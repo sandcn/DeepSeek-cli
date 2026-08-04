@@ -44,6 +44,15 @@ _DIFF_ADD_STYLE: Style = StyleSheet.get("diff_add") or Style(fg=41)
 _DIFF_DEL_STYLE: Style = StyleSheet.get("diff_del") or Style(fg=196)
 _DIFF_CTX_STYLE: Style = StyleSheet.get("diff_ctx") or Style(fg=244)
 
+# ── 美化专用样式常量（diff 渲染局部样式，不注册 StyleSheet 避免影响其他模块） ──
+_DIFF_FILE_OLD: Style = Style(fg=210, bold=True)    # 旧文件头：亮红（旧文件标识）
+_DIFF_FILE_NEW: Style = Style(fg=114, bold=True)    # 新文件头：亮绿（新文件标识）
+_DIFF_HUNK_BAR: Style = Style(fg=45, dim=True)      # hunk 头装饰条：柔青
+_DIFF_NUM_DEL:  Style = Style(fg=167)               # 删除行号列：柔红（避免 196 过刺眼）
+_DIFF_NUM_ADD:  Style = Style(fg=41)                # 新增行号列：绿
+_DIFF_MARK_DEL: Style = Style(fg=196, bold=True)    # `-` 标记：亮红加粗
+_DIFF_MARK_ADD: Style = Style(fg=41, bold=True)     # `+` 标记：亮绿加粗
+
 # 向后兼容常量（从 StyleSheet.get() 获取语义色，兜底硬编码值）
 # 保留别名供 _render_* 函数中 f-string 使用（已迁移为 Style.apply）
 _RESET_STR = "\033[0m"
@@ -258,11 +267,13 @@ def _render_chunk(item, w, lexer_name, output_target):
         # P3-12：文件头路径消毒（ANSI 注入防护）——path 来自 diff 列表
         # （可能是用户提供的文件名），须与 ctx/add/del 行一致走 _sanitize_ansi。
         path = _sanitize_ansi(item[1][4:] if len(item[1]) > 4 else "")
-        _write_diff_line("  " + dim.apply("┌─ " + path), output_target)
+        # 美化：旧文件头亮红加粗（保持 ``┌─ path`` 连续字面量，测试/WebUI 兼容）
+        _write_diff_line("  " + _DIFF_FILE_OLD.apply("┌─ " + path), output_target)
         return
     if typ == 'new_file':
         path = _sanitize_ansi(item[1][4:] if len(item[1]) > 4 else "")
-        _write_diff_line("  " + dim.apply("└─ " + path), output_target)
+        # 美化：新文件头亮绿加粗
+        _write_diff_line("  " + _DIFF_FILE_NEW.apply("└─ " + path), output_target)
         return
     if typ == 'hunk':
         hl = StyleSheet.resolve("highlight", Style(fg=45))
@@ -273,14 +284,16 @@ def _render_chunk(item, w, lexer_name, output_target):
         #   \x1b[31mINJECT`` 可注入 ANSI（与 old_file/new_file/ctx 行已消毒
         #   语义一致）。
         hunk_text = _sanitize_ansi(item[1])
-        _write_diff_line("  " + bold_hl.apply(hunk_text), output_target)
+        # 美化：左装饰条 ``▌``（柔青 dim）+ hunk 头加粗亮青
+        _write_diff_line("  " + _DIFF_HUNK_BAR.apply("▌ ") + bold_hl.apply(hunk_text), output_target)
         return
     if typ == 'fold':
         hidden = item[1]
         # 方向3（折叠行对齐）：与 ctx 行结构对称——行号列占位 + 分隔空格 +
         # 折叠提示（修复前 `│` 后紧贴 `┄`，行号列/内容列与 ctx 行不对齐）。
+        # 美化：折叠提示柔青（与 hunk 装饰同色系，视觉层级一致）
         _write_diff_line(
-            "  " + dim.apply(f"│ {'':>{w}} │") + " " + dim.apply(f"┄ {hidden} lines ┄"),
+            "  " + dim.apply(f"│ {'':>{w}} │") + " " + _DIFF_HUNK_BAR.apply(f"┄ {hidden} lines ┄"),
             output_target,
         )
         return
@@ -332,18 +345,19 @@ def _render_diff_summary(diff_list, output_target=None, width: int = _SEPARATOR_
         parts.append(_DIFF_DEL_STYLE.apply(f"🔴 -{dels}"))
     if ctx:
         parts.append(_DIFF_CTX_STYLE.apply(f"⚪ {ctx} unchanged"))
-    _write_diff_line("  " + "  ".join(parts), output_target)
+    # 美化：统计行前置 ✦ 图标（柔青），层级与分隔线/折叠提示一致
+    _write_diff_line("  " + _DIFF_HUNK_BAR.apply("✦ ") + "  ".join(parts), output_target)
 
 
 def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optional["IOutputTarget"] = None, width: int = _SEPARATOR_WIDTH):
     """
     美化后的差异渲染：
-    - 文件头：┌─ a/path（old） / └─ b/path（new）
-    - hunk 头：@@ -L,N +L,N @@ — 加粗亮青色
-    - 删除行：RED▐ 左颜色条 + 暗红行号 + BRIGHT_RED - 前缀
-    - 新增行：GREEN▐ 左颜色条 + 暗绿行号 + BRIGHT_GREEN + 前缀
+    - 文件头：┌─ a/path（旧，亮红加粗） / └─ b/path（新，亮绿加粗）
+    - hunk 头：▌ @@ -L,N +L,N @@ — 装饰条柔青 + 头加粗亮青色
+    - 删除行：│ 行号 │（柔红）+ 加粗红 - 前缀，内容含红背景行内高亮
+    - 新增行：│ 行号 │（绿）+ 加粗绿 + 前缀，内容含绿背景行内高亮
     - 上下文行：浅灰 │ 行号 │ 内容（语法高亮）
-    - 折叠行：┄ N lines ┄
+    - 折叠行：┄ N lines ┄（柔青提示）
     - 多 hunk 间 ╌╌╌ 分隔线
     - 成对修改行内高亮差异部分（红/绿背景色）
 
@@ -364,31 +378,31 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
     sep = min(_SEPARATOR_WIDTH, width)
 
     def _flush_pairs(del_buf, add_buf):
-        diff_del = _DIFF_DEL_STYLE
-        diff_add = _DIFF_ADD_STYLE
+        # 美化：行号列统一为 ``│ n │`` 表格风格（与 ctx/fold 对齐），
+        # 删除行号列柔红、新增行号列绿；`-`/`+` 标记加粗醒目。
         for i in range(max(len(del_buf), len(add_buf))):
             if i < len(del_buf) and i < len(add_buf):
                 _, d_line, d_oln, _ = del_buf[i]
                 _, a_line, _, a_nln = add_buf[i]
                 h_old, h_new = _inline_highlight(d_line[1:], a_line[1:])
                 _write_diff_line(
-                    "  " + diff_del.apply(f"▐ {d_oln:>{w}} │") + " " + Style(fg=196, bold=True).apply("-") + h_old,
+                    "  " + _DIFF_NUM_DEL.apply(f"│ {d_oln:>{w}} │") + " " + _DIFF_MARK_DEL.apply("-") + h_old,
                     output_target,
                 )
                 _write_diff_line(
-                    "  " + diff_add.apply(f"▐ {a_nln:>{w}} │") + " " + Style(fg=41, bold=True).apply("+") + h_new,
+                    "  " + _DIFF_NUM_ADD.apply(f"│ {a_nln:>{w}} │") + " " + _DIFF_MARK_ADD.apply("+") + h_new,
                     output_target,
                 )
             elif i < len(del_buf):
                 _, d_line, d_oln, _ = del_buf[i]
                 _write_diff_line(
-                    "  " + diff_del.apply(f"▐ {d_oln:>{w}} │") + " " + Style(fg=196, bold=True).apply("-") + _hl(d_line[1:]),
+                    "  " + _DIFF_NUM_DEL.apply(f"│ {d_oln:>{w}} │") + " " + _DIFF_MARK_DEL.apply("-") + _hl(d_line[1:]),
                     output_target,
                 )
             else:
                 _, a_line, _, a_nln = add_buf[i]
                 _write_diff_line(
-                    "  " + diff_add.apply(f"▐ {a_nln:>{w}} │") + " " + Style(fg=41, bold=True).apply("+") + _hl(a_line[1:]),
+                    "  " + _DIFF_NUM_ADD.apply(f"│ {a_nln:>{w}} │") + " " + _DIFF_MARK_ADD.apply("+") + _hl(a_line[1:]),
                     output_target,
                 )
 
