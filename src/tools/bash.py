@@ -58,6 +58,14 @@ def _has_dangerous_command(command: str) -> str | None:
 # （is_interrupted）。200ms 平衡响应速度与 CPU 开销。
 _INTERRUPT_CHECK_INTERVAL = 0.2
 
+# ── 单次读取块大小 ────────────────────────────────
+# _read_loop 每次从 StreamReader 读取的最大字节数。与 Python 标准库
+# _UnixReadPipeTransport 的 max_size（256KB）一致：单次 read 通常能取到
+# transport 一次到达的全部数据，减少循环次数；超长行/无换行大数据在本地
+# bytearray 累积，不受 StreamReader 默认 64KB limit 限制（弃用 readline：
+# 其 LimitOverrunError 处理会 clear 整个缓冲，导致超长行数据丢失）。
+_READ_CHUNK_SIZE = 256 * 1024
+
 
 # 模块级预编译正则（消除 _strip_ansi 每次调用的 re.compile 开销）
 _ANSI_STRIP_RE = _re.compile(
@@ -102,6 +110,28 @@ def _strip_ansi(text: str) -> str:
     #    保留 \t(0x09)、\n(0x0A)、\r(0x0D→进度条行内覆盖) 等不影响终端布局的字符。
     result = _CTRL_CHAR_RE.sub('', result)
     return result
+
+
+class _PtyEioAsEofProtocol(asyncio.StreamReaderProtocol):
+    """PTY master 端读到 EIO（slave 关闭）时归一化为正常 EOF。
+
+    PTY 场景下，子进程退出会关闭 slave 端，此时 master 端 read 返回
+    EIO（OSError errno=EIO）。但用户空间 StreamReader 的缓冲中可能还有
+    未消费的数据——子进程一次性写入多行后立刻退出（echo/seq/printf 等
+    快速命令），数据整体到达缓冲，随后 EIO 才到达。
+
+    默认 ``StreamReaderProtocol.connection_lost`` 会把非 None 异常
+    ``set_exception`` 到 reader，导致后续 ``readline()`` 直接抛 EIO，
+    ``_read_loop`` 把 EIO 误当 EOF break，丢弃缓冲中剩余的行
+    （用户侧现象：多行输出只返回第一行）。
+
+    这里把 EIO 归一化为 ``feed_eof()``：缓冲中剩余数据先被 ``readline()``
+    消费完，再返回 EOF（b''），与真实终端「读完缓冲再遇 EOF」一致。
+    """
+    def connection_lost(self, exc):
+        if exc is not None and getattr(exc, 'errno', None) == _errno.EIO:
+            exc = None  # PTY slave 关闭 → 正常 EOF（先消费缓冲剩余数据）
+        super().connection_lost(exc)
 
 
 def _simulate_terminal(text: str) -> str:
@@ -439,8 +469,24 @@ class BashFunc(Func):
                          kill_fn=None):
         """共享读取循环，消除 _run_pipe 和 _run_pty 中的重复代码（~80行×2）。
 
-        从 reader 逐行读取字节，处理中断检测、超时/PTY EIO/超长行、
+        从 reader 读取字节，处理中断检测、超时/PTY EIO/超长行、
         UTF-8 解码、\\r\\n 规范化、ANSI 剥离终端输出和行发布回调。
+
+        实现说明（★ 超长行修复）：
+        不使用 ``StreamReader.readline()``。readline 内部基于 readuntil，
+        当某行超过 StreamReader 默认 limit（64KB）时 readuntil 抛
+        ``LimitOverrunError``，而 ``readline()`` 捕获后会把整个内部缓冲
+        ``clear()``（数据丢失）；随后 ``_read_loop`` 再调 ``reader.read()``
+        只能读到清空后新到达的数据 → 超长行/大块无换行输出被截断
+        （用户侧现象：如 ``print('X'*200000)`` 只返回前几 KB）。
+
+        改为循环 ``reader.read(CHUNK)`` 取块 + 本地 bytearray 累积，手动按
+        ``\\n`` 切行：
+          - 超长行/无换行数据安全累积在本地缓冲，不受 StreamReader limit 限制；
+          - ``read()`` 消费 StreamReader 缓冲后自动 ``_maybe_resume_transport``，
+            避免缓冲超 limit 后 transport 暂停导致子进程写阻塞（死锁）；
+          - 正常行/超长行/EOF 残留统一走 ``_handle_line``，行尾语义与旧
+            readline 一致（含 \\n 的行原样保留，EOF 残留无 \\n）。
 
         Args:
             reader: asyncio.StreamReader（PIPE stdout/stderr 或 PTY master）
@@ -455,34 +501,13 @@ class BashFunc(Func):
         Returns:
             bool: True 表示被 ESC 中断信号打断，False 表示正常读到 EOF
         """
-        while True:
-            if is_interrupted():
-                if kill_fn is not None:
-                    kill_fn()
-                else:
-                    process.kill()
-                return True
-            try:
-                line = await asyncio.wait_for(
-                    reader.readline(),
-                    timeout=_INTERRUPT_CHECK_INTERVAL,
-                )
-            except asyncio.TimeoutError:
-                continue  # 超时→回到循环头检查中断
-            except OSError as e:
-                if e.errno == _errno.EIO:  # PTY slave closed → EOF
-                    break
-                raise
-            except ValueError:
-                # LimitOverrunError: 超长行（找不到换行符且超出缓冲区限制）
-                # 回退到 read() 读取大块数据，避免崩溃
-                chunk = await reader.read(65536)
-                if not chunk:
-                    break
-                line = chunk
-            if not line:
-                break
-            decoded = line.decode('utf-8', errors='replace')
+        # 本地累积缓冲：跨块数据/超长行先累积，按 \n 切分后处理
+        buffer = bytearray()
+        interrupted = False
+
+        async def _handle_line(raw: bytes) -> None:
+            """处理一个完整行（含 \\n）或 EOF 残留（无 \\n）。"""
+            decoded = raw.decode('utf-8', errors='replace')
             # ★ 规范化行尾：PTY ONLCR 将 \n → \r\n，归一化为 \n，
             #   保留行内独立 \r（用于进度条）不动
             clean = decoded.replace('\r\n', '\n')
@@ -500,7 +525,46 @@ class BashFunc(Func):
                     await publish_line_fn(clean, is_stderr)
                 except Exception:
                     pass
-        return False
+
+        while True:
+            if is_interrupted():
+                if kill_fn is not None:
+                    kill_fn()
+                else:
+                    process.kill()
+                interrupted = True
+                break
+            try:
+                chunk = await asyncio.wait_for(
+                    reader.read(_READ_CHUNK_SIZE),
+                    timeout=_INTERRUPT_CHECK_INTERVAL,
+                )
+            except asyncio.TimeoutError:
+                continue  # 超时→回到循环头检查中断
+            except OSError as e:
+                if e.errno == _errno.EIO:  # PTY slave closed → EOF
+                    break
+                raise
+            except ValueError:
+                # 防御分支：StreamReader.read() 正常不抛 ValueError
+                # （readline 的 LimitOverrunError 才抛）；reader._exception
+                # 为非 OSError 异常时避免崩溃，向上传播由上层处理。
+                raise
+            if not chunk:
+                break  # EOF
+            buffer.extend(chunk)
+            # 按 \n 切分完整行（每行保留换行符）
+            while True:
+                nl = buffer.find(b'\n')
+                if nl == -1:
+                    break
+                await _handle_line(bytes(buffer[:nl + 1]))
+                del buffer[:nl + 1]
+        # EOF：处理残留的不完整行（超长行无尾换行 / 最后一块无 \n）
+        if buffer:
+            await _handle_line(bytes(buffer))
+            buffer.clear()
+        return interrupted
 
     # ── PIPE / PTY 执行 ────────────────────────────────
 
@@ -641,9 +705,13 @@ class BashFunc(Func):
         os.close(slave_fd)
 
         # 将 master FD 包装为 asyncio StreamReader
+        # ★ 使用 _PtyEioAsEofProtocol：PTY 子进程退出关闭 slave 端后 master
+        #   read 返回 EIO，但缓冲中可能还有未消费的数据（一次性到达的多行
+        #   输出）。该 protocol 把 EIO 归一化为 EOF，先消费完缓冲再结束，
+        #   避免「多行输出只返回第一行」。
         loop = asyncio.get_event_loop()
         reader = asyncio.StreamReader()
-        protocol = asyncio.StreamReaderProtocol(reader)
+        protocol = _PtyEioAsEofProtocol(reader)
 
         try:
             transport, _ = await loop.connect_read_pipe(
