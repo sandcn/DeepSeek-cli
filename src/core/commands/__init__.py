@@ -19,7 +19,6 @@ from ..internal.commands._command_core import (
 
 from ._session_cmd import (
     _cmd_clear,
-    _cmd_compress,
     _cmd_pin,
     _cmd_undo,
     _cmd_retry,
@@ -28,7 +27,6 @@ from ._session_cmd import (
     _cmd_changes,
     # 插件子类
     ClearCommand,
-    CompressCommand,
     PinCommand,
     UndoCommand,
     RetryCommand,

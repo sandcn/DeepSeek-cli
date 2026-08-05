@@ -57,8 +57,6 @@ def _setup_session(loaded_data: dict | None = None, chat_ui=None) -> tuple:
             # 恢复会话后同步终端窗口标题（OSC 序列，无 TTY 静默失败）
             title = (data.get("title") or "").strip()
             if title:
-                # 已有标题（AI 生成/用户重命名）→ 本进程不再自动生成覆盖
-                session._state.ai_title_done = True
                 from ..tui._screen import set_window_title
                 set_window_title(title)
             non_system = _non_system_messages(session)

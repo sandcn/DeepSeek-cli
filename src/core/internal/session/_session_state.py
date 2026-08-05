@@ -46,9 +46,6 @@ class SessionState:
     # ── WebUI 页面刷新保护 ────────────────────────────────
     orphaned_task: asyncio.Task | None = None
 
-    # ── AI 标题生成标志（进程内只生成一次） ────────────────
-    ai_title_done: bool = False
-
     # ── run_round 并发锁 ──────────────────────────────────
     round_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 

@@ -158,7 +158,7 @@ async def run_round(session, user_input: str) -> dict:
             _force_state_recovery(session)
             raise
         # ── AI 回复前提前分配 session_id ──────────────────
-        # 标题生成在后台并行执行，需要 session_id 已就绪才能保存标题。
+        # 提前分配保证同一轮内 _auto_save / round_end 事件使用一致的 session_id。
         if not session._state.session_id:
             session._state.session_id = session._persistence_port.generate_id()
         try:
@@ -392,9 +392,6 @@ async def _finalize_round(session, interrupted: bool,
         _logger.exception("_finalize_round: _auto_save 异常")
         session_id = None
 
-    # ★ AI 会话标题：每轮完成后后台异步生成（不阻塞主流程，失败静默）
-    _maybe_spawn_title_generation(session, session_id)
-
     # 发射事件并返回
     return _emit_round_events(session, interrupted, session_id, delta)
 
@@ -439,51 +436,6 @@ async def _auto_save(session) -> str | None:
         _logger.exception("自动保存会话失败: %s", exc)
         _force_state_recovery(session)
         return None
-
-
-def _maybe_spawn_title_generation(session, session_id: str | None) -> None:
-    """后台异步生成 AI 会话标题（不阻塞主流程，失败静默）。
-
-    条件：
-    - 已分配 session_id（run_round 提前分配）
-    - 本进程未生成过 AI 标题（``_state.ai_title_done``）
-    - 至少 2 条非 system 消息（有足够对话内容）
-
-    生成成功 → ``rename_session`` 写入会话文件 → 标记 done；
-    失败保持截断标题，下轮重试。task 为 fire-and-forget，所有异常内部消化。
-    """
-    if not session_id:
-        return
-    if getattr(session._state, "ai_title_done", False):
-        return
-    messages = getattr(session._agent, "messages", None) or []
-    non_system = [m for m in messages if m.get(_ROLE_KEY) != _SYSTEM_ROLE]
-    if len(non_system) < 2:
-        return
-    model_port = None
-    try:
-        model_port = session._agent.get_async_model_port()
-    except Exception:
-        _logger.debug("获取 async model port 失败，跳过后台标题生成", exc_info=True)
-    if model_port is None:
-        return
-
-    async def _task() -> None:
-        try:
-            from ...title_generator import maybe_update_title_async
-            title = await maybe_update_title_async(
-                model_port, messages, session._model, session_id,
-            )
-            if title:
-                session._state.ai_title_done = True
-        except Exception:
-            _logger.debug("后台 AI 标题生成异常（忽略）", exc_info=True)
-
-    try:
-        asyncio.create_task(_task())
-    except RuntimeError:
-        # 无事件循环（如纯同步测试上下文）→ 跳过
-        _logger.debug("无事件循环，跳过后台标题生成")
 
 
 def _emit_round_events(session, interrupted: bool, session_id: str | None,

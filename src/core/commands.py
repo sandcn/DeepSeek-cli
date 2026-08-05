@@ -20,7 +20,6 @@ from .internal.commands._command_core import (  # noqa: F401, F811
 
 from .commands._session_cmd import (  # noqa: F401, F811
     _cmd_clear,
-    _cmd_compress,
     _cmd_pin,
     _cmd_undo,
     _cmd_retry,
@@ -56,7 +55,6 @@ __all__ = [
     "_pop_assistant_tool_messages",
     "_format_cost_duration",
     "_cmd_clear",
-    "_cmd_compress",
     "_cmd_pin",
     "_cmd_undo",
     "_cmd_retry",

@@ -81,7 +81,6 @@ COMMANDS_HELP = (
     f"\n{DIM}  \u2500 可用命令{RESET}\n"
     f"  {TEAL}/clear{RESET}    清空对话\n"
     f"  {TEAL}/loop{RESET}     循环执行 N 次指定提词（每轮第1次用用户提词，第2次用固定提词）: /loop <次数> <提词>\n"
-    f"  {TEAL}/compress{RESET} 手动压缩上下文\n"
     f"  {TEAL}/pin{RESET}      标记重要消息（压缩时保留）\n"
     f"  {TEAL}/editmsg{RESET}  编辑当前会话消息 (Ctrl+O)\n"
     f"  {TEAL}/undo{RESET}     撤销上一轮对话\n"

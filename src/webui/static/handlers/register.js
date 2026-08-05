@@ -207,20 +207,6 @@ ws.on('session_renamed', () => {
   ws.send({ type: 'get_sessions' });
 });
 
-/* ── 自动标题生成 WS 事件 ── */
-ws.on('session_title_updated', (data) => {
-  // 更新顶栏标题显示
-  const titleEl = document.getElementById('session-title');
-  if (titleEl && data.title) {
-    titleEl.textContent = data.title;
-    titleEl.classList.add('visible');
-  }
-  // 更新浏览器标签页标题
-  document.title = data.title ? data.title + ' - Chat' : 'Chat';
-  // 刷新历史会话列表中的标题
-  ws.send({ type: 'get_sessions' });
-});
-
 ws.on('session_loaded', (data) => {
   if (data.messages) {
     _stopContentObserver();

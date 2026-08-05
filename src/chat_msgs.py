@@ -112,9 +112,8 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
         _logger.exception("获取 token 统计失败，使用空统计")
         stats = {"input": 0, "output": 0, "total": 0}
     # ── 标题策略 ───────────────────────────────────────────
-    # 1) 已有会话文件且已有标题（AI 生成 / 用户重命名）→ 保留，不覆盖
-    # 2) 否则从首条 user 消息截断生成（即时 fallback，
-    #    后台 AI 标题生成完成后经 rename_session 覆盖）
+    # 1) 已有会话文件且已有标题（用户重命名）→ 保留，不覆盖
+    # 2) 否则从首条 user 消息截断生成（即时 fallback）
     title = ""
     if session_id:
         existing = load_session(session_id)

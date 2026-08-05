@@ -100,10 +100,10 @@ class TestSetupSession:
 
 
 class TestSetupSessionTitleSync:
-    """--load 恢复会话后同步终端窗口标题（起完标题 → 终端标题跟随）。"""
+    """--load 恢复会话后同步终端窗口标题。"""
 
     def test_load_syncs_terminal_title(self):
-        """恢复会话且标题非空时同步终端窗口标题并标记 ai_title_done。"""
+        """恢复会话且标题非空时同步终端窗口标题。"""
         from src.app_loop._session_setup import _setup_session
 
         captured: list[str] = []
@@ -113,7 +113,6 @@ class TestSetupSessionTitleSync:
             messages=[{"role": "user", "content": "hi"}],
             loaded={"model": "model-b", "title": "恢复的会话标题"},
         )
-        session._state = MagicMock()
 
         with patch(
             "src.app_loop._session_setup.ChatSession", return_value=session,
@@ -124,11 +123,9 @@ class TestSetupSessionTitleSync:
             _setup_session({"id": "sess-1"}, chat_ui)
 
         assert captured == ["恢复的会话标题"]
-        # 已有标题 → 本进程不再自动生成 AI 标题覆盖
-        assert session._state.ai_title_done is True
 
     def test_load_skip_sync_when_no_title(self):
-        """恢复会话无标题时不调用 set_window_title 也不标记 ai_title_done。"""
+        """恢复会话无标题时不调用 set_window_title。"""
         from src.app_loop._session_setup import _setup_session
 
         captured: list[str] = []
@@ -138,8 +135,6 @@ class TestSetupSessionTitleSync:
             messages=[{"role": "user", "content": "hi"}],
             loaded={"model": "model-b"},
         )
-        session._state = MagicMock()
-        session._state.ai_title_done = False  # 模拟真实 dataclass 默认值
 
         with patch(
             "src.app_loop._session_setup.ChatSession", return_value=session,
@@ -150,5 +145,3 @@ class TestSetupSessionTitleSync:
             _setup_session({"id": "sess-1"}, chat_ui)
 
         assert captured == []
-        # 无标题 → 后续轮次可触发 AI 标题生成
-        assert session._state.ai_title_done is False

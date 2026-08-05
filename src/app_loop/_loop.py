@@ -405,7 +405,7 @@ class InteractiveLoop:
                 session=session,
                 ui_adapter=_ui_adapter,
             )
-            # 优先 async_execute（InteractiveCommandPlugin 子类/CompressCommand 有），
+            # 优先 async_execute（InteractiveCommandPlugin 子类有），
             # 否则回退到同步 execute（纯 CommandPlugin 子类）
             if hasattr(plugin, 'async_execute'):
                 handled = await plugin.async_execute(ctx)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from ..adapters.output import get_default_output_port
 from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
-from ..context_selector import total_chars
 from ..sandbox_manager import get_sandbox_manager
 from ..internal.commands._command_core import CommandContext, _pop_assistant_tool_messages
 
@@ -43,39 +42,6 @@ def _cmd_clear(ctx):
         if agent is not None:
             setattr(agent, "_subagent_records", [])
     _out.write(f"{GREEN}  + 对话已清空（系统提词已保留）{RESET}", level="raw", source="cmd")
-    return True
-
-
-def _cmd_compress(ctx):
-    from ...config import MAX_CONTEXT_CHARS, MODEL as _default_model
-
-    tc = total_chars(ctx.messages)
-    _out.write(f"{DIM}  当前消息数: {len(ctx.messages)}，总字符数: {tc}{RESET}", level="raw", source="cmd")
-    _out.write(f"{DIM}  最大上下文限制: {MAX_CONTEXT_CHARS // 1000}k 字符{RESET}", level="raw", source="cmd")
-
-    if ctx.session is not None:
-        # 委托给 ChatSession.compress()（复用 ContextManager 实例和阈值检查）
-        ctx.session.compress(force=True)
-    else:
-        non_system_count = sum(1 for m in ctx.messages
-                               if m.get("role") != "system"
-                               or (m.get("content") or "").startswith("[对话摘要]"))
-        if non_system_count <= 2:
-            _out.write(f"{YELLOW}  ! 非系统消息太少（≤2），无需压缩{RESET}", level="raw", source="cmd")
-            return True
-
-        cm = ctx.context_manager
-        if cm is None:
-            from ..context_manager import ContextManager
-            cm = ContextManager(ctx.messages, ctx.state.get("model", _default_model))
-        cm.check_and_compress(force=True)
-
-    new_total = total_chars(ctx.messages)
-    compressed_count = tc - new_total
-    if compressed_count > 0:
-        _out.write(f"{GREEN}  + 压缩完成 消息数: {len(ctx.messages)}，字符数: {new_total}（减少 {compressed_count}）{RESET}", level="raw", source="cmd")
-    else:
-        _out.write(f"{GREEN}  + 压缩完成 消息数: {len(ctx.messages)}，字符数: {new_total}{RESET}", level="raw", source="cmd")
     return True
 
 
@@ -300,22 +266,6 @@ class ClearCommand(CommandPlugin):
         return _cmd_clear(ctx)
 
 
-class CompressCommand(CommandPlugin):
-    """压缩对话上下文"""
-    def __init__(self):
-        self.meta = CommandMeta(name="compress", description="手动压缩上下文")
-
-    async def async_execute(self, ctx) -> bool:
-        if ctx.context_manager:
-            await ctx.context_manager.compress_async()
-            return True
-        return False
-
-    def execute(self, ctx) -> bool:
-        """同步版本（不会执行异步压缩）"""
-        return _cmd_compress(ctx)
-
-
 class PinCommand(CommandPlugin):
     """固定/取消固定消息"""
     def __init__(self):
@@ -364,7 +314,6 @@ class ChangesCommand(CommandPlugin):
 
 # ── 自动注册插件 ────────────────────────────────────
 get_plugin_registry().register(ClearCommand())
-get_plugin_registry().register(CompressCommand())
 get_plugin_registry().register(PinCommand())
 get_plugin_registry().register(UndoCommand())
 get_plugin_registry().register(RetryCommand())

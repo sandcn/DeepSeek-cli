@@ -257,9 +257,7 @@ class ContextManager:
             return ""
 
         pct = chars / max_context_chars * 100
-        if pct >= 90:
-            return f"上下文 {pct:.0f}% /compress"
-        elif pct >= 80:
+        if pct >= 80:
             return f"上下文 {pct:.0f}%"
         return ""
 
