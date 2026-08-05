@@ -23,7 +23,6 @@ from .fiber import Fiber
 from .output import StyledRun, Line
 from ._style_fp import style_fingerprint
 from ._layout_sizing import (
-    _resolve_length,
     _resolve_width,
     _clamp_width,
     _resolve_height,
@@ -32,7 +31,7 @@ from ._layout_sizing import (
     _flex_shrink,
     _apply_aspect_ratio,
 )
-from ._layout_tree import layout_children, _skip_function
+from ._layout_tree import layout_children
 from ._layout_transform import (
     _reflow_subtree,
     _translate_subtree_y,

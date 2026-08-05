@@ -48,14 +48,9 @@ from . import hooks as _hooks
 #   ``from src.tui.ink.session import _get_cmd_priority`` 兼容）。
 from ._cmd_priority import (
     _CMD_PRIORITY_CRITICAL,
-    _CMD_PRIORITY_HIGH,
-    _CMD_PRIORITY_NORMAL,
     _CMD_PRIORITY_LOW,
     _CRITICAL_CMDS,
     _STREAM_CMDS,
-    _HIGH_CMDS,
-    _NORMAL_CMDS,
-    _LOW_CMDS,
     _get_cmd_id,
     _get_cmd_priority,
     _cmd_name,

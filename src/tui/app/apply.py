@@ -15,6 +15,7 @@ from src.tui._const import (
     RenderCmd,
     _CLEAR_PARSE_LINE,
 )
+from src.tui.ink._cmd_priority import _cmd_name
 from src.tui.core.style import Style
 from src.renderer.ansi.helpers import AnsiLine, ansi_to_line
 # 方向C 步骤4：_S_USER_ICON/_S_USER_TEXT/_S_NOTICE 迁入 app/_theme.py 共享池
@@ -41,13 +42,6 @@ def apply_cmd(model, cmd: RenderCmd) -> None:
         handler(model, cmd)
     except TypeError:
         _logger.warning("渲染命令 %s 参数错误", _cmd_name(cid), exc_info=True)
-
-
-def _cmd_name(cid: int) -> str:
-    try:
-        return RenderCommand(cid).name
-    except ValueError:
-        return str(cid)
 
 
 # ═══════════════════════════════════════════════════════════

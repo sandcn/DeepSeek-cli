@@ -31,19 +31,11 @@ from .fiber import Fiber
 from .layout import layout_tree, wrap_text_lines, _skip_function
 from .output import Frame, Line
 from ._paint_canvas import (
-    _line_as_dict,
-    _ensure_row_dict,
-    _overlaps_wide_second_col,
     _merge_line,
-    _slice_run_text,
     _slice_line,
     _canvas_row_to_line,
 )
 from ._paint_border import (
-    _border_style,
-    _BORDER_CHARS,
-    _DEFAULT_BORDER_OBJECT,
-    _border_chars,
     _paint_border,
     _paint_box_background,
     _merge_inherit_bg,
