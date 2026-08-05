@@ -124,9 +124,7 @@ class InteractiveLoop:
                     await _put_and_wait(queue, queued, msg_done)
                     return _RoundResult(should_exit=False)
 
-            _tw = self._get_term_width()
-            self._chat_ui.write_line(f"{DIM}{'─' * max(min(_tw - 2, 40), 1)}{RESET}")
-            # ★ 等待 render 线程处理完分隔线
+            # ★ 等待 render 线程处理完待渲染内容
             self._chat_ui.flush()
             # ★ 显式将光标定位到输入行（flush 返回时 render 线程可能尚未执行 _position_cursor）
             self._chat_ui.bottom_bar.ensure_cursor_in_lower()
