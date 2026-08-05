@@ -150,6 +150,7 @@ _api_key_warned_lock = threading.Lock()
 
 
 def _headers() -> dict[str, str]:
+    global _api_key_warned
     if not API_KEY:
         with _api_key_warned_lock:
             if not _api_key_warned:
@@ -163,6 +164,7 @@ def _headers() -> dict[str, str]:
 
 def _headers_anthropic() -> dict[str, str]:
     """构建 Anthropic API 请求头（x-api-key 认证 + anthropic-version）。"""
+    global _api_key_warned
     if not API_KEY:
         with _api_key_warned_lock:
             if not _api_key_warned:

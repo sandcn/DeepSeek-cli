@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 _logger = logging.getLogger(__name__)
@@ -74,14 +75,13 @@ class CommandUiAdapter:
                 session.request_bottom_redraw()
             except Exception:
                 pass
-            import time as _t
             deadline = model.user_select.deadline
             while not model.user_select.done:
-                if deadline > 0 and _t.monotonic() >= deadline:
+                if deadline > 0 and time.monotonic() >= deadline:
                     model.user_select.done = True
                     model.user_select.action = "timeout"
                     break
-                _t.sleep(0.05)
+                time.sleep(0.05)
             st = model.user_select
             action = st.action or "timeout"
             selected = int(getattr(st, "selected", -1))
@@ -110,7 +110,6 @@ class CommandUiAdapter:
             _logger.debug("run_bottom_bar_selection: show_completions 失败: %s", e)
             return {"action": "error", "index": None}
 
-        import time
         deadline = time.monotonic() + 60
 
         while time.monotonic() < deadline:
