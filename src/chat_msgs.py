@@ -63,6 +63,23 @@ def generate_id() -> str:
     return hashlib.md5(raw.encode()).hexdigest()
 
 
+# ── 终端窗口标题同步 ──────────────────────────────────────
+def _sync_terminal_title(title: str) -> None:
+    """同步会话标题到终端窗口标题（OSC 序列）。
+
+    会话保存生成标题后调用，使 Termux / 桌面终端窗口标签显示当前会话主题。
+    延迟导入 ``set_window_title`` 避免数据层→UI 层模块级依赖（与
+    ``publish_output`` 同模式）；无 TTY / 异常时静默失败（非关键路径）。
+    """
+    if not title:
+        return
+    try:
+        from .tui._screen import set_window_title
+        set_window_title(title)
+    except Exception:
+        _logger.debug("同步终端窗口标题失败（非关键）", exc_info=True)
+
+
 # ── 保存对话 ──────────────────────────────────────────────
 def save_session(messages: list[dict], model: str, session_id: str | None = None,
                  subagents: list | None = None) -> str:
@@ -94,15 +111,27 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
     except Exception:
         _logger.exception("获取 token 统计失败，使用空统计")
         stats = {"input": 0, "output": 0, "total": 0}
+    # ── 标题策略 ───────────────────────────────────────────
+    # 1) 已有会话文件且已有标题（AI 生成 / 用户重命名）→ 保留，不覆盖
+    # 2) 否则从首条 user 消息截断生成（即时 fallback，
+    #    后台 AI 标题生成完成后经 rename_session 覆盖）
     title = ""
-    # 基于 filtered 提取标题（跳过 system 消息），保持与保存内容一致
-    for m in filtered:
-        if m.get("role") == "user":
-            content = (m.get("content") or "").strip()
-            title = content[:40]
-            if len(content) > 40:
-                title += "…"
-            break
+    if session_id:
+        existing = load_session(session_id)
+        if existing and existing.get("title"):
+            title = existing["title"]
+    if not title:
+        # 基于 filtered 提取标题（跳过 system 消息），保持与保存内容一致
+        for m in filtered:
+            if m.get("role") == "user":
+                content = (m.get("content") or "").strip()
+                title = content[:40]
+                if len(content) > 40:
+                    title += "…"
+                break
+
+    # ★ 起完标题后同步终端窗口标题（OSC 序列，无 TTY 静默失败）
+    _sync_terminal_title(title)
 
     data = {
         "id": sid,

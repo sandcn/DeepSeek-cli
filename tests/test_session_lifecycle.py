@@ -147,3 +147,123 @@ class TestFinalizeRoundAutoSaveCancelledError:
             assert "delta" in result
 
 
+
+
+# ═══════════════════════════════════════════════════════════
+# TestMaybeSpawnTitleGeneration
+# ═══════════════════════════════════════════════════════════
+
+class TestMaybeSpawnTitleGeneration:
+    """_maybe_spawn_title_generation — 后台 AI 标题生成触发逻辑。"""
+
+    def _session(self):
+        """构造满足生成条件的最小 session mock。"""
+        session = MagicMock()
+        session._state = MagicMock()
+        session._state.ai_title_done = False
+        agent = MagicMock()
+        agent.messages = [
+            {"role": "user", "content": "帮我分析项目"},
+            {"role": "assistant", "content": "好的，正在分析"},
+        ]
+        agent.get_async_model_port.return_value = MagicMock()
+        session._agent = agent
+        session._model = "model-a"
+        return session
+
+    @pytest.mark.asyncio
+    async def test_spawns_task_and_marks_done(self):
+        """条件满足 → 创建后台 task → 完成后标记 ai_title_done。"""
+        from src.core.internal.session._session_lifecycle import _maybe_spawn_title_generation
+        import src.core.title_generator as tg
+
+        session = self._session()
+        tasks: list[asyncio.Task] = []
+        real_create_task = asyncio.create_task
+
+        def fake_create_task(coro):
+            t = real_create_task(coro)
+            tasks.append(t)
+            return t
+
+        async def fake_update(model_port, messages, model, sid):
+            return "AI 标题"
+
+        with patch("asyncio.create_task", side_effect=fake_create_task), patch.object(
+            tg, "maybe_update_title_async", new=fake_update,
+        ):
+            _maybe_spawn_title_generation(session, "sess-1")
+            assert len(tasks) == 1
+            # 在 patch 生效期间等待 task 完成（task 内 from-import 取到 fake）
+            await tasks[0]
+
+        assert session._state.ai_title_done is True
+
+    @pytest.mark.asyncio
+    async def test_skip_when_no_session_id(self):
+        from src.core.internal.session._session_lifecycle import _maybe_spawn_title_generation
+
+        session = self._session()
+        with patch("asyncio.create_task") as mock_task:
+            _maybe_spawn_title_generation(session, None)
+        mock_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skip_when_not_enough_messages(self):
+        from src.core.internal.session._session_lifecycle import _maybe_spawn_title_generation
+
+        session = self._session()
+        session._agent.messages = [{"role": "user", "content": "只有一条"}]
+        with patch("asyncio.create_task") as mock_task:
+            _maybe_spawn_title_generation(session, "sess-1")
+        mock_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skip_when_ai_title_done(self):
+        from src.core.internal.session._session_lifecycle import _maybe_spawn_title_generation
+
+        session = self._session()
+        session._state.ai_title_done = True
+        with patch("asyncio.create_task") as mock_task:
+            _maybe_spawn_title_generation(session, "sess-1")
+        mock_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skip_when_model_port_none(self):
+        from src.core.internal.session._session_lifecycle import _maybe_spawn_title_generation
+
+        session = self._session()
+        session._agent.get_async_model_port.return_value = None
+        with patch("asyncio.create_task") as mock_task:
+            _maybe_spawn_title_generation(session, "sess-1")
+        mock_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_task_failure_is_silent(self):
+        """后台 task 内部异常被消化，不标记 done，不向外传播。"""
+        from src.core.internal.session._session_lifecycle import _maybe_spawn_title_generation
+        import src.core.title_generator as tg
+
+        session = self._session()
+        tasks: list[asyncio.Task] = []
+        real_create_task = asyncio.create_task
+
+        def fake_create_task(coro):
+            t = real_create_task(coro)
+            tasks.append(t)
+            return t
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("model down")
+
+        with patch("asyncio.create_task", side_effect=fake_create_task), patch.object(
+            tg, "maybe_update_title_async", new=boom,
+        ):
+            _maybe_spawn_title_generation(session, "sess-1")
+            assert len(tasks) == 1
+            # 在 patch 生效期间等待 task 完成
+            await tasks[0]
+
+        # task 异常被内部消化（不 raise）
+        # 失败不标记 done（下轮可重试）
+        assert session._state.ai_title_done is False
