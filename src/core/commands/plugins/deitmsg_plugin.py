@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -17,7 +16,6 @@ from .base import InteractiveCommandPlugin
 from ..base import CommandMeta, get_plugin_registry
 
 _logger = logging.getLogger(__name__)
-
 
 def _content_str(content: Any) -> str:
     """将 content（可能是 str 或 list[dict]）转换为纯文本字符串。"""
@@ -32,7 +30,6 @@ def _content_str(content: Any) -> str:
                 parts.append(str(c))
         return " ".join(parts)
     return str(content)
-
 
 class DeitmsgPlugin(InteractiveCommandPlugin):
     """直接编辑上一条用户消息 (/deitmsg)
@@ -203,7 +200,6 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
         raise RuntimeError(
             "DeitmsgPlugin 需要异步执行，请调用 async_execute()"
         )
-
 
 # 模块级自注册
 get_plugin_registry().register(DeitmsgPlugin())

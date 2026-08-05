@@ -20,7 +20,6 @@ import fnmatch
 import logging
 import os
 import re
-import shlex
 
 from ._constants import (
     EXCLUDED_DIRS,
@@ -42,53 +41,37 @@ BUFFER_SIZE = 65536                  # 文件读取缓冲区大小
 
 # ── 命令行工具检测 ────────────────────────────────────
 
-_HAS_RG: bool | None = None
-_HAS_GREP: bool | None = None
+_COMMAND_CACHE: dict[str, bool] = {}
 
+async def _check_command_available(cmd: str) -> bool:
+    """检测系统是否安装命令行工具（结果缓存，避免重复探测）"""
+    if cmd in _COMMAND_CACHE:
+        return _COMMAND_CACHE[cmd]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            cmd, "--version",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        rc = await proc.wait()
+        _COMMAND_CACHE[cmd] = rc == 0
+    except FileNotFoundError:
+        _COMMAND_CACHE[cmd] = False
+    return _COMMAND_CACHE[cmd]
 
 async def _check_rg() -> bool:
     """检测系统是否安装 ripgrep"""
-    global _HAS_RG
-    if _HAS_RG is not None:
-        return _HAS_RG
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "rg", "--version",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        rc = await proc.wait()
-        _HAS_RG = rc == 0
-    except FileNotFoundError:
-        _HAS_RG = False
-    return _HAS_RG
-
+    return await _check_command_available("rg")
 
 async def _check_grep() -> bool:
     """检测系统是否安装 grep"""
-    global _HAS_GREP
-    if _HAS_GREP is not None:
-        return _HAS_GREP
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "grep", "--version",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        rc = await proc.wait()
-        _HAS_GREP = rc == 0
-    except FileNotFoundError:
-        _HAS_GREP = False
-    return _HAS_GREP
-
+    return await _check_command_available("grep")
 
 # ── 纯 Python 辅助 ────────────────────────────────────
-
 
 def _is_binary(data: bytes) -> bool:
     """检测前 512 字节是否包含 null 字节来判断是否为二进制文件"""
     return b"\0" in data[:8192]
-
 
 def _matches_any(text: str) -> bool:
     """text 是否匹配 GREP_EXCLUDE_FILES 中的任意一个模式（使用预编译 regex）"""
@@ -97,16 +80,13 @@ def _matches_any(text: str) -> bool:
             return True
     return False
 
-
 # ── 预编译的排除文件 regex（来自 GREP_EXCLUDE_FILES），
 # 消除 _matches_any 中每次 fnmatch 内部的 translate+compile 开销
 _GREP_EXCLUDE_RES: list[re.Pattern] = [
     re.compile(fnmatch.translate(p)) for p in GREP_EXCLUDE_FILES
 ]
 
-
 # ── 工具类 ────────────────────────────────────────────
-
 
 @tool_metadata(
     parallel_safe=True,

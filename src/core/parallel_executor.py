@@ -20,6 +20,10 @@ from .internal.agent._capture_manager import _safe_restore as safe_restore_stdou
 from .internal.agent._subagent_spawner import SubAgentSpawner
 from .subagent import SubAgent
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from ..tui.events import EventBusDisplayProxy
+
 _logger = logging.getLogger(__name__)
 
 

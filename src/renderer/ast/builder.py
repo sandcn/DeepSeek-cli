@@ -9,14 +9,11 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from .types import ASTNode, NodeType, SourceRange
 from ..types import Token, TokenType, RenderContext
 from ._builder_mixins import (
     _TextBuildingMixin, _ListBuildingMixin, _BlockBuildingMixin,
 )
-
 
 class ASTBuilder(_TextBuildingMixin, _ListBuildingMixin, _BlockBuildingMixin):
     """从 Token 流构建树形 AST。
@@ -184,4 +181,3 @@ class ASTBuilder(_TextBuildingMixin, _ListBuildingMixin, _BlockBuildingMixin):
             self._emit(node, closed)
             return node
         return None
-

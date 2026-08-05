@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 
 from ..config import config
@@ -20,7 +19,6 @@ _logger = logging.getLogger(__name__)
 
 # ── 版本常量 ──
 VERSION = "v2.2.0"
-
 
 def _parse_args() -> argparse.Namespace:
     """解析命令行参数，支持子命令和旧语法自动兼容"""
@@ -89,7 +87,6 @@ def _parse_args() -> argparse.Namespace:
     subparsers.add_parser('version', help='显示版本信息并退出')
 
     return parser.parse_args(argv[1:])
-
 
 def _apply_theme(args: argparse.Namespace) -> None:
     """应用配色主题"""

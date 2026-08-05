@@ -13,8 +13,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from contextlib import AbstractContextManager
-from typing import Any, Generator
-
+from typing import Any
 
 class ObservabilityPort(ABC):
     """可观测性抽象端口

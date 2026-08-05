@@ -1,8 +1,6 @@
 """统计适配器 — DefaultStatsAdapter、MockStatsAdapter"""
+
 from __future__ import annotations
-
-from typing import Any
-
 
 class DefaultStatsAdapter:
     """默认统计适配器 — 包装 src/api/stats"""
@@ -47,7 +45,6 @@ class DefaultStatsAdapter:
     def reset(self) -> None:
         from ...api.stats import reset_stats
         reset_stats()
-
 
 class MockStatsAdapter:
     """Mock 统计适配器 — 用于测试"""

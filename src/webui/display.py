@@ -11,7 +11,6 @@ WebDisplay: 实现 BaseDisplay 接口，所有方法调用序列化为 JSON 经 
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Callable
 
@@ -41,7 +40,6 @@ _logger = logging.getLogger(__name__)
 
 # 向后兼容：pending_selects 从 _pending_selects 导入并在此重导出
 # 供 user_select / routing / cleanup 模块共享
-
 
 # ── 接口方法集 ──────────────────────────────────────────
 
@@ -152,6 +150,5 @@ class WebDisplay(BaseDisplay, BaseWebSocketSender):
     def capture_and_print(self, display_func: Callable[[], str] | None) -> str:
         """接口兼容方法，委托给 run_display。"""
         return self.run_display(display_func)
-
 
 __all__ = ["WebDisplay", "pending_selects"]

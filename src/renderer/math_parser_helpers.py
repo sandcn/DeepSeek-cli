@@ -74,35 +74,19 @@ def _skip_spaces(s: str, i: int, n: int) -> int:
 # ═══════════════════════════════════════════════════════════
 
 def _convert_to_superscript(text: str) -> str:
-    """将普通文本转换为上标 Unicode 字符。"""
-    chars: List[str] = []
-    for c in text:
-        chars.append(_SUPERSCRIPT_MAP.get(c, c))
-    return ''.join(chars)
+    """将普通文本转换为上标 Unicode 字符（映射不到的字符保留原样）。"""
+    return ''.join(_SUPERSCRIPT_MAP.get(c, c) for c in text)
 
 
 def _convert_to_subscript(text: str) -> str:
-    """将普通文本转换为下标 Unicode 字符。"""
-    chars: List[str] = []
-    for c in text:
-        chars.append(_SUBSCRIPT_MAP.get(c, c))
-    return ''.join(chars)
+    """将普通文本转换为下标 Unicode 字符（映射不到的字符保留原样）。"""
+    return ''.join(_SUBSCRIPT_MAP.get(c, c) for c in text)
 
 
-def _convert_to_superscript_progressive(text: str) -> str:
-    """渐进式上标转换：对于映射不到的字符保留原样。"""
-    chars: List[str] = []
-    for c in text:
-        chars.append(_SUPERSCRIPT_MAP.get(c, c))
-    return ''.join(chars)
-
-
-def _convert_to_subscript_progressive(text: str) -> str:
-    """渐进式下标转换：对于映射不到的字符保留原样。"""
-    chars: List[str] = []
-    for c in text:
-        chars.append(_SUBSCRIPT_MAP.get(c, c))
-    return ''.join(chars)
+# 历史命名别名：与 _convert_to_superscript/_convert_to_subscript 行为完全一致，
+# 保留以兼容既有调用方（math_parser.py / math_parser_extra_commands.py）。
+_convert_to_superscript_progressive = _convert_to_superscript
+_convert_to_subscript_progressive = _convert_to_subscript
 
 
 def _all_chars_mapped(text: str, mapping: Dict[str, str]) -> bool:

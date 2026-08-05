@@ -5,12 +5,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from ._utils import _non_system_messages, _save_and_show_recover
 from ._session_setup import _register_session_handlers
-
 from ..core.session import ChatSession
 from ..core.agent import Agent
 from ..core.constants import CYAN, DIM, RESET
@@ -18,7 +16,6 @@ from ..api.escape_monitor import EscapeMonitor, stop_active_monitor
 from ..tui.consumer import ChatUIConsumer
 
 _logger = logging.getLogger(__name__)
-
 
 def _make_event_agent():
     """创建通过 EventBus 发布事件的 Agent 实例。"""
@@ -30,7 +27,6 @@ def _make_event_agent():
         event_port=DisplayEventBusAdapter(source="agent"),
         output_port=DefaultOutputAdapter(),
     )
-
 
 async def run_single_mode_async(prompt_text):
     """单次对话模式（异步版）：输入一句话，回答后退出"""

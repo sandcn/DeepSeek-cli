@@ -10,12 +10,10 @@ tests/test_renderer/test_locks_location.py）。故本包自带最小 Style：
 from __future__ import annotations
 
 from src._compat import dataclass
-from dataclasses import field
 from typing import Union
 
 # 颜色值：256 色号（int）或 (r,g,b) 24-bit 三元组
 ColorValue = Union[int, tuple[int, int, int]]
-
 
 @dataclass(frozen=True)
 class Style:
@@ -67,14 +65,12 @@ class Style:
             or self.bold or self.italic or self.dim or self.underline
         )
 
-
 def _color_ansi(color: ColorValue, prefix: str) -> str:
     """构建 256 色或 24-bit 前景/背景序列。"""
     if isinstance(color, tuple):
         r, g, b = color
         return f"\033[{prefix};2;{r};{g};{b}m"
     return f"\033[{prefix};5;{color}m"
-
 
 def rgb_to_256(r: int, g: int, b: int) -> int:
     """RGB → 最接近的 xterm-256 色号（自包含实现）。"""
@@ -90,7 +86,6 @@ def rgb_to_256(r: int, g: int, b: int) -> int:
             best_dist = dist
             best_idx = idx
     return best_idx
-
 
 def _build_palette() -> list[tuple[int, int, int]]:
     palette: list[tuple[int, int, int]] = [
@@ -112,8 +107,6 @@ def _build_palette() -> list[tuple[int, int, int]]:
         palette.append((v, v, v))
     return palette
 
-
 _XTERM_PALETTE: list[tuple[int, int, int]] = _build_palette()
-
 
 __all__ = ["Style", "ColorValue", "rgb_to_256"]

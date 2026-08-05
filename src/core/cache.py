@@ -15,12 +15,11 @@ from __future__ import annotations
 
 import threading
 import time
-from abc import abstractmethod
 from collections import OrderedDict
 from src._compat import dataclass
 from typing import Any, Optional
-from .ports.cache import CachePort
 
+from .ports.cache import CachePort
 
 # ═══════════════════════════════════════════════════════════════
 # 缓存条目
@@ -40,7 +39,6 @@ class _CacheItem:
     @property
     def expired(self) -> bool:
         return time.monotonic() > self.expires_at
-
 
 # ═══════════════════════════════════════════════════════════════
 # LRUCache — 最近最少使用缓存
@@ -156,7 +154,6 @@ class LRUCache(CachePort):
                 "default_ttl": self._default_ttl,
             }
 
-
 # ═══════════════════════════════════════════════════════════════
 # NullCache — 空缓存（不存储任何数据）
 # ═══════════════════════════════════════════════════════════════
@@ -185,14 +182,12 @@ class NullCache(CachePort):
     def invalidate_pattern(self, pattern: str) -> int:
         return 0
 
-
 # ═══════════════════════════════════════════════════════════════
 # 模块级全局缓存实例
 # ═══════════════════════════════════════════════════════════════
 
 _default_cache: CachePort | None = None
 _cache_lock = threading.RLock()
-
 
 def get_default_cache() -> CachePort:
     """获取全局默认缓存（线程安全单例）"""
@@ -203,13 +198,11 @@ def get_default_cache() -> CachePort:
                 _default_cache = LRUCache()
     return _default_cache
 
-
 def set_default_cache(cache: CachePort) -> None:
     """设置全局默认缓存（用于测试/依赖注入）"""
     global _default_cache
     with _cache_lock:
         _default_cache = cache
-
 
 def reset_default_cache() -> None:
     """重置全局默认缓存（主要用于测试）"""

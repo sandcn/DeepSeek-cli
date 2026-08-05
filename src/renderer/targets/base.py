@@ -14,8 +14,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import field
 from src._compat import dataclass
-from typing import Any, Optional
-
+from typing import Any
 
 # ═══════════════════════════════════════════════════════════
 # 渲染上下文
@@ -33,7 +32,6 @@ class RenderTargetContext:
     indent: int = 0
     depth: int = 0
     extra: dict = field(default_factory=dict)
-
 
 # ═══════════════════════════════════════════════════════════
 # RenderTarget 抽象基类
@@ -110,7 +108,6 @@ class RenderTarget(ABC):
 
     def __exit__(self, *args):
         self.close()
-
 
 # ═══════════════════════════════════════════════════════════
 # CompositeRenderTarget — 多目标组合

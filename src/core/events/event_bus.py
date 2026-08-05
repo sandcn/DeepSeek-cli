@@ -10,8 +10,7 @@ import logging
 import threading
 import time
 from collections import defaultdict
-from typing import Any, Callable
-
+from typing import Callable
 from functools import wraps
 
 from .event_types import CoreEvent, EventPriority
@@ -23,7 +22,6 @@ _TRACE_LEVEL: int = logging.DEBUG - 5
 
 # 处理器类型签名
 EventHandler = Callable[[CoreEvent], None]
-
 
 class _TimeWindowBatcher:
     """时间窗口批处理器
@@ -105,7 +103,6 @@ class _TimeWindowBatcher:
         """缓冲中待处理的事件数量"""
         with self._lock:
             return len(self._buffer)
-
 
 class CoreEventBus:
     """核心事件总线
@@ -470,12 +467,10 @@ class CoreEventBus:
                 return len(self._handlers.get(event_type, []))
             return sum(len(h) for h in self._handlers.values())
 
-
 # ── 模块级全局单例 ──────────────────────────────────────
 
 _default_bus: CoreEventBus | None = None
 _bus_lock = threading.RLock()
-
 
 def get_default_bus() -> CoreEventBus:
     """获取全局默认事件总线（线程安全单例）"""
@@ -486,13 +481,11 @@ def get_default_bus() -> CoreEventBus:
                 _default_bus = CoreEventBus()
     return _default_bus
 
-
 def set_default_bus(bus: CoreEventBus) -> None:
     """设置全局默认事件总线（用于测试/依赖注入）"""
     global _default_bus
     with _bus_lock:
         _default_bus = bus
-
 
 def reset_default_bus() -> None:
     """重置全局默认事件总线（主要用于测试）"""

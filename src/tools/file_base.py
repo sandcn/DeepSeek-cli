@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import time
 import logging
 import asyncio
@@ -21,13 +20,10 @@ from ..renderer._locks import (
     diff_active,
 )
 from ..core.sandbox_manager import async_record_file_change_from_context
-
 from ._constants import DEFAULT_ENCODING, DEFAULT_ERRORS as DEFAULT_ERRORS_HANDLING, MAX_FILE_SIZE_MB
-
 
 class FileToolError(Exception):
     pass
-
 
 # ═══════════════════════════════════════════════════════════════
 # FileSystemToolBase — cp/mv/rm/mk 的公共基类
@@ -43,6 +39,19 @@ class FileSystemToolBase(Func):
     """
 
     _action_verb: str = ""  # 子类覆盖："复制"/"移动"/"删除"/"创建"
+    # display_params 模板：'路径' + 可选标志。子类设置后无需再覆盖 display_params
+    _display_flag: str | None = None       # 附加标志文本，如 "-p"/"-r"
+    _display_flag_arg: str | None = None   # 标志对应的参数名，如 "parents"/"recursive"
+
+    @classmethod
+    def display_params(cls, arguments: dict, max_len: int = 80) -> str:
+        """标准 display_params 模板：'路径' + 可选标志。"""
+        path = arguments.get("path", "")
+        display = f"'{cls._sanitize_display(path)}'"
+        flag = cls._display_flag
+        if flag and arguments.get(cls._display_flag_arg):
+            display += f" {flag}"
+        return display
 
     def _get_operation_desc(self) -> str:
         """返回 display() 中 _print_operation 使用的操作描述。子类必须覆盖。"""
@@ -91,11 +100,9 @@ class PathSecurityError(FileToolError):
 class FileSizeError(FileToolError):
     pass
 
-
 # plan agent 路径白名单目录（模块级常量）
 # cwd 在进程生命周期内不变，提前计算避免每次 _validate_path_and_size 重复解析
 _PLAN_ALLOWED_DIR = os.path.realpath(os.path.join(os.getcwd(), '.chat', 'plan'))
-
 
 @tool_metadata(
     parallel_safe=False,

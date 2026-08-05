@@ -24,13 +24,10 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from collections import Counter
-
 
 from .types import Token, TokenType, RenderContext
 from ._utils import parse_highlight_lines
 _logger = logging.getLogger(__name__)
-
 
 # ═══════════════════════════════════════════════════════════
 # 过滤器基类
@@ -53,7 +50,6 @@ class TokenFilter(ABC):
         Returns:
             处理后的 Token 列表
         """
-
 
 # ═══════════════════════════════════════════════════════════
 # Token 管道
@@ -92,7 +88,6 @@ class TokenPipeline:
     def _post_process(self, tokens: list[Token], ctx: RenderContext) -> list[Token]:
         """后处理钩子 — 过滤器链运行后调用，子类可重写。"""
         return tokens
-
 
 # ═══════════════════════════════════════════════════════════
 # 内置过滤器
@@ -336,4 +331,3 @@ class CodeBlockBatcher(TokenFilter):
             self._feed_count = 0
             self._flushed_in_feed = False
             raise
-

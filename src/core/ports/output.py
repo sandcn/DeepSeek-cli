@@ -3,12 +3,11 @@
 定义 OutputPort 抽象基类，覆盖 DefaultOutputAdapter 全部公有方法签名。
 核心层通过此端口向终端输出文本，不直接依赖 tui/ 具体实现模块。
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from contextlib import AbstractContextManager
-from typing import Optional
-
 
 class OutputPort(ABC):
     """输出端口 — 核心层文本输出功能的抽象接口

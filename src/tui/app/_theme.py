@@ -19,7 +19,6 @@ from __future__ import annotations
 #: （patch 解析本模块命名空间的 ``time`` 属性；替换的是全局 time 模块对象，
 #: core/_theme 实现随之生效）。
 import time as time  # noqa: F401
-
 from src.tui.core._theme import (
     _S_ACCENT,
     _S_ACCENT_BOLD,
@@ -39,6 +38,10 @@ from src.tui.core._theme import (
     _invalidate_palette_cache,
     _PALETTE_SLOTS,
 )
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from src.tui.ink.output import Line
 # ★ 模块级状态/缓存 re-export：测试直接读写 ``theme._active_palette_cache``
 #   （test_app_theme.py TTL 边界用例）、``theme._glow_bucket``（lru 缓存
 #   清除/命中计数）——re-export 同一对象（函数对象/当前值），旧访问路径

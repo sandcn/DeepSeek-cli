@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Optional
 
 _logger = logging.getLogger(__name__)
 
@@ -22,7 +21,6 @@ _ROLE_KEY = "role"
 _SYSTEM_ROLE = "system"
 _MIN_CHECKPOINT_MESSAGES = 2
 _TASK_DESC_TRUNCATE = 200
-
 
 class SessionPersistenceManager:
     """会话持久化管理器

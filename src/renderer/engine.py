@@ -20,7 +20,6 @@ from rich.text import Text
 logger = logging.getLogger(__name__)
 from rich.style import Style
 from rich.syntax import Syntax
-
 from .output import OutputAdapter
 from .types import Token, TokenType, RenderContext
 from .inline_renderer import InlineRenderer
@@ -32,6 +31,10 @@ from .handlers import HandlerRegistry, InlineHandler, CodeHandler, MathHandler, 
 from .states import _CodeBlockState, _DetailsState, _TodoState
 from ._rendering import render_todo_progress_bar as _render_todo_progress_bar
 from ._rendering import render_toc, get_lexer as _shared_get_lexer
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .math_renderer import MathRenderer
+    from .mermaid_renderer import MermaidRenderer
 
 
 # ═══════════════════════════════════════════════════════════

@@ -1,10 +1,11 @@
 """事件端口 — 核心层与事件总线的接口"""
+
 from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Optional, TypeVar, Generic
+from typing import Any, Callable, TypeVar
 
 T = TypeVar("T")
-
 
 class EventPort(ABC):
     """抽象事件端口

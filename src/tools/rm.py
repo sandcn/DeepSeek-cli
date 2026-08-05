@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+
 from .base import tool_metadata
 from .file_base import FileSystemToolBase
 from .file_ops import (
@@ -25,6 +26,8 @@ from .file_ops import (
 class RmFunc(FileSystemToolBase):
     name = "rm"
     _action_verb = "删除"
+    _display_flag = "-r"
+    _display_flag_arg = "recursive"
 
     @classmethod
     def to_tool_schema(cls) -> dict:
@@ -73,14 +76,6 @@ class RmFunc(FileSystemToolBase):
                 }
             }
         }
-
-    @classmethod
-    def display_params(cls, arguments: dict, max_len: int = 80) -> str:
-        path = arguments.get("path", "")
-        display = f"'{cls._sanitize_display(path)}'"
-        if arguments.get("recursive"):
-            display += " -r"
-        return display
 
     def __init__(self, path: str, recursive: bool = False):
         super().__init__()

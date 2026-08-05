@@ -10,10 +10,7 @@
 
 from __future__ import annotations
 
-import sys
-
 from . import IncrementalRenderer
-
 
 def create_stream_renderers(output_file=None) -> tuple:
     """创建一对流式渲染器（推理渲染器 + 内容渲染器）。

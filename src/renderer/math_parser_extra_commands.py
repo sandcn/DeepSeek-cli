@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re as _re
 from typing import Tuple
-
 from rich.style import Style
 from rich.text import Text
 
@@ -404,31 +403,26 @@ class MathParserExtraCommandsMixin:
 
     # ── 绝对值 \abs{...} / 范数 \norm{...} ─────────
 
-    def _parse_abs(self, s: str, i: int, n: int) -> Tuple[Text, int]:
-        """解析 \\abs{...} → |...|。"""
+    def _parse_braced_delim(self, s: str, i: int, n: int, left: str, right: str) -> Tuple[Text, int]:
+        """解析 \\<cmd>{...} → left + 内容 + right。"""
         try:
             i = _skip_spaces(s, i, n)
             content_raw, i = _extract_braced_group(s, i)
         except Exception:
             return Text(), i
-        result = Text("|")
+        result = Text(left)
         if content_raw:
             result.append_text(self.parse(content_raw))
-        result.append("|")
+        result.append(right)
         return result, i
+
+    def _parse_abs(self, s: str, i: int, n: int) -> Tuple[Text, int]:
+        """解析 \\abs{...} → |...|。"""
+        return self._parse_braced_delim(s, i, n, "|", "|")
 
     def _parse_norm(self, s: str, i: int, n: int) -> Tuple[Text, int]:
         """解析 \\norm{...} → ‖...‖。"""
-        try:
-            i = _skip_spaces(s, i, n)
-            content_raw, i = _extract_braced_group(s, i)
-        except Exception:
-            return Text(), i
-        result = Text("‖")
-        if content_raw:
-            result.append_text(self.parse(content_raw))
-        result.append("‖")
-        return result, i
+        return self._parse_braced_delim(s, i, n, "‖", "‖")
 
     # ── 水平线 \rule[raise]{width}{height} ─────────────
 

@@ -10,7 +10,6 @@ import copy
 import json
 import logging
 import time
-from typing import Any
 
 from .client_async import (
     chat_completions_async, chat_completions_async_anthropic,
@@ -68,7 +67,6 @@ async def call_model_async(
         fixed_delay_sec=fixed_delay_sec,
     )
 
-
 async def call_model_sync_async(
     messages: list,
     model: str | None = None,
@@ -93,7 +91,6 @@ async def call_model_sync_async(
         override_max_retries=override_max_retries,
         fixed_delay_sec=fixed_delay_sec,
     )
-
 
 # ── 非流式调用实现（async） ─────────────────────────────────
 
@@ -165,7 +162,6 @@ async def _call_sync_async(
         content = reasoning_content
     return reasoning_content, content, usage, tool_calls
 
-
 # ── 同步兼容包装（持久化事件循环） ──────────────────────────
 # 使用持久化事件循环替代 asyncio.run()，避免每次调用创建/销毁
 # 新事件循环，从而防止 httpx.AsyncClient 因事件循环变换而触发
@@ -174,7 +170,6 @@ async def _call_sync_async(
 # 事件循环管理逻辑已提取到 _model_loops.py。
 
 from ._model_loops import _get_model_loop, cleanup_model_loops  # noqa: E402 — 事件循环管理
-
 
 def call_model_sync(messages, model=None, tools=None, display=None, label=None):
     """同步兼容包装 — 在线程持久化事件循环中运行 async 调用。
@@ -185,7 +180,6 @@ def call_model_sync(messages, model=None, tools=None, display=None, label=None):
     return loop.run_until_complete(
         call_model_sync_async(messages, model, tools, display, label),
     )
-
 
 def call_model(messages, model=None, tools=None, display=None, label=None, silent=False):
     """同步兼容包装 — 在线程持久化事件循环中运行 async 调用。

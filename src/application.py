@@ -18,7 +18,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 from .core.session import ChatSession
 from .core.ports import PersistencePort, CheckpointPort, ConfigPort, OutputPort
@@ -28,7 +28,6 @@ from .paths import CHAT_MSGS_DIR
 from .chat_msgs import load_session, get_recover_cmd, list_sessions
 
 _logger = logging.getLogger(__name__)
-
 
 # ═══════════════════════════════════════════════════════════════
 # 应用上下文
@@ -47,7 +46,6 @@ class AppContext:
     trace_context: Optional[TraceContext] = None
     loaded_data: Optional[dict] = None
     session: Optional[ChatSession] = None
-
 
 # ═══════════════════════════════════════════════════════════════
 # 会话管理器
@@ -119,7 +117,6 @@ class SessionManager:
             output.write(f"\n{CYAN}  恢复命令: {recover_cmd}{RESET}", level="raw")
         return sid
 
-
 # ═══════════════════════════════════════════════════════════════
 # AppMode 协议
 # ═══════════════════════════════════════════════════════════════
@@ -156,7 +153,6 @@ class AppMode(ABC):
         if session:
             save_mgr = SessionManager(self._ctx)
             save_mgr.save_and_show_recover(session, self._ctx.output_port)
-
 
 # ═══════════════════════════════════════════════════════════════
 # Application — 统一编排
@@ -219,7 +215,6 @@ class Application:
             await self._mode.shutdown()
             self._ctx.output_port.write("  Goodbye!", level="raw")
 
-
 # ═══════════════════════════════════════════════════════════════
 # InteractiveMode — 交互式对话
 # ═══════════════════════════════════════════════════════════════
@@ -234,7 +229,6 @@ class InteractiveMode(AppMode):
     async def shutdown(self) -> None:
         """交互模式下退出时不自动保存（app_loop 已处理保存逻辑）"""
         _logger.info("交互模式关闭")
-
 
 # ═══════════════════════════════════════════════════════════════
 # SingleMode — 单次对话

@@ -12,30 +12,17 @@ from enum import IntEnum
 _logger = logging.getLogger(__name__)
 
 from ._utils import (
-    _COMMON_LANGUAGES, _get_fence_info, decode_html_entities,
+    _COMMON_LANGUAGES, _get_fence_info,
 )
 from .types import Token, TokenType, RenderContext
-
-from .inline_nodes import (
-    InlineNode, TextNode, BoldNode, ItalicNode, BoldItalicNode,
-    UnderlineNode, InlineCodeNode, LinkNode, ImageNode,
-    StrikethroughNode, HighlightNode, SubscriptNode, SuperscriptNode,
-    InlineMathNode, FootnoteRefNode, AutoLinkNode, AutoLinkEmailNode,
-    LineBreakNode, _HTML_TAG_MAP,
-)
-from .inline_parser import (
-    _InlineParser, render_inline_to_text,
-)
 from ._table_utils import (
     _is_table_row, _is_table_separator,
     _parse_table_row, _parse_table_alignments,
-    _SAFE_SENTINEL,
 )
 from ._block_helpers import (
     _is_empty_line, _strip_left, _rstrip_line,
-    _is_only_chars, _has_only_chars,
-    _LANG_BLACKLIST, _BLOCK_HTML_TAGS, _VOID_HTML_TAGS,
-    _INDENT_SPACES,
+    _is_only_chars,
+    _LANG_BLACKLIST, _BLOCK_HTML_TAGS,
     _is_blockquote_line, _get_blockquote_text,
     _is_code_fence_line, _strip_blockquote_prefix,
     _get_fence_lang, _rstrip_trailing_hashes,
@@ -1587,7 +1574,6 @@ class RegexFreeBlockParser:
                 gt_text += ch if ch != ' ' or gt_text else ' '
         inner_stripped = gt_text.strip()
         inner_has_gt = inner_stripped.startswith('>')
-        lower_text = inner_stripped.lower()
         if inner_stripped.startswith('[') and '!' in inner_stripped[:8]:
             adm_end = inner_stripped.find(']')
             # 宽松检测：`]` 后任意字符都接受，不再要求空格

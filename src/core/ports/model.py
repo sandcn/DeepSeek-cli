@@ -2,18 +2,14 @@
 
 适配器实现已移至 src.core.adapters.model。
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
+from typing import Any
 
 # ─── 统一结果数据类 ────────────────────────────────────────────────────────────
-
 
 @dataclass
 class ModelResult:
@@ -23,11 +19,9 @@ class ModelResult:
     usage: dict = field(default_factory=lambda: {"input": 0, "output": 0})
     tool_calls: list = field(default_factory=list)
 
-
 # ═══════════════════════════════════════════════════════════════
 # 异步端口
 # ═══════════════════════════════════════════════════════════════
-
 
 class AsyncModelPort(ABC):
     """异步模型调用抽象端口。

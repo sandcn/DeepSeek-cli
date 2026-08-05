@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+
 from .base import tool_metadata
 from .file_base import FileSystemToolBase
 from .file_ops import validate_path_security, async_file_exists
@@ -20,6 +21,8 @@ from .file_ops import validate_path_security, async_file_exists
 class MkdirFunc(FileSystemToolBase):
     name = "mkdir"
     _action_verb = "创建"
+    _display_flag = "-p"
+    _display_flag_arg = "parents"
 
     @classmethod
     def to_tool_schema(cls) -> dict:
@@ -60,14 +63,6 @@ class MkdirFunc(FileSystemToolBase):
                 }
             }
         }
-
-    @classmethod
-    def display_params(cls, arguments: dict, max_len: int = 80) -> str:
-        path = arguments.get("path", "")
-        display = f"'{cls._sanitize_display(path)}'"
-        if arguments.get("parents"):
-            display += " -p"
-        return display
 
     def __init__(self, path: str, parents: bool = False):
         super().__init__()

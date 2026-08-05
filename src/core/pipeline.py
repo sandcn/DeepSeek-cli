@@ -21,16 +21,14 @@ import logging
 import sys
 from dataclasses import field
 from src._compat import dataclass
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .agent import Agent
 
-
 _logger = logging.getLogger(__name__)
 
 _INTERRUPTED_MSG = "(已中断)"
-
 
 # ═══════════════════════════════════════════════════════════════
 # PipelineContext
@@ -74,7 +72,6 @@ class PipelineContext:
     # init=False 使 __init__ 不要求传参，保持向后兼容
     interrupt_port: Any = field(default=None, init=False)
 
-
 # ═══════════════════════════════════════════════════════════════
 # AsyncMiddleware（异步中间件基类）
 # ═══════════════════════════════════════════════════════════════
@@ -114,7 +111,6 @@ class AsyncMiddleware:
     async def on_exception(self, ctx: PipelineContext, exc: Exception) -> None:
         """异步：未捕获异常时的钩子"""
         pass
-
 
 # ═══════════════════════════════════════════════════════════════
 # Pipeline（流水线编排器）

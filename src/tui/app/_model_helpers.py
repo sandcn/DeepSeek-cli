@@ -10,6 +10,9 @@
 from __future__ import annotations
 
 from src.tui._format import single_line
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from src.tui.ink.output import Line
 
 __all__ = [
     "_TOOL_INCREMENTAL_THRESHOLD",

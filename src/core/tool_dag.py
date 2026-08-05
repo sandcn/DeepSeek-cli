@@ -20,7 +20,7 @@ import logging
 import os
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 _logger = logging.getLogger(__name__)
 
@@ -28,14 +28,12 @@ _logger = logging.getLogger(__name__)
 # 匹配形如 "$call_xxx" 或 "${call_xxx}" 的引用
 _TC_ID_REF_RE = None  # 延迟导入 re
 
-
 def _compile_re():
     global _TC_ID_REF_RE
     if _TC_ID_REF_RE is None:
         import re
         _TC_ID_REF_RE = re.compile(r"\$(call_[a-zA-Z0-9_]+)")
     return _TC_ID_REF_RE
-
 
 @dataclass
 class ToolCallNode:
@@ -61,7 +59,6 @@ class ToolCallNode:
     dependencies: set[str] = field(default_factory=set)
     dependents: set[str] = field(default_factory=set)
     layer: int = -1
-
 
 class ToolDAG:
     """工具调用 DAG — 构建依赖图并执行拓扑排序

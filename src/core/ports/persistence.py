@@ -7,8 +7,6 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
-
 
 # ── 端口定义 ──────────────────────────────────────────────
 
@@ -47,7 +45,6 @@ class PersistencePort(ABC):
     @abstractmethod
     def get_recover_cmd(self, session_id: str) -> str:
         """获取恢复指定会话的命令行提示字符串。"""
-
 
 class CheckpointPort(ABC):
     """断点管理端口 —— 用于长任务执行中的状态保存与恢复。"""

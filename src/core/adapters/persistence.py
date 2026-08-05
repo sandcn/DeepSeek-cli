@@ -1,10 +1,8 @@
 """持久化端口适配器 — JsonFilePersistence、JsonFileCheckpoint"""
+
 from __future__ import annotations
 
-from typing import Any
-
 from ..ports.persistence import PersistencePort, CheckpointPort
-
 
 class JsonFilePersistence(PersistencePort):
     """基于 .chat/msg_list/*.json 文件的会话持久化实现。
@@ -45,7 +43,6 @@ class JsonFilePersistence(PersistencePort):
         """生成唯一的会话 ID。"""
         from ...chat_msgs import generate_id as _gen
         return _gen()
-
 
 class JsonFileCheckpoint(CheckpointPort):
     """基于 .chat/msg_list/_checkpoint.json 文件的断点实现。

@@ -7,10 +7,9 @@
 from __future__ import annotations
 
 import os
-import sys
-import time
 import threading
 import logging
+
 from ...config.defaults import INPUT_HISTORY_FILE
 
 _logger = logging.getLogger(__name__)
@@ -34,9 +33,7 @@ _HISTORY_COMPACT_RATIO = 1.5      # 压缩触发比例：行数 > 去重后*1.5 
 _active_monitor = None
 _active_monitor_lock = threading.RLock()
 
-
 # ── 跨进程文件锁辅助函数（输入历史多进程写入） ──────────────
-
 
 def _lock_history_file(fd: int, shared: bool = False) -> bool:
     """对历史文件加跨进程锁（基于 fcntl.flock）。
@@ -60,7 +57,6 @@ def _lock_history_file(fd: int, shared: bool = False) -> bool:
         _logger.warning("历史文件锁获取失败(%s): %s", "共享" if shared else "独占", exc)
         return False
 
-
 def _unlock_history_file(fd: int) -> None:
     """释放历史文件锁。Windows 降级跳过。"""
     try:
@@ -70,7 +66,6 @@ def _unlock_history_file(fd: int) -> None:
         pass  # Windows: fcntl 不可用
     except (ValueError, OSError):
         pass  # fd 已关闭等正常降级
-
 
 def _read_history_file() -> tuple[str, bool]:
     """加共享锁读取历史文件，保证跨进程读取一致性。
@@ -91,7 +86,6 @@ def _read_history_file() -> tuple[str, bool]:
         return content, locked
     except (OSError, FileNotFoundError):
         return "", False
-
 
 def _append_to_history_file(text: str) -> bool:
     """加独占锁追加写入一行到历史文件。
@@ -117,7 +111,6 @@ def _append_to_history_file(text: str) -> bool:
     except OSError as exc:
         _logger.warning("历史文件追加写入失败: %s", exc)
         return False
-
 
 def _compact_history_file() -> bool:
     """加独占锁压缩历史文件：读取→去重→重写。

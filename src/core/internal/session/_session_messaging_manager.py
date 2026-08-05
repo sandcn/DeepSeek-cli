@@ -13,15 +13,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Callable, Optional
 
 _logger = logging.getLogger(__name__)
 
 _ROLE_KEY = "role"
 _SYSTEM_ROLE = "system"
-
 
 class SessionMessagingManager:
     """会话消息管理器

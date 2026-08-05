@@ -21,8 +21,7 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
-
+from typing import Tuple
 from rich.style import Style
 from rich.text import Text
 
@@ -64,7 +63,6 @@ from .math_parser_fractions import MathParserFractionsMixin
 from .math_parser_matrix import MathParserMatrixMixin
 from .math_parser_core_commands import MathParserCoreCommandsMixin
 from .math_parser_extra_commands import MathParserExtraCommandsMixin
-
 
 class MathParser(
     MathParserFractionsMixin,

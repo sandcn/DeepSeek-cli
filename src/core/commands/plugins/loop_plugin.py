@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -17,7 +16,6 @@ from .base import InteractiveCommandPlugin
 from ..base import CommandMeta, get_plugin_registry
 
 _logger = logging.getLogger(__name__)
-
 
 class LoopPlugin(InteractiveCommandPlugin):
     """循环执行 N 次指定提词 (/loop)
@@ -123,7 +121,6 @@ class LoopPlugin(InteractiveCommandPlugin):
         raise RuntimeError(
             "LoopPlugin 需要异步执行，请调用 async_execute()"
         )
-
 
 # 模块级自注册
 get_plugin_registry().register(LoopPlugin())

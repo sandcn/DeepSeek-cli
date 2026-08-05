@@ -8,7 +8,10 @@ enabling the CLI interaction loop to continue running after recoverable failures
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
+
+_logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------

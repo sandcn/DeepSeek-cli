@@ -7,8 +7,6 @@
 from __future__ import annotations
 
 import threading
-import time
-
 
 class StreamingIndicator:
     """流式光标指示器。
