@@ -22,7 +22,7 @@ from typing import Optional
 
 from .core.session import ChatSession
 from .core.ports import PersistencePort, CheckpointPort, ConfigPort, OutputPort
-from .core.adapters.output import DefaultOutputAdapter, get_default_output_port
+from .core.adapters.output import get_default_output_port
 from .core.telemetry.trace_context import TraceContext, get_current_trace_id
 from .paths import CHAT_MSGS_DIR
 from .chat_msgs import load_session, get_recover_cmd, list_sessions
@@ -110,7 +110,7 @@ class SessionManager:
 
         sid = session.save()
         if sid:
-            from .core.constants import GREEN, CYAN, DIM, RESET
+            from .core.constants import GREEN, CYAN, RESET
             filepath = f"{CHAT_MSGS_DIR}/{sid}.json"
             recover_cmd = get_recover_cmd(sid)
             output.write(f"\n{GREEN}  ✓ 对话已保存到 {filepath}{RESET}", level="raw")

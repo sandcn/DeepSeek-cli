@@ -10,7 +10,6 @@ from typing import List, Tuple
 from rich.text import Text
 
 from .math_parser_helpers import (
-    _STYLE_SUBSCRIPT,
     re_split_rows, _extract_braced_group, _skip_spaces,
 )
 

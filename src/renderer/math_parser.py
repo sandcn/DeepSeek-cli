@@ -53,9 +53,7 @@ from .math_parser_helpers import (
     _SUBSCRIPT_UNICHARS, _SUPERSCRIPT_UNICHARS,
     _extract_braced_group, _skip_group, _skip_spaces,
     _convert_to_superscript, _convert_to_subscript,
-    _convert_to_superscript_progressive, _convert_to_subscript_progressive,
-    _all_chars_mapped, _has_operator, _find_tex_primitive,
-    re_split_rows,
+    _all_chars_mapped, _find_tex_primitive,
 )
 
 # 从 Mixin 模块导入
@@ -363,7 +361,6 @@ class MathParser(
         # ── 带星号的 \operatorname* ──────────────────────
         if cmd == "operatorname":
             # 检查后面是否有 *
-            i_saved = i
             i = _skip_spaces(s, i, n)
             if i < n and s[i] == '*':
                 i += 1  # 跳过 *

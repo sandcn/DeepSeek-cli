@@ -19,7 +19,6 @@ from __future__ import annotations
 import logging
 
 from rich.style import Style
-from rich.table import Table
 from rich.text import Text
 
 from .types import ASTNode, NodeType
@@ -29,10 +28,6 @@ from ..math_renderer import MathRenderer
 from ..mermaid_renderer import MermaidRenderer
 from ..inline_renderer import InlineRenderer
 
-from .._rendering import (
-    render_code_title_bar, render_code_fence_open, render_code_fence_close,
-    render_code_block_syntax, style_heading,
-)
 from ._render_mixins import (
     _TextRenderingMixin, _ListRenderingMixin, _BlockRenderingMixin,
 )

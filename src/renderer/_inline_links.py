@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 
 from .inline_nodes import (
-    InlineNode, TextNode, LinkNode, ImageNode,
+    InlineNode, LinkNode, ImageNode,
     AutoLinkNode, AutoLinkEmailNode, FootnoteRefNode,
     render_inline_to_text,
 )
@@ -342,7 +342,6 @@ class InlineLinksMixin:
                             and self._text[self._pos:self._pos + plen].lower() == protocol):
                         saved = self._pos
                         self._pos += len(protocol)
-                        url_start = self._pos
                         while (self._pos < self._n
                                and not self._text[self._pos].isspace()
                                and self._text[self._pos] not in '<>"\'[]{},，。、！？；：】》》）—–—'):
@@ -363,7 +362,6 @@ class InlineLinksMixin:
                     and self._text[self._pos:self._pos + len(_www_prefix)].lower() == _www_prefix):
                 saved = self._pos
                 self._pos += len(_www_prefix)
-                url_start = self._pos
                 while (self._pos < self._n
                        and not self._text[self._pos].isspace()
                        and self._text[self._pos] not in '<>"\'[]{},，。、！？；：】》》）—–—'):

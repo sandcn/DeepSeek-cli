@@ -44,9 +44,8 @@ async def run_single_mode_async(prompt_text):
     _register_session_handlers(session, monitor, chat_ui=chat_ui)
 
     try:
-        result = await session.run_single(prompt_text)
+        await session.run_single(prompt_text)
 
-        delta = result.get("delta", {})
         _save_and_show_recover(session, chat_ui)
     except Exception:
         # 异常时尝试保存会话（如果已有消息），避免对话丢失

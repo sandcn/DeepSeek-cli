@@ -20,11 +20,7 @@ _logger = logging.getLogger(__name__)
 from .inline_nodes import (
     InlineNode, TextNode,
     InlineCodeNode, InlineMathNode,
-    LinkNode, ImageNode,
-    AutoLinkNode, AutoLinkEmailNode,
-    LineBreakNode, FootnoteRefNode,
-    SubscriptNode, SuperscriptNode,
-    _HTML_TAG_MAP,
+    LineBreakNode,
     render_inline_to_text,
 )
 from .emoji_map import EMOJI_MAP

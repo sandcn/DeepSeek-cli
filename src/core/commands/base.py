@@ -85,7 +85,6 @@ class CommandPlugin(ABC):
     def help_text(self) -> str:
         """生成帮助文本"""
         parts = []
-        names = [self.meta.name] + self.meta.aliases
         parts.append(f"/{self.meta.name}")
         if self.meta.usage:
             parts.append(f" {self.meta.usage}")

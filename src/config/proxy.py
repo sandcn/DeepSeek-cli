@@ -57,8 +57,12 @@ class ConfigProxy(ConfigPort):
         return float(self.get(key, default))
 
     def get_bool(self, key: str, default: bool = False) -> bool:
-        from src.config.schema import _parse_config_value
-        return bool(_parse_config_value(key, self.get(key, default)))
+        value = self.get(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in ("true", "1", "yes", "on")
+        return bool(value)
 
     # ── 上下文压缩配置 ──────────────────────────────────
 

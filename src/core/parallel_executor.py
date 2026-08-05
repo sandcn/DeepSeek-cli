@@ -15,7 +15,7 @@ import random
 import time
 from typing import List, Dict, Any
 
-from ._terminal import get_terminal_width as _get_terminal_width
+from ._terminal import get_terminal_width as _get_terminal_width  # noqa: F401 — 兼容别名保留（见下）
 from .internal.agent._capture_manager import _safe_restore as safe_restore_stdout
 from .internal.agent._subagent_spawner import SubAgentSpawner
 from .subagent import SubAgent

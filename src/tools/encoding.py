@@ -10,7 +10,6 @@ import asyncio
 import logging
 
 from ._constants import (
-    BOM_MARKERS,
     CATCHALL_ENCODINGS,
     COMMON_ENCODINGS,
     ENCODING_ALIASES,

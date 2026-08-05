@@ -376,9 +376,7 @@ class ReadFileFunc(Func):
 
     async def display(self):
         """异步显示文件内容并返回给大模型"""
-        start_time = _time.time()
         output = await self.execute()
-        elapsed = _time.time() - start_time
 
         if not self._file_result[_SUCCESS_KEY]:
             Func._publish_tool_text(f"  {RED}x {self._file_result[_ERROR_KEY]}{RESET}")
@@ -397,9 +395,7 @@ class ReadFileFunc(Func):
     async def web_display(self) -> str:
         """Web 模式：返回带文件路径的纯文本内容（无 ANSI 控制码），
         同时将文件路径和内容（含语法高亮）打印到终端。"""
-        start_time = _time.time()
         output = await self.execute()
-        elapsed = _time.time() - start_time
 
         if not self._file_result[_SUCCESS_KEY]:
             Func._publish_tool_text(f"  {RED}x {self._file_result[_ERROR_KEY]}{RESET}")

@@ -19,7 +19,7 @@ from ._history import (
     _active_monitor,
     _active_monitor_lock,
 )
-from ..interrupt_async import request_interrupt_async, reset_interrupt_async
+from ..interrupt_async import reset_interrupt_async
 from src._compat_termios import termios, tty
 
 _logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ class EscapeMonitor:
         Args:
             prefill: 可选的预填文本。
         """
-        global _active_monitor, _active_monitor_lock
+        global _active_monitor
         self._started = True
         reset_interrupt_async(input_instance=self._input)
         self._interrupted.clear()
@@ -86,7 +86,7 @@ class EscapeMonitor:
 
     def stop(self):
         """停止监听，恢复终端设置。"""
-        global _active_monitor, _active_monitor_lock
+        global _active_monitor
         self._stop.set()
         self._active.set()
         self._interrupted.clear()
@@ -170,7 +170,6 @@ class EscapeMonitor:
 
 def get_active_monitor():
     """获取当前活跃的 EscapeMonitor 实例（如果有）。"""
-    global _active_monitor_lock
     with _active_monitor_lock:
         return _active_monitor
 

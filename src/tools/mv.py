@@ -7,7 +7,7 @@ from .base import tool_metadata
 from .file_base import FileSystemToolBase
 from .file_ops import (
     validate_path_security, async_file_exists, async_read_file_content,
-    async_collect_files, async_is_link, async_makedirs,
+    async_collect_files, async_is_link,
     async_record_directory_files,
     async_record_sandbox,
 )

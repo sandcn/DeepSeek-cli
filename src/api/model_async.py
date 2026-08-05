@@ -169,7 +169,7 @@ async def _call_sync_async(
 # 每个调用线程持有独立循环（threading.local），互不干扰。
 # 事件循环管理逻辑已提取到 _model_loops.py。
 
-from ._model_loops import _get_model_loop, cleanup_model_loops  # noqa: E402 — 事件循环管理
+from ._model_loops import _get_model_loop
 
 def call_model_sync(messages, model=None, tools=None, display=None, label=None):
     """同步兼容包装 — 在线程持久化事件循环中运行 async 调用。

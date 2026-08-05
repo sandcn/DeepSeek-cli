@@ -5,7 +5,7 @@ from __future__ import annotations
 from rich.text import Text
 from rich.style import Style
 
-from ._url_email_scanner import _scan_next_url, _scan_next_email
+from ._url_email_scanner import _scan_next_email
 
 
 def _auto_linkify_emails(text: str) -> Text:

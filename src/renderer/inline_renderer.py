@@ -24,10 +24,8 @@ from rich.style import Style
 from ._utils import (
     _scan_next_url_or_email,
 )
-from .emoji_map import EMOJI_MAP
 from ._inline_preprocess import (
     _MAX_RECURSION_DEPTH,
-    _INLINE_FORMAT_CHARS,
     _has_inline_format,
     _preprocess_text,
 )

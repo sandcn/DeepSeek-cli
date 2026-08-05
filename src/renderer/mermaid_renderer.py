@@ -21,8 +21,7 @@ from rich.text import Text
 from rich.style import Style
 
 from ._mermaid_helpers import (
-    _STYLE_HEADER, _STYLE_ARROW, _STYLE_NODE, _STYLE_EDGE_LABEL,
-    _is_comment_line,
+    _STYLE_HEADER,
 )
 from ._mermaid_flowchart import MermaidFlowchartMixin
 from ._mermaid_sequence import MermaidSequenceMixin

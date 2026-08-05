@@ -20,7 +20,6 @@ from ._blocks import split_by_br
 
 def estimate_table_width(headers: list[str], data_rows: list[list[str]]) -> list[int]:
     """估算表格每列的最小宽度。"""
-    num_cols = len(headers)
     col_min_widths = []
     for i, h in enumerate(headers):
         w = cjk_display_width(h)

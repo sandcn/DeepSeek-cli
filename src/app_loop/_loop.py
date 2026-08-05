@@ -10,7 +10,7 @@ import asyncio
 import logging
 
 from ._utils import (
-    _non_system_messages, _put_and_wait, _merge_prefill,
+    _put_and_wait, _merge_prefill,
     _exit_save_and_stop, _save_loop_snapshot,
     _RETRY_SENTINEL,
 )
@@ -22,16 +22,13 @@ from ._session_setup import (
 from ._handlers import (
     _handle_retry_sentinel,
 )
-from ._single import _make_event_agent
 
-from ..config import MODEL
-from ..core.session import ChatSession
 from ..core.commands import CommandContext
 from ..core.commands.plugins import get_interactive_registry
 from ..core.message_queue import MessageQueue
 from ..core.exceptions import is_fatal_exception, is_network_error
-from ..core.constants import CYAN, DIM, RESET, GREEN, YELLOW
-from ..tui._screen import TerminalWidthCache, narrow_sep_width
+from ..core.constants import DIM, RESET, GREEN, YELLOW
+from ..tui._screen import TerminalWidthCache
 from ..api.escape_monitor import EscapeMonitor
 from ..api.interrupt_async import reset_interrupt_async, request_interrupt_async
 from ..api.stats import reset_token_speed
@@ -371,7 +368,7 @@ class InteractiveLoop:
             self._chat_ui.bottom_bar.set_model_name(state.model)
         breached, _ = await session.run_pending_loop(max_iter=10)
         if breached:
-            self._chat_ui.write_line(f"\n  [错误] 系统繁忙，部分消息未能处理，请重新发送")
+            self._chat_ui.write_line("\n  [错误] 系统繁忙，部分消息未能处理，请重新发送")
             session._force_state_recovery()
         # ★ 等待 ChatUI 渲染完所有待处理命令（工具输出/汇总等）
         #   确保输入提示符出现在完整渲染内容之后，不重叠。
@@ -466,9 +463,6 @@ class InteractiveLoop:
         """初始化 ChatUI 消费者并显示启动信息"""
         self._chat_ui = ChatUIConsumer()
         self._chat_ui.start()
-
-        _term_width = self._get_term_width()
-        _sep_width = narrow_sep_width(40)
 
     def _teardown_chat_ui(self):
         """停止 ChatUI 消费者"""

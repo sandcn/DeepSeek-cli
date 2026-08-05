@@ -150,7 +150,7 @@ async def run_web_server(host: str = "0.0.0.0", port: int = 8080,
     host_display = host if host != "0.0.0.0" else "localhost"
     url = f"http://{host_display}:{port}"
     publish_output(f"\033[1;36m  Web UI: {url}\033[0m", level="raw")
-    publish_output(f"\033[2m  按 Ctrl+C 停止服务器\033[0m", level="raw")
+    publish_output("\033[2m  按 Ctrl+C 停止服务器\033[0m", level="raw")
 
     # ── Termux：自动用浏览器打开 URL（委托给 _termux 模块） ──
     await auto_open_browser(url)

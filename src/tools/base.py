@@ -169,7 +169,7 @@ class Func(abc.ABC):
     @staticmethod
     def _print_result(result: str, success_prefix: str = "+", fail_prefix: str = "x") -> None:
         """根据结果前缀打印成功/失败信息到终端。以 `(` 开头的错误结果视为失败。"""
-        from ..core.constants import GREEN, RED, YELLOW, RESET
+        from ..core.constants import GREEN, RED, RESET
         if result.startswith("("):
             Func._publish_tool_text(f"  {RED}{fail_prefix} {result}{RESET}")
         else:

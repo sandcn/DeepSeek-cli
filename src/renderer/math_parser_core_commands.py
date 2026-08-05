@@ -14,17 +14,15 @@ from rich.style import Style
 from rich.text import Text
 
 from .math_parser_helpers import (
-    _STYLE_DEFAULT, _STYLE_FUNCTION, _STYLE_NUMBER, _STYLE_OPERATOR,
-    _STYLE_SUPERSCRIPT, _STYLE_SUBSCRIPT, _STYLE_FRAC_LINE,
+    _STYLE_DEFAULT, _STYLE_OPERATOR,
+    _STYLE_SUPERSCRIPT, _STYLE_SUBSCRIPT,
     _STYLE_TEXT, _STYLE_BOLD, _STYLE_ITALIC,
-    _STYLE_CANCEL, _STYLE_TAG, _STYLE_BOXED,
-    _STYLE_ACCENT, _STYLE_COLOR_NOTICE,
+    _STYLE_CANCEL, _STYLE_BOXED,
     _convert_to_superscript, _has_operator,
     _extract_braced_group, _skip_spaces, _skip_group,
 )
 from .math_symbols import (
     _ACCENT_MAP, _DELIMITER_MAP, _COLOR_ALIAS,
-    _COMMAND_MAP,
 )
 
 

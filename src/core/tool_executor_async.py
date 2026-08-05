@@ -23,14 +23,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, List, Tuple, Optional, Callable, TYPE_CHECKING
+from typing import Any, List, Tuple, Optional, Callable
 
 from ..tools.registry import ToolRegistry
 from .param_formatter import extract_key_params
 from .tool_dag import ToolDAG
-
-if TYPE_CHECKING:
-    from .tool_dag import ToolDAG  # noqa: F811 — 类型检查时重新导入以用于注解
 
 _logger = logging.getLogger(__name__)
 

@@ -156,8 +156,6 @@ class SubAgent(BaseAgent):
     async def _run_impl(self) -> str:
         """SubAgent 主循环实现（由 run() 包裹，确保 finally 记录完整对话）。"""
         content = ""
-        # 日志截断长度
-        _LOG_TRUNCATE_LEN = 100
 
         while True:
             # ── 模型调用（含网络错误重试） ──────────────

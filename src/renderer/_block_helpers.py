@@ -5,10 +5,6 @@
 
 from __future__ import annotations
 
-from ._utils import (
-    _COMMON_LANGUAGES, _get_fence_info,
-)
-
 
 # ═══════════════════════════════════════════════════════════
 # 字符级辅助函数（无正则）

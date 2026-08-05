@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from .types import ASTNode, NodeType, SourceRange
+from .types import ASTNode, NodeType
 from ..types import Token, TokenType, RenderContext
 from ._builder_mixins import (
     _TextBuildingMixin, _ListBuildingMixin, _BlockBuildingMixin,

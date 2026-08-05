@@ -9,7 +9,7 @@ from ._mermaid_helpers import (
     _STYLE_BOX, _STYLE_NODE, _STYLE_EDGE_LABEL, _STYLE_HEADER,
     _STYLE_ARROW, _STYLE_FIELD, _STYLE_METHOD, _STYLE_RELATION,
     _STYLE_SUBGRAPH,
-    _is_word_char, _extract_word_ids,
+    _extract_word_ids,
     _starts_with_ignore_case, _is_comment_line,
 )
 
@@ -178,7 +178,7 @@ class MermaidClassStateGanttPieMixin:
             result.append("\n")
             for src, dst, label in trans:
                 if src == st:
-                    result.append(f"    ──▶ ", style=_STYLE_ARROW)
+                    result.append("    ──▶ ", style=_STYLE_ARROW)
                     if dst == "*":
                         result.append("● (final)", style=Style(dim=True))
                     else:

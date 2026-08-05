@@ -53,8 +53,6 @@ _PENDING_LOOP_MAX_ITER = 10  # 排队消息处理熔断阈值
 _PROCESS_TASK_TIMEOUT = 5.0  # process_task 等待取消超时（秒）
 
 # 从 ws_handler 包导入共享常量
-from ..ws_handler import _MESSAGE_PREVIEW_LENGTH
-# 从 types 导入消息长度上限常量（原 _MAX_MSG_LENGTH 已迁移到 types.py）
 from ..types import _MAX_MSG_LENGTH
 
 

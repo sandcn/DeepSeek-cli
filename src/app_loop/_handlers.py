@@ -10,8 +10,7 @@ import logging
 
 from ._utils import _non_system_messages
 
-from ..core.commands import handle_command, CommandContext
-from ..core.commands.plugins import get_interactive_registry
+from ..core.commands import handle_command
 
 _logger = logging.getLogger(__name__)
 

@@ -185,8 +185,6 @@ class Agent(BaseAgent):
 
         返回 async 函数，可直接用于 Pipeline 的异步路径。
         """
-        from ..core.ports.model import ModelResult
-
         async def wrapped(messages, model=None, tools=None, display=None, label=None, silent=False):
             result = await async_model_port.call(messages, model, tools, display, label, silent)
             return result.reasoning, result.content, result.usage, result.tool_calls

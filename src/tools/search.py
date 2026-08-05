@@ -22,7 +22,6 @@ import os
 import re
 
 from ._constants import (
-    EXCLUDED_DIRS,
     GREP_EXCLUDE_DIRS,
     GREP_EXCLUDE_FILES,
     RG_EXCLUDE_GLOBS,

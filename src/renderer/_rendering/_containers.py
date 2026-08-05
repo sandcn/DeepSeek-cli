@@ -54,7 +54,7 @@ def render_admonition_header(
     if content:
         header_text += f"│ {content}"
 
-    t = Text(f"  ┌─", style=Style(bold=True, color=color))
+    t = Text("  ┌─", style=Style(bold=True, color=color))
     t.append(header_text, style=Style(bold=True, color=color))
     remaining = output_width - cjk_display_width(t.plain) - 1
     if remaining > 0:
@@ -92,7 +92,7 @@ def render_box_open(prefix: str, text: str, color: str, output_width: int) -> Te
     if text:
         header_text += f"│ {text}"
 
-    t = Text(f"  ┌─", style=Style(bold=True, color=color))
+    t = Text("  ┌─", style=Style(bold=True, color=color))
     t.append(header_text, style=Style(bold=True, color=color))
     remaining = max(0, output_width - cjk_display_width(t.plain) - 1)
     if remaining > 0:

@@ -23,7 +23,7 @@ from rich.syntax import Syntax
 from .output import OutputAdapter
 from .types import Token, TokenType, RenderContext
 from .inline_renderer import InlineRenderer
-from ._utils import get_code_style, parse_highlight_lines
+from ._utils import get_code_style
 from .handlers import HandlerRegistry, InlineHandler, CodeHandler, MathHandler, \
     MermaidHandler, DetailsHandler, AdmonitionHandler, HtmlBlockHandler, TableHandler, \
     FencedDivHandler

@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import Optional
 
 from .agent import Agent
-from ..tools.registry import ToolRegistry
 
 
 class AgentBuilder:

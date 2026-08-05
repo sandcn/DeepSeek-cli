@@ -80,7 +80,6 @@ def _render_inline_impl(text: str, base: Style) -> list[Run]:
                 close_paren = text.find(")", close_bracket + 2)
                 if close_paren != -1:
                     label = text[i + 1:close_bracket]
-                    url = text[close_bracket + 2:close_paren]
                     runs.append(Run(
                         label,
                         base.merge(Style(fg=45, underline=True)),

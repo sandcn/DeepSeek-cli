@@ -40,7 +40,6 @@ class InlineHTMLMixin:
             return None
         saved = self._pos
         self._pos += 1
-        start = self._pos
         while self._pos < self._n and self._text[self._pos] not in (';', ' ', '\n', '\t'):
             self._pos += 1
         if self._pos >= self._n or self._text[self._pos] != ';':

@@ -344,7 +344,6 @@ class ChatSession:
         #   _force_state_recovery 后重新初始化时覆盖已有沙盒状态
         if get_sandbox_manager() is None:
             create_sandbox_manager()
-        sandbox = get_sandbox_manager()
 
         if model:
             self._model = model

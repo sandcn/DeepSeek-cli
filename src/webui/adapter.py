@@ -78,16 +78,15 @@ class UIDisplayAdapter:
             return None
         result = method(*args, **kwargs)
         # 防御：若委托方法返回协程但调用方期望同步结果，
-        # 尝试在当前事件循环中 await（仅当已有运行中的循环时）
+        # 检查是否已有运行中的事件循环（无法在此同步上下文中 await 协程）
         if asyncio.iscoroutine(result):
             try:
-                loop = asyncio.get_running_loop()
+                asyncio.get_running_loop()
             except RuntimeError:
                 _logger.warning(
                     "UIDisplayAdapter: 方法 %s 返回协程但无运行中的事件循环", method_name
                 )
                 return None
-            # 无法在此同步上下文中 await 协程，返回协程对象由调用方处理
             _logger.debug(
                 "UIDisplayAdapter: 方法 %s 返回协程对象（调用方需自行 await）", method_name
             )

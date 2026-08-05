@@ -15,7 +15,7 @@ from rich.text import Text
 from .math_parser_helpers import (
     _STYLE_DEFAULT, _STYLE_FUNCTION, _STYLE_OPERATOR,
     _STYLE_SUPERSCRIPT, _STYLE_SUBSCRIPT, _STYLE_ACCENT,
-    _STYLE_BOXED, _STYLE_CANCEL, _STYLE_TAG, _STYLE_TEXT,
+    _STYLE_TAG, _STYLE_TEXT,
     _convert_to_superscript_progressive, _convert_to_subscript_progressive,
     _extract_braced_group, _skip_spaces, _skip_group,
 )

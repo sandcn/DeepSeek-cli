@@ -136,7 +136,7 @@ def _setup_connection(ws, session, ws_send, select_id_tracker=None):
 
     # ★ 添加排空辅助函数到返回值（六元组），供关闭时清空队列
     async def _drain_send_queue():
-        nonlocal send_queue_active, worker_task
+        nonlocal send_queue_active
         send_queue_active = False
         # ★ task_done 说明：当 worker 被取消时，最后一条 get() 取出的消息可能尚未调用 task_done()。
         #   由于队列 join() 已被禁用（详见清空循环注释），task_done 计数不精确不影响功能。

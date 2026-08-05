@@ -14,7 +14,7 @@ import fnmatch
 import re
 import logging
 from pathlib import Path
-from ._constants import EXCLUDED_DIRS, should_exclude_dir as _should_exclude_dir
+from ._constants import should_exclude_dir as _should_exclude_dir
 from .base import Func, tool_metadata
 
 logger = logging.getLogger(__name__)
@@ -307,10 +307,6 @@ class FindFunc(Func):
 
         # 按（相对路径的目录部分，文件名）排序
         display_items.sort(key=lambda x: str(x[1]))
-
-        # 分类统计
-        file_count = sum(1 for p, _ in display_items if p.is_file())
-        dir_count = sum(1 for p, _ in display_items if p.is_dir())
 
         # 构建输出
         type_label = {

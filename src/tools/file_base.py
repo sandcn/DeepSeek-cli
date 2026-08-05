@@ -340,7 +340,7 @@ class FileToolBase(Func):
         old_content = await self._read_original() if exists else None
         try:
             new_content = await self._get_new_content()
-        except FileToolError as e:
+        except FileToolError:
             return None, None, exists
         return old_content, new_content, exists
 

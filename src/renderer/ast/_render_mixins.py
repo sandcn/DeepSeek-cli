@@ -37,7 +37,6 @@ from .._rendering import (
     render_mermaid_block as _render_mermaid_block_shared,
     render_mermaid_close as _render_mermaid_close_shared,
     render_hr as _render_hr_shared,
-    style_heading, render_blockquote_prefix,
     render_code_fence_open, render_code_fence_close,
     render_code_block_syntax, is_todo, BULLET_SYMBOLS,
     split_by_br, render_code_title_bar,

@@ -14,7 +14,8 @@ import logging
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from ..base import CommandPlugin, CommandMeta
+from ..base import CommandPlugin
+
 
 if TYPE_CHECKING:
     pass  # 延迟导入避免循环

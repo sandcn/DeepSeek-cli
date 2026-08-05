@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import logging
 
 from .types import Token, TokenType
 from ._block_parser_common import _State

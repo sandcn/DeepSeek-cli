@@ -20,12 +20,11 @@ from __future__ import annotations
 
 from rich.console import Console
 from rich.text import Text
-from rich.style import Style
 
 import logging
 import time
 from io import StringIO
-from ._locks import render_lock, _try_acquire_output_lock
+from ._locks import _try_acquire_output_lock
 
 _logger = logging.getLogger(__name__)
 

@@ -8,8 +8,7 @@ from rich.style import Style
 from ._mermaid_helpers import (
     _STYLE_BOX, _STYLE_NODE, _STYLE_EDGE_LABEL, _STYLE_HEADER,
     _STYLE_ARROW, _STYLE_ACTOR, _STYLE_SUBGRAPH,
-    _is_word_char, _extract_word_ids,
-    _starts_with_ignore_case, _is_comment_line,
+    _is_comment_line,
 )
 
 

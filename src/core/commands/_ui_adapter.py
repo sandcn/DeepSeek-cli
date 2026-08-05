@@ -113,7 +113,6 @@ class CommandUiAdapter:
         deadline = time.monotonic() + 60
 
         while time.monotonic() < deadline:
-            from ..api.escape_monitor._monitor import EscapeMonitor
             try:
                 input_inst = getattr(bottom_bar, '_input', None)
                 if input_inst is not None:

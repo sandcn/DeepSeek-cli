@@ -27,7 +27,7 @@ def build_environment_info(
     today = datetime.date.today()
 
     lines = [
-        f"# 当前执行环境",
+        "# 当前执行环境",
         f"- 操作系统: {platform.system()} {platform.release()} ({platform.machine()})",
     ]
     lines.append(f"- 主机名: {platform.node()}")
