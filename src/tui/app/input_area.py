@@ -846,10 +846,12 @@ def _input_snap_key(props: dict, width: int, now: float):
     max_input = max(1, width - len(_PROMPT))
     # history_search 一次提取（多处字段共享）
     search = props.get("history_search")
-    # 引用级指纹（同 BUG-23 轻量指纹）：id() 引用稳定（模型字段不变时）；
-    # 内容变化 → id/len 变 → 重建。
+    # ★ review 方向（BUG-T1 同族修复）：str 指纹从 ``id()`` 改为 ``hash()``——
+    #   原 ``id(text)`` 在 echo 回调每次新建 str 时恒 miss（缓存退化）；且 str
+    #   对象被 GC 后 id 复用可能错误命中（内容不同但 id+len 相同）。``hash(str)``
+    #   同进程内稳定、内容变化必变（碰撞概率可忽略）；值比较语义正确。
     return (
-        id(text) if text is not None else -1,
+        hash(text_str),
         len(text_str),
         max_input,
         width,
@@ -869,7 +871,7 @@ def _input_snap_key(props: dict, width: int, now: float):
         status_active,
         # history_search 指纹（局部变量提取——一次 props.get）
         bool(search is not None and bool(getattr(search, "active", False))),
-        id(getattr(search, "query", None)) if search is not None else -1,
+        hash(getattr(search, "query", "") or "") if search is not None else 0,
         len(getattr(search, "query", "") or "") if search is not None else 0,
         id(getattr(search, "matches", None)) if search is not None else -1,
         len(getattr(search, "matches", None) or []) if search is not None else 0,

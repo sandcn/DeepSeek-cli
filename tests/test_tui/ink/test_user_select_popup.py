@@ -230,7 +230,10 @@ class TestUserSelectPopupInteract:
         cap = _Router()
         _render(r, root, _popup(m))
         # 空格取消 A 勾选 → 回车
-        assert cap.key("space") is True
+        # ★ review 方向（测试同步）：生产路径空格按键为 ``kind="char", char=" "``
+        # （_input_parser 无 "space" kind）——测试改用真实事件形态（原
+        # ``key("space")`` 依赖被清理的死分支）。
+        assert cap.key("char", " ") is True
         assert m.user_select.checked == []
         assert cap.key("enter") is True
         assert m.user_select.done is True
@@ -245,13 +248,13 @@ class TestUserSelectPopupInteract:
         r, root = Reconciler(), Reconciler().create_root()
         cap = _Router()
         _render(r, root, _popup(m))
-        # 空格勾选 A
-        assert cap.key("space") is True
+        # 空格勾选 A（真实事件形态：char ' '；生产路径无 kind="space"）
+        assert cap.key("char", " ") is True
         assert m.user_select.checked == [0]
         frame = _render(r, root, _popup(m))
         assert _plain(frame)[1] == " ●  A"
         # 再按空格取消
-        assert cap.key("space") is True
+        assert cap.key("char", " ") is True
         assert m.user_select.checked == []
         frame = _render(r, root, _popup(m))
         assert _plain(frame)[1] == " ○  A"

@@ -525,7 +525,15 @@ class InkSession:
                 import inspect as _i
                 if _i.isawaitable(result):
                     import asyncio
-                    asyncio.get_event_loop().run_until_complete(result)
+                    # ★ BUG（review 方向）：``asyncio.get_event_loop().run_until_complete()``
+                    #   在 Python 3.10+ 非主线程调用抛 RuntimeError（无当前事件循环）、
+                    #   3.12+ 产生 DeprecationWarning——改用独立事件循环执行协程
+                    #   （``new_event_loop`` 线程安全，无 get_event_loop 的线程绑定）。
+                    loop = asyncio.new_event_loop()
+                    try:
+                        loop.run_until_complete(result)
+                    finally:
+                        loop.close()
             except Exception:
                 _logger.debug("suspend_terminal callback 异常", exc_info=True)
             self.request_clear()
@@ -744,9 +752,12 @@ class InkSession:
         with _try_acquire_output_lock(name="ink_session.drain_queue", timeout=self._config.drain_lock_timeout) as locked:
             if not locked:
                 return False
-            # 方向1 步骤4（渲染失败 sleep 出锁）：锁块内仅排空 + 应用命令——
-            # 渲染与失败处理移出锁块（块内置 render_failed 标记？否——渲染在
-            # 锁外直接执行，sleep 退避期间输出锁可被其他写入方获取）。
+            # 方向1 步骤4 + review 方向（应用移出锁块）：锁块内**仅排空命令**
+            # ——``_apply_commands`` 含 markdown 全量渲染（_do_subagent_markdown
+            # → AnsiStreamRenderer）等耗时操作，持锁会阻塞其他写入方（diff
+            # 渲染/紧急输出）。命令应用在锁外执行（见下）；渲染与失败处理本
+            # 就在锁外（块内置 render_failed 标记？否——渲染在锁外直接执行，
+            # sleep 退避期间输出锁可被其他写入方获取）。
             while len(commands) < self._config.max_batch_size:
                 try:
                     _, _, cmd = self._cmd_queue.get_nowait()
@@ -755,17 +766,20 @@ class InkSession:
                 except queue.Empty:
                     break
             changed = bool(commands)
-            if commands:
-                # 方向3（宽度源统一）：应用命令前刷新 model.width——committed 行
-                # （按 model.width wrap）与 live 行（按渲染宽度 wrap）同源，避免
-                # resize/首帧批次提交用陈旧宽度（_render_frame 中更新发生在命令
-                # 应用之后）。幂等：_render_frame 的 ``model.width = width`` 保持。
-                if self._model is not None and hasattr(self._model, "width"):
-                    try:
-                        self._model.width = self._width_cache.get_width()
-                    except Exception:
-                        _logger.debug("应用命令前刷新 model.width 异常", exc_info=True)
-                self._apply_commands(commands)
+        # 锁外应用命令（review 方向）：apply_cmd 是纯模型状态变更（AppModel），
+        # 不直接写终端——移出输出锁避免 markdown 渲染等耗时操作持锁阻塞其他
+        # 写入方。模型仅 render 线程修改（push_cmd 只入队不应用），线程安全。
+        if commands:
+            # 方向3（宽度源统一）：应用命令前刷新 model.width——committed 行
+            # （按 model.width wrap）与 live 行（按渲染宽度 wrap）同源，避免
+            # resize/首帧批次提交用陈旧宽度（_render_frame 中更新发生在命令
+            # 应用之后）。幂等：_render_frame 的 ``model.width = width`` 保持。
+            if self._model is not None and hasattr(self._model, "width"):
+                try:
+                    self._model.width = self._width_cache.get_width()
+                except Exception:
+                    _logger.debug("应用命令前刷新 model.width 异常", exc_info=True)
+            self._apply_commands(commands)
         # 渲染与失败处理移出锁块（方向1 步骤4）：渲染失败退避 sleep 不再持有
         # 输出锁（修复前 sleep 在锁块内 → render_lock 阻塞其他写入方输出）。
         if self._should_render(changed):

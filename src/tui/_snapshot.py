@@ -8,9 +8,14 @@
   - 导入路径更新为 ..api.stats
 
 消费方说明（2026-07-31 方向F）：本模块仅含私有函数 ``_get_snapshot``，
-**非死代码**——被 ``src/tui/_bottom_bar/_bar.py`` 的 ``get_status_elapsed()`` 与
-``_format_status()`` 消费（惰性加载 ``get_token_speed_snapshot``，异常静默）。
+**非死代码**——被 ``src/tui/app/status_bar.py`` 的 ``_snapshot()``（状态栏
+token/速度展示）与 ``src/tui/_ink_bridge.py`` 的 ``get_status_elapsed()``
+消费（惰性加载 ``get_token_speed_snapshot``，异常静默）。
 **保留不删**；恢复 Token 速度展示或迁移至统一快照源时须同步上述消费方。
+
+★ review 方向（2026-08-05）：docstring 中旧消费方 ``src/tui/_bottom_bar/_bar.py``
+已随 TUI 重构删除（_bottom_bar 目录不存在）——实际消费方为上列
+``app/status_bar.py`` 与 ``_ink_bridge.py``（均已 search 验证）。
 """
 
 from __future__ import annotations

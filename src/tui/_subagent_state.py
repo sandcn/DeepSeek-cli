@@ -238,7 +238,14 @@ class StateStore:
                 slot.output_tokens += usage.get("output", 0)
                 slot.live_input_tokens += usage.get("live_input", 0)
                 slot.live_output_tokens += usage.get("live_output", 0)
-            slot.last_speed = float(usage.get("speed", 0))
+            # ★ BUG（review 方向）：``float(usage.get("speed", 0))`` 在 speed 为
+            #   None/非数字时抛 TypeError/ValueError——事件处理器无本地 try，异常被
+            #   EventBus.publish 捕获后该事件全部 token/速度更新丢失（面板统计静默
+            #   停滞）。加类型防护：解析失败回退 0.0。
+            try:
+                slot.last_speed = float(usage.get("speed", 0))
+            except (TypeError, ValueError):
+                slot.last_speed = 0.0
 
     def update_metrics(self, label: str, live_input_tokens: int,
                        live_output_tokens: int, output_tokens: int,

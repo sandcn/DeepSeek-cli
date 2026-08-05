@@ -240,7 +240,21 @@ class TuiLifecycle:
                             "register_event_handler: 取消订阅旧 handler 失败",
                             exc_info=True,
                         )
-                self._bus.subscribe(handler_method, event_type=event_type)
+                # ★ review 方向（订阅异常回滚）：subscribe 失败时恢复旧 handler
+                # 订阅（若刚取消过），避免"旧 handler 已取消但 _bound_handlers
+                # 仍记录旧值"的状态不一致（下次 stop 会 unsubscribe 未订阅项）。
+                try:
+                    self._bus.subscribe(handler_method, event_type=event_type)
+                except Exception:
+                    if old_handler is not None:
+                        try:
+                            self._bus.subscribe(old_handler, event_type=event_type)
+                        except Exception:
+                            _logger.debug(
+                                "register_event_handler: 恢复旧 handler 订阅失败",
+                                exc_info=True,
+                            )
+                    raise
                 if self._bound_handlers is not None:
                     self._bound_handlers[event_type] = handler_method
 

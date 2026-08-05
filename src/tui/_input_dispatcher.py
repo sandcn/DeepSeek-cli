@@ -171,6 +171,10 @@ class InputDispatcher:
         elif ch == '\x14':        # Ctrl+T → 主题切换
             self._handle_special_key('toggle_theme')
         elif ch == '\x12':        # Ctrl+R → 重新生成上一轮（Claude parity 3.4）
+            # ★ review 方向（门控语义明确）：本分支仅在
+            # ``reverse_search_enabled=False`` 时可达——elif 链中上一分支
+            # ``ch == '\x12' and self._reverse_search_enabled`` 已拦截反向
+            # 搜索；两分支互斥，不存在"同时触发"路径。
             self._handle_special_key('retry')
         elif ch == '\x0e':        # Ctrl+N → 切换模型（保留）
             self._handle_special_key('switch_model')
@@ -257,7 +261,11 @@ class InputDispatcher:
             else:
                 self.reset()
                 self._buffer_editor.handle_chars(result)
-        if action in ('editmsg', 'retry'):
+        # ★ review 方向：仅回调返回非 None（有实际结果）时才提交——回调返回
+        #   None（异常/插件返回"无操作"）时不应意外提交当前缓冲文本。当前实际
+        #   回调（app_loop/_special_keys.py）恒返回 '/editmsg'/'/retry'（非 None），
+        #   此守卫为防御性（未来回调/插件异常路径）。
+        if result is not None and action in ('editmsg', 'retry'):
             # editmsg/retry 是用户主动发起的提交操作（Ctrl+O/Ctrl+R），
             # 清除 _suppress_enter 确保 _enter() 不被抑制
             self.set_suppress_enter(False)

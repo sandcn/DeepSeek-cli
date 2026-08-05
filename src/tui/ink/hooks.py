@@ -640,7 +640,6 @@ def _event_key(event) -> dict:
     """
     kind = getattr(event, "kind", "")
     modifier = getattr(event, "modifier", 0) or 0
-    keycode = getattr(event, "keycode", 0) or 0
     return {
         "leftArrow": kind == "arrow_left",
         "rightArrow": kind == "arrow_right",
@@ -653,8 +652,16 @@ def _event_key(event) -> dict:
         "tab": kind == "tab",
         "backspace": kind == "backspace",
         "delete": kind == "delete",
-        "pageDown": kind == "page_down" or (kind == "csi_u" and keycode in (62,)),
-        "pageUp": kind == "page_up" or (kind == "csi_u" and keycode in (63,)),
+        # ★ review 方向（死分支清理）：删除 ``kind == "csi_u" and keycode in
+        #   (62,)/(63,)`` 分支——keycode 62/63 是 ``>``/``?`` 的 ASCII 码，
+        #   ``_input_parser._dispatch_csi`` 中 modifier=1 时已被
+        #   ``32 <= keycode <= 126 → char`` 抢先映射（永不以 csi_u 到达），
+        #   modifier!=1 时把 ``\x1b[62;2u``（Shift+'>'）误映射为 PageDown 属
+        #   错误行为。PageUp/PageDown 正确来源：CSI-u 增强键盘协议码
+        #   （57358/57359，_dispatch_csi 已映射 page_up/page_down）与传统
+        #   ``\x1b[5~``/``\x1b[6~``。
+        "pageDown": kind == "page_down",
+        "pageUp": kind == "page_up",
         "home": kind == "home",
         "end": kind == "end",
         "meta": modifier in (3, 6),

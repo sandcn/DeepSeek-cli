@@ -5,7 +5,7 @@ Layer 0 — 无内部依赖，被所有 TUI 模块引用。
 
 保留确认（2026-07-31 方向F）：``FrameworkCommand``/``ChatCommand`` 为
 ``RenderCommand`` 别名，被 ``src/tui/__init__.py`` 与 ``src/tui/consumer/__init__.py``
-re-export（公共 API 约束）；``RenderCommand`` 20 个枚举值均有对应 ``RenderCmd``
+re-export（公共 API 约束）；``RenderCommand`` 24 个枚举值均有对应 ``RenderCmd``
 dataclass 且全部被分发使用，**无未引用枚举**。别名保留不删。
 """
 

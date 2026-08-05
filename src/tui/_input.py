@@ -13,6 +13,9 @@ Input 保留全部公开 API 作为薄外观（Facade），方法体委托：
     ``lambda: request_interrupt_async()``）；未注入时记 debug 日志并跳过。
   - 历史写盘决策（2026-07-31）：``_append_history_locked`` 保持每 Enter 调
     ``_append_to_history_file``（**保持现状**，批量化风险 > 收益，见 _input_buffer.py）。
+  - 历史写盘线程模型（2026-08-05 review 收敛）：每 Enter 创建 daemon 线程改为
+    共享串行后台 writer（_HistoryDiskWriter，见 _input_buffer.py）；「不批量化」
+    决策不变。
 
 设计模式：外观（Facade）——薄外观保持公共 API；组合持有三个拆分组件。
 
@@ -851,9 +854,13 @@ class Input:
         self._buffer_editor.set_echo_callback(cb)
 
     def set_special_key_callback(self, cb) -> None:
-        """设置特殊按键回调（Ctrl+G/O/N/R）。
+        """设置特殊按键回调（Ctrl+G/O/N/R/T/B 等组合键）。
 
         cb 签名: (action: str, current_text: str) -> str | None
+
+        action 取值（当前分发）：``vim``（Ctrl+G）/ ``editmsg``（Ctrl+O）/
+        ``retry``（Ctrl+R，反向搜索禁用时）/ ``toggle_theme``（Ctrl+T）/
+        ``switch_model``（Ctrl+N）/ ``empty_mode``（Ctrl+B）。
         """
         self._dispatcher.set_special_key_callback(cb)
 

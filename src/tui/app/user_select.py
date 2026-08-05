@@ -150,7 +150,10 @@ def UserSelectPopup(props) -> object:
                 set_selected(cur)
                 us.selected = cur
             return True
-        if event.kind == "space" or (event.kind == "char" and event.char == " "):
+        # ★ review 方向（死分支清理）：``event.kind == "space"`` 永假——
+        #   KeyEvent.kind 无 "space" 值，空格统一走 ``kind == "char" and
+        #   event.char == " "`` 分支（下方）。
+        if event.kind == "char" and event.char == " ":
             if multi_now:
                 new_checked = list(checked_ref.current)
                 if cur in new_checked:

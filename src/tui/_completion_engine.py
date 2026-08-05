@@ -139,7 +139,7 @@ def _ranked_sessions(
 
 
 # ── 主题适配器（模块级懒加载单例） ──────────────────────────
-# CommandUiAdapter 无状态，复用同一实例避免每次缓存刷新（TTL 300s）
+# CommandUiAdapter 无状态，复用同一实例避免每次缓存刷新（TTL 60s）
 # 重复构造。延迟导入保留（避免 core→tui 循环依赖）。
 # 双检锁保证多线程并发首次访问时只构造一次（线程安全单例）。
 _THEME_ADAPTER = None
@@ -164,11 +164,14 @@ class CompletionEngine:
         self._sessions_cache = _TTLCache(
             fetcher=self._fetch_sessions, ttl=60.0,
         )
+        # ★ review 方向：模型/主题缓存 TTL 从 300s 降至 60s——模型列表变更
+        #   （插件/配置更新）后最长 5 分钟补全不刷新的延迟过长；60s 平衡缓存
+        #   收益与新鲜度（与命令/会话缓存 TTL 一致）。
         self._models_cache = _TTLCache(
-            fetcher=self._fetch_models, ttl=300.0,
+            fetcher=self._fetch_models, ttl=60.0,
         )
         self._theme_cache = _TTLCache(
-            fetcher=self._fetch_themes, ttl=300.0,
+            fetcher=self._fetch_themes, ttl=60.0,
         )
 
     # ── 缓存 fetcher ───────────────────────────────────
@@ -272,15 +275,21 @@ class CompletionEngine:
         """
         commands = self._commands_cache.get()
         ranked = _ranked(commands, prefix)
+        # ★ review 方向：``get_command_help`` 导入移出循环（原每候选命令
+        #   try/except 重复导入——命令描述查询可缓存）。
+        try:
+            from ..core.internal.commands._command_core import get_command_help
+        except Exception:
+            get_command_help = None
         result: list[CompletionItem] = []
         for cmd in ranked:
             # Claude TUI parity 步骤 3.7：命令描述（注册表 help；无则空串）
             desc = ""
-            try:
-                from ..core.internal.commands._command_core import get_command_help
-                desc = get_command_help(cmd)
-            except Exception:
-                pass
+            if get_command_help is not None:
+                try:
+                    desc = get_command_help(cmd)
+                except Exception:
+                    pass
             result.append(CompletionItem(
                 cmd, start_pos=-len(prefix), item_type="command", desc=desc,
             ))

@@ -121,7 +121,6 @@ class DisplayEventBus(metaclass=SingletonMeta):
         self._lock = threading.RLock()
         self._batched_events: set[type] = set()
         self._batcher = _TimeWindowBatcher()
-        self._source: str = ""
 
     # 单例访问由 SingletonMeta 提供：
     #   DisplayEventBus.get_default() → 线程安全单例获取（DCL）
@@ -235,6 +234,11 @@ class DisplayEventBus(metaclass=SingletonMeta):
 
     def register_batched_event(self, event_type: type[DisplayEvent]) -> None:
         """注册需要时间窗口批处理的事件类型。
+
+        ★ review 方向（未启用标注）：**生产路径未启用**——``_lifecycle.start``
+        注释明确说明批处理不启用（批处理将「延迟分发的高频事件」与「同步直发
+        的阶段切换事件」的顺序竞态放大为固定窗口，导致推理文本静默丢失）。本
+        方法保留供未来启用（须先解决顺序保障），勿在未解决竞态前调用。
 
         高频 UI 事件（如 ContentChunkEvent、ReasoningChunkEvent）
         走 ~33ms 窗口批处理，降低渲染压力。
