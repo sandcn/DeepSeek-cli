@@ -29,12 +29,22 @@ class _Stats:
         # ── 上次流式输出速度（供 agent 侧显示用）───────────
         self.last_stream_speed = 0.0
 
-    def accumulate_usage(self, usage):
-        """线程安全地累加一次 API 调用的 usage 到全局统计。"""
+    def accumulate_usage(self, usage, increment_calls=True):
+        """线程安全地累加一次 API 调用的 usage 到全局统计。
+
+        Args:
+            usage: {"input": int, "output": int} 字典
+            increment_calls: 是否累加调用次数。流式过程中的实时 token
+                估计累计（SpeedHandler）应传 False——该累计不是一次真实
+                API 调用，只影响 token 展示；真实 usage 到达时由
+                accumulate_usage(..., increment_calls=True) 统一计一次
+                calls，避免 /cost 的调用次数虚高。
+        """
         with self._lock:
             self.token_stats["input"] += usage.get("input", 0)
             self.token_stats["output"] += usage.get("output", 0)
-            self.token_stats["calls"] += 1
+            if increment_calls:
+                self.token_stats["calls"] += 1
 
     def set_tool_parse_elapsed(self, elapsed):
         """线程安全地更新上次工具调用解析耗时。"""

@@ -273,19 +273,18 @@ class AsyncStreamPipeline:
 
             # SpeedHandler.try_update() 已在流式过程中累积了估计的
             # output token。此处以真实值直接覆盖，确保统计准确。
-            # 由于 accumulate_usage 是累加操作，先追加真实值，
-            # 再追加负的修正值，最后结果 = 估计值 + (真实值 - 估计值) = 真实值。
-            # 修正值在首次遇到 usage 时只做一次。
+            # 修正值 = 真实值 - 估计值；合并为单次 accumulate_usage：
+            # input += real_input，output += correction，
+            # calls 恰 +1（对应一次真实 API 调用）。
+            # 此前 split 为两次调用导致 calls 多计 1 次（/cost 调用次数虚高）。
             estimated_output = ctx.last_live_est
             correction = real_output - estimated_output
-            if correction != 0:
-                accumulate_usage({"output": correction})
             # ★ 已用真实值修正，重置 token 估计使后续 final_update 不再产生 delta
             ctx.token_estimate = 0
             ctx.last_live_est = 0
             # ★ 标记最终 usage 已接收，后续 SpeedHandler 跳过重复累积
             ctx.final_usage_received = True
-            accumulate_usage({"input": real_input})
+            accumulate_usage({"input": real_input, "output": correction})
             ctx.usage_accumulated = True
 
     def _build_result(self, ctx: StreamContext) -> tuple:

@@ -290,20 +290,22 @@ class SubAgent(BaseAgent):
         return result
 
     def _update_display(self, usage):
-        """更新显示状态（累加每次模型调用的 token 到显示层）"""
+        """更新显示状态（仅显示层）。
+
+        注意：token 统计由模型调用层统一累计（_call_model_impl → api 层
+        stream_call_async/_call_sync_async 内部已 accumulate_usage），
+        此处不再重复累计，否则 SubAgent 每次模型调用的 input/output/calls
+        会被统计两次，导致 /cost 输入 tok 翻倍（Bug 修复）。
+        """
         from ..tui.events.event_types import UsageUpdatedEvent, ModelPhaseEvent
 
         if self.display:
             if usage is not None:
                 self.display.update_usage(self.label, usage, replace=False)
-                # 累加到全局统计（方法体内延迟导入）
-                from ..api.stats import accumulate_usage
-                accumulate_usage(usage)
             self.display.update_model_phase(self.label, "")
         else:
             # display 为 None 时回退到 EventPort 路径
             if usage is not None:
-                accumulate_usage(usage)
                 self._event_port.publish_event(UsageUpdatedEvent(
                     label=self.label, usage=usage, replace=False, source=self.label,
                 ))

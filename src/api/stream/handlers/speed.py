@@ -20,7 +20,11 @@ class SpeedHandler:
                 # 实时累积估算的 output token 到全局统计，
                 # 确保流式生成 dispatch_agent 等大参数时
                 # 总 token 数持续增长，避免"总tok数量没实时增加"。
-                accumulate_usage({"input": 0, "output": delta_live})
+                # 注意：这是实时估算累计，不是真实 API 调用，
+                # increment_calls=False 防止 /cost 调用次数虚高
+                # （真实 usage 到达后由 _handle_usage 统一计一次 calls）。
+                accumulate_usage({"input": 0, "output": delta_live},
+                                 increment_calls=False)
                 ctx.last_live_est = est
                 if ctx.display and ctx.label:
                     ctx.display.update_live_output(ctx.label, delta_live)
