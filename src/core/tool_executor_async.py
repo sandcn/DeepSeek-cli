@@ -139,7 +139,7 @@ class ToolScheduler:
         self._background_dispatch_tasks.clear()
         self._prev_non_dispatch_ids.clear()
 
-    def _find_next_layer(self, dag, layers) -> list[str] | None:
+    def _find_next_layer(self, dag, layers, is_outermost: bool = True) -> list[str] | None:
         """在拓扑排序的层次中查找首个包含未执行节点的层。
 
         同时应用 bash 独占过滤：若 bash 工具正在运行，仅允许 dispatch_agent 通过。
@@ -147,6 +147,15 @@ class ToolScheduler:
         Args:
             dag: ToolDAG 实例
             layers: 拓扑排序后的层次列表 [[tc_id1, tc_id2], ...]
+            is_outermost: 是否为最外层 schedule() 调用。
+                ★ 关键修复（2026-08-06）：bash 独占过滤**仅对最外层调度生效**。
+                修复前 ``_running_bash_ids`` 为全局单例状态，主 Agent 的 bash
+                运行期间（如长时编译）会跨 SubAgent 上下文拦截**所有子代理的
+                工具调用**——子代理工具被 ``bash 独占过滤`` 拦成空层后无限轮询
+                等待 bash 完成，若 bash 卡住（进程树清理不彻底等），子代理永远
+                卡在工具 parsing 状态（用户侧现象：子代理「接收参数后不执行」）。
+                嵌套调用（SubAgent，is_outermost=False）跳过独占过滤，保证
+                子代理工具可独立调度，不被父 Agent 的 bash 阻塞。
 
         Returns:
             None: 所有节点均已执行
@@ -173,7 +182,8 @@ class ToolScheduler:
         # ── bash 独占运行：bash 运行中仅 dispatch_agent 可并行 ──
         # 若已有 bash 工具正在运行，当前层仅允许 dispatch_agent 通过，
         # 其他工具（read/write/bash/interactive）须等待 bash 完成。
-        if self._running_bash_ids:
+        # ★ 仅最外层调度应用（SubAgent 嵌套调用跳过——见 docstring）。
+        if is_outermost and self._running_bash_ids:
             filtered = []
             for tc_id in target_layer:
                 node = dag.get_node(tc_id)
@@ -559,7 +569,12 @@ class ToolScheduler:
                     break
 
                 # 查找首个未执行节点层 + bash 独占过滤
-                target_layer = self._find_next_layer(dag, layers)
+                # ★ 传递 is_outermost：bash 独占过滤仅对最外层调度生效，
+                #   SubAgent 嵌套调用（is_outermost=False）跳过独占过滤，
+                #   不被父 Agent 的 bash 阻塞（修复子代理工具卡在 parsing）。
+                target_layer = self._find_next_layer(
+                    dag, layers, is_outermost=is_outermost,
+                )
                 if target_layer is None:
                     break  # 全部节点已执行
 
