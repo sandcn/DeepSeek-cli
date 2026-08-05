@@ -33,28 +33,11 @@ from __future__ import annotations
 from ..element import TEXT, Element, h
 from ..hooks import use_state, use_input
 from ..widgets.layout import Column
+# ★ 公共纯辅助收敛（2026-08-05 架构优化）：_children/_call 原本地定义（与
+#   layout/_panel/checkbox 等逐字重复）——收敛至 _widget_common 单一真源。
+from ._widget_common import _children, _call
 
 __all__ = ["FocusGroup", "Key"]
-
-
-def _children(props: dict):
-    """读取 reconciler 注入的 children（Element 元组；无子级时空元组）。"""
-    children = props.get("children", ())
-    if children is None:
-        return ()
-    if isinstance(children, (list, tuple)):
-        return tuple(children)
-    return (children,)
-
-
-def _call(fn, *args) -> None:
-    """安全调用可选回调（异常仅记录，不阻断输入分发）。"""
-    if fn is None:
-        return
-    try:
-        fn(*args)
-    except Exception:
-        pass
 
 
 def FocusGroup(props: dict) -> Element:

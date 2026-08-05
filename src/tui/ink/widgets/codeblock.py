@@ -22,8 +22,11 @@ import logging
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
-from ..helpers import _parse_color
 from ..widgets.layout import Row, Column
+# ★ 公共纯辅助收敛（2026-08-05 架构优化）：_color 原本地定义（与
+#   _interactive_common/_display_common 逻辑一致，仅默认值 23 vs 6）——收敛
+#   至 _widget_common（调用处显式传 default=23，行为不变）。
+from ._widget_common import _color
 
 _logger = logging.getLogger(__name__)
 
@@ -40,12 +43,7 @@ _BORDER_CHARS: dict[str, tuple[str, str, str, str, str, str]] = {
 _DEFAULT_BORDER = ("\u250c", "\u2510", "\u2514", "\u2518", "\u2500", "\u2502")
 
 
-def _color(value, default: int = 23) -> int:
-    """解析颜色 shorthand（颜色名/int）为 256 色号；解析失败回退 default。"""
-    if value is None:
-        return default
-    parsed = _parse_color(value)
-    return parsed if parsed is not None else default
+
 
 
 def _repeat(ch: str, n: int) -> str:

@@ -27,6 +27,10 @@ from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
 from ..hooks import use_state, use_input, use_ref
 from ..widgets.layout import Row, Column
+# ★ 公共纯辅助收敛（2026-08-05 架构优化）：_clamp_index 原本地定义（与
+#   _interactive_common/tabs/search_input/tree/listview 逐字重复）——收敛至
+#   _widget_common 单一真源。
+from ._widget_common import _clamp_index
 
 __all__ = ["Menu"]
 
@@ -44,14 +48,7 @@ _MENU_DISABLED = Style(fg=238)
 _MENU_HEADER = Style(fg=45, bold=True)
 
 
-def _clamp_index(idx: int, total: int) -> int:
-    if total <= 0:
-        return 0
-    if idx < 0:
-        return 0
-    if idx >= total:
-        return total - 1
-    return idx
+
 
 
 def _is_selectable(item: dict) -> bool:

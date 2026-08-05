@@ -27,6 +27,9 @@ from src.tui.core.style import Style
 from ..element import TEXT, Element, h
 from ..hooks import use_state, use_input, use_ref
 from ..widgets.layout import Column
+# ★ 公共纯辅助收敛（2026-08-05 架构优化）：_clamp_index 原本地定义——收敛
+#   至 _widget_common 单一真源。
+from ._widget_common import _clamp_index
 
 __all__ = ["Tree"]
 
@@ -95,17 +98,6 @@ def _node_key(node: dict) -> str:
     无需严格唯一。不可变 str 保证可哈希。
     """
     return f"n:{node['label']}"
-
-
-def _clamp_index(idx: int, total: int) -> int:
-    """将光标索引钳制到合法范围 ``[0, total-1]``（可见节点动态变化越界防护）。"""
-    if total <= 0:
-        return 0
-    if idx < 0:
-        return 0
-    if idx >= total:
-        return total - 1
-    return idx
 
 
 def Tree(props: dict) -> Element:

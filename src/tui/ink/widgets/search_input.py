@@ -17,6 +17,9 @@ from src.tui.core.style import Style
 from ..element import TEXT, Element, h
 from ..hooks import use_state, use_input, use_ref
 from ..widgets.layout import Column
+# ★ 公共纯辅助收敛（2026-08-05 架构优化）：_clamp_index 原本地定义——收敛
+#   至 _widget_common 单一真源。
+from ._widget_common import _clamp_index
 
 __all__ = ["SearchInput"]
 
@@ -58,14 +61,7 @@ def _filter_items(items: list[dict], query: str) -> list[dict]:
     return [it for it in items if q in it["searchText"].lower()]
 
 
-def _clamp_index(idx: int, total: int) -> int:
-    if total <= 0:
-        return 0
-    if idx < 0:
-        return 0
-    if idx >= total:
-        return total - 1
-    return idx
+
 
 
 def SearchInput(props: dict) -> Element:

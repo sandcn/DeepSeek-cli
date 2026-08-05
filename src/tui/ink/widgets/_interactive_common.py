@@ -13,27 +13,12 @@ from __future__ import annotations
 
 import logging
 
-from ..helpers import _parse_color
+# ★ 公共纯辅助收敛（2026-08-05 架构优化）：``_clamp_index`` / ``_color`` /
+#   ``_call`` 与多个控件模块重复的实现收敛至 ``_widget_common``（单一真源）；
+#   本模块 re-export 保持 interactive 门面/测试 patch 路径兼容。
+from ._widget_common import _clamp_index, _color, _call
 
 _logger = logging.getLogger(__name__)
-
-
-def _call(fn, *args) -> None:
-    """安全调用可选回调（异常仅记录日志，不阻断输入分发）。"""
-    if fn is None:
-        return
-    try:
-        fn(*args)
-    except Exception:
-        _logger.debug("控件回调异常", exc_info=True)
-
-
-def _color(value, default: int = 6) -> int | None:
-    """解析颜色 shorthand（颜色名/int）为 256 色号；解析失败回退 default。"""
-    if value is None:
-        return default
-    parsed = _parse_color(value)
-    return parsed if parsed is not None else default
 
 
 def _normalize_items(items) -> list[dict]:
@@ -68,25 +53,6 @@ def _visible_window(selected: int, total: int, limit: int | None) -> tuple[int, 
         return 0, total
     offset = max(0, min(selected, total - limit))
     return offset, limit
-
-
-def _clamp_index(idx: int, total: int) -> int:
-    """将内部索引钳制到合法范围 ``[0, total-1]``（items 动态缩小后越界防护，E8）。
-
-    ``total <= 0``（空列表）返回 0；``idx < 0`` 钳到 0；``idx > total-1`` 钳到
-    ``total-1``；正常范围原样返回。
-
-    用途：SelectInput/MultiSelect 的 ``items`` 在挂载后被外部缩小（如异步候选
-    刷新），内部 ``selected``/``cursor_idx`` 可能越界——Enter/space 分支读取
-    ``items[selected_ref.current]`` 时越界被 router 吞掉（事件丢失/回调不触发）。
-    """
-    if total <= 0:
-        return 0
-    if idx < 0:
-        return 0
-    if idx >= total:
-        return total - 1
-    return idx
 
 
 def _hashable(value):

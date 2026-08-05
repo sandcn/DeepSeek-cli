@@ -16,21 +16,14 @@
 from __future__ import annotations
 
 from ..element import BOX, TEXT, Element, h
+# ★ 公共纯辅助收敛（2026-08-05 架构优化）：_children 原本地定义（与
+#   focus/_panel 逐字重复）——收敛至 _widget_common 单一真源。
+from ._widget_common import _children
 
 __all__ = [
     "Row", "Column", "Box", "Text", "Flex", "Spacer",
     "Center", "Stack", "HStack", "VStack", "Grid", "ZStack",
 ]
-
-
-def _children(props: dict):
-    """读取 reconciler 注入的 children（Element 元组；无子级时空元组）。"""
-    children = props.get("children", ())
-    if children is None:
-        return ()
-    if isinstance(children, (list, tuple)):
-        return tuple(children)
-    return (children,)
 
 
 def Row(props: dict) -> Element:

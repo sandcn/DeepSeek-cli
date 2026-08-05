@@ -12,15 +12,9 @@ from __future__ import annotations
 
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
-from ..helpers import _parse_color
-
-
-def _color(value, default: int = 6) -> int | None:
-    """解析颜色 shorthand（颜色名/int）为 256 色号；解析失败回退 default。"""
-    if value is None:
-        return default
-    parsed = _parse_color(value)
-    return parsed if parsed is not None else default
+# ★ 公共纯辅助收敛（2026-08-05 架构优化）：_color 原本地定义（与
+#   _interactive_common 逐字重复）——收敛至 _widget_common 单一真源。
+from ._widget_common import _color
 
 
 def _resolve_style(props: dict, default_fg: int | None = None) -> Style | None:

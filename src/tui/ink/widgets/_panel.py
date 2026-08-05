@@ -9,6 +9,9 @@ from __future__ import annotations
 from src.tui.core.style import Style
 from ..element import TEXT, BOX, Element, h
 from ._display_common import _color
+# ★ 公共纯辅助收敛（2026-08-05 架构优化）：_children 原本地定义（与
+#   focus/layout 逐字重复）——收敛至 _widget_common 单一真源。
+from ._widget_common import _children
 
 #: Panel 边框字符元组（复用 _BORDER_CHARS 同族：顶/底角 + 横/竖线）
 _PANEL_BORDER_CHARS: dict[str, tuple[str, str, str, str, str, str]] = {
@@ -19,16 +22,6 @@ _PANEL_BORDER_CHARS: dict[str, tuple[str, str, str, str, str, str]] = {
     "classic": ("+", "+", "+", "+", "-", "|"),
     "dashed": ("┌", "┐", "└", "┘", "┄", "┆"),
 }
-
-
-def _children(props: dict):
-    """读取 reconciler 注入的 children（Element 元组；无子级时空元组）。"""
-    children = props.get("children", ())
-    if children is None:
-        return ()
-    if isinstance(children, (list, tuple)):
-        return tuple(children)
-    return (children,)
 
 
 def _panel_border_style(props: dict) -> Style:

@@ -16,6 +16,9 @@ from src.tui.core.style import Style
 from ..element import TEXT, Element, h
 from ..hooks import use_state, use_input, use_ref
 from ..widgets.layout import Row
+# ★ 公共纯辅助收敛（2026-08-05 架构优化）：_call 原本地定义——收敛至
+#   _widget_common 单一真源。
+from ._widget_common import _call
 
 __all__ = ["Checkbox"]
 
@@ -25,15 +28,6 @@ _CHECKBOX_CHECKED = Style(fg=41, bold=True)
 
 #: 默认未勾选样式（dim 灰 244）
 _CHECKBOX_UNCHECKED = Style(fg=244)
-
-
-def _call(fn, *args) -> None:
-    if fn is None:
-        return
-    try:
-        fn(*args)
-    except Exception:
-        pass
 
 
 def Checkbox(props: dict) -> Element:
