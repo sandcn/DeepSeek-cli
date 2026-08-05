@@ -902,6 +902,41 @@ class TestEnterResidualLF:
             os.close(w_fd)
             os.close(r_fd)
 
+    def test_router_consumed_enter_sets_residual_lf_flag_regression(
+        self, tmp_path, wait_pipe_readable_fixture,
+    ) -> None:
+        """UserSelectPopup（router）消费 Enter 后置残留 LF 标记，紧随 LF 被丢弃。
+
+        用户需求（/editmsg TUI）：/editmsg 选择确认走 UserSelectPopup 标准
+        协议（use_input 消费 Enter 写 done，不经 _suppress_enter 分支）——
+        CR+LF 的 LF 若残留在 stdin，会在 prefill 注入后被 _enter() 误提交
+        （用户看到「prefill 没效果，要再按回车」）。修复：router 消费 Enter
+        时同样置残留标记，read_stdin_once 紧随 LF 直接丢弃（不触发 _enter）。
+        """
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "test_history")
+            inp.start_io()
+            # 模拟 UserSelectPopup use_input handler：消费 Enter（写 done 后
+            # 返回 True），其余事件放行
+            inp.set_input_hook_router(lambda event: event.kind == "enter")
+            os.write(w_fd, b"\r\n")
+
+            # 第一次 read_stdin_once：CR → router 消费 → 置残留标记（不触发 _enter）
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp._dispatcher._enter_residual_pending is True
+            assert not inp.has_queued_input()
+
+            # 第二次 read_stdin_once：LF → 被丢弃（不触发 _enter）
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp._dispatcher._enter_residual_pending is False
+            assert not inp.has_queued_input()
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
     def test_suppress_false_clears_residual_enter_commits_regression(self, tmp_path) -> None:
         """set_suppress_enter(False) 清残留标记，用户后续 Enter 正常提交。
 

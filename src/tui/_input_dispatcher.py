@@ -514,6 +514,16 @@ class InputDispatcher:
 
         # ── ink useInput 钩子优先分发（经 _router_consume 统一入口） ──
         if self._router_consume(event):
+            # ★ 残留 LF 源头丢弃（2026-08-05，editmsg prefill 竞态修复）：
+            #   UserSelectPopup 等交互组件消费 Enter（写 done）后，CR+LF 中
+            #   的 LF 会残留在 stdin——若后续被 read_stdin_once 解析为第二个
+            #   Enter，会在 prefill 注入后被 _enter() 误提交（用户看到
+            #   「prefill 没效果，要再按回车」）。标记残留 LF 待丢弃：
+            #   read_stdin_once 读取紧随的一个 LF/CR（0x0a/0x0d）时直接丢弃；
+            #   无 LF（单 CR 终端）或用户后续输入普通字符时标记自动清除
+            #   （不误丢）。非 Enter 事件不设置（↑↓/Esc 等无 CR+LF 问题）。
+            if event.kind == "enter":
+                self._enter_residual_pending = True
             return  # 已消费，跳过旧回调路径
 
         if kind == "enter":
