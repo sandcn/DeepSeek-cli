@@ -64,7 +64,7 @@ def App(props) -> object:
         #   修复 model.width 与布局宽度不一致时 subagent/工具卡行被 wrap 拆成
         #   两行（第二行只剩边框字符）的显示错乱。
         h(ChatView, {"model": model, "width": width}),
-        h(_ParseLine, {"model": model}),
+        h(_ParseLine, {"model": model, "width": width}),
     ]
     bottom_area = [
         # ★ React Ink 化（user_select）：用户选择弹窗组件——StatusBar 上方渲染，
@@ -98,6 +98,7 @@ def _ParseLine(props) -> object:
     解析进行中更生动（与 subagent 卡片 spinner 共用语义）。
     """
     model = props["model"]
+    width = props.get("width") or 0
     line = model.parse_line
     if line is None:
         # ★ P2（review）：空状态统一返回空 TEXT（h=0 不占行），与活跃状态
@@ -143,6 +144,12 @@ def _ParseLine(props) -> object:
                 text = stripped[1:]
                 first_text = False
         runs.append(StyledRun(text, st))
+    # ★ 窄屏防溢出：解析进度行截断至终端宽度（不拆 CJK）——修复前多工具
+    #   并行解析行（``  ~ tool1, tool2 ... 123t 12.3s``）在窄终端被自动换行
+    #   拆成多行，破坏「同位置刷新」的进度行语义（视觉跳动/错乱）。
+    if width and width > 0:
+        from src.tui.ink.helpers import truncate_runs
+        runs = truncate_runs(runs, width)
     # ★ 阶段2（标准布局容器重构）：单子 BOX 展开为直接 TEXT（父容器 Column
     #   中 fill 语义与 BOX 内 TEXT 等价，输出与重构前一致）。
     return h(TEXT, {"styled": runs})

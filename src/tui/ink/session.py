@@ -840,28 +840,22 @@ class InkSession:
             return True
         if getattr(model, "parse_line", None) is not None:
             return True
-        # ★ BUG-49（review 方向）：补全弹窗可见时推进呼吸动画——弹窗标题/
-        #   选中高亮/提示文本的呼吸色是时间基（time_glow），但渲染循环空闲时
-        #   跳过（_should_render 无脏返回 False）→ 弹窗打开且无其他动画状态时
-        #   呼吸静止（标题/高亮颜色冻结）。补全弹窗可见时持续 10Hz 渲染推进。
-        completion = getattr(model, "completion", None)
-        if completion is not None and completion.visible and completion.items:
-            return True
-        # ★ BUG-49：反向历史搜索激活时推进（query 呼吸色 221↔232，8s 周期）
-        search = getattr(model, "history_search", None)
-        if search is not None and getattr(search, "active", False):
-            return True
-        # ★ BEAUTY-18（体验动效）：user_select 弹窗可见时推进呼吸——弹窗标题/
-        #   选中高亮背景为时间基呼吸色（time_glow），渲染循环空闲跳过时呼吸
-        #   静止。与补全弹窗（BUG-49）同语义：弹窗激活持续 10Hz 渲染推进。
-        us = getattr(model, "user_select", None)
-        if (
-            us is not None
-            and getattr(us, "visible", False)
-            and not getattr(us, "done", False)
-            and getattr(us, "options", None)
-        ):
-            return True
+        # ★ 补全弹窗（2026-08-05 修复，与 user_select 弹窗同）：不驱动动画
+        #   循环——弹窗已静态化（标题/高亮/说明/提示均为静态色，见
+        #   input_area.py _build_popup_lines），无需 10Hz 渲染推进呼吸。修复前
+        #   补全弹窗激活持续 10Hz 渲染，每帧重写弹窗行（Termux 等终端闪烁）。
+        #   弹窗内容仅随打字（items 变化）/导航（selected 变化）更新，经
+        #   事件驱动渲染。
+        # ★ 反向历史搜索（2026-08-05 修复，与弹窗同）：不驱动动画循环——
+        #   搜索行 query 已静态化（见 input_area.py _build_lines），无需 10Hz
+        #   渲染推进呼吸。修复前搜索激活持续 10Hz 渲染（Termux 等终端闪烁）；
+        #   搜索行内容仅随按键（query/matches 变化）更新，经事件驱动渲染。
+        # ★ user_select 弹窗（2026-08-05 修复）：不驱动动画循环——弹窗已
+        #   静态化（标题/高亮/说明/提示均为静态色，见 user_select.py），
+        #   无需 10Hz 渲染推进呼吸。修复前弹窗激活持续 10Hz 渲染，每帧
+        #   重写弹窗行（呼吸色 time_glow 变化），Termux 等终端每帧刷新/
+        #   闪烁（「每 fps 刷出错乱显示」）。弹窗内容仅随交互（按键导航/
+        #   确认/取消）变化，经 use_state setter → _request_render 重绘。
         return False
 
     def _should_render(self, changed: bool) -> bool:

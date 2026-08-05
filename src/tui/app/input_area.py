@@ -261,9 +261,12 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
 
     lines: list = []
     # 分栏说明模式（user_select）：左侧选项列表、右侧当前选中项说明
-    # 标题行（方向3：标题呼吸色——补全弹窗出现时增加动态感；
-    # 方向8：▍ 装饰条前缀——与错误/通知标记同语义，补全弹窗更醒目）
-    title_color = _glow_color(38, 55)
+    # 标题行（方向8：▍ 装饰条前缀——与错误/通知标记同语义，补全弹窗更醒目）
+    # ★ 静态色（2026-08-05 修复，与 user_select 弹窗同）：补全弹窗不再呼吸
+    #   ——弹窗是交互界面，呼吸色使弹窗行每帧随 time_glow 变化 → 渲染器每帧
+    #   重写弹窗行（Termux 等终端闪烁/错乱）；静态色弹窗内容不变时 diff 零输出
+    #   （仅打字 items 变化 / 导航 selected 变化时重绘）。
+    title_color = 38
     head = Line.of(" \u258d", Style(fg=title_color, bold=True))
     head.append(" ", Style(fg=title_color, bold=True))
     head.append(title, Style(fg=title_color, bold=True))
@@ -282,9 +285,8 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
         head = truncate_line(head, width)
     lines.append(head)
     # 候选项
-    # ★ 方向3（动效）：选中项高亮呼吸——背景色 236→239 脉动（10s 周期），
-    #   高亮项有微弱呼吸感（候选列表导航更生动）。
-    sel_bg = time_glow(236, 239, 10.0)
+    # ★ 静态高亮背景（修复同标题：弹窗不呼吸，避免每帧重绘）
+    sel_bg = 237
     if split:
         # 左栏选项内容宽度（前缀 ▶ + 文本；右栏说明独立换行）
         cell_w = max(
@@ -322,13 +324,11 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
                 line.append(" " * opt_w, _S_DIM)
             line.append("\u2502", _S_SEP)
             # 右栏：当前选中项说明（分栏换行）
-            # ★ BEAUTY-21（体验动效）：说明列呼吸色——浅蓝 110→120 脉动
-            #   （12s 周期，与弹窗标题/提示呼吸协调）。弹窗可见时渲染循环
-            #   持续推进（_needs_animation 覆盖），呼吸平滑。
+            # ★ 静态说明列色（修复同标题：弹窗不呼吸，避免每帧重绘）
             if row < len(desc_lines):
                 line.append(
                     _truncate_width(desc_lines[row], desc_w),
-                    Style(fg=time_glow(110, 120, 12.0)),
+                    Style(fg=110),
                 )
             # ★ 方向8（窄屏防溢出）：分栏行超宽时截断至 width（不拆
             #   CJK）——修复前窄屏下左栏前缀 + 文本 + 分隔线 + 说明撑爆行宽。
@@ -362,13 +362,11 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
             # Claude TUI parity 步骤 3.7：斜杠命令描述灰显（command 且描述非空）
             if types_disp[i] == "command" and i < len(descs) and descs[i]:
                 line.append("  ", _S_DIM)
-                # ★ BEAUTY-21（体验动效）：命令描述呼吸色——浅蓝 110→120 脉动
-                #   （12s 周期，与分栏说明列呼吸一致）。弹窗可见时渲染循环
-                #   持续推进，呼吸平滑；与原 _S_DIM 相比增加细微动态。
+                # ★ 静态描述色（修复同标题：弹窗不呼吸，避免每帧重绘）
                 desc_budget = max(1, width - line.width)
                 line.append(
                     _truncate_width(descs[i], desc_budget),
-                    Style(fg=time_glow(110, 120, 12.0)),
+                    Style(fg=110),
                 )
             # ★ 方向8（窄屏防溢出）：选项行超宽时截断至 width（不拆
             #   CJK）——修复前 `` ▶ /help 显示帮助`` 在窄屏撑爆行宽。
@@ -376,8 +374,8 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
                 from src.tui.ink.helpers import truncate_line
                 line = truncate_line(line, width)
             lines.append(line)
-    # 底部提示（方向3 动效：提示文本呼吸色——补全弹窗出现时更生动）
-    hint_color = _glow_color(110, 16)  # 浅蓝 110 → 126 脉动（_S_TIME 邻域）
+    # 底部提示（★ 静态提示色——修复同标题：弹窗不呼吸，避免每帧重绘）
+    hint_color = 110  # 浅蓝（静态，原呼吸 110→126 的基色）
     hint = Line.of(" ", Style(fg=hint_color))
     hint.append("Tab \u2191\u2193 PgUp/PgDn Esc", Style(fg=hint_color))
     # ★ 方向8（窄屏防溢出）：提示行超宽时截断至 width。
@@ -544,10 +542,9 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
         if search.matches and 0 <= search.index < len(search.matches):
             match = search.matches[search.index]
         sline = Line.of("(reverse-i-search)`", _S_ACCENT)
-        # ★ 方向8（动效）：搜索 query 呼吸色（221→232，8s 周期）——搜索
-        #   激活时 query 微呼吸，视觉提示「匹配进行中」（0.25s 桶，4Hz 刷新）。
-        from src.tui.app._theme import time_glow as _tg
-        sline.append(q, Style(fg=_tg(221, 232, 8.0)))
+        # ★ 静态 query 色（修复同弹窗：搜索行不呼吸，避免每帧重绘——修复前
+        #   query 呼吸色 221↔232 使搜索激活无输入时仍 10Hz 渲染重绘）
+        sline.append(q, Style(fg=221))
         sline.append("`: ", _S_ACCENT)
         # 方向1 步骤4（窄屏防溢出）：match 截断至剩余行宽（不拆 CJK）
         match_budget = max(1, width - sline.width)

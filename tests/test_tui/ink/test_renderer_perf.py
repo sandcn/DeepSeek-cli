@@ -32,8 +32,9 @@ class TestShiftedTailSkipsRewrite:
         # prev=[a,b,c]，new=[a,b,c,d]（delta=1，尾部相同）
         r.render(_frame("a", "b", "c", "d"))
         val = out.getvalue()
-        # 仅写 delta 新行（第 4 行 "d"），不重写平移行 a/b/c
-        assert val == "\rd\x1b[K\n", (
+        # 仅写 delta 新行（第 4 行 "d"），不重写平移行 a/b/c；满宽行 wrap
+        # 修复：\n 前 \r 归位。
+        assert val == "\rd\x1b[K\r\n", (
             f"平移快路径应仅写 delta 新行，实际: {val!r}"
         )
         assert val.count("\x1b[K") == 1
@@ -47,7 +48,7 @@ class TestShiftedTailSkipsRewrite:
         out.truncate()
         r.render(_frame("x", "y", "z", "w"))
         val = out.getvalue()
-        assert val == "\rz\x1b[K\n\rw\x1b[K\n"
+        assert val == "\rz\x1b[K\r\n\rw\x1b[K\r\n"
         assert val.count("\x1b[K") == 2
         assert r.cursor_row == 5
 
@@ -71,8 +72,8 @@ class TestShiftedTailSkipsRewrite:
         # prev=[a,b,c]，new=[a,X,b,c]：i=1 < prev_h=3 → 常规全量重写路径
         r.render(_frame("a", "X", "b", "c"))
         val = out.getvalue()
-        # 重写 X,b,c（3 行）
-        assert val == "\x1b[2A" + "\rX\x1b[K\n" + "\rb\x1b[K\n" + "\rc\x1b[K\n"
+        # 重写 X,b,c（3 行）；满宽行 wrap 修复：\n 前 \r 归位
+        assert val == "\x1b[2A" + "\rX\x1b[K\r\n" + "\rb\x1b[K\r\n" + "\rc\x1b[K\r\n"
         assert r.cursor_row == 5
 
 
@@ -109,8 +110,9 @@ class TestMaxRewriteRowsIncremental:
         assert not val.startswith("\x1b[2J\x1b[H"), (
             f"超限应仍走增量路径（无 clear_screen），实际: {val[:20]!r}"
         )
-        # 增量路径写全部 500 个变化行（每行 \r 前缀）
-        assert val.count("\r") == 500
+        # 增量路径写全部 500 个变化行（每行一个 \x1b[K 行尾清除；满宽行 wrap
+        # 修复后行首/行尾各一 \r，行数按 \x1b[K 计数）
+        assert val.count("\x1b[K") == 500
         # 首行/末行均被写入（末行以 \n 结尾，末尾可能跟光标归位序列）
         assert "L0" in val
         assert "L499" in val
@@ -144,9 +146,10 @@ class TestMaxRewriteRowsIncremental:
         assert not val.startswith(clear_screen()), (
             f"超限应无 clear_screen，实际: {val[:20]!r}"
         )
-        # 全部 500 行被写入（每行 \r 前缀；旧实现仅写末尾 200 行 → 首行 L0 缺失）
-        assert val.count("\r") == 500, (
-            f"增量应写 500 行，实际 {val.count(chr(13))} 行"
+        # 全部 500 行被写入（每行一个 \x1b[K；满宽行 wrap 修复后行首/行尾各一
+        # \r，行数按 \x1b[K 计数；旧实现仅写末尾 200 行 → 首行 L0 缺失）
+        assert val.count("\x1b[K") == 500, (
+            f"增量应写 500 行，实际 {val.count(chr(0x1b))} 行"
         )
         assert "L0" in val, "首行 L0 应被写入（修复前跳写末尾 200 行不写 L0）"
         assert "L499" in val, "末行 L499 应被写入"
@@ -241,7 +244,8 @@ class TestBufferedSingleWrite:
         out.truncate()
         r.render(_frame("a", "X", "b", "c"))
         val = out.getvalue()
-        assert val == "\x1b[2A" + "\rX\x1b[K\n" + "\rb\x1b[K\n" + "\rc\x1b[K\n"
+        # 满宽行 wrap 修复：写行结尾 \r\n（\n 前 \r 归位）
+        assert val == "\x1b[2A" + "\rX\x1b[K\r\n" + "\rb\x1b[K\r\n" + "\rc\x1b[K\r\n"
 
 
 class TestInputRouterCache:
@@ -361,7 +365,7 @@ class TestFastPathGuards:
         # 常规差异路径：从 cursor_row=2 上移到行 i+1=4（cursor_down 2）→ 写 d
         # 无越界滚动序列（\x1b[9999;1H 或 CUD 越界）
         assert "\x1b[9999" not in val, f"不应出现越底滚动序列: {val!r}"
-        assert val.endswith("\rd\x1b[K\n"), f"应写 delta 新行 d: {val!r}"
+        assert val.endswith("\rd\x1b[K\r\n"), f"应写 delta 新行 d: {val!r}"
         assert r.cursor_row == 5, f"渲染后光标应在文档底部下一行，实际 {r.cursor_row}"
 
     def test_first_frame_empty_cursor_row_regression(self):
@@ -378,7 +382,7 @@ class TestFastPathGuards:
         r.render(_frame("a"))  # 第二帧 1 行
         val = out.getvalue()
         # 从 cursor_row=1 到行 i=0：n_move = 1-1 = 0 → 无移动，直接写
-        assert val == "\ra\x1b[K\n", (
+        assert val == "\ra\x1b[K\r\n", (
             f"第二帧应无多余光标移动（仅写 a 行），实际: {val!r}"
         )
         assert r.cursor_row == 2

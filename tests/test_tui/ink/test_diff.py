@@ -233,7 +233,9 @@ class TestInkRenderer:
     def test_first_render_writes_full(self):
         r, out = self._new()
         r.render(_frame("a", "b"))
-        assert out.getvalue() == "\ra\n\rb\n"
+        # 满宽行 wrap 修复：写行结尾统一 \r\n（行内容填满宽度时 \n 前 \r 归位，
+        # 避免 pyte/Termux 等终端在 wrap 边界把 \n 当两次下移）
+        assert out.getvalue() == "\ra\r\n\rb\r\n"
         assert r.cursor_row == 3
 
     def test_identical_render_no_output(self):
@@ -250,8 +252,9 @@ class TestInkRenderer:
         out.seek(0)
         out.truncate()
         r.render(_frame("a", "b", "c"))
-        # 从第 3 行（首差异=2）写起：无光标上移 + \r 归位 + 一行 + 换行
-        assert out.getvalue() == "\rc\x1b[K\n"
+        # 从第 3 行（首差异=2）写起：无光标上移 + \r 归位 + 一行 + \r\n 换行
+        # （满宽行 wrap 修复：\n 前 \r 归位，避免 wrap 边界 \n 两次下移）
+        assert out.getvalue() == "\rc\x1b[K\r\n"
 
     def test_rewrite_from_diff_line(self):
         r, out = self._new()
@@ -259,8 +262,8 @@ class TestInkRenderer:
         out.seek(0)
         out.truncate()
         r.render(_frame("a", "b", "X"))
-        # 首差异=2 → cursor_up(3-2=1) + "\rX\x1b[K\n"
-        assert out.getvalue() == "\x1b[1A" + "\rX\x1b[K\n"
+        # 首差异=2 → cursor_up(3-2=1) + "\rX\x1b[K\r\n"（满宽行 wrap 修复）
+        assert out.getvalue() == "\x1b[1A" + "\rX\x1b[K\r\n"
 
     def test_rewrite_earlier_line(self):
         r, out = self._new()
@@ -270,8 +273,8 @@ class TestInkRenderer:
         r.render(_frame("a", "Y", "c"))
         # 差异区间=[(1,2)]：仅重写第 2 行（Y），不重写未变的第 3 行（c）；
         # 重写后光标移回文档底部（cursor_down 1）。修复前从首差异行重写到
-        # 末尾（冗余重写 c）。
-        assert out.getvalue() == "\x1b[2A" + "\rY\x1b[K\n" + "\x1b[1B"
+        # 末尾（冗余重写 c）。满宽行 wrap 修复：\n 前 \r 归位。
+        assert out.getvalue() == "\x1b[2A" + "\rY\x1b[K\r\n" + "\x1b[1B"
 
     def test_no_up_shift_after_place_cursor(self):
         """回归：place_cursor 将光标移到输入行后，下一帧重写不向上偏移。
@@ -291,7 +294,8 @@ class TestInkRenderer:
         r.render(_frame("a", "b", "c", "d", "E"))
         # 正确：从当前光标行 5 移动到目标行 5（i=4 → i+1=5），无上移
         # 旧 buggy：cursor_up(prev_h - i = 5-4 = 1) → 上移 1 行错位
-        assert out.getvalue() == "\rE\x1b[K\n", (
+        # 满宽行 wrap 修复：\n 前 \r 归位。
+        assert out.getvalue() == "\rE\x1b[K\r\n", (
             f"应无光标上移（直接重写输入行），实际: {out.getvalue()!r}"
         )
 
@@ -348,8 +352,9 @@ class TestInkRenderer:
         out.seek(0)
         out.truncate()
         r.render(_frame("x"))
-        # 增量路径：\rx\x1b[K\n（含行尾清除，与 _write_full 的裸 \rx\n 不同）
-        assert out.getvalue() == "\rx\x1b[K\n"
+        # 增量路径：\rx\x1b[K\r\n（含行尾清除，与 _write_full 的裸 \rx\r\n 不同；
+        # 满宽行 wrap 修复：\n 前 \r 归位）
+        assert out.getvalue() == "\rx\x1b[K\r\n"
 
     def test_reset_full_then_full_rewrite(self):
         """reset(full=True)（resize）后全量写入（无行尾清除，最低开销）。"""
@@ -359,8 +364,8 @@ class TestInkRenderer:
         out.seek(0)
         out.truncate()
         r.render(_frame("x"))
-        # _write_full：裸 \rx\n，无行尾清除
-        assert out.getvalue() == "\rx\n"
+        # _write_full：裸 \rx\r\n，无行尾清除（满宽行 wrap 修复：\n 前 \r 归位）
+        assert out.getvalue() == "\rx\r\n"
 
 
 class TestIncrementalRuns:
@@ -382,7 +387,8 @@ class TestIncrementalRuns:
         r.render(_frame("h2", "c1", "c2", "c3", "status", "in1"))
         val = out.getvalue()
         # 仅重写首行 h2，其余 5 行原样保留（未出现重写序列）；光标移回底部
-        assert val == "\x1b[6A\rh2\x1b[K\n\x1b[5B", val
+        # 满宽行 wrap 修复：\n 前 \r 归位。
+        assert val == "\x1b[6A\rh2\x1b[K\r\n\x1b[5B", val
         assert val.count("\x1b[K") == 1
         assert "c1" not in val and "c3" not in val
         assert r.cursor_row == 7
@@ -412,8 +418,9 @@ class TestIncrementalRuns:
         out.truncate()
         r.render(_frame("h", "c1", "c2", "c3", "status", "input: abc"))
         val = out.getvalue()
-        # 仅末行重写（光标已在输入行 → 无上移/下移）
-        assert val == "\rinput: abc\x1b[K\n", val
+        # 仅末行重写（光标已在输入行 → 无上移/下移）；满宽行 wrap 修复：
+        # \n 前 \r 归位。
+        assert val == "\rinput: abc\x1b[K\r\n", val
         assert val.count("\x1b[K") == 1
         assert "c3" not in val
         assert r.cursor_row == 7

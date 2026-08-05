@@ -98,6 +98,12 @@ def detect_truecolor() -> bool:
 
 # CJK Unified Ideographs 及扩展区范围
 _CJK_RANGES: list[tuple[int, int]] = [
+    # ★ CJK 符号标点区（、。「」〈〉【】等，U+3000-U+303F）——修复前缺失：
+    #   "。"、"、" 等全角标点被误算宽度 1（实际 2），导致行宽测量偏小 →
+    #   内容实际超宽触发终端 wraparound → 渲染错乱（user_select 弹窗按键
+    #   导航复现）。与 ``renderer/_utils/_display.cjk_display_width`` 的
+    #   ``0x2E80-0x9FFF`` 块对齐（双宽度函数一致，注释同源约束）。
+    (0x3000, 0x303F),    # CJK Symbols and Punctuation（全角标点宽度 2）
     (0x4E00, 0x9FFF),    # CJK Unified Ideographs
     (0x3400, 0x4DBF),    # CJK Unified Ideographs Extension A
     (0xF900, 0xFAFF),    # CJK Compatibility Ideographs

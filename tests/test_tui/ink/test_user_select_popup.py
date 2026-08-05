@@ -163,6 +163,74 @@ class TestUserSelectPopupRender:
             # 行宽不超过文档宽（渲染器行级 diff 宽度不变量）
             assert ln.width <= 15, f"超宽行: {ln.plain!r} ({ln.width})"
 
+    def test_narrow_title_keeps_position_indicator(self):
+        """窄终端：标题单行截断，位置指示 (1/3) 不被拆到下一行。
+
+        回归：修复前标题行自动换行，(1/3) 位置指示拆到独立行——窄屏视觉错乱
+        （标题与位置指示分离，误导为另一行选项）。
+        """
+        m = AppModel()
+        m.user_select = UserSelectState(
+            visible=True, seq=1, title="测试：请选择一个选项",
+            options=["A", "B", "C"], selected=0,
+        )
+        r, root = Reconciler(), Reconciler().create_root()
+        frame = _render(r, root, _popup(m, width=25), width=25)
+        lines = _plain(frame)
+        assert "(1/3)" in lines[0]          # 位置指示仍在标题行
+        assert lines[1] != "(1/3)"          # 不再拆到第二行
+        assert frame.lines[0].width <= 25   # 单行不超宽
+
+    def test_narrow_hint_single_line(self):
+        """窄终端：提示行单行截断（不拆行）。
+
+        回归：修复前提示行自动换行拆成两行（窄终端 ``Esc 取消`` 独立一行）。
+        """
+        m = AppModel()
+        m.user_select = UserSelectState(visible=True, seq=1, title="T",
+                                        options=["A", "B"])
+        r, root = Reconciler(), Reconciler().create_root()
+        frame = _render(r, root, _popup(m, width=20), width=20)
+        # 弹窗 = 标题 1 + 2 选项 + 提示 1 = 4 行（提示拆行会变 5 行）
+        assert len(frame.lines) == 4
+        assert frame.lines[-1].width <= 20
+
+    def test_long_desc_rows_capped(self):
+        """超长说明：分栏弹窗行数受上限约束（不超高）。
+
+        回归：修复前分栏说明行数无上限——超长说明弹窗超高，挤压/遮挡状态栏
+        与输入区（UserSelectPopup 未做补全弹窗 _completion_item_rows 超屏防护）。
+        """
+        from unittest.mock import patch
+        long_desc = "这是一段非常长的说明。" * 100  # 1000 字
+        m = AppModel()
+        m.user_select = UserSelectState(
+            visible=True, seq=1, title="超长",
+            options=["A", "B"], option_descriptions=[long_desc, "短"], selected=0,
+        )
+        r, root = Reconciler(), Reconciler().create_root()
+        with patch("src.tui.app.user_select._popup_item_rows", return_value=6):
+            frame = _render(r, root, _popup(m), width=80)
+        # 弹窗 = 标题 1 + n_rows(≤6) + 提示 1 = 8 行
+        assert len(frame.lines) <= 8
+
+    def test_many_options_rows_capped(self):
+        """大量选项：普通模式弹窗行数受上限约束（不超高）。
+
+        回归：修复前普通模式选项行数无上限——100+ 选项弹窗超高。
+        """
+        from unittest.mock import patch
+        m = AppModel()
+        m.user_select = UserSelectState(
+            visible=True, seq=1, title="多选项",
+            options=[f"选项{i}" for i in range(100)], selected=0,
+        )
+        r, root = Reconciler(), Reconciler().create_root()
+        with patch("src.tui.app.user_select._popup_item_rows", return_value=6):
+            frame = _render(r, root, _popup(m), width=80)
+        # 弹窗 = 标题 1 + 6 选项 + 提示 1 = 8 行
+        assert len(frame.lines) == 8
+
 
 class TestUserSelectPopupInteract:
     def test_arrow_navigation(self):

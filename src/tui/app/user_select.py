@@ -37,31 +37,33 @@ from src.tui.ink.hooks import use_state, use_input, use_ref
 __all__ = ["UserSelectPopup"]
 
 #: 弹窗标题色（亮青加粗，对齐 _S_ACCENT_BOLD）
-# ★ BEAUTY-18（体验动效）：生产路径改用标题呼吸色（time_glow 时间基）；
-#   本常量保留为静态兼容回退/测试断言。
 _S_TITLE = Style(fg=45, bold=True)
-#: 高亮行背景色（与补全弹窗 sel_bg 呼吸下限一致）
-# ★ BEAUTY-18：生产路径改用选中高亮呼吸背景（time_glow 时间基）；
-#   本常量保留为静态兼容回退/测试断言。
+#: 高亮行背景色（静态 237——弹窗不呼吸）
 _S_SEL_BG = Style(bg=237)
+#: 说明列 / 提示行静态色（浅蓝 110——弹窗不呼吸）
+_S_DESC = Style(fg=110)
 #: 多选勾选标记（几何符号单宽，wcswidth_simple 宽度 1——安全对齐）
 _CHECKED = "\u25cf "
 _UNCHECKED = "\u25cb "
 
-#: 弹窗标题呼吸色域（亮青 38→93 脉动，12s 周期——与补全弹窗 title_color 对齐）
-_S_TITLE_LO = 38
-_S_TITLE_HI = 93
-_S_TITLE_PERIOD = 12.0
-#: 选中高亮背景呼吸色域（236→239 脉动，10s 周期——与补全弹窗 sel_bg 对齐）
-_S_SEL_BG_LO = 236
-_S_SEL_BG_HI = 239
-_S_SEL_BG_PERIOD = 10.0
 
+def _popup_item_rows() -> int:
+    """弹窗选项/说明行数上限（超屏防护）。
 
-def _glow(lo: int, hi: int, period: float) -> int:
-    """时间基呼吸色号（0.1s 桶缓存，10Hz 渲染平滑推进）。"""
-    from src.tui.app._theme import time_glow
-    return time_glow(lo, hi, period)
+    与补全弹窗 ``_completion_item_rows`` 同源（预留顶部标题 1 + 弹窗标题 1 +
+    弹窗提示行 1 + 状态栏/输入区约 7 行 ≈ 10 行）：选项 + 说明行数限制在
+    ``max(6, h - 10)``。修复前分栏说明行数与普通模式选项数均无上限——长
+    说明 / 大量选项时弹窗超高，挤压甚至遮挡状态栏与输入区。
+
+    Returns:
+        选项（含说明）最大渲染行数。
+    """
+    try:
+        from src.tui._screen import TerminalWidthCache
+        h = TerminalWidthCache.get_default().get_height()
+        return max(6, h - 10)
+    except Exception:
+        return 12
 
 
 def UserSelectPopup(props) -> object:
@@ -202,20 +204,30 @@ def UserSelectPopup(props) -> object:
     rows: list = []
 
     # 标题行（对齐补全弹窗：▍ + 模式图标 + 标题 + (n/total)）
-    # ★ BEAUTY-18（体验动效）：标题呼吸色——亮青 38→93 脉动（12s 周期，与
-    #   补全弹窗 title_color 对齐）。弹窗激活时 session._needs_animation
-    #   推进 10Hz 渲染，呼吸平滑；空闲静态 _S_TITLE（零额外渲染成本）。
+    # ★ 静态色（2026-08-05 修复）：弹窗标题不再呼吸——弹窗是交互界面，
+    #   呼吸色使弹窗行每帧随 time_glow 变化 → 渲染器每帧重写弹窗行（Termux
+    #   等终端每帧闪烁/错乱）；静态色弹窗内容不变时 diff 零输出（只在交互
+    #   按键时重绘）。
     # ★ BEAUTY-29（2026-08-05 布局美化）：标题前置模式图标——单选 ▶ / 多选
     #   ☑（宽 1 列几何符号，与选中行 ▶/● 前缀语义呼应），一眼识别弹窗模式。
-    title_style = Style(fg=_glow(_S_TITLE_LO, _S_TITLE_HI, _S_TITLE_PERIOD), bold=True)
+    title_style = _S_TITLE
     mode_icon = "\u2611" if multi else "\u25b6"
+    # ★ 窄屏防溢出：标题超宽时截断 title 文本（保留模式图标与位置指示
+    #   (cur/total)）——修复前标题行自动换行，(1/3) 位置指示拆到下一行
+    #   （视觉错乱）；textWrap="truncate-end" 兜底极端窄屏（截断后仍超宽）。
+    title_disp = f" \u258d {mode_icon} {title} ({cur + 1}/{total})"
+    if wcswidth_simple(title_disp) > width:
+        prefix = f" \u258d {mode_icon} "
+        suffix = f" ({cur + 1}/{total})"
+        budget = max(1, width - wcswidth_simple(prefix) - wcswidth_simple(suffix))
+        title_disp = prefix + _truncate_width(title, budget) + suffix
     rows.append(h(TEXT, {
-        "children": f" \u258d {mode_icon} {title} ({cur + 1}/{total})",
+        "children": title_disp,
         "style": title_style,
+        "textWrap": "truncate-end",
     }))
-    # ★ BEAUTY-18：选中高亮背景呼吸——236→239 脉动（10s 周期，与补全弹窗
-    #   sel_bg 对齐）。弹窗激活时渲染循环持续推进；空闲静态 _S_SEL_BG。
-    sel_bg_style = Style(bg=_glow(_S_SEL_BG_LO, _S_SEL_BG_HI, _S_SEL_BG_PERIOD))
+    # ★ 静态高亮背景（修复同标题：弹窗不呼吸，避免每帧重绘）
+    sel_bg_style = _S_SEL_BG
 
     if split:
         # ── 分栏说明模式：左栏选项 + │ + 右栏当前选中项说明 ──
@@ -233,7 +245,10 @@ def UserSelectPopup(props) -> object:
         desc_sel = max(0, min(cur, len(descs) - 1)) if descs else 0
         desc_text = descs[desc_sel] if descs else ""
         desc_lines = _wrap_by_width(desc_text or "", desc_w)
-        n_rows = max(total, len(desc_lines))
+        # ★ 超屏防护：选项 + 说明行数限制（与补全弹窗 _completion_item_rows
+        #   同源——超长说明 / 大量选项时弹窗不超终端高度；修复前无上限，
+        #   长说明弹窗超高挤压状态栏/输入区）。
+        n_rows = min(max(total, len(desc_lines)), _popup_item_rows())
         for row_i in range(n_rows):
             if row_i < total:
                 opt = _truncate_width(options[row_i], max(1, opt_w - 3))
@@ -262,18 +277,20 @@ def UserSelectPopup(props) -> object:
             desc_txt = _truncate_width(
                 desc_lines[row_i] if row_i < len(desc_lines) else "", desc_w,
             )
-            # ★ BEAUTY-19（体验动效）：说明列呼吸色——浅蓝 110→120 脉动
-            #   （12s 周期，与提示行呼吸协调）。弹窗激活时渲染循环持续推进。
+            # ★ 静态色（修复同标题：说明列不呼吸，避免每帧重绘）
             rows.append(h(Row, {"height": 1}, [
                 left,
                 h(TEXT, {"children": "\u2502", "style": _S_SEP, "height": 1}),
-                h(TEXT, {"children": desc_txt, "style": Style(fg=_glow(110, 120, 12.0)), "height": 1}),
+                h(TEXT, {"children": desc_txt, "style": _S_DESC, "height": 1}),
             ]))
     else:
         # ── 普通模式：选项列表（单选高亮 / 多选勾选 + 高亮） ──
         opt_w = max(1, width - 4) if width and width > 0 else 40
-        for i, opt in enumerate(options):
-            opt = _truncate_width(opt, opt_w)
+        # ★ 超屏防护：大量选项时限制渲染行数（弹窗不超终端高度；交互仍可
+        #   导航到隐藏项，与补全弹窗行为一致）。
+        n_show = min(total, _popup_item_rows())
+        for i in range(n_show):
+            opt = _truncate_width(options[i], opt_w)
             if multi:
                 mark = _CHECKED if i in checked else _UNCHECKED
                 prefix = f" {mark}"
@@ -288,13 +305,18 @@ def UserSelectPopup(props) -> object:
 
     # 提示行
     # 2026-08-05（增加操作）：提示加入 vim 风格 j/k/g/G 导航（与 ↑↓ 等价）
-    # ★ BEAUTY-19（体验动效）：提示文本呼吸色——浅蓝 110→126 脉动（12s 周期，
-    #   与补全弹窗 hint_color 对齐）。弹窗激活时渲染循环持续推进；空闲静态。
+    # ★ 静态色（修复同标题：提示行不呼吸，避免每帧重绘）
     if multi:
         hint = " \u2423 切换选中 · Enter 确认 · Esc 取消"
     else:
         hint = " \u2191\u2193/jk 选择 · g/G 首末 · Enter 确认 · Esc 取消"
-    hint_style = Style(fg=_glow(110, 126, 12.0))
-    rows.append(h(TEXT, {"children": hint, "style": hint_style}))
+    hint_style = _S_DESC
+    # ★ 窄屏防溢出：提示行单行截断（textWrap="truncate-end"，超宽省略号）——
+    #   修复前提示行自动换行拆成两行（窄终端 `Esc 取消` 独立一行视觉错乱）。
+    rows.append(h(TEXT, {
+        "children": hint,
+        "style": hint_style,
+        "textWrap": "truncate-end",
+    }))
 
     return h(Column, None, rows)

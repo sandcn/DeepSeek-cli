@@ -293,6 +293,9 @@ class InkRenderer:
                 buf.write("\r")
                 buf.write(frame.render_line(line_idx))
                 buf.write(_CLEAR_EOL)
+                # ★ 满宽行 wrap 修复（同 _diff_runs 写行循环）：行内容填满宽度时
+                #   \r 归位避免 \n 触发 wraparound 额外下移。
+                buf.write("\r")
                 buf.write("\n")
                 current_row = self._advance_row(current_row)
             # 物理缓冲增长 = 从 prev 文档底部写到屏幕底部后每次 \n 触发的滚动次数
@@ -448,6 +451,12 @@ class InkRenderer:
                     buf.write("\r")
                     buf.write(frame.render_line(idx))
                     buf.write(_CLEAR_EOL)
+                    # ★ 满宽行 wrap 修复（2026-08-05）：行内容恰好填满终端宽度时，
+                    #   光标停在 wrap 边界（x==width），直接 ``\n`` 在 pyte/Termux
+                    #   等终端会先触发 wraparound 再 LF → 光标额外下移 1 行 →
+                    #   后续光标定位逐次偏移，弹窗按键导航内容错乱。写行前 ``\r``
+                    #   归位（清除 wrap 待触发态），``\n`` 只下移 1 行。
+                    buf.write("\r")
                     buf.write("\n")
                     current_row = self._advance_row(current_row)
         else:
@@ -468,6 +477,12 @@ class InkRenderer:
                     buf.write("\r")
                     buf.write(frame.render_line(idx))
                     buf.write(_CLEAR_EOL)
+                    # ★ 满宽行 wrap 修复（2026-08-05）：行内容恰好填满终端宽度时，
+                    #   光标停在 wrap 边界（x==width），直接 ``\n`` 在 pyte/Termux
+                    #   等终端会先触发 wraparound 再 LF → 光标额外下移 1 行 →
+                    #   后续光标定位逐次偏移，弹窗按键导航内容错乱。写行前 ``\r``
+                    #   归位（清除 wrap 待触发态），``\n`` 只下移 1 行。
+                    buf.write("\r")
                     buf.write("\n")
                     current_row = self._advance_row(current_row)
             # 位移区（锚点起连续重写到新帧末尾）
@@ -482,6 +497,12 @@ class InkRenderer:
                     buf.write("\r")
                     buf.write(frame.render_line(idx))
                     buf.write(_CLEAR_EOL)
+                    # ★ 满宽行 wrap 修复（2026-08-05）：行内容恰好填满终端宽度时，
+                    #   光标停在 wrap 边界（x==width），直接 ``\n`` 在 pyte/Termux
+                    #   等终端会先触发 wraparound 再 LF → 光标额外下移 1 行 →
+                    #   后续光标定位逐次偏移，弹窗按键导航内容错乱。写行前 ``\r``
+                    #   归位（清除 wrap 待触发态），``\n`` 只下移 1 行。
+                    buf.write("\r")
                     buf.write("\n")
                     current_row = self._advance_row(current_row)
             # 缩短：清除残留行（prev 帧 rows new_h+1 .. prev_h）
@@ -651,6 +672,9 @@ class InkRenderer:
                 buf.write("\r")
                 buf.write(frame.render_line(doc_idx))
                 buf.write(_CLEAR_EOL)
+                # ★ 满宽行 wrap 修复（同 _diff_runs 写行循环）：行内容填满宽度时
+                #   \r 归位避免 \n 触发 wraparound 额外下移。
+                buf.write("\r")
                 buf.write("\n")
                 current_row = self._advance_row(current_row)
             # 末尾空行：物理行 new_h（= buf_h1-1）由最后一个 doc 行的 \n 创建
@@ -931,6 +955,9 @@ class InkRenderer:
         for line in frame.lines:
             buf.write("\r")
             buf.write(line.render())
+            # ★ 满宽行 wrap 修复（同 _diff_runs 写行循环）：行内容填满宽度时
+            #   \r 归位避免 \n 触发 wraparound 额外下移。
+            buf.write("\r")
             buf.write("\n")
         # 物理缓冲行数 = 文档行 + 末尾空白行（每行以 \n 结尾）
         self._buf_h = frame.height + 1

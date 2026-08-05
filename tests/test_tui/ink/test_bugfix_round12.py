@@ -727,7 +727,14 @@ def test_format_speed_non_finite():
 
 
 def test_needs_animation_completion():
-    """补全弹窗可见时 _needs_animation 返回 True（呼吸动画推进）。"""
+    """补全弹窗不驱动动画循环（弹窗静态化，不每帧重绘）。
+
+    2026-08-05 修复（与 user_select 弹窗同）：补全弹窗已静态化（标题/高亮/
+    说明/提示均为静态色，见 input_area.py _build_popup_lines）——无需 10Hz
+    渲染推进呼吸。修复前补全弹窗激活持续 10Hz 渲染，每帧重写弹窗行（Termux
+    等终端闪烁）。弹窗内容仅随打字（items 变化）/导航（selected 变化）更新，
+    经事件驱动渲染。
+    """
     import src.tui.ink.session as sess
     s = sess.InkSession.__new__(sess.InkSession)
     model = type("M", (), {})()
@@ -737,11 +744,16 @@ def test_needs_animation_completion():
     model.history_search = None
     model.completion = type("C", (), {"visible": True, "items": [1]})()
     s._model = model
-    assert sess.InkSession._needs_animation(s) is True
+    assert sess.InkSession._needs_animation(s) is False
 
 
 def test_needs_animation_search():
-    """反向历史搜索激活时 _needs_animation 返回 True。"""
+    """反向历史搜索不驱动动画循环（搜索行 query 已静态化）。
+
+    2026-08-05 修复（与弹窗同）：搜索行 query 呼吸色改静态（见 input_area.py
+    _build_lines）——搜索激活无输入时不再 10Hz 渲染重绘（Termux 等终端闪烁）；
+    搜索行内容仅随按键（query/matches 变化）更新，经事件驱动渲染。
+    """
     import src.tui.ink.session as sess
     s = sess.InkSession.__new__(sess.InkSession)
     model = type("M", (), {})()
@@ -751,7 +763,7 @@ def test_needs_animation_search():
     model.completion = type("C", (), {"visible": False, "items": []})()
     model.history_search = type("H", (), {"active": True})()
     s._model = model
-    assert sess.InkSession._needs_animation(s) is True
+    assert sess.InkSession._needs_animation(s) is False
 
 
 def test_needs_animation_idle_false():
@@ -769,12 +781,13 @@ def test_needs_animation_idle_false():
 
 
 def test_needs_animation_user_select():
-    """user_select 弹窗可见时 _needs_animation 返回 True（呼吸推进）。
+    """user_select 弹窗不驱动动画循环（弹窗静态化，不每帧重绘）。
 
-    BEAUTY-18（2026-08-05）：user_select 弹窗标题/选中高亮/提示/说明列
-    均为时间基呼吸色（time_glow），渲染循环空闲跳过时呼吸静止——弹窗激活
-    须持续 10Hz 渲染推进。与补全弹窗（test_needs_animation_completion）
-    同语义。
+    2026-08-05 修复：弹窗已静态化（标题/高亮/说明/提示均为静态色，见
+    user_select.py）——无需 10Hz 渲染推进呼吸。修复前弹窗激活持续渲染，
+    每帧重写弹窗行（呼吸色 time_glow 变化），Termux 等终端每帧刷新/
+    闪烁（「每 fps 刷出错乱显示」）。弹窗内容仅随交互变化，经 use_state
+    setter → _request_render 重绘。
     """
     import src.tui.ink.session as sess
     s = sess.InkSession.__new__(sess.InkSession)
@@ -788,7 +801,7 @@ def test_needs_animation_user_select():
         "visible": True, "done": False, "options": ["a", "b"],
     })()
     s._model = model
-    assert sess.InkSession._needs_animation(s) is True
+    assert sess.InkSession._needs_animation(s) is False
 
 
 def test_needs_animation_user_select_done_false():
