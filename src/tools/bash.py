@@ -253,6 +253,16 @@ def _kill_process_tree(pid: int) -> None:
                 pass  # 进程已死或无权限
 
 
+def kill_process_tree(pid: int) -> None:
+    """杀死进程及其所有后代（公开 API，供 bash_task 工具按 task_id 操作）。
+
+    策略与 _kill_process_tree 相同（两阶段）：
+      1. killpg：先杀死进程组（shell + 前台子进程），快路径覆盖
+      2. /proc 递归：剩余后代（后台作业、管道独立 PGID 进程）逐个补杀
+    """
+    _kill_process_tree(pid)
+
+
 @tool_metadata(
     parallel_safe=False,
     requires_network=False,
@@ -594,11 +604,22 @@ class BashFunc(Func):
     # ── PIPE / PTY 执行 ────────────────────────────────
 
     async def _run_pipe(self, show_command=False, show_output=False,
-                        publish_line_fn=None):
+                        publish_line_fn=None, interactive=False,
+                        interactive_ready_fn=None):
         """使用 PIPE 模式执行命令（fallback，PTY 不可用时使用）。
 
         子进程 stdout/stderr 连接到 PIPE，存在全缓冲问题，
         输出不会逐行实时刷新。仅在 PTY 不可用时使用。
+
+        Args:
+            show_command: 是否打印命令行到终端
+            show_output: 是否实时打印输出到终端
+            publish_line_fn: 可选的行回调
+            interactive: 是否启用交互式输入。True 时子进程 stdin 使用
+                         PIPE（可通过 process.stdin 写入），False 时 DEVNULL。
+            interactive_ready_fn: 可选的回调，子进程创建后调用
+                          interactive_ready_fn(process, "pipe", stdin_writer=process.stdin)
+                          供后台任务记录 stdin 写端（bash_task 工具写入输入用）。
         """
         if show_command:
             cwd_info = f" {DIM}(在 {self.cwd}){RESET}" if self.cwd else ""
@@ -607,7 +628,7 @@ class BashFunc(Func):
         process = await asyncio.create_subprocess_shell(
             self.command,
             cwd=self.cwd,
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE if interactive else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             shell=True,
@@ -615,6 +636,13 @@ class BashFunc(Func):
             preexec_fn=lambda: os.setpgid(0, 0),
             env=self._get_subprocess_env(),
         )
+
+        # ★ interactive_ready_fn 回调：提供 stdin 写端供 bash_task 工具写入。
+        if interactive_ready_fn is not None:
+            try:
+                interactive_ready_fn(process, "pipe", stdin_writer=process.stdin)
+            except Exception:
+                logger.debug("interactive_ready_fn 回调异常")
 
         stdout_lines = []
         stderr_lines = []
@@ -663,7 +691,8 @@ class BashFunc(Func):
         return output.strip() or "(无输出)"
 
     async def _run_pty(self, show_command=False, show_output=False,
-                       publish_line_fn=None, pty_ready_fn=None):
+                       publish_line_fn=None, pty_ready_fn=None,
+                       interactive=False, interactive_ready_fn=None):
         """使用 PTY（伪终端）执行命令，强制子进程行缓冲输出。
 
         PTY 让子进程的 stdout 看起来像终端，C 运行时会使用行缓冲
@@ -678,6 +707,12 @@ class BashFunc(Func):
             pty_ready_fn: 可选的回调，PTY 创建后调用
                           pty_ready_fn(master_fd)，用于外部获取 PTY master fd
                           以在终端 resize 时同步更新 PTY winsize。
+            interactive: 是否启用交互式输入。True 时子进程 stdin 连接到
+                          PTY slave（从 master 端写入的数据进入子进程 stdin），
+                          False 时 stdin 为 DEVNULL（非交互命令）。
+            interactive_ready_fn: 可选的回调，子进程创建后调用
+                          interactive_ready_fn(process, "pty", master_fd=master_fd)
+                          供后台任务记录进程句柄（bash_task 工具写入输入用）。
 
         Returns:
             命令完整输出字符串
@@ -713,7 +748,7 @@ class BashFunc(Func):
             process = await asyncio.create_subprocess_exec(
                 _shell, '-c', self.command,
                 cwd=self.cwd,
-                stdin=asyncio.subprocess.DEVNULL,
+                stdin=slave_fd if interactive else asyncio.subprocess.DEVNULL,
                 stdout=slave_fd,
                 stderr=slave_fd,
                 env=env,
@@ -728,6 +763,15 @@ class BashFunc(Func):
         # 关闭父进程中的 slave 端，确保子进程退出后
         # master 端能收到 EOF
         os.close(slave_fd)
+
+        # ★ interactive_ready_fn 回调：通知外层子进程已创建，提供交互句柄。
+        #   在 master 包装为 asyncio 读管道前调用，保证 bash_task 工具
+        #   能尽早向 PTY master 写入输入。
+        if interactive_ready_fn is not None:
+            try:
+                interactive_ready_fn(process, "pty", master_fd=master_fd)
+            except Exception:
+                logger.debug("interactive_ready_fn 回调异常")
 
         # 将 master FD 包装为 asyncio StreamReader
         # ★ 使用 _PtyEioAsEofProtocol：PTY 子进程退出关闭 slave 端后 master
@@ -819,6 +863,53 @@ class BashFunc(Func):
             logger.exception("异步命令执行异常: %s", self.command[:200])
             return f"(执行出错: {e})"
 
+    async def _run_interactive_async(self, on_ready=None):
+        """交互模式异步执行：启用 stdin（PTY slave / PIPE），供后台任务操作。
+
+        与 _run_async 的区别：
+          - interactive=True：子进程 stdin 连接 PTY slave（或 PIPE），
+            外部可通过任务记录中的 master_fd / stdin_writer 写入输入；
+          - on_ready 回调在子进程创建后立即调用，把 process/pid/master_fd
+            写入任务记录，供 bash_task 工具按 task_id 操作。
+
+        Args:
+            on_ready: 可选回调 on_ready(process, mode, master_fd=None, stdin_writer=None)
+
+        Returns:
+            命令完整输出字符串（已截断）
+        """
+        ret = self._check_cwd_or_return(self.cwd)
+        if ret:
+            return ret
+
+        try:
+            if _HAS_PTY:
+                result = await asyncio.wait_for(
+                    self._run_pty(
+                        show_command=False, show_output=False,
+                        publish_line_fn=None,
+                        interactive=True, interactive_ready_fn=on_ready,
+                    ),
+                    timeout=self.timeout,
+                )
+            else:
+                result = await asyncio.wait_for(
+                    self._run_pipe(
+                        show_command=False, show_output=False,
+                        publish_line_fn=None,
+                        interactive=True, interactive_ready_fn=on_ready,
+                    ),
+                    timeout=self.timeout,
+                )
+            return self._truncate_output(result)
+        except asyncio.TimeoutError:
+            return "(命令执行超时，已强制终止)"
+        except asyncio.CancelledError:
+            return "(命令已被取消)"
+        except Exception as e:
+            logger.exception("交互式命令执行异常: %s", self.command[:200])
+            return f"(执行出错: {e})"
+
     # ── 后台执行模式 ────────────────────────────────────────
     # background=True 时：命令在 asyncio 后台任务中运行，工具立即返回
     # {"task_id": ..., "status": "running"} JSON；任务记录注册到当前
@@ -859,6 +950,9 @@ class BashFunc(Func):
         task = asyncio.ensure_future(self._run_background_task(bg, task_id))
 
         # ── tasklist 放入对应 agent 的成员 _background_tasks ──
+        # ★ 交互控制字段（bash_task 工具按 task_id 操作后台任务）：
+        #   process/pid/mode/master_fd/stdin_writer 由 _run_background_task
+        #   的子进程创建回调（_on_ready）填充；io_lock 串行化 stdin/keys 写入。
         agent._register_background_task(task_id, {
             "task": task,
             "command": self.command,
@@ -867,6 +961,13 @@ class BashFunc(Func):
             "done": False,
             "result": "",
             "status": "running",
+            # ── 交互控制字段 ──
+            "process": None,        # asyncio.subprocess.Process（创建后填充）
+            "pid": None,            # 子进程 PID（kill 进程树用）
+            "mode": None,           # "pty" / "pipe"（写入方式）
+            "master_fd": None,      # PTY master fd（mode="pty" 时，os.write 写入）
+            "stdin_writer": None,   # PIPE stdin StreamWriter（mode="pipe" 时）
+            "io_lock": asyncio.Lock(),  # stdin/keys 写入串行化
         })
 
         await print_to_terminal(
@@ -882,19 +983,37 @@ class BashFunc(Func):
     async def _run_background_task(self, bg: "BashFunc", task_id: str) -> None:
         """后台任务执行体：运行命令并把结果写入 agent 的后台任务记录。
 
+        ★ 交互模式：后台任务启用 stdin（PTY slave / PIPE），子进程创建后
+        通过 on_ready 回调把 process/pid/master_fd 写入任务记录，供
+        bash_task 工具按 task_id 发送输入 / 杀死进程树 / 等待完成。
+
         Args:
             bg: 实际执行命令的 BashFunc 实例（timeout 已按后台语义调整）
             task_id: 后台任务 ID
         """
+        agent = getattr(self, 'agent', None)
+
+        def _on_ready(process, mode, master_fd=None, stdin_writer=None):
+            """子进程创建回调：把进程句柄写入任务记录（bash_task 工具使用）。"""
+            if agent is None or not hasattr(agent, '_background_tasks'):
+                return
+            rec = agent._background_tasks.get(task_id)
+            if rec is None:
+                return
+            rec["process"] = process
+            rec["pid"] = process.pid
+            rec["mode"] = mode
+            rec["master_fd"] = master_fd
+            rec["stdin_writer"] = stdin_writer
+
         try:
-            result = await bg._run_async(show_command=False, show_output=False)
+            result = await bg._run_interactive_async(_on_ready)
         except asyncio.CancelledError:
             result = "(后台命令已被取消)"
         except Exception as e:
             logger.exception("后台命令执行异常: %s", self.command[:200])
             result = f"(后台命令执行出错: {e})"
 
-        agent = getattr(self, 'agent', None)
         if agent is not None and hasattr(agent, '_complete_background_task'):
             try:
                 agent._complete_background_task(task_id, result)

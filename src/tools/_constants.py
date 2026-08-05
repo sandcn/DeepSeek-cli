@@ -175,6 +175,7 @@ TOOL_DISPLAY_NAME: dict[str, str] = {
     "search": "Grep",
     "bash": "Bash",
     "execute_command": "Bash",
+    "bash_task": "BashTask",
     "cp": "CP",
     "mv": "MV",
     "rm": "RM",

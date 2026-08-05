@@ -175,10 +175,38 @@ class BaseAgent:
         self._publish_background_task_event()
 
     def _pending_background_tasks(self) -> list[dict]:
-        """返回所有未完成的后台任务记录列表。"""
+        """返回所有未完成的后台任务记录列表。
+
+        ★ 被 bash_task 工具管理的任务（managed_by_tool=True）不在此列：
+        其生命周期由大模型通过 bash_task 工具主动控制（wait/kill/stdin/keys），
+        不需要对话轮次自动等待其完成（交互式任务可能长期运行）。
+        """
         if not hasattr(self, "_background_tasks"):
             return []
-        return [r for r in self._background_tasks.values() if not r.get("done")]
+        return [
+            r for r in self._background_tasks.values()
+            if not r.get("done") and not r.get("managed_by_tool")
+        ]
+
+    def _get_background_task(self, task_id: str) -> dict | None:
+        """按 task_id 获取后台任务记录（bash_task 工具使用）。"""
+        if not hasattr(self, "_background_tasks"):
+            return None
+        return self._background_tasks.get(task_id)
+
+    def _remove_background_task(self, task_id: str) -> dict | None:
+        """移除并返回指定后台任务记录（bash_task 工具使用）。
+
+        任务被 bash_task 工具主动消费（wait 拿到输出 / kill 终止）时，
+        从 tasklist 移除，避免 _process_background_tasks 再次把结果
+        作为用户消息重复插入对话。
+        """
+        if not hasattr(self, "_background_tasks"):
+            return None
+        rec = self._background_tasks.pop(task_id, None)
+        if rec is not None:
+            self._publish_background_task_event()
+        return rec
 
     def _count_running_background_tasks(self) -> int:
         """返回当前运行中（未完成）的后台 bash 任务数量。"""
@@ -210,6 +238,10 @@ class BaseAgent:
 
         每条消息格式：{"task_id": "...", "command": "...", "status": "...", "output": "..."}
         满足需求：插入的用户消息为 JSON 格式，含 taskid 和命令输出。
+
+        ★ 被 bash_task 工具管理的任务（managed_by_tool=True）只清理、不生成消息：
+        其结果已由大模型通过 bash_task wait 主动获取（或由 stdin/keys 交互管理），
+        不再重复插入用户消息。
         """
         if not hasattr(self, "_background_tasks"):
             return []
@@ -217,13 +249,14 @@ class BaseAgent:
         done_ids: list[str] = []
         for task_id, record in self._background_tasks.items():
             if record.get("done"):
-                payload = {
-                    "task_id": task_id,
-                    "command": record.get("command", ""),
-                    "status": record.get("status", "completed"),
-                    "output": record.get("result", ""),
-                }
-                messages.append(json.dumps(payload, ensure_ascii=False))
+                if not record.get("managed_by_tool"):
+                    payload = {
+                        "task_id": task_id,
+                        "command": record.get("command", ""),
+                        "status": record.get("status", "completed"),
+                        "output": record.get("result", ""),
+                    }
+                    messages.append(json.dumps(payload, ensure_ascii=False))
                 done_ids.append(task_id)
         for task_id in done_ids:
             self._background_tasks.pop(task_id, None)

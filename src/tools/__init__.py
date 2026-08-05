@@ -5,6 +5,7 @@
 
 from .base import Func
 from .bash import BashFunc as Bash
+from .bash_task import BashTaskFunc as BashTask
 from .read_file import ReadFileFunc as ReadFile
 from .rm import RmFunc as Rm
 from .cp import CpFunc as Cp
@@ -22,6 +23,6 @@ from .registry import get_tools, register_tool
 
 __all__ = [
     'Func',
-    'Bash', 'ReadFile', 'Rm', 'WriteFile', 'UpdateFile', 'UserSelect', 'Search', 'Find', 'Ls', 'Mv', 'Cp', 'Mk', 'WebSearch', 'DispatchAgent',
+    'Bash', 'BashTask', 'ReadFile', 'Rm', 'WriteFile', 'UpdateFile', 'UserSelect', 'Search', 'Find', 'Ls', 'Mv', 'Cp', 'Mk', 'WebSearch', 'DispatchAgent',
     'get_tools', 'register_tool'
 ]
