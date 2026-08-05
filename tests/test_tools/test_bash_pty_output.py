@@ -64,7 +64,6 @@ class TestPtyMultiLineOutput:
         """慢速逐行输出（每行在中断轮询间隔内完成）行为不变。"""
         result = await BashFunc(
             command="for i in 1 2 3; do echo line$i; sleep 0.1; done",
-            timeout=30,
         ).execute()
         assert result == "line1\nline2\nline3"
 

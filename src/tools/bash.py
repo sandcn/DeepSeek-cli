@@ -275,7 +275,9 @@ def kill_process_tree(pid: int) -> None:
 )
 class BashFunc(Func):
     name = "bash"
-    _DEFAULT_TIMEOUT: int = 300
+    # 前台命令超过该秒数未完成 → 自动转后台执行（不终止进程），
+    # 返回 {"task_id": ...} JSON，可用 bash_task 工具继续管理。
+    _AUTO_BG_TIMEOUT: int = 60
 
     @classmethod
     def to_tool_schema(cls):
@@ -286,19 +288,19 @@ class BashFunc(Func):
                 "description": (
                     "执行shell命令。用途：编译构建、git操作、包管理、进程管理、系统信息查询。"
                     "禁止替代专用工具——搜索代码用search，查找文件用find，文件读写用read_file/write_file/update_file。"
-                    f"命令默认有{cls._DEFAULT_TIMEOUT}秒超时限制，超时后强制终止并返回超时错误，"
-                    "可通过 timeout 参数自定义超时秒数。"
+                    f"前台执行（background 缺省/False）超过 {cls._AUTO_BG_TIMEOUT} 秒未完成时"
+                    "自动转后台：命令不终止，立即返回 {\"task_id\": \"bg-xxx\", \"status\": \"running\", \"command\": \"...\"} JSON，"
+                    "可用 bash_task 工具按 task_id 继续管理（wait/kill/stdin/keys）。"
                     "返回stdout+stderr合并输出。"
                     "\n\n"
                     "参数说明："
                     "\n- command（必填）：要执行的 shell 命令，支持管道、重定向、环境变量、&& 串联等完整 shell 语法"
                     "\n- cwd（可选）：指定命令的工作目录，省略时使用进程当前工作目录"
-                    f"\n- timeout（可选）：命令超时秒数（整数）。默认 {cls._DEFAULT_TIMEOUT} 秒，"
-                    "超时后强制终止整个进程树并返回超时错误；传 0 表示不设超时限制（慎用）"
                     "\n- background（可选）：是否后台执行（布尔，默认 false）。true 时命令在后台异步运行，"
                     "立即返回 {\"task_id\": \"...\", \"status\": \"running\", \"command\": \"...\"} JSON，"
                     "不阻塞当前工具调用；后台任务完成后系统会自动将结果（JSON 含 task_id 和命令输出）"
-                    "作为用户消息插入对话，让大模型继续处理。适用于编译、打包、长时下载等耗时命令"
+                    "作为用户消息插入对话，让大模型继续处理。适用于编译、打包、长时下载等耗时命令。"
+                    "false（默认）时前台执行：超过 1 分钟自动转后台，行为同上（返回 task_id JSON）"
                     "\n\n"
                     "参数关联："
                     "\n- cwd 影响命令中所有相对路径的解析基准（如 ./config、../scripts 等）"
@@ -324,10 +326,13 @@ class BashFunc(Func):
                     "\n- 工作目录(cwd)不存在时返回明确错误，不会在错误目录下执行"
                     "\n- 禁止运行交互式命令（vim/top/less等），会导致进程挂起"
                     "\n- 输出限制：超过1000行后截断，仅保留最后1000行（最新内容）"
+                    f"\n- 前台执行超过 {cls._AUTO_BG_TIMEOUT} 秒自动转后台：命令不终止，"
+                    "立即返回 {\"task_id\": \"bg-xxx\", \"status\": \"running\", \"command\": \"...\"} JSON，"
+                    "可用 bash_task 工具继续管理（wait/kill/stdin/keys）"
                     "\n\n"
                     "【Android (Termux) 兼容】"
                     "\n- 不要在命令里使用 `timeout` 系统命令（行为差异可能导致孤儿进程），"
-                    "需要限制执行时间时直接用 bash 工具的 timeout 参数"
+                    "长时命令会自动转后台，无需手动设置超时"
                     "\n\n"
                     "【Git 操作限制】"
                     "\n- 禁止 git push -f / git reset --hard"
@@ -340,7 +345,7 @@ class BashFunc(Func):
                     "\n- 禁止执行系统破坏操作：rm -rf、mkfs、dd、chmod 777、sudo、chown"
                     "\n- 不可以从根目录find / 东西"
                     "\n- 有大量输入的时候多用 cmd | grep * 或 cmd | tail 100 等"
-                    "\n- 不会停的命令 用 bash 工具的 timeout 参数（而不是系统 timeout 命令）"
+                    "\n- 不会停的命令：前台执行超过 1 分钟会自动转后台（返回 task_id），无需手动设置超时"
                     "\n- 此红线约束直接 shell 执行和通过脚本的间接执行路径"
                     "\n\n"
                 ),
@@ -375,15 +380,6 @@ class BashFunc(Func):
                                 "\n- 不会在错误目录下执行命令，也不会退回到默认目录"
                             )
                         },
-                        "timeout": {
-                            "type": "integer",
-                            "description": (
-                                "命令执行超时秒数（可选）。"
-                                f"\n- 省略时使用默认 {cls._DEFAULT_TIMEOUT} 秒"
-                                "\n- 超时后命令及其子进程树被强制终止，返回 '(命令执行超时，已强制终止)'"
-                                "\n- 传 0 表示不设超时限制（慎用，可能导致命令永久挂起）"
-                            )
-                        },
                         "background": {
                             "type": "boolean",
                             "description": (
@@ -392,9 +388,10 @@ class BashFunc(Func):
                                 "'{\"task_id\": \"bg-xxx\", \"status\": \"running\", \"command\": \"...\"}' JSON，"
                                 "不阻塞当前工具调用；后台任务完成后系统自动把结果（JSON 含 task_id 和命令输出）"
                                 "作为用户消息插入对话，让大模型继续处理。"
-                                "\n- 后台任务默认不设超时（无限运行），适合编译/打包/长时下载等耗时命令；"
-                                "显式传 timeout 时仍会遵守超时。"
-                                "\n- false（默认）：同步执行并等待命令完成。"
+                                "\n- 后台任务无限运行（适合编译/打包/长时下载等耗时命令）。"
+                                "\n- false（默认）：前台执行并等待命令完成；"
+                                "超过 1 分钟自动转后台（命令不终止，返回 task_id JSON，"
+                                "可用 bash_task 工具继续管理）。"
                             )
                         }
                     },
@@ -423,27 +420,13 @@ class BashFunc(Func):
         """检查 PTY 是否可用（用于子进程实时行缓冲输出）。"""
         return _HAS_PTY
 
-    def __init__(self, command, cwd=None, timeout=None, background=False):
+    def __init__(self, command, cwd=None, background=False):
         super().__init__()
         self.command = command
         self.cwd = cwd
         self.background = bool(background)
-        # timeout 参数语义（seconds）：
-        #   省略/None → 默认 _DEFAULT_TIMEOUT（300s）
-        #   <=0       → 不设超时限制（asyncio.wait_for 无限等待，慎用）
-        #   >0        → 自定义超时秒数
-        # _timeout_explicit 记录是否显式传入 timeout：后台模式下
-        #   未显式传 timeout → 无限运行（默认 300s 超时会误杀长时任务）
-        #   显式传 timeout  → 后台任务仍遵守该超时
-        self._timeout_explicit = timeout is not None
-        if timeout is None:
-            self.timeout = self._DEFAULT_TIMEOUT
-        else:
-            try:
-                timeout = int(timeout)
-            except (TypeError, ValueError):
-                timeout = self._DEFAULT_TIMEOUT
-            self.timeout = None if timeout <= 0 else timeout
+        # 无 timeout 参数：前台执行超过 _AUTO_BG_TIMEOUT 秒自动转后台
+        # （不终止进程，返回 task_id JSON）；后台任务无限运行。
 
     @classmethod
     async def _show_command_to_terminal(cls, command, cwd=None):
@@ -818,15 +801,24 @@ class BashFunc(Func):
         output = ''.join(lines)
         return output.strip() or "(无输出)"
 
-    async def _run_async(self, show_command=False, show_output=False):
-        """异步执行命令，使用 asyncio.create_subprocess_shell（不阻塞事件循环）
+    async def _run_async(self, show_command=False, show_output=False,
+                         publish_line_fn=None):
+        """前台执行命令：最多等待 _AUTO_BG_TIMEOUT 秒，超过自动转后台。
+
+        与旧版（asyncio.wait_for 超时强杀进程）的区别：
+        - 使用 asyncio.wait 观察执行任务，超时**不取消**任务；
+        - 超过 _AUTO_BG_TIMEOUT 秒未完成 → 自动转后台任务：
+          命令继续运行，注册到 agent._background_tasks，返回
+          {"task_id": ..., "status": "running", "command": ...} JSON，
+          大模型可用 bash_task 工具按 task_id 继续管理（wait/kill/stdin/keys）。
 
         Args:
-            show_command: 是否打印命令行
-            show_output: 是否实时打印输出
+            show_command: 是否打印命令行到终端
+            show_output: 是否实时打印输出到终端（_read_loop 内部）
+            publish_line_fn: 可选的行回调（display/web_display 用）
 
         Returns:
-            命令输出字符串
+            命令输出字符串（已截断）；超时转后台时返回 task_id JSON 字符串
         """
         ret = self._check_cwd_or_return(self.cwd)
         if ret:
@@ -835,38 +827,142 @@ class BashFunc(Func):
         if show_command:
             await self._show_command_to_terminal(self.command, self.cwd)
 
-        try:
+        # ★ 子进程句柄记录：自动转后台时写入任务记录，供 bash_task 工具操作
+        #   （wait 等待 / kill 杀进程树 / stdin、keys 交互）。
+        holder: dict = {}
+
+        def _on_ready(process, mode, master_fd=None, stdin_writer=None):
+            holder["process"] = process
+            holder["mode"] = mode
+            holder["master_fd"] = master_fd
+            holder["stdin_writer"] = stdin_writer
+
+        # ★ 行回调代理（可变引用）：自动转后台后把 fn 置 None，断开实时输出，
+        #   避免转后台后命令输出继续污染已闭合的工具卡片（工具已返回
+        #   task_id JSON，后续输出由 bash_task wait 获取完整结果）。
+        line_cb: dict = {"fn": publish_line_fn}
+
+        async def _line_proxy(text: str, is_stderr: bool) -> None:
+            fn = line_cb["fn"]
+            if fn is not None:
+                await fn(text, is_stderr)
+
+        async def _run_exec():
             if _HAS_PTY:
-                result = await asyncio.wait_for(
-                    self._run_pty(
-                        show_command=False,
-                        show_output=show_output,
-                        publish_line_fn=None,
-                    ),
-                    timeout=self.timeout,
+                result = await self._run_pty(
+                    show_command=False,
+                    show_output=show_output,
+                    publish_line_fn=_line_proxy,
+                    interactive=True,
+                    interactive_ready_fn=_on_ready,
                 )
             else:
-                result = await asyncio.wait_for(
-                    self._run_pipe(
-                        show_command=False,
-                        show_output=show_output,
-                        publish_line_fn=None,
-                    ),
-                    timeout=self.timeout,
+                result = await self._run_pipe(
+                    show_command=False,
+                    show_output=show_output,
+                    publish_line_fn=_line_proxy,
+                    interactive=True,
+                    interactive_ready_fn=_on_ready,
                 )
             return self._truncate_output(result)
-        except asyncio.TimeoutError:
-            return "(命令执行超时，已强制终止)"
-        except asyncio.CancelledError:
-            return "(命令已被取消)"
-        except Exception as e:
-            logger.exception("异步命令执行异常: %s", self.command[:200])
-            return f"(执行出错: {e})"
+
+        exec_task = asyncio.ensure_future(_run_exec())
+        done, _pending = await asyncio.wait(
+            {exec_task}, timeout=self._AUTO_BG_TIMEOUT,
+        )
+        if exec_task in done:
+            try:
+                result = exec_task.result()
+            except asyncio.CancelledError:
+                return "(命令已被取消)"
+            except Exception as e:
+                logger.exception("异步命令执行异常: %s", self.command[:200])
+                return f"(执行出错: {e})"
+            return result
+
+        # 超过 _AUTO_BG_TIMEOUT 秒 → 自动转后台执行（不终止进程）。
+        # ★ 断开实时行回调：工具即将返回 task_id JSON（工具卡片闭合），
+        #   转后台后的输出不再发布到终端/前端。
+        line_cb["fn"] = None
+        return await self._promote_to_background(exec_task, holder)
+
+    async def _promote_to_background(self, exec_task, holder: dict) -> str:
+        """把已运行超过 _AUTO_BG_TIMEOUT 秒的前台命令转为后台任务。
+
+        前台命令超过 1 分钟仍未完成时调用（由 _run_async 触发）：
+          - **不终止进程**（asyncio.wait 观察而非 wait_for 干预）；
+          - 生成 task_id，把执行中的任务注册到 agent._background_tasks；
+          - 任务完成后结果写入任务记录（bash_task wait / 对话轮次自动
+            插入用户消息消费）；
+          - 返回 {"task_id": ..., "status": "running", "command": ...} JSON，
+            大模型可用 bash_task 工具继续管理。
+
+        Args:
+            exec_task: 正在运行的命令执行任务（asyncio.Task）
+            holder: 子进程句柄记录（process/mode/master_fd/stdin_writer）
+
+        Returns:
+            task_id JSON 字符串
+        """
+        agent = getattr(self, 'agent', None)
+        if agent is None or not hasattr(agent, '_register_background_task'):
+            return (f"(命令执行超过 {self._AUTO_BG_TIMEOUT} 秒，但当前未关联 "
+                    f"Agent 上下文，无法自动转后台管理)")
+
+        task_id = f"bg-{uuid.uuid4().hex[:12]}"
+        process = holder.get("process")
+
+        agent._register_background_task(task_id, {
+            "task": exec_task,
+            "command": self.command,
+            "cwd": self.cwd,
+            "created_at": time.time(),
+            "done": False,
+            "result": "",
+            "status": "running",
+            # ── 交互控制字段（bash_task 工具按 task_id 操作） ──
+            "process": process,
+            "pid": process.pid if process is not None else None,
+            "mode": holder.get("mode"),
+            "master_fd": holder.get("master_fd"),
+            "stdin_writer": holder.get("stdin_writer"),
+            "io_lock": asyncio.Lock(),
+        })
+
+        def _on_done(t: asyncio.Task) -> None:
+            """任务完成回调：把结果写入后台任务记录（与 _run_background_task 一致）。"""
+            try:
+                result = t.result()
+            except asyncio.CancelledError:
+                result = "(后台命令已被取消)"
+            except Exception as e:
+                logger.exception("自动转后台命令执行异常: %s", self.command[:200])
+                result = f"(后台命令执行出错: {e})"
+            if agent is not None and hasattr(agent, '_complete_background_task'):
+                try:
+                    agent._complete_background_task(task_id, result)
+                except Exception:
+                    logger.exception("自动转后台任务结果写入失败")
+
+        exec_task.add_done_callback(_on_done)
+
+        await print_to_terminal(
+            f"{DIM}[命令执行超过 {self._AUTO_BG_TIMEOUT} 秒，已自动转后台任务 "
+            f"{task_id}: {self.command[:80]}{'...' if len(self.command) > 80 else ''}]{RESET}\n"
+        )
+
+        return json.dumps({
+            "task_id": task_id,
+            "status": "running",
+            "command": self.command,
+        }, ensure_ascii=False)
 
     async def _run_interactive_async(self, on_ready=None):
         """交互模式异步执行：启用 stdin（PTY slave / PIPE），供后台任务操作。
 
         与 _run_async 的区别：
+          - **后台任务执行体（background=True）专用**：无限运行，不设超时、
+            不自动转后台（本身已是后台任务）；
           - interactive=True：子进程 stdin 连接 PTY slave（或 PIPE），
             外部可通过任务记录中的 master_fd / stdin_writer 写入输入；
           - on_ready 回调在子进程创建后立即调用，把 process/pid/master_fd
@@ -884,26 +980,18 @@ class BashFunc(Func):
 
         try:
             if _HAS_PTY:
-                result = await asyncio.wait_for(
-                    self._run_pty(
-                        show_command=False, show_output=False,
-                        publish_line_fn=None,
-                        interactive=True, interactive_ready_fn=on_ready,
-                    ),
-                    timeout=self.timeout,
+                result = await self._run_pty(
+                    show_command=False, show_output=False,
+                    publish_line_fn=None,
+                    interactive=True, interactive_ready_fn=on_ready,
                 )
             else:
-                result = await asyncio.wait_for(
-                    self._run_pipe(
-                        show_command=False, show_output=False,
-                        publish_line_fn=None,
-                        interactive=True, interactive_ready_fn=on_ready,
-                    ),
-                    timeout=self.timeout,
+                result = await self._run_pipe(
+                    show_command=False, show_output=False,
+                    publish_line_fn=None,
+                    interactive=True, interactive_ready_fn=on_ready,
                 )
             return self._truncate_output(result)
-        except asyncio.TimeoutError:
-            return "(命令执行超时，已强制终止)"
         except asyncio.CancelledError:
             return "(命令已被取消)"
         except Exception as e:
@@ -937,15 +1025,8 @@ class BashFunc(Func):
 
         task_id = f"bg-{uuid.uuid4().hex[:12]}"
 
-        # 后台任务默认不设超时（无限运行，避免误杀编译/下载等长时命令）；
-        # 用户显式传 timeout 时后台任务仍遵守该超时。
-        if self._timeout_explicit:
-            bg = BashFunc(
-                command=self.command, cwd=self.cwd,
-                timeout=self.timeout if self.timeout is not None else 0,
-            )
-        else:
-            bg = BashFunc(command=self.command, cwd=self.cwd, timeout=0)
+        # 后台任务无限运行（不设超时，避免误杀编译/下载等长时命令）
+        bg = BashFunc(command=self.command, cwd=self.cwd)
 
         task = asyncio.ensure_future(self._run_background_task(bg, task_id))
 
@@ -983,12 +1064,14 @@ class BashFunc(Func):
     async def _run_background_task(self, bg: "BashFunc", task_id: str) -> None:
         """后台任务执行体：运行命令并把结果写入 agent 的后台任务记录。
 
+        ★ 后台任务无限运行（_run_interactive_async 不设超时、不自动转后台），
+        配合 bash_task 工具按 task_id 操作（wait/kill/stdin/keys）。
         ★ 交互模式：后台任务启用 stdin（PTY slave / PIPE），子进程创建后
         通过 on_ready 回调把 process/pid/master_fd 写入任务记录，供
         bash_task 工具按 task_id 发送输入 / 杀死进程树 / 等待完成。
 
         Args:
-            bg: 实际执行命令的 BashFunc 实例（timeout 已按后台语义调整）
+            bg: 实际执行命令的 BashFunc 实例
             task_id: 后台任务 ID
         """
         agent = getattr(self, 'agent', None)
@@ -1061,11 +1144,14 @@ class BashFunc(Func):
     async def _run_with_line_callback(self, on_line) -> str:
         """共享的 UI 执行框架：检查 cwd、显示命令、执行 PTY/PIPE、异常处理。
 
+        前台执行与 _run_async 一致：超过 _AUTO_BG_TIMEOUT 秒自动转后台
+        （命令不终止，返回 task_id JSON）；publish_line_fn 持续接收实时输出行。
+
         Args:
             on_line: 异步回调 async (text: str, is_stderr: bool) -> None
 
         Returns:
-            命令输出字符串
+            命令输出字符串（已截断）；超时转后台时返回 task_id JSON 字符串
         """
         # ── 后台模式：display/web_display 路径同样不等待命令完成 ──
         if self.background:
@@ -1077,31 +1163,10 @@ class BashFunc(Func):
 
         await self._show_command_to_terminal(self.command, self.cwd)
 
-        try:
-            if _HAS_PTY:
-                result = await asyncio.wait_for(
-                    self._run_pty(
-                        show_command=False, show_output=False,
-                        publish_line_fn=on_line, pty_ready_fn=None,
-                    ),
-                    timeout=self.timeout,
-                )
-            else:
-                result = await asyncio.wait_for(
-                    self._run_pipe(
-                        show_command=False, show_output=False,
-                        publish_line_fn=on_line,
-                    ),
-                    timeout=self.timeout,
-                )
-            return self._truncate_output(result)
-        except asyncio.TimeoutError:
-            return "(命令执行超时，已强制终止)"
-        except asyncio.CancelledError:
-            return "(命令已被取消)"
-        except Exception as e:
-            logger.exception("异步命令执行异常: %s", self.command[:200])
-            return f"(执行出错: {e})"
+        return await self._run_async(
+            show_command=False, show_output=False,
+            publish_line_fn=on_line,
+        )
 
     async def display(self):
         """异步执行命令并实时输出到终端"""
