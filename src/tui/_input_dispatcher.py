@@ -27,6 +27,7 @@ import logging
 import os
 import select
 import threading
+import time
 from typing import TYPE_CHECKING
 
 from ._input_parser import InputParser, KeyEvent
@@ -37,6 +38,12 @@ if TYPE_CHECKING:
     from ._input_buffer import InputBufferEditor
 
 _logger = logging.getLogger(__name__)
+
+# ── 残留 Enter 丢弃窗口（秒） ──
+# CR+LF 终端按 Enter 发送 \r\n：LF 是同一按键的第二个字节，正常毫秒级到达。
+# 该窗口内到达的 LF/CR 视为残留 Enter 丢弃；窗口超时视为无残留（单 CR 终端），
+# 后续 LF/CR 为用户新输入不丢弃（防用户后续回车被误丢）。
+_ENTER_RESIDUAL_WINDOW = 0.5
 
 
 # ═══════════════════════════════════════════════════════════
@@ -82,7 +89,13 @@ class InputDispatcher:
         # ── 残留 Enter 标记（editmsg 竞态修复） ──
         # editmsg 选择确认 Enter（CR）被抑制后，标记可能存在残留 LF（\n）待丢弃。
         # GIL 原子 bool，与 _suppress_enter 同等无锁访问（不改 API 签名）。
+        # ``_enter_residual_deadline``：标记丢弃窗口截止时间（monotonic 秒）。
+        #   - CR+LF 终端：LF 在窗口内到达 → 被 read_stdin_once 丢弃（残留 Enter
+        #     不触发 _enter()）；
+        #   - 单 CR 终端 / 窗口超时：无 LF 待丢弃 → read_stdin_once 不丢弃
+        #     （用户后续回车正常提交）。
         self._enter_residual_pending: bool = False
+        self._enter_residual_deadline: float = 0.0
 
         # ── 非可打印字符捕获 ──
         self._captured_input: bytearray = bytearray()
@@ -330,13 +343,18 @@ class InputDispatcher:
         first_byte = raw[0]
 
         # ── 残留 Enter 后置 LF/CR 丢弃（editmsg 竞态修复） ──
-        # 若 _enter_residual_pending 置位（被抑制 Enter 后可能残留 LF），
-        # 先清标记；首字节为 LF（0x0a）/ CR（0x0d）时丢弃并返回 True
-        # （不触发 _enter()，prefill 保持可编辑）；非 LF/CR 首字节
-        # （如用户立即输入字符）不误丢，继续正常分发。
+        # 若 _enter_residual_pending 置位（Enter 提交/被抑制/router 消费后可能
+        # 残留 LF），先清标记；首字节为 LF（0x0a）/ CR（0x0d）且仍在丢弃窗口内
+        # （deadline 未超时）时丢弃并返回 True（不触发 _enter()，prefill 保持
+        # 可编辑）；非 LF/CR 首字节（如用户立即输入字符）不误丢，继续正常分发。
+        # 窗口超时（单 CR 终端无 LF / 渲染线程忙）后 LF/CR 视为用户新输入，
+        # 继续分发（不丢弃）。
         if self._enter_residual_pending:
             self._enter_residual_pending = False
-            if first_byte in (0x0a, 0x0d):
+            if (
+                first_byte in (0x0a, 0x0d)
+                and time.monotonic() <= self._enter_residual_deadline
+            ):
                 return True
 
         # ── ASCII 控制字符分发 ──
@@ -522,8 +540,13 @@ class InputDispatcher:
             #   read_stdin_once 读取紧随的一个 LF/CR（0x0a/0x0d）时直接丢弃；
             #   无 LF（单 CR 终端）或用户后续输入普通字符时标记自动清除
             #   （不误丢）。非 Enter 事件不设置（↑↓/Esc 等无 CR+LF 问题）。
+            # ★ 窗口截止（2026-08-06）：deadline 超时后标记失效——渲染线程
+            #   忙/单 CR 终端时 LF 不晚于窗口到达；超时后 LF/CR 为用户新输入。
             if event.kind == "enter":
                 self._enter_residual_pending = True
+                self._enter_residual_deadline = (
+                    time.monotonic() + _ENTER_RESIDUAL_WINDOW
+                )
             return  # 已消费，跳过旧回调路径
 
         if kind == "enter":
@@ -538,10 +561,22 @@ class InputDispatcher:
             # 加锁不一致（GIL 下原子读良性，但并发访问模式不一致）。
             if not self.get_suppress_enter():
                 self._buffer_editor._enter()
+                # ★ 正常 Enter 提交后同样置残留标记（2026-08-06）：
+                #   /editmsg /deitmsg 等命令的 CR+LF 中 LF 可能晚到（终端/
+                #   蓝牙/SSH 延迟）——若在弹窗打开后到达会被 UserSelectPopup
+                #   误判为确认 Enter（弹窗自动确认/直接编辑最后一条），或在
+                #   prefill 注入后被 _enter() 误提交。统一标记丢弃（窗口内）。
+                self._enter_residual_pending = True
+                self._enter_residual_deadline = (
+                    time.monotonic() + _ENTER_RESIDUAL_WINDOW
+                )
             else:
                 # editmsg 选择确认 CR 被抑制后标记残留 LF（\n），
                 # 由 read_stdin_once 丢弃，避免 LF 在 prefill 注入后被误提交。
                 self._enter_residual_pending = True
+                self._enter_residual_deadline = (
+                    time.monotonic() + _ENTER_RESIDUAL_WINDOW
+                )
         elif kind == "tab":
             if self._buffer_editor.is_search_active():
                 # 方向D 步骤14：搜索模式 Tab 应用匹配并退出搜索（与 Enter 一致）
@@ -883,13 +918,24 @@ class InputDispatcher:
         将跳过 _enter() 调用，防止选择确认 Enter 被误提交为输入。
 
         线程安全：使用 _suppress_enter_lock 保护。
+
+        ★ 修复（2026-08-06）：恢复 Enter（suppress=False）时**不**无条件清除
+        残留标记——弹窗确认 Enter 的 LF 可能晚到（渲染线程忙/终端 I/O 延迟），
+        若清除标记，LF 会在 prefill 注入后被 _enter() 误提交（用户看到
+        「编辑无效/要再输入」）。改为 deadline 超时自动失效：
+          - CR+LF 终端：LF 在窗口内到达 → 被 read_stdin_once 丢弃；
+          - 单 CR 终端：无 LF 到达 → 窗口超时后标记失效（`set_suppress_enter`
+            此处或 `read_stdin_once` 消费时清）→ 用户后续回车正常提交。
         """
         with self._suppress_enter_lock:
             self._suppress_enter = suppress
-            # 防单 CR 终端：恢复 Enter 时清除残留标记，避免误丢弃用户后续回车。
-            # suppress=True 时不清标记（保留至 LF 被处理或恢复 False）。
-            if not suppress:
-                self._enter_residual_pending = False
+            # suppress=True 时不清标记（保留至 LF 被处理或窗口超时）。
+            # suppress=False 时仅清理**已超时**标记（无待丢弃 LF）；未超时
+            # 保留——read_stdin_once 消费紧随 LF/CR 丢弃，或窗口超时后
+            # read_stdin_once 不丢弃并清标记（用户新输入正常分发）。
+            if not suppress and self._enter_residual_pending:
+                if time.monotonic() > self._enter_residual_deadline:
+                    self._enter_residual_pending = False
 
     def get_suppress_enter(self) -> bool:
         """获取当前 Enter 抑制状态。线程安全。"""
