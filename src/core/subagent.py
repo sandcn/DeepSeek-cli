@@ -217,6 +217,12 @@ class SubAgent(BaseAgent):
             self._update_display(usage)
 
             if not tool_calls:
+                # ── 后台任务处理：模型完成对话但后台任务可能有结果 ──
+                # bash 后台任务（background=True）注册在本 SubAgent 的
+                # _background_tasks 成员中；有完成/等待完成的后台任务时，
+                # 把结果 JSON 作为用户消息插入，继续让模型处理一轮。
+                if await self._process_background_tasks():
+                    continue
                 self.result = content
                 return content
 

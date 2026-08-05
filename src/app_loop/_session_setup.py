@@ -111,6 +111,18 @@ def _make_round_callbacks(
 
         input_ = chat_ui._components.input
 
+        # ★ 自动闭合空工具 box（┌─ ● ⚙ 工具）：后台任务等非工具上下文的
+        #   输出可能创建只有顶边框、永不闭合的空工具卡——每轮结束统一以
+        #   完成态闭合（渲染为 ✔ 完成），避免空卡永久 ● running 悬挂。
+        try:
+            model = chat_ui.get_model()
+            if model is not None and hasattr(model, "close_empty_tool_boxes"):
+                closed = model.close_empty_tool_boxes()
+                if closed > 0:
+                    _logger.debug("_on_round_end: 自动闭合 %d 个空工具 box", closed)
+        except Exception:
+            _logger.debug("_on_round_end: 闭合空工具 box 失败", exc_info=True)
+
         # /loop 模式下不冻结状态行、不发桌面通知，保持状态行活跃
         if not loop_state.get("_loop_mode"):
             # ★ 冻结底部栏状态行（定格最终数值），同时获取耗时供通知复用

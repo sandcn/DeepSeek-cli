@@ -18,6 +18,7 @@ from src.tui._const import (
     ToolCountIncCmd, ToolFailIncCmd, ErrorCmd, ToolCountDecCmd,
     MainPhaseCmd,
     SubagentMarkdownCmd,
+    BgBashCountCmd,
     _CLEAR_PARSE_LINE,
     is_agent_source,
     truncate_error_message,
@@ -90,6 +91,10 @@ class EventDispatcher:
         self._handler_groups: dict[str, dict[type, Callable]] = {}
         # list_handlers 结果缓存：register_handler / register_group 后置 None 失效重建
         self._handlers_cache: dict[type, Callable] | None = None
+        # 后台 bash 数量聚合映射（label → 运行中任务数）：
+        # 主 Agent（"main"）与每个 SubAgent（"agent-N"）发布各自计数，
+        # 状态栏显示聚合总数（右下方）。
+        self._bg_bash_counts: dict[str, int] = {}
 
     @staticmethod
     def _default_filter_fn(source: str | None) -> bool:
@@ -163,6 +168,7 @@ class EventDispatcher:
             _ET.ToolSummaryEvent: self._on_tool_summary,
             _ET.SubagentPromptEvent: self._on_subagent_prompt,
             _ET.AgentResultEvent: self._on_agent_result,
+            _ET.BackgroundTaskChangedEvent: self._on_bg_bash_changed,
         }
         for group in self._handler_groups.values():
             result.update(group)
@@ -247,6 +253,12 @@ class EventDispatcher:
         #   （subagent 面板自渲染）。
         if self._is_subagent_label(event.label) or self._is_subagent_label(event.tool_id):
             return
+        # ★ 空工具卡防御（后台任务等非工具上下文的输出）：工具执行上下文
+        #   退出后 print_to_terminal 回退 label/tool_id="assistant"——不作为
+        #   工具输出（避免 append_tool_output 兜底创建永不闭合的空「工具」卡
+        #   ┌─ ● ⚙ 工具）。
+        if (event.label or "") == "assistant" or (event.tool_id or "") == "assistant":
+            return
         text = event.text.rstrip("\n")
         if text:
             tool_id = event.tool_id or event.label
@@ -306,6 +318,21 @@ class EventDispatcher:
         if event.result:
             parts.append(event.result)
         self._push_cmd(SubagentMarkdownCmd(text="\n".join(parts)))
+
+    def _on_bg_bash_changed(self, event) -> None:
+        """后台 bash 数量变更：聚合主 Agent + 全部 SubAgent 的运行中任务数。
+
+        每个 Agent（主 "main" / SubAgent "agent-N"）在后台任务注册/完成/
+        移除时发布自己的运行中计数；这里按 label 聚合后推送总数到状态栏
+        （右下角显示当前后台 bash 数量）。
+        """
+        label = event.label or "main"
+        count = max(0, int(event.count))
+        if count <= 0:
+            self._bg_bash_counts.pop(label, None)
+        else:
+            self._bg_bash_counts[label] = count
+        self._push_cmd(BgBashCountCmd(count=sum(self._bg_bash_counts.values())))
 
 
 __all__ = ["EventDispatcher"]

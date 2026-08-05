@@ -222,17 +222,30 @@ class Agent(BaseAgent):
     # =================== 对话循环（纯异步） ===================
 
     async def run(self):
-        """纯异步执行对话（用于已有事件循环的上下文）"""
+        """纯异步执行对话（用于已有事件循环的上下文）
+
+        循环处理后台任务：一轮对话完成后，若存在后台任务（bash background=True），
+        - 有已完成的后台任务 → 把结果（JSON：task_id + 命令输出）作为用户消息插入，
+          继续一轮对话让模型处理；
+        - 无已完成但仍有运行中的后台任务 → 等待全部完成后插入结果，再来一轮对话。
+        """
         await self._interrupt_port.reset()
 
-        ctx = PipelineContext(self)
-        # 将会话状态机引用从 agent 临时属性转移到 PipelineContext
-        sm = getattr(self, '_session_state_machine', None)
-        if sm is not None:
-            ctx.session_state_machine = sm
-        # 将 interrupt_port 传递给 PipelineContext，供 pipeline 直接使用
-        ctx.interrupt_port = self._interrupt_port
-        interrupted = await self._pipeline.run_round_async(ctx)
+        interrupted = False
+        while True:
+            ctx = PipelineContext(self)
+            # 将会话状态机引用从 agent 临时属性转移到 PipelineContext
+            sm = getattr(self, '_session_state_machine', None)
+            if sm is not None:
+                ctx.session_state_machine = sm
+            # 将 interrupt_port 传递给 PipelineContext，供 pipeline 直接使用
+            ctx.interrupt_port = self._interrupt_port
+            interrupted = await self._pipeline.run_round_async(ctx)
+            if interrupted:
+                break
+            # ── 后台任务处理：一轮对话完成后检查后台任务结果 ──
+            if not await self._process_background_tasks():
+                break
         return interrupted
 
     # ── 兼容旧版直接调用（某些测试可能直接使用） ──────────

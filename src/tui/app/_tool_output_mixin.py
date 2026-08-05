@@ -131,6 +131,13 @@ class _ToolOutputMixin:
         """
         from src.tui.core.style import Style
         from src.renderer.ansi.helpers import AnsiLine, ansi_to_line
+        # ★ 空工具卡防御（模型层双保险）：tool_id 为 "assistant" 时说明该输出
+        #   来自工具上下文之外的 print_to_terminal 回退（如后台任务完成提示），
+        #   不归属任何工具 box——兜底创建空「工具」卡会永不闭合（┌─ ● ⚙ 工具）。
+        #   直接丢弃（上层 _on_tool_output 已过滤，此为防御冗余）。
+        if tool_id == "assistant":
+            _logger.debug("append_tool_output: 无归属输出（assistant），丢弃: %.80s", text)
+            return
         block = self.tool_boxes.get(tool_id)
         if block is None:
             if not tool_id:
@@ -334,6 +341,26 @@ class _ToolOutputMixin:
         new_list = list(self.committed_lines)
         new_list[offset] = new_line
         self.committed_lines = new_list
+
+    def close_empty_tool_boxes(self) -> int:
+        """自动闭合开放但无主体内容的空工具 box，返回闭合数量。
+
+        ★ 空工具卡防御：后台任务等非工具上下文输出可能经兜底创建只有顶边框
+        （``block.lines`` 仅 1 行标题）的空「工具」box（┌─ ● ⚙ 工具），这类
+        box 永远不会有 ToolCloseCmd。每轮对话结束（round_end）时调用本方法，
+        将空 box 以完成态关闭（闭合后渲染为 ``┌─ ● …┐ / └─ ✔ 完成 ┘``），
+        避免空卡永久保持 ● running 悬挂。
+        """
+        closed = 0
+        for tool_id in list(self.tool_boxes.keys()):
+            block = self.tool_boxes.get(tool_id)
+            if block is None or block.closed:
+                continue
+            # 空 box：只有标题行（lines[0]），无主体输出内容
+            if len(block.lines) <= 1:
+                self.close_tool_box(tool_id, True)
+                closed += 1
+        return closed
 
     def _next_tool_id(self) -> str:
         self._tool_id_seq += 1

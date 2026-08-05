@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-import os
-import sys
 import asyncio
 import errno as _errno
+import json
 import logging
+import os
 import re as _re
+import sys
+import time
+import uuid
 from .base import Func, tool_metadata, print_to_terminal
 
 from ..core.constants import GREEN, RED, DIM, RESET
@@ -282,6 +285,10 @@ class BashFunc(Func):
                     "\n- cwd（可选）：指定命令的工作目录，省略时使用进程当前工作目录"
                     f"\n- timeout（可选）：命令超时秒数（整数）。默认 {cls._DEFAULT_TIMEOUT} 秒，"
                     "超时后强制终止整个进程树并返回超时错误；传 0 表示不设超时限制（慎用）"
+                    "\n- background（可选）：是否后台执行（布尔，默认 false）。true 时命令在后台异步运行，"
+                    "立即返回 {\"task_id\": \"...\", \"status\": \"running\", \"command\": \"...\"} JSON，"
+                    "不阻塞当前工具调用；后台任务完成后系统会自动将结果（JSON 含 task_id 和命令输出）"
+                    "作为用户消息插入对话，让大模型继续处理。适用于编译、打包、长时下载等耗时命令"
                     "\n\n"
                     "参数关联："
                     "\n- cwd 影响命令中所有相对路径的解析基准（如 ./config、../scripts 等）"
@@ -366,6 +373,19 @@ class BashFunc(Func):
                                 "\n- 超时后命令及其子进程树被强制终止，返回 '(命令执行超时，已强制终止)'"
                                 "\n- 传 0 表示不设超时限制（慎用，可能导致命令永久挂起）"
                             )
+                        },
+                        "background": {
+                            "type": "boolean",
+                            "description": (
+                                "是否后台执行（可选，默认 false）。"
+                                "\n- true：命令在后台异步运行，立即返回 "
+                                "'{\"task_id\": \"bg-xxx\", \"status\": \"running\", \"command\": \"...\"}' JSON，"
+                                "不阻塞当前工具调用；后台任务完成后系统自动把结果（JSON 含 task_id 和命令输出）"
+                                "作为用户消息插入对话，让大模型继续处理。"
+                                "\n- 后台任务默认不设超时（无限运行），适合编译/打包/长时下载等耗时命令；"
+                                "显式传 timeout 时仍会遵守超时。"
+                                "\n- false（默认）：同步执行并等待命令完成。"
+                            )
                         }
                     },
                     "required": ["command"]
@@ -393,14 +413,19 @@ class BashFunc(Func):
         """检查 PTY 是否可用（用于子进程实时行缓冲输出）。"""
         return _HAS_PTY
 
-    def __init__(self, command, cwd=None, timeout=None):
+    def __init__(self, command, cwd=None, timeout=None, background=False):
         super().__init__()
         self.command = command
         self.cwd = cwd
+        self.background = bool(background)
         # timeout 参数语义（seconds）：
         #   省略/None → 默认 _DEFAULT_TIMEOUT（300s）
         #   <=0       → 不设超时限制（asyncio.wait_for 无限等待，慎用）
         #   >0        → 自定义超时秒数
+        # _timeout_explicit 记录是否显式传入 timeout：后台模式下
+        #   未显式传 timeout → 无限运行（默认 300s 超时会误杀长时任务）
+        #   显式传 timeout  → 后台任务仍遵守该超时
+        self._timeout_explicit = timeout is not None
         if timeout is None:
             self.timeout = self._DEFAULT_TIMEOUT
         else:
@@ -794,6 +819,104 @@ class BashFunc(Func):
             logger.exception("异步命令执行异常: %s", self.command[:200])
             return f"(执行出错: {e})"
 
+    # ── 后台执行模式 ────────────────────────────────────────
+    # background=True 时：命令在 asyncio 后台任务中运行，工具立即返回
+    # {"task_id": ..., "status": "running"} JSON；任务记录注册到当前
+    # Agent 的 _background_tasks 成员（tasklist）。一轮对话完成后，
+    # Agent 主循环检查后台任务：已完成的把结果（JSON：task_id + 命令输出）
+    # 作为用户消息插入对话继续处理；未完成的则等待全部完成后再次插入。
+
+    async def _execute_background(self) -> str:
+        """后台执行命令：生成 task_id、注册到 agent 后台任务列表，立即返回 JSON。
+
+        需要当前 BashFunc 实例关联了 Agent（registry.dispatch 会自动 set_agent）。
+        返回 JSON 字符串（task_id/status/command），供大模型识别后台任务。
+        """
+        # ★ 危险命令检查：display() 路径（主 Agent）进入后台前也需运行时防护
+        danger = _has_dangerous_command(self.command)
+        if danger:
+            return f"(拒绝执行危险命令: {danger})"
+
+        agent = getattr(self, 'agent', None)
+        if agent is None or not hasattr(agent, '_register_background_task'):
+            return "(后台执行需要关联 Agent 上下文，当前未关联)"
+
+        # 显示启动命令（后台任务本身不再重复打印）
+        await self._show_command_to_terminal(self.command, self.cwd)
+
+        task_id = f"bg-{uuid.uuid4().hex[:12]}"
+
+        # 后台任务默认不设超时（无限运行，避免误杀编译/下载等长时命令）；
+        # 用户显式传 timeout 时后台任务仍遵守该超时。
+        if self._timeout_explicit:
+            bg = BashFunc(
+                command=self.command, cwd=self.cwd,
+                timeout=self.timeout if self.timeout is not None else 0,
+            )
+        else:
+            bg = BashFunc(command=self.command, cwd=self.cwd, timeout=0)
+
+        task = asyncio.ensure_future(self._run_background_task(bg, task_id))
+
+        # ── tasklist 放入对应 agent 的成员 _background_tasks ──
+        agent._register_background_task(task_id, {
+            "task": task,
+            "command": self.command,
+            "cwd": self.cwd,
+            "created_at": time.time(),
+            "done": False,
+            "result": "",
+            "status": "running",
+        })
+
+        await print_to_terminal(
+            f"{DIM}[后台任务 {task_id} 已启动: {self.command[:80]}{'...' if len(self.command) > 80 else ''}]{RESET}\n"
+        )
+
+        return json.dumps({
+            "task_id": task_id,
+            "status": "running",
+            "command": self.command,
+        }, ensure_ascii=False)
+
+    async def _run_background_task(self, bg: "BashFunc", task_id: str) -> None:
+        """后台任务执行体：运行命令并把结果写入 agent 的后台任务记录。
+
+        Args:
+            bg: 实际执行命令的 BashFunc 实例（timeout 已按后台语义调整）
+            task_id: 后台任务 ID
+        """
+        try:
+            result = await bg._run_async(show_command=False, show_output=False)
+        except asyncio.CancelledError:
+            result = "(后台命令已被取消)"
+        except Exception as e:
+            logger.exception("后台命令执行异常: %s", self.command[:200])
+            result = f"(后台命令执行出错: {e})"
+
+        agent = getattr(self, 'agent', None)
+        if agent is not None and hasattr(agent, '_complete_background_task'):
+            try:
+                agent._complete_background_task(task_id, result)
+            except Exception:
+                logger.exception("后台任务结果写入失败")
+        else:
+            logger.warning("后台任务 %s 完成但 agent 已不可用，结果丢弃", task_id)
+            return
+
+        # ★ 完成提示发布为**普通输出**（OutputEvent），而非工具输出
+        #   （ToolOutputChunkEvent）：此时工具上下文已退出（contextvar 中
+        #   tool_id 已清除），走工具输出路径会以 label="assistant" 触发
+        #   append_tool_output 兜底创建一个永不闭合的空「工具」卡
+        #   （┌─ ● ⚙ 工具），这里改为普通文本行显示，避免空工具卡。
+        try:
+            from ..core.display_target import get_output_publisher
+            publisher = get_output_publisher()
+            if publisher is not None:
+                publisher(f"[后台任务 {task_id} 已完成]", level="info", source="agent")
+        except Exception:
+            logger.debug("后台任务完成提示发布失败", exc_info=True)
+
     # ── 父类契约实现 ──
     # execute() → 无 UI 副作用，只返回结果
     # display() → 负责 UI 展示（实时输出到终端）
@@ -811,6 +934,9 @@ class BashFunc(Func):
         if danger:
             await print_to_terminal(f"{RED}$ {self.command}{RESET}\n{RED}(拒绝执行危险命令: {danger}){RESET}\n")
             return f"(拒绝执行危险命令: {danger})"
+        # ── 后台模式：不等待命令完成，立即返回 task_id JSON ──
+        if self.background:
+            return await self._execute_background()
         return await self._run_async(show_command=False, show_output=False)
 
     async def _run_with_line_callback(self, on_line) -> str:
@@ -822,6 +948,10 @@ class BashFunc(Func):
         Returns:
             命令输出字符串
         """
+        # ── 后台模式：display/web_display 路径同样不等待命令完成 ──
+        if self.background:
+            return await self._execute_background()
+
         ret = self._check_cwd_or_return(self.cwd)
         if ret:
             return ret

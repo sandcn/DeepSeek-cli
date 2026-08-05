@@ -125,7 +125,14 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             phase_text = f"\u2026{main_phase}"
         model_part.append(StyledRun(" ", None))
         model_part.append(StyledRun(phase_text, phase_style))
+
+    # ★ 后台 bash 任务数（右侧显示；主 agent + subagent 聚合）
+    #   无论活跃/空闲都显示（后台任务可能在对话结束后仍在运行）。
+    bg_bash_count = getattr(st, "bg_bash_count", 0) or 0
+
     if not status_active:
+        if bg_bash_count > 0:
+            return model_part + [StyledRun("  ", None)] + _build_bg_bash_runs(bg_bash_count, False)
         return model_part
 
     snap = _snapshot()
@@ -179,6 +186,10 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
         # 单一真源：format_speed（subagent 卡与状态栏统一 tok/s 显示）
         parts.append(StyledRun(_format_speed(speed), speed_style))
 
+    # ★ 后台 bash 任务数（右侧最末显示；主 agent + subagent 聚合）
+    if bg_bash_count > 0:
+        parts.extend(_build_bg_bash_runs(bg_bash_count, status_active))
+
     if not parts:
         return model_part
     sep = StyledRun(" \u00b7 ", _S_DIM)
@@ -195,6 +206,23 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
 def _glow(lo: int, hi: int, period: float) -> int:
     """状态点呼吸色（时间基正弦插值）。参数语义与 ``time_glow(lo, hi, period)`` 一致。"""
     return time_glow(lo, hi, period)
+
+
+#: 后台 bash 任务数图标（循环箭头，表示后台运行中）
+_BG_BASH_ICON = "\u21bb"
+
+
+def _build_bg_bash_runs(count: int, active: bool) -> list[StyledRun]:
+    """后台 bash 任务数 runs（状态栏右下角显示；主 agent + subagent 聚合）。
+
+    Args:
+        count: 当前运行中的后台 bash 任务总数。
+        active: 是否活跃（流式/工具运行）；活跃期呼吸色，空闲静态强调色。
+    """
+    if count <= 0:
+        return []
+    style = Style(fg=time_glow(45, 55, 8.0)) if active else _S_ACCENT
+    return [StyledRun(f"{_BG_BASH_ICON} {count}", style)]
 
 
 def StatusBar(props) -> object:
@@ -245,6 +273,9 @@ def StatusBar(props) -> object:
             #   变化时触发重建（修复前缺 main_phase：阶段切换后状态栏仍显示旧
             #   阶段直至其他 deps 变化）。getattr 防御（测试桩对象无该字段）。
             getattr(st, "main_phase", ""),
+            # ★ 后台 bash 任务数（主 agent + subagent 聚合）——计数变化时
+            #   状态栏右下角刷新。
+            getattr(st, "bg_bash_count", 0),
             time_dep,
             # ★ BUG-43（review 方向）：deps 补充 spinner_char——修复前依赖
             #   time_dep（0.1s 桶）兜底，``int(now/0.1)`` 与 ``int(now*10)``

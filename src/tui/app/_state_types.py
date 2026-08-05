@@ -165,6 +165,8 @@ class StatusState:
     status_active: bool = False
     cpu: int = 0
     mem: int = 0
+    #: 后台 bash 任务总数（主 agent + 全部 subagent 聚合，运行中未完成）
+    bg_bash_count: int = 0
 
 
 @dataclass

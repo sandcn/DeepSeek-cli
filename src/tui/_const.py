@@ -89,6 +89,7 @@ class RenderCommand(IntEnum):
     TOOL_CLOSE = 22     # (22, tool_id, success) — 工具 box 关闭
     SUBAGENT_MARKDOWN = 23  # (23, text: str) — subagent 提词/返回 markdown 消息区块
     CLEAR_MSGS = 24      # (24,) — 清空消息区显示（编辑/加载会话重渲染前使用）
+    BG_BASH_COUNT = 25   # (25, count: int) — 后台 bash 任务总数（主 agent + subagent 聚合）
 
 
 # ═══════════════════════════════════════════════════════════
@@ -207,6 +208,16 @@ class MainPhaseCmd(RenderCmd):
 class SubagentMarkdownCmd(RenderCmd):
     cid: int = RenderCommand.SUBAGENT_MARKDOWN
     text: str = ""
+
+@dataclass(frozen=True)
+class BgBashCountCmd(RenderCmd):
+    """后台 bash 任务总数更新（主 agent + 全部 subagent 聚合）。
+
+    Attributes:
+        count: 当前运行中的后台 bash 任务总数。
+    """
+    cid: int = RenderCommand.BG_BASH_COUNT
+    count: int = 0
 
 
 # ═══════════════════════════════════════════════════════════

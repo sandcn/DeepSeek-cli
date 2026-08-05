@@ -432,6 +432,15 @@ def _do_clear_msgs(model, cmd) -> None:
     model.reset_display()
 
 
+def _do_bg_bash_count(model, cmd) -> None:
+    """后台 bash 任务总数更新（主 agent + subagent 聚合）。
+
+    由 BackgroundTaskChangedEvent → BgBashCountCmd 驱动，更新状态栏
+    右侧显示的后台任务数量。
+    """
+    model.status.bg_bash_count = max(0, int(cmd.count))
+
+
 _HANDLERS: dict[int, object] = {
 
     RenderCommand.NOTIFICATION: _do_notification,
@@ -455,6 +464,7 @@ _HANDLERS: dict[int, object] = {
     RenderCommand.DISPLAY_MSGS: _do_display_messages,
     RenderCommand.SUBAGENT_MARKDOWN: _do_subagent_markdown,
     RenderCommand.CLEAR_MSGS: _do_clear_msgs,
+    RenderCommand.BG_BASH_COUNT: _do_bg_bash_count,
 }
 
 __all__ = ["apply_cmd", "build_user_line", "build_assistant_line"]

@@ -373,6 +373,23 @@ class AgentResultEvent(DisplayEvent):
     index: int = 0
 
 
+# ── 后台任务（bash background=True）状态 ──────────────
+
+@dataclass(frozen=True)
+class BackgroundTaskChangedEvent(DisplayEvent):
+    """后台 bash 任务数量变更 — 任务注册/完成/移除时发布。
+
+    主 Agent（label="main"）与每个 SubAgent（label="agent-N"）都发布
+    自己的**当前运行中**后台任务数；TUI 状态栏聚合所有 label 显示总数。
+
+    Attributes:
+        label: Agent 标识（主 Agent 为 "main"，SubAgent 为自身 label）
+        count: 该 agent 当前运行中（未完成）的后台 bash 任务数量
+    """
+    label: str = ""
+    count: int = 0
+
+
 # ── 事件类型注册表 ──────────────────────────────────────
 
 # 所有事件类型的集合，用于 EventBus 按类型过滤订阅
@@ -387,4 +404,5 @@ ALL_EVENT_TYPES: tuple = (
     UserSelectNeededEvent,
     SubagentPromptEvent,
     AgentResultEvent,
+    BackgroundTaskChangedEvent,
 )
