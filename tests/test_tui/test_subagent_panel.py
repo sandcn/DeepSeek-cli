@@ -404,7 +404,7 @@ class TestToolMappingSingleSource:
     def test_tool_mapping_single_source_regression(self):
         """_subagent_panel 不再定义本地映射，_get_tool_color 查用共享映射。"""
         import src.tui._subagent_panel as sp
-        from src.tui._tool_icons import TOOL_CATEGORY_COLORS, TOOL_CATEGORY_MAP
+        from src.tui._tool_icons import TOOL_CATEGORY_MAP
         from src.tui.core.style import Style
 
         # 本地副本已删除（唯一真源收敛）
@@ -414,10 +414,10 @@ class TestToolMappingSingleSource:
         assert sp._get_tool_color("bash") == Style(fg=41)        # shell
         assert sp._get_tool_color("read_file") == Style(fg=81)   # file_read
         assert sp._get_tool_color("unknown_tool") == Style(fg=245)
-        # 色号与共享 ANSI 映射一致（单一真源回归）
-        from src.tui._subagent_render import _ansi_color_code
-        assert _ansi_color_code(TOOL_CATEGORY_COLORS["shell"]) == 41
-        assert _ansi_color_code(TOOL_CATEGORY_COLORS["file_read"]) == 81
+        # 色号与共享 ANSI 映射一致（单一真源回归：直接比较 Style.fg 与 ANSI
+        # 解析值——``_ansi_color_code`` 中间层已随死代码清理移除）
+        assert Style(fg=41) == sp._get_tool_color("bash")
+        assert Style(fg=81) == sp._get_tool_color("read_file")
         # ★ 标准 React Ink 组件化：_C_* ANSI 面板色 re-export 已移除
         assert not hasattr(sp, "_C_RUNNING"), "_C_* re-export 应移除"
 
@@ -832,13 +832,17 @@ class TestSubAgentSingleLineContract:
         assert "line1\\nline2" in line.plain
 
     def test_render_children_boundary_escapes_newline(self):
-        """显示边界 _render_children 对含 \n 的行强制单行（防御兜底）。"""
+        """显示边界 SubAgentCard 转换点对含 \\n 的行强制单行（防御兜底）。
+
+        2026-08-05 死代码清理：``_render_children`` 兼容辅助已删除——改经
+        ``_lines_to_children``（SubAgentCard 内部转换点）验证相同行为。
+        """
         from src.tui.app.model import AppModel
-        from src.tui.app.subagent_panel import _render_children
+        from src.tui.app.subagent_panel import _lines_to_children
 
         m = AppModel()
         m.subagent_lines = ["  ├─ [EXE] task line one\nline two"]
-        children = _render_children(m, 80)
+        children = _lines_to_children(m.subagent_lines, 80)
         assert len(children) == 1, "应产出 1 个子节点"
         text = "".join(r.text for r in children[0].props["styled"])
         assert "\n" not in text, "子节点文本不得含原始换行"
@@ -962,15 +966,19 @@ class TestSubAgentCardWidthConsistency:
         assert len(bash_rows[0]) <= 40, f"工具历史行不超布局宽度: {bash_rows[0]!r}"
 
     def test_render_children_uses_layout_width_not_model_width(self):
-        """_render_children 截断宽度=布局宽度（40 而非 model.width=60）。"""
+        """SubAgentCard 转换点截断宽度=布局宽度（40 而非 model.width=60）。
+
+        2026-08-05 死代码清理：``_render_children`` 兼容辅助已删除——改经
+        ``_lines_to_children``（SubAgentCard 内部转换点）验证相同行为。
+        """
         from src.tui.app.model import AppModel
-        from src.tui.app.subagent_panel import _render_children
+        from src.tui.app.subagent_panel import _lines_to_children
 
         sub_lines = self._build_subagent_lines()
         m = AppModel()
         m.width = 60
         m.subagent_lines = sub_lines
-        children = _render_children(m, 40)
+        children = _lines_to_children(m.subagent_lines, 40)
         assert children, "应产出 subagent TEXT 节点"
         for child in children:
             text = "".join(r.text for r in child.props["styled"])
@@ -998,7 +1006,7 @@ class TestGroupCardBorderBreath:
     def test_running_card_invokes_time_glow(self):
         """运行中边框调用 time_glow 呼吸（暗青→亮青脉动）。"""
         from unittest.mock import patch
-        with patch("src.tui.app._theme.time_glow", return_value=45) as mock_glow:
+        with patch("src.tui.core._theme.time_glow", return_value=45) as mock_glow:
             lines = self._card(["running"])
         assert mock_glow.call_count >= 1, "运行中边框应调用 time_glow 呼吸"
         assert lines, "应产出卡片行"
@@ -1006,7 +1014,7 @@ class TestGroupCardBorderBreath:
     def test_closed_card_does_not_invoke_time_glow(self):
         """全部完成（closed）边框静态（不调用 time_glow，零额外成本）。"""
         from unittest.mock import patch
-        with patch("src.tui.app._theme.time_glow", return_value=45) as mock_glow:
+        with patch("src.tui.core._theme.time_glow", return_value=45) as mock_glow:
             lines = self._card(["done"])
         mock_glow.assert_not_called()
         assert lines, "应产出卡片行"
@@ -1016,7 +1024,7 @@ class TestGroupCardBorderBreath:
     def test_running_border_color_in_breath_range(self):
         """运行中边框色号落在暗青 23..亮青 45 区间（time_glow 语义）。"""
         from unittest.mock import patch
-        with patch("src.tui.app._theme.time_glow", return_value=30):
+        with patch("src.tui.core._theme.time_glow", return_value=30):
             lines = self._card(["running"])
         # 顶边框样式应使用呼吸色号 30（mock 的呼吸色）
         assert lines[0].runs[0].style is not None and lines[0].runs[0].style.fg == 30, \

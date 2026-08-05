@@ -1,4 +1,4 @@
-"""subagent 卡片渲染 — React Ink 标准组件 SubAgentCard + 兼容辅助。
+"""subagent 卡片渲染 — React Ink 标准组件 SubAgentCard。
 
 对齐 Claude Code：子代理活动渲染为**逐 agent 卡片**（``_subagent_render``
 产出带边框 Line 行），经 ``ChatView`` 并入消息流显示（原独立 SubAgentPanel
@@ -10,12 +10,16 @@
 ``ToolCard`` / ``OpenBlockLines`` 同模式）。内部 ``use_memo`` 缓存行 TEXT
 元素列表（deps = ``(lines, width)`` 引用级——控制器推送新列表时引用变化
 自动重算；无变化帧返回同一 children 元组 → reconciler props 引用级命中）。
-组件内 hook 占用子 fiber 槽位，不再消耗 ChatView 的 hook 顺序（比旧
-``use_subagent_children`` 在父组件无条件占槽更干净——组件卸载/挂载由
-``model.subagent_lines`` 空/非空自动驱动）。
+组件内 hook 占用子 fiber 槽位，不再消耗 ChatView 的 hook 顺序。组件卸载/
+挂载由 ``model.subagent_lines`` 空/非空自动驱动。
 
 subagent_lines 数据格式为「ink Line 行」（StyledRun），本模块直接复用
 ``Line.runs`` 转 TEXT 标准组件；按终端宽度截断 + 换行转义语义保留。
+
+2026-08-05 死代码清理：旧兼容辅助 ``_render_children`` /
+``use_subagent_children``（deprecated，生产无调用方）已删除——既有测试
+``test_bugfix_round12.py::test_subagent_children_memoized`` 已迁移为
+验证 ``SubAgentCard`` 的 use_memo 缓存行为。
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ from __future__ import annotations
 from src.tui.ink import h, TEXT, StyledRun, FRAGMENT, truncate_runs, use_memo
 from src.tui._format import single_line
 
-__all__ = ["SubAgentCard", "_render_children", "use_subagent_children"]
+__all__ = ["SubAgentCard"]
 
 
 def _lines_to_children(lines, width: int) -> list:
@@ -85,25 +89,3 @@ def SubAgentCard(props: dict) -> object:
         (lines, width),
     )
     return h(FRAGMENT, None, children)
-
-
-def _render_children(model, width: int) -> list:
-    """兼容辅助：从 model 构建 subagent 卡片子树（旧调用面保留）。
-
-    # deprecated: 组件树请用 ``SubAgentCard``（标准组件）；本函数保留
-    # 供既有测试/外部调用面兼容（``use_subagent_children`` 内部复用）。
-    """
-    return _lines_to_children(getattr(model, "subagent_lines", None), width)
-
-
-def use_subagent_children(model, width: int) -> list:
-    """兼容辅助：use_memo 缓存 subagent 卡片元素列表（旧调用面保留）。
-
-    # deprecated: 组件树请用 ``SubAgentCard``（标准组件——hook 在子组件
-    # fiber 上，不占父组件 hook 槽位）；本函数保留供既有测试/外部调用面
-    # 兼容（ChatView 已迁移到 SubAgentCard）。
-    """
-    return use_memo(
-        lambda: _render_children(model, width),
-        (getattr(model, "subagent_lines", None), width),
-    )

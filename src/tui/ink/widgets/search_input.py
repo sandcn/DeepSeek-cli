@@ -16,7 +16,7 @@ from __future__ import annotations
 from src.tui.core.style import Style
 from ..element import TEXT, Element, h
 from ..hooks import use_state, use_input, use_ref
-from ..widgets.layout import Row, Column
+from ..widgets.layout import Column
 
 __all__ = ["SearchInput"]
 

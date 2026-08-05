@@ -24,15 +24,16 @@
   - 渲染函数不修改状态（只读快照），全部输出为 ink Line 行列表，
     作为「控制器→模型→组件」互换契约（模型 ``subagent_lines`` 存 Line 行）。
 
-依赖约束（P3-11 更新允许清单）：仅依赖 _const/_config/_tool_icons/events/
-_format/app._theme/app._fx/_screen/ink(Line/StyledRun/Style/truncate_runs) 与
-**同级状态模块 _subagent_state** 与标准库（无父包依赖、无事件订阅）；
+依赖约束（P3-11 更新允许清单 + 2026-08-05 公共工具归位）：仅依赖
+_const/_config/_tool_icons/events/_format/core(_fx/_theme)/_screen/
+ink(Line/StyledRun/Style/truncate_runs) 与**同级状态模块 _subagent_state**
+与标准库（无父包依赖、无事件订阅、无 app 域依赖——公共动效/样式工具
+``core._fx`` / ``core._theme`` 替代原 ``app._fx`` / ``app._theme``）；
 ``_tool_icons`` / ``src.tools.registry`` 保持函数内惰性导入（避免模块加载环）。
 """
 
 from __future__ import annotations
 
-import re
 import time
 from typing import List
 
@@ -49,7 +50,7 @@ from src.tui._tool_icons import (
     TOOL_CATEGORY_MAP,
     TOOL_CATEGORY_STYLES,
 )
-from src.tui.app import _fx
+from src.tui.core import _fx
 from src.tui._format import format_duration, format_tokens, format_speed, single_line
 
 from src.tui._subagent_state import _AgentSlot, _ToolRecord
@@ -69,22 +70,11 @@ _S_DIMMER = Style(fg=240)           # 暗灰 — 辅助
 _S_DIMMEST = Style(fg=238)          # 深灰 — 分隔线
 _S_SUMMARY_DIM = Style(fg=245)      # 中灰 — 摘要次要
 
-#: spinner 帧序列唯一真源（方向4 收敛至 _fx.SPINNER_FRAMES；原内联列表形态
-#: 保留为 list——兼容既有测试 ``_SPINNER_FRAMES[i]`` 下标访问与 patch 路径）。
-from src.tui.app._fx import SPINNER_FRAMES as _SPINNER_FRAMES_SRC
+#: spinner 帧序列唯一真源（方向4 收敛至 core._fx.SPINNER_FRAMES；原内联列表
+#: 形态保留为 list——兼容既有测试 ``_SPINNER_FRAMES[i]`` 下标访问与 patch 路径）。
+from src.tui.core._fx import SPINNER_FRAMES as _SPINNER_FRAMES_SRC
 _SPINNER_FRAMES = list(_SPINNER_FRAMES_SRC)
 _INDENT = "  "
-
-
-def _ansi_color_code(ansi: str) -> int | None:
-    """从 ANSI 前景序列提取 256 色号（如 ``"\\033[38;5;214m"`` → 214）；无法解析返回 None。
-
-    # deprecated: 标准 React Ink 组件化后生产路径不再解析 ANSI（配色映射已为
-    # ``_tool_icons.AGENT_TYPE_STYLES``/``TOOL_CATEGORY_STYLES``，直接取 Style.fg）。
-    # 保留供既有测试/外部调用面兼容（``_ansi_color_code(TOOL_CATEGORY_COLORS[...])``）。
-    """
-    m = re.search(r"38;5;(\d+)", ansi)
-    return int(m.group(1)) if m else None
 
 
 def _fade_type_style(agent_type: str, elapsed: float) -> Style:
@@ -94,7 +84,8 @@ def _fade_type_style(agent_type: str, elapsed: float) -> Style:
     elapsed 期间从 ``_FADE_START_COLOR`` 渐变到原色号。
 
     ★ 标准 React Ink 组件化：直接查 ``AGENT_TYPE_STYLES``（Style 映射）取
-    色号——不再经 ANSI 色串 + ``_ansi_color_code`` 解析（中间层移除）。
+    色号——不再经 ANSI 色串 + ``_ansi_color_code`` 解析（中间层已随死代码
+    清理移除，2026-08-05）。
     参数更名 ``agent_type_ansi`` → ``agent_type``（原传 ANSI 色串，现传
     类型名）；未知类型回退 ``_S_DIMMER``（与原 ``code is None`` 分支一致）。
     """
@@ -228,7 +219,7 @@ def _build_group_card(rows: list[tuple[str, str, List[Line]]],
     #   （8s 周期，与工具卡边框呼吸同步），视觉提示「子代理执行中」；全部
     #   完成（closed）保持静态 _S_BORDER（零额外渲染成本）。
     if any_running:
-        from src.tui.app._theme import time_glow
+        from src.tui.core._theme import time_glow
         border = Style(fg=time_glow(23, 45, 8.0))
     else:
         border = _S_BORDER
@@ -264,7 +255,7 @@ def _build_group_card(rows: list[tuple[str, str, List[Line]]],
         #   浅蓝 110→120 脉动（12s 周期，与状态栏耗时呼吸同步）；空闲静态
         #   _S_DIMMER（零额外渲染成本）。
         if any_running:
-            from src.tui.app._theme import time_glow
+            from src.tui.core._theme import time_glow
             omit_style = Style(fg=time_glow(110, 120, 12.0))
         else:
             omit_style = _S_DIMMER
@@ -321,7 +312,7 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
     speed_str = format_speed(slot.last_speed) if slot.status == "running" else ""
     # ★ BEAUTY-23（体验动效）：running 统计呼吸色统一惰性导入（time_glow
     #   0.1s 桶缓存——函数级导入避免模块加载环；仅 running 分支消费）。
-    from src.tui.app._theme import time_glow as _tg
+    from src.tui.core._theme import time_glow as _tg
 
     # ── 类型名（BEAUTY-1：FadeIn 渐显，时间基；无 `[xx]` 方括号标签） ──
     # ★ 标准 React Ink 组件化：AGENT_TYPE_STYLES 导入为模块级（顶部）
@@ -472,7 +463,7 @@ def _running_pulse_style() -> Style:
 
     时间基（``time_glow`` 0.1s 桶缓存），subagent 面板 10Hz 刷新时平滑推进。
     """
-    from src.tui.app._theme import time_glow
+    from src.tui.core._theme import time_glow
     return Style(fg=time_glow(208, 220, 6.0))
 
 

@@ -3,10 +3,12 @@
 覆盖：
 - DisplayEventBus 发布/订阅/取消订阅、多订阅者通知顺序、异常隔离
 - 四层共用场景（api/core/webui/tools 模拟注册）
-- 时间窗口批处理（register_batched_event / unregister_batched_event）
 - 事件类型字段/默认值/序列化往返/frozen 不可变/类型判别
 
 DisplayEventBus 为单例（SingletonMeta），测试前后通过 reset_default/clear 隔离。
+
+2026-08-05 死代码清理：时间窗口批处理机制（_TimeWindowBatcher /
+register_batched_event / unregister_batched_event）已删除——生产未启用。
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import dataclasses
 
 import pytest
 
-from src.tui.events.event_bus import DisplayEventBus, _TimeWindowBatcher
+from src.tui.events.event_bus import DisplayEventBus
 from src.tui.events.event_types import (
     ALL_EVENT_TYPES,
     AgentAddedEvent,
@@ -240,58 +242,6 @@ class TestEventBusFourLayerShared:
 
         assert api_events == []
         assert len(tools_events) == 1
-
-
-class TestEventBusBatched:
-    """时间窗口批处理路径。"""
-
-    def test_batched_event_regression(self, bus, wait_until_fixture):
-        """注册批处理类型后，窗口内多次发布合并为一次分发。"""
-        received = []
-        bus.subscribe(lambda ev: received.append(ev), ContentChunkEvent)
-        bus.register_batched_event(ContentChunkEvent)
-        # P2-8：通过 _TimeWindowBatcher(window=0.5) 构造放大窗口，
-        # 不再直接修改 bus._batcher._window 私有字段。
-        # TODO（改进方向）：DisplayEventBus 构造暂未支持 batcher 注入，
-        # 此处仍直接写私有字段 _batcher；后续可提供 set_batcher 公开注入点后改走注入。
-        bus._batcher = _TimeWindowBatcher(window=0.5)
-
-        bus.publish(ContentChunkEvent(text="a"))
-        assert len(received) == 1  # 首次立即 flush（_last_dispatch 初始为 0）
-
-        bus.publish(ContentChunkEvent(text="b"))  # 窗口内合并，进入 pending
-        assert len(received) == 1  # 尚未分发
-
-        # P2-9：轮询等待 Timer 窗口到期 flush（替代固定 sleep，消除时序依赖）
-        assert wait_until_fixture(lambda: len(received) >= 2, timeout=3.0)
-        assert len(received) == 2
-        assert [e.text for e in received] == ["a", "b"]
-
-    def test_unregister_batched_event_regression(self, bus):
-        """取消批处理注册后事件同步分发。"""
-        received = []
-        bus.subscribe(lambda ev: received.append(ev), ContentChunkEvent)
-        bus.register_batched_event(ContentChunkEvent)
-        bus.unregister_batched_event(ContentChunkEvent)
-
-        bus.publish(ContentChunkEvent(text="sync"))
-
-        assert len(received) == 1
-
-    def test_register_batched_invalid_type_regression(self, bus):
-        """register_batched_event 非 DisplayEvent 子类抛出 TypeError。"""
-        with pytest.raises(TypeError):
-            bus.register_batched_event(str)  # type: ignore[arg-type]
-
-    def test_batched_event_bus_clear_resets_regression(self, bus):
-        """bus.clear() 后 _batched_events 清空（全量重置语义）。"""
-        bus.register_batched_event(ContentChunkEvent)
-        assert ContentChunkEvent in bus._batched_events
-
-        bus.clear()
-
-        assert bus._batched_events == set()
-        assert ContentChunkEvent not in bus._batched_events
 
 
 class TestOutputConsumerSinglePath:

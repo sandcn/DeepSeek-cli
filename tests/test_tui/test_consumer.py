@@ -327,9 +327,8 @@ class TestChatUIConsumerPublicMethods:
         assert mock_consumer.bottom_bar is mock_consumer._bb
 
     def test_output_adapter_property(self, mock_consumer):
-        """output_adapter 属性应委托给 renderer。"""
-        mock_consumer._renderer.output_adapter = "mock_adapter"
-        assert mock_consumer.output_adapter == "mock_adapter"
+        """output_adapter 恒为 None（非全屏流动模型无 OutputAdapter，死代码清理）。"""
+        assert mock_consumer.output_adapter is None
 
     def test_get_input_component(self, mock_consumer):
         """get_input_component 应返回 _components.input 实例（收敛私有访问）。"""
@@ -826,20 +825,18 @@ class TestAssemblyRefactorRegression:
 
 
 class TestLifecycleBatchedRegistration:
-    """方向D 步骤6 / P0-3 重估 — TuiLifecycle.start() 批处理注册决策回归测试。"""
+    """方向D 步骤6 / P0-3 重估 — TuiLifecycle.start() 生命周期注册回归测试。
 
-    def test_lifecycle_start_registers_batched_events_regression(self):
-        """start() 后总线 _batched_events **为空**（批处理不启用决策，P0-3）。
+    2026-08-05 死代码清理：时间窗口批处理机制已删除（原断言
+    ``_batched_events == set()`` 移除）——本测试保留生命周期 start/stop
+    幂等 + 订阅绑定行为断言。
+    """
 
-        2026-07-31 重估：上游 StreamChunkHandler 100ms 节流已满足降频目标，
-        33ms 批处理窗口无实际合并收益，且将「批处理延迟事件 vs 同步直发阶段
-        切换事件」的顺序竞态放大为固定窗口（推理文本静默丢失/content 开新块）
-        → 批处理机制保留但**不启用**。
-        """
+    def test_lifecycle_start_registers_handlers_regression(self):
+        """start() 后总线订阅绑定 + 重复 start() 幂等 + stop() 全量解除。"""
         from unittest.mock import MagicMock
         from src.tui._lifecycle import TuiLifecycle
         from src.tui.events.event_bus import DisplayEventBus
-        from src.tui.events.event_types import ContentChunkEvent, ReasoningChunkEvent
 
         DisplayEventBus.reset_default()
         try:
@@ -855,19 +852,17 @@ class TestLifecycleBatchedRegistration:
 
             lc.start()
 
-            # 批处理不启用：_batched_events 为空（无 ContentChunk/Reasoning 注册）
-            assert bus._batched_events == set()
-            assert ContentChunkEvent not in bus._batched_events
-            assert ReasoningChunkEvent not in bus._batched_events
+            # 生命周期订阅绑定（dispatcher 处理器均已注册到总线）
+            assert bus.subscriber_count == len(lc._dispatcher.list_handlers())
 
-            # 重复 start() 幂等（仍不注册批处理）
+            # 重复 start() 幂等（不重复注册）
             lc.start()
-            assert bus._batched_events == set()
+            assert bus.subscriber_count == len(lc._dispatcher.list_handlers())
 
             lc.stop()
 
-            # stop() 后仍为空
-            assert bus._batched_events == set()
+            # stop() 后全量解除
+            assert bus.subscriber_count == 0
         finally:
             DisplayEventBus.reset_default()
 

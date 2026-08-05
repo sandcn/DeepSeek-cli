@@ -185,7 +185,8 @@ class ParallelExecutor:
         """
         self._executing = True
         # ★ 激活 SubAgent 面板控制器（消费 EventBus 事件并渲染面板帧）
-        from ..tui._subagent_panel import SubAgentPanelController as _PanelCtrl
+        #   ——经 subagent/ 聚合门面统一入口（2026-08-05 出口收敛）
+        from ..tui.subagent import SubAgentPanelController as _PanelCtrl
         _panel = _PanelCtrl.get_default()
         _panel.ensure_active()
 
@@ -350,7 +351,7 @@ class ParallelExecutor:
         max_workers: 最大并行数，默认 None（无限制，等于 task 数量）
         返回: [{_LABEL_KEY: str, _DESCRIPTION_KEY: str, _RESULT_KEY: str, _ERROR_KEY: str}]
         """
-        from ..tui._subagent_panel import SubAgentPanelController as _PanelCtrl
+        from ..tui.subagent import SubAgentPanelController as _PanelCtrl
         _panel = _PanelCtrl.get_default()
         _panel.ensure_active()
 

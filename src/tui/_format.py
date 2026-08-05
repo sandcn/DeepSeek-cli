@@ -87,8 +87,9 @@ def single_line(text: str) -> str:
     """强制单行显示：将换行/回车转义为字面量（``\\n``/``\\r``）。
 
     通用单行契约（方向5 收敛）——model ``_single_line_detail`` /
-    ``_subagent_render`` ``_single_line`` / subagent_panel ``_render_children``
-    三处各自内联同一逻辑：``text.replace("\\r", "\\\\r").replace("\\n", "\\\\n")``。
+    ``_subagent_render`` ``_single_line`` / subagent_panel ``SubAgentCard``
+    （``_lines_to_children``）三处各自内联同一逻辑：
+    ``text.replace("\\r", "\\\\r").replace("\\n", "\\\\n")``。
     单行条目（状态栏/工具卡 detail/补全项/subagent 行）来源字段可能含
     ``\\n``/``\\r``，直接渲染会被终端按物理换行拆成多行，破坏行级 diff
     宽度不变量与帧行号；显示前统一转义为可见字面量。

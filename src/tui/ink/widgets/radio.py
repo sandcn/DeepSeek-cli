@@ -15,9 +15,8 @@ from __future__ import annotations
 import logging
 
 from src.tui.core.style import Style
-from src.tui._screen import wcswidth_simple
+from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
-from ..helpers import _parse_color
 from ..hooks import use_state, use_input, use_ref
 from ..widgets.layout import Column
 from ..widgets.interactive import _normalize_items, _clamp_index, _visible_window, _call

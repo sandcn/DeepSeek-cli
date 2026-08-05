@@ -3,7 +3,6 @@
 覆盖：
   - fade_color: elapsed=0 返回 start、>=duration 返回 end、中间单调
   - spinner_frame: 时间基推进（mock time.monotonic），非帧计数
-  - needs_animation: 空闲/活跃判定
 """
 
 from __future__ import annotations
@@ -73,26 +72,3 @@ class TestSpinnerFrame:
     def test_spinner_frame_empty_regression(self) -> None:
         """空帧序列返回 0，不抛异常。"""
         assert _fx.spinner_frame(10.0, []) == 0
-
-
-class TestNeedsAnimation:
-    """动画需求判定。"""
-
-    def test_idle_no_animation_regression(self) -> None:
-        """空闲（无活跃状态）不触发动画重绘。"""
-        assert _fx.needs_animation([]) is False
-        assert _fx.needs_animation([False, False, False]) is False
-
-    def test_idle_no_animation_redraw_regression(self) -> None:
-        """BEAUTY-5：空闲（无活跃状态）不需要动画重绘；running 状态需要。"""
-        assert _fx.needs_animation([]) is False
-        assert _fx.needs_animation([False, False]) is False
-        assert _fx.needs_animation([True, False]) is True
-        # 非空字符串状态（如 "running"）视为活跃
-        assert _fx.needs_animation(("done", "running")) is True
-
-    def test_active_animation_regression(self) -> None:
-        """任一活跃状态触发动画重绘。"""
-        assert _fx.needs_animation([False, True, False]) is True
-        # 非空字符串状态（如 "running"）为真
-        assert _fx.needs_animation(("done", "running")) is True

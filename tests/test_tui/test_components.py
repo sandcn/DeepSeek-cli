@@ -285,14 +285,15 @@ class TestSubAgentPanel:
         assert "task line one\\nline two" in sub_lines[0].plain
 
     def test_single_conversion_point_matches_line_runs(self):
-        """★ 标准 React Ink 组件化 — 子代理行经 _render_children 直接渲染。
+        """★ 标准 React Ink 组件化 — 子代理行经 SubAgentCard 直接渲染。
 
         契约：subagent_lines 为 ink Line 行（StyledRun），组件侧转换点
-        ``subagent_panel._render_children`` 直接复用 ``Line.runs``（不再
-        ``ansi_to_runs`` 解析 ANSI 字符串）。本用例断言渲染结果与 Line.runs
-        直接使用等值。
+        ``subagent_panel._lines_to_children``（SubAgentCard 内部复用）直接
+        复用 ``Line.runs``（不再 ``ansi_to_runs`` 解析 ANSI 字符串）。本
+        用例断言渲染结果与 Line.runs 直接使用等值。2026-08-05 死代码清理：
+        旧 ``_render_children`` 兼容辅助已删除，改经纯函数转换点验证。
         """
-        from src.tui.app.subagent_panel import _render_children
+        from src.tui.app.subagent_panel import _lines_to_children
         from src.tui.ink import StyledRun, Line, truncate_runs
         from src.tui.core.style import Style
 
@@ -302,7 +303,7 @@ class TestSubAgentPanel:
         m = AppModel()
         m.subagent_lines = [line]
 
-        children = _render_children(m, width)
+        children = _lines_to_children(m.subagent_lines, width)
         assert len(children) == 1, "转换点应产出 1 个子节点"
         child = children[0]
         # 与 Line.runs 直接使用（同截断参数）等值

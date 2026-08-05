@@ -93,8 +93,10 @@ class ChatUIConsumer:
     def for_testing(cls, components, event_bus=None) -> "ChatUIConsumer":
         """创建用于测试的 ChatUIConsumer 实例。
 
-        支持新旧两种 ``components`` 类型：
-          - 旧 ``_ChatUIComponents``：提取内部属性
+        支持两种 ``components`` 输入（2026-08-05 简化说明：旧
+        ``_ChatUIComponents`` 类已删除，对象风格入口保留——测试用
+        ``SimpleNamespace`` 传组件）：
+          - 对象风格（hasattr ``rs``）：提取属性
           - ``dict``：按 key 取值
 
         Args:
@@ -110,7 +112,7 @@ class ChatUIConsumer:
         instance = cls.__new__(cls)
         instance._bus = event_bus
 
-        # 兼容旧的 _ChatUIComponents 和新接口
+        # 对象风格（旧 _ChatUIComponents / SimpleNamespace）与 dict 双入口
         if hasattr(components, 'rs'):
             instance._rs = components.rs
             instance._engine = components.engine
@@ -261,7 +263,13 @@ class ChatUIConsumer:
 
     @property
     def output_adapter(self):
-        return self._renderer.output_adapter
+        """返回 None（非全屏流动模型无 OutputAdapter；2026-08-05 死代码清理）。
+
+        旧实现委托 ``self._renderer.output_adapter``（``_InkRendererFacade``
+        占位恒 None，无生产消费方）——占位类已删除，本属性直接返回 None
+        保持公共 API 兼容（test_consumer.py 已同步更新断言）。
+        """
+        return None
 
     def set_panel_refresh_callback(self, callback: Callable[[], None] | None) -> None:
         self._engine.set_panel_refresh_callback(callback)

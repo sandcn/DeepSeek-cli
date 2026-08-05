@@ -27,7 +27,7 @@ React Ink 化（2026-08-05）：user_select 工具的终端交互界面从「命
 from __future__ import annotations
 
 from src.tui.core.style import Style
-from src.tui._screen import wcswidth_simple
+from src.tui._width import wcswidth_simple
 from src.tui._input import _wrap_by_width
 from src.tui.app.input_area import _desc_column_width, _truncate_width
 from src.tui.app._theme import _S_DIM, _S_SEP

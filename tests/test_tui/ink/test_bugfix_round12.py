@@ -532,22 +532,26 @@ def _collect_text_fibers(root):
 # ═══════════════════════════════════════════════════════════
 
 
-def test_subagent_children_memoized():
-    """subagent_lines 引用不变时 use_memo 命中（零重建，组件渲染期）。"""
+def test_subagent_card_children_memoized():
+    """subagent_lines 引用不变时 SubAgentCard 内部 use_memo 命中（零重建）。
+
+    BUG-42 语义迁移（2026-08-05 死代码清理：旧 ``use_subagent_children``
+    兼容辅助已删除，测试改验证标准组件 ``SubAgentCard`` 的相同缓存行为）。
+    """
     from src.tui.app import subagent_panel as sp
     from src.tui.app.model import AppModel
     from src.tui.ink.reconciler import Reconciler
     from src.tui.ink.element import h, TEXT
+    from src.tui.ink.output import Line
     from unittest.mock import patch
 
     m = AppModel()
-    m.subagent_lines = ["line1", "line2"]
+    m.subagent_lines = [Line.of("line1"), Line.of("line2")]
 
     def _Comp(props):
-        children = sp.use_subagent_children(props["model"], 40)
-        return h("box", None, children)
+        return h(sp.SubAgentCard, {"lines": props["model"].subagent_lines, "width": 40})
 
-    with patch.object(sp, "_render_children", wraps=sp._render_children) as mock:
+    with patch.object(sp, "_lines_to_children", wraps=sp._lines_to_children) as mock:
         r = Reconciler()
         root = r.create_root()
         r.render(root, h(_Comp, {"model": m}), 80, 24)
@@ -930,27 +934,6 @@ def test_diff_hunk_header_sanitized():
     assert "\x1b[" not in _sanitize_ansi("@@ -1 +1 @@ \x1b[31mINJECT"), (
         "hunk 头应消毒 ANSI"
     )
-
-
-# ═══════════════════════════════════════════════════════════
-# BUG-58：事件批处理队列水位限制
-# ═══════════════════════════════════════════════════════════
-
-
-def test_batcher_pending_bounded():
-    """批处理待处理队列超过上限时丢弃最旧。"""
-    from src.tui.events.event_bus import _TimeWindowBatcher
-    b = _TimeWindowBatcher(window=999.0)  # 窗口很大 → 不 flush
-    b._last_dispatch = 0.0
-    calls = []
-    h = lambda ev: calls.append(ev)
-    # 入队超过上限的事件
-    for i in range(_TimeWindowBatcher._MAX_PENDING + 50):
-        b.enqueue(h, i)
-    assert len(b._pending) <= _TimeWindowBatcher._MAX_PENDING
-    # 保留最新（队尾是最新）
-    assert b._pending[-1][1] == _TimeWindowBatcher._MAX_PENDING + 49
-    assert b._pending[0][1] == 50  # 最旧被丢弃
 
 
 # ═══════════════════════════════════════════════════════════

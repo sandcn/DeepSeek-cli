@@ -55,7 +55,7 @@ from .layout import (
 )
 from .radio import RadioList
 from .codeblock import CodeBlock
-from .spinner import InlineSpinner, SPINNER_FRAMES as _INLINE_SPINNER_FRAMES
+from .spinner import InlineSpinner
 from .gradient import Gradient
 from .staticlines import StaticLines
 

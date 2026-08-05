@@ -23,81 +23,34 @@ InputBufferEditor 通过构造注入 ``echo_callback``（缺省 None 时 _echo �
   「不批量化」决策不变（写入仍逐条异步落盘），仅复用线程、防高频 Enter 的
   线程创建开销与磁盘竞争（详见 _HistoryDiskWriter 注释）。
 
+★ 模块边界（2026-08-05 架构优化）：历史写盘已拆分至 ``_history_disk.py``
+  （``_safe_disk_append``/``_HistoryDiskWriter``/``_HISTORY_DISK_WRITER``）；
+  本模块经 re-export 保持旧导入路径兼容（``from src.tui._input_buffer import
+  _HISTORY_DISK_WRITER`` 等）。编辑/历史/队列主体（InputBufferEditor）保留。
+
 设计模式: 策略（Strategy）——编辑算法族与 I/O 解耦。
 """
 
 from __future__ import annotations
 
 import logging
-import queue
 import threading
 from pathlib import Path
 from typing import Callable
 
 from src.api.escape_monitor._history import _HISTORY_MAX_ENTRIES
 
+# ★ 历史写盘（模块边界优化，2026-08-05）：_safe_disk_append /
+#   _HistoryDiskWriter / _HISTORY_DISK_WRITER 迁至 _history_disk.py（后台
+#   写盘独立职责）；本模块 re-export 保持旧导入路径兼容
+#   （``from src.tui._input_buffer import _HISTORY_DISK_WRITER`` 等）。
+from src.tui._history_disk import (
+    _safe_disk_append,
+    _HistoryDiskWriter,
+    _HISTORY_DISK_WRITER,
+)
+
 _logger = logging.getLogger(__name__)
-
-
-def _safe_disk_append(history_io, escaped: str) -> None:
-    """后台线程历史写盘（锁外执行；失败仅记日志，不抛回调用线程）。
-
-    方向3（Enter fsync 阻塞渲染修复）：``os.fsync``（Android Termux ext4
-    10-100ms）在渲染线程持锁执行会冻结所有缓冲编辑——迁移到后台 daemon
-    线程。daemon 线程随进程退出自动终止；退出冲刷由 lifecycle flush 兜底。
-    """
-    try:
-        if not history_io.append(escaped):
-            _logger.warning("历史文件异步追加写入失败")
-    except Exception:
-        _logger.debug("历史文件异步追加异常", exc_info=True)
-
-
-# ═══════════════════════════════════════════════════════════
-# 共享串行历史写盘（review 方向：替代每 Enter 创建 daemon 线程）
-# ═══════════════════════════════════════════════════════════
-
-class _HistoryDiskWriter:
-    """共享后台历史写盘（单 daemon 线程 + 有界队列，串行有序）。
-
-    替代原「每 Enter 创建 daemon 线程」实现（高频 Enter/脚本粘贴多行时线程
-    创建开销与磁盘竞争；有界队列防历史写盘慢时内存无限累积）。
-
-    权衡说明（保留原设计注释语义）：写盘仍为异步 daemon——崩溃时未落盘历史
-    丢失窗口与退出冲刷复杂度同原实现（退出冲刷由 lifecycle flush 兜底），
-    仅收敛线程模型（线程复用 + 队列有界），不改变「不批量化」的决策。
-
-    线程安全：``queue.Queue`` 内部锁保护；``submit`` 非阻塞（队列满时丢弃并
-    记 debug——不阻塞输入路径，与「写盘失败仅记日志」一致）。
-    """
-
-    #: 待写队列上限（条）——超出丢弃（历史写盘慢时防内存无限）
-    _MAX_PENDING = 256
-
-    def __init__(self) -> None:
-        self._queue: queue.Queue = queue.Queue(maxsize=self._MAX_PENDING)
-        self._thread = threading.Thread(
-            target=self._run, daemon=True, name="tui-history-disk-writer",
-        )
-        self._thread.start()
-
-    def _run(self) -> None:
-        while True:
-            item = self._queue.get()
-            if item is None:  # 哨兵退出（当前无生产调用方；保留供生命周期/测试）
-                break
-            history_io, escaped = item
-            _safe_disk_append(history_io, escaped)
-
-    def submit(self, history_io, escaped: str) -> None:
-        try:
-            self._queue.put((history_io, escaped), block=False)
-        except queue.Full:
-            _logger.debug("历史写盘队列已满，丢弃", exc_info=True)
-
-
-#: 模块级共享 writer（daemon 线程，进程退出自动终止）
-_HISTORY_DISK_WRITER = _HistoryDiskWriter()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -847,4 +800,4 @@ class InputBufferEditor:
         return self._input_ready.wait(timeout)
 
 
-__all__ = ["InputBufferEditor"]
+__all__ = ["InputBufferEditor", "_safe_disk_append", "_HistoryDiskWriter", "_HISTORY_DISK_WRITER"]

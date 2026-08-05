@@ -155,12 +155,8 @@ def _ParseLine(props) -> object:
     return h(TEXT, {"styled": runs})
 
 
-def build_app_element(model, width: int, animator=None) -> object:
-    """构建根元素（session 渲染入口）。
-
-    animator: 保留参数（兼容旧调用面），App 组件已不使用动画上下文。
-    # deprecated: animator 参数已废弃，仅兼容旧调用面
-    """
+def build_app_element(model, width: int) -> object:
+    """构建根元素（session 渲染入口）。"""
     return h(App, {"model": model, "width": width})
 
 

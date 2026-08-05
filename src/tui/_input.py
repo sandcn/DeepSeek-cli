@@ -21,12 +21,15 @@ Input 保留全部公开 API 作为薄外观（Facade），方法体委托：
 
 模块级私有函数（``_TAB_WIDTH`` / ``_compute_cursor_visual_pos`` /
 ``_expand_tabs`` / ``_wrap_by_width`` / ``_tab_pos_to_expanded`` /
-``_compute_input_layout`` / ``_cursor_visual_from_layout``）保持定义于本文件：
-bottom_bar（_bar/_layout/_render）依赖，勿迁移。
+``_compute_input_layout`` / ``_cursor_visual_from_layout``）已拆分至
+``_input_layout.py``（纯函数，输入区换行与光标视觉位置计算），本模块
+re-export 保持旧导入路径兼容（tests 直接 ``from src.tui._input import
+_compute_cursor_visual_pos`` 等）。
 
 方向5（光标算法单一真源）：``_compute_input_layout`` /
-``_cursor_visual_from_layout`` 自 ``app/input_area.py`` 迁移至本模块——
-input_area / session / input_area host 均从本模块复用同一实现，不再双实现。
+``_cursor_visual_from_layout`` 原自 ``app/input_area.py`` 迁移至本模块，
+再随模块边界拆分独立为 ``_input_layout.py``——input_area / session /
+_cursor 均从同一实现复用，不再双实现。
 
 线程模型：
   - Render 线程（daemon）：_drain_queue() 中每帧调用 process_events()，
@@ -45,7 +48,25 @@ from src.api.escape_monitor._history import (
     _append_to_history_file,
     _compact_history_file,
 )
-from src.tui._screen import wcswidth_simple, TerminalWidthCache
+from src.tui._screen import TerminalWidthCache
+# ★ 输入区布局计算（模块边界优化，2026-08-05）：_TAB_WIDTH/_expand_tabs/
+#   _tab_pos_to_expanded/_compute_input_layout/_cursor_visual_from_layout/
+#   _compute_cursor_visual_pos 迁至 _input_layout.py（纯函数）；本模块
+#   re-export 保持旧导入路径兼容。**``_wrap_by_width`` 定义也已归位
+#   ``_input_layout``**（2026-08-05 循环依赖消除：原定义保留于本文件导致
+#   ``_input_layout._compute_input_layout`` 经函数内延迟 import 访问形成
+#   ``_input → _input_layout → _input`` 隐性环；归位后本模块 re-export
+#   保持旧导入路径兼容——``from src.tui._input import _wrap_by_width`` 仍
+#   可用，测试 patch 目标已迁移至 ``src.tui._input_layout._wrap_by_width``）。
+from ._input_layout import (
+    _TAB_WIDTH,
+    _expand_tabs,
+    _tab_pos_to_expanded,
+    _wrap_by_width,
+    _compute_input_layout,
+    _cursor_visual_from_layout,
+    _compute_cursor_visual_pos,
+)
 from ._input_parser import (
     InputParser,
     KeyEvent,
@@ -63,220 +84,6 @@ _logger = logging.getLogger(__name__)
 # 解析超时常量（_CSI_READ_TIMEOUT / _SS3_READ_TIMEOUT / _UTF8_READ_TIMEOUT）
 # 已随解析逻辑搬移至 _input_parser.py；_UTF8_READ_TIMEOUT 由 read_utf8_char
 # 使用，随读取层搬移至 _input_io.py（本模块不再需要）。
-
-# ═══════════════════════════════════════════════════════════
-# 光标视觉位置计算（内联自 widgets/bottom_bar/cursor.py）
-# 使用 wcswidth_simple() 替代 wcwidth.wcswidth()
-# ═══════════════════════════════════════════════════════════
-# 唯一真源：本文件（_input.py）提供 _compute_cursor_visual_pos /
-# _expand_tabs / _tab_pos_to_expanded / _wrap_by_width / _TAB_WIDTH 的实现，
-# Input.compute_cursor 引用同一实现。
-
-_TAB_WIDTH = 4  # 制表符宽度（列数）—— 唯一真源
-
-
-def _expand_tabs(text: str, start_col: int = 0, tab_width: int | None = None) -> str:
-    """将制表符按制表位展开为空格。
-
-    每个 \\t 跳到下一个制表位列（tab_width 的整数倍），
-    用空格填充至该列。
-
-    Args:
-        text: 含制表符的文本。
-        start_col: 起始列（0-based）。
-        tab_width: 制表宽度，默认 _TAB_WIDTH。
-
-    Returns:
-        展开后的纯空格文本。
-    """
-    if tab_width is None:
-        tab_width = _TAB_WIDTH
-    if '\t' not in text:
-        return text
-    result = []
-    col = start_col
-    for ch in text:
-        if ch == '\n':
-            result.append(ch)
-            col = 0
-        elif ch == '\t':
-            spaces = tab_width - (col % tab_width)
-            result.append(' ' * spaces)
-            col += spaces
-        else:
-            cw = wcswidth_simple(ch)
-            result.append(ch)
-            col += cw
-    return ''.join(result)
-
-
-def _tab_pos_to_expanded(text: str, pos: int,
-                         tab_width: int | None = None) -> int:
-    """将含制表符文本中的字符位置映射到展开后的位置。
-
-    Args:
-        text: 含制表符的原始文本。
-        pos: 原始文本中的字符索引（<0 返回 -1）。
-        tab_width: 制表宽度，默认 _TAB_WIDTH。
-
-    Returns:
-        展开后文本中对应的字符索引。
-    """
-    if pos < 0:
-        return -1
-    if tab_width is None:
-        tab_width = _TAB_WIDTH
-    expanded_pos = 0
-    col = 0
-    for i, ch in enumerate(text):
-        if i >= pos:
-            break
-        if ch == '\t':
-            spaces = tab_width - (col % tab_width)
-            expanded_pos += spaces
-            col += spaces
-        elif ch == '\n':
-            expanded_pos += 1
-            col = 0
-        else:
-            cw = wcswidth_simple(ch)
-            expanded_pos += 1
-            col += cw
-    return expanded_pos
-
-
-def _wrap_by_width(s: str, max_width: int) -> list[str]:
-    """按终端列宽拆分文本为多行，每行不超过 max_width 列。
-
-    优先按 \\n 拆分（强制换行），再对每段按列宽拆行。
-    调用方应先通过 _expand_tabs 展开制表符。
-    """
-    if max_width <= 0 or not s:
-        return [s] if s else [""]
-    lines: list[str] = []
-    for segment in s.split('\n'):
-        remaining = segment
-        while remaining:
-            w = 0
-            idx = 0
-            for i, ch in enumerate(remaining):
-                cw = wcswidth_simple(ch)
-                if w + cw > max_width:
-                    break
-                w += cw
-                idx = i + 1
-            if idx == 0:
-                idx = 1
-            lines.append(remaining[:idx])
-            remaining = remaining[idx:]
-        if not segment:
-            lines.append("")
-    return lines if lines else [""]
-
-
-def _compute_input_layout(text: str, max_input: int) -> tuple[int, list[list[str]]]:
-    """单次换行计算：返回 (总行数, 每逻辑行拆行后的段列表)。
-
-    方向5（光标算法单一真源）：本函数自 ``app/input_area.py`` 迁移（原
-    input_area 与 _input 双实现）——``_build_lines``/
-    ``_cursor_visual_from_layout``/``_compute_cursor_visual_pos`` 全部复用，
-    每帧至多 1 次换行计算（PERF-1）。
-
-    ``wrapped_by_logical[i]`` 为第 i 个逻辑行（按 ``\\n`` 拆分）拆行后的段
-    列表；空逻辑行对应 ``[""]``。
-    """
-    if not text:
-        return 1, [[""]]
-    expanded = _expand_tabs(text)
-    wrapped_by_logical: list[list[str]] = []
-    total_rows = 0
-    for segment in expanded.split('\n'):
-        seg_wrapped = _wrap_by_width(segment, max_input) or [""]
-        wrapped_by_logical.append(seg_wrapped)
-        total_rows += len(seg_wrapped)
-    return max(1, total_rows), wrapped_by_logical
-
-
-def _cursor_visual_from_layout(
-    text: str,
-    cursor_pos: int,
-    wrapped_by_logical: list[list[str]],
-) -> tuple[int, int]:
-    """基于已缓存的换行布局计算光标视觉位置（复用缓存，避免重复换行计算）。
-
-    方向5（光标算法单一真源）：本函数自 ``app/input_area.py`` 迁移——与
-    ``_compute_cursor_visual_pos`` 语义一致：返回 (visual_line_idx,
-    visual_col)。仅对光标所在逻辑行做 O(行) 定位，不重新整段换行。
-    """
-    if not text:
-        return (0, 0)
-    abs_cursor = len(text) if cursor_pos < 0 else cursor_pos
-
-    lines = text.split('\n')
-    cum = 0
-    for logical_idx, logical_line in enumerate(lines):
-        line_len = len(logical_line)
-        if abs_cursor <= cum + line_len:
-            # 光标在此逻辑行中（或在行末的 \n 上）
-            pos_in_line = abs_cursor - cum
-            segs = (
-                wrapped_by_logical[logical_idx]
-                if logical_idx < len(wrapped_by_logical)
-                else [""]
-            )
-            expanded_in_line = _tab_pos_to_expanded(logical_line, pos_in_line)
-            if expanded_in_line < 0:
-                last_seg = segs[-1] if segs else ""
-                col_in_line = wcswidth_simple(last_seg)
-                visual_line_in_logical = len(segs) - 1 if segs else 0
-            else:
-                cum2 = 0
-                visual_line_in_logical = 0
-                for i, seg in enumerate(segs):
-                    if expanded_in_line <= cum2 + len(seg):
-                        visual_line_in_logical = i
-                        prefix = seg[:expanded_in_line - cum2]
-                        col_in_line = wcswidth_simple(prefix)
-                        break
-                    cum2 += len(seg)
-                else:
-                    visual_line_in_logical = len(segs) - 1 if segs else 0
-                    col_in_line = wcswidth_simple(segs[-1]) if segs else 0
-            total_before = sum(len(s) for s in wrapped_by_logical[:logical_idx])
-            return (total_before + visual_line_in_logical, col_in_line)
-        cum += line_len + 1
-
-    # 超出范围 → 末尾（防御分支，正常路径不可达——光标位置落在文本内时
-    # 上方循环已 return；仅当 abs_cursor 超出全部逻辑行（如 cursor_pos 超
-    # 长）时到达。保留防御成本低、正确性安全）
-    last_segs = wrapped_by_logical[-1] if wrapped_by_logical else [""]
-    last_seg = last_segs[-1] if last_segs else ""
-    col = wcswidth_simple(last_seg)
-    total_before = sum(len(s) for s in wrapped_by_logical[:-1])
-    visual_row = total_before + (len(last_segs) - 1 if last_segs else 0)
-    return (visual_row, col)
-
-
-def _compute_cursor_visual_pos(
-    text: str, cursor_pos: int, max_width: int,
-) -> tuple[int, int]:
-    """计算光标在带 \\n 的文本中的视觉位置（行号, 列号）。
-
-    方向5（光标算法单一真源）：内部复用 ``_compute_input_layout`` +
-    ``_cursor_visual_from_layout``（与 input_area 缓存布局语义一致，行为
-    不变——input_area 的 ``_compute_input_layout``/``_cursor_visual_from_layout``
-    已迁移到本模块，不再双实现）。
-
-    Args:
-        text: 原始输入文本（含 \\n）。
-        cursor_pos: 光标在原始文本中的字符偏移（-1=末尾）。
-        max_width: 每行最大列宽。
-
-    Returns:
-        (visual_line_idx, visual_col) —— 均为 0-based。
-    """
-    _, wrapped_by_logical = _compute_input_layout(text, max_width)
-    return _cursor_visual_from_layout(text, cursor_pos, wrapped_by_logical)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -791,56 +598,6 @@ class Input:
     def _kill_to_eol(self) -> None:
         """Ctrl+K：删除光标到当前逻辑行尾（委托 InputBufferEditor）。"""
         self._buffer_editor._kill_to_eol()
-
-    # ═══════════════════════════════════════════════════════
-    # 光标定位（保留于外观，使用 wcswidth_simple）
-    # ═══════════════════════════════════════════════════════
-
-    def compute_cursor(
-        self,
-        text: str,
-        cursor_pos: int,
-        bottom_lines: int,
-        subagent_lines: int,
-        completion_height: int,
-    ) -> tuple[int, int, int, int]:
-        """计算光标在终端上的位置。
-
-        # deprecated: 无生产调用方（公共 API 兼容保留，不删除）——光标视觉
-        # 位置计算已由 ``_compute_input_layout`` / ``_cursor_visual_from_layout``
-        # 单一真源承载（本模块）；本方法保留签名与行为（tests 锁定，
-        # test_input.py::TestComputeCursor 多断言），内部复用同一真源实现。
-
-        Args:
-            text: 输入文本（含 \\n）。
-            cursor_pos: 光标在文本中的偏移位置（-1=末尾）。
-            bottom_lines: 底部栏总行数（含分隔线、状态行、输入行、补全弹窗）。
-            subagent_lines: subagent 面板行数。
-            completion_height: 补全弹窗高度（行数）。
-
-        Returns:
-            (r_cursor, cursor_col, vis_row, vis_col) 四元组：
-              - r_cursor: 终端行号（1-based）
-              - cursor_col: 终端列号（1-based）
-              - vis_row: 视觉行（0-based）
-              - vis_col: 视觉列（0-based）
-        """
-        width = self._term_width_cache.get_width()
-        height = self._term_width_cache.get_height()
-
-        max_input = max(1, width - 4)
-        vis_row, vis_col = _compute_cursor_visual_pos(
-            text, cursor_pos, max_input,
-        )
-
-        r_cursor = (
-            height - bottom_lines + 4 + subagent_lines + completion_height + vis_row
-        )
-        r_cursor = max(1, min(r_cursor, height))
-
-        cursor_col = min(3 + vis_col, width)
-
-        return (r_cursor, cursor_col, vis_row, vis_col)
 
     # ═══════════════════════════════════════════════════════
     # 回调接口（委托 InputBufferEditor / InputDispatcher）

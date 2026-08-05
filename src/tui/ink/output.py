@@ -7,7 +7,7 @@
   - FrameBuilder：流式构建 Frame 的辅助器（按宽换行/追加）
 
 零 Rich 依赖：样式一律用 ``src.tui.core.style.Style``，
-宽度一律用 ``_screen.wcswidth_simple``（唯一宽度依据）。
+宽度一律用 ``_width.wcswidth_simple``（唯一宽度依据）。
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from dataclasses import field
 from typing import Iterable
 
 from src.tui.core.style import Style
-from src.tui._screen import wcswidth_simple
+from src.tui._width import wcswidth_simple
 
 
 # ═══════════════════════════════════════════════════════════

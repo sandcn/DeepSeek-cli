@@ -1,7 +1,9 @@
 """终端补全引擎 — 纯计算型，不依赖 prompt_toolkit。
 
-供 EscapeMonitor Tab 键回调使用，与 ChatCompleter（prompt_toolkit 专用）
-平行存在，服务于新的流式输入系统。
+供 ``_CmplHandler``（``_completion.py``，补全 UI 交互流程）委托的**纯计算**
+模块：装配链为 ``TuiAssembly → _CmplHandler → CompletionEngine``（Tab/自动
+补全回调经 ``_CmplHandler`` 调用本引擎计算候选项）。与 ``_completion.py``
+职责互补（交互 vs 计算），非平行重复实现。
 
 支持三种补全：
   - 命令补全（/ 开头）：从命令注册表获取

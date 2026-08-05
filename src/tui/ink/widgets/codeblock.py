@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 
 from src.tui.core.style import Style
-from src.tui._screen import wcswidth_simple
+from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
 from ..helpers import _parse_color
 from ..widgets.layout import Row, Column

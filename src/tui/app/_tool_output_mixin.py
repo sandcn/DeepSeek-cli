@@ -1,0 +1,343 @@
+"""AppModel 工具输出 Mixin — 工具 box 生命周期（open/append/close）。
+
+模块边界（2026-08-05 架构优化）：从 ``app/model.py`` 拆分——工具输出处理
+（开放工具 box 的创建/追加/修剪/关闭/已提交行替换）独立为 mixin，
+``AppModel(_ToolOutputMixin)`` 组合。mixin 方法操作 ``self`` 状态
+（``tool_boxes``/``committed_lines``/``blocks``），依赖宿主提供的
+``append_block``/``commit_open_block``/``commit_block``/``_block_to_ink_lines``
+（AppModel 主类实现）。
+
+日志名保持 ``src.tui.app.model``（外部 caplog/过滤按旧名监听）。
+"""
+
+from __future__ import annotations
+
+import logging
+
+# ★ 状态常量/辅助来自 model 门面（re-export 自 _state_types/_model_helpers）——
+#   避免 mixin 反向依赖 model 主模块造成循环；toolcard 行生成经函数内惰性
+#   import（toolcard 零依赖，无循环风险）。
+from src.tui.app._state_types import ChatBlock
+from src.tui.app._model_helpers import (
+    _TOOL_INCREMENTAL_THRESHOLD,
+    _BASH_OUTPUT_TAIL_LINES,
+    _TOOL_HEAD_TOOLS,
+    _TOOL_HEAD_LINES,
+    _single_line_detail,
+)
+# ★ ToolCard React Ink 组件化：工具卡行生成/状态图标收敛到 app/toolcard.py
+#   （模块级零依赖，函数内惰性 import——无循环风险）。
+from src.tui.app.toolcard import _tool_icon_runs, tool_card_lines
+
+_logger = logging.getLogger("src.tui.app.model")
+
+
+class _ToolOutputMixin:
+    """AppModel 工具输出行为 mixin（工具 box 生命周期）。"""
+
+    def open_tool_box(self, tool_id: str, tool_name: str, detail: str = "") -> ChatBlock:
+        """打开一个工具分组：卡片顶边框立即显示，输出增量追加（卡片化）。
+
+        方向D 步骤15：extra 记录工具状态（running）与顶边框 detail
+        （``tool_detail``）；输出行不再增量提交 committed_lines（关闭时统一
+        提交/冻结，避免 committed_lines 与块状态不一致）。
+
+        防孤儿卡（同一 tool_id 重复 open）：非空 tool_id 已存在开放 box 时
+        **复用**——修复前直接新建块并覆盖 ``tool_boxes[tool_id]``，旧块成为
+        孤儿（永不关闭、无主体，只渲染一个 `┌─ ●` 顶边框，TUI 显示多一行）。
+        触发场景：同一 tool_call_id 重复 ToolStartedEvent（重试/重复投递），
+        或 append_tool_output 兜底建 box 后 ToolStartedEvent 后到。复用并更新
+        标题/状态（如兜底 box 的 tool_name="" → 后到 open 补全 Bash·detail）。
+        """
+        from src.tui.core.style import Style
+        from src.renderer.ansi.helpers import AnsiLine
+        from src.tools.registry import get_tool_display_name
+        display = get_tool_display_name(tool_name) or tool_name or "工具"
+        # 工具卡片顶边框 detail 数据源（tool_card_lines 消费）；
+        # ★ bash 多行命令 detail 含 \n——强制单行转义（对齐 _single_line 契约，
+        #   防 \n 拆破单行边框）。title/active_tool 复用转义后值（同源单行）。
+        detail = _single_line_detail(detail)
+        if tool_id:
+            existing = self.tool_boxes.get(tool_id)
+            if existing is not None:
+                # 复用已开放 box：更新工具名/状态/detail + 顶边框标题行
+                # （live 渲染下一帧生效；开放 box 未提交，更新安全）
+                existing.extra["tool_name"] = tool_name
+                existing.extra["tool_status"] = "running"
+                existing.extra["tool_detail"] = detail
+                title = f"  \u00b7 {display}"
+                if detail:
+                    title = f"  \u00b7 {display} \u00b7 {detail}"
+                if existing.lines:
+                    existing.lines[0] = AnsiLine.of(title, Style(fg=23, bold=True))
+                # ★ BUG-22（review 方向）：已增量提交过的 box（输出 > 阈值，
+                #   顶边框已在 committed_lines）复用更新标题时**同步重建
+                #   committed_lines 顶边框行**——修复前仅更新块内标题行，
+                #   渲染仍显示旧标题（如兜底 box 的空工具名）。
+                #   ★ BUG-30（review 方向）：经 ``_replace_committed_line``
+                #   替换新 Line + 列表身份变化——修复前直接 ``committed_lines[offset]
+                #   = Line(...)`` 替换元素但列表身份不变 → 前缀缓存命中返回旧
+                #   元素 → 新标题不上屏（与 close_tool_box 图标翻转同根因）。
+                if existing.committed_line_count > 0:
+                    offset = existing.extra.get("_first_committed_offset")
+                    if offset is not None and 0 <= offset < len(self.committed_lines):
+                        from src.tui.ink import Line
+                        head = tool_card_lines(
+                            existing, getattr(self, "width", 0), 0, None,
+                        )
+                        if head:
+                            self._replace_committed_line(offset, Line(head[0]))
+                self.active_tool = {
+                    "name": display, "detail": detail, "status": "running",
+                    "tool_name": tool_name or "",
+                }
+                return existing
+        block = self.append_block("tool")
+        block.extra["tool_id"] = tool_id or ""
+        block.extra["tool_name"] = tool_name
+        block.extra["tool_status"] = "running"
+        block.extra["tool_detail"] = detail
+        title = f"  \u00b7 {display}"
+        if detail:
+            title = f"  \u00b7 {display} \u00b7 {detail}"
+        block.lines.append(AnsiLine.of(title, Style(fg=23, bold=True)))
+        # 方向1 B8：记录实际存储 key（非空 tool_id 即自身；空 tool_id 场景为
+        # _next_tool_id() 生成值）。``_box_key`` 记录**原始传入 tool_id**——
+        # 非空时即实际存储 key（tool_boxes 按原 id 存取）；空 id 场景为 ""，
+        # 供 ``close_tool_box("")`` 按空 id 匹配匿名 box 关闭（修复空 tool_id
+        # box 泄漏：旧实现空 id open 存于生成 key，close("") 永远 pop 不到）。
+        key = tool_id or self._next_tool_id()
+        block.extra["_box_key"] = tool_id
+        self.tool_boxes[key] = block
+        # Claude TUI parity 步骤 2.2：记录进行中工具（ToolStatusHeader 消费）
+        self.active_tool = {
+            "name": display, "detail": detail, "status": "running",
+            "tool_name": tool_name or "",
+        }
+        return block
+
+    def append_tool_output(self, tool_id: str, text: str) -> None:
+        """追加工具输出行到对应分组（卡片主体行）。
+
+        方向4（开放工具块增量提交）：输出行数超过阈值
+        （``_TOOL_INCREMENTAL_THRESHOLD``）时经 ``commit_open_block`` 增量提交
+        已闭合行到 committed_lines——长工具输出每帧不再全量重渲染（开放块只
+        渲染未提交尾）；关闭时 ``commit_block`` 追加剩余尾（含状态行），
+        ``committed_line_count`` 计数保证不重复（「关闭后无重复行」不变量）。
+
+        Bug A 修复：按 tool_id 精确路由——key 命中精确追加；key 未命中且
+        tool_id 非空 → 创建匿名 box（标题回退「工具」，输出不丢失）；
+        tool_id 为空 → 丢弃并 debug 日志（无归属输出不静默错路由）。
+        """
+        from src.tui.core.style import Style
+        from src.renderer.ansi.helpers import AnsiLine, ansi_to_line
+        block = self.tool_boxes.get(tool_id)
+        if block is None:
+            if not tool_id:
+                _logger.debug(
+                    "append_tool_output: 收到空 tool_id，输出丢弃: %.80s", text,
+                )
+                return
+            block = self.open_tool_box(tool_id, "")
+        for seg in text.split("\n"):
+            l = AnsiLine.of("  ", Style(fg=242))
+            # ★ 工具输出可能含 Rich/pygments 高亮 ANSI 序列（read_file 等）。
+            #   原样保留进 Run.text 会让宽度测量把转义码当可见字符（宽度膨胀→
+            #   误触发 wrap），wrap_line 逐字符截断把转义序列拦腰截断（如残留
+            #   ;49;00m）渲染错乱。经 ansi_to_line 解析为带样式 Run，宽度测量
+            #   与 wrap 按样式安全处理。
+            for r in ansi_to_line(seg).runs:
+                l.append_run(r)
+            block.lines.append(l)
+        # bash/execute_command：输出超过阈值行数时只保留最后 N 行（tail 显示，
+        # 对齐 Claude Code 收敛冗长 bash 输出；修剪后行数 ≤ N+1，不触发增量提交）
+        if block.extra.get("tool_name") in ("bash", "execute_command"):
+            self._trim_tool_output_tail(block, _BASH_OUTPUT_TAIL_LINES)
+        # find/search/ls/read_file：输出超过阈值行数时只保留前 N 行（head 显示，
+        # 对齐终端 head 语义——目录列表/文件预览等有序输出看开头即可，防卡片撑爆）
+        if block.extra.get("tool_name") in _TOOL_HEAD_TOOLS:
+            self._trim_tool_output_head(block, _TOOL_HEAD_LINES)
+        # ★ 方向4：增量提交阈值——长工具输出不每帧全量重渲染（超过阈值即提交
+        #   已闭合行到 committed_lines；开放块渲染只取未提交尾）。
+        if len(block.lines) - block.committed_line_count >= _TOOL_INCREMENTAL_THRESHOLD:
+            self.commit_open_block(block)
+
+    def _trim_tool_output_tail(self, block, keep: int) -> None:
+        """工具块输出修剪为最后 keep 行（保留标题行 block.lines[0]）。
+
+        bash 尾显示：输出超过 keep 行时删除前置输出行（下标 1..N-keep），
+        累计省略数记入 ``block.extra["_bash_omitted_lines"]``（卡片渲染时
+        前置「… 前 N 行省略」提示）；同步 ``committed_line_count``（已提交行
+        被删则回退计数，防越界/重复提交）。修剪后行数 ≤ 1+keep，远低于增量
+        提交阈值 → 无增量提交。
+
+        方向3（trim 与增量提交协同）：已增量提交的行（``committed_line_count>0``）
+        不可删除——删除会令 committed_lines 前缀与块行映射错位（回退计数但
+        前缀残留 → 渲染重复/错位）。已提交场景跳过 trim（保留全部，正确性
+        优先）。正常路径 trim 在增量提交前已压缩到 ≤keep 行，本分支仅覆盖
+        「空名 box 输出 >64 行触发增量提交后工具名补全」的罕见时序。
+        """
+        lines = block.lines
+        if len(lines) <= 1 + keep:
+            return
+        if block.committed_line_count > 0:
+            _logger.debug(
+                "bash tail trim 跳过（块已增量提交 %d 行，无法安全删除）",
+                block.committed_line_count,
+            )
+            return
+        del_count = len(lines) - 1 - keep
+        del lines[1:1 + del_count]
+        block.extra["_bash_omitted_lines"] = (
+            block.extra.get("_bash_omitted_lines", 0) + del_count
+        )
+
+    def _trim_tool_output_head(self, block, keep: int) -> None:
+        """工具块输出修剪为前 keep 行（保留标题行 block.lines[0]）。
+
+        find/search/ls/read_file 头显示：输出超过 keep 行时删除后置输出行
+        （下标 1+keep..末尾），累计省略数记入 ``block.extra["_head_omitted_lines"]``
+        （卡片渲染时在主体行后置「… 后 N 行省略」提示）；同步
+        ``committed_line_count``（已提交行被删则回退计数，防越界/重复提交）。
+        修剪后行数 ≤ 1+keep，远低于增量提交阈值 → 无增量提交。
+
+        方向3（trim 与增量提交协同）：已增量提交的行（``committed_line_count>0``）
+        不可删除——删除会令 committed_lines 前缀与块行映射错位。已提交场景
+        跳过 trim（保留全部，正确性优先；与 ``_trim_tool_output_tail`` 一致）。
+        """
+        lines = block.lines
+        if block.committed_line_count > 0:
+            _logger.debug(
+                "head trim 跳过（块已增量提交 %d 行，无法安全删除）",
+                block.committed_line_count,
+            )
+            return
+        # 尾部换行符产生的空行（text.split("\n") 尾空 seg → 仅前缀的空行）不
+        # 算内容行——先剔除，避免「前 N 行」计数被尾空行占位（如 read_file
+        # 整文件输出以 \n 结尾时尾空行无意义，会挤占前 3 行显示位）。
+        while len(lines) > 1 and lines[-1].plain.strip() == "":
+            del lines[-1]
+        if len(lines) <= 1 + keep:
+            return
+        del_count = len(lines) - (1 + keep)
+        del lines[1 + keep:]
+        block.extra["_head_omitted_lines"] = (
+            block.extra.get("_head_omitted_lines", 0) + del_count
+        )
+
+    def close_tool_box(self, tool_id: str, success: bool) -> None:
+        """关闭工具分组：置状态、冻结并提交（工具卡片）。
+
+        方向D 步骤15：
+          - extra.tool_status = done/fail（卡片顶边框状态图标原位翻转 ✔/✖）；
+          - 关闭块冻结 _cached_ink_lines（含底边框，免每帧 Style merge）。
+
+        Bug A 修复：按 tool_id 精确 pop，不再 fallback 到 _current_tool_box
+        （单值指针语义已移除）；找不到对应 box 时静默丢弃（debug 日志）。
+
+        方向1 B8：空 tool_id 关闭——``pop("")`` 未命中且 tool_id 为空时遍历
+        ``tool_boxes`` 按 ``_box_key == ""``（open 记录的原始空 id 标记）查找
+        匿名 box 关闭（倒序取最近者）；找不到时静默丢弃（debug 日志）。
+        修复空 tool_id box 泄漏。
+        """
+        from src.tui.core.style import Style
+        from src.renderer.ansi.helpers import AnsiLine
+        block = self.tool_boxes.pop(tool_id, None)
+        if block is None and not tool_id:
+            for stored_key, candidate in reversed(list(self.tool_boxes.items())):
+                if candidate.extra.get("_box_key") == "":
+                    block = self.tool_boxes.pop(stored_key)
+                    break
+        if block is None:
+            _logger.debug(
+                "close_tool_box: 未找到 tool_id=%r 的工具 box，静默丢弃", tool_id,
+            )
+            return
+        status = "\u2714" if success else "\u2716"
+        # 记录状态行下标（卡片渲染跳过该主体行——状态已移入底边框；模型层
+        # 不变式 block.lines[-1].plain.strip()=="✔" 保留）
+        block.extra["_status_line_index"] = len(block.lines)
+        block.lines.append(AnsiLine.of(f"  {status}", Style(fg=41 if success else 196)))
+        block.extra["tool_status"] = "done" if success else "fail"
+        # Claude TUI parity 步骤 2.2：关闭后无进行中工具（ToolStatusHeader 隔离
+        # 测试仍消费 active_tool；app 组件树已移除该组件）
+        self.active_tool = None
+
+        # ★ 1.6 修复 + BUG-30（review 方向）修复：长工具输出（>
+        #   _TOOL_INCREMENTAL_THRESHOLD 触发增量提交后顶边框已在 committed_lines）
+        #   关闭时更新 committed_lines 中顶边框状态图标。
+        #   **BUG-30（渲染陈旧）**：修复前原地修改 ``top_line.runs``（保留 Line
+        #   对象引用）——committed-chat 前缀缓存（``chat_view._paint`` 键
+        #   ``(id(lines), n, box.y)``）与 diff 身份短路（``p is f`` → 相等跳过）
+        #   都按「Line 对象身份 = 内容不变」优化：内存中 Line 虽改为 ✔，但
+        #   prev 帧与 new 帧引用同一 Line 对象 → 渲染器认为无差异 → **终端顶边框
+        #   恒显示 ●，与底边框「✔ 完成」矛盾**（必现，长工具输出触发增量提交后
+        #   关闭必现）。
+        #   修复：**新建 Line 对象替换**（不复用旧对象）+ ``_replace_committed_line``
+        #   令 committed_lines 列表身份变化（浅拷贝）→ 前缀缓存键中 ``id(lines)``
+        #   失效 → 下一帧重建前缀 → diff 对新 Line 对象做 runs 值比较 → 顶边框
+        #   行被重写。短工具（未增量提交，offset 不存在）关闭时经 commit_block
+        #   提交的顶边框已带 done/fail 图标，无需更新。
+        #   卡片结构：``_first_committed_offset`` 指向卡片**首行（顶边框）**，
+        #   状态图标为边框内 runs[1]（``┌─ `` 前缀后；runs[0] 为边框前缀）。
+        offset = block.extra.get("_first_committed_offset")
+        if offset is not None and 0 <= offset < len(self.committed_lines):
+            icon = _tool_icon_runs(block)
+            if icon:
+                top_line = self.committed_lines[offset]
+                runs = list(top_line.runs)
+                # 顶边框结构：[0]=`┌─ ` 边框前缀, [1]=状态图标, [2:]=标题内容
+                idx = 1
+                if not (len(runs) > 1 and runs[0].text.startswith("\u250c")):
+                    # 防御：超窄宽度下标题被截断时按图标字符扫描定位
+                    for i, r in enumerate(runs):
+                        if r.text and r.text.strip() in ("\u25cf", "\u2714", "\u2716"):
+                            idx = i
+                            break
+                # ★ BUG-30：新建 Line 对象（不复用旧对象）+ 列表身份变化
+                from src.tui.ink import Line
+                self._replace_committed_line(offset, Line(runs[:idx] + icon + runs[idx + 1:]))
+
+        block.closed = True
+        # ★ 方向4（增量提交协同）：冻结仅**未提交部分**（已提交行在
+        #   committed_lines 中，避免重复存储；``_block_styled_lines`` 冻结
+        #   缓存分支已调整为 ``cache[0:]``——冻结缓存即未提交部分，start 参数
+        #   对冻结缓存无意义）。关闭后 ``commit_block`` 追加剩余尾（含状态行），
+        #   ``committed_line_count`` 计数保证不重复追加已提交行。
+        block._cached_ink_lines = self._block_to_ink_lines(block, block.committed_line_count)
+        block._open_styled_cache = None  # 冻结后开放缓存不再需要
+        self.commit_block(len(self.blocks) - 1)
+        # ★ PERF-6：清理工具卡缓存须在 ``commit_block`` **之后**——commit_block
+        #   内部 ``_block_to_ink_lines``（tool 分支）会经 ``tool_card_lines``
+        #   重建缓存（close_tool_box 提前清理会被重建覆盖）。关闭块冻结后渲染走
+        #   ``_cached_ink_lines``，不再访问 tool 卡缓存，此处无条件释放。
+        block._tool_card_body_cache = None
+        block._tool_card_frame_cache = None
+        block._tool_card_body_lines_cache = None
+
+    def _replace_committed_line(self, offset: int, new_line) -> None:
+        """替换 committed_lines[offset] 并令列表身份变化（已提交行原地更新）。
+
+        已提交行（committed_lines）被 committed-chat 前缀缓存（``chat_view._paint``
+        键 ``(id(lines), n, box.y)``）与 diff 身份短路引用——**原地替换元素但保持
+        列表身份**时前缀缓存不失效、渲染输出陈旧（BUG-30 同族）。本方法经
+        ``self.committed_lines = self.committed_lines.copy()`` 浅拷贝令 ``id(lines)``
+        变化 → 前缀缓存失效 → 下一帧重建前缀（新前缀引用新 Line 对象）→ diff 做
+        runs 值比较 → 目标行被重写。
+
+        与 ``commit_block``/``commit_open_block`` 的原地 ``extend`` 语义正交：
+        追加新行保持列表身份（前缀缓存命中仅追加新增行，零重建）；本方法仅在
+        更新**已提交行内容**时触发（低频：工具状态图标翻转/标题更新）。
+        """
+        if not (0 <= offset < len(self.committed_lines)):
+            return
+        new_list = list(self.committed_lines)
+        new_list[offset] = new_line
+        self.committed_lines = new_list
+
+    def _next_tool_id(self) -> str:
+        self._tool_id_seq += 1
+        return f"tool-{self._tool_id_seq}"
+
+
+__all__ = ["_ToolOutputMixin"]

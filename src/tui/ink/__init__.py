@@ -4,16 +4,45 @@
 非全屏（随内容流动）模型。由以下子模块组成：
   - element.py    — 不可变元素（Element/h）
   - fiber.py      — 调和器工作单元（Fiber/hook 节点）
-  - hooks.py      — use_state/use_effect/use_ref/use_reducer/useImperativeHandle
+  - hooks.py      — hooks 公共门面（use_state/use_effect/use_ref/... +
+                    模块级可变状态唯一真源；实现拆分至 _hooks_* 子模块）
+  - _hooks_core.py      — hook 基础设施 + 基础 hooks（state/ref/effect/memo/context/id）
+  - _hooks_input.py     — 输入 hooks（use_input / router 发布 / 双签名适配）
+  - _hooks_component.py — 组件 hooks（useApp/memo/forwardRef/useImperativeHandle/...）
+  - _hooks_focus.py     — 焦点 hooks（useFocus/useFocusManager + 仲裁状态）
+  - _hooks_env.py       — 环境 hooks（useMeasure/useWindowSize/useCursor/...）
   - reconciler.py — 挂载/更新 fiber 树 + effect 队列（含 forwardRef）
-  - layout.py     — flexbox 子集 + 文本换行
+  - layout.py     — 布局公共门面（LayoutBox/layout_tree + re-export；
+                    实现拆分至 _layout_* 子模块）
+  - _layout_sizing.py   — 尺寸解析（width/height/padding/flexGrow/flexShrink）
+  - _layout_tree.py     — 布局树遍历（host 子节点收集 / function 链下降）
+  - _layout_transform.py— 坐标变换（子树平移 / reflow 重排）
+  - _layout_flex.py     — flexbox 分布（余数分配 / row justifyContent）
+  - _layout_measure.py  — 测量核心（_measure / 行宽 / 对齐 / 收缩）
+  - _layout_absolute.py — 绝对定位（第二遍放置）
   - output.py     — StyledRun/Line/Frame 输出模型
-  - helpers.py    — ANSI 剥离 / 宽度测量 / 换行截断
-  - components.py — host 组件渲染函数
-  - renderer.py   — InkRenderer 非全屏渲染器（行级 diff）
+  - helpers.py    — 工具门面（ANSI 剥离/换行截断/样式解析/边框块 +
+                    re-export；实现拆分至 _ansi_utils/_runs_utils/
+                    _style_utils/_border_box）
+  - _ansi_utils.py      — ANSI 转义剥离/检测/视觉宽度/ASCII 快路径判定
+  - _runs_utils.py      — StyledRun 换行/截断（wrap_runs_by_width + truncate 族）
+  - _style_utils.py     — TEXT shorthand 样式解析（color/bold/transform → Style）
+  - _border_box.py      — 边框块构建（build_border_box）
+  - components.py — host 组件渲染主模块（_paint/_paint_impl/render_frame +
+                    re-export；画布/边框辅助拆分至 _paint_canvas/_paint_border）
+  - _paint_canvas.py    — 画布行操作（Line↔dict 转换/合并/裁剪，CJK 安全）
+  - _paint_border.py    — 边框字符/样式解析 + 边框/背景画布绘制
+  - renderer.py   — InkRenderer 非全屏渲染器（行级 diff；diff 纯逻辑经
+                    _frame_diff 共享）
+  - _frame_diff.py      — 帧差异区间纯函数（差异收集/尾部位移/锚点查找）
   - diff.py       — 新旧 Frame 行级 diff
   - error_boundary.py — ErrorBoundary 函数组件（组件树异常局部降级）
-  - session.py    — InkSession（PriorityQueue + render 线程 + 生命周期）
+  - session.py    — InkSession（PriorityQueue + render 线程 + 生命周期）；
+                    render()/ _SimpleModel 轻量入口经 ``_render_api`` 独立
+                    （2026-08-05 架构优化：模块边界拆分）
+  - _render_api.py — React Ink render() 轻量入口（render / _SimpleModel；
+                    依赖 session.InkSession，函数内惰性 import 避免循环）
+  - widgets/      — 控件库（interactive/display 门面 + 按控件拆分模块）
 
 React Ink 语义覆盖（完善 ink，方向3）：
   - forwardRef / useImperativeHandle（命令式句柄暴露）

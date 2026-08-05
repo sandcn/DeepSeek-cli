@@ -120,13 +120,14 @@ class Reconciler:
         # 布局（host 树）
         _layout.layout_tree(root_fiber, width)
         # ★ 性能（PERF-25）：合并渲染后置元数据收集——原实现 host ref 填充
-        #   （_attach_host_refs）、effects 提交（_run_live_effects →
-        #   _traverse_functions）、input router（_build_input_router →
+        #   （_attach_host_refs）、effects 提交（_traverse_functions 收集后
+        #   reversed 提交）、input router（_build_input_router →
         #   _collect_input_hooks）各自独立遍历整棵 fiber 树（每帧 3 次全树
         #   DFS）。合并为**一次 DFS** 同时收集：带 ref 的 host fiber / function
         #   fiber 列表 / InputHook+PasteHook（遍历顺序保持前序——ref 填充顺序
         #   无消费方、effects 后序提交、router 按 hooks_list 前序调用，与各自
-        #   原实现语义一致）。原方法保留（兼容测试/外部调用面）。
+        #   原实现语义一致）。``_run_live_effects`` 独立遍历入口已删除
+        #   （2026-08-05 死代码清理：生产无调用方）。
         function_fibers, ref_fibers, input_hooks, paste_hooks = (
             self._collect_render_metadata(root_fiber)
         )
@@ -993,29 +994,10 @@ class Reconciler:
         except Exception:
             _logger.debug("effect 销毁执行异常 fiber=%s", fiber.type, exc_info=True)
 
-    def _run_live_effects(self, root: Fiber) -> None:
-        """遍历活树，提交依赖变化的 effect（后序——子 effect 先于父 effect，React 语义）。
-
-        方向3（effect 提交顺序修复）：React 中 effect 提交顺序为**子先父后**
-        （子组件 effect 先于父组件 effect 提交）——修复前 ``_traverse_functions``
-        前序遍历父先子后，与 React 相反。实现：前序收集 function fiber 列表
-        （``_traverse_functions`` 保持前序不变），再 reversed 执行（后序提交）。
-
-        方向4（layout/passive 两阶段）：React 中 **layout effects 先于 passive
-        effects** 提交——先遍历提交 layout（``useLayoutEffect``，布局后同步），
-        再遍历提交 passive（``useEffect``）。两阶段各自保持子先父后的后序。
-
-        # deprecated: 生产渲染经 ``_run_live_effects_collected``（PERF-25 合并
-        # 遍历后提交，免单独全树遍历）；本方法保留兼容入口（独立收集+提交）。
-        """
-        collected: list[Fiber] = []
-        self._traverse_functions(root, collected.append)
-        self._run_live_effects_collected(collected)
-
     def _run_live_effects_collected(self, function_fibers: list) -> None:
         """提交依赖变化的 effect（PERF-25：用 ``_collect_render_metadata`` 合并
-        遍历收集的 function fiber 前序列表，reversed 后序提交——与
-        ``_run_live_effects`` 语义一致，免再次全树遍历）。"""
+        遍历收集的 function fiber 前序列表，reversed 后序提交——子 effect 先于
+        父 effect，React 语义）。"""
         # 第一阶段：layout effects（useLayoutEffect）
         for fiber in reversed(function_fibers):
             self._commit_live(fiber, layout=True)
@@ -1058,13 +1040,13 @@ class Reconciler:
             cb: 对 function fiber 调用的回调。
             include_self: True 时对起点 fiber 自身也调用 cb（即使其已置
                 deleted 标记——``_mark_deleted`` 收集删除子树 destroy 的
-                前置场景；默认 False 保持 ``_run_live_effects`` /
-                ``_collect_input_hooks`` 等既有调用语义不变）。
+                前置场景；默认 False 保持 ``_collect_input_hooks``
+                等既有调用语义不变）。
 
         ★ 性能（PERF-19）：递归 → 显式栈迭代（大组件树每帧数千节点的递归
-        调用开销可感知；回调顺序保持前序——``_run_live_effects`` 收集后
-        reversed 执行（顺序无关）、``_queue_destroys`` 收集 destroy（顺序
-        无关），显式栈后进先出的兄弟顺序不影响语义）。
+        调用开销可感知；回调顺序保持前序——``_collect_render_metadata`` 收集
+        effects 后 reversed 执行（顺序无关）、``_queue_destroys`` 收集 destroy
+        （顺序无关），显式栈后进先出的兄弟顺序不影响语义）。
         """
         # include_self：起点 fiber 已 deleted 时仍调用 cb（收集其 destroy）——
         # 正常路径（起点未 deleted）由下方遍历处理，不重复。

@@ -7,19 +7,23 @@
   - 按事件类型（DisplayEvent 子类）存储 handler 列表
   - subscribe() 支持按类型订阅或订阅所有（event_type=None）
   - publish() 直接调用 handler，异常隔离
-  - 批处理机制：高频事件 ~33ms 时间窗口合并
 
 设计原则：
   - 线程安全：RLock 保护 handler 注册表，异常隔离
   - 轻量无依赖：无需 CoreEventBus，自实现完整分发
   - 向后兼容：所有公开接口签名与旧版完全一致
+
+2026-08-05 死代码清理：时间窗口批处理机制（``_TimeWindowBatcher`` /
+``register_batched_event`` / ``unregister_batched_event`` / ``_batched_events``）
+已删除——生产路径从未启用（批处理将「延迟分发的高频事件」与「同步直发的
+阶段切换事件」的顺序竞态放大为固定窗口，导致推理文本静默丢失），保留属于
+未启用死代码。
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-import time
 from typing import Any, Callable, Optional, Type
 
 from .event_types import DisplayEvent
@@ -28,75 +32,6 @@ from ..core.singleton import SingletonMeta
 _logger = logging.getLogger(__name__)
 
 EventHandler = Callable[[DisplayEvent], Any]
-
-
-# ═══════════════════════════════════════════════════════════
-# _TimeWindowBatcher — 时间窗口批处理器
-# ═══════════════════════════════════════════════════════════
-
-class _TimeWindowBatcher:
-    """时间窗口批处理器 — 在指定时间窗口内合并对同一 handler 的多次触发。
-
-    用于高频事件（ContentChunkEvent, ReasoningChunkEvent）的批处理，
-    减少渲染压力。窗口默认 ~33ms。
-
-    ★ BUG-58（review 方向）：待处理队列水位限制——慢 handler 下高频事件
-    持续入队积压内存无界；超出上限丢弃最旧（UI 状态事件最新优先）。
-    """
-
-    #: 待处理队列上限（条）
-    _MAX_PENDING = 200
-
-    def __init__(self, window: float = 0.033):
-        self._window = window
-        self._last_dispatch: float = 0.0
-        self._pending: list[tuple[EventHandler, DisplayEvent]] = []
-        self._lock = threading.RLock()
-        self._timer: threading.Timer | None = None
-
-    def enqueue(self, handler: EventHandler, event: DisplayEvent) -> None:
-        """将事件加入待处理队列，在时间窗口结束后统一分发。"""
-        with self._lock:
-            self._pending.append((handler, event))
-            # BUG-58：水位限制——超出上限丢弃最旧（保留最新 _MAX_PENDING 条）
-            if len(self._pending) > self._MAX_PENDING:
-                del self._pending[:len(self._pending) - self._MAX_PENDING]
-            now = time.monotonic()
-            if now - self._last_dispatch >= self._window:
-                self._flush()
-            elif self._timer is None:
-                remaining = self._window - (now - self._last_dispatch)
-                self._timer = threading.Timer(remaining, self._flush)
-                self._timer.daemon = True
-                self._timer.start()
-
-    def _flush(self) -> None:
-        with self._lock:
-            if self._timer is not None:
-                self._timer.cancel()
-                self._timer = None
-            if not self._pending:
-                return
-            batch = self._pending[:]
-            self._pending.clear()
-            self._last_dispatch = time.monotonic()
-        for handler, event in batch:
-            try:
-                handler(event)
-            except Exception:
-                _logger.exception(
-                    "批处理事件处理函数 %s 处理 %s 时异常",
-                    getattr(handler, "__name__", repr(handler)),
-                    type(event).__name__,
-                )
-
-    def clear(self) -> None:
-        """清空待处理队列。"""
-        with self._lock:
-            if self._timer is not None:
-                self._timer.cancel()
-                self._timer = None
-            self._pending.clear()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -119,8 +54,6 @@ class DisplayEventBus(metaclass=SingletonMeta):
         self._handlers: dict[type, list[EventHandler]] = {}
         self._all_handlers: list[EventHandler] = []
         self._lock = threading.RLock()
-        self._batched_events: set[type] = set()
-        self._batcher = _TimeWindowBatcher()
 
     # 单例访问由 SingletonMeta 提供：
     #   DisplayEventBus.get_default() → 线程安全单例获取（DCL）
@@ -174,20 +107,18 @@ class DisplayEventBus(metaclass=SingletonMeta):
                     self._all_handlers.remove(handler)
 
     def clear(self) -> None:
-        """清除所有订阅与批处理注册（全量重置，供测试隔离与整体 teardown）。
+        """清除所有订阅（全量重置，供测试隔离与整体 teardown）。
 
         与 stop() 不同（stop 不注销批处理以保持生命周期内稳定），
-        clear() 为完整重置语义，一并清空 _batched_events。
+        clear() 为完整重置语义。批处理机制已随 2026-08-05 死代码清理移除。
 
-        P2-7 审计：clear() 全量重置（订阅 + 批处理注册）仅供测试隔离/整体
-        teardown；**生产代码当前无调用方**（生产路径使用 subscribe/unsubscribe
+        P2-7 审计：clear() 全量重置（订阅）仅供测试隔离/整体 teardown；
+        **生产代码当前无调用方**（生产路径使用 subscribe/unsubscribe
         或 stop() 的生命周期语义）。
         """
         with self._lock:
             self._handlers.clear()
             self._all_handlers.clear()
-            self._batched_events.clear()
-            self._batcher.clear()
 
     @property
     def subscriber_count(self) -> int:
@@ -213,51 +144,12 @@ class DisplayEventBus(metaclass=SingletonMeta):
             if event_type in self._handlers:
                 targets.extend(self._handlers[event_type])
             targets.extend(self._all_handlers)
-        if not targets:
-            return
-        # 批处理检查
-        if event_type in self._batched_events:
-            for handler in targets:
-                self._batcher.enqueue(handler, event)
-        else:
-            for handler in targets:
-                try:
-                    handler(event)
-                except Exception:
-                    _logger.exception(
-                        "事件处理函数 %s 处理 %s 时异常",
-                        getattr(handler, "__name__", repr(handler)),
-                        event_type.__name__,
-                    )
-
-    # ── 时间窗口批处理 ──────────────────────────────────
-
-    def register_batched_event(self, event_type: type[DisplayEvent]) -> None:
-        """注册需要时间窗口批处理的事件类型。
-
-        ★ review 方向（未启用标注）：**生产路径未启用**——``_lifecycle.start``
-        注释明确说明批处理不启用（批处理将「延迟分发的高频事件」与「同步直发
-        的阶段切换事件」的顺序竞态放大为固定窗口，导致推理文本静默丢失）。本
-        方法保留供未来启用（须先解决顺序保障），勿在未解决竞态前调用。
-
-        高频 UI 事件（如 ContentChunkEvent、ReasoningChunkEvent）
-        走 ~33ms 窗口批处理，降低渲染压力。
-
-        Args:
-            event_type: DisplayEvent 的子类。
-        """
-        if not issubclass(event_type, DisplayEvent):
-            raise TypeError(
-                f"event_type 必须是 DisplayEvent 的子类，收到: {event_type}"
-            )
-        with self._lock:
-            self._batched_events.add(event_type)
-
-    def unregister_batched_event(self, event_type: type[DisplayEvent]) -> None:
-        """取消事件类型的批处理注册。
-
-        Args:
-            event_type: DisplayEvent 的子类。
-        """
-        with self._lock:
-            self._batched_events.discard(event_type)
+        for handler in targets:
+            try:
+                handler(event)
+            except Exception:
+                _logger.exception(
+                    "事件处理函数 %s 处理 %s 时异常",
+                    getattr(handler, "__name__", repr(handler)),
+                    event_type.__name__,
+                )

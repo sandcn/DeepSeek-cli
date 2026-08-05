@@ -514,17 +514,20 @@ ChatUIConsumer
 │   │   └── telemetry/         # 可观测性（指标/追踪/上下文传播）
 │   │
 │   ├── tui/                # 终端 UI 聊天渲染引擎（替代 chat_ui/）
-│   │   ├── _animator.py / _assembly.py / _base_display.py / _buffer.py / _completion.py / _completion_engine.py
-│   │   ├── _config.py / _const.py / _consumer.py / _cost.py / _cursor_tracker.py / _diff_renderer.py
-│   │   ├── _input.py / _input_parser.py / _input_orchestrator.py / _lifecycle.py / _output.py / _output_target.py
-│   │   ├── _screen.py / _snapshot.py / _stdout_tracker.py / _subagent_panel.py / _tool_icons.py / input.py
-│   │   ├── _bottom_bar/        # DECSTBM 分屏底部固定栏（_bar/_layout/_layout_utils/_monitor/_popup/_render/_status）
-│   │   ├── _renderer/          # TuiEngine + TuiRenderer + EventDispatcher（_dispatcher/_engine/_renderer）
-│   │   ├── consumer/           # ChatUIConsumer 事件消费者 + 渲染入口
-│   │   ├── core/               # 核心工具（color/style/singleton）
-│   │   ├── events/             # UI 事件总线 + DisplayEvent 类型定义
-│   │   ├── pipeline/           # 消息编辑/显示管道
-│   │   └── state/              # 渲染/消费/输入/会话状态管理
+│   │   ├── _assembly.py / _assembly_steps.py / _base_display.py / _completion.py / _completion_engine.py
+│   │   ├── _config.py / _const.py / _consumer.py / _diff_renderer.py / _dispatcher.py / _format.py
+│   │   ├── _input.py / _input_io.py / _input_parser.py / _input_buffer.py / _input_dispatcher.py
+│   │   ├── _input_layout.py / _input_metrics.py / _input_orchestrator.py / _ink_bridge.py / _lifecycle.py
+│   │   ├── _screen.py / _snapshot.py / _stdout_tracker.py / _subagent_panel.py / _subagent_render.py
+│   │   ├── _subagent_state.py / _tool_icons.py / _width.py / input.py / _history_disk.py / _system_monitor.py
+│   │   ├── app/               # AppModel + apply_cmd + 组件树（input_area/status_bar/toolcard/...）
+│   │   ├── consumer/          # ChatUIConsumer 事件消费者 + 渲染入口
+│   │   ├── core/              # 核心工具（color/style/singleton/_fx/_theme）
+│   │   ├── events/            # UI 事件总线 + DisplayEvent 类型定义
+│   │   ├── ink/               # React Ink 风格组件框架（调和器/flexbox/hooks/渲染器）
+│   │   ├── pipeline/          # 消息编辑/显示管道
+│   │   ├── state/             # 消费/注册表状态管理
+│   │   └── subagent/          # SubAgent 面板子域聚合门面
 │   │
 │   ├── renderer/           # 增量流式 Markdown 渲染引擎
 │   │   ├── engine.py          # RenderEngine 渲染引擎
@@ -689,7 +692,7 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 - **TUI 全量标准 React Ink 组件化（阶段4，无例外）** ✅ — 所有 TUI 布局/组件按标准 React Ink 表达重构，无例外（`tests/test_tui/ink/test_react_ink_refactor.py` 11 例固化）：
   - **committed-chat → StaticLines 标准组件**（`src/tui/ink/widgets/staticlines.py`）——聊天历史静态行批量渲染从 app 层私有 host 迁移为标准组件（组件库导出 `h(StaticLines, {"lines": ...})`），保留帧前缀缓存/增量发射性能机制（无变化帧 O(1)）；`render_frame`/`layout` 的 committed 前缀消费统一识别 static-lines；旧 host 标签保留为兼容别名；
   - **input-area → InputArea + CompletionPopup 标准组件**（`src/tui/app/input_area.py`）——输入区自定义 host（直接画布绘制）迁移为函数组件 `InputArea`（返回 Column 组件树：`CompletionPopup` 弹窗 + 上/下分隔线 TEXT + 历史搜索 TEXT + 输入行 TEXT），`dataInputArea` 标记容器 + props 透传；`session._position_cursor` 经 dataInputArea 容器定位 + 换行布局缓存写回（`fiber._input_layout_cache`——同 text/max_input 帧零重复换行计算）；`use_memo` 原子值 deps（id/len 指纹 + 时间桶）缓存 Element 列表——修复嵌套 tuple deps 恒 miss（is 引用比较）后无变化帧 **~0.9ms → ~0.62ms**；占位符渐显状态经 `use_ref` 组件级持久（修复组件化后渐显每 0.1s 桶重置 bug）；
-  - **subagent 卡片去 ANSI 中间层**（`src/tui/_subagent_render.py`）——子代理卡片渲染从「ANSI 字符串行拼接」迁移为「ink Line 行（StyledRun）」：`render_frame`/`build_agent_lines`/`format_tool_record` 返回 `Line`，样式统一用 `Style(fg=色号)`（与 StatusBar/ToolCard/UserSelect 同源），`subagent_panel._render_children` 直接复用 `Line.runs` 转 TEXT 标准组件（不再 `ansi_to_runs` 解析）；`Line` 增补值比较 `__eq__`（控制器变更检测）；`_get_tool_color` 返回 `Style`（色号与旧 ANSI 一致）；
+  - **subagent 卡片去 ANSI 中间层**（`src/tui/_subagent_render.py`）——子代理卡片渲染从「ANSI 字符串行拼接」迁移为「ink Line 行（StyledRun）」：`render_frame`/`build_agent_lines`/`format_tool_record` 返回 `Line`，样式统一用 `Style(fg=色号)`（与 StatusBar/ToolCard/UserSelect 同源），`subagent_panel.SubAgentCard`（`_lines_to_children` 转换点）直接复用 `Line.runs` 转 TEXT 标准组件（不再 `ansi_to_runs` 解析）；`Line` 增补值比较 `__eq__`（控制器变更检测）；`_get_tool_color` 返回 `Style`（色号与旧 ANSI 一致）；
   - **兼容层彻底移除（无例外）** — 旧 host 标签 `committed-chat`/`input-area` 注册已移除（生产/测试全部用 StaticLines/InputArea 标准组件）；`chat_view.register()`/`input_area.register()` 空操作移除；`input_area` 遗留 host 绘制函数（`_measure`/`_paint`/`_build_separator_line`/`_merge`/`_compute_input_rows`/`_wrap_input_text`）与 `ToolStatusHeader` 死代码模块（`tool_header.py`，工具状态已由工具卡片顶边框 ● 展示）已删除（无例外）；`_const.py` 的 `_COLOR_*`/`_C_*` ANSI 颜色常量与 `_screen.py`/`_subagent_panel.py` re-export 已删除（生产渲染统一 `Style(fg=色号)`，色号从 `_SEMANTIC_COLOR` 槽位表解析）；`reconciler._mark_deleted` 递归标记子树全部 fiber deleted（修复函数组件 key 变化时外部缓存——session 输入区 fiber / committed 前缀缓存——失效检测失败）；
   - **性能**：重构后全场景无变化帧 < 1.5ms（20 条历史 + 20 项弹窗 + 中文输入 1.40ms；1050 行历史 0.66ms；流式增长 0.65ms——10Hz 预算 100ms 仅占 <1.5%）；全量 `tests/` 2643 例通过。
 - **行宽不变量（渲染错误修复）** ✅ — E-ROW-OVERFLOW（row 内容自然宽超容器时按 flexShrink 权重收缩子节点，默认 flexShrink=1 React Ink 标准语义，收缩后重新测量约束内部内容）、E-FILL-OVERFLOW（fill=False 容器被钳制时内部子节点按容器实际宽度重测）、E-OVERFLOW-GUARD（render_frame 行级截断防线——行宽恒 <= 文档宽，行级 diff 模型核心不变量）、E-COMMITTED-OVERFLOW（committed-chat 前缀复用路径的行宽守卫——reflow_committed 未执行/失败时 committed_lines 按旧宽度 wrap 产生超宽行，前缀复用不经 E-OVERFLOW-GUARD 直接进帧；修复：chat_view._paint 缓存重建时 O(n) 检查行宽标记 all_ok（非每帧，缓存命中零开销），render_frame 对 all_ok=False 前缀截断超宽行，正常行保持身份短路）；2000+ 模糊用例零超宽（嵌套 row/ZStack/边框/宽字符/绝对定位组合）

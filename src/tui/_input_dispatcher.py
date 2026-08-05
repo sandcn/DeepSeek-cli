@@ -30,6 +30,7 @@ import threading
 from typing import TYPE_CHECKING
 
 from ._input_parser import InputParser, KeyEvent
+from ._completion_nav import _CompletionNavHandler
 
 if TYPE_CHECKING:
     from ._input_io import InputIO
@@ -60,6 +61,9 @@ class InputDispatcher:
         self._io = io
         self._buffer_editor = buffer_editor
         self._parser = parser
+        # ★ 补全导航策略（模块边界优化，2026-08-05）：Tab/箭头/翻页/Shift+Tab
+        #   的补全弹窗交互独立为 _CompletionNavHandler；本类经组合委托。
+        self._completion_nav = _CompletionNavHandler(self)
 
         # ── 回调引用 ──
         self._special_key_callback = None
@@ -700,155 +704,40 @@ class InputDispatcher:
     # ═══════════════════════════════════════════════════════
 
     def _handle_tab(self) -> None:
-        """处理 Tab 键：调用补全回调，失败则插入制表符。"""
-        cb = self._completion_callback
-        if cb is None:
-            self._buffer_editor.handle_char('\t')
-            return
-        text = self._buffer_editor.get_current_text()
-        try:
-            result = cb(text)
-        except Exception:
-            _logger.debug("补全回调异常", exc_info=True)
-            result = None
-        if result is None:
-            self._buffer_editor.handle_char('\t')
-        else:
-            self._buffer_editor.set_buffer(result)
-            self._buffer_editor._echo(result)
-            self._trigger_auto_completion()
+        """处理 Tab 键：调用补全回调，失败则插入制表符（委托补全导航策略）。"""
+        self._completion_nav.handle_tab()
 
     def _handle_arrow_up(self) -> None:
-        """处理上箭头：补全弹窗可见时仅移动高亮，否则历史浏览。"""
-        cb = self._completion_navigate_callback
-        if cb is not None:
-            try:
-                text = self._buffer_editor.get_current_text()
-                result = cb(-1, text)
-            except Exception:
-                _logger.debug("补全导航回调异常", exc_info=True)
-                result = None
-            if result is not None:
-                if result != text:
-                    self._buffer_editor.set_buffer(result)
-                    self._buffer_editor._echo(result)
-                    self._trigger_auto_completion()
-                return
-        self._buffer_editor._up()
+        """处理上箭头：补全弹窗可见时仅移动高亮，否则历史浏览（委托策略）。"""
+        self._completion_nav.handle_arrow_up()
 
     def _handle_arrow_down(self) -> None:
-        """处理下箭头：补全弹窗可见时仅移动高亮，否则历史浏览。"""
-        cb = self._completion_navigate_callback
-        if cb is not None:
-            try:
-                text = self._buffer_editor.get_current_text()
-                result = cb(1, text)
-            except Exception:
-                _logger.debug("补全导航回调异常", exc_info=True)
-                result = None
-            if result is not None:
-                if result != text:
-                    self._buffer_editor.set_buffer(result)
-                    self._buffer_editor._echo(result)
-                    self._trigger_auto_completion()
-                return
-        self._buffer_editor._down()
+        """处理下箭头：补全弹窗可见时仅移动高亮，否则历史浏览（委托策略）。"""
+        self._completion_nav.handle_arrow_down()
 
     def _handle_page_nav(self, delta: int) -> None:
-        """处理 PageUp/PageDown：补全弹窗可见时按页步进高亮，否则 no-op。
-
-        2026-08-05（增加操作）：补全弹窗候选多时逐项 ↑↓ 效率低——PageUp/
-        PageDown 一次移动一页（每页 ±5 项，与弹窗可见行数相当）。复用
-        ``_completion_navigate_callback``（delta 传 ±5——补全循环实现按
-        delta 步进并钳制/回绕）；补全不可见或回调未消费时 no-op（不改变
-        输入缓冲/光标，与 Shift+Tab 语义一致）。
-        """
-        cb = self._completion_navigate_callback
-        if cb is None:
-            return
-        try:
-            text = self._buffer_editor.get_current_text()
-            result = cb(delta, text)
-        except Exception:
-            _logger.debug("补全翻页回调异常", exc_info=True)
-            return
-        if result is not None and result != text:
-            self._buffer_editor.set_buffer(result)
-            self._buffer_editor._echo(result)
-            self._trigger_auto_completion()
+        """处理 PageUp/PageDown：补全弹窗可见时按页步进高亮，否则 no-op（委托策略）。"""
+        self._completion_nav.handle_page_nav(delta)
 
     def _handle_shift_tab_reverse(self) -> None:
-        """处理 Shift+Tab：补全弹窗可见时反向循环，否则 no-op。
-
-        方向A 步骤1：CSI u Shift+Tab（keycode=9, modifier=2）→ tab/modifier=2
-        事件分发至此；补全导航回调未消费（补全不可见）时 no-op（不插入制表符）。
-        """
-        cb = self._completion_navigate_callback
-        if cb is None:
-            return
-        try:
-            text = self._buffer_editor.get_current_text()
-            result = cb(-1, text)
-        except Exception:
-            _logger.debug("补全导航回调异常", exc_info=True)
-            return
-        if result is not None and result != text:
-            self._buffer_editor.set_buffer(result)
-            self._buffer_editor._echo(result)
-            self._trigger_auto_completion()
+        """处理 Shift+Tab：补全弹窗可见时反向循环，否则 no-op（委托策略）。"""
+        self._completion_nav.handle_shift_tab_reverse()
 
     def _handle_editmsg_tab(self) -> None:
-        """editmsg 模式 Tab：正向循环补全高亮（不写缓冲、不确认）。
-
-        方向2（editmsg Tab 误写输入缓冲修复）：editmsg 选择期间 Tab 经
-        ``_completion_navigate_callback(1, text)``（等价 ``_CmplHandler.on_navigate
-        (+1)`` cycle_completion）移动高亮——弹窗可见时仅循环不高亮写入
-        （on_navigate 返回 text 不应用，``_CmplHandler.on_navigate`` 已实现
-        ``return text`` 不应用），不写输入缓冲、不确认。``_suppress_enter``
-        为 editmsg 模式的代理标志（当前唯一场景）。
-        """
-        cb = self._completion_navigate_callback
-        if cb is None:
-            return
-        try:
-            text = self._buffer_editor.get_current_text()
-            cb(1, text)
-        except Exception:
-            _logger.debug("editmsg Tab 补全导航回调异常", exc_info=True)
+        """editmsg 模式 Tab：正向循环补全高亮（不写缓冲、不确认，委托策略）。"""
+        self._completion_nav.handle_editmsg_tab()
 
     def _dismiss_completion(self) -> None:
-        """如果补全弹窗可见，关闭它。"""
-        cb = self._dismiss_completion_callback
-        if cb is not None:
-            try:
-                cb()
-            except Exception:
-                _logger.debug("关闭补全回调异常", exc_info=True)
+        """如果补全弹窗可见，关闭它（委托补全导航策略）。"""
+        self._completion_nav.dismiss_completion()
 
     def _maybe_dismiss_completion(self) -> None:
-        """关闭补全弹窗（editmsg 选择期间除外——_suppress_enter=True 时不触发）。
-
-        方向2（editmsg 选择期间 backspace 等误触发确认修复）：editmsg 选择期间
-        ``_suppress_enter=True``，message_editor 将 dismiss 回调替换为确认信号
-        （``_editmsg_dismiss`` 设置 ``_selection_ready``）——backspace/home/end/
-        delete/unknown 等**非确认键**若触发 dismiss 会提前确认选择。仅 Enter
-        保持无条件 ``_dismiss_completion()``（正常确认机制，不可改动——
-        message_editor 依赖 dismiss 回调作为 Enter 确认信号）。
-        """
-        if self.get_suppress_enter():
-            return
-        self._dismiss_completion()
+        """关闭补全弹窗（editmsg 选择期间除外——_suppress_enter=True 时不触发）。"""
+        self._completion_nav.maybe_dismiss_completion()
 
     def _trigger_auto_completion(self) -> None:
-        """获取当前文本并调用自动补全回调。"""
-        cb = self._auto_completion_callback
-        if cb is None:
-            return
-        text = self._buffer_editor.get_current_text()
-        try:
-            cb(text)
-        except Exception:
-            _logger.debug("自动补全回调异常", exc_info=True)
+        """获取当前文本并调用自动补全回调（委托补全导航策略）。"""
+        self._completion_nav.trigger_auto_completion()
 
     # ═══════════════════════════════════════════════════════
     # 解析方法（委托 InputParser → _input_parser.py）

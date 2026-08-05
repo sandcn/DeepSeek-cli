@@ -24,7 +24,6 @@ import time
 from typing import Callable
 
 from src.tui._const import (
-    RenderCommand,
     RenderCmd,
     CONTENT_COMMANDS,
     ANSI_EMERGENCY_RED,
@@ -42,85 +41,36 @@ from .reconciler import Reconciler
 from .renderer import InkRenderer
 from . import components as _components
 from . import hooks as _hooks
-from .element import Element
-from src.tui._input import _compute_input_layout, _cursor_visual_from_layout
-from src.tui.app.input_area import (
-    _completion_height,
-    _is_search_active,
+# ★ Element 已随 render() 拆移至 _render_api.py（session.py 不再直接使用；
+#   类型注解在 docstring 中为字符串形式，无需运行时 import）。
+# ★ 命令优先级策略（方向B 拆分，2026-08-05）：优先级常量与映射函数自
+#   ._cmd_priority 导入（模块级 re-export——旧导入路径
+#   ``from src.tui.ink.session import _get_cmd_priority`` 兼容）。
+from ._cmd_priority import (
+    _CMD_PRIORITY_CRITICAL,
+    _CMD_PRIORITY_HIGH,
+    _CMD_PRIORITY_NORMAL,
+    _CMD_PRIORITY_LOW,
+    _CRITICAL_CMDS,
+    _STREAM_CMDS,
+    _HIGH_CMDS,
+    _NORMAL_CMDS,
+    _LOW_CMDS,
+    _get_cmd_id,
+    _get_cmd_priority,
+    _cmd_name,
 )
+# ★ 输入光标定位（方向B 拆分，2026-08-05）：_position_cursor/_find_input_fiber
+#   的布局计算自 ._cursor 导入（纯函数模块，独立可测）。
+from . import _cursor
 
 _logger = logging.getLogger(__name__)
 # ── 内容命令集合（真源在 _const.CONTENT_COMMANDS） ──────────
 _CONTENT_COMMANDS = CONTENT_COMMANDS
 
-# ── 命令优先级（值越小越优先） ──────────────────────────────
-_CMD_PRIORITY_CRITICAL = 0
-_CMD_PRIORITY_HIGH = 1
-_CMD_PRIORITY_NORMAL = 2
-_CMD_PRIORITY_LOW = 3
-
-_CRITICAL_CMDS = frozenset({
-    RenderCommand.PHASE_DONE,
-    RenderCommand.TOOL_SUMMARY,
-    RenderCommand.TOOL_COUNT_INC,
-    RenderCommand.TOOL_COUNT_DEC,
-    RenderCommand.TOOL_FAIL_INC,
-    RenderCommand.MAIN_PHASE,
-    RenderCommand.SPLASH,
-    RenderCommand.TOOL_OPEN,
-    RenderCommand.TOOL_CLOSE,
-})
-_STREAM_CMDS = frozenset({
-    RenderCommand.REASONING,
-    RenderCommand.CONTENT,
-    # 工具输出与 Open/Close（prio0）同序——否则 Close 先于 Output 出队，
-    # 输出落到无名新 box（每工具 box 增量刷新依赖此顺序）。
-    RenderCommand.TOOL_OUTPUT,
-})
-_HIGH_CMDS = frozenset({
-    RenderCommand.SUBAGENT_FRAME,
-    RenderCommand.ERROR,
-})
-_NORMAL_CMDS = frozenset({
-    # TOOL_OUTPUT 已在 _STREAM_CMDS（prio 0）——此处不再重复配置（方向3：
-    # 重复配置误导——_get_cmd_priority 先查 STREAM，TOOL_OUTPUT 恒为 prio 0）。
-    RenderCommand.USER_MSG,
-    RenderCommand.PARSE_INFO,
-    RenderCommand.NOTIFICATION,
-})
-_LOW_CMDS = frozenset({
-    RenderCommand.WRITE_LINE,
-    RenderCommand.DISPLAY_MSGS,
-    # 与 WRITE_LINE 同优先级（低优先级批量投递，不抢占流式内容）
-    RenderCommand.SUBAGENT_MARKDOWN,
-})
-
 #: BUG-39：崩溃恢复后视为「稳定」的最小运行时长（秒）——恢复成功且持续运行
 #: 超过该阈值后复位 ``_recover_attempts``（防长时间运行后恢复预算耗尽）。
 _RECOVER_STABLE_SECS = 60.0
-
-
-def _get_cmd_id(cmd: RenderCmd) -> int:
-    return cmd.cid
-
-
-def _get_cmd_priority(cmd: RenderCmd) -> int:
-    """获取命令优先级（与 TuiEngine._get_cmd_priority 语义一致）。"""
-    cid = cmd.cid
-    if cid in _CRITICAL_CMDS or cid in _STREAM_CMDS:
-        return _CMD_PRIORITY_CRITICAL
-    if cid in _HIGH_CMDS:
-        return _CMD_PRIORITY_HIGH
-    if cid in _NORMAL_CMDS:
-        return _CMD_PRIORITY_NORMAL
-    return _CMD_PRIORITY_LOW
-
-
-def _cmd_name(cid: int) -> str:
-    try:
-        return RenderCommand(cid).name
-    except ValueError:
-        return str(cid)
 
 
 class InkSession:
@@ -261,6 +211,25 @@ class InkSession:
 
     def set_build_tree(self, fn: Callable | None) -> None:
         self._build_tree = fn
+
+    def set_line_tracker(self, tracker) -> None:
+        """绑定输出行追踪器（输出历史落盘 + line callback 接线）。
+
+        2026-08-05 装配层重构：取代装配对 ``session._line_tracker`` /
+        ``session._ink_renderer.set_line_callback`` 的**私有字段直写**——
+        装配经本公开方法注入：
+          - 新增内容行回调 ``tracker.track``（输出历史跟踪）；
+          - ``self._line_tracker`` 供 ``TuiLifecycle.stop`` 流程调用
+            ``close()``（flush 剩余行 + 停止 daemon 刷盘定时器）。
+        None 可清除绑定（line callback 置空）。
+        """
+        self._line_tracker = tracker
+        try:
+            self._ink_renderer.set_line_callback(
+                tracker.track if tracker is not None else None,
+            )
+        except Exception:
+            _logger.debug("set_line_tracker 接线 line callback 异常", exc_info=True)
 
     # ── 紧急输出 ─────────────────────────────────────
 
@@ -1034,89 +1003,35 @@ class InkSession:
     # ── 光标 ─────────────────────────────────────────
 
     def _position_cursor(self) -> None:
-        """渲染后定位输入光标（从文档底部相对移动）。"""
+        """渲染后定位输入光标（从文档底部相对移动）。
+
+        方向B（2026-08-05）：布局/坐标计算委托 ``_cursor.position_cursor``
+        （纯函数模块）；本方法只负责 fiber 获取与异常兜底。
+        """
         if self._model is None:
             return
         # ★ P5：优先复用缓存的 input-area fiber（_render_frame 已保证其有效；
         #   None 时回退全树查找——如测试直接构造 root 的场景）
         fiber = self._input_fiber
         if fiber is None:
-            fiber = self._find_input_fiber(self._root_fiber)
+            fiber = _cursor.find_input_fiber(self._root_fiber)
         if fiber is None:
             return
-        box = fiber.layout_box
-        if box is None:
-            return
-        text = str(fiber.props.get("text", ""))
-        cursor_pos = int(fiber.props.get("cursor_pos", -1))
-        prompt = str(fiber.props.get("prompt", "> "))
-        completion = fiber.props.get("completion")
-        # 方向1 步骤4（缺失 completion 属性守卫）：popup_height 与 row 计算
-        # 纳入 try/except——completion 缺 ``items`` 等属性时抛 AttributeError
-        # 中断渲染；修复后缺属性回退 popup_height=0（记 debug），place_cursor
-        # 调用保持独立 try。
         try:
-            popup_height = _completion_height(completion, box.w)
-        except Exception:
-            popup_height = 0
-            _logger.debug(
-                "_position_cursor: completion 属性缺失，回退 popup_height=0",
-                exc_info=True,
+            _cursor.position_cursor(
+                self._ink_renderer, self._width_cache.get_width(), fiber,
             )
-        max_input = max(1, box.w - len(prompt))
-        # ★ PERF-1：优先复用换行布局缓存（每帧至多 1 次换行；缓存写回
-        #   dataInputArea 容器 fiber——InputArea 组件内部 _build_lines 写的是
-        #   临时 fiber（_input_elements SimpleNamespace），此处是真实 Column
-        #   fiber，二者分离；写回后同 text/max_input 帧零重复换行计算）。
-        #   未命中时经 _compute_input_layout 计算并写回。
-        cached = getattr(fiber, "_input_layout_cache", None)
-        if cached is not None and cached[0] == (text, max_input):
-            _, wrapped_by_logical = cached[1]
-        else:
-            rows, wrapped_by_logical = _compute_input_layout(text, max_input)
-            fiber._input_layout_cache = ((text, max_input), (rows, wrapped_by_logical))
-        vis_row, vis_col = _cursor_visual_from_layout(text, cursor_pos, wrapped_by_logical)
-        # 输入文本起始行 = box.y + popup_height + 1（上分隔线之后）
-        row = box.y + popup_height + 1 + vis_row + 1
-        # ★ P0-1：反向历史搜索激活时 input_area 在输入文本行前追加 1 行
-        #   (reverse-i-search) 覆盖行（_build_lines 已正确增行）——光标行偏移须
-        #   同步计入（与 input_area._build_lines 共享 _is_search_active
-        #   高度辅助，保持一致）。
-        if _is_search_active(fiber.props.get("history_search")):
-            row += 1
-        # ★ 方向6（光标列右边界 clamp）：超宽输入（vis_col 超终端宽度）时
-        #   光标列钳制到终端宽度（修复前 col 越界溢出导致光标定位异常）。
-        width = self._width_cache.get_width()
-        col = min(box.x + len(prompt) + vis_col + 1, width)
-        try:
-            self._ink_renderer.place_cursor(row, col)
         except Exception:
             _logger.debug("place_cursor 异常", exc_info=True)
 
     def _find_input_fiber(self, root_fiber):
-        """在 host 树中查找输入区 fiber（标准组件 dataInputArea 容器或旧 host）。
+        """在 host 树中查找输入区 fiber（委托 ``_cursor.find_input_fiber``）。
 
         ★ 标准 React Ink 组件化：InputArea 标准组件返回 Column（props 含
         ``dataInputArea=True`` 标记 + 透传输入区状态）——查找条件为
         ``props.dataInputArea`` 或旧 ``type == "input-area"``（兼容）。
         """
-        from .fiber import Fiber
-
-        def walk(f: Fiber | None):
-            f2 = f
-            while f2 is not None:
-                if f2.is_host and (
-                    f2.type == "input-area"
-                    or bool(f2.props.get("dataInputArea"))
-                ):
-                    return f2
-                r = walk(f2.child)
-                if r is not None:
-                    return r
-                f2 = f2.sibling
-            return None
-
-        return walk(root_fiber)
+        return _cursor.find_input_fiber(root_fiber)
 
     # ── 崩溃恢复 ─────────────────────────────────────
 
@@ -1173,6 +1088,11 @@ class InkSession:
         return dropped
 
 
+# ★ render() 轻量入口（方向 F1）已拆分至独立模块 _render_api.py
+#   （2026-08-05 架构优化）——本模块 re-export 保持旧导入路径兼容
+#   （``from src.tui.ink.session import render`` 仍可用，测试锁定）。
+from ._render_api import render, _SimpleModel  # noqa: F401  re-export 兼容
+
 __all__ = [
     "InkSession",
     "render",
@@ -1182,95 +1102,3 @@ __all__ = [
     "_STREAM_CMDS",
     "_CONTENT_COMMANDS",
 ]
-
-
-# ═══════════════════════════════════════════════════════════
-# render() — React Ink 轻量入口（方向 F1）
-# ═══════════════════════════════════════════════════════════
-
-
-class _SimpleModel:
-    """render() 独立会话的最小模型占位（满足 InkSession 读取的属性）。"""
-
-    width: int = 80
-    input_text: str = ""
-    input_cursor: int = 0
-    status: object = None
-
-    def reset_display(self) -> None:
-        pass
-
-
-def render(
-    element: Element,
-    stream=None,
-    width: int | None = None,
-    height: int | None = None,
-) -> dict:
-    """React Ink ``render()`` 等价物（轻量入口）：渲染组件树到终端。
-
-    创建独立 InkSession 渲染给定元素（不依赖 App 模型/命令管线）——适用于
-    组件开发/测试/独立 UI 场景。返回控制对象：
-      - ``waitUntilExit()``：awaitable——app 退出（unmount/exit）后 resolve；
-      - ``unmount()``：卸载 app（停止渲染线程）；
-      - ``cleanup()``：同 unmount（React Ink 内部清理语义别名）；
-      - ``rerender(new_element)``：以新元素树重新渲染；
-      - ``clear()``：请求全帧清屏重绘。
-
-    Args:
-        element: 根元素（函数组件或 Element）。
-        stream: 输出流（默认 ``sys.stdout``）。
-        width/height: 终端尺寸覆盖（默认读取 width_cache）。
-
-    Returns:
-        dict：控制对象（waitUntilExit/unmount/cleanup/rerender/clear）。
-    """
-    import sys as _sys
-
-    model = _SimpleModel()
-    if width is not None:
-        model.width = width
-
-    # 组件函数形式的根元素：包装为固定构建函数（每帧返回最新 element）
-    _state = {"element": element}
-
-    def _build_tree(m, w):
-        return _state["element"]
-
-    session = InkSession(
-        model=model,
-        build_tree=_build_tree,
-        stream=stream if stream is not None else _sys.stdout,
-    )
-    # 尺寸覆盖（TerminalWidthCache 只读接口——直接写内部缓存字段）
-    if width is not None:
-        session._width_cache._width = width
-    if height is not None:
-        session._width_cache._height = height
-
-    session.start()
-
-    def _wait_until_exit():
-        async def _waiter():
-            import asyncio as _aio
-            while session._render_running:
-                await _aio.sleep(0.05)
-        return _waiter()
-
-    def _unmount():
-        try:
-            session.request_exit()
-        except Exception:
-            _logger.debug("render unmount 异常", exc_info=True)
-
-    def _rerender(new_element):
-        _state["element"] = new_element
-        session._request_render()
-
-    return {
-        "waitUntilExit": _wait_until_exit,
-        "unmount": _unmount,
-        "cleanup": _unmount,
-        "rerender": _rerender,
-        "clear": session.request_clear,
-    }

@@ -19,7 +19,6 @@
 
 from __future__ import annotations
 
-from src.tui.core.color import lerp_color
 from src.tui.core.style import Style
 from src.tui.ink import TEXT, StyledRun, h, Row, use_memo
 from src.tui.app._theme import time_glow

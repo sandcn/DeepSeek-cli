@@ -8,7 +8,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from src.tui.ink.fiber import Fiber
-from src.tui._input import _wrap_by_width
+from src.tui._input_layout import _wrap_by_width
 from src.tui.app.input_area import (
     _compute_input_layout,
     _cursor_visual_from_layout,
@@ -49,7 +49,7 @@ class TestLayoutCache:
         """同 text/max_input 二次 _build_lines 不重复调用 _wrap_by_width（mock 计数）。"""
         fiber = _input_fiber(text="hello world", cursor_pos=5)
         fiber.layout_box = _Box(x=0, y=0, w=80, h=1)
-        with patch("src.tui._input._wrap_by_width", wraps=_wrap_by_width) as mock_wrap:
+        with patch("src.tui._input_layout._wrap_by_width", wraps=_wrap_by_width) as mock_wrap:
             _build_lines(fiber)
             _build_lines(fiber)
             # 两次 build：第二次命中 fiber._input_layout_cache → 不再调用 _wrap_by_width
@@ -61,7 +61,7 @@ class TestLayoutCache:
         """text 变化时缓存键不同 → 重新计算。"""
         fiber = _input_fiber(text="hello", cursor_pos=5)
         fiber.layout_box = _Box(x=0, y=0, w=80, h=1)
-        with patch("src.tui._input._wrap_by_width", wraps=_wrap_by_width) as mock_wrap:
+        with patch("src.tui._input_layout._wrap_by_width", wraps=_wrap_by_width) as mock_wrap:
             _build_lines(fiber)
             fiber.props["text"] = "hello world"
             _build_lines(fiber)
@@ -81,7 +81,7 @@ class TestLayoutCache:
         fiber = _input_fiber(text="hello", cursor_pos=3)
         fiber.layout_box = _Box(x=0, y=0, w=80, h=1)
         _build_lines(fiber)  # 首次：计算 + 写回缓存
-        with patch("src.tui._input._wrap_by_width", wraps=_wrap_by_width) as mock_wrap:
+        with patch("src.tui._input_layout._wrap_by_width", wraps=_wrap_by_width) as mock_wrap:
             lines = _build_lines(fiber)
             assert len(lines) >= 3  # 分隔线 + 输入行 + 时间戳
             mock_wrap.assert_not_called()  # 命中缓存 → 不重新换行

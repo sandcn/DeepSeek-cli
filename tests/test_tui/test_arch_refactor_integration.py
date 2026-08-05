@@ -164,10 +164,6 @@ class TestLifecycleBatchedAndSubscriptions:
         ui = ChatUIConsumer()
         ui.start()
         try:
-            # 批处理不启用（P0-3 重估：33ms 窗口无合并收益且放大顺序竞态）
-            assert bus._batched_events == set()
-            assert ContentChunkEvent not in bus._batched_events
-            assert ReasoningChunkEvent not in bus._batched_events
             # 订阅绑定：lifecycle 订阅 dispatcher.list_handlers()（>=12 类）
             # P3-19：不依赖精确计数，改显式断言关键事件已订阅
             assert bus.subscriber_count >= 12
@@ -179,12 +175,15 @@ class TestLifecycleBatchedAndSubscriptions:
         finally:
             ui.stop()
 
-        # stop() 后订阅全部解除（批处理未注册，_batched_events 保持为空）
+        # stop() 后订阅全部解除
         assert bus.subscriber_count == 0
-        assert bus._batched_events == set()
 
     def test_lifecycle_restart_keeps_no_batched_regression(self):
-        """重复 start()/stop() 幂等：批处理保持不启用（P0-3），订阅可重绑定。"""
+        """重复 start()/stop() 幂等：订阅可重绑定。
+
+        2026-08-05 死代码清理：批处理机制已删除（原断言 ``_batched_events
+        == set()`` 移除），本测试保留订阅可重绑定断言。
+        """
         from src.tui.consumer import ChatUIConsumer
         from src.tui.events.event_bus import DisplayEventBus
 
@@ -194,7 +193,6 @@ class TestLifecycleBatchedAndSubscriptions:
         ui.stop()
         ui.start()
         try:
-            assert bus._batched_events == set()
             assert bus.subscriber_count >= 12
         finally:
             ui.stop()
@@ -274,7 +272,7 @@ class TestInputFacadeWiring:
             "handle_char", "handle_chars", "get_queued_input", "has_queued_input",
             "get_current_text", "reset", "drain_all", "set_buffer",
             "get_history_indicator", "load_history",
-            "compute_cursor", "echo", "reset_and_echo",
+            "echo", "reset_and_echo",
             "capture_bytes", "drain_captured", "flush_stdin_buffer",
             "set_echo_callback", "set_special_key_callback",
             "set_completion_callback", "set_dismiss_completion_callback",

@@ -169,8 +169,13 @@ class TestSubAgentStyledRuns:
         assert "Grep" in line.plain
 
     def test_render_children_no_ansi_parse(self):
-        """subagent_panel 直接复用 Line.runs（不再 ansi_to_runs）。"""
-        from src.tui.app.subagent_panel import _render_children
+        """subagent_panel 直接复用 Line.runs（不再 ansi_to_runs）。
+
+        2026-08-05 死代码清理：``_render_children`` 兼容辅助已删除——改经
+        ``SubAgentCard`` 标准组件 / ``_lines_to_children`` 纯函数验证相同
+        行为（复用 ``Line.runs`` 直接转 TEXT，样式保留）。
+        """
+        from src.tui.app.subagent_panel import _lines_to_children
         from src.tui.core.style import Style
         m = AppModel()
         line = Line([
@@ -178,7 +183,7 @@ class TestSubAgentStyledRuns:
             StyledRun(" 子代理", None),
         ])
         m.subagent_lines = [line]
-        children = _render_children(m, 80)
+        children = _lines_to_children(m.subagent_lines, 80)
         assert len(children) == 1
         runs = children[0].props["styled"]
         assert runs[0].style is not None and runs[0].style.fg == 214, "样式保留"

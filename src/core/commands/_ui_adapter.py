@@ -148,11 +148,12 @@ class CommandUiAdapter:
     def get_theme_names_with_desc(self) -> list[tuple[str, str]]:
         """获取所有主题名称和描述（Claude TUI parity 步骤 3.5/4.3）。
 
-        主题集单一真源在 ``tui.app._theme.ThemeRegistry``（dark/light/
-        high-contrast）；描述为中文文案。
+        主题集单一真源在 ``tui.core._theme.ThemeRegistry``（dark/light/
+        high-contrast；app._theme 为 re-export 存根，2026-08-05 公共工具
+        归位 core 层）；描述为中文文案。
         """
         try:
-            from ...tui.app._theme import ThemeRegistry
+            from ...tui.core._theme import ThemeRegistry
             desc = {"dark": "暗色", "light": "亮色", "high-contrast": "高对比"}
             return [(n, desc.get(n, n)) for n in ThemeRegistry.names()]
         except Exception:
@@ -190,7 +191,7 @@ class CommandUiAdapter:
             except Exception:
                 _logger.debug("set_theme(%s): config 持久化失败", name, exc_info=True)
         try:
-            from ...tui.app._theme import _invalidate_palette_cache
+            from ...tui.core._theme import _invalidate_palette_cache
             _invalidate_palette_cache()
         except Exception:
             _logger.debug("set_theme(%s): 调色板缓存失效异常", name, exc_info=True)

@@ -9,15 +9,24 @@
 模块架构：
   _config.py                — TuiConfig 配置 dataclass
   _const.py                 — RenderCommand / FrameworkCommand / ChatCommand 枚举
-  _screen.py                — 纯 ANSI 终端屏幕管理（尺寸/光标/滚动/颜色/SIGWINCH）
+  _width.py                 — 字符显示宽度计算（CJK/Emoji/零宽/ANSI 跳过，Layer 0 纯计算）
+  _screen.py                — 纯 ANSI 终端屏幕管理（尺寸/光标/滚动/颜色/SIGWINCH；
+                              宽度计算 re-export 自 _width）
   _input.py                 — Input 统一输入管理（stdin 读取/解析/缓冲/历史/补全）
   _input_parser.py          — InputParser ANSI 解析策略（Input 组合持有委托）
+  _input_layout.py          — 输入区布局纯函数（换行/光标视觉位置/制表符展开/
+                              _wrap_by_width 单一真源；Layer 0 仅依赖 _width）
+  _input_metrics.py         — 输入区布局度量（补全弹窗高度/反向搜索状态；ink 光标
+                              定位与 app 输入区共享，消除 ink→app 反向依赖）
   _dispatcher.py            — EventDispatcher（DisplayEvent → RenderCommand 过滤+入队）
   _consumer.py              — ChatUIConsumer 兼容实现
   _completion.py            — _CmplHandler 补全处理器
   _completion_engine.py     — CompletionEngine 终端补全引擎（/命令/路径/参数补全，
-                              供 EscapeMonitor Tab 回调使用；与 _completion.py 平行存在）
-  _assembly.py              — TuiAssembly 子系统装配工厂
+                              供 _CmplHandler 委托；与 _completion.py 职责互补）
+  _assembly.py              — TuiAssembly 子系统装配工厂（瘦编排器：结果容器 +
+                              assemble() 编排 + _create_* 兼容转发）
+  _assembly_steps.py        — 装配子步骤独立模块（create_infrastructure/...，
+                              惰性 import 各自依赖；2026-08-05 装配层重构）
   _base_display.py          — 显示抽象基类（被 webui 引用）
   _diff_renderer.py         — 差异渲染（纯函数，被 core/tools/webui 引用）
   _input_orchestrator.py    — TuiInputOrchestrator 输入等待编排器
@@ -31,12 +40,41 @@
 
 新结构目录（非旧残留）：
   consumer/                 — ChatUIConsumer 事件消费者 + 渲染入口
-  core/                     — 核心工具（color/style/singleton）
+  core/                     — 核心工具（color/style/singleton；color 调色板
+                              → core/_palette.py；2026-08-05 公共动效/样式工具
+                              归位：core/_fx.py / core/_theme.py——app/_fx.py、
+                              app/_theme.py 降为 re-export 存根）
   events/                   — UI 事件总线 + DisplayEvent 类型定义
   pipeline/                 — 消息编辑/显示管道（message_display/message_editor）
   state/                    — 消费/注册表状态管理（consumer_registry）
-  ink/                      — React Ink 风格组件框架（调和器 + flexbox 布局 + 非全屏渲染）
-  app/                      — 应用组件与模型（AppModel + apply_cmd + 组件树）
+  ink/                      — React Ink 风格组件框架（调和器 + flexbox 布局 + 非全屏渲染；
+                              2026-08-05 模块边界拆分：hooks → _hooks_core/_hooks_input/
+                              _hooks_component/_hooks_focus/_hooks_env（hooks.py 门面持
+                              状态唯一真源）；layout → _layout_sizing/_layout_tree/
+                              _layout_transform/_layout_flex/_layout_measure/_layout_absolute
+                              （layout.py 门面）；helpers → _ansi_utils/_runs_utils/
+                              _style_utils/_border_box（helpers.py 门面）；components →
+                              _paint_canvas/_paint_border；renderer → _frame_diff；
+                              session → _render_api（render()/ _SimpleModel 轻量入口
+                              独立，session 保留 re-export）——详见 ink/__init__.py 模块清单）
+  app/                      — 应用组件与模型（AppModel + apply_cmd + 组件树；
+                              input_area.py → _popup_builder.py 弹窗构建独立；
+                              model.py → _tool_output_mixin.py 工具 box 生命周期）
+  subagent/                 — SubAgent 面板子域聚合门面（控制器/渲染/状态三模块
+                              re-export；实现文件保持顶层，移动受测试 patch 路径
+                              依赖约束——见 subagent/__init__.py 设计说明）
+
+子域归类（方向C，2026-08-05）：
+  - 输入系统 = 顶层 ``_input*.py`` + ``input.py`` 门面（``input/`` 包因
+    ``input.py`` 门面命名冲突不可创建；``_`` 前缀标识内部实现）。输入域拆分：
+    ``_input.py``（Input 外观）→ ``_input_io``（I/O）/``_input_parser``（解析）/
+    ``_input_buffer``（编辑+历史）/``_input_dispatcher``（分发，补全导航 →
+    ``_completion_nav.py``）/``_input_layout``（布局计算）/``_input_metrics``
+    （布局度量）。
+  - SubAgent 面板 = 顶层 ``_subagent_panel/_subagent_render/_subagent_state``，
+    经 ``subagent/`` 子包聚合门面统一入口（文件保持顶层的原因见上）。
+  - 历史写盘 = 顶层 ``_history_disk.py``（共享后台 writer；自 _input_buffer.py
+    拆分，re-export 保持旧导入路径兼容）。
 
 Layer 层次（由底向上）：
   _config → _const → _screen → _input → _dispatcher → ink/app → _consumer

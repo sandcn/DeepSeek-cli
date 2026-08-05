@@ -23,7 +23,7 @@ widgets.layout（Layer 0/1），无父包依赖。
 from __future__ import annotations
 
 from src.tui.core.style import Style
-from src.tui._screen import wcswidth_simple
+from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
 from ..hooks import use_state, use_input, use_ref
 from ..widgets.layout import Row, Column

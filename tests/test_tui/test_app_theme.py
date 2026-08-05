@@ -62,13 +62,17 @@ class TestTimeGlowBucketCache:
     @staticmethod
     def _reset_cache():
         """清空 _glow_bucket lru_cache（多桶缓存，方向6）。"""
-        import src.tui.app._theme as theme
+        # 2026-08-05 公共工具归位 core：_active_palette_cache 为可变绑定，
+        # 须经 core._theme 访问真实模块变量（app._theme 为 re-export 存根）。
+        import src.tui.core._theme as theme
         theme._glow_bucket.cache_clear()
 
     def test_time_glow_bucket_cache_regression(self) -> None:
         """同桶（同 int(t/0.1) 且同参数）返回缓存色号；跨桶重新计算。"""
         from unittest.mock import patch
-        import src.tui.app._theme as theme
+        # 2026-08-05 公共工具归位 core：_active_palette_cache 为可变绑定，
+        # 须经 core._theme 访问真实模块变量（app._theme 为 re-export 存根）。
+        import src.tui.core._theme as theme
 
         self._reset_cache()
         # 同桶：两次调用返回同值
@@ -91,7 +95,9 @@ class TestTimeGlowBucketCache:
     def test_time_glow_multi_param_no_overwrite_regression(self) -> None:
         """方向6 — 不同 (lo,hi,period) 参数多桶互不覆盖（同桶同参命中缓存）。"""
         from unittest.mock import patch
-        import src.tui.app._theme as theme
+        # 2026-08-05 公共工具归位 core：_active_palette_cache 为可变绑定，
+        # 须经 core._theme 访问真实模块变量（app._theme 为 re-export 存根）。
+        import src.tui.core._theme as theme
 
         self._reset_cache()
         with patch("src.tui.app._theme.time.monotonic", return_value=100.0):
@@ -175,7 +181,9 @@ class TestPaletteRegistry:
         缓存值保持当前活动 palette。
         """
         from unittest.mock import patch
-        import src.tui.app._theme as theme
+        # 2026-08-05 公共工具归位 core：_active_palette_cache 为可变绑定，
+        # 须经 core._theme 访问真实模块变量（app._theme 为 re-export 存根）。
+        import src.tui.core._theme as theme
         from src.tui.app._theme import (
             _invalidate_palette_cache, get_active_palette, resolve_theme,
         )
