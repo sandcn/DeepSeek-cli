@@ -156,7 +156,9 @@ class TestSubAgentStyledRuns:
         assert lines, "应产出卡片行"
         assert all(isinstance(ln, Line) for ln in lines), "行应为 ink Line"
         plains = [ln.plain for ln in lines]
-        assert plains[0].startswith("┌"), "顶边框"
+        assert plains[0].startswith("\u25cf"), "标题行（running ●，无边框）"
+        assert not any(ch in p for p in plains
+                       for ch in "\u250c\u2510\u2502\u2514\u2518"), "无边框字符"
         assert any("分析" in p for p in plains), "agent 描述"
 
     def test_format_tool_record_returns_line(self):

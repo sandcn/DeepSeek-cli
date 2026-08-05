@@ -11,8 +11,9 @@
 ``Style``（fg 色号），与其余 React Ink 组件（StatusBar/ToolCard/UserSelect）
 同源。
 
-对齐 Claude Code：子代理活动渲染为**逐 agent 卡片**（``┌─ ● ⚡ map 地图扫描 ─┐``
-顶边框 + ``│`` 主体行 + ``└─ ✔ 完成 ─┘`` 底边框），不再输出汇总行/树形分支/
+对齐 Claude Code：子代理活动渲染为**逐 agent 卡片**（标题行 ``● ⚡ map 地图扫描``
++ 内容行 + 状态行 ``✔ 完成``，**无边框**——2026-08-06 用户需求：所有 tool
+card 去掉边框，子代理活动卡一并去边框），不再输出汇总行/树形分支/
 方括号类型标签。卡片内容宽度自适应（Line.width 测量）。
 
 设计模式: 模板方法（Template Method）— 帧渲染骨架由渲染模块统一提供，
@@ -55,9 +56,6 @@ from src.tui._format import format_duration, format_tokens, format_speed, single
 
 from src.tui._subagent_state import _AgentSlot, _ToolRecord
 
-#: 卡片边框色（对齐工具卡 palette.border fg=23 暗青）
-_S_BORDER = Style(fg=23)
-
 #: 语义色（与 _const._C_* 值一致：RUNNING=214/DONE=40/FAIL=196/ANSWERING=75/
 #: PARSING=178/BATCH=140/DIMMER=240/DIMMEST=238/SUMMARY_DIM=245）
 _S_RUNNING = Style(fg=214)          # 琥珀 — 运行中
@@ -95,15 +93,6 @@ def _fade_type_style(agent_type: str, elapsed: float) -> Style:
     code = style.fg
     faded = _fx.fade_color(elapsed, _FADE_DURATION, _FADE_START_COLOR, code)
     return Style(fg=faded)
-
-
-def _pad_runs(runs: List[StyledRun], width: int) -> List[StyledRun]:
-    """右侧补空格至目标显示宽度（内容不超则原样）。"""
-    w = sum(r.width for r in runs)
-    pad = width - w
-    if pad > 0:
-        return runs + [StyledRun(" " * pad, None)]
-    return runs
 
 
 def _get_tool_color(tool_name: str) -> Style:
@@ -204,48 +193,44 @@ def _terminal_max_width() -> int:
 def _build_group_card(rows: list[tuple[str, str, List[Line]]],
                       now: float,
                       max_lines: int | None = None) -> List[Line]:
-    """构建子代理组卡片（所有 Agent 合并为一个卡，内容宽度自适应）。
+    """构建子代理组卡片（所有 Agent 合并为一个卡，内容宽度自适应，**无边框**）。
 
-    对齐 Claude Code：``┌─ ● ⚡ 子代理 · N ─┐`` 顶边框 + ``│`` 各 agent 行
-    （running 优先并展开阶段/工具子行，done/fail 为单行）+ ``└─ ✔ 完成 ─┘``
-    底边框（全部结束）。**行数保护**：卡片总行数 ≤ max_lines（终端高度推算），
-    超限截断并追加 ``… +K 行省略`` 提示——防卡片撑爆终端可视区。
+    对齐 Claude Code：标题行（``●/✔ ⚡ 子代理 · N``）+ 各 agent 行（running
+    优先并展开阶段/工具子行，done/fail 为单行）+ 状态行（``✔ 完成``，全部
+    结束）。**行数保护**：卡片总行数 ≤ max_lines（终端高度推算），超限截断
+    并追加 ``… +K 行省略`` 提示——防卡片撑爆终端可视区。
     """
     if max_lines is None:
         max_lines = _terminal_max_lines()
     n = len(rows)
     any_running = any(st == "running" for st, _, _ in rows)
-    # ★ BEAUTY-11（方向4 动效）：运行中组卡边框呼吸——暗青 23 → 亮青 45
-    #   （8s 周期，与工具卡边框呼吸同步），视觉提示「子代理执行中」；全部
-    #   完成（closed）保持静态 _S_BORDER（零额外渲染成本）。
-    if any_running:
-        from src.tui.core._theme import time_glow
-        border = Style(fg=time_glow(23, 45, 8.0))
-    else:
-        border = _S_BORDER
-    # 标题：●/✔ ⚡ 子代理 · N（⚡ 为 subagent 图标，对齐 Claude Code Task 卡）
+    # 标题：●/✔ ⚡ 子代理 · N（⚡ 为 subagent 图标，对齐 Claude Code Task 卡）。
+    # 运行中 ● 状态图标呼吸（琥珀 208-220 脉动，BEAUTY-11 语义——2026-08-06
+    # 去边框后呼吸由状态图标承接，与工具卡状态图标呼吸一致）；全部完成（closed）
+    # 保持静态 _S_DONE（零额外渲染成本）。
     status_icon = "\u25cf" if any_running else "\u2714"
-    icon_style = _S_RUNNING if any_running else _S_DONE
+    if any_running:
+        icon_style = _running_pulse_style()
+    else:
+        icon_style = _S_DONE
     title: List[StyledRun] = [
         StyledRun(status_icon, icon_style),
         StyledRun(" ", None),
         StyledRun("\u26a1", _S_RUNNING),
         StyledRun(f" 子代理 \u00b7 {n}", None),
     ]
-    # 主体行：running 优先（标题 + 缩进子行），done/fail 单行（后置）
+    # 主体行：running 优先（标题 + 子行），done/fail 单行（后置）。
+    # 无边框：子行直接裸行输出（2026-08-06 去边框，不再加 `│ ` 前缀）。
     body: List[Line] = []
     for status, t, sublines in rows:
         if status == "running":
             body.append(t)
             for s in sublines:
-                body.append(Line([
-                    StyledRun("\u2502", _S_DIMMER),
-                    StyledRun(" ", None),
-                ] + s.runs))
+                body.append(s)
     for status, t, sublines in rows:
         if status != "running":
             body.append(t)
-    # 行数保护：卡片总行数（顶 + 主体 + 底）≤ max_lines
+    # 行数保护：卡片总行数（标题 + 主体 + 状态）≤ max_lines
     closed = not any_running
     budget = max_lines - (2 if closed else 1)
     if len(body) > budget:
@@ -263,37 +248,18 @@ def _build_group_card(rows: list[tuple[str, str, List[Line]]],
             StyledRun("\u2026", omit_style),
             StyledRun(f" +{dropped} 行省略", omit_style),
         ])]
-    # 组装卡片（内容宽度自适应，clamp 到终端宽度——修复前 card_w 由未截断
-    # 内容决定，超长内容使卡片比终端宽，右边界 ┐/│/┘ 被截断 → 卡片开口）
+    # 组装卡片（无边框裸行；宽度 clamp 到终端宽度——超长内容截断防撑爆）
     widths = [sum(r.width for r in title)] + [ln.width for ln in body]
     if closed:
         status_text = [StyledRun("\u2714 完成", _S_DONE)]
         widths.append(sum(r.width for r in status_text))
-    card_w = min(max(widths) + 6, _terminal_max_width())
-    inner_w = max(1, card_w - 4)
+    card_w = min(max(widths) if widths else 0, _terminal_max_width())
     out: List[Line] = []
-    title_trunc = truncate_runs(title, inner_w)
-    head = [StyledRun("\u250c\u2500 ", border)] + title_trunc
-    fill = max(0, card_w - 4 - sum(r.width for r in title_trunc))
-    if fill > 0:
-        head.append(StyledRun("\u2500" * fill, border))
-    head.append(StyledRun("\u2510", border))
-    out.append(Line(head))
+    out.append(Line(truncate_runs(title, card_w)))
     for ln in body:
-        content = truncate_runs(ln.runs, inner_w)
-        out.append(Line(
-            [StyledRun("\u2502 ", border)]
-            + _pad_runs(content, inner_w)
-            + [StyledRun(" \u2502", border)]
-        ))
+        out.append(Line(truncate_runs(ln.runs, card_w)))
     if closed:
-        status_trunc = truncate_runs(status_text, inner_w)
-        tail = [StyledRun("\u2514\u2500 ", border)] + status_trunc
-        fill = max(0, card_w - 4 - sum(r.width for r in status_trunc))
-        if fill > 0:
-            tail.append(StyledRun("\u2500" * fill, border))
-        tail.append(StyledRun("\u2518", border))
-        out.append(Line(tail))
+        out.append(Line(truncate_runs(status_text, card_w)))
     return out
 
 
@@ -301,8 +267,9 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
                       max_history: int = 3) -> List[Line]:
     """构建单个 Agent 的内容行（标题 + 阶段指示 + 工具历史，无树形分支）。
 
-    首行为卡片顶边框标题（状态图标 + 类型名 + 描述 + 统计）；其余为卡片主体
-    （阶段指示 + 工具记录）。``is_last`` 保留兼容参数（无分支后不再使用）。
+    首行为卡片标题行（状态图标 + 类型名 + 描述 + 统计，无边框）；其余为
+    卡片内容行（阶段指示 + 工具记录）。``is_last`` 保留兼容参数（无分支后
+    不再使用）。
     """
     lines: List[Line] = []
     elapsed = (slot.end_time or now) - slot.start_time

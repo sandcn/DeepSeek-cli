@@ -84,13 +84,12 @@ def test_tool_icon_refresh_after_close_renderer():
     before = stream.getvalue()
     ink.render(f_b)
     delta = stream.getvalue()[len(before):]
-    # delta 含光标定位（\x1b[71A）+ 顶边框重写（┌─ ✔）
-    assert "┌" in delta and "✔" in delta, (
-        "关闭后 diff 应重写顶边框行（含 ✔ 图标）"
+    # delta 含光标定位（\x1b[71A）+ 标题行重写（● → ✔，无边框前缀）——
+    # Bash 工具名仅出现在标题行（状态行为 `✔ 完成`），Bash+✔ 同时出现
+    # 证明标题行被重写（而非仅新增状态行）。
+    assert "✔" in delta and "Bash" in delta, (
+        "关闭后 diff 应重写标题行（含 ✔ 图标）"
     )
-    # 顶边框重写行的内容确认（\r 之后首个 ┌ 所在段含 ✔）
-    seg = delta.split("┌")[1]
-    assert "✔" in seg.split("┐")[0], "顶边框重写段应含 ✔ 图标"
 
 
 def test_committed_lines_identity_changes_on_replace():

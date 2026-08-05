@@ -9,14 +9,14 @@
     → TuiRenderer._do_subagent_frame()
     → BottomBar.set_subagent_frame() → 终端显示
 
-渲染效果：
-  ● 3 agents [████████░░░░] · 12.5k out · 1.2k/s · 15.3s · 2/3 done
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   ├─ ⠋ [EXE] 分析代码结构  12.5k out  1.2k/s  15.3s
-   │  …thinking  3.2s
-   │  ● read_file /path/to/file.py  0.3s
-   │  ✔ grep pattern src/  0.1s
-   └─ ✔ [EXE] 生成测试  8.2k out  10.1s
+渲染效果（2026-08-06 无边框卡片；对齐 Claude Code 子代理 Task 卡）：
+  ● ⚡ 子代理 · 3
+  ● 分析代码结构  12.5k out  1.2k/s  15.3s
+  …thinking  3.2s
+  ● read_file /path/to/file.py  0.3s
+  ✔ grep pattern src/  0.1s
+  ✔ 分析代码结构  8.2k out  10.1s
+  ✔ 完成
 
 方向C 步骤7 拆分说明（上帝类 → 三域分离）：
   - 状态建模 → ``src/tui/_subagent_state.py``（``_AgentSlot``/``_ToolRecord``/``StateStore``）

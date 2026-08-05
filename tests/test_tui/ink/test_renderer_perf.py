@@ -34,7 +34,7 @@ class TestShiftedTailSkipsRewrite:
         val = out.getvalue()
         # 仅写 delta 新行（第 4 行 "d"），不重写平移行 a/b/c；满宽行 wrap
         # 修复：\n 前 \r 归位。
-        assert val == "\rd\x1b[K\r\n", (
+        assert val == "\r\x1b[Kd\r\n", (
             f"平移快路径应仅写 delta 新行，实际: {val!r}"
         )
         assert val.count("\x1b[K") == 1
@@ -48,7 +48,7 @@ class TestShiftedTailSkipsRewrite:
         out.truncate()
         r.render(_frame("x", "y", "z", "w"))
         val = out.getvalue()
-        assert val == "\rz\x1b[K\r\n\rw\x1b[K\r\n"
+        assert val == "\r\x1b[Kz\r\n\r\x1b[Kw\r\n"
         assert val.count("\x1b[K") == 2
         assert r.cursor_row == 5
 
@@ -73,7 +73,7 @@ class TestShiftedTailSkipsRewrite:
         r.render(_frame("a", "X", "b", "c"))
         val = out.getvalue()
         # 重写 X,b,c（3 行）；满宽行 wrap 修复：\n 前 \r 归位
-        assert val == "\x1b[2A" + "\rX\x1b[K\r\n" + "\rb\x1b[K\r\n" + "\rc\x1b[K\r\n"
+        assert val == "\x1b[2A" + "\r\x1b[KX\r\n" + "\r\x1b[Kb\r\n" + "\r\x1b[Kc\r\n"
         assert r.cursor_row == 5
 
 
@@ -245,7 +245,7 @@ class TestBufferedSingleWrite:
         r.render(_frame("a", "X", "b", "c"))
         val = out.getvalue()
         # 满宽行 wrap 修复：写行结尾 \r\n（\n 前 \r 归位）
-        assert val == "\x1b[2A" + "\rX\x1b[K\r\n" + "\rb\x1b[K\r\n" + "\rc\x1b[K\r\n"
+        assert val == "\x1b[2A" + "\r\x1b[KX\r\n" + "\r\x1b[Kb\r\n" + "\r\x1b[Kc\r\n"
 
 
 class TestInputRouterCache:
@@ -365,7 +365,7 @@ class TestFastPathGuards:
         # 常规差异路径：从 cursor_row=2 上移到行 i+1=4（cursor_down 2）→ 写 d
         # 无越界滚动序列（\x1b[9999;1H 或 CUD 越界）
         assert "\x1b[9999" not in val, f"不应出现越底滚动序列: {val!r}"
-        assert val.endswith("\rd\x1b[K\r\n"), f"应写 delta 新行 d: {val!r}"
+        assert val.endswith("\r\x1b[Kd\r\n"), f"应写 delta 新行 d: {val!r}"
         assert r.cursor_row == 5, f"渲染后光标应在文档底部下一行，实际 {r.cursor_row}"
 
     def test_first_frame_empty_cursor_row_regression(self):
@@ -382,7 +382,7 @@ class TestFastPathGuards:
         r.render(_frame("a"))  # 第二帧 1 行
         val = out.getvalue()
         # 从 cursor_row=1 到行 i=0：n_move = 1-1 = 0 → 无移动，直接写
-        assert val == "\ra\x1b[K\r\n", (
+        assert val == "\r\x1b[Ka\r\n", (
             f"第二帧应无多余光标移动（仅写 a 行），实际: {val!r}"
         )
         assert r.cursor_row == 2

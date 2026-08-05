@@ -94,15 +94,15 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
       - 关闭块（``_cached_ink_lines`` 非 None）直接复用冻结 ``Line.runs``
         引用（同一 runs 列表对象跨帧复用，免每帧 Style merge）；推理块除外
         ——冻结语义（dim）与即时渲染（fg=242）不同，保持即时路径。
-      - 工具块短路：直接返回 ``tool_card_lines`` 边框行（open 卡无
-        底边框）。**不走** per-line ``_open_styled_cache``——卡片行数与输入行
-        非 1:1（wrap/边框），缓存键失效。
+      - 工具块短路：直接返回 ``tool_card_lines`` 行（open 卡无
+        状态行）。**不走** per-line ``_open_styled_cache``——卡片行数与输入行
+        非 1:1（wrap/标题/状态），缓存键失效。
       - 其余（reasoning/content）保持原 per-line styled 引用缓存逻辑。
 
     Args:
         block: 聊天块。
         start: 起始 AnsiLine 下标。
-        width: 文档宽度（工具卡片边框宽度约束；调用方传 model.width）。
+        width: 文档宽度（工具卡片宽度约束；调用方传 model.width）。
     """
     kind = block.kind
     cache = getattr(block, "_cached_ink_lines", None)
@@ -321,8 +321,8 @@ def ChatView(props) -> object:
         # ★ 方向D 步骤14 + PERF-7（live 尾部截断）：content/reasoning 块被
         #   未提交工具卡夹住（无法增量提交）时未提交尾随流式增长——仅渲染
         #   最后 ``_LIVE_TAIL_LINES`` 行（中间行块关闭提交时经 committed_lines
-        #   完整显示，非全屏流动模型无视觉跳变）；工具卡不截断（边框渲染
-        #   依赖 start==0 顶边框）。
+        #   完整显示，非全屏流动模型无视觉跳变）；工具卡不截断（标题行渲染
+        #   依赖 start==0）。
         # ★ BUG-41（review 方向，性能）：行 key 用**块内绝对行号**（修复前
         #   ``row_in_block`` 从 committed_line_count 起重新编号——块被增量提交
         #   N 行后，旧 ``chat-{i}-0`` 的 fiber 改渲染绝对行号 N → 换行缓存/style

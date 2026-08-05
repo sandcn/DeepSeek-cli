@@ -256,7 +256,7 @@ class EventDispatcher:
         # ★ 空工具卡防御（后台任务等非工具上下文的输出）：工具执行上下文
         #   退出后 print_to_terminal 回退 label/tool_id="assistant"——不作为
         #   工具输出（避免 append_tool_output 兜底创建永不闭合的空「工具」卡
-        #   ┌─ ● ⚙ 工具）。
+        #   ● ⚙ 工具；2026-08-06 去边框后为空标题行）。
         if (event.label or "") == "assistant" or (event.tool_id or "") == "assistant":
             return
         text = event.text.rstrip("\n")

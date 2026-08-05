@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import select
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -937,10 +938,13 @@ class TestEnterResidualLF:
             os.close(w_fd)
             os.close(r_fd)
 
-    def test_suppress_false_clears_residual_enter_commits_regression(self, tmp_path) -> None:
-        """set_suppress_enter(False) 清残留标记，用户后续 Enter 正常提交。
+    def test_suppress_false_clears_expired_residual_commits_regression(self, tmp_path) -> None:
+        """set_suppress_enter(False) 清**已超时**残留标记，用户后续 Enter 正常提交。
 
-        覆盖「单 CR 终端（无 LF）恢复后用户 Enter 不被误丢弃」。
+        覆盖「单 CR 终端（无 LF）恢复后用户 Enter 不被误丢弃」：
+        残留标记仅在丢弃窗口（_ENTER_RESIDUAL_WINDOW）内有效——窗口超时
+        （无 LF 到达）后 set_suppress_enter(False) 清理标记，用户后续 Enter
+        正常提交（不被误丢）。
         """
         r_fd, w_fd = os.pipe()
         try:
@@ -952,7 +956,10 @@ class TestEnterResidualLF:
             assert inp._dispatcher._enter_residual_pending is True
             assert not inp.has_queued_input()
 
-            # 恢复 Enter 抑制 → 清残留标记
+            # 标记窗口超时（单 CR 终端：无 LF 到达）
+            inp._dispatcher._enter_residual_deadline = time.monotonic() - 1.0
+
+            # 恢复 Enter 抑制 → 清已超时残留标记
             inp.set_suppress_enter(False)
             assert inp._dispatcher._enter_residual_pending is False
 
@@ -961,6 +968,106 @@ class TestEnterResidualLF:
                 inp._dispatch_key_event(KeyEvent(kind="enter"))
             assert inp.has_queued_input()
             assert inp.get_queued_input() == "edit content"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_suppress_false_keeps_unexpired_residual_lf_discarded(
+        self, tmp_path, wait_pipe_readable_fixture,
+    ) -> None:
+        """set_suppress_enter(False) 保留**未超时**残留标记，紧随 LF 仍被丢弃。
+
+        修复（2026-08-06）：弹窗确认 Enter 的 LF 可能晚到（渲染线程忙/终端
+        I/O 延迟）——若 set_suppress_enter(False) 无条件清标记，LF 会在
+        prefill 注入后被 _enter() 误提交（用户看到「编辑无效/要再输入」）。
+        标记保留至窗口内 LF 被 read_stdin_once 丢弃。
+        """
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "test_history")
+            inp.start_io()
+            inp.set_suppress_enter(True)
+            inp.handle_chars("edit content")
+            os.write(w_fd, b"\r")
+
+            # 第一次 read_stdin_once：处理 CR（被抑制）→ 置残留标记
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp._dispatcher._enter_residual_pending is True
+
+            # 恢复 Enter 抑制（弹窗关闭）——标记未超时 → 保留
+            inp.set_suppress_enter(False)
+            assert inp._dispatcher._enter_residual_pending is True
+
+            # 第二次 read_stdin_once：LF → 仍被丢弃（不触发 _enter）
+            os.write(w_fd, b"\n")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp._dispatcher._enter_residual_pending is False
+            assert not inp.has_queued_input()
+            assert inp.get_current_text() == "edit content"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_normal_enter_sets_residual_flag_lf_discarded(
+        self, tmp_path, wait_pipe_readable_fixture,
+    ) -> None:
+        """正常 Enter 提交后同样置残留标记，紧随 LF 被丢弃（不触发 _enter）。
+
+        修复（2026-08-06）：/editmsg /deitmsg 等命令的 CR+LF 中 LF 可能晚到
+        （终端/蓝牙/SSH 延迟）——若在弹窗打开后到达会被 UserSelectPopup 误判
+        为确认 Enter（弹窗自动确认），或在 prefill 注入后被 _enter() 误提交。
+        统一标记丢弃。
+        """
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "test_history")
+            inp.start_io()
+            inp.handle_chars("/editmsg")
+            os.write(w_fd, b"\r")
+
+            # 第一次 read_stdin_once：CR → 正常提交 → 置残留标记
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp._dispatcher._enter_residual_pending is True
+            assert inp.has_queued_input()
+            assert inp.get_queued_input() == "/editmsg"
+
+            # 第二次 read_stdin_once：LF → 被丢弃（不触发第二次 _enter）
+            os.write(w_fd, b"\n")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp._dispatcher._enter_residual_pending is False
+            assert not inp.has_queued_input()
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_expired_residual_lf_does_not_discard_user_enter(
+        self, tmp_path, wait_pipe_readable_fixture,
+    ) -> None:
+        """残留标记窗口超时后用户 Enter 正常提交（不误丢）。
+
+        覆盖「渲染线程忙/单 CR 终端导致 LF 超过窗口才被处理」——超时后
+        LF/CR 视为用户新输入，正常分发提交（不丢弃）。提交后正常 Enter
+        又会置新残留标记（等待紧随 LF，行为一致）。
+        """
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "test_history")
+            inp.start_io()
+            inp.handle_chars("edited content")
+            # 直接置残留标记但窗口已超时（模拟渲染线程忙：LF 超过窗口才处理）
+            inp._dispatcher._enter_residual_pending = True
+            inp._dispatcher._enter_residual_deadline = time.monotonic() - 1.0
+            os.write(w_fd, b"\r")
+
+            # read_stdin_once：CR → 标记超时 → 不丢弃 → 正常提交
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp.has_queued_input()
+            assert inp.get_queued_input() == "edited content"
         finally:
             os.close(w_fd)
             os.close(r_fd)

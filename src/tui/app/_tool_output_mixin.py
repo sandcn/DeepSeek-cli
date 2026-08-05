@@ -36,15 +36,15 @@ class _ToolOutputMixin:
     """AppModel 工具输出行为 mixin（工具 box 生命周期）。"""
 
     def open_tool_box(self, tool_id: str, tool_name: str, detail: str = "") -> ChatBlock:
-        """打开一个工具分组：卡片顶边框立即显示，输出增量追加（卡片化）。
+        """打开一个工具分组：卡片标题行立即显示，输出增量追加（卡片化）。
 
-        方向D 步骤15：extra 记录工具状态（running）与顶边框 detail
+        方向D 步骤15：extra 记录工具状态（running）与标题行 detail
         （``tool_detail``）；输出行不再增量提交 committed_lines（关闭时统一
         提交/冻结，避免 committed_lines 与块状态不一致）。
 
         防孤儿卡（同一 tool_id 重复 open）：非空 tool_id 已存在开放 box 时
         **复用**——修复前直接新建块并覆盖 ``tool_boxes[tool_id]``，旧块成为
-        孤儿（永不关闭、无主体，只渲染一个 `┌─ ●` 顶边框，TUI 显示多一行）。
+        孤儿（永不关闭、无主体，只渲染一个 `● ⚙ 工具` 标题行，TUI 显示多一行）。
         触发场景：同一 tool_call_id 重复 ToolStartedEvent（重试/重复投递），
         或 append_tool_output 兜底建 box 后 ToolStartedEvent 后到。复用并更新
         标题/状态（如兜底 box 的 tool_name="" → 后到 open 补全 Bash·detail）。
@@ -53,14 +53,14 @@ class _ToolOutputMixin:
         from src.renderer.ansi.helpers import AnsiLine
         from src.tools.registry import get_tool_display_name
         display = get_tool_display_name(tool_name) or tool_name or "工具"
-        # 工具卡片顶边框 detail 数据源（tool_card_lines 消费）；
+        # 工具卡片标题行 detail 数据源（tool_card_lines 消费）；
         # ★ bash 多行命令 detail 含 \n——强制单行转义（对齐 _single_line 契约，
-        #   防 \n 拆破单行边框）。title/active_tool 复用转义后值（同源单行）。
+        #   防 \n 拆破单行标题行）。title/active_tool 复用转义后值（同源单行）。
         detail = _single_line_detail(detail)
         if tool_id:
             existing = self.tool_boxes.get(tool_id)
             if existing is not None:
-                # 复用已开放 box：更新工具名/状态/detail + 顶边框标题行
+                # 复用已开放 box：更新工具名/状态/detail + 标题行
                 # （live 渲染下一帧生效；开放 box 未提交，更新安全）
                 existing.extra["tool_name"] = tool_name
                 existing.extra["tool_status"] = "running"
@@ -71,8 +71,8 @@ class _ToolOutputMixin:
                 if existing.lines:
                     existing.lines[0] = AnsiLine.of(title, Style(fg=23, bold=True))
                 # ★ BUG-22（review 方向）：已增量提交过的 box（输出 > 阈值，
-                #   顶边框已在 committed_lines）复用更新标题时**同步重建
-                #   committed_lines 顶边框行**——修复前仅更新块内标题行，
+                #   标题行已在 committed_lines）复用更新标题时**同步重建
+                #   committed_lines 标题行**——修复前仅更新块内标题行，
                 #   渲染仍显示旧标题（如兜底 box 的空工具名）。
                 #   ★ BUG-30（review 方向）：经 ``_replace_committed_line``
                 #   替换新 Line + 列表身份变化——修复前直接 ``committed_lines[offset]
@@ -133,7 +133,7 @@ class _ToolOutputMixin:
         from src.renderer.ansi.helpers import AnsiLine, ansi_to_line
         # ★ 空工具卡防御（模型层双保险）：tool_id 为 "assistant" 时说明该输出
         #   来自工具上下文之外的 print_to_terminal 回退（如后台任务完成提示），
-        #   不归属任何工具 box——兜底创建空「工具」卡会永不闭合（┌─ ● ⚙ 工具）。
+        #   不归属任何工具 box——兜底创建空「工具」卡会永不闭合（● ⚙ 工具）。
         #   直接丢弃（上层 _on_tool_output 已过滤，此为防御冗余）。
         if tool_id == "assistant":
             _logger.debug("append_tool_output: 无归属输出（assistant），丢弃: %.80s", text)
@@ -284,18 +284,19 @@ class _ToolOutputMixin:
         #   令 committed_lines 列表身份变化（浅拷贝）→ 前缀缓存键中 ``id(lines)``
         #   失效 → 下一帧重建前缀 → diff 对新 Line 对象做 runs 值比较 → 顶边框
         #   行被重写。短工具（未增量提交，offset 不存在）关闭时经 commit_block
-        #   提交的顶边框已带 done/fail 图标，无需更新。
-        #   卡片结构：``_first_committed_offset`` 指向卡片**首行（顶边框）**，
-        #   状态图标为边框内 runs[1]（``┌─ `` 前缀后；runs[0] 为边框前缀）。
+        #   提交的标题行已带 done/fail 图标，无需更新。
+        #   卡片结构：``_first_committed_offset`` 指向卡片**首行（标题行）**，
+        #   状态图标为标题行 runs[0]（无边框——2026-08-06 去边框后不再有
+        #   ``┌─ `` 边框前缀）。
         offset = block.extra.get("_first_committed_offset")
         if offset is not None and 0 <= offset < len(self.committed_lines):
             icon = _tool_icon_runs(block)
             if icon:
                 top_line = self.committed_lines[offset]
                 runs = list(top_line.runs)
-                # 顶边框结构：[0]=`┌─ ` 边框前缀, [1]=状态图标, [2:]=标题内容
-                idx = 1
-                if not (len(runs) > 1 and runs[0].text.startswith("\u250c")):
+                # 标题行结构：[0]=状态图标, [1:]=标题内容
+                idx = 0
+                if not (runs and runs[0].text.strip() in ("\u25cf", "\u2714", "\u2716")):
                     # 防御：超窄宽度下标题被截断时按图标字符扫描定位
                     for i, r in enumerate(runs):
                         if r.text and r.text.strip() in ("\u25cf", "\u2714", "\u2716"):
@@ -345,11 +346,11 @@ class _ToolOutputMixin:
     def close_empty_tool_boxes(self) -> int:
         """自动闭合开放但无主体内容的空工具 box，返回闭合数量。
 
-        ★ 空工具卡防御：后台任务等非工具上下文输出可能经兜底创建只有顶边框
-        （``block.lines`` 仅 1 行标题）的空「工具」box（┌─ ● ⚙ 工具），这类
+        ★ 空工具卡防御：后台任务等非工具上下文输出可能经兜底创建只有标题行
+        （``block.lines`` 仅 1 行标题）的空「工具」box（● ⚙ 工具），这类
         box 永远不会有 ToolCloseCmd。每轮对话结束（round_end）时调用本方法，
-        将空 box 以完成态关闭（闭合后渲染为 ``┌─ ● …┐ / └─ ✔ 完成 ┘``），
-        避免空卡永久保持 ● running 悬挂。
+        将空 box 以完成态关闭（闭合后渲染为 ``● ⚙ 工具 … / ✔ 完成``，
+        无边框——2026-08-06 去边框），避免空卡永久保持 ● running 悬挂。
         """
         closed = 0
         for tool_id in list(self.tool_boxes.keys()):

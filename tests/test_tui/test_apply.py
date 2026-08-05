@@ -373,9 +373,16 @@ class TestToolBox:
         assert m.blocks[-1].closed is True
         assert m.blocks[-1].extra["tool_status"] == "done"
         assert m.tool_boxes == {}
-        # 渲染后无重复顶边框（committed_lines 仅一个 `┌─` 首行）
-        tops = [ln.plain for ln in m.committed_lines if ln.plain.startswith("\u250c")]
-        assert len(tops) == 1, f"重复 open 不应产生孤儿顶边框: {tops}"
+        # 渲染后无重复标题行（无边框：标题行以状态图标开头且含工具显示名）
+        from src.tools.registry import get_tool_display_name
+        tops = [ln.plain for ln in m.committed_lines
+                if get_tool_display_name("bash") in ln.plain]
+        assert len(tops) == 1, f"重复 open 不应产生孤儿标题行: {tops}"
+        # 无边框字符
+        assert not any(ch in ln.plain for ln in m.committed_lines
+                       for ch in "\u250c\u2510\u2502\u2514\u2518"), (
+            f"工具卡应无边框字符: {[ln.plain for ln in m.committed_lines]}"
+        )
 
     def test_tool_open_after_output_fallback_reuses_box(self):
         """append_tool_output 兜底建 box 后 ToolStartedEvent 后到 → 复用并补全标题。
@@ -570,10 +577,10 @@ class TestToolBox:
         for i in range(200):
             m.append_tool_output("t1", f"line{i}\n")
         assert block.committed_line_count > 0
-        # 工具卡片顶边框仅首次提交（committed_line_count==0）发射一次
-        # （卡片化后顶边框替代 `▎⚡` 角色头，无独立角色头行）
-        borders = [l for l in m.committed_lines if l.plain.startswith("\u250c")]
-        assert len(borders) == 1, f"工具卡片顶边框应恰好一次，实际 {len(borders)}"
+        # 工具卡片标题行仅首次提交（committed_line_count==0）发射一次
+        # （卡片化后标题行替代 `▎⚡` 角色头，无独立角色头行；无边框）
+        borders = [l for l in m.committed_lines if "WebSearch" in l.plain]
+        assert len(borders) == 1, f"工具卡片标题行应恰好一次，实际 {len(borders)}"
         # 开放块未关闭 → 尚无卡片尾空行（无空 plain 行）
         assert all(l.plain != "" for l in m.committed_lines), "开放块不应有尾空行"
         m.close_tool_box("t1", True)
@@ -1111,10 +1118,10 @@ class TestReflowCommitted:
         assert all(ln.width <= 20 for ln in m.committed_lines)
         plains = [ln.plain for ln in m.committed_lines]
         assert "line69" not in "".join(plains), "未提交尾不应混入 committed"
-        # 卡片化：重排后首行为工具卡片顶边框（running ● 图标 + 显示名 WebSearch）
-        assert plains[0].startswith("\u250c"), "重排后卡片首行应为顶边框"
-        assert "\u25cf" in plains[0], "顶边框应含 running ● 状态图标"
-        assert "WebSearch" in plains[0], "顶边框应含工具显示名"
+        # 卡片化：重排后首行为工具卡片标题行（running ● 图标 + 显示名
+        # WebSearch；无边框——2026-08-06 去边框）
+        assert plains[0].startswith("\u25cf"), "重排后卡片首行应为标题行（● 状态图标）"
+        assert "WebSearch" in plains[0], "标题行应含工具显示名"
 
     def test_closed_tool_header_icon_trailer_preserved(self):
         """关闭工具块重排：头/关闭图标/尾空行保留，_first_committed_offset 重建。"""
@@ -1126,17 +1133,17 @@ class TestReflowCommitted:
             m.append_tool_output("t1", f"out{i}\n")
         m.close_tool_box("t1", True)
         block = m.blocks[-1]
-        # 卡片结构：顶边框 + 主体行（状态行跳过移入底边框）+ 底边框 + 尾空行
+        # 卡片结构：标题行 + 主体行（状态行跳过移入状态行）+ 状态行 + 尾空行
         assert len(m.committed_lines) == len(block.lines) + 1
         m.reflow_committed(30)
         plains = [ln.plain for ln in m.committed_lines]
-        assert plains[0].startswith("\u250c"), "关闭工具卡首行应为顶边框"
-        assert "\u2714" in plains[0], "顶边框应含关闭 ✔ 状态图标"
+        assert plains[0].startswith("\u2714"), "关闭工具卡首行应为标题行（✔ 状态图标）"
+        assert "\u2714" in plains[0], "标题行应含关闭 ✔ 状态图标"
         assert plains[-1] == ""  # 尾空行保留
         assert sum(1 for p in plains if p == "") == 1
         offset = block.extra["_first_committed_offset"]
-        assert m.committed_lines[offset].plain.startswith("\u250c"), "offset 应指向顶边框"
-        assert "\u2714" in m.committed_lines[offset].plain, "顶边框应含关闭 ✔ 图标"
+        assert m.committed_lines[offset].plain.startswith("\u2714"), "offset 应指向标题行"
+        assert "\u2714" in m.committed_lines[offset].plain, "标题行应含关闭 ✔ 图标"
 
     def test_idempotent_same_width(self):
         """同宽度/非法宽度调用 → 不重建（引用不变）。"""

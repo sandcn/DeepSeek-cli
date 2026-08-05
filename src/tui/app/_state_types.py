@@ -57,21 +57,21 @@ class ChatBlock:
     #: ``_measure`` 的 ``cache[0] is styled`` 身份快路径跨帧命中（大 open 块
     #: 每帧零重建）。行被 block.lines 持有，dict 随 block GC 自然释放。
     _open_styled_cache: dict | None = None
-    #: 工具卡主体行 wrap 结果缓存（dict[(AnsiLine, inner_w), list]，PERF-6）——
-    #: ``tool_card_lines`` 对开放工具卡主体行按 ``(行对象, 内宽)`` 缓存
-    #: wrap+截断+pad 后的内容 runs（不含动态边框色），每帧仅拼接边框——修复
-    #: 前开放大工具卡（如长 bash 输出）每帧全量 ``wrap_line`` 重建全部主体行
-    #: → 10Hz 渲染循环下 CPU 100%。行对象被 block.lines 持有，dict 随 block
-    #: GC 自然释放；关闭块冻结后不再访问。
+    #: 工具卡内容行 wrap 结果缓存（dict[(AnsiLine, width), list]，PERF-6）——
+    #: ``tool_card_lines`` 对开放工具卡内容行按 ``(行对象, 宽度)`` 缓存
+    #: wrap+截断后的内容 runs（无边框，2026-08-06 去边框后不含 pad/边框拼接）
+    #: ——修复前开放大工具卡（如长 bash 输出）每帧全量 ``wrap_line`` 重建全部
+    #: 内容行 → 10Hz 渲染循环下 CPU 100%。行对象被 block.lines 持有，dict 随
+    #: block GC 自然释放；关闭块冻结后不再访问。
     _tool_card_body_cache: dict | None = None
     #: 工具卡帧级缓存（tuple[key, list]，PERF-6）——开放工具卡完整输出列表
-    #: （含动态边框色）在同一 time_glow 桶内跨帧复用，TEXT ``_wrap_cache``
-    #: 命中 → 主体行零重建。key 含全部动态因素（行数/状态/呼吸色/省略计数）；
+    #: （含动态状态图标色）在同一 time_glow 桶内跨帧复用，TEXT ``_wrap_cache``
+    #: 命中 → 内容行零重建。key 含全部动态因素（行数/状态/呼吸色/省略计数）；
     #: 关闭块冻结后置 None 释放。
     _tool_card_frame_cache: tuple | None = None
-    #: 工具卡主体行完整列表缓存（tuple[key, list]，PERF-6b）——含**静态边框**
-    #: 的主体行跨帧/跨桶复用（顶/底边框呼吸色动态，独立重建）。frame_cache
-    #: 同桶快速路径 miss（跨桶）时兜底复用主体行，TEXT ``_wrap_cache`` 命中。
+    #: 工具卡内容行完整列表缓存（tuple[key, list]，PERF-6b）——内容行跨帧/
+    #: 跨桶复用（标题行状态图标色动态，独立重建）。frame_cache 同桶快速路径
+    #: miss（跨桶）时兜底复用内容行，TEXT ``_wrap_cache`` 命中。
     _tool_card_body_lines_cache: tuple | None = None
 
 

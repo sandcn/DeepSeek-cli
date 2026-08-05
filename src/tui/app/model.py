@@ -244,8 +244,9 @@ class AppModel(_ToolOutputMixin):
         ``self.width <= 0`` 时跳过 wrap 保持原样（防御）。
 
         分支（先于通用 wrap）：
-          - tool：卡片化边框行（顶/底边框 + `│ ` 主体行）——渲染期变换，不改动
-            ``block.lines`` 原文；builder 统一管理宽度约束，不走通用 wrap。
+          - tool：卡片化行（标题行 + 内容行 + 状态行，**无边框**——2026-08-06
+            去边框）——渲染期变换，不改动 ``block.lines`` 原文；builder 统一
+            管理宽度约束，不走通用 wrap。
           - user：每行 ``> `` 标记（顶格列 0，对齐 Claude Code）——即使不超宽
             也要重前缀。
 

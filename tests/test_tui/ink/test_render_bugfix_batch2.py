@@ -44,7 +44,9 @@ class TestBug74PrefixCacheKeyWidth:
         apply_cmd(model, ToolCloseCmd(tool_id="t1", success=True))
         # 宽 80 首次渲染（提交前缀缓存）
         frame80 = self._render(model, 80)
-        assert any("┌─" in ln.plain for ln in frame80.lines)
+        assert any("执行 ls" in ln.plain for ln in frame80.lines), (
+            "宽 80 渲染应含工具卡标题行（detail）"
+        )
         # 宽 40 渲染——不 reflow（防御路径）
         frame40 = self._render(model, 40)
         for ln in frame40.lines:
@@ -63,7 +65,9 @@ class TestBug74PrefixCacheKeyWidth:
         frame40 = self._render(model, 40)
         for ln in frame40.lines:
             assert ln.width <= 40, f"行宽 {ln.width} > 40: {ln.plain[:40]!r}"
-        assert any("┌─" in ln.plain for ln in frame40.lines)
+        assert any("执行 ls" in ln.plain for ln in frame40.lines), (
+            "宽 40 重排后应含工具卡标题行（detail）"
+        )
 
 
 class TestBug75WriteLineMultilineSplit:

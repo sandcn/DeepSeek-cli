@@ -447,9 +447,14 @@ class TestToolCardMultilineDetail:
         # 标题行（block.lines[0]）同样单行（open_tool_box 同源转义）
         assert "\n" not in m.tool_boxes["t1"].lines[0].plain
         plains = self._render_plains(m)
-        assert any("\u250c" in p for p in plains)  # 顶边框存在
+        assert any("\u25cf" in p for p in plains)  # 标题行存在（running ●，无边框）
+        # 无边框字符
+        assert not any(ch in p for p in plains
+                       for ch in "\u250c\u2510\u2502\u2514\u2518"), (
+            f"工具卡应无边框字符: {plains}"
+        )
         for p in plains:
-            assert "\n" not in p, f"渲染行含换行符破坏边框: {p!r}"
+            assert "\n" not in p, f"渲染行含换行符: {p!r}"
         # 转义后命令仍可见（字面量 \n）
         assert any("cmd1\\ncmd2" in p for p in plains)
 
@@ -458,19 +463,19 @@ class TestToolCardMultilineDetail:
         m = AppModel()
         m.open_tool_box("t1", "bash", "ls\npwd")
         m.append_tool_output("t1", "out\n")
-        # 边框 builder 产物：顶边框行单行完整（┌ 与 ┐ 同行），无物理换行
+        # 标题行（无边框）单行完整，无物理换行
         from src.tui.app.toolcard import tool_card_lines
         head_lines = tool_card_lines(m.tool_boxes["t1"], 40, 0, None)
         head_text = "".join(r.text for r in head_lines[0])
         head_width = sum(r.width for r in head_lines[0])
         assert "\n" not in head_text
-        assert head_text.startswith("\u250c")
-        assert head_text.endswith("\u2510")
-        assert head_width == 40  # 显示宽度恰为卡片宽度（不超不欠）
-        # 渲染帧同样无换行符破坏边框
+        assert head_text.startswith("\u25cf")  # 状态图标起（无边框前缀）
+        assert not any(ch in head_text for ch in "\u250c\u2510\u2502\u2514\u2518")
+        assert head_width <= 40  # 显示宽度不超卡片宽度
+        # 渲染帧同样无换行符
         plains = self._render_plains(m, 40)
         for p in plains:
-            assert "\n" not in p, f"渲染行含换行符破坏边框: {p!r}"
+            assert "\n" not in p, f"渲染行含换行符: {p!r}"
         assert any("ls\\npwd" in p for p in plains)
 
     def test_single_line_detail_helper(self):

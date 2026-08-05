@@ -291,8 +291,14 @@ class InkRenderer:
             current_row = target_row
             for line_idx in range(prev_h, new_h):
                 buf.write("\r")
-                buf.write(frame.render_line(line_idx))
+                # ★ 行尾宽字符修复（2026-08-06）：EL 0（\033[K）从内容后移到
+                #   内容前——修复前写满宽行（内容恰好 = 终端列宽）后光标停在
+                #   wrap 边界（x==width），此时 EL 0 在 Termux 等终端会清除
+                #   行尾刚写入的宽字符（CJK/emoji 占 2 列，第二列处于行尾）→
+                #   行尾中文字符显示不出来。EL 前移：先清整行旧残留再写新内容，
+                #   行尾宽字符不再被清除（满宽行无残留，清行无副作用）。
                 buf.write(_CLEAR_EOL)
+                buf.write(frame.render_line(line_idx))
                 # ★ 满宽行 wrap 修复（同 _diff_runs 写行循环）：行内容填满宽度时
                 #   \r 归位避免 \n 触发 wraparound 额外下移。
                 buf.write("\r")
@@ -449,8 +455,10 @@ class InkRenderer:
                 current_row = target_row
                 for idx in range(start, end):
                     buf.write("\r")
-                    buf.write(frame.render_line(idx))
+                    # ★ 行尾宽字符修复（2026-08-06）：EL 0 前移（先清行再写
+                    #   内容）——满宽行尾 CJK 不再被清除（见平移快路径注释）。
                     buf.write(_CLEAR_EOL)
+                    buf.write(frame.render_line(idx))
                     # ★ 满宽行 wrap 修复（2026-08-05）：行内容恰好填满终端宽度时，
                     #   光标停在 wrap 边界（x==width），直接 ``\n`` 在 pyte/Termux
                     #   等终端会先触发 wraparound 再 LF → 光标额外下移 1 行 →
@@ -475,8 +483,10 @@ class InkRenderer:
                 current_row = target_row
                 for idx in range(start, end):
                     buf.write("\r")
-                    buf.write(frame.render_line(idx))
+                    # ★ 行尾宽字符修复（2026-08-06）：EL 0 前移（先清行再写
+                    #   内容）——满宽行尾 CJK 不再被清除（见平移快路径注释）。
                     buf.write(_CLEAR_EOL)
+                    buf.write(frame.render_line(idx))
                     # ★ 满宽行 wrap 修复（2026-08-05）：行内容恰好填满终端宽度时，
                     #   光标停在 wrap 边界（x==width），直接 ``\n`` 在 pyte/Termux
                     #   等终端会先触发 wraparound 再 LF → 光标额外下移 1 行 →
@@ -495,8 +505,10 @@ class InkRenderer:
                 current_row = target_row
                 for idx in range(shift_start, new_h):
                     buf.write("\r")
-                    buf.write(frame.render_line(idx))
+                    # ★ 行尾宽字符修复（2026-08-06）：EL 0 前移（先清行再写
+                    #   内容）——满宽行尾 CJK 不再被清除（见平移快路径注释）。
                     buf.write(_CLEAR_EOL)
+                    buf.write(frame.render_line(idx))
                     # ★ 满宽行 wrap 修复（2026-08-05）：行内容恰好填满终端宽度时，
                     #   光标停在 wrap 边界（x==width），直接 ``\n`` 在 pyte/Termux
                     #   等终端会先触发 wraparound 再 LF → 光标额外下移 1 行 →
@@ -644,11 +656,12 @@ class InkRenderer:
                     buf.write(cursor_down(target_row - current_row))
                 current_row = target_row
                 buf.write("\r")
-                if doc_idx == -1:
-                    buf.write(_CLEAR_EOL)
-                else:
+                # ★ 行尾宽字符修复（2026-08-06）：EL 0 前移（先清行再写内容）
+                #   ——满宽行尾 CJK 不再被清除（见平移快路径注释）。doc_idx==-1
+                #   仍只清行（不写内容）。
+                buf.write(_CLEAR_EOL)
+                if doc_idx != -1:
                     buf.write(frame.render_line(doc_idx))
-                    buf.write(_CLEAR_EOL)
                 # 不写 \n：自底向上用 cursor_up/down 移动，旧缓冲行不触发滚动
         # 追加新行（滚动扩展物理缓冲）：漂移吸收为 0 时 buf_h1 == new_h+1，
         # 内容行写完后额外滚动一次产生末尾空行。
@@ -670,8 +683,10 @@ class InkRenderer:
             current_row = self._advance_row(current_row)
             for doc_idx in range(append_start, new_h):
                 buf.write("\r")
-                buf.write(frame.render_line(doc_idx))
+                # ★ 行尾宽字符修复（2026-08-06）：EL 0 前移（先清行再写
+                #   内容）——满宽行尾 CJK 不再被清除（见平移快路径注释）。
                 buf.write(_CLEAR_EOL)
+                buf.write(frame.render_line(doc_idx))
                 # ★ 满宽行 wrap 修复（同 _diff_runs 写行循环）：行内容填满宽度时
                 #   \r 归位避免 \n 触发 wraparound 额外下移。
                 buf.write("\r")
@@ -839,11 +854,12 @@ class InkRenderer:
                 buf.write(cursor_down(target_row - current_row))
             current_row = target_row
             buf.write("\r")
-            if doc_idx == -1:
-                buf.write(_CLEAR_EOL)  # 清除残留/空行
-            else:
+            # ★ 行尾宽字符修复（2026-08-06）：EL 0 前移（先清行再写内容）——
+            #   满宽行尾 CJK 不再被清除（见平移快路径注释）。doc_idx==-1 仍只
+            #   清行（不写内容）。
+            buf.write(_CLEAR_EOL)
+            if doc_idx != -1:
                 buf.write(frame.render_line(doc_idx))
-                buf.write(_CLEAR_EOL)
             # 不写 \n：自底向上用 cursor_up/down 移动，物理缓冲不变
         # 光标移到物理缓冲末尾（屏幕底部；此分支仅在 height>0 且 _buf_h>height
         # 时进入，缓冲末行屏幕坐标 = height）。

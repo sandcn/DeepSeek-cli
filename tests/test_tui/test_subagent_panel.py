@@ -644,15 +644,19 @@ class TestBeautyTimeBasedEffects:
         ctrl._order = ["agent-run", "agent-done"]
         lines = ctrl._render_frame()
         plains = [l.plain for l in lines]
-        # 单卡：顶边框含 `子代理 · 2`；running agent 标题在 done 之前
-        assert plains[0].startswith("\u250c") and "子代理 · 2" in plains[0]
+        # 单卡：标题行含 `子代理 · 2`（running ●，无边框）；running agent
+        # 标题在 done 之前
+        assert plains[0].startswith("\u25cf") and "子代理 · 2" in plains[0]
         assert any("run" in p for p in plains)
         assert any("done" in p for p in plains)
-        # running → 开放卡（无底边框）
-        assert not any(p.startswith("\u2514") for p in plains)
+        # 无边框字符
+        assert not any(ch in p for p in plains
+                       for ch in "\u250c\u2510\u2502\u2514\u2518"), (
+            f"子代理卡应无边框字符: {plains}"
+        )
 
     def test_group_card_closed_when_all_done(self):
-        """全部结束后单卡闭合（`✔ 完成` 底边框）。"""
+        """全部结束后单卡闭合（`✔ 完成` 状态行，无边框）。"""
         import time as _time
         from src.tui._subagent_panel import (
             SubAgentPanelController, _AgentSlot,
@@ -665,8 +669,8 @@ class TestBeautyTimeBasedEffects:
         ctrl._order = ["agent-done"]
         lines = ctrl._render_frame()
         plains = [l.plain for l in lines]
-        assert plains[0].startswith("\u250c") and "子代理 · 1" in plains[0]
-        assert any(p.startswith("\u2514") and "✔ 完成" in p for p in plains)
+        assert plains[0].startswith("\u2714") and "子代理 · 1" in plains[0]
+        assert any("✔ 完成" in p for p in plains)
 
     def test_group_card_row_protection(self):
         """行数保护：max_lines 超限时截断并追加 `… +K 行省略`（不撑爆终端）。"""
@@ -989,10 +993,10 @@ class TestSubAgentCardWidthConsistency:
 
 
 class TestGroupCardBorderBreath:
-    """BEAUTY-11 — 运行中子代理组卡边框呼吸（暗青 23 → 亮青 45 脉动）。
+    """BEAUTY-11 — 运行中子代理组卡状态图标呼吸（琥珀 208-220 脉动）。
 
-    与工具卡边框呼吸（_tool_card_styled_lines）同步；全部完成（closed）保持
-    静态 _C_BORDER（23）。面板 10Hz 刷新时时间基推进平滑呼吸。
+    与工具卡状态图标呼吸（toolcard._tool_icon_runs）同步；全部完成（closed）
+    保持静态 _S_DONE（40）。面板 10Hz 刷新时时间基推进平滑呼吸。
     """
 
     def _card(self, statuses):
@@ -1004,31 +1008,31 @@ class TestGroupCardBorderBreath:
         return render_frame(store, max_history=3)
 
     def test_running_card_invokes_time_glow(self):
-        """运行中边框调用 time_glow 呼吸（暗青→亮青脉动）。"""
+        """运行中标题行调用 time_glow 呼吸（状态图标琥珀脉动）。"""
         from unittest.mock import patch
         with patch("src.tui.core._theme.time_glow", return_value=45) as mock_glow:
             lines = self._card(["running"])
-        assert mock_glow.call_count >= 1, "运行中边框应调用 time_glow 呼吸"
+        assert mock_glow.call_count >= 1, "运行中标题行应调用 time_glow 呼吸"
         assert lines, "应产出卡片行"
 
     def test_closed_card_does_not_invoke_time_glow(self):
-        """全部完成（closed）边框静态（不调用 time_glow，零额外成本）。"""
+        """全部完成（closed）标题静态（不调用 time_glow，零额外成本）。"""
         from unittest.mock import patch
         with patch("src.tui.core._theme.time_glow", return_value=45) as mock_glow:
             lines = self._card(["done"])
         mock_glow.assert_not_called()
         assert lines, "应产出卡片行"
-        assert lines[0].runs[0].style is not None and lines[0].runs[0].style.fg == 23, \
-            "closed 边框应保持静态 _S_BORDER(23)"
+        assert lines[0].runs[0].style is not None and lines[0].runs[0].style.fg == 40, \
+            "closed 标题行状态图标应静态 _S_DONE(40)"
 
     def test_running_border_color_in_breath_range(self):
-        """运行中边框色号落在暗青 23..亮青 45 区间（time_glow 语义）。"""
+        """运行中标题行状态图标色号为呼吸色（time_glow 语义）。"""
         from unittest.mock import patch
         with patch("src.tui.core._theme.time_glow", return_value=30):
             lines = self._card(["running"])
-        # 顶边框样式应使用呼吸色号 30（mock 的呼吸色）
+        # 标题行状态图标应使用呼吸色号 30（mock 的呼吸色）
         assert lines[0].runs[0].style is not None and lines[0].runs[0].style.fg == 30, \
-            "运行中边框应使用呼吸色号"
+            "运行中状态图标应使用呼吸色号"
 
 
 class TestGroupCardBorderFill:

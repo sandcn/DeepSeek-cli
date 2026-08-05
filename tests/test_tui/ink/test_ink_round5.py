@@ -335,7 +335,7 @@ class TestNewlineAndFragment:
 
 
 class TestToolBorderBreathing:
-    """运行中工具卡边框呼吸（BEAUTY-10，完善动效）。"""
+    """运行中工具卡标题行动效（BEAUTY-10 系；2026-08-06 去边框后呼吸移至状态图标）。"""
 
     def _make_block(self, status, closed):
         from src.tui.app.model import AppModel, StatusState
@@ -353,20 +353,27 @@ class TestToolBorderBreathing:
         return b, tool_card_lines
 
     def test_running_tool_border_breathes(self):
-        """运行中工具卡顶边框色在呼吸区间内（23-45），非静态 23。"""
+        """运行中工具卡标题行状态图标色在呼吸区间内（208-220），非静态。"""
         b, fn = self._make_block("running", False)
         runs = fn(b, 60, 0, None)
         top = runs[0]
-        border_fg = top[0].style.fg
-        assert isinstance(border_fg, int), f"边框色应为 256 色号: {border_fg!r}"
-        assert 23 <= border_fg <= 45, f"运行中边框应呼吸于 [23,45]: {border_fg}"
+        icon_fg = top[0].style.fg
+        assert isinstance(icon_fg, int), f"状态图标色应为 256 色号: {icon_fg!r}"
+        assert 208 <= icon_fg <= 220, f"运行中状态图标应呼吸于 [208,220]: {icon_fg}"
+        # 无边框字符
+        assert not any(r.text and r.text.strip() in ("\u250c", "\u2502", "\u2510")
+                       for r in top), "去边框后标题行不应含边框字符"
 
     def test_closed_tool_border_static(self):
-        """已关闭工具卡边框保持静态（frozen，不呼吸）。"""
+        """已关闭工具卡标题行状态图标静态（主题 success 色，不呼吸）。"""
         b, fn = self._make_block("done", True)
         runs = fn(b, 60, 0, None)
         top = runs[0]
-        assert top[0].style.fg == 23, f"关闭工具卡边框应静态 23: {top[0].style.fg}"
+        # 静态 success 色（主题 resolve，默认兜底 41；非时间基呼吸色）
+        assert isinstance(top[0].style.fg, int)
+        assert not (208 <= top[0].style.fg <= 220), (
+            f"关闭工具卡状态图标不应呼吸于 [208,220]: {top[0].style.fg}"
+        )
 
 
 class TestIncrementalRendering:
