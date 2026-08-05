@@ -41,11 +41,19 @@ async def call_model_async(
     display=None,
     label: str | None = None,
     silent: bool = False,
+    override_max_retries: int | None = None,
+    fixed_delay_sec: float | None = None,
 ) -> tuple:
     """异步流式调用模型。
 
     返回 (reasoning_content, content, usage, tool_calls)。
     与同步 call_model 接口完全兼容。
+
+    Args:
+        override_max_retries: 覆盖最大重试次数（透传给重试层）。
+            默认 None 使用全局 MAX_RETRIES；SubAgent 等快速失败场景传 1。
+        fixed_delay_sec: 覆盖固定重试间隔（透传给重试层）。
+            默认 None 使用全局 RETRY_BASE_SEC；SubAgent 场景传 0。
     """
     model = model or MODEL
     adapter = get_adapter(model)
@@ -56,6 +64,8 @@ async def call_model_async(
         stream_call_async,
         silent=silent, display=display, label=label,
         api_args=(messages_copy, model, is_reasoner, tools, display, label, silent),
+        override_max_retries=override_max_retries,
+        fixed_delay_sec=fixed_delay_sec,
     )
 
 
@@ -65,6 +75,8 @@ async def call_model_sync_async(
     tools: list | None = None,
     display=None,
     label: str | None = None,
+    override_max_retries: int | None = None,
+    fixed_delay_sec: float | None = None,
 ) -> tuple:
     """异步非流式模型调用（Agent 内部使用），无终端输出。
 
@@ -78,6 +90,8 @@ async def call_model_sync_async(
         _call_sync_async,
         silent=True, display=display, label=label,
         api_args=(messages_copy, model, tools, display, label),
+        override_max_retries=override_max_retries,
+        fixed_delay_sec=fixed_delay_sec,
     )
 
 

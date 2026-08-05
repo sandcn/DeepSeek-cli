@@ -281,9 +281,26 @@ class SubAgent(BaseAgent):
 
         优先使用异步 ModelPort（async_model_port.call），
         降级到同步 call_model（兼容旧路径）。
+
+        重试策略：SubAgent 传 ``override_max_retries=1`` + ``fixed_delay_sec=0``，
+        禁用 API 层全局长重试（默认 MAX_RETRIES=10 × RETRY_BASE_SEC=30 ≈ 5 分钟）。
+        原因：
+        - SubAgent 是并行临时任务，API 报错时应快速失败返回结果，而非长时间
+          重试拖住父 Agent（用户侧现象：子代理"调用一两个工具后卡住 5 分钟"）。
+        - API 层不再长重试后，由 SubAgent 主循环的 ``_NETWORK_RETRY_MAX=3``
+          提供有限次快速重试（每次请求秒级失败，不叠加长等待）。
         """
         if self._model_port is not None:
-            result = await self._model_port.call(messages, model, tools, display, label, silent)
+            # 兼容不支持重试参数的自定义端口（旧 Mock 等）：TypeError 回退默认调用
+            try:
+                result = await self._model_port.call(
+                    messages, model, tools, display, label, silent,
+                    override_max_retries=1, fixed_delay_sec=0,
+                )
+            except TypeError:
+                result = await self._model_port.call(
+                    messages, model, tools, display, label, silent,
+                )
             return result.reasoning, result.content, result.usage, result.tool_calls
         from ..api.model_async import call_model as _sync_call_model
         result = await asyncio.to_thread(_sync_call_model, messages, model, tools, display, label, silent)

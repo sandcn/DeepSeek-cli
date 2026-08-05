@@ -122,6 +122,8 @@ async def retry_on_parse_failure_async(
     label: str | None = None,
     api_args: tuple = (),
     retry_func=None,
+    override_max_retries: int | None = None,
+    fixed_delay_sec: float | None = None,
 ):
     """解析失败重试包装函数。
 
@@ -139,6 +141,11 @@ async def retry_on_parse_failure_async(
         api_func: 底层 API 调用函数
         retry_func: 可注入的 API 重试函数，默认使用 retry_api_call_async。
                     用于单元测试中 mock 底层 API 调用，避免真实网络请求。
+        override_max_retries: 覆盖最大重试次数（透传给 retry_api_call_async）。
+            SubAgent 等快速失败场景传 1（不重试），避免叠加全局长重试
+            （MAX_RETRIES=10 × RETRY_BASE_SEC=30 ≈ 5 分钟）导致子代理"卡住"。
+        fixed_delay_sec: 覆盖固定重试间隔（透传给 retry_api_call_async），
+            SubAgent 场景传 0 避免 30s 长等待。
     """
     _retry = retry_func if retry_func is not None else retry_api_call_async
 
@@ -151,10 +158,20 @@ async def retry_on_parse_failure_async(
 
     from .json_repair import _PARSE_RETRY_STATS, _JSON_REPAIR_LOCK
 
+    def _retry_kwargs():
+        """构造透传给 _retry 的额外 kwargs（兼容自定义 retry_func 不支持新参数）。"""
+        kwargs: dict = {}
+        if override_max_retries is not None:
+            kwargs["override_max_retries"] = override_max_retries
+        if fixed_delay_sec is not None:
+            kwargs["fixed_delay_sec"] = fixed_delay_sec
+        return kwargs
+
     result = await _retry(
         api_func,
         silent=silent, display=display, label=label,
         api_args=api_args,
+        **_retry_kwargs(),
     )
     reasoning_content, content, usage, tool_calls = result
 
@@ -174,6 +191,7 @@ async def retry_on_parse_failure_async(
             api_func,
             silent=silent, display=display, label=label,
             api_args=api_args,
+            **_retry_kwargs(),
         )
         reasoning_content, content, usage, tool_calls = result
         # 重试后检查是否仍失败 → 更新成功/耗尽统计

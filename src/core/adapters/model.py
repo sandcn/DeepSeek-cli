@@ -17,6 +17,8 @@ class DefaultAsyncModelAdapter(AsyncModelPort):
         display: Any = None,
         label: str | None = None,
         silent: bool = False,
+        override_max_retries: int | None = None,
+        fixed_delay_sec: float | None = None,
     ) -> ModelResult:
         from ...api.model_async import call_model_async
 
@@ -27,6 +29,8 @@ class DefaultAsyncModelAdapter(AsyncModelPort):
             display=display,
             label=label,
             silent=silent,
+            override_max_retries=override_max_retries,
+            fixed_delay_sec=fixed_delay_sec,
         )
         return ModelResult(
             reasoning=reasoning,
@@ -42,6 +46,8 @@ class DefaultAsyncModelAdapter(AsyncModelPort):
         tools: list[dict] | None = None,
         display: Any = None,
         label: str | None = None,
+        override_max_retries: int | None = None,
+        fixed_delay_sec: float | None = None,
     ) -> ModelResult:
         from ...api.model_async import call_model_sync_async
 
@@ -51,6 +57,8 @@ class DefaultAsyncModelAdapter(AsyncModelPort):
             tools=tools,
             display=display,
             label=label,
+            override_max_retries=override_max_retries,
+            fixed_delay_sec=fixed_delay_sec,
         )
         return ModelResult(
             reasoning=reasoning,
