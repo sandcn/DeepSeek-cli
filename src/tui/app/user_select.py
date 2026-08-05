@@ -30,19 +30,38 @@ from src.tui.core.style import Style
 from src.tui._screen import wcswidth_simple
 from src.tui._input import _wrap_by_width
 from src.tui.app.input_area import _desc_column_width, _truncate_width
-from src.tui.app._theme import _S_DIM, _S_SEP, _S_TIME
+from src.tui.app._theme import _S_DIM, _S_SEP
 from src.tui.ink import TEXT, h, Column, Row
 from src.tui.ink.hooks import use_state, use_input, use_ref
 
 __all__ = ["UserSelectPopup"]
 
 #: 弹窗标题色（亮青加粗，对齐 _S_ACCENT_BOLD）
+# ★ BEAUTY-18（体验动效）：生产路径改用标题呼吸色（time_glow 时间基）；
+#   本常量保留为静态兼容回退/测试断言。
 _S_TITLE = Style(fg=45, bold=True)
 #: 高亮行背景色（与补全弹窗 sel_bg 呼吸下限一致）
+# ★ BEAUTY-18：生产路径改用选中高亮呼吸背景（time_glow 时间基）；
+#   本常量保留为静态兼容回退/测试断言。
 _S_SEL_BG = Style(bg=237)
 #: 多选勾选标记（几何符号单宽，wcswidth_simple 宽度 1——安全对齐）
 _CHECKED = "\u25cf "
 _UNCHECKED = "\u25cb "
+
+#: 弹窗标题呼吸色域（亮青 38→93 脉动，12s 周期——与补全弹窗 title_color 对齐）
+_S_TITLE_LO = 38
+_S_TITLE_HI = 93
+_S_TITLE_PERIOD = 12.0
+#: 选中高亮背景呼吸色域（236→239 脉动，10s 周期——与补全弹窗 sel_bg 对齐）
+_S_SEL_BG_LO = 236
+_S_SEL_BG_HI = 239
+_S_SEL_BG_PERIOD = 10.0
+
+
+def _glow(lo: int, hi: int, period: float) -> int:
+    """时间基呼吸色号（0.1s 桶缓存，10Hz 渲染平滑推进）。"""
+    from src.tui.app._theme import time_glow
+    return time_glow(lo, hi, period)
 
 
 def UserSelectPopup(props) -> object:
@@ -179,11 +198,21 @@ def UserSelectPopup(props) -> object:
     title = us.title or "选择"
     rows: list = []
 
-    # 标题行（对齐补全弹窗：▍ + 标题 + (n/total)）
+    # 标题行（对齐补全弹窗：▍ + 模式图标 + 标题 + (n/total)）
+    # ★ BEAUTY-18（体验动效）：标题呼吸色——亮青 38→93 脉动（12s 周期，与
+    #   补全弹窗 title_color 对齐）。弹窗激活时 session._needs_animation
+    #   推进 10Hz 渲染，呼吸平滑；空闲静态 _S_TITLE（零额外渲染成本）。
+    # ★ BEAUTY-29（2026-08-05 布局美化）：标题前置模式图标——单选 ▶ / 多选
+    #   ☑（宽 1 列几何符号，与选中行 ▶/● 前缀语义呼应），一眼识别弹窗模式。
+    title_style = Style(fg=_glow(_S_TITLE_LO, _S_TITLE_HI, _S_TITLE_PERIOD), bold=True)
+    mode_icon = "\u2611" if multi else "\u25b6"
     rows.append(h(TEXT, {
-        "children": f" \u258d {title} ({cur + 1}/{total})",
-        "style": _S_TITLE,
+        "children": f" \u258d {mode_icon} {title} ({cur + 1}/{total})",
+        "style": title_style,
     }))
+    # ★ BEAUTY-18：选中高亮背景呼吸——236→239 脉动（10s 周期，与补全弹窗
+    #   sel_bg 对齐）。弹窗激活时渲染循环持续推进；空闲静态 _S_SEL_BG。
+    sel_bg_style = Style(bg=_glow(_S_SEL_BG_LO, _S_SEL_BG_HI, _S_SEL_BG_PERIOD))
 
     if split:
         # ── 分栏说明模式：左栏选项 + │ + 右栏当前选中项说明 ──
@@ -215,7 +244,7 @@ def UserSelectPopup(props) -> object:
                     prefix = " \u25b6 " if row_i == cur else "   "
                 left = h(TEXT, {
                     "children": f"{prefix}{opt}",
-                    "style": _S_SEL_BG if row_i == cur else None,
+                    "style": sel_bg_style if row_i == cur else None,
                     "height": 1,
                 })
                 # 左栏补宽（分隔线对齐：左栏总宽 = opt_w，│ 在 opt_w 列）
@@ -230,10 +259,12 @@ def UserSelectPopup(props) -> object:
             desc_txt = _truncate_width(
                 desc_lines[row_i] if row_i < len(desc_lines) else "", desc_w,
             )
+            # ★ BEAUTY-19（体验动效）：说明列呼吸色——浅蓝 110→120 脉动
+            #   （12s 周期，与提示行呼吸协调）。弹窗激活时渲染循环持续推进。
             rows.append(h(Row, {"height": 1}, [
                 left,
                 h(TEXT, {"children": "\u2502", "style": _S_SEP, "height": 1}),
-                h(TEXT, {"children": desc_txt, "style": _S_DIM, "height": 1}),
+                h(TEXT, {"children": desc_txt, "style": Style(fg=_glow(110, 120, 12.0)), "height": 1}),
             ]))
     else:
         # ── 普通模式：选项列表（单选高亮 / 多选勾选 + 高亮） ──
@@ -245,7 +276,7 @@ def UserSelectPopup(props) -> object:
                 prefix = f" {mark}"
             else:
                 prefix = " \u25b6 " if i == cur else "   "
-            style = _S_SEL_BG if i == cur else None
+            style = sel_bg_style if i == cur else None
             rows.append(h(TEXT, {
                 "children": f"{prefix} {opt}",
                 "style": style,
@@ -254,10 +285,13 @@ def UserSelectPopup(props) -> object:
 
     # 提示行
     # 2026-08-05（增加操作）：提示加入 vim 风格 j/k/g/G 导航（与 ↑↓ 等价）
+    # ★ BEAUTY-19（体验动效）：提示文本呼吸色——浅蓝 110→126 脉动（12s 周期，
+    #   与补全弹窗 hint_color 对齐）。弹窗激活时渲染循环持续推进；空闲静态。
     if multi:
         hint = " \u2423 切换选中 · Enter 确认 · Esc 取消"
     else:
         hint = " \u2191\u2193/jk 选择 · g/G 首末 · Enter 确认 · Esc 取消"
-    rows.append(h(TEXT, {"children": hint, "style": _S_TIME}))
+    hint_style = Style(fg=_glow(110, 126, 12.0))
+    rows.append(h(TEXT, {"children": hint, "style": hint_style}))
 
     return h(Column, None, rows)

@@ -322,8 +322,14 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
                 line.append(" " * opt_w, _S_DIM)
             line.append("\u2502", _S_SEP)
             # 右栏：当前选中项说明（分栏换行）
+            # ★ BEAUTY-21（体验动效）：说明列呼吸色——浅蓝 110→120 脉动
+            #   （12s 周期，与弹窗标题/提示呼吸协调）。弹窗可见时渲染循环
+            #   持续推进（_needs_animation 覆盖），呼吸平滑。
             if row < len(desc_lines):
-                line.append(_truncate_width(desc_lines[row], desc_w), _S_DIM)
+                line.append(
+                    _truncate_width(desc_lines[row], desc_w),
+                    Style(fg=time_glow(110, 120, 12.0)),
+                )
             # ★ 方向8（窄屏防溢出）：分栏行超宽时截断至 width（不拆
             #   CJK）——修复前窄屏下左栏前缀 + 文本 + 分隔线 + 说明撑爆行宽。
             if width > 0 and line.width > width:
@@ -356,10 +362,14 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
             # Claude TUI parity 步骤 3.7：斜杠命令描述灰显（command 且描述非空）
             if types_disp[i] == "command" and i < len(descs) and descs[i]:
                 line.append("  ", _S_DIM)
-                # 方向1 步骤4（窄屏防溢出）：描述截断至剩余行宽（复用
-                # _truncate_width，截断点不拆 CJK）——超长描述不再撑爆行宽。
+                # ★ BEAUTY-21（体验动效）：命令描述呼吸色——浅蓝 110→120 脉动
+                #   （12s 周期，与分栏说明列呼吸一致）。弹窗可见时渲染循环
+                #   持续推进，呼吸平滑；与原 _S_DIM 相比增加细微动态。
                 desc_budget = max(1, width - line.width)
-                line.append(_truncate_width(descs[i], desc_budget), _S_DIM)
+                line.append(
+                    _truncate_width(descs[i], desc_budget),
+                    Style(fg=time_glow(110, 120, 12.0)),
+                )
             # ★ 方向8（窄屏防溢出）：选项行超宽时截断至 width（不拆
             #   CJK）——修复前 `` ▶ /help 显示帮助`` 在窄屏撑爆行宽。
             if width > 0 and line.width > width:
@@ -512,10 +522,16 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
     # 剩余宽度（不拆 CJK；width < 22 时不再超宽）。
     content_budget = max(1, width - max(0, width - cpu_mem_w))
     content = Line()
+    # ★ BEAUTY-22（体验动效）：CPU/MEM 值活跃期呼吸——CPU 亮青 45→55、MEM
+    #   橙黄 214→224（12s 周期，与状态栏 token/速度呼吸同步）。空闲静态
+    #   _S_CPU/_S_MEM（零额外渲染成本）。系统监控 2s 刷新一次，呼吸提供
+    #   平滑视觉过渡。
+    _active_cpu_style = Style(fg=time_glow(45, 55, 12.0)) if status_active else _S_CPU
+    _active_mem_style = Style(fg=time_glow(214, 224, 12.0)) if status_active else _S_MEM
     _append_truncated(content, " CPU:", _S_ACCENT, content_budget)
-    _append_truncated(content, f"{cpu}%", _S_CPU, content_budget)
+    _append_truncated(content, f"{cpu}%", _active_cpu_style, content_budget)
     _append_truncated(content, " \u00b7 MEM:", _S_ACCENT, content_budget)
-    _append_truncated(content, f"{mem}%", _S_MEM, content_budget)
+    _append_truncated(content, f"{mem}%", _active_mem_style, content_budget)
     lines.append(_theme_sep_line(width, content, status_active))
 
     # ── 反向历史搜索覆盖行（方向D 步骤14，Ctrl+R 配置门控） ──

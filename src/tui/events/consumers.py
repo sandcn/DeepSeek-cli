@@ -25,6 +25,9 @@ from .event_types import (
 _logger = logging.getLogger(__name__)
 
 # -- 级别 -> ANSI 颜色映射 ----------------------------------------------
+# 直写终端回退路径（非组件树）：保持 ANSI 色串直拼（OutputConsumer 服务
+# 无 ChatUI 上下文时的回退输出，不属于 React Ink 组件树；组件树渲染统一
+# 用 core.style.Style）。与组件树无交叉，保留既行为零回归。
 
 _LEVEL_COLORS: dict[str, str] = {
     "error": "\033[31m",      # RED

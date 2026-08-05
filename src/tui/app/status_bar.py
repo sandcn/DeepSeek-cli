@@ -113,6 +113,13 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
         elif main_phase == "parsing":
             phase_style = Style(fg=178)
             phase_text = "\u2026解析"
+        elif main_phase == "thinking":
+            # ★ BEAUTY-28（体验动效）：思考阶段标签弱呼吸——暗灰 242→252 脉动
+            #   （8s 周期，与推理块角色头呼吸同步）。思考中提示「正在进行」的
+            #   动态感（区别于静态 dim）；阶段切换即刷新（use_memo deps 含
+            #   main_phase）。
+            phase_style = Style(fg=time_glow(242, 252, 8.0))
+            phase_text = "\u2026思考"
         else:
             phase_style = _S_DIM
             phase_text = f"\u2026{main_phase}"
@@ -154,13 +161,23 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             else:
                 parts.append(StyledRun(f"{tool_total}", _S_TOOL_OK))
     if elapsed > 0:
-        parts.append(StyledRun(_format_duration(elapsed), _S_TIME))
+        # ★ BEAUTY-20（体验动效）：耗时显示呼吸——活跃期浅蓝 110→120 脉动
+        #   （12s 周期，弱呼吸提示状态栏活跃；空闲静态 _S_TIME 零成本）。
+        #   time_glow 0.1s 桶缓存，10Hz 渲染平滑推进。
+        elapsed_style = Style(fg=time_glow(110, 120, 12.0)) if status_active else _S_TIME
+        parts.append(StyledRun(_format_duration(elapsed), elapsed_style))
     if total > 0:
+        # ★ BEAUTY-20：token 计数呼吸——活跃期紫蓝 68→78 脉动（12s 周期，
+        #   与耗时呼吸同步周期；空闲静态 _S_TOKEN 零成本）。
+        token_style = Style(fg=time_glow(68, 78, 12.0)) if status_active else _S_TOKEN
         tok = f"{total / 1000:.1f}k" if total >= 1000 else str(total)
-        parts.append(StyledRun(f"{tok}t", _S_TOKEN))
+        parts.append(StyledRun(f"{tok}t", token_style))
     if speed > 0:
+        # ★ BEAUTY-20：速度显示呼吸——活跃期橙黄 214→224 脉动（12s 周期，
+        #   与耗时/token 呼吸同步周期；空闲静态 _S_SPEED 零成本）。
+        speed_style = Style(fg=time_glow(214, 224, 12.0)) if status_active else _S_SPEED
         # 单一真源：format_speed（subagent 卡与状态栏统一 tok/s 显示）
-        parts.append(StyledRun(_format_speed(speed), _S_SPEED))
+        parts.append(StyledRun(_format_speed(speed), speed_style))
 
     if not parts:
         return model_part

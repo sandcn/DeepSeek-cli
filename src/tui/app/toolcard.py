@@ -161,10 +161,29 @@ def tool_card_lines(block, width, start=0, stop=None):
         # 状态图标恒为 title_runs[0] → 顶边框 runs[1]（前缀 `┌─ ` 后），
         # 供 close_tool_box 原位翻转图标。
         title_runs = list(_tool_icon_runs(block))
-        title_runs.append(StyledRun(f"{icon_char} ", Style(fg=252)))
+        # ★ BEAUTY-26（体验动效）：工具图标运行中呼吸——亮白 232→252 脉动
+        #   （12s 周期，与 detail 呼吸同步）。运行中的工具图标更生动（与边框
+        #   呼吸/● 图标呼吸/detail 呼吸联动）；关闭/提交后保持亮白静态
+        #   （frozen 缓存不再重算，零额外渲染成本）。
+        if block.extra.get("tool_status") == "running" and not block.closed:
+            from src.tui.app._theme import time_glow
+            icon_style = Style(fg=time_glow(232, 252, 12.0))
+        else:
+            icon_style = Style(fg=252)
+        title_runs.append(StyledRun(f"{icon_char} ", icon_style))
         title_runs.append(StyledRun(display, Style(fg=252)))
         if detail:
-            title_runs.append(StyledRun(f" \u00b7 {detail}", pal.dim))
+            # ★ BEAUTY-24（体验动效）：工具 detail 运行中呼吸——暗灰 242→252
+            #   脉动（12s 周期，与状态栏 token/速度呼吸同步）。运行中的工具
+            #   detail 更生动（与边框呼吸/图标呼吸联动）；关闭/提交后保持静态
+            #   pal.dim（frozen 缓存不再重算，零额外渲染成本）。
+            if block.extra.get("tool_status") == "running" and not block.closed:
+                from src.tui.app._theme import time_glow
+                title_runs.append(StyledRun(
+                    f" \u00b7 {detail}", Style(fg=time_glow(242, 252, 12.0)),
+                ))
+            else:
+                title_runs.append(StyledRun(f" \u00b7 {detail}", pal.dim))
         if ultra_narrow:
             # 降级：无边框裸标题行（截断至 width）
             out.append(truncate_runs(title_runs, width))

@@ -4,14 +4,21 @@
 
 工具名→展示映射唯一真源（2026-07-31 方向F 收敛）：
   - TOOL_ICONS（工具名→图标）
-  - TOOL_CATEGORY_MAP / TOOL_CATEGORY_COLORS（工具名→类别→类别配色，收敛自
-    _subagent_panel.py 的 _TOOL_CATEGORY_MAP/_TOOL_CATEGORY_COLORS）
-  - AGENT_TYPE_ABBREV / AGENT_TYPE_COLORS（Agent 类型→缩写/颜色）
+  - TOOL_CATEGORY_MAP / TOOL_CATEGORY_STYLES（工具名→类别→类别配色）
+  - AGENT_TYPE_ABBREV / AGENT_TYPE_STYLES（Agent 类型→缩写/颜色）
 映射 import 后只读，Python 字典读操作在 GIL 下线程安全；
 原 _subagent_panel 线程隔离本地副本已收敛（无共享写风险）。
+
+★ 标准 React Ink 组件化（2026-08-05）：配色映射从「ANSI 色串」迁移为
+「Style 对象」（``Style(fg=色号)``）——消除渲染侧的 ANSI 中间层解析
+（``_subagent_render`` 不再 ``_ansi_color_code`` 从字符串提取色号）。
+旧 ANSI 色串常量（``AGENT_TYPE_COLORS`` / ``TOOL_CATEGORY_COLORS``）
+保留为兼容 re-export（既有测试/外部调用面），值为同一色号的 ANSI 序列。
 """
 
 from __future__ import annotations
+
+from src.tui.core.style import Style
 
 # ── Agent 类型缩写（与旧版本一致：小写 2 字符） ──────
 AGENT_TYPE_ABBREV: dict[str, str] = {
@@ -21,12 +28,17 @@ AGENT_TYPE_ABBREV: dict[str, str] = {
     "execute": "ex",
 }
 
-# ── Agent 类型 → 256 色 ANSI ──────────────────────────
+# ── Agent 类型 → Style（唯一真源，标准 React Ink） ─────
+AGENT_TYPE_STYLES: dict[str, Style] = {
+    "map":     Style(fg=33),    # 深蓝
+    "review":  Style(fg=129),   # 紫
+    "plan":    Style(fg=214),   # 琥珀
+    "execute": Style(fg=208),   # 橙色
+}
+
+# ── Agent 类型 → 256 色 ANSI（兼容 re-export，同一色号） ──
 AGENT_TYPE_COLORS: dict[str, str] = {
-    "map":     "\033[38;5;33m",    # 深蓝
-    "review":  "\033[38;5;129m",   # 紫
-    "plan":    "\033[38;5;214m",   # 琥珀
-    "execute": "\033[38;5;208m",   # 橙色
+    k: f"\033[38;5;{s.fg}m" for k, s in AGENT_TYPE_STYLES.items()
 }
 
 # ── 工具图标（与旧版本一致的 Unicode 图标） ─────────
@@ -61,21 +73,28 @@ TOOL_CATEGORY_MAP: dict[str, str] = {
     "rm": "delete",
 }
 
-# ── 工具类别 → 256 色 ANSI（唯一真源，方向F 步骤12 收敛） ──
+# ── 工具类别 → Style（唯一真源，标准 React Ink） ──
+TOOL_CATEGORY_STYLES: dict[str, Style] = {
+    "shell":      Style(fg=41),
+    "file_read":  Style(fg=81),
+    "file_write": Style(fg=213),
+    "search":     Style(fg=221),
+    "agent":      Style(fg=75),
+    "interact":   Style(fg=51),
+    "delete":     Style(fg=203),
+}
+
+# ── 工具类别 → 256 色 ANSI（兼容 re-export，同一色号） ──
 TOOL_CATEGORY_COLORS: dict[str, str] = {
-    "shell":      "\033[38;5;41m",
-    "file_read":  "\033[38;5;81m",
-    "file_write": "\033[38;5;213m",
-    "search":     "\033[38;5;221m",
-    "agent":      "\033[38;5;75m",
-    "interact":   "\033[38;5;51m",
-    "delete":     "\033[38;5;203m",
+    k: f"\033[38;5;{s.fg}m" for k, s in TOOL_CATEGORY_STYLES.items()
 }
 
 __all__ = [
     "AGENT_TYPE_ABBREV",
+    "AGENT_TYPE_STYLES",
     "AGENT_TYPE_COLORS",
     "TOOL_ICONS",
     "TOOL_CATEGORY_MAP",
+    "TOOL_CATEGORY_STYLES",
     "TOOL_CATEGORY_COLORS",
 ]

@@ -75,7 +75,8 @@ class TestUserSelectPopupRender:
         r, root = Reconciler(), Reconciler().create_root()
         frame = _render(r, root, _popup(m))
         lines = _plain(frame)
-        assert lines[0] == " ▍ 测试 (2/3)"
+        # BEAUTY-29（2026-08-05）：标题前置单选模式图标 ▶
+        assert lines[0] == " ▍ ▶ 测试 (2/3)"
         assert lines[1] == "    A"
         assert lines[2] == " ▶  B"
         assert lines[3] == "    C"

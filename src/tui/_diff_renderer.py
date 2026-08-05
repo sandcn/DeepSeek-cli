@@ -31,9 +31,18 @@ if TYPE_CHECKING:
     from ._output_target import IOutputTarget
 
 # 行内差异背景色（256 色，使用 Style）
-_BG_RED = '\033[48;5;124m'    # 256色暗红背景（保留，因 Style 不支持 bg only）
-_BG_GREEN = '\033[48;5;28m'   # 256色柔和绿背景（保留，因 Style 不支持 bg only）
-_BG_OFF = '\033[49m'          # 重置为默认背景色
+# ★ 标准 React Ink 组件化（2026-08-05）：ANSI 背景色直拼迁移为 Style 对象
+#   （Style 支持 bg——旧注释「因 Style 不支持 bg only」过时）。渲染统一经
+#   ``Style.apply``，不再手动拼接 ANSI 序列。旧常量保留为兼容 re-export
+#   （既有测试/外部调用面）；生产路径经 ``_bg_del``/``_bg_add`` Style。
+_BG_RED = '\033[48;5;124m'    # 256色暗红背景（兼容 re-export；生产用 _bg_del）
+_BG_GREEN = '\033[48;5;28m'   # 256色柔和绿背景（兼容 re-export；生产用 _bg_add）
+_BG_OFF = '\033[49m'          # 重置为默认背景色（兼容 re-export）
+
+#: 行内删除段背景 Style（暗红 bg=124）
+_bg_del = Style(bg=124)
+#: 行内新增段背景 Style（柔和绿 bg=28）
+_bg_add = Style(bg=28)
 
 # 分隔线默认宽度（方向1 P1：diff 摘要/多 hunk 分隔线固定 40 → 提取常量，
 # 窄终端调用方传收缩宽度 min(40, max(10, ...))，默认 40 行为不变）
@@ -54,7 +63,8 @@ _DIFF_MARK_DEL: Style = Style(fg=196, bold=True)    # `-` 标记：亮红加粗
 _DIFF_MARK_ADD: Style = Style(fg=41, bold=True)     # `+` 标记：亮绿加粗
 
 # 向后兼容常量（从 StyleSheet.get() 获取语义色，兜底硬编码值）
-# 保留别名供 _render_* 函数中 f-string 使用（已迁移为 Style.apply）
+# ★ 标准 React Ink 组件化（2026-08-05）：_RESET_STR 已无生产引用
+#   （渲染统一经 Style.apply 自带 reset）；保留定义供外部兼容导入。
 _RESET_STR = "\033[0m"
 
 
@@ -160,12 +170,12 @@ def _inline_highlight(old_text, new_text):
             old_parts.append(old_text[i1:i2])
             new_parts.append(new_text[j1:j2])
         elif op == 'replace':
-            old_parts.append(f"{_BG_RED}{old_text[i1:i2]}{_BG_OFF}")
-            new_parts.append(f"{_BG_GREEN}{new_text[j1:j2]}{_BG_OFF}")
+            old_parts.append(_bg_del.apply(old_text[i1:i2]))
+            new_parts.append(_bg_add.apply(new_text[j1:j2]))
         elif op == 'delete':
-            old_parts.append(f"{_BG_RED}{old_text[i1:i2]}{_BG_OFF}")
+            old_parts.append(_bg_del.apply(old_text[i1:i2]))
         elif op == 'insert':
-            new_parts.append(f"{_BG_GREEN}{new_text[j1:j2]}{_BG_OFF}")
+            new_parts.append(_bg_add.apply(new_text[j1:j2]))
     return ''.join(old_parts), ''.join(new_parts)
 
 

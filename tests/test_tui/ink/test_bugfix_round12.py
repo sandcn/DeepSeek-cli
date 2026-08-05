@@ -768,6 +768,46 @@ def test_needs_animation_idle_false():
     assert sess.InkSession._needs_animation(s) is False
 
 
+def test_needs_animation_user_select():
+    """user_select 弹窗可见时 _needs_animation 返回 True（呼吸推进）。
+
+    BEAUTY-18（2026-08-05）：user_select 弹窗标题/选中高亮/提示/说明列
+    均为时间基呼吸色（time_glow），渲染循环空闲跳过时呼吸静止——弹窗激活
+    须持续 10Hz 渲染推进。与补全弹窗（test_needs_animation_completion）
+    同语义。
+    """
+    import src.tui.ink.session as sess
+    s = sess.InkSession.__new__(sess.InkSession)
+    model = type("M", (), {})()
+    model.status = type("S", (), {"status_active": False})()
+    model.tool_boxes = {}
+    model.parse_line = None
+    model.completion = type("C", (), {"visible": False, "items": []})()
+    model.history_search = None
+    model.user_select = type("U", (), {
+        "visible": True, "done": False, "options": ["a", "b"],
+    })()
+    s._model = model
+    assert sess.InkSession._needs_animation(s) is True
+
+
+def test_needs_animation_user_select_done_false():
+    """user_select 弹窗已 done 时不推进（呼吸静止——弹窗即将关闭）。"""
+    import src.tui.ink.session as sess
+    s = sess.InkSession.__new__(sess.InkSession)
+    model = type("M", (), {})()
+    model.status = type("S", (), {"status_active": False})()
+    model.tool_boxes = {}
+    model.parse_line = None
+    model.completion = type("C", (), {"visible": False, "items": []})()
+    model.history_search = None
+    model.user_select = type("U", (), {
+        "visible": True, "done": True, "options": ["a", "b"],
+    })()
+    s._model = model
+    assert sess.InkSession._needs_animation(s) is False
+
+
 # ═══════════════════════════════════════════════════════════
 # BUG-50：h() 生成器/迭代器子级展开
 # ═══════════════════════════════════════════════════════════

@@ -25,6 +25,19 @@ from src.tui._screen import wcswidth_simple
 # ═══════════════════════════════════════════════════════════
 
 
+def _text_width(text: str) -> int:
+    """字符串显示宽度（Line.append 增量维护用）。
+
+    ★ 性能（2026-08-05）：纯可打印 ASCII 批量快路径——宽度 == 字符数
+    （``isascii()`` + ``isprintable()`` C 实现单趟扫描，免逐字符
+    ``wcswidth_simple`` 调用）。渲染热路径（``_build_lines`` / 补全弹窗 /
+    状态栏等 append 段）以 ASCII 文本为主。
+    """
+    if text.isascii() and text.isprintable():
+        return len(text)
+    return wcswidth_simple(text)
+
+
 @dataclass(frozen=True)
 class StyledRun:
     """一段带样式的文本。
@@ -110,11 +123,11 @@ class Line:
             # ★ 增量宽度：替换末 run（新宽 = 旧宽 + text 宽）——直接加 text 宽
             self.runs[-1] = StyledRun(last.text + text, style)
             if self._w is not None:
-                self._w += wcswidth_simple(text)
+                self._w += _text_width(text)
             return
         self.runs.append(StyledRun(text, style))
         if self._w is not None:
-            self._w += wcswidth_simple(text)
+            self._w += _text_width(text)
 
     def append_run(self, run: StyledRun) -> None:
         """追加 StyledRun。"""

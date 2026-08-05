@@ -282,13 +282,21 @@ def _user_marker_styled_lines(block, start, stop, width):
     return out
 
 
-def _role_header_runs(block, model) -> list:
+def _role_header_runs(block, model, live: bool = False) -> list:
     """构建块角色头 StyledRun 列表（卡片首行，按 kind 选样式与文本）。
 
     无头 kind（content/tool/user/write_line/splash/parse_info）返回空列表
     （不占行）——content 对齐 Claude Code 无头回答；tool 由卡片顶边框替代。
     样式取活动调色板槽位（``get_active_palette()``，dark 下与既有常量同值）；
     reasoning/error 用硬编码兜底（与正文样式语义一致）。
+
+    Args:
+        block: 聊天块。
+        model: AppModel 实例（调色板解析）。
+        live: True = **每帧渲染的 live 路径**（ChatView 未提交块）——推理头
+            spinner 化 / 呼吸色生效；False = **提交/冻结路径**（_card_lines /
+            _card_lines_committed）——回退静态样式（冻结缓存内容确定，防
+            历史里固定显示随机 spinner 帧字符）。
     """
     from src.tui.app._theme import get_active_palette
     from src.tui.core.style import Style
@@ -303,16 +311,29 @@ def _role_header_runs(block, model) -> list:
         # 方向3（动效）：推理块角色头呼吸色——块仍开放（live 推理中）时
         # 从暗灰 242 呼吸到亮灰 252（8s 周期，视觉提示「推理进行中」）；
         # 关闭提交后保持静态暗灰（frozen 缓存不再重算）。
-        if not block.closed:
+        # ★ BEAUTY-27（2026-08-05 体验动效）：**live 渲染路径**（live=True）
+        #   ``💭`` 图标替换为时间基 spinner 帧（10Hz 推进，与解析行 spinner
+        #   共用语义）——推理进行中更生动；提交/关闭路径（live=False）回退
+        #   静态 💭（冻结缓存内容确定，防历史思考头固定为随机 spinner 帧）。
+        if not block.closed and live:
             from src.tui.app._theme import time_glow
+            from src.tui.app import _fx
             glow = time_glow(242, 252, 8.0)
-            return [StyledRun("\u258d\U0001f4ad 思考", Style(fg=glow))]
+            sp = _fx.spinner_char()
+            return [StyledRun(f"\u258d{sp} 思考", Style(fg=glow))]
         return [StyledRun("\u258d\U0001f4ad 思考", Style(fg=242))]
     if kind == "tool":
         # 工具卡片顶边框替代 `▎⚡ 工具 X` 角色头（卡片化对齐 Claude Code）；
         # 无头 → _card_lines 不前置独立头行，顶边框即卡片首行。
         return []
     if kind == "notification":
+        # ★ BEAUTY-33（2026-08-05 体验动效）：通知角色头 live 渲染路径
+        #   （live=True 且未关闭）呼吸——暗灰 242↔252 脉动（8s 周期，与
+        #   推理头呼吸同步）；提交/关闭回退静态 pal.notice（冻结缓存确定）。
+        if not block.closed and live:
+            from src.tui.app._theme import time_glow
+            glow = time_glow(242, 252, 8.0)
+            return [StyledRun("\u258e", Style(fg=glow)), StyledRun("通知", Style(fg=glow))]
         return [StyledRun("\u258e", pal.notice), StyledRun("通知", pal.notice)]
     if kind == "error":
         # 方向3（动效）：错误标记呼吸色——错误消息醒目但不过度闪烁
@@ -324,17 +345,28 @@ def _role_header_runs(block, model) -> list:
             return [StyledRun("\u258e错误", Style(fg=glow, bold=True))]
         return [StyledRun("\u258e错误", Style(fg=196, bold=True))]
     if kind == "subagent":
+        # ★ BEAUTY-33：子代理角色头 live 渲染路径呼吸——暗灰 242↔252 脉动
+        #   （8s 周期）；提交/关闭回退静态 pal.dim（冻结缓存确定）。
+        if not block.closed and live:
+            from src.tui.app._theme import time_glow
+            glow = time_glow(242, 252, 8.0)
+            return [StyledRun("\u258e", Style(fg=glow)), StyledRun("子代理", Style(fg=glow))]
         return [StyledRun("\u258e", pal.dim), StyledRun("子代理", pal.dim)]
     return []
 
 
-def _role_header_line(block, model, width) -> "Line | None":
+def _role_header_line(block, model, width, live: bool = False) -> "Line | None":
     """构建块角色头行（单行，截断至 width 满足行级 diff 宽度不变量）。
 
     无头 kind 返回 None。头部必须单行且宽度 <= width（committed_lines 每行
     ink Line 宽度 <= width 不变量）；width<=0 时保持原样（防御）。
+
+    Args:
+        live: 透传 ``_role_header_runs``——True（ChatView 每帧渲染路径）启用
+            推理头 spinner/呼吸；False（提交/冻结路径）回退静态（见
+            ``_role_header_runs`` docstring）。
     """
-    runs = _role_header_runs(block, model)
+    runs = _role_header_runs(block, model, live=live)
     if not runs:
         return None
     from src.tui.ink import Line

@@ -107,6 +107,10 @@ def _ParseLine(props) -> object:
     from src.tui.app._theme import time_glow
     from src.tui.app import _fx
     glow = time_glow(242, 252, 8.0)
+    # ★ BEAUTY-30（体验动效）：spinner 金色呼吸色（178→190 脉动，8s 周期，
+    #   与解析行文本呼吸同步周期）——解析进行中 spinner 更醒目（金色提示
+    #   「工具解析中」，与状态栏 parsing 阶段标签 178 同色系）。
+    sp_glow = time_glow(178, 190, 8.0)
     # 时间基 spinner（解析进度行常驻 live，10Hz 渲染时平滑推进）
     # ★ 方向4：帧序列唯一真源 _fx.SPINNER_FRAMES（原内联字符串收敛）
     sp = _fx.spinner_char()
@@ -130,7 +134,13 @@ def _ParseLine(props) -> object:
             stripped = text.lstrip(" ")
             lead = len(text) - len(stripped)
             if stripped.startswith("~"):
-                text = text[:lead] + sp + stripped[1:]
+                # ★ BEAUTY-30：spinner 独立金色呼吸 run（前导空格保持原样、
+                #   spinner 金色、剩余文本呼吸灰）——视觉上 spinner 与文本
+                #   区分（原实现整段同呼吸灰）。
+                if lead > 0:
+                    runs.append(StyledRun(text[:lead], st))
+                runs.append(StyledRun(sp, Style(fg=sp_glow)))
+                text = stripped[1:]
                 first_text = False
         runs.append(StyledRun(text, st))
     # ★ 阶段2（标准布局容器重构）：单子 BOX 展开为直接 TEXT（父容器 Column

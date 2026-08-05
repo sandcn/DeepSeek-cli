@@ -837,6 +837,17 @@ class InkSession:
         search = getattr(model, "history_search", None)
         if search is not None and getattr(search, "active", False):
             return True
+        # ★ BEAUTY-18（体验动效）：user_select 弹窗可见时推进呼吸——弹窗标题/
+        #   选中高亮背景为时间基呼吸色（time_glow），渲染循环空闲跳过时呼吸
+        #   静止。与补全弹窗（BUG-49）同语义：弹窗激活持续 10Hz 渲染推进。
+        us = getattr(model, "user_select", None)
+        if (
+            us is not None
+            and getattr(us, "visible", False)
+            and not getattr(us, "done", False)
+            and getattr(us, "options", None)
+        ):
+            return True
         return False
 
     def _should_render(self, changed: bool) -> bool:

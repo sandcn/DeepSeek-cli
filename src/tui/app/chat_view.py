@@ -28,12 +28,45 @@ _S_REASONING = Style(fg=242)
 #: 空状态欢迎提示（2026-08-05 美化）：模块级单例 styled runs——✦ 强调青 +
 #: 欢迎文本亮白 + 操作提示 dim。静态样式（无时间基呼吸——空状态渲染循环
 #: 空闲跳过，避免每帧重建）。
+#: ★ BEAUTY-25（2026-08-05 体验动效）：**活跃期**（模型已配置 + 流式/工具
+#:   执行中）欢迎行 ✦ 图标呼吸化——渲染循环已因动画状态持续 10Hz 推进，零
+#:   额外渲染成本；空闲期（无动画状态）回退本静态单例（CPU ~0）。
 _WELCOME_STYLED = [
     StyledRun("\u2726 ", Style(fg=45, bold=True)),
     StyledRun("欢迎使用 DeepSeek CLI", Style(fg=252)),
     StyledRun("  \u00b7  ", Style(fg=242)),
     StyledRun("/help 查看命令 · Ctrl+N 切换模型 · Tab 补全", Style(fg=242)),
 ]
+
+#: 欢迎行 ✦ 呼吸色域（亮青 45 邻域脉动，8s 周期——与工具卡边框/模型名呼吸同步）
+_WELCOME_DOT_LO = 45
+_WELCOME_DOT_HI = 61
+_WELCOME_DOT_PERIOD = 8.0
+
+
+def _welcome_element(model, width: int) -> object:
+    """空状态欢迎行元素（活跃期 ✦ 呼吸，空闲静态单例）。
+
+    ★ BEAUTY-25（体验动效）：渲染循环仅在动画状态（status_active/工具运行/
+    弹窗等，见 session._needs_animation）下持续 10Hz 推进——欢迎行 ✦ 图标
+    仅在活跃期呼吸（渲染已推进，零额外成本）；空闲期返回模块级静态单例
+    ``_WELCOME_STYLED``（同引用跨帧复用，TEXT ``_wrap_cache`` 引用级命中
+    零重建）。返回 ``(children, key)``——ChatView 直接 ``h(TEXT, ...)``。
+    """
+    st = getattr(model, "status", None)
+    active = bool(st is not None and getattr(st, "status_active", False))
+    if active:
+        from src.tui.app._theme import time_glow
+        dot = time_glow(_WELCOME_DOT_LO, _WELCOME_DOT_HI, _WELCOME_DOT_PERIOD)
+        styled = [
+            StyledRun("\u2726 ", Style(fg=dot, bold=True)),
+            StyledRun("欢迎使用 DeepSeek CLI", Style(fg=252)),
+            StyledRun("  \u00b7  ", Style(fg=242)),
+            StyledRun("/help 查看命令 · Ctrl+N 切换模型 · Tab 补全", Style(fg=242)),
+        ]
+    else:
+        styled = _WELCOME_STYLED
+    return h(TEXT, {"key": "welcome", "styled": styled, "height": 1})
 
 #: 开放块 live 渲染行数上限（PERF-7 防御）：未提交尾超过该行数时只渲染
 #: 最后 N 行（对齐终端 tail 语义）——content/reasoning 块被未提交工具卡
@@ -131,6 +164,60 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
 #   不再注册 host（旧 "committed-chat" 别名已彻底移除——无例外）。
 
 
+def _with_stream_indicator(styled: list, width: int, sp: str) -> list:
+    """为 live content 最后一行追加流式指示 spinner（BEAUTY-32）。
+
+    截断原内容到 ``width-1``（给 spinner 留位）再追加亮青 spinner 帧——
+    流式回答末尾显示动态「生成中」指示（对齐 Claude Code 末尾光标语义，
+    spinner 帧比静态光标更生动）。宽度守卫：最后一行原内容可能恰好满宽，
+    不截断直接追加会破坏行级 diff 宽度不变量。
+
+    Args:
+        styled: 行 StyledRun 列表（_block_styled_lines 产出）。
+        width: 布局宽度（>0 时截断基准）。
+        sp: spinner 帧字符（非空才追加）。
+
+    Returns:
+        新 StyledRun 列表（原内容截断 + spinner）；sp 为空返回原列表。
+    """
+    if not sp or not styled:
+        return styled
+    from src.tui.ink.helpers import truncate_runs
+    if width and width > 0:
+        budget = max(1, width - 1)
+        runs = truncate_runs(styled, budget)
+    else:
+        runs = list(styled)
+    runs = list(runs)
+    runs.append(StyledRun(sp, Style(fg=45, bold=True)))
+    return runs
+
+
+def _build_open_children(
+    block, live_start: int, width: int, block_idx: int,
+    is_live_content: bool, sp: str,
+) -> tuple:
+    """构建开放块行 TEXT 元素元组（OpenBlockLines use_memo 缓存计算体）。
+
+    独立函数（use_memo lambda 内部调用）——``_block_styled_lines`` 仅在
+    use_memo miss 时调用（deps 未变帧零计算，与 PERF-26 契约一致）。
+    BEAUTY-32：live content 时最后一行经 ``_with_stream_indicator`` 追加
+    spinner（截断防溢出）。
+    """
+    rows = _block_styled_lines(block, live_start, width)
+    n_rows = len(rows)
+    return tuple(
+        h(TEXT, {
+            "key": f"chat-{block_idx}-{live_start + i}",
+            "styled": (
+                _with_stream_indicator(runs, width, sp)
+                if is_live_content and i == n_rows - 1 else runs
+            ),
+        })
+        for i, runs in enumerate(rows)
+    )
+
+
 def OpenBlockLines(props) -> object:
     """开放块行组件（PERF-26）：use_memo 缓存行 TEXT 元素列表。
 
@@ -154,23 +241,29 @@ def OpenBlockLines(props) -> object:
     比较；行追加（n 变化）/ live_start / width 变化自动重建。styled runs
     引用由 ``_block_styled_lines`` 的 ``_open_styled_cache`` 保证稳定
     （同 line 对象同一 runs 列表）——同 deps 时 children 内容确定。
+
+    ★ BEAUTY-32（2026-08-05 体验动效）：live content 流式指示——开放
+    content 块（未关闭且有内容）最后一行追加时间基 spinner 帧（10Hz
+    推进）。deps 含 spinner 帧字符（``sp``）——流式推进时每 0.1s 重建
+    children（Element 构造开销可忽略）；非 live content 时 ``sp`` 为空串
+    （常量）→ 缓存行为与修复前完全一致（PERF-26 契约保持）。
     """
     block = props["block"]
     width = props["width"]
     live_start = props["live_start"]
     block_idx = props["block_idx"]
     n = len(block.lines)
+    # ★ BEAUTY-32：live content 判定（kind == content 且未关闭且非空）
+    is_live_content = block.kind == "content" and not block.closed and n > 0
+    sp = ""
+    if is_live_content:
+        from src.tui.app import _fx
+        sp = _fx.spinner_char()
     children = use_memo(
-        lambda: tuple(
-            h(TEXT, {
-                "key": f"chat-{block_idx}-{live_start + i}",
-                "styled": runs,
-            })
-            for i, runs in enumerate(
-                _block_styled_lines(block, live_start, width)
-            )
+        lambda: _build_open_children(
+            block, live_start, width, block_idx, is_live_content, sp,
         ),
-        (id(block.lines), n, live_start, width, block_idx),
+        (id(block.lines), n, live_start, width, block_idx, sp),
     )
     return h(FRAGMENT, None, children)
 
@@ -214,8 +307,11 @@ def ChatView(props) -> object:
         # 卡片角色头（live 路径）：块尚未有任何增量提交（committed_line_count
         # == 0）时在正文行前发射——已提交的头在 committed_lines 中，此处不再
         # 重复（互斥）。头独立 key ``chat-{block_idx}-h``（不与整数行号冲突）。
+        # ★ BEAUTY-27：live=True（每帧渲染路径）——推理头 spinner/呼吸生效；
+        #   提交路径（模型 _card_lines）默认 live=False 回退静态 💭（防历史
+        #   冻结随机 spinner 帧）。
         if block.committed_line_count == 0:
-            header_line = _role_header_line(block, model, width)
+            header_line = _role_header_line(block, model, width, live=True)
             if header_line is not None:
                 children.append(h(TEXT, {
                     "key": f"chat-{block_idx}-h",
@@ -270,15 +366,13 @@ def ChatView(props) -> object:
             "lines": model.subagent_lines,
             "width": width,
         }))
-    # ★ 空状态欢迎提示（2026-08-05 美化）：聊天区无任何内容（启动/清屏后）
-    #   时显示欢迎引导行——避免空白聊天区的冷启动感。静态样式（模块级
-    #   Style 单例），空状态渲染循环空闲（无动画状态），零每帧重建。
+    # ★ 空状态欢迎提示（2026-08-05 美化 + BEAUTY-25）：聊天区无任何内容
+    #   （启动/清屏后）时显示欢迎引导行——避免空白聊天区的冷启动感。
+    #   ★ BEAUTY-25（体验动效）：活跃期（status_active——模型已配置且流式/
+    #   工具执行中）✦ 图标时间基呼吸（渲染循环已推进，零额外成本）；空闲期
+    #   回退静态单例（CPU ~0）。
     if not children:
-        children.append(h(TEXT, {
-            "key": "welcome",
-            "styled": _WELCOME_STYLED,
-            "height": 1,
-        }))
+        children.append(_welcome_element(model, width))
     # ★ 阶段2（标准布局容器重构）：BOX(None) → Column（默认 flexDirection=
     #   column，输出与重构前一致；committed-chat host 子节点不受容器 type
     #   变化影响——容器仍是 "box" host）。

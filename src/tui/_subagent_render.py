@@ -40,7 +40,15 @@ from src.tui.core.style import Style
 from src.tui.ink.output import Line, StyledRun
 from src.tui.ink.helpers import truncate_runs
 from src.tui._config import TuiConfig
-from src.tui._tool_icons import TOOL_CATEGORY_COLORS, TOOL_CATEGORY_MAP
+# ★ 标准 React Ink 组件化（2026-08-05）：配色映射从 ANSI 色串迁移为 Style
+# 对象——TOOL_CATEGORY_STYLES / AGENT_TYPE_STYLES（直接取 Style.fg 色号，
+# 不再经 _ansi_color_code 解析）。旧 ANSI 映射保留在 _tool_icons（兼容），
+# 本模块不再消费。
+from src.tui._tool_icons import (
+    AGENT_TYPE_STYLES,
+    TOOL_CATEGORY_MAP,
+    TOOL_CATEGORY_STYLES,
+)
 from src.tui.app import _fx
 from src.tui._format import format_duration, format_tokens, format_speed, single_line
 
@@ -69,20 +77,31 @@ _INDENT = "  "
 
 
 def _ansi_color_code(ansi: str) -> int | None:
-    """从 ANSI 前景序列提取 256 色号（如 ``"\\033[38;5;214m"`` → 214）；无法解析返回 None。"""
+    """从 ANSI 前景序列提取 256 色号（如 ``"\\033[38;5;214m"`` → 214）；无法解析返回 None。
+
+    # deprecated: 标准 React Ink 组件化后生产路径不再解析 ANSI（配色映射已为
+    # ``_tool_icons.AGENT_TYPE_STYLES``/``TOOL_CATEGORY_STYLES``，直接取 Style.fg）。
+    # 保留供既有测试/外部调用面兼容（``_ansi_color_code(TOOL_CATEGORY_COLORS[...])``）。
+    """
     m = re.search(r"38;5;(\d+)", ansi)
     return int(m.group(1)) if m else None
 
 
-def _fade_type_style(agent_type_ansi: str, elapsed: float) -> Style:
+def _fade_type_style(agent_type: str, elapsed: float) -> Style:
     """agent 类型名 FadeIn 渐显（BEAUTY-1，返回 Style）。
 
     时间基：elapsed>=duration 时返回原色（动画结束不触发重绘）；
     elapsed 期间从 ``_FADE_START_COLOR`` 渐变到原色号。
+
+    ★ 标准 React Ink 组件化：直接查 ``AGENT_TYPE_STYLES``（Style 映射）取
+    色号——不再经 ANSI 色串 + ``_ansi_color_code`` 解析（中间层移除）。
+    参数更名 ``agent_type_ansi`` → ``agent_type``（原传 ANSI 色串，现传
+    类型名）；未知类型回退 ``_S_DIMMER``（与原 ``code is None`` 分支一致）。
     """
-    code = _ansi_color_code(agent_type_ansi)
-    if code is None:
+    style = AGENT_TYPE_STYLES.get(agent_type)
+    if style is None or getattr(style, "fg", None) is None:
         return _S_DIMMER
+    code = style.fg
     faded = _fx.fade_color(elapsed, _FADE_DURATION, _FADE_START_COLOR, code)
     return Style(fg=faded)
 
@@ -97,16 +116,17 @@ def _pad_runs(runs: List[StyledRun], width: int) -> List[StyledRun]:
 
 
 def _get_tool_color(tool_name: str) -> Style:
-    """查询工具类别配色（共享单一真源映射，_tool_icons.TOOL_CATEGORY_MAP/COLORS）。
+    """查询工具类别配色（共享单一真源映射，_tool_icons.TOOL_CATEGORY_MAP/STYLES）。
 
-    ★ 标准 React Ink 组件化：返回 **Style**（fg 色号）——替代原 ANSI 字符串
-    （解析自 TOOL_CATEGORY_COLORS 的 256 色号，值一致）。函数签名保留
-    （方向F 步骤12 收敛后查询共享映射，线程安全只读）。
+    ★ 标准 React Ink 组件化：直接返回 **Style**（fg 色号）——查询
+    ``TOOL_CATEGORY_STYLES`` 映射，不再经 ANSI 色串解析。未知工具回退
+    ``Style(fg=245)``（与原 ANSI 默认色号一致）。线程安全只读。
     """
     cat = TOOL_CATEGORY_MAP.get(tool_name, "")
-    ansi = TOOL_CATEGORY_COLORS.get(cat, "\033[38;5;245m")
-    code = _ansi_color_code(ansi)
-    return Style(fg=code if code is not None else 245)
+    style = TOOL_CATEGORY_STYLES.get(cat)
+    if style is not None:
+        return style
+    return Style(fg=245)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -240,9 +260,17 @@ def _build_group_card(rows: list[tuple[str, str, List[Line]]],
     if len(body) > budget:
         kept = max(1, budget - 1)  # 预留省略提示行
         dropped = len(body) - kept
+        # ★ BEAUTY-34（2026-08-05 体验动效）：省略提示呼吸——运行中组卡
+        #   浅蓝 110→120 脉动（12s 周期，与状态栏耗时呼吸同步）；空闲静态
+        #   _S_DIMMER（零额外渲染成本）。
+        if any_running:
+            from src.tui.app._theme import time_glow
+            omit_style = Style(fg=time_glow(110, 120, 12.0))
+        else:
+            omit_style = _S_DIMMER
         body = body[:kept] + [Line([
-            StyledRun("\u2026", _S_DIMMER),
-            StyledRun(f" +{dropped} 行省略", _S_DIMMER),
+            StyledRun("\u2026", omit_style),
+            StyledRun(f" +{dropped} 行省略", omit_style),
         ])]
     # 组装卡片（内容宽度自适应，clamp 到终端宽度——修复前 card_w 由未截断
     # 内容决定，超长内容使卡片比终端宽，右边界 ┐/│/┘ 被截断 → 卡片开口）
@@ -291,13 +319,16 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
     disp_out = slot.output_tokens + slot.live_output_tokens
     output_str = format_tokens(disp_out)
     speed_str = format_speed(slot.last_speed) if slot.status == "running" else ""
+    # ★ BEAUTY-23（体验动效）：running 统计呼吸色统一惰性导入（time_glow
+    #   0.1s 桶缓存——函数级导入避免模块加载环；仅 running 分支消费）。
+    from src.tui.app._theme import time_glow as _tg
 
     # ── 类型名（BEAUTY-1：FadeIn 渐显，时间基；无 `[xx]` 方括号标签） ──
-    from ._tool_icons import AGENT_TYPE_COLORS
-    agent_type_ansi = AGENT_TYPE_COLORS.get(slot.agent_type, "\033[38;5;240m")
+    # ★ 标准 React Ink 组件化：AGENT_TYPE_STYLES 导入为模块级（顶部）
+    #   ——fade 查 Style 映射取色号（不再经 ANSI 色串解析）。
     type_name = slot.agent_type or "??"
     fade_elapsed = time.monotonic() - slot.appear_time
-    type_style = _fade_type_style(agent_type_ansi, fade_elapsed)
+    type_style = _fade_type_style(slot.agent_type, fade_elapsed)
 
     # ── 状态图标 + 标题行 ──
     # P3-?：description 经 _single_line 转义（可能含 \n → 强制单行显示）
@@ -323,13 +354,17 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
         #   保留兼容测试 patch 路径；值同 _fx.SPINNER_FRAMES）。
         spinner = _fx.spinner_char(_SPINNER_HZ)
         dot = StyledRun(spinner, _S_RUNNING)
+        # ★ BEAUTY-23（体验动效）：running 期间输出/speed/耗时统计呼吸——
+        #   输出量浅蓝 240→250、速度亮青 45→55、耗时暗灰 240→250（12s 周期，
+        #   与状态栏 token/速度呼吸同步）。active 子代理面板 10Hz 刷新，
+        #   time_glow 0.1s 桶缓存平滑推进；done/fail 折叠为单行保持静态。
         suffix = [
             StyledRun("  ", None),
-            StyledRun(output_str, _S_DIMMER),
+            StyledRun(output_str, Style(fg=_tg(240, 250, 12.0))),
             StyledRun("  ", None),
-            StyledRun(speed_str, _S_SUMMARY_DIM),
+            StyledRun(speed_str, Style(fg=_tg(45, 55, 12.0))),
             StyledRun("  ", None),
-            StyledRun(elapsed_str, _S_DIMMER),
+            StyledRun(elapsed_str, Style(fg=_tg(240, 250, 12.0))),
         ]
         title = [dot, StyledRun(" ", None), StyledRun(type_name, type_style),
                  StyledRun(f" {description}", None)] + suffix
