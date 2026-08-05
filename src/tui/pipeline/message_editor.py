@@ -60,6 +60,23 @@ def _user_msg_summary(msg: dict, idx: int, max_w: int = 60) -> str:
     return f"{idx}. \u25cf \u2502 {_truncate(text, max_w)}"
 
 
+def _user_msg_display_lines(msg: dict) -> list:
+    """用 TUI 用户消息渲染方式生成弹窗显示行（``> 内容``，多行）。
+
+    与 ``apply.build_user_line`` 同语义（消息区历史回放路径
+    ``DisplayMsgsCmd → _do_display_messages``）：每行 ``> {segment}`` 顶格，
+    前缀用调色板 ``user_icon`` 色、内容用 ``user_text`` 色；空内容保留
+    前缀行。供 ``UserSelectPopup`` 的 ``option_lines`` 使用——/editmsg
+    弹窗中的历史消息显示与消息区渲染一致。
+
+    Returns:
+        list[AnsiLine] — 每条消息按 ``\\n`` 拆分后的渲染行。
+    """
+    from src.tui.app.apply import build_user_line
+    content = _content_str(msg.get("content", ""))
+    return build_user_line(content)
+
+
 def _restore_sandbox_to(agent: Any, target_idx: int) -> str:
     """恢复沙盒到指定消息索引，返回恢复文件数的描述文本。"""
     sandbox_manager = _get_sandbox_manager()
@@ -260,8 +277,10 @@ class MessageEditor:
     ) -> bool:
         """进入当前会话消息编辑（Ctrl+O / /editmsg）。
 
-        在线程中运行（由 asyncio.to_thread 调用），
-        直接使用 time.sleep 进行轮询。
+        在主流程同步直接执行（EditmsgPlugin 不再经 run_in_executor 线程池）：
+        交互选择期间主协程阻塞在 time.sleep 轮询，render 线程独立驱动
+        UserSelectPopup 组件写 done；按回车确认后编辑立即生效，不依赖
+        线程调度返回。
 
         Args:
             agent: ChatAgent 实例（包含 messages 列表）。
@@ -281,9 +300,14 @@ class MessageEditor:
             return False
 
         # 构建显示项
+        # display_items：纯文本摘要（UserSelectState.options——回车 result 与
+        #   legacy 补全弹窗路径消费）；option_lines：TUI 消息渲染方式的多行
+        #   AnsiLine（UserSelectPopup 优先渲染，与消息区显示一致）。
         display_items = []
+        option_lines = []
         for display_idx, (orig_idx, msg) in enumerate(user_msgs):
             display_items.append(_user_msg_summary(msg, display_idx))
+            option_lines.append(_user_msg_display_lines(msg))
 
         # ★ 设置 Enter 抑制 + 替换补全关闭回调
         #   在交互选择期间，Enter 键不经过 _enter() 提交，
@@ -311,7 +335,7 @@ class MessageEditor:
 
         try:
             real_idx = self._interactive_message_select(
-                user_msgs, display_items,
+                user_msgs, display_items, option_lines,
             )
         finally:
             # 恢复原始回调（经公开 API）
@@ -342,11 +366,13 @@ class MessageEditor:
         self,
         user_msgs: list[tuple[int, dict]],
         display_items: list[str],
+        option_lines: list | None = None,
     ) -> int | None:
         """选择要编辑的消息（标准 React Ink UserSelectPopup 协议）。
 
         交互流程（与 user_select 工具同协议，标准 React Ink 无例外）：
-          1. 设置 ``model.user_select``（visible=True, seq+1, options=消息摘要）；
+          1. 设置 ``model.user_select``（visible=True, seq+1, options=消息摘要，
+             option_lines=消息 TUI 渲染多行）；
           2. ``UserSelectPopup`` 组件在 App 组件树底部区渲染（use_input 消费
              ↑↓/Enter/Esc，render 线程驱动路由）；
           3. 本方法轮询 ``us.done``（跨线程 GIL 原子字段）并读取结果索引；
@@ -355,6 +381,8 @@ class MessageEditor:
         Args:
             user_msgs: [(原始索引, 消息字典), ...]。
             display_items: 每个消息的显示文本（UserSelectPopup 选项）。
+            option_lines: 每个消息的 TUI 渲染多行（list[list[AnsiLine]]，
+                可选）——UserSelectPopup 优先渲染，与消息区显示一致。
 
         Returns:
             选中的原始消息索引，None 表示取消/超时。
@@ -377,6 +405,7 @@ class MessageEditor:
             seq=prev_seq + 1,
             title="\u9009\u62e9\u8981\u7f16\u8f91\u7684\u6d88\u606f",  # 选择要编辑的消息
             options=list(display_items),
+            option_lines=list(option_lines) if option_lines else [],
             selected=sel_count - 1,  # 默认选中最后一条
             deadline=time.monotonic() + 120,  # 2 分钟超时
         )

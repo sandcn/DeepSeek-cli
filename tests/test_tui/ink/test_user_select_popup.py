@@ -420,13 +420,173 @@ class TestUserSelectPopupRemount:
         assert m.user_select.selected == 0
 
 
-class TestUserSelectPopupEscEndToEnd:
-    """端到端：stdin Esc 字节 → InputDispatcher → router → 弹窗取消。
+class TestUserSelectPopupMultiLineOptions:
+    """/editmsg 多行历史消息（option_lines）渲染 — 历史消息按 TUI 消息渲染方式显示。
 
-    回归（2026-08-05）：修复前 InputDispatcher 的 ESC 内联分支直接走中断
-    （从未询问 input router）——UserSelectPopup 的 use_input handler 收不到
-    escape 事件，弹窗按 Esc 无法取消。修复后 ESC 事件先经 router 分发。
+    用户需求（/editmsg TUI）：弹窗中的历史消息显示与消息区渲染一致——
+    每条消息按 ``> 内容`` 多行显示（user_icon/user_text 色），首行带
+    选中/勾选前缀，续行对齐；单条超长截断到 _MAX_OPTION_LINES 行并追加
+    省略提示；高亮覆盖该消息的所有行。
     """
+
+    @staticmethod
+    def _render_popup(m, width=80, height=24):
+        r, root = Reconciler(), Reconciler().create_root()
+        frame = _render(r, root, _popup(m), width=width, height=height)
+        return _plain(frame), frame
+
+    def test_multiline_options_rendered_with_user_prefix(self):
+        """多行历史消息渲染为 `> 内容`（TUI 消息渲染一致），首行带 ▶ 前缀。"""
+        from src.tui.pipeline.message_editor import _user_msg_display_lines
+
+        m = AppModel()
+        msgs = [
+            {"role": "user", "content": "第一行\n第二行"},
+            {"role": "user", "content": "第二条"},
+        ]
+        m.user_select = UserSelectState(
+            visible=True, seq=1, title="选择要编辑的消息",
+            options=["0. ● │ 第一行 第二行", "1. ● │ 第二条"],
+            option_lines=[_user_msg_display_lines(msg) for msg in msgs],
+            selected=0,
+        )
+        lines, frame = self._render_popup(m)
+        # 首行：高亮前缀 + `> 内容`
+        assert lines[1] == " ▶  > 第一行"
+        # 续行：对齐 4 列前缀 + `> 内容`
+        assert lines[2] == "    > 第二行"
+        # 第二条（单行）
+        assert lines[3] == "    > 第二条"
+        assert "↑↓/jk 选择" in lines[4]
+        # 高亮覆盖选中消息所有行（首行 run 均带 bg=237）
+        assert all(
+            getattr(r.style, "bg", None) == 237
+            for r in frame.lines[1].runs if r.text.strip()
+        )
+
+    def test_highlight_covers_all_lines_of_selected_option(self):
+        """选中消息的所有行（含续行）都带高亮背景。"""
+        from src.renderer.ansi.helpers import AnsiLine
+
+        m = AppModel()
+        m.user_select = UserSelectState(
+            visible=True, seq=1, title="T",
+            options=["消息0", "消息1"],
+            option_lines=[
+                [AnsiLine.of("> 消息0")],
+                [AnsiLine.of("> 消息1-1"), AnsiLine.of("> 消息1-2")],
+            ],
+            selected=1,
+        )
+        lines, frame = self._render_popup(m)
+        assert lines[1] == "    > 消息0"
+        assert lines[2] == " ▶  > 消息1-1"
+        assert lines[3] == "    > 消息1-2"
+        # 选中消息两行均高亮
+        assert all(
+            getattr(r.style, "bg", None) == 237
+            for r in frame.lines[2].runs if r.text.strip()
+        )
+        assert all(
+            getattr(r.style, "bg", None) == 237
+            for r in frame.lines[3].runs if r.text.strip()
+        )
+        # 未选中消息无背景
+        assert not any(
+            getattr(r.style, "bg", None) == 237
+            for r in frame.lines[1].runs
+        )
+
+    def test_long_message_truncated_with_ellipsis(self):
+        """超长消息（> _MAX_OPTION_LINES 行）截断并追加省略提示行。"""
+        from unittest.mock import patch
+        from src.renderer.ansi.helpers import AnsiLine
+
+        m = AppModel()
+        many_lines = [AnsiLine.of(f"> 行{i}") for i in range(10)]
+        m.user_select = UserSelectState(
+            visible=True, seq=1, title="T",
+            options=["超长消息"],
+            option_lines=[many_lines],
+            selected=0,
+        )
+        with patch("src.tui.app.user_select._MAX_OPTION_LINES", 4):
+            lines, frame = self._render_popup(m)
+        # 标题 1 + 4 行 + 省略 1 + 提示 1 = 7 行
+        assert len(lines) == 7
+        assert lines[1] == " ▶  > 行0"
+        assert lines[4] == "    > 行3"
+        assert lines[5] == "    ..."
+
+    def test_total_rows_capped_by_popup_budget(self):
+        """多条多行消息：总显示行数受 _popup_item_rows 上限约束（不超高）。"""
+        from unittest.mock import patch
+        from src.renderer.ansi.helpers import AnsiLine
+
+        m = AppModel()
+        option_lines = [
+            [AnsiLine.of("> 消息"), AnsiLine.of("> 续行")] for _ in range(10)
+        ]
+        m.user_select = UserSelectState(
+            visible=True, seq=1, title="T",
+            options=[f"消息{i}" for i in range(10)],
+            option_lines=option_lines,
+            selected=0,
+        )
+        with patch("src.tui.app.user_select._popup_item_rows", return_value=6):
+            lines, _ = self._render_popup(m)
+        # 标题 1 + ≤6 行选项 + 提示 1 ≤ 8
+        assert len(lines) <= 8
+
+    def test_narrow_width_multiline_no_overflow(self):
+        """窄屏：多行选项行宽不超过文档宽（行级 diff 宽度不变量）。"""
+        from src.renderer.ansi.helpers import AnsiLine
+
+        m = AppModel()
+        m.user_select = UserSelectState(
+            visible=True, seq=1, title="窄",
+            options=["超长消息"],
+            option_lines=[[AnsiLine.of("> " + "超长文本" * 10)]],
+            selected=0,
+        )
+        r, root = Reconciler(), Reconciler().create_root()
+        frame = _render(r, root, _popup(m, width=15), width=15)
+        for ln in frame.lines:
+            assert ln.width <= 15, f"超宽行: {ln.plain!r} ({ln.width})"
+
+    def test_arrow_navigation_between_multiline_options(self):
+        """多行选项：↑↓ 仍在消息之间导航（按选项而非按行）。"""
+        from src.renderer.ansi.helpers import AnsiLine
+
+        m = AppModel()
+        m.user_select = UserSelectState(
+            visible=True, seq=1, title="T",
+            options=["消息0", "消息1", "消息2"],
+            option_lines=[
+                [AnsiLine.of("> 消息0-1"), AnsiLine.of("> 消息0-2")],
+                [AnsiLine.of("> 消息1")],
+                [AnsiLine.of("> 消息2-1"), AnsiLine.of("> 消息2-2")],
+            ],
+            selected=0,
+        )
+        r, root = Reconciler(), Reconciler().create_root()
+        cap = _Router()
+        frame = _render(r, root, _popup(m))
+        assert _plain(frame)[1] == " ▶  > 消息0-1"
+        # 下移一次 → 选中消息1（中间项）
+        assert cap.key("arrow_down") is True
+        assert m.user_select.selected == 1
+        frame = _render(r, root, _popup(m))
+        # 消息0 两行 + 消息1 首行带 ▶
+        assert _plain(frame)[3] == " ▶  > 消息1"
+        # 再下移 → 消息2
+        assert cap.key("arrow_down") is True
+        assert m.user_select.selected == 2
+        frame = _render(r, root, _popup(m))
+        assert _plain(frame)[4] == " ▶  > 消息2-1"
+
+
+
 
     def _session(self, tmp_path):
         import io

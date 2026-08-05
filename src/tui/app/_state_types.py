@@ -121,6 +121,10 @@ class UserSelectState:
         title: 弹窗标题。
         options: 选项字符串列表。
         option_descriptions: 与 options 等长的说明列表（长度不足补齐空串）。
+        option_lines: 每条选项的预渲染多行（list[list[AnsiLine]]，可选）。
+            /editmsg 用 TUI 消息渲染方式（``> 内容``，user_icon/user_text 色）
+            生成历史消息显示行；缺省（空列表）时组件回退 options 单行纯文本
+            （user_select 工具协议不受影响）。
         multi_select: 是否多选。
         default_options: 默认选项（超时/取消/非交互回退）。
         selected: 当前高亮索引（组件维护）。
@@ -136,6 +140,7 @@ class UserSelectState:
     title: str = ""
     options: list = field(default_factory=list)
     option_descriptions: list = field(default_factory=list)
+    option_lines: list = field(default_factory=list)
     multi_select: bool = False
     default_options: list = field(default_factory=list)
     selected: int = 0

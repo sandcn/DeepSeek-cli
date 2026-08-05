@@ -671,14 +671,15 @@ class TestDisplayMsgs:
         m = _model()
         apply_cmd(m, DisplayMsgsCmd(messages=[
             {"role": "user", "content": "你好"},
-            {"role": "assistant", "content": None},  # 纯工具调用消息
+            {"role": "assistant", "content": None},  # 纯工具调用消息（无 tool_calls 字段）
             {"role": "assistant", "content": "正常回复"},
             {"role": "assistant", "content": None},
             {"role": "assistant", "content": None},
             {"role": "assistant", "content": None},
         ], speed=0))
         kinds = [b.kind for b in m.blocks]
-        assert kinds == ["user", "write_line"]  # 仅正常消息产块
+        # ChatView 语义：content 非空的 assistant 消息 → content 块（markdown 渲染）
+        assert kinds == ["user", "content"]  # 仅正常消息产块
         rendered = [l.plain for b in m.blocks for l in b.lines]
         assert "None" not in rendered  # 无 "None" 行
         assert any("正常回复" in l for l in rendered)
@@ -692,7 +693,7 @@ class TestDisplayMsgs:
             {"role": "assistant", "content": "有内容"},
         ], speed=0))
         kinds = [b.kind for b in m.blocks]
-        assert kinds == ["write_line"]
+        assert kinds == ["content"]
         rendered = [l.plain for b in m.blocks for l in b.lines]
         assert len(rendered) == 1
         assert "有内容" in rendered[0]
@@ -858,6 +859,115 @@ class TestCommitBlockFreeze:
         assert len(sand_block._cached_ink_lines) == len(sand_block.lines)
 
 
+class TestDisplayMsgsRichRendering:
+    """DisplayMsgs 历史消息回放 ChatView 语义 — 思考/回答/工具调用渲染。
+
+    用户需求（/editmsg 等历史消息显示）：与消息区（ChatView）渲染一致——
+    assistant 的 reasoning_content → reasoning 块（💭 思考）、content →
+    content 块（markdown 渲染）、tool_calls → 工具卡片（ToolCard）、
+    tool 消息 → 工具输出追加并关闭工具块。不再回退纯文本 ``  │ 原文本``。
+    """
+
+    def test_assistant_reasoning_renders_reasoning_block(self):
+        """assistant 带 reasoning_content → reasoning 块（角色头自动带 💭 思考）。"""
+        m = _model()
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "assistant", "content": "",
+             "reasoning_content": "我需要思考一下\n再回答"},
+        ], speed=0))
+        kinds = [b.kind for b in m.blocks]
+        assert kinds == ["reasoning"]
+        block = m.blocks[0]
+        rendered = [l.plain for l in block.lines]
+        assert any("我需要思考一下" in p for p in rendered)
+        assert any("再回答" in p for p in rendered)
+        # 提交路径角色头带 💭 思考（_card_lines 前置）
+        from src.tui.app.model import _role_header_line
+        header = _role_header_line(block, m, 80)
+        assert header is not None
+        assert "思考" in header.plain
+
+    def test_assistant_content_renders_markdown(self):
+        """assistant content → content 块（markdown 渲染，代码块格式化）。"""
+        m = _model()
+        m.width = 80
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "assistant", "content": "```python\ndef qsort(arr):\n    return arr\n```\n\n**完成**"},
+        ], speed=0))
+        kinds = [b.kind for b in m.blocks]
+        assert kinds == ["content"]
+        rendered = [l.plain for l in m.blocks[0].lines]
+        # markdown 渲染：代码块内容行可见，强调文本保留
+        assert any("def qsort(arr)" in p for p in rendered)
+        assert any("return arr" in p for p in rendered)
+        assert any("完成" in p for p in rendered)
+
+    def test_tool_calls_and_tool_messages_render_toolcard(self):
+        """assistant tool_calls + tool 消息 → 工具卡片（ToolCard 边框 + 输出）。"""
+        m = _model()
+        m.width = 80
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "user", "content": "帮我查一下"},
+            {"role": "assistant", "content": None,
+             "reasoning_content": "需要调用工具",
+             "tool_calls": [{
+                 "id": "call_1", "type": "function",
+                 "function": {"name": "bash", "arguments": "{\"command\": \"ls\"}"},
+             }]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "file1.txt\nfile2.txt"},
+            {"role": "assistant", "content": "查询完成",
+             "reasoning_content": ""},
+        ], speed=0))
+        kinds = [b.kind for b in m.blocks]
+        assert kinds == ["user", "reasoning", "tool", "content"]
+        # 工具块：标题行 + 工具输出 + 状态行，已关闭
+        tool_block = next(b for b in m.blocks if b.kind == "tool")
+        assert tool_block.closed is True
+        assert tool_block.extra["tool_name"] == "bash"
+        assert tool_block.extra["tool_status"] == "done"
+        assert any("file1.txt" in l.plain for l in tool_block.lines)
+        # active_tool 已清空
+        assert m.active_tool is None
+
+    def test_unclosed_tool_blocks_defensively_closed(self):
+        """tool 结果消息缺失的异常会话：回放结束强制关闭残留工具块。"""
+        m = _model()
+        m.width = 80
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "assistant", "content": None,
+             "tool_calls": [{
+                 "id": "call_x", "type": "function",
+                 "function": {"name": "bash", "arguments": "{}"},
+             }]},
+        ], speed=0))
+        assert all(b.closed for b in m.blocks)
+        assert m.tool_boxes == {}
+        assert m.active_tool is None
+
+    def test_multiple_tool_calls_routed_by_tool_call_id(self):
+        """同一 assistant 消息多个 tool_calls → 多个工具块按 tool_call_id 路由。"""
+        m = _model()
+        m.width = 80
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "assistant", "content": None,
+             "tool_calls": [
+                 {"id": "call_a", "type": "function",
+                  "function": {"name": "ls", "arguments": "{}"}},
+                 {"id": "call_b", "type": "function",
+                  "function": {"name": "find", "arguments": "{}"}},
+             ]},
+            {"role": "tool", "tool_call_id": "call_a", "content": "aaa.txt"},
+            {"role": "tool", "tool_call_id": "call_b", "content": "bbb.txt"},
+        ], speed=0))
+        tool_blocks = [b for b in m.blocks if b.kind == "tool"]
+        assert len(tool_blocks) == 2
+        assert all(b.closed for b in tool_blocks)
+        a_block = next(b for b in tool_blocks if b.extra["tool_id"] == "call_a")
+        b_block = next(b for b in tool_blocks if b.extra["tool_id"] == "call_b")
+        assert any("aaa.txt" in l.plain for l in a_block.lines)
+        assert any("bbb.txt" in l.plain for l in b_block.lines)
+
+
 class TestDisplayMsgsNoSeparator:
     """方向6 — _do_display_messages 无消息间分隔线（对齐 Claude Code：仅空行分隔）。"""
 
@@ -878,13 +988,17 @@ class TestDisplayMsgsNoSeparator:
         assert not any(l.plain.startswith("  \u2500") for b in m.blocks for l in b.lines)
 
     def test_user_and_assistant_messages_no_separator(self):
-        """user + assistant 消息 → user 块 + assistant（write_line）块，无分隔线。"""
+        """user + assistant 消息 → user 块 + assistant（content）块，无分隔线。
+
+        ChatView 语义：assistant content 历史回放走 markdown 渲染（content 块），
+        不再回退 write_line 纯文本行（用户需求：回答显示与消息区渲染一致）。
+        """
         m = _model()
         apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "user", "content": "m1"}], speed=0))
         apply_cmd(m, DisplayMsgsCmd(messages=[{"role": "assistant", "content": "a2"}], speed=0))
         kinds = [b.kind for b in m.blocks]
-        assert kinds == ["user", "write_line"]
-        assert any("a2" in b.lines[0].plain for b in m.blocks if b.kind == "write_line")
+        assert kinds == ["user", "content"]
+        assert any("a2" in b.lines[0].plain for b in m.blocks if b.kind == "content")
         assert not any(l.plain.startswith("  \u2500") for b in m.blocks for l in b.lines)
 
 

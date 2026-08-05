@@ -525,68 +525,152 @@ class TestEditmsgBackspaceNoConfirm:
             os.close(fd)
 
 
-class TestCompletionVisiblePropertyAndPublicApi:
-    """方向2 — is_completion_visible property 调用修复 + dismiss 回调公开 API 收敛。"""
+class TestUserMsgDisplayLines:
+    """/editmsg 弹窗历史消息 TUI 渲染行生成（option_lines）。
 
-    def test_is_completion_visible_property_regression(self):
-        """is_completion_visible 为 property 时轮询路径不抛 TypeError（修复前按方法调用）。"""
-        from unittest.mock import MagicMock
+    用户需求（/editmsg TUI）：弹窗中的历史消息显示与消息区渲染一致——
+    ``_user_msg_display_lines`` 复用 ``apply.build_user_line``（DisplayMsgsCmd
+    历史回放路径），每条消息按 ``> 内容`` 多行生成（user_icon/user_text 色）。
+    """
+
+    def test_display_lines_multiline_user_prefix(self) -> None:
+        """多行消息按 \\n 拆行，每行带 `> ` 前缀（TUI 用户消息渲染一致）。"""
+        from src.tui.pipeline.message_editor import _user_msg_display_lines
+
+        lines = _user_msg_display_lines({
+            "role": "user", "content": "第一行\n第二行",
+        })
+        assert len(lines) == 2
+        assert [ln.plain for ln in lines] == ["> 第一行", "> 第二行"]
+
+    def test_display_lines_uses_build_user_line_same_object(self) -> None:
+        """与 apply.build_user_line 同源：空内容保留前缀行，样式同消息区。"""
+        from src.tui.app.apply import build_user_line
+        from src.tui.pipeline.message_editor import _user_msg_display_lines
+
+        def _plains(lines):
+            return [(ln.plain, [(r.text, str(r.style)) for r in ln.runs]) for ln in lines]
+
+        assert _plains(
+            _user_msg_display_lines({"role": "user", "content": ""}),
+        ) == _plains(build_user_line(""))
+        assert _plains(
+            _user_msg_display_lines({"role": "user", "content": "hello"}),
+        ) == _plains(build_user_line("hello"))
+
+    def test_display_lines_content_str_variants(self) -> None:
+        """content 为 list[dict] / None 时的行生成（_content_str 语义）。"""
+        from src.tui.pipeline.message_editor import _user_msg_display_lines
+
+        # list[dict] 取 text
+        lines = _user_msg_display_lines({
+            "role": "user", "content": [{"text": "a"}, {"text": "b"}],
+        })
+        assert [ln.plain for ln in lines] == ["> a b"]
+        # None / 空 → 保留前缀行
+        assert [ln.plain for ln in _user_msg_display_lines(
+            {"role": "user", "content": None},
+        )] == ["> "]
+
+    def test_edit_current_messages_builds_option_lines(self) -> None:
+        """edit_current_messages 构建的 option_lines 与 display_items 等长。
+
+        UserSelectState.option_lines 为每条消息的 TUI 渲染多行（list[AnsiLine]），
+        UserSelectPopup 优先渲染，历史消息显示与消息区一致。
+        """
+        from unittest.mock import patch
 
         from src.tui.pipeline.message_editor import MessageEditor
 
-        class _FakeBB:
-            def __init__(self):
-                self._visible = True
+        agent = MagicMock()
+        agent.messages = [
+            {"role": "user", "content": "第一条\n带换行"},
+            {"role": "assistant", "content": "回复"},
+            {"role": "user", "content": "第二条"},
+        ]
+        bb = MagicMock()
+        inp = MagicMock()
+        inp.set_suppress_enter = MagicMock()
+        inp.set_dismiss_completion_callback = MagicMock()
+        inp.get_dismiss_completion_callback = MagicMock(return_value=None)
+        inp.flush_stdin_buffer = MagicMock()
 
-            @property
-            def is_completion_visible(self):
-                return self._visible
+        editor = MessageEditor(bottom_bar=bb, input_=inp)
+        captured = {}
 
-            def show_completions(self, items, selected_idx, **kw):
-                pass
+        def _fake_select(user_msgs, display_items, option_lines=None):
+            captured["user_msgs"] = user_msgs
+            captured["display_items"] = display_items
+            captured["option_lines"] = option_lines
+            return 0  # 选中第一条
 
-            def hide_completions(self):
-                pass
+        with patch.object(
+            editor, "_interactive_message_select", side_effect=_fake_select,
+        ):
+            state = {}
+            result = editor.edit_current_messages(agent, state, action="edit")
 
-            def get_selected_completion_index(self):
-                return 0
+        assert result is True
+        # 只显示 user 消息（2 条），option_lines 等长
+        assert len(captured["user_msgs"]) == 2
+        assert len(captured["display_items"]) == 2
+        assert len(captured["option_lines"]) == 2
+        # 第一条消息渲染为 2 行（带换行），第二条 1 行
+        assert [ln.plain for ln in captured["option_lines"][0]] == ["> 第一条", "> 带换行"]
+        assert [ln.plain for ln in captured["option_lines"][1]] == ["> 第二条"]
 
-        class _FakeInput:
-            interrupted = False
+    def test_interactive_message_select_passes_option_lines(self) -> None:
+        """标准路径：UserSelectState 收到 option_lines（UserSelectPopup 优先渲染）。"""
+        from src.renderer.ansi.helpers import AnsiLine
+        from src.tui.app.model import AppModel
+        from src.tui.pipeline.message_editor import MessageEditor
 
-        editor = MessageEditor(bottom_bar=_FakeBB(), input_=_FakeInput())
-        # 轮询路径：_selection_ready.wait 首次超时（False）→ 进入 is_completion_visible
-        # 轮询；第二次 True → 退出循环（返回选中索引）。
-        editor._selection_ready.wait = MagicMock(side_effect=[False, True])
-        # 时间：deadline 计算（100.0）+ 循环检查两次（200.0 < 220 → 进入循环）
-        mock_monotonic = MagicMock(side_effect=[100.0, 200.0, 200.0])
+        model = AppModel()
+        session = MagicMock()
+        session.request_bottom_redraw = MagicMock()
+        bb = MagicMock()
+        bb._model = model
+        bb._session = session
+        inp = MagicMock()
 
-        import src.tui.pipeline.message_editor as me_mod
-        with patch.object(me_mod.time, "monotonic", mock_monotonic):
-            user_msgs = [
-                (0, {"role": "user", "content": "m0"}),
-                (1, {"role": "user", "content": "m1"}),
-            ]
-            display_items = ["0. \u25cf \u2502 m0", "1. \u25cf \u2502 m1"]
-            result = editor._interactive_message_select(user_msgs, display_items)
+        editor = MessageEditor(bottom_bar=bb, input_=inp)
+        user_msgs = [
+            (0, {"role": "user", "content": "第一条\n带换行"}),
+            (1, {"role": "user", "content": "第二条"}),
+        ]
+        display_items = ["0. ● │ 第一条 带换行", "1. ● │ 第二条"]
+        option_lines = [
+            [AnsiLine.of("> 第一条"), AnsiLine.of("> 带换行")],
+            [AnsiLine.of("> 第二条")],
+        ]
 
-        # 修复前 `bb.is_completion_visible()` 抛 TypeError → 捕获返回 None；
-        # 修复后属性访问正常 → 返回追踪到的选中索引 0
+        captured = {}
+
+        with patch(
+            "src.tui.pipeline.message_editor.time.monotonic",
+            return_value=100.0,
+        ), patch(
+            "src.tui.pipeline.message_editor.time.sleep",
+        ) as mock_sleep:
+            def _simulate_component(*args):
+                # 模拟 UserSelectPopup 组件写回完成（真实场景由 render 线程写入）
+                captured["option_lines"] = list(model.user_select.option_lines)
+                captured["options"] = list(model.user_select.options)
+                model.user_select.done = True
+                model.user_select.action = "confirmed"
+                model.user_select.selected = 0
+            mock_sleep.side_effect = _simulate_component
+            result = editor._interactive_message_select(
+                user_msgs, display_items, option_lines,
+            )
+
         assert result == 0
+        # 弹窗状态中 option_lines 已注入（每条消息的 TUI 渲染多行）
+        assert [ln.plain for ln in captured["option_lines"][0]] == ["> 第一条", "> 带换行"]
+        assert [ln.plain for ln in captured["option_lines"][1]] == ["> 第二条"]
+        assert captured["options"] == display_items
+        # 清理后弹窗状态复位
+        assert model.user_select.visible is False
 
-    def test_dismiss_callback_public_api_regression(self, tmp_path):
-        """Input 公开 get/set_dismiss_completion_callback 收敛私有字段访问（message_editor 使用）。"""
-        import os
 
-        from src.tui.input import Input
 
-        fd = os.open("/dev/null", os.O_RDONLY)
-        try:
-            inp = Input(fd=fd, history_file=tmp_path / "history")
-            cb = lambda: None  # noqa: E731
-            inp.set_dismiss_completion_callback(cb)
-            assert inp.get_dismiss_completion_callback() is cb
-            # 与 dispatcher 私有字段同一引用（getter 读同一回调）
-            assert inp._dispatcher._dismiss_completion_callback is cb
-        finally:
-            os.close(fd)

@@ -19,7 +19,6 @@ prefill 数据流（正常路径）:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -90,10 +89,12 @@ class EditmsgPlugin(InteractiveCommandPlugin):
             input_ = chat_ui.get_input() if chat_ui is not None else None
 
             editor = MessageEditor(bottom_bar=bottom_bar, input_=input_)
-            # 在线程中运行编辑器的交互式选择（使用 time.sleep 轮询）
-            loop_edit = asyncio.get_running_loop()
-            edited = await loop_edit.run_in_executor(
-                None, editor.edit_current_messages, session.agent, edit_state, "edit",
+            # ★ 编辑逻辑同步直接执行（用户需求：不用 run_in_executor 线程池）——
+            #   交互选择期间主协程阻塞在内部轮询（render 线程独立驱动
+            #   UserSelectPopup 组件写 done），按回车确认后编辑立即生效，
+            #   不依赖线程调度返回（去除多线程 + await 延迟）。
+            edited = editor.edit_current_messages(
+                session.agent, edit_state, "edit",
             )
 
             if edited:

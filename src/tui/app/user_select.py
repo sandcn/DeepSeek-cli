@@ -26,12 +26,13 @@ React Ink 化（2026-08-05）：user_select 工具的终端交互界面从「命
 
 from __future__ import annotations
 
+from src.renderer.ansi.helpers import AnsiLine, truncate_line
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from src.tui._input import _wrap_by_width
 from src.tui.app.input_area import _desc_column_width, _truncate_width
 from src.tui.app._theme import _S_DIM, _S_SEP
-from src.tui.ink import TEXT, h, Column, Row
+from src.tui.ink import TEXT, h, Column, Row, StyledRun
 from src.tui.ink.hooks import use_state, use_input, use_ref
 
 __all__ = ["UserSelectPopup"]
@@ -64,6 +65,64 @@ def _popup_item_rows() -> int:
         return max(6, h - 10)
     except Exception:
         return 12
+
+
+#: 每条选项最多显示行数（/editmsg 多行历史消息——防单条超长消息撑爆弹窗；
+#: 超过部分以省略行提示）。单行选项（user_select 工具协议）不受影响。
+_MAX_OPTION_LINES = 4
+
+
+def _option_rows_of(us) -> list[list[AnsiLine]]:
+    """提取每条选项的渲染行（AnsiLine 列表）。
+
+    优先使用 ``us.option_lines``（/editmsg 用 TUI 消息渲染方式生成——
+    ``build_user_line`` 每行 ``> 内容``，user_icon/user_text 色）；
+    缺省（user_select 工具协议，options 为单行纯文本）时回退
+    ``options[i]`` 单行。
+
+    Returns:
+        list[list[AnsiLine]] — 每条选项的 AnsiLine 行列表。
+    """
+    options = list(getattr(us, "options", None) or [])
+    raw = getattr(us, "option_lines", None) or []
+    out: list[list[AnsiLine]] = []
+    for i, opt in enumerate(options):
+        if i < len(raw) and raw[i]:
+            out.append(list(raw[i]))
+        else:
+            out.append([AnsiLine.of(opt)])
+    return out
+
+
+def _ansi_line_to_styled(
+    line: AnsiLine, prefix: str, highlighted: bool,
+) -> list[StyledRun]:
+    """AnsiLine → StyledRun 列表（前缀 + 内容；高亮时整行 merge 背景色）。
+
+    与 UserSelectPopup 普通模式单选高亮语义一致：选中行整行（含前缀）
+    叠加 ``_S_SEL_BG`` 背景；未选中行仅保留 AnsiLine 自身样式。
+
+    Args:
+        line: 选项渲染行（可能为多 run 样式行，如 ``> 内容``）。
+        prefix: 行首前缀（选中/勾选标记或续行对齐空白）。
+        highlighted: 是否为当前高亮项。
+
+    Returns:
+        非空 StyledRun 列表（空行时兜底空格 run，保持高度）。
+    """
+    runs: list[StyledRun] = []
+    if prefix:
+        runs.append(StyledRun(prefix, _S_SEL_BG if highlighted else None))
+    for r in getattr(line, "runs", None) or []:
+        if not r.text:
+            continue
+        st = r.style
+        if highlighted:
+            st = (st or Style()).merge(_S_SEL_BG)
+        runs.append(StyledRun(r.text, st))
+    if not runs:
+        runs.append(StyledRun(" ", _S_SEL_BG if highlighted else None))
+    return runs
 
 
 def UserSelectPopup(props) -> object:
@@ -199,7 +258,10 @@ def UserSelectPopup(props) -> object:
     # ── 渲染 ──
     cur = max(0, min(selected, total - 1))
     descs = us.option_descriptions or []
-    split = bool(descs) and width and width > 0
+    # option_lines 非空（/editmsg 多行历史消息）时不走分栏说明模式——
+    # 左栏已按 TUI 消息渲染多行，右栏说明与行结构冲突；editmsg 实际不传
+    # option_descriptions，该分支仅防御性兜底。
+    split = bool(descs) and width and width > 0 and not getattr(us, "option_lines", None)
     title = us.title or "选择"
     rows: list = []
 
@@ -231,6 +293,8 @@ def UserSelectPopup(props) -> object:
 
     if split:
         # ── 分栏说明模式：左栏选项 + │ + 右栏当前选中项说明 ──
+        # /editmsg 多行历史消息（option_lines 非空）不经本分支——即使带了
+        # option_descriptions 也走普通多行模式（editmsg 实际不传 descs）。
         # 左栏按最大选项长度自适应分栏（2026-08-05 用户需求）：分隔线 │
         # 紧跟最长选项之后，右栏说明自动变宽——选项短时不再有大片留白；
         # 选项超长时受上限约束（右栏至少保留 _desc_column_width 基准宽），
@@ -285,23 +349,50 @@ def UserSelectPopup(props) -> object:
             ]))
     else:
         # ── 普通模式：选项列表（单选高亮 / 多选勾选 + 高亮） ──
+        # ★ /editmsg 多行历史消息（option_lines 非空）：每条选项按 TUI 消息
+        #   渲染方式显示多行（``> 内容``，user_icon/user_text 色），首行带
+        #   选中/勾选前缀、续行对齐；单条超长截断到 _MAX_OPTION_LINES 行并
+        #   追加省略提示行；总行数受 _popup_item_rows 超屏防护（交互仍可
+        #   导航到隐藏项，与补全弹窗行为一致）。无 option_lines（user_select
+        #   工具协议）时行为不变：单行纯文本 + 宽度截断。
         opt_w = max(1, width - 4) if width and width > 0 else 40
-        # ★ 超屏防护：大量选项时限制渲染行数（弹窗不超终端高度；交互仍可
-        #   导航到隐藏项，与补全弹窗行为一致）。
-        n_show = min(total, _popup_item_rows())
-        for i in range(n_show):
-            opt = _truncate_width(options[i], opt_w)
-            if multi:
-                mark = _CHECKED if i in checked else _UNCHECKED
-                prefix = f" {mark}"
-            else:
-                prefix = " \u25b6 " if i == cur else "   "
-            style = sel_bg_style if i == cur else None
-            rows.append(h(TEXT, {
-                "children": f"{prefix} {opt}",
-                "style": style,
-                "height": 1,
-            }))
+        opt_rows = _option_rows_of(us)
+        max_lines = _MAX_OPTION_LINES
+        # 按总行数预算逐条累计可显示选项（保证至少显示 1 条）
+        budget = _popup_item_rows()
+        shown: list[int] = []
+        used = 0
+        for i in range(total):
+            n = max(1, min(len(opt_rows[i]), max_lines))
+            if shown and used + n > budget:
+                break
+            shown.append(i)
+            used += n
+        if not shown:
+            shown = [0]
+        for i in shown:
+            lines_i = opt_rows[i][:max_lines]
+            for li, ansi_line in enumerate(lines_i):
+                # 单行截断（CJK 安全，防超宽行破坏行级 diff 宽度不变量）
+                ansi_line = truncate_line(ansi_line, opt_w)
+                if li == 0:
+                    if multi:
+                        mark = _CHECKED if i in checked else _UNCHECKED
+                        prefix = f" {mark} "
+                    else:
+                        prefix = " \u25b6  " if i == cur else "    "
+                else:
+                    # 续行对齐首行前缀宽（4 列）
+                    prefix = "    "
+                runs = _ansi_line_to_styled(ansi_line, prefix, i == cur)
+                rows.append(h(TEXT, {"styled": runs, "height": 1}))
+            # 截断提示（超过 max_lines 的单条超长消息）
+            if len(opt_rows[i]) > max_lines:
+                rows.append(h(TEXT, {
+                    "children": "    ...",
+                    "style": _S_DESC,
+                    "height": 1,
+                }))
 
     # 提示行
     # 2026-08-05（增加操作）：提示加入 vim 风格 j/k/g/G 导航（与 ↑↓ 等价）

@@ -320,20 +320,104 @@ def _do_subagent_markdown(model, cmd) -> None:
     model.append_committed("subagent", lines)
 
 
+def _render_markdown_lines(text: str, width: int) -> list:
+    """将 markdown 文本渲染为 AnsiLine 列表（与流式内容渲染同管线）。
+
+    历史消息回放（/load、--load、/editmsg、/deitmsg 重渲染）按 ChatView
+    语义渲染 assistant 的推理/回答——与流式生成时的 ``AnsiStreamRenderer``
+    完全一致（markdown 标题/代码块/表格等格式化、TOC）。
+    """
+    from src.renderer.ansi import AnsiStreamRenderer
+    renderer = AnsiStreamRenderer(width=max(width, 20))
+    try:
+        renderer.write(text)
+    finally:
+        renderer.close()
+    return renderer.take_lines()
+
+
+def _append_assistant_rich(model, msg) -> None:
+    """assistant 历史消息按 ChatView 语义分块渲染（reasoning/content/tool）。
+
+    用户需求（/editmsg 等历史回放）：思考/回答/工具调用显示与消息区
+    （ChatView）渲染一致——不再回退 ``  │ 原文本`` 纯文本行：
+      - reasoning_content → reasoning 块（💭 思考 角色头 + markdown 行）；
+      - content → content 块（markdown 渲染，对齐 Claude Code 无头回答）；
+      - tool_calls → 工具块（ToolCard 卡片，open_tool_box 后续 tool 消息
+        经 ``_append_tool_rich`` 追加输出并关闭）。
+    """
+    from src.tui.pipeline.message_display import _content_str
+    reasoning = _content_str(msg.get("reasoning_content", "")).strip()
+    content = _content_str(msg.get("content", "")).strip()
+    tool_calls = msg.get("tool_calls") or []
+
+    width = getattr(model, "width", 80)
+    if reasoning:
+        lines = _render_markdown_lines(reasoning, width)
+        if lines:
+            model.append_committed("reasoning", lines)
+    if content:
+        lines = _render_markdown_lines(content, width)
+        if lines:
+            model.append_committed("content", lines)
+    for tc in tool_calls:
+        fn = tc.get("function") or {}
+        name = fn.get("name", "") or ""
+        args = fn.get("arguments", "") or ""
+        # 参数摘要转单行（工具卡标题行内；tool_card_lines 会按宽度截断，
+        # 此处仅防御性限制超长参数 JSON 的标题构建成本）
+        from src.tui.app._model_helpers import _single_line_detail
+        detail = _single_line_detail(str(args))
+        if len(detail) > 200:
+            detail = detail[:200] + "..."
+        model.open_tool_box(tc.get("id") or "", name, detail)
+
+
+def _append_tool_rich(model, msg) -> None:
+    """tool 历史消息：追加工具输出并关闭对应工具块（ToolCard 完整显示）。"""
+    from src.tui.pipeline.message_display import _content_str
+    tool_call_id = msg.get("tool_call_id") or ""
+    content = _content_str(msg.get("content", ""))
+    if content.strip():
+        model.append_tool_output(tool_call_id, content)
+    # 历史回放中的工具调用均已执行完成
+    model.close_tool_box(tool_call_id, True)
+
+
 def _do_display_messages(model, cmd) -> None:
+    """历史消息回放：按 ChatView 语义渲染（user/assistant/tool 角色）。
+
+    用户需求（/editmsg 编辑后重渲染等历史显示）：与消息区既有渲染一致——
+      - user：``> 内容``（build_user_line）；
+      - assistant：reasoning → 💭 思考块 / content → markdown 回答块 /
+        tool_calls → 工具卡片；
+      - tool：工具输出追加到对应工具卡片并关闭；
+      - 其他角色（other）：回退纯文本（防御性，保持既有行为）。
+    """
     from src.tui.pipeline.message_display import _content_str
     messages = cmd.messages or []
     for msg in messages:
         role = msg.get("role", "")
-        content = _content_str(msg.get("content", ""))
-        if not content.strip():
-            # content 为 None/空（如纯工具调用的 assistant 消息无文本）：
-            # 跳过不渲染，避免 /load 回放时出现 n 行 "None"/空行。
-            continue
         if role == "user":
+            content = _content_str(msg.get("content", ""))
+            if not content.strip():
+                # content 为 None/空：跳过不渲染，避免 /load 回放时出现
+                # n 行 "None"/空行。
+                continue
             model.append_committed("user", build_user_line(content))
-        elif role in ("assistant", "other"):
+        elif role == "assistant":
+            _append_assistant_rich(model, msg)
+        elif role == "tool":
+            _append_tool_rich(model, msg)
+        elif role in ("other",):
+            content = _content_str(msg.get("content", ""))
+            if not content.strip():
+                continue
             model.append_committed("write_line", build_assistant_line(content))
+    # 防御：回放结束仍有未关闭工具块（tool 结果消息缺失的异常会话）——
+    # 强制以完成态关闭，避免工具卡片残留 running（● 呼吸）状态。
+    for tool_id in list(getattr(model, "tool_boxes", {}).keys()):
+        model.close_tool_box(tool_id, True)
     # 无消息间分隔线（对齐 Claude Code：消息间仅空行分隔，由卡片尾空行承担）
 
 

@@ -13,6 +13,64 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+class TestEditmsgPluginSyncExecution:
+    """编辑逻辑同步直接执行（不用 run_in_executor 线程池）。
+
+    用户需求：/editmsg 按回车确认后编辑立即生效——MessageEditor 在主流程
+    同步直接调用（render 线程独立驱动 UserSelectPopup 写 done），不依赖
+    线程池调度返回。
+    """
+
+    @pytest.mark.asyncio
+    async def test_message_editor_called_synchronously(self):
+        """MessageEditor.edit_current_messages 被直接调用（非 run_in_executor）。"""
+        from src.core.commands.plugins.editmsg_plugin import EditmsgPlugin
+
+        plugin = EditmsgPlugin()
+        chat_ui = MagicMock()
+        input_inst = MagicMock()
+        chat_ui.get_input.return_value = input_inst
+        loop = MagicMock()
+        loop._chat_ui = chat_ui
+        loop._monitor = MagicMock()
+        plugin._loop = loop
+
+        msgs = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "第一条"},
+        ]
+        session = MagicMock()
+        session.messages = msgs
+        session.captured_prefill = ""
+        session.sync_retry_pending = MagicMock()
+        session.reset_retry_pending_for_edit = MagicMock()
+
+        ctx = MagicMock()
+        ctx.session = session
+        ctx.state = {"model": "deepseek", "retry": False, "prefill": ""}
+
+        with patch(
+            "src.tui.pipeline.message_editor.MessageEditor",
+        ) as mock_editor_cls:
+            mock_editor = MagicMock()
+            mock_editor.edit_current_messages.return_value = True
+            mock_editor_cls.return_value = mock_editor
+
+            with patch(
+                "src.app_loop._non_system_messages",
+                return_value=msgs[1:],
+            ):
+                result = await plugin.async_execute(ctx)
+
+        assert result is True
+        # edit_current_messages 被直接调用（mock 实例方法调用即证明同步路径，
+        # 若走 run_in_executor 则调用的是 executor 提交而非直接方法调用）
+        mock_editor.edit_current_messages.assert_called_once_with(
+            session.agent, {"model": "deepseek", "retry": False, "prefill": ""},
+            "edit",
+        )
+
+
 class TestEditmsgPluginNeedsRerender:
     """测试 editmsg_plugin.py 中 needs_rerender 判断逻辑。
 
