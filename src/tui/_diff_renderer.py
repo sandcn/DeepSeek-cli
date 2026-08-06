@@ -460,7 +460,7 @@ def render_diff_to_ansi(path: str, old_content: str, new_content: str) -> str:
       - render_diff_to_ansi: 返回字符串，无锁，无副作用，纯函数
     """
     old_norm = old_content.replace('\r\n', '\n') if old_content else ""
-    new_norm = new_content.replace('\r\n', '\n')
+    new_norm = new_content.replace('\r\n', '\n') if new_content else ""
     old_lines = old_norm.splitlines(keepends=False)
     new_lines = new_norm.splitlines(keepends=False)
 
@@ -512,7 +512,7 @@ def show_file_diff(path, old_content, new_content, output_target: Optional["IOut
         _diff_count==0 时强制清除（认为异常/取消导致残留）。
     """
     old_norm = old_content.replace('\r\n', '\n') if old_content else ""
-    new_norm = new_content.replace('\r\n', '\n')
+    new_norm = new_content.replace('\r\n', '\n') if new_content else ""
 
     old_lines = old_norm.splitlines(keepends=False)
     new_lines = new_norm.splitlines(keepends=False)

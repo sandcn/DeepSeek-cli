@@ -677,8 +677,23 @@ class Reconciler:
         if not same:
             return False
         # ★ children 值相等比较（React children 属于 props——本框架独立字段）
+        # ★ P2（PERF 修复，review 方向）：快速路径——先比较长度（O(1)）+
+        #   逐项 ``is`` 引用比较（O(n) 引用级，免深度递归）。Element 为
+        #   frozen 不可变：子元素同引用即内容相等（可安全短路）；引用不同
+        #   时回退 ``==`` 值比较（深度递归，行为与原逻辑完全一致）。常规
+        #   父组件每帧 ``h()`` 重建子元素时引用恒不同 → 快速路径 miss 回退
+        #   值比较（仅新增 O(n) is 探测开销，零行为变化）；引用稳定场景
+        #   （组件持有缓存子元素）大子树免每帧深度递归。
         try:
-            same = element.children == getattr(fiber, "_last_memo_children", ())
+            last_children = getattr(fiber, "_last_memo_children", ())
+            if len(element.children) == len(last_children):
+                same = all(
+                    a is b for a, b in zip(element.children, last_children)
+                )
+                if not same:
+                    same = element.children == last_children
+            else:
+                same = False
         except Exception:
             same = False
         if not same:

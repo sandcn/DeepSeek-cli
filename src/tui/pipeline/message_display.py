@@ -139,6 +139,10 @@ def display_messages(
         speed: 保留参数（兼容旧接口，当前忽略）。
     """
     for msg in data:
+        # ★ 修复（P3）：data 元素可能非 dict（str 等异常数据）——
+        #   msg.get 抛 AttributeError；非 dict 跳过（安全处理）。
+        if not isinstance(msg, dict):
+            continue
         role = msg.get("role", "")
         cfg = _DEFAULT_ROLE_MAP.get(role)
         icon = cfg.icon if cfg else "\u00b7"

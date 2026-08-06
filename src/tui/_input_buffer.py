@@ -207,17 +207,24 @@ class InputBufferEditor:
         with self._lock:
             return self._buffer
 
-    def reset(self) -> None:
+    def reset(self, clear_queue: bool = True) -> None:
         """清空所有流式输入状态（缓冲区、提交文本、历史导航、搜索状态）。
 
         （中断标志 _interrupted 由 InputDispatcher.reset() 一并清除，
         本方法仅负责缓冲/队列状态。）
+
+        Args:
+            clear_queue: 是否同时清空未消费排队输入（``_submitted_text`` /
+                ``_input_ready``）。False 用于特殊按键分发路径（非 editmsg/
+                retry 的 action）——保留用户 Enter 提交后尚未被编排器消费的
+                输入（P2 修复，2026-08-07）。
         """
         with self._lock:
             self._buffer = ""
             self._cursor_pos = 0
-            self._submitted_text = ""
-            self._input_ready.clear()
+            if clear_queue:
+                self._submitted_text = ""
+                self._input_ready.clear()
             self._history_idx = -1
             self._saved_input_before_history = ""
             self._search_query = ""
@@ -439,10 +446,18 @@ class InputBufferEditor:
                 self._input_ready.set()
                 if self._history_idx >= 0:
                     self._history_idx = -1
-                if append_history is not None:
-                    append_history(text)
-                else:
-                    self._append_history_locked(text)
+        # P2（2026-08-07）：历史追加移出锁——``_append_history_locked`` 内部
+        # ``_HISTORY_DISK_WRITER.submit`` 获取 ``_submit_lock``；flush 并发
+        # 持 ``_submit_lock`` 做同步文件 I/O 时，锁内 submit 阻塞 render 线程
+        # （所有缓冲编辑冻结）。移出后 submit 阻塞不再影响 ``_lock``。
+        # 线程安全说明：``_history`` 内存更新（``_append_history_locked``
+        # 内部）仅 render 线程路径访问（_up/_down/search/load_history 均为
+        # render/装配期调用），无跨线程竞态。
+        if not applied_search:
+            if append_history is not None:
+                append_history(text)
+            else:
+                self._append_history_locked(text)
         if applied_search:
             self._echo(text)
         else:

@@ -528,6 +528,10 @@ def to_ansi_fg(color: ColorValue) -> str:
         return color.to_ansi_fg()
     if isinstance(color, Color256):
         return f"\033[38;5;{color.value}m"
+    if not isinstance(color, int):
+        # ★ 修复（P3）：非 int 输入（None/str 等）返回空串——修复前
+        #   max(0, min(255, color)) 抛 TypeError（渲染中断）。
+        return ""
     # int: 256 色号（P3-17：钳制到 [0, 255]，容忍非法输入不生成越界 ANSI 序列）
     return f"\033[38;5;{max(0, min(255, color))}m"
 
@@ -549,6 +553,10 @@ def to_ansi_bg(color: ColorValue) -> str:
         return color.to_ansi_bg()
     if isinstance(color, Color256):
         return f"\033[48;5;{color.value}m"
+    if not isinstance(color, int):
+        # ★ 修复（P3）：非 int 输入（None/str 等）返回空串——修复前
+        #   max(0, min(255, color)) 抛 TypeError（渲染中断）。
+        return ""
     # int: 256 色号（P3-17：钳制到 [0, 255]，容忍非法输入不生成越界 ANSI 序列）
     return f"\033[48;5;{max(0, min(255, color))}m"
 

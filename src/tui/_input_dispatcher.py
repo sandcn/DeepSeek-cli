@@ -277,7 +277,11 @@ class InputDispatcher:
                 self.reset()
                 self._buffer_editor.set_buffer(result)
             else:
-                self.reset()
+                # P2（2026-08-07）：非 editmsg/retry action（vim/switch_model/
+                # toggle_theme/empty_mode）不清空未消费排队输入——用户 Enter
+                # 提交后、编排器消费前触发此类 action，reset 清空
+                # _submitted_text/_input_ready 会丢弃首次提交文本。
+                self.reset(clear_queue=False)
                 self._buffer_editor.handle_chars(result)
         # ★ review 方向：仅回调返回非 None（有实际结果）时才提交——回调返回
         #   None（异常/插件返回"无操作"）时不应意外提交当前缓冲文本。当前实际
@@ -337,8 +341,8 @@ class InputDispatcher:
                 self._io.record_eof()
                 return False
             self._io.reset_eof()
-        except (ValueError, OSError, TypeError):
-            self._io.mark_fd_error()
+        except (ValueError, OSError, TypeError) as exc:
+            self._io.mark_fd_error(exc)
             return False
 
         first_byte = raw[0]
@@ -419,7 +423,7 @@ class InputDispatcher:
                         "enter", "page_up", "page_down",
                     ):
                         self._dispatch_key_event(event)
-                    # unknown / csi_u → 静默忽略
+                    # unknown 静默忽略；csi_u 进分发 debug no-op（router 可消费）
                 elif event.kind == "interrupt":
                     self._do_interrupt()
                 elif event.kind == "ctrl_key":
@@ -828,10 +832,17 @@ class InputDispatcher:
     # 缓冲重置辅助
     # ═══════════════════════════════════════════════════════
 
-    def reset(self) -> None:
-        """清空缓冲/队列状态 + 清除中断标志（与 _input.py 原 reset 语义等价）。"""
+    def reset(self, clear_queue: bool = True) -> None:
+        """清空缓冲/队列状态 + 清除中断标志（与 _input.py 原 reset 语义等价）。
+
+        Args:
+            clear_queue: 是否同时清空未消费排队输入（``_submitted_text`` /
+                ``_input_ready``，委托 ``_buffer_editor.reset``）。False 用于
+                特殊按键分发路径（非 editmsg/retry 的 action）——保留用户
+                Enter 提交后尚未被编排器消费的输入（P2 修复，2026-08-07）。
+        """
         self._io.clear_interrupted()
-        self._buffer_editor.reset()
+        self._buffer_editor.reset(clear_queue=clear_queue)
 
     def reset_and_echo(self) -> None:
         """重置缓冲区并回显空字符串（清空输入行视觉）。"""

@@ -1,6 +1,6 @@
 """tabs — React Ink 风格标签页组件（Tabs）。
 
-标签行 + 内容区：左右键切换标签、enter/space 也可切换。标签行渲染为
+标签行 + 内容区：左右键切换标签。标签行渲染为
 Row（水平排列），内容区渲染为 Column（垂直堆叠）。
 
 标签形态：:
@@ -126,7 +126,11 @@ def Tabs(props: dict) -> Element:
         elif event.kind in ("arrow_right", "arrow_down"):
             new = (cur + 1) % len(tabs) if len(tabs) > 1 else cur
         elif event.kind in ("space", "enter") or (event.kind == "char" and event.char == " "):
-            new = cur
+            # ★ P2（review）：space/enter **不切换**（仅箭头键切换，与模块
+            #   docstring 语义修正一致），但**消费事件**——修复前 ``new = cur``
+            #   使 ``new != cur`` 恒 False → 落入 return False 放行父级（事件
+            #   未消费，与「enter/space 可切换」表述矛盾，且造成父级重复响应）。
+            return True
         else:
             return False
         if new != cur and active_key is None and len(tabs) > 1:

@@ -59,6 +59,13 @@ from src.tui._subagent_render import (
     build_agent_lines as _build_agent_lines_impl,
     render_frame as _render_frame_impl,
 )
+# 兼容 re-export（docstring 声明 + patch 路径兼容，与 app/status_bar 同惯例）：
+#   _format_duration / _format_tokens / _format_speed
+from src.tui._format import (
+    format_duration as _format_duration,
+    format_tokens as _format_tokens,
+    format_speed as _format_speed,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -132,6 +139,9 @@ class SubAgentPanelController:
         # 上一推送帧（变更检测，避免空转推送）
         self._last_pushed_frame: List[Line] | None = None
         self._active: bool = False
+        # P3：ensure_active 订阅原子性锁——active 检查与订阅合并为原子操作，
+        #   防止并发调用重复订阅（修复前 ``if self._active: return`` 非原子）。
+        self._active_lock = threading.Lock()
         self._cb_registered: bool = False
         self._chat_ui: Any = None
         self._push_cmd_cb: Callable[[RenderCmd], None] | None = push_cmd
@@ -157,28 +167,32 @@ class SubAgentPanelController:
     # ── 生命周期 ────────────────────────────────────────
 
     def ensure_active(self) -> None:
-        if self._active:
-            return
-        from .events import DisplayEventBus
-        bus = DisplayEventBus.get_default()
-        # P3-11：订阅循环 try/except 包裹并统一回滚已订阅项（与 stop() 防御
-        # 风格对齐）——任一订阅失败时回滚已订阅项，保持订阅状态一致。
-        subscribed: list[tuple[type, Callable]] = []
-        try:
-            for ev_type, method_name in self._SUBSCRIPTIONS:
-                handler = getattr(self, method_name)
-                bus.subscribe(handler, event_type=ev_type)
-                subscribed.append((ev_type, handler))
-            self._register_panel_refresh()
-        except Exception:
-            # 回滚已订阅项（尽力而为，日志不抛）
-            for ev_type, handler in subscribed:
-                try:
-                    bus.unsubscribe(handler, event_type=ev_type)
-                except Exception:
-                    _logger.debug("ensure_active 回滚取消订阅异常", exc_info=True)
-            raise
-        self._active = True
+        # P3：加锁保证 active 检查与订阅原子——修复前 ``if self._active:
+        # return`` 非原子，并发调用可能同时通过检查重复订阅（同一 handler
+        # 重复注册到 bus）。锁内完成全部订阅/回滚/置位。
+        with self._active_lock:
+            if self._active:
+                return
+            from .events import DisplayEventBus
+            bus = DisplayEventBus.get_default()
+            # P3-11：订阅循环 try/except 包裹并统一回滚已订阅项（与 stop() 防御
+            # 风格对齐）——任一订阅失败时回滚已订阅项，保持订阅状态一致。
+            subscribed: list[tuple[type, Callable]] = []
+            try:
+                for ev_type, method_name in self._SUBSCRIPTIONS:
+                    handler = getattr(self, method_name)
+                    bus.subscribe(handler, event_type=ev_type)
+                    subscribed.append((ev_type, handler))
+                self._register_panel_refresh()
+            except Exception:
+                # 回滚已订阅项（尽力而为，日志不抛）
+                for ev_type, handler in subscribed:
+                    try:
+                        bus.unsubscribe(handler, event_type=ev_type)
+                    except Exception:
+                        _logger.debug("ensure_active 回滚取消订阅异常", exc_info=True)
+                raise
+            self._active = True
 
     def stop(self, clear_panel: bool = True) -> None:
         if not self._active:

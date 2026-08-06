@@ -22,6 +22,11 @@ from typing import Callable, TypeVar
 
 T = TypeVar("T")
 
+#: 路径补全候选项数量上限（P3：原魔法数字 20 提升为模块级常量）——
+#: 与补全弹窗可见行数耦合（弹窗最多显示 20 行候选项，超出部分无 UI 消费
+#: 方）；限制避免超大目录下返回过多候选拖慢渲染。
+_MAX_COMPLETION_ITEMS = 20
+
 # ── 简易 TTL 缓存 ────────────────────────────────────────
 
 class _TTLCache:
@@ -452,8 +457,8 @@ class CompletionEngine:
         # 排序：目录优先，然后按字母
         matches.sort(key=lambda p: (not os.path.isdir(p), os.path.basename(p).lower()))
 
-        # 限制数量
-        max_items = 20
+        # 限制数量（模块级常量 _MAX_COMPLETION_ITEMS，与补全弹窗可见行数耦合）
+        max_items = _MAX_COMPLETION_ITEMS
 
         # 找到公共前缀用于计算 start_pos
         if prefix.endswith(os.sep):

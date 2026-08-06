@@ -89,8 +89,6 @@ from src.tui.app._theme import sep_line as _theme_sep_line, time_glow, _S_ACCENT
 # 占位符
 _PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 · Tab 补全"
 _PLACEHOLDER_COMPACT = "/help · Ctrl+N · Tab"
-#: 流式占位符完整显示（保留既有值/外部引用）
-_PLACEHOLDER_STREAMING = "AI 生成中..."
 #: 流式占位符动画基文本（无尾点；BEAUTY-8 动态追加 0-3 个点循环）
 _PLACEHOLDER_STREAMING_BASE = "AI 生成中"
 
@@ -161,7 +159,11 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
         completion_snap = (
             completion.visible,
             id(completion.items),
-            len(completion.items),
+            # ★ 修复（P3）：completion.items 可能为 None（外部注入）——
+            #   len(None) 抛 TypeError；`or []` 防御（id() 不变——id(None)
+            #   安全且稳定；换 `or []` 会让空列表每次新建对象 id 变化 →
+            #   快照缓存恒 miss）。
+            len(completion.items or []),
             completion.selected,
             id(completion.texts),
             len(completion.texts),
@@ -520,7 +522,7 @@ def _input_snap_key(props: dict, width: int, now: float):
         # completion 指纹
         bool(completion is not None and completion.visible),
         id(completion.items) if completion is not None else -1,
-        len(completion.items) if completion is not None else 0,
+        len(completion.items or []) if completion is not None else 0,
         completion.selected if completion is not None else 0,
         id(completion.texts) if completion is not None else -1,
         len(completion.texts) if completion is not None and completion.texts else 0,

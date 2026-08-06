@@ -472,6 +472,13 @@ class AppModel(_ToolOutputMixin):
     def reopen_content(self) -> None:
         """重新打开内容通道（多轮会话新一轮内容前调用）。"""
         self.content_closed = False
+        # ★ 修复（P3）：清理 content_renderer 残留——修复前仅置
+        #   content_closed=False，若 close_content 异常路径残留 renderer
+        #   （close/take_lines 抛异常中断），ensure_content 因 renderer
+        #   非 None 复用旧渲染器（状态错乱/旧流内容混入新一轮）。重开时
+        #   统一置 None，ensure_content 按需新建（与 close_content 语义
+        #   一致，不破坏正常流程）。
+        self.content_renderer = None
 
     def flush_open_channels(self) -> None:
         """停止时固化所有开放通道。"""

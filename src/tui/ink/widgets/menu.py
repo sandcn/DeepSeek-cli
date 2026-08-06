@@ -184,6 +184,11 @@ def Menu(props: dict) -> Element:
                         _logger.debug("Menu onHighlight 回调异常", exc_info=True)
             return True
         if event.kind == "enter":
+            # ★ P2（review）：所有项均不可选（全 header/全 disabled）时 Enter
+            #   不触发 onSelect——修复前顶部 ``_next_selectable`` 找不到可选
+            #   项返回原 cur，enter 仍对不可选项调用 onSelect。
+            if not _is_selectable(items[cur]):
+                return False
             item = items[cur]
             item_on_select = item.get("onSelect")
             if item_on_select is not None:

@@ -164,8 +164,15 @@ class TuiLifecycle:
                                 "stop: unsubscribe %s 失败",
                                 event_type.__name__, exc_info=True,
                             )
-                self._engine.flush()
-                self._engine.stop()
+                try:
+                    self._engine.flush()
+                finally:
+                    # ★ P2（stop 健壮性）：flush 抛异常时仍须停止引擎——修复前
+                    #   flush/stop 在同一个 try 主体顺序执行，flush 异常则
+                    #   engine.stop() 被跳过（渲染线程泄漏）。stop() 移入嵌套
+                    #   finally，flush 异常传播到外层 finally 继续 line_tracker
+                    #   关闭/状态复位。
+                    self._engine.stop()
                 with render_lock:
                     self._safe_close_all(self._rs)
                 # ★ 方向5：bb.teardown 为兼容层 no-op（_BottomBarCompatMixin），
@@ -235,6 +242,10 @@ class TuiLifecycle:
         with self._state_lock:
             if not self._started:
                 return
+            # P3（已知低概率，保守处理）：stop 与 suspend 并发极端时序下（stop
+            # 置 _started=False 后、本方法已通过 _started 检查前）可能对已停止
+            # 引擎调用 suspend——InkSession 侧幂等容忍，暂不加状态守卫（改动
+            # 风险高于收益），保留注释说明。
             self._engine.suspend()
 
     def resume(self) -> None:
@@ -250,6 +261,10 @@ class TuiLifecycle:
                 return
             if self._engine.is_render_running():
                 return
+            # P3（已知低概率，保守处理）：stop 与 resume 并发极端时序下（stop
+            # 置 _started=False 后、本方法已通过 _started 检查前）可能对已停止
+            # 引擎调用 resume——InkSession 侧幂等容忍，暂不加状态守卫（改动
+            # 风险高于收益），保留注释说明。
             self._engine.resume()
 
     @property

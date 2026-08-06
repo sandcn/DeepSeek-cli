@@ -39,7 +39,11 @@ def _desc_column_width(width: int) -> int:
     分栏行总宽溢出终端。
     """
     if int(width) < 20:
-        return max(1, min(int(width) - 1, int(width) // 2))
+        # P3（2026-08-07）：极窄终端右栏超宽修复——width <= 1 时原
+        # ``max(1, ...)`` 返回 1（右栏等于终端总宽甚至超宽）。下限钳制到
+        # ``max(0, ...)``：右栏宽度不超可用宽度（≤ width-1），width<=1 时
+        # 右栏为 0（左栏占满，不溢出）。
+        return max(0, min(int(width) - 1, int(width) // 2))
     return max(8, min(int(width) // 3, 40, int(width) - 12))
 
 

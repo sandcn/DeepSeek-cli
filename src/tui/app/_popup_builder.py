@@ -166,6 +166,12 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
         sel = max(0, min(int(selected), len(items) - 1))
     except (TypeError, ValueError):
         sel = 0
+    # ★ 修复（P2）：归一化后回写 completion.selected——``_completion_height``
+    #   （_input_metrics）直接读原始 ``completion.selected``（split_desc 模式
+    #   下 selected 被外部注入 None/str 时 min(selected, ...) 抛 TypeError）；
+    #   回写后高度计算与绘制统一用归一化 int（同帧后续 _completion_height
+    #   调用及外部 _cursor 定位均读到安全值）。
+    completion.selected = sel
     match_prefix = completion.match_prefix or ""
     # ★ 缓存键稳定性（PERF-7 同族，BUG-73）：types 为空列表时用模块级空元组
     #   （恒同对象）——``completion.types or [""] * len(items)`` 每次创建新
@@ -177,7 +183,7 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
     #   ``types_disp[i]`` 对任意 i < len(items) 不越界（修复前 types 非空但
     #   长度 < len(items) 时越界 IndexError）。不进缓存键（键用稳定空元组 id）。
     types_disp = list(types) + [""] * (len(items) - len(types))
-    title = completion.title
+    title = completion.title or ""
     total = len(completion.texts) if completion.texts else len(items)
     # ★ 缓存键稳定性（PERF-7）：descriptions 为空时用模块级空元组（恒同对象）
     #   ——``[] or []`` 每次调用创建新空列表，`id(descs)` 每帧变化 → 弹窗缓存

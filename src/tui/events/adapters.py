@@ -66,6 +66,12 @@ class DisplayEventAdapter:
     #   不同——update_status 为状态栏文本、update_agent_status 为 Agent 状态）。
     #   适配器无生产调用方（仅 events/__init__ re-export），subscribe_to 经
     #   hasattr 检查跳过无对应方法的 display，补齐不破坏现有行为。
+    #   ★ 修复（P3，ToolOutputChunkEvent 不映射）：该事件类型存在，但
+    #   BaseDisplay 无「工具输出块」方法（无 tool_output/tool_chunk 接口，
+    #   已 search 确认）——映射不适用（hasattr 检查会静默跳过，补齐为死
+    #   映射）。TUI 侧经 ``_dispatcher._on_tool_output`` 直连消费
+    #   （EventBus→RenderCmd 管线），WebUI 侧经 ``webui.bridge._on_tool_output``
+    #   直连订阅。文档声明保留。
     _EVENT_METHOD_MAP: Dict[Type[DisplayEvent], str] = {
         ToolParsingEvent: "tool_parsing",
         ToolStartedEvent: "tool_start",

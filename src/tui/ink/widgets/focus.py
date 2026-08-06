@@ -30,12 +30,16 @@ React Ink 生态中多个可聚焦组件（如多个 ``TextInput``/``SelectInput
 
 from __future__ import annotations
 
+import logging
+
 from ..element import TEXT, Element, h
 from ..hooks import use_state, use_input
 from ..widgets.layout import Column
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_children/_call 原本地定义（与
 #   layout/_panel/checkbox 等逐字重复）——收敛至 _widget_common 单一真源。
 from ._widget_common import _children, _call
+
+_logger = logging.getLogger(__name__)
 
 __all__ = ["FocusGroup", "Key"]
 
@@ -134,6 +138,15 @@ def Key(props: dict) -> Element:
 
     # 子组件注入 focus（激活状态）
     if children:
+        if len(children) > 1:
+            # ★ P2（review）：Key 多子级仅渲染首个（其余静默丢弃）——记录
+            #   warning 便于排查。容器包裹方案会改变渲染形态且 focus 注入目标
+            #   不明确（多个交互子组件无法决定注入对象），选安全方案：保持
+            #   单子级语义 + 告警（修复前完全静默）。
+            _logger.warning(
+                "Key 收到 %d 个子组件，仅渲染首个（focus 注入）；其余被忽略",
+                len(children),
+            )
         first = children[0]
         if isinstance(first, Element):
             cp = dict(first.props)

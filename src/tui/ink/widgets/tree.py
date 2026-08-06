@@ -143,6 +143,25 @@ def _node_key(node: dict) -> str:
     return f"n:{node['label']}"
 
 
+def _tree_content_key(nodes: list[dict], depth: int = 0) -> tuple:
+    """稳定内容键（扁平 str 元组——use_effect deps 逐项按值比较）。
+
+    递归展开归一化节点为 ``(label, open_flag, [children...])`` 扁平序列：
+    同内容（调用方每次渲染新建列表但结构/标签/open 相同）→ 键相同 →
+    展开状态不重置；内容真正变化（label/open/结构）→ 键不同 → 重置
+    （「data 真正变化时重置」语义保持）。open_set 播种只依赖 (label, open)
+    对（``_node_key`` 仅用 label），故扁平序列足以检测播种相关变化。
+    """
+    if depth > _TREE_MAX_DEPTH:
+        return ()
+    out: list[str] = []
+    for node in nodes:
+        out.append(node["label"])
+        out.append("1" if node["open"] else "0")
+        out.extend(_tree_content_key(node["children"], depth + 1))
+    return tuple(out)
+
+
 def Tree(props: dict) -> Element:
     """React Ink 风格树形控件。
 
@@ -178,34 +197,38 @@ def Tree(props: dict) -> Element:
     node_style = props.get("nodeStyle")
     leaf_style = props.get("labelStyle")
 
-    # 展开集合：初始收集 data 中显式 ``open=True`` 的节点
-    initial_open = set()
-
-    def _collect_initial(nodes: list[dict], depth: int = 0):
+    # 展开集合：初始收集 data 中显式 ``open=True`` 的节点（惰性初始化——仅
+    # 首渲染调用一次；修复前每帧重建 ``initial_open = set()`` + O(n) 遍历）。
+    def _collect_initial(nodes: list[dict], depth: int = 0) -> set:
+        """收集 ``open=True`` 节点键集合（use_state 惰性初始化回调，返回新 set）。"""
         if depth > _TREE_MAX_DEPTH:
-            return
+            return set()
+        out: set = set()
         for node in nodes:
             if node["open"]:
-                initial_open.add(_node_key(node))
-            _collect_initial(node["children"], depth + 1)
+                out.add(_node_key(node))
+            out |= _collect_initial(node["children"], depth + 1)
+        return out
 
-    _collect_initial(items)
-    open_set, set_open_set = use_state(initial_open)
+    open_set, set_open_set = use_state(lambda: _collect_initial(items))
     cursor, set_cursor = use_state(initial_index)
     # ★ P3（review 2026-08-06）：open_set 不随 data 变化更新——``use_state``
     #   仅初始化一次，data 变化后新节点默认折叠（旧节点展开状态也可能与
-    #   新 data 不匹配）。对 data **身份变化**增加 ``use_effect`` 重置：data
-    #   引用变化（调用方传入新 list 对象）→ 重新播种 open_set（收集新 data
-    #   的 ``open=True`` 节点）。deps 用 data 原始引用（身份比较）：
-    #   - 调用方保持 data 引用稳定（如 use_memo 缓存）→ 展开状态跨渲染保持；
-    #   - data 每次新引用 → 展开状态重置（data 变化语义）。
-    #   effect 内比较 open_set 与 initial_open 相同则不 set（避免挂载时无谓
-    #   重渲染）。
+    #   新 data 不匹配）。对 data **内容变化**增加 ``use_effect`` 重置：data
+    #   内容真正变化（label/open/结构）→ 重新播种 open_set（收集新 data
+    #   的 ``open=True`` 节点）。deps 用 ``_tree_content_key(items)``（扁平
+    #   str 元组——use_effect deps 逐项按值比较，``_hooks_core._object_is``
+    #   对 str 值比较）：
+    #   - 调用方每次渲染新建同内容列表 → 键相同 → 展开状态跨渲染保持
+    #     （修复前 deps 为 data 原始引用，引用每次变化 → 用户展开状态被重置）；
+    #   - data 内容真正变化 → 键不同 → 展开状态重置（data 变化语义保持）。
+    #   effect 内比较 open_set 与 fresh 相同则不 set（避免挂载时无谓重渲染）。
     def _reset_open_on_data_change():
-        if open_set != initial_open:
-            set_open_set(initial_open)
+        fresh = _collect_initial(items)
+        if open_set != fresh:
+            set_open_set(fresh)
 
-    use_effect(_reset_open_on_data_change, (props.get("data", []),))
+    use_effect(_reset_open_on_data_change, _tree_content_key(items))
     # ★ ref 镜像（同批连续按键修复）：handler 读 ref 而非闭包 state。
     open_ref = use_ref(open_set)
     cursor_ref = use_ref(cursor)

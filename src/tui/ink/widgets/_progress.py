@@ -60,7 +60,11 @@ def ProgressBar(props: dict) -> Element:
         #   填充字符视觉）。
         char = "█"
         char_w = 1
-    filled_w = int(round(width * percent))
+    # ★ P3（review）：银行家舍入修复——``round()`` 对 .5 偶舍入（如
+    #   ``width*percent=12.5`` → round→12 欠一格）；改用 ``int(x+0.5)``
+    #   四舍五入。percent 已归一化 [0,1]、width>=1 → 结果自动钳制在
+    #   [0, width]。
+    filled_w = int(width * percent + 0.5)
     filled_chars = filled_w // char_w
     bar = char * filled_chars + " " * (width - filled_chars * char_w)
     return h(TEXT, {"children": left + bar + right, "style": style})

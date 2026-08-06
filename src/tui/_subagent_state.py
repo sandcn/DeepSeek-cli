@@ -209,7 +209,14 @@ class StateStore:
             if slot is None:
                 return
             tokens_str = f"{tokens}t" if isinstance(tokens, (int, float)) else str(tokens)
-            slot.parse_info = f"{tool_names} {tokens_str} {elapsed:.2f}s"
+            # ★ P2：elapsed 无类型防御——事件字段可能为 None/非数值时
+            #   f"{elapsed:.2f}s" 抛 TypeError（与 update_usage 的防御一致），
+            #   解析失败回退 0.00s。
+            try:
+                elapsed_str = f"{elapsed:.2f}s"
+            except (TypeError, ValueError):
+                elapsed_str = "0.00s"
+            slot.parse_info = f"{tool_names} {tokens_str} {elapsed_str}"
 
     def clear_parse_info(self, label: str) -> None:
         """ParseInfoDoneEvent — 工具解析完成，清除解析摘要和 phase。"""
@@ -261,8 +268,15 @@ class StateStore:
                 slot.live_output_tokens += live_output_tokens
             if output_tokens:
                 slot.output_tokens += output_tokens
-            if speed > 0:
-                slot.last_speed = speed
+            # ★ P2：speed 无类型防御——事件字段可能为 None/非数值时
+            #   ``speed > 0`` 抛 TypeError（与 update_usage 的防御一致），
+            #   无效速度回退 0.0。
+            try:
+                speed_f = float(speed)
+            except (TypeError, ValueError):
+                speed_f = 0.0
+            if speed_f > 0:
+                slot.last_speed = speed_f
 
     # ── 查询辅助 ─────────────────────────────────────
 

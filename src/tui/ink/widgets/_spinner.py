@@ -91,7 +91,9 @@ def Spinner(props: dict) -> Element:
     #   每秒帧数 hz = 1000/interval）。纯渲染期计算，无 threading.Timer。
     hz = 1000.0 / interval
     frame_index = int(time.monotonic() * hz) % len(frames)
-    ch = frames[frame_index % len(frames)]
+    # ★ P3（review）：frame_index 已在上一行取模——修复前重复
+    #   ``% len(frames)``（无行为差异，冗余计算）。
+    ch = frames[frame_index]
     return h(TEXT, {"children": ch, "style": style, "height": 1})
 
 

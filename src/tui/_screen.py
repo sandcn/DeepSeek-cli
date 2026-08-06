@@ -19,6 +19,7 @@ re-export 保持旧导入路径兼容。
 from __future__ import annotations
 
 import io
+import logging
 import os
 import signal
 import struct
@@ -51,6 +52,8 @@ from ._width import (
     _char_width_cache,
     _wcswidth_single,
 )
+
+_logger = logging.getLogger(__name__)
 
 # ★ 标准 React Ink 组件化（2026-08-05）：原 ANSI 颜色常量（_COLOR_*）re-export
 # 已移除——生产渲染统一用 core/style.py Style（fg 色号），色号从
@@ -435,7 +438,9 @@ def process_sigwinch() -> bool:
         try:
             cb(width, height)
         except Exception:
-            pass
+            # P3：修复前裸 ``except Exception: pass`` 吞掉回调异常无痕迹——
+            # 记录 debug 日志（exc_info 保留堆栈）供排障，不中断其他回调。
+            _logger.debug("SIGWINCH 回调异常", exc_info=True)
     return True
 
 

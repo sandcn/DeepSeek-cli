@@ -407,10 +407,20 @@ class _StdoutLineTracker:
                 thread.join(timeout=0.01)
                 continue
             try:
-                self._flush_buffered_lines()
-            except Exception:
-                _logger.warning("_flush_history: 最终刷盘异常", exc_info=True)
-                break
+                # ★ P2（单飞）：同步取批前先置 _flush_in_progress——修复前
+                #   _stop_flush_timer() 时 timer 回调在途可能启动新 worker，与
+                #   _flush_history 并发取批 → 历史行序颠倒。置位后 timer 回调
+                #   只置 _pending_flush（不启动 worker），本同步刷盘完成后复位。
+                with self._buffer_lock:
+                    self._flush_in_progress = True
+                try:
+                    self._flush_buffered_lines()
+                except Exception:
+                    _logger.warning("_flush_history: 最终刷盘异常", exc_info=True)
+                    break
+            finally:
+                with self._buffer_lock:
+                    self._flush_in_progress = False
         else:
             # 循环自然耗尽（20s 上限）：残留行兜底刷盘（尽力而为，不丢行）
             try:

@@ -141,9 +141,9 @@ def _event_key(event) -> dict:
     """
     kind = getattr(event, "kind", "")
     modifier = getattr(event, "modifier", 0) or 0
-    # ★ P1-1（review 方向）：CSI-u modifier 语义——1=None, 2=Shift,
-    #   3=Alt, 4=Shift+Alt, 5=Ctrl, 6=Shift+Ctrl, 7=Alt+Ctrl,
-    #   8=Shift+Alt+Ctrl（bit0=Shift, bit1=Alt, bit2=Ctrl）。
+    # ★ P1-1（review 方向）：CSI-u modifier 编码 = 1 + shift*1 + alt*2 +
+    #   ctrl*4（Shift=1, Alt=2, Ctrl=4 位标志）——2=Shift, 3=Alt,
+    #   4=Shift+Alt, 5=Ctrl, 6=Shift+Ctrl, 7=Alt+Ctrl, 8=Shift+Alt+Ctrl。
     #   修复前 ``meta: modifier in (3, 6)`` 把 6（Shift+Ctrl，无 Alt）误判为
     #   meta 且漏 4/7/8；``ctrl`` 漏 7/8；``shift`` 漏 7/8。现按位语义：
     #   meta=含 Alt 位（3,4,7,8）、ctrl=含 Ctrl 位（5,6,7,8）、

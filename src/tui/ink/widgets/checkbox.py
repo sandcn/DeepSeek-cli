@@ -57,7 +57,10 @@ def Checkbox(props: dict) -> Element:
     focus = bool(props.get("focus", True))
     label = props.get("label")
     label_style = props.get("labelStyle")
-    checked_style = props.get("checkedStyle") or _CHECKBOX_CHECKED
+    # ★ P3（review）：checkedStyle 用 ``or`` 判断——显式空 Style()（falsy）
+    #   被默认样式替换。改 ``is not None`` 判断：显式传入空样式按原样保留。
+    checked_style_prop = props.get("checkedStyle")
+    checked_style = checked_style_prop if checked_style_prop is not None else _CHECKBOX_CHECKED
     unchecked_style = props.get("uncheckedStyle") or _CHECKBOX_UNCHECKED
 
     internal_checked, set_internal_checked = use_state(default_checked)

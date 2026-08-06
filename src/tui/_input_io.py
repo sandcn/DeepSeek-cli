@@ -23,6 +23,7 @@ InputIO 持有 fd 与粘贴退避状态；``_interrupted`` 事件仍由 Input �
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import select
@@ -205,8 +206,22 @@ class InputIO:
         """读取成功后清零 EOF 计数。"""
         self._eof_count = 0
 
-    def mark_fd_error(self) -> None:
-        """os.read 异常时将 fd 标记为不可用。"""
+    def mark_fd_error(self, exc: BaseException | None = None) -> None:
+        """os.read 异常时将 fd 标记为不可用。
+
+        P3（2026-08-07）：区分瞬时错误与致命错误——EINTR（信号中断）/
+        EWOULDBLOCK / EAGAIN（非阻塞无数据）为瞬时错误，仅记 debug 日志
+        并继续（不置 error）——修复前任何 os.read 异常都置
+        ``_fd_status="error"``，``can_read()`` 恒 False，I/O 永久停止。
+        其他异常（EBADF 等致命错误）仍置 error。
+
+        Args:
+            exc: 触发标记的异常对象（含 errno）；None 表示无异常信息。
+        """
+        errno_val = getattr(exc, "errno", None) if exc is not None else None
+        if errno_val in (errno.EINTR, errno.EWOULDBLOCK, errno.EAGAIN):
+            _logger.debug("os.read 瞬时错误 (errno=%s)，继续读取", errno_val)
+            return
         self._fd_status = "error"
 
     # ═══════════════════════════════════════════════════════
@@ -303,6 +318,11 @@ class InputIO:
             except (ValueError, OSError, TypeError, AttributeError):
                 return first_chars
             if not has_more:
+                # P3（2026-08-07）：非粘贴路径（快速路径 select 无数据）→
+                # 粘贴边界结束——清空跨调用残留的截断 UTF-8 尾部，避免与
+                # 下次独立粘贴的首字节拼接（两个粘贴边界混淆，修复前残留
+                # 在快速路径帧中持续保留）。
+                self._paste_partial = b""
                 return first_chars
             # 有数据，重置计数器并进入粘贴检测
             self._paste_skip_counter = 0

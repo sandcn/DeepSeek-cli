@@ -33,7 +33,11 @@ __all__ = ["InputParser", "KeyEvent"]
 _CSI_READ_TIMEOUT = 0.01     # CSI 参数读取超时（秒）
 _SS3_READ_TIMEOUT = 0.01     # SS3 读取超时（秒）
 _UTF8_READ_TIMEOUT = 0.05    # UTF-8 多字节序列读取超时（秒）
-_ESC_FOLLOWUP_TIMEOUT = 0.05  # ESC 后续字节等待超时（秒）
+# P2（2026-08-07）：ESC 后续字节等待超时 0.05 → 0.01s——``_parse_escape_sequence``
+# 在 render 线程同步执行 select.select 等待 ESC 后续字节，每次按 Esc 渲染帧
+# 冻结最长 50ms；降至 0.01s（与 _CSI_READ_TIMEOUT/_SS3_READ_TIMEOUT 一致），
+# 不改变解析逻辑（0.01s 内 ESC 后续字节正常到达；超时仍按纯 Esc 处理）。
+_ESC_FOLLOWUP_TIMEOUT = 0.01
 _ALT_BACKSPACE_DRAIN_TIMEOUT = 0.01  # Alt+Backspace 后续字节排空检测超时（秒）
 # ★ P1-1（review 2026-08-06）：CSI 序列最大字节数上限——正常 CSI 序列
 #   （方向键/Home/End/CSI u）参数极短（<16 字节）；异常/恶意输入流（fd
@@ -173,6 +177,14 @@ class InputParser:
                 modifier=3,
                 raw=b"\x1b" + bytes([next_byte]),
             )
+        # P3（2026-08-07）：ESC 后跟高位字节（≥0x80，UTF-8 多字节序列首字节，
+        # 如 Alt+中文）→ unknown 而非 interrupt——修复前一律返回 interrupt，
+        # Alt+中文等 ESC+UTF-8 多字节首字节误触发中断。本函数为单字节解析，
+        # 无法构成完整 UTF-8 字符，保守返回 unknown（静默丢弃，不误触发
+        # 中断）。0x7f 已在上方 Alt+Backspace 分支处理，此处 next_byte 仅
+        # 可能 < 0x20 或 ≥ 0x80。
+        if next_byte >= 0x80:
+            return KeyEvent(kind="unknown", raw=b"\x1b" + bytes([next_byte]))
         return KeyEvent(kind="interrupt", raw=b"\x1b" + bytes([next_byte]))
 
     @staticmethod

@@ -31,12 +31,5 @@ class ChatConfig(ConfigBase):
 
     # ── 主 Agent 标识 ──────────────────────────────────
     main_label: str = "assistant"      # 主 Agent 的 DisplayEvent.label
-    main_source: str = "agent"         # 主 Agent 的 DisplayEvent.source
-
-    # ── 思考标题 ──────────────────────────────────────
-    thinking_header: str = "\n  ─ 思考 ─\n"
-
-    # ── 截断参数 ──────────────────────────────────────
-    max_output_len: int = 10000        # 工具输出最大长度（字符）
 
 

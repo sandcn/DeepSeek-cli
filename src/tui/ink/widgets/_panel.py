@@ -83,7 +83,9 @@ def Panel(props: dict) -> Element:
     border_color = props.get("borderColor")
     # ★ P3（review）：borderStyle 透传——dict 自定义边框对象原样透传（不
     #   str() 化——修复前 ``str(dict)`` 生成 ``"{'topLeft': ...}"`` 无效变体，
-    #   ``_border_chars`` 无法识别，dict 边框被忽略）；字符串变体保持 str()。
+    #   ``_border_chars`` 无法识别，dict 边框被忽略）；Style 对象原样透传
+    #   （修复前 ``str(Style(fg=5))`` 把边框前景色丢失为字符串——``_border_style``
+    #   无法识别回退默认暗青）；字符串变体保持 str()。
     bs = props.get("borderStyle", "single")
     # 标题/状态文本默认样式 = 边框色（解析后）；边框绘制经 BOX borderColor
     # 透传（components._border_style 消费）
@@ -109,7 +111,7 @@ def Panel(props: dict) -> Element:
     return h(BOX, {
         "border": 1,
         "width": width,
-        "borderStyle": bs if isinstance(bs, dict) else str(bs),
+        "borderStyle": bs if isinstance(bs, (dict, Style)) else str(bs),
         "borderColor": border_color,
         "paddingLeft": pad,
         "paddingRight": pad,

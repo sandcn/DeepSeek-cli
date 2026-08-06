@@ -656,6 +656,12 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     if parent_avail_h is not None:
         for child in children:
             child._parent_avail_h = parent_avail_h
+    else:
+        # ★ P1 修复（review 方向）：容器从「显式数字 height」变为「无 height」
+        #   时必须清零子节点 ``_parent_avail_h``——否则残留旧父高度，子节点
+        #   ``height="50%"`` 继续用陈旧父高度解析（状态未重置）。
+        for child in children:
+            child._parent_avail_h = None
     direction = fiber.props.get("flexDirection", "column")
 
     # ── flexDirection="row-reverse"/"column-reverse"（完善 react ink）──

@@ -76,13 +76,23 @@ def Table(props: dict) -> Element:
 
     rows: list[list[str]] = []
     if columns is not None:
-        # ★ P3（review）：表头单元格含 "\n" 时归一化（与数据行一致——防
-        #   行高/对齐破坏）。
-        rows.append([str(c).replace("\n", " ") for c in columns])
+        # ★ P3（review）：columns 可迭代守卫——非可迭代（标量，如
+        #   ``columns=5``）或 str/bytes（逐字符拆列意外语义）时回退空列表
+        #   （不添加表头行）——修复前 ``for c in columns`` 对 columns=5 抛
+        #   TypeError。与 data 同守卫模式。
+        if hasattr(columns, "__iter__") and not isinstance(columns, (str, bytes)):
+            # ★ P3（review）：表头单元格含 "\n" 时归一化（与数据行一致——防
+            #   行高/对齐破坏）。
+            rows.append([str(c).replace("\n", " ") for c in columns])
     for row in data:
         # ★ P3（review）：行级 None 守卫——data 行可能为 None（如
         #   ``[None, ["a"]]``），修复前 ``for c in row`` 抛 TypeError。
         if row is None:
+            continue
+        # ★ P3（review）：行非可迭代（标量行，如 ``data=[123]``）或 str/bytes
+        #   （逐字符拆列意外语义）时跳过该行——修复前 ``for c in row`` 对标量
+        #   抛 TypeError。与 data/columns 同守卫模式。
+        if not hasattr(row, "__iter__") or isinstance(row, (str, bytes)):
             continue
         # ★ P3（review）：单元格含 "\n" 时归一化（与 Breadcrumbs/Menu/Tree
         #   一致——防行级 diff 宽度不变量破坏）。

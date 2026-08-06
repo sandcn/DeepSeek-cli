@@ -158,9 +158,17 @@ def useImperativeHandle(ref, factory: Callable, deps: list | tuple | None = None
     if ref is not None:
         eff = _next_hook(EffectHook, None, None, None, None)
         eff.create = _make_imperative_cleanup(hook)
-        if memo_changed:
-            eff.deps = (id(ref), id(hook), id(hook.value))
-            eff.last_deps = None
+        # ★ P1 修复（review 方向）：deps **无条件**设置——修复前仅
+        #   ``memo_changed`` 分支写 eff.deps：ref 从 None → 非 None 且用户
+        #   deps 未变（memo_changed=False）时 eff.deps 残留 None（ref=None
+        #   渲染期写入）→ ``deps_changed()`` 恒 True（deps=None 表示每帧
+        #   执行）→ 每帧提交期执行 destroy → 渲染期刚写入的句柄被清空。
+        #   现无条件设置 deps（ref/hook/句柄身份三元组），last_deps 仅在
+        #   memo_changed 时重置（None=首次需执行）；memo_changed=False 时
+        #   保留上帧 last_deps（提交后 mark_effect_committed 记录）——
+        #   deps 未变 → deps_changed() False → 不执行 destroy，句柄保留。
+        eff.deps = (id(ref), id(hook), id(hook.value))
+        eff.last_deps = None if memo_changed else getattr(eff, "last_deps", None)
     else:
         eff = _next_hook(EffectHook, None, None, None, None)
         eff.create = None

@@ -37,6 +37,11 @@ def _normalize_items(items) -> list[dict]:
     if not hasattr(items, "__iter__"):
         # 不可迭代：回退空列表（渲染安全）
         return []
+    if isinstance(items, (str, bytes)):
+        # ★ P3（review）：str/bytes 是 Iterable（逐字符）——作为 items 会被
+        #   逐字符拆列（意外语义，与 _table/_normalize_tree 守卫一致）：回退
+        #   空列表（渲染安全）。
+        return []
     out: list[dict] = []
     for item in items:
         if isinstance(item, dict):

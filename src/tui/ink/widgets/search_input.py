@@ -105,6 +105,11 @@ def SearchInput(props: dict) -> Element:
         initial_index = max(0, int(props.get("initialIndex", 0)))
     except (TypeError, ValueError, OverflowError):
         initial_index = 0
+    # ★ P2（review）：initialIndex 钳制到 [0, len(all_items)-1]——修复前仅
+    #   ``max(0, ...)`` 未钳上界：initialIndex 越界进入 cursor state，渲染期
+    #   虽经 ``_clamp_index`` 钳制显示，但 state 保持越界（items 恢复时错乱）。
+    #   空 items 时 ``len-1 == -1``，max(0, ...) 兜底回 0。
+    initial_index = max(0, min(initial_index, len(all_items) - 1))
     prefix = str(props.get("prefix", "❯ "))
 
     query, set_query = use_state("")
@@ -119,8 +124,11 @@ def SearchInput(props: dict) -> Element:
         if not focus:
             return False
         cur_q = query_ref.current
-        cur_cursor = cursor_ref.current
         filtered = _filter_items(all_items, cur_q)
+        # ★ P2（review）：事件期光标钳制到过滤结果长度——修复前
+        #   ``cursor_ref.current`` 未钳制：查询过滤/items 收缩使 filtered 变短
+        #   后越界索引直接进入 arrow_up/down/enter 分支（光标越界状态写入）。
+        cur_cursor = _clamp_index(cursor_ref.current, len(filtered))
         if event.kind == "char":
             ch = event.char
             if not ch:

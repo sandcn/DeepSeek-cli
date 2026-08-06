@@ -28,7 +28,12 @@ def _get_match_prefix(items: list, last_word: str) -> str:
     非路径场景：直接使用最后一个词。
     """
     if items and items[0].item_type in ("file", "dir"):
-        return os.path.basename(last_word) if '/' in last_word else last_word
+        # P2：路径分隔符兼容——原硬编码 ``'/' in last_word`` 对 Windows 路径
+        # （``C:\foo\bar``）无效；统一按 ``os.sep``/``os.altsep`` 判断
+        # （POSIX os.sep='/'；Windows 为 '\\'/'/' 双分隔符）。
+        if os.sep in last_word or (os.altsep and os.altsep in last_word):
+            return os.path.basename(last_word)
+        return last_word
     return last_word
 
 
@@ -53,10 +58,11 @@ def _show_completions_for(bb, engine, text: str) -> bool:
     if not items:
         return False
 
-    # P2-6：与 CompletionEngine.complete 统一为 split(" ")（保留尾随空串）——
-    # split() 丢弃末尾空串，输入 "cd " 时 last_word 取到 "cd" 把 "cd" 当
-    # 前缀显示，而非枚举当前目录。
-    words = text.split(" ")
+    # P2-6：与 CompletionEngine.complete 统一为 re.split(r"\s+")（保留尾随空串）——
+    # 原 split(" ") 对含 \t 输入不切分（cd\t/src 中 last_word 取整段
+    # "cd\t/src"，路径补全失效）；re.split 保留尾随空串（"cd " → ['cd', '']，
+    # 与 split(" ") 空格语义一致，且兼容制表符）。
+    words = re.split(r"\s+", text)
     last_word = words[-1] if words else ""
 
     match_prefix = _get_match_prefix(items, last_word)

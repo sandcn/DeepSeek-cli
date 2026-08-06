@@ -18,6 +18,7 @@ import logging
 
 from src.tui._input_layout import _compute_input_layout, _cursor_visual_from_layout
 from src.tui._input_metrics import _completion_height, _is_search_active
+from ._ansi_utils import visual_width
 
 _logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ def position_cursor(renderer, width: int, fiber) -> None:
             "position_cursor: completion 属性缺失，回退 popup_height=0",
             exc_info=True,
         )
-    max_input = max(1, box.w - len(prompt))
+    max_input = max(1, box.w - visual_width(prompt))
     # ★ PERF-1：优先复用换行布局缓存（每帧至多 1 次换行；缓存写回
     #   dataInputArea 容器 fiber——InputArea 组件内部 _build_lines 写的是
     #   临时 fiber（_input_elements SimpleNamespace），此处是真实 Column
@@ -101,7 +102,7 @@ def position_cursor(renderer, width: int, fiber) -> None:
         row += 1
     # ★ 方向6（光标列右边界 clamp）：超宽输入（vis_col 超终端宽度）时
     #   光标列钳制到终端宽度（修复前 col 越界溢出导致光标定位异常）。
-    col = min(box.x + len(prompt) + vis_col + 1, width)
+    col = min(box.x + visual_width(prompt) + vis_col + 1, width)
     renderer.place_cursor(row, col)
 
 

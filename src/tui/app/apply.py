@@ -304,7 +304,10 @@ def _do_parse_info(model, cmd) -> None:
     if isinstance(cmd.tokens, (int, float)):
         tokens_str = f"{int(cmd.tokens)}t" if math.isfinite(cmd.tokens) else "?"
     else:
-        tokens_str = str(cmd.tokens)
+        # ★ 修复（P3）：tokens 非 int/float 且非 _CLEAR_PARSE_LINE 时
+        #   str(None) 显示 "None"——与 elapsed 归一化同族防御（tokens 为
+        #   None/缺省时回退空串，不中断进度行渲染）。
+        tokens_str = "" if cmd.tokens is None else str(cmd.tokens)
     # ★ review 修复：elapsed 归一化——None/str 等非 float 输入在
     #   f"{cmd.elapsed:.2f}s" 抛 TypeError（被 apply_cmd 吞，进度行缺失）；
     #   float() 归一化失败/非有限值一律回退 0.0（不中断渲染）。
@@ -402,6 +405,10 @@ def _append_assistant_rich(model, msg) -> None:
     # import 置于循环外（函数体内惰性 import，与 _do_parse_info 风格一致）
     from src.core.param_formatter import extract_key_params
     for tc in tool_calls:
+        # ★ 修复（P3）：tool_calls 元素可能非 dict（str 等异常数据）——
+        #   tc.get 抛 AttributeError；非 dict 跳过（安全处理）。
+        if not isinstance(tc, dict):
+            continue
         fn = tc.get("function") or {}
         name = fn.get("name", "") or ""
         # 保留空 dict 形态（{} → extract_key_params 空 dict 分支返回 ""）；
@@ -483,7 +490,13 @@ def _do_bg_bash_count(model, cmd) -> None:
     由 BackgroundTaskChangedEvent → BgBashCountCmd 驱动，更新状态栏
     右侧显示的后台任务数量。
     """
-    model.status.bg_bash_count = max(0, int(cmd.count))
+    # ★ 修复（P3）：cmd.count 可能为 None/非数字字符串（外部注入）——
+    #   int() 抛 ValueError 被 apply_cmd 吞、计数不更新；归一化失败回退 0。
+    try:
+        count = int(cmd.count)
+    except (TypeError, ValueError):
+        count = 0
+    model.status.bg_bash_count = max(0, count)
 
 
 _HANDLERS: dict[int, object] = {

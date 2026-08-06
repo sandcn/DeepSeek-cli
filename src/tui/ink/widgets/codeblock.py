@@ -48,13 +48,18 @@ _DEFAULT_BORDER = ("\u250c", "\u2510", "\u2514", "\u2518", "\u2500", "\u2502")
 
 
 def _repeat(ch: str, n: int) -> str:
-    """将字符重复到目标显示宽度（宽字符按显示宽度换算）。"""
+    """将字符重复到目标显示宽度（宽字符按显示宽度换算）。
+
+    ★ P3（review）：宽字符非偶数倍时补空格——修复前 ``ch * (n // cw)``
+    总宽 < n（如 cw=2、n=3 → ``ch*1`` 仅 2 宽）；补 ``n % cw`` 空格对齐
+    目标宽度。``wcswidth_simple`` 对单字符返回 1（窄）或 2（宽），换算正确。
+    """
     if n <= 0:
         return ""
     cw = wcswidth_simple(ch)
     if cw <= 1:
         return ch * n
-    return ch * max(0, n // cw)
+    return ch * max(0, n // cw) + " " * max(0, n % cw)
 
 
 def _truncate_to_width(text: str, max_w: int) -> str:

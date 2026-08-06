@@ -76,12 +76,17 @@ class TuiInputOrchestrator:
                     "before setting prefill", stale,
                 )
             input_.set_buffer(prefill)
-            # 残留提交检查与恢复（editmsg 竞态兜底修复，2026-08-01）：
+            input_.echo(prefill)
+            # 残留提交检查与恢复（editmsg 竞态兜底修复，2026-08-01；
+            # P2 2026-08-07：检查移至 echo 之后）：
             # 修复 1 已在源头（dispatcher）丢弃被抑制 Enter 后的 LF；此处防御
             # LF 在 set_buffer 之后才被 render 线程处理、_enter() 已提交 prefill
-            # 的残余窗口——再次 get_queued_input() 检查残留提交，若非 None 则
-            # 重新注入恢复（set_buffer 清 submitted/事件，poll loop 从干净状态
-            # 开始；echo 保持在最后，恢复后的缓冲被正确回显）。
+            # 的残余窗口——echo 后再次 get_queued_input() 检查残留提交，若
+            # 非 None 则重新注入恢复（set_buffer 清 submitted/事件，poll loop
+            # 从干净状态开始）。检查放在 echo 之后（P2 竞态窗口修复：修复前
+            # 检查与 echo 之间 render 线程可能处理残留 LF 提交 prefill，导致
+            # prefill 被误当用户输入返回；echo 后检查覆盖该窗口，恢复后的
+            # 缓冲已被回显，无需再次 echo）。
             residual = input_.get_queued_input()
             if residual is not None:
                 _logger.debug(
@@ -89,7 +94,6 @@ class TuiInputOrchestrator:
                     "重新注入恢复", residual,
                 )
                 input_.set_buffer(prefill)
-            input_.echo(prefill)
             _logger.debug("wait_for_user_input: prefill done, entering poll loop")
 
         deadline = None if timeout is None else time.monotonic() + timeout

@@ -227,6 +227,10 @@ def _build_group_card(rows: list[tuple[str, str, List[Line]]],
     """
     if max_lines is None:
         max_lines = _terminal_max_lines()
+    # ★ P2：max_lines <= 0 时直接返回 []——标题行无条件输出 1 行会违反
+    #   「总输出 ≤ max_lines」不变量（标题行自身超出上限）。
+    if max_lines <= 0:
+        return []
     n = len(rows)
     any_running = any(st == "running" for st, _, _ in rows)
     # 标题：●/✔ 子代理 · N（状态图标 + 组卡名；⚡ 图标已随 Claude Code 极简

@@ -457,7 +457,12 @@ class MessageEditor:
 
         st = model.user_select
         action = st.action or "timeout"
-        selected = int(getattr(st, "selected", sel_count - 1))
+        # ★ 修复（P2）：selected 可能为 None（外部注入）——
+        #   int(None) 抛 TypeError；归一化失败回退默认选中最后一条。
+        try:
+            selected = int(getattr(st, "selected", sel_count - 1))
+        except (TypeError, ValueError):
+            selected = sel_count - 1
 
         # 清理弹窗状态 + 请求重绘（底部栏立即恢复正常显示）
         model.user_select = UserSelectState()

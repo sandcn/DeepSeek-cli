@@ -37,12 +37,14 @@ def _measure(fiber, avail_w) -> tuple[int, int]:
     if not isinstance(lines, list):
         # ★ P3（review）防御层：绕过组件函数直接 h("static-lines") 时 lines
         #   可能非 list（生成器）——list() 化防 ``len()`` TypeError（组件函数
-        #   StaticLines 已守卫，此处兜底非常规路径；生成器一次性语义由调用方
-        #   保证）。
+        #   StaticLines 已守卫，此处兜底非常规路径）。list 化结果**写回
+        #   fiber.props**——修复前 _measure/_paint 各自 ``list(lines)`` 消费
+        #   生成器：_paint 拿到已耗尽生成器渲染空行。
         try:
             lines = list(lines)
         except TypeError:
             lines = []
+        fiber.props["lines"] = lines
     return (avail_w, len(lines))
 
 

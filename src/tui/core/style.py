@@ -91,6 +91,14 @@ class Style:
         不在此重复。
         """
         for _name, _value in (("fg", self.fg), ("bg", self.bg)):
+            # ★ 修复（P3）：bool 是 int 子类——``Style(fg=True)`` 经
+            #   isinstance(_value, int) 通过且 True∈[0,255]，to_ansi 生成
+            #   ``\033[38;5;1m``（语义错误）。显式排除 bool（抛 ValueError，
+            #   与 int 越界校验同一异常类型/风格）。
+            if _value is not None and isinstance(_value, bool):
+                raise ValueError(
+                    f"Style.{_name} 不接受 bool 色号（bool 是 int 子类），收到: {_value!r}"
+                )
             if (
                 _value is not None
                 and isinstance(_value, int)

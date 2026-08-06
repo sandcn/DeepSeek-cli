@@ -58,6 +58,15 @@ class DisplayEventBus(metaclass=SingletonMeta):
         既有实例）。注意：直接构造返回既有单例时 Python 仍会调用
         ``__init__``，由 ``__init__`` 幂等保护（已初始化则跳过），
         避免重置单例订阅状态。
+
+        ★ P3-24（并发构造竞态，文档声明）：本路径无锁——直接构造
+        （``DisplayEventBus()``）与 ``get_default()``（DCL）并发首次调用时
+        可能重复创建实例（后写者覆盖，被丢弃实例的订阅状态丢失）。不并入
+        ``_instance_lock`` 的原因：``SingletonMeta.get_default()`` 已持有
+        ``_instance_lock``（threading.Lock 非重入）后经 ``cls()`` 进入本
+        方法，此处再加锁会**死锁**。竞态窗口极小（仅首次构造；生产路径经
+        get_default 已 DCL 保护，直接构造为测试/兼容场景），文档声明为
+        已知边界。
         """
         inst = cls._instance
         if inst is not None:

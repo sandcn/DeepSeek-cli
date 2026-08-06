@@ -45,7 +45,14 @@ def build_border_box(
     lines: list[Line] = []
 
     # ── 顶行：┌─ title ─……─┐ ──
-    head = Line.of("┌─ ", border_style)
+    # ★ P2 修复（review 方向）：width<3 时省略前缀空格/按宽裁剪前缀——
+    #   修复前 ``Line.of("┌─ ")`` 固定占 3 列，width=1/2 时 head 宽超目标
+    #   宽度（且无条件追加右角 ┐ 使行宽进一步超宽）。width>=3 正常路径
+    #   不变（head 前缀 3 列 + title + fill，┐ 恒追加）。
+    if width < 3:
+        head = Line.of("┌─"[:max(0, width)], border_style)
+    else:
+        head = Line.of("┌─ ", border_style)
     # ★ P3（review）：预算下限 1 → 0——标题为空时不该硬塞 1 列（宽度极小
     #   或空标题场景下 budget=1 可能溢出/错位）。
     title_budget = max(0, width - 4)
@@ -54,20 +61,33 @@ def build_border_box(
     fill = max(0, width - 1 - head.width)
     if fill > 0:
         head.append("─" * fill, border_style)
-    head.append("┐", border_style)
+    # ★ P2 修复（review 方向）：仅当行宽未达目标宽度时追加右角 ┐——
+    #   width<3 时前缀已占满（width=2→"┌─"、width=1→"┌"），追加会超宽。
+    if head.width < width:
+        head.append("┐", border_style)
     lines.append(head)
 
     # ── 主体行：│ body（每行前缀左竖线，内容按宽截断） ──
     body_budget = max(0, width - 2)
     for bl in body_lines or []:
-        body_line = Line.of("│ ", border_style)
+        # ★ P2 修复（review 方向）：与顶行同构——width<3 时按宽裁剪前缀
+        #   （width=1 时固定 2 列前缀 ``"│ "`` 会超宽；width>=3 正常路径不变）。
+        if width < 3:
+            body_line = Line.of("│"[:max(0, width)], border_style)
+        else:
+            body_line = Line.of("│ ", border_style)
         for run in truncate_runs(bl.runs, body_budget):
             body_line.append_run(run)
         lines.append(body_line)
 
     # ── 底行：└─ {status} ─……─┘（closed 模式） ──
     if status != "open":
-        tail = Line.of("└─ ", border_style)
+        # ★ P2 修复（review 方向）：与顶行同构——width<3 时省略前缀空格/
+        #   按宽裁剪前缀（底行右角 ┘ 同样仅当行宽未达目标宽度时追加）。
+        if width < 3:
+            tail = Line.of("└─"[:max(0, width)], border_style)
+        else:
+            tail = Line.of("└─ ", border_style)
         # ★ P3（review）：status 文本截断到 width-4（与 title 相同处理）——
         #   修复前超长 status 直接追加导致底行宽度溢出边框。
         status_budget = max(0, width - 4)
@@ -76,7 +96,8 @@ def build_border_box(
         tail_fill = max(0, width - 1 - tail.width)
         if tail_fill > 0:
             tail.append("─" * tail_fill, border_style)
-        tail.append("┘", border_style)
+        if tail.width < width:
+            tail.append("┘", border_style)
         lines.append(tail)
 
     return lines
