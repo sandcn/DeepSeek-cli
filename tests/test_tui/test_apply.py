@@ -976,6 +976,148 @@ class TestDisplayMsgsRichRendering:
         assert any("aaa.txt" in l.plain for l in a_block.lines)
         assert any("bbb.txt" in l.plain for l in b_block.lines)
 
+    def test_tool_card_detail_uses_extracted_key_params(self):
+        """历史回放（/editmsg 重渲染）工具卡标题 detail = 关键参数值（非原始 JSON）。
+
+        用户需求（2026-08-06）：/editmsg 等编辑后重渲染历史消息时，工具卡
+        标题参数与正常执行路径一致——Bash 显示 ``pwd``（extract_key_params
+        提取 ``command`` 值）而非原始 JSON ``{"command": "pwd"}``。
+        """
+        m = _model()
+        m.width = 80
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "assistant", "content": None,
+             "tool_calls": [{
+                 "id": "call_1", "type": "function",
+                 "function": {"name": "bash",
+                              "arguments": "{\"command\": \"pwd\"}"},
+             }]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "/home/lmy\n"},
+        ], speed=0))
+        tool_block = next(b for b in m.blocks if b.kind == "tool")
+        # detail 为关键参数值（Bash → command 值），非原始 JSON 字符串
+        assert tool_block.extra["tool_detail"] == "pwd"
+        assert tool_block.extra["tool_detail"] != '{"command": "pwd"}'
+
+    def test_tool_card_detail_multiline_command_single_lined(self):
+        """历史回放多行 command 参数 → detail 单行化（\\n → 字面量 \\n）。"""
+        m = _model()
+        m.width = 80
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "assistant", "content": None,
+             "tool_calls": [{
+                 "id": "call_1", "type": "function",
+                 "function": {"name": "bash",
+                              "arguments": '{"command": "ls -la &&\\necho hi"}'},
+             }]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "x\n"},
+        ], speed=0))
+        tool_block = next(b for b in m.blocks if b.kind == "tool")
+        # extract_key_params 提取 command 值（含 \n），open_tool_box 内部单行化
+        assert tool_block.extra["tool_detail"] == "ls -la &&\\necho hi"
+        assert "\n" not in tool_block.extra["tool_detail"]
+
+    def test_tool_card_detail_dict_arguments(self):
+        """历史回放 arguments 为 dict 形态 → 同样提取关键参数值。"""
+        m = _model()
+        m.width = 80
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "assistant", "content": None,
+             "tool_calls": [{
+                 "id": "call_1", "type": "function",
+                 "function": {"name": "read_file",
+                              "arguments": {"path": "src/main.py"}},
+             }]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "code\n"},
+        ], speed=0))
+        tool_block = next(b for b in m.blocks if b.kind == "tool")
+        # dict 形态走 extract_key_params 直读 key（read_file → path 值）
+        assert tool_block.extra["tool_detail"] == "src/main.py"
+
+    def test_tool_card_detail_unknown_tool_compact_kv(self):
+        """历史回放未知工具名 → detail 紧凑 ``k=v``（非 JSON 大括号）。"""
+        m = _model()
+        m.width = 80
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "assistant", "content": None,
+             "tool_calls": [{
+                 "id": "call_1", "type": "function",
+                 "function": {"name": "custom_tool",
+                              "arguments": '{"key": "value"}'},
+             }]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "out\n"},
+        ], speed=0))
+        tool_block = next(b for b in m.blocks if b.kind == "tool")
+        # 未知工具走紧凑 k=v 分支（非原始 JSON 大括号）
+        assert tool_block.extra["tool_detail"] == "key=value"
+        assert "{" not in tool_block.extra["tool_detail"]
+
+    def test_tool_card_detail_empty_arguments(self):
+        """历史回放空 arguments（"{}"/""）→ detail 为空串且不抛异常。"""
+        for args in ("{}", ""):
+            m = _model()
+            m.width = 80
+            apply_cmd(m, DisplayMsgsCmd(messages=[
+                {"role": "assistant", "content": None,
+                 "tool_calls": [{
+                     "id": "call_1", "type": "function",
+                     "function": {"name": "bash", "arguments": args},
+                 }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "out\n"},
+            ], speed=0))
+            tool_block = next(b for b in m.blocks if b.kind == "tool")
+            assert tool_block.extra["tool_detail"] == ""
+
+    def test_tool_card_detail_invalid_json_arguments(self):
+        """历史回放无效 JSON arguments → 回退原始串截断（不抛异常）。"""
+        m = _model()
+        m.width = 80
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "assistant", "content": None,
+             "tool_calls": [{
+                 "id": "call_1", "type": "function",
+                 "function": {"name": "custom_tool",
+                              "arguments": "not-json"},
+             }]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "out\n"},
+        ], speed=0))
+        tool_block = next(b for b in m.blocks if b.kind == "tool")
+        # extract_key_params 无效 JSON 回退 str(arguments)[:80]
+        assert tool_block.extra["tool_detail"] == "not-json"
+
+    def test_tool_card_detail_json_non_dict_arguments(self):
+        """历史回放 JSON 解析成功但非 dict（如列表）→ detail 空串（不抛异常）。"""
+        m = _model()
+        m.width = 80
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "assistant", "content": None,
+             "tool_calls": [{
+                 "id": "call_1", "type": "function",
+                 "function": {"name": "custom_tool",
+                              "arguments": "[1, 2]"},
+             }]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "out\n"},
+        ], speed=0))
+        tool_block = next(b for b in m.blocks if b.kind == "tool")
+        # extract_key_params 非 dict 非空 → 返回 ""（非 JSON 大括号显示）
+        assert tool_block.extra["tool_detail"] == ""
+
+    def test_tool_card_detail_empty_dict_arguments(self):
+        """历史回放空 dict 形态 arguments → 保留 dict 分支，detail 空串。"""
+        m = _model()
+        m.width = 80
+        apply_cmd(m, DisplayMsgsCmd(messages=[
+            {"role": "assistant", "content": None,
+             "tool_calls": [{
+                 "id": "call_1", "type": "function",
+                 "function": {"name": "bash", "arguments": {}},
+             }]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "out\n"},
+        ], speed=0))
+        tool_block = next(b for b in m.blocks if b.kind == "tool")
+        # 空 dict 形态不被 `or ""` 吞掉，走 extract_key_params 空 dict 分支返回 ""
+        assert tool_block.extra["tool_detail"] == ""
+
 
 class TestDisplayMsgsNoSeparator:
     """方向6 — _do_display_messages 无消息间分隔线（对齐 Claude Code：仅空行分隔）。"""

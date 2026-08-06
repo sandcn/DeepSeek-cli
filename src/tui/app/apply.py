@@ -30,6 +30,11 @@ _S_ERROR_ICON = Style(fg=196, bold=True)
 _S_PARSE = Style(fg=242)
 _S_SPLASH = Style(fg=45, bold=True)
 
+#: 历史回放工具卡标题 detail 防御性截断上限（字符数）。
+#: 当前 extract_key_params 内部已截断（已知工具单值 ≤60、未知工具整体 ≤80），
+#: 此处纯防御——防止 core 层未来放宽阈值后超长 detail 撑破标题行。
+_TOOL_DETAIL_MAX_LEN = 200
+
 
 def apply_cmd(model, cmd: RenderCmd) -> None:
     """将单个 RenderCmd 应用到模型。"""
@@ -388,16 +393,28 @@ def _append_assistant_rich(model, msg) -> None:
         lines = _render_markdown_lines(content, width)
         if lines:
             model.append_committed("content", lines)
+    # 与正常执行路径（tool_executor_async._execute_one_async 经
+    # extract_key_params）一致：工具卡标题 detail 用关键参数**值**
+    # （如 Bash → `pwd`、read_file → `src/main.py`），而非原始 JSON
+    # （`{"command": "pwd"}`）——历史回放（/editmsg /deitmsg /load
+    # 重渲染）与流式执行的工具卡标题显示统一。extract_key_params
+    # 兼容 str（JSON 串）与 dict 两种 arguments 形态。
+    # import 置于循环外（函数体内惰性 import，与 _do_parse_info 风格一致）
+    from src.core.param_formatter import extract_key_params
     for tc in tool_calls:
         fn = tc.get("function") or {}
         name = fn.get("name", "") or ""
-        args = fn.get("arguments", "") or ""
-        # 参数摘要转单行（工具卡标题行内；tool_card_lines 会按宽度截断，
-        # 此处仅防御性限制超长参数 JSON 的标题构建成本）
-        from src.tui.app._model_helpers import _single_line_detail
-        detail = _single_line_detail(str(args))
-        if len(detail) > 200:
-            detail = detail[:200] + "..."
+        # 保留空 dict 形态（{} → extract_key_params 空 dict 分支返回 ""）；
+        # `or ""` 仅兜底 None（arguments 键缺失/显式 None），不拦截空 dict。
+        args = fn.get("arguments", "")
+        if args is None:
+            args = ""
+        detail = extract_key_params(name, args)
+        # 防御性长度截断：extract_key_params 内部已截断（已知工具单值 ≤60
+        # 字符、未知工具整体 ≤80 字符），此处保留以防 core 层未来放宽阈值。
+        # 单行化（\n → 字面量 \n）由 open_tool_box 内部统一承担（同源单行）。
+        if len(detail) > _TOOL_DETAIL_MAX_LEN:
+            detail = detail[:_TOOL_DETAIL_MAX_LEN] + "..."
         model.open_tool_box(tc.get("id") or "", name, detail)
 
 

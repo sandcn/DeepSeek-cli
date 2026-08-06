@@ -80,6 +80,32 @@ class TestParamFormatterChain:
         # 消费方模块可正常导入（调用链完整）
         import src.core.tool_executor_async  # noqa: F401
 
+    def test_param_formatter_truncation_branches(self):
+        """extract_key_params 各截断分支（历史回放路径兼容的边界行为）。"""
+        from src.core.param_formatter import extract_key_params
+
+        # 已知工具单值 >60 → s[:57] + "..."
+        long_path = "x" * 61
+        detail = extract_key_params("read_file", {"path": long_path})
+        assert detail == "x" * 57 + "..."
+        assert len(detail) == 60
+        # 未知工具单值 >40 → s[:37] + "..."（k= 前缀 + 截断值，共 42 字符）
+        long_val = "y" * 41
+        detail = extract_key_params("custom_tool", {"k": long_val})
+        assert detail == "k=" + "y" * 37 + "..."
+        assert len(detail) == 42
+        # 未知工具整体 >80 → result[:77] + "..."
+        long_val2 = "z" * 50
+        detail = extract_key_params("custom_tool", {"a": long_val2, "b": long_val2})
+        # "a=" + 50 + " " + "b=" + 50 = 105 字符 → 截断至 80
+        assert len(detail) == 80
+        assert detail.endswith("...")
+        # 非 dict 非空（JSON 列表）→ 空串
+        assert extract_key_params("custom_tool", "[1, 2]") == ""
+        # 空 dict → 空串
+        assert extract_key_params("custom_tool", {}) == ""
+        assert extract_key_params("custom_tool", "") == ""
+
     def test_param_formatter_old_path_removed_regression(self):
         """旧路径 src/tui/_param_formatter 已删除，禁止恢复引用。"""
         with pytest.raises(ImportError):
