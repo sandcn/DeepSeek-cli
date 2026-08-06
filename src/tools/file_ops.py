@@ -6,19 +6,11 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
 import tempfile
-try:
-    import fcntl
-except ImportError:
-    fcntl = None
 import logging
 
 _logger = logging.getLogger(__name__)
-
-# 原子写入锁文件统一存放在系统临时目录，避免污染源码树
-_LOCK_DIR = os.path.join(tempfile.gettempdir(), 'chat_atomic_locks')
 
 from ._constants import (
     DANGEROUS_DEVICE_FILES,
@@ -90,23 +82,13 @@ def _copy_file_permissions(src, dst):
 def atomic_write_file(path, content, encoding='utf-8', errors='replace'):
     """原子写入文件，返回 (lines_count, size_bytes)
 
-    使用 fcntl.flock 互斥锁 + tempfile + os.replace 实现原子写入。
-    锁文件统一存放在系统临时目录（_LOCK_DIR），不污染源码树。
+    使用 tempfile + os.replace 实现原子写入。
+    不依赖 flock 文件锁：同一进程内并发写同一文件已由 ToolDAG 的路径依赖
+    分层（写依赖写串行）保证，无需额外互斥；os.replace 本身保证替换原子性。
     """
     fd = None
     temp_path = None
-    lock_f = None
-    lock_file_path = None
     try:
-        if fcntl is not None:
-            os.makedirs(_LOCK_DIR, exist_ok=True)
-            # 用绝对路径的 SHA-256 哈希生成唯一锁文件名，避免路径冲突
-            abs_path = os.path.abspath(path)
-            path_hash = hashlib.sha256(abs_path.encode()).hexdigest()
-            lock_file_path = os.path.join(_LOCK_DIR, f".lock_{path_hash}")
-            lock_f = open(lock_file_path, 'w')
-            fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
-
         dir_path = os.path.dirname(path)
         if not dir_path:
             dir_path = tempfile.gettempdir()
@@ -146,17 +128,6 @@ def atomic_write_file(path, content, encoding='utf-8', errors='replace'):
             except Exception:
                 _logger.debug("临时文件清理失败: %s", temp_path)
         raise
-    finally:
-        if lock_f is not None:
-            try:
-                fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
-            except Exception:
-                _logger.warning("解锁文件锁失败: %s", lock_file_path)
-            try:
-                lock_f.close()
-            except Exception:
-                _logger.warning("关闭锁文件失败: %s", lock_file_path)
-        # 锁文件存于系统临时目录，保留不删无副作用（系统重启自动清理）
 
 
 def get_last_user_message_preview(messages, max_chars=100):
