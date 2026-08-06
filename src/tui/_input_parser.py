@@ -35,6 +35,11 @@ _SS3_READ_TIMEOUT = 0.01     # SS3 读取超时（秒）
 _UTF8_READ_TIMEOUT = 0.05    # UTF-8 多字节序列读取超时（秒）
 _ESC_FOLLOWUP_TIMEOUT = 0.05  # ESC 后续字节等待超时（秒）
 _ALT_BACKSPACE_DRAIN_TIMEOUT = 0.01  # Alt+Backspace 后续字节排空检测超时（秒）
+# ★ P1-1（review 2026-08-06）：CSI 序列最大字节数上限——正常 CSI 序列
+#   （方向键/Home/End/CSI u）参数极短（<16 字节）；异常/恶意输入流（fd
+#   持续可读且无终止符的数字流）若无限读取将阻塞 render 线程（DoS）。
+#   达上限视为解析失败（unknown，raw 保留已读部分）。
+_CSI_MAX_BYTES = 64
 
 
 # ═══════════════════════════════════════════════════════════
@@ -228,6 +233,11 @@ class InputParser:
 
         try:
             while select.select([fd], [], [], _CSI_READ_TIMEOUT)[0]:
+                # P1-1（review 2026-08-06）：无终止符输入流（fd 持续可读的
+                # 数字/异常字节）无限循环阻塞 render 线程——达上限 break 视为
+                # 解析失败（unknown）。
+                if len(raw_acc) >= _CSI_MAX_BYTES:
+                    break
                 raw_c = os.read(fd, 1)
                 if not raw_c:
                     break
@@ -239,9 +249,13 @@ class InputParser:
                     except ValueError:
                         params.append(0)
                     current = ""
-                elif c.isdigit():
+                # P1-1（review 2026-08-06）：``str.isdigit()`` / ``str.isalpha()``
+                # 对 Unicode 数字/字母（'²'/'٣'/'é' 等）返回 True——UTF-8 续字节
+                # 或异常字节 decode 后可能被误当参数数字/终止符（污染 current 或
+                # 提前终止 CSI 解析）。限制为 ASCII（``c.isascii()``，Py3.7+）。
+                elif c.isascii() and c.isdigit():
                     current += c
-                elif c.isalpha() or c == '~':
+                elif (c.isascii() and c.isalpha()) or c == '~':
                     if current:
                         try:
                             params.append(int(current))

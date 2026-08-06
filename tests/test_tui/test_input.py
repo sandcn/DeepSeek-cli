@@ -3698,3 +3698,256 @@ class TestHistoryIdxResetOnNavigation:
         assert inp._saved_input_before_history == "current2"
         assert inp._history_idx == 0
         assert inp._buffer == "old"
+
+
+# ═══════════════════════════════════════════════════════════
+# review（2026-08-06）— P0 修复回归测试
+# ═══════════════════════════════════════════════════════════
+
+class TestBackspaceDeleteBoundaryNoCrash:
+    """P0-1/P0-2 — 行首退格 / 行尾删除 no-op 不崩溃。
+
+    修复前 ``_backspace``（``_cursor_pos==0``）与 ``_delete``
+    （``_cursor_pos>=len``）的 ``text`` 仅在 if 分支内赋值，边界按键触发
+    ``self._echo(text)`` 的 ``UnboundLocalError``（TUI 输入崩溃）。
+    """
+
+    @pytest.fixture
+    def inp(self, tmp_path):
+        fd = os.open("/dev/null", os.O_RDONLY)
+        try:
+            yield Input(fd=fd, history_file=tmp_path / "history")
+        finally:
+            os.close(fd)
+
+    def test_backspace_at_start_no_crash(self, inp):
+        """光标在行首（pos=0）按退格 → no-op 不崩溃。"""
+        inp.handle_chars("abc")
+        inp._home()
+        assert inp._cursor_pos == 0
+        received = []
+
+        def cb(text, pos):
+            received.append((text, pos))
+
+        inp.set_echo_callback(cb)
+        inp._backspace()  # 修复前 UnboundLocalError
+        assert inp.get_current_text() == "abc"
+        assert received == [("abc", 0)]  # 回显保持当前缓冲
+
+    def test_backspace_empty_buffer_no_crash(self, inp):
+        """空缓冲按退格 → no-op 不崩溃。"""
+        received = []
+        inp.set_echo_callback(lambda t, p: received.append((t, p)))
+        inp._backspace()  # 修复前 UnboundLocalError
+        assert inp.get_current_text() == ""
+        assert received == [("", 0)]
+
+    def test_delete_at_end_no_crash(self, inp):
+        """光标在行尾按 Del → no-op 不崩溃。"""
+        inp.handle_chars("abc")
+        assert inp._cursor_pos == 3
+        received = []
+
+        def cb(text, pos):
+            received.append((text, pos))
+
+        inp.set_echo_callback(cb)
+        inp._delete()  # 修复前 UnboundLocalError
+        assert inp.get_current_text() == "abc"
+        assert received == [("abc", 3)]
+
+    def test_delete_empty_buffer_no_crash(self, inp):
+        """空缓冲按 Del → no-op 不崩溃。"""
+        received = []
+        inp.set_echo_callback(lambda t, p: received.append((t, p)))
+        inp._delete()  # 修复前 UnboundLocalError
+        assert inp.get_current_text() == ""
+        assert received == [("", 0)]
+
+    def test_backspace_history_navigation_resets_idx_no_crash(self, inp):
+        """历史导航中行首退格仍重置 _history_idx（不崩溃）。"""
+        inp._history = ["stored"]
+        inp._up()  # 进入历史导航（缓冲替换为历史条目，光标在末尾）
+        assert inp._history_idx == 0
+        inp._home()  # 光标移到行首
+        assert inp._history_idx == -1  # _home 已重置
+        inp._backspace()  # 行首退格 no-op 不崩溃
+        assert inp.get_current_text() == "stored"
+
+
+class TestEscapePathDispatchRegression:
+    """P0-3 — ESC 转义路径分发补齐 enter/page_up/page_down。
+
+    修复前 ``read_stdin_once`` 的 ESC 路径分发元组缺失 "enter"/"page_up"/
+    "page_down"——CSI u 无修饰 Enter（``\x1b[13;1u``，增强键盘协议终端按
+    Enter）无法提交输入；PageUp/PageDown（``\x1b[5~``/``\x1b[6~`` 传统序列
+    与 CSI u 57358/57359）被静默忽略（补全弹窗翻页失效）。
+    """
+
+    def test_csi_u_enter_submits_regression(self, tmp_path, wait_pipe_readable_fixture):
+        """\x1b[13;1u（CSI u 无修饰 Enter）→ 提交输入。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.start_io()
+            inp.handle_chars("hello")
+            os.write(w_fd, b"\x1b[13;1u")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp.has_queued_input()
+            assert inp.get_queued_input() == "hello"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_csi_u_enter_empty_buffer_submits_exit_regression(self, tmp_path, wait_pipe_readable_fixture):
+        """空缓冲 \x1b[13;1u → 提交空串（Enter 语义，不崩溃）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.start_io()
+            os.write(w_fd, b"\x1b[13;1u")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert inp.has_queued_input()
+            assert inp.get_queued_input() == ""
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_page_up_traditional_dispatched_regression(self, tmp_path, wait_pipe_readable_fixture):
+        """\x1b[5~（传统 PageUp）→ 补全导航回调 delta=-5。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.start_io()
+            calls = []
+            inp.set_completion_navigate_callback(lambda d, t: calls.append(d) or t)
+            os.write(w_fd, b"\x1b[5~")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert calls == [-5]
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_page_down_traditional_dispatched_regression(self, tmp_path, wait_pipe_readable_fixture):
+        """\x1b[6~（传统 PageDown）→ 补全导航回调 delta=5。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.start_io()
+            calls = []
+            inp.set_completion_navigate_callback(lambda d, t: calls.append(d) or t)
+            os.write(w_fd, b"\x1b[6~")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert calls == [5]
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_page_up_csi_u_dispatched_regression(self, tmp_path, wait_pipe_readable_fixture):
+        """\x1b[57358;1u（CSI u PageUp）→ 补全导航回调 delta=-5。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.start_io()
+            calls = []
+            inp.set_completion_navigate_callback(lambda d, t: calls.append(d) or t)
+            os.write(w_fd, b"\x1b[57358;1u")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert calls == [-5]
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_page_down_csi_u_dispatched_regression(self, tmp_path, wait_pipe_readable_fixture):
+        """\x1b[57359;1u（CSI u PageDown）→ 补全导航回调 delta=5。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.start_io()
+            calls = []
+            inp.set_completion_navigate_callback(lambda d, t: calls.append(d) or t)
+            os.write(w_fd, b"\x1b[57359;1u")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert calls == [5]
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_csi_u_enter_router_consume_still_consumed(self, tmp_path, wait_pipe_readable_fixture):
+        """CSI u Enter 先经 input router（消费则跳过提交，与直接 Enter 一致）。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.start_io()
+            inp.set_input_hook_router(lambda ev: ev.kind == "enter")
+            inp.handle_chars("hello")
+            os.write(w_fd, b"\x1b[13;1u")
+            assert wait_pipe_readable_fixture(r_fd)
+            assert inp.read_stdin_once() is True
+            assert not inp.has_queued_input()
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+
+class TestReadCsiSequenceBounds:
+    """P1-1 — _read_csi_sequence 上限与 ASCII 限制。
+
+    修复前：fd 持续可读且无终止符的数字流无限循环（阻塞 render 线程）；
+    ``str.isdigit()``/``str.isalpha()`` 对 Unicode 数字/字母误判。
+    """
+
+    def test_csi_max_bytes_break_regression(self, tmp_path):
+        """无终止符数字流达 _CSI_MAX_BYTES 上限 → 解析失败 unknown（不无限循环）。"""
+        from src.tui._input_parser import _CSI_MAX_BYTES
+
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            # 写入远超过上限的数字字节流（无终止符）
+            os.write(w_fd, b"1" * (_CSI_MAX_BYTES + 100))
+            # 不等待管道就绪（数据已全部写入），直接 parse——若无限循环会挂死
+            # （受 select 超时 0.01s + 上限 break 兜底，正常快速返回）
+            ev = inp._parser._read_csi_sequence(r_fd)
+            assert ev.kind == "unknown"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_unicode_digit_not_treated_as_csi_param(self, tmp_path):
+        """Unicode 数字字节（UTF-8 编码 ²）不污染 CSI 参数解析。
+
+        修复前 ``c.isdigit()`` 对 '²' 返回 True → current += '²' → int 失败
+        落入 0 或污染后续参数。修复后限制 ASCII，Unicode 数字被忽略。
+        """
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            # \x1b[ 后跟 '²' 的 UTF-8 编码（0xC2 0xB2）+ 终止符 '~'
+            os.write(w_fd, "\u00b2~".encode("utf-8"))
+            ev = inp._parser._read_csi_sequence(r_fd)
+            # ² 被忽略 → params 为空 → [0]~ → 未知 ~ 键 → unknown
+            assert ev.kind == "unknown"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_normal_csi_still_parses_regression(self, tmp_path):
+        """正常 CSI 序列（\x1b[1;5C Ctrl+右）不受 ASCII 限制影响。"""
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            os.write(w_fd, b"1;5C")
+            ev = inp._parser._read_csi_sequence(r_fd)
+            assert ev.kind == "arrow_right"
+            assert ev.modifier == 5
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)

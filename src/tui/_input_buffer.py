@@ -342,7 +342,14 @@ class InputBufferEditor:
     # ═══════════════════════════════════════════════════════
 
     def _backspace(self) -> None:
-        """退格：删除光标前一个字符（代理对整体钳制）。"""
+        """退格：删除光标前一个字符（代理对整体钳制）。
+
+        ★ P0-1（review 2026-08-06）：光标在行首（``_cursor_pos==0``）时退格
+        为 no-op——修复前 ``text`` 仅在 ``if self._cursor_pos > 0:`` 分支内赋值，
+        行首退格触发 ``self._echo(text)`` 的 ``UnboundLocalError``（TUI 输入
+        崩溃）。``text`` 恒赋值（与 ``_left``/``_right``/``_delete_word_left``
+        等边界处理一致）。
+        """
         with self._lock:
             if self._history_idx >= 0:
                 self._history_idx = -1
@@ -374,7 +381,8 @@ class InputBufferEditor:
                         + self._buffer[pos:]
                     )
                     self._cursor_pos -= del_count
-                text = self._buffer
+            # P0-1：行首退格 no-op，text 恒赋值（防 UnboundLocalError）
+            text = self._buffer
         self._echo(text)
 
     def _left(self) -> None:
@@ -748,7 +756,14 @@ class InputBufferEditor:
         self._echo(text)
 
     def _delete(self) -> None:
-        """Del：删除光标后的字符（代理对整体钳制）。"""
+        """Del：删除光标后的字符（代理对整体钳制）。
+
+        ★ P0-2（review 2026-08-06）：光标在行尾（``_cursor_pos >= len``）时
+        Del 为 no-op——修复前 ``text`` 仅在 ``if self._cursor_pos < n:`` 分支
+        内赋值，行尾删除触发 ``self._echo(text)`` 的 ``UnboundLocalError``
+        （TUI 输入崩溃）。``text`` 恒赋值（与 ``_delete_word_left`` 等边界
+        处理一致）。
+        """
         with self._lock:
             if self._history_idx >= 0:
                 self._history_idx = -1
@@ -778,7 +793,8 @@ class InputBufferEditor:
                     self._buffer = (
                         self._buffer[:pos] + self._buffer[pos + del_count:]
                     )
-                text = self._buffer
+            # P0-2：行尾 Del no-op，text 恒赋值（防 UnboundLocalError）
+            text = self._buffer
         self._echo(text)
 
     def _delete_word_left(self) -> None:

@@ -407,6 +407,16 @@ class InputDispatcher:
                         # P3-4：其余 csi_u 事件先进 input router（消费则返回），
                         #   未消费则 no-op（不再静默丢弃）。
                         "ctrl_key", "csi_u",
+                        # ★ P0-3（review 2026-08-06）：ESC 转义路径分发元组补齐
+                        #   "enter" / "page_up" / "page_down"——修复前 CSI u
+                        #   无修饰 Enter（``\x1b[13;1u``，kitty/wezterm 等增强
+                        #   键盘协议终端按 Enter 发送）解析为 enter 事件但不进
+                        #   分发 → 用户无法提交输入；PageUp/PageDown
+                        #   （``\x1b[5~``/``\x1b[6~`` 与 CSI u 57358/57359）解析
+                        #   为 page_up/page_down 但被静默忽略 → 补全弹窗翻页失效。
+                        #   （``_dispatch_key_event`` 已有 enter/page_up/page_down
+                        #   分支，仅 ESC 路径入口元组遗漏。）
+                        "enter", "page_up", "page_down",
                     ):
                         self._dispatch_key_event(event)
                     # unknown / csi_u → 静默忽略
