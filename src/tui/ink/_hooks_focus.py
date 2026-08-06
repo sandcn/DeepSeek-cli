@@ -48,6 +48,20 @@ def _resolve_focus_id(fiber: Fiber) -> str:
     return fid
 
 
+def _clear_focus_active(fiber: Fiber) -> None:
+    """组件卸载时清空指向自身的焦点激活（防焦点悬挂，P3 修复）。
+
+    ``_focus_active`` 为全局焦点管理器当前激活的焦点 id（str）。卸载
+    （reconciler ``_mark_deleted`` 收集 destroy）时若 ``_focus_active`` 与该
+    fiber 自动分配的 ``_focus_id`` 相同（同 id）则清空——修复前卸载后焦点
+    仍指向已不存在的组件：``focusNext``/``focusPrevious`` 找不到该 id、
+    ``isFocused`` 悬空判断（焦点悬挂）。
+    """
+    fid = getattr(fiber, "_focus_id", None)
+    if fid is not None and _hooks_module._focus_active == fid:
+        _hooks_module._focus_active = None
+
+
 def _focus_next() -> None:
     """切换到下一个可聚焦组件（Tab）。React Ink useFocusManager.focusNext。"""
     focus_ids = _hooks_module._focus_ids
@@ -138,16 +152,25 @@ def useFocus(options: "bool | dict | None" = None) -> dict:
     fiber = _current()
     if isinstance(options, dict):
         is_active = options.get("isActive", True)
-        auto_focus = options.get("autoFocus", True)
+        # ★ P3 修复（review 方向）：autoFocus 默认 False（修复前默认 True——
+        #   首个可聚焦组件自动抢焦点，聚焦悬挂到自动 id 上）。显式
+        #   ``autoFocus=True`` 才自动获得焦点。
+        auto_focus = options.get("autoFocus", False)
         fid = options.get("id")
     else:
         is_active = True
-        auto_focus = True if options is None else bool(options)
+        auto_focus = False if options is None else bool(options)
         fid = None
     # 焦点管理器注册（React Ink v6）：active 组件进入可聚焦列表。
     if is_active:
         if fid is None:
             fid = _resolve_focus_id(fiber)
+        else:
+            # ★ 2026-08-06：显式 id 也写入 fiber 属性——卸载时
+            #   _clear_focus_active 据此清空指向自身的 _focus_active（修复前
+            #   显式 id 组件卸载后 _focus_active 悬挂，后续 autoFocus 组件因
+            #   `_focus_active is None` 为 False 无法自动聚焦，需 Tab 才恢复）。
+            fiber._focus_id = fid
         _register_focus_id(fid)
         if auto_focus and _hooks_module._focus_active is None:
             _hooks_module._focus_active = fid
@@ -188,6 +211,7 @@ __all__ = [
     "_reset_focus_ids",
     "_register_focus_id",
     "_resolve_focus_id",
+    "_clear_focus_active",
     "_focus_next",
     "_focus_previous",
     "_focus_to",

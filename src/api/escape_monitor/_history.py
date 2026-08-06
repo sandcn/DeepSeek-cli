@@ -146,24 +146,25 @@ def _compact_history_file() -> bool:
         return False
 
     # 第一趟 O(n)：记录每个条目在文件中的最后出现索引（含转义后的 unescape）
+    # ★ 2026-08-06 口径统一：条目**不 strip**（首尾空白保留，与写盘
+    #   _append_to_history_file 一致）——修复前 strip 会把历史文件中的首尾
+    #   空白永久裁剪（load_history 已同步修复；压缩重写不得再引入裁剪）。
     latest: dict[str, int] = {}
     for i, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped:
+        if not line.strip():
             continue
-        latest[stripped] = i
+        latest[line] = i
 
     # 第二趟 O(n)：只保留最后出现的条目，保持原始顺序
     kept: set[str] = set()
     unique: list[str] = []
     for i, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped:
+        if not line.strip():
             continue
         # 仅在该行是此条目的最后出现时才保留
-        if i == latest.get(stripped) and stripped not in kept:
-            unique.append(stripped)
-            kept.add(stripped)
+        if i == latest.get(line) and line not in kept:
+            unique.append(line)
+            kept.add(line)
 
     if len(lines) <= len(unique) * _HISTORY_COMPACT_RATIO:
         return False  # 无需压缩

@@ -37,7 +37,12 @@ def _repeat_to_width(char: str, width: int) -> str:
     """以 char 重复填充至目标显示宽度（不足部分补空格；宽字符按宽度换算）。"""
     if width <= 0:
         return ""
-    cw = max(1, wcswidth_simple(char))
+    cw = wcswidth_simple(char)
+    if cw <= 0:
+        # ★ P3（review）：零宽字符无法以重复填充达宽（修复前 ``max(1, 0)=1``
+        #   将零宽字符按 1 计，count=width 但实际宽度 0，永远达不成目标宽）——
+        #   零宽字符回退纯空格填充。
+        return " " * width
     count = width // cw
     out = char * count
     remain = width - cw * count

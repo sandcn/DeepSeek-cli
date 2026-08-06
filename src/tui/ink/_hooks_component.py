@@ -130,8 +130,12 @@ def useImperativeHandle(ref, factory: Callable, deps: list | tuple | None = None
     if memo_changed:
         hook.value = factory()
         hook.last_deps = list(hook.deps) if hook.deps is not None else None
-        if ref is not None:
-            ref.current = hook.value
+    if ref is not None:
+        # ★ P3 修复（review 方向）：deps 未变化（memo_changed=False）但 ref
+        #   身份变化（父组件传入新 ref 对象）时仍把当前 ``hook.value`` 写入
+        #   ``ref.current``——修复前仅 memo_changed 分支写 ref，新 ref.current
+        #   恒为 None（父组件拿不到句柄）。
+        ref.current = hook.value
     # 卸载清理（EffectHook 通道）：**恒消费 2 槽**（deps 含句柄身份——句柄
     # 重建时旧 destroy 不会清掉新句柄（_make_imperative_cleanup 引用检查）。
     # ★ BUG-37（review 方向）：修复前 ``ref is not None`` 才消费 EffectHook

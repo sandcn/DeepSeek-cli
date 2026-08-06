@@ -30,6 +30,13 @@ from .display import (
     Badge,
     Divider,
     Panel,
+    # ★ P3（review）：SPINNER_FRAMES 同名异义说明——本文件导出的
+    #   SPINNER_FRAMES 为 **dict**（动画预设名 → 帧串，来自 .display →
+    #   ._spinner）；而 ``.spinner`` 模块（InlineSpinner）也导出同名
+    #   **str** 类型符号（braille 帧序列）。因 tests/test_tui/ink/
+    #   test_widgets_display.py 直接依赖本导出（``"dots" in SPINNER_FRAMES``
+    #   dict 语义），按「改动会影响测试则只加注释不改名」原则保持导出名
+    #   不变，仅注明语义差异（避免调用方误用 str 语义）。
     SPINNER_FRAMES,
 )
 from .tree import Tree

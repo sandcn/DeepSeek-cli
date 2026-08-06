@@ -384,13 +384,19 @@ class TestNoAnimatorDependency:
         组件树内时间基动效仅影响帧选择，不影响「同输入同输出」的确定性契约。
         """
         from unittest.mock import patch
+        import time as _time
         m = AppModel()
         apply_cmd(m, UserMsgCmd(text="hi"))
         apply_cmd(m, ContentCmd(text="answer\n"))
         apply_cmd(m, PhaseDoneCmd(phase="content"))
         m.status.status_active = True
         m.status.model_name = "deepseek"
-        with patch("src.tui.app.status_bar.time.monotonic", return_value=1000.0):
+        # ★ 2026-08-06：补 patch input_area 的时间戳（下分隔线用
+        #   time.localtime 生成实时时钟）——修复前仅 patch time.monotonic，
+        #   两次 _frame 跨秒执行时时间戳不同 → 测试偶发失败（flaky）。
+        fixed_local = _time.struct_time((2026, 8, 6, 12, 0, 0, 0, 0, -1))
+        with patch("src.tui.app.status_bar.time.monotonic", return_value=1000.0), \
+             patch("src.tui.app.input_area.time.localtime", return_value=fixed_local):
             f1 = _frame(m)
             f2 = _frame(m)
         assert [l.plain for l in f1.lines] == [l.plain for l in f2.lines]

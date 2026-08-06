@@ -62,6 +62,24 @@ def _place_absolute(fiber: Fiber, base: Fiber) -> None:
     has_w = width_prop is not None
     has_h = height_prop is not None
 
+    def _measure_abs(x: int, y: int, avail_w: int, fill: bool):
+        """以解析宽测量（百分比 width 归一化为整数，防 _measure 二次缩放）。
+
+        2026-08-06：``_measure`` 内部对 ``width="50%"`` 再次按 ``avail_w``
+        解析 → 宽度二次缩放（w*0.5）→ 内容按错误宽度换行 → 高度偏大。
+        测量前临时把 ``props.width`` 替换为已解析整数 w（**替换 props 引用**
+        ——非原地修改，避免 _measure 的 props 引用级缓存误命中；容器不缓存、
+        TEXT 缓存键为 props 引用，恢复后不残留）。
+        """
+        if has_w and isinstance(width_prop, str) and width_prop.endswith("%"):
+            saved = fiber.props
+            fiber.props = {**fiber.props, "width": w}
+            try:
+                return _measure(fiber, x, y, avail_w, fill)
+            finally:
+                fiber.props = saved
+        return _measure(fiber, x, y, avail_w, fill)
+
     # ── 尺寸解析 ──
     if has_w:
         w = _resolve_length(width_prop, inner_w)
@@ -80,9 +98,16 @@ def _place_absolute(fiber: Fiber, base: Fiber) -> None:
                 h = max(0, int(height_prop))
             except (TypeError, ValueError, OverflowError):
                 h = 0
+    elif has_w:
+        # ★ P1 修复（review 方向）：显式 width、无显式 height——先以固定宽
+        #   测量内容高度（fill=False——内容自适应高）。修复前直接读
+        #   ``fiber.layout_box``（可能为 None）→ h=0 → 最终放置又把
+        #   fill=True 重测出的正确高度覆盖为 0（absolute 元素显式 width
+        #   无显式 height 时高度恒为 0）。
+        box = _measure_abs(inner_x, inner_y, max(1, w), fill=False)
+        h = box.h
     else:
-        # 无显式高：内容测量值（has_w 分支已 _measure 过；has_w 且未测量时
-        # 重新取 layout_box）
+        # 无显式高（无显式宽时上方已内容测量）：复用测量结果
         box = fiber.layout_box
         h = box.h if box is not None else 0
     # 拉伸（left+right / top+bottom 同时指定且无显式宽/高）
@@ -110,12 +135,16 @@ def _place_absolute(fiber: Fiber, base: Fiber) -> None:
     # ── 最终放置 ──
     if has_w or has_h or stretch_x or stretch_y:
         # 有确定尺寸 → 重新测量（fill=True——固定尺寸容器内部正常 flex），
-        # 再强制写入最终 w/h（修正百分比宽二次缩放误差）
-        _measure(fiber, x, y, max(1, w), fill=True)
+        # 再强制写入最终 w/h（修正百分比宽二次缩放误差）。
+        # ★ P1 修复（review 方向）：cb.h 仅在显式 height 或纵向拉伸时覆盖——
+        #   无显式 height（内容高度已由测量推导）时保留 fill=True 重测的
+        #   高度，避免把内容高度覆盖为 0。
+        _measure_abs(x, y, max(1, w), fill=True)
         cb = fiber.layout_box
         if cb is not None:
             cb.w = w
-            cb.h = h
+            if has_h or stretch_y:
+                cb.h = h
             fiber.layout_box = cb
     else:
         # 纯内容尺寸 → 平移子树到锚点（后代坐标随动）

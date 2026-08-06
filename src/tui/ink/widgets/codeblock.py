@@ -153,9 +153,12 @@ def CodeBlock(props: dict) -> Element:
             })
         )
     # ── 代码行 ──
-    # 内容预算 = 总宽 - 左右边框/竖线/间距（无行号 4：`│ ` 2 + ` │` 2；
-    # 有行号 4：行号竖线 `│ ` 2 + 右侧 ` │` 2——行号栏宽度已在 num_prefix_w）
-    inner_w = max(1, width_eff - num_prefix_w - 4)
+    # 内容预算 = 总宽 - 左右边框/竖线/间距：
+    #   无行号 4：`│ ` 2 + ` │` 2；
+    #   有行号 2：num_prefix_w 已计入左侧行号 + `│ `（num_w + 2），右侧仅
+    #   ` │` 2——修复前统一 `- 4` 重复计入左侧 `│ `，有行号时代码行比边框
+    #   窄 2 列。
+    inner_w = max(1, width_eff - num_prefix_w - (2 if show_lines else 4))
     for i, line in enumerate(lines):
         content = line if line else ""
         if not wrap:

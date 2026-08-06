@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from .element import Element, TEXT, STATIC, h
+from .element import Element, TEXT, STATIC, h, _as_element
 from .hooks import use_memo
 
 __all__ = ["Transform", "Static", "Newline", "Fragment", "STATIC_TEXT"]
@@ -125,8 +125,13 @@ def Transform(props: dict) -> Element:
             if transform is None:
                 return child
             return _apply_transform_to_element(child, transform)
+        # ★ P3（review）：多 children 含原始 str 时——修复前非 Element 项
+        #   （str）直接放入 fragment children（fragment 子级应为 Element；
+        #   布局/调和对 str 子级处理不一致）。经 _as_element 规范化为 TEXT。
+        #   ★ 2026-08-06：str 子级同样应用 transform（修复前仅 Element 项
+        #     应用 transform，str 项仅规范化丢失变换）。
         transformed = tuple(
-            (_apply_transform_to_element(c, transform) if isinstance(c, Element) else c)
+            _apply_transform_to_element(_as_element(c), transform)
             for c in children
         )
         return Element("fragment", {}, transformed)

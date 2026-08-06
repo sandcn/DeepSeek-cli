@@ -67,7 +67,12 @@ def MultiSelect(props: dict) -> Element:
 
     cursor_idx, set_cursor_idx = use_state(initial_index)
     initial_values = props.get("initialValues", [])
-    if not isinstance(initial_values, (list, tuple, set)):
+    # ★ P3（review）：initialValues 非 list/tuple/set 时被丢弃——修复为
+    #   hasattr __iter__ 守卫：生成器/range 等可迭代值同样接受（修复前仅
+    #   三类内建容器，其余可迭代被静默置空）。
+    # ★ 2026-08-06：守卫排除 str/bytes——str 是 Iterable 但逐字符拆分会
+    #   产生意外选中集（与 _table/listview 的守卫写法对齐）。
+    if not hasattr(initial_values, "__iter__") or isinstance(initial_values, (str, bytes)):
         initial_values = []
     # ★ E9（不可哈希 initialValues 兜底）：initialValues 含 dict/list 等不可
     #   哈希元素时 ``set(initial_values)`` 抛 TypeError（渲染期崩溃）——逐项

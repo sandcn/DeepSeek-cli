@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from src.tui.core.style import Style
 from ..element import TEXT, Element, h
 from ..hooks import use_state, use_input, use_ref
@@ -22,6 +24,8 @@ from ..widgets.layout import Column
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_clamp_index 原本地定义——收敛
 #   至 _widget_common 单一真源。
 from ._widget_common import _clamp_index
+
+_logger = logging.getLogger(__name__)
 
 __all__ = ["ListView"]
 
@@ -88,15 +92,25 @@ def ListView(props: dict) -> Element:
         cur_offset = offset_ref.current
         changed = False
         if event.kind == "arrow_up":
-            cur = _clamp_index(cur - 1, total)
+            # ★ P3（review）：视口边界按键空转——已在首项时按上键不移动却
+            #   set_state + 消费事件。移动无效返回 False（不消费）。
+            if cur <= 0:
+                return False
+            cur = cur - 1
             changed = True
         elif event.kind == "arrow_down":
-            cur = _clamp_index(cur + 1, total)
+            if cur >= total - 1:
+                return False
+            cur = cur + 1
             changed = True
         elif event.kind == "home":
+            if cur == 0:
+                return False
             cur = 0
             changed = True
         elif event.kind == "end":
+            if cur == total - 1:
+                return False
             cur = total - 1
             changed = True
         elif event.kind == "enter":
@@ -104,7 +118,9 @@ def ListView(props: dict) -> Element:
                 try:
                     on_select(items[cur], cur)
                 except Exception:
-                    pass
+                    # ★ P3（review）：onSelect 异常静默吞（无日志）——补 debug
+                    #   日志便于排查回调崩溃。
+                    _logger.debug("ListView onSelect 回调异常", exc_info=True)
             return True
         if not changed:
             return False

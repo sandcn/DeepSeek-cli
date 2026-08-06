@@ -46,7 +46,12 @@ class _CompletionNavHandler:
             result = None
         if result is None:
             d._buffer_editor.handle_char('\t')
-        else:
+        elif result != text:
+            # ★ 2026-08-06：仅 result 变化时 set_buffer——修复前无条件
+            #   set_buffer(result)：首次 Tab（_first_tab 返回原 text，result
+            #   == text）也会清除 _submitted_text/_input_ready（用户刚 Enter
+            #   提交、编排器未消费时竞态窗口内按 Tab → 先前提交丢失）并重置
+            #   光标（词中间按 Tab 光标被强制移到行尾）。
             d._buffer_editor.set_buffer(result)
             d._buffer_editor._echo(result)
             self.trigger_auto_completion()

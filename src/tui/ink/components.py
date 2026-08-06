@@ -399,16 +399,21 @@ def render_frame(root: Fiber, width: int) -> Frame:
                     for ln in prefix
                 ]
             if committed_box is not None and committed_box.y == 0 and prefix_ok:
-                tail_start = min(len(prefix), len(canvas))
-                tail = [_to_line(r) for r in canvas[tail_start:]]
+                # ★ P3 修复（review 方向）：与 fallback 路径一致加 fit 截断——
+                #   reflow 期间前缀可能超画布（布局陈旧），修复前 ``prefix +
+                #   tail`` 直接拼接把超长前缀行写入 Frame（破坏行宽不变量
+                #   E-OVERFLOW-GUARD）。fit = 前缀实际覆盖行数（≤画布行数）。
+                fit = min(len(prefix), max(0, len(canvas)))
+                tail = [_to_line(r) for r in canvas[fit:]]
                 # ★ 稳定前缀（PERF-7）：prefix 为复用列表对象（``_committed_prefix``
                 # 缓存命中），标记 stable_prefix 使 ``first_diff_line`` 跳过前缀
-                # 区间（避免大文档每帧全量逐行 is 比较）。
+                # 区间（避免大文档每帧全量逐行 is 比较）。防御：fit 可能 <
+                # len(prefix)，stable_prefix_len 用实际覆盖 fit。
                 return Frame(
-                    prefix + tail,
+                    prefix[:fit] + tail,
                     stable_prefix=prefix,
                     stable_prefix_offset=0,
-                    stable_prefix_len=len(prefix),
+                    stable_prefix_len=fit,
                 )
             # 非顶部 / 前缀含超宽行：前缀行填入画布对应区域（_paint 命中缓存
             # 已跳过画布写入；超宽行已截断，正常行身份保持）。

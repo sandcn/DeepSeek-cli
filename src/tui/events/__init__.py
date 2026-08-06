@@ -24,6 +24,7 @@ from .event_types import (
     ParseInfoEvent, ParseInfoDoneEvent, MetricsUpdateEvent,
     OutputEvent, ToolSummaryEvent,
     UserSelectNeededEvent, SubagentPromptEvent, AgentResultEvent,
+    BackgroundTaskChangedEvent,
     ALL_EVENT_TYPES,
 )
 from .event_bus import DisplayEventBus, EventHandler
@@ -49,6 +50,7 @@ __all__ = [
     "ContentChunkEvent", "ReasoningChunkEvent",
     "ParseInfoEvent", "ParseInfoDoneEvent", "MetricsUpdateEvent",
     "OutputEvent", "ToolSummaryEvent", "UserSelectNeededEvent",
+    "BackgroundTaskChangedEvent",
     "ALL_EVENT_TYPES",
     # 基础设施
     "DisplayEventBus",

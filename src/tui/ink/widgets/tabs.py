@@ -94,17 +94,19 @@ def Tabs(props: dict) -> Element:
     render_content = props.get("renderContent")
     show_content = bool(props.get("showContent", True))
 
-    # 受控/非受控激活索引
+    # ★ P2（review）：受控/非受控分支条件性调用 use_state（违反 hook 顺序
+    #   规则）——修复为无条件调用 use_state，再按 active_key 是否受控决定
+    #   是否用内部值。受控时 set_internal_idx 仍可用（事件期不调用）。
+    internal_idx, set_internal_idx = use_state(
+        next(
+            (i for i, t in enumerate(tabs) if t["key"] == str(default_key)), 0,
+        ) if default_key is not None else 0,
+    )
     if active_key is not None:
         active_idx = next(
             (i for i, t in enumerate(tabs) if t["key"] == str(active_key)), 0,
         )
     else:
-        internal_idx, set_internal_idx = use_state(
-            next(
-                (i for i, t in enumerate(tabs) if t["key"] == str(default_key)), 0,
-            ) if default_key is not None else 0,
-        )
         active_idx = internal_idx
     active_idx = _clamp_index(active_idx, len(tabs))
     # ref 镜像（受控变化 + 同批按键）
@@ -126,12 +128,15 @@ def Tabs(props: dict) -> Element:
         if new != cur and active_key is None and len(tabs) > 1:
             active_ref.current = new
             set_internal_idx(new)
-        if onChange is not None:
+        # ★ P3（review）：new == cur（单标签或 space/enter 未切换）时不再触发
+        #   onChange——修复前单标签时 new == cur 仍触发 onChange（重复回调）。
+        if new != cur and onChange is not None:
             try:
                 onChange(tabs[new], tabs[new]["key"], new)
             except Exception:
                 pass
-        return True
+            return True
+        return False
 
     use_input(_handle, focus)
 

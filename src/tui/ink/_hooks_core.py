@@ -199,6 +199,20 @@ def _make_setter(fiber: Fiber, hook: StateHook) -> Callable[[Any], None]:
     return _set
 
 
+def _clear_fiber_state_queues(fiber: Fiber) -> None:
+    """清空 fiber 全部 StateHook 的待处理更新队列（fiber 复用时调用）。
+
+    ★ P3 修复（review 方向）：fiber 复用（reconciler 置 ``deleted=False``
+    处）时清空 ``hook.queue``——防止陈旧 state queue 被复用渲染应用。残留
+    场景：组件本帧 set_state 排队后被删除（``_mark_deleted``）→ queue 未应用
+    残留；之后同 key/type 复用该 fiber → ``_next_state_hook`` 把删除前的
+    陈旧更新应用到复用后的新渲染（状态回滚到删除前，渲染错误）。
+    """
+    for hook in fiber.hooks:
+        if isinstance(hook, StateHook) and hook.queue is not None:
+            hook.queue = None
+
+
 def use_state(initial: Any) -> tuple[Any, Callable[[Any], None]]:
     """React useState 等价物。
 
@@ -526,6 +540,7 @@ __all__ = [
     "_next_hook",
     "_next_state_hook",
     "_make_setter",
+    "_clear_fiber_state_queues",
     "_INIT_PENDING",
     "use_state",
     "use_reducer",

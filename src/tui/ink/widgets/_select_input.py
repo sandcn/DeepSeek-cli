@@ -52,7 +52,10 @@ def SelectInput(props: dict) -> Element:
     if items:
         initial_index = min(initial_index, len(items) - 1)
     highlight_style = props.get("highlightStyle") or Style(fg=6)
-    prefix = str(props.get("prefix", "> "))
+    # ★ P3（review）：prefix=None 时回退默认 "> "——修复前 ``str(None)`` 渲染
+    #   出字面 "None"。
+    prefix = props.get("prefix", "> ")
+    prefix = str(prefix) if prefix is not None else "> "
 
     selected, set_selected = use_state(initial_index)
     # ★ ref 镜像（同批连续按键修复）：handler 闭包捕获渲染期 state——同一渲染
@@ -98,7 +101,9 @@ def SelectInput(props: dict) -> Element:
     selected_shown = _clamp_index(selected, len(items))
     offset, count = _visible_window(selected_shown, len(items), limit)
     rows = []
-    pad = " " * (wcswidth_simple(prefix) if prefix else 2)
+    # ★ P3（review）：pad 恒按 prefix 显示宽度——修复前 ``if prefix else 2``
+    #   在 prefix=""（空串）时仍 pad 2 空格（未选中行比选中行宽 2 错位）。
+    pad = " " * wcswidth_simple(prefix)
     for i in range(count):
         idx = offset + i
         item = items[idx]

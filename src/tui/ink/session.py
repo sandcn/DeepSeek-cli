@@ -561,7 +561,10 @@ class InkSession:
                     # 崩溃恢复重启了新线程 → 继续下一轮 join 新线程
                     self._render_running = False
                     continue
-                break
+                # ★ P2 修复（review 方向）：join 超时但版本未变——不提前 break，
+                #   继续下一轮二次等待确认线程退出（渲染线程卡住时仍在写
+                #   stream，未确认退出即 reset/suspend 会造成输出撕裂竞态）。
+                continue
             # 兜底：循环结束后线程仍存活 → 记 warning 并排空队列（不无限等待）
             if self._render_thread is not None and self._render_thread.is_alive():
                 _logger.warning(
@@ -606,6 +609,20 @@ class InkSession:
         self._render_running = False
         if self._render_thread is not None:
             self._render_thread.join(timeout=2.0)
+            if self._render_thread.is_alive():
+                # ★ P2 修复（review 方向）：join 超时后检查 is_alive()——线程
+                #   仍存活时记 warning 并二次等待确认退出后再继续清理（防渲染
+                #   线程卡住仍在写 stream → 让出终端后输出撕裂竞态）。
+                _logger.warning(
+                    "suspend() 等待 render 线程超时（版本=%d），二次等待确认退出",
+                    self._render_version,
+                )
+                self._render_thread.join(timeout=2.0)
+                if self._render_thread.is_alive():
+                    _logger.warning(
+                        "suspend() render 线程二次等待仍存活（版本=%d），强制继续清理",
+                        self._render_version,
+                    )
         self._ink_renderer.suspend()
         self._drain_queue_safe()
         # 定位光标到终端底部：交互工具同步渲染弹窗的起点

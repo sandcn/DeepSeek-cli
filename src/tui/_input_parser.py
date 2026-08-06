@@ -269,6 +269,15 @@ class InputParser:
                         ord('Q'): "f2",
                         ord('R'): "f3",
                         ord('S'): "f4",
+                        # ★ 应用光标键模式（DECCKM，2026-08-06）：部分终端
+                        #   （SSH 客户端/kitty 等）默认开启应用模式，方向键
+                        #   发送 \x1bOA/B/C/D 而非 \x1b[A/B/C/D——修复前
+                        #   mapping 缺失 → unknown 静默丢弃，↑↓←→ 全部失效。
+                        #   与 CSI 箭头语义一致（modifier 无修饰）。
+                        ord('A'): "arrow_up",
+                        ord('B'): "arrow_down",
+                        ord('C'): "arrow_right",
+                        ord('D'): "arrow_left",
                     }
                     kind = mapping.get(raw_c[0], "unknown")
                     return KeyEvent(kind=kind, raw=raw)

@@ -327,7 +327,12 @@ class EventDispatcher:
         （右下角显示当前后台 bash 数量）。
         """
         label = event.label or "main"
-        count = max(0, int(event.count))
+        try:
+            count = max(0, int(event.count))
+        except (TypeError, ValueError):
+            # 防御性：count 可能为 None/非数字（外部 Agent 发布异常事件）——
+            # 回退 0，避免抛异常被 EventBus 吞掉（无日志且状态栏数量错乱）。
+            count = 0
         if count <= 0:
             self._bg_bash_counts.pop(label, None)
         else:

@@ -352,7 +352,11 @@ class InputDispatcher:
         if self._enter_residual_pending:
             self._enter_residual_pending = False
             if (
-                first_byte in (0x0a, 0x0d)
+                # ★ 仅丢弃 LF（0x0a）——CR+LF 终端 Enter 提交后紧随的残留 LF。
+                #   CR（0x0d）永不丢弃：单 CR 终端（Enter 只发 0x0d）用户
+                #   在窗口内二次按 Enter 时，第二个 CR 是新的提交而非残留，
+                #   丢弃会丢失第二次提交（2026-08-06 双击误吞修复）。
+                first_byte == 0x0a
                 and time.monotonic() <= self._enter_residual_deadline
             ):
                 return True
@@ -554,6 +558,15 @@ class InputDispatcher:
                 # 方向D 步骤14：搜索模式 Enter 应用匹配并退出搜索（不提交）
                 self._buffer_editor._enter()
                 self._sync_reverse_search()
+                # ★ 搜索 Enter 应用匹配后同样置残留标记（2026-08-06）：
+                #   CR+LF 终端 Enter 应用匹配退出搜索后，紧随 LF 若不丢弃会
+                #   被解析为第二个 enter 事件 → 搜索已退出 → _enter() 立即
+                #   提交搜索匹配文本（用户无法继续编辑）。与正常 Enter 提交
+                #   分支统一标记丢弃（窗口内）。
+                self._enter_residual_pending = True
+                self._enter_residual_deadline = (
+                    time.monotonic() + _ENTER_RESIDUAL_WINDOW
+                )
                 return
             self._dismiss_completion()
             # ★ 方向1（加锁读取）：与其他访问统一经 get_suppress_enter()

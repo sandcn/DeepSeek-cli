@@ -46,7 +46,9 @@ def build_border_box(
 
     # ── 顶行：┌─ title ─……─┐ ──
     head = Line.of("┌─ ", border_style)
-    title_budget = max(1, width - 4)
+    # ★ P3（review）：预算下限 1 → 0——标题为空时不该硬塞 1 列（宽度极小
+    #   或空标题场景下 budget=1 可能溢出/错位）。
+    title_budget = max(0, width - 4)
     for run in truncate_runs(title_runs, title_budget):
         head.append_run(run)
     fill = max(0, width - 1 - head.width)
@@ -56,7 +58,7 @@ def build_border_box(
     lines.append(head)
 
     # ── 主体行：│ body（每行前缀左竖线，内容按宽截断） ──
-    body_budget = max(1, width - 2)
+    body_budget = max(0, width - 2)
     for bl in body_lines or []:
         body_line = Line.of("│ ", border_style)
         for run in truncate_runs(bl.runs, body_budget):
@@ -66,7 +68,11 @@ def build_border_box(
     # ── 底行：└─ {status} ─……─┘（closed 模式） ──
     if status != "open":
         tail = Line.of("└─ ", border_style)
-        tail.append(status, border_style)
+        # ★ P3（review）：status 文本截断到 width-4（与 title 相同处理）——
+        #   修复前超长 status 直接追加导致底行宽度溢出边框。
+        status_budget = max(0, width - 4)
+        for run in truncate_runs([StyledRun(status, border_style)], status_budget):
+            tail.append_run(run)
         tail_fill = max(0, width - 1 - tail.width)
         if tail_fill > 0:
             tail.append("─" * tail_fill, border_style)

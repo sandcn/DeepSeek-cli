@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import math
+
 from ..element import TEXT, Element, h
 from src.tui._width import wcswidth_simple
 from ._display_common import _resolve_style
@@ -28,6 +30,10 @@ def ProgressBar(props: dict) -> Element:
     try:
         percent = float(props.get("percent", 0))
     except (TypeError, ValueError):
+        percent = 0.0
+    # ★ P3（review）：NaN/Inf percent 防御——修复前 float('nan') 通过
+    #   ``min(1.0, nan)`` 返回 1.0 → NaN 渲染为 100% 满格。非有限值回退 0%。
+    if not math.isfinite(percent):
         percent = 0.0
     # 归一化：0-1 原样；(1, 100] 视为百分比；> 100 视为 100%
     if percent > 1.0:

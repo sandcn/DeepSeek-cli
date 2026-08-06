@@ -54,13 +54,37 @@ def _distribute_extra(
         return
     per = total_extra // total_weight
     remainder = total_extra % total_weight
-    weighted_idx = 0  # 权重 >0 节点序列索引（余数仅在这些节点间分配）
+    # ★ P2 修复（review 方向）：余数分配保证**不丢失**——修复前按
+    #   「加权节点索引 < remainder」逐节点 +1：remainder 可大于权重节点数
+    #   （如 extra=5、权重 [10,1] → remainder=5、节点仅 2 个）导致余数丢失
+    #   （欠分配 3 行）。修复：remainder <= 权重节点数时保持既有语义
+    #   （前 remainder 个权重 >0 节点各 +1，测试锁定）；remainder 超出时
+    #   超出部分（remainder - n）按**权重单位**分配（每个权重单位至多 +1），
+    #   保证余数全部分配（flexGrow/flexShrink 共用均受益）。
+    extra_shares = [0] * len(children)
+    weighted_idx = 0
+    n_weighted = 0
+    for i, w in enumerate(weights):
+        if w > 0:
+            if weighted_idx < remainder:
+                extra_shares[i] += 1
+            weighted_idx += 1
+            n_weighted += 1
+    overflow = remainder - n_weighted
+    if overflow > 0:
+        # 超出部分按权重单位分配：节点 i 覆盖权重单位
+        # [prefix, prefix+w)；单位编号 < overflow 的 +1（权重 0 节点不参与）。
+        prefix = 0
+        for i, w in enumerate(weights):
+            if w <= 0:
+                continue
+            extra_shares[i] += max(0, min(w, overflow - prefix))
+            prefix += w
     cursor = inner_y
     for i, child in enumerate(children):
         cb = child.layout_box
         if weights[i] > 0:
-            delta = per * weights[i] + (1 if weighted_idx < remainder else 0)
-            weighted_idx += 1
+            delta = per * weights[i] + extra_shares[i]
             if delta > 0:
                 if direction > 0:
                     cb.h += delta

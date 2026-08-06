@@ -89,7 +89,12 @@ def Badge(props: dict) -> Element:
     style = Style(fg=fg, bg=bg, bold=bool(props.get("bold", False)))
     base = props.get("style")
     if base is not None:
-        style = base.merge(style)
+        # ★ P3（review）：合并方向修复——docstring「style 优先」即用户 style
+        #   覆盖自动对比色。Style.merge 语义为「后者覆盖前者」：原
+        #   ``base.merge(style)`` 让自动 fg 覆盖用户 style.fg（与文档矛盾）；
+        #   改为 ``style.merge(base)``——用户 style 的 non-None 字段覆盖自动
+        #   计算值（fg/bg/bold），未提供字段保留自动对比色。
+        style = style.merge(base)
     text = " " * padding + label + " " * padding
     return h(TEXT, {"children": text, "style": style})
 

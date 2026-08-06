@@ -257,12 +257,17 @@ class InputBufferEditor:
             return
 
         # 第一趟 O(n)：记录每个条目在文件中的最后出现索引
+        # ★ 2026-08-06 口径统一：条目**不 strip**（首尾空白保留）——写盘
+        # （_append_history_locked → _append_to_history_file）不 strip，读取
+        # 若 strip 会造成「提交 "  hello  " → 重启加载后 entry="hello"」的
+        # 往返数据损坏（历史文件中的首尾空白被永久裁剪）。仅空白行判断用
+        # strip（与 _append_history_locked 的 ``if not text.strip(): return``
+        # 跳过纯空白输入一致）。
         latest: dict[str, int] = {}
         for i, line in enumerate(lines):
-            stripped = line.strip()
-            if not stripped:
+            if not line.strip():
                 continue
-            entry = self._unescape(stripped)
+            entry = self._unescape(line)
             if not entry:
                 continue
             latest[entry] = i
@@ -271,10 +276,9 @@ class InputBufferEditor:
         seen: set[str] = set()
         unique: list[str] = []
         for i, line in enumerate(lines):
-            stripped = line.strip()
-            if not stripped:
+            if not line.strip():
                 continue
-            entry = self._unescape(stripped)
+            entry = self._unescape(line)
             if not entry:
                 continue
             if i == latest.get(entry) and entry not in seen:
@@ -282,7 +286,11 @@ class InputBufferEditor:
                 seen.add(entry)
 
         # 合并到现有内存历史
-        file_entries = unique[:_HISTORY_MAX_ENTRIES]
+        # ★ 2026-08-06：截断取**最新**条目——`unique` 为文件顺序（旧→新），
+        #   unique[:_MAX] 取的是最旧 N 条（历史文件唯一条目 >N 时最新历史
+        #   重启后丢失，与 _append_history_locked 保留最新的语义不一致）。
+        #   改为 unique[-_MAX:]（先取最新再反转成新→旧内存序）。
+        file_entries = unique[-_HISTORY_MAX_ENTRIES:]
         if self._history:
             if file_entries:
                 existing = set(self._history)
@@ -491,6 +499,12 @@ class InputBufferEditor:
                     lines = self._buffer.split('\n')
                     pos = sum(len(lines[i]) + 1 for i in range(cur_line))
                     col = self._cursor_pos - pos
+                    # ★ 2026-08-06 钳制防御：光标落在当前行换行符上时 col 可
+                    #   越界（多行文本以 \n 结尾场景），钳制到当前行长度
+                    #   [0, cur_len]，防止 min(col, prev_len) 产生错误位置。
+                    cur_len = len(lines[cur_line])
+                    if col < 0 or col > cur_len:
+                        col = min(max(col, 0), cur_len)
                     prev_start = sum(len(lines[i]) + 1 for i in range(cur_line - 1))
                     prev_len = len(lines[cur_line - 1])
                     self._cursor_pos = prev_start + min(col, prev_len)
@@ -650,6 +664,11 @@ class InputBufferEditor:
                 if cur_line < len(lines) - 1:
                     pos = sum(len(lines[i]) + 1 for i in range(cur_line))
                     col = self._cursor_pos - pos
+                    # ★ 2026-08-06 钳制防御：与 _up 对称——col 越界时钳制到
+                    #   当前行长度 [0, cur_len]。
+                    cur_len = len(lines[cur_line])
+                    if col < 0 or col > cur_len:
+                        col = min(max(col, 0), cur_len)
                     next_start = sum(len(lines[i]) + 1 for i in range(cur_line + 1))
                     next_len = len(lines[cur_line + 1])
                     self._cursor_pos = next_start + min(col, next_len)

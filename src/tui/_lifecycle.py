@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from src.tui.events.event_bus import DisplayEventBus
 
 from src.tui._const import SplashCmd
+from src.tui._history_disk import flush_history_disk
 from src.renderer._locks import render_lock
 
 _logger = logging.getLogger(__name__)
@@ -122,7 +123,21 @@ class TuiLifecycle:
             # tests/test_tui/test_consumer.py::TestLifecycleBatchedRegistration
             # （断言 start() 后 bus._batched_events 为空）。
             self._engine.start()
-            self._engine.push_cmd(SplashCmd())
+            try:
+                self._engine.push_cmd(SplashCmd())
+            except Exception:
+                # 半启动不一致修复：engine.start() 成功（render 线程已运行）但
+                # push_cmd(SplashCmd()) 抛异常时，回滚 engine.stop()（幂等）并
+                # re-raise——避免 _started 未置位但线程仍在运行的半启动状态。
+                # 回滚后 _started 保持 False，下次 start 走完整订阅+启动路径
+                # （_handlers_bound=True 时先 unsubscribe 再重新 subscribe，幂等）。
+                try:
+                    self._engine.stop()
+                except Exception:
+                    _logger.debug(
+                        "start 回滚 engine.stop 异常", exc_info=True,
+                    )
+                raise
             self._started = True
 
     def stop(self) -> None:
@@ -133,29 +148,43 @@ class TuiLifecycle:
         with self._state_lock:
             if not self._started:
                 return
-            if self._bound_handlers is not None:
-                for event_type in self._bound_handlers:
-                    try:
-                        self._bus.unsubscribe(
-                            self._bound_handlers[event_type], event_type=event_type,
-                        )
-                    except Exception:
-                        _logger.debug(
-                            "stop: unsubscribe %s 失败",
-                            event_type.__name__, exc_info=True,
-                        )
-            self._engine.flush()
-            self._engine.stop()
-            with render_lock:
-                self._safe_close_all(self._rs)
-            # ★ 方向5：bb.teardown 为兼容层 no-op（_BottomBarCompatMixin），
-            #   已删除——生命周期收敛为 engine.flush/stop 单一路径。
-            # 方向2（输出历史落盘接线）：停止时关闭 line tracker——flush 剩余
-            # 行到历史文件 + 停止 daemon 刷盘定时器（修复 _flush_history 无生产
-            # 调用方——停止时历史文件缺失末尾行 + daemon Timer 自重置泄漏）。
-            self._close_line_tracker()
-            self._started = False
-            self._bound_handlers = None
+            try:
+                if self._bound_handlers is not None:
+                    for event_type in self._bound_handlers:
+                        try:
+                            self._bus.unsubscribe(
+                                self._bound_handlers[event_type], event_type=event_type,
+                            )
+                        except Exception:
+                            _logger.debug(
+                                "stop: unsubscribe %s 失败",
+                                event_type.__name__, exc_info=True,
+                            )
+                self._engine.flush()
+                self._engine.stop()
+                with render_lock:
+                    self._safe_close_all(self._rs)
+                # ★ 方向5：bb.teardown 为兼容层 no-op（_BottomBarCompatMixin），
+                #   已删除——生命周期收敛为 engine.flush/stop 单一路径。
+                # 方向2（输出历史落盘接线）：停止时关闭 line tracker——flush 剩余
+                # 行到历史文件 + 停止 daemon 刷盘定时器（修复 _flush_history 无生产
+                # 调用方——停止时历史文件缺失末尾行 + daemon Timer 自重置泄漏）。
+                self._close_line_tracker()
+            finally:
+                # ★ 2026-08-06（输入历史落盘冲刷）：放入 finally——即使
+                #   unsubscribe/flush/stop/render_lock 清理抛异常（如渲染线程
+                #   崩溃恢复路径）也确保冲刷共享输入历史写盘队列（修复前
+                #   _HistoryDiskWriter 无冲刷接口，daemon 线程随进程强制终止时
+                #   队列中最多 256 条未落盘历史丢失）。
+                try:
+                    flush_history_disk(timeout=2.0)
+                except Exception:
+                    _logger.debug("flush_history_disk 异常", exc_info=True)
+                # 无论 unsubscribe/flush/stop/render_lock 清理是否抛异常，都必须
+                # 复位状态——保证 _started=False、_bound_handlers=None（下次 start
+                # 可重新订阅，不残留半停止状态）。
+                self._started = False
+                self._bound_handlers = None
 
     def _close_line_tracker(self) -> None:
         """关闭输出历史 line tracker（flush 剩余行 + 停止 daemon 定时器）。

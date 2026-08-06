@@ -464,7 +464,12 @@ class GradientDescriptor:
     steps: int = 8
     effect: str = "none"
 
-    __effect_options: tuple[str, ...] = ("none", "wave", "shimmer")
+    # 类级常量（合法动效选项集）。**不带类型注解**的纯类变量赋值：dataclass
+    # 只处理 __annotations__ 中的名字，无注解类变量既不会被当作实例字段
+    # （repr 不显示 _GradientDescriptor__effect_options=...），也不会被
+    # _compat 低版本 slots 模拟加入 __slots__（修复前带注解赋值在 Python<3.10
+    # 下被 slots 模拟误纳入 __slots__ → 实例访问 slot 未初始化 AttributeError）。
+    __effect_options = ("none", "wave", "shimmer")
 
     def __post_init__(self) -> None:
         """校验字段范围。"""

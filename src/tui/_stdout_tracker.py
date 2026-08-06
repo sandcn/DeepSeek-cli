@@ -5,7 +5,7 @@ complete lines (detected by \n) in a ring buffer.
 
 机制：
   - 所有 write/flush 原封不动穿透到真实 stdout
-  - 检测 \n 将内容按行拆分存入环形缓冲区（最大 300 行）
+  - 检测 \n 将内容按行拆分存入环形缓冲区（最大 1000 行，与 _MAX_LINES 一致）
   - 使用统一正则按数据流顺序处理光标控制序列：
     \\033[{r};{c}H 绝对光标定位（r > scroll_end → 过滤底部栏内容）
     \\0338 / \\033[u 光标恢复 → 退出底部栏模式
@@ -249,6 +249,9 @@ class _StdoutLineTracker:
         try:
             success = self._flush_buffered_lines()
         except Exception:
+            # ★ 2026-08-06：补日志（修复前刷盘 worker 兜底异常被吞，
+            #   失败无诊断信息）。
+            _logger.debug("_flush_worker 刷盘异常", exc_info=True)
             success = False
         finally:
             with self._buffer_lock:
@@ -314,9 +317,15 @@ class _StdoutLineTracker:
             try:
                 self._maybe_compact_output_history()
             except Exception:
-                pass
+                # 压缩为刷盘非关键路径——意外异常不中断刷盘主流程，
+                # 但须记录日志（修复前裸吞异常无任何痕迹）。
+                _logger.debug("输出历史压缩异常", exc_info=True)
             return True
         except Exception:
+            # ★ 2026-08-06：补日志——内部 OSError 分支已有 warning，但外层
+            #   兜底异常（open 抛非 OSError/锁操作异常）此前静默 return False
+            #   （行已从缓冲取出未落盘 → 丢失，且无任何痕迹）。
+            _logger.warning("输出历史刷盘兜底异常", exc_info=True)
             return False
 
     def _load_output_history(self) -> None:
@@ -422,7 +431,9 @@ class _StdoutLineTracker:
             else:
                 self._flush_buffered_lines()
         except Exception:
-            pass
+            # ★ 2026-08-06：补日志（修复前定时刷盘回调异常被静默吞掉，
+            #   无任何痕迹）。
+            _logger.debug("_timer_flush_callback 异常", exc_info=True)
         if self._flush_timer is not None and not self._flush_timer_stop.is_set():
             self._start_flush_timer()
 

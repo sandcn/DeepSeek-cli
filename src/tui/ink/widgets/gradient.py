@@ -22,9 +22,21 @@ __all__ = ["Gradient"]
 
 def _gradient_runs(text: str, colors) -> list:
     """逐字符渐变 runs（复用 header 的 lerp_color 插值语义）。"""
-    if not text or not colors:
+    # ★ 2026-08-06：colors 非迭代（int/float 标量）时回退无样式——修复前
+    #   ``for c in colors`` 对 `colors=45` 抛 TypeError 渲染崩溃（Gradient
+    #   的 props 守卫只防 None/空列表，标量 truthy 穿透）。
+    if not text or not colors or not hasattr(colors, "__iter__") or isinstance(colors, (str, bytes)):
         return []
-    stops = [int(c) for c in colors if c is not None]
+    # ★ P3（review）：colors 含非 int 值（str/float/None 等）时 ``int(c)`` 抛
+    #   ValueError——转换失败跳过该项（保留其余色标）；全部失败回退无样式。
+    stops: list[int] = []
+    for c in colors:
+        if c is None:
+            continue
+        try:
+            stops.append(int(c))
+        except (TypeError, ValueError, OverflowError):
+            continue
     if not stops:
         return [StyledRun(text, None)]
     n = len(text)

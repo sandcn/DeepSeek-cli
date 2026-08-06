@@ -70,8 +70,15 @@ def _truncate(text: str, max_len: int) -> str:
     message_editor 共用的公共函数（message_editor 已删除本地副本改从此导入）。
     """
     text = text.replace('\n', ' ').replace('\r', '')
+    # ★ 2026-08-06：负 max_len 防护——`max_len <= 3` 分支 `text[:max_len]`
+    #   对负值返回「去掉尾部字符」的字符串（长度仍可能 > max_len）。
+    max_len = max(0, int(max_len))
     if len(text) <= max_len:
         return text
+    if max_len <= 3:
+        # max_len 过小（≤3）时无法容纳 "..." 后缀——直接返回前缀，
+        # 避免 text[:max_len-3] 负索引导致输出长度 > max_len。
+        return text[:max_len]
     return text[:max_len - 3] + "..."
 
 

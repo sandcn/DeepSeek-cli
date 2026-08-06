@@ -299,7 +299,15 @@ class Reconciler:
                 #   _measure_cache 引用级命中，0% → 高命中率），内容变化才
                 #   更新（免每帧 O(n) dict 浅拷贝）。
                 self._set_props(fiber, element.props)
+                was_deleted = fiber.deleted
                 fiber.deleted = False
+                if was_deleted:
+                    # ★ P3 修复（review 方向）：仅「被删除后恢复复用」时清空
+                    #   陈旧 state queue——正常帧间复用 deleted 恒 False，
+                    #   queue 中的待应用更新必须保留（无条件清空会丢失本帧
+                    #   排队的状态更新）。见 _hooks_core
+                    #   ``_clear_fiber_state_queues``。
+                    _hooks._clear_fiber_state_queues(fiber)
                 fiber.return_ = return_fiber
                 self._begin_work(fiber, element)
                 consumed.add(id(fiber))
@@ -379,7 +387,13 @@ class Reconciler:
                 # ★ 性能（PERF-7 + props 引用级缓存）：经 ``_set_props``
                 #   值比较复用（内容相等保持旧引用 → _measure_cache 命中）。
                 self._set_props(fiber, el.props)
+                was_deleted = fiber.deleted
                 fiber.deleted = False
+                if was_deleted:
+                    # ★ P3 修复（review 方向）：仅「被删除后恢复复用」时清空
+                    #   陈旧 state queue（见 _hooks_core
+                    #   ``_clear_fiber_state_queues``）。
+                    _hooks._clear_fiber_state_queues(fiber)
                 fiber.return_ = return_fiber
                 fiber.moved = False  # 稳定列表：位置不变
                 self._begin_work(fiber, el)
@@ -405,7 +419,13 @@ class Reconciler:
             # ★ 性能（PERF-7 + props 引用级缓存）：经 ``_set_props`` 值比较
             #   复用（内容相等保持旧引用 → _measure_cache 命中）。
             self._set_props(existing, element.props)
+            was_deleted = existing.deleted
             existing.deleted = False
+            if was_deleted:
+                # ★ P3 修复（review 方向）：仅「被删除后恢复复用」时清空
+                #   陈旧 state queue（见 _hooks_core
+                #   ``_clear_fiber_state_queues``）。
+                _hooks._clear_fiber_state_queues(existing)
             existing.return_ = return_fiber
             existing.sibling = None
             self._begin_work(existing, element)
@@ -565,13 +585,10 @@ class Reconciler:
                 # ★ 性能（方向1）：空子元素快路径——叶子/无子节点容器直接
                 #   删除旧子链（修复前无条件 ``_reconcile_children(fiber, [])``
                 #   仍构建空 maps + 遍历旧链，流式开放块每行 TEXT 都走一遍）。
-                # ★ 性能（PERF-16）：叶子 fiber 且旧子链为 None（首帧/纯叶子
-                #   复用）时**跳过函数调用**——``_reconcile_children(fiber, [])``
-                #   的空元素快路径只是遍历旧子链删除（此处旧子链已 None，零
-                #   操作）。大组件树每帧数千叶子（1000+ TEXT）省一次函数调用
-                #   与空检查。
-                if fiber.child is not None:
-                    self._reconcile_children(fiber, [])
+                #   ★ P3 修复（review 方向）：外层 ``elif fiber.child is not
+                #   None`` 已保证旧子链非 None——删除内层重复 ``if fiber.child
+                #   is not None``（恒真）及过时 PERF-16 注释。
+                self._reconcile_children(fiber, [])
 
     # ── ErrorBoundary（方向B 步骤9） ────────────────────
 
@@ -925,6 +942,9 @@ class Reconciler:
         return
 
     def _queue_destroys(self, fiber: Fiber) -> None:
+        # ★ P3 修复（review 方向）：组件卸载时若焦点激活指向自身（同自动
+        #   id）则清空——防焦点悬挂（见 _hooks_focus ``_clear_focus_active``）。
+        _hooks._clear_focus_active(fiber)
         for hook in fiber.hooks:
             if isinstance(hook, EffectHook) and hook.destroy is not None:
                 self._pending_destroys.append((fiber, hook))

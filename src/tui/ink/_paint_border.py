@@ -42,7 +42,17 @@ def _border_style(props: dict, edge: str | None = None) -> Style:
         if border_color is not None:
             color = _parse_color(border_color)
             if color is not None:
-                return Style(fg=color)
+                # ★ P3 修复（review 方向）：重建 Style(fg=color) 丢失 base 的
+                #   bg/dim/bold/italic/underline/strikethrough/inverse——
+                #   borderStyle 传 Style 对象（含字型/背景）或
+                #   borderDimColor/borderBackgroundColor 已并入 base 时须保留。
+                return Style(
+                    fg=color, bg=base.bg, dim=base.dim,
+                    bold=base.bold, italic=base.italic,
+                    underline=base.underline,
+                    strikethrough=base.strikethrough,
+                    inverse=base.inverse,
+                )
         return base
     # 单边：edge = "top"/"bottom"/"left"/"right"
     edge_color = props.get(f"border{edge.capitalize()}Color")
@@ -55,16 +65,27 @@ def _border_style(props: dict, edge: str | None = None) -> Style:
         bg_color = props.get("borderBackgroundColor")
     fg = _parse_color(color) if color is not None else None
     bg = _parse_color(bg_color) if bg_color is not None else None
+    # ★ P3 修复（review 方向）：两个分支均保留 base 的字型属性
+    #   （bold/italic/underline/strikethrough/inverse——修复前重建
+    #   Style(fg=..., bg=..., dim=...) 丢失非 fg/bg/dim 字段）。
     if fg is not None:
         return Style(
             fg=fg,
             bg=bg,
             dim=bool(dim_color),
+            bold=base.bold, italic=base.italic,
+            underline=base.underline,
+            strikethrough=base.strikethrough,
+            inverse=base.inverse,
         )
     return Style(
         fg=base.fg,
         bg=bg if bg is not None else base.bg,
         dim=bool(dim_color) or base.dim,
+        bold=base.bold, italic=base.italic,
+        underline=base.underline,
+        strikethrough=base.strikethrough,
+        inverse=base.inverse,
     )
 
 

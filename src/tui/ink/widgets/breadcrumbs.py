@@ -59,7 +59,10 @@ def _apply_max_items(items: list[dict], max_items: int) -> list[dict]:
     # 至少保留首 + 尾（max_items>=2 时）
     if max_items == 1:
         return [items[-1]]
-    head_n = max_items - 1  # 首部保留数（尾部保留 1）
+    # ★ P2（review）：off-by-one 修复——head_n 由 max_items-1 改为 max_items-2，
+    #   总项数 = head_n + 省略号 + 尾 = max_items（修复前 max_items+1，折叠后
+    #   仍超 maxItems）。
+    head_n = max_items - 2  # 首部保留数（尾部保留 1 + 省略号 1）
     out = items[:head_n] + [{"label": "…", "active": False, "_ellipsis": True}]
     out.append(items[-1])
     return out

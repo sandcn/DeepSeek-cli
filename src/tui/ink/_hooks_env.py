@@ -14,6 +14,7 @@ session（``set_window_size_accessor``/``set_cursor_position_fn``）、组件库
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Callable
 
 from .fiber import SyncStoreHook, PasteHook
@@ -179,13 +180,20 @@ def useSyncExternalStore(
                 _logger.debug("useSyncExternalStore 旧订阅清理异常", exc_info=True)
             hook.cleanup = None
         hook.last_subscribe = subscribe
-        hook.subscribed = True
+        hook.subscribed = False
         try:
             cleanup = subscribe(lambda: _schedule())
             hook.cleanup = cleanup if callable(cleanup) else None
+            hook.subscribed = True
         except Exception:
+            # ★ P3 修复（review 方向）：订阅抛异常后置 subscribed=False +
+            #   复位 last_subscribe（cleanup 已置 None）——下帧重试订阅。
+            #   修复前 subscribed 保持 True 且 last_subscribe 已更新 → 永不
+            #   重试，组件永久失去 store 更新。
             _logger.debug("useSyncExternalStore 订阅异常", exc_info=True)
             hook.cleanup = None
+            hook.subscribed = False
+            hook.last_subscribe = None
     else:
         hook.subscribed = True
     try:
@@ -400,7 +408,7 @@ def useAnimation(options: "dict | None" = None) -> dict:
     Returns:
         dict：``{"frame": int, "timestamp": float}``。
     """
-    import time as _time
+    # ★ 2026-08-06：time 已移至模块顶部导入（修复前每次调用函数内 import）
     fps = 24
     duration = 0.0
     if isinstance(options, dict):
@@ -412,7 +420,7 @@ def useAnimation(options: "dict | None" = None) -> dict:
             duration = max(0.0, float(options.get("duration", 0)))
         except (TypeError, ValueError, OverflowError):
             duration = 0.0
-    now = _time.monotonic()
+    now = time.monotonic()
     if duration > 0:
         total_frames = max(1, int(round(duration * fps)))
         frame = int(now * fps) % total_frames

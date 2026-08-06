@@ -23,6 +23,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from src.tui.core.style import Style
 from ..element import TEXT, Element, h
 from ..hooks import use_state, use_input, use_ref
@@ -30,6 +32,8 @@ from ..widgets.layout import Column
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_clamp_index 原本地定义——收敛
 #   至 _widget_common 单一真源。
 from ._widget_common import _clamp_index
+
+_logger = logging.getLogger(__name__)
 
 __all__ = ["Tree"]
 
@@ -56,7 +60,16 @@ def _normalize_tree(items) -> list[dict]:
       - dict：``label``/``children``/``open`` 字段（children 递归归一化）；
       - str：叶子（label == 文本）；
       - 其他：``str()`` 化叶子。
+
+    ★ 健壮性（渲染错误防御）：data 不可迭代（None/标量/对象）时回退空列表
+      ——修复前 ``for item in items or []`` 对不可迭代的 data（如 int/bool）
+      抛 TypeError，Tree 渲染崩溃。
+    ★ 2026-08-06：可迭代守卫排除 str/bytes——str 是 Iterable（逐字符），
+      但作为 data 会被逐字符拆成叶子节点（意外语义），与 _table/listview
+      的守卫写法对齐。
     """
+    if not hasattr(items, "__iter__") or isinstance(items, (str, bytes)):
+        return []
     out: list[dict] = []
     for item in items or []:
         if isinstance(item, dict):
@@ -80,13 +93,19 @@ def _collect_visible(
     """收集可见节点（前序遍历，折叠节点的子级跳过）。
 
     ``open_set``：展开节点集合（存储节点 id——label 可能重复；不可哈希
-    兜底用稳定字符串键）。折叠（open=False 或不在 open_set）→ 子级不收集。
+    兜底用稳定字符串键）。折叠（不在 open_set）→ 子级不收集。
     """
     if out is None:
         out = []
     for node in nodes:
         out.append((node, depth))
-        if node["children"] and (node["open"] or _node_key(node) in open_set):
+        # ★ P1（review）：可见性判定仅依据 open_set——修复前 ``node["open"] or
+        #   key in open_set`` 中 ``node["open"]`` 恒为 True（_normalize_tree
+        #   默认播种 True）且 toggle 只改 open_set 不改 node["open"] → 默认
+        #   open=True 节点 toggle 后子级仍全部可见、永远无法折叠。open_set
+        #   初始化时已含所有 open=True 节点（_collect_initial 播种），显式
+        #   open=False 节点不在 open_set → 折叠语义保持。
+        if node["children"] and (_node_key(node) in open_set):
             _collect_visible(node["children"], open_set, depth + 1, out)
     return out
 
@@ -187,7 +206,8 @@ def Tree(props: dict) -> Element:
                     try:
                         on_select(node)
                     except Exception:
-                        pass
+                        # ★ 2026-08-06：补日志（修复前静默吞，与 listview 对齐）
+                        _logger.debug("Tree onSelect 回调异常", exc_info=True)
             return True
         return False
 

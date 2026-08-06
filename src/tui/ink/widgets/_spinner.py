@@ -66,7 +66,13 @@ def Spinner(props: dict) -> Element:
     indicator = props.get("indicator")
     type_ = str(props.get("type", "dots"))
     if indicator:
-        frames = list(str(indicator))
+        # ★ P1（review）：indicator 为 list/tuple 时按帧序列元素逐帧取——修复前
+        #   ``list(str(indicator))`` 对 ``["⠋","⠙"]`` 生成 ``['[', "'", ...]``
+        #   逐字符 repr 垃圾帧。
+        if isinstance(indicator, (list, tuple)):
+            frames = list(indicator)
+        else:
+            frames = list(str(indicator))
     else:
         frames = list(SPINNER_FRAMES.get(type_, SPINNER_FRAMES["dots"]))
     if not frames:

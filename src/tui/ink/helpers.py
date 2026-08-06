@@ -75,4 +75,12 @@ __all__ = [
     "apply_text_transform",
     "_parse_color",
     "cursor_control_re",
+    # ★ P3（review）：__all__ 补全——以下符号已模块级导入（_ansi_utils /
+    #   _runs_utils re-export）但未列入 __all__（通配导入丢失）。
+    "_ANSI_RE",
+    "_is_plain_ascii_fast",
+    "_first_logical_line_runs",
+    "_runs_total_width",
+    "_keep_head",
+    "_keep_tail",
 ]

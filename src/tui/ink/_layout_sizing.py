@@ -126,13 +126,17 @@ def _resolve_height(fiber: Fiber, content_h: int) -> int:
     mn = fiber.props.get("minHeight")
     if mn is not None:
         try:
-            h = max(int(mn), h)
+            # ★ P3 修复（review 方向）：与 ``_clamp_width`` 一致用
+            #   ``_resolve_length`` 解析百分比（基准 = 父容器高度，缺省回退
+            #   内容高度）——修复前 ``int("50%")`` 抛 ValueError 被吞、
+            #   minHeight/maxHeight 百分比被静默忽略。
+            h = max(_resolve_length(mn, parent_h if parent_h is not None else h), h)
         except (TypeError, ValueError, OverflowError):
             pass
     mx = fiber.props.get("maxHeight")
     if mx is not None:
         try:
-            h = min(int(mx), h)
+            h = min(_resolve_length(mx, parent_h if parent_h is not None else h), h)
         except (TypeError, ValueError, OverflowError):
             pass
     return h

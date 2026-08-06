@@ -193,7 +193,9 @@ class ToolCountDecCmd(RenderCmd):
 @dataclass(frozen=True)
 class SubagentFrameCmd(RenderCmd):
     cid: int = RenderCommand.SUBAGENT_FRAME
-    frame_lines: tuple = ()
+    # tuple | list：调用侧 _subagent_panel._push_frame 实际传 List[Line]
+    # （渲染行列表）——标注放宽以匹配真实调用（修复前标注 tuple 与传参不符）。
+    frame_lines: tuple | list = ()
 
 @dataclass(frozen=True)
 class SplashCmd(RenderCmd):

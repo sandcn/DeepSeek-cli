@@ -156,6 +156,16 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
         return []
     items = completion.items
     selected = completion.selected
+    # ★ review 修复：selected 越界钳制（绘制统一使用 sel）——selected 可能为
+    #   负/超出 items 范围（外部状态注入异常 / items 变化后残留旧索引），越界
+    #   时无高亮且标题位置 (n/total) 显示错乱；钳制到 [0, len(items)-1]。
+    #   （缓存键 popup_snap 仍用原始 selected——值变化自然触发重建。）
+    # ★ 2026-08-06：selected 非 int（None/str 等外部注入）时 `min(selected, n)`
+    #   抛 TypeError——int() 归一化失败回退 0。
+    try:
+        sel = max(0, min(int(selected), len(items) - 1))
+    except (TypeError, ValueError):
+        sel = 0
     match_prefix = completion.match_prefix or ""
     # ★ 缓存键稳定性（PERF-7 同族，BUG-73）：types 为空列表时用模块级空元组
     #   （恒同对象）——``completion.types or [""] * len(items)`` 每次创建新
@@ -163,9 +173,10 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
     #   与 descs 的 ``descriptions or ()`` 修复一致。types 非空（show_completions
     #   传入）时保持列表引用稳定（不可变契约）。
     types = completion.types or ()
-    # ★ 绘制用 types 列表：types 为空时生成 ``[""] * len(items)`` 供 ``types[i]``
-    #   索引（绘制阶段才展开，不进缓存键——键用稳定空元组 id）。
-    types_disp = list(types) if types else [""] * len(items)
+    # ★ 绘制用 types 列表：types 为空或长度不足 items 时补齐空串，保证
+    #   ``types_disp[i]`` 对任意 i < len(items) 不越界（修复前 types 非空但
+    #   长度 < len(items) 时越界 IndexError）。不进缓存键（键用稳定空元组 id）。
+    types_disp = list(types) + [""] * (len(items) - len(types))
     title = completion.title
     total = len(completion.texts) if completion.texts else len(items)
     # ★ 缓存键稳定性（PERF-7）：descriptions 为空时用模块级空元组（恒同对象）
@@ -215,7 +226,7 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
     #   补全弹窗导航时用户可感知当前位置（替代仅总数）。总数取
     #   ``len(completion.texts)``（与项数一致；缺省回退 len(items)）。
     if total > 0:
-        head.append(f" ({selected + 1}/{total})", Style(fg=title_color))
+        head.append(f" ({sel + 1}/{total})", Style(fg=title_color))
     if split:
         # 左栏标题占位（标题与选项栏对齐；右栏说明位置留白）
         head.append(" " * max(0, opt_w - head.width), _S_DIM)
@@ -237,7 +248,7 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
         #   一致——修复前高度按 ``min(selected, len(descs)-1)`` 的说明行数
         #   计算、绘制却 ``descs[selected] if 0 <= selected < len(descs)``
         #   （越界时空说明）→ 弹窗底部多出空白行，测量高度与绘制不一致。
-        desc_sel = max(0, min(selected, len(descs) - 1)) if descs else 0
+        desc_sel = max(0, min(sel, len(descs) - 1)) if descs else 0
         desc_text = descs[desc_sel] if descs else ""
         desc_lines = _wrap_by_width(desc_text or "", desc_w)
         # 方向4（超屏防护）：候选项 + 说明行数限制（与 _completion_height
@@ -251,7 +262,7 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
             # 左栏：选项
             if row < len(items):
                 i = row
-                if i == selected:
+                if i == sel:
                     line.append(" \u25b6 ", Style(fg=15, bg=sel_bg))
                 else:
                     line.append("   ")
@@ -292,7 +303,7 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
                 continue
             item = items[i]
             line = Line()
-            if i == selected:
+            if i == sel:
                 line.append(" \u25b6 ", Style(fg=15, bg=sel_bg))
             else:
                 # 与选中行 ` ▶ `（3 列）等宽——修复前 `"  "`（2 列）使

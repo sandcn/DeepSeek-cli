@@ -59,8 +59,12 @@ class ChatUIErrorHandler(logging.Handler):
                 consumer = get_active_chat_ui()
                 if consumer is not None:
                     consumer.on_error(msg)
+                    # ★ review 修复：仅 consumer 非 None **且投递成功**时标记——
+                    #  consumer 为 None（或 on_error 抛异常）时不标记：错误既
+                    #  不透传也不标记，留待后续 emit 重放（修复前无条件标记，
+                    #  consumer 为 None 时错误被永久吞掉）。
+                    record._chatui_reported = True
             finally:
-                record._chatui_reported = True
                 _handler_reentrant.is_active = False
 
 

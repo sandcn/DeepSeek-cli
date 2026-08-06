@@ -22,11 +22,15 @@ widgets.layout（Layer 0/1），无父包依赖。
 
 from __future__ import annotations
 
+import logging
+
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
 from ..hooks import use_state, use_input, use_ref
 from ..widgets.layout import Row, Column
+
+_logger = logging.getLogger(__name__)
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_clamp_index 原本地定义（与
 #   _interactive_common/tabs/search_input/tree/listview 逐字重复）——收敛至
 #   _widget_common 单一真源。
@@ -133,6 +137,11 @@ def Menu(props: dict) -> Element:
         if not focus or not items:
             return False
         cur = _clamp_index(cursor_ref.current, len(items))
+        # ★ P3（review）：items 收缩后 state 未同步——钳制结果与 ref 不一致时
+        #   同步（修复前仅不可选时跳转同步，越界钳制到可选值不 set_cursor）。
+        if cur != cursor_ref.current:
+            cursor_ref.current = cur
+            set_cursor(cur)
         if not _is_selectable(items[cur]):
             cur = _next_selectable(items, cur, 1)
             cursor_ref.current = cur
@@ -146,7 +155,7 @@ def Menu(props: dict) -> Element:
                     try:
                         on_highlight(items[new], new)
                     except Exception:
-                        pass
+                        _logger.debug("Menu onHighlight 回调异常", exc_info=True)
             return True
         if event.kind == "arrow_down":
             new = _next_selectable(items, cur, 1)
@@ -157,7 +166,7 @@ def Menu(props: dict) -> Element:
                     try:
                         on_highlight(items[new], new)
                     except Exception:
-                        pass
+                        _logger.debug("Menu onHighlight 回调异常", exc_info=True)
             return True
         if event.kind in ("home", "end"):
             new = _next_selectable(items, 0, 1) if event.kind == "home" else _next_selectable(items, len(items) - 1, -1)
@@ -167,7 +176,7 @@ def Menu(props: dict) -> Element:
                 try:
                     on_highlight(items[new], new)
                 except Exception:
-                    pass
+                    _logger.debug("Menu onHighlight 回调异常", exc_info=True)
             return True
         if event.kind == "enter":
             item = items[cur]
@@ -176,12 +185,12 @@ def Menu(props: dict) -> Element:
                 try:
                     item_on_select(item, cur)
                 except Exception:
-                    pass
+                    _logger.debug("Menu item onSelect 回调异常", exc_info=True)
             elif on_select is not None:
                 try:
                     on_select(item, cur)
                 except Exception:
-                    pass
+                    _logger.debug("Menu onSelect 回调异常", exc_info=True)
             return True
         return False
 
@@ -211,7 +220,9 @@ def Menu(props: dict) -> Element:
             label = label.replace("\n", " ")
         is_header = item.get("type") == "header"
         is_disabled = bool(item.get("disabled"))
-        is_sel = i == cursor_shown and not is_header
+        # ★ P3（review）：is_sel 增加 not is_disabled——禁用项即使光标钳制在其
+        #   行也不高亮（修复前 disabled 项被高亮样式覆盖 disabledStyle）。
+        is_sel = i == cursor_shown and not is_header and not is_disabled
         shortcut = str(item.get("shortcut", "")) if item.get("shortcut") else ""
         if is_header:
             rows.append(h(TEXT, {

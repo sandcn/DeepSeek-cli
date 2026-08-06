@@ -85,7 +85,7 @@ def FocusGroup(props: dict) -> Element:
             key_idx += 1
         else:
             wrapped.append(child)
-    return h(Column, props.get("height"), wrapped)
+    return h(Column, {"height": props.get("height")} if props.get("height") is not None else None, wrapped)
 
 
 def Key(props: dict) -> Element:

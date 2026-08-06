@@ -230,18 +230,25 @@ def UserSelectPopup(props) -> object:
                 # 多选：返回勾选结果（空勾选返回空列表）——与 Web 前端
                 # confirm 行为一致；修复前空勾选时误回退 us.default_options
                 # （用户取消所有勾选后回车仍返回默认项，违背交互意图）。
-                sel = sorted(checked_ref.current)
+                # ★ 2026-08-06：对 sel 做 0 <= i < total_now 过滤——checked
+                #   若被外部预置越界索引（或交互期选项被缩窄），options_now[i]
+                #   抛 IndexError 使弹窗交互中断（无超时兜底）。
+                sel = [i for i in sorted(checked_ref.current) if 0 <= i < total_now]
                 result = [options_now[i] for i in sel]
             else:
                 result = [options_now[cur]] if 0 <= cur < total_now else list(us.default_options or [])
-            us.done = True
+            # ★ 发布屏障语义：result/action 先写、done 最后写——工具线程轮询
+            #   done=True 时 result/action 必已就绪（修复前 done/action/result
+            #   非原子写入，工具线程读到 done=True, action="" 误判超时）。
             us.action = "confirmed"
             us.result = result
+            us.done = True
             return True
         if event.kind == "escape":
-            us.done = True
+            # ★ 发布屏障语义（同 Enter 分支）：action/result 先写、done 最后写。
             us.action = "cancel"
             us.result = list(us.default_options or [])
+            us.done = True
             return True
         # 弹窗期间其他按键一律消费（不输入到输入框）
         return True

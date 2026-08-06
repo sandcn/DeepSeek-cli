@@ -403,15 +403,25 @@ class CompletionEngine:
             return []
 
         # 确定搜索基准目录和前缀
-        if prefix.endswith(os.sep):
+        # ★ 2026-08-06：`.`/`..` 前缀特殊处理——修复前 prefix="." 时
+        #   dirname(".") or "." 使 file_prefix="" 且 `not prefix.endswith(os.sep)`
+        #   → 返回空（用户输入 "." 按 Tab 无结果）；prefix=".." 时
+        #   file_prefix=".." → glob("..*") 匹配祖父目录项，补全出父级之上的
+        #   目录（行为错误）。现在对 "." / ".." 视为「枚举当前/上级目录」。
+        if prefix in (".", ".."):
+            search_dir = expanded
+            file_prefix = ""
+        elif prefix.endswith(os.sep):
             search_dir = expanded
             file_prefix = ""
         else:
             search_dir = os.path.dirname(expanded) or "."
             file_prefix = os.path.basename(expanded)
 
-        # 如果前缀为空，不搜索（避免列出当前目录所有文件）
-        if not file_prefix and not prefix.endswith(os.sep):
+        # 如果前缀为空，不搜索（避免列出当前目录所有文件）。
+        # ★ 2026-08-06："." / ".." 例外——视为「枚举当前/上级目录」请求
+        #   （file_prefix 为空但语义明确，不应被本守卫拦截）。
+        if not file_prefix and not prefix.endswith(os.sep) and prefix not in (".", ".."):
             return []
 
         try:
@@ -434,6 +444,9 @@ class CompletionEngine:
         # 找到公共前缀用于计算 start_pos
         if prefix.endswith(os.sep):
             base = prefix
+        elif prefix in (".", ".."):
+            # "." / ".." 补全结果带 "./" / "../" 前缀（与用户输入路径形态一致）
+            base = prefix + os.sep
         else:
             base = os.path.dirname(prefix)
             if base and not base.endswith(os.sep):

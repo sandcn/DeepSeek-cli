@@ -41,6 +41,11 @@ def apply_cmd(model, cmd: RenderCmd) -> None:
     try:
         handler(model, cmd)
     except TypeError:
+        # ★ 语义说明（review 修复）：此处捕获的 TypeError 可能来自两类来源——
+        #   ① 命令参数校验失败（handler 字段/参数类型不符）；
+        #   ② handler **内部实现**抛出的 TypeError。
+        #   两者统一记录 warning（exc_info=True 保留完整堆栈，可据 traceback
+        #   区分根因），内部异常不会因「参数错误」标注而被静默吞掉。
         _logger.warning("渲染命令 %s 参数错误", _cmd_name(cid), exc_info=True)
 
 
@@ -292,7 +297,19 @@ def _do_parse_info(model, cmd) -> None:
         tokens_str = f"{int(cmd.tokens)}t" if math.isfinite(cmd.tokens) else "?"
     else:
         tokens_str = str(cmd.tokens)
-    model.parse_line = AnsiLine.of(f"  ~ {cmd.tool_names} {tokens_str} {cmd.elapsed:.2f}s", _S_PARSE)
+    # ★ review 修复：elapsed 归一化——None/str 等非 float 输入在
+    #   f"{cmd.elapsed:.2f}s" 抛 TypeError（被 apply_cmd 吞，进度行缺失）；
+    #   float() 归一化失败/非有限值一律回退 0.0（不中断渲染）。
+    try:
+        elapsed = float(cmd.elapsed)
+        if not math.isfinite(elapsed):
+            elapsed = 0.0
+    except (TypeError, ValueError, OverflowError):
+        # ★ 2026-08-06：OverflowError——超大 Decimal（如 1e999999）float()
+        #   也抛 OverflowError，补进捕获（修复前穿透 apply_cmd 的
+        #   except TypeError 向上冒泡中断命令处理）。
+        elapsed = 0.0
+    model.parse_line = AnsiLine.of(f"  ~ {cmd.tool_names} {tokens_str} {elapsed:.2f}s", _S_PARSE)
 
 
 def _do_user_message(model, cmd) -> None:

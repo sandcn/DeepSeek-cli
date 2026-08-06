@@ -84,7 +84,7 @@ class SubAgentPanelController:
          （``_SUBSCRIPTIONS`` 声明式表）
       2. 事件分发：10 个 ``_on_*`` 处理器——委托 ``StateStore`` 变更方法
          （锁内）+ 置脏 + ``_emit_frame()``（锁外节流推送）
-      3. 帧推送：``_push_frame``（注入 push_cmd 或降级 chat_ui）
+      3. 帧推送：``_push_frame``（注入 push_cmd 回调；失败仅记日志不降级）
       - 状态建模在 ``_subagent_state``；帧渲染在 ``_subagent_render``。
     """
 
@@ -405,22 +405,17 @@ class SubAgentPanelController:
     # ── 帧推送 ──────────────────────────────────────────
 
     def _push_frame(self, lines: List[Line]) -> None:
-        # 优先使用注入的 push_cmd 回调，避免 get_active_chat_ui() 循环依赖
+        # 优先使用注入的 push_cmd 回调，避免 get_active_chat_ui() 循环依赖。
+        # ★ review 修复：push_cmd_cb 抛异常时仅记日志返回，**不再降级重试**——
+        #   降级 chat_ui.push_cmd 入同一引擎队列同样失败（同一队列/同一总线），
+        #   且可能两次推送同一帧（帧被推入两次，面板渲染重复）。推送失败属
+        #   非关键路径（debug 日志），下一帧推送自然重试。
         if self._push_cmd_cb is not None:
             try:
                 self._push_cmd_cb(SubagentFrameCmd(frame_lines=lines))
-                return
             except Exception:
                 _logger.debug("_push_frame push_cmd_cb 异常", exc_info=True)
-        # 降级：通过 get_active_chat_ui() 获取
-        chat_ui = self._chat_ui
-        if chat_ui is None:
-            from .consumer import get_active_chat_ui
-            chat_ui = get_active_chat_ui()
-            self._chat_ui = chat_ui
-        if chat_ui is None:
-            return
-        try:
-            chat_ui.push_cmd(SubagentFrameCmd(frame_lines=lines))
-        except Exception:
-            _logger.debug("_push_frame chat_ui.push_cmd 异常", exc_info=True)
+        else:
+            # ★ 2026-08-06：未注入 push_cmd 时记 debug 日志（修复前静默丢帧，
+            #   排障无痕迹；装配路径已注入，仅测试桩/异常装配缺省）。
+            _logger.debug("_push_frame 无 push_cmd_cb，帧丢弃（%d 行）", len(lines))

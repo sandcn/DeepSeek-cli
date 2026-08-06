@@ -98,10 +98,15 @@ def single_line(text: str) -> str:
         text: 源文本（可为空）。
 
     Returns:
-        单行化文本；空串原样返回（replace 对空串无副作用，零拷贝）。
+        单行化文本；空串/None 一律返回 ``""``（修复前 None 原样透传
+        违反 str 返回契约）。
     """
+    if not isinstance(text, str):
+        # ★ 2026-08-06：非 str 非空值（如 int）也回退空串——`if not text`
+        #   只覆盖 None/空串/0，非零数字走 text.replace 抛 AttributeError。
+        return ""
     if not text:
-        return text
+        return ""
     return text.replace("\r", "\\r").replace("\n", "\\n")
 
 

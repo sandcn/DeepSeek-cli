@@ -41,12 +41,9 @@ fiber 在每次渲染前 ``reset_hooks()`` 清零 hook_index，``use_*`` 按下�
 from __future__ import annotations
 
 import itertools
-import logging
 from typing import Any, Callable, List
 
 from .fiber import Fiber
-
-_logger = logging.getLogger("src.tui.ink.hooks")
 
 # ═══════════════════════════════════════════════════════════
 # 模块级可变状态（唯一真源；子模块经 ``hooks._xxx`` 访问最新值）
@@ -100,6 +97,7 @@ from ._hooks_core import (
     _next_hook,
     _next_state_hook,
     _make_setter,
+    _clear_fiber_state_queues,
     use_state,
     use_reducer,
     use_ref,
@@ -142,6 +140,7 @@ from ._hooks_focus import (
     _reset_focus_ids,
     _register_focus_id,
     _resolve_focus_id,
+    _clear_focus_active,
     _focus_next,
     _focus_previous,
     _focus_to,

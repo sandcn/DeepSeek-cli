@@ -74,14 +74,74 @@ class _HistoryDiskWriter:
             _safe_disk_append(history_io, escaped)
 
     def submit(self, history_io, escaped: str) -> None:
+        self._ensure_thread()
         try:
             self._queue.put((history_io, escaped), block=False)
         except queue.Full:
-            _logger.debug("历史写盘队列已满，丢弃", exc_info=True)
+            # ★ 2026-08-06：队列满丢弃升级 warning——高频 Enter/慢盘时超出
+            #   256 条的历史被静默丢弃（仅 debug）用户不可见，历史丢失应
+            #   可观测。
+            _logger.warning(
+                "历史写盘队列已满（%d），丢弃条目（历史可能丢失）",
+                self._MAX_PENDING,
+            )
+
+    def _ensure_thread(self) -> None:
+        """确保后台写盘线程存活（flush 退出后自动重建）。
+
+        ★ 2026-08-06：``flush()`` 置哨兵使线程退出后，若模块级 writer 仍被
+        使用（lifecycle.stop 后再 start / 多 ChatUIConsumer 实例共享），
+        ``submit`` 会把条目放入队列但无消费者 → 历史写盘静默失效。submit
+        前检查线程存活，已死则重建（复用同一队列——剩余条目与哨兵外的
+        内容保持串行有序）。
+        """
+        if not self._thread.is_alive():
+            self._thread = threading.Thread(
+                target=self._run, daemon=True, name="tui-history-disk-writer",
+            )
+            self._thread.start()
+
+    def flush(self, timeout: float = 2.0) -> bool:
+        """排空待写队列并等待后台线程写入完成（退出冲刷接线，2026-08-06）。
+
+        置 ``None`` 哨兵退出线程；join 等待线程消费剩余条目后正常退出。
+        幂等：线程已退出（重复调用）时直接返回 True。
+
+        Returns:
+            True — 队列已排空且线程正常退出；
+            False — 超时（线程仍存活，少量条目可能未落盘）。
+        """
+        if not self._thread.is_alive():
+            return True
+        try:
+            self._queue.put(None, block=True, timeout=timeout)
+        except queue.Full:
+            _logger.warning("历史写盘队列满，无法置退出哨兵（条目可能丢失）")
+            return False
+        self._thread.join(timeout=timeout)
+        if self._thread.is_alive():
+            _logger.warning("历史写盘线程 %s 秒内未退出", timeout)
+            return False
+        return True
+
+
+def flush_history_disk(timeout: float = 2.0) -> bool:
+    """冲刷共享历史写盘队列（TuiLifecycle.stop 接线，2026-08-06）。
+
+    修复前 ``_HistoryDiskWriter`` 无冲刷接口——注释声称「退出冲刷由 lifecycle
+    flush 兜底」但实际无接线，daemon 线程随进程强制终止时队列中最多
+    ``_MAX_PENDING`` 条未落盘历史丢失。
+    """
+    return _HISTORY_DISK_WRITER.flush(timeout=timeout)
 
 
 #: 模块级共享 writer（daemon 线程，进程退出自动终止）
 _HISTORY_DISK_WRITER = _HistoryDiskWriter()
 
 
-__all__ = ["_safe_disk_append", "_HistoryDiskWriter", "_HISTORY_DISK_WRITER"]
+__all__ = [
+    "_safe_disk_append",
+    "_HistoryDiskWriter",
+    "_HISTORY_DISK_WRITER",
+    "flush_history_disk",
+]

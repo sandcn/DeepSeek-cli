@@ -50,6 +50,15 @@ def Table(props: dict) -> Element:
         BOX 元素（纵向堆叠的表格行）。
     """
     data = props.get("data", []) or []
+    # ★ P3（review）：data 不可迭代（标量）时渲染崩溃——修复前 ``for row in
+    #   data`` 对 int/bool 等抛 TypeError。增加可迭代守卫（同
+    #   _interactive_common._normalize_items 模式）。
+    if data is None:
+        data = []
+    elif hasattr(data, "__iter__") and not isinstance(data, (str, bytes)):
+        data = list(data)
+    else:
+        data = []
     columns = props.get("columns")
     try:
         padding = max(0, int(props.get("padding", 1)))

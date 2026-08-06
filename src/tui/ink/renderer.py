@@ -930,7 +930,8 @@ class InkRenderer:
             for idx in range(start, end):
                 self._line_callback(frame.render_line(idx) + "\n")
         except Exception:
-            pass
+            # ★ P3 修复（review 方向）：裸吞异常补日志（exc_info 保留栈）。
+            _logger.debug("_emit_new_lines 行回调异常", exc_info=True)
 
     # ── 光标 ─────────────────────────────────────────
 
@@ -997,7 +998,8 @@ class InkRenderer:
         try:
             self._stream.flush()
         except Exception:
-            pass
+            # ★ P3 修复（review 方向）：裸吞异常补日志（exc_info 保留栈）。
+            _logger.debug("suspend 刷出异常", exc_info=True)
 
     def reset(self, full: bool = False) -> None:
         """重置渲染状态。
@@ -1024,7 +1026,8 @@ class InkRenderer:
         try:
             self._stream.flush()
         except Exception:
-            pass
+            # ★ P3 修复（review 方向）：裸吞异常补日志（exc_info 保留栈）。
+            _logger.debug("flush 刷出异常", exc_info=True)
 
     # ── 测试辅助 ─────────────────────────────────────
 

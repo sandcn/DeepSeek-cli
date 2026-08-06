@@ -201,14 +201,23 @@ def _shrink_row_children(
         inner_x: 内容区起始 x。
         inner_y: 内容区起始 y。
     """
-    weights = [max(1, _flex_shrink(c)) for c in children]
+    weights = []
+    for c in children:
+        if "flexShrink" in c.props:
+            # 显式提供（含显式 0）：权重即解析值——显式 0 表示禁缩
+            # （不参与收缩循环），保持 0。
+            weights.append(_flex_shrink(c))
+        else:
+            # 未设置 → 默认权重 1（row 超宽默认收缩防溢出）。
+            weights.append(1)
     widths = [c.layout_box.w for c in children]
     deficit = float(used_w - target_w)
     if deficit <= 0:
         return
-    # 迭代收缩：每轮按权重比例缩减，钳制每子 >= 1
+    # 迭代收缩：每轮按权重比例缩减，钳制每子 >= 1；
+    # 权重 0（显式 flexShrink: 0）的子节点不参与收缩（宽度保持）。
     while deficit > 0.01:
-        shrinkable = [i for i, w in enumerate(widths) if w > 1]
+        shrinkable = [i for i, w in enumerate(widths) if w > 1 and weights[i] > 0]
         if not shrinkable:
             break
         w_total = sum(weights[i] for i in shrinkable)

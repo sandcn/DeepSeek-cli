@@ -163,6 +163,10 @@ class ChatUIConsumer:
 
     def start(self) -> None:
         """启动 ChatUI 消费者（委托 TuiLifecycle + 注册消费者）。"""
+        # ★ 2026-08-06 备注：start/stop 的 ``_started`` 检查在锁外——并发重复
+        #   调用时可能重复注册/注销（consumer_registry refcount 错乱）。当前
+        #   生产调用方为单线程生命周期管理（app_loop 顺序调用），并发仅测试
+        #   场景；如需并发安全应将注册/注销移入 ``_state_lock`` 临界区。
         if not self._started:
             _register_consumer(self)
             # 方向2（注册回滚）：lifecycle.start 异常不泄漏消费者注册表——
@@ -172,14 +176,17 @@ class ChatUIConsumer:
             except Exception:
                 _unregister_consumer()
                 raise
-        else:
-            self._lifecycle.start()
+        # else 分支：已启动则直接返回（_lifecycle.start() 幂等 no-op，无需重复调用）
 
     def stop(self) -> None:
         """停止 ChatUI 消费者（委托 TuiLifecycle + 注销消费者）。"""
         if self._started:
-            self._lifecycle.stop()
-            _unregister_consumer()
+            try:
+                self._lifecycle.stop()
+            finally:
+                # 无论 lifecycle.stop 是否抛异常，都必须注销消费者，
+                # 防止消费者注册表泄漏、get_active_chat_ui() 返回已停止实例。
+                _unregister_consumer()
 
     def suspend(self) -> None:
         """暂停渲染引擎（委托 TuiLifecycle）。"""

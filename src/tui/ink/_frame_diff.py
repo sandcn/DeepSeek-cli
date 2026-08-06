@@ -75,7 +75,10 @@ def _is_tail_shifted(self_prev: Frame, frame: Frame, i: int, delta: int) -> bool
     p = self_prev.lines
     n = frame.lines
     start = i + delta
-    if start > len(n):
+    # ★ P3 修复（review 方向）：delta<0 时 start = i + delta 可为负——Python
+    #   负索引回绕（``n[start]`` 从末尾取、``len(n)-start`` 虚增）导致错误
+    #   判定/越界。防御：start < 0 直接返回 False（非纯下移尾部）。
+    if start < 0 or start > len(n):
         return False
     # 索引循环比较（避免每帧创建两段切片——方向3 性能）
     count = self_prev.height - i

@@ -58,20 +58,26 @@ def _text_children_value(children) -> str:
 
     React Ink 语义：``<Text>`` 的 children 属于 props，通常为字符串
     （``h(Text, {"children": "a"})``）。变参用法（``h(Text, None, "a")``）
-    经 reconciler 注入为 Element 元组（``(TEXT('a'),)``）——归一化为首元素
-    文本（单文本场景）；空/无子级回退空串。
+    经 reconciler 注入为 Element 元组（``(TEXT('a'),)``）——归一化为文本
+    （多子级拼接；空/无子级回退空串）。
     """
     if children is None or children == "":
         return ""
     if isinstance(children, (tuple, list)):
         if not children:
             return ""
-        first = children[0]
-        if isinstance(first, str):
-            return first
-        if isinstance(first, Element) and first.type == TEXT:
-            return str(first.props.get("children", ""))
-        return str(first)
+        # ★ P3（review）：多文本子级拼接——修复前仅取首元素（多子级内容
+        #   静默丢失）。统一拼接全部子级文本（Element 取 children prop；
+        #   字符串/其他 str() 化）。
+        parts: list[str] = []
+        for child in children:
+            if isinstance(child, str):
+                parts.append(child)
+            elif isinstance(child, Element) and child.type == TEXT:
+                parts.append(str(child.props.get("children", "")))
+            else:
+                parts.append(str(child))
+        return "".join(parts)
     return children
 
 
