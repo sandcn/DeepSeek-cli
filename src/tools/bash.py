@@ -200,12 +200,6 @@ class BashFunc(Func):
         # （不终止进程，返回 task_id JSON）；后台任务无限运行。
 
     @classmethod
-    async def _show_command_to_terminal(cls, command, cwd=None):
-        """将命令打印到终端（绿色高亮，含 cwd 信息）。"""
-        cwd_info = f" {DIM}(在 {cwd}){RESET}" if cwd else ""
-        await print_to_terminal(f"{GREEN}$ {command}{cwd_info}{RESET}")
-
-    @classmethod
     def _check_cwd_or_return(cls, cwd):
         """检查 cwd 是否存在，不存在时返回错误信息。"""
         if cwd and not os.path.isdir(cwd):
@@ -595,9 +589,6 @@ class BashFunc(Func):
         if ret:
             return ret
 
-        if show_command:
-            await self._show_command_to_terminal(self.command, self.cwd)
-
         # ★ 子进程句柄记录：自动转后台时写入任务记录，供 bash_task 工具操作
         #   （wait 等待 / kill 杀进程树 / stdin、keys 交互）。
         holder: dict = {}
@@ -792,7 +783,6 @@ class BashFunc(Func):
             return "(后台执行需要关联 Agent 上下文，当前未关联)"
 
         # 显示启动命令（后台任务本身不再重复打印）
-        await self._show_command_to_terminal(self.command, self.cwd)
 
         task_id = f"bg-{uuid.uuid4().hex[:12]}"
 
@@ -932,7 +922,6 @@ class BashFunc(Func):
         if ret:
             return ret
 
-        await self._show_command_to_terminal(self.command, self.cwd)
 
         return await self._run_async(
             show_command=False, show_output=False,
