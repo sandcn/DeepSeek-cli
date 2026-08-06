@@ -630,7 +630,7 @@ class TestBeautyTimeBasedEffects:
         assert _SPINNER_FRAMES[0] != _SPINNER_FRAMES[3]
 
     def test_group_card_running_open_done_included(self):
-        """单卡合并：running agent 优先展开、done agent 单行；running 时开放（无底边框）。"""
+        """树图：标题行 + 各 agent 一级分支（running 展开、done 单行）；无框线角字符。"""
         import time as _time
         from src.tui._subagent_panel import (
             SubAgentPanelController, _AgentSlot,
@@ -644,15 +644,18 @@ class TestBeautyTimeBasedEffects:
         ctrl._order = ["agent-run", "agent-done"]
         lines = ctrl._render_frame()
         plains = [l.plain for l in lines]
-        # 单卡：标题行含 `子代理 · 2`（running ●，无边框）；running agent
-        # 标题在 done 之前
+        # 树图：标题行含 `子代理 · 2`（running ●，树根）；agent 按 order 顺序
+        # 一级分支（├─ / └─），running agent 标题在 done 之前
         assert plains[0].startswith("\u25cf") and "子代理 · 2" in plains[0]
         assert any("run" in p for p in plains)
         assert any("done" in p for p in plains)
-        # 无边框字符
+        # 树形分支线（├─ └─）存在：第一个 agent 非最后 → ├─；最后 agent → └─
+        assert any("\u251c\u2500" in p for p in plains), f"应有一级分支 ├─: {plains}"
+        assert any("\u2514\u2500" in p for p in plains), f"应有树尾分支 └─: {plains}"
+        # 无框线角字符（┌ ┐ ┘；树形分支线 ├─└─│ 是树图语义，允许）
         assert not any(ch in p for p in plains
-                       for ch in "\u250c\u2510\u2502\u2514\u2518"), (
-            f"子代理卡应无边框字符: {plains}"
+                       for ch in "\u250c\u2510\u2518"), (
+            f"子代理卡应无框线角字符: {plains}"
         )
 
     def test_group_card_closed_when_all_done(self):

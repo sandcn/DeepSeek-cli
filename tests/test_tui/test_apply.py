@@ -378,9 +378,10 @@ class TestToolBox:
         tops = [ln.plain for ln in m.committed_lines
                 if get_tool_display_name("bash") in ln.plain]
         assert len(tops) == 1, f"重复 open 不应产生孤儿标题行: {tops}"
-        # 无边框字符
+        # 无边框字符（│ 为内容竖线引导线——BEAUTY-35 美化保留，非边框；
+        # 仅角字符 ┌┐└┘ 视为边框残留）
         assert not any(ch in ln.plain for ln in m.committed_lines
-                       for ch in "\u250c\u2510\u2502\u2514\u2518"), (
+                       for ch in "\u250c\u2510\u2514\u2518"), (
             f"工具卡应无边框字符: {[ln.plain for ln in m.committed_lines]}"
         )
 

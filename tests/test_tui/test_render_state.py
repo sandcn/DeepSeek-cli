@@ -448,9 +448,9 @@ class TestToolCardMultilineDetail:
         assert "\n" not in m.tool_boxes["t1"].lines[0].plain
         plains = self._render_plains(m)
         assert any("\u25cf" in p for p in plains)  # 标题行存在（running ●，无边框）
-        # 无边框字符
+        # 无边框字符（│ 为内容竖线引导线——BEAUTY-35 美化保留，非边框）
         assert not any(ch in p for p in plains
-                       for ch in "\u250c\u2510\u2502\u2514\u2518"), (
+                       for ch in "\u250c\u2510\u2514\u2518"), (
             f"工具卡应无边框字符: {plains}"
         )
         for p in plains:

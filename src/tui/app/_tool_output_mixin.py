@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 # ★ 状态常量/辅助来自 model 门面（re-export 自 _state_types/_model_helpers）——
 #   避免 mixin 反向依赖 model 主模块造成循环；toolcard 行生成经函数内惰性
@@ -97,6 +98,11 @@ class _ToolOutputMixin:
         block.extra["tool_name"] = tool_name
         block.extra["tool_status"] = "running"
         block.extra["tool_detail"] = detail
+        # ★ BEAUTY-35（状态行元信息）：记录工具开始时间戳——close_tool_box
+        #   关闭时计算耗时（``_tool_duration``），状态行渲染 ``· N 行 · Xs``。
+        #   复用路径（同一 tool_id 重复 open 防重复投递）不重置——保持首次
+        #   开始时间，避免重复事件刷新耗时。
+        block.extra["_tool_started_at"] = time.monotonic()
         title = f"  \u00b7 {display}"
         if detail:
             title = f"  \u00b7 {display} \u00b7 {detail}"
@@ -261,6 +267,12 @@ class _ToolOutputMixin:
             )
             return
         status = "\u2714" if success else "\u2716"
+        # ★ BEAUTY-35（状态行元信息）：计算工具耗时（open 记录的开始时间戳 →
+        # 关闭时差），状态行渲染 ``· N 行 · Xs``。无开始时间戳（旧块/外部构造）
+        # 时跳过（防御）。
+        started = block.extra.get("_tool_started_at")
+        if started is not None:
+            block.extra["_tool_duration"] = max(0.0, time.monotonic() - started)
         # 记录状态行下标（卡片渲染跳过该主体行——状态已移入底边框；模型层
         # 不变式 block.lines[-1].plain.strip()=="✔" 保留）
         block.extra["_status_line_index"] = len(block.lines)

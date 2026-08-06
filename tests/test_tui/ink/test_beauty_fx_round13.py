@@ -96,26 +96,33 @@ class TestBeauty26ToolIconBreath:
         return blk
 
     def test_running_icon_uses_breath_style(self):
-        """running 工具卡标题图标呼吸色（非静态 252）。"""
+        """running 工具卡标题图标呼吸色（bash→shell 类别色 41~49 脉动）。
+
+        BEAUTY-35（2026-08-06 工具卡完整美化）：图标按工具类别着色——运行中
+        在类别色邻域呼吸（bash 属 shell 类：41→49），非旧版亮白 232~252。
+        """
         from src.tui.app.toolcard import tool_card_lines
         blk = self._tool_block("running")
         lines = tool_card_lines(blk, 60)
         head = lines[0]
-        # 结构：┌─ + 状态图标● + 空格 + 工具图标⚡（呼吸）+ 显示名 + ...
-        # 找到工具图标 run（⚡/📄 等，非状态图标/边框/显示名）
+        # 结构：状态图标● + ▎引导线 + 工具图标⚡（类别呼吸）+ 显示名（加粗
+        # 类别呼吸）+ detail；找到工具图标 run（⚡/📄 等，非状态图标/引导线）
         icon_run = None
         for run in head:
             if run.text and run.text[0] in ("\u26a1", "\u2699", "\U0001f4c4", "\U0001f50d", "\U0001f4d6"):
                 icon_run = run
                 break
         assert icon_run is not None, f"应找到工具图标 run: {head!r}"
-        # 运行中图标色应为呼吸色（232~252 区间，非静态 252）
+        # 运行中图标色应为类别呼吸色（bash→shell 41~49，非静态 252）
         fg = icon_run.style.fg if icon_run.style else None
         assert fg is not None, "运行中图标应有颜色"
-        assert 232 <= fg <= 252, f"运行中图标色应在呼吸区间: {fg}"
+        assert 41 <= fg <= 49, f"运行中图标色应在类别呼吸区间(41~49): {fg}"
 
     def test_done_icon_static(self):
-        """已关闭工具卡标题图标静态 252（frozen 缓存）。"""
+        """已关闭工具卡标题图标静态类别色（bash→shell 41，frozen 缓存）。
+
+        BEAUTY-35：关闭/提交后图标静态类别色（非旧版亮白 252）。
+        """
         from src.tui.app.toolcard import tool_card_lines
         blk = self._tool_block("done", closed=True)
         lines = tool_card_lines(blk, 60)
@@ -127,7 +134,7 @@ class TestBeauty26ToolIconBreath:
                 break
         assert icon_run is not None, f"应找到工具图标 run: {head!r}"
         fg = icon_run.style.fg if icon_run.style else None
-        assert fg == 252, f"已关闭卡图标应静态 252: {fg}"
+        assert fg == 41, f"已关闭卡图标应静态类别色 41（shell）: {fg}"
 
 
 # ═══════════════════════════════════════════════════════════

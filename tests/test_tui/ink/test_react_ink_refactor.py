@@ -156,9 +156,12 @@ class TestSubAgentStyledRuns:
         assert lines, "应产出卡片行"
         assert all(isinstance(ln, Line) for ln in lines), "行应为 ink Line"
         plains = [ln.plain for ln in lines]
-        assert plains[0].startswith("\u25cf"), "标题行（running ●，无边框）"
+        assert plains[0].startswith("\u25cf"), "标题行（running ●，树图树根）"
+        # 树形分支线（单 agent 树尾 └─）存在
+        assert any("\u2514\u2500" in p for p in plains), f"应有树形分支: {plains}"
+        # 无框线角字符（┌ ┐ ┘；树形分支线 ├─└─│ 是树图语义，允许）
         assert not any(ch in p for p in plains
-                       for ch in "\u250c\u2510\u2502\u2514\u2518"), "无边框字符"
+                       for ch in "\u250c\u2510\u2518"), "无框线角字符"
         assert any("分析" in p for p in plains), "agent 描述"
 
     def test_format_tool_record_returns_line(self):

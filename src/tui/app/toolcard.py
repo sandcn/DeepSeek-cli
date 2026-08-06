@@ -1,9 +1,23 @@
 """toolcard — ToolCard 工具调用卡片控件（React Ink 组件化）。
 
-工具执行结果卡片（对齐 Claude Code）：标题行（状态图标 + 工具图标 + 名称 +
-detail）+ 内容行 + 状态行（``✔ 完成`` / ``✖ 失败``）。**无边框**——卡片
-以「裸行」呈现（2026-08-06 用户需求：所有 tool card 去掉边框），不再绘制
-``┌─…┐`` / ``│…│`` / ``└─…┘`` 边框字符。
+工具执行结果卡片（对齐 Claude Code）：标题行（状态图标 + ▎引导线 + 类别色
+工具图标 + 加粗类别色名称 + detail）+ 内容行（``│ `` 竖线引导）+ 状态行
+（``✔ 完成 · N 行 · Xs`` / ``✖ 失败 · N 行 · Xs``）。**无边框**——卡片以
+「裸行」呈现（2026-08-06 用户需求：所有 tool card 去掉边框），不再绘制
+``┌─…┐`` / ``│…│`` / ``└─…┘`` 边框字符；``│`` 为**内容竖线引导线**
+（Claude Code 风格视觉归组，非边框）。
+
+完整美化（BEAUTY-35，2026-08-06）：工具类别配色 + 标题强化 + 内容竖线 +
+状态元信息：
+  - 类别配色：标题 ▎引导线 / 工具图标 / 显示名按工具类别着色（唯一真源
+    ``_tool_icons.TOOL_CATEGORY_STYLES``：shell 绿 / file_read 浅蓝 /
+    file_write 粉 / search 金 / agent 蓝 / interact 青 / delete 红），运行中
+    在类别色邻域 12s 脉动呼吸（与 detail 呼吸同步），关闭后静态类别色；
+  - 标题强化：显示名加粗 + ▎引导线（状态图标恒为 runs[0]——close_tool_box
+    原位翻转图标与 ``startswith(●/✔/✖)`` 测试不变式依赖）；
+  - 内容竖线：每内容行前置 ``│ ``（深灰 238），窄屏截断保证总宽 <= width；
+  - 状态元信息：状态行追加 ``· N 行 · Xs``（dim 灰；行数/耗时由
+    ``_tool_output_mixin`` 记录）。
 
 React Ink 组件化（2026-08-05，深度组件化）：原 ``AppModel._tool_card_styled_lines``
 （模型层纯函数生成 StyledRun 行）迁移为独立组件模块，模型层不再持有行生成
@@ -28,7 +42,59 @@ React Ink 组件化（2026-08-05，深度组件化）：原 ``AppModel._tool_car
 
 from __future__ import annotations
 
+# core.style 为 Layer 0 底层（无 app 依赖），模块级 import 无循环风险；
+# 用于模块级样式常量（_GUIDE_STYLE / _CATEGORY_DEFAULT_STYLE）。
+from src.tui.core.style import Style
+
 __all__ = ["ToolCard", "tool_card_lines", "_tool_icon_runs", "_tool_status_index"]
+
+# ── 工具类别配色（BEAUTY-35，2026-08-06 美化） ─────────────────────
+# 标题 ▎引导线 / 工具图标 / 显示名按工具类别着色；运行中在类别色邻域
+# 脉动呼吸（12s 周期，与 detail 呼吸同步——视觉联动），关闭后静态类别色。
+# 呼吸区间下限 = 静态类别色号（_tool_icons.TOOL_CATEGORY_STYLES 同值），
+# 上限为更亮色号（呼吸峰值）。未知名工具兜底暗灰→亮白（与旧图标呼吸一致）。
+_CATEGORY_BREATH: dict[str, tuple[int, int]] = {
+    "shell":      (41, 49),    # 绿 → 亮绿
+    "file_read":  (81, 87),    # 浅蓝 → 亮蓝
+    "file_write": (213, 219),  # 粉 → 亮粉
+    "search":     (221, 229),  # 金 → 亮金
+    "agent":      (75, 81),    # 蓝 → 亮蓝
+    "interact":   (51, 87),    # 青 → 亮青
+    "delete":     (203, 210),  # 红 → 亮红
+}
+_CATEGORY_DEFAULT_STYLE = Style(fg=242)     # 未知名工具兜底（dim）
+_CATEGORY_DEFAULT_BREATH = (242, 252)       # 未知名工具呼吸（暗灰→亮白）
+_GUIDE_STYLE = Style(fg=238)                # 内容竖线引导色（深灰，低调）
+
+
+def _category_style(tool_name: str) -> Style:
+    """工具类别静态 Style（唯一真源 ``_tool_icons.TOOL_CATEGORY_STYLES``）。
+
+    Args:
+        tool_name: 工具名（TOOL_CATEGORY_MAP 键；未知名返回 dim 兜底）。
+
+    Returns:
+        类别 Style（frozen 对象，可复用）。
+    """
+    from src.tui._tool_icons import TOOL_CATEGORY_MAP, TOOL_CATEGORY_STYLES
+    cat = TOOL_CATEGORY_MAP.get(tool_name, "")
+    return TOOL_CATEGORY_STYLES.get(cat, _CATEGORY_DEFAULT_STYLE)
+
+
+def _category_breath_fg(tool_name: str) -> int:
+    """工具类别呼吸色号（运行中：类别色邻域 12s 脉动）。
+
+    Args:
+        tool_name: 工具名（TOOL_CATEGORY_MAP 键；未知名回退暗灰→亮白）。
+
+    Returns:
+        [lo, hi] 区间内的 256 色号（与 detail 呼吸同周期，视觉联动）。
+    """
+    from src.tui.app._theme import time_glow
+    from src.tui._tool_icons import TOOL_CATEGORY_MAP
+    cat = TOOL_CATEGORY_MAP.get(tool_name, "")
+    lo, hi = _CATEGORY_BREATH.get(cat, _CATEGORY_DEFAULT_BREATH)
+    return time_glow(lo, hi, 12.0)
 
 
 def _tool_icon_runs(block) -> list:
@@ -79,18 +145,22 @@ def _tool_status_index(block):
 
 
 def _omitted_line(text: str, width: int) -> list:
-    """省略提示行（``… 前/后 N 行省略``，无边框）。
+    """省略提示行（``│ … 前/后 N 行省略``，无边框——BEAUTY-35 带竖线引导）。
 
     窄屏防溢出：提示文本超宽时截断至 width（与标题/内容行一致——
-    不截断时窄终端错乱）。函数内惰性 import（与 tool_card_lines 同模式）。
+    不截断时窄终端错乱；竖线引导占用 2 列，内容截断至 width-2）。
+    函数内惰性 import（与 tool_card_lines 同模式）。
     """
     from src.tui.ink import StyledRun
     from src.tui.ink.helpers import truncate_runs
-    from src.tui.core.style import Style
-    ind_runs = [StyledRun(text, Style(fg=242))]
+    guide = [StyledRun("│ ", _GUIDE_STYLE)]
     if width <= 0:
-        return ind_runs
-    return truncate_runs(ind_runs, width)
+        # 无宽度防御：不截断（与旧行为一致）
+        return guide + [StyledRun(text, Style(fg=242))]
+    if width == 1:
+        # 极端窄屏：仅竖线（1 列）
+        return [StyledRun("│", _GUIDE_STYLE)]
+    return guide + truncate_runs([StyledRun(text, Style(fg=242))], width - 2)
 
 
 def tool_card_lines(block, width, start=0, stop=None):
@@ -114,7 +184,6 @@ def tool_card_lines(block, width, start=0, stop=None):
         list[list[StyledRun]] — 每行 StyledRun 列表（卡片行，无边框字符）。
     """
     from src.tui.app._theme import get_active_palette
-    from src.tui.core.style import Style
     from src.tui.ink import StyledRun
     from src.tui.ink.helpers import truncate_runs
     from src.tools.registry import get_tool_display_name
@@ -131,14 +200,18 @@ def tool_card_lines(block, width, start=0, stop=None):
     if start == 0 and _status == "running" and not block.closed:
         from src.tui.app._theme import time_glow as _time_glow_icon
         _icon_fg = _time_glow_icon(208, 220, 6.0)
+        # BEAUTY-35：类别呼吸色（▎/图标/名称 12s 脉动）——与 _icon_fg 同桶
+        # 固定（跨桶变化触发重建）；仅运行中且 start==0 时计算，其余 -1。
+        _cat_fg = _category_breath_fg(block.extra.get("tool_name", ""))
     else:
         _icon_fg = -1
+        _cat_fg = -1
     # ★ BUG-71（review 方向，缓存键完整性）：_frame_key 补充标题字段
     #   （tool_name/tool_detail）——修复前缺标题：open_tool_box 复用 box 更新
     #   标题后，同帧帧缓存（同 start/stop/status/len/呼吸色桶）命中旧标题。
     _frame_key = (
         start, stop, block.closed, _status, len(block.lines),
-        _icon_fg,
+        _icon_fg, _cat_fg,
         block.extra.get("tool_name", ""),
         block.extra.get("tool_detail", ""),
         block.extra.get("_bash_omitted_lines", 0),
@@ -158,23 +231,26 @@ def tool_card_lines(block, width, start=0, stop=None):
         icon_char = TOOL_ICONS.get(tool_name, "\u2699")
         detail = block.extra.get("tool_detail", "")
         title_runs = list(_tool_icon_runs(block))
-        # ★ BEAUTY-26（体验动效）：工具图标运行中呼吸——亮白 232→252 脉动
-        #   （12s 周期，与 detail 呼吸同步）。运行中的工具图标更生动（与
-        #   ● 图标呼吸/detail 呼吸联动）；关闭/提交后保持亮白静态
-        #   （frozen 缓存不再重算，零额外渲染成本）。
-        if block.extra.get("tool_status") == "running" and not block.closed:
-            from src.tui.app._theme import time_glow
-            icon_style = Style(fg=time_glow(232, 252, 12.0))
+        running = _status == "running" and not block.closed
+        # ★ BEAUTY-35（工具卡完整美化）：▎引导线 + 工具图标 + 显示名按工具
+        #   类别着色——运行中在类别色邻域呼吸（12s 周期，与 detail 呼吸同步；
+        #   同 _cat_fg 值，整体同色脉动），关闭/提交后静态类别色（frozen 缓存
+        #   不再重算，零额外渲染成本）。显示名加粗（标题强化）。runs[0] 保持
+        #   状态图标（close_tool_box 原位翻转 + 测试 startswith(●/✔/✖) 不变式）。
+        if running:
+            cat_fg = _cat_fg
         else:
-            icon_style = Style(fg=252)
-        title_runs.append(StyledRun(f"{icon_char} ", icon_style))
-        title_runs.append(StyledRun(display, Style(fg=252)))
+            cat_style = _category_style(tool_name)
+            cat_fg = cat_style.fg if cat_style.fg is not None else 242
+        title_runs.append(StyledRun("\u258e", Style(fg=cat_fg)))  # ▎ 引导线
+        title_runs.append(StyledRun(f"{icon_char} ", Style(fg=cat_fg)))
+        title_runs.append(StyledRun(display, Style(fg=cat_fg, bold=True)))
         if detail:
             # ★ BEAUTY-24（体验动效）：工具 detail 运行中呼吸——暗灰 242→252
             #   脉动（12s 周期，与状态栏 token/速度呼吸同步）。运行中的工具
             #   detail 更生动（与图标呼吸联动）；关闭/提交后保持静态 pal.dim
             #   （frozen 缓存不再重算，零额外渲染成本）。
-            if block.extra.get("tool_status") == "running" and not block.closed:
+            if running:
                 from src.tui.app._theme import time_glow
                 title_runs.append(StyledRun(
                     f" \u00b7 {detail}", Style(fg=time_glow(242, 252, 12.0)),
@@ -235,14 +311,29 @@ def tool_card_lines(block, width, start=0, stop=None):
                         if width <= 0:
                             items.append(("bare", seg_runs))
                             continue
-                        # 无边框：内容直接截断至 width（不拼边框前缀/后缀）
-                        items.append(("content", truncate_runs(seg_runs, width)))
+                        # ★ BEAUTY-35（内容竖线引导）：每行前置 ``│ ``（深灰
+                        #   238），内容截断至 width-2——对齐 Claude Code 内容
+                        #   缩进引导（视觉归组）；窄屏 width<=1 时仅 ``│``
+                        #   （1 列）。无边框——竖线是引导线不是边框字符。
+                        guide_text = "│ " if width >= 2 else "│"
+                        guide_w = 2 if width >= 2 else 1
+                        items.append((
+                            "content",
+                            [StyledRun(guide_text, _GUIDE_STYLE)]
+                            + truncate_runs(seg_runs, max(0, width - guide_w)),
+                        ))
                     cached = items
                 body_cache[key] = cached
             for item in cached:
                 kind = item[0]
                 if kind == "empty":
-                    body_lines.append([StyledRun("", None)])
+                    # ★ BEAUTY-35：空输出行保留竖线引导（视觉连续）；width<=0
+                    #   无宽度防御保持空行
+                    if width >= 1:
+                        guide_text = "│ " if width >= 2 else "│"
+                        body_lines.append([StyledRun(guide_text, _GUIDE_STYLE)])
+                    else:
+                        body_lines.append([StyledRun("", None)])
                     continue
                 if kind == "bare":
                     body_lines.append(item[1])
@@ -256,7 +347,9 @@ def tool_card_lines(block, width, start=0, stop=None):
         block._tool_card_body_lines_cache = (_body_key, body_lines)
     out.extend(body_lines)
     # 状态行：仅关闭块且为最终块；含状态文本（✔ 完成 / ✖ 失败，无边框）。
-    # 窄屏防溢出：状态文本截断至 width（不截断时窄终端行超宽）。
+    # ★ BEAUTY-35（状态行元信息）：追加 ``· N 行 · Xs``（dim 灰）——行数/
+    #   耗时由 _tool_output_mixin 记录（open 记 _tool_started_at、close 算
+    #   _tool_duration）。窄屏防溢出：状态文本截断至 width。
     if block.closed and (stop is None or stop >= len(block.lines)):
         status = block.extra.get("tool_status", "running")
         if status == "done":
@@ -266,9 +359,42 @@ def tool_card_lines(block, width, start=0, stop=None):
         else:
             status_runs = []
         if status_runs:
+            meta = _status_meta(block)
+            if meta:
+                status_runs.append(StyledRun(f" \u00b7 {meta}", Style(fg=242)))
             out.append(truncate_runs(status_runs, width) if width > 0 else status_runs)
     block._tool_card_frame_cache = (_frame_key, out)
     return out
+
+
+def _status_meta(block) -> str:
+    """状态行元信息（``N 行 · Xs``，dim 灰；无内容/无耗时返回空串）。
+
+    行数 = 内容行数（``_status_line_index - 1``，标题行下标 0；回退
+    ``len(lines)-1``——未记录 _status_line_index 的旧块）；耗时来自
+    close_tool_box 记录的 ``_tool_duration``。
+    """
+    parts: list[str] = []
+    idx = block.extra.get("_status_line_index")
+    if idx is not None:
+        n = max(0, idx - 1)
+    else:
+        n = max(0, len(block.lines) - 1)
+    if n > 0:
+        parts.append(f"{n} 行")
+    dur = block.extra.get("_tool_duration")
+    if dur is not None and dur >= 0:
+        parts.append(_format_duration(dur))
+    return " \u00b7 ".join(parts)
+
+
+def _format_duration(secs: float) -> str:
+    """耗时格式化（<60s：``0.42s``；>=60s：``1m 05s``）。"""
+    if secs < 60:
+        return f"{secs:.2f}s"
+    m = int(secs // 60)
+    s = secs - m * 60
+    return f"{m}m {s:.1f}s"
 
 
 def ToolCard(props: dict):
