@@ -1,9 +1,13 @@
-"""工具图标 & Agent 类型标签 — 保持与旧版本一致的显示效果。
+"""工具图标 & Agent 类型标签 — 兼容保留（Claude Code 极简样式后仅兼容引用）。
 
-2026-07-29 TUI 重构：原 core/tool_icons.py 已删除，此处提供完整映射。
+2026-08-06 用户需求（所有 tool card 对齐 Claude Code）：工具卡/子代理面板
+**不再显示 emoji 工具图标**（标题行/工具记录行去掉 ⚡/📖/✏️ 等）——
+TOOL_ICONS 保留为兼容 re-export（外部测试/调用面），生产渲染不再消费；
+TOOL_CATEGORY_MAP / TOOL_CATEGORY_STYLES（类别配色）继续为唯一真源
+（工具名按类别着色）。
 
-工具名→展示映射唯一真源（2026-07-31 方向F 收敛）：
-  - TOOL_ICONS（工具名→图标）
+工具名→展示映射（2026-07-31 方向F 收敛）：
+  - TOOL_ICONS（工具名→图标；极简样式后仅兼容保留，渲染不再使用）
   - TOOL_CATEGORY_MAP / TOOL_CATEGORY_STYLES（工具名→类别→类别配色）
   - AGENT_TYPE_ABBREV / AGENT_TYPE_STYLES（Agent 类型→缩写/颜色）
 映射 import 后只读，Python 字典读操作在 GIL 下线程安全；

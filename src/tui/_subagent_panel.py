@@ -9,12 +9,13 @@
     → TuiRenderer._do_subagent_frame()
     → BottomBar.set_subagent_frame() → 终端显示
 
-渲染效果（2026-08-06 无边框树图；agent 一级分支 + 阶段/工具二级分支）：
-  ● ⚡ 子代理 · 3
+渲染效果（2026-08-06 无边框树图 + Claude Code 极简样式；agent 一级分支 +
+阶段/工具二级分支，无 emoji 工具图标）：
+  ● 子代理 · 3
   ├─ ● 分析代码结构  12.5k out  1.2k/s  15.3s
   │  ├─ …thinking  3.2s
-  │  ├─ ● read_file /path/to/file.py  0.3s
-  │  └─ ✔ grep pattern src/  0.1s
+  │  ├─ ● Read /path/to/file.py  0.3s
+  │  └─ ✔ Grep pattern src/  0.1s
   ├─ ✔ 分析代码结构  8.2k out  10.1s
   └─ ✖ 测试 auth.py  5.1s
   ✔ 完成

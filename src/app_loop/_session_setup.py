@@ -111,9 +111,9 @@ def _make_round_callbacks(
 
         input_ = chat_ui._components.input
 
-        # ★ 自动闭合空工具 box（┌─ ● ⚙ 工具）：后台任务等非工具上下文的
-        #   输出可能创建只有顶边框、永不闭合的空工具卡——每轮结束统一以
-        #   完成态闭合（渲染为 ✔ 完成），避免空卡永久 ● running 悬挂。
+        # ★ 自动闭合空工具 box（● 工具）：后台任务等非工具上下文的输出可能
+        #   创建只有标题行、永不闭合的空工具卡——每轮结束统一以完成态闭合
+        #   （标题行状态图标翻转 ✔），避免空卡永久 ● running 悬挂。
         try:
             model = chat_ui.get_model()
             if model is not None and hasattr(model, "close_empty_tool_boxes"):

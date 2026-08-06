@@ -1,23 +1,24 @@
 """toolcard — ToolCard 工具调用卡片控件（React Ink 组件化）。
 
-工具执行结果卡片（对齐 Claude Code）：标题行（状态图标 + ▎引导线 + 类别色
-工具图标 + 加粗类别色名称 + detail）+ 内容行（``│ `` 竖线引导）+ 状态行
-（``✔ 完成 · N 行 · Xs`` / ``✖ 失败 · N 行 · Xs``）。**无边框**——卡片以
-「裸行」呈现（2026-08-06 用户需求：所有 tool card 去掉边框），不再绘制
-``┌─…┐`` / ``│…│`` / ``└─…┘`` 边框字符；``│`` 为**内容竖线引导线**
-（Claude Code 风格视觉归组，非边框）。
+工具执行结果卡片（完整对齐 Claude Code，2026-08-06 用户需求）：标题行
+（状态图标 + 类别色工具名 + 参数）+ 内容行（``│ `` 竖线引导）。**无边框、
+极简**——卡片以「裸行」呈现，不再绘制 ``┌─…┐`` / ``│…│`` / ``└─…┘``
+边框字符；``│`` 为**内容竖线引导线**（Claude Code 风格视觉归组，非边框）。
 
-完整美化（BEAUTY-35，2026-08-06）：工具类别配色 + 标题强化 + 内容竖线 +
-状态元信息：
-  - 类别配色：标题 ▎引导线 / 工具图标 / 显示名按工具类别着色（唯一真源
-    ``_tool_icons.TOOL_CATEGORY_STYLES``：shell 绿 / file_read 浅蓝 /
-    file_write 粉 / search 金 / agent 蓝 / interact 青 / delete 红），运行中
-    在类别色邻域 12s 脉动呼吸（与 detail 呼吸同步），关闭后静态类别色；
-  - 标题强化：显示名加粗 + ▎引导线（状态图标恒为 runs[0]——close_tool_box
-    原位翻转图标与 ``startswith(●/✔/✖)`` 测试不变式依赖）；
-  - 内容竖线：每内容行前置 ``│ ``（深灰 238），窄屏截断保证总宽 <= width；
-  - 状态元信息：状态行追加 ``· N 行 · Xs``（dim 灰；行数/耗时由
-    ``_tool_output_mixin`` 记录）。
+对齐 Claude Code 的极简样式（方案 A，2026-08-06）：
+  - 标题行：``状态图标 + 工具名 + 参数``（如 ``● Bash ls -la``）——去掉
+    ▎ 引导线、去掉 emoji 工具图标、detail 用空格分隔（Claude Code
+    ``Read src/main.py`` 语义，非 ``·``）；状态图标恒为 runs[0]
+    （close_tool_box 原位翻转图标与 ``startswith(●/✔/✖)`` 测试不变式依赖）；
+  - 工具名类别配色：唯一真源 ``_tool_icons.TOOL_CATEGORY_STYLES``（shell 绿 /
+    file_read 浅蓝 / file_write 粉 / search 金 / agent 蓝 / interact 青 /
+    delete 红），运行中在类别色邻域 12s 脉动呼吸（与 detail 呼吸同步），
+    关闭后静态类别色；工具名加粗（标题强化）；
+  - 参数（detail）：运行中暗灰 242→252 呼吸（12s），关闭后静态 pal.dim；
+  - 内容行：每内容行前置 ``│ ``（深灰 238），窄屏截断保证总宽 <= width；
+  - **无独立状态行**（Claude Code 无 ``✔ 完成 · N 行 · Xs``）——状态由
+    标题行状态图标表达（● 运行中 / ✔ 完成 / ✖ 失败）；模型层 close_tool_box
+    追加的 ``  ✔``/``  ✖`` 数据行渲染时跳过（``_tool_status_index``）。
 
 React Ink 组件化（2026-08-05，深度组件化）：原 ``AppModel._tool_card_styled_lines``
 （模型层纯函数生成 StyledRun 行）迁移为独立组件模块，模型层不再持有行生成
@@ -32,9 +33,8 @@ React Ink 组件化（2026-08-05，深度组件化）：原 ``AppModel._tool_car
 
 渲染期变换：不改动 ``block.lines`` 原文（model 测试不变式
 ``block.lines[0].plain.startswith("  · ")`` / ``strip()=="✔"`` 依赖此）。
-标题行仅 ``start==0``（块首次提交）；状态行仅块关闭且为最终块
-（``stop is None`` 或 ``stop >= len(block.lines)``）。关闭状态行
-``  ✔``（模型层保留）**不渲染为内容行**——状态移入状态行。
+标题行仅 ``start==0``（块首次提交）。关闭状态行 ``  ✔``（模型层保留）
+**不渲染为内容行**——状态移入标题行图标（``_tool_status_index`` 跳过）。
 
 依赖约束：鸭子类型访问 ``block``（ChatBlock 字段：lines/closed/extra），
 不 import 模型层（避免循环依赖）；样式来自 app._theme 调色板/呼吸色。
@@ -49,10 +49,11 @@ from src.tui.core.style import Style
 __all__ = ["ToolCard", "tool_card_lines", "_tool_icon_runs", "_tool_status_index"]
 
 # ── 工具类别配色（BEAUTY-35，2026-08-06 美化） ─────────────────────
-# 标题 ▎引导线 / 工具图标 / 显示名按工具类别着色；运行中在类别色邻域
-# 脉动呼吸（12s 周期，与 detail 呼吸同步——视觉联动），关闭后静态类别色。
+# 标题工具名按工具类别着色（Claude Code 极简样式后不再有 ▎引导线/emoji
+# 工具图标）；运行中在类别色邻域脉动呼吸（12s 周期，与 detail 呼吸同步——
+# 视觉联动），关闭后静态类别色。
 # 呼吸区间下限 = 静态类别色号（_tool_icons.TOOL_CATEGORY_STYLES 同值），
-# 上限为更亮色号（呼吸峰值）。未知名工具兜底暗灰→亮白（与旧图标呼吸一致）。
+# 上限为更亮色号（呼吸峰值）。未知名工具兜底暗灰→亮白。
 _CATEGORY_BREATH: dict[str, tuple[int, int]] = {
     "shell":      (41, 49),    # 绿 → 亮绿
     "file_read":  (81, 87),    # 浅蓝 → 亮蓝
@@ -129,8 +130,8 @@ def _tool_status_index(block):
     """工具卡状态行下标（close 追加的 `  ✔`/`  ✖` 行）；无则返回 None。
 
     关闭工具块时 ``close_tool_box`` 追加状态行到 block.lines 末尾（模型层
-    不变式 ``block.lines[-1].plain.strip()=="✔"``）。卡片渲染把状态移到状态行
-    （``✔ 完成``），渲染内容行时跳过该行。
+    不变式 ``block.lines[-1].plain.strip()=="✔"``）。Claude Code 极简样式下
+    状态由标题行状态图标表达（●/✔/✖），渲染内容行时跳过该数据行。
     ``_status_line_index`` 由 close_tool_box 记录（歧义安全）；回退按末行
     plain 匹配（覆盖 reflow/旧块等未记录场景）。
     """
@@ -164,15 +165,14 @@ def _omitted_line(text: str, width: int) -> list:
 
 
 def tool_card_lines(block, width, start=0, stop=None):
-    """工具卡片渲染期行（标题行 + 内容行 + 状态行，**无边框**）。
+    """工具卡片渲染期行（标题行 + 内容行，**无边框、无独立状态行**）。
 
     纯行生成函数（React Ink 组件化迁移自 ``_tool_card_styled_lines``）：
     渲染期变换，不改动 ``block.lines`` 原文（model 测试不变式
     ``block.lines[0].plain.startswith("  · ")`` / ``strip()=="✔"`` 依赖此）。
-    标题行仅 ``start==0``（块首次提交）；状态行仅块关闭且为最终块
-    （``stop is None`` 或 ``stop >= len(block.lines)``）。关闭状态行
-    ``  ✔``（模型层保留）**不渲染为内容行**——状态移入状态行
-    （``✔ 完成`` / ``✖ 失败``）。
+    标题行仅 ``start==0``（块首次提交）。关闭状态行 ``  ✔``（模型层保留）
+    **不渲染为内容行**——状态移入标题行状态图标（``_tool_status_index``
+    跳过该数据行）。
 
     Args:
         block: 工具块（ChatBlock.kind == "tool"）。
@@ -187,7 +187,6 @@ def tool_card_lines(block, width, start=0, stop=None):
     from src.tui.ink import StyledRun
     from src.tui.ink.helpers import truncate_runs
     from src.tools.registry import get_tool_display_name
-    from src.tui._tool_icons import TOOL_ICONS
     from src.renderer.ansi.helpers import wrap_line
     pal = get_active_palette()
     width = width if isinstance(width, int) and width > 0 else 0
@@ -222,44 +221,44 @@ def tool_card_lines(block, width, start=0, stop=None):
     if _frame_cache is not None and _frame_cache[0] == _frame_key:
         return _frame_cache[1]
     out: list[list[StyledRun]] = []
-    # 标题行（仅 start==0）：状态图标 + 工具图标 + 显示名（+ detail）。
+    # 标题行（仅 start==0）：状态图标 + 工具名 + 参数（Claude Code 极简）。
     # 状态图标恒为 title_runs[0] → 标题行 runs[0]，供 close_tool_box 原位
     # 翻转图标（无边框前缀，runs[0] 即状态图标）。
     if start == 0:
         tool_name = block.extra.get("tool_name") or "工具"
         display = get_tool_display_name(tool_name) or tool_name or "工具"
-        icon_char = TOOL_ICONS.get(tool_name, "\u2699")
         detail = block.extra.get("tool_detail", "")
         title_runs = list(_tool_icon_runs(block))
         running = _status == "running" and not block.closed
-        # ★ BEAUTY-35（工具卡完整美化）：▎引导线 + 工具图标 + 显示名按工具
-        #   类别着色——运行中在类别色邻域呼吸（12s 周期，与 detail 呼吸同步；
-        #   同 _cat_fg 值，整体同色脉动），关闭/提交后静态类别色（frozen 缓存
-        #   不再重算，零额外渲染成本）。显示名加粗（标题强化）。runs[0] 保持
-        #   状态图标（close_tool_box 原位翻转 + 测试 startswith(●/✔/✖) 不变式）。
+        # ★ Claude Code 极简样式（2026-08-06 用户需求）：标题行 = 状态图标 +
+        #   工具名（类别色，加粗）+ 参数（空格分隔，dim）——去掉 ▎ 引导线、
+        #   emoji 工具图标（Claude Code ``Read src/main.py`` 语义）。工具名
+        #   按类别着色——运行中在类别色邻域呼吸（12s 周期，与 detail 呼吸
+        #   同步；同 _cat_fg 值，整体同色脉动），关闭/提交后静态类别色
+        #   （frozen 缓存不再重算，零额外渲染成本）。runs[0] 保持状态图标
+        #   （close_tool_box 原位翻转 + 测试 startswith(●/✔/✖) 不变式）。
         if running:
             cat_fg = _cat_fg
         else:
             cat_style = _category_style(tool_name)
             cat_fg = cat_style.fg if cat_style.fg is not None else 242
-        title_runs.append(StyledRun("\u258e", Style(fg=cat_fg)))  # ▎ 引导线
-        title_runs.append(StyledRun(f"{icon_char} ", Style(fg=cat_fg)))
         title_runs.append(StyledRun(display, Style(fg=cat_fg, bold=True)))
         if detail:
             # ★ BEAUTY-24（体验动效）：工具 detail 运行中呼吸——暗灰 242→252
             #   脉动（12s 周期，与状态栏 token/速度呼吸同步）。运行中的工具
-            #   detail 更生动（与图标呼吸联动）；关闭/提交后保持静态 pal.dim
-            #   （frozen 缓存不再重算，零额外渲染成本）。
+            #   detail 更生动；关闭/提交后保持静态 pal.dim（frozen 缓存不再
+            #   重算，零额外渲染成本）。空格分隔（Claude Code ``Bash ls -la``
+            #   语义——非 ``·``）。
             if running:
                 from src.tui.app._theme import time_glow
                 title_runs.append(StyledRun(
-                    f" \u00b7 {detail}", Style(fg=time_glow(242, 252, 12.0)),
+                    f" {detail}", Style(fg=time_glow(242, 252, 12.0)),
                 ))
             else:
-                title_runs.append(StyledRun(f" \u00b7 {detail}", pal.dim))
+                title_runs.append(StyledRun(f" {detail}", pal.dim))
         out.append(truncate_runs(title_runs, width) if width > 0 else title_runs)
     # 内容行：block.lines[start:stop]，start==0 时跳过标题行（名字已在标题行）；
-    # 关闭状态行（_tool_status_index）跳过——状态已移入状态行
+    # 关闭状态行数据行（_tool_status_index）跳过——状态由标题行状态图标表达
     body_end = len(block.lines) if stop is None else min(stop, len(block.lines))
     body_start = start if start > 0 else 1
     # ★ PERF-6b：内容行整体缓存——跨帧/跨桶复用列表对象，TEXT
@@ -346,55 +345,12 @@ def tool_card_lines(block, width, start=0, stop=None):
             body_lines.append(_omitted_line(f"\u2026 后 {omitted_head} 行省略", width))
         block._tool_card_body_lines_cache = (_body_key, body_lines)
     out.extend(body_lines)
-    # 状态行：仅关闭块且为最终块；含状态文本（✔ 完成 / ✖ 失败，无边框）。
-    # ★ BEAUTY-35（状态行元信息）：追加 ``· N 行 · Xs``（dim 灰）——行数/
-    #   耗时由 _tool_output_mixin 记录（open 记 _tool_started_at、close 算
-    #   _tool_duration）。窄屏防溢出：状态文本截断至 width。
-    if block.closed and (stop is None or stop >= len(block.lines)):
-        status = block.extra.get("tool_status", "running")
-        if status == "done":
-            status_runs = [StyledRun("\u2714 完成", Style(fg=41))]
-        elif status == "fail":
-            status_runs = [StyledRun("\u2716 失败", Style(fg=196))]
-        else:
-            status_runs = []
-        if status_runs:
-            meta = _status_meta(block)
-            if meta:
-                status_runs.append(StyledRun(f" \u00b7 {meta}", Style(fg=242)))
-            out.append(truncate_runs(status_runs, width) if width > 0 else status_runs)
+    # ★ Claude Code 极简样式（2026-08-06 用户需求）：**无独立状态行**——
+    #   Claude Code 完成/失败时状态由标题行状态图标（✔/✖）原位表达，不追加
+    #   ``✔ 完成 · N 行 · Xs`` 状态行。模型层 close_tool_box 追加的
+    #   ``  ✔``/``  ✖`` 数据行经 ``_tool_status_index`` 跳过（不渲染为内容行）。
     block._tool_card_frame_cache = (_frame_key, out)
     return out
-
-
-def _status_meta(block) -> str:
-    """状态行元信息（``N 行 · Xs``，dim 灰；无内容/无耗时返回空串）。
-
-    行数 = 内容行数（``_status_line_index - 1``，标题行下标 0；回退
-    ``len(lines)-1``——未记录 _status_line_index 的旧块）；耗时来自
-    close_tool_box 记录的 ``_tool_duration``。
-    """
-    parts: list[str] = []
-    idx = block.extra.get("_status_line_index")
-    if idx is not None:
-        n = max(0, idx - 1)
-    else:
-        n = max(0, len(block.lines) - 1)
-    if n > 0:
-        parts.append(f"{n} 行")
-    dur = block.extra.get("_tool_duration")
-    if dur is not None and dur >= 0:
-        parts.append(_format_duration(dur))
-    return " \u00b7 ".join(parts)
-
-
-def _format_duration(secs: float) -> str:
-    """耗时格式化（<60s：``0.42s``；>=60s：``1m 05s``）。"""
-    if secs < 60:
-        return f"{secs:.2f}s"
-    m = int(secs // 60)
-    s = secs - m * 60
-    return f"{m}m {s:.1f}s"
 
 
 def ToolCard(props: dict):
@@ -410,7 +366,7 @@ def ToolCard(props: dict):
         stop: 结束下标（不含；None 表示到块末尾）。
 
     Returns:
-        Column 元素（标题行 + 内容行 + 状态行，每行一个 TEXT）。
+        Column 元素（标题行 + 内容行，每行一个 TEXT）。
         行宽由 ``tool_card_lines`` 保证 <= width（行级 diff 宽度不变量）。
 
     组件化语义：ChatView live 路径对未提交工具块用本组件渲染（替代原

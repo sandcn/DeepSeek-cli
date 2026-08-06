@@ -9,9 +9,9 @@
 未提交（live）块的**角色头**经 ``_role_header_line`` 在正文行之前发射
 （仅 ``committed_line_count == 0`` 时——已增量提交的头已在 committed_lines，
 互斥不重复）；正文行仍走 ``_block_styled_lines``（正文-only，不带头）。
-content/tool 无角色头（content 对齐 Claude Code 无头回答；tool 由卡片顶边框
+content/tool 无角色头（content 对齐 Claude Code 无头回答；tool 由卡片标题行
 替代）——live content 直接渲染正文，live 工具块经 ``ToolCard`` 组件
-（React Ink 组件化，内部 ``tool_card_lines`` 边框行）发射，与 committed
+（React Ink 组件化，内部 ``tool_card_lines`` 行）发射，与 committed
 首次提交互斥。
 """
 
@@ -38,7 +38,7 @@ _WELCOME_STYLED = [
     StyledRun("/help 查看命令 · Ctrl+N 切换模型 · Tab 补全", Style(fg=242)),
 ]
 
-#: 欢迎行 ✦ 呼吸色域（亮青 45 邻域脉动，8s 周期——与工具卡边框/模型名呼吸同步）
+#: 欢迎行 ✦ 呼吸色域（亮青 45 邻域脉动，8s 周期——与工具卡标题/模型名呼吸同步）
 _WELCOME_DOT_LO = 45
 _WELCOME_DOT_HI = 61
 _WELCOME_DOT_PERIOD = 8.0
@@ -73,7 +73,7 @@ def _welcome_element(model, width: int) -> object:
 #: 夹住无法增量提交（BUG-4 连续窗口守卫）时，未提交尾随流式持续增长，
 #: 每帧全量渲染 O(未提交尾) 导致渲染线程卡顿。限制后中间行暂不显示，
 #: 块关闭提交（commit_block）时全部行进入 committed_lines 完整显示。
-#: 工具卡不适用（边框渲染依赖 start==0 顶边框逻辑，且自身有 64 行增量
+#: 工具卡不适用（卡片渲染依赖 start==0 标题行逻辑，且自身有 64 行增量
 #: 提交阈值）。
 _LIVE_TAIL_LINES = 64
 
@@ -125,7 +125,7 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
         offset = max(0, start - block.committed_line_count)
         return [line.runs for line in cache[offset:]]
     if kind == "tool":
-        # 开放工具卡：边框行（live 仅 committed_line_count==0 发顶边框——
+        # 开放工具卡：卡片行（live 仅 committed_line_count==0 发标题行——
         # 与 committed 首次提交互斥；start>0 已增量提交 → 仅主体行）。
         # ★ ToolCard React Ink 组件化（2026-08-05）：ChatView live 路径已改
         #   用 ``h(ToolCard, ...)`` 组件渲染；本分支保留供冻结缓存测试
@@ -357,7 +357,7 @@ def ChatView(props) -> object:
             "block_idx": block_idx,
         }))
     # 子代理活动卡片（并入消息流，对齐 Claude Code）：subagent_lines 为
-    # _subagent_render 产出的逐 agent 卡片 Line 行（带边框），经标准组件
+    # _subagent_render 产出的树图 Line 行（无边框/无 emoji 图标），经标准组件
     # SubAgentCard 渲染（内部 use_memo 缓存——引用不变帧零重建；组件卸载
     # 由 subagent_lines 空/非空自动驱动，不占 ChatView hook 槽位）。
     if model.subagent_lines:

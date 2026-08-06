@@ -80,7 +80,7 @@ class TestEventDispatcher:
         """调用 subagent（dispatch_agent/Task）不建普通工具卡，仅计数。
 
         回归：dispatch_agent 的 tool_start（source='agent'）此前创建
-        ``⚙ Task`` 普通工具卡，与 SubAgent 面板卡（┌─ ● ⚡ 子代理 ─┐）
+        ``Task`` 普通工具卡，与 SubAgent 面板卡（● 子代理 · N 树图）
         重复显示。修复后只计数、不上屏 box。
         """
         from src.tui._dispatcher import EventDispatcher

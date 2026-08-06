@@ -1,12 +1,15 @@
-"""BEAUTY-35 工具卡完整美化回归测试（2026-08-06）。
+"""BEAUTY-35 工具卡完整美化回归测试（2026-08-06，Claude Code 极简样式）。
 
-覆盖 2026-08-06 工具卡完整美化：
-  - 类别配色：标题 ▎引导线 / 工具图标 / 显示名按工具类别着色（运行中类别色
-    邻域呼吸，关闭后静态类别色）；
-  - 标题强化：显示名加粗 + ▎引导线（runs[0] 保持状态图标——close_tool_box
-    原位翻转依赖）；
+覆盖 2026-08-06 工具卡对齐 Claude Code 极简样式（用户需求，方案 A）：
+  - 标题行：状态图标 + 类别色工具名（加粗）+ 参数（空格分隔，dim）——
+    去掉 ▎ 引导线 / emoji 工具图标 / ``·`` detail 分隔（Claude Code
+    ``Read src/main.py`` 语义）；runs[0] 保持状态图标（close_tool_box 原位
+    翻转依赖）；
+  - 类别配色：工具名按工具类别着色（唯一真源 TOOL_CATEGORY_STYLES），运行中
+    类别色邻域呼吸，关闭后静态类别色；
   - 内容竖线：每内容行前置 ``│ ``（深灰 238），窄屏总宽 <= width；
-  - 状态元信息：状态行追加 ``· N 行 · Xs``（行数/耗时）。
+  - **无独立状态行**：Claude Code 状态由标题行状态图标表达（●/✔/✖），
+    无 ``✔ 完成 · N 行 · Xs`` 状态行。
 
 测试原则：动效为时间基（time_glow），断言聚焦**结构契约**（文本/前缀/
 类别色号/宽度），不锁定具体呼吸色号（时间敏感断言脆弱——呼吸区间断言
@@ -47,11 +50,18 @@ def _make_block(tool_name, status="running", detail="", lines=None,
 # ═══════════════════════════════════════════════════════════
 
 class TestCategoryColor:
-    """标题行按工具类别着色（唯一真源 _tool_icons.TOOL_CATEGORY_STYLES）。"""
+    """标题行工具名按工具类别着色（唯一真源 _tool_icons.TOOL_CATEGORY_STYLES）。"""
 
-    def _head(self, tool_name, status="done", closed=True):
+    def _head(self, tool_name, status="done", closed=True, display=None):
         blk = _make_block(tool_name, status, "", [_al("  out")], closed=closed)
-        return tool_card_lines(blk, 60, 0, None)[0]
+        head = tool_card_lines(blk, 60, 0, None)[0]
+        # 找到工具名 run（加粗类别色；display 缺省用显示名）
+        from src.tools.registry import get_tool_display_name
+        disp = display or get_tool_display_name(tool_name) or tool_name
+        for r in head:
+            if r.text and r.text.strip() == disp:
+                return r
+        return None
 
     def test_category_style_mapping(self):
         """类别映射：shell/file_read/file_write/search/agent/interact/delete。"""
@@ -76,29 +86,37 @@ class TestCategoryColor:
         assert st.fg == 242
 
     def test_closed_icon_name_category_color(self):
-        """关闭后工具图标/显示名静态类别色（bash→shell 41），显示名加粗。"""
-        head = self._head("bash", "done", True)
-        # 结构：✔ + ▎(41) + ⚡(41) + Bash(41 bold) + detail
+        """关闭后工具名静态类别色（bash→shell 41），加粗；runs[0] 状态图标。
+
+        Claude Code 极简样式：标题行 = 状态图标 + 工具名 + 参数——无 ▎/emoji。
+        """
+        blk = _make_block("bash", "done", "", [_al("  out")], closed=True)
+        head = tool_card_lines(blk, 60, 0, None)[0]
         assert head[0].text.strip() == "\u2714", f"runs[0] 应为状态图标: {head!r}"
-        assert head[1].text == "\u258e", f"应含 ▎ 引导线: {head!r}"
-        assert head[1].style.fg == 41, f"▎ 应类别色 41: {head[1].style.fg}"
-        assert head[2].text.startswith("\u26a1"), f"工具图标: {head!r}"
-        assert head[2].style.fg == 41, f"图标应类别色 41: {head[2].style.fg}"
-        assert head[3].style.fg == 41, f"显示名应类别色 41: {head[3].style.fg}"
-        assert head[3].style.bold, "显示名应加粗"
+        # 无 ▎ 引导线 / 无 emoji 图标
+        assert not any(r.text == "\u258e" for r in head), f"不应含 ▎ 引导线: {head!r}"
+        assert not any(r.text and r.text[0] in ("\u26a1", "\U0001f4d6", "\u270e")
+                       for r in head), f"不应含 emoji 工具图标: {head!r}"
+        # 工具名 run：类别色 41 + 加粗
+        name_run = self._head("bash", "done", True, display="Bash")
+        assert name_run is not None, f"应找到工具名 run: {head!r}"
+        assert name_run.style.fg == 41, f"工具名应类别色 41: {name_run.style.fg}"
+        assert name_run.style.bold, "工具名应加粗"
 
     def test_running_icon_breath_in_category_range(self):
-        """运行中图标呼吸色在类别区间内（bash→shell 41~49）。"""
-        head = self._head("bash", "running", False)
-        icon = next(r for r in head if r.text and r.text[0] == "\u26a1")
-        fg = icon.style.fg
-        assert 41 <= fg <= 49, f"运行中图标应在类别呼吸区间: {fg}"
+        """运行中工具名呼吸色在类别区间内（bash→shell 41~49）。"""
+        name_run = self._head("bash", "running", False, display="Bash")
+        assert name_run is not None, f"应找到工具名 run: {name_run!r}"
+        fg = name_run.style.fg
+        assert 41 <= fg <= 49, f"运行中工具名应在类别呼吸区间: {fg}"
 
     def test_closed_state_icon_static(self):
         """关闭后状态图标静态（不呼吸）：done ✔ 47 / fail ✖ 196 bold。"""
-        head_done = self._head("bash", "done", True)
-        assert head_done[0].style.fg == 47, f"done 状态图标: {head_done[0].style.fg}"
-        head_fail = self._head("bash", "fail", True)
+        blk = _make_block("bash", "done", "", [_al("  out")], closed=True)
+        head = tool_card_lines(blk, 60, 0, None)[0]
+        assert head[0].style.fg == 47, f"done 状态图标: {head[0].style.fg}"
+        blk_fail = _make_block("bash", "fail", "", [_al("  out")], closed=True)
+        head_fail = tool_card_lines(blk_fail, 60, 0, None)[0]
         assert head_fail[0].style.fg == 196, f"fail 状态图标: {head_fail[0].style.fg}"
         assert head_fail[0].style.bold, "fail 状态图标应加粗"
 
@@ -108,6 +126,59 @@ class TestCategoryColor:
         head = tool_card_lines(blk, 60, 0, None)[0]
         detail_run = next(r for r in head if "echo hi" in r.text)
         assert detail_run.style.fg == 242, f"关闭 detail 应 dim 242: {detail_run.style.fg}"
+
+
+# ═══════════════════════════════════════════════════════════
+# 标题行极简结构（Claude Code 语义）
+# ═══════════════════════════════════════════════════════════
+
+class TestTitleMinimal:
+    """标题行 = 状态图标 + 工具名 + 参数（空格分隔，无 ▎/emoji/·）。"""
+
+    def test_title_plain_text(self):
+        """标题行纯文本：✔ Bash echo hi（空格分隔）。"""
+        blk = _make_block("bash", "done", "echo hi", [_al("  out")], closed=True)
+        head = tool_card_lines(blk, 60, 0, None)[0]
+        text = "".join(r.text for r in head)
+        assert text == "\u2714 Bash echo hi", f"标题行文本: {text!r}"
+        # 无边框角字符 / 无 ▎ / 无 · 分隔
+        assert not any(ch in text for ch in "\u250c\u2510\u2514\u2518"), text
+        assert "\u258e" not in text, f"不应含 ▎ 引导线: {text!r}"
+        assert " \u00b7 " not in text, f"不应含 · 分隔: {text!r}"
+
+    def test_title_no_emoji_icon(self):
+        """标题行无 emoji 工具图标（⚡/📖/✏️ 等）。"""
+        for tool_name in ("bash", "read_file", "write_file", "update_file",
+                          "web_search", "dispatch_agent"):
+            blk = _make_block(tool_name, "done", "arg", [_al("  o")], closed=True)
+            head = tool_card_lines(blk, 60, 0, None)[0]
+            text = "".join(r.text for r in head)
+            assert not any(ord(ch) > 0x2600 for ch in text if ch not in (
+                "\u2714", "\u2716", "\u25cf", "\u258e",
+            )), f"{tool_name} 标题不应含 emoji: {text!r}"
+
+    def test_runs0_is_status_icon(self):
+        """runs[0] 恒为状态图标（close_tool_box 原位翻转依赖）。"""
+        for status, closed, icon in (
+            ("running", False, "\u25cf"),
+            ("done", True, "\u2714"),
+            ("fail", True, "\u2716"),
+        ):
+            blk = _make_block("bash", status, "d", [_al("  o")], closed=closed)
+            head = tool_card_lines(blk, 60, 0, None)[0]
+            assert head[0].text.strip() == icon, (
+                f"{status} runs[0] 应为 {icon}: {head!r}"
+            )
+
+    def test_title_narrow_truncate_no_overflow(self):
+        """窄屏标题行截断至 width。"""
+        blk = _make_block("bash", "done", "x" * 30, [_al("  o")], closed=True)
+        for width in (5, 10, 20):
+            head = tool_card_lines(blk, width, 0, None)[0]
+            text = "".join(r.text for r in head)
+            assert wcswidth_simple(text) <= width, (
+                f"width={width} 标题超宽: {text!r}"
+            )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -170,92 +241,52 @@ class TestContentGuide:
 
 
 # ═══════════════════════════════════════════════════════════
-# 状态行元信息
+# 无独立状态行（Claude Code 极简样式）
 # ═══════════════════════════════════════════════════════════
 
-class TestStatusMeta:
-    """状态行元信息（``· N 行 · Xs``，dim 灰）。"""
+class TestNoStatusLine:
+    """Claude Code 极简样式：无 ``✔ 完成 · N 行 · Xs`` 独立状态行。"""
 
-    def test_status_meta_lines_and_duration(self):
-        """done 状态行含行数与耗时。"""
+    def test_no_status_line_done(self):
+        """done 卡无独立状态行（状态由标题行图标 ✔ 表达）。"""
         blk = _make_block("bash", "done", "x", [_al("  a"), _al("  b"), _al("  c")],
                           closed=True, duration=0.42)
         lines = tool_card_lines(blk, 60, 0, None)
-        status_line = lines[-1]
-        text = "".join(r.text for r in status_line)
-        assert text == "✔ 完成 · 3 行 · 0.42s", f"状态行应含元信息: {text!r}"
-        meta_run = next(r for r in status_line if "行" in r.text)
-        assert meta_run.style.fg == 242, f"元信息应 dim 灰: {meta_run.style.fg}"
+        plains = ["".join(r.text for r in l) for l in lines]
+        assert not any("\u2714 完成" in p for p in plains), (
+            f"不应含独立状态行: {plains!r}"
+        )
+        # 末行是内容行（竖线引导），不是状态行
+        assert plains[-1].startswith("│"), f"末行应为内容行: {plains!r}"
+        # 标题行含 ✔（状态图标）
+        assert plains[0].startswith("\u2714"), f"标题行应含 ✔: {plains[0]!r}"
 
-    def test_status_meta_no_duration_skips(self):
-        """无耗时记录时只显示行数。"""
-        blk = _make_block("bash", "done", "x", [_al("  a")], closed=True)
-        text = "".join(r.text for r in tool_card_lines(blk, 60, 0, None)[-1])
-        assert text == "✔ 完成 · 1 行", f"无耗时只显示行数: {text!r}"
-
-    def test_status_meta_fail(self):
-        """fail 状态行含失败标记 + 元信息。"""
+    def test_no_status_line_fail(self):
+        """fail 卡无独立状态行（状态由标题行图标 ✖ 表达）。"""
         blk = _make_block("bash", "fail", "x", [_al("  error")], closed=True,
                           duration=0.1)
-        text = "".join(r.text for r in tool_card_lines(blk, 60, 0, None)[-1])
-        assert text == "✖ 失败 · 1 行 · 0.10s", f"fail 状态行: {text!r}"
+        lines = tool_card_lines(blk, 60, 0, None)
+        plains = ["".join(r.text for r in l) for l in lines]
+        assert not any("\u2716 失败" in p for p in plains), (
+            f"不应含独立状态行: {plains!r}"
+        )
+        assert plains[0].startswith("\u2716"), f"标题行应含 ✖: {plains[0]!r}"
 
-    def test_status_meta_empty_card(self):
-        """空工具卡（仅标题行）状态行无行数（只耗时）。"""
+    def test_no_status_line_empty_card(self):
+        """空工具卡（仅标题行）无状态行（Claude Code 不显示耗时/行数）。"""
         blk = _make_block("bash", "done", "x", [], closed=True, duration=1.2)
-        text = "".join(r.text for r in tool_card_lines(blk, 60, 0, None)[-1])
-        assert text == "✔ 完成 · 1.20s", f"空卡状态行: {text!r}"
+        lines = tool_card_lines(blk, 60, 0, None)
+        plains = ["".join(r.text for r in l) for l in lines]
+        assert len(plains) == 1, f"空卡仅标题行: {plains!r}"
+        assert not any("完成" in p or "行" in p for p in plains), plains
 
-    def test_status_narrow_truncate(self):
-        """窄屏状态行截断至 width（不超宽）。"""
-        blk = _make_block("bash", "done", "x", [_al("  a")] * 5, closed=True,
-                          duration=12.34)
-        lines = tool_card_lines(blk, 10, 0, None)
-        text = "".join(r.text for r in lines[-1])
-        assert wcswidth_simple(text) <= 10, f"状态行超宽: {text!r}"
-
-
-# ═══════════════════════════════════════════════════════════
-# 标题行结构不变式
-# ═══════════════════════════════════════════════════════════
-
-class TestTitleStructure:
-    """标题行结构不变式（runs[0] 状态图标、▎ 引导线、加粗名称）。"""
-
-    def test_runs0_is_status_icon(self):
-        """runs[0] 恒为状态图标（close_tool_box 原位翻转依赖）。"""
-        for status, closed, icon in (
-            ("running", False, "\u25cf"),
-            ("done", True, "\u2714"),
-            ("fail", True, "\u2716"),
-        ):
-            blk = _make_block("bash", status, "d", [_al("  o")], closed=closed)
-            head = tool_card_lines(blk, 60, 0, None)[0]
-            assert head[0].text.strip() == icon, (
-                f"{status} runs[0] 应为 {icon}: {head!r}"
-            )
-
-    def test_title_has_guide_and_icon_and_name(self):
-        """标题含 ▎引导线 + 类别色图标 + 加粗类别色名称。"""
-        blk = _make_block("bash", "done", "echo hi", [_al("  o")], closed=True)
-        head = tool_card_lines(blk, 60, 0, None)[0]
-        text = "".join(r.text for r in head)
-        assert "\u258e" in text, f"应含 ▎ 引导线: {text!r}"
-        assert "\u26a1" in text, f"应含工具图标: {text!r}"
-        assert "Bash" in text, f"应含显示名: {text!r}"
-        assert "echo hi" in text, f"应含 detail: {text!r}"
-        # 无边框角字符
-        assert not any(ch in text for ch in "\u250c\u2510\u2514\u2518"), text
-
-    def test_title_narrow_truncate_no_overflow(self):
-        """窄屏标题行截断至 width。"""
-        blk = _make_block("bash", "done", "x" * 30, [_al("  o")], closed=True)
-        for width in (5, 10, 20):
-            head = tool_card_lines(blk, width, 0, None)[0]
-            text = "".join(r.text for r in head)
-            assert wcswidth_simple(text) <= width, (
-                f"width={width} 标题超宽: {text!r}"
-            )
+    def test_status_data_line_skipped(self):
+        """模型层状态数据行（``  ✔``/``  ✖``）不渲染为内容行。"""
+        blk = _make_block("bash", "done", "x", [_al("  a"), _al("  b")],
+                          closed=True)
+        lines = tool_card_lines(blk, 60, 0, None)
+        plains = ["".join(r.text for r in l) for l in lines]
+        assert plains == ["\u2714 Bash x", "│   a", "│   b"], plains
 
 
 # ═══════════════════════════════════════════════════════════
@@ -263,7 +294,7 @@ class TestTitleStructure:
 # ═══════════════════════════════════════════════════════════
 
 class TestModelIntegration:
-    """open/close 记录耗时并渲染到状态行。"""
+    """open/close 记录耗时（模型层数据保留，渲染层不再显示状态行）。"""
 
     def test_close_sets_duration(self):
         """close_tool_box 后 extra 记录 _tool_duration（>=0）。"""
@@ -276,9 +307,10 @@ class TestModelIntegration:
         assert blk.extra["_tool_started_at"] is not None
         assert blk.extra["_tool_duration"] is not None
         assert blk.extra["_tool_duration"] >= 0
-        # 渲染帧状态行含耗时
+        # 渲染帧无独立状态行（Claude Code 极简）；标题行含 ✔
         plains = [l.plain for l in m.committed_lines]
-        assert any("✔ 完成" in p and "s" in p for p in plains), plains
+        assert not any("✔ 完成" in p for p in plains), plains
+        assert any(p.startswith("✔") for p in plains), plains
 
     def test_reuse_box_keeps_started_at(self):
         """同一 tool_id 复用 box 不重置开始时间（防重复投递刷新耗时）。"""

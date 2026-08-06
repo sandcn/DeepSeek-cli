@@ -12,12 +12,13 @@
 同源。
 
 ★ 树图显示（2026-08-06 用户需求）：子代理面板改为**两级树图**——
-标题行（树根 ``● ⚡ 子代理 · N``）+ 各 agent 一级分支（``├─ ``/``└─ ``）
+标题行（树根 ``● 子代理 · N``）+ 各 agent 一级分支（``├─ ``/``└─ ``）
 + running agent 的阶段/工具历史二级分支（一级延续线 ``│  ``/``   ``
-+ 二级分支 ``├─ ``/``└─ ``）。done/fail agent 折叠为单行。**无边框**——
-2026-08-06 用户需求：所有 tool card 去掉边框，子代理活动卡一并去边框，
-树形分支线仅表达层级（非卡片边框），分支线用暗灰（_S_BRANCH fg=239）。
-不再输出汇总行/方括号类型标签。卡片内容宽度自适应（Line.width 测量）。
++ 二级分支 ``├─ ``/``└─ ``）。done/fail agent 折叠为单行。**无边框且无
+emoji 图标**（2026-08-06 用户需求：所有 tool card 对齐 Claude Code 极简
+样式，子代理活动卡一并去边框、工具记录行去 ⚡/📖 等图标），树形分支线仅
+表达层级（非卡片边框），分支线用暗灰（_S_BRANCH fg=239）。不再输出汇总
+行/方括号类型标签。卡片内容宽度自适应（Line.width 测量）。
 
 设计模式: 模板方法（Template Method）— 帧渲染骨架由渲染模块统一提供，
 控制器（外观）委托本模块渲染，状态建模在 ``_subagent_state``。
@@ -53,7 +54,6 @@ from src.tui._tool_icons import (
     AGENT_TYPE_STYLES,
     TOOL_CATEGORY_MAP,
     TOOL_CATEGORY_STYLES,
-    TOOL_ICONS,
 )
 from src.tui.core import _fx
 from src.tui._format import format_duration, format_tokens, format_speed, single_line
@@ -215,7 +215,7 @@ def _build_group_card(rows: list[tuple[str, str, List[Line]]],
                       max_lines: int | None = None) -> List[Line]:
     """构建子代理树图卡片（标题行 + 树形分支，**无边框**）。
 
-    树图（2026-08-06 用户需求）：标题行（树根 ``●/✔ ⚡ 子代理 · N``）+
+    树图（2026-08-06 用户需求）：标题行（树根 ``●/✔ 子代理 · N``）+
     各 agent 一级分支（``build_agent_lines`` 产出 ``├─ ``/``└─ `` 前缀，
     running 展开二级子行、done/fail 单行）+ 状态行（``✔ 完成``，全部
     结束）。**按 order 顺序渲染**（树形结构语义，不再 running 优先重排）。
@@ -226,7 +226,8 @@ def _build_group_card(rows: list[tuple[str, str, List[Line]]],
         max_lines = _terminal_max_lines()
     n = len(rows)
     any_running = any(st == "running" for st, _, _ in rows)
-    # 标题：●/✔ ⚡ 子代理 · N（⚡ 为 subagent 图标，对齐 Claude Code Task 卡）。
+    # 标题：●/✔ 子代理 · N（状态图标 + 组卡名；⚡ 图标已随 Claude Code 极简
+    # 样式去掉——2026-08-06 用户需求：所有 tool card 去装饰对齐 Claude Code）。
     # 运行中 ● 状态图标呼吸（琥珀 208-220 脉动，BEAUTY-11 语义——2026-08-06
     # 去边框后呼吸由状态图标承接，与工具卡状态图标呼吸一致）；全部完成（closed）
     # 保持静态 _S_DONE（零额外渲染成本）。
@@ -238,8 +239,7 @@ def _build_group_card(rows: list[tuple[str, str, List[Line]]],
     title: List[StyledRun] = [
         StyledRun(status_icon, icon_style),
         StyledRun(" ", None),
-        StyledRun("\u26a1", _S_RUNNING),
-        StyledRun(f" 子代理 \u00b7 {n}", None),
+        StyledRun(f"子代理 \u00b7 {n}", None),
     ]
     # 主体行：按 order 顺序（树图语义）——每个 agent 一行一级分支
     # （build_agent_lines 已含 ├─/└─ 前缀），running agent 追加二级子行。
@@ -458,13 +458,12 @@ def format_tool_record(rec: _ToolRecord, now: float, cont: str = "",
     detail = _single_line(rec.detail)
 
     from src.tools.registry import get_tool_display_name
-    tool_icon = TOOL_ICONS.get(rec.tool_name, "")
     display_name = get_tool_display_name(rec.tool_name)
     tool_style = _get_tool_color(rec.tool_name)
-    tool_abbr: List[StyledRun] = []
-    if tool_icon:
-        tool_abbr.append(StyledRun(f"{tool_icon} ", None))
-    tool_abbr.append(StyledRun(display_name, tool_style))
+    # ★ Claude Code 极简样式（2026-08-06 用户需求）：工具记录行去掉 emoji
+    #   工具图标（Claude Code 工具名 + 参数语义，无 ⚡/📖/✏️ 等图标）——仅
+    #   保留状态图标 + 类别色工具名 + detail + 耗时。
+    tool_abbr: List[StyledRun] = [StyledRun(display_name, tool_style)]
 
     runs: List[StyledRun] = []
     if rec.phase == "parsing":

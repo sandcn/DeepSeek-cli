@@ -211,8 +211,8 @@ class EventDispatcher:
             return
         # 主 agent 工具 → 上屏 box；subagent 工具 → 仅计数（面板自渲染）
         # ★ 调用 subagent（dispatch_agent/Task）不上普通工具卡：subagent 活动
-        #   由 SubAgent 面板卡自渲染（┌─ ● ⚡ 子代理 · N ─┐），避免「调用
-        #   子代理出现两个卡片（⚙ Task 工具卡 + 子代理面板卡）」冗余。
+        #   由 SubAgent 面板卡自渲染（● 子代理 · N 树图），避免「调用
+        #   子代理出现两个卡片（Task 工具卡 + 子代理面板卡）」冗余。
         if event.source == "agent" and event.tool_name != "dispatch_agent":
             tool_id = event.tool_id or event.label
             self._push_cmd(ToolOpenCmd(

@@ -152,13 +152,13 @@ class TestClosedToolBoxFreezeCache:
 
         # content 块仍开放（未关闭 → tool box 不在 committed_lines 中）
         assert m.content_closed is False
-        # 冻结缓存已建立（全块行：顶边框 + 主体行 + 底边框；标题行被顶边框
-        # 替代、状态行跳过移入底边框 → 与块行数相等）
+        # 冻结缓存已建立（标题行 + 主体行；状态行数据行跳过——Claude Code
+        # 极简样式：状态由标题行状态图标表达）→ 块行 -1
         assert box._cached_ink_lines is not None
-        assert len(box._cached_ink_lines) == len(box.lines)
-        # 未提交尾（状态行移入底边框后）经缓存复用 runs 引用
+        assert len(box._cached_ink_lines) == len(box.lines) - 1
+        # 未提交尾（状态行数据行跳过）经缓存复用 runs 引用
         tail = _block_styled_lines(box, box.committed_line_count)
-        assert len(tail) == len(box.lines) - box.committed_line_count
+        assert len(tail) == len(box.lines) - box.committed_line_count - 1
         assert len(tail) >= 1
         assert any("\u2714" in "".join(r.text for r in runs) for runs in tail)
         # 引用级复用：同一 runs 列表对象（免每帧 Style merge）

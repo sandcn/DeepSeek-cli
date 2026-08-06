@@ -9,12 +9,13 @@
 
 卡片结构：``committed_lines`` 为「卡片文档」——每块提交为
 ``[角色头] + [正文] + [空行]``（无头 kind 为 ``[正文] + [空行]``，如
-user/write_line/splash/parse_info；工具块为渲染期边框卡
-``[顶边框] + [主体行] + [底边框]``，顶边框替代 `▎⚡` 角色头）。角色头经
-``_role_header_line`` 截断保证单行 ≤width；空行经 ``_append_card_trailer``
-在块关闭提交时追加恰好一次。正文-only 冻结缓存 ``_cached_ink_lines``
-不含卡片头/空行（``len == len(block.lines)`` 不变式；工具卡含底边框，
-``len == len(block.lines) + 1``）。
+user/write_line/splash/parse_info；工具块为渲染期卡片
+``[标题行] + [主体行]``——Claude Code 极简样式（2026-08-06 用户需求），
+标题行替代 ``▎⚡ 工具 X`` 角色头，状态由标题行状态图标（●/✔/✖）表达，
+无独立状态行）。角色头经 ``_role_header_line`` 截断保证单行 ≤width；空行
+经 ``_append_card_trailer`` 在块关闭提交时追加恰好一次。正文-only 冻结
+缓存 ``_cached_ink_lines`` 不含卡片头/空行（``len == len(block.lines)``
+不变式；工具卡跳过状态行数据行，``len == len(block.lines) - 1``）。
 
 终端 resize：``reflow_committed(width)`` 在宽度变化后按新宽度重建全部
 已提交行（committed_lines 提交时按旧宽度 wrap，宽度变化后需重排）——

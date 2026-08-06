@@ -99,7 +99,9 @@ class _ToolOutputMixin:
         block.extra["tool_status"] = "running"
         block.extra["tool_detail"] = detail
         # ★ BEAUTY-35（状态行元信息）：记录工具开始时间戳——close_tool_box
-        #   关闭时计算耗时（``_tool_duration``），状态行渲染 ``· N 行 · Xs``。
+        #   关闭时计算耗时（``_tool_duration``）。Claude Code 极简样式后渲染
+        #   层不显示独立状态行（状态由标题行图标表达），耗时字段保留供内部/
+        #   测试消费。
         #   复用路径（同一 tool_id 重复 open 防重复投递）不重置——保持首次
         #   开始时间，避免重复事件刷新耗时。
         block.extra["_tool_started_at"] = time.monotonic()
@@ -128,7 +130,8 @@ class _ToolOutputMixin:
         方向4（开放工具块增量提交）：输出行数超过阈值
         （``_TOOL_INCREMENTAL_THRESHOLD``）时经 ``commit_open_block`` 增量提交
         已闭合行到 committed_lines——长工具输出每帧不再全量重渲染（开放块只
-        渲染未提交尾）；关闭时 ``commit_block`` 追加剩余尾（含状态行），
+        渲染未提交尾）；关闭时 ``commit_block`` 追加剩余尾（状态行数据行
+        渲染时跳过——状态由标题行图标表达），
         ``committed_line_count`` 计数保证不重复（「关闭后无重复行」不变量）。
 
         Bug A 修复：按 tool_id 精确路由——key 命中精确追加；key 未命中且
@@ -242,8 +245,8 @@ class _ToolOutputMixin:
         """关闭工具分组：置状态、冻结并提交（工具卡片）。
 
         方向D 步骤15：
-          - extra.tool_status = done/fail（卡片顶边框状态图标原位翻转 ✔/✖）；
-          - 关闭块冻结 _cached_ink_lines（含底边框，免每帧 Style merge）。
+          - extra.tool_status = done/fail（卡片标题行状态图标原位翻转 ✔/✖）；
+          - 关闭块冻结 _cached_ink_lines（跳过状态行数据行，免每帧 Style merge）。
 
         Bug A 修复：按 tool_id 精确 pop，不再 fallback 到 _current_tool_box
         （单值指针语义已移除）；找不到对应 box 时静默丢弃（debug 日志）。
@@ -268,13 +271,13 @@ class _ToolOutputMixin:
             return
         status = "\u2714" if success else "\u2716"
         # ★ BEAUTY-35（状态行元信息）：计算工具耗时（open 记录的开始时间戳 →
-        # 关闭时差），状态行渲染 ``· N 行 · Xs``。无开始时间戳（旧块/外部构造）
-        # 时跳过（防御）。
+        # 关闭时差）。Claude Code 极简样式后渲染层不显示独立状态行（耗时字段
+        # 保留供内部/测试消费）。无开始时间戳（旧块/外部构造）时跳过（防御）。
         started = block.extra.get("_tool_started_at")
         if started is not None:
             block.extra["_tool_duration"] = max(0.0, time.monotonic() - started)
-        # 记录状态行下标（卡片渲染跳过该主体行——状态已移入底边框；模型层
-        # 不变式 block.lines[-1].plain.strip()=="✔" 保留）
+        # 记录状态行下标（卡片渲染跳过该主体行——状态由标题行状态图标表达；
+        # 模型层不变式 block.lines[-1].plain.strip()=="✔" 保留）
         block.extra["_status_line_index"] = len(block.lines)
         block.lines.append(AnsiLine.of(f"  {status}", Style(fg=41 if success else 196)))
         block.extra["tool_status"] = "done" if success else "fail"
@@ -283,19 +286,18 @@ class _ToolOutputMixin:
         self.active_tool = None
 
         # ★ 1.6 修复 + BUG-30（review 方向）修复：长工具输出（>
-        #   _TOOL_INCREMENTAL_THRESHOLD 触发增量提交后顶边框已在 committed_lines）
-        #   关闭时更新 committed_lines 中顶边框状态图标。
+        #   _TOOL_INCREMENTAL_THRESHOLD 触发增量提交后标题行已在 committed_lines）
+        #   关闭时更新 committed_lines 中标题行状态图标。
         #   **BUG-30（渲染陈旧）**：修复前原地修改 ``top_line.runs``（保留 Line
         #   对象引用）——committed-chat 前缀缓存（``chat_view._paint`` 键
         #   ``(id(lines), n, box.y)``）与 diff 身份短路（``p is f`` → 相等跳过）
         #   都按「Line 对象身份 = 内容不变」优化：内存中 Line 虽改为 ✔，但
-        #   prev 帧与 new 帧引用同一 Line 对象 → 渲染器认为无差异 → **终端顶边框
-        #   恒显示 ●，与底边框「✔ 完成」矛盾**（必现，长工具输出触发增量提交后
-        #   关闭必现）。
+        #   prev 帧与 new 帧引用同一 Line 对象 → 渲染器认为无差异 → **终端标题行
+        #   恒显示 ●，与关闭状态矛盾**（必现，长工具输出触发增量提交后关闭必现）。
         #   修复：**新建 Line 对象替换**（不复用旧对象）+ ``_replace_committed_line``
         #   令 committed_lines 列表身份变化（浅拷贝）→ 前缀缓存键中 ``id(lines)``
-        #   失效 → 下一帧重建前缀 → diff 对新 Line 对象做 runs 值比较 → 顶边框
-        #   行被重写。短工具（未增量提交，offset 不存在）关闭时经 commit_block
+        #   失效 → 下一帧重建前缀 → diff 对新 Line 对象做 runs 值比较 → 标题行
+        #   被重写。短工具（未增量提交，offset 不存在）关闭时经 commit_block
         #   提交的标题行已带 done/fail 图标，无需更新。
         #   卡片结构：``_first_committed_offset`` 指向卡片**首行（标题行）**，
         #   状态图标为标题行 runs[0]（无边框——2026-08-06 去边框后不再有
@@ -322,8 +324,8 @@ class _ToolOutputMixin:
         # ★ 方向4（增量提交协同）：冻结仅**未提交部分**（已提交行在
         #   committed_lines 中，避免重复存储；``_block_styled_lines`` 冻结
         #   缓存分支已调整为 ``cache[0:]``——冻结缓存即未提交部分，start 参数
-        #   对冻结缓存无意义）。关闭后 ``commit_block`` 追加剩余尾（含状态行），
-        #   ``committed_line_count`` 计数保证不重复追加已提交行。
+        #   对冻结缓存无意义）。关闭后 ``commit_block`` 追加剩余尾（状态行数据
+        #   行渲染时跳过），``committed_line_count`` 计数保证不重复追加已提交行。
         block._cached_ink_lines = self._block_to_ink_lines(block, block.committed_line_count)
         block._open_styled_cache = None  # 冻结后开放缓存不再需要
         self.commit_block(len(self.blocks) - 1)
@@ -359,10 +361,11 @@ class _ToolOutputMixin:
         """自动闭合开放但无主体内容的空工具 box，返回闭合数量。
 
         ★ 空工具卡防御：后台任务等非工具上下文输出可能经兜底创建只有标题行
-        （``block.lines`` 仅 1 行标题）的空「工具」box（● ⚙ 工具），这类
+        （``block.lines`` 仅 1 行标题）的空「工具」box（● 工具），这类
         box 永远不会有 ToolCloseCmd。每轮对话结束（round_end）时调用本方法，
-        将空 box 以完成态关闭（闭合后渲染为 ``● ⚙ 工具 … / ✔ 完成``，
-        无边框——2026-08-06 去边框），避免空卡永久保持 ● running 悬挂。
+        将空 box 以完成态关闭（闭合后渲染为 ``● 工具``，无边框/无独立状态行
+        ——2026-08-06 去边框 + Claude Code 极简样式），避免空卡永久保持
+        ● running 悬挂。
         """
         closed = 0
         for tool_id in list(self.tool_boxes.keys()):

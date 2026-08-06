@@ -85,8 +85,8 @@ def test_tool_icon_refresh_after_close_renderer():
     ink.render(f_b)
     delta = stream.getvalue()[len(before):]
     # delta 含光标定位（\x1b[71A）+ 标题行重写（● → ✔，无边框前缀）——
-    # Bash 工具名仅出现在标题行（状态行为 `✔ 完成`），Bash+✔ 同时出现
-    # 证明标题行被重写（而非仅新增状态行）。
+    # Bash 工具名仅出现在标题行，Bash+✔ 同时出现证明标题行被重写
+    # （Claude Code 极简样式：状态由标题行状态图标表达，无独立状态行）。
     assert "✔" in delta and "Bash" in delta, (
         "关闭后 diff 应重写标题行（含 ✔ 图标）"
     )

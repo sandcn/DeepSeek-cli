@@ -554,13 +554,14 @@ class TestToolBox:
         m.close_tool_box("t1", True)
         # 关闭后全部行已提交（committed_line_count == len）
         assert block.committed_line_count == len(block.lines)
-        # 无重复行：卡片结构下 committed_lines = 顶边框 + 主体行（标题行被顶边框
-        # 替代、状态行被跳过——移入底边框）+ 底边框 + 卡片尾空行 → 块行 +1
-        assert len(m.committed_lines) == len(block.lines) + 1, (
-            f"关闭后 committed_lines 应 = 块行 + 底边框，committed={len(m.committed_lines)} lines={len(block.lines)}"
+        # 无重复行：卡片结构下 committed_lines = 标题行 + 主体行（状态行数据
+        # 行被跳过——状态由标题行图标表达）+ 卡片尾空行 → 与块行数相等
+        assert len(m.committed_lines) == len(block.lines), (
+            f"关闭后 committed_lines 应 = 块行数（跳过状态数据行 + 尾空行），"
+            f"committed={len(m.committed_lines)} lines={len(block.lines)}"
         )
         committed_plains = [l.plain for l in m.committed_lines]
-        # 尾行为卡片空行；✔ 在顶边框与底边框 `✔ 完成`（去空行后）
+        # 尾行为卡片空行；✔ 在标题行（Claude Code 极简：状态图标原位表达）
         assert committed_plains[-1] == ""
         assert "✔" in "".join(committed_plains)
         assert any("line0" in p for p in committed_plains)
@@ -585,7 +586,7 @@ class TestToolBox:
         # 开放块未关闭 → 尚无卡片尾空行（无空 plain 行）
         assert all(l.plain != "" for l in m.committed_lines), "开放块不应有尾空行"
         m.close_tool_box("t1", True)
-        # 关闭提交（新增状态行）→ 卡片尾空行恰好一次
+        # 关闭提交（状态由标题行图标表达）→ 卡片尾空行恰好一次
         assert m.committed_lines[-1].plain == "", "关闭后应有卡片尾空行"
         assert sum(1 for l in m.committed_lines if l.plain == "") == 1, "尾空行应恰好一次"
 
@@ -608,10 +609,10 @@ class TestToolBox:
         committed_before = block.committed_line_count
         assert committed_before > 0
         m.close_tool_box("t1", True)
-        # 冻结缓存 = 未提交尾（不含已提交行 + 底边框；状态行跳过——已移入底
-        # 边框，故与「未提交行数」恰好相等）
+        # 冻结缓存 = 未提交尾（不含已提交行；状态行数据行跳过——状态由标题行
+        # 图标表达，故比「未提交行数」少 1）
         assert block._cached_ink_lines is not None
-        assert len(block._cached_ink_lines) == len(block.lines) - committed_before
+        assert len(block._cached_ink_lines) == len(block.lines) - committed_before - 1
 
 
 class TestStatusCounts:
@@ -726,9 +727,9 @@ class TestToolCardState:
         block = m.blocks[-1]
         assert block.extra["tool_status"] == "done"
         assert block._cached_ink_lines is not None
-        # 卡片结构：冻结缓存 = 顶边框 + 主体行 + 底边框（标题行被顶边框替代、
-        # 状态行跳过移入底边框 → 与块行数相等）
-        assert len(block._cached_ink_lines) == len(block.lines)
+        # 卡片结构：冻结缓存 = 标题行 + 主体行（状态行数据行跳过——Claude
+        # Code 极简样式：状态由标题行状态图标表达）→ 块行 -1
+        assert len(block._cached_ink_lines) == len(block.lines) - 1
 
     def test_tool_close_fail_status(self):
         """close 失败 → status=fail。"""
@@ -1134,8 +1135,9 @@ class TestReflowCommitted:
             m.append_tool_output("t1", f"out{i}\n")
         m.close_tool_box("t1", True)
         block = m.blocks[-1]
-        # 卡片结构：标题行 + 主体行（状态行跳过移入状态行）+ 状态行 + 尾空行
-        assert len(m.committed_lines) == len(block.lines) + 1
+        # 卡片结构：标题行 + 主体行（状态行数据行跳过——状态由标题行图标
+        # 表达）+ 尾空行 → 与块行数相等
+        assert len(m.committed_lines) == len(block.lines)
         m.reflow_committed(30)
         plains = [ln.plain for ln in m.committed_lines]
         assert plains[0].startswith("\u2714"), "关闭工具卡首行应为标题行（✔ 状态图标）"
