@@ -30,6 +30,9 @@ def _reflow_subtree(fiber: Fiber, new_y: int, new_x: int | None = None) -> None:
         fiber: 待重排的 fiber（其 layout_box 非 None）。
         new_y: 该 fiber 的新 y 坐标。
         new_x: 该 fiber 的新 x 坐标（None 表示保持原 x）。
+        ★ P3-8 说明（review 方向）：column 分支不传 ``new_x``——**column 仅
+        重排 y，x 由测量阶段确定**（``_measure`` 已按最终 x 测量，重排只修正
+        纵向堆叠后的 y；传入 new_x 会覆盖测量阶段的 x 布局结果）。
     """
     cb = fiber.layout_box
     if cb is None:
@@ -68,11 +71,19 @@ def _reflow_subtree(fiber: Fiber, new_y: int, new_x: int | None = None) -> None:
         # row：横向排列——子节点 x 累加，y 保持内边距基准（纵向偏移由
         # alignItems 承担；与 _measure row 分支语义一致）。
         cursor_x = cb.x + pad_l + border
-        for child in layout_children(fiber):
+        row_children = layout_children(fiber)
+        for i, child in enumerate(row_children):
             _reflow_subtree(child, new_y + pad_t + border, cursor_x)
             ccb = child.layout_box
             if ccb is not None:
-                cursor_x += ccb.w + spacing
+                cursor_x += ccb.w
+                # ★ P3-7 修复（review 方向）：最后子节点后不计 spacing——与
+                #   ``_measure`` row 分支（``if i < n_children - 1: cursor_x +=
+                #   spacing``）一致。修复前无条件累加 spacing（局部变量无
+                #   副作用——最后子节点后 cursor_x 不再被消费——但语义误导，
+                #   未来若复用 cursor_x 会多出间隔）。
+                if i < len(row_children) - 1:
+                    cursor_x += spacing
     else:
         # column：纵向堆叠——子节点 y 累加（默认方向，与既有语义一致）。
         cursor_y = new_y + pad_t + border

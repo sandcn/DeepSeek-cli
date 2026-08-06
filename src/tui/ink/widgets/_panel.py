@@ -25,10 +25,19 @@ _PANEL_BORDER_CHARS: dict[str, tuple[str, str, str, str, str, str]] = {
 
 
 def _panel_border_style(props: dict) -> Style:
-    """解析 Panel 边框样式（``borderColor``/``borderStyle``；缺省暗青 23）。"""
+    """解析 Panel 边框样式（``borderColor``/``borderStyle``；缺省暗青 23）。
+
+    ★ P3（review）：``borderStyle`` 为 dict（React Ink v6 自定义边框对象
+    ``{topLeft, top, topRight, left, bottomLeft, bottom, bottomRight, right}``）
+    时**不支持 Style 解析**——防御性忽略（仅按 ``borderColor`` 建样式）；边框
+    **字符**由 BOX 层 ``_paint_border._border_chars`` 消费 dict（Panel 对
+    dict 原样透传，不 str() 化——见 Panel 内 ``borderStyle`` 透传）。Style
+    对象原样返回。
+    """
     style = props.get("borderStyle")
     if isinstance(style, Style):
         return style
+    # dict 等非 Style 边框对象：仅解析 borderColor（边框字符由 _border_chars）
     fg = _color(props.get("borderColor"), 23)
     return Style(fg=fg)
 
@@ -40,7 +49,10 @@ def Panel(props: dict) -> Element:
         title: 顶部标题（None/空时不显示标题行）。
         status: 底部状态文本（None 时不显示状态行）。
         width: 面板总宽（默认 60）。
-        borderStyle: 边框变体（single/double/round/bold/classic/dashed）。
+        borderStyle: 边框变体（single/double/round/bold/classic/dashed）
+            或 Style 对象（完整样式）或 dict 自定义边框对象
+            （``{topLeft, top, topRight, left, bottomLeft, bottom, bottomRight,
+            right}``——React Ink v6 语义，原样透传 BOX）。
         borderColor: 边框颜色（颜色名/int；默认暗青 23）。
         titleStyle: 标题样式（默认 None）。
         statusStyle: 状态样式（默认 None）。
@@ -69,6 +81,10 @@ def Panel(props: dict) -> Element:
     except (TypeError, ValueError, OverflowError):
         pad = 1
     border_color = props.get("borderColor")
+    # ★ P3（review）：borderStyle 透传——dict 自定义边框对象原样透传（不
+    #   str() 化——修复前 ``str(dict)`` 生成 ``"{'topLeft': ...}"`` 无效变体，
+    #   ``_border_chars`` 无法识别，dict 边框被忽略）；字符串变体保持 str()。
+    bs = props.get("borderStyle", "single")
     # 标题/状态文本默认样式 = 边框色（解析后）；边框绘制经 BOX borderColor
     # 透传（components._border_style 消费）
     border_style = _panel_border_style(props)
@@ -88,12 +104,12 @@ def Panel(props: dict) -> Element:
         }))
     # ★ 标准布局：BOX border 绘制完整边框（竖线自动覆盖全部行高——修复了
     #   Row 拼接方案的竖线高度问题）；内部 Column 填充标题 + 内容 + 状态。
-    #   边框样式经 ``borderStyle``（字符串变体）与 ``borderColor`` 透传——
-    #   components._border_style 消费（缺省暗青 23）。
+    #   边框样式经 ``borderStyle``（字符串变体或 dict 自定义对象）与
+    #   ``borderColor`` 透传——components/_paint_border 消费（缺省暗青 23）。
     return h(BOX, {
         "border": 1,
         "width": width,
-        "borderStyle": str(props.get("borderStyle", "single")),
+        "borderStyle": bs if isinstance(bs, dict) else str(bs),
         "borderColor": border_color,
         "paddingLeft": pad,
         "paddingRight": pad,

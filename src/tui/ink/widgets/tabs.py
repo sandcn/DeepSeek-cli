@@ -21,6 +21,8 @@ Row（水平排列），内容区渲染为 Column（垂直堆叠）。
 
 from __future__ import annotations
 
+import logging
+
 from src.tui.core.style import Style
 from ..element import TEXT, Element, h
 from ..hooks import use_state, use_input, use_ref
@@ -28,6 +30,8 @@ from ..widgets.layout import Row, Column
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_clamp_index 原本地定义——收敛
 #   至 _widget_common 单一真源。
 from ._widget_common import _clamp_index
+
+_logger = logging.getLogger(__name__)
 
 __all__ = ["Tabs"]
 
@@ -128,13 +132,23 @@ def Tabs(props: dict) -> Element:
         if new != cur and active_key is None and len(tabs) > 1:
             active_ref.current = new
             set_internal_idx(new)
-        # ★ P3（review）：new == cur（单标签或 space/enter 未切换）时不再触发
-        #   onChange——修复前单标签时 new == cur 仍触发 onChange（重复回调）。
+            if onChange is not None:
+                try:
+                    onChange(tabs[new], tabs[new]["key"], new)
+                except Exception:
+                    # ★ P2（review）：回调异常静默吞（无日志）——补 debug 日志
+                    #   便于排查（修复前 ``except Exception: pass``）。
+                    _logger.debug("Tabs onChange 回调异常", exc_info=True)
+            # ★ P2（review）：内部 idx 已切换（非受控）→ **消费事件**——修复前
+            #   onChange is None 时 return False（事件未消费），造成「标签已
+            #   切换 + 焦点也后退」双重响应。与有 onChange 时一致：内部状态
+            #   已变化即 return True。
+            return True
         if new != cur and onChange is not None:
             try:
                 onChange(tabs[new], tabs[new]["key"], new)
             except Exception:
-                pass
+                _logger.debug("Tabs onChange 回调异常", exc_info=True)
             return True
         return False
 

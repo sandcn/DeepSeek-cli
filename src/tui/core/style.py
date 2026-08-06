@@ -82,6 +82,24 @@ class Style:
     strikethrough: bool = False
     inverse: bool = False
 
+    def __post_init__(self) -> None:
+        """校验 fg/bg 为 int（256 色号）时的范围 [0, 255]。
+
+        ★ P2-1：int 分支无范围校验时，负值/超界会生成非法 ANSI 序列
+        （``\\033[38;5;{value}m`` 越界）——显式校验抛 ValueError，
+        与 Color256 构造校验语义一致。TrueColor 值对象内部自带分量校验，
+        不在此重复。
+        """
+        for _name, _value in (("fg", self.fg), ("bg", self.bg)):
+            if (
+                _value is not None
+                and isinstance(_value, int)
+                and not (0 <= _value <= 255)
+            ):
+                raise ValueError(
+                    f"Style.{_name} int 色号必须位于 [0, 255]，收到: {_value}"
+                )
+
     @lru_cache(maxsize=1024)
     def to_ansi(self) -> str:
         """构建 ANSI 转义序列。
@@ -404,7 +422,10 @@ class StyleSheet:
     模式参考 ``BreathPalette``，但注册 Style 对象而非颜色列表。
     模块加载时自动注册一组预定义基本样式。
 
-    线程安全：所有操作为只读字典访问 + 纯函数。
+    线程安全：读操作（get/resolve/has/all_names）为只读字典访问，线程安全。
+    ★ P3-19：写操作（register/register_many/clear）为无锁字典写入——
+    文档此前声称「所有操作为只读」与实现不符；写操作需在初始化期
+    （模块加载/启动阶段）或测试中单线程调用，避免跨线程并发写竞态。
     """
 
     _registry: ClassVar[dict[str, Style]] = {}

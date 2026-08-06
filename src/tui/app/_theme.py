@@ -74,7 +74,12 @@ def sep_line(width: int, content: "Line | None" = None,
     from src.tui.ink.output import Line
     style = sep_style(active)
     if content is None:
-        return Line.of("\u2501" * max(1, width), style)
+        # ★ P3-8：width<=0（无宽度上下文）时返回空 Line——修复前
+        #   ``max(1, width)`` 在 width<=0 时输出 1 字符行（分隔线显示异常）。
+        #   width>0 时 ``max(1, width)`` 即 width，直接填充。
+        if width <= 0:
+            return Line()
+        return Line.of("\u2501" * width, style)
     # ★ 健壮性（通用组件防御）：content 可能未按预算截断（调用方直接传超宽
     #   行时）——``sep_len = max(0, width - content.width)`` 为 0 → 行宽 =
     #   content.width > width，破坏行级 diff 行宽不变量。防御：content 超宽时

@@ -45,10 +45,16 @@ class TestFeedByte:
         assert ev.raw == b"A"
 
     def test_high_byte_utf8(self):
-        """高位字节（UTF-8 首字节）→ char 事件（replace 解码）。"""
+        """高位字节（UTF-8 多字节序列的一部分）→ unknown 事件。
+
+        P2-2：单字节 feed_byte 无法构成完整 UTF-8 字符——旧实现以
+        errors="replace" 解码产出 U+FFFD 字符事件（孤立续字节被当作可打印
+        字符）；修复后返回 unknown（高位字节经 read_utf8_char 完整序列路径
+        处理）。
+        """
         ev = self.parser.feed_byte(0xe4)
         assert ev is not None
-        assert ev.kind == "char"
+        assert ev.kind == "unknown"
         assert ev.raw == b"\xe4"
 
     def test_control_char_enter(self):
@@ -275,19 +281,40 @@ class TestCsiUModifier1:
         kitty/wezterm 等启用键盘协议（modifyOtherKeys）的终端发送
         ``\\x1b[8;1u``/``\\x1b[127;1u``/``\\x1b[27;1u``——修复前落入
         ``csi_u`` no-op 被静默丢弃，退格/删除/取消均失效。
+
+        P1-1 修复：modifier=1 表示**无修饰键**——普通 Backspace/Delete
+        （8;1u / 127;1u）映射为 modifier=0 事件走普通删除语义（修复前误用
+        modifier=1 词删除语义，普通退格/删除每次删除整个词）；显式
+        Alt+Backspace/Delete（8;3u / 127;3u）映射为 modifier=1 词删除
+        （见 ``test_modifier3_alt_backspace_delete``）。
         """
         ev = InputParser._dispatch_csi([8, 1], 'u')
         assert ev.kind == "backspace"
-        assert ev.modifier == 1
+        assert ev.modifier == 0
         assert ev.keycode == 8
         ev = InputParser._dispatch_csi([127, 1], 'u')
         assert ev.kind == "delete"
-        assert ev.modifier == 1
+        assert ev.modifier == 0
         assert ev.keycode == 127
         ev = InputParser._dispatch_csi([27, 1], 'u')
         assert ev.kind == "escape"
         assert ev.modifier == 1
         assert ev.keycode == 27
+
+    def test_modifier3_alt_backspace_delete(self):
+        """P1-1：CSI u 显式 Alt+Backspace（8;3u）/ Alt+Delete（127;3u）。
+
+        映射为 modifier=1 词删除（与 ESC DEL / Ctrl+W 传统路径语义一致）——
+        修复前此类事件落入 ``csi_u`` no-op，真 Alt+Backspace 失效。
+        """
+        ev = InputParser._dispatch_csi([8, 3], 'u')
+        assert ev.kind == "backspace"
+        assert ev.modifier == 1
+        assert ev.keycode == 8
+        ev = InputParser._dispatch_csi([127, 3], 'u')
+        assert ev.kind == "delete"
+        assert ev.modifier == 1
+        assert ev.keycode == 127
 
     def test_modifier1_unknown_kept_csi_u(self):
         """未知非可打印 keycode modifier=1 仍走 csi_u（router 可消费，不静默丢）。"""

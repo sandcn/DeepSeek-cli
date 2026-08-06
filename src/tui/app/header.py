@@ -36,6 +36,12 @@ _VER_LO = 242
 _VER_HI = 252
 _VER_PERIOD = 8.0
 
+#: 版本号空闲静态 runs（P3-4：模块级单例缓存——首次空闲渲染时惰性构建
+#   （VERSION 须函数内惰性导入：src/app_init/_args 经 config→tui 链存在
+#   模块加载循环，模块级导入会 ImportError——原实现即函数内导入），后续帧
+#   返回同一引用跨帧复用，diff 身份短路零重建；None=未构建）。
+_VERSION_RUNS_STATIC: list | None = None
+
 
 def _gradient_runs(text: str) -> list[StyledRun]:
     """逐字符空间渐变（青→蓝→紫→品红，per-char lerp_color 插值）。
@@ -58,13 +64,20 @@ def _version_runs(active: bool) -> list[StyledRun]:
     """版本号 runs（活跃期呼吸 / 空闲静态 242）。
 
     ★ BEAUTY-31（体验动效）：活跃期版本号暗灰 242→252 脉动（8s 周期，与
-    工具卡 detail 呼吸同步）；空闲静态 242（渲染循环空闲跳过，零额外成本）。
+    工具卡 detail 呼吸同步）；空闲静态 242——返回模块级单例
+    ``_VERSION_RUNS_STATIC``（P3-4：首次空闲渲染惰性构建后同一引用跨帧复用，
+    diff 身份短路零额外成本；修复前每次渲染新建 StyledRun 列表）。
     独立 runs 列表——不污染 ``_title_runs`` 渐变缓存（use_memo 引用级命中）。
     """
-    from src.app_init._args import VERSION
+    global _VERSION_RUNS_STATIC
     if active:
+        # VERSION 惰性导入（app_init._args 存在模块加载循环，见模块级注释）
+        from src.app_init._args import VERSION
         return [StyledRun(f" \u00b7 {VERSION}", Style(fg=time_glow(_VER_LO, _VER_HI, _VER_PERIOD)))]
-    return [StyledRun(f" \u00b7 {VERSION}", Style(fg=242))]
+    if _VERSION_RUNS_STATIC is None:
+        from src.app_init._args import VERSION
+        _VERSION_RUNS_STATIC = [StyledRun(f" \u00b7 {VERSION}", Style(fg=242))]
+    return _VERSION_RUNS_STATIC
 
 
 def TopHeader(props) -> object:

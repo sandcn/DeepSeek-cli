@@ -32,6 +32,11 @@ def _resolve_length(value, avail: int) -> int:
     if isinstance(value, str) and value.endswith("%"):
         try:
             pct = float(value[:-1])
+            # ★ P3-6 截断语义说明（review 方向）：百分比结果**截断**而非
+            #   四舍五入（``int(avail * pct / 100.0)``）——与 CSS 百分比布局
+            #   一致（向下取整到整列/整行，0.5 列无法表达）；截断误差 ≤1
+            #   列/行，视觉无可感知差异。保持截断语义（改为四舍五入会与既有
+            #   布局测试/像素级断言不一致）。
             return max(0, int(avail * pct / 100.0))
         except (TypeError, ValueError, OverflowError):
             return avail
@@ -75,6 +80,12 @@ def _clamp_width(fiber: Fiber, w: int, avail: int | None = None) -> int:
 
     min/max 百分比相对 ``avail``（可用宽度）；avail 缺省时百分比回退
     w（防御）。
+
+    ★ 契约（React Ink 语义，P3-5 review 方向）：**minWidth 可超宽**——显式
+      ``minWidth`` 大于 ``avail`` 时 ``box.w`` 允许超过可用宽度/文档宽度
+      （调用方显式声明最小宽度，行级 diff 宽度不变量在显式 minWidth 场景下
+      局部让位；``_resolve_width`` 的 E1 钳制不覆盖 min 提升）。``maxWidth``
+      不受此契约影响（上限恒钳制到解析值）。
 
     ★ 性能（PERF-7）：无 ``minWidth``/``maxWidth`` 属性（绝大多数节点）走
     快速路径直接 ``max(0, w)``——免 2 次 ``props.get`` + 类型兜底。

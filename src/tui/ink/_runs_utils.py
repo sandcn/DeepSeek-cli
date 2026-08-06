@@ -232,7 +232,10 @@ def truncate_runs_ellipsis(runs: list[StyledRun], max_width: int) -> list[Styled
     Returns:
         截断后的 StyledRun 列表（总宽度 <= max_width）。
     """
-    if max_width < 0:
+    # ★ P3-11（review 方向）：边界统一为 ``<= 0``——与 truncate_runs_start/
+    #   truncate_runs_middle 一致（修复前 `< 0`：max_width=0 落入主逻辑，
+    #   budget=-1 等边界分支依赖后续逻辑兜底；显式早返回语义更清晰）。
+    if max_width <= 0:
         return []
     runs = _first_logical_line_runs(runs)
     total = 0
@@ -360,7 +363,10 @@ def truncate_runs_middle(runs: list[StyledRun], max_width: int) -> list[StyledRu
     Returns:
         截断后的 StyledRun 列表（总宽度 <= max_width）。
     """
-    if max_width < 0:
+    # ★ P3-11（review 方向）：边界统一为 ``<= 0``——与 truncate_runs_start/
+    #   truncate_runs_ellipsis 一致（修复前 `< 0`：max_width=0 落入主逻辑，
+    #   经 `<= 3` 分支回退 ellipsis 后仍返回空，行为正确但语义不显式）。
+    if max_width <= 0:
         return []
     runs = _first_logical_line_runs(runs)
     if _runs_total_width(runs) <= max_width:

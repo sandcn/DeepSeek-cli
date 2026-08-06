@@ -26,6 +26,7 @@ from ._layout_sizing import (
     _resolve_width,
     _clamp_width,
     _resolve_height,
+    _resolve_length,
     _resolve_padding,
     _flex_grow,
     _flex_shrink,
@@ -234,6 +235,13 @@ def _shrink_row_children(
         if not progressed:
             break
     # 写回 + 重新测量 + 重排 x
+    # ★ P3-4 舍入语义说明（review 方向）：收缩循环以 float 迭代（``widths[i]``
+    #   可带小数），写回时 ``int(round(widths[i]))`` 四舍五入——多子节点各自
+    #   舍入后收缩总量可能偏差 ±1 列（如两子各缩 0.5 → 各 round 到 1，合计
+    #   缩 2 列而 deficit 仅 1 列；或 0.4+0.4 合计 0.8 → 各 round 到 0 欠缩）。
+    #   行宽不变量在舍入写回后轻微放宽（允许 ±1 列超差/欠缩）——收缩为超宽
+    #   降级路径，视觉无可感知差异。保持 float 迭代（改为纯整数运算需重构
+    #   deficit 收敛语义，收益低风险高）；注释记录语义供未来重构参考。
     cx = inner_x
     for i, child in enumerate(children):
         new_w = max(1, int(round(widths[i])))
@@ -243,9 +251,27 @@ def _shrink_row_children(
         if cb.w != new_w:
             # 重新测量子树（fill=True：内部内容按新宽度约束 wrap/截断——
             # 修复嵌套容器内部孙节点自然宽超容器后的溢出）
+            # ★ P2-2 修复（review 方向，行宽不变量）：子节点显式 minWidth
+            #   > new_w 时，``_clamp_width`` 仍会把宽度提升回 minWidth（React
+            #   Ink min-width 语义——见 ``_clamp_width`` docstring「minWidth 可
+            #   超宽」契约）——若以 new_w 为可用宽度测量，内部内容按 new_w
+            #   换行但 box.w = minWidth（宽高不一致），且收缩后行内总宽仍超
+            #   容器（行宽不变量被破坏）。修复：以 minWidth 为**实际可用宽度**
+            #   测量（内部内容按最终 box 宽度布局）——该子节点允许超宽（显式
+            #   minWidth 优先于收缩约束，与 React Ink 语义一致），行宽不变量
+            #   在显式 minWidth 场景下局部让位（注释记录，不静默破坏）。
+            avail_for_remeasure = new_w
+            mn_w = child.props.get("minWidth")
+            if mn_w is not None:
+                try:
+                    mn_resolved = _resolve_length(mn_w, new_w)
+                except (TypeError, ValueError, OverflowError):
+                    mn_resolved = 0
+                if mn_resolved > new_w:
+                    avail_for_remeasure = mn_resolved
             cb.w = new_w
             child.layout_box = cb
-            _measure(child, inner_x, inner_y, new_w, fill=True)
+            _measure(child, inner_x, inner_y, avail_for_remeasure, fill=True)
             cb = child.layout_box
             if cb is None:
                 continue
@@ -271,33 +297,11 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         fill: True=填充可用宽度（column 默认）；False=内容自适应宽度（row）。
     """
     ftype = fiber.type
-    # ★ 性能（PERF-14 提前）：props 引用级测量缓存——在 props.get / get_host /
-    #   display 检查之前检查（纯 TEXT 缓存命中可跳过全部解析）。命中条件：
-    #   - ftype 相同（缓存归属正确；容器/自定义 host 不缓存——布局有子节点
-    #     副作用）；
-    #   - props 引用相同（reconciler 经 ``_set_props`` **内容相等时保持引用
-    #     稳定**，props 内容不可变契约 → 引用相同 = 内容相同，除 styled 列表
-    #     可被测试契约原地修改——见下方 TEXT 分支的 styled 长度快照校验）；
-    #   - avail_w/fill 相同（布局上下文，决定宽度解析/换行结果）。
-    #   命中时直接复用 w/h，跳过全部 props 解析与换行计算（1000 个 TEXT 无
-    #   变化帧每帧零重建——修复前每帧对每个 TEXT 做 ~14 次 props.get +
-    #   _resolve_width + 缓存比较，dict.get 280740 次/20 帧）。
-    #   ★ TEXT 类型不在此提前返回：styled 列表可能被原地修改（测试契约
-    #   ``test_wrap_cache_invalidated_on_styled_list_mutation`` 原地 append）——
-    #   引用级命中无法检测内容变化，须走 TEXT 分支（含 styled 长度快照校验）。
-    mc = getattr(fiber, "_measure_cache", None)
-    if (
-        mc is not None
-        and ftype != "text"
-        and mc[0] == ftype
-        and mc[1] is fiber.props
-        and mc[2] == avail_w
-        and mc[3] == fill
-    ):
-        box = LayoutBox(x, y, mc[4], mc[5])
-        fiber.layout_box = box
-        return box
-
+    # ★ P2-1 修复（review 方向）：**通用** ``_measure_cache`` 提前检查分支已
+    #   删除——原分支要求 ``ftype != "text"`` 但**只有 TEXT 分支写缓存**
+    #   （容器/自定义 host 不缓存，见 TEXT 写回处），``ftype != "text"`` 条件
+    #   恒 miss（死代码，每帧空转 O(1)）。TEXT 缓存命中由 TEXT 分支自身检查
+    #   （含 styled 长度快照校验——styled 列表可能被测试契约原地修改）。
     explicit_w = fiber.props.get("width")
 
     # ── display: none（完善 react ink）──
@@ -448,12 +452,14 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             # 引用级快速路径：同 styled 引用 + (width, text_wrap, align) 不变
             # → 复用 lines（runs 在本分支无下游消费——h 仅由 lines 推导；
             # 死拷贝移除；lines 已含 align 结果，不再二次对齐）。
-            # ★ 契约说明（BUG-71 复核）：引用级命中依赖「styled 列表不可变」——
-            #   同引用 + 同长度 + 内容被**原地替换**（如 ``styled[3] = new_run``）
-            #   不会触发重算（长度/指纹均未检查）。当前全部调用方遵守契约
+            # ★ 契约说明（BUG-71 复核 + P3-3 强制约定）：引用级命中依赖
+            #   「styled 列表不可变」——同引用 + 同长度 + 内容被**原地替换**
+            #   （如 ``styled[3] = new_run``）不会触发重算（长度/指纹均未
+            #   检查）。**强制约定：新增 styled 原地修改的调用方必须先换新
+            #   引用**（``list.copy()``/新建列表——否则缓存不失效，渲染结果
+            #   陈旧且难以排查）。当前全部调用方遵守契约
             #   （model._replace_committed_line 刻意用 ``list.copy()`` 换引用，
             #   chat_view 冻结 runs 列表不被修改）；React 同语义（props 不可变）。
-            #   若未来新增原地修改 styled 的调用方，须先换新列表引用。
             lines = cache[3]
         else:
             if styled is not None:
@@ -472,6 +478,12 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
                 ref = text
             if (
                 cache is not None
+                # ★ P3-2 修复（review 方向）：值比较前加**长度快照短路**——
+                #   ``cache[0] == ref`` 对 styled 列表逐 run 比较（O(runs)），
+                #   长度不同直接 miss（O(1)）——styled 原地增删（测试契约）
+                #   必然先改长度；仅同长元素替换（罕见）才落到值比较。字符串
+                #   ref（styled is None 分支）len 同样 O(1) 短路。
+                and len(cache[0]) == len(ref)
                 and cache[0] == ref
                 and cache[1] == cache_wt
                 and cache[2] == style_fp
@@ -511,9 +523,12 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             h = len(lines)
         # ★ 性能（PERF-14 + props 引用级缓存）：写回 props 引用级测量缓存
         #   （下次同 props 引用 + styled 长度 + avail_w + fill 直接复用 w/h，
-        #   跳过全部解析与换行）。缓存结构含 ftype（函数开头快速路径校验
-        #   归属——容器/自定义 host 不缓存）、styled 长度快照（styled 原地
-        #   修改检测——mc[4]）、宽高（mc[5], mc[6]）。
+        #   跳过全部解析与换行）。缓存结构含 ftype（归属校验）、styled 长度
+        #   快照（styled 原地修改检测——mc[4]）、宽高（mc[5], mc[6]）。
+        #   ★ P2-1 契约（review 方向）：**仅文本可缓存**——容器/自定义 host
+        #   不写缓存（布局有子节点副作用，缓存复用会跳过子节点测量）；本
+        #   模块唯一的 ``_measure_cache`` 写入点即此 TEXT 分支（函数开头
+        #   通用检查已删除，见上）。
         styled_cache_len = len(styled) if styled is not None else 0
         fiber._measure_cache = (
             "text", fiber.props, avail_w, fill, styled_cache_len, width, h,
@@ -534,6 +549,11 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             h = max(0, int(h))
         except (TypeError, ValueError, OverflowError):
             h = 1
+        # ★ P3-1 修复（review 方向）：SPACER 应用 minHeight/maxHeight 钳制
+        #   （与容器分支 ``_resolve_height`` 一致）——修复前 SPACER 仅解析显式
+        #   height，minHeight/maxHeight 被静默忽略（SPACER 显式 ``minHeight``
+        #   参与 row 高度累加时行为与 BOX 不一致）。
+        h = _resolve_height(fiber, h)
         # ★ 1.7 修复：零宽 SPACER（显式 width=0 或剩余宽度 0）高度视为 0——
         #   不参与 row 高度累加（row_h 不虚增；fill=False 时 width=1 不受影响）。
         if width == 0:

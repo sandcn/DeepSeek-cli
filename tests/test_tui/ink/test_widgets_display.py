@@ -1,7 +1,7 @@
 """测试 ink/widgets/display.py — Spinner / ProgressBar / Table / Badge / Divider。
 
 覆盖：
-  - Spinner：初始帧 / indicator / type 预设 / Timer 生命周期（patch）；
+  - Spinner：时间基帧号（patch time.monotonic）/ indicator / type 预设；
   - ProgressBar：percent 归一化 / 左右标记 / 自定义 char / 边界；
   - Table：无边框对齐 / 表头 / 边框变体 / 列宽自动；
   - Badge：背景色 / 前景自动对比 / padding / style 合并；
@@ -33,18 +33,18 @@ def _render(element, width=80, height=24):
 
 class TestSpinner:
     def test_initial_frame_dots(self):
-        with patch("src.tui.ink.widgets.display.threading.Timer") as mock_timer:
+        """时间基首帧（mock monotonic=0 → 帧号 0）。"""
+        with patch("src.tui.ink.widgets._spinner.time.monotonic", return_value=0.0):
             frame = _render(h(Spinner, {"type": "dots"})).lines[0]
             assert frame.plain == "⠋"  # dots 首帧
-            mock_timer.assert_called()  # 动画 Timer 已注册
 
     def test_custom_indicator(self):
-        with patch("src.tui.ink.widgets.display.threading.Timer"):
+        with patch("src.tui.ink.widgets._spinner.time.monotonic", return_value=0.0):
             frame = _render(h(Spinner, {"indicator": "abc"})).lines[0]
             assert frame.plain == "a"
 
     def test_unknown_type_falls_back_dots(self):
-        with patch("src.tui.ink.widgets.display.threading.Timer"):
+        with patch("src.tui.ink.widgets._spinner.time.monotonic", return_value=0.0):
             frame = _render(h(Spinner, {"type": "not-a-real-type"})).lines[0]
             assert frame.plain == "⠋"
 
@@ -53,41 +53,31 @@ class TestSpinner:
         assert "line" in SPINNER_FRAMES
         assert "moon" in SPINNER_FRAMES
 
-    def test_effect_cleanup_returns_callable(self):
-        """use_effect create 返回清理函数（组件卸载时取消 Timer）。"""
-        from src.tui.ink.widgets import display as display_mod
-        with patch.object(display_mod.threading, "Timer") as mock_timer:
-            r = Reconciler()
-            root = r.create_root()
-            el = h(Spinner, {"type": "dots"})
-            r.render(root, el, 80, 24)
-            # 找到 Spinner 函数 fiber 的 EffectHook destroy
-            destroy = _collect_effect_destroy(root)
-            assert destroy is not None
-            assert callable(destroy)
-            destroy()  # 清理可调用（stop 标志）
+    def test_time_based_frame_progress(self):
+        """时间基推进：monotonic 推进后帧号 +1（无 Timer 线程）。"""
+        with patch("src.tui.ink.widgets._spinner.time.monotonic", return_value=0.0):
+            f0 = _render(h(Spinner, {"type": "dots", "interval": 1000})).lines[0].plain
+        with patch("src.tui.ink.widgets._spinner.time.monotonic", return_value=1.0):
+            f1 = _render(h(Spinner, {"type": "dots", "interval": 1000})).lines[0].plain
+        assert f0 == "⠋"          # 帧号 0（now=0）
+        assert f1 == "⠙"          # 帧号 1（interval=1000ms → hz=1 → int(1.0*1)%10）
+        assert f0 != f1            # 帧随时间推进（时间基，非帧计数）
+
+    def test_no_timer_thread(self):
+        """P1（review）：Spinner 不再注册 threading.Timer（纯渲染期时间基）。"""
+        from src.tui.ink.widgets import _spinner
+        src = _spinner.__file__
+        with open(src, encoding="utf-8") as fh:
+            content = fh.read()
+        assert "threading.Timer" not in content
+        assert "time.monotonic" in content
 
     def test_color_style(self):
         from src.tui.core.style import Style
-        with patch("src.tui.ink.widgets.display.threading.Timer"):
+        with patch("src.tui.ink.widgets._spinner.time.monotonic", return_value=0.0):
             frame = _render(h(Spinner, {"type": "dots", "color": "red"})).lines[0]
             assert frame.plain == "⠋"
             assert frame.runs[0].style.fg == 1  # red → 1
-
-
-def _collect_effect_destroy(fiber) -> object | None:
-    """递归查找第一个函数 fiber 上 EffectHook.destroy。"""
-    f = fiber
-    while f is not None:
-        if f.is_function:
-            for hook in f.hooks:
-                if hasattr(hook, "destroy") and hook.destroy is not None:
-                    return hook.destroy
-        child = _collect_effect_destroy(f.child)
-        if child is not None:
-            return child
-        f = f.sibling
-    return None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -255,9 +245,11 @@ class TestDivider:
         assert frame.runs[0].style.fg == 1
 
     def test_title_wider_than_width(self):
+        """标题超宽时截断至可用宽度（修复前原样返回超宽 TEXT）。"""
         el = h(Divider, {"title": "long-title", "width": 5})
         frame = _render(el)
-        assert "".join(ln.plain for ln in frame.lines) == "long-title"
+        # 截断至 3 宽 "lo…" + 两侧空格 → 总宽 5 == width（不超宽）
+        assert "".join(ln.plain for ln in frame.lines) == " lo… "
 
     def test_wide_char_repeat(self):
         """宽字符（如 ━ 宽度 1；用 emoji 验证按宽度换算）。"""

@@ -29,8 +29,15 @@ from src.tui.app._model_helpers import (
 # ★ ToolCard React Ink 组件化：工具卡行生成/状态图标收敛到 app/toolcard.py
 #   （模块级零依赖，函数内惰性 import——无循环风险）。
 from src.tui.app.toolcard import _tool_icon_runs, tool_card_lines
+# core.style 为 Layer 0 底层（无 app 依赖），模块级 import 无循环风险；
+# 用于模块级样式常量（_S_TOOL_OUT 工具输出前缀色）。
+from src.tui.core.style import Style
 
 _logger = logging.getLogger("src.tui.app.model")
+
+#: 工具输出行前缀样式（append_tool_output 每段输出共用；模块级单例复用——
+#   修复前每段新建 ``Style(fg=242)``，长工具输出数万行时无谓分配）
+_S_TOOL_OUT = Style(fg=242)
 
 
 class _ToolOutputMixin:
@@ -70,6 +77,12 @@ class _ToolOutputMixin:
                 if detail:
                     title = f"  \u00b7 {display} \u00b7 {detail}"
                 if existing.lines:
+                    # ★ P2-10（双数据源说明）：``lines[0]`` 为**数据层保留
+                    #   字段**——渲染（tool_card_lines）实际读
+                    #   ``block.extra["tool_name"/"tool_detail"]``（标题行在
+                    #   渲染期重建），此处同步更新 lines[0] 仅为保持模型层
+                    #   不变式（``block.lines[0].plain.startswith("  · ")``
+                    #   等测试断言依赖），非渲染数据源。
                     existing.lines[0] = AnsiLine.of(title, Style(fg=23, bold=True))
                 # ★ BUG-22（review 方向）：已增量提交过的 box（输出 > 阈值，
                 #   标题行已在 committed_lines）复用更新标题时**同步重建
@@ -138,7 +151,6 @@ class _ToolOutputMixin:
         tool_id 非空 → 创建匿名 box（标题回退「工具」，输出不丢失）；
         tool_id 为空 → 丢弃并 debug 日志（无归属输出不静默错路由）。
         """
-        from src.tui.core.style import Style
         from src.renderer.ansi.helpers import AnsiLine, ansi_to_line
         # ★ 空工具卡防御（模型层双保险）：tool_id 为 "assistant" 时说明该输出
         #   来自工具上下文之外的 print_to_terminal 回退（如后台任务完成提示），
@@ -156,7 +168,7 @@ class _ToolOutputMixin:
                 return
             block = self.open_tool_box(tool_id, "")
         for seg in text.split("\n"):
-            l = AnsiLine.of("  ", Style(fg=242))
+            l = AnsiLine.of("  ", _S_TOOL_OUT)
             # ★ 工具输出可能含 Rich/pygments 高亮 ANSI 序列（read_file 等）。
             #   原样保留进 Run.text 会让宽度测量把转义码当可见字符（宽度膨胀→
             #   误触发 wrap），wrap_line 逐字符截断把转义序列拦腰截断（如残留
@@ -177,6 +189,19 @@ class _ToolOutputMixin:
         #   已闭合行到 committed_lines；开放块渲染只取未提交尾）。
         if len(block.lines) - block.committed_line_count >= _TOOL_INCREMENTAL_THRESHOLD:
             self.commit_open_block(block)
+
+    def _drop_tool_body_cache(self, block, line) -> None:
+        """从工具卡内容行缓存中移除行键（trim 删除行后同步清理，P1-1）。
+
+        ``_tool_card_body_cache`` 为 dict（键=AnsiLine 行对象，值=wrap 结果
+        runs）——trim 从 ``block.lines`` 删除行后若不同步 pop，被删行对象仍
+        被 cache 持有直到工具 box 关闭（长输出工具在 box 存活期内内存线性
+        增长）。pop 对不存在键安全（dict.pop 带默认值）；cache 未建立
+        （None）时零开销返回。
+        """
+        body_cache = getattr(block, "_tool_card_body_cache", None)
+        if body_cache is not None:
+            body_cache.pop(line, None)
 
     def _trim_tool_output_tail(self, block, keep: int) -> None:
         """工具块输出修剪为最后 keep 行（保留标题行 block.lines[0]）。
@@ -203,6 +228,13 @@ class _ToolOutputMixin:
             )
             return
         del_count = len(lines) - 1 - keep
+        # ★ P1-1（工具输出缓存无界增长）：删除前先捕获被删行引用并同步清理
+        #   ``_tool_card_body_cache``（dict，键=行对象）——修复前仅删除
+        #   block.lines 中的行，被删行对象仍被 cache 持有直到工具 box 关闭
+        #   （长输出工具在 box 存活期内内存线性增长）。
+        removed = lines[1:1 + del_count]
+        for line in removed:
+            self._drop_tool_body_cache(block, line)
         del lines[1:1 + del_count]
         block.extra["_bash_omitted_lines"] = (
             block.extra.get("_bash_omitted_lines", 0) + del_count
@@ -231,11 +263,17 @@ class _ToolOutputMixin:
         # 尾部换行符产生的空行（text.split("\n") 尾空 seg → 仅前缀的空行）不
         # 算内容行——先剔除，避免「前 N 行」计数被尾空行占位（如 read_file
         # 整文件输出以 \n 结尾时尾空行无意义，会挤占前 3 行显示位）。
+        # ★ P1-1（同 tail trim）：删除行同步清理 ``_tool_card_body_cache``
+        #   行键，防被删行对象被缓存持有（内存线性增长）。
         while len(lines) > 1 and lines[-1].plain.strip() == "":
+            self._drop_tool_body_cache(block, lines[-1])
             del lines[-1]
         if len(lines) <= 1 + keep:
             return
         del_count = len(lines) - (1 + keep)
+        removed = lines[1 + keep:]
+        for line in removed:
+            self._drop_tool_body_cache(block, line)
         del lines[1 + keep:]
         block.extra["_head_omitted_lines"] = (
             block.extra.get("_head_omitted_lines", 0) + del_count
@@ -253,14 +291,20 @@ class _ToolOutputMixin:
 
         方向1 B8：空 tool_id 关闭——``pop("")`` 未命中且 tool_id 为空时遍历
         ``tool_boxes`` 按 ``_box_key == ""``（open 记录的原始空 id 标记）查找
-        匿名 box 关闭（倒序取最近者）；找不到时静默丢弃（debug 日志）。
+        匿名 box 关闭（**正序取最早打开者**——P2-4：与打开顺序一致，防多空
+        id 场景逆序弹栈错配）；找不到时静默丢弃（debug 日志）。
         修复空 tool_id box 泄漏。
         """
         from src.tui.core.style import Style
         from src.renderer.ansi.helpers import AnsiLine
         block = self.tool_boxes.pop(tool_id, None)
         if block is None and not tool_id:
-            for stored_key, candidate in reversed(list(self.tool_boxes.items())):
+            # ★ P2-4（多空 tool_call_id 逆序弹栈）：空 id 匿名 box 按**打开
+            #   顺序**（正序遍历）匹配关闭——修复前 reversed 逆序弹栈：
+            #   多个空 tool_call_id 的 tool 结果消息连续关闭时 LIFO 与打开
+            #   顺序相反（如 A→B 打开、B→A 关闭）→ 输出错配。正序 FIFO
+            #   与打开顺序一致（先开先关）。
+            for stored_key, candidate in self.tool_boxes.items():
                 if candidate.extra.get("_box_key") == "":
                     block = self.tool_boxes.pop(stored_key)
                     break

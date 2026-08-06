@@ -30,10 +30,12 @@
 
 性能：``_build_lines`` 快照缓存语义保留（Line 跨帧引用稳定）——InputArea
 经 ``use_memo`` 缓存 Element 列表（deps = 快照键），命中时 children 引用
-稳定 → reconciler/layout/paint 短路（零重建）。光标定位由 session 经
-``dataInputArea`` 容器 + ``_compute_cursor_visual_pos`` 计算；换行布局缓存
-（``fiber._input_layout_cache``）由 ``_build_lines`` 单点写入（原遗留
-``_measure`` 写入职责收拢，session._position_cursor 复用）。
+稳定 → reconciler/layout/paint 短路（零重建）。★ P2-6：组件内部经**持久
+fiber 引用**（use_ref 持有）使 ``_build_lines`` 的快照/换行布局缓存跨帧命中
+（修复前每帧新建临时 fiber，缓存写回当帧即弃恒 miss——死缓存）。光标定位
+由 session 经 ``dataInputArea`` 容器 + ``_compute_cursor_visual_pos`` 计算；
+换行布局缓存（``fiber._input_layout_cache``）由 ``_build_lines`` 单点写入
+（原遗留 ``_measure`` 写入职责收拢，session._position_cursor 复用）。
 """
 
 from __future__ import annotations
@@ -236,7 +238,10 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
     # 方向1 步骤4（窄屏防溢出）：sep_len 下限改为 0（修复前 ``max(1, ...)``
     # 在 width < cpu_mem_w 时内容超宽溢出）；CPU/MEM 内容独立行逐段截断至
     # 剩余宽度（不拆 CJK；width < 22 时不再超宽）。
-    content_budget = max(1, width - max(0, width - cpu_mem_w))
+    # ★ P2-7：``max(1, width - max(0, width - cpu_mem_w))`` 等价
+    #   ``max(1, min(width, cpu_mem_w))``——简化表达式（保留 max(1, ...)
+    #   语义：width<=0 或内容超宽时预算至少 1 列）。
+    content_budget = max(1, min(width, cpu_mem_w))
     content = Line()
     # ★ BEAUTY-22（体验动效）：CPU/MEM 值活跃期呼吸——CPU 亮青 45→55、MEM
     #   橙黄 214→224（12s 周期，与状态栏 token/速度呼吸同步）。空闲静态
@@ -255,7 +260,10 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
     # (reverse-i-search)`query`: match
     search = props.get("history_search")
     if _is_search_active(search):
-        q = search.query
+        # ★ P2-8：search.query 可能为 None（外部注入/异常状态）——
+        #   ``Line.append(None)`` 行为未定义，回退空串（防御性，正常路径
+        #   query 恒为 str）。
+        q = search.query or ""
         match = ""
         if search.matches and 0 <= search.index < len(search.matches):
             match = search.matches[search.index]
@@ -332,7 +340,9 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
     #   经 _theme.sep_style。
     # 方向1 步骤4（窄屏防溢出）：sep_len 下限 0 + 时间戳内容独立行截断
     # （width < 22 时不超宽；正常宽度时间戳完整保留）
-    content_budget = max(1, width - max(0, width - time_w))
+    # ★ P2-7（同 CPU/MEM 分隔线）：简化 ``max(1, width - max(0, width - time_w))``
+    #   为等价 ``max(1, min(width, time_w))``。
+    content_budget = max(1, min(width, time_w))
     content = Line()
     _append_truncated(content, f" {ts}", _S_TIME, content_budget)
     lines.append(_theme_sep_line(width, content, status_active))
@@ -397,20 +407,37 @@ def _input_elements(props: dict, width: int, now: float, fade_state: dict) -> li
     复用 ``_build_lines`` 快照缓存语义（非弹窗行 include_popup=False）：
     每行 TEXT 带索引 key，styled 引用稳定（Line 跨帧复用）→ 零重建。
 
+    ★ P2-6（死缓存修复）：fiber 为**持久对象**（存于组件级 fade_state，
+    use_ref 持有跨渲染持久）——修复前每帧新建 ``SimpleNamespace`` fiber，
+    ``_build_lines`` 内部快照缓存（``fiber._lines_cache``）与换行布局缓存
+    （``fiber._input_layout_cache``）写回临时对象当帧即弃 → 生产路径恒 miss
+    （死缓存：每帧全量重建行 + 换行计算）。持久引用后同快照/同
+    text/max_input 帧缓存命中（外层 use_memo 兜底之外再省一层重建）。
+    props/layout_box 每帧更新（fiber 本体跨帧复用）。
+
     Args:
         props: 输入区 props。
         width: 布局宽度。
         now: 当前 monotonic 时间。
-        fade_state: 组件级渐显缓存（use_ref 持有，跨 use_memo 重算持久——
-            修复组件化后占位符渐显每 0.1s 桶重置的 bug：fiber 为临时对象，
-            渐显 key 丢失 → 渐显永远停在起点色）。
+        fade_state: 组件级缓存（use_ref 持有，跨 use_memo 重算持久）——
+            ① 占位符渐显缓存（修复组件化后占位符渐显每 0.1s 桶重置的 bug：
+            fiber 为临时对象时渐显 key 丢失 → 渐显永远停在起点色）；
+            ② P2-6：持久 fiber 对象（``fade_state["_fiber"]``）。
     """
     from types import SimpleNamespace
-    fiber = SimpleNamespace(
-        props=props,
-        layout_box=SimpleNamespace(w=width, x=0, y=0),
-        _placeholder_fade_key=fade_state.get("_placeholder_fade_key"),
-    )
+    fiber = fade_state.get("_fiber")
+    if fiber is None:
+        # 首次：创建持久 fiber 对象（含缓存字段，SimpleNamespace 动态可写）
+        fiber = SimpleNamespace(
+            props=props,
+            layout_box=SimpleNamespace(w=width, x=0, y=0),
+            _placeholder_fade_key=fade_state.get("_placeholder_fade_key"),
+        )
+        fade_state["_fiber"] = fiber
+    else:
+        # 跨帧复用：仅更新可变字段（props/布局宽度）
+        fiber.props = props
+        fiber.layout_box.w = width
     # 补全弹窗：独立标准组件（Column + TEXT）
     children = [h(CompletionPopup, {
         "completion": props.get("completion"),

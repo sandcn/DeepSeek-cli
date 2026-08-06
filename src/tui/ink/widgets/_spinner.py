@@ -1,18 +1,23 @@
 """Spinner — 旋转加载动画控件（React Ink ink-spinner 对齐）。
 
 模块边界（2026-08-05 架构优化）：从 ``widgets/display.py`` 拆分——Spinner
-独立成模块（公共辅助经 ``_display_common`` 共享）。threading 为全局单例
-模块——测试 ``patch("src.tui.ink.widgets.display.threading.Timer")`` 修改的
-是同一 threading 模块对象，本模块 ``import threading`` 引用同一对象，patch
-依然生效（兼容保留）。
+独立成模块（公共辅助经 ``_display_common`` 共享）。
+
+★ P1（review 2026-08-06）：**时间基动画重构**——修复前 ``Spinner`` 用
+``threading.Timer`` 后台线程周期调用 ``set_frame_index`` 推进帧号：Timer
+线程与 render 线程的 ``_next_state_hook``（``hook.queue = None``）并发读写
+同一 StateHook.queue，存在状态更新丢失与调度竞争，违反框架单线程渲染模型。
+现改为**纯渲染期计算帧号**（``int(time.monotonic() * hz) % len(frames)``，
+与 ``widgets/spinner.py`` 的 ``InlineSpinner`` 同语义）——无后台线程、无跨
+线程状态访问、无状态 hook；空闲不触发重绘（与 InlineSpinner 一致，由宿主
+渲染短路语义承担）。
 """
 
 from __future__ import annotations
 
-import threading
+import time
 
 from ..element import TEXT, Element, h
-from ..hooks import use_state, use_effect
 from ._display_common import _resolve_style
 
 #: 内置动画帧字符集（Braille/几何/emoji，键名对齐 ink-spinner 常用预设）
@@ -55,10 +60,10 @@ def Spinner(props: dict) -> Element:
         color: 前景色（颜色名/int）。
         style: 完整样式（``color`` 覆盖 style.fg）。
 
-    实现：``use_state`` 保存帧序号 + ``use_effect`` 注册 ``threading.Timer``
-    周期推进帧序号（set_state → schedule → 重渲染）。组件卸载时清理 Timer
-    （stop 标志防残余 tick 继续创建新 Timer）。``interval``/``indicator``
-    变化不重建 Timer（挂载时捕获；React Ink setInterval deps=[] 同语义）。
+    实现（时间基）：渲染期按 ``time.monotonic()`` 与 ``interval`` 计算当前
+    帧号（``int(now * (1000.0 / interval)) % len(frames)``）——纯时间推进
+    （非帧计数，与 ``InlineSpinner`` 同语义）。修复 P1：无后台线程、无跨
+    线程访问 hook 状态竞态；空闲不触发重绘（宿主渲染短路语义承担）。
 
     Returns:
         TEXT 元素（当前帧字符）。
@@ -82,31 +87,10 @@ def Spinner(props: dict) -> Element:
     except (TypeError, ValueError, OverflowError):
         interval = 80
     style = _resolve_style(props)
-    frame_index, set_frame_index = use_state(0)
-
-    def _create():
-        stop = {"stop": False}
-
-        def _tick():
-            if stop["stop"]:
-                return
-            set_frame_index(lambda i: (i + 1) % len(frames))
-            _schedule_next()
-
-        def _schedule_next():
-            t = threading.Timer(interval / 1000.0, _tick)
-            t.daemon = True
-            t.start()
-
-        _schedule_next()
-
-        def _cleanup():
-            stop["stop"] = True
-
-        return _cleanup
-
-    use_effect(_create, ())
-
+    # ★ P1（review）：时间基帧号——``int(now * hz) % n``（interval 毫秒 →
+    #   每秒帧数 hz = 1000/interval）。纯渲染期计算，无 threading.Timer。
+    hz = 1000.0 / interval
+    frame_index = int(time.monotonic() * hz) % len(frames)
     ch = frames[frame_index % len(frames)]
     return h(TEXT, {"children": ch, "style": style, "height": 1})
 

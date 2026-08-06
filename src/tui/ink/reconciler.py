@@ -93,6 +93,12 @@ class Reconciler:
         self._pending_destroys: list[tuple[Fiber, EffectHook]] = []
         #: input router 签名缓存（同签名复用上次 router，免每帧重建闭包）
         self._input_router_cache: tuple[tuple, object] | None = None
+        # ★ P3-17 说明（review 方向）：``_hooks.set_schedule_callback`` 为
+        #   **模块级单例**（hooks 模块全局状态，非实例字段）——**单会话约束**：
+        #   同一进程仅一个活跃 Reconciler/InkSession 会话。多会话并发会相互
+        #   覆盖回调（后者覆盖前者，前一会话状态更新触发后一会话重渲染）。
+        #   当前架构（单 TUI 会话）满足约束；多会话场景须将 hooks 状态与会话
+        #   绑定（hooks 模块状态整体实例化），本注释记录该约束供未来扩展参考。
         _hooks.set_schedule_callback(schedule_callback)
 
     def render(
@@ -368,6 +374,12 @@ class Reconciler:
             el = elements[n_old]
             if not _is_same_type(cur, el):
                 return False
+            # ★ P3-15 语义声明（review 方向）：快路径按**位置**匹配 + 显式 key
+            #   校验——与完整算法「无 key 按索引、有 key 按 key」等价：前 N 个
+            #   位置 key/type 一致时按序复用，恰为完整算法的逐一复用结果
+            #   （keyed 元素 key 相等 + 无 key 元素位置对应 = 同 type 复用；
+            #   快路径不做 moved 标记——稳定列表位置不变，moved 恒 False，与
+            #   完整算法一致）。
             if el.props.get("key") is not None and cur.key != el.key:
                 return False
             n_old += 1
@@ -542,6 +554,13 @@ class Reconciler:
             #   ——大组件树每帧数千叶子（1000+ TEXT）省数千次 dict 清空与
             #   isinstance/注册表检查。仅 ``_host_ref`` 仍须设置（叶子也可
             #   绑定 useMeasure ref）。
+            # ★ P3-16 说明（review 方向）：叶子快路径不执行
+            #   ``fiber.contexts.clear()``——依赖「内置 host 不可能是 context
+            #   provider」不变量（``_BUILTIN_HOSTS`` 标签无 provider 注册路径，
+            #   create_context 生成唯一 ``__ctx_*__`` 标签，不属于内置集合），
+            #   contexts 永不写入内置 host → 无残留可清（下方常规分支的
+            #   ``fiber.contexts.clear()`` 在叶子快路径被跳过）。若未来允许
+            #   内置 host 成为 provider，须在本快路径补 ``contexts.clear()``。
             if not children and fiber.child is None and ftype in _BUILTIN_HOSTS:
                 fiber._host_ref = fiber.props.get("ref")
                 return
@@ -726,6 +745,12 @@ class Reconciler:
         focused_hooks = [h for h in hooks_list if getattr(h, "focused", True)]
         if focused_hooks:
             hooks_list = focused_hooks
+        # ★ P3-18 说明（review 方向）：签名含 ``id(hook.handler)``（对象身份
+        #   依赖）——id 在 handler 被 GC 后可能复用 → 签名误判未变 → 复用过期
+        #   router 闭包（handler 已失效）。兜底机制：缓存三元组
+        #   ``(signature, router, hooks_list)`` 命中时逐一 ``is`` 比对
+        #   hook/handler 引用仍有效（见下方缓存命中分支——低开销：每帧一次、
+        #   hooks 数量极少），闭环修复 id 复用风险。
         signature = tuple(
             (hook.seq, hook.is_active, id(hook.handler), getattr(hook, "focused", True))
             for hook in hooks_list

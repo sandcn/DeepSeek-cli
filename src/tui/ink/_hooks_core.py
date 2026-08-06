@@ -481,6 +481,11 @@ def create_context(default: Any = None) -> Context:
     ctx = Context(default=default, tag="")
     ctx.tag = f"__ctx_{next(_CTX_SEQ)}__"
     ctx.Provider = ctx.tag
+    # ★ P3-3（review 方向）：注册表为 WeakValueDictionary（hooks.py 门面
+    #   定义）——Context 不再被外部引用时 GC 自动移除条目（create_context
+    #   无显式清理路径；修复前普通 dict 只增不回收）。Context 被外部持有
+    #   （模块级/组件级 ctx 变量）时条目存活——与 BUG-18「注册表条目与
+    #   Provider 挂载解耦（进程生命周期）」设计一致，挂载/卸载不清理。
     _hooks_module._context_registry[ctx.tag] = ctx
     return ctx
 

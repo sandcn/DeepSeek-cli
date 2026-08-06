@@ -230,6 +230,11 @@ class InputIO:
         self._fd_status = "ok"
         # 方向2：启动时清空慢速多字节续读缓冲（会话重启不携带旧 partial）
         self._utf8_partial = b""
+        # P2-1：跨会话状态残留修复——同步清空粘贴多字节缓冲并重置粘贴退避
+        # 计数器（start_io/stop_io 重置后会话边界干净，避免旧粘贴尾字节与
+        # 退避状态泄漏到新会话）。
+        self._paste_partial = b""
+        self._paste_skip_counter = 0
 
     def stop_io(self) -> None:
         """停用 I/O 读取（标志位管理模式，不再 join 线程）。
@@ -243,6 +248,10 @@ class InputIO:
         self._fd_status = "ok"
         # 方向2：停止时清空慢速多字节续读缓冲（重启后从干净状态恢复）
         self._utf8_partial = b""
+        # P2-1：与 start_io 对称——停止时同步清空粘贴缓冲与退避计数
+        # （会话边界干净，重启不携带旧状态）。
+        self._paste_partial = b""
+        self._paste_skip_counter = 0
 
     def pause_io(self) -> None:
         """暂停 I/O 读取（供 EscapeMonitor 的特殊按键回调使用）。

@@ -53,7 +53,11 @@ class TuiLifecycle:
         self._subagent_controller = subagent_controller
 
         self._bound_handlers: dict[type, Callable] | None = None
-        self._state_lock = threading.Lock()
+        # ★ P2-5（ChatUIConsumer start/stop 并发）：RLock——ChatUIConsumer
+        #   start()/stop() 在 ``_state_lock`` 临界区内委托本类 start()/stop()
+        #   （注册/注销消费者 + 生命周期操作原子化），本类内部再次获取同一把
+        #   锁须可重入（普通 Lock 会自死锁）。
+        self._state_lock = threading.RLock()
         self._started = False
         self._handlers_bound = False
 
@@ -169,8 +173,15 @@ class TuiLifecycle:
                 # 方向2（输出历史落盘接线）：停止时关闭 line tracker——flush 剩余
                 # 行到历史文件 + 停止 daemon 刷盘定时器（修复 _flush_history 无生产
                 # 调用方——停止时历史文件缺失末尾行 + daemon Timer 自重置泄漏）。
-                self._close_line_tracker()
+                # ★ P3-8：line tracker 关闭移入 finally——engine.flush/stop 抛
+                #   异常时仍关闭（flush 剩余行 + 停止 daemon 定时器），防历史
+                #   文件缺失末尾行与 daemon Timer 泄漏（修复前位于 try 主体，
+                #   flush/stop 异常时 line tracker 不关闭）。
             finally:
+                try:
+                    self._close_line_tracker()
+                except Exception:
+                    _logger.debug("line_tracker.close 异常", exc_info=True)
                 # ★ 2026-08-06（输入历史落盘冲刷）：放入 finally——即使
                 #   unsubscribe/flush/stop/render_lock 清理抛异常（如渲染线程
                 #   崩溃恢复路径）也确保冲刷共享输入历史写盘队列（修复前

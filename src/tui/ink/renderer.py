@@ -230,8 +230,35 @@ class InkRenderer:
 
     # ── 渲染 ─────────────────────────────────────────
 
+    def _assert_renderer_invariants(self) -> None:
+        """调试期不变量断言（P3-14 review 方向）：``_prev/_buf_h/_top_aligned``
+        三元组一致性校验。
+
+        辅助未来重构校验（``assert`` 在 ``python -O`` 下剥离，常规运行每帧
+        O(1) 开销可忽略）。不变量：
+          - ``_buf_h >= 0``（物理缓冲行数非负）；
+          - ``_top_aligned == False``（底部对齐）仅在**已渲染**状态合法——
+            ``_prev`` 非 None 且 ``_buf_h > 0``（底部对齐仅由
+            ``_grow_drifted``/``_rewrite_drifted`` 渲染路径置位，二者均以
+            ``_prev = frame`` 收尾；首帧/软重置/全量写入恒置 True）；
+          - ``_prev is None`` ⇔ 全量写入待触发（首帧 / reset(full=True)），
+            此时 ``_buf_h == 0`` 且 ``_top_aligned == True``。
+        """
+        assert self._buf_h >= 0, f"_buf_h 非负不变量被破坏: {self._buf_h}"
+        if not self._top_aligned:
+            assert self._prev is not None and self._buf_h > 0, (
+                "底部对齐（_top_aligned=False）仅在已渲染状态合法: "
+                f"prev={self._prev is not None} buf_h={self._buf_h}"
+            )
+        if self._prev is None:
+            assert self._buf_h == 0 and self._top_aligned, (
+                "未渲染状态（_prev is None）应满足 buf_h==0 且 top_aligned: "
+                f"buf_h={self._buf_h} top_aligned={self._top_aligned}"
+            )
+
     def render(self, frame: Frame) -> None:
         """渲染新帧（最小差异写入）。"""
+        self._assert_renderer_invariants()
         if self._prev is None:
             # ★ BUG-65：首帧（_history_lines==0）全量回调；reset(full=True)
             #   （resize 后全量重写）只回调**新增**行（跳过已记录历史）——
@@ -905,6 +932,12 @@ class InkRenderer:
         # 物理缓冲行数 = 文档行 + 末尾空白行（每行以 \n 结尾）
         self._buf_h = frame.height + 1
         self._top_aligned = True
+        # ★ P3-13 设计说明（review 方向）：行回调（``_emit_new_lines``）在
+        #   终端写入（``stream.write``）**之前**调用——设计取舍：回调先于
+        #   终端写入，保证输出历史（scrollback 落盘）在任何终端输出之前记录
+        #   （写入/刷新异常时历史不缺失）。回调异常已被 ``_emit_new_lines``
+        #   内部吞掉仅记日志，不影响终端写入。保持既有顺序（改动顺序会改变
+        #   回调与终端写入的时序语义，无收益）。
         self._emit_new_lines(frame, emit_start, frame.height)
         self._cursor_row = self._bottom_row(frame.height)
         self._stream.write(buf.getvalue())

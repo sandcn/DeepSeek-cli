@@ -17,6 +17,11 @@ from __future__ import annotations
 
 from src.tui.core.style import Style
 from src.tui.ink import h, APP, TEXT, StyledRun, Column
+# ★ P3-7：time_glow/_fx 模块顶部集中导入（_theme/_fx 仅依赖 core 层，无
+#   app 依赖，模块级导入无循环风险；input_area 已同模式导入）——修复前
+#   _ParseLine 每帧在函数体内重复惰性导入。
+from src.tui.app import _fx
+from src.tui.app._theme import time_glow
 from .chat_view import ChatView
 from .header import TopHeader
 from .status_bar import StatusBar
@@ -70,6 +75,15 @@ def App(props) -> object:
         # ★ React Ink 化（user_select）：用户选择弹窗组件——StatusBar 上方渲染，
         #   visible=False 时零高度不占行；key=seq 强制重挂载（每次打开重置
         #   组件内部 state，连续多次调用不残留旧选中/勾选）。
+        # ★ P3-2（seq 复用竞态）：工具 cleanup 后 ``model.user_select =
+        #   UserSelectState()``（seq=0）→ 组件树 key 变为 ``us-0``；下次打开
+        #   seq 从 0 起 +1（每次独立调用均为 us-1）——连续两次调用若中间
+        #   cleanup 渲染未发生（渲染循环间隙极短窗口），两次 key 相同 → fiber
+        #   复用 → use_state 不重新初始化（残留旧选中/勾选）。属低概率竞态
+        #   （cleanup 与下次 open 之间必有 request_bottom_redraw，正常路径
+        #   key 先回落 us-0 再回升），用户可导航修正；并入单调递增序号需
+        #   模块级可变状态（多实例/测试污染 + 每帧 key 漂移风险），权衡后
+        #   以注释说明风险（实现复杂度 > 风险收益）。
         h(UserSelectPopup, {
             "model": model,
             "width": width,
@@ -104,9 +118,8 @@ def _ParseLine(props) -> object:
         # ★ P2（review）：空状态统一返回空 TEXT（h=0 不占行），与活跃状态
         #   TEXT 类型一致——避免 BOX↔TEXT 类型切换导致 fiber 销毁重建。
         return h(TEXT, {"children": ""})
-    # ★ 呼吸色：仅当解析行存在时计算（每帧一次 time_glow，0.1s 桶缓存命中）
-    from src.tui.app._theme import time_glow
-    from src.tui.app import _fx
+    # ★ 呼吸色：仅当解析行存在时计算（每帧一次 time_glow，0.1s 桶缓存命中；
+    #   time_glow/_fx 已模块顶部导入——P3-7）
     glow = time_glow(242, 252, 8.0)
     # ★ BEAUTY-30（体验动效）：spinner 金色呼吸色（178→190 脉动，8s 周期，
     #   与解析行文本呼吸同步周期）——解析进行中 spinner 更醒目（金色提示

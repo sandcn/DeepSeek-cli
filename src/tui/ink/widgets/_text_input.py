@@ -85,20 +85,25 @@ def TextInput(props: dict) -> Element:
             _call(onChange, new_text)
             return True
         if event.kind == "backspace":
-            if cur_cursor > 0:
-                new_text = cur_text[:cur_cursor - 1] + cur_text[cur_cursor:]
-                text_ref.current = new_text
-                cursor_ref.current = cur_cursor - 1
-                set_text(new_text)
-                set_cursor(cursor_ref.current)
-                _call(onChange, new_text)
+            # ★ P3（review）：光标在 0 时无操作——返回 False（不消费，放行
+            #   父级；与 ListView 边界修复对齐）。
+            if cur_cursor <= 0:
+                return False
+            new_text = cur_text[:cur_cursor - 1] + cur_text[cur_cursor:]
+            text_ref.current = new_text
+            cursor_ref.current = cur_cursor - 1
+            set_text(new_text)
+            set_cursor(cursor_ref.current)
+            _call(onChange, new_text)
             return True
         if event.kind == "delete":
-            if cur_cursor < len(cur_text):
-                new_text = cur_text[:cur_cursor] + cur_text[cur_cursor + 1:]
-                text_ref.current = new_text
-                set_text(new_text)
-                _call(onChange, new_text)
+            # ★ P3（review）：光标在末尾时无操作——返回 False（不消费）。
+            if cur_cursor >= len(cur_text):
+                return False
+            new_text = cur_text[:cur_cursor] + cur_text[cur_cursor + 1:]
+            text_ref.current = new_text
+            set_text(new_text)
+            _call(onChange, new_text)
             return True
         if event.kind == "arrow_left":
             cursor_ref.current = max(0, cur_cursor - 1)

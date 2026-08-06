@@ -51,8 +51,13 @@ class _HistoryDiskWriter:
     丢失窗口与退出冲刷复杂度同原实现（退出冲刷由 lifecycle flush 兜底），
     仅收敛线程模型（线程复用 + 队列有界），不改变「不批量化」的决策。
 
-    线程安全：``queue.Queue`` 内部锁保护；``submit`` 非阻塞（队列满时丢弃并
-    记 debug——不阻塞输入路径，与「写盘失败仅记日志」一致）。
+    线程安全（P2-9 修复）：``queue.Queue`` 内部锁 + ``_submit_lock`` 互斥锁
+    保护 flush/submit/线程重建的原子性——原实现无锁：flush 置哨兵后另一
+    线程 submit 新条目可能排在哨兵之后，后台线程遇哨兵退出导致新条目滞留
+    （历史静默丢失）。现 flush 置哨兵前先 ``get_nowait()`` 排空队列（现有
+    条目同步写盘），submit 经 ``_sentinel_count`` 检查到哨兵残留时改同步
+    写盘，不再滞留。``submit`` 非阻塞（队列满时丢弃并记 warning——不阻塞
+    输入路径，与「写盘失败仅记日志」一致）。
     """
 
     #: 待写队列上限（条）——超出丢弃（历史写盘慢时防内存无限）
@@ -60,68 +65,148 @@ class _HistoryDiskWriter:
 
     def __init__(self) -> None:
         self._queue: queue.Queue = queue.Queue(maxsize=self._MAX_PENDING)
-        self._thread = threading.Thread(
-            target=self._run, daemon=True, name="tui-history-disk-writer",
-        )
-        self._thread.start()
+        # P2-9：flush/submit/线程重建互斥锁（保护哨兵计数与队列操作的原子性）
+        self._submit_lock = threading.Lock()
+        #: 队列中哨兵（None）数量——submit 检查到哨兵残留时改同步写盘
+        self._sentinel_count: int = 0
+        self._thread: threading.Thread | None = None
+        try:
+            self._thread = threading.Thread(
+                target=self._run, daemon=True, name="tui-history-disk-writer",
+            )
+            self._thread.start()
+        except Exception:
+            # P3-3：线程启动降级——极端资源耗尽（线程创建失败）时记录 warning，
+            # 后续 submit 改同步写盘（不丢历史、不使模块 import 级崩溃）。
+            _logger.warning(
+                "历史写盘后台线程启动失败，降级为同步写盘", exc_info=True,
+            )
+            self._thread = None
 
     def _run(self) -> None:
         while True:
             item = self._queue.get()
-            if item is None:  # 哨兵退出（当前无生产调用方；保留供生命周期/测试）
+            if item is None:  # 哨兵退出（flush 置哨兵；重建时清理残留）
                 break
             history_io, escaped = item
             _safe_disk_append(history_io, escaped)
 
     def submit(self, history_io, escaped: str) -> None:
-        self._ensure_thread()
-        try:
-            self._queue.put((history_io, escaped), block=False)
-        except queue.Full:
-            # ★ 2026-08-06：队列满丢弃升级 warning——高频 Enter/慢盘时超出
-            #   256 条的历史被静默丢弃（仅 debug）用户不可见，历史丢失应
-            #   可观测。
-            _logger.warning(
-                "历史写盘队列已满（%d），丢弃条目（历史可能丢失）",
-                self._MAX_PENDING,
-            )
+        with self._submit_lock:
+            if self._thread is None:
+                # 线程启动失败降级 → 同步写盘（不丢历史）
+                _safe_disk_append(history_io, escaped)
+                return
+            self._ensure_thread_locked()
+            if self._sentinel_count > 0:
+                # P2-9：队列中已有退出哨兵（flush 进行中/已完成）——新条目
+                # 入队会排在哨兵之后，后台线程遇哨兵退出后滞留（历史静默
+                # 丢失）。改同步写盘（flush 期间不排队）。
+                _safe_disk_append(history_io, escaped)
+                return
+            try:
+                self._queue.put((history_io, escaped), block=False)
+            except queue.Full:
+                # ★ 2026-08-06：队列满丢弃升级 warning——高频 Enter/慢盘时
+                #   超出 256 条的历史被静默丢弃（仅 debug）用户不可见，历史
+                #   丢失应可观测。
+                _logger.warning(
+                    "历史写盘队列已满（%d），丢弃条目（历史可能丢失）",
+                    self._MAX_PENDING,
+                )
 
-    def _ensure_thread(self) -> None:
-        """确保后台写盘线程存活（flush 退出后自动重建）。
+    def _ensure_thread_locked(self) -> None:
+        """确保后台写盘线程存活（flush 退出后自动重建）。**持锁调用**。
 
         ★ 2026-08-06：``flush()`` 置哨兵使线程退出后，若模块级 writer 仍被
         使用（lifecycle.stop 后再 start / 多 ChatUIConsumer 实例共享），
         ``submit`` 会把条目放入队列但无消费者 → 历史写盘静默失效。submit
-        前检查线程存活，已死则重建（复用同一队列——剩余条目与哨兵外的
-        内容保持串行有序）。
+        前检查线程存活，已死则重建——重建前先排空旧队列并清除残留哨兵
+        （None），剩余真实条目放入新队列（串行有序，不滞留）。
         """
+        if self._thread is None:
+            return
         if not self._thread.is_alive():
-            self._thread = threading.Thread(
-                target=self._run, daemon=True, name="tui-history-disk-writer",
-            )
-            self._thread.start()
+            # 重建前清理队列残留：哨兵（None）丢弃，真实条目保留到新队列
+            pending: list[tuple] = []
+            while True:
+                try:
+                    item = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if item is None:
+                    self._sentinel_count -= 1
+                else:
+                    pending.append(item)
+            new_queue: queue.Queue = queue.Queue(maxsize=self._MAX_PENDING)
+            for item in pending:
+                try:
+                    new_queue.put(item, block=False)
+                except queue.Full:
+                    _logger.warning("重建历史写盘线程时队列溢出，丢弃条目")
+            self._queue = new_queue
+            try:
+                self._thread = threading.Thread(
+                    target=self._run, daemon=True,
+                    name="tui-history-disk-writer",
+                )
+                self._thread.start()
+            except Exception:
+                # P3-3：重建失败同样降级——待写条目同步写掉（不丢历史）
+                _logger.warning(
+                    "历史写盘后台线程重建失败，降级为同步写盘", exc_info=True,
+                )
+                self._thread = None
+                for item in pending:
+                    history_io, escaped = item
+                    _safe_disk_append(history_io, escaped)
 
     def flush(self, timeout: float = 2.0) -> bool:
         """排空待写队列并等待后台线程写入完成（退出冲刷接线，2026-08-06）。
 
-        置 ``None`` 哨兵退出线程；join 等待线程消费剩余条目后正常退出。
+        P2-9 修复：置哨兵前先 ``get_nowait()`` 排空队列（现有条目由本方法
+        同步写盘），保证置哨兵时队列为空——修复前队列中可能残留条目排在
+        哨兵前（flush 不等它们写完）或哨兵后（submit 竞态滞留）。置哨兵后
+        的后续 submit 经 ``_sentinel_count`` 检查改同步写盘，不滞留。
         幂等：线程已退出（重复调用）时直接返回 True。
 
         Returns:
             True — 队列已排空且线程正常退出；
             False — 超时（线程仍存活，少量条目可能未落盘）。
         """
+        if self._thread is None:
+            # 线程启动失败降级（submit 均同步写盘）——无后台队列可冲刷
+            return True
         if not self._thread.is_alive():
             return True
-        try:
-            self._queue.put(None, block=True, timeout=timeout)
-        except queue.Full:
-            _logger.warning("历史写盘队列满，无法置退出哨兵（条目可能丢失）")
-            return False
+        with self._submit_lock:
+            # 先排空队列：现有条目同步写盘、残留哨兵清除——保证置哨兵前
+            # 队列为空（后续 submit 在锁内检查 _sentinel_count 走同步写）。
+            drained: list[tuple] = []
+            while True:
+                try:
+                    item = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if item is None:
+                    self._sentinel_count -= 1
+                else:
+                    drained.append(item)
+            try:
+                self._queue.put(None, block=True, timeout=timeout)
+            except queue.Full:
+                _logger.warning("历史写盘队列满，无法置退出哨兵（条目可能丢失）")
+                return False
+            self._sentinel_count += 1
+        for history_io, escaped in drained:
+            _safe_disk_append(history_io, escaped)
         self._thread.join(timeout=timeout)
         if self._thread.is_alive():
             _logger.warning("历史写盘线程 %s 秒内未退出", timeout)
             return False
+        with self._submit_lock:
+            # 哨兵已被后台线程消费 → 归零（后续 submit 正常入队）
+            self._sentinel_count = 0
         return True
 
 

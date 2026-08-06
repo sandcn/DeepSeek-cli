@@ -170,25 +170,29 @@ def _with_stream_indicator(styled: list, width: int, sp: str) -> list:
     截断原内容到 ``width-1``（给 spinner 留位）再追加亮青 spinner 帧——
     流式回答末尾显示动态「生成中」指示（对齐 Claude Code 末尾光标语义，
     spinner 帧比静态光标更生动）。宽度守卫：最后一行原内容可能恰好满宽，
-    不截断直接追加会破坏行级 diff 宽度不变量。
+    不截断直接追加会破坏行级 diff 宽度不变量；``width<=0``（无截断基准）
+    时仅返回原行不追加 spinner（P2-5）。
 
     Args:
         styled: 行 StyledRun 列表（_block_styled_lines 产出）。
-        width: 布局宽度（>0 时截断基准）。
+        width: 布局宽度（>0 时截断基准；<=0 时返回原行）。
         sp: spinner 帧字符（非空才追加）。
 
     Returns:
-        新 StyledRun 列表（原内容截断 + spinner）；sp 为空返回原列表。
+        新 StyledRun 列表（原内容截断 + spinner）；sp 为空或 width<=0
+        返回原列表。
     """
     if not sp or not styled:
         return styled
+    if not width or width <= 0:
+        # ★ P2-5（width<=0）：无宽度上下文下无法保证「截断后追加 spinner」的
+        #   行级 diff 宽度不变量（截断基准缺失，直接追加可能超宽）——仅返回
+        #   原行（不追加 spinner），保持调用方渲染语义（width<=0 为防御路径，
+        #   正常渲染 width>0 恒有截断基准）。
+        return styled
     from src.tui.ink.helpers import truncate_runs
-    if width and width > 0:
-        budget = max(1, width - 1)
-        runs = truncate_runs(styled, budget)
-    else:
-        runs = list(styled)
-    runs = list(runs)
+    budget = max(1, width - 1)
+    runs = list(truncate_runs(styled, budget))
     runs.append(StyledRun(sp, Style(fg=45, bold=True)))
     return runs
 

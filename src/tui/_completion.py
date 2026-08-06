@@ -53,7 +53,10 @@ def _show_completions_for(bb, engine, text: str) -> bool:
     if not items:
         return False
 
-    words = text.split()
+    # P2-6：与 CompletionEngine.complete 统一为 split(" ")（保留尾随空串）——
+    # split() 丢弃末尾空串，输入 "cd " 时 last_word 取到 "cd" 把 "cd" 当
+    # 前缀显示，而非枚举当前目录。
+    words = text.split(" ")
     last_word = words[-1] if words else ""
 
     match_prefix = _get_match_prefix(items, last_word)

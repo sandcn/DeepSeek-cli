@@ -36,7 +36,7 @@ def detect_truecolor() -> bool:
     """检测终端是否支持 TrueColor（环境变量约定，结果进程级缓存）。
 
     判定优先级：
-      1. ``NO_COLOR`` 置位（非空）→ 强制 256 色降级（最高优先级）。
+      1. ``NO_COLOR`` 存在（含空串，规范「存在即禁用」）→ 强制 256 色降级（最高优先级）。
       2. ``COLORTERM`` 含 "truecolor"/"24bit" → TrueColor。
       3. ``TERM`` 含 "direct" → TrueColor。
       4. 其余情况 → False（256 色降级，向后兼容）。
@@ -53,7 +53,9 @@ def detect_truecolor() -> bool:
 
 
 def _detect_truecolor_uncached() -> bool:
-    if os.environ.get("NO_COLOR"):
+    # P3-18：NO_COLOR 规范「存在即禁用」——空串设置同样视为禁用
+    # （修复前 ``os.environ.get("NO_COLOR")`` 将空串视为未设置，违反规范）。
+    if "NO_COLOR" in os.environ:
         return False
     ct = os.environ.get("COLORTERM", "").lower()
     if "truecolor" in ct or "24bit" in ct:
@@ -420,6 +422,13 @@ def lerp_color(a: int, b: int, t: float) -> int:
     #   防御外部调用方传入异常 t）。
     if not math.isfinite(t):
         return a
+    # ★ P1-1（最关键）：a/b 超出 [0, 255]（如负值）时 ``_XTERM_PALETTE[a]``
+    #   抛 IndexError（无范围校验）——入口显式校验并抛 ValueError，
+    #   与 Color256 构造校验语义一致（明确报错而非越界索引）。
+    if not (0 <= a <= 255) or not (0 <= b <= 255):
+        raise ValueError(
+            f"lerp_color a/b must be in [0, 255], got a={a}, b={b}"
+        )
     if t <= 0.0:
         return a
     if t >= 1.0:
@@ -519,8 +528,8 @@ def to_ansi_fg(color: ColorValue) -> str:
         return color.to_ansi_fg()
     if isinstance(color, Color256):
         return f"\033[38;5;{color.value}m"
-    # int: 256 色号
-    return f"\033[38;5;{color}m"
+    # int: 256 色号（P3-17：钳制到 [0, 255]，容忍非法输入不生成越界 ANSI 序列）
+    return f"\033[38;5;{max(0, min(255, color))}m"
 
 
 def to_ansi_bg(color: ColorValue) -> str:
@@ -540,8 +549,8 @@ def to_ansi_bg(color: ColorValue) -> str:
         return color.to_ansi_bg()
     if isinstance(color, Color256):
         return f"\033[48;5;{color.value}m"
-    # int: 256 色号
-    return f"\033[48;5;{color}m"
+    # int: 256 色号（P3-17：钳制到 [0, 255]，容忍非法输入不生成越界 ANSI 序列）
+    return f"\033[48;5;{max(0, min(255, color))}m"
 
 
 def to_256(color: ColorValue) -> int:
@@ -561,8 +570,8 @@ def to_256(color: ColorValue) -> int:
         return color.to_256()
     if isinstance(color, Color256):
         return color.value
-    # int: 原样返回
-    return color
+    # int: 256 色号（P3-17：钳制到 [0, 255]，容忍非法输入返回合法色号）
+    return max(0, min(255, color))
 
 
 def auto_color(r: int, g: int, b: int) -> ColorValue:

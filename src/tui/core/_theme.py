@@ -161,6 +161,8 @@ def resolve_theme(name: str) -> Palette:
 
 
 #: 活动调色板 TTL 缓存（≤1Hz 刷新；读 config THEME 键）
+#: ★ P3-20：无锁读写——全局缓存为单字段赋值（GIL 原子性）且仅主线程
+#:   （render）/命令线程（/theme 切换）读写，原子替换元组可接受（无中间态）。
 _ACTIVE_PALETTE_TTL = 1.0
 _active_palette_cache: tuple[float, Palette] = (0.0, ThemeRegistry.resolve("dark"))
 
@@ -232,7 +234,16 @@ def _glow_bucket(lo: int, hi: int, period: float, bucket: int) -> int:
     （key 含 lo/hi/period/bucket，不同参数不互相污染）；桶切换后 bucket 变化
     自动失效；maxsize=32 防无限增长。桶内代表时间取桶中点
     （``(bucket + 0.5) * 0.1``，单调稳定）。
+
+    ★ P1-2：入口防御校验——``period <= 0`` 时 ``math.sin`` 除零抛
+    ZeroDivisionError（无校验），显式抛 ValueError 明确报错（lru_cache
+    不缓存异常结果）；``lo > hi`` 时静默返回 lo 恒值（``max(lo, min(hi, ...))``
+    语义混乱），改为交换 lo/hi 宽容处理。
     """
+    if period <= 0:
+        raise ValueError(f"period must be > 0, got {period}")
+    if lo > hi:
+        lo, hi = hi, lo
     t = (bucket + 0.5) * 0.1
     ratio = (math.sin(2 * math.pi * t / period) + 1) / 2
     return max(lo, min(hi, lo + int((hi - lo) * ratio)))

@@ -40,7 +40,10 @@ def _default_fx_params() -> tuple[float, float]:
         return (0.6, 10.0)
 
 
-#: 模块级默认参数（对齐 TuiConfig 配置默认值，避免每帧重复构造配置实例）
+#: 模块级默认参数快照（对齐 TuiConfig 配置默认值，兼容外部导入引用——
+#: ``app/_fx.py`` re-export、``app/input_area.py`` 引用）。
+#: ★ P3-21：模块导入时固化的快照仅供外部引用；函数内部**惰性读取**
+#:   ``TuiConfig.defaults()``（运行期修改配置即时生效），不依赖本快照。
 _DEFAULT_FADE_DURATION, _DEFAULT_SPINNER_HZ = _default_fx_params()
 
 #: spinner 帧序列**唯一真源**（BEAUTY 动效收敛，方向4）——ASCII braille 帧
@@ -72,7 +75,9 @@ def fade_color(
         中间经 ``lerp_color`` 线性插值（RGB 空间）。
     """
     if duration is None:
-        duration = _DEFAULT_FADE_DURATION
+        # ★ P3-21：惰性读取 TuiConfig 默认值——修复前用模块导入时固化的
+        #   ``_DEFAULT_FADE_DURATION``，运行期修改 TuiConfig 不影响。
+        duration = _default_fx_params()[0]
     if duration <= 0.0:
         return end_color
     if elapsed <= 0.0:
@@ -97,7 +102,9 @@ def spinner_frame(tick_hz: float, frames) -> int:
     if n <= 0:
         return 0
     if tick_hz <= 0:
-        tick_hz = _DEFAULT_SPINNER_HZ
+        # ★ P3-21：惰性读取 TuiConfig 默认值——修复前用模块导入时固化的
+        #   ``_DEFAULT_SPINNER_HZ``，运行期修改 TuiConfig 不影响。
+        tick_hz = _default_fx_params()[1]
     hz = max(tick_hz, 1e-6)
     return int(time.monotonic() * hz) % n
 

@@ -17,8 +17,8 @@ InputDispatcher 组合持有 InputIO + InputBufferEditor + InputParser + 全部�
   _input.py → _input_dispatcher.py 单向依赖；本模块不得 import _input（避免循环）。
 
 模块级 ``import select`` / ``import os`` 供读取方法使用；可被
-``patch("src.tui._input.select.select", ...)`` 经共享 select 模块全局拦截
-（与 _input.py 原行为等价）。
+``patch("select.select", ...)`` 经共享 select 模块全局拦截（P3-4 移除
+_input.py 的 select import 后，patch 目标统一为顶层模块）。
 """
 
 from __future__ import annotations
@@ -171,7 +171,8 @@ class InputDispatcher:
           - Ctrl+L → 清屏（非流式时；未注入回调跳过）
           - Ctrl+D → EOF（空缓冲提交 exit；非空 no-op 防误退）
           - Ctrl+T → 主题切换
-          - 方向1 B1：Ctrl+E（\x05）→ 未知 no-op 兜底——不产生 end 光标行为。
+          - P2-5：Ctrl+E（\x05）由 _decode_control_char 映射为 end 事件
+            （readline 行尾），本分支不可达（不再有 no-op 兜底）。
         """
         if ch == '\x07':          # Ctrl+G → vim
             self._handle_special_key('vim')
@@ -638,6 +639,10 @@ class InputDispatcher:
             # （不再静默丢弃——router 可经 useInput 钩子消费）。
             _logger.debug("%s 功能键未被 input router 消费", kind)
         elif kind == "backspace":
+            # P1-1：modifier==1 表示「词删除」（Ctrl+W / ESC DEL / CSI u 显式
+            # Alt+Backspace \x1b[8;3u 传统路径）；modifier==0 表示普通退格
+            # （ASCII DEL/BS 与 CSI u 普通退格 \x1b[8;1u——修复前 \x1b[8;1u
+            # 误带 modifier=1 落入本分支，普通退格每次删除整个词）。
             self._maybe_dismiss_completion()
             if event.modifier == 1:
                 self._buffer_editor._delete_word_left()
@@ -653,6 +658,10 @@ class InputDispatcher:
             self._maybe_dismiss_completion()
             self._buffer_editor._end()
         elif kind == "delete":
+            # P1-1：modifier==0 普通删除（\x1b[3~ / CSI u 普通 Delete
+            # \x1b[127;1u——修复前 \x1b[127;1u 误带 modifier=1 落入词删除）；
+            # modifier==1 词删除（Ctrl+W / CSI u 显式 Alt+Delete \x1b[127;3u）；
+            # modifier 2/3 为行首/行尾删除（Ctrl+U / Ctrl+K）。
             modifier = event.modifier
             if modifier == 0:
                 self._maybe_dismiss_completion()

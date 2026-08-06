@@ -62,18 +62,25 @@ def _place_absolute(fiber: Fiber, base: Fiber) -> None:
     has_w = width_prop is not None
     has_h = height_prop is not None
 
-    def _measure_abs(x: int, y: int, avail_w: int, fill: bool):
+    def _measure_abs(x: int, y: int, avail_w: int, fill: bool, w_override: int):
         """以解析宽测量（百分比 width 归一化为整数，防 _measure 二次缩放）。
 
         2026-08-06：``_measure`` 内部对 ``width="50%"`` 再次按 ``avail_w``
         解析 → 宽度二次缩放（w*0.5）→ 内容按错误宽度换行 → 高度偏大。
-        测量前临时把 ``props.width`` 替换为已解析整数 w（**替换 props 引用**
-        ——非原地修改，避免 _measure 的 props 引用级缓存误命中；容器不缓存、
-        TEXT 缓存键为 props 引用，恢复后不残留）。
+        测量前临时把 ``props.width`` 替换为已解析整数 ``w_override``。
+        ★ P3-12 机制说明（review 方向）：替换采用**新建 props dict 换引用**
+        （``{**fiber.props, "width": w_override}``）而非原地修改——``_measure``
+        的 props 引用级缓存（``mc[1] is fiber.props``）对**新引用必然 miss**
+        （容器不缓存、TEXT 缓存键为 props 引用），避免「旧 props 引用 + 新
+        width 值」的脏命中（旧引用命中会跳过百分比归一化、宽度二次缩放）；
+        测量后 ``finally`` 恢复原 props 引用（缓存键回原引用，不残留）。
+        ★ P3-11 修复（review 方向）：``w_override`` 显式参数传递——修复前
+        内嵌函数通过闭包引用外部 ``w``（隐式依赖，重构时易错）；改为显式
+        传参（调用点语义清晰：百分比宽场景用已解析整数覆盖 props.width）。
         """
         if has_w and isinstance(width_prop, str) and width_prop.endswith("%"):
             saved = fiber.props
-            fiber.props = {**fiber.props, "width": w}
+            fiber.props = {**fiber.props, "width": w_override}
             try:
                 return _measure(fiber, x, y, avail_w, fill)
             finally:
@@ -104,7 +111,7 @@ def _place_absolute(fiber: Fiber, base: Fiber) -> None:
         #   ``fiber.layout_box``（可能为 None）→ h=0 → 最终放置又把
         #   fill=True 重测出的正确高度覆盖为 0（absolute 元素显式 width
         #   无显式 height 时高度恒为 0）。
-        box = _measure_abs(inner_x, inner_y, max(1, w), fill=False)
+        box = _measure_abs(inner_x, inner_y, max(1, w), fill=False, w_override=w)
         h = box.h
     else:
         # 无显式高（无显式宽时上方已内容测量）：复用测量结果
@@ -139,7 +146,7 @@ def _place_absolute(fiber: Fiber, base: Fiber) -> None:
         # ★ P1 修复（review 方向）：cb.h 仅在显式 height 或纵向拉伸时覆盖——
         #   无显式 height（内容高度已由测量推导）时保留 fill=True 重测的
         #   高度，避免把内容高度覆盖为 0。
-        _measure_abs(x, y, max(1, w), fill=True)
+        _measure_abs(x, y, max(1, w), fill=True, w_override=w)
         cb = fiber.layout_box
         if cb is not None:
             cb.w = w

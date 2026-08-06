@@ -41,6 +41,7 @@ fiber 在每次渲染前 ``reset_hooks()`` 清零 hook_index，``use_*`` 按下�
 from __future__ import annotations
 
 import itertools
+import weakref
 from typing import Any, Callable, List
 
 from .fiber import Fiber
@@ -54,7 +55,13 @@ _current_fiber_stack: List[Fiber] = []
 # 状态更新后触发重渲染的回调（session 注入）
 _schedule_callback: Callable[[], None] | None = None
 # context 注册表（create_context → reconciler provider host 消费）
-_context_registry: dict[str, Any] = {}
+# ★ P3-3（review 方向）：**WeakValueDictionary**——create_context 写入后无
+#   清理路径，普通 dict 只增不回收（无限增长）。弱引用方案：Context 不再被
+#   外部引用（仅注册表持有）时 GC 自动移除条目。**评估注**：Context 被外部
+#   持有（模块级/组件级 ctx 变量）时 WeakValueDictionary 不回收——这是合理
+#   语义（外部持有即调用方负责生命周期），且与 BUG-18「注册表条目与 Provider
+#   挂载解耦（进程生命周期）」设计对齐——挂载/卸载不清理，仅 GC 自然回收。
+_context_registry: "weakref.WeakValueDictionary[str, Any]" = weakref.WeakValueDictionary()
 # context 缓存版本号（provider 值变化时递增；use_context 命中校验）
 _context_version: int = 0
 # std 流访问器（session 注入；useStdin/useStdout/useStderr 读取）
@@ -223,5 +230,29 @@ __all__ = [
     "_focus_ids",
     "_focus_active",
     "_notify_window_size",
+    # ── P3-2 补全（review 方向）：内部 re-export 符号补全 __all__——与门面
+    #    import 列表一致（``from src.tui.ink.hooks import *`` 可获取全部符号，
+    #    含内部基础设施）。修复前 __all__ 未列全，通配导入漏掉
+    #    _next_hook/_current/_push_current/_pop_current/_schedule/
+    #    _make_setter 等（外部/测试按名导入虽不受影响，但 * 导入契约不完整）。
+    "_push_current",
+    "_pop_current",
+    "_current",
+    "_schedule",
+    "_next_hook",
+    "_next_state_hook",
+    "_make_setter",
+    "_clear_fiber_state_queues",
+    "_object_is",
+    "_memo_deps_changed",
+    "_bump_context_version",
+    "_publish_input_router",
+    "_make_compat_handler",
+    "_event_input",
+    "_event_key",
+    "_make_imperative_cleanup",
+    "_clear_focus_active",
+    "_refresh_window_size",
+    "_subscribe_window_size",
     "HookStateError",
 ]

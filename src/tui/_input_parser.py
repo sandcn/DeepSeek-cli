@@ -90,12 +90,17 @@ class InputParser:
         if byte <= 0x1f or byte == 0x7f:
             return self._decode_control_char(byte)
 
-        # ── ASCII 可打印 / 高位字节 ──
-        try:
-            ch = bytes([byte]).decode("utf-8", errors="replace")
-        except (ValueError, UnicodeDecodeError):
-            ch = chr(byte)
-        return KeyEvent(kind="char", char=ch, raw=bytes([byte]))
+        # ── ASCII 可打印 ──
+        if byte < 0x80:
+            return KeyEvent(kind="char", char=chr(byte), raw=bytes([byte]))
+
+        # ── 高位字节（UTF-8 多字节序列的一部分） ──
+        # P2-2 修复：单字节 feed_byte 无法构成完整 UTF-8 字符——旧实现以
+        # errors="replace" 解码产出 U+FFFD 字符事件（孤立续字节被当作可打印
+        # 字符；except UnicodeDecodeError 分支为死代码，因 replace 不抛错）。
+        # 高位字节经 read_utf8_char 完整序列路径处理，本方法返回 unknown
+        # （不再产生 U+FFFD 字符事件）。
+        return KeyEvent(kind="unknown", raw=bytes([byte]))
 
     def parse_sequence(self, fd: int) -> KeyEvent:
         """解析 ESC 转义序列（含 I/O）。
@@ -300,6 +305,16 @@ class InputParser:
             # （_dispatch_key_event 消费：补全可见时反向循环）。
             if keycode == 9 and modifier == 2:
                 return KeyEvent(kind="tab", modifier=2, keycode=keycode, raw=raw)
+            # ★ P1-1 修复（CSI u 键盘协议 Alt+Backspace/Delete）：显式处理
+            #   ``\x1b[8;3u``（keycode=8, modifier=3 即 Alt）→ backspace
+            #   modifier=1（词删除，与 ESC DEL / Ctrl+W 传统路径语义一致）；
+            #   ``\x1b[127;3u`` → delete modifier=1——修复前此类事件落入
+            #   ``csi_u`` no-op，真 Alt+Backspace 失效。
+            if keycode in (8, 127) and modifier == 3:
+                kind = "backspace" if keycode == 8 else "delete"
+                return KeyEvent(
+                    kind=kind, modifier=1, keycode=keycode, raw=raw,
+                )
             # ★ 方向2（CSI u 增强键盘协议 modifier=1 映射）：无修饰键的
             #   Enter/Tab/Home/End/方向键在增强键盘协议下发送 ``keycode;1u``——
             #   修复前这些事件落入 ``csi_u`` 被静默丢弃（P3-4 no-op 分支）。
@@ -319,15 +334,17 @@ class InputParser:
                     return KeyEvent(kind="home", modifier=1, keycode=keycode, raw=raw)
                 if keycode == 4:
                     return KeyEvent(kind="end", modifier=1, keycode=keycode, raw=raw)
-                # ★ CSI u 增强键盘协议下 Backspace/Delete/Esc 映射（review 方向）：
+                # ★ P1-1 修复（CSI u 增强键盘协议下 Backspace/Delete/Esc 映射）：
                 #   kitty/wezterm 等启用键盘协议（modifyOtherKeys）的终端发送
-                #   ``\x1b[8;1u``（Backspace）/``\x1b[127;1u``（Delete）/
-                #   ``\x1b[27;1u``（Esc）——修复前落入 ``csi_u`` no-op 被静默
-                #   丢弃，退格/删除/取消均失效。
+                #   ``\x1b[8;1u``（普通 Backspace）/``\x1b[127;1u``（普通 Delete）/
+                #   ``\x1b[27;1u``（Esc）。**modifier=1 表示无修饰键**——映射为
+                #   modifier=0 事件走普通删除语义（修复前误用 modifier=1 词删除
+                #   语义，普通退格/删除每次删除整个词）；显式 Alt+Backspace/
+                #   Delete（modifier=3）已在上述独立分支处理为 modifier=1。
                 if keycode == 8:
-                    return KeyEvent(kind="backspace", modifier=1, keycode=keycode, raw=raw)
+                    return KeyEvent(kind="backspace", modifier=0, keycode=keycode, raw=raw)
                 if keycode == 127:
-                    return KeyEvent(kind="delete", modifier=1, keycode=keycode, raw=raw)
+                    return KeyEvent(kind="delete", modifier=0, keycode=keycode, raw=raw)
                 if keycode == 27:
                     return KeyEvent(kind="escape", modifier=1, keycode=keycode, raw=raw)
                 if keycode == 57417:   # ↑

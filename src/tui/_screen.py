@@ -18,16 +18,18 @@ re-export 保持旧导入路径兼容。
 
 from __future__ import annotations
 
-import fcntl
 import io
 import os
 import signal
 import struct
 import sys
-import termios
 import threading
 import time
 from typing import Callable
+
+# ★ P3-2（平台兼容）：fcntl/termios 为 POSIX 模块，纯 Windows 上 ImportError
+#   会导致整个 _screen 模块导入失败——已移入 ``_get_terminal_size`` 函数内
+#   惰性 import（try/except ImportError 降级 ``os.get_terminal_size``）。
 
 # 字符显示宽度计算已拆分至 _width.py（纯计算职责，Layer 0 零依赖）；
 # 本模块 re-export 保持旧导入路径兼容（test_screen.py / ink.helpers 等）。
@@ -67,22 +69,33 @@ def _get_terminal_size() -> tuple[int, int]:
     fallback ``os.get_terminal_size()``，
     最终兜底 (80, 24)。
 
+    ★ P3-2（平台兼容）：fcntl/termios 为 POSIX 模块，纯 Windows 导入即
+    ImportError——函数内惰性 import（try/except ImportError 降级到
+    ``os.get_terminal_size()``，Windows 上仅走 fallback/兜底路径）。
+
     Returns:
         (cols, rows) 终端宽度和高度。
     """
-    for fd_src in (sys.stdin, sys.stdout, sys.stderr):
-        try:
-            fd = fd_src.fileno()
-        except (io.UnsupportedOperation, OSError, AttributeError):
-            continue
-        try:
-            # TIOCGWINSZ 结构体: unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel
-            buf = fcntl.ioctl(fd, termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
-            rows, cols, _, _ = struct.unpack("HHHH", buf)
-            if rows > 0 and cols > 0:
-                return (cols, rows)
-        except (OSError, struct.error):
-            continue
+    try:
+        import fcntl
+        import termios
+    except ImportError:
+        fcntl = None
+        termios = None
+    if fcntl is not None and termios is not None:
+        for fd_src in (sys.stdin, sys.stdout, sys.stderr):
+            try:
+                fd = fd_src.fileno()
+            except (io.UnsupportedOperation, OSError, AttributeError):
+                continue
+            try:
+                # TIOCGWINSZ 结构体: unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel
+                buf = fcntl.ioctl(fd, termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
+                rows, cols, _, _ = struct.unpack("HHHH", buf)
+                if rows > 0 and cols > 0:
+                    return (cols, rows)
+            except (OSError, struct.error):
+                continue
 
     # Fallback: os.get_terminal_size()
     try:
@@ -454,17 +467,29 @@ class TerminalWidthCache:
         self._height: int = 0
         self._last_width_fetch: float = 0.0
         self._last_height_fetch: float = 0.0
+        # ★ P2-3（多线程安全）：缓存读写锁——_fetch 整体加锁，防止多线程
+        #   交错更新读到宽/高来自不同 ioctl 的组合（渲染线程与 SIGWINCH
+        #   处理线程并发查询）。
+        self._lock = threading.Lock()
         self._fetch()
 
     def _fetch(self) -> None:
-        """从底层获取终端尺寸并更新缓存。"""
-        try:
-            self._width, self._height = _get_terminal_size()
-        except Exception:
-            self._width, self._height = 80, 24
-        now = time.monotonic()
-        self._last_width_fetch = now
-        self._last_height_fetch = now
+        """从底层获取终端尺寸并更新缓存。
+
+        ★ P2-3：整体加锁——修复前多步字段更新（_width/_height/时间戳）在
+        多线程交错下可能读到宽/高来自不同 ioctl 的组合；现于锁内用局部变量
+        一次性计算后统一赋值（原子一致）。
+        """
+        with self._lock:
+            try:
+                w, h = _get_terminal_size()
+            except Exception:
+                w, h = 80, 24
+            self._width = w
+            self._height = h
+            now = time.monotonic()
+            self._last_width_fetch = now
+            self._last_height_fetch = now
 
     def _is_expired(self, last_fetch: float) -> bool:
         """检查缓存是否过期（超过 TTL）。"""
@@ -473,29 +498,13 @@ class TerminalWidthCache:
     def get_width(self) -> int:
         """获取终端宽度（TTL 缓存）。"""
         if self._is_expired(self._last_width_fetch):
-            try:
-                w, h = _get_terminal_size()
-                self._width = w
-                self._height = h
-            except Exception:
-                self._width, self._height = 80, 24
-            now = time.monotonic()
-            self._last_width_fetch = now
-            self._last_height_fetch = now
+            self._fetch()
         return self._width
 
     def get_height(self) -> int:
         """获取终端高度（TTL 缓存）。"""
         if self._is_expired(self._last_height_fetch):
-            try:
-                w, h = _get_terminal_size()
-                self._width = w
-                self._height = h
-            except Exception:
-                self._width, self._height = 80, 24
-            now = time.monotonic()
-            self._last_width_fetch = now
-            self._last_height_fetch = now
+            self._fetch()
         return self._height
 
     def get_dimensions(self) -> tuple[int, int]:
@@ -515,9 +524,13 @@ class TerminalWidthCache:
         self._fetch()
 
     def clear(self) -> None:
-        """清空缓存，下次查询强制刷新。"""
-        self._last_width_fetch = 0.0
-        self._last_height_fetch = 0.0
+        """清空缓存，下次查询强制刷新。
+
+        ★ P2-3：与 _fetch 同锁（防与刷新交错读到半更新状态）。
+        """
+        with self._lock:
+            self._last_width_fetch = 0.0
+            self._last_height_fetch = 0.0
 
     def refresh_height(self) -> int:
         """强制刷新高度缓存，返回新高度。
@@ -525,15 +538,7 @@ class TerminalWidthCache:
         Returns:
             当前终端高度。
         """
-        try:
-            w, h = _get_terminal_size()
-            self._width = w
-            self._height = h
-        except Exception:
-            self._width, self._height = 80, 24
-        now = time.monotonic()
-        self._last_width_fetch = now
-        self._last_height_fetch = now
+        self._fetch()
         return self._height
 
     @classmethod

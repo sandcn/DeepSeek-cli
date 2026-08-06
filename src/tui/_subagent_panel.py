@@ -116,6 +116,12 @@ class SubAgentPanelController:
         # RLock: 允许事件处理器在持有锁时调用渲染函数而不死锁；_render_frame 内部也获取此锁
         self._state_lock = self._store._state_lock
         self._frame: int = 0
+        # ★ P2-6（控制器字段无锁可接受）：以下跨线程共享字段
+        #   （_last_emit_time/_dirty/_pending_emit/_last_pushed_frame）不加锁——
+        #   GIL 下各字段的读/写/比较均原子；节流设计（PERF-2）允许瞬时轻微
+        #   偏差（节流窗口内多渲染/少渲染一帧、脏标记延迟复位）不影响正确性，
+        #   最终一致（下一允许拍补推最新帧）。不引入锁避免 10Hz 渲染热路径
+        #   锁开销。
         self._last_emit_time: float = 0.0
         # PERF-2：面板脏标记（事件处理器更新状态后置位；渲染后复位）
         self._dirty: bool = False

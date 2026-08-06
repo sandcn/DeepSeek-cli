@@ -219,19 +219,29 @@ def _skip_ansi_at(text: str, i: int) -> int:
 #: 单字符显示宽度缓存（wcswidth_simple 热路径——重复 CJK/emoji 字符免区间二分）。
 #: 有界：超过 ``_CHAR_WIDTH_CACHE_MAX`` 时整体清空重建（终端文本字符集有界，
 #: 清空后重新积累；宽度值确定性，正确性不受影响）。
+#: ★ P2-4（无锁可接受）：模块级共享可变 dict 无锁——GIL 下单条 get/set/
+#:   clear 均原子；缓存为性能优化，最坏情况（并发清空/重建）只是宽度重复
+#:   计算，不影响正确性（宽度值确定性）。不引入锁（避免热路径锁开销）；
+#:   不改为 ``functools.lru_cache``（测试经 ``_char_width_cache.clear()``
+#:   访问，lru_cache 无 clear 接口破坏测试 patch 路径）。
 _CHAR_WIDTH_CACHE_MAX = 4096
 _char_width_cache: dict[str, int] = {}
 
 
 def _wcswidth_single(ch: str) -> int:
-    """计算单个字符的显示宽度（wcswidth_simple 内部辅助，缓存专用）。"""
+    """计算单个字符的显示宽度（wcswidth_simple 内部辅助，缓存专用）。
+
+    ★ P3-3（冗余分支删除）：原「cp < 0x20 或 0x7F-0x9F 返回 0」控制字符分支
+    已删除——调用方 ``wcswidth_simple`` 单字符快路径已提前过滤（cp < 0x20 /
+    0x7F-0x9F / ESC 均 return 0，不经本函数）；本函数仅对非 ASCII/非控制
+    字符执行区间判定，行为一致（区间表不含控制字符，删除后对控制字符的
+    返回值不影响任何调用路径）。
+    """
     cp = ord(ch)
     if 0x20 <= cp <= 0x7E:
         return 1
     if ch == "\x1b":
         return 0  # 孤立 ESC 宽度 0（_skip_ansi_at 语义）
-    if cp < 0x20 or (0x7F <= cp <= 0x9F):
-        return 0  # 控制字符
     if _in_ranges_bisect(cp, _CJK_FLAT):
         return 2
     if _in_ranges_bisect(cp, _FULLWIDTH_FLAT):

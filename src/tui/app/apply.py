@@ -40,13 +40,16 @@ def apply_cmd(model, cmd: RenderCmd) -> None:
         return
     try:
         handler(model, cmd)
-    except TypeError:
-        # ★ 语义说明（review 修复）：此处捕获的 TypeError 可能来自两类来源——
-        #   ① 命令参数校验失败（handler 字段/参数类型不符）；
-        #   ② handler **内部实现**抛出的 TypeError。
-        #   两者统一记录 warning（exc_info=True 保留完整堆栈，可据 traceback
-        #   区分根因），内部异常不会因「参数错误」标注而被静默吞掉。
-        _logger.warning("渲染命令 %s 参数错误", _cmd_name(cid), exc_info=True)
+    except Exception:
+        # ★ P3-3（review 修复）：handler **内部**异常统一经 ``except Exception``
+        #   独立记录——修复前仅捕获 TypeError：① 参数校验失败（TypeError）与
+        #   ② handler 内部 bug 混在同一 except，且 handler 抛出的非 TypeError
+        #   内部异常（KeyError/ValueError/AttributeError 等）穿透中断命令处理
+        #   （渲染线程崩溃/命令丢失）。参数校验已前置：``_HANDLERS`` 键存在性
+        #   检查（未知命令直接返回）+ 各 handler 内部字段防御（如 _do_parse_info
+        #   的 float() 归一化、_do_bg_bash_count 的 int()），此处捕获即 handler
+        #   实现异常——exc_info=True 保留完整堆栈，可据 traceback 定位根因。
+        _logger.warning("渲染命令 %s 执行异常", _cmd_name(cid), exc_info=True)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -309,7 +312,15 @@ def _do_parse_info(model, cmd) -> None:
         #   也抛 OverflowError，补进捕获（修复前穿透 apply_cmd 的
         #   except TypeError 向上冒泡中断命令处理）。
         elapsed = 0.0
-    model.parse_line = AnsiLine.of(f"  ~ {cmd.tool_names} {tokens_str} {elapsed:.2f}s", _S_PARSE)
+    # ★ P2-3（review 修复）：tool_names 单行化——工具名列表可能含 ``\n``
+    #   （多工具并行时逗号拼接带换行），直接放进进度行会被终端按物理换行
+    #   拆行，破坏「同位置刷新」的进度行语义。复用 ``_single_line_detail``
+    #   （委托 ``_format.single_line`` 单一真源：换行/回车转义为字面量）。
+    from src.tui.app._model_helpers import _single_line_detail
+    model.parse_line = AnsiLine.of(
+        f"  ~ {_single_line_detail(cmd.tool_names or '')} {tokens_str} {elapsed:.2f}s",
+        _S_PARSE,
+    )
 
 
 def _do_user_message(model, cmd) -> None:

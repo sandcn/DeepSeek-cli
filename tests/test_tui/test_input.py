@@ -517,8 +517,9 @@ class TestCursorVisualPos:
         assert _wrap_by_width("", 10) == [""]
 
     def test_wrap_by_width_zero_width(self):
-        result = _wrap_by_width("test", 0)
-        assert result == ["test"]
+        """P3-2：max_width<=0 无有效列宽 → 显式返回 []（不拆行、不产生超宽
+        单行）；调用方 _compute_input_layout 以 ``or [""]`` 兜底为空段。"""
+        assert _wrap_by_width("test", 0) == []
 
     def test_wrap_by_width_empty_segment(self):
         """连续换行产生空段。"""
@@ -760,7 +761,7 @@ class TestExplicitExceptionTypes:
         inp = input_instance
         inp.start_io()
         # 使用 select mock 返回 "ready" 但 os.read 失败
-        with patch('src.tui._input.select.select', return_value=([1], [], [])), \
+        with patch('select.select', return_value=([1], [], [])), \
              patch.object(inp, '_fd', 999):  # 无效 fd
             result = inp.read_stdin_once()
             assert result is False  # 异常被捕获，不崩溃
@@ -1528,7 +1529,7 @@ class TestFlushStdinBufferRegression:
             call_count[0] += 1
             return ([inp._fd], [], [])
 
-        with patch("src.tui._input.select.select", side_effect=fake_select):
+        with patch("select.select", side_effect=fake_select):
             inp.flush_stdin_buffer(max_flush=3)
             assert call_count[0] <= 3 + 1  # +1 容差（tcflush 路径可能额外调用）
 
@@ -2894,6 +2895,44 @@ class TestCombinationKeyDispatch:
             assert inp.read_stdin_once() is True
             assert inp.get_current_text() == "abc"
             assert not inp.interrupted
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_csi_u_plain_backspace_regression(self, tmp_path):
+        """P1-1 端到端：CSI u 普通 Backspace（\\x1b[8;1u）删除**一个**字符。
+
+        修复前 \x1b[8;1u 被映射为 modifier=1 事件（词删除语义），普通退格
+        每次删除整个词；修复后映射 modifier=0 普通删除语义。
+        """
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.handle_chars("abc")  # 光标在末尾（pos=3）
+            os.write(w_fd, b"\x1b[8;1u")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == "ab"
+        finally:
+            os.close(w_fd)
+            os.close(r_fd)
+
+    def test_csi_u_alt_backspace_word_regression(self, tmp_path):
+        """P1-1 端到端：CSI u Alt+Backspace（\\x1b[8;3u）删除**一个词**。
+
+        修复前 8;3u 落入 csi_u no-op，真 Alt+Backspace 失效；修复后映射
+        modifier=1 词删除（与 ESC DEL / Ctrl+W 语义一致）。
+        """
+        r_fd, w_fd = os.pipe()
+        try:
+            inp = Input(fd=r_fd, history_file=tmp_path / "history")
+            inp.handle_chars("hello world")  # 光标在末尾（pos=11）
+            os.write(w_fd, b"\x1b[8;3u")
+            ready, _, _ = select.select([r_fd], [], [], 2.0)
+            assert ready
+            assert inp.read_stdin_once() is True
+            assert inp.get_current_text() == "hello "
         finally:
             os.close(w_fd)
             os.close(r_fd)

@@ -20,6 +20,22 @@ React Ink 化（2026-08-05）：user_select 工具的终端交互界面从「命
   - 工具：轮询 ``us.done``（带 deadline 超时），读 result 后清理
     ``model.user_select = UserSelectState()`` 并 request_bottom_redraw。
 
+  结果写入协议（P1-2，first-write-wins）：``done`` 一旦置位即终态，后续
+  写入方不覆盖——组件 Enter/Escape 写入前先读 ``us.done``（若已由工具超时
+  置位则放弃覆盖，保留 timeout 结果）；工具侧轮询 ``while not us.done``
+  退出语义天然符合 first-write-wins（读到 done 即终止循环，不再写 timeout）。
+  注意：工具侧超时分支（tools 层只读）存在「已进入超时分支、组件同时确认」
+  的极端窗口仍可能覆盖组件结果，属工具侧协议限制（本组件侧防御 + 注释
+  收敛该语义）。
+
+  结果写入协议（P1-2，first-write-wins）：``done`` 一旦置位即终态，后续
+  写入方不覆盖——组件 Enter/Escape 写入前先读 ``us.done``（若已由工具超时
+  置位则放弃覆盖，保留 timeout 结果）；工具侧轮询 ``while not us.done``
+  退出语义天然符合 first-write-wins（读到 done 即终止循环，不再写 timeout）。
+  注意：工具侧超时分支（tools 层只读）存在「已进入超时分支、组件同时确认」
+  的极端窗口仍可能覆盖组件结果，属工具侧协议限制（本组件侧防御 + 注释
+  收敛该语义）。
+
 依赖约束：仅依赖 app 同层（model/_theme/input_area）与 ink 框架（Layer 0/1），
 无 tools 层反向依赖。
 """
@@ -162,17 +178,33 @@ def UserSelectPopup(props) -> object:
 
         2026-08-05（增加操作）：vim 风格 ``j/k`` 导航（j=下、k=上，大小写
         等效）——与 ↑↓ 等价但无需方向键（终端/键盘布局友好）。弹窗激活期间
-        消费所有按键（阻断输入框/旧路径副作用）。
+        消费选择类按键（阻断输入框/旧路径副作用）；**Ctrl+C 放行**（P3-1——
+        应用级中断快捷键不被吞，可中断工具执行）。
         """
         # 弹窗已关闭（工具清理）→ 不再处理
         if us is None or not us.visible or us.done:
             return True
+        # ★ P3-1（Ctrl+C 吞键）：``\x03`` 放行（return False 不消费）——修复
+        #   前弹窗激活期间所有按键被消费（含 Ctrl+C），用户无法中断工具执行。
+        if event.kind == "char" and event.char == "\x03":
+            return False
         options_now = getattr(us, "options", None) or []
         total_now = len(options_now)
         multi_now = bool(getattr(us, "multi_select", False))
         cur = selected_ref.current
         if not (0 <= cur < total_now):
-            cur = 0
+            # ★ P2-1（selected 越界一致性）：统一钳制并**回写** us.selected——
+            #   修复前仅钳制局部 cur（selected_ref.current 保持越界），渲染
+            #   高亮钳制到 ``max(0, min(selected, total-1))`` 但 us.selected
+            #   保持越界 → Enter 单选 ``0 <= cur < total_now`` 为假走
+            #   default_options 分支与高亮不一致。钳制到 total-1（与渲染
+            #   钳制语义一致：越界钳制到末项）后同步 selected_ref/
+            #   set_selected/us.selected——外部交互期缩窄 options 或预置越界
+            #   selected 时导航与 Enter 均基于同一钳制值。
+            cur = total_now - 1 if total_now > 0 else 0
+            selected_ref.current = cur
+            set_selected(cur)
+            us.selected = cur
         if event.kind == "arrow_up":
             if cur > 0:
                 cur -= 1
@@ -226,6 +258,12 @@ def UserSelectPopup(props) -> object:
                 us.checked = new_checked
             return True
         if event.kind == "enter":
+            # ★ P1-2（确认 vs 超时竞态，first-write-wins）：写入前先读
+            #   us.done——工具超时轮询若已置位（timeout 回退）则不覆盖
+            #   （保留 timeout 结果）。handler 开头已检查 us.done，此处为
+            #   写终态前的显式防御（双保险，应对 handler 结构变化）。
+            if us.done:
+                return True
             if multi_now:
                 # 多选：返回勾选结果（空勾选返回空列表）——与 Web 前端
                 # confirm 行为一致；修复前空勾选时误回退 us.default_options
@@ -245,6 +283,10 @@ def UserSelectPopup(props) -> object:
             us.done = True
             return True
         if event.kind == "escape":
+            # ★ P1-2（同 Enter 分支，first-write-wins）：写入前先读 us.done
+            #   ——已置位则放弃覆盖（保留 timeout/confirmed 结果）。
+            if us.done:
+                return True
             # ★ 发布屏障语义（同 Enter 分支）：action/result 先写、done 最后写。
             us.action = "cancel"
             us.result = list(us.default_options or [])

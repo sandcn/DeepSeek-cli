@@ -158,7 +158,10 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             parts.append(StyledRun(f"{st.tool_count}\u2192", arrow_style))
             parts.append(StyledRun(f"{tool_total}", count_style))
         else:
-            done = tool_total - st.tool_count - st.tool_fail
+            # ★ P2-9：计数源不一致（如 tool_fail 单独递增超过 tool_total、
+            #   或 tool_count/tool_fail 来源不同步）时 ``tool_total - tool_count
+            #   - tool_fail`` 可为负——钳制到 0，避免状态栏显示负数完成数。
+            done = max(0, tool_total - st.tool_count - st.tool_fail)
             parts.append(StyledRun(f"{done}", _S_TOOL_OK))
             parts.append(StyledRun("/", _S_DIM))
             if st.tool_fail > 0:

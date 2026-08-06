@@ -150,12 +150,11 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
                 apply_text_transform,
             )
             styled = fiber.props.get("styled")
-            transform = fiber.props.get("transform")
-            text = apply_text_transform(
-                str(fiber.props.get("children", "")), transform,
-            )
-            style = resolve_text_style(fiber.props)
             if styled is not None:
+                # ★ P3-9（review 方向）：styled 非 None 时按 runs 直接换行，
+                #   不计算 text/style（修复前 apply_text_transform/
+                #   resolve_text_style 结果在 styled 分支未使用——冗余计算，
+                #   每帧浪费一次字符串变换与样式解析）。
                 text_wrap = fiber.props.get("textWrap")
                 if text_wrap is None:
                     text_wrap = fiber.props.get("wrap", "wrap")
@@ -163,6 +162,11 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
             else:
                 # ★ Box 背景继承（完善 react ink v6）：子 TEXT 未指定自身
                 #   backgroundColor 时继承父 Box 背景色（_merge_inherit_bg）。
+                transform = fiber.props.get("transform")
+                text = apply_text_transform(
+                    str(fiber.props.get("children", "")), transform,
+                )
+                style = resolve_text_style(fiber.props)
                 text_wrap = fiber.props.get("textWrap")
                 if text_wrap is None:
                     text_wrap = fiber.props.get("wrap", "wrap")

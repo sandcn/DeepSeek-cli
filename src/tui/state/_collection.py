@@ -21,7 +21,7 @@ T = TypeVar("T")
 
 
 class ThreadSafeList:
-    """线程安全列表封装，提供 list 兼容接口。
+    """线程安全列表封装，提供 list 兼容接口（**基础操作子集**）。
 
     使用 threading.Lock 保护所有写操作和读操作，
     确保多线程环境下的 append/clear/__len__/__iter__ 等操作安全。
@@ -30,10 +30,12 @@ class ThreadSafeList:
       - 跨线程共享的可变字符串/对象集合（captured_* 机制已删除，2026-07-31）
 
     兼容性：
-      - 支持 append()、clear()、__iter__()、__len__()、__getitem__()
-      - 支持 "".join() 操作（通过 __iter__）
-      - 支持 bool() 判断（通过 __bool__ → __len__）
-      - 支持 getattr(obj, attr, None) 的安全检测
+      - ★ P3-16：实现为 **list 基础操作子集**，非完整 list 接口——
+        仅支持 append()/extend()/clear()/__iter__()/__len__()/__getitem__()/
+        __bool__()/__repr__()/to_list()。不支持 list 的其它方法
+        （pop/remove/index/count/sort/reverse/__setitem__/__delitem__/+
+        运算/切片赋值等）；文档此前声称「list 兼容接口」过于宽泛，
+        下游如需要未支持操作请改用 to_list() 快照后操作或补充实现。
 
     设计模式：代理 — 对 list 操作添加线程安全代理层
     """

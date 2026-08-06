@@ -57,17 +57,23 @@ def _unregister_consumer() -> None:
     """注销活跃 ChatUIConsumer 实例（引用计数 -1）。
 
     引用计数归零时清空 _active_consumer。
-    包含 try/except TypeError 兼容测试 mock 场景（MagicMock 不支持 int 比较）。
+    包含 try/except TypeError 兼容测试 mock 场景（MagicMock 不支持 int 运算/比较）。
 
     stop() 中调用此函数替代直接操作 _active_consumer_refcount。
     """
     with _state_global_lock:
         global _active_consumer, _active_consumer_refcount
-        _active_consumer_refcount -= 1
-        _weak_consumer_registry.pop(threading.get_ident(), None)
         try:
+            # ★ P2-3：下限保护——引用计数不可为负（防御重复注销/计数漂移，
+            #   修复前 ``-= 1`` 可减到负数导致 _active_consumer 永不归零清空）。
+            _active_consumer_refcount = max(0, _active_consumer_refcount - 1)
+            # 内部断言：递减后引用计数必须非负（防御性，正常路径恒成立）
+            assert _active_consumer_refcount >= 0
             if _active_consumer_refcount <= 0:
                 _active_consumer = None
         except TypeError:
-            # 兼容测试 mock 场景：MagicMock 不支持 int <= 比较，直接清空
+            # ★ P3-1：整个「递减+比较」移入 try（修复前仅 ``<=`` 比较在
+            #   try 内，``-= 1`` 在 try 外——mock 场景递减即抛异常）——
+            #   兼容测试 mock 场景（MagicMock 不支持 int 运算/比较），直接清空。
             _active_consumer = None
+        _weak_consumer_registry.pop(threading.get_ident(), None)

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from src.tui._screen import TerminalWidthCache
 from .element import Element
@@ -25,7 +26,24 @@ _logger = logging.getLogger(__name__)
 
 
 class _SimpleModel:
-    """render() 独立会话的最小模型占位（满足 InkSession 读取的属性）。"""
+    """render() 独立会话的最小模型占位（满足 InkSession 读取的属性）。
+
+    缺省属性说明（render() 独立会话中 InkSession / 组件树可能读取的模型
+    属性，缺省值经 getattr 或类属性兜底）：
+      - ``width``：渲染宽度（render() 尺寸覆盖写入，缺省 80）；
+      - ``input_text`` / ``input_cursor``：输入区状态（update_input echo 回调）；
+      - ``status``：状态对象（``status_active`` 动画驱动 / 系统监控采集；
+        缺省 None——``_needs_animation`` 判 None 跳过）；
+      - ``tool_boxes``：工具卡片容器（``_needs_animation`` 动画驱动探测；
+        缺省 None 时跳过）；
+      - ``parse_line``：解析进度行（``_needs_animation`` 动画驱动探测；
+        缺省 None 时跳过）；
+      - ``reflow_committed``：resize 重排回调（``_render_frame`` 经 getattr
+        探测，缺省 None 时跳过——桩模型无需重排）；
+      - ``reasoning_renderer`` / ``content_renderer``：开放通道 renderer
+        （resize 宽度传播，``_render_frame`` 经 getattr 探测；缺省 None 时
+        跳过——独立会话无开放通道）。
+    """
 
     width: int = 80
     input_text: str = ""
@@ -89,10 +107,25 @@ def render(
         width_cache=TerminalWidthCache(),
     )
     # 尺寸覆盖（TerminalWidthCache 只读接口——直接写独立缓存字段）
+    # ★ P1-1 修复（review 方向）：写覆盖值的同时**同步延长时间戳**——修复前
+    #   仅写 ``_width/_height`` 不更新 ``_last_width_fetch/_last_height_fetch``：
+    #   60s TTL 过期后 ``get_width()``/``get_height()`` 重新执行
+    #   ``_get_terminal_size()`` 覆盖覆盖值（尺寸覆盖静默失效）。时间戳设为
+    #   ``monotonic() + ttl``（等价于把 TTL 起点延后到未来——``_is_expired``
+    #   判 ``monotonic() - last_fetch > ttl`` 恒 False，覆盖值在本会话期间
+    #   不再被 TTL 刷新覆盖）。优先方案（为 ``TerminalWidthCache`` 增加公开
+    #   ``set_dimensions(w, h)``）因 ``_screen.py`` 不在本次修改范围而放弃，
+    #   采用等价方案 b（保持向后兼容，不破坏 _screen.py 现有测试）。
     if width is not None:
         session._width_cache._width = width
+        session._width_cache._last_width_fetch = (
+            time.monotonic() + getattr(session._width_cache, "_ttl", 60.0)
+        )
     if height is not None:
         session._width_cache._height = height
+        session._width_cache._last_height_fetch = (
+            time.monotonic() + getattr(session._width_cache, "_ttl", 60.0)
+        )
 
     session.start()
 

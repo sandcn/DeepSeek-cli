@@ -37,8 +37,13 @@ def _wrap_by_width(s: str, max_width: int) -> list[str]:
     ``patch("src.tui._input_layout._wrap_by_width")`` 拦截计数（原
     ``patch("src.tui._input._wrap_by_width")`` 路径已随归位迁移）。
     """
-    if max_width <= 0 or not s:
-        return [s] if s else [""]
+    if max_width <= 0:
+        # P3-2：max_width<=0 无有效列宽——显式返回 []（不拆行、不产生超宽
+        # 单行）；调用方 _compute_input_layout 以 ``or [""]`` 兜底为空段，
+        # 避免无限循环（原返回 [s] 对超长行不拆行产生超宽单行）。
+        return []
+    if not s:
+        return [""]
     lines: list[str] = []
     for segment in s.split('\n'):
         remaining = segment

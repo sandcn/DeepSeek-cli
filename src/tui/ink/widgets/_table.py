@@ -76,9 +76,17 @@ def Table(props: dict) -> Element:
 
     rows: list[list[str]] = []
     if columns is not None:
-        rows.append([str(c) for c in columns])
+        # ★ P3（review）：表头单元格含 "\n" 时归一化（与数据行一致——防
+        #   行高/对齐破坏）。
+        rows.append([str(c).replace("\n", " ") for c in columns])
     for row in data:
-        rows.append([str(c) for c in row])
+        # ★ P3（review）：行级 None 守卫——data 行可能为 None（如
+        #   ``[None, ["a"]]``），修复前 ``for c in row`` 抛 TypeError。
+        if row is None:
+            continue
+        # ★ P3（review）：单元格含 "\n" 时归一化（与 Breadcrumbs/Menu/Tree
+        #   一致——防行级 diff 宽度不变量破坏）。
+        rows.append([str(c).replace("\n", " ") for c in row])
     if not rows:
         # ★ 阶段2（标准布局容器重构）：column BOX → Column（语义化门面，输出等价）。
         return h(Column, None, [])

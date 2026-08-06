@@ -51,7 +51,15 @@ def ProgressBar(props: dict) -> Element:
     char = str(props.get("char", "█")) or "█"
     style = _resolve_style(props)
 
-    char_w = max(1, wcswidth_simple(char))
+    char_w = wcswidth_simple(char)
+    if char_w <= 0:
+        # ★ P3（review）：零宽字符（如 ``\u200b``）实际宽度 0——修复前
+        #   ``max(1, wcswidth_simple(char))`` 按 1 计导致总宽不足（进度条
+        #   渲染不满 width）。零宽 char 回退默认 "█"（与 _display_common
+        #   ``_repeat_to_width`` 的零宽回退空格填充不同：进度条语义须保留
+        #   填充字符视觉）。
+        char = "█"
+        char_w = 1
     filled_w = int(round(width * percent))
     filled_chars = filled_w // char_w
     bar = char * filled_chars + " " * (width - filled_chars * char_w)

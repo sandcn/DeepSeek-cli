@@ -76,16 +76,21 @@ def SelectInput(props: dict) -> Element:
             selected_ref.current = cur
             set_selected(cur)
         if event.kind == "arrow_up":
-            if cur > 0:
-                new = cur - 1
-                selected_ref.current = new
-                set_selected(new)
+            # ★ P3（review）：已在首项时按上键不移动——无效移动返回 False
+            #   （不消费，放行父级；与 ListView/Menu 对齐）。
+            if cur <= 0:
+                return False
+            new = cur - 1
+            selected_ref.current = new
+            set_selected(new)
             return True
         if event.kind == "arrow_down":
-            if cur < len(items) - 1:
-                new = cur + 1
-                selected_ref.current = new
-                set_selected(new)
+            # ★ P3（review）：已在末项时按下键不移动——无效移动返回 False。
+            if cur >= len(items) - 1:
+                return False
+            new = cur + 1
+            selected_ref.current = new
+            set_selected(new)
             return True
         if event.kind == "enter":
             _call(on_select, items[cur])

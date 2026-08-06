@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from src.tui.core.style import Style
 from ..element import TEXT, Element, h
 from ..hooks import use_state, use_input, use_ref
@@ -20,6 +22,8 @@ from ..widgets.layout import Column
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_clamp_index 原本地定义——收敛
 #   至 _widget_common 单一真源。
 from ._widget_common import _clamp_index
+
+_logger = logging.getLogger(__name__)
 
 __all__ = ["SearchInput"]
 
@@ -132,7 +136,9 @@ def SearchInput(props: dict) -> Element:
                 try:
                     on_query_change(new_q)
                 except Exception:
-                    pass
+                    # ★ P2（review）：回调异常静默吞（无日志）——补 debug 日志
+                    #   便于排查（修复前 ``except Exception: pass``）。
+                    _logger.debug("SearchInput onQueryChange 回调异常", exc_info=True)
             return True
         if event.kind == "backspace":
             if cur_q:
@@ -145,19 +151,22 @@ def SearchInput(props: dict) -> Element:
                     try:
                         on_query_change(new_q)
                     except Exception:
-                        pass
+                        _logger.debug("SearchInput onQueryChange 回调异常", exc_info=True)
             return True
         if event.kind == "escape":
-            if cur_q:
-                query_ref.current = ""
-                cursor_ref.current = 0
-                set_query("")
-                set_cursor(0)
-                if on_query_change is not None:
-                    try:
-                        on_query_change("")
-                    except Exception:
-                        pass
+            # ★ P3（review）：查询已为空时 escape 无操作——返回 False（不消费，
+            #   放行父级；修复前空查询 escape 仍 return True）。
+            if not cur_q:
+                return False
+            query_ref.current = ""
+            cursor_ref.current = 0
+            set_query("")
+            set_cursor(0)
+            if on_query_change is not None:
+                try:
+                    on_query_change("")
+                except Exception:
+                    _logger.debug("SearchInput onQueryChange 回调异常", exc_info=True)
             return True
         if event.kind == "arrow_up":
             if filtered and cur_cursor > 0:
@@ -177,7 +186,9 @@ def SearchInput(props: dict) -> Element:
                     try:
                         on_select(item, idx)
                     except Exception:
-                        pass
+                        # ★ P2（review）：onSelect 回调异常同补日志（与
+                        #   onQueryChange 一致——修复前静默吞）。
+                        _logger.debug("SearchInput onSelect 回调异常", exc_info=True)
             return True
         return False
 

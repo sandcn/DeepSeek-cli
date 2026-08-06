@@ -138,6 +138,15 @@ def _normalize_children(children: Sequence[Any]) -> tuple[Element, ...]:
     for c in children:
         if c is None or c is True or c is False:
             continue
+        if isinstance(c, dict):
+            # ★ P3-10（review 方向）：显式拒绝 dict 子级——dict 是 Iterable
+            #   （迭代键名），修复前落入通用迭代分支被扁平化为键名文本
+            #   （如 ``{"a": 1}`` 渲染出 "a"——静默渲染错误内容）。props 与
+            #   children 分离（React 语义），dict 应作为 props 传入；子级出现
+            #   dict 为编程错误，显式 raise（防静默错误）。
+            raise TypeError(
+                f"children 中不允许 dict 子级（{c!r}）；dict 应作为 props 传入"
+            )
         if isinstance(c, (list, tuple)):
             out.extend(_normalize_children(c))
         elif isinstance(c, (str, bytes)) or not hasattr(c, "__iter__"):

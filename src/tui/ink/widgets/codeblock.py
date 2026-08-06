@@ -22,6 +22,7 @@ import logging
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
+from ..helpers import strip_ansi
 from ..widgets.layout import Row, Column
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_color 原本地定义（与
 #   _interactive_common/_display_common 逻辑一致，仅默认值 23 vs 6）——收敛
@@ -57,9 +58,16 @@ def _repeat(ch: str, n: int) -> str:
 
 
 def _truncate_to_width(text: str, max_w: int) -> str:
-    """按显示宽度截断（不拆 CJK；超宽时末尾补省略号）。"""
+    """按显示宽度截断（不拆 CJK；超宽时末尾补省略号）。
+
+    ★ P3（review）：截断前 ``strip_ansi`` 剥离 ANSI 转义序列——修复前 ANSI
+    序列逐字符参与宽度累计（转义字符 ``\\x1b``/``[``/``3``/``1``/``m`` 各计
+    1 宽），截断可能切在序列中间（渲染畸形）且宽度统计错误。剥离后按可见
+    字符截断（ANSI 样式信息在截断后丢失——展示用途可接受）。
+    """
     if max_w <= 0:
         return ""
+    text = strip_ansi(text)
     if wcswidth_simple(text) <= max_w:
         return text
     w = 0
@@ -136,6 +144,11 @@ def CodeBlock(props: dict) -> Element:
     # ── 顶边框（含可选语言标签） ──
     if label:
         label_text = f" {label} "
+        # ★ P2（review）：显式 width 小于 label+3 时顶边框行超宽（右侧 ┐
+        #   丢失）——先截断 label_text 至可用宽度（``width_eff - 3`` =
+        #   ``┌ + ─ + 标题`` 占 3 后的剩余），再计算 fill 保证总宽 ==
+        #   width_eff（``_truncate_to_width`` 返回宽度 <= max_w）。
+        label_text = _truncate_to_width(label_text, max(0, width_eff - 3))
         label_w = wcswidth_simple(label_text)
         fill = max(0, width_eff - 3 - label_w)
         children.append(

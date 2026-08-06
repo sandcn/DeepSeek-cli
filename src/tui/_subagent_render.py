@@ -176,7 +176,7 @@ def render_frame(store, max_history: int = 3,
             rows.append((slot.status, lines[0], lines[1:]))
         if not rows:
             return []
-        return _build_group_card(rows, now, max_lines)
+        return _build_group_card(rows, max_lines)
 
 
 def _terminal_max_lines() -> int:
@@ -211,7 +211,6 @@ def _terminal_max_width() -> int:
 
 
 def _build_group_card(rows: list[tuple[str, str, List[Line]]],
-                      now: float,
                       max_lines: int | None = None) -> List[Line]:
     """构建子代理树图卡片（标题行 + 树形分支，**无边框**）。
 
@@ -221,6 +220,10 @@ def _build_group_card(rows: list[tuple[str, str, List[Line]]],
     结束）。**按 order 顺序渲染**（树形结构语义，不再 running 优先重排）。
     **行数保护**：卡片总行数 ≤ max_lines（终端高度推算），超限截断并追加
     ``… +K 行省略`` 提示——防卡片撑爆终端可视区。
+
+    ★ P3-9（死参数移除）：原 ``now`` 参数函数体内未使用（树图渲染的时间基
+    由 ``build_agent_lines`` 内部按行推进）——已移除（私有函数，无测试/
+    外部引用签名依赖）。
     """
     if max_lines is None:
         max_lines = _terminal_max_lines()
@@ -356,7 +359,12 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
         title = [StyledRun(branch, _S_BRANCH), icon,
                  StyledRun(" ", None), StyledRun(type_name, type_style),
                  StyledRun(f" {description}", None)] + suffix
-    elif slot.status == "fail":
+    elif slot.status in ("fail", "error"):
+        # ★ P2-7（error 状态卡死修复）：error 与 fail 走相同折叠渲染——修复前
+        #   error 落入 else（running/spinner 分支）但 ``StateStore.needs_animation``
+        #   仅 status=="running" 返回 True → error 渲染一次后 spinner 冻结
+        #   （无动画推进也不折叠，卡在 spinner 帧）。error 为终态，按失败
+        #   折叠为单行（✖ 图标 + 耗时，无工具历史展开）。
         icon = StyledRun("\u2716", _S_FAIL)
         suffix = [StyledRun("  ", None), StyledRun(elapsed_str, _S_DIMMER)]
         title = [StyledRun(branch, _S_BRANCH), icon,
@@ -419,8 +427,8 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
                 StyledRun(phase_time, _S_DIMMER),
             ]))
 
-    # ── 工具历史（仅 running 时展开；done/fail 折叠为单行） ──
-    if slot.status not in ("done", "fail"):
+    # ── 工具历史（仅 running 时展开；done/fail/error 折叠为单行） ──
+    if slot.status not in ("done", "fail", "error"):
         # P2（review）：max_history=0 时不显示工具历史（list[-0:] 返回全部
         # 的切片陷阱，绕过行数保护）
         if max_history > 0:

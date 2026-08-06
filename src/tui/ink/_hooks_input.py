@@ -11,6 +11,7 @@ reconciler（``_publish_input_router``）/session（``set_input_router_callback`
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from typing import Any, Callable
 
 from .fiber import InputHook
@@ -57,8 +58,20 @@ def use_input(handler: Callable[[Any], bool], is_active: bool = True) -> None:
 
 
 #: use_input 兼容包装缓存（handler→包装；仅普通函数缓存，MagicMock 等动态
-#: 对象回退每次解析——inspect.signature 开销可接受）
-_compat_handler_cache: dict = {}
+#: 对象回退每次解析——inspect.signature 开销可接受）。
+#: ★ P2-1（review 方向）：**LRU 淘汰**——value 为 ``(handler, wrapped)``
+#:   强引用元组；访问命中 ``move_to_end``、超上限 ``popitem(last=False)``
+#:   淘汰最久未访问项。修复前普通 dict 只增不淘汰：频繁创建临时闭包（如
+#:   列表推导内 lambda）时累积 512 个死闭包，达上限后每帧重新
+#:   inspect.signature（性能退化）。
+#: ★ P3-1（隐式契约固化）：命中判定 ``cached[0] is handler`` 双键校验——
+#:   缓存持有 handler 强引用，保证 handler 存活期间其 id 不复用（id 复用
+#:   安全）；即便某 handler 被淘汰后 id 被新对象复用，新对象经 is 校验
+#:   不命中旧缓存（不会错误返回旧包装）。
+_compat_handler_cache: "OrderedDict[int, tuple[Callable, Callable]]" = OrderedDict()
+
+#: 兼容包装缓存上限（P2-1 LRU 淘汰阈值；超限淘汰最久未访问项）
+_COMPAT_CACHE_MAX = 512
 
 
 def _make_compat_handler(handler: Callable) -> Callable:
@@ -84,6 +97,8 @@ def _make_compat_handler(handler: Callable) -> Callable:
     hid = id(handler)
     cached = _compat_handler_cache.get(hid)
     if cached is not None and cached[0] is handler:
+        # LRU 命中：移到末尾（OrderedDict 保持插入序——头部为最久未访问）
+        _compat_handler_cache.move_to_end(hid)
         return cached[1]
     try:
         import inspect as _inspect
@@ -100,10 +115,12 @@ def _make_compat_handler(handler: Callable) -> Callable:
     def _wrapped(event) -> bool:
         return bool(handler(_event_input(event), _event_key(event)))
 
-    # 仅缓存普通函数（有 __name__）；避免无限增长：缓存 key 为 id，同 id 复用
-    # 时覆盖（handler 存活期间 id 稳定；hook 持有 handler 引用）。
-    if len(_compat_handler_cache) < 512:
-        _compat_handler_cache[hid] = (handler, _wrapped)
+    # 仅缓存普通函数（有 __name__）；P2-1 LRU 淘汰：超上限时弹出头部
+    # （popitem(last=False)——最久未访问项）。缓存 key 为 id，同 id 复用
+    # 覆盖（handler 存活期间 id 稳定；hook 持有 handler 引用）。
+    if len(_compat_handler_cache) >= _COMPAT_CACHE_MAX:
+        _compat_handler_cache.popitem(last=False)
+    _compat_handler_cache[hid] = (handler, _wrapped)
     return _wrapped
 
 
@@ -124,6 +141,13 @@ def _event_key(event) -> dict:
     """
     kind = getattr(event, "kind", "")
     modifier = getattr(event, "modifier", 0) or 0
+    # ★ P1-1（review 方向）：CSI-u modifier 语义——1=None, 2=Shift,
+    #   3=Alt, 4=Shift+Alt, 5=Ctrl, 6=Shift+Ctrl, 7=Alt+Ctrl,
+    #   8=Shift+Alt+Ctrl（bit0=Shift, bit1=Alt, bit2=Ctrl）。
+    #   修复前 ``meta: modifier in (3, 6)`` 把 6（Shift+Ctrl，无 Alt）误判为
+    #   meta 且漏 4/7/8；``ctrl`` 漏 7/8；``shift`` 漏 7/8。现按位语义：
+    #   meta=含 Alt 位（3,4,7,8）、ctrl=含 Ctrl 位（5,6,7,8）、
+    #   shift=含 Shift 位（2,4,6,8）。
     return {
         "leftArrow": kind == "arrow_left",
         "rightArrow": kind == "arrow_right",
@@ -131,8 +155,8 @@ def _event_key(event) -> dict:
         "downArrow": kind == "arrow_down",
         "return": kind == "enter",
         "escape": kind == "escape",
-        "ctrl": kind == "ctrl_key" or modifier in (5, 6),
-        "shift": modifier in (2, 4, 6),
+        "ctrl": kind == "ctrl_key" or modifier in (5, 6, 7, 8),
+        "shift": modifier in (2, 4, 6, 8),
         "tab": kind == "tab",
         "backspace": kind == "backspace",
         "delete": kind == "delete",
@@ -148,7 +172,7 @@ def _event_key(event) -> dict:
         "pageUp": kind == "page_up",
         "home": kind == "home",
         "end": kind == "end",
-        "meta": modifier in (3, 6),
+        "meta": modifier in (3, 4, 7, 8),
         "super": False,
         "hyper": False,
         "capsLock": False,

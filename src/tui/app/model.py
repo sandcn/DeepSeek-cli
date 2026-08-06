@@ -488,9 +488,10 @@ class AppModel(_ToolOutputMixin):
     def reset_display(self) -> None:
         """清空显示状态（Claude TUI parity 步骤 2.2，供 Ctrl+L 清屏复用）。
 
-        清空聊天块/增量缓存/推理内容通道/subagent 行/进行中工具/解析行，
-        保留 ``status/input_text/input_cursor/completion``（用户输入与状态不丢）。
-        调用方须保证非流式（status.status_active=False）时调用，避免丢未提交块。
+        清空聊天块/增量缓存/推理内容通道/subagent 行/进行中工具/解析行/
+        反向历史搜索，保留 ``status/input_text/input_cursor/completion``
+        （用户输入与状态不丢）。调用方须保证非流式（status.status_active=False）
+        时调用，避免丢未提交块。
         """
         self.blocks = []
         self.committed_lines = []
@@ -508,6 +509,11 @@ class AppModel(_ToolOutputMixin):
         self.parse_line = None
         self.subagent_lines = []
         self.active_tool = None
+        # ★ P2-2：同步重置反向历史搜索状态——Ctrl+R 搜索激活期间执行
+        #   Ctrl+L 清屏//editmsg 重渲染时输入区不再渲染 (reverse-i-search)
+        #   覆盖行（修复前 reset_display 未重置 history_search，残留搜索态
+        #   导致输入区仍渲染搜索覆盖行）。
+        self.history_search = None
 
 
 __all__ = [

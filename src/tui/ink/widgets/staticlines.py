@@ -34,6 +34,15 @@ __all__ = ["StaticLines"]
 def _measure(fiber, avail_w) -> tuple[int, int]:
     """测量：宽度取可用宽度，高度 = 行数。"""
     lines = fiber.props.get("lines") or []
+    if not isinstance(lines, list):
+        # ★ P3（review）防御层：绕过组件函数直接 h("static-lines") 时 lines
+        #   可能非 list（生成器）——list() 化防 ``len()`` TypeError（组件函数
+        #   StaticLines 已守卫，此处兜底非常规路径；生成器一次性语义由调用方
+        #   保证）。
+        try:
+            lines = list(lines)
+        except TypeError:
+            lines = []
     return (avail_w, len(lines))
 
 
@@ -48,6 +57,13 @@ def _paint(fiber, canvas) -> None:
     if box is None:
         return
     lines = fiber.props.get("lines") or []
+    if not isinstance(lines, list):
+        # ★ P3（review）防御层：同 _measure——非常规路径（绕过组件函数）下
+        #   lines 可能非 list（生成器），list() 化防 ``len()`` TypeError。
+        try:
+            lines = list(lines)
+        except TypeError:
+            lines = []
     n = len(lines)
     if box.x == 0:
         # ★ 增量快路径（大历史 O(1)/帧）：静态行跨帧身份复用——前缀缓存挂
@@ -112,9 +128,23 @@ def StaticLines(props: dict):
         lines: list[Line] — 静态行列表（每行含样式 runs）。支持增量追加
             （同列表对象原地 extend，引用不变、长度增长→只发射新增行）。
 
+    ★ P3（review）：lines 守卫——非 list（生成器/元组等）时 ``list()`` 化：
+    修复前 ``_measure``/``_paint`` 假定 list，``len()`` 对生成器抛 TypeError。
+    list 输入保持原引用（``id`` 稳定 → 增量快路径不受影响）；生成器等一次性
+    可迭代 list() 化后同一渲染批次内 measure/paint 共享同一 props（引用稳定），
+    生成器「每帧传入新生成器」的一次性语义由调用方保证。
+
     Returns:
         "static-lines" host 元素（批量发射，保留前缀缓存性能机制）。
     """
+    lines = props.get("lines") or []
+    if not isinstance(lines, list):
+        try:
+            lines = list(lines)
+        except TypeError:
+            lines = []
+        props = dict(props)
+        props["lines"] = lines
     return h("static-lines", props)
 
 

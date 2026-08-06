@@ -2,7 +2,7 @@
 
 重构说明（2026-07-29）：
   - 删除旧 terminal/animation/components/core/frame/pipeline/layout/widgets/engine/consumer 等 100+ 文件
-  - 用 ~24 个顶层模块替代，零第三方依赖（blessed/wcwidth 移除）
+  - 用约 30 个顶层模块替代，零第三方依赖（blessed/wcwidth 移除）
   - rich 仅限内容渲染（OutputAdapter），TUI 框架本身不依赖 rich
   - 所有 ANSI 序列手写，终端尺寸通过 fcntl.ioctl + os.get_terminal_size 获取
 

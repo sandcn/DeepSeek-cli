@@ -50,7 +50,26 @@ class DisplayEventBus(metaclass=SingletonMeta):
       强依赖 get_default()，隔离改动过大 → 标记 P2 遗留，保持单例，不做隔离。
     """
 
+    def __new__(cls):
+        """拦截直接构造：返回进程级单例（与 get_default() 一致）。
+
+        ★ P3-9：修复前 ``DisplayEventBus()`` 直接实例化可绕过单例——
+        现在直接构造与 ``get_default()`` 等价（首次创建并缓存，后续返回
+        既有实例）。注意：直接构造返回既有单例时 Python 仍会调用
+        ``__init__``，由 ``__init__`` 幂等保护（已初始化则跳过），
+        避免重置单例订阅状态。
+        """
+        inst = cls._instance
+        if inst is not None:
+            return inst
+        inst = super().__new__(cls)
+        cls._instance = inst
+        return inst
+
     def __init__(self):
+        if getattr(self, "_handlers", None) is not None:
+            # 幂等保护：直接构造返回既有单例时不重置订阅状态（P3-9）
+            return
         self._handlers: dict[type, list[EventHandler]] = {}
         self._all_handlers: list[EventHandler] = []
         self._lock = threading.RLock()
@@ -71,6 +90,16 @@ class DisplayEventBus(metaclass=SingletonMeta):
         Args:
             handler: 事件处理函数，接受 DisplayEvent 参数。
             event_type: 指定订阅的事件类型。None 表示订阅所有事件。
+
+        ★ P3-6（基类订阅永不触发）：``publish`` 按 ``type(event)`` **精确匹配**
+        ——订阅 ``event_type=DisplayEvent``（抽象基类）或其它基类事件类型时，
+        子类事件不会被触发（``issubclass`` 校验通过但精确匹配不命中）。
+        ``DisplayEvent`` 为抽象基类，请订阅具体子类型（如 ``ToolStartedEvent``）。
+
+        ★ P3-8（同 handler 重复触发）：同一 handler 同时注册到全局
+        （``event_type=None``）与特定类型时，发布该类型事件会**触发两次**
+        ——这是显式注册语义（全局订阅 + 类型订阅是两条独立注册通道）；
+        如需仅触发一次请勿同时注册。
         """
         if event_type is not None:
             if not issubclass(event_type, DisplayEvent):
@@ -94,7 +123,16 @@ class DisplayEventBus(metaclass=SingletonMeta):
         Args:
             handler: 之前注册的事件处理函数。
             event_type: 指定取消订阅的类型。None 表示从全局订阅中移除。
+
+        Raises:
+            TypeError: event_type 非 DisplayEvent 子类（与 subscribe 对齐校验，
+                ★ P3-7）。
         """
+        # P3-7：与 subscribe 对齐的类型校验（修复前 unsubscribe 无校验，
+        # 非法 event_type 静默走 ``_handlers.get(event_type)`` 不报错）。
+        if event_type is not None:
+            if not issubclass(event_type, DisplayEvent):
+                raise TypeError(f"event_type 必须是 DisplayEvent 的子类，收到: {event_type}")
         with self._lock:
             if event_type is not None:
                 handlers = self._handlers.get(event_type)

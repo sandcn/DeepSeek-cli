@@ -59,13 +59,27 @@ class DisplayEventAdapter:
     """
 
     # 事件类型 → BaseDisplay 方法名映射表
+    # ★ P3-10/P3-11：补齐 ToolBatchStartedEvent/AgentAddedEvent/ParseInfoEvent/
+    #   ParseInfoDoneEvent/MetricsUpdateEvent/OutputEvent/ToolSummaryEvent 映射
+    #   （修复前缺映射，事件发布后无 display 方法被调用）；AgentStatusChanged
+    #   改映射到 update_agent_status（修复前误映射 update_status，两方法语义
+    #   不同——update_status 为状态栏文本、update_agent_status 为 Agent 状态）。
+    #   适配器无生产调用方（仅 events/__init__ re-export），subscribe_to 经
+    #   hasattr 检查跳过无对应方法的 display，补齐不破坏现有行为。
     _EVENT_METHOD_MAP: Dict[Type[DisplayEvent], str] = {
         ToolParsingEvent: "tool_parsing",
         ToolStartedEvent: "tool_start",
         ToolDoneEvent: "tool_done",
+        ToolBatchStartedEvent: "tool_batch_start",
+        AgentAddedEvent: "add_agent",
+        AgentStatusChanged: "update_agent_status",
         ModelPhaseEvent: "update_model_phase",
         UsageUpdatedEvent: "update_usage",
-        AgentStatusChanged: "update_status",
+        ParseInfoEvent: "update_parse_info",
+        ParseInfoDoneEvent: "parse_info_done",
+        MetricsUpdateEvent: "update_tokens",
+        OutputEvent: "publish_output",
+        ToolSummaryEvent: "publish_tool_summary",
         SessionStarted: "start",
         SessionStopped: "stop",
     }
@@ -122,15 +136,35 @@ class DisplayEventAdapter:
                 return
             try:
                 if isinstance(event, ToolParsingEvent):
+                    # ★ P3-12（文档注明）：ToolParsingEvent.tool_id 不转发——
+                    #   BaseDisplay.tool_parsing 签名无 tool_id 参数
+                    #   （_base_display.py 不在本次修改范围内，未加默认参数）；
+                    #   tool_id 已完整保存在事件对象字段中，由 ChatUIConsumer/
+                    #   WebUI 直接订阅事件消费，不依赖本转发路径。
                     method(event.label, event.tool_name, event.arguments)
                 elif isinstance(event, ToolStartedEvent):
                     method(event.label, event.tool_name, event.detail, event.metadata)
                 elif isinstance(event, ToolDoneEvent):
                     method(event.label, event.tool_name, event.success, event.metadata)
+                elif isinstance(event, ToolBatchStartedEvent):
+                    method(event.label, list(event.tool_names))
+                elif isinstance(event, AgentAddedEvent):
+                    method(event.label, event.description, event.status)
                 elif isinstance(event, ModelPhaseEvent):
                     method(event.label, event.phase, event.info)
                 elif isinstance(event, UsageUpdatedEvent):
                     method(event.label, event.usage, event.replace)
+                elif isinstance(event, ParseInfoEvent):
+                    method(event.label, event.tool_names, event.tokens, event.elapsed)
+                elif isinstance(event, ParseInfoDoneEvent):
+                    method(event.label)
+                elif isinstance(event, MetricsUpdateEvent):
+                    # 统一指标事件转发到 update_tokens（取主要字段 output_tokens）
+                    method(event.label, event.output_tokens)
+                elif isinstance(event, OutputEvent):
+                    method(event.text, event.level)
+                elif isinstance(event, ToolSummaryEvent):
+                    method(list(event.successful_tools), list(event.failed_tools))
                 elif isinstance(event, SessionStarted):
                     method()
                 elif isinstance(event, SessionStopped):
@@ -177,6 +211,9 @@ class EventBusDisplayProxy(_BaseDisplay):
         self._source = source
         self.max_history = max_history
         # 按 label 存储 subagent 结果
+        # ★ P3-13：无锁 dict——set_result/get_result 为单 key 赋值/读取，
+        #   GIL 下 dict 单操作原子（无中间态），跨线程读写可接受；如未来
+        #   引入复合操作（遍历+修改）需加锁。
         self._results: Dict[str, Dict[str, str]] = {}
 
     def set_source(self, source: str) -> None:

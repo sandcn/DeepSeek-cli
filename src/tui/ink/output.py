@@ -79,6 +79,14 @@ class Line:
       维护——渲染热路径（diff/截断/画布转换）免重复 ``wcswidth_simple``）。
     - ``append(text, style)`` 追加一段；``append_run(run)`` 追加 StyledRun。
 
+    ★ P2-3（review 方向，隐式不变式固化）：``Line.__init__`` 对 list 参数
+    直接复用引用（PERF-7，免 O(n) 拷贝）——**构造后不得原地修改传入的 runs
+    列表**：``_r`` ANSI 渲染缓存假设 runs 只经 ``append`` 修改（append 会
+    主动失效缓存）；外部原地修改 runs（``line.runs.append(...)`` /
+    ``line.runs[0] = ...``）绕过失效路径，``render()`` 返回过期缓存。
+    不变式由调用方保证（构造时传入的均为临时新建 list；渲染热路径中
+    committed 前缀/快照缓存命中时 Line 对象跨帧只读复用）。
+
     ★ 性能（PERF-24）：ANSI 渲染缓存——``render()`` 结果缓存在 ``_r``。
     StyledRun 为 frozen dataclass（text/style 不可变）+ Style frozen（to_ansi
     lru_cache），同 runs 列表的渲染结果确定性——同一 Line 对象跨帧复用（committed
@@ -199,6 +207,14 @@ class Frame:
 
     整个 UI 是一个输出文档：静态聊天历史 + 尾部 live 区（状态栏 + 输入）。
     每帧 = 完整文档的 Line 列表，供 InkRenderer 行级 diff。
+
+    ★ P2-3（review 方向，隐式不变式固化）：``Frame.__init__`` 对 list 参数
+    直接复用引用（PERF-7，免 O(n) 拷贝）——**构造后不得原地修改传入的 lines
+    列表**：行级 diff（``first_diff_line``）依赖 lines 跨帧稳定性（Line 对象
+    身份/值不变则跳过）；外部原地修改 lines（追加/替换/删除元素）绕过
+    ``stable_prefix`` 偏移与身份短路假设，diff 结果不可预期。不变式由调用方
+    保证（``render_frame`` 构建 Frame 后只读消费；测试直接构造 Frame 时传入
+    临时新建 list）。
 
     Attributes:
         lines: 帧行列表。

@@ -151,9 +151,10 @@ def _role_header_runs(block, model, live: bool = False) -> list:
             return [StyledRun(f"\u258d{sp} 思考", Style(fg=glow))]
         return [StyledRun("\u258d\U0001f4ad 思考", Style(fg=242))]
     if kind == "tool":
-        # 工具卡片标题行替代 `▎⚡ 工具 X` 角色头（卡片化对齐 Claude Code；Claude
-    # Code 极简样式后标题行 = 状态图标 + 工具名 + 参数，无 ▎/emoji）；
-        # 无头 → _card_lines 不前置独立头行，顶边框即卡片首行。
+        # 工具卡片标题行替代 `▎⚡ 工具 X` 角色头（卡片化对齐 Claude Code；
+        # Claude Code 极简样式后标题行 = 状态图标 + 工具名 + 参数，无 ▎/emoji）；
+        # 无头 → _card_lines 不前置独立头行，**标题行即卡片首行**（渲染期由
+        # tool_card_lines 生成，数据源为 extra["tool_name"/"tool_detail"]）。
         return []
     if kind == "notification":
         # ★ BEAUTY-33（2026-08-05 体验动效）：通知角色头 live 渲染路径

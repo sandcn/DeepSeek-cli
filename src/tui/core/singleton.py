@@ -40,6 +40,19 @@ class SingletonMeta(ABCMeta):
     提供类方法：
       - ``get_default()`` — 线程安全单例获取（双重检查锁）
       - ``reset_default()`` — 线程安全单例重置
+
+    ★ P3-22（继承链单例）：**禁止继承使用 SingletonMeta 的类**——
+    ``SingletonMeta.__new__`` 为每个类注入独立的 ``_instance``，但
+    ``get_default()`` 经 ``cls._instance`` 读取，若子类继承父类的
+    ``_instance`` 属性（未覆盖时共享父类单例缓存），子类 ``get_default()``
+    返回父类实例。使用方（如 ``DisplayEventBus``）均为叶子类，无继承链；
+    如确需继承请自行覆盖 ``_instance`` 或在子类显式声明。
+
+    ★ P3-23（直接构造）：**直接 ``MyClass()`` 可绕过单例**（仅
+    ``get_default()`` 保证单例语义）——文档声明而非实现拦截，因测试/
+    初始化代码可能依赖直接构造（``__init__`` 副作用）。如需强制单例，
+    请在具体类上覆写 ``__new__`` 拦截返回既有实例（见
+    ``DisplayEventBus.__new__``）。
     """
 
     def __new__(mcs, name: str, bases: tuple, namespace: dict, **kwargs: Any) -> type:

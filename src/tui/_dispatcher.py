@@ -94,6 +94,10 @@ class EventDispatcher:
         # 后台 bash 数量聚合映射（label → 运行中任务数）：
         # 主 Agent（"main"）与每个 SubAgent（"agent-N"）发布各自计数，
         # 状态栏显示聚合总数（右下方）。
+        # ★ P3-6（无锁可接受）：聚合 dict 无锁——GIL 下单条 get/set/pop 原子；
+        #   ``_on_bg_bash_changed`` 的「更新 + sum」为复合操作，但结果仅用于
+        #   状态栏显示（允许瞬时轻微偏差，最终一致），不加锁可接受（避免
+        #   事件分发热路径锁开销）。
         self._bg_bash_counts: dict[str, int] = {}
 
     @staticmethod

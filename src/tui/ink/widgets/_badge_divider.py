@@ -79,7 +79,7 @@ def Badge(props: dict) -> Element:
     Returns:
         TEXT 元素（``  label  `` 背景色块）。
     """
-    label = str(props.get("label", ""))
+    label = str(props.get("label") or "")
     bg = _color(props.get("color"), 6)
     fg = _color(props.get("fg")) if props.get("fg") is not None else _badge_fg_for_bg(bg)
     try:
@@ -104,6 +104,27 @@ def Badge(props: dict) -> Element:
 # ═══════════════════════════════════════════════════════════
 
 _DIVIDER_DEFAULT_WIDTH = 40
+
+
+def _truncate_to_width(text: str, max_w: int) -> str:
+    """按显示宽度截断标题（不拆 CJK；超宽时末尾补省略号）。
+
+    与 codeblock._truncate_to_width 同思路（保留 ``max_w-1`` 字符宽 +
+    省略号 1 宽，返回宽度 <= max_w）；``max_w <= 0`` 返回空串。
+    """
+    if max_w <= 0:
+        return ""
+    if wcswidth_simple(text) <= max_w:
+        return text
+    w = 0
+    out = []
+    for ch in text:
+        cw = wcswidth_simple(ch)
+        if w + cw > max_w - 1:
+            break
+        out.append(ch)
+        w += cw
+    return "".join(out) + "\u2026"
 
 
 def Divider(props: dict) -> Element:
@@ -140,7 +161,15 @@ def Divider(props: dict) -> Element:
     title_w = wcswidth_simple(title)
     avail = width - title_w - 2  # 两侧各留 1 空格
     if avail <= 0:
-        return h(TEXT, {"children": title, "style": title_style})
+        # ★ P3（review）：显式 width 极小且标题超宽时原样返回超宽 TEXT（超宽
+        #   行破坏行宽不变量）——先截断标题至可用宽度（``width - 2`` = 标题
+        #   模式中标题的最大剩余宽度），再按正常两侧线布局对齐到 width。
+        title = _truncate_to_width(title, max(0, width - 2))
+        title_w = wcswidth_simple(title)
+        avail = width - title_w - 2
+        if avail <= 0:
+            # 截断后仍放不下（width <= 2）：仅标题（已截断到 width，不超宽）
+            return h(TEXT, {"children": title, "style": title_style})
     left_w = avail // 2
     right_w = avail - left_w
     # ★ 阶段2（标准布局容器重构）：row BOX → Row（语义化门面，输出等价）。

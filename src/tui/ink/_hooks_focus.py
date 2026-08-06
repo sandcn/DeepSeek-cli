@@ -164,6 +164,15 @@ def useFocus(options: "bool | dict | None" = None) -> dict:
     # 焦点管理器注册（React Ink v6）：active 组件进入可聚焦列表。
     if is_active:
         if fid is None:
+            # ★ P3-8（review 方向）：无 id 分支先清除显式 id 残留——组件从
+            #   显式 id（``useFocus({"id": "my-id"})``）切换到无 id 渲染时
+            #   ``fiber._focus_id`` 残留旧显式 id，``_resolve_focus_id`` 会
+            #   复用旧值（焦点仲裁沿用旧 id，与其他组件冲突/悬挂）。仅当
+            #   残留 id 为显式来源时清除（自动 id 以 ``__focus_`` 前缀标记，
+            #   保持「复用不重分配」稳定）；清除后重新分配自动 id。
+            existing = getattr(fiber, "_focus_id", None)
+            if existing is not None and not existing.startswith("__focus_"):
+                fiber._focus_id = None
             fid = _resolve_focus_id(fiber)
         else:
             # ★ 2026-08-06：显式 id 也写入 fiber 属性——卸载时

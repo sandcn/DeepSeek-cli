@@ -81,13 +81,23 @@ def _distribute_extra(
             extra_shares[i] += max(0, min(w, overflow - prefix))
             prefix += w
     cursor = inner_y
+    remaining = total_extra  # ★ P3-9：剩余分配量跟踪（delta 钳制上限基准）
     for i, child in enumerate(children):
         cb = child.layout_box
         if weights[i] > 0:
             delta = per * weights[i] + extra_shares[i]
             if delta > 0:
                 if direction > 0:
+                    # ★ P3-9 修复（review 方向）：``cb.h += delta`` 无上限
+                    #   钳制——增加 ``delta = min(delta, remaining)`` 防御性
+                    #   钳制。正常路径 delta 总和恰为 total_extra（per + 余数
+                    #   分配已收敛，见上），钳制不影响结果；仅防御未来权重
+                    #   解析/余数分配改动引入超发（保证 flexGrow 不会把子节点
+                    #   高度撑过总余数）。flexShrink 方向不钳制（clamp_min
+                    #   下限已约束单子缩减量，remaining 语义不同）。
+                    delta = min(delta, remaining)
                     cb.h += delta
+                    remaining -= delta
                 else:
                     # 每子至少保留 1 行（钳制 ≥1）
                     cb.h = max(clamp_min if clamp_min is not None else 1, cb.h - delta)
@@ -141,6 +151,9 @@ def _reflow_row_justify(
     if n == 0:
         return
     if justify == "space-between":
+        # ★ P3-10 说明（review 方向）：n==1 时 gaps=0（无间隔）——CSS flexbox
+        #   space-between 语义：单子节点时无间隔可分配（子节点贴 start_x，
+        #   不居中/不偏移；``per/rem`` 经 ``if gaps else 0`` 兜底避免除零）。
         gaps = n - 1
         per = extra // gaps if gaps else 0
         rem = extra % gaps if gaps else 0

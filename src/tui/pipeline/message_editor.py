@@ -78,7 +78,14 @@ def _user_msg_display_lines(msg: dict) -> list:
 
 
 def _restore_sandbox_to(agent: Any, target_idx: int) -> str:
-    """恢复沙盒到指定消息索引，返回恢复文件数的描述文本。"""
+    """恢复沙盒到指定消息索引，返回恢复文件数的描述文本。
+
+    ★ P3-4（明确降级语义）：恢复失败**不阻断编辑**——记录 warning 并
+    返回失败描述文本（调用方继续截断消息）。这是既有测试契约
+    （test_edit_command_prefill_still_set_when_restore_fails_regression 固化
+    「失败继续编辑」语义）；注意恢复失败后继续截断可能导致沙盒文件与
+    消息索引不一致（降级风险），如需严格一致性应中止编辑，属未来可选项。
+    """
     sandbox_manager = _get_sandbox_manager()
     if not sandbox_manager:
         return ""
@@ -91,6 +98,26 @@ def _restore_sandbox_to(agent: Any, target_idx: int) -> str:
     except Exception as exc:
         _logger.warning("沙盒恢复失败 (target_idx=%s): %s", target_idx, exc)
         return f"沙盒恢复失败: {exc}"
+
+
+def _truncate_messages(agent: Any, keep_idx: int) -> str:
+    """截断消息到 keep_idx（删除 keep_idx 及之后），恢复沙盒并 remap 索引。
+
+    ★ P2-6：EditCommand/DeleteCommand/ResumeCommand 共用的「沙盒恢复 +
+    截断 + remap」逻辑提取（修复前 Edit/Delete 执行体高度重复四段相同逻辑）。
+    沙盒恢复到截断后保留的最后一条消息（keep_idx-1，下限 0——Edit/Delete
+    keep_idx=real_idx 时即恢复光标消息之前；Resume keep_idx=real_idx+1 时
+    即恢复光标消息处），返回恢复描述文本。
+    """
+    messages = agent.messages
+    target_index = keep_idx - 1 if keep_idx > 0 else 0
+    restore_text = _restore_sandbox_to(agent, target_index)
+    original_len = len(messages)
+    del messages[keep_idx:]
+    sm = _get_sandbox_manager()
+    if sm:
+        sm.remap_indices(list(range(keep_idx, original_len)))
+    return restore_text
 
 
 # ═══════════════════════════════════════════════════════════
@@ -112,19 +139,9 @@ class EditCommand:
 
         old_content = _content_str(messages[self.real_idx].get("content", ""))
 
-        # 恢复沙盒
-        target_index = self.real_idx - 1 if self.real_idx > 0 else 0
-        restore_text = _restore_sandbox_to(agent, target_index)
-        state["_restore_text"] = restore_text
-
-        # 截断消息
-        original_len = len(messages)
-        del messages[self.real_idx:]
-
-        # 同步沙盒索引
-        sm = _get_sandbox_manager()
-        if sm:
-            sm.remap_indices(list(range(self.real_idx, original_len)))
+        # 截断 + 沙盒恢复 + remap（P2-6：公共助手，恢复失败语义见
+        # _restore_sandbox_to —— 明确降级：记录 warning 并继续编辑）
+        state["_restore_text"] = _truncate_messages(agent, self.real_idx)
 
         state["prefill"] = old_content
         state["_edit_performed"] = True
@@ -144,16 +161,9 @@ class DeleteCommand:
         if self.real_idx < 0 or self.real_idx >= len(messages):
             return False
 
-        target_index = self.real_idx - 1 if self.real_idx > 0 else 0
-        restore_text = _restore_sandbox_to(agent, target_index)
-        state["_restore_text"] = restore_text
-
-        original_len = len(messages)
-        del messages[self.real_idx:]
-
-        sm = _get_sandbox_manager()
-        if sm:
-            sm.remap_indices(list(range(self.real_idx, original_len)))
+        # 截断 + 沙盒恢复 + remap（P2-6：公共助手，恢复失败语义见
+        # _restore_sandbox_to —— 明确降级：记录 warning 并继续编辑）
+        state["_restore_text"] = _truncate_messages(agent, self.real_idx)
 
         state["_edit_performed"] = True
         return True
@@ -172,15 +182,9 @@ class ResumeCommand:
         if self.real_idx < 0 or self.real_idx >= len(messages):
             return False
 
-        restore_text = _restore_sandbox_to(agent, self.real_idx)
-        state["_restore_text"] = restore_text
-
-        original_len = len(messages)
-        del messages[self.real_idx + 1:]
-
-        sm = _get_sandbox_manager()
-        if sm:
-            sm.remap_indices(list(range(self.real_idx + 1, original_len)))
+        # 截断到 real_idx+1（保留当前消息）+ 沙盒恢复到光标消息 + remap
+        # （P2-6：公共助手；keep_idx=real_idx+1 → 沙盒恢复到 real_idx）
+        state["_restore_text"] = _truncate_messages(agent, self.real_idx + 1)
 
         _check_last_message_role(agent, state)
         state["_edit_performed"] = True
@@ -198,6 +202,9 @@ class ResumeAllCommand:
         if not agent.messages:
             return False
         _check_last_message_role(agent, state)
+        # ★ P3-5：统一 state 契约——显式设置 prefill（明确「不预填」语义，
+        #   与 EditCommand 设置旧内容对齐；消费方 _merge_prefill 读空串跳过）。
+        state["prefill"] = ""
         state["_edit_performed"] = True
         return True
 
@@ -316,30 +323,42 @@ class MessageEditor:
         if input_ is None:
             return False
 
-        input_.set_suppress_enter(True)
-        # 方向2（私有属性访问公开化）：dismiss 回调经公开 API 保存/替换/恢复
-        # （不直接读写 input_._dismiss_completion_callback 私有字段）。
-        orig_dismiss_cb = input_.get_dismiss_completion_callback()
-
-        def _editmsg_dismiss():
-            """自定义补全关闭回调 — 设置选择完成信号。
-
-            在 render 线程中调用：
-              _dispatch_key_event(enter) → _dismiss_completion()
-            → 调用此回调 → 设置 _selection_ready 通知 executor 线程。
-            """
-            self._selection_confirmed = True
-            self._selection_ready.set()
-
-        input_.set_dismiss_completion_callback(_editmsg_dismiss)
-
+        # ★ P2-5：将「set_suppress_enter(True) + get_dismiss_completion_callback
+        #   + set_dismiss_completion_callback」整个序列移入 try/finally——
+        #   修复前若任一步抛异常（input 状态异常等），Enter 抑制永久卡死
+        #   （输入无法提交）；finally 确保恢复。
+        orig_dismiss_cb = None
         try:
+            input_.set_suppress_enter(True)
+            # 方向2（私有属性访问公开化）：dismiss 回调经公开 API 保存/替换/恢复
+            # （不直接读写 input_._dismiss_completion_callback 私有字段）。
+            orig_dismiss_cb = input_.get_dismiss_completion_callback()
+
+            def _editmsg_dismiss():
+                """自定义补全关闭回调 — 设置选择完成信号。
+
+                在 render 线程中调用：
+                  _dispatch_key_event(enter) → _dismiss_completion()
+                → 调用此回调 → 设置 _selection_ready 通知 executor 线程。
+                """
+                self._selection_confirmed = True
+                self._selection_ready.set()
+
+            input_.set_dismiss_completion_callback(_editmsg_dismiss)
+
             real_idx = self._interactive_message_select(
                 user_msgs, display_items, option_lines,
             )
         finally:
-            # 恢复原始回调（经公开 API）
-            input_.set_dismiss_completion_callback(orig_dismiss_cb)
+            # 恢复原始回调（经公开 API；orig_dismiss_cb 为 None 时跳过——
+            # 原回调不存在则无需恢复）
+            if orig_dismiss_cb is not None:
+                try:
+                    input_.set_dismiss_completion_callback(orig_dismiss_cb)
+                except Exception:
+                    _logger.debug(
+                        "edit_current_messages: 恢复 dismiss 回调异常", exc_info=True,
+                    )
             # ★ 先排空 stdin 残留字节（含 CR+LF 中的 \n），再恢复 Enter 抑制，
             #   防止竞态窗口内残留 \n 触发 _enter() 误消费 prefill
             try:
@@ -347,7 +366,12 @@ class MessageEditor:
             except Exception:
                 _logger.debug("edit_current_messages: flush_stdin_buffer 异常", exc_info=True)
             # 安全恢复 Enter 抑制（在排空 stdin 之后，确保无残留字节）
-            input_.set_suppress_enter(False)
+            try:
+                input_.set_suppress_enter(False)
+            except Exception:
+                _logger.debug(
+                    "edit_current_messages: set_suppress_enter(False) 异常", exc_info=True,
+                )
             # 清理独立信号（防残留）
             self._selection_ready.clear()
             self._selection_confirmed = False
@@ -417,6 +441,13 @@ class MessageEditor:
         # 轮询等待组件交互完成（render 线程运行中；UserSelectPopup use_input 写 done）
         deadline = model.user_select.deadline
         while not model.user_select.done:
+            if self._selection_ready.is_set():
+                # ★ P2-7：标准路径同时响应 _selection_ready 信号（自定义
+                #   dismiss 回调 _editmsg_dismiss 设置，legacy 路径已响应）——
+                #   修复前标准路径仅响应 ``user_select.done``：若 Enter 经
+                #   ``_dismiss_completion → _editmsg_dismiss`` 路径确认而 done
+                #   未及时写回，轮询可能空转到超时；同时检查双信号更稳。
+                break
             if deadline > 0 and time.monotonic() >= deadline:
                 # 超时：写回超时结果（组件下一帧读到 done 停止渲染）
                 model.user_select.done = True

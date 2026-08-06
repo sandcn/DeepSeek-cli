@@ -39,6 +39,11 @@ _BG_RED = '\033[48;5;124m'    # 256色暗红背景（兼容 re-export；生产�
 _BG_GREEN = '\033[48;5;28m'   # 256色柔和绿背景（兼容 re-export；生产用 _bg_add）
 _BG_OFF = '\033[49m'          # 重置为默认背景色（兼容 re-export）
 
+# ★ P3-13（兼容死代码）：_BG_RED/_BG_GREEN/_BG_OFF/_RESET_STR 生产路径零引用
+#   （渲染统一经 ``Style.apply``）——保留仅为兼容 re-export（既有测试/外部
+#   调用面）。移除计划：在 __all__ 标注 deprecated 后，待确认外部调用方清空
+#   后删除（勿在生产代码新增引用）。
+
 #: 行内删除段背景 Style（暗红 bg=124）
 _bg_del = Style(bg=124)
 #: 行内新增段背景 Style（柔和绿 bg=28）
@@ -560,4 +565,7 @@ __all__ = [
     "_BG_RED",
     "_BG_GREEN",
     "_BG_OFF",
+    # ★ P3-13：_BG_RED/_BG_GREEN/_BG_OFF 为 deprecated 兼容 re-export
+    #   （生产路径零引用，移除计划见模块内注释）；_RESET_STR 未在 __all__
+    #   导出（仅保留定义供外部兼容导入，同移除计划）。
 ]

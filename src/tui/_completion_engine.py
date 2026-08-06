@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 import glob as _glob_module
@@ -24,24 +25,36 @@ T = TypeVar("T")
 # ── 简易 TTL 缓存 ────────────────────────────────────────
 
 class _TTLCache:
-    """简易 TTL 缓存 — 替换已删除的 core/ttl_cache.py。"""
+    """简易 TTL 缓存 — 替换已删除的 core/ttl_cache.py。
+
+    P2-7：get() 加锁（threading.Lock）——原实现无锁，并发时多个线程同时
+    判定过期并重复执行 fetcher（重复查询会话/模型/主题列表）；加锁后仅
+    单线程执行 fetcher，其余线程等待并复用结果（双重检查：锁内二次判定
+    过期，避免等待期间已被其他线程刷新）。
+    """
 
     def __init__(self, fetcher: Callable[[], T], ttl: float = 60.0):
         self._fetcher = fetcher
         self._ttl = ttl
         self._value: T | None = None
         self._expires: float = 0.0
+        self._lock = threading.Lock()
 
     def get(self) -> T:
         now = time.monotonic()
         if self._value is None or now >= self._expires:
-            self._value = self._fetcher()
-            self._expires = now + self._ttl
+            with self._lock:
+                # 双重检查：等待锁期间可能已被其他线程刷新
+                now = time.monotonic()
+                if self._value is None or now >= self._expires:
+                    self._value = self._fetcher()
+                    self._expires = now + self._ttl
         return self._value  # type: ignore[return-value]
 
     def clear(self) -> None:
-        self._value = None
-        self._expires = 0.0
+        with self._lock:
+            self._value = None
+            self._expires = 0.0
 
     def refresh(self) -> T:
         self.clear()
@@ -236,10 +249,11 @@ class CompletionEngine:
         if cursor_pos is not None and cursor_pos >= 0:
             text = text[:cursor_pos]
 
-        # 获取最后一个词（空格分隔；方向1 修复：用 ``split(" ")`` 保留末尾
-        # 空词——``text.split()`` 丢弃末尾空串，输入 ``"cd "`` 时 last_word
-        # 取到 "cd" 把 "cd" 当文件前缀补全，而非枚举当前目录）。
-        words = text.split(" ")
+        # 获取最后一个词（P2-8 修复：按空白切分 \s+——原 split(" ") 对含 \t
+        # 输入不切分（cd\t/src 中 last_word 取整段 "cd\t/src"，路径补全失效）；
+        # re.split 保留尾随空串（"cd " → ['cd', '']，与 split(" ") 空格语义
+        # 一致，且兼容制表符）。与 _complete_param 的空白切分口径统一。
+        words = re.split(r"\s+", text)
         last_word = words[-1] if words else ""
 
         if last_word.startswith("/") and text.startswith("/"):

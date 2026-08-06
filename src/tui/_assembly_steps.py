@@ -153,6 +153,10 @@ def create_chat_domain_assembly(tui_config, session, bridge):
 #:   更新本引用——修复前每次 assemble 创建新闭包，``register_sigwinch_callback``
 #:   按身份去重（``cb not in _sigwinch_callbacks``）失败，旧闭包越积越多，
 #:   每次 resize 触发 N 个回调且持陈旧 session 引用（内存泄漏）。
+#:   ★ P3-7（全局引用限制）：模块级可变引用——多 TUI 实例并存时不支持各自
+#:     独立 SIGWINCH（最后一个 ``assemble`` 的会话持有回调，早期实例 resize
+#:     时刷新错误的 session）；当前生产为单实例生命周期（app_loop 顺序装配/
+#:     停止），可接受，不做多实例支持。
 _active_session = None
 
 

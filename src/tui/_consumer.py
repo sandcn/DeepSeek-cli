@@ -162,31 +162,41 @@ class ChatUIConsumer:
         return self._lifecycle._state_lock
 
     def start(self) -> None:
-        """启动 ChatUI 消费者（委托 TuiLifecycle + 注册消费者）。"""
-        # ★ 2026-08-06 备注：start/stop 的 ``_started`` 检查在锁外——并发重复
-        #   调用时可能重复注册/注销（consumer_registry refcount 错乱）。当前
-        #   生产调用方为单线程生命周期管理（app_loop 顺序调用），并发仅测试
-        #   场景；如需并发安全应将注册/注销移入 ``_state_lock`` 临界区。
-        if not self._started:
-            _register_consumer(self)
-            # 方向2（注册回滚）：lifecycle.start 异常不泄漏消费者注册表——
-            # 回滚注册并 re-raise（不静默丢输出）。
-            try:
-                self._lifecycle.start()
-            except Exception:
-                _unregister_consumer()
-                raise
-        # else 分支：已启动则直接返回（_lifecycle.start() 幂等 no-op，无需重复调用）
+        """启动 ChatUI 消费者（委托 TuiLifecycle + 注册消费者）。
+
+        ★ P2-5（并发安全）：注册与 ``_started`` 检查移入 ``_state_lock``
+        临界区（``_state_lock`` 为 RLock——本类持锁委托 ``_lifecycle.start()``
+        可重入）——修复前检查在锁外，并发重复调用会重复注册消费者
+        （consumer_registry refcount 错乱）。异常回滚保留（注册后 lifecycle
+        start 失败 → 注销并 re-raise）。
+        """
+        with self._state_lock:
+            if not self._started:
+                _register_consumer(self)
+                # 方向2（注册回滚）：lifecycle.start 异常不泄漏消费者注册表——
+                # 回滚注册并 re-raise（不静默丢输出）。
+                try:
+                    self._lifecycle.start()
+                except Exception:
+                    _unregister_consumer()
+                    raise
+            # else 分支：已启动则直接返回（_lifecycle.start() 幂等 no-op，无需重复调用）
 
     def stop(self) -> None:
-        """停止 ChatUI 消费者（委托 TuiLifecycle + 注销消费者）。"""
-        if self._started:
-            try:
-                self._lifecycle.stop()
-            finally:
-                # 无论 lifecycle.stop 是否抛异常，都必须注销消费者，
-                # 防止消费者注册表泄漏、get_active_chat_ui() 返回已停止实例。
-                _unregister_consumer()
+        """停止 ChatUI 消费者（委托 TuiLifecycle + 注销消费者）。
+
+        ★ P2-5（并发安全）：注销与 ``_started`` 检查移入 ``_state_lock``
+        临界区（RLock 可重入）——修复前检查在锁外，并发重复调用会重复注销
+        消费者（refcount 负向错乱）。
+        """
+        with self._state_lock:
+            if self._started:
+                try:
+                    self._lifecycle.stop()
+                finally:
+                    # 无论 lifecycle.stop 是否抛异常，都必须注销消费者，
+                    # 防止消费者注册表泄漏、get_active_chat_ui() 返回已停止实例。
+                    _unregister_consumer()
 
     def suspend(self) -> None:
         """暂停渲染引擎（委托 TuiLifecycle）。"""

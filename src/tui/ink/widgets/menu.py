@@ -106,7 +106,9 @@ def Menu(props: dict) -> Element:
             if isinstance(it, dict):
                 items.append(dict(it))
             else:
-                items.append({"label": str(it)})
+                # ★ P3（review）：items 元素为 None 时渲染空标签——修复前
+                #   ``str(None)`` 渲染出字面 "None"。
+                items.append({"label": "" if it is None else str(it)})
     on_select = props.get("onSelect")
     on_highlight = props.get("onHighlight")
     focus = bool(props.get("focus", True))
@@ -170,13 +172,16 @@ def Menu(props: dict) -> Element:
             return True
         if event.kind in ("home", "end"):
             new = _next_selectable(items, 0, 1) if event.kind == "home" else _next_selectable(items, len(items) - 1, -1)
-            cursor_ref.current = new
-            set_cursor(new)
-            if on_highlight is not None:
-                try:
-                    on_highlight(items[new], new)
-                except Exception:
-                    _logger.debug("Menu onHighlight 回调异常", exc_info=True)
+            # ★ P3（review）：new == cur（已在首/末可选项且目标即当前）时不再
+            #   重复触发 onHighlight——修复前 home/end 无条件回调（重复回调）。
+            if new != cur:
+                cursor_ref.current = new
+                set_cursor(new)
+                if on_highlight is not None:
+                    try:
+                        on_highlight(items[new], new)
+                    except Exception:
+                        _logger.debug("Menu onHighlight 回调异常", exc_info=True)
             return True
         if event.kind == "enter":
             item = items[cur]

@@ -56,19 +56,26 @@ def use_error_state() -> Any:
 # ═══════════════════════════════════════════════════════════
 
 
-def _make_imperative_cleanup(ref, hook: MemoHook) -> Callable:
+def _make_imperative_cleanup(hook: MemoHook) -> Callable:
     """构造 useImperativeHandle 的 effect create（返回卸载清理函数）。
 
-    卸载清理仅在 ``ref.current`` 仍指向本组件最近一次句柄时置 None——
-    deps 变化后旧 destroy 不得清掉新句柄（React 语义：卸载时置 null，
-    更新时不清）。
+    卸载清理：清空「**最近一次写入的 ref**」（``hook._last_ref``）——
+    父组件换入新 ref 对象时 useImperativeHandle 渲染期已把句柄写入新 ref，
+    destroy 须清理最近写入的 ref（修复前 effect create 闭包捕获的是创建时
+    的旧 ref——父组件换入新 ref 对象但用户 deps 未变（effect 未重建）时
+    旧 destroy 只清旧 ref，新 ref.current 残留句柄引用，P3-7 换 ref 泄漏）。
+
+    引用检查语义（React）：deps 变化后旧 destroy 不得清掉新句柄——destroy
+    仅当 ``ref.current is value``（仍指向本组件最近一次句柄）时置 None；
+    新句柄已写入（``value is not`` 匹配）时不清。
     """
 
     def _create():
         value = hook.value
 
         def _destroy():
-            if getattr(ref, "current", None) is value:
+            ref = getattr(hook, "_last_ref", None)
+            if ref is not None and getattr(ref, "current", None) is value:
                 ref.current = None
 
         return _destroy
@@ -135,6 +142,10 @@ def useImperativeHandle(ref, factory: Callable, deps: list | tuple | None = None
         #   身份变化（父组件传入新 ref 对象）时仍把当前 ``hook.value`` 写入
         #   ``ref.current``——修复前仅 memo_changed 分支写 ref，新 ref.current
         #   恒为 None（父组件拿不到句柄）。
+        # ★ P3-7（review 方向）：记录「最近一次写入的 ref」——destroy 据此
+        #   清理（_make_imperative_cleanup 不再捕获创建时 ref，父组件换入新
+        #   ref 对象时新 ref.current 残留句柄被正确清理）。
+        hook._last_ref = ref
         ref.current = hook.value
     # 卸载清理（EffectHook 通道）：**恒消费 2 槽**（deps 含句柄身份——句柄
     # 重建时旧 destroy 不会清掉新句柄（_make_imperative_cleanup 引用检查）。
@@ -146,7 +157,7 @@ def useImperativeHandle(ref, factory: Callable, deps: list | tuple | None = None
     #   None 变 None 场景正确释放）。
     if ref is not None:
         eff = _next_hook(EffectHook, None, None, None, None)
-        eff.create = _make_imperative_cleanup(ref, hook)
+        eff.create = _make_imperative_cleanup(hook)
         if memo_changed:
             eff.deps = (id(ref), id(hook), id(hook.value))
             eff.last_deps = None
@@ -238,7 +249,9 @@ def useApp() -> dict:
             try:
                 return _hooks_module._render_flush_fn()
             except Exception:
-                pass
+                # ★ P3-6（review 方向）：不静默吞异常——记 debug 日志（flush
+                #   回调异常降级为已解决 awaitable，不中断渲染，但须可观测）。
+                _logger.debug("render flush 回调异常，降级为已解决 awaitable", exc_info=True)
         return _already_flushed()
 
     def _suspend(callback=None):
@@ -246,12 +259,16 @@ def useApp() -> dict:
             try:
                 return _hooks_module._suspend_terminal_fn(callback)
             except Exception:
-                pass
+                # ★ P3-6（review 方向）：不静默吞异常——记 debug 日志（终端
+                #   挂起回调异常降级为直接执行 callback，但须可观测）。
+                _logger.debug("终端挂起回调异常，降级为直接执行 callback", exc_info=True)
         if callback is not None:
             try:
                 callback()
             except Exception:
-                pass
+                # ★ P3-6（review 方向）：不静默吞异常——记 debug 日志（降级
+                #   路径 callback 异常不传播（挂起流程已降级），但须可观测）。
+                _logger.debug("suspendTerminal 降级 callback 异常", exc_info=True)
         return None
 
     return {

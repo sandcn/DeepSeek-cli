@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Callable
 
 from .element import Element, TEXT, STATIC, h, _as_element
-from .hooks import use_memo
+from .hooks import use_memo, use_ref
 
 __all__ = ["Transform", "Static", "Newline", "Fragment", "STATIC_TEXT"]
 
@@ -28,12 +28,29 @@ __all__ = ["Transform", "Static", "Newline", "Fragment", "STATIC_TEXT"]
 #: STATIC 语义标注常量（供组件显式声明静态内容；当前 diff 已增量跳过未变化行）
 STATIC_TEXT = "static-text"
 
-#: transform 变换函数参数数缓存（handler 属性——免每帧 inspect.signature）
+#: transform 变换函数参数数缓存——两级：普通函数经 ``_ink_transform_arity``
+#: 属性（零 dict 查找）；不可设置属性的对象（内置函数如 ``str.upper`` 等）
+#: 经模块级 ``(id, fn)`` 双键缓存（P3-13 修复——修复前每次抛
+#: AttributeError 后重新 inspect.signature）。
+#: 上限（_TRANSFORM_ARITY_CACHE_MAX）：防止每帧新建 lambda 场景下 id 缓存
+#: 无限增长（不同对象不同 id）；超限整体清空重建（与 _width._char_width_cache
+#: 一致的有界缓存策略——宽度/参数数值确定性，清空后重新积累，正确性不受影响）。
+_transform_arity_cache: dict = {}
+_TRANSFORM_ARITY_CACHE_MAX = 256
+
+
 def _transform_arity(fn: Callable) -> int:
     """返回 transform 函数的位置参数数量（>=2 → (line, index) 签名）。"""
+    # 普通函数：属性缓存快路径（免 dict 查找）
     cached = getattr(fn, "_ink_transform_arity", None)
     if cached is not None:
         return cached
+    # 模块级 (id, fn) 双键缓存（内置函数等不可设置属性对象；双键校验防
+    # id 复用错误命中——entry[0] is fn）
+    fid = id(fn)
+    entry = _transform_arity_cache.get(fid)
+    if entry is not None and entry[0] is fn:
+        return entry[1]
     try:
         import inspect as _inspect
         sig = _inspect.signature(fn)
@@ -47,6 +64,9 @@ def _transform_arity(fn: Callable) -> int:
         fn._ink_transform_arity = n
     except Exception:
         pass
+    if len(_transform_arity_cache) >= _TRANSFORM_ARITY_CACHE_MAX:
+        _transform_arity_cache.clear()
+    _transform_arity_cache[fid] = (fn, n)
     return n
 
 
@@ -130,6 +150,14 @@ def Transform(props: dict) -> Element:
         #   布局/调和对 str 子级处理不一致）。经 _as_element 规范化为 TEXT。
         #   ★ 2026-08-06：str 子级同样应用 transform（修复前仅 Element 项
         #     应用 transform，str 项仅规范化丢失变换）。
+        #   ★ P2-2（review 方向）：transform=None 时直接规范化返回，**不走
+        #     变换路径**——修复前 ``_apply_transform_to_element(_as_element(c),
+        #     None)`` 对每个子级每帧 3 次异常（_transform_arity 对 None
+        #     signature 抛 TypeError、setattr 抛 AttributeError、调用 None 抛
+        #     TypeError，全被 except 兜底——异常控制流，多 children 场景每帧
+        #     大量异常开销）。
+        if transform is None:
+            return Element("fragment", {}, tuple(_as_element(c) for c in children))
         transformed = tuple(
             _apply_transform_to_element(_as_element(c), transform)
             for c in children
@@ -206,12 +234,26 @@ def Static(props: dict) -> Element:
         render_fn = props.get("children")
         if not callable(render_fn):
             render_fn = lambda item, index: str(item)
-        items_tuple = tuple(items) if not isinstance(items, (tuple, list)) else items
+        # ★ P3-14（review 方向）：deps 用 ``tuple(items)`` **快照** + use_ref
+        #   内容比较——修复前 ``deps=(items_tuple,)`` 传原 list 引用（原地
+        #   append 不改变引用 → deps 恒等 → 不触发重建，新 item 永不渲染）。
+        #   快照语义：每帧 ``tuple(items)`` 生成新快照，与上次快照内容比较
+        #   （tuple 逐元素值比较，C 级）——内容变化（含原地 append）时更新
+        #   快照 → deps 变化 → 重建；内容未变时复用上次快照对象 → deps 稳定
+        #   → 冻结复用（不重渲染）。
+        #   ★ hook 顺序注：items 模式（本分支）消费 2 个 hook（use_ref +
+        #   use_memo）、非 items 模式消费 1 个（use_memo）——同一组件在渲染
+        #   间切换两种模式违反 Rules of Hooks（hook 数量变化 → HookStateError），
+        #   调用方须保证模式稳定（与 React 语义一致）。
+        items_snapshot = tuple(items)
+        snap_ref = use_ref(items_snapshot)
+        if snap_ref.current != items_snapshot:
+            snap_ref.current = items_snapshot
         frozen = use_memo(
             lambda: tuple(
-                render_fn(item, index) for index, item in enumerate(items_tuple)
+                render_fn(item, index) for index, item in enumerate(snap_ref.current)
             ),
-            (items_tuple,),
+            (snap_ref.current,),
         )
         return h(STATIC, style_props, frozen)
     children = props.get("children")

@@ -101,6 +101,13 @@ class OutputConsumer:
             OutputConsumer 跳过直写避免重复和绕过 ChatUI。
         """
         if event.source == "cmd":
+            # ★ P3-15：source="cmd" 无条件跳过直写（不检查 ChatUI 活跃）——
+            # 契约注明：所有 source="cmd" 的 OutputEvent 发布方均在 ChatUI
+            # 命令执行路径（CommandUiAdapter 等），必然存在活跃 ChatUIConsumer
+            # 接管渲染；即使 chat_ui_managed=False（测试场景）也跳过，
+            # 避免命令输出重复直写。若未来出现非 ChatUI 路径发布
+            # source="cmd"，需改为 ``and self._chat_ui_managed
+            # and self._active_chat_ui_present()``。
             return True
         if self._chat_ui_managed and self._active_chat_ui_present():
             return True
@@ -114,7 +121,15 @@ class OutputConsumer:
             return False
 
     def _write(self, text: str, level: str = "info") -> None:
-        """输出带颜色/级别的文本到终端（由 output_lock 保护）。"""
+        """输出带颜色/级别的文本到终端（由 output_lock 保护）。
+
+        ★ P3-14：忽略 ``_try_acquire_output_lock`` 的 yield bool 值——
+        锁超时（render_lock 被渲染管线占用 >1s）时仍**降级直写**终端。
+        这是有意的降级策略：OutputConsumer 为非 ChatUI 上下文的兜底输出
+        路径（低频、非关键渲染），宁可容忍与渲染管线并发写终端的轻微竞态，
+        也不阻塞输出（阻塞会卡住日志/回显）。如需严格互斥可检查 bool
+        并跳过直写，但会引入输出丢失风险。
+        """
         with _try_acquire_output_lock(name="output_consumer._write", timeout=1.0):
             try:
                 if self._stream.closed:

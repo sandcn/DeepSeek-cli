@@ -34,12 +34,20 @@ def _color_component(color) -> _ColorFp:
 
     Returns:
         -1（None）、int（256 色号）或 (r, g, b) 三元组。
+
+    ★ P3-12（review 方向）：非 int/TrueColor 值（如颜色名字符串
+    ``"red"``）修复前 ``int(color)`` 抛 ValueError——指纹计算崩溃导致布局
+    wrap 缓存异常（style_fingerprint 为热路径调用）。现返回哨兵 ``-2``
+    （未知颜色；可哈希稳定，仅指纹区分，不参与真实渲染——渲染层颜色解析
+    由 _parse_color/样式系统负责，指纹只要求值稳定可哈希）。
     """
     if color is None:
         return -1
     if isinstance(color, TrueColor):
         return (color.r, color.g, color.b)
-    return int(color)
+    if isinstance(color, int):
+        return color
+    return -2
 
 
 def style_fingerprint(style: Style) -> tuple:

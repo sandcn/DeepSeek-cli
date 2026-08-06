@@ -40,8 +40,21 @@ def ConfirmInput(props: dict) -> Element:
     """
     onConfirm = props.get("onConfirm")
     focus = bool(props.get("focus", True))
+    # ★ P3（review）：yesKeys/noKeys 容器归一化 + 守卫——修复前直接
+    #   ``ch in yes_keys``：传 str 时是**子串匹配**（"y" in "yn" 恒 True，
+    #   误触发确认）；传 int 等不可迭代时抛 TypeError。统一 ``tuple()`` 化
+    #   （str 按字符序列处理——``yesKeys="yn"`` → ``("y","n")``）；不可迭代
+    #   输入回退默认值。
     yes_keys = props.get("yesKeys", ("y", "Y"))
     no_keys = props.get("noKeys", ("n", "N"))
+    if not hasattr(yes_keys, "__iter__"):
+        yes_keys = ("y", "Y")
+    else:
+        yes_keys = tuple(yes_keys)
+    if not hasattr(no_keys, "__iter__"):
+        no_keys = ("n", "N")
+    else:
+        no_keys = tuple(no_keys)
     label = str(props.get("label", "(y/n)"))
     label_style = props.get("labelStyle")
 
@@ -109,7 +122,13 @@ def Toggle(props: dict) -> Element:
     label = None if label is None else str(label)
     checked_prefix = str(props.get("checkedPrefix", _TOGGLE_CHECKED))
     unchecked_prefix = str(props.get("uncheckedPrefix", _TOGGLE_UNCHECKED))
-    checked_style = props.get("checkedStyle") or Style(fg=6)
+    # ★ P3（review）：显式空 ``Style()`` 不被 ``or`` 覆盖——修复前
+    #   ``props.get("checkedStyle") or Style(fg=6)`` 把显式 ``Style()``（空
+    #   样式，可能为受控样式合并预留）当 falsy 替换为默认 cyan。改为
+    #   ``is not None`` 判断：仅未提供时回退默认。
+    checked_style = props.get("checkedStyle")
+    if checked_style is None:
+        checked_style = Style(fg=6)
     base_style = props.get("style")
     label_style = props.get("labelStyle")
     # ★ ref 镜像（同批连续按键修复）：handler 读 ref 而非闭包 value——同一渲染

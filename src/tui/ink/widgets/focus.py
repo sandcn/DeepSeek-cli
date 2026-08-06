@@ -69,9 +69,14 @@ def FocusGroup(props: dict) -> Element:
     )
     if n_keys == 0:
         return h(Column, None, children)
-    # 激活序号钳制到 [0, n_keys)
+    # ★ P3（review）：激活序号钳制到 [0, n_keys) 并**同步 state**——修复前
+    #   ``active >= n_keys: active = 0`` 仅改局部变量（渲染期钳制显示正确），
+    #   但 ``_focus_active`` 注入经局部 active，state 仍越界：后续 Key 数量
+    #   恢复（n_keys 增大）时 active state 保持旧越界值，焦点序号错乱。钳制
+    #   后同步 ``set_active``（仅越界时触发一次，下帧 active 已合法，无循环）。
     if active >= n_keys:
         active = 0
+        set_active(0)
     wrapped: list = []
     key_idx = 0
     for child in children:

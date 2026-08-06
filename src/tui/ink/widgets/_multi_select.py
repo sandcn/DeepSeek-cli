@@ -101,16 +101,21 @@ def MultiSelect(props: dict) -> Element:
             set_cursor_idx(cur_cursor)
         cur_selected = selected_ref.current
         if event.kind == "arrow_up":
-            if cur_cursor > 0:
-                new = cur_cursor - 1
-                cursor_ref.current = new
-                set_cursor_idx(new)
+            # ★ P3（review）：已在首项时按上键不移动——无效移动返回 False
+            #   （不消费，放行父级；与 ListView/Menu 对齐）。
+            if cur_cursor <= 0:
+                return False
+            new = cur_cursor - 1
+            cursor_ref.current = new
+            set_cursor_idx(new)
             return True
         if event.kind == "arrow_down":
-            if cur_cursor < len(items) - 1:
-                new = cur_cursor + 1
-                cursor_ref.current = new
-                set_cursor_idx(new)
+            # ★ P3（review）：已在末项时按下键不移动——无效移动返回 False。
+            if cur_cursor >= len(items) - 1:
+                return False
+            new = cur_cursor + 1
+            cursor_ref.current = new
+            set_cursor_idx(new)
             return True
         if event.kind == "space" or (event.kind == "char" and event.char == " "):
             value = items[cur_cursor]["value"]

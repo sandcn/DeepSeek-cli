@@ -423,6 +423,13 @@ class InkSession:
         #   共用 _try_acquire_output_lock（同一 output lock）——避免 suspend
         #   期间同步渲染与外部输出竞争撕裂；locked=False（锁超时）时跳过
         #   并记 debug（弹窗显示延迟一帧可接受，与 _drain_queue 超时跳过一致）。
+        #   ★ P3-20 竞态窗口说明（review 方向）：``not self._render_running``
+        #   检查与同步渲染之间存在竞态窗口——render 线程可能恰在检查后启动
+        #   （start()/resume() 并发调用）→ 本帧同步渲染与线程渲染并行（双写
+        #   终端）。output lock 串行化实际写入（同一锁互斥），但存在双帧渲染
+        #   （同步帧 + 线程帧）顺序不确定性：同步帧内容与线程下一帧内容一致
+        #   （同一模型状态），后写帧覆盖先写帧，最终显示一致——可接受（已知
+        #   权衡，输出锁已消除撕裂主风险）。
         if not self._render_running:
             with _try_acquire_output_lock(
                 name="ink_session.sync_render",
@@ -763,6 +770,14 @@ class InkSession:
             self._apply_commands(commands)
         # 渲染与失败处理移出锁块（方向1 步骤4）：渲染失败退避 sleep 不再持有
         # 输出锁（修复前 sleep 在锁块内 → render_lock 阻塞其他写入方输出）。
+        # ★ P3-20 锁外渲染设计说明（review 方向）：输出锁**仅保护队列排空**
+        #   （锁块内只做 ``_cmd_queue.get_nowait`` 收集）——命令应用与渲染在
+        #   锁外执行。已知权衡：渲染本身不受锁互斥（request_bottom_redraw
+        #   同步渲染可能与本线程渲染并行，双写终端——output lock 串行化写入
+        #   防撕裂，双帧顺序不确定性可接受，见 request_bottom_redraw 竞态窗口
+        #   注释）；收益：应用/渲染耗时（markdown 渲染、失败退避 sleep）不
+        #   阻塞其他写入方（diff 渲染/紧急输出），命令吞吐不因单帧慢渲染
+        #   阻塞。若未来需要渲染互斥，应引入独立渲染锁（非输出锁）。
         if self._should_render(changed):
             try:
                 self._render_frame()
@@ -902,6 +917,7 @@ class InkSession:
             #   None 跳过。set_width 幂等（重复调用无副作用）。
             # ★ 方向3（resize 全量刷新）：宽度变化置 ``_resize_pending``——
             #   终端尺寸变化后旧帧与物理屏幕内容不对齐，须全量重写而非增量 diff。
+            width_changed = False
             if width != self._last_render_width:
                 for renderer in (
                     getattr(self._model, "reasoning_renderer", None),
@@ -914,14 +930,11 @@ class InkSession:
                             _logger.debug("set_width 传播异常", exc_info=True)
                 self._last_render_width = width
                 self._resize_pending = True
-                # ★ React Ink useWindowSize（方向 E）：宽度变化通知订阅组件重渲染。
-                try:
-                    _hooks._notify_window_size()
-                except Exception:
-                    _logger.debug("notify_window_size 异常", exc_info=True)
+                width_changed = True
             # ★ 增量渲染屏幕高度传播（方向1）：高度变化（resize）时更新
             #   InkRenderer.set_height——渲染器按新屏幕高度钳制光标/跳过不可达行。
             height = self._width_cache.get_height()
+            height_changed = False
             if height != self._last_render_height:
                 try:
                     self._ink_renderer.set_height(height)
@@ -931,6 +944,19 @@ class InkSession:
                 # 高度变化与宽度变化共用同一次重置（全量刷新标志由宽度/高度
                 # 分支任一置位，下方消费）。
                 self._resize_pending = True
+                height_changed = True
+            if width_changed or height_changed:
+                # ★ React Ink useWindowSize（方向 E）+ P3-19（review 方向）：
+                #   宽度/高度任一变化都通知订阅组件重渲染——修复前仅在宽度
+                #   分支调用 ``_notify_window_size()``：高度单独变化（resize
+                #   只改高度）时 useWindowSize 订阅者不重渲染，窗口尺寸状态
+                #   陈旧（useWindowSize 返回 columns/rows 双值，rows 变化须
+                #   通知）。宽高同时变化时合并为一次通知（版本只递增一次，
+                #   订阅者单次重渲染，避免双帧重绘）。
+                try:
+                    _hooks._notify_window_size()
+                except Exception:
+                    _logger.debug("notify_window_size 异常", exc_info=True)
         # ★ 方向3（resize 全量刷新消费）：尺寸变化后本帧即全量重建（不等待
         #   下一帧 diff）——重置渲染器 prev（full=True），使 render() 走全量
         #   写入路径。仅 resize 使用 full=True；其余路径均走增量 diff。
@@ -1064,6 +1090,13 @@ class InkSession:
             _logger.info("render 线程将在 %.1f 秒后自动恢复 (第 %d/%d 次)",
                          self._config.recover_delay, self._recover_attempts,
                          self._config.max_recover_attempts)
+            # ★ P3-20 sleep 行为说明（review 方向）：崩溃恢复前**阻塞 sleep**
+            #   （recover_delay）——期间渲染线程挂起不处理命令（队列堆积，
+            #   命令经 PriorityQueue 保序不丢失，恢复后批量处理）。已知权衡：
+            #   阻塞 sleep 避免崩溃恢复风暴（持续性异常下立即重启会反复崩溃
+            #   刷屏/忙循环），代价是恢复期间 UI 无渲染（延迟 recover_delay
+            #   可见）；恢复前置 ``_drain_queue_safe()`` 丢弃待处理命令（防
+            #   陈旧命令在恢复帧被应用），队列清空语义由 finally 排空兜底。
             time.sleep(self._config.recover_delay)
             self._drain_queue_safe()
             self._render_version += 1

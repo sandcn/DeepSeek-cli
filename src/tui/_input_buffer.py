@@ -130,9 +130,39 @@ class InputBufferEditor:
                 + ch
                 + self._buffer[self._cursor_pos:]
             )
-            self._cursor_pos += len(ch)
+            # P2-3：按「有效字符数」步进（完整代理对计 1 个字符）——原
+            # ``+= len(ch)`` 对代理对字符（如 emoji 在部分环境以两个 code
+            # point 表示）步进 2，而 _left/_right/_backspace 按 code point
+            # 移动 1 位，光标落在代理对中间再退格会切出孤立代理。
+            self._cursor_pos += self._char_count(ch)
             text = self._buffer
         self._echo(text)
+
+    @staticmethod
+    def _char_count(ch: str) -> int:
+        """有效字符数（code point 计数，完整代理对按 1 个字符计）。
+
+        P2-3：handle_char 插入内容可能含 UTF-16 代理对（高代理 0xD800-
+        0xDBFF + 低代理 0xDC00-0xDFFF 连续出现）——按 ``len(ch)`` 步进会把
+        代理对计为 2 个位置，与 _left/_right/_backspace 的 code point 移动
+        语义不一致。本 helper 将连续代理对计为 1 个字符，保证步进与删除
+        语义统一（删除时见 _backspace/_delete 的代理对整体钳制）。
+        """
+        count = 0
+        i = 0
+        n = len(ch)
+        while i < n:
+            cp = ord(ch[i])
+            if (
+                0xD800 <= cp <= 0xDBFF
+                and i + 1 < n
+                and 0xDC00 <= ord(ch[i + 1]) <= 0xDFFF
+            ):
+                i += 2
+            else:
+                i += 1
+            count += 1
+        return count
 
     def handle_chars(self, text: str) -> None:
         """批量处理多个字符（粘贴/预填场景），只在全部插入后触发一次回显。
@@ -243,84 +273,108 @@ class InputBufferEditor:
     def load_history(self) -> None:
         """从 INPUT_HISTORY_FILE 加载历史行（多进程安全）。
 
-        P3-6 说明：本方法**不加锁**直接改写 ``_history``——设计上仅在装配/
-        启动阶段（render 线程启动前）调用，与渲染线程的 ``search_enter`` /
-        ``_append_history_locked`` 无并发窗口；若未来在运行期调用，须先获取
-        ``_lock``（既有限制文档化，非缺陷）。
+        P3-1 修复：加 ``_lock`` 防御——原实现不加锁直接改写 ``_history``，
+        仅靠文档约定装配期调用（render 线程启动前）；加锁后即使未来在运行
+        期调用亦安全（锁内文件读取为装配期一次性成本，可接受）。
         """
-        raw, locked = self._history_io.read()
-        if not raw:
-            return
+        with self._lock:
+            raw, locked = self._history_io.read()
+            if not raw:
+                return
 
-        lines = raw.splitlines()
-        if not lines:
-            return
+            lines = raw.splitlines()
+            if not lines:
+                return
 
-        # 第一趟 O(n)：记录每个条目在文件中的最后出现索引
-        # ★ 2026-08-06 口径统一：条目**不 strip**（首尾空白保留）——写盘
-        # （_append_history_locked → _append_to_history_file）不 strip，读取
-        # 若 strip 会造成「提交 "  hello  " → 重启加载后 entry="hello"」的
-        # 往返数据损坏（历史文件中的首尾空白被永久裁剪）。仅空白行判断用
-        # strip（与 _append_history_locked 的 ``if not text.strip(): return``
-        # 跳过纯空白输入一致）。
-        latest: dict[str, int] = {}
-        for i, line in enumerate(lines):
-            if not line.strip():
-                continue
-            entry = self._unescape(line)
-            if not entry:
-                continue
-            latest[entry] = i
+            # 第一趟 O(n)：记录每个条目在文件中的最后出现索引
+            # ★ 2026-08-06 口径统一：条目**不 strip**（首尾空白保留）——写盘
+            # （_append_history_locked → _append_to_history_file）不 strip，读取
+            # 若 strip 会造成「提交 "  hello  " → 重启加载后 entry="hello"」的
+            # 往返数据损坏（历史文件中的首尾空白被永久裁剪）。仅空白行判断用
+            # strip（与 _append_history_locked 的 ``if not text.strip(): return``
+            # 跳过纯空白输入一致）。
+            latest: dict[str, int] = {}
+            for i, line in enumerate(lines):
+                if not line.strip():
+                    continue
+                entry = self._unescape(line)
+                if not entry:
+                    continue
+                latest[entry] = i
 
-        # 第二趟 O(n)：只保留最后出现的条目，保持原始顺序
-        seen: set[str] = set()
-        unique: list[str] = []
-        for i, line in enumerate(lines):
-            if not line.strip():
-                continue
-            entry = self._unescape(line)
-            if not entry:
-                continue
-            if i == latest.get(entry) and entry not in seen:
-                unique.append(entry)
-                seen.add(entry)
+            # 第二趟 O(n)：只保留最后出现的条目，保持原始顺序
+            seen: set[str] = set()
+            unique: list[str] = []
+            for i, line in enumerate(lines):
+                if not line.strip():
+                    continue
+                entry = self._unescape(line)
+                if not entry:
+                    continue
+                if i == latest.get(entry) and entry not in seen:
+                    unique.append(entry)
+                    seen.add(entry)
 
-        # 合并到现有内存历史
-        # ★ 2026-08-06：截断取**最新**条目——`unique` 为文件顺序（旧→新），
-        #   unique[:_MAX] 取的是最旧 N 条（历史文件唯一条目 >N 时最新历史
-        #   重启后丢失，与 _append_history_locked 保留最新的语义不一致）。
-        #   改为 unique[-_MAX:]（先取最新再反转成新→旧内存序）。
-        file_entries = unique[-_HISTORY_MAX_ENTRIES:]
-        if self._history:
-            if file_entries:
-                existing = set(self._history)
-                for entry in reversed(file_entries):
-                    if entry not in existing:
-                        self._history.append(entry)
-                        existing.add(entry)
-                self._history = self._history[:_HISTORY_MAX_ENTRIES]
-        else:
-            self._history = list(reversed(file_entries))
+            # 合并到现有内存历史
+            # ★ 2026-08-06：截断取**最新**条目——`unique` 为文件顺序（旧→新），
+            #   unique[:_MAX] 取的是最旧 N 条（历史文件唯一条目 >N 时最新历史
+            #   重启后丢失，与 _append_history_locked 保留最新的语义不一致）。
+            #   改为 unique[-_MAX:]（先取最新再反转成新→旧内存序）。
+            # P2-4：统一使用实例属性 ``self._history_max_entries``（与
+            # ``_append_history_locked`` 一致），消除模块常量/实例属性双真源。
+            file_entries = unique[-self._history_max_entries:]
+            if self._history:
+                if file_entries:
+                    existing = set(self._history)
+                    for entry in reversed(file_entries):
+                        if entry not in existing:
+                            self._history.append(entry)
+                            existing.add(entry)
+                    self._history = self._history[:self._history_max_entries]
+            else:
+                self._history = list(reversed(file_entries))
 
-        if locked:
-            self._history_io.compact()
+            if locked:
+                self._history_io.compact()
 
     # ═══════════════════════════════════════════════════════
     # 缓冲编辑操作（原 InputBuffer 内部方法 → 私有方法）
     # ═══════════════════════════════════════════════════════
 
     def _backspace(self) -> None:
-        """退格：删除光标前一个字符。"""
+        """退格：删除光标前一个字符（代理对整体钳制）。"""
         with self._lock:
             if self._history_idx >= 0:
                 self._history_idx = -1
             if self._cursor_pos > 0:
-                self._buffer = (
-                    self._buffer[:self._cursor_pos - 1]
-                    + self._buffer[self._cursor_pos:]
-                )
-                self._cursor_pos -= 1
-            text = self._buffer
+                pos = self._cursor_pos
+                # P2-3：孤立代理整体钳制——完整代理对（高+低）不拆开删除：
+                #   - 代理对跨光标（前邻高代理 + 后邻低代理）→ 删前 1 个
+                #     与后 1 个（光标落在代理对中间时退格不切出孤立代理）；
+                #   - 代理对整体在光标前（前邻低代理 + 再前高代理）→ 删 2 个。
+                if (
+                    pos < len(self._buffer)
+                    and 0xD800 <= ord(self._buffer[pos - 1]) <= 0xDBFF
+                    and 0xDC00 <= ord(self._buffer[pos]) <= 0xDFFF
+                ):
+                    self._buffer = (
+                        self._buffer[:pos - 1] + self._buffer[pos + 1:]
+                    )
+                    self._cursor_pos = pos - 1
+                else:
+                    del_count = 1
+                    if (
+                        pos >= 2
+                        and 0xDC00 <= ord(self._buffer[pos - 1]) <= 0xDFFF
+                        and 0xD800 <= ord(self._buffer[pos - 2]) <= 0xDBFF
+                    ):
+                        del_count = 2
+                    self._buffer = (
+                        self._buffer[:pos - del_count]
+                        + self._buffer[pos:]
+                    )
+                    self._cursor_pos -= del_count
+                text = self._buffer
         self._echo(text)
 
     def _left(self) -> None:
@@ -694,17 +748,37 @@ class InputBufferEditor:
         self._echo(text)
 
     def _delete(self) -> None:
-        """Del：删除光标后的字符。"""
+        """Del：删除光标后的字符（代理对整体钳制）。"""
         with self._lock:
             if self._history_idx >= 0:
                 self._history_idx = -1
             n = len(self._buffer)
             if self._cursor_pos < n:
-                self._buffer = (
-                    self._buffer[:self._cursor_pos]
-                    + self._buffer[self._cursor_pos + 1:]
-                )
-            text = self._buffer
+                pos = self._cursor_pos
+                # P2-3：孤立代理整体钳制——完整代理对（高+低）不拆开删除：
+                #   - 代理对跨光标（前邻高代理 + 后邻低代理）→ 删前 1 个
+                #     与后 1 个（光标落在代理对中间时删除不切出孤立代理）；
+                #   - 代理对整体在光标后（后邻高代理 + 再后低代理）→ 删 2 个。
+                if (
+                    pos > 0
+                    and 0xD800 <= ord(self._buffer[pos - 1]) <= 0xDBFF
+                    and 0xDC00 <= ord(self._buffer[pos]) <= 0xDFFF
+                ):
+                    self._buffer = (
+                        self._buffer[:pos - 1] + self._buffer[pos + 1:]
+                    )
+                else:
+                    del_count = 1
+                    if (
+                        pos + 1 < n
+                        and 0xD800 <= ord(self._buffer[pos]) <= 0xDBFF
+                        and 0xDC00 <= ord(self._buffer[pos + 1]) <= 0xDFFF
+                    ):
+                        del_count = 2
+                    self._buffer = (
+                        self._buffer[:pos] + self._buffer[pos + del_count:]
+                    )
+                text = self._buffer
         self._echo(text)
 
     def _delete_word_left(self) -> None:

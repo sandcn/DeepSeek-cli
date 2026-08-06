@@ -166,6 +166,13 @@ class _StdoutLineTracker:
         sequences are stripped from tracked text.  Only tracks complete lines
         (ending with \\n) when scroll_end >= 1.
         """
+        # ★ P2-2（close 后拒绝新行）：close() 后不再跟踪/累积——修复前
+        #   _closed=True 后 write()/_track() 仍把新行写入 _output_buffer/
+        #   _ring，但刷盘已停止（close → _flush_history → 定时器停止），
+        #   这些行永不再落盘（内存残留 + 历史文件缺失末尾行）。close 后
+        #   write() 仍透传 real_stdout（透明包装语义不变），仅跳过跟踪。
+        if self._closed:
+            return
         if self._scroll_end < 1:
             return
 
@@ -231,9 +238,18 @@ class _StdoutLineTracker:
             self._output_buffer.append(line)
             if len(self._output_buffer) >= 50 and not self._flush_in_progress:
                 self._flush_in_progress = True
-                thread = threading.Thread(target=self._flush_worker, daemon=True)
-                self._flush_worker_thread = thread
-                thread.start()
+                self._spawn_flush_worker_locked()
+
+    def _spawn_flush_worker_locked(self) -> None:
+        """锁内启动刷盘 worker（调用方须已持有 ``_buffer_lock`` 且单飞标志已置位）。
+
+        P2-1：``_buffer_to_output`` 与 ``_timer_flush_callback`` 共用本方法
+        ——timer 与 worker 的启动统一走单飞路径，杜绝两线程各自取批并发写
+        文件（行序颠倒）。
+        """
+        thread = threading.Thread(target=self._flush_worker, daemon=True)
+        self._flush_worker_thread = thread
+        thread.start()
 
     def _flush_worker(self) -> None:
         """刷盘工作线程：执行刷盘后复位单飞标志并检查残留。
@@ -275,6 +291,11 @@ class _StdoutLineTracker:
 
     def _flush_buffered_lines(self) -> bool:
         """刷出输出缓冲中的行到历史文件。"""
+        # ★ P1-1（数据完整性，最关键）：提前初始化 buf——外层兜底异常路径
+        #   仍可放回缓冲。修复前 buf 在 ``with self._buffer_lock:`` 内定义，
+        #   外层 except 只 return False 不放回：行已取出未落盘即永久丢失，
+        #   与内部 OSError 分支（BUG-19 已放回）不一致。
+        buf: list[str] = []
         try:
             with self._buffer_lock:
                 buf = self._output_buffer
@@ -326,6 +347,12 @@ class _StdoutLineTracker:
             #   兜底异常（open 抛非 OSError/锁操作异常）此前静默 return False
             #   （行已从缓冲取出未落盘 → 丢失，且无任何痕迹）。
             _logger.warning("输出历史刷盘兜底异常", exc_info=True)
+            # ★ P1-1（数据完整性）：与内部 OSError 分支（BUG-19）一致——已取出
+            #   未落盘的行放回缓冲头部，由后续刷盘（定时器/worker finally/close）
+            #   重试（修复前这些行永久丢失）。buf 提前初始化为 []，异常发生在
+            #   取批前时 ``[] + _output_buffer`` 恒等于原缓冲，安全。
+            with self._buffer_lock:
+                self._output_buffer = buf + self._output_buffer
             return False
 
     def _load_output_history(self) -> None:
@@ -426,10 +453,18 @@ class _StdoutLineTracker:
         批次，写盘顺序取决于锁竞争（后到行可能先写）→ 输出历史乱序。
         """
         try:
-            if self._flush_in_progress:
-                self._pending_flush = True
-            else:
-                self._flush_buffered_lines()
+            # ★ P2-1（timer 与 worker 行序竞态修复）：读 ``_flush_in_progress``
+            #   与启动刷盘合并为 ``_buffer_lock`` 内的原子操作——修复前标志
+            #   检查与 ``_flush_buffered_lines()`` 取批之间非原子，worker 可能
+            #   在此期间启动并取批，timer 随后也取批 → 两个线程并发写文件，
+            #   后到行可能先写（历史行序颠倒）。timer 分支统一经 worker 单飞
+            #   刷盘（与 ``_buffer_to_output`` 同路径，行序由单飞保证）。
+            with self._buffer_lock:
+                if self._flush_in_progress:
+                    self._pending_flush = True
+                elif self._output_buffer:
+                    self._flush_in_progress = True
+                    self._spawn_flush_worker_locked()
         except Exception:
             # ★ 2026-08-06：补日志（修复前定时刷盘回调异常被静默吞掉，
             #   无任何痕迹）。
@@ -455,12 +490,21 @@ class _StdoutLineTracker:
         ``_file_io_lock``——与 ``_flush_buffered_lines`` 的追加写串行化（防止
         rename 期间追加写落旧 inode 丢行）；冷却检查同锁内读，双线程不会同时
         通过检查并发压缩（第二次压缩在锁内重读文件行数已 <=5000 自然跳过）。
+
+        ★ P3-1（tmp 文件跨进程互斥）：tmp 文件名加随机后缀（``os.urandom``）
+        ——修复前固定 ``.tmp`` 后缀在多进程同时压缩时互相覆盖/rename 竞态
+        （进程 A 写 tmp 中进程 B rename 走 → 内容错乱/丢行）。随机后缀保证
+        每进程独立 tmp 文件；残留 tmp 在失败分支清理（``tmp_path`` 实际路径
+        unlink）。
         """
         with self._file_io_lock:
             if time.monotonic() - self._last_compact_time < _COMPACT_COOLDOWN:
                 return False
             # 通过冷却检查 → 记录本次压缩尝试（防频繁检查）
             self._last_compact_time = time.monotonic()
+            # P3-1：tmp 路径提前初始化（失败清理分支可访问；异常发生在生成
+            # tmp_path 之前时 None 守卫跳过清理）
+            tmp_path: Path | None = None
             try:
                 path = self._output_history_file
                 if not path.exists():
@@ -492,8 +536,8 @@ class _StdoutLineTracker:
 
                 keep = unique[-2000:] if len(unique) > 2000 else unique
 
-                # 原子写入
-                tmp_path = path.with_suffix(".tmp")
+                # 原子写入（P3-1：随机后缀跨进程互斥）
+                tmp_path = path.with_name(f"{path.name}.tmp.{os.urandom(4).hex()}")
                 with open(tmp_path, "w", encoding="utf-8") as tmp:
                     for line in keep:
                         tmp.write(line + "\n")
@@ -506,8 +550,8 @@ class _StdoutLineTracker:
             except (OSError, FileNotFoundError) as exc:
                 _logger.warning("输出历史压缩失败: %s", exc)
                 try:
-                    tmp_path = self._output_history_file.with_suffix(".tmp")
-                    tmp_path.unlink(missing_ok=True)
+                    if tmp_path is not None:
+                        tmp_path.unlink(missing_ok=True)
                 except OSError:
                     pass
                 return False

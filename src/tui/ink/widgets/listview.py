@@ -156,6 +156,14 @@ def ListView(props: dict) -> Element:
                 cp["style"] = highlight_style
             cp.setdefault("key", f"lv-{i}")
             rows.append(Element(child.type, cp, child.children))
+        elif child is None:
+            # ★ P3（review）：render_item 返回 None 时渲染空 TEXT——修复前走
+            #   ``str(None)`` 渲染出字面 "None"。
+            rows.append(h(TEXT, {
+                "children": "",
+                "style": highlight_style if is_sel else None,
+                "key": f"lv-{i}", "height": 1,
+            }))
         else:
             rows.append(h(TEXT, {
                 "children": str(child),

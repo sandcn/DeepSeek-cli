@@ -103,6 +103,11 @@ class CompletionState:
     # 增长滚动自然）。items **大幅**减少（补白超过 _LOCKED_PAD_LIMIT，如
     # 20→1 项）时允许缩小——避免弹窗底部大片空白。hide_completions 重置为 0。
     locked_height: int = 0
+    # ★ P3-6：补全弹窗行缓存（tuple[popup_snap, list[Line]]，PERF-7）——
+    #   ``_popup_builder._build_popup_lines`` 动态挂载；dataclass 显式声明
+    #   （防类型不完整/动态属性隐患），None=未缓存（弹窗不可见/内容变化后
+    #   重建）。
+    _popup_lines_cache: tuple | None = None
 
 
 @dataclass

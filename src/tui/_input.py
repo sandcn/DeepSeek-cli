@@ -39,7 +39,6 @@ _cursor 均从同一实现复用，不再双实现。
 from __future__ import annotations
 
 import logging
-import select  # ★ 保持模块级 import：tests 通过 patch("src.tui._input.select.select") 拦截读取
 from pathlib import Path
 from typing import TYPE_CHECKING
 

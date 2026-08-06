@@ -30,6 +30,9 @@ _DEFAULT_ROLE_MAP: dict[str, RoleConfig] = {
     "tool": RoleConfig(icon="\u2699"),       # ⚙
 }
 
+#: 消息预览最大显示长度（P3-2：消除魔法数字——display_messages 截断参数）
+_DISPLAY_PREVIEW_MAX_LEN = 120
+
 
 def _content_str(content: Any) -> str:
     """将 content（可能是 str 或 list[dict]）转换为纯文本字符串。
@@ -117,9 +120,9 @@ class MessageDisplayContext:
 
 def display_messages(
     data: list[dict],
-    agent: Any = None,
-    idx_map: list[int] | None = None,
-    speed: int = 0,
+    agent: Any = None,  # noqa: ARG001  # 兼容保留参数（当前忽略，P3-3）
+    idx_map: list[int] | None = None,  # noqa: ARG001  # 兼容保留参数（当前忽略，P3-3）
+    speed: int = 0,  # noqa: ARG001  # 兼容保留参数（当前忽略，P3-3）
 ) -> None:
     """将消息列表渲染到终端（非 ChatUI 上下文兜底直写实现）。
 
@@ -143,13 +146,14 @@ def display_messages(
         if not content.strip():
             continue
         # 截断过长的消息用于显示（_truncate 内部已去除 \n/\r）
-        preview = _truncate(content, 120)
+        preview = _truncate(content, _DISPLAY_PREVIEW_MAX_LEN)
         try:
             sys.__stdout__.write(f"  {icon} [{role}] {preview}\n")
         except (OSError, ValueError, AttributeError):
-            # ★ BUG-60（review 方向）：兜底直写无 TTY/管道关闭时抛异常——
-            #   静默跳过（非关键路径，不中断消息展示循环）。
-            return
+            # ★ BUG-60（review 方向）+ P2-4：兜底直写无 TTY/管道关闭时抛
+            #   异常——**跳过当前消息**（continue），修复前 ``return`` 中断
+            #   整个循环与注释「不中断消息展示循环」矛盾。
+            continue
     try:
         sys.__stdout__.flush()
     except (OSError, ValueError, AttributeError):

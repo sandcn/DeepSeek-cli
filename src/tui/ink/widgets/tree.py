@@ -27,7 +27,7 @@ import logging
 
 from src.tui.core.style import Style
 from ..element import TEXT, Element, h
-from ..hooks import use_state, use_input, use_ref
+from ..hooks import use_state, use_input, use_effect, use_ref
 from ..widgets.layout import Column
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_clamp_index 原本地定义——收敛
 #   至 _widget_common 单一真源。
@@ -52,8 +52,13 @@ _TREE_HIGHLIGHT = Style(fg=6)
 #: 叶子节点选中样式（可选，默认 None——不区分）
 _TREE_LEAF_STYLE = None
 
+#: 递归深度上限（P3-22 防御）：超过则停止展开 children（截断深层，避免
+#: Python 默认递归深度 ~1000 触发 RecursionError）。200 层对正常树结构远
+#: 超裕量；文档化：深度 > 200 的树子级将被截断。
+_TREE_MAX_DEPTH = 200
 
-def _normalize_tree(items) -> list[dict]:
+
+def _normalize_tree(items, depth: int = 0) -> list[dict]:
     """将 data 规范化为 ``{"label", "children", "open"}`` 节点列表。
 
     支持三种形态：
@@ -67,13 +72,17 @@ def _normalize_tree(items) -> list[dict]:
     ★ 2026-08-06：可迭代守卫排除 str/bytes——str 是 Iterable（逐字符），
       但作为 data 会被逐字符拆成叶子节点（意外语义），与 _table/listview
       的守卫写法对齐。
+    ★ P3（review 2026-08-06）：递归深度守卫——``depth > _TREE_MAX_DEPTH``
+      时停止展开 children（截断深层，避免 RecursionError）。
     """
     if not hasattr(items, "__iter__") or isinstance(items, (str, bytes)):
+        return []
+    if depth > _TREE_MAX_DEPTH:
         return []
     out: list[dict] = []
     for item in items or []:
         if isinstance(item, dict):
-            children = _normalize_tree(item.get("children", []))
+            children = _normalize_tree(item.get("children", []), depth + 1)
             out.append({
                 "label": str(item.get("label", "")),
                 "children": children,
@@ -94,9 +103,14 @@ def _collect_visible(
 
     ``open_set``：展开节点集合（存储节点 id——label 可能重复；不可哈希
     兜底用稳定字符串键）。折叠（不在 open_set）→ 子级不收集。
+
+    ★ P3（review）：递归深度守卫——``depth > _TREE_MAX_DEPTH`` 时停止递归
+    并返回已收集列表（避免 RecursionError）。
     """
     if out is None:
         out = []
+    if depth > _TREE_MAX_DEPTH:
+        return out
     for node in nodes:
         out.append((node, depth))
         # ★ P1（review）：可见性判定仅依据 open_set——修复前 ``node["open"] or
@@ -115,6 +129,16 @@ def _node_key(node: dict) -> str:
 
     展开集合仅需区分「是否展开」——同 label 兄弟同时展开/折叠语义一致，
     无需严格唯一。不可变 str 保证可哈希。
+
+    ★ P3（review 2026-08-06）：**已知权衡保留**——同 label 兄弟的展开状态
+    互相影响（展开一个同 label 节点会同步展开另一个）。替代方案评估：
+      - ``id(node)`` 作 key：``_normalize_tree`` 每次渲染重建 node dict，
+        id 不稳定 → open_set 恒匹配失败（永远折叠），不可行；
+      - 路径 key（如 ``"0/1/2"``）：可区分同 label 兄弟，但 data 增删节点
+        后路径漂移、旧 open_set 失效——需与 P3-20（data 身份变化重置）配合
+        且改动面大（``_collect_visible``/``_collect_initial`` 均需传路径）。
+    权衡收益低（同 label 兄弟同时展开语义影响小）、成本高，保留现状并注释
+    说明；如需严格区分建议后续改为路径 key + data 重置。
     """
     return f"n:{node['label']}"
 
@@ -157,15 +181,31 @@ def Tree(props: dict) -> Element:
     # 展开集合：初始收集 data 中显式 ``open=True`` 的节点
     initial_open = set()
 
-    def _collect_initial(nodes: list[dict]):
+    def _collect_initial(nodes: list[dict], depth: int = 0):
+        if depth > _TREE_MAX_DEPTH:
+            return
         for node in nodes:
             if node["open"]:
                 initial_open.add(_node_key(node))
-            _collect_initial(node["children"])
+            _collect_initial(node["children"], depth + 1)
 
     _collect_initial(items)
     open_set, set_open_set = use_state(initial_open)
     cursor, set_cursor = use_state(initial_index)
+    # ★ P3（review 2026-08-06）：open_set 不随 data 变化更新——``use_state``
+    #   仅初始化一次，data 变化后新节点默认折叠（旧节点展开状态也可能与
+    #   新 data 不匹配）。对 data **身份变化**增加 ``use_effect`` 重置：data
+    #   引用变化（调用方传入新 list 对象）→ 重新播种 open_set（收集新 data
+    #   的 ``open=True`` 节点）。deps 用 data 原始引用（身份比较）：
+    #   - 调用方保持 data 引用稳定（如 use_memo 缓存）→ 展开状态跨渲染保持；
+    #   - data 每次新引用 → 展开状态重置（data 变化语义）。
+    #   effect 内比较 open_set 与 initial_open 相同则不 set（避免挂载时无谓
+    #   重渲染）。
+    def _reset_open_on_data_change():
+        if open_set != initial_open:
+            set_open_set(initial_open)
+
+    use_effect(_reset_open_on_data_change, (props.get("data", []),))
     # ★ ref 镜像（同批连续按键修复）：handler 读 ref 而非闭包 state。
     open_ref = use_ref(open_set)
     cursor_ref = use_ref(cursor)

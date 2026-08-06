@@ -58,12 +58,23 @@ class ChatUIErrorHandler(logging.Handler):
             try:
                 consumer = get_active_chat_ui()
                 if consumer is not None:
-                    consumer.on_error(msg)
-                    # ★ review 修复：仅 consumer 非 None **且投递成功**时标记——
-                    #  consumer 为 None（或 on_error 抛异常）时不标记：错误既
-                    #  不透传也不标记，留待后续 emit 重放（修复前无条件标记，
-                    #  consumer 为 None 时错误被永久吞掉）。
-                    record._chatui_reported = True
+                    try:
+                        consumer.on_error(msg)
+                    except Exception:
+                        # ★ P2-2：on_error 异常不再传播至 logging.handleError
+                        #   （会打印 "Logging error" 到 stderr 污染终端）——
+                        #   捕获记录 warning，不重放。
+                        _logger.warning(
+                            "ChatUIErrorHandler 投递错误上屏失败 (name=%s): %s",
+                            record.name, msg, exc_info=True,
+                        )
+                # ★ P2-2 语义修订：无论投递成功/失败（consumer 为 None 或
+                #   on_error 抛异常）均标记 ``_chatui_reported``——修复前注释
+                #   声称「留待后续 emit 重放」实际**不会重放**（emit 仅在新
+                #   日志记录触发时被调用，旧 record 不会再次进入本 handler）；
+                #   统一为「不重放，仅记录」：同一错误最多尝试投递一次，
+                #   避免后续相关日志每次重复尝试。
+                record._chatui_reported = True
             finally:
                 _handler_reentrant.is_active = False
 

@@ -89,6 +89,13 @@ def useStdin() -> dict:
     def _noop(*args, **kwargs):
         return None
 
+    # ★ P3-5（review 方向，文档化行为）：本函数每帧渲染新建 ``_noop`` 闭包
+    #   与返回 dict——**返回对象身份每帧变化**。React Ink 语义中 useStdin
+    #   返回值应在渲染间稳定（memo 依赖消费）——本实现为惰性读取（stdin 在
+    #   set_input 后才注入），每帧重建返回 dict 使 ``use_memo(deps=[stdin])``
+    #   等依赖身份比较的消费方每帧 miss（重算）；这是文档化行为（惰性读取
+    #   优先于身份稳定），消费方须按字段值而非对象身份使用。
+
     stdin = _hooks_module._stdin_accessor() if _hooks_module._stdin_accessor is not None else None
     return {
         "stdin": stdin,
@@ -110,6 +117,10 @@ def useStdout() -> dict:
     def _noop(*args, **kwargs):
         return None
 
+    # ★ P3-5（review 方向，文档化行为）：同上——本函数每帧新建 ``_noop``
+    #   闭包与返回 dict，**返回对象身份每帧变化**（惰性读取 stdout 最新流
+    #   对象）；memo 消费方按身份比较依赖会每帧 miss，须按字段值使用。
+
     stdout = _hooks_module._stdout_accessor() if _hooks_module._stdout_accessor is not None else None
     write = getattr(stdout, "write", _noop)
     return {"stdout": stdout, "write": write}
@@ -125,6 +136,10 @@ def useStderr() -> dict:
 
     def _noop(*args, **kwargs):
         return None
+
+    # ★ P3-5（review 方向，文档化行为）：同上——本函数每帧新建 ``_noop``
+    #   闭包与返回 dict，**返回对象身份每帧变化**（惰性读取 stderr 最新流
+    #   对象）；memo 消费方按身份比较依赖会每帧 miss，须按字段值使用。
 
     stderr = _hooks_module._stderr_accessor() if _hooks_module._stderr_accessor is not None else None
     write = getattr(stderr, "write", _noop)
@@ -302,7 +317,9 @@ def _refresh_window_size() -> None:
         try:
             _hooks_module._window_size = _hooks_module._window_size_accessor()
         except Exception:
-            pass
+            # ★ P3-4（review 方向）：不静默吞异常——记 debug 日志（窗口尺寸
+            #   访问器异常为环境级降级，不中断渲染，但须可观测）。
+            _logger.debug("窗口尺寸访问器异常，回退旧尺寸", exc_info=True)
 
 
 def _subscribe_window_size(listener: Callable[[], None]) -> Callable[[], None]:
@@ -318,7 +335,9 @@ def _notify_window_size() -> None:
         try:
             fn()
         except Exception:
-            pass
+            # ★ P3-4（review 方向）：不静默吞异常——记 debug 日志（单订阅
+            #   回调异常不阻断其余订阅通知，但须可观测）。
+            _logger.debug("窗口尺寸订阅回调异常", exc_info=True)
 
 
 def useWindowSize() -> dict:
@@ -362,7 +381,9 @@ def useCursor() -> dict:
             try:
                 _hooks_module._cursor_position_fn(position)
             except Exception:
-                pass
+                # ★ P3-4（review 方向）：不静默吞异常——记 debug 日志（光标
+                #   定位回调异常为环境级降级，不中断渲染，但须可观测）。
+                _logger.debug("光标定位回调异常", exc_info=True)
 
     return {"setCursorPosition": _set_cursor_position}
 
