@@ -19,7 +19,8 @@ class TestEventDispatcher:
         from src.tui._dispatcher import EventDispatcher
         dispatcher = EventDispatcher(MagicMock())
         handlers = dispatcher.list_handlers()
-        assert len(handlers) == 15
+        # 15 内置 + ToolBatchStartedEvent/ToolGroupPlannedEvent（Phase B 分组）
+        assert len(handlers) == 17
 
     def test_on_reasoning_chunk(self):
         """main label 的 reasoning chunk → push ReasoningCmd（加固：非仅不抛异常）。"""
@@ -254,7 +255,7 @@ class TestEventDispatcher:
         h1 = dispatcher.list_handlers()
         h2 = dispatcher.list_handlers()
         assert h1 is h2, "list_handlers() 应返回同一缓存对象"
-        assert len(h1) == 15
+        assert len(h1) == 17
 
         custom = MagicMock()
         dispatcher.register_handler(SessionStarted, custom)
@@ -262,7 +263,7 @@ class TestEventDispatcher:
         assert h3 is not h2, "register_handler 后应重新构建缓存"
         assert SessionStarted in h3
         assert h3[SessionStarted] is custom
-        assert len(h3) == 16
+        assert len(h3) == 18
 
     def test_register_group_regression(self):
         """register_group 注册声明式订阅组并合并进 list_handlers。"""
@@ -279,7 +280,7 @@ class TestEventDispatcher:
         handlers = dispatcher.list_handlers()
         assert SessionStarted in handlers
         assert handlers[SessionStarted] is group_handler
-        assert len(handlers) == 16
+        assert len(handlers) == 18
 
     def test_on_model_phase_thinking(self):
         from src.tui._dispatcher import EventDispatcher

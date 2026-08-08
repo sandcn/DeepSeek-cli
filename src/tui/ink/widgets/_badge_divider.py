@@ -167,9 +167,12 @@ def Divider(props: dict) -> Element:
         title = _truncate_to_width(title, max(0, width - 2))
         title_w = wcswidth_simple(title)
         avail = width - title_w - 2
-        if avail <= 0:
+        if avail < 0:
             # 截断后仍放不下（width <= 2）：仅标题（已截断到 width，不超宽）
             return h(TEXT, {"children": title, "style": title_style})
+        # ★ 修复：avail == 0 时（截断后标题恰好等于 width-2）也走正常两侧线
+        #   布局（左 0 右 0 → " " + title + " "），总宽对齐到 width——修复前
+        #   ``avail <= 0`` 提前返回裸标题（宽度 title_w < width，未利用宽度）。
     left_w = avail // 2
     right_w = avail - left_w
     # ★ 阶段2（标准布局容器重构）：row BOX → Row（语义化门面，输出等价）。

@@ -19,6 +19,10 @@ __all__ = [
     "_BASH_OUTPUT_TAIL_LINES",
     "_TOOL_HEAD_TOOLS",
     "_TOOL_HEAD_LINES",
+    "_GROUPABLE_TOOLS",
+    "_COLLAPSIBLE_GROUP_TOOLS",
+    "_TASK_GROUPABLE_TOOLS",
+    "_write_bash_output_file",
     "_single_line_detail",
     "_user_marker_styled_lines",
     "_role_header_runs",
@@ -30,13 +34,70 @@ __all__ = [
 _TOOL_INCREMENTAL_THRESHOLD = 64
 
 #: bash/execute_command 工具输出尾显示行数——超过该行数时只保留最后 N 行
-#: （对齐终端 ``tail`` 语义；bash 输出常为冗长命令回显/构建日志，防卡片撑爆）。
-_BASH_OUTPUT_TAIL_LINES = 3
+#: （对齐 Claude Code ``getRecent(5)``；bash 输出常为冗长命令回显/构建日志，
+#: 只保留最近 5 行，更早输出在关闭时落盘供完整查看）。
+_BASH_OUTPUT_TAIL_LINES = 5
 
-#: 头显示工具集合——find/search/ls/read_file 输出超过阈值行数时只保留前 N 行
-#: （对齐终端 ``head`` 语义；目录列表/文件预览等有序输出看开头即可，防卡片撑爆）。
-_TOOL_HEAD_TOOLS = ("find", "search", "ls", "read_file")
-_TOOL_HEAD_LINES = 3
+#: 头显示工具集合——find/search/ls 输出超过阈值行数时只保留前 N 行
+#: （对齐终端 ``head`` 语义；目录列表等有序输出看开头即可，防卡片撑爆）。
+#: ★ read_file 已移出头修（2026-08-08 对齐 Claude Code）：文件内容即卡片
+#:   意义，且分组/折叠摘要依赖成员 detail（路径），超长由增量提交阈值
+#:   （_TOOL_INCREMENTAL_THRESHOLD=64）兜底帧成本。
+_TOOL_HEAD_TOOLS = ("find", "search", "ls")
+_TOOL_HEAD_LINES = 20
+
+#: 可分组工具集合（分组工具卡，对齐 Claude Code grouped tool use）——
+#: 同一 assistant 消息内 ≥2 个**连续同类**分组工具合并为一张卡
+#: （Task → ``● N agents finished`` + ``@name`` 行）；单次调用（长度 1）
+#: 不分组，仍走单卡。bash/write/edit 不分组（对齐 CC）。详情见
+#: ``_tool_output_mixin.open_tool_group``。
+_GROUPABLE_TOOLS = frozenset({"read_file", "grep", "find", "glob", "search"})
+
+#: 折叠摘要工具集合——分组卡折叠为摘要卡（对齐 CC ``collapsed_read_search``：
+#: count + 末成员 detail 提示行），不渲染成员全文输出。展开/收起经 Ctrl+X
+#: 交互切换（``toggle_group_collapsed``）。
+_COLLAPSIBLE_GROUP_TOOLS = frozenset({"read_file", "grep", "find", "glob", "search"})
+
+#: Task（dispatch_agent）分组工具集合——对齐 CC ``renderGroupedToolUse``：
+#: 同一 assistant 消息内 ≥2 个**连续** dispatch_agent 合并为一张卡
+#: （``● N agents finished`` + ``@description`` 行，展开态不折叠）。Task
+#: 卡与 SubAgent 面板卡并存（面板为运行中活动树图，Task 卡为完成摘要）。
+_TASK_GROUPABLE_TOOLS = frozenset({"dispatch_agent"})
+
+
+def _write_bash_output_file(text: str) -> str:
+    """将 bash 大输出全文写入临时文件（原子写），返回落盘路径。
+
+    对齐 Claude Code：超大 bash 输出落盘（``Full output saved to: <path>``），
+    卡片只保留最近 N 行 + 截断提示，完整输出可查盘。目录尊重
+    ``DEEPSEEK_TUI_TMPDIR`` 环境变量（测试注入 tmp_path 断言清理）；
+    缺省 ``tempfile.gettempdir()``。``mkstemp`` 返回 (fd, path)，经
+    ``os.fdopen`` 写全文 + ``flush`` 原子关闭（避免部分写）；写失败清理
+    半成品文件并 re-raise（调用方 ``close_tool_box`` 捕获回退省略提示）。
+
+    Returns:
+        落盘文件绝对路径。
+    """
+    import os
+    import tempfile
+    tmpdir = os.environ.get("DEEPSEEK_TUI_TMPDIR") or tempfile.gettempdir()
+    try:
+        os.makedirs(tmpdir, exist_ok=True)
+    except OSError:
+        tmpdir = tempfile.gettempdir()
+    fd, path = tempfile.mkstemp(prefix="deepseek-bash-", dir=tmpdir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+    return path
 
 
 def _single_line_detail(detail: str) -> str:

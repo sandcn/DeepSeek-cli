@@ -13,6 +13,7 @@ from src.tui._const import (
     RenderCmd,
     ReasoningCmd, ContentCmd, PhaseDoneCmd,
     ToolOutputCmd, ToolSummaryCmd, ToolOpenCmd, ToolCloseCmd,
+    ToolGroupOpenCmd,
     ParseInfoCmd,
     WriteLineCmd,
     ToolCountIncCmd, ToolFailIncCmd, ErrorCmd, ToolCountDecCmd,
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
         ToolParsingEvent,
         ToolStartedEvent,
         ToolSummaryEvent,
+        ToolGroupPlannedEvent,
         SubagentPromptEvent,
         AgentResultEvent,
     )
@@ -99,6 +101,11 @@ class EventDispatcher:
         #   状态栏显示（允许瞬时轻微偏差，最终一致），不加锁可接受（避免
         #   事件分发热路径锁开销）。
         self._bg_bash_counts: dict[str, int] = {}
+        # 分组成员 id 集合（Phase B）：当前批次内被分组计划登记的成员——其
+        # ``ToolStartedEvent`` 抑制单卡 ``ToolOpenCmd``（群组卡已打开）。
+        # ``_on_tool_batch_start``（每批开始）清空重置；``_on_tool_group_planned``
+        # 逐个登记。GIL 下 set 单操作原子（事件分发单线程执行）。
+        self._group_member_ids: set[str] = set()
 
     @staticmethod
     def _default_filter_fn(source: str | None) -> bool:
@@ -165,6 +172,8 @@ class EventDispatcher:
             _ET.ToolStartedEvent: self._on_tool_started,
             _ET.ToolDoneEvent: self._on_tool_done,
             _ET.ToolOutputChunkEvent: self._on_tool_output,
+            _ET.ToolBatchStartedEvent: self._on_tool_batch_start,
+            _ET.ToolGroupPlannedEvent: self._on_tool_group_planned,
             _ET.ParseInfoEvent: self._on_parse_info,
             _ET.ParseInfoDoneEvent: self._on_parse_info_done,
             _ET.OutputEvent: self._on_output,
@@ -210,6 +219,33 @@ class EventDispatcher:
     def _is_subagent_label(label: str) -> bool:
         return bool(label and label.startswith("agent-"))
 
+    def _on_tool_batch_start(self, event) -> None:
+        """批量工具开始：重置分组成员 id 集合（分组计划按批发布）。
+
+        ``_tool_callbacks.handle_tool_calls`` 在 schedule 前调用
+        ``display.tool_batch_start``（现端口方法首次启用）——每批开始清空
+        ``_group_member_ids``，随后 ``_on_tool_group_planned`` 逐个登记。
+        """
+        if not self._is_agent_source(event.source):
+            return
+        self._group_member_ids.clear()
+
+    def _on_tool_group_planned(self, event: "ToolGroupPlannedEvent") -> None:
+        """分组工具卡计划：登记成员 id + 推送 ToolGroupOpenCmd。
+
+        消费 ``handle_tool_calls`` 发布的分组计划（唯一有序源）——记录成员
+        id（抑制成员单卡 ``ToolOpenCmd``）并打开群组卡。
+        """
+        if not self._is_agent_source(event.source):
+            return
+        members = tuple((m[0] or "", m[1] or "") for m in event.members)
+        for mid, _detail in members:
+            if mid:
+                self._group_member_ids.add(mid)
+        self._push_cmd(ToolGroupOpenCmd(
+            tool_name=event.tool_name, members=members,
+        ))
+
     def _on_tool_started(self, event: "ToolStartedEvent") -> None:
         if not self._is_agent_source(event.source) and not self._is_subagent_label(event.label):
             return
@@ -219,19 +255,25 @@ class EventDispatcher:
         #   子代理出现两个卡片（Task 工具卡 + 子代理面板卡）」冗余。
         if event.source == "agent" and event.tool_name != "dispatch_agent":
             tool_id = event.tool_id or event.label
-            self._push_cmd(ToolOpenCmd(
-                tool_name=event.tool_name, tool_id=tool_id, detail=event.detail,
-            ))
+            # ★ Phase B：分组成员抑制单卡 ToolOpenCmd（群组卡已打开；成员
+            #   仅推进计数），避免「群组卡 + 成员单卡」双渲染。
+            if tool_id not in self._group_member_ids:
+                self._push_cmd(ToolOpenCmd(
+                    tool_name=event.tool_name, tool_id=tool_id, detail=event.detail,
+                ))
         self._push_cmd(ToolCountIncCmd())
 
     def _on_tool_done(self, event: "ToolDoneEvent") -> None:
         if not self._is_agent_source(event.source) and not self._is_subagent_label(event.label):
             return
-        # ★ 调用 subagent（dispatch_agent）未开工具卡 → 无需 ToolCloseCmd
-        #   （ParallelExecutor 批量结束会经 parent_display.tool_done 补发 done）
-        if event.source == "agent" and event.tool_name != "dispatch_agent":
+        # ★ 调用 subagent（dispatch_agent）未开**单卡** → 非分组 Task 无需
+        #   ToolCloseCmd（ParallelExecutor 批量结束会经 parent_display.tool_done
+        #   补发 done）；但 **Task 分组卡成员**（Phase B 后续工作）须推送
+        #   ToolCloseCmd 路由到群组成员 close（聚合群组状态/最终化）。
+        if event.source == "agent":
             tool_id = event.tool_id or event.label
-            self._push_cmd(ToolCloseCmd(tool_id=tool_id, success=event.success))
+            if event.tool_name != "dispatch_agent" or tool_id in self._group_member_ids:
+                self._push_cmd(ToolCloseCmd(tool_id=tool_id, success=event.success))
         if not event.success:
             self._push_cmd(ToolFailIncCmd())
             self._push_cmd(ToolCountDecCmd())

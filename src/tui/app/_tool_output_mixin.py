@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 
 # ★ 状态常量/辅助来自 model 门面（re-export 自 _state_types/_model_helpers）——
@@ -24,6 +25,9 @@ from src.tui.app._model_helpers import (
     _BASH_OUTPUT_TAIL_LINES,
     _TOOL_HEAD_TOOLS,
     _TOOL_HEAD_LINES,
+    _GROUPABLE_TOOLS,
+    _COLLAPSIBLE_GROUP_TOOLS,
+    _write_bash_output_file,
     _single_line_detail,
 )
 # ★ ToolCard React Ink 组件化：工具卡行生成/状态图标收敛到 app/toolcard.py
@@ -38,6 +42,21 @@ _logger = logging.getLogger("src.tui.app.model")
 #: 工具输出行前缀样式（append_tool_output 每段输出共用；模块级单例复用——
 #   修复前每段新建 ``Style(fg=242)``，长工具输出数万行时无谓分配）
 _S_TOOL_OUT = Style(fg=242)
+
+
+def _bash_line_text(line) -> str:
+    """工具输出行内容文本（剥离渲染前缀 ``  ``，还原原始输出）。
+
+    ``append_tool_output`` 每输出行经 ``AnsiLine.of("  ", _S_TOOL_OUT)``
+    前置 2 空格渲染前缀——``line.plain`` 含该前缀（如 ``"  line0"``）。
+    文件级截断落盘（``_bash_dropped_text``/tail 拼接）需**原始输出**文本，
+    统一剥离前缀还原（前缀恒为 2 空格，确定性）。防御：非 ``  `` 开头
+    原样返回。
+    """
+    plain = getattr(line, "plain", "")
+    if plain.startswith("  "):
+        return plain[2:]
+    return plain
 
 
 class _ToolOutputMixin:
@@ -68,6 +87,21 @@ class _ToolOutputMixin:
         if tool_id:
             existing = self.tool_boxes.get(tool_id)
             if existing is not None:
+                if existing.extra.get("_group"):
+                    # ── 群组成员 open（Phase B）：不覆盖群组标题/状态 ──
+                    # 群组卡已由 open_tool_group 建立；成员 ToolStartedEvent
+                    # 的单个 ToolOpenCmd 被 Dispatcher 抑制，此处仅防御
+                    # （append_tool_output 兜底等路径）。更新该成员 detail
+                    # + active_tool 后复用群组块返回。
+                    for member in existing.extra.get("_members", []):
+                        if member["tool_id"] == tool_id:
+                            member["detail"] = detail
+                            break
+                    self.active_tool = {
+                        "name": display, "detail": detail, "status": "running",
+                        "tool_name": tool_name or "",
+                    }
+                    return existing
                 # 复用已开放 box：更新工具名/状态/detail + 标题行
                 # （live 渲染下一帧生效；开放 box 未提交，更新安全）
                 existing.extra["tool_name"] = tool_name
@@ -137,6 +171,61 @@ class _ToolOutputMixin:
         }
         return block
 
+    def open_tool_group(self, tool_name: str, members) -> ChatBlock:
+        """打开一个分组工具卡（同一 assistant 消息内 ≥2 个连续同类分组工具）。
+
+        Phase B（对齐 Claude Code grouped tool use）：多个同类分组工具
+        （``_GROUPABLE_TOOLS``）合并为**一张卡**——群组 = 单个
+        ``ChatBlock(kind="tool")``，extra 记录：
+          ``_group=True`` / ``_group_tool=<raw name>`` / ``_collapsed``（Phase C，
+          可折叠工具为 True）/ ``_members=[{tool_id, detail, status}, ...]``。
+        ``block.lines`` 仅 1 行标题占位（保持模型不变式
+        ``block.lines[0].plain.startswith("  · ")``）。成员 id 注册进现有
+        ``tool_boxes`` dict → 群组块，使 ``append_tool_output``（输出丢弃）/
+        ``close_tool_box``（成员关闭路由）对群组路由不变。
+
+        Args:
+            tool_name: 工具名（raw，如 ``read_file``）。
+            members: 成员可迭代——dict（``{"tool_id"/"id", "detail"}``）或
+                ``(tool_id, detail)`` 二元组。
+        """
+        from src.tui.core.style import Style
+        from src.renderer.ansi.helpers import AnsiLine
+        from src.tools.registry import get_tool_display_name
+        display = get_tool_display_name(tool_name) or tool_name or "工具"
+        block = self.append_block("tool")
+        block.extra["_group"] = True
+        block.extra["_group_tool"] = tool_name
+        block.extra["_collapsed"] = tool_name in _COLLAPSIBLE_GROUP_TOOLS
+        block.extra["tool_status"] = "running"
+        block.extra["_tool_started_at"] = time.monotonic()
+        normalized: list[dict] = []
+        for member in members:
+            if isinstance(member, dict):
+                mid = member.get("tool_id") or member.get("id") or ""
+                detail = member.get("detail", "") or ""
+            elif isinstance(member, (tuple, list)) and len(member) >= 1:
+                mid = member[0] or ""
+                detail = member[1] if len(member) >= 2 else ""
+            else:
+                mid = str(member or "")
+                detail = ""
+            normalized.append({
+                "tool_id": mid,
+                "detail": _single_line_detail(detail),
+                "status": "running",
+            })
+            if mid:
+                self.tool_boxes[mid] = block
+        block.extra["_members"] = normalized
+        block.lines.append(AnsiLine.of(f"  \u00b7 {display}", Style(fg=23, bold=True)))
+        self._tool_groups[id(block)] = block
+        self.active_tool = {
+            "name": display, "detail": "", "status": "running",
+            "tool_name": tool_name or "",
+        }
+        return block
+
     def append_tool_output(self, tool_id: str, text: str) -> None:
         """追加工具输出行到对应分组（卡片主体行）。
 
@@ -167,6 +256,15 @@ class _ToolOutputMixin:
                 )
                 return
             block = self.open_tool_box(tool_id, "")
+        # ── 群组成员输出丢弃（Phase B）：群组卡为**摘要卡**，不渲染成员
+        # 全文输出（全文仍作为 tool result 进入对话，模型正确性不受影响；
+        # 同时规避分组卡内无界正文的增量提交/修剪复杂度）。
+        if block.extra.get("_group"):
+            _logger.debug(
+                "append_tool_output: 群组成员 %r 输出丢弃（摘要卡）: %.80s",
+                tool_id, text,
+            )
+            return
         for seg in text.split("\n"):
             l = AnsiLine.of("  ", _S_TOOL_OUT)
             # ★ 工具输出可能含 Rich/pygments 高亮 ANSI 序列（read_file 等）。
@@ -245,6 +343,17 @@ class _ToolOutputMixin:
         block.extra["_bash_omitted_lines"] = (
             block.extra.get("_bash_omitted_lines", 0) + del_count
         )
+        # ★ 文件级截断（对齐 CC）：被删行**纯文本**累积进
+        #   ``extra["_bash_dropped_text"]``——close_tool_box 落盘时与保留尾
+        #   拼接还原完整输出（dropped 恒为前缀、tail 为后缀，按行顺序连续）。
+        #   仅发生 trim 时累积（无省略则无落盘需求）；空行 plain="" 以
+        #   "\n" 参与 join 还原原始换行结构。
+        dropped_text = "\n".join(_bash_line_text(ln) for ln in removed)
+        if dropped_text:
+            prev = block.extra.get("_bash_dropped_text", "")
+            block.extra["_bash_dropped_text"] = (
+                prev + ("\n" if prev else "") + dropped_text
+            )
 
     def _trim_tool_output_head(self, block, keep: int) -> None:
         """工具块输出修剪为前 keep 行（保留标题行 block.lines[0]）。
@@ -303,6 +412,13 @@ class _ToolOutputMixin:
         """
         from src.tui.core.style import Style
         from src.renderer.ansi.helpers import AnsiLine
+        # ── 群组成员 close（Phase B）：路由到 _close_group_member ──
+        # 成员 id 注册在 tool_boxes → 群组块；关闭只更新成员状态并聚合群组
+        # 状态，不 pop 群组块本身（全部成员关闭后才 _finalize_group）。
+        block = self.tool_boxes.get(tool_id)
+        if block is not None and block.extra.get("_group"):
+            self._close_group_member(block, tool_id, success)
+            return
         block = self.tool_boxes.pop(tool_id, None)
         if block is None and not tool_id:
             # ★ P2-4（多空 tool_call_id 逆序弹栈）：空 id 匿名 box 按**打开
@@ -331,6 +447,30 @@ class _ToolOutputMixin:
         block.extra["_status_line_index"] = len(block.lines)
         block.lines.append(AnsiLine.of(f"  {status}", Style(fg=41 if success else 196)))
         block.extra["tool_status"] = "done" if success else "fail"
+        # ★ 文件级截断（对齐 CC，2026-08-08）：bash 输出超过 tail 行数被修剪
+        #   （``_bash_omitted_lines>0``）时，关闭一次性将完整输出（被删前缀 +
+        #   保留尾）落盘，卡片渲染 ``Output truncated (XKB total). Full output
+        #   saved to: <path>`` 替代省略行。写失败回退省略提示（异常安全、
+        #   幂等——`_bash_truncation_file` 仅成功路径写入）。在渲染线程执行，
+        #   单次小文件写（< MB 级），可接受。
+        if block.extra.get("_bash_omitted_lines", 0) > 0 and not block.extra.get("_bash_truncation_file"):
+            dropped = block.extra.get("_bash_dropped_text", "")
+            tail = "\n".join(_bash_line_text(ln) for ln in block.lines[1:-1])
+            if dropped and tail:
+                full = dropped + "\n" + tail
+            else:
+                full = dropped + tail
+            try:
+                path = _write_bash_output_file(full)
+                block.extra["_bash_truncation_file"] = path
+                block.extra["_bash_truncation_bytes"] = len(full.encode("utf-8"))
+            except Exception:
+                # 落盘失败：保留省略提示（渲染回退「… 前 N 行省略」）
+                _logger.debug(
+                    "bash 大输出落盘失败，回退省略提示（%d 行）",
+                    block.extra.get("_bash_omitted_lines", 0),
+                    exc_info=True,
+                )
         # Claude TUI parity 步骤 2.2：关闭后无进行中工具（ToolStatusHeader 隔离
         # 测试仍消费 active_tool；app 组件树已移除该组件）
         self.active_tool = None
@@ -387,6 +527,96 @@ class _ToolOutputMixin:
         block._tool_card_frame_cache = None
         block._tool_card_body_lines_cache = None
 
+    def _close_group_member(self, block, tool_id: str, success: bool) -> None:
+        """关闭群组单个成员：置成员状态 + 聚合群组状态 + 原位翻转标题图标。
+
+        群组块由成员 id 路由（``close_tool_box`` 已判 ``_group``）；本方法：
+          - 置成员 status（done/fail）；
+          - 聚合 ``_tool_status``（任一 running→running / 否则任一 fail→fail
+            / 否则 done）——群组卡标题状态图标数据源（``_tool_icon_runs``
+            经 ``_group_status`` 读取）；
+          - 已增量提交（``_first_committed_offset`` 存在）时经
+            ``_replace_committed_line`` 原位翻转标题图标（BUG-30 安全——
+            新建 Line 对象 + 列表身份变化，防前缀缓存命中返回旧标题）；
+          - 全部成员关闭（无 running）→ ``_finalize_group`` 冻结提交。
+
+        不追加 ``  ✔`` 状态数据行（群组卡摘要，无正文/状态行）。
+        """
+        members = block.extra.get("_members", [])
+        for member in members:
+            if member["tool_id"] == tool_id:
+                member["status"] = "done" if success else "fail"
+                break
+        # 该成员工具 box 不再 active（群组块保留到全部成员关闭）
+        self.tool_boxes.pop(tool_id, None)
+        running = any(m["status"] == "running" for m in members)
+        failed = any(m["status"] == "fail" for m in members)
+        block.extra["_tool_status"] = (
+            "running" if running else ("fail" if failed else "done")
+        )
+        # BUG-30 安全：已提交标题行原位翻转图标（群组块仅在极端时序下
+        # 提前提交，防御路径）
+        offset = block.extra.get("_first_committed_offset")
+        if offset is not None and 0 <= offset < len(self.committed_lines):
+            from src.tui.ink import Line
+            head = tool_card_lines(block, getattr(self, "width", 0), 0, None)
+            if head:
+                self._replace_committed_line(offset, Line(head[0]))
+        if not running:
+            self._finalize_group(block)
+
+    def _finalize_group(self, block) -> None:
+        """最终化群组卡：弹出全部成员、置 closed、冻结并提交。
+
+        全部成员关闭（或 ``flush_tool_groups`` 回合末兜底）后调用一次：
+          - 弹出 tool_boxes 中剩余成员（防御：成员未逐一 close 的异常时序）；
+          - 从 ``_tool_groups`` 移除（防重复 flush）；
+          - 置 closed + 冻结未提交部分 + ``commit_block``（与 close_tool_box
+            一致）；冻结前 ``tool_status`` 同步为聚合 ``_tool_status``
+            （标题图标数据源兼容）；
+          - 释放工具卡缓存（冻结后渲染走 ``_cached_ink_lines``）。
+        幂等：已 closed 群组再次调用直接返回（防 flush + 成员 close 竞态）。
+        """
+        if block.closed:
+            return
+        for member in block.extra.get("_members", []):
+            mid = member["tool_id"]
+            if mid in self.tool_boxes:
+                self.tool_boxes.pop(mid, None)
+        for gid in list(self._tool_groups.keys()):
+            if self._tool_groups[gid] is block:
+                self._tool_groups.pop(gid, None)
+                break
+        block.extra["tool_status"] = block.extra.get("_tool_status", "done")
+        block.closed = True
+        block._cached_ink_lines = self._block_to_ink_lines(
+            block, block.committed_line_count,
+        )
+        block._open_styled_cache = None
+        self.commit_block(len(self.blocks) - 1)
+        block._tool_card_body_cache = None
+        block._tool_card_frame_cache = None
+        block._tool_card_body_lines_cache = None
+        # 群组全部结束 → 无进行中工具（与单卡 close_tool_box 置 None 一致）
+        self.active_tool = None
+
+    def flush_tool_groups(self) -> None:
+        """回合末强制结束未完成的群组（对齐 ``close_empty_tool_boxes``）。
+
+        某群组成员因异常/取消未逐一 close 时，回合末将未关闭成员置 done 后
+        最终化群组——避免群组卡永久 ● running 悬挂。由 ``_on_round_end``
+        （``_session_setup``）调用。
+        """
+        for gid in list(self._tool_groups.keys()):
+            block = self._tool_groups[gid]
+            if block.closed:
+                continue
+            for member in block.extra.get("_members", []):
+                if member["status"] == "running":
+                    member["status"] = "done"
+            block.extra["_tool_status"] = "done"
+            self._finalize_group(block)
+
     def _replace_committed_line(self, offset: int, new_line) -> None:
         """替换 committed_lines[offset] 并令列表身份变化（已提交行原地更新）。
 
@@ -422,6 +652,11 @@ class _ToolOutputMixin:
             block = self.tool_boxes.get(tool_id)
             if block is None or block.closed:
                 continue
+            # ── 群组块跳过（Phase B）：群组卡仅 1 行标题占位，若按「空 box」
+            # 判定会被误判为空卡自动闭合——成员状态由 close_tool_box/
+            # flush_tool_groups 管理，此处不自动闭合。
+            if block.extra.get("_group"):
+                continue
             # 空 box：只有标题行（lines[0]），无主体输出内容
             if len(block.lines) <= 1:
                 self.close_tool_box(tool_id, True)
@@ -431,6 +666,24 @@ class _ToolOutputMixin:
     def _next_tool_id(self) -> str:
         self._tool_id_seq += 1
         return f"tool-{self._tool_id_seq}"
+
+    def _unlink_truncation_files(self) -> None:
+        """清理全部工具块已落盘的 bash 截断文件（reset_display/回放重渲染复用）。
+
+        ``close_tool_box`` 落盘的 ``deepseek-bash-*`` 临时文件在会话内保留
+        （用户可查看 ``Full output saved to`` 路径）；清屏/回放重渲染
+        （Ctrl+L、/editmsg 等经 reset_display）时旧块被丢弃，临时文件不再
+        被引用——统一 unlink 防 /tmp 累积。幂等：未落盘块（无
+        ``_bash_truncation_file``）零开销。
+        """
+        for block in self.blocks:
+            path = block.extra.get("_bash_truncation_file")
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+                block.extra["_bash_truncation_file"] = ""
 
 
 __all__ = ["_ToolOutputMixin"]

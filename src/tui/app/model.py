@@ -92,6 +92,10 @@ class AppModel(_ToolOutputMixin):
         # 每工具 box 跟踪（tool_id → 开放 box）
         self.tool_boxes: dict = {}
         self._tool_id_seq: int = 0
+        # 分组工具卡跟踪（Phase B，对齐 CC grouped tool use）——开放群组
+        # 块集合（id(block) → ChatBlock）；flush_tool_groups 回合末兜底
+        # 结束未完成群组。
+        self._tool_groups: dict = {}
         # 状态栏
         self.status: StatusState = StatusState()
         # 输入
@@ -364,6 +368,20 @@ class AppModel(_ToolOutputMixin):
         if width <= 0 or width == self.width:
             return
         self.width = width
+        self._rebuild_committed_lines(width)
+
+    def _rebuild_committed_lines(self, width: int) -> None:
+        """按当前块状态重建 committed_lines（reflow/群组折叠切换共用）。
+
+        逐块按已提交行数重新渲染（``_card_lines_committed``，含卡片头/尾空行
+        恰好一次）+ 记录 ``_first_committed_offset`` + 关闭块 trailer 标志 +
+        未提交尾重冻结——产出**新列表对象**使 ChatView use_memo / committed-chat
+        前缀缓存（键含 ``id(lines)``）自动失效。群组展开/收起切换（
+        ``toggle_group_collapsed``）改变已提交块的渲染行数/内容，同样全量重建。
+
+        Args:
+            width: 渲染宽度（``_card_lines_committed`` 按此重 wrap）。
+        """
         committed: list = []
         for block in self.blocks:
             count = block.committed_line_count
@@ -371,15 +389,42 @@ class AppModel(_ToolOutputMixin):
                 continue
             block.extra["_first_committed_offset"] = len(committed)
             committed.extend(self._card_lines_committed(block, width))
-            # 方向3：reflow 重建含尾空行（_card_lines_committed 对 closed 块
-            # 无条件补 trailer）→ 重置 trailer 标志，防后续 commit_block 重复
-            # 追加（已重建的 committed_lines 含 trailer）。
+            # 方向3：重建含尾空行（_card_lines_committed 对 closed 块无条件补
+            # trailer）→ 重置 trailer 标志，防后续 commit_block 重复追加。
             if block.closed:
                 block.extra["_trailer_appended"] = True
             # 关闭块未提交尾（增量提交后仍留尾 / 被夹住）：按新宽度重冻结
             if block._cached_ink_lines is not None and count < len(block.lines):
                 block._cached_ink_lines = self._block_to_ink_lines(block, count)
         self.committed_lines = committed
+
+    def toggle_group_collapsed(self) -> int:
+        """切换全部折叠群组卡的展开/收起状态，返回受影响卡数。
+
+        对齐 Claude Code collapsed_read_search 的展开交互：折叠摘要卡
+        （``Read N files`` + 末成员提示）切换后展开显示全部成员 detail。
+        翻转 ``block.extra["_collapsed"]``（渲染缓存键含 ``_collapsed`` →
+        自动失效，防御性清理）+ 全量重建 committed_lines（已提交块行数/内容
+        变化）。已关闭群组卡在 transcript 中切换；开放群组仅影响 live 渲染。
+
+        Returns:
+            int：受影响（被切换）的群组卡数量。
+        """
+        blocks = [
+            b for b in self.blocks
+            if b.kind == "tool" and b.extra.get("_group")
+        ]
+        if not blocks:
+            return 0
+        for block in blocks:
+            block.extra["_collapsed"] = not block.extra.get("_collapsed", True)
+            # 渲染缓存键含 _collapsed/_member_sig → 翻转后自动 miss；防御性清理
+            block._tool_card_frame_cache = None
+            block._tool_card_body_lines_cache = None
+            block._tool_card_body_cache = None
+        if any(b.committed_line_count > 0 for b in blocks):
+            self._rebuild_committed_lines(getattr(self, "width", 0))
+        return len(blocks)
 
     # ── 推理/内容通道 ───────────────────────────────
 
@@ -500,6 +545,12 @@ class AppModel(_ToolOutputMixin):
         （用户输入与状态不丢）。调用方须保证非流式（status.status_active=False）
         时调用，避免丢未提交块。
         """
+        # ★ 文件级截断清理：清屏/回放重渲染前先 unlink 已落盘的 bash 截断
+        #   临时文件（旧块被丢弃后文件不再被引用，防 /tmp 累积）。
+        try:
+            self._unlink_truncation_files()
+        except Exception:
+            _logger.debug("reset_display: 清理 bash 截断文件异常", exc_info=True)
         self.blocks = []
         self.committed_lines = []
         self.committed_count = 0
@@ -513,6 +564,7 @@ class AppModel(_ToolOutputMixin):
         self.tool_block_index = -1
         self.tool_boxes = {}
         self._tool_id_seq = 0
+        self._tool_groups = {}
         self.parse_line = None
         self.subagent_lines = []
         self.active_tool = None

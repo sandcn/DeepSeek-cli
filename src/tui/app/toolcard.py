@@ -46,7 +46,15 @@ from __future__ import annotations
 # 用于模块级样式常量（_GUIDE_STYLE / _CATEGORY_DEFAULT_STYLE）。
 from src.tui.core.style import Style
 
-__all__ = ["ToolCard", "tool_card_lines", "_tool_icon_runs", "_tool_status_index"]
+__all__ = [
+    "ToolCard",
+    "tool_card_lines",
+    "_tool_icon_runs",
+    "_tool_status_index",
+    "_group_status",
+    "_collapsed_title",
+    "_bash_truncation_message",
+]
 
 # ── 工具类别配色（BEAUTY-35，2026-08-06 美化） ─────────────────────
 # 标题工具名按工具类别着色（Claude Code 极简样式后不再有 ▎引导线/emoji
@@ -98,13 +106,25 @@ def _category_breath_fg(tool_name: str) -> int:
     return time_glow(lo, hi, 12.0)
 
 
+def _group_status(block) -> str:
+    """群组卡状态（``extra["_tool_status"]``，聚合自成员状态）。
+
+    群组卡（``_group=True``）的状态由 ``_close_group_member`` 聚合写入
+    ``extra["_tool_status"]``（任一成员 running→running / 否则任一 fail→fail
+    / 否则 done）；开放期未设置时回退 ``tool_status``（running）。非群组块
+    恒走 ``tool_status``（本函数仅群组消费，回退保持单卡语义一致）。
+    """
+    return block.extra.get("_tool_status") or block.extra.get("tool_status", "running")
+
+
 def _tool_icon_runs(block) -> list:
     """工具块标题前置状态图标 runs（渲染装饰）。
 
     不改动 ``block.lines`` 原文（模型层保持原始标题行，测试断言
     ``block.lines[0].plain.startswith("  · ")`` 依赖此不变式）。
     样式取 ``StyleSheet.resolve`` 语义色（success/error/warn），
-    兜底硬编码确保任何加载顺序下都有默认值。
+    兜底硬编码确保任何加载顺序下都有默认值。群组卡读
+    ``_tool_status``（``_group_status``），单卡读 ``tool_status``。
 
     Args:
         block: 工具块（ChatBlock.kind == "tool"）。
@@ -114,7 +134,7 @@ def _tool_icon_runs(block) -> list:
     """
     from src.tui.ink import StyledRun
     from src.tui.core.style import Style, StyleSheet
-    status = block.extra.get("tool_status", "running")
+    status = _group_status(block)
     if status == "done":
         return [StyledRun("\u2714 ", StyleSheet.resolve("success", Style(fg=41)))]
     if status == "fail":
@@ -126,6 +146,20 @@ def _tool_icon_runs(block) -> list:
     return [StyledRun("\u25cf ", Style(fg=c))]
 
 
+def _collapsed_suffix(display: str, n: int) -> str:
+    """折叠摘要计数后缀（``Read`` → `` 3 files``；其余 `` 2``）。
+
+    对齐 Claude Code ``collapsed_read_search``：read_file 折叠为 ``Read N
+    files``，grep/find/glob/search 折叠为 ``Grep N`` 等（显示名 + 计数）。
+    """
+    return f" {n} files" if display == "Read" else f" {n}"
+
+
+def _collapsed_title(display: str, n: int) -> str:
+    """折叠摘要标题文本（``Read 3 files`` / ``Grep 2``，供测试断言）。"""
+    return display + _collapsed_suffix(display, n)
+
+
 def _tool_status_index(block):
     """工具卡状态行下标（close 追加的 `  ✔`/`  ✖` 行）；无则返回 None。
 
@@ -135,6 +169,9 @@ def _tool_status_index(block):
     ``_status_line_index`` 由 close_tool_box 记录（歧义安全）；回退按末行
     plain 匹配（覆盖 reflow/旧块等未记录场景）。
     """
+    # 群组卡（_group）无状态数据行（摘要卡无正文），恒返回 None
+    if block.extra.get("_group"):
+        return None
     idx = block.extra.get("_status_line_index")
     if idx is not None:
         return idx
@@ -143,6 +180,28 @@ def _tool_status_index(block):
         if getattr(last, "plain", "").strip() in ("\u2714", "\u2716"):
             return len(block.lines) - 1
     return None
+
+
+def _bash_truncation_message(block) -> str:
+    """CC 截断文案（bash 大输出落盘后替代省略行）。
+
+    对齐 Claude Code：``Output truncated (XKB total). Full output saved to:
+    <path>``——超大输出落盘，卡片只显示截断提示。仅 ``close_tool_box``
+    落盘成功（``extra["_bash_truncation_file"]`` 非空）时返回文案；否则
+    返回空串（渲染回退 ``… 前 N 行省略`` 兜底，保住既有省略行测试）。
+
+    Args:
+        block: 工具块（ChatBlock.kind == "tool"）。
+
+    Returns:
+        str：CC 截断文案；未落盘返回空串。
+    """
+    path = block.extra.get("_bash_truncation_file", "")
+    if not path:
+        return ""
+    # KB 取整对齐 CC ``Math.max(1, Math.round(totalBytes / 1024))``
+    kb_total = max(1, round(block.extra.get("_bash_truncation_bytes", 0) / 1024))
+    return f"Output truncated ({kb_total}KB total). Full output saved to: {path}"
 
 
 def _omitted_line(text: str, width: int) -> list:
@@ -191,17 +250,32 @@ def tool_card_lines(block, width, start=0, stop=None):
     pal = get_active_palette()
     width = width if isinstance(width, int) and width > 0 else 0
     status_idx = _tool_status_index(block)
+    # ★ 群组卡字段（Phase B/C，2026-08-08 对齐 CC grouped tool use）：
+    #   ``_group`` 卡为**摘要卡**（无成员正文），标题 = 状态图标 + 工具名 +
+    #   折叠计数（collapsed）或成员 detail（展开态）。_member_sig 为成员签名
+    #   （tool_id/detail/status 元组）——成员关闭后标题陈旧（缓存防漏）。
+    _group = bool(block.extra.get("_group", False))
+    _collapsed = bool(block.extra.get("_collapsed", False))
+    _group_tool = block.extra.get("_group_tool", "") if _group else ""
+    _members = block.extra.get("_members", []) if _group else []
+    _member_sig = tuple(
+        (m.get("tool_id", ""), m.get("detail", ""), m.get("status", ""))
+        for m in _members
+    )
     # ★ 帧级缓存：开放工具卡动态色（状态图标呼吸 208↔220）为时间基
     #   （time_glow 0.1s 桶）——同一桶内帧复用**完整输出列表对象**，TEXT
     #   组件 ``_wrap_cache`` 按 styled 引用命中 → 主体行零重建。key 覆盖
     #   全部动态因素（行数/状态/宽度/省略计数/呼吸色）；任何变化重建。
-    _status = block.extra.get("tool_status", "running")
+    #   群组卡状态读 ``_tool_status``（聚合），单卡读 ``tool_status``。
+    _status = _group_status(block) if _group else block.extra.get("tool_status", "running")
     if start == 0 and _status == "running" and not block.closed:
         from src.tui.app._theme import time_glow as _time_glow_icon
         _icon_fg = _time_glow_icon(208, 220, 6.0)
         # BEAUTY-35：类别呼吸色（▎/图标/名称 12s 脉动）——与 _icon_fg 同桶
         # 固定（跨桶变化触发重建）；仅运行中且 start==0 时计算，其余 -1。
-        _cat_fg = _category_breath_fg(block.extra.get("tool_name", ""))
+        _cat_fg = _category_breath_fg(
+            _group_tool if _group else block.extra.get("tool_name", ""),
+        )
     else:
         _icon_fg = -1
         _cat_fg = -1
@@ -215,6 +289,8 @@ def tool_card_lines(block, width, start=0, stop=None):
         block.extra.get("tool_detail", ""),
         block.extra.get("_bash_omitted_lines", 0),
         block.extra.get("_head_omitted_lines", 0),
+        block.extra.get("_bash_truncation_file", ""),
+        _group, _collapsed, _group_tool, _member_sig,
         width,
     )
     _frame_cache = getattr(block, "_tool_card_frame_cache", None)
@@ -223,40 +299,73 @@ def tool_card_lines(block, width, start=0, stop=None):
     out: list[list[StyledRun]] = []
     # 标题行（仅 start==0）：状态图标 + 工具名 + 参数（Claude Code 极简）。
     # 状态图标恒为 title_runs[0] → 标题行 runs[0]，供 close_tool_box 原位
-    # 翻转图标（无边框前缀，runs[0] 即状态图标）。
+    # 翻转图标（无边框前缀，runs[0] 即状态图标）。群组卡标题 = 状态图标 +
+    # 工具名（类别色加粗）+ 折叠计数（``Read 3 files``）或展开成员 detail。
     if start == 0:
-        tool_name = block.extra.get("tool_name") or "工具"
-        display = get_tool_display_name(tool_name) or tool_name or "工具"
-        detail = block.extra.get("tool_detail", "")
-        title_runs = list(_tool_icon_runs(block))
-        running = _status == "running" and not block.closed
-        # ★ Claude Code 极简样式（2026-08-06 用户需求）：标题行 = 状态图标 +
-        #   工具名（类别色，加粗）+ 参数（空格分隔，dim）——去掉 ▎ 引导线、
-        #   emoji 工具图标（Claude Code ``Read src/main.py`` 语义）。工具名
-        #   按类别着色——运行中在类别色邻域呼吸（12s 周期，与 detail 呼吸
-        #   同步；同 _cat_fg 值，整体同色脉动），关闭/提交后静态类别色
-        #   （frozen 缓存不再重算，零额外渲染成本）。runs[0] 保持状态图标
-        #   （close_tool_box 原位翻转 + 测试 startswith(●/✔/✖) 不变式）。
-        if running:
-            cat_fg = _cat_fg
-        else:
-            cat_style = _category_style(tool_name)
-            cat_fg = cat_style.fg if cat_style.fg is not None else 242
-        title_runs.append(StyledRun(display, Style(fg=cat_fg, bold=True)))
-        if detail:
-            # ★ BEAUTY-24（体验动效）：工具 detail 运行中呼吸——暗灰 242→252
-            #   脉动（12s 周期，与状态栏 token/速度呼吸同步）。运行中的工具
-            #   detail 更生动；关闭/提交后保持静态 pal.dim（frozen 缓存不再
-            #   重算，零额外渲染成本）。空格分隔（Claude Code ``Bash ls -la``
-            #   语义——非 ``·``）。
+        if _group:
+            # ── 群组卡标题（Phase B/C） ───────────────────────────
+            # 折叠态（collapsed_read_search）：``● Read 3 files``；展开态
+            # 仅工具名（成员 detail 在内容行逐行展示）；Task 分组卡
+            # （dispatch_agent）：``● N agents finished``（CC renderGroupedToolUse）。
+            display = get_tool_display_name(_group_tool) or _group_tool or "工具"
+            title_runs = list(_tool_icon_runs(block))
+            running = _status == "running" and not block.closed
             if running:
-                from src.tui.app._theme import time_glow
-                title_runs.append(StyledRun(
-                    f" {detail}", Style(fg=time_glow(242, 252, 12.0)),
-                ))
+                cat_fg = _cat_fg
             else:
-                title_runs.append(StyledRun(f" {detail}", pal.dim))
-        out.append(truncate_runs(title_runs, width) if width > 0 else title_runs)
+                cat_style = _category_style(_group_tool)
+                cat_fg = cat_style.fg if cat_style.fg is not None else 242
+            if _group_tool == "dispatch_agent":
+                # Task 卡标题：``{n} agents finished``（运行中 ``{n} agents``）
+                n = len(_members)
+                suffix = " agents finished" if not running else " agents"
+                title_runs.append(StyledRun(f"{n}{suffix}", Style(fg=cat_fg, bold=True)))
+            else:
+                title_runs.append(StyledRun(display, Style(fg=cat_fg, bold=True)))
+                if _collapsed and _members:
+                    # 折叠计数后缀 dim（Read → `` 3 files``；Grep → `` 2``）
+                    suffix = _collapsed_suffix(display, len(_members))
+                    if running:
+                        from src.tui.app._theme import time_glow
+                        title_runs.append(StyledRun(
+                            suffix, Style(fg=time_glow(242, 252, 12.0)),
+                        ))
+                    else:
+                        title_runs.append(StyledRun(suffix, pal.dim))
+            out.append(truncate_runs(title_runs, width) if width > 0 else title_runs)
+        else:
+            tool_name = block.extra.get("tool_name") or "工具"
+            display = get_tool_display_name(tool_name) or tool_name or "工具"
+            detail = block.extra.get("tool_detail", "")
+            title_runs = list(_tool_icon_runs(block))
+            running = _status == "running" and not block.closed
+            # ★ Claude Code 极简样式（2026-08-06 用户需求）：标题行 = 状态图标 +
+            #   工具名（类别色，加粗）+ 参数（空格分隔，dim）——去掉 ▎ 引导线、
+            #   emoji 工具图标（Claude Code ``Read src/main.py`` 语义）。工具名
+            #   按类别着色——运行中在类别色邻域呼吸（12s 周期，与 detail 呼吸
+            #   同步；同 _cat_fg 值，整体同色脉动），关闭/提交后静态类别色
+            #   （frozen 缓存不再重算，零额外渲染成本）。runs[0] 保持状态图标
+            #   （close_tool_box 原位翻转 + 测试 startswith(●/✔/✖) 不变式）。
+            if running:
+                cat_fg = _cat_fg
+            else:
+                cat_style = _category_style(tool_name)
+                cat_fg = cat_style.fg if cat_style.fg is not None else 242
+            title_runs.append(StyledRun(display, Style(fg=cat_fg, bold=True)))
+            if detail:
+                # ★ BEAUTY-24（体验动效）：工具 detail 运行中呼吸——暗灰 242→252
+                #   脉动（12s 周期，与状态栏 token/速度呼吸同步）。运行中的工具
+                #   detail 更生动；关闭/提交后保持静态 pal.dim（frozen 缓存不再
+                #   重算，零额外渲染成本）。空格分隔（Claude Code ``Bash ls -la``
+                #   语义——非 ``·``）。
+                if running:
+                    from src.tui.app._theme import time_glow
+                    title_runs.append(StyledRun(
+                        f" {detail}", Style(fg=time_glow(242, 252, 12.0)),
+                    ))
+                else:
+                    title_runs.append(StyledRun(f" {detail}", pal.dim))
+            out.append(truncate_runs(title_runs, width) if width > 0 else title_runs)
     # 内容行：block.lines[start:stop]，start==0 时跳过标题行（名字已在标题行）；
     # 关闭状态行数据行（_tool_status_index）跳过——状态由标题行状态图标表达
     body_end = len(block.lines) if stop is None else min(stop, len(block.lines))
@@ -269,16 +378,48 @@ def tool_card_lines(block, width, start=0, stop=None):
         start, len(block.lines), body_start, body_end, width, status_idx,
         block.extra.get("_bash_omitted_lines", 0),
         block.extra.get("_head_omitted_lines", 0),
+        block.extra.get("_bash_truncation_file", ""),
+        _group, _collapsed, _member_sig,
     )
     body_lines_cache = getattr(block, "_tool_card_body_lines_cache", None)
     if body_lines_cache is not None and body_lines_cache[0] == _body_key:
         body_lines = body_lines_cache[1]
+    elif _group:
+        # ── 群组卡内容（Phase B/C）：摘要卡，无成员全文输出 ─────
+        # 折叠态：仅末成员 detail 提示行（``│ {path}``——CC collapsed
+        # 摘要 latestDisplayHint）；展开态：每成员一行 ``│ {detail}``；
+        # Task 分组卡：每成员一行 ``│ @{description}``（CC ``@name`` 行）。
+        # 成员少（≤ 数量级个），每帧直接生成（无逐行 wrap 缓存需求）。
+        body_lines: list[list[StyledRun]] = []
+        if _collapsed:
+            if _members:
+                last = _members[-1]
+                if last.get("detail", ""):
+                    body_lines.append(_omitted_line(last["detail"], width))
+        elif _group_tool == "dispatch_agent":
+            for member in _members:
+                detail = member.get("detail", "")
+                if detail:
+                    body_lines.append(_omitted_line(f"@{detail}", width))
+        else:
+            for member in _members:
+                detail = member.get("detail", "")
+                if detail:
+                    body_lines.append(_omitted_line(detail, width))
+        block._tool_card_body_lines_cache = (_body_key, body_lines)
     else:
         body_lines: list[list[StyledRun]] = []
-        # bash 尾显示：前置省略提示行「… 前 N 行省略」（仅首次提交 start==0）
+        # bash 尾显示：前置省略提示行（仅首次提交 start==0）。已落盘
+        # （close_tool_box 写入 ``_bash_truncation_file``）用 CC 截断文案
+        # （Output truncated + Full output saved to），否则保留
+        # 「… 前 N 行省略」兜底（无落盘/落盘失败）。
         omitted = block.extra.get("_bash_omitted_lines", 0)
         if omitted > 0:
-            body_lines.append(_omitted_line(f"\u2026 前 {omitted} 行省略", width))
+            trunc_msg = _bash_truncation_message(block)
+            if trunc_msg:
+                body_lines.append(_omitted_line(trunc_msg, width))
+            else:
+                body_lines.append(_omitted_line(f"\u2026 前 {omitted} 行省略", width))
         # ★ PERF-6（性能）：开放工具卡内容行按 ``(行对象, width)`` 缓存
         #   wrap+截断后的内容 runs——修复前每帧对全部内容行重新 ``wrap_line``
         #   （长 bash 输出 300 行 → 单帧 ~190ms → 10Hz 下 CPU 100%）。行对象

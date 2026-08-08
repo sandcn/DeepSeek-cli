@@ -84,6 +84,59 @@ class ToolCallbackChain:
 
         agent._append_assistant_message(content, tool_calls, reasoning_content)
 
+        # ── Phase B：分组工具卡计划（对齐 CC grouped tool use） ──
+        # schedule 前对**有序** tool_calls 做 run 划分（唯一有序源——并发
+        # on_before 无法保证到达顺序）：连续同类分组工具（_GROUPABLE_TOOLS /
+        # _TASK_GROUPABLE_TOOLS）且 run 长度 ≥2 → 合并为一张卡（成员输出
+        # 丢弃，摘要卡）；单次调用（长度 1）不分组仍走单卡；bash/write/edit
+        # 不分组（对齐 CC）。
+        # 惰性 import（core 层避免模块级依赖 TUI app 常量）。
+        from src.tui.app._model_helpers import (
+            _GROUPABLE_TOOLS as _GROUP_TOOLS,
+            _TASK_GROUPABLE_TOOLS as _TASK_TOOLS,
+        )
+        from ...param_formatter import extract_key_params as _extract_kp
+        _GROUPABLE = _GROUP_TOOLS | _TASK_TOOLS
+        _groups: list[tuple[str, list]] = []
+        _i, _n = 0, len(tool_calls)
+        while _i < _n:
+            _tc = tool_calls[_i]
+            _name = _tc.get("name", "")
+            if _name in _GROUPABLE:
+                _j = _i
+                while _j < _n and tool_calls[_j].get("name") == _name:
+                    _j += 1
+                _run = tool_calls[_i:_j]
+                if len(_run) >= 2:
+                    if _name == "dispatch_agent":
+                        # Task 成员 detail = 任务描述（CC ``@name`` 行语义）
+                        _members = [
+                            (
+                                m.get("id", ""),
+                                (m.get("arguments") or {}).get("description", "")
+                                if isinstance(m.get("arguments"), dict)
+                                else _extract_kp(_name, m.get("arguments", "")),
+                            )
+                            for m in _run
+                        ]
+                    else:
+                        _members = [
+                            (m.get("id", ""), _extract_kp(_name, m.get("arguments", "")))
+                            for m in _run
+                        ]
+                    _groups.append((_name, _members))
+                    _i = _j
+                    continue
+            _i += 1
+        if tool_calls:
+            # 每批开始重置批状态（端口方法现启用）——Dispatcher
+            # ``_on_tool_batch_start`` 清分组成员 id 集合。**即使本批无分组也
+            # 调用（names 为空）**：防上一批分组成员 id 残留导致后续同名 id
+            # 的单工具被误抑制开卡。随后 ``tool_group_planned`` 逐个登记成员。
+            agent.display.tool_batch_start("main", [g[0] for g in _groups])
+            for _gname, _gmembers in _groups:
+                agent.display.tool_group_planned("main", _gname, _gmembers)
+
         # ── 回调工厂（消除 lambda 重复） ────────────────
         def _on_before(tc, detail):
             return self._on_before_tool(tc, detail, parse_elapsed)

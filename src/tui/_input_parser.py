@@ -224,7 +224,9 @@ class InputParser:
         # ctrl_key 集合）；Ctrl+P（0x10）加入 ctrl_key（dispatcher 处理为
         # readline 历史上一条——与 Ctrl+N 被 switch_model 占用的对称补充）。
         # Ctrl+B(0x02) → 主 agent 空模式切换（0x02 非打印控制，不与 Enter 冲突）
-        if byte in (0x02, 0x04, 0x07, 0x0c, 0x0e, 0x0f, 0x10, 0x12, 0x14):  # Ctrl+B/D/G/L/N/O/P/R/T
+        # Ctrl+X(0x18) → 折叠群组卡展开/收起（App use_input 钩子消费；非打印，
+        # 与 readline 编辑键不冲突）
+        if byte in (0x02, 0x04, 0x07, 0x0c, 0x0e, 0x0f, 0x10, 0x12, 0x14, 0x18):  # Ctrl+B/D/G/L/N/O/P/R/T/X
             return KeyEvent(kind="ctrl_key", char=chr(byte), raw=raw)
         # 其他控制字符 → unknown
         return KeyEvent(kind="unknown", raw=raw)

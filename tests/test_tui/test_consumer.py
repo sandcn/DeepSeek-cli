@@ -165,7 +165,11 @@ class TestChatUIConsumerRaceCondition:
                 engine=c._engine, bus=c._bus, bb=c._bb,
                 rs=c._rs, dispatcher=c._dispatcher,
             )
-            c._lifecycle._state_lock = threading.Lock()  # 真实锁
+            # ★ 修复：须用 RLock（对齐生产 TuiLifecycle.__init__）——ChatUIConsumer
+            #   start()/stop() 在 ``_state_lock`` 临界区内委托 ``_lifecycle.start()``
+            #   /stop()（再次获取同一把锁，可重入）。普通 Lock 不自锁重入 →
+            #   测试死锁挂起。
+            c._lifecycle._state_lock = threading.RLock()
             c._input_orchestrator = TuiInputOrchestrator(c._input)
             return c
 

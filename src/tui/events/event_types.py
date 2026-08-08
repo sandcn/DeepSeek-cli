@@ -133,6 +133,25 @@ class ToolBatchStartedEvent(DisplayEvent):
     tool_names: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class ToolGroupPlannedEvent(DisplayEvent):
+    """分组工具卡计划 — 同一 assistant 消息内 ≥2 个连续同类分组工具合并。
+
+    由 ``_tool_callbacks.handle_tool_calls`` 在 schedule 前对有序 tool_calls
+    做 run 划分后发布（唯一有序源——并发 on_before 无法保证到达顺序）。
+    Dispatcher 消费本事件记录成员 id（抑制成员单卡 open）并推送
+    ``ToolGroupOpenCmd`` 打开群组卡。
+
+    Attributes:
+        label: Agent 标识
+        tool_name: 分组工具名（raw，如 ``read_file``）
+        members: 成员列表 ``[(tool_id, detail), ...]``（有序）
+    """
+    label: str = ""
+    tool_name: str = ""
+    members: tuple[tuple[str, str], ...] = ()
+
+
 # ── Agent 状态 ──────────────────────────────────────────
 
 
@@ -396,6 +415,7 @@ class BackgroundTaskChangedEvent(DisplayEvent):
 ALL_EVENT_TYPES: tuple = (
     SessionStarted, SessionStopped,
     ToolParsingEvent, ToolStartedEvent, ToolDoneEvent, ToolOutputChunkEvent, ToolBatchStartedEvent,
+    ToolGroupPlannedEvent,
     AgentAddedEvent, AgentStatusChanged,
     ModelPhaseEvent, PhaseDoneEvent, UsageUpdatedEvent,
     ContentChunkEvent, ReasoningChunkEvent,

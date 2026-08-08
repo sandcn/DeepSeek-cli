@@ -273,6 +273,13 @@ def _do_tool_open(model, cmd) -> None:
     model.open_tool_box(cmd.tool_id, cmd.tool_name, cmd.detail)
 
 
+def _do_tool_group_open(model, cmd) -> None:
+    """分组工具卡打开（Phase B）：同一 assistant 消息内 ≥2 个连续同类分组
+    工具合并为一张摘要卡（open_tool_group）。成员由 Dispatcher 抑制单卡 open；
+    成员输出丢弃、close 路由到成员（open_tool_group 内部注册 tool_boxes）。"""
+    model.open_tool_group(cmd.tool_name, list(cmd.members or ()))
+
+
 def _do_tool_output(model, cmd) -> None:
     if not cmd.text:
         return
@@ -404,6 +411,16 @@ def _append_assistant_rich(model, msg) -> None:
     # 兼容 str（JSON 串）与 dict 两种 arguments 形态。
     # import 置于循环外（函数体内惰性 import，与 _do_parse_info 风格一致）
     from src.core.param_formatter import extract_key_params
+    from src.tui.app._model_helpers import (
+        _GROUPABLE_TOOLS as _GROUP_TOOLS,
+        _TASK_GROUPABLE_TOOLS as _TASK_TOOLS,
+    )
+    _GROUPABLE = _GROUP_TOOLS | _TASK_TOOLS
+    # 与 live 路径（_tool_callbacks.handle_tool_calls）一致的 run 划分
+    # （Phase B）：连续同类分组工具 ≥2 → open_tool_group（摘要卡）；单次
+    # 调用（长度 1）/非分组工具仍走单卡 open_tool_box——历史回放（/editmsg
+    # /deitmsg /load 重渲染）与流式执行工具卡显示统一。
+    _norm: list[tuple[str, str, str]] = []
     for tc in tool_calls:
         # ★ 修复（P3）：tool_calls 元素可能非 dict（str 等异常数据）——
         #   tc.get 抛 AttributeError；非 dict 跳过（安全处理）。
@@ -416,13 +433,44 @@ def _append_assistant_rich(model, msg) -> None:
         args = fn.get("arguments", "")
         if args is None:
             args = ""
-        detail = extract_key_params(name, args)
+        if name == "dispatch_agent":
+            # Task 成员 detail = 任务描述（CC ``@name`` 行语义）；arguments 为
+            # dict/JSON 串时取 description 字段，异常回退 extract_key_params。
+            desc = ""
+            if isinstance(args, dict):
+                desc = str(args.get("description", "") or "")
+            elif isinstance(args, str):
+                import json as _json
+                try:
+                    _parsed = _json.loads(args)
+                    if isinstance(_parsed, dict):
+                        desc = str(_parsed.get("description", "") or "")
+                except (_json.JSONDecodeError, TypeError):
+                    pass
+            detail = desc if desc else extract_key_params(name, args)
+        else:
+            detail = extract_key_params(name, args)
         # 防御性长度截断：extract_key_params 内部已截断（已知工具单值 ≤60
         # 字符、未知工具整体 ≤80 字符），此处保留以防 core 层未来放宽阈值。
-        # 单行化（\n → 字面量 \n）由 open_tool_box 内部统一承担（同源单行）。
+        # 单行化（\n → 字面量 \n）由 open_tool_box/open_tool_group 内部统一
+        # 承担（同源单行）。
         if len(detail) > _TOOL_DETAIL_MAX_LEN:
             detail = detail[:_TOOL_DETAIL_MAX_LEN] + "..."
-        model.open_tool_box(tc.get("id") or "", name, detail)
+        _norm.append((tc.get("id") or "", name, detail))
+    _i, _n = 0, len(_norm)
+    while _i < _n:
+        _mid, _mname, _mdetail = _norm[_i]
+        if _mname in _GROUPABLE:
+            _j = _i
+            while _j < _n and _norm[_j][1] == _mname:
+                _j += 1
+            _run = _norm[_i:_j]
+            if len(_run) >= 2:
+                model.open_tool_group(_mname, [(r[0], r[2]) for r in _run])
+                _i = _j
+                continue
+        model.open_tool_box(_mid, _mname, _mdetail)
+        _i += 1
 
 
 def _append_tool_rich(model, msg) -> None:
@@ -516,6 +564,7 @@ _HANDLERS: dict[int, object] = {
     RenderCommand.TOOL_OUTPUT: _do_tool_output,
     RenderCommand.TOOL_SUMMARY: _do_tool_summary,
     RenderCommand.TOOL_OPEN: _do_tool_open,
+    RenderCommand.TOOL_GROUP_OPEN: _do_tool_group_open,
     RenderCommand.TOOL_CLOSE: _do_tool_close,
     RenderCommand.PARSE_INFO: _do_parse_info,
     RenderCommand.USER_MSG: _do_user_message,

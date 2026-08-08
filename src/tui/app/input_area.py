@@ -87,8 +87,8 @@ from src.tui.app import _fx
 from src.tui.app._theme import sep_line as _theme_sep_line, time_glow, _S_ACCENT, _S_DIM, _S_SEP, _S_TEXT, _S_TIME
 
 # 占位符
-_PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 · Tab 补全"
-_PLACEHOLDER_COMPACT = "/help · Ctrl+N · Tab"
+_PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 · Ctrl+X 展开工具 · Tab 补全"
+_PLACEHOLDER_COMPACT = "/help · Ctrl+N · Ctrl+X · Tab"
 #: 流式占位符动画基文本（无尾点；BEAUTY-8 动态追加 0-3 个点循环）
 _PLACEHOLDER_STREAMING_BASE = "AI 生成中"
 

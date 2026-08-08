@@ -348,18 +348,23 @@ class TestEmptyToolIdBoxLifecycle:
         assert block.extra["tool_status"] == "done"
 
     def test_close_empty_tool_id_latest_anonymous_box(self):
-        """多个空 tool_id box → close('') 关闭最近打开者（倒序语义）。"""
+        """多个空 tool_id box → close('') 按打开顺序关闭最早者（P2-4 FIFO）。
+
+        P2-4 修复：空 id 匿名 box 按**打开顺序**（正序遍历）匹配关闭——修复前
+        reversed 逆序弹栈（LIFO）与打开顺序相反（A→B 打开、B→A 关闭）→ 输出
+        错配。FIFO 与打开顺序一致（先开先关）。
+        """
         from src.tui.app.model import AppModel
         m = AppModel()
         m.open_tool_box("", "first")
         m.open_tool_box("", "second")
         m.close_tool_box("", True)
         assert len(m.tool_boxes) == 1
-        # 最近的 "second" 已关闭，最早的 "first" 保留
+        # 最早打开者 "first" 先关闭；"second" 保留
         assert m.blocks[0].extra.get("tool_name") == "first"
-        assert m.blocks[0].closed is False
+        assert m.blocks[0].closed is True
         assert m.blocks[1].extra.get("tool_name") == "second"
-        assert m.blocks[1].closed is True
+        assert m.blocks[1].closed is False
 
     def test_close_empty_tool_id_no_anonymous_box_noop(self):
         """无空 tool_id box 时 close('') → no-op（不误关其他 box）。"""

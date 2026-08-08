@@ -123,6 +123,14 @@ def _make_round_callbacks(
         except Exception:
             _logger.debug("_on_round_end: 闭合空工具 box 失败", exc_info=True)
 
+        # ★ Phase B：回合末强制结束未完成群组（成员因异常/取消未逐一 close）
+        #   ——置未关闭成员 done 后最终化，避免群组卡永久 ● running 悬挂。
+        if model is not None and hasattr(model, "flush_tool_groups"):
+            try:
+                model.flush_tool_groups()
+            except Exception:
+                _logger.debug("_on_round_end: flush_tool_groups 失败", exc_info=True)
+
         # /loop 模式下不冻结状态行、不发桌面通知，保持状态行活跃
         if not loop_state.get("_loop_mode"):
             # ★ 冻结底部栏状态行（定格最终数值），同时获取耗时供通知复用

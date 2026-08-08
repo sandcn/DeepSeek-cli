@@ -90,6 +90,7 @@ class RenderCommand(IntEnum):
     SUBAGENT_MARKDOWN = 23  # (23, text: str) — subagent 提词/返回 markdown 消息区块
     CLEAR_MSGS = 24      # (24,) — 清空消息区显示（编辑/加载会话重渲染前使用）
     BG_BASH_COUNT = 25   # (25, count: int) — 后台 bash 任务总数（主 agent + subagent 聚合）
+    TOOL_GROUP_OPEN = 26 # (26, tool_name, members) — 分组工具卡打开（Phase B）
 
 
 # ═══════════════════════════════════════════════════════════
@@ -140,6 +141,18 @@ class ToolCloseCmd(RenderCmd):
     cid: int = RenderCommand.TOOL_CLOSE
     tool_id: str = ""
     success: bool = True
+
+@dataclass(frozen=True)
+class ToolGroupOpenCmd(RenderCmd):
+    """分组工具卡打开（Phase B：≥2 个连续同类分组工具合并为一张卡）。
+
+    Attributes:
+        tool_name: 分组工具名（raw，如 ``read_file``）。
+        members: 成员列表 ``[(tool_id, detail), ...]``（有序）。
+    """
+    cid: int = RenderCommand.TOOL_GROUP_OPEN
+    tool_name: str = ""
+    members: tuple[tuple[str, str], ...] = ()
 
 @dataclass(frozen=True)
 class UserMsgCmd(RenderCmd):
