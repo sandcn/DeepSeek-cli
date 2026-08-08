@@ -117,6 +117,32 @@ class ToolCallbackChain:
             else:
                 failed_tools.append((tc_name, output))
 
+        # ★ P3-时序修复（2026-08-08）：dispatch_agent 提前返回后，剩余 dispatch
+        #   由后台任务执行并补发 tool result（_bg_dispatch_agents）。等待其完成，
+        #   确保下一轮模型调用的消息序列完整（避免 assistant tool_call 无对应
+        #   tool 消息 → API 400 / 模型重发）。
+        try:
+            await ToolScheduler.default().wait_background_dispatch()
+        except Exception:
+            _logger.debug("等待后台 dispatch 任务异常", exc_info=True)
+
+        # ★ P3-一致性修复：提前返回的 dispatch 结果已由 bg 补发到消息，
+        #   补入工具汇总（否则 dispatch 计入 tools.calls 但不显示在 summary）。
+        #   P1-1 修复：仅补入「未包含在 schedule() 返回结果中」的 dispatch 节点，
+        #   避免非提前返回（正常执行）路径的汇总重复。
+        result_ids = {r[0] for r in results}
+        _scheduler = ToolScheduler.default()
+        for tc in tool_calls:
+            if (tc.get("name") == "dispatch_agent"
+                    and tc.get("id") not in result_ids):
+                _r = getattr(_scheduler, "_results_map", {}).get(tc.get("id", ""))
+                if _r is not None and len(_r) >= 3:
+                    _, _output, _success = _r
+                    if _success:
+                        successful_tools.append("dispatch_agent")
+                    else:
+                        failed_tools.append(("dispatch_agent", _output))
+
         self._show_tool_execution_summary(successful_tools, failed_tools)
 
         # ── 可观测性：记录工具执行指标 ───────────────────

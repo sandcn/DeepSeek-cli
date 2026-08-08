@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, List, Tuple, Optional, Callable
 
 from ..tools.registry import ToolRegistry
@@ -125,15 +126,18 @@ class ToolScheduler:
         self._global_dag = None
         self._pending_tc_ids.clear()
         self._running_bash_ids.clear()
-        # 取消并清理后台 dispatch_agent 任务
-        # 先收集需要取消的未完成任务，统一 cancel 后 await 等待终止
-        tasks_to_cancel = [t for t in self._background_dispatch_tasks if not t.done()]
-        if tasks_to_cancel:
-            for task in tasks_to_cancel:
-                task.cancel()
-            # 等待所有被取消的任务终止，return_exceptions=True 吞掉 CancelledError
-            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
-        self._background_dispatch_tasks.clear()
+        # ★ 不再取消仍在执行的后台 dispatch_agent 任务（P0-1 修复）：
+        #   dispatch_agent 提前返回（_handle_dispatch_agent_early_return）后，
+        #   bg 任务可能在等待 SubAgent 完成（ParallelExecutor barrier / gather）。
+        #   清理入口若在此 cancel，SubAgent 被取消、结果丢失——与用户报告的
+        #   "多个 SubAgent 并发执行时偶发失败"高度相关。
+        #   仅移除已完成任务（其 _on_bg_dispatch_done 回调已执行/由本行清除）；
+        #   未完成的任务保留，由 schedule() finally 在确认全部完成后统一清理。
+        #   ⚠ 过滤方向：保留未完成（not t.done()），移除已完成——否则本方法在
+        #   全部 bg done 后调用时列表全量保留、永久累积（内存泄漏）。
+        self._background_dispatch_tasks = [
+            t for t in self._background_dispatch_tasks if not t.done()
+        ]
         self._prev_non_dispatch_ids.clear()
 
     def _find_next_layer(self, dag, layers, is_outermost: bool = True) -> list[str] | None:
@@ -335,7 +339,8 @@ class ToolScheduler:
 
         # 异常兜底回调：后台 Task 异常/取消时写入失败结果
         bg_task.add_done_callback(
-            lambda task, rd=remaining_dispatch: self._on_bg_dispatch_done(task, rd)
+            lambda task, rd=remaining_dispatch, ar=agent_ref:
+                self._on_bg_dispatch_done(task, rd, ar)
         )
         self._background_dispatch_tasks.append(bg_task)
         return True  # 退出 while 循环，提前返回
@@ -354,6 +359,12 @@ class ToolScheduler:
         复用 _execute_concurrent 执行 dispatch_agent，完成后将结果写入
         _results_map 和 _completed_tc_ids。此方法由 asyncio.ensure_future
         调度为后台 Task，不阻塞外层 schedule() 返回。
+
+        ★ P3 修复（2026-08-08）：提前返回路径下 dispatch_agent 的工具结果
+          不会经 schedule() 返回给调用方（schedule() 在 bg 任务完成前已返回，
+          batch_results 仅含非 dispatch 节点）。若不在对话中补发 tool result，
+          下一轮模型调用的消息序列缺 tool 消息 → API 报错或模型重发。
+          这里在结果写入 _results_map 的同时，直接补发到 agent 消息。
         """
         results = await self._execute_concurrent(
             remaining_dispatch, agent_ref=agent_ref,
@@ -363,35 +374,80 @@ class ToolScheduler:
         for r in results:
             self._results_map[r[0]] = r
             self._completed_tc_ids.add(r[0])
+            # 补发 tool result 到对话（仅提前返回路径调用本方法，不会重复）
+            try:
+                if hasattr(agent_ref, '_append_tool_result'):
+                    agent_ref._append_tool_result(r[0], r[1])
+            except Exception:
+                _logger.debug("补发 dispatch_agent tool result 失败", exc_info=True)
+
+    def _append_bg_failure_result(
+        self,
+        tc_id: str,
+        message: str,
+        agent_ref: Any,
+    ) -> None:
+        """写入并补发一个失败的后台 dispatch_agent 结果（P2-1 提取）。
+
+        供 _on_bg_dispatch_done 的取消/异常兜底路径复用：
+        - 写入 _results_map / _completed_tc_ids（调度器内部结果一致）；
+        - 补发 tool result 到 agent 消息（保证下一轮模型调用消息序列完整）。
+        """
+        if tc_id in self._results_map:
+            return  # 已有结果，不重复写入/补发
+        self._results_map[tc_id] = (tc_id, message, False)
+        self._completed_tc_ids.add(tc_id)
+        try:
+            if agent_ref is not None and hasattr(agent_ref, '_append_tool_result'):
+                agent_ref._append_tool_result(tc_id, message)
+        except Exception:
+            _logger.debug("补发 dispatch_agent 失败 tool result 异常", exc_info=True)
 
     def _on_bg_dispatch_done(
         self,
         task: asyncio.Task,
         remaining_dispatch: list[dict[str, Any]],
+        agent_ref: Any = None,
     ) -> None:
         """后台 dispatch_agent 任务完成回调（含异常兜底）。
 
-        防御性检查：若 Task 已不在 _background_dispatch_tasks 中或
-        _global_dag 已为 None（表示 _cleanup_batch_records 已清理），
-        直接返回，避免操作已清空的状态。
+        防御性检查：若 _global_dag 已为 None（表示 _cleanup_batch_records 已清理），
+        直接返回，避免操作已清空的状态。Task 已完成即从 _background_dispatch_tasks
+        移除自身（防止列表累积——_cleanup_batch_records 仅保留未完成任务）。
         """
         # 防御：_cleanup_batch_records 已清理 → 不再操作
-        if task not in self._background_dispatch_tasks or self._global_dag is None:
+        if self._global_dag is None:
             return
+
+        # 主动从后台任务列表移除自身（done task 不应长期留在列表中）
+        try:
+            if task in self._background_dispatch_tasks:
+                self._background_dispatch_tasks.remove(task)
+        except ValueError:
+            pass
 
         try:
             if task.cancelled():
+                # ★ 取消路径补发失败结果（P3）：bg 任务被取消时同样保证
+                #   消息序列完整（tool_call 有对应 tool 消息）。当前无取消源
+                #   （_cleanup_batch_records 已不再取消 bg 任务），此分支为
+                #   防御性兜底（未来用户中断等场景）。
+                for tc in remaining_dispatch:
+                    self._append_bg_failure_result(
+                        tc["id"], "后台 dispatch_agent 已被取消", agent_ref,
+                    )
                 return  # 已被取消，_pending_tc_ids 由 finally 统一清理
             exc = task.exception()
             if exc is not None:
+                # 防御性死代码（P2-1 注释）：_execute_concurrent 将工具失败转为
+                # 结果元组不抛异常；唯一非正常路径是 CancelledError（已由上面
+                # cancelled 分支处理）。保留本分支作为未来异常来源的兜底。
                 for tc in remaining_dispatch:
-                    if tc["id"] not in self._results_map:
-                        self._results_map[tc["id"]] = (
-                            tc["id"],
-                            f"后台 dispatch_agent 执行失败: {exc}",
-                            False,
-                        )
-                        self._completed_tc_ids.add(tc["id"])
+                    self._append_bg_failure_result(
+                        tc["id"],
+                        f"后台 dispatch_agent 执行失败: {exc}",
+                        agent_ref,
+                    )
         finally:
             for tc in remaining_dispatch:
                 self._pending_tc_ids.discard(tc["id"])
@@ -404,6 +460,49 @@ class ToolScheduler:
             _default_scheduler._reset_global_state()
         _default_scheduler = None
         cls._semaphore = None
+
+    async def wait_background_dispatch(self, timeout: float | None = 180.0) -> None:
+        """等待所有后台 dispatch_agent 任务完成（供调用方同步消息序列）。
+
+        dispatch_agent 提前返回（_handle_dispatch_agent_early_return）后，
+        剩余 dispatch 在后台任务中执行，其 tool result 由 _bg_dispatch_agents
+        补发到 agent 消息。调用方（MainAgent handle_tool_calls）在继续下一轮
+        模型调用前等待这些任务完成，确保消息序列完整——否则下一轮模型请求
+        携带「有 tool_calls 但无对应 tool 消息」的历史消息，部分 provider
+        会返回 400 错误或导致模型重发。
+
+        超时语义（P3-1 修复）：超时后**不取消**未完成的 bg 任务——其 SubAgent
+        可能仍在执行（模型调用无超时、后台等待有界），取消会杀死用户等待的
+        子代理结果。改为放弃等待并返回，bg 任务继续运行、完成后正常补发结果
+        （与 _process_background_tasks 的超时降级语义一致）。
+
+        Args:
+            timeout: 最长等待秒数（None 表示无限等待）。默认 180s，
+                覆盖 SubAgent 后台等待超时（_BACKGROUND_WAIT_TIMEOUT=120s）上限。
+        """
+        pending = [t for t in self._background_dispatch_tasks if not t.done()]
+        if not pending:
+            return
+        if timeout is None:
+            await asyncio.gather(*pending, return_exceptions=True)
+            return
+        # 手写轮询：仅观察不干预（asyncio.wait 超时不 cancel 任务）
+        deadline = time.monotonic() + timeout
+        while True:
+            pending = [t for t in pending if not t.done()]
+            if not pending:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _logger.warning(
+                    "等待后台 dispatch 任务超时（%d 个未完成），放弃等待（任务继续运行）",
+                    len(pending),
+                )
+                return
+            try:
+                await asyncio.wait(pending, timeout=min(0.5, remaining))
+            except asyncio.CancelledError:
+                raise
 
     async def _run_tool_func(self, func, tc, run_method) -> Tuple[str, bool]:
         """统一执行工具调用，处理 run_method 和直接执行两种路径
@@ -581,12 +680,19 @@ class ToolScheduler:
                     iteration -= 1  # bash 轮询不计入 _MAX_DAG_ITERATIONS
                     continue
 
-                # 最外层：将本层节点标记为 pending（嵌套保护）
-                if is_outermost:
-                    for tc_id in target_layer:
-                        if tc_id not in all_pending_ids:
-                            all_pending_ids.add(tc_id)
-                            self._pending_tc_ids.add(tc_id)
+                # ★ 将本层节点标记为 pending（防并发重复执行）
+                #   P0-2 修复：修复前仅最外层（is_outermost=True）标记 pending，
+                #   多个并发 SubAgent 的 _execute_global_dag_async（各自
+                #   is_outermost=False）在 _find_next_layer 中可能同时选中同一
+                #   层节点（_results_map/_pending_tc_ids 均未命中）→ 工具被
+                #   重复执行（write_file 写两次、bash 跑两次——用户报告"多个
+                #   SubAgent 并发大量 write_file/bash 偶发异常"的元凶）。
+                #   改为无论是否最外层，选中节点一律标记 pending，由 finally
+                #   统一 discard，消除选中竞态。
+                for tc_id in target_layer:
+                    if tc_id not in all_pending_ids:
+                        all_pending_ids.add(tc_id)
+                        self._pending_tc_ids.add(tc_id)
 
                 # 执行本层工具（构建 layer_calls → 标记 bash → 执行 → 清理 bash 标记）
                 await self._execute_one_layer(
@@ -609,12 +715,12 @@ class ToolScheduler:
 
         finally:
             self._execution_depth -= 1
-            if is_outermost:
-                # 注意：bg 任务通过 _on_bg_dispatch_done 注入的 _pending_tc_ids
-                # 条目由 _on_bg_dispatch_done 的 finally 块负责清理，而非由此处
-                # 的 all_pending_ids 遍历处理。
-                for tc_id in all_pending_ids:
-                    self._pending_tc_ids.discard(tc_id)
+            # 所有层均标记 pending（P0-2 修复），finally 统一清理。
+            # 注意：bg 任务通过 _on_bg_dispatch_done 注入的 _pending_tc_ids
+            # 条目由 _on_bg_dispatch_done 的 finally 块负责清理，而非由此处
+            # 的 all_pending_ids 遍历处理。
+            for tc_id in all_pending_ids:
+                self._pending_tc_ids.discard(tc_id)
 
         # 标记当前批次中已完成的工具
         for tc_id in current_batch_ids:
@@ -776,12 +882,30 @@ class ToolScheduler:
 
         finally:
             self._schedule_depth -= 1
-            # ★ 最外层 schedule() 返回后清理跨批记录，防止 DAG 膨胀
-            # 条件：is_outermost_schedule 确保只有最外层调用触发清理
-            #       self._schedule_depth == 0 确认嵌套深度已归零
-            #       tool_calls 非空跳过空列表路径（current_batch_ids 未定义）
-            if is_outermost_schedule and self._schedule_depth == 0 and tool_calls:
-                await self._cleanup_batch_records()
+            # ★ 清理条件：所有 schedule 调用（MainAgent + 并行 SubAgent）全部
+            #   完成后才清理跨批记录，防止 DAG 膨胀 + 防止提前清理。
+            #
+            #   Bug 修复（2026-08-08）：修复前条件为
+            #   ``is_outermost_schedule and self._schedule_depth == 0``——
+            #   MainAgent dispatch 批次提前返回（dispatch_agent 转后台）时，
+            #   SubAgent 可能仍在全局 DAG 上执行工具（_schedule_depth > 0），
+            #   MainAgent 的 finally 却把深度减到 0 并立即清理全局状态
+            #   （_results_map/_global_dag/_pending_tc_ids 等），导致并发
+            #   SubAgent 的工具结果丢失/调度错乱（用户侧现象：多个 SubAgent
+            #   并发写文件/跑 bash 时偶发卡死或重复执行）。
+            #   改为仅当 _schedule_depth == 0（无任何活跃 schedule 调用）时清理；
+            #   且存在未完成的后台 dispatch 任务时延迟清理（其 SubAgent 可能
+            #   仍在运行，清理会取消 bg 任务 / 清空 SubAgent 依赖的全局状态）。
+            #
+            #   is_outermost_schedule 仍用于 _update_prev_ids 的"仅最外层更新
+            #   _prev_non_dispatch_ids"语义，不与清理条件耦合。
+            if self._schedule_depth == 0 and tool_calls:
+                if any(not t.done() for t in self._background_dispatch_tasks):
+                    _logger.debug(
+                        "ToolScheduler: 有未完成的后台 dispatch 任务，延迟清理"
+                    )
+                else:
+                    await self._cleanup_batch_records()
 
     async def _execute_concurrent(
         self, tool_calls: list, *,

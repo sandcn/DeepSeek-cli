@@ -9,11 +9,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from .sandbox_manager import get_sandbox_manager, set_current_message_index
 
 _logger = logging.getLogger(__name__)
+
+# ── 后台 bash 任务自动等待超时（防无限卡死） ──────────────
+# 前台 bash 超过 _AUTO_BG_TIMEOUT 秒会自动转后台（命令不终止），
+# 转后台后任务可能长期运行（长时/交互式命令）。_process_background_tasks
+# 在等待这类任务时必须有一个有界上限，否则任一长时 bash 任务会让
+# Agent/SubAgent 无限阻塞——用户侧现象：多个 SubAgent 并发执行时，
+# 只要一个 SubAgent 的 bash 命令长时间不退出，整个并行执行永久卡死。
+# 超时后未完成任务被标记为 bash_task 管理（模型已拿到 task_id），
+# 由模型经 bash_task 工具主动 wait/kill 管理，不再自动阻塞对话。
+_BACKGROUND_WAIT_TIMEOUT: float = 120.0
 
 
 def _serialize_tool_arguments(arguments: Any) -> str:
@@ -282,17 +293,32 @@ class BaseAgent:
             except Exception:
                 _logger.debug("后台任务消息插入后 invalidate_cache 失败", exc_info=True)
 
-    async def _wait_background_tasks(self, tasks: list) -> None:
-        """等待所有后台任务完成，期间响应中断信号（中断时取消剩余任务）。
+    async def _wait_background_tasks(self, tasks: list, timeout: float | None = None) -> set:
+        """等待所有后台任务完成，带超时上限（防无限卡死）。
+
+        返回仍未完成的任务集合（空集合表示全部完成，或被中断取消）。
+        超时后未完成的任务由调用方处理（标记 managed_by_tool 交 bash_task
+        工具管理），避免长时/挂起的 bash 后台任务（如自动转后台后命令
+        永不退出）让 Agent/SubAgent 无限阻塞。
 
         Args:
             tasks: asyncio.Task 列表
+            timeout: 最长等待秒数。None 使用 _BACKGROUND_WAIT_TIMEOUT。
+
+        Returns:
+            仍未完成（超时）的任务集合；全部完成或中断取消时返回空集合。
         """
         if not tasks:
-            return
+            return set()
+        if timeout is None:
+            timeout = _BACKGROUND_WAIT_TIMEOUT
         pending = set(tasks)
+        deadline = time.monotonic() + timeout
         while pending:
-            _, pending = await asyncio.wait(pending, timeout=0.2)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break  # 超时：返回仍未完成的任务集合
+            _, pending = await asyncio.wait(pending, timeout=min(0.2, remaining))
             if not pending:
                 break
             # 等待期间检查中断信号：用户按 ESC 时取消剩余后台任务
@@ -301,16 +327,35 @@ class BaseAgent:
                 if port is not None and await port.is_interrupted():
                     for t in pending:
                         t.cancel()
-                    await asyncio.gather(*pending, return_exceptions=True)
-                    break
+                    # ★ 取消等待带超时（P1）：被取消的后台 bash 任务可能卡在
+                    #   _run_pty/_run_pipe 的 process.wait()（子进程不可杀），
+                    #   无界等待会让 Agent/SubAgent 永久阻塞（卡死）。进程树
+                    #   已由 _run_pty 的 CancelledError 分支 kill，超时后放弃。
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.gather(*pending, return_exceptions=True),
+                            timeout=5.0,
+                        )
+                    except asyncio.TimeoutError:
+                        _logger.warning(
+                            "后台任务取消等待超时（%d 个任务），放弃等待",
+                            len(pending),
+                        )
+                    return set()
             except Exception:
                 _logger.debug("后台任务等待中断检查失败", exc_info=True)
+        return pending
 
     async def _process_background_tasks(self) -> bool:
         """一轮对话完成后处理后台任务（主 Agent 与 SubAgent 共用）。
 
         返回 True 表示已把后台任务结果插入用户消息，需要继续一轮对话；
         返回 False 表示无后台任务可处理，对话可以结束。
+
+        防卡死：等待运行中后台任务完成带 _BACKGROUND_WAIT_TIMEOUT 超时。
+        超时后仍在运行的任务被标记为 ``managed_by_tool=True``（不再自动等待），
+        并插入「仍在运行」用户消息——模型已在前台 bash 工具返回中拿到
+        task_id，可经 bash_task 工具继续 wait/kill 管理。
         """
         if not hasattr(self, "_background_tasks") or not self._background_tasks:
             return False
@@ -321,20 +366,81 @@ class BaseAgent:
             self._append_background_result_messages(done_msgs)
             return True
 
-        # ② 无已完成，但有运行中的后台任务 → 等待全部完成后再处理
+        # ② 无已完成，但有运行中的后台任务 → 等待全部完成后处理（带超时）
         pending = self._pending_background_tasks()
         if pending:
             tasks = [
                 r.get("task") for r in pending
                 if r.get("task") is not None and not r["task"].done()
             ]
+            unfinished: set = set()
             if tasks:
-                await self._wait_background_tasks(tasks)
+                unfinished = await self._wait_background_tasks(tasks)
             done_msgs = self._collect_done_background_messages()
             if done_msgs:
                 self._append_background_result_messages(done_msgs)
                 return True
-            # 等待后仍无完成（任务被取消等）→ 清理残留记录
-            self._background_tasks.clear()
+            if unfinished:
+                # ★ 超时未完成（长时/挂起后台任务）：
+                #   1. 标记 managed_by_tool——后续不再自动等待其完成
+                #      （模型已拿到 task_id，可经 bash_task 继续管理）；
+                #   2. 插入「仍在运行」用户消息，让模型知道任务未结束，
+                #      可选择继续管理或结束对话（不再无限阻塞）。
+                running_msgs: list[str] = []
+                for task in unfinished:
+                    # 快照遍历（P3 防御）：当前循环内无 await 不会结构性修改，
+                    # 但快照可防未来加入 await 时 bash_task/完成回调并发 pop。
+                    for task_id, rec in list(self._background_tasks.items()):
+                        if rec.get("task") is task:
+                            if not rec.get("managed_by_tool"):
+                                rec["managed_by_tool"] = True
+                            running_msgs.append(json.dumps({
+                                "task_id": task_id,
+                                "command": rec.get("command", ""),
+                                "status": "running",
+                                "output": rec.get("result", ""),
+                            }, ensure_ascii=False))
+                            break
+                if running_msgs:
+                    self._append_background_result_messages(running_msgs)
+                    self._publish_background_task_event()
+                    return True
+                # 防御：running_msgs 为空（极端时序下 unfinished 任务已被
+                # bash_task 移除或刚完成）→ 仅移除这些任务的残留记录，
+                # 不清空全表（避免误删其他仍在管理的任务记录）。
+                removed_any = False
+                for task in unfinished:
+                    for task_id, rec in list(self._background_tasks.items()):
+                        if rec.get("task") is task:
+                            del self._background_tasks[task_id]
+                            removed_any = True
+                            break
+                if removed_any:
+                    self._publish_background_task_event()
+            else:
+                # unfinished 为空（tasks 全为 None/done、或中断取消后已收集）：
+                # 仅清理「非 managed 且 task 缺失或已结束」的残留记录，
+                # 保留 managed_by_tool 任务（模型可经 bash_task 继续管理，
+                # 全表 clear 会使其失联——P2 修复）。
+                #
+                # ★ P1 修复（2026-08-08）：stale 判定必须同时满足
+                #   ``task.done()`` 与 ``rec.get("done")``——自动转后台任务
+                #   （_promote_to_background）的 done 标志由 exec_task 的
+                #   _on_done 完成回调写入（call_soon 排队），存在「task 已完成
+                #   但回调未执行」的极窄窗口；若此时仅凭 task.done() 判 stale
+                #   删除记录，回调随后 _complete_background_task 时 record 为
+                #   None → 结果静默丢弃。保留该记录一个循环，待回调写入后由
+                #   分支 ① _collect_done_background_messages 正常消费。
+                stale_ids: list[str] = []
+                for tid, rec in self._background_tasks.items():
+                    if rec.get("managed_by_tool"):
+                        continue
+                    task = rec.get("task")
+                    if task is None or (task.done() and rec.get("done")):
+                        stale_ids.append(tid)
+                for tid in stale_ids:
+                    del self._background_tasks[tid]
+                if stale_ids:
+                    self._publish_background_task_event()
 
         return False

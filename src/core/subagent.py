@@ -150,8 +150,98 @@ class SubAgent(BaseAgent):
         try:
             return await self._run_impl()
         finally:
-            # 无论成功/失败/取消，均将完整对话记录到父 Agent（供 /export 导出）
-            self._record_to_parent()
+            # ★ SubAgent 结束时清理未完成的后台 bash 任务（防资源泄漏）：
+            #   SubAgent 内部自动转后台 / background=True 的 bash 任务若未完成，
+            #   父 Agent 无法访问其任务记录（挂在 SubAgent 的 _background_tasks），
+            #   必须在此取消 asyncio task 并终止子进程，防止 task + 子进程长期
+            #   残留（fd/进程资源累积 → 后续并行执行卡死）。
+            #   清理异常（如再入 CancelledError）不得阻断 _record_to_parent
+            #   （/export 导出完整性，P1-4 修复）。
+            try:
+                await self._cleanup_background_tasks()
+            except BaseException:
+                _logger.exception(
+                    "SubAgent %s 清理后台任务异常（不影响记录导出）", self.label,
+                )
+            finally:
+                # 无论成功/失败/取消，均将完整对话记录到父 Agent（供 /export 导出）
+                self._record_to_parent()
+
+    async def _cleanup_background_tasks(self) -> None:
+        """清理 SubAgent 内部未完成的后台 bash 任务。
+
+        取消仍在运行的 asyncio task（_run_pty 的 CancelledError 分支会杀进程树），
+        对已记录 pid 且进程尚未退出的任务兜底杀进程树，最后清空任务记录。
+        """
+        tasks_to_cancel: list = []
+        bg = getattr(self, "_background_tasks", {})
+        if bg is None:
+            bg = {}
+        elif not isinstance(bg, dict):
+            _logger.warning(
+                "SubAgent %s 的 _background_tasks 类型异常: %s（回退为空 dict）",
+                getattr(self, "label", "?"), type(bg).__name__,
+            )
+            bg = {}
+        for _task_id, rec in bg.items():
+            # record 级防御（P2-2）：异常 record 跳过，避免中断整个清理
+            if not isinstance(rec, dict):
+                _logger.warning(
+                    "SubAgent %s 后台任务记录类型异常: %s（跳过）",
+                    getattr(self, "label", "?"), type(rec).__name__,
+                )
+                continue
+            task = rec.get("task")
+            if task is not None and not task.done():
+                tasks_to_cancel.append(task)
+            process = rec.get("process")
+            # 兜底杀进程树（P1-2）：仅当进程仍可能存活时执行。
+            #   process.returncode 非 None 表示进程已退出（进程组已解散），
+            #   pid 可能已被 OS 复用，此时 killpg(pid) 会误杀无关进程组——
+            #   安全红线（禁止影响未授权进程）。
+            pid = rec.get("pid")
+            process_alive = (process is None or process.returncode is None)
+            if pid is not None and process_alive:
+                try:
+                    from ..tools.bash import kill_process_tree
+                    kill_process_tree(pid)
+                except Exception:
+                    _logger.debug("SubAgent 清理后台任务进程树失败: %s", pid, exc_info=True)
+            # ★ P2-2：不再单独 process.kill()——kill_process_tree 已覆盖
+            #   进程组 + /proc 后代补杀；此处若再用同一 pid 调用 process.kill()，
+            #   killpg 之后 returncode 更新有延迟，pid 可能已被 OS 复用，
+            #   存在误杀无关进程的风险（安全红线）。
+        for t in tasks_to_cancel:
+            t.cancel()
+        if tasks_to_cancel:
+            # ★ 取消等待带超时（P1-3）：被取消的后台 bash 任务可能卡在
+            #   process.wait()（子进程不可杀），无界等待会让 SubAgent.run
+            #   的 finally 永不结束 → 父 Agent dispatch 等待 → 整个并行执行
+            #   卡死（与本次修复目标冲突）。进程树已 kill，超时后放弃等待，
+            #   残余 task 由事件循环 GC 回收。
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks_to_cancel, return_exceptions=True),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                _logger.warning(
+                    "SubAgent %s 后台任务取消等待超时（%d 个任务），放弃等待",
+                    self.label, len(tasks_to_cancel),
+                )
+            except Exception:
+                _logger.debug("SubAgent 清理后台任务等待取消异常", exc_info=True)
+        # ★ 时序说明（P3-3）：此处的 task 完成回调（_complete_background_task
+        #   → 写 record）在上面的 await gather 等待期间于事件循环中执行，
+        #   先更新 record 再 clear，无数据丢失。
+        # ★ P3：全 done 场景（tasks_to_cancel 为空，无 await 点）时，让出一次
+        #   事件循环，使已排队（call_soon）的 _on_done 完成回调先执行并写入
+        #   done/result，再 clear——避免窗口记录（task 已完成但回调未执行）
+        #   的结果静默丢失。
+        await asyncio.sleep(0)
+        if getattr(self, "_background_tasks", None):
+            self._background_tasks.clear()
+            self._publish_background_task_event()
 
     async def _run_impl(self) -> str:
         """SubAgent 主循环实现（由 run() 包裹，确保 finally 记录完整对话）。"""
