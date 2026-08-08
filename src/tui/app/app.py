@@ -15,8 +15,6 @@ Claude Code 视觉对齐：顶部标题栏（TopHeader）为文档首行，其�
 
 from __future__ import annotations
 
-import logging
-
 from src.tui.core.style import Style
 from src.tui.ink import h, APP, TEXT, StyledRun, Column
 # ★ P3-7：time_glow/_fx 模块顶部集中导入（_theme/_fx 仅依赖 core 层，无
@@ -24,14 +22,11 @@ from src.tui.ink import h, APP, TEXT, StyledRun, Column
 #   _ParseLine 每帧在函数体内重复惰性导入。
 from src.tui.app import _fx
 from src.tui.app._theme import time_glow
-from src.tui.ink.hooks import use_input
 from .chat_view import ChatView
 from .header import TopHeader
 from .status_bar import StatusBar
 from .user_select import UserSelectPopup
 from .input_area import InputArea
-
-_logger = logging.getLogger(__name__)
 
 
 def App(props) -> object:
@@ -43,20 +38,6 @@ def App(props) -> object:
     """
     model = props["model"]
     width = props.get("width", 80)
-
-    # ── 折叠群组卡展开/收起交互（Phase C 后续工作，对齐 CC） ──
-    # Ctrl+X：切换全部折叠摘要卡（``Read N files``）展开/收起。is_active 恒真
-    # （全局显示命令）；handler 仅消费 Ctrl+X（ctrl_key '\x18'），其余按键
-    # 返回 False 放行——不干扰输入编辑 / UserSelectPopup 导航 / 其他组件。
-    def _toggle_collapse(event) -> bool:
-        if event.kind == "ctrl_key" and event.char == "\x18":  # Ctrl+X
-            try:
-                model.toggle_group_collapsed()
-            except Exception:
-                _logger.debug("Ctrl+X 折叠群组卡切换异常", exc_info=True)
-            return True
-        return False
-    use_input(_toggle_collapse, is_active=True)
 
     input_props = {
         "text": model.input_text,

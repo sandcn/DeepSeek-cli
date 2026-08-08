@@ -35,7 +35,7 @@ _WELCOME_STYLED = [
     StyledRun("\u2726 ", Style(fg=45, bold=True)),
     StyledRun("欢迎使用 DeepSeek CLI", Style(fg=252)),
     StyledRun("  \u00b7  ", Style(fg=242)),
-    StyledRun("/help 查看命令 · Ctrl+N 切换模型 · Ctrl+X 展开工具 · Tab 补全", Style(fg=242)),
+    StyledRun("/help 查看命令 · Ctrl+N 切换模型 · Tab 补全", Style(fg=242)),
 ]
 
 #: 欢迎行 ✦ 呼吸色域（亮青 45 邻域脉动，8s 周期——与工具卡标题/模型名呼吸同步）
@@ -62,7 +62,7 @@ def _welcome_element(model, width: int) -> object:
             StyledRun("\u2726 ", Style(fg=dot, bold=True)),
             StyledRun("欢迎使用 DeepSeek CLI", Style(fg=252)),
             StyledRun("  \u00b7  ", Style(fg=242)),
-            StyledRun("/help 查看命令 · Ctrl+N 切换模型 · Ctrl+X 展开工具 · Tab 补全", Style(fg=242)),
+            StyledRun("/help 查看命令 · Ctrl+N 切换模型 · Tab 补全", Style(fg=242)),
         ]
     else:
         styled = _WELCOME_STYLED

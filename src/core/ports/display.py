@@ -55,14 +55,6 @@ class DisplayPort(ABC):
         """批量工具开始"""
         ...
 
-    def tool_group_planned(self, label: str, tool_name: str, members: list) -> None:
-        """分组工具卡计划（Phase B：≥2 个连续同类分组工具合并为一张卡）。
-
-        具体子类覆盖（TUI 经 EventBusDisplayProxy 发布事件）；基类默认
-        no-op——非 TUI 显示实现（null/webui）不消费分组计划。
-        """
-        pass
-
     @abstractmethod
     def update_parse_info(self, label: str, tool_name: str, tokens: int,
                           elapsed: float) -> None:

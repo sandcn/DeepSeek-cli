@@ -131,10 +131,6 @@ class WebDisplay(BaseDisplay, BaseWebSocketSender):
     def tool_batch_start(self, label: str, names: list) -> None:
         self.send_json(msg_tool_batch_start(label, names))
 
-    def tool_group_planned(self, label: str, tool_name: str, members: list) -> None:
-        # WebUI 不消费分组计划（工具逐卡显示）；no-op 保持端口链完整。
-        pass
-
     def update_parse_info(self, label: str, tool_name: str, tokens: int, elapsed: float) -> None:
         self.send_json(msg_parse_info(label, tool_name, tokens, elapsed))
 

@@ -239,31 +239,6 @@ class TestContentGuide:
         text = "".join(r.text for r in omit)
         assert text.startswith("│ "), f"head 省略提示应有竖线引导: {text!r}"
 
-    def test_bash_truncation_message_has_guide(self):
-        """落盘截断文案（CC）替代省略行，带竖线引导且宽度 <= width。
-
-        对齐 Claude Code：`Output truncated (XKB total). Full output saved
-        to: <path>`。仅在 ``_bash_truncation_file`` 非空时启用（兜底省略行
-        由 test_omitted_line_has_guide 覆盖）。
-        """
-        blk = _make_block("bash", "done", "x", [_al("  hi")], closed=True)
-        blk.extra["_bash_omitted_lines"] = 7
-        blk.extra["_bash_truncation_file"] = "/tmp/deepseek-bash-abc123"
-        blk.extra["_bash_truncation_bytes"] = 2048
-        lines = tool_card_lines(blk, 120, 0, None)
-        trunc = next(l for l in lines if "Output truncated" in "".join(r.text for r in l))
-        text = "".join(r.text for r in trunc)
-        assert text.startswith("│ "), f"截断文案应有竖线引导: {text!r}"
-        assert "Output truncated (2KB total)." in text, text
-        assert "Full output saved to: /tmp/deepseek-bash-abc123" in text, text
-        assert wcswidth_simple(text) <= 120, f"截断文案超宽: {text!r}"
-        # 无落盘文件（缺省）回退省略行
-        blk2 = _make_block("bash", "done", "x", [_al("  hi")], closed=True)
-        blk2.extra["_bash_omitted_lines"] = 7
-        lines2 = tool_card_lines(blk2, 30, 0, None)
-        omit = next(l for l in lines2 if "省略" in "".join(r.text for r in l))
-        assert "前 7 行省略" in "".join(r.text for r in omit), lines2
-
 
 # ═══════════════════════════════════════════════════════════
 # 无独立状态行（Claude Code 极简样式）

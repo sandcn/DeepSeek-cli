@@ -64,17 +64,12 @@ class TestSpinner:
         assert f0 != f1            # 帧随时间推进（时间基，非帧计数）
 
     def test_no_timer_thread(self):
-        """P1（review）：Spinner 不再注册 threading.Timer（纯渲染期时间基）。
-
-        断言**实际调用** ``threading.Timer(`` 不存在（回归防护：重新引入
-        Timer 后台线程必须实例化它）；模块 docstring 的历史说明中提及
-        ``threading.Timer`` 字面量不算回归，故不匹配裸字符串。
-        """
+        """P1（review）：Spinner 不再注册 threading.Timer（纯渲染期时间基）。"""
         from src.tui.ink.widgets import _spinner
         src = _spinner.__file__
         with open(src, encoding="utf-8") as fh:
             content = fh.read()
-        assert "threading.Timer(" not in content
+        assert "threading.Timer" not in content
         assert "time.monotonic" in content
 
     def test_color_style(self):

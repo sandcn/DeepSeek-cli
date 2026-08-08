@@ -33,7 +33,6 @@ from .event_types import (
     DisplayEvent,
     SessionStarted, SessionStopped,
     ToolParsingEvent, ToolStartedEvent, ToolDoneEvent, ToolBatchStartedEvent,
-    ToolGroupPlannedEvent,
     AgentAddedEvent, AgentStatusChanged,
     ModelPhaseEvent, UsageUpdatedEvent,
     ParseInfoEvent, ParseInfoDoneEvent, MetricsUpdateEvent,
@@ -316,14 +315,6 @@ class EventBusDisplayProxy(_BaseDisplay):
     def tool_batch_start(self, label: str, tool_names: list) -> None:
         self._bus.publish(ToolBatchStartedEvent(
             label=label, tool_names=tuple(tool_names), source=self._source,
-        ))
-
-    def tool_group_planned(self, label: str, tool_name: str, members: list) -> None:
-        """发布分组工具卡计划事件（Phase B：≥2 个连续同类分组工具合并）。"""
-        self._bus.publish(ToolGroupPlannedEvent(
-            label=label, tool_name=tool_name,
-            members=tuple(tuple(m) if not isinstance(m, tuple) else m for m in members),
-            source=self._source,
         ))
 
     def update_parse_info(self, label: str, tool_names: str, tokens: int, elapsed: float) -> None:

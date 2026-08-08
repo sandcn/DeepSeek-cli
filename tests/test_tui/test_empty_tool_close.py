@@ -120,20 +120,6 @@ class TestCloseEmptyToolBoxes:
         model = AppModel()
         assert model.close_empty_tool_boxes() == 0
 
-    def test_group_block_not_closed_as_empty(self) -> None:
-        """群组块（仅 1 行标题占位）不被误判为空卡闭合。
-
-        回归：群组卡 block.lines 仅 1 行标题占位（成员输出丢弃、摘要卡），
-        按「空 box（len<=1）」判定会误闭合——群组状态由成员 close/
-        flush_tool_groups 管理，close_empty_tool_boxes 须跳过 _group 块。
-        """
-        model = AppModel()
-        model.open_tool_group("read_file", [("r1", "a.py"), ("r2", "b.py")])
-        closed = model.close_empty_tool_boxes()
-        assert closed == 0
-        assert "r1" in model.tool_boxes and "r2" in model.tool_boxes
-        assert model.blocks[-1].closed is False
-
 
 # ═══════════════════════════════════════════════════════════
 # _on_round_end 调用 close_empty_tool_boxes

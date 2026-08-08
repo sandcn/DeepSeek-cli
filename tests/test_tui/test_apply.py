@@ -6,8 +6,6 @@ content close/reopen、tool 组开闭、状态计数。
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 from src.tui.app.model import AppModel, ReasoningState
 from src.tui.app.apply import apply_cmd
 from src.tui._const import (
@@ -39,18 +37,6 @@ from src.tui._const import (
 
 def _model() -> AppModel:
     return AppModel()
-
-
-def _file_back_bash():
-    """禁用 bash 大输出落盘（测试钩子）——close_tool_box 写盘失败回退省略行。
-
-    返回 context manager：patch ``_tool_output_mixin._write_bash_output_file``
-    抛 OSError（落盘失败路径），断言「… 前 N 行省略」兜底文案时使用。
-    """
-    return patch(
-        "src.tui.app._tool_output_mixin._write_bash_output_file",
-        side_effect=OSError("disk full (test hook)"),
-    )
 
 
 class TestBasicCommands:
@@ -432,70 +418,31 @@ class TestToolBox:
         second = m.open_tool_box("", "second")
         assert first is not second
         assert len(m.blocks) == 2
-        # P2-4：空 id 匿名 box 按打开顺序 FIFO 关闭（先开先关，与打开顺序一致）
+        # 最近者关闭，最早者保留（倒序语义，与既有 close("") 行为一致）
         m.close_tool_box("", True)
-        assert m.blocks[0].closed is True
-        assert m.blocks[1].closed is False
+        assert m.blocks[0].closed is False
+        assert m.blocks[1].closed is True
 
     def test_bash_output_tail_display(self):
-        """bash 输出超过 5 行 → 只保留最后 5 行 + 落盘失败回退省略提示。
-
-        CC 对齐：tail 保留最近 5 行（getRecent(5)）；close_tool_box 落盘
-        （_file_back_bash 使写盘失败）失败回退「… 前 5 行省略」兜底。
-        """
+        """bash 输出超过 3 行 → 只保留最后 3 行 + 省略提示「… 前 N 行省略」。"""
         m = _model()
         m.width = 40
         m.open_tool_box("t1", "bash", "make build")
         for i in range(10):
             m.append_tool_output("t1", f"line{i}")
-        with _file_back_bash():
-            m.close_tool_box("t1", True)
-        block = m.blocks[-1]
-        # block.lines 修剪为 标题 + 最后 5 行 + 状态行
-        assert len(block.lines) == 1 + 5 + 1
-        assert "line9" in block.lines[-2].plain
-        # 省略计数记录（10 输出 - 5 保留 = 5）
-        assert block.extra["_bash_omitted_lines"] == 5
-        # 卡片渲染：省略提示 + 最后 5 行；前置行不显示
-        plains = [l.plain for l in m.committed_lines]
-        assert "前 5 行省略" in "".join(plains)
-        assert any("line5" in p for p in plains)
-        assert any("line9" in p for p in plains)
-        assert not any("line0" in p for p in plains)
-
-    def test_bash_output_file_backed(self, tmp_path, monkeypatch):
-        """bash 大输出落盘：完整内容写入 + CC 截断文案（Output truncated KB + 路径）。
-
-        DEEPSEEK_TUI_TMPDIR 注入 tmp_path；close 后断言文件存在、内容为完整
-        输出（被删前缀 + 保留尾），卡片渲染 `Output truncated (XKB total).
-        Full output saved to: <path>` 替代省略行；reset_display 清理文件。
-        """
-        monkeypatch.setenv("DEEPSEEK_TUI_TMPDIR", str(tmp_path))
-        m = _model()
-        m.width = 200
-        m.open_tool_box("t1", "bash", "make build")
-        for i in range(10):
-            m.append_tool_output("t1", f"line{i}")
         m.close_tool_box("t1", True)
         block = m.blocks[-1]
-        assert block.extra["_bash_omitted_lines"] == 5
-        path = block.extra.get("_bash_truncation_file", "")
-        assert path, "close 应落盘 bash 截断文件"
-        assert path.startswith(str(tmp_path)), f"落盘目录应尊重 DEEPSEEK_TUI_TMPDIR: {path}"
-        # 完整输出：全部 10 行（被删前缀 + 保留尾）
-        with open(path, encoding="utf-8") as f:
-            full = f.read()
-        assert full.splitlines() == [f"line{i}" for i in range(10)], full
-        # 卡片渲染：CC 截断文案（含 KB + 路径）
+        # block.lines 修剪为 标题 + 最后 3 行 + 状态行
+        assert len(block.lines) == 1 + 3 + 1
+        assert "line9" in block.lines[-2].plain
+        # 省略计数记录（10 输出 - 3 保留 = 7）
+        assert block.extra["_bash_omitted_lines"] == 7
+        # 卡片渲染：顶边框 + 省略提示 + 最后 3 行 + 底边框；前置行不显示
         plains = [l.plain for l in m.committed_lines]
-        joined = "\n".join(plains)
-        assert "Output truncated (" in joined, joined
-        assert "KB total)" in joined, joined
-        assert f"Full output saved to: {path}" in joined, joined
-        # reset_display（清屏/回放重渲染）清理落盘文件
-        m.reset_display()
-        import os
-        assert not os.path.exists(path), "reset_display 应 unlink bash 截断文件"
+        assert "前 7 行省略" in "".join(plains)
+        assert any("line7" in p for p in plains)
+        assert any("line9" in p for p in plains)
+        assert not any("line0" in p for p in plains)
 
     def test_bash_output_tail_narrow_terminal_no_overflow(self):
         """窄终端 + bash 大量输出 → 省略提示行截断至内宽，卡片不撑破（无超宽行）。
@@ -519,50 +466,27 @@ class TestToolBox:
                 )
 
     def test_head_tools_display(self):
-        """find/search/ls 输出超过 20 行 → 只保留前 20 行 + 省略提示「… 后 N 行省略」。"""
-        for tool in ("find", "search", "ls"):
+        """find/search/ls/read_file 输出超过 3 行 → 只保留前 3 行 + 省略提示「… 后 N 行省略」。"""
+        for tool in ("find", "search", "ls", "read_file"):
             m = _model()
             m.width = 40
             m.open_tool_box("t1", tool)
-            for i in range(25):
+            for i in range(10):
                 m.append_tool_output("t1", f"line{i}")
             m.close_tool_box("t1", True)
             block = m.blocks[-1]
-            # block.lines 修剪为 标题 + 前 20 行 + 状态行
-            assert len(block.lines) == 1 + 20 + 1, tool
-            assert "line19" in block.lines[-2].plain, tool
-            # 省略计数记录（25 输出 - 20 保留 = 5）
-            assert block.extra["_head_omitted_lines"] == 5, tool
-            # 卡片渲染：前 20 行 + 省略提示；后置行不显示
+            # block.lines 修剪为 标题 + 前 3 行 + 状态行
+            assert len(block.lines) == 1 + 3 + 1, tool
+            assert "line2" in block.lines[-2].plain, tool
+            # 省略计数记录（10 输出 - 3 保留 = 7）
+            assert block.extra["_head_omitted_lines"] == 7, tool
+            # 卡片渲染：顶边框 + 前 3 行 + 省略提示 + 底边框；后置行不显示
             plains = [l.plain for l in m.committed_lines]
-            assert "后 5 行省略" in "".join(plains), tool
+            assert "后 7 行省略" in "".join(plains), tool
             assert any("line0" in p for p in plains), tool
-            assert any("line19" in p for p in plains), tool
-            assert not any("line20" in p for p in plains), tool
-            assert not any("line24" in p for p in plains), tool
-
-    def test_read_file_no_head_trim(self):
-        """read_file 移出头修：输出不修剪（内容即卡片意义），无省略提示。
-
-        CC 对齐（2026-08-08）：read_file 不再进 _TOOL_HEAD_TOOLS——文件内容
-        即卡片意义，超长由增量提交阈值兜底帧成本。
-        """
-        m = _model()
-        m.width = 40
-        m.open_tool_box("t1", "read_file")
-        for i in range(25):
-            m.append_tool_output("t1", f"line{i}")
-        m.close_tool_box("t1", True)
-        block = m.blocks[-1]
-        # 标题 + 25 行输出 + 状态行（不修剪）
-        assert len(block.lines) == 1 + 25 + 1
-        assert "_head_omitted_lines" not in block.extra
-        assert "_bash_omitted_lines" not in block.extra
-        # 卡片渲染包含首尾行（无省略提示）
-        plains = [l.plain for l in m.committed_lines]
-        assert any("line0" in p for p in plains)
-        assert any("line24" in p for p in plains)
-        assert not any("省略" in p for p in plains)
+            assert any("line2" in p for p in plains), tool
+            assert not any("line3" in p for p in plains), tool
+            assert not any("line9" in p for p in plains), tool
 
     def test_head_tools_under_three_lines_unchanged(self):
         """find/search/ls/read_file 输出 ≤3 行 → 不修剪（无省略提示）。"""

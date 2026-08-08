@@ -55,9 +55,6 @@ class _NullDisplayPort(DisplayPort):
     def tool_batch_start(self, label: str, names: list[str]) -> None:
         pass
 
-    def tool_group_planned(self, label: str, tool_name: str, members: list) -> None:
-        pass
-
     def update_model_phase(self, label: str, phase: str, message: str = "") -> None:
         pass
 
