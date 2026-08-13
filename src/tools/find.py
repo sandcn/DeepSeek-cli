@@ -46,27 +46,11 @@ class FindFunc(Func):
             "function": {
                 "name": "find",
                 "description": (
-                    "在项目中查找文件和目录。支持 shell 通配符（fnmatch）模式匹配、类型(file/dir)过滤、搜索深度控制。"
-                    "自动排除 node_modules、__pycache__、.git 等非源码目录。"
-                    "使用纯 Python 实现，安全跨平台，无 shell 注入风险。"
-                    "\n\n"
-                    "【防幻觉】引用任何文件路径前，先用 find 确认该路径确实存在，禁止凭记忆虚构路径。"
-                    "\n\n"
-                    "参数说明："
-                    "\n- pattern（必填）：文件/目录名匹配模式，支持 shell 通配符（如 *.py、test_*），多个模式用空格分隔（OR）"
-                    "\n- path（可选）：搜索根路径，默认当前工作目录。可指定子目录如 src/"
-                    "\n- type（可选）：过滤类型，可选 'file'（仅文件）或 'dir'（仅目录），省略时两者都返回"
-                    "\n- depth（可选）：最大搜索深度（目录层级），默认 0 表示无限制。设置 1 表示仅在当前目录搜索（不含子目录）"
-                    "\n\n"
-                    "使用示例："
-                    "\n- 找所有 Python 文件：find(pattern=\"*.py\")"
-                    "\n- 在 src 下找目录：find(pattern=\"*\", path=\"src\", type=\"dir\", depth=1)"
-                    "\n- 找所有测试文件：find(pattern=\"test_*.py\")"
-                    "\n- 找配置文件：find(pattern=\"*.json *.yaml\", path=\"src/config\")"
-                    "\n- 限制搜索深度：find(pattern=\"*.py\", depth=3)"
-                    "\n- 多模式搜索：find(pattern=\"*.md *.rst\", path=\"docs\")"
-                    "\n- 精确搜索目录：find(pattern=\"*\", path=\"src/tools\", type=\"dir\", depth=1)"
-                    "\n- 扩展名搜索：find(pattern=\"*.py\", type=\"file\", depth=5)"
+                    "在项目中按文件名模式（fnmatch 通配符）查找文件和目录，返回匹配路径列表。"
+                    "引用任何文件路径前先用 find 确认其存在。"
+                    "pattern 支持 * ? [...] 通配符，多模式空格分隔（OR）；"
+                    "path 限定根目录，type 过滤 file/dir，depth 控制深度（0 无限制）。"
+                    "自动排除 node_modules/.git/__pycache__ 等。无结果返回明确提示。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -121,18 +105,8 @@ class FindFunc(Func):
                         },
                         "depth": {
                             "type": "integer",
-                            "description": (
-                                "最大搜索深度（可选）。目录层级从搜索根目录开始计数："
-                                "\n- 0（默认）：无限制（递归搜索所有子目录）"
-                                "\n- 1：仅在搜索根目录中查找（不进入子目录）"
-                                "\n- 2：搜索根目录及子目录下一层内容"
-                                "\n- 3+：更多层的递归"
-                                "\n\n"
-                                "最佳实践："
-                                "\n- 项目探底看模块结构：depth=1"
-                                "\n- 看子模块：depth=2"
-                                "\n- 全量搜索省略 depth（=0 无限制）"
-                            ),
+                            "minimum": 0,
+                            "description": "最大搜索深度（目录层级，0 无限制）。1 仅当前层，2 含子目录。",
                             "default": 0,
                         },
                     },

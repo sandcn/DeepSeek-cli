@@ -35,20 +35,9 @@ class CpFunc(FileSystemToolBase):
             "function": {
                 "name": "cp",
                 "description": (
-                    "复制文件或目录。支持文件沙盒撤回（复制前会记录目标路径的原内容到沙盒）。"
-                    "复制文件时保留元数据（修改时间、权限等）。"
-                    "\n"
-                    "参数行为摘要：将 source 路径下的文件或目录复制到 destination 路径，方向为 source → destination。"
-                    "\n\n"
-                    "【边界信息】"
-                    "\n- 路径安全校验：拒绝路径穿越攻击（如../../etc/shadow等系统敏感文件）"
-                    "\n- 源路径不存在时返回明确错误信息"
-                    "\n- 目标路径已存在时直接覆盖（文件用 shutil.copy2，目录用 shutil.copytree）"
-                    "\n- 复制目录时必须设置 recursive=True，否则返回提示并拒绝"
-                    "\n- 目录递归复制时，递归收集目标目录下所有文件进行沙盒记录"
-                    "\n- 符号链接：复制文件本身而非其指向的目标"
-                    "\n- 权限不足时返回 PermissionError"
-                    "\n- 沙盒机制：复制前保存目标路径的原有内容，可通过沙盒恢复撤回"
+                    "复制文件或目录（source → destination）。"
+                    "复制目录必须设 recursive=true；目标已存在则覆盖（文件保留元数据）。"
+                    "返回：复制结果；失败以 ( 开头。路径穿越被拒绝；沙盒可撤回。"
                 ),
                 "parameters": {
                     "type": "object",

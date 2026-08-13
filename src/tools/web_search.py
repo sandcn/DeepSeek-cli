@@ -130,22 +130,11 @@ class WebSearchFunc(Func):
             "function": {
                 "name": "web_search",
                 "description": (
-                    "网页搜索 & 网页内容获取。支持两种模式：\n\n"
-                    "【mode='search'（默认）】在百度/必应等搜索引擎中搜索关键词，"
-                    "返回标题/链接/摘要。参数：query(必填)、engine、num_results、time_range。\n\n"
-                    "【mode='fetch'】获取指定 URL 的网页全文内容，"
-                    "自动提取标题、发布时间、正文（去除导航/广告/页脚噪音）。参数：query(填URL)、mode='fetch'。\n\n"
-                    "使用建议：当需要了解网页完整内容（如技术文章、文档、新闻）时使用 mode='fetch'；"
-                    "当需要查找相关资源时使用 mode='search'。\n\n"
-                    "【边界信息】\n"
-                    "- 禁止访问内网/私有地址（SSRF防护）\n"
-                    "- 仅支持 http/https 协议\n"
-                    "- 网络超时：15秒\n"
-                    "- 正文最大输出 50000 字符，超出截断\n"
-                    "- 自动检测编码（UTF-8/GBK等）\n"
-                    "- User-Agent池随机轮换，降低被反爬概率"
-                    "\n\n"
-                    "【来源追溯（强制）】通过 web_search 获取的代码片段必须标注来源 URL 和验证状态"
+                    "网页搜索或获取网页全文。"
+                    "mode='search'（默认）：搜索关键词返回标题/链接/摘要；"
+                    "mode='fetch'：抓取指定 URL 全文（去导航/广告噪音）。"
+                    "了解完整内容用 fetch，查找资源用 search。"
+                    "仅 http/https，禁止内网地址。获取的代码片段须标注来源 URL 和验证状态。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -168,7 +157,9 @@ class WebSearchFunc(Func):
                         },
                         "num_results": {
                             "type": "integer",
-                            "description": "返回结果数量，范围1-20，默认10，超出自动裁剪到边界值。仅 mode='search' 时有效。",
+                            "minimum": 1,
+                            "maximum": 20,
+                            "description": "返回结果数量（1-20），默认 10，超出自动裁剪。仅 mode='search' 时有效。",
                             "default": 10
                         },
                         "time_range": {

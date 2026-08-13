@@ -40,26 +40,10 @@ class DispatchAgents(Func):
             "function": {
                 "name": cls.name,
                 "description": (
-                    "并行派发多个子Agent执行任务，每个子Agent有独立上下文和文件沙盒。"
-                    "适用：并发分析/修改多个独立文件或模块。"
-                    "关键规则：同一文件的所有修改必须通过单次调用完成。"
-                    "\n\n"
-                    "【参数行为说明】"
-                    "\n- **description**：UI标题，用作子任务在界面中的显示标签"
-                    "\n- **prompt**：完整任务指令，子Agent据此独立执行全部工作"
-                    "\n- **type**：子Agent类型。execute（默认，通用型，读写+bash，无路径限制）/ map（只读分析代码结构）/ review（代码审查,找bug）/ plan（计划生成，write_file/update_file/mkdir 仅限 .chat/plan/ 目录）"
-                    "\n\n"
-                    "【使用限制】"
-                    "\n- 单次调用执行单个子Agent任务（独立执行），同一轮多次调用自动共享执行器实现真正并行"
-                    "\n- description和prompt缺一不可：缺少任意一个返回错误"
-                    "\n- 同一文件的所有修改必须在单次subagent内完成，禁止跨subagent修改同一文件"
-                    "\n- 必须关联父Agent：未关联时返回错误"
-                    "\n- 同一轮多个dispatch_agent调用会自动共享ParallelExecutor实现真正的并行执行"
-                    "\n\n"
-                    "【SubAgent 幻觉防止】"
-                    "\n- 派发前确认文件路径和引用的函数名都 read_file 确认过"
-                    "\n- SubAgent 已内置幻觉防止规则，无需重复要求"
-                    "\n- 对不确定部分要求 SubAgent 标注「【待确认】」并如实报告不充分信息"
+                    "派发子 Agent 执行任务（独立上下文+文件沙盒），同轮多次调用自动并行。"
+                    "type：execute（读写+bash，默认）/ map（只读分析）/ review（代码审查 P0-P3）/ plan（生成计划，仅写 .chat/plan/）。"
+                    "同一文件的所有修改必须在单次调用内完成。"
+                    "返回：子 Agent 执行结果。"
                 ),
                 "parameters": {
                     "type": "object",

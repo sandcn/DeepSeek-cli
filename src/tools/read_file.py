@@ -53,36 +53,29 @@ class ReadFileFunc(Func):
             "function": {
                 "name": "read_file",
                 "description": (
-                    "读取文件内容。支持 path + start_line/end_line 配合使用："
-                    "①仅 path → 读取整个文件；②path+start_line → 从 start_line 读至末尾；"
-                    "③path+end_line → 从第1行读至 end_line；"
-                    "④同时指定 start_line+end_line → 读取闭区间 [start_line, end_line]。"
-                    "读取多个文件时应并发调用多个read_file。\n\n"
-                    "【使用规则】\n"
-                    "- 首次读取：第一次读取某个文件时，必须读取完整内容（不设 start_line/end_line 限制），"
-                    "确保全面理解后再操作。后续读取同一文件时可设行号范围进行分段读取。\n\n"
-                    "【边界信息】\n"
-                    "- 大文件(>10MB)会在UI上显示警告标记，仍正常读取\n"
-                    "- 二进制文件/编码错误自动降级为replace模式，不会崩溃\n"
-                    "- start_line<1自动调整为1，start_line>end_line自动交换\n"
-                    "- 路径安全校验：拒绝路径穿越攻击（如../../etc/passwd）\n"
-                    "- 文件不存在时返回明确错误信息「文件不存在: xxx」\n"
-                    "- 自动检测编码（UTF-8 / GBK / Latin-1 等），GBK 中文文件亦可正常读取"
+                    "读取文件内容，返回文件文本。支持整文件读取或按行号范围读取"
+                    "（start_line/end_line，含两端，行号从 1 开始）。"
+                    "首次读取某文件必须读完整内容（不设行号限制）以全面理解；"
+                    "读取多个文件时并发调用多个 read_file。"
+                    "返回：文件内容；文件不存在返回「文件不存在: xxx」；"
+                    "编码自动检测（UTF-8/GBK/Latin-1），二进制/编码错误自动降级不崩溃；路径穿越被拒绝。"
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "文件路径，支持相对路径（如 \"src/main.py\"）和绝对路径（如 \"/home/user/project/main.py\"）。示例：\"src/main.py\""
+                            "description": "文件路径，支持相对路径（如 src/main.py）或绝对路径。"
                         },
                         "start_line": {
                             "type": "integer",
-                            "description": "起始行号（行号从1开始，包含该行）。如果小于1自动调整为1。不指定时从文件开头读取。"
+                            "minimum": 1,
+                            "description": "起始行号（从 1 开始，含该行）。省略时从文件开头读取。"
                         },
                         "end_line": {
                             "type": "integer",
-                            "description": "结束行号（包含该行）。如果 start_line>end_line 则自动交换两者。不指定时读到文件末尾。"
+                            "minimum": 1,
+                            "description": "结束行号（含该行）。省略时读到文件末尾；start_line>end_line 时自动交换。"
                         }
                     },
                     "required": ["path"]

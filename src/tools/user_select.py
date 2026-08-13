@@ -59,7 +59,12 @@ class UserSelectFunc(Func):
             "type": "function",
             "function": {
                 "name": "user_select",
-                "description": "向用户显示交互式选择界面，用于确认方案、选择选项或澄清需求歧义。支持单选/多选，超时自动选中默认项。非交互环境自动回退默认选项。需要用户确认时优先使用此工具。\n\n参数行为摘要：\n- title（必填）：选择界面的标题，简明扼要即可\n- options（必填）：选项字符串列表，用户从中选择；空列表时返回 {\"selected\":[], \"action\":\"empty\"}\n- option_descriptions（可选）：与 options 等长的说明字符串列表，option_descriptions[i] 为 options[i] 的说明；TUI 中移动到选项时说明显示在选项右侧。缺省为空\n- multi_select：是否允许多选，false=单选（默认），true=多选可勾选多项\n- default_options：超时/取消/非交互时回退的默认选项列表，值必须在 options 中\n- timeout：超时秒数（默认120），超时自动回退 default_options，action=\"timeout\"\n\n【边界信息】\n- options为空时返回 {\"selected\":[], \"action\":\"empty\"}，不会崩溃\n- 非交互式终端（非tty）自动回退默认选项，action为\"non_interactive\"\n- 超时（默认120秒）自动选中默认选项，action为\"timeout\"\n- 用户取消操作时返回默认选项，action为\"cancel\"\n- 异常发生时回退默认选项并返回错误信息，action为\"error: ...\"\n- multi_select默认为False（单选模式）\n- default_options参数可选，默认为空列表\n- option_descriptions长度不足时缺省为空字符串；长度超出部分忽略",
+                "description": (
+                    "向用户显示交互式选择界面，用于确认方案、选择选项或澄清歧义；需用户确认时优先使用。"
+                    "支持单选/多选（multi_select），超时/非交互自动回退 default_options。"
+                    "返回 JSON：{\"selected\":[...], \"action\":...}，"
+                    "action 为 confirmed/cancel/timeout/non_interactive/empty/error。"
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {

@@ -34,18 +34,8 @@ class MvFunc(FileSystemToolBase):
             "function": {
                 "name": "mv",
                 "description": (
-                    "移动文件或目录（source → destination）。支持文件沙盒撤回（可通过沙盒机制恢复）。"
-                    "使用 shutil.move 执行移动操作，支持跨文件系统移动。"
-                    "\n\n"
-                    "【边界信息】"
-                    "\n- 路径安全校验：拒绝路径穿越攻击（如../../etc/passwd）"
-                    "\n- 源路径不存在时返回明确信息「源路径不存在: xxx」"
-                    "\n- 目标路径已存在时将被覆盖（shutil.move 行为），请谨慎操作"
-                    "\n- 目录移动：递归收集并记录所有文件内容到沙盒后执行移动"
-                    "\n- 符号链接：移动链接本身而非其指向的目标"
-                    "\n- 权限不足时返回 PermissionError"
-                    "\n- 沙盒机制：移动前保存源文件内容和目标位置的原有内容，可通过沙盒撤回"
-                    "\n- 支持跨文件系统移动（会自动使用 copy+delete 策略）"
+                    "移动文件或目录（source → destination），支持跨文件系统。"
+                    "目标已存在将被覆盖。返回：移动结果；失败以 ( 开头。路径穿越被拒绝；沙盒可撤回。"
                 ),
                 "parameters": {
                     "type": "object",
