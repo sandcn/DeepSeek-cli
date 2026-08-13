@@ -292,6 +292,17 @@ class InkSession:
                     return
                 except queue.Full:
                     pass  # 并发竞争仍满 → 保持丢弃（不无限循环）
+            # ★ 内容命令不静默丢弃（长任务思考/回答丢失修复，2026-08-13）：
+            #   REASONING/CONTENT/TOOL_OUTPUT 是用户可见核心内容——队列满且无
+            #   LOW 可腾位时，修复前非 blocking 内容命令被**立即静默丢弃** →
+            #   长任务（大量工具输出/流式文本积压致队列满）中思考/回答偶发不
+            #   显示，而 TOOL_OPEN/TOOL_CLOSE/PHASE_DONE 等 CRITICAL 命令走
+            #   阻塞路径不丢，视觉上「只显示工具调用卡片」。渲染线程存活时
+            #   背压等待（模型流式让渲染消费跟上，内容不丢）；渲染线程已终止
+            #   （UI 不可用）回退原丢弃语义（不无限卡死调用方/事件循环）。
+            if _get_cmd_id(cmd) in _STREAM_CMDS and self._render_running:
+                if self._put_no_drop(priority, cmd):
+                    return
             # 方向2（CRITICAL 不静默丢弃）：blocking（CRITICAL）命令腾位失败后
             # 改走 push_cmd_critical 紧急直写语义（_write_emergency 兜底，绝不
             # 静默丢弃）——PhaseDone/ToolClose 等通道关闭命令丢失会导致通道
@@ -339,6 +350,33 @@ class InkSession:
                 f"{_cmd_name(cmd_id)}{ANSI_EMERGENCY_RESET}\n",
                 stream="stderr",
             )
+
+    def _put_no_drop(self, priority: int, cmd: RenderCmd) -> bool:
+        """内容命令背压等待：渲染线程存活时持续等待入队（不静默丢弃内容）。
+
+        长任务渲染拥塞修复（2026-08-13）：REASONING/CONTENT/TOOL_OUTPUT 是
+        用户可见核心内容——队列满时若静默丢弃，长任务中思考/回答偶发不显示
+        （工具调用卡因 CRITICAL 阻塞语义不丢，视觉上「只显示工具调用」）。
+        渲染线程存活时阻塞等待（背压：模型流式等待渲染消费跟上，内容不丢）；
+        渲染线程已终止（UI 不可用）返回 False → 调用方回退丢弃告警路径，
+        避免无限卡死调用方（流式/事件循环线程）。
+
+        Returns:
+            True — 已入队成功；False — 渲染线程已终止，未入队。
+        """
+        while self._render_running:
+            try:
+                self._cmd_queue.put(
+                    (priority, next(self._cmd_seq), cmd),
+                    block=True, timeout=0.5,
+                )
+                self._consecutive_full = 0
+                self._cmd_event.set()
+                return True
+            except queue.Full:
+                # 渲染线程存活但队列仍满（消费中）→ 继续等待（背压，不丢内容）
+                continue
+        return False
 
     # ── 公开访问器 ───────────────────────────────────
 
