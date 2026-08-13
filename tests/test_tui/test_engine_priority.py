@@ -158,3 +158,26 @@ class TestQueueEvictLow:
         # 腾位发生（LOW 被移除），但重试 put 仍满 → HIGH 丢弃
         assert s._cmd_queue.qsize() == 1  # 仅剩 1 个 LOW
         assert s._cmd_queue_dropped == 2  # 移除 LOW(1) + 丢弃 HIGH(1)
+
+    def test_evict_preserves_unfinished_tasks(self):
+        """腾位移除 LOW 命令后补 task_done，unfinished_tasks 不虚高（queue.join 不挂起）。
+
+        长任务回归：修复前 pop 绕过 get() 未减 unfinished_tasks → queue.join()
+        （flush 等待排空）因计数虚高而永远等待 → flush 恒超时 → 丢弃未消费的
+        reasoning/content 命令（视觉「只显示工具调用」）。
+        """
+        from src.tui._const import WriteLineCmd, SubagentFrameCmd
+        s = self._make_session()
+        s.push_cmd(WriteLineCmd(text="low1"))
+        s.push_cmd(WriteLineCmd(text="low2"))          # 队列满（maxsize=2）
+        assert s._cmd_queue.unfinished_tasks == 2
+        s.push_cmd(SubagentFrameCmd(frame_lines=("h",)))  # 腾位
+        # 腾位后：2 - 1(移除 LOW) + 1(入队 HIGH) = 2（不虚高）
+        assert s._cmd_queue.unfinished_tasks == 2
+        assert s._cmd_queue.qsize() == 2
+        # 消费全部命令后 unfinished_tasks 归零，queue.join 不挂起
+        while not s._cmd_queue.empty():
+            s._cmd_queue.get_nowait()
+            s._cmd_queue.task_done()
+        assert s._cmd_queue.unfinished_tasks == 0
+        s._cmd_queue.join()  # 不应挂起（超时由 pytest 兜底）

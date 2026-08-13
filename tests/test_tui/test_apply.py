@@ -418,10 +418,11 @@ class TestToolBox:
         second = m.open_tool_box("", "second")
         assert first is not second
         assert len(m.blocks) == 2
-        # 最近者关闭，最早者保留（倒序语义，与既有 close("") 行为一致）
+        # 最早打开者先关闭，最近者保留（正序 FIFO——P2-4 修复：与打开顺序
+        # 一致，防多空 id 场景逆序弹栈错配；先开先关）
         m.close_tool_box("", True)
-        assert m.blocks[0].closed is False
-        assert m.blocks[1].closed is True
+        assert m.blocks[0].closed is True
+        assert m.blocks[1].closed is False
 
     def test_bash_output_tail_display(self):
         """bash 输出超过 3 行 → 只保留最后 3 行 + 省略提示「… 前 N 行省略」。"""

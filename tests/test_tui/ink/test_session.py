@@ -199,6 +199,61 @@ class TestCommandQueue:
         s.flush(timeout=1.0)
         assert s._cmd_queue.qsize() == 0
 
+    def test_flush_waits_when_render_thread_alive(self):
+        """渲染线程存活但消费慢时，flush 超时后继续等待排空（不丢弃内容命令）。
+
+        长任务回归：修复前 flush 超时即 ``_drain_queue_safe()`` 丢弃队列中未
+        消费命令（含 reasoning/content），渲染线程存活仅因消费慢导致后几轮
+        思考/回答被丢弃（工具卡因 CRITICAL 阻塞语义不丢），视觉上「只显示
+        工具调用」。修复后渲染线程存活则继续等待排空，仅停止才丢弃。
+        """
+        import queue as _queue
+        import threading
+        import time
+
+        s = _make_session()
+        stop = threading.Event()
+
+        def _slow_render():
+            while not stop.is_set():
+                try:
+                    _, _, _cmd = s._cmd_queue.get_nowait()
+                    s._cmd_queue.task_done()
+                    time.sleep(0.05)  # 消费慢（20 命令/秒）
+                except _queue.Empty:
+                    time.sleep(0.01)
+
+        s._render_running = True
+        rt = threading.Thread(target=_slow_render, daemon=True)
+        s._render_thread = rt
+        rt.start()
+        try:
+            for i in range(3):
+                s._cmd_queue.put((0, i, ReasoningCmd(text=f"t{i}")))
+            s._cmd_queue.put((0, 3, ContentCmd(text="c")))
+            s._cmd_queue.put((0, 4, PhaseDoneCmd(phase="content")))
+            # 超时极短（渲染线程消费慢），应继续等待排空而非丢弃
+            s.flush(timeout=0.01)
+            assert s._cmd_queue.qsize() == 0
+            assert s._cmd_queue.unfinished_tasks == 0
+        finally:
+            stop.set()
+            s._render_running = False
+            rt.join(timeout=2)
+
+    def test_flush_drains_when_render_thread_stopped(self):
+        """渲染线程已停止时，flush 丢弃剩余命令（兜底，不无限等待）。"""
+        s = _make_session()
+        s._render_running = False
+        dead = threading.Thread(target=lambda: None)
+        dead.start()
+        dead.join()
+        s._render_thread = dead
+        for i in range(5):
+            s._cmd_queue.put((0, i, WriteLineCmd(text=f"test{i}")))
+        s.flush(timeout=1.0)
+        assert s._cmd_queue.qsize() == 0
+
     def test_request_bottom_redraw(self):
         s = _make_session()
         assert s._bottom_redraw_requested.is_set() is False

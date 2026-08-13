@@ -283,6 +283,18 @@ class InkSession:
                             evicted = True
                             break
             if evicted:
+                # ★ 修复（长任务思考/回答丢失）：pop 绕过 get() 直接移除 heapq
+                #   元素，须补 task_done() 减 unfinished_tasks——否则
+                #   queue.join()（flush 等待排空）因 unfinished_tasks 虚高而
+                #   永远等待 → flush 恒超时 → _drain_queue_safe 丢弃未消费的
+                #   reasoning/content 命令（视觉「只显示工具调用」）。
+                #   task_done() 须在 mutex 外调用：其内部经 all_tasks_done
+                #   （Condition，与 mutex 同源普通 Lock 不可重入）再次获取
+                #   mutex，持 mutex 调用会自死锁。
+                try:
+                    self._cmd_queue.task_done()
+                except ValueError:
+                    pass
                 try:
                     self._cmd_queue.put(
                         (priority, next(self._cmd_seq), cmd), block=False,
@@ -621,7 +633,15 @@ class InkSession:
         self._drain_queue_safe()
 
     def flush(self, timeout: float | None = 5.0) -> None:
-        """等待队列处理完成（超时后排空）。"""
+        """等待队列处理完成。
+
+        超时后若渲染线程仍存活（仅消费慢，非崩溃/停止），继续等待队列排空
+        而非丢弃——修复前超时即 ``_drain_queue_safe()`` 丢弃队列中未消费命令
+        （含 reasoning/content），长任务大量工具输出积压时 flush 超时 → 后几轮
+        思考/回答命令被丢弃（工具卡因 CRITICAL 阻塞语义不丢），视觉上「只显示
+        工具调用」。渲染线程存活则持续消费，等待直至排空；仅当渲染线程停止
+        （``_render_running=False`` / 线程退出）才丢弃兜底，避免无限等待。
+        """
         if self._render_thread is None or not self._render_thread.is_alive():
             while not self._cmd_queue.empty():
                 try:
@@ -634,8 +654,19 @@ class InkSession:
         task_done.start()
         task_done.join(timeout=timeout)
         if task_done.is_alive():
-            self._drain_queue_safe()
-            task_done.join(timeout=1.0)
+            # ★ 修复（长任务思考/回答丢失）：超时后渲染线程存活则继续等待排空
+            #   （每次 1s 轮询），仅当渲染线程停止（_render_running=False 或
+            #   线程退出）才丢弃剩余命令兜底——避免超时即丢内容命令。
+            while (
+                task_done.is_alive()
+                and self._render_running
+                and self._render_thread is not None
+                and self._render_thread.is_alive()
+            ):
+                task_done.join(timeout=1.0)
+            if task_done.is_alive():
+                self._drain_queue_safe()
+                task_done.join(timeout=1.0)
 
     def suspend(self) -> None:
         """暂停渲染（供交互工具独占终端）。
