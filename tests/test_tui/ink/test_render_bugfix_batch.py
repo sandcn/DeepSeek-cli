@@ -161,7 +161,10 @@ class TestSeparatorLineWidth:
             )
             # 分隔线行（首/末）宽度 == width（满宽对齐 status_bar）
             assert lines[0].width == w, f"上分隔线应满宽: {lines[0].width} != {w}"
-            assert lines[-1].width == w, f"下分隔线应满宽: {lines[-1].width} != {w}"
+            # 2026-08-14：时间戳行（下分隔线）为倒数第 2 行；其后为新增主
+            # Agent 运行模式行（同样满宽）。
+            assert lines[-2].width == w, f"下分隔线应满宽: {lines[-2].width} != {w}"
+            assert lines[-1].width == w, f"模式行应满宽: {lines[-1].width} != {w}"
 
 
 class TestSingleLineConvergence:

@@ -585,3 +585,97 @@ class TestCompletionSelectedClamp:
         assert any("long desc two" in p for p in plains), (
             f"越界 selected 应渲染最后一条说明（与高度一致）: {plains!r}"
         )
+
+
+class TestMainAgentModeLine:
+    """2026-08-14 — 主 Agent 运行模式行（时间戳分隔线下方，最右侧显示）。
+
+    需求：显示时间戳的下面一行的最右边显示 main agent 运行模式（空模式/
+    标准模式，Ctrl+B 切换）。用户反馈：模式行左侧不要分隔线填充。
+    """
+
+    def _mode_fiber(self, width=80):
+        fiber = _input_fiber(text="hello", cursor_pos=3, width=width)
+        fiber.layout_box = _Box(x=0, y=0, w=width, h=1)
+        return fiber
+
+    def test_standard_mode_rendered_right_aligned(self):
+        """标准模式（默认）：最后一行最右侧显示「标准模式」。"""
+        lines = _build_lines(self._mode_fiber())
+        mode = lines[-1]
+        assert mode.plain.endswith("标准模式"), (
+            f"模式行最右侧应显示标准模式: {mode.plain!r}"
+        )
+        assert mode.width == 80, f"模式行应满宽: {mode.width}"
+
+    def test_empty_mode_rendered_right_aligned(self):
+        """空模式（Ctrl+B 切换）：最后一行最右侧显示「空模式」。"""
+        with patch("src.prompt_builder.builder.is_empty_mode", return_value=True):
+            lines = _build_lines(self._mode_fiber())
+        mode = lines[-1]
+        assert mode.plain.endswith("空模式"), (
+            f"模式行最右侧应显示空模式: {mode.plain!r}"
+        )
+
+    def test_mode_line_left_no_sep(self):
+        """模式行左侧无分隔线填充（用户反馈：左边不要分割线）。"""
+        lines = _build_lines(self._mode_fiber())
+        mode = lines[-1]
+        # 左侧应为空白（模式文本前无 ━ 分隔线字符）
+        sep_char = "\u2501"  # ━
+        assert sep_char not in mode.plain, (
+            f"模式行不应含分隔线填充: {mode.plain!r}"
+        )
+        # 时间戳行（倒数第 2 行）仍保留分隔线填充
+        ts = lines[-2]
+        assert ts.plain.startswith("\u2501"), (
+            f"时间戳行应保留分隔线: {ts.plain!r}"
+        )
+
+    def test_mode_line_full_width_all_widths(self):
+        """模式行行宽恒 = width（行级 diff 不变量，窄屏含截断补位）。"""
+        for w in (80, 20, 15, 8, 4):
+            lines = _build_lines(self._mode_fiber(width=w))
+            assert all(l.width <= w for l in lines), (
+                f"width={w} 行超宽: {[l.width for l in lines]}"
+            )
+            assert lines[-1].width == w, (
+                f"width={w} 模式行应满宽: {lines[-1].width}"
+            )
+
+    def test_mode_change_rebuilds_snapshot(self):
+        """模式切换 → snap_key 变化 → 快照缓存重建（即时刷新）。"""
+        fiber = self._mode_fiber()
+        with patch("src.prompt_builder.builder.is_empty_mode", return_value=False):
+            with patch("src.tui.app.input_area.time.monotonic", return_value=1000.0):
+                lines1 = _build_lines(fiber)
+        with patch("src.prompt_builder.builder.is_empty_mode", return_value=True):
+            with patch("src.tui.app.input_area.time.monotonic", return_value=1000.1):
+                lines2 = _build_lines(fiber)
+        assert lines1 is not lines2, "模式切换应触发快照缓存重建"
+        assert "空模式" in lines2[-1].plain
+
+    def test_mode_same_snapshot_reuses_cache(self):
+        """同模式同快照 → 缓存命中（引用级复用）。"""
+        fiber = self._mode_fiber()
+        with patch("src.prompt_builder.builder.is_empty_mode", return_value=False):
+            with patch("src.tui.app.input_area.time.monotonic", return_value=1000.0):
+                lines1 = _build_lines(fiber)
+            with patch("src.tui.app.input_area.time.monotonic", return_value=1000.1):
+                lines2 = _build_lines(fiber)
+        assert lines1 is lines2, "同模式同快照应命中缓存"
+
+    def test_empty_mode_golden_fg(self):
+        """空模式文本金色（178）；标准模式暗灰（242）。"""
+        with patch("src.prompt_builder.builder.is_empty_mode", return_value=True):
+            lines = _build_lines(self._mode_fiber())
+        empty_run = lines[-1].runs[-1]
+        assert empty_run.style.fg == 178, (
+            f"空模式应金色: {empty_run.style.fg!r}"
+        )
+        with patch("src.prompt_builder.builder.is_empty_mode", return_value=False):
+            lines2 = _build_lines(self._mode_fiber())
+        std_run = lines2[-1].runs[-1]
+        assert std_run.style.fg == 242, (
+            f"标准模式应暗灰: {std_run.style.fg!r}"
+        )

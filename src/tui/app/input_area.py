@@ -36,6 +36,14 @@ fiber 引用**（use_ref 持有）使 ``_build_lines`` 的快照/换行布局缓
 由 session 经 ``dataInputArea`` 容器 + ``_compute_cursor_visual_pos`` 计算；
 换行布局缓存（``fiber._input_layout_cache``）由 ``_build_lines`` 单点写入
 （原遗留 ``_measure`` 写入职责收拢，session._position_cursor 复用）。
+
+模式行（2026-08-14）：时间戳分隔线（下分隔线）下方新增一行——行最右侧
+显示主 Agent 运行模式（Ctrl+B 切换，``src/prompt_builder.builder`` 的
+``is_empty_mode()``）：「空模式」（金色 178 强调——特殊状态醒目）/
+「标准模式」（暗灰 dim——常规状态零打扰）。左侧无分隔线填充（用户反馈
+要求仅最右侧显示）。模式状态同时作为 ``_build_lines`` snap_key 与
+InputArea ``_input_snap_key``（use_memo deps）字段——Ctrl+B 切换后即时
+重建模式行（无需额外同步链路）。
 """
 
 from __future__ import annotations
@@ -104,9 +112,51 @@ _S_CONT = Style(fg=242)
 _S_CPU = Style(fg=45)
 _S_MEM = Style(fg=214)
 
+# ── 主 Agent 运行模式行（时间戳分隔线下方，2026-08-14） ──────────
+#: 空模式显示文本（Ctrl+B 切换；系统提词替换为 prompts_export_main_empty.md）
+_MODE_EMPTY_TEXT = "空模式"
+#: 标准模式显示文本（完整规则集）
+_MODE_STANDARD_TEXT = "标准模式"
+#: 空模式文本强调色（金色 178——特殊状态醒目，与解析阶段标签同色系）
+_S_MODE_EMPTY = Style(fg=178)
+
+
+def _build_mode_line(width: int, empty_mode: bool) -> Line:
+    """构建主 Agent 运行模式行（时间戳分隔线下方，最右侧显示当前运行模式）。
+
+    Ctrl+B 切换空模式（``src/prompt_builder.builder.is_empty_mode()``）：
+      - 空模式（True）：显示「空模式」（金色 178 强调——特殊状态醒目）；
+      - 标准模式（False）：显示「标准模式」（暗灰 dim——常规状态零打扰）。
+
+    ★ 左侧无分隔线填充（2026-08-14 用户反馈：模式行左边不要分割线）——
+    左侧空白 + 最右侧模式文本。行宽恒 = width（行级 diff 行宽不变量）；
+    窄屏时内容按预算截断不溢出（与 CPU/MEM/时间戳分隔线截断语义一致）。
+
+    Args:
+        width: 行总宽（终端列宽）。
+        empty_mode: 是否处于主 Agent 空模式（True=空模式）。
+
+    Returns:
+        模式行（Line，行宽 = width；左侧空白 + 右侧模式文本）。
+    """
+    text = _MODE_EMPTY_TEXT if empty_mode else _MODE_STANDARD_TEXT
+    style = _S_MODE_EMPTY if empty_mode else _S_DIM
+    line = Line()
+    # 预算按显示宽度计（CJK 字符显示宽 2 列——len() 为字符数不准确）
+    mode_w = wcswidth_simple(f" {text}")
+    pad = max(0, width - mode_w)
+    if pad > 0:
+        line.append(" " * pad, None)
+    _append_truncated(line, f" {text}", style, max(0, width))
+    # 窄屏（width < mode_w）内容截断后可能不足 width——补空格保持行宽
+    # 不变量（行级 diff 行宽恒 = width，与分隔线行语义一致）。
+    if width > 0 and line.width < width:
+        line.append(" " * (width - line.width), None)
+    return line
+
 
 def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
-    """构建输入区行列表（弹窗/分隔线/搜索/输入行/时间戳）。
+    """构建输入区行列表（弹窗/分隔线/搜索/输入行/时间戳/模式行）。
 
     Args:
         fiber: 输入区 host fiber（读取 props + layout_box）。
@@ -184,6 +234,14 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
         )
     else:
         search_snap = (False, "", 0, 0, -1)
+    # ★ 主 Agent 运行模式（Ctrl+B 切换，2026-08-14）：模式状态进快照缓存
+    #   键——切换后 snap_key 变化 → 模式行重建（无需额外同步链路）。读取
+    #   失败回退标准模式（False，不崩溃）；开销为单次模块布尔读取。
+    try:
+        from src.prompt_builder.builder import is_empty_mode
+        empty_mode = is_empty_mode()
+    except Exception:
+        empty_mode = False
     snap_key = (
         include_popup,  # ★ 标准组件化：弹窗行存在性须进缓存键（InputArea
         #   用 include_popup=False 时不命中全量缓存；置于首部保持 time_bucket
@@ -198,6 +256,7 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
         int(props.get("cpu", 0)),
         int(props.get("mem", 0)),
         status_active,
+        empty_mode,  # ★ 主 Agent 运行模式（Ctrl+B 切换即时刷新模式行）
         search_snap,
         time_bucket,
     )
@@ -348,6 +407,13 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
     content = Line()
     _append_truncated(content, f" {ts}", _S_TIME, content_budget)
     lines.append(_theme_sep_line(width, content, status_active))
+
+    # ── 主 Agent 运行模式行（时间戳下方，最右侧显示空模式/标准模式） ──
+    # ★ 2026-08-14：时间戳分隔线下方新增一行——最右侧显示当前运行模式
+    #   （Ctrl+B 切换：空模式金色强调 / 标准模式暗灰 dim）。左侧无分隔线
+    #   （用户反馈：模式行左边不要分割线）；模式状态已进 snap_key，
+    #   Ctrl+B 切换后本函数重建（外层 InputArea use_memo deps 亦含模式）。
+    lines.append(_build_mode_line(width, empty_mode))
 
     # ★ 快照缓存写回（方向4）：未命中重建后更新缓存（同快照下次命中）
     fiber._lines_cache = (snap_key, lines)
@@ -510,6 +576,14 @@ def _input_snap_key(props: dict, width: int, now: float):
     max_input = max(1, width - len(_PROMPT))
     # history_search 一次提取（多处字段共享）
     search = props.get("history_search")
+    # ★ 主 Agent 运行模式（Ctrl+B 切换，2026-08-14）：进 use_memo deps——
+    #   模式切换后 InputArea 重建（_build_lines snap_key 已含模式，双保险
+    #   即时刷新）。单次模块布尔读取，开销可忽略。
+    try:
+        from src.prompt_builder.builder import is_empty_mode
+        empty_mode_flag = is_empty_mode()
+    except Exception:
+        empty_mode_flag = False
     # ★ review 方向（BUG-T1 同族修复）：str 指纹从 ``id()`` 改为 ``hash()``——
     #   原 ``id(text)`` 在 echo 回调每次新建 str 时恒 miss（缓存退化）；且 str
     #   对象被 GC 后 id 复用可能错误命中（内容不同但 id+len 相同）。``hash(str)``
@@ -533,6 +607,7 @@ def _input_snap_key(props: dict, width: int, now: float):
         int(props.get("cpu", 0)),
         int(props.get("mem", 0)),
         status_active,
+        empty_mode_flag,  # ★ 主 Agent 运行模式（Ctrl+B 切换即时刷新）
         # history_search 指纹（局部变量提取——一次 props.get）
         bool(search is not None and bool(getattr(search, "active", False))),
         hash(getattr(search, "query", "") or "") if search is not None else 0,
@@ -549,9 +624,13 @@ __all__ = [
     "InputArea",
     "CompletionPopup",
     "_build_lines",
+    "_build_mode_line",
     "_build_popup_lines",
     "_completion_height",
     "_is_search_active",
     "_compute_input_layout",
     "_cursor_visual_from_layout",
+    "_MODE_EMPTY_TEXT",
+    "_MODE_STANDARD_TEXT",
+    "_S_MODE_EMPTY",
 ]

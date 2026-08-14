@@ -68,9 +68,10 @@ def _popup_item_rows() -> int:
     """弹窗选项/说明行数上限（超屏防护）。
 
     与补全弹窗 ``_completion_item_rows`` 同源（预留顶部标题 1 + 弹窗标题 1 +
-    弹窗提示行 1 + 状态栏/输入区约 7 行 ≈ 10 行）：选项 + 说明行数限制在
-    ``max(6, h - 10)``。修复前分栏说明行数与普通模式选项数均无上限——长
-    说明 / 大量选项时弹窗超高，挤压甚至遮挡状态栏与输入区。
+    弹窗提示行 1 + 状态栏/输入区约 8 行 ≈ 11 行，2026-08-14 新增模式行
+    后 +1）：选项 + 说明行数限制在 ``max(6, h - 11)``。修复前分栏说明行数
+    与普通模式选项数均无上限——长说明 / 大量选项时弹窗超高，挤压甚至遮挡
+    状态栏与输入区。
 
     Returns:
         选项（含说明）最大渲染行数。
@@ -78,7 +79,7 @@ def _popup_item_rows() -> int:
     try:
         from src.tui._screen import TerminalWidthCache
         h = TerminalWidthCache.get_default().get_height()
-        return max(6, h - 10)
+        return max(6, h - 11)
     except Exception:
         return 12
 

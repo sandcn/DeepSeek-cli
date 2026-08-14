@@ -56,8 +56,9 @@ def _completion_item_rows() -> int:
     """补全弹窗候选项最大行数（终端高度约束，防超屏）。
 
     预留顶部标题 1 + 弹窗标题 1 + 弹窗提示行 1 + 状态栏 1 + 输入区分隔线 1
-    + 输入行 1 + 输入下分隔线 1 + 时间戳 1 ≈ 8 行；候选项 + 说明行数限制在
-    ``max(6, h - 10)``。正常补全（≤20 项）不受影响；极长说明 / user_select
+    + 输入行 1 + 输入下分隔线 1 + 时间戳 1 + 模式行 1 ≈ 9 行（2026-08-14
+    新增模式行后底部固定占用 +1）；候选项 + 说明行数限制在
+    ``max(6, h - 11)``。正常补全（≤20 项）不受影响；极长说明 / user_select
     大量选项时弹窗不超屏。
 
     ★ 性能（方向4）：终端高度经 ``TerminalWidthCache`` 读取——修复前每次
@@ -71,7 +72,7 @@ def _completion_item_rows() -> int:
     try:
         from src.tui._screen import TerminalWidthCache
         h = TerminalWidthCache.get_default().get_height()
-        return max(6, h - 10)
+        return max(6, h - 11)
     except Exception:
         return 12
 

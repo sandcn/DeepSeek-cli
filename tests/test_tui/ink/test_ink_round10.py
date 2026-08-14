@@ -308,7 +308,9 @@ class TestInputAreaBottomSepBreath:
     def test_bottom_sep_breath_when_active(self):
         ia, fiber = self._make_fiber(True)
         lines = ia._build_lines(fiber)
-        bottom = lines[-1]
+        # 2026-08-14：时间戳行（下分隔线）为倒数第 2 行——其后新增主 Agent
+        # 运行模式行（最右侧显示空模式/标准模式）。
+        bottom = lines[-2]
         assert bottom.runs[0].style is not None
         assert bottom.runs[0].style.fg != 237, (
             f"活跃期下分隔线应呼吸（非静态深灰）: {bottom.runs[0].style.fg!r}"
@@ -317,7 +319,8 @@ class TestInputAreaBottomSepBreath:
     def test_bottom_sep_static_when_idle(self):
         ia, fiber = self._make_fiber(False)
         lines = ia._build_lines(fiber)
-        bottom = lines[-1]
+        # 2026-08-14：时间戳行（下分隔线）为倒数第 2 行（其后为模式行）。
+        bottom = lines[-2]
         assert bottom.runs[0].style.fg == 237, (
             f"空闲期下分隔线应静态深灰: {bottom.runs[0].style.fg!r}"
         )
