@@ -189,7 +189,7 @@ class BaseAgent:
         """返回所有未完成的后台任务记录列表。
 
         ★ 被 bash_task 工具管理的任务（managed_by_tool=True）不在此列：
-        其生命周期由大模型通过 bash_task 工具主动控制（wait/kill/stdin/keys），
+        其生命周期由大模型通过 bash_task 工具主动控制（read/wait/kill/stdin/keys），
         不需要对话轮次自动等待其完成（交互式任务可能长期运行）。
         """
         if not hasattr(self, "_background_tasks"):

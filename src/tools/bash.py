@@ -34,6 +34,21 @@ except ImportError:
     _HAS_PTY = False
 
 
+async def _append_read_buffer(rec: dict, text: str) -> None:
+    """把输出行追加到任务记录 read_buffer（bash_task read 操作消费）。
+
+    read_buffer 保存后台任务运行期间**已产生但尚未被 bash_task read 消费**
+    的输出；read 操作读取后清空（增量语义）。用 io_lock 串行化并发访问
+    （PIPE 双流 publish 与 bash_task read 可能并发）。
+    """
+    lock = rec.get("io_lock")
+    if lock is not None:
+        async with lock:
+            rec["read_buffer"] = rec.get("read_buffer", "") + text
+    else:
+        rec["read_buffer"] = rec.get("read_buffer", "") + text
+
+
 @tool_metadata(
     parallel_safe=False,
     requires_network=False,
@@ -496,7 +511,7 @@ class BashFunc(Func):
         - 超过 _AUTO_BG_TIMEOUT 秒未完成 → 自动转后台任务：
           命令继续运行，注册到 agent._background_tasks，返回
           {"task_id": ..., "status": "running", "command": ...} JSON，
-          大模型可用 bash_task 工具按 task_id 继续管理（wait/kill/stdin/keys）。
+          大模型可用 bash_task 工具按 task_id 继续管理（read/wait/kill/stdin/keys）。
 
         Args:
             show_command: 是否打印命令行到终端
@@ -523,9 +538,17 @@ class BashFunc(Func):
         # ★ 行回调代理（可变引用）：自动转后台后把 fn 置 None，断开实时输出，
         #   避免转后台后命令输出继续污染已闭合的工具卡片（工具已返回
         #   task_id JSON，后续输出由 bash_task wait 获取完整结果）。
+        #   fn 置 None 后，后续输出行写入任务记录 read_buffer（bash_task
+        #   read 操作实时消费，见 _promote_to_background 填充 line_cb）。
         line_cb: dict = {"fn": publish_line_fn}
 
         async def _line_proxy(text: str, is_stderr: bool) -> None:
+            # ★ 转后台后（rec 已设置）：输出写入任务记录 read_buffer
+            #   （bash_task read 实时消费），不再发布到 UI/回调。
+            rec = line_cb.get("rec")
+            if rec is not None:
+                await _append_read_buffer(rec, text)
+                return
             fn = line_cb["fn"]
             if fn is not None:
                 await fn(text, is_stderr)
@@ -565,11 +588,12 @@ class BashFunc(Func):
 
         # 超过 _AUTO_BG_TIMEOUT 秒 → 自动转后台执行（不终止进程）。
         # ★ 断开实时行回调：工具即将返回 task_id JSON（工具卡片闭合），
-        #   转后台后的输出不再发布到终端/前端。
+        #   转后台后的输出不再发布到终端/前端，改由 bash_task read 实时读取。
         line_cb["fn"] = None
-        return await self._promote_to_background(exec_task, holder)
+        return await self._promote_to_background(exec_task, holder, line_cb)
 
-    async def _promote_to_background(self, exec_task, holder: dict) -> str:
+    async def _promote_to_background(self, exec_task, holder: dict,
+                                     line_cb: dict | None = None) -> str:
         """把已运行超过 _AUTO_BG_TIMEOUT 秒的前台命令转为后台任务。
 
         前台命令超过 1 分钟仍未完成时调用（由 _run_async 触发）：
@@ -583,6 +607,9 @@ class BashFunc(Func):
         Args:
             exec_task: 正在运行的命令执行任务（asyncio.Task）
             holder: 子进程句柄记录（process/mode/master_fd/stdin_writer）
+            line_cb: 行回调代理 dict（含 fn）。传入时把 task_id 与任务记录
+                     引用写入，供 _line_proxy 在转后台后把输出追加到
+                     read_buffer（bash_task read 实时读取）。
 
         Returns:
             task_id JSON 字符串
@@ -595,7 +622,7 @@ class BashFunc(Func):
         task_id = f"bg-{uuid.uuid4().hex[:12]}"
         process = holder.get("process")
 
-        agent._register_background_task(task_id, {
+        rec = {
             "task": exec_task,
             "command": self.command,
             "cwd": self.cwd,
@@ -610,7 +637,16 @@ class BashFunc(Func):
             "master_fd": holder.get("master_fd"),
             "stdin_writer": holder.get("stdin_writer"),
             "io_lock": asyncio.Lock(),
-        })
+            # ── 实时输出缓冲（bash_task read 读取后清空） ──
+            "read_buffer": "",
+        }
+        agent._register_background_task(task_id, rec)
+
+        # ★ 转后台后输出改走 read_buffer：把任务记录引用写入 line_cb，
+        #   后续 _read_loop 的每行输出经 _line_proxy 追加到 read_buffer。
+        if line_cb is not None:
+            line_cb["task_id"] = task_id
+            line_cb["rec"] = rec
 
         def _on_done(t: asyncio.Task) -> None:
             """任务完成回调：把结果写入后台任务记录（与 _run_background_task 一致）。"""
@@ -640,7 +676,7 @@ class BashFunc(Func):
             "command": self.command,
         }, ensure_ascii=False)
 
-    async def _run_interactive_async(self, on_ready=None):
+    async def _run_interactive_async(self, on_ready=None, publish_line_fn=None):
         """交互模式异步执行：启用 stdin（PTY slave / PIPE），供后台任务操作。
 
         与 _run_async 的区别：
@@ -649,10 +685,13 @@ class BashFunc(Func):
           - interactive=True：子进程 stdin 连接 PTY slave（或 PIPE），
             外部可通过任务记录中的 master_fd / stdin_writer 写入输入；
           - on_ready 回调在子进程创建后立即调用，把 process/pid/master_fd
-            写入任务记录，供 bash_task 工具按 task_id 操作。
+            写入任务记录，供 bash_task 工具按 task_id 操作；
+          - publish_line_fn 可选：每行输出实时回调，后台任务用它把输出
+            追加到任务记录 read_buffer（bash_task read 操作实时消费）。
 
         Args:
             on_ready: 可选回调 on_ready(process, mode, master_fd=None, stdin_writer=None)
+            publish_line_fn: 可选 async (text, is_stderr) -> None 行回调
 
         Returns:
             命令完整输出字符串（已截断）
@@ -665,13 +704,13 @@ class BashFunc(Func):
             if _HAS_PTY:
                 result = await self._run_pty(
                     show_command=False, show_output=False,
-                    publish_line_fn=None,
+                    publish_line_fn=publish_line_fn,
                     interactive=True, interactive_ready_fn=on_ready,
                 )
             else:
                 result = await self._run_pipe(
                     show_command=False, show_output=False,
-                    publish_line_fn=None,
+                    publish_line_fn=publish_line_fn,
                     interactive=True, interactive_ready_fn=on_ready,
                 )
             return self._truncate_output(result)
@@ -731,6 +770,8 @@ class BashFunc(Func):
             "master_fd": None,      # PTY master fd（mode="pty" 时，os.write 写入）
             "stdin_writer": None,   # PIPE stdin StreamWriter（mode="pipe" 时）
             "io_lock": asyncio.Lock(),  # stdin/keys 写入串行化
+            # ── 实时输出缓冲（bash_task read 读取后清空） ──
+            "read_buffer": "",      # 运行期间已产生、尚未被 read 消费的输出
         })
 
         await print_to_terminal(
@@ -747,7 +788,7 @@ class BashFunc(Func):
         """后台任务执行体：运行命令并把结果写入 agent 的后台任务记录。
 
         ★ 后台任务无限运行（_run_interactive_async 不设超时、不自动转后台），
-        配合 bash_task 工具按 task_id 操作（wait/kill/stdin/keys）。
+        配合 bash_task 工具按 task_id 操作（read/wait/kill/stdin/keys）。
         ★ 交互模式：后台任务启用 stdin（PTY slave / PIPE），子进程创建后
         通过 on_ready 回调把 process/pid/master_fd 写入任务记录，供
         bash_task 工具按 task_id 发送输入 / 杀死进程树 / 等待完成。
@@ -771,8 +812,17 @@ class BashFunc(Func):
             rec["master_fd"] = master_fd
             rec["stdin_writer"] = stdin_writer
 
+        async def _publish_line(text: str, is_stderr: bool) -> None:
+            """后台任务实时输出行 → 任务记录 read_buffer（bash_task read 消费）。"""
+            if agent is None or not hasattr(agent, '_background_tasks'):
+                return
+            rec = agent._background_tasks.get(task_id)
+            if rec is None:
+                return
+            await _append_read_buffer(rec, text)
+
         try:
-            result = await bg._run_interactive_async(_on_ready)
+            result = await bg._run_interactive_async(_on_ready, publish_line_fn=_publish_line)
         except asyncio.CancelledError:
             result = "(后台命令已被取消)"
         except Exception as e:

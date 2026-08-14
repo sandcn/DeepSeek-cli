@@ -5,10 +5,15 @@ bash_task — 按 task_id 操作后台 bash 任务
 {"task_id": "bg-xxx", "status": "running", "command": "..."}，
 大模型可据此用 bash_task 工具按 task_id 操作：
 
+- op=read   读取后台命令**当前已产生**的全部输出并清空缓冲，立即返回（不等待完成）
 - op=wait   等待任务执行完成并获取命令输出（JSON：task_id/command/status/output）
 - op=kill   杀死后台命令的所有进程树（killpg + /proc 递归补杀后代）
 - op=stdin  向后台命令的 stdin 发送文本输入（text 参数，newline 可选是否追加换行）
 - op=keys   向后台命令发送光标/键盘消息（跨平台 ANSI/VT100 转义序列）
+
+read 为**增量读取**：后台任务运行期间的每一行输出都会累积到内部缓冲，
+每次 read 取走当前全部累积内容并清空，适合实时观察长时任务（编译/下载/
+日志流）的进度；任务最终完整结果仍由 op=wait 获取。
 
 键盘消息跨平台说明：VT100/ANSI 转义序列是终端输入的标准语义，被 Linux/
 macOS/Android(Termux) 的 PTY 与 Windows 的 ConPTY/Windows Terminal 统一
@@ -145,7 +150,8 @@ class BashTaskFunc(Func):
                 "name": "bash_task",
                 "description": (
                     "按 task_id 操作后台 bash 任务（由 bash background=true 启动）。"
-                    "op：wait（等待完成取输出，timeout 秒，默认 300/0 无限）、"
+                    "op：read（读取当前已产生的全部输出并清空缓冲，立即返回不等待完成）、"
+                    "wait（等待完成取输出，timeout 秒，默认 300/0 无限）、"
                     "kill（杀进程树）、stdin（发文本，需 text）、keys（发按键，需 key）。"
                     "task_id 必须是当前对话 bash 后台返回的 bg-xxx。返回：操作结果 JSON 或输出；失败以 ( 开头。"
                 ),
@@ -161,9 +167,12 @@ class BashTaskFunc(Func):
                         },
                         "op": {
                             "type": "string",
-                            "enum": ["wait", "kill", "stdin", "keys"],
+                            "enum": ["read", "wait", "kill", "stdin", "keys"],
                             "description": (
                                 "要执行的操作："
+                                "\n- read：读取后台命令当前已产生的全部输出并清空缓冲，"
+                                "立即返回（不等待任务完成）；后续 read 只返回新产生的输出，"
+                                "最终完整结果由 wait 获取"
                                 "\n- wait：等待任务完成并获取命令输出"
                                 "\n- kill：杀死任务所有进程树"
                                 "\n- stdin：向任务 stdin 发送文本输入（需 text）"
@@ -261,6 +270,8 @@ class BashTaskFunc(Func):
         #   也不自动等待其完成（避免交互任务阻塞对话轮次）。
         rec["managed_by_tool"] = True
 
+        if self.op == "read":
+            return await self._op_read(rec)
         if self.op == "wait":
             return await self._op_wait(agent, rec)
         if self.op == "kill":
@@ -269,7 +280,38 @@ class BashTaskFunc(Func):
             return await self._op_stdin(rec)
         if self.op == "keys":
             return await self._op_keys(rec)
-        return f"(未知操作: {self.op}。支持: wait/kill/stdin/keys)"
+        return f"(未知操作: {self.op}。支持: read/wait/kill/stdin/keys)"
+
+    # ── op=read ──────────────────────────────────────────
+
+    async def _op_read(self, rec: dict) -> str:
+        """读取后台任务当前已产生的全部输出并清空缓冲，立即返回。
+
+        read 为增量读取：任务运行期间的每一行输出累积到 read_buffer，
+        本次读走全部内容并清空；任务继续运行，后续 read 只返回新输出，
+        最终完整结果由 op=wait 获取。
+
+        返回 JSON（task_id/command/status/output）：
+          - status: 任务当前状态（running / completed）
+          - output: 本次读取到的累积输出（读取后已清空缓冲）
+        """
+        lock = rec.get("io_lock")
+        if lock is not None:
+            async with lock:
+                output = rec.get("read_buffer", "")
+                rec["read_buffer"] = ""
+        else:
+            output = rec.get("read_buffer", "")
+            rec["read_buffer"] = ""
+        done = bool(rec.get("done"))
+        status = rec.get("status") or ("completed" if done else "running")
+        payload = {
+            "task_id": self.task_id,
+            "command": rec.get("command", ""),
+            "status": status,
+            "output": output,
+        }
+        return json.dumps(payload, ensure_ascii=False)
 
     # ── op=wait ──────────────────────────────────────────
 
