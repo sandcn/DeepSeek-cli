@@ -234,6 +234,66 @@ def _cmd_theme(ctx):
     return True
 
 
+# ── /reasoning 命令 ───────────────────────────────────────
+
+# 推理等级允许值域（DeepSeek V4 thinking mode reasoning_effort）
+_REASONING_LEVELS: list[str] = ["low", "medium", "high", "max"]
+
+
+def _cmd_reasoning(ctx):
+    """调整推理等级（low/medium/high/max）
+
+    - 有参数：设置推理等级并持久化到 RC 配置
+    - 无参数：显示当前推理等级 + 可选等级列表
+    """
+    arg = ctx.arg.strip()
+
+    # 读取当前推理等级（优先 ConfigPort，回退到 config 模块）
+    if ctx.config_port is not None:
+        current = ctx.config_port.get_reasoning_effort()
+    else:
+        from ...config import REASONING_EFFORT as current
+
+    if arg:
+        arg_l = arg.lower()
+        # ① 精确匹配
+        exact = [lvl for lvl in _REASONING_LEVELS if lvl == arg_l]
+        if exact:
+            selected = exact[0]
+        else:
+            # ② 前缀模糊匹配（如 /reasoning hi → high）
+            matched = [lvl for lvl in _REASONING_LEVELS if lvl.startswith(arg_l)]
+            if len(matched) == 1:
+                selected = matched[0]
+            elif len(matched) > 1:
+                _out.write(f"{YELLOW}  ! 匹配到多个推理等级: {', '.join(matched)}{RESET}", level="raw", source="cmd")
+                _out.write(f"  {DIM}  可用等级: {', '.join(_REASONING_LEVELS)}{RESET}", level="raw", source="cmd")
+                return True
+            else:
+                _out.write(f"{YELLOW}  ! 未知推理等级: {arg}{RESET}", level="raw", source="cmd")
+                _out.write(f"  {DIM}  可用等级: {', '.join(_REASONING_LEVELS)}{RESET}", level="raw", source="cmd")
+                return True
+
+        if ctx.config_port is not None:
+            ctx.config_port.set("reasoning_effort", selected)
+        else:
+            from ...config.loader import update_config as _upd
+            _upd("reasoning_effort", selected)
+        _out.write(f"{GREEN}  + 已设置推理等级: {selected}{RESET}", level="raw", source="cmd")
+        return True
+
+    # 无参数：显示当前推理等级 + 可选列表
+    _out.write(f"\n{DIM}  \u2500 推理等级{RESET}", level="raw", source="cmd")
+    _out.write(f"  {DIM}\u2502{RESET} 当前: {CYAN}{current}{RESET}", level="raw", source="cmd")
+    _out.write(f"  {DIM}\u2502{RESET} 可用:", level="raw", source="cmd")
+    for level in _REASONING_LEVELS:
+        marker = " <-" if level == current else ""
+        _out.write(f"  {DIM}\u2502{RESET}   {CYAN}{level}{RESET}{DIM}{marker}{RESET}", level="raw", source="cmd")
+    _out.write(f"  {DIM}\u2514{'─' * 24}{RESET}", level="raw", source="cmd")
+    _out.write(f"  {DIM} 使用: /reasoning <low|medium|high|max> 切换{RESET}", level="raw", source="cmd")
+    return True
+
+
 # ── CommandPlugin 子类 ──────────────────────────────
 # 命令通过 get_plugin_registry().register() 注册，不再使用 register_command()。
 # CommandPluginRegistry.register() 内部自动调用 register_command() 确保向后兼容。
@@ -268,7 +328,17 @@ class ThemeCommand(CommandPlugin):
         return _cmd_theme(ctx)
 
 
+class ReasoningCommand(CommandPlugin):
+    """调整推理等级"""
+    def __init__(self):
+        self.meta = CommandMeta(name="reasoning", description="调整推理等级 (low/medium/high/max)")
+
+    def execute(self, ctx: CommandContext) -> bool:
+        return _cmd_reasoning(ctx)
+
+
 # ── 自动注册插件 ────────────────────────────────────
 get_plugin_registry().register(SystemCommand())
 get_plugin_registry().register(CostCommand())
 get_plugin_registry().register(ThemeCommand())
+get_plugin_registry().register(ReasoningCommand())

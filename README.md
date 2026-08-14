@@ -252,6 +252,7 @@ python chat.py version
 | `/retry` | `/r` | 重新生成上一条回答 |
 | `/edit` | — | 编辑并重新发送上一条输入 |
 | `/model` | — | 切换模型（无参数时交互选择，支持序号/名称） |
+| `/reasoning [等级]` | — | 调整推理等级（low / medium / high / max，无参数时显示当前值） |
 | `/system` | — | 查看或追加系统提示词 |
 | `/cost` | — | 查看 token 用量和费用 |
 | `/load <ID>` | — | 加载保存的对话 |

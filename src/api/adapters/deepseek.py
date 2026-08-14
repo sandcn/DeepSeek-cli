@@ -36,6 +36,19 @@ _CLASSIC_MODELS: set[str] = {
 # DeepSeekAdapter
 # ═══════════════════════════════════════════════════════════════
 
+def _get_reasoning_effort() -> str:
+    """读取当前推理等级（low/medium/high/max），异常回退 'max'。
+
+    延迟导入避免模块加载时的循环依赖；配置写入后缓存被清除，
+    每次调用都能读到最新值。
+    """
+    try:
+        from ...config import REASONING_EFFORT as effort
+    except Exception:
+        return "max"
+    return effort or "max"
+
+
 class DeepSeekAdapter(BaseLLMAdapter):
     """DeepSeek API 专用适配器
 
@@ -98,8 +111,12 @@ class DeepSeekAdapter(BaseLLMAdapter):
         # deepseek-v4-* 系列（非 reasoner）需要注入 thinking 参数
         # 以启用推理能力的流式输出。
         # reasoner 模型已有内置推理能力，不需要额外参数。
+        # reasoning_effort 可通过 /reasoning 命令调整（low/medium/high/max）。
         if self.is_v4_model(model) and not self.is_reasoner_model(model):
-            kwargs["thinking"] = {"type": "enabled", "reasoning_effort": "max"}
+            kwargs["thinking"] = {
+                "type": "enabled",
+                "reasoning_effort": _get_reasoning_effort(),
+            }
 
         return kwargs
 

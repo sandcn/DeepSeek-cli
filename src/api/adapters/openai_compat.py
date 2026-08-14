@@ -14,6 +14,15 @@ def _is_reasoner_model(model: str) -> bool:
     return any(p in model for p in _REASONER_PATTERNS) or is_deepseek_v4_model(model)
 
 
+def _get_reasoning_effort() -> str:
+    """读取当前推理等级（low/medium/high/max），异常回退 'max'。"""
+    try:
+        from ...config import REASONING_EFFORT as effort
+    except Exception:
+        return "max"
+    return effort or "max"
+
+
 class OpenAICompatAdapter(BaseLLMAdapter):
     """OpenAI 兼容 API 适配器"""
 
@@ -43,7 +52,10 @@ class OpenAICompatAdapter(BaseLLMAdapter):
         # 非 reasoner 子串匹配的 V4 模型需要 thinking 参数
         is_reasoner = _is_reasoner_model(model)
         if is_reasoner and not any(p in model for p in _REASONER_PATTERNS):
-            kwargs["thinking"] = {"type": "enabled"}
+            kwargs["thinking"] = {
+                "type": "enabled",
+                "reasoning_effort": _get_reasoning_effort(),
+            }
 
         return kwargs
 

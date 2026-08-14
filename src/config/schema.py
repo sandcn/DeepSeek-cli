@@ -84,6 +84,15 @@ def _validate_rc(rc):
     if "api_key" in rc and not isinstance(rc["api_key"], str):
         rc["api_key"] = DEFAULTS["api_key"]
 
+    # reasoning_effort 值域校验：非 str 或不在允许集合时回退默认值
+    _REASONING_EFFORT_LEVELS = frozenset({"low", "medium", "high", "max"})
+    if "reasoning_effort" in rc:
+        effort = rc["reasoning_effort"]
+        if not isinstance(effort, str) or effort.lower() not in _REASONING_EFFORT_LEVELS:
+            rc["reasoning_effort"] = DEFAULTS.get("reasoning_effort", "max")
+        else:
+            rc["reasoning_effort"] = effort.lower()
+
     if "models" in rc:
         if not isinstance(rc["models"], (list, tuple)):
             rc["models"] = DEFAULTS["models"]

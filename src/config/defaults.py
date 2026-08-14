@@ -64,6 +64,7 @@ DEFAULTS = {
     "base_url": "",
     "api_key": "",
     "model": "deepseek-v4-flash",
+    "reasoning_effort": "max",
     "max_context_chars": 60000,
     "max_output_chars": 3000,
     "max_retries": 10,
@@ -105,6 +106,12 @@ CONFIG_KEYS = {
         "rc_path": ("models",),
         "type": list,
         "default": [],
+        "cacheable": True,
+    },
+    "REASONING_EFFORT": {
+        "rc_path": ("reasoning_effort",),
+        "type": str,
+        "default": "max",
         "cacheable": True,
     },
     "THEME": {

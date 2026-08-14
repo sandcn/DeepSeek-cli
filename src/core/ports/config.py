@@ -54,6 +54,11 @@ class ConfigPort(ABC):
         ...
 
     @abstractmethod
+    def get_reasoning_effort(self) -> str:
+        """获取推理等级（low/medium/high/max）。"""
+        ...
+
+    @abstractmethod
     def get_int(self, key: str, default: int = 0) -> int:
         """读取整数配置项"""
         ...

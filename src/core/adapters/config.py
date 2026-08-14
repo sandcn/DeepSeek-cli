@@ -62,6 +62,9 @@ class MockConfigAdapter(ConfigPort):
         result = self._data.get("models", [])
         return list(result) if isinstance(result, (list, tuple)) else []
 
+    def get_reasoning_effort(self) -> str:
+        return str(self._data.get("reasoning_effort", "max"))
+
     def get_int(self, key: str, default: int = 0) -> int:
         return int(self.get(key, default))
 

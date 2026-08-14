@@ -50,6 +50,10 @@ class ConfigProxy(ConfigPort):
     def get_models(self) -> list[str]:
         return _config.MODELS
 
+    def get_reasoning_effort(self) -> str:
+        """获取推理等级（low/medium/high/max）。"""
+        return _config.REASONING_EFFORT
+
     def get_int(self, key: str, default: int = 0) -> int:
         return int(self.get(key, default))
 
@@ -113,6 +117,10 @@ class ConfigProxy(ConfigPort):
     @property
     def MODELS(self) -> list[str]:
         return _config.MODELS
+
+    @property
+    def REASONING_EFFORT(self) -> str:
+        return _config.REASONING_EFFORT
 
     @property
     def THEME(self) -> str:
