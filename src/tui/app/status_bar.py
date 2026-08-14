@@ -70,8 +70,9 @@ def _snapshot() -> dict:
 
 
 def _build_status_runs(model, dot_elapsed: float = 0.0,
-                       spinner_char: str = "\u00b7") -> list[StyledRun]:
-    """构建状态文本 runs（模型名/工具计数/耗时/token/速度）。
+                       spinner_char: str = "\u00b7",
+                       reasoning_effort: str | None = None) -> list[StyledRun]:
+    """构建状态文本 runs（模型名/推理等级/工具计数/耗时/token/速度）。
 
     Args:
         model: AppModel 实例。
@@ -79,6 +80,8 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             >=duration 后返回呼吸色（动画结束）。
         spinner_char: 活跃状态指示字符（BEAUTY-7：streaming 时 10Hz spinner
             帧；空闲为静态 ``·``）。
+        reasoning_effort: 当前推理等级（low/medium/high/max，/reasoning 命令
+            配置）；None 或空串不显示推理等级标签。
     """
     st = model.status
     status_active = st.status_active
@@ -97,6 +100,14 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             model_name_style = _S_ACCENT_BOLD
         model_part.append(StyledRun(f"{spinner_char} ", dot_style))
         model_part.append(StyledRun(st.model_name, model_name_style))
+        # ★ 推理等级标签（2026-08-14）：模型名后追加当前推理等级
+        #   （low/medium/high/max，/reasoning 命令配置）。暗灰 dim 弱化——
+        #   与模型名（亮青 bold）区分信息层级；格式 [level] 与 /reasoning
+        #   命令显示一致，切换后经 use_memo deps（reasoning_effort）即时
+        #   刷新。参数防御：None 或空串不显示。
+        eff = (reasoning_effort or "").strip().lower()
+        if eff:
+            model_part.append(StyledRun(f" [{eff}]", _S_DIM))
     # ★ 主 Agent 模型阶段标签（2026-08-05 美化+动效）：流式/工具活跃期间在
     #   模型名后追加当前阶段（thinking→…思考 / answering→…回答 / parsing→…解析 /
     #   未知→原文）。思考 dim 灰、回答亮青呼吸（45-55，8s，与模型名呼吸同步）、
@@ -264,8 +275,18 @@ def StatusBar(props) -> object:
     else:
         time_dep = int(time.monotonic() / 1.0)
         spinner_char = "\u00b7"
+    # ★ 推理等级（/reasoning 命令配置 low/medium/high/max）：模型名后显示
+    #   [level]。读取配置（RC 内存缓存 + 单键缓存，每帧读取开销极小；异常
+    #   回退空串不显示）。作为 use_memo deps——update_config 清配置缓存后
+    #   下帧读取新值 → deps 变化 → 状态栏即时刷新（/reasoning 切换无需
+    #   额外同步链路）。
+    try:
+        from src.config import REASONING_EFFORT as _eff
+        reasoning_effort = str(_eff or "")
+    except Exception:
+        reasoning_effort = ""
     status_runs = use_memo(
-        lambda: _build_status_runs(model, dot_elapsed, spinner_char),
+        lambda: _build_status_runs(model, dot_elapsed, spinner_char, reasoning_effort),
         (
             st.status_active,
             st.model_name,
@@ -284,6 +305,9 @@ def StatusBar(props) -> object:
             #   time_dep（0.1s 桶）兜底，``int(now/0.1)`` 与 ``int(now*10)``
             #   浮点边界偶发错位 ≤1 帧（spinner 帧与缓存不同步）。
             spinner_char,
+            # ★ 推理等级（2026-08-14）：切换（/reasoning）后 deps 变化 →
+            #   重建状态行（模型名后 [level] 即时刷新）。
+            reasoning_effort,
         ),
     )
     # 分割线（上面）

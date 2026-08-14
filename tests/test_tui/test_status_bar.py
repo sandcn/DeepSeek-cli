@@ -295,3 +295,72 @@ class TestStatusBarSeparatorWidth:
         assert status_line.plain.startswith("  ")
         assert status_line.plain[2] != " "
         assert "test-model" in status_line.plain
+
+
+class TestStatusBarReasoningEffort:
+    """推理等级标签 — status 行模型名后追加 [推理等级]（/reasoning 配置）。
+
+    显示格式：模型名 + 空格 + ``[level]``（如 ``test-model [max]``）；
+    level 取 low/medium/high/max。None/空串时不显示（向后兼容）。
+    """
+
+    def test_build_runs_shows_effort_after_model(self):
+        """_build_status_runs 传入推理等级 → 模型名后显示 [level]。"""
+        model = _Model()
+        runs = _build_status_runs(model, 0.0, "\u00b7", "max")
+        text = "".join(r.text for r in runs)
+        assert "[max]" in text
+        # [level] 在模型名之后
+        assert text.index("[max]") > text.index("test-model")
+
+    def test_build_runs_normalizes_case(self):
+        """推理等级大小写规范化（RC 中可能存 HIGH）。"""
+        model = _Model()
+        runs = _build_status_runs(model, 0.0, "\u00b7", "HIGH")
+        text = "".join(r.text for r in runs)
+        assert "[high]" in text
+
+    def test_build_runs_without_effort_hidden(self):
+        """默认 None / 空串 → 不显示推理等级标签（向后兼容）。"""
+        model = _Model()
+        for effort in (None, "", "   "):
+            runs = _build_status_runs(model, 0.0, "\u00b7", effort)
+            text = "".join(r.text for r in runs)
+            assert "[" not in text, f"effort={effort!r} 不应显示标签: {text!r}"
+
+    def test_component_reads_config_and_shows(self):
+        """StatusBar 渲染读取配置 REASONING_EFFORT → 状态行显示 [high]。"""
+        from src.tui.ink.components import render_frame
+        model = _Model()
+        with patch("src.tui.app.status_bar.time.monotonic", return_value=100.0):
+            with patch("src.config.REASONING_EFFORT", "high"):
+                r = Reconciler()
+                root = r.create_root()
+                el = h(StatusBar, {"model": model, "width": 80})
+                r.render(root, el, 80, 24)
+                frame = render_frame(root, 80)
+        status_line = frame.lines[1]
+        assert "test-model" in status_line.plain
+        assert "[high]" in status_line.plain, (
+            f"状态行应显示 [high]，实际: {status_line.plain!r}"
+        )
+        assert status_line.plain.index("[high]") > status_line.plain.index("test-model")
+
+    def test_effort_change_triggers_recompute(self):
+        """推理等级变化（/reasoning 切换）→ use_memo deps 变化 → 重算。"""
+        model = _Model()
+        with patch("src.tui.app.status_bar.time.monotonic", return_value=100.0):
+            with patch("src.tui.app._fx.time.monotonic", return_value=100.0):
+                with patch("src.tui.app._theme.time.monotonic", return_value=100.0):
+                    with patch("src.tui.app.status_bar._build_status_runs",
+                               wraps=_build_status_runs) as mock_br:
+                        r = Reconciler()
+                        root = r.create_root()
+                        el = h(StatusBar, {"model": model, "width": 80})
+                        with patch("src.config.REASONING_EFFORT", "max"):
+                            r.render(root, el, 80, 24)
+                        with patch("src.config.REASONING_EFFORT", "high"):
+                            r.render(root, el, 80, 24)
+                        assert mock_br.call_count == 2, (
+                            f"推理等级变化应触发重算，实际 {mock_br.call_count}"
+                        )
