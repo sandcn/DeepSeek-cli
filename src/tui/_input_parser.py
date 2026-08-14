@@ -9,13 +9,18 @@
 
 KeyEvent 数据类随解析逻辑搬移至本模块（Input 层 re-export，公开 API 不变）。
 
+★ 批量读取优化（2026-08-14）：构造注入 InputIO 后，ESC/SS3 序列的后续字节
+  经 ``InputIO.read_with_timeout`` 读取——优先消费 ``_pending``（批量读取
+  剩余字节已在内存在，零等待、零 select 超时）；io 未注入时回退旧
+  select+os.read 逻辑（独立可用，兼容直接构造场景）。
+
 设计模式:
   策略（Strategy）— 解析算法族从 Input 提取为独立策略对象，Input 组合持有。
 
 依赖方向:
   _input.py → _input_parser.py 单向依赖；本模块不得 import _input（避免循环）。
 
-模块级 ``import select`` 供 I/O 方法使用；可被 ``patch("select.select", ...)``
+模块级 ``import select`` 供回退路径使用；可被 ``patch("select.select", ...)``
 全局拦截（与 _input.py 原行为等价）。
 """
 
@@ -82,6 +87,41 @@ class InputParser:
     所有方法保持与 _input.py 原实现逐行等价（零逻辑改动）。
     """
 
+    def __init__(self, io=None) -> None:
+        """构造解析策略。
+
+        Args:
+            io: InputIO 实例（可选）。注入后 ESC/SS3/UTF-8 的后续字节经
+                ``io.read_with_timeout`` 读取——优先消费批量读取 pending
+                （已在内存在，零等待、零 select 超时）；None 时回退旧
+                select+os.read 逻辑（独立可用，兼容直接构造场景）。
+        """
+        self._io = io
+
+    def _read_with_timeout(self, fd: int, timeout: float) -> bytes | None:
+        """读取单个后续字节（优先 InputIO.pending，回退 select+os.read）。
+
+        io 已注入（正常装配路径）时委托 ``self._io.read_with_timeout``——
+        pending 缓冲有字节（批量读取剩余）则零等待直取；io 为 None（直接
+        构造场景）时保持旧 select+os.read 逻辑（可被 patch 全局拦截）。
+
+        Returns:
+            单字节 bytes；None — 超时/EOF/异常（无后续字节）。
+        """
+        if self._io is not None:
+            return self._io.read_with_timeout(timeout)
+        try:
+            ready, _, _ = select.select([fd], [], [], timeout)
+        except (ValueError, OSError, TypeError, AttributeError):
+            return None
+        if not ready:
+            return None
+        try:
+            raw = os.read(fd, 1)
+            return raw if raw else None
+        except (ValueError, OSError, TypeError):
+            return None
+
     def feed_byte(self, byte: int) -> KeyEvent | None:
         """单字节推入解析状态机。
 
@@ -126,23 +166,17 @@ class InputParser:
         return self._parse_escape_sequence(fd)
 
     def _parse_escape_sequence(self, fd: int) -> KeyEvent:
-        """读取并解析 ESC 转义序列（含 I/O）。"""
-        # 读取 ESC 后的下一个字节
-        try:
-            has_more, _, _ = select.select([fd], [], [], _ESC_FOLLOWUP_TIMEOUT)
-        except (ValueError, OSError, TypeError, AttributeError):
-            return KeyEvent(kind="escape", raw=b"\x1b")
+        """读取并解析 ESC 转义序列（含 I/O）。
 
-        if not has_more:
+        优化（2026-08-14 批量读取）：后续字节经 ``_read_with_timeout``
+        读取——pending 中有字节（同批 read 的方向键等）零等待直取；无
+        pending 时 select 等待 ``_ESC_FOLLOWUP_TIMEOUT``（纯 Esc 判定）。
+        """
+        # 读取 ESC 后的下一个字节（pending 优先，无则 select 等待）
+        raw2 = self._read_with_timeout(fd, _ESC_FOLLOWUP_TIMEOUT)
+        if not raw2:
             return KeyEvent(kind="escape", raw=b"\x1b")
-
-        try:
-            raw2 = os.read(fd, 1)
-            if not raw2:
-                return KeyEvent(kind="escape", raw=b"\x1b")
-            next_byte = raw2[0]
-        except (ValueError, OSError, TypeError):
-            return KeyEvent(kind="escape", raw=b"\x1b")
+        next_byte = raw2[0]
 
         # ── CSI 序列：ESC [ ──
         if next_byte == ord('['):
@@ -154,11 +188,9 @@ class InputParser:
 
         # ── Alt+Backspace：ESC DEL ──
         if next_byte == 0x7f:
-            try:
-                if select.select([fd], [], [], _ALT_BACKSPACE_DRAIN_TIMEOUT)[0]:
-                    os.read(fd, 1)
-            except (ValueError, OSError, TypeError):
-                pass
+            # 排空紧随的一个字节（原 select+os.read 语义；pending/无数据时
+            # read_with_timeout 立即返回或超时，忽略结果）
+            self._read_with_timeout(fd, _ALT_BACKSPACE_DRAIN_TIMEOUT)
             return KeyEvent(kind="backspace", modifier=1, raw=b"\x1b\x7f")
 
         # ── 双 Esc ──
@@ -233,50 +265,53 @@ class InputParser:
         """读取 CSI 序列参数 + 终结符并解析为 KeyEvent。
 
         方向1 B6：循环内累积已读原始字节到 ``raw_acc``（初始 ``b"\\x1b["``，
-        每 ``os.read`` 到字节先 ``raw_acc += raw_bytes`` 再 decode 处理）；
-        超时（terminator 为 None）时 unknown 事件 raw 含已读参数（原返回
+        每读入字节先 ``raw_acc += raw_bytes`` 再 decode 处理）；超时
+        （terminator 为 None）时 unknown 事件 raw 含已读参数（原返回
         ``b"\\x1b["`` 丢失已读部分）；成功路径 raw 构建不变（经
         ``_params_to_bytes``，与 _dispatch_csi 内部构建一致）。
+
+        优化（2026-08-14 批量读取）：后续字节经 ``_read_with_timeout`` 读取
+        ——pending 有字节（同批 read 的方向键等）零等待直取；无 pending 时
+        select 等待 ``_CSI_READ_TIMEOUT``。
         """
         params: list[int] = []
         current = ""
         terminator: str | None = None
         raw_acc = b"\x1b["  # 方向1 B6：累积已读原始字节（超时 raw 保留）
 
-        try:
-            while select.select([fd], [], [], _CSI_READ_TIMEOUT)[0]:
-                # P1-1（review 2026-08-06）：无终止符输入流（fd 持续可读的
-                # 数字/异常字节）无限循环阻塞 render 线程——达上限 break 视为
-                # 解析失败（unknown）。
-                if len(raw_acc) >= _CSI_MAX_BYTES:
-                    break
-                raw_c = os.read(fd, 1)
-                if not raw_c:
-                    break
-                raw_acc += raw_c  # 方向1 B6：先累积再 decode 处理
-                c = raw_c.decode("utf-8", errors="replace")
-                if c == ';':
+        while True:
+            # P1-1（review 2026-08-06）：无终止符输入流（fd 持续可读的
+            # 数字/异常字节）无限循环阻塞 render 线程——达上限 break 视为
+            # 解析失败（unknown）。
+            if len(raw_acc) >= _CSI_MAX_BYTES:
+                break
+            # 读取下一字节：pending 优先（零等待），空则 select 等待；超时
+            # /EOF/异常均返回 None → break（等价原 while select 条件 False）。
+            raw_c = self._read_with_timeout(fd, _CSI_READ_TIMEOUT)
+            if raw_c is None:
+                break
+            raw_acc += raw_c  # 方向1 B6：先累积再 decode 处理
+            c = raw_c.decode("utf-8", errors="replace")
+            if c == ';':
+                try:
+                    params.append(int(current) if current else 0)
+                except ValueError:
+                    params.append(0)
+                current = ""
+            # P1-1（review 2026-08-06）：``str.isdigit()`` / ``str.isalpha()``
+            # 对 Unicode 数字/字母（'²'/'٣'/'é' 等）返回 True——UTF-8 续字节
+            # 或异常字节 decode 后可能被误当参数数字/终止符（污染 current 或
+            # 提前终止 CSI 解析）。限制为 ASCII（``c.isascii()``，Py3.7+）。
+            elif c.isascii() and c.isdigit():
+                current += c
+            elif (c.isascii() and c.isalpha()) or c == '~':
+                if current:
                     try:
-                        params.append(int(current) if current else 0)
+                        params.append(int(current))
                     except ValueError:
                         params.append(0)
-                    current = ""
-                # P1-1（review 2026-08-06）：``str.isdigit()`` / ``str.isalpha()``
-                # 对 Unicode 数字/字母（'²'/'٣'/'é' 等）返回 True——UTF-8 续字节
-                # 或异常字节 decode 后可能被误当参数数字/终止符（污染 current 或
-                # 提前终止 CSI 解析）。限制为 ASCII（``c.isascii()``，Py3.7+）。
-                elif c.isascii() and c.isdigit():
-                    current += c
-                elif (c.isascii() and c.isalpha()) or c == '~':
-                    if current:
-                        try:
-                            params.append(int(current))
-                        except ValueError:
-                            params.append(0)
-                    terminator = c
-                    break
-        except (ValueError, OSError, TypeError):
-            pass
+                terminator = c
+                break
 
         if terminator is None:
             # 方向1 B6：超时 → unknown raw 保留已读参数（原返回 b"\x1b[" 丢失）
@@ -289,31 +324,31 @@ class InputParser:
 
         方向A 步骤1：ESC O P/Q/R/S → f1/f2/f3/f4 功能键事件；
         其余 SS3 字符保持 unknown（raw 保留完整字节供调试/未来消费）。
+
+        优化（2026-08-14 批量读取）：后续字节经 ``_read_with_timeout`` 读取
+        ——pending 有字节零等待直取；无 pending 时 select 等待
+        ``_SS3_READ_TIMEOUT``。
         """
-        try:
-            if select.select([fd], [], [], _SS3_READ_TIMEOUT)[0]:
-                raw_c = os.read(fd, 1)
-                if raw_c:
-                    raw = b"\x1bO" + raw_c
-                    mapping = {
-                        ord('P'): "f1",
-                        ord('Q'): "f2",
-                        ord('R'): "f3",
-                        ord('S'): "f4",
-                        # ★ 应用光标键模式（DECCKM，2026-08-06）：部分终端
-                        #   （SSH 客户端/kitty 等）默认开启应用模式，方向键
-                        #   发送 \x1bOA/B/C/D 而非 \x1b[A/B/C/D——修复前
-                        #   mapping 缺失 → unknown 静默丢弃，↑↓←→ 全部失效。
-                        #   与 CSI 箭头语义一致（modifier 无修饰）。
-                        ord('A'): "arrow_up",
-                        ord('B'): "arrow_down",
-                        ord('C'): "arrow_right",
-                        ord('D'): "arrow_left",
-                    }
-                    kind = mapping.get(raw_c[0], "unknown")
-                    return KeyEvent(kind=kind, raw=raw)
-        except (ValueError, OSError, TypeError):
-            pass
+        raw_c = self._read_with_timeout(fd, _SS3_READ_TIMEOUT)
+        if raw_c:
+            raw = b"\x1bO" + raw_c
+            mapping = {
+                ord('P'): "f1",
+                ord('Q'): "f2",
+                ord('R'): "f3",
+                ord('S'): "f4",
+                # ★ 应用光标键模式（DECCKM，2026-08-06）：部分终端
+                #   （SSH 客户端/kitty 等）默认开启应用模式，方向键
+                #   发送 \x1bOA/B/C/D 而非 \x1b[A/B/C/D——修复前
+                #   mapping 缺失 → unknown 静默丢弃，↑↓←→ 全部失效。
+                #   与 CSI 箭头语义一致（modifier 无修饰）。
+                ord('A'): "arrow_up",
+                ord('B'): "arrow_down",
+                ord('C'): "arrow_right",
+                ord('D'): "arrow_left",
+            }
+            kind = mapping.get(raw_c[0], "unknown")
+            return KeyEvent(kind=kind, raw=raw)
         return KeyEvent(kind="unknown", raw=b"\x1bO")
 
     @staticmethod

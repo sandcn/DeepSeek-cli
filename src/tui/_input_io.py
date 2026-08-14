@@ -6,9 +6,18 @@
   - 残留排空: _flush_stdin_residual / flush_stdin_buffer
   - I/O 状态机: start_io / stop_io / pause_io / resume_io（_active / _stop / _interrupted）
   - 故障检测: _eof_count / _select_error_count / _exit_reason / _fd_status
-  - 粘贴退避: _paste_skip_counter / _paste_skip_threshold
 
-InputIO 持有 fd 与粘贴退避状态；``_interrupted`` 事件仍由 Input 公开属性
+★ 批量读取优化（2026-08-14）：InputIO 持有 ``_pending`` 待处理字节缓冲——
+  read_stdin_once 批量 ``os.read(fd, _READ_BATCH)`` 读入的剩余字节暂存于此；
+  ``read_byte`` / ``read_with_timeout`` / ``read_utf8_char`` 优先消费 pending
+  （零 syscall、零等待），pending 空时才 select+os.read。ESC 序列 / UTF-8
+  多字节的后续字节若已在 pending 中，解析**不再 select 超时等待**（方向键、
+  中文等跨字节序列零延迟）。原 ``_paste_skip_counter`` / ``_paste_skip_threshold``
+  退避机制已移除——try_read_paste 依赖 pending 感知 + 单次短窗口确认
+  （见 try_read_paste 注释），消除前 10 次按键每次 3 次 select 累计 5.1ms
+  的固定打字延迟。
+
+InputIO 持有 fd 与粘贴解码缓冲；``_interrupted`` 事件仍由 Input 公开属性
 ``interrupted`` 委托读取。``_UTF8_READ_TIMEOUT`` 从 _input_parser 导入。
 
 设计模式: 单一职责（SRP）提取——读取层仅负责原始 I/O，不含缓冲/分发。
@@ -42,6 +51,11 @@ from ._input_parser import _UTF8_READ_TIMEOUT
 
 _logger = logging.getLogger(__name__)
 
+#: 粘贴确认窗口（秒）：首字符后等待后续字节的最长时间。
+#: 打字按键间隔 >> 1ms（人 >50ms），终端粘贴/IME 上屏的字符流 <1ms——单次
+#: 短窗口即可区分，替代原 3 次退避 select（0.1+2+3ms 累计 5.1ms 固定延迟）。
+_PASTE_CONFIRM_TIMEOUT = 0.001
+
 
 # ═══════════════════════════════════════════════════════════
 # InputIO — stdin 原始读取 + I/O 状态机
@@ -66,9 +80,18 @@ class InputIO:
         self._stop = threading.Event()
         self._interrupted = threading.Event()
 
-        # ── 粘贴退避优化 ──
-        self._paste_skip_counter: int = 0
-        self._paste_skip_threshold: int = 10
+        # ── 粘贴退避优化（2026-08-14 移除） ──
+        # 原 ``_paste_skip_counter`` / ``_paste_skip_threshold`` 退避机制已删除：
+        # 批量读取（read_stdin_once os.read(fd, _READ_BATCH)）将剩余字节存入
+        # ``_pending``，try_read_paste 感知 pending 即突发输入（粘贴/IME 上屏），
+        # 无需"连续 N 次非粘贴后走快速路径"的退避状态（见 try_read_paste 注释）。
+
+        # ── 批量读取待处理字节缓冲（2026-08-14） ──
+        # read_stdin_once 批量 os.read 读入的剩余字节暂存于此，后续调用优先
+        # 消费（零 syscall）。ESC 序列 / UTF-8 多字节解析经 read_with_timeout
+        # 优先取 pending（后续字节已在内存时零等待，不 select 超时）。
+        self._pending: bytes = b""
+        self._pending_pos: int = 0
 
         # ── 粘贴多字节解码缓冲（方向1 步骤1） ──
         # 跨 read_stdin_once 调用保留不完整的 UTF-8 尾部字节，配合
@@ -245,11 +268,12 @@ class InputIO:
         self._fd_status = "ok"
         # 方向2：启动时清空慢速多字节续读缓冲（会话重启不携带旧 partial）
         self._utf8_partial = b""
-        # P2-1：跨会话状态残留修复——同步清空粘贴多字节缓冲并重置粘贴退避
-        # 计数器（start_io/stop_io 重置后会话边界干净，避免旧粘贴尾字节与
-        # 退避状态泄漏到新会话）。
+        # P2-1：跨会话状态残留修复——同步清空粘贴多字节缓冲
+        # （start_io/stop_io 重置后会话边界干净，避免旧粘贴尾字节泄漏到
+        # 新会话）；批量读取 pending 一并清空（会话重启不携带旧待处理字节）。
         self._paste_partial = b""
-        self._paste_skip_counter = 0
+        self._pending = b""
+        self._pending_pos = 0
 
     def stop_io(self) -> None:
         """停用 I/O 读取（标志位管理模式，不再 join 线程）。
@@ -263,10 +287,11 @@ class InputIO:
         self._fd_status = "ok"
         # 方向2：停止时清空慢速多字节续读缓冲（重启后从干净状态恢复）
         self._utf8_partial = b""
-        # P2-1：与 start_io 对称——停止时同步清空粘贴缓冲与退避计数
+        # P2-1：与 start_io 对称——停止时同步清空粘贴缓冲与 pending
         # （会话边界干净，重启不携带旧状态）。
         self._paste_partial = b""
-        self._paste_skip_counter = 0
+        self._pending = b""
+        self._pending_pos = 0
 
     def pause_io(self) -> None:
         """暂停 I/O 读取（供 EscapeMonitor 的特殊按键回调使用）。
@@ -284,19 +309,63 @@ class InputIO:
     # stdin 读取原语
     # ═══════════════════════════════════════════════════════
 
+    # ── 批量读取 pending 缓冲（2026-08-14） ──
+    # read_stdin_once 批量 os.read(fd, _READ_BATCH) 后将剩余字节 set_pending；
+    # read_byte / read_with_timeout / read_utf8_char / try_read_paste 优先消费。
+    # 状态跨 read_stdin_once 调用保留——同批读入的字节由后续调用逐字节分发。
+
+    def has_pending(self) -> bool:
+        """是否有批量读取的待处理字节。"""
+        return self._pending_pos < len(self._pending)
+
+    def take_pending_byte(self) -> bytes:
+        """从 pending 缓冲取单个字节（bytes 类型；无则返回 b""）。"""
+        if self._pending_pos >= len(self._pending):
+            return b""
+        b = self._pending[self._pending_pos:self._pending_pos + 1]
+        self._pending_pos += 1
+        if self._pending_pos >= len(self._pending):
+            # 消费完立即释放缓冲（不保留已消费前缀）
+            self._pending = b""
+            self._pending_pos = 0
+        return b
+
+    def drain_pending(self) -> bytes:
+        """取走全部待处理字节（供 try_read_paste 粘贴路径一次性取用）。"""
+        if self._pending_pos >= len(self._pending):
+            return b""
+        data = self._pending[self._pending_pos:]
+        self._pending = b""
+        self._pending_pos = 0
+        return data
+
+    def set_pending(self, data: bytes) -> None:
+        """存入批量读取的剩余字节（覆盖旧值——调用方先 has_pending 判空）。"""
+        self._pending = data
+        self._pending_pos = 0
+
     def read_byte(self) -> bytes:
-        """从 fd 读取单个原始字节。
+        """从 fd 读取单个原始字节（优先消费 pending，零 syscall）。
 
         Returns:
             读取到的单字节 bytes 对象；EOF/错误时返回空 bytes。
         """
+        if self.has_pending():
+            return self.take_pending_byte()
         try:
             return os.read(self._fd, 1)
         except (ValueError, OSError, TypeError):
             return b""
 
     def read_with_timeout(self, timeout: float) -> bytes | None:
-        """使用 select + os.read 读取单个字节，超时返回 None。"""
+        """使用 select + os.read 读取单个字节，超时返回 None。
+
+        优化（2026-08-14 批量读取）：pending 缓冲有字节时**直接返回**（零
+        等待、零 syscall）——批量读取的剩余字节已在内存在，无需 select；
+        pending 空时才走 select+os.read。
+        """
+        if self.has_pending():
+            return self.take_pending_byte()
         try:
             ready, _, _ = select.select([self._fd], [], [], timeout)
         except (ValueError, OSError, TypeError, AttributeError):
@@ -310,32 +379,35 @@ class InputIO:
             return None
 
     def try_read_paste(self, fd: int, first_chars: str) -> str:
-        """检测并读取粘贴内容（退避 select 检测突发字符流）。"""
-        # 快速路径：若近期均非粘贴，跳过退避检测
-        if self._paste_skip_counter >= self._paste_skip_threshold:
+        """检测并读取粘贴内容（pending 感知 + 短窗口确认，无退避延迟）。
+
+        优化（2026-08-14）：原实现 ``_paste_skip_counter`` 退避机制——前 10
+        次按键每次 3 次 select（0.1+2+3ms）累计 5.1ms 固定打字延迟，达阈后才
+        走快速路径。现改为：
+          1. pending 非空（read_stdin_once 批量读取剩余字节）→ 突发输入
+             （粘贴/IME 上屏），直接读取全部，无需等待；
+          2. pending 空 → 单次 select(``_PASTE_CONFIRM_TIMEOUT``=1ms) 确认
+             是否还有后续——打字按键间隔 >>1ms 不受影响，粘贴/IME 上屏
+             字符流 <1ms 可捕捉。
+        总延迟从 5.1ms 降至 ≤1ms，且无需退避状态。
+        """
+        # 批量读取剩余字节（突发输入）——有则无需等待，直接作为粘贴读全部
+        extra = self.drain_pending()
+        if not extra:
+            # 单字符：短窗口确认是否还有后续（打字 1ms 无感知；粘贴可捕捉）
             try:
-                has_more, _, _ = select.select([fd], [], [], 0.0)
+                has_more, _, _ = select.select(
+                    [fd], [], [], _PASTE_CONFIRM_TIMEOUT,
+                )
             except (ValueError, OSError, TypeError, AttributeError):
                 return first_chars
             if not has_more:
-                # P3（2026-08-07）：非粘贴路径（快速路径 select 无数据）→
-                # 粘贴边界结束——清空跨调用残留的截断 UTF-8 尾部，避免与
-                # 下次独立粘贴的首字节拼接（两个粘贴边界混淆，修复前残留
-                # 在快速路径帧中持续保留）。
+                # P3（2026-08-07）：非粘贴路径（select 无数据）→ 粘贴边界
+                # 结束——清空跨调用残留的截断 UTF-8 尾部，避免与下次独立
+                # 粘贴的首字节拼接（两个粘贴边界混淆）。
                 self._paste_partial = b""
                 return first_chars
-            # 有数据，重置计数器并进入粘贴检测
-            self._paste_skip_counter = 0
-        else:
-            for delay in (0.0001, 0.002, 0.003):
-                try:
-                    has_more, _, _ = select.select([fd], [], [], delay)
-                except (ValueError, OSError, TypeError, AttributeError):
-                    return first_chars
-                if not has_more:
-                    self._paste_skip_counter += 1
-                    return first_chars
-        extra = b""
+        # 有更多数据（pending 或 select 确认）→ 读取全部可读字节
         try:
             while True:
                 has_more, _, _ = select.select([fd], [], [], 0.01)
@@ -425,6 +497,10 @@ class InputIO:
         字节若可组成合法 UTF-8 前缀则存入 ``_utf8_partial`` 返回 None（待
         下次调用拼接补齐）；不可组成则清空返回 None（首字节调回 capture
         路径）。跨 read_stdin_once 调用保留 partial——慢速多字节不丢首字节。
+
+        优化（2026-08-14 批量读取）：续字节经 ``read_with_timeout`` 读取——
+        pending 缓冲有字节时零等待直取（同批 read 的中文等多字节序列不再
+        select 超时），pending 空时才 select 等待。
         """
         if self._utf8_partial:
             # 有跨调用残留 partial——校验当前 first_byte 是否为合法续字节
@@ -452,21 +528,12 @@ class InputIO:
         # 已读字节数（含 partial 与当前 first_byte）
         have = len(self._utf8_partial) + 1
         for _ in range(total_bytes - have):
-            try:
-                has_data, _, _ = select.select(
-                    [fd], [], [], _UTF8_READ_TIMEOUT,
-                )
-            except (ValueError, OSError, TypeError, AttributeError):
+            # read_with_timeout：优先从 pending 取（零等待），空则 select
+            # 等待 _UTF8_READ_TIMEOUT；超时/EOF 均返回 None → break。
+            more = self.read_with_timeout(_UTF8_READ_TIMEOUT)
+            if more is None:
                 break
-            if not has_data:
-                break
-            try:
-                more = os.read(fd, 1)
-                if not more:
-                    break
-                buf += more
-            except (ValueError, OSError, TypeError):
-                break
+            buf += more
 
         full = self._utf8_partial + buf
         try:

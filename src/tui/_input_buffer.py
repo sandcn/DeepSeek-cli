@@ -164,6 +164,62 @@ class InputBufferEditor:
             count += 1
         return count
 
+    # ── 词边界 helper（2026-08-14 提取） ──
+    # 原 _word_left / _word_right / _delete_word_left / _delete_word_right
+    # 各含重复的 while 词字符扫描（isalnum / '_' 判定）——统一收敛为三个
+    # helper，消除 4 处漂移（语义逐一核对，见各 helper 注释）。
+
+    @staticmethod
+    def _is_word_char(ch: str) -> bool:
+        """词字符判定（readline 词边界语义：字母数字或下划线）。"""
+        return ch.isalnum() or ch == '_'
+
+    @staticmethod
+    def _prev_word_start(text: str, pos: int) -> int:
+        """光标 pos 前一个词的起始位置（word_left / delete_word_left 共用）。
+
+        从 pos-1 向前：先跳过非词字符（分隔符），再跳过词字符；返回词起始
+        位置。与原 _word_left / _delete_word_left 的 while 扫描逻辑逐行等价。
+        """
+        if pos <= 0:
+            return 0
+        p = pos - 1
+        while p >= 0 and not InputBufferEditor._is_word_char(text[p]):
+            p -= 1
+        while p >= 0 and InputBufferEditor._is_word_char(text[p]):
+            p -= 1
+        return p + 1
+
+    @staticmethod
+    def _next_word_end(text: str, pos: int) -> int:
+        """光标 pos 后下一个词的结束位置（delete_word_right 语义：停在词尾）。
+
+        从 pos 向后：先跳过非词字符，再跳过词字符；返回词结束位置（不跳过
+        词后的非词字符——与原 _delete_word_right 的 while 扫描逻辑逐行等价）。
+        """
+        n = len(text)
+        if pos >= n:
+            return n
+        p = pos
+        while p < n and not InputBufferEditor._is_word_char(text[p]):
+            p += 1
+        while p < n and InputBufferEditor._is_word_char(text[p]):
+            p += 1
+        return p
+
+    @staticmethod
+    def _next_word_start(text: str, pos: int) -> int:
+        """光标 pos 后下一个词的起始位置（word_right 语义：跨过词后的分隔符）。
+
+        复用 ``_next_word_end`` 定位词尾后继续跳过非词字符（分隔符），返回
+        下一个词开头。与原 _word_right 的 while 扫描逻辑逐行等价。
+        """
+        n = len(text)
+        p = InputBufferEditor._next_word_end(text, pos)
+        while p < n and not InputBufferEditor._is_word_char(text[p]):
+            p += 1
+        return p
+
     def handle_chars(self, text: str) -> None:
         """批量处理多个字符（粘贴/预填场景），只在全部插入后触发一次回显。
 
@@ -184,7 +240,11 @@ class InputBufferEditor:
                 self._buffer[self._cursor_pos:],
             ]
             self._buffer = ''.join(parts)
-            self._cursor_pos += len(text)
+            # P2-3 一致性（2026-08-14）：按「有效字符数」步进（与 handle_char
+            # 的 _char_count 语义统一）——修复前 ``+= len(text)`` 对含 UTF-16
+            # 代理对文本（粘贴/预填场景）步进 2 与 _left/_right/_backspace 的
+            # code point 移动语义不一致，光标可能落在代理对中间。
+            self._cursor_pos += self._char_count(text)
             result = self._buffer
         self._echo(result)
 
@@ -649,6 +709,8 @@ class InputBufferEditor:
 
         方向2（_history_idx 重置修复）：历史浏览中按 Ctrl+左 退出历史导航（同
         _home 修复语义）。
+
+        2026-08-14：词边界扫描提取至 ``_prev_word_start``（语义逐行等价）。
         """
         with self._lock:
             if self._history_idx >= 0:
@@ -656,16 +718,9 @@ class InputBufferEditor:
             if self._cursor_pos <= 0:
                 text = self._buffer
             else:
-                pos = self._cursor_pos - 1
-                while pos >= 0 and not (
-                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
-                ):
-                    pos -= 1
-                while pos >= 0 and (
-                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
-                ):
-                    pos -= 1
-                self._cursor_pos = pos + 1
+                self._cursor_pos = self._prev_word_start(
+                    self._buffer, self._cursor_pos,
+                )
                 text = self._buffer
         self._echo(text)
 
@@ -674,6 +729,8 @@ class InputBufferEditor:
 
         方向2（_history_idx 重置修复）：历史浏览中按 Ctrl+右 退出历史导航（同
         _home 修复语义）。
+
+        2026-08-14：词边界扫描提取至 ``_next_word_start``（语义逐行等价）。
         """
         with self._lock:
             if self._history_idx >= 0:
@@ -682,20 +739,9 @@ class InputBufferEditor:
             if self._cursor_pos >= n:
                 text = self._buffer
             else:
-                pos = self._cursor_pos
-                while pos < n and not (
-                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
-                ):
-                    pos += 1
-                while pos < n and (
-                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
-                ):
-                    pos += 1
-                while pos < n and not (
-                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
-                ):
-                    pos += 1
-                self._cursor_pos = pos
+                self._cursor_pos = self._next_word_start(
+                    self._buffer, self._cursor_pos,
+                )
                 text = self._buffer
         self._echo(text)
 
@@ -705,26 +751,21 @@ class InputBufferEditor:
         对称于 ``_delete_word_left``（Ctrl+W）：跳过光标后的非词字符，再跳过
         一个词字符，删除 [光标, 词尾) 区间。方向2（_history_idx 重置修复）：
         历史浏览中按 Alt+D 退出历史导航（与其他编辑方法一致）。
+
+        2026-08-14：词边界扫描提取至 ``_next_word_end``（语义逐行等价）。
         """
         with self._lock:
             if self._history_idx >= 0:
                 self._history_idx = -1
-            n = len(self._buffer)
-            if self._cursor_pos >= n:
+            if self._cursor_pos >= len(self._buffer):
                 text = self._buffer
             else:
-                pos = self._cursor_pos
-                while pos < n and not (
-                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
-                ):
-                    pos += 1
-                while pos < n and (
-                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
-                ):
-                    pos += 1
+                word_end = self._next_word_end(
+                    self._buffer, self._cursor_pos,
+                )
                 self._buffer = (
                     self._buffer[:self._cursor_pos]
-                    + self._buffer[pos:]
+                    + self._buffer[word_end:]
                 )
                 text = self._buffer
         self._echo(text)
@@ -813,23 +854,19 @@ class InputBufferEditor:
         self._echo(text)
 
     def _delete_word_left(self) -> None:
-        """Ctrl+W / Alt+Backspace：删除光标前的一个词。"""
+        """Ctrl+W / Alt+Backspace：删除光标前的一个词。
+
+        2026-08-14：词边界扫描提取至 ``_prev_word_start``（语义逐行等价）。
+        """
         with self._lock:
             if self._history_idx >= 0:
                 self._history_idx = -1
             if self._cursor_pos <= 0:
                 text = self._buffer
             else:
-                pos = self._cursor_pos - 1
-                while pos >= 0 and not (
-                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
-                ):
-                    pos -= 1
-                while pos >= 0 and (
-                    self._buffer[pos].isalnum() or self._buffer[pos] == '_'
-                ):
-                    pos -= 1
-                word_start = pos + 1
+                word_start = self._prev_word_start(
+                    self._buffer, self._cursor_pos,
+                )
                 self._buffer = (
                     self._buffer[:word_start]
                     + self._buffer[self._cursor_pos:]

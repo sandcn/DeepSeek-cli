@@ -45,6 +45,12 @@ _logger = logging.getLogger(__name__)
 # 后续 LF/CR 为用户新输入不丢弃（防用户后续回车被误丢）。
 _ENTER_RESIDUAL_WINDOW = 0.5
 
+# ── 批量读取大小（字节） ──
+# read_stdin_once 一次 os.read 读入的最大字节数——快速打字/IME 上屏/粘贴时
+# 一次读入多个字节（剩余存入 InputIO._pending 由后续调用消费），系统调用数
+# 从 2N 降至 2（select+os.read）；4096 足够覆盖单次输入突发。
+_READ_BATCH = 4096
+
 
 # ═══════════════════════════════════════════════════════════
 # InputDispatcher — 事件分发胶水
@@ -310,6 +316,13 @@ class InputDispatcher:
         Render 线程每帧调用一次。使用 select timeout=0 确保不阻塞渲染帧。
         单次迭代逻辑改为直接分发（不经过 queue.Queue 中间队列）。
 
+        ★ 批量读取优化（2026-08-14）：``os.read(fd, 1)`` → ``os.read(fd,
+        _READ_BATCH)`` 一次读入多个字节，剩余存入 ``InputIO._pending``——
+        后续调用优先消费 pending（零 select/read syscall）。快速打字/IME
+        上屏/粘贴场景系统调用数从 2N 降至 2；ESC/UTF-8 序列的后续字节已在
+        pending 时解析零等待（经 InputIO.read_with_timeout 消费，见
+        ``_input_io.py`` / ``_input_parser.py``）。
+
         设计模式: 模板方法 — ``read_stdin_once()`` 为骨架，
         保留 ``_do_interrupt()`` / ``_handle_special_key()`` 具体步骤。
 
@@ -322,6 +335,14 @@ class InputDispatcher:
         # ── 状态检查（委托 InputIO） ──
         if not self._io.can_read():
             return False
+
+        # ── 优先消费 pending（批量读取剩余字节，零 select/read） ──
+        if self._io.has_pending():
+            try:
+                return self._dispatch_byte(self._io.take_pending_byte()[0])
+            except Exception:
+                _logger.warning("pending 字节分发异常", exc_info=True)
+                return True
 
         # ── select 非阻塞读取（timeout=0，不阻塞渲染帧） ──
         try:
@@ -336,7 +357,8 @@ class InputDispatcher:
         self._io.reset_select_error()
 
         try:
-            raw = os.read(fd, 1)
+            # 批量读取（一次读入多个字节，剩余存 pending 由后续调用消费）
+            raw = os.read(fd, _READ_BATCH)
             if not raw:
                 self._io.record_eof()
                 return False
@@ -345,7 +367,29 @@ class InputDispatcher:
             self._io.mark_fd_error(exc)
             return False
 
-        first_byte = raw[0]
+        if len(raw) > 1:
+            self._io.set_pending(raw[1:])
+
+        try:
+            return self._dispatch_byte(raw[0])
+        except Exception:
+            _logger.warning("输入分发异常", exc_info=True)
+            return True
+
+    def _dispatch_byte(self, first_byte: int) -> bool:
+        """分派单个输入字节（read_stdin_once 字节处理逻辑提取）。
+
+        从 read_stdin_once 提取（2026-08-14 批量读取重构）：pending 优先
+        消费与批量读取后的首字节分发共用本方法。保留原三路分发结构
+        （控制字符 / ASCII 可打印 / 多字节 UTF-8）与全部修复逻辑。
+
+        Args:
+            first_byte: 待分发的输入字节（int，0-255）。
+
+        Returns:
+            True — 字节已被处理（消费）。
+        """
+        fd = self._io.fd
 
         # ── 残留 Enter 后置 LF/CR 丢弃（editmsg 竞态修复） ──
         # 若 _enter_residual_pending 置位（Enter 提交/被抑制/router 消费后可能

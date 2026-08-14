@@ -141,8 +141,6 @@ class Input:
         history_file: Path,
         term_width_cache: "TerminalWidthCache | None" = None,
     ) -> None:
-        # ANSI 解析策略对象（方向⑤：解析算法族提取至 _input_parser.py）
-        self._parser = InputParser()
         self._term_width_cache = (
             term_width_cache if term_width_cache is not None
             else TerminalWidthCache.get_default()
@@ -150,6 +148,10 @@ class Input:
 
         # ── 职责拆分（方向A 步骤1） ──
         self._io = InputIO(fd=fd)
+        # ★ 批量读取优化（2026-08-14）：InputParser 注入 InputIO——ESC/UTF-8
+        #   序列的后续字节经 io.read_with_timeout 读取（优先消费批量读取
+        #   pending，零 select 超时）。
+        self._parser = InputParser(io=self._io)
         self._buffer_editor = InputBufferEditor(
             history_file=history_file,
             history_io=_HistoryIO(),
