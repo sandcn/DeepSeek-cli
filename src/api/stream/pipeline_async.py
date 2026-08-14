@@ -266,10 +266,25 @@ class AsyncStreamPipeline:
         """处理 usage chunk — 以真实值覆盖估计值。"""
         chunk_usage = chunk.get("usage")
         if chunk_usage and not ctx.usage_accumulated:
-            real_input = chunk_usage.get("prompt_tokens", 0)
-            real_output = chunk_usage.get("completion_tokens", 0)
+            # 兼容两种 usage 格式：
+            # - 原始 OpenAI/DeepSeek 格式：prompt_tokens / completion_tokens +
+            #   prompt_cache_hit_tokens / prompt_cache_miss_tokens
+            # - 统一格式（Anthropic 转换层 / parse_response 产物）：input / output +
+            #   input_cache_hit / input_cache_miss
+            if "prompt_tokens" in chunk_usage or "completion_tokens" in chunk_usage:
+                real_input = chunk_usage.get("prompt_tokens", 0)
+                real_output = chunk_usage.get("completion_tokens", 0)
+                from ..adapters.base import _extract_cache_usage
+                real_hit, real_miss = _extract_cache_usage(chunk_usage)
+            else:
+                real_input = chunk_usage.get("input", 0)
+                real_output = chunk_usage.get("output", 0)
+                real_hit = chunk_usage.get("input_cache_hit", 0)
+                real_miss = chunk_usage.get("input_cache_miss", 0)
             ctx.usage["input"] = real_input
             ctx.usage["output"] = real_output
+            ctx.usage["input_cache_hit"] = real_hit
+            ctx.usage["input_cache_miss"] = real_miss
 
             # SpeedHandler.try_update() 已在流式过程中累积了估计的
             # output token。此处以真实值直接覆盖，确保统计准确。
@@ -284,7 +299,12 @@ class AsyncStreamPipeline:
             ctx.last_live_est = 0
             # ★ 标记最终 usage 已接收，后续 SpeedHandler 跳过重复累积
             ctx.final_usage_received = True
-            accumulate_usage({"input": real_input, "output": correction})
+            accumulate_usage({
+                "input": real_input,
+                "output": correction,
+                "input_cache_hit": real_hit,
+                "input_cache_miss": real_miss,
+            })
             ctx.usage_accumulated = True
 
     def _build_result(self, ctx: StreamContext) -> tuple:

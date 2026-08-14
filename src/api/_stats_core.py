@@ -20,7 +20,16 @@ class _Stats:
         self._lock = threading.Lock()
 
         # ── 会话级 token 统计 ──────────────────────────────
-        self.token_stats = {"input": 0, "output": 0, "calls": 0}
+        # input/output: 总输入/输出 token
+        # input_cache_hit/input_cache_miss: 缓存命中/未命中的输入 token
+        #   （命中 + 未命中 = input，供 /cost 正确计算缓存折扣费用）
+        self.token_stats = {
+            "input": 0,
+            "output": 0,
+            "calls": 0,
+            "input_cache_hit": 0,
+            "input_cache_miss": 0,
+        }
         self.session_start_time = time.time()
 
         # ── 上次工具调用解析耗时（供 agent 侧显示用）───────
@@ -33,7 +42,9 @@ class _Stats:
         """线程安全地累加一次 API 调用的 usage 到全局统计。
 
         Args:
-            usage: {"input": int, "output": int} 字典
+            usage: {"input": int, "output": int, "input_cache_hit": int,
+                    "input_cache_miss": int} 字典；缓存字段可选（缺省按 0 累加，
+                    兼容旧调用方 / 流式实时估计阶段）。
             increment_calls: 是否累加调用次数。流式过程中的实时 token
                 估计累计（SpeedHandler）应传 False——该累计不是一次真实
                 API 调用，只影响 token 展示；真实 usage 到达时由
@@ -43,6 +54,8 @@ class _Stats:
         with self._lock:
             self.token_stats["input"] += usage.get("input", 0)
             self.token_stats["output"] += usage.get("output", 0)
+            self.token_stats["input_cache_hit"] += usage.get("input_cache_hit", 0)
+            self.token_stats["input_cache_miss"] += usage.get("input_cache_miss", 0)
             if increment_calls:
                 self.token_stats["calls"] += 1
 
@@ -110,10 +123,28 @@ def get_total_output_tokens() -> int:
         return _stats.token_stats["output"]
 
 
+def get_total_input_cache_hit_tokens() -> int:
+    """返回缓存命中的输入 token 数。"""
+    with _stats._lock:
+        return _stats.token_stats.get("input_cache_hit", 0)
+
+
+def get_total_input_cache_miss_tokens() -> int:
+    """返回缓存未命中的输入 token 数。"""
+    with _stats._lock:
+        return _stats.token_stats.get("input_cache_miss", 0)
+
+
 def reset_stats() -> None:
     """重置 _Stats 的 token 统计和会话开始时间。"""
     with _stats._lock:
-        _stats.token_stats = {"input": 0, "output": 0, "calls": 0}
+        _stats.token_stats = {
+            "input": 0,
+            "output": 0,
+            "calls": 0,
+            "input_cache_hit": 0,
+            "input_cache_miss": 0,
+        }
         _stats.session_start_time = time.time()
 
 

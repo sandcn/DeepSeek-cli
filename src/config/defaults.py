@@ -17,8 +17,11 @@ PROVIDERS = {
         "default_model": "deepseek-v4-pro",
         "models": ["deepseek-v4-pro", "deepseek-v4-flash"],
         "token_prices": {
-            "deepseek-v4-pro": {"input": 0.55, "output": 2.19},
-            "deepseek-v4-flash": {"input": 0.55, "output": 2.19},
+            # 价格单位：美元 / 百万 tokens。input_cache_hit 为缓存命中输入价格
+            # （DeepSeek 上下文缓存：命中部分按未命中价 ~1/8 计费，缺失时 /cost
+            # 回退按 input 全价计费，保守不低估）。
+            "deepseek-v4-pro": {"input": 0.55, "output": 2.19, "input_cache_hit": 0.07},
+            "deepseek-v4-flash": {"input": 0.55, "output": 2.19, "input_cache_hit": 0.07},
         }
     },
     "custom": {

@@ -129,11 +129,93 @@ def _fmt_token(n: int) -> str:
     return format_token_k(n)
 
 
+def compute_cost(stats: dict, prices: dict) -> dict:
+    """计算 token 费用明细（含缓存命中折扣）。
+
+    缓存命中计费规则：
+    - 命中输入按 ``prices["input_cache_hit"]`` 计费（DeepSeek 等按未命中价
+      ~1/8 优惠）；价格缺失时回退按 ``prices["input"]`` 全价（保守不低估）。
+    - 未命中输入按 ``prices["input"]`` 全价计费。
+    - 输出按 ``prices["output"]`` 计费。
+
+    向后兼容：stats 缺失缓存拆分字段（旧统计）时，全部输入视为未命中，
+    费用结果与旧实现一致（input 全价）。
+
+    Args:
+        stats: token_stats 快照（含 input/output/input_cache_hit/input_cache_miss）
+        prices: 模型价格配置 {"input": $/M, "output": $/M, "input_cache_hit": $/M(可选)}
+
+    Returns:
+        dict: 含 total_input / input_hit / input_miss / input_cost /
+        output_cost / total / saved / cache_priced。
+    """
+    total_input = int(stats.get("input", 0))
+    input_hit = int(stats.get("input_cache_hit", 0) or 0)
+    input_miss_raw = stats.get("input_cache_miss")
+    if input_miss_raw is None:
+        # 旧统计无缓存拆分：全部输入视为未命中（费用与历史一致）
+        input_miss = total_input
+        input_hit = 0
+    else:
+        input_miss = int(input_miss_raw or 0)
+    # 防御：不允许负 token 数
+    if input_hit < 0:
+        input_hit = 0
+    if input_miss < 0:
+        input_miss = 0
+
+    input_price = float(prices.get("input", 0.0))
+    output_price = float(prices.get("output", 0.0))
+    cache_hit_price = float(prices.get("input_cache_hit", input_price))
+
+    input_cost = (input_miss * input_price + input_hit * cache_hit_price) / 1_000_000
+    output_cost = int(stats.get("output", 0)) / 1_000_000 * output_price
+    # 缓存命中相对全价的节省金额（>0 才有意义）
+    saved = (input_hit * (input_price - cache_hit_price)) / 1_000_000
+
+    return {
+        "total_input": total_input,
+        "input_hit": input_hit,
+        "input_miss": input_miss,
+        "input_cost": input_cost,
+        "output_cost": output_cost,
+        "total": input_cost + output_cost,
+        "saved": saved,
+        "cache_priced": "input_cache_miss" in stats or "input_cache_hit" in stats,
+    }
+
+
+def _fill_default_cache_price(model: str, prices: dict | None) -> dict | None:
+    """若价格配置缺失 ``input_cache_hit``，从内置 provider 默认价格补充。
+
+    用户 RC 配置为旧格式（仅 input/output）时，DeepSeek 等提供商的缓存
+    命中优惠价不会自动出现；这里按模型名在内置 PROVIDERS 默认值中查找，
+    补充 ``input_cache_hit``，使 /cost 能正确按优惠价计算命中费用。
+    未匹配到默认价时原样返回（compute_cost 会回退按全价，保守不低估）。
+    """
+    if prices is not None and "input_cache_hit" in prices:
+        return prices
+    try:
+        from ....config.defaults import PROVIDERS
+        for provider_conf in PROVIDERS.values():
+            tp = provider_conf.get("token_prices", {})
+            if model in tp and isinstance(tp[model], dict) and "input_cache_hit" in tp[model]:
+                merged = dict(prices or {})
+                merged.setdefault("input_cache_hit", tp[model]["input_cache_hit"])
+                return merged
+    except Exception:
+        pass
+    return prices
+
+
 def show_cost(ctx):
     """显示 token 用量和费用。
 
     优先通过 ctx.config_port（ConfigPort）获取价格配置，
     若不可用则回退到直接 import TOKEN_PRICES（向后兼容）。
+    正确体现缓存命中：统计含缓存拆分时，输入按「命中/未命中」分别展示，
+    费用按命中优惠价 + 未命中全价计算；统计为旧结构（无缓存拆分）时
+    保持原输出格式、全部输入按全价计费。
     """
     from ....config import TOKEN_PRICES  # 配置常量 — 函数体内延迟导入（回退）
     model = ctx.state.get("model", TOKEN_PRICES and next(iter(TOKEN_PRICES), ""))
@@ -149,18 +231,22 @@ def show_cost(ctx):
             prices = next(iter(TOKEN_PRICES.values()))
         else:
             prices = {"input": 0.01, "output": 0.03}
+    prices = _fill_default_cache_price(model, prices)
     current = get_token_stats()
-    input_cost = current["input"] / 1_000_000 * prices["input"]
-    output_cost = current["output"] / 1_000_000 * prices["output"]
-    total = input_cost + output_cost
+    detail = compute_cost(current, prices)
     elapsed = _time.time() - get_session_start_time()
     duration = _format_cost_duration(elapsed)
     _get_out().write(f"\n{DIM}  \u2500 费用统计{RESET}", level="raw", source="cmd")
     _get_out().write(f"  {DIM}\u2502{RESET} 模型  {model}", level="raw", source="cmd")
     _get_out().write(f"  {DIM}\u2502{RESET} 调用  {current['calls']}", level="raw", source="cmd")
-    _get_out().write(f"  {DIM}\u2502{RESET} 输入  {_fmt_token(current['input'])}t", level="raw", source="cmd")
+    # 输入 = 未命中（真实计费输入）；缓存命中单独一行，不计入输入
+    _get_out().write(f"  {DIM}\u2502{RESET} 输入  {_fmt_token(detail['input_miss'])}t", level="raw", source="cmd")
+    if detail["cache_priced"]:
+        _get_out().write(f"  {DIM}\u2502{RESET} 缓存  {_fmt_token(detail['input_hit'])}t (命中)", level="raw", source="cmd")
     _get_out().write(f"  {DIM}\u2502{RESET} 输出  {_fmt_token(current['output'])}t", level="raw", source="cmd")
-    _get_out().write(f"  {DIM}\u2502{RESET} 费用  ${total:.4f}", level="raw", source="cmd")
+    _get_out().write(f"  {DIM}\u2502{RESET} 费用  ${detail['total']:.4f}", level="raw", source="cmd")
+    if detail["saved"] > 0:
+        _get_out().write(f"  {DIM}\u2502{RESET} 缓存  -${detail['saved']:.4f} (命中优惠)", level="raw", source="cmd")
     _get_out().write(f"  {DIM}\u2502{RESET} 时长  {duration}", level="raw", source="cmd")
     _get_out().write(f"{DIM}  \u2514{'─' * 24}{RESET}", level="raw", source="cmd")
 

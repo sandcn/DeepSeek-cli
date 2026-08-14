@@ -4,6 +4,32 @@ from abc import ABC, abstractmethod
 from typing import Any, Optional
 
 
+def _extract_cache_usage(raw_usage: dict) -> tuple[int, int]:
+    """从 OpenAI 兼容格式的原始 usage 中提取缓存命中/未命中输入 token。
+
+    兼容两种返回格式：
+    - DeepSeek：``prompt_cache_hit_tokens`` / ``prompt_cache_miss_tokens``
+    - OpenAI：``prompt_tokens_details.cached_tokens``（命中数，未命中 = 总输入 - 命中）
+
+    Returns:
+        (input_cache_hit, input_cache_miss) 均为 int；无法识别时返回 (0, 0)。
+    """
+    if not isinstance(raw_usage, dict):
+        return 0, 0
+    hit = raw_usage.get("prompt_cache_hit_tokens", 0) or 0
+    miss = raw_usage.get("prompt_cache_miss_tokens", 0) or 0
+    if hit or miss:
+        return int(hit), int(miss)
+    details = raw_usage.get("prompt_tokens_details") or {}
+    if isinstance(details, dict):
+        cached = details.get("cached_tokens", 0) or 0
+        if cached:
+            total = raw_usage.get("prompt_tokens", 0) or 0
+            cached = int(cached)
+            return cached, max(int(total) - cached, 0)
+    return 0, 0
+
+
 def _parse_openai_stream_chunk(chunk: dict) -> dict:
     """解析 OpenAI 兼容格式的流式 chunk 为统一增量格式
 
@@ -26,9 +52,12 @@ def _parse_openai_stream_chunk(chunk: dict) -> dict:
     # 处理 usage（通常在最后一个 chunk）
     chunk_usage = chunk.get("usage")
     if chunk_usage:
+        cache_hit, cache_miss = _extract_cache_usage(chunk_usage)
         result["usage"] = {
             "input": chunk_usage.get("prompt_tokens", 0),
             "output": chunk_usage.get("completion_tokens", 0),
+            "input_cache_hit": cache_hit,
+            "input_cache_miss": cache_miss,
         }
 
     choices = chunk.get("choices")
@@ -122,11 +151,14 @@ class BaseLLMAdapter(ABC):
         content = msg.get("content", "") or ""
         reasoning_content = msg.get("reasoning_content", "") or ""
 
-        usage = {"input": 0, "output": 0}
+        usage = {"input": 0, "output": 0, "input_cache_hit": 0, "input_cache_miss": 0}
         resp_usage = response.get("usage")
         if resp_usage:
             usage["input"] = resp_usage.get("prompt_tokens", 0)
             usage["output"] = resp_usage.get("completion_tokens", 0)
+            cache_hit, cache_miss = _extract_cache_usage(resp_usage)
+            usage["input_cache_hit"] = cache_hit
+            usage["input_cache_miss"] = cache_miss
             if preserve_raw_usage:
                 usage["_raw"] = resp_usage
 

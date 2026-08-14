@@ -9,7 +9,7 @@ __all__ = [
     "register_command", "handle_command",
     "CommandContext", "get_registered_command_names",
     "COMMANDS_HELP", "_commands",
-    "_format_cost_duration", "show_cost",
+    "_format_cost_duration", "show_cost", "compute_cost",
     "_pop_assistant_tool_messages", "_cmd_help",
     "get_dynamic_help_text",
 ]

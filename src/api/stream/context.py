@@ -28,7 +28,7 @@ class StreamContext:
         self.reasoning_full: str = ""
 
         # 使用量
-        self.usage = {"input": 0, "output": 0}
+        self.usage = {"input": 0, "output": 0, "input_cache_hit": 0, "input_cache_miss": 0}
         self.usage_accumulated = False
 
         # 工具调用

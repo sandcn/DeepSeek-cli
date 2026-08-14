@@ -148,12 +148,17 @@ class AnthropicAdapter(BaseLLMAdapter):
                     "arguments": block.get("input", {}),
                 })
         usage = response.get("usage", {})
+        read = usage.get("cache_read_input_tokens", 0) or 0
+        plain = usage.get("input_tokens", 0) or 0
         return {
             "content": content,
             "reasoning_content": "",
             "usage": {
-                "input": usage.get("input_tokens", 0),
+                # 总输入 = 普通输入（含缓存创建）+ 缓存读取
+                "input": plain + read,
                 "output": usage.get("output_tokens", 0),
+                "input_cache_hit": read,
+                "input_cache_miss": plain,
             },
             "tool_calls": tool_calls,
         }
@@ -232,9 +237,13 @@ class AnthropicAdapter(BaseLLMAdapter):
         elif chunk_type == "message_delta":
             usage = chunk.get("usage", {})
             if usage:
+                read = usage.get("cache_read_input_tokens", 0) or 0
+                plain = usage.get("input_tokens", 0) or 0
                 result["usage"] = {
-                    "input": usage.get("input_tokens", 0),
+                    "input": plain + read,
                     "output": usage.get("output_tokens", 0),
+                    "input_cache_hit": read,
+                    "input_cache_miss": plain,
                 }
 
         return result
