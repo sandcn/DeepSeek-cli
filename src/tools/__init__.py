@@ -17,12 +17,13 @@ from .search import SearchFunc as Search
 from .find import FindFunc as Find
 from .ls import LsFunc as Ls
 from .web_search import WebSearchFunc as WebSearch
+from .web_fetch import WebFetchFunc as WebFetch
 from .dispatch_agent import DispatchAgents as DispatchAgent
 from .mkdir import MkdirFunc as Mk
 from .registry import get_tools, register_tool
 
 __all__ = [
     'Func',
-    'Bash', 'BashTask', 'ReadFile', 'Rm', 'WriteFile', 'UpdateFile', 'UserSelect', 'Search', 'Find', 'Ls', 'Mv', 'Cp', 'Mk', 'WebSearch', 'DispatchAgent',
+    'Bash', 'BashTask', 'ReadFile', 'Rm', 'WriteFile', 'UpdateFile', 'UserSelect', 'Search', 'Find', 'Ls', 'Mv', 'Cp', 'Mk', 'WebSearch', 'WebFetch', 'DispatchAgent',
     'get_tools', 'register_tool'
 ]

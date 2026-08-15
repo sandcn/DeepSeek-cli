@@ -1,7 +1,7 @@
 """
 page_fetcher — 网页内容获取与正文提取模块
 
-供 web_search 工具的 mode="fetch" 使用。
+供 web_fetch 工具使用。
 从指定 URL 获取 HTML，提取标题/发布时间/正文内容（去导航/广告/页脚）。
 """
 
@@ -475,7 +475,12 @@ def extract_page(html: str, url: str) -> dict:
             - date: 发布日期（如能提取到）
             - body: 正文文本
     """
-    soup = BeautifulSoup(html, 'lxml')
+    # 解析器多级降级：lxml（最快）→ html.parser（内置）→ 抛错
+    try:
+        soup = BeautifulSoup(html, 'lxml')
+    except Exception:
+        _logger.warning("lxml 不可用，降级到 html.parser")
+        soup = BeautifulSoup(html, 'html.parser')
 
     # 标题
     title = _extract_title(soup)

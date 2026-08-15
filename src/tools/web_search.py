@@ -1,172 +1,83 @@
 """
-web_search — 网页搜索 & 内容获取工具
+web_search — 网页搜索工具
 
-支持两种模式:
-  - mode="search"（默认）: 在百度/必应等搜索引擎中搜索关键词，返回标题、链接和摘要
-  - mode="fetch": 获取指定 URL 的网页全文内容，自动提取标题/发布时间/正文（去噪音）
+与内置 web_search 对齐的调用契约与内部实现：
+  - 入参：仅 query（搜索关键词）
+  - 内部实现（与内置 web_search 相同）：
+      1. 检索 — 并发调用 search_providers 中的提供者获取来源列表
+         （每条含 title / link / snippet），工具本身不解析任何搜索引擎 HTML
+      2. 回答合成 — 用配置的 LLM 基于来源摘要合成可选回答（引用来源编号）
+      3. 输出 — 可选答案 + 来源列表（每条为标题 markdown 链接、来源 URL
+         与摘要片段）；模型应优先使用返回的摘要片段，并以 markdown 链接
+         引用相关来源 URL
 """
 
 from __future__ import annotations
 
 import asyncio
-import importlib
-import random
-from urllib.parse import quote_plus
 
 import httpx
 
 from .base import Func, tool_metadata
-from ._constants import WEB_USER_AGENTS as _USER_AGENTS
-from .page_fetcher import fetch_page, format_fetch_result
+from .search_providers import (
+    DuckDuckGoProvider,
+    ScrapeProviders,
+    SearchResult,
+    get_shared_client,
+    shutdown_client,
+)
 from ..core.constants import GREEN, YELLOW, DIM, RESET
+
+# 合成回答的最大字符数（防御性截断，正常由提示词约束）
+_MAX_ANSWER_CHARS = 600
+
+# 单个来源摘要注入合成提示词的最大字符数
+_MAX_SYNTH_SNIPPET_CHARS = 300
 
 
 @tool_metadata(
     parallel_safe=True,
     requires_network=True,
     requires_terminal=False,
-    timeout_estimate=15,
+    timeout_estimate=30,
     category="general",
     priority=40,
     tool_category="read",
-    description="网页搜索和内容获取",
+    description="网页搜索",
 )
 class WebSearchFunc(Func):
     name = "web_search"
 
-    @staticmethod
-    def _random_ua():
-        """从 User-Agent 池中随机选取一个"""
-        return random.choice(_USER_AGENTS)
+    # 默认返回来源数上限（与内置 web_search 的来源列表规模一致）
+    MAX_RESULTS = 10
 
-    ENGINES = {
-        "baidu": {
-            "label": "百度",
-            "base_url": "https://www.baidu.com/s?wd={query}",
-            "referer": "https://www.baidu.com/",
-        },
-        "bing": {
-            "label": "必应",
-            "base_url": "https://www.bing.com/search?q={query}&setlang=zh-cn&cc=cn",
-            "referer": "https://www.bing.com/",
-        },
-        "github": {
-            "label": "GitHub",
-            "base_url": "https://github.com/search?q={query}&type=repositories",
-            "referer": "https://github.com/",
-        },
-    }
+    # 摘要片段最大字符数（超出截断，保持输出精炼）
+    MAX_SNIPPET_CHARS = 200
 
-    TIME_RANGES = {
-        "any": "不限",
-        "day": "过去24小时",
-        "week": "过去一周",
-        "month": "过去一月",
-        "year": "过去一年",
-    }
-
-    ENGINE_TIME_PARAMS = {
-        "bing": {
-            "day": "&freshness=Day",
-            "week": "&freshness=Week",
-            "month": "&freshness=Month",
-            "year": "&freshness=Year",
-        },
-        "baidu": {
-            # Baidu 暂不支持通过 URL 参数直接筛选时间范围
-        },
-        "github": {
-            # GitHub 搜索暂不支持通过 URL 参数直接筛选时间范围
-        },
-    }
-
-    # ── 共享 AsyncClient（连接池复用，懒初始化） ──
-    _shared_client: httpx.AsyncClient | None = None
-    _client_lock = asyncio.Lock()
-
-    @classmethod
-    def _build_search_url(cls, engine: str, query: str, time_range: str) -> str:
-        """构建搜索引擎 URL，含时间范围参数"""
-        cfg = cls.ENGINES[engine]
-        url = cfg["base_url"].format(query=quote_plus(query))
-        if time_range and time_range != "any":
-            time_params = cls.ENGINE_TIME_PARAMS.get(engine, {})
-            time_suffix = time_params.get(time_range)
-            if time_suffix:
-                url += time_suffix
-        return url
-
-    @classmethod
-    async def _get_client(cls) -> httpx.AsyncClient:
-        """获取共享 AsyncClient 实例（连接池复用，懒初始化，异步安全）
-
-        如果客户端已关闭（如被外部调用 shutdown），自动重新创建以避免连接泄漏。
-        """
-        if cls._shared_client is None or cls._shared_client.is_closed:
-            async with cls._client_lock:
-                if cls._shared_client is None or cls._shared_client.is_closed:
-                    limits = httpx.Limits(
-                        max_keepalive_connections=5,
-                        max_connections=20,
-                        keepalive_expiry=60.0,
-                    )
-                    cls._shared_client = httpx.AsyncClient(
-                        timeout=15,
-                        follow_redirects=True,
-                        limits=limits,
-                    )
-        return cls._shared_client
+    # 提供者聚合顺序：结构化 API 优先（提供可选回答），HTML 解析兜底
+    PROVIDERS = (DuckDuckGoProvider, ScrapeProviders)
 
     @classmethod
     def to_tool_schema(cls):
-        engine_desc = ("搜索引擎，可选: " + ", ".join(
-            f"{k}({v['label']})" for k, v in cls.ENGINES.items()
-        ) + "。百度(baidu)国内中文搜索最优、必应(bing)两者兼顾、GitHub(github)仓库搜索。仅 mode='search' 时有效。")
-        time_range_desc = ("时间范围，可选: " + ", ".join(
-            f"{k}({v})" for k, v in cls.TIME_RANGES.items()
-        ) + "。注意：百度不支持URL参数筛选时间范围，仅必应有效。仅 mode='search' 时有效。")
         return {
             "type": "function",
             "function": {
                 "name": "web_search",
                 "description": (
-                    "网页搜索或获取网页全文。"
-                    "mode='search'（默认）：搜索关键词返回标题/链接/摘要；"
-                    "mode='fetch'：抓取指定 URL 全文（去导航/广告噪音）。"
-                    "了解完整内容用 fetch，查找资源用 search。"
-                    "仅 http/https，禁止内网地址。获取的代码片段须标注来源 URL 和验证状态。"
+                    "搜索网页获取最新信息。返回可选的摘要回答和来源列表："
+                    "每条包含标题、来源 URL 与摘要片段。"
+                    "回答时优先使用返回的摘要片段，并以 markdown 链接引用相关来源 URL"
+                    "（如 [标题](https://...)）。"
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "搜索关键词（mode='search'时），或要获取全文的 URL（mode='fetch'时）"
-                        },
-                        "mode": {
-                            "type": "string",
-                            "description": "操作模式：'search' 搜索网页（默认），'fetch' 获取指定URL的全文内容",
-                            "default": "search",
-                            "enum": ["search", "fetch"],
-                        },
-                        "engine": {
-                            "type": "string",
-                            "description": engine_desc,
-                            "default": "baidu",
-                            "enum": list(cls.ENGINES.keys()),
-                        },
-                        "num_results": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 20,
-                            "description": "返回结果数量（1-20），默认 10，超出自动裁剪。仅 mode='search' 时有效。",
-                            "default": 10
-                        },
-                        "time_range": {
-                            "type": "string",
-                            "description": time_range_desc,
-                            "default": "any",
-                            "enum": list(cls.TIME_RANGES.keys()),
+                            "description": (
+                                "搜索关键词（中文/英文均可）。"
+                                "建议包含关键实体、版本号或时间词以获取最新信息。"
+                            ),
                         }
                     },
                     "required": ["query"]
@@ -177,120 +88,126 @@ class WebSearchFunc(Func):
     @classmethod
     def display_params(cls, arguments: dict, max_len: int = 80) -> str:
         query = arguments.get("query", "")
-        mode = arguments.get("mode", "search")
-        engine = arguments.get("engine", "baidu")
-        time_range = arguments.get("time_range", "any")
-        if mode == "fetch":
-            s = f"[获取网页] {query}"
-        else:
-            label = cls.ENGINES.get(engine, {}).get("label", engine)
-            time_label = cls.TIME_RANGES.get(time_range, "")
-            if time_range and time_range != "any" and time_label:
-                s = f"[{label}|{time_label}] {query}"
-            else:
-                s = f"[{label}] {query}"
-        if len(s) > max_len:
-            s = s[: max_len - 3] + "..."
-        return s
+        if len(query) > max_len:
+            query = query[: max_len - 3] + "..."
+        return query
 
-    def __init__(self, query, mode="search", engine="baidu", num_results=10, time_range="any"):
+    def __init__(self, query):
         super().__init__()
         self.query = query
-        self.mode = mode if mode in ("search", "fetch") else "search"
-        self.engine = engine if engine in self.ENGINES else "baidu"
-        self.num_results = min(max(1, num_results), 20)
-        self.time_range = time_range if time_range in self.TIME_RANGES else "any"
 
     async def execute(self) -> str:
-        if self.mode == "fetch":
-            return await self._fetch_async()
+        if not self.query or not self.query.strip():
+            return "(搜索失败: 参数 query 不能为空)"
         try:
             return await self._search_async()
         except httpx.TimeoutException:
-            label = self.ENGINES[self.engine]["label"]
-            return f"({label}搜索超时: {self.query})"
-        except ModuleNotFoundError as e:
-            label = self.ENGINES[self.engine]["label"]
-            return f"({label}搜索解析器加载失败: {e}，请检查 parsers/{self.engine}.py 是否存在)"
+            return f"(搜索超时: {self.query})"
         except Exception as e:
-            label = self.ENGINES[self.engine]["label"]
-            return f"({label}搜索失败: {e})"
+            return f"(搜索失败: {e})"
 
-    async def _search_async(self):
-        """异步搜索，使用 httpx.AsyncClient"""
-        cfg = self.ENGINES[self.engine]
-        headers = {
-            "User-Agent": self._random_ua(),
-            "Accept": (
-                "text/html,application/xhtml+xml,application/xml;"
-                "q=0.9,image/avif,image/webp,*/*;q=0.8"
-            ),
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Referer": cfg["referer"],
-        }
-        url = self._build_search_url(self.engine, self.query, self.time_range)
+    async def _search_async(self) -> str:
+        """检索 → 回答合成 → 输出（与内置 web_search 的实现流程一致）"""
+        client = await get_shared_client()
+        provider_results: list[SearchResult] = await asyncio.gather(
+            *[provider().search(self.query, client=client) for provider in self.PROVIDERS]
+        )
 
-        client = await self._get_client()
-        resp = await client.get(url, headers=headers)
+        merged: list[dict] = []
+        for r in provider_results:
+            merged.extend(r.sources)
 
-        if resp.status_code != 200:
-            return f"({cfg['label']}搜索返回状态码: {resp.status_code})"
+        sources = self._dedupe(merged, self.MAX_RESULTS)
+        if not sources:
+            return f"(搜索未找到结果: {self.query})"
 
-        parser_module = importlib.import_module(f'.parsers.{self.engine}', package=__package__)
-        results = await asyncio.to_thread(parser_module.parse, resp.text, self.num_results)
+        # 回答合成：LLM 基于来源摘要生成（失败/中断则降级为提供者回答或纯来源列表）
+        answer = await _synthesize_answer(self.query, sources)
+        if not answer:
+            answer = next((r.answer for r in provider_results if r.answer), None)
 
-        if not results:
-            return f"({cfg['label']}搜索未找到结果: {self.query})"
+        return self._format_result(self.query, answer, sources)
 
-        label = cfg["label"]
-        output_lines = [f"{label}搜索结果 ({len(results)}条):"]
-        for i, r in enumerate(results, 1):
-            output_lines.append(f"\n{i}. {r['title']}")
-            if r.get('link'):
-                output_lines.append(f"   {r['link']}")
-            if r.get('abstract'):
-                abstract = r['abstract']
-                if len(abstract) > 200:
-                    abstract = abstract[:200] + "..."
-                output_lines.append(f"   {abstract}")
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        """规范化 URL 用于去重：小写、去 scheme/www、去尾斜杠与 fragment、忽略 query"""
+        if not url:
+            return ""
+        url = url.strip()
+        from urllib.parse import urlparse
 
-        return '\n'.join(output_lines)
+        parsed = urlparse(url)
+        host = (parsed.netloc or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        path = parsed.path.rstrip("/")
+        normalized = f"{host}{path}"
+        return normalized or url.lower()
 
-    async def _fetch_async(self) -> str:
-        """获取网页全文"""
-        url = self.query.strip()
-        try:
-            client = await self._get_client()
-            result = await fetch_page(url, client=client)
-        except httpx.TimeoutException:
-            return f"(获取网页超时: {url})"
-        except Exception as e:
-            return f"(获取网页失败: {e})"
+    @classmethod
+    def _dedupe(cls, results: list[dict], max_results: int | None = None) -> list[dict]:
+        """按规范化 URL 去重（无链接时按标题去重），保持顺序并裁剪数量"""
+        seen_urls: set[str] = set()
+        seen_titles: set[str] = set()
+        out: list[dict] = []
+        for r in results:
+            title = (r.get("title") or "").strip()
+            link = (r.get("link") or "").strip()
+            if not title:
+                continue
 
-        if "error" in result:
-            return result["error"]
+            key = cls._normalize_url(link)
+            if key:
+                if key in seen_urls:
+                    continue
+                seen_urls.add(key)
+            else:
+                title_key = title.lower()
+                if title_key in seen_titles:
+                    continue
+                seen_titles.add(title_key)
 
-        return format_fetch_result(result)
+            out.append(r)
+            if max_results is not None and len(out) >= max_results:
+                break
+        return out
+
+    @classmethod
+    def _format_result(cls, query: str, answer: str | None, sources: list[dict]) -> str:
+        """格式化为：可选答案 + 来源列表（标题为 markdown 链接，附带摘要片段）"""
+        lines: list[str] = []
+        if answer:
+            lines.append(f"答案: {answer}")
+            lines.append("")
+
+        lines.append(f"来源 ({len(sources)} 条):")
+        for i, s in enumerate(sources, 1):
+            title = (s.get("title") or "").strip()
+            link = (s.get("link") or "").strip()
+            snippet = (s.get("snippet") or "").strip()
+
+            lines.append("")
+            if link:
+                lines.append(f"{i}. [{title}]({link})")
+            else:
+                lines.append(f"{i}. {title}")
+            if snippet:
+                if len(snippet) > cls.MAX_SNIPPET_CHARS:
+                    snippet = snippet[: cls.MAX_SNIPPET_CHARS] + "..."
+                lines.append(f"   {snippet}")
+        return "\n".join(lines)
 
     @classmethod
     async def shutdown(cls):
         """关闭共享 AsyncClient，释放连接池资源（应用退出时调用）"""
-        if cls._shared_client is not None:
-            async with cls._client_lock:
-                if cls._shared_client is not None:
-                    await cls._shared_client.aclose()
-                    cls._shared_client = None
+        await shutdown_client()
 
     close_client = shutdown
 
     # ── 显示 ──
 
     async def display(self) -> str:
-        if self.mode == "fetch":
-            Func._publish_tool_text(f"\n  {GREEN}📄 获取网页: {self.query}{RESET}")
-        else:
-            cfg = self.ENGINES[self.engine]
-            Func._publish_tool_text(f"\n  {GREEN}🔍 {cfg['label']}搜索: {self.query}{RESET}")
+        Func._publish_tool_text(f"\n  {GREEN}🔍 网页搜索: {self.query}{RESET}")
         result = await self.execute()
 
         if result.startswith("("):
@@ -300,3 +217,73 @@ class WebSearchFunc(Func):
 
         return result
 
+
+# ═══════════════════════════════════════════════════════════
+#  回答合成（与内置 web_search 的回答生成一致）
+# ═══════════════════════════════════════════════════════════
+
+def _build_synthesis_messages(query: str, sources: list[dict]) -> list:
+    """构建回答合成提示词：问题 + 带编号来源（标题/URL/摘要）。
+
+    编号与最终输出的来源列表一致，模型回答中以 [n] 引用。
+    """
+    source_lines: list[str] = []
+    for i, s in enumerate(sources, 1):
+        title = (s.get("title") or "").strip()
+        link = (s.get("link") or "").strip()
+        snippet = (s.get("snippet") or "").strip()
+
+        lines = [f"[{i}] {title}"]
+        if link:
+            lines.append(f"URL: {link}")
+        if snippet:
+            if len(snippet) > _MAX_SYNTH_SNIPPET_CHARS:
+                snippet = snippet[: _MAX_SYNTH_SNIPPET_CHARS] + "..."
+            lines.append(f"摘要: {snippet}")
+        source_lines.append("\n".join(lines))
+
+    system = (
+        "你是网页搜索助手。根据给定的搜索结果回答用户问题。要求：\n"
+        "- 只用来源摘要中的信息回答，不要编造\n"
+        "- 简洁准确，用与问题相同的语言回答（不超过150字）\n"
+        "- 引用来源时用方括号编号，如 [1][2]\n"
+        "- 搜索结果信息不足时直接说明，不要臆测"
+    )
+    user = f"问题: {query}\n\n搜索结果:\n" + "\n\n".join(source_lines)
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+async def _synthesize_answer(query: str, sources: list[dict]) -> str | None:
+    """用配置的 LLM 基于来源摘要合成回答。
+
+    任何失败（未配置 API Key / 调用失败 / 被中断 / 空回答）都返回 None，
+    输出降级为纯来源列表 — 与内置 web_search 的“可选回答”语义一致。
+    """
+    if not sources:
+        return None
+    try:
+        from ..config import API_KEY
+        if not API_KEY or not API_KEY.strip():
+            return None
+        from ..api.model_async import call_model_sync_async
+    except Exception:
+        return None
+
+    try:
+        _, content, _, _ = await call_model_sync_async(
+            _build_synthesis_messages(query, sources),
+            override_max_retries=1,
+            fixed_delay_sec=0,
+        )
+    except Exception:
+        return None
+
+    content = (content or "").strip()
+    if not content or content == "(已中断)":
+        return None
+    if len(content) > _MAX_ANSWER_CHARS:
+        content = content[: _MAX_ANSWER_CHARS] + "..."
+    return content
