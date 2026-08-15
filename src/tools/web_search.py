@@ -1,38 +1,30 @@
 """
-web_search — 网页搜索工具
+web_search — 网页搜索工具（DeepSeek 官方原生搜索）
 
-与内置 web_search 对齐的调用契约与内部实现：
+对齐 DSH @deepseek-ai/dsh-tool-web + dsh-web-search-deepseek 的实现：
   - 入参：仅 query（搜索关键词）
-  - 内部实现（与内置 web_search 相同）：
-      1. 检索 — 并发调用 search_providers 中的提供者获取来源列表
-         （每条含 title / link / snippet），工具本身不解析任何搜索引擎 HTML
-      2. 回答合成 — 用配置的 LLM 基于来源摘要合成可选回答（引用来源编号）
-      3. 输出 — 可选答案 + 来源列表（每条为标题 markdown 链接、来源 URL
-         与摘要片段）；模型应优先使用返回的摘要片段，并以 markdown 链接
-         引用相关来源 URL
+  - 内部实现（与 DSH web_search 相同）：
+      1. 检索 — 通过 DeepSeekSearchProvider 调用 DeepSeek 的 Anthropic
+         兼容 Messages API，由原生服务端工具 web_search_20250305 完成
+         真实联网搜索；工具本身不解析任何搜索引擎 HTML
+      2. 裁剪 — 来源数上限 MAX_RESULTS（对齐 DSH WEB_SEARCH_MAX_RESULTS=8），
+         超限截断并置 truncated 标记
+      3. 输出 — 来源列表（标题 markdown 链接 + 摘要片段 + 发布日期）与
+         引用指令；可选回答由调用方模型基于来源自行组织（DSH 的
+         DeepSeek 提供者不生成回答）
 """
 
 from __future__ import annotations
-
-import asyncio
 
 import httpx
 
 from .base import Func, tool_metadata
 from .search_providers import (
-    DuckDuckGoProvider,
-    ScrapeProviders,
-    SearchResult,
-    get_shared_client,
-    shutdown_client,
+    DeepSeekSearchProvider,
+    WebSearchError,
+    shutdown_clients,
 )
 from ..core.constants import GREEN, YELLOW, DIM, RESET
-
-# 合成回答的最大字符数（防御性截断，正常由提示词约束）
-_MAX_ANSWER_CHARS = 600
-
-# 单个来源摘要注入合成提示词的最大字符数
-_MAX_SYNTH_SNIPPET_CHARS = 300
 
 
 @tool_metadata(
@@ -48,14 +40,14 @@ _MAX_SYNTH_SNIPPET_CHARS = 300
 class WebSearchFunc(Func):
     name = "web_search"
 
-    # 默认返回来源数上限（与内置 web_search 的来源列表规模一致）
-    MAX_RESULTS = 10
+    # 默认返回来源数上限（对齐 DSH WEB_SEARCH_MAX_RESULTS）
+    MAX_RESULTS = 8
 
     # 摘要片段最大字符数（超出截断，保持输出精炼）
     MAX_SNIPPET_CHARS = 200
 
-    # 提供者聚合顺序：结构化 API 优先（提供可选回答），HTML 解析兜底
-    PROVIDERS = (DuckDuckGoProvider, ScrapeProviders)
+    # 搜索提供者（对齐 DSH：工具只依赖接口，提供者可替换）
+    PROVIDER = DeepSeekSearchProvider
 
     @classmethod
     def to_tool_schema(cls):
@@ -64,10 +56,9 @@ class WebSearchFunc(Func):
             "function": {
                 "name": "web_search",
                 "description": (
-                    "搜索网页获取最新信息。返回可选的摘要回答和来源列表："
-                    "每条包含标题、来源 URL 与摘要片段。"
-                    "回答时优先使用返回的摘要片段，并以 markdown 链接引用相关来源 URL"
-                    "（如 [标题](https://...)）。"
+                    "搜索网页获取当前信息。返回来源列表：每条包含标题、来源 URL 与"
+                    "摘要片段。回答时优先使用返回的摘要片段，并以 markdown 链接引用"
+                    "相关来源 URL；需要某个来源的完整内容时再用 web_fetch。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -97,110 +88,92 @@ class WebSearchFunc(Func):
         self.query = query
 
     async def execute(self) -> str:
-        if not self.query or not self.query.strip():
+        query = (self.query or "").strip()
+        if not query:
             return "(搜索失败: 参数 query 不能为空)"
         try:
-            return await self._search_async()
+            result = await self.PROVIDER().search(query)
         except httpx.TimeoutException:
-            return f"(搜索超时: {self.query})"
+            return f"(搜索超时: {query})"
+        except WebSearchError as e:
+            return f"(搜索失败: [{e.code}] {e})"
         except Exception as e:
             return f"(搜索失败: {e})"
 
-    async def _search_async(self) -> str:
-        """检索 → 回答合成 → 输出（与内置 web_search 的实现流程一致）"""
-        client = await get_shared_client()
-        provider_results: list[SearchResult] = await asyncio.gather(
-            *[provider().search(self.query, client=client) for provider in self.PROVIDERS]
-        )
-
-        merged: list[dict] = []
-        for r in provider_results:
-            merged.extend(r.sources)
-
-        sources = self._dedupe(merged, self.MAX_RESULTS)
-        if not sources:
-            return f"(搜索未找到结果: {self.query})"
-
-        # 回答合成：LLM 基于来源摘要生成（失败/中断则降级为提供者回答或纯来源列表）
-        answer = await _synthesize_answer(self.query, sources)
-        if not answer:
-            answer = next((r.answer for r in provider_results if r.answer), None)
-
-        return self._format_result(self.query, answer, sources)
+        sources, truncated = self._cap_sources(result.sources, self.MAX_RESULTS)
+        return self._format_result(query, result.answer, sources, truncated)
 
     @staticmethod
-    def _normalize_url(url: str) -> str:
-        """规范化 URL 用于去重：小写、去 scheme/www、去尾斜杠与 fragment、忽略 query"""
-        if not url:
-            return ""
-        url = url.strip()
-        from urllib.parse import urlparse
+    def _cap_sources(sources: list, max_results: int) -> "tuple[list, bool]":
+        """执行 maxResults 裁剪（对齐 DSH WebRuntime.capSources）。
 
-        parsed = urlparse(url)
-        host = (parsed.netloc or "").lower()
-        if host.startswith("www."):
-            host = host[4:]
-        path = parsed.path.rstrip("/")
-        normalized = f"{host}{path}"
-        return normalized or url.lower()
+        提供者超量返回时截断 sources 并置 truncated 标记。
+        """
+        if len(sources) <= max_results:
+            return sources, False
+        return sources[:max_results], True
 
-    @classmethod
-    def _dedupe(cls, results: list[dict], max_results: int | None = None) -> list[dict]:
-        """按规范化 URL 去重（无链接时按标题去重），保持顺序并裁剪数量"""
-        seen_urls: set[str] = set()
-        seen_titles: set[str] = set()
-        out: list[dict] = []
-        for r in results:
-            title = (r.get("title") or "").strip()
-            link = (r.get("link") or "").strip()
-            if not title:
-                continue
+    @staticmethod
+    def _source_label(source: dict) -> str:
+        """来源显示标签：标题，缺失时用主机名（对齐 DSH sourceLabel）。"""
+        title = (source.get("title") or "").strip()
+        if title:
+            return title
+        link = (source.get("link") or "").strip()
+        try:
+            from urllib.parse import urlparse
 
-            key = cls._normalize_url(link)
-            if key:
-                if key in seen_urls:
-                    continue
-                seen_urls.add(key)
-            else:
-                title_key = title.lower()
-                if title_key in seen_titles:
-                    continue
-                seen_titles.add(title_key)
-
-            out.append(r)
-            if max_results is not None and len(out) >= max_results:
-                break
-        return out
+            return urlparse(link).netloc or link
+        except Exception:
+            return link
 
     @classmethod
-    def _format_result(cls, query: str, answer: str | None, sources: list[dict]) -> str:
-        """格式化为：可选答案 + 来源列表（标题为 markdown 链接，附带摘要片段）"""
-        lines: list[str] = []
+    def _format_result(
+        cls, query: str, answer: "str | None", sources: list, truncated: bool = False
+    ) -> str:
+        """格式化输出（对齐 DSH formatSearchOutput）：
+
+        可选答案 + 来源列表（`- [标签](url) — 摘要 (日期)`）；
+        无来源时输出“未找到结果。”；截断时附提示；末尾附引用指令。
+        """
+        parts: list[str] = []
         if answer:
-            lines.append(f"答案: {answer}")
-            lines.append("")
+            parts.append(f"答案: {answer}")
 
-        lines.append(f"来源 ({len(sources)} 条):")
-        for i, s in enumerate(sources, 1):
-            title = (s.get("title") or "").strip()
-            link = (s.get("link") or "").strip()
-            snippet = (s.get("snippet") or "").strip()
+        if sources:
+            lines = [f"来源 ({len(sources)} 条):"]
+            for s in sources:
+                label = cls._source_label(s)
+                link = (s.get("link") or "").strip()
 
-            lines.append("")
-            if link:
-                lines.append(f"{i}. [{title}]({link})")
-            else:
-                lines.append(f"{i}. {title}")
-            if snippet:
-                if len(snippet) > cls.MAX_SNIPPET_CHARS:
-                    snippet = snippet[: cls.MAX_SNIPPET_CHARS] + "..."
-                lines.append(f"   {snippet}")
-        return "\n".join(lines)
+                meta: list[str] = []
+                snippet = (s.get("snippet") or "").strip()
+                if snippet:
+                    if len(snippet) > cls.MAX_SNIPPET_CHARS:
+                        snippet = snippet[: cls.MAX_SNIPPET_CHARS] + "..."
+                    meta.append(snippet)
+                published = (s.get("published_at") or "").strip()
+                if published:
+                    meta.append(f"({published})")
+
+                suffix = f" — {' '.join(meta)}" if meta else ""
+                lines.append(f"- [{label}]({link}){suffix}")
+            parts.append("\n".join(lines))
+        else:
+            parts.append("未找到结果。")
+
+        if truncated:
+            parts.append(f"(仅显示前 {len(sources)} 条来源，可细化查询获取更多。)")
+
+        parts.append(
+            "回答时请优先使用上述来源的摘要片段，并以 markdown 链接引用相关来源 URL。"
+        )
+        return "\n\n".join(parts)
 
     @classmethod
     async def shutdown(cls):
-        """关闭共享 AsyncClient，释放连接池资源（应用退出时调用）"""
-        await shutdown_client()
+        """关闭共享客户端与搜索 API 客户端，释放连接池资源（应用退出时调用）"""
+        await shutdown_clients()
 
     close_client = shutdown
 
@@ -216,74 +189,3 @@ class WebSearchFunc(Func):
             Func._publish_tool_text(f"  {DIM}{result}{RESET}")
 
         return result
-
-
-# ═══════════════════════════════════════════════════════════
-#  回答合成（与内置 web_search 的回答生成一致）
-# ═══════════════════════════════════════════════════════════
-
-def _build_synthesis_messages(query: str, sources: list[dict]) -> list:
-    """构建回答合成提示词：问题 + 带编号来源（标题/URL/摘要）。
-
-    编号与最终输出的来源列表一致，模型回答中以 [n] 引用。
-    """
-    source_lines: list[str] = []
-    for i, s in enumerate(sources, 1):
-        title = (s.get("title") or "").strip()
-        link = (s.get("link") or "").strip()
-        snippet = (s.get("snippet") or "").strip()
-
-        lines = [f"[{i}] {title}"]
-        if link:
-            lines.append(f"URL: {link}")
-        if snippet:
-            if len(snippet) > _MAX_SYNTH_SNIPPET_CHARS:
-                snippet = snippet[: _MAX_SYNTH_SNIPPET_CHARS] + "..."
-            lines.append(f"摘要: {snippet}")
-        source_lines.append("\n".join(lines))
-
-    system = (
-        "你是网页搜索助手。根据给定的搜索结果回答用户问题。要求：\n"
-        "- 只用来源摘要中的信息回答，不要编造\n"
-        "- 简洁准确，用与问题相同的语言回答（不超过150字）\n"
-        "- 引用来源时用方括号编号，如 [1][2]\n"
-        "- 搜索结果信息不足时直接说明，不要臆测"
-    )
-    user = f"问题: {query}\n\n搜索结果:\n" + "\n\n".join(source_lines)
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
-
-
-async def _synthesize_answer(query: str, sources: list[dict]) -> str | None:
-    """用配置的 LLM 基于来源摘要合成回答。
-
-    任何失败（未配置 API Key / 调用失败 / 被中断 / 空回答）都返回 None，
-    输出降级为纯来源列表 — 与内置 web_search 的“可选回答”语义一致。
-    """
-    if not sources:
-        return None
-    try:
-        from ..config import API_KEY
-        if not API_KEY or not API_KEY.strip():
-            return None
-        from ..api.model_async import call_model_sync_async
-    except Exception:
-        return None
-
-    try:
-        _, content, _, _ = await call_model_sync_async(
-            _build_synthesis_messages(query, sources),
-            override_max_retries=1,
-            fixed_delay_sec=0,
-        )
-    except Exception:
-        return None
-
-    content = (content or "").strip()
-    if not content or content == "(已中断)":
-        return None
-    if len(content) > _MAX_ANSWER_CHARS:
-        content = content[: _MAX_ANSWER_CHARS] + "..."
-    return content

@@ -85,7 +85,7 @@ class FindFunc(Func):
                                 "搜索根路径（可选）。缩小搜索范围可提高速度。"
                                 "\n- 省略时：使用进程当前工作目录"
                                 "\n- 指定子目录：如 'src/' 或 '/home/user/project/src'，只在该目录下递归搜索"
-                                "\n- 多层嵌套：如 'src/tools/parsers/'"
+                                "\n- 多层嵌套：如 'src/renderer/handlers/'"
                                 "\n- 记忆目录：如 '.chat/memory/'"
                             ),
                         },

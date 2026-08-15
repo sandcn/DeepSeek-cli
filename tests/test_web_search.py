@@ -1,23 +1,34 @@
-"""web_search / web_fetch 重构后契约测试。
+"""web_search / web_fetch 重构后契约测试（DeepSeek 官方原生搜索）。
 
-对齐内置 web_search 的契约与内部实现：
+对齐 DSH dsh-tool-web + dsh-web-search-deepseek 的契约与内部实现：
 1. web_search 入参仅 query（无 mode/engine/time_range/num_results）
-2. 内部通过搜索提供者获取结构化结果（可选回答 + 来源列表），工具不解析 HTML
-3. 输出为：可选答案 + 来源列表（标题 markdown 链接 + 来源 URL + 摘要片段）
-4. 提供者合并 + URL 去重 + 数量裁剪；单提供者失败不影响整体
-5. web_fetch 独立为单 url 参数的获取工具
+2. 执行走 DeepSeekSearchProvider：Anthropic 兼容 Messages API + 原生服务端
+   工具 web_search_20250305；工具本身不解析搜索引擎 HTML
+3. 响应映射：web_search_tool_result 块 → 来源（title/link）；摘要片段来自
+   text 块 citations（url → cited_text，首见生效）；page_age → published_at；
+   按 URL 精确去重（首见生效）
+4. 无 web_search_tool_result 块 → WebSearchError(WEB_PROVIDER_ERROR)；
+   未配置密钥 → WebSearchError(WEB_PROVIDER_CREDENTIAL_MISSING)
+5. 输出：来源列表（标题 markdown 链接 + 摘要片段 + 发布日期）+ 截断提示 +
+   引用指令；无来源 → "未找到结果。"；数量上限 8（对齐 DSH WEB_SEARCH_MAX_RESULTS）
+6. web_fetch 独立为单 url 参数的获取工具（不变）
 """
 from __future__ import annotations
 
 import asyncio
 
-from src.tools.web_search import WebSearchFunc
-from src.tools.web_fetch import WebFetchFunc
+import httpx
+import pytest
+
 from src.tools.search_providers import (
-    DuckDuckGoProvider,
-    ScrapeProviders,
+    DeepSeekSearchProvider,
     SearchResult,
+    WebSearchError,
+    _citation_snippets,
+    _resolve_api_key,
 )
+from src.tools.web_fetch import WebFetchFunc
+from src.tools.web_search import WebSearchFunc
 
 
 # ── schema 契约 ──
@@ -50,112 +61,189 @@ def test_from_args_only_query():
     assert tool.query == "hello"
 
 
-# ── DuckDuckGo 提供者解析 ──
+# ── 提供者响应映射（对齐 DSH mapAnthropicResponse） ──
 
-_SAMPLE_DDG = {
-    "Answer": "pytest 是一个 Python 测试框架",
-    "AbstractText": "pytest 使编写小型可读测试变得容易。",
-    "AbstractURL": "https://docs.pytest.org/",
-    "Heading": "pytest",
-    "AbstractSource": "pytest docs",
-    "RelatedTopics": [
+_SAMPLE_RESPONSE = {
+    "content": [
         {
-            "Name": "分组",
-            "Topics": [
-                {"Text": "pytest 官方文档片段", "FirstURL": "https://docs.pytest.org/en/stable/"},
-                {"Text": "", "FirstURL": "https://example.com/empty"},
+            "type": "text",
+            "text": "pytest 是 Python 的测试框架。",
+            "citations": [
+                {"url": "https://docs.pytest.org/", "cited_text": "pytest 官方文档摘要"},
+                {"url": "https://pypi.org/project/pytest/", "cited_text": "PyPI 页面摘要"},
+                {"url": "", "cited_text": "空 URL 应被忽略"},
+                {"url": "https://no-text.example.com/", "cited_text": ""},
             ],
         },
-        {"Text": "PyPI 上的 pytest", "FirstURL": "https://pypi.org/project/pytest/"},
+        {
+            "type": "web_search_tool_result",
+            "content": [
+                {
+                    "type": "web_search_result",
+                    "url": "https://docs.pytest.org/",
+                    "title": "pytest 文档",
+                    "page_age": "2025-06-01",
+                },
+                {
+                    "type": "web_search_result",
+                    "url": "https://pypi.org/project/pytest/",
+                    "title": "pytest · PyPI",
+                },
+                {
+                    "type": "web_search_result",
+                    "url": "https://docs.pytest.org/",
+                    "title": "重复条目（应被去重）",
+                },
+                {"type": "not_a_search_result", "url": "https://ignored.example.com/"},
+            ],
+        },
     ],
 }
 
 
-def test_ddg_parse_answer_and_sources():
-    result = DuckDuckGoProvider._parse(_SAMPLE_DDG)
-    assert result.answer == "pytest 是一个 Python 测试框架"
-    # 主来源 + 2 个 RelatedTopics（空 Text 的被跳过）
-    assert len(result.sources) == 3
-    assert result.sources[0]["link"] == "https://docs.pytest.org/"
-    assert result.sources[1]["link"] == "https://docs.pytest.org/en/stable/"
-    assert result.sources[2]["link"] == "https://pypi.org/project/pytest/"
-    # 无 Name 时用域名推导标题
-    assert result.sources[2]["title"] == "pypi.org"
+def test_parse_maps_result_blocks_with_citation_snippets():
+    result = DeepSeekSearchProvider._parse(_SAMPLE_RESPONSE)
+    assert result.answer is None  # DeepSeek 提供者不生成回答（对齐 DSH）
+    assert len(result.sources) == 2
+
+    first = result.sources[0]
+    assert first["title"] == "pytest 文档"
+    assert first["link"] == "https://docs.pytest.org/"
+    assert first["snippet"] == "pytest 官方文档摘要"
+    assert first["published_at"] == "2025-06-01"
+
+    second = result.sources[1]
+    assert second["title"] == "pytest · PyPI"
+    assert second["snippet"] == "PyPI 页面摘要"
+    assert "published_at" not in second  # 无 page_age 时省略字段
 
 
-def test_ddg_parse_abstract_fallback_answer():
-    data = {k: v for k, v in _SAMPLE_DDG.items() if k != "Answer"}
-    result = DuckDuckGoProvider._parse(data)
-    assert result.answer == "pytest 使编写小型可读测试变得容易。"
+def test_parse_dedupes_by_url_first_wins():
+    result = DeepSeekSearchProvider._parse(_SAMPLE_RESPONSE)
+    titles = [s["title"] for s in result.sources]
+    assert titles == ["pytest 文档", "pytest · PyPI"]
+    assert not any("重复" in t for t in titles)
 
 
-def test_ddg_parse_empty_payload():
-    result = DuckDuckGoProvider._parse({})
+def test_parse_empty_items_returns_no_sources():
+    data = {"content": [{"type": "web_search_tool_result", "content": []}]}
+    result = DeepSeekSearchProvider._parse(data)
     assert result.answer is None
     assert result.sources == []
 
 
-def test_ddg_flatten_topics():
-    flat = DuckDuckGoProvider._flatten_topics(_SAMPLE_DDG["RelatedTopics"])
-    assert len(flat) == 3
-    assert all("Topics" not in t for t in flat)
+def test_parse_without_result_blocks_raises_provider_error():
+    with pytest.raises(WebSearchError) as exc_info:
+        DeepSeekSearchProvider._parse(
+            {"content": [{"type": "text", "text": "只有文本块", "citations": []}]}
+        )
+    assert exc_info.value.code == "WEB_PROVIDER_ERROR"
 
 
-# ── 引擎选择（HTML 兜底提供者） ──
-
-def test_engines_for_repo_query():
-    assert "github" in ScrapeProviders._engines_for("github langchain")
-    assert "github" in ScrapeProviders._engines_for("openai/tiktoken")
-    assert "github" not in ScrapeProviders._engines_for("天气 北京")
+def test_parse_missing_content_field_raises_provider_error():
+    with pytest.raises(WebSearchError) as exc_info:
+        DeepSeekSearchProvider._parse({})
+    assert exc_info.value.code == "WEB_PROVIDER_ERROR"
 
 
-# ── URL 规范化与去重 ──
+# ── citation 摘要提取（对齐 DSH citationSnippets） ──
 
-def test_normalize_url():
-    f = WebSearchFunc._normalize_url
-    # 主机名大小写不敏感，路径保留原大小写（RFC 语义）
-    assert f("https://www.Example.com/Path/") == "example.com/Path"
-    assert f("HTTPS://Example.com/Path#frag") == "example.com/Path"
-    assert f("https://example.com/a") != f("https://example.com/b")
-    assert f("") == ""
-
-
-def test_dedupe_keeps_first_and_caps():
-    results = [
-        {"title": "A", "link": "https://x.com/a", "snippet": "s1"},
-        {"title": "A2", "link": "https://www.x.com/a", "snippet": "dup"},
-        {"title": "B", "link": "https://x.com/b", "snippet": "s2"},
-        {"title": "C", "link": "", "snippet": "s3"},
-        {"title": "c", "link": "", "snippet": "dup-title"},
+def test_citation_snippets_first_occurrence_wins():
+    blocks = [
+        {"type": "text", "citations": [
+            {"url": "https://a.example.com/", "cited_text": "第一段"},
+        ]},
+        {"type": "not_text", "citations": [
+            {"url": "https://ignored.example.com/", "cited_text": "非 text 块应跳过"},
+        ]},
+        {"type": "text", "citations": [
+            {"url": "https://a.example.com/", "cited_text": "第二段（应被忽略）"},
+            {"url": "https://b.example.com/", "cited_text": "B 摘要"},
+        ]},
+        {"type": "text", "citations": None},
     ]
-    out = WebSearchFunc._dedupe(results, 10)
-    assert len(out) == 3
-    assert out[0]["title"] == "A"
-    assert out[1]["title"] == "B"
-    assert out[2]["title"] == "C"
-
-    capped = WebSearchFunc._dedupe(
-        [{"title": f"t{i}", "link": f"https://x.com/{i}", "snippet": ""} for i in range(20)],
-        10,
-    )
-    assert len(capped) == 10
+    snippets = _citation_snippets(blocks)
+    assert snippets == {
+        "https://a.example.com/": "第一段",
+        "https://b.example.com/": "B 摘要",
+    }
 
 
-# ── 输出格式 ──
+# ── 结构化错误 ──
+
+def test_web_search_error_default_code():
+    err = WebSearchError("boom")
+    assert err.code == "WEB_PROVIDER_ERROR"
+    assert str(err) == "boom"
+
+
+def test_resolve_api_key_missing_raises_credential_error(monkeypatch):
+    monkeypatch.delenv("CHAT_API_KEY", raising=False)
+    with pytest.raises(WebSearchError) as exc_info:
+        _resolve_api_key()
+    assert exc_info.value.code == "WEB_PROVIDER_CREDENTIAL_MISSING"
+
+
+def test_resolve_api_key_returns_env_key(monkeypatch):
+    monkeypatch.setenv("CHAT_API_KEY", "dummy-key")
+    assert _resolve_api_key() == "dummy-key"
+
+
+# ── 数量裁剪（对齐 DSH WebRuntime.capSources） ──
+
+def test_cap_sources_within_limit_unchanged():
+    sources = [{"title": f"s{i}", "link": f"https://x.com/{i}"} for i in range(5)]
+    out, truncated = WebSearchFunc._cap_sources(sources, 8)
+    assert out == sources
+    assert truncated is False
+
+
+def test_cap_sources_over_limit_truncates_and_flags():
+    sources = [{"title": f"s{i}", "link": f"https://x.com/{i}"} for i in range(12)]
+    out, truncated = WebSearchFunc._cap_sources(sources, 8)
+    assert len(out) == 8
+    assert out == sources[:8]
+    assert truncated is True
+
+
+# ── 输出格式（对齐 DSH formatSearchOutput） ──
+
+def test_format_result_sources_and_cite_instruction():
+    sources = [{
+        "title": "pytest 文档",
+        "link": "https://docs.pytest.org/",
+        "snippet": "pytest 官方文档摘要",
+        "published_at": "2025-06-01",
+    }]
+    text = WebSearchFunc._format_result("q", None, sources)
+    assert "来源 (1 条):" in text
+    assert "- [pytest 文档](https://docs.pytest.org/) — pytest 官方文档摘要 (2025-06-01)" in text
+    assert "markdown 链接引用" in text  # 引用指令
+
 
 def test_format_result_with_answer():
     sources = [{"title": "标题", "link": "https://example.com", "snippet": "摘要"}]
     text = WebSearchFunc._format_result("q", "这是答案", sources)
-    assert "答案: 这是答案" in text
-    assert "1. [标题](https://example.com)" in text
-    assert "摘要" in text
+    assert text.startswith("答案: 这是答案")
+    assert "- [标题](https://example.com)" in text
 
 
-def test_format_result_without_answer():
-    sources = [{"title": "标题", "link": "https://example.com", "snippet": "摘要"}]
+def test_format_result_label_falls_back_to_hostname():
+    sources = [{"title": "", "link": "https://example.com/a/b", "snippet": "摘要"}]
     text = WebSearchFunc._format_result("q", None, sources)
-    assert not text.startswith("答案")
-    assert "1. [标题](https://example.com)" in text
+    assert "- [example.com](https://example.com/a/b)" in text
+
+
+def test_format_result_no_sources():
+    text = WebSearchFunc._format_result("q", None, [])
+    assert "未找到结果。" in text
+    assert "markdown 链接引用" in text
+
+
+def test_format_result_truncated_note():
+    sources = [{"title": f"s{i}", "link": f"https://x.com/{i}", "snippet": ""} for i in range(8)]
+    text = WebSearchFunc._format_result("q", None, sources, truncated=True)
+    assert "仅显示前 8 条来源" in text
 
 
 def test_format_result_truncates_snippet():
@@ -164,198 +252,77 @@ def test_format_result_truncates_snippet():
         "q", None, [{"title": "t", "link": "https://e.com", "snippet": long}]
     )
     assert "x" * 201 not in text
+    assert text.count("...") >= 1
 
 
-# ── 提供者合并 + 回答合成（集成） ──
+# ── 工具执行（集成） ──
 
-async def _no_synth(query, sources):
-    return None
-
-
-def test_search_merges_answer_and_dedupes_sources(monkeypatch):
-    class FakeDDG:
-        async def search(self, query, client=None, max_results=10):
-            return SearchResult(
-                answer="答案是 A",
-                sources=[{"title": "s1", "link": "https://a.com/1", "snippet": "snip"}],
-            )
-
-    class FakeScrape:
-        async def search(self, query, client=None, max_results=10):
+def test_execute_formats_provider_sources(monkeypatch):
+    class FakeProvider:
+        async def search(self, query, client=None):
+            assert query == "q"
             return SearchResult(
                 sources=[
-                    {"title": "s1-dup", "link": "https://a.com/1", "snippet": "dup"},
+                    {"title": "s1", "link": "https://a.com/1", "snippet": "snip"},
                     {"title": "s2", "link": "https://b.com/2", "snippet": "snip2"},
                 ]
             )
 
-    monkeypatch.setattr(WebSearchFunc, "PROVIDERS", (FakeDDG, FakeScrape))
-    monkeypatch.setattr("src.tools.web_search._synthesize_answer", _no_synth)
-    tool = WebSearchFunc(query="q")
-    result = asyncio.run(tool.execute())
-
-    # 合成失败时降级为提供者回答
-    assert "答案: 答案是 A" in result
-    assert "[s1](https://a.com/1)" in result
-    assert "s1-dup" not in result
-    assert "[s2](https://b.com/2)" in result
+    monkeypatch.setattr(WebSearchFunc, "PROVIDER", FakeProvider)
+    result = asyncio.run(WebSearchFunc(query="q").execute())
+    assert "- [s1](https://a.com/1) — snip" in result
+    assert "- [s2](https://b.com/2) — snip2" in result
+    assert "markdown 链接引用" in result
 
 
-def test_search_synthesized_answer_takes_precedence(monkeypatch):
-    class FakeDDG:
-        async def search(self, query, client=None, max_results=10):
+def test_execute_caps_sources_at_max_results(monkeypatch):
+    class FakeProvider:
+        async def search(self, query, client=None):
             return SearchResult(
-                answer="提供者答案",
-                sources=[{"title": "s1", "link": "https://a.com/1", "snippet": "snip"}],
+                sources=[
+                    {"title": f"s{i}", "link": f"https://x.com/{i}", "snippet": ""}
+                    for i in range(12)
+                ]
             )
 
-    async def fake_synth(query, sources):
-        return "LLM 合成答案"
-
-    monkeypatch.setattr(WebSearchFunc, "PROVIDERS", (FakeDDG,))
-    monkeypatch.setattr("src.tools.web_search._synthesize_answer", fake_synth)
-    tool = WebSearchFunc(query="q")
-    result = asyncio.run(tool.execute())
-
-    assert "答案: LLM 合成答案" in result
-    assert "提供者答案" not in result
+    monkeypatch.setattr(WebSearchFunc, "PROVIDER", FakeProvider)
+    result = asyncio.run(WebSearchFunc(query="q").execute())
+    assert "来源 (8 条):" in result
+    assert "仅显示前 8 条来源" in result
+    assert "https://x.com/11" not in result  # 第 12 条被裁剪
 
 
-def test_search_no_answer_degrades_to_sources_only(monkeypatch):
-    class FakeScrape:
-        async def search(self, query, client=None, max_results=10):
-            return SearchResult(
-                sources=[{"title": "s1", "link": "https://a.com/1", "snippet": "snip"}]
-            )
-
-    monkeypatch.setattr(WebSearchFunc, "PROVIDERS", (FakeScrape,))
-    monkeypatch.setattr("src.tools.web_search._synthesize_answer", _no_synth)
-    tool = WebSearchFunc(query="q")
-    result = asyncio.run(tool.execute())
-
-    assert not result.startswith("答案")
-    assert "[s1](https://a.com/1)" in result
-
-
-def test_search_no_results_returns_error(monkeypatch):
-    class FakeEmpty:
-        async def search(self, query, client=None, max_results=10):
+def test_execute_no_sources(monkeypatch):
+    class FakeProvider:
+        async def search(self, query, client=None):
             return SearchResult()
 
-    monkeypatch.setattr(WebSearchFunc, "PROVIDERS", (FakeEmpty,))
-    monkeypatch.setattr("src.tools.web_search._synthesize_answer", _no_synth)
-    tool = WebSearchFunc(query="q")
-    result = asyncio.run(tool.execute())
+    monkeypatch.setattr(WebSearchFunc, "PROVIDER", FakeProvider)
+    result = asyncio.run(WebSearchFunc(query="q").execute())
+    assert "未找到结果。" in result
+
+
+def test_execute_provider_error_reports_code(monkeypatch):
+    class FakeProvider:
+        async def search(self, query, client=None):
+            raise WebSearchError("API down", "WEB_PROVIDER_ERROR")
+
+    monkeypatch.setattr(WebSearchFunc, "PROVIDER", FakeProvider)
+    result = asyncio.run(WebSearchFunc(query="q").execute())
     assert result.startswith("(")
+    assert "[WEB_PROVIDER_ERROR]" in result
+    assert "API down" in result
 
 
-# ── 回答合成 ──
+def test_execute_timeout_reports_timeout(monkeypatch):
+    class FakeProvider:
+        async def search(self, query, client=None):
+            raise httpx.TimeoutException("timed out")
 
-def test_build_synthesis_messages():
-    from src.tools.web_search import _build_synthesis_messages
+    monkeypatch.setattr(WebSearchFunc, "PROVIDER", FakeProvider)
+    result = asyncio.run(WebSearchFunc(query="q").execute())
+    assert result.startswith("(搜索超时:")
 
-    messages = _build_synthesis_messages(
-        "什么是 pytest",
-        [{"title": "标题", "link": "https://example.com", "snippet": "摘要内容"}],
-    )
-    assert messages[0]["role"] == "system"
-    user = messages[1]["content"]
-    assert "问题: 什么是 pytest" in user
-    assert "[1] 标题" in user
-    assert "URL: https://example.com" in user
-    assert "摘要: 摘要内容" in user
-
-
-def test_build_synthesis_messages_truncates_snippet():
-    from src.tools.web_search import _build_synthesis_messages
-
-    long = "x" * 400
-    messages = _build_synthesis_messages(
-        "q", [{"title": "t", "link": "https://e.com", "snippet": long}]
-    )
-    assert "x" * 301 not in messages[1]["content"]
-
-
-def test_synthesize_answer_returns_none_without_api_key(monkeypatch):
-    from src.tools.web_search import _synthesize_answer
-
-    monkeypatch.delenv("CHAT_API_KEY", raising=False)
-    result = asyncio.run(
-        _synthesize_answer("q", [{"title": "t", "link": "https://e.com", "snippet": "s"}])
-    )
-    assert result is None
-
-
-def test_synthesize_answer_returns_none_without_sources(monkeypatch):
-    from src.tools.web_search import _synthesize_answer
-
-    monkeypatch.setenv("CHAT_API_KEY", "dummy-key")
-    result = asyncio.run(_synthesize_answer("q", []))
-    assert result is None
-
-
-def test_synthesize_answer_uses_model_response(monkeypatch):
-    from src.tools.web_search import _synthesize_answer
-
-    monkeypatch.setenv("CHAT_API_KEY", "dummy-key")
-
-    async def fake_call(messages, **kwargs):
-        return ("", "这是合成回答 [1]", {"input": 1, "output": 1}, [])
-
-    monkeypatch.setattr("src.api.model_async.call_model_sync_async", fake_call)
-    result = asyncio.run(
-        _synthesize_answer("q", [{"title": "t", "link": "https://e.com", "snippet": "s"}])
-    )
-    assert result == "这是合成回答 [1]"
-
-
-def test_synthesize_answer_failure_returns_none(monkeypatch):
-    from src.tools.web_search import _synthesize_answer
-
-    monkeypatch.setenv("CHAT_API_KEY", "dummy-key")
-
-    async def fake_fail(messages, **kwargs):
-        raise RuntimeError("api down")
-
-    monkeypatch.setattr("src.api.model_async.call_model_sync_async", fake_fail)
-    result = asyncio.run(
-        _synthesize_answer("q", [{"title": "t", "link": "https://e.com", "snippet": "s"}])
-    )
-    assert result is None
-
-
-def test_synthesize_answer_interrupted_returns_none(monkeypatch):
-    from src.tools.web_search import _synthesize_answer
-
-    monkeypatch.setenv("CHAT_API_KEY", "dummy-key")
-
-    async def fake_interrupted(messages, **kwargs):
-        return ("", "(已中断)", {"input": 0, "output": 0}, [])
-
-    monkeypatch.setattr("src.api.model_async.call_model_sync_async", fake_interrupted)
-    result = asyncio.run(
-        _synthesize_answer("q", [{"title": "t", "link": "https://e.com", "snippet": "s"}])
-    )
-    assert result is None
-
-
-def test_synthesize_answer_truncates_long_response(monkeypatch):
-    from src.tools.web_search import _synthesize_answer
-
-    monkeypatch.setenv("CHAT_API_KEY", "dummy-key")
-
-    async def fake_long(messages, **kwargs):
-        return ("", "x" * 1000, {"input": 1, "output": 1000}, [])
-
-    monkeypatch.setattr("src.api.model_async.call_model_sync_async", fake_long)
-    result = asyncio.run(
-        _synthesize_answer("q", [{"title": "t", "link": "https://e.com", "snippet": "s"}])
-    )
-    assert len(result) == 603  # 600 + "..."
-    assert result.endswith("...")
-
-
-# ── 错误路径 ──
 
 def test_execute_empty_query_returns_error():
     tool = WebSearchFunc(query="   ")

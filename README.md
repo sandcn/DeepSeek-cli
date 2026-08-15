@@ -271,7 +271,7 @@ python chat.py version
 
 ## 工具系统（Tool System）
 
-AI 代理在对话中可调用以下工具完成各类操作。共 **15 个内置工具**，涵盖文件操作、代码搜索、网络请求、用户交互等能力。
+AI 代理在对话中可调用以下工具完成各类操作。共 **16 个内置工具**，涵盖文件操作、代码搜索、网络请求、用户交互等能力。
 
 ### 工具列表
 
@@ -289,7 +289,8 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **15 个内�
 | `mv` | mv | IO | ✅ | 移动文件或目录，支持跨文件系统 |
 | `rm` | rm | IO | ❌ | 删除文件或目录（删除前自动备份到沙盒） |
 | `mk` | mk | IO | ✅ | 创建目录，支持递归创建父目录 |
-| `web_search` | ws | 网络 | ❌ | 搜索引擎搜索 + 网页全文抓取（百度/必应/GitHub） |
+| `web_search` | ws | 网络 | ❌ | DeepSeek 官方原生联网搜索（Anthropic 兼容 Messages API + web_search_20250305），返回来源列表（标题/URL/摘要） |
+| `web_fetch` | — | 网络 | ✅ | 获取指定 URL 的网页全文（自动提取正文，SSRF 防护，仅 http/https） |
 | `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/超时回退/非交互回退，选项可带说明，TUI 中高亮选项时说明显示在右侧） |
 | `dispatch_agent` | da | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：map/review/plan/execute） |
 
@@ -300,7 +301,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **15 个内�
 | **文件 IO** | read_file, write_file, update_file, ls, cp, mv, rm, mk | 读写文件、目录操作、文件管理 |
 | **代码搜索** | search, find | 正则搜索源码、通配符查找文件 |
 | **命令执行** | bash, bash_task | 安全沙盒中执行 shell 命令；按 task_id 操作后台 bash 任务 |
-| **网络访问** | web_search | 搜索引擎查询和网页内容获取 |
+| **网络访问** | web_search, web_fetch | 网页搜索（DeepSeek 官方原生搜索）与网页全文获取 |
 | **用户交互** | user_select | 交互式选择弹窗（单选/多选/超时回退） |
 | **Agent 调度** | dispatch_agent | 并发派发原子 Agent 执行独立任务 |
 
@@ -558,13 +559,13 @@ ChatUIConsumer
 │   │   ├── read_file.py / write_file.py / update_file.py
 │   │   ├── search.py / find.py / ls.py
 │   │   ├── bash.py / cp.py / mv.py / rm.py / mk.py
-│   │   ├── web_search.py / user_select.py / dispatch_agent.py
+│   │   ├── web_search.py / web_fetch.py / user_select.py / dispatch_agent.py
 │   │   ├── file_ops.py        # 文件操作原子工具（原子写入、路径安全校验、沙盒记录）
 │   │   ├── _constants.py      # 共享常量（排除目录、安全路径、编码等）
 │   │   ├── encoding.py        # 编码检测工具函数
 │   │   ├── utils.py           # 工具通用辅助函数
-│   │   ├── page_fetcher.py    # 网页内容抓取（web_search 内部依赖）
-│   │   └── parsers/           # 搜索引擎结果解析器（baidu / bing / generic / github）
+│   │   ├── search_providers.py  # DeepSeek 官方原生搜索提供者（web_search 依赖）
+│   │   └── page_fetcher.py    # 网页内容抓取（web_fetch 依赖）
 │   │
 │   ├── webui/              # Web 界面
 │   │   ├── server.py          # aiohttp HTTP 服务器 + WebSocket

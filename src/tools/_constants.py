@@ -146,21 +146,6 @@ ENCODING_ALIASES: dict[str, str] = {
 
 LARGE_FILE_THRESHOLD = 10 * 1024 * 1024  # 10MB
 
-# ── web_search 常量 ──
-
-WEB_USER_AGENTS: list[str] = [
-    "Mozilla/5.0 (Linux; Android 12; SM-G998B) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.6099.43 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/121.0.6167.143 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 12; SM-S908B) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.6099.43 Mobile Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-]
-
 # ── 工具显示名映射（UI显示用，对齐 Claude Code 完整名） ──
 
 TOOL_DISPLAY_NAME: dict[str, str] = {
