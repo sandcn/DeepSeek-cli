@@ -66,6 +66,7 @@ async def main():
         return
 
     # ── 信号处理（非 webui 模式） ──
+    signal_mgr = None
     if args.command != 'webui':
         signal_mgr = SignalManager()
         signal_mgr.register_handlers()
@@ -129,3 +130,8 @@ async def main():
         stop_active_monitor()
         if output_consumer is not None:
             output_consumer.stop()
+        # ★ 进入退出清理阶段：此后的信号不再取消任务，
+        #   避免 asyncio.run() 清理阶段（shutdown_default_executor）被
+        #   二次信号取消而抛出 CancelledError 裸 traceback。
+        if signal_mgr is not None:
+            signal_mgr.mark_exiting()

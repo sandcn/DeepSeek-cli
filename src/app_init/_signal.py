@@ -28,13 +28,35 @@ class SignalManager:
         self._registered: bool = False
         self._shutdown_requested = asyncio.Event()
         self._sigint_lock = threading.Lock()
+        # ★ 程序已进入退出清理阶段（asyncio.run 的 shutdown_default_executor 等）。
+        #   此后到达的信号不再取消任何任务，避免清理阶段任务被取消
+        #   而抛出 CancelledError 裸 traceback（Python 3.9 已知行为）。
+        self._exiting = threading.Event()
 
     @property
     def is_shutdown_requested(self) -> bool:
         return self._shutdown_requested.is_set()
 
+    @property
+    def is_exiting(self) -> bool:
+        return self._exiting.is_set()
+
+    def mark_exiting(self) -> None:
+        """标记程序已进入退出清理阶段。
+
+        应在主协程返回前（如 app_init/main.py 的 finally 中）调用，
+        覆盖 asyncio.run() 清理阶段的信号窗口：此后的信号处理器
+        直接忽略，不再取消任务，保证 shutdown_default_executor 等
+        清理任务能完整执行。
+        """
+        self._exiting.set()
+
     async def handle_sigint(self) -> None:
         """处理 SIGINT — 首按优雅中断，再按强制关闭"""
+        if self._exiting.is_set():
+            _logger.info("SIGINT 忽略：程序已进入退出清理阶段")
+            return
+
         from ..api.interrupt_async import request_interrupt_async
 
         with self._sigint_lock:
@@ -66,6 +88,10 @@ class SignalManager:
 
     async def shutdown(self) -> None:
         """SIGTERM 的优雅关闭 — 直接强制退出"""
+        if self._exiting.is_set():
+            _logger.info("SIGTERM 忽略：程序已进入退出清理阶段")
+            return
+
         publish_output("\n  ⚠ 正在关闭…", level="raw")
         stop_active_monitor()
         current = asyncio.current_task()
@@ -83,6 +109,10 @@ class SignalManager:
         pty 断开/Cygwin 会话变更/休眠恢复时触发，行为与 shutdown() 一致，
         但使用独立的提示信息以区分用户主动 SIGTERM 与 pty 断开 SIGHUP。
         """
+        if self._exiting.is_set():
+            _logger.info("SIGHUP 忽略：程序已进入退出清理阶段")
+            return
+
         publish_output("\n  ⚠ 检测到终端断开(SIGHUP)，正在关闭…", level="raw")
         stop_active_monitor()
         current = asyncio.current_task()

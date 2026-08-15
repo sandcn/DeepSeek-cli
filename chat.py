@@ -2,6 +2,24 @@ import asyncio
 import sys
 from src import main
 
+
+def _run() -> int:
+    """运行异步主入口并统一处理退出路径。
+
+    Python 3.9 的 asyncio.run() 在清理阶段（shutdown_default_executor）可能
+    因二次信号（Ctrl+C / SIGTERM / SIGHUP）取消任务而抛出 CancelledError
+    （参见 src/app_init/_signal.py 的 mark_exiting 修复），此处兜底吞掉，
+    避免输出裸 traceback；KeyboardInterrupt 映射为标准退出码 130。
+    """
+    try:
+        asyncio.run(main())
+    except asyncio.CancelledError:
+        return 0
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
 if __name__ == "__main__":
     # ── 删除 stdio 缓冲区 ──────────────────────────────────
     # Android Termux 中 sys.stdout.isatty() 返回 False，
@@ -18,4 +36,4 @@ if __name__ == "__main__":
     except (ValueError, AttributeError):
         pass
 
-    asyncio.run(main())
+    sys.exit(_run())
