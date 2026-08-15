@@ -667,6 +667,22 @@ class Input:
         """
         self._dispatcher.set_input_hook_router(router)
 
+    def set_key_pressed_callback(self, cb) -> None:
+        """设置任意键按下回调（委托 InputDispatcher，ink useStdin().isAnyKeyPressed）。
+
+        cb 签名: ``() -> None``（幂等置位语义）；None 可清除注入。
+        """
+        self._dispatcher.set_key_pressed_callback(cb)
+
+    def set_interrupt_routable(self, routable: bool) -> None:
+        """设置 interrupt（Ctrl+C）事件 router 放行标志（委托 InputDispatcher，
+        React Ink exitOnCtrlC=False 语义）。
+
+        False（默认）：Ctrl+C 走中断路径（生产行为不变）；True：Ctrl+C 先问
+        input router——消费则跳过中断（交给 useInput handler）。
+        """
+        self._dispatcher.set_interrupt_routable(routable)
+
     def set_reverse_search_enabled(self, enabled: bool) -> None:
         """设置 Ctrl+R 反向历史搜索启用标志（委托 InputDispatcher，方向D 步骤14）。
 

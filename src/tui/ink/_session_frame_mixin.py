@@ -186,6 +186,12 @@ class _SessionFrameMixin:
         self._reconciler.render(self._root_fiber, element, width, self._width_cache.get_height())
         frame = _components.render_frame(self._root_fiber, width)
         self._ink_renderer.render(frame)
+        # ★ render() debug 选项：记录最近帧行数（session._debug_log_frame 统计）
+        if hasattr(self, "_last_frame_lines"):
+            try:
+                self._last_frame_lines = len(frame.lines)
+            except Exception:
+                pass
         # ★ P5：input-area fiber 缓存——仅在失效时重建（避免每帧全树递归查找）。
         #   调和器复用 fiber 时重置 deleted=False；input-area 被删除/替换（旧
         #   fiber 未复用 → deleted 保持 True）时缓存自动失效重建。

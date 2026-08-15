@@ -120,6 +120,19 @@ class InputDispatcher:
         # 视为放行（不阻断输入）。None 缺省时行为与未注入完全一致。
         self._input_hook_router = None
 
+        # ── 任意键按下回调（ink useStdin().isAnyKeyPressed 置位） ──
+        # 每个输入字节分发前调用（回调注入由 session.set_input 接线；
+        # None 缺省零开销）。置位回调幂等（bool 标志），无返回值约定。
+        self._key_pressed_callback = None
+
+        # ── Ctrl+C（interrupt）事件 router 放行标志（React Ink
+        #    exitOnCtrlC=False 语义） ──
+        # 默认 False：interrupt 事件（0x03 Ctrl+C / 双 Esc）直接走
+        # ``_do_interrupt``（生产中断路径，行为不变）；render() 独立会话
+        # ``exitOnCtrlC=False`` 时置 True——interrupt 事件先问 input router，
+        # 消费则跳过中断路径（React Ink 语义：Ctrl+C 交给 useInput handler）。
+        self._interrupt_routable: bool = False
+
         # ── 反向历史搜索（方向D 步骤14，Ctrl+R 配置门控） ──
         # 默认 False 保持既有 Ctrl+R switch_model 语义；装配注入
         # TuiConfig.reverse_search_enabled。
@@ -421,6 +434,10 @@ class InputDispatcher:
             ):
                 return True
 
+        # ── 任意键按下通知（ink useStdin().isAnyKeyPressed 置位） ──
+        # 每个输入字节分发前触发（含残留 Enter 丢弃之外的全部输入路径）。
+        self._notify_key_pressed()
+
         # ── ASCII 控制字符分发 ──
         if first_byte < 0x20 or first_byte == 0x7F:
             try:
@@ -480,7 +497,15 @@ class InputDispatcher:
                         self._dispatch_key_event(event)
                     # unknown 静默忽略；csi_u 进分发 debug no-op（router 可消费）
                 elif event.kind == "interrupt":
-                    self._do_interrupt()
+                    # ★ React Ink exitOnCtrlC=False（render() 独立会话）：interrupt
+                    #   事件（0x03 Ctrl+C / 双 Esc）在 ``_interrupt_routable``
+                    #   置位时先进 input router——消费则跳过中断路径（Ctrl+C
+                    #   交给 useInput handler，官方语义）；未消费回退中断。
+                    #   生产路径（标志默认 False）行为不变：直接中断。
+                    if self._interrupt_routable and self._router_consume(event):
+                        pass
+                    else:
+                        self._do_interrupt()
                 elif event.kind == "ctrl_key":
                     # 方向1 B1：内联 ctrl_key 路径 router 先行（经 _router_consume
                     # 统一入口）。router 消费 → 跳过旧回调路径；未消费 →
@@ -1010,6 +1035,37 @@ class InputDispatcher:
             router: 路由回调或 None。
         """
         self._input_hook_router = router
+
+    def set_key_pressed_callback(self, cb) -> None:
+        """设置任意键按下回调（ink useStdin().isAnyKeyPressed 置位）。
+
+        cb 签名: ``() -> None``；None 可清除注入（缺省零开销）。
+        回调在每个输入字节分发前调用（幂等置位语义，异常吞掉记 debug）。
+        """
+        self._key_pressed_callback = cb
+
+    def set_interrupt_routable(self, routable: bool) -> None:
+        """设置 interrupt（Ctrl+C）事件 router 放行标志（React Ink
+        exitOnCtrlC=False 语义）。
+
+        False（默认）：interrupt 事件直接走 ``_do_interrupt``（生产中断路径，
+        行为不变）。True：interrupt 事件先问 input router——消费则跳过中断
+        路径（React Ink 语义：Ctrl+C 交给 useInput handler）；未消费仍走
+        ``_do_interrupt``（回退中断，不丢事件）。
+
+        Args:
+            routable: True=interrupt 事件先进 router；False=直接中断。
+        """
+        self._interrupt_routable = bool(routable)
+
+    def _notify_key_pressed(self) -> None:
+        """通知任意键按下（每个输入字节分发前调用；回调异常吞掉记 debug）。"""
+        cb = self._key_pressed_callback
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                _logger.debug("key pressed 回调异常", exc_info=True)
 
     def set_reverse_search_enabled(self, enabled: bool) -> None:
         """设置 Ctrl+R 反向历史搜索启用标志（方向D 步骤14，默认 False）。

@@ -221,12 +221,35 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._system_monitor = None
         self._last_sys_stats_time: float = 0.0
         self._sys_stats_interval: float = 2.0
+        # ★ React Ink render() options（官方 API 补齐）：
+        #   - ``_debug``：调试模式（True 时每渲染帧输出统计到 stderr）
+        #   - ``_exit_on_ctrl_c``：Ctrl+C 是否退出（True 时 render() 独立会话
+        #     Ctrl+C → request_exit；False 时 Ctrl+C 交给 useInput handler）
+        #   - ``_last_frame_lines``：最近渲染帧行数（debug 统计用；
+        #     _render_frame 渲染后写入）
+        self._debug: bool = False
+        self._exit_on_ctrl_c: bool = True
+        self._last_frame_lines: int = 0
+        #: stderr 流（render() stderr 选项；useStderr().stderr 与 debug 帧统计共用）
+        self._stderr_stream = sys.__stderr__
 
     # ── 注入 ─────────────────────────────────────────
 
     def set_input(self, input_instance) -> None:
-        """注入 Input 实例（render 循环输入分发）。"""
+        """注入 Input 实例（render 循环输入分发）。
+
+        ★ React Ink useStdin().isAnyKeyPressed 接线：向 InputDispatcher 注入
+        任意键按下回调 → hooks 置位标志（``mark_any_key_pressed``）。Input
+        外观委托存在（``set_key_pressed_callback``），异常（外部/测试构造的
+        桩实例无此方法）吞掉记 debug——置位缺失仅影响 isAnyKeyPressed 读取，
+        不阻断输入主路径。
+        """
         self._input = input_instance
+        # isAnyKeyPressed 置位接线（官方 React Ink useStdin 字段）
+        try:
+            input_instance.set_key_pressed_callback(_hooks.mark_any_key_pressed)
+        except Exception:
+            _logger.debug("set_input 注入 key pressed 回调异常", exc_info=True)
         # ★ use_input router 补发：构造期（_input 未注入）发布的 router 缓存于此，
         #   set_input 后补发最新 router，保证 useInput 钩子完整接线。
         if self._pending_input_router is not None and self._input is not None:
@@ -235,6 +258,29 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 self._pending_input_router = None
             except Exception:
                 _logger.debug("set_input 补发 input router 异常", exc_info=True)
+
+    def set_stderr(self, stream) -> None:
+        """注入 stderr 流（render() stderr 选项；useStderr().stderr 读取）。
+
+        默认 ``sys.__stderr__``（构造期注入）；替换后 useStderr 返回新流，
+        debug 帧统计（``_debug_log_frame``）亦写入该流。传入 None 时恢复
+        默认（``sys.__stderr__``）。
+        """
+        self._stderr_stream = stream if stream is not None else sys.__stderr__
+        _hooks.set_std_accessors(
+            lambda: self._input,
+            lambda: getattr(self._ink_renderer, "_stream", None),
+            lambda: self._stderr_stream,
+        )
+
+    def set_exit_on_ctrl_c(self, enabled: bool) -> None:
+        """设置 Ctrl+C 退出标志（render() exitOnCtrlC 选项）。
+
+        True（默认）：render() 独立会话 Ctrl+C 经 interrupt 回调请求退出；
+        False：Ctrl+C 事件放行给 useInput handler（React Ink 语义）——由
+        render() 按本标志配置 Input 的 interrupt 注入/放行。
+        """
+        self._exit_on_ctrl_c = bool(enabled)
 
     def _on_input_router(self, router) -> None:
         """use_input composite router 发布回调（reconciler 每帧调用）。
@@ -872,7 +918,29 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                     else:
                         # 成功渲染 → 复位连续失败计数（P7 退避语义）
                         self._consecutive_render_failures = 0
+                        # ★ render() debug 选项（官方 React Ink）：调试模式下
+                        #   每渲染帧输出统计到 stderr（帧号/行数/队列积压），
+                        #   便于观察渲染节奏与性能。非渲染帧（跳过）无输出。
+                        if self._debug:
+                            self._debug_log_frame()
                 return changed
+
+    def _debug_log_frame(self) -> None:
+        """debug 模式帧统计输出（render() debug 选项）。
+
+        渲染帧成功后将统计写入 stderr 流（``_stderr_stream``，render()
+        stderr 选项注入；缺省 sys.__stderr__）：帧行数 + 队列积压 + 渲染
+        失败计数。异常吞掉（debug 输出为观测辅助，不阻断渲染循环）。
+        """
+        try:
+            self._stderr_stream.write(
+                f"[ink:debug] frame lines={self._last_frame_lines} "
+                f"queue={self._cmd_queue.qsize()} "
+                f"failures={self._consecutive_render_failures}\n"
+            )
+            self._stderr_stream.flush()
+        except Exception:
+            _logger.debug("debug 帧统计输出异常", exc_info=True)
 
     def _drain_commands_locked(self):
         """输出锁内排空渲染命令队列（DRAIN_COMMANDS 阶段）。
@@ -1085,7 +1153,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
 # ★ render() 轻量入口（方向 F1）已拆分至独立模块 _render_api.py
 #   （2026-08-05 架构优化）——本模块 re-export 保持旧导入路径兼容
 #   （``from src.tui.ink.session import render`` 仍可用，测试锁定）。
-from ._render_api import render, _SimpleModel  # noqa: F401  re-export 兼容
+from ._render_api import render, measureElement, _SimpleModel  # noqa: F401  re-export 兼容
 
 __all__ = [
     "InkSession",

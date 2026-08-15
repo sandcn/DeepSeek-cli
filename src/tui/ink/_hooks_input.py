@@ -38,22 +38,49 @@ def _publish_input_router(router) -> None:
             _logger.debug("input router 发布异常", exc_info=True)
 
 
-def use_input(handler: Callable[[Any], bool], is_active: bool = True) -> None:
+def use_input(
+    handler: Callable[[Any], bool],
+    options: "bool | dict | None" = None,
+) -> None:
     """React useInput 等价物（与 react-ink useInput(inputHandler, {isActive}) 对齐）。
+
+    调用形态（兼容新旧两种签名）：
+      - ``use_input(handler)``——默认激活；
+      - ``use_input(handler, is_active)``——第二参为 bool（旧签名，等价
+        ``{"isActive": is_active}``）；
+      - ``use_input(handler, {"isActive": bool, "mask": str|None})``——
+        React Ink 风格 options 字典。
+
+    options（dict 形态）：
+      - ``isActive``（bool，默认 True）：是否参与输入路由；False 时 hook
+        不参与（不消费）。
+      - ``mask``（str | None，默认 None）：输入掩码（React Ink 生态 password
+        语义）——非 None 时，本 hook 收到的可打印输入（kind=="char"）以
+        ``mask * len(input)`` 替代后再传给 handler（与 ink-text-input 的
+        ``mask.repeat(value.length)`` 显示掩码公式一致）；掩码只影响本 hook
+        的输入参数，其他 hook 与事件本身不受影响。典型用途：密码输入防
+        handler 接触明文。
 
     Args:
         handler: 按键处理回调，签名 ``(event) -> bool``——返回 True 表示消费
             事件（跳过旧回调路径）；False/异常放行（走旧路径）。也兼容
             React Ink 生态签名 ``(input, key) -> bool``（handler 接受 2+ 参数
             时自动适配——input 为可打印字符串，key 为按键信息字典）。
-        is_active: 是否参与输入路由；False 时 hook 不参与（不消费）。
+        options: bool（旧 is_active）或 dict（``{"isActive", "mask"}`）。
 
     Returns:
         None（与 react-ink 一致）。
     """
-    hook = _next_hook(InputHook, handler, is_active)
+    if isinstance(options, dict):
+        is_active = bool(options.get("isActive", True))
+        mask = options.get("mask")
+    else:
+        is_active = True if options is None else bool(options)
+        mask = None
+    hook = _next_hook(InputHook, handler, is_active, mask)
     hook.handler = _make_compat_handler(handler)
     hook.is_active = is_active
+    hook.mask = mask
     return None
 
 
@@ -155,7 +182,12 @@ def _event_key(event) -> dict:
         "downArrow": kind == "arrow_down",
         "return": kind == "enter",
         "escape": kind == "escape",
-        "ctrl": kind == "ctrl_key" or modifier in (5, 6, 7, 8),
+        # ★ 官方 React Ink：Ctrl+C 的 key 为 {ctrl: true}（exitOnCtrlC=False
+        #   时传给 handler）。interrupt 事件（0x03 Ctrl+C / 双 Esc）默认不进
+        #   router（生产中断路径不变）；仅 render() 独立会话 exitOnCtrlC=False
+        #   时经 ``_interrupt_routable`` 放行进 router——此时 handler 按
+        #   ctrl=True 识别 Ctrl+C（与官方语义对齐）。
+        "ctrl": kind == "ctrl_key" or kind == "interrupt" or modifier in (5, 6, 7, 8),
         "shift": modifier in (2, 4, 6, 8),
         "tab": kind == "tab",
         "backspace": kind == "backspace",

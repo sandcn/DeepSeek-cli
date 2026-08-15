@@ -98,6 +98,10 @@ class InputHook:
     Attributes:
         handler: 按键处理回调（签名 ``(event) -> bool``，True=消费）。
         is_active: 是否参与输入路由（False 时 hook 不参与）。
+        mask: 输入掩码（React Ink 生态 mask 语义，password 输入）——非 None
+            时，本 hook 收到的可打印输入（kind=="char"）以 ``mask * len(input)``
+            替代后再传给 handler（与 ink-text-input 的
+            ``mask.repeat(value.length)`` 显示掩码公式一致）。None=不掩码。
         focused: 焦点仲裁标志（useFocus 设置；True=参与焦点优先路由）。
         seq: 稳定递增序号（方向1 L3）——hook 实例唯一标识，router 签名以此
             替代 ``id(hook)``（id 复用风险：hook 被 GC 后新对象可能复用旧 id，
@@ -106,6 +110,7 @@ class InputHook:
 
     handler: Callable[[Any], bool] | None = None
     is_active: bool = True
+    mask: str | None = None
     focused: bool = True
     seq: int = field(default_factory=lambda: next(_HOOK_SEQ))
 

@@ -88,6 +88,26 @@ _window_size_listeners: set = set()
 _window_size_accessor: Callable[[], tuple[int, int]] | None = None
 # 光标定位回调（session 注入；useCursor）
 _cursor_position_fn: Callable[[Any], None] | None = None
+# 任意键已按下标志（useStdin().isAnyKeyPressed——React Ink 语义：用户曾
+# 按过任意键后恒 True，不复位；session 经 InputDispatcher 注入置位回调）
+_any_key_pressed: bool = False
+
+
+def mark_any_key_pressed() -> None:
+    """标记任意键已按下（useStdin().isAnyKeyPressed 置位）。
+
+    由 session 注入 InputDispatcher 按键回调调用（每个输入字节分发时触发）；
+    置位后保持 True（与 React Ink 语义一致——用于检测用户是否已交互，
+    spinner 等据此暂停动画）。
+    """
+    global _any_key_pressed
+    _any_key_pressed = True
+
+
+def reset_any_key_pressed() -> None:
+    """复位任意键标志（测试/会话复用用）。"""
+    global _any_key_pressed
+    _any_key_pressed = False
 
 # ═══════════════════════════════════════════════════════════
 # 函数 re-export（实现拆分至 _hooks_* 子模块）
@@ -215,6 +235,8 @@ __all__ = [
     "set_cursor_position_fn",
     "set_render_flush_fn",
     "set_suspend_terminal_fn",
+    "mark_any_key_pressed",
+    "reset_any_key_pressed",
     "deps_changed",
     "mark_effect_committed",
     "_deps_equal",

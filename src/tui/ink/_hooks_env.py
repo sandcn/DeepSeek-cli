@@ -102,6 +102,12 @@ def useStdin() -> dict:
         "isRawModeSupported": False,
         "setRawMode": _noop,
         "internal_exitOnCtrlC": True,
+        # ★ React Ink useStdin().isAnyKeyPressed（官方 API 补齐）：用户是否已
+        #   按过任意键（置位后恒 True，不复位——官方语义，spinner 等据此
+        #   检测用户交互）。经 session.set_input 注入 InputDispatcher 按键
+        #   回调置位（hooks.mark_any_key_pressed）；未注入 Input 的会话恒
+        #   False（无 stdin，合理）。
+        "isAnyKeyPressed": bool(getattr(_hooks_module, "_any_key_pressed", False)),
     }
 
 

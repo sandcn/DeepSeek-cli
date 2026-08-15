@@ -99,6 +99,7 @@ from .helpers import (
 from .registry import register_host, unregister_host, get_host, has_host
 from .error_boundary import ErrorBoundary, create_error_boundary
 from .extra import Transform, Static, Newline, Fragment, STATIC_TEXT
+from ._render_api import render, measureElement
 from .widgets import (
     SelectInput,
     TextInput,
@@ -214,6 +215,8 @@ __all__ = [
     # error boundary
     "ErrorBoundary",
     "create_error_boundary",
+    # render API
+    "measureElement",
     # generic components
     "Transform",
     "Static",

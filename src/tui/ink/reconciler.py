@@ -34,6 +34,28 @@ from . import layout as _layout
 
 _logger = logging.getLogger(__name__)
 
+
+class _MaskedCharEvent:
+    """mask 掩码事件（鸭子类型 KeyEvent，供 router per-hook 掩码）。
+
+    React Ink 生态 mask 语义：可打印输入以 ``mask * len(input)`` 替代——
+    handler 收到的 input 为掩码字符重复（与 ink-text-input 的
+    ``mask.repeat(value.length)`` 公式一致）。仅 ``kind=="char"`` 事件掩码；
+    其余字段（modifier/keycode/raw）原样透传，handler 可正常识别修饰键。
+    不依赖 ``KeyEvent`` 类型（ink 层零 _input_parser 依赖，与既有
+    ``_event_input/_event_key`` 鸭子类型约定一致）。
+    """
+
+    __slots__ = ("kind", "char", "modifier", "keycode", "raw")
+
+    def __init__(self, event, mask: str) -> None:
+        text = getattr(event, "char", "") or ""
+        self.kind = "char"
+        self.char = mask * len(text)
+        self.modifier = getattr(event, "modifier", 0)
+        self.keycode = getattr(event, "keycode", 0)
+        self.raw = getattr(event, "raw", None)
+
 #: 内置 host 标签集合——绝不可能是 context provider（create_context 生成
 #: 唯一 ``__ctx_*__`` 标签；内置标签无 provider 注册路径）。reconciler
 #: begin_work 跳过注册表 dict 查找（流式开放块每行 TEXT 各省一次 dict miss）。
@@ -767,7 +789,8 @@ class Reconciler:
         #   hook/handler 引用仍有效（见下方缓存命中分支——低开销：每帧一次、
         #   hooks 数量极少），闭环修复 id 复用风险。
         signature = tuple(
-            (hook.seq, hook.is_active, id(hook.handler), getattr(hook, "focused", True))
+            (hook.seq, hook.is_active, id(hook.handler), getattr(hook, "mask", None),
+             getattr(hook, "focused", True))
             for hook in hooks_list
         )
         has_focus_ids = bool(getattr(_hooks, "_focus_ids", None)) and bool(getattr(_hooks, "_focus_enabled", True))
@@ -812,8 +835,13 @@ class Reconciler:
                 return True
             for hook in hooks_list:
                 try:
-                    if hook.handler is not None and hook.handler(event):
-                        return True
+                    if hook.handler is not None:
+                        ev = event
+                        mask = getattr(hook, "mask", None)
+                        if mask and getattr(event, "kind", "") == "char":
+                            ev = _MaskedCharEvent(event, mask)
+                        if hook.handler(ev):
+                            return True
                 except Exception:
                     continue
             return False
