@@ -31,8 +31,9 @@ from src.tui.ink import Line
 from src.tui.app import _fx
 from src.tui.app._theme import time_glow, _S_DIM, _S_SEP
 
-#: 候选行样式（弹窗内使用；选中高亮背景静态色——弹窗不呼吸，避免每帧重绘）
-sel_bg = 237
+#: 候选行样式说明（2026-08-15 L5）：选中高亮背景静态色 237 由
+#: ``_build_popup_lines`` 函数内局部定义（弹窗不呼吸，避免每帧重绘）。
+#: 模块级同名定义已删除（死代码——被局部遮蔽且无外部引用，见 L5）。
 
 
 def _glow_color(base: int, amp: int) -> int:
@@ -244,6 +245,9 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
     lines.append(head)
     # 候选项
     # ★ 静态高亮背景（修复同标题：弹窗不呼吸，避免每帧重绘）
+    # ★ L5（2026-08-15）：函数内局部定义 sel_bg（静态高亮背景色）——模块级
+    #   同名定义已删除（死代码，被本局部遮蔽且无外部引用）；本局部供下方
+    #   Style(fg=15, bg=sel_bg) 选中行高亮使用（L272/L313）。
     sel_bg = 237
     if split:
         # 左栏选项内容宽度（前缀 ▶ + 文本；右栏说明独立换行）

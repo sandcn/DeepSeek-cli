@@ -7,6 +7,21 @@ ASCII 快速路径/单字符缓存）。从 ``_screen.py`` 拆分独立，使屏
 与 ``renderer/_utils/_display.cjk_display_width`` 双宽度函数对齐（注释同源
 约束——两者共享同一套区间表语义，改动须同步）。
 
+★ H1（2026-08-15 双宽度区间对齐）：本模块 ``_CJK_RANGES`` 与
+``cjk_display_width`` 的 if-elif 链区间表**内容一致**（各区间完整清单）：
+  - Hangul Jamo 0x1100-0x11FF
+  - CJK 部首补充+康熙部首 0x2E80-0x2FFF
+  - CJK 符号标点 0x3000-0x303F
+  - 平假名/片假名/注音/CJK 兼容 0x3040-0x33FF
+  - CJK 扩展 A 0x3400-0x4DBF
+  - CJK 统一表意 0x4E00-0x9FFF
+  - 韩文音节 0xAC00-0xD7AF
+  - CJK 兼容表意 0xF900-0xFAFF
+  - CJK 兼容表意补充 0x2F800-0x2FA1F
+  - CJK 扩展 B-F 0x20000-0x2CEAF
+  - CJK 扩展 G-H 0x30000-0x3134F
+  零宽/全角/emoji 区间两表亦已对齐（见下）。改动任一侧须同步另一侧。
+
 Layer 0 — 零依赖（仅标准库 bisect/re），被 _screen 及 ink 框架消费。
 """
 
@@ -20,14 +35,38 @@ import re
 # ═══════════════════════════════════════════════════════════
 
 _CJK_RANGES: list[tuple[int, int]] = [
+    # ★ H1（双宽度区间对齐，2026-08-15）：新增 Hangul Jamo——修复前
+    #   ``wcswidth_simple`` 缺失该区间（韩文辅音/元音字母 U+1100-U+11FF），
+    #   这些字符在 ink 侧计 1、在 renderer 侧（``cjk_display_width``
+    #   ``0x1100-0x11FF`` 分支）计 2 → 含韩文字母的行双函数测量不一致，
+    #   破坏行级 diff 宽度不变量。与 ``cjk_display_width`` 对齐（宽度 2）。
+    (0x1100, 0x11FF),    # Hangul Jamo（韩文辅音/元音字母，宽度 2）
+    # ★ H1（双宽度区间对齐，2026-08-15）：新增 CJK 部首补充 + 康熙部首
+    #   （U+2E80-U+2FFF，如 ⼀ U+2F00）——修复前 ink 侧计 1、renderer 侧
+    #   （``cjk_display_width`` ``0x2E80-0x9FFF`` 大块）计 2。与
+    #   ``cjk_display_width`` 对齐（宽度 2）。注意不可与下方 ``0x3000``
+    #   区间重叠，故拆为独立区间而非 ``0x2E80-0x33FF`` 整段。
+    (0x2E80, 0x2FFF),    # CJK Radicals Supplement + Kangxi Radicals（宽度 2）
     # ★ CJK 符号标点区（、。「」〈〉【】等，U+3000-U+303F）——修复前缺失：
     #   "。"、"、" 等全角标点被误算宽度 1（实际 2），导致行宽测量偏小 →
     #   内容实际超宽触发终端 wraparound → 渲染错乱（user_select 弹窗按键
     #   导航复现）。与 ``renderer/_utils/_display.cjk_display_width`` 的
     #   ``0x2E80-0x9FFF`` 块对齐（双宽度函数一致，注释同源约束）。
     (0x3000, 0x303F),    # CJK Symbols and Punctuation（全角标点宽度 2）
-    (0x4E00, 0x9FFF),    # CJK Unified Ideographs
+    # ★ H1（双宽度区间对齐，2026-08-15）：新增平假名/片假名/注音/CJK 兼容
+    #   （U+3040-U+33FF，如 あ U+3042、カ U+30AB）——修复前 ink 侧计 1、
+    #   renderer 侧（``cjk_display_width`` ``0x2E80-0x9FFF`` 大块）计 2。
+    #   与 ``cjk_display_width`` 对齐（宽度 2）。注意不可与上方 ``0x303F``
+    #   /下方 ``0x3400`` 重叠，故拆为独立区间（``0x3000-0x303F`` 已有、
+    #   ``0x3400-0x4DBF`` 已有，仅中间段 U+3040-U+33FF 缺失）。
+    (0x3040, 0x33FF),    # Hiragana/Katakana/Bopomofo/CJK Compatibility（宽度 2）
     (0x3400, 0x4DBF),    # CJK Unified Ideographs Extension A
+    (0x4E00, 0x9FFF),    # CJK Unified Ideographs
+    # ★ H1（双宽度区间对齐，2026-08-15）：新增韩文音节（U+AC00-U+D7AF，
+    #   如 가 U+AC00、한 U+D55C）——修复前 ink 侧计 1、renderer 侧
+    #   （``cjk_display_width`` ``0xAC00-0xD7AF`` 分支）计 2。与
+    #   ``cjk_display_width`` 对齐（宽度 2）。
+    (0xAC00, 0xD7AF),    # Hangul Syllables（韩文音节，宽度 2）
     (0xF900, 0xFAFF),    # CJK Compatibility Ideographs
     (0x2F800, 0x2FA1F),  # CJK Compatibility Ideographs Supplement
     (0x20000, 0x2CEAF),  # CJK Unified Ideographs Extension B-F

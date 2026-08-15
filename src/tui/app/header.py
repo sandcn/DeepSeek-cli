@@ -85,22 +85,44 @@ def TopHeader(props) -> object:
 
     Props:
         model: AppModel 实例（status_active 驱动版本号呼吸）。
-        width: 终端宽度（未使用——渐变 runs 与宽度无关）。
+        width: 终端宽度（窄屏截断预算——优先级：✦ 保留 > 渐变标题 > 版本号）。
     """
     # 渐变标题：空依赖 use_memo 缓存（引用级身份复用）
     title_styled = use_memo(_title_runs, ())
     # 呼吸 ✦：独立 TEXT 元素（0.1s 时间桶刷新，不污染渐变缓存）
     dot_color = time_glow(_DOT_LO, _DOT_HI, _DOT_PERIOD)
+    # M1：读取 width prop（app.py:66 已传，修复前未使用）——窄屏截断预算
+    width = props.get("width", 0)
     # ★ BEAUTY-31：版本号独立 TEXT——活跃期呼吸（渲染循环已推进，零额外
     #   成本）；空闲静态（回退模块级常量引用，diff 身份短路）。
     model = props.get("model")
     st = getattr(model, "status", None)
     active = bool(st is not None and getattr(st, "status_active", False))
     ver_runs = _version_runs(active)
+    # ★ M1（BUG 修复，2026-08-15）：窄终端截断防御——三个 TEXT（✦/渐变标题/
+    #   版本号）在 Row(height=1) 中按内容宽度排列，极窄终端（width<26）总宽
+    #   超宽。修复：按 width 预算截断——优先级：✦（2 列）保留 > 渐变标题 >
+    #   版本号（最可丢弃）；与 StatusBar/_ParseLine 防御模式一致（truncate_runs
+    #   按显示宽度截断，不拆 CJK）。宽度不足时版本号先消失、标题次之、✦ 保留；
+    #   预算为 0 时对应 runs 截断为空（TEXT 渲染空行零高度不影响 Row height=1）。
+    #   ✦ 本身亦受 width 物理约束（width=1 时截断为仅 "✦" 宽 1 去空格，保证
+    #   总宽 <= width 不超宽）。
+    if width > 0:
+        from src.tui.ink.helpers import truncate_runs
+        dot_runs = [StyledRun("\u2726 ", Style(fg=dot_color))]
+        dot_runs = truncate_runs(dot_runs, width)
+        dot_w = sum(r.width for r in dot_runs)
+        title_budget = max(0, width - dot_w)
+        title_styled = truncate_runs(title_styled, title_budget)
+        title_w = sum(r.width for r in title_styled)
+        ver_budget = max(0, width - dot_w - title_w)
+        ver_runs = truncate_runs(ver_runs, ver_budget)
+    else:
+        dot_runs = [StyledRun("\u2726 ", Style(fg=dot_color))]
     # ★ 阶段2（标准布局容器重构）：BOX(flexDirection=row) → Row（语义化门面，
     #   Row = BOX + flexDirection=row，props 透传，输出与重构前一致）。
     return h(Row, {"height": 1}, [
-        h(TEXT, {"styled": [StyledRun("\u2726 ", Style(fg=dot_color))], "height": 1}),
+        h(TEXT, {"styled": dot_runs, "height": 1}),
         h(TEXT, {"styled": title_styled, "height": 1}),
         h(TEXT, {"styled": ver_runs, "height": 1}),
     ])

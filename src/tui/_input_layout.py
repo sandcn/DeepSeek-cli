@@ -57,6 +57,16 @@ def _wrap_by_width(s: str, max_width: int) -> list[str]:
                 w += cw
                 idx = i + 1
             if idx == 0:
+                # ★ L1（2026-08-15）：首字符超宽分支——max_width=1 且首字符
+                #   CJK（宽 2）时原 ``idx=1`` 强制拆出宽 2 行 > max_width，
+                #   破坏行宽不变量。宁可窄不可宽：最小 1 列预算仍放不下该
+                #   字符（``wcswidth_simple(remaining[0]) > max_width``）时
+                #   跳过该字符（每轮至少推进 1 字符，无死循环；不产生超宽
+                #   行）；否则保持 ``idx=1``。调用方 ``_compute_input_layout``
+                #   以 ``or [""]`` 兜底空段。
+                if wcswidth_simple(remaining[0]) > max_width:
+                    remaining = remaining[1:]
+                    continue
                 idx = 1
             lines.append(remaining[:idx])
             remaining = remaining[idx:]

@@ -359,8 +359,17 @@ class InputParser:
             keycode = params[0] if len(params) >= 1 else 0
             modifier = params[1] if len(params) >= 2 else 1
             raw = b"\x1b[" + InputParser._params_to_bytes(params) + b"u"
+            # ★ L2（2026-08-15）：CSI-u 修饰 Enter 语义对齐——Shift/Ctrl/Alt+
+            #   Enter（keycode=13, modifier 2/3/5）由「插入换行」（kind="char"
+            #   char="\n"，被 _dispatch_key_event 当可打印字符插入缓冲）改为
+            #   「提交」（kind="enter"，与普通 Enter 0x0d / \x1b[13;1u 一致）。
+            #   对齐提交语义：router 优先消费（UserSelectPopup 等组件可正常
+            #   消费 enter）；未消费走 _dispatch_key_event ``kind=="enter"``
+            #   → _enter() 提交（含搜索模式/残留 LF 丢弃）；_hooks_input.py
+            #   useInput ``"return": kind == "enter"`` 同步触发（与普通 Enter
+            #   一致，符合用户直觉）。
             if keycode == 13 and modifier in (2, 3, 5):
-                return KeyEvent(kind="char", char="\n", modifier=modifier,
+                return KeyEvent(kind="enter", modifier=modifier,
                                 keycode=keycode, raw=raw)
             # 方向A 步骤1：CSI u Shift+Tab（keycode=9, modifier=2）→ tab modifier=2
             # （_dispatch_key_event 消费：补全可见时反向循环）。
@@ -444,7 +453,8 @@ class InputParser:
             # 经 CSI u 路径失效）。keycode 1-26 即 ASCII 控制码（Ctrl+X 编码
             # = X 在字母表中的位置），直接经 _decode_control_char 解码
             # （keycode=5 → 0x05 → ctrl_key '\x05'）。keycode 9/13 已在更早
-            # 分支处理（modifier=5 时 13 → char '\n'），防御排除防重复。
+            # 分支处理（L2：modifier=5 时 13 → enter 提交语义），防御排除
+            # 防重复。
             if 1 <= keycode <= 26 and modifier == 5 and keycode not in (9, 13):
                 decoded = InputParser._decode_control_char(keycode)
                 return KeyEvent(kind=decoded.kind, char=decoded.char,

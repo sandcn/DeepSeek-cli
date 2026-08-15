@@ -259,15 +259,27 @@ def _fold_context(parsed, fold_threshold=4):
     return folded
 
 
-def _write_diff_line(text: str, output_target=None):
-    """写入一行 diff 输出，优先使用 output_target，否则使用 publish_output。"""
+def _write_diff_line(text: str, output_target=None, width=None):
+    """写入一行 diff 输出，优先使用 output_target，否则使用 publish_output。
+
+    ★ H3（BUG 修复，2026-08-15）：出口截断——``width`` 非 None 且 >0 时，
+    经 ``ansi_to_line``（ANSI→AnsiLine）+ ``truncate_line``（CJK 安全截断）
+    组合按宽度截断（diff 非每帧热路径，性能可接受），窄终端 diff 长行不再
+    wraparound。``width`` None（默认）保持原样（旧调用/纯函数兼容——
+    ``render_diff_to_ansi``/WebUI 不传）。截断后仍为合法 ANSI（无断裂 SGR）。
+    """
+    if width is not None and width > 0:
+        from src.renderer.ansi.helpers import ansi_to_line, truncate_line
+        line = ansi_to_line(text)
+        if line.width > width:
+            text = truncate_line(line, width).render()
     if output_target is not None:
         output_target.write_line(text)
     else:
         publish_output(text, level="raw")
 
 
-def _render_chunk(item, w, lexer_name, output_target):
+def _render_chunk(item, w, lexer_name, output_target, max_width=None):
     """渲染一个非增删类型的 diff 块（old_file/new_file/hunk/ctx/fold）。
 
     Args:
@@ -275,6 +287,7 @@ def _render_chunk(item, w, lexer_name, output_target):
         w: 行号宽度
         lexer_name: 语法高亮名称
         output_target: 可选的输出目标
+        max_width: 行截断宽度（None=不截断；H3——出口截断经 _write_diff_line）
     """
     typ = item[0]
     dim = _DIFF_CTX_STYLE
@@ -283,12 +296,12 @@ def _render_chunk(item, w, lexer_name, output_target):
         # （可能是用户提供的文件名），须与 ctx/add/del 行一致走 _sanitize_ansi。
         path = _sanitize_ansi(item[1][4:] if len(item[1]) > 4 else "")
         # 美化：旧文件头亮红加粗（保持 ``┌─ path`` 连续字面量，测试/WebUI 兼容）
-        _write_diff_line("\n  " + _DIFF_FILE_OLD.apply("┌─ " + path), output_target)
+        _write_diff_line("\n  " + _DIFF_FILE_OLD.apply("┌─ " + path), output_target, max_width)
         return
     if typ == 'new_file':
         path = _sanitize_ansi(item[1][4:] if len(item[1]) > 4 else "")
         # 美化：新文件头亮绿加粗
-        _write_diff_line("  " + _DIFF_FILE_NEW.apply("└─ " + path), output_target)
+        _write_diff_line("  " + _DIFF_FILE_NEW.apply("└─ " + path), output_target, max_width)
         return
     if typ == 'hunk':
         hl = StyleSheet.resolve("highlight", Style(fg=45))
@@ -300,7 +313,7 @@ def _render_chunk(item, w, lexer_name, output_target):
         #   语义一致）。
         hunk_text = _sanitize_ansi(item[1])
         # 美化：左装饰条 ``▌``（柔青 dim）+ hunk 头加粗亮青
-        _write_diff_line("  " + _DIFF_HUNK_BAR.apply("▌ ") + bold_hl.apply(hunk_text), output_target)
+        _write_diff_line("  " + _DIFF_HUNK_BAR.apply("▌ ") + bold_hl.apply(hunk_text), output_target, max_width)
         return
     if typ == 'fold':
         hidden = item[1]
@@ -310,6 +323,7 @@ def _render_chunk(item, w, lexer_name, output_target):
         _write_diff_line(
             "  " + dim.apply(f"│ {'':>{w}} │") + " " + _DIFF_HUNK_BAR.apply(f"┄ {hidden} lines ┄"),
             output_target,
+            max_width,
         )
         return
     # ctx: 上下文行（先消毒用户内容再输出，防 ANSI 注入）
@@ -319,10 +333,11 @@ def _render_chunk(item, w, lexer_name, output_target):
     _write_diff_line(
         "  " + dim.apply(f"│ {item[2]:>{w}} │") + " " + hl_text,
         output_target,
+        max_width,
     )
 
 
-def _render_diff_summary(diff_list, output_target=None, width: int = _SEPARATOR_WIDTH):
+def _render_diff_summary(diff_list, output_target=None, width: int = _SEPARATOR_WIDTH, max_width: int | None = None):
     """渲染 diff 变更统计摘要（增删行数）。
 
     ★ 方向1 P0-2：基于 ``_parse_diff_hunks`` 的 parsed 结构统计——不再用
@@ -333,6 +348,9 @@ def _render_diff_summary(diff_list, output_target=None, width: int = _SEPARATOR_
     方向1 P1（宽度参数化）：分隔线宽度提取 ``_SEPARATOR_WIDTH``（默认 40）；
     调用方（render_diff_to_ansi/show_file_diff）传 ``min(40, max(10, 终端宽度
     或 w*2))``——窄终端分隔线收缩不溢出，默认 width=40 行为不变。
+
+    H3（2026-08-15）：新增 ``max_width``——行截断宽度（None=不截断；与
+    ``render_diff`` 同语义，出口截断经 ``_write_diff_line``）。
     """
     parsed = _parse_diff_hunks(diff_list)
     adds = dels = ctx = 0
@@ -351,7 +369,7 @@ def _render_diff_summary(diff_list, output_target=None, width: int = _SEPARATOR_
     # 分隔线（宽度参数化：取 min(_SEPARATOR_WIDTH, width)，调用方已 clamp ≥10）
     dim = _DIFF_CTX_STYLE
     sep = min(_SEPARATOR_WIDTH, width)
-    _write_diff_line("  " + dim.apply("╌" * sep), output_target)
+    _write_diff_line("  " + dim.apply("╌" * sep), output_target, max_width)
 
     parts = []
     if adds:
@@ -361,10 +379,10 @@ def _render_diff_summary(diff_list, output_target=None, width: int = _SEPARATOR_
     if ctx:
         parts.append(_DIFF_CTX_STYLE.apply(f"⚪ {ctx} unchanged"))
     # 美化：统计行前置 ✦ 图标（柔青），层级与分隔线/折叠提示一致
-    _write_diff_line("  " + _DIFF_HUNK_BAR.apply("✦ ") + "  ".join(parts), output_target)
+    _write_diff_line("  " + _DIFF_HUNK_BAR.apply("✦ ") + "  ".join(parts), output_target, max_width)
 
 
-def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optional["IOutputTarget"] = None, width: int = _SEPARATOR_WIDTH):
+def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optional["IOutputTarget"] = None, width: int = _SEPARATOR_WIDTH, max_width: int | None = None):
     """
     美化后的差异渲染：
     - 文件头：┌─ a/path（旧，亮红加粗） / └─ b/path（新，亮绿加粗）
@@ -378,6 +396,12 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
 
     方向1 P1（宽度参数化）：多 hunk 分隔线宽度提取 ``_SEPARATOR_WIDTH``
     （默认 40），调用方传收缩宽度（如 ``min(40, max(10, w*2))``）。
+
+    H3（2026-08-15）：新增 ``max_width``——行截断宽度（None=不截断，保持
+    旧调用/纯函数行为；``render_diff_to_ansi``/WebUI 不传）。``width``
+    （分隔线宽度）与 ``max_width``（截断宽度）职责分离，不复用语义冲突。
+    截断经 ``_write_diff_line`` 出口统一执行（含分隔线/hunk/fold/ctx/add/del
+    各行；行号列前缀随整行一起截断，前缀短不受影响）。
     """
     def _hl(text):
         # 方向A 步骤3：无条件调用 _syntax_hl——空 lexer 时也消毒（消除单行
@@ -392,7 +416,7 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
     # 多 hunk 分隔线宽度（方向1 P1：调用方已 clamp ≥10）
     sep = min(_SEPARATOR_WIDTH, width)
 
-    def _flush_pairs(del_buf, add_buf):
+    def _flush_pairs(del_buf, add_buf, max_width):
         # 美化：行号列统一为 ``│ n │`` 表格风格（与 ctx/fold 对齐），
         # 删除行号列柔红、新增行号列绿；`-`/`+` 标记加粗醒目。
         for i in range(max(len(del_buf), len(add_buf))):
@@ -403,22 +427,26 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
                 _write_diff_line(
                     "  " + _DIFF_NUM_DEL.apply(f"│ {d_oln:>{w}} │") + " " + _DIFF_MARK_DEL.apply("-") + h_old,
                     output_target,
+                    max_width,
                 )
                 _write_diff_line(
                     "  " + _DIFF_NUM_ADD.apply(f"│ {a_nln:>{w}} │") + " " + _DIFF_MARK_ADD.apply("+") + h_new,
                     output_target,
+                    max_width,
                 )
             elif i < len(del_buf):
                 _, d_line, d_oln, _ = del_buf[i]
                 _write_diff_line(
                     "  " + _DIFF_NUM_DEL.apply(f"│ {d_oln:>{w}} │") + " " + _DIFF_MARK_DEL.apply("-") + _hl(d_line[1:]),
                     output_target,
+                    max_width,
                 )
             else:
                 _, a_line, _, a_nln = add_buf[i]
                 _write_diff_line(
                     "  " + _DIFF_NUM_ADD.apply(f"│ {a_nln:>{w}} │") + " " + _DIFF_MARK_ADD.apply("+") + _hl(a_line[1:]),
                     output_target,
+                    max_width,
                 )
 
     del_buf, add_buf = [], []
@@ -427,14 +455,14 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
         typ = item[0]
         if typ == 'del':
             if add_buf:
-                _flush_pairs(del_buf, add_buf)
+                _flush_pairs(del_buf, add_buf, max_width)
                 del_buf, add_buf = [], []
             del_buf.append(item)
         elif typ == 'add':
             add_buf.append(item)
         else:
             if del_buf or add_buf:
-                _flush_pairs(del_buf, add_buf)
+                _flush_pairs(del_buf, add_buf, max_width)
                 del_buf, add_buf = [], []
             # 多 hunk 间输出分隔线（宽度参数化，方向1 P1）
             if typ == 'hunk':
@@ -443,10 +471,11 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
                     _write_diff_line(
                         "  " + _DIFF_CTX_STYLE.apply("╌" * sep),
                         output_target,
+                        max_width,
                     )
-            _render_chunk(item, w, lexer_name, output_target)
+            _render_chunk(item, w, lexer_name, output_target, max_width)
     if del_buf or add_buf:
-        _flush_pairs(del_buf, add_buf)
+        _flush_pairs(del_buf, add_buf, max_width)
 
 
 def render_diff_to_ansi(path: str, old_content: str, new_content: str) -> str:
@@ -534,6 +563,11 @@ def show_file_diff(path, old_content, new_content, output_target: Optional["IOut
     lexer_name = _resolve_lexer_name(ext)
     # 方向1 P1：分隔线宽度随行号宽度收缩（min(40, max(10, w*2))，窄终端不溢出）
     sep_w = min(_SEPARATOR_WIDTH, max(10, w * 2))
+    # ★ H3（2026-08-15）：出口按终端宽度截断——窄终端 diff 长行不再
+    #   wraparound。TerminalWidthCache TTL 缓存（无终端时内部回退 80，行为
+    #   确定）；``render_diff_to_ansi``（纯函数/WebUI）不传，保持行为不变。
+    from src.tui._screen import TerminalWidthCache
+    term_w = TerminalWidthCache.get_default().get_width()
     # 锁外预热 Pygments lexer，避免在锁内首次加载阻塞其他线程
     _get_highlighter(lexer_name)
     diff_was_active = diff_active.is_set()
@@ -541,8 +575,8 @@ def show_file_diff(path, old_content, new_content, output_target: Optional["IOut
         diff_active.set()
     try:
         with _try_acquire_output_lock(name=f"show_file_diff:{os.path.basename(path)}"):
-            render_diff(diff_list, w, lexer_name=lexer_name, output_target=output_target, width=sep_w)
-            _render_diff_summary(diff_list, output_target=output_target, width=sep_w)
+            render_diff(diff_list, w, lexer_name=lexer_name, output_target=output_target, width=sep_w, max_width=term_w)
+            _render_diff_summary(diff_list, output_target=output_target, width=sep_w, max_width=term_w)
     finally:
         if not diff_was_active:
             diff_active.clear()

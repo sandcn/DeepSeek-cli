@@ -554,8 +554,17 @@ class InkRenderer:
                     elif current_row < target_row:
                         buf.write(cursor_down(target_row - current_row))
                     current_row = target_row
+                    # ★ M3（2026-08-15）：缩短清残留越底滚动兜底——差异行数
+                    #   （prev_h-new_h）超过可见区高度时 cursor_down(1) 越过
+                    #   屏幕底部触发滚动（物理缓冲增长/内容错乱）。到底部
+                    #   （current_row >= height）后只清当前行不再 cursor_down，
+                    #   不可达残留行跳过（物理缓冲行数 ``_buf_h`` 已精确跟踪，
+                    #   跳过安全）。height=0（无约束）守卫不生效，保持原循环。
                     for _ in range(prev_h - new_h):
                         buf.write(clear_line())
+                        if self._height > 0 and current_row >= self._height:
+                            current_row = self._advance_row(current_row)
+                            continue
                         buf.write(cursor_down(1))
                         current_row = self._advance_row(current_row)
             # 增长：回调新增行（输出历史跟踪；重写循环已写出这些行）。
@@ -981,7 +990,23 @@ class InkRenderer:
         doc_h = self._prev.height if self._prev is not None else row
         # ★ 用 `_effective_offset`（含物理缓冲漂移，可为负）而非 `_screen_offset`
         #   （max(0,...)）——漂移时文档物理位置可能偏下，max 偏移会把光标放偏上。
-        target = self._clamp(row - self._effective_offset(doc_h))
+        offset = self._effective_offset(doc_h)
+        target = row - offset
+        # ★ M2（2026-08-15）：负 offset 目标行按物理缓冲边界钳制——底部对齐
+        #   + 文档偏下（``_buf_h <= _height`` 且 ``doc_h+1 < _buf_h``，offset
+        #   为负）时 ``target = row + |offset|`` 偏大：输入行（row 可达
+        #   doc_h+1）target 恰好 = ``_buf_h``（物理缓冲末行）正确；但 row >
+        #   doc_h+1（补全弹窗/多行输入高度与帧行数时序不一致等状态组合）时
+        #   target > ``_buf_h``，直接 ``_clamp`` 会把可达输入行钳到屏幕底部
+        #   空白区——越界方向确认：offset 负 → target 偏大 → >height 钳到底
+        #   （<1 钳到顶不发生）。按物理缓冲上界钳制：文档行物理位置不可能
+        #   超过物理缓冲末行（``_buf_h``），目标行不超物理缓冲；随后
+        #   ``_clamp`` 保证 [1, height]。正常路径（row <= doc_h+1）target <=
+        #   ``_buf_h``，本钳制不生效（零回归）。仅限目标行计算，不触碰
+        #   ``_effective_offset`` 漂移模型本身（BUG-64/65/66/68/76 语义保留）。
+        if offset < 0 and self._buf_h > 0:
+            target = max(1, min(target, self._buf_h))
+        target = self._clamp(target)
         current_row = self._cursor_row
         n_up = current_row - target
         if n_up > 0:

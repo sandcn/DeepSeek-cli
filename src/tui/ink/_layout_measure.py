@@ -235,15 +235,14 @@ def _shrink_row_children(
                 progressed = True
         if not progressed:
             break
-    # 写回 + 重新测量 + 重排 x
+    # 写回 + 重新测量（宽度变化子节点按新宽度约束内部内容 wrap/截断）
     # ★ P3-4 舍入语义说明（review 方向）：收缩循环以 float 迭代（``widths[i]``
     #   可带小数），写回时 ``int(round(widths[i]))`` 四舍五入——多子节点各自
     #   舍入后收缩总量可能偏差 ±1 列（如两子各缩 0.5 → 各 round 到 1，合计
     #   缩 2 列而 deficit 仅 1 列；或 0.4+0.4 合计 0.8 → 各 round 到 0 欠缩）。
-    #   行宽不变量在舍入写回后轻微放宽（允许 ±1 列超差/欠缩）——收缩为超宽
-    #   降级路径，视觉无可感知差异。保持 float 迭代（改为纯整数运算需重构
-    #   deficit 收敛语义，收益低风险高）；注释记录语义供未来重构参考。
-    cx = inner_x
+    #   保持 float 迭代（改为纯整数运算需重构 deficit 收敛语义，收益低风险
+    #   高）；舍入偏大导致的超宽由下方 L4 预算内补偿修正（行宽不变量不再
+    #   放宽，宁欠勿超）。
     for i, child in enumerate(children):
         new_w = max(1, int(round(widths[i])))
         cb = child.layout_box
@@ -273,10 +272,41 @@ def _shrink_row_children(
             cb.w = new_w
             child.layout_box = cb
             _measure(child, inner_x, inner_y, avail_for_remeasure, fill=True)
+    # ★ L4 舍入预算内补偿（2026-08-15，行宽不变量）：写回后核算实际总宽
+    #   （含 spacing），若仍 > target_w（多子节点各自 round 偏大——如两子
+    #   各需缩 0.5 列 → 各 round 到 1，合计缩 2 列超 deficit 1 列），对
+    #   shrinkable 子节点（权重>0 且宽 >1）循环减 1 直到总宽 <= target_w
+    #   （宁欠勿超，预算内补偿；补偿后行宽不变量保持）。仅修正写回宽度、
+    #   不重新测量（内部内容超宽由 paint 截断兜底，与 P2-2 minWidth 让位
+    #   语义同族）。
+    used_new = sum(c.layout_box.w for c in children if c.layout_box is not None)
+    if children:
+        used_new += spacing * (len(children) - 1)
+    _guard = 0
+    while used_new > target_w:
+        pick = -1
+        for i, child in enumerate(children):
             cb = child.layout_box
-            if cb is None:
-                continue
-        # 重排 x + 平移整棵子树（后代随动，BUG-15 语义）
+            if cb is not None and cb.w > 1 and weights[i] > 0:
+                pick = i
+                break
+        if pick < 0:
+            break
+        cb = children[pick].layout_box
+        cb.w -= 1
+        children[pick].layout_box = cb
+        used_new -= 1
+        _guard += 1
+        # 有界保护：每轮至少减 1，正常远小于 len*4（防 weights 与 children
+        # 长度不一致等异常导致死循环）
+        if _guard > max(1, len(children) * 4):
+            break
+    # 重排 x + 平移整棵子树（后代随动，BUG-15 语义）
+    cx = inner_x
+    for i, child in enumerate(children):
+        cb = child.layout_box
+        if cb is None:
+            continue
         delta = cx - cb.x
         if delta:
             _translate_subtree_x(child, delta)
@@ -706,10 +736,35 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         wrap_lines: list[list[Fiber]] = [[]]
         wrap_heights: list[int] = []
         cur_x = inner_x
+
+        def _apply_wrap_flex_basis(child: Fiber, cbox: LayoutBox) -> LayoutBox:
+            """wrap 分支 flexBasis 应用（与 row 分支同逻辑）。
+
+            L4（2026-08-15）：wrap 场景测量后应用 ``flexBasis`` 覆盖测量
+            宽度——修复前 wrap 分支漏应用（row 分支有、wrap 场景静默失效），
+            flexWrap 容器子节点 ``flexBasis`` 不生效（测量宽度恒覆盖）。
+            换行判断基于应用后宽度（flexBasis 使子节点超宽时正确换行）；
+            flexBasis 超 wrap_inner_w 时子节点单独成行（与 row 分支超宽
+            语义一致）。
+            """
+            fb = child.props.get("flexBasis")
+            if fb is not None:
+                try:
+                    fb_w = max(0, int(fb))
+                except (TypeError, ValueError, OverflowError):
+                    fb_w = 0
+                if fb_w > 0 and fb_w != cbox.w:
+                    cbox.w = fb_w
+                    child.layout_box = cbox
+            return cbox
+
         for child in children:
             # 先以整行内宽测量（内容自然宽，不被剩余宽度截断——换行判断须
             # 用自然宽：剩余宽为 0 时测量宽为 0，换行判断恒 False）
             cbox = _measure(child, cur_x, inner_y, wrap_inner_w, fill=False)
+            # L4：测量后应用 flexBasis（与 row 分支同逻辑；换行判断基于
+            # 应用后宽度——flexBasis 使子节点超宽时正确换行）
+            cbox = _apply_wrap_flex_basis(child, cbox)
             if wrap_lines[-1] and (cur_x - inner_x) + cbox.w > wrap_inner_w:
                 wrap_heights.append(
                     max((c.layout_box.h for c in wrap_lines[-1]), default=0)
@@ -719,6 +774,8 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
                 # 换行后重新测量（y 不影响宽度；x 影响嵌套 relative/绝对定位
                 # 后代坐标——统一以最终 x 测量保证后代坐标正确）
                 cbox = _measure(child, cur_x, inner_y, wrap_inner_w, fill=False)
+                # L4：换行后重测同样应用 flexBasis（两次测量点一致）
+                cbox = _apply_wrap_flex_basis(child, cbox)
             wrap_lines[-1].append(child)
             cur_x += cbox.w + col_gap
         wrap_heights.append(

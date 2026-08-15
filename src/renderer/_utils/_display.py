@@ -1,4 +1,13 @@
-"""终端显示宽度计算与 Rich Text 转义标记处理。"""
+"""终端显示宽度计算与 Rich Text 转义标记处理。
+
+★ H1（2026-08-15 双宽度区间对齐）：本模块 ``cjk_display_width`` 与
+``src.tui._width.wcswidth_simple`` 共享同一套区间表语义（注释同源约束——
+改动须同步）。``cjk_display_width`` 区间已完整覆盖（Hangul Jamo
+0x1100-0x11FF、CJK+韩文 0x2E80-0x9FFF、韩文音节 0xAC00-0xD7AF、CJK 兼容
+0xF900-0xFAFF、全角 0xFF01-0xFF60/0xFFE0-0xFFE6、CJK 扩展 0x20000-0x3134F、
+emoji 宽集、零宽集合），H1 补齐的是 ``wcswidth_simple._CJK_RANGES`` 侧缺失
+区间；本模块无代码改动（复核确认无缺失区间），仅注释同步。
+"""
 
 from __future__ import annotations
 

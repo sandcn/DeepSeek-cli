@@ -112,7 +112,19 @@ def _completion_height(completion, width=None) -> int:
         need = min(n, _completion_item_rows()) + 2
     else:
         desc_w = _desc_column_width(width)
-        sel = max(0, min(completion.selected, len(descs) - 1))
+        # ★ M4/M5（2026-08-15）：selected 钳制统一 + 类型防御——与
+        #   ``_popup_builder._build_popup_lines`` 的 ``desc_sel`` 同源（绘制
+        #   语义）：① M5：selected 非 int（None/str 外部注入）时 ``int()``
+        #   归一化失败回退 0，不抛 TypeError（与 ``_popup_builder`` 一致）；
+        #   ② M4：钳制统一按 ``min(len(descs)-1, len(items)-1)``——descs/
+        #   items 长度不齐（异常数据）时高度测量与绘制 desc_sel 同源，
+        #   弹窗不截断/不底部空白。分栏分支前置条件 items/descs 均非空
+        #   （函数开头已判），``len(completion.items)-1`` / ``len(descs)-1``
+        #   安全。
+        try:
+            sel = max(0, min(int(completion.selected), len(descs) - 1, len(completion.items) - 1))
+        except (TypeError, ValueError):
+            sel = 0
         desc_lines = _wrap_by_width(descs[sel] or "", desc_w)
         need = min(max(n, len(desc_lines)), _completion_item_rows()) + 2
     # 高度锁定（补全弹窗闪烁修复 + 补白上限）：

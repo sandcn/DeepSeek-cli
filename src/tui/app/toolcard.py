@@ -295,8 +295,20 @@ def tool_card_lines(block, width, start=0, stop=None):
             key = (ansi_line, width)
             cached = body_cache.get(key)
             if cached is None:
+                # ★ H2（BUG 修复，2026-08-15）：内容行 wrap 预算与显示预算
+                #   对齐——内容行每段前置 ``│ ``（竖线引导占 guide_w 列），
+                #   修复前按总宽 ``wrap_line(ansi_line, width)`` 换行，但每段
+                #   显示预算仅 ``width-guide_w``（下方 truncate_runs 丢弃
+                #   段末 2 列）→ 长行跨段时每段末尾 2 列内容丢失。修复：wrap
+                #   宽度改用 ``content_w = width - guide_w``——每段 + 竖线后
+                #   恰为 width，不再丢内容。width<=1 走既有「仅竖线」分支
+                #   （content_w<=0 无内容）；width<=0 无宽度防御保持裸行。
+                guide_w = 2 if width >= 2 else 1
+                content_w = max(0, width - guide_w)
                 wrapped = (
-                    wrap_line(ansi_line, width)
+                    wrap_line(ansi_line, content_w)
+                    if width >= 2
+                    else wrap_line(ansi_line, width)
                     if width > 0
                     else ([ansi_line] if ansi_line.runs else [])
                 )

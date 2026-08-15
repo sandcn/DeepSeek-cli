@@ -24,12 +24,20 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Any, Callable, Optional, Type
 
 from .event_types import DisplayEvent
 from ..core.singleton import SingletonMeta
 
 _logger = logging.getLogger(__name__)
+
+#: L3（2026-08-15）：publish 异常日志降级 + 限频窗口（秒）——高频事件
+#: （ContentChunk/ReasoningChunk）handler 持续异常时刷屏污染终端；窗口内
+#: 同事件类型只记 1 条 warning（含栈），其余记 debug（含计数由 debug 条目
+#: 承载）。不同事件类型独立限频（按 ``event_type.__name__`` 分桶）。
+_EXC_LOG_WINDOW = 5.0
+_last_exc_log: dict[str, float] = {}
 
 EventHandler = Callable[[DisplayEvent], Any]
 
@@ -195,8 +203,25 @@ class DisplayEventBus(metaclass=SingletonMeta):
             try:
                 handler(event)
             except Exception:
-                _logger.exception(
-                    "事件处理函数 %s 处理 %s 时异常",
-                    getattr(handler, "__name__", repr(handler)),
-                    event_type.__name__,
-                )
+                # L3（2026-08-15）：异常日志降级 + 按事件类型 5s 窗口限频——
+                # 修复前 ``_logger.exception``（ERROR + 完整栈）每次异常都打，
+                # 高频事件（ContentChunk/ReasoningChunk）handler 持续异常时
+                # 刷屏污染终端。窗口内（now - last < 5.0）同事件类型只记
+                # debug，窗口外记 1 条 warning（含完整栈）并更新时间戳；
+                # 不同事件类型独立限频（按 ``event_type.__name__`` 分桶）。
+                # 模块级 dict 无锁——GIL 原子读写，日志场景可接受（与项目
+                # 其他限频模式一致）。
+                handler_name = getattr(handler, "__name__", repr(handler))
+                etype_name = event_type.__name__
+                now = time.monotonic()
+                if now - _last_exc_log.get(etype_name, 0.0) >= _EXC_LOG_WINDOW:
+                    _last_exc_log[etype_name] = now
+                    _logger.warning(
+                        "事件处理函数 %s 处理 %s 时异常（5s 限频）",
+                        handler_name, etype_name, exc_info=True,
+                    )
+                else:
+                    _logger.debug(
+                        "事件处理函数 %s 处理 %s 时异常（限频抑制）",
+                        handler_name, etype_name,
+                    )
