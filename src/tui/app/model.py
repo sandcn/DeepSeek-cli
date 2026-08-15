@@ -427,7 +427,16 @@ class AppModel(_ToolOutputMixin):
                     block, block.committed_line_count,
                 )
             block._open_styled_cache = None  # 冻结后开放缓存不再需要
-            self.commit_block(self.reasoning_block_index)
+            # ★ BUG-77（commit 范围）：提交到**块列表末尾**（而非仅本块索引）
+            #   ——reasoning 关闭时其后可能存在**已关闭但未提交**的块（如
+            #   上一轮遗留的工具卡 / content 流式期间先关闭的工具卡）。修复前
+            #   ``commit_block(self.reasoning_block_index)`` 只提交到本块，
+            #   其后的已关闭块（tool）被遗留为「未提交」状态：工具卡永远走
+            #   live 渲染（ToolCard 每帧重建，无冻结缓存消费）、后续 open 块
+            #   增量提交被 BUG-4 连续窗口守卫阻断。``commit_block(len-1)``
+            #   从 committed_count 起连续提交**全部已关闭块**，遇未关闭块
+            #   （如仍流式的 content）自然停止——语义安全。
+            self.commit_block(len(self.blocks) - 1)
 
     def reopen_reasoning(self) -> None:
         """重新打开推理通道（CLOSED → INACTIVE）。"""
@@ -467,7 +476,16 @@ class AppModel(_ToolOutputMixin):
                 block, block.committed_line_count,
             )
             block._open_styled_cache = None  # 冻结后开放缓存不再需要
-            self.commit_block(self.content_block_index)
+            # ★ BUG-77（commit 范围，同 close_reasoning）：提交到**块列表末尾**
+            #   ——content 关闭时其后可能存在**已关闭但未提交**的块（content
+            #   流式期间打开并关闭的工具卡——``close_tool_box`` 的
+            #   ``commit_block(len-1)`` 被未关闭的 content 挡住）。修复前
+            #   ``commit_block(self.content_block_index)`` 只提交 content 自身，
+            #   其后的工具卡遗留为「未提交」：永远走 ToolCard live 渲染
+            #   （每帧重建，无冻结缓存）、后续 open 块增量提交被 BUG-4 连续
+            #   窗口守卫阻断（大回答流式期间无法增量提交 → 全量 live 渲染）。
+            #   ``commit_block(len-1)`` 连续提交全部已关闭块，遇未关闭块停止。
+            self.commit_block(len(self.blocks) - 1)
 
     def reopen_content(self) -> None:
         """重新打开内容通道（多轮会话新一轮内容前调用）。"""

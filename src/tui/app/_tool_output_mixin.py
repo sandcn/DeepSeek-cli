@@ -167,7 +167,15 @@ class _ToolOutputMixin:
                 )
                 return
             block = self.open_tool_box(tool_id, "")
-        for seg in text.split("\n"):
+        segs = text.split("\n")
+        # ★ BUG-78（工具卡尾部空行）：工具输出常以 ``\n`` 结尾（bash/ls 等
+        #   命令回显）——``split("\n")`` 产生尾部空 segment，追加后渲染为
+        #   「│ 」空引导行（占用卡片一行、视觉多余）。剔除末尾空 segment
+        #   （中间空行保留——段落/结构分隔语义）；与 ``_trim_tool_output_head``
+        #   既有的「剔除尾空行」语义对齐。空输出（``""``）剔除后不追加行。
+        while segs and segs[-1] == "":
+            segs.pop()
+        for seg in segs:
             l = AnsiLine.of("  ", _S_TOOL_OUT)
             # ★ 工具输出可能含 Rich/pygments 高亮 ANSI 序列（read_file 等）。
             #   原样保留进 Run.text 会让宽度测量把转义码当可见字符（宽度膨胀→
