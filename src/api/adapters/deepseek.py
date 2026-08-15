@@ -89,7 +89,8 @@ class DeepSeekAdapter(BaseLLMAdapter):
     # ── 消息预处理 ─────────────────────────────────────────
 
     def prepare_messages(self, messages: list, model: str) -> list:
-        """发送前预处理消息（DeepSeek 特有的 reasoning_content 修复）"""
+        """发送前预处理消息（DeepSeek 特有的 reasoning_content 修复 + tool 配对修复）"""
+        messages = super().prepare_messages(messages, model)
         return ensure_reasoning_content(messages, model)
 
     # ── 请求构造 ─────────────────────────────────────────

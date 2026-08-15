@@ -124,8 +124,18 @@ class BaseLLMAdapter(ABC):
         return False
 
     def prepare_messages(self, messages: list, model: str) -> list:
-        """准备消息列表。默认不做处理直接透传，子类可重写。"""
-        return messages
+        """准备消息列表。默认实现修复 tool_calls/tool 消息配对。
+
+        这是所有适配器共用的最终防御层：修复「assistant 带 tool_calls 但
+        缺少对应 tool 响应」的不完整消息历史（否则 OpenAI / DeepSeek 等
+        provider 会返回 400：An assistant message with 'tool_calls' must
+        be followed by tool messages responding to each 'tool_call_id'）。
+
+        子类可先调用 super().prepare_messages() 再叠加 provider 特有修复
+        （如 reasoning_content）。
+        """
+        from ._utils import ensure_tool_response_complete
+        return ensure_tool_response_complete(messages, model)
 
     # ── 共享响应解析 ────────────────────────────────────────
 

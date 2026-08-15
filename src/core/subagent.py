@@ -460,8 +460,27 @@ class SubAgent(BaseAgent):
             self._shared_executor = None
 
         # 收集所有工具结果，确保 messages 序列完整
+        # ★ 防御性修复：ToolScheduler 调度结果可能因极端时序/异常而缺失
+        #   某个 tool_call 的结果。若不补发，下一轮模型调用会携带
+        #   「assistant 带 tool_calls 但无对应 tool 消息」的不完整历史，
+        #   触发 API 400（An assistant message with 'tool_calls' must be
+        #   followed by tool messages responding to each 'tool_call_id'）。
+        #   此处对缺失结果的 tool_call 补发失败结果，保证消息序列自洽。
+        executed_ids: set = set()
         for tool_call_id, output, _ in results:
             self._append_tool_result(tool_call_id, output)
+            executed_ids.add(tool_call_id)
+        for tc in tool_calls:
+            tc_id = tc.get("id")
+            if tc_id and tc_id not in executed_ids:
+                _logger.warning(
+                    "SubAgent %s 工具调用结果缺失 (tool_call_id=%s)，补发失败结果以保持消息序列完整",
+                    self.label, tc_id,
+                )
+                self._append_tool_result(
+                    tc_id,
+                    f"工具执行失败: 调度器未返回该工具调用的结果 (tool_call_id={tc_id})",
+                )
 
     def _build_tool_callbacks(
         self,

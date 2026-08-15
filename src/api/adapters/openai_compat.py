@@ -36,7 +36,8 @@ class OpenAICompatAdapter(BaseLLMAdapter):
         return _is_reasoner_model(model)
 
     def prepare_messages(self, messages: list, model: str) -> list:
-        """发送前预处理消息（修复 reasoning_content 等 provider 特定问题）"""
+        """发送前预处理消息（tool 配对修复 + reasoning_content 等 provider 特定问题）"""
+        messages = super().prepare_messages(messages, model)
         return ensure_reasoning_content(messages, model)
 
     def build_request_kwargs(
