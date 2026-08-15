@@ -122,6 +122,16 @@ class InputParser:
         except (ValueError, OSError, TypeError):
             return None
 
+    def _restore_byte(self, data: bytes) -> None:
+        """将未消费的单字节回写到待处理缓冲（供后续解析正常消费）。
+
+        P2-1（review）：Alt+Backspace 排空检测误读的多字节首字节等场景——
+        回写 pending 前缀（io 未注入时忽略——回退 select+os.read 场景无法
+        回写，放弃该字节）。
+        """
+        if self._io is not None:
+            self._io.prepend_pending(data)
+
     def feed_byte(self, byte: int) -> KeyEvent | None:
         """单字节推入解析状态机。
 
@@ -190,7 +200,15 @@ class InputParser:
         if next_byte == 0x7f:
             # 排空紧随的一个字节（原 select+os.read 语义；pending/无数据时
             # read_with_timeout 立即返回或超时，忽略结果）
-            self._read_with_timeout(fd, _ALT_BACKSPACE_DRAIN_TIMEOUT)
+            # P2-1（review）：仅当取到的字节为 LF/CR（0x0a/0x0d）时才丢弃——
+            # 修复前无条件排空一个字节，慢速输入中 Alt+Backspace 紧随多字节
+            # UTF-8 首字节（如 ESC DEL 后紧跟中文首字节 0xE4）时首字节被误吞
+            # （多字节字符静默丢失）。非 LF/CR 字节回写 pending（交由解析器
+            # 正常消费）；io 未注入（回退 select+os.read）时无法回写，保持
+            # 旧语义（放弃该字节）。
+            drained = self._read_with_timeout(fd, _ALT_BACKSPACE_DRAIN_TIMEOUT)
+            if drained is not None and drained[0] not in (0x0a, 0x0d):
+                self._restore_byte(drained)
             return KeyEvent(kind="backspace", modifier=1, raw=b"\x1b\x7f")
 
         # ── 双 Esc ──
@@ -210,14 +228,49 @@ class InputParser:
                 raw=b"\x1b" + bytes([next_byte]),
             )
         # P3（2026-08-07）：ESC 后跟高位字节（≥0x80，UTF-8 多字节序列首字节，
-        # 如 Alt+中文）→ unknown 而非 interrupt——修复前一律返回 interrupt，
-        # Alt+中文等 ESC+UTF-8 多字节首字节误触发中断。本函数为单字节解析，
-        # 无法构成完整 UTF-8 字符，保守返回 unknown（静默丢弃，不误触发
-        # 中断）。0x7f 已在上方 Alt+Backspace 分支处理，此处 next_byte 仅
+        # 如 Alt+中文）→ 不再静默丢弃为 unknown——继续读完整 UTF-8 字符生成
+        # alt_char 事件（P2-6 review）。io 注入（正常装配）时经 read_utf8_char
+        # 慢速续读（超时保留 partial 待补齐）；io 未注入时回退 select+os.read
+        # 单次读取。0x7f 已在上方 Alt+Backspace 分支处理，此处 next_byte 仅
         # 可能 < 0x20 或 ≥ 0x80。
         if next_byte >= 0x80:
+            if self._io is not None:
+                ch = self._io.read_utf8_char(fd, next_byte)
+            else:
+                ch = self._read_utf8_fallback(fd, next_byte)
+            if ch:
+                return KeyEvent(
+                    kind="alt_char", char=ch, modifier=3,
+                    raw=b"\x1b" + ch.encode("utf-8", errors="replace"),
+                )
             return KeyEvent(kind="unknown", raw=b"\x1b" + bytes([next_byte]))
         return KeyEvent(kind="interrupt", raw=b"\x1b" + bytes([next_byte]))
+
+    def _read_utf8_fallback(self, fd: int, first_byte: int) -> str | None:
+        """io 未注入时的多字节 UTF-8 续读回退（select+os.read，单次读取）。
+
+        P2-6：ESC 后跟高位字节（Alt+中文）在 io=None（直接构造）场景的续读
+        回退——字节数判定与 ``InputIO.read_utf8_char`` 一致；续读超时/非法
+        序列返回 None（调用方降级 unknown，不误触发中断）。
+        """
+        if (first_byte & 0xE0) == 0xC0:
+            total = 2
+        elif (first_byte & 0xF0) == 0xE0:
+            total = 3
+        elif (first_byte & 0xF8) == 0xF0:
+            total = 4
+        else:
+            return None
+        buf = bytes([first_byte])
+        for _ in range(total - 1):
+            raw = self._read_with_timeout(fd, _UTF8_READ_TIMEOUT)
+            if raw is None:
+                break
+            buf += raw
+        try:
+            return buf.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
 
     @staticmethod
     def _decode_control_char(byte: int) -> KeyEvent:
@@ -304,7 +357,12 @@ class InputParser:
             # 提前终止 CSI 解析）。限制为 ASCII（``c.isascii()``，Py3.7+）。
             elif c.isascii() and c.isdigit():
                 current += c
-            elif (c.isascii() and c.isalpha()) or c == '~':
+            # P2-2（review）：CSI 终止符集合不完整——原仅 ``isalpha()`` 或
+            # '~'（缺 '@'、'['、']'、'^'、'_'、'`'、'{'、'|'、'}' 等 ECMA-48
+            # 最终字节）。按 CSI 最终字节全范围 ``0x40 <= ord(c) <= 0x7E``
+            # 判定（';' 0x3B / 数字 0x30-0x39 已在上方分支先行处理，不会到达
+            # 此处）。
+            elif c.isascii() and 0x40 <= ord(c) <= 0x7E:
                 if current:
                     try:
                         params.append(int(current))
@@ -441,6 +499,19 @@ class InputParser:
                 if 32 <= keycode <= 126:
                     return KeyEvent(kind="char", char=chr(keycode), modifier=1,
                                     keycode=keycode, raw=raw)
+            # P2-5（review）：CSI u Ctrl+方向键（modifier=5，kitty/wezterm
+            # 码位 57417-57420）→ 方向键 modifier=5（词跳转语义，与
+            # ``\x1b[1;5C`` 等传统 CSI 路径一致）——修复前落入 csi_u
+            # no-op，增强键盘协议终端 Ctrl+方向键失效。
+            if modifier == 5:
+                if keycode == 57417:   # Ctrl+↑
+                    return KeyEvent(kind="arrow_up", modifier=5, keycode=keycode, raw=raw)
+                if keycode == 57418:   # Ctrl+↓
+                    return KeyEvent(kind="arrow_down", modifier=5, keycode=keycode, raw=raw)
+                if keycode == 57419:   # Ctrl+←
+                    return KeyEvent(kind="arrow_left", modifier=5, keycode=keycode, raw=raw)
+                if keycode == 57420:   # Ctrl+→
+                    return KeyEvent(kind="arrow_right", modifier=5, keycode=keycode, raw=raw)
             # 方向A 步骤1：CSI u Ctrl+字母（keycode 97-122, modifier=5）→ 复用
             # _decode_control_char(keycode-96) 语义（Ctrl+A=Home、Ctrl+W=delete word 等）。
             if 97 <= keycode <= 122 and modifier == 5:

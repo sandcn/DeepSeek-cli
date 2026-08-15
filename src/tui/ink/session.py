@@ -97,6 +97,33 @@ _KEEP_CONTENT_CMDS = frozenset({
 #: 超过该阈值后复位 ``_recover_attempts``（防长时间运行后恢复预算耗尽）。
 _RECOVER_STABLE_SECS = 60.0
 
+#: P2-2（review 方向）：``_put_no_drop`` 内容命令背压最大等待时长（秒）。
+#: 渲染线程存活时队列满 → 背压等待（不静默丢弃内容）；超过本阈值（渲染线程
+#: 卡死/消费停滞）回退为丢弃并记 warning——防调用方（流式/事件循环线程）
+#: 永久阻塞。
+_PUT_NO_DROP_TIMEOUT = 30.0
+
+
+def _safe_int(value, default: int = 0) -> int:
+    """安全整数转换（系统监控值防御）。
+
+    P2-5（review 方向）：``_SystemMonitor.get_cpu_and_mem`` 平台采集在异常时
+    返回 0.0，但某些路径（子进程输出解析/平台差异）可能返回非数字（如
+    "N/A"）——``int(value)`` 在渲染线程内抛 ``ValueError`` 使渲染线程崩溃。
+    转换失败回退默认值（0），不中断渲染循环。
+
+    Args:
+        value: 待转换值（数字/数字字符串/其他）。
+        default: 转换失败回退值。
+
+    Returns:
+        转换后的整数；失败返回 ``default``。
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
 
 class InkSession:
     """Ink 渲染会话。
@@ -403,9 +430,16 @@ class InkSession:
         渲染线程已终止（UI 不可用）返回 False → 调用方回退丢弃告警路径，
         避免无限卡死调用方（流式/事件循环线程）。
 
+        ★ P2-2（review 方向）：背压**有上限**——``while`` 循环内
+        ``put(timeout=0.5)`` 无限重试，渲染线程卡死（消费停滞但线程仍存活）
+        时调用方永久阻塞。修复：增加最大等待时长（``_PUT_NO_DROP_TIMEOUT``，
+        30s），超时后回退为丢弃并记 warning（返回 False，调用方回退既有
+        丢弃告警路径，语义兼容）。
+
         Returns:
-            True — 已入队成功；False — 渲染线程已终止，未入队。
+            True — 已入队成功；False — 渲染线程已终止或背压超时，未入队。
         """
+        deadline = time.monotonic() + _PUT_NO_DROP_TIMEOUT
         while self._render_running:
             try:
                 self._cmd_queue.put(
@@ -417,6 +451,12 @@ class InkSession:
                 return True
             except queue.Full:
                 # 渲染线程存活但队列仍满（消费中）→ 继续等待（背压，不丢内容）
+                if time.monotonic() >= deadline:
+                    _logger.warning(
+                        "内容命令背压等待超时（>%.0fs），回退丢弃: %s (优先级=%d)",
+                        _PUT_NO_DROP_TIMEOUT, _cmd_name(_get_cmd_id(cmd)), priority,
+                    )
+                    return False
                 continue
         return False
 
@@ -466,6 +506,13 @@ class InkSession:
         try:
             self._render_frame()
         except Exception:
+            # ★ P2-1（review 方向）：渲染失败后补置 ``_dirty``——修复前失败被
+            #   吞且不补脏标记：Ctrl+L 清屏后 ``full_clear()`` 已清空屏幕（渲染
+            #   器 prev 软重置为空帧），而重建空文档失败时屏幕保持空白；渲染
+            #   线程下一拍 ``_should_render`` 因无脏标记（无命令/无 force/无
+            #   动画）跳过渲染 → 屏幕空白且空闲时永不重绘。补置 ``_dirty`` 后
+            #   下一 10Hz 拍重试重建（配合 _drain_queue 既有指数退避防刷屏）。
+            self._dirty = True
             _logger.debug("clear_screen 重建空文档异常", exc_info=True)
 
     def request_clear(self) -> None:
@@ -658,8 +705,16 @@ class InkSession:
                     "stop() 等待 render 线程超时（版本=%d），排空队列后退出",
                     self._render_version,
                 )
-        # 重置渲染器状态（suspend/resume 路径：下次 start 全量重绘）
-        self._ink_renderer.suspend()
+        # 重置渲染器状态（suspend/resume 路径：下次 start 全量重绘）。
+        # ★ P2-4（review 方向）：join 超时（渲染线程仍存活）时**跳过渲染器
+        #   suspend**——修复前超时后仍无条件执行 ``_ink_renderer.suspend()``
+        #   + ``_drain_queue_safe()``：渲染线程若仍在写 stream 会与清理并发
+        #   （输出撕裂/渲染状态错乱）。渲染器状态保留至线程真正退出（stop 后
+        #   该线程/渲染器不再复用；确需重启走 start/resume 的 reset/full
+        #   路径）。``_drain_queue_safe()`` 保留——排空队列为 stop 必要语义，
+        #   队列操作线程安全（mutex 保护），不写 stream 无撕裂风险。
+        if self._render_thread is None or not self._render_thread.is_alive():
+            self._ink_renderer.suspend()
         self._drain_queue_safe()
 
     def flush(self, timeout: float | None = 5.0) -> None:
@@ -680,7 +735,14 @@ class InkSession:
                 except queue.Empty:
                     break
             return
-        task_done = threading.Thread(target=self._cmd_queue.join, daemon=False)
+        # ★ P1-1（review 方向）：daemon=True——修复前 ``daemon=False`` 泄漏
+        #   非 daemon 线程：flush 超时后 ``_drain_queue_safe(keep_content=True)``
+        #   保留内容命令不消费、不 task_done → ``unfinished_tasks`` 永不归零 →
+        #   本线程永远阻塞在 ``queue.join()``，进程退出时挂起。daemon=True 后
+        #   进程退出不等待本线程（渲染线程停止时 ``_drain_queue_safe`` 兜底
+        #   已清理队列；线程随进程退出自然终止，无资源泄漏）。flush() 其余
+        #   创建线程处（start/resume/崩溃恢复）均已 daemon=True，仅此一处遗漏。
+        task_done = threading.Thread(target=self._cmd_queue.join, daemon=True)
         task_done.start()
         task_done.join(timeout=timeout)
         if task_done.is_alive():
@@ -749,6 +811,24 @@ class InkSession:
         """恢复渲染：重置渲染器后重新渲染组件树。"""
         if self._render_running:
             return
+        # ★ P2-3（review 方向）：resume 前检查旧线程是否已退出——修复前
+        #   无条件覆盖 ``_render_thread``：suspend() join 超时旧线程仍存活时
+        #   直接启动新线程 → 两个渲染线程并发（双写终端）。仍存活则先
+        #   join(timeout=...) 等待确认退出（suspend 已置 ``_render_running=
+        #   False``，旧线程解除阻塞后自然退出）；二次等待仍存活记 warning 并
+        #   强制启动新线程（resume 必须恢复渲染，输出锁互斥防撕裂，旧线程
+        #   终将退出）。
+        if self._render_thread is not None and self._render_thread.is_alive():
+            _logger.warning(
+                "resume() 旧 render 线程仍存活（版本=%d），先等待其退出",
+                self._render_version,
+            )
+            self._render_thread.join(timeout=2.0)
+            if self._render_thread.is_alive():
+                _logger.warning(
+                    "resume() 旧 render 线程等待超时仍存活（版本=%d），强制启动新线程",
+                    self._render_version,
+                )
         self._render_running = True
         self._ink_renderer.reset()
         # 立即渲染一帧（从当前位置重绘文档）
@@ -1162,9 +1242,15 @@ class InkSession:
         except Exception:
             _logger.debug("系统监控采集异常", exc_info=True)
             return
-        if int(cpu) != status.cpu or int(mem) != status.mem:
-            status.cpu = int(cpu)
-            status.mem = int(mem)
+        # ★ P2-5（review 方向）：int() 转换纳入防御——``get_cpu_and_mem()``
+        #   异常时返回 0.0，但平台差异/子进程解析可能返回非数字（如 "N/A"），
+        #   直接 ``int()`` 抛 ValueError 使渲染线程崩溃（_drain_queue 每帧
+        #   调用本方法）。``_safe_int`` 转换失败回退 0，不中断渲染循环。
+        cpu_i = _safe_int(cpu)
+        mem_i = _safe_int(mem)
+        if cpu_i != status.cpu or mem_i != status.mem:
+            status.cpu = cpu_i
+            status.mem = mem_i
             self._dirty = True  # 触发渲染显示新值
 
     def _phase_process_sigwinch(self) -> None:

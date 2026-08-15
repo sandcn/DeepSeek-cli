@@ -14,12 +14,53 @@ from src.tui._width import wcswidth_simple
 from .output import Line
 
 
+def _put_char(d: dict, col: int, ch: str, st) -> int:
+    """将字符写入列键字典，返回下一个列键（零宽字符合并到前一键）。
+
+    ★ P1-1 修复（review 方向）：零宽字符（组合标记 U+0300-036F、ZWJ
+    U+200D、变体选择符 U+FE00 等，宽度 0）写入时若存在**最近的前一列键**
+    则与该键合并（追加到前键文本，样式保留基字符）——修复前
+    ``d[col]=(ch, st); col += wcswidth_simple(ch)`` 对零宽字符 col 不递增，
+    下一个字符以相同键覆盖写入，组合标记静默丢失（如 ``"e\\u0301x"`` 渲染
+    成 ``"ex"``）。合并目标为**最近的前键**而非 ``col-1``：宽字符（占 2 列）
+    后跟零宽字符时前键是 ``col-2``（键 ``col-1`` 不存在，如 ``"中\\u0301文"``
+    的 ``\\u0301`` 依附键 0 的 ``中``）。tab（宽度 0）同根因一并处理（合并到
+    前键，不覆盖后续字符）。行首零宽字符（col==0 无前键可依附）按原语义写入
+    当前键（无基字符可依附，视觉上不渲染——保留既有行为）。CJK 宽字符
+    （宽度 2）走常规路径，行为不变。
+
+    Args:
+        d: 列键字典（``{col: (ch, style)}``）。
+        col: 当前列键。
+        ch: 待写入字符。
+        st: 字符样式。
+
+    Returns:
+        下一个列键（零宽字符合并后不递增）。
+    """
+    w = wcswidth_simple(ch)
+    if w == 0 and col > 0:
+        # 零宽字符合并到最近的既有前键（画布行宽有界 ≤ 终端列数，向前
+        # 扫描可接受；正常文本零宽字符紧跟基字符，扫描至多 1-2 次）。
+        prev_col = col - 1
+        while prev_col >= 0 and prev_col not in d:
+            prev_col -= 1
+        if prev_col >= 0:
+            prev_ch, prev_st = d[prev_col]
+            # 样式合并：保留基字符样式；基字符无样式时用零宽字符自身样式
+            d[prev_col] = (prev_ch + ch, prev_st if prev_st is not None else st)
+            return col
+    d[col] = (ch, st)
+    return col + w
+
+
 def _line_as_dict(line: Line) -> dict:
     """将 Line 转为列键字典（``{display_col: (ch, style)}``，CJK 安全）。
 
     列键为**显示宽度**（``wcswidth_simple``），与画布行键语义一致——
     CJK 宽字符占 2 列则键递增 2（修复前逐字符 ``col += 1`` 导致宽字符
-    后续内容错位重叠）。
+    后续内容错位重叠）。零宽字符（宽度 0）经 ``_put_char`` 合并到前一键
+    （P1-1：不覆盖后续字符）。
 
     ★ 性能（2026-08-05）：纯可打印 ASCII run 走批量快路径——宽度 == 字符数
     （``isascii()`` + ``isprintable()`` C 实现单趟扫描），免逐字符
@@ -37,8 +78,8 @@ def _line_as_dict(line: Line) -> dict:
         else:
             st = run.style
             for ch in t:
-                d[col] = (ch, st)
-                col += wcswidth_simple(ch)
+                # ★ P1-1 修复：零宽字符合并到前键（见 _put_char）
+                col = _put_char(d, col, ch, st)
     return d
 
 
@@ -119,8 +160,8 @@ def _merge_line(row, x: int, line: Line) -> dict:
                 col += 1
         else:
             for ch in t:
-                slice_[col] = (ch, st)
-                col += wcswidth_simple(ch)
+                # ★ P1-1 修复：零宽字符合并到前键（见 _put_char）
+                col = _put_char(slice_, col, ch, st)
     row = _ensure_row_dict(row)
     # ★ P2（review）：空行（row={}）场景跳过宽字符第二列扫描（常见合并热路径
     #   零额外开销）——``not row`` 短路后不调用 ``_overlaps_wide_second_col``。

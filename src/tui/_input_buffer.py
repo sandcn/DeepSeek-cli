@@ -334,8 +334,40 @@ class InputBufferEditor:
 
     @staticmethod
     def _unescape(line: str) -> str:
-        """将文件中转义的 \\n 还原为真实换行符。"""
-        return line.replace("\\n", "\n")
+        """将文件中转义的换行/反斜杠还原（与 _append_history_locked 写盘逆序）。
+
+        写盘（``_append_history_locked``）顺序：字面量反斜杠 ``\\`` →
+        ``\\\\``（双重转义）→ 真实换行 ``\n`` → ``\\n``——文件编码约定：
+        ``\\\\``=字面反斜杠、``\\n``=换行。读取按转义约定逆序还原：从左到右
+        逐字符解析（``\\\\`` → ``\\``、``\\n`` → 换行、其余 ``\\x`` 保留
+        ``\\``+``x``）——不能简单 ``replace("\\\\", "\\")`` 再
+        ``replace("\\n", "\\n")``（``\\\\n`` 即字面量 \\n 会被误还原为换行）；
+        逐字符解析同时兼容旧格式（旧历史文件 ``\\n`` 恒为换行；未双重转义的
+        字面反斜杠按原样保留——不产生新的往返损坏）。
+
+        P1-2（review）：修复前 ``line.replace("\\n", "\\n")`` 无条件替换——
+        字面量反斜杠+n（如路径 ``C:\\new``）写盘时未双重转义，重启读取后被
+        还原为真实换行（往返数据损坏）。
+        """
+        if "\\" not in line:
+            return line
+        out: list[str] = []
+        i = 0
+        n = len(line)
+        while i < n:
+            if line[i] == "\\" and i + 1 < n:
+                nxt = line[i + 1]
+                if nxt == "\\":
+                    out.append("\\")
+                    i += 2
+                    continue
+                if nxt == "n":
+                    out.append("\n")
+                    i += 2
+                    continue
+            out.append(line[i])
+            i += 1
+        return "".join(out)
 
     def load_history(self) -> None:
         """从 INPUT_HISTORY_FILE 加载历史行（多进程安全）。
@@ -618,7 +650,11 @@ class InputBufferEditor:
         self._history.insert(0, text)
         if len(self._history) > self._history_max_entries:
             self._history = self._history[:self._history_max_entries]
-        escaped = text.replace("\n", "\\n")
+        escaped = text.replace("\\", "\\\\").replace("\n", "\\n")
+        # P1-2（review）：写盘双重转义——字面量反斜杠 ``\\`` → ``\\\\`` 后
+        # 再转义真实换行 ``\n`` → ``\\n``。修复前仅转义换行，字面量反斜杠+n
+        # （如路径 ``C:\new``）写盘后读取（旧 _unescape 无条件
+        # ``replace("\\n", "\n")``）被还原为真实换行（往返数据损坏）。
         # ★ review 方向：写盘迁移到共享串行后台 writer（单 daemon 线程 +
         # 有界队列），替代每 Enter 创建 daemon 线程（线程创建开销/磁盘竞争）。
         # 权衡见 _HistoryDiskWriter 注释：不改变「不批量化」决策。

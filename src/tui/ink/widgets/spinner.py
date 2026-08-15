@@ -57,6 +57,8 @@ def InlineSpinner(props: dict) -> Element:
     idx = _spinner_frame_index(tick_hz, frames)
     try:
         ch = frames[idx]
-    except (IndexError, TypeError):
+    except (KeyError, IndexError, TypeError):
+        # ★ P2-10（review）：frames 为 dict 时 ``frames[idx]`` 抛 KeyError（idx
+        #   不在键中）——与 IndexError/TypeError 一致捕获，回退空格。
         ch = " "
     return h(TEXT, {"children": ch, "style": props.get("style")})

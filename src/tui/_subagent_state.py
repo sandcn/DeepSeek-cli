@@ -34,10 +34,15 @@ _MAX_TOOL_HISTORY = 50
 
 
 class _ToolRecord:
-    __slots__ = ('tool_name', 'detail', 'start_time', 'end_time', 'phase')
+    __slots__ = ('tool_name', 'tool_id', 'detail', 'start_time', 'end_time', 'phase')
 
-    def __init__(self, tool_name: str, detail: str = ""):
+    def __init__(self, tool_name: str, detail: str = "", tool_id: str = ""):
         self.tool_name = tool_name
+        # ★ P1-1（review 方向）：工具调用唯一 ID（tool_call_id）——同名工具
+        #   连续调用且事件乱序/交叉时（A start → B start → A done），done_tool
+        #   按 tool_name 从尾部匹配会闭合错误的 running 记录。tool_id 缺省
+        #   空串（旧调用/旧事件不带 tool_id 时降级按 tool_name 匹配，兼容）。
+        self.tool_id = tool_id
         self.detail = detail
         self.start_time: float = time.time()
         self.end_time: float = 0.0
@@ -107,6 +112,43 @@ class StateStore:
         if len(slot.tool_history) > _MAX_TOOL_HISTORY:
             slot.tool_history.pop(0)
 
+    @staticmethod
+    def _find_record(slot, tool_name: str, tool_id: str,
+                     phases: tuple, fallback: bool = True) -> _ToolRecord | None:
+        """按 tool_id 精确匹配工具记录；tool_id 为空时优先匹配无 tool_id
+        记录，未命中且 fallback 时按 tool_name 降级匹配。
+
+        ★ P1-1/P2-7（review 方向）：
+          - tool_id 非空时**仅精确匹配**（不按 tool_name 降级）——同名工具
+            连续调用且事件乱序/交叉（A start → B start，不同 tool_id）必须
+            各自建立记录；若按 tool_name 降级会把 A/B 合并成一条，破坏精确
+            闭合能力。
+          - tool_id 为空时**优先精确匹配 tool_id=="" 的记录**——避免无
+            tool_id 事件（旧调用方/旧事件）误合并到带 tool_id 的同名记录
+            （如带 tool_id 的 A 与不带 id 的 B 并存时必须各自独立）。
+          - fallback=True 时（update_tool_parsing/done_tool）：tool_id="" 精确
+            匹配未命中再按 tool_name 降级（纯旧路径/旧数据兼容——全部记录
+            均无 tool_id 时按 tool_name 合并；done_tool 兜底闭合场景）。
+          - fallback=False 时（start_tool）：无 tool_id 记录未命中则新建，
+            **不降级合并到带 tool_id 的记录**（start 是新建强信号，合并会
+            破坏两条独立调用的记录隔离）。
+        返回匹配记录；无匹配返回 None。
+        """
+        if tool_id:
+            for rec in reversed(slot.tool_history):
+                if rec.tool_id == tool_id and rec.phase in phases:
+                    return rec
+            return None
+        for rec in reversed(slot.tool_history):
+            if rec.tool_id == "" and rec.tool_name == tool_name \
+                    and rec.phase in phases:
+                return rec
+        if fallback:
+            for rec in reversed(slot.tool_history):
+                if rec.tool_name == tool_name and rec.phase in phases:
+                    return rec
+        return None
+
     def add_agent(self, label: str, description: str, status: str = "running",
                   agent_type: str = "execute") -> None:
         with self._state_lock:
@@ -148,8 +190,13 @@ class StateStore:
             slot.model_info = info
 
     def update_tool_parsing(self, label: str, tool_name: str,
-                            arguments: str) -> None:
-        """ToolParsingEvent — 流式解析工具参数时创建/更新 parsing 记录。"""
+                            arguments: str, tool_id: str = "") -> None:
+        """ToolParsingEvent — 流式解析工具参数时创建/更新 parsing 记录。
+
+        Args:
+            tool_id: 工具调用唯一 ID（tool_call_id）；缺省空串时降级按
+                tool_name 匹配（旧调用方兼容）。
+        """
         with self._state_lock:
             slot = self._agents.get(label)
             if slot is None:
@@ -161,17 +208,25 @@ class StateStore:
             if slot.model_phase != "parsing":
                 slot.model_phase_start = time.time()
             slot.model_phase = "parsing"
-            # 如果已有同名 parsing 记录，更新 detail（累积参数）
-            for rec in reversed(slot.tool_history):
-                if rec.tool_name == tool_name and rec.phase == "parsing":
-                    rec.detail = arguments
-                    break
+            # 按 tool_id 精确匹配 parsing 记录（tool_id 为空时按 tool_name
+            # 匹配——P1-1：同名工具乱序事件不更新错记录）；未命中新建
+            # parsing 记录
+            rec = self._find_record(slot, tool_name, tool_id, ("parsing",))
+            if rec is not None:
+                rec.detail = arguments
             else:
-                rec = _ToolRecord(tool_name=tool_name)
+                rec = _ToolRecord(tool_name=tool_name, tool_id=tool_id)
                 rec.detail = arguments
                 self._append_record(slot, rec)  # BUG-55：历史条数上限
 
-    def start_tool(self, label: str, tool_name: str, detail: str) -> None:
+    def start_tool(self, label: str, tool_name: str, detail: str,
+                   tool_id: str = "") -> None:
+        """ToolStartedEvent — 工具开始执行，创建/升级 running 记录。
+
+        Args:
+            tool_id: 工具调用唯一 ID（tool_call_id）；缺省空串时降级按
+                tool_name 匹配（旧调用方兼容）。
+        """
         with self._state_lock:
             slot = self._agents.get(label)
             if slot is None:
@@ -182,28 +237,52 @@ class StateStore:
             #   set_model_phase/clear_parse_info 到达。
             if slot.model_phase == "parsing":
                 slot.model_phase = ""
-            # 将已有 parsing 记录转换为 running，避免重复创建
-            for rec in reversed(slot.tool_history):
-                if rec.tool_name == tool_name and rec.phase == "parsing":
-                    rec.phase = "running"
-                    rec.detail = detail
-                    break
+            # ★ P1-1/P2-7（review 方向）：按 tool_id 精确匹配 parsing/running
+            #   记录（未命中/无 tool_id 时降级按 tool_name 匹配）——重复/乱序
+            #   start 事件下**不产生重复 running 记录**（修复前仅转换 parsing
+            #   记录，已有同名 running 记录时新建重复记录；且未按 tool_id
+            #   区分，A start → B start（同名）→ A 再 start 会新建第三条）。
+            #   fallback=False：无 tool_id 的 start 不合并到带 tool_id 的同名
+            #   记录（带 id 与不带 id 的调用各自独立成记录）。
+            rec = self._find_record(
+                slot, tool_name, tool_id, ("parsing", "running"),
+                fallback=False,
+            )
+            if rec is not None:
+                rec.phase = "running"
+                rec.detail = detail
             else:
-                rec = _ToolRecord(tool_name=tool_name, detail=detail)
+                rec = _ToolRecord(tool_name=tool_name, detail=detail,
+                                  tool_id=tool_id)
                 rec.phase = "running"
                 self._append_record(slot, rec)  # BUG-55：历史条数上限
 
-    def done_tool(self, label: str, tool_name: str, success: bool) -> None:
+    def done_tool(self, label: str, tool_name: str, success: bool,
+                  tool_id: str = "") -> None:
+        """ToolDoneEvent — 工具执行完成，闭合匹配的 running 记录。
+
+        Args:
+            tool_id: 工具调用唯一 ID（tool_call_id）；缺省空串时按 tool_name
+                匹配（旧调用方兼容）。
+        """
         with self._state_lock:
             slot = self._agents.get(label)
             if slot is None:
                 return
-            # 找到最后一个匹配的 running 工具并标记完成
-            for rec in reversed(slot.tool_history):
-                if rec.tool_name == tool_name and rec.phase == "running":
-                    rec.phase = "done" if success else "fail"
-                    rec.end_time = time.time()
-                    break
+            # ★ P1-1（review 方向）：按 tool_id 精确匹配 running 记录——同名
+            #   工具连续调用且事件乱序/交叉时（A start → B start → A done），
+            #   A 的 done 精确闭合 A 的记录而非错误闭合 B（修复前仅按
+            #   tool_name 从尾部匹配 → A 记录永久残留 running → 面板 10Hz
+            #   持续空转渲染）。
+            rec = self._find_record(slot, tool_name, tool_id, ("running",))
+            # ★ 降级兜底（review 方向）：done 带 tool_id 但精确匹配失败（start
+            #   记录缺失/未带 tool_id）时，按 tool_name 从尾部闭合最后一个
+            #   running——done 是终态强信号，闭合优于残留 running 空转。
+            if rec is None and tool_id:
+                rec = self._find_record(slot, tool_name, "", ("running",))
+            if rec is not None:
+                rec.phase = "done" if success else "fail"
+                rec.end_time = time.time()
 
     def set_parse_info(self, label: str, tool_names: str, tokens,
                        elapsed: float) -> None:

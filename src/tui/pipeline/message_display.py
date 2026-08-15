@@ -103,17 +103,22 @@ class MessageDisplayContext:
     @classmethod
     def from_messages(cls, messages: list[dict]) -> MessageDisplayContext:
         """从消息列表创建上下文。"""
-        data = [m for m in messages if m.get("role") != "system"]
+        # ★ 修复（P2-8）：非 dict 消息元素防御——修复前 m.get 抛
+        #   AttributeError（消息列表混入 str 等异常数据时上下文构建中断）。
+        data = [m for m in messages if isinstance(m, dict) and m.get("role") != "system"]
         return cls(data=data, idx_map=None)
 
     @classmethod
     def from_agent(cls, agent: Any) -> MessageDisplayContext:
         """从 agent 创建上下文。"""
         messages = getattr(agent, 'messages', [])
-        data = [m for m in messages if m.get("role") != "system"]
+        # ★ 修复（P2-8）：非 dict 消息元素防御（同 from_messages）——修复前
+        #   m.get 抛 AttributeError 中断上下文构建。
+        data = []
         idx_map = []
         for i, m in enumerate(messages):
-            if m.get("role") != "system":
+            if isinstance(m, dict) and m.get("role") != "system":
+                data.append(m)
                 idx_map.append(i)
         return cls(data=data, agent=agent, idx_map=idx_map)
 

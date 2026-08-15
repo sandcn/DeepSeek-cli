@@ -183,34 +183,46 @@ def useSyncExternalStore(
     hook = _next_hook(SyncStoreHook, None)
     hook.subscribe = subscribe
     hook.get_snapshot = get_snapshot
-    # ★ BUG-38（review 方向）：subscribe 函数身份变化时**重订阅**——修复前
-    #   ``subscribed=True`` 短路：新 subscribe 永不调用、旧订阅永不取消（订阅
-    #   函数变化后组件持续监听旧 store）。重订阅语义（React）：先清理旧订阅
-    #   再订阅新 store。首次挂载（last_subscribe is None）同样走订阅路径。
-    if hook.last_subscribe is not subscribe:
-        if hook.cleanup is not None:
-            try:
-                hook.cleanup()
-            except Exception:
-                _logger.debug("useSyncExternalStore 旧订阅清理异常", exc_info=True)
-            hook.cleanup = None
-        hook.last_subscribe = subscribe
-        hook.subscribed = False
-        try:
-            cleanup = subscribe(lambda: _schedule())
-            hook.cleanup = cleanup if callable(cleanup) else None
-            hook.subscribed = True
-        except Exception:
-            # ★ P3 修复（review 方向）：订阅抛异常后置 subscribed=False +
-            #   复位 last_subscribe（cleanup 已置 None）——下帧重试订阅。
-            #   修复前 subscribed 保持 True 且 last_subscribe 已更新 → 永不
-            #   重试，组件永久失去 store 更新。
-            _logger.debug("useSyncExternalStore 订阅异常", exc_info=True)
-            hook.cleanup = None
+
+    def _commit_subscribe() -> None:
+        # ★ P2-3 修复（review 方向）：订阅/重订阅移入提交阶段（layout
+        #   effect）——渲染期仅比较身份（``hook.last_subscribe``），不再在
+        #   渲染中途同步调用 subscribe。修复前渲染期直接调用 subscribe：
+        #   若 store 在 subscribe 期间同步通知 listener（``_schedule()``），
+        #   listener 在渲染中途触发重渲染请求，存在重入风险。提交期渲染
+        #   已结束，subscribe 的同步通知经 ``_schedule()`` 调度下帧渲染，
+        #   无重入。deps=None 每次渲染提交期执行——内部按 last_subscribe
+        #   身份判断是否重订阅（subscribe 身份不变仅置 subscribed=True）；
+        #   订阅异常置 last_subscribe=None，下帧可重试（保持原语义）。
+        if hook.last_subscribe is not subscribe:
+            if hook.cleanup is not None:
+                try:
+                    hook.cleanup()
+                except Exception:
+                    _logger.debug("useSyncExternalStore 旧订阅清理异常", exc_info=True)
+                hook.cleanup = None
+            hook.last_subscribe = subscribe
             hook.subscribed = False
-            hook.last_subscribe = None
-    else:
-        hook.subscribed = True
+            try:
+                cleanup = subscribe(lambda: _schedule())
+                hook.cleanup = cleanup if callable(cleanup) else None
+                hook.subscribed = True
+            except Exception:
+                # ★ P3 修复（review 方向）：订阅抛异常后置 subscribed=False +
+                #   复位 last_subscribe（cleanup 已置 None）——下帧重试订阅。
+                #   修复前 subscribed 保持 True 且 last_subscribe 已更新 → 永不
+                #   重试，组件永久失去 store 更新。
+                _logger.debug("useSyncExternalStore 订阅异常", exc_info=True)
+                hook.cleanup = None
+                hook.subscribed = False
+                hook.last_subscribe = None
+        else:
+            hook.subscribed = True
+
+    # ★ P2-3：layout effect 提交期执行订阅（deps=None 每次渲染提交期执行，
+    #   内部按 last_subscribe 身份判断重订阅；订阅异常可下帧重试）。
+    useLayoutEffect(_commit_subscribe, None)
+
     try:
         hook.snapshot = get_snapshot()
     except Exception:

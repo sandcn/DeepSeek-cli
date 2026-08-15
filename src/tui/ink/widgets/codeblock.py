@@ -143,6 +143,14 @@ def CodeBlock(props: dict) -> Element:
     else:
         # 内容自适应：内容宽 + 行号栏 + 左右竖线/间距（各 2 列）
         width_eff = num_prefix_w + content_w + 4
+    # ★ P2-11（review）：显式 width 过小（<5，或不足以容纳行号栏 + 竖线）时
+    #   钳制最小有效宽度——修复前 ``│ content │``（至少 5 宽：左右竖线/间距
+    #   各 2 + 内容 1）与顶/底边框（至少 2 宽）在 width<5 时超宽溢出（破坏
+    #   行宽不变量）。钳制后 inner_w >= 1（内容至少 1 宽）、行宽恒 ==
+    #   width_eff，不溢出（实际渲染宽可能大于显式 width——降级方案，宁钳勿溢）。
+    min_width = (num_prefix_w + 3) if show_lines else 5
+    if width_eff < min_width:
+        width_eff = min_width
 
     children: list[Element] = []
 
@@ -181,6 +189,13 @@ def CodeBlock(props: dict) -> Element:
         content = line if line else ""
         if not wrap:
             content = _truncate_to_width(content, inner_w)
+        # ★ P1-2（review）：content 填充到 inner_w——修复前 Row 无显式宽度、
+        #   内容自适应，content 短于 inner_w 时右侧竖线（` │`）落在错误列
+        #   （与底边框 ┘ 不对齐）。填充后 content 显示宽 == inner_w，行总宽
+        #   == width_eff（右侧竖线对齐边框）。
+        pad_w = inner_w - wcswidth_simple(content)
+        if pad_w > 0:
+            content = content + " " * pad_w
         code_runs: list[Element] = []
         if show_lines:
             num_text = f"{i + 1:>{num_w}}"

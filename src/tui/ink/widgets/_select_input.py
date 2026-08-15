@@ -51,7 +51,10 @@ def SelectInput(props: dict) -> Element:
         initial_index = 0
     if items:
         initial_index = min(initial_index, len(items) - 1)
-    highlight_style = props.get("highlightStyle") or Style(fg=6)
+    # ★ P3（review）：highlightStyle 改 ``is not None`` 判断——修复前 ``or``
+    #   把显式空 Style()（falsy）当默认替换。
+    highlight_style_prop = props.get("highlightStyle")
+    highlight_style = highlight_style_prop if highlight_style_prop is not None else Style(fg=6)
     # ★ P3（review）：prefix=None 时回退默认 "> "——修复前 ``str(None)`` 渲染
     #   出字面 "None"。
     prefix = props.get("prefix", "> ")

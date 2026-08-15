@@ -106,7 +106,10 @@ def _fade_type_style(agent_type: str, elapsed: float) -> Style:
     if style is None or getattr(style, "fg", None) is None:
         return _S_DIMMER
     code = style.fg
-    faded = _fx.fade_color(elapsed, _FADE_DURATION, _FADE_START_COLOR, code)
+    # ★ P2-5（review 方向）：惰性读取动效参数（运行期修改 TuiConfig 即时
+    #   生效；修复前消费模块级快照 _FADE_DURATION/_FADE_START_COLOR）。
+    fade_duration, fade_start_color, _ = _fx_params()
+    faded = _fx.fade_color(elapsed, fade_duration, fade_start_color, code)
     return Style(fg=faded)
 
 
@@ -131,9 +134,26 @@ def _get_tool_color(tool_name: str) -> Style:
 
 # ── 动效时间基配置 ──
 _CFG = TuiConfig.defaults()
+# ★ P2-5（review 方向）：以下模块级常量仅为**兼容外部引用**保留（原快照）——
+# 函数内一律经 ``_fx_params()`` 惰性读取 TuiConfig（运行期修改配置即时生效）。
 _FADE_DURATION: float = _CFG.fade_duration_sec       # FadeIn 渐显总时长（0.6s）
 _FADE_START_COLOR: int = _CFG.fade_start_color       # FadeIn 起始暗色（238）
 _SPINNER_HZ: float = _CFG.spinner_tick_hz            # spinner 时间基推进频率（10Hz）
+
+
+def _fx_params() -> tuple[float, int, float]:
+    """读取 TuiConfig 动效参数（fade_duration_sec / fade_start_color / spinner_tick_hz）。
+
+    ★ P2-5（review 方向）：函数内惰性读取——修复前消费模块导入时固化的
+    快照（``_FADE_DURATION/_FADE_START_COLOR/_SPINNER_HZ``），运行期修改
+    TuiConfig 不生效。读取失败回退与配置默认值一致的字面量。
+    """
+    try:
+        from src.tui._config import TuiConfig
+        cfg = TuiConfig.defaults()
+        return (cfg.fade_duration_sec, cfg.fade_start_color, cfg.spinner_tick_hz)
+    except Exception:
+        return (0.6, 238, 10.0)
 
 
 def render_frame(store, max_history: int = 3,
@@ -378,7 +398,10 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
         # BEAUTY-3：spinner 时间基推进（非帧计数；_frame 字段保留兼容）
         # ★ 方向4：帧字符唯一真源 _fx.spinner_char（_SPINNER_FRAMES 别名
         #   保留兼容测试 patch 路径；值同 _fx.SPINNER_FRAMES）。
-        spinner = _fx.spinner_char(_SPINNER_HZ)
+        # ★ P2-5（review 方向）：spinner 频率惰性读取（运行期修改
+        #   TuiConfig.spinner_tick_hz 即时生效；修复前消费模块级快照）。
+        _, _, spinner_hz = _fx_params()
+        spinner = _fx.spinner_char(spinner_hz)
         dot = StyledRun(spinner, _S_RUNNING)
         # ★ BEAUTY-23（体验动效）：running 期间输出/speed/耗时统计呼吸——
         #   输出量浅蓝 240→250、速度亮青 45→55、耗时暗灰 240→250（12s 周期，

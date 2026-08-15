@@ -67,7 +67,10 @@ def RadioList(props: dict) -> Element:
         initial_index = 0
     if items:
         initial_index = min(initial_index, len(items) - 1)
-    highlight_style = props.get("highlightStyle") or Style(fg=6)
+    # ★ P3（review）：highlightStyle 改 ``is not None`` 判断——修复前 ``or``
+    #   把显式空 Style()（falsy）当默认替换。
+    highlight_style_prop = props.get("highlightStyle")
+    highlight_style = highlight_style_prop if highlight_style_prop is not None else Style(fg=6)
     checked_prefix = str(props.get("checkedPrefix", _CHECKED))
     unchecked_prefix = str(props.get("uncheckedPrefix", _UNCHECKED))
     # 指示符对齐宽度（选中/未选中前缀等宽；自定义前缀时取较宽者）
@@ -103,7 +106,9 @@ def RadioList(props: dict) -> Element:
             selected_ref.current = new
             set_selected(new)
             return True
-        if event.kind in ("enter", "space") or (event.kind == "char" and event.char == " "):
+        # ★ P3（review）：``event.kind == "space"`` 为死分支（InputParser 从不
+        #   产生 kind=="space"，空格为 ``kind=="char", char==" "``）——删除。
+        if event.kind == "enter" or (event.kind == "char" and event.char == " "):
             _call(on_select, items[cur])
             return True
         return False

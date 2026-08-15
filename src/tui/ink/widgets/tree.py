@@ -193,7 +193,10 @@ def Tree(props: dict) -> Element:
         initial_index = max(0, int(props.get("initialIndex", 0)))
     except (TypeError, ValueError, OverflowError):
         initial_index = 0
-    highlight_style = props.get("highlightStyle") or _TREE_HIGHLIGHT
+    # ★ P3（review）：highlightStyle 改 ``is not None`` 判断——修复前 ``or``
+    #   把显式空 Style()（falsy）当默认替换。
+    highlight_style_prop = props.get("highlightStyle")
+    highlight_style = highlight_style_prop if highlight_style_prop is not None else _TREE_HIGHLIGHT
     node_style = props.get("nodeStyle")
     leaf_style = props.get("labelStyle")
 
@@ -252,7 +255,9 @@ def Tree(props: dict) -> Element:
                 cursor_ref.current = cur + 1
                 set_cursor(cursor_ref.current)
             return True
-        if event.kind == "space" or (event.kind == "char" and event.char == " ") or event.kind == "enter":
+        # ★ P3（review）：``event.kind == "space"`` 为死分支（InputParser 从不
+        #   产生 kind=="space"，空格为 ``kind=="char", char==" "``）——删除。
+        if (event.kind == "char" and event.char == " ") or event.kind == "enter":
             node = cur_vis[cur][0]
             if node["children"]:
                 key = _node_key(node)

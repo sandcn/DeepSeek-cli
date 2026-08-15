@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 from typing import TYPE_CHECKING
-from weakref import WeakValueDictionary
+from weakref import WeakValueDictionary, ref as _weakref
 
 if TYPE_CHECKING:
     from .._consumer import ChatUIConsumer
@@ -22,6 +22,12 @@ _state_global_lock = threading.Lock()
 
 # 弱引用注册表：以线程 ID 为键，在 _active_consumer 悬空时提供兜底恢复
 _weak_consumer_registry: "WeakValueDictionary[int, ChatUIConsumer]" = WeakValueDictionary()
+
+#: 按注册顺序记录活跃实例的弱引用栈（P1-1 多实例回滚用）。
+#: 弱引用防止阻止实例回收；栈顶为最近注册实例。
+#: 与 refcount 的对应关系：每个活跃（started）实例入栈一次，stop 时经
+#: ``_latest_started_consumer`` 惰性清理已停止/已回收引用。
+_active_consumer_stack: list = []
 
 def get_active_chat_ui() -> "ChatUIConsumer | None":
     """获取当前活跃的 ChatUIConsumer 实例，供交互式终端工具使用。
@@ -38,6 +44,35 @@ def get_active_chat_ui() -> "ChatUIConsumer | None":
     return _weak_consumer_registry.get(threading.get_ident())
 
 
+def _is_started(consumer) -> bool:
+    """判断 consumer 实例是否仍活跃（started）。
+
+    P1-1 辅助：真实实例经 ``_started`` property 读取 lifecycle 状态
+    （``ChatUIConsumer._started`` → ``_lifecycle.is_started`` bool）。
+    mock 场景（无 _started 或调用异常）视为活跃（兼容测试桩——mock
+    不真实启动，回滚逻辑在 mock 场景不触发）。
+    """
+    try:
+        return bool(getattr(consumer, "_started", False))
+    except Exception:
+        return True
+
+
+def _latest_started_consumer() -> "ChatUIConsumer | None":
+    """返回注册栈中最近一个仍活跃的实例，无则 None。
+
+    P1-1 辅助：从栈顶（最近注册）往回遍历，跳过已停止/已回收实例；
+    同时惰性清理栈中已停止/已回收引用（栈仅保留活跃实例，防无限增长）。
+    """
+    _active_consumer_stack[:] = [
+        ref for ref in _active_consumer_stack
+        if ref() is not None and _is_started(ref())
+    ]
+    if not _active_consumer_stack:
+        return None
+    return _active_consumer_stack[-1]()
+
+
 # ── 引用计数管理（封装 start()/stop() 中对全局变量的操作） ──
 
 def _register_consumer(consumer: "ChatUIConsumer") -> None:
@@ -50,6 +85,7 @@ def _register_consumer(consumer: "ChatUIConsumer") -> None:
         global _active_consumer, _active_consumer_refcount
         _active_consumer_refcount += 1
         _active_consumer = consumer
+        _active_consumer_stack.append(_weakref(consumer))
         _weak_consumer_registry[threading.get_ident()] = consumer
 
 
@@ -71,6 +107,12 @@ def _unregister_consumer() -> None:
             assert _active_consumer_refcount >= 0
             if _active_consumer_refcount <= 0:
                 _active_consumer = None
+            else:
+                # ★ P1-1：refcount>0 时回滚 _active_consumer 到最近一个仍
+                #   活跃的实例——修复前「后注册者恒胜」：A.start → B.start →
+                #   B.stop 后 refcount=1 但 active 仍为已停止的 B，
+                #   get_active_chat_ui() 返回已停止实例。
+                _active_consumer = _latest_started_consumer()
         except TypeError:
             # ★ P3-1：整个「递减+比较」移入 try（修复前仅 ``<=`` 比较在
             #   try 内，``-= 1`` 在 try 外——mock 场景递减即抛异常）——

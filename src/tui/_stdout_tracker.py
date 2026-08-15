@@ -45,6 +45,13 @@ _COMPACT_COOLDOWN: float = 30.0
 #: 最新内容（行跟踪按最新优先）。
 _PARTIAL_LINE_MAX: int = 1 << 20
 
+#: P2-4（review 方向）：输出历史缓冲上限（行）——刷盘持续失败（磁盘满/
+#: flock 冲突/BUG-19 放回循环）时 ``_output_buffer`` 无界增长（内存风险）；
+#: 超限丢弃最旧行并告警。保持防丢行语义：仅「新行进入」时裁剪（丢弃最旧
+#: 新行，内存保护优先）；BUG-19 放回的行（已取出未落盘）由后续刷盘立即
+#: 重试，不在此裁剪。
+_OUTPUT_BUFFER_MAX: int = 100_000
+
 
 class _StdoutLineTracker:
     """Transparent stdout wrapper that tracks complete lines.
@@ -233,9 +240,21 @@ class _StdoutLineTracker:
         不新建线程（避免每 50 行无条件创建 daemon 线程 → 线程创建风暴 +
         锁竞争）。线程完成刷盘后检查残留（在途期间新积累的行），>=50 则
         再次启动，保证不丢行。
+
+        ★ P2-4（review 方向）：缓冲上限——刷盘持续失败（磁盘满/flock 冲突/
+        BUG-19 放回循环）时缓冲不再无界增长；超限丢弃最旧行并告警（仅新行
+        进入时裁剪，保持防丢行语义——BUG-19 放回的行由后续刷盘重试）。
         """
         with self._buffer_lock:
             self._output_buffer.append(line)
+            if len(self._output_buffer) > _OUTPUT_BUFFER_MAX:
+                # P2-4：超限丢弃最旧行（一次性裁剪到上限，避免逐行 pop(0) O(n)）
+                excess = len(self._output_buffer) - _OUTPUT_BUFFER_MAX
+                del self._output_buffer[:excess]
+                _logger.warning(
+                    "输出历史缓冲超限（>%d 行），丢弃最旧 %d 行",
+                    _OUTPUT_BUFFER_MAX, excess,
+                )
             if len(self._output_buffer) >= 50 and not self._flush_in_progress:
                 self._flush_in_progress = True
                 self._spawn_flush_worker_locked()
@@ -422,9 +441,26 @@ class _StdoutLineTracker:
                 with self._buffer_lock:
                     self._flush_in_progress = False
         else:
-            # 循环自然耗尽（20s 上限）：残留行兜底刷盘（尽力而为，不丢行）
+            # 循环自然耗尽（20s 上限）：残留行兜底刷盘（尽力而为，不丢行）。
+            # ★ P2-3（review 方向）：兜底前检查在途 worker——循环耗尽时
+            #   ``_flush_in_progress`` 可能仍为 True（慢盘 worker 挂起致 20s
+            #   未完成）；直接 ``_flush_buffered_lines()`` 会与在途 worker 并发
+            #   取批写文件（两个线程各自取批，后到行可能先写 → 历史行序颠倒）。
+            #   修复：为 True 时改走 join 等待（在途 worker 先写其持有的块）；
+            #   等待后仍为 True（worker 持续挂起）则放弃本次刷盘（避免并发取
+            #   批），残留行由定时器/后续调用重试（不丢行语义由重试保证）。
             try:
-                self._flush_buffered_lines()
+                if self._flush_in_progress:
+                    thread = self._flush_worker_thread
+                    if thread is not None and thread.is_alive():
+                        thread.join(timeout=0.01)
+                if self._flush_in_progress:
+                    _logger.warning(
+                        "_flush_history: 兜底刷盘跳过（在途 worker 未完成，"
+                        "避免并发取批行序颠倒）"
+                    )
+                else:
+                    self._flush_buffered_lines()
             except Exception:
                 _logger.warning("_flush_history: 兜底刷盘异常", exc_info=True)
 

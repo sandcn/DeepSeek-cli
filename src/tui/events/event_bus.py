@@ -84,12 +84,22 @@ class DisplayEventBus(metaclass=SingletonMeta):
         return inst
 
     def __init__(self):
-        if getattr(self, "_handlers", None) is not None:
-            # 幂等保护：直接构造返回既有单例时不重置订阅状态（P3-9）
-            return
-        self._handlers: dict[type, list[EventHandler]] = {}
-        self._all_handlers: list[EventHandler] = []
-        self._lock = threading.RLock()
+        # ★ 修复（P2-10）：__init__ 异常时回滚单例缓存——修复前 __new__ 已
+        #   赋值 cls._instance，__init__ 抛异常会缓存半初始化单例（后续
+        #   get_default 返回未初始化实例）；try/except 回滚 _instance=None，
+        #   下次构造重新走完整初始化（仅当缓存的是本实例时回滚，不覆盖
+        #   其他线程已缓存的单例）。
+        try:
+            if getattr(self, "_handlers", None) is not None:
+                # 幂等保护：直接构造返回既有单例时不重置订阅状态（P3-9）
+                return
+            self._handlers: dict[type, list[EventHandler]] = {}
+            self._all_handlers: list[EventHandler] = []
+            self._lock = threading.RLock()
+        except Exception:
+            if type(self)._instance is self:
+                type(self)._instance = None
+            raise
 
     # 单例访问由 SingletonMeta 提供：
     #   DisplayEventBus.get_default() → 线程安全单例获取（DCL）

@@ -75,15 +75,22 @@ def Table(props: dict) -> Element:
     border_style = Style(fg=_color(props.get("borderColor"), 23))
 
     rows: list[list[str]] = []
+    header_present = False
     if columns is not None:
         # ★ P3（review）：columns 可迭代守卫——非可迭代（标量，如
         #   ``columns=5``）或 str/bytes（逐字符拆列意外语义）时回退空列表
         #   （不添加表头行）——修复前 ``for c in columns`` 对 columns=5 抛
         #   TypeError。与 data 同守卫模式。
         if hasattr(columns, "__iter__") and not isinstance(columns, (str, bytes)):
-            # ★ P3（review）：表头单元格含 "\n" 时归一化（与数据行一致——防
-            #   行高/对齐破坏）。
-            rows.append([str(c).replace("\n", " ") for c in columns])
+            # ★ P2-8（review）：columns 为空列表（``columns=[]``）时不追加表头
+            #   行、不置 has_header——修复前追加空行 ``[]`` 产生空表头行（数据
+            #   行被误判为首行样式）且 has_header 误判 True。
+            col_list = list(columns)
+            if col_list:
+                # ★ P3（review）：表头单元格含 "\n" 时归一化（与数据行一致——防
+                #   行高/对齐破坏）。
+                rows.append([str(c).replace("\n", " ") for c in col_list])
+                header_present = True
     for row in data:
         # ★ P3（review）：行级 None 守卫——data 行可能为 None（如
         #   ``[None, ["a"]]``），修复前 ``for c in row`` 抛 TypeError。
@@ -107,7 +114,7 @@ def Table(props: dict) -> Element:
         for i, cell in enumerate(r):
             widths[i] = max(widths[i], wcswidth_simple(cell))
 
-    has_header = columns is not None
+    has_header = header_present
 
     # ── 无边框：纯对齐文本 ──
     if not border:

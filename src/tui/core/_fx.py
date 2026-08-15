@@ -22,6 +22,7 @@ app 域」的分层倒置。
 
 from __future__ import annotations
 
+import math
 import time
 
 from src.tui.core.color import lerp_color
@@ -101,7 +102,10 @@ def spinner_frame(tick_hz: float, frames) -> int:
     n = len(frames)
     if n <= 0:
         return 0
-    if tick_hz <= 0:
+    if not math.isfinite(tick_hz) or tick_hz <= 0:
+        # ★ 修复（P2-3）：NaN/inf tick_hz 防御——修复前 ``tick_hz <= 0`` 对
+        #   NaN 恒为 False（未触发默认值回退），``int(monotonic * NaN)`` 抛
+        #   ValueError 中断渲染。非有限或 <=0 一律回退配置默认值。
         # ★ P3-21：惰性读取 TuiConfig 默认值——修复前用模块导入时固化的
         #   ``_DEFAULT_SPINNER_HZ``，运行期修改 TuiConfig 不影响。
         tick_hz = _default_fx_params()[1]

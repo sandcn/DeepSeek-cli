@@ -39,6 +39,10 @@ class _SystemMonitor:
         # 子进程平台后台刷新（darwin/windows 无 psutil 时启用）——渲染线程
         # 不阻塞等待 iostat/sysctl/vm_stat/wmic 子进程（方向3 性能）。
         self._bg_started: bool = False
+        # ★ P2-1（review 方向）：后台线程启动锁——检查/置位原子化，防并发
+        #   首次调用（get_cpu_and_mem 双线程同时见 _bg_started=False）启动
+        #   双后台线程。
+        self._bg_lock = threading.Lock()
         self._bg_interval: float = 2.0
 
     @staticmethod
@@ -124,14 +128,24 @@ class _SystemMonitor:
         return (self._cpu_percent, self._mem_percent)
 
     def _start_bg_refresh(self) -> None:
-        """启动后台刷新线程（幂等；daemon 线程随进程退出自动终止）。"""
-        self._bg_started = True
-        try:
-            t = threading.Thread(target=self._bg_loop, daemon=True, name="tui-sysmon")
-            t.start()
-        except Exception:
-            _logger.debug("系统监控后台线程启动失败", exc_info=True)
-            self._bg_started = False
+        """启动后台刷新线程（幂等；daemon 线程随进程退出自动终止）。
+
+        ★ P2-1（review 方向）：检查/置位在 ``_bg_lock`` 内原子完成——修复前
+        无锁（``self._bg_started = True`` 在启动前裸置位），并发首次调用
+        （get_cpu_and_mem 双线程同时通过 ``not self._bg_started`` 检查）可
+        启动双后台线程。锁内二次检查保证仅启动一个。
+        """
+        with self._bg_lock:
+            if self._bg_started:
+                return
+            self._bg_started = True
+            try:
+                t = threading.Thread(target=self._bg_loop, daemon=True,
+                                     name="tui-sysmon")
+                t.start()
+            except Exception:
+                _logger.debug("系统监控后台线程启动失败", exc_info=True)
+                self._bg_started = False
 
     def _bg_loop(self) -> None:
         """后台刷新循环：每 2 秒采集一次 CPU/MEM（get_* 内部含 1s TTL 缓存）。"""
@@ -184,11 +198,26 @@ class _SystemMonitor:
             if result.returncode != 0:
                 return 0.0
             lines = result.stdout.strip().splitlines()
-            if len(lines) >= 4:
-                parts = lines[-1].split()
-                if len(parts) >= 6:
-                    idle_str = parts[-1].replace("%", "")
-                    return max(0.0, 100.0 - float(idle_str))
+            # ★ P1-2（review 方向）：按标题行动态定位 idle 列——macOS iostat
+            #   数据行格式 ``us sy id 1m 5m 15m``（us=0, sy=1, id=2）；修复前
+            #   取 ``parts[-1]`` 为 15m load average → CPU 使用率恒 ≈98% 错误。
+            #   标题行定位比硬编码索引稳妥（iostat 输出可能含磁盘列，如
+            #   ``KB/t tps MB/s us sy id ...``）。
+            idle_idx: int | None = None
+            for line in lines:
+                toks = line.split()
+                if "us" in toks and "sy" in toks and "id" in toks:
+                    idle_idx = toks.index("id")
+                    break
+            if idle_idx is None:
+                return 0.0
+            # 数据行从后向前取（``iostat -c 2 2`` 最后一行是最新采样）
+            for line in reversed(lines):
+                toks = line.split()
+                if len(toks) > idle_idx:
+                    idle_str = toks[idle_idx].replace("%", "")
+                    idle = float(idle_str)
+                    return max(0.0, 100.0 - idle)
             return 0.0
         except subprocess.TimeoutExpired:
             _logger.warning("子进程超时: iostat -c 2 2", exc_info=True)
@@ -273,31 +302,25 @@ class _SystemMonitor:
         except OSError:
             return 0.0
         page_size = 4096
-        active_pages = 0
-        wired_pages = 0
-        compressed_pages = 0
+        free_pages = 0
         for line in result.stdout.strip().splitlines():
             line = line.strip()
             if "page size of" in line:
                 m = re.search(r"page size of (\d+)", line)
                 if m:
                     page_size = int(m.group(1))
-            elif line.startswith("Pages active:"):
+            elif line.startswith("Pages free:"):
                 try:
-                    active_pages = int(line.split(":")[-1].strip().rstrip("."))
+                    free_pages = int(line.split(":")[-1].strip().rstrip("."))
                 except ValueError:
                     pass
-            elif line.startswith("Pages wired down:"):
-                try:
-                    wired_pages = int(line.split(":")[-1].strip().rstrip("."))
-                except ValueError:
-                    pass
-            elif line.startswith("Pages stored in compressor:"):
-                try:
-                    compressed_pages = int(line.split(":")[-1].strip().rstrip("."))
-                except ValueError:
-                    pass
-        used_bytes = (active_pages + wired_pages + compressed_pages) * page_size
+        # ★ P2-6（review 方向）：改用 ``total - free`` 完整口径——修复前
+        #   ``active + wired + stored_in_compressor`` 系统性低估真实内存使用
+        #   （漏掉 inactive/speculative/purgeable 等已分配页面；且 macOS
+        #   vm_stat 实际关键字为 "Pages occupied by compressor"，旧关键字
+        #   "Pages stored in compressor" 解析恒 0）。total - free 近似"已
+        #   分配内存"，口径完整且与 Linux ``MemTotal - MemFree`` 近似一致。
+        used_bytes = max(0, total_bytes - free_pages * page_size)
         return 100.0 * used_bytes / total_bytes
 
     def _read_mem_windows(self) -> float:

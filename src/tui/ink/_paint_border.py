@@ -72,7 +72,11 @@ def _border_style(props: dict, edge: str | None = None) -> Style:
         return Style(
             fg=fg,
             bg=bg if bg is not None else base.bg,
-            dim=bool(dim_color),
+            # ★ P2-1 修复（review 方向）：fg 分支也保留 base.dim——修复前
+            #   ``dim=bool(dim_color)`` 与 fg None 分支
+            #   ``bool(dim_color) or base.dim`` 不一致：borderStyle 传 Style
+            #   对象（base.dim=True）+ borderColor 指定 fg 时丢失 base.dim。
+            dim=bool(dim_color) or base.dim,
             bold=base.bold, italic=base.italic,
             underline=base.underline,
             strikethrough=base.strikethrough,
@@ -176,6 +180,14 @@ def _paint_border(fiber: Fiber, canvas: list[dict], border: int, clip=None) -> N
     x0, y0 = box.x, box.y
     x1 = x0 + box.w - 1
     y1 = y0 + box.h - 1
+    # ★ P3-2 修复（review 方向）：负坐标防御——写画布前钳制 x0/x1 >= 0
+    #   （修复前 box.x 为负时顶/底边 ``_merge_line`` 从负列写入、左右边
+    #   ``row[x0]``/``row[x1]`` 负索引从列表末尾写，污染画布）。box 完全
+    #   在屏幕左侧外（x1 < 0）时无可见部分，直接返回。
+    if x1 < 0:
+        return
+    x0 = max(x0, 0)
+    x1 = max(x1, 0)
     # overflow 裁剪范围（None=不裁剪）
     clip_x0 = clip_y0 = clip_x1 = clip_y1 = None
     if clip is not None and clip[2] > 0 and clip[3] > 0:

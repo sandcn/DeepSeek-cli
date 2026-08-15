@@ -125,7 +125,9 @@ def Tabs(props: dict) -> Element:
             new = (cur - 1) % len(tabs) if len(tabs) > 1 else cur
         elif event.kind in ("arrow_right", "arrow_down"):
             new = (cur + 1) % len(tabs) if len(tabs) > 1 else cur
-        elif event.kind in ("space", "enter") or (event.kind == "char" and event.char == " "):
+        # ★ P3（review）：``event.kind == "space"`` 为死分支（InputParser 从不
+        #   产生 kind=="space"，空格为 ``kind=="char", char==" "``）——删除。
+        elif event.kind == "enter" or (event.kind == "char" and event.char == " "):
             # ★ P2（review）：space/enter **不切换**（仅箭头键切换，与模块
             #   docstring 语义修正一致），但**消费事件**——修复前 ``new = cur``
             #   使 ``new != cur`` 恒 False → 落入 return False 放行父级（事件

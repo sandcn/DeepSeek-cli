@@ -211,7 +211,11 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
     #   长度 < len(items) 时越界 IndexError）。不进缓存键（键用稳定空元组 id）。
     types_disp = list(types) + [""] * (len(items) - len(types))
     title = completion.title or ""
-    total = len(completion.texts) if completion.texts else len(items)
+    # ★ P2-7（review 修复）：位置提示总数统一用 ``len(items)``——候选渲染
+    #   行数 = items 数量；texts（补全文本列表）与 items 长度可能不一致
+    #   （外部注入/异常状态），用 len(texts) 时标题 ``(sel+1/total)`` 错位
+    #   （sel 为 items 索引，total 可能 < sel+1 显示荒谬位置）。
+    total = len(items)
     # ★ 缓存键稳定性（PERF-7）：descriptions 为空时用模块级空元组（恒同对象）
     #   ——``[] or []`` 每次调用创建新空列表，`id(descs)` 每帧变化 → 弹窗缓存
     #   永远 miss（每帧重建）。

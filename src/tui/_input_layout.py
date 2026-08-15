@@ -47,6 +47,12 @@ def _wrap_by_width(s: str, max_width: int) -> list[str]:
     lines: list[str] = []
     for segment in s.split('\n'):
         remaining = segment
+        # P2-10（review）：本逻辑段是否存在可显示内容（至少一个字符宽 <=
+        # max_width）——决定跳过超宽字符时是否保留零宽占位（仅当段内确有
+        # 可显示内容时占位才有意义；全部字符均超宽的段保持 L1 空段语义）。
+        has_fittable = any(
+            wcswidth_simple(ch) <= max_width for ch in segment
+        )
         while remaining:
             w = 0
             idx = 0
@@ -64,7 +70,18 @@ def _wrap_by_width(s: str, max_width: int) -> list[str]:
                 #   跳过该字符（每轮至少推进 1 字符，无死循环；不产生超宽
                 #   行）；否则保持 ``idx=1``。调用方 ``_compute_input_layout``
                 #   以 ``or [""]`` 兜底空段。
+                # P2-10（review）：跳过超宽字符时保留零宽占位（U+200B，宽 0）
+                #   ——修复前直接 ``remaining = remaining[1:]`` 丢弃字符，混合
+                #   内容（如 "a가b" / "a가", max_width=1）中超宽字符从输出消失，
+                #   换行结果拼接不回原文本 → ``_cursor_visual_from_layout`` 按
+                #   字符数映射光标位置错乱（丢字）。零宽占位宽度 0（不破坏
+                #   行宽不变量）、字符数 1（光标映射不丢位）。**仅当本逻辑段
+                #   存在可显示内容**时保留占位——全部字符均超宽（极端窄终端 +
+                #   全宽文本，如 "가나", max_width=1）时保持 L1 空段语义（调用
+                #   方 ``or [""]`` 兜底），不破坏既有回归断言。
                 if wcswidth_simple(remaining[0]) > max_width:
+                    if has_fittable:
+                        lines.append("\u200b")
                     remaining = remaining[1:]
                     continue
                 idx = 1

@@ -113,10 +113,21 @@ def _truncate_messages(agent: Any, keep_idx: int) -> str:
     target_index = keep_idx - 1 if keep_idx > 0 else 0
     restore_text = _restore_sandbox_to(agent, target_index)
     original_len = len(messages)
-    del messages[keep_idx:]
     sm = _get_sandbox_manager()
     if sm:
-        sm.remap_indices(list(range(keep_idx, original_len)))
+        # ★ 修复（P2-7）：先 remap 后删除——修复前先 ``del messages[keep_idx:]``
+        #   再 remap：remap 异常时消息已删（沙盒与消息索引不一致且无补偿）。
+        #   先 remap（仅操作沙盒记录，与 messages 列表状态无关；失败记录
+        #   error 并抛出明确异常，消息未删无中间态）再删除。
+        try:
+            sm.remap_indices(list(range(keep_idx, original_len)))
+        except Exception:
+            _logger.error(
+                "remap_indices 失败 (keep_idx=%s): 沙盒记录可能未更新",
+                keep_idx, exc_info=True,
+            )
+            raise
+    del messages[keep_idx:]
     return restore_text
 
 
@@ -350,15 +361,16 @@ class MessageEditor:
                 user_msgs, display_items, option_lines,
             )
         finally:
-            # 恢复原始回调（经公开 API；orig_dismiss_cb 为 None 时跳过——
-            # 原回调不存在则无需恢复）
-            if orig_dismiss_cb is not None:
-                try:
-                    input_.set_dismiss_completion_callback(orig_dismiss_cb)
-                except Exception:
-                    _logger.debug(
-                        "edit_current_messages: 恢复 dismiss 回调异常", exc_info=True,
-                    )
+            # ★ 修复（P2-6）：恢复原始回调——orig_dismiss_cb 为 None 时也
+            #   显式 ``set_dismiss_completion_callback(None)`` 恢复原状（修复前
+            #   None 分支跳过恢复，_editmsg_dismiss 永久残留，后续 Enter 误
+            #   触发选择完成信号 _selection_ready）。
+            try:
+                input_.set_dismiss_completion_callback(orig_dismiss_cb)
+            except Exception:
+                _logger.debug(
+                    "edit_current_messages: 恢复 dismiss 回调异常", exc_info=True,
+                )
             # ★ 先排空 stdin 残留字节（含 CR+LF 中的 \n），再恢复 Enter 抑制，
             #   防止竞态窗口内残留 \n 触发 _enter() 误消费 prefill
             try:
@@ -457,6 +469,12 @@ class MessageEditor:
 
         st = model.user_select
         action = st.action or "timeout"
+        # ★ 修复（P2-5）：真正消费 _selection_confirmed——Enter 经
+        #   ``_dismiss_completion → _editmsg_dismiss`` 路径确认时 st.action
+        #   可能未写回 "confirmed"（修复前 action 归为 "timeout" 丢弃已确认的
+        #   选择）；此处回退按 confirmed 处理（st.selected 读取紧随其后）。
+        if action == "timeout" and self._selection_confirmed:
+            action = "confirmed"
         # ★ 修复（P2）：selected 可能为 None（外部注入）——
         #   int(None) 抛 TypeError；归一化失败回退默认选中最后一条。
         try:

@@ -120,10 +120,16 @@ def Menu(props: dict) -> Element:
         initial_index = _clamp_index(initial_index, len(items))
         if not _is_selectable(items[initial_index]):
             initial_index = _next_selectable(items, initial_index, 1)
-    highlight_style = props.get("highlightStyle") or _MENU_HIGHLIGHT
-    shortcut_style = props.get("shortcutStyle") or _MENU_SHORTCUT
-    disabled_style = props.get("disabledStyle") or _MENU_DISABLED
-    header_style = props.get("headerStyle") or _MENU_HEADER
+    # ★ P3（review）：样式 prop 改 ``is not None`` 判断——修复前 ``or`` 把
+    #   显式空 Style()（falsy）当默认替换。
+    highlight_style_prop = props.get("highlightStyle")
+    highlight_style = highlight_style_prop if highlight_style_prop is not None else _MENU_HIGHLIGHT
+    shortcut_style_prop = props.get("shortcutStyle")
+    shortcut_style = shortcut_style_prop if shortcut_style_prop is not None else _MENU_SHORTCUT
+    disabled_style_prop = props.get("disabledStyle")
+    disabled_style = disabled_style_prop if disabled_style_prop is not None else _MENU_DISABLED
+    header_style_prop = props.get("headerStyle")
+    header_style = header_style_prop if header_style_prop is not None else _MENU_HEADER
     shortcut_align = props.get("shortcutAlign", "right")
     try:
         min_gap = max(0, int(props.get("minShortcutGap", 2)))
@@ -254,8 +260,12 @@ def Menu(props: dict) -> Element:
                 h(TEXT, {"children": shortcut, "style": shortcut_style, "height": 1}),
             ]))
         elif shortcut:
+            # ★ P2-6（review）：shortcutAlign="left" 忽略 minShortcutGap——修复
+            #   前恒用 2 空格拼接；改为 ``max(min_gap, 2)``（保持至少 2 空格，
+            #   与 right 对齐语义的 min_gap 下限一致）。
+            gap = " " * max(min_gap, 2)
             rows.append(h(TEXT, {
-                "children": f"{label}  {shortcut}", "style": style, "height": 1,
+                "children": f"{label}{gap}{shortcut}", "style": style, "height": 1,
                 "key": f"menu-{i}",
             }))
         else:

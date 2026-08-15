@@ -95,6 +95,47 @@ def _distribute_extra(
     total_weight = sum(weights)
     if total_weight <= 0 or total_extra <= 0:
         return
+    if direction < 0:
+        # ★ P2-3 修复（review 方向）：flexShrink 钳制 ≥1 后 deficit 重分配——
+        #   修复前单轮按权重比例缩减、每子钳制 ≥ clamp_min，触底子节点未
+        #   缩减的量（deficit 盈余）直接丢失（如单子 deficit 超可缩空间、
+        #   或多子部分触底时收缩总量不足，容器高度仍超限）。改为迭代分配：
+        #   每轮按权重比例缩减，触底节点退出，剩余 deficit 在未触底节点间
+        #   继续分配，直至耗尽或无可缩节点（每轮至少一个节点触底或 deficit
+        #   清零 → 轮数 <= 子节点数，_guard 有界保护）。
+        lo = clamp_min if clamp_min is not None else 1
+        heights = [cb.h for cb in (child.layout_box for child in children)]
+        deficit = total_extra
+        guard = 0
+        while deficit > 0:
+            shrinkable = [i for i, hh in enumerate(heights) if hh > lo and weights[i] > 0]
+            if not shrinkable:
+                break
+            sub_weights = [weights[i] for i in shrinkable]
+            per, extra_shares = _compute_weight_shares(sub_weights, deficit)
+            progressed = False
+            for k, i in enumerate(shrinkable):
+                delta = per * sub_weights[k] + extra_shares[k]
+                if delta <= 0:
+                    continue
+                new_h = max(lo, heights[i] - delta)
+                if new_h < heights[i]:
+                    deficit -= heights[i] - new_h
+                    heights[i] = new_h
+                    progressed = True
+            if not progressed:
+                break
+            guard += 1
+            if guard > max(1, len(children) * 4):
+                break
+        cursor = inner_y
+        for i, child in enumerate(children):
+            cb = child.layout_box
+            cb.h = max(lo, heights[i])
+            cb.y = cursor
+            child.layout_box = cb
+            cursor += cb.h + margin
+        return
     per, extra_shares = _compute_weight_shares(weights, total_extra)
     cursor = inner_y
     remaining = total_extra  # ★ P3-9：剩余分配量跟踪（delta 钳制上限基准）
@@ -103,20 +144,15 @@ def _distribute_extra(
         if weights[i] > 0:
             delta = per * weights[i] + extra_shares[i]
             if delta > 0:
-                if direction > 0:
-                    # ★ P3-9 修复（review 方向）：``cb.h += delta`` 无上限
-                    #   钳制——增加 ``delta = min(delta, remaining)`` 防御性
-                    #   钳制。正常路径 delta 总和恰为 total_extra（per + 余数
-                    #   分配已收敛，见上），钳制不影响结果；仅防御未来权重
-                    #   解析/余数分配改动引入超发（保证 flexGrow 不会把子节点
-                    #   高度撑过总余数）。flexShrink 方向不钳制（clamp_min
-                    #   下限已约束单子缩减量，remaining 语义不同）。
-                    delta = min(delta, remaining)
-                    cb.h += delta
-                    remaining -= delta
-                else:
-                    # 每子至少保留 1 行（钳制 ≥1）
-                    cb.h = max(clamp_min if clamp_min is not None else 1, cb.h - delta)
+                # ★ P3-9 修复（review 方向）：``cb.h += delta`` 无上限
+                #   钳制——增加 ``delta = min(delta, remaining)`` 防御性
+                #   钳制。正常路径 delta 总和恰为 total_extra（per + 余数
+                #   分配已收敛，见上），钳制不影响结果；仅防御未来权重
+                #   解析/余数分配改动引入超发（保证 flexGrow 不会把子节点
+                #   高度撑过总余数）。
+                delta = min(delta, remaining)
+                cb.h += delta
+                remaining -= delta
         cb.y = cursor
         child.layout_box = cb
         cursor += cb.h + margin

@@ -163,19 +163,15 @@ def resolve_theme(name: str) -> Palette:
 #: 活动调色板 TTL 缓存（≤1Hz 刷新；读 config THEME 键）
 #: ★ P3-20：无锁读写——全局缓存为单字段赋值（GIL 原子性）且仅主线程
 #:   （render）/命令线程（/theme 切换）读写，原子替换元组可接受（无中间态）。
+#: ★ 修复（P2-9）：初始为 None（未初始化）——启动后首次调用直接读配置
+#:   （跳过 TTL），修复前初始 ``(0.0, dark)`` 使进程启动 1s 内恒返回 dark
+#:   （config light/high-contrast 不生效）。
 _ACTIVE_PALETTE_TTL = 1.0
-_active_palette_cache: tuple[float, Palette] = (0.0, ThemeRegistry.resolve("dark"))
+_active_palette_cache: tuple[float, Palette] | None = None
 
 
-def get_active_palette() -> Palette:
-    """返回当前活动调色板（读 config THEME，TLR 缓存 1s）。
-
-    config 读取失败/未加载 → 回退 dark（零回归安全侧）。
-    """
-    global _active_palette_cache
-    now = time.monotonic()
-    if now - _active_palette_cache[0] < _ACTIVE_PALETTE_TTL:
-        return _active_palette_cache[1]
+def _read_theme() -> str:
+    """读取 config THEME 值（读取失败/未加载回退 dark）。"""
     theme = "dark"
     try:
         from src.config.proxy import config
@@ -184,20 +180,34 @@ def get_active_palette() -> Palette:
             theme = value
     except Exception:
         pass
-    pal = resolve_theme(theme)
+    return theme
+
+
+def get_active_palette() -> Palette:
+    """返回当前活动调色板（读 config THEME，TTL 缓存 1s）。
+
+    config 读取失败/未加载 → 回退 dark（零回归安全侧）。
+    """
+    global _active_palette_cache
+    now = time.monotonic()
+    if _active_palette_cache is not None:
+        if now - _active_palette_cache[0] < _ACTIVE_PALETTE_TTL:
+            return _active_palette_cache[1]
+    pal = resolve_theme(_read_theme())
     _active_palette_cache = (now, pal)
     return pal
 
 
 def _invalidate_palette_cache() -> None:
-    """使活动调色板缓存失效（/theme 切换后强制重解析）。"""
+    """使活动调色板缓存失效（/theme 切换后强制重解析）。
+
+    ★ 修复（P2-9）：失效时**直接读配置解析新主题**并缓存（时间戳 0.0 使
+    下个 get 立即重读，双保险）——修复前 ``(0.0, get_active_palette())``：
+    1) 递归读取的仍是失效前的旧主题；2) 时间戳 0 使失效后 1s 内（TTL 边界）
+    仍返回旧主题（新主题不生效）。
+    """
     global _active_palette_cache
-    # 方向2（TTL 边界修复）：失效时缓存值保持当前活动 palette（不硬编码
-    # dark）——修复前置 ``(0.0, resolve("dark"))`` 在进程启动 1s 内
-    # （``now - 0 < TTL`` 判定）误返回 dark；保持当前 palette 使 TTL 边界
-    # 处仍返回既有主题。正常（进程运行 >1s）时时间戳 0 使缓存立即过期 →
-    # 下个 get 重读 config 返回新主题。
-    _active_palette_cache = (0.0, get_active_palette())
+    _active_palette_cache = (0.0, resolve_theme(_read_theme()))
 
 
 def time_glow(lo: int, hi: int, period: float = 12.0) -> int:

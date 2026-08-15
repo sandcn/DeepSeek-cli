@@ -26,8 +26,12 @@ TuiEngine/TuiRenderer/_BottomBar/ChatRenderState 装配。
 
 from __future__ import annotations
 
+import logging
+
 from src.tui import _assembly_steps
 from src.tui._components import _ComponentsNamespace
+
+_logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -104,27 +108,46 @@ class TuiAssembly:
         方向3 步骤16：移除 ``on_display_messages`` 死参数——显示路径已统一由
         ``DisplayMsgsCmd → apply._do_display_messages`` 承载，无回调注入需求。
         装配步骤实现见 ``_assembly_steps``（2026-08-05 装配层重构）。
-        """
-        line_tracker = _assembly_steps.create_infrastructure()
-        tui_config, model = _assembly_steps.create_shared()
-        input_instance = _assembly_steps.create_chat_domain()
-        session, bridge, renderer = _assembly_steps.create_framework(
-            model, tui_config, line_tracker, input_instance,
-        )
-        dispatcher, cmpl_handler, subagent_controller = (
-            _assembly_steps.create_chat_domain_assembly(
-                tui_config, session, bridge,
-            )
-        )
-        components = _ComponentsNamespace(input_instance)
 
-        return TuiAssemblyResult(
-            rs=model, engine=session, bb=bridge, dispatcher=dispatcher,
-            renderer=renderer, cmpl_handler=cmpl_handler,
-            input_instance=input_instance,
-            subagent_controller=subagent_controller,
-            components=components,
-        )
+        ★ P2-6（review 方向）：部分失败清理——``create_infrastructure`` 创建的
+        ``_StdoutLineTracker`` 在 ``__init__`` 即启动 2s 自重置 daemon 定时器；
+        后续装配步骤抛异常时 tracker 无引用可回收（定时器泄漏）。失败时对
+        已创建的 tracker 调 ``close()``（幂等：停止定时器 + flush 剩余行），
+        再 re-raise（不吞异常，由调用方决定后续）。
+        """
+        line_tracker = None
+        try:
+            line_tracker = _assembly_steps.create_infrastructure()
+            tui_config, model = _assembly_steps.create_shared()
+            input_instance = _assembly_steps.create_chat_domain()
+            session, bridge, renderer = _assembly_steps.create_framework(
+                model, tui_config, line_tracker, input_instance,
+            )
+            dispatcher, cmpl_handler, subagent_controller = (
+                _assembly_steps.create_chat_domain_assembly(
+                    tui_config, session, bridge,
+                )
+            )
+            components = _ComponentsNamespace(input_instance)
+
+            return TuiAssemblyResult(
+                rs=model, engine=session, bb=bridge, dispatcher=dispatcher,
+                renderer=renderer, cmpl_handler=cmpl_handler,
+                input_instance=input_instance,
+                subagent_controller=subagent_controller,
+                components=components,
+            )
+        except Exception:
+            # P2-6：已创建的 tracker（含其 daemon 定时器）在失败路径上无引用
+            # 可回收——close() 停止定时器并 flush 剩余行，防泄漏（幂等）。
+            if line_tracker is not None:
+                try:
+                    line_tracker.close()
+                except Exception:
+                    _logger.debug(
+                        "assemble 失败清理 line_tracker 异常", exc_info=True,
+                    )
+            raise
 
 
 __all__ = ["TuiAssembly", "TuiAssemblyResult"]

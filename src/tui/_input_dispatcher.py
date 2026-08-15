@@ -88,6 +88,13 @@ class InputDispatcher:
         #   None 缺省时 _do_interrupt 记 debug 日志并跳过（保证测试兼容）。
         self._interrupt_callback = None
 
+        # ★ P2-8（review）：Enter 提交历史追加回调注入——``_handle_special_key``
+        #   的 ``_enter`` 经此回调注入（与 ``Input._enter`` 的 append_history
+        #   注入语义一致：测试 patch 外观 ``_append_history_locked`` 拦截路径
+        #   有效）。None 时 ``_enter`` 使用 buffer_editor 自身
+        #   ``_append_history_locked``（缺省语义，生产行为不变）。
+        self._enter_append_history = None
+
         # ── Enter 抑制 ──
         self._suppress_enter: bool = False
         self._suppress_enter_lock = threading.Lock()
@@ -297,7 +304,11 @@ class InputDispatcher:
             # editmsg/retry 是用户主动发起的提交操作（Ctrl+O/Ctrl+R），
             # 清除 _suppress_enter 确保 _enter() 不被抑制
             self.set_suppress_enter(False)
-            self._buffer_editor._enter()
+            # P2-8（review）：注入 append_history——经 ``set_enter_append_history``
+            # 注入的回调（与 ``Input._enter`` 的 append_history 注入语义一致），
+            # None 时 ``_enter`` 使用 buffer_editor 自身 ``_append_history_locked``
+            # （缺省行为不变）。
+            self._buffer_editor._enter(append_history=self._enter_append_history)
             # 方向1 B3：retry 提交后恢复用户草稿（供继续编辑）；draft 为空时
             # 行为与现状一致（不恢复）。用 handle_chars 而非 set_buffer——
             # set_buffer 会清空 _submitted_text/_input_ready，导致 _enter()
@@ -760,7 +771,10 @@ class InputDispatcher:
             self._maybe_dismiss_completion()
             if event.raw:
                 with self._captured_lock:
-                    self._captured_input.append(event.raw[0])
+                    # P2-7（review）：unknown 事件完整捕获——修复前仅捕获
+                    # ``event.raw[0]`` 首字节，多字节 unknown（如残缺 CSI/UTF-8
+                    # 序列）的后续字节丢失，drain_captured 只能还原残缺文本。
+                    self._captured_input.extend(event.raw)
         elif kind == "char":
             if event.char:
                 self._buffer_editor.handle_char(event.char)
@@ -947,6 +961,17 @@ class InputDispatcher:
         None 缺省时 ``_do_interrupt`` 记 debug 日志并跳过（测试兼容）。
         """
         self._interrupt_callback = cb
+
+    def set_enter_append_history(self, cb) -> None:
+        """设置 Enter 提交历史追加回调（P2-8）。
+
+        cb 签名: ``(text: str) -> None``；None 时 ``_handle_special_key`` 的
+        ``_enter`` 使用 buffer_editor 自身 ``_append_history_locked``（缺省
+        语义）。由 Input 外观注入其 ``_append_history_locked``——与
+        ``Input._enter`` 的 append_history 注入一致（测试 patch 外观拦截
+        路径有效）。
+        """
+        self._enter_append_history = cb
 
     def set_input_hook_router(self, router) -> None:
         """设置 input hook router（步骤 8：ink useInput 钩子优先分发）。

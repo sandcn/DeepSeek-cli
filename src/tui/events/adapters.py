@@ -142,12 +142,12 @@ class DisplayEventAdapter:
                 return
             try:
                 if isinstance(event, ToolParsingEvent):
-                    # ★ P3-12（文档注明）：ToolParsingEvent.tool_id 不转发——
-                    #   BaseDisplay.tool_parsing 签名无 tool_id 参数
-                    #   （_base_display.py 不在本次修改范围内，未加默认参数）；
-                    #   tool_id 已完整保存在事件对象字段中，由 ChatUIConsumer/
-                    #   WebUI 直接订阅事件消费，不依赖本转发路径。
-                    method(event.label, event.tool_name, event.arguments)
+                    # ★ 修复（P2-4）：ToolParsingEvent.tool_id 同步转发——
+                    #   BaseDisplay.tool_parsing 签名含 tool_id 默认参数
+                    #   （_base_display.py L95-98），转发路径不再丢弃 tool_id
+                    #   （修复前注释声称「签名无 tool_id」而未转发，事件发布
+                    #   后 display 侧拿不到 tool_id）。
+                    method(event.label, event.tool_name, event.arguments, event.tool_id)
                 elif isinstance(event, ToolStartedEvent):
                     method(event.label, event.tool_name, event.detail, event.metadata)
                 elif isinstance(event, ToolDoneEvent):
@@ -255,11 +255,15 @@ class EventBusDisplayProxy(_BaseDisplay):
         tool_name: str,
         detail: str = "",
         metadata: dict | None = None,
+        tool_id: str = "",
     ) -> None:
+        # ★ 修复（P2-4）：透传 tool_id——修复前签名无 tool_id，发布
+        #   ToolStartedEvent 时 tool_id 恒为 ""（前端无法按 tool_call_id
+        #   精确匹配）。
         self._bus.publish(ToolStartedEvent(
             label=label, tool_name=tool_name,
             detail=detail, metadata=metadata,
-            source=self._source,
+            tool_id=tool_id, source=self._source,
         ))
 
     def tool_done(
@@ -268,11 +272,13 @@ class EventBusDisplayProxy(_BaseDisplay):
         tool_name: str = "",
         success: bool = True,
         metadata: dict | None = None,
+        tool_id: str = "",
     ) -> None:
+        # ★ 修复（P2-4）：透传 tool_id（同 tool_start）。
         self._bus.publish(ToolDoneEvent(
             label=label, tool_name=tool_name,
             success=success, metadata=metadata,
-            source=self._source,
+            tool_id=tool_id, source=self._source,
         ))
 
     # ── 状态 ────────────────────────────────────────────

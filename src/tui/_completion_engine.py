@@ -225,15 +225,24 @@ class CompletionEngine:
 
     @staticmethod
     def _fetch_themes() -> list[tuple[str, str]]:
-        # 延迟导入避免循环依赖：主题名来自 core 层 CommandUiAdapter
-        # （原 from ..core.theme 指向不存在的模块，2026-07-31 修复幽灵导入）
-        from src.core.commands._ui_adapter import CommandUiAdapter
-        global _THEME_ADAPTER
-        if _THEME_ADAPTER is None:
-            with _THEME_ADAPTER_LOCK:
-                if _THEME_ADAPTER is None:
-                    _THEME_ADAPTER = CommandUiAdapter()
-        return list(_THEME_ADAPTER.get_theme_names_with_desc())
+        """主题列表 fetcher（与 _fetch_sessions/_fetch_models 一致：异常返回 []）。
+
+        ★ P2-2（review 方向）：统一加 try/except 返回 []——修复前无异常
+        捕获，CommandUiAdapter 导入/构造/查询任一异常直接冒泡，经
+        _TTLCache.get() 传播至补全按键路径（Tab 补全 /theme 崩溃）。
+        """
+        try:
+            # 延迟导入避免循环依赖：主题名来自 core 层 CommandUiAdapter
+            # （原 from ..core.theme 指向不存在的模块，2026-07-31 修复幽灵导入）
+            from src.core.commands._ui_adapter import CommandUiAdapter
+            global _THEME_ADAPTER
+            if _THEME_ADAPTER is None:
+                with _THEME_ADAPTER_LOCK:
+                    if _THEME_ADAPTER is None:
+                        _THEME_ADAPTER = CommandUiAdapter()
+            return list(_THEME_ADAPTER.get_theme_names_with_desc())
+        except Exception:
+            return []
 
     # ── 主入口 ─────────────────────────────────────────
 
@@ -427,7 +436,11 @@ class CompletionEngine:
         #   → 返回空（用户输入 "." 按 Tab 无结果）；prefix=".." 时
         #   file_prefix=".." → glob("..*") 匹配祖父目录项，补全出父级之上的
         #   目录（行为错误）。现在对 "." / ".." 视为「枚举当前/上级目录」。
-        if prefix in (".", ".."):
+        # ★ P2-3（review 方向）："~" 加入特判集——修复前 prefix="~" 落入
+        #   常规分支（file_prefix=home basename），守卫后 glob 匹配 home 同级
+        #   目录下以该 basename 开头的项（错误）或返回空（home 为根目录）。
+        #   现视为「枚举 home 目录」（expanded 即 expanduser 展开结果）。
+        if prefix in (".", "..", "~"):
             search_dir = expanded
             file_prefix = ""
         elif prefix.endswith(os.sep):
@@ -440,7 +453,8 @@ class CompletionEngine:
         # 如果前缀为空，不搜索（避免列出当前目录所有文件）。
         # ★ 2026-08-06："." / ".." 例外——视为「枚举当前/上级目录」请求
         #   （file_prefix 为空但语义明确，不应被本守卫拦截）。
-        if not file_prefix and not prefix.endswith(os.sep) and prefix not in (".", ".."):
+        # ★ P2-3："~" 同例外（枚举 home）。
+        if not file_prefix and not prefix.endswith(os.sep) and prefix not in (".", "..", "~"):
             return []
 
         try:
@@ -466,6 +480,11 @@ class CompletionEngine:
         elif prefix in (".", ".."):
             # "." / ".." 补全结果带 "./" / "../" 前缀（与用户输入路径形态一致）
             base = prefix + os.sep
+        elif prefix == "~":
+            # P2-3（review 方向）："~" 枚举 home——候选替换文本带展开后的
+            # home 绝对路径前缀（如 ``/Users/alice/``），与用户输入形态一致
+            # （区别于 "." 的相对前缀；expanded 即 expanduser("~") 结果）。
+            base = expanded if expanded.endswith(os.sep) else expanded + os.sep
         else:
             base = os.path.dirname(prefix)
             if base and not base.endswith(os.sep):

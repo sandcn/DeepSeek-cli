@@ -203,6 +203,12 @@ class TuiLifecycle:
                 # 可重新订阅，不残留半停止状态）。
                 self._started = False
                 self._bound_handlers = None
+                # ★ P2-5（review 方向）：stop 复位订阅绑定标志——修复前仅复位
+                #   _bound_handlers=None，_handlers_bound 残留 True；下次 start()
+                #   时 ``if self._handlers_bound:`` 分支对刚重建（尚未订阅）的
+                #   handlers 执行多余 unsubscribe（无害但错误），且外部经
+                #   handlers_bound 属性误判为「仍已绑定」。
+                self._handlers_bound = False
 
     def _close_line_tracker(self) -> None:
         """关闭输出历史 line tracker（flush 剩余行 + 停止 daemon 定时器）。

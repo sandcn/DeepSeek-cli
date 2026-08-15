@@ -73,14 +73,20 @@ def FocusGroup(props: dict) -> Element:
     )
     if n_keys == 0:
         return h(Column, None, children)
-    # ★ P3（review）：激活序号钳制到 [0, n_keys) 并**同步 state**——修复前
-    #   ``active >= n_keys: active = 0`` 仅改局部变量（渲染期钳制显示正确），
-    #   但 ``_focus_active`` 注入经局部 active，state 仍越界：后续 Key 数量
-    #   恢复（n_keys 增大）时 active state 保持旧越界值，焦点序号错乱。钳制
-    #   后同步 ``set_active``（仅越界时触发一次，下帧 active 已合法，无循环）。
-    if active >= n_keys:
-        active = 0
-        set_active(0)
+    # ★ P2-2（review）：渲染期只做显示钳制（active_display），不 set_active——
+    #   修复前 ``active >= n_keys`` 时渲染期 ``set_active(0)``（渲染期状态
+    #   副作用 → 多余重渲染）。越界 state 在事件期（_clamp_focus）钳制并同步。
+    active_display = 0 if active >= n_keys else active
+
+    # 事件期钳制：n_keys 缩小导致 active 越界后，下次按键触发 set_active(0)
+    # （仅触发一次，下帧 active 已合法，无循环）；不消费事件（钳制副作用，
+    # 放行子组件输入路由）。
+    def _clamp_focus(event) -> bool:
+        if active >= n_keys:
+            set_active(0)
+        return False
+
+    use_input(_clamp_focus, True)
     wrapped: list = []
     key_idx = 0
     for child in children:
@@ -88,7 +94,7 @@ def FocusGroup(props: dict) -> Element:
             cp = dict(child.props)
             cp["_focus_index"] = key_idx
             cp["_focus_total"] = n_keys
-            cp["_focus_active"] = (key_idx == active)
+            cp["_focus_active"] = (key_idx == active_display)
             cp["_focus_set"] = set_active
             wrapped.append(Element(child.type, cp, child.children))
             key_idx += 1
@@ -126,11 +132,18 @@ def Key(props: dict) -> Element:
         # 仅受管且激活的 Key 处理焦点切换
         if not managed or not active or set_active is None:
             return False
+        # ★ P1-3 + P2-1（review）：Tab（modifier!=2）前进 / Shift+Tab
+        #   （modifier==2）后退——框架 CSI-u 已把 Shift+Tab 解析为
+        #   ``kind=="tab", modifier==2``（见 _input_parser 方向A 步骤1）。
+        #   修复前：① modifier 未区分，Shift+Tab（modifier==2）仍按前进处理
+        #   （P2-1）；② 用 arrow_left 模拟后退（P1-3）与子组件（TextInput
+        #   等）左移键冲突——激活态 Key 恒消费 arrow_left，子组件永远收不到
+        #   左移事件。
         if event.kind == "tab" or (event.kind == "char" and event.char == "\t"):
-            _call(set_active, (index + 1) % total)
-            return True
-        if event.kind == "arrow_left":
-            _call(set_active, (index - 1) % total)
+            if event.modifier == 2:
+                _call(set_active, (index - 1) % total)
+            else:
+                _call(set_active, (index + 1) % total)
             return True
         return False
 

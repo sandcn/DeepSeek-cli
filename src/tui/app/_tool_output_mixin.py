@@ -366,6 +366,14 @@ class _ToolOutputMixin:
                         if r.text and r.text.strip() in ("\u25cf", "\u2714", "\u2716"):
                             idx = i
                             break
+                    else:
+                        # ★ P2-5（review 修复）：扫描失败（标题被截断致图标
+                        #   字符丢失/结构异常）时**头部插入** icon 而非替换——
+                        #   替换 ``icon + runs[1:]`` 会丢弃标题首 run（内容
+                        #   丢失）；``icon + runs`` 保留全部内容（仅补状态）。
+                        from src.tui.ink import Line
+                        self._replace_committed_line(offset, Line(icon + runs))
+                        return
                 # ★ BUG-30：新建 Line 对象（不复用旧对象）+ 列表身份变化
                 from src.tui.ink import Line
                 self._replace_committed_line(offset, Line(runs[:idx] + icon + runs[idx + 1:]))

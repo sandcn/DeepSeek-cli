@@ -98,6 +98,10 @@ def TextInput(props: dict) -> Element:
             return True
         if event.kind == "delete":
             # ★ P3（review）：光标在末尾时无操作——返回 False（不消费）。
+            # ★ P3（review）：带修饰键的 delete（modifier>=2，如 Shift/Alt/
+            #   Ctrl+Delete）不按单字符删除处理——放行（组合键由上层消费）。
+            if event.modifier >= 2:
+                return False
             if cur_cursor >= len(cur_text):
                 return False
             new_text = cur_text[:cur_cursor] + cur_text[cur_cursor + 1:]
@@ -106,10 +110,16 @@ def TextInput(props: dict) -> Element:
             _call(onChange, new_text)
             return True
         if event.kind == "arrow_left":
+            # ★ P3（review）：带修饰键的方向键（modifier>=2，如 Alt+← 词跳转
+            #   由 _dispatch_key_event 消费）不按单格移动处理——放行。
+            if event.modifier >= 2:
+                return False
             cursor_ref.current = max(0, cur_cursor - 1)
             set_cursor(cursor_ref.current)
             return True
         if event.kind == "arrow_right":
+            if event.modifier >= 2:
+                return False
             cursor_ref.current = min(len(cur_text), cur_cursor + 1)
             set_cursor(cursor_ref.current)
             return True
@@ -134,11 +144,19 @@ def TextInput(props: dict) -> Element:
         if placeholder:
             return h(TEXT, {"children": placeholder, "dim": True, "style": Style(fg=244)})
         return h(TEXT, {"children": " ", "height": 1})
-    before = display[:eff]
-    after = display[eff:]
+    # ★ P2-5（review）：mask 长度 >1 时 eff 是**原文**索引，display 长度 =
+    #   len(mask) * len(text)——直接用 eff 切片会落在错误字符边界（如 mask="ab"
+    #   text="xy" cursor=1 → display[:1]="a" 而非 "ab"）。按 ``eff * len(mask)``
+    #   换算显示索引后再切片。
+    if mask:
+        disp_eff = eff * len(mask)
+    else:
+        disp_eff = eff
+    before = display[:disp_eff]
+    after = display[disp_eff:]
     if not show_cursor:
         return h(TEXT, {"children": display})
-    cursor_ch = " " if eff >= len(display) else display[eff]
+    cursor_ch = " " if disp_eff >= len(display) else display[disp_eff]
     cursor_style = Style(bg=cursor_color)
     # ★ P3（review E10）：光标列对齐由 row 布局按显示宽度累加保证——``before``
     #   含 CJK/emoji（宽字符）时其**显示宽度** ≠ 字符数，row 布局子节点按

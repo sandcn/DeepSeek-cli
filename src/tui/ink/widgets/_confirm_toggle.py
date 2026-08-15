@@ -139,7 +139,9 @@ def Toggle(props: dict) -> Element:
     def _handle(event) -> bool:
         if not focus:
             return False
-        if event.kind == "space" or (event.kind == "char" and event.char == " ") or event.kind == "enter":
+        # ★ P3（review）：``event.kind == "space"`` 为死分支（InputParser 从不
+        #   产生 kind=="space"，空格为 ``kind=="char", char==" "``）——删除。
+        if (event.kind == "char" and event.char == " ") or event.kind == "enter":
             new_value = not value_ref.current
             value_ref.current = new_value
             _call(onChange, new_value)

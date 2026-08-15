@@ -449,6 +449,11 @@ def _do_display_messages(model, cmd) -> None:
     from src.tui.pipeline.message_display import _content_str
     messages = cmd.messages or []
     for msg in messages:
+        # ★ P2-4（review 修复）：消息元素可能非 dict（str/None 等外部注入）——
+        #   ``msg.get`` 抛 AttributeError 中断回放；非 dict 跳过（安全处理，
+        #   与 _append_assistant_rich 的 tool_calls 元素防御一致）。
+        if not isinstance(msg, dict):
+            continue
         role = msg.get("role", "")
         if role == "user":
             content = _content_str(msg.get("content", ""))

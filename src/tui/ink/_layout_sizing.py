@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+import math
+
 from .fiber import Fiber
 
 
@@ -254,7 +256,12 @@ def _apply_aspect_ratio(fiber: Fiber, width: int, h: int) -> tuple[int, int]:
         ar = float(ar)
     except (TypeError, ValueError, OverflowError):
         return width, h
-    if ar <= 0:
+    # ★ P1-5 修复（review 方向）：非有限值（nan/inf）直接返回原尺寸——
+    #   ``float("nan")`` 不抛异常且 ``nan <= 0`` 恒 False，走到
+    #   ``int(round(width / nan))`` 抛 ValueError；``inf`` 在 height 推导
+    #   分支 ``int(round(h * inf))`` 抛 OverflowError。``math.isfinite``
+    #   统一拦截（nan/inf 均非有限）。
+    if not math.isfinite(ar) or ar <= 0:
         return width, h
     if fiber.props.get("width") is not None and fiber.props.get("height") is None:
         return width, max(0, int(round(width / ar)))

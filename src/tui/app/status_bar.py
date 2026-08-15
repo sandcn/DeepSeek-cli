@@ -150,15 +150,19 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
     total = snap.get("total_tokens", 0)
     elapsed = snap.get("elapsed_seconds", 0.0)
     speed = snap.get("per_second_speed", 0.0)
-    tool_total = st.tool_total
+    # ★ P2-8（review 修复）：统一 getattr 防御——测试桩/异常状态对象可能缺
+    #   tool_total/tool_count/tool_fail 字段（直接属性访问 AttributeError）。
+    tool_total = getattr(st, "tool_total", 0) or 0
+    tool_count = getattr(st, "tool_count", 0) or 0
+    tool_fail = getattr(st, "tool_fail", 0) or 0
 
     parts: list[StyledRun] = []
     if tool_total > 0:
-        if st.tool_count > 0:
+        if tool_count > 0:
             # ★ BEAUTY-16（动效）：工具失败计数警示呼吸——tool_fail>0 时
             #   总数从暗红 196 呼吸到亮红 208（8s，醒目但不过度闪烁），提示
             #   有工具失败；无失败保持成功绿。time_glow 0.1s 桶缓存。
-            if st.tool_fail > 0:
+            if tool_fail > 0:
                 count_style = Style(fg=time_glow(196, 208, 8.0))
             else:
                 count_style = _S_TOOL_OK
@@ -166,16 +170,16 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             # （45-55，8s，与模型名/分隔线呼吸同步），空闲静态强调色。
             # time_glow 0.1s 桶缓存，10Hz 渲染时平滑推进。
             arrow_style = Style(fg=time_glow(45, 55, 8.0)) if status_active else _S_ACCENT
-            parts.append(StyledRun(f"{st.tool_count}\u2192", arrow_style))
+            parts.append(StyledRun(f"{tool_count}\u2192", arrow_style))
             parts.append(StyledRun(f"{tool_total}", count_style))
         else:
             # ★ P2-9：计数源不一致（如 tool_fail 单独递增超过 tool_total、
             #   或 tool_count/tool_fail 来源不同步）时 ``tool_total - tool_count
             #   - tool_fail`` 可为负——钳制到 0，避免状态栏显示负数完成数。
-            done = max(0, tool_total - st.tool_count - st.tool_fail)
+            done = max(0, tool_total - tool_count - tool_fail)
             parts.append(StyledRun(f"{done}", _S_TOOL_OK))
             parts.append(StyledRun("/", _S_DIM))
-            if st.tool_fail > 0:
+            if tool_fail > 0:
                 parts.append(StyledRun(
                     f"{tool_total}", Style(fg=time_glow(196, 208, 8.0)),
                 ))
@@ -262,18 +266,29 @@ def StatusBar(props) -> object:
     dot_elapsed = time.monotonic() - dot_fade_ref.current[1]
     # BEAUTY-1/PERF-3：渐显窗口内按 0.1s 桶刷新（平滑渐显），结束后回 1s 桶
     # （PERF-3 缓存语义保持）。fade_duration_sec<=0（配置异常）→ 回退纯 1s 桶。
+    # ★ P1-1（review 修复）：按「渐显窗口」而非 status_active 决定桶粒度——
+    #   修复前空闲恒 1s 桶：模型名首次出现（status_active=False）时渐显
+    #   （fade_duration 默认 0.6s）在 1s 桶内冻结/步进，渐显动画实际不可见。
+    #   修复后 dot_elapsed < fade_duration 期间（含空闲）用 0.1s 桶平滑渐显，
+    #   结束后回 1s 桶（与 docstring 声明一致）。
     # BEAUTY-7：status_active 期间恒用 0.1s 桶——streaming spinner + 模型点
     #   呼吸以 10Hz 平滑推进（流式期间帧率本就 10Hz，零额外渲染成本）；
-    #   空闲回 1s 桶（静态显示，CPU 保持低占用）。
+    #   空闲非渐显期回 1s 桶（静态显示，CPU 保持低占用）。
     if st.status_active:
         time_dep = int(time.monotonic() / 0.1)
         # BEAUTY-7：streaming spinner 帧（10Hz）——spinner_frame 返回帧索引，
         # 必须经 _SPINNER_FRAMES 查表取字符（修复前直接格式化索引 → 显示数字
         # 0-9 循环）。
-        from src.tui.app import _fx
         spinner_char = _fx.spinner_char()
     else:
-        time_dep = int(time.monotonic() / 1.0)
+        # fade_duration 惰性读取（_default_fx_params，与 fade_color 一致——
+        # 修复前用固化快照 _DEFAULT_FADE_DURATION 判断渐显窗口）
+        fade_duration_sec = _fx._default_fx_params()[0]
+        if fade_duration_sec > 0 and dot_elapsed < fade_duration_sec:
+            # 空闲渐显窗口：0.1s 桶平滑渐显（静态点字符——空闲 spinner 为 ·）
+            time_dep = int(time.monotonic() / 0.1)
+        else:
+            time_dep = int(time.monotonic() / 1.0)
         spinner_char = "\u00b7"
     # ★ 推理等级（/reasoning 命令配置 low/medium/high/max）：模型名后显示
     #   [level]。读取配置（RC 内存缓存 + 单键缓存，每帧读取开销极小；异常
@@ -290,9 +305,9 @@ def StatusBar(props) -> object:
         (
             st.status_active,
             st.model_name,
-            st.tool_total,
-            st.tool_count,
-            st.tool_fail,
+            getattr(st, "tool_total", 0),
+            getattr(st, "tool_count", 0),
+            getattr(st, "tool_fail", 0),
             # ★ 2026-08-05：deps 补充 st.main_phase——阶段标签（思考/回答/解析）
             #   变化时触发重建（修复前缺 main_phase：阶段切换后状态栏仍显示旧
             #   阶段直至其他 deps 变化）。getattr 防御（测试桩对象无该字段）。

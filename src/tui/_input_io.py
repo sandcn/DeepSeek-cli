@@ -344,6 +344,22 @@ class InputIO:
         self._pending = data
         self._pending_pos = 0
 
+    def prepend_pending(self, data: bytes) -> None:
+        """将字节回写到 pending 缓冲前缀（供后续解析正常消费）。
+
+        P2-1（review）：Alt+Backspace 排空检测误读的字节（如多字节 UTF-8
+        首字节）回写——原 pending 剩余部分保留在后（保持原始顺序）。
+        """
+        if not data:
+            return
+        if self._pending_pos >= len(self._pending):
+            self._pending = data
+            self._pending_pos = 0
+            return
+        remaining = self._pending[self._pending_pos:]
+        self._pending = data + remaining
+        self._pending_pos = 0
+
     def read_byte(self) -> bytes:
         """从 fd 读取单个原始字节（优先消费 pending，零 syscall）。
 
@@ -357,23 +373,29 @@ class InputIO:
         except (ValueError, OSError, TypeError):
             return b""
 
-    def read_with_timeout(self, timeout: float) -> bytes | None:
+    def read_with_timeout(self, timeout: float, fd: int | None = None) -> bytes | None:
         """使用 select + os.read 读取单个字节，超时返回 None。
 
         优化（2026-08-14 批量读取）：pending 缓冲有字节时**直接返回**（零
         等待、零 syscall）——批量读取的剩余字节已在内存在，无需 select；
         pending 空时才走 select+os.read。
+
+        P2-4（review）：新增可选 ``fd`` 参数——``read_utf8_char`` 持有外部
+        传入 fd（与 ``self._fd`` 可能不同，如 fd_override）时经此参数传递，
+        避免 ``read_utf8_char`` 的 fd 参数被忽略（原实现一律读 ``self._fd``）。
+        缺省 None 保持 ``self._fd``（既有调用方零变更）。
         """
         if self.has_pending():
             return self.take_pending_byte()
+        target_fd = self._fd if fd is None else fd
         try:
-            ready, _, _ = select.select([self._fd], [], [], timeout)
+            ready, _, _ = select.select([target_fd], [], [], timeout)
         except (ValueError, OSError, TypeError, AttributeError):
             return None
         if not ready:
             return None
         try:
-            raw = os.read(self._fd, 1)
+            raw = os.read(target_fd, 1)
             return raw if raw else None
         except (ValueError, OSError, TypeError):
             return None
@@ -422,6 +444,14 @@ class InputIO:
         except (ValueError, OSError, TypeError, AttributeError):
             pass
         if not extra:
+            return first_chars
+        # P1-1（review）：批量读取/select 读入的 extra 若含 ESC（0x1b）——
+        # 「普通字符 + 方向键/Home/End 等转义序列」同批读入场景——不得作为
+        # 粘贴文本解码（ESC 序列会被当成粘贴内容存入 _paste_partial，方向键
+        # 事件永久丢失且残留污染后续粘贴）。回写 pending 交由解析器逐字节
+        # 消费（方向键等正常解析），本调用仅返回首字符（非粘贴）。
+        if b"\x1b" in extra:
+            self.set_pending(extra)
             return first_chars
         # 方向1 B4：粘贴正文经 _decode_paste_bytes 解码——extra 尾部若为截断
         # 多字节 UTF-8 序列，保留到 _paste_partial 留待下次补齐，不再产生
@@ -486,7 +516,15 @@ class InputIO:
                 text = prefix.decode("utf-8")
             except UnicodeDecodeError:
                 continue
-            return text, buf[-cut:]
+            # P1-1（review）：尾部若含控制字节（0x00-0x1F，如 ESC 转义序列
+            # 残留）不存入 partial——控制字节与后续粘贴字节拼接会产生错误
+            # 解码/污染粘贴缓冲（修复前 ``b"ab\\xc2\\x1b"`` 的尾部
+            # ``b"\\xc2\\x1b"`` 含 ESC 残留，被整段存为 partial，下次粘贴
+            # 拼接后误解码）。
+            tail = buf[-cut:]
+            if any(b < 0x20 for b in tail):
+                return text, b""
+            return text, tail
         # 前缀均无法严格解码（中部损坏）→ replace 兜底，残留全部丢弃
         return buf.decode("utf-8", errors="replace"), b""
 
@@ -502,12 +540,20 @@ class InputIO:
         pending 缓冲有字节时零等待直取（同批 read 的中文等多字节序列不再
         select 超时），pending 空时才 select 等待。
         """
+        replaced_prefix = ""
         if self._utf8_partial:
             # 有跨调用残留 partial——校验当前 first_byte 是否为合法续字节
             # （0x80-0xBF）。续字节被新字符首字节打断（慢速输入间隔中插入
             # 新字符）时 partial 无效 → 清空后按新字符首字节重新解析（修复
             # 前把新首字节拼进旧序列 → 解码失败 → 两个字符均丢失）。
             if not (0x80 <= first_byte <= 0xBF):
+                # P2-3（review）：被打断的 partial 不直接丢弃——以
+                # errors="replace" 消费（不完整序列以 U+FFFD 呈现而非静默
+                # 消失），作为前缀与本次新字符解析结果合并返回（调用方按
+                # 连续文本分发，字节不丢）。
+                replaced_prefix = self._utf8_partial.decode(
+                    "utf-8", errors="replace",
+                )
                 self._utf8_partial = b""
             first = self._utf8_partial[0] if self._utf8_partial else first_byte
             buf = bytes([first_byte])
@@ -522,7 +568,11 @@ class InputIO:
         elif (first & 0xF8) == 0xF0:
             total_bytes = 4
         else:
+            # P2-3：非 UTF-8 首字节（如打断后直接调用）——若已有 replace
+            # 消费的前缀，返回前缀（不丢）；否则清空 partial 返回 None。
             self._utf8_partial = b""
+            if replaced_prefix:
+                return replaced_prefix
             return None
 
         # 已读字节数（含 partial 与当前 first_byte）
@@ -530,7 +580,9 @@ class InputIO:
         for _ in range(total_bytes - have):
             # read_with_timeout：优先从 pending 取（零等待），空则 select
             # 等待 _UTF8_READ_TIMEOUT；超时/EOF 均返回 None → break。
-            more = self.read_with_timeout(_UTF8_READ_TIMEOUT)
+            # P2-4（review）：透传外部 fd（read_utf8_char 的 fd 参数不再被
+            # 忽略——原实现经 read_with_timeout 一律读 self._fd）。
+            more = self.read_with_timeout(_UTF8_READ_TIMEOUT, fd)
             if more is None:
                 break
             buf += more
@@ -539,12 +591,17 @@ class InputIO:
         try:
             text = full.decode("utf-8")
             self._utf8_partial = b""
-            return text
+            return replaced_prefix + text
         except UnicodeDecodeError:
             pass
         # 从尾部找最大合法前缀——可组成合法前缀（不完整序列）→ 存 partial
         # 返回 None（待下次补齐）；不可组成 → 清空返回 None（不产生 U+FFFD）。
         _text, partial = self._take_valid_prefix(full)
+        if replaced_prefix:
+            # P2-3：已有 replace 消费的打断前缀——不能返回 None（前缀会丢
+            # 失）。本次未完整序列存 partial 留待补齐，返回前缀文本。
+            self._utf8_partial = partial
+            return replaced_prefix
         if partial:
             self._utf8_partial = partial
             return None

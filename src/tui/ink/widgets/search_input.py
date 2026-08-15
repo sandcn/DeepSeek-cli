@@ -100,7 +100,10 @@ def SearchInput(props: dict) -> Element:
             limit = max(1, int(limit))
         except (TypeError, ValueError, OverflowError):
             limit = None
-    highlight_style = props.get("highlightStyle") or _SEARCH_HIGHLIGHT
+    # ★ P3（review）：highlightStyle 改 ``is not None`` 判断——修复前 ``or``
+    #   把显式空 Style()（falsy）当默认替换。
+    highlight_style_prop = props.get("highlightStyle")
+    highlight_style = highlight_style_prop if highlight_style_prop is not None else _SEARCH_HIGHLIGHT
     try:
         initial_index = max(0, int(props.get("initialIndex", 0)))
     except (TypeError, ValueError, OverflowError):
@@ -149,17 +152,20 @@ def SearchInput(props: dict) -> Element:
                     _logger.debug("SearchInput onQueryChange 回调异常", exc_info=True)
             return True
         if event.kind == "backspace":
-            if cur_q:
-                new_q = cur_q[:-1]
-                query_ref.current = new_q
-                cursor_ref.current = 0
-                set_query(new_q)
-                set_cursor(0)
-                if on_query_change is not None:
-                    try:
-                        on_query_change(new_q)
-                    except Exception:
-                        _logger.debug("SearchInput onQueryChange 回调异常", exc_info=True)
+            # ★ P3（review）：查询已为空时 backspace 无操作——返回 False（不
+            #   消费，放行父级；与 escape 空查询语义一致）。
+            if not cur_q:
+                return False
+            new_q = cur_q[:-1]
+            query_ref.current = new_q
+            cursor_ref.current = 0
+            set_query(new_q)
+            set_cursor(0)
+            if on_query_change is not None:
+                try:
+                    on_query_change(new_q)
+                except Exception:
+                    _logger.debug("SearchInput onQueryChange 回调异常", exc_info=True)
             return True
         if event.kind == "escape":
             # ★ P3（review）：查询已为空时 escape 无操作——返回 False（不消费，
@@ -177,26 +183,32 @@ def SearchInput(props: dict) -> Element:
                     _logger.debug("SearchInput onQueryChange 回调异常", exc_info=True)
             return True
         if event.kind == "arrow_up":
-            if filtered and cur_cursor > 0:
-                cursor_ref.current = cur_cursor - 1
-                set_cursor(cursor_ref.current)
+            # ★ P2-4（review）：无匹配结果或移动无效时返回 False（不消费）——
+            #   修复前无条件 return True（空结果时方向键/回车仍吞掉事件，
+            #   父级收不到）。
+            if not filtered or cur_cursor <= 0:
+                return False
+            cursor_ref.current = cur_cursor - 1
+            set_cursor(cursor_ref.current)
             return True
         if event.kind == "arrow_down":
-            if filtered and cur_cursor < len(filtered) - 1:
-                cursor_ref.current = cur_cursor + 1
-                set_cursor(cursor_ref.current)
+            if not filtered or cur_cursor >= len(filtered) - 1:
+                return False
+            cursor_ref.current = cur_cursor + 1
+            set_cursor(cursor_ref.current)
             return True
         if event.kind == "enter":
-            if filtered:
-                idx = _clamp_index(cur_cursor, len(filtered))
-                item = filtered[idx]
-                if on_select is not None:
-                    try:
-                        on_select(item, idx)
-                    except Exception:
-                        # ★ P2（review）：onSelect 回调异常同补日志（与
-                        #   onQueryChange 一致——修复前静默吞）。
-                        _logger.debug("SearchInput onSelect 回调异常", exc_info=True)
+            if not filtered:
+                return False
+            idx = _clamp_index(cur_cursor, len(filtered))
+            item = filtered[idx]
+            if on_select is not None:
+                try:
+                    on_select(item, idx)
+                except Exception:
+                    # ★ P2（review）：onSelect 回调异常同补日志（与
+                    #   onQueryChange 一致——修复前静默吞）。
+                    _logger.debug("SearchInput onSelect 回调异常", exc_info=True)
             return True
         return False
 

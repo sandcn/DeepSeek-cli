@@ -155,6 +155,18 @@ def UserSelectPopup(props) -> object:
     model = props["model"]
     width = props.get("width", 80)
     us = getattr(model, "user_select", None)
+    # ★ P2-6（review 修复）：options 为空（外部注入/异常状态）时弹窗无可交互
+    #   选项——静默不可见（visible=False）会让工具协程（无超时 deadline=0）
+    #   永远轮询 ``us.done`` → 交互卡死。修复：自动以 default_options 回退
+    #   （置 done=True；first-write-wins——done 已由工具超时置位则跳过）。
+    #   弹窗不可见但工具协程可正常返回（与 Enter 的 default 回退语义一致）。
+    if (
+        us is not None and us.visible and not us.done
+        and not getattr(us, "options", None)
+    ):
+        us.action = "confirmed"
+        us.result = list(getattr(us, "default_options", None) or [])
+        us.done = True
     visible = bool(
         us is not None and us.visible and not us.done
         and getattr(us, "options", None)

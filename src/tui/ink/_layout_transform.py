@@ -66,6 +66,23 @@ def _reflow_subtree(fiber: Fiber, new_y: int, new_x: int | None = None) -> None:
             spacing = margin
     else:
         spacing = margin
+    # ★ P1-1 修复（review 方向）：与 ``_measure`` 一致解析 columnGap/rowGap
+    #   显式覆盖——flexGrow/flexShrink 后孙节点重排的兄弟间距须与测量阶段
+    #   一致（``_measure`` 用 ``col_gap``/``row_gap``；columnGap/rowGap 显式
+    #   覆盖 gap 时若此处仍用 gap，重排后孙节点间距错乱）。row 分支用
+    #   ``col_gap``、column 分支用 ``row_gap``；畸形值回退 gap。
+    col_gap = spacing
+    row_gap = spacing
+    if "columnGap" in fiber.props:
+        try:
+            col_gap = max(0, int(fiber.props.get("columnGap")))
+        except (TypeError, ValueError, OverflowError):
+            col_gap = spacing
+    if "rowGap" in fiber.props:
+        try:
+            row_gap = max(0, int(fiber.props.get("rowGap")))
+        except (TypeError, ValueError, OverflowError):
+            row_gap = spacing
     direction = fiber.props.get("flexDirection", "column")
     if direction == "row":
         # row：横向排列——子节点 x 累加，y 保持内边距基准（纵向偏移由
@@ -83,7 +100,7 @@ def _reflow_subtree(fiber: Fiber, new_y: int, new_x: int | None = None) -> None:
                 #   副作用——最后子节点后 cursor_x 不再被消费——但语义误导，
                 #   未来若复用 cursor_x 会多出间隔）。
                 if i < len(row_children) - 1:
-                    cursor_x += spacing
+                    cursor_x += col_gap
     else:
         # column：纵向堆叠——子节点 y 累加（默认方向，与既有语义一致）。
         cursor_y = new_y + pad_t + border
@@ -91,7 +108,7 @@ def _reflow_subtree(fiber: Fiber, new_y: int, new_x: int | None = None) -> None:
             _reflow_subtree(child, cursor_y)
             ccb = child.layout_box
             if ccb is not None:
-                cursor_y += ccb.h + spacing
+                cursor_y += ccb.h + row_gap
 
 
 def _translate_subtree_y(fiber: Fiber, delta_y: int) -> None:

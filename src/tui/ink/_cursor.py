@@ -29,24 +29,35 @@ def find_input_fiber(root_fiber):
     ★ 标准 React Ink 组件化：InputArea 标准组件返回 Column（props 含
     ``dataInputArea=True`` 标记 + 透传输入区状态）——查找条件为
     ``props.dataInputArea`` 或旧 ``type == "input-area"``（兼容）。
+
+    ★ P3-1 修复（review 方向）：显式栈迭代替代递归（与 ``_find_committed_chat``
+    一致）——修复前 ``walk(f2.child)`` 递归无深度限制，深层嵌套树（1000+
+    层）触发 RecursionError（Python 默认递归上限 ~1000）。显式栈保持原 DFS
+    顺序（child 深度优先、sibling 从左到右）：sibling 链先压栈（栈底）、
+    child 后压栈（栈顶先处理）。
     """
     from .fiber import Fiber
 
-    def walk(f: Fiber | None):
-        f2 = f
-        while f2 is not None:
-            if f2.is_host and (
-                f2.type == "input-area"
-                or bool(f2.props.get("dataInputArea"))
-            ):
-                return f2
-            r = walk(f2.child)
-            if r is not None:
-                return r
-            f2 = f2.sibling
-        return None
-
-    return walk(root_fiber)
+    stack = [root_fiber]
+    while stack:
+        f = stack.pop()
+        if f.is_host and (
+            f.type == "input-area"
+            or bool(f.props.get("dataInputArea"))
+        ):
+            return f
+        # sibling 链逆序压入（LIFO 弹出恢复从左到右），child 最后压入
+        # （栈顶先处理——原递归 child 深度优先语义）。
+        sibs = []
+        s = f.sibling
+        while s is not None:
+            sibs.append(s)
+            s = s.sibling
+        for i in range(len(sibs) - 1, -1, -1):
+            stack.append(sibs[i])
+        if f.child is not None:
+            stack.append(f.child)
+    return None
 
 
 def position_cursor(renderer, width: int, fiber) -> None:

@@ -282,6 +282,7 @@ class SubAgentPanelController:
         """
         self._store.update_tool_parsing(
             event.label, event.tool_name, event.arguments,
+            getattr(event, "tool_id", ""),
         )
         self._dirty = True
         self._emit_frame()
@@ -301,12 +302,17 @@ class SubAgentPanelController:
         self._emit_frame()
 
     def _on_tool_started(self, event) -> None:
-        self._store.start_tool(event.label, event.tool_name, event.detail)
+        # P1-1（review 方向）：透传 event.tool_id——同名工具连续调用且事件
+        # 乱序/交叉时 StateStore 按 tool_id 精确闭合正确的 running 记录。
+        self._store.start_tool(event.label, event.tool_name, event.detail,
+                               getattr(event, "tool_id", ""))
         self._dirty = True
         self._emit_frame()
 
     def _on_tool_done(self, event) -> None:
-        self._store.done_tool(event.label, event.tool_name, event.success)
+        # P1-1（review 方向）：透传 event.tool_id（同上）。
+        self._store.done_tool(event.label, event.tool_name, event.success,
+                              getattr(event, "tool_id", ""))
         self._dirty = True
         self._emit_frame()
 
@@ -391,8 +397,13 @@ class SubAgentPanelController:
             # ★ 变更检测：帧无变化时跳过推送（避免空转 keep-alive 推送使
             #   render 循环持续置脏 → 空闲 CPU 100%）
             if lines != self._last_pushed_frame:
-                self._last_pushed_frame = list(lines)
+                # ★ P2-4（review 方向）：**推送成功后**再更新
+                #   _last_pushed_frame（与 _emit_frame 的 P3-13 顺序一致）——
+                #   修复前先更新后推送：推送失败（被下方 except 捕获）时帧已
+                #   记录为"已推送"，下一帧变更检测 ``lines !=
+                #   _last_pushed_frame`` 为 False → 不再重试 → 帧永久丢失。
                 self._push_frame(lines)
+                self._last_pushed_frame = list(lines)
         except Exception:
             # ★ BUG-54（review 方向）：渲染异常时**不复位脏标记**——修复前
             #   ``self._dirty = False`` 在 try 外无条件执行：异常后脏标记被清，

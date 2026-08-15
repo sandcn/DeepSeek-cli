@@ -61,7 +61,10 @@ def Checkbox(props: dict) -> Element:
     #   被默认样式替换。改 ``is not None`` 判断：显式传入空样式按原样保留。
     checked_style_prop = props.get("checkedStyle")
     checked_style = checked_style_prop if checked_style_prop is not None else _CHECKBOX_CHECKED
-    unchecked_style = props.get("uncheckedStyle") or _CHECKBOX_UNCHECKED
+    # ★ P3（review）：uncheckedStyle 同样改 ``is not None`` 判断（与
+    #   checkedStyle 一致）——修复前 ``or`` 把显式空 Style()（falsy）当默认替换。
+    unchecked_style_prop = props.get("uncheckedStyle")
+    unchecked_style = unchecked_style_prop if unchecked_style_prop is not None else _CHECKBOX_UNCHECKED
 
     internal_checked, set_internal_checked = use_state(default_checked)
     checked = bool(checked_prop) if controlled else internal_checked
@@ -72,7 +75,9 @@ def Checkbox(props: dict) -> Element:
     def _handle(event) -> bool:
         if not focus:
             return False
-        if event.kind == "space" or (event.kind == "char" and event.char == " ") or event.kind == "enter":
+        # ★ P3（review）：``event.kind == "space"`` 为死分支（InputParser 从不
+        #   产生 kind=="space"，空格为 ``kind=="char", char==" "``）——删除。
+        if (event.kind == "char" and event.char == " ") or event.kind == "enter":
             new_value = not checked_ref.current
             checked_ref.current = new_value
             if not controlled:

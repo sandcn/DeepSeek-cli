@@ -85,9 +85,14 @@ def Breadcrumbs(props: dict) -> Element:
     """
     items = _normalize_items(props.get("items", []))
     separator = str(props.get("separator", " / "))
-    separator_style = props.get("separatorStyle") or _BREADCRUMB_SEP
-    active_style = props.get("activeStyle") or _BREADCRUMB_ACTIVE
-    item_style = props.get("itemStyle") or _BREADCRUMB_ITEM
+    # ★ P3（review）：样式 prop 改 ``is not None`` 判断——修复前 ``or`` 把
+    #   显式空 Style()（falsy）当默认替换。
+    separator_style_prop = props.get("separatorStyle")
+    separator_style = separator_style_prop if separator_style_prop is not None else _BREADCRUMB_SEP
+    active_style_prop = props.get("activeStyle")
+    active_style = active_style_prop if active_style_prop is not None else _BREADCRUMB_ACTIVE
+    item_style_prop = props.get("itemStyle")
+    item_style = item_style_prop if item_style_prop is not None else _BREADCRUMB_ITEM
     try:
         max_items = int(props.get("maxItems", 0))
     except (TypeError, ValueError, OverflowError):

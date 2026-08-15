@@ -194,21 +194,35 @@ def _parse_diff_hunks(diff_list, line_offset=0):
     difflib.unified_diff 输出恒为 ``--- a/...``/``+++ b/...``），并排除 ``----``
     边界——删除行内容以 ``--`` 开头（diff 表示为 ``---foo``，无空格）不再被
     误判为 old_file，落入 del 分支（``-`` 前缀）。
+
+    ★ P1-1（review 方向，文件头误判修复）：文件头判定与 difflib 标准输出强
+    绑定——difflib.unified_diff 恒将文件头（``--- fromfile``/``+++ tofile``，
+    fromfile/tofile 可为**任意字符串**）置于**第一个 hunk 之前**；hunk 之后
+    的 ``--- ``/``+++ `` 前缀行是删除/新增行内容（如 SQL 注释 ``-- comment``
+    → diff 行 ``--- comment``；``++ i`` → ``+++ i``），不是文件头。修复前
+    仅凭前缀判定，hunk 之后的 ``--- comment``/``+++ i`` 被误判为文件头（该行
+    渲染错乱 + 后续所有删除/新增行行号错位 + 统计少计）。修复：``seen_hunk``
+    门控——仅接受「位于第一个 hunk 之前」的文件头；对 fromfile/tofile 为
+    任意字符串的标准 difflib 输出同样正确（文件头恒在 hunk 前）。
     """
     hunk_re = re.compile(r'^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@')
     old_num = new_num = 0
     parsed = []
+    seen_hunk = False
     for line in diff_list:
         # 文件头：``--- a/path`` / ``+++ b/path``（difflib 输出恒含空格）；
-        # ``----`` 边界兜底（排除 ``---``+非空格 前缀）
-        if line.startswith('--- ') and not line.startswith('----'):
+        # ``----`` 边界兜底（排除 ``---``+非空格 前缀）。仅第一个 hunk 之前
+        # 的 ``--- ``/``+++ `` 为文件头（difflib 标准输出）；hunk 之后的
+        # ``--- ``/``+++ `` 前缀是删除/新增行内容（P1-1 seen_hunk 门控）。
+        if not seen_hunk and line.startswith('--- ') and not line.startswith('----'):
             parsed.append(('old_file', line, 0, 0))
             continue
-        if line.startswith('+++ ') and not line.startswith('++++'):
+        if not seen_hunk and line.startswith('+++ ') and not line.startswith('++++'):
             parsed.append(('new_file', line, 0, 0))
             continue
         m = hunk_re.match(line)
         if m:
+            seen_hunk = True
             old_num = line_offset + int(m.group(1))
             new_num = line_offset + int(m.group(2))
             parsed.append(('hunk', line, old_num, new_num))
@@ -267,12 +281,20 @@ def _write_diff_line(text: str, output_target=None, width=None):
     组合按宽度截断（diff 非每帧热路径，性能可接受），窄终端 diff 长行不再
     wraparound。``width`` None（默认）保持原样（旧调用/纯函数兼容——
     ``render_diff_to_ansi``/WebUI 不传）。截断后仍为合法 ANSI（无断裂 SGR）。
+
+    ★ P2-2（review 方向）：截断路径异常保护——``ansi_to_line``/
+    ``truncate_line`` 意外抛异常时降级为不截断原样输出（diff 渲染主路径
+    不因截断失败中断）。
     """
     if width is not None and width > 0:
-        from src.renderer.ansi.helpers import ansi_to_line, truncate_line
-        line = ansi_to_line(text)
-        if line.width > width:
-            text = truncate_line(line, width).render()
+        try:
+            from src.renderer.ansi.helpers import ansi_to_line, truncate_line
+            line = ansi_to_line(text)
+            if line.width > width:
+                text = truncate_line(line, width).render()
+        except Exception:
+            # P2-2：截断失败降级为不截断原样输出（记录 debug，不中断渲染）
+            _logger.debug("_write_diff_line 截断异常，降级为不截断", exc_info=True)
     if output_target is not None:
         output_target.write_line(text)
     else:
@@ -337,7 +359,7 @@ def _render_chunk(item, w, lexer_name, output_target, max_width=None):
     )
 
 
-def _render_diff_summary(diff_list, output_target=None, width: int = _SEPARATOR_WIDTH, max_width: int | None = None):
+def _render_diff_summary(diff_list, output_target=None, width: int = _SEPARATOR_WIDTH, max_width: int | None = None, parsed=None):
     """渲染 diff 变更统计摘要（增删行数）。
 
     ★ 方向1 P0-2：基于 ``_parse_diff_hunks`` 的 parsed 结构统计——不再用
@@ -351,8 +373,15 @@ def _render_diff_summary(diff_list, output_target=None, width: int = _SEPARATOR_
 
     H3（2026-08-15）：新增 ``max_width``——行截断宽度（None=不截断；与
     ``render_diff`` 同语义，出口截断经 ``_write_diff_line``）。
+
+    ★ P2-1（review 方向）：新增 ``parsed``——调用方（render_diff_to_ansi/
+    show_file_diff）已由 ``render_diff`` 解析过一次，传入 parsed 复用，避免
+    同一 diff 被重复解析两次（修复前 render_diff 与 _render_diff_summary 各自
+    调用 _parse_diff_hunks）。``parsed=None``（默认）时内部解析，保持旧调用
+    兼容（测试/独立调用面）。
     """
-    parsed = _parse_diff_hunks(diff_list)
+    if parsed is None:
+        parsed = _parse_diff_hunks(diff_list)
     adds = dels = ctx = 0
     for typ, _line, _old_num, _new_num in parsed:
         if typ == 'add':
@@ -476,6 +505,11 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
             _render_chunk(item, w, lexer_name, output_target, max_width)
     if del_buf or add_buf:
         _flush_pairs(del_buf, add_buf, max_width)
+    # ★ P2-1（review 方向）：返回解析结果——调用方（render_diff_to_ansi/
+    #   show_file_diff）复用 parsed 传给 _render_diff_summary，避免同一 diff
+    #   被重复解析两次（修复前摘要函数各自重新解析）。旧调用方忽略返回值
+    #   不受影响（行为仅多返回一个值）。
+    return parsed
 
 
 def render_diff_to_ansi(path: str, old_content: str, new_content: str) -> str:
@@ -517,9 +551,10 @@ def render_diff_to_ansi(path: str, old_content: str, new_content: str) -> str:
         def write_line(cls, text: str) -> None:
             cls._target.append(text)
 
-    render_diff(diff_list, w, lexer_name=lexer_name, output_target=_Collector, width=sep_w)
+    # ★ P2-1（review 方向）：render_diff 返回解析结果，摘要复用（不再重复解析）
+    parsed = render_diff(diff_list, w, lexer_name=lexer_name, output_target=_Collector, width=sep_w)
     # 追加变更统计摘要
-    _render_diff_summary(diff_list, output_target=_Collector, width=sep_w)
+    _render_diff_summary(diff_list, output_target=_Collector, width=sep_w, parsed=parsed)
     # 移除最后的空行（如有）
     while collected and collected[-1] == '':
         collected.pop()
@@ -575,8 +610,9 @@ def show_file_diff(path, old_content, new_content, output_target: Optional["IOut
         diff_active.set()
     try:
         with _try_acquire_output_lock(name=f"show_file_diff:{os.path.basename(path)}"):
-            render_diff(diff_list, w, lexer_name=lexer_name, output_target=output_target, width=sep_w, max_width=term_w)
-            _render_diff_summary(diff_list, output_target=output_target, width=sep_w, max_width=term_w)
+            # ★ P2-1（review 方向）：render_diff 返回解析结果，摘要复用（不再重复解析）
+            parsed = render_diff(diff_list, w, lexer_name=lexer_name, output_target=output_target, width=sep_w, max_width=term_w)
+            _render_diff_summary(diff_list, output_target=output_target, width=sep_w, max_width=term_w, parsed=parsed)
     finally:
         if not diff_was_active:
             diff_active.clear()

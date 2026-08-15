@@ -25,8 +25,13 @@ def _gradient_runs(text: str, colors) -> list:
     # ★ 2026-08-06：colors 非迭代（int/float 标量）时回退无样式——修复前
     #   ``for c in colors`` 对 `colors=45` 抛 TypeError 渲染崩溃（Gradient
     #   的 props 守卫只防 None/空列表，标量 truthy 穿透）。
-    if not text or not colors or not hasattr(colors, "__iter__") or isinstance(colors, (str, bytes)):
+    # ★ P1-1（review）：非迭代/str/bytes colors 返回 ``[StyledRun(text, None)]``
+    #   （保留文本无样式）而非 []——修复前返回 [] 被 Gradient 外层判为空结果
+    #   → 渲染空文本（``colors=45`` / ``colors="red"`` 时文本整体消失）。
+    if not text:
         return []
+    if not colors or not hasattr(colors, "__iter__") or isinstance(colors, (str, bytes)):
+        return [StyledRun(text, None)]
     # ★ P3（review）：colors 含非 int 值（str/float/None 等）时 ``int(c)`` 抛
     #   ValueError——转换失败跳过该项（保留其余色标）；全部失败回退无样式。
     stops: list[int] = []

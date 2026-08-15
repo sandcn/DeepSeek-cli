@@ -110,13 +110,23 @@ def TopHeader(props) -> object:
     if width > 0:
         from src.tui.ink.helpers import truncate_runs
         dot_runs = [StyledRun("\u2726 ", Style(fg=dot_color))]
-        dot_runs = truncate_runs(dot_runs, width)
-        dot_w = sum(r.width for r in dot_runs)
-        title_budget = max(0, width - dot_w)
-        title_styled = truncate_runs(title_styled, title_budget)
+        # ★ P2-1（review 修复）：仅预算不足时调用 truncate_runs——修复前
+        #   无条件截断：宽屏（预算充足）下每次调用新建 runs 列表（引用变化）
+        #   → 渐变标题/版本号 TEXT 缓存（键含 styled 引用）每帧 miss → 整个
+        #   header 每帧重建。修复后预算充足直接复用缓存引用（title_styled 为
+        #   use_memo 缓存引用；ver_runs 空闲为模块级单例），仅 dot（呼吸色）
+        #   独立重建——宽屏零额外重建。
+        dot_w = 2  # "✦ " 固定宽 2 列
         title_w = sum(r.width for r in title_styled)
-        ver_budget = max(0, width - dot_w - title_w)
-        ver_runs = truncate_runs(ver_runs, ver_budget)
+        ver_w = sum(r.width for r in ver_runs)
+        if dot_w + title_w + ver_w > width:
+            dot_runs = truncate_runs(dot_runs, width)
+            dot_w = sum(r.width for r in dot_runs)
+            title_budget = max(0, width - dot_w)
+            title_styled = truncate_runs(title_styled, title_budget)
+            title_w = sum(r.width for r in title_styled)
+            ver_budget = max(0, width - dot_w - title_w)
+            ver_runs = truncate_runs(ver_runs, ver_budget)
     else:
         dot_runs = [StyledRun("\u2726 ", Style(fg=dot_color))]
     # ★ 阶段2（标准布局容器重构）：BOX(flexDirection=row) → Row（语义化门面，

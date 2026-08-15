@@ -528,6 +528,11 @@ def to_ansi_fg(color: ColorValue) -> str:
         return color.to_ansi_fg()
     if isinstance(color, Color256):
         return f"\033[38;5;{color.value}m"
+    if isinstance(color, bool):
+        # ★ 修复（P2-2）：bool 是 int 子类（True→1 / False→0）——修复前
+        #   bool 色号走 int 分支生成 ``38;5;1``/``38;5;0`` ANSI 序列
+        #   （语义错误），显式排除返回空串。
+        return ""
     if not isinstance(color, int):
         # ★ 修复（P3）：非 int 输入（None/str 等）返回空串——修复前
         #   max(0, min(255, color)) 抛 TypeError（渲染中断）。
@@ -553,6 +558,10 @@ def to_ansi_bg(color: ColorValue) -> str:
         return color.to_ansi_bg()
     if isinstance(color, Color256):
         return f"\033[48;5;{color.value}m"
+    if isinstance(color, bool):
+        # ★ 修复（P2-2）：bool 是 int 子类——bool 色号显式排除返回空串
+        #   （与 to_ansi_fg 对齐）。
+        return ""
     if not isinstance(color, int):
         # ★ 修复（P3）：非 int 输入（None/str 等）返回空串——修复前
         #   max(0, min(255, color)) 抛 TypeError（渲染中断）。
@@ -578,6 +587,12 @@ def to_256(color: ColorValue) -> int:
         return color.to_256()
     if isinstance(color, Color256):
         return color.value
+    if not isinstance(color, int) or isinstance(color, bool):
+        # ★ 修复（P2-1）：非 int 输入（None/str 等）返回 0——修复前
+        #   max(0, min(255, color)) 抛 TypeError（渲染中断）；bool 是 int
+        #   子类（True→1 / False→0），显式排除（与 to_ansi_fg/to_ansi_bg
+        #   对齐）。
+        return 0
     # int: 256 色号（P3-17：钳制到 [0, 255]，容忍非法输入返回合法色号）
     return max(0, min(255, color))
 

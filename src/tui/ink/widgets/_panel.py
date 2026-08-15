@@ -80,6 +80,16 @@ def Panel(props: dict) -> Element:
         pad = max(0, int(props.get("padding", 1)))
     except (TypeError, ValueError, OverflowError):
         pad = 1
+    # ★ P2-3（review）：paddingLeft/paddingRight 分别读取（缺省回退 padding）
+    #   ——修复前二者被静默忽略（恒用统一 pad）。
+    try:
+        pad_left = max(0, int(props.get("paddingLeft", pad)))
+    except (TypeError, ValueError, OverflowError):
+        pad_left = pad
+    try:
+        pad_right = max(0, int(props.get("paddingRight", pad)))
+    except (TypeError, ValueError, OverflowError):
+        pad_right = pad
     border_color = props.get("borderColor")
     # ★ P3（review）：borderStyle 透传——dict 自定义边框对象原样透传（不
     #   str() 化——修复前 ``str(dict)`` 生成 ``"{'topLeft': ...}"`` 无效变体，
@@ -113,8 +123,8 @@ def Panel(props: dict) -> Element:
         "width": width,
         "borderStyle": bs if isinstance(bs, (dict, Style)) else str(bs),
         "borderColor": border_color,
-        "paddingLeft": pad,
-        "paddingRight": pad,
+        "paddingLeft": pad_left,
+        "paddingRight": pad_right,
         "paddingTop": 1 if (title or children) else 0,
         "paddingBottom": 1 if (title or children or status) else 0,
     }, inner)

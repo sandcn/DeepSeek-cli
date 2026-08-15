@@ -70,7 +70,10 @@ def ListView(props: dict) -> Element:
         render_item = lambda item, i: h(TEXT, {"children": str(item), "height": 1})
     on_select = props.get("onSelect")
     focus = bool(props.get("focus", True))
-    highlight_style = props.get("highlightStyle") or Style(fg=6)
+    # ★ P3（review）：highlightStyle 改 ``is not None`` 判断——修复前 ``or``
+    #   把显式空 Style()（falsy）当默认替换。
+    highlight_style_prop = props.get("highlightStyle")
+    highlight_style = highlight_style_prop if highlight_style_prop is not None else Style(fg=6)
     try:
         initial_index = max(0, int(props.get("initialIndex", 0)))
     except (TypeError, ValueError, OverflowError):
@@ -149,7 +152,13 @@ def ListView(props: dict) -> Element:
     for i in range(offset_shown, min(total, offset_shown + viewport_h)):
         item = items[i]
         is_sel = i == cursor_shown
-        child = render_item(item, i)
+        # ★ P2-9（review）：renderItem 抛异常时 try/except + 日志，降级为渲染
+        #   占位文本（str(item)）——修复前 renderItem 异常直接崩溃整个列表渲染。
+        try:
+            child = render_item(item, i)
+        except Exception:
+            _logger.debug("ListView renderItem 异常，降级为占位文本", exc_info=True)
+            child = h(TEXT, {"children": str(item), "height": 1})
         if isinstance(child, Element):
             cp = dict(child.props)
             if is_sel and "style" not in cp and "styled" not in cp:

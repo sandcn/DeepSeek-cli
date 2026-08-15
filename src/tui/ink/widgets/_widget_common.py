@@ -54,11 +54,24 @@ def _children(props: dict):
 
 
 def _color(value, default: int = 6) -> int | None:
-    """解析颜色 shorthand（颜色名/int）为 256 色号；解析失败回退 default。"""
+    """解析颜色 shorthand（颜色名/int）为 256 色号；解析失败回退 default。
+
+    ★ P2-7（review）：int 色号钳制到 [0, 255]、显式排除 bool——修复前
+    ``_parse_color`` 对 int 原样返回（越界色号如 300/-1 渲染崩溃）、bool
+    （int 子类，``isinstance(True, int)`` 为 True）被当作色号 0/1（True→1
+    红色）。钳制后越界归边界值，bool 回退 default。
+    """
     if value is None:
         return default
+    # bool 是 int 子类——显式排除（True/False 不应作为色号）
+    if isinstance(value, bool):
+        return default
     parsed = _parse_color(value)
-    return parsed if parsed is not None else default
+    if parsed is None:
+        return default
+    if isinstance(parsed, int):
+        return max(0, min(255, parsed))
+    return parsed
 
 
 def _call(fn, *args) -> None:

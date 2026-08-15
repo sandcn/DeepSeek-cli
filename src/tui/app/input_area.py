@@ -190,7 +190,11 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
     fading = False
     if fade_key is not None:
         fade_elapsed = now - fade_key[1]
-        fade_duration = _fx._DEFAULT_FADE_DURATION
+        # ★ P2-9（review 修复）：fade_duration 惰性读取 TuiConfig
+        #   （``_default_fx_params()[0]``）——修复前用模块导入时固化的
+        #   ``_DEFAULT_FADE_DURATION``（0.6s 快照），运行期修改 TuiConfig
+        #   不生效（与 ``fade_color`` 惰性读取不一致）。
+        fade_duration = _fx._default_fx_params()[0]
         fading = fade_duration > 0 and fade_elapsed < fade_duration
     if status_active or fading:
         time_bucket = int(now / 0.1)
@@ -215,10 +219,13 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
             #   快照缓存恒 miss）。
             len(completion.items or []),
             completion.selected,
+            # ★ P2-2（review 修复）：texts/descriptions 同样可能为 None
+            #   （外部注入）——``len(None)`` 抛 TypeError；``or []`` 防御
+            #   （与 items 对齐；id(None) 稳定，不破坏缓存命中）。
             id(completion.texts),
-            len(completion.texts),
+            len(completion.texts or []),
             id(completion.descriptions),
-            len(completion.descriptions),
+            len(completion.descriptions or []),
             getattr(completion, "split_desc", False),
         )
     else:
@@ -558,11 +565,13 @@ def InputArea(props: dict) -> object:
 def _input_snap_key(props: dict, width: int, now: float):
     """InputArea use_memo 依赖（纯原子值，逐项 Object.is 值比较）。
 
-    use_memo deps 逐项 ``_object_is``（React Object.is：int/bool 按值比较、
-    其余按 is 引用比较）——**str 不做值比较**（仅 is），故 text/query 用
-    ``id()+len()`` 指纹（模型字段引用稳定时 id 稳定；内容变化时 id/len 变）。
-    嵌套 tuple 每帧新建会 is miss，已展开为原子值。时间桶与 _build_lines
-    对齐（status_active 0.1s 桶 / 空闲 0.25s 桶）。
+    use_memo deps 逐项 ``_object_is``（React Object.is：int/bool/str 按值
+    比较——BUG-44 修复后 str 按值比较；其余按 is 引用比较）。text 直接放
+    ``text_str`` 值（修复前 ``hash()+len()`` 指纹：哈希碰撞可致**错误命中**
+    ——不同文本 hash 相同且 len 相同时代入旧缓存；str 已按值比较，无需指纹）。
+    query 保持 hash()+len() 指纹（兼容旧行为，query 通常较短且稳定）。嵌套
+    tuple 每帧新建会 is miss，已展开为原子值。时间桶与 _build_lines 对齐
+    （status_active 0.1s 桶 / 空闲 0.25s 桶）。
 
     ★ 性能（PERF-24）：props.get 去重——history_search 经局部变量一次提取
     （修复前逐字段 ``props.get("history_search")`` 调用 8 次；空值快路径
@@ -584,13 +593,12 @@ def _input_snap_key(props: dict, width: int, now: float):
         empty_mode_flag = is_empty_mode()
     except Exception:
         empty_mode_flag = False
-    # ★ review 方向（BUG-T1 同族修复）：str 指纹从 ``id()`` 改为 ``hash()``——
-    #   原 ``id(text)`` 在 echo 回调每次新建 str 时恒 miss（缓存退化）；且 str
-    #   对象被 GC 后 id 复用可能错误命中（内容不同但 id+len 相同）。``hash(str)``
-    #   同进程内稳定、内容变化必变（碰撞概率可忽略）；值比较语义正确。
+    # ★ P2-3（review 修复）：text 直接放 ``text_str`` 值——``_object_is`` 对
+    #   str 按值比较（BUG-44 修复后），无需 hash()+len() 指纹（哈希碰撞可致
+    #   错误命中：不同文本 hash+len 相同时代入旧缓存）。query 保持指纹（兼容
+    #   旧行为）。
     return (
-        hash(text_str),
-        len(text_str),
+        text_str,
         max_input,
         width,
         # completion 指纹

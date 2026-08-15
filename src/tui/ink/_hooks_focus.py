@@ -29,7 +29,18 @@ from src.tui.ink import hooks as _hooks_module
 
 
 def _reset_focus_ids() -> None:
-    """每帧渲染前重置可聚焦 id 收集列表（reconciler.render 调用）。"""
+    """每帧渲染前重置可聚焦 id 收集列表（reconciler.render 调用）。
+
+    ★ P2-2 修复（review 方向）：隐藏组件焦点悬挂——组件隐藏（本帧不再
+    调用 useFocus）后 ``_focus_active`` 悬挂到不可见 id，后续 autoFocus
+    组件因 ``_focus_active is None`` 为 False 无法自动聚焦。修复：清空
+    收集列表时校验 active——active 不在待清空列表（上一帧收集的可聚焦
+    id，本帧渲染前最新）中则已悬挂（组件隐藏/卸载后 active 未被重新收集
+    且不在收集列表），同步清空。
+    """
+    active = _hooks_module._focus_active
+    if active is not None and active not in _hooks_module._focus_ids:
+        _hooks_module._focus_active = None
     _hooks_module._focus_ids.clear()
 
 
@@ -181,7 +192,11 @@ def useFocus(options: "bool | dict | None" = None) -> dict:
             #   `_focus_active is None` 为 False 无法自动聚焦，需 Tab 才恢复）。
             fiber._focus_id = fid
         _register_focus_id(fid)
-        if auto_focus and _hooks_module._focus_active is None:
+        if auto_focus and _hooks_module._focus_enabled and _hooks_module._focus_active is None:
+            # ★ P2-2 修复（review 方向）：autoFocus 分支加 _focus_enabled
+            #   判断——焦点管理被 disableFocus 禁用期间 autoFocus 不写入
+            #   _focus_active（修复前禁用期间 autoFocus 仍抢焦点，enableFocus
+            #   恢复后焦点落在未经用户交互的组件上）。
             _hooks_module._focus_active = fid
     is_focused = bool(
         is_active and _hooks_module._focus_enabled and fid == _hooks_module._focus_active

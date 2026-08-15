@@ -987,6 +987,13 @@ class InkRenderer:
         目标行位于可见区上方（滚动区）时钳制到屏幕顶部（不可达时无法
         放置，钳制安全侧）。
         """
+        # ★ P3-1（review 方向）：col 防御钳制下限——修复前对 col 无钳制，
+        #   col<=0 时 ``cursor_forward(col-1)`` 输出非法 ANSI（``\033[0C`` /
+        #   负数列）污染终端。钳制 ``col >= 1`` 保证归位后至少原地（无前进
+        #   序列）。上限钳制（``min(col, width)``）渲染器无法实现——本类
+        #   无终端宽度状态（仅高度），列上限由调用方负责（``_cursor.
+        #   position_cursor`` 已 ``min(..., width)`` 钳到终端宽度）。
+        col = max(1, col)
         doc_h = self._prev.height if self._prev is not None else row
         # ★ 用 `_effective_offset`（含物理缓冲漂移，可为负）而非 `_screen_offset`
         #   （max(0,...)）——漂移时文档物理位置可能偏下，max 偏移会把光标放偏上。
