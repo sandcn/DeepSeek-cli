@@ -16,5 +16,5 @@
 - 禁止说工作量太大，和相关的字句
 - 每次修改文件后，必须增加对应的单元测试到 ./tests 目录（新增或更新测试用例，确保测试覆盖本次修改）
 - 所有代码修改完之后，必须强制派发一个 review agent 进行代码审查，并清空它返回的 P0~P3 级问题（逐条修复，直到全部清零）
-- **元文件保护**：未经用户明确指定，禁止修改 7 个运行时元文件：**global.md、main.md、plan.md、think.md、map.md、review.md、execute.md**
+- **元文件保护**：未经用户明确指定，禁止读取和修改 7 个运行时元文件：**global.md、main.md、plan.md、think.md、map.md、review.md、execute.md**
 - 禁止 rm -rf / mkfs / dd / chmod 777 / sudo / chown
