@@ -164,7 +164,11 @@ class CodeHandler(TokenHandler):
                 t = render_code_fence_open(lang, attrs=attrs)
             engine._output.write(t)
 
-            lines = source.split('\n')
+            # ★ 修复（review 方向）：rstrip('\n') 移除尾部换行——修复前
+            #   '\n'.join(source.split('\n')) 恒等于 source（宣称的防御性
+            #   修复是 no-op），且尾部换行使 len(lines) 多计一行（2 行代码
+            #   块显示 // 3 行）。
+            lines = source.rstrip('\n').split('\n')
             engine.ensure_theme()
 
             highlight_lines = token.meta.get("highlight_lines", [])

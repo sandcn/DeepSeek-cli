@@ -5,6 +5,7 @@ import errno as _errno
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
 import uuid
@@ -309,6 +310,17 @@ class BashFunc(Func):
             cwd_info = f" {DIM}(在 {self.cwd}){RESET}" if self.cwd else ""
             await print_to_terminal(f"\n{GREEN}$ {self.command}{cwd_info}{RESET}\n")
 
+        # ★ Windows 兼容（review 方向）：非 PTY 回退路径恰恰是 PTY 不可用
+        #   时（如 Windows）使用，修复前无条件传 preexec_fn=os.setpgid——
+        #   os.name == 'nt' 时 subprocess 抛 ValueError("preexec_fn is not
+        #   supported on Windows platforms") 且 os.setpgid 不存在，bash 工具
+        #   在 Windows 上完全不可用。Windows 用 creationflags 建新进程组。
+        popen_kwargs: dict = {}
+        if os.name != "nt":
+            popen_kwargs["preexec_fn"] = lambda: os.setpgid(0, 0)
+        else:
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
         process = await asyncio.create_subprocess_shell(
             self.command,
             cwd=self.cwd,
@@ -317,8 +329,8 @@ class BashFunc(Func):
             stderr=asyncio.subprocess.PIPE,
             shell=True,
             close_fds=True,
-            preexec_fn=lambda: os.setpgid(0, 0),
             env=self._get_subprocess_env(),
+            **popen_kwargs,
         )
 
         # ★ interactive_ready_fn 回调：提供 stdin 写端供 bash_task 工具写入。
@@ -573,9 +585,22 @@ class BashFunc(Func):
             return self._truncate_output(result)
 
         exec_task = asyncio.ensure_future(_run_exec())
-        done, _pending = await asyncio.wait(
-            {exec_task}, timeout=self._AUTO_BG_TIMEOUT,
-        )
+        try:
+            done, _pending = await asyncio.wait(
+                {exec_task}, timeout=self._AUTO_BG_TIMEOUT,
+            )
+        except asyncio.CancelledError:
+            # ★ 修复（review 方向）：等待窗口内被取消（中断/任务取消）时，
+            #   必须取消 exec_task 并终止子进程——修复前 exec_task 被遗弃，
+            #   命令子进程脱离控制继续运行（孤儿进程无法再被 kill）。
+            exec_task.cancel()
+            process = holder.get("process")
+            if process is not None:
+                try:
+                    _kill_process_tree(process.pid)
+                except Exception:
+                    logger.debug("取消时清理子进程异常（非关键）", exc_info=True)
+            raise
         if exec_task in done:
             try:
                 result = exec_task.result()

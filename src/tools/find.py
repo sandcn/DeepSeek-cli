@@ -210,7 +210,10 @@ class FindFunc(Func):
                 # ── 深度控制 ──
                 current_depth = len(current_path.parts) - root_depth
                 # depth=0 表示无限制，>0 时 current_depth=0 为根目录本身
-                if self.depth > 0 and current_depth > self.depth:
+                # ★ 修复（review 方向）：depth=N 只允许 current_depth < N——
+                #   修复前 ``> self.depth`` 多放行一层（depth=1 时一级子目录
+                #   current_depth=1 也被匹配，违背 schema「1 仅当前层」）。
+                if self.depth > 0 and current_depth >= self.depth:
                     # 修剪子树，不再深入
                     dirs.clear()
                     # depth 超过时跳过当前目录的条目（但根目录 depth=0 已处理）

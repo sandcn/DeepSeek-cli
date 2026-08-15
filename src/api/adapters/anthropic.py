@@ -163,7 +163,7 @@ class AnthropicAdapter(BaseLLMAdapter):
             "tool_calls": tool_calls,
         }
 
-    def parse_stream_chunk(self, chunk: dict) -> dict:
+    def parse_stream_chunk(self, chunk: dict, state: dict | None = None) -> dict:
         """解析 Anthropic SSE 流式 chunk 为统一增量格式
 
         处理如下 Anthropic SSE 事件类型：
@@ -172,14 +172,28 @@ class AnthropicAdapter(BaseLLMAdapter):
           - content_block_stop：工具块结束，输出累积的完整 tool_call
           - message_delta：用量信息
 
+        Args:
+            chunk: Anthropic SSE 事件 dict。
+            state: 每流独立的累积状态 dict（并发流安全）。调用方（如
+                pipeline_async 的 _anthropic_to_unified）为每条流传入独立
+                dict；None 时回退到实例级 _stream_tool_acc（向后兼容，
+                仅限单流调用方使用——并发流须显式传 state，否则工具参数
+                会在流间交叉污染）。
+
         注意：每次新流式调用开始时（message_start type），清空残留的
-        _stream_tool_acc，防止因前一次调用中途中断（content_block_stop
+        累积状态，防止因前一次调用中途中断（content_block_stop
         未触发）导致工具参数残留污染本次调用。
         """
-        # 在每次新流式调用开始时创建新的累积状态实例
+        # 每流独立累积状态：state 显式传入时用它（并发安全）；
+        # 否则回退实例级字典（向后兼容）。
+        acc = state if state is not None else self._stream_tool_acc
+
         chunk_type = chunk.get("type", "")
         if chunk_type == "message_start":
-            self._stream_tool_acc = {}
+            if state is not None:
+                state.clear()
+            else:
+                self._stream_tool_acc = {}
 
         result: dict = {
             "content": "",
@@ -197,16 +211,16 @@ class AnthropicAdapter(BaseLLMAdapter):
                 partial_json = delta.get("partial_json", "")
                 index = chunk.get("index", 0)
                 key = f"tool_{index}"
-                if key not in self._stream_tool_acc:
-                    self._stream_tool_acc[key] = {"partial": "", "id": "", "name": ""}
-                self._stream_tool_acc[key]["partial"] += partial_json
+                if key not in acc:
+                    acc[key] = {"partial": "", "id": "", "name": ""}
+                acc[key]["partial"] += partial_json
 
         elif chunk_type == "content_block_start":
             block = chunk.get("content_block", {})
             if block.get("type") == "tool_use":
                 index = chunk.get("index", 0)
                 key = f"tool_{index}"
-                self._stream_tool_acc[key] = {
+                acc[key] = {
                     "partial": "",
                     "id": block.get("id", ""),
                     "name": block.get("name", ""),
@@ -222,15 +236,15 @@ class AnthropicAdapter(BaseLLMAdapter):
         elif chunk_type == "content_block_stop":
             index = chunk.get("index", 0)
             key = f"tool_{index}"
-            acc = self._stream_tool_acc.pop(key, None)
-            if acc and acc["partial"]:
+            acc_entry = acc.pop(key, None)
+            if acc_entry and acc_entry["partial"]:
                 try:
-                    arguments = json.loads(acc["partial"])
+                    arguments = json.loads(acc_entry["partial"])
                 except json.JSONDecodeError:
-                    arguments = {"raw": acc["partial"]}
+                    arguments = {"raw": acc_entry["partial"]}
                 result["tool_calls"] = [{
-                    "id": acc["id"],
-                    "name": acc["name"],
+                    "id": acc_entry["id"],
+                    "name": acc_entry["name"],
                     "arguments": arguments,
                 }]
 

@@ -141,7 +141,7 @@ class SummarizeStrategy(CompressionStrategy):
                 success=True,
                 removed_indices=to_compress,
                 inserted_message={"role": "system", "content": f"[对话摘要] {summary}"},
-                chars_saved=chars_before - (cache.total_chars if cache.is_valid
+                chars_saved=chars_before - (cache.total_chars if (cache is not None and cache.is_valid)
                                             else selector.total_chars(messages)),
                 stats={"usage": usage, "elapsed": elapsed},
             )
@@ -202,14 +202,14 @@ class SummarizeStrategy(CompressionStrategy):
             if idx < len(messages):
                 messages.pop(idx)
 
-        if cache.is_valid:
+        if cache is not None and cache.is_valid:
             cache.on_remove(to_compress)
 
         # 在所有非摘要 system 消息之后插入摘要
         summary_msg = {"role": "system", "content": f"[对话摘要] {summary}"}
         messages.insert(system_end, summary_msg)
 
-        if cache.is_valid:
+        if cache is not None and cache.is_valid:
             cache.on_insert(system_end, summary_msg)
 
         # 通知回调（先 remove 后 insert）
@@ -219,7 +219,7 @@ class SummarizeStrategy(CompressionStrategy):
     @staticmethod
     def _report_success(to_compress, chars_before, cache, usage, elapsed, messages, on_info=None):
         """输出压缩成功日志。"""
-        chars_after = cache.total_chars if cache.is_valid else selector.total_chars(messages)
+        chars_after = cache.total_chars if (cache is not None and cache.is_valid) else selector.total_chars(messages)
         saved = chars_before - chars_after
         pinned = sum(1 for m in messages if m.get("pinned"))
 
@@ -283,17 +283,17 @@ class DropStrategy(CompressionStrategy):
     @staticmethod
     def _drop_all(messages, indices, on_changed, cache):
         """强制模式：删除所有 unpinned 消息。"""
-        chars_before = cache.total_chars if cache.is_valid else selector.total_chars(messages)
+        chars_before = cache.total_chars if (cache is not None and cache.is_valid) else selector.total_chars(messages)
 
         for idx in reversed(indices):
             messages.pop(idx)
 
-        if cache.is_valid:
+        if cache is not None and cache.is_valid:
             cache.on_remove(indices)
 
         DropStrategy._safe_notify(on_changed, {"type": "remove", "indices": sorted(indices)})
 
-        saved = chars_before - (cache.total_chars if cache.is_valid
+        saved = chars_before - (cache.total_chars if (cache is not None and cache.is_valid)
                                 else selector.total_chars(messages))
         _log("CONTEXT_TRIM", f"降级删除 {len(indices)} 条旧消息")
         return CompressionResult(
@@ -306,8 +306,8 @@ class DropStrategy(CompressionStrategy):
     @staticmethod
     def _drop_excess(messages, indices, on_changed, cache):
         """非强制模式：计算超出量，批量删除直到释放足够空间。"""
-        chars_before = cache.total_chars if cache.is_valid else selector.total_chars(messages)
-        tokens_before = cache.total_tokens if cache.is_valid else 0
+        chars_before = cache.total_chars if (cache is not None and cache.is_valid) else selector.total_chars(messages)
+        tokens_before = cache.total_tokens if (cache is not None and cache.is_valid) else 0
 
         need = selector.calc_excess_chars_values(chars_before, tokens_before)
         if need <= 0:
@@ -317,7 +317,7 @@ class DropStrategy(CompressionStrategy):
         freed = 0
         to_remove = []
         for idx in reversed(indices):
-            if cache.is_valid:
+            if cache is not None and cache.is_valid:
                 c, _ = cache.get_per_msg(idx)
             else:
                 c = len(selector.message_to_text(messages[idx]))
@@ -330,7 +330,7 @@ class DropStrategy(CompressionStrategy):
         for idx in to_remove:
             messages.pop(idx)
 
-        if cache.is_valid:
+        if cache is not None and cache.is_valid:
             cache.on_remove(to_remove)
 
         if to_remove:

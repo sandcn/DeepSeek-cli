@@ -34,7 +34,8 @@ class _NullDisplayPort(DisplayPort):
     def stop(self, final: bool = False) -> None:
         pass
 
-    def tool_parsing(self, label: str, tool_name: str, arguments: str = "") -> None:
+    def tool_parsing(self, label: str, tool_name: str, arguments: str = "",
+                     tool_id: str = "") -> None:
         pass
 
     def tool_start(self, label: str, tool_name: str, detail: str, metadata: dict | None = None) -> None:

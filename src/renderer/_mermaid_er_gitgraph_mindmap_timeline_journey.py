@@ -62,7 +62,10 @@ class MermaidExtraMixin:
                 style=_STYLE_BOX,
             )
             result.append("\n")
-            rel_ch = "─" * 5
+            # ★ 修复（review 方向）：rel_sym（基数/关系符号）此前被解包后
+            #   丢弃，连接线恒为 "─────"——ER 图的关系类型/基数完全不可见。
+            #   连接线按符号映射（'-'→'─'）截宽 5；完整符号随标签行展示。
+            rel_ch = (rel_sym or "").replace("-", "─")[:5].ljust(5, "─")
             result.append(
                 f"  │ {e1:^{w1 - 4}s} │{rel_ch}│ {e2:^{w2 - 4}s} │",
                 style=_STYLE_NODE,
@@ -73,7 +76,8 @@ class MermaidExtraMixin:
                 style=_STYLE_BOX,
             )
             result.append("\n")
-            result.append(f"       {label}", style=_STYLE_EDGE_LABEL)
+            edge_line = f"{rel_sym}  {label}".rstrip() if label else (rel_sym or "")
+            result.append(f"       {edge_line}", style=_STYLE_EDGE_LABEL)
             result.append("\n\n")
 
         return result

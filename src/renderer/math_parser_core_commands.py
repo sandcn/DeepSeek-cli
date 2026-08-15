@@ -181,8 +181,18 @@ class MathParserCoreCommandsMixin:
                 while i < n and s[i].isalpha():
                     i += 1
                 delim_cmd = s[start:i]
-                char = _DELIMITER_MAP.get(delim_cmd, delim_cmd)
-                return Text(char), i
+                if delim_cmd:
+                    char = _DELIMITER_MAP.get(delim_cmd, delim_cmd)
+                    return Text(char), i
+                # ★ 修复（review 方向）：非字母定界符（如 \left\|）此前
+                #   delim_cmd 为空串 → 渲染为空。按 "\\" + 符号查表
+                #   （_DELIMITER_MAP["\\|"] → "‖"）。
+                if i < n:
+                    sym = s[i]
+                    i += 1
+                    char = _DELIMITER_MAP.get('\\' + sym, sym)
+                    return Text(char), i
+                return Text(), i
 
             if c == '.':
                 return Text(), i
@@ -211,8 +221,17 @@ class MathParserCoreCommandsMixin:
                 while i < n and s[i].isalpha():
                     i += 1
                 delim_cmd = s[start:i]
-                char = _DELIMITER_MAP.get(delim_cmd, delim_cmd)
-                return Text(char, style=Style(bold=True)), i
+                if delim_cmd:
+                    char = _DELIMITER_MAP.get(delim_cmd, delim_cmd)
+                    return Text(char, style=Style(bold=True)), i
+                # ★ 修复（review 方向）：非字母定界符（\bigl\| 等）——
+                #   按 "\\" + 符号查表。
+                if i < n:
+                    sym = s[i]
+                    i += 1
+                    char = _DELIMITER_MAP.get('\\' + sym, sym)
+                    return Text(char, style=Style(bold=True)), i
+                return Text(), i
 
             if c == '.':
                 return Text(), i
@@ -450,12 +469,19 @@ class MathParserCoreCommandsMixin:
 
     # ── 彩色框 \colorbox{color}{text} / \fcolorbox{border}{fill}{text} ──
 
-    def _parse_colorbox(self, s: str, i: int, n: int) -> Tuple[Text, int]:
+    def _parse_colorbox(self, s: str, i: int, n: int, cmd: str = "colorbox") -> Tuple[Text, int]:
         """解析 \\colorbox{color}{text} 或 \\fcolorbox{border}{fill}{text}。"""
         try:
             i = _skip_spaces(s, i, n)
             if i < n and s[i] == '{':
                 _, i = _skip_group(s, i)  # skip color name
+            # ★ 修复（review 方向）：\fcolorbox 有两个前置组（边框色 + 填充色），
+            #   须再跳过一个——修复前仅跳 color，把 {fill} 当正文、{text} 泄漏
+            #   到主解析循环变成普通文本。
+            if cmd == "fcolorbox":
+                i = _skip_spaces(s, i, n)
+                if i < n and s[i] == '{':
+                    _, i = _skip_group(s, i)  # skip fill color
             i = _skip_spaces(s, i, n)
             content_raw, i = _extract_braced_group(s, i)
         except Exception:

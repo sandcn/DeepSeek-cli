@@ -15,6 +15,49 @@ from .fiber import Fiber
 from ._layout_transform import _translate_subtree_x
 
 
+def _compute_weight_shares(weights: list[int], total_extra: int) -> tuple[int, list[int]]:
+    """按权重计算余数分配份额：返回 ``(per, extra_shares)``。
+
+      - ``per = total_extra // sum(weights)``（每个权重单位的基础份额）；
+      - ``extra_shares``：余数（total_extra % sum(weights)）的分配份额——
+        前 remainder 个权重 >0 节点各 +1；余数超过权重节点数时，超出部分
+        按权重单位分配（每个权重单位至多 +1），保证余数**不丢失**。
+        （修复前按「加权节点索引 < remainder」逐节点 +1：remainder 可大于
+        权重节点数（如 extra=5、权重 [10,1] → remainder=5、节点仅 2 个），
+        导致余数丢失（欠分配 3 行）。）
+
+    权重总和 <= 0 或 total_extra <= 0 时返回 ``(0, [0] * len(weights))``。
+
+    供 ``_distribute_extra``（column 高度）与 ``_layout_measure`` 的 row
+    flexGrow 宽度分配共用，避免两处余数逻辑漂移。
+    """
+    total_weight = sum(weights)
+    if total_weight <= 0 or total_extra <= 0:
+        return 0, [0] * len(weights)
+    per = total_extra // total_weight
+    remainder = total_extra % total_weight
+    extra_shares = [0] * len(weights)
+    weighted_idx = 0
+    n_weighted = 0
+    for i, w in enumerate(weights):
+        if w > 0:
+            if weighted_idx < remainder:
+                extra_shares[i] += 1
+            weighted_idx += 1
+            n_weighted += 1
+    overflow = remainder - n_weighted
+    if overflow > 0:
+        # 超出部分按权重单位分配：节点 i 覆盖权重单位
+        # [prefix, prefix+w)；单位编号 < overflow 的 +1（权重 0 节点不参与）。
+        prefix = 0
+        for i, w in enumerate(weights):
+            if w <= 0:
+                continue
+            extra_shares[i] += max(0, min(w, overflow - prefix))
+            prefix += w
+    return per, extra_shares
+
+
 def _distribute_extra(
     children: list[Fiber],
     weight_fn: Callable[[Fiber], int],
@@ -52,34 +95,7 @@ def _distribute_extra(
     total_weight = sum(weights)
     if total_weight <= 0 or total_extra <= 0:
         return
-    per = total_extra // total_weight
-    remainder = total_extra % total_weight
-    # ★ P2 修复（review 方向）：余数分配保证**不丢失**——修复前按
-    #   「加权节点索引 < remainder」逐节点 +1：remainder 可大于权重节点数
-    #   （如 extra=5、权重 [10,1] → remainder=5、节点仅 2 个）导致余数丢失
-    #   （欠分配 3 行）。修复：remainder <= 权重节点数时保持既有语义
-    #   （前 remainder 个权重 >0 节点各 +1，测试锁定）；remainder 超出时
-    #   超出部分（remainder - n）按**权重单位**分配（每个权重单位至多 +1），
-    #   保证余数全部分配（flexGrow/flexShrink 共用均受益）。
-    extra_shares = [0] * len(children)
-    weighted_idx = 0
-    n_weighted = 0
-    for i, w in enumerate(weights):
-        if w > 0:
-            if weighted_idx < remainder:
-                extra_shares[i] += 1
-            weighted_idx += 1
-            n_weighted += 1
-    overflow = remainder - n_weighted
-    if overflow > 0:
-        # 超出部分按权重单位分配：节点 i 覆盖权重单位
-        # [prefix, prefix+w)；单位编号 < overflow 的 +1（权重 0 节点不参与）。
-        prefix = 0
-        for i, w in enumerate(weights):
-            if w <= 0:
-                continue
-            extra_shares[i] += max(0, min(w, overflow - prefix))
-            prefix += w
+    per, extra_shares = _compute_weight_shares(weights, total_extra)
     cursor = inner_y
     remaining = total_extra  # ★ P3-9：剩余分配量跟踪（delta 钳制上限基准）
     for i, child in enumerate(children):
@@ -190,4 +206,4 @@ def _reflow_row_justify(
             cx += cb.w + margin + gaps[i + 1]
 
 
-__all__ = ["_distribute_extra", "_reflow_row_justify"]
+__all__ = ["_distribute_extra", "_compute_weight_shares", "_reflow_row_justify"]

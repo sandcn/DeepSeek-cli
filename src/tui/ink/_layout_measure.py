@@ -40,6 +40,7 @@ from ._layout_transform import (
 )
 from ._layout_flex import (
     _distribute_extra,
+    _compute_weight_shares,
     _reflow_row_justify,
 )
 
@@ -925,17 +926,19 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         for child in children:
             grow_total += _flex_grow(child)
         if grow_total > 0 and extra_w > 0:
-            per = extra_w // grow_total
-            remainder = extra_w % grow_total
-            g_idx = 0
+            # ★ 余数分配修复（review 方向）：与 _distribute_extra（column 高度）
+            #   共用 _compute_weight_shares——修复前按「grow 子节点序号 <
+            #   remainder」逐子 +1：remainder 可超过 grow 子节点数（如单个
+            #   flexGrow=3 子节点 + extra_w=2 → remainder=2 > 1 子节点），
+            #   欠分配导致剩余列未被填满（row 宽度不足 inner_w_row）。
+            weights = [_flex_grow(child) for child in children]
+            per, extra_shares = _compute_weight_shares(weights, extra_w)
             old_xs = [child.layout_box.x for child in children]
-            for child in children:
-                g = _flex_grow(child)
-                if g > 0:
+            for i, child in enumerate(children):
+                if weights[i] > 0:
                     cb = child.layout_box
-                    cb.w += per * g + (1 if g_idx < remainder else 0)
+                    cb.w += per * weights[i] + extra_shares[i]
                     child.layout_box = cb
-                    g_idx += 1
             # 重排 x（grow 改变宽度后；最后子节点不计 spacing）
             cx = inner_x
             for i, child in enumerate(children):

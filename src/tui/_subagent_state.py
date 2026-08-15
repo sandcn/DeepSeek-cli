@@ -126,7 +126,11 @@ class StateStore:
             if slot is None:
                 return
             slot.status = status
-            if status in ("done", "fail"):
+            # ★ 修复（review 方向）："error" 同为终态（事件类型明确列出，
+            #   渲染层按终态处理）——修复前仅 done/fail 终结：
+            #   error 代理 end_time 恒 0（面板时长持续增长）+ running/parsing
+            #   工具记录不闭合 → needs_animation 恒 True（面板 10Hz 空转）。
+            if status in ("done", "fail", "error"):
                 slot.end_time = time.time()
                 for rec in slot.tool_history:
                     if rec.phase in ("running", "parsing"):

@@ -133,8 +133,9 @@ class UIDisplayAdapter:
                   success: bool = True, metadata: Optional[dict] = None) -> None:
         self._safe_delegate("tool_done", tool_label, tool_name, success, metadata)
 
-    def tool_parsing(self, label: str, tool_name: str, arguments: str = "") -> None:
-        self._safe_delegate("tool_parsing", label, tool_name, arguments)
+    def tool_parsing(self, label: str, tool_name: str, arguments: str = "",
+                     tool_id: str = "") -> None:
+        self._safe_delegate("tool_parsing", label, tool_name, arguments, tool_id=tool_id)
 
     def update_status(self, label: str, status: str) -> None:
         self._safe_delegate("update_status", label, status)

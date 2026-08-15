@@ -108,8 +108,10 @@ def msg_phase_done(phase: str, label: str) -> dict:
     return {"type": WSMsgType.PHASE_DONE, "phase": phase, "label": label}
 
 
-def msg_tool_parsing(label: str, tool_name: str, arguments: str = "") -> dict:
-    return {"type": WSMsgType.TOOL_PARSING, "label": label, "tool_name": tool_name, "arguments": arguments}
+def msg_tool_parsing(label: str, tool_name: str, arguments: str = "",
+                     tool_id: str = "") -> dict:
+    return {"type": WSMsgType.TOOL_PARSING, "label": label, "tool_name": tool_name,
+            "arguments": arguments, "tool_id": tool_id}
 
 
 def msg_tool_started(label: str, tool_name: str, detail: str = "",

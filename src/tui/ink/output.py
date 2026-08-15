@@ -317,6 +317,15 @@ class FrameBuilder:
         # Line.append 段拼接 O(n²)；段长受换行宽度约束有界，join 成本可接受。
         buf_chars: list[str] = []
         for ch in text:
+            # ★ BUG-35（review 方向）：width>0 分支也须按 ``\n`` 拆行——
+            #   修复前 ``\n`` 宽度 0，被当普通字符累积进 run，Line 内嵌字面
+            #   换行符破坏「帧行内无换行」不变量（wrap/截断均按整行语义）。
+            if ch == "\n":
+                if buf_chars:
+                    self._current.append("".join(buf_chars), style)
+                    buf_chars = []
+                self._newline()
+                continue
             cw = wcswidth_simple(ch)
             if self._current_width + cw > self._width and (self._current.runs or buf_chars):
                 if buf_chars:

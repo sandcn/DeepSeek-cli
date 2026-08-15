@@ -93,7 +93,12 @@ DATE_META_PATTERNS = [
 # ═══════════════════════════════════════════════════════════
 
 def _is_private_url(url: str) -> bool:
-    """检查 URL 是否指向私有/内网地址（SSRF防护）"""
+    """检查 URL 是否指向私有/内网地址（SSRF防护）。
+
+    字面量级快速检查（localhost 别名 / 数字 IP / IPv6 link-local），
+    不做 DNS 解析——解析级校验见 ``_validate_fetch_url`` 的异步路径
+    （域名可解析到内网 IP 的反弹攻击在请求前拦截）。
+    """
     parsed = urlparse(url)
     hostname = parsed.hostname or ""
 
@@ -122,12 +127,52 @@ def _is_private_url(url: str) -> bool:
             if hostname.startswith(prefix):
                 return True
 
-
     return False
 
 
-def _validate_fetch_url(url: str) -> Optional[str]:
-    """校验 fetch 的 URL 是否合法安全，有问题返回错误消息，通过返回 None"""
+def _is_private_ip(ip_str: str) -> bool:
+    """判断单个 IP 地址字符串是否属于内网/保留地址（SSRF 防护）。"""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+async def _resolve_host_ips_async(hostname: str) -> list[str]:
+    """异步 DNS 解析主机名 → IP 列表（去重，保持顺序）。
+
+    使用事件循环原生 getaddrinfo，不阻塞事件循环；解析失败抛
+    socket.gaierror / OSError，由调用方转为错误信息。
+    """
+    import asyncio
+    import socket
+
+    loop = asyncio.get_running_loop()
+    infos = await loop.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    ips: list[str] = []
+    seen: set[str] = set()
+    for info in infos:
+        ip = info[4][0]
+        if ip not in seen:
+            seen.add(ip)
+            ips.append(ip)
+    return ips
+
+
+async def _validate_fetch_url(url: str) -> Optional[str]:
+    """校验 fetch 的 URL 是否合法安全，有问题返回错误消息，通过返回 None。
+
+    异步：含 DNS 解析级 SSRF 校验（域名解析到内网 IP 时拒绝），
+    使用 loop.getaddrinfo 避免阻塞事件循环。
+    """
     if not url or not url.strip():
         return "(fetch失败: URL为空)"
 
@@ -141,8 +186,22 @@ def _validate_fetch_url(url: str) -> Optional[str]:
     if not parsed.netloc:
         return "(fetch失败: URL缺少域名)"
 
-    # SSRF 防护
+    hostname = parsed.hostname or ""
+
+    # SSRF 防护 1：字面量快速检查（localhost 别名 / 数字 IP / IPv6 link-local）
     if _is_private_url(url):
+        return "(fetch失败: 不允许访问内网地址)"
+
+    # SSRF 防护 2：DNS 解析级检查——域名可指向内网（如 127.0.0.1.nip.io、
+    #   sslip.io 类反弹域名、十进制/十六进制 IP 编码），解析后任一地址
+    #   为私有/保留地址即拒绝（修复前仅字面量前缀检查，该层完全缺失）。
+    try:
+        ips = await _resolve_host_ips_async(hostname)
+    except (OSError, ValueError) as e:
+        _logger.warning("fetch URL 域名解析失败: %s (%s)", hostname, e)
+        return f"(fetch失败: 域名解析失败 '{hostname}')"
+
+    if any(_is_private_ip(ip) for ip in ips):
         return "(fetch失败: 不允许访问内网地址)"
 
     return None
@@ -184,6 +243,46 @@ _DATE_PATTERNS = [
     "%Y年%m月%d日",
 ]
 
+# strptime 指令 → 匹配正则（用于截取「能被该格式解析的前缀」）。
+# ★ 修复（review 方向）：修复前用 ``clean[:len(pattern)]`` 按**格式串长度**
+#   截断（"%Y-%m-%d" 8 字符 vs 实际日期 "2024-01-01" 10 字符），所有模式
+#   恒解析失败，日期时间分量被丢弃、斜杠/中文格式返回空串。
+_STRPTIME_RE_PART = {
+    "%Y": r"\d{4}",
+    "%m": r"\d{2}",
+    "%d": r"\d{2}",
+    "%H": r"\d{2}",
+    "%M": r"\d{2}",
+    "%S": r"\d{2}",
+    "%z": r"[+-]\d{2}:?\d{2}",
+    "%Z": r"[A-Za-z]+",
+}
+def _pattern_to_regex(pattern: str) -> str:
+    """strptime 格式串 → 前缀匹配正则（捕获组 1 = 恰好匹配该格式的前缀）。
+
+    逐字符扫描：``%X`` 指令替换为对应匹配段，其余字面量转义保留
+    （"-"、":"、"T"、"/"、"年" 等分隔符不得丢失）。
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        if pattern[i] == "%" and i + 1 < len(pattern):
+            directive = pattern[i:i + 2]
+            part = _STRPTIME_RE_PART.get(directive)
+            if part is not None:
+                out.append(part)
+                i += 2
+                continue
+        out.append(re.escape(pattern[i]))
+        i += 1
+    return "(" + "".join(out) + ")"
+
+
+_PATTERN_RE = [
+    (pattern, re.compile(_pattern_to_regex(pattern)))
+    for pattern in _DATE_PATTERNS
+]
+
 
 def _format_date_str(date_str: str) -> str:
     """尝试多种格式解析日期字符串，返回统一格式 'YYYY-MM-DD HH:MM' 或空字符串"""
@@ -193,9 +292,14 @@ def _format_date_str(date_str: str) -> str:
     if clean.endswith("Z"):
         clean = clean[:-1] + "+00:00"
 
-    for pattern in _DATE_PATTERNS:
+    for pattern, pattern_re in _PATTERN_RE:
+        m = pattern_re.match(clean)
+        if not m:
+            continue
+        # 仅截取「恰好匹配该格式」的前缀再解析（日期后允许跟随任意尾巴）
+        prefix = m.group(1)
         try:
-            dt = datetime.strptime(clean[:len(pattern)], pattern)
+            dt = datetime.strptime(prefix, pattern)
             return dt.strftime("%Y-%m-%d %H:%M")
         except ValueError:
             continue
@@ -456,7 +560,7 @@ async def fetch_page(url: str, client: Optional[object] = None) -> dict:
         dict，包含 title/url/domain/date/body/error 等字段
     """
     # 安全校验
-    error_msg = _validate_fetch_url(url)
+    error_msg = await _validate_fetch_url(url)
     if error_msg:
         return {"error": error_msg, "url": url}
 

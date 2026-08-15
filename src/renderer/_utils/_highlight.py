@@ -29,14 +29,18 @@ def parse_highlight_lines(attrs: str) -> list[int]:
         return []
     # ★ 优化：用 str.find 替代逐字符 while 循环（C 级 memchr 实现）
     marker = 'hl_lines="'
+    quote = '"'
     start = attrs.find(marker)
     if start == -1:
         marker = "hl_lines='"
+        quote = "'"
         start = attrs.find(marker)
         if start == -1:
             return []
     i = start + len(marker)
-    value_end = attrs.find('"', i)
+    # ★ 修复（review 方向）：闭合引号须与开启引号一致——修复前无论单双
+    #   引号一律找 '"'，hl_lines='1,3-5'（单引号）恒解析失败返回空列表。
+    value_end = attrs.find(quote, i)
     if value_end == -1:
         return []
     value = attrs[i:value_end]

@@ -58,15 +58,16 @@ EXCLUDED_FILE_PATTERNS: set[str] = {
 # ── 用于 rg 的 --glob !<pattern> 排除模式 ──
 RG_EXCLUDE_GLOBS: tuple[str, ...] = tuple(EXCLUDED_DIRS | EXCLUDED_FILE_PATTERNS)
 
-# ── 用于 grep 的 --exclude-dir 排除（仅纯目录名） ──
-GREP_EXCLUDE_DIRS: tuple[str, ...] = tuple(
-    d for d in EXCLUDED_DIRS if "*" not in d
-)
+# ── 用于 grep 的 --exclude-dir 排除（目录名/目录 glob） ──
+# ★ 修复（review 方向）：*.egg-info 等目录 glob 此前被并入
+#   GREP_EXCLUDE_FILES（--exclude 仅匹配文件名）——grep 不会剪枝
+#   .egg-info 目录，反而误排除「名为 x.egg-info 的文件」。GNU/BSD
+#   grep 的 --exclude-dir 支持 glob 目录名（老 grep 字面处理时降级为
+#   无剪枝，无害）；全部目录模式保留在此处。
+GREP_EXCLUDE_DIRS: tuple[str, ...] = tuple(EXCLUDED_DIRS)
 
-# ── 用于 grep 的 --exclude 排除（文件通配符模式） ──
-GREP_EXCLUDE_FILES: tuple[str, ...] = tuple(
-    {d for d in EXCLUDED_DIRS if "*" in d} | EXCLUDED_FILE_PATTERNS
-)
+# ── 用于 grep 的 --exclude 排除（仅文件通配符模式） ──
+GREP_EXCLUDE_FILES: tuple[str, ...] = tuple(EXCLUDED_FILE_PATTERNS)
 
 # ── 路径安全常量（用于 file_ops / file_base / cp / mv / rm 等） ──
 

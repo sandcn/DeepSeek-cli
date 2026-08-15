@@ -21,8 +21,20 @@ def _inline_math_handler(self, node, ctx, _depth):
 
 
 def _footnote_ref_handler(self, node, ctx, _depth):
-    """FootnoteRefNode 调度器：递增脚注计数器并渲染。"""
-    fn_num = ctx.fn_next_number() if ctx else 0
+    """FootnoteRefNode 调度器：按引用先后编号并渲染。
+
+    ★ 修复（review 方向）：编号改为「ref_id 在 fn_order 中的位置 +1」，
+    与 render_footnotes 的脚注列表排序同源——修复前用独立计数器按引用
+    顺序编号、而列表按**定义**顺序（fn_order 在定义处填充）排列，引用
+    顺序与定义顺序不一致时 [n] 指向错误的脚注条目。引用处同步补录
+    fn_order（首个出现即定序：引用或定义谁先出现谁先编号）。
+    """
+    if ctx:
+        if node.ref_id not in ctx.fn_order:
+            ctx.fn_order.append(node.ref_id)
+        fn_num = ctx.fn_order.index(node.ref_id) + 1
+    else:
+        fn_num = 0
     return Text(
         f"[{fn_num}]" if ctx else f"[^{node.ref_id}]",
         style=Style(color="bright_cyan", italic=True, bold=True),

@@ -54,7 +54,18 @@ def _highlight_line(line: str, lexer, pyg_style) -> AnsiLine:
             val = value.rstrip("\n")
             if not val:
                 continue
-            fg = _hex_to_256(pyg_style.styles.get(ttype, ""))
+            # ★ 修复（review 方向）：pygments token 为层级类型（如
+            #   Comment.Single），styles 表常只定义基类型（Comment）——
+            #   直接 get(ttype) 取不到样式（子类型无着色）。沿 parent 链
+            #   向上查找最近定义的样式。
+            fg = None
+            t = ttype
+            while t is not None:
+                style_str = pyg_style.styles.get(t, "")
+                fg = _hex_to_256(style_str)
+                if fg is not None:
+                    break
+                t = getattr(t, "parent", None)
             aline.append(val, Style(fg=fg) if fg is not None else None)
         return aline
     except Exception:

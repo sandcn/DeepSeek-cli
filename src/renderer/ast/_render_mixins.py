@@ -339,11 +339,21 @@ class _BlockRenderingMixin:
     def _handle_admonition(self, node: ASTNode):
         """告示块（> [!NOTE/WARNING/...]）。"""
         adm_type = node.meta.get("type", "NOTE").upper()
-        content = node.content
+        content = node.content or ""
+        # ★ 修复（review 方向）：builder 的 _handle_admonition_close 把正文
+        #   合并进 node.content——header 渲染器只应接收首行标题，修复前整个
+        #   正文被塞进顶部标题行（内嵌 \n），正文行丢失。首行作标题，
+        #   其余行按正文（prefix 前缀）渲染。
+        lines = content.split("\n")
+        title = lines[0] if lines else ""
         header, prefix, footer = _render_admonition_header_shared(
-            adm_type, content, self._output.width, self._render_inline,
+            adm_type, title, self._output.width, self._render_inline,
         )
         self._output.write(header)
+        for body_line in lines[1:]:
+            body_t = self._render_inline(body_line)
+            assembled = Text.assemble(prefix, body_t)
+            self._output_assembled(assembled)
         for child in node.children:
             child_t = self._render_inline(child.content)
             assembled = Text.assemble(prefix, child_t)

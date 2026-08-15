@@ -123,6 +123,7 @@ async def _shared_poll_loop(interval: float = 0.5) -> None:
     global _poll_shared_task, _poll_stop_event
     state = _TokenStatsState()
     stop_event = _poll_stop_event
+    _normal_exit = False
 
     try:
         while True:
@@ -134,6 +135,7 @@ async def _shared_poll_loop(interval: float = 0.5) -> None:
             else:
                 # 事件已设置：检查是否真的没有活跃连接
                 if not _poll_ws_sends:
+                    _normal_exit = True
                     break  # 所有连接已注销，安全退出
                 # 新连接在事件设置后加入，清除事件继续运行
                 stop_event.clear()
@@ -176,9 +178,19 @@ async def _shared_poll_loop(interval: float = 0.5) -> None:
     except asyncio.CancelledError:
         pass
     finally:
+        # ★ 修复（review 方向）：正常退出（_normal_exit）与最后注销之间
+        #   存在竞态窗口——新连接在 finally 置空前注册（见 _poll_shared_task
+        #   非 None 复用旧任务），旧循环退出后新连接滞留无轮询任务
+        #   （usage 更新静默丢失）。finally 内持锁复查：仍有活跃连接且
+        #   本任务仍是注册任务时，spawn 替代循环接管，否则正常置空。
         async with _poll_lock:
-            _poll_shared_task = None
-            _poll_stop_event = None
+            if (_normal_exit and _poll_ws_sends
+                    and _poll_shared_task is asyncio.current_task()):
+                _poll_stop_event = asyncio.Event()
+                _poll_shared_task = asyncio.create_task(_shared_poll_loop(interval))
+            else:
+                _poll_shared_task = None
+                _poll_stop_event = None
 
 
 # ═══════════════════════════════════════════════════════════════

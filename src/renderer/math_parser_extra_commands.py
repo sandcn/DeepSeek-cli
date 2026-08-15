@@ -224,8 +224,10 @@ class MathParserExtraCommandsMixin:
     def _parse_xarrow(self, cmd: str, s: str, i: int, n: int) -> Tuple[Text, int]:
         """解析 \\xrightarrow{text}、\\xleftarrow{text} 等可扩展箭头。
 
-        \\xrightarrow{text} → 上标文字 + 箭头符号
-        \\xleftarrow{text}  → 箭头符号 + 上标文字
+        ★ 修复（review 方向）：docstring 与实现相反——实现中文字排布在
+        箭头的「反方向」（左箭头文字在前、右箭头文字在后）：
+        \\xleftarrow{text}  → 上标文字 + 箭头符号
+        \\xrightarrow{text} → 箭头符号 + 上标文字
         """
         try:
             i = _skip_spaces(s, i, n)

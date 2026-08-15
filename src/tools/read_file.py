@@ -415,7 +415,12 @@ class ReadFileFunc(Func):
                         range_str = f" (L{start}+)"
                 else:
                     # 读取整个文件时，计算内容总行数
-                    line_count = cleaned.count('\n') + 1
+                    # ★ 修复（review 方向）：结尾换行不计入额外一行——
+                    #   修复前 "a\nb\n" 计 3 行（实际 2 行），L1-N 行号虚高。
+                    if cleaned.endswith('\n'):
+                        line_count = cleaned.count('\n')
+                    else:
+                        line_count = cleaned.count('\n') + 1
                     range_str = f" (L1-{line_count})"
                 output = f"文件: {self.path}{range_str}\n{cleaned}"
 

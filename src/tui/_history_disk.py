@@ -98,6 +98,12 @@ class _HistoryDiskWriter:
                 _safe_disk_append(history_io, escaped)
                 return
             self._ensure_thread_locked()
+            # ★ 修复（review 方向）：重建失败后 _ensure_thread_locked 内部
+            #   已将 self._thread 置 None（待写条目同步写掉）——须重新检查，
+            #   否则本条落入队列但无消费者，条目滞留永远不落盘。
+            if self._thread is None:
+                _safe_disk_append(history_io, escaped)
+                return
             if self._sentinel_count > 0:
                 # P2-9：队列中已有退出哨兵（flush 进行中/已完成）——新条目
                 # 入队会排在哨兵之后，后台线程遇哨兵退出后滞留（历史静默

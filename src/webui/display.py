@@ -74,8 +74,9 @@ class WebDisplay(BaseDisplay, BaseWebSocketSender):
     # 工具调用 — BaseDisplay 接口
     # ═══════════════════════════════════════════════════════
 
-    def tool_parsing(self, label: str, tool_name: str, arguments: str = "") -> None:
-        self.send_json(msg_tool_parsing(label, tool_name, arguments))
+    def tool_parsing(self, label: str, tool_name: str, arguments: str = "",
+                     tool_id: str = "") -> None:
+        self.send_json(msg_tool_parsing(label, tool_name, arguments, tool_id))
 
     def tool_start(
         self,

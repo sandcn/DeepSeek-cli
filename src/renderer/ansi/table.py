@@ -50,7 +50,10 @@ def _shrink_widths(widths: list[int], max_total: int, ncols: int) -> list[int]:
     budget = max_total - 3 * ncols - 1  # 内容总预算
     if budget <= 0:
         return [1] * ncols
-    while sum(widths) > budget and min(widths) > 1:
+    # ★ 修复（review 方向）：循环守卫用 max(widths) > 1 而非 min(widths) > 1
+    #   ——修复前任一列已为 1（如 ✔ 列）即整体停止收缩，宽列无法再降，
+    #   超预算表格溢出终端宽度。
+    while sum(widths) > budget and max(widths) > 1:
         i = max(range(ncols), key=lambda i: widths[i])
         if widths[i] > 1:
             widths[i] -= 1

@@ -53,7 +53,13 @@ def _extract_braced_group(s: str, start: int) -> Tuple[str, int]:
             depth -= 1
         i += 1
 
-    content = s[start + 1:i - 1]
+    # ★ 修复（review 方向）：未闭合（depth > 0）时 i 停在末尾且未消费
+    #   任何 '}'——修复前统一 ``s[start+1:i-1]`` 多截掉最后一个字符
+    #   （'{abc' 得 'ab' 而非 'abc'，'{a{b}' 丢失结尾 '}'）。
+    if depth > 0:
+        content = s[start + 1:i]
+    else:
+        content = s[start + 1:i - 1]
     return content, i
 
 

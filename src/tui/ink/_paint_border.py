@@ -71,7 +71,7 @@ def _border_style(props: dict, edge: str | None = None) -> Style:
     if fg is not None:
         return Style(
             fg=fg,
-            bg=bg,
+            bg=bg if bg is not None else base.bg,
             dim=bool(dim_color),
             bold=base.bold, italic=base.italic,
             underline=base.underline,

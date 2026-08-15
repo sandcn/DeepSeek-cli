@@ -118,6 +118,11 @@ class MermaidSequenceMixin:
             m = self._parse_note_over(s)
             if m:
                 names, note_text = m
+                # ★ 修复（review 方向）：names 为空（如 "note over : text" /
+                #   "note over , : text"）时 names[0]/names[-1] 抛 IndexError
+                #   中断整个序列渲染——跳过该行。
+                if not names:
+                    continue
                 for n in names:
                     if n not in parts:
                         parts.append(n)
@@ -132,7 +137,16 @@ class MermaidSequenceMixin:
                 if name not in parts:
                     parts.append(name)
                 idx = parts.index(name)
-                notes.append((idx, idx, note_text))
+                # ★ 修复（review 方向）：side 此前被解包后丢弃——note
+                #   left/right of 与普通注记渲染完全一致。近似语义：left →
+                #   注记框右缘锚定在参与者列（跨 idx-1..idx）；right →
+                #   左缘锚定（跨 idx..idx+1）；无邻列时保持原位。
+                if side == 'left' and idx > 0:
+                    notes.append((idx - 1, idx, note_text))
+                elif side == 'right' and idx + 1 < len(parts):
+                    notes.append((idx, idx + 1, note_text))
+                else:
+                    notes.append((idx, idx, note_text))
                 continue
 
             m = self._parse_seq_msg(s)

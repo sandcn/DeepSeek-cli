@@ -206,6 +206,11 @@ class SearchFunc(Func):
             search_pattern = re.escape(self.query)
         else:
             search_pattern = self.query
+        # ★ 修复（review 方向）：保存统一的搜索模式串供 rg/grep/纯 Python
+        #   三引擎共用——修复前 rg/grep 直接传原始 query，灾难性回溯保护
+        #   只作用于 Python 兜底引擎，同一查询在不同机器（rg 有无）上
+        #   字面量/正则语义不一致。
+        self._search_pattern_str = search_pattern
 
         try:
             self._pattern = re.compile(search_pattern)
@@ -272,7 +277,7 @@ class SearchFunc(Func):
 
         cmd.append("--regexp")
 
-        cmd.append(self.query)
+        cmd.append(self._search_pattern_str)
         cmd.append(self.path)
 
         proc = await asyncio.create_subprocess_exec(
@@ -318,7 +323,7 @@ class SearchFunc(Func):
                 if pat:
                     cmd.extend(["--include", pat])
 
-        cmd.append(self.query)
+        cmd.append(self._search_pattern_str)
         cmd.append(self.path)
 
         proc = await asyncio.create_subprocess_exec(

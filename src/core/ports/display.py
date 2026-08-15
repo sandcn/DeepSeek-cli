@@ -46,7 +46,8 @@ class DisplayPort(ABC):
         ...
 
     @abstractmethod
-    def tool_parsing(self, label: str, tool_name: str, arguments: str = "") -> None:
+    def tool_parsing(self, label: str, tool_name: str, arguments: str = "",
+                     tool_id: str = "") -> None:
         """工具解析中"""
         ...
 

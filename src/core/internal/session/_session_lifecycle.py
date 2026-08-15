@@ -248,9 +248,9 @@ async def run_pending_loop(session, max_iter: int = _MAX_PENDING_LOOP_ITER) -> t
     if not pending:
         return False, []
 
-    total_count = 0
-    while pending and total_count < max_iter:
-        total_count += len(pending)
+    rounds = 0
+    while pending and rounds < max_iter:
+        rounds += 1
         for i, msg in enumerate(pending):
             try:
                 await run_round(session, msg)
@@ -270,11 +270,14 @@ async def run_pending_loop(session, max_iter: int = _MAX_PENDING_LOOP_ITER) -> t
                     _logger.exception("run_pending_loop: save_checkpoint 异常，不阻断消息处理")
         pending = session.pop_pending_messages()
 
-    if total_count >= max_iter:
-        _logger.error("排队消息处理超过熔断阈值 (%d)，终止循环", max_iter)
-        remaining = session.pop_pending_messages()
-        if remaining:
-            session._state.pending_messages = remaining + session._state.pending_messages
+    # ★ 熔断判定修复（review 方向）：以「轮次达到上限后是否仍有未处理
+    #   消息」为准——修复前按累计消息数 ``total_count >= max_iter`` 判定：
+    #   1) 恰好处理 max_iter 条且全部成功（无残留）时误报 breached，
+    #      调用方误触发「系统繁忙」提示与 _force_state_recovery；
+    #   2) 每轮整批处理不设上限，max_iter 并未真正约束单轮工作量。
+    if pending:
+        _logger.error("排队消息处理超过熔断阈值 (%d 轮)，终止循环", max_iter)
+        session._state.pending_messages = pending + session._state.pending_messages
         return True, list(session._state.pending_messages)
 
     return False, []

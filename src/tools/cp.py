@@ -107,17 +107,27 @@ class CpFunc(FileSystemToolBase):
 
             # 复制文件
             if src_is_file:
-                dest_content_before = await async_read_file_content(self.destination) if await async_file_exists(self.destination) else None
+                # ★ 修复（review 方向）：目标为已存在目录时 shutil.copy2 会把
+                #   文件复制**进该目录内**（实际落点 dst/basename(source)），
+                #   修复前沙盒按 destination（目录本身）记录文件内容，undo
+                #   回滚路径错误。effective_dst 为真实落点。
+                if await asyncio.to_thread(os.path.isdir, self.destination):
+                    effective_dst = os.path.join(
+                        self.destination, os.path.basename(os.path.normpath(self.source)),
+                    )
+                else:
+                    effective_dst = self.destination
+                dest_content_before = await async_read_file_content(effective_dst) if await async_file_exists(effective_dst) else None
                 source_content = await async_read_file_content(self.source)
 
-                dest_dir = os.path.dirname(self.destination)
+                dest_dir = os.path.dirname(effective_dst)
                 if dest_dir:
                     from .file_ops import async_makedirs_and_record
                     await async_makedirs_and_record(dest_dir, self.name)
 
                 await asyncio.to_thread(shutil.copy2, self.source, self.destination)
-                await async_record_sandbox(self.destination, dest_content_before, source_content, self.name)
-                return f"复制成功: {self.source} \u2192 {self.destination}"
+                await async_record_sandbox(effective_dst, dest_content_before, source_content, self.name)
+                return f"复制成功: {self.source} \u2192 {effective_dst}"
 
             # 复制目录
             elif src_is_dir:

@@ -437,7 +437,7 @@ class MathParser(
 
         # ── 彩色框 \colorbox{color}{text} / \fcolorbox{border}{fill}{text} ──
         if cmd in ("colorbox", "fcolorbox"):
-            return self._parse_colorbox(s, i, n)
+            return self._parse_colorbox(s, i, n, cmd=cmd)
 
         # ── 排版样式 \displaystyle / \textstyle ──────────
         if cmd == "displaystyle":

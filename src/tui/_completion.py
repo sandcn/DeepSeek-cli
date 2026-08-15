@@ -158,8 +158,12 @@ class _CmplHandler:
             # 本分支，路径补全功能完整保留。方向3 性能优化。
             words = text.split(" ")
             last_word = words[-1] if words else ""
+            # ★ 修复（review 方向）：路径分隔符兼容——与 _get_match_prefix
+            #   一致按 os.sep/os.altsep 判断（修复前硬编码 "/"：Windows 上
+            #   ``C:\proj\sr`` / ``foo\bar`` 永不触发自动路径补全）。
+            sep_hit = os.sep in last_word or (os.altsep and os.altsep in last_word)
             is_pathish = (
-                "/" in last_word
+                sep_hit
                 or last_word.startswith("~")
                 or last_word.startswith(".")
             )

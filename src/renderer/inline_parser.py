@@ -99,11 +99,21 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
                 self._pos = self._n
                 continue
 
+            pos_before = self._pos
             try:
                 node = self._try_format(depth)
             except Exception:
                 node = None
             if node is not None:
+                # ★ 修复（review 方向）：裸邮箱检测从 '@' 向前回溯局部部分，
+                #   这些字符此前已被缓冲进 plain_buf——emit 前按局部部分长度
+                #   截掉，避免 "foo@bar.com" 渲染为 "foofoo@bar.com"（仅当文本
+                #   同时含其他行内标记时走本路径）。
+                local_start = getattr(self, '_last_email_local_start', None)
+                if (local_start is not None
+                        and type(node).__name__ == 'AutoLinkEmailNode'):
+                    self._trim_plain_buf(plain_buf, pos_before - local_start)
+                self._last_email_local_start = None
                 _emit_plain()
                 nodes.append(node)
                 continue
@@ -114,8 +124,21 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
         _emit_plain()
         return nodes, False
 
+    @staticmethod
+    def _trim_plain_buf(plain_buf: list[str], n: int) -> None:
+        """从 plain_buf 尾部截掉 n 个字符（跨字符串条目）。"""
+        while n > 0 and plain_buf:
+            s = plain_buf[-1]
+            take = min(n, len(s))
+            if take >= len(s):
+                plain_buf.pop()
+            else:
+                plain_buf[-1] = s[:-take]
+            n -= take
+
     def _try_format(self, depth: int) -> InlineNode | None:
         try:
+            self._last_email_local_start = None
             ch = self._text[self._pos] if self._pos < self._n else ''
 
             entries = self._METHOD_CACHE.get(ch)

@@ -422,6 +422,9 @@ class InlineLinksMixin:
             self._pos -= (len(addr) - len(stripped_addr))
             addr = stripped_addr
             if '@' in addr and '.' in addr[addr.index('@') + 1:]:
+                # ★ 修复（review 方向）：记录局部部分起点供 _parse_until 截掉
+                #   已缓冲的局部字符（"foo" 已在 plain_buf），避免重复渲染。
+                self._last_email_local_start = local_start
                 return AutoLinkEmailNode(email=addr, content=addr)
             self._pos = saved
             return None

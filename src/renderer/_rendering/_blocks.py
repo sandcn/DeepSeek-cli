@@ -17,12 +17,13 @@ from .._utils import cjk_display_width
 # ═══════════════════════════════════════════════════════════
 
 def is_todo(text: str) -> tuple[str | None, str]:
-    """字符级检测 [ ] 或 [x] 任务列表项。
+    """字符级检测 [ ] / [x] / [-] 任务列表项。
 
     Returns:
-        (marker, content): marker=' ' 未勾选, marker in 'xX' 已勾选, marker=None 非任务项
+        (marker, content): marker=' ' 未勾选, marker in 'xX' 已勾选,
+        marker='-' 已取消, marker=None 非任务项
     """
-    if len(text) >= 4 and text[0] == '[' and text[2] == ']' and text[1] in ' xX':
+    if len(text) >= 4 and text[0] == '[' and text[2] == ']' and text[1] in ' xX-':
         return text[1], text[3:].strip()
     return None, text
 
@@ -200,6 +201,12 @@ def render_list_item(
         content_rich = render_inline_fn(content) if render_inline_fn else Text(content)
         if marker == ' ':
             symbol = Text("⬜ ", style=Style(color="bright_white"))
+            return Text.assemble(prefix, symbol, content_rich)
+        elif marker == '-':
+            # ★ 修复（review 方向）：[-] 已取消任务——修复前 is_todo 不识别，
+            #   渲染为字面 "• [-] task" 且不计入进度条。
+            content_rich.stylize(Style(color="red", strike=True, dim=True))
+            symbol = Text("❌ ", style=Style(color="red", bold=True))
             return Text.assemble(prefix, symbol, content_rich)
         else:
             content_rich.stylize(Style(color="green", strike=True))

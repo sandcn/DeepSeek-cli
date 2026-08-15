@@ -66,4 +66,8 @@ _BIG_OPERATOR_COMMANDS: Set[str] = {
     "bigcup", "bigcap", "bigvee", "bigwedge",
     "bigoplus", "bigotimes", "bigsqcup", "biguplus",
     "bigsqcap", "bigtriangleup", "bigtriangledown",
+    # ★ 修复（review 方向）：四个大运算符缺失（_BIG_OPERATORS 中存在）——
+    #   修复前 \bigtimes/\bigast/\bigodot/\bigcirc 不走大运算符极限路径，
+    #   _{...}^{...} 落入通用上下标处理。
+    "bigtimes", "bigast", "bigodot", "bigcirc",
 }

@@ -511,9 +511,13 @@ async def stream_call_async(
                 base_url=adapter._base_url, **kwargs)
             # ★ 转换层：将 Anthropic SSE chunks 转换为统一格式（OpenAI 兼容），
             #    使 AsyncStreamPipeline.process() 能按 choices[0].delta.content 路径解析。
+            # ★ 并发安全：为每条流创建独立的工具累积状态 dict——适配器实例被
+            #    _adapter_manager 按模型缓存共享，实例级 _stream_tool_acc 会被
+            #    并发流交叉污染（工具参数串流），故显式传入每流独立 state。
             async def _anthropic_to_unified(raw):
+                tool_acc: dict = {}
                 async for chunk in raw:
-                    yield adapter.parse_stream_chunk(chunk)
+                    yield adapter.parse_stream_chunk(chunk, tool_acc)
             response_iter = _anthropic_to_unified(raw_iter)
         else:
             response_iter = await chat_completions_async(**kwargs)

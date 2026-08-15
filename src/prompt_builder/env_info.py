@@ -33,7 +33,9 @@ def build_environment_info(
     lines.append(f"- 主机名: {platform.node()}")
     lines.append(f"- 日期: {today.year}年{today.month:02d}月{today.day:02d}日")
     lines.append(f"- Python: {platform.python_version()}")
-    lines.append(f"- 工作目录: {os.getcwd()}")
+    # ★ 修复（review 方向）：使用参数 cwd（_resolve_cwd 解析）——修复前
+    #   硬编码 os.getcwd()，调用方为子代理 prompt 传入的其他工作目录被忽略。
+    lines.append(f"- 工作目录: {_resolve_cwd(cwd)}")
     lines.append("")
 
     return "\n".join(lines) + "\n"

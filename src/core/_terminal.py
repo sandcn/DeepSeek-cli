@@ -19,12 +19,13 @@ def get_terminal_width() -> int:
     Returns:
         终端列数；ioctl 与 shutil 均失败时返回 80 兜底。
     """
-    import fcntl
     import os
     import struct
-    import termios
 
     try:
+        import fcntl
+        import termios
+
         fd = os.open("/dev/tty", os.O_RDONLY)
         try:
             data = fcntl.ioctl(fd, termios.TIOCGWINSZ,

@@ -84,7 +84,8 @@ class BaseDisplay(ABC):
         """批量工具开始。可选覆盖。"""
         pass
 
-    def tool_parsing(self, label: str, tool_name: str, arguments: str = "") -> None:
+    def tool_parsing(self, label: str, tool_name: str, arguments: str = "",
+                     tool_id: str = "") -> None:
         """工具解析中。可选覆盖。"""
         pass
 

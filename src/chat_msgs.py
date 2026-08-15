@@ -229,9 +229,14 @@ def list_sessions() -> list[dict[str, Any]]:
         if data is None:
             continue
         title = data.get("title")
-        # 兼容旧会话：没有 title 字段则从消息中提取
+        # 兼容旧会话：没有 title 字段则从首条 user 消息提取
         if not title:
             title = ""
+            for m in data.get("messages", []) or []:
+                if isinstance(m, dict) and m.get("role") == "user":
+                    content = (m.get("content") or "").strip()
+                    title = content[:40] + ("…" if len(content) > 40 else "")
+                    break
         sessions.append({
             "id": data.get("id", f.stem),
             "title": title,

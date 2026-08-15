@@ -86,21 +86,38 @@ class MvFunc(FileSystemToolBase):
             src_is_file = await async_is_link(self.source) or await asyncio.to_thread(os.path.isfile, self.source)
             src_is_dir = await asyncio.to_thread(os.path.isdir, self.source)
 
+            # ★ 修复（review 方向）：目标为已存在目录时 shutil.move 会把源
+            #   **移入该目录内**（实际结果为 dst/basename(source)），修复前
+            #   沙盒仍按 destination 扁平记录（undo 回滚路径错误、覆盖提示
+            #   与实际落点不符）。effective_dst 为真实落点。
+            dst_is_dir = dst_exists and await asyncio.to_thread(os.path.isdir, self.destination)
+            if dst_is_dir:
+                effective_dst = os.path.join(
+                    self.destination, os.path.basename(os.path.normpath(self.source)),
+                )
+            else:
+                effective_dst = self.destination
+            effective_exists = await async_file_exists(effective_dst)
+            if effective_exists:
+                same_eff = await asyncio.to_thread(os.path.samefile, self.source, effective_dst)
+                if same_eff:
+                    return f"(源和目标路径相同: {self.source})"
+
             if src_is_file:
                 source_content = await async_read_file_content(self.source)
-                dst_content = await async_read_file_content(self.destination) if dst_exists else None
+                dst_content = await async_read_file_content(effective_dst) if effective_exists else None
                 await asyncio.to_thread(shutil.move, self.source, self.destination)
                 # ★ 跨文件系统一致性检查：shutil.move 在跨文件系统时使用 copy+delete 策略，
                 #    若 copy 成功但 delete 失败，源文件仍存在。此时沙盒不应记录源删除。
                 source_still_exists = await async_file_exists(self.source)
                 if source_still_exists:
                     # 跨文件系统：复制成功但源删除失败，仅记录目标写入
-                    await async_record_sandbox(self.destination, dst_content, source_content, self.name)
+                    await async_record_sandbox(effective_dst, dst_content, source_content, self.name)
                     return f"(移动部分成功: 跨文件系统复制完成但源文件删除失败: {self.source})"
                 await async_record_sandbox(self.source, source_content, None, self.name)
-                await async_record_sandbox(self.destination, dst_content, source_content, self.name)
-                action = "覆盖" if dst_exists else "移动"
-                return f"{action}成功: {self.source} -> {self.destination}"
+                await async_record_sandbox(effective_dst, dst_content, source_content, self.name)
+                action = "覆盖" if effective_exists else "移动"
+                return f"{action}成功: {self.source} -> {effective_dst}"
 
             elif src_is_dir:
                 src_files = await async_collect_files(self.source)
@@ -110,10 +127,10 @@ class MvFunc(FileSystemToolBase):
                     src_contents[fp] = await async_read_file_content(fp)
 
                 dst_existing = {}
-                if dst_exists:
-                    dst_dir = await asyncio.to_thread(os.path.isdir, self.destination)
-                    if dst_dir:
-                        dst_files = await async_collect_files(self.destination)
+                if effective_exists:
+                    eff_is_dir = await asyncio.to_thread(os.path.isdir, effective_dst)
+                    if eff_is_dir:
+                        dst_files = await async_collect_files(effective_dst)
                         for fp in dst_files:
                             dst_existing[fp] = await async_read_file_content(fp)
 
@@ -125,19 +142,19 @@ class MvFunc(FileSystemToolBase):
                 if source_still_exists:
                     # 跨文件系统：复制成功但源删除失败，仅记录目标写入
                     await async_record_directory_files(
-                        self.source, self.destination, src_files, self.name,
+                        self.source, effective_dst, src_files, self.name,
                         dst_existing or None, source_contents=src_contents,
                         source_deleted=False,
                     )
                     return f"(移动部分成功: 跨文件系统复制完成但源目录删除失败: {self.source})"
 
                 await async_record_directory_files(
-                    self.source, self.destination, src_files, self.name,
+                    self.source, effective_dst, src_files, self.name,
                     dst_existing or None, source_contents=src_contents,
                 )
                 # ★ 源目录自身：content_before="" 表示目录存在，content_after=None 表示被移动后删除
                 await async_record_sandbox(self.source, "", None, self.name, record_type="directory")
-                return f"移动成功: {self.source} -> {self.destination} ({len(src_files)}个文件)"
+                return f"移动成功: {self.source} -> {effective_dst} ({len(src_files)}个文件)"
 
             else:
                 return f"(不支持的路径类型: {self.source})"
