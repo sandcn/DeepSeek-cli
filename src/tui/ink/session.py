@@ -1036,8 +1036,10 @@ class InkSession:
 
         与 ``_subagent_panel._needs_animation``（面板控制器经 SUBAGENT_FRAME
         命令自行驱动渲染循环）互补：本方法覆盖主 agent 侧动画状态。
-        空闲（全部非活跃）返回 False → 渲染循环跳过（CPU ~0），保持
-        ``_should_render`` 空闲短路语义。
+
+        ★ 2026-08-16 需求变更：渲染循环已改为**全程 10Hz**（空闲也持续渲染，
+        见 ``_should_render``），本方法不再决定是否跳过渲染——保留用于标记
+        活跃动画状态（置脏），以及对时间基动画语义的探测（其他模块注释引用）。
 
         线程安全：仅在 render 线程（``_should_render``）调用；属性读取为 GIL
         原子操作（status/tool_boxes/parse_line 赋值与读取均原子）。
@@ -1071,36 +1073,33 @@ class InkSession:
         return False
 
     def _should_render(self, changed: bool) -> bool:
-        """是否需渲染本帧：脏标记 + 10Hz 拍批处理。
+        """是否需渲染本帧：全程 10Hz 拍渲染（空闲也持续刷新）。
 
         事件（命令/重绘请求）标记脏并唤醒循环，但不立即渲染——与下一个
-        10Hz 拍一起渲染（批处理）。**空闲（无脏）时跳过渲染**，避免固定
-        10Hz 全量重建整棵聊天树（大历史下 CPU 100%）。
+        10Hz 拍一起渲染（批处理）。
 
-        ★ 动画保持：活跃动画状态（工具运行/流式/解析，见 ``_needs_animation``）
-        时持续置脏——即使无新命令也按 10Hz 拍渲染，时间基动画平滑推进
-        （工具执行期间 TUI 其他部分不冻结）。动画结束后回退空闲跳过（CPU ~0）。
+        ★ 全程 10Hz（2026-08-16 需求变更）：移除原先「空闲（无脏）跳过渲染
+        （CPU ~0）」短路——**没有流式输出（等待用户输入/空闲）期间 TUI 也
+        以每秒 10Hz 刷新**。组件树大量缓存下无变化帧 diff 零输出（仅光标
+        定位），CPU 开销可控；空闲时状态栏/输入区等时间基元素同样平滑推进。
+
+        ★ 立即渲染：force（_bottom_redraw_requested，如 /editmsg prefill 注入）
+        时跳过 interval 节流——用户可感知的 UI 更新即时渲染；高频命令
+        （工具状态）不走 force，10Hz 批处理语义不变。
 
         Returns:
-            True — 本拍渲染（脏且 render_interval 已到期）。
+            True — 本拍渲染（render_interval 已到期或 force）。
         """
         now = time.monotonic()
         force = self._bottom_redraw_requested.is_set()
         self._bottom_redraw_requested.clear()
         if changed or force:
             self._dirty = True  # 本批命令已应用 / 底部重绘请求 → 标记脏
-        # ★ 活跃动画状态 → 持续置脏（10Hz 拍推进时间基动画；空闲保持跳过）
+        # ★ 活跃动画状态 → 置脏（语义保留：有动画需求时标记 dirty；渲染决定
+        #   已不依赖 dirty——全程 10Hz 渲染，见上）。
         if not self._dirty and self._needs_animation():
             self._dirty = True
-        if not self._dirty:
-            return False  # 空闲且无变化：跳过渲染（CPU ~0）
-        # ★ prefill/交互立即渲染修复（2026-08-15）：force（_bottom_redraw_requested，
-        #   如 /editmsg /deitmsg /retry prefill 注入经 update_input → _request_render
-        #   置位）时**跳过 interval 节流**——修复前 EditmsgPlugin 完成时 flush 刚
-        #   渲染（_last_bottom_redraw 刚更新），紧随其后的 prefill 注入请求被
-        #   ``now - last < render_interval`` 拦截延迟到下一 10Hz 拍（输入区延迟
-        #   显示 prefill）。force 表示「用户可感知的 UI 更新」，即时渲染符合预期；
-        #   高频命令（工具状态）不走 force，10Hz 批处理语义不变。
+        # ★ 全程 10Hz：空闲也按 render_interval 渲染（移除空闲跳过短路）。
         if now - self._last_bottom_redraw >= self._config.render_interval or force:
             self._dirty = False
             self._last_bottom_redraw = now
