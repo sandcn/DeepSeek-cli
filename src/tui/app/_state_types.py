@@ -73,6 +73,11 @@ class ChatBlock:
     #: 跨桶复用（标题行状态图标色动态，独立重建）。frame_cache 同桶快速路径
     #: miss（跨桶）时兜底复用内容行，TEXT ``_wrap_cache`` 命中。
     _tool_card_body_lines_cache: tuple | None = None
+    #: 工具卡折叠状态（2026-08-15 用户需求）：True=关闭后折叠为单行（仅显示
+    #: 标题行——状态图标+工具名+参数，对齐 Claude Code 收起工具结果）；False=
+    #: 展开显示全部内容行。``close_tool_box`` 完成后自动置 True；``/toolcard``
+    #: 命令手动切换（展开查看后再次折叠）。渲染期由 ``tool_card_lines`` 消费。
+    tool_collapsed: bool = False
 
 
 @dataclass

@@ -177,6 +177,9 @@ class InputDispatcher:
           - Ctrl+L → 清屏（非流式时；未注入回调跳过）
           - Ctrl+D → EOF（空缓冲提交 exit；非空 no-op 防误退）
           - Ctrl+T → 主题切换
+          - Ctrl+B → 主 agent 空模式切换
+          - Ctrl+Y → 折叠/展开最后一张工具卡片（2026-08-15 用户需求；
+            \x19 未占用 readline 键位）
           - P2-5：Ctrl+E（\x05）由 _decode_control_char 映射为 end 事件
             （readline 行尾），本分支不可达（不再有 no-op 兜底）。
         """
@@ -216,6 +219,8 @@ class InputDispatcher:
                 self._buffer_editor._up()
         elif ch == '\x02':        # Ctrl+B → 主 agent 空模式切换
             self._handle_special_key('empty_mode')
+        elif ch == '\x19':        # Ctrl+Y → 折叠/展开最后一张工具卡片（/toolcard）
+            self._handle_special_key('tool_fold')
         # else：未知 ctrl_key → no-op
 
     def _handle_clear_screen(self) -> None:

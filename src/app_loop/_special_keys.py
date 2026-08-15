@@ -18,6 +18,7 @@ def make_special_key_callback(loop, session, state, chat_ui, monitor=None):
     - 'switch_model'：循环切换模型
     - 'empty_mode'：Ctrl+B 切换主 agent 空模式（系统提词替换为
       prompts_export_main_empty.md，重建 agent 系统消息）
+    - 'tool_fold'：Ctrl+Y 折叠/展开最后一张工具卡片（2026-08-15 用户需求）
 
     monitor: EscapeMonitor 实例，用于 vim 路径中的终端模式切换。
              在单线程模型中，回调在 render 线程执行，不能调用
@@ -137,6 +138,16 @@ def make_special_key_callback(loop, session, state, chat_ui, monitor=None):
                     )
             except Exception:
                 _logger.debug("empty_mode 切换异常", exc_info=True)
+            return text
+        elif action == 'tool_fold':
+            # Ctrl+Y → 折叠/展开最后一张工具卡片（2026-08-15 用户需求）：
+            # 经 chat_ui.fold_tool_cards 投递 ToolFoldCmd 到渲染命令队列
+            # （线程安全，不修改输入缓冲——回调返回原 text 保持缓冲不变）。
+            try:
+                if chat_ui is not None and hasattr(chat_ui, 'fold_tool_cards'):
+                    chat_ui.fold_tool_cards(tool_id="", collapsed=None)
+            except Exception:
+                _logger.debug("tool_fold 切换异常", exc_info=True)
             return text
         return None
 

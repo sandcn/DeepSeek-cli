@@ -348,6 +348,39 @@ class AppModel(_ToolOutputMixin):
                 out.append(Line())
         return out
 
+    def _rebuild_committed(self) -> None:
+        """按当前宽度与折叠状态全量重建 committed_lines。
+
+        与 ``reflow_committed`` 共用重建主体（宽度变化 / 工具卡折叠切换后
+        调用）——重建产出**新列表对象** → ChatView use_memo / committed-chat
+        前缀缓存（键含 ``id(lines)``）自动失效，无需额外通知。
+
+        关闭块未提交尾（``_cached_ink_lines``）**无条件重冻结**——工具卡折叠
+        状态参与渲染（折叠块冻结=仅标题行，展开块冻结=完整内容），折叠切换
+        后须按新状态重建；非工具块重冻结结果不变（无折叠概念），仅多一次
+        ``_block_to_ink_lines``（低频操作可接受）。reasoning 块跳过（保持
+        ``_block_styled_lines`` 即时 fg=242 路径的不变式）。
+        """
+        width = getattr(self, "width", 0)
+        committed: list = []
+        for block in self.blocks:
+            count = block.committed_line_count
+            # 关闭块未提交尾（含 count==0 被夹住未提交的块）：按当前折叠状态
+            # 重冻结——工具卡折叠切换后 count==0 的块不在 committed_lines
+            # 重建范围，须单独按新折叠状态重建冻结缓存（live 渲染消费）。
+            # 必须在 ``count <= 0 continue`` 之前处理。
+            if block.closed and count < len(block.lines) and block.kind != "reasoning":
+                block._cached_ink_lines = self._block_to_ink_lines(block, count)
+            if count <= 0:
+                continue
+            block.extra["_first_committed_offset"] = len(committed)
+            committed.extend(self._card_lines_committed(block, width))
+            # 方向3：重建含尾空行（_card_lines_committed 对 closed 块无条件补
+            # trailer）→ 重置 trailer 标志，防后续 commit_block 重复追加。
+            if block.closed:
+                block.extra["_trailer_appended"] = True
+        self.committed_lines = committed
+
     def reflow_committed(self, width: int) -> None:
         """终端宽度变化后按新宽度重建 committed_lines（重排已提交行）。
 
@@ -364,22 +397,71 @@ class AppModel(_ToolOutputMixin):
         if width <= 0 or width == self.width:
             return
         self.width = width
-        committed: list = []
-        for block in self.blocks:
-            count = block.committed_line_count
-            if count <= 0:
-                continue
-            block.extra["_first_committed_offset"] = len(committed)
-            committed.extend(self._card_lines_committed(block, width))
-            # 方向3：reflow 重建含尾空行（_card_lines_committed 对 closed 块
-            # 无条件补 trailer）→ 重置 trailer 标志，防后续 commit_block 重复
-            # 追加（已重建的 committed_lines 含 trailer）。
-            if block.closed:
-                block.extra["_trailer_appended"] = True
-            # 关闭块未提交尾（增量提交后仍留尾 / 被夹住）：按新宽度重冻结
-            if block._cached_ink_lines is not None and count < len(block.lines):
-                block._cached_ink_lines = self._block_to_ink_lines(block, count)
-        self.committed_lines = committed
+        self._rebuild_committed()
+
+    def set_tool_collapsed(self, block, collapsed: bool | None = None) -> bool:
+        """设置工具卡折叠状态并重建 committed_lines（返回是否发生切换）。
+
+        供 ``/toolcard`` 命令（经 ToolFoldCmd 在渲染线程）调用——折叠状态
+        变化后 ``tool_card_lines`` 渲染不同（折叠=仅标题行 / 展开=全部内容），
+        经 ``_rebuild_committed`` 全量重建 committed_lines（新列表对象 →
+        ChatView 缓存自动失效）。``_cached_ink_lines`` 由 ``_rebuild_committed``
+        按新折叠状态重冻结。
+
+        Args:
+            block: 工具块（ChatBlock.kind == "tool"）。
+            collapsed: True=折叠 / False=展开 / None=toggle（默认）。
+
+        Returns:
+            True=折叠状态实际变化（已重建 committed_lines）；False=无变化。
+        """
+        if block.kind != "tool":
+            return False
+        target = (
+            bool(collapsed)
+            if collapsed is not None
+            else not bool(getattr(block, "tool_collapsed", False))
+        )
+        if bool(getattr(block, "tool_collapsed", False)) == target:
+            return False
+        block.tool_collapsed = target
+        block._open_styled_cache = None  # 折叠切换后开放 styled 缓存失效
+        self._rebuild_committed()
+        return True
+
+    def fold_tool_cards(self, tool_id: str = "", collapsed: bool | None = None) -> int:
+        """折叠/展开工具卡片（``/toolcard`` 命令核心），返回受影响数量。
+
+        Args:
+            tool_id: 目标工具块 id（``block.extra["tool_id"]``）——"" 表示
+                **最后一张**已关闭工具卡（最近完成，最常需要展开查看）；
+                "all" 表示全部已关闭工具卡。
+            collapsed: True=折叠 / False=展开 / None=toggle（默认）。
+
+        Returns:
+            折叠状态实际变化的工具卡数量（0=无匹配/无变化）。
+        """
+        targets: list = []
+        if tool_id == "all":
+            targets = [
+                b for b in self.blocks
+                if b.kind == "tool" and b.closed
+            ]
+        elif tool_id:
+            targets = [
+                b for b in self.blocks
+                if b.kind == "tool" and b.extra.get("tool_id") == tool_id
+            ]
+        else:
+            for b in reversed(self.blocks):
+                if b.kind == "tool" and b.closed:
+                    targets.append(b)
+                    break
+        changed = 0
+        for block in targets:
+            if self.set_tool_collapsed(block, collapsed):
+                changed += 1
+        return changed
 
     # ── 推理/内容通道 ───────────────────────────────
 

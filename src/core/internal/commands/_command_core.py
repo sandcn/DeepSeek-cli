@@ -93,6 +93,7 @@ COMMANDS_HELP = (
     f"  {TEAL}/load{RESET}     加载保存的对话 /load <id>\n"
     f"  {TEAL}/sessions{RESET} 列出所有保存的对话\n"
     f"  {TEAL}/theme{RESET}    切换配色主题: /theme <dark|light|high-contrast>\n"
+    f"  {TEAL}/toolcard{RESET}  折叠/展开工具卡片: /toolcard [all|expand|collapse]\n"
     f"  {TEAL}/help{RESET}     显示帮助\n"
     f"  {DIM}  exit 退出{RESET}"
     # ── 快捷键说明（2026-08-05 增加操作；readline 编辑键 + 会话操作键） ──
@@ -107,7 +108,8 @@ COMMANDS_HELP = (
     f"  {TEAL}Ctrl+G{RESET}        打开 vim 编辑 {TEAL}Ctrl+O{RESET}         编辑会话消息\n"
     f"  {TEAL}Ctrl+N{RESET}        切换模型     {TEAL}Ctrl+T{RESET}         切换主题\n"
     f"  {TEAL}Ctrl+L{RESET}        清屏         {TEAL}Ctrl+D{RESET}         退出(空输入)\n"
-    f"  {TEAL}Ctrl+B{RESET}        主Agent空模式 {TEAL}Esc{RESET}           取消输入/中断"
+    f"  {TEAL}Ctrl+B{RESET}        主Agent空模式 {TEAL}Ctrl+Y{RESET}         折叠/展开工具卡片\n"
+    f"  {TEAL}Esc{RESET}           取消输入/中断"
 )
 
 

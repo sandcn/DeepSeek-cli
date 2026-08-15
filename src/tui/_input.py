@@ -612,13 +612,14 @@ class Input:
         self._buffer_editor.set_echo_callback(cb)
 
     def set_special_key_callback(self, cb) -> None:
-        """设置特殊按键回调（Ctrl+G/O/N/R/T/B 等组合键）。
+        """设置特殊按键回调（Ctrl+G/O/N/R/T/B/Y 等组合键）。
 
         cb 签名: (action: str, current_text: str) -> str | None
 
         action 取值（当前分发）：``vim``（Ctrl+G）/ ``editmsg``（Ctrl+O）/
         ``retry``（Ctrl+R，反向搜索禁用时）/ ``toggle_theme``（Ctrl+T）/
-        ``switch_model``（Ctrl+N）/ ``empty_mode``（Ctrl+B）。
+        ``switch_model``（Ctrl+N）/ ``empty_mode``（Ctrl+B）/
+        ``tool_fold``（Ctrl+Y，折叠/展开最后一张工具卡片）。
         """
         self._dispatcher.set_special_key_callback(cb)
 

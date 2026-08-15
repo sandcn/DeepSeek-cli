@@ -19,7 +19,7 @@ from src.tui.app.toolcard import tool_card_lines
 
 
 def _make_block(content_text: str) -> SimpleNamespace:
-    """构造最小 ChatBlock 鸭子类型（lines/closed/extra）。
+    """构造最小 ChatBlock 鸭子类型（lines/closed/extra/tool_collapsed）。
 
     lines[0] 为模型层标题行（tool_card_lines start=0 时跳过），lines[1:]
     为内容行。
@@ -27,6 +27,7 @@ def _make_block(content_text: str) -> SimpleNamespace:
     return SimpleNamespace(
         lines=[AnsiLine.of("标题"), AnsiLine.of(content_text)],
         closed=True,
+        tool_collapsed=False,
         extra={
             "tool_status": "done",
             "tool_name": "bash",
@@ -90,3 +91,85 @@ def test_width_zero_bare_line_regression():
     lines = _body_lines(tool_card_lines(block, 0))
     joined = "".join("".join(r.text for r in line) for line in lines)
     assert joined == text, "width=0 应原样输出不截断"
+
+
+# ── 折叠渲染（2026-08-15 用户需求：工具完成后自动折叠为单行） ─────
+
+def _make_fold_block() -> SimpleNamespace:
+    """构造已关闭且带折叠标志的工具块（多内容行）。"""
+    return SimpleNamespace(
+        lines=[
+            AnsiLine.of("标题"),
+            AnsiLine.of("内容-1"),
+            AnsiLine.of("内容-2"),
+        ],
+        closed=True,
+        tool_collapsed=True,
+        extra={
+            "tool_status": "done",
+            "tool_name": "bash",
+            "tool_detail": "ls -la",
+            "_bash_omitted_lines": 0,
+            "_head_omitted_lines": 0,
+        },
+    )
+
+
+def test_collapsed_returns_title_only():
+    """折叠工具卡 start=0：只返回标题行（状态图标+工具名+参数），无内容行。"""
+    block = _make_fold_block()
+    lines = tool_card_lines(block, 40)
+    assert len(lines) == 1, f"折叠后应只有标题行，实际 {len(lines)} 行"
+    title = "".join(r.text for r in lines[0])
+    assert title.startswith("✔ "), f"标题应含完成图标: {title!r}"
+    assert "Bash" in title and "ls -la" in title
+
+
+def test_collapsed_tail_returns_empty():
+    """折叠工具卡 start>0（未提交尾）：无内容行可显示，返回空列表。"""
+    block = _make_fold_block()
+    assert tool_card_lines(block, 40, 1, None) == []
+    assert tool_card_lines(block, 40, 1, 2) == []
+
+
+def test_expanded_returns_full_content():
+    """展开工具卡（tool_collapsed=False）：标题行 + 全部内容行。"""
+    block = _make_fold_block()
+    block.tool_collapsed = False
+    lines = tool_card_lines(block, 40)
+    assert len(lines) == 3, f"展开后应有标题+2内容，实际 {len(lines)} 行"
+    body = "".join(
+        "".join(r.text for r in row)
+        for row in _body_lines(lines)
+    )
+    assert "内容-1" in body and "内容-2" in body
+
+
+def test_collapse_switch_invalidates_frame_cache():
+    """折叠状态切换后 frame 缓存失效（key 含 collapsed 标志）。"""
+    block = _make_fold_block()
+    block.tool_collapsed = False
+    expanded = tool_card_lines(block, 40)
+    assert len(expanded) == 3
+    block.tool_collapsed = True
+    collapsed = tool_card_lines(block, 40)
+    assert len(collapsed) == 1, "折叠状态切换后应重建为仅标题行"
+    assert block._tool_card_frame_cache[0][3] is True, "frame key 应含 collapsed 标志"
+
+
+def test_collapsed_running_icon_still_render():
+    """折叠仅对已关闭块生效——开放块（未关闭）即使标记折叠仍渲染标题+内容。"""
+    block = SimpleNamespace(
+        lines=[AnsiLine.of("标题"), AnsiLine.of("内容")],
+        closed=False,
+        tool_collapsed=True,
+        extra={
+            "tool_status": "running",
+            "tool_name": "bash",
+            "tool_detail": "watch",
+            "_bash_omitted_lines": 0,
+            "_head_omitted_lines": 0,
+        },
+    )
+    lines = tool_card_lines(block, 40)
+    assert len(lines) == 2, "开放工具块不应折叠（需保持输出可见）"
