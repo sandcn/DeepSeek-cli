@@ -756,11 +756,37 @@ class InkSession:
                         self._cmd_event.clear()
                         now = time.monotonic()
                         remaining = next_loop - now
+                        # ★ prefill/交互立即渲染修复（2026-08-15）：底部重绘请求
+                        #   （force，如 /editmsg /deitmsg /retry 的 prefill 注入经
+                        #   update_input → _request_render 置位）**提前退出**节流
+                        #   等待，本拍立即处理渲染——修复前 prefill 注入仅置位
+                        #   标志，渲染线程被节流（next_loop）拦截且 _should_render
+                        #   的 interval 检查可能因 EditmsgPlugin flush 刚渲染过而
+                        #   不满足 → 输入区延迟 0.1~0.5s 才显示 prefill（用户感知
+                        #   「编辑后没立即显示，要再按一次回车才刷新」）。
+                        #   高频命令（ToolCountInc/DecCmd、SUBAGENT_FRAME、
+                        #   ParseInfoCmd 等）不置位 _bottom_redraw_requested，仍走
+                        #   既有 10Hz 批处理（PERF-8 忙循环防护不回归）。
+                        if self._bottom_redraw_requested.is_set():
+                            break
                 next_loop = max(next_loop, time.monotonic()) + self._config.render_interval
                 try:
                     # 方向5（死代码清理）：返回值未使用——has_content 删除。
                     self._drain_queue()
                     self._cmd_event.clear()
+                    # ★ prefill/交互立即渲染修复（2026-08-15）：force
+                    #   （_bottom_redraw_requested，如 /editmsg /deitmsg /retry
+                    #   prefill 注入经 update_input → _request_render 置位）未
+                    #   消费时**保持 _cmd_event 唤醒**——渲染线程 busy（处理
+                    #   EditmsgPlugin 的 clear/display/write 命令）期间注入的
+                    #   force 请求若在本行被无条件 clear，渲染线程下一轮循环进入
+                    #   节流等待时 ``_cmd_event.wait`` 不会立即返回（事件已 clear），
+                    #   prefill 延迟到下一 10Hz 拍才渲染（输入区 0.1~0.5s 空白）。
+                    #   保持唤醒 → 下一轮循环 force 提前退出节流等待（上方）→
+                    #   _drain_queue → _should_render（force 跳过 interval）→
+                    #   立即渲染 prefill。
+                    if self._bottom_redraw_requested.is_set():
+                        self._cmd_event.set()
                     # ★ BUG-39：稳定运行复位崩溃恢复计数——上次恢复后持续运行
                     #   超过阈值视为已稳定（偶发崩溃重新从头计数），防长时间
                     #   运行后 max_recover_attempts 耗尽导致 UI 永久冻结。
@@ -947,7 +973,14 @@ class InkSession:
             self._dirty = True
         if not self._dirty:
             return False  # 空闲且无变化：跳过渲染（CPU ~0）
-        if now - self._last_bottom_redraw >= self._config.render_interval:
+        # ★ prefill/交互立即渲染修复（2026-08-15）：force（_bottom_redraw_requested，
+        #   如 /editmsg /deitmsg /retry prefill 注入经 update_input → _request_render
+        #   置位）时**跳过 interval 节流**——修复前 EditmsgPlugin 完成时 flush 刚
+        #   渲染（_last_bottom_redraw 刚更新），紧随其后的 prefill 注入请求被
+        #   ``now - last < render_interval`` 拦截延迟到下一 10Hz 拍（输入区延迟
+        #   显示 prefill）。force 表示「用户可感知的 UI 更新」，即时渲染符合预期；
+        #   高频命令（工具状态）不走 force，10Hz 批处理语义不变。
+        if now - self._last_bottom_redraw >= self._config.render_interval or force:
             self._dirty = False
             self._last_bottom_redraw = now
             return True
