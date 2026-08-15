@@ -234,19 +234,6 @@ class ChatUIConsumer:
         """返回 AppModel 实例（React Ink 化 user_select 弹窗状态读写）。"""
         return self._rs
 
-    def fold_tool_cards(self, tool_id: str = "", collapsed=None) -> None:
-        """折叠/展开工具卡片（``/toolcard`` 命令，2026-08-15 用户需求）。
-
-        经渲染命令队列投递 ``ToolFoldCmd``——在渲染线程执行模型折叠切换与
-        committed_lines 重建（避免与渲染循环跨线程竞争；命令队列线程安全）。
-
-        Args:
-            tool_id: 目标工具块 id；""=最后一张已关闭工具卡；"all"=全部。
-            collapsed: True=折叠 / False=展开 / None=toggle（默认）。
-        """
-        from src.tui._const import ToolFoldCmd
-        self._engine.push_cmd(ToolFoldCmd(tool_id=tool_id, collapsed=collapsed))
-
     def get_input(self):
         """返回输入组件实例（供 core 层插件使用）。"""
         return self._input

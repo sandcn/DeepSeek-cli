@@ -90,7 +90,6 @@ class RenderCommand(IntEnum):
     SUBAGENT_MARKDOWN = 23  # (23, text: str) — subagent 提词/返回 markdown 消息区块
     CLEAR_MSGS = 24      # (24,) — 清空消息区显示（编辑/加载会话重渲染前使用）
     BG_BASH_COUNT = 25   # (25, count: int) — 后台 bash 任务总数（主 agent + subagent 聚合）
-    TOOL_FOLD = 26       # (26, tool_id: str, collapsed: bool|None) — 工具卡折叠/展开（/toolcard）
 
 
 # ═══════════════════════════════════════════════════════════
@@ -221,23 +220,6 @@ class BgBashCountCmd(RenderCmd):
     """
     cid: int = RenderCommand.BG_BASH_COUNT
     count: int = 0
-
-
-@dataclass(frozen=True)
-class ToolFoldCmd(RenderCmd):
-    """工具卡片折叠/展开（``/toolcard`` 命令，2026-08-15 用户需求）。
-
-    工具完成后默认自动折叠为单行（close_tool_box 置 ``block.tool_collapsed``）；
-    本命令手动切换折叠状态（展开查看输出后再次折叠）。
-
-    Attributes:
-        tool_id: 目标工具块 id（``block.extra["tool_id"]``）；""=最后一张
-            已关闭工具卡；"all"=全部已关闭工具卡。
-        collapsed: True=折叠 / False=展开 / None=toggle（默认）。
-    """
-    cid: int = RenderCommand.TOOL_FOLD
-    tool_id: str = ""
-    collapsed: bool | None = None
 
 
 # ═══════════════════════════════════════════════════════════

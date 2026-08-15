@@ -191,15 +191,6 @@ def tool_card_lines(block, width, start=0, stop=None):
     pal = get_active_palette()
     width = width if isinstance(width, int) and width > 0 else 0
     status_idx = _tool_status_index(block)
-    # ★ 折叠状态（2026-08-15 用户需求）：工具完成后自动折叠为单行——仅显示
-    #   标题行（状态图标 + 工具名 + 参数，对齐 Claude Code 收起工具结果）。
-    #   - 折叠块 start==0：只渲染标题行（内容行全部隐藏）；
-    #   - 折叠块 start>0（未提交尾）：无内容行可显示，直接返回空列表
-    #     （标题行已在 committed_lines；_block_to_ink_lines 冻结未提交尾为
-    #     []——_rebuild_committed 重冻结按折叠状态生成）。
-    collapsed = bool(getattr(block, "tool_collapsed", False)) and block.closed
-    if collapsed and start > 0:
-        return []
     # ★ 帧级缓存：开放工具卡动态色（状态图标呼吸 208↔220）为时间基
     #   （time_glow 0.1s 桶）——同一桶内帧复用**完整输出列表对象**，TEXT
     #   组件 ``_wrap_cache`` 按 styled 引用命中 → 主体行零重建。key 覆盖
@@ -218,7 +209,7 @@ def tool_card_lines(block, width, start=0, stop=None):
     #   （tool_name/tool_detail）——修复前缺标题：open_tool_box 复用 box 更新
     #   标题后，同帧帧缓存（同 start/stop/status/len/呼吸色桶）命中旧标题。
     _frame_key = (
-        start, stop, block.closed, collapsed, _status, len(block.lines),
+        start, stop, block.closed, _status, len(block.lines),
         _icon_fg, _cat_fg,
         block.extra.get("tool_name", ""),
         block.extra.get("tool_detail", ""),
@@ -266,13 +257,6 @@ def tool_card_lines(block, width, start=0, stop=None):
             else:
                 title_runs.append(StyledRun(f" {detail}", pal.dim))
         out.append(truncate_runs(title_runs, width) if width > 0 else title_runs)
-        # ★ 折叠（2026-08-15 用户需求）：工具完成后自动折叠为单行——标题行
-        #   之后直接返回，**不构建任何内容行**（Claude Code 收起工具结果语义，
-        #   屏幕不再被大段输出占满）。展开（``/toolcard``）后走下方内容行路径
-        #   完整显示。折叠块 frame_key 含 collapsed 标志 → 切换时缓存自动失效。
-        if collapsed:
-            block._tool_card_frame_cache = (_frame_key, out)
-            return out
     # 内容行：block.lines[start:stop]，start==0 时跳过标题行（名字已在标题行）；
     # 关闭状态行数据行（_tool_status_index）跳过——状态由标题行状态图标表达
     body_end = len(block.lines) if stop is None else min(stop, len(block.lines))

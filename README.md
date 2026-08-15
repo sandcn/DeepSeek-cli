@@ -219,7 +219,6 @@ python chat.py version
 | `Ctrl+L` | 清屏 |
 | `Ctrl+D` | 退出程序（输入为空时） |
 | `Ctrl+B` | 主 Agent 空模式切换 |
-| `Ctrl+Y` | 折叠/展开最后一张工具卡片（展开查看输出后再次折叠） |
 | `Ctrl+C`（首次） | 中断当前 AI 回复 |
 | `Ctrl+C`（再次） | 强制退出程序 |
 | `Tab` | 自动补全（命令名、会话 ID 等） |
@@ -260,7 +259,6 @@ python chat.py version
 | `/sessions` | — | 列出所有保存的对话 |
 | `/export [路径]` | — | 导出当前对话为 Markdown（含 SubAgent 聊天信息） |
 | `/theme <名称>` | — | 切换配色主题（dark / light / high-contrast） |
-| `/toolcard [all\|expand\|collapse]` | `/fold` `/expand` | 折叠/展开工具卡片（无参=切换最后一张；`all`=全部） |
 | `/changes` | — | 显示文件沙盒中被修改文件的差异（可加文件名过滤） |
 | `exit` | — | 退出程序 |
 

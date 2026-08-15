@@ -284,16 +284,6 @@ def _do_tool_close(model, cmd) -> None:
     model.close_tool_box(cmd.tool_id, cmd.success)
 
 
-def _do_tool_fold(model, cmd) -> None:
-    """工具卡折叠/展开（/toolcard 命令，2026-08-15 用户需求）。
-
-    工具完成后默认自动折叠为单行（close_tool_box 置 ``block.tool_collapsed``）；
-    本命令手动切换——``model.fold_tool_cards`` 定位目标工具块并重建
-    committed_lines（渲染线程执行，避免与渲染循环跨线程竞争）。
-    """
-    model.fold_tool_cards(getattr(cmd, "tool_id", ""), getattr(cmd, "collapsed", None))
-
-
 def _do_tool_summary(model, cmd) -> None:
     # 批内工具已由 ToolDoneEvent → ToolCloseCmd 逐盒关闭；此命令防御性
     # 关闭残留开放 box（兼容旧调用方）。
@@ -527,7 +517,6 @@ _HANDLERS: dict[int, object] = {
     RenderCommand.TOOL_SUMMARY: _do_tool_summary,
     RenderCommand.TOOL_OPEN: _do_tool_open,
     RenderCommand.TOOL_CLOSE: _do_tool_close,
-    RenderCommand.TOOL_FOLD: _do_tool_fold,
     RenderCommand.PARSE_INFO: _do_parse_info,
     RenderCommand.USER_MSG: _do_user_message,
     RenderCommand.DISPLAY_MSGS: _do_display_messages,

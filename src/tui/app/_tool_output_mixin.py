@@ -335,14 +335,6 @@ class _ToolOutputMixin:
         # 测试仍消费 active_tool；app 组件树已移除该组件）
         self.active_tool = None
 
-        # ★ 自动折叠（2026-08-15 用户需求）：工具完成后卡片自动折叠为单行——
-        #   只显示标题行（状态图标 ✔/✖ + 工具名 + 参数），对齐 Claude Code
-        #   收起工具结果。折叠状态须在 ``_block_to_ink_lines`` 冻结前设置——
-        #   冻结缓存经 ``tool_card_lines`` 按折叠状态生成（折叠块冻结=仅标题行/
-        #   空，展开块冻结=完整内容）。``/toolcard`` 命令手动切换（展开查看
-        #   后再次折叠）。
-        block.tool_collapsed = True
-
         # ★ 1.6 修复 + BUG-30（review 方向）修复：长工具输出（>
         #   _TOOL_INCREMENTAL_THRESHOLD 触发增量提交后标题行已在 committed_lines）
         #   关闭时更新 committed_lines 中标题行状态图标。
@@ -387,20 +379,6 @@ class _ToolOutputMixin:
         block._cached_ink_lines = self._block_to_ink_lines(block, block.committed_line_count)
         block._open_styled_cache = None  # 冻结后开放缓存不再需要
         self.commit_block(len(self.blocks) - 1)
-        # ★ 自动折叠后的 committed_lines 重建（2026-08-15 用户需求）：工具卡
-        #   完成即折叠为单行——但**增量提交期间**累积的内容行（长工具输出
-        #   > _TOOL_INCREMENTAL_THRESHOLD 触发 commit_open_block 已写入
-        #   committed_lines 的标题+内容行）仍保留在 committed_lines，仅靠
-        #   commit_block 的「未提交尾走折叠逻辑返回空」无法移除历史内容行。
-        #   折叠状态变化须**全量重建** committed_lines（``_rebuild_committed``
-        #   按折叠状态重生成每块已提交行 + 重冻结未提交尾）——新列表对象 →
-        #   ChatView use_memo / committed-chat 前缀缓存自动失效，下一帧按折叠
-        #   后渲染。工具完成是低频事件，全量重建开销可接受。
-        #   注：重建后的标题行已含 done/fail 状态图标（tool_card_lines 按
-        #   tool_status 生成）——上方 BUG-30 ``_replace_committed_line`` 的
-        #   图标翻转被本重建覆盖（保留原逻辑作为重建前的即时视觉更新，
-        #   幂等无害）。
-        self._rebuild_committed()
         # ★ PERF-6：清理工具卡缓存须在 ``commit_block`` **之后**——commit_block
         #   内部 ``_block_to_ink_lines``（tool 分支）会经 ``tool_card_lines``
         #   重建缓存（close_tool_box 提前清理会被重建覆盖）。关闭块冻结后渲染走
