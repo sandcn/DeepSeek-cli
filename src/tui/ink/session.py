@@ -24,6 +24,7 @@ import time
 from typing import Callable
 
 from src.tui._const import (
+    RenderCommand,
     RenderCmd,
     CONTENT_COMMANDS,
     ANSI_EMERGENCY_RED,
@@ -62,6 +63,35 @@ from . import _cursor
 _logger = logging.getLogger(__name__)
 # ── 内容命令集合（真源在 _const.CONTENT_COMMANDS） ──────────
 _CONTENT_COMMANDS = CONTENT_COMMANDS
+
+# ── 暂停/恢复保留命令集合（2026-08-15 短内容丢失修复） ──────────
+# suspend（交互工具独占终端）/ 崩溃恢复 / flush 超时兜底经 ``_drain_queue_safe``
+# 清空队列时，**用户可见核心内容命令**（思考/回答/工具卡/阶段/错误等）不丢弃、
+# 保留在队列中，resume 后渲染线程处理——修复前这些命令被无条件丢弃，模型
+# 在交互工具挂起 / 渲染暂停期间输出的短思考/短回答**永久丢失**（模型状态也
+# 未应用），视觉上「很短的回答跟思考没显示」（偶发，取决于命令入队与
+# suspend 清理的时序）。
+# 可丢弃命令（WRITE_LINE/DISPLAY_MSGS/SUBAGENT_FRAME/CLEAR_MSGS/SPLASH/
+# BG_BASH_COUNT）为外部输出/历史回放/面板刷新/清屏等——临时挂起后重放或
+# 由调用方重新触发，丢弃可接受（避免暂停期间积压陈旧命令污染恢复帧）。
+_KEEP_CONTENT_CMDS = frozenset({
+    RenderCommand.REASONING,
+    RenderCommand.CONTENT,
+    RenderCommand.PHASE_DONE,
+    RenderCommand.TOOL_OUTPUT,
+    RenderCommand.TOOL_SUMMARY,
+    RenderCommand.TOOL_OPEN,
+    RenderCommand.TOOL_CLOSE,
+    RenderCommand.TOOL_COUNT_INC,
+    RenderCommand.TOOL_COUNT_DEC,
+    RenderCommand.TOOL_FAIL_INC,
+    RenderCommand.USER_MSG,
+    RenderCommand.ERROR,
+    RenderCommand.NOTIFICATION,
+    RenderCommand.MAIN_PHASE,
+    RenderCommand.PARSE_INFO,
+    RenderCommand.SUBAGENT_MARKDOWN,
+})
 
 #: BUG-39：崩溃恢复后视为「稳定」的最小运行时长（秒）——恢复成功且持续运行
 #: 超过该阈值后复位 ``_recover_attempts``（防长时间运行后恢复预算耗尽）。
@@ -665,7 +695,10 @@ class InkSession:
             ):
                 task_done.join(timeout=1.0)
             if task_done.is_alive():
-                self._drain_queue_safe()
+                # ★ 2026-08-15（短内容丢失修复）：flush 超时兜底丢弃时保留
+                #   内容命令（思考/回答/工具卡）——修复前超时即丢弃队列中
+                #   未消费的 reasoning/content，长任务/渲染暂停后短内容丢失。
+                self._drain_queue_safe(keep_content=True)
                 task_done.join(timeout=1.0)
 
     def suspend(self) -> None:
@@ -700,7 +733,10 @@ class InkSession:
                         self._render_version,
                     )
         self._ink_renderer.suspend()
-        self._drain_queue_safe()
+        # ★ 2026-08-15（短内容丢失修复）：suspend 清空队列时**保留内容命令**
+        #   （思考/回答/工具卡等）——模型在交互工具挂起期间输出的短内容命令
+        #   不丢弃，resume 后渲染线程处理显示（修复前无条件丢弃 → 偶发丢失）。
+        self._drain_queue_safe(keep_content=True)
         # 定位光标到终端底部：交互工具同步渲染弹窗的起点
         try:
             _, h = _get_terminal_size()
@@ -815,7 +851,12 @@ class InkSession:
             if self._render_version != entry_version:
                 _logger.debug("render 线程版本已更新（新线程已启动），跳过排空")
                 return
-            dropped = self._drain_queue_safe()
+            # ★ 2026-08-15（短内容丢失修复）：渲染线程退出时保留内容命令
+            #   （思考/回答/工具卡等）——suspend 流程中 ``_render_thread.join()``
+            #   等待本线程退出，若 finally 以 keep_content=False 排空，会丢弃
+            #   suspend 清理刚保留的内容命令（模型输出短内容永久丢失）；统一
+            #   保留，resume 后新线程处理显示。stop() 的排空仍会清空全部。
+            dropped = self._drain_queue_safe(keep_content=True)
             _logger.debug("render 线程 finally 排空 %d 条命令", dropped)
             if dropped > 0:
                 self._write_emergency(
@@ -993,6 +1034,17 @@ class InkSession:
         for cmd in commands:
             try:
                 self._apply_fn(self._model, cmd)
+                # ★ 2026-08-15（/editmsg 后渲染错乱修复）：CLEAR_MSGS
+                #   （reset_display 清空聊天块）后置 ``_resize_pending`` ——
+                #   下一帧 ``_render_frame`` 经 reset(full=True) 全量重写。
+                #   修复前 clear+display 整篇重建（文档高度大减 + 内容全变）
+                #   走 ``_rewrite_drifted`` 漂移路径：首差异行 0 触发底部对齐
+                #   切换，物理缓冲（buf_h）与文档高度严重不匹配（漂移），
+                #   后续增量增长（_grow_drifted）只重写变化行，状态栏/输入区
+                #   等「新旧内容相同」的行不重写 → 屏幕布局错乱（状态栏
+                #   丢失、内容错位）。
+                if _get_cmd_id(cmd) == RenderCommand.CLEAR_MSGS:
+                    self._resize_pending = True
             except Exception:
                 _logger.warning("应用命令 %s 失败", _cmd_name(_get_cmd_id(cmd)), exc_info=True)
 
@@ -1200,7 +1252,11 @@ class InkSession:
             #   可见）；恢复前置 ``_drain_queue_safe()`` 丢弃待处理命令（防
             #   陈旧命令在恢复帧被应用），队列清空语义由 finally 排空兜底。
             time.sleep(self._config.recover_delay)
-            self._drain_queue_safe()
+            # ★ 2026-08-15（短内容丢失修复）：崩溃恢复清空队列时**保留内容
+            #   命令**（思考/回答/工具卡）——修复前恢复前置 ``_drain_queue_safe()``
+            #   丢弃待处理命令，崩溃瞬间模型输出的短内容永久丢失；保留后恢复
+            #   帧批量处理（队列经 PriorityQueue 保序不丢失）。
+            self._drain_queue_safe(keep_content=True)
             self._render_version += 1
             # ★ BUG-39：恢复成功置位稳定计时起点 + 清除崩溃标志——修复前
             #   ``_render_crashed`` Event 恢复后不清除（外部 render_crashed 判断
@@ -1221,8 +1277,54 @@ class InkSession:
             self._cmd_event.set()
             return False
 
-    def _drain_queue_safe(self) -> int:
+    def _drain_queue_safe(self, keep_content: bool = False) -> int:
+        """清空渲染命令队列（丢弃计数）。
+
+        Args:
+            keep_content: True 时**保留用户可见核心内容命令**
+                （``_KEEP_CONTENT_CMDS``：思考/回答/工具卡/阶段/错误等）——
+                仅丢弃非内容命令（WRITE_LINE/DISPLAY_MSGS/SUBAGENT_FRAME 等）。
+                供 suspend（交互工具独占终端）/ 崩溃恢复 / flush 超时兜底使用：
+                模型在渲染暂停期间输出的短思考/短回答命令**不丢失**，resume 后
+                渲染线程处理并显示（修复前无条件丢弃 → 短内容永久丢失）。
+
+        Returns:
+            丢弃的命令条数。
+        """
         dropped = 0
+        if keep_content:
+            # ★ 保留内容命令：**不 get/put 重放**（会破坏 unfinished_tasks——
+            # get_nowait+task_done 后 put 回去，resume 后 _drain_queue 的
+            # task_done 抛 ValueError）——直接在 mutex 保护下遍历队列，仅
+            # 移除要丢弃的命令（保留命令原地不动，seq/堆序不变）。
+            with self._cmd_queue.mutex:
+                keep_items: list = []
+                drop_items: list = []
+                for item in self._cmd_queue.queue:
+                    if _get_cmd_id(item[2]) in _KEEP_CONTENT_CMDS:
+                        keep_items.append(item)
+                    else:
+                        drop_items.append(item)
+                self._cmd_queue.queue[:] = keep_items
+                # ★ BUG-31 同族：heapq 数组任意修改后须 heapify 恢复堆序
+                #   （否则后续 heappush/heappop 在损坏堆上操作可能返回非最小项）。
+                heapq.heapify(self._cmd_queue.queue)
+                dropped = len(drop_items)
+            # 丢弃的命令补 task_done（unfinished_tasks 一致性：put 增加、task_done
+            # 减少；丢弃的命令不再被消费 → 补一次 task_done）。与 push_cmd 腾位
+            # 语义一致：task_done 在 mutex 外调用（all_tasks_done Condition 与
+            # mutex 同源普通 Lock 不可重入，持 mutex 调用会自死锁）。
+            for _ in drop_items:
+                try:
+                    self._cmd_queue.task_done()
+                except ValueError:
+                    pass
+            if dropped > 0:
+                _logger.info(
+                    "渲染队列清理：丢弃 %d 条非内容命令，保留 %d 条内容命令",
+                    dropped, len(keep_items),
+                )
+            return dropped
         while not self._cmd_queue.empty():
             try:
                 _, _, cmd = self._cmd_queue.get_nowait()
