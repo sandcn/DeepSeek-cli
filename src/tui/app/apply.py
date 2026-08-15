@@ -294,12 +294,16 @@ def _do_tool_summary(model, cmd) -> None:
 
 
 def _do_parse_info(model, cmd) -> None:
-    """解析进度：更新实时行（parse_line）在原位置刷新；Done 时提交到文档。"""
+    """解析进度：更新实时行（parse_line）在原位置刷新；Done 时直接清除（不留文档）。
+
+    ★ 2026-08-16（用户需求）：接收参数完成后**删除**进度行——不再
+    append_committed 提交到文档（修复前 ``~ Edit 2608t 8.44s`` 进度行
+    残留为会话历史中的 parse_info 块）。live 进度行在参数接收期间原位
+    刷新，完成后即消失，工具卡/回答之间不残留进度信息。
+    """
     if cmd.tokens == _CLEAR_PARSE_LINE:
-        # 提交当前进度行到文档（等价旧 \n 结束进度行），清空实时行
-        if model.parse_line is not None:
-            model.append_committed("parse_info", [model.parse_line])
-            model.parse_line = None
+        # 删除当前进度行（不提交到文档），清空实时行
+        model.parse_line = None
         return
     if isinstance(cmd.tokens, (int, float)):
         tokens_str = f"{int(cmd.tokens)}t" if math.isfinite(cmd.tokens) else "?"
@@ -325,6 +329,10 @@ def _do_parse_info(model, cmd) -> None:
     #   拆行，破坏「同位置刷新」的进度行语义。复用 ``_single_line_detail``
     #   （委托 ``_format.single_line`` 单一真源：换行/回车转义为字面量）。
     from src.tui.app._model_helpers import _single_line_detail
+    # ★ 2026-08-16（用户需求）：进度行（接收参数）显示前确保思考内容先渲染——
+    #   防御性固化开放推理通道已渲染行（ReasoningCmd 与 ParseInfoCmd 同批
+    #   入队处理时思考内容先上屏，不滞后于进度行；渲染器无残留时零成本跳过）。
+    model.flush_reasoning_live()
     model.parse_line = AnsiLine.of(
         f"  ~ {_single_line_detail(cmd.tool_names or '')} {tokens_str} {elapsed:.2f}s",
         _S_PARSE,

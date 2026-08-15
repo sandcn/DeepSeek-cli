@@ -395,6 +395,32 @@ class AppModel(_ToolOutputMixin):
             self.append_block("reasoning")
         return self.reasoning_renderer
 
+    def flush_reasoning_live(self) -> None:
+        """兜底固化开放推理通道已渲染行（思考内容先于进度行上屏）。
+
+        需求背景（2026-08-16 用户需求）：工具参数接收进度行（如
+        ``~ Edit 2608t 8.44s``）与思考内容（reasoning 块）在渲染线程中
+        同批入队处理时，确保思考内容先固化到块——避免进度行先于思考内容
+        上屏。仅当推理通道处于 ACTIVE（开放且有渲染器）且块未关闭时生效；
+        无思考内容（渲染器不存在/已关闭）零成本跳过。
+
+        与 ``_do_reasoning`` 每次 flush 语义一致（AnsiStreamRenderer 实时
+        渲染、``take_lines`` 消费缓冲）——此处为 ``ParseInfoCmd``（接收
+        参数进度行）路径的防御性保障：即使 ReasoningCmd 与 ParseInfoCmd
+        同批到达，思考内容也已固化显示。
+        """
+        rr = self.reasoning_renderer
+        if rr is None or self.reasoning_state != ReasoningState.ACTIVE:
+            return
+        lines = rr.take_lines()
+        if not lines:
+            return
+        idx = self.reasoning_block_index
+        if 0 <= idx < len(self.blocks):
+            block = self.blocks[idx]
+            block.lines.extend(lines)
+            self.commit_open_block(block)
+
     def close_reasoning(self) -> None:
         """关闭推理通道：固化渲染器输出（无分隔线——对齐 Claude Code 消息间仅空行）。"""
         if self.reasoning_state == ReasoningState.CLOSED:
