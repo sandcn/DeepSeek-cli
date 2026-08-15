@@ -33,10 +33,10 @@ async def print_to_terminal(text: str, tool_id: str = "") -> None:
             解析归属；仍为空回退 "assistant"（兼容旧行为）。
     """
     from ..tui.events.event_types import ToolOutputChunkEvent
-    from ..tui.events.event_bus import DisplayEventBus
+    from ..tui.events.publish import emit
     from ..core.internal.agent._tool_context import get_current_tool_id
     resolved = tool_id or get_current_tool_id() or "assistant"
-    DisplayEventBus.get_default().publish(ToolOutputChunkEvent(
+    emit(ToolOutputChunkEvent(
         label=resolved, tool_id=resolved, text=text, source="agent",
     ))
 
@@ -149,11 +149,11 @@ class Func(abc.ABC):
                 仍为空回退 "assistant"（兼容旧行为）。
         """
         from ..tui.events.event_types import ToolOutputChunkEvent
-        from ..tui.events.event_bus import DisplayEventBus
+        from ..tui.events.publish import emit
         from ..core.internal.agent._tool_context import get_current_tool_id
         try:
             resolved = tool_id or get_current_tool_id() or "assistant"
-            DisplayEventBus.get_default().publish(ToolOutputChunkEvent(
+            emit(ToolOutputChunkEvent(
                 label=resolved, tool_id=resolved, text=text, source="agent",
             ))
         except Exception:

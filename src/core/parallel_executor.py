@@ -198,8 +198,8 @@ class ParallelExecutor:
             self._spawner.render_display(self._pending_specs)
 
             from ..tui.events import EventBusDisplayProxy as _EventBusDisplayProxy
-            from ..tui.events import DisplayEventBus as _DisplayEventBus
             from ..tui.events.event_types import AgentAddedEvent as _AgentAddedEvent
+            from ..tui.events.publish import emit
 
             display = _EventBusDisplayProxy(max_history=self.max_history)
 
@@ -210,7 +210,7 @@ class ParallelExecutor:
                 label = f"agent-{i + 1}"
                 desc = spec.get(_DESCRIPTION_KEY, label)
                 dispatch_label = spec.get("tool_label", "")
-                _DisplayEventBus.get_default().publish(_AgentAddedEvent(
+                emit(_AgentAddedEvent(
                     label=label, description=desc, status="running", source="parallel",
                     dispatch_label=dispatch_label,
                     agent_type=spec.get(_AGENT_TYPE_KEY, "execute"),
@@ -419,12 +419,12 @@ class ParallelExecutor:
             delay = min(stagger * base, stagger_max * 3)
             await asyncio.sleep(delay)
         try:
-            from ..tui.events import DisplayEventBus as _DisplayEventBus
             from ..tui.events.event_types import AgentStatusChanged as _AgentStatusChanged
+            from ..tui.events.publish import emit
 
             result = await sa.run()
             display.update_agent_status(sa.label, "done")
-            _DisplayEventBus.get_default().publish(_AgentStatusChanged(
+            emit(_AgentStatusChanged(
                 label=sa.label, status="done", source="parallel",
             ))
             display.set_result(sa.label, result_text=result)
@@ -437,9 +437,8 @@ class ParallelExecutor:
             display.update_model_phase(sa.label, "error", "cancelled")
             display.update_agent_status(sa.label, "fail")
             display.set_result(sa.label, error="cancelled")
-            from ..tui.events import DisplayEventBus as _DisplayEventBus
             from ..tui.events.event_types import AgentStatusChanged as _AgentStatusChanged
-            _DisplayEventBus.get_default().publish(_AgentStatusChanged(
+            emit(_AgentStatusChanged(
                 label=sa.label, status="fail", source="parallel",
             ))
             # 不 raise，改为返回结果 dict，保证 agent 身份不丢失
@@ -447,14 +446,13 @@ class ParallelExecutor:
                     _RESULT_KEY: "", _ERROR_KEY: "cancelled",
                     _AGENT_TYPE_KEY: sa.agent_type}
         except Exception as e:
-            from ..tui.events import DisplayEventBus as _DisplayEventBus
             from ..tui.events.event_types import AgentStatusChanged as _AgentStatusChanged
 
             _logger.error("SubAgent %s failed: %s", sa.label, e)
             display.update_model_phase(sa.label, "error", str(e))
             display.update_agent_status(sa.label, "fail")
             display.set_result(sa.label, error=str(e))
-            _DisplayEventBus.get_default().publish(_AgentStatusChanged(
+            emit(_AgentStatusChanged(
                 label=sa.label, status="fail", source="parallel",
             ))
             # AgentResultEvent 不再逐个发布，待全部 subagent 完成后统一批量发布

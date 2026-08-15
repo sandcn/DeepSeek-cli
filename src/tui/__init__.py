@@ -76,6 +76,27 @@
   - 历史写盘 = 顶层 ``_history_disk.py``（共享后台 writer；自 _input_buffer.py
     拆分，re-export 保持旧导入路径兼容）。
 
+架构改进（2026-08-16，方向 A-F）：
+  - A（InkSession 拆分）：``ink/session.py`` 上帝类按职责拆为
+    ``_session_queue_mixin.py``（命令入队/背压/排空安全）+
+    ``_session_frame_mixin.py``（组件树/调和/渲染/光标/系统监控）——
+    InkSession 组合两 mixin，保留渲染循环调度/生命周期/崩溃恢复/注入；
+    常量（_KEEP_CONTENT_CMDS/_PUT_NO_DROP_TIMEOUT/_safe_int）随方法迁移
+    并 re-export 保持旧导入路径。
+  - B（事件发布门面）：``events/publish.py`` 提供 ``emit(event, bus=...)``
+    统一发布入口——收敛 tools/core/api 的 ``get_default().publish`` 散点，
+    支持显式总线注入。
+  - C（SIGWINCH 多实例）：``_screen.register_sigwinch_callback(cb, token=)``
+    + ``unregister_sigwinch_callback(token)``——替代模块级 ``_active_session``
+    全局引用，会话 stop 时注销。
+  - D（事件总线实例化）：``events/event_bus.py`` 解除强制单例构造——
+    ``DisplayEventBus()`` 创建独立实例（测试/多场景隔离），``get_default()``
+    保留进程级默认实例（CLI/WebUI 共享为既有架构约束）。
+  - E（渲染循环状态机）：``RenderLoopPhase`` 枚举——``_drain_queue`` 六阶段
+    显式迁移（SIGWINCH→INPUT→PANELS→SYSTEM_STATS→DRAIN_COMMANDS→APPLY→RENDER）。
+  - F（架构守卫）：``tests/test_tui/test_arch_guard.py`` AST 依赖方向检查
+    （ink 不依赖 app / app 不依赖 consumer / Layer 0 纯净 / import 无环）。
+
 Layer 层次（由底向上）：
   _config → _const → _screen → _input → _dispatcher → ink/app → _consumer
 """

@@ -12,8 +12,10 @@ assemble() 编排 + 兼容转发」，各装配步骤在独立模块中按需惰
   - ``create_framework``             — (session, bridge, renderer)
   - ``create_chat_domain_assembly``  — (dispatcher, cmpl_handler, subagent_controller)
 
-辅助回调工厂（``_make_reverse_search_cb`` / ``_make_active_status_cb`` /
-``_make_sigwinch_cb`` + ``_active_session``）随步骤迁至本模块。
+辅助回调工厂（``_make_reverse_search_cb`` / ``_make_active_status_cb``）随步骤
+迁至本模块。SIGWINCH 回调为 ``InkSession._on_sigwinch`` 实例方法（架构改进
+方向 C：装配层经 ``register_sigwinch_callback(cb, token=session)`` 注册，
+stop 时注销——替代旧模块级 ``_active_session`` 全局引用）。
 
 依赖约束：本模块为装配专用（Layer 0 / 无父包依赖），函数内惰性 import。
 """
@@ -106,8 +108,10 @@ def create_framework(model, tui_config, line_tracker, input_instance):
     # Claude TUI parity 步骤 3.1：Ctrl+L 清屏（session.clear_screen；
     # 未注入时 dispatcher 记 debug 跳过，测试兼容）
     input_instance.set_clear_screen_callback(session.clear_screen)
-    # SIGWINCH → 刷新宽度 + 重绘
-    register_sigwinch_callback(_make_sigwinch_cb(session))
+    # SIGWINCH → 刷新宽度 + 重绘（架构改进方向 C：实例方法 + token 去重注册，
+    # 替代旧模块级 ``_active_session`` 全局引用——多 TUI 实例各持自身回调，
+    # stop 时由 session 注销，消除全局可变引用与陈旧会话刷新错乱）
+    register_sigwinch_callback(session._on_sigwinch, token=session)
     bridge = InkBridge(model, session)
     # ★ 2026-08-05 死代码清理：renderer slot 直接指向 session 的真实
     #   渲染器（InkRenderer）——旧 ``_InkRendererFacade`` 占位类已删除
@@ -148,38 +152,12 @@ def create_chat_domain_assembly(tui_config, session, bridge):
 # 辅助回调工厂
 # ═══════════════════════════════════════════════════════════
 
-#: 当前活动会话（SIGWINCH 回调读取；``_make_sigwinch_cb`` 更新）。
-#:   方向1 修复：回调使用**稳定模块级函数**（身份恒定），``assemble`` 时仅
-#:   更新本引用——修复前每次 assemble 创建新闭包，``register_sigwinch_callback``
-#:   按身份去重（``cb not in _sigwinch_callbacks``）失败，旧闭包越积越多，
-#:   每次 resize 触发 N 个回调且持陈旧 session 引用（内存泄漏）。
-#:   ★ P3-7（全局引用限制）：模块级可变引用——多 TUI 实例并存时不支持各自
-#:     独立 SIGWINCH（最后一个 ``assemble`` 的会话持有回调，早期实例 resize
-#:     时刷新错误的 session）；当前生产为单实例生命周期（app_loop 顺序装配/
-#:     停止），可接受，不做多实例支持。
-_active_session = None
-
-
-def _sigwinch_cb_impl(cols, rows):
-    """稳定 SIGWINCH 回调实现（模块级函数，身份恒定可去重）。"""
-    session = _active_session
-    if session is None:
-        return
-    # P2-9：不再裸吞异常——记录 debug 日志（SIGWINCH 刷新异常属非关键
-    # 降级，不阻断信号处理）。
-    try:
-        session._width_cache.force_refresh()
-        session.request_bottom_redraw()
-    except Exception:
-        _logger.debug("SIGWINCH 刷新异常", exc_info=True)
-
-
-def _make_sigwinch_cb(session):
-    """记录活动会话并返回稳定回调（模块级函数，身份恒定）。"""
-    global _active_session
-    _active_session = session
-    return _sigwinch_cb_impl
-
+# ★ 架构改进方向 C（2026-08-16）：模块级 ``_active_session`` 全局引用已删除
+#   ——SIGWINCH 回调收敛为 ``InkSession._on_sigwinch`` 实例方法，装配层经
+#   ``register_sigwinch_callback(cb, token=session)`` 按 token 去重注册，
+#   ``InkSession.stop()`` 注销。多 TUI 实例各持自身回调互不干扰，消除
+#   P3-7 已知限制（最后一个 assemble 的会话持有回调、早期实例 resize 时
+#   刷新错误的 session）。
 
 def _make_reverse_search_cb(model, session):
     """构建反向历史搜索状态同步回调（更新 model.history_search + 重绘）。
@@ -222,6 +200,4 @@ __all__ = [
     "create_chat_domain_assembly",
     "_make_reverse_search_cb",
     "_make_active_status_cb",
-    "_make_sigwinch_cb",
-    "_active_session",
 ]

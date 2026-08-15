@@ -950,9 +950,8 @@ class BashFunc(Func):
           - 终端：通过 sys.__stdout__ 直接打印（绕过 _SharedCapture 捕获）
           - Web：通过 EventBus 发布 ToolOutputChunkEvent 到前端
         """
-        from ..tui.events.event_bus import DisplayEventBus
         from ..tui.events.event_types import ToolOutputChunkEvent
-        bus = DisplayEventBus.get_default()
+        from ..tui.events.publish import emit
 
         # 获取当前工具自己的 label（由 ToolCallbackChain._run_tool_method 设置）
         tool_label: str | None = getattr(self, 'tool_label', None)
@@ -967,7 +966,7 @@ class BashFunc(Func):
             else:
                 await print_to_terminal(safe)
             if tool_label:
-                bus.publish(ToolOutputChunkEvent(
+                emit(ToolOutputChunkEvent(
                     label=tool_label, text=clean, source="agent",
                 ))
 

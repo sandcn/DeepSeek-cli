@@ -50,56 +50,29 @@ class DisplayEventBus(metaclass=SingletonMeta):
     """显示层事件总线 — 同步发布/订阅（直接分发实现）。
 
     线程安全。支持按事件类型过滤订阅。
-    单例行为由 ``SingletonMeta`` 自动提供 get_default / reset_default。
+    默认实例由 ``SingletonMeta`` 提供 get_default / reset_default。
 
-    单例作用域评估（2026-07-31 方向D）：
-      CLI/WebUI 共享 DisplayEventBus 进程级单例为既有架构；webui bridge
-      （_EVENT_BINDINGS 16 类）与 TUI 内部（_lifecycle/_subagent_panel/consumers）
-      强依赖 get_default()，隔离改动过大 → 标记 P2 遗留，保持单例，不做隔离。
+    ★ 架构改进方向 D（2026-08-16，单例解耦落地）：
+      - **直接构造 ``DisplayEventBus()`` 创建独立实例**（不再拦截返回单例）
+        ——测试/多场景可持有完全隔离的事件总线（实例间订阅互不干扰）；
+      - ``get_default()`` 仍返回进程级默认实例（生产路径零变化）；
+      - CLI/WebUI **共享默认实例为既有架构约束**（webui bridge 依赖默认
+        实例转发模型事件到前端，完全隔离会破坏 webui 显示）——P2 遗留
+        更新：不做 CLI/WebUI 强制隔离，但实例化 + 注入路径已打通
+        （``emit(event, bus=...)`` / ``ChatUIConsumer(event_bus=...)`` /
+        ``WebEventBridge(event_bus=...)`` / ``DisplayEventBusAdapter(bus=...)``），
+        需要隔离的场景（测试/多会话）可自行注入独立实例。
     """
 
-    def __new__(cls):
-        """拦截直接构造：返回进程级单例（与 get_default() 一致）。
-
-        ★ P3-9：修复前 ``DisplayEventBus()`` 直接实例化可绕过单例——
-        现在直接构造与 ``get_default()`` 等价（首次创建并缓存，后续返回
-        既有实例）。注意：直接构造返回既有单例时 Python 仍会调用
-        ``__init__``，由 ``__init__`` 幂等保护（已初始化则跳过），
-        避免重置单例订阅状态。
-
-        ★ P3-24（并发构造竞态，文档声明）：本路径无锁——直接构造
-        （``DisplayEventBus()``）与 ``get_default()``（DCL）并发首次调用时
-        可能重复创建实例（后写者覆盖，被丢弃实例的订阅状态丢失）。不并入
-        ``_instance_lock`` 的原因：``SingletonMeta.get_default()`` 已持有
-        ``_instance_lock``（threading.Lock 非重入）后经 ``cls()`` 进入本
-        方法，此处再加锁会**死锁**。竞态窗口极小（仅首次构造；生产路径经
-        get_default 已 DCL 保护，直接构造为测试/兼容场景），文档声明为
-        已知边界。
-        """
-        inst = cls._instance
-        if inst is not None:
-            return inst
-        inst = super().__new__(cls)
-        cls._instance = inst
-        return inst
-
     def __init__(self):
-        # ★ 修复（P2-10）：__init__ 异常时回滚单例缓存——修复前 __new__ 已
-        #   赋值 cls._instance，__init__ 抛异常会缓存半初始化单例（后续
-        #   get_default 返回未初始化实例）；try/except 回滚 _instance=None，
-        #   下次构造重新走完整初始化（仅当缓存的是本实例时回滚，不覆盖
-        #   其他线程已缓存的单例）。
-        try:
-            if getattr(self, "_handlers", None) is not None:
-                # 幂等保护：直接构造返回既有单例时不重置订阅状态（P3-9）
-                return
-            self._handlers: dict[type, list[EventHandler]] = {}
-            self._all_handlers: list[EventHandler] = []
-            self._lock = threading.RLock()
-        except Exception:
-            if type(self)._instance is self:
-                type(self)._instance = None
-            raise
+        # 幂等保护：实例已初始化（含直接构造的独立实例）则跳过——
+        # 独立实例每次构造调用 __init__，本检查防重复初始化重置订阅状态；
+        # 默认实例经 get_default() 首次构造时同样走本方法初始化。
+        if getattr(self, "_handlers", None) is not None:
+            return
+        self._handlers: dict[type, list[EventHandler]] = {}
+        self._all_handlers: list[EventHandler] = []
+        self._lock = threading.RLock()
 
     # 单例访问由 SingletonMeta 提供：
     #   DisplayEventBus.get_default() → 线程安全单例获取（DCL）

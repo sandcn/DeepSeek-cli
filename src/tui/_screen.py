@@ -375,29 +375,63 @@ def set_window_title(title: str) -> None:
 # SIGWINCH 信号处理
 # ═══════════════════════════════════════════════════════════
 
-_sigwinch_callbacks: list[Callable[[int, int], None]] = []
+_sigwinch_callbacks: list[tuple[int, Callable[[int, int], None]]] = []
 _sigwinch_registered: bool = False
 # BUG-T4：信号处理器只置标志（信号安全），渲染循环经 process_sigwinch() 消费
 _sigwinch_pending: bool = False
 
 
-def register_sigwinch_callback(cb: Callable[[int, int], None]) -> None:
+def register_sigwinch_callback(
+    cb: Callable[[int, int], None],
+    token: object | None = None,
+) -> None:
     """注册 SIGWINCH 回调。
 
     窗口尺寸变化时，回调被调用并传入 (width, height)。
 
+    ★ 架构改进方向 C（2026-08-16）：新增 ``token`` 参数——按 token 身份
+    去重/替换（修复前仅按 ``cb`` 身份去重：绑定方法/闭包每次访问生成新
+    对象身份，重复注册累积；且回调注册后无注销接口，stop 后仍持有会话
+    引用形成全局泄漏）。多 TUI 实例各以自身为 token 注册，互不干扰。
+
     Args:
         cb: 回调函数，签名为 ``(width: int, height: int) -> None``。
+        token: 去重键（建议传会话/引擎实例）；None 时退化为按 ``id(cb)``
+            去重（旧行为兼容）。
     """
     global _sigwinch_registered
-    if cb not in _sigwinch_callbacks:
-        _sigwinch_callbacks.append(cb)
+    key = id(token) if token is not None else id(cb)
+    for i, (existing_key, _) in enumerate(_sigwinch_callbacks):
+        if existing_key == key:
+            # 同 token 已注册：替换回调（幂等 + 最新绑定生效）
+            _sigwinch_callbacks[i] = (key, cb)
+            break
+    else:
+        _sigwinch_callbacks.append((key, cb))
     if not _sigwinch_registered:
         try:
             signal.signal(signal.SIGWINCH, _handle_sigwinch)
             _sigwinch_registered = True
         except (OSError, ValueError):
             pass
+
+
+def unregister_sigwinch_callback(token: object) -> None:
+    """注销指定 token 的 SIGWINCH 回调（幂等）。
+
+    ★ 架构改进方向 C：会话/引擎 stop 时注销自身回调——释放回调注册表对
+    会话实例的强引用（修复前回调注册后从不注销，stop 后会话对象仍被全局
+    注册表持有，形成内存泄漏；重复 assemble 时旧会话回调仍被触发刷新错误
+    的 session）。
+
+    Args:
+        token: 注册时传入的 token（会话/引擎实例）。
+    """
+    key = id(token)
+    for i, (existing_key, _) in enumerate(_sigwinch_callbacks):
+        if existing_key == key:
+            del _sigwinch_callbacks[i]
+            return
 
 
 def _handle_sigwinch(signum: int, frame: object) -> None:
@@ -434,7 +468,7 @@ def process_sigwinch() -> bool:
         width, height = _get_terminal_size()
     except Exception:
         width, height = 80, 24
-    for cb in _sigwinch_callbacks:
+    for _, cb in _sigwinch_callbacks:
         try:
             cb(width, height)
         except Exception:

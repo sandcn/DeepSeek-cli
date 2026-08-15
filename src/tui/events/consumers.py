@@ -15,6 +15,7 @@ import sys
 from typing import List, Optional
 
 from .event_bus import DisplayEventBus
+from .publish import emit
 from src.renderer._locks import _try_acquire_output_lock
 from .event_types import (
     DisplayEvent,
@@ -159,10 +160,7 @@ def publish_output(text: str, level: str = "info", source: str = "") -> None:
         level: 输出级别: "info", "success", "warning", "error", "raw"
         source: 事件来源标识
     """
-    DisplayEventBus.get_default().publish(
-        OutputEvent(text=text, level=level, source=source)
-    )
-
+    emit(OutputEvent(text=text, level=level, source=source))
 
 def publish_tool_summary(
     successful_tools: List[str],
@@ -178,7 +176,7 @@ def publish_tool_summary(
         failed_tools: 失败的工具列表 [(name, error), ...]
         source: 事件来源标识
     """
-    DisplayEventBus.get_default().publish(
+    emit(
         ToolSummaryEvent(
             successful_tools=tuple(successful_tools),
             failed_tools=tuple(failed_tools),

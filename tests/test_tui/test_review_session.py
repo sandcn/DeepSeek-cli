@@ -161,7 +161,10 @@ def test_put_no_drop_timeout_falls_back_without_blocking():
     session._render_running = True
     cmd = ContentCmd(text="内容")
     priority = _get_cmd_priority(cmd)
-    with patch("src.tui.ink.session._PUT_NO_DROP_TIMEOUT", 0.05), \
+    # ★ 架构改进方向 A（2026-08-16）：_PUT_NO_DROP_TIMEOUT 常量已随 _put_no_drop
+    #   迁移至 _session_queue_mixin（唯一使用方）——patch 目标同步更新
+    #   （session 模块仅 re-export，patch 旧路径不生效）。
+    with patch("src.tui.ink._session_queue_mixin._PUT_NO_DROP_TIMEOUT", 0.05), \
             patch.object(session._cmd_queue, "put", side_effect=queue.Full):
         start = time.monotonic()
         result = session._put_no_drop(priority, cmd)

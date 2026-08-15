@@ -24,11 +24,11 @@ def publish_event(event_type: str, **kwargs) -> bool:
         True 发布成功，False 跳过（模块不可用或事件类型不存在）
     """
     try:
-        from src.tui.events.event_bus import DisplayEventBus
         from src.tui.events import event_types as evt
+        from src.tui.events.publish import emit
         event_cls = getattr(evt, event_type, None)
         if event_cls is not None:
-            DisplayEventBus.get_default().publish(event_cls(**kwargs))
+            emit(event_cls(**kwargs))
             return True
         _logger.warning("事件类型 %s 在 event_types 中不存在", event_type)
     except ImportError:
