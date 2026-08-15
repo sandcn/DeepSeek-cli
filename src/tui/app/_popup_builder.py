@@ -142,6 +142,32 @@ def _append_truncated(line: Line, text: str, style, budget: int) -> None:
     line.append(_truncate_width(text, remaining), style)
 
 
+def _completion_scroll_offset(sel: int, total: int, n_rows: int) -> int:
+    """补全弹窗渲染窗口起始偏移（选中项保持可见）。
+
+    修复（2026-08-15）：/load 会话候选多时一直按下键，弹窗固定从
+    ``items[0]`` 渲染——选中项移出首屏后不可见（无自动滚动）。本函数
+    计算渲染窗口起始索引：
+
+      - 候选总数 ≤ 可见行数（n_rows）→ 不滚动（offset=0，全部可见）；
+      - 选中项在首屏内（sel < n_rows）→ 窗口在顶部（offset=0）；
+      - 选中项越过首屏底部（sel >= n_rows）→ 窗口跟随，选中项贴底
+        （offset = sel - n_rows + 1）；
+      - 结果钳制到 ``[0, total - n_rows]``（末屏不越界）。
+
+    Args:
+        sel: 归一化后的选中索引（调用方已钳制到 [0, total-1]）。
+        total: 候选总数（len(items)）。
+        n_rows: 弹窗可见候选项行数。
+
+    Returns:
+        渲染起始偏移（0 <= offset <= max(0, total - n_rows)）。
+    """
+    if total <= 0 or n_rows <= 0 or total <= n_rows:
+        return 0
+    return max(0, min(sel - n_rows + 1, total - n_rows))
+
+
 def _build_popup_lines(completion, width: int, now: float) -> list:
     """构建补全弹窗行（标题 + 候选项 + 提示）；弹窗不可见返回 []。
 
@@ -267,11 +293,16 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
         #   （锁定高度）而非当前内容需求——items 减少时弹窗高度保持（底部
         #   补白），doc 高度不变 → 等高 diff 只重写弹窗行（不闪）。
         n_rows = max(0, _completion_height(completion, width) - 2)
+        # ★ 滚动窗口（2026-08-15 修复）：/load 会话候选多时一直按下键，
+        #   选中项移出首屏后弹窗固定从 items[0] 渲染——选中项不可见。
+        #   计算起始偏移使选中项保持在可见区域内（越过底部时选中项贴底、
+        #   回首屏内时窗口回顶）。
+        scroll = _completion_scroll_offset(sel, len(items), n_rows)
         for row in range(n_rows):
             line = Line()
-            # 左栏：选项
-            if row < len(items):
-                i = row
+            # 左栏：选项（i 为 items 真实索引，行号 row = i - scroll）
+            i = scroll + row
+            if i < len(items):
                 if i == sel:
                     line.append(" \u25b6 ", Style(fg=15, bg=sel_bg))
                 else:
@@ -306,7 +337,11 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
         #   （锁定高度）而非当前 items 数量——items 减少时弹窗高度保持
         #   （底部补白空行），doc 高度不变 → 等高 diff 只重写弹窗行（不闪）。
         n_rows = max(0, _completion_height(completion, width) - 2)
-        for i in range(n_rows):
+        # ★ 滚动窗口（2026-08-15 修复，同分栏分支）：选中项超出可见区域时
+        #   窗口跟随（选中项贴底/回顶），修复前固定从 items[0] 渲染。
+        scroll = _completion_scroll_offset(sel, len(items), n_rows)
+        for row in range(n_rows):
+            i = scroll + row
             if i >= len(items):
                 # 高度锁定补白：items 减少后弹窗底部留白（空行）
                 lines.append(Line())
@@ -353,6 +388,7 @@ __all__ = [
     "_glow_color",
     "_placeholder_fade_color",
     "_build_popup_lines",
+    "_completion_scroll_offset",
     "_vwidth",
     "_styled_completion_cached",
     "_styled_completion",
