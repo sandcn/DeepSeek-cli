@@ -493,8 +493,17 @@ class SubAgent(BaseAgent):
         def on_before(tc, detail):
             tool_name = tc["name"]
             if display:
-                display.tool_parsing(self.label, tool_name, detail)
-                display.tool_start(self.label, tool_name, detail)
+                # ★ BUG（2026-08-16，显示多一行修复）：透传 tool_call_id——
+                #   流式 parsing（api/stream/handlers/tool_calls.py）已带
+                #   tool_id（_stream_label）发布 ToolParsingEvent，此处不传
+                #   tool_id 会与流式 parsing 记录分裂（start 无 id 无法认领
+                #   带 id 的 parsing 记录 → 同一次调用两条记录 → 面板同一
+                #   工具显示两行）。SubAgent.display 为 EventBusDisplayProxy
+                #   （ParallelExecutor 装配），tool_parsing/tool_start 均支持
+                #   tool_id 参数。
+                tool_id = tc.get("id", "")
+                display.tool_parsing(self.label, tool_name, detail, tool_id=tool_id)
+                display.tool_start(self.label, tool_name, detail, tool_id=tool_id)
 
         def on_after(tc, output, success):
             tool_name = tc["name"]
@@ -503,7 +512,8 @@ class SubAgent(BaseAgent):
                 with self._tool_calls_count_lock:
                     self.tool_calls_count += 1
             if display:
-                display.tool_done(self.label, tool_name, success=success)
+                display.tool_done(self.label, tool_name, success=success,
+                                  tool_id=tc.get("id", ""))
 
         async def run_method(func, tc):
             from .internal.agent._tool_context import run_with_tool_context

@@ -138,6 +138,93 @@ def test_start_tool_no_duplicate_running_record():
 
 
 # ═══════════════════════════════════════════════════════════
+# BUG（2026-08-16）：面板"显示多一行"——流式 parsing 带 tool_id、
+# 执行 start 不带 tool_id 时同一次工具调用分裂为两条记录
+# ═══════════════════════════════════════════════════════════
+
+def test_stream_parsing_and_execute_events_merge_single_record():
+    """流式 parsing(带 tool_id) + 执行 parsing/start/done(不带 tool_id) 事件
+    序列：同一次工具调用只产生一条 done 记录。
+
+    背景：SubAgent 工具调用的流式 parsing 事件（api/stream/handlers/
+    tool_calls.py）带 tool_id（_stream_label），而执行阶段 on_before/on_after
+    曾不传 tool_id——start 无 tool_id 时 fallback=False 不认领带 id 的 parsing
+    记录 → 每次调用分裂为两条记录（带 id parsing 残留 + 无 id running→done），
+    面板同一工具显示两行（✔ done + ◌ parsing 残留）。修复后 start_tool
+    fallback=True 降级认领，仅一条记录。
+    """
+    store = StateStore()
+    store.add_agent("agent-1", "desc")
+    # 流式阶段：ToolCallsHandler 带 tool_id 发布 parsing
+    store.update_tool_parsing("agent-1", "read_file", "", tool_id="call_x")
+    # 执行阶段：on_before/on_after（旧调用方无 tool_id）
+    store.update_tool_parsing("agent-1", "read_file", "/a.py", tool_id="")
+    store.start_tool("agent-1", "read_file", "/a.py", tool_id="")
+    store.done_tool("agent-1", "read_file", True, tool_id="")
+    slot = store._agents["agent-1"]
+    assert len(slot.tool_history) == 1, \
+        f"同一次调用应只有 1 条记录，实际 {len(slot.tool_history)}"
+    rec = slot.tool_history[0]
+    assert rec.phase == "done"
+    assert rec.tool_id == "call_x"
+    assert rec.detail == "/a.py"
+    assert rec.end_time > 0
+
+
+def test_two_same_name_calls_with_mixed_tool_id_keep_separate():
+    """两次同名工具调用（带 id 与不带 id 混合事件）：各闭合各的记录，
+    不因 start_tool fallback=True 误合并（隔离不变量保持）。"""
+    store = StateStore()
+    store.add_agent("agent-1", "desc")
+    # 调用1：完整带 id 生命周期
+    store.update_tool_parsing("agent-1", "read_file", "", tool_id="call_a")
+    store.start_tool("agent-1", "read_file", "/a.py", tool_id="call_a")
+    store.done_tool("agent-1", "read_file", True, tool_id="call_a")
+    # 调用2：纯无 id 生命周期（旧调用方）
+    store.update_tool_parsing("agent-1", "read_file", "/b.py", tool_id="")
+    store.start_tool("agent-1", "read_file", "/b.py", tool_id="")
+    store.done_tool("agent-1", "read_file", True, tool_id="")
+    slot = store._agents["agent-1"]
+    assert len(slot.tool_history) == 2
+    by_id = {r.tool_id: r for r in slot.tool_history}
+    assert by_id["call_a"].phase == "done"
+    assert by_id["call_a"].detail == "/a.py"
+    assert by_id[""].phase == "done"
+    assert by_id[""].detail == "/b.py"
+
+
+def test_late_parsing_event_after_done_not_duplicated():
+    """工具已完成（done）后同 tool_id 的迟到 parsing 事件：不新建残留
+    parsing 记录（修复前新建 ◌ parsing 行使面板同一工具显示两行）。"""
+    store = StateStore()
+    store.add_agent("agent-1", "desc")
+    store.update_tool_parsing("agent-1", "read_file", "", tool_id="call_x")
+    store.start_tool("agent-1", "read_file", "/a.py", tool_id="call_x")
+    store.done_tool("agent-1", "read_file", True, tool_id="call_x")
+    # 迟到 parsing（同 tool_id，工具已闭合）
+    store.update_tool_parsing("agent-1", "read_file", "/a.py", tool_id="call_x")
+    slot = store._agents["agent-1"]
+    assert len(slot.tool_history) == 1
+    assert slot.tool_history[0].phase == "done"
+
+
+def test_parsing_new_tool_id_after_done_still_created():
+    """前次调用 done 后，新调用（不同 tool_id）的 parsing 事件仍正常新建
+    （迟到防御不误伤新调用）。"""
+    store = StateStore()
+    store.add_agent("agent-1", "desc")
+    store.update_tool_parsing("agent-1", "read_file", "", tool_id="call_a")
+    store.start_tool("agent-1", "read_file", "/a.py", tool_id="call_a")
+    store.done_tool("agent-1", "read_file", True, tool_id="call_a")
+    store.update_tool_parsing("agent-1", "read_file", "", tool_id="call_b")
+    slot = store._agents["agent-1"]
+    assert len(slot.tool_history) == 2
+    by_id = {r.tool_id: r for r in slot.tool_history}
+    assert by_id["call_a"].phase == "done"
+    assert by_id["call_b"].phase == "parsing"
+
+
+# ═══════════════════════════════════════════════════════════
 # P1-2 / P2-6：_system_monitor macOS
 # ═══════════════════════════════════════════════════════════
 

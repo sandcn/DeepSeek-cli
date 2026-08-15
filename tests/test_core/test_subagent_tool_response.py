@@ -94,3 +94,44 @@ def test_handle_tool_calls_empty_id_not_backfilled():
 
     tool_msgs = [m for m in agent.messages if m["role"] == "tool"]
     assert len(tool_msgs) == 0
+
+
+def test_build_tool_callbacks_pass_tool_id():
+    """SubAgent._build_tool_callbacks 的 on_before/on_after 透传 tool_call_id。
+
+    背景：流式 parsing 事件（api/stream/handlers/tool_calls.py）带 tool_id
+    （_stream_label），执行回调不传 tool_id 会与流式 parsing 记录分裂成两条
+    （同一次调用显示两行：✔ done + ◌ parsing 残留）。修复后透传 tc["id"]，
+    事件流（parsing → start → done）同 tool_id 精确闭合为一条记录。
+    """
+    agent = _make_subagent()
+    display = MagicMock()
+    agent.display = display
+    on_before, on_after, _ = agent._build_tool_callbacks()
+    tc = {"id": "call_x", "name": "read_file", "arguments": {"path": "/a.py"}}
+    on_before(tc, "/a.py")
+    display.tool_parsing.assert_called_once_with(
+        "test-agent", "read_file", "/a.py", tool_id="call_x")
+    display.tool_start.assert_called_once_with(
+        "test-agent", "read_file", "/a.py", tool_id="call_x")
+
+    on_after(tc, "ok", True)
+    display.tool_done.assert_called_once_with(
+        "test-agent", "read_file", success=True, tool_id="call_x")
+
+
+def test_build_tool_callbacks_tool_id_default_empty():
+    """tc 缺 id 时透传空串（与旧行为一致，走 tool_name 降级匹配），不抛错。"""
+    agent = _make_subagent()
+    display = MagicMock()
+    agent.display = display
+    on_before, on_after, _ = agent._build_tool_callbacks()
+    tc = {"name": "bash", "arguments": {}}
+    on_before(tc, "pwd")
+    display.tool_parsing.assert_called_once_with(
+        "test-agent", "bash", "pwd", tool_id="")
+    display.tool_start.assert_called_once_with(
+        "test-agent", "bash", "pwd", tool_id="")
+    on_after(tc, "ok", True)
+    display.tool_done.assert_called_once_with(
+        "test-agent", "bash", success=True, tool_id="")

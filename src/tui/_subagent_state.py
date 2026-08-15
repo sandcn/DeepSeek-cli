@@ -214,10 +214,24 @@ class StateStore:
             rec = self._find_record(slot, tool_name, tool_id, ("parsing",))
             if rec is not None:
                 rec.detail = arguments
-            else:
+            # ★ BUG（2026-08-16，显示多一行修复）：迟到的 parsing 事件不新建
+            #   残留记录——同 tool_id 已存在任意阶段记录（running/done/fail）
+            #   说明该工具调用已开始/已闭合，后续再到达的 parsing 是重复/迟到
+            #   事件（如事件乱序），新建会残留 ◌ parsing 行使面板同一工具显示
+            #   两行。tool_id 全局唯一（tool_call_id），同 tool_id 必属同一
+            #   调用，忽略不误伤其他调用；tool_id 为空时保持原新建行为
+            #   （执行路径 parsing 总是在 start 前到达，无迟到语义）。
+            elif not self._has_tool_record(slot, tool_id):
                 rec = _ToolRecord(tool_name=tool_name, tool_id=tool_id)
                 rec.detail = arguments
                 self._append_record(slot, rec)  # BUG-55：历史条数上限
+
+    @staticmethod
+    def _has_tool_record(slot, tool_id: str) -> bool:
+        """同 tool_id 是否已存在任意阶段记录（迟到 parsing 事件防御）。"""
+        if not tool_id:
+            return False
+        return any(rec.tool_id == tool_id for rec in slot.tool_history)
 
     def start_tool(self, label: str, tool_name: str, detail: str,
                    tool_id: str = "") -> None:
@@ -242,12 +256,28 @@ class StateStore:
             #   start 事件下**不产生重复 running 记录**（修复前仅转换 parsing
             #   记录，已有同名 running 记录时新建重复记录；且未按 tool_id
             #   区分，A start → B start（同名）→ A 再 start 会新建第三条）。
-            #   fallback=False：无 tool_id 的 start 不合并到带 tool_id 的同名
-            #   记录（带 id 与不带 id 的调用各自独立成记录）。
+            #   第一轮 fallback=False：无 tool_id 的 start 不合并到带 tool_id
+            #   的记录（带 id 与不带 id 的调用各自独立成记录）。
             rec = self._find_record(
                 slot, tool_name, tool_id, ("parsing", "running"),
                 fallback=False,
             )
+            # ★ BUG（2026-08-16，显示多一行修复）：第二轮降级**仅认领带
+            #   tool_id 的 parsing 记录**——SubAgent 工具调用的流式 parsing
+            #   事件（api/stream/handlers/tool_calls.py）带 tool_id
+            #   （_stream_label），而执行阶段 start 曾不传 tool_id：不降级
+            #   认领会把同一次调用分裂为两条记录（带 id parsing 残留 + 无 id
+            #   running→done），面板同一工具显示两行（✔ done + ◌ parsing
+            #   残留）。降级阶段限定为 parsing：parsing 记录尚未被任何 start
+            #   认领（属"等待开始"的流式解析），无 id 的 start 认领它是同一
+            #   调用的开始信号；running 记录已被某次 start 认领（可能属另一
+            #   条独立调用），认领会破坏记录隔离（既有测试
+            #   test_done_tool_with_tool_id_fallback_keeps_other_record 锁定）。
+            if rec is None and not tool_id:
+                rec = self._find_record(
+                    slot, tool_name, tool_id, ("parsing",),
+                    fallback=True,
+                )
             if rec is not None:
                 rec.phase = "running"
                 rec.detail = detail
