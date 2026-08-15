@@ -179,7 +179,16 @@ def _do_reasoning(model, cmd) -> None:
         return
     rr = model.ensure_reasoning()
     if rr is None:
-        return  # 通道已关闭：丢弃
+        # ★ 2026-08-16 修复（多轮工具循环「思考最后一行不显示」）：推理通道已
+        #   关闭（CLOSED）但内容仍到来——工具调用后模型继续新一轮推理，且
+        #   reasoning.py 的 phase_thinking_sent 每流只发布一次 MainPhase
+        #   （reopen_reasoning 未触发）。自动重开通道接收新一轮思考（新块），
+        #   避免工具调用后的思考被整体丢弃。reopen 仅 CLOSED→INACTIVE 生效，
+        #   正常 INACTIVE/ACTIVE 状态不受影响。
+        model.reopen_reasoning()
+        rr = model.ensure_reasoning()
+        if rr is None:
+            return  # 重开后仍不可用（防御）：丢弃
     rr.write(cmd.text)
     _flush_renderer_to_block(model, "reasoning", rr)
 
@@ -189,7 +198,16 @@ def _do_content(model, cmd) -> None:
         return
     cr = model.ensure_content()
     if cr is None:
-        return  # 通道已关闭：丢弃
+        # ★ 2026-08-16 修复（多轮工具循环「回答最后一行不显示」）：内容通道已
+        #   关闭（content_closed=True）但内容仍到来——工具调用时 tool_calls.py
+        #   在 content_full 非空时发布了 PhaseDone("content")（close_content
+        #   关闭通道），工具调用后模型继续输出最终回答，而 phase_answering_sent
+        #   每流只发布一次 MainPhase（reopen_content 未触发）。自动重开通道
+        #   接收新一轮回答（新块），避免工具调用后的回答被整体丢弃。
+        model.reopen_content()
+        cr = model.ensure_content()
+        if cr is None:
+            return  # 重开后仍不可用（防御）：丢弃
     cr.write(cmd.text)
     _flush_renderer_to_block(model, "content", cr)
 

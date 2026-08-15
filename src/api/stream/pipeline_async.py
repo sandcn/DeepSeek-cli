@@ -246,6 +246,19 @@ class AsyncStreamPipeline:
                         # 🔥 发布 PhaseDoneEvent("reasoning")（去重助手：每流恰一次）
                         ctx.publish_phase_done_once("reasoning")
                     await self._tool_calls_handler.handle(ctx, dtc)
+                    # ★ 2026-08-16 修复（多轮工具循环「最后一行不显示」）：
+                    #   工具调用后模型将继续输出新一轮内容（新一轮推理/回答）。
+                    #   阶段完成标志（phase_done_*_sent）重置为 False——否则
+                    #   新一轮内容结束时 ``_cleanup_display`` 的
+                    #   ``publish_phase_done_once`` 因「每流至多一次」去重跳过，
+                    #   close_reasoning/close_content 不会再次执行，新一轮内容
+                    #   尾部（最后一行无换行符）滞留在解析器缓冲永不渲染。
+                    #   ★ 工具调用前的当前阶段已完成（reasoning done 已发布、
+                    #     content done 由 tool_calls_handler 按 content_full
+                    #     发布）——重置只影响「工具调用后」的新一轮，不破坏
+                    #   当前阶段关闭（关闭幂等，重复发布无害）。
+                    ctx.phase_done_reasoning_sent = False
+                    ctx.phase_done_content_sent = False
                     self._speed_handler.try_update(ctx)
                     continue
 
@@ -398,11 +411,15 @@ class AsyncStreamPipeline:
         #     必发布一次。
         if ctx.reasoning_full:
             ctx.publish_phase_done_once("reasoning")
-        if ctx.content_full and not ctx.tool_calls_map and not ctx.esc_interrupted:
-            # 仅当没有工具调用路径且未被中断时才发布 content done 事件
-            # （tool_calls.py 已发布过 content done，助手幂等跳过；条件保留——
-            #  not ctx.esc_interrupted 必须保留，否则中断文本 ContentChunk 晚于
-            #  PhaseDone 到达被丢弃）
+        if ctx.content_full and not ctx.esc_interrupted:
+            # ★ 2026-08-16 修复（多轮工具循环「最后一行不显示」）：
+            #   不再要求 ``not ctx.tool_calls_map``——工具调用时 content 可能
+            #   为空（推理后直接工具调用，tool_calls.py 未发布 content done），
+            #   该条件会阻止流结束时发布 → 工具调用后的内容（内容B）无法关闭
+            #   渲染通道，尾部无换行 token 滞留 parser 缓冲永不渲染。去掉后
+            #   统一「始终尝试 + 去重助手」：已发布过（tool_calls.py）幂等跳过，
+            #   未发布过（工具后内容）必发布一次。``not ctx.esc_interrupted``
+            #   必须保留（中断文本 ContentChunk 晚于 PhaseDone 到达被丢弃）。
             ctx.publish_phase_done_once("content")
 
         # 🔥 中断标记：向前端发送 (已中断) 标记
