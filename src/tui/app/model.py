@@ -300,8 +300,9 @@ class AppModel(_ToolOutputMixin):
     def _card_lines(self, block, start: int = 0):
         """块卡片行：正文 + （首次提交时）角色头。
 
-        committed_lines 为「卡片文档」（角色头 + 正文 + 空行；content/tool 无
-        角色头——content 对齐 Claude Code 无头回答，tool 由卡片顶边框替代）。
+        committed_lines 为「卡片文档」（角色头 + 正文 + 空行；tool 无角色头
+        ——由卡片顶边框替代；content/reasoning 等有角色头——content
+        ``▍💬 回答``、reasoning ``▍💭 思考``）。
         角色头仅在 start==0（块首次提交，committed_line_count==0）时前置一次；
         增量提交（start>0）不再重复。冻结行 ``_cached_ink_lines`` 保持正文-only
         （不改，测试锁定 ``len(_cached_ink_lines) == len(block.lines)``）。

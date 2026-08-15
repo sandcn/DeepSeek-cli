@@ -404,7 +404,7 @@ def _append_assistant_rich(model, msg) -> None:
     用户需求（/editmsg 等历史回放）：思考/回答/工具调用显示与消息区
     （ChatView）渲染一致——不再回退 ``  │ 原文本`` 纯文本行：
       - reasoning_content → reasoning 块（💭 思考 角色头 + markdown 行）；
-      - content → content 块（markdown 渲染，对齐 Claude Code 无头回答）；
+      - content → content 块（💬 回答 角色头 + markdown 行）；
       - tool_calls → 工具块（ToolCard 卡片，open_tool_box 后续 tool 消息
         经 ``_append_tool_rich`` 追加输出并关闭）。
     """
@@ -467,7 +467,7 @@ def _do_display_messages(model, cmd) -> None:
 
     用户需求（/editmsg 编辑后重渲染等历史显示）：与消息区既有渲染一致——
       - user：``> 内容``（build_user_line）；
-      - assistant：reasoning → 💭 思考块 / content → markdown 回答块 /
+      - assistant：reasoning → 💭 思考块 / content → 💬 回答块 /
         tool_calls → 工具卡片；
       - tool：工具输出追加到对应工具卡片并关闭；
       - 其他角色（other）：回退纯文本（防御性，保持既有行为）。

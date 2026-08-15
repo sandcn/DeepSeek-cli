@@ -9,9 +9,10 @@
 未提交（live）块的**角色头**经 ``_role_header_line`` 在正文行之前发射
 （仅 ``committed_line_count == 0`` 时——已增量提交的头已在 committed_lines，
 互斥不重复）；正文行仍走 ``_block_styled_lines``（正文-only，不带头）。
-content/tool 无角色头（content 对齐 Claude Code 无头回答；tool 由卡片标题行
-替代）——live content 直接渲染正文，live 工具块经 ``ToolCard`` 组件
-（React Ink 组件化，内部 ``tool_card_lines`` 行）发射，与 committed
+content/reasoning 有角色头（content ``▍💬 回答``、reasoning ``▍💭 思考``，
+2026-08-16 用户需求）；tool 无角色头（由卡片标题行替代）——live content
+直接渲染正文（头经 _role_header_line 发射），live 工具块经 ``ToolCard``
+组件（React Ink 组件化，内部 ``tool_card_lines`` 行）发射，与 committed
 首次提交互斥。
 """
 

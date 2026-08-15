@@ -113,8 +113,9 @@ def _user_marker_styled_lines(block, start, stop, width):
 def _role_header_runs(block, model, live: bool = False) -> list:
     """构建块角色头 StyledRun 列表（卡片首行，按 kind 选样式与文本）。
 
-    无头 kind（content/tool/user/write_line/splash/parse_info）返回空列表
-    （不占行）——content 对齐 Claude Code 无头回答；tool 由卡片顶边框替代。
+    无头 kind（tool/user/write_line/splash/parse_info）返回空列表（不占行）
+    ——tool 由卡片顶边框替代；content 有 ``▍💬 回答`` 角色头（2026-08-16
+    用户需求，与 reasoning ``▍💭 思考`` 同格式）。
     样式取活动调色板槽位（``get_active_palette()``，dark 下与既有常量同值）；
     reasoning/error 用硬编码兜底（与正文样式语义一致）。
 
@@ -126,15 +127,25 @@ def _role_header_runs(block, model, live: bool = False) -> list:
             _card_lines_committed）——回退静态样式（冻结缓存内容确定，防
             历史里固定显示随机 spinner 帧字符）。
     """
-    from src.tui.app._theme import get_active_palette
+    from src.tui.app._theme import get_active_palette, time_glow
     from src.tui.core.style import Style
     from src.tui.ink import StyledRun
     kind = block.kind
     pal = get_active_palette()
     if kind == "content":
-        # 助手回答无角色头（对齐 Claude Code：markdown 文本直接流动，无
-        # `▎回答` 头行；用户消息以 `> ` 前缀区分）
-        return []
+        # 助手回答角色头（★ 2026-08-16 用户需求：回答与思考同格式显示——
+        # ``▍💬 回答``，对齐 ``▍💭 思考`` 推理头；修复前对齐 Claude Code
+        # 无头回答，markdown 文本直接流动）。live 路径**与思考头同动效**：
+        # ``💬`` 图标替换为时间基 spinner 帧（10Hz 推进，与推理头/解析行
+        # spinner 共用语义）+ 呼吸色（亮青 45↔61，8s 周期，与欢迎行/模型名
+        # 呼吸同步，视觉提示「回答生成中」）；提交/关闭回退静态亮青
+        # （pal.accent，冻结缓存内容确定，防历史回答头固定为随机 spinner 帧）。
+        if not block.closed and live:
+            from src.tui.app import _fx
+            glow = time_glow(45, 61, 8.0)
+            sp = _fx.spinner_char()
+            return [StyledRun(f"\u258d{sp} 回答", Style(fg=glow))]
+        return [StyledRun("\u258d\U0001f4ac 回答", pal.accent)]
     if kind == "reasoning":
         # 方向3（动效）：推理块角色头呼吸色——块仍开放（live 推理中）时
         # 从暗灰 242 呼吸到亮灰 252（8s 周期，视觉提示「推理进行中」）；
