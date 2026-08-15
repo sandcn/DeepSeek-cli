@@ -591,6 +591,34 @@ class InputDispatcher:
             _logger.debug("input hook router 异常，放行事件", exc_info=True)
             return False
 
+    def _mark_enter_residual(self, event: KeyEvent) -> None:
+        """按触发字节标记残留 LF 丢弃窗口（editmsg 竞态修复）。
+
+        设计意图：CR+LF 终端（Windows 原生控制台等）Enter 发 ``\\r\\n``——
+        CR 触发 enter 事件后紧随的 LF 是同一按键的残留字节，须在窗口内
+        丢弃防误提交/误确认（LF 若被解析为第二个 enter，会在 editmsg 弹窗
+        打开后误判确认、或在 prefill 注入后被 ``_enter()`` 误提交）。
+
+        ★ 修复（2026-08-16，LF-only 终端误吞确认 Enter）：Python 3.9
+        ``tty.setcbreak`` 只关 ICANON+ECHO、**不关 ICRNL**——POSIX/Cygwin
+        驱动将 Enter 的 ``\\r`` 转换为 ``\\n``，程序读到的是 **LF (0x0a)**，
+        LF 本身就是完整按键，不存在"残留"。修复前无条件置标记：``/editmsg``
+        提交回车（LF）置标记后，0.5s 窗口内用户在弹窗按 Enter 确认（LF）
+        会被 ``_dispatch_byte`` 误吞 → 弹窗无响应（"按回车有时不能编辑
+        消息"，需再按一次）。
+
+        规则：仅当触发 enter 的原始字节为 CR（0x0d）时置标记丢弃紧随 LF；
+        LF 触发（LF-only 终端）或 CSI u 增强键盘协议（``\\x1b[13;1u`` 等，
+        完整序列无 CR+LF 字节对）不置标记——LF/CSI u 已是完整按键，窗口内
+        后续 LF/CR 为用户新输入，不误丢。
+        """
+        raw = getattr(event, "raw", None) or b""
+        if raw and raw[0] == 0x0d:
+            self._enter_residual_pending = True
+            self._enter_residual_deadline = (
+                time.monotonic() + _ENTER_RESIDUAL_WINDOW
+            )
+
     def _dispatch_key_event(self, event: KeyEvent) -> None:
         """根据 KeyEvent.kind 分发到对应的输入处理器。
 
@@ -616,11 +644,12 @@ class InputDispatcher:
             #   （不误丢）。非 Enter 事件不设置（↑↓/Esc 等无 CR+LF 问题）。
             # ★ 窗口截止（2026-08-06）：deadline 超时后标记失效——渲染线程
             #   忙/单 CR 终端时 LF 不晚于窗口到达；超时后 LF/CR 为用户新输入。
+            # ★ 修复（2026-08-16）：置标记改经 _mark_enter_residual 按触发
+            #   字节判断——LF-only 终端（Python 3.9 setcbreak 不关 ICRNL，
+            #   POSIX/Cygwin 驱动 \r→\n）Enter 读到 LF，LF 即完整按键无残留，
+            #   无条件置标记会在窗口内误吞用户下一次真实 Enter（见该方法）。
             if event.kind == "enter":
-                self._enter_residual_pending = True
-                self._enter_residual_deadline = (
-                    time.monotonic() + _ENTER_RESIDUAL_WINDOW
-                )
+                self._mark_enter_residual(event)
             return  # 已消费，跳过旧回调路径
 
         if kind == "enter":
@@ -632,11 +661,9 @@ class InputDispatcher:
                 #   CR+LF 终端 Enter 应用匹配退出搜索后，紧随 LF 若不丢弃会
                 #   被解析为第二个 enter 事件 → 搜索已退出 → _enter() 立即
                 #   提交搜索匹配文本（用户无法继续编辑）。与正常 Enter 提交
-                #   分支统一标记丢弃（窗口内）。
-                self._enter_residual_pending = True
-                self._enter_residual_deadline = (
-                    time.monotonic() + _ENTER_RESIDUAL_WINDOW
-                )
+                #   分支统一标记丢弃（窗口内）。按触发字节判断见
+                #   _mark_enter_residual（LF-only 终端不置标记）。
+                self._mark_enter_residual(event)
                 return
             self._dismiss_completion()
             # ★ 方向1（加锁读取）：与其他访问统一经 get_suppress_enter()
@@ -648,18 +675,18 @@ class InputDispatcher:
                 #   /editmsg /deitmsg 等命令的 CR+LF 中 LF 可能晚到（终端/
                 #   蓝牙/SSH 延迟）——若在弹窗打开后到达会被 UserSelectPopup
                 #   误判为确认 Enter（弹窗自动确认/直接编辑最后一条），或在
-                #   prefill 注入后被 _enter() 误提交。统一标记丢弃（窗口内）。
-                self._enter_residual_pending = True
-                self._enter_residual_deadline = (
-                    time.monotonic() + _ENTER_RESIDUAL_WINDOW
-                )
+                #   prefill 注入后被 _enter() 误提交。统一标记丢弃（窗口内）；
+                #   按触发字节判断（LF-only 终端不置标记）见
+                #   _mark_enter_residual。
+                self._mark_enter_residual(event)
             else:
                 # editmsg 选择确认 CR 被抑制后标记残留 LF（\n），
                 # 由 read_stdin_once 丢弃，避免 LF 在 prefill 注入后被误提交。
-                self._enter_residual_pending = True
-                self._enter_residual_deadline = (
-                    time.monotonic() + _ENTER_RESIDUAL_WINDOW
-                )
+                # 按触发字节判断：LF-only 终端（Enter 读到 LF）不置标记——
+                # 修复前 /editmsg 提交回车（LF）置标记，0.5s 窗口内用户在
+                # 弹窗按 Enter 确认（LF）被 _dispatch_byte 误吞 → 弹窗无响应
+                # （"按回车有时不能编辑消息"）。
+                self._mark_enter_residual(event)
         elif kind == "tab":
             if self._buffer_editor.is_search_active():
                 # 方向D 步骤14：搜索模式 Tab 应用匹配并退出搜索（与 Enter 一致）
