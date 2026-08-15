@@ -127,7 +127,6 @@ def _build_mode_line(width: int, empty_mode: bool) -> Line:
     Ctrl+B 切换空模式（``src/prompt_builder.builder.is_empty_mode()``）：
       - 空模式（True）：显示「空模式」（金色 178 强调——特殊状态醒目）；
       - 标准模式（False）：显示「标准模式」（暗灰 dim——常规状态零打扰）。
-
     ★ 左侧无分隔线填充（2026-08-14 用户反馈：模式行左边不要分割线）——
     左侧空白 + 最右侧模式文本。行宽恒 = width（行级 diff 行宽不变量）；
     窄屏时内容按预算截断不溢出（与 CPU/MEM/时间戳分隔线截断语义一致）。
