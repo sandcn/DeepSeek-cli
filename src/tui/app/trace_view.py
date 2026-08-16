@@ -492,18 +492,15 @@ def _inspector_children(rec, right_w: int, vh: int) -> list:
                 break
     if tail_first:
         segs.reverse()  # reversed 遍历恢复正序（省略提示在前、最新内容在后）
-    if truncated:
-        omitted = max(1, total_lines - shown)
-        if tail_first:
-            children.append(h(TEXT, {
-                "children": f"\u2026 前 {omitted} 行省略",
-                "style": _S_HINT, "height": 1, "key": "tinsp-omitted",
-            }))
-        else:
-            children.append(h(TEXT, {
-                "children": f"\u2026 后 {omitted} 行省略",
-                "style": _S_HINT, "height": 1, "key": "tinsp-omitted",
-            }))
+    omitted = max(1, total_lines - shown) if truncated else 0
+    if truncated and tail_first:
+        # 思考/回答（tail_first）：省略的是前部旧内容 → 「… 前 N 行省略」
+        # 置顶（在内容行之前——与 toolcard bash 尾显示「… 前 N 行省略」
+        # 前置语义一致，提示紧跟被省略内容一侧）
+        children.append(h(TEXT, {
+            "children": f"\u2026 前 {omitted} 行省略",
+            "style": _S_HINT, "height": 1, "key": "tinsp-omitted",
+        }))
     for seg in segs:
         if isinstance(seg, list):
             # markdown 渲染行（StyledRun 列表——children 纯文本仅供测试/
@@ -521,6 +518,15 @@ def _inspector_children(rec, right_w: int, vh: int) -> list:
                 "height": 1,
                 "key": f"tinsp-{len(children)}",
             }))
+    if truncated and not tail_first:
+        # 其余种类（system/user/tool/subagent/context，head-first）：省略的
+        # 是尾部内容 → 「… 后 N 行省略」**后置在内容行之后**（最后一行——
+        # 与 toolcard 头显示「head 省略的行在末尾——提示置于内容行之后，
+        # 对齐终端 head 语义」一致；修复前统一前置在内容上方，与语义不符）
+        children.append(h(TEXT, {
+            "children": f"\u2026 后 {omitted} 行省略",
+            "style": _S_HINT, "height": 1, "key": "tinsp-omitted",
+        }))
     if not lines and not md_rows:
         children.append(h(TEXT, {
             "children": "(无内容)", "style": _S_HINT, "height": 1,

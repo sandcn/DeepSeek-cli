@@ -2005,7 +2005,10 @@ def test_inspector_reasoning_tail_first_omitted_front():
 
 
 def test_inspector_tool_keeps_tail_omitted():
-    """工具（tool）：保持从头部显示 + 「… 后 N 行省略」（零回归）。"""
+    """工具（tool）：保持从头部显示 + 「… 后 N 行省略」**后置在内容之后**。
+
+    省略的是尾部内容 → 提示应显示在内容行之后的最后一行（对齐 toolcard
+    头显示语义；修复前统一前置在内容上方与语义不符）。"""
     rec = TraceRecord(index=1, kind="tool", summary="bash ls")
     rec._detail_lines = [f"输出行{i}" for i in range(80)]
     children = _inspector_children(rec, right_w=40, vh=10)
@@ -2013,6 +2016,23 @@ def test_inspector_tool_keeps_tail_omitted():
     assert any("省略" in t and "后" in t for t in texts)
     assert "输出行0" in texts, "工具从头部显示"
     assert "输出行79" not in texts
+    # 位置：省略提示在内容行之后（最后一行——非 tail_first 后置语义）
+    omitted_idx = next(i for i, t in enumerate(texts) if "省略" in t)
+    assert omitted_idx == len(texts) - 1, f"省略提示应在最后一行: {texts}"
+    assert all("输出行" not in t for t in texts[omitted_idx + 1:]), "提示之后不应有内容行"
+
+
+def test_inspector_user_head_first_omitted_after_content():
+    """用户（user）：head-first 省略尾部 → 「… 后 N 行省略」在内容行之后。"""
+    rec = TraceRecord(index=1, kind="user", summary="长提问")
+    rec._detail_lines = [f"用户行{i}" for i in range(60)]
+    children = _inspector_children(rec, right_w=40, vh=10)
+    texts = [str(c.props.get("children", "")) for c in children]
+    omitted = [t for t in texts if "省略" in t]
+    assert omitted and "后" in omitted[0], f"应显示后 N 行省略: {texts}"
+    assert texts[-1] == omitted[0], f"省略提示应在最后一行: {texts}"
+    assert "用户行0" in texts, "head-first 从头部显示"
+    assert "用户行59" not in texts, "尾部省略"
 
 
 def test_inspector_short_content_no_omitted_hint():
@@ -2236,7 +2256,8 @@ def test_inspector_system_block_reused():
 
 def test_inspector_system_tail_omitted_kept_head_first():
     """system 记录（head-first）：长提示词从头部显示 + 「… 后 N 行省略」。
-    markdown 渲染后行数超视口时省略尾部（system 非流式内容——零回归）。"""
+    markdown 渲染后行数超视口时省略尾部（system 非流式内容——零回归）；
+    省略提示后置在内容行之后（最后一行）。"""
     rec = TraceRecord(index=1, kind="system", summary="提示词")
     rec._detail_lines = [f"提示词行{i}" for i in range(80)]
     children = _inspector_children(rec, right_w=40, vh=10)
@@ -2244,6 +2265,10 @@ def test_inspector_system_tail_omitted_kept_head_first():
     assert any("省略" in t and "后" in t for t in texts), "system 保持后 N 行省略"
     assert any("提示词行0" in t for t in texts), "system 从头部显示"
     assert not any("提示词行79" in t for t in texts), "尾部省略"
+    # 位置：省略提示在内容行之后（最后一行——head-first 后置语义）
+    omitted_idx = next(i for i, t in enumerate(texts) if "省略" in t)
+    assert omitted_idx == len(texts) - 1, f"省略提示应在最后一行: {texts}"
+    assert all("提示词行" not in t for t in texts[omitted_idx + 1:]), "提示之后不应有内容行"
 
 
 # ═══════════════════════════════════════════════════════════
