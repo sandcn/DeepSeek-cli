@@ -1,5 +1,7 @@
 """数据命令 — 文件读写/会话管理相关命令处理函数"""
 
+import logging
+
 from ..constants import GREEN, YELLOW, DIM, RESET, CYAN, filter_system, filter_non_system
 from ..adapters.output import get_default_output_port
 from ...config import MODEL
@@ -7,6 +9,7 @@ from ..sandbox_manager import get_sandbox_manager
 from ..internal.commands._command_core import CommandContext
 
 _out = get_default_output_port()
+_logger = logging.getLogger(__name__)
 
 _SESSION_ID_TRUNCATE = 12     # 会话ID显示截断长度
 
@@ -67,6 +70,17 @@ def _cmd_load(ctx):
         agent = getattr(ctx.session, "agent", None)
         if agent is not None:
             setattr(agent, "_subagent_records", list(loaded_subagents))
+
+    # ★ 2026-08-17（用户需求：load 命令支持已完成 subagent 轨迹）：恢复
+    #   轨迹存档——主轨迹显示历史 subagent 记录、Enter 可进入查看完整轨迹
+    #   （数据源与构建逻辑复用运行时同一套：``_trace_archive`` →
+    #   ``_subagent_records``/``build_subagent_trace_records``，无第二份
+    #   实现；非 TUI 环境/异常记 debug 日志零成本跳过）。
+    try:
+        from ...tui.subagent import SubAgentPanelController
+        SubAgentPanelController.get_default().restore_trace_archive(loaded_subagents)
+    except Exception:
+        _logger.debug("恢复 subagent 轨迹存档异常", exc_info=True)
 
     model = data.get("model", ctx.state.get("model", MODEL))
     ctx.state["model"] = model

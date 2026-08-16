@@ -307,8 +307,16 @@ def _subagent_fingerprint() -> tuple:
     """subagent 槽位指纹（use_memo deps）：顺序 + 状态 + 工具历史长度。
 
     控制器不存在/未装配时返回空元组（零成本——无 subagent 记录）。
+
+    ★ 2026-08-17（用户需求：已完成 subagent 仍可查看轨迹）：数据源与
+    ``trace._subagent_records`` 一致 = 面板 store（未注册槽位）+ **轨迹存档**
+    （``_trace_archive``——``stop()`` 清空 store 后存档保留 → 指纹稳定，
+    主轨迹持续显示已完成 subagent 记录；新任务注册覆盖存档 → 指纹变化
+    触发重建）。遍历顺序复用 ``trace._subagent_label_order``（单一实现，
+    review 方向：避免与记录构建逻辑漂移）。
     """
     try:
+        from src.tui.app.trace import _subagent_label_order
         from src.tui.subagent import SubAgentPanelController
         controller = SubAgentPanelController.get_default()
         store = getattr(controller, "_store", None)
@@ -317,10 +325,14 @@ def _subagent_fingerprint() -> tuple:
         with store._state_lock:
             order = list(getattr(store, "_order", None) or [])
             agents = getattr(store, "_agents", None) or {}
+            archive = getattr(controller, "_trace_archive", None) or {}
+            labels = _subagent_label_order(order, archive)
             fp = tuple(
-                (label, getattr(agents.get(label), "status", ""),
-                 len(getattr(agents.get(label), "tool_history", None) or []))
-                for label in order
+                (label,
+                 getattr(agents.get(label) or archive.get(label), "status", ""),
+                 len(getattr(agents.get(label) or archive.get(label),
+                             "tool_history", None) or []))
+                for label in labels
             )
         return fp
     except Exception:

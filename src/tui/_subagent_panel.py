@@ -153,6 +153,16 @@ class SubAgentPanelController:
         self._chat_ui: Any = None
         self._push_cmd_cb: Callable[[RenderCmd], None] | None = push_cmd
         self.max_history: int = max_history
+        # ★ 2026-08-17（用户需求：已完成 subagent 仍可查看轨迹）：轨迹存档
+        #   （label → 槽位引用，``register_subagent`` 写入）——``stop()`` 清空
+        #   面板 store（渲染状态）后存档保留，主轨迹仍从存档读取 subagent
+        #   记录并可 Enter 进入查看完整轨迹（历史复盘；同 label 新任务注册
+        #   时覆盖为最近一次——与持久化 ``_subagent_records`` 同 label 覆盖
+        #   语义一致，用户已确认仅保留最近一次）。访问须在 ``_state_lock``
+        #   内（与 store 一致）。**有界性**：label 由 ParallelExecutor 固定
+        #   生成 ``agent-N`` → 存档 ≤ N 槽位有界；自定义 label 调用方需经
+        #   ``clear_trace_archive()`` 自行清理，防无界增长。
+        self._trace_archive: Dict[str, _AgentSlot] = {}
 
     @classmethod
     def get_default(cls) -> "SubAgentPanelController":
@@ -194,6 +204,70 @@ class SubAgentPanelController:
             except Exception:
                 slot.messages = []
             slot.prompt = str(getattr(agent, "prompt", "") or "")
+            # ★ 2026-08-17（用户需求：已完成 subagent 仍可查看轨迹）：写入
+            #   轨迹存档（label → 槽位引用）——面板 ``stop()`` 清空 store 后
+            #   存档保留，主轨迹仍显示 subagent 记录、Enter 仍可进入查看
+            #   完整轨迹；同 label 新任务注册时覆盖为最近一次（槽位对象复用，
+            #   字段由新 SubAgent 消息/提词接管）。
+            self._trace_archive[label] = slot
+
+    def clear_trace_archive(self) -> None:
+        """清空轨迹存档（显式清理入口；``stop()`` **不**调用——已完成
+        subagent 轨迹保留供复盘查看）。
+
+        调用时机：新会话/测试清理等需要移除历史 subagent 轨迹记录的场景。
+        """
+        with self._state_lock:
+            self._trace_archive.clear()
+
+    def restore_trace_archive(self, records) -> None:
+        """从历史会话 subagent 记录恢复轨迹存档（load 命令支持）。
+
+        /load、--load 启动、webui 加载会话后调用：把会话数据中的
+        ``subagents``（``_subagent_records`` 条目，结构同
+        ``SubAgent._record_to_parent``：label/description/agent_type/prompt/
+        status/result/error/messages）转换为槽位写入轨迹存档（**替换语义**：
+        加载的新会话取代旧会话存档）——主轨迹显示历史 subagent 记录、
+        Enter 可进入查看完整轨迹。数据源与构建逻辑与运行时已完成 subagent
+        完全一致（``_trace_archive`` → ``_subagent_records`` /
+        ``build_subagent_trace_records``，**无第二份实现**）。
+
+        Args:
+            records: 会话数据 ``subagents`` 列表（dict 条目；空/None 时
+                清空存档——加载的会话无 subagent 数据则主轨迹不显示）。
+                注意：历史数据不含运行期 usage 统计/耗时 → 主轨迹检查器
+                token 显示 0、无耗时（可接受，会话文件未保存该信息）。
+        """
+        with self._state_lock:
+            self._trace_archive.clear()
+            if not records:
+                return
+            for item in records:
+                if not isinstance(item, dict):
+                    continue
+                label = str(item.get("label") or "").strip()
+                if not label:
+                    continue
+                slot = _AgentSlot(
+                    label=label,
+                    description=str(item.get("description") or ""),
+                    status=str(item.get("status") or "done"),
+                    agent_type=str(item.get("agent_type") or "execute"),
+                )
+                slot.prompt = str(item.get("prompt") or "")
+                slot.result_text = str(item.get("result") or "")
+                slot.result_error = str(item.get("error") or "")
+                msgs = item.get("messages")
+                if isinstance(msgs, list):
+                    # 逐条防御：非 dict 元素（None/str/损坏数据）跳过——
+                    # 单条损坏不影响其余消息恢复（不整批置空）
+                    slot.messages = [
+                        dict(m) for m in msgs if isinstance(m, dict)
+                    ]
+                # 历史数据无运行期时间 → 无耗时显示（end=start=0）
+                slot.start_time = 0.0
+                slot.end_time = 0.0
+                self._trace_archive[label] = slot
 
     # ── 生命周期 ────────────────────────────────────────
 
@@ -245,6 +319,10 @@ class SubAgentPanelController:
                     _logger.debug("request_bottom_redraw 异常", exc_info=True)
         self._unregister_panel_refresh()
         self._store.clear()
+        # ★ 2026-08-17（用户需求：已完成 subagent 仍可查看轨迹）：**不清空**
+        #   轨迹存档（``_trace_archive``）——store 清空仅复位面板渲染状态；
+        #   主轨迹仍从存档读取已完成 subagent 记录并可 Enter 进入查看完整
+        #   轨迹（历史复盘）。显式清理走 ``clear_trace_archive()``。
         self._active = False
 
     # ── 事件处理器（委托 StateStore 变更 + 置脏 + 节流推送） ──

@@ -591,11 +591,37 @@ def _records_from_messages(messages) -> tuple:
     return records, rows
 
 
+def _subagent_label_order(order: list, archive: dict) -> list:
+    """subagent 标签遍历顺序（store 未注册槽位在前 + 存档去重合并）。
+
+    供 ``_subagent_records``（主轨迹记录构建）与
+    ``trace_view._subagent_fingerprint``（use_memo 指纹）**复用**——两处
+    数据源与遍历顺序保持单一实现（review 方向：避免记录/指纹逻辑漂移）。
+    顺序语义：面板 store 中未注册槽位（异常路径）优先，随后按注册顺序
+    追加轨迹存档槽位（注册过的全部：运行中 + 已完成保留）。
+    """
+    labels: list = []
+    for label in order:
+        if label not in archive:
+            labels.append(label)
+    for label in archive:
+        if label not in labels:
+            labels.append(label)
+    return labels
+
+
 def _subagent_records(index_holder: list, out_records: list, rows: list) -> None:
-    """subagent 槽位 → 轨迹记录（追加到块记录之后；仅块回退路径）。
+    """subagent 槽位 → 轨迹记录（追加到块记录之后）。
 
     惰性 import SubAgentPanelController（app 层不依赖装配层）；控制器不存在
     （未装配/测试）时零成本跳过。
+
+    ★ 2026-08-17（用户需求：已完成 subagent 仍可查看轨迹）：数据源 = 面板
+    store（未注册槽位，异常路径）+ **轨迹存档**（``controller._trace_archive``
+    ——``register_subagent`` 注册过的全部槽位，含运行中与已完成）。``stop()``
+    清空 store 后存档保留 → 主轨迹仍显示已完成 subagent 记录（Enter 可进入
+    查看完整轨迹）；遍历顺序：store 未注册槽位（异常路径）在前，存档
+    （注册顺序）在后。
     """
     try:
         from src.tui.subagent import SubAgentPanelController
@@ -609,10 +635,12 @@ def _subagent_records(index_holder: list, out_records: list, rows: list) -> None
         with store._state_lock:
             order = list(getattr(store, "_order", None) or [])
             agents = dict(getattr(store, "_agents", None) or {})
+            archive = dict(getattr(controller, "_trace_archive", None) or {})
     except Exception:
         return
-    for label in order:
-        slot = agents.get(label)
+    labels = _subagent_label_order(order, archive)
+    for label in labels:
+        slot = agents.get(label) or archive.get(label)
         if slot is None:
             continue
         status = getattr(slot, "status", "") or "running"
@@ -756,7 +784,15 @@ def _subagent_live_records(index_holder: list, out_records: list, rows: list,
 
 
 def _subagent_slot(label: str):
-    """按 label 获取 subagent 槽位（面板 store）；控制器不存在/未装配返回 None。"""
+    """按 label 获取 subagent 槽位（面板 store / 轨迹存档）；控制器不存在/
+    未装配返回 None。
+
+    ★ 2026-08-17（用户需求：已完成 subagent 仍可查看轨迹）：优先查面板
+    store（运行中/新批次槽位——窗口期存档未覆盖时读最新），store 未命中
+    再查**轨迹存档**（``controller._trace_archive``——``register_subagent``
+    注册过的槽位，``stop()`` 清空 store 后仍保留 → 已完成 subagent 轨迹
+    可构建）。
+    """
     if not label:
         return None
     try:
@@ -766,7 +802,11 @@ def _subagent_slot(label: str):
         if store is None:
             return None
         with store._state_lock:
-            return store._agents.get(label)
+            slot = store._agents.get(label)
+            if slot is not None:
+                return slot
+            archive = dict(getattr(controller, "_trace_archive", None) or {})
+            return archive.get(label)
     except Exception:
         return None
 
@@ -955,4 +995,5 @@ __all__ = [
     "_live_fingerprint",
     "_subagent_live_records",
     "_subagent_slot",
+    "_subagent_label_order",
 ]

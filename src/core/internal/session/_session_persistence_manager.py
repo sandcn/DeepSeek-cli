@@ -127,6 +127,12 @@ class SessionPersistenceManager:
         if self._set_subagents is not None:
             self._set_subagents(data.get("subagents") or [])
 
+        # ★ 2026-08-17（用户需求：load 命令支持已完成 subagent 轨迹）：恢复
+        #   轨迹存档（--load 启动 / webui 加载路径）——主轨迹显示历史 subagent
+        #   记录、Enter 可进入查看完整轨迹（数据源与构建逻辑复用运行时同一
+        #   套，无第二份实现；非 TUI 环境零成本跳过）。
+        self._restore_trace_archive(data.get("subagents") or [])
+
         self._set_model(data.get("model", self._get_model()))
         self._set_session_id(session_id)
 
@@ -141,6 +147,19 @@ class SessionPersistenceManager:
     def get_session_ids(self) -> list[str]:
         """列出所有保存的会话 ID。"""
         return [s["id"] for s in self._persistence.list_sessions()]
+
+    def _restore_trace_archive(self, records: list) -> None:
+        """恢复 subagent 轨迹存档（load 路径统一接入点）。
+
+        委托 TUI 控制器（``SubAgentPanelController.restore_trace_archive``）
+        ——非 TUI 环境（无头/单次模式）控制器单例仍可用但无人消费，异常时
+        记 debug 日志零成本跳过（轨迹恢复属增强能力，不阻断会话加载）。
+        """
+        try:
+            from ....tui.subagent import SubAgentPanelController
+            SubAgentPanelController.get_default().restore_trace_archive(records)
+        except Exception:
+            _logger.debug("恢复 subagent 轨迹存档异常", exc_info=True)
 
     # ── 自动保存（异步） ────────────────────────────────
 

@@ -1026,6 +1026,7 @@ def test_register_subagent_injects_messages():
         assert len(slot.messages) == 2
     finally:
         ctl._store.clear()
+        ctl.clear_trace_archive()  # 轨迹存档清理（register_subagent 写入）
 
 
 def test_build_subagent_trace_records_from_messages():
@@ -1265,6 +1266,506 @@ def test_trace_view_ctrl_h_returns_from_subagent_trace():
 
 
 # ═══════════════════════════════════════════════════════════
+# 9.5 已完成 subagent 轨迹保留（2026-08-17 用户需求）
+# ═══════════════════════════════════════════════════════════
+# 用户需求：subagent 已完成后仍能按 Enter 查看其轨迹（历史复盘）。修复前
+# ParallelExecutor 完成后 ``_panel.stop()`` 清空面板 store → 主轨迹 subagent
+# 记录消失、Enter 无法下钻。修复：``register_subagent`` 写入**轨迹存档**
+# （``_trace_archive``），``stop()`` 清空 store 后存档保留 → 主轨迹仍显示
+# 已完成 subagent 记录、Enter 仍可进入查看完整轨迹（同 label 新任务注册
+# 时覆盖为最近一次）。
+
+class _StubSubAgent:
+    """SubAgent 桩（messages/prompt 属性，对齐 register_subagent 读取面）。"""
+
+    def __init__(self, messages, prompt):
+        self.messages = messages
+        self.prompt = prompt
+
+
+def _register_done_slot(ctl, label="agent-1", description="解析模块"):
+    """构造「已完成 subagent」：面板槽位（done）+ 轨迹存档（store 已清空）。
+
+    ★ 模拟语义：用 ``ctl._store.clear()`` 模拟 ``ParallelExecutor`` 完成后
+    ``stop()`` 清空面板 store 的效果（``stop()`` 在测试环境因 ``_active``
+    为 False 直接返回，且其完整路径——取消订阅/推空帧/动画回调注销——与
+    存档保留语义无关；本测试聚焦「store 清空后存档保留」）。
+    """
+    ctl._store.clear()
+    ctl.clear_trace_archive()
+    ctl._store.add_agent(label, description, status="running")
+    agent = _StubSubAgent(
+        messages=[
+            {"role": "user", "content": "读取 user.py"},
+            {"role": "assistant", "content": "解析完成。", "reasoning_content": None},
+        ],
+        prompt="读取 user.py",
+    )
+    ctl.register_subagent(label, agent)
+    ctl._store.update_status(label, "done")
+    ctl._store.clear()  # 模拟 ParallelExecutor 完成后 stop() 清空面板 store
+    return ctl
+
+
+def test_stop_preserves_trace_archive_completed_subagent():
+    """stop() 清空面板 store 后轨迹存档保留 → 主轨迹仍显示已完成 subagent
+    记录（done）且可构建完整 subagent 轨迹。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = _register_done_slot(SubAgentPanelController.get_default())
+    try:
+        # ① 面板 store 已清空（渲染状态复位）
+        assert ctl._store._order == []
+        assert ctl._store._agents == {}
+        # ② 轨迹存档保留（label → 槽位引用）
+        assert "agent-1" in ctl._trace_archive
+        slot = ctl._trace_archive["agent-1"]
+        assert slot.status == "done"
+        # ③ 主轨迹（消息源模式）仍追加已完成 subagent 记录
+        m = AppModel()
+        m.message_source = lambda: _sample_messages()
+        records, rows = build_trace_records(m)
+        sub = records[-1]
+        assert sub.kind == "subagent"
+        assert sub.status == "done"
+        assert sub.subagent_label == "agent-1"
+        assert rows[-1] is sub
+        # ④ 完成后仍可构建完整 subagent 轨迹（消息 → 台账记录）
+        sub_records, _ = build_subagent_trace_records("agent-1", None)
+        assert [r.kind for r in sub_records] == ["user", "content"]
+        assert sub_records[0].summary == "读取 user.py"
+        assert sub_records[1].summary == "解析完成。"
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_subagent_slot_prefers_store_then_archive():
+    """_subagent_slot：优先面板 store（运行中），store 缺失回退轨迹存档
+    （已完成——store 清空后仍可构建轨迹）。"""
+    from src.tui.app.trace import _subagent_slot
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+        # 仅存档有槽位（store 清空模拟已完成）→ 回退存档
+        ctl._store.add_agent("archived", "存档任务", status="done")
+        ctl.register_subagent("archived", _StubSubAgent(
+            messages=[{"role": "user", "content": "hi"}], prompt="hi"))
+        ctl._store.clear()
+        slot = _subagent_slot("archived")
+        assert slot is not None and slot.status == "done"
+        # store 有新槽位（运行中）而存档为旧槽位 → 优先 store
+        ctl._store.add_agent("archived", "新任务", status="running")
+        new_slot = ctl._store._agents["archived"]
+        assert _subagent_slot("archived") is new_slot
+        # 均不存在 → None
+        assert _subagent_slot("ghost") is None
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_trace_view_enter_completed_subagent_after_store_clear():
+    """主轨迹 Enter 已完成 subagent（store 已清空）→ 仍进入 subagent 轨迹
+    显示完整内容；Esc 返回主轨迹。"""
+    from src.tui.ink.element import h as h_el
+    from src.tui.ink.reconciler import Reconciler
+    from src.tui.ink.widgets.listview import ListView
+    from src.tui.subagent import SubAgentPanelController
+    ctl = _register_done_slot(SubAgentPanelController.get_default())
+    try:
+        m = _make_model_with_blocks()
+        m.trace_open = True
+        m.trace_selected = -1  # 跟随尾部（subagent 记录为末条）
+        rec = Reconciler()
+        root = rec.create_root()
+        rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+        router = rec._build_input_router(root)
+        # Enter（选中已完成 subagent 记录）→ 进入 subagent 轨迹
+        assert router(KeyEvent(kind="enter", raw=b"\r")) is True
+        assert m.trace_subagent_label == "agent-1"
+        assert m.trace_open is True
+        # 下一帧渲染 → subagent 轨迹（数据源 = 存档槽位消息）
+        rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+        el, _ = _render(TraceView, {"model": m, "width": 100})
+        header = list(el.children)[0]
+        header_text = "".join(r.text for r in header.props.get("styled", []))
+        assert "子代理轨迹 agent-1" in header_text, "已完成 subagent 轨迹标题应显示 label"
+        row_el = list(el.children)[1]
+        left = list(row_el.children)[0]
+        assert left.type is ListView
+        texts = [item.summary for item in left.props["items"] if item is not None]
+        assert "读取 user.py" in texts
+        assert "解析完成。" in texts
+        # Esc → 返回主轨迹（trace_open 保持 True）
+        handler = _input_handler(_render(TraceView, {"model": m, "width": 100})[1])
+        assert handler(KeyEvent(kind="escape", raw=b"\x1b")) is True
+        assert m.trace_subagent_label is None
+        assert m.trace_open is True
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_clear_trace_archive_removes_completed_records():
+    """clear_trace_archive 清空存档 → 主轨迹不再显示已完成 subagent 记录。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = _register_done_slot(SubAgentPanelController.get_default())
+    try:
+        m = AppModel()
+        m.message_source = lambda: _sample_messages()
+        records, _ = build_trace_records(m)
+        assert records[-1].kind == "subagent", "存档保留时主轨迹应含 subagent 记录"
+        ctl.clear_trace_archive()
+        records2, _ = build_trace_records(m)
+        assert all(r.kind != "subagent" for r in records2), \
+            "存档清空后主轨迹不应再有 subagent 记录"
+        assert build_subagent_trace_records("agent-1", None) == ([], [])
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+# ═══════════════════════════════════════════════════════════
+# 9.6 load 命令恢复 subagent 轨迹（2026-08-17 用户需求）
+# ═══════════════════════════════════════════════════════════
+# 用户需求：load 命令（/load、--load 启动、webui 加载）也要支持「已完成
+# subagent 仍可 Enter 查看轨迹」，且不实现第二份构建逻辑。方案：会话数据
+# 中的 ``subagents``（``_subagent_records`` 条目，含完整 messages）经
+# ``SubAgentPanelController.restore_trace_archive`` 转换为槽位注入轨迹存档
+# ——主轨迹显示、Enter 下钻、轨迹构建全部复用运行时同一套（``_trace_archive``
+# → ``_subagent_records``/``build_subagent_trace_records``）。
+
+def _sample_subagent_record(label="agent-1", status="done"):
+    """会话数据 subagents 条目（对齐 SubAgent._record_to_parent 结构）。"""
+    return {
+        "label": label,
+        "description": "解析模块",
+        "agent_type": "execute",
+        "prompt": "读取 user.py",
+        "status": status,
+        "result": "解析完成。",
+        "error": "",
+        "tool_calls_count": 1,
+        "messages": [
+            {"role": "system", "content": "你是子代理。"},
+            {"role": "user", "content": "读取 user.py"},
+            {"role": "assistant", "content": "解析完成。", "reasoning_content": None},
+        ],
+    }
+
+
+def test_restore_trace_archive_from_session_records():
+    """restore_trace_archive：会话 subagents 记录 → 存档槽位（字段映射），
+    主轨迹显示历史 subagent、可构建完整轨迹。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+        ctl.restore_trace_archive([_sample_subagent_record()])
+        # ① 存档槽位字段映射
+        slot = ctl._trace_archive["agent-1"]
+        assert slot.status == "done"
+        assert slot.description == "解析模块"
+        assert slot.prompt == "读取 user.py"
+        assert slot.result_text == "解析完成。"
+        assert slot.result_error == ""
+        assert len(slot.messages) == 3
+        # ② 主轨迹（消息源模式）显示历史 subagent 记录
+        m = AppModel()
+        m.message_source = lambda: _sample_messages()
+        records, rows = build_trace_records(m)
+        sub = records[-1]
+        assert sub.kind == "subagent"
+        assert sub.status == "done"
+        assert sub.subagent_label == "agent-1"
+        assert rows[-1] is sub
+        # ③ 可构建完整 subagent 轨迹（复用 _records_from_messages）
+        sub_records, _ = build_subagent_trace_records("agent-1", None)
+        assert [r.kind for r in sub_records] == ["system", "user", "content"]
+        assert sub_records[1].summary == "读取 user.py"
+        assert sub_records[2].summary == "解析完成。"
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_restore_trace_archive_replaces_previous():
+    """restore_trace_archive 为替换语义：新会话存档取代旧会话（同/异 label）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+        # 先注入旧会话存档（两个 label）
+        ctl.restore_trace_archive([
+            _sample_subagent_record("agent-1"),
+            _sample_subagent_record("agent-2"),
+        ])
+        assert set(ctl._trace_archive) == {"agent-1", "agent-2"}
+        # 再恢复新会话（仅 agent-1，且内容更新）→ 旧 agent-2 移除、agent-1 覆盖
+        rec = _sample_subagent_record("agent-1")
+        rec["result"] = "新会话结果。"
+        ctl.restore_trace_archive([rec])
+        assert set(ctl._trace_archive) == {"agent-1"}
+        assert ctl._trace_archive["agent-1"].result_text == "新会话结果。"
+        # 空列表 → 清空存档
+        ctl.restore_trace_archive([])
+        assert ctl._trace_archive == {}
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_trace_view_enter_restored_subagent_after_load():
+    """load 恢复存档后：主轨迹 Enter 历史 subagent → 进入 subagent 轨迹
+    显示完整内容；Esc 返回主轨迹。"""
+    from src.tui.ink.element import h as h_el
+    from src.tui.ink.reconciler import Reconciler
+    from src.tui.ink.widgets.listview import ListView
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+        ctl.restore_trace_archive([_sample_subagent_record()])
+        m = _make_model_with_blocks()
+        m.trace_open = True
+        m.trace_selected = -1  # 跟随尾部（subagent 记录为末条）
+        rec = Reconciler()
+        root = rec.create_root()
+        rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+        router = rec._build_input_router(root)
+        # Enter（选中历史 subagent 记录）→ 进入 subagent 轨迹
+        assert router(KeyEvent(kind="enter", raw=b"\r")) is True
+        assert m.trace_subagent_label == "agent-1"
+        # 下一帧渲染 → subagent 轨迹（数据源 = 存档槽位消息）
+        rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+        el, _ = _render(TraceView, {"model": m, "width": 100})
+        header = list(el.children)[0]
+        header_text = "".join(r.text for r in header.props.get("styled", []))
+        assert "子代理轨迹 agent-1" in header_text, "恢复的 subagent 轨迹标题应显示 label"
+        row_el = list(el.children)[1]
+        left = list(row_el.children)[0]
+        assert left.type is ListView
+        texts = [item.summary for item in left.props["items"] if item is not None]
+        assert "读取 user.py" in texts
+        assert "解析完成。" in texts
+        # Esc → 返回主轨迹
+        handler = _input_handler(_render(TraceView, {"model": m, "width": 100})[1])
+        assert handler(KeyEvent(kind="escape", raw=b"\x1b")) is True
+        assert m.trace_subagent_label is None
+        assert m.trace_open is True
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_session_persistence_load_restores_trace_archive():
+    """SessionPersistenceManager.load（--load / webui 路径）→ 恢复轨迹存档。"""
+    from src.core.internal.session._session_persistence_manager import (
+        SessionPersistenceManager,
+    )
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    ctl._store.clear()
+    ctl.clear_trace_archive()
+
+    class _StubPersistence:
+        def load_session(self, sid):
+            return {
+                "messages": [{"role": "user", "content": "历史消息"}],
+                "subagents": [_sample_subagent_record()],
+                "model": "deepseek",
+            }
+
+        def save_session(self, *args, **kwargs):
+            return "saved-id"
+
+        def list_sessions(self):
+            return []
+
+    class _StubObs:
+        def gauge(self, *a, **k):
+            pass
+
+    msgs = [{"role": "system", "content": "sys"}]
+    mgr = SessionPersistenceManager(
+        messages_getter=lambda: msgs,
+        model_getter=lambda: "deepseek",
+        model_setter=lambda v: None,
+        session_id_getter=lambda: "",
+        session_id_setter=lambda v: None,
+        persistence_port=_StubPersistence(),
+        checkpoint_port=None,
+        state_machine=None,
+        emit_fn=lambda *a, **k: None,
+        observability_port=_StubObs(),
+        subagents_getter=lambda: [],
+        subagents_setter=lambda v: None,
+    )
+    try:
+        data = mgr.load("hist-1")
+        assert data is not None
+        assert ctl._trace_archive["agent-1"].status == "done"
+        sub_records, _ = build_subagent_trace_records("agent-1", None)
+        assert [r.kind for r in sub_records] == ["system", "user", "content"]
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_cmd_load_restores_trace_archive():
+    """/load 命令（_cmd_load）→ 恢复轨迹存档（主轨迹可查看历史 subagent 轨迹）。"""
+    from src.core.commands._data_cmd import _cmd_load
+    from src.core.internal.commands._command_core import CommandContext
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    ctl._store.clear()
+    ctl.clear_trace_archive()
+
+    class _StubPersistence:
+        def load_session(self, sid):
+            return {
+                "messages": [{"role": "user", "content": "历史消息"}],
+                "subagents": [_sample_subagent_record()],
+                "model": "deepseek",
+                "title": "历史会话",
+            }
+
+        def save_session(self, *args, **kwargs):
+            return "saved-id"
+
+        def list_sessions(self):
+            return []
+
+    msgs = [{"role": "system", "content": "sys"}]
+    ctx = CommandContext(
+        messages=msgs, state={}, arg="hist-1",
+        build_system_prompt=None, get_user_input=None, context_manager=None,
+        session=None, persistence_port=_StubPersistence(), ui_adapter=None,
+    )
+    try:
+        assert _cmd_load(ctx) is True
+        assert "agent-1" in ctl._trace_archive
+        sub_records, _ = build_subagent_trace_records("agent-1", None)
+        assert [r.kind for r in sub_records] == ["system", "user", "content"]
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_cmd_clear_clears_trace_archive():
+    """/clear 命令（_cmd_clear）→ 同步清空轨迹存档（跨会话残留一致性，
+    review 方向：/clear 清空 _subagent_records 但不同步清 _trace_archive）。"""
+    from src.core.commands._session_cmd import _cmd_clear
+    from src.core.internal.commands._command_core import CommandContext
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+        ctl.restore_trace_archive([_sample_subagent_record()])
+        assert "agent-1" in ctl._trace_archive
+        ctx = CommandContext(
+            messages=[{"role": "system", "content": "sys"}],
+            state={}, arg="",
+            build_system_prompt=lambda: ["sys"],
+            get_user_input=None, context_manager=None,
+            session=None, persistence_port=None, ui_adapter=None,
+        )
+        assert _cmd_clear(ctx) is True
+        assert ctl._trace_archive == {}, "/clear 应同步清空轨迹存档"
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_register_same_label_overwrites_archive():
+    """同 label 新批次注册覆盖存档为最近一次（用户确认取舍：仅保留最近
+    一次——与持久化 _subagent_records 同 label 覆盖语义一致）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+        # 批次 1：注册 agent-1（任务一）
+        ctl._store.add_agent("agent-1", "任务一", status="running")
+        ctl.register_subagent("agent-1", _StubSubAgent(
+            messages=[{"role": "user", "content": "任务一提词"}], prompt="任务一提词"))
+        assert ctl._trace_archive["agent-1"].prompt == "任务一提词"
+        # 批次 1 完成（store 清空）→ 批次 2 同 label 注册（任务二）
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "任务二", status="running")
+        ctl.register_subagent("agent-1", _StubSubAgent(
+            messages=[{"role": "user", "content": "任务二提词"}], prompt="任务二提词"))
+        # 存档仅保留最近一次（任务二）
+        assert len(ctl._trace_archive) == 1
+        assert ctl._trace_archive["agent-1"].prompt == "任务二提词"
+        assert build_subagent_trace_records("agent-1", None)[0][0].summary == "任务二提词"
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_restore_trace_archive_error_status():
+    """restore 映射 status="error"（_record_to_parent 终态之一）→ 主轨迹
+    subagent 记录状态为 error（✖ 图标）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+        rec = _sample_subagent_record()
+        rec["status"] = "error"
+        rec["error"] = "模型调用失败"
+        rec["result"] = ""
+        ctl.restore_trace_archive([rec])
+        slot = ctl._trace_archive["agent-1"]
+        assert slot.status == "error"
+        assert slot.result_error == "模型调用失败"
+        assert slot.result_text == ""
+        m = AppModel()
+        m.message_source = lambda: _sample_messages()
+        records, _ = build_trace_records(m)
+        sub = records[-1]
+        assert sub.status == "error"
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_restore_trace_archive_messages_defensive():
+    """restore messages 逐条防御：非 dict 元素跳过，其余消息保留；非 list
+    消息字段 → 空列表（review 方向：单条损坏不整批置空）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+        rec = _sample_subagent_record()
+        rec["messages"] = [
+            {"role": "user", "content": "正常消息"},
+            None,
+            "损坏",
+            {"role": "assistant", "content": "正常回答", "reasoning_content": None},
+        ]
+        ctl.restore_trace_archive([rec])
+        slot = ctl._trace_archive["agent-1"]
+        assert [m["role"] for m in slot.messages] == ["user", "assistant"]
+        # 非 list messages → 空列表（防御）
+        rec2 = _sample_subagent_record("agent-2")
+        rec2["messages"] = "not-a-list"
+        ctl.restore_trace_archive([rec2])
+        assert ctl._trace_archive["agent-2"].messages == []
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+# ═══════════════════════════════════════════════════════════
 # 10. subagent 动态部分显示（2026-08-16 用户需求：跟 mainagent 一样）
 # ═══════════════════════════════════════════════════════════
 # subagent 轨迹的动态部分（运行中内容）与 mainagent 轨迹语义一致：
@@ -1275,6 +1776,7 @@ def _make_running_slot(label="agent-1", description="实时解析"):
     from src.tui.subagent import SubAgentPanelController
     ctl = SubAgentPanelController.get_default()
     ctl._store.clear()
+    ctl.clear_trace_archive()  # 轨迹存档一并清理（防旧槽位遮蔽/泄漏）
     ctl._store.add_agent(label, description, status="running")
     return ctl, ctl._store._agents[label]
 

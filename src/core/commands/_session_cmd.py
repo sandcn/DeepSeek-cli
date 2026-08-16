@@ -41,6 +41,14 @@ def _cmd_clear(ctx):
         agent = getattr(ctx.session, "agent", None)
         if agent is not None:
             setattr(agent, "_subagent_records", [])
+    # ★ 2026-08-17（review 方向：跨会话残留一致性）：同步清空轨迹存档——
+    #   subagent 记录属于被清空的对话，主轨迹不应残留其 subagent 记录
+    #   （与 `_subagent_records` 清空语义对齐；非 TUI 环境/异常零成本跳过）。
+    try:
+        from ...tui.subagent import SubAgentPanelController
+        SubAgentPanelController.get_default().clear_trace_archive()
+    except Exception:
+        pass
     _out.write(f"{GREEN}  + 对话已清空（系统提词已保留）{RESET}", level="raw", source="cmd")
     return True
 
