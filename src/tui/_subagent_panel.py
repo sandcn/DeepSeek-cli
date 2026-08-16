@@ -253,6 +253,13 @@ class SubAgentPanelController:
                     description=str(item.get("description") or ""),
                     status=str(item.get("status") or "done"),
                     agent_type=str(item.get("agent_type") or "execute"),
+                    # ★ 2026-08-17（用户需求：load 命令后也要合并）：所属
+                    #   dispatch_agent tool_call_id（运行期 SubAgent 经
+                    #   _record_to_parent 持久化）——主轨迹消息源恢复后凭此
+                    #   把历史 subagent 合并到 dispatch_agent 工具记录（不分
+                    #   两条）；旧会话无该字段 → 空串（独立 subagent 记录，
+                    #   兼容）。
+                    dispatch_label=str(item.get("dispatch_label") or ""),
                 )
                 slot.prompt = str(item.get("prompt") or "")
                 slot.result_text = str(item.get("result") or "")
@@ -363,6 +370,12 @@ class SubAgentPanelController:
             description=event.description,
             status=event.status,
             agent_type=getattr(event, 'agent_type', 'execute'),
+            # ★ 2026-08-17（用户需求：agent 内容合并到 dispatch_agent）：
+            #   AgentAddedEvent.dispatch_label（dispatch_agent 的 tool_call_id）
+            #   存入槽位——主轨迹台账按此把 subagent 记录合并到对应的
+            #   dispatch_agent 工具调用记录（不分两条）；旧事件无该字段时
+            #   空串（独立 subagent 记录，兼容）。
+            dispatch_label=getattr(event, 'dispatch_label', ''),
         )
         self._dirty = True
         self._emit_frame()

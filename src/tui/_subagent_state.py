@@ -52,6 +52,7 @@ class _ToolRecord:
 class _AgentSlot:
     __slots__ = (
         'label', 'description', 'status', 'agent_type',
+        'dispatch_label',
         'start_time', 'end_time',
         'appear_time',
         'model_phase', 'model_info', 'model_phase_start',
@@ -67,11 +68,16 @@ class _AgentSlot:
     )
 
     def __init__(self, label: str, description: str, status: str = "running",
-                 agent_type: str = "execute"):
+                 agent_type: str = "execute", dispatch_label: str = ""):
         self.label = label
         self.description = description
         self.status = status
         self.agent_type = agent_type
+        # ★ 2026-08-17（用户需求：agent 内容合并到 dispatch_agent）：
+        #   所属 dispatch_agent 工具的 label（tool_call_id）——主轨迹台账按
+        #   此把 subagent 记录合并到对应 dispatch_agent 工具调用记录（不
+        #   分两条）；空串 = 无关联 dispatch（独立执行/历史恢复槽位）。
+        self.dispatch_label = dispatch_label
         self.start_time: float = time.time()
         self.end_time: float = 0.0
         # BEAUTY-1：FadeIn 出现时刻（时间基，time.monotonic()）
@@ -170,7 +176,7 @@ class StateStore:
         return None
 
     def add_agent(self, label: str, description: str, status: str = "running",
-                  agent_type: str = "execute") -> None:
+                  agent_type: str = "execute", dispatch_label: str = "") -> None:
         with self._state_lock:
             if label not in self._agents:
                 slot = _AgentSlot(
@@ -178,6 +184,7 @@ class StateStore:
                     description=description,
                     status=status,
                     agent_type=agent_type,
+                    dispatch_label=dispatch_label,
                 )
                 self._agents[label] = slot
                 self._order.append(label)

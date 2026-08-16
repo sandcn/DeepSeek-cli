@@ -2527,3 +2527,404 @@ def test_block_styled_rows_rewind_and_kind_switch():
     assert rows3 is not rows2, "kind 切换应全量重建"
     assert all(getattr(r.style, "fg", None) == 242 for runs in rows3 for r in runs), \
         "reasoning 行应叠加暗灰弱化"
+
+
+# ═══════════════════════════════════════════════════════════
+# 9. agent 内容合并到 dispatch_agent（2026-08-17 用户需求）
+# ═══════════════════════════════════════════════════════════
+
+def _dispatch_messages():
+    """一次并行派发两个 dispatch_agent 的真实会话消息形态。
+
+    与用户场景（#38-#44 dispatch_agent 调用 + #45-#51 agent 完成）一致：
+    assistant 一轮 tool_calls 派发多个 dispatch_agent（tool_call_id =
+    call_d1/call_d2），随后各 tool 返回（"## desc\\n结果" 格式）。
+    """
+    return [
+        {"role": "user", "content": "审查代码"},
+        {
+            "role": "assistant", "content": None, "reasoning_content": "并行派发审查。",
+            "tool_calls": [
+                {"id": "call_d1", "function": {"name": "dispatch_agent",
+                 "arguments": '{"description": "审查 API 层", "prompt": "审吧", "type": "review"}'}},
+                {"id": "call_d2", "function": {"name": "dispatch_agent",
+                 "arguments": '{"description": "审查 core 层", "prompt": "审吧", "type": "review"}'}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_d1", "content": "## 审查 API 层\n结果A"},
+        {"role": "tool", "tool_call_id": "call_d2", "content": "## 审查 core 层\n结果B"},
+    ]
+
+
+def test_records_from_messages_tool_call_id_preserved():
+    """tool 记录保存 tool_call_id（dispatch_agent 合并关联键）。"""
+    records, _ = _records_from_messages(_dispatch_messages())
+    tool = records[2]
+    assert tool.kind == "tool"
+    assert tool.tool_call_id == "call_d1"
+    assert "dispatch_agent" in tool.summary and "审查 API 层" in tool.summary
+    assert tool.result == "## 审查 API 层"  # 返回首行预览（合并前）
+
+
+def test_add_agent_stores_dispatch_label():
+    """StateStore.add_agent 透传 dispatch_label 存入槽位。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "审查 API 层", status="done",
+                             dispatch_label="call_d1")
+        slot = ctl._store._agents["agent-1"]
+        assert slot.dispatch_label == "call_d1"
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()  # 轨迹存档清理（对齐既有测试风格，防顺序耦合）
+
+
+def test_build_trace_records_dispatch_agent_merged():
+    """用户需求：agent 内容合并到 dispatch_agent——带 dispatch_label 的
+    subagent 槽位合并进对应 tool 调用记录，**不再生成独立 subagent 记录**。
+
+    台账记录：⚡ ✔ dispatch_agent 审查 API 层 · agent-1 审查 API 层（一条）。
+    """
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "审查 API 层", status="done",
+                             dispatch_label="call_d1")
+        ctl._store.add_agent("agent-2", "审查 core 层", status="done",
+                             dispatch_label="call_d2")
+        slot1 = ctl._store._agents["agent-1"]
+        slot1.end_time = slot1.start_time + 3.0
+        slot1.input_tokens = 100
+        slot1.output_tokens = 50
+        slot1.result_text = "P0 发现 1 处"
+        slot2 = ctl._store._agents["agent-2"]
+        slot2.end_time = slot2.start_time + 2.0
+
+        m = AppModel()
+        m.message_source = lambda: _dispatch_messages()
+        records, rows = build_trace_records(m)
+        kinds = [r.kind for r in records]
+        # 无独立 subagent 记录（合并到 tool 记录）
+        assert "subagent" not in kinds, f"应无独立 subagent 记录: {kinds}"
+        tools = [r for r in records if r.kind == "tool"]
+        assert len(tools) == 2, f"两条 dispatch_agent 各合并为一条 tool 记录: {len(tools)}"
+        # agent-1 → call_d1 合并
+        t1 = tools[0]
+        assert t1.tool_call_id == "call_d1"
+        assert "dispatch_agent" in t1.summary and "审查 API 层" in t1.summary
+        assert t1.status == "done"
+        assert "agent-1" in t1.result and "审查 API 层" in t1.result
+        assert t1.subagent_label == "agent-1"       # Enter 可下钻
+        assert t1.time_seconds == pytest.approx(3.0, abs=0.01)
+        assert t1.tokens["input"] == 100
+        assert t1.tokens["output"] == 50
+        assert "审查 API 层" in "".join(t1.lines)    # 调用行
+        assert "P0 发现 1 处" in t1.lines            # subagent 结果详情
+        # agent-2 → call_d2 合并（并行多次 dispatch 精确关联不串位）
+        t2 = tools[1]
+        assert t2.tool_call_id == "call_d2"
+        assert t2.subagent_label == "agent-2"
+        assert t2.time_seconds == pytest.approx(2.0, abs=0.01)
+        assert rows.count(t1) == 1 and rows.count(t2) == 1
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()  # 轨迹存档清理（对齐既有测试风格，防顺序耦合）
+
+
+def test_subagent_without_dispatch_label_stays_separate():
+    """无 dispatch_label（独立执行/历史恢复槽位）→ 仍生成独立 subagent
+    记录（合并仅限 dispatch 关联槽位，零回归）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "解析模块", status="done")
+        m = AppModel()
+        m.message_source = lambda: _sample_messages()
+        records, rows = build_trace_records(m)
+        assert records[-1].kind == "subagent", "无 dispatch_label 应保持独立 subagent 记录"
+        assert records[-1].subagent_label == "agent-1"
+        assert rows[-1] is records[-1]
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()  # 轨迹存档清理（对齐既有测试风格，防顺序耦合）
+
+
+def test_dispatch_merge_running_status_live():
+    """合并记录运行中状态：subagent running → tool 记录 ● running。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "审查 API 层", status="running",
+                             dispatch_label="call_d1")
+        m = AppModel()
+        m.message_source = lambda: _dispatch_messages()
+        records, _ = build_trace_records(m)
+        tools = [r for r in records if r.kind == "tool"]
+        assert tools[0].status == "running"
+        assert tools[0].time_seconds is None  # 未完成无耗时
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()  # 轨迹存档清理（对齐既有测试风格，防顺序耦合）
+
+
+def test_dispatch_merge_fail_status():
+    """合并记录失败状态：subagent fail/error → tool 记录 ✖（状态图标语义）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "审查 API 层", status="fail",
+                             dispatch_label="call_d1")
+        slot = ctl._store._agents["agent-1"]
+        slot.end_time = slot.start_time + 1.5
+        slot.result_error = "超时"
+        m = AppModel()
+        m.message_source = lambda: _dispatch_messages()
+        records, _ = build_trace_records(m)
+        tools = [r for r in records if r.kind == "tool"]
+        assert tools[0].status == "fail"
+        assert "错误: 超时" in tools[0].lines
+        assert tools[0].time_seconds == pytest.approx(1.5, abs=0.01)
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()  # 轨迹存档清理（对齐既有测试风格，防顺序耦合）
+
+
+def test_ledger_row_merged_dispatch_shows_agent():
+    """合并记录台账行：调用 + agent 摘要预览（``· agent-1 审查 API 层``）。"""
+    rec = TraceRecord(
+        index=2, kind="tool", summary="dispatch_agent 审查 API 层",
+        status="done", result="agent-1 · 审查 API 层", time_seconds=3.0,
+    )
+    runs = _ledger_row_runs(rec, sel=False, left_w=100)
+    text = "".join(r.text for r in runs)
+    assert "dispatch_agent" in text and "审查 API 层" in text, "调用应显示"
+    assert "\u2714" in text, "完成状态图标应显示"
+    assert "agent-1" in text, "agent 内容应合并显示"
+    assert text.endswith("3.0s")
+
+
+def test_inspector_merged_dispatch_hint():
+    """合并后的 dispatch_agent 工具记录检查器：显示 Enter 下钻提示。"""
+    rec = TraceRecord(
+        index=1, kind="tool", summary="dispatch_agent 审查 API 层",
+        status="done", result="agent-1 · 审查 API 层", subagent_label="agent-1",
+        lines=["dispatch_agent 审查 API 层", "agent-1 · 审查 API 层", "P0 发现 1 处"],
+    )
+    children = _inspector_children(rec, right_w=40, vh=10)
+    texts = [str(c.props.get("children", "")) for c in children]
+    assert any("Enter" in t and "子代理" in t for t in texts), "合并 tool 记录应有下钻提示"
+
+
+def test_trace_view_enter_merged_dispatch_opens_subagent_trace():
+    """主轨迹 Enter 合并后的 dispatch 记录 → 进入 subagent 轨迹（嵌套）。
+
+    合并记录 kind 为 tool 但携带 subagent_label——下钻条件放宽为
+    subagent_label 非空（独立 subagent 记录与合并 tool 记录均可进入）。
+    """
+    from src.tui.ink.element import h as h_el
+    from src.tui.ink.reconciler import Reconciler
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "审查 API 层", status="done",
+                             dispatch_label="call_d1")
+        ctl._store.add_agent("agent-2", "审查 core 层", status="done",
+                             dispatch_label="call_d2")
+        slot = ctl._store._agents["agent-1"]
+        slot.messages = [
+            {"role": "user", "content": "审查 API 层"},
+            {"role": "assistant", "content": "审查完成。", "reasoning_content": None},
+        ]
+        m = AppModel()
+        m.message_source = lambda: _dispatch_messages()
+        m.trace_open = True
+        m.trace_selected = -1  # 跟随尾部（末条 = 合并后的 call_d2 记录）
+
+        rec = Reconciler()
+        root = rec.create_root()
+        rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+        router = rec._build_input_router(root)
+        assert router(KeyEvent(kind="enter", raw=b"\r")) is True
+        assert m.trace_subagent_label == "agent-2", "合并记录 Enter 应进入 subagent 轨迹"
+        assert m.trace_open is True
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()  # 轨迹存档清理（对齐既有测试风格，防顺序耦合）
+
+
+def test_dispatch_merge_error_status():
+    """合并记录 error 状态：subagent error → tool 记录 ✖ + 错误详情。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "审查 API 层", status="error",
+                             dispatch_label="call_d1")
+        slot = ctl._store._agents["agent-1"]
+        slot.end_time = slot.start_time + 0.8
+        slot.result_error = "模型调用崩溃"
+        m = AppModel()
+        m.message_source = lambda: _dispatch_messages()
+        records, _ = build_trace_records(m)
+        tools = [r for r in records if r.kind == "tool"]
+        assert tools[0].status == "error"
+        assert "错误: 模型调用崩溃" in tools[0].lines
+        assert tools[0].time_seconds == pytest.approx(0.8, abs=0.01)
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_dispatch_label_without_matching_tool_stays_separate():
+    """有 dispatch_label 但消息源无匹配 tool 记录（消息未入源/异常）→
+    降级独立 subagent 记录（零丢失，P3 防御）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "审查 API 层", status="done",
+                             dispatch_label="call_ghost")
+        m = AppModel()
+        m.message_source = lambda: _sample_messages()  # 无 dispatch_agent 调用
+        records, rows = build_trace_records(m)
+        assert records[-1].kind == "subagent", "无匹配 tool 记录应降级独立 subagent 记录"
+        assert records[-1].subagent_label == "agent-1"
+        assert "agent-1" in records[-1].summary
+        assert rows[-1] is records[-1]
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_duplicate_dispatch_label_second_slot_stays_separate():
+    """同一 dispatch_label 多个槽位（异常数据）→ 首个合并进 tool 记录，
+    其余降级独立 subagent 记录——不覆盖首个、不静默丢失（P3 防御）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "审查 API 层", status="done",
+                             dispatch_label="call_d1")
+        ctl._store.add_agent("agent-2", "重复审查", status="done",
+                             dispatch_label="call_d1")
+        m = AppModel()
+        m.message_source = lambda: _dispatch_messages()
+        records, _ = build_trace_records(m)
+        kinds = [r.kind for r in records]
+        assert kinds.count("subagent") == 1, "第二个同 label 槽位应降级独立: {kinds}"
+        tools = [r for r in records if r.kind == "tool"]
+        assert tools[0].subagent_label == "agent-1", "首个合并不被覆盖"
+        assert "agent-2" not in tools[0].result
+        sub = next(r for r in records if r.kind == "subagent")
+        assert sub.subagent_label == "agent-2"
+        assert "重复审查" in sub.summary
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_live_records_skips_merged_dispatch_box():
+    """运行期 _live_records 跳过已合并的 dispatch box——dispatch 执行中
+    台账也只显示一条（用户需求：不要分两个；修复前运行期两条相同调用行）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "审查 API 层", status="running",
+                             dispatch_label="call_d1")
+        m = AppModel()
+        m.message_source = lambda: _dispatch_messages()
+        # 未关闭的 dispatch box（运行中工具，_live_records 会扫描到）
+        m.open_tool_box("call_d1", "dispatch_agent", "审查 API 层")
+        records, rows = build_trace_records(m)
+        # call_d1 在台账中只出现一次（合并记录），无 _live_records 重复追加
+        call_d1_recs = [r for r in records
+                        if getattr(r, "tool_call_id", "") == "call_d1"]
+        assert len(call_d1_recs) == 1, f"运行期应只有一条合并记录: {len(call_d1_recs)}"
+        rec = call_d1_recs[0]
+        assert rec.subagent_label == "agent-1"
+        assert rec.status == "running"
+        # 未合并的 call_d2 box 正常运行（_live_records 照常追加 running 记录）
+        m.open_tool_box("call_d2", "dispatch_agent", "审查 core 层")
+        records2, _ = build_trace_records(m)
+        live_calls = [r.summary for r in records2
+                      if r.kind == "tool" and r.status == "running"]
+        assert any("审查 core 层" in s for s in live_calls), \
+            f"未合并 box 应保留 live 运行记录: {live_calls}"
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_restore_trace_archive_preserves_dispatch_label():
+    """restore 恢复槽位保留 dispatch_label（load 后合并关联键）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+        rec = _sample_subagent_record()
+        rec["dispatch_label"] = "call_d1"
+        ctl.restore_trace_archive([rec])
+        assert ctl._trace_archive["agent-1"].dispatch_label == "call_d1"
+        # 旧会话无该字段 → 空串（兼容独立记录）
+        ctl.restore_trace_archive([_sample_subagent_record()])
+        assert ctl._trace_archive["agent-1"].dispatch_label == ""
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_restored_dispatch_label_merges_after_load():
+    """用户需求：load 命令后也要合并——restore 恢复的带 dispatch_label
+    槽位合并进主轨迹 dispatch_agent 工具记录（不分两条）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+        rec = _sample_subagent_record()
+        rec["dispatch_label"] = "call_d1"
+        rec["description"] = "审查 API 层"
+        ctl.restore_trace_archive([rec])
+        m = AppModel()
+        m.message_source = lambda: _dispatch_messages()
+        records, rows = build_trace_records(m)
+        kinds = [r.kind for r in records]
+        assert "subagent" not in kinds, f"load 恢复后应合并（无独立记录）: {kinds}"
+        tools = [r for r in records if r.kind == "tool"]
+        t1 = tools[0]
+        assert t1.tool_call_id == "call_d1"
+        assert t1.subagent_label == "agent-1"
+        assert "agent-1" in t1.result and "审查 API 层" in t1.result
+        assert "解析完成。" in t1.lines  # subagent 结果详情
+        assert rows.count(t1) == 1
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+def test_restored_without_dispatch_label_stays_separate():
+    """旧会话（无 dispatch_label 字段）恢复 → 独立 subagent 记录（兼容
+    load 不破坏既有行为）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+        ctl.restore_trace_archive([_sample_subagent_record()])
+        m = AppModel()
+        m.message_source = lambda: _dispatch_messages()
+        records, _ = build_trace_records(m)
+        assert records[-1].kind == "subagent", "无 dispatch_label 恢复槽位应独立显示"
+        assert records[-1].subagent_label == "agent-1"
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()

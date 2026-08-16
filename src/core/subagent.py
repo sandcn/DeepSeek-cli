@@ -76,6 +76,7 @@ class SubAgent(BaseAgent):
         model: str = None,
         model_port=None,
         agent_type: str = "execute",
+        dispatch_label: str = "",
     ):
         super().__init__()
 
@@ -85,6 +86,12 @@ class SubAgent(BaseAgent):
         self.parent = parent_agent
         self._event_port = getattr(parent_agent, '_event_port', None)
         self.agent_type = agent_type
+        # ★ 2026-08-17（用户需求：agent 内容合并到 dispatch_agent）：所属
+        #   dispatch_agent 工具的 label（tool_call_id）——运行时与面板槽位
+        #   dispatch_label 同源（spec["tool_label"]）；随 _record_to_parent
+        #   写入会话存档，load 恢复后主轨迹仍可把历史 subagent 合并到
+        #   dispatch_agent 工具记录（不分两条）。
+        self.dispatch_label = dispatch_label
 
         self._registry = parent_agent.get_tool_registry()
         self._model_port = model_port or getattr(parent_agent, '_async_model_port', None)
@@ -357,6 +364,11 @@ class SubAgent(BaseAgent):
             "status": "error" if self.error else "done",
             "result": self.result,
             "error": self.error,
+            # ★ 2026-08-17（用户需求：load 命令后也要合并）：所属 dispatch_agent
+            #   tool_call_id 随会话存档持久化——/load/--load/webui 恢复后
+            #   restore_trace_archive 凭此把历史 subagent 合并到主轨迹对应
+            #   dispatch_agent 工具记录（旧会话无该字段 → 空串，独立记录兼容）。
+            "dispatch_label": self.dispatch_label,
             "tool_calls_count": self.tool_calls_count,
             "messages": [dict(m) for m in self.messages],
         }
