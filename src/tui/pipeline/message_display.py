@@ -123,6 +123,31 @@ class MessageDisplayContext:
         return cls(data=data, agent=agent, idx_map=idx_map)
 
 
+def _display_line(icon: str, role: str, preview: str) -> "Line":
+    """构建单条消息的兜底显示行（ink 输出模型）。
+
+    ★ 标准 React Ink 输出模型（2026-08-16 深化控件化）：兜底直写路径的
+    渲染行统一用 ``ink.output.Line``（StyledRun 行）构建——与 TUI 界面
+    渲染同源（样式/宽度/渲染出口一致），不再手工拼接字符串。样式默认
+    None（与旧实现纯文本输出字节一致）；角色色可经
+    ``_DEFAULT_ROLE_MAP`` 扩展。
+
+    Args:
+        icon: 角色图标（如 ●）。
+        role: 角色名（user/assistant/tool/...）。
+        preview: 截断后的消息预览文本。
+
+    Returns:
+        单行 ink Line（``  {icon} [{role}] {preview}``）。
+    """
+    # 惰性导入（pipeline 层不依赖 ink 框架，仅在兜底路径使用）
+    from src.tui.ink.output import Line
+    line = Line()
+    line.append(f"  {icon} [{role}] ", None)
+    line.append(preview, None)
+    return line
+
+
 def display_messages(
     data: list[dict],
     agent: Any = None,  # noqa: ARG001  # 兼容保留参数（当前忽略，P3-3）
@@ -135,7 +160,11 @@ def display_messages(
     （``ChatUIConsumer.display_messages`` → ``DisplayMsgsCmd`` 管线）承担，本函数
     仅在无 ChatUI 场景（单次模式等）作为兜底直接写入 ``sys.__stdout__``；
     调用方（``CommandUiAdapter`` / ``_session_setup``）已委托路径 A。
-    函数体零改动，保留向后兼容 re-export。
+
+    ★ 标准 React Ink 输出模型（2026-08-16 深化控件化）：渲染行经
+    ``_display_line``（ink ``Line`` 输出模型）构建后 ``render()`` 输出——
+    兜底路径与 TUI 界面渲染共用同一输出模型（渲染出口统一，字节与旧
+    纯文本输出一致）。
 
     Args:
         data: 消息列表（不含 system 消息）。
@@ -157,7 +186,7 @@ def display_messages(
         # 截断过长的消息用于显示（_truncate 内部已去除 \n/\r）
         preview = _truncate(content, _DISPLAY_PREVIEW_MAX_LEN)
         try:
-            sys.__stdout__.write(f"  {icon} [{role}] {preview}\n")
+            sys.__stdout__.write(_display_line(icon, role, preview).render() + "\n")
         except (OSError, ValueError, AttributeError):
             # ★ BUG-60（review 方向）+ P2-4：兜底直写无 TTY/管道关闭时抛
             #   异常——**跳过当前消息**（continue），修复前 ``return`` 中断
@@ -173,4 +202,5 @@ __all__ = [
     "MessageDisplayContext",
     "RoleConfig",
     "display_messages",
+    "_display_line",
 ]

@@ -7,6 +7,14 @@
   - 从 src/tui/consumer/diff_renderer.py 迁移至此
   - 导入路径更新为使用 .core.style / ._locks / .events.consumers
   - 外部调用方通过 src/tui._diff_renderer 或 src/tui.consumer 的 re-export 访问
+
+★ 标准 React Ink 输出模型（2026-08-16 深化控件化，用户需求「所有 TUI 都要用
+  React Ink 控件跟布局实现所有」）：diff 行构建统一迁移为 ink 输出模型
+  （``ink.output.Line`` / ``StyledRun``，样式统一 ``tui.core.Style``）——
+  生产路径（``render_diff`` 内部）不再手工 ``Style.apply`` 拼接 ANSI 字符串，
+  行经 ``_write_diff_line``（Line）渲染输出；对外接口（``render_diff_to_ansi``
+  返回 ANSI 字符串 / ``show_file_diff`` 写 output_target）与字节输出不变
+  （兼容路径保留 str 输入：测试/外部直接调 ``_write_diff_line`` 走旧逻辑）。
 """
 
 from __future__ import annotations
@@ -24,6 +32,9 @@ from .events.consumers import publish_output
 # 方向1 步骤2（ANSI 单一工具）：消毒复用统一 ``ink.helpers.strip_ansi``
 # 主真源（本文件不再定义独立正则；先剥离合法序列 + 兜底移除孤立 ESC）。
 from src.tui.ink.helpers import strip_ansi
+# ★ 标准 React Ink 输出模型（2026-08-16）：Line/StyledRun 为 diff 行统一
+#   输出模型（样式统一 tui.core.Style，渲染经 Line.render()）。
+from src.tui.ink.output import Line, StyledRun
 
 _logger = logging.getLogger(__name__)
 
@@ -33,14 +44,15 @@ if TYPE_CHECKING:
 # 行内差异背景色（256 色，使用 Style）
 # ★ 标准 React Ink 组件化（2026-08-05）：ANSI 背景色直拼迁移为 Style 对象
 #   （Style 支持 bg——旧注释「因 Style 不支持 bg only」过时）。渲染统一经
-#   ``Style.apply``，不再手动拼接 ANSI 序列。旧常量保留为兼容 re-export
-#   （既有测试/外部调用面）；生产路径经 ``_bg_del``/``_bg_add`` Style。
+#   ink 输出模型（StyledRun + Line.render()），不再手动拼接 ANSI 序列。
+#   旧常量保留为兼容 re-export（既有测试/外部调用面）；生产路径经
+#   ``_bg_del``/``_bg_add`` Style。
 _BG_RED = '\033[48;5;124m'    # 256色暗红背景（兼容 re-export；生产用 _bg_del）
 _BG_GREEN = '\033[48;5;28m'   # 256色柔和绿背景（兼容 re-export；生产用 _bg_add）
 _BG_OFF = '\033[49m'          # 重置为默认背景色（兼容 re-export）
 
 # ★ P3-13（兼容死代码）：_BG_RED/_BG_GREEN/_BG_OFF/_RESET_STR 生产路径零引用
-#   （渲染统一经 ``Style.apply``）——保留仅为兼容 re-export（既有测试/外部
+#   （渲染统一经 ink 输出模型）——保留仅为兼容 re-export（既有测试/外部
 #   调用面）。移除计划：在 __all__ 标注 deprecated 后，待确认外部调用方清空
 #   后删除（勿在生产代码新增引用）。
 
@@ -158,7 +170,12 @@ def _syntax_hl(text, lexer_name):
 
 
 def _inline_highlight(old_text, new_text):
-    """对比两段文本，返回带背景色高亮差异部分的 (old_hl, new_hl)
+    """对比两段文本，返回带背景色高亮差异部分的 (old_runs, new_runs)。
+
+    ★ 标准 React Ink 输出模型（2026-08-16 深化控件化）：返回 **StyledRun
+    列表**（ink 输出模型）——渲染统一经 ``Line`` 构建 + ``render()``，不再
+    手工 ``Style.apply`` 拼接 ANSI 字符串（字节输出与旧实现一致：equal 段
+    无样式原样、replace/delete/insert 段经 ``_bg_del``/``_bg_add`` 背景）。
 
     注意：对输入文本做 ANSI 转义序列消毒（移除所有 ESC 字符），防止终端注入。
     """
@@ -168,20 +185,21 @@ def _inline_highlight(old_text, new_text):
 
     sm = difflib.SequenceMatcher(None, old_text, new_text)
     if sm.ratio() < 0.25:
-        return old_text, new_text
-    old_parts, new_parts = [], []
+        return ([StyledRun(old_text, None)], [StyledRun(new_text, None)])
+    old_parts: list[StyledRun] = []
+    new_parts: list[StyledRun] = []
     for op, i1, i2, j1, j2 in sm.get_opcodes():
         if op == 'equal':
-            old_parts.append(old_text[i1:i2])
-            new_parts.append(new_text[j1:j2])
+            old_parts.append(StyledRun(old_text[i1:i2], None))
+            new_parts.append(StyledRun(new_text[j1:j2], None))
         elif op == 'replace':
-            old_parts.append(_bg_del.apply(old_text[i1:i2]))
-            new_parts.append(_bg_add.apply(new_text[j1:j2]))
+            old_parts.append(StyledRun(old_text[i1:i2], _bg_del))
+            new_parts.append(StyledRun(new_text[j1:j2], _bg_add))
         elif op == 'delete':
-            old_parts.append(_bg_del.apply(old_text[i1:i2]))
+            old_parts.append(StyledRun(old_text[i1:i2], _bg_del))
         elif op == 'insert':
-            new_parts.append(_bg_add.apply(new_text[j1:j2]))
-    return ''.join(old_parts), ''.join(new_parts)
+            new_parts.append(StyledRun(new_text[j1:j2], _bg_add))
+    return old_parts, new_parts
 
 
 def _parse_diff_hunks(diff_list, line_offset=0):
@@ -273,20 +291,42 @@ def _fold_context(parsed, fold_threshold=4):
     return folded
 
 
-def _write_diff_line(text: str, output_target=None, width=None):
+def _write_diff_line(text, output_target=None, width=None):
     """写入一行 diff 输出，优先使用 output_target，否则使用 publish_output。
 
+    ★ 标准 React Ink 输出模型（2026-08-16 深化控件化）：生产路径（``render_diff``
+    内部）传入 **ink ``Line``**（StyledRun 行，样式统一 ``tui.core.Style``）——
+    行构建不再手工 ``Style.apply`` 拼接 ANSI，渲染统一经 ``Line.render()``；
+    兼容路径（既有测试/外部直接调本函数传 **str**）保持旧 H3 截断逻辑
+    （``ansi_to_line`` + ``truncate_line``，renderer.ansi 模型）——字节输出
+    与旧实现一致。
+
     ★ H3（BUG 修复，2026-08-15）：出口截断——``width`` 非 None 且 >0 时，
-    经 ``ansi_to_line``（ANSI→AnsiLine）+ ``truncate_line``（CJK 安全截断）
-    组合按宽度截断（diff 非每帧热路径，性能可接受），窄终端 diff 长行不再
+    按宽度截断（diff 非每帧热路径，性能可接受），窄终端 diff 长行不再
     wraparound。``width`` None（默认）保持原样（旧调用/纯函数兼容——
     ``render_diff_to_ansi``/WebUI 不传）。截断后仍为合法 ANSI（无断裂 SGR）。
 
-    ★ P2-2（review 方向）：截断路径异常保护——``ansi_to_line``/
-    ``truncate_line`` 意外抛异常时降级为不截断原样输出（diff 渲染主路径
-    不因截断失败中断）。
+    ★ P2-2（review 方向）：截断路径异常保护——截断意外抛异常时降级为
+    不截断原样输出（diff 渲染主路径不因截断失败中断）。
+
+    Args:
+        text: ink Line（生产路径）或 ANSI/纯文本字符串（兼容路径）。
+        output_target: 可选输出目标。
+        width: 截断宽度（None 或 <=0 不截断）。
     """
-    if width is not None and width > 0:
+    if isinstance(text, Line):
+        # 生产路径：ink Line 输出模型（截断经 ink.helpers.truncate_line——
+        # 接受 tui.core.Style 的 Line，CJK 安全）
+        if width is not None and width > 0 and text.width > width:
+            try:
+                from src.tui.ink.helpers import truncate_line as _ink_truncate
+                text = _ink_truncate(text, width)
+            except Exception:
+                # P2-2：截断失败降级为不截断原样输出（记录 debug，不中断渲染）
+                _logger.debug("_write_diff_line 截断异常，降级为不截断", exc_info=True)
+        text = text.render()
+    elif width is not None and width > 0:
+        # 兼容路径（str 输入）：保持旧 H3 截断逻辑（renderer.ansi 模型）
         try:
             from src.renderer.ansi.helpers import ansi_to_line, truncate_line
             line = ansi_to_line(text)
@@ -304,6 +344,11 @@ def _write_diff_line(text: str, output_target=None, width=None):
 def _render_chunk(item, w, lexer_name, output_target, max_width=None):
     """渲染一个非增删类型的 diff 块（old_file/new_file/hunk/ctx/fold）。
 
+    ★ 标准 React Ink 输出模型（2026-08-16 深化控件化）：行经 ``Line``
+    （StyledRun，``tui.core.Style``）构建后 ``_write_diff_line`` 渲染——
+    不再手工 ``Style.apply`` 拼接 ANSI（字节输出与旧实现一致：前缀无样式
+    run + 内容样式 run，与 ``"  " + style.apply(content)`` 等价）。
+
     Args:
         item: folded 列表中的条目 (typ, line, old_num, new_num)
         w: 行号宽度
@@ -318,12 +363,18 @@ def _render_chunk(item, w, lexer_name, output_target, max_width=None):
         # （可能是用户提供的文件名），须与 ctx/add/del 行一致走 _sanitize_ansi。
         path = _sanitize_ansi(item[1][4:] if len(item[1]) > 4 else "")
         # 美化：旧文件头亮红加粗（保持 ``┌─ path`` 连续字面量，测试/WebUI 兼容）
-        _write_diff_line("\n  " + _DIFF_FILE_OLD.apply("┌─ " + path), output_target, max_width)
+        line = Line()
+        line.append("\n  ", None)
+        line.append("┌─ " + path, _DIFF_FILE_OLD)
+        _write_diff_line(line, output_target, max_width)
         return
     if typ == 'new_file':
         path = _sanitize_ansi(item[1][4:] if len(item[1]) > 4 else "")
         # 美化：新文件头亮绿加粗
-        _write_diff_line("  " + _DIFF_FILE_NEW.apply("└─ " + path), output_target, max_width)
+        line = Line()
+        line.append("  ", None)
+        line.append("└─ " + path, _DIFF_FILE_NEW)
+        _write_diff_line(line, output_target, max_width)
         return
     if typ == 'hunk':
         hl = StyleSheet.resolve("highlight", Style(fg=45))
@@ -335,28 +386,34 @@ def _render_chunk(item, w, lexer_name, output_target, max_width=None):
         #   语义一致）。
         hunk_text = _sanitize_ansi(item[1])
         # 美化：左装饰条 ``▌``（柔青 dim）+ hunk 头加粗亮青
-        _write_diff_line("  " + _DIFF_HUNK_BAR.apply("▌ ") + bold_hl.apply(hunk_text), output_target, max_width)
+        line = Line()
+        line.append("  ", None)
+        line.append("▌ ", _DIFF_HUNK_BAR)
+        line.append(hunk_text, bold_hl)
+        _write_diff_line(line, output_target, max_width)
         return
     if typ == 'fold':
         hidden = item[1]
         # 方向3（折叠行对齐）：与 ctx 行结构对称——行号列占位 + 分隔空格 +
         # 折叠提示（修复前 `│` 后紧贴 `┄`，行号列/内容列与 ctx 行不对齐）。
         # 美化：折叠提示柔青（与 hunk 装饰同色系，视觉层级一致）
-        _write_diff_line(
-            "  " + dim.apply(f"│ {'':>{w}} │") + " " + _DIFF_HUNK_BAR.apply(f"┄ {hidden} lines ┄"),
-            output_target,
-            max_width,
-        )
+        line = Line()
+        line.append("  ", None)
+        line.append(f"│ {'':>{w}} │", dim)
+        line.append(" ", None)
+        line.append(f"┄ {hidden} lines ┄", _DIFF_HUNK_BAR)
+        _write_diff_line(line, output_target, max_width)
         return
     # ctx: 上下文行（先消毒用户内容再输出，防 ANSI 注入）
     ctx_text = item[1][1:] if item[1].startswith(' ') else item[1]
     ctx_text = _sanitize_ansi(ctx_text)
     hl_text = _syntax_hl(ctx_text, lexer_name) if lexer_name else ctx_text
-    _write_diff_line(
-        "  " + dim.apply(f"│ {item[2]:>{w}} │") + " " + hl_text,
-        output_target,
-        max_width,
-    )
+    line = Line()
+    line.append("  ", None)
+    line.append(f"│ {item[2]:>{w}} │", dim)
+    line.append(" ", None)
+    line.append(hl_text, None)  # 语法高亮为内嵌 ANSI（pygments），原样输出
+    _write_diff_line(line, output_target, max_width)
 
 
 def _render_diff_summary(diff_list, output_target=None, width: int = _SEPARATOR_WIDTH, max_width: int | None = None, parsed=None):
@@ -398,17 +455,29 @@ def _render_diff_summary(diff_list, output_target=None, width: int = _SEPARATOR_
     # 分隔线（宽度参数化：取 min(_SEPARATOR_WIDTH, width)，调用方已 clamp ≥10）
     dim = _DIFF_CTX_STYLE
     sep = min(_SEPARATOR_WIDTH, width)
-    _write_diff_line("  " + dim.apply("╌" * sep), output_target, max_width)
+    # ★ 标准 React Ink 输出模型（2026-08-16）：Line 构建（前缀无样式 run +
+    # 内容样式 run——与 ``"  " + dim.apply("╌"*sep)`` 字节等价）
+    line = Line()
+    line.append("  ", None)
+    line.append("╌" * sep, dim)
+    _write_diff_line(line, output_target, max_width)
 
-    parts = []
+    parts: list[StyledRun] = []
     if adds:
-        parts.append(_DIFF_ADD_STYLE.apply(f"🟢 +{adds}"))
+        parts.append(StyledRun(f"\U0001f7e2 +{adds}", _DIFF_ADD_STYLE))
     if dels:
-        parts.append(_DIFF_DEL_STYLE.apply(f"🔴 -{dels}"))
+        parts.append(StyledRun(f"\U0001f534 -{dels}", _DIFF_DEL_STYLE))
     if ctx:
-        parts.append(_DIFF_CTX_STYLE.apply(f"⚪ {ctx} unchanged"))
+        parts.append(StyledRun(f"\u26aa {ctx} unchanged", _DIFF_CTX_STYLE))
     # 美化：统计行前置 ✦ 图标（柔青），层级与分隔线/折叠提示一致
-    _write_diff_line("  " + _DIFF_HUNK_BAR.apply("✦ ") + "  ".join(parts), output_target, max_width)
+    stat = Line()
+    stat.append("  ", None)
+    stat.append("\u2726 ", _DIFF_HUNK_BAR)
+    for i, part in enumerate(parts):
+        if i > 0:
+            stat.append("  ", None)
+        stat.append_run(part)
+    _write_diff_line(stat, output_target, max_width)
 
 
 def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optional["IOutputTarget"] = None, width: int = _SEPARATOR_WIDTH, max_width: int | None = None):
@@ -448,35 +517,50 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
     def _flush_pairs(del_buf, add_buf, max_width):
         # 美化：行号列统一为 ``│ n │`` 表格风格（与 ctx/fold 对齐），
         # 删除行号列柔红、新增行号列绿；`-`/`+` 标记加粗醒目。
+        # ★ 标准 React Ink 输出模型（2026-08-16）：行经 Line（StyledRun，
+        #   tui.core.Style）构建——行内高亮（_inline_highlight）返回
+        #   StyledRun 列表直接 append_run；语法高亮（_hl）为内嵌 ANSI 文本
+        #   原样输出（pygments 输出）。字节与旧 ``"  " + apply(...) + hl``
+        #   拼接一致（前缀无样式 run + 样式 run + 高亮文本）。
         for i in range(max(len(del_buf), len(add_buf))):
             if i < len(del_buf) and i < len(add_buf):
                 _, d_line, d_oln, _ = del_buf[i]
                 _, a_line, _, a_nln = add_buf[i]
                 h_old, h_new = _inline_highlight(d_line[1:], a_line[1:])
-                _write_diff_line(
-                    "  " + _DIFF_NUM_DEL.apply(f"│ {d_oln:>{w}} │") + " " + _DIFF_MARK_DEL.apply("-") + h_old,
-                    output_target,
-                    max_width,
-                )
-                _write_diff_line(
-                    "  " + _DIFF_NUM_ADD.apply(f"│ {a_nln:>{w}} │") + " " + _DIFF_MARK_ADD.apply("+") + h_new,
-                    output_target,
-                    max_width,
-                )
+                line = Line()
+                line.append("  ", None)
+                line.append(f"│ {d_oln:>{w}} │", _DIFF_NUM_DEL)
+                line.append(" ", None)
+                line.append("-", _DIFF_MARK_DEL)
+                for r in h_old:
+                    line.append_run(r)
+                _write_diff_line(line, output_target, max_width)
+                line = Line()
+                line.append("  ", None)
+                line.append(f"│ {a_nln:>{w}} │", _DIFF_NUM_ADD)
+                line.append(" ", None)
+                line.append("+", _DIFF_MARK_ADD)
+                for r in h_new:
+                    line.append_run(r)
+                _write_diff_line(line, output_target, max_width)
             elif i < len(del_buf):
                 _, d_line, d_oln, _ = del_buf[i]
-                _write_diff_line(
-                    "  " + _DIFF_NUM_DEL.apply(f"│ {d_oln:>{w}} │") + " " + _DIFF_MARK_DEL.apply("-") + _hl(d_line[1:]),
-                    output_target,
-                    max_width,
-                )
+                line = Line()
+                line.append("  ", None)
+                line.append(f"│ {d_oln:>{w}} │", _DIFF_NUM_DEL)
+                line.append(" ", None)
+                line.append("-", _DIFF_MARK_DEL)
+                line.append(_hl(d_line[1:]), None)
+                _write_diff_line(line, output_target, max_width)
             else:
                 _, a_line, _, a_nln = add_buf[i]
-                _write_diff_line(
-                    "  " + _DIFF_NUM_ADD.apply(f"│ {a_nln:>{w}} │") + " " + _DIFF_MARK_ADD.apply("+") + _hl(a_line[1:]),
-                    output_target,
-                    max_width,
-                )
+                line = Line()
+                line.append("  ", None)
+                line.append(f"│ {a_nln:>{w}} │", _DIFF_NUM_ADD)
+                line.append(" ", None)
+                line.append("+", _DIFF_MARK_ADD)
+                line.append(_hl(a_line[1:]), None)
+                _write_diff_line(line, output_target, max_width)
 
     del_buf, add_buf = [], []
     _hunk_count = 0
@@ -497,11 +581,11 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
             if typ == 'hunk':
                 _hunk_count += 1
                 if _hunk_count > 1:
-                    _write_diff_line(
-                        "  " + _DIFF_CTX_STYLE.apply("╌" * sep),
-                        output_target,
-                        max_width,
-                    )
+                    # ★ 标准 React Ink 输出模型（2026-08-16）：Line 构建
+                    sep_line = Line()
+                    sep_line.append("  ", None)
+                    sep_line.append("╌" * sep, _DIFF_CTX_STYLE)
+                    _write_diff_line(sep_line, output_target, max_width)
             _render_chunk(item, w, lexer_name, output_target, max_width)
     if del_buf or add_buf:
         _flush_pairs(del_buf, add_buf, max_width)
@@ -587,7 +671,12 @@ def show_file_diff(path, old_content, new_content, output_target: Optional["IOut
         lineterm='', n=3
     ))
     if not diff_list:
-        msg = "  " + _DIFF_CTX_STYLE.apply("(内容相同，无变化)")
+        # ★ 标准 React Ink 输出模型（2026-08-16）：Line 构建（前缀无样式 +
+        # 内容样式——与旧 ``"  " + apply(...)`` 字节等价）
+        line = Line()
+        line.append("  ", None)
+        line.append("(内容相同，无变化)", _DIFF_CTX_STYLE)
+        msg = line.render()
         if output_target is not None:
             output_target.write_line(msg)
         else:
