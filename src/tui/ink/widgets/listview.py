@@ -42,25 +42,6 @@ def _is_selectable(item) -> bool:
     return item is not None
 
 
-def _as_items(raw_items) -> list:
-    """items 归一化（性能：list/tuple 直接引用不拷贝——渲染期只读）。
-
-    ★ 性能（2026-08-19 优化）：TraceView 台账 rows 为 use_memo 缓存列表，
-    每帧渲染经本函数引用（修复前 ``list(raw_items)`` 每帧 O(记录数) 浅拷贝
-    ——长会话每次渲染额外开销，10Hz 渲染循环下累积明显）。list/tuple 渲染
-    期只读（调用方保证渲染期间不原地修改），直接引用安全；tuple 同时天然
-    防外部修改。其他可迭代对象拷贝为 list；None/不可迭代（标量/str）回退
-    空列表（渲染错误防御，修复前不可迭代 items 抛 TypeError）。
-    """
-    if raw_items is None:
-        return []
-    if isinstance(raw_items, (list, tuple)):
-        return raw_items
-    if hasattr(raw_items, "__iter__") and not isinstance(raw_items, (str, bytes)):
-        return list(raw_items)
-    return []
-
-
 def ListView(props: dict) -> Element:
     """React Ink 风格虚拟滚动列表控件（``ink-listview`` 对齐）。
 
@@ -91,12 +72,15 @@ def ListView(props: dict) -> Element:
         Column 元素（高度 = ``height`` 视口，仅渲染可见窗口内的项）。
     """
     raw_items = props.get("items")
-    # ★ 健壮性（渲染错误防御）+ 性能（2026-08-19）：items 归一化委托
-    #   ``_as_items``——list/tuple 直接引用（渲染期只读，零拷贝），其余
-    #   可迭代对象拷贝；None/不可迭代（float/bool 等）回退空列表（修复前
-    #   ``list(props.get("items", []) or [])`` 对不可迭代 items 抛
-    #   TypeError，ListView 渲染崩溃）。
-    items = _as_items(raw_items)
+    # ★ 健壮性（渲染错误防御）：items 不可迭代（None/标量/对象）时回退空列表
+    #   ——修复前 ``list(props.get("items", []) or [])`` 对不可迭代的 items
+    #   （如 float/bool）抛 TypeError，ListView 渲染崩溃。
+    if raw_items is None:
+        items = []
+    elif hasattr(raw_items, "__iter__") and not isinstance(raw_items, (str, bytes)):
+        items = list(raw_items)
+    else:
+        items = []
     try:
         viewport_h = max(1, int(props.get("height", 10)))
     except (TypeError, ValueError, OverflowError):

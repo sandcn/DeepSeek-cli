@@ -322,35 +322,6 @@ def _messages_fingerprint(model) -> tuple:
     return (id(messages), len(messages), tail_fp)
 
 
-def _block_content_len(b) -> int:
-    """开放块行内容总长（增量统计缓存）。
-
-    ★ 性能（2026-08-19 优化）：``_live_fingerprint`` 每帧计算（流式期间
-    live 内容逐帧增长）——块 lines 为 append-only（渲染管线只追加），缓存
-    ``(id(lines), len, total)`` 到块上后仅统计**新增行**长度，避免每帧全量
-    重扫已统计行（修复前流式内容越长每帧扫描越久，累积 O(n²)）。行数倒退 /
-    lines 引用变化（非 append-only 异常）→ 缓存条件不满足 → 全量重算。
-    统计语义与全量一致（``sum(len(plain))``），指纹精确稳定。
-    """
-    lines = getattr(b, "lines", None) or []
-    cache = getattr(b, "_live_len_cache", None)
-    if cache is not None:
-        cid, clen, ctotal = cache
-        if cid == id(lines) and len(lines) >= clen:
-            add = 0
-            for ln in lines[clen:]:
-                plain = getattr(ln, "plain", None)
-                add += len(plain if plain is not None else str(ln))
-            b._live_len_cache = (cid, len(lines), ctotal + add)
-            return ctotal + add
-    total = 0
-    for ln in lines:
-        plain = getattr(ln, "plain", None)
-        total += len(plain if plain is not None else str(ln))
-    b._live_len_cache = (id(lines), len(lines), total)
-    return total
-
-
 def _live_fingerprint(model) -> tuple:
     """实时生成内容指纹（use_memo deps，消息源模式）。
 
@@ -358,8 +329,7 @@ def _live_fingerprint(model) -> tuple:
     仅靠消息指纹无法触发轨迹台账重建 → 台账不显示正在生成的内容。叠加
     实时元素：
       - 开放块（reasoning/content 未关闭）：种类 + 行数 + 内容总长度——
-        流式增长（行追加/内容变长）即时触发重建（内容总长经
-        ``_block_content_len`` 增量统计，不每帧全量重扫）；
+        流式增长（行追加/内容变长）即时触发重建；
       - 运行中工具（tool_boxes 未关闭 box）：tool_id + 状态 + 输出行数——
         工具输出刷新即时触发重建。
 
@@ -374,7 +344,11 @@ def _live_fingerprint(model) -> tuple:
         if getattr(b, "kind", "") not in ("reasoning", "content"):
             continue
         lines = getattr(b, "lines", None) or []
-        fp.append((getattr(b, "kind", ""), len(lines), _block_content_len(b)))
+        total = 0
+        for ln in lines:
+            plain = getattr(ln, "plain", None)
+            total += len(plain if plain is not None else str(ln))
+        fp.append((getattr(b, "kind", ""), len(lines), total))
     for key, box in (getattr(model, "tool_boxes", None) or {}).items():
         if getattr(box, "closed", False):
             continue
@@ -1064,112 +1038,6 @@ def build_subagent_trace_records(label: str, model=None) -> tuple:
     return [], []
 
 
-def _block_fallback_records(model) -> tuple:
-    """回退块路径记录构建（无消息源/消息为空/消息源异常——测试/无装配）。
-
-    系统提词（TTL 缓存）+ 聊天块记录（新用户消息插轮次分隔行）+ subagent
-    槽位记录。开放块（流式生成中的思考/回答）已由 ``_record_from_block``
-    标记 running——调用方**不得**再追加 live 记录（防重复）。
-    """
-    records: list = []
-    rows: list = []
-    index = 0
-    # 系统提词（台账首条；对齐 DSH SYSTEM 记录）
-    sys_rec = _system_prompt_record(index + 1)
-    if sys_rec is not None:
-        index += 1
-        records.append(sys_rec)
-        rows.append(sys_rec)
-    # 聊天块记录（新用户消息 = 新轮次，插入分隔行）
-    for block in getattr(model, "blocks", None) or []:
-        if getattr(block, "kind", "") == "user":
-            rows.append(None)  # 轮次分隔行（新用户消息 = 新轮次）
-        rec = _record_from_block(block, index + 1)
-        if rec is None:
-            continue
-        index += 1
-        rec.index = index
-        records.append(rec)
-        rows.append(rec)
-    # 子代理记录（追加于块记录之后，按状态存储顺序）
-    _subagent_records([index], records, rows)
-    return records, rows
-
-
-def _messages_payload(model) -> tuple:
-    """消息源模式 payload——消息+subagent 记录（**不含 live 记录**）。
-
-    ★ 性能（2026-08-19 优化）：消息记录与 live 记录**拆分缓存**——流式
-    生成期间 agent.messages **不变**（assistant 消息/工具返回完成才追加），
-    live 内容逐帧增长只重建 live 段（``_with_live_records``），历史消息
-    记录（大 system 提示词全文/工具调用参数解析/ANSI 消毒）零重建（修复前
-    live 指纹变化驱动整树重建，长会话每帧 O(全部消息内容)）。
-
-    返回语义（供 use_memo 缓存 + ``_with_live_records`` 消费）：
-      - ``is_message_path=True``：消息列表构建成功（records/rows 为消息+
-        subagent 记录，merged_tool_ids 为已合并进 tool 记录的 dispatch
-        tool_call_id 集合——live 追加时跳过这些 box 的重复 running 记录）；
-      - ``is_message_path=False``：回退块路径（消息为空/异常/无消息源）——
-        records/rows 为块记录，开放块已表达 running，调用方不得追加 live。
-
-    Returns:
-        (records, rows, merged_tool_ids, is_message_path)。
-    """
-    source = getattr(model, "message_source", None)
-    if source is not None:
-        try:
-            messages = source()
-            if isinstance(messages, (list, tuple)) and messages:
-                records, rows = _records_from_messages(messages)
-                if records:
-                    # ★ 2026-08-16（轨迹 Trace 嵌套）：消息源模式下也追加
-                    #   subagent 记录（主轨迹可选中按 Enter 进入 subagent 轨迹；
-                    #   修复前 subagent 记录仅回退路径存在——装配场景看不到）。
-                    #   ★ 2026-08-17（用户需求：agent 内容合并到 dispatch_agent）：
-                    #   _subagent_records 返回已合并进 tool 记录的 dispatch
-                    #   tool_call_id 集合——live 段据此跳过这些 box 的重复
-                    #   running 记录（运行期也只显示一条）。
-                    merged_tool_ids = _subagent_records(
-                        [len(records)], records, rows,
-                    )
-                    return records, rows, merged_tool_ids, True
-        except Exception:
-            pass  # 消息源异常 → 回退块路径（防御）
-    records, rows = _block_fallback_records(model)
-    return records, rows, set(), False
-
-
-def _with_live_records(payload, model) -> tuple:
-    """在消息 payload 上追加 live 记录（消息源模式流式动态显示）。
-
-    ★ 性能（2026-08-19 优化）：浅拷贝 records/rows 再追加——不污染 payload
-    缓存（use_memo 复用）。live 指纹变化（内容逐帧增长）仅重建 live 段，
-    payload 缓存命中时历史消息记录零重建。
-
-    Args:
-        payload: ``_messages_payload`` 返回值
-            ``(records, rows, merged_tool_ids, is_message_path)``。
-        model: AppModel 实例。
-
-    Returns:
-        (records, rows)——完整记录（消息+subagent+live）。块回退路径
-        （is_message_path=False）原样返回（开放块已表达 running，不重复
-        追加 live）。
-    """
-    records, rows, merged_tool_ids, is_message_path = payload
-    if not is_message_path:
-        return records, rows
-    records2, rows2 = list(records), list(rows)
-    # ★ 2026-08-19（用户需求：轨迹 Trace 正在生成的内容也要动态显示）：
-    #   消息源（agent.messages）仅在流式完成后才追加 assistant 消息/工具
-    #   返回——模型生成期间（思考/回答/工具执行中）从 TUI 模型提取「正在
-    #   生成」内容追加为 running 记录（台账尾部；trace_selected=-1 跟随
-    #   尾部自动展示最新生成内容；完成后记录消失由消息记录接管，无重复）。
-    _live_records(model, [len(records2)], records2, rows2,
-                  merged_tool_ids=merged_tool_ids)
-    return records2, rows2
-
-
 def build_trace_records(model) -> tuple:
     """构建轨迹记录列表 + 台账行序列。
 
@@ -1185,17 +1053,68 @@ def build_trace_records(model) -> tuple:
       - 未注入/消息为空/消息源异常 → 回退块构建路径（blocks + 系统提词
         TTL 构建 + subagent 槽位——测试/无装配场景）。
 
-    实现（★ 性能 2026-08-19）：委托 ``_messages_payload``（消息+subagent
-    记录）+ ``_with_live_records``（live 记录追加）——TraceView 两段
-    use_memo 与外部调用共用同一实现（不漂移）。
-
     Args:
         model: AppModel 实例（message_source/blocks/status）。
 
     Returns:
         (records: list[TraceRecord], rows: list[TraceRecord | None])。
     """
-    return _with_live_records(_messages_payload(model), model)
+    # ── 主路径：agent 消息列表（真实会话消息） ──
+    source = getattr(model, "message_source", None)
+    if source is not None:
+        try:
+            messages = source()
+            if isinstance(messages, (list, tuple)) and messages:
+                records, rows = _records_from_messages(messages)
+                if records:
+                    # ★ 2026-08-16（轨迹 Trace 嵌套）：消息源模式下也追加
+                    #   subagent 记录（主轨迹可选中按 Enter 进入 subagent 轨迹；
+                    #   修复前 subagent 记录仅回退路径存在——装配场景看不到）。
+                    #   ★ 2026-08-17（用户需求：agent 内容合并到 dispatch_agent）：
+                    #   _subagent_records 返回已合并进 tool 记录的 dispatch
+                    #   tool_call_id 集合——_live_records 据此跳过这些 box 的
+                    #   重复 running 记录（运行期也只显示一条）。
+                    merged_tool_ids = _subagent_records(
+                        [len(records)], records, rows,
+                    )
+                    # ★ 2026-08-19（用户需求：轨迹 Trace 正在生成的内容也要
+                    #   动态显示）：消息源（agent.messages）仅在流式完成后才
+                    #   追加 assistant 消息/工具返回——模型生成期间（思考/
+                    #   回答/工具执行中）从 TUI 模型提取「正在生成」内容
+                    #   追加为 running 记录（台账尾部；trace_selected=-1
+                    #   跟随尾部自动展示最新生成内容；完成后记录消失由
+                    #   消息记录接管，无重复）。
+                    _live_records(model, [len(records)], records, rows,
+                                  merged_tool_ids=merged_tool_ids)
+                    return records, rows
+        except Exception:
+            pass  # 消息源异常 → 回退块路径（防御）
+    # ── 回退路径：TUI 块构建（无消息源/空消息/异常） ──
+    records: list = []
+    rows: list = []
+    index = 0
+    # 系统提词（台账首条；对齐 DSH SYSTEM 记录）
+    sys_rec = _system_prompt_record(index + 1)
+    if sys_rec is not None:
+        index += 1
+        records.append(sys_rec)
+        rows.append(sys_rec)
+    # 聊天块记录（新用户消息 = 新轮次，插入分隔行）
+    turn = 0
+    for block in getattr(model, "blocks", None) or []:
+        if getattr(block, "kind", "") == "user":
+            turn += 1
+            rows.append(None)  # 轮次分隔行（新用户消息 = 新轮次）
+        rec = _record_from_block(block, index + 1)
+        if rec is None:
+            continue
+        index += 1
+        rec.index = index
+        records.append(rec)
+        rows.append(rec)
+    # 子代理记录（追加于块记录之后，按状态存储顺序）
+    _subagent_records([index], records, rows)
+    return records, rows
 
 
 __all__ = [
@@ -1210,10 +1129,6 @@ __all__ = [
     "_messages_fingerprint",
     "_live_records",
     "_live_fingerprint",
-    "_block_content_len",
-    "_block_fallback_records",
-    "_messages_payload",
-    "_with_live_records",
     "_subagent_live_records",
     "_subagent_slot",
     "_subagent_label_order",
