@@ -33,6 +33,8 @@ __all__ = [
     "block_detail_lines",
     "_records_from_messages",
     "_messages_fingerprint",
+    "_live_records",
+    "_live_fingerprint",
 ]
 
 #: 记录种类（展示顺序/图标映射在 trace_view 消费）
@@ -264,6 +266,12 @@ def _record_from_block(block, index: int) -> TraceRecord | None:
             )
     else:
         rec.summary = _first_plain_line(block)
+        # ★ 2026-08-19（用户需求：轨迹 Trace 正在生成的内容动态显示）：
+        #   块回退路径开放块（流式生成中的思考/回答，未关闭）标记
+        #   running——台账 ● 图标动态显示正在生成的内容（消息源模式经
+        #   ``_live_records`` 另行处理，此处覆盖无消息源的块回退场景）。
+        if kind in ("reasoning", "content") and not getattr(block, "closed", False):
+            rec.status = "running"
     return rec
 
 
@@ -296,6 +304,137 @@ def _messages_fingerprint(model) -> tuple:
     else:
         tail_fp = (id(tail), str(tail)[:40])
     return (id(messages), len(messages), tail_fp)
+
+
+def _live_fingerprint(model) -> tuple:
+    """实时生成内容指纹（use_memo deps，消息源模式）。
+
+    流式生成期间 agent.messages **不变化**（assistant 消息完成才追加）——
+    仅靠消息指纹无法触发轨迹台账重建 → 台账不显示正在生成的内容。叠加
+    实时元素：
+      - 开放块（reasoning/content 未关闭）：种类 + 行数 + 内容总长度——
+        流式增长（行追加/内容变长）即时触发重建；
+      - 运行中工具（tool_boxes 未关闭 box）：tool_id + 状态 + 输出行数——
+        工具输出刷新即时触发重建。
+
+    时间基元素不入指纹（台账静态色，不随动画重建）。流式完成（块关闭/
+    工具 box pop）后实时元素消失 → 指纹回退基线（消息指纹接管，无重复
+    重建）。
+    """
+    fp: list = []
+    for b in getattr(model, "blocks", None) or []:
+        if getattr(b, "closed", False):
+            continue
+        if getattr(b, "kind", "") not in ("reasoning", "content"):
+            continue
+        lines = getattr(b, "lines", None) or []
+        total = 0
+        for ln in lines:
+            plain = getattr(ln, "plain", None)
+            total += len(plain if plain is not None else str(ln))
+        fp.append((getattr(b, "kind", ""), len(lines), total))
+    for key, box in (getattr(model, "tool_boxes", None) or {}).items():
+        if getattr(box, "closed", False):
+            continue
+        extra = getattr(box, "extra", None) or {}
+        lines = getattr(box, "lines", None) or []
+        fp.append((key, extra.get("tool_status", ""), len(lines)))
+    return tuple(fp)
+
+
+def _live_records(model, index_holder: list, out_records: list, rows: list) -> None:
+    """实时生成记录（消息源模式：轨迹 Trace 正在生成的内容动态显示）。
+
+    消息源（agent.messages）只在**流式完成后**才追加 assistant 消息/工具
+    返回——模型正在生成期间（思考/回答/工具执行中）消息记录看不到进行中
+    内容。本函数从 TUI 模型提取「正在生成」内容，追加为 running 记录
+    （台账尾部；trace_selected=-1 跟随尾部自动展示最新生成内容）：
+
+      - 开放 reasoning/content 块（``reasoning_block_index`` /
+        ``content_block_index`` 指向、未关闭）→ reasoning/content 记录
+        （摘要 = 当前已生成首行；lines = 当前内容快照；● running）；
+      - 运行中工具（``tool_boxes`` 未关闭 box）→ tool 记录（摘要 = 调用，
+        result = 当前输出首行预览，耗时 = 已运行时长；● running）。
+
+    流式完成（块关闭 / 工具 box pop）后记录**自然消失**——assistant 消息
+    随后出现在消息源 → 消息记录接管（无重复：实时记录仅覆盖未关闭块）。
+    消息源路径专用；块回退路径开放块已由 ``_record_from_block`` 表达
+    （本函数不重复调用——防御：调用方仅消息源模式）。
+    """
+    if model is None:
+        return
+    blocks = getattr(model, "blocks", None) or []
+    # ── 1. 开放推理/内容块（流式生成中的思考/回答） ──
+    for attr in ("reasoning_block_index", "content_block_index"):
+        idx = getattr(model, attr, -1)
+        try:
+            idx = int(idx)
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= idx < len(blocks)):
+            continue
+        block = blocks[idx]
+        if getattr(block, "closed", False):
+            continue
+        kind = getattr(block, "kind", "")
+        if kind not in ("reasoning", "content"):
+            continue
+        lines = _block_plain_lines(block)
+        if not lines:
+            continue
+        summary = _first_text(lines)
+        if not summary:
+            summary = "（正在思考…）" if kind == "reasoning" else "（正在生成…）"
+        index_holder[0] += 1
+        rec = TraceRecord(
+            index=index_holder[0],
+            kind=kind,
+            summary=summary,
+            status="running",
+            lines=list(lines),
+        )
+        out_records.append(rec)
+        rows.append(rec)
+    # ── 2. 运行中的工具（tool_boxes 未关闭 box） ──
+    for box in (getattr(model, "tool_boxes", None) or {}).values():
+        if getattr(box, "closed", False):
+            continue
+        extra = getattr(box, "extra", None) or {}
+        tool_name = extra.get("tool_name") or "工具"
+        detail = extra.get("tool_detail", "")
+        call = f"{tool_name} {detail}".strip() or tool_name
+        lines = _block_plain_lines(box)
+        # 输出首行预览（跳过标题行 lines[0]——与消息记录 result 语义一致；
+        # strip 去除工具输出行前缀，与 ``_tool_result_preview`` 对齐）
+        result = ""
+        for i, ln in enumerate(lines):
+            if i == 0:
+                continue
+            if ln.strip():
+                result = ln.strip()
+                break
+        started = extra.get("_tool_started_at")
+        time_sec = None
+        if started is not None:
+            try:
+                time_sec = max(0.0, _time.monotonic() - float(started))
+            except (TypeError, ValueError):
+                time_sec = None
+        index_holder[0] += 1
+        # 详情 = 调用行 + 当前输出行（剔除原始标题行——与
+        # ``block_detail_lines`` 合并语义一致）
+        detail_lines = [call] + [ln for i, ln in enumerate(lines) if i != 0]
+        rec = TraceRecord(
+            index=index_holder[0],
+            kind="tool",
+            summary=call,
+            status="running",
+            result=result or "（运行中…）",
+            lines=detail_lines,
+            time_seconds=time_sec,
+        )
+        out_records.append(rec)
+        rows.append(rec)
 
 
 def _content_str(content) -> str:
@@ -543,6 +682,14 @@ def build_trace_records(model) -> tuple:
             if isinstance(messages, (list, tuple)) and messages:
                 records, rows = _records_from_messages(messages)
                 if records:
+                    # ★ 2026-08-19（用户需求：轨迹 Trace 正在生成的内容也要
+                    #   动态显示）：消息源（agent.messages）仅在流式完成后才
+                    #   追加 assistant 消息/工具返回——模型生成期间（思考/
+                    #   回答/工具执行中）从 TUI 模型提取「正在生成」内容
+                    #   追加为 running 记录（台账尾部；trace_selected=-1
+                    #   跟随尾部自动展示最新生成内容；完成后记录消失由
+                    #   消息记录接管，无重复）。
+                    _live_records(model, [len(records)], records, rows)
                     return records, rows
         except Exception:
             pass  # 消息源异常 → 回退块路径（防御）
@@ -583,4 +730,6 @@ __all__ = [
     "_system_prompt_record",
     "_records_from_messages",
     "_messages_fingerprint",
+    "_live_records",
+    "_live_fingerprint",
 ]

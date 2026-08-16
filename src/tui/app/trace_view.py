@@ -297,13 +297,16 @@ def _subagent_fingerprint() -> tuple:
 def _records_deps(model) -> tuple:
     """记录构建 use_memo 依赖（数据源自适应指纹）。
 
-    消息源模式（装配注入 agent.messages）：``_messages_fingerprint``——流式
-    增长/追加/编辑触发重建；块模式：块指纹 + subagent 指纹（内容变化才
-    重建）。时间基元素不入指纹（台账静态色，不随动画重建）。
+    消息源模式（装配注入 agent.messages）：``_messages_fingerprint`` +
+    ``_live_fingerprint``——消息内容变化（流式完成后追加/编辑）与**实时生成
+    内容**（开放块行数/内容长度、运行中工具输出）任一变化均触发重建：
+    流式生成期间 agent.messages 不变，靠实时指纹驱动台账动态显示正在生成的
+    内容（用户需求 2026-08-19）。块模式：块指纹 + subagent 指纹（内容变化
+    才重建）。时间基元素不入指纹（台账静态色，不随动画重建）。
     """
     if getattr(model, "message_source", None) is not None:
-        from src.tui.app.trace import _messages_fingerprint
-        return (_messages_fingerprint(model),)
+        from src.tui.app.trace import _live_fingerprint, _messages_fingerprint
+        return (_messages_fingerprint(model), _live_fingerprint(model))
     return (_block_fingerprint(model), _subagent_fingerprint())
 
 

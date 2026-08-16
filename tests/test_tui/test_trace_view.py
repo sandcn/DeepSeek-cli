@@ -27,6 +27,7 @@ from src.tui.app.app import build_app_element
 from src.tui.app.model import AppModel
 from src.tui.app.trace import (
     TraceRecord,
+    _live_fingerprint,
     _messages_fingerprint,
     _records_from_messages,
     block_detail_lines,
@@ -688,6 +689,161 @@ def test_session_setup_injects_message_source_to_chat_ui():
     _register_session_handlers(session, _StubMonitor(), chat_ui=ui)
     assert ui.source is not None, "chat_ui 应注入消息源"
     assert ui.source() == session.messages, "消息源应返回 agent 消息列表"
+
+
+# ═══════════════════════════════════════════════════════════
+# 8. 实时生成内容动态显示（2026-08-19 用户需求）
+# ═══════════════════════════════════════════════════════════
+# 消息源（agent.messages）仅在流式完成后才追加 assistant 消息/工具返回——
+# 模型生成期间（思考/回答/工具执行中）轨迹台账须动态显示正在生成的内容：
+# 开放块（reasoning/content 未关闭）→ running 记录；运行中工具 → running
+# tool 记录；流式完成（块关闭 + 消息追加）后实时记录消失由消息记录接管
+# （无重复）；实时指纹驱动 use_memo 重建（流式期间消息指纹不变）。
+
+def _open_content_block(model, text: str):
+    """构造一个开放（未关闭）的 content 块——模拟流式生成中。"""
+    model.content_block_index = len(model.blocks)
+    block = model.append_block("content")
+    block.lines.append(AnsiLine.of(text))
+    return block
+
+
+def test_live_records_message_source_streaming_content():
+    """消息源模式：流式生成中的 content 块 → 台账尾部 running content 记录。"""
+    m = AppModel()
+    m.message_source = lambda: [{"role": "user", "content": "hi"}]
+    _open_content_block(m, "正在生成的第一行")
+    records, rows = build_trace_records(m)
+    assert [r.kind for r in records] == ["user", "content"]
+    live = records[-1]
+    assert live.kind == "content"
+    assert live.status == "running"
+    assert live.summary == "正在生成的第一行"
+    assert live.lines == ["正在生成的第一行"]
+    assert live.index == 2
+    assert rows[-1] is live
+
+
+def test_live_records_message_source_streaming_reasoning():
+    """消息源模式：流式生成中的 reasoning 块 → running reasoning 记录。"""
+    m = AppModel()
+    m.message_source = lambda: [{"role": "user", "content": "hi"}]
+    m.reasoning_block_index = len(m.blocks)
+    block = m.append_block("reasoning")
+    block.lines.append(AnsiLine.of("先思考一下"))
+    records, _ = build_trace_records(m)
+    assert [r.kind for r in records] == ["user", "reasoning"]
+    live = records[-1]
+    assert live.status == "running"
+    assert live.summary == "先思考一下"
+    assert live.lines == ["先思考一下"]
+
+
+def test_live_records_message_source_running_tool():
+    """消息源模式：运行中的工具 → running tool 记录（调用/输出预览/耗时）。"""
+    m = AppModel()
+    m.message_source = lambda: [{"role": "user", "content": "查一下"}]
+    m.open_tool_box("call_1", "bash", "ls -la")
+    m.append_tool_output("call_1", "file1.txt\nfile2.txt")
+    records, rows = build_trace_records(m)
+    assert [r.kind for r in records] == ["user", "tool"]
+    tool = records[-1]
+    assert tool.status == "running"
+    assert tool.summary == "bash ls -la"
+    assert tool.result == "file1.txt"                      # 输出首行预览
+    assert tool.time_seconds is not None and tool.time_seconds >= 0
+    assert tool.lines[0] == "bash ls -la"                  # 调用行
+    assert [ln.strip() for ln in tool.lines[1:]] == ["file1.txt", "file2.txt"]
+    assert rows[-1] is tool
+
+
+def test_live_records_disappear_after_stream_done():
+    """流式完成（块关闭 + 消息追加）→ 实时记录消失，消息记录接管（无重复）。"""
+    msgs = [{"role": "user", "content": "hi"}]
+    m = AppModel()
+    m.message_source = lambda: msgs
+    block = _open_content_block(m, "生成中...")
+    records, _ = build_trace_records(m)
+    assert records[-1].kind == "content" and records[-1].status == "running"
+    # 流式完成：块关闭 + assistant 消息追加到消息源
+    block.closed = True
+    msgs.append({"role": "assistant", "content": "生成完成", "reasoning_content": None})
+    records2, _ = build_trace_records(m)
+    assert [r.kind for r in records2] == ["user", "content"]
+    done = records2[-1]
+    assert done.kind == "content" and done.status != "running"
+    assert done.summary == "生成完成"
+    assert len(records2) == 2  # 无重复：仅消息记录，实时记录已消失
+
+
+def test_live_records_skip_closed_blocks():
+    """实时记录仅覆盖未关闭块——已关闭块（历史/已完成）不重复追加。"""
+    m = AppModel()
+    m.message_source = lambda: [{"role": "user", "content": "hi"}]
+    b = _open_content_block(m, "生成中")
+    b.closed = True  # 已关闭（如异常路径未关闭时不被计为实时）
+    records, _ = build_trace_records(m)
+    assert [r.kind for r in records] == ["user"]
+    assert all(r.status != "running" for r in records)
+
+
+def test_live_fingerprint_tracks_streaming_growth():
+    """实时指纹：开放块内容增长 / 工具输出增长触发变化；完成后回退基线。"""
+    m = AppModel()
+    m.message_source = lambda: []
+    fp_base = _live_fingerprint(m)
+    assert fp_base == ()
+    block = _open_content_block(m, "第一行")
+    fp1 = _live_fingerprint(m)
+    assert fp1 != fp_base
+    block.lines.append(AnsiLine.of("第二行（流式追加）"))
+    fp2 = _live_fingerprint(m)
+    assert fp1 != fp2, "开放块行数增长应触发指纹变化"
+    m.open_tool_box("t1", "bash", "pwd")
+    fp3 = _live_fingerprint(m)
+    assert fp2 != fp3, "新增运行中工具应触发指纹变化"
+    # 流式完成：关闭块 → 指纹回退（仅剩运行中工具）
+    block.closed = True
+    fp4 = _live_fingerprint(m)
+    assert fp4 != fp3 and fp4 != fp_base
+    m.close_tool_box("t1", True)
+    assert _live_fingerprint(m) == fp_base, "全部完成后指纹回退基线"
+
+
+def test_record_from_block_open_block_running_status():
+    """块回退路径（无消息源）：开放 reasoning/content 块 → running 状态。"""
+    m = AppModel()
+    rb = m.append_block("reasoning")
+    rb.lines.append(AnsiLine.of("思考中"))
+    cb = m.append_block("content")
+    cb.lines.append(AnsiLine.of("生成中"))
+    records, _ = build_trace_records(m)
+    live = [r for r in records if r.kind in ("reasoning", "content") and r.status == "running"]
+    assert len(live) == 2
+    assert live[0].kind == "reasoning" and live[0].summary == "思考中"
+    assert live[1].kind == "content" and live[1].summary == "生成中"
+
+
+def test_trace_view_message_source_shows_live_records():
+    """消息源模式 + 流式生成中：TraceView 台账动态显示 ● running 记录。"""
+    from src.tui.ink.widgets.listview import ListView
+    m = AppModel()
+    m.message_source = lambda: [{"role": "user", "content": "hi"}]
+    _open_content_block(m, "正在流式生成的内容")
+    m.trace_open = True
+    m.trace_selected = -1  # 跟随尾部
+    el, _ = _render(TraceView, {"model": m, "width": 100})
+    row_el = list(el.children)[1]
+    left = list(row_el.children)[0]
+    assert left.type is ListView
+    items = left.props["items"]
+    # rows: [轮次分隔, user 记录, content 实时记录]——尾部跟随选中实时记录
+    assert len(items) == 3
+    live_el = left.props["renderItem"](items[2], 2, True)
+    text = "".join(r.text for r in live_el.props.get("styled", []))
+    assert text.startswith("\u25b6"), "尾部跟随应选中实时记录"
+    assert "\u25cf" in text, "运行中 ● 图标应显示"
+    assert "正在流式生成的内容" in text
 
 
 # ═══════════════════════════════════════════════════════════
