@@ -165,9 +165,19 @@ def _register_session_handlers(
 
     每次调用前先移除旧回调（如果 loop_state 中缓存了引用），
     防止恢复路径中重复注册导致回调累加。
+
+    2026-08-19：会话就绪时向 chat_ui 注入 agent 消息列表访问器——轨迹视图
+    （Ctrl+H）以真实会话消息（system/user/assistant+tool_calls/tool 返回）
+    为数据源（非 TUI 渲染过的聊天块）。
     """
     if loop_state is None:
         loop_state = {}
+    # ★ 轨迹视图消息源注入（幂等：重复注册覆盖为最新 session）
+    if chat_ui is not None and hasattr(chat_ui, "set_message_source"):
+        try:
+            chat_ui.set_message_source(lambda: session.messages)
+        except Exception:
+            _logger.debug("注入轨迹消息源异常", exc_info=True)
     callbacks = _make_round_callbacks(session, monitor, loop_state, chat_ui)
     # 清除旧回调（如果存在），防止重复注册累加
     old_callbacks = loop_state.get("_registered_callbacks")

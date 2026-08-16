@@ -149,6 +149,12 @@ class InputDispatcher:
         # 注入 session.clear_screen；未注入时 Ctrl+L 记 debug 跳过（测试兼容）。
         self._clear_screen_callback = None
 
+        # ── Ctrl+H 轨迹视图开关回调（2026-08-19，装配注入） ──
+        # Ctrl+H（0x08 字节 / CSI u \x1b[104;5u、\x1b[8;5u）→ 打开/关闭 DSH
+        # 风格轨迹视图（左台账 + 右检查器）。未注入回调时回退 backspace
+        # （0x08 传统 BS 语义——行为与修复前一致，测试/无装配场景兼容）。
+        self._trace_toggle_callback = None
+
     # ═══════════════════════════════════════════════════════
     # 中断与特殊按键处理（render 线程调用）
     # ═══════════════════════════════════════════════════════
@@ -204,6 +210,12 @@ class InputDispatcher:
             self._handle_special_key('vim')
         elif ch == '\x0f':        # Ctrl+O → /editmsg
             self._handle_special_key('editmsg')
+        elif ch == '\x08':        # Ctrl+H → 轨迹视图开关（2026-08-19）
+            # ★ 字节语义：0x08（BS）在现代终端为 Ctrl+H；Backspace 键发送
+            #   0x7f（DEL，_decode_control_char 已改判 backspace）。未注入
+            #   轨迹回调时回退 backspace（0x08 传统 BS 语义兼容——仅发送
+            #   ^H 而非 DEL 的旧式终端退格仍可用）。
+            self._handle_trace_toggle()
         elif ch == '\x12' and self._reverse_search_enabled:
             # 方向D 步骤14：Ctrl+R 反向历史搜索（配置门控，默认 False）
             self._handle_reverse_search()
@@ -248,6 +260,23 @@ class InputDispatcher:
             cb()
         except Exception:
             _logger.debug("Ctrl+L clear_screen 回调异常", exc_info=True)
+
+    def _handle_trace_toggle(self) -> None:
+        """Ctrl+H 轨迹视图开关：调用注入的 trace 回调（未注入回退 backspace）。
+
+        2026-08-19：0x08（Ctrl+H）在现代终端与 Backspace 键（0x7f DEL）字节
+        可区分——注入回调时作为轨迹视图（DSH 风格台账 + 检查器）开关；未注入
+        （测试/无装配场景）时回退 ``_backspace()``，0x08 传统 BS 语义保持
+        （发送 ^H 而非 DEL 的旧式终端退格不回归）。
+        """
+        cb = self._trace_toggle_callback
+        if cb is None:
+            self._buffer_editor._backspace()
+            return
+        try:
+            cb()
+        except Exception:
+            _logger.debug("Ctrl+H trace 回调异常", exc_info=True)
 
     def _handle_ctrl_d(self) -> None:
         """Ctrl+D EOF：空缓冲 → 提交 exit；非空 no-op（防误退）。
@@ -1105,6 +1134,14 @@ class InputDispatcher:
         未注入时 Ctrl+L 记 debug 跳过（测试兼容）。
         """
         self._clear_screen_callback = cb
+
+    def set_trace_toggle_callback(self, cb) -> None:
+        """设置 Ctrl+H 轨迹视图开关回调（2026-08-19，装配注入）。
+
+        cb 签名: ``() -> None``（翻转 model.trace_open + 请求重绘）；None 可
+        清除注入。未注入时 Ctrl+H 回退 backspace（0x08 传统 BS 语义）。
+        """
+        self._trace_toggle_callback = cb
 
     def set_suppress_enter(self, suppress: bool) -> None:
         """设置 Enter 抑制标志（用于 editmsg 消息选择期间）。

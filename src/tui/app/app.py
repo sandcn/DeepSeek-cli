@@ -7,6 +7,10 @@
   - 底部区：状态栏 + 输入区（固定内容高度）。
   - Static 包裹聊天历史（静态内容，首差异行之前永不重写）
 
+轨迹视图（2026-08-19，Ctrl+H 开关）：``model.trace_open`` 时消息区替换为
+``TraceView``（DSH 风格左台账 + 右检查器）——不再显示聊天消息区，显示
+DSH 轨迹的全部内容（轮次/记录/详情/耗时/token）；底部区保留（非模态）。
+
 Claude Code 视觉对齐：顶部标题栏（TopHeader）为文档首行，其后 committed
 聊天历史（committed-chat）落到 y>=1 走非顶部前缀路径（render_frame 正确
 处理）。工具运行状态由工具卡片顶边框（● 图标）展示（原 ToolStatusHeader
@@ -27,6 +31,7 @@ from .header import TopHeader
 from .status_bar import StatusBar
 from .user_select import UserSelectPopup
 from .input_area import InputArea
+from .trace_view import TraceView
 
 
 def App(props) -> object:
@@ -53,6 +58,14 @@ def App(props) -> object:
         #   width（布局宽度同源，修复 model.width 与布局宽度不一致）。
         "width": width,
     }
+
+    # ★ 轨迹视图（2026-08-19，Ctrl+H 开关）：trace_open 时**整屏只显示
+    #   TraceView**（消息区/顶部标题栏/状态栏/输入区全部不渲染）——「打开时
+    #   其他 TUI 不显示，只显示这个界面」。关闭（Esc/Ctrl+H）后恢复完整
+    #   组件树（顶部标题栏 + 聊天 + 状态栏 + 输入区）。根元素类型切换
+    #   （APP ↔ TraceView）由调和器卸载/重建整树（10Hz 渲染循环自动）。
+    if getattr(model, "trace_open", False):
+        return h(TraceView, {"model": model, "width": width})
 
     # ★ 方向1（Flexbox 布局消息区 + 底部区）：根容器 flexbox column——消息区
     #   （flexGrow=1，聊天历史/实时解析行/工具状态头/subagent 面板）与底部区

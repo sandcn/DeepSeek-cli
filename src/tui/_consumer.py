@@ -56,11 +56,15 @@ class ChatUIConsumer:
     公开方法与旧版完全兼容。
     """
 
-    def __init__(self, event_bus=None):
+    def __init__(self, event_bus=None, message_source=None):
         """初始化 ChatUIConsumer。
 
         Args:
             event_bus: DisplayEventBus 实例。为 None 时获取默认实例。
+            message_source: agent 消息列表访问器 ``() -> list[dict]``——注入
+                AppModel 供轨迹视图（Ctrl+H）以真实会话消息为数据源
+                （system/user/assistant+tool_calls/tool 返回）；None 可稍后经
+                ``set_message_source`` 注入（会话创建晚于 UI 装配）。
         """
         if event_bus is None:
             from src.tui.events.event_bus import DisplayEventBus
@@ -88,6 +92,20 @@ class ChatUIConsumer:
             subagent_controller=self._subagent_controller,
         )
         self._input_orchestrator = TuiInputOrchestrator(self._input)
+        # 轨迹视图消息源（2026-08-19）：装配后注入（会话可能晚于 UI 创建）
+        if message_source is not None:
+            self.set_message_source(message_source)
+
+    def set_message_source(self, source) -> None:
+        """注入 agent 消息列表访问器（轨迹视图数据源）。
+
+        source 签名: ``() -> list[dict]``——返回真实会话消息列表
+        （system/user/assistant+tool_calls/tool 返回）；None 可清除注入
+        （回退 TUI 块构建路径）。装配后调用（会话创建晚于 UI 装配——
+        主循环/单次模式经 ``_register_session_handlers`` 注入）。重复注入
+        幂等（最新 source 生效）。
+        """
+        self._rs.message_source = source
 
     @classmethod
     def for_testing(cls, components, event_bus=None) -> "ChatUIConsumer":

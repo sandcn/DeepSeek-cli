@@ -108,6 +108,10 @@ def create_framework(model, tui_config, line_tracker, input_instance):
     # Claude TUI parity 步骤 3.1：Ctrl+L 清屏（session.clear_screen；
     # 未注入时 dispatcher 记 debug 跳过，测试兼容）
     input_instance.set_clear_screen_callback(session.clear_screen)
+    # ★ 2026-08-19：Ctrl+H 轨迹视图开关（DSH 风格左台账 + 右检查器）——
+    #   翻转 model.trace_open + 请求重绘（非全屏流动模型文档随重绘重建；
+    #   trace_open 时 App 消息区替换为 TraceView，不显示聊天消息区）。
+    input_instance.set_trace_toggle_callback(_make_trace_toggle_cb(model, session))
     # SIGWINCH → 刷新宽度 + 重绘（架构改进方向 C：实例方法 + token 去重注册，
     # 替代旧模块级 ``_active_session`` 全局引用——多 TUI 实例各持自身回调，
     # stop 时由 session 注销，消除全局可变引用与陈旧会话刷新错乱）
@@ -179,6 +183,22 @@ def _make_reverse_search_cb(model, session):
     return _cb
 
 
+def _make_trace_toggle_cb(model, session):
+    """构建 Ctrl+H 轨迹视图开关回调（翻转 model.trace_open + 重绘）。
+
+    2026-08-19：InputDispatcher 在 render 线程调用本回调——翻转
+    ``model.trace_open`` 并请求重绘（App 据此在消息区与 TraceView 间切换）。
+    选中索引（``trace_selected``，-1=跟随尾部）跨开关保留——重新打开时回到
+    上次浏览位置；聊天内容清空（Ctrl+L reset_display）时模型侧已复位为 -1。
+    """
+
+    def _cb():
+        model.trace_open = not getattr(model, "trace_open", False)
+        session.request_bottom_redraw()
+
+    return _cb
+
+
 def _make_active_status_cb(model):
     """构建活跃状态回调（方向D 步骤16：Esc 取消输入判定用）。
 
@@ -200,4 +220,5 @@ __all__ = [
     "create_chat_domain_assembly",
     "_make_reverse_search_cb",
     "_make_active_status_cb",
+    "_make_trace_toggle_cb",
 ]

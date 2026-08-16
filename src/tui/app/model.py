@@ -107,6 +107,19 @@ class AppModel(_ToolOutputMixin):
         self.subagent_lines: list = []
         # 反向历史搜索状态（None=未激活；input_area 渲染覆盖行）
         self.history_search: "HistorySearchState | None" = None
+        # ── 轨迹视图（2026-08-19，Ctrl+H 开关；DSH 风格左台账 + 右检查器） ──
+        # trace_open: 轨迹视图是否打开（打开时 App 消息区替换为 TraceView）。
+        # trace_selected: 选中记录索引（records 下标，0-based）；-1 表示
+        #   「跟随尾部」（默认——打开时定位最新记录，流式追加自动跟进；用户
+        #   导航后写回具体索引退出尾部跟随）。
+        # message_source: agent 消息列表访问器 ``() -> list[dict]``（真实会话
+        #   消息：system/user/assistant(+tool_calls)/tool 返回）——轨迹视图
+        #   **以 agent 消息列表为数据源**（对齐 DSH：从 Session 消息组装业务
+        #   记录，而非 TUI 渲染过的聊天块）；None=未注入（回退块构建路径，
+        #   测试/无装配场景）。
+        self.trace_open: bool = False
+        self.trace_selected: int = -1
+        self.message_source: object | None = None
         # 顶部工具调用状态（Claude TUI parity 步骤 2.2：active_tool 为模型
         # 数据——原 ToolStatusHeader 渲染消费，组件已移除（工具状态改由工具
         # 卡片顶边框 ● 展示，双份冗余）；字段保留供测试/未来消费，None=无
@@ -566,6 +579,9 @@ class AppModel(_ToolOutputMixin):
         #   覆盖行（修复前 reset_display 未重置 history_search，残留搜索态
         #   导致输入区仍渲染搜索覆盖行）。
         self.history_search = None
+        # ★ 轨迹视图状态复位（2026-08-19）：清屏后轨迹记录清空，选中回到
+        #   尾部跟随（-1）——避免残留索引指向已清空的记录列表。
+        self.trace_selected = -1
 
 
 __all__ = [

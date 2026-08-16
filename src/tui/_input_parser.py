@@ -280,8 +280,16 @@ class InputParser:
             return KeyEvent(kind="enter", raw=raw)
         if byte == 0x09:                 # \t
             return KeyEvent(kind="tab", raw=raw)
-        if byte in (0x7f, 0x08):        # DEL / BS
+        if byte == 0x7f:                 # DEL
             return KeyEvent(kind="backspace", raw=raw)
+        if byte == 0x08:                 # Ctrl+H（BS 字节）
+            # ★ 轨迹视图开关（2026-08-19）：0x08（Ctrl+H）从 backspace 改判为
+            #   ctrl_key '\x08'——现代终端（Windows Terminal/iTerm2/kitty/
+            #   wezterm/Termux 等）Backspace 键发送 0x7f（DEL），Ctrl+H 发送
+            #   0x08，字节可区分。InputDispatcher 的 ctrl_key 分发（router
+            #   优先）消费为轨迹视图开关；未注入回调时回退 backspace 语义
+            #   （0x08 传统 BS 兼容，行为与修复前一致）。
+            return KeyEvent(kind="ctrl_key", char="\x08", raw=raw)
         if byte == 0x03:                 # Ctrl+C
             return KeyEvent(kind="interrupt", raw=raw)
         if byte == 0x01:                 # Ctrl+A → Home

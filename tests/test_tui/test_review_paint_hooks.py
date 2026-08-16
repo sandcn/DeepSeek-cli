@@ -388,6 +388,49 @@ def test_find_input_fiber_dfs_order_child_first():
     assert find_input_fiber(r) is a1
 
 
+def test_find_input_fiber_long_sibling_chain_linear():
+    """P3-21 长 sibling 链线性时间（修复前 O(2^N) 指数压栈）。
+
+    修复背景（2026-08-19）：轨迹视图检查器 23 个兄弟 TEXT 触发指数爆炸——
+    每 pop 一个节点都重压完整 sibling 链，后续节点被每个前缀节点反复压入
+    （23 行链 ≈ 800 万次压栈，渲染线程卡死数秒）。修复后压栈去重：每个
+    节点只压一次，O(N + Σ链长)。
+
+    本测试锁定：200 个兄弟的线性链在**有限步数**内完成（防回归指数）。
+    """
+    root = Fiber(TAG_HOST, props={})
+    first = Fiber(TAG_HOST, props={})
+    root.child = first
+    cur = first
+    for _ in range(200):
+        sib = Fiber(TAG_HOST, props={})
+        cur.sibling = sib
+        cur = sib
+    import time as _t
+
+    t0 = _t.monotonic()
+    assert find_input_fiber(root) is None  # 无 input-area → 全树遍历
+    elapsed = _t.monotonic() - t0
+    assert elapsed < 1.0, f"长 sibling 链应线性时间，实际 {elapsed:.3f}s"
+
+
+def test_find_input_fiber_shared_node_no_hang():
+    """P3-21 共享/环结构节点不挂死（压栈去重防死循环）。"""
+    root = Fiber(TAG_HOST, props={})
+    a = Fiber(TAG_HOST, props={})
+    b = Fiber(TAG_HOST, props={})
+    root.child = a
+    a.sibling = b
+    # 异常树：b 的 sibling 回指 a（环）
+    b.sibling = a
+    import time as _t
+
+    t0 = _t.monotonic()
+    assert find_input_fiber(root) is None
+    elapsed = _t.monotonic() - t0
+    assert elapsed < 1.0, f"环结构应去重防挂死，实际 {elapsed:.3f}s"
+
+
 # ═══════════════════════════════════════════════════════════
 # P3-2 _paint_border 负坐标防御
 # ═══════════════════════════════════════════════════════════

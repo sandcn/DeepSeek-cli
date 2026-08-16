@@ -35,10 +35,21 @@ def find_input_fiber(root_fiber):
     层）触发 RecursionError（Python 默认递归上限 ~1000）。显式栈保持原 DFS
     顺序（child 深度优先、sibling 从左到右）：sibling 链先压栈（栈底）、
     child 后压栈（栈顶先处理）。
+
+    ★ P3-21 修复（2026-08-19，长 sibling 链指数爆炸）：原实现**每 pop 一个
+    节点都将其完整 sibling 链重新压栈**——线性兄弟链（如轨迹视图检查器的
+    N 个内容行）上，后续节点被每个前缀节点反复压入：节点被压次数 = 2^(位置)
+    → O(2^N) 指数时间（21 行链 ≈ 200 万次压栈、23 行链 ≈ 800 万次，渲染
+    线程卡死数秒）。修复：**压栈时 ``pushed`` 集合去重**——每个节点只压栈
+    一次（sibling 链遍历跳过已压节点），总复杂度 O(N + Σ链长)。DFS 语义
+    （child 深度优先、sibling 从左到右）与无环树结果完全一致；有环/共享
+    节点（异常树）由去重天然防死循环。
     """
     from .fiber import Fiber
 
+    pushed: set = set()
     stack = [root_fiber]
+    pushed.add(id(root_fiber))
     while stack:
         f = stack.pop()
         if f.is_host and (
@@ -48,14 +59,20 @@ def find_input_fiber(root_fiber):
             return f
         # sibling 链逆序压入（LIFO 弹出恢复从左到右），child 最后压入
         # （栈顶先处理——原递归 child 深度优先语义）。
+        # ★ P3-21：已压栈（pushed）的 sibling/child 跳过——线性兄弟链上
+        #   后续节点不被每个前缀节点重复压入（原实现 O(2^N) 指数）；
+        #   sibling 链遍历遇已压节点即停——异常树（sibling 环）遍历本身
+        #   不死循环（正常树中同层链元素一次性压入，遇 pushed 即链尾）。
         sibs = []
         s = f.sibling
-        while s is not None:
+        while s is not None and id(s) not in pushed:
+            pushed.add(id(s))
             sibs.append(s)
             s = s.sibling
         for i in range(len(sibs) - 1, -1, -1):
             stack.append(sibs[i])
-        if f.child is not None:
+        if f.child is not None and id(f.child) not in pushed:
+            pushed.add(id(f.child))
             stack.append(f.child)
     return None
 

@@ -721,6 +721,14 @@ class Input:
         """
         self._dispatcher.set_clear_screen_callback(cb)
 
+    def set_trace_toggle_callback(self, cb) -> None:
+        """设置 Ctrl+H 轨迹视图开关回调（委托 InputDispatcher，2026-08-19）。
+
+        cb 签名: ``() -> None``（翻转 model.trace_open + 请求重绘）；None 可
+        清除注入——未注入时 Ctrl+H 回退 backspace（0x08 传统 BS 语义）。
+        """
+        self._dispatcher.set_trace_toggle_callback(cb)
+
     def set_interrupt_callback(self, cb) -> None:
         """设置中断回调（方向A 步骤1 注入点）。
 
