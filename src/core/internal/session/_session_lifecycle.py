@@ -22,6 +22,7 @@ import logging
 from typing import AsyncIterator
 
 from ...state_machine import SessionState, InvalidTransitionError
+from ....skills.gestures import inject_skill_gestures
 
 _logger = logging.getLogger(__name__)
 
@@ -151,6 +152,11 @@ async def run_round(session, user_input: str) -> dict:
         session._state_machine.start_round()
         try:
             session._agent.add_user_message(user_input)
+            # 技能手势注入：/skill-name → 注入 <skill_content> user 消息
+            try:
+                inject_skill_gestures(session._agent, user_input)
+            except Exception:
+                _logger.exception("run_round: 技能手势注入异常")
         except (KeyboardInterrupt, asyncio.CancelledError):
             raise
         except Exception:

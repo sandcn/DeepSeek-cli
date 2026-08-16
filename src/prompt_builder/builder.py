@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 import os
 
+from ..skills.prompt_section import build_skills_prompt_section
+
 
 _logger = logging.getLogger(__name__)
 
@@ -140,6 +142,7 @@ def _build_prompt(
     include_version_control: bool = True,
     cwd: str | None = None,
     include_global_md: bool = True,
+    include_skills: bool = False,
 ) -> list[str]:
     """构建提示词的公共逻辑。
 
@@ -151,6 +154,8 @@ def _build_prompt(
         include_version_control: 是否包含版本控制信息
         cwd: 工作目录
         include_global_md: 是否从 global.md 加载项目摘要信息
+        include_skills: 是否在环境信息后注入技能章节（主 Agent 专用，
+            构建时只注入一次；技能变更后经 rebuild_system_prompt 重建）
     """
     cwd = _resolve_cwd(cwd)
     parts: list[str] = []
@@ -181,6 +186,12 @@ def _build_prompt(
         env_info += vcs_info
     parts.append(env_info)
 
+    # 技能章节：环境信息之后注入，构建时只注入一次
+    if include_skills:
+        skills_section = build_skills_prompt_section(cwd)
+        if skills_section:
+            parts.append(skills_section)
+
     # 过滤空字符串（文件丢失/读取失败时 _load_prompt 返回空字符串）
     return [p for p in parts if p]
 
@@ -195,9 +206,9 @@ def build_subagent_system_prompt(
     """构建子代理系统提示词。
 
     prompts_export_sub.md 不存在，直接使用 fallback 兜底提示词，
-    追加运行时动态信息。
+    追加运行时动态信息。环境信息后注入技能章节（每个 agent 均可使用技能）。
     """
-    return _build_prompt("sub","", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
+    return _build_prompt("sub","", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True, include_skills=True)
 
 
 def build_map_agent_system_prompt(
@@ -208,8 +219,9 @@ def build_map_agent_system_prompt(
 
     从 prompts_export_map.md 加载静态规则，追加运行时动态信息。
     Map 类型专用于项目代码分析，只读工具集。
+    环境信息后注入技能章节（每个 agent 均可使用技能）。
     """
-    return _build_prompt("map","prompts_export_map", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
+    return _build_prompt("map","prompts_export_map", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True, include_skills=True)
 
 
 def build_review_agent_system_prompt(
@@ -220,8 +232,9 @@ def build_review_agent_system_prompt(
 
     从 prompts_export_review.md 加载静态规则，追加运行时动态信息。
     Review 类型专用于代码审查（Code Review），只读工具集，P0-P3 分级输出。
+    环境信息后注入技能章节（每个 agent 均可使用技能）。
     """
-    return _build_prompt("review","prompts_export_review", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
+    return _build_prompt("review","prompts_export_review", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True, include_skills=True)
 
 
 def build_plan_agent_system_prompt(
@@ -233,8 +246,9 @@ def build_plan_agent_system_prompt(
     从 prompts_export_plan.md 加载静态规则，追加运行时动态信息。
     Plan 类型专用于制定可执行计划并写入 .chat/plan/ 目录，
     只读分析工具 + write_file/update_file。
+    环境信息后注入技能章节（每个 agent 均可使用技能）。
     """
-    return _build_prompt("plan","prompts_export_plan", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
+    return _build_prompt("plan","prompts_export_plan", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True, include_skills=True)
 
 
 def build_execute_agent_system_prompt(
@@ -246,8 +260,9 @@ def build_execute_agent_system_prompt(
     从 prompts_export_execute.md 加载静态规则，追加运行时动态信息。
     execute 类型拥有完整读写+bash 工具集，独立上下文，
     用于执行计划文件中的具体步骤，完成后返回修改的文件列表。
+    环境信息后注入技能章节（每个 agent 均可使用技能）。
     """
-    return _build_prompt("execute","prompts_export_execute", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True)
+    return _build_prompt("execute","prompts_export_execute", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True, include_skills=True)
 
 
 # =================== 主代理提示词 ===================
@@ -261,9 +276,11 @@ def build_system_prompt(
 
     从 prompts_export_main.md 加载静态规则，追加运行时动态信息。
     空模式（``is_empty_mode()``，Ctrl+M 切换）加载 prompts_export_main_empty.md。
+    环境信息之后注入技能章节（构建时一次；技能变更后经
+    ``rebuild_system_prompt()`` 重建）。
     """
     export_name = "prompts_export_main_empty" if _EMPTY_MODE else "prompts_export_main"
-    return _build_prompt("main", export_name, _FALLBACK_MAIN_PROMPT, include_version_control, cwd)
+    return _build_prompt("main", export_name, _FALLBACK_MAIN_PROMPT, include_version_control, cwd, include_skills=True)
 
 
 __all__ = [

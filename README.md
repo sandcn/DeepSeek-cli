@@ -758,3 +758,103 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 
 - **分布式 Agent 执行** — 将 SubAgent 派发到远程计算节点执行，支持大规模并行代码分析和批量修改
 - **自适应并行策略** — 基于历史任务执行时间自动学习并行度配置，为新任务推荐最优并发参数
+
+---
+
+## 技能系统（Skills）
+
+参照 DeepSeek Harness 的 dsh-skill 设计实现的可复用指令技能系统。技能是一组可复用的任务专用指令（Markdown + YAML frontmatter），模型可在执行任务前按需加载。
+
+### 存放位置（仅 `./.skills`）
+
+技能只存放在项目的 `./.skills` 目录（自动定位到 git 根，子目录运行同样生效）：
+
+```
+<项目根>/
+├── .skills/
+│   ├── code-review/
+│   │   └── SKILL.md          # 目录包技能（可携带相对资源）
+│   ├── summarize.md          # 扁平技能
+│   └── installed/            # GitHub 安装的技能（/skill install）
+│       └── owner__repo/
+│           └── <技能>/
+└── .git/
+```
+
+技能文件格式（与 Claude Skills / DSH 相同）：
+
+```markdown
+---
+name: code-review          # 必填，kebab-case
+description: 代码审查指南   # 必填，一句话描述（模型目录用）
+whenToUse: 用户要求审查代码时  # 可选，路由提示
+disable-model-invocation: false  # 可选，禁止模型调用
+user-invocable: true            # 可选，允许 /name 手势调用
+metadata:                        # 可选，任意附加元数据
+  author: someone
+---
+# 技能正文（Markdown 指令）
+```
+
+### 调用方式
+
+1. **模型自动加载（所有 Agent 可用）** — 技能目录（名称 + 描述摘要）随系统提示词注入，位置在环境信息之后，**构建时只注入一次**（不随对话轮次重复注入）；主 Agent 与 map/review/plan/execute SubAgent 的系统提示词均会注入，每个 Agent 都能使用技能。模型判断任务匹配后调用 `skill` 工具加载完整指令（返回 `<skill_content>` 块）。技能变更后（`/skill install/update/remove/refresh`）系统提示词自动重建，技能章节随之更新。
+2. **无条件自动加载（`skills.auto_load`）** — 配置的技能正文直接注入系统提示词（「已自动加载的技能」小节，`<skill_content>` 块），模型无需调用工具即可遵循。适合高频必用技能，注意正文常驻上下文：
+
+```json
+{
+  "skills": {
+    "enabled": true,
+    "auto_load": ["pdf", "docx"],
+    "catalog_description_max_length": 500
+  }
+}
+```
+
+3. **用户 `/name` 手势** — 消息中以词边界输入 `/code-review` 即直接加载该技能（仅 `user-invocable` 技能），正文以 `<skill_content>` user 消息注入会话。路径（`/usr/bin`）、分数（`5/8`）、URL 不会误匹配。
+4. **`/skill` 命令** — 管理技能：`/skill list`（含 installed）/ `/skill info <名>` / `/skill refresh`（技能变更后自动重建系统提示词）。
+
+### 从 GitHub 安装技能
+
+```bash
+/skill install owner/repo                 # 默认分支
+/skill install owner/repo@main            # 指定分支/标签
+/skill install https://github.com/a/b/tree/dev
+/skill update owner/repo                  # 更新（沿用原 ref）
+/skill remove owner/repo                  # 卸载（或 owner__repo / 技能名）
+/skill list installed                     # 查看已安装
+```
+
+安装实现：通过 codeload 下载 tarball（httpx 流式，30MB 上限）→ 安全解压（拒绝路径穿越/符号链接/设备文件，60MB 解压上限）→ 识别技能根（`skills/` 目录 > 根目录 `SKILL.md` > 技能集合）→ 校验至少一个合法技能 → 原子替换到 `./.skills/installed/<owner>__<repo>/`，并记录 `.skill-source.json` 元数据（owner/repo/ref/commit/时间）。同名技能项目级（rank 100）优先于已安装（rank 200）。
+
+> ⚠️ 技能内容按受信任本地内容处理（原样注入），仅从可信仓库安装。
+
+### 优先级与配置
+
+- 同名技能：项目 `.skills`（rank 100）> GitHub 安装（rank 200）> 运行时注册（rank 250）。
+- 配置（`~/.chat_config/chatrc.json`）：
+
+```json
+{
+  "skills": {
+    "enabled": true,
+    "catalog_description_max_length": 500
+  }
+}
+```
+
+### 实现结构（`src/skills/`）
+
+| 模块 | 职责 |
+|------|------|
+| `models.py` | 数据结构、kebab-case 校验、调用策略（InvocationPolicy） |
+| `frontmatter.py` | YAML frontmatter 解析（零依赖内置解析器，PyYAML 存在时优先） |
+| `discovery.py` | 技能根扫描（目录包 / 扁平 Markdown / 单技能根） |
+| `registry.py` | 注册表：多根合并、rank 裁决、mtime 缓存、运行时注册 |
+| `render.py` | `<skill_content>` 规范渲染（工具结果与手势注入同形） |
+| `prompt_section.py` | 系统提示词技能章节（环境信息之后注入一次，主 Agent 与 SubAgent 均注入） |
+| `gestures.py` | `/name` 手势扫描与正文注入 |
+| `github.py` | GitHub 安装/更新/卸载（spec 解析 + tarball 安全解压） |
+| `src/tools/skill_tool.py` | `skill` 工具（模型加载入口，自动发现注册） |
+| `src/core/commands/plugins/skill_plugin.py` | `/skill` 命令（变更后重建系统提示词） |
+| `src/prompt_builder/builder.py` | `_build_prompt(include_skills=True)` 在环境信息后追加技能章节 |

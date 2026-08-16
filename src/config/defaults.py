@@ -82,6 +82,12 @@ DEFAULTS = {
     "models": [],
     "token_prices": {},
     "theme": "dark",
+    # 技能（skill）子系统配置
+    "skills": {
+        "enabled": True,
+        "catalog_description_max_length": 500,
+        "auto_load": [],
+    },
 }
 
 # ============================================================
