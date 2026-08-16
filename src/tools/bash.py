@@ -191,7 +191,8 @@ class BashFunc(Func):
         """共享读取循环，消除 _run_pipe 和 _run_pty 中的重复代码（~80行×2）。
 
         从 reader 读取字节，处理中断检测、超时/PTY EIO/超长行、
-        UTF-8 解码、\\r\\n 规范化、ANSI 剥离终端输出和行发布回调。
+        UTF-8 解码、\\r\\n 规范化、ANSI 剥离 + \\r 覆盖模拟（终端视角统一）
+        和行发布回调。
 
         实现说明（★ 超长行修复）：
         不使用 ``StreamReader.readline()``。readline 内部基于 readuntil，
@@ -227,14 +228,28 @@ class BashFunc(Func):
         interrupted = False
 
         async def _handle_line(raw: bytes) -> None:
-            """处理一个完整行（含 \\n）或 EOF 残留（无 \\n）。"""
+            """处理一个完整行（含 \\n）或 EOF 残留（无 \\n）。
+
+            ★ 终端视角统一（返回内容与终端显示一致）：在数据源头统一
+            剥离 ANSI（_strip_ansi）并兑现 \\r 覆盖语义（_simulate_terminal）
+            ——lines（最终返回给大模型的输出）、show_output（终端实时打印）
+            与 publish_line_fn（display/web_display / 后台任务 read_buffer）
+            三方拿到同一份「终端视角」文本：进度条/行内刷新（如
+            ``10%\\r20%\\r30%``）折叠为最终状态 ``30%``，不再把字面 \\r
+            传给大模型，返回的行数不会多于真实终端显示。
+            """
             decoded = raw.decode('utf-8', errors='replace')
             # ★ 规范化行尾：PTY ONLCR 将 \n → \r\n，归一化为 \n，
             #   保留行内独立 \r（用于进度条）不动
             clean = decoded.replace('\r\n', '\n')
+            # ★ 先剥 ANSI 再兑现 \r 覆盖（顺序契约：_simulate_terminal 对
+            #   含 ANSI 文本结果不确定，须先 _strip_ansi；与 display()/
+            #   web_display() 的 _on_line 同一处理，此处提前到数据源头使
+            #   返回给大模型的输出同样生效）
+            clean = _simulate_terminal(_strip_ansi(clean))
             lines.append(clean)
             if show_output:
-                safe = _strip_ansi(clean)
+                safe = clean  # 已剥 ANSI、已兑现 \r 覆盖
                 if not safe.endswith('\n'):
                     safe += '\n'
                 if is_stderr:
@@ -934,6 +949,8 @@ class BashFunc(Func):
         async def _on_line(text: str, is_stderr: bool) -> None:
             # ★ 终端模拟：先剥 ANSI，再兑现 \r 覆盖语义（进度条等行内刷新
             #   输出在工具卡片呈现与真实终端一致的最终状态，而非字面 \r）。
+            #   text 已由 _read_loop._handle_line 统一处理（ANSI 已剥、\r 已
+            #   覆盖），此处为幂等防御（无 \r/ANSI 时走零开销快路径）。
             safe = _simulate_terminal(_strip_ansi(text))
             if not safe.endswith('\n'):
                 safe += '\n'
@@ -966,7 +983,8 @@ class BashFunc(Func):
 
         async def _on_line(text: str, is_stderr: bool) -> None:
             # ★ 终端模拟：先剥 ANSI，再兑现 \r 覆盖语义（与 display() 一致，
-            #   工具卡片/前端呈现与真实终端相同的最终状态）。
+            #   工具卡片/前端呈现与真实终端相同的最终状态）。text 已由
+            #   _read_loop._handle_line 统一处理，此处为幂等防御。
             clean = _simulate_terminal(_strip_ansi(text))
             safe = clean if clean.endswith('\n') else clean + '\n'
             if is_stderr:
