@@ -17,6 +17,15 @@ system/user/assistant(+tool_calls)/tool 返回）——对齐 DSH：轨迹从 Se
     （调用 + 返回：``result`` 首行预览 + 详情 = 调用行 + 返回行）；无匹配
     调用（异常/截断）→ 独立返回记录。
 
+**subagent 轨迹嵌套（2026-08-16 用户需求）**：主轨迹中选中 subagent 记录
+按 Enter → 进入该 subagent 的轨迹 Trace（``build_subagent_trace_records``
+——数据源 = SubAgent 完整消息列表（``slot.messages``，SubAgent.messages
+实时引用，运行中/已完成均可用），经 ``_records_from_messages`` 构建——
+显示内容与 mainagent 完全一致（system/user/思考/回答/工具调用+返回合并，
+左台账 + 右检查器）；messages 缺失（未注册/异常）时回退槽位活动记录
+（提词 + 工具历史 + 结果）。主轨迹（消息源模式）同样追加 subagent 记录
+（``subagent_label`` 填充，Enter 下钻数据源）。
+
 依赖约束：仅依赖 app 同层（model/_state_types/toolcard）与标准库；subagent
 控制器、prompt_builder、param_formatter 函数内惰性 import（避免循环依赖）。
 """
@@ -67,6 +76,8 @@ class TraceRecord:
             块记录详情由检查器按需经 ``block_detail_lines(source_block)``
             惰性提取（大块不随台账构建全量扫描）。
         source_block: 来源 ChatBlock（块记录；system/subagent 记录为 None）。
+        subagent_label: subagent 记录关联的 subagent label（Enter 进入其
+            轨迹 Trace 用；非 subagent 记录为空串）。
     """
 
     index: int = 0
@@ -78,6 +89,7 @@ class TraceRecord:
     result: str = ""
     lines: list = field(default_factory=list)
     source_block: object | None = None
+    subagent_label: str = ""
 
 
 #: 块种类 → 轨迹记录种类（separator 跳过；splash 品牌屏跳过——非业务记录）
@@ -648,9 +660,213 @@ def _subagent_records(index_holder: list, out_records: list, rows: list) -> None
             time_seconds=time_sec,
             tokens=tokens,
             lines=detail,
+            subagent_label=label,
         )
         out_records.append(rec)
         rows.append(rec)
+
+
+def _subagent_live_records(index_holder: list, out_records: list, rows: list,
+                           slot) -> None:
+    """subagent 轨迹动态部分（运行中内容，对齐 mainagent ``_live_records`` 语义）。
+
+    SubAgent 模型调用为**流式管线**（silent=True 也发布 ReasoningChunkEvent/
+    ContentChunkEvent，label = subagent label）——``SubAgentPanelController``
+    把 chunk 累积到 ``slot.live_reasoning``/``slot.live_content``（新阶段
+    thinking/answering 开始重置）。本函数把「正在生成」内容追加为 running
+    记录（与 mainagent 轨迹的 ● running 记录同语义：实际内容动态显示，
+    整轮完成后由 messages 记录接管，无重复）：
+
+      - 运行中工具（``tool_history`` phase=running/parsing）→ running tool
+        记录（摘要 = 调用，耗时 = 已运行时长；● running）——对齐 mainagent
+        ``_live_records`` 的运行中工具分支；
+      - 运行中模型阶段（``slot.status == "running"``）→ 流式**实际内容**
+        running 记录：thinking → reasoning（live_reasoning 逐帧增长）；
+        answering → reasoning（本轮若有）+ content（live_content）——
+        与 mainagent 同时显示 reasoning/content 开放块语义一致；无流式
+        内容（阶段事件已到但 chunk 未到）不追加记录（对齐 mainagent
+        开放块无行跳过）。
+
+    时间基元素（耗时）不入指纹（台账静态色，不随动画重建）；阶段/工具
+    phase/流式内容长度变化由 ``_subagent_trace_deps`` 的 live 指纹驱动重建。
+    """
+    if slot is None:
+        return
+    now = _time.time()
+    # ── 1. 运行中工具（对齐 mainagent _live_records 运行中工具分支） ──
+    for rec in getattr(slot, "tool_history", None) or []:
+        phase = getattr(rec, "phase", "") or ""
+        if phase not in ("running", "parsing"):
+            continue
+        name = getattr(rec, "tool_name", "") or ""
+        det = getattr(rec, "detail", "") or ""
+        call = f"{name} {det}".strip() or (name or "工具")
+        start = getattr(rec, "start_time", 0.0) or 0.0
+        time_sec = max(0.0, now - start) if start > 0 else None
+        index_holder[0] += 1
+        tool_rec = TraceRecord(
+            index=index_holder[0], kind="tool", summary=call,
+            status="running", result="（运行中…）",
+            time_seconds=time_sec, lines=[call],
+        )
+        out_records.append(tool_rec)
+        rows.append(tool_rec)
+    # ── 2. 运行中模型阶段（流式实际内容——与 mainagent 开放块同语义） ──
+    if (getattr(slot, "status", "") or "") != "running":
+        return
+    phase = getattr(slot, "model_phase", "") or ""
+    live_reasoning = (getattr(slot, "live_reasoning", "") or "").strip()
+    live_content = (getattr(slot, "live_content", "") or "").strip()
+    if phase in ("thinking", "reasoning"):
+        # 思考阶段：显示正在生成的思考（实际流式内容，逐帧增长）
+        if live_reasoning:
+            lines = live_reasoning.splitlines()
+            index_holder[0] += 1
+            rec = TraceRecord(
+                index=index_holder[0], kind="reasoning",
+                summary=_first_text(lines) or "（正在思考…）",
+                status="running", lines=lines,
+            )
+            out_records.append(rec)
+            rows.append(rec)
+    elif phase in ("generating", "answering", "batch"):
+        # 回答阶段：显示思考（若本轮已有）+ 回答（正在生成的实际内容）——
+        # 与 mainagent 同时显示 reasoning/content 记录语义一致（SubAgent
+        # messages 整轮完成后才追加，动态部分先行展示实际生成内容）
+        if live_reasoning:
+            lines = live_reasoning.splitlines()
+            index_holder[0] += 1
+            rec = TraceRecord(
+                index=index_holder[0], kind="reasoning",
+                summary=_first_text(lines) or "（正在思考…）",
+                status="running", lines=lines,
+            )
+            out_records.append(rec)
+            rows.append(rec)
+        if live_content:
+            lines = live_content.splitlines()
+            index_holder[0] += 1
+            rec = TraceRecord(
+                index=index_holder[0], kind="content",
+                summary=_first_text(lines) or "（正在生成…）",
+                status="running", lines=lines,
+            )
+            out_records.append(rec)
+            rows.append(rec)
+
+
+def _subagent_slot(label: str):
+    """按 label 获取 subagent 槽位（面板 store）；控制器不存在/未装配返回 None。"""
+    if not label:
+        return None
+    try:
+        from src.tui.subagent import SubAgentPanelController
+        controller = SubAgentPanelController.get_default()
+        store = getattr(controller, "_store", None)
+        if store is None:
+            return None
+        with store._state_lock:
+            return store._agents.get(label)
+    except Exception:
+        return None
+
+
+def _subagent_fallback_records(label: str, slot) -> tuple:
+    """subagent 槽位活动记录（无 messages 时的回退路径）。
+
+    messages 缺失（异常/未注册）时，从槽位构建「活动轨迹」：
+      - user 记录（初始提词）；
+      - tool 记录（工具历史：调用 + 状态 + 耗时）；
+      - content 记录（结果文本/错误）。
+    """
+    records: list = []
+    rows: list = []
+    index = 0
+    prompt = (getattr(slot, "prompt", "") or "").strip()
+    if prompt:
+        lines = prompt.splitlines()
+        index += 1
+        rec = TraceRecord(
+            index=index, kind="user",
+            summary=_first_text(lines) or label,
+            lines=lines,
+        )
+        records.append(rec)
+        rows.append(rec)
+    for rec in getattr(slot, "tool_history", None) or []:
+        name = getattr(rec, "tool_name", "") or ""
+        det = getattr(rec, "detail", "") or ""
+        phase = getattr(rec, "phase", "") or ""
+        status = {"done": "done", "fail": "fail", "running": "running",
+                  "parsing": "running"}.get(phase, "")
+        r_start = getattr(rec, "start_time", 0.0) or 0.0
+        r_end = getattr(rec, "end_time", 0.0) or 0.0
+        time_sec = (r_end - r_start) if r_end > r_start else None
+        call = f"{name} {det}".strip() or (name or "工具")
+        index += 1
+        tool_rec = TraceRecord(
+            index=index, kind="tool", summary=call,
+            status=status, time_seconds=time_sec, lines=[call],
+        )
+        records.append(tool_rec)
+        rows.append(tool_rec)
+    result_error = (getattr(slot, "result_error", "") or "").strip()
+    result_text = (getattr(slot, "result_text", "") or "").strip()
+    if result_error:
+        lines = [f"错误: {result_error}"]
+        index += 1
+        rec = TraceRecord(
+            index=index, kind="content", summary="错误", lines=lines,
+        )
+        records.append(rec)
+        rows.append(rec)
+    elif result_text:
+        lines = result_text.splitlines()
+        index += 1
+        rec = TraceRecord(
+            index=index, kind="content",
+            summary=_first_text(lines) or "结果",
+            lines=lines,
+        )
+        records.append(rec)
+        rows.append(rec)
+    return records, rows
+
+
+def build_subagent_trace_records(label: str, model=None) -> tuple:
+    """构建单个 subagent 的轨迹记录（台账 + 检查器，显示内容与 mainagent 一致）。
+
+    主轨迹中选中 subagent 记录按 Enter 进入（嵌套 TraceView）：数据源为
+    SubAgent 完整消息列表（``slot.messages``——SubAgent.messages 实时引用，
+    运行中/已完成均可用），经 ``_records_from_messages`` 构建——与 mainagent
+    轨迹完全同构（system/user/思考/回答/工具调用+返回合并一条）。messages
+    缺失（未注册/异常）时回退槽位活动记录（提词 + 工具历史 + 结果）。
+
+    Args:
+        label: subagent 标识（如 "agent-1"）。
+        model: AppModel 实例（备用，当前未使用——保留签名一致性）。
+
+    Returns:
+        (records: list[TraceRecord], rows: list[TraceRecord | None])。
+    """
+    slot = _subagent_slot(label)
+    if slot is not None:
+        messages = getattr(slot, "messages", None) or []
+        if isinstance(messages, (list, tuple)) and messages:
+            records, rows = _records_from_messages(messages)
+            if records:
+                # ★ 2026-08-16（用户需求：subagent 动态部分显示也跟 mainagent
+                #   一样）：追加运行中内容（运行中工具 / 正在思考/生成占位）
+                #   ——● running 记录动态显示 subagent 正在生成的内容，完成后
+                #   由消息记录接管（无重复）。
+                _subagent_live_records([len(records)], records, rows, slot)
+                return records, rows
+    # 回退：槽位活动记录（无 messages / 消息为空 / 槽位不存在）
+    if slot is not None:
+        records, rows = _subagent_fallback_records(label, slot)
+        _subagent_live_records([len(records)], records, rows, slot)
+        return records, rows
+    return [], []
 
 
 def build_trace_records(model) -> tuple:
@@ -682,6 +898,10 @@ def build_trace_records(model) -> tuple:
             if isinstance(messages, (list, tuple)) and messages:
                 records, rows = _records_from_messages(messages)
                 if records:
+                    # ★ 2026-08-16（轨迹 Trace 嵌套）：消息源模式下也追加
+                    #   subagent 记录（主轨迹可选中按 Enter 进入 subagent 轨迹；
+                    #   修复前 subagent 记录仅回退路径存在——装配场景看不到）。
+                    _subagent_records([len(records)], records, rows)
                     # ★ 2026-08-19（用户需求：轨迹 Trace 正在生成的内容也要
                     #   动态显示）：消息源（agent.messages）仅在流式完成后才
                     #   追加 assistant 消息/工具返回——模型生成期间（思考/
@@ -724,6 +944,7 @@ def build_trace_records(model) -> tuple:
 __all__ = [
     "TraceRecord",
     "build_trace_records",
+    "build_subagent_trace_records",
     "TRACE_KIND_ORDER",
     "block_detail_lines",
     "_record_from_block",
@@ -732,4 +953,6 @@ __all__ = [
     "_messages_fingerprint",
     "_live_records",
     "_live_fingerprint",
+    "_subagent_live_records",
+    "_subagent_slot",
 ]

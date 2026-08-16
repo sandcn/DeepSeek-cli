@@ -388,6 +388,16 @@ class ParallelExecutor:
         for i, spec in enumerate(specs):
             sa = self._spawner.spawn(spec, i, display)
             agents.append(sa)
+            # ★ 2026-08-16（轨迹 Trace 嵌套）：把 SubAgent 实例注册到面板
+            #   控制器——槽位存 messages/prompt 引用（实时增长），轨迹视图
+            #   Enter subagent 记录时显示 subagent 轨迹（与 mainagent 同构：
+            #   system/user/assistant/tool 消息 → 台账 + 检查器）。注册失败
+            #   非致命（面板无槽位/异常时跳过，轨迹回退槽位活动记录）。
+            try:
+                from ..tui.subagent import SubAgentPanelController as _PanelCtrl
+                _PanelCtrl.get_default().register_subagent(sa.label, sa)
+            except Exception:
+                _logger.debug("注册 SubAgent 到面板控制器失败: %s", sa.label, exc_info=True)
 
         display.start()
         coros = [self._run_one(sa, display, stagger=i) for i, sa in enumerate(agents)]

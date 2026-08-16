@@ -120,6 +120,11 @@ class AppModel(_ToolOutputMixin):
         self.trace_open: bool = False
         self.trace_selected: int = -1
         self.message_source: object | None = None
+        # trace_subagent_label: 轨迹视图当前显示的 subagent 轨迹 label
+        #   （None=显示主 agent 轨迹；非 None=主轨迹中按 Enter 选中 subagent
+        #   记录后进入其轨迹——嵌套 TraceView，内容与 mainagent 轨迹同构：
+        #   system/user/assistant/tool 消息 → 台账 + 检查器；Esc/Ctrl+H 返回
+        #   主轨迹，再次 Esc/Ctrl+H 关闭整个轨迹视图）。
         # 顶部工具调用状态（Claude TUI parity 步骤 2.2：active_tool 为模型
         # 数据——原 ToolStatusHeader 渲染消费，组件已移除（工具状态改由工具
         # 卡片顶边框 ● 展示，双份冗余）；字段保留供测试/未来消费，None=无
@@ -582,6 +587,9 @@ class AppModel(_ToolOutputMixin):
         # ★ 轨迹视图状态复位（2026-08-19）：清屏后轨迹记录清空，选中回到
         #   尾部跟随（-1）——避免残留索引指向已清空的记录列表。
         self.trace_selected = -1
+        # ★ 2026-08-16：清屏同时退出 subagent 轨迹（嵌套视图）——残留 label
+        #   指向的 subagent 记录可能已随面板清空（无记录可显示）。
+        self.trace_subagent_label = None
 
 
 __all__ = [

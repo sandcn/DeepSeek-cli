@@ -61,6 +61,9 @@ class _AgentSlot:
         'last_speed',
         'tool_history',
         'result_text', 'result_error',
+        'messages', 'prompt',
+        'live_reasoning', 'live_content',
+        '_prev_phase',
     )
 
     def __init__(self, label: str, description: str, status: str = "running",
@@ -85,6 +88,23 @@ class _AgentSlot:
         self.tool_history: List[_ToolRecord] = []
         self.result_text: str = ""
         self.result_error: str = ""
+        # ★ 2026-08-16（轨迹 Trace 嵌套）：SubAgent 完整消息列表引用
+        #   （``register_subagent`` 注入 SubAgent.messages 同一列表对象——
+        #   实时增长，轨迹视图显示 subagent 轨迹与 mainagent 同构）；
+        #   未注册（异常/未装配）为空列表。
+        self.messages: List[dict] = []
+        # SubAgent 初始提词（user 消息；供无 messages 时回退显示）
+        self.prompt: str = ""
+        # ★ 2026-08-16（subagent 动态部分——跟 mainagent 一样动态显示）：
+        #   流式生成中的实际内容累积（ReasoningChunkEvent/ContentChunkEvent
+        #   ——SubAgent 模型调用为流式管线，chunk 事件带 label 发布；轨迹
+        #   视图据此动态显示正在生成的思考/回答，与 mainagent 开放块同
+        #   语义）。新阶段开始（set_model_phase 到 thinking/answering）时
+        #   重置对应累积（当前轮内容；旧轮已由 messages 记录接管）。
+        self.live_reasoning: str = ""
+        self.live_content: str = ""
+        # 上一模型阶段（set_model_phase 阶段切换检测用；__slots__ 白名单）
+        self._prev_phase: str = ""
 
 
 class StateStore:
@@ -188,6 +208,35 @@ class StateStore:
                 slot.model_phase_start = time.time()
             slot.model_phase = phase
             slot.model_info = info
+            # ★ 2026-08-16（subagent 动态部分）：新阶段开始重置对应流式
+            #   累积——thinking 开始清空 live_reasoning、answering 开始
+            #   清空 live_content（当前轮内容；旧轮已由 messages 记录
+            #   接管，避免跨轮拼接）。仅阶段首次进入时重置（phase 与
+            #   当前不同），重复事件（同阶段 chunk）不打断累积。
+            if phase == "thinking" and phase != getattr(slot, "_prev_phase", ""):
+                slot.live_reasoning = ""
+            elif phase == "answering" and phase != getattr(slot, "_prev_phase", ""):
+                slot.live_content = ""
+            slot._prev_phase = phase
+
+    def append_live(self, label: str, kind: str, text: str) -> None:
+        """累积 subagent 流式生成内容（ReasoningChunkEvent/ContentChunkEvent）。
+
+        Args:
+            label: subagent 标识（非 subagent label 无槽位，零成本跳过）。
+            kind: "reasoning" | "content"。
+            text: 内容增量。
+        """
+        if not text:
+            return
+        with self._state_lock:
+            slot = self._agents.get(label)
+            if slot is None:
+                return
+            if kind == "reasoning":
+                slot.live_reasoning += text
+            elif kind == "content":
+                slot.live_content += text
 
     def update_tool_parsing(self, label: str, tool_name: str,
                             arguments: str, tool_id: str = "") -> None:

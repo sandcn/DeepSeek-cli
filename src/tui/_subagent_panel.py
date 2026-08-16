@@ -49,6 +49,7 @@ from src.tui.events.event_types import (
     ToolParsingEvent, ToolStartedEvent, ToolDoneEvent,
     ParseInfoEvent, ParseInfoDoneEvent,
     UsageUpdatedEvent, MetricsUpdateEvent,
+    ReasoningChunkEvent, ContentChunkEvent,
 )
 
 from src.tui._subagent_state import StateStore, _AgentSlot, _ToolRecord
@@ -112,6 +113,12 @@ class SubAgentPanelController:
         (ParseInfoDoneEvent, "_on_parse_info_done"),
         (UsageUpdatedEvent, "_on_usage_updated"),
         (MetricsUpdateEvent, "_on_metrics"),
+        # ★ 2026-08-16（subagent 动态部分）：流式内容 chunk——SubAgent 模型
+        #   调用为流式管线（silent=True 也发布 chunk 事件，label = subagent
+        #   label），累积到槽位 live_reasoning/live_content 供轨迹 Trace
+        #   动态显示正在生成的思考/回答（与 mainagent 开放块同语义）。
+        (ReasoningChunkEvent, "_on_reasoning_chunk"),
+        (ContentChunkEvent, "_on_content_chunk"),
     )
 
     def __init__(self, max_history: int = 3,
@@ -163,6 +170,30 @@ class SubAgentPanelController:
         装配重建时订阅/动画状态丢失）。``_push_frame`` 已优先使用本回调。
         """
         self._push_cmd_cb = cb
+
+    def register_subagent(self, label: str, agent) -> None:
+        """注册 SubAgent 实例（轨迹 Trace 嵌套数据源）。
+
+        由 core 层（``ParallelExecutor._run_agents``）在创建 SubAgent 后调用
+        ——把 SubAgent 的完整消息列表（``agent.messages`` 同一列表对象，实时
+        增长）与初始提词（``agent.prompt``）存入对应槽位，供轨迹 Trace
+        按 label 显示 subagent 轨迹（与 mainagent 轨迹同构：system/user/
+        assistant/tool 消息 → 台账 + 检查器）。
+
+        Args:
+            label: SubAgent 标识（如 "agent-1"）。
+            agent: SubAgent 实例（含 messages/prompt 属性）。
+        """
+        with self._state_lock:
+            slot = self._agents.get(label)
+            if slot is None:
+                return
+            try:
+                msgs = getattr(agent, "messages", None) or []
+                slot.messages = msgs if isinstance(msgs, list) else list(msgs)
+            except Exception:
+                slot.messages = []
+            slot.prompt = str(getattr(agent, "prompt", "") or "")
 
     # ── 生命周期 ────────────────────────────────────────
 
@@ -334,6 +365,27 @@ class SubAgentPanelController:
         )
         self._dirty = True
         self._emit_frame()
+
+    def _on_reasoning_chunk(self, event) -> None:
+        """ReasoningChunkEvent → 累积 subagent 流式思考内容（动态部分）。
+
+        仅累积存在槽位的 label（main agent 的 chunk 由 EventDispatcher
+        消费，无槽位零成本跳过）；流式节流（API 层 100ms）下内容增量累积
+        到 ``slot.live_reasoning``——轨迹 Trace 动态显示正在生成的思考
+        （与 mainagent 开放 reasoning 块同语义）。置脏触发面板刷新（无
+        独立渲染方，轨迹视图经指纹重建读取）。
+        """
+        if not getattr(event, "text", ""):
+            return
+        self._store.append_live(event.label, "reasoning", event.text)
+        self._dirty = True
+
+    def _on_content_chunk(self, event) -> None:
+        """ContentChunkEvent → 累积 subagent 流式回答内容（动态部分）。"""
+        if not getattr(event, "text", ""):
+            return
+        self._store.append_live(event.label, "content", event.text)
+        self._dirty = True
 
     # ── 面板刷新回调 ────────────────────────────────────
 

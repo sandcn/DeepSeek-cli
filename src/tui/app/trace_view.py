@@ -17,15 +17,21 @@ Ctrl+H（0x08）打开/关闭：App 在 ``model.trace_open`` 时**整屏只渲�
 
 键盘（use_input 路由，trace_open 期间激活）：
   - ↑↓ 选择 · PgUp/PgDn 翻页 · Home/End、g/G 首末 · Esc/Ctrl+H 关闭；
-  - Enter/其余按键**放行**（无输入区显示；Enter 仍可提交消息——轨迹界面
-    持续显示会话最新记录）。
+  - Enter 选中 subagent 记录 → **进入 subagent 轨迹**（嵌套 TraceView——
+    显示内容与 mainagent 同构：system/user/思考/回答/工具，Esc/Ctrl+H 返回
+    主轨迹）；其余记录 Enter/其余按键**放行**（无输入区显示；Enter 仍可
+    提交消息——轨迹界面持续显示会话最新记录）。
 """
 
 from __future__ import annotations
 
 from src.tui._format import format_duration, format_tokens
 from src.tui._input_layout import _wrap_by_width
-from src.tui.app.trace import block_detail_lines, build_trace_records
+from src.tui.app.trace import (
+    block_detail_lines,
+    build_subagent_trace_records,
+    build_trace_records,
+)
 from src.tui.core.style import Style
 from src.tui.ink import TEXT, Column, Row, StyledRun, h, use_input, use_memo
 from src.tui.ink.helpers import truncate_runs
@@ -223,33 +229,60 @@ def _inspector_children(rec, right_w: int, vh: int) -> list:
         lines = getattr(rec, "lines", None) or []
     if right_w <= 0:
         right_w = 40  # 无栏宽上下文防御（_wrap_by_width max_width<=0 返回空）
-    for line in lines:
+    # ★ 2026-08-16（用户需求：思考/回答省略提示改「… 前 N 行省略」）：
+    #   思考（reasoning）/回答（content）为流式生成内容——检查器优先显示
+    #   **最新内容（尾部）**（与轨迹尾部跟随语义一致：用户关注正在生成的
+    #   最新行），被截断时置顶提示「… 前 N 行省略」（省略的是前部旧内容）；
+    #   其余种类（system/user/tool/subagent/context）保持从头部显示（省略
+    #   尾部，「… 后 N 行省略」）。
+    tail_first = kind in ("reasoning", "content")
+    total_lines = len(lines)
+    segs: list = []
+    src_lines = reversed(lines) if tail_first else lines
+    for line in src_lines:
         if not isinstance(line, str):
             line = str(line)
         for seg in _wrap_by_width(line, right_w):
             if shown >= budget:
                 truncated = True
                 break
-            children.append(h(TEXT, {
-                "children": seg if seg else " ",
-                "style": _S_DIM if kind == "reasoning" else _S_TEXT,
-                "height": 1,
-                "key": f"tinsp-{shown}",
-            }))
+            segs.append(seg)
             shown += 1
         if truncated:
             break
+    if tail_first:
+        segs.reverse()  # reversed 遍历恢复正序（省略提示在前、最新内容在后）
     if truncated:
+        if tail_first:
+            omitted = max(1, total_lines - shown)
+            children.append(h(TEXT, {
+                "children": f"\u2026 前 {omitted} 行省略",
+                "style": _S_HINT, "height": 1, "key": "tinsp-omitted",
+            }))
+        else:
+            children.append(h(TEXT, {
+                "children": f"\u2026 后 {len(lines) - shown + 1} 行省略",
+                "style": _S_HINT, "height": 1, "key": "tinsp-omitted",
+            }))
+    for seg in segs:
         children.append(h(TEXT, {
-            "children": f"\u2026 后 {len(lines) - shown + 1} 行省略",
-            "style": _S_HINT,
+            "children": seg if seg else " ",
+            "style": _S_DIM if kind == "reasoning" else _S_TEXT,
             "height": 1,
-            "key": "tinsp-omitted",
+            "key": f"tinsp-{len(children)}",
         }))
     if not lines:
         children.append(h(TEXT, {
             "children": "(无内容)", "style": _S_HINT, "height": 1,
             "key": "tinsp-none",
+        }))
+    # ★ 2026-08-16（轨迹 Trace 嵌套）：subagent 记录检查器追加操作提示——
+    #   「Enter 查看该子代理的轨迹」（引导用户下钻到 subagent 轨迹视图；
+    #   非 subagent 记录 / 无关联 label 不显示）
+    if getattr(rec, "kind", "") == "subagent" and getattr(rec, "subagent_label", ""):
+        children.append(h(TEXT, {
+            "children": "\u23ce Enter 查看该子代理的轨迹",
+            "style": _S_HINT, "height": 1, "key": "tinsp-subagent-hint",
         }))
     return children
 
@@ -298,16 +331,63 @@ def _records_deps(model) -> tuple:
     """记录构建 use_memo 依赖（数据源自适应指纹）。
 
     消息源模式（装配注入 agent.messages）：``_messages_fingerprint`` +
-    ``_live_fingerprint``——消息内容变化（流式完成后追加/编辑）与**实时生成
-    内容**（开放块行数/内容长度、运行中工具输出）任一变化均触发重建：
-    流式生成期间 agent.messages 不变，靠实时指纹驱动台账动态显示正在生成的
-    内容（用户需求 2026-08-19）。块模式：块指纹 + subagent 指纹（内容变化
-    才重建）。时间基元素不入指纹（台账静态色，不随动画重建）。
+    ``_live_fingerprint`` + ``_subagent_fingerprint``——消息内容变化（流式
+    完成后追加/编辑）、**实时生成内容**（开放块行数/内容长度、运行中工具
+    输出）与 subagent 槽位状态（新增/状态变更/工具历史增长——消息源模式
+    同样追加 subagent 记录）任一变化均触发重建：流式生成期间 agent.messages
+    不变，靠实时指纹驱动台账动态显示正在生成的内容（用户需求 2026-08-19）。
+    块模式：块指纹 + subagent 指纹（内容变化才重建）。时间基元素不入指纹
+    （台账静态色，不随动画重建）。
     """
     if getattr(model, "message_source", None) is not None:
         from src.tui.app.trace import _live_fingerprint, _messages_fingerprint
-        return (_messages_fingerprint(model), _live_fingerprint(model))
+        return (_messages_fingerprint(model), _live_fingerprint(model),
+                _subagent_fingerprint())
     return (_block_fingerprint(model), _subagent_fingerprint())
+
+
+def _subagent_trace_deps(label: str) -> tuple:
+    """subagent 轨迹 use_memo 依赖（嵌套视图数据源指纹）。
+
+    消息列表身份 + 长度 + 末条消息（内容增长/追加触发重建）+ 槽位状态 +
+    工具历史长度 + **动态元素**（模型阶段/解析摘要/运行中工具 phase——
+    SubAgent 模型调用为非流式，运行中内容以占位记录动态显示；阶段/工具
+    状态变化触发重建）——subagent 消息逐轮追加 + 运行中状态推进时轨迹台账
+    实时更新；时间基元素（耗时）不入指纹（台账静态色）。
+    """
+    from src.tui.app.trace import _subagent_slot
+    slot = _subagent_slot(label)
+    if slot is None:
+        return ("missing", label)
+    messages = getattr(slot, "messages", None) or []
+    if isinstance(messages, list) and messages:
+        tail = messages[-1]
+        if isinstance(tail, dict):
+            tail_fp = (
+                id(tail), tail.get("role", ""),
+                len(str(tail.get("content", ""))),
+                len(tail.get("tool_calls") or ()),
+            )
+        else:
+            tail_fp = (id(tail), str(tail)[:40])
+        msg_fp = (id(messages), len(messages), tail_fp)
+    else:
+        msg_fp = (id(messages), len(messages))
+    # 动态元素（subagent 动态部分——与 mainagent _live_fingerprint 同语义：
+    # 运行中工具/阶段/流式内容长度变化触发台账重建）
+    tool_live = tuple(
+        (getattr(r, "tool_name", ""), getattr(r, "phase", ""))
+        for r in getattr(slot, "tool_history", None) or []
+    )
+    live_fp = (
+        getattr(slot, "status", ""),
+        getattr(slot, "model_phase", "") or "",
+        getattr(slot, "parse_info", "") or "",
+        len(getattr(slot, "live_reasoning", "") or ""),
+        len(getattr(slot, "live_content", "") or ""),
+        tool_live,
+    )
+    return (label, msg_fp, live_fp)
 
 
 def _row_of_record(rows: list, sel: int, records: list) -> int:
@@ -377,12 +457,22 @@ def TraceView(props) -> object:
     """
     model = props["model"]
     width = props.get("width", 0) or 0
+    # ★ 2026-08-16（轨迹 Trace 嵌套）：trace_subagent_label 非 None = 主轨迹
+    #   中按 Enter 选中 subagent 记录后进入其轨迹（嵌套 TraceView——显示
+    #   subagent 轨迹，内容与 mainagent 同构：system/user/思考/回答/工具）。
+    sub_label = getattr(model, "trace_subagent_label", None) or None
 
     # ── 数据（use_memo 指纹缓存：消息源/块/subagent 内容变化才重建） ──
-    records, rows = use_memo(
-        lambda: build_trace_records(model),
-        _records_deps(model),
-    )
+    if sub_label:
+        records, rows = use_memo(
+            lambda: build_subagent_trace_records(sub_label, model),
+            _subagent_trace_deps(sub_label),
+        )
+    else:
+        records, rows = use_memo(
+            lambda: build_trace_records(model),
+            _records_deps(model),
+        )
     total = len(records)
 
     # ── 选中解析（-1 = 跟随尾部：渲染期解析为最新记录，流式追加自动跟进） ──
@@ -419,13 +509,33 @@ def TraceView(props) -> object:
     def _handle(event) -> bool:
         if not getattr(model, "trace_open", False):
             return False
-        # 关闭类按键（Esc / Ctrl+H）——优先于导航
+        # 关闭类按键（Esc / Ctrl+H）——subagent 轨迹优先返回主轨迹
+        #   （trace_subagent_label 置 None），主轨迹才关闭整个视图
         if event.kind == "escape":
-            model.trace_open = False
+            if getattr(model, "trace_subagent_label", None):
+                model.trace_subagent_label = None
+                model.trace_selected = -1  # 返回主轨迹：回到尾部跟随
+            else:
+                model.trace_open = False
             return True
         if event.kind == "ctrl_key" and getattr(event, "char", "") == "\x08":
-            model.trace_open = False
+            if getattr(model, "trace_subagent_label", None):
+                model.trace_subagent_label = None
+                model.trace_selected = -1
+            else:
+                model.trace_open = False
             return True
+        # Enter：主轨迹中选中 subagent 记录 → 进入 subagent 轨迹（嵌套
+        #   TraceView——显示内容与 mainagent 同构）。subagent 轨迹内 Enter
+        #   放行（提交消息）；sub-subagent 下钻不阻断（覆盖 label）。
+        if event.kind == "enter" and not getattr(model, "trace_subagent_label", None):
+            rec = records[sel] if 0 <= sel < total else None
+            if rec is not None and getattr(rec, "kind", "") == "subagent":
+                sub = getattr(rec, "subagent_label", "") or ""
+                if sub:
+                    model.trace_subagent_label = sub
+                    model.trace_selected = -1  # subagent 轨迹：尾部跟随
+                    return True
         # 其余按键（↑↓/PgUp/PgDn/Home/End/g/G/Enter/字符）放行——导航由
         # ListView 消费，Enter/字符放行（非模态：提交消息/打字）
         return False
@@ -441,10 +551,17 @@ def TraceView(props) -> object:
     # ── 渲染 ──
     # 头部（静态色——轨迹视图为浏览界面，不呼吸，diff 零输出）
     turn_count = sum(1 for r in rows if r is None)
+    if sub_label:
+        header_title = f"\u258d子代理轨迹 {sub_label}"
+        header_hint = "  \u2191\u2193 选择 · PgUp/PgDn 翻页 · g/G 首末 · Esc/Ctrl+H 返回"
+    else:
+        header_title = "\u258d轨迹 Trace"
+        header_hint = ("  \u2191\u2193 选择 · PgUp/PgDn 翻页 · g/G 首末 · "
+                       "Enter 进入子代理 · Esc/Ctrl+H 关闭")
     header_runs = [
-        StyledRun("\u258d轨迹 Trace", _S_TITLE),
+        StyledRun(header_title, _S_TITLE),
         StyledRun(f" · {total} 条 · {turn_count} 轮", _S_HINT),
-        StyledRun("  \u2191\u2193 选择 · PgUp/PgDn 翻页 · g/G 首末 · Enter 提交 · Esc/Ctrl+H 关闭", _S_HINT),
+        StyledRun(header_hint, _S_HINT),
     ]
     if width > 0:
         header_runs = truncate_runs(header_runs, width)
@@ -472,4 +589,10 @@ def TraceView(props) -> object:
     ])
 
 
-__all__ = ["TraceView", "_ledger_row_runs", "_inspector_children", "_viewport_rows"]
+__all__ = [
+    "TraceView",
+    "_ledger_row_runs",
+    "_inspector_children",
+    "_viewport_rows",
+    "_subagent_trace_deps",
+]

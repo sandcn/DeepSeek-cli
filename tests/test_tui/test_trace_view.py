@@ -31,12 +31,14 @@ from src.tui.app.trace import (
     _messages_fingerprint,
     _records_from_messages,
     block_detail_lines,
+    build_subagent_trace_records,
     build_trace_records,
 )
 from src.tui.app.trace_view import (
     TraceView,
     _inspector_children,
     _ledger_row_runs,
+    _subagent_trace_deps,
 )
 from src.tui.ink import hooks
 from src.tui.ink.fiber import TAG_FUNCTION, Fiber
@@ -916,15 +918,26 @@ def test_e2e_trace_view_replaces_message_area():
         _t.sleep(0.5)
         toggle = _make_trace_toggle_cb(model, session)
 
+        # ★ 稳定性（2026-08-16）：真实渲染循环（10Hz）在 xdist 并行/高负载
+        #   下可能延迟——固定 sleep 偶发不足导致断言误报。改为轮询等待
+        #   pyte 重放屏幕状态满足条件（带超时兜底），保留原断言语义。
+        def _screen_text():
+            scr = pyte.Screen(80, 24)
+            pyte.Stream(scr).feed(stream.getvalue())
+            return "\n".join(scr.display)
+
+        def _wait_text(cond, timeout=5.0):
+            deadline = _t.time() + timeout
+            while _t.time() < deadline:
+                if cond(_screen_text()):
+                    return True
+                _t.sleep(0.1)
+            return cond(_screen_text())
+
         # ── 打开轨迹视图 ──
         toggle()
-        _t.sleep(0.3)
-        out = stream.getvalue()
-        screen = pyte.Screen(80, 24)
-        pyte.Stream(screen).feed(out)
-        lines = screen.display
-        joined = "\n".join(lines)
-        assert "轨迹 Trace" in joined, "轨迹头部应显示"
+        assert _wait_text(lambda t: "轨迹 Trace" in t), "轨迹头部应显示"
+        joined = _screen_text()
         assert "轮次 1" in joined, "轮次分隔应显示"
         assert "回答 2" in joined, "台账摘要/检查器应含最新回答"
         assert "\u2726" not in joined, "消息区标题栏（✦）不应显示"
@@ -933,13 +946,8 @@ def test_e2e_trace_view_replaces_message_area():
 
         # ── 关闭轨迹视图 ──
         toggle()
-        _t.sleep(0.3)
-        out2 = stream.getvalue()
-        screen2 = pyte.Screen(80, 24)
-        pyte.Stream(screen2).feed(out2)
-        lines2 = screen2.display
-        joined2 = "\n".join(lines2)
-        assert "轨迹 Trace" not in joined2, "轨迹头部应消失"
+        assert _wait_text(lambda t: "轨迹 Trace" not in t), "轨迹头部应消失"
+        joined2 = _screen_text()
         # 非全屏流动模型：长聊天文档顶部（✦ 标题栏）滚出可见区——以聊天
         # 内容恢复为准（思考/回答角色头可见即消息区已恢复）
         assert "思考 2" in joined2, "聊天推理内容应恢复显示"
@@ -984,3 +992,529 @@ def test_e2e_trace_view_streaming_tail_follow():
         assert "追加" in sel_lines[-1], "尾部跟随应选中最新追加记录"
     finally:
         session.stop()
+
+
+# ═══════════════════════════════════════════════════════════
+# 9. subagent 轨迹嵌套（2026-08-16 用户需求）
+# ═══════════════════════════════════════════════════════════
+# 在轨迹 Trace 界面按回车，如果选中的是 subagent 记录，轨迹就显示该
+# subagent 的轨迹 Trace（内容与 mainagent 一样：左台账 + 右检查器，
+# 数据源 = SubAgent 完整消息列表 → system/user/思考/回答/工具记录）。
+
+def test_register_subagent_injects_messages():
+    """register_subagent 把 SubAgent.messages/prompt 引用注入槽位（实时增长）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "解析模块", status="running")
+
+        class _StubAgent:
+            def __init__(self):
+                self.messages = [{"role": "user", "content": "读取 user.py"}]
+                self.prompt = "读取 user.py"
+
+        agent = _StubAgent()
+        ctl.register_subagent("agent-1", agent)
+        slot = ctl._store._agents["agent-1"]
+        assert slot.messages is agent.messages, "messages 应为同一列表引用"
+        assert slot.prompt == "读取 user.py"
+        # 实时增长（同一引用——轨迹视图跟随显示最新内容）
+        agent.messages.append({"role": "assistant", "content": "解析完成。",
+                               "reasoning_content": None})
+        assert slot.messages is agent.messages
+        assert len(slot.messages) == 2
+    finally:
+        ctl._store.clear()
+
+
+def test_build_subagent_trace_records_from_messages():
+    """subagent 轨迹：slot.messages → 与 mainagent 同构记录（消息列表构建）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "解析模块", status="done")
+        slot = ctl._store._agents["agent-1"]
+        slot.messages = [
+            {"role": "system", "content": "你是子代理。"},
+            {"role": "user", "content": "读取 user.py"},
+            {"role": "assistant", "content": None,
+             "reasoning_content": "先读文件。",
+             "tool_calls": [{"id": "c1", "function": {
+                 "name": "read_file", "arguments": '{"path": "user.py"}'}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "class User: ..."},
+            {"role": "assistant", "content": "解析完成。", "reasoning_content": None},
+        ]
+        records, rows = build_subagent_trace_records("agent-1", None)
+        assert [r.kind for r in records] == ["system", "user", "reasoning", "tool", "content"]
+        # 工具调用 + 返回合并一条（与 mainagent 语义一致）
+        assert records[3].summary == "read_file user.py"
+        assert records[3].result == "class User: ..."
+        # 与 mainagent 的 _records_from_messages 完全同构
+        main_records, _ = _records_from_messages(slot.messages)
+        assert [r.kind for r in main_records] == [r.kind for r in records]
+        assert main_records[3].summary == records[3].summary
+    finally:
+        ctl._store.clear()
+
+
+def test_build_subagent_trace_records_fallback_slot():
+    """无 messages（未注册）→ 回退槽位活动记录（提词 + 工具历史 + 结果）。"""
+    from src.tui._subagent_state import _ToolRecord
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "解析模块", status="done")
+        slot = ctl._store._agents["agent-1"]
+        slot.prompt = "读取 user.py"
+        slot.result_text = "解析完成"
+        rec = _ToolRecord(tool_name="read_file", detail="user.py")
+        rec.phase = "done"
+        slot.tool_history.append(rec)
+        records, rows = build_subagent_trace_records("agent-1", None)
+        assert [r.kind for r in records] == ["user", "tool", "content"]
+        assert records[0].summary == "读取 user.py"
+        assert records[1].summary == "read_file user.py"
+        assert records[1].status == "done"
+        assert records[2].summary == "解析完成"
+        assert rows[-1] is records[-1]
+    finally:
+        ctl._store.clear()
+
+
+def test_build_subagent_trace_records_missing_slot():
+    """槽位不存在 → 空记录（防御，不崩溃）。"""
+    records, rows = build_subagent_trace_records("ghost-agent", None)
+    assert records == []
+    assert rows == []
+
+
+def test_subagent_trace_deps_tracks_growth_and_status():
+    """subagent 轨迹指纹：消息增长 / 状态变化触发重建。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "解析", status="running")
+        slot = ctl._store._agents["agent-1"]
+        slot.messages = [{"role": "user", "content": "hi"}]
+        fp1 = _subagent_trace_deps("agent-1")
+        # 消息增长 → 指纹变化
+        slot.messages.append({"role": "assistant", "content": "ok",
+                              "reasoning_content": None})
+        fp2 = _subagent_trace_deps("agent-1")
+        assert fp1 != fp2, "消息增长应触发指纹变化"
+        # 状态变化 → 指纹变化
+        slot.status = "done"
+        fp3 = _subagent_trace_deps("agent-1")
+        assert fp2 != fp3, "状态变化应触发指纹变化"
+        # 无变化 → 稳定
+        assert _subagent_trace_deps("agent-1") == fp3
+        # 槽位缺失 → 指纹含 missing 标记（区别于正常）
+        assert _subagent_trace_deps("ghost") != fp3
+    finally:
+        ctl._store.clear()
+
+
+def test_build_trace_records_message_source_appends_subagent():
+    """消息源模式：subagent 记录也追加（subagent_label 填充——Enter 下钻数据源）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "解析模块", status="done")
+        m = AppModel()
+        m.message_source = lambda: _sample_messages()
+        records, rows = build_trace_records(m)
+        assert records[-1].kind == "subagent", "消息源模式应含 subagent 记录"
+        sub = records[-1]
+        assert sub.subagent_label == "agent-1"
+        assert rows[-1] is sub
+    finally:
+        ctl._store.clear()
+
+
+def test_inspector_subagent_hint():
+    """subagent 记录检查器：末尾追加「Enter 查看子代理轨迹」提示。"""
+    rec = TraceRecord(
+        index=1, kind="subagent", summary="agent-1 · 解析模块",
+        subagent_label="agent-1", lines=["解析模块"],
+    )
+    children = _inspector_children(rec, right_w=40, vh=10)
+    texts = [str(c.props.get("children", "")) for c in children]
+    assert any("Enter" in t and "子代理" in t for t in texts), "应有下钻提示"
+
+
+def test_inspector_non_subagent_no_hint():
+    """非 subagent 记录检查器无下钻提示（零回归）。"""
+    rec = TraceRecord(index=1, kind="content", summary="回答", lines=["hi"])
+    children = _inspector_children(rec, right_w=40, vh=10)
+    texts = [str(c.props.get("children", "")) for c in children]
+    assert not any("子代理" in t for t in texts)
+
+
+def test_trace_view_enter_subagent_opens_subagent_trace():
+    """主轨迹 Enter subagent 记录 → 进入 subagent 轨迹（嵌套 TraceView）：
+    标题变「子代理轨迹」；Esc 返回主轨迹；再次 Esc 关闭整个视图。"""
+    from src.tui.ink.element import h as h_el
+    from src.tui.ink.reconciler import Reconciler
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "解析模块", status="done")
+        slot = ctl._store._agents["agent-1"]
+        slot.messages = [
+            {"role": "user", "content": "读取 user.py"},
+            {"role": "assistant", "content": "解析完成。", "reasoning_content": None},
+        ]
+        m = _make_model_with_blocks()
+        m.trace_open = True
+        m.trace_selected = -1  # 跟随尾部（subagent 记录为末条）
+
+        rec = Reconciler()
+        root = rec.create_root()
+        rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+        router = rec._build_input_router(root)
+        # Enter（选中 subagent 记录）→ 进入 subagent 轨迹
+        assert router(KeyEvent(kind="enter", raw=b"\r")) is True
+        assert m.trace_subagent_label == "agent-1"
+        assert m.trace_selected == -1
+        assert m.trace_open is True
+
+        # 下一帧渲染 → subagent 轨迹（数据源 = subagent messages）
+        rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+        el, fiber = _render(TraceView, {"model": m, "width": 100})
+        header = list(el.children)[0]
+        header_text = "".join(r.text for r in header.props.get("styled", []))
+        assert "子代理轨迹 agent-1" in header_text, "subagent 轨迹标题应显示 label"
+        assert "轨迹 Trace" not in header_text.split("·")[0], "主轨迹标题应替换"
+
+        # subagent 轨迹台账数据源 = subagent messages（user + 回答）
+        row_el = list(el.children)[1]
+        from src.tui.ink.widgets.listview import ListView
+        left = list(row_el.children)[0]
+        assert left.type is ListView
+        items = left.props["items"]
+        texts = []
+        for item in items:
+            if item is None:
+                continue
+            texts.append(item.summary)
+        assert "读取 user.py" in texts
+        assert "解析完成。" in texts
+
+        # Esc → 返回主轨迹（trace_open 保持 True）
+        handler = _input_handler(fiber)
+        assert handler(KeyEvent(kind="escape", raw=b"\x1b")) is True
+        assert m.trace_subagent_label is None
+        assert m.trace_open is True
+
+        # 再次 Esc → 关闭整个轨迹视图
+        el2, fiber2 = _render(TraceView, {"model": m, "width": 100})
+        handler2 = _input_handler(fiber2)
+        assert handler2(KeyEvent(kind="escape", raw=b"\x1b")) is True
+        assert m.trace_open is False
+    finally:
+        ctl._store.clear()
+
+
+def test_trace_view_enter_non_subagent_passes_through():
+    """主轨迹 Enter 非 subagent 记录 → 放行（不进入 subagent 轨迹）。"""
+    from src.tui.ink.element import h as h_el
+    from src.tui.ink.reconciler import Reconciler
+    m = _make_model_with_blocks()  # 无 subagent 记录
+    m.trace_open = True
+    m.trace_selected = -1
+    rec = Reconciler()
+    root = rec.create_root()
+    rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+    router = rec._build_input_router(root)
+    assert router(KeyEvent(kind="enter", raw=b"\r")) is False
+    assert getattr(m, "trace_subagent_label", None) is None
+    assert m.trace_open is True
+
+
+def test_trace_view_ctrl_h_returns_from_subagent_trace():
+    """subagent 轨迹内 Ctrl+H → 返回主轨迹（不直接关闭整个视图）。"""
+    from src.tui.ink.element import h as h_el
+    from src.tui.ink.reconciler import Reconciler
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "解析模块", status="done")
+        slot = ctl._store._agents["agent-1"]
+        slot.messages = [{"role": "user", "content": "读取 user.py"}]
+        m = _make_model_with_blocks()
+        m.trace_open = True
+        m.trace_selected = -1
+        m.trace_subagent_label = "agent-1"  # 已在 subagent 轨迹
+        rec = Reconciler()
+        root = rec.create_root()
+        rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+        router = rec._build_input_router(root)
+        # Ctrl+H → 返回主轨迹（不关闭 trace_open）
+        assert router(KeyEvent(kind="ctrl_key", char="\x08", raw=b"\x08")) is True
+        assert m.trace_subagent_label is None
+        assert m.trace_open is True
+    finally:
+        ctl._store.clear()
+
+
+# ═══════════════════════════════════════════════════════════
+# 10. subagent 动态部分显示（2026-08-16 用户需求：跟 mainagent 一样）
+# ═══════════════════════════════════════════════════════════
+# subagent 轨迹的动态部分（运行中内容）与 mainagent 轨迹语义一致：
+# 运行中工具 → running tool 记录；运行中模型阶段（思考/生成）→ running
+# reasoning/content 占位记录；完成后由消息记录接管（无重复）。
+
+def _make_running_slot(label="agent-1", description="实时解析"):
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    ctl._store.clear()
+    ctl._store.add_agent(label, description, status="running")
+    return ctl, ctl._store._agents[label]
+
+
+def test_subagent_live_records_running_tool():
+    """subagent 动态部分：运行中工具 → running tool 记录（调用/耗时/● running）。"""
+    from src.tui._subagent_state import _ToolRecord
+    from src.tui.app.trace import _subagent_live_records
+    ctl, slot = _make_running_slot()
+    try:
+        rec = _ToolRecord(tool_name="read_file", detail="user.py")
+        rec.phase = "running"
+        slot.tool_history.append(rec)
+        out, rows = [], []
+        _subagent_live_records([0], out, rows, slot)
+        assert len(out) == 1
+        assert out[0].kind == "tool"
+        assert out[0].status == "running"
+        assert out[0].summary == "read_file user.py"
+        assert out[0].result == "（运行中…）"
+        assert out[0].time_seconds is not None and out[0].time_seconds >= 0
+        assert rows[-1] is out[0]
+    finally:
+        ctl._store.clear()
+
+
+def test_subagent_live_records_thinking_and_answering():
+    """subagent 动态部分：thinking → 实际思考内容；answering → 思考+回答内容。"""
+    from src.tui.app.trace import _subagent_live_records
+    ctl, slot = _make_running_slot()
+    try:
+        slot.model_phase = "thinking"
+        slot.live_reasoning = "第一行思考\n第二行思考"
+        out, rows = [], []
+        _subagent_live_records([0], out, rows, slot)
+        assert [r.kind for r in out] == ["reasoning"]
+        assert out[0].status == "running"
+        assert out[0].summary == "第一行思考"
+        assert out[0].lines == ["第一行思考", "第二行思考"]
+        assert rows[-1] is out[0]
+        # answering → 思考（本轮若有）+ 回答（正在生成的实际内容）
+        slot.model_phase = "answering"
+        slot.live_content = "正在生成回答"
+        out2, rows2 = [], []
+        _subagent_live_records([0], out2, rows2, slot)
+        assert [r.kind for r in out2] == ["reasoning", "content"]
+        assert out2[0].kind == "reasoning" and out2[0].summary == "第一行思考"
+        assert out2[1].kind == "content"
+        assert out2[1].summary == "正在生成回答"
+        assert out2[1].lines == ["正在生成回答"]
+    finally:
+        ctl._store.clear()
+
+
+def test_subagent_live_records_no_live_content_skips():
+    """subagent 动态部分：阶段已到但无流式内容（尚未生成）→ 不显示占位
+    （对齐 mainagent _live_records：开放块无行不追加记录）。"""
+    from src.tui.app.trace import _subagent_live_records
+    ctl, slot = _make_running_slot()
+    try:
+        slot.model_phase = "thinking"
+        out, rows = [], []
+        _subagent_live_records([0], out, rows, slot)
+        assert out == []
+        slot.model_phase = "answering"
+        _subagent_live_records([0], out, rows, slot)
+        assert out == []
+    finally:
+        ctl._store.clear()
+
+
+def test_subagent_live_records_skips_non_running():
+    """subagent 动态部分：非 running 状态（done/fail/error）无动态记录——
+    即使残留 live 内容/阶段也不显示（消息记录已接管）。"""
+    from src.tui.app.trace import _subagent_live_records
+    ctl, slot = _make_running_slot()
+    try:
+        slot.status = "done"
+        slot.model_phase = "thinking"
+        slot.live_reasoning = "残留思考内容"  # 终态不应显示
+        out, rows = [], []
+        _subagent_live_records([0], out, rows, slot)
+        assert out == []
+    finally:
+        ctl._store.clear()
+
+
+def test_store_append_live_accumulates_and_phase_resets():
+    """StateStore.append_live 累积流式内容；set_model_phase 新阶段重置。"""
+    ctl, slot = _make_running_slot()
+    try:
+        ctl._store.append_live("agent-1", "reasoning", "思考")
+        ctl._store.append_live("agent-1", "reasoning", "内容")
+        ctl._store.append_live("agent-1", "content", "回答")
+        assert slot.live_reasoning == "思考内容"
+        assert slot.live_content == "回答"
+        # 非 subagent label（main agent）无槽位 → 零成本跳过
+        ctl._store.append_live("main", "reasoning", "x")
+        assert slot.live_reasoning == "思考内容"
+        # 空文本跳过
+        ctl._store.append_live("agent-1", "reasoning", "")
+        assert slot.live_reasoning == "思考内容"
+        # 新阶段 thinking → 重置 live_reasoning
+        ctl._store.set_model_phase("agent-1", "thinking", "")
+        assert slot.live_reasoning == ""
+        assert slot.live_content == "回答"  # content 不受 thinking 影响
+        ctl._store.append_live("agent-1", "reasoning", "新思考")
+        # 新阶段 answering → 重置 live_content
+        ctl._store.set_model_phase("agent-1", "answering", "")
+        assert slot.live_content == ""
+        assert slot.live_reasoning == "新思考"  # reasoning 不受 answering 影响
+        ctl._store.append_live("agent-1", "content", "新回答")
+        ctl._store.append_live("agent-1", "content", "续")
+        assert slot.live_content == "新回答续"
+        # 同阶段重复事件不重置（accumulate 继续）
+        ctl._store.set_model_phase("agent-1", "answering", "")
+        assert slot.live_content == "新回答续"
+    finally:
+        ctl._store.clear()
+
+
+def test_build_subagent_trace_records_with_live_dynamic():
+    """subagent 轨迹：消息记录 + 动态部分（运行中工具 / 流式思考内容）合并。"""
+    from src.tui._subagent_state import _ToolRecord
+    ctl, slot = _make_running_slot()
+    try:
+        slot.messages = [
+            {"role": "user", "content": "读取 user.py"},
+            {"role": "assistant", "content": "解析完成。", "reasoning_content": None},
+        ]
+        # 运行中工具 + 思考阶段（实际流式内容动态累积）
+        rec = _ToolRecord(tool_name="grep", detail="class User")
+        rec.phase = "running"
+        slot.tool_history.append(rec)
+        slot.model_phase = "thinking"
+        slot.live_reasoning = "先搜索 class User 的定义"
+        records, rows = build_subagent_trace_records("agent-1", None)
+        kinds = [r.kind for r in records]
+        # user + content（消息记录）→ tool running（动态）→ reasoning（动态）
+        assert kinds == ["user", "content", "tool", "reasoning"]
+        assert records[-2].status == "running"
+        assert records[-2].summary == "grep class User"
+        assert records[-1].kind == "reasoning" and records[-1].status == "running"
+        assert records[-1].summary == "先搜索 class User 的定义"
+        # 完成后：工具 phase done + 阶段清空 + live 被 messages 接管 → 动态消失
+        rec.phase = "done"
+        slot.model_phase = ""
+        slot.live_reasoning = ""
+        slot.status = "done"
+        records2, _ = build_subagent_trace_records("agent-1", None)
+        assert [r.kind for r in records2] == ["user", "content"]
+        assert all(r.status != "running" for r in records2)
+    finally:
+        ctl._store.clear()
+
+
+def test_subagent_trace_deps_tracks_live_dynamic():
+    """subagent 轨迹指纹：模型阶段 / 工具 phase / 流式内容长度变化触发重建。"""
+    from src.tui._subagent_state import _ToolRecord
+    ctl, slot = _make_running_slot()
+    try:
+        slot.messages = [{"role": "user", "content": "hi"}]
+        fp1 = _subagent_trace_deps("agent-1")
+        # 工具 parsing → running → done 状态推进
+        rec = _ToolRecord(tool_name="read_file", detail="a.py")
+        rec.phase = "parsing"
+        slot.tool_history.append(rec)
+        fp2 = _subagent_trace_deps("agent-1")
+        assert fp1 != fp2, "新增工具记录应触发指纹变化"
+        rec.phase = "running"
+        fp3 = _subagent_trace_deps("agent-1")
+        assert fp2 != fp3, "工具 phase 变化应触发指纹变化"
+        rec.phase = "done"
+        slot.model_phase = "thinking"
+        fp4 = _subagent_trace_deps("agent-1")
+        assert fp3 != fp4, "模型阶段变化应触发指纹变化"
+        # 流式内容增长 → 指纹变化（动态部分逐帧重建）
+        slot.live_reasoning = "思考第一段"
+        fp5 = _subagent_trace_deps("agent-1")
+        assert fp4 != fp5, "流式思考内容增长应触发指纹变化"
+        slot.live_reasoning = "思考第一段续写"
+        fp6 = _subagent_trace_deps("agent-1")
+        assert fp5 != fp6, "流式思考内容续写应触发指纹变化"
+        slot.live_content = "回答内容"
+        fp7 = _subagent_trace_deps("agent-1")
+        assert fp6 != fp7, "流式回答内容出现应触发指纹变化"
+        # 无变化 → 稳定
+        assert _subagent_trace_deps("agent-1") == fp7
+    finally:
+        ctl._store.clear()
+
+
+# ═══════════════════════════════════════════════════════════
+# 11. 检查器省略提示（2026-08-16 用户需求：思考/回答改「前 N 行省略」）
+# ═══════════════════════════════════════════════════════════
+# 思考（reasoning）/回答（content）为流式生成内容——检查器优先显示最新
+# 内容（尾部），被截断时置顶提示「… 前 N 行省略」；其余种类从头部显示
+# （省略尾部，「… 后 N 行省略」）。
+
+def test_inspector_content_tail_first_omitted_front():
+    """回答（content）：长内容尾部优先显示 + 「… 前 N 行省略」置顶。"""
+    rec = TraceRecord(index=1, kind="content", summary="回答")
+    rec._detail_lines = [f"旧行{i}" for i in range(80)]
+    children = _inspector_children(rec, right_w=40, vh=10)
+    texts = [str(c.props.get("children", "")) for c in children]
+    # 省略提示置顶（元信息之后、内容之前）且为「前 N 行省略」
+    assert "省略" in texts[1] and "前" in texts[1], texts[:3]
+    assert "后" not in texts[1]
+    # 旧内容不显示、最新内容显示（尾部优先）
+    assert "旧行0" not in texts
+    assert "旧行79" in texts
+
+
+def test_inspector_reasoning_tail_first_omitted_front():
+    """思考（reasoning）：长内容尾部优先显示 + 「… 前 N 行省略」置顶。"""
+    rec = TraceRecord(index=1, kind="reasoning", summary="思考")
+    rec._detail_lines = [f"思考行{i}" for i in range(50)]
+    children = _inspector_children(rec, right_w=40, vh=10)
+    texts = [str(c.props.get("children", "")) for c in children]
+    assert any("省略" in t and "前" in t for t in texts)
+    assert "思考行0" not in texts
+    assert "思考行49" in texts
+
+
+def test_inspector_tool_keeps_tail_omitted():
+    """工具（tool）：保持从头部显示 + 「… 后 N 行省略」（零回归）。"""
+    rec = TraceRecord(index=1, kind="tool", summary="bash ls")
+    rec._detail_lines = [f"输出行{i}" for i in range(80)]
+    children = _inspector_children(rec, right_w=40, vh=10)
+    texts = [str(c.props.get("children", "")) for c in children]
+    assert any("省略" in t and "后" in t for t in texts)
+    assert "输出行0" in texts, "工具从头部显示"
+    assert "输出行79" not in texts
+
+
+def test_inspector_short_content_no_omitted_hint():
+    """短内容（思考/回答）不截断 → 无省略提示（零回归）。"""
+    rec = TraceRecord(index=1, kind="content", summary="短回答")
+    rec._detail_lines = ["短内容"]
+    children = _inspector_children(rec, right_w=40, vh=10)
+    texts = [str(c.props.get("children", "")) for c in children]
+    assert not any("省略" in t for t in texts)
+    assert "短内容" in texts
