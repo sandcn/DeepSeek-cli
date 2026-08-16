@@ -10,7 +10,9 @@ Ctrl+H（0x08）打开/关闭：App 在 ``model.trace_open`` 时**整屏只渲�
     选中行整行高亮（▶ 标记 + 背景色）；仅渲染可见窗口（虚拟窗口，行数 =
     终端高度自适应）；
   - 右栏「检查器」：选中记录详情（#N 种类 · 状态图标/耗时/token · 内容行，
-    按栏宽换行 + 视口行数截断）。
+    按栏宽换行 + 视口行数截断；**思考/回答经流式 markdown 渲染**——标题/
+    粗体/行内码/代码高亮/表格等格式化，与聊天区内容渲染同管线，内容增长
+    自动重渲染）。
 
 记录数据：``build_trace_records``（agent 消息列表为主数据源；use_memo 指纹
 缓存——消息/块内容变化才重建；详情行仅对选中记录惰性提取）。
@@ -152,29 +154,239 @@ def _sep_row_runs(n: int, left_w: int) -> list:
 
 def _detail_lines_of(rec) -> list:
     """选中记录详情行（惰性提取：subagent 记录自带 lines；块记录经
-    ``block_detail_lines`` 按需提取）。"""
+    ``block_detail_lines`` 按需提取）。
+
+    ★ review 修复（P3-1）：**块记录（source_block 非空）优先块路径**——
+    与 ``_detail_deps`` 的块优先键一致（live 记录同时携带 lines 快照与
+    source_block：修复前 lines 快照优先，快照随 records 重建漂移而
+    ``_detail_deps`` 用块引用 → 同长原地替换场景 deps 不变但快照陈旧）。
+    块路径实时反映 block.lines 内容（流式增长触发 deps 行数变化重建）。
+    """
     if rec is None:
         return []
+    block = getattr(rec, "source_block", None)
+    if block is not None:
+        return block_detail_lines(block)
     lines = getattr(rec, "lines", None) or []
     if lines:
         return lines
-    block = getattr(rec, "source_block", None)
-    if block is None:
-        return []
+    return []
     return block_detail_lines(block)
 
 
 def _detail_deps(rec) -> tuple:
-    """详情行 use_memo 依赖（块记录：行列表身份 + 行数；subagent：lines 身份）。"""
+    """详情行 use_memo 依赖（块记录：行列表身份 + 行数；subagent：lines 身份）。
+
+    ★ 2026-08-17（review 修复）：**块记录（source_block 非空）优先块路径**
+    ——live 记录同时携带 lines 快照（随 records 重建漂移）与 source_block
+    （实时引用），修复前 ``_detail_deps`` 优先 lines 快照分支：流式期间
+    records 每帧重建 → lines 新 id → use_memo 恒 miss → 每帧重新提取快照
+    （无用功）。块路径用 block.lines 稳定引用 + 行数（流式增长触发重建），
+    与 ``_md_detail_rows`` 的块缓存键一致（单一数据源语义）。
+    """
     if rec is None:
         return (None,)
+    block = getattr(rec, "source_block", None)
+    if block is not None:
+        return (id(getattr(block, "lines", None)), len(getattr(block, "lines", None) or []))
     lines = getattr(rec, "lines", None) or []
     if lines:
         return (id(lines), getattr(rec, "index", 0))
+    return (None,)
+
+
+def _clamp_color(v):
+    """renderer 色号钳制（review 修复：bool / 越界 int / 非 int 非 tuple
+    色号会让 tui Style 构造抛 ValueError 或生成非法 ANSI——一律回退 None，
+    丢色不崩溃）。
+
+    注意 bool 是 int 子类且 True∈[0,255]——但 ``Style.__post_init__`` 对
+    bool 显式抛 ValueError（bool 色号语义错误），故 bool 必须回退 None
+    （修复前原样放行 → Style 构造异常传播中断检查器渲染）。
+    """
+    if isinstance(v, bool) or not isinstance(v, int):
+        return None
+    return v if 0 <= v <= 255 else None
+
+
+def _to_tui_style(rs, kind: str):
+    """renderer.ansi.Style → tui.core.Style（检查器 markdown 行用）。
+
+    RGB 三元组 fg/bg → ``TrueColor``（tui 样式类型）；reasoning 叠加暗灰
+    弱化样式（对齐 chat_view 推理块弱化语义：基础样式 fg 覆盖渲染色、
+    布尔属性 OR 保留——与 ``_block_styled_lines`` 的
+    ``(r.style or Style()).merge(_S_REASONING)`` 同语义，_S_REASONING 与
+    _S_DIM 同为 fg=242 暗灰）。非法色号（越界 int / 越界 RGB）钳制回退
+    None（防御：异常数据不中断检查器渲染）。
+    """
+    if rs is None:
+        st = None
+    else:
+        fg = rs.fg
+        if isinstance(fg, tuple):
+            from src.tui.core.color import TrueColor
+            try:
+                fg = TrueColor(*fg)
+            except Exception:
+                fg = None
+        else:
+            fg = _clamp_color(fg)
+        bg = rs.bg
+        if isinstance(bg, tuple):
+            from src.tui.core.color import TrueColor
+            try:
+                bg = TrueColor(*bg)
+            except Exception:
+                bg = None
+        else:
+            bg = _clamp_color(bg)
+        st = Style(fg=fg, bg=bg, bold=rs.bold, italic=rs.italic,
+                   dim=rs.dim, underline=rs.underline)
+    if kind == "reasoning":
+        st = _S_DIM if st is None else st.merge(_S_DIM)
+    return st
+
+
+def _convert_ansi_row(aline, right_w: int, kind: str) -> list:
+    """单条 AnsiLine → StyledRun 行列表（超宽按 right_w 样式安全换行）。
+
+    空行（无 runs / 纯文本为空——段落/结构分隔）→ 单个空格占位行
+    ``[StyledRun(" ", 样式)]``（review 修复：TEXT styled=[] 渲染 0 行 h=0
+    不绘制——空行必须有占位才能保留段落/表格结构；占位行带 kind 基础
+    样式——reasoning 空行与其他行同暗灰，视觉一致）。
+
+    防御（review 修复 P3）：单 run 样式转换异常（非法色号等）→ 该 run
+    回退默认样式（不中断整行/检查器渲染）。
+    """
+    if not getattr(aline, "runs", None) or not getattr(aline, "plain", ""):
+        return [[StyledRun(" ", _to_tui_style(None, kind))]]
+    from src.renderer.ansi.helpers import wrap_line
+    out: list = []
+    for wl in wrap_line(aline, right_w):
+        runs: list = []
+        for r in wl.runs:
+            if not r.text:
+                continue
+            try:
+                st = _to_tui_style(r.style, kind)
+            except Exception:
+                st = None
+            runs.append(StyledRun(r.text, st))
+        out.append(runs if runs else [StyledRun(" ", _to_tui_style(None, kind))])
+    return out
+
+
+def _block_styled_rows(block, right_w: int, kind: str) -> list:
+    """块渲染输出行 → StyledRun 行列表（缓存；块/live 记录检查器内容）。
+
+    ★ 2026-08-17（用户需求：回答/思考/system 用 markdown 显示在右边）：
+    块（model.blocks）内 AnsiLine 是**流式 markdown 渲染管线的输出**（标题
+    青色粗体/代码 pygments 高亮/列表符号等已带样式）——直接复用（AnsiLine
+    runs → StyledRun），**不二次 markdown 解析**（二次解析会把渲染后的代码
+    块标题行 `` ```python [python]`` 误判为「语言 + 首行内容」）。
+
+    **流式（review 修复 P2：增量缓存）**：block.lines 为 append-only（渲染
+    管线只追加不修改）——缓存记录已转换行数，流式增长仅转换**新增行**
+    （既有行引用复用），避免每帧全量重建 O(n²)。行数倒退 / right_w / kind
+    变化（非 append-only 异常）→ 全量重建。缓存挂载到 block
+    （``_insp_md_cache = (key, rows, converted_count)``）；key = (lines
+    引用 id, right_w, kind)。**内容不可变契约**：block.lines 内 AnsiLine
+    只追加不原地修改（与 ``_wrap_cache`` BUG-71 强制约定同语义）。
+    """
+    blines = getattr(block, "lines", None) or []
+    cache = getattr(block, "_insp_md_cache", None)
+    if cache is not None:
+        ckey, crows, cconv = cache
+        if (ckey == (id(blines), right_w, kind) and len(blines) >= cconv):
+            # 增量路径：仅转换新增行（流式 append-only）
+            for aline in blines[cconv:]:
+                crows.extend(_convert_ansi_row(aline, right_w, kind))
+            block._insp_md_cache = (ckey, crows, len(blines))
+            return crows
+    # 全量重建（缓存 miss / 参数变化 / 行数倒退）
+    rows: list = []
+    for aline in blines:
+        rows.extend(_convert_ansi_row(aline, right_w, kind))
+    block._insp_md_cache = ((id(blines), right_w, kind), rows, len(blines))
+    return rows
+
+
+def _lines_fp(lines) -> int:
+    """lines 内容指纹（缓存键：records 流式重建时静态记录内容未变 → 命中
+    → 零重渲染；内容变化 → 指纹变化 → 重建）。
+
+    ``hash(tuple(lines))`` 每次 O(内容)（远低于全量 markdown 渲染成本）；
+    hash 碰撞仅导致缓存陈旧/重建（不崩溃，可接受）。lines 元素不可 hash
+    （异常数据）回退引用 id（保底）。
+    """
+    try:
+        return hash(tuple(lines))
+    except Exception:
+        return id(lines)
+
+
+#: 内联 markdown 渲染模块级缓存（review 修复 P1-3）：键 = (内容指纹, 行数,
+#: right_w, kind) → rows。流式期间 records 每帧重建（新 TraceRecord）——
+#: rec 级缓存恒冷（新 rec 无 _md_detail_cache），模块级缓存**跨 rec 命中**
+#: （静态内联记录内容未变 → 指纹相同 → 零重渲染）；内容变化（live 记录
+#: 增长）指纹变化 → miss → 重建。渲染结果纯函数（同输入同输出），跨 rec
+#: 共享安全。有界防无限增长（超限清空重建——miss 仅多一次渲染，无正确性
+#: 影响）。
+_MD_RENDER_CACHE: dict = {}
+_MD_RENDER_CACHE_MAX = 256
+
+
+def _md_detail_rows(rec, right_w: int, kind: str) -> list:
+    """reasoning/content/system 记录详情 → markdown 渲染 StyledRun 行（缓存）。
+
+    ★ 2026-08-17（用户需求：回答/思考/system 用流式 markdown 显示在右边）：
+    **数据源分支**：
+      - ``rec.source_block`` 非空（块/live 记录——块内 AnsiLine 已是流式
+        markdown 渲染管线的输出，带标题/代码高亮等样式）→ 直接复用
+        ``_block_styled_rows``（不二次解析，渲染输出二次解析会把代码块
+        标题行 `` ```python [python]`` 误判为「语言 + 首行内容」）；
+      - 内联 lines（消息源模式 = reasoning_content/content/system 提示词
+        的**原始 markdown 文本**）→ 经 ``apply._render_markdown_lines``
+        （与聊天区流式内容同一渲染管线）重新渲染。
+
+    渲染行按 right_w 样式安全换行（``wrap_line``）→ StyledRun 行。**流式
+    （review 修复 P1-3）**：缓存用**模块级内容指纹**（``_MD_RENDER_CACHE``
+    + ``_lines_fp``）——流式期间 ``_live_fingerprint`` 变化驱动 records
+    整体重建，静态内联记录（system 提示词/历史回答）每次重建产生新
+    TraceRecord + 新 lines 引用，但内容未变 → 指纹命中 → 零重渲染（修复前
+    每帧全量 markdown 渲染 + TOC；rec 级缓存因新 rec 恒冷无效）。live 记录
+    （内容增长）指纹变化 → miss → 重建（流式动态更新）。无内联源码且无块
+    → 空列表（纯文本回退）。渲染异常（``_render_markdown_lines`` 抛错）→
+    回退空列表（不中断检查器）。
+
+    key = (内容指纹, 行数, right_w, kind)。
+    """
+    right_w = max(1, right_w)  # review 修复：right_w<=0 外部调用防御
     block = getattr(rec, "source_block", None)
-    if block is None:
-        return (None,)
-    return (id(getattr(block, "lines", None)), len(getattr(block, "lines", None) or []))
+    if block is not None:
+        return _block_styled_rows(block, right_w, kind)
+    lines = getattr(rec, "_detail_lines", None)
+    if lines is None:
+        lines = getattr(rec, "lines", None) or []
+    if not lines:
+        return []
+    key = (_lines_fp(lines), len(lines), right_w, kind)
+    cached = _MD_RENDER_CACHE.get(key)
+    if cached is not None:
+        return cached
+    from src.tui.app.apply import _render_markdown_lines
+    text = "\n".join(str(ln) for ln in lines)
+    try:
+        ansi_lines = _render_markdown_lines(text, max(right_w, 20))
+    except Exception:
+        ansi_lines = []
+    rows: list = []
+    for aline in ansi_lines:
+        rows.extend(_convert_ansi_row(aline, right_w, kind))
+    _MD_RENDER_CACHE[key] = rows
+    if len(_MD_RENDER_CACHE) > _MD_RENDER_CACHE_MAX:
+        _MD_RENDER_CACHE.clear()  # 有界：超限清空重建（miss 仅多一次渲染）
+    return rows
 
 
 def _inspector_children(rec, right_w: int, vh: int) -> list:
@@ -235,43 +447,81 @@ def _inspector_children(rec, right_w: int, vh: int) -> list:
     #   最新行），被截断时置顶提示「… 前 N 行省略」（省略的是前部旧内容）；
     #   其余种类（system/user/tool/subagent/context）保持从头部显示（省略
     #   尾部，「… 后 N 行省略」）。
+    # ★ 2026-08-17（用户需求：回答/思考/system 用流式 markdown 显示在右边）：
+    #   reasoning/content/system 详情经 markdown 渲染管线（``_md_detail_rows``
+    #   ——消息源模式原始文本重新渲染 / 块记录直接复用渲染输出）显示带样式
+    #   StyledRun 行，内容增长（流式）自动重渲染（rec/block 缓存）；其余种类
+    #   保持纯文本按宽换行（零回归）。
     tail_first = kind in ("reasoning", "content")
-    total_lines = len(lines)
     segs: list = []
-    src_lines = reversed(lines) if tail_first else lines
-    for line in src_lines:
-        if not isinstance(line, str):
-            line = str(line)
-        for seg in _wrap_by_width(line, right_w):
+    md_rows: list = []
+    use_md = kind in ("reasoning", "content", "system")
+    if use_md:
+        md_rows = _md_detail_rows(rec, right_w, kind)
+    if use_md and md_rows:
+        total_lines = len(md_rows)
+        src_rows = reversed(md_rows) if tail_first else md_rows
+        for runs in src_rows:
             if shown >= budget:
                 truncated = True
                 break
-            segs.append(seg)
+            segs.append(runs)
             shown += 1
-        if truncated:
-            break
+    else:
+        # ★ review 修复（P1-2）：纯文本分支统计**换行后总行数**（单行拆
+        #   多行/截断提前 break 均计入）——省略提示数值 = 总行数 - 已显示
+        #   行数，修复前 ``len(lines) - shown + 1`` 用原始行数减换行后行数
+        #   可显示负数（如 1 行拆 11 行显示 8 行 → 1-8+1 = -2）。
+        total_lines = 0
+        for li, line in enumerate(lines):
+            if not isinstance(line, str):
+                line = str(line)
+            wrapped = _wrap_by_width(line, right_w)
+            total_lines += len(wrapped)
+            for seg in wrapped:
+                if shown >= budget:
+                    truncated = True
+                    break
+                segs.append(seg)
+                shown += 1
+            if truncated:
+                # 补算剩余行的换行数（省略提示数值准确）
+                for rest in lines[li + 1:]:
+                    r = str(rest) if not isinstance(rest, str) else rest
+                    total_lines += len(_wrap_by_width(r, right_w))
+                break
     if tail_first:
         segs.reverse()  # reversed 遍历恢复正序（省略提示在前、最新内容在后）
     if truncated:
+        omitted = max(1, total_lines - shown)
         if tail_first:
-            omitted = max(1, total_lines - shown)
             children.append(h(TEXT, {
                 "children": f"\u2026 前 {omitted} 行省略",
                 "style": _S_HINT, "height": 1, "key": "tinsp-omitted",
             }))
         else:
             children.append(h(TEXT, {
-                "children": f"\u2026 后 {len(lines) - shown + 1} 行省略",
+                "children": f"\u2026 后 {omitted} 行省略",
                 "style": _S_HINT, "height": 1, "key": "tinsp-omitted",
             }))
     for seg in segs:
-        children.append(h(TEXT, {
-            "children": seg if seg else " ",
-            "style": _S_DIM if kind == "reasoning" else _S_TEXT,
-            "height": 1,
-            "key": f"tinsp-{len(children)}",
-        }))
-    if not lines:
+        if isinstance(seg, list):
+            # markdown 渲染行（StyledRun 列表——children 纯文本仅供测试/
+            # 调试可见，渲染走 styled 优先分支）
+            children.append(h(TEXT, {
+                "children": "".join(r.text for r in seg) if seg else " ",
+                "styled": seg,
+                "height": 1,
+                "key": f"tinsp-{len(children)}",
+            }))
+        else:
+            children.append(h(TEXT, {
+                "children": seg if seg else " ",
+                "style": _S_DIM if kind == "reasoning" else _S_TEXT,
+                "height": 1,
+                "key": f"tinsp-{len(children)}",
+            }))
+    if not lines and not md_rows:
         children.append(h(TEXT, {
             "children": "(无内容)", "style": _S_HINT, "height": 1,
             "key": "tinsp-none",
@@ -607,4 +857,9 @@ __all__ = [
     "_inspector_children",
     "_viewport_rows",
     "_subagent_trace_deps",
+    "_md_detail_rows",
+    "_block_styled_rows",
+    "_convert_ansi_row",
+    "_lines_fp",
+    "_to_tui_style",
 ]

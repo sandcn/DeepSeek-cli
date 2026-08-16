@@ -36,9 +36,12 @@ from src.tui.app.trace import (
 )
 from src.tui.app.trace_view import (
     TraceView,
+    _block_styled_rows,
     _inspector_children,
     _ledger_row_runs,
+    _md_detail_rows,
     _subagent_trace_deps,
+    _to_tui_style,
 )
 from src.tui.ink import hooks
 from src.tui.ink.fiber import TAG_FUNCTION, Fiber
@@ -2020,3 +2023,482 @@ def test_inspector_short_content_no_omitted_hint():
     texts = [str(c.props.get("children", "")) for c in children]
     assert not any("省略" in t for t in texts)
     assert "短内容" in texts
+
+
+# ═══════════════════════════════════════════════════════════
+# 12. 检查器流式 markdown 渲染（2026-08-17 用户需求）
+# ═══════════════════════════════════════════════════════════
+# 用户需求：轨迹 Trace 的回答（content）/思考（reasoning）在右侧检查器
+# 用流式 markdown 显示——标题/粗体/行内码/代码高亮/表格等格式化（与聊天区
+# 内容渲染同管线），内容增长（流式生成中）自动重渲染（rec 缓存）。
+
+
+def _styled_texts(children):
+    """收集检查器内容行的纯文本（children 文本 = styled 行的纯文本）。"""
+    return [str(c.props.get("children", "")) for c in children]
+
+
+def test_inspector_content_markdown_rendered():
+    """回答（content）：markdown 语法渲染为格式化内容行（styled StyledRun）。"""
+    rec = TraceRecord(index=1, kind="content", summary="回答")
+    rec._detail_lines = ["**粗体文字** 和 `行内码`", "普通段落"]
+    children = _inspector_children(rec, right_w=40, vh=10)
+    texts = _styled_texts(children)
+    assert any("粗体文字" in t for t in texts), "粗体语法应被渲染（语法字符剥离）"
+    assert any("行内码" in t for t in texts), "行内码语法应被渲染（语法字符剥离）"
+    assert any("普通段落" in t for t in texts)
+    assert not any("**" in t or "`" in t for t in texts), "markdown 语法字符不应残留"
+    # 含「粗体文字」的内容行：粗体 run 带 bold 样式（styled StyledRun）
+    styled_rows = [c.props.get("styled") for c in children]
+    bold_row = next(
+        (r for r in styled_rows if r and any("粗体文字" in rr.text for rr in r)),
+        None,
+    )
+    assert bold_row is not None, "markdown 行应携带 styled runs"
+    assert any(getattr(r.style, "bold", False) for r in bold_row), "粗体应带 bold 样式"
+
+
+def test_inspector_reasoning_markdown_dim():
+    """思考（reasoning）：markdown 渲染 + 暗灰弱化样式叠加（fg=242）。"""
+    rec = TraceRecord(index=1, kind="reasoning", summary="思考")
+    rec._detail_lines = ["**粗体** 思考内容"]
+    children = _inspector_children(rec, right_w=40, vh=10)
+    styled_rows = [c.props.get("styled") for c in children]
+    styled = next((r for r in styled_rows if r), None)
+    assert styled, "应渲染出内容行"
+    for r in styled:
+        assert getattr(r.style, "fg", None) == 242, "reasoning 行应全部叠加暗灰弱化"
+    texts = _styled_texts(children)
+    assert any("粗体" in t for t in texts)
+    assert any("思考内容" in t for t in texts)
+
+
+def test_inspector_content_markdown_code_block_highlight():
+    """回答含代码块：pygments 高亮色保留（StyledRun 带 fg 色）。"""
+    rec = TraceRecord(index=1, kind="content", summary="回答")
+    rec._detail_lines = ["```python", "print(1)", "```"]
+    children = _inspector_children(rec, right_w=40, vh=10)
+    styled_rows = [c.props.get("styled", []) for c in children]
+    code_rows = [r for r in styled_rows
+                 if any("print" in rr.text for rr in r)]
+    assert code_rows, "代码行应显示"
+    assert any(getattr(rr.style, "fg", None) is not None
+               for rr in code_rows[0]), "代码高亮应保留 fg 色"
+
+
+def test_md_detail_rows_wraps_long_lines():
+    """markdown 渲染行按 right_w 样式安全换行（超长行不超宽）。"""
+    rec = TraceRecord(index=1, kind="content", summary="回答")
+    rec._detail_lines = ["x" * 200]  # 无空格断点长行
+    rows = _md_detail_rows(rec, 30, "content")
+    from src.tui._width import wcswidth_simple
+    for runs in rows:
+        w = sum(wcswidth_simple(r.text) for r in runs)
+        assert w <= 30, f"行宽 {w} 超过 30"
+    assert len(rows) >= 7, "200 字符应拆成多行"
+
+
+def test_md_detail_rows_cache_hit_and_invalidation():
+    """markdown 渲染缓存：同 lines 引用命中；lines 变化（新 list）重渲染。"""
+    rec = TraceRecord(index=1, kind="content", summary="回答")
+    rec._detail_lines = ["第一版内容"]
+    rows1 = _md_detail_rows(rec, 40, "content")
+    # 同 rec + 同 lines → 缓存命中（同对象）
+    rows2 = _md_detail_rows(rec, 40, "content")
+    assert rows1 is rows2, "同 deps 应返回同一缓存对象（零重渲染）"
+    # lines 变化（流式增长——live 记录每次重建新 list）→ 重渲染
+    rec._detail_lines = ["第一版内容", "第二版（流式追加）"]
+    rows3 = _md_detail_rows(rec, 40, "content")
+    assert rows3 is not rows1, "lines 变化应重渲染"
+    joined = "".join(r.text for runs in rows3 for r in runs)
+    assert "第二版（流式追加）" in joined
+    # 宽度变化 → 重渲染（换行结果不同）
+    rows4 = _md_detail_rows(rec, 20, "content")
+    assert rows4 is not rows3
+
+
+def test_inspector_content_markdown_streaming_growth():
+    """流式增长：内容追加后检查器显示最新（markdown 重渲染 + tail 优先）。"""
+    rec = TraceRecord(index=1, kind="content", summary="回答")
+    rec._detail_lines = ["初始内容"]
+    texts1 = _styled_texts(_inspector_children(rec, right_w=40, vh=10))
+    assert any("初始内容" in t for t in texts1)
+    # 流式追加（新 list——live 记录重建语义）
+    rec._detail_lines = ["初始内容", "**追加回答**"]
+    texts2 = _styled_texts(_inspector_children(rec, right_w=40, vh=10))
+    assert any("追加回答" in t for t in texts2), "流式追加内容应显示"
+
+
+def test_inspector_content_markdown_from_block_falls_back_plain():
+    """块回退路径（source_block）：直接复用块渲染输出行（不二次解析）。
+
+    块内容是**渲染后输出**（如代码块标题行 `` ```python [python]``）——不
+    二次 markdown 解析（否则标题行被误判为「语言 + 首行内容」出现多余
+    ``[python]`` 行）；检查器直接显示块 AnsiLine（runs 转 StyledRun）。
+    """
+    m = AppModel()
+    # 模拟渲染后输出：代码块标题行 + 代码内容（块路径——无内联 markdown 源码）
+    b = m.append_block("content")
+    b.lines.append(AnsiLine.of("```python [python]"))
+    b.lines.append(AnsiLine.of("print('hi')"))
+    b.lines.append(AnsiLine.of("```"))
+    b.closed = True
+    m.commit_block(0)
+    records, _ = build_trace_records(m)
+    content = next(r for r in records if r.kind == "content")
+    assert content.lines == [], "块记录无内联源码（惰性提取）"
+    # md 渲染 = 块输出行直接复用（一行 ```python [python]，不拆成两行）
+    from src.tui.app.trace_view import _md_detail_rows
+    rows = _md_detail_rows(content, 40, "content")
+    assert len(rows) == 3, "块输出行原样复用（不二次解析拆行）"
+    assert any("```python [python]" in "".join(r.text for r in runs) for runs in rows)
+    assert not any("".join(r.text for r in runs).strip() == "[python]"
+                   for runs in rows), "不应二次解析出 [python] 行"
+    children = _inspector_children(content, right_w=40, vh=10)
+    texts = _styled_texts(children)
+    assert any("```python [python]" in t for t in texts), "块渲染输出行原样显示"
+    assert any("print('hi')" in t for t in texts)
+
+
+def test_inspector_reasoning_markdown_no_inline_fallback():
+    """思考（reasoning）无内联源码（块回退）→ 纯文本渲染（零回归）。"""
+    m = AppModel()
+    b = m.append_block("reasoning")
+    b.lines.append(AnsiLine.of("思考中..."))
+    b.closed = True
+    m.commit_block(0)
+    records, _ = build_trace_records(m)
+    reasoning = next(r for r in records if r.kind == "reasoning")
+    children = _inspector_children(reasoning, right_w=40, vh=10)
+    texts = _styled_texts(children)
+    assert any("思考中..." in t for t in texts)
+
+
+def test_to_tui_style_maps_renderer_style():
+    """renderer.ansi.Style → tui Style：字段映射 + RGB 元组 → TrueColor。"""
+    from src.renderer.ansi.style import Style as Rs
+    # RGB 元组 fg → TrueColor
+    st = _to_tui_style(Rs(fg=(255, 128, 0), bold=True, dim=True), "content")
+    assert st is not None
+    assert st.bold is True and st.dim is True
+    assert getattr(st.fg, "r", None) == 255
+    # int fg 直接映射
+    st2 = _to_tui_style(Rs(fg=45, underline=True), "content")
+    assert st2.fg == 45 and st2.underline is True
+    # None → None（content 不叠加）
+    assert _to_tui_style(None, "content") is None
+    # reasoning 叠加暗灰弱化（None → fg=242；渲染色被覆盖 + 布尔属性保留）
+    st3 = _to_tui_style(None, "reasoning")
+    assert st3 is not None and st3.fg == 242
+    st4 = _to_tui_style(Rs(fg=45, bold=True), "reasoning")
+    assert st4.fg == 242, "reasoning 弱化样式 fg 应覆盖渲染色"
+    assert st4.bold is True, "布尔属性（bold）应保留"
+
+
+def test_inspector_system_markdown_rendered():
+    """系统（system）记录：markdown 语法渲染（标题/列表/粗体剥离）——用户需求
+    「system 也用 markdown」。"""
+    rec = TraceRecord(index=1, kind="system", summary="核心目标", lines=[
+        "你是一位乐于助人的软件工程师助手。",
+        "## 安全红线",
+        "- 禁止 rm -rf",
+        "**重要** 说明",
+    ])
+    children = _inspector_children(rec, right_w=40, vh=10)
+    texts = _styled_texts(children)
+    assert texts[0].startswith("#1 系统"), "标题行保持"
+    assert any("你是一位乐于助人的软件工程师助手。" in t for t in texts)
+    assert any(t.strip() == "安全红线" for t in texts), "标题 ## 语法应剥离（渲染为标题）"
+    assert any("• 禁止 rm -rf" in t for t in texts), "列表 - 应渲染为 • 列表项"
+    assert any("重要 说明" in t for t in texts), "** 粗体语法应剥离"
+    assert not any("**" in t for t in texts), "markdown 语法字符不应残留"
+    # 标题渲染带青色粗体样式（markdown 格式化）
+    styled_rows = [c.props.get("styled") for c in children]
+    title_row = next(r for r in styled_rows if r and any(rr.text == "安全红线" for rr in r))
+    assert any(getattr(rr.style, "bold", False) for rr in title_row), "标题应带 bold 样式"
+
+
+def test_inspector_system_block_reused():
+    """system 块记录（error 块 → source_block）：直接复用块输出行（不二次解析）。"""
+    from src.tui.app.trace_view import _md_detail_rows
+    m = AppModel()
+    m.append_committed("error", [AnsiLine.of("  ! 错误信息")])
+    records, _ = build_trace_records(m)
+    sys_from_block = next(r for r in records
+                          if r.kind == "system" and r.source_block is not None)
+    rows = _md_detail_rows(sys_from_block, 40, "system")
+    assert rows, "块记录应直接复用块输出行"
+    assert any("错误信息" in "".join(r.text for r in runs) for runs in rows)
+    children = _inspector_children(sys_from_block, right_w=40, vh=10)
+    texts = _styled_texts(children)
+    assert any("错误信息" in t for t in texts)
+
+
+def test_inspector_system_tail_omitted_kept_head_first():
+    """system 记录（head-first）：长提示词从头部显示 + 「… 后 N 行省略」。
+    markdown 渲染后行数超视口时省略尾部（system 非流式内容——零回归）。"""
+    rec = TraceRecord(index=1, kind="system", summary="提示词")
+    rec._detail_lines = [f"提示词行{i}" for i in range(80)]
+    children = _inspector_children(rec, right_w=40, vh=10)
+    texts = _styled_texts(children)
+    assert any("省略" in t and "后" in t for t in texts), "system 保持后 N 行省略"
+    assert any("提示词行0" in t for t in texts), "system 从头部显示"
+    assert not any("提示词行79" in t for t in texts), "尾部省略"
+
+
+# ═══════════════════════════════════════════════════════════
+# 13. 流式 live 记录的 markdown 渲染（2026-08-17 用户需求补充）
+# ═══════════════════════════════════════════════════════════
+# live 记录（流式生成中）挂 source_block → 检查器直接复用块渲染输出行
+# （AnsiLine 已带 markdown 样式），不二次解析；端到端验证流式追加结构化
+# 内容（标题/列表）在检查器动态显示。
+
+def test_live_records_carry_source_block():
+    """live 记录（消息源流式）挂 source_block → 检查器直接复用块渲染输出。"""
+    m = AppModel()
+    m.message_source = lambda: [{"role": "user", "content": "hi"}]
+    block = _open_content_block(m, "生成中")
+    records, _ = build_trace_records(m)
+    live = records[-1]
+    assert live.kind == "content" and live.status == "running"
+    assert live.source_block is block, "live 记录应挂 source_block（块渲染输出复用）"
+    from src.tui.app.trace_view import _md_detail_rows
+    rows = _md_detail_rows(live, 40, "content")
+    assert rows, "块输出行应直接复用"
+    assert any("生成中" in "".join(r.text for r in runs) for runs in rows)
+    # 复用块行（行数 = 块行数——不二次解析拆行）
+    assert len(rows) == len(block.lines)
+
+
+def test_block_styled_rows_cache_and_growth():
+    """_block_styled_rows：同 block.lines 引用命中；行数增长（流式）增量转换。"""
+    from src.tui.app.trace_view import _block_styled_rows
+    m = AppModel()
+    block = m.append_block("content")
+    block.lines.append(AnsiLine.of("第一行"))
+    rows1 = _block_styled_rows(block, 40, "content")
+    rows2 = _block_styled_rows(block, 40, "content")
+    assert rows1 is rows2, "同 deps 应命中缓存（零重渲染）"
+    # 流式增长：block.lines 原地 extend → 增量转换新增行（同一列表对象，
+    # 内容更新——避免每帧全量重建 O(n²)）
+    block.lines.append(AnsiLine.of("**追加**"))
+    rows3 = _block_styled_rows(block, 40, "content")
+    assert rows3 is rows1, "增量路径复用同一列表对象（仅追加新增行）"
+    assert len(rows3) == 2, "新增行应已转换追加"
+    assert any("追加" in "".join(r.text for r in runs) for runs in rows3)
+    # 宽度变化 → 全量重建（换行结果不同，同一引用列表不够）
+    rows4 = _block_styled_rows(block, 20, "content")
+    assert rows4 is not rows3, "宽度变化应全量重建"
+
+
+def test_e2e_trace_view_streaming_markdown_live():
+    """端到端：轨迹打开期间流式追加结构化 markdown（标题/列表——段落缓冲
+    除外即时 flush）→ 检查器动态显示渲染后的 markdown 文本。"""
+    import time as _t
+
+    import pyte
+
+    from src.tui._assembly_steps import _make_trace_toggle_cb
+    from src.tui._const import ContentCmd, MainPhaseCmd
+
+    session, model, stream = _make_session(height=30, width=120)
+    session.start()
+    _t.sleep(0.15)
+    try:
+        _push_history(session, rounds=1)
+        _t.sleep(0.3)
+        toggle = _make_trace_toggle_cb(model, session)
+        toggle()
+        _t.sleep(0.3)
+        # 流式追加结构化内容（标题/列表项即时 flush——段落缓冲除外）
+        session.push_cmd(MainPhaseCmd(phase="answering"))
+        session.push_cmd(ContentCmd(text="## 追加标题\n\n- 流式列表项\n"))
+
+        def _screen_text():
+            scr = pyte.Screen(120, 30)
+            pyte.Stream(scr).feed(stream.getvalue())
+            return "\n".join(scr.display)
+
+        def _wait_text(cond, timeout=5.0):
+            deadline = _t.time() + timeout
+            while _t.time() < deadline:
+                if cond(_screen_text()):
+                    return True
+                _t.sleep(0.1)
+            return cond(_screen_text())
+
+        assert _wait_text(lambda t: "追加标题" in t), "流式追加标题应显示（markdown 渲染）"
+        joined = _screen_text()
+        assert "流式列表项" in joined, "流式列表项应渲染显示"
+        # 尾部跟随：最新 live 记录选中（▶ 前缀行含标题摘要）
+        sel_lines = [ln for ln in joined.split("\n") if ln.startswith("\u25b6")]
+        assert sel_lines, "应有台账选中行（▶）"
+        assert "追加标题" in sel_lines[-1], "尾部跟随应选中最新追加记录"
+    finally:
+        session.stop()
+
+
+# ═══════════════════════════════════════════════════════════
+# 14. review 修复回归（2026-08-17）
+# ═══════════════════════════════════════════════════════════
+# 覆盖 review 发现并修复的问题：markdown 空行占位（P1-1）、省略提示数值
+# 不为负且用渲染/换行后总行数（P1-2）、流式期间静态记录内容指纹缓存命中
+# 零重渲染（P1-3）、_to_tui_style 色号越界防御（P2-2）、块增量缓存（P2-1）。
+
+def test_md_detail_rows_blank_line_placeholder():
+    """markdown 空行（段落/结构分隔）→ 空格占位行（P1-1：空行不丢失）。"""
+    rec = TraceRecord(index=1, kind="content", summary="回答")
+    rec._detail_lines = ["第一段", "", "第二段"]
+    rows = _md_detail_rows(rec, 40, "content")
+    assert len(rows) == 3, "空行应保留为占位行（结构分隔）"
+    assert any("".join(r.text for r in runs).strip() == "第一段" for runs in rows)
+    assert any("".join(r.text for r in runs) == " " for runs in rows), "空行应显示为空格占位"
+    assert any("".join(r.text for r in runs).strip() == "第二段" for runs in rows)
+
+
+def test_convert_ansi_row_blank_line_placeholder():
+    """_convert_ansi_row：空 AnsiLine（无 runs / 空文本）→ 空格占位行。"""
+    from src.tui.app.trace_view import _convert_ansi_row
+    from src.renderer.ansi.helpers import AnsiLine
+    from src.tui.ink import StyledRun as _SR
+    rows = _convert_ansi_row(AnsiLine(), 40, "content")
+    assert rows == [[_SR(" ", None)]]
+    rows2 = _convert_ansi_row(AnsiLine.of(""), 40, "content")
+    assert rows2 == [[_SR(" ", None)]]
+
+
+def test_inspector_tool_omitted_count_not_negative():
+    """省略提示数值不为负（P1-2）：tool 单行拆多行显示截断 → 「后 N 行省略」
+    用换行后总行数计算（修复前 1-8+1=-2）。"""
+    rec = TraceRecord(index=1, kind="tool", summary="bash", lines=["x" * 200])
+    rec._detail_lines = ["x" * 200]
+    children = _inspector_children(rec, right_w=20, vh=8)
+    texts = [str(c.props.get("children", "")) for c in children]
+    omitted = [t for t in texts if "省略" in t]
+    assert omitted, "应显示省略提示"
+    assert "后" in omitted[0] and "-" not in omitted[0], f"省略数值不应为负: {omitted[0]}"
+
+
+def test_md_detail_rows_content_fingerprint_cache():
+    """内容指纹缓存（P1-3）：records 流式重建（新 lines 引用、内容未变）→
+    命中缓存零重渲染；内容变化 → 重建。"""
+    rec = TraceRecord(index=2, kind="content", summary="回答")
+    rec._detail_lines = ["内容A", "内容B"]
+    rows1 = _md_detail_rows(rec, 40, "content")
+    # 新引用同内容（流式期间 records 整体重建语义）→ 指纹命中（同对象）
+    rec._detail_lines = ["内容A", "内容B"]
+    rows2 = _md_detail_rows(rec, 40, "content")
+    assert rows1 is rows2, "同内容新引用应命中缓存（零重渲染）"
+    # 内容变化 → 指纹变化 → 重建
+    rec._detail_lines = ["内容A", "内容B", "内容C"]
+    rows3 = _md_detail_rows(rec, 40, "content")
+    assert rows3 is not rows2, "内容变化应重建"
+    assert any("内容C" in "".join(r.text for r in runs) for runs in rows3)
+
+
+def test_lines_fp_stable_for_same_content():
+    """_lines_fp：同内容（不同引用）指纹稳定；内容变化指纹变化。"""
+    from src.tui.app.trace_view import _lines_fp
+    assert _lines_fp(["a", "b"]) == _lines_fp(["a", "b"])
+    assert _lines_fp(["a", "b"]) != _lines_fp(["a", "c"])
+    # 非 hashable 元素（防御）回退 id（不抛）
+    fp = _lines_fp([["a"], ["b"]])
+    assert fp is not None
+
+
+def test_to_tui_style_clamps_invalid_colors():
+    """_to_tui_style 色号越界防御（P2-2）：越界 int/RGB 回退 None（不崩溃）。"""
+    from src.renderer.ansi.style import Style as Rs
+    st = _to_tui_style(Rs(fg=999), "content")
+    assert st.fg is None
+    st2 = _to_tui_style(Rs(fg=(300, 0, 0)), "content")
+    assert st2.fg is None
+    st3 = _to_tui_style(Rs(bg=-5), "content")
+    assert st3.bg is None
+    # 合法值不受影响
+    st4 = _to_tui_style(Rs(fg=45), "content")
+    assert st4.fg == 45
+
+
+# ═══════════════════════════════════════════════════════════
+# 15. review 二轮修复回归（2026-08-17）
+# ═══════════════════════════════════════════════════════════
+# 覆盖：模块级内容指纹缓存跨 rec 命中（P1-3 修复目标场景）、bool 色号钳制
+# （P1-2 防御缺陷）、_lines_fp 返回类型、md 分支省略提示数值、全空白行、
+# 块增量缓存行数倒退/kind 切换全量重建。
+
+def test_md_detail_rows_cross_rec_fingerprint_cache():
+    """模块级内容指纹缓存：**不同 rec 对象同内容**（流式期间 records 每帧
+    重建 → 新 TraceRecord 的真实场景）→ 命中缓存零重渲染（P1-3 修复目标）。"""
+    rec1 = TraceRecord(index=1, kind="system", summary="提示词", lines=["# 标题", "- 项"])
+    rows1 = _md_detail_rows(rec1, 40, "system")
+    # 流式期间 records 重建：新 rec 对象 + 新 lines 引用，内容相同
+    rec2 = TraceRecord(index=1, kind="system", summary="提示词", lines=["# 标题", "- 项"])
+    rows2 = _md_detail_rows(rec2, 40, "system")
+    assert rows1 is rows2, "跨 rec 同内容应命中模块级缓存（零重渲染）"
+    # 内容变化（live 增长）→ miss → 重建
+    rec3 = TraceRecord(index=1, kind="system", summary="提示词", lines=["# 标题", "- 项", "追加"])
+    rows3 = _md_detail_rows(rec3, 40, "system")
+    assert rows3 is not rows2, "内容变化应重建"
+
+
+def test_to_tui_style_bool_color_clamped():
+    """_to_tui_style bool 色号钳制（P1-2）：bool 色号回退 None 不抛
+    （Style.__post_init__ 对 bool 显式抛 ValueError——原样放行会崩溃）。"""
+    from src.renderer.ansi.style import Style as Rs
+    st = _to_tui_style(Rs(fg=True), "content")
+    assert st.fg is None, "bool 色号应钳制为 None"
+    st2 = _to_tui_style(Rs(fg=False), "content")
+    assert st2.fg is None
+    # 非 int 非 tuple 色号（float）同样回退 None
+    st3 = _to_tui_style(Rs(fg=128.5), "content")
+    assert st3.fg is None
+
+
+def test_lines_fp_returns_int():
+    """_lines_fp 返回 int（hash 或 id），非 tuple（review 二轮 P2 类型修复）。"""
+    from src.tui.app.trace_view import _lines_fp
+    fp = _lines_fp(["a", "b"])
+    assert isinstance(fp, int), f"指纹应为 int: {type(fp)}"
+    assert _lines_fp(["a", "b"]) == fp  # 同内容稳定
+
+
+def test_inspector_content_omitted_count_md_tail_first():
+    """md 分支省略提示数值（tail_first）：长回答 → 「… 前 N 行省略」N 为正。"""
+    rec = TraceRecord(index=1, kind="content", summary="回答")
+    rec._detail_lines = [f"内容行{i}" for i in range(50)]
+    children = _inspector_children(rec, right_w=40, vh=6)
+    texts = [str(c.props.get("children", "")) for c in children]
+    omitted = [t for t in texts if "省略" in t]
+    assert omitted and "前" in omitted[0], f"应显示前 N 行省略: {omitted}"
+    assert "-" not in omitted[0], f"省略数值不应为负: {omitted[0]}"
+
+
+def test_convert_ansi_row_whitespace_only_line():
+    """_convert_ansi_row 全空白行（plain='   '）→ 保留为占位（不丢行）。"""
+    from src.tui.app.trace_view import _convert_ansi_row
+    from src.renderer.ansi.helpers import AnsiLine
+    rows = _convert_ansi_row(AnsiLine.of("   "), 40, "content")
+    assert rows, "全空白行应有输出行（空格占位）"
+    assert "".join(r.text for r in rows[0]).strip() == "", "内容为空白"
+
+
+def test_block_styled_rows_rewind_and_kind_switch():
+    """_block_styled_rows 行数倒退 / kind 切换 → 全量重建（增量防御分支）。"""
+    from src.tui.app.trace_view import _block_styled_rows
+    m = AppModel()
+    block = m.append_block("content")
+    block.lines.append(AnsiLine.of("行一"))
+    block.lines.append(AnsiLine.of("行二"))
+    rows1 = _block_styled_rows(block, 40, "content")
+    assert len(rows1) == 2
+    # 行数倒退（非 append-only 异常：pop）→ 全量重建（内容同步）
+    block.lines.pop()
+    rows2 = _block_styled_rows(block, 40, "content")
+    assert rows2 is not rows1, "行数倒退应全量重建"
+    assert len(rows2) == 1
+    # kind 切换 → 全量重建（样式不同：reasoning 弱化）
+    rows3 = _block_styled_rows(block, 40, "reasoning")
+    assert rows3 is not rows2, "kind 切换应全量重建"
+    assert all(getattr(r.style, "fg", None) == 242 for runs in rows3 for r in runs), \
+        "reasoning 行应叠加暗灰弱化"

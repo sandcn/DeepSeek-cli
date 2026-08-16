@@ -404,6 +404,12 @@ def _live_records(model, index_holder: list, out_records: list, rows: list) -> N
             summary=summary,
             status="running",
             lines=list(lines),
+            # ★ 2026-08-17（用户需求：回答/思考用流式 markdown 显示在右边）：
+            #   live 记录挂 source_block → 检查器直接复用块渲染输出（AnsiLine
+            #   已带 markdown 样式：标题青色粗体/代码 pygments 高亮等）——流式
+            #   生成中动态显示正在生成的 markdown 格式内容；不二次解析（渲染
+            #   输出行二次 markdown 解析会把代码块标题行误判）。
+            source_block=block,
         )
         out_records.append(rec)
         rows.append(rec)
