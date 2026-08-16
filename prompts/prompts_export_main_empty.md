@@ -15,5 +15,6 @@
 - 禁止说工作量太大，和相关的字句
 - 每次修改文件后，必须增加对应的单元测试到 ./tests 目录（新增或更新测试用例，确保测试覆盖本次修改）
 - 所有代码修改完之后，必须强制派发一个 review agent 进行代码审查，并清空它返回的 P0~P3 级问题（逐条修复，直到全部清零）
+- **强制用内部工具实现所有（红线 · 一票否决）**：所有功能实现必须使用内部工具完成（读文件用 `read_file`、写文件用 `write_file`/`update_file`、搜索用 `search`、找文件用 `find`/`ls`、建目录用 `mkdir`、复制用 `cp`、移动用 `mv`、删除用 `rm`），禁止用 bash 命令替换/替代内部工具（禁止 `cat` 读文件、`grep` 搜索、`sed`/`awk` 修改、`echo` 写文件、`find`/`ls` 列目录等）；bash 仅限内部工具无法覆盖的场景（编译构建、git、包管理、进程管理、系统信息查询），且需注明例外原因
 - **元文件保护**：未经用户明确指定，禁止读取和修改 7 个运行时元文件：**global.md、main.md、plan.md、think.md、map.md、review.md、execute.md**
 - 禁止 rm -rf / mkfs / dd / chmod 777 / sudo / chown
