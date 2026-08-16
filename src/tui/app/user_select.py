@@ -135,64 +135,81 @@ def _ansi_line_to_styled(
     return runs
 
 
-def _build_regular_rows(
-    us, options: list, multi: bool, cur: int, checked: list,
-    opt_w: int, width: int,
-) -> list:
-    """普通模式选项行构建（单选高亮 / 多选勾选 + 高亮；/editmsg 多行）。
+def _build_regular_row(
+    us, options: list, multi: bool, i: int, cur: int, checked: list,
+    opt_w: int,
+) -> object:
+    """普通模式单个选项行构建（单选高亮 / 多选勾选 + 高亮；/editmsg 多行）。
 
-    与旧 UserSelectPopup 普通模式视觉一致：每行经 ``renderItem`` 返回
-    Row/TEXT——首行带选中/勾选前缀 + 高亮背景（整行），续行对齐；单条超长
-    截断到 ``_MAX_OPTION_LINES`` 行 + 省略提示行；总行数受 ``_popup_item_rows``
-    超屏防护（交互仍可导航到隐藏项，与补全弹窗行为一致）。
+    与旧 UserSelectPopup 普通模式视觉一致：首行带选中/勾选前缀 + 高亮背景
+    （整行），续行对齐；单条超长截断到 ``_MAX_OPTION_LINES`` 行 + 省略提示行。
+    对应控件 ``renderItem`` 单 item 语义——每个选项只构建自身行（行数预算
+    由调用方以控件 ``limit`` 折算，交互仍可导航到隐藏项，与补全弹窗一致）。
 
     Args:
         us: UserSelectState。
         options: 选项字符串列表。
         multi: 是否多选。
+        i: 当前选项索引（控件 item 索引）。
         cur: 当前高亮索引（已钳制）。
         checked: 多选勾选索引列表。
         opt_w: 选项行宽度预算。
-        width: 终端宽度（防御）。
+
+    Returns:
+        Column（该选项的行）。
+    """
+    opt_rows = _option_rows_of(us)
+    max_lines = _MAX_OPTION_LINES
+    lines_i = opt_rows[i][:max_lines]
+    children: list = []
+    for li, ansi_line in enumerate(lines_i):
+        # 单行截断（CJK 安全，防超宽行破坏行级 diff 宽度不变量）
+        ansi_line = truncate_line(ansi_line, opt_w)
+        if li == 0:
+            if multi:
+                mark = _CHECKED if i in checked else _UNCHECKED
+                prefix = f" {mark} "
+            else:
+                prefix = " \u25b6  " if i == cur else "    "
+        else:
+            # 续行对齐首行前缀宽（4 列）
+            prefix = "    "
+        runs = _ansi_line_to_styled(ansi_line, prefix, i == cur)
+        children.append(h(TEXT, {"styled": runs, "height": 1, "key": f"row-{li}"}))
+    # 截断提示（超过 max_lines 的单条超长消息）
+    if len(opt_rows[i]) > max_lines:
+        children.append(h(TEXT, {
+            "children": "    ...", "style": _S_DESC, "height": 1,
+            "key": "row-omitted",
+        }))
+    return h(Column, None, children)
+
+
+def _regular_item_limit(us, total: int) -> int:
+    """普通模式控件 limit：按行数预算折算可显示的 item 数。
+
+    与旧版超屏防护同源——/editmsg 多行 option_lines 每项可能占多行，
+    按实际行数累计（至少显示 1 项）。控件窗口滚动交互仍可导航到隐藏项。
+
+    Args:
+        us: UserSelectState。
+        total: 选项总数。
+
+    Returns:
+        可见 item 数上限（>= 1）。
     """
     opt_rows = _option_rows_of(us)
     max_lines = _MAX_OPTION_LINES
     budget = _popup_item_rows()
-    shown: list[int] = []
+    cnt = 0
     used = 0
-    total = len(options)
     for i in range(total):
         n = max(1, min(len(opt_rows[i]), max_lines))
-        if shown and used + n > budget:
+        if cnt and used + n > budget:
             break
-        shown.append(i)
+        cnt += 1
         used += n
-    if not shown:
-        shown = [0]
-    for i in shown:
-        lines_i = opt_rows[i][:max_lines]
-        children: list = []
-        for li, ansi_line in enumerate(lines_i):
-            # 单行截断（CJK 安全，防超宽行破坏行级 diff 宽度不变量）
-            ansi_line = truncate_line(ansi_line, opt_w)
-            if li == 0:
-                if multi:
-                    mark = _CHECKED if i in checked else _UNCHECKED
-                    prefix = f" {mark} "
-                else:
-                    prefix = " \u25b6  " if i == cur else "    "
-            else:
-                # 续行对齐首行前缀宽（4 列）
-                prefix = "    "
-            runs = _ansi_line_to_styled(ansi_line, prefix, i == cur)
-            children.append(h(TEXT, {"styled": runs, "height": 1, "key": f"row-{li}"}))
-        # 截断提示（超过 max_lines 的单条超长消息）
-        if len(opt_rows[i]) > max_lines:
-            children.append(h(TEXT, {
-                "children": "    ...", "style": _S_DESC, "height": 1,
-                "key": "row-omitted",
-            }))
-        yield h(Column, None, children)
+    return max(1, cnt)
 
 
 def _build_split_row(
@@ -367,30 +384,39 @@ def UserSelectPopup(props) -> object:
         opt_w = max(1, min(max(1, width - base_desc_w - 1), auto_opt_w))
         desc_w = max(1, width - opt_w - 1)
         # 超屏防护：选项 + 说明行数限制（与补全弹窗 _completion_item_rows
-        # 同源——超长说明 / 大量选项时弹窗不超终端高度）
-        n_rows = min(max(total, 1), _popup_item_rows())
+        # 同源——超长说明 / 大量选项时弹窗不超终端高度）。每选项一行，
+        # limit 即可见选项数上限（控件窗口滚动交互仍可导航到隐藏项）。
+        limit = min(max(total, 1), _popup_item_rows())
 
         def _split_renderer(item, idx, is_sel, is_checked=None):
-            sub = []
-            for row_i in range(n_rows):
-                sub.append(_build_split_row(
-                    us, options, multi, idx if is_sel else cur,
-                    list(getattr(us, "checked", []) or []),
-                    opt_w, desc_w, width, row_i, total,
-                ))
-            return h(Column, None, sub)
+            # 分栏说明模式单行：控件对每个 item 调用一次 renderItem——
+            # 只构建 item 索引对应的那一行（修复前循环渲染整个选项列表，
+            # 每个 item 重复 total 次 → 弹窗选项重复多份）。
+            checked_now = list(getattr(us, "checked", []) or [])
+            if multi and is_checked is not None:
+                # 多选勾选态以控件内部 selected 为权威（is_checked 当前
+                # item 勾选与否）；_build_split_row 仅判断本行 row_i==idx，
+                # 直接以 is_checked 归一化（修复前只读 us.checked——空格
+                # 切换后勾选标记不即时更新）。
+                checked_now = [idx] if is_checked else []
+            return _build_split_row(
+                us, options, multi, cur, checked_now,
+                opt_w, desc_w, width, idx, total,
+            )
     else:
         opt_w = max(1, width - 4) if width and width > 0 else 40
+        limit = _regular_item_limit(us, total)
 
         def _regular_renderer(item, idx, is_sel, is_checked=None):
+            # 普通模式单 item 行：控件对每个 item 调用一次 renderItem——
+            # 只构建 item 索引对应的那一项（修复前返回整个选项列表，
+            # 每个 item 重复 total 次 → 弹窗选项重复多份）。
             checked_now = list(getattr(us, "checked", []) or [])
             if multi and is_checked is not None:
                 checked_now = [i for i, _v in enumerate(options) if is_checked]
-            sub = list(_build_regular_rows(
-                us, options, multi, idx if is_sel else cur,
-                checked_now, opt_w, width,
-            ))
-            return h(Column, None, sub)
+            return _build_regular_row(
+                us, options, multi, idx, cur, checked_now, opt_w,
+            )
 
     # 多选勾选态：控件内部维护；Enter 提交经 onSubmit 返回勾选 values。
     if multi:
@@ -405,6 +431,7 @@ def UserSelectPopup(props) -> object:
             "items": items,
             "initialIndex": cur,
             "initialValues": initial_vals,
+            "limit": limit,
             "onSubmit": _on_submit,
             "onCancel": _on_cancel,
             "onHighlight": _on_highlight,
@@ -417,6 +444,7 @@ def UserSelectPopup(props) -> object:
             "key": "us-select",
             "items": items,
             "initialIndex": cur,
+            "limit": limit,
             "onSelect": _on_select,
             "onCancel": _on_cancel,
             "onHighlight": _on_highlight,
