@@ -3,7 +3,7 @@
 背景（2026-08-16 用户需求「所有 TUI 都要用 React Ink 控件跟布局实现所有」）：
 TUI 界面渲染已全量迁移到 ink 框架（``src/tui/ink/`` 组件树 + flexbox 布局 +
 hooks）。为防止回归（新增界面/组件绕过 ink 直接拼 ANSI / 直写终端），以
-AST 静态分析守护三条规则：
+AST 静态分析守护四条规则：
 
   R5 渲染模块必须依赖 ink —— tui 模块中凡含 ``h(`` 调用（构建组件树）或
      ``use_*`` hook 调用者，必须运行时依赖 ``src.tui.ink``（组件/hooks/
@@ -15,7 +15,12 @@ AST 静态分析守护三条规则：
   R7 h 字符串 host 合规 —— 所有 ``h("<字符串>", ...)`` 的字符串类型必须
      是 ink 内置 host（box/text/static/spacer/app/fragment）或经
      ``register_host`` 注册的 host（如 static-lines），禁止未注册的自定义
-     host 标签（渲染内核无法布局/绘制）。
+     host 标签（渲染内核无法布局/绘制）；
+  R8 事件输出消费者统一 ink 输出模型 —— ``tui.events.consumers`` 的
+     ``OutputConsumer._write``（回退直写输出路径）必须经 ``_LEVEL_STYLES``
+     （``core.style.Style``）+ ``ink Line.render()`` 渲染，禁止再引用旧
+     ``_LEVEL_COLORS``/``_RESET`` ANSI 色串直拼（回退路径与界面渲染共用
+     同一输出模型，与 message_display/_diff_renderer 迁移语义一致）。
 
 实现说明（与 ``test_arch_guard.py`` 同模式）：
   - 依赖解析为纯 AST 静态分析（不 import 被检模块，测试自身零副作用）；
@@ -300,6 +305,69 @@ def test_h_string_host_types_registered(render_graph) -> None:
         "R7 违规：h() 使用了未注册 host 字符串（应使用内置 host / 标准组件 / "
         f"register_host 注册的 host）: {violations}"
     )
+
+
+# ═══════════════════════════════════════════════════════════
+# R8 — 事件输出消费者统一 ink 输出模型
+# ═══════════════════════════════════════════════════════════
+
+def _output_consumer_write_src() -> str:
+    """读取 ``OutputConsumer._write`` 方法源码（AST 提取，不 import 模块）。"""
+    path = TUI_ROOT / "events" / "consumers.py"
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (SyntaxError, UnicodeDecodeError):
+        return ""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "OutputConsumer":
+            for sub in node.body:
+                if isinstance(sub, ast.FunctionDef) and sub.name == "_write":
+                    # ast.get_source_segment 依赖原始文本（含注释/docstring）
+                    return ast.get_source_segment(path.read_text(encoding="utf-8"), sub) or ""
+    return ""
+
+
+def test_events_output_consumer_uses_ink_output_model() -> None:
+    """R8：``OutputConsumer._write`` 必须经 ink 输出模型（_LEVEL_STYLES + Line）。
+
+    TUI 事件输出消费者（回退直写路径）不得再手工拼接 ANSI 色串
+    （``_LEVEL_COLORS``/``_RESET`` 为 deprecated 兼容 re-export，生产路径
+    零引用）——输出统一经 ``core.style.Style`` + ``ink Line.render()``，与
+    message_display/_diff_renderer 回退路径迁移语义一致（用户需求「所有 TUI
+    都要用 React Ink 控件跟布局实现所有」）。
+    """
+    src = _output_consumer_write_src()
+    assert src, "OutputConsumer._write 源码提取失败（结构变化应更新守卫）"
+    # 生产路径禁止引用旧 ANSI 色串映射常量（直拼 = 脱离 ink 输出模型）
+    assert "_LEVEL_COLORS" not in src, (
+        "R8 违规：OutputConsumer._write 引用旧 ANSI 色串映射 _LEVEL_COLORS"
+        "（应经 _LEVEL_STYLES + Line 输出模型渲染）"
+    )
+    assert "_RESET" not in src, (
+        "R8 违规：OutputConsumer._write 引用 _RESET 手工拼 ANSI reset"
+        "（应经 Line.render() 统一输出）"
+    )
+    # 应使用 _LEVEL_STYLES（Style）与 Line（ink 输出模型）
+    assert "_LEVEL_STYLES" in src, "OutputConsumer._write 应引用 _LEVEL_STYLES"
+    assert "Line" in src, "OutputConsumer._write 应使用 ink Line 输出模型"
+    assert "render()" in src, "OutputConsumer._write 应经 Line.render() 渲染"
+
+
+def test_events_output_consumer_ink_guard_selfcheck() -> None:
+    """自检：R8 守卫能正确识别「生产路径引用旧 ANSI 常量」为违规。"""
+    import textwrap
+    good = textwrap.dedent('''
+        def _write(self, text, level="info"):
+            style = _LEVEL_STYLES.get(level, Style())
+            line = Line.of(text, style).render()
+    ''')
+    bad = textwrap.dedent('''
+        def _write(self, text, level="info"):
+            color = _LEVEL_COLORS.get(level, "")
+            line = f"{color}{text}{_RESET}"
+    ''')
+    assert "_LEVEL_COLORS" not in good and "_RESET" not in good
+    assert "_LEVEL_COLORS" in bad and "_RESET" in bad
 
 
 # ═══════════════════════════════════════════════════════════

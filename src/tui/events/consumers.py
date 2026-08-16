@@ -17,6 +17,7 @@ from typing import List, Optional
 from .event_bus import DisplayEventBus
 from .publish import emit
 from src.renderer._locks import _try_acquire_output_lock
+from src.tui.ink.output import Line
 from .event_types import (
     DisplayEvent,
     OutputEvent,
@@ -25,11 +26,28 @@ from .event_types import (
 
 _logger = logging.getLogger(__name__)
 
-# -- 级别 -> ANSI 颜色映射 ----------------------------------------------
-# 直写终端回退路径（非组件树）：保持 ANSI 色串直拼（OutputConsumer 服务
-# 无 ChatUI 上下文时的回退输出，不属于 React Ink 组件树；组件树渲染统一
-# 用 core.style.Style）。与组件树无交叉，保留既行为零回归。
+# -- 级别 -> Style 映射（统一 ink 输出模型） -----------------------------
+# ★ 标准 React Ink 输出模型（2026-08-16 深化控件化，用户需求「所有 TUI 都
+#   要用 React Ink 控件跟布局实现所有」）：OutputConsumer 为「无 ChatUI 上下
+#   文的回退直写输出路径」——渲染行统一经 ``core.style.Style`` + ``ink Line``
+#   输出模型构建（``Line.render()``），不再手工拼接 ANSI 色串（与
+#   message_display 兜底 / _diff_renderer 已迁移语义一致：回退路径与界面渲染
+#   共用同一输出模型/样式体系）。色号取与旧 16 色视觉等价的 256 色语义色
+#   （error 亮红 196 / warning 黄 220 / success 绿 41 / info 中灰 244）。
+#   旧 ``_LEVEL_COLORS``/``_RESET`` 保留为 deprecated 兼容 re-export（外部
+#   既有引用/测试兼容；生产路径不再消费）。
 
+from src.tui.core.style import Style
+
+_LEVEL_STYLES: dict[str, Style] = {
+    "error":   Style(fg=196),   # 亮红（旧 \033[31m RED）
+    "warning": Style(fg=220),   # 黄（旧 \033[33m YELLOW）
+    "success": Style(fg=41),    # 绿（旧 \033[32m GREEN）
+    "info":    Style(fg=244),   # 中灰（旧 \033[90m DARK_GRAY）
+    "raw":     Style(),         # 原样输出（无样式）
+}
+#: 旧 ANSI 色串映射（deprecated 兼容 re-export——生产路径经 ``_LEVEL_STYLES``；
+#: 保留供外部既有引用/测试，勿在生产代码新增引用）
 _LEVEL_COLORS: dict[str, str] = {
     "error": "\033[31m",      # RED
     "warning": "\033[33m",    # YELLOW
@@ -124,6 +142,13 @@ class OutputConsumer:
     def _write(self, text: str, level: str = "info") -> None:
         """输出带颜色/级别的文本到终端（由 output_lock 保护）。
 
+        ★ 标准 React Ink 输出模型（2026-08-16 深化控件化）：渲染行统一经
+        ``ink Line`` 构建（``Line.of(text, style)``，样式为 ``core.style.Style``）
+        后 ``render()`` 输出——回退直写路径与界面渲染共用同一输出模型/样式
+        体系（不再手工拼接 ANSI 色串，与 message_display/_diff_renderer 已
+        迁移语义一致）。非 raw 级别经 ``_LEVEL_STYLES`` 查表（缺省回退空
+        Style 原样输出）；raw 级原样输出（不附加任何样式）。
+
         ★ P3-14：忽略 ``_try_acquire_output_lock`` 的 yield bool 值——
         锁超时（render_lock 被渲染管线占用 >1s）时仍**降级直写**终端。
         这是有意的降级策略：OutputConsumer 为非 ChatUI 上下文的兜底输出
@@ -138,8 +163,8 @@ class OutputConsumer:
                 if level == "raw":
                     line = text
                 else:
-                    color = _LEVEL_COLORS.get(level, "")
-                    line = f"{color}{text}{_RESET}"
+                    style = _LEVEL_STYLES.get(level, Style())
+                    line = Line.of(text, style).render()
                 self._stream.write(line + "\n")
                 self._stream.flush()
             except (ValueError, OSError):
