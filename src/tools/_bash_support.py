@@ -134,6 +134,36 @@ class _PtyEioAsEofProtocol(asyncio.StreamReaderProtocol):
         super().connection_lost(exc)
 
 
+#: ANSI 重置码（\x1b[0m）——_wrap_colored_line 颜色包裹行尾使用
+_ANSI_RESET = "\x1b[0m"
+
+
+def _wrap_colored_line(safe: str, color: str) -> str:
+    """颜色包裹工具输出行：行尾 ``\\n`` 保持在 RESET 之外（BUG-79）。
+
+    工具输出行（``_read_loop._handle_line`` 按行收集）自带行尾 ``\\n``。
+    若按 ``f"{color}{safe}{RESET}"`` 包裹，``\\n`` 被夹在 color 与 RESET
+    之间——下游 ``EventDispatcher._on_tool_output`` 的 ``rstrip("\\n")``
+    与 ``_ToolOutputMixin.append_tool_output`` 的「剔除尾空 segment」
+    （BUG-78）都因文本以 ``\\x1b[0m`` 结尾而失效 → split 出纯 RESET 空
+    segment → 工具卡每个 stderr 行多渲染一个空白行（用户报障「调用 bash
+    工具后 TUI 显示空白行」的根因）。本函数把行尾 ``\\n`` 移到 RESET
+    之后，恢复下游尾部换行剥离链。safe 须为已剥 ANSI 的纯文本（调用方
+    保证；与 ``_simulate_terminal`` 同契约）。
+
+    Args:
+        safe: 已剥 ANSI 的纯文本行（可含行尾 \\n；\\r 覆盖语义已兑现）。
+        color: 前景色转义码（如 ``\\x1b[31m``）。
+
+    Returns:
+        颜色包裹后的文本：``<color><内容><RESET>``；行尾 \\n 位于 RESET
+        之后（无行尾 \\n 时原样包裹）。
+    """
+    if safe.endswith('\n'):
+        return f"{color}{safe[:-1]}{_ANSI_RESET}\n"
+    return f"{color}{safe}{_ANSI_RESET}"
+
+
 def _simulate_terminal(text: str) -> str:
     """模拟终端回车（\\r）语义：\\r 使光标回到当前行首，后续字符覆盖。
 

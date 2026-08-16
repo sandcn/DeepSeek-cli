@@ -18,6 +18,7 @@ from ._bash_support import (
     _strip_ansi,
     _PtyEioAsEofProtocol,
     _simulate_terminal,
+    _wrap_colored_line,
     _kill_process_tree,
     kill_process_tree,  # noqa: F401  # 公开 API：bash_task 与测试经 bash 模块导入
 )
@@ -237,7 +238,11 @@ class BashFunc(Func):
                 if not safe.endswith('\n'):
                     safe += '\n'
                 if is_stderr:
-                    await print_to_terminal(f"{RED}{safe}{RESET}")
+                    # ★ BUG-79：行尾 \n 须保持在 RESET 之后（_wrap_colored_line
+                    #   保证）——修复前 ``f"{RED}{safe}{RESET}"`` 把 \n 夹在
+                    #   color 与 RESET 中间，下游 rstrip(\n)/尾空 segment 剔除
+                    #   失效 → 工具卡每个 stderr 行多渲染一个空白行。
+                    await print_to_terminal(_wrap_colored_line(safe, RED))
                 else:
                     await print_to_terminal(safe)
             if publish_line_fn:
@@ -933,7 +938,10 @@ class BashFunc(Func):
             if not safe.endswith('\n'):
                 safe += '\n'
             if is_stderr:
-                await print_to_terminal(f"{RED}{safe}{RESET}")
+                # ★ BUG-79：行尾 \n 保持在 RESET 之后（_wrap_colored_line）——
+                #   修复前 ``f"{RED}{safe}{RESET}"`` 使下游 rstrip(\n)/尾空
+                #   segment 剔除失效，工具卡每个 stderr 行多一个空白行。
+                await print_to_terminal(_wrap_colored_line(safe, RED))
             else:
                 await print_to_terminal(safe)
 
@@ -962,7 +970,10 @@ class BashFunc(Func):
             clean = _simulate_terminal(_strip_ansi(text))
             safe = clean if clean.endswith('\n') else clean + '\n'
             if is_stderr:
-                await print_to_terminal(f"{RED}{safe}{RESET}")
+                # ★ BUG-79：行尾 \n 保持在 RESET 之后（_wrap_colored_line）——
+                #   修复前 ``f"{RED}{safe}{RESET}"`` 使下游 rstrip(\n)/尾空
+                #   segment 剔除失效，工具卡每个 stderr 行多一个空白行。
+                await print_to_terminal(_wrap_colored_line(safe, RED))
             else:
                 await print_to_terminal(safe)
             if tool_label:
