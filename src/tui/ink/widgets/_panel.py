@@ -8,6 +8,11 @@ from __future__ import annotations
 
 from src.tui.core.style import Style
 from ..element import TEXT, BOX, Element, h
+# ★ BUG-80：无边框模式（border=0/None/False）渲染 ``h(Column, ...)``——
+#   修复前漏导入 Column → 每次渲染 live 工具卡（ToolCard → Panel border=0）
+#   抛 ``NameError: name 'Column' is not defined`` → 渲染线程崩溃恢复 3 次后
+#   永久终止 → 工具调用之后所有新增内容不再渲染（屏幕空白行）。
+from ..widgets.layout import Column
 from ._display_common import _color
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_children 原本地定义（与
 #   focus/layout 逐字重复）——收敛至 _widget_common 单一真源。
