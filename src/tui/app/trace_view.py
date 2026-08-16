@@ -33,6 +33,8 @@ from src.tui.app.trace import (
     block_detail_lines,
     build_subagent_trace_records,
     build_trace_records,
+    _messages_payload,
+    _with_live_records,
 )
 from src.tui.core.style import Style
 from src.tui.ink import TEXT, Column, Row, StyledRun, h, use_input, use_memo
@@ -599,22 +601,35 @@ def _subagent_fingerprint() -> tuple:
 
 
 def _records_deps(model) -> tuple:
-    """记录构建 use_memo 依赖（数据源自适应指纹）。
+    """记录构建 use_memo 依赖（块回退模式；无消息源/消息为空路径）。
 
-    消息源模式（装配注入 agent.messages）：``_messages_fingerprint`` +
-    ``_live_fingerprint`` + ``_subagent_fingerprint``——消息内容变化（流式
-    完成后追加/编辑）、**实时生成内容**（开放块行数/内容长度、运行中工具
-    输出）与 subagent 槽位状态（新增/状态变更/工具历史增长——消息源模式
-    同样追加 subagent 记录）任一变化均触发重建：流式生成期间 agent.messages
-    不变，靠实时指纹驱动台账动态显示正在生成的内容（用户需求 2026-08-19）。
-    块模式：块指纹 + subagent 指纹（内容变化才重建）。时间基元素不入指纹
-    （台账静态色，不随动画重建）。
+    块指纹 + subagent 指纹（内容变化才重建）。时间基元素不入指纹（台账
+    静态色，不随动画重建）。
+
+    ★ 性能（2026-08-19 优化）：消息源模式不再走本函数——TraceView 拆为
+    **两段 use_memo**（消息+subagent 记录 / live 记录），流式生成期间
+    live 内容逐帧增长只重建 live 段，历史消息记录零重建（修复前 live
+    指纹变化驱动整树重建，长会话每帧 O(全部消息内容)）。
+
+    ★ 值比较语义（2026-08-19 修复）：use_memo deps 经 ``_object_is`` 比较
+    ——非 int/float/str 元素按 **is 引用**比较，指纹函数每次调用返回新
+    tuple → deps 恒变 → memo 恒失效（每帧全量重建）。经 ``_fp_key`` 包装
+    为 repr 字符串按值比较：内容不变命中缓存、内容变化触发重建。
     """
-    if getattr(model, "message_source", None) is not None:
-        from src.tui.app.trace import _live_fingerprint, _messages_fingerprint
-        return (_messages_fingerprint(model), _live_fingerprint(model),
-                _subagent_fingerprint())
-    return (_block_fingerprint(model), _subagent_fingerprint())
+    return (_fp_key(_block_fingerprint(model), _subagent_fingerprint()),)
+
+
+def _fp_key(*parts) -> str:
+    """指纹 deps 键（use_memo 值比较语义，2026-08-19 性能修复）。
+
+    use_memo deps 经 ``_object_is`` 比较：非 int/float/str 元素按 **is
+    引用**比较——指纹函数每次调用返回新 tuple（内容相同也非同一对象）→
+    deps 恒变 → memo 恒失效（每帧重建，长会话每帧 O(全部消息内容)）。
+    包装为 repr 字符串后按值比较：内容相同 → 缓存命中（零重建）；内容
+    变化 → repr 变化 → 重建。repr 开销 O(指纹规模)（开放块数/工具数/
+    subagent 数，远低于记录重建成本）。
+    """
+    return "|".join(repr(p) for p in parts)
 
 
 def _subagent_trace_deps(label: str) -> tuple:
@@ -733,13 +748,43 @@ def TraceView(props) -> object:
     #   subagent 轨迹，内容与 mainagent 同构：system/user/思考/回答/工具）。
     sub_label = getattr(model, "trace_subagent_label", None) or None
 
+    # 指纹函数惰性 import（对齐 _records_deps 原风格；模块顶部仅导入
+    # _messages_payload/_with_live_records——避免顶层 import 面过宽）
+    from src.tui.app.trace import (
+        _live_fingerprint,
+        _messages_fingerprint,
+    )
+
     # ── 数据（use_memo 指纹缓存：消息源/块/subagent 内容变化才重建） ──
     if sub_label:
         records, rows = use_memo(
             lambda: build_subagent_trace_records(sub_label, model),
-            _subagent_trace_deps(sub_label),
+            (_fp_key(_subagent_trace_deps(sub_label)),),
+        )
+    elif getattr(model, "message_source", None) is not None:
+        # ★ 性能（2026-08-19 优化）：消息源模式**两段 use_memo**——消息+
+        #   subagent 记录（deps: 消息指纹 + subagent 指纹）与 live 记录
+        #   （deps: live 指纹 + payload 引用）分离缓存：
+        #     - 流式生成期间 agent.messages **不变**（完成才追加），live
+        #       内容逐帧增长 → 仅重建 live 段（浅拷贝追加 running 记录），
+        #       历史消息记录（大 system 提示词全文/工具调用参数解析/ANSI
+        #       消毒）零重建（修复前 live 指纹变化驱动整树重建，长会话
+        #       每帧 O(全部消息内容)）；
+        #     - 消息追加/编辑（``_messages_fingerprint`` 变化）或 subagent
+        #       槽位状态变化才重建消息段（payload 新对象 → live 段随
+        #       payload 引用变化自然重建）。
+        #   deps 经 ``_fp_key`` 包装为值比较（指纹 tuple 按 is 比较恒变——
+        #   缓存恒失效；见 ``_fp_key`` docstring）。
+        payload = use_memo(
+            lambda: _messages_payload(model),
+            (_fp_key(_messages_fingerprint(model), _subagent_fingerprint()),),
+        )
+        records, rows = use_memo(
+            lambda: _with_live_records(payload, model),
+            (_fp_key(_live_fingerprint(model)), payload),
         )
     else:
+        # 无消息源（测试/无装配场景）→ 单段块回退（开放块已表达 running）
         records, rows = use_memo(
             lambda: build_trace_records(model),
             _records_deps(model),
