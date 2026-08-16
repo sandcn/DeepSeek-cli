@@ -49,6 +49,9 @@ def Panel(props: dict) -> Element:
         title: 顶部标题（None/空时不显示标题行）。
         status: 底部状态文本（None 时不显示状态行）。
         width: 面板总宽（默认 60）。
+        border: 边框模式（默认 1=带边框；0/"none"/None/False=无边框——
+            ★ 方案B：工具卡等「无边框裸行」界面经无边框 Panel 控件化表达，
+            直接渲染标题+内容+状态（Column），无边框字符）。
         borderStyle: 边框变体（single/double/round/bold/classic/dashed）
             或 Style 对象（完整样式）或 dict 自定义边框对象
             （``{topLeft, top, topRight, left, bottomLeft, bottom, bottomRight,
@@ -60,7 +63,7 @@ def Panel(props: dict) -> Element:
         children: 主体内容（换行到内宽）。
 
     Returns:
-        BOX 元素（border=1 标准边框 + 内部 Column）。
+        BOX 元素（border=1 标准边框 + 内部 Column）或 Column（无边框模式）。
 
     实现（标准布局）：复用 BOX ``border`` 绘制完整四边框（``_paint_border``
     ——顶/底/左/右竖线自动覆盖全部行高），内部 Column 依次渲染标题行 +
@@ -114,6 +117,12 @@ def Panel(props: dict) -> Element:
         inner.append(h(TEXT, {
             "children": status, "style": status_style or border_style, "height": 1,
         }))
+    # ★ 无边框模式（方案B）：border=0/"none"/None/False → 直接渲染 inner
+    #   （Column）——工具卡等「无边框裸行」界面控件化表达，无边框字符。
+    #   与 BOX border=0 等价（内部 Column 结构，视觉零变化）。
+    border = props.get("border", 1)
+    if border in (0, "none", None, False):
+        return h(Column, None, inner)
     # ★ 标准布局：BOX border 绘制完整边框（竖线自动覆盖全部行高——修复了
     #   Row 拼接方案的竖线高度问题）；内部 Column 填充标题 + 内容 + 状态。
     #   边框样式经 ``borderStyle``（字符串变体或 dict 自定义对象）与

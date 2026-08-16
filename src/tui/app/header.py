@@ -131,9 +131,14 @@ def TopHeader(props) -> object:
         dot_runs = [StyledRun("\u2726 ", Style(fg=dot_color))]
     # ★ 阶段2（标准布局容器重构）：BOX(flexDirection=row) → Row（语义化门面，
     #   Row = BOX + flexDirection=row，props 透传，输出与重构前一致）。
+    # ★ 全面控件化（方案B）：渐变标题经标准控件 ``Gradient`` 渲染
+    #   （``h(Gradient, {"styled": title_styled})``——styled 注入模式：
+    #   宽屏 use_memo 缓存引用 / 窄屏截断后注入，视觉与 _gradient_runs
+    #   等价）；✦ 与版本号保持 TEXT（基础控件）。
+    from src.tui.ink.widgets.gradient import Gradient
     return h(Row, {"height": 1}, [
         h(TEXT, {"styled": dot_runs, "height": 1}),
-        h(TEXT, {"styled": title_styled, "height": 1}),
+        h(Gradient, {"styled": title_styled, "height": 1}),
         h(TEXT, {"styled": ver_runs, "height": 1}),
     ])
 

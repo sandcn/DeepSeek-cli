@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from src.tui.app.header import TopHeader, _title_runs, _version_runs
 from src.tui.ink import hooks
 from src.tui.ink.fiber import Fiber, TAG_FUNCTION
+from src.tui.ink.element import Element
 
 
 def _model_stub() -> SimpleNamespace:
@@ -41,10 +42,27 @@ def _render_header(width: int):
 
 
 def _collect_text_widths(el) -> list:
-    """遍历元素树，收集所有 TEXT 子节点 styled runs 总宽。"""
+    """遍历元素树，收集所有 TEXT 子节点 styled runs 总宽。
+
+    ★ 全面控件化（方案B）：TopHeader 渐变标题经标准控件 ``Gradient``
+    （函数组件）渲染——收集宽度时对函数组件调用其渲染函数展开（Gradient
+    无 hooks，可安全直接调用），穿透组件层到 TEXT 子节点。
+    """
     if el.type == "text":
         styled = el.props.get("styled")
         return [sum(r.width for r in styled)] if styled else [0]
+    if callable(el.type) and not isinstance(el.type, str):
+        # 函数组件（控件）：把 Element.children 注入 props 后调用渲染展开
+        # （与 reconciler 渲染语义一致；仅限无 hooks 的展示控件）
+        try:
+            cp = dict(el.props)
+            cp["children"] = getattr(el, "children", None) or ()
+            sub = el.type(cp)
+            if isinstance(sub, Element):
+                return _collect_text_widths(sub)
+            return [0]
+        except Exception:
+            return [0]
     out = []
     for child in el.children:
         out.extend(_collect_text_widths(child))

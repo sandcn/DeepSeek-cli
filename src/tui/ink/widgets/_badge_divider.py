@@ -137,9 +137,14 @@ def Divider(props: dict) -> Element:
         color: 分隔线前景色（颜色名/int）。
         style: 分隔线完整样式（``color`` 覆盖 style.fg）。
         titleStyle: 标题样式（默认 None）。
+        trailing: 右侧内容（可选——StyledRun 列表或 ink ``Line``；提供时
+            输出「左侧填充 + 右侧内容」，行宽恒 = width；供 InputArea
+            CPU/MEM、时间戳分隔线等右侧内容场景——与 ``_theme.sep_line``
+            构建语义对齐，控件化表达）。
 
     Returns:
-        无标题：TEXT 元素；有标题：BOX 元素（横向：线+空格+标题+空格+线）。
+        无标题且无 trailing：TEXT 元素；有 trailing：Row 元素（左侧填充
+        TEXT + 右侧内容 TEXT）；有标题：Row 元素（线+空格+标题+空格+线）。
     """
     title = props.get("title")
     title = None if title is None else str(title)
@@ -154,6 +159,30 @@ def Divider(props: dict) -> Element:
         width = wcswidth_simple(title) + 4 if title else _DIVIDER_DEFAULT_WIDTH
     hz_style = _resolve_style(props)
     title_style = props.get("titleStyle")
+
+    # ★ trailing 右侧内容（方案B）：左侧填充 + 右侧内容（行宽恒 = width）。
+    #   供 InputArea 分隔线（CPU/MEM、时间戳）等右侧内容场景——与
+    #   ``_theme.sep_line`` 语义对齐（控件化表达，行宽不变量保持）。
+    trailing = props.get("trailing")
+    if trailing is not None and not title:
+        trailing_runs = list(trailing.runs) if hasattr(trailing, "runs") else list(trailing)
+        trailing_w = sum(getattr(r, "width", len(str(getattr(r, "text", "")))) for r in trailing_runs)
+        if width > 0 and trailing_w > width:
+            # 防御：右侧内容超宽时截断至 width（复用 _theme.sep_line 语义）
+            from ..helpers import truncate_line
+            if hasattr(trailing, "runs"):
+                line = truncate_line(trailing, width)
+                trailing_runs = list(line.runs)
+            else:
+                from src.tui.ink.output import Line as _L
+                line = truncate_line(_L(list(trailing_runs)), width)
+                trailing_runs = list(line.runs)
+            trailing_w = sum(r.width for r in trailing_runs)
+        fill = max(0, width - trailing_w)
+        return h(Row, None, [
+            h(TEXT, {"children": _repeat_to_width(char, fill), "style": hz_style}),
+            h(TEXT, {"styled": list(trailing_runs)}),
+        ])
 
     if not title:
         return h(TEXT, {"children": _repeat_to_width(char, width), "style": hz_style})

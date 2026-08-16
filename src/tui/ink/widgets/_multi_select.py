@@ -2,6 +2,11 @@
 
 模块边界（2026-08-05 架构优化）：从 ``widgets/interactive.py`` 拆分——多选
 列表独立成模块（公共辅助经 ``_interactive_common`` 共享）。
+
+★ 全面控件化（2026-08-16 方案B）：控件扩展支持 TUI 弹窗界面（UserSelectPopup
+多选）——新增 ``onCancel``（Esc 回调）、``onHighlight``（光标变化回调）、
+``renderItem``（自定义行渲染）、``consumeAll``（弹窗模式消费所有按键）、
+vim 风格 ``j/k/g/G`` 导航。未传新 props 时行为与旧版完全一致（零回归）。
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ from ._interactive_common import (
     _clamp_index,
     _hashable,
 )
+from ._select_input import _is_vim_nav
 
 #: 选中/未选中指示符（几何符号单宽，wcswidth_simple 宽度 1——安全对齐）
 _CHECKED = "\u25cf "   # ●
@@ -37,17 +43,30 @@ def MultiSelect(props: dict) -> Element:
         highlightStyle: 光标行样式（默认 ``Style(fg=6)`` cyan）。
         checkedPrefix/uncheckedPrefix: 选中/未选中指示符
             （默认 ``"● "`` / ``"○ "``）。
+        onCancel: ``(selected: list) -> None``——Esc 取消时回调（消费 Esc；
+            None 时 Esc 放行）。
+        onHighlight: ``(index) -> None``——光标下标变化时回调（导航后触发；
+            None 时忽略）。
+        renderItem: ``(item, index, isSelected, isChecked) -> Element``——
+            自定义行渲染；None 时用默认 indicator+label。
+        consumeAll: True（弹窗模式）——非导航/Enter/Esc 的按键也消费
+            （阻断输入框）；Ctrl+C（``\\x03``）放行。
 
     行为：
-      - up/down 移动光标；space（或空格 char）切换当前项选中；
-      - enter 触发 ``onSubmit(selected_values)`` 并消费事件。
+      - up/down（及 vim j/k）移动光标；space（或空格 char）切换当前项选中；
+      - g/G 跳首/末项；enter 触发 ``onSubmit(selected_values)`` 并消费事件；
+      - escape 触发 ``onCancel(selected_values)``（onCancel 提供时）。
 
     Returns:
         BOX 元素（纵向堆叠的 item 行）。
     """
     items = _normalize_items(props.get("items", []))
     onSubmit = props.get("onSubmit")
+    on_cancel = props.get("onCancel")
+    on_highlight = props.get("onHighlight")
+    render_item = props.get("renderItem")
     focus = bool(props.get("focus", True))
+    consume_all = bool(props.get("consumeAll", False))
     limit = props.get("limit")
     if limit is not None:
         try:
@@ -103,22 +122,42 @@ def MultiSelect(props: dict) -> Element:
             cursor_ref.current = cur_cursor
             set_cursor_idx(cur_cursor)
         cur_selected = selected_ref.current
+        if event.kind == "escape" and on_cancel is not None:
+            _call(on_cancel, items[cur_cursor])
+            return True
+        nav = None
         if event.kind == "arrow_up":
+            nav = "up"
+        elif event.kind == "arrow_down":
+            nav = "down"
+        else:
+            nav = _is_vim_nav(event)
+        moved = False
+        new = cur_cursor
+        if nav == "up":
             # ★ P3（review）：已在首项时按上键不移动——无效移动返回 False
             #   （不消费，放行父级；与 ListView/Menu 对齐）。
-            if cur_cursor <= 0:
-                return False
-            new = cur_cursor - 1
-            cursor_ref.current = new
-            set_cursor_idx(new)
-            return True
-        if event.kind == "arrow_down":
+            if cur_cursor > 0:
+                new = cur_cursor - 1
+                moved = True
+        elif nav == "down":
             # ★ P3（review）：已在末项时按下键不移动——无效移动返回 False。
-            if cur_cursor >= len(items) - 1:
-                return False
-            new = cur_cursor + 1
+            if cur_cursor < len(items) - 1:
+                new = cur_cursor + 1
+                moved = True
+        elif nav == "first":
+            if cur_cursor != 0:
+                new = 0
+                moved = True
+        elif nav == "last":
+            if cur_cursor != len(items) - 1:
+                new = len(items) - 1
+                moved = True
+        if moved:
             cursor_ref.current = new
             set_cursor_idx(new)
+            if on_highlight is not None:
+                _call(on_highlight, new)
             return True
         if event.kind == "space" or (event.kind == "char" and event.char == " "):
             value = items[cur_cursor]["value"]
@@ -140,6 +179,11 @@ def MultiSelect(props: dict) -> Element:
             ]
             _call(onSubmit, ordered)
             return True
+        if consume_all:
+            # ★ 弹窗模式：其他按键一律消费（阻断输入框）；Ctrl+C 放行。
+            if event.kind == "char" and event.char == "\x03":
+                return False
+            return True
         return False
 
     use_input(_handle, focus)
@@ -155,6 +199,24 @@ def MultiSelect(props: dict) -> Element:
         item = items[idx]
         is_cursor = idx == cursor_shown
         is_checked = _hashable(item["value"]) in selected
+        if render_item is not None:
+            # ★ 自定义行渲染（方案B）：弹窗界面（UserSelectPopup 多选）经
+            #   renderItem 完全自定义行元素（勾选/高亮由调用方表达）。异常
+            #   降级默认行（防御）。
+            try:
+                child = render_item(item, idx, is_cursor, is_checked)
+            except Exception:
+                indicator = checked_prefix if is_checked else unchecked_prefix
+                child = h(TEXT, {"children": indicator + item["label"], "style": highlight_style if is_cursor else None})
+            if isinstance(child, Element):
+                cp = dict(child.props)
+                cp.setdefault("key", f"item-{idx}")
+                rows.append(Element(child.type, cp, child.children))
+            elif child is None:
+                rows.append(h(TEXT, {"children": "", "key": f"item-{idx}"}))
+            else:
+                rows.append(h(TEXT, {"children": str(child), "key": f"item-{idx}"}))
+            continue
         indicator = checked_prefix if is_checked else unchecked_prefix
         style = highlight_style if is_cursor else None
         rows.append(

@@ -390,7 +390,7 @@ def ToolCard(props: dict):
     # 惰性 import（保持与 model 层行生成一致的加载模式，避免 app → ink
     # 模块级提前加载影响启动顺序）
     from src.tui.ink import h, TEXT
-    from src.tui.ink.widgets.layout import Column
+    from src.tui.ink.widgets._panel import Panel
     block = props["block"]
     width = props.get("width", 0)
     start = props.get("start", 0)
@@ -400,4 +400,11 @@ def ToolCard(props: dict):
         h(TEXT, {"key": f"tool-{i}", "styled": runs})
         for i, runs in enumerate(runs_list)
     ]
-    return h(Column, None, children)
+    # ★ 全面控件化（方案B）：工具卡经标准控件 ``Panel``（border=0 无边框
+    #   模式）表达——「无边框裸行 + │ 引导线」Claude Code 极简视觉保持
+    #   （2026-08-06 用户需求：无边框），Panel 无边框模式直接渲染内部
+    #   Column（与旧 h(Column, ...) 等价，控件化表达）。
+    return h(Panel, {
+        "border": 0, "width": max(0, width),
+        "padding": 0, "paddingLeft": 0, "paddingRight": 0,
+    }, children)

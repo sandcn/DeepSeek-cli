@@ -2,6 +2,12 @@
 
 模块边界（2026-08-05 架构优化）：从 ``widgets/interactive.py`` 拆分——单选
 列表独立成模块（公共辅助经 ``_interactive_common`` 共享）。
+
+★ 全面控件化（2026-08-16 方案B）：控件扩展支持 TUI 弹窗界面（UserSelectPopup
+单选 / CompletionPopup）——新增 ``onCancel``（Esc 回调）、``onHighlight``
+（选中变化回调）、``renderItem``（自定义行渲染）、``consumeAll``（弹窗模式
+消费所有按键）、vim 风格 ``j/k/g/G`` 导航（与 arrow 等价）。未传新 props
+时行为与旧版完全一致（零回归）。
 """
 
 from __future__ import annotations
@@ -19,6 +25,21 @@ from ._interactive_common import (
 )
 
 
+def _is_vim_nav(event) -> str | None:
+    """vim 风格导航判定：返回 "down"/"up"/"first"/"last" 或 None。
+
+    j/J 下、k/K 上、g 首、G 末（大小写等效——UserSelectPopup 既有语义）。
+    非导航字符返回 None。
+    """
+    if event.kind == "char" and event.char in ("j", "J"):
+        return "down"
+    if event.kind == "char" and event.char in ("k", "K"):
+        return "up"
+    if event.kind == "char" and event.char in ("g", "G"):
+        return "first" if event.char == "g" else "last"
+    return None
+
+
 def SelectInput(props: dict) -> Element:
     """React Ink ``<SelectInput>`` 等价物：单选列表选择控件。
 
@@ -31,13 +52,26 @@ def SelectInput(props: dict) -> Element:
         limit: 可见 item 数（超出滚动窗口；默认 None 全部显示）。
         highlightStyle: 选中行样式（默认 ``Style(fg=6)`` cyan）。
         prefix: 选中行前缀（默认 ``"> "``）；未选中行用同宽空格对齐。
+        onCancel: ``(item) -> None``——Esc 取消时回调（消费 Esc；None 时
+            Esc 放行）。弹窗界面（UserSelectPopup）经此实现取消协议。
+        onHighlight: ``(index) -> None``——选中下标变化时回调（导航
+            ↑↓/j/k/g/G 后触发；None 时忽略）。
+        renderItem: ``(item, index, isSelected) -> Element``——自定义行渲染
+            （返回元素直接作为列表行；None 时用默认 prefix+label）。
+        consumeAll: True（弹窗模式）——非导航/Enter/Esc 的按键也消费
+            （返回 True 不放行），防止字符落入输入框；Ctrl+C（``\\x03``）
+            仍放行（可中断工具执行）。
 
     Returns:
         BOX 元素（纵向堆叠的 item 行）。
     """
     items = _normalize_items(props.get("items", []))
     on_select = props.get("onSelect")
+    on_cancel = props.get("onCancel")
+    on_highlight = props.get("onHighlight")
+    render_item = props.get("renderItem")
     focus = bool(props.get("focus", True))
+    consume_all = bool(props.get("consumeAll", False))
     limit = props.get("limit")
     if limit is not None:
         try:
@@ -78,25 +112,58 @@ def SelectInput(props: dict) -> Element:
         if cur != selected_ref.current:
             selected_ref.current = cur
             set_selected(cur)
+        if event.kind == "escape" and on_cancel is not None:
+            # ★ 弹窗取消协议（方案B）：Esc 时调用 onCancel 并消费事件（返回
+            #   True 阻断旧路径 Esc 中断语义——弹窗激活期间由协议接管取消）。
+            _call(on_cancel, items[cur])
+            return True
+        nav = None
         if event.kind == "arrow_up":
+            nav = "up"
+        elif event.kind == "arrow_down":
+            nav = "down"
+        else:
+            nav = _is_vim_nav(event)
+        moved = False
+        new = cur
+        if nav == "up":
             # ★ P3（review）：已在首项时按上键不移动——无效移动返回 False
             #   （不消费，放行父级；与 ListView/Menu 对齐）。
-            if cur <= 0:
-                return False
-            new = cur - 1
-            selected_ref.current = new
-            set_selected(new)
-            return True
-        if event.kind == "arrow_down":
+            if cur > 0:
+                new = cur - 1
+                moved = True
+        elif nav == "down":
             # ★ P3（review）：已在末项时按下键不移动——无效移动返回 False。
-            if cur >= len(items) - 1:
-                return False
-            new = cur + 1
+            if cur < len(items) - 1:
+                new = cur + 1
+                moved = True
+        elif nav == "first":
+            if cur != 0:
+                new = 0
+                moved = True
+        elif nav == "last":
+            if cur != len(items) - 1:
+                new = len(items) - 1
+                moved = True
+        if moved:
             selected_ref.current = new
             set_selected(new)
+            if on_highlight is not None:
+                _call(on_highlight, new)
             return True
         if event.kind == "enter":
-            _call(on_select, items[cur])
+            # ★ 方案B：onSelect 未提供时 enter 放行（返回 False 不消费——
+            #   CompletionPopup 补全弹窗 Enter 确认由 InputDispatcher 旧路径
+            #   接管）；提供时消费并回调（UserSelectPopup 单选协议）。
+            if on_select is not None:
+                _call(on_select, items[cur])
+                return True
+            return False
+        if consume_all:
+            # ★ 弹窗模式：其他按键一律消费（阻断输入框）；Ctrl+C 放行
+            #   （可中断工具执行——UserSelectPopup 既有语义）。
+            if event.kind == "char" and event.char == "\x03":
+                return False
             return True
         return False
 
@@ -116,6 +183,23 @@ def SelectInput(props: dict) -> Element:
         idx = offset + i
         item = items[idx]
         is_sel = idx == selected_shown
+        if render_item is not None:
+            # ★ 自定义行渲染（方案B）：弹窗界面（UserSelectPopup 分栏/多行/
+            #   高亮视觉）经 renderItem 完全自定义行元素——命中高亮由调用方
+            #   自行表达（isSelected 传入）。异常降级默认行（防御）。
+            try:
+                child = render_item(item, idx, is_sel)
+            except Exception:
+                child = h(TEXT, {"children": prefix + item["label"], "style": highlight_style if is_sel else None})
+            if isinstance(child, Element):
+                cp = dict(child.props)
+                cp.setdefault("key", f"item-{idx}")
+                rows.append(Element(child.type, cp, child.children))
+            elif child is None:
+                rows.append(h(TEXT, {"children": "", "key": f"item-{idx}"}))
+            else:
+                rows.append(h(TEXT, {"children": str(child), "key": f"item-{idx}"}))
+            continue
         line_prefix = prefix if is_sel else pad
         style = highlight_style if is_sel else None
         rows.append(

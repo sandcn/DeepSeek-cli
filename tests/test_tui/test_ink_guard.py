@@ -403,3 +403,101 @@ def test_layer0_not_render(render_graph) -> None:
     for mid in ("tui._config", "tui._const", "tui._width"):
         info = render_graph[mid]
         assert not info["has_h"] and not info["has_hook"], f"{mid} 不应含渲染调用"
+
+
+# ═══════════════════════════════════════════════════════════
+# R9 — 界面组件禁止字符串 host（必须用命名控件/布局门面）
+# ═══════════════════════════════════════════════════════════
+
+def test_app_layer_no_string_hosts(render_graph) -> None:
+    """R9：tui.app.* 界面组件 h() 第一参禁止字符串 host。
+
+    界面组件树必须用 React Ink **命名控件/组件**（TEXT/Column/Row/
+    SelectInput/ListView/Divider/Gradient/Panel 等）与布局门面表达——
+    字符串 host（``h("box")``/``h("text")``）绕过命名控件层（无法享受
+    控件语义/守卫审计），属架构违规。与 R7 区别：R7 允许内置 host 字符串
+    （含框架内部），R9 对 app 界面层更严格（全面控件化方案B：界面必须用
+    命名控件）。
+    """
+    violations = []
+    for mid, info in sorted(render_graph.items()):
+        if not (mid == "tui.app" or mid.startswith("tui.app.")):
+            continue
+        for host in info["h_hosts"]:
+            violations.append(f"{mid}: h({host!r})")
+    assert not violations, (
+        "R9 违规：界面组件使用字符串 host（应用命名控件/布局门面表达）: "
+        f"{violations}"
+    )
+
+
+# ═══════════════════════════════════════════════════════════
+# R10 — 界面控件化组件审计（方案B 迁移清单防回归）
+# ═══════════════════════════════════════════════════════════
+
+#: 界面组件 → 必须使用的控件库导出名（方案B 全面控件化迁移清单）
+#:   header 渐变 → Gradient；status_bar 分隔线 → Divider；
+#:   trace_view 台账 → ListView；user_select 弹窗 → SelectInput/MultiSelect；
+#:   toolcard 工具卡 → Panel；input_area 补全弹窗 → SelectInput。
+_CONTROL_USAGE_AUDIT: dict[str, set[str]] = {
+    "tui.app.header": {"Gradient"},
+    "tui.app.status_bar": {"Divider"},
+    "tui.app.trace_view": {"ListView"},
+    "tui.app.user_select": {"SelectInput", "MultiSelect"},
+    "tui.app.toolcard": {"Panel"},
+    "tui.app.input_area": {"SelectInput"},
+}
+
+
+def _module_uses_symbol(path: Path, symbol: str) -> bool:
+    """AST 检查模块源码是否引用指定符号（import 或 h(调用）。"""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (SyntaxError, UnicodeDecodeError):
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == symbol:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr == symbol:
+            return True
+        if isinstance(node, ast.ImportFrom):
+            for n in node.names:
+                if n.name == symbol:
+                    return True
+    return False
+
+
+def test_interface_components_use_widgets_controls() -> None:
+    """R10：界面组件必须使用控件库控件（方案B 迁移清单防回归）。
+
+    全面控件化（2026-08-16 方案B）迁移的界面组件，其实现必须引用对应
+    标准控件——防止后续改动回退为「纯 TEXT/手写行」表达（界面脱离控件
+    库语义）。AST 静态分析（import/名称/属性引用均可命中），不 import
+    被检模块。
+    """
+    violations = []
+    for mid, symbols in sorted(_CONTROL_USAGE_AUDIT.items()):
+        rel = mid[len("tui."):].replace(".", "/")
+        path = TUI_ROOT / f"{rel}.py"
+        if not path.exists():
+            violations.append(f"{mid}: 模块文件不存在")
+            continue
+        missing = [s for s in symbols if not _module_uses_symbol(path, s)]
+        if missing:
+            violations.append(f"{mid}: 缺少控件引用 {missing}")
+    assert not violations, (
+        "R10 违规：界面组件未使用控件库控件（方案B 全面控件化迁移清单）: "
+        f"{violations}"
+    )
+
+
+def test_control_usage_audit_selfcheck() -> None:
+    """自检：R10 审计清单模块存在且当前实现命中控件（防审计退化）。"""
+    for mid, symbols in _CONTROL_USAGE_AUDIT.items():
+        rel = mid[len("tui."):].replace(".", "/")
+        path = TUI_ROOT / f"{rel}.py"
+        assert path.exists(), f"审计模块不存在: {mid}"
+        for s in symbols:
+            assert _module_uses_symbol(path, s), (
+                f"{mid} 当前未引用 {s}——审计清单与实现不同步"
+            )

@@ -29,6 +29,7 @@ from src.tui.app.trace import block_detail_lines, build_trace_records
 from src.tui.core.style import Style
 from src.tui.ink import TEXT, Column, Row, StyledRun, h, use_input, use_memo
 from src.tui.ink.helpers import truncate_runs
+from src.tui.ink.widgets.listview import ListView
 
 # ── 样式 ─────────────────────────────────────────────
 _S_TITLE = Style(fg=45, bold=True)        # 视图标题前缀（亮青加粗）
@@ -317,12 +318,59 @@ def _row_of_record(rows: list, sel: int, records: list) -> int:
     return 0
 
 
+def _records_index_of_row(rows: list, row_idx: int) -> int:
+    """台账行下标 → 记录索引（跳过 None 分隔行；row 为 None/越界返回 -1）。"""
+    if not (0 <= row_idx < len(rows)):
+        return -1
+    count = 0
+    for i in range(row_idx + 1):
+        if rows[i] is None:
+            continue
+        if i == row_idx:
+            return count
+        count += 1
+    return -1
+
+
+def _ledger_renderer(rows: list, left_w: int, records: list, model):
+    """台账行渲染函数（ListView renderItem 三参签名）。
+
+    items 为 ``rows``（TraceRecord 或 None 分隔行）：
+      - 分隔行（None）→ 轮次分隔行 TEXT（``── 轮次 N ──``）；
+      - 记录行 → ``_ledger_row_runs``（选中整行背景高亮 + ▶ 标记），
+        isSelected 由 ListView 注入（受控 cursor 行）。
+    """
+    def render_item(item, idx, is_sel):
+        if item is None:
+            n = sum(1 for r in rows[:idx] if r is None) + 1  # 第 n 个分隔 = 轮次 n
+            return h(TEXT, {
+                "key": f"tsep-{idx}",
+                "styled": _sep_row_runs(n, left_w),
+                "height": 1,
+            })
+        return h(TEXT, {
+            "key": f"trow-{idx}",
+            "styled": _ledger_row_runs(item, bool(is_sel), left_w),
+            "height": 1,
+        })
+    return render_item
+
+
 def TraceView(props) -> object:
     """轨迹视图组件（App 消息区替换渲染；Ctrl+H 开关）。
 
     Props:
         model: AppModel 实例（blocks/subagent_lines/trace_open/trace_selected）。
         width: 终端宽度（左右栏宽分配）。
+
+    ★ 全面控件化（方案B）：台账左栏经标准控件 ``ListView`` 表达——
+    受控光标（``cursor``= 选中记录在 rows 中的下标）、虚拟滚动
+    （``height``= 台账可见行数，内部自动滚动）、导航
+    （↑↓/PgUp/PgDn/Home/End/g/G，None 分隔行自动跳过）、选中态注入
+    （``renderItem`` 三参 isSelected）；导航结果经 ``onNavigate`` 写回
+    ``model.trace_selected``（退出尾部跟随）。本组件 use_input 仅处理
+    关闭类按键（Esc/Ctrl+H）——其余导航/选择键放行 ListView 消费，
+    Enter 放行（非模态：提交消息）。
     """
     model = props["model"]
     width = props.get("width", 0) or 0
@@ -360,14 +408,11 @@ def TraceView(props) -> object:
     if rec is not None:
         rec._detail_lines = detail_lines
 
-    # ── 台账可见窗口（选中行置于窗口首行之下 1 行上下文；尾部跟随自然滑动） ──
+    # ── 台账可见窗口（选中记录在 rows 中的下标——ListView 受控光标） ──
     row_count = len(rows)
-    sel_row = _row_of_record(rows, sel, records)
-    offset = (
-        max(0, min(sel_row - 1, row_count - vh)) if row_count > vh else 0
-    )
+    sel_row = _row_of_record(rows, sel, records) if row_count else 0
 
-    # ── 输入（trace_open 期间激活；Enter/其余按键放行——非模态） ──
+    # ── 输入（trace_open 期间激活；关闭类按键本组件消费，导航放行 ListView） ──
     def _handle(event) -> bool:
         if not getattr(model, "trace_open", False):
             return False
@@ -378,45 +423,17 @@ def TraceView(props) -> object:
         if event.kind == "ctrl_key" and getattr(event, "char", "") == "\x08":
             model.trace_open = False
             return True
-        if total == 0:
-            return False
-        cur = getattr(model, "trace_selected", -1)
-        if cur == -1 or cur >= total:
-            cur = total - 1
-        changed = False
-        if event.kind == "arrow_up":
-            if cur > 0:
-                cur -= 1
-                changed = True
-        elif event.kind == "arrow_down":
-            if cur < total - 1:
-                cur += 1
-                changed = True
-        elif event.kind == "page_up":
-            n = max(0, cur - vh)
-            changed = n != cur
-            cur = n
-        elif event.kind == "page_down":
-            n = min(total - 1, cur + vh)
-            changed = n != cur
-            cur = n
-        elif event.kind == "home":
-            changed = cur != 0
-            cur = 0
-        elif event.kind == "end":
-            changed = cur != total - 1
-            cur = total - 1
-        elif event.kind == "char" and getattr(event, "char", "") in ("g", "G"):
-            n = 0 if event.char == "g" else total - 1
-            changed = cur != n
-            cur = n
-        else:
-            return False  # Enter/字符/其余按键放行（提交消息/打字）
-        if changed:
-            model.trace_selected = cur  # 退出尾部跟随（写入具体索引）
-        return True
+        # 其余按键（↑↓/PgUp/PgDn/Home/End/g/G/Enter/字符）放行——导航由
+        # ListView 消费，Enter/字符放行（非模态：提交消息/打字）
+        return False
 
     use_input(_handle, bool(getattr(model, "trace_open", False)))
+
+    def _on_navigate(row_idx: int) -> None:
+        """台账导航回调（ListView 导航后）：写回 model.trace_selected（退出跟随）。"""
+        rec_idx = _records_index_of_row(rows, row_idx)
+        if rec_idx >= 0:
+            model.trace_selected = rec_idx
 
     # ── 渲染 ──
     # 头部（静态色——轨迹视图为浏览界面，不呼吸，diff 零输出）
@@ -429,29 +446,23 @@ def TraceView(props) -> object:
     if width > 0:
         header_runs = truncate_runs(header_runs, width)
 
-    # 左栏（台账）
-    left_rows: list = []
-    for i in range(offset, min(row_count, offset + vh)):
-        row = rows[i]
-        if row is None:
-            n = sum(1 for r in rows[:i] if r is None) + 1  # 第 n 个分隔 = 轮次 n
-            left_rows.append(h(TEXT, {
-                "key": f"tsep-{i}", "styled": _sep_row_runs(n, left_w), "height": 1,
-            }))
-        else:
-            is_sel = row is rec
-            left_rows.append(h(TEXT, {
-                "key": f"trow-{i}",
-                "styled": _ledger_row_runs(row, is_sel, left_w),
-                "height": 1,
-            }))
+    # 左栏（台账——ListView 标准控件：受控光标 + 虚拟滚动 + 分隔行跳过）
+    ledger = h(ListView, {
+        "items": rows,
+        "height": vh,
+        "width": left_w,
+        "cursor": sel_row if row_count else 0,
+        "renderItem": _ledger_renderer(rows, left_w, records, model),
+        "onNavigate": _on_navigate,
+        "focus": bool(getattr(model, "trace_open", False)),
+    })
     # 右栏（检查器）
     right_rows = _inspector_children(rec, right_w, vh)
 
     return h(Column, None, [
         h(TEXT, {"styled": header_runs, "height": 1}),
         h(Row, None, [
-            h(Column, {"width": left_w}, left_rows),
+            ledger,
             h(TEXT, {"children": "\u2502", "style": _S_SEP_ROW, "height": 1}),
             h(Column, {"width": right_w}, right_rows),
         ]),

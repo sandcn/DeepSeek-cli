@@ -91,6 +91,7 @@ from src.tui.app._popup_builder import (
 )
 from src.tui.core.style import Style
 from src.tui.ink import h, TEXT, Column, Line, use_memo, use_ref
+from src.tui.ink.widgets.interactive import SelectInput
 from src.tui.app import _fx
 from src.tui.app._theme import sep_line as _theme_sep_line, time_glow, _S_ACCENT, _S_DIM, _S_SEP, _S_TEXT, _S_TIME
 
@@ -451,7 +452,19 @@ def _lines_to_text_elements(lines: list, prefix: str = "ia") -> list:
 
 
 def CompletionPopup(props: dict) -> object:
-    """React Ink 标准组件：命令补全弹窗（Column + TEXT 行）。
+    """React Ink 标准组件：命令补全弹窗（Column + SelectInput 控件 + TEXT）。
+
+    ★ 全面控件化（方案B）：候选项列表经标准控件 ``SelectInput`` 表达——
+    导航（↑↓/PgUp/PgDn）由控件消费并写回 ``completion.selected``
+    （onHighlight）；Enter 放行（补全确认由 InputDispatcher 旧路径接管——
+    无 onSelect 时控件不消费 enter）；Esc 放行（关闭弹窗由 InputDispatcher
+    处理——无 onCancel）；``limit`` = 锁定高度可见行数（高度锁定防闪烁语义
+    保持，底部补白）；``renderItem`` 复用候选项行视觉（▶ 高亮 + match 前缀
+    高亮 + 描述灰显）。标题/提示行保持 TEXT（基础控件）。
+
+    ★ 分栏说明模式（split_desc——历史 user_select 场景，生产已迁移
+    UserSelectPopup 不再触发）回退 ``_build_popup_lines`` 旧路径（兼容
+    既有调用/测试；分栏行需滚动偏移，SelectInput renderItem 无法表达）。
 
     Props:
         completion: CompletionState 或 None（不可见/无 items 时空 TEXT 零高度）。
@@ -459,20 +472,113 @@ def CompletionPopup(props: dict) -> object:
         now: 当前 monotonic 时间（父组件传入，缓存键同源；缺省自取）。
 
     Returns:
-        Column（标题 + 候选项 + 提示行）；弹窗不可见返回空 TEXT（h=0 不占行）。
+        Column（标题 + SelectInput 候选项 + 提示行）；弹窗不可见返回空
+        TEXT（h=0 不占行）。
     """
     completion = props.get("completion")
     width = props.get("width", 80)
     now = props.get("now")
     if now is None:
         now = time.monotonic()
-    lines = _build_popup_lines(completion, width, now)
-    if not lines:
+    if completion is None or not completion.visible or not completion.items:
         return h(TEXT, {"children": "", "key": "popup-empty"})
-    return h(Column, {"key": "completion-popup"}, [
-        h(TEXT, {"key": f"popup-{i}", "styled": ln.runs, "height": 1})
-        for i, ln in enumerate(lines)
-    ])
+    items = list(completion.items)
+    # selected 钳制（_build_popup_lines 同语义——外部注入异常/越界归一化）
+    try:
+        sel = max(0, min(int(completion.selected), len(items) - 1))
+    except (TypeError, ValueError):
+        sel = 0
+    completion.selected = sel
+    match_prefix = completion.match_prefix or ""
+    types = completion.types or ()
+    types_disp = list(types) + [""] * (len(items) - len(types))
+    title = completion.title or ""
+    descs = completion.descriptions if completion.descriptions else ()
+    split = bool(getattr(completion, "split_desc", False)) and bool(descs)
+    # ★ 分栏说明模式回退旧路径（生产无触发；兼容既有调用/测试）
+    if split:
+        lines = _build_popup_lines(completion, width, now)
+        return h(Column, {"key": "completion-popup"}, [
+            h(TEXT, {"key": f"popup-{i}", "styled": ln.runs, "height": 1})
+            for i, ln in enumerate(lines)
+        ])
+    # 锁定可见行数（高度锁定防闪烁：_completion_height-2，与 _build_popup_lines
+    # 一致——items 减少时底部补白空行，doc 高度不变）
+    n_rows = max(0, _completion_height(completion, width) - 2)
+    total = len(items)
+    sel_bg = 237
+
+    # ── 标题行（静态色——弹窗不呼吸，避免每帧重绘） ──
+    title_color = 38
+    head = Line.of(" \u258d", Style(fg=title_color, bold=True))
+    head.append(" ", Style(fg=title_color, bold=True))
+    head.append(title, Style(fg=title_color, bold=True))
+    if total > 0:
+        head.append(f" ({sel + 1}/{total})", Style(fg=title_color))
+    if head.width > width:
+        from src.tui.ink.helpers import truncate_line
+        head = truncate_line(head, width)
+
+    # ── 候选项（SelectInput 标准控件） ──
+    cell_w = max(
+        1, min(max((_vwidth(i) for i in items), default=10) + 4, width - 2) - 3,
+    )
+
+    def _render_item(item, idx, is_sel):
+        """候选项行渲染（▶ 高亮 + match 前缀高亮 + 描述灰显）。
+
+        SelectInput 调用 renderItem 时 item 为规范化 dict
+        （``{"label", "value"}``）——取 label 渲染；选中态经第三参
+        ``is_sel``（控件内部 state——导航后自动更新，非闭包 selected）。
+        """
+        label = item["label"] if isinstance(item, dict) else str(item)
+        line = Line()
+        if is_sel:
+            line.append(" \u25b6 ", Style(fg=15, bg=sel_bg))
+        else:
+            line.append("   ")
+        for run in _styled_completion(label, types_disp[idx], match_prefix, cell_w).runs:
+            line.append_run(run)
+        # 斜杠命令描述灰显（command 且描述非空）
+        if types_disp[idx] == "command" and idx < len(descs) and descs[idx]:
+            line.append("  ", _S_DIM)
+            desc_budget = max(1, width - line.width)
+            line.append(_truncate_width(descs[idx], desc_budget), Style(fg=110))
+        if width > 0 and line.width > width:
+            from src.tui.ink.helpers import truncate_line
+            line = truncate_line(line, width)
+        return h(TEXT, {"styled": line.runs, "height": 1})
+
+    select_items = [{"label": item, "value": item} for item in items]
+    control = h(SelectInput, {
+        "key": "popup-items",
+        "items": select_items,
+        "initialIndex": sel,
+        "limit": n_rows if n_rows > 0 else None,
+        "onHighlight": lambda idx: setattr(completion, "selected", idx),
+        "renderItem": _render_item,
+        "focus": True,
+        "consumeAll": False,
+    })
+
+    # 高度锁定补白：items 减少时弹窗底部补空行（doc 高度不变——防闪烁）
+    pad_rows = max(0, n_rows - min(total, n_rows))
+
+    # ── 提示行（静态色） ──
+    hint = Line.of(" ", Style(fg=110))
+    hint.append("Tab \u2191\u2193 PgUp/PgDn Esc", Style(fg=110))
+    if width > 0 and hint.width > width:
+        from src.tui.ink.helpers import truncate_line
+        hint = truncate_line(hint, width)
+
+    children = [
+        h(TEXT, {"key": "popup-head", "styled": head.runs, "height": 1}),
+        control,
+    ]
+    if pad_rows > 0:
+        children.append(h(TEXT, {"key": "popup-pad", "children": "", "height": pad_rows}))
+    children.append(h(TEXT, {"key": "popup-hint", "styled": hint.runs, "height": 1}))
+    return h(Column, {"key": "completion-popup"}, children)
 
 
 def _input_elements(props: dict, width: int, now: float, fade_state: dict) -> list:

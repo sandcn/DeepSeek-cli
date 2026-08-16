@@ -339,6 +339,9 @@ def StatusBar(props) -> object:
     #   重建分隔线 Line。修复后同 0.1s 时间桶内返回**同一 Style 实例** →
     #   use_memo 引用命中 → 分隔线 Line 跨帧复用（零重建）；跨桶呼吸色更新
     #   自动重建。空闲期 _S_SEP 常量恒同对象，同样命中。
+    # ★ 全面控件化（方案B）：分隔线经标准控件 ``Divider`` 渲染
+    #   （``h(Divider, {"width", "char": "━", "style": sep_style})``——纯
+    #   填充分隔线，与 sep_line 构建语义等价，控件化表达）。
     sep_style = _theme_sep_style(st.status_active)
     sep = use_memo(
         lambda: _theme_sep_line(width, None, st.status_active),
@@ -364,12 +367,15 @@ def StatusBar(props) -> object:
     #   一行——避免启动期 / 未配置模型时状态栏空行占位（视觉更紧凑）。
     # ★ 阶段2（标准布局容器重构）：BOX(None) → Column（默认 flexDirection=
     #   column，输出与重构前一致；use_memo 缓存链不动——PERF-10/11 契约核心）。
+    # ★ 全面控件化（方案B）：分隔线经 Divider 标准控件（纯填充 = sep_line
+    #   等价）；状态行保持 TEXT（StyledRun 行——React Ink 基础控件）。
+    from src.tui.ink.widgets.display import Divider
     if not status_runs:
         return h(Column, None, [
-            h(TEXT, {"styled": sep.runs, "height": 1}),
+            h(Divider, {"width": width, "char": "\u2501", "style": sep_style}),
         ])
     return h(Column, None, [
-        h(TEXT, {"styled": sep.runs, "height": 1}),
+        h(Divider, {"width": width, "char": "\u2501", "style": sep_style}),
         h(TEXT, {"styled": status_line.runs, "height": 1}),
     ])
 

@@ -71,10 +71,27 @@ def Gradient(props: dict) -> Element:
             至少 2 个才能渐变，1 个/空回退纯色/无样式）。
         style: 基础样式（与渐变 fg 合并——渐变 fg 优先；style 的其他属性
             保留）。
+        styled: 预计算 StyledRun 列表（可选）——提供时**直接使用**（不再
+            按 text/colors 重新渐变），供宿主按预算截断后注入（如 TopHeader
+            窄屏截断渐变标题：宽屏 use_memo 缓存引用、窄屏截断后经本 prop
+            注入，视觉等价且缓存引用稳定）。style 仍合并（覆盖 styled run
+            样式）。
 
     Returns:
         TEXT 元素（渐变 StyledRun 序列）。
     """
+    # ★ styled 注入模式（控件化支持）：宿主提供预计算 runs（截断/缓存场景）
+    #   时直接使用——不再重新渐变（text/colors 仅作描述性输入，可省略）。
+    styled = props.get("styled")
+    style = props.get("style")
+    if styled is not None:
+        runs = list(styled)
+        if style is not None and runs:
+            runs = [
+                StyledRun(r.text, style.merge(r.style)) if r.style is not None else StyledRun(r.text, style)
+                for r in runs
+            ]
+        return h(TEXT, {"styled": runs})
     text = props.get("text")
     text = "" if text is None else str(text)
     colors = props.get("colors", [45, 39, 141, 213])
@@ -86,7 +103,6 @@ def Gradient(props: dict) -> Element:
     runs = _gradient_runs(text, colors)
     if not runs:
         return h(TEXT, {"children": ""})
-    style = props.get("style")
     if style is not None and runs:
         runs = [
             StyledRun(r.text, style.merge(r.style)) if r.style is not None else StyledRun(r.text, style)

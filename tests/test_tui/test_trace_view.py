@@ -389,7 +389,11 @@ def test_inspector_empty_record():
 
 
 def test_trace_view_renders_ledger_and_inspector():
-    """TraceView：头部 + 左右布局（左台账 / 分隔 / 右检查器）。"""
+    """TraceView：头部 + 左右布局（左台账 / 分隔 / 右检查器）。
+
+    ★ 全面控件化（方案B）：台账左栏经标准控件 ``ListView`` 表达——检查
+    控件 props（items/cursor/renderItem）与 renderItem 行渲染。
+    """
     m = _make_model_with_blocks()
     m.trace_open = True
     m.trace_selected = 3
@@ -405,22 +409,30 @@ def test_trace_view_renders_ledger_and_inspector():
     assert row_el.type is Row  # 左右布局容器（React Ink Row）
     parts = list(row_el.children)
     assert len(parts) == 3
-    left_col, sep, right_col = parts
-    # 左栏：系统提词 + 轮次分隔 + 5 条记录（窗口全量可见）
-    left_children = list(left_col.children)
-    assert len(left_children) == 6
-    # 首行 = 系统提词记录（⚙ 图标 + 提示词首行摘要）
-    sys_text = "".join(r.text for r in left_children[0].props.get("styled", []))
+    left, sep, right_col = parts
+    # 左栏 = ListView 标准控件（items = rows 含分隔行；cursor = 选中记录行号）
+    from src.tui.ink.widgets.listview import ListView
+    assert left.type is ListView, f"左栏应为 ListView 控件: {left.type}"
+    lv = left.props
+    items = lv["items"]
+    assert len(items) == 6  # system + 轮次分隔 + user/reasoning/content/tool
+    assert lv["cursor"] == 4  # records[3]（content 回答）在 rows 中下标 4
+    # renderItem：系统提词行（⚙ + #1）
+    sys_el = lv["renderItem"](items[0], 0, False)
+    sys_text = "".join(r.text for r in sys_el.props.get("styled", []))
     assert "\u2699" in sys_text
     assert sys_text.startswith("  # 1")
-    # 第二行 = 轮次 1 分隔
-    assert "轮次 1" in "".join(r.text for r in left_children[1].props.get("styled", []))
-    # 选中行（records[3] = content 回答 #4）带 ▶
-    sel_text = "".join(r.text for r in left_children[4].props.get("styled", []))
+    # renderItem：轮次分隔行
+    sep_el = lv["renderItem"](items[1], 1, False)
+    assert "轮次 1" in "".join(r.text for r in sep_el.props.get("styled", []))
+    # renderItem：选中行（content #4，isSelected=True）带 ▶
+    sel_el = lv["renderItem"](items[4], 4, True)
+    sel_text = "".join(r.text for r in sel_el.props.get("styled", []))
     assert sel_text.startswith("\u25b6")
     assert "# 4" in sel_text
-    # 工具行（末行 #5）：调用 + 返回预览合并一条（· file1.txt）
-    tool_text = "".join(r.text for r in left_children[5].props.get("styled", []))
+    # renderItem：工具行（#5）：调用 + 返回预览合并一条（· file1.txt）
+    tool_el = lv["renderItem"](items[5], 5, False)
+    tool_text = "".join(r.text for r in tool_el.props.get("styled", []))
     assert "# 5" in tool_text
     assert "· file1.txt" in tool_text
     # 右栏：检查器标题为 #4 回答
@@ -428,17 +440,20 @@ def test_trace_view_renders_ledger_and_inspector():
 
 
 def test_trace_view_tail_follow():
-    """trace_selected=-1（跟随尾部）→ 选中最新记录。"""
+    """trace_selected=-1（跟随尾部）→ ListView 受控光标指向最新记录。"""
     m = _make_model_with_blocks()
     m.trace_open = True
     m.trace_selected = -1
     el, _ = _render(TraceView, {"model": m, "width": 100})
     row_el = list(el.children)[1]
     parts = list(row_el.children)
-    left_children = list(parts[0].children)
-    # 尾部跟随：窗口最后一行（工具记录 #5）选中
-    last = left_children[-1]
-    text = "".join(r.text for r in last.props.get("styled", []))
+    left = parts[0]
+    # 尾部跟随：ListView cursor = 最新记录（tool #5）在 rows 中下标 5
+    assert left.props["cursor"] == 5, f"跟随尾部应定位 tool 记录: {left.props['cursor']}"
+    # renderItem 验证该行为 ▶ 选中
+    items = left.props["items"]
+    tool_el = left.props["renderItem"](items[5], 5, True)
+    text = "".join(r.text for r in tool_el.props.get("styled", []))
     assert text.startswith("\u25b6")
     assert "# 5" in text
 
@@ -452,27 +467,44 @@ def _input_handler(fiber):
 
 
 def test_trace_view_navigation_writes_model():
-    """↑↓ 导航写入 model.trace_selected（退出尾部跟随）。"""
+    """↑↓ 导航（经 ListView 控件）写入 model.trace_selected（退出尾部跟随）。
+
+    ★ 全面控件化（方案B）：导航由 ListView 消费，onNavigate 回调写回
+    model.trace_selected——经 Reconciler 完整渲染（含 ListView hooks）
+    验证 router 事件链路；事件后重建元素树模拟渲染循环（cursor prop 更新）。
+    """
+    from src.tui.ink.element import h as h_el
+    from src.tui.ink.reconciler import Reconciler
     m = _make_model_with_blocks()
     m.trace_open = True
     m.trace_selected = -1
-    el, fiber = _render(TraceView, {"model": m, "width": 100})
-    handler = _input_handler(fiber)
+    rec = Reconciler()
+    root = rec.create_root()
+    rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+    router = rec._build_input_router(root)
     # 记录：system(0) user(1) reasoning(2) content(3) tool(4)
     # 上移：从尾部（#5 工具）到 #4 回答
-    assert handler(KeyEvent(kind="arrow_up", raw=b"\x1b[A")) is True
+    assert router(KeyEvent(kind="arrow_up", raw=b"\x1b[A")) is True
     assert m.trace_selected == 3
-    # 上移继续
-    assert handler(KeyEvent(kind="arrow_up", raw=b"\x1b[A")) is True
+    # 下一帧重建（渲染循环）→ 上移继续
+    rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+    router = rec._build_input_router(root)
+    assert router(KeyEvent(kind="arrow_up", raw=b"\x1b[A")) is True
     assert m.trace_selected == 2
     # 下移
-    assert handler(KeyEvent(kind="arrow_down", raw=b"\x1b[B")) is True
+    rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+    router = rec._build_input_router(root)
+    assert router(KeyEvent(kind="arrow_down", raw=b"\x1b[B")) is True
     assert m.trace_selected == 3
     # End → 尾部
-    assert handler(KeyEvent(kind="end", raw=b"\x1b[F")) is True
+    rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+    router = rec._build_input_router(root)
+    assert router(KeyEvent(kind="end", raw=b"\x1b[F")) is True
     assert m.trace_selected == 4
     # g → 首条（系统提词）
-    assert handler(KeyEvent(kind="char", char="g", raw=b"g")) is True
+    rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+    router = rec._build_input_router(root)
+    assert router(KeyEvent(kind="char", char="g", raw=b"g")) is True
     assert m.trace_selected == 0
 
 
