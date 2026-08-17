@@ -34,6 +34,7 @@ from .status_bar import StatusBar
 from .user_select import UserSelectPopup
 from .input_area import InputArea
 from .trace_view import TraceView
+from .trace_tools_view import TraceToolsView
 
 #: 模态全屏视图注册表（2026-08-17 通用机制）：view_id → 组件函数。
 #: App 在 ``model.fullscreen`` 非空时按 id 查注册表**整屏渲染**对应组件；
@@ -43,6 +44,12 @@ from .trace_view import TraceView
 #: 输入接管 / 光标隐藏（全屏无输入区自动隐藏）全部自动生效，无需改 App 分支。
 FULLSCREEN_VIEWS: dict = {
     "trace": TraceView,
+    # ★ 2026-08-17（用户需求：轨迹 Trace 工具列表 Enter 进入新界面）：工具
+    #   列表详情视图——主轨迹选中 #0 工具列表记录按 Enter → ``model.fullscreen
+    #   = "trace_tools"`` → 整屏渲染 TraceToolsView（左右布局：左工具名列表
+    #   上下选择 + 右树控件显示需要的参数）；Esc/Ctrl+H 返回主轨迹
+    #   （``model.fullscreen = "trace"``）。
+    "trace_tools": TraceToolsView,
 }
 
 #: 模态底部视图注册表（2026-08-17 通用机制）：view_id → 组件 或

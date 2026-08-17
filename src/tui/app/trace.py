@@ -32,6 +32,7 @@ system/user/assistant(+tool_calls)/tool 返回）——对齐 DSH：轨迹从 Se
 
 from __future__ import annotations
 
+import json as _json
 import time as _time
 from dataclasses import dataclass, field
 
@@ -181,6 +182,137 @@ def _tools_record() -> TraceRecord | None:
     )
     _tools_cache = (now, rec)
     return rec
+
+
+#: 工具参数 schema 列表 TTL 缓存时长（秒）——与 ``_tools_record`` 同语义
+#:   （``to_tool_schema`` 为工具类方法调用；工具列表详情视图构建时仅命中
+#:   缓存，不重复解析）。
+_TOOLS_SCHEMA_TTL = 30.0
+_tools_schema_cache: tuple[float, list] | None = None
+
+
+def _tools_schema_list() -> list:
+    """工具参数 schema 列表（工具列表详情视图数据源，TTL 缓存）。
+
+    ★ 2026-08-17（用户需求：轨迹 Trace 工具列表 Enter 进入新界面——左边
+    工具名列表上下选择 + 右边树控件显示需要的参数）：数据源与
+    ``_tools_record`` 同源（``ToolRegistry.default().get_tools()`` 注册顺序
+    = 自动发现顺序，dict 保持插入顺序）；惰性 import（trace 层不依赖 tools
+    层，避免循环依赖）。性能（review 方向）：模块级 TTL 缓存（30s）——
+    ``to_tool_schema`` 逐工具解析 schema，界面每帧重建时仅命中缓存；工具
+    注册发生在启动装配期，运行期变化**不触发界面重建**（与 ``_tools_record``
+    隐式契约一致）。
+
+    Returns:
+        list[tuple]——[(工具名, properties dict, required list, description
+        str)] 按注册顺序。properties = ``function.parameters.properties``
+        （参数名 → 参数定义 dict）；required = 必需参数名列表；description =
+        工具描述。注册表获取异常/为空 → 空列表（界面显示空态，静默降级
+        零成本）；单个工具 schema 解析失败 → 该工具降级为
+        ``(name, {}, [], "")``（不阻断其他工具，异常结果不缓存）。
+    """
+    global _tools_schema_cache
+    now = _time.monotonic()
+    if _tools_schema_cache is not None and now - _tools_schema_cache[0] < _TOOLS_SCHEMA_TTL:
+        return _tools_schema_cache[1]
+    try:
+        from src.tools.registry import ToolRegistry
+        tools = ToolRegistry.default().get_tools()
+    except Exception:
+        return []
+    if not tools:
+        return []
+    out: list = []
+    for name, tool_cls in tools.items():
+        try:
+            schema = tool_cls.to_tool_schema()
+            fn = schema.get("function") or {} if isinstance(schema, dict) else {}
+            params = fn.get("parameters") or {} if isinstance(fn, dict) else {}
+            props = params.get("properties") or {} if isinstance(params, dict) else {}
+            required = list(params.get("required") or []) if isinstance(params, dict) else []
+            description = str(fn.get("description", "") or "") if isinstance(fn, dict) else ""
+            out.append((fn.get("name", name) or name, props, required, description))
+        except Exception:
+            out.append((name, {}, [], ""))
+    _tools_schema_cache = (now, out)
+    return out
+
+
+def _compact_value(value) -> str:
+    """值 → 单行紧凑文本（树节点叶子标签用）。
+
+    None/布尔 → JSON 字面量（null/true/false，对齐 JSON 原文而非 Python
+    字符串化）；dict/list → JSON 单行（超长截断 + 省略号——树叶子标签
+    单行语义）；其余 → str。
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (dict, list)):
+        try:
+            s = _json.dumps(value, ensure_ascii=False)
+        except Exception:
+            s = str(value)
+        return s if len(s) <= 60 else s[:57] + "..."
+    return str(value)
+
+
+def _param_node(name: str, pinfo: dict, is_required: bool) -> list:
+    """单个参数定义 → 树节点（展开后为属性叶子）。
+
+    叶子：类型/描述/必需标记/默认值/枚举/数组元素定义/数值与字符串约束
+    （minimum/maximum/minLength/maxLength/format/pattern——schema 常见
+    约束键，防御忽略未知键）。参数名 label 追加 `` *`` 必需标记（对齐
+    表单必填语义，一眼识别必需参数）。
+    """
+    children: list = []
+    ptype = pinfo.get("type", "")
+    if ptype:
+        children.append({"label": f"类型: {ptype}", "children": []})
+    desc = pinfo.get("description", "")
+    if desc:
+        children.append({"label": f"描述: {desc}", "children": []})
+    if is_required:
+        children.append({"label": "必需: 是", "children": []})
+    if "default" in pinfo:
+        children.append({"label": f"默认值: {_compact_value(pinfo['default'])}", "children": []})
+    enum = pinfo.get("enum")
+    if enum:
+        children.append({"label": f"枚举: {', '.join(_compact_value(e) for e in enum)}", "children": []})
+    items = pinfo.get("items")
+    if items:
+        children.append({"label": f"元素: {_compact_value(items)}", "children": []})
+    for key in ("minimum", "maximum", "minLength", "maxLength", "format", "pattern"):
+        if key in pinfo:
+            children.append({"label": f"{key}: {_compact_value(pinfo[key])}", "children": []})
+    return [{"label": f"{name}{' *' if is_required else ''}", "children": children}]
+
+
+def build_tools_params_tree(properties: dict, required: list) -> list:
+    """工具参数 schema → 树节点列表（{label, children} 形态）。
+
+    ★ 2026-08-17（用户需求：轨迹 Trace 工具列表 Enter 进入新界面——右边
+    树控件显示需要的参数）：工具参数定义（``function.parameters``）→
+    树形节点——``参数 (N 项)`` 容器节点，每个参数一个子节点（``_param_node``
+    展开后为类型/描述/必需/默认值/枚举/约束叶子）。无参数 → ``参数: (无)``
+    叶子。树节点形态对齐 ink Tree 控件 data 语义（label/children），由
+    工具列表详情视图右侧检查器渲染（``trace_tools_view`` 树行渲染）。
+
+    Args:
+        properties: 参数名 → 参数定义 dict（schema parameters.properties）。
+        required: 必需参数名列表。
+
+    Returns:
+        list[dict]——树节点列表。
+    """
+    req_set = set(required or [])
+    prop_nodes: list = []
+    for name, pinfo in (properties or {}).items():
+        prop_nodes.extend(_param_node(name, pinfo or {}, name in req_set))
+    if prop_nodes:
+        return [{"label": f"参数 ({len(prop_nodes)} 项)", "children": prop_nodes}]
+    return [{"label": "参数: (无)", "children": []}]
 
 
 def _system_prompt_record(index: int) -> TraceRecord | None:
@@ -1376,4 +1508,6 @@ __all__ = [
     "_block_plain_lines",
     "_block_content_len",
     "_slot_live_lines",
+    "_tools_schema_list",
+    "build_tools_params_tree",
 ]

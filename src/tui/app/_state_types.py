@@ -8,6 +8,8 @@ Layer 0 — 仅依赖 dataclass/typing（无 TUI 运行时依赖）。
 
 from __future__ import annotations
 
+import threading
+
 from src._compat import dataclass
 from dataclasses import field
 from enum import Enum
@@ -138,6 +140,8 @@ class UserSelectState:
         done: 交互是否已结束（组件写入）。
         action: 结束方式（confirmed/cancel/timeout）。
         result: 选中的 options 子集（组件/工具写入）。
+        _final_lock: 终态写入锁（done/action/result 三字段原子写，
+            first-write-wins 跨线程安全——工具协程超时 vs 组件确认竞态）。
     """
 
     visible: bool = False
@@ -154,6 +158,35 @@ class UserSelectState:
     done: bool = False
     action: str = ""
     result: list = field(default_factory=list)
+    #: 终态写入锁（repr/比较忽略——纯同步原语，非状态数据）
+    _final_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False,
+    )
+
+    def try_set_final(self, action: str, result: list) -> bool:
+        """原子写入终态（first-write-wins，跨线程安全）。
+
+        done/action/result 三字段在锁内一次性提交：done 已置位（其他线程
+        已确认/已超时）时返回 False 且不覆盖，调用方放弃写入。
+
+        用于统一组件侧 _commit（Enter/Esc）与工具侧超时分支的终态写入，
+        消除「工具超时分支无条件覆盖组件确认结果」的竞态窗口
+        （2026-08-17 修复：UserSelect timeout 精确性验证有机率复现）。
+
+        Args:
+            action: 结束方式（confirmed/cancel/timeout）。
+            result: 终态结果列表（入参浅拷贝，调用方后续修改不影响）。
+
+        Returns:
+            True 本次写入生效；False 终态已由其他线程置位。
+        """
+        with self._final_lock:
+            if self.done:
+                return False
+            self.action = action
+            self.result = list(result)
+            self.done = True
+            return True
 
 
 @dataclass

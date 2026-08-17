@@ -88,8 +88,10 @@ class CommandUiAdapter:
                 deadline = model.user_select.deadline
                 while not model.user_select.done:
                     if deadline > 0 and time.monotonic() >= deadline:
-                        model.user_select.done = True
-                        model.user_select.action = "timeout"
+                        # 超时：原子终态写入（first-write-wins）——组件已
+                        # 确认（done 已置位）则放弃覆盖（2026-08-17 修复：
+                        # 修复前无条件写 done/action 覆盖组件确认结果）。
+                        model.user_select.try_set_final("timeout", [])
                         break
                     time.sleep(0.05)
                 st = model.user_select

@@ -1140,21 +1140,34 @@ def TraceView(props) -> object:
             else:
                 model.trace_open = False
             return True
-        # Enter：主轨迹中选中 subagent 记录 → 进入 subagent 轨迹（嵌套
-        #   TraceView——显示内容与 mainagent 同构）。subagent 轨迹内 Enter
-        #   放行（模态：由 use_fullscreen 吞掉，不落入输入缓冲）；sub-subagent
-        #   下钻不阻断（覆盖 label）。
+        # Enter：选中 subagent 记录 → 进入 subagent 轨迹（嵌套 TraceView——
+        #   显示内容与 mainagent 同构）。subagent 轨迹内 Enter 放行（模态：
+        #   由 use_fullscreen 吞掉，不落入输入缓冲）；sub-subagent 下钻不
+        #   阻断（覆盖 label）。
         # ★ 2026-08-17（用户需求：agent 内容合并到 subagent）：合并
         #   后的 subagent 工具记录携带 subagent_label（kind 仍为 tool）
         #   ——下钻条件从 kind=="subagent" 放宽为 subagent_label 非空（独立
         #   subagent 记录与合并 tool 记录均可 Enter 进入 subagent 轨迹）。
-        if event.kind == "enter" and not getattr(model, "trace_subagent_label", None):
+        # ★ 2026-08-17（用户需求：轨迹 Trace 工具列表 Enter 进入新界面）：
+        #   选中 #0 工具列表记录（kind=="tools"）→ 进入工具列表详情视图
+        #   （模态全屏视图 id "trace_tools"——左右布局：左工具名列表上下
+        #   选择 + 右树控件显示需要的参数）。主轨迹与 subagent 轨迹均显示
+        #   工具列表记录——两处 Enter 均可进入；返回时经 fullscreen="trace"
+        #   + trace_subagent_label 保留语义回到原轨迹（subagent 轨迹内进入
+        #   后 Esc 仍回 subagent 轨迹，再 Esc 回主轨迹）。选中索引归零
+        #   （从首个工具开始浏览），trace_selected 保留（返回时选中记录
+        #   不变）。
+        if event.kind == "enter":
             rec = records[sel] if 0 <= sel < total else None
             if rec is not None:
                 sub = getattr(rec, "subagent_label", "") or ""
                 if sub:
                     model.trace_subagent_label = sub
                     model.trace_selected = -1  # subagent 轨迹：尾部跟随
+                    return True
+                if getattr(rec, "kind", "") == "tools":
+                    model.fullscreen = "trace_tools"
+                    model.trace_tools_selected = 0
                     return True
         # 其余按键（↑↓/PgUp/PgDn/Home/End/g/G/Enter/字符）不消费——导航由
         # ListView 消费；Enter/字符等被 use_fullscreen 模态吞掉（不落入输入

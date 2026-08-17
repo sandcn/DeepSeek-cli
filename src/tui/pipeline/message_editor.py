@@ -475,9 +475,10 @@ class MessageEditor:
                     #   未及时写回，轮询可能空转到超时；同时检查双信号更稳。
                     break
                 if deadline > 0 and time.monotonic() >= deadline:
-                    # 超时：写回超时结果（组件下一帧读到 done 停止渲染）
-                    model.user_select.done = True
-                    model.user_select.action = "timeout"
+                    # 超时：原子终态写入（first-write-wins）——组件已确认
+                    # （done 已置位）则放弃覆盖，保留组件结果（2026-08-17
+                    # 修复：修复前无条件写 done/action 覆盖组件确认结果）。
+                    model.user_select.try_set_final("timeout", [])
                     break
                 time.sleep(0.05)
 

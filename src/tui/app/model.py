@@ -144,6 +144,11 @@ class AppModel(_ToolOutputMixin):
         #   记录后进入其轨迹——嵌套 TraceView，内容与 mainagent 轨迹同构：
         #   system/user/assistant/tool 消息 → 台账 + 检查器；Esc/Ctrl+H 返回
         #   主轨迹，再次 Esc/Ctrl+H 关闭整个轨迹视图）。
+        # trace_tools_selected: 工具列表详情视图（fullscreen=="trace_tools"，
+        #   主轨迹选中 #0 工具列表记录按 Enter 进入——2026-08-17 用户需求）
+        #   当前选中的工具索引（schemas 下标，0-based；进入时置 0，导航写回
+        #   ——返回主轨迹再进入保持上次选择）。
+        self.trace_tools_selected: int = 0
         # 顶部工具调用状态（Claude TUI parity 步骤 2.2：active_tool 为模型
         # 数据——原 ToolStatusHeader 渲染消费，组件已移除（工具状态改由工具
         # 卡片顶边框 ● 展示，双份冗余）；字段保留供测试/未来消费，None=无
@@ -609,6 +614,10 @@ class AppModel(_ToolOutputMixin):
         # ★ 2026-08-16：清屏同时退出 subagent 轨迹（嵌套视图）——残留 label
         #   指向的 subagent 记录可能已随面板清空（无记录可显示）。
         self.trace_subagent_label = None
+        # ★ 2026-08-17（工具列表详情视图）：清屏同时复位工具列表选中索引
+        #   （fullscreen 已复位——工具列表视图随清屏退出；选中索引回到 0，
+        #   避免残留索引指向已清空的工具 schema 列表）。
+        self.trace_tools_selected = 0
         # ★ 2026-08-17（review 方向 P2）：清屏同时退出模态全屏视图——残留
         #   fullscreen 会让 App 整屏渲染全屏视图组件（如 TraceView），而
         #   blocks 已清空 → 残留渲染空数据全屏界面。与 trace_subagent_label

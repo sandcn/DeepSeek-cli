@@ -21,12 +21,12 @@ Enter 确认、Esc 取消、空格勾选由控件消费，协议（first-write-w
     ``model.user_select = UserSelectState()`` 并 request_bottom_redraw。
 
   结果写入协议（P1-2，first-write-wins）：``done`` 一旦置位即终态，后续
-  写入方不覆盖——组件 Enter/Escape 写入前先读 ``us.done``（若已由工具超时
-  置位则放弃覆盖，保留 timeout 结果）；工具侧轮询 ``while not us.done``
-  退出语义天然符合 first-write-wins（读到 done 即终止循环，不再写 timeout）。
-  注意：工具侧超时分支（tools 层只读）存在「已进入超时分支、组件同时确认」
-  的极端窗口仍可能覆盖组件结果，属工具侧协议限制（本组件侧防御 + 注释
-  收敛该语义）。
+  写入方不覆盖——组件 Enter/Escape 与工具超时分支统一经
+  ``UserSelectState.try_set_final`` 原子终态写入（锁内检查 done + 写
+  action/result/done，跨线程安全）：任一写入方先置位则另一方放弃覆盖
+  （组件确认 vs 工具超时竞态全覆盖，2026-08-17 修复——修复前工具侧超时
+  分支无条件覆盖 action/result，用户已确认却可能返回 timeout；组件侧
+  _commit 已走 try_set_final 前存在 TOCTOU 窗口）。
 
 依赖约束：仅依赖 app 同层（model/_theme/input_area）与 ink 框架（Layer 0/1），
 无 tools 层反向依赖。
@@ -295,9 +295,8 @@ def UserSelectPopup(props) -> object:
         us is not None and us.visible and not us.done
         and not getattr(us, "options", None)
     ):
-        us.action = "confirmed"
-        us.result = list(getattr(us, "default_options", None) or [])
-        us.done = True
+        # 原子终态写入（first-write-wins）：done 已由工具超时置位则放弃
+        us.try_set_final("confirmed", list(getattr(us, "default_options", None) or []))
     visible = bool(
         us is not None and us.visible and not us.done
         and getattr(us, "options", None)
@@ -358,15 +357,18 @@ def UserSelectPopup(props) -> object:
 
     # ── 协议回调（first-write-wins） ──
     def _commit(result, action: str) -> None:
-        """提交终态（first-write-wins：done 已置位则放弃覆盖）。"""
-        if us.done:
-            return
-        us.action = action
-        us.result = result
-        us.done = True
+        """提交终态（first-write-wins：done 已置位则放弃覆盖）。
+
+        原子终态写入经 ``us.try_set_final``（锁内检查+写入）——消除与
+        工具侧超时分支的竞态覆盖（2026-08-17 修复：修复前此处
+        ``if us.done: return`` + 顺序写三字段存在 TOCTOU 窗口，组件确认
+        可能被工具超时分支覆盖）。
+        """
+        us.try_set_final(action, result)
 
     def _on_select(item) -> None:
-        # 单选 Enter：写入前先读 us.done（工具超时已置位则放弃覆盖）
+        # 单选 Enter：经 try_set_final 原子终态写入（工具超时已置位则
+        # 放弃覆盖——first-write-wins）
         result = [item["value"]] if 0 <= cur < total else list(us.default_options or [])
         _commit(result, "confirmed")
 

@@ -10,6 +10,10 @@ React Ink 组件 ``UserSelectPopup``（src/tui/app/user_select.py）：
     InputDispatcher 路由按键）；
   - 结果经 ``model.user_select.done/action/result`` 回传，工具协程读取后
     清理状态。
+  - 终态写入统一经 ``UserSelectState.try_set_final``（first-write-wins，
+    锁内原子写）——工具超时分支与组件确认并发时不会互相覆盖
+    （2026-08-17 修复：修复前工具侧超时分支无条件覆盖，用户已确认却
+    可能返回 timeout，UserSelect timeout 精确性验证（1s）有机率复现）。
 """
 
 from __future__ import annotations
@@ -237,10 +241,11 @@ class UserSelectFunc(Func):
             deadline = model.user_select.deadline
             while not model.user_select.done:
                 if deadline > 0 and time.monotonic() >= deadline:
-                    # 超时：写回默认结果（组件下一帧读到 done 停止渲染）
-                    model.user_select.done = True
-                    model.user_select.action = "timeout"
-                    model.user_select.result = default_opts
+                    # 超时：原子终态写入（first-write-wins）——若组件恰在
+                    # 临界窗口已确认（done 已置位），try_set_final 返回 False
+                    # 且不覆盖，保留组件结果（2026-08-17 修复：修复前无条件
+                    # 写 done/action/result，用户已确认却可能返回 timeout）。
+                    model.user_select.try_set_final("timeout", default_opts)
                     break
                 await asyncio.sleep(0.05)
 
