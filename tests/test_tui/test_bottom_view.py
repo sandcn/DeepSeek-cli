@@ -14,9 +14,11 @@ model.fullscreen）的架构模式，作用范围从「整屏」收窄为「底�
      时底部框不显示，弹窗在原来底部框位置独立显示」）；key 约定支持
      ``(组件, key_fn)`` 元组（UserSelectPopup 用 seq 强制重挂载重置内部
      use_state）。
-  3. 协议层：user_select 工具 / /editmsg 消息选择 / CommandUiAdapter
-     run_bottom_bar_selection 打开时设置 ``bottom_view="user_select"``、
-     清理时恢复 ""（与 UserSelectState 同生命周期）。
+  3. 协议层：user_select 工具 / CommandUiAdapter run_bottom_bar_selection
+     打开时设置 ``bottom_view="user_select"``、清理时恢复 ""（与
+     UserSelectState 同生命周期）；/editmsg 消息选择使用**独立协议**
+     （bottom_view="editmsg" + EditMsgSelectState + EditMsgSelectPopup，
+     2026-08-18 用户需求：editmsg 与 user_select 不能用同一份代码）。
 """
 
 from __future__ import annotations
@@ -31,8 +33,9 @@ from src.tui._input_dispatcher import InputDispatcher
 from src.tui._input_io import InputIO
 from src.tui._input_parser import InputParser, KeyEvent
 from src.tui.app.app import BOTTOM_VIEWS, App
+from src.tui.app.editmsg_select import EditMsgSelectPopup
 from src.tui.app.input_area import InputArea
-from src.tui.app.model import AppModel, UserSelectState
+from src.tui.app.model import AppModel, UserSelectState, EditMsgSelectState
 from src.tui.app.status_bar import StatusBar
 from src.tui.app.user_select import UserSelectPopup
 from src.tui.ink import hooks
@@ -229,6 +232,29 @@ def test_app_bottom_views_registry_contains_user_select():
     assert callable(key_fn)
 
 
+def test_app_bottom_views_registry_contains_editmsg():
+    """注册表含 editmsg（独立组件 + key 工厂元组）→ EditMsgSelectPopup——
+    /editmsg 与 user_select 使用独立底部视图（2026-08-18 用户需求）。"""
+    entry = BOTTOM_VIEWS["editmsg"]
+    assert isinstance(entry, tuple)
+    view, key_fn = entry
+    assert view is EditMsgSelectPopup
+    assert view is not UserSelectPopup, "editmsg 必须使用独立组件（不与 user_select 共用）"
+    assert callable(key_fn)
+
+
+def test_app_bottom_view_editmsg_key_from_seq():
+    """key 工厂：editmsg_select.seq 不同 → key 不同（强制重挂载重置内部 state）。"""
+    entry = BOTTOM_VIEWS["editmsg"]
+    _view, key_fn = entry
+    m1 = _make_model_with_blocks()
+    m1.editmsg_select.seq = 1
+    m2 = _make_model_with_blocks()
+    m2.editmsg_select.seq = 2
+    assert key_fn(m1) != key_fn(m2)
+    assert key_fn(m1) == "em-1"
+
+
 def test_app_bottom_view_key_from_seq():
     """key 工厂：seq 不同 → key 不同（强制重挂载重置内部 state）。"""
     entry = BOTTOM_VIEWS["user_select"]
@@ -255,6 +281,25 @@ def test_app_bottom_view_renders_only_popup():
     # 状态栏/输入区不在树中
     types = [str(getattr(c, "type", "")) for c in children]
     assert all("StatusBar" not in str(t) and "InputArea" not in str(t) for t in types)
+
+
+def test_app_bottom_view_editmsg_renders_own_popup():
+    """bottom_view="editmsg" → 底部区只渲染 EditMsgSelectPopup（独立组件，
+    不渲染 UserSelectPopup）——/editmsg 与 user_select 使用不同组件。"""
+    m = _make_model_with_blocks()
+    es = EditMsgSelectState()
+    es.visible = True
+    es.seq = 1
+    es.title = "选择要编辑的消息"
+    es.options = ["0. ● │ hi", "1. ● │ 第二条"]
+    es.selected = 1
+    m.editmsg_select = es
+    m.bottom_view = "editmsg"
+    el, _ = _render(App, {"model": m, "width": 100})
+    children = _bottom_children(el)
+    assert len(children) == 1, f"底部区应只有弹窗: {[type(c).__name__ for c in children]}"
+    assert children[0].type is EditMsgSelectPopup
+    assert children[0].type is not UserSelectPopup, "editmsg 弹窗不得复用 UserSelectPopup"
 
 
 def test_app_bottom_view_empty_renders_normal():
@@ -418,7 +463,7 @@ def test_ui_adapter_sets_bottom_view(monkeypatch):
 
 def test_message_editor_sets_bottom_view():
     """/editmsg 消息选择（MessageEditor._interactive_message_select）打开/清理
-    bottom_view（与 user_select 工具同协议）。"""
+    bottom_view="editmsg"（独立于 user_select 的独立底部视图协议）。"""
     from src.tui.pipeline.message_editor import MessageEditor
 
     m = AppModel()
@@ -432,9 +477,9 @@ def test_message_editor_sets_bottom_view():
 
     def _set_done():
         time.sleep(0.1)
-        m.user_select.done = True
-        m.user_select.action = "confirmed"
-        m.user_select.selected = 0
+        m.editmsg_select.done = True
+        m.editmsg_select.action = "confirmed"
+        m.editmsg_select.selected = 0
 
     t = threading.Thread(target=_set_done, daemon=True)
     t.start()
@@ -442,7 +487,7 @@ def test_message_editor_sets_bottom_view():
         [(0, {"role": "user", "content": "hi"})], ["hi"],
     )
     assert idx == 0
-    assert "user_select" in session.views, "打开时应激活底部视图"
+    assert "editmsg" in session.views, "打开时应激活独立底部视图"
     assert m.bottom_view == "", "清理后应恢复正常底部区"
 
 
@@ -537,7 +582,7 @@ def test_ui_adapter_cleanup_on_bad_selected(monkeypatch):
 
 
 def test_message_editor_cleanup_on_poll_exception(monkeypatch):
-    """/editmsg 轮询异常（time.sleep 抛错）→ finally 清理 user_select +
+    """/editmsg 轮询异常（time.sleep 抛错）→ finally 清理 editmsg_select +
     bottom_view（不泄漏底部视图——修复前清理段顺序执行，异常直接跳出函数
     泄漏 bottom_view → App 持续只渲染弹窗、输入区消失）。"""
     import pytest
@@ -561,7 +606,7 @@ def test_message_editor_cleanup_on_poll_exception(monkeypatch):
             [(0, {"role": "user", "content": "hi"})], ["hi"],
         )
     assert m.bottom_view == "", "finally 应清理底部视图（不泄漏）"
-    assert m.user_select.visible is False
+    assert m.editmsg_select.visible is False
 
 
 __all__ = [

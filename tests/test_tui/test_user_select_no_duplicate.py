@@ -143,25 +143,6 @@ def test_split_multi_checkmark_from_is_checked():
 
 
 # ═══════════════════════════════════════════════════════════
-# /editmsg 多行 option_lines
-# ═══════════════════════════════════════════════════════════
-
-def test_regular_multiline_option_lines():
-    """/editmsg 多行 option_lines：每项渲染其多行（不重复整列表）。"""
-    from src.renderer.ansi.helpers import AnsiLine
-
-    us = _us(options=["m1", "m2"], option_lines=[
-        [AnsiLine.of("> 第一行"), AnsiLine.of("> 第二行")],
-        [AnsiLine.of("> 单行")],
-    ])
-    _, _, frame = _popup_frame({"model": SimpleNamespace(user_select=us), "width": 80})
-    lines = _frame_plain(frame)
-    assert len(lines) == 5, f"1 标题 + (2+1) 选项行 + 1 提示 = 5 行: {lines}"
-    assert "第一行" in lines[1] and "第二行" in lines[2]
-    assert "单行" in lines[3]
-
-
-# ═══════════════════════════════════════════════════════════
 # 超屏防护 limit
 # ═══════════════════════════════════════════════════════════
 
@@ -190,20 +171,18 @@ def test_regular_limit_budget(monkeypatch):
 
 
 def test_regular_limit_budget_multiline(monkeypatch):
-    """普通模式多行 item：limit 按实际行数累计（预算 3 → 仅容纳 1 项 × 2 行）。"""
-    from src.renderer.ansi.helpers import AnsiLine
+    """普通模式多行 item：limit 按实际行数累计（预算 3 → 仅容纳 1 项 × 2 行）。
 
+    ★ 2026-08-18（editmsg 拆分）：/editmsg 多行 option_lines 已移除——本
+    测试改为单行 item 场景：预算 3 → 可见 3 项。
+    """
     monkeypatch.setattr(
         "src.tui.app.user_select._popup_item_rows", lambda: 3,
     )
-    us = _us(options=["m1", "m2", "m3"], option_lines=[
-        [AnsiLine.of("a1"), AnsiLine.of("a2")],
-        [AnsiLine.of("b1"), AnsiLine.of("b2")],
-        [AnsiLine.of("c1")],
-    ])
+    us = _us(options=["A", "B", "C", "D"])
     _, _, frame = _popup_frame({"model": SimpleNamespace(user_select=us), "width": 80})
     lines = _frame_plain(frame)
-    # 预算 3：首项 2 行（必显示）+ 次项 2 行 = 4 > 3 → 仅 1 项 → 1+2+1=4 行
-    assert len(lines) == 4, f"1 项 × 2 行 → 1+2+1=4 行: {lines}"
-    assert "a1" in lines[1] and "a2" in lines[2]
-    assert "b1" not in lines and "c1" not in lines
+    # 单行 item：预算 3 → limit=3 → 1+3+1=5 行（第 4 项隐藏）
+    assert len(lines) == 5, f"3 项可见 → 1+3+1=5 行: {lines}"
+    assert "A" in lines[1] and "B" in lines[2] and "C" in lines[3]
+    assert "D" not in lines

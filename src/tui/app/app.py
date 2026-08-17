@@ -32,6 +32,7 @@ from .chat_view import ChatView
 from .header import TopHeader
 from .status_bar import StatusBar
 from .user_select import UserSelectPopup
+from .editmsg_select import EditMsgSelectPopup
 from .input_area import InputArea
 from .trace_view import TraceView
 from .trace_tools_view import TraceToolsView
@@ -70,6 +71,14 @@ BOTTOM_VIEWS: dict = {
     "user_select": (
         UserSelectPopup,
         lambda model: f"us-{getattr(getattr(model, 'user_select', None), 'seq', 0)}",
+    ),
+    # ★ 2026-08-18（用户需求：editmsg 与 user_select 不能用同一份代码）：
+    #   /editmsg 消息选择独立为底部视图——独立状态 model.editmsg_select +
+    #   独立组件 EditMsgSelectPopup（每条消息只显示一行）。key 用
+    #   editmsg_select.seq 递增序号强制重挂载，重置组件内部 use_state。
+    "editmsg": (
+        EditMsgSelectPopup,
+        lambda model: f"em-{getattr(getattr(model, 'editmsg_select', None), 'seq', 0)}",
     ),
 }
 

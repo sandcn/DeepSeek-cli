@@ -8,9 +8,15 @@ React Ink 化（2026-08-05）：user_select 工具的终端交互界面从「命
 ``SelectInput``（单选）/``MultiSelect``（多选）表达——导航（↑↓/j/k/g/G）、
 Enter 确认、Esc 取消、空格勾选由控件消费，协议（first-write-wins、us 状态
 写回）经控件回调（onSelect/onSubmit/onCancel/onHighlight）承载；自定义行
-渲染经 ``renderItem``（单选 ▶/整行背景高亮、多选 ●/○ 勾选、分栏说明、
-/editmsg 多行 option_lines）完全保留既有视觉；``consumeAll=True`` 弹窗
-模式（其他按键消费阻断输入框，Ctrl+C 放行可中断工具执行）。
+渲染经 ``renderItem``（单选 ▶/整行背景高亮、多选 ●/○ 勾选、分栏说明）
+完全保留既有视觉；``consumeAll=True`` 弹窗模式（其他按键消费阻断输入框，
+Ctrl+C 放行可中断工具执行）。
+
+★ 2026-08-18（用户需求：editmsg 与 user_select 不能用同一份代码）：
+/editmsg 消息选择已拆分为**独立协议**（EditMsgSelectState +
+EditMsgSelectPopup + bottom_view="editmsg"，见 editmsg_select.py）——
+本组件仅服务 ``user_select`` 工具与 ``CommandUiAdapter``，options 为单行
+纯文本，不再承载 /editmsg 多行 option_lines 渲染。
 
 组件与工具协程通信协议（跨线程安全，GIL 原子字段）：
   - 工具：设置 ``model.user_select``（visible=True, seq+1）→ request_bottom_redraw；
@@ -34,13 +40,12 @@ Enter 确认、Esc 取消、空格勾选由控件消费，协议（first-write-w
 
 from __future__ import annotations
 
-from src.renderer.ansi.helpers import AnsiLine, truncate_line
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from src.tui._input import _wrap_by_width
 from src.tui.app.input_area import _desc_column_width, _truncate_width
 from src.tui.app._theme import _S_DIM, _S_SEP
-from src.tui.ink import TEXT, h, Column, Row, StyledRun
+from src.tui.ink import TEXT, h, Column, Row
 from src.tui.ink.hooks import use_state, use_modal
 from src.tui.ink.widgets.interactive import SelectInput, MultiSelect
 
@@ -80,74 +85,17 @@ def _popup_item_rows() -> int:
         return 12
 
 
-#: 每条选项最多显示行数（/editmsg 多行历史消息——防单条超长消息撑爆弹窗；
-#: 超过部分以省略行提示）。单行选项（user_select 工具协议）不受影响。
-_MAX_OPTION_LINES = 4
-
-
-def _option_rows_of(us) -> list[list[AnsiLine]]:
-    """提取每条选项的渲染行（AnsiLine 列表）。
-
-    优先使用 ``us.option_lines``（/editmsg 用 TUI 消息渲染方式生成——
-    ``build_user_line`` 每行 ``> 内容``，user_icon/user_text 色）；
-    缺省（user_select 工具协议，options 为单行纯文本）时回退
-    ``options[i]`` 单行。
-
-    Returns:
-        list[list[AnsiLine]] — 每条选项的 AnsiLine 行列表。
-    """
-    options = list(getattr(us, "options", None) or [])
-    raw = getattr(us, "option_lines", None) or []
-    out: list[list[AnsiLine]] = []
-    for i, opt in enumerate(options):
-        if i < len(raw) and raw[i]:
-            out.append(list(raw[i]))
-        else:
-            out.append([AnsiLine.of(opt)])
-    return out
-
-
-def _ansi_line_to_styled(
-    line: AnsiLine, prefix: str, highlighted: bool,
-) -> list[StyledRun]:
-    """AnsiLine → StyledRun 列表（前缀 + 内容；高亮时整行 merge 背景色）。
-
-    与 UserSelectPopup 普通模式单选高亮语义一致：选中行整行（含前缀）
-    叠加 ``_S_SEL_BG`` 背景；未选中行仅保留 AnsiLine 自身样式。
-
-    Args:
-        line: 选项渲染行（可能为多 run 样式行，如 ``> 内容``）。
-        prefix: 行首前缀（选中/勾选标记或续行对齐空白）。
-        highlighted: 是否为当前高亮项。
-
-    Returns:
-        非空 StyledRun 列表（空行时兜底空格 run，保持高度）。
-    """
-    runs: list[StyledRun] = []
-    if prefix:
-        runs.append(StyledRun(prefix, _S_SEL_BG if highlighted else None))
-    for r in getattr(line, "runs", None) or []:
-        if not r.text:
-            continue
-        st = r.style
-        if highlighted:
-            st = (st or Style()).merge(_S_SEL_BG)
-        runs.append(StyledRun(r.text, st))
-    if not runs:
-        runs.append(StyledRun(" ", _S_SEL_BG if highlighted else None))
-    return runs
-
-
 def _build_regular_row(
     us, options: list, multi: bool, i: int, cur: int, checked: list,
     opt_w: int,
 ) -> object:
-    """普通模式单个选项行构建（单选高亮 / 多选勾选 + 高亮；/editmsg 多行）。
+    """普通模式单个选项行构建（单选高亮 / 多选勾选 + 高亮，单行）。
 
-    与旧 UserSelectPopup 普通模式视觉一致：首行带选中/勾选前缀 + 高亮背景
-    （整行），续行对齐；单条超长截断到 ``_MAX_OPTION_LINES`` 行 + 省略提示行。
-    对应控件 ``renderItem`` 单 item 语义——每个选项只构建自身行（行数预算
-    由调用方以控件 ``limit`` 折算，交互仍可导航到隐藏项，与补全弹窗一致）。
+    与旧 UserSelectPopup 普通模式视觉一致：选中/勾选前缀 + 高亮背景
+    （整行）；选项超长截断到 ``opt_w``（CJK 安全，防超宽行破坏行级 diff
+    宽度不变量）。对应控件 ``renderItem`` 单 item 语义——每个选项只构建
+    自身一行（行数预算由调用方以控件 ``limit`` 折算，交互仍可导航到
+    隐藏项，与补全弹窗一致）。
 
     Args:
         us: UserSelectState。
@@ -159,40 +107,27 @@ def _build_regular_row(
         opt_w: 选项行宽度预算。
 
     Returns:
-        Column（该选项的行）。
+        TEXT（该选项的单行）。
     """
-    opt_rows = _option_rows_of(us)
-    max_lines = _MAX_OPTION_LINES
-    lines_i = opt_rows[i][:max_lines]
-    children: list = []
-    for li, ansi_line in enumerate(lines_i):
-        # 单行截断（CJK 安全，防超宽行破坏行级 diff 宽度不变量）
-        ansi_line = truncate_line(ansi_line, opt_w)
-        if li == 0:
-            if multi:
-                mark = _CHECKED if i in checked else _UNCHECKED
-                prefix = f" {mark} "
-            else:
-                prefix = " \u25b6  " if i == cur else "    "
-        else:
-            # 续行对齐首行前缀宽（4 列）
-            prefix = "    "
-        runs = _ansi_line_to_styled(ansi_line, prefix, i == cur)
-        children.append(h(TEXT, {"styled": runs, "height": 1, "key": f"row-{li}"}))
-    # 截断提示（超过 max_lines 的单条超长消息）
-    if len(opt_rows[i]) > max_lines:
-        children.append(h(TEXT, {
-            "children": "    ...", "style": _S_DESC, "height": 1,
-            "key": "row-omitted",
-        }))
-    return h(Column, None, children)
+    if multi:
+        mark = _CHECKED if i in checked else _UNCHECKED
+        prefix = f" {mark} "
+    else:
+        prefix = " \u25b6  " if i == cur else "    "
+    opt = _truncate_width(str(options[i]), max(1, opt_w - wcswidth_simple(prefix)))
+    return h(TEXT, {
+        "children": f"{prefix}{opt}",
+        "style": _S_SEL_BG if i == cur else None,
+        "height": 1,
+        "key": f"row-{i}",
+    })
 
 
 def _regular_item_limit(us, total: int) -> int:
-    """普通模式控件 limit：按行数预算折算可显示的 item 数。
+    """普通模式控件 limit：行数预算即可见项数（单行选项，一选项一行）。
 
-    与旧版超屏防护同源——/editmsg 多行 option_lines 每项可能占多行，
-    按实际行数累计（至少显示 1 项）。控件窗口滚动交互仍可导航到隐藏项。
+    与旧版超屏防护同源——选项行数限制（防止弹窗超高挤压消息区）。控件
+    窗口滚动交互仍可导航到隐藏项。
 
     Args:
         us: UserSelectState。
@@ -201,18 +136,7 @@ def _regular_item_limit(us, total: int) -> int:
     Returns:
         可见 item 数上限（>= 1）。
     """
-    opt_rows = _option_rows_of(us)
-    max_lines = _MAX_OPTION_LINES
-    budget = _popup_item_rows()
-    cnt = 0
-    used = 0
-    for i in range(total):
-        n = max(1, min(len(opt_rows[i]), max_lines))
-        if cnt and used + n > budget:
-            break
-        cnt += 1
-        used += n
-    return max(1, cnt)
+    return max(1, min(total, _popup_item_rows()))
 
 
 def _build_split_row(
@@ -323,10 +247,10 @@ def UserSelectPopup(props) -> object:
     # ── 渲染 ──
     cur = max(0, min(selected, total - 1))
     descs = us.option_descriptions or []
-    # option_lines 非空（/editmsg 多行历史消息）时不走分栏说明模式——
-    # 左栏已按 TUI 消息渲染多行，右栏说明与行结构冲突；editmsg 实际不传
-    # option_descriptions，该分支仅防御性兜底。
-    split = bool(descs) and width and width > 0 and not getattr(us, "option_lines", None)
+    # 分栏说明模式：option_descriptions 非空时左栏选项 + 右栏说明。
+    # （★ 2026-08-18：option_lines 已随 /editmsg 拆分移除——本组件选项
+    #   恒为单行纯文本，分栏判断不再需要 option_lines 排除条件。）
+    split = bool(descs) and width and width > 0
     title = us.title or "选择"
     rows: list = []
 

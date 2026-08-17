@@ -1,24 +1,26 @@
-"""交互式会话消息编辑器 — 使用标准 React Ink 组件（UserSelectPopup）选择消息。
+"""交互式会话消息编辑器 — 使用独立 React Ink 组件（EditMsgSelectPopup）选择消息。
 
 用法：在聊天中输入 /editmsg 或 Ctrl+O 进入消息编辑。
 
 编辑职责：
-- 消息选择交互（UserSelectPopup 标准 React Ink 组件 + use_input 交互）
+- 消息选择交互（EditMsgSelectPopup 独立 React Ink 组件 + use_input 交互）
 - 编辑/删除/恢复动作处理
 - 会话管理入口（MessageEditor.edit_current_messages）
 
-★ 标准 React Ink 化（2026-08-05，消灭例外）：消息选择交互从「补全弹窗
-（show_completions）+ _selection_ready 事件轮询」迁移为 **UserSelectPopup
-标准组件协议**——设置 ``model.user_select``（visible=True, seq+1, options=
-消息摘要）→ App 组件树渲染 ``UserSelectPopup``（use_input 消费 ↑↓/Enter/
-Esc，与 user_select 工具同协议）→ 本模块轮询 ``us.done``（跨线程 GIL
-原子字段）→ 读取结果。不再直接操作补全弹窗私有字段、不再自定义 dismiss
-回调 hack。无 ChatUI 模型环境（测试桩/单次模式）回退旧补全弹窗路径
-（兼容保留）。
+★ 2026-08-18（用户需求：editmsg 与 user_select 不能用同一份代码）：
+消息选择交互从「user_select 协议（model.user_select + UserSelectPopup +
+bottom_view="user_select"）」拆分为**独立协议**——设置
+``model.editmsg_select``（EditMsgSelectState，visible=True, seq+1,
+options=单行摘要）→ App 组件树渲染 ``EditMsgSelectPopup``（独立组件，
+use_input 消费 ↑↓/Enter/Esc）→ 本模块轮询 ``es.done``（跨线程 GIL
+原子字段）→ 读取结果。**每条消息只显示一行**（options 为单行摘要，
+不再使用多行 option_lines）。不再直接操作补全弹窗私有字段、不再自定义
+dismiss 回调 hack。无 ChatUI 模型环境（测试桩/单次模式）回退旧补全弹窗
+路径（兼容保留）。
 
 适配 2026-07 TUI 重构后的架构：
   - 不复用已删除的 pipeline/message_display.py 完整版，使用内置精简替代
-  - 标准交互经 ``model.user_select``（ChatUIConsumer 活跃时可用）；
+  - 标准交互经 ``model.editmsg_select``（ChatUIConsumer 活跃时可用）；
     无 ChatUI 时回退 _BottomBar.show_completions() API（兼容）
   - 不执行 chat_ui.suspend()（重构后 suspend 会拆除 _BottomBar）
 """
@@ -43,9 +45,13 @@ _logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════
 
 def _user_msg_summary(msg: dict, idx: int, max_w: int = 60) -> str:
-    """生成用户消息的简短摘要（用于底部栏弹窗显示）。
+    """生成用户消息的简短摘要（用于消息选择弹窗显示，**每条一行**）。
 
     格式: N. ● │ 消息内容摘要...
+
+    ★ 2026-08-18（用户需求：editmsg 每条信息只显示一行）：消息选择弹窗
+    不再使用 TUI 多行渲染（option_lines），改为单行摘要——多行消息内容
+    经 ``_truncate`` 折叠为单行（换行 → 空格），超宽截断加 "..."。
 
     Args:
         msg: 消息字典。
@@ -53,28 +59,11 @@ def _user_msg_summary(msg: dict, idx: int, max_w: int = 60) -> str:
         max_w: 最大宽度。
 
     Returns:
-        纯文本摘要字符串（不含 ANSI 颜色）。
+        纯文本单行摘要字符串（不含 ANSI 颜色）。
     """
     content = _content_str(msg.get("content", ""))
     text = content.strip()
     return f"{idx}. \u25cf \u2502 {_truncate(text, max_w)}"
-
-
-def _user_msg_display_lines(msg: dict) -> list:
-    """用 TUI 用户消息渲染方式生成弹窗显示行（``> 内容``，多行）。
-
-    与 ``apply.build_user_line`` 同语义（消息区历史回放路径
-    ``DisplayMsgsCmd → _do_display_messages``）：每行 ``> {segment}`` 顶格，
-    前缀用调色板 ``user_icon`` 色、内容用 ``user_text`` 色；空内容保留
-    前缀行。供 ``UserSelectPopup`` 的 ``option_lines`` 使用——/editmsg
-    弹窗中的历史消息显示与消息区渲染一致。
-
-    Returns:
-        list[AnsiLine] — 每条消息按 ``\\n`` 拆分后的渲染行。
-    """
-    from src.tui.app.apply import build_user_line
-    content = _content_str(msg.get("content", ""))
-    return build_user_line(content)
 
 
 def _restore_sandbox_to(agent: Any, target_idx: int) -> str:
@@ -257,13 +246,14 @@ class MessageEditor:
         """
         self._bottom_bar = bottom_bar
         self._input = input_
-        # ★ 标准 React Ink 化（消灭例外）：从 bottom_bar 提取 model/session——
-        #   InkBridge 持有 AppModel + InkSession（UserSelectPopup 标准协议用）；
-        #   无 model/session 环境（测试桩/单次模式）回退旧补全弹窗路径。
-        #   防御：MagicMock 任意属性访问返回 MagicMock（非 None）——仅当
-        #   model 具备 ``user_select`` 属性且类型非 mock 时采用标准协议
-        #   （测试用 MagicMock bottom_bar 的 _model 提取到 MagicMock →
-        #   _is_mock_model 排除 → 走 legacy 路径，测试兼容）。
+        # ★ 独立 React Ink 协议（2026-08-18 拆分）：从 bottom_bar 提取
+        #   model/session——InkBridge 持有 AppModel + InkSession
+        #   （EditMsgSelectPopup 标准协议用）；无 model/session 环境（测试桩/
+        #   单次模式）回退旧补全弹窗路径。防御：MagicMock 任意属性访问返回
+        #   MagicMock（非 None）——仅当 model 具备 ``editmsg_select`` 属性且
+        #   类型非 mock 时采用标准协议（测试用 MagicMock bottom_bar 的
+        #   _model 提取到 MagicMock → _is_mock_model 排除 → 走 legacy 路径，
+        #   测试兼容）。
         self._model = None
         self._session = None
         if bottom_bar is not None:
@@ -286,7 +276,7 @@ class MessageEditor:
         type_name = type(model).__name__
         if "Mock" in type_name:
             return True
-        return not hasattr(model, "user_select")
+        return not hasattr(model, "editmsg_select")
 
     # ── 公开入口 ──
 
@@ -297,7 +287,7 @@ class MessageEditor:
 
         在主流程同步直接执行（EditmsgPlugin 不再经 run_in_executor 线程池）：
         交互选择期间主协程阻塞在 time.sleep 轮询，render 线程独立驱动
-        UserSelectPopup 组件写 done；按回车确认后编辑立即生效，不依赖
+        EditMsgSelectPopup 组件写 done；按回车确认后编辑立即生效，不依赖
         线程调度返回。
 
         Args:
@@ -317,15 +307,11 @@ class MessageEditor:
         if not user_msgs:
             return False
 
-        # 构建显示项
-        # display_items：纯文本摘要（UserSelectState.options——回车 result 与
-        #   legacy 补全弹窗路径消费）；option_lines：TUI 消息渲染方式的多行
-        #   AnsiLine（UserSelectPopup 优先渲染，与消息区显示一致）。
+        # 构建显示项（★ 2026-08-18 用户需求：每条消息只显示一行——单行摘要，
+        # 供 EditMsgSelectState.options 与 legacy 补全弹窗路径消费）。
         display_items = []
-        option_lines = []
         for display_idx, (orig_idx, msg) in enumerate(user_msgs):
             display_items.append(_user_msg_summary(msg, display_idx))
-            option_lines.append(_user_msg_display_lines(msg))
 
         # ★ 设置 Enter 抑制 + 替换补全关闭回调
         #   在交互选择期间，Enter 键不经过 _enter() 提交，
@@ -357,9 +343,7 @@ class MessageEditor:
 
             input_.set_dismiss_completion_callback(_editmsg_dismiss)
 
-            real_idx = self._interactive_message_select(
-                user_msgs, display_items, option_lines,
-            )
+            real_idx = self._interactive_message_select(user_msgs, display_items)
         finally:
             # ★ 修复（P2-6）：恢复原始回调——orig_dismiss_cb 为 None 时也
             #   显式 ``set_dismiss_completion_callback(None)`` 恢复原状（修复前
@@ -408,69 +392,74 @@ class MessageEditor:
         self,
         user_msgs: list[tuple[int, dict]],
         display_items: list[str],
-        option_lines: list | None = None,
     ) -> int | None:
-        """选择要编辑的消息（标准 React Ink UserSelectPopup 协议）。
+        """选择要编辑的消息（独立 React Ink EditMsgSelectPopup 协议）。
 
-        交互流程（与 user_select 工具同协议，标准 React Ink 无例外）：
-          1. 设置 ``model.user_select``（visible=True, seq+1, options=消息摘要，
-             option_lines=消息 TUI 渲染多行）；
-          2. ``UserSelectPopup`` 组件在 App 组件树底部区渲染（use_input 消费
-             ↑↓/Enter/Esc，render 线程驱动路由）；
-          3. 本方法轮询 ``us.done``（跨线程 GIL 原子字段）并读取结果索引；
-          4. 清理 ``model.user_select = UserSelectState()`` + 请求重绘。
+        ★ 2026-08-18（用户需求：editmsg 与 user_select 不能用同一份代码）：
+        本方法使用**独立协议**（model.editmsg_select + EditMsgSelectPopup +
+        bottom_view="editmsg"），不复用 user_select 的
+        model.user_select / UserSelectPopup / bottom_view="user_select"。
+        **每条消息只显示一行**（display_items 为单行摘要）。
+
+        交互流程（与 user_select 工具协议同构，但独立实现）：
+          1. 设置 ``model.editmsg_select``（visible=True, seq+1,
+             options=单行消息摘要）；
+          2. ``EditMsgSelectPopup`` 组件在 App 组件树底部区渲染（use_input
+             消费 ↑↓/Enter/Esc，render 线程驱动路由）；
+          3. 本方法轮询 ``es.done``（跨线程 GIL 原子字段）并读取结果索引；
+          4. 清理 ``model.editmsg_select = EditMsgSelectState()`` + 请求重绘。
 
         Args:
             user_msgs: [(原始索引, 消息字典), ...]。
-            display_items: 每个消息的显示文本（UserSelectPopup 选项）。
-            option_lines: 每个消息的 TUI 渲染多行（list[list[AnsiLine]]，
-                可选）——UserSelectPopup 优先渲染，与消息区显示一致。
+            display_items: 每个消息的单行显示文本（EditMsgSelectState
+                options）。
 
         Returns:
             选中的原始消息索引，None 表示取消/超时。
         """
         model = self._model
         session = self._session
-        if model is None or session is None or not hasattr(model, "user_select"):
+        if model is None or session is None or not hasattr(model, "editmsg_select"):
             # 无 ChatUI 模型环境（测试桩/单次模式）：回退旧补全弹窗路径（兼容）
             return self._interactive_message_select_legacy(user_msgs, display_items)
 
-        from src.tui.app.model import UserSelectState
+        from src.tui.app.model import EditMsgSelectState
         sel_count = len(user_msgs)
         if sel_count == 0:
             return None
 
-        # 设置弹窗状态（seq+1 强制 UserSelectPopup 重挂载，重置内部 state）
-        prev_seq = getattr(model.user_select, "seq", 0)
-        model.user_select = UserSelectState(
+        # 设置弹窗状态（seq+1 强制 EditMsgSelectPopup 重挂载，重置内部 state）
+        prev_seq = getattr(model.editmsg_select, "seq", 0)
+        model.editmsg_select = EditMsgSelectState(
             visible=True,
             seq=prev_seq + 1,
             title="\u9009\u62e9\u8981\u7f16\u8f91\u7684\u6d88\u606f",  # 选择要编辑的消息
             options=list(display_items),
-            option_lines=list(option_lines) if option_lines else [],
             selected=sel_count - 1,  # 默认选中最后一条
             deadline=time.monotonic() + 120,  # 2 分钟超时
         )
-        # ★ 模态底部视图（2026-08-17 通用机制）：与 user_select 工具同协议
-        #   ——激活底部视图（底部区只渲染弹窗，状态栏/输入区不显示）。
+        # ★ 模态底部视图（2026-08-17 通用机制）：激活独立底部视图
+        #   （bottom_view="editmsg"——底部区只渲染 EditMsgSelectPopup，
+        #   状态栏/输入区不显示；与 user_select 的 "user_select" 视图独立）。
         if hasattr(model, "bottom_view"):
-            model.bottom_view = "user_select"
+            model.bottom_view = "editmsg"
         try:
             session.request_bottom_redraw()
         except Exception:
             _logger.debug("_interactive_message_select: request_bottom_redraw 异常", exc_info=True)
 
-        # 轮询等待组件交互完成（render 线程运行中；UserSelectPopup use_input 写 done）
+        # 轮询等待组件交互完成（render 线程运行中；EditMsgSelectPopup
+        # use_input 写 done）
         # ★ P2（review 修复）：轮询 + 解析 + 清理整段 try/finally——异常路径
-        #   也保证 user_select + bottom_view 恢复（不残留弹窗/底部视图，
+        #   也保证 editmsg_select + bottom_view 恢复（不残留弹窗/底部视图，
         #   输入区不消失）；与 tools/user_select.py 的 finally 清理模式对齐。
         try:
-            deadline = model.user_select.deadline
-            while not model.user_select.done:
+            deadline = model.editmsg_select.deadline
+            while not model.editmsg_select.done:
                 if self._selection_ready.is_set():
                     # ★ P2-7：标准路径同时响应 _selection_ready 信号（自定义
                     #   dismiss 回调 _editmsg_dismiss 设置，legacy 路径已响应）——
-                    #   修复前标准路径仅响应 ``user_select.done``：若 Enter 经
+                    #   修复前标准路径仅响应 ``editmsg_select.done``：若 Enter 经
                     #   ``_dismiss_completion → _editmsg_dismiss`` 路径确认而 done
                     #   未及时写回，轮询可能空转到超时；同时检查双信号更稳。
                     break
@@ -478,11 +467,11 @@ class MessageEditor:
                     # 超时：原子终态写入（first-write-wins）——组件已确认
                     # （done 已置位）则放弃覆盖，保留组件结果（2026-08-17
                     # 修复：修复前无条件写 done/action 覆盖组件确认结果）。
-                    model.user_select.try_set_final("timeout", [])
+                    model.editmsg_select.try_set_final("timeout", [])
                     break
                 time.sleep(0.05)
 
-            st = model.user_select
+            st = model.editmsg_select
             action = st.action or "timeout"
             # ★ 修复（P2-5）：真正消费 _selection_confirmed——Enter 经
             #   ``_dismiss_completion → _editmsg_dismiss`` 路径确认时 st.action
@@ -498,7 +487,7 @@ class MessageEditor:
                 selected = sel_count - 1
         finally:
             # 清理弹窗状态 + 请求重绘（底部栏立即恢复正常显示）
-            model.user_select = UserSelectState()
+            model.editmsg_select = EditMsgSelectState()
             # ★ 模态底部视图：关闭底部视图 → App 恢复状态栏 + 输入区。
             if hasattr(model, "bottom_view"):
                 model.bottom_view = ""
@@ -520,7 +509,7 @@ class MessageEditor:
     ) -> int | None:
         """旧补全弹窗消息选择路径（无 ChatUI 模型环境回退，兼容保留）。
 
-        # deprecated: 标准路径（UserSelectPopup 协议）不可用时的回退——
+        # deprecated: 标准路径（EditMsgSelectPopup 协议）不可用时的回退——
         # 生产 ChatUI 环境恒走标准 React Ink 路径，本方法仅服务测试桩/
         # 单次模式（bottom_bar 无 _model 的兼容场景）。
 

@@ -438,12 +438,14 @@ def test_app_layer_no_string_hosts(render_graph) -> None:
 #: 界面组件 → 必须使用的控件库导出名（方案B 全面控件化迁移清单）
 #:   header 渐变 → Gradient；status_bar 分隔线 → Divider；
 #:   trace_view 台账 → ListView；user_select 弹窗 → SelectInput/MultiSelect；
+#:   editmsg 弹窗 → SelectInput（2026-08-18 独立组件）；
 #:   toolcard 工具卡 → Panel；input_area 补全弹窗 → SelectInput。
 _CONTROL_USAGE_AUDIT: dict[str, set[str]] = {
     "tui.app.header": {"Gradient"},
     "tui.app.status_bar": {"Divider"},
     "tui.app.trace_view": {"ListView"},
     "tui.app.user_select": {"SelectInput", "MultiSelect"},
+    "tui.app.editmsg_select": {"SelectInput"},
     "tui.app.toolcard": {"Panel"},
     "tui.app.input_area": {"SelectInput"},
 }

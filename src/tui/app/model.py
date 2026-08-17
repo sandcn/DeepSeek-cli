@@ -42,6 +42,7 @@ from src.tui.app._state_types import (
     ChatBlock,
     CompletionState,
     UserSelectState,
+    EditMsgSelectState,
     StatusState,
     HistorySearchState,
     ReasoningState,
@@ -101,6 +102,11 @@ class AppModel(_ToolOutputMixin):
         self.completion: CompletionState = CompletionState()
         # 用户选择弹窗（React Ink 化：user_select 工具 → UserSelectPopup 组件）
         self.user_select: UserSelectState = UserSelectState()
+        # 消息编辑选择弹窗（2026-08-18 用户需求：editmsg 与 user_select 不能
+        # 用同一份代码——/editmsg 消息选择独立于 user_select 协议：
+        # model.editmsg_select + EditMsgSelectPopup + bottom_view="editmsg"。
+        # 每条消息只显示一行（options 为单行摘要）。）
+        self.editmsg_select: EditMsgSelectState = EditMsgSelectState()
         # 实时解析进度行（同位置刷新；ParseInfoDone 后提交并清空）
         self.parse_line: Any = None
         # subagent 面板行（控制器推送）
@@ -629,6 +635,10 @@ class AppModel(_ToolOutputMixin):
         #   工具轮询 done 期间若清屏，弹窗消失但工具仍在等待（超时兜底）。
         #   与 fullscreen 同语义（底部视图态不跨清屏保留）。
         self.bottom_view = ""
+        # ★ 2026-08-18（editmsg 独立协议）：清屏同时重置消息编辑选择弹窗
+        #   （与 user_select 同语义——残留 editmsg_select 让 /editmsg 轮询
+        #   done 期间弹窗消失，轮询等待空转到超时）。
+        self.editmsg_select = EditMsgSelectState()
 
     # ── trace_open 兼容别名（2026-08-17 通用化：模态全屏视图） ──
     # 轨迹视图打开 = model.fullscreen == "trace"。property 保持旧字段读写
@@ -654,5 +664,6 @@ __all__ = [
     "StatusState",
     "HistorySearchState",
     "UserSelectState",
+    "EditMsgSelectState",
     "ReasoningState",
 ]

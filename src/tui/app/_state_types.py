@@ -19,6 +19,7 @@ __all__ = [
     "ChatBlock",
     "CompletionState",
     "UserSelectState",
+    "EditMsgSelectState",
     "StatusState",
     "HistorySearchState",
 ]
@@ -120,6 +121,12 @@ class UserSelectState:
     （CompletionState + show_completions + raw I/O），改为独立的 React Ink
     组件 ``UserSelectPopup`` 渲染与交互（use_input + use_state）。
 
+    ★ 2026-08-18（用户需求：editmsg 与 user_select 不能用同一份代码）：
+    /editmsg 消息选择已拆分为独立协议（EditMsgSelectState +
+    EditMsgSelectPopup + bottom_view="editmsg"），本状态仅服务
+    ``user_select`` 工具与 ``CommandUiAdapter``（options 为单行纯文本，
+    无多行 option_lines）。
+
     Attributes:
         visible: 弹窗是否显示（工具打开/关闭）。
         seq: 弹窗会话序号（每次打开递增）——App 组件用 key 强制
@@ -128,10 +135,6 @@ class UserSelectState:
         title: 弹窗标题。
         options: 选项字符串列表。
         option_descriptions: 与 options 等长的说明列表（长度不足补齐空串）。
-        option_lines: 每条选项的预渲染多行（list[list[AnsiLine]]，可选）。
-            /editmsg 用 TUI 消息渲染方式（``> 内容``，user_icon/user_text 色）
-            生成历史消息显示行；缺省（空列表）时组件回退 options 单行纯文本
-            （user_select 工具协议不受影响）。
         multi_select: 是否多选。
         default_options: 默认选项（超时/取消/非交互回退）。
         selected: 当前高亮索引（组件维护）。
@@ -149,7 +152,6 @@ class UserSelectState:
     title: str = ""
     options: list = field(default_factory=list)
     option_descriptions: list = field(default_factory=list)
-    option_lines: list = field(default_factory=list)
     multi_select: bool = False
     default_options: list = field(default_factory=list)
     selected: int = 0
@@ -172,6 +174,76 @@ class UserSelectState:
         用于统一组件侧 _commit（Enter/Esc）与工具侧超时分支的终态写入，
         消除「工具超时分支无条件覆盖组件确认结果」的竞态窗口
         （2026-08-17 修复：UserSelect timeout 精确性验证有机率复现）。
+
+        Args:
+            action: 结束方式（confirmed/cancel/timeout）。
+            result: 终态结果列表（入参浅拷贝，调用方后续修改不影响）。
+
+        Returns:
+            True 本次写入生效；False 终态已由其他线程置位。
+        """
+        with self._final_lock:
+            if self.done:
+                return False
+            self.action = action
+            self.result = list(result)
+            self.done = True
+            return True
+
+
+@dataclass
+class EditMsgSelectState:
+    """消息编辑选择弹窗状态（/editmsg 专用，独立于 user_select）。
+
+    ★ 2026-08-18（用户需求：editmsg 与 user_select 不能用同一份代码）：
+    /editmsg 消息选择从 user_select 协议（model.user_select +
+    UserSelectPopup + bottom_view="user_select"）拆分为独立实现——
+    独立状态（本类，model.editmsg_select）+ 独立组件
+    （EditMsgSelectPopup）+ 独立底部视图（bottom_view="editmsg"）。
+
+    与 UserSelectState 的差异：
+      - 仅单选消息（无 multi_select / 无 option_descriptions 分栏）；
+      - 每条消息只显示一行——options 为单行摘要（_user_msg_summary 生成，
+        不再使用多行 option_lines）。
+
+    Attributes:
+        visible: 弹窗是否显示（编辑器打开/关闭）。
+        seq: 弹窗会话序号（每次打开递增）——App 组件用 key 强制
+            EditMsgSelectPopup 重挂载，重置组件内部 state（连续多次编辑
+            不残留旧选中）。
+        title: 弹窗标题。
+        options: 消息单行摘要列表（每条消息一行）。
+        selected: 当前高亮索引（组件维护）。
+        deadline: 超时截止（time.monotonic()）；0 表示无限等待。
+        done: 交互是否已结束（组件写入）。
+        action: 结束方式（confirmed/cancel/timeout）。
+        result: 选中的摘要文本列表（组件写入，取消为空）。
+        _final_lock: 终态写入锁（done/action/result 三字段原子写，
+            first-write-wins 跨线程安全——编辑器轮询超时 vs 组件确认竞态）。
+    """
+
+    visible: bool = False
+    seq: int = 0
+    title: str = ""
+    options: list = field(default_factory=list)
+    selected: int = 0
+    deadline: float = 0.0
+    done: bool = False
+    action: str = ""
+    result: list = field(default_factory=list)
+    #: 终态写入锁（repr/比较忽略——纯同步原语，非状态数据）
+    _final_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False,
+    )
+
+    def try_set_final(self, action: str, result: list) -> bool:
+        """原子写入终态（first-write-wins，跨线程安全）。
+
+        done/action/result 三字段在锁内一次性提交：done 已置位（其他线程
+        已确认/已超时）时返回 False 且不覆盖，调用方放弃写入。
+
+        用于统一组件侧 _commit（Enter/Esc）与编辑器轮询超时分支的终态写入
+        （与 UserSelectState.try_set_final 同语义——独立实现，不共用代码）。
 
         Args:
             action: 结束方式（confirmed/cancel/timeout）。
