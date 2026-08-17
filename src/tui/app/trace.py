@@ -63,6 +63,9 @@ _CONTENT_CACHE_MAX = 128
 _content_str_cache: dict = {}
 #: 文本 → 换行列表缓存（tuple 存值——不可变防污染；返回 list() 复制）
 _split_lines_cache: dict = {}
+#: 工具调用行 + 返回行 → 合并列表缓存（消息源模式 tool 调用+返回合并一条；
+#:   键 = (调用行, 返回全文)——内容不变 → 每帧重建 records 时零重建）
+_merge_lines_cache: dict = {}
 
 
 @dataclass
@@ -500,6 +503,51 @@ def _tool_result_preview(block) -> str:
     return ""
 
 
+def _tool_block_text(block) -> tuple:
+    """工具块 → (返回首行预览, 返回全文) 增量缓存。
+
+    ★ 性能（2026-08-19 用户需求：轨迹 Trace 优化性能，O(N²) 优化）：
+    ``_record_from_block`` 块回退路径每帧重建 records（``_block_fingerprint``
+    驱动）——修复前对每个 tool 块每帧**全量**过滤输出行（跳过标题行/状态
+    数据行）+ ``"\n".join`` O(行数)，长工具输出（N 行 × N 帧）累计 O(N²)。
+    块级增量缓存（``block._trace_tool_text_cache``）：行只追加（append-only）
+    → 仅对**新增行**拼接（``cres += ...``——CPython 引用计数 1 时原地扩展
+    O(新增)）；行数倒退 / 状态行下标变化（``_tool_status_data_index``）→
+    全量重建（防御非 append-only 异常，与 ``_block_plain_lines`` 同契约）。
+    语义与 ``block_detail_lines`` 一致（跳过 ``lines[0]`` 原始标题行与
+    状态数据行）。返回字符串为缓存共享引用（调用方只读契约）。
+    """
+    blines = getattr(block, "lines", None) or []
+    status_idx = _tool_status_data_index(block)
+    cache = getattr(block, "_trace_tool_text_cache", None)
+    if cache is not None:
+        ckey, cpreview, cres, cconv = cache
+        if ckey == (id(blines), status_idx) and len(blines) >= cconv:
+            for i in range(cconv, len(blines)):
+                if i == 0 or i == status_idx:
+                    continue
+                ln = blines[i]
+                plain = getattr(ln, "plain", None)
+                text = plain if plain is not None else str(ln)
+                cres += ("\n" if cres else "") + text
+                if not cpreview and text.strip():
+                    cpreview = text.strip()
+            block._trace_tool_text_cache = ((id(blines), status_idx), cpreview, cres, len(blines))
+            return cpreview, cres
+    preview = ""
+    res = ""
+    for i, ln in enumerate(blines):
+        if i == 0 or i == status_idx:
+            continue
+        plain = getattr(ln, "plain", None)
+        text = plain if plain is not None else str(ln)
+        res += ("\n" if res else "") + text
+        if not preview and text.strip():
+            preview = text.strip()
+    block._trace_tool_text_cache = ((id(blines), status_idx), preview, res, len(blines))
+    return preview, res
+
+
 def _record_from_block(block, index: int) -> TraceRecord | None:
     """聊天块 → 轨迹记录（separator/splash/空块跳过返回 None）。
 
@@ -519,18 +567,18 @@ def _record_from_block(block, index: int) -> TraceRecord | None:
         tool_name = extra.get("tool_name") or "工具"
         detail = extra.get("tool_detail", "")
         rec.summary = f"{tool_name} {detail}".strip()
-        rec.result = _tool_result_preview(block)
+        # ★ 性能（O(N²) 优化）：返回预览/全文经 ``_tool_block_text`` 增量
+        #   缓存（块级 append-only 增量拼接）——修复前每帧全量过滤输出行 +
+        #   join O(行数)，长工具输出累计 O(N²)。
+        preview, result_text = _tool_block_text(block)
+        rec.result = preview
         rec.status = extra.get("tool_status", "running")
         # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树控件
         #   显示）：块回退路径填充树显示数据源——参数 = 工具卡标题 detail
         #   （extract_key_params 关键参数摘要）；返回值 = 工具块输出行
         #   （跳过原始标题行/状态数据行，与 ``block_detail_lines`` 同语义）。
         rec.tool_args = detail
-        blines = _block_plain_lines(block)
-        status_idx = _tool_status_data_index(block)
-        out_lines = [ln for i, ln in enumerate(blines)
-                     if i != 0 and i != status_idx]
-        rec.tool_result = "\n".join(out_lines)
+        rec.tool_result = result_text
         started = extra.get("_tool_started_at")
         if started is not None:
             duration = extra.get("_tool_duration")
@@ -625,6 +673,49 @@ def _live_fingerprint(model) -> tuple:
     return tuple(fp)
 
 
+def _live_tool_payload(box, call: str) -> tuple:
+    """运行中工具 → (详情行, 返回全文) 增量缓存。
+
+    ★ 性能（2026-08-19 用户需求：轨迹 Trace 优化性能，O(N²) 优化）：
+    ``_live_records`` 消息源模式每帧重建 records（``_live_fingerprint``
+    驱动）——修复前对每个运行中工具每帧**全量**构建 detail_lines
+    （``[call] + 输出行``）+ ``"\n".join(输出行)`` O(行数)，长工具输出
+    （N 行 × N 帧）累计 O(N²)。块级增量缓存（``box._live_tool_cache``）：
+    行只追加（append-only）→ 仅对**新增行**拼接（``cres += ...``——CPython
+    引用计数 1 时原地扩展 O(新增)）；行数倒退 / call 变化 → 全量重建
+    （防御非 append-only 异常，与 ``_block_plain_lines`` 同契约）。语义与
+    ``_live_records`` 一致：跳过标题行（``lines[0]``），详情行首条 = 调用行。
+    返回共享列表/字符串（调用方只读契约——rec.lines 与缓存共享，id 稳定
+    → 检查器 use_memo 零重建，与 ``_split_lines`` 共享引用同契约）。
+    """
+    blines = getattr(box, "lines", None) or []
+    cache = getattr(box, "_live_tool_cache", None)
+    if cache is not None:
+        ckey, clines, cres, cconv = cache
+        if ckey == (id(blines), call) and len(blines) >= cconv:
+            for i in range(cconv, len(blines)):
+                if i == 0:
+                    continue
+                ln = blines[i]
+                plain = getattr(ln, "plain", None)
+                text = plain if plain is not None else str(ln)
+                clines.append(text)
+                cres += ("\n" if cres else "") + text
+            box._live_tool_cache = ((id(blines), call), clines, cres, len(blines))
+            return clines, cres
+    clines = [call]
+    res = ""
+    for i, ln in enumerate(blines):
+        if i == 0:
+            continue
+        plain = getattr(ln, "plain", None)
+        text = plain if plain is not None else str(ln)
+        clines.append(text)
+        res += ("\n" if res else "") + text
+    box._live_tool_cache = ((id(blines), call), clines, res, len(blines))
+    return clines, res
+
+
 def _live_records(model, index_holder: list, out_records: list, rows: list,
                   merged_tool_ids: set = None) -> None:
     """实时生成记录（消息源模式：轨迹 Trace 正在生成的内容动态显示）。
@@ -708,15 +799,16 @@ def _live_records(model, index_holder: list, out_records: list, rows: list,
         tool_name = extra.get("tool_name") or "工具"
         detail = extra.get("tool_detail", "")
         call = f"{tool_name} {detail}".strip() or tool_name
-        lines = _block_plain_lines(box)
-        # 输出首行预览（跳过标题行 lines[0]——与消息记录 result 语义一致；
-        # strip 去除工具输出行前缀，与 ``_tool_result_preview`` 对齐）
+        # ★ 性能（O(N²) 优化）：详情行/返回全文经 ``_live_tool_payload``
+        #   增量缓存（块级 append-only 增量拼接）——修复前每帧全量构建
+        #   detail_lines + join O(行数)，长工具输出累计 O(N²)。
+        detail_lines, result_text = _live_tool_payload(box, call)
+        # 输出首行预览（跳过调用行 detail_lines[0]——与消息记录 result
+        # 语义一致；strip 去除工具输出行前缀，与 ``_tool_result_preview`` 对齐）
         result = ""
-        for i, ln in enumerate(lines):
-            if i == 0:
-                continue
-            if ln.strip():
-                result = ln.strip()
+        for i in range(1, len(detail_lines)):
+            if detail_lines[i].strip():
+                result = detail_lines[i].strip()
                 break
         started = extra.get("_tool_started_at")
         time_sec = None
@@ -726,9 +818,6 @@ def _live_records(model, index_holder: list, out_records: list, rows: list,
             except (TypeError, ValueError):
                 time_sec = None
         index_holder[0] += 1
-        # 详情 = 调用行 + 当前输出行（剔除原始标题行——与
-        # ``block_detail_lines`` 合并语义一致）
-        detail_lines = [call] + [ln for i, ln in enumerate(lines) if i != 0]
         rec = TraceRecord(
             index=index_holder[0],
             kind="tool",
@@ -742,7 +831,7 @@ def _live_records(model, index_holder: list, out_records: list, rows: list,
             #   （关键参数摘要）；返回值 = 当前已输出行（流式增长驱动检查器
             #   树重渲染）。
             tool_args=detail,
-            tool_result="\n".join(ln for i, ln in enumerate(lines) if i != 0),
+            tool_result=result_text,
         )
         out_records.append(rec)
         rows.append(rec)
@@ -795,6 +884,30 @@ def _split_lines(text: str) -> list:
         _split_lines_cache.clear()
     _split_lines_cache[text] = lines
     return lines
+
+
+def _merge_call_lines(call: str, text: str, lines: list) -> list:
+    """工具调用行 + 返回行 → 合并列表（缓存：records 每帧重建时命中）。
+
+    ★ 性能（2026-08-19 用户需求：轨迹 Trace 优化性能，O(N²) 优化）：
+    消息源模式下历史 tool 返回消息每帧经 ``list(rec.lines) + lines`` 重建
+    合并列表（O(返回行数)）——长工具返回（N 行 × N 帧）累计 O(N²)。内容
+    不变（call/返回全文为持久 str 对象）→ 缓存命中零重建。缓存存 **list**
+    （调用方只读契约——rec.lines 与缓存共享同一列表引用，id 稳定 →
+    ``_detail_deps`` 的 ``id(lines)`` 跨帧命中 → 检查器 use_memo 零重建，
+    与 ``_split_lines`` 共享引用同契约；``_merge_subagent_into_tool_record``
+    先 ``list(rec.lines)`` 复制再扩展，不污染缓存）。有界防无限增长（与
+    ``_content_str`` 同 ``_CONTENT_CACHE_MAX``）。
+    """
+    key = (call, text)
+    cached = _merge_lines_cache.get(key)
+    if cached is not None:
+        return cached
+    merged = [call] + lines
+    if len(_merge_lines_cache) >= _CONTENT_CACHE_MAX:
+        _merge_lines_cache.clear()
+    _merge_lines_cache[key] = merged
+    return merged
 
 
 def _tool_detail(name: str, args) -> str:
@@ -932,7 +1045,9 @@ def _records_from_messages(messages) -> tuple:
             if rec is not None:
                 # ★ 工具调用 + 返回合并一条：返回追加到调用记录
                 rec.result = _first_text(lines)
-                rec.lines = list(rec.lines) + lines
+                # ★ 性能（O(N²) 优化）：合并列表缓存（内容不变 → 每帧零重建，
+                #   长工具返回不再每帧 O(返回行数) 复制）。
+                rec.lines = _merge_call_lines(rec.summary, text, lines)
                 # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树
                 #   控件显示）：保存**原始返回文本**——检查器据此用树控件显示
                 #   返回值（JSON 树形展开；非 JSON 文本每行一个叶子节点）。

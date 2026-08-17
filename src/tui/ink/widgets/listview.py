@@ -75,8 +75,13 @@ def ListView(props: dict) -> Element:
     # ★ 健壮性（渲染错误防御）：items 不可迭代（None/标量/对象）时回退空列表
     #   ——修复前 ``list(props.get("items", []) or [])`` 对不可迭代的 items
     #   （如 float/bool）抛 TypeError，ListView 渲染崩溃。
+    # ★ 性能（O(N²) 优化）：items 已为 list 时直接引用（内部只读遍历）——
+    #   修复前 ``list(raw_items)`` 每帧复制整个 items（TraceView 台账大列表
+    #   下每帧 O(N) 复制，随渲染帧数累积）；生成器/可迭代仍 list() 化。
     if raw_items is None:
         items = []
+    elif isinstance(raw_items, list):
+        items = raw_items
     elif hasattr(raw_items, "__iter__") and not isinstance(raw_items, (str, bytes)):
         items = list(raw_items)
     else:

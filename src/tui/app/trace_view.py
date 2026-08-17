@@ -72,6 +72,13 @@ _SECTION_PREFIX = "\u25b8 "  # ▸
 #:   增长（超限清空重建——miss 仅多一次 runs 构建，无正确性影响）。
 _LEDGER_RUNS_CACHE: dict = {}
 _LEDGER_RUNS_CACHE_MAX = 256
+#: 台账行预计算索引缓存（性能：O(N²) 优化——分隔行编号/记录↔行映射/轮次
+#:   数一次 O(N) 预计算，跨帧 O(1) 查表；rows 来自 use_memo（内容不变引用
+#:   稳定）→ 命中零重建；records 重建 → 新 rows 引用 → 一次性 O(N) 重建，
+#:   远低于修复前每帧对每个可见分隔行的累计扫描）。有界防无限增长（超限
+#:   清空重建——miss 仅多一次索引构建，无正确性影响）。
+_ROWS_INDEX_CACHE_MAX = 4
+_rows_index_cache: dict = {}  # id(rows) → (rows_ref, (sep_nums, rec_to_row, row_to_rec))
 #: 轮次分隔行 runs 缓存（与 _ledger_row_runs 同缓存上限——纯函数输出复用）
 _SEP_RUNS_CACHE: dict = {}
 
@@ -975,29 +982,72 @@ def _subagent_trace_deps(label: str) -> tuple:
     return (label, *msg_fp, *tail_fp, *live_fp, *tool_live)
 
 
+def _rows_index(rows: list) -> tuple:
+    """台账行预计算索引：(sep_nums, rec_to_row, row_to_rec)。
+
+    - ``sep_nums``: {row_idx: 轮次数}——分隔行编号 O(1) 查表（修复前
+      ``_ledger_renderer`` 的 ``sum(1 for r in rows[:idx] if r is None)``
+      对每个可见分隔行每帧 O(idx) 扫描 + O(idx) 切片分配，大台账累计
+      O(N×视口) ≈ O(N²)）；
+    - ``rec_to_row``: {id(record): row_idx}——``_row_of_record`` O(1) 查表
+      （修复前每帧 O(N) 线性扫描）；
+    - ``row_to_rec``: list（row_idx → records 索引；分隔行为 -1）——
+      ``_records_index_of_row`` O(1) 查表（修复前 O(row_idx)）。
+
+    缓存 keyed by ``id(rows)`` + 引用校验（rows 来自 use_memo：内容不变
+    引用稳定 → 跨帧命中零重建）。``_rows_index`` 只遍历 rows（不依赖
+    records——rows 中非 None 项顺序与 records 索引一一对应）。
+    """
+    key = id(rows)
+    entry = _rows_index_cache.get(key)
+    if entry is not None and entry[0] is rows:
+        return entry[1]
+    sep_nums: dict = {}
+    rec_to_row: dict = {}
+    row_to_rec: list = []
+    sep = 0
+    rec_idx = 0
+    for i, r in enumerate(rows):
+        if r is None:
+            sep += 1
+            sep_nums[i] = sep
+            row_to_rec.append(-1)
+        else:
+            rec_to_row[id(r)] = i
+            row_to_rec.append(rec_idx)
+            rec_idx += 1
+    idx = (sep_nums, rec_to_row, row_to_rec)
+    if len(_rows_index_cache) >= _ROWS_INDEX_CACHE_MAX:
+        _rows_index_cache.clear()
+    _rows_index_cache[key] = (rows, idx)
+    return idx
+
+
 def _row_of_record(rows: list, sel: int, records: list) -> int:
-    """记录 sel 在台账行（rows）中的下标（分隔行不计入选择）。"""
+    """记录 sel 在台账行（rows）中的下标（分隔行不计入选择）。
+
+    ★ 性能（O(N²) 优化）：预计算 ``rec_to_row`` 映射 O(1) 查表——修复前
+    ``for i, row in enumerate(rows): if row is target`` 每帧 O(N) 线性扫描
+    （大台账下随渲染帧数累积）。
+    """
     if not (0 <= sel < len(records)):
         return 0
     target = records[sel]
-    for i, row in enumerate(rows):
-        if row is target:
-            return i
-    return 0
+    _, rec_to_row, _ = _rows_index(rows)
+    return rec_to_row.get(id(target), 0)
 
 
 def _records_index_of_row(rows: list, row_idx: int) -> int:
-    """台账行下标 → 记录索引（跳过 None 分隔行；row 为 None/越界返回 -1）。"""
+    """台账行下标 → 记录索引（跳过 None 分隔行；row 为 None/越界返回 -1）。
+
+    ★ 性能（O(N²) 优化）：预计算 ``row_to_rec`` 映射 O(1) 查表——修复前
+    ``for i in range(row_idx + 1)`` O(row_idx)（导航回调高频触发时随台账
+    行数累积）。
+    """
     if not (0 <= row_idx < len(rows)):
         return -1
-    count = 0
-    for i in range(row_idx + 1):
-        if rows[i] is None:
-            continue
-        if i == row_idx:
-            return count
-        count += 1
-    return -1
+    _, _, row_to_rec = _rows_index(rows)
+    return row_to_rec[row_idx]
 
 
 def _ledger_renderer(rows: list, left_w: int, records: list, model):
@@ -1007,10 +1057,17 @@ def _ledger_renderer(rows: list, left_w: int, records: list, model):
       - 分隔行（None）→ 轮次分隔行 TEXT（``── 轮次 N ──``）；
       - 记录行 → ``_ledger_row_runs``（选中整行背景高亮 + ▶ 标记），
         isSelected 由 ListView 注入（受控 cursor 行）。
+
+    ★ 性能（O(N²) 优化）：分隔行编号经 ``_rows_index`` 预计算 O(1) 查表
+    （``sep_nums``）——修复前 ``sum(1 for r in rows[:idx] if r is None)``
+    对每个可见分隔行每帧 O(idx) 扫描 + ``rows[:idx]`` O(idx) 切片分配，
+    大台账（多轮次）下每帧 O(N×视口) ≈ O(N²)。
     """
+    sep_nums, _, _ = _rows_index(rows)
+
     def render_item(item, idx, is_sel):
         if item is None:
-            n = sum(1 for r in rows[:idx] if r is None) + 1  # 第 n 个分隔 = 轮次 n
+            n = sep_nums.get(idx, 1)  # 第 n 个分隔 = 轮次 n（O(1) 查表）
             return h(TEXT, {
                 "key": f"tsep-{idx}",
                 "styled": _sep_row_runs(n, left_w),
@@ -1198,7 +1255,11 @@ def TraceView(props) -> object:
 
     # ── 渲染 ──
     # 头部（静态色——轨迹视图为浏览界面，不呼吸，diff 零输出）
-    turn_count = sum(1 for r in rows if r is None)
+    # ★ 性能（O(N²) 优化）：轮次数 = 分隔行编号表长度（``_rows_index``
+    #   预计算 O(1)）——修复前 ``sum(1 for r in rows if r is None)`` 每帧
+    #   O(N) 全量扫描（大台账下随渲染帧数累积）。
+    sep_nums, _, _ = _rows_index(rows)
+    turn_count = len(sep_nums)
     if sub_label:
         header_title = f"\u258d子代理轨迹 {sub_label}"
         header_hint = "  \u2191\u2193 选择 · PgUp/PgDn 翻页 · g/G 首末 · Esc/Ctrl+H 返回"
