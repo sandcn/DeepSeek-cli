@@ -36,13 +36,11 @@ from ._session_cmd import (
 
 from ._config_cmd import (
     _cmd_model,
-    _cmd_system,
     _cmd_cost,
     _cmd_theme,
     _cmd_reasoning,
     _cmd_temperature,
     # 插件子类
-    SystemCommand,
     CostCommand,
     ThemeCommand,
     ReasoningCommand,

@@ -82,7 +82,7 @@ class SessionMessagingManager:
 
         若现有 system 消息与当前构建状态（完整/空模式）不一致——例如 Ctrl+B
         切换空模式后 agent system 消息未同步重建——则按当前状态重建标准
-        system 消息，并保留用户通过 /system 追加的额外 system 消息。
+        system 消息，并保留额外 system 消息。
 
         Returns:
             被删除的消息数量

@@ -1,4 +1,4 @@
-"""配置命令 — 模型/系统提示词/费用/主题相关命令处理函数"""
+"""配置命令 — 模型/费用/主题相关命令处理函数"""
 
 from __future__ import annotations
 
@@ -139,57 +139,6 @@ def _cmd_model(ctx):
     elif result["action"] == "error":
         _out.write(f"{YELLOW}  ! 底部栏不可用，请直接指定模型名称{RESET}", level="raw", source="cmd")
         _out.write(f"  {DIM}  可用模型: {', '.join(models)}{RESET}", level="raw", source="cmd")
-    return True
-
-
-def _cmd_system(ctx):
-    if not ctx.messages:
-        _out.write(f"{YELLOW}  ! 消息列表为空，无法修改{RESET}", level="raw", source="cmd")
-        return True
-
-    # 计算插入位置：优先在最后一条非摘要 system 后，其次在所有 system 后，兜底 0
-    insert_pos = 0
-    for i, msg in enumerate(ctx.messages):
-        if msg.get("role") == "system" and not (msg.get("content") or "").startswith("[对话摘要]"):
-            insert_pos = i + 1
-    if insert_pos == 0:
-        # 没有非摘要 system 消息 → 放在所有 system 消息（如摘要）之后
-        for i in range(len(ctx.messages) - 1, -1, -1):
-            if ctx.messages[i].get("role") == "system":
-                insert_pos = i + 1
-                break
-
-    if ctx.arg:
-        ctx.messages.insert(insert_pos, {"role": "system", "content": ctx.arg})
-        _out.write(f"{GREEN}  + 已追加系统提示词（新消息）{RESET}", level="raw", source="cmd")
-    else:
-        # 显示所有 system 消息（含摘要）
-        system_msgs = [(i, m) for i, m in enumerate(ctx.messages)
-                       if m.get("role") == "system"]
-        _out.write(f"  {DIM}\u2500 系统提示词（共 {len(system_msgs)} 段）{RESET}", level="raw", source="cmd")
-        for orig_idx, msg in system_msgs:
-            content = msg.get("content") or ""
-            # 提取标签：取第一行非空行，去掉 # 前缀
-            label = ""
-            for line in content.splitlines():
-                stripped = line.strip()
-                if stripped:
-                    label = stripped.lstrip("#").strip()
-                    break
-            if not label:
-                label = f"第 {orig_idx} 段"
-            # 显示完整内容
-            char_count = len(content)
-            _out.write(f"  {DIM}\u2502{RESET} {CYAN}[{orig_idx}]{RESET} {DIM}{label}{RESET}  ({char_count} 字符)", level="raw", source="cmd")
-            _out.write(content, level="raw", source="cmd")
-            _out.write("", level="raw", source="cmd")
-        _out.write(f"  {DIM}\u2514{'─' * 24}{RESET}", level="raw", source="cmd")
-        new_text = ctx.get_user_input("输入新的补充内容 (回车跳过): ").strip()
-        if not new_text:
-            _out.write(f"{YELLOW}  ! 已取消{RESET}", level="raw", source="cmd")
-            return True
-        ctx.messages.insert(insert_pos, {"role": "system", "content": new_text})
-        _out.write(f"{GREEN}  + 已追加{RESET}", level="raw", source="cmd")
     return True
 
 
@@ -356,15 +305,6 @@ def _cmd_temperature(ctx):
 from .base import CommandPlugin, CommandMeta, get_plugin_registry
 
 
-class SystemCommand(CommandPlugin):
-    """设置系统提示"""
-    def __init__(self):
-        self.meta = CommandMeta(name="system", description="修改系统提示词")
-
-    def execute(self, ctx: CommandContext) -> bool:
-        return _cmd_system(ctx)
-
-
 class CostCommand(CommandPlugin):
     """显示费用统计"""
     def __init__(self):
@@ -402,7 +342,6 @@ class TemperatureCommand(CommandPlugin):
 
 
 # ── 自动注册插件 ────────────────────────────────────
-get_plugin_registry().register(SystemCommand())
 get_plugin_registry().register(CostCommand())
 get_plugin_registry().register(ThemeCommand())
 get_plugin_registry().register(ReasoningCommand())
