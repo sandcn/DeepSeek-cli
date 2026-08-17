@@ -39,34 +39,45 @@ def _publish_input_router(router) -> None:
 
 
 def use_fullscreen(is_active: bool = True) -> None:
-    """声明当前组件为**模态全屏视图**（独占键盘输入，2026-08-17 通用机制）。
+    """声明当前组件为**模态视图**（独占键盘输入，2026-08-17 通用机制）。
 
-    React Ink 生态无对应物（模态全屏为本框架扩展）。激活期间
+    通用模态声明，适用于两类渲染位置（由 App 注册表决定，hook 本身不关心
+    布局）：
+      - **模态全屏视图**（``app.FULLSCREEN_VIEWS`` + ``model.fullscreen``）：
+        App 整屏只渲染对应组件（消息区/状态栏/输入区全部不显示）；
+      - **模态底部视图**（``app.BOTTOM_VIEWS`` + ``model.bottom_view``）：
+        App 独占渲染底部区（状态栏/输入区隐藏——底部框不显示），视图渲染
+        在**原底部框位置**（屏幕底部区域）；消息区保持正常显示（如
+        UserSelectPopup——user_select 弹窗独立出底部框，显示时底部框隐藏）。
+
+    React Ink 生态无对应物（模态为本框架扩展）。激活期间
     （``is_active=True``）：
       - 组件自身 use_input handler 仍优先消费（导航/关闭等按键）；
       - 全部 use_input **未消费**的事件被 input router **吞掉**（返回 True）
         → InputDispatcher 跳过旧回调路径（buffer_editor 输入缓冲）→ 字符/
-        Enter 等不落入输入缓冲（杜绝「打开时看不见的输入」误提交/误编辑）。
+        Enter 等不落入输入缓冲（杜绝「打开时看不见的输入」误提交/误编辑——
+        底部视图场景：底部框隐藏时不可见输入不污染缓冲）。
         吞掉判定与 hook 注册顺序无关——始终在**全部** use_input handler
         之后（router 实现保证，见 reconciler）。
-    ``is_active=False`` 时 hook 不参与路由（零影响——组件非全屏渲染/已关闭）。
+    ``is_active=False`` 时 hook 不参与路由（零影响——组件非模态渲染/已关闭）。
 
-    配合 App 全屏视图注册表（``app.FULLSCREEN_VIEWS``，按
-    ``model.fullscreen`` 整屏渲染）使用：组件渲染即声明，关闭（Esc/Ctrl+H
-    等由组件 use_input 自行处理）后下一帧组件不在树中、hook 自动消失。
+    配合 App 视图注册表（``FULLSCREEN_VIEWS`` / ``BOTTOM_VIEWS``，按
+    ``model.fullscreen`` / ``model.bottom_view`` 渲染）使用：组件渲染即声明，
+    关闭（Esc/Ctrl+H 等由组件 use_input 自行处理 / 调用方清理视图状态）后
+    下一帧组件不在树中、hook 自动消失。
 
     ★ 窗口约束（2026-08-17 review 方向）：本 hook 经 reconciler 每帧构建
-    router 生效——打开/关闭全屏视图后，**当前渲染帧内**（≤1 帧周期 ≈100ms）
+    router 生效——打开/关闭模态视图后，**当前渲染帧内**（≤1 帧周期 ≈100ms）
     的剩余输入仍沿用旧 router（打开侧：尚未吞掉；关闭侧：仍被吞掉）。属
     渲染循环架构固有窗口（与 user_select/editmsg 等所有状态切换一致），
     下一帧渲染后即收敛；toggle 回调已请求立即重绘以最短化窗口。
 
-    用法（全屏视图组件，与 use_input 同源激活）：
+    用法（模态视图组件，与 use_input 同源激活）：
         use_input(_handle, active)
         use_fullscreen(active)
 
     Args:
-        is_active: 是否处于模态全屏激活态（默认 True）。
+        is_active: 是否处于模态激活态（默认 True）。
 
     Returns:
         None（与 use_input 一致）。

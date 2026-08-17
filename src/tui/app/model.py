@@ -101,6 +101,17 @@ class AppModel(_ToolOutputMixin):
         self.completion: CompletionState = CompletionState()
         # 用户选择弹窗（React Ink 化：user_select 工具 → UserSelectPopup 组件）
         self.user_select: UserSelectState = UserSelectState()
+        # ── 模态底部视图（2026-08-17 通用机制，与 fullscreen 对称） ──
+        # bottom_view: 当前模态底部视图 id（""=正常底部框：状态栏+输入区；
+        #   "user_select"=用户选择界面独占底部区）。非空时 App 按底部视图
+        #   注册表（``app.BOTTOM_VIEWS``）**独占渲染底部区**——状态栏/输入区
+        #   不显示（底部框隐藏），视图组件渲染在**原底部框位置**（屏幕底部
+        #   区域）。组件经 ``use_fullscreen(True)`` 声明模态（未消费按键不
+        #   落入输入缓冲）。新增底部视图两步：注册表加条目 + 设置
+        #   model.bottom_view（独占渲染/输入接管/光标隐藏全部自动生效）。
+        #   与 fullscreen（整屏）区别：bottom_view 只替换底部区，消息区保持
+        #   正常显示。
+        self.bottom_view: str = ""
         # 实时解析进度行（同位置刷新；ParseInfoDone 后提交并清空）
         self.parse_line: Any = None
         # subagent 面板行（控制器推送）
@@ -602,6 +613,32 @@ class AppModel(_ToolOutputMixin):
         #   blocks 已清空 → 残留渲染空数据全屏界面。与 trace_subagent_label
         #   同语义（全屏态不跨清屏保留）。
         self.fullscreen = ""
+        # ★ 2026-08-17（模态底部视图）：清屏重置 bottom_view（防残留 id 让
+        #   App 独占渲染底部区视图）。**保留 user_select 弹窗状态**——工具
+        #   协程正轮询 ``us.done``（清屏不打断用户选择流程）：若弹窗仍激活
+        #   （visible=True），App 兼容回退按底部视图继续显示弹窗（与清屏前
+        #   一致）；若弹窗已清理（visible=False），底部框恢复正常显示。
+        self.bottom_view = ""
+
+    # ── 模态底部视图（2026-08-17 通用机制） ───────────────
+    # 通用 API：``open_bottom_view(view_id)`` 打开 / ``close_bottom_view()``
+    # 关闭。与 fullscreen（模态全屏视图）对称——bottom_view 只替换底部区
+    # （状态栏+输入区隐藏，视图渲染在原底部框位置），消息区保持正常显示。
+    # 调用方（user_select 工具/message_editor/ui_adapter）设置后须
+    # ``request_bottom_redraw()`` 触发重绘。
+
+    def open_bottom_view(self, view_id: str) -> None:
+        """打开模态底部视图（设置 id 触发 App 独占底部区渲染）。
+
+        Args:
+            view_id: 底部视图注册表（``app.BOTTOM_VIEWS``）中的视图 id；
+                空串等价于关闭（防御）。
+        """
+        self.bottom_view = view_id or ""
+
+    def close_bottom_view(self) -> None:
+        """关闭模态底部视图（恢复状态栏 + 输入区正常底部框）。"""
+        self.bottom_view = ""
 
     # ── trace_open 兼容别名（2026-08-17 通用化：模态全屏视图） ──
     # 轨迹视图打开 = model.fullscreen == "trace"。property 保持旧字段读写

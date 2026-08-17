@@ -4,6 +4,15 @@ React Ink 化（2026-08-05）：user_select 工具的终端交互界面从「命
 （CompletionState + show_completions）+ 手动 raw I/O（select/read_byte）」
 迁移为独立的 React Ink 函数组件。
 
+★ 模态底部视图（2026-08-17 通用机制）：UserSelectPopup 为
+``app.BOTTOM_VIEWS`` 注册表的第一个底部视图——``model.bottom_view ==
+"user_select"`` 时 App **独占渲染底部区**（状态栏 + 输入区不显示——底部框
+隐藏），本组件渲染在**原底部框位置**（屏幕底部区域）；消息区保持正常显示。
+组件经 ``use_fullscreen(visible)`` 声明模态（未消费按键不落入输入缓冲——
+底部框隐藏时不可见输入不污染缓冲）。工具/editor 设置 ``model.user_select``
+（visible=True, seq+1）时同步设置 ``model.bottom_view = "user_select"``，
+清理时同步 ``model.bottom_view = ""``。
+
 ★ 全面控件化（2026-08-16 方案B）：弹窗选项列表经标准控件
 ``SelectInput``（单选）/``MultiSelect``（多选）表达——导航（↑↓/j/k/g/G）、
 Enter 确认、Esc 取消、空格勾选由控件消费，协议（first-write-wins、us 状态
@@ -40,7 +49,7 @@ from src.tui._width import wcswidth_simple
 from src.tui._input import _wrap_by_width
 from src.tui.app.input_area import _desc_column_width, _truncate_width
 from src.tui.app._theme import _S_DIM, _S_SEP
-from src.tui.ink import TEXT, h, Column, Row, StyledRun
+from src.tui.ink import TEXT, h, Column, Row, StyledRun, use_fullscreen
 from src.tui.ink.hooks import use_state
 from src.tui.ink.widgets.interactive import SelectInput, MultiSelect
 
@@ -304,6 +313,15 @@ def UserSelectPopup(props) -> object:
     # 初始值从 model.user_select 读取（App 以 key=seq 强制重挂载，
     # seq 变化 → fiber 重建 → use_state 重新初始化）。
     selected, set_selected = use_state(us.selected if us is not None else 0)
+
+    # ★ 模态底部视图（2026-08-17 通用机制）：visible 时声明模态独占键盘——
+    #   未消费按键被 input router 吞掉（不落入 InputDispatcher 旧路径输入
+    #   缓冲）。底部视图激活时 App 分支不渲染 StatusBar/InputArea（底部框
+    #   隐藏），本声明保证「看不见的输入」不污染输入缓冲（SelectInput/
+    #   MultiSelect consumeAll=True 已消费绝大多数按键，此声明为兜底——
+    #   与 fullscreen 全屏视图同语义）。visible=False 时 is_active=False
+    #   零影响（弹窗不可见/组件不在树中时 hook 不参与路由）。
+    use_fullscreen(visible)
 
     if not visible:
         return h(TEXT, {"children": ""})

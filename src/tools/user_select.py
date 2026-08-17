@@ -10,6 +10,12 @@ React Ink 组件 ``UserSelectPopup``（src/tui/app/user_select.py）：
     InputDispatcher 路由按键）；
   - 结果经 ``model.user_select.done/action/result`` 回传，工具协程读取后
     清理状态。
+
+★ 模态底部视图（2026-08-17 通用机制）：设置弹窗状态时同步
+``model.open_bottom_view("user_select")``——App 经 ``app.BOTTOM_VIEWS``
+注册表**独占渲染底部区**（状态栏/输入区隐藏——底部框不显示），弹窗界面
+渲染在**原底部框位置**（屏幕底部区域）；消息区保持正常显示。清理（finally）
+同步 ``model.close_bottom_view()`` 恢复状态栏 + 输入区。
 """
 
 from __future__ import annotations
@@ -223,6 +229,12 @@ class UserSelectFunc(Func):
                 checked=checked,
                 deadline=0.0 if self.timeout <= 0 else time.monotonic() + self.timeout,
             )
+            # ★ 模态底部视图（2026-08-17 通用机制）：user_select 独立出底部框
+            #   ——弹窗激活时同步打开底部视图（App 独占渲染底部区，状态栏+
+            #   输入区隐藏；弹窗界面渲染在原底部框位置）。清理时同步关闭
+            #   （见 finally，恢复状态栏+输入区）。统一经通用 API 写入（与
+            #   message_editor/ui_adapter 同单一写入路径）。
+            model.open_bottom_view("user_select")
             chat_ui.request_bottom_redraw()
 
             # 轮询等待组件交互完成（render 线程运行中；组件写 done）
@@ -254,6 +266,9 @@ class UserSelectFunc(Func):
             # 清理弹窗状态 + 主动重绘（底部栏立即恢复正常显示）
             try:
                 model.user_select = UserSelectState()
+                # ★ 模态底部视图（2026-08-17 通用机制）：同步关闭底部视图——
+                #   App 恢复状态栏 + 输入区正常底部框（统一经通用 API 写入）。
+                model.close_bottom_view()
                 chat_ui.request_bottom_redraw()
             except Exception:
                 _logger.debug("user_select: cleanup 失败", exc_info=True)
