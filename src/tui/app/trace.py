@@ -79,7 +79,7 @@ class TraceRecord:
         subagent_label: subagent 记录关联的 subagent label（Enter 进入其
             轨迹 Trace 用；非 subagent 记录为空串）。
         tool_call_id: 工具调用唯一 ID（tool_call_id；tool 记录专用——主轨迹
-            台账按此把 subagent 记录合并到对应的 dispatch_agent 工具调用
+            台账按此把 subagent 记录合并到对应的 subagent 工具调用
             记录；块回退路径/无 ID 为空串）。
     """
 
@@ -379,11 +379,11 @@ def _live_records(model, index_holder: list, out_records: list, rows: list,
     （本函数不重复调用——防御：调用方仅消息源模式）。
 
     Args:
-        merged_tool_ids: 已合并进消息源 tool 记录的 dispatch_agent
+        merged_tool_ids: 已合并进消息源 tool 记录的 subagent
             tool_call_id 集合（``_subagent_records`` 合并返回）——这些
-            dispatch box 运行中不再追加重复 running tool 记录（用户需求
-            2026-08-17：agent 内容合并到 dispatch_agent 后运行期也只显示
-            一条「⚡ ● dispatch_agent … · agent-N …」，修复前显示两条相同
+            subagent box 运行中不再追加重复 running tool 记录（用户需求
+            2026-08-17：agent 内容合并到 subagent 后运行期也只显示
+            一条「⚡ ● subagent … · agent-N …」，修复前显示两条相同
             调用行）；None/空 = 无合并（独立 subagent 场景）。
     """
     if model is None:
@@ -431,9 +431,9 @@ def _live_records(model, index_holder: list, out_records: list, rows: list,
     for key, box in (getattr(model, "tool_boxes", None) or {}).items():
         if getattr(box, "closed", False):
             continue
-        # ★ 2026-08-17（用户需求：agent 内容合并到 dispatch_agent）：
-        #   已合并进消息源 tool 记录的 dispatch box 跳过——运行期不重复
-        #   追加 running tool 记录（一条记录表达 dispatch 调用 + agent
+        # ★ 2026-08-17（用户需求：agent 内容合并到 subagent）：
+        #   已合并进消息源 tool 记录的 subagent box 跳过——运行期不重复
+        #   追加 running tool 记录（一条记录表达 subagent 调用 + agent
         #   状态；修复前运行期显示两条相同调用行）
         if merged_tool_ids and key in merged_tool_ids:
             continue
@@ -588,8 +588,8 @@ def _records_from_messages(messages) -> tuple:
                 index += 1
                 rec = TraceRecord(
                     index=index, kind="tool", summary=call, lines=[call],
-                    # ★ 2026-08-17（用户需求：agent 内容合并到 dispatch_agent）：
-                    #   保存 tool_call_id——dispatch_agent 调用记录凭此与
+                    # ★ 2026-08-17（用户需求：agent 内容合并到 subagent）：
+                    #   保存 tool_call_id——subagent 调用记录凭此与
                     #   subagent 槽位（dispatch_label = tool_call_id）匹配合并
                     #   （同轮并行多次 dispatch 时精确关联各自 agent）。
                     tool_call_id=cid,
@@ -642,11 +642,11 @@ def _subagent_label_order(order: list, archive: dict) -> list:
 
 
 def _subagent_tool_targets(out_records: list) -> dict:
-    """tool 记录 tool_call_id → TraceRecord（dispatch_agent 合并目标表）。
+    """tool 记录 tool_call_id → TraceRecord（subagent 合并目标表）。
 
     收集消息源路径构建的 tool 记录（含 ``tool_call_id``；块回退路径的 tool
     记录无 tool_call_id 不参与匹配）。subagent 槽位的 ``dispatch_label``
-    凭此找到对应的 dispatch_agent 调用记录进行合并（同轮并行多次 dispatch
+    凭此找到对应的 subagent 调用记录进行合并（同轮并行多次 dispatch
     时按 tool_call_id 精确关联，不串位）。
     """
     targets: dict = {}
@@ -714,12 +714,12 @@ def _subagent_slot_detail(slot) -> list:
 
 
 def _merge_subagent_into_tool_record(rec, slot, label: str) -> None:
-    """把 subagent 内容合并进 dispatch_agent 工具调用记录（不分两条）。
+    """把 subagent 内容合并进 subagent 工具调用记录（不分两条）。
 
-    ★ 2026-08-17（用户需求：agent 的内容合并到 dispatch_agent，不要分
-    两个）：主轨迹台账中 dispatch_agent 派生的 subagent 记录**合并到对应
-    工具调用记录**——一条记录同时表达「dispatch 调用 + agent 完成」
-    （修复前同一次 dispatch 显示两条：⚡ dispatch_agent 行 + 🤖 agent-N
+    ★ 2026-08-17（用户需求：agent 的内容合并到 subagent，不要分
+    两个）：主轨迹台账中 subagent 派生的 subagent 记录**合并到对应
+    工具调用记录**——一条记录同时表达「subagent 调用 + agent 完成」
+    （修复前同一次 dispatch 显示两条：⚡ subagent 行 + 🤖 agent-N
     行）。合并后：
       - ``status``/``time_seconds``/``tokens`` 用 subagent 槽位值（agent
         生命周期：● 运行中 / ✔ 完成 / ✖ 失败）；
@@ -757,16 +757,16 @@ def _subagent_records(index_holder: list, out_records: list, rows: list) -> set:
     查看完整轨迹）；遍历顺序：store 未注册槽位（异常路径）在前，存档
     （注册顺序）在后。
 
-    ★ 2026-08-17（用户需求：agent 的内容合并到 dispatch_agent，不要分
-    两个）：槽位带 ``dispatch_label``（AgentAddedEvent 传入的 dispatch_agent
+    ★ 2026-08-17（用户需求：agent 的内容合并到 subagent，不要分
+    两个）：槽位带 ``dispatch_label``（AgentAddedEvent 传入的 subagent
     tool_call_id）且消息源存在匹配 tool 记录（``tool_call_id``）时，subagent
     内容**合并进该 tool 记录**（``_merge_subagent_into_tool_record``，不再
-    生成独立 subagent 记录——主轨迹一条记录表达 dispatch 调用 + agent
+    生成独立 subagent 记录——主轨迹一条记录表达 subagent 调用 + agent
     完成）；无关联 dispatch（独立执行/历史恢复槽位）仍生成独立 subagent
     记录（零回归）。
 
     Returns:
-        set[str]——已合并进 tool 记录的 dispatch_agent tool_call_id 集合
+        set[str]——已合并进 tool 记录的 subagent tool_call_id 集合
         （供 ``_live_records`` 跳过这些 box 的重复 running 记录，运行期
         也只显示一条）；无合并返回空 set。
     """
@@ -786,14 +786,14 @@ def _subagent_records(index_holder: list, out_records: list, rows: list) -> set:
     except Exception:
         return set()
     labels = _subagent_label_order(order, archive)
-    # ★ 2026-08-17：dispatch_agent 合并目标表（tool_call_id → tool 记录）
+    # ★ 2026-08-17：subagent 合并目标表（tool_call_id → tool 记录）
     targets = _subagent_tool_targets(out_records)
     merged_tool_ids: set = set()
     for label in labels:
         slot = agents.get(label) or archive.get(label)
         if slot is None:
             continue
-        # ★ 合并路径：槽位关联 dispatch_agent 且消息源存在匹配 tool 记录
+        # ★ 合并路径：槽位关联 subagent 且消息源存在匹配 tool 记录
         dispatch_label = getattr(slot, "dispatch_label", "") or ""
         target = targets.get(dispatch_label) if dispatch_label else None
         # ★ P3-1（review）：target 已被其他槽位合并（异常数据：多个槽位共享
@@ -1070,8 +1070,8 @@ def build_trace_records(model) -> tuple:
                     # ★ 2026-08-16（轨迹 Trace 嵌套）：消息源模式下也追加
                     #   subagent 记录（主轨迹可选中按 Enter 进入 subagent 轨迹；
                     #   修复前 subagent 记录仅回退路径存在——装配场景看不到）。
-                    #   ★ 2026-08-17（用户需求：agent 内容合并到 dispatch_agent）：
-                    #   _subagent_records 返回已合并进 tool 记录的 dispatch
+                    #   ★ 2026-08-17（用户需求：agent 内容合并到 subagent）：
+                    #   _subagent_records 返回已合并进 tool 记录的 subagent
                     #   tool_call_id 集合——_live_records 据此跳过这些 box 的
                     #   重复 running 记录（运行期也只显示一条）。
                     merged_tool_ids = _subagent_records(

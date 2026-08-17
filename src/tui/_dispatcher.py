@@ -214,10 +214,10 @@ class EventDispatcher:
         if not self._is_agent_source(event.source) and not self._is_subagent_label(event.label):
             return
         # 主 agent 工具 → 上屏 box；subagent 工具 → 仅计数（面板自渲染）
-        # ★ 调用 subagent（dispatch_agent/Task）不上普通工具卡：subagent 活动
+        # ★ 调用 subagent（subagent/Task）不上普通工具卡：subagent 活动
         #   由 SubAgent 面板卡自渲染（● 子代理 · N 树图），避免「调用
         #   子代理出现两个卡片（Task 工具卡 + 子代理面板卡）」冗余。
-        if event.source == "agent" and event.tool_name != "dispatch_agent":
+        if event.source == "agent" and event.tool_name != "subagent":
             tool_id = event.tool_id or event.label
             self._push_cmd(ToolOpenCmd(
                 tool_name=event.tool_name, tool_id=tool_id, detail=event.detail,
@@ -227,9 +227,9 @@ class EventDispatcher:
     def _on_tool_done(self, event: "ToolDoneEvent") -> None:
         if not self._is_agent_source(event.source) and not self._is_subagent_label(event.label):
             return
-        # ★ 调用 subagent（dispatch_agent）未开工具卡 → 无需 ToolCloseCmd
+        # ★ 调用 subagent（subagent）未开工具卡 → 无需 ToolCloseCmd
         #   （ParallelExecutor 批量结束会经 parent_display.tool_done 补发 done）
-        if event.source == "agent" and event.tool_name != "dispatch_agent":
+        if event.source == "agent" and event.tool_name != "subagent":
             tool_id = event.tool_id or event.label
             self._push_cmd(ToolCloseCmd(tool_id=tool_id, success=event.success))
         if not event.success:

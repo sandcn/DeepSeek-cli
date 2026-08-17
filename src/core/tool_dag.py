@@ -202,7 +202,7 @@ class ToolDAG:
             new_tool_calls: 新批次的工具调用列表
                 [{"id": str, "name": str, "arguments": dict}, ...]
             registry: ToolRegistry 实例（用于查询 metadata）
-            prev_non_dispatch_ids: 上一批中非 dispatch_agent 的 tc_id 集合。
+            prev_non_dispatch_ids: 上一批中非 subagent 的 tc_id 集合。
                 None 表示不添加批间依赖边。
         """
         if not new_tool_calls:

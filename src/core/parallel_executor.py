@@ -3,7 +3,7 @@ ParallelExecutor — 使用 asyncio.gather 并行调度多个 SubAgent
 
 支持两种模式：
 1. 独立模式：run() 直接创建并执行 agents
-2. 批量模式：多个 dispatch_agent 调用共享同一实例，
+2. 批量模式：多个 subagent 调用共享同一实例，
    通过 add_agent() 注册，barrier 协调，execute_all() 统一执行
 """
 
@@ -41,7 +41,7 @@ def _publish_output(text: str, level: str = "info", source: str = "") -> None:
 # ── 常量 ──────────────────────────────────────────────
 _TIMEOUT = 3.0  # 显示停止等超时（秒）
 # barrier 兜底超时 — dispatch 等待为分钟级任务，60s 兜底防永久阻塞
-# （任一 dispatch_agent 在 register_and_wait 前抛异常时，其余等待者
+# （任一 subagent 在 register_and_wait 前抛异常时，其余等待者
 #  不会永久阻塞；超时后由 register_and_wait 主动触发 _execute_all 唤醒）
 _BARRIER_TIMEOUT = 60.0
 
@@ -62,7 +62,7 @@ _AGENT_TYPE_KEY = "agent_type"
 class ParallelExecutor:
     """并行执行多个 SubAgent，统一管理显示
 
-    支持批量模式：多个 dispatch_agent 调用共享同一实例，
+    支持批量模式：多个 subagent 调用共享同一实例，
     通过 add_agent() 注册 agent specs，register_and_wait() 协调全部注册完成后
     由 _execute_all() 统一创建 SubAgent 并并发执行。
 
@@ -95,7 +95,7 @@ class ParallelExecutor:
 
     @property
     def is_batch_mode(self) -> bool:
-        """是否已设置为批量模式（用于 dispatch_agent 判断）。"""
+        """是否已设置为批量模式（用于 subagent 判断）。"""
         return self._expected_count > 0
 
     def setup_barrier(self, count: int):
@@ -155,7 +155,7 @@ class ParallelExecutor:
             prompt: 完整指令
             agent_type: 子Agent 类型（默认 execute，后续可扩展）
             model: 模型名（可选）
-            tool_label: 所属 dispatch_agent 工具的 label，用于前端路由到正确容器
+            tool_label: 所属 subagent 工具的 label，用于前端路由到正确容器
         """
         idx = len(self._pending_specs)
         self._pending_specs.append({
@@ -319,7 +319,7 @@ class ParallelExecutor:
             except Exception:
                 _logger.exception("%s await_stop 异常", log_prefix)
 
-            # ★ 批量模式：停止 dispatch_agent 的 Spinner
+            # ★ 批量模式：停止 subagent 的 Spinner
             if is_batch and not self._is_web and results:
                 parent_display = getattr(self.parent, 'display', None)
                 if parent_display is not None:
@@ -328,10 +328,10 @@ class ParallelExecutor:
                         if dispatch_label:
                             try:
                                 parent_display.tool_done(
-                                    dispatch_label, "dispatch_agent", success=True,
+                                    dispatch_label, "subagent", success=True,
                                 )
                             except Exception:
-                                _logger.warning("dispatch_agent tool_done 异常", exc_info=True)
+                                _logger.warning("subagent tool_done 异常", exc_info=True)
 
             # ★ sys.stdout 泄漏检测
             try:

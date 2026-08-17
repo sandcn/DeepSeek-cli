@@ -5,13 +5,13 @@
 
 设计要点：
 - 工具执行使用 asyncio 原生 async/await（无额外线程池）
-- dispatch_agent 使用 asyncio.Event 纯异步等待，不消耗线程池工人
+- subagent 使用 asyncio.Event 纯异步等待，不消耗线程池工人
 - 不支持超时（所有工具等待到底，避免误杀长时间任务）
 - 支持 asyncio.gather 实现真正的并发
 - Semaphore 为类级全局单例，跨 Agent 实例共享限流
 - module-level `_default_scheduler` 单例 + `ToolScheduler.default()` 获取
 - `schedule()` 为统一且唯一的入口：所有工具都走全局 DAG 路径
-- 多批并发：批间串行执行，上一批只剩 dispatch_agent 时下一批可并行
+- 多批并发：批间串行执行，上一批只剩 subagent 时下一批可并行
 - SubAgent 工具调用同样走全局 DAG 路径
 """
 
@@ -39,7 +39,7 @@ _default_scheduler: Optional[ToolScheduler] = None
 
 _MAX_CONCURRENT_TOOLS = 0  # 最大并发工具数，0 表示无限制
 _MAX_DAG_ITERATIONS = 200    # DAG while 循环最大迭代次数（防死循环）
-_BASH_POLL_INTERVAL = 0.1   # bash 运行中无 dispatch_agent 时的轮询间隔（秒）
+_BASH_POLL_INTERVAL = 0.1   # bash 运行中无 subagent 时的轮询间隔（秒）
 
 
 class ToolScheduler:
@@ -126,12 +126,12 @@ class ToolScheduler:
         self._global_dag = None
         self._pending_tc_ids.clear()
         self._running_bash_ids.clear()
-        # ★ 不再取消仍在执行的后台 dispatch_agent 任务（P0-1 修复）：
-        #   dispatch_agent 提前返回（_handle_dispatch_agent_early_return）后，
+        # ★ 不再取消仍在执行的后台 subagent 任务（P0-1 修复）：
+        #   subagent 提前返回（_handle_subagent_early_return）后，
         #   bg 任务可能在等待 SubAgent 完成（ParallelExecutor barrier / gather）。
         #   清理入口若在此 cancel，SubAgent 被取消、结果丢失——与用户报告的
         #   "多个 SubAgent 并发执行时偶发失败"高度相关。
-        #   仅移除已完成任务（其 _on_bg_dispatch_done 回调已执行/由本行清除）；
+        #   仅移除已完成任务（其 _on_bg_subagent_done 回调已执行/由本行清除）；
         #   未完成的任务保留，由 schedule() finally 在确认全部完成后统一清理。
         #   ⚠ 过滤方向：保留未完成（not t.done()），移除已完成——否则本方法在
         #   全部 bg done 后调用时列表全量保留、永久累积（内存泄漏）。
@@ -143,7 +143,7 @@ class ToolScheduler:
     def _find_next_layer(self, dag, layers, is_outermost: bool = True) -> list[str] | None:
         """在拓扑排序的层次中查找首个包含未执行节点的层。
 
-        同时应用 bash 独占过滤：若 bash 工具正在运行，仅允许 dispatch_agent 通过。
+        同时应用 bash 独占过滤：若 bash 工具正在运行，仅允许 subagent 通过。
 
         Args:
             dag: ToolDAG 实例
@@ -180,8 +180,8 @@ class ToolScheduler:
         if target_layer is None:
             return None  # 全部节点已执行
 
-        # ── bash 独占运行：bash 运行中仅 dispatch_agent 可并行 ──
-        # 若已有 bash 工具正在运行，当前层仅允许 dispatch_agent 通过，
+        # ── bash 独占运行：bash 运行中仅 subagent 可并行 ──
+        # 若已有 bash 工具正在运行，当前层仅允许 subagent 通过，
         # 其他工具（read/write/bash/interactive）须等待 bash 完成。
         # ★ 仅最外层调度应用（SubAgent 嵌套调用跳过——见 docstring）。
         if is_outermost and self._running_bash_ids:
@@ -190,7 +190,7 @@ class ToolScheduler:
                 node = dag.get_node(tc_id)
                 if node is not None:
                     if (node.tool_category == "general"
-                            and node.name == "dispatch_agent"):
+                            and node.name == "subagent"):
                         filtered.append(tc_id)
             target_layer = filtered
             if not target_layer:
@@ -198,15 +198,15 @@ class ToolScheduler:
 
         return target_layer
 
-    def _only_dispatch_agent_remaining(self, dag: ToolDAG) -> list[dict[str, Any]] | None:
-        """检查 DAG 中所有未执行节点是否全部为 dispatch_agent。
+    def _only_subagent_remaining(self, dag: ToolDAG) -> list[dict[str, Any]] | None:
+        """检查 DAG 中所有未执行节点是否全部为 subagent。
 
         遍历 DAG 中所有节点，过滤出不在 _results_map 且不在 _pending_tc_ids
-        中的节点。若全部为 dispatch_agent（tool_category="general"
-        且 name="dispatch_agent"），返回剩余 dispatch_agent 列表；
+        中的节点。若全部为 subagent（tool_category="general"
+        且 name="subagent"），返回剩余 subagent 列表；
         否则返回 None。
 
-        用于多批并发的提前返回检测：当仅剩 dispatch_agent 时，
+        用于多批并发的提前返回检测：当仅剩 subagent 时，
         可将其作为后台任务执行，不阻塞外层 schedule() 返回。
         """
         if not dag.nodes:
@@ -215,7 +215,7 @@ class ToolScheduler:
         for node in dag.nodes.values():
             tc_id = node.tc_id
             if tc_id not in self._results_map and tc_id not in self._pending_tc_ids:
-                if not (node.tool_category == "general" and node.name == "dispatch_agent"):
+                if not (node.tool_category == "general" and node.name == "subagent"):
                     return None
                 remaining.append({
                     "id": node.tc_id,
@@ -293,7 +293,7 @@ class ToolScheduler:
                 for bash_id in bash_ids_in_layer:
                     self._running_bash_ids.discard(bash_id)
 
-    def _handle_dispatch_agent_early_return(
+    def _handle_subagent_early_return(
         self,
         dag,
         is_outermost: bool,
@@ -303,10 +303,10 @@ class ToolScheduler:
         on_after: Optional[Callable] = None,
         run_method: Optional[Callable] = None,
     ) -> bool:
-        """检测 DAG 中所有未执行节点是否均为 dispatch_agent。
+        """检测 DAG 中所有未执行节点是否均为 subagent。
 
         若是，将其作为后台任务异步执行并提前返回，不阻塞外层 schedule() 返回。
-        这实现了 dispatch_agent 提前放行的语义。
+        这实现了 subagent 提前放行的语义。
 
         Args:
             dag: ToolDAG 实例
@@ -320,7 +320,7 @@ class ToolScheduler:
             True: 已触发提前返回（调用方应 break while 循环）
             False: 不触发提前返回
         """
-        remaining_dispatch = self._only_dispatch_agent_remaining(dag)
+        remaining_dispatch = self._only_subagent_remaining(dag)
         if not is_outermost or remaining_dispatch is None:
             return False
 
@@ -328,9 +328,9 @@ class ToolScheduler:
         for tc in remaining_dispatch:
             self._pending_tc_ids.add(tc["id"])
 
-        # 创建后台协程：复用 _execute_concurrent 执行 dispatch_agent
+        # 创建后台协程：复用 _execute_concurrent 执行 subagent
         bg_task = asyncio.ensure_future(
-            self._bg_dispatch_agents(
+            self._bg_subagents(
                 remaining_dispatch, agent_ref=agent_ref,
                 on_before=on_before, on_after=on_after,
                 run_method=run_method,
@@ -340,12 +340,12 @@ class ToolScheduler:
         # 异常兜底回调：后台 Task 异常/取消时写入失败结果
         bg_task.add_done_callback(
             lambda task, rd=remaining_dispatch, ar=agent_ref:
-                self._on_bg_dispatch_done(task, rd, ar)
+                self._on_bg_subagent_done(task, rd, ar)
         )
         self._background_dispatch_tasks.append(bg_task)
         return True  # 退出 while 循环，提前返回
 
-    async def _bg_dispatch_agents(
+    async def _bg_subagents(
         self,
         remaining_dispatch: list[dict[str, Any]],
         *,
@@ -354,15 +354,15 @@ class ToolScheduler:
         on_after: Optional[Callable] = None,
         run_method: Optional[Callable] = None,
     ) -> None:
-        """后台执行剩余的 dispatch_agent 工具列表。
+        """后台执行剩余的 subagent 工具列表。
 
-        复用 _execute_concurrent 执行 dispatch_agent，完成后将结果写入
+        复用 _execute_concurrent 执行 subagent，完成后将结果写入
         _results_map 和 _completed_tc_ids。此方法由 asyncio.ensure_future
         调度为后台 Task，不阻塞外层 schedule() 返回。
 
-        ★ P3 修复（2026-08-08）：提前返回路径下 dispatch_agent 的工具结果
+        ★ P3 修复（2026-08-08）：提前返回路径下 subagent 的工具结果
           不会经 schedule() 返回给调用方（schedule() 在 bg 任务完成前已返回，
-          batch_results 仅含非 dispatch 节点）。若不在对话中补发 tool result，
+          batch_results 仅含非 subagent 节点）。若不在对话中补发 tool result，
           下一轮模型调用的消息序列缺 tool 消息 → API 报错或模型重发。
           这里在结果写入 _results_map 的同时，直接补发到 agent 消息。
         """
@@ -379,7 +379,7 @@ class ToolScheduler:
                 if hasattr(agent_ref, '_append_tool_result'):
                     agent_ref._append_tool_result(r[0], r[1])
             except Exception:
-                _logger.debug("补发 dispatch_agent tool result 失败", exc_info=True)
+                _logger.debug("补发 subagent tool result 失败", exc_info=True)
 
     def _append_bg_failure_result(
         self,
@@ -387,9 +387,9 @@ class ToolScheduler:
         message: str,
         agent_ref: Any,
     ) -> None:
-        """写入并补发一个失败的后台 dispatch_agent 结果（P2-1 提取）。
+        """写入并补发一个失败的后台 subagent 结果（P2-1 提取）。
 
-        供 _on_bg_dispatch_done 的取消/异常兜底路径复用：
+        供 _on_bg_subagent_done 的取消/异常兜底路径复用：
         - 写入 _results_map / _completed_tc_ids（调度器内部结果一致）；
         - 补发 tool result 到 agent 消息（保证下一轮模型调用消息序列完整）。
         """
@@ -401,15 +401,15 @@ class ToolScheduler:
             if agent_ref is not None and hasattr(agent_ref, '_append_tool_result'):
                 agent_ref._append_tool_result(tc_id, message)
         except Exception:
-            _logger.debug("补发 dispatch_agent 失败 tool result 异常", exc_info=True)
+            _logger.debug("补发 subagent 失败 tool result 异常", exc_info=True)
 
-    def _on_bg_dispatch_done(
+    def _on_bg_subagent_done(
         self,
         task: asyncio.Task,
         remaining_dispatch: list[dict[str, Any]],
         agent_ref: Any = None,
     ) -> None:
-        """后台 dispatch_agent 任务完成回调（含异常兜底）。
+        """后台 subagent 任务完成回调（含异常兜底）。
 
         防御性检查：若 _global_dag 已为 None（表示 _cleanup_batch_records 已清理），
         直接返回，避免操作已清空的状态。Task 已完成即从 _background_dispatch_tasks
@@ -434,7 +434,7 @@ class ToolScheduler:
                 #   防御性兜底（未来用户中断等场景）。
                 for tc in remaining_dispatch:
                     self._append_bg_failure_result(
-                        tc["id"], "后台 dispatch_agent 已被取消", agent_ref,
+                        tc["id"], "后台 subagent 已被取消", agent_ref,
                     )
                 return  # 已被取消，_pending_tc_ids 由 finally 统一清理
             exc = task.exception()
@@ -445,7 +445,7 @@ class ToolScheduler:
                 for tc in remaining_dispatch:
                     self._append_bg_failure_result(
                         tc["id"],
-                        f"后台 dispatch_agent 执行失败: {exc}",
+                        f"后台 subagent 执行失败: {exc}",
                         agent_ref,
                     )
         finally:
@@ -462,10 +462,10 @@ class ToolScheduler:
         cls._semaphore = None
 
     async def wait_background_dispatch(self, timeout: float | None = 180.0) -> None:
-        """等待所有后台 dispatch_agent 任务完成（供调用方同步消息序列）。
+        """等待所有后台 subagent 任务完成（供调用方同步消息序列）。
 
-        dispatch_agent 提前返回（_handle_dispatch_agent_early_return）后，
-        剩余 dispatch 在后台任务中执行，其 tool result 由 _bg_dispatch_agents
+        subagent 提前返回（_handle_subagent_early_return）后，
+        剩余 dispatch 在后台任务中执行，其 tool result 由 _bg_subagents
         补发到 agent 消息。调用方（MainAgent handle_tool_calls）在继续下一轮
         模型调用前等待这些任务完成，确保消息序列完整——否则下一轮模型请求
         携带「有 tool_calls 但无对应 tool 消息」的历史消息，部分 provider
@@ -532,8 +532,8 @@ class ToolScheduler:
     ) -> Tuple[str, str, bool]:
         """异步执行单个工具调用，无超时限制，等待到底。
 
-        所有工具（含 dispatch_agent）统一使用 async/await 路径，
-        dispatch_agent 内部使用 asyncio.Event 纯异步等待 barrier，
+        所有工具（含 subagent）统一使用 async/await 路径，
+        subagent 内部使用 asyncio.Event 纯异步等待 barrier，
         不消耗任何线程池工人。
         """
         # 对齐 Claude Code：工具卡 detail 用关键参数**值**（非 JSON）——已知工具
@@ -583,7 +583,7 @@ class ToolScheduler:
 
         支持多批并发：
         - 层间循环中每执行完一层后重新拓扑排序 DAG
-        - dispatch_agent 的 SubAgent 通过 add_batch 新增的节点
+        - subagent 的 SubAgent 通过 add_batch 新增的节点
           被后续迭代自动捕获并执行
         - 批间串行通过 prev_non_dispatch_ids 依赖边保证
 
@@ -631,9 +631,9 @@ class ToolScheduler:
                     if tc_id in self._results_map]
 
         # ── 逐层执行 + 层间重拓扑（多批并发支持） ──
-        # 设计：每次执行一层后重新拓扑排序 DAG。dispatch_agent 的 SubAgent
+        # 设计：每次执行一层后重新拓扑排序 DAG。subagent 的 SubAgent
         # 通过 add_batch 新增的节点被后续迭代自动捕获并执行。
-        # 这实现了 dispatch_agent 不阻塞下一批的语义。
+        # 这实现了 subagent 不阻塞下一批的语义。
         self._execution_depth += 1
         is_outermost = (self._execution_depth == 1)
         all_pending_ids: set[str] = set()
@@ -645,7 +645,7 @@ class ToolScheduler:
             while iteration < max_iterations:
                 iteration += 1
 
-                # 每层完成后重新拓扑，捕获 dispatch_agent SubAgent 新增的节点
+                # 每层完成后重新拓扑，捕获 subagent SubAgent 新增的节点
                 layers = dag.topological_sort()
                 if layers is None:
                     _logger.warning(
@@ -675,7 +675,7 @@ class ToolScheduler:
                     break  # 全部节点已执行
 
                 if not target_layer:
-                    # bash 运行中且无 dispatch_agent：让出控制权等待 bash 完成
+                    # bash 运行中且无 subagent：让出控制权等待 bash 完成
                     await asyncio.sleep(_BASH_POLL_INTERVAL)
                     iteration -= 1  # bash 轮询不计入 _MAX_DAG_ITERATIONS
                     continue
@@ -703,21 +703,21 @@ class ToolScheduler:
                     run_method=run_method,
                 )
 
-                # 多批并发：仅剩 dispatch_agent 时提前返回
-                if self._handle_dispatch_agent_early_return(
+                # 多批并发：仅剩 subagent 时提前返回
+                if self._handle_subagent_early_return(
                     dag, is_outermost,
                     agent_ref=agent_ref,
                     on_before=on_before,
                     on_after=on_after,
                     run_method=run_method,
                 ):
-                    break  # dispatch_agent 已转为后台任务，提前返回
+                    break  # subagent 已转为后台任务，提前返回
 
         finally:
             self._execution_depth -= 1
             # 所有层均标记 pending（P0-2 修复），finally 统一清理。
-            # 注意：bg 任务通过 _on_bg_dispatch_done 注入的 _pending_tc_ids
-            # 条目由 _on_bg_dispatch_done 的 finally 块负责清理，而非由此处
+            # 注意：bg 任务通过 _on_bg_subagent_done 注入的 _pending_tc_ids
+            # 条目由 _on_bg_subagent_done 的 finally 块负责清理，而非由此处
             # 的 all_pending_ids 遍历处理。
             for tc_id in all_pending_ids:
                 self._pending_tc_ids.discard(tc_id)
@@ -766,8 +766,8 @@ class ToolScheduler:
         - 所有工具（单工具/多工具）→ 全局 DAG 调度（累积工具到全局 DAG + 拓扑分层并发）
 
         多批并发策略：
-        - 批间串行：上一批非 dispatch_agent 工具执行完之前，下一批等待
-        - dispatch_agent 放行：上一批只剩 dispatch_agent 时，下一批可并行执行
+        - 批间串行：上一批非 subagent 工具执行完之前，下一批等待
+        - subagent 放行：上一批只剩 subagent 时，下一批可并行执行
 
         SubAgent 也使用全局 DAG：
         - 子 Agent 的工具调用被正确累积到全局 DAG
@@ -798,7 +798,7 @@ class ToolScheduler:
             if is_outermost_schedule:
                 self._prev_non_dispatch_ids = {
                     tc["id"] for tc in tool_calls
-                    if tc.get("name") != "dispatch_agent"
+                    if tc.get("name") != "subagent"
                 }
 
         try:
@@ -887,7 +887,7 @@ class ToolScheduler:
             #
             #   Bug 修复（2026-08-08）：修复前条件为
             #   ``is_outermost_schedule and self._schedule_depth == 0``——
-            #   MainAgent dispatch 批次提前返回（dispatch_agent 转后台）时，
+            #   MainAgent dispatch 批次提前返回（subagent 转后台）时，
             #   SubAgent 可能仍在全局 DAG 上执行工具（_schedule_depth > 0），
             #   MainAgent 的 finally 却把深度减到 0 并立即清理全局状态
             #   （_results_map/_global_dag/_pending_tc_ids 等），导致并发

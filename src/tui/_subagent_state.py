@@ -73,9 +73,9 @@ class _AgentSlot:
         self.description = description
         self.status = status
         self.agent_type = agent_type
-        # ★ 2026-08-17（用户需求：agent 内容合并到 dispatch_agent）：
-        #   所属 dispatch_agent 工具的 label（tool_call_id）——主轨迹台账按
-        #   此把 subagent 记录合并到对应 dispatch_agent 工具调用记录（不
+        # ★ 2026-08-17（用户需求：agent 内容合并到 subagent）：
+        #   所属 subagent 工具的 label（tool_call_id）——主轨迹台账按
+        #   此把 subagent 记录合并到对应 subagent 工具调用记录（不
         #   分两条）；空串 = 无关联 dispatch（独立执行/历史恢复槽位）。
         self.dispatch_label = dispatch_label
         self.start_time: float = time.time()

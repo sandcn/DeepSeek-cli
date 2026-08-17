@@ -5,14 +5,14 @@
          _setGenInputTokens, _setGenTotalTokens, _genState)
          bubble.js (activeTools, activeAgents, _globalTimer, bubbles,
          dispatchState, _parallelBatchEl, _activeToolCount, addBubble,
-         scrollToBottom, _flushPendingDispatchAgent, _cleanupAllTimers)
+         scrollToBottom, _flushPendingSubagent, _cleanupAllTimers)
          tool-renderer.js (renderReadFileOutput, renderAnsiDiff, renderWebDiff)
          utils.js (escapeHtml, postProcessMarkdown)
    ═══════════════════════════════════════════════════════════════ */
 
 /* ═══════════════════════════════════════════════════════════════
    1. handleToolParsing — 工具参数解析
-   使用 _createToolBubble() 创建气泡（dispatch_agent 统一走抽象函数，
+   使用 _createToolBubble() 创建气泡（subagent 统一走抽象函数，
    不再需要特殊 ~40 行分支）。并行工具根据 _activeToolCount > 0
    判断。同步 store（200ms 节流）。
    ═══════════════════════════════════════════════════════════════ */
@@ -66,10 +66,10 @@ function handleToolParsing(data) {
     return;
   }
 
-  // ── 创建新气泡（dispatch_agent 与普通工具统一走 _createToolBubble） ──
+  // ── 创建新气泡（subagent 与普通工具统一走 _createToolBubble） ──
   const isParallel = _activeToolCount > 0 && _parallelBatchEl;
   const toolName = data.tool_name || '';
-  const isDispatch = toolName === 'dispatch_agent';
+  const isDispatch = toolName === 'subagent';
 
   const result = _createToolBubble(label, toolName, data.msg_index, {
     isDispatch: isDispatch,
@@ -89,7 +89,7 @@ function handleToolParsing(data) {
   };
   _activeToolCount++;
 
-  // dispatch_agent 特殊状态跟踪
+  // subagent 特殊状态跟踪
   if (isDispatch) {
     dispatchState.labelOrder.push(label);
   }
@@ -121,7 +121,7 @@ function handleToolStarted(data) {
 
   // ── label 回退匹配 ──
   if (!tool) {
-    // 优先按 tool_name 匹配（dispatch_agent 或普通工具）
+    // 优先按 tool_name 匹配（subagent 或普通工具）
     for (const [k, v] of Object.entries(activeTools)) {
       if (v.toolName === data.tool_name && /^\d+$/.test(k)) {
         tool = v;
@@ -155,11 +155,11 @@ function handleToolStarted(data) {
   const execStart = Date.now();
   tool._execStart = execStart;
 
-  // ── dispatch_agent 特殊处理 ──
-  if (data.tool_name === 'dispatch_agent' || tool.toolName === 'dispatch_agent') {
+  // ── subagent 特殊处理 ──
+  if (data.tool_name === 'subagent' || tool.toolName === 'subagent') {
     // ★ 从 parsing 模式切换到 exec 模式
     _globalTimer.unregisterTool(label);
-    tool.phaseEl.innerHTML = '<span class="spinner"></span> 执行中 dispatch_agent <span class="tool-timer-text">0.0s</span>';
+    tool.phaseEl.innerHTML = '<span class="spinner"></span> 执行中 subagent <span class="tool-timer-text">0.0s</span>';
     _globalTimer.registerTool(label, {
       phaseEl: tool.phaseEl,
       startTime: execStart,
@@ -197,7 +197,7 @@ function handleToolStarted(data) {
     if (_st()) _st().updateTool(label, { phase: 'executing', execStart: execStart });
 
     // 刷新缓冲的 dispatch agent 条目
-    _flushPendingDispatchAgent();
+    _flushPendingSubagent();
     _debouncedScrollToBottom();
     return;
   }
@@ -361,7 +361,7 @@ function handleToolOutput(data) {
 
 /* ═══════════════════════════════════════════════════════════════
    4. handleToolDone — 工具完成
-   dispatch_agent 特殊处理（创建 agentsContainer），
+   subagent 特殊处理（创建 agentsContainer），
    普通工具根据 metadata 渲染输出（readFileOutput/ansiDiff/webDiff）。
    1s 后从 activeTools 清理。
    ═══════════════════════════════════════════════════════════════ */
@@ -391,12 +391,12 @@ function handleToolDone(data) {
       ? ((Date.now() - tool._parsingStart) / 1000).toFixed(1)
       : '0.0');
 
-  // ── dispatch_agent 特殊处理 ──
-  if (name === 'dispatch_agent') {
+  // ── subagent 特殊处理 ──
+  if (name === 'subagent') {
     if (tool.phaseEl) {
       tool.phaseEl.innerHTML = data.success
-        ? '<span class="tick">✓</span> dispatch_agent 完成 <span class="tool-duration">' + elapsed + 's</span>'
-        : '<span class="cross">✗</span> dispatch_agent 失败 <span class="tool-duration">' + elapsed + 's</span>';
+        ? '<span class="tick">✓</span> subagent 完成 <span class="tool-duration">' + elapsed + 's</span>'
+        : '<span class="cross">✗</span> subagent 失败 <span class="tool-duration">' + elapsed + 's</span>';
     }
     if (_st()) _st().updateTool(label, { phase: 'done', success: data.success, metadata: meta });
 
@@ -418,7 +418,7 @@ function handleToolDone(data) {
       _debouncedScrollToBottom();
       return;
     }
-    // ★ Bug 4 修复：dispatch_agent 完成时清理其子 Agent 的工具记录
+    // ★ Bug 4 修复：subagent 完成时清理其子 Agent 的工具记录
     if (_st()) {
       const allAgents = _st().getAgents();
       for (const [agentLabel, agentData] of Object.entries(allAgents)) {

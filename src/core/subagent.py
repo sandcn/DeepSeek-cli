@@ -31,28 +31,28 @@ _NETWORK_RETRY_MAX = 3
 # - review: 代码审查，排除所有写入类工具，保留 web_search（可查文档）
 # - plan: 计划生成，保留 write_file/update_file，但在 FileToolBase
 #   ._validate_path_and_size() 中有额外的路径白名单校验（仅限 .chat/plan/）
-# - execute: 计划执行型（默认），保留读写工具 + bash，排除 web_search + dispatch_agent + user_select，
+# - execute: 计划执行型（默认），保留读写工具 + bash，排除 web_search + subagent + user_select，
 #   无路径白名单限制，用于执行计划文件步骤并返回修改文件列表
 _TOOL_EXCLUSION_MAP = {
     "map": {
         "bash", "bash_task", "write_file", "update_file", "rm", "mv", "cp", "mkdir",
         "web_search",
-        "dispatch_agent", "user_select",
+        "subagent", "user_select",
     },
     "review": {
         "bash", "bash_task", "write_file", "update_file", "rm", "mv", "cp", "mkdir",
-        "dispatch_agent", "user_select",
+        "subagent", "user_select",
     },
     "plan": {
         "bash", "bash_task",
         "rm",
         "mv",
         "cp",
-        "dispatch_agent",
+        "subagent",
         "user_select",
     },
     "execute": {
-        "dispatch_agent",
+        "subagent",
         "user_select",
         "web_search",
     },
@@ -86,11 +86,11 @@ class SubAgent(BaseAgent):
         self.parent = parent_agent
         self._event_port = getattr(parent_agent, '_event_port', None)
         self.agent_type = agent_type
-        # ★ 2026-08-17（用户需求：agent 内容合并到 dispatch_agent）：所属
-        #   dispatch_agent 工具的 label（tool_call_id）——运行时与面板槽位
+        # ★ 2026-08-17（用户需求：agent 内容合并到 subagent）：所属
+        #   subagent 工具的 label（tool_call_id）——运行时与面板槽位
         #   dispatch_label 同源（spec["tool_label"]）；随 _record_to_parent
         #   写入会话存档，load 恢复后主轨迹仍可把历史 subagent 合并到
-        #   dispatch_agent 工具记录（不分两条）。
+        #   subagent 工具记录（不分两条）。
         self.dispatch_label = dispatch_label
 
         self._registry = parent_agent.get_tool_registry()
@@ -364,10 +364,10 @@ class SubAgent(BaseAgent):
             "status": "error" if self.error else "done",
             "result": self.result,
             "error": self.error,
-            # ★ 2026-08-17（用户需求：load 命令后也要合并）：所属 dispatch_agent
+            # ★ 2026-08-17（用户需求：load 命令后也要合并）：所属 subagent
             #   tool_call_id 随会话存档持久化——/load/--load/webui 恢复后
             #   restore_trace_archive 凭此把历史 subagent 合并到主轨迹对应
-            #   dispatch_agent 工具记录（旧会话无该字段 → 空串，独立记录兼容）。
+            #   subagent 工具记录（旧会话无该字段 → 空串，独立记录兼容）。
             "dispatch_label": self.dispatch_label,
             "tool_calls_count": self.tool_calls_count,
             "messages": [dict(m) for m in self.messages],
@@ -443,8 +443,8 @@ class SubAgent(BaseAgent):
         - 空列表 → 直接返回
         - 全部工具 → 通过全局 DAG 拓扑分层调度（单工具/多工具统一）
         """
-        # 检测 dispatch_agent 调用，创建共享 ParallelExecutor
-        dispatch_count = sum(1 for tc in tool_calls if tc.get("name") == "dispatch_agent")
+        # 检测 subagent 调用，创建共享 ParallelExecutor
+        dispatch_count = sum(1 for tc in tool_calls if tc.get("name") == "subagent")
         if dispatch_count > 0:
             from .parallel_executor import ParallelExecutor
             self._shared_executor = ParallelExecutor(self, is_web=False)

@@ -1,11 +1,11 @@
-"""SubAgent dispatch_label 持久化测试（用户需求：agent 内容合并到 dispatch_agent）。
+"""SubAgent dispatch_label 持久化测试（用户需求：agent 内容合并到 subagent）。
 
 背景（2026-08-17）：SubAgent 创建时经 ``_spawn_subagent`` 注入所属
-dispatch_agent 的 tool_call_id（spec["tool_label"]，dispatch 工具调用 id）；
+subagent 的 tool_call_id（spec["tool_label"]，subagent 工具调用 id）；
 ``_record_to_parent`` 把该 id 写入会话存档（subagents 条目新增
 "dispatch_label" 字段）——/load、--load、webui 加载会话后
 ``restore_trace_archive`` 凭此把历史 subagent 合并到主轨迹对应的
-dispatch_agent 工具记录（用户需求：load 命令后也要合并；旧会话无该字段
+subagent 工具记录（用户需求：load 命令后也要合并；旧会话无该字段
 → 空串，独立 subagent 记录兼容）。
 """
 from __future__ import annotations
@@ -41,7 +41,7 @@ def _make_subagent(dispatch_label: str = "") -> SubAgent:
 
 
 def test_subagent_init_stores_dispatch_label():
-    """SubAgent.__init__ 保存所属 dispatch_agent 的 tool_call_id。"""
+    """SubAgent.__init__ 保存所属 subagent 的 tool_call_id。"""
     sa = _make_subagent("call_d1")
     assert sa.dispatch_label == "call_d1"
 

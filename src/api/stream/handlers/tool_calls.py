@@ -114,7 +114,7 @@ class ToolCallsHandler:
                         if len(entry["_args_preview"]) > 200:
                             entry["_args_preview"] = entry["_args_preview"][:200]
                     # 实时估算工具调用参数的 token 数，确保 token_estimate
-                    # 在流式接收 dispatch_agent 等大参数时持续增长，
+                    # 在流式接收 subagent 等大参数时持续增长，
                     # 驱动 SpeedHandler 发出 update_live_output 更新。
                     ctx.token_estimate += estimate_tokens(fargs)
                     add_token_size(estimate_tokens(fargs))

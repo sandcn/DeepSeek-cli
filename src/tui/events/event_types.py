@@ -144,7 +144,7 @@ class AgentAddedEvent(DisplayEvent):
         label: Agent 唯一标识
         description: Agent 描述（显示用）
         status: 初始状态，默认 "running"
-        dispatch_label: 所属 dispatch_agent 工具的 label（用于前端路由到正确容器）
+        dispatch_label: 所属 subagent 工具的 label（用于前端路由到正确容器）
     """
     label: str = ""
     description: str = ""

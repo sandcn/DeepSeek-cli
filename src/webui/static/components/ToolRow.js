@@ -72,7 +72,7 @@ export function ToolRow({ tool }) {
 
   if (!tool) return null;
 
-  const isDispatch = tool.tool_name === 'dispatch_agent';
+  const isDispatch = tool.tool_name === 'subagent';
   const startTs = tool.execStart || tool.parsingStart || Date.now();
   const elapsedStr = ((curTime - startTs) / 1000).toFixed(1);
 
@@ -98,7 +98,7 @@ export function ToolRow({ tool }) {
     if (tool.metadata['行数']) metaParts.push('行数: ' + tool.metadata['行数']);
   }
 
-  // ── dispatch_agent 子 Agent 列表 ───────────────────
+  // ── subagent 子 Agent 列表 ───────────────────
   let childAgents = [];
   if (isDispatch) {
     const allAgents = getAgents();

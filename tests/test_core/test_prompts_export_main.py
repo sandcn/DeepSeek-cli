@@ -25,7 +25,7 @@ REQUIRED_RULES = [
     # plan 章节：选「执行」后一次性派发整个计划
     "选「执行」→ 派发 1 个 execute Agent 一次性执行整个计划全部步骤",
     # review 章节：修复必须通过 execute 且串行
-    "修复必须通过 `dispatch_agent(type=\"execute\")`（子类型B：Review后修复子任务）",
+    "修复必须通过 `subagent(type=\"execute\")`（子类型B：Review后修复子任务）",
     "多个修复任务强制串行派发，一个修复完成并确认后再派下一个，禁止并行",
     # execute 章节：整个计划 1 个 agent 一次性执行
     "整个计划强制由 **1 个 execute Agent 一次性执行全部步骤**",

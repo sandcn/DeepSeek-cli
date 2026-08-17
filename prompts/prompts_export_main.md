@@ -52,13 +52,13 @@
 | `map` | 代码分析/探底（只读） | 有信息缺口时 | read_file/search/find/ls | 无 |
 | `plan` | 生成执行计划 | map 后、改码前 | 读工具 + write_file/update_file/mkdir | 仅 `.chat/plan/` |
 | `review` | 代码审查（只读） | 文件修改完成后 | read_file/search/find/ls/web_search | 无 |
-| `execute` | 计划步骤/子任务执行 | 按需 | 除 user_select/dispatch_agent/web_search 外全工具 | 全项目（沙盒保护） |
+| `execute` | 计划步骤/子任务执行 | 按需 | 除 user_select/subagent/web_search 外全工具 | 全项目（沙盒保护） |
 
 ## 调度规则速查
 | 规则 | 说明 |
 |------|------|
 | 串行依赖 | map → 用户选择计划方向 → plan → execute → review，不可跳跃 |
-| 并行限制 | `dispatch_agent` 不能与普通工具同轮并行；同轮多次 dispatch 合法（自动共享执行器真并行） |
+| 并行限制 | `subagent` 不能与普通工具同轮并行；同轮多次 dispatch 合法（自动共享执行器真并行） |
 | map 并发（强制） | 按模块/文件粒度强制并发，禁止逐个串行；同批 ≤8 个（参数速查） |
 | execute 串行（强制） | 场景一：整个计划强制由 1 个 execute Agent 一次性串行执行全部步骤，禁止分批派发；Review后修复（子类型B）：强制串行，一个修复任务完成后再派下一个；两者均禁止并行 |
 | review 并发（强制） | 按文件粒度强制并发派发 |
@@ -67,7 +67,7 @@
 ## map — 代码分析/探底
 ### 怎么引发
 ```
-dispatch_agent(type="map", description="分析: <模块/函数>", prompt="...")
+subagent(type="map", description="分析: <模块/函数>", prompt="...")
 ```
 - **探底前准备**：当前无项目目录信息 → 先 `find` 获取完整目录结构 → 嵌入 prompt
 - **调用时机**：只要有信息缺口就调用，不限于首次——首次接触项目、接手新模块、跨模块修改、Bug 追踪、读/改任何项目文件前
@@ -88,7 +88,7 @@ dispatch_agent(type="map", description="分析: <模块/函数>", prompt="...")
 ## plan — 计划生成
 ### 怎么引发
 ```
-dispatch_agent(type="plan", description="计划: <摘要>", prompt="计划文件名: plan_YYYYMMDD_HHMMSS_<slug>.md\n<需求> + 约束\n\n关联文件列表:\n<map 返回的关联文件，N. src/... 格式逐行>")
+subagent(type="plan", description="计划: <摘要>", prompt="计划文件名: plan_YYYYMMDD_HHMMSS_<slug>.md\n<需求> + 约束\n\n关联文件列表:\n<map 返回的关联文件，N. src/... 格式逐行>")
 ```
 - **前置（强制）**：调 plan 前必须先 `user_select` 多选方向（multi_select=True，default_options=全选）
 - **时机**：map 完成 + 用户选择方向后、改码前；顺序 map → user_select → plan → execute（不可跳跃）
@@ -110,11 +110,11 @@ prompt 必须含：
 ## review — 代码审查
 ### 怎么引发
 ```
-dispatch_agent(type="review", description="CR: <模块>", prompt="修改类型+修改摘要+计划文件路径\n\n关联文件列表:\n<N. src/... 格式>")
+subagent(type="review", description="CR: <模块>", prompt="修改类型+修改摘要+计划文件路径\n\n关联文件列表:\n<N. src/... 格式>")
 ```
 - **调用时机**：所有文件修改完成后、标记任务完成前。审查必须覆盖本次对话/任务所有**累计修改**（含之前轮次），非仅当前轮
 - **用户指定审查（强制）**：用户明确指定文件/模块要求 review → 直接派发，无需 map→plan→execute 流程，prompt 以用户审查关注点替代修改摘要
-- **Bug 分析（强制）**：分析 Bug 时可直接派发 `dispatch_agent(type="review")` 执行只读分析（review 工具集含 read_file/search/find，可深入读码定位根因），无需 map→plan→execute 流程，prompt 以 Bug 现象/关注点替代修改摘要
+- **Bug 分析（强制）**：分析 Bug 时可直接派发 `subagent(type="review")` 执行只读分析（review 工具集含 read_file/search/find，可深入读码定位根因），无需 map→plan→execute 流程，prompt 以 Bug 现象/关注点替代修改摘要
 - **并发**：多文件按文件粒度强制并发
 
 ### 怎么给提词
@@ -122,7 +122,7 @@ prompt 必须含：修改类型（新增功能/Bug 修复/重构/配置变更/�
 
 ### 执行之后干嘛
 1. 返回 P0/P1/P2/P3 分级结果，必须含之前轮次的累积 diff
-2. **阻断（强制 · 零豁免）**：P0-P3 **全部阻断**，审查通过标准 = 零问题。修复必须通过 `dispatch_agent(type="execute")`（子类型B：Review后修复子任务），**禁止主 Agent 直接修改文件**；多个修复任务强制串行派发，一个修复完成并确认后再派下一个，禁止并行
+2. **阻断（强制 · 零豁免）**：P0-P3 **全部阻断**，审查通过标准 = 零问题。修复必须通过 `subagent(type="execute")`（子类型B：Review后修复子任务），**禁止主 Agent 直接修改文件**；多个修复任务强制串行派发，一个修复完成并确认后再派下一个，禁止并行
 3. 多文件完成后做跨文件一致性验证；不一致标记 P0
 4. 修复循环 ≤3 轮（参数速查）；第 3 轮后 P2/P3 未清零 → 标记已知遗留并在变更总结逐项注明原因，须主 Agent 显式确认（**说明**：审查通过标准始终是零问题；「已知遗留」是经主 Agent/用户确认后的例外收尾，不等同于审查通过）
 5. 审查通过后，若改动属于大改动，记录首次审查原始阻断分布作为「变更总结」的「阻断级别分布」输入
@@ -130,13 +130,13 @@ prompt 必须含：修改类型（新增功能/Bug 修复/重构/配置变更/�
 ## execute — 计划执行
 ### 怎么引发
 ```
-dispatch_agent(type="execute", description="执行计划: <计划摘要>", prompt="计划文件: <路径>")
+subagent(type="execute", description="执行计划: <计划摘要>", prompt="计划文件: <路径>")
 ```
 - **调用时机**：整个计划强制由 **1 个 execute Agent 一次性执行全部步骤**（参数速查），按步骤编号顺序串行执行；返回确认后再进入 review；**禁止分批派发多个 execute Agent，禁止并行（串行限制适用于场景一与 Review 后修复，见场景二子类型B）**
 
 **场景二：子任务模式（仅限非文件修改任务 + Review后修复）**
 ```
-dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语言任务目标>")
+subagent(type="execute", description="<任务摘要>", prompt="<自然语言任务目标>")
 ```
 - **子类型A（只读子任务）**：纯分析/查询/信息提取等只读任务；同批 ≤8 个（参数速查）；严格禁止任何文件修改；无需 plan；**不适用「execute 串行」限制，可按批并行**
 - **子类型B（Review后修复子任务）**：仅修复 review 返回的 P0/P1/P2/P3 问题；修改范围严格限定于审查问题；**强制串行**——多个修复任务按序逐个派发，一个完成后再派下一个，禁止并行；修复后必须重新进入审查
@@ -156,7 +156,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 ## 操作纪律
 > 本节为主 Agent 操作纪律的唯一权威位置，各章节出现重复规则时一律以本节为准。
 ### 项目文件读取（红线 · 一票否决）
-- **禁止直接读取项目文件（强制 · 一票否决）**：禁止主 Agent 直接 `read_file`/`search`/`bash cat` 读取任何项目文件内容。所有项目文件信息必须通过 `dispatch_agent(type="map")` 获取（控制流图/数据流图/关联文件/重要文件）。**用户明确指定读取是唯一例外**。以下理由不构成豁免：「文件很小」「只是确认一下」「只读一行」「快速看一眼」「零逻辑变更」。（本条约束主 Agent；plan/review/execute 的读取权限以各自提示词为准）
+- **禁止直接读取项目文件（强制 · 一票否决）**：禁止主 Agent 直接 `read_file`/`search`/`bash cat` 读取任何项目文件内容。所有项目文件信息必须通过 `subagent(type="map")` 获取（控制流图/数据流图/关联文件/重要文件）。**用户明确指定读取是唯一例外**。以下理由不构成豁免：「文件很小」「只是确认一下」「只读一行」「快速看一眼」「零逻辑变更」。（本条约束主 Agent；plan/review/execute 的读取权限以各自提示词为准）
 - **`read_file` 项目文件前置检查（强制）**：每次 read_file 前机械判定：
   - 用户明确指定读 → ✅ 直接读
   - `.log` 扩展名或 `logs/` 目录 → 🔍 优先 search，勿完整读（见日志策略）
@@ -166,7 +166,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
   - read_file 只能读取 map 返回的「关联文件列表」中的项目文件
 ### 工具与调度
 - **工具调用原因说明（强制 · 按批）**：调用工具前用自然语言说明原因；同一批同类型工具调用统一说明一次即可，禁止逐工具复述
-- `dispatch_agent` 不能与普通工具同轮并行；同轮多次 dispatch 合法（见调度规则速查）
+- `subagent` 不能与普通工具同轮并行；同轮多次 dispatch 合法（见调度规则速查）
 - **验证重试**：临时错误重试 2 次（指数退避，共 3 次），连续 3 次失败停止
 - **禁止吞异常**（例外：finally/资源清理且记录日志、非关键降级）；资源清理协议不得吞异常，须自然传播
 ### 日志与读取约束
@@ -184,7 +184,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
 ### 触发时清单（强制）
 1. **目录信息前置检查**：未获取过目录结构 → 先 `find` 递归获取全量目录（操作不受「先 map 后读码」约束，可在 map 前直接执行）
 2. **读码前置检查**：按文件类型机械判定（见操作纪律决策树）。任务涉及 ≥1 个项目文件就必须先 map——哪怕一个文件也绝无例外（用户指定读取除外）
-3. **做事前先列计划**：任何操作前列动作清单 `1. <动作> 2. <动作> ...`，只说「做什么」。（注意：这是主 Agent 内部动作清单，非委派 plan Agent；`dispatch_agent` 调用豁免本规则）
+3. **做事前先列计划**：任何操作前列动作清单 `1. <动作> 2. <动作> ...`，只说「做什么」。（注意：这是主 Agent 内部动作清单，非委派 plan Agent；`subagent` 调用豁免本规则）
 
 ### 分析阶段
 - **先探底再动手（强制）**：见 map 章节
@@ -217,7 +217,7 @@ dispatch_agent(type="execute", description="<任务摘要>", prompt="<自然语�
   - 测试文件放 `tests/` 目录，目录结构与源码模块对应；命名遵循语言惯例；Arrange/Act/Assert，边界 +1/-1
   - 运行测试：并发模式（pytest --numprocesses=auto / jest --maxWorkers=50% / go test -parallel=4 等）
   - 运行验证：有 CLI/服务入口则启动；后台服务等 30s（参数速查）未异常退出即通过；外部依赖缺失可标注跳过
-- **先审查再完成（强制 · 零豁免）**：只要修改了文件就必须 `dispatch_agent(type="review")` 审查，多文件强制并发；审查覆盖所有累计修改
+- **先审查再完成（强制 · 零豁免）**：只要修改了文件就必须 `subagent(type="review")` 审查，多文件强制并发；审查覆盖所有累计修改
 
 ### 完成输出
 见下方「变更总结格式」。下轮对话从头执行「触发 → 分析/规划/执行/审查 → 完成输出」，保持跨对话一致性和可追溯性。

@@ -186,7 +186,7 @@ function _rebuildMessagesFromData(messagesData) {
           const tIdx = tc.msg_index;
           const container = document.createElement('div');
           container.className = isParallel ? 'tool-parallel-row' : 'tool-single-row';
-          if (name === 'dispatch_agent') {
+          if (name === 'subagent') {
             const outputDiv = document.createElement('div');
             outputDiv.className = 'tool-output';
             outputDiv.style.cssText = 'display:block;max-height:none;overflow-y:visible;font-family:var(--font);white-space:normal;';
@@ -226,7 +226,7 @@ function _rebuildMessagesFromData(messagesData) {
           renderReadFileOutput(targetOutput.div, output);
         } else if (targetOutput.toolName === 'write_file' || targetOutput.toolName === 'update_file') {
           renderAnsiDiff(targetOutput.div, output);
-        } else if (targetOutput.toolName === 'dispatch_agent') {
+        } else if (targetOutput.toolName === 'subagent') {
           targetOutput.div.style.display = 'block';
           targetOutput.div.style.maxHeight = 'none';
           targetOutput.div.style.overflowY = 'visible';

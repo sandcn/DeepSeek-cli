@@ -16,7 +16,7 @@ const escapeHtml = (s) => window.escapeHtml ? window.escapeHtml(s) : String(s);
 /* ═══════════════════════════════════════════════════════════════
    Agent 卡片 — 单个 Agent 气泡渲染
    @param {object} agent - Agent 数据
-   @param {boolean} inline - true=作为 dispatch_agent 子项渲染（树形紧凑样式）
+   @param {boolean} inline - true=作为 subagent 子项渲染（树形紧凑样式）
    ═══════════════════════════════════════════════════════════════ */
 export function AgentCard({ agent, inline }) {
   if (!agent) return null;
@@ -49,7 +49,7 @@ export function AgentCard({ agent, inline }) {
   // ── token 行（紧凑格式：1.2k out · 12.3s） ──────────
   const tokParts = getTokenParts(agent);
 
-  // ── 内联模式（dispatch_agent 子项 — 树形紧凑样式） ──
+  // ── 内联模式（subagent 子项 — 树形紧凑样式） ──
   if (inlineStyle) {
     return html`
       <div class="tree-node">
@@ -158,7 +158,7 @@ export function AgentCard({ agent, inline }) {
 
 /* ═══════════════════════════════════════════════════════════════
    Agent 卡片列表 — 订阅 store 并渲染全部 Agent
-   只显示独立 Agent（dispatchLabel 为空），dispatch_agent 子项由 ToolRow 内联渲染
+   只显示独立 Agent（dispatchLabel 为空），subagent 子项由 ToolRow 内联渲染
    ═══════════════════════════════════════════════════════════════ */
 export function AgentCardList() {
   const [agents, setAgents] = useState({});
@@ -172,7 +172,7 @@ export function AgentCardList() {
     return unsub;
   }, []);
 
-  // 只显示独立 Agent（非 dispatch_agent 子项）
+  // 只显示独立 Agent（非 subagent 子项）
   const standaloneAgents = Object.values(agents).filter(a => !a.dispatchLabel);
 
   if (standaloneAgents.length === 0) return html`<div style="display:none;"></div>`;

@@ -55,7 +55,7 @@ def extract_key_params(
         "cp": ["source", "destination"],
         "web_search": ["query"],
         "web_fetch": ["url"],
-        "dispatch_agent": ["description", "type"],
+        "subagent": ["description", "type"],
         "user_select": ["title"],
     }
 

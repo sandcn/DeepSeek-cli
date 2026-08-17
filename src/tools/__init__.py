@@ -19,12 +19,12 @@ from .ls import LsFunc as Ls
 from .web_search import WebSearchFunc as WebSearch
 from .web_fetch import WebFetchFunc as WebFetch
 from .skill_tool import SkillFunc as Skill
-from .dispatch_agent import DispatchAgents as DispatchAgent
+from .subagent import SubagentFunc as Subagent
 from .mkdir import MkdirFunc as Mk
 from .registry import get_tools, register_tool
 
 __all__ = [
     'Func',
-    'Bash', 'BashTask', 'ReadFile', 'Rm', 'WriteFile', 'UpdateFile', 'UserSelect', 'Search', 'Find', 'Ls', 'Mv', 'Cp', 'Mk', 'WebSearch', 'WebFetch', 'DispatchAgent', 'Skill',
+    'Bash', 'BashTask', 'ReadFile', 'Rm', 'WriteFile', 'UpdateFile', 'UserSelect', 'Search', 'Find', 'Ls', 'Mv', 'Cp', 'Mk', 'WebSearch', 'WebFetch', 'Subagent', 'Skill',
     'get_tools', 'register_tool'
 ]

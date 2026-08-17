@@ -294,7 +294,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **16 个内�
 | `web_search` | ws | 网络 | ❌ | DeepSeek 官方原生联网搜索（Anthropic 兼容 Messages API + web_search_20250305），返回来源列表（标题/URL/摘要） |
 | `web_fetch` | — | 网络 | ✅ | 获取指定 URL 的网页全文（自动提取正文，SSRF 防护，仅 http/https） |
 | `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/超时回退/非交互回退，选项可带说明，TUI 中高亮选项时说明显示在右侧） |
-| `dispatch_agent` | da | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：map/review/plan/execute） |
+| `subagent` | sa | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：map/review/plan/execute） |
 
 ### 工具分类
 
@@ -305,7 +305,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **16 个内�
 | **命令执行** | bash, bash_task | 安全沙盒中执行 shell 命令；按 task_id 操作后台 bash 任务 |
 | **网络访问** | web_search, web_fetch | 网页搜索（DeepSeek 官方原生搜索）与网页全文获取 |
 | **用户交互** | user_select | 交互式选择弹窗（单选/多选/超时回退） |
-| **Agent 调度** | dispatch_agent | 并发派发原子 Agent 执行独立任务 |
+| **Agent 调度** | subagent | 并发派发原子 Agent 执行独立任务 |
 
 ### 工具设计原则
 
@@ -368,7 +368,7 @@ ChatUIConsumer
 
 ## Agent 工作流程
 
-本项目的核心是 **Main-Sub Agent 架构**，通过 `dispatch_agent` 委派任务给不同类型的子 Agent。
+本项目的核心是 **Main-Sub Agent 架构**，通过 `subagent` 委派任务给不同类型的子 Agent。
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -421,9 +421,9 @@ ChatUIConsumer
 | **plan** | 只读分析 + write_file/update_file（仅限 `.chat/plan/` 目录） | 任务拆解、依赖分析、生成计划文件到 `.chat/plan/` |
 | **map** | 只读（read_file/search/find/ls） | 项目探底、模块地图、调用链追踪、引用关系分析 |
 | **review** | 只读 + web_search | Code Review、P0-P3 分级审查、跨文件一致性验证 |
-| **execute** | 全工具（不含 user_select/dispatch_agent） | 读/写/改代码、执行测试、通用任务 |
+| **execute** | 全工具（不含 user_select/subagent） | 读/写/改代码、执行测试、通用任务 |
 
-> **工具排除策略**：execute 排除 `dispatch_agent/user_select`；map 排除 `bash/write_file/update_file/rm/mv/cp/mk/web_search/dispatch_agent/user_select`；review 排除 `bash/write_file/update_file/rm/mv/cp/mk/dispatch_agent/user_select`（保留 web_search）；plan 排除 `bash/rm/mv/cp/mk/dispatch_agent/user_select`，write_file/update_file 仅限 `.chat/plan/` 目录。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan Agent 路径白名单校验。
+> **工具排除策略**：execute 排除 `subagent/user_select`；map 排除 `bash/write_file/update_file/rm/mv/cp/mk/web_search/subagent/user_select`；review 排除 `bash/write_file/update_file/rm/mv/cp/mk/subagent/user_select`（保留 web_search）；plan 排除 `bash/rm/mv/cp/mk/subagent/user_select`，write_file/update_file 仅限 `.chat/plan/` 目录。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan Agent 路径白名单校验。
 
 ### 并发调度策略
 
@@ -561,7 +561,7 @@ ChatUIConsumer
 │   │   ├── read_file.py / write_file.py / update_file.py
 │   │   ├── search.py / find.py / ls.py
 │   │   ├── bash.py / cp.py / mv.py / rm.py / mk.py
-│   │   ├── web_search.py / web_fetch.py / user_select.py / dispatch_agent.py
+│   │   ├── web_search.py / web_fetch.py / user_select.py / subagent.py
 │   │   ├── file_ops.py        # 文件操作原子工具（原子写入、路径安全校验、沙盒记录）
 │   │   ├── _constants.py      # 共享常量（排除目录、安全路径、编码等）
 │   │   ├── encoding.py        # 编码检测工具函数
@@ -732,7 +732,7 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 
 ### 2. ✅ 🧠 Plan Agent 架构 — 已完成
 
-独立的 **Plan Agent** 层已实现并投入使用。任何文件修改或新需求前，必须先通过 `dispatch_agent(type="plan")` 委派 plan SubAgent 生成结构化计划文件（`.chat/plan/`），主 Agent 读取后逐条执行，形成「规划 → 探底 → 推理 → 执行 → 审查 → 验证」六阶段流水线。详见上方 🔄 [Agent 工作流程](#agent-工作流程)。
+独立的 **Plan Agent** 层已实现并投入使用。任何文件修改或新需求前，必须先通过 `subagent(type="plan")` 委派 plan SubAgent 生成结构化计划文件（`.chat/plan/`），主 Agent 读取后逐条执行，形成「规划 → 探底 → 推理 → 执行 → 审查 → 验证」六阶段流水线。详见上方 🔄 [Agent 工作流程](#agent-工作流程)。
 
 ---
 
@@ -744,9 +744,9 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 
 | 改进项 | 现状 | 目标 |
 |--------|------|------|
-| SubAgent 并发派发 | ✅ 同轮多次 `dispatch_agent`（ParallelExecutor 并行已实现） | 支持批量派发 + 动态扩缩容 Worker 池 |
+| SubAgent 并发派发 | ✅ 同轮多次 `subagent`（ParallelExecutor 并行已实现） | 支持批量派发 + 动态扩缩容 Worker 池 |
 | 文件读取并发 | ✅ 同轮多个 `read_file` 自动并行 | 增加读取优先级队列（关键路径先读） |
-| 审查并行 | ✅ 多文件同轮并发 review（同轮并发 dispatch_agent 已实现） | 支持审查结果增量合并，减少重复审查 |
+| 审查并行 | ✅ 多文件同轮并发 review（同轮并发 subagent 已实现） | 支持审查结果增量合并，减少重复审查 |
 | 工具调用并行 | 单步工具串行执行 | 支持独立的工具调用 DAG（无依赖的工具并行执行） |
 
 **中期目标（v3.0 → v4.0）**：

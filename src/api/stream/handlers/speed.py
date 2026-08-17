@@ -18,7 +18,7 @@ class SpeedHandler:
                 # #93 修复：同步通过 update_usage 向前端 status 弹窗发送实时 token 估计值，
                 # 确保主 Agent 生成时 status 弹窗显示真实 token 数而非 charCount/3 估算。
                 # 实时累积估算的 output token 到全局统计，
-                # 确保流式生成 dispatch_agent 等大参数时
+                # 确保流式生成 subagent 等大参数时
                 # 总 token 数持续增长，避免"总tok数量没实时增加"。
                 # 注意：这是实时估算累计，不是真实 API 调用，
                 # increment_calls=False 防止 /cost 调用次数虚高

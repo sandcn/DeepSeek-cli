@@ -132,9 +132,9 @@ function scrollToBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-/* ── dispatch_agent 辅助 ─────────────────────────────────── */
-/** 在 dispatch_agent 容器内创建 agent 行（终端树形风格） */
-function _createDispatchAgentRow(data, dispatchContainer) {
+/* ── subagent 辅助 ─────────────────────────────────── */
+/** 在 subagent 容器内创建 agent 行（终端树形风格） */
+function _createSubagentRow(data, dispatchContainer) {
   const row = document.createElement('div');
   row.className = 'dispatch-agent-row';
   row.dataset.agentLabel = data.label;
@@ -234,8 +234,8 @@ function _getActiveDispatchLabel() {
   return null;
 }
 
-/** 刷新缓冲的 dispatch agent 条目 */
-function _flushPendingDispatchAgent() {
+/** 刷新缓冲的 subagent 条目 */
+function _flushPendingSubagent() {
   const pending = dispatchState.pendingAgents;
   if (!pending.length) return;
   // 倒序查找最后一个活跃的 dispatch 容器
@@ -243,7 +243,7 @@ function _flushPendingDispatchAgent() {
   const dispatchData = activeLabel ? dispatchState.map.get(activeLabel) : null;
   if (!dispatchData) return; // 容器尚未就绪，保留 pending
   for (const data of pending) {
-    _createDispatchAgentRow(data, dispatchData);
+    _createSubagentRow(data, dispatchData);
   }
   dispatchState.pendingAgents = [];
 }

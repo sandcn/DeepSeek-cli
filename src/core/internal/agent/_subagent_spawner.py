@@ -79,8 +79,8 @@ class SubAgentSpawner:
             parent_agent=self.parent,
             model=spec.get("model"),
             agent_type=agent_type,
-            # ★ 2026-08-17（用户需求：agent 内容合并到 dispatch_agent）：
-            #   所属 dispatch_agent 的 tool_call_id（spec["tool_label"]，add_agent
+            # ★ 2026-08-17（用户需求：agent 内容合并到 subagent）：
+            #   所属 subagent 的 tool_call_id（spec["tool_label"]，add_agent
             #   传入）——随 _record_to_parent 写入会话存档，load 恢复后主轨迹
             #   仍可合并；独立模式（run）spec 无 tool_label → 空串（独立记录）。
             dispatch_label=spec.get("tool_label", ""),

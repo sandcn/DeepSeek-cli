@@ -72,9 +72,9 @@ class ToolCallbackChain:
         agent = self._agent
         parse_elapsed = (usage or {}).get("tool_parse_elapsed", 0.0)
 
-        # dispatch_agent 调用时创建共享 ParallelExecutor
+        # subagent 调用时创建共享 ParallelExecutor
         # 单次调用独立执行，多次调用共享实例实现真正并行
-        dispatch_count = sum(1 for tc in tool_calls if tc.get("name") == "dispatch_agent")
+        dispatch_count = sum(1 for tc in tool_calls if tc.get("name") == "subagent")
         if dispatch_count > 0:
             is_web = getattr(agent._display_port, 'is_web', False)
             agent._shared_executor = ParallelExecutor(agent, is_web=is_web)
@@ -117,8 +117,8 @@ class ToolCallbackChain:
             else:
                 failed_tools.append((tc_name, output))
 
-        # ★ P3-时序修复（2026-08-08）：dispatch_agent 提前返回后，剩余 dispatch
-        #   由后台任务执行并补发 tool result（_bg_dispatch_agents）。等待其完成，
+        # ★ P3-时序修复（2026-08-08）：subagent 提前返回后，剩余 dispatch
+        #   由后台任务执行并补发 tool result（_bg_subagents）。等待其完成，
         #   确保下一轮模型调用的消息序列完整（避免 assistant tool_call 无对应
         #   tool 消息 → API 400 / 模型重发）。
         try:
@@ -133,15 +133,15 @@ class ToolCallbackChain:
         result_ids = {r[0] for r in results}
         _scheduler = ToolScheduler.default()
         for tc in tool_calls:
-            if (tc.get("name") == "dispatch_agent"
+            if (tc.get("name") == "subagent"
                     and tc.get("id") not in result_ids):
                 _r = getattr(_scheduler, "_results_map", {}).get(tc.get("id", ""))
                 if _r is not None and len(_r) >= 3:
                     _, _output, _success = _r
                     if _success:
-                        successful_tools.append("dispatch_agent")
+                        successful_tools.append("subagent")
                     else:
-                        failed_tools.append(("dispatch_agent", _output))
+                        failed_tools.append(("subagent", _output))
 
         self._show_tool_execution_summary(successful_tools, failed_tools)
 
@@ -243,7 +243,7 @@ class ToolCallbackChain:
     async def _run_tool_method(self, func, tc):
         """分发工具执行到对应策略。
 
-        - dispatch_agent: 跳过 UI 输出，直接 execute
+        - subagent: 跳过 UI 输出，直接 execute
         - user_select: 交互式终端工具，跳过 stdout 捕获
         - 其他工具: 统一走 stdout 捕获 + display/web_display
 
@@ -258,7 +258,7 @@ class ToolCallbackChain:
         tool_name = tc["name"]
         is_web = getattr(agent._display_port, 'is_web', False)
 
-        if tool_name == "dispatch_agent":
+        if tool_name == "subagent":
             coro = func.execute()
         elif tool_name == "user_select":
             coro = self._run_interactive(func, is_web)

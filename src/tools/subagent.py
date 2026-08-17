@@ -1,8 +1,8 @@
 """
-dispatch_agent — 并行子 Agent 调度工具
+subagent — 并行子 Agent 调度工具
 
 模型通过此工具同时派发多个独立子任务，并行执行后汇总结果。
-当同一轮有多个 dispatch_agent 调用时，共享一个 ParallelExecutor 实现真正的并行。
+当同一轮有多个 subagent 调用时，共享一个 ParallelExecutor 实现真正的并行。
 """
 
 import asyncio
@@ -19,8 +19,8 @@ from .base import Func, tool_metadata
     tool_category="general",
     description="并行子Agent调度",
 )
-class DispatchAgents(Func):
-    name = "dispatch_agent"
+class SubagentFunc(Func):
+    name = "subagent"
 
     def __init__(self, description: str, prompt: str, target_agent_type: str = "execute"):
         super().__init__()
@@ -59,7 +59,7 @@ class DispatchAgents(Func):
                         "type": {
                             "type": "string",
                             "enum": ["map", "review", "plan", "execute"],
-                            "description": "子Agent类型。execute（默认）：排除 dispatch_agent、user_select 和 web_search，保留所有读写工具+bash，无路径限制，用于执行计划文件步骤并返回修改文件列表。map：只读分析型，仅保留 read_file/search/find/ls 等读取工具，专用于项目代码分析和地图生成。review：代码审查型，只读工具集（含 read_file/search/find/ls/web_search），专用于文件列表的 Code Review（P0-P3 分级输出）。plan：计划型，只读分析工具 + write_file/update_file/mkdir（仅限写入 .chat/plan/ 目录），根据指令生成计划。",
+                            "description": "子Agent类型。execute（默认）：排除 subagent、user_select 和 web_search，保留所有读写工具+bash，无路径限制，用于执行计划文件步骤并返回修改文件列表。map：只读分析型，仅保留 read_file/search/find/ls 等读取工具，专用于项目代码分析和地图生成。review：代码审查型，只读工具集（含 read_file/search/find/ls/web_search），专用于文件列表的 Code Review（P0-P3 分级输出）。plan：计划型，只读分析工具 + write_file/update_file/mkdir（仅限写入 .chat/plan/ 目录），根据指令生成计划。",
                         },
                     },
                     "required": ["description", "prompt"],
@@ -81,7 +81,7 @@ class DispatchAgents(Func):
         if not self.agent:
             return "错误：未关联父 Agent"
 
-        # 检查是否有共享的 ParallelExecutor（同一轮多个 dispatch_agent）
+        # 检查是否有共享的 ParallelExecutor（同一轮多个 subagent）
         shared = getattr(self.agent, '_shared_executor', None)
         if shared is not None and shared.is_batch_mode:
             # 传递 tool_label，用于前端将 subagent 路由到对应的 dispatch 工具容器
@@ -115,8 +115,8 @@ class DispatchAgents(Func):
         # 独立模式（无 shared_executor）→ 无法执行
         # 正常流程下由 _tool_callbacks.py 创建 shared executor，
         # 此处为异常回退路径（外部非正常调用）
-        return ("错误：dispatch_agent 未处于有效的并行执行上下文中。"
-                "请通过 tools 系统正常调用 dispatch_agent。")
+        return ("错误：subagent 未处于有效的并行执行上下文中。"
+                "请通过 tools 系统正常调用 subagent。")
 
     @staticmethod
     def _format_single(r: dict) -> str:

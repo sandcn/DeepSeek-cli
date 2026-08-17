@@ -534,8 +534,8 @@ def _inspector_children(rec, right_w: int, vh: int) -> list:
         }))
     # ★ 2026-08-16（轨迹 Trace 嵌套）：subagent 记录检查器追加操作提示——
     #   「Enter 查看该子代理的轨迹」（引导用户下钻到 subagent 轨迹视图）。
-    #   ★ 2026-08-17（用户需求：agent 内容合并到 dispatch_agent）：合并后
-    #   的 dispatch_agent 工具记录同样携带 subagent_label——提示条件从
+    #   ★ 2026-08-17（用户需求：agent 内容合并到 subagent）：合并后
+    #   的 subagent 工具记录同样携带 subagent_label——提示条件从
     #   kind=="subagent" 放宽为 subagent_label 非空（独立 subagent 记录与
     #   合并 tool 记录均可下钻）。
     if getattr(rec, "subagent_label", ""):
@@ -799,8 +799,8 @@ def TraceView(props) -> object:
         # Enter：主轨迹中选中 subagent 记录 → 进入 subagent 轨迹（嵌套
         #   TraceView——显示内容与 mainagent 同构）。subagent 轨迹内 Enter
         #   放行（提交消息）；sub-subagent 下钻不阻断（覆盖 label）。
-        # ★ 2026-08-17（用户需求：agent 内容合并到 dispatch_agent）：合并
-        #   后的 dispatch_agent 工具记录携带 subagent_label（kind 仍为 tool）
+        # ★ 2026-08-17（用户需求：agent 内容合并到 subagent）：合并
+        #   后的 subagent 工具记录携带 subagent_label（kind 仍为 tool）
         #   ——下钻条件从 kind=="subagent" 放宽为 subagent_label 非空（独立
         #   subagent 记录与合并 tool 记录均可 Enter 进入 subagent 轨迹）。
         if event.kind == "enter" and not getattr(model, "trace_subagent_label", None):

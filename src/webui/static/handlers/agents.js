@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════
    handlers/agents.js — Agent 事件处理器
    从 handlers.js 提取，依赖 bubble.js (activeAgents, _globalTimer, dispatchState, 
-   _createDispatchAgentRow, scrollToBottom), utils.js (escapeHtml, 
+   _createSubagentRow, scrollToBottom), utils.js (escapeHtml, 
    scheduleTask, postProcessMarkdown), tool-renderer.js
    handlers.js 提供 _st, _renderMarkdownFallback, _debouncedScrollToBottom
    ═══════════════════════════════════════════════════════════════ */
@@ -27,9 +27,9 @@ function _updateAgentToolConnectors(agent) {
    1. handleAgentAdded — 添加 Agent 气泡
    ═══════════════════════════════════════════════════════════════ */
 function handleAgentAdded(data) {
-  // ★ Bug 修复：使用 dispatch_label 精确路由到对应 dispatch 容器
-  //   source=parallel 时，dispatch_label 标识 subagent 所属的 dispatch_agent 工具 label
-  //   避免所有 subagent 被路由到最后一个 dispatch 容器
+  // ★ Bug 修复：使用 dispatch_label 精确路由到对应 subagent 容器
+  //   source=parallel 时，dispatch_label 标识 subagent 所属的 subagent 工具 label
+  //   避免所有 subagent 被路由到最后一个 subagent 容器
   if (data.source === 'parallel') {
     let dispatchData = null;
 
@@ -49,7 +49,7 @@ function handleAgentAdded(data) {
     }
 
     if (dispatchData) {
-      _createDispatchAgentRow(data, dispatchData);
+      _createSubagentRow(data, dispatchData);
       if (_st()) {
         _st().addAgent(data.label, {
           description: data.description || data.label,
@@ -263,7 +263,7 @@ function handleAgentToolStarted(data) {
   const toolsEl = agent.toolsEl;
   if (!toolsEl) return;
 
-  const toolIcons = { cmd: '⚡', read_file: '📖', write_file: '📝', update_file: '🔧', dispatch_agent: '📡' };
+  const toolIcons = { cmd: '⚡', read_file: '📖', write_file: '📝', update_file: '🔧', subagent: '📡' };
   const toolIcon = toolIcons[toolName] || '·';
 
   let rec = null;
@@ -442,7 +442,7 @@ function handleAgentToolDone(data) {
 
   _globalTimer.unregisterAgent(data.agent_label + '::tool::' + toolKey);
 
-  const toolIcons = { cmd: '⚡', read_file: '📖', write_file: '📝', update_file: '🔧', dispatch_agent: '📡' };
+  const toolIcons = { cmd: '⚡', read_file: '📖', write_file: '📝', update_file: '🔧', subagent: '📡' };
   const toolIcon = toolIcons[toolName] || '·';
   const elapsed = rec._startTime ? ((Date.now() - rec._startTime) / 1000).toFixed(1) : '0.0';
   const statusIcon = data.success ? '<span class="status-icon-done">✔</span>' : '<span class="status-icon-fail">✗</span>';
