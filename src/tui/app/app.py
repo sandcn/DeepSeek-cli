@@ -13,13 +13,6 @@
 （轮次/记录/详情/耗时/token）；底部区不渲染（模态独占输入——未消费按键
 不落入输入缓冲）。
 
-用户选择视图（2026-08-17 **模态底部视图通用机制**）：``model.bottom_view``
-非空时按 ``BOTTOM_VIEWS`` 注册表**独占渲染底部区**（状态栏 + 输入区隐藏——
-「底部框不显示」），视图组件渲染在**原底部框位置**（屏幕底部区域）；消息区
-保持正常显示。user_select 弹窗从底部框内嵌组件（原与状态栏/输入区同层渲染）
-独立为该机制的第一个底部视图——显示时底部框隐藏、独占键盘（组件经
-``use_fullscreen(True)`` 声明模态，未消费按键不落入输入缓冲）。
-
 Claude Code 视觉对齐：顶部标题栏（TopHeader）为文档首行，其后 committed
 聊天历史（committed-chat）落到 y>=1 走非顶部前缀路径（render_frame 正确
 处理）。工具运行状态由工具卡片顶边框（● 图标）展示（原 ToolStatusHeader
@@ -50,27 +43,6 @@ from .trace_view import TraceView
 #: 输入接管 / 光标隐藏（全屏无输入区自动隐藏）全部自动生效，无需改 App 分支。
 FULLSCREEN_VIEWS: dict = {
     "trace": TraceView,
-}
-
-#: 模态底部视图注册表（2026-08-17 通用机制，与 FULLSCREEN_VIEWS 对称）：
-#: view_id → (组件函数, key 生成函数 | None)。App 在 ``model.bottom_view``
-#: 非空时按 id 查注册表**独占渲染底部区**（状态栏 + 输入区隐藏——底部框
-#: 不显示），视图渲染在**原底部框位置**（屏幕底部区域）；消息区保持正常
-#: 显示。组件内部须 ``use_fullscreen(True)`` 声明模态（未消费按键不落入
-#: 输入缓冲——底部框隐藏时不可见输入不污染缓冲）与 ``use_input`` 处理
-#: 交互（导航/确认/取消，可委托标准控件 SelectInput/MultiSelect 等）。
-#: 新增底部视图两步：注册表加条目 + 设置 ``model.bottom_view``——独占渲染 /
-#: 输入接管 / 光标隐藏（InputArea 不在树中自动隐藏）全部自动生效，无需改
-#: App 分支。
-#: key 生成函数（可选）：返回组件 props 的 ``key``（强制重挂载语义，如
-#: user_select 用 ``us-{seq}`` 每次打开重置组件内部 state）；None 时不传
-#: key（组件无重挂载需求）。key_fn 返回空串/None/抛异常时同样不传 key
-#: （App 渲染分支防御）。
-BOTTOM_VIEWS: dict = {
-    "user_select": (
-        UserSelectPopup,
-        lambda model: f"us-{getattr(getattr(model, 'user_select', None), 'seq', 0)}",
-    ),
 }
 
 
@@ -131,63 +103,24 @@ def App(props) -> object:
         h(ChatView, {"model": model, "width": width}),
         h(_ParseLine, {"model": model, "width": width}),
     ]
-
-    # ★ 模态底部视图（2026-08-17 通用机制，与 FULLSCREEN_VIEWS 对称）：
-    #   model.bottom_view 非空 → 按 BOTTOM_VIEWS 注册表**独占渲染底部区**
-    #   （状态栏 + 输入区不显示——「底部框不显示」），视图渲染在**原底部框
-    #   位置**（屏幕底部区域）；消息区保持正常显示。组件经 use_fullscreen(True)
-    #   声明模态（未消费按键不落入输入缓冲——底部框隐藏时不可见输入不污染
-    #   缓冲）。关闭（视图自身 use_input 处理 / 调用方清理 bottom_view）后
-    #   恢复完整底部框（状态栏 + 输入区）。底部区元素类型切换（StatusBar/
-    #   InputArea ↔ 底部视图）由调和器卸载/重建（10Hz 渲染循环自动）。
-    #   未知视图 id 防御回退正常底部框（防注册表删除后残留状态崩溃）。
-    #   ★ 兼容回退：旧调用方（测试桩/历史路径）仅设置 ``model.user_select``
-    #   （visible=True）而未写 ``model.bottom_view`` 时，按 user_select
-    #   底部视图处理——与 UserSelectPopup 内部 visible 判定一致（visible 且
-    #   未 done 且有 options），保证旧路径弹窗仍独占底部区显示。options 为空
-    #   时回退路径无法渲染弹窗（UserSelectPopup auto-done 兜底不执行）——
-    #   此处与组件同语义置 done 回退（见下方分支），防 deadline=0 调用方
-    #   轮询 ``us.done`` 永久挂起。
-    bottom_view_id = getattr(model, "bottom_view", "") or ""
-    if not bottom_view_id:
-        _us = getattr(model, "user_select", None)
-        if (
-            _us is not None
-            and getattr(_us, "visible", False)
-            and not getattr(_us, "done", True)
-        ):
-            if getattr(_us, "options", None):
-                bottom_view_id = "user_select"
-            else:
-                # ★ 兼容回退边界（review 方向）：options 空且可见未完成——
-                #   UserSelectPopup 的 auto-done 兜底仅在组件渲染时执行；回退
-                #   路径下 options 空 → 不渲染弹窗 → 兜底不执行 → 工具协程
-                #   （deadline=0 无限等待）轮询 us.done 永久挂起。此处与组件
-                #   P2-6 同语义回退（置 done；first-write-wins——done 已置位
-                #   则跳过，本分支已排除 done 置位）。
-                _us.done = True
-                _us.action = "confirmed"
-                _us.result = list(getattr(_us, "default_options", None) or [])
-    if bottom_view_id:
-        entry = BOTTOM_VIEWS.get(bottom_view_id)
-        if entry is not None:
-            view, key_fn = entry
-            view_props = {"model": model, "width": width}
-            try:
-                key = key_fn(model) if key_fn is not None else None
-            except Exception:
-                key = None
-            if key:
-                view_props["key"] = key
-            return h(APP, {"width": width, "flexDirection": "column"}, [
-                h(Column, {"flexGrow": 1}, message_area),
-                h(view, view_props),
-            ])
-
-    # 正常底部框：状态栏 + 输入区（user_select 弹窗已独立为模态底部视图——
-    # 2026-08-17 用户需求：弹窗显示时底部框隐藏，弹窗界面渲染在原底部框
-    # 位置；底部视图注册表 BOTTOM_VIEWS 承载）。
     bottom_area = [
+        # ★ React Ink 化（user_select）：用户选择弹窗组件——StatusBar 上方渲染，
+        #   visible=False 时零高度不占行；key=seq 强制重挂载（每次打开重置
+        #   组件内部 state，连续多次调用不残留旧选中/勾选）。
+        # ★ P3-2（seq 复用竞态）：工具 cleanup 后 ``model.user_select =
+        #   UserSelectState()``（seq=0）→ 组件树 key 变为 ``us-0``；下次打开
+        #   seq 从 0 起 +1（每次独立调用均为 us-1）——连续两次调用若中间
+        #   cleanup 渲染未发生（渲染循环间隙极短窗口），两次 key 相同 → fiber
+        #   复用 → use_state 不重新初始化（残留旧选中/勾选）。属低概率竞态
+        #   （cleanup 与下次 open 之间必有 request_bottom_redraw，正常路径
+        #   key 先回落 us-0 再回升），用户可导航修正；并入单调递增序号需
+        #   模块级可变状态（多实例/测试污染 + 每帧 key 漂移风险），权衡后
+        #   以注释说明风险（实现复杂度 > 风险收益）。
+        h(UserSelectPopup, {
+            "model": model,
+            "width": width,
+            "key": f"us-{model.user_select.seq}",
+        }),
         h(StatusBar, {"model": model, "width": width}),
         # ★ 标准 React Ink 组件化（2026-08-05）：input-area 自定义 host →
         #   InputArea 标准函数组件（内部 Column + CompletionPopup + TEXT 行）。

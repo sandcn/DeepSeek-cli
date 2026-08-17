@@ -71,53 +71,28 @@ class CommandUiAdapter:
                 selected=max(0, min(int(initial_idx), len(display) - 1)),
                 deadline=time.monotonic() + 60,
             )
-            # ★ 模态底部视图（2026-08-17 通用机制，与 user_select 工具/
-            #   message_editor 同协议）：同步打开底部视图——App 独占渲染
-            #   底部区（状态栏+输入区隐藏），选择界面渲染在原底部框位置。
-            #   清理经 finally 保证（异常/取消路径均恢复底部框，防模态卡死）。
-            try:
-                model.open_bottom_view("user_select")
-            except Exception:
-                _logger.debug("run_bottom_bar_selection: bottom_view 设置异常", exc_info=True)
             try:
                 session.request_bottom_redraw()
             except Exception:
-                _logger.debug("run_bottom_bar_selection: request_bottom_redraw 异常", exc_info=True)
+                pass
+            deadline = model.user_select.deadline
+            while not model.user_select.done:
+                if deadline > 0 and time.monotonic() >= deadline:
+                    model.user_select.done = True
+                    model.user_select.action = "timeout"
+                    break
+                time.sleep(0.05)
+            st = model.user_select
+            action = st.action or "timeout"
+            selected = int(getattr(st, "selected", -1))
+            model.user_select = UserSelectState()
             try:
-                deadline = model.user_select.deadline
-                while not model.user_select.done:
-                    if deadline > 0 and time.monotonic() >= deadline:
-                        model.user_select.done = True
-                        model.user_select.action = "timeout"
-                        break
-                    time.sleep(0.05)
-                st = model.user_select
-                action = st.action or "timeout"
-                # ★ 归一化（与 message_editor 同语义）：selected 可能为 None
-                #   （外部注入/异常状态）——int(None) 抛 TypeError 中断清理；
-                #   归一化失败回退初始索引。
-                try:
-                    selected = int(getattr(st, "selected", initial_idx))
-                except (TypeError, ValueError):
-                    selected = initial_idx
-                if action != "confirmed":
-                    return {"action": "cancel", "index": None}
-                return {"action": "confirmed", "index": selected if selected >= 0 else initial_idx}
-            finally:
-                # 清理弹窗状态 + 请求重绘（底部栏立即恢复正常显示）——finally
-                # 保证：轮询异常/取消/超时路径均恢复底部框（防 bottom_view
-                # 残留 → App 永久独占底部区 + 模态吞输入卡死）。
-                model.user_select = UserSelectState()
-                # ★ 模态底部视图（2026-08-17 通用机制）：同步关闭底部视图——
-                #   App 恢复状态栏 + 输入区正常底部框。
-                try:
-                    model.close_bottom_view()
-                except Exception:
-                    _logger.debug("run_bottom_bar_selection: bottom_view 清理异常", exc_info=True)
-                try:
-                    session.request_bottom_redraw()
-                except Exception:
-                    _logger.debug("run_bottom_bar_selection: cleanup redraw 异常", exc_info=True)
+                session.request_bottom_redraw()
+            except Exception:
+                pass
+            if action != "confirmed":
+                return {"action": "cancel", "index": None}
+            return {"action": "confirmed", "index": selected if selected >= 0 else initial_idx}
 
         # ── 旧补全弹窗路径（无 ChatUI 兼容） ──
         if bottom_bar is None:
