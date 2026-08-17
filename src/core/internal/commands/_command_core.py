@@ -88,6 +88,7 @@ COMMANDS_HELP = (
     f"  {TEAL}/edit{RESET}     编辑并重新发送上一条输入\n"
     f"  {TEAL}/model{RESET}    切换模型\n"
     f"  {TEAL}/reasoning{RESET} 调整推理等级: /reasoning <low|medium|high|max>\n"
+    f"  {TEAL}/temperature{RESET} 调整大模型温度: /temperature <0.0~2.0>\n"
     f"  {TEAL}/system{RESET}   修改系统提示词\n"
     f"  {TEAL}/cost{RESET}     查看 token 用量和费用\n"
     f"  {TEAL}/load{RESET}     加载保存的对话 /load <id>\n"

@@ -14,6 +14,18 @@ from typing import Optional
 from .base import BaseLLMAdapter
 
 
+def _get_temperature() -> float:
+    """读取当前大模型温度（0.0~2.0），异常回退 0.2。"""
+    try:
+        from ...config import TEMPERATURE as temperature
+    except Exception:
+        return 0.2
+    try:
+        return float(temperature)
+    except (TypeError, ValueError):
+        return 0.2
+
+
 class OllamaAdapter(BaseLLMAdapter):
     """Ollama 本地模型适配器"""
 
@@ -31,7 +43,11 @@ class OllamaAdapter(BaseLLMAdapter):
         stream_options: Optional[dict] = None,
     ) -> dict:
         # ★ P0 修复: 参数顺序修正 — _build_base_kwargs 签名为 (model, messages, ...)
-        return self._build_base_kwargs(model, messages, tools, stream, stream_options)
+        kwargs = self._build_base_kwargs(
+            model, messages, tools, stream, stream_options,
+            extra_kwargs={"temperature": _get_temperature()},
+        )
+        return kwargs
 
     def parse_response(self, response: dict) -> dict:
         """Ollama /v1/chat/completions 兼容格式解析"""

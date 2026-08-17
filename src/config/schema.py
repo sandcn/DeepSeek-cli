@@ -93,6 +93,18 @@ def _validate_rc(rc):
         else:
             rc["reasoning_effort"] = effort.lower()
 
+    # temperature 值域校验：非法类型或超出 [0.0, 2.0] 时回退默认值
+    if "temperature" in rc:
+        temp = rc["temperature"]
+        if isinstance(temp, bool) or not isinstance(temp, (int, float)):
+            rc["temperature"] = DEFAULTS.get("temperature", 0.2)
+        else:
+            temp = float(temp)
+            if not (0.0 <= temp <= 2.0):
+                rc["temperature"] = DEFAULTS.get("temperature", 0.2)
+            else:
+                rc["temperature"] = temp
+
     if "models" in rc:
         if not isinstance(rc["models"], (list, tuple)):
             rc["models"] = DEFAULTS["models"]

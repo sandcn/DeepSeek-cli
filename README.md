@@ -56,6 +56,8 @@ pip install ".[dev]"
     "provider": "deepseek",
     "api_key": "sk-你的API密钥",
     "model": "deepseek-v4-flash",
+    "reasoning_effort": "max",
+    "temperature": 0.2,
     "base_url": "https://api.deepseek.com/v1/chat/completions",
     "max_context_chars": 60000,
     "max_output_chars": 3000,
@@ -253,6 +255,7 @@ python chat.py version
 | `/edit` | — | 编辑并重新发送上一条输入 |
 | `/model` | — | 切换模型（无参数时交互选择，支持序号/名称） |
 | `/reasoning [等级]` | — | 调整推理等级（low / medium / high / max，无参数时显示当前值） |
+| `/temperature [数值]` | — | 调整大模型温度（0.0 ~ 2.0，无参数时显示当前值，保存到配置） |
 | `/system` | — | 查看或追加系统提示词 |
 | `/cost` | — | 查看 token 用量和费用 |
 | `/load <ID>` | — | 加载保存的对话 |

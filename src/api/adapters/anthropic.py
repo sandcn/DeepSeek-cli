@@ -69,6 +69,12 @@ class AnthropicAdapter(BaseLLMAdapter):
             "messages": anthro_messages,
             "max_tokens": 4096,
         }
+        # 大模型温度（从配置读取，Anthropic 官方支持范围 0.0~1.0，clamp 保证安全）
+        try:
+            from ...config import TEMPERATURE as _temperature
+            kwargs["temperature"] = min(max(float(_temperature), 0.0), 1.0)
+        except (ImportError, TypeError, ValueError):
+            pass
         if system:
             kwargs["system"] = system
         if tools:

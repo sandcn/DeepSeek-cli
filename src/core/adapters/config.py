@@ -65,6 +65,9 @@ class MockConfigAdapter(ConfigPort):
     def get_reasoning_effort(self) -> str:
         return str(self._data.get("reasoning_effort", "max"))
 
+    def get_temperature(self) -> float:
+        return float(self._data.get("temperature", 0.2))
+
     def get_int(self, key: str, default: int = 0) -> int:
         return int(self.get(key, default))
 

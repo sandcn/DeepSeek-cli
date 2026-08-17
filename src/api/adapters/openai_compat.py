@@ -23,6 +23,18 @@ def _get_reasoning_effort() -> str:
     return effort or "max"
 
 
+def _get_temperature() -> float:
+    """读取当前大模型温度（0.0~2.0），异常回退 0.2。"""
+    try:
+        from ...config import TEMPERATURE as temperature
+    except Exception:
+        return 0.2
+    try:
+        return float(temperature)
+    except (TypeError, ValueError):
+        return 0.2
+
+
 class OpenAICompatAdapter(BaseLLMAdapter):
     """OpenAI 兼容 API 适配器"""
 
@@ -48,7 +60,10 @@ class OpenAICompatAdapter(BaseLLMAdapter):
         stream: bool = False,
         stream_options: Optional[dict] = None,
     ) -> dict:
-        kwargs = self._build_base_kwargs(model, messages, tools, stream, stream_options)
+        kwargs = self._build_base_kwargs(
+            model, messages, tools, stream, stream_options,
+            extra_kwargs={"temperature": _get_temperature()},
+        )
 
         # 非 reasoner 子串匹配的 V4 模型需要 thinking 参数
         is_reasoner = _is_reasoner_model(model)

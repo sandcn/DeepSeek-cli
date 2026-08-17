@@ -49,6 +49,22 @@ def _get_reasoning_effort() -> str:
     return effort or "max"
 
 
+def _get_temperature() -> float:
+    """读取当前大模型温度（0.0~2.0），异常回退 0.2。
+
+    延迟导入避免模块加载时的循环依赖；配置写入后缓存被清除，
+    每次调用都能读到最新值。
+    """
+    try:
+        from ...config import TEMPERATURE as temperature
+    except Exception:
+        return 0.2
+    try:
+        return float(temperature)
+    except (TypeError, ValueError):
+        return 0.2
+
+
 class DeepSeekAdapter(BaseLLMAdapter):
     """DeepSeek API 专用适配器
 
@@ -105,7 +121,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
     ) -> dict:
         kwargs = self._build_base_kwargs(
             model, messages, tools, stream, stream_options,
-            extra_kwargs={"temperature": 0.2},
+            extra_kwargs={"temperature": _get_temperature()},
         )
 
         # ── V4 thinking mode ────────────────────────────

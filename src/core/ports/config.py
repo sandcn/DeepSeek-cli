@@ -59,6 +59,11 @@ class ConfigPort(ABC):
         ...
 
     @abstractmethod
+    def get_temperature(self) -> float:
+        """获取大模型温度（0.0~2.0）。"""
+        ...
+
+    @abstractmethod
     def get_int(self, key: str, default: int = 0) -> int:
         """读取整数配置项"""
         ...

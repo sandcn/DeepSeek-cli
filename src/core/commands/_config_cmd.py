@@ -294,6 +294,61 @@ def _cmd_reasoning(ctx):
     return True
 
 
+# ── /temperature 命令 ────────────────────────────────────
+
+# 温度允许值域（DeepSeek 等 OpenAI 兼容 API：0.0~2.0）
+_TEMPERATURE_RANGE: tuple[float, float] = (0.0, 2.0)
+
+
+def _cmd_temperature(ctx):
+    """调整大模型温度（0.0~2.0）
+
+    - 有参数：设置温度并持久化到 RC 配置
+    - 无参数：显示当前温度 + 允许范围
+    """
+    arg = ctx.arg.strip()
+
+    # 读取当前温度（优先 ConfigPort，回退到 config 模块）
+    if ctx.config_port is not None:
+        current = float(ctx.config_port.get_temperature())
+    else:
+        from ...config import TEMPERATURE as _current
+        current = float(_current)
+
+    if arg:
+        # 解析数值参数
+        try:
+            value = float(arg)
+        except (ValueError, TypeError):
+            _out.write(f"{YELLOW}  ! 无效温度值: {arg}{RESET}", level="raw", source="cmd")
+            _out.write(f"  {DIM}  温度必须是 {_TEMPERATURE_RANGE[0]:g}~{_TEMPERATURE_RANGE[1]:g} 之间的数字{RESET}", level="raw", source="cmd")
+            return True
+        # 值域校验（防御 NaN/Inf 等非有限值）
+        if not (_TEMPERATURE_RANGE[0] <= value <= _TEMPERATURE_RANGE[1]):
+            _out.write(f"{YELLOW}  ! 温度超出范围: {value:g}{RESET}", level="raw", source="cmd")
+            _out.write(f"  {DIM}  允许范围: {_TEMPERATURE_RANGE[0]:g} ~ {_TEMPERATURE_RANGE[1]:g}{RESET}", level="raw", source="cmd")
+            return True
+        # 规范化：最多保留 2 位小数
+        value = round(value, 2)
+
+        if ctx.config_port is not None:
+            ctx.config_port.set("temperature", value)
+        else:
+            from ...config.loader import update_config as _upd
+            _upd("temperature", value)
+        _out.write(f"{GREEN}  + 已设置温度: {value:g}{RESET}", level="raw", source="cmd")
+        return True
+
+    # 无参数：显示当前温度 + 允许范围
+    _out.write(f"\n{DIM}  \u2500 大模型温度{RESET}", level="raw", source="cmd")
+    _out.write(f"  {DIM}\u2502{RESET} 当前: {CYAN}{current:g}{RESET}", level="raw", source="cmd")
+    _out.write(f"  {DIM}\u2502{RESET} 范围: {_TEMPERATURE_RANGE[0]:g} ~ {_TEMPERATURE_RANGE[1]:g}", level="raw", source="cmd")
+    _out.write(f"  {DIM}\u2502{RESET} 说明: 值越高输出越随机，越低越确定", level="raw", source="cmd")
+    _out.write(f"  {DIM}\u2514{'─' * 24}{RESET}", level="raw", source="cmd")
+    _out.write(f"  {DIM} 使用: /temperature <数值> 切换（如 /temperature 0.7）{RESET}", level="raw", source="cmd")
+    return True
+
+
 # ── CommandPlugin 子类 ──────────────────────────────
 # 命令通过 get_plugin_registry().register() 注册，不再使用 register_command()。
 # CommandPluginRegistry.register() 内部自动调用 register_command() 确保向后兼容。
@@ -337,8 +392,18 @@ class ReasoningCommand(CommandPlugin):
         return _cmd_reasoning(ctx)
 
 
+class TemperatureCommand(CommandPlugin):
+    """调整大模型温度"""
+    def __init__(self):
+        self.meta = CommandMeta(name="temperature", description="调整大模型温度 (0.0~2.0)")
+
+    def execute(self, ctx: CommandContext) -> bool:
+        return _cmd_temperature(ctx)
+
+
 # ── 自动注册插件 ────────────────────────────────────
 get_plugin_registry().register(SystemCommand())
 get_plugin_registry().register(CostCommand())
 get_plugin_registry().register(ThemeCommand())
 get_plugin_registry().register(ReasoningCommand())
+get_plugin_registry().register(TemperatureCommand())

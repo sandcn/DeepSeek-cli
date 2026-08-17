@@ -54,6 +54,10 @@ class ConfigProxy(ConfigPort):
         """获取推理等级（low/medium/high/max）。"""
         return _config.REASONING_EFFORT
 
+    def get_temperature(self) -> float:
+        """获取大模型温度（0.0~2.0）。"""
+        return float(_config.TEMPERATURE)
+
     def get_int(self, key: str, default: int = 0) -> int:
         return int(self.get(key, default))
 
@@ -121,6 +125,10 @@ class ConfigProxy(ConfigPort):
     @property
     def REASONING_EFFORT(self) -> str:
         return _config.REASONING_EFFORT
+
+    @property
+    def TEMPERATURE(self) -> float:
+        return _config.TEMPERATURE
 
     @property
     def THEME(self) -> str:
