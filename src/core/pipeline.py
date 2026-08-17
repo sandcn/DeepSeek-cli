@@ -62,11 +62,6 @@ class PipelineContext:
     # 本轮模型调用次数
     model_calls: int = 0
 
-    # addmsg 已插入标志（AddmsgMiddleware 设置）。
-    # pipeline 据此在无工具调用时继续下一轮模型调用，
-    # 让模型处理新插入的用户消息（/addmsg 流式插入）。
-    addmsg_inserted: bool = False
-
     # 未捕获异常
     error: Exception | None = None
 
@@ -270,13 +265,7 @@ class Pipeline:
                     except Exception:
                         _logger.debug("中断检查失败（非关键）")
             else:
-                if ctx.addmsg_inserted:
-                    # ★ addmsg 已插入（/addmsg 流式插入）：无工具调用时
-                    #   不结束本轮，继续下一轮模型调用让模型处理新插入
-                    #   的用户消息。标志在此消费，防止无限循环。
-                    ctx.addmsg_inserted = False
-                else:
-                    ctx.round_complete = True
+                ctx.round_complete = True
 
         # ── on_round_complete ─────────────────────────────
         await self._fire_hooks_async('on_round_complete', ctx)

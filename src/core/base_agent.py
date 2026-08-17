@@ -73,13 +73,6 @@ class BaseAgent:
         # bash 工具后台模式（background=True）把任务记录注册到这里，
         # 一轮对话完成后由 _process_background_tasks() 检查并处理。
         self._background_tasks: dict[str, dict] = {}
-        # ── addmsg 待插入队列（/addmsg 流式插入） ──
-        # 流式输出期间由 /addmsg 命令或中间件捕获的输入暂存于此，
-        # AddmsgMiddleware 在「思考/回答完成」或「工具调用完成」后
-        # 以 user 角色插入对话并让下一轮模型调用继续处理。
-        self._addmsg_queue: list[str] = []
-        self._addmsg_input_provider = None  # () -> Input | None
-        self._addmsg_chat_ui_provider = None  # () -> ChatUIConsumer | None
 
     # ── 沙盒索引同步 ──────────────────────────────────
 
@@ -148,64 +141,6 @@ class BaseAgent:
             "content": content,
         })
         self._sync_sandbox_index(len(self.messages) - 1)
-
-    # ── addmsg（/addmsg 流式插入用户消息） ─────────────────
-
-    def set_addmsg_input_provider(self, provider) -> None:
-        """注入 Input 访问器（供 AddmsgMiddleware 捕获流式期间的 /addmsg 输入）。
-
-        Args:
-            provider: 可调用 ``() -> Input | None``
-        """
-        self._addmsg_input_provider = provider
-
-    def set_addmsg_chat_ui_provider(self, provider) -> None:
-        """注入 ChatUIConsumer 访问器（供 AddmsgMiddleware 渲染插入的消息）。
-
-        Args:
-            provider: 可调用 ``() -> ChatUIConsumer | None``
-        """
-        self._addmsg_chat_ui_provider = provider
-
-    def add_addmsg(self, content: str) -> None:
-        """暂存一条待插入的用户消息（流式输出期间由 /addmsg 排队）。
-
-        消息不会立即进入 messages，而是等 AddmsgMiddleware 在
-        「思考/回答完成」或「工具调用完成」后统一插入。
-        """
-        if content is None:
-            return
-        content = content if isinstance(content, str) else str(content)
-        if content:
-            self._addmsg_queue.append(content)
-
-    def drain_addmsg(self) -> list[str]:
-        """取出并清空所有待插入的 addmsg 消息。"""
-        msgs = self._addmsg_queue
-        self._addmsg_queue = []
-        return msgs
-
-    def has_pending_addmsg(self) -> bool:
-        """是否有待插入的 addmsg 消息。"""
-        return bool(self._addmsg_queue)
-
-    def insert_addmsg_messages(self, contents: list[str]) -> None:
-        """将 addmsg 消息以 user 角色插入对话（含沙盒/上下文缓存同步）。
-
-        与 _append_background_result_messages 语义一致：插入后同步沙盒
-        索引并使 context_manager 缓存失效，保证下一轮模型调用携带新消息。
-        """
-        if not contents:
-            return
-        for content in contents:
-            self.add_user_message(content)
-        self._sync_sandbox_index()
-        cm = getattr(self, "context_manager", None)
-        if cm is not None:
-            try:
-                cm.invalidate_cache()
-            except Exception:
-                _logger.debug("addmsg 消息插入后 invalidate_cache 失败", exc_info=True)
 
     # ═══════════════════════════════════════════════════════════
     # 后台任务（bash background=True）管理

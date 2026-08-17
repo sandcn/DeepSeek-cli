@@ -258,18 +258,6 @@ class InputBufferEditor:
             self._input_ready.clear()
         return text
 
-    def peek_queued_input(self) -> str | None:
-        """查看排队输入（Enter 提交的文本），不消费。
-
-        供 AddmsgMiddleware 在流式阶段完成点探测用户是否提交了
-        ``/addmsg`` 命令——仅查看不消费，非 addmsg 文本保留给
-        round_end 的 drain_all 走原有 queued_input 路径。
-        """
-        if not self._input_ready.is_set():
-            return None
-        with self._lock:
-            return self._submitted_text
-
     def has_queued_input(self) -> bool:
         """是否有排队输入等待处理。"""
         return self._input_ready.is_set()
