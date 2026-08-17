@@ -311,18 +311,3 @@ class LsFunc(Func):
         return await self._display_result_template(
             header=f"ls{opt_str} {self.target_path}",
         )
-
-    # ── 显示（Web） ─────────────────────────────────────
-
-    async def web_display(self) -> str:
-        """Web 模式：返回纯文本结果"""
-        opts = []
-        if self.long:
-            opts.append("-l")
-        if self.all:
-            opts.append("-a")
-        opt_str = f" {' '.join(opts)}" if opts else ""
-        return await self._web_display_result_template(
-            header=f"ls{opt_str} {self.target_path}",
-            print_result=False,
-        )

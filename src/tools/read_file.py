@@ -299,7 +299,7 @@ class ReadFileFunc(Func):
             return f"文件: {self.path}\n{cleaned}"
         return f"(文件为空: {self.path})"
 
-    # ── 公共 UI 辅助方法（消除 display/web_display 重复）──
+    # ── 公共 UI 辅助方法 ──
 
     async def _build_file_info_line(self, file_path: str, result: dict) -> str:
         """构建文件信息行（大小、修改时间、范围等），返回 ANSI 格式化字符串。"""
@@ -382,46 +382,5 @@ class ReadFileFunc(Func):
         Func._publish_tool_text(info_line)
 
         self._render_syntax_to_output(file_path, result)
-
-        return output
-
-    async def web_display(self) -> str:
-        """Web 模式：返回带文件路径的纯文本内容（无 ANSI 控制码），
-        同时将文件路径和内容（含语法高亮）打印到终端。"""
-        output = await self.execute()
-
-        if not self._file_result[_SUCCESS_KEY]:
-            Func._publish_tool_text(f"  {RED}x {self._file_result[_ERROR_KEY]}{RESET}")
-            return output
-
-        file_path = self.path
-        result = self._file_result
-
-        info_line = await self._build_file_info_line(file_path, result)
-        Func._publish_tool_text(info_line)
-
-        self._render_syntax_to_output(file_path, result)
-
-        # 为前端构建带行号信息的返回文本
-        if result[_CONTENT_KEY] is not None:
-            cleaned = result[_CONTENT_KEY].replace('\r', '')
-            if cleaned:
-                # 提取行号范围信息，嵌入到文件路径行中供前端解析
-                if result.get(_LINE_NUMBERS_KEY) is not None:
-                    start, end = result[_LINE_NUMBERS_KEY]
-                    if end is not None:
-                        range_str = f" (L{start}-{end})"
-                    else:
-                        range_str = f" (L{start}+)"
-                else:
-                    # 读取整个文件时，计算内容总行数
-                    # ★ 修复（review 方向）：结尾换行不计入额外一行——
-                    #   修复前 "a\nb\n" 计 3 行（实际 2 行），L1-N 行号虚高。
-                    if cleaned.endswith('\n'):
-                        line_count = cleaned.count('\n')
-                    else:
-                        line_count = cleaned.count('\n') + 1
-                    range_str = f" (L1-{line_count})"
-                output = f"文件: {self.path}{range_str}\n{cleaned}"
 
         return output

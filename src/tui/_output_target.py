@@ -5,8 +5,7 @@
 
 消费方说明（2026-07-31 方向F）：``IOutputTarget`` 协议被
 ``src/tui/_base_display.py``（BaseDisplay.output_target）、
-``src/tui/_diff_renderer.py``（render_diff/show_file_diff 的 output_target 参数）与
-``src/webui/output_target.py``（WebSocketTarget 实现）消费，**保留不删**。
+``src/tui/_diff_renderer.py``（render_diff/show_file_diff 的 output_target 参数）消费。
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ from typing import Protocol, runtime_checkable
 class IOutputTarget(Protocol):
     """输出目标协议 — 定义终端渲染输出的抽象接口。
 
-    由 BaseDisplay / ChatUIConsumer / WebUI 等实现。
+    由 BaseDisplay / ChatUIConsumer 等实现。
     """
 
     def write_line(self, text: str) -> None: ...

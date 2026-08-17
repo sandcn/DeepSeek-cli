@@ -262,7 +262,7 @@ class Agent(BaseAgent):
         return await self._tool_callbacks.handle_tool_calls(content, tool_calls, reasoning_content, usage)
 
     # ── 工具回调已移入 ToolCallbackChain ──────────────
-    # _sanitize_args_for_log / _detect_webdiff / _on_before_tool /
+    # _sanitize_args_for_log / _on_before_tool /
     # _on_after_tool / _run_tool_method / _show_tool_execution_summary
     # 均通过 self._tool_callbacks 直接访问，Agent 不再提供薄委托。
 

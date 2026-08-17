@@ -5,10 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ai-chat"
 version = "2.2.0"
-description = "全异步、高可扩展的 AI 聊天服务后端，支持多模型适配、增量流式 Markdown 渲染、工具调用系统、上下文压缩和终端+Web 双界面"
+description = "全异步、高可扩展的 AI 聊天服务后端，支持多模型适配、增量流式 Markdown 渲染、工具调用系统和终端交互界面"
 requires-python = ">=3.9"
 dependencies = [
-    "aiohttp>=3.9",
     "httpx>=0.27",
     "rich>=10",
     "Pygments>=2.16",

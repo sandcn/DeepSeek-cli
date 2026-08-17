@@ -304,7 +304,7 @@ def _write_diff_line(text, output_target=None, width=None):
     ★ H3（BUG 修复，2026-08-15）：出口截断——``width`` 非 None 且 >0 时，
     按宽度截断（diff 非每帧热路径，性能可接受），窄终端 diff 长行不再
     wraparound。``width`` None（默认）保持原样（旧调用/纯函数兼容——
-    ``render_diff_to_ansi``/WebUI 不传）。截断后仍为合法 ANSI（无断裂 SGR）。
+    ``render_diff_to_ansi`` 不传）。截断后仍为合法 ANSI（无断裂 SGR）。
 
     ★ P2-2（review 方向）：截断路径异常保护——截断意外抛异常时降级为
     不截断原样输出（diff 渲染主路径不因截断失败中断）。
@@ -362,7 +362,7 @@ def _render_chunk(item, w, lexer_name, output_target, max_width=None):
         # P3-12：文件头路径消毒（ANSI 注入防护）——path 来自 diff 列表
         # （可能是用户提供的文件名），须与 ctx/add/del 行一致走 _sanitize_ansi。
         path = _sanitize_ansi(item[1][4:] if len(item[1]) > 4 else "")
-        # 美化：旧文件头亮红加粗（保持 ``┌─ path`` 连续字面量，测试/WebUI 兼容）
+        # 美化：旧文件头亮红加粗（保持 ``┌─ path`` 连续字面量，测试兼容）
         line = Line()
         line.append("\n  ", None)
         line.append("┌─ " + path, _DIFF_FILE_OLD)
@@ -496,7 +496,7 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
     （默认 40），调用方传收缩宽度（如 ``min(40, max(10, w*2))``）。
 
     H3（2026-08-15）：新增 ``max_width``——行截断宽度（None=不截断，保持
-    旧调用/纯函数行为；``render_diff_to_ansi``/WebUI 不传）。``width``
+    旧调用/纯函数行为；``render_diff_to_ansi`` 不传）。``width``
     （分隔线宽度）与 ``max_width``（截断宽度）职责分离，不复用语义冲突。
     截断经 ``_write_diff_line`` 出口统一执行（含分隔线/hunk/fold/ctx/add/del
     各行；行号列前缀随整行一起截断，前缀短不受影响）。
@@ -599,8 +599,7 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
 def render_diff_to_ansi(path: str, old_content: str, new_content: str) -> str:
     """将文件差异渲染为带 ANSI 颜色的纯文本字符串。
 
-    纯函数，无锁，不涉及 I/O。返回的字符串可直接在支持 ANSI 的终端显示，
-    或由前端做 ANSI→HTML 转换后在 WebUI 渲染。
+    纯函数，无锁，不涉及 I/O。返回的字符串可直接在支持 ANSI 的终端显示。
 
     与 show_file_diff 的区别：
       - show_file_diff: 通过 output_target 输出（可能有锁），有副作用
@@ -689,7 +688,7 @@ def show_file_diff(path, old_content, new_content, output_target: Optional["IOut
     sep_w = min(_SEPARATOR_WIDTH, max(10, w * 2))
     # ★ H3（2026-08-15）：出口按终端宽度截断——窄终端 diff 长行不再
     #   wraparound。TerminalWidthCache TTL 缓存（无终端时内部回退 80，行为
-    #   确定）；``render_diff_to_ansi``（纯函数/WebUI）不传，保持行为不变。
+    #   确定）；``render_diff_to_ansi``（纯函数）不传，保持行为不变。
     from src.tui._screen import TerminalWidthCache
     term_w = TerminalWidthCache.get_default().get_width()
     # 锁外预热 Pygments lexer，避免在锁内首次加载阻塞其他线程

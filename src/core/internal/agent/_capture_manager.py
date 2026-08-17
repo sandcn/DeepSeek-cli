@@ -199,7 +199,7 @@ class CaptureManager:
 
         重定向 sys.stdout → SharedCapture，将工具 print 输出：
         1. 通过 SharedCapture.write() 推送到 real_stdout（终端打印）
-        2. 同时发布为 ToolOutputChunkEvent → EventBus → WebUI
+        2. 同时发布为 ToolOutputChunkEvent → EventBus 渲染
 
         多个工具可共享同一个 SharedCapture 实例（并发捕获）。
         """

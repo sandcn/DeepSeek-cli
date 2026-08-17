@@ -23,7 +23,7 @@ from .event_types import (
     ContentChunkEvent, ReasoningChunkEvent,
     ParseInfoEvent, ParseInfoDoneEvent, MetricsUpdateEvent,
     OutputEvent, ToolSummaryEvent,
-    UserSelectNeededEvent, SubagentPromptEvent, AgentResultEvent,
+    SubagentPromptEvent, AgentResultEvent,
     BackgroundTaskChangedEvent,
     ALL_EVENT_TYPES,
 )
@@ -50,7 +50,7 @@ __all__ = [
     "ModelPhaseEvent", "PhaseDoneEvent", "UsageUpdatedEvent",
     "ContentChunkEvent", "ReasoningChunkEvent",
     "ParseInfoEvent", "ParseInfoDoneEvent", "MetricsUpdateEvent",
-    "OutputEvent", "ToolSummaryEvent", "UserSelectNeededEvent",
+    "OutputEvent", "ToolSummaryEvent",
     "BackgroundTaskChangedEvent",
     "ALL_EVENT_TYPES",
     # 基础设施

@@ -27,8 +27,8 @@
                               assemble() 编排 + _create_* 兼容转发）
   _assembly_steps.py        — 装配子步骤独立模块（create_infrastructure/...，
                               惰性 import 各自依赖；2026-08-05 装配层重构）
-  _base_display.py          — 显示抽象基类（被 webui 引用）
-  _diff_renderer.py         — 差异渲染（纯函数，被 core/tools/webui 引用）
+  _base_display.py          — 显示抽象基类
+  _diff_renderer.py         — 差异渲染（纯函数，被 core/tools 引用）
   _input_orchestrator.py    — TuiInputOrchestrator 输入等待编排器
   _lifecycle.py             — TuiLifecycle 生命周期管理（start/stop/suspend/resume）
   _output_target.py         — 输出目标协议存根（IOutputTarget）
@@ -91,7 +91,7 @@
     全局引用，会话 stop 时注销。
   - D（事件总线实例化）：``events/event_bus.py`` 解除强制单例构造——
     ``DisplayEventBus()`` 创建独立实例（测试/多场景隔离），``get_default()``
-    保留进程级默认实例（CLI/WebUI 共享为既有架构约束）。
+    保留进程级默认实例。
   - E（渲染循环状态机）：``RenderLoopPhase`` 枚举——``_drain_queue`` 六阶段
     显式迁移（SIGWINCH→INPUT→PANELS→SYSTEM_STATS→DRAIN_COMMANDS→APPLY→RENDER）。
   - F（架构守卫）：``tests/test_tui/test_arch_guard.py`` AST 依赖方向检查
@@ -135,12 +135,12 @@ from .app.model import AppModel
 from .consumer.chat_config import ChatConfig
 
 # ═══════════════════════════════════════════════════════════
-# 差异渲染（纯函数，被 core/tools/webui 引用）
+# 差异渲染（纯函数，被 core/tools 引用）
 # ═══════════════════════════════════════════════════════════
 from ._diff_renderer import render_diff_to_ansi, show_file_diff
 
 # ═══════════════════════════════════════════════════════════
-# 显示抽象基类（被 webui 引用）
+# 显示抽象基类
 # ═══════════════════════════════════════════════════════════
 from ._base_display import BaseDisplay
 

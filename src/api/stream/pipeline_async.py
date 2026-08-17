@@ -396,7 +396,7 @@ class AsyncStreamPipeline:
         # 为避免 publish_output 附加的 \n 导致多余空行，
         # tracker 行清除已合并到尾部换行步骤统一处理。
 
-        # ── 第 2b 步：发布 PhaseDoneEvent（即使 silent=True 也要发，确保 WebUI 收到） ─
+        # ── 第 2b 步：发布 PhaseDoneEvent（即使 silent=True 也要发） ─
         # ★ 标记追踪：在 content.py 或 tool_calls.py 中已发布的阶段事件，此处不再重复发送
         #   PhaseDoneEvent("reasoning") 由 content.py 在首次 content 到达时发布，
         #   PhaseDoneEvent("content") 由 tool_calls.py 在首次工具调用时发布。

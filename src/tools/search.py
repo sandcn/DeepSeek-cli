@@ -533,11 +533,3 @@ class SearchFunc(Func):
             header=f"🔍 搜索: {self.query}",
             extra_info=f"引擎: {engine}{path_info}{include_info}",
         )
-
-    async def web_display(self) -> str:
-        """Web 模式：返回纯文本结果"""
-        engine = await self._resolve_engine()
-        path_info = f" in:{self.path}" if self.path != "." else ""
-        return await self._web_display_result_template(
-            header=f"🔍 搜索: {self.query} ({engine}{path_info})",
-        )

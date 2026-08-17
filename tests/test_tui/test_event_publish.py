@@ -147,7 +147,6 @@ def test_no_scattered_get_default_publish_in_outer_layers():
         "src/tools",
         "src/core",
         "src/api",
-        "src/webui",
         "src/tui/events/consumers.py",
     ]
     offenders: list[str] = []

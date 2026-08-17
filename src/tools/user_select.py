@@ -10,8 +10,6 @@ React Ink 组件 ``UserSelectPopup``（src/tui/app/user_select.py）：
     InputDispatcher 路由按键）；
   - 结果经 ``model.user_select.done/action/result`` 回传，工具协程读取后
     清理状态。
-
-Web 模式保持 ``web_display``（UserSelectNeededEvent → 前端响应）。
 """
 
 from __future__ import annotations
@@ -27,7 +25,6 @@ from src._compat_termios import HAS_TERMIOS
 from .base import Func, tool_metadata
 from ..core.constants import GREEN, YELLOW, RED, DIM, RESET
 from ..tui.consumer import get_active_chat_ui
-from ..api.events import publish_event
 
 
 _logger = logging.getLogger(__name__)
@@ -337,36 +334,3 @@ class UserSelectFunc(Func):
                 Func._publish_tool_text(f"  {DIM}使用默认选项: {', '.join(self.default_options)}{RESET}")
 
         return result_json
-
-    async def web_display(self) -> str:
-        """Web 模式：发布 UserSelectNeededEvent，等待前端响应。"""
-        if not self.options:
-            return json.dumps({"selected": [], "action": "empty"}, ensure_ascii=False)
-
-        from ..webui._pending_selects import pending_selects
-
-        select_id = f"select_{id(self)}_{asyncio.get_running_loop().time()}"
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-        pending_selects._pending[select_id] = future
-
-        try:
-            publish_event("UserSelectNeededEvent",
-                          select_id=select_id,
-                          title=self.title,
-                          options=tuple(self.options),
-                          multi_select=self.multi_select,
-                          default_options=tuple(self.default_options or []),
-                          timeout=self.timeout,
-                          option_descriptions=tuple(self.option_descriptions))
-
-            try:
-                result = await asyncio.wait_for(future, timeout=self.timeout + 5)
-                return result
-            except asyncio.TimeoutError:
-                return json.dumps({
-                    "selected": list(self.default_options or []),
-                    "action": "timeout",
-                }, ensure_ascii=False)
-        finally:
-            pending_selects._pending.pop(select_id, None)

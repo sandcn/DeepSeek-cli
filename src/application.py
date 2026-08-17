@@ -4,7 +4,7 @@
 将 app.py 中的启动/运行/关闭逻辑抽象为可测试的组件。
 
 架构位置：
-    chat.py → Application → {InteractiveMode, SingleMode, WebUIMode} → ChatSession
+    chat.py → Application → {InteractiveMode, SingleMode} → ChatSession
 
 设计原则：
     - 依赖倒置：所有外部依赖通过 AppContext 注入

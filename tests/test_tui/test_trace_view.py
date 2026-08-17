@@ -1433,7 +1433,7 @@ def test_clear_trace_archive_removes_completed_records():
 # ═══════════════════════════════════════════════════════════
 # 9.6 load 命令恢复 subagent 轨迹（2026-08-17 用户需求）
 # ═══════════════════════════════════════════════════════════
-# 用户需求：load 命令（/load、--load 启动、webui 加载）也要支持「已完成
+# 用户需求：load 命令（/load、--load 启动）也要支持「已完成
 # subagent 仍可 Enter 查看轨迹」，且不实现第二份构建逻辑。方案：会话数据
 # 中的 ``subagents``（``_subagent_records`` 条目，含完整 messages）经
 # ``SubAgentPanelController.restore_trace_archive`` 转换为槽位注入轨迹存档
@@ -1567,7 +1567,7 @@ def test_trace_view_enter_restored_subagent_after_load():
 
 
 def test_session_persistence_load_restores_trace_archive():
-    """SessionPersistenceManager.load（--load / webui 路径）→ 恢复轨迹存档。"""
+    """SessionPersistenceManager.load（--load 路径）→ 恢复轨迹存档。"""
     from src.core.internal.session._session_persistence_manager import (
         SessionPersistenceManager,
     )

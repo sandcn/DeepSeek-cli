@@ -47,9 +47,8 @@ class ContentHandler(StreamChunkHandler):
 
         # 🔥 发布内容 chunk 事件到 EventBus
         # - ChatUIConsumer 消费此事件驱动终端 Markdown 渲染
-        # - WebUI 桥接器消费此事件驱动 SSE 推送
         # 带文本累积节流：短 chunk 合并，减少 EventBus 压力
-        # 注意：即使 silent=True 也要发布到 EventBus，确保 WebUI 能显示 SubAgent 流式内容
+        # 注意：即使 silent=True 也要发布到 EventBus，确保流式内容不丢失
         self.buffer(dc, ctx.label)
 
 

@@ -3,7 +3,7 @@
 背景（2026-08-17）：SubAgent 创建时经 ``_spawn_subagent`` 注入所属
 subagent 的 tool_call_id（spec["tool_label"]，subagent 工具调用 id）；
 ``_record_to_parent`` 把该 id 写入会话存档（subagents 条目新增
-"dispatch_label" 字段）——/load、--load、webui 加载会话后
+"dispatch_label" 字段）——/load、--load 加载会话后
 ``restore_trace_archive`` 凭此把历史 subagent 合并到主轨迹对应的
 subagent 工具记录（用户需求：load 命令后也要合并；旧会话无该字段
 → 空串，独立 subagent 记录兼容）。

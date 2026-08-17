@@ -1,6 +1,6 @@
 """bash stderr 行颜色包裹 → 工具卡空白行回归测试（BUG-79）。
 
-根因：``display()/web_display()/_handle_line`` 的 stderr 分支原按
+根因：``display()/_handle_line`` 的 stderr 分支原按
 ``f"{RED}{safe}{RESET}"`` 包裹输出行——``_read_loop`` 按行收集自带行尾
 ``\\n``，包裹后换行符被夹在 color 与 RESET 之间，下游
 ``EventDispatcher._on_tool_output`` 的 ``rstrip("\\n")`` 与

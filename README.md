@@ -1,6 +1,6 @@
 # DeepSeek-cli `v2.2.0`
 
-全异步、高可扩展的 AI 聊天服务后端，支持多模型适配、增量流式 Markdown 渲染、工具调用系统、上下文压缩和终端+Web 双界面。
+全异步、高可扩展的 AI 聊天服务后端，支持多模型适配、增量流式 Markdown 渲染、工具调用系统、上下文压缩和终端交互界面。
 
 ---
 
@@ -14,7 +14,7 @@
 
 ```bash
 # 安装全部核心依赖
-pip install aiohttp httpx rich Pygments Jinja2 beautifulsoup4 chardet aiofiles
+pip install httpx rich Pygments Jinja2 beautifulsoup4 chardet aiofiles
 
 # 安装开发依赖（测试/代码检查等）
 pip install pytest pytest-asyncio pytest-xdist pytest-cov ruff mypy
@@ -34,7 +34,6 @@ pip install ".[dev]"
 
 | 包 | 用途 | 安装命令 |
 |---|---|---|
-| `aiohttp` | 异步 HTTP 服务器/客户端 | `pip install aiohttp` |
 | `httpx` | HTTP 请求库 | `pip install httpx` |
 | `rich` | 终端富文本输出 | `pip install rich` |
 | `Pygments` | 代码语法高亮 | `pip install Pygments` |
@@ -123,20 +122,6 @@ python chat.py
 
 启动终端交互界面，进入多轮对话。
 
-#### Web UI 模式
-
-```bash
-python chat.py --webui
-# 或等价的子命令
-python chat.py webui
-```
-
-启动浏览器界面（默认 http://0.0.0.0:8080），支持自定义监听地址和端口：
-
-```bash
-python chat.py webui --host 127.0.0.1 --port 3000
-```
-
 #### 单次问答模式
 
 ```bash
@@ -149,7 +134,6 @@ python chat.py -p "你好，请介绍一下自己"
 
 ```bash
 python chat.py --load <会话ID>
-python chat.py webui --load <会话ID>   # Web UI 模式恢复
 ```
 
 #### 指定模型
@@ -194,8 +178,6 @@ python chat.py version
 | `python chat.py -m deepseek-v4-pro` | 指定模型 |
 | `python chat.py -v` | INFO 级别日志 |
 | `python chat.py -vv` | DEBUG 级别日志 |
-| `python chat.py --webui` | Web UI 模式（默认 0.0.0.0:8080） |
-| `python chat.py webui --host 127.0.0.1 --port 3000` | 自定义 Web UI 地址端口 |
 | `python chat.py session list` | 列出所有会话 |
 | `python chat.py session delete abc123` | 删除会话 |
 | `python chat.py session export abc123` | 导出会话 |
@@ -312,7 +294,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **16 个内�
 - **纯异步** — 所有工具均基于 `asyncio`，不阻塞事件循环
 - **沙盒安全** — 文件操作自动备份，支持撤回（undo）
 - **元数据系统** — 每工具声明并行安全、网络依赖、超时估计等元数据，供调度层优化
-- **双端适配** — 同时支持终端（`display()`）和 Web UI（`web_display()`）两种渲染路径
+- **双端适配** — 同时支持终端（`display()`）渲染路径
 
 ### 工具权限系统（v2.2.0+）
 
@@ -569,22 +551,6 @@ ChatUIConsumer
 │   │   ├── search_providers.py  # DeepSeek 官方原生搜索提供者（web_search 依赖）
 │   │   └── page_fetcher.py    # 网页内容抓取（web_fetch 依赖）
 │   │
-│   ├── webui/              # Web 界面
-│   │   ├── server.py          # aiohttp HTTP 服务器 + WebSocket
-│   │   ├── bridge.py          # WebEventBridge（EventBus → WebSocket）
-│   │   ├── session.py         # WEBChatSession（Web 会话管理）
-│   │   ├── display.py         # WebDisplay 适配器
-│   │   ├── types.py           # WebSocket 消息类型定义
-│   │   ├── output_target.py   # 输出目标适配
-│   │   ├── cleanup.py         # 资源清理逻辑
-│   │   ├── msg_index.py       # 消息索引管理
-│   │   ├── _base_sender.py    # WebSocket 发送基类
-│   │   ├── _pending_selects.py # user_select 待决追踪
-│   │   ├── _termux.py         # Termux 浏览器适配
-│   │   ├── routing/           # WebSocket 消息路由
-│   │   ├── ws_handler/        # WebSocket 处理器
-│   │   └── static/            # 前端 SPA（HTML/CSS/JS）
-│   │
 │   ├── prompt_builder/     # 系统提示词构建
 │   ├── notifications/      # 桌面通知（Termux/Linux/Windows）
 │   └── observability/      # 可观测性门面（聚合指标/追踪/遥测日志）
@@ -594,7 +560,7 @@ ChatUIConsumer
 
 ## 六边形架构（Ports & Adapters）
 
-核心层通过 **8 个端口接口** 访问基础设施，实现依赖倒置——核心层不直接依赖 `api`、`tui`、`webui`、`chat_msgs` 等具体实现模块，基础设施层通过适配器模式实现这些端口。
+核心层通过 **8 个端口接口** 访问基础设施，实现依赖倒置——核心层不直接依赖 `api`、`tui`、`chat_msgs` 等具体实现模块，基础设施层通过适配器模式实现这些端口。
 
 | 端口 | 文件 | 说明 |
 |------|------|------|
@@ -640,7 +606,7 @@ ChatUIConsumer
 
 ### UI 事件总线（`src/tui/events/`）
 
-显示层事件系统，定义 **24 种 `DisplayEvent`** 类型（生命周期/工具调用/Agent 状态/模型阶段/流式内容/附加状态/通用输出/用户交互），基于 `CoreEventBus` 底层发布机制实现。`DisplayEventBus` 对 `DisplayEvent` 子类提供类型安全包装，与核心事件（字符串类型）并行独立运作，确保终端和 Web UI 双端共享相同的事件语义。
+显示层事件系统，定义 **24 种 `DisplayEvent`** 类型（生命周期/工具调用/Agent 状态/模型阶段/流式内容/附加状态/通用输出/用户交互），基于 `CoreEventBus` 底层发布机制实现。`DisplayEventBus` 对 `DisplayEvent` 子类提供类型安全包装，与核心事件（字符串类型）并行独立运作，确保终端共享相同的事件语义。
 
 ---
 
@@ -726,7 +692,6 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 - **多面板布局** — 对话区/工具调用日志/系统状态分屏显示，便于调试与观察 Agent 行为
 - **主题系统扩展** ✅ — 支持自定义配色方案，适配亮色/暗色终端环境（已内置 dark/light/high-contrast 三种主题）
 - **动效与呼吸效果** ✅ — 标题栏✦/工具卡边框/状态栏分隔线/模型名/解析行 spinner/推理头/错误标记/补全弹窗/流式占位符/工具计数箭头/失败警示等 10+ 处时间基动效（time_glow 0.1s 桶缓存）；2026-08-05 新增 BEAUTY-18~24：user_select 弹窗标题/选中高亮/提示行/说明列呼吸（**已于 2026-08-05 静态化**——弹窗呼吸使弹窗行每帧随 time_glow 重写，Termux 等终端每帧刷新/错乱；现改静态色且不驱动动画循环，仅交互按键时重绘）、状态栏耗时/token/速度/CPU/MEM 呼吸、补全弹窗说明列/命令描述呼吸、工具 detail 呼吸、subagent 卡统计呼吸；2026-08-05 第二轮 BEAUTY-25~34：空状态欢迎行 ✦ 活跃期呼吸（空闲静态单例零重建）、工具卡标题图标运行中呼吸、思考块角色头 live spinner 化（💭→⠋⠙⠹…，关闭回退静态）、状态栏 thinking 阶段标签弱呼吸（…思考）、user_select 弹窗标题模式图标（单选 ▶ / 多选 ☑）、解析进度行 spinner 金色呼吸（178↔190）、标题栏版本号活跃期呼吸、live content 流式末尾指示 spinner、通知/子代理角色头 live 呼吸、subagent 组卡省略提示呼吸（渲染性能：Line.append ASCII 批量宽度快路径）
-- **Web UI 同步增强** — 终端与 Web 界面的渲染逻辑复用，保证两种模式下显示一致性
 
 ---
 

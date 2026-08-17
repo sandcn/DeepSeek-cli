@@ -1,6 +1,6 @@
 """消息编辑公共模块 — 截断/重写消息的通用工具函数
 
-CLI 和 WebUI 共用的消息列表操作函数。
+CLI 共用的消息列表操作函数。
 """
 
 from __future__ import annotations

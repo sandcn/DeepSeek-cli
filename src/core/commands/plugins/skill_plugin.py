@@ -9,8 +9,7 @@
 - ``/skill info <技能名>``          — 查看技能详情
 - ``/skill refresh``               — 清空目录缓存（技能文件变更后）
 
-TUI 下 install/update 走异步路径（不阻塞事件循环）；
-Web 端经旧命令系统同步执行，install/update 提示到终端执行。
+TUI 下 install/update 走异步路径（不阻塞事件循环）。
 """
 
 from __future__ import annotations
@@ -221,7 +220,7 @@ class SkillPlugin(InteractiveCommandPlugin):
         return True
 
     def execute(self, ctx: Any) -> bool:
-        """同步版本（Web/旧命令系统路径）。"""
+        """同步版本（旧命令系统路径）。"""
         arg = (ctx.arg or "").strip()
         if not arg or arg == "list":
             self._cmd_list()
@@ -231,9 +230,9 @@ class SkillPlugin(InteractiveCommandPlugin):
         rest = parts[1].strip() if len(parts) > 1 else ""
 
         if sub == "install" or sub == "update":
-            # 在线下载会阻塞事件循环，Web 端提示到终端执行
+            # 在线下载会阻塞事件循环，提示到终端执行
             self._write(
-                f"  {_YELLOW}Web 端不支持在线安装/更新，请在终端执行 "
+                f"  {_YELLOW}不支持在线安装/更新，请在终端执行 "
                 f"/skill {sub} {rest}{_RESET}"
             )
         elif sub == "list":

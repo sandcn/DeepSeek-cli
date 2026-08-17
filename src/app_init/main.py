@@ -65,33 +65,11 @@ async def main():
         _handle_session_command(args)
         return
 
-    # ── 信号处理（非 webui 模式） ──
-    signal_mgr = None
-    if args.command != 'webui':
-        signal_mgr = SignalManager()
-        signal_mgr.register_handlers()
+    # ── 信号处理 ──
+    signal_mgr = SignalManager()
+    signal_mgr.register_handlers()
 
     try:
-        # ── Web UI 模式 ──
-        if args.command == 'webui':
-            output_consumer.stop()
-            from ..webui.server import run_web_server
-
-            loaded_data = None
-            if args.load:
-                data = load_session(args.load)
-                if data is None:
-                    publish_output(f"\n{YELLOW}  ! 未找到会话 '{args.load}'{RESET}", level="raw")
-                    return
-                loaded_data = data
-
-            await run_web_server(
-                host=args.host,
-                port=args.port,
-                loaded_data=loaded_data,
-            )
-            return
-
         # ── run 模式 ──
         _apply_theme(args)
 

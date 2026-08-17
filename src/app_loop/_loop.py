@@ -90,7 +90,7 @@ class InteractiveLoop:
     ) -> _RoundResult:
         """执行一轮对话交互——所有用户输入（包括命令）统一放入 MessageQueue。
 
-        所有用户输入通过 MessageQueue 投递，与 WebUI 共用同一消息处理机制。
+        所有用户输入通过 MessageQueue 投递。
         """
         try:
             # ★ Bug 7: 确保 msg_done 为 cleared 状态，避免异常路径遗留 set 状态导致逻辑混乱

@@ -223,7 +223,7 @@ class SubAgentPanelController:
     def restore_trace_archive(self, records) -> None:
         """从历史会话 subagent 记录恢复轨迹存档（load 命令支持）。
 
-        /load、--load 启动、webui 加载会话后调用：把会话数据中的
+        /load、--load 启动加载会话后调用：把会话数据中的
         ``subagents``（``_subagent_records`` 条目，结构同
         ``SubAgent._record_to_parent``：label/description/agent_type/prompt/
         status/result/error/messages）转换为槽位写入轨迹存档（**替换语义**：

@@ -25,11 +25,9 @@ _AGENT_TYPE_KEY = "agent_type"
 class SubAgentSpawner:
     """创建 SubAgent 实例、发布提词/结果事件"""
 
-    def __init__(self, parent_agent, agent_factory, is_web: bool = False,
-                 event_port=None):
+    def __init__(self, parent_agent, agent_factory, event_port=None):
         self.parent = parent_agent
         self._agent_factory = agent_factory
-        self._is_web = is_web
         if event_port is not None:
             self._event_port = event_port
         else:
@@ -52,12 +50,12 @@ class SubAgentSpawner:
         return self._spawn_subagent(spec, index, display)
 
     def render_display(self, specs: List[Dict[str, Any]]) -> None:
-        """逐 spec 发布 SubagentPromptEvent（仅非 Web 模式，投递到 TUI 消息区）。
+        """逐 spec 发布 SubagentPromptEvent（投递到 TUI 消息区）。
 
         事件经 EventBus → EventDispatcher → SubagentMarkdownCmd 在消息区
         渲染为独立 markdown 块；无头（无 ChatUI）模式下无消费者，不再输出。
         """
-        if not self._is_web and specs:
+        if specs:
             self._render_subagent_display(specs)
 
     def publish_summary(self, results: List[Dict[str, Any]]) -> None:

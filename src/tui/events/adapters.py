@@ -70,8 +70,7 @@ class DisplayEventAdapter:
     #   BaseDisplay 无「工具输出块」方法（无 tool_output/tool_chunk 接口，
     #   已 search 确认）——映射不适用（hasattr 检查会静默跳过，补齐为死
     #   映射）。TUI 侧经 ``_dispatcher._on_tool_output`` 直连消费
-    #   （EventBus→RenderCmd 管线），WebUI 侧经 ``webui.bridge._on_tool_output``
-    #   直连订阅。文档声明保留。
+    #   （EventBus→RenderCmd 管线）。文档声明保留。
     _EVENT_METHOD_MAP: Dict[Type[DisplayEvent], str] = {
         ToolParsingEvent: "tool_parsing",
         ToolStartedEvent: "tool_start",

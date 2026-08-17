@@ -141,7 +141,6 @@ def test_run_tool_method_subagent_direct_execute():
 
     agent = MagicMock()
     agent._display_port = MagicMock()
-    agent._display_port.is_web = False
     chain = ToolCallbackChain(agent)
 
     func = MagicMock()

@@ -235,8 +235,6 @@ async def run_pending_loop(session, max_iter: int = _MAX_PENDING_LOOP_ITER) -> t
     将 _pending_messages 中的所有消息串行调用 run_round 处理，
     每处理完一轮后再次检查是否有新排队的消息，直到全部处理完毕或达到熔断阈值。
 
-    CLI 和 WebUI 共用此方法，消除两端重复的排队消息处理逻辑。
-
     变更行为：
     - 增量 checkpoint（Bug 3）：每成功处理一条排队消息后立即调用 save_checkpoint()
       保存增量 checkpoint，确保中途异常时不丢失已成功处理的消息。

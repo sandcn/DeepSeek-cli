@@ -315,13 +315,3 @@ class FindFunc(Func):
             header=f"🔍 查找: {self.pattern}",
             extra_info=f"模式: {self.pattern}{path_info}{type_info}{depth_info}",
         )
-
-    # ── 显示（Web） ─────────────────────────────────────
-
-    async def web_display(self) -> str:
-        """Web 模式：返回纯文本结果"""
-        path_info = f" in:{self.root_path}" if self.root_path != os.getcwd() else ""
-        type_info = f" type:{self.filter_type}" if self.filter_type else ""
-        return await self._web_display_result_template(
-            header=f"🔍 查找: {self.pattern}{path_info}{type_info}",
-        )

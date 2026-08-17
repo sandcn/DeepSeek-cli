@@ -209,7 +209,7 @@ class UsageUpdatedEvent(DisplayEvent):
     replace: bool = False
 
 
-# ── 流式内容事件（纯 Web 路径，取代 stdout 拦截） ──────
+# ── 流式内容事件 ────────────────────────────────────
 
 @dataclass(frozen=True)
 class ContentChunkEvent(DisplayEvent):
@@ -315,27 +315,6 @@ class ToolSummaryEvent(DisplayEvent):
 
 
 @dataclass(frozen=True)
-class UserSelectNeededEvent(DisplayEvent):
-    """用户选择需要 — Web UI 需要展示选择界面并等待用户响应。
-
-    Attributes:
-        select_id: 唯一标识这次选择请求
-        title: 选择界面的标题
-        options: 可供选择的选项列表
-        multi_select: 是否允许多选
-        default_options: 默认选中的选项
-        timeout: 超时时间（秒）
-    """
-    select_id: str = ""
-    title: str = ""
-    options: tuple[str, ...] = ()
-    multi_select: bool = False
-    default_options: tuple[str, ...] = ()
-    timeout: int = 120
-    option_descriptions: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
 class SubagentPromptEvent(DisplayEvent):
     """子代理提词 — subagent 开始执行前发布，包含完整提词 markdown 文本。
 
@@ -401,7 +380,6 @@ ALL_EVENT_TYPES: tuple = (
     ContentChunkEvent, ReasoningChunkEvent,
     ParseInfoEvent, ParseInfoDoneEvent, MetricsUpdateEvent,
     OutputEvent, ToolSummaryEvent,
-    UserSelectNeededEvent,
     SubagentPromptEvent,
     AgentResultEvent,
     BackgroundTaskChangedEvent,

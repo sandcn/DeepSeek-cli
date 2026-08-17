@@ -362,7 +362,7 @@ def UserSelectPopup(props) -> object:
         _commit(result, "confirmed")
 
     def _on_submit(sel: list) -> None:
-        # 多选 Enter：返回勾选结果（空勾选返回空列表）——与 Web 前端
+        # 多选 Enter：返回勾选结果（空勾选返回空列表）——与单选的
         # confirm 行为一致（修复前空勾选误回退 default_options）。
         _commit(list(sel), "confirmed")
 

@@ -32,7 +32,7 @@ def publish_event(event_type: str, **kwargs) -> bool:
             return True
         _logger.warning("事件类型 %s 在 event_types 中不存在", event_type)
     except ImportError:
-        _logger.debug("UI events 模块不可用，事件发布跳过（非 Web/TUI 模式）")
+        _logger.debug("UI events 模块不可用，事件发布跳过（无 TUI 环境）")
     except Exception:
         _logger.exception("发布事件 %s 异常", event_type)
     return False

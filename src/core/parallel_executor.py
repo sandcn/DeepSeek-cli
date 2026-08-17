@@ -15,7 +15,6 @@ import random
 import time
 from typing import List, Dict, Any
 
-from ._terminal import get_terminal_width as _get_terminal_width  # noqa: F401 — 兼容别名保留（见下）
 from .internal.agent._capture_manager import _safe_restore as safe_restore_stdout
 from .internal.agent._subagent_spawner import SubAgentSpawner
 from .subagent import SubAgent
@@ -56,7 +55,6 @@ _AGENT_TYPE_KEY = "agent_type"
 # ── 终端尺寸查询 ─────────────────────────────────────
 # 共享 get_terminal_width（src/core/_terminal.py）：优先 /dev/tty ioctl 查询，
 # 不能依赖 shutil.get_terminal_size()（Android Termux 上返回陈旧环境变量值）。
-# 保留 _get_terminal_width 兼容别名（步骤 1.4 迁移），避免外部调用点破坏。
 
 
 class ParallelExecutor:
@@ -72,15 +70,14 @@ class ParallelExecutor:
     """
 
     def __init__(self, parent_agent, max_history: int = 3, agent_factory=None,
-                 is_web: bool = False, config_port=None):
+                 config_port=None):
         self.parent = parent_agent
         self.max_history = max_history
         self._agent_factory = agent_factory or SubAgent
-        self._is_web = is_web
         self._config_port = config_port
 
         # SubAgent 创建 + 显示委托
-        self._spawner = SubAgentSpawner(parent_agent, self._agent_factory, is_web)
+        self._spawner = SubAgentSpawner(parent_agent, self._agent_factory)
 
         # 批量模式状态
         self._pending_specs: List[Dict[str, Any]] = []
@@ -320,7 +317,7 @@ class ParallelExecutor:
                 _logger.exception("%s await_stop 异常", log_prefix)
 
             # ★ 批量模式：停止 subagent 的 Spinner
-            if is_batch and not self._is_web and results:
+            if is_batch and results:
                 parent_display = getattr(self.parent, 'display', None)
                 if parent_display is not None:
                     for spec in specs:
@@ -360,8 +357,7 @@ class ParallelExecutor:
         _panel.ensure_active()
 
         try:
-            if not self._is_web:
-                self._spawner.render_display(agent_specs)
+            self._spawner.render_display(agent_specs)
 
             from ..tui.events import EventBusDisplayProxy as _EventBusDisplayProxy
             display = _EventBusDisplayProxy(max_history=self.max_history)

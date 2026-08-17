@@ -89,7 +89,7 @@ def notify_chat_completed(messages: list[dict], elapsed: float | None = None) ->
 
 
 async def async_notify_chat_completed(messages: list[dict], elapsed: float | None = None) -> None:
-    """对话完成时发送桌面通知（异步协程版本，供 WebUI 使用）
+    """对话完成时发送桌面通知（异步协程版本）
 
     带 30 秒冷却：同一进程内连续重复通知会被静默跳过。
 

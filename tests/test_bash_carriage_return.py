@@ -8,7 +8,7 @@
 
 修复：``_read_loop._handle_line`` 在数据源头统一 ``_strip_ansi`` + 
 ``_simulate_terminal``，lines（最终返回给大模型的输出）、show_output、
-publish_line_fn（display/web_display 与后台 read_buffer）三方拿到同一份
+publish_line_fn（display 与后台 read_buffer）三方拿到同一份
 「终端视角」文本。
 
 覆盖：

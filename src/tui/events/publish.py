@@ -11,8 +11,7 @@
 
 ★ 架构改进方向 D（2026-08-16）：``DisplayEventBus`` 已支持直接构造独立
 实例（不再强制单例）——``emit(event, bus=独立实例)`` 即跨总线发布。默认
-总线（``get_default()``）保留为进程级共享实例（CLI/WebUI 既有架构约束，
-webui bridge 依赖默认实例转发事件）。
+总线（``get_default()``）保留为进程级共享实例。
 
 约定：各层**发布**事件统一经本模块 ``emit``；订阅/读取总线仍可经
 ``DisplayEventBus.get_default()``（本模块不改变既有订阅语义）。发布路径

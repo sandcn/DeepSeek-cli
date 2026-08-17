@@ -1,11 +1,11 @@
 """targets.base — RenderTarget 抽象基类：统一渲染目标接口。
 
-所有渲染目标（终端/Web/移动端）实现此接口，
+所有渲染目标（终端/文件等）实现此接口，
 VNodePatcher 和 IncrementalVNodeRenderer 通过此接口消费渲染输出。
 
 设计原则：
   - 接口最小化：只暴露渲染目标必需的操作
-  - 目标无关：不假设终端/浏览器/原生控件的特性
+  - 目标无关：不假设终端/文件等目标的特性
   - 可组合：多个 RenderTarget 可通过 CompositeRenderTarget 组合
 """
 
@@ -60,7 +60,7 @@ class RenderTarget(ABC):
 
         Args:
             renderable: 目标特定的渲染对象
-                        （终端为 Rich renderable，Web 为 HTML 字符串）
+                        （终端为 Rich renderable）
         """
 
     @abstractmethod
@@ -96,7 +96,7 @@ class RenderTarget(ABC):
         return text
 
     def flush(self) -> None:
-        """刷出缓冲区（可选覆写）。终端不需要，Web/文件需要。"""
+        """刷出缓冲区（可选覆写）。终端不需要，文件需要。"""
 
     def close(self) -> None:
         """关闭渲染目标（可选覆写）。释放资源。"""
@@ -116,10 +116,10 @@ class RenderTarget(ABC):
 class CompositeRenderTarget(RenderTarget):
     """组合渲染目标——同时输出到多个 RenderTarget。
 
-    用于同时渲染到终端和文件、终端和 Web 等场景。
+    用于同时渲染到终端和文件等场景。
 
     用法：
-      target = CompositeRenderTarget([term_target, web_target])
+      target = CompositeRenderTarget([term_target, file_target])
       target.write("Hello")  # 同时输出到两个目标
     """
 

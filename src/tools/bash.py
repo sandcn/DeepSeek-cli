@@ -233,7 +233,7 @@ class BashFunc(Func):
             ★ 终端视角统一（返回内容与终端显示一致）：在数据源头统一
             剥离 ANSI（_strip_ansi）并兑现 \\r 覆盖语义（_simulate_terminal）
             ——lines（最终返回给大模型的输出）、show_output（终端实时打印）
-            与 publish_line_fn（display/web_display / 后台任务 read_buffer）
+            与 publish_line_fn（display / 后台任务 read_buffer）
             三方拿到同一份「终端视角」文本：进度条/行内刷新（如
             ``10%\\r20%\\r30%``）折叠为最终状态 ``30%``，不再把字面 \\r
             传给大模型，返回的行数不会多于真实终端显示。
@@ -243,8 +243,8 @@ class BashFunc(Func):
             #   保留行内独立 \r（用于进度条）不动
             clean = decoded.replace('\r\n', '\n')
             # ★ 先剥 ANSI 再兑现 \r 覆盖（顺序契约：_simulate_terminal 对
-            #   含 ANSI 文本结果不确定，须先 _strip_ansi；与 display()/
-            #   web_display() 的 _on_line 同一处理，此处提前到数据源头使
+            #   含 ANSI 文本结果不确定，须先 _strip_ansi；与 display() 的
+            #   _on_line 同一处理，此处提前到数据源头使
             #   返回给大模型的输出同样生效）
             clean = _simulate_terminal(_strip_ansi(clean))
             lines.append(clean)
@@ -548,7 +548,7 @@ class BashFunc(Func):
         Args:
             show_command: 是否打印命令行到终端
             show_output: 是否实时打印输出到终端（_read_loop 内部）
-            publish_line_fn: 可选的行回调（display/web_display 用）
+            publish_line_fn: 可选的行回调（display 用）
 
         Returns:
             命令输出字符串（已截断）；超时转后台时返回 task_id JSON 字符串
@@ -899,7 +899,6 @@ class BashFunc(Func):
     # ── 父类契约实现 ──
     # execute() → 无 UI 副作用，只返回结果
     # display() → 负责 UI 展示（实时输出到终端）
-    # web_display() → WebUI 实时流式输出到前端
 
     async def execute(self) -> str:
         """异步执行命令并返回结果。
@@ -930,7 +929,7 @@ class BashFunc(Func):
         Returns:
             命令输出字符串（已截断）；超时转后台时返回 task_id JSON 字符串
         """
-        # ── 后台模式：display/web_display 路径同样不等待命令完成 ──
+        # ── 后台模式：display 路径同样不等待命令完成 ──
         if self.background:
             return await self._execute_background()
 
@@ -961,42 +960,5 @@ class BashFunc(Func):
                 await print_to_terminal(_wrap_colored_line(safe, RED))
             else:
                 await print_to_terminal(safe)
-
-        return await self._run_with_line_callback(_on_line)
-
-    async def web_display(self):
-        """WebUI 模式：异步执行命令并实时流式输出到前端。
-
-        ★ PTY 策略：使用伪终端执行子进程（_run_pty），
-           让子进程认为 stdout 是终端，强制行缓冲输出。
-           保证每条输出行都实时刷新，避免 PIPE 全缓冲问题。
-
-        两个输出管道并行：
-          - 终端：通过 sys.__stdout__ 直接打印（绕过 _SharedCapture 捕获）
-          - Web：通过 EventBus 发布 ToolOutputChunkEvent 到前端
-        """
-        from ..tui.events.event_types import ToolOutputChunkEvent
-        from ..tui.events.publish import emit
-
-        # 获取当前工具自己的 label（由 ToolCallbackChain._run_tool_method 设置）
-        tool_label: str | None = getattr(self, 'tool_label', None)
-
-        async def _on_line(text: str, is_stderr: bool) -> None:
-            # ★ 终端模拟：先剥 ANSI，再兑现 \r 覆盖语义（与 display() 一致，
-            #   工具卡片/前端呈现与真实终端相同的最终状态）。text 已由
-            #   _read_loop._handle_line 统一处理，此处为幂等防御。
-            clean = _simulate_terminal(_strip_ansi(text))
-            safe = clean if clean.endswith('\n') else clean + '\n'
-            if is_stderr:
-                # ★ BUG-79：行尾 \n 保持在 RESET 之后（_wrap_colored_line）——
-                #   修复前 ``f"{RED}{safe}{RESET}"`` 使下游 rstrip(\n)/尾空
-                #   segment 剔除失效，工具卡每个 stderr 行多一个空白行。
-                await print_to_terminal(_wrap_colored_line(safe, RED))
-            else:
-                await print_to_terminal(safe)
-            if tool_label:
-                emit(ToolOutputChunkEvent(
-                    label=tool_label, text=clean, source="agent",
-                ))
 
         return await self._run_with_line_callback(_on_line)

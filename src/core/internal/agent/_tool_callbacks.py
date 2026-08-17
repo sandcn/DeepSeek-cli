@@ -9,14 +9,12 @@ ToolScheduler 为全局单例，内聚 ToolDAG 构建 + 调度 + 并发控制。
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from ...parallel_executor import ParallelExecutor
 from ...tool_executor_async import ToolScheduler
 from ...telemetry import get_default_collector
 from ....api.tokens import estimate_tokens
-from ....tools.base import Func
 from ....tools.registry import get_tool_display_name
 
 _logger = logging.getLogger(__name__)
@@ -44,17 +42,12 @@ async def _run_file_display(func, display=None):
     return await func.display()
 
 
-def _spinner_refresher(display, tool_label: str):
-    """（废弃）Spinner 刷新已迁移至 ChatUIConsumer（chat_ui.py）。"""
-    return None
-
-
 class ToolCallbackChain:
     """工具回调链 — 封装 Agent 中工具调用的完整生命周期。
 
     接受 agent 实例作为构造参数，通过 self._agent 访问 agent 属性。
     提取自 agent.py：_handle_tool_calls / _run_tool_method / _on_before_tool /
-    _on_after_tool / _sanitize_args_for_log / _detect_webdiff / _show_tool_execution_summary。
+    _on_after_tool / _sanitize_args_for_log / _show_tool_execution_summary。
     """
 
     def __init__(self, agent):
@@ -76,8 +69,7 @@ class ToolCallbackChain:
         # 单次调用独立执行，多次调用共享实例实现真正并行
         dispatch_count = sum(1 for tc in tool_calls if tc.get("name") == "subagent")
         if dispatch_count > 0:
-            is_web = getattr(agent._display_port, 'is_web', False)
-            agent._shared_executor = ParallelExecutor(agent, is_web=is_web)
+            agent._shared_executor = ParallelExecutor(agent)
             agent._shared_executor.setup_barrier(dispatch_count)
         else:
             agent._shared_executor = None
@@ -175,27 +167,6 @@ class ToolCallbackChain:
         result = str(sanitized)
         return result[:200]
 
-    @staticmethod
-    def _detect_webdiff(output: str) -> tuple[dict | None, str]:
-        """检测 webdiff JSON 格式的输出，提取 diff_data 和预览文本。"""
-        diff_data = None
-        preview = output
-        if output and output.strip().startswith("{"):
-            try:
-                parsed = json.loads(output)
-                if isinstance(parsed, dict) and parsed.get("type") == "webdiff":
-                    diff_data = {
-                        "path": parsed.get("path", ""),
-                        "mode": parsed.get("mode", ""),
-                        "old_content": parsed.get("old_content", ""),
-                        "new_content": parsed.get("new_content", ""),
-                        "result": parsed.get("result", output),
-                    }
-                    preview = parsed.get("result", output)
-            except (json.JSONDecodeError, TypeError):
-                pass
-        return diff_data, preview
-
     def _on_before_tool(self, tc: dict, detail: str, parse_elapsed: float) -> None:
         """工具执行前回调：审计日志 + display 进度展示。"""
         agent = self._agent
@@ -218,16 +189,13 @@ class ToolCallbackChain:
         tool_label = tc["id"]
 
         if success:
-            diff_data, preview = self._detect_webdiff(output)
             metadata: dict = {
                 "参数": f"{estimate_tokens(_safe_json_dumps(tc.get('arguments', '')))}t",
                 "输出": f"{estimate_tokens(output)}t",
                 "行数": output.count('\n') + 1,
-                "output_preview": preview,
+                "output_preview": output,
                 "tool_name": tc["name"],
             }
-            if diff_data:
-                metadata["diff_data"] = diff_data
             agent.display.tool_done(tool_label, tc["name"], success=True, metadata=metadata)
         else:
             err_preview = (output[:300] + '…') if len(output) > 300 else output
@@ -245,7 +213,7 @@ class ToolCallbackChain:
 
         - subagent: 跳过 UI 输出，直接 execute
         - user_select: 交互式终端工具，跳过 stdout 捕获
-        - 其他工具: 统一走 stdout 捕获 + display/web_display
+        - 其他工具: 统一走 stdout 捕获 + display
 
         执行期间设置 contextvar（当前 tool_id），使 print_to_terminal /
         SharedCapture.write 能定向分发输出事件到正确的工具 box。
@@ -256,18 +224,17 @@ class ToolCallbackChain:
             func.tool_label = tool_label
 
         tool_name = tc["name"]
-        is_web = getattr(agent._display_port, 'is_web', False)
 
         if tool_name == "subagent":
             coro = func.execute()
         elif tool_name == "user_select":
-            coro = self._run_interactive(func, is_web)
+            coro = self._run_interactive(func)
         else:
-            coro = self._run_with_capture(func, tool_label, is_web)
+            coro = self._run_with_capture(func, tool_label)
         from ._tool_context import run_with_tool_context
         return await run_with_tool_context(tool_label, coro)
 
-    async def _run_interactive(self, func, is_web: bool):
+    async def _run_interactive(self, func):
         """执行交互式终端工具（user_select），跳过 stdout 捕获。
 
         stdout 捕获会劫持 sys.stdout 为 _SharedCapture，导致 prompt_toolkit
@@ -280,9 +247,6 @@ class ToolCallbackChain:
         suspend 会停止渲染循环（InputDispatcher 随之停止读 stdin），组件
         无法渲染/接收按键。弹窗期间 AI 状态栏/动画继续正常刷新。
         """
-        if is_web and func.__class__.web_display is not Func.web_display:
-            return await func.web_display()
-
         result = await func.execute()
 
         # user_select 结果通过 ToolOutputChunkEvent 上屏显示
@@ -331,29 +295,19 @@ class ToolCallbackChain:
         except Exception:
             _logger.debug("user_select 结果上屏失败", exc_info=True)
 
-    async def _run_with_capture(self, func, tool_label: str, is_web: bool):
-        """执行通用工具，带 stdout 捕获和 spinner 刷新。
+    async def _run_with_capture(self, func, tool_label: str):
+        """执行通用工具，带 stdout 捕获。
 
         工具执行期间的 stdout 输出会被实时捕获为 ToolOutputChunkEvent
-        → EventBus → WebToolBridge → SSE → 前端。
+        → EventBus → 前端渲染。
         """
         agent = self._agent
         if tool_label:
             agent._capture_mgr.start_capture(tool_label)
 
-        refresh_task = _spinner_refresher(agent.display, tool_label) if tool_label else None
-
         try:
-            if is_web and func.__class__.web_display is not Func.web_display:
-                return await func.web_display()
             return await func.display()
         finally:
-            if refresh_task:
-                refresh_task.cancel()
-                try:
-                    await refresh_task
-                except asyncio.CancelledError:
-                    pass
             if tool_label:
                 agent._capture_mgr.stop_capture(tool_label)
 

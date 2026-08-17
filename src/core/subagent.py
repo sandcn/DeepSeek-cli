@@ -365,7 +365,7 @@ class SubAgent(BaseAgent):
             "result": self.result,
             "error": self.error,
             # ★ 2026-08-17（用户需求：load 命令后也要合并）：所属 subagent
-            #   tool_call_id 随会话存档持久化——/load/--load/webui 恢复后
+            #   tool_call_id 随会话存档持久化——/load/--load 恢复后
             #   restore_trace_archive 凭此把历史 subagent 合并到主轨迹对应
             #   subagent 工具记录（旧会话无该字段 → 空串，独立记录兼容）。
             "dispatch_label": self.dispatch_label,
@@ -447,7 +447,7 @@ class SubAgent(BaseAgent):
         dispatch_count = sum(1 for tc in tool_calls if tc.get("name") == "subagent")
         if dispatch_count > 0:
             from .parallel_executor import ParallelExecutor
-            self._shared_executor = ParallelExecutor(self, is_web=False)
+            self._shared_executor = ParallelExecutor(self)
             self._shared_executor.setup_barrier(dispatch_count)
         else:
             self._shared_executor = None

@@ -175,11 +175,6 @@ class Func(abc.ABC):
         else:
             Func._publish_tool_text(f"  {GREEN}{success_prefix} {result}{RESET}")
 
-    @staticmethod
-    def _web_print(line: str) -> None:
-        """Web 模式下打印到终端（通过 EventBus 统一渲染）"""
-        Func._publish_tool_text(line)
-
     # ── 显示模板方法 ──
 
     async def _display_result_template(
@@ -212,31 +207,6 @@ class Func(abc.ABC):
             self._publish_tool_text(f"  {DIM}{lines_result[1]}{RESET}")
         return result
 
-    async def _web_display_result_template(
-        self, header: str, print_result: bool = True,
-    ) -> str:
-        """web_display() 通用模板 — ls/find/search 统一使用。
-
-        1. 用 _web_print 输出 header
-        2. await self.execute()
-        3. 可选：打印结果首行（成功绿色/错误黄色）
-        4. 返回 result
-        """
-        from ..core.constants import GREEN, YELLOW, DIM, RESET
-
-        line = f"\n  {DIM}{header}{RESET}\n"
-        self._web_print(line)
-
-        result = await self.execute()
-
-        if print_result:
-            if result.startswith("("):
-                self._web_print(f"  {YELLOW}{result}{RESET}\n")
-            else:
-                self._web_print(f"  {GREEN}{result.split(chr(10))[0]}{RESET}\n")
-
-        return result
-
     # ── 抽象方法 ──
 
     @abc.abstractmethod
@@ -247,10 +217,6 @@ class Func(abc.ABC):
     async def display(self) -> str:
         """显示工具执行过程并返回结果。默认直接 await execute()，子类可覆盖以添加 UI 输出。"""
         return await self.execute()
-
-    async def web_display(self) -> str:
-        """Web 模式下的工具执行。默认回退到 display()，子类可覆盖以提供 Web 专用 UI。"""
-        return await self.display()
 
     # ── 执行指标 ──
 

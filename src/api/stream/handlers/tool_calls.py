@@ -16,7 +16,7 @@ class ToolCallsHandler:
 
         首次检测到 tool_calls 时 flush 缓冲区并启动 tracker。
         对每个新工具调用索引，通过 ctx.display.tool_parsing()
-        发布 ToolParsingEvent 到 EventBus（供 Web UI 消费）。
+        发布 ToolParsingEvent 到 EventBus。
         """
         if not ctx.tracker.started:
             # 首次检测到工具调用：标记推理阶段结束、同步状态
@@ -47,7 +47,7 @@ class ToolCallsHandler:
                     "arguments": "",
                     "_stream_label": _stream_label,
                 }
-                # 🔥 发布 ToolParsingEvent 到 EventBus（Web 桥接器消费）
+                # 🔥 发布 ToolParsingEvent 到 EventBus
                 #    label 使用 ctx.label（agent 标签，如 "agent-1"），
                 #    确保 SubAgentPanelController 能正确查找对应 agent slot。
                 if ctx.display is not None:

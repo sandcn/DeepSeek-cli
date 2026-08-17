@@ -128,7 +128,7 @@ class SessionPersistenceManager:
             self._set_subagents(data.get("subagents") or [])
 
         # ★ 2026-08-17（用户需求：load 命令支持已完成 subagent 轨迹）：恢复
-        #   轨迹存档（--load 启动 / webui 加载路径）——主轨迹显示历史 subagent
+        #   轨迹存档（--load 启动路径）——主轨迹显示历史 subagent
         #   记录、Enter 可进入查看完整轨迹（数据源与构建逻辑复用运行时同一
         #   套，无第二份实现；非 TUI 环境零成本跳过）。
         self._restore_trace_archive(data.get("subagents") or [])

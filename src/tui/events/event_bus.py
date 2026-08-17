@@ -56,11 +56,9 @@ class DisplayEventBus(metaclass=SingletonMeta):
       - **直接构造 ``DisplayEventBus()`` 创建独立实例**（不再拦截返回单例）
         ——测试/多场景可持有完全隔离的事件总线（实例间订阅互不干扰）；
       - ``get_default()`` 仍返回进程级默认实例（生产路径零变化）；
-      - CLI/WebUI **共享默认实例为既有架构约束**（webui bridge 依赖默认
-        实例转发模型事件到前端，完全隔离会破坏 webui 显示）——P2 遗留
-        更新：不做 CLI/WebUI 强制隔离，但实例化 + 注入路径已打通
+      - 不做强制单例隔离，但实例化 + 注入路径已打通
         （``emit(event, bus=...)`` / ``ChatUIConsumer(event_bus=...)`` /
-        ``WebEventBridge(event_bus=...)`` / ``DisplayEventBusAdapter(bus=...)``），
+        ``DisplayEventBusAdapter(bus=...)``），
         需要隔离的场景（测试/多会话）可自行注入独立实例。
     """
 

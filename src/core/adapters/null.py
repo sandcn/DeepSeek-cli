@@ -16,8 +16,6 @@ class _NullDisplayPort(DisplayPort):
     不覆盖 __getattr__，避免 hasattr 误报。
     """
 
-    is_web: bool = False
-
     def write(self, text: str = "", level: str = "info", source: str = "core") -> None:
         pass
 
@@ -50,7 +48,7 @@ class _NullDisplayPort(DisplayPort):
     def capture_and_print(self, display_func) -> str:
         return ""
 
-    def capture_and_print_async(self, display_func) -> str:
+    async def capture_and_print_async(self, display_func) -> str:
         return ""
 
     def tool_batch_start(self, label: str, names: list[str]) -> None:

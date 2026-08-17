@@ -30,8 +30,6 @@ def _parse_args() -> argparse.Namespace:
     # 旧语法兼容：无参数或首个参数以 - 开头时，自动映射到对应子命令
     if len(argv) <= 1:
         argv.insert(1, 'run')
-    elif argv[1] == '--webui':
-        argv[1] = 'webui'
     elif argv[1].startswith('-') and argv[1] not in _OLD_FLAGS:
         argv.insert(1, 'run')
 
@@ -63,12 +61,6 @@ def _parse_args() -> argparse.Namespace:
     p_run = subparsers.add_parser('run', help='交互/单次对话模式（默认）')
     p_run.add_argument('-p', '--prompt', type=str, help='输入一句话，大模型回答完成后退出')
     p_run.add_argument('--load', type=str, help='从保存的会话 ID 恢复对话')
-
-    # webui — Web UI 模式
-    p_webui = subparsers.add_parser('webui', help='启动 Web UI 模式')
-    p_webui.add_argument('--host', type=str, default='0.0.0.0', help='监听地址（默认 0.0.0.0）')
-    p_webui.add_argument('--port', type=int, default=8080, help='端口（默认 8080）')
-    p_webui.add_argument('--load', type=str, help='从保存的会话 ID 恢复')
 
     # session — 会话管理
     p_session = subparsers.add_parser('session', help='会话管理')
