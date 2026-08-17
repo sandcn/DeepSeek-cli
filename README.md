@@ -14,7 +14,7 @@
 
 ```bash
 # 安装全部核心依赖
-pip install httpx rich Pygments Jinja2 beautifulsoup4 chardet aiofiles
+pip install httpx rich Pygments Jinja2 beautifulsoup4 chardet aiofiles qrcode
 
 # 安装开发依赖（测试/代码检查等）
 pip install pytest pytest-asyncio pytest-xdist pytest-cov ruff mypy
@@ -41,6 +41,7 @@ pip install ".[dev]"
 | `beautifulsoup4` | HTML 解析 | `pip install beautifulsoup4` |
 | `chardet` | 字符编码检测 | `pip install chardet` |
 | `aiofiles` | 异步文件操作 | `pip install aiofiles` |
+| `qrcode` | 终端二维码生成（微信 ClawBot 登录） | `pip install qrcode` |
 
 ---
 
@@ -182,6 +183,41 @@ python chat.py version
 | `python chat.py session delete abc123` | 删除会话 |
 | `python chat.py session export abc123` | 导出会话 |
 | `python chat.py --version` | 显示版本信息 |
+| `python chat.py clawbot` | 微信 ClawBot 远程控制（扫码登录） |
+| `python chat.py clawbot --re-login` | 强制重新扫码登录 |
+
+---
+
+### 3.5 微信 ClawBot 远程控制（clawbot）
+
+通过微信官方 ClawBot 插件协议（iLink Bot API）实现**远程发命令 + 结果显示**：
+
+```bash
+python chat.py clawbot              # 启动（复用缓存凭证或扫码登录）
+python chat.py clawbot --re-login   # 强制重新扫码登录
+```
+
+**登录**：终端会直接渲染微信官方登录二维码（手机扫码即可，无需打开文件），扫码确认后自动进入监听模式。
+
+**远程发命令**（在微信里给 ClawBot 发消息）：
+
+| 微信消息 | 功能 |
+|---|---|
+| 普通文本 | AI 对话（DeepSeek 会话引擎，可自动调用文件/Shell 等工具） |
+| `/shell <命令>` | 远程执行 Shell 命令并回显结果 |
+| `/clear` | 清空当前会话上下文 |
+| `/new` | 开始新会话 |
+| `/status` | 显示模型、会话与连接状态 |
+| `/time` | 显示连接剩余时间 |
+| `/model <名称>` | 切换模型 |
+| `/help` | 显示帮助 |
+
+**安全配对**：首次发消息的用户需回复终端打印的配对码完成授权，之后该用户的所有命令都被处理；已授权用户持久化在 `~/.chat_config/clawbot_allowed.json`。
+
+**其他说明**：
+- 每个微信用户有独立会话（LRU 上限 20 个），结果分段回显到微信
+- 输入状态指示（"正在输入"）自动发送/取消
+- iLink 连接有效期 24 小时，到期前自动提醒并支持扫码重连
 
 ---
 

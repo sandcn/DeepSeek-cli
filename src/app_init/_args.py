@@ -45,6 +45,8 @@ def _parse_args() -> argparse.Namespace:
             '  python chat.py session delete xxx  删除会话\n'
             '  python chat.py session export xxx  导出会话\n'
             '  python chat.py version             查看版本\n'
+            '  python chat.py clawbot             微信 ClawBot 远程控制（扫码登录）\n'
+            '  python chat.py clawbot --re-login  强制重新扫码\n'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -77,6 +79,16 @@ def _parse_args() -> argparse.Namespace:
 
     # version
     subparsers.add_parser('version', help='显示版本信息并退出')
+
+    # clawbot — 微信 ClawBot 远程控制
+    p_clawbot = subparsers.add_parser(
+        'clawbot',
+        help='微信 ClawBot 远程控制（扫码登录、远程发命令、结果回显）',
+    )
+    p_clawbot.add_argument('--re-login', action='store_true',
+                           help='强制重新扫码登录（忽略本地缓存凭证）')
+    p_clawbot.add_argument('--no-tui', action='store_true',
+                           help='不使用 TUI 界面（回退纯文本日志模式）')
 
     return parser.parse_args(argv[1:])
 

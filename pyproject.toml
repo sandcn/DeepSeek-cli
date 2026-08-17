@@ -15,6 +15,7 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "chardet>=3.0",
     "aiofiles>=23",
+    "qrcode>=7.4",
 ]
 
 [project.optional-dependencies]

@@ -73,6 +73,14 @@ async def main():
         # ── run 模式 ──
         _apply_theme(args)
 
+        # ── clawbot 模式：微信 ClawBot 远程控制（默认 TUI：非全屏聊天界面
+        #     + 本地输入 + 微信多用户共享同一会话） ──
+        if args.command == 'clawbot':
+            from ..clawbot.runner import run_clawbot
+            await run_clawbot(model=args.model, re_login=args.re_login,
+                              tui=not args.no_tui)
+            return
+
         loaded_data = None
         if args.load:
             data = load_session(args.load)
