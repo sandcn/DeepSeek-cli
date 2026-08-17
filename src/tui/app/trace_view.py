@@ -27,6 +27,8 @@ Ctrl+H（0x08）打开/关闭：App 在 ``model.trace_open`` 时**整屏只渲�
 
 from __future__ import annotations
 
+import json
+
 from src.tui._format import format_duration, format_tokens
 from src.tui._input_layout import _wrap_by_width
 from src.tui.app.trace import (
@@ -49,6 +51,17 @@ _S_TEXT = Style(fg=252)                    # 摘要/内容文本（亮白）
 _S_DIM = Style(fg=242)                     # 推理摘要/元信息（暗灰）
 _S_SEL_BG = Style(bg=237)                  # 选中行背景（静态 237，不呼吸）
 _S_SEL_MARK = Style(fg=45, bold=True)      # 选中 ▶ 标记（亮青加粗）
+_S_SECTION = Style(fg=110, bold=True)      # 检查器小节标题（参数/返回值，浅蓝加粗）
+_S_TREE_KEY = Style(fg=75)                 # 树节点键（浅紫蓝）
+_S_TREE_VAL = Style(fg=252)                # 树节点标量值（亮白）
+
+#: 树节点指示符/缩进（对齐 ink Tree 控件渲染语义——检查器参数/返回值
+#:   以树形结构展示：层级缩进 + 展开指示符）
+_TREE_OPEN = "\u25be "    # ▾ 展开
+_TREE_LEAF = "  "         # 叶子占位（对齐 Tree._TREE_LEAF）
+_TREE_INDENT = 2          # 每层缩进空格数（对齐 Tree._TREE_INDENT）
+#: 参数/返回值小节标题前缀
+_SECTION_PREFIX = "\u25b8 "  # ▸
 
 #: 种类图标（台账行）与名称（检查器标题）——对齐既有角色头 emoji 语义
 _KIND_ICON = {
@@ -182,9 +195,18 @@ def _detail_deps(rec) -> tuple:
     records 每帧重建 → lines 新 id → use_memo 恒 miss → 每帧重新提取快照
     （无用功）。块路径用 block.lines 稳定引用 + 行数（流式增长触发重建），
     与 ``_md_detail_rows`` 的块缓存键一致（单一数据源语义）。
+
+    ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树控件显示）：
+    tool 记录检查器树显示数据源 = ``tool_args``/``tool_result``——运行中
+    工具输出流式增长（``tool_result`` 变长）须触发重建；时间基元素
+    （``time_seconds``）不入指纹（台账静态色，不随动画重建）。
     """
     if rec is None:
         return (None,)
+    if getattr(rec, "kind", "") == "tool":
+        args = getattr(rec, "tool_args", None)
+        result = str(getattr(rec, "tool_result", "") or "")
+        return ("tool-tree", repr(args)[:200], result[:200], len(result))
     block = getattr(rec, "source_block", None)
     if block is not None:
         return (id(getattr(block, "lines", None)), len(getattr(block, "lines", None) or []))
@@ -324,6 +346,172 @@ def _lines_fp(lines) -> int:
         return id(lines)
 
 
+#: 工具调用树显示模块级缓存（对齐 ``_MD_RENDER_CACHE`` 语义）：键 =
+#: (args 前 200 字符, result 前 200 字符, result 长度, right_w) → 行列表。
+#: 流式期间 records 每帧重建（新 TraceRecord）——树内容不变时跨 rec 命中
+#: 零重建；运行中工具输出增长（result 变化）键变 → miss 重建（流式动态
+#: 更新）。渲染结果纯函数（同输入同输出），跨 rec 共享安全。有界防无限
+#: 增长（超限清空重建——miss 仅多一次渲染，无正确性影响）。
+_TOOL_TREE_CACHE: dict = {}
+_TOOL_TREE_CACHE_MAX = 64
+
+
+#: 树递归深度上限（防御：超过则停止展开 children——与 ink Tree 控件
+#: ``_TREE_MAX_DEPTH`` 同语义，避免异常深层 JSON 触发 RecursionError）。
+_TREE_MAX_DEPTH = 200
+
+
+def _value_to_tree(value, key: str = "", depth: int = 0) -> list:
+    """任意值 → 树控件 data 格式节点列表（{label, children}）。
+
+    ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树控件显示）：
+    JSON 值 → 树形节点（对齐 ink Tree 控件 data 形态——label/children）：
+      - dict → 键值对子节点；key 非空时包装为 ``key (N 项)`` 节点（根 key
+        为空直接列出子节点——省略无名根，紧凑展示）；
+      - list → 下标子节点（``[i]``）；key 非空时包装为 ``key (N 项)``；
+      - 标量 → 叶子 ``key: value``（key 为空则纯 value）；
+      - 空 dict/list → 叶子 ``key: {}``/``key: []``。
+    """
+    if depth > _TREE_MAX_DEPTH:
+        return []
+    if isinstance(value, dict):
+        if not value:
+            return [{"label": (f"{key}: {{}}" if key else "{}"), "children": []}]
+        children: list = []
+        for k, v in value.items():
+            children.extend(_value_to_tree(v, str(k), depth + 1))
+        if key:
+            return [{"label": f"{key} ({len(value)} 项)", "children": children}]
+        return children
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return [{"label": (f"{key}: []" if key else "[]"), "children": []}]
+        children = []
+        for i, v in enumerate(value):
+            children.extend(_value_to_tree(v, f"[{i}]", depth + 1))
+        if key:
+            return [{"label": f"{key} ({len(value)} 项)", "children": children}]
+        return children
+    # 标量：JSON 字面量语义（null/true/false——对齐 JSON 原文，而非 Python
+    # 的 None/True/False 字符串化）
+    if value is None:
+        display = "null"
+    elif isinstance(value, bool):
+        display = "true" if value else "false"
+    else:
+        display = str(value)
+    return [{"label": (f"{key}: {display}" if key else display), "children": []}]
+
+
+def _args_to_tree(args) -> list:
+    """工具调用参数 → 树节点列表（str JSON / dict；None/空 → []）。
+
+    str 形态尝试 JSON 解析（消息模型 arguments 原始 JSON 串）；解析失败
+    （块路径 tool_detail 关键参数摘要等非 JSON 文本）→ 单叶子节点。
+    """
+    if args is None:
+        return []
+    if isinstance(args, dict):
+        return _value_to_tree(args)
+    text = str(args).strip()
+    if not text:
+        return []
+    try:
+        return _value_to_tree(json.loads(text))
+    except (ValueError, TypeError):
+        return [{"label": text, "children": []}]
+
+
+def _parse_tree_text(text) -> list:
+    """工具返回文本 → 树节点列表（JSON 解析成功 → 树；失败 → 每行一个叶子）。
+
+    ★ 2026-08-17（用户需求：轨迹 Trace 工具调用返回值用树控件显示）：
+    bash/read_file 等工具返回值通常为**非 JSON 纯文本**（命令回显/文件
+    内容）——以文本行叶子树形展示（对齐 Tree 控件叶子行语义）。
+    """
+    if text is None:
+        return []
+    s = str(text).strip()
+    if not s:
+        return []
+    try:
+        return _value_to_tree(json.loads(s))
+    except (ValueError, TypeError):
+        lines = s.splitlines() or [s]
+        return [{"label": ln, "children": []} for ln in lines]
+
+
+def _tree_node_rows(nodes: list, right_w: int, out: list, depth: int = 0) -> None:
+    """树节点列表 → 可见行（前序；缩进 + 展开指示符；对齐 Tree 控件渲染）。
+
+    只读展示（检查器不参与树交互——台账 ListView 独占导航焦点），默认展开
+    全部层级；label 含 ``\\n`` 归一化单行（防行级 diff 宽度不变量破坏）；
+    行超宽截断到 right_w（行级 diff 宽度不变量）。
+    """
+    if depth > _TREE_MAX_DEPTH:
+        return
+    for node in nodes:
+        children = node.get("children") or []
+        indicator = _TREE_OPEN if children else _TREE_LEAF
+        prefix = " " * (depth * _TREE_INDENT)
+        label = node.get("label", "")
+        if "\n" in label:
+            label = label.replace("\n", " ")
+        text = f"{prefix}{indicator}{label}"
+        out.append(truncate_runs([StyledRun(text, _S_TEXT)], max(1, right_w)))
+        if children:
+            _tree_node_rows(children, right_w, out, depth + 1)
+
+
+def _tool_tree_rows(rec, right_w: int) -> list:
+    """tool 记录检查器树内容行：**参数树 → 分割线 → 返回值树**。
+
+    ★ 2026-08-17（用户需求：轨迹 Trace 工具调用修改——参数用树控件显示，
+    然后分割线，返回值用树控件显示）：选中 tool 记录时检查器内容 =
+      1. ``▸ 参数`` 小节标题 + 参数树（``tool_args`` JSON 树形展开）；
+      2. 分割线（``──`` 深灰满宽——分隔参数与返回值）；
+      3. ``▸ 返回值`` 小节标题 + 返回值树（``tool_result`` JSON 树形展开，
+         非 JSON 文本每行一个叶子）。
+    参数/返回值缺失（None/空）→ 对应小节占位提示（(无参数)/(无返回)）。
+
+    Args:
+        rec: tool TraceRecord（读 ``tool_args``/``tool_result``）。
+        right_w: 右栏宽（行超宽截断；<=0 外部调用防御）。
+
+    Returns:
+        list[list[StyledRun]]——树内容行（head-first 顺序；预算/截断/省略
+        提示由 ``_inspector_children`` 统一处理）。
+    """
+    right_w = max(1, right_w)
+    args = getattr(rec, "tool_args", None)
+    result = str(getattr(rec, "tool_result", "") or "")
+    key = (repr(args)[:200], result[:200], len(result), right_w)
+    cached = _TOOL_TREE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    rows: list = []
+    # ── 1. 参数小节（树控件显示参数） ──
+    rows.append([StyledRun(f"{_SECTION_PREFIX}参数", _S_SECTION)])
+    arg_nodes = _args_to_tree(args)
+    if arg_nodes:
+        _tree_node_rows(arg_nodes, right_w, rows)
+    else:
+        rows.append([StyledRun("(无参数)", _S_HINT)])
+    # ── 2. 分割线（参数 / 返回值 之间的分隔） ──
+    rows.append([StyledRun("\u2500" * max(1, right_w - 1), _S_SEP_ROW)])
+    # ── 3. 返回值小节（树控件显示返回值） ──
+    rows.append([StyledRun(f"{_SECTION_PREFIX}返回值", _S_SECTION)])
+    result_nodes = _parse_tree_text(result)
+    if result_nodes:
+        _tree_node_rows(result_nodes, right_w, rows)
+    else:
+        rows.append([StyledRun("(无返回)", _S_HINT)])
+    _TOOL_TREE_CACHE[key] = rows
+    if len(_TOOL_TREE_CACHE) > _TOOL_TREE_CACHE_MAX:
+        _TOOL_TREE_CACHE.clear()
+    return rows
+
+
 #: 内联 markdown 渲染模块级缓存（review 修复 P1-3）：键 = (内容指纹, 行数,
 #: right_w, kind) → rows。流式期间 records 每帧重建（新 TraceRecord）——
 #: rec 级缓存恒冷（新 rec 无 _md_detail_cache），模块级缓存**跨 rec 命中**
@@ -457,7 +645,28 @@ def _inspector_children(rec, right_w: int, vh: int) -> list:
     use_md = kind in ("reasoning", "content", "system")
     if use_md:
         md_rows = _md_detail_rows(rec, right_w, kind)
-    if use_md and md_rows:
+    # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用修改——参数用树控件显示，
+    #   然后分割线，返回值用树控件显示）：tool 记录且携带参数/返回值树数据
+    #   （``tool_args``/``tool_result``）→ 检查器内容 = 参数树 + 分割线 +
+    #   返回值树（``_tool_tree_rows``——head-first 截断 + 「… 后 N 行省略」
+    #   后置，与既有 tool 纯文本分支语义一致）；无树数据（手动构造/异常
+    #   路径）回退纯文本 lines（零回归——既有 test_inspector_tool_* 直接
+    #   构造无树数据的记录）。
+    use_tool_tree = kind == "tool" and (
+        (getattr(rec, "tool_args", None) is not None
+         and str(getattr(rec, "tool_args", "")) != "")
+        or (getattr(rec, "tool_result", "") or "")
+    )
+    if use_tool_tree:
+        tree_rows = _tool_tree_rows(rec, right_w)
+        total_lines = len(tree_rows)
+        for runs in tree_rows:
+            if shown >= budget:
+                truncated = True
+                break
+            segs.append(runs)
+            shown += 1
+    elif use_md and md_rows:
         total_lines = len(md_rows)
         src_rows = reversed(md_rows) if tail_first else md_rows
         for runs in src_rows:
@@ -526,7 +735,7 @@ def _inspector_children(rec, right_w: int, vh: int) -> list:
             "children": f"\u2026 后 {omitted} 行省略",
             "style": _S_HINT, "height": 1, "key": "tinsp-omitted",
         }))
-    if not lines and not md_rows:
+    if not lines and not md_rows and not use_tool_tree:
         children.append(h(TEXT, {
             "children": "(无内容)", "style": _S_HINT, "height": 1,
             "key": "tinsp-none",
@@ -874,4 +1083,9 @@ __all__ = [
     "_convert_ansi_row",
     "_lines_fp",
     "_to_tui_style",
+    "_value_to_tree",
+    "_args_to_tree",
+    "_parse_tree_text",
+    "_tool_tree_rows",
+    "_tree_node_rows",
 ]

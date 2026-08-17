@@ -76,6 +76,12 @@ class TraceRecord:
         tool_call_id: 工具调用唯一 ID（tool_call_id；tool 记录专用——主轨迹
             台账按此把 subagent 记录合并到对应的 subagent 工具调用
             记录；块回退路径/无 ID 为空串）。
+        tool_args: 工具调用原始参数（tool 记录专用——str JSON 或 dict；
+            None=无参数数据）。检查器据此用**树控件**显示参数
+            （``_value_to_tree`` JSON 树形展开；非 JSON 文本回退单节点）。
+        tool_result: 工具返回原始文本（tool 记录专用——消息模型 tool 返回
+            content 原文；空串=无返回）。检查器据此用**树控件**显示返回值
+            （JSON 树形展开；非 JSON 文本每行一个叶子节点）。
     """
 
     index: int = 0
@@ -89,6 +95,8 @@ class TraceRecord:
     source_block: object | None = None
     subagent_label: str = ""
     tool_call_id: str = ""
+    tool_args: object = None
+    tool_result: str = ""
 
 
 #: 块种类 → 轨迹记录种类（separator 跳过；splash 品牌屏跳过——非业务记录）
@@ -309,6 +317,16 @@ def _record_from_block(block, index: int) -> TraceRecord | None:
         rec.summary = f"{tool_name} {detail}".strip()
         rec.result = _tool_result_preview(block)
         rec.status = extra.get("tool_status", "running")
+        # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树控件
+        #   显示）：块回退路径填充树显示数据源——参数 = 工具卡标题 detail
+        #   （extract_key_params 关键参数摘要）；返回值 = 工具块输出行
+        #   （跳过原始标题行/状态数据行，与 ``block_detail_lines`` 同语义）。
+        rec.tool_args = detail
+        blines = _block_plain_lines(block)
+        status_idx = _tool_status_data_index(block)
+        out_lines = [ln for i, ln in enumerate(blines)
+                     if i != 0 and i != status_idx]
+        rec.tool_result = "\n".join(out_lines)
         started = extra.get("_tool_started_at")
         if started is not None:
             duration = extra.get("_tool_duration")
@@ -506,6 +524,12 @@ def _live_records(model, index_holder: list, out_records: list, rows: list,
             result=result or "（运行中…）",
             lines=detail_lines,
             time_seconds=time_sec,
+            # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树控件
+            #   显示）：运行中工具同样填充树显示数据源——参数 = 标题 detail
+            #   （关键参数摘要）；返回值 = 当前已输出行（流式增长驱动检查器
+            #   树重渲染）。
+            tool_args=detail,
+            tool_result="\n".join(ln for i, ln in enumerate(lines) if i != 0),
         )
         out_records.append(rec)
         rows.append(rec)
@@ -637,6 +661,10 @@ def _records_from_messages(messages) -> tuple:
                     #   subagent 槽位（dispatch_label = tool_call_id）匹配合并
                     #   （同轮并行多次 dispatch 时精确关联各自 agent）。
                     tool_call_id=cid,
+                    # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值
+                    #   用树控件显示）：保存**原始 arguments**（str JSON 或
+                    #   dict）——检查器据此用树控件显示参数（JSON 树形展开）。
+                    tool_args=args,
                 )
                 records.append(rec)
                 rows.append(rec)
@@ -653,6 +681,10 @@ def _records_from_messages(messages) -> tuple:
                 # ★ 工具调用 + 返回合并一条：返回追加到调用记录
                 rec.result = _first_text(lines)
                 rec.lines = list(rec.lines) + lines
+                # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树
+                #   控件显示）：保存**原始返回文本**——检查器据此用树控件显示
+                #   返回值（JSON 树形展开；非 JSON 文本每行一个叶子节点）。
+                rec.tool_result = text
             else:
                 # 无匹配调用（异常/截断会话）→ 独立返回记录
                 index += 1
@@ -660,6 +692,7 @@ def _records_from_messages(messages) -> tuple:
                     index=index, kind="tool", summary="工具返回",
                     result=_first_text(lines),
                     lines=["工具返回"] + lines,
+                    tool_result=text,
                 )
                 records.append(rec)
                 rows.append(rec)
@@ -909,6 +942,9 @@ def _subagent_live_records(index_holder: list, out_records: list, rows: list,
             index=index_holder[0], kind="tool", summary=call,
             status="running", result="（运行中…）",
             time_seconds=time_sec, lines=[call],
+            # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树控件
+            #   显示）：subagent 运行中工具同样填充参数树数据源。
+            tool_args=det,
         )
         out_records.append(tool_rec)
         rows.append(tool_rec)
@@ -1026,6 +1062,9 @@ def _subagent_fallback_records(label: str, slot) -> tuple:
         tool_rec = TraceRecord(
             index=index, kind="tool", summary=call,
             status=status, time_seconds=time_sec, lines=[call],
+            # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树控件
+            #   显示）：subagent 回退路径工具记录同样填充参数树数据源。
+            tool_args=det,
         )
         records.append(tool_rec)
         rows.append(tool_rec)

@@ -36,12 +36,16 @@ from src.tui.app.trace import (
 )
 from src.tui.app.trace_view import (
     TraceView,
+    _args_to_tree,
     _block_styled_rows,
     _inspector_children,
     _ledger_row_runs,
     _md_detail_rows,
+    _parse_tree_text,
     _subagent_trace_deps,
     _to_tui_style,
+    _tool_tree_rows,
+    _value_to_tree,
 )
 from src.tui.ink import hooks
 from src.tui.ink.fiber import TAG_FUNCTION, Fiber
@@ -3101,3 +3105,170 @@ def test_tools_record_in_main_and_subagent_trace():
     finally:
         ctl._store.clear()
         ctl.clear_trace_archive()
+
+
+# ═══════════════════════════════════════════════════════════
+# 14. 轨迹 Trace 工具调用：参数/返回值用树控件显示（2026-08-17 用户需求）
+# ═══════════════════════════════════════════════════════════
+# 用户需求：轨迹 Trace 的工具调用修改——参数用树控件显示，然后分割线，
+# 返回值用树控件显示。数据层（trace.py）：tool 记录保存原始参数
+# （tool_args）与返回文本（tool_result）；渲染层（trace_view.py）：选中
+# tool 记录时检查器内容 = 参数树 + 分割线 + 返回值树（JSON 树形展开，
+# 非 JSON 文本每行一个叶子；无树数据回退纯文本 lines 零回归）。
+
+def test_records_from_messages_tool_args_result_preserved():
+    """消息源 tool 记录保存原始参数（arguments JSON 串）与返回文本
+    （树显示数据源）。"""
+    records, _ = _records_from_messages(_sample_messages())
+    tool = next(r for r in records if r.kind == "tool")
+    assert tool.tool_args == '{"command": "ls -la"}', "应保存原始 arguments"
+    assert tool.tool_result == "总用量 4462\ndrwxrwxr-x", "应保存原始返回文本"
+
+
+def test_build_records_tool_args_result_filled():
+    """块路径 tool 记录填充树数据：tool_args = 工具卡标题 detail；
+    tool_result = 输出行（剔除原始标题行/状态数据行）。"""
+    records, _ = build_trace_records(_make_model_with_blocks())
+    tool = next(r for r in records if r.kind == "tool")
+    assert tool.tool_args == "ls -la"
+    assert tool.tool_result == "file1.txt\nfile2.txt"
+
+
+def test_inspector_tool_tree_args_divider_result():
+    """tool 记录检查器：**参数树 → 分割线 → 返回值树**（用户需求核心）。"""
+    rec = TraceRecord(index=1, kind="tool", summary="bash ls -la")
+    rec.tool_args = '{"command": "ls -la", "cwd": "/tmp"}'
+    rec.tool_result = "file1.txt\nfile2.txt"
+    children = _inspector_children(rec, right_w=40, vh=20)
+    texts = [str(c.props.get("children", "")) for c in children]
+    joined = "\n".join(texts)
+    # 参数小节 + 参数树（JSON 键值叶子）
+    assert texts[1] == "\u25b8 参数", f"参数小节标题应紧随标题: {texts[:3]}"
+    assert "command: ls -la" in joined
+    assert "cwd: /tmp" in joined
+    # 分割线（参数与返回值之间）
+    sep_idx = next(i for i, t in enumerate(texts) if "\u2500" in t)
+    assert any("\u2500" in t for t in texts), "应有分割线"
+    # 返回值小节 + 树（非 JSON 文本 → 每行一个叶子）
+    assert "\u25b8 返回值" in joined
+    assert "file1.txt" in joined
+    assert "file2.txt" in joined
+    # 顺序：参数 → 分割线 → 返回值
+    assert texts.index("\u25b8 参数") < sep_idx < texts.index("\u25b8 返回值")
+
+
+def test_inspector_tool_tree_nested_json():
+    """嵌套 JSON 参数/返回值 → 树形层级（▾ 展开指示符 + 缩进 + 下标）。"""
+    rec = TraceRecord(index=1, kind="tool", summary="read_file")
+    rec.tool_args = '{"path": "src/main.py", "meta": {"lines": [1, 2], "lang": "py"}}'
+    rec.tool_result = '{"ok": true, "count": 2}'
+    children = _inspector_children(rec, right_w=40, vh=30)
+    texts = [str(c.props.get("children", "")) for c in children]
+    joined = "\n".join(texts)
+    # 参数树：标量叶子 + 嵌套 dict 节点 + list 下标节点
+    assert "path: src/main.py" in joined
+    assert "meta (2 项)" in joined
+    assert "lines (2 项)" in joined
+    assert "[0]: 1" in joined and "[1]: 2" in joined
+    assert "lang: py" in joined
+    # 返回值 JSON 树：布尔/数字标量（JSON 字面量语义）
+    assert "ok: true" in joined
+    assert "count: 2" in joined
+    # ▾ 展开指示符（有 children 的节点）
+    assert "\u25be" in joined
+
+
+def test_inspector_tool_tree_non_json_result():
+    """非 JSON 返回值 → 文本行叶子树形展示（每行一个叶子，对齐 Tree 控件）。"""
+    rec = TraceRecord(index=1, kind="tool", summary="bash ls")
+    rec.tool_args = "ls -la"  # 非 JSON 参数 → 单叶子
+    rec.tool_result = "drwxrwxr-x 1 user\n-rw-r--r-- 1 user"
+    children = _inspector_children(rec, right_w=40, vh=20)
+    joined = "\n".join(str(c.props.get("children", "")) for c in children)
+    assert "\u25b8 返回值" in joined
+    assert "drwxrwxr-x 1 user" in joined
+    assert "-rw-r--r-- 1 user" in joined
+    assert "ls -la" in joined, "非 JSON 参数以单叶子显示"
+
+
+def test_inspector_tool_tree_budget_truncated():
+    """树内容超视口预算 → 「… 后 N 行省略」**后置**（head-first，对齐 tool
+    语义——省略的是尾部内容）。"""
+    rec = TraceRecord(index=1, kind="tool", summary="bash")
+    rec.tool_args = '{"command": "x"}'
+    rec.tool_result = "\n".join(f"输出行{i}" for i in range(50))
+    children = _inspector_children(rec, right_w=40, vh=8)
+    texts = [str(c.props.get("children", "")) for c in children]
+    omitted = [t for t in texts if "省略" in t]
+    assert omitted and "后" in omitted[0], f"应显示后 N 行省略: {texts}"
+    assert texts[-1] == omitted[0], f"省略提示应在最后一行: {texts}"
+    assert any("输出行0" in t for t in texts), "head-first 从头部显示"
+    assert not any("输出行49" in t for t in texts), "尾部省略"
+
+
+def test_inspector_tool_without_tree_falls_back_lines():
+    """无树数据（tool_args/tool_result 均空——手动构造/异常路径）→ 回退
+    纯文本 lines（零回归：既有 tool 检查器语义保持）。"""
+    rec = TraceRecord(index=1, kind="tool", summary="bash ls")
+    rec._detail_lines = ["调用行", "返回行"]
+    children = _inspector_children(rec, right_w=40, vh=10)
+    texts = [str(c.props.get("children", "")) for c in children]
+    assert "调用行" in texts
+    assert "返回行" in texts
+    assert not any("\u25b8 参数" in t for t in texts), "无树数据不应显示参数小节"
+
+
+def test_inspector_tool_tree_placeholder():
+    """参数/返回值单侧缺失 → 对应小节占位提示（(无参数)/(无返回)）。"""
+    # 仅参数（无返回）
+    rec = TraceRecord(index=1, kind="tool", summary="bash")
+    rec.tool_args = '{"command": "pwd"}'
+    rec.tool_result = ""
+    children = _inspector_children(rec, right_w=40, vh=20)
+    texts = [str(c.props.get("children", "")) for c in children]
+    assert any("(无返回)" in t for t in texts)
+    assert "command: pwd" in "\n".join(texts)
+    # 仅返回（无参数）
+    rec2 = TraceRecord(index=2, kind="tool", summary="bash")
+    rec2.tool_args = None
+    rec2.tool_result = "/home/user"
+    children2 = _inspector_children(rec2, right_w=40, vh=20)
+    texts2 = [str(c.props.get("children", "")) for c in children2]
+    assert any("(无参数)" in t for t in texts2)
+    assert "/home/user" in "\n".join(texts2)
+
+
+def test_tool_tree_rows_cache_hit_and_invalidation():
+    """树行缓存：同内容命中（同一列表引用）；result 变化重生成。"""
+    rec = TraceRecord(index=1, kind="tool", summary="bash")
+    rec.tool_args = '{"a": 1}'
+    rec.tool_result = "x"
+    rows1 = _tool_tree_rows(rec, 40)
+    rows2 = _tool_tree_rows(rec, 40)
+    assert rows1 is rows2, "同内容应命中缓存（同一列表引用）"
+    rec2 = TraceRecord(index=2, kind="tool", summary="bash")
+    rec2.tool_args = '{"a": 1}'
+    rec2.tool_result = "xy"
+    rows3 = _tool_tree_rows(rec2, 40)
+    assert rows3 is not rows1, "result 变化应重生成"
+
+
+def test_trace_view_tool_record_shows_tree():
+    """TraceView 集成：选中消息源 tool 记录 → 检查器显示
+    参数树 + 分割线 + 返回值树。"""
+    m = _make_model_with_blocks()
+    m.message_source = lambda: _sample_messages()
+    m.trace_open = True
+    m.trace_selected = 5  # records[5] = tool 记录
+    el, _ = _render(TraceView, {"model": m, "width": 100})
+    row_el = list(el.children)[1]
+    right_col = list(row_el.children)[2]
+    texts = [str(c.props.get("children", "")) for c in right_col.children]
+    joined = "\n".join(texts)
+    assert any(t.startswith("#5 工具") for t in texts), f"标题应为 #5 工具: {texts[0]}"
+    assert "\u25b8 参数" in joined
+    assert "command: ls -la" in joined
+    assert "\u2500" in joined, "应有分割线"
+    assert "\u25b8 返回值" in joined
+    assert "总用量 4462" in joined
+    assert "drwxrwxr-x" in joined
