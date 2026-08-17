@@ -171,26 +171,34 @@ def _make_model_with_blocks() -> AppModel:
     return m
 
 
-def test_build_records_system_prompt_first():
-    """系统提词为首条 system 记录（摘要 = 提示词首行；lines = 全文）。"""
+def test_build_records_tools_first_system_second():
+    """台账首条 = # 0 工具列表（用户需求 2026-08-17）；系统提词次条 #1。"""
     records, rows = build_trace_records(_make_model_with_blocks())
-    sys_rec = records[0]
+    tools_rec = records[0]
+    assert tools_rec.kind == "tools"
+    assert tools_rec.index == 0
+    assert tools_rec.summary == "工具列表"
+    assert tools_rec.lines, "工具列表应非空（agent 全部工具，一行一个）"
+    assert rows[0] is tools_rec
+    sys_rec = records[1]
     assert sys_rec.kind == "system"
     assert sys_rec.index == 1
     assert sys_rec.summary, "系统提词摘要应非空"
     assert sys_rec.lines, "系统提词详情应非空"
-    assert rows[0] is sys_rec
+    assert rows[1] is sys_rec
 
 
 def test_build_records_kind_mapping_and_turn_separator():
-    """块 → 记录种类映射 + 新用户消息插入轮次分隔行（系统提词为首条）。"""
+    """块 → 记录种类映射 + 新用户消息插入轮次分隔行（工具列表 + 系统提词
+    为首两条）。"""
     records, rows = build_trace_records(_make_model_with_blocks())
-    assert [r.kind for r in records] == ["system", "user", "reasoning", "content", "tool"]
-    assert [r.index for r in records] == [1, 2, 3, 4, 5]
-    # 系统提词后、首个用户块前有轮次分隔行
-    assert rows[0] is records[0]      # system 记录
-    assert rows[1] is None            # 轮次 1 分隔
-    assert rows[2] is records[1]      # user 记录
+    assert [r.kind for r in records] == ["tools", "system", "user", "reasoning", "content", "tool"]
+    assert [r.index for r in records] == [0, 1, 2, 3, 4, 5]
+    # 工具列表/系统提词后、首个用户块前有轮次分隔行
+    assert rows[0] is records[0]      # tools 记录
+    assert rows[1] is records[1]      # system 记录
+    assert rows[2] is None            # 轮次 1 分隔
+    assert rows[3] is records[2]      # user 记录
     # 无第二个用户块 → 仅 1 个分隔行
     assert sum(1 for r in rows if r is None) == 1
 
@@ -198,7 +206,7 @@ def test_build_records_kind_mapping_and_turn_separator():
 def test_build_records_tool_metadata():
     """工具记录：摘要 = 调用（工具名+detail）；result = 返回首行预览。"""
     records, _ = build_trace_records(_make_model_with_blocks())
-    tool = records[4]
+    tool = next(r for r in records if r.kind == "tool")
     assert tool.kind == "tool"
     assert tool.summary == "bash ls -la"      # 调用
     assert tool.result == "file1.txt"         # 返回首行
@@ -211,7 +219,7 @@ def test_build_records_tool_detail_merged():
     「工具调用跟返回合并成一条」的完整详情。"""
     m = _make_model_with_blocks()
     records, _ = build_trace_records(m)
-    tool = records[4]
+    tool = next(r for r in records if r.kind == "tool")
     lines = block_detail_lines(tool.source_block)
     assert lines[0] == "bash ls -la"          # 调用行（从 extra 重建）
     assert lines[1:] == ["file1.txt", "file2.txt"]  # 返回输出
@@ -225,14 +233,14 @@ def test_build_records_skips_separator_and_splash():
     m.append_committed("separator", [])
     m.append_committed("splash", [AnsiLine.of("brand")])
     records, rows = build_trace_records(m)
-    assert [r.kind for r in records] == ["system", "user", "reasoning", "content", "tool"]
+    assert [r.kind for r in records] == ["tools", "system", "user", "reasoning", "content", "tool"]
 
 
 def test_build_records_detail_lazy():
     """块记录详情惰性：records.lines 为空，block_detail_lines 按需提取。"""
     m = _make_model_with_blocks()
     records, _ = build_trace_records(m)
-    user = records[1]
+    user = next(r for r in records if r.kind == "user")
     assert user.lines == []
     lines = block_detail_lines(user.source_block)
     assert lines == ["> 你好"]
@@ -244,7 +252,7 @@ def test_build_records_running_tool_duration():
     b = m.append_block("tool")
     b.extra.update(tool_name="bash", tool_status="running", _tool_started_at=10.0)
     records, _ = build_trace_records(m)
-    tool = records[1]  # 系统提词之后的工具记录
+    tool = next(r for r in records if r.kind == "tool")
     assert tool.time_seconds > 0.0
     assert tool.status == "running"
 
@@ -402,7 +410,7 @@ def test_trace_view_renders_ledger_and_inspector():
     """
     m = _make_model_with_blocks()
     m.trace_open = True
-    m.trace_selected = 3
+    m.trace_selected = 4  # records[4]（content 回答）
     el, _ = _render(TraceView, {"model": m, "width": 100})
     # 头部（第一子元素 TEXT）+ Row（第二子元素）
     assert el.type.__name__ == "Column"  # 根 Column
@@ -421,23 +429,30 @@ def test_trace_view_renders_ledger_and_inspector():
     assert left.type is ListView, f"左栏应为 ListView 控件: {left.type}"
     lv = left.props
     items = lv["items"]
-    assert len(items) == 6  # system + 轮次分隔 + user/reasoning/content/tool
-    assert lv["cursor"] == 4  # records[3]（content 回答）在 rows 中下标 4
+    # tools + system + 轮次分隔 + user/reasoning/content/tool
+    assert len(items) == 7
+    assert lv["cursor"] == 5  # records[4]（content 回答）在 rows 中下标 5
+    # renderItem：工具列表行（🧰 + # 0 + 工具列表）
+    tools_el = lv["renderItem"](items[0], 0, False)
+    tools_text = "".join(r.text for r in tools_el.props.get("styled", []))
+    assert "\U0001F9F0" in tools_text
+    assert "# 0" in tools_text
+    assert "工具列表" in tools_text
     # renderItem：系统提词行（⚙ + #1）
-    sys_el = lv["renderItem"](items[0], 0, False)
+    sys_el = lv["renderItem"](items[1], 1, False)
     sys_text = "".join(r.text for r in sys_el.props.get("styled", []))
     assert "\u2699" in sys_text
     assert sys_text.startswith("  # 1")
     # renderItem：轮次分隔行
-    sep_el = lv["renderItem"](items[1], 1, False)
+    sep_el = lv["renderItem"](items[2], 2, False)
     assert "轮次 1" in "".join(r.text for r in sep_el.props.get("styled", []))
     # renderItem：选中行（content #4，isSelected=True）带 ▶
-    sel_el = lv["renderItem"](items[4], 4, True)
+    sel_el = lv["renderItem"](items[5], 5, True)
     sel_text = "".join(r.text for r in sel_el.props.get("styled", []))
     assert sel_text.startswith("\u25b6")
     assert "# 4" in sel_text
     # renderItem：工具行（#5）：调用 + 返回预览合并一条（· file1.txt）
-    tool_el = lv["renderItem"](items[5], 5, False)
+    tool_el = lv["renderItem"](items[6], 6, False)
     tool_text = "".join(r.text for r in tool_el.props.get("styled", []))
     assert "# 5" in tool_text
     assert "· file1.txt" in tool_text
@@ -454,11 +469,11 @@ def test_trace_view_tail_follow():
     row_el = list(el.children)[1]
     parts = list(row_el.children)
     left = parts[0]
-    # 尾部跟随：ListView cursor = 最新记录（tool #5）在 rows 中下标 5
-    assert left.props["cursor"] == 5, f"跟随尾部应定位 tool 记录: {left.props['cursor']}"
+    # 尾部跟随：ListView cursor = 最新记录（tool #5）在 rows 中下标 6
+    assert left.props["cursor"] == 6, f"跟随尾部应定位 tool 记录: {left.props['cursor']}"
     # renderItem 验证该行为 ▶ 选中
     items = left.props["items"]
-    tool_el = left.props["renderItem"](items[5], 5, True)
+    tool_el = left.props["renderItem"](items[6], 6, True)
     text = "".join(r.text for r in tool_el.props.get("styled", []))
     assert text.startswith("\u25b6")
     assert "# 5" in text
@@ -488,26 +503,26 @@ def test_trace_view_navigation_writes_model():
     root = rec.create_root()
     rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
     router = rec._build_input_router(root)
-    # 记录：system(0) user(1) reasoning(2) content(3) tool(4)
-    # 上移：从尾部（#5 工具）到 #4 回答
+    # 记录：tools(0) system(1) user(2) reasoning(3) content(4) tool(5)
+    # 上移：从尾部（#5 工具，rows 下标 6）到 #4 回答
     assert router(KeyEvent(kind="arrow_up", raw=b"\x1b[A")) is True
-    assert m.trace_selected == 3
+    assert m.trace_selected == 4
     # 下一帧重建（渲染循环）→ 上移继续
     rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
     router = rec._build_input_router(root)
     assert router(KeyEvent(kind="arrow_up", raw=b"\x1b[A")) is True
-    assert m.trace_selected == 2
+    assert m.trace_selected == 3
     # 下移
     rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
     router = rec._build_input_router(root)
     assert router(KeyEvent(kind="arrow_down", raw=b"\x1b[B")) is True
-    assert m.trace_selected == 3
+    assert m.trace_selected == 4
     # End → 尾部
     rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
     router = rec._build_input_router(root)
     assert router(KeyEvent(kind="end", raw=b"\x1b[F")) is True
-    assert m.trace_selected == 4
-    # g → 首条（系统提词）
+    assert m.trace_selected == 5
+    # g → 首条（工具列表 #0）
     rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
     router = rec._build_input_router(root)
     assert router(KeyEvent(kind="char", char="g", raw=b"g")) is True
@@ -592,25 +607,32 @@ def _sample_messages():
 
 
 def test_records_from_messages_structure():
-    """消息列表 → 记录：system×2 / 轮次分隔 / user / 思考 / 工具 / 回答。"""
+    """消息列表 → 记录：工具列表 / system×2 / 轮次分隔 / user / 思考 /
+    工具 / 回答。"""
     records, rows = _records_from_messages(_sample_messages())
-    assert [r.kind for r in records] == ["system", "system", "user", "reasoning", "tool", "content"]
-    assert [r.index for r in records] == [1, 2, 3, 4, 5, 6]
+    assert [r.kind for r in records] == ["tools", "system", "system", "user", "reasoning", "tool", "content"]
+    assert [r.index for r in records] == [0, 1, 2, 3, 4, 5, 6]
     # 轮次分隔：system 记录后、user 记录前
-    assert rows[0] is records[0]
+    assert rows[0] is records[0]  # tools 记录
     assert rows[1] is records[1]
-    assert rows[2] is None
-    assert rows[3] is records[2]
+    assert rows[2] is records[2]
+    assert rows[3] is None
+    assert rows[4] is records[3]
+    # tools 记录：index=0 + summary=工具列表 + 每行一个工具（原名）
+    tools_rec = records[0]
+    assert tools_rec.index == 0
+    assert tools_rec.summary == "工具列表"
+    assert tools_rec.lines, "工具列表应非空（一行一个工具原名）"
     # system 记录：摘要 = 首行；lines = 全文
-    assert records[0].summary == "你是一位乐于助人的软件工程师助手。"
-    assert records[1].lines == ["# 当前执行环境", "- OS: Windows"]
+    assert records[1].summary == "你是一位乐于助人的软件工程师助手。"
+    assert records[2].lines == ["# 当前执行环境", "- OS: Windows"]
 
 
 def test_records_from_messages_tool_call_result_merged():
     """工具调用 + 返回合并一条：summary = 调用；result = 返回首行；
     lines = 调用行 + 返回行。"""
     records, _ = _records_from_messages(_sample_messages())
-    tool = records[4]
+    tool = next(r for r in records if r.kind == "tool")
     assert tool.kind == "tool"
     assert tool.summary == "bash ls -la"          # 调用（关键参数提取）
     assert tool.result == "总用量 4462"           # 返回首行预览
@@ -624,9 +646,9 @@ def test_records_from_messages_orphan_tool_result():
         {"role": "tool", "tool_call_id": "ghost", "content": "孤儿返回"},
     ]
     records, _ = _records_from_messages(messages)
-    assert [r.kind for r in records] == ["user", "tool"]
-    assert records[1].summary == "工具返回"
-    assert records[1].result == "孤儿返回"
+    assert [r.kind for r in records] == ["tools", "user", "tool"]
+    assert records[2].summary == "工具返回"
+    assert records[2].result == "孤儿返回"
 
 
 def test_build_trace_records_message_source_preferred():
@@ -635,11 +657,11 @@ def test_build_trace_records_message_source_preferred():
     m = _make_model_with_blocks()
     m.message_source = lambda: _sample_messages()
     records, _ = build_trace_records(m)
-    assert [r.kind for r in records] == ["system", "system", "user", "reasoning", "tool", "content"]
-    # 清除消息源 → 回退块路径（系统提词 + 块记录）
+    assert [r.kind for r in records] == ["tools", "system", "system", "user", "reasoning", "tool", "content"]
+    # 清除消息源 → 回退块路径（工具列表 + 系统提词 + 块记录）
     m.message_source = None
     records2, _ = build_trace_records(m)
-    assert [r.kind for r in records2] == ["system", "user", "reasoning", "content", "tool"]
+    assert [r.kind for r in records2] == ["tools", "system", "user", "reasoning", "content", "tool"]
 
 
 def test_messages_fingerprint_tracks_growth_and_edit():
@@ -719,13 +741,13 @@ def test_live_records_message_source_streaming_content():
     m.message_source = lambda: [{"role": "user", "content": "hi"}]
     _open_content_block(m, "正在生成的第一行")
     records, rows = build_trace_records(m)
-    assert [r.kind for r in records] == ["user", "content"]
+    assert [r.kind for r in records] == ["tools", "user", "content"]
     live = records[-1]
     assert live.kind == "content"
     assert live.status == "running"
     assert live.summary == "正在生成的第一行"
     assert live.lines == ["正在生成的第一行"]
-    assert live.index == 2
+    assert live.index == 3
     assert rows[-1] is live
 
 
@@ -737,7 +759,7 @@ def test_live_records_message_source_streaming_reasoning():
     block = m.append_block("reasoning")
     block.lines.append(AnsiLine.of("先思考一下"))
     records, _ = build_trace_records(m)
-    assert [r.kind for r in records] == ["user", "reasoning"]
+    assert [r.kind for r in records] == ["tools", "user", "reasoning"]
     live = records[-1]
     assert live.status == "running"
     assert live.summary == "先思考一下"
@@ -751,7 +773,7 @@ def test_live_records_message_source_running_tool():
     m.open_tool_box("call_1", "bash", "ls -la")
     m.append_tool_output("call_1", "file1.txt\nfile2.txt")
     records, rows = build_trace_records(m)
-    assert [r.kind for r in records] == ["user", "tool"]
+    assert [r.kind for r in records] == ["tools", "user", "tool"]
     tool = records[-1]
     assert tool.status == "running"
     assert tool.summary == "bash ls -la"
@@ -774,11 +796,11 @@ def test_live_records_disappear_after_stream_done():
     block.closed = True
     msgs.append({"role": "assistant", "content": "生成完成", "reasoning_content": None})
     records2, _ = build_trace_records(m)
-    assert [r.kind for r in records2] == ["user", "content"]
+    assert [r.kind for r in records2] == ["tools", "user", "content"]
     done = records2[-1]
     assert done.kind == "content" and done.status != "running"
     assert done.summary == "生成完成"
-    assert len(records2) == 2  # 无重复：仅消息记录，实时记录已消失
+    assert len(records2) == 3  # 无重复：仅消息记录，实时记录已消失
 
 
 def test_live_records_skip_closed_blocks():
@@ -788,7 +810,7 @@ def test_live_records_skip_closed_blocks():
     b = _open_content_block(m, "生成中")
     b.closed = True  # 已关闭（如异常路径未关闭时不被计为实时）
     records, _ = build_trace_records(m)
-    assert [r.kind for r in records] == ["user"]
+    assert [r.kind for r in records] == ["tools", "user"]
     assert all(r.status != "running" for r in records)
 
 
@@ -842,9 +864,9 @@ def test_trace_view_message_source_shows_live_records():
     left = list(row_el.children)[0]
     assert left.type is ListView
     items = left.props["items"]
-    # rows: [轮次分隔, user 记录, content 实时记录]——尾部跟随选中实时记录
-    assert len(items) == 3
-    live_el = left.props["renderItem"](items[2], 2, True)
+    # rows: [工具列表, 轮次分隔, user 记录, content 实时记录]——尾部跟随选中实时记录
+    assert len(items) == 4
+    live_el = left.props["renderItem"](items[3], 3, True)
     text = "".join(r.text for r in live_el.props.get("styled", []))
     assert text.startswith("\u25b6"), "尾部跟随应选中实时记录"
     assert "\u25cf" in text, "运行中 ● 图标应显示"
@@ -913,6 +935,12 @@ def test_e2e_trace_view_replaces_message_area():
 
     from src.tui._assembly_steps import _make_trace_toggle_cb
 
+    # e2e 前置（review 方向）：工具列表断言依赖 ToolRegistry 自动发现成功
+    # ——显式初始化注册表并确认非空（自动发现个别模块失败被吞时降级为空，
+    #   台账无「工具列表」行，避免隐性测试耦合）。
+    from src.tools.registry import ToolRegistry
+    assert ToolRegistry.default().get_tools(), "e2e 前置：注册表应非空（工具列表断言依赖）"
+
     session, model, stream = _make_session()
     session.start()
     _t.sleep(0.15)
@@ -941,6 +969,7 @@ def test_e2e_trace_view_replaces_message_area():
         toggle()
         assert _wait_text(lambda t: "轨迹 Trace" in t), "轨迹头部应显示"
         joined = _screen_text()
+        assert "工具列表" in joined, "# 0 工具列表应在台账显示"
         assert "轮次 1" in joined, "轮次分隔应显示"
         assert "回答 2" in joined, "台账摘要/检查器应含最新回答"
         assert "\u2726" not in joined, "消息区标题栏（✦）不应显示"
@@ -1051,20 +1080,27 @@ def test_build_subagent_trace_records_from_messages():
             {"role": "assistant", "content": "解析完成。", "reasoning_content": None},
         ]
         records, rows = build_subagent_trace_records("agent-1", None)
-        assert [r.kind for r in records] == ["system", "user", "reasoning", "tool", "content"]
+        assert [r.kind for r in records] == ["tools", "system", "user", "reasoning", "tool", "content"]
+        # 首条 # 0 工具列表（用户需求 2026-08-17：subagent 轨迹同主轨迹）
+        assert records[0].kind == "tools"
+        assert records[0].index == 0
+        assert records[0].summary == "工具列表"
+        assert records[0].lines, "工具列表应非空（一行一个工具原名）"
         # 工具调用 + 返回合并一条（与 mainagent 语义一致）
-        assert records[3].summary == "read_file user.py"
-        assert records[3].result == "class User: ..."
+        tool = next(r for r in records if r.kind == "tool")
+        assert tool.summary == "read_file user.py"
+        assert tool.result == "class User: ..."
         # 与 mainagent 的 _records_from_messages 完全同构
         main_records, _ = _records_from_messages(slot.messages)
         assert [r.kind for r in main_records] == [r.kind for r in records]
-        assert main_records[3].summary == records[3].summary
+        assert next(r for r in main_records if r.kind == "tool").summary == tool.summary
     finally:
         ctl._store.clear()
 
 
 def test_build_subagent_trace_records_fallback_slot():
-    """无 messages（未注册）→ 回退槽位活动记录（提词 + 工具历史 + 结果）。"""
+    """无 messages（未注册）→ 回退槽位活动记录（工具列表 + 提词 + 工具
+    历史 + 结果）。"""
     from src.tui._subagent_state import _ToolRecord
     from src.tui.subagent import SubAgentPanelController
     ctl = SubAgentPanelController.get_default()
@@ -1078,11 +1114,12 @@ def test_build_subagent_trace_records_fallback_slot():
         rec.phase = "done"
         slot.tool_history.append(rec)
         records, rows = build_subagent_trace_records("agent-1", None)
-        assert [r.kind for r in records] == ["user", "tool", "content"]
-        assert records[0].summary == "读取 user.py"
-        assert records[1].summary == "read_file user.py"
-        assert records[1].status == "done"
-        assert records[2].summary == "解析完成"
+        assert [r.kind for r in records] == ["tools", "user", "tool", "content"]
+        assert records[0].kind == "tools" and records[0].summary == "工具列表"
+        assert records[1].summary == "读取 user.py"
+        assert records[2].summary == "read_file user.py"
+        assert records[2].status == "done"
+        assert records[3].summary == "解析完成"
         assert rows[-1] is records[-1]
     finally:
         ctl._store.clear()
@@ -1334,9 +1371,10 @@ def test_stop_preserves_trace_archive_completed_subagent():
         assert rows[-1] is sub
         # ④ 完成后仍可构建完整 subagent 轨迹（消息 → 台账记录）
         sub_records, _ = build_subagent_trace_records("agent-1", None)
-        assert [r.kind for r in sub_records] == ["user", "content"]
-        assert sub_records[0].summary == "读取 user.py"
-        assert sub_records[1].summary == "解析完成。"
+        assert [r.kind for r in sub_records] == ["tools", "user", "content"]
+        assert sub_records[0].kind == "tools" and sub_records[0].summary == "工具列表"
+        assert sub_records[1].summary == "读取 user.py"
+        assert sub_records[2].summary == "解析完成。"
     finally:
         ctl._store.clear()
         ctl.clear_trace_archive()
@@ -1487,9 +1525,10 @@ def test_restore_trace_archive_from_session_records():
         assert rows[-1] is sub
         # ③ 可构建完整 subagent 轨迹（复用 _records_from_messages）
         sub_records, _ = build_subagent_trace_records("agent-1", None)
-        assert [r.kind for r in sub_records] == ["system", "user", "content"]
-        assert sub_records[1].summary == "读取 user.py"
-        assert sub_records[2].summary == "解析完成。"
+        assert [r.kind for r in sub_records] == ["tools", "system", "user", "content"]
+        assert sub_records[0].kind == "tools" and sub_records[0].summary == "工具列表"
+        assert sub_records[2].summary == "读取 user.py"
+        assert sub_records[3].summary == "解析完成。"
     finally:
         ctl._store.clear()
         ctl.clear_trace_archive()
@@ -1614,7 +1653,7 @@ def test_session_persistence_load_restores_trace_archive():
         assert data is not None
         assert ctl._trace_archive["agent-1"].status == "done"
         sub_records, _ = build_subagent_trace_records("agent-1", None)
-        assert [r.kind for r in sub_records] == ["system", "user", "content"]
+        assert [r.kind for r in sub_records] == ["tools", "system", "user", "content"]
     finally:
         ctl._store.clear()
         ctl.clear_trace_archive()
@@ -1654,7 +1693,7 @@ def test_cmd_load_restores_trace_archive():
         assert _cmd_load(ctx) is True
         assert "agent-1" in ctl._trace_archive
         sub_records, _ = build_subagent_trace_records("agent-1", None)
-        assert [r.kind for r in sub_records] == ["system", "user", "content"]
+        assert [r.kind for r in sub_records] == ["tools", "system", "user", "content"]
     finally:
         ctl._store.clear()
         ctl.clear_trace_archive()
@@ -1707,7 +1746,9 @@ def test_register_same_label_overwrites_archive():
         # 存档仅保留最近一次（任务二）
         assert len(ctl._trace_archive) == 1
         assert ctl._trace_archive["agent-1"].prompt == "任务二提词"
-        assert build_subagent_trace_records("agent-1", None)[0][0].summary == "任务二提词"
+        sub_records, _ = build_subagent_trace_records("agent-1", None)
+        assert sub_records[0].kind == "tools", "subagent 轨迹首条仍为 # 0 工具列表"
+        assert sub_records[1].summary == "任务二提词"
     finally:
         ctl._store.clear()
         ctl.clear_trace_archive()
@@ -1918,8 +1959,9 @@ def test_build_subagent_trace_records_with_live_dynamic():
         slot.live_reasoning = "先搜索 class User 的定义"
         records, rows = build_subagent_trace_records("agent-1", None)
         kinds = [r.kind for r in records]
-        # user + content（消息记录）→ tool running（动态）→ reasoning（动态）
-        assert kinds == ["user", "content", "tool", "reasoning"]
+        # tools + user + content（消息记录）→ tool running（动态）→ reasoning（动态）
+        assert kinds == ["tools", "user", "content", "tool", "reasoning"]
+        assert records[0].kind == "tools" and records[0].summary == "工具列表"
         assert records[-2].status == "running"
         assert records[-2].summary == "grep class User"
         assert records[-1].kind == "reasoning" and records[-1].status == "running"
@@ -1930,7 +1972,7 @@ def test_build_subagent_trace_records_with_live_dynamic():
         slot.live_reasoning = ""
         slot.status = "done"
         records2, _ = build_subagent_trace_records("agent-1", None)
-        assert [r.kind for r in records2] == ["user", "content"]
+        assert [r.kind for r in records2] == ["tools", "user", "content"]
         assert all(r.status != "running" for r in records2)
     finally:
         ctl._store.clear()
@@ -2559,7 +2601,7 @@ def _dispatch_messages():
 def test_records_from_messages_tool_call_id_preserved():
     """tool 记录保存 tool_call_id（subagent 合并关联键）。"""
     records, _ = _records_from_messages(_dispatch_messages())
-    tool = records[2]
+    tool = next(r for r in records if r.kind == "tool")
     assert tool.kind == "tool"
     assert tool.tool_call_id == "call_d1"
     assert "subagent" in tool.summary and "审查 API 层" in tool.summary
@@ -2925,6 +2967,137 @@ def test_restored_without_dispatch_label_stays_separate():
         records, _ = build_trace_records(m)
         assert records[-1].kind == "subagent", "无 dispatch_label 恢复槽位应独立显示"
         assert records[-1].subagent_label == "agent-1"
+    finally:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+
+
+# ═══════════════════════════════════════════════════════════
+# 16. # 0 工具列表（2026-08-17 用户需求）
+# ═══════════════════════════════════════════════════════════
+# 用户需求：轨迹 Trace 增加一个 # 0 工具列表——右侧检查器显示 agent 所有
+# 工具列表，一行一个（显示原名）。用户确认范围：主轨迹 + 子代理轨迹都加。
+
+def test_tools_record_lists_all_registry_tools():
+    """# 0 工具列表记录：kind=tools / index=0 / summary=工具列表；
+    lines = ToolRegistry 全部工具原名（一行一个，与注册表一致）。"""
+    from src.tools.registry import ToolRegistry
+    from src.tui.app.trace import _tools_record
+    rec = _tools_record()
+    assert rec is not None
+    assert rec.kind == "tools"
+    assert rec.index == 0
+    assert rec.summary == "工具列表"
+    assert rec.status == ""  # 无状态
+    assert rec.time_seconds is None  # 无耗时
+    assert rec.tokens == {}  # 无 token 统计
+    tools = list(ToolRegistry.default().get_tools())
+    assert rec.lines == tools, "工具列表应等于注册表全部工具（原名，一行一个）"
+    assert len(rec.lines) >= 10, "内置工具应多于 10 个"
+    assert "read_file" in rec.lines and "bash" in rec.lines
+
+
+def test_tools_record_defensive_registry_failure(monkeypatch):
+    """_tools_record 注册表异常 → 返回 None（台账不显示，静默降级零成本）；
+    异常结果不缓存（临时状态可在 TTL 内恢复）。"""
+    from src.tui.app.trace import _tools_record
+    monkeypatch.setattr("src.tui.app.trace._tools_cache", None)  # 清缓存（防前置命中）
+
+    class _Boom:
+        @staticmethod
+        def default():
+            raise RuntimeError("registry broken")
+
+    monkeypatch.setattr("src.tools.registry.ToolRegistry", _Boom)
+    assert _tools_record() is None
+    # 异常不缓存：再次调用仍走异常路径（返回 None，不抛）
+    assert _tools_record() is None
+
+
+def test_tools_record_empty_registry_returns_none(monkeypatch):
+    """注册表为空（自动发现失败/清空）→ _tools_record 返回 None——三处
+    插入点（消息源/回退/subagent）均静默降级：build_trace_records 首条
+    为 system（#1）、无 tools 记录（review P2：空注册表降级路径）。"""
+    from src.tui.app.trace import _tools_record
+    monkeypatch.setattr("src.tui.app.trace._tools_cache", None)  # 清缓存
+
+    class _EmptyReg:
+        @staticmethod
+        def get_tools():
+            return {}
+
+    class _EmptyRegistry:
+        @staticmethod
+        def default():
+            return _EmptyReg()
+
+    monkeypatch.setattr("src.tools.registry.ToolRegistry", _EmptyRegistry)
+    assert _tools_record() is None
+    # 回退路径：无 tools 记录，首条 system（#1）
+    records, _ = build_trace_records(_make_model_with_blocks())
+    assert records[0].kind == "system", f"空注册表应降级（首条 system）: {records[0].kind}"
+    assert records[0].index == 1
+    assert all(r.kind != "tools" for r in records)
+    # 消息源路径同样降级
+    m = AppModel()
+    m.message_source = lambda: [{"role": "user", "content": "hi"}]
+    records2, _ = build_trace_records(m)
+    assert records2[0].kind == "user", f"消息源模式空注册表应降级: {records2[0].kind}"
+    assert all(r.kind != "tools" for r in records2)
+
+
+def test_inspector_tools_record_one_per_line():
+    """# 0 工具列表检查器：标题 #0 工具列表 + 内容每行一个工具（原名）。"""
+    rec = TraceRecord(index=0, kind="tools", summary="工具列表",
+                      lines=["read_file", "bash", "web_search"])
+    children = _inspector_children(rec, right_w=40, vh=10)
+    texts = [str(c.props.get("children", "")) for c in children]
+    assert texts[0].startswith("#0 工具列表"), f"标题应为 #0 工具列表: {texts[0]}"
+    # 每行一个工具（原名）
+    assert "read_file" in texts
+    assert "bash" in texts
+    assert "web_search" in texts
+    # 无耗时/token 元信息（标题后直接内容行）
+    assert not any("耗时" in t or "输入" in t or "输出" in t for t in texts)
+
+
+def test_ledger_row_tools_record():
+    """# 0 工具列表台账行：# 0 + 🧰 图标 + 工具列表摘要；选中高亮。"""
+    rec = TraceRecord(index=0, kind="tools", summary="工具列表")
+    runs = _ledger_row_runs(rec, sel=False, left_w=40)
+    text = "".join(r.text for r in runs)
+    assert "# 0" in text
+    assert "\U0001F9F0" in text, "工具列表行应显示 🧰 图标"
+    assert "工具列表" in text
+    # 选中态：▶ 标记 + 背景高亮
+    sel_runs = _ledger_row_runs(rec, sel=True, left_w=40)
+    assert sel_runs[0].text.startswith("\u25b6")
+    for r in sel_runs:
+        assert r.style is not None and r.style.bg is not None
+
+
+def test_tools_record_in_main_and_subagent_trace():
+    """主轨迹（消息源模式）与 subagent 轨迹首条均为 # 0 工具列表（用户
+    确认范围：主轨迹 + 子代理轨迹都加）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl.clear_trace_archive()
+        ctl._store.add_agent("agent-1", "解析模块", status="done")
+        ctl._store._agents["agent-1"].messages = [
+            {"role": "user", "content": "读取 user.py"},
+        ]
+        m = AppModel()
+        m.message_source = lambda: _sample_messages()
+        main_records, _ = build_trace_records(m)
+        assert main_records[0].kind == "tools", "主轨迹首条应为 # 0 工具列表"
+        assert main_records[0].index == 0
+        assert main_records[0].summary == "工具列表"
+        sub_records, _ = build_subagent_trace_records("agent-1", None)
+        assert sub_records[0].kind == "tools", "subagent 轨迹首条应为 # 0 工具列表"
+        assert sub_records[0].index == 0
+        assert sub_records[0].summary == "工具列表"
     finally:
         ctl._store.clear()
         ctl.clear_trace_archive()

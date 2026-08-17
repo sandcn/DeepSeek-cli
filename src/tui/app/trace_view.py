@@ -52,18 +52,18 @@ _S_SEL_MARK = Style(fg=45, bold=True)      # 选中 ▶ 标记（亮青加粗）
 
 #: 种类图标（台账行）与名称（检查器标题）——对齐既有角色头 emoji 语义
 _KIND_ICON = {
-    "system": "\u2699", "user": "\U0001F464", "reasoning": "\U0001F4AD",
-    "content": "\U0001F4AC", "tool": "\u26A1", "subagent": "\U0001F916",
-    "context": "\U0001F4C4",
+    "tools": "\U0001F9F0", "system": "\u2699", "user": "\U0001F464",
+    "reasoning": "\U0001F4AD", "content": "\U0001F4AC", "tool": "\u26A1",
+    "subagent": "\U0001F916", "context": "\U0001F4C4",
 }
 _KIND_NAME = {
-    "system": "系统", "user": "用户", "reasoning": "思考", "content": "回答",
-    "tool": "工具", "subagent": "子代理", "context": "上下文",
+    "tools": "工具列表", "system": "系统", "user": "用户", "reasoning": "思考",
+    "content": "回答", "tool": "工具", "subagent": "子代理", "context": "上下文",
 }
 #: 种类图标色（摘要文本 reasoning 用暗灰，其余亮白）
 _KIND_FG = {
-    "system": 110, "user": 39, "reasoning": 242, "content": 45, "tool": 214,
-    "subagent": 75, "context": 110,
+    "tools": 214, "system": 110, "user": 39, "reasoning": 242, "content": 45,
+    "tool": 214, "subagent": 75, "context": 110,
 }
 #: 状态图标与色（tool/subagent：● 运行中 / ✔ 完成 / ✖ 失败）
 _STATUS_ICON = {"running": "\u25cf", "done": "\u2714", "fail": "\u2716", "error": "\u2716"}
@@ -171,7 +171,6 @@ def _detail_lines_of(rec) -> list:
     if lines:
         return lines
     return []
-    return block_detail_lines(block)
 
 
 def _detail_deps(rec) -> tuple:

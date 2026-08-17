@@ -35,25 +35,20 @@ from __future__ import annotations
 import time as _time
 from dataclasses import dataclass, field
 
-__all__ = [
-    "TraceRecord",
-    "build_trace_records",
-    "TRACE_KIND_ORDER",
-    "block_detail_lines",
-    "_records_from_messages",
-    "_messages_fingerprint",
-    "_live_records",
-    "_live_fingerprint",
-]
-
 #: 记录种类（展示顺序/图标映射在 trace_view 消费）
-TRACE_KIND_ORDER = ("system", "user", "reasoning", "content", "tool", "subagent", "context")
+TRACE_KIND_ORDER = ("tools", "system", "user", "reasoning", "content", "tool", "subagent", "context")
 
 #: 系统提词 TTL 缓存时长（秒）——build_system_prompt 含文件读取 + git
 #:   子进程调用，台账每帧重建时仅命中缓存；超时才重新构建（空模式切换等
 #:   提示词变化在 TTL 内反映）。
 _SYSTEM_PROMPT_TTL = 30.0
 _system_prompt_cache: tuple[float, list] | None = None
+
+#: 工具列表 TTL 缓存时长（秒）——get_tools() 含首次全量自动发现（import
+#:   全部工具模块）；工具注册发生在启动装配期，台账每帧重建时仅命中缓存
+#:   （见 ``_tools_record`` docstring）。
+_TOOLS_TTL = 30.0
+_tools_cache: tuple[float, TraceRecord] | None = None
 
 #: 工具调用参数详情最大长度（消息模型 tool_calls arguments 防御截断——
 #:   与 apply._append_assistant_rich 同阈值语义）
@@ -128,6 +123,47 @@ def _system_prompt_parts() -> list:
         parts = []
     _system_prompt_cache = (now, parts)
     return parts
+
+
+def _tools_record() -> TraceRecord | None:
+    """# 0 工具列表记录（台账固定首条；右侧检查器显示 agent 全部工具）。
+
+    ★ 2026-08-17（用户需求：轨迹 Trace 增加 # 0 工具列表）：台账首条
+    固定 # 0 工具列表——右侧检查器显示 agent 全部工具（**一行一个**，
+    显示原名）。数据源 = ``ToolRegistry.default().get_tools()``（注册
+    顺序 = 自动发现顺序，dict 保持插入顺序）；惰性 import（trace 层
+    不依赖 tools 层，避免循环依赖）。
+
+    性能（review 方向）：模块级 TTL 缓存（``_tools_cache``，30s）——
+    ``get_tools()`` 含首次全量自动发现（import 全部工具模块），台账每帧
+    重建时仅命中缓存；工具注册发生在启动装配期（``Agent.__init__`` 已
+    初始化注册表），运行期变化**不触发台账重建**（``_records_deps`` /
+    ``_subagent_trace_deps`` use_memo 指纹不含工具列表——隐式契约）。
+
+    防御：注册表获取异常 / 为空 / 非法类型（非 dict）→ 返回 None（台账
+    不显示该记录，静默降级零成本，index 从 #1 起）。异常结果不缓存
+    （临时状态可在 TTL 内恢复）。
+    """
+    global _tools_cache
+    now = _time.monotonic()
+    if _tools_cache is not None and now - _tools_cache[0] < _TOOLS_TTL:
+        return _tools_cache[1]
+    try:
+        from src.tools.registry import ToolRegistry
+        tools = ToolRegistry.default().get_tools()
+        names = list(tools or {}) if tools else []
+    except Exception:
+        return None
+    if not names:
+        return None
+    rec = TraceRecord(
+        index=0,
+        kind="tools",
+        summary="工具列表",
+        lines=names,
+    )
+    _tools_cache = (now, rec)
+    return rec
 
 
 def _system_prompt_record(index: int) -> TraceRecord | None:
@@ -524,6 +560,14 @@ def _records_from_messages(messages) -> tuple:
     records: list = []
     rows: list = []
     index = 0
+    # ★ 2026-08-17（用户需求：# 0 工具列表）：台账固定首条 # 0 工具列表
+    #   （index=0 特殊 0 基准，不占用 index 变量——后续记录仍 #1 起）。
+    #   本函数被主轨迹（消息源模式）与 subagent 轨迹（消息源模式）共用
+    #   → 两处轨迹都显示工具列表（右侧检查器：一行一个工具原名）。
+    tools_rec = _tools_record()
+    if tools_rec is not None:
+        records.append(tools_rec)
+        rows.append(tools_rec)
     # 等待返回合并的工具调用（tool_call_id → 记录）
     pending: dict = {}
     for msg in messages:
@@ -951,6 +995,12 @@ def _subagent_fallback_records(label: str, slot) -> tuple:
     records: list = []
     rows: list = []
     index = 0
+    # ★ 2026-08-17（用户需求：# 0 工具列表）：subagent 轨迹回退路径（无
+    #   messages）同样固定首条 # 0 工具列表（与 mainagent 轨迹一致）。
+    tools_rec = _tools_record()
+    if tools_rec is not None:
+        records.append(tools_rec)
+        rows.append(tools_rec)
     prompt = (getattr(slot, "prompt", "") or "").strip()
     if prompt:
         lines = prompt.splitlines()
@@ -1093,7 +1143,13 @@ def build_trace_records(model) -> tuple:
     records: list = []
     rows: list = []
     index = 0
-    # 系统提词（台账首条；对齐 DSH SYSTEM 记录）
+    # ★ 2026-08-17（用户需求：# 0 工具列表）：台账固定首条 # 0 工具列表
+    #   （index=0，不占用 index 变量——系统提词仍 #1 起）。
+    tools_rec = _tools_record()
+    if tools_rec is not None:
+        records.append(tools_rec)
+        rows.append(tools_rec)
+    # 系统提词（台账次条；对齐 DSH SYSTEM 记录）
     sys_rec = _system_prompt_record(index + 1)
     if sys_rec is not None:
         index += 1
@@ -1123,6 +1179,7 @@ __all__ = [
     "build_subagent_trace_records",
     "TRACE_KIND_ORDER",
     "block_detail_lines",
+    "_tools_record",
     "_record_from_block",
     "_system_prompt_record",
     "_records_from_messages",
