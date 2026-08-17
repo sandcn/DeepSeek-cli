@@ -70,11 +70,14 @@ class _FakeChatUI:
 def _render_component(component, model, fiber=None):
     """在手动 fiber 上下文渲染弹窗组件（返回 fiber + 元素树）。
 
-    复用传入 fiber（模拟调和器 fiber 复用——key 相同时 use_state 保留）；
-    不传则新建 fiber（模拟重挂载）。
+    复用传入 fiber（模拟调和器 fiber 复用——key 相同时 hook 复用、use_state
+    保留旧值）；不传则新建 fiber（模拟重挂载）。复用前 ``reset_hooks()`` 与
+    reconciler ``_begin_work`` 语义一致（hook 按下标复用，保留状态）。
     """
     if fiber is None:
         fiber = Fiber(TAG_FUNCTION, component, {"model": model, "width": 80})
+    else:
+        fiber.reset_hooks()
     hooks._push_current(fiber)
     try:
         el = component({"model": model, "width": 80})
