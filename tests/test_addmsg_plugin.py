@@ -187,16 +187,113 @@ class TestAddmsgMiddleware:
         )
 
     async def test_capture_addmsg_without_content_ignored(self):
+        """"/addmsg"（无内容）不消费——保留给命令分发路径显示用法提示。
+
+        回归（2026-08-17）：原实现消费后静默丢弃（用户输入 "/addmsg "
+        消息丢失），改为不消费保留。
+        """
         agent = _make_agent()
         fake = _FakeInput("/addmsg")
         agent.set_addmsg_input_provider(lambda: fake)
         ctx = self._make_ctx(agent)
         mw = AddmsgMiddleware()
         await mw.after_model_call(ctx)
-        assert fake._queued is None  # 命令被消费
-        assert ctx.addmsg_inserted is False  # 无内容不插入
+        assert fake._queued == "/addmsg"  # 未消费，保留给命令分发
+        assert ctx.addmsg_inserted is False
         assert not any(
             m.get("role") == "user" and m.get("content") == ""
+            for m in agent.messages
+        )
+
+    async def test_capture_addmsg_blank_content_not_consumed(self):
+        """"/addmsg   "（空白内容）不消费，保留给命令分发路径。"""
+        agent = _make_agent()
+        fake = _FakeInput("/addmsg   ")
+        agent.set_addmsg_input_provider(lambda: fake)
+        ctx = self._make_ctx(agent)
+        mw = AddmsgMiddleware()
+        await mw.after_model_call(ctx)
+        assert fake._queued == "/addmsg   "
+        assert ctx.addmsg_inserted is False
+
+    async def test_capture_addmsg_prefix_command_not_consumed(self):
+        """/addmsgxyz（前缀误匹配）不被消费——保留给未知命令提示。
+
+        回归（2026-08-17）：原实现 startswith 前缀匹配会误吞 /addmsgxyz
+        等前缀命令并篡改内容（"内容"被当 addmsg 插入），现精确匹配命令名。
+        """
+        agent = _make_agent()
+        fake = _FakeInput("/addmsgxyz 内容")
+        agent.set_addmsg_input_provider(lambda: fake)
+        ctx = self._make_ctx(agent)
+        mw = AddmsgMiddleware()
+        await mw.after_model_call(ctx)
+        assert fake._queued == "/addmsgxyz 内容"  # 未消费，走未知命令提示
+        assert ctx.addmsg_inserted is False
+        assert not any(
+            m.get("role") == "user" and m.get("content") == "内容"
+            for m in agent.messages
+        )
+
+    async def test_capture_addmsg_leading_space_ok(self):
+        """前导空白的 /addmsg 命令正常捕获（lstrip 兼容）。"""
+        agent = _make_agent()
+        fake = _FakeInput("  /addmsg 带前导空格的补充")
+        agent.set_addmsg_input_provider(lambda: fake)
+        ctx = self._make_ctx(agent)
+        mw = AddmsgMiddleware()
+        await mw.after_model_call(ctx)
+        assert fake._queued is None  # 已消费
+        assert ctx.addmsg_inserted is True
+        assert any(
+            m.get("role") == "user" and m.get("content") == "带前导空格的补充"
+            for m in agent.messages
+        )
+
+    async def test_on_round_complete_inserts_residual(self):
+        """一轮对话完成：残留的排队消息兜底插入（消息不丢失）。"""
+        agent = _make_agent()
+        agent.messages.append({"role": "user", "content": "原始问题"})
+        # 模拟：中间件错过阶段完成点，排队消息残留
+        agent._addmsg_queue = ["残留补充"]
+        ctx = self._make_ctx(agent)
+        mw = AddmsgMiddleware()
+        await mw.on_round_complete(ctx)
+        assert agent._addmsg_queue == []  # 已消费
+        assert any(
+            m.get("role") == "user" and m.get("content") == "残留补充"
+            for m in agent.messages
+        )
+
+    async def test_on_round_complete_no_pending_noop(self):
+        """无残留队列时 on_round_complete 无操作。"""
+        agent = _make_agent()
+        before = len(agent.messages)
+        agent.messages.append({"role": "user", "content": "原始问题"})
+        ctx = self._make_ctx(agent)
+        mw = AddmsgMiddleware()
+        await mw.on_round_complete(ctx)
+        assert len(agent.messages) == before + 1  # 未新增任何消息
+
+    async def test_on_round_complete_captures_input(self):
+        """on_round_complete 不消费输入框中的 /addmsg（保留给命令分发路径）。
+
+        回归保护（2026-08-17）：若 on_round_complete 抢先消费 queued_input
+        中的 /addmsg，round_end 的 drain_all 将拿不到它 → 命令分发不触发 →
+        消息只插入不被模型处理（回归）。输入框 /addmsg 必须走原路径。
+        """
+        agent = _make_agent()
+        agent.messages.append({"role": "user", "content": "原始问题"})
+        fake = _FakeInput("/addmsg 末尾补充")
+        agent.set_addmsg_input_provider(lambda: fake)
+        ctx = self._make_ctx(agent)
+        mw = AddmsgMiddleware()
+        await mw.on_round_complete(ctx)
+        # 未消费，保留给 round_end → 命令分发路径（AddmsgPlugin run_round）
+        assert fake._queued == "/addmsg 末尾补充"
+        # 未插入对话（避免与命令分发路径重复处理）
+        assert not any(
+            m.get("role") == "user" and m.get("content") == "末尾补充"
             for m in agent.messages
         )
 
@@ -343,6 +440,36 @@ class TestAddmsgPlugin:
         assert result is True
         run_round.assert_awaited_once_with("普通消息内容")
         session.save_checkpoint.assert_called_once()
+
+    async def test_residual_queue_flushed_before_run_round(self):
+        """非流式路径：残留的 addmsg 排队消息先插入对话再 run_round。
+
+        回归（2026-08-17）：工具调用完成等场景下中间件可能错过阶段完成点
+        导致排队消息滞留——AddmsgPlugin 兜底插入，避免消息丢失。
+        """
+        from src.core.commands.plugins.addmsg_plugin import AddmsgPlugin
+        plugin = AddmsgPlugin()
+        agent = _make_agent()
+        agent.messages.append({"role": "system", "content": "sys"})
+        agent.add_addmsg("残留消息")
+        session = self._make_session(agent)
+        ctx = self._make_ctx(session, "新消息")
+        run_round = AsyncMock(return_value={"interrupted": False, "pending": False})
+        session.run_round = run_round
+        session.save_checkpoint = MagicMock()
+        session.run_pending_loop = AsyncMock(return_value=(False, []))
+        plugin._loop = MagicMock()
+        plugin._loop._chat_ui = None
+
+        result = await plugin.async_execute(ctx)
+        assert result is True
+        # 残留消息已插入对话
+        assert any(
+            m.get("role") == "user" and m.get("content") == "残留消息"
+            for m in agent.messages
+        )
+        assert agent.has_pending_addmsg() is False  # 队列已清空
+        run_round.assert_awaited_once_with("新消息")
 
     async def test_streaming_queues_addmsg(self):
         from src.core.commands.plugins.addmsg_plugin import AddmsgPlugin

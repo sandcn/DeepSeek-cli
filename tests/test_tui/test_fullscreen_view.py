@@ -260,7 +260,11 @@ def test_trace_toggle_cb_delegates_generic():
 def test_user_select_popup_consumes_ctrl_h():
     """user_select 弹窗可见时 Ctrl+H 被弹窗消费（不打开 Trace）——弹窗模态
     优先于全局全屏 toggle（防回归：SelectInput consumeAll 语义变化会意外
-    打断用户选择流程）。"""
+    打断用户选择流程）。
+
+    ★ 模态底部视图（2026-08-17）：弹窗不再作为底部区常规成员——激活须
+    ``model.bottom_view = "user_select"``（App 底部区只渲染弹窗，状态栏/
+    输入区不显示）。"""
     from src.tui.app.model import UserSelectState
     m = _make_model_with_blocks()
     us = UserSelectState()
@@ -268,6 +272,7 @@ def test_user_select_popup_consumes_ctrl_h():
     us.options = ["选项A", "选项B"]
     us.title = "测试选择"
     m.user_select = us
+    m.bottom_view = "user_select"  # 模态底部视图激活（弹窗独立界面）
     m.fullscreen = ""
     rec = Reconciler()
     root = rec.create_root()
@@ -290,6 +295,7 @@ def test_e2e_user_select_popup_consumes_ctrl_h_via_dispatcher():
     us.options = ["选项A", "选项B"]
     us.title = "测试选择"
     m.user_select = us
+    m.bottom_view = "user_select"  # 模态底部视图激活（弹窗独立界面）
     # 注入 toggle 回调（若被调用会打开 Trace）
     disp.set_trace_toggle_callback(_make_trace_toggle_cb(m, _StubSession()))
     rec = Reconciler()

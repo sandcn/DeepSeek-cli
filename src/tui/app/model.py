@@ -117,6 +117,18 @@ class AppModel(_ToolOutputMixin):
         #   自动生效）。
         # trace_open: fullscreen=="trace" 的兼容别名（property，见类底部）。
         self.fullscreen: str = ""
+        # ── 模态底部视图（2026-08-17 通用机制，user_select 独立成底部视图） ──
+        # bottom_view: 当前模态底部视图 id（""=正常底部区；"user_select"=
+        #   用户选择弹窗独立界面）。bottom_view 非空时 App 按底部视图注册表
+        #   （``app.BOTTOM_VIEWS``）**只渲染对应视图**（状态栏/输入区不显示
+        #   ——「弹窗打开时底部框不显示，弹窗在原来底部框位置独立显示」），
+        #   组件经 ``use_modal(True)`` 声明模态——独占键盘输入（未消费按键
+        #   不落入输入缓冲）。新增底部视图两步：注册表加条目 + 设置
+        #   model.bottom_view（底部区渲染/输入接管/光标隐藏全部自动生效）。
+        # 与 fullscreen 的关系：互斥共存设计——fullscreen 整屏渲染优先
+        # （App 先判 fullscreen 再判 bottom_view）；底部视图激活期间 fullscreen
+        # 恒为空（工具/协议打开 user_select 时不会同时打开全屏视图）。
+        self.bottom_view: str = ""
         # trace_selected: 选中记录索引（records 下标，0-based）；-1 表示
         #   「跟随尾部」（默认——打开时定位最新记录，流式追加自动跟进；用户
         #   导航后写回具体索引退出尾部跟随）。
@@ -602,6 +614,12 @@ class AppModel(_ToolOutputMixin):
         #   blocks 已清空 → 残留渲染空数据全屏界面。与 trace_subagent_label
         #   同语义（全屏态不跨清屏保留）。
         self.fullscreen = ""
+        # ★ 2026-08-17（模态底部视图通用机制）：清屏同时退出模态底部视图
+        #   （bottom_view 置空）——残留 bottom_view 会让 App 底部区只渲染
+        #   底部视图组件（如 UserSelectPopup）而 blocks 已清空；且 user_select
+        #   工具轮询 done 期间若清屏，弹窗消失但工具仍在等待（超时兜底）。
+        #   与 fullscreen 同语义（底部视图态不跨清屏保留）。
+        self.bottom_view = ""
 
     # ── trace_open 兼容别名（2026-08-17 通用化：模态全屏视图） ──
     # 轨迹视图打开 = model.fullscreen == "trace"。property 保持旧字段读写

@@ -55,6 +55,9 @@ def use_fullscreen(is_active: bool = True) -> None:
     ``model.fullscreen`` 整屏渲染）使用：组件渲染即声明，关闭（Esc/Ctrl+H
     等由组件 use_input 自行处理）后下一帧组件不在树中、hook 自动消失。
 
+    ★ 通用化（2026-08-17）：实现委托 ``use_modal``（模态输入接管与全屏
+    无关——底部视图同样需要）；本函数保持历史语义名（全屏视图专用）。
+
     ★ 窗口约束（2026-08-17 review 方向）：本 hook 经 reconciler 每帧构建
     router 生效——打开/关闭全屏视图后，**当前渲染帧内**（≤1 帧周期 ≈100ms）
     的剩余输入仍沿用旧 router（打开侧：尚未吞掉；关闭侧：仍被吞掉）。属
@@ -67,6 +70,39 @@ def use_fullscreen(is_active: bool = True) -> None:
 
     Args:
         is_active: 是否处于模态全屏激活态（默认 True）。
+
+    Returns:
+        None（与 use_input 一致）。
+    """
+    return use_modal(bool(is_active))
+
+
+def use_modal(is_active: bool = True) -> None:
+    """声明当前组件为**模态视图**（独占键盘输入，通用机制）。
+
+    模态底部视图通用机制（2026-08-17）：user_select 从底部区常规成员
+    独立为「模态底部视图」（App ``BOTTOM_VIEWS`` 注册表 + ``model.bottom_view``
+    状态驱动）——激活时底部区只渲染该视图、状态栏/输入区不渲染（「打开时
+    底部框不显示，弹窗在原来底部框位置独立显示」）；未消费按键必须被吞掉
+    （输入区已不渲染，字符/Enter 落入输入缓冲会「看不见地」改变用户输入）。
+
+    语义与 use_fullscreen 完全一致（同一 hook 节点类型——``_next_hook``
+    按下标复用须类型一致，二者在同一组件内不可混用同一 hook 位）：
+      - 组件自身 use_input handler 仍优先消费（导航/确认/取消等按键）；
+      - 全部 use_input **未消费**的事件被 input router **吞掉**（返回 True）
+        → InputDispatcher 跳过旧回调路径（buffer_editor 输入缓冲）→ 字符/
+        Enter 等不落入输入缓冲；
+      - interrupt（Ctrl+C）生产路径不进 router（``_interrupt_routable``
+        默认 False）→ 直接中断（工具执行可被 Ctrl+C 中断，弹窗 Ctrl+C
+        放行语义保持）。
+    ``is_active=False`` 时 hook 不参与路由（零影响——组件非模态渲染/已关闭）。
+
+    用法（底部视图组件，与 use_input 同源激活）：
+        use_input(_handle, active)
+        use_modal(active)
+
+    Args:
+        is_active: 是否处于模态激活态（默认 True）。
 
     Returns:
         None（与 use_input 一致）。
@@ -256,6 +292,7 @@ __all__ = [
     "_publish_input_router",
     "use_input",
     "use_fullscreen",
+    "use_modal",
     "_compat_handler_cache",
     "_make_compat_handler",
     "_event_input",

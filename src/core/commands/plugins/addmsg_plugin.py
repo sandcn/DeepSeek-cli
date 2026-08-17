@@ -120,6 +120,23 @@ class AddmsgPlugin(InteractiveCommandPlugin):
         session = ctx.session
         chat_ui = loop._chat_ui if loop is not None else None
 
+        # ── 兜底：处理残留的 addmsg 排队消息 ────────────────
+        # 工具调用完成等场景下，若中间件因时序错过阶段完成点（异常/中断）
+        # 而未能消费 addmsg 队列，此处先插入对话，避免用户消息滞留丢失
+        # （下一轮 run_round 的模型调用会看到这些消息）。
+        agent = getattr(session, "agent", None)
+        if (agent is not None and hasattr(agent, "has_pending_addmsg")
+                and agent.has_pending_addmsg()):
+            try:
+                msgs = agent.drain_addmsg()
+                if msgs:
+                    agent.insert_addmsg_messages(msgs)
+                    if chat_ui is not None:
+                        for m in msgs:
+                            chat_ui.on_user_message(m)
+            except Exception:
+                _logger.debug("addmsg 残留队列处理异常（不阻断）", exc_info=True)
+
         if chat_ui is not None:
             reset_interrupt_async(
                 input_instance=chat_ui.input if chat_ui is not None else None

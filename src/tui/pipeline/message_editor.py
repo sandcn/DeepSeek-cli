@@ -387,6 +387,12 @@ class MessageEditor:
             # 清理独立信号（防残留）
             self._selection_ready.clear()
             self._selection_confirmed = False
+            # ★ review 修复（P2）：底部视图兜底清理——_interactive_message_select
+            #   自身 finally 已清理（异常路径安全）；此处作第二道防线（防御
+            #   未来新增调用路径未清理/异常中断导致 bottom_view 残留——App
+            #   持续只渲染弹窗、输入区消失）。edit 结束不残留任何底部视图。
+            if self._model is not None and hasattr(self._model, "bottom_view"):
+                self._model.bottom_view = ""
 
         if real_idx is None:
             return False
@@ -445,49 +451,60 @@ class MessageEditor:
             selected=sel_count - 1,  # 默认选中最后一条
             deadline=time.monotonic() + 120,  # 2 分钟超时
         )
+        # ★ 模态底部视图（2026-08-17 通用机制）：与 user_select 工具同协议
+        #   ——激活底部视图（底部区只渲染弹窗，状态栏/输入区不显示）。
+        if hasattr(model, "bottom_view"):
+            model.bottom_view = "user_select"
         try:
             session.request_bottom_redraw()
         except Exception:
             _logger.debug("_interactive_message_select: request_bottom_redraw 异常", exc_info=True)
 
         # 轮询等待组件交互完成（render 线程运行中；UserSelectPopup use_input 写 done）
-        deadline = model.user_select.deadline
-        while not model.user_select.done:
-            if self._selection_ready.is_set():
-                # ★ P2-7：标准路径同时响应 _selection_ready 信号（自定义
-                #   dismiss 回调 _editmsg_dismiss 设置，legacy 路径已响应）——
-                #   修复前标准路径仅响应 ``user_select.done``：若 Enter 经
-                #   ``_dismiss_completion → _editmsg_dismiss`` 路径确认而 done
-                #   未及时写回，轮询可能空转到超时；同时检查双信号更稳。
-                break
-            if deadline > 0 and time.monotonic() >= deadline:
-                # 超时：写回超时结果（组件下一帧读到 done 停止渲染）
-                model.user_select.done = True
-                model.user_select.action = "timeout"
-                break
-            time.sleep(0.05)
-
-        st = model.user_select
-        action = st.action or "timeout"
-        # ★ 修复（P2-5）：真正消费 _selection_confirmed——Enter 经
-        #   ``_dismiss_completion → _editmsg_dismiss`` 路径确认时 st.action
-        #   可能未写回 "confirmed"（修复前 action 归为 "timeout" 丢弃已确认的
-        #   选择）；此处回退按 confirmed 处理（st.selected 读取紧随其后）。
-        if action == "timeout" and self._selection_confirmed:
-            action = "confirmed"
-        # ★ 修复（P2）：selected 可能为 None（外部注入）——
-        #   int(None) 抛 TypeError；归一化失败回退默认选中最后一条。
+        # ★ P2（review 修复）：轮询 + 解析 + 清理整段 try/finally——异常路径
+        #   也保证 user_select + bottom_view 恢复（不残留弹窗/底部视图，
+        #   输入区不消失）；与 tools/user_select.py 的 finally 清理模式对齐。
         try:
-            selected = int(getattr(st, "selected", sel_count - 1))
-        except (TypeError, ValueError):
-            selected = sel_count - 1
+            deadline = model.user_select.deadline
+            while not model.user_select.done:
+                if self._selection_ready.is_set():
+                    # ★ P2-7：标准路径同时响应 _selection_ready 信号（自定义
+                    #   dismiss 回调 _editmsg_dismiss 设置，legacy 路径已响应）——
+                    #   修复前标准路径仅响应 ``user_select.done``：若 Enter 经
+                    #   ``_dismiss_completion → _editmsg_dismiss`` 路径确认而 done
+                    #   未及时写回，轮询可能空转到超时；同时检查双信号更稳。
+                    break
+                if deadline > 0 and time.monotonic() >= deadline:
+                    # 超时：写回超时结果（组件下一帧读到 done 停止渲染）
+                    model.user_select.done = True
+                    model.user_select.action = "timeout"
+                    break
+                time.sleep(0.05)
 
-        # 清理弹窗状态 + 请求重绘（底部栏立即恢复正常显示）
-        model.user_select = UserSelectState()
-        try:
-            session.request_bottom_redraw()
-        except Exception:
-            _logger.debug("_interactive_message_select: cleanup redraw 异常", exc_info=True)
+            st = model.user_select
+            action = st.action or "timeout"
+            # ★ 修复（P2-5）：真正消费 _selection_confirmed——Enter 经
+            #   ``_dismiss_completion → _editmsg_dismiss`` 路径确认时 st.action
+            #   可能未写回 "confirmed"（修复前 action 归为 "timeout" 丢弃已确认的
+            #   选择）；此处回退按 confirmed 处理（st.selected 读取紧随其后）。
+            if action == "timeout" and self._selection_confirmed:
+                action = "confirmed"
+            # ★ 修复（P2）：selected 可能为 None（外部注入）——
+            #   int(None) 抛 TypeError；归一化失败回退默认选中最后一条。
+            try:
+                selected = int(getattr(st, "selected", sel_count - 1))
+            except (TypeError, ValueError):
+                selected = sel_count - 1
+        finally:
+            # 清理弹窗状态 + 请求重绘（底部栏立即恢复正常显示）
+            model.user_select = UserSelectState()
+            # ★ 模态底部视图：关闭底部视图 → App 恢复状态栏 + 输入区。
+            if hasattr(model, "bottom_view"):
+                model.bottom_view = ""
+            try:
+                session.request_bottom_redraw()
+            except Exception:
+                _logger.debug("_interactive_message_select: cleanup redraw 异常", exc_info=True)
 
         if action != "confirmed":
             return None

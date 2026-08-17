@@ -71,28 +71,45 @@ class CommandUiAdapter:
                 selected=max(0, min(int(initial_idx), len(display) - 1)),
                 deadline=time.monotonic() + 60,
             )
+            # ★ 模态底部视图（2026-08-17 通用机制）：与 user_select 工具同协议
+            #   ——激活底部视图（底部区只渲染弹窗，状态栏/输入区不显示）。
+            if hasattr(model, "bottom_view"):
+                model.bottom_view = "user_select"
             try:
                 session.request_bottom_redraw()
             except Exception:
                 pass
-            deadline = model.user_select.deadline
-            while not model.user_select.done:
-                if deadline > 0 and time.monotonic() >= deadline:
-                    model.user_select.done = True
-                    model.user_select.action = "timeout"
-                    break
-                time.sleep(0.05)
-            st = model.user_select
-            action = st.action or "timeout"
-            selected = int(getattr(st, "selected", -1))
-            model.user_select = UserSelectState()
+            # ★ P1/P2（review 修复）：轮询 + 解析 + 清理整段 try/finally——
+            #   异常路径也保证 user_select + bottom_view 恢复（不残留弹窗/
+            #   底部视图，输入区不消失）；selected 归一化仿 message_editor
+            #   （selected 可能为 None/非数字，int() 抛 TypeError 会跳过清理
+            #   泄漏 bottom_view → App 持续只渲染弹窗，输入区消失）。
             try:
-                session.request_bottom_redraw()
-            except Exception:
-                pass
-            if action != "confirmed":
-                return {"action": "cancel", "index": None}
-            return {"action": "confirmed", "index": selected if selected >= 0 else initial_idx}
+                deadline = model.user_select.deadline
+                while not model.user_select.done:
+                    if deadline > 0 and time.monotonic() >= deadline:
+                        model.user_select.done = True
+                        model.user_select.action = "timeout"
+                        break
+                    time.sleep(0.05)
+                st = model.user_select
+                action = st.action or "timeout"
+                try:
+                    selected = int(getattr(st, "selected", -1))
+                except (TypeError, ValueError):
+                    selected = -1
+                if action != "confirmed":
+                    return {"action": "cancel", "index": None}
+                return {"action": "confirmed", "index": selected if selected >= 0 else initial_idx}
+            finally:
+                # 清理弹窗状态 + 关闭底部视图 → App 恢复状态栏 + 输入区。
+                model.user_select = UserSelectState()
+                if hasattr(model, "bottom_view"):
+                    model.bottom_view = ""
+                try:
+                    session.request_bottom_redraw()
+                except Exception:
+                    pass
 
         # ── 旧补全弹窗路径（无 ChatUI 兼容） ──
         if bottom_bar is None:

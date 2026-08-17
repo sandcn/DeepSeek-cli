@@ -41,7 +41,7 @@ from src.tui._input import _wrap_by_width
 from src.tui.app.input_area import _desc_column_width, _truncate_width
 from src.tui.app._theme import _S_DIM, _S_SEP
 from src.tui.ink import TEXT, h, Column, Row, StyledRun
-from src.tui.ink.hooks import use_state
+from src.tui.ink.hooks import use_state, use_modal
 from src.tui.ink.widgets.interactive import SelectInput, MultiSelect
 
 __all__ = ["UserSelectPopup"]
@@ -60,11 +60,14 @@ _UNCHECKED = "\u25cb "
 def _popup_item_rows() -> int:
     """弹窗选项/说明行数上限（超屏防护）。
 
-    与补全弹窗 ``_completion_item_rows`` 同源（预留顶部标题 1 + 弹窗标题 1 +
-    弹窗提示行 1 + 状态栏/输入区约 8 行 ≈ 11 行，2026-08-14 新增模式行
-    后 +1）：选项 + 说明行数限制在 ``max(6, h - 11)``。修复前分栏说明行数
-    与普通模式选项数均无上限——长说明 / 大量选项时弹窗超高，挤压甚至遮挡
-    状态栏与输入区。
+    ★ 模态底部视图（2026-08-17）：UserSelectPopup 独立为底部视图——弹窗
+    打开时状态栏/输入区**不渲染**，可用高度 = 终端高 - 顶部标题栏 1 -
+    弹窗标题 1 - 弹窗提示行 1 ≈ ``h - 3``（修复前按普通弹窗预留状态栏/输入区
+    约 8 行 ``h - 11``，底部视图模式下留白过多——弹窗独立界面应利用原
+    底部框全部空间）。与补全弹窗 ``_completion_item_rows`` 仅**超屏防护模式
+    同源**（选项 + 说明行数限制，防止弹窗超高挤压消息区）；数值语义不同：
+    ``_completion_item_rows`` 仍为 ``max(6, h - 11)``（补全弹窗须预留状态栏/
+    输入区空间），本函数为底部视图模式独立放宽——勿同步两值。
 
     Returns:
         选项（含说明）最大渲染行数。
@@ -72,7 +75,7 @@ def _popup_item_rows() -> int:
     try:
         from src.tui._screen import TerminalWidthCache
         h = TerminalWidthCache.get_default().get_height()
-        return max(6, h - 11)
+        return max(6, h - 3)
     except Exception:
         return 12
 
@@ -304,6 +307,12 @@ def UserSelectPopup(props) -> object:
     # 初始值从 model.user_select 读取（App 以 key=seq 强制重挂载，
     # seq 变化 → fiber 重建 → use_state 重新初始化）。
     selected, set_selected = use_state(us.selected if us is not None else 0)
+    # ★ 模态底部视图声明（2026-08-17 通用机制）：visible 时独占键盘输入——
+    #   未消费按键被 input router 吞掉（不落入输入缓冲；输入区已不渲染，
+    #   字符落入输入缓冲会「看不见地」改变用户输入）。visible=False 时 hook
+    #   不参与路由（组件不渲染/已关闭，零影响）。与 use_fullscreen 同节点
+    #   类型（模态输入接管语义，见 _hooks_input.use_modal docstring）。
+    use_modal(visible)
 
     if not visible:
         return h(TEXT, {"children": ""})

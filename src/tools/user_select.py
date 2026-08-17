@@ -184,9 +184,11 @@ class UserSelectFunc(Func):
             bb = chat_ui.bottom_bar
             if bb is not None and getattr(bb, "is_completion_visible", False):
                 bb.hide_completions()
-            # 清空输入文本，使输入区显示干净弹窗选择界面
-            if bb is not None and getattr(bb, "_last_text", ""):
-                bb._last_text = ""
+            # ★ 模态底部视图（2026-08-17）：不再清空输入文本——输入区在底部
+            #   视图激活期间不渲染（App 只渲染 UserSelectPopup），保留用户
+            #   输入（关闭弹窗后原输入恢复显示，不丢失）。修复前清空
+            #   ``bb._last_text`` 是为「输入区显示干净弹窗」——输入区已不
+            #   渲染，清空反而不必要地丢失用户输入。
         except Exception:
             _logger.debug("user_select: 清理补全弹窗失败", exc_info=True)
 
@@ -223,6 +225,12 @@ class UserSelectFunc(Func):
                 checked=checked,
                 deadline=0.0 if self.timeout <= 0 else time.monotonic() + self.timeout,
             )
+            # ★ 模态底部视图（2026-08-17 通用机制）：激活底部视图——App
+            #   底部区只渲染 UserSelectPopup（状态栏/输入区不显示，弹窗在
+            #   原来底部框位置独立显示）。user_select 工具协议：打开设置
+            #   bottom_view，清理恢复空（与 UserSelectState 同生命周期）。
+            if hasattr(model, "bottom_view"):
+                model.bottom_view = "user_select"
             chat_ui.request_bottom_redraw()
 
             # 轮询等待组件交互完成（render 线程运行中；组件写 done）
@@ -254,6 +262,10 @@ class UserSelectFunc(Func):
             # 清理弹窗状态 + 主动重绘（底部栏立即恢复正常显示）
             try:
                 model.user_select = UserSelectState()
+                # ★ 模态底部视图：关闭底部视图 → App 恢复状态栏 + 输入区
+                #   （弹窗关闭后正常底部框重新显示）。
+                if hasattr(model, "bottom_view"):
+                    model.bottom_view = ""
                 chat_ui.request_bottom_redraw()
             except Exception:
                 _logger.debug("user_select: cleanup 失败", exc_info=True)

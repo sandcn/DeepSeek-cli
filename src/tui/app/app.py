@@ -45,6 +45,27 @@ FULLSCREEN_VIEWS: dict = {
     "trace": TraceView,
 }
 
+#: 模态底部视图注册表（2026-08-17 通用机制）：view_id → 组件 或
+#: ``(组件, key_fn)`` 元组。
+#: App 在 ``model.bottom_view`` 非空时按 id 查注册表**只渲染对应组件**作为
+#: 底部区（状态栏/输入区不显示——「弹窗打开时底部框不显示，弹窗在原来
+#: 底部框位置独立显示」）；组件内部须 ``use_modal(True)`` 声明模态（独占
+#: 键盘输入——输入区已不渲染，未消费按键不落入输入缓冲，杜绝看不见的
+#: 输入）与 ``use_input`` 处理导航/确认/取消键。
+#: key 约定：无内部 use_state 的简单组件用固定 key ``bv-{view_id}``（fiber
+#: 复用保持组件状态）；带内部状态且须每次打开重置的组件用 ``(组件, key_fn)``
+#: 元组（key_fn 接收 model 返回 key 字符串——如 UserSelectPopup 用
+#: ``model.user_select.seq`` 递增序号强制重挂载，重置内部选中/勾选 state）。
+#: 新增底部视图两步：注册表加条目 + 设置 ``model.bottom_view``——底部区
+#: 渲染 / 输入接管 / 光标隐藏（输入区不渲染自动隐藏）全部自动生效，无需
+#: 改 App 分支。
+BOTTOM_VIEWS: dict = {
+    "user_select": (
+        UserSelectPopup,
+        lambda model: f"us-{getattr(getattr(model, 'user_select', None), 'seq', 0)}",
+    ),
+}
+
 
 def App(props) -> object:
     """App 根组件。
@@ -55,21 +76,6 @@ def App(props) -> object:
     """
     model = props["model"]
     width = props.get("width", 80)
-
-    input_props = {
-        "text": model.input_text,
-        "cursor_pos": model.input_cursor,
-        "prompt": "> ",
-        "completion": model.completion,
-        "status_active": model.status.status_active,
-        "cpu": model.status.cpu,
-        "mem": model.status.mem,
-        # 方向D 步骤14：Ctrl+R 反向历史搜索状态（input-area 渲染覆盖行）
-        "history_search": model.history_search,
-        # ★ 标准 React Ink 组件化（2026-08-05）：InputArea 标准组件接收
-        #   width（布局宽度同源，修复 model.width 与布局宽度不一致）。
-        "width": width,
-    }
 
     # ★ 模态全屏视图（2026-08-17 通用机制）：model.fullscreen 非空 → 按
     #   注册表**整屏只显示对应视图**（其他 TUI 组件不渲染、不接收键盘输入
@@ -103,35 +109,61 @@ def App(props) -> object:
         h(ChatView, {"model": model, "width": width}),
         h(_ParseLine, {"model": model, "width": width}),
     ]
-    bottom_area = [
-        # ★ React Ink 化（user_select）：用户选择弹窗组件——StatusBar 上方渲染，
-        #   visible=False 时零高度不占行；key=seq 强制重挂载（每次打开重置
-        #   组件内部 state，连续多次调用不残留旧选中/勾选）。
-        # ★ P3-2（seq 复用竞态）：工具 cleanup 后 ``model.user_select =
-        #   UserSelectState()``（seq=0）→ 组件树 key 变为 ``us-0``；下次打开
-        #   seq 从 0 起 +1（每次独立调用均为 us-1）——连续两次调用若中间
-        #   cleanup 渲染未发生（渲染循环间隙极短窗口），两次 key 相同 → fiber
-        #   复用 → use_state 不重新初始化（残留旧选中/勾选）。属低概率竞态
-        #   （cleanup 与下次 open 之间必有 request_bottom_redraw，正常路径
-        #   key 先回落 us-0 再回升），用户可导航修正；并入单调递增序号需
-        #   模块级可变状态（多实例/测试污染 + 每帧 key 漂移风险），权衡后
-        #   以注释说明风险（实现复杂度 > 风险收益）。
-        h(UserSelectPopup, {
-            "model": model,
-            "width": width,
-            "key": f"us-{model.user_select.seq}",
-        }),
+    # ★ 模态底部视图（2026-08-17 通用机制）：model.bottom_view 非空 → 底部区
+    #   **只渲染**注册表中对应的底部视图组件（状态栏/输入区不显示——「弹窗
+    #   打开时底部框不显示，弹窗在原来底部框位置独立显示」）。组件经
+    #   use_modal(True) 声明模态（未消费按键不落入输入缓冲——输入区已不渲染，
+    #   字符落入输入缓冲会「看不见地」改变用户输入）；Esc/Enter 等关闭键由
+    #   组件自身 use_input 处理。关闭（工具/协议清理 bottom_view）后恢复
+    #   正常底部区（状态栏 + 输入区），调和器按 key 差异自动重建。
+    #   未知视图 id 防御回退正常底部区（防注册表删除后残留状态崩溃）；此时
+    #   model.bottom_view 残留非空为设计（清理方负责恢复；App 渲染分支/输入
+    #   接管/光标隐藏均按实际渲染结果判断，无误判路径）。
+    bottom_view_id = getattr(model, "bottom_view", "") or ""
+    if bottom_view_id:
+        entry = BOTTOM_VIEWS.get(bottom_view_id)
+        if entry is not None:
+            if isinstance(entry, tuple):
+                view, key_fn = entry
+                key = key_fn(model)
+            else:
+                view, key = entry, f"bv-{bottom_view_id}"
+            bottom_area = [
+                h(view, {"model": model, "width": width, "key": key}),
+            ]
+        else:
+            bottom_area = _normal_bottom_area(model, width)
+    else:
+        bottom_area = _normal_bottom_area(model, width)
+    return h(APP, {"width": width, "flexDirection": "column"}, [
+        h(Column, {"flexGrow": 1}, message_area),
+        h(Column, None, bottom_area),
+    ])
+
+
+def _normal_bottom_area(model, width: int) -> list:
+    """正常底部区：状态栏 + 输入区（底部视图未激活时渲染）。"""
+    return [
         h(StatusBar, {"model": model, "width": width}),
         # ★ 标准 React Ink 组件化（2026-08-05）：input-area 自定义 host →
         #   InputArea 标准函数组件（内部 Column + CompletionPopup + TEXT 行）。
         #   组件以 ``dataInputArea`` 标记容器，session._position_cursor 据此
         #   定位输入区（兼容 host "input-area" 别名查找）。
-        h(InputArea, input_props),
+        h(InputArea, {
+            "text": model.input_text,
+            "cursor_pos": model.input_cursor,
+            "prompt": "> ",
+            "completion": model.completion,
+            "status_active": model.status.status_active,
+            "cpu": model.status.cpu,
+            "mem": model.status.mem,
+            # 方向D 步骤14：Ctrl+R 反向历史搜索状态（input-area 渲染覆盖行）
+            "history_search": model.history_search,
+            # ★ 标准 React Ink 组件化（2026-08-05）：InputArea 标准组件接收
+            #   width（布局宽度同源，修复 model.width 与布局宽度不一致）。
+            "width": width,
+        }),
     ]
-    return h(APP, {"width": width, "flexDirection": "column"}, [
-        h(Column, {"flexGrow": 1}, message_area),
-        h(Column, None, bottom_area),
-    ])
 
 
 def _ParseLine(props) -> object:
