@@ -30,6 +30,7 @@ from typing import Callable, Optional
 
 from ..config.defaults import CONFIG_DIR
 from ..core.session import ChatSession
+from ..api.interrupt_async import request_interrupt_async
 from .client import IlinkClient, extract_text, is_user_message
 from .auth import SESSION_DURATION, login, save_cred
 from .commands import (
@@ -104,6 +105,8 @@ class ClawBotRunner:
         self._chat_ui: Optional[object] = None
         self._monitor: Optional[object] = None
         self._loop_state: dict = {}
+        # AI 对话是否正在生成（流式输出/工具执行中）——供 /stop 判断
+        self._ai_running: bool = False
 
     # ── 工厂 ──────────────────────────────────────────
 
@@ -340,6 +343,9 @@ class ClawBotRunner:
                 #   与 InteractiveLoop._handle_round 的 queued_input 语义一致。
                 queued_input = self._loop_state.pop("queued_input", None)
                 if queued_input:
+                    # ★ /stop 实时中断：AI 生成期间本地排队输入 /stop 立即触发中断
+                    if self._try_stop_local(queued_input):
+                        continue
                     await queue.put({
                         "source": "local",
                         "from_id": LOCAL_USER_ID,
@@ -375,6 +381,9 @@ class ClawBotRunner:
                 if text.strip().lower() == "exit":
                     break
                 if not text:
+                    continue
+                # ★ /stop 实时中断：AI 生成期间本地输入 /stop 立即触发中断
+                if self._try_stop_local(text):
                     continue
                 await queue.put({
                     "source": "local",
@@ -427,6 +436,11 @@ class ClawBotRunner:
                     ctx = msg.get("context_token") or ""
                     text = extract_text(msg).strip()
                     if not from_id or not text:
+                        continue
+                    # ★ /stop 实时中断：AI 生成期间微信 /stop 立即触发中断
+                    #   （_consume_loop 阻塞在 run_round 上，无法消费队列，
+                    #    须由独立轮询任务响应并跳过入队）
+                    if await self._try_stop_ai(from_id, ctx, text):
                         continue
                     self._last_contact = {"from_id": from_id, "context_token": ctx}
                     await queue.put({
@@ -534,6 +548,8 @@ class ClawBotRunner:
             await self._cmd_status(from_id, ctx)
         elif name == "model":
             await self._cmd_model(from_id, ctx, arg)
+        elif name == "stop":
+            await self._cmd_stop(from_id, ctx)
         elif name:
             await self._send(from_id, ctx, f"未知指令 /{name}\n{HELP_TEXT}")
         else:
@@ -634,6 +650,59 @@ class ClawBotRunner:
         session.model = arg
         await self._send(from_id, ctx, f"✅ 已切换模型: {arg}")
 
+    # ── /stop 指令：终止 AI 流式输出 ──────────────────
+
+    async def _cmd_stop(self, from_id: str, ctx: str) -> None:
+        """/stop：终止当前正在进行的 AI 流式输出（队列消费路径）。
+
+        AI 空闲（无生成任务）时提示；生成期间调用 request_interrupt_async()
+        设置全局中断标志——流式迭代器每收到一个 SSE chunk 都会检查该标志，
+        检测到后立即终止本轮生成（与 ESC 中断同一机制），run_round 以
+        interrupted 结束，已生成的部分内容保留。
+
+        注意：AI 生成期间 _consume_loop 阻塞在 run_round 上，本方法实际由
+        _poll_loop（微信）/ _run_tui 主循环（本地）的实时特判抢先响应；
+        本方法覆盖 AI 空闲时显式调用 /stop 的提示场景。
+        """
+        if not self._ai_running:
+            await self._send(from_id, ctx, "当前没有正在生成的输出")
+            return
+        request_interrupt_async()
+        self._print(f"[stop] {from_id} 请求停止当前生成")
+        await self._send(from_id, ctx, "⏹ 已停止当前生成")
+
+    async def _try_stop_ai(self, from_id: str, ctx: str, text: str) -> bool:
+        """微信路径 /stop 实时中断（由 _poll_loop 长轮询任务调用）。
+
+        当 AI 正在生成时，_consume_loop 阻塞在 run_round 上无法消费队列，
+        因此必须在独立的轮询任务中检测已授权用户的 /stop 并立即触发中断。
+
+        Returns:
+            True — 已处理 /stop（消息不进入队列）；False — 继续正常入队
+        """
+        if from_id not in self._allowed_users or not self._ai_running:
+            return False
+        if text.strip().lower() != "/stop":
+            return False
+        request_interrupt_async()
+        self._print(f"[stop] 微信用户 {from_id} 请求停止当前生成")
+        await self._send_wechat(from_id, ctx, "⏹ 已停止当前生成")
+        return True
+
+    def _try_stop_local(self, text: str) -> bool:
+        """本地 TUI 路径 /stop 实时中断（由 _run_tui 主循环调用）。
+
+        Returns:
+            True — 已处理 /stop（文本不进入队列）；False — 继续正常入队
+        """
+        if not self._ai_running:
+            return False
+        if text.strip().lower() != "/stop":
+            return False
+        request_interrupt_async()
+        self._print("⏹ 已停止当前生成")
+        return True
+
     # ── AI 对话 ───────────────────────────────────────
 
     async def _ai_chat(self, from_id: str, ctx: str, text: str) -> None:
@@ -644,6 +713,7 @@ class ClawBotRunner:
             self._chat_ui.on_user_message(label)
         await self._typing(from_id, 1)
         before = len(session.messages)
+        self._ai_running = True
         try:
             result = await session.run_round(text)
         except asyncio.CancelledError:
@@ -654,6 +724,9 @@ class ClawBotRunner:
             await self._typing(from_id, 2)
             await self._send(from_id, ctx, f"❌ 处理失败: {e}")
             return
+        finally:
+            # 无论正常结束/异常/中断，都复位生成标志（/stop 判断依据）
+            self._ai_running = False
         await self._typing(from_id, 2)
 
         new_msgs = session.messages[before:]
@@ -666,7 +739,14 @@ class ClawBotRunner:
             parts.append(summary)
         if reasoning:
             parts.append(f"🤔 {reasoning}")
-        parts.append(reply if reply else "(本轮无文本回复)")
+        if result.get("interrupted"):
+            # /stop 或 ESC 中断：回显停止提示 + 已生成的部分内容（若有）
+            if reply:
+                parts.append(f"⏹ 已停止生成\n\n{reply}")
+            else:
+                parts.append("⏹ 已停止生成")
+        else:
+            parts.append(reply if reply else "(本轮无文本回复)")
         body = "\n\n".join(parts)
         for chunk in split_message(body):
             if self._chat_ui is not None:
