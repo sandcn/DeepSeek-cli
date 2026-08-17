@@ -46,7 +46,7 @@ from src.tui._input import _wrap_by_width
 from src.tui.app.input_area import _desc_column_width, _truncate_width
 from src.tui.app._theme import _S_DIM, _S_SEP
 from src.tui.ink import TEXT, h, Column, Row
-from src.tui.ink.hooks import use_state, use_modal
+from src.tui.ink.hooks import use_modal, use_ref, use_state
 from src.tui.ink.widgets.interactive import SelectInput, MultiSelect
 
 __all__ = ["UserSelectPopup"]
@@ -230,6 +230,17 @@ def UserSelectPopup(props) -> object:
     # 初始值从 model.user_select 读取（App 以 key=seq 强制重挂载，
     # seq 变化 → fiber 重建 → use_state 重新初始化）。
     selected, set_selected = use_state(us.selected if us is not None else 0)
+    # ★ 2026-08-18（连续弹出显示错乱修复 · 组件级双保险）：us 实例变化
+    #   （清理后重新打开产生新 UserSelectState 对象）时本帧即以新
+    #   us.selected 计算高亮，并排队 set_selected 让下一帧 state 收敛——
+    #   即使调和器因 key 复用（seq 修复后理论不会发生）保留旧 fiber，
+    #   也不残留旧选中/旧勾选（标题 (n/N) 与高亮行显示正确）。
+    us_ref = use_ref(None)
+    fresh_us = us_ref.current is not us
+    if fresh_us:
+        us_ref.current = us
+        if us is not None and selected != us.selected:
+            set_selected(us.selected)
     # ★ 模态底部视图声明（2026-08-17 通用机制）：visible 时独占键盘输入——
     #   未消费按键被 input router 吞掉（不落入输入缓冲；输入区已不渲染，
     #   字符落入输入缓冲会「看不见地」改变用户输入）。visible=False 时 hook
@@ -245,7 +256,15 @@ def UserSelectPopup(props) -> object:
     multi = bool(us.multi_select)
 
     # ── 渲染 ──
-    cur = max(0, min(selected, total - 1))
+    # 本帧高亮源：us 实例变化（fresh_us——组件防御，防 fiber 复用残留旧
+    # 选中）时用新 us.selected；否则用 use_state 值（控件导航权威）。
+    if fresh_us and us is not None:
+        try:
+            cur = max(0, min(int(us.selected or 0), total - 1))
+        except (TypeError, ValueError):
+            cur = max(0, min(selected, total - 1))
+    else:
+        cur = max(0, min(selected, total - 1))
     descs = us.option_descriptions or []
     # 分栏说明模式：option_descriptions 非空时左栏选项 + 右栏说明。
     # （★ 2026-08-18：option_lines 已随 /editmsg 拆分移除——本组件选项
@@ -362,7 +381,7 @@ def UserSelectPopup(props) -> object:
             if 0 <= i < total:
                 initial_vals.append(options[i])
         control = h(MultiSelect, {
-            "key": "us-multiselect",
+            "key": f"us-multiselect-{getattr(us, 'seq', 0)}",
             "items": items,
             "initialIndex": cur,
             "initialValues": initial_vals,
@@ -376,7 +395,7 @@ def UserSelectPopup(props) -> object:
         })
     else:
         control = h(SelectInput, {
-            "key": "us-select",
+            "key": f"us-select-{getattr(us, 'seq', 0)}",
             "items": items,
             "initialIndex": cur,
             "limit": limit,

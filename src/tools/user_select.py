@@ -266,11 +266,20 @@ class UserSelectFunc(Func):
         finally:
             # 清理弹窗状态 + 主动重绘（底部栏立即恢复正常显示）
             try:
-                model.user_select = UserSelectState()
-                # ★ 模态底部视图：关闭底部视图 → App 恢复状态栏 + 输入区
-                #   （弹窗关闭后正常底部框重新显示）。
+                # ★ 模态底部视图：**先关闭底部视图**（App 恢复状态栏 + 输入区，
+                #   弹窗关闭后正常底部框重新显示）再清理弹窗状态——避免
+                #   「user_select 已重置但 bottom_view 仍指向弹窗」的空白帧
+                #   窗口（渲染线程可能在此窗口取帧，弹窗消失但底部区未恢复）。
                 if hasattr(model, "bottom_view"):
                     model.bottom_view = ""
+                # ★ 2026-08-18（连续弹出显示错乱修复）：清理**保留 seq**——
+                #   seq 单调递增保证 App key（us-{seq}）永不重复 → 调和器每次
+                #   强制重挂载 UserSelectPopup（重置内部 selected/checked state）。
+                #   修复前归零：连续两次弹出之间若关闭帧被渲染节流合并跳过，
+                #   第二次 seq 与第一次相同 → key 复用 → fiber 复用 → 旧选中/
+                #   勾选残留（标题 (n/N)/高亮/勾选显示错乱）。
+                prev_seq = getattr(model.user_select, "seq", 0)
+                model.user_select = UserSelectState(seq=prev_seq)
                 chat_ui.request_bottom_redraw()
             except Exception:
                 _logger.debug("user_select: cleanup 失败", exc_info=True)

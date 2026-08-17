@@ -105,9 +105,16 @@ class CommandUiAdapter:
                 return {"action": "confirmed", "index": selected if selected >= 0 else initial_idx}
             finally:
                 # 清理弹窗状态 + 关闭底部视图 → App 恢复状态栏 + 输入区。
-                model.user_select = UserSelectState()
+                # ★ 2026-08-18（连续弹出显示错乱修复）：先关闭底部视图再清理
+                #   状态（避免「状态已重置但 bottom_view 仍指向弹窗」的空白帧
+                #   窗口）；且清理**保留 seq**——seq 单调递增保证 App key
+                #   （us-{seq}）永不重复 → 调和器强制重挂载 UserSelectPopup
+                #   （修复前归零 → 连续打开 key 复用 → fiber 复用 → use_state
+                #   残留旧选中，弹窗显示错乱）。
                 if hasattr(model, "bottom_view"):
                     model.bottom_view = ""
+                prev_seq = getattr(model.user_select, "seq", 0)
+                model.user_select = UserSelectState(seq=prev_seq)
                 try:
                     session.request_bottom_redraw()
                 except Exception:

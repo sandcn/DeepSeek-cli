@@ -486,11 +486,17 @@ class MessageEditor:
             except (TypeError, ValueError):
                 selected = sel_count - 1
         finally:
-            # 清理弹窗状态 + 请求重绘（底部栏立即恢复正常显示）
-            model.editmsg_select = EditMsgSelectState()
-            # ★ 模态底部视图：关闭底部视图 → App 恢复状态栏 + 输入区。
+            # 清理弹窗状态 + 请求重绘（底部栏立即恢复正常显示）。
+            # ★ 2026-08-18（连续弹出显示错乱修复）：先关闭底部视图再清理
+            #   状态（避免「状态已重置但 bottom_view 仍指向弹窗」的空白帧
+            #   窗口）；且清理**保留 seq**——seq 单调递增保证 App key
+            #   （em-{seq}）永不重复 → 调和器强制重挂载 EditMsgSelectPopup
+            #   （修复前归零 → 连续打开 key 复用 → fiber 复用 → use_state
+            #   残留旧选中，弹窗显示错乱）。
             if hasattr(model, "bottom_view"):
                 model.bottom_view = ""
+            prev_es_seq = getattr(model.editmsg_select, "seq", 0)
+            model.editmsg_select = EditMsgSelectState(seq=prev_es_seq)
             try:
                 session.request_bottom_redraw()
             except Exception:

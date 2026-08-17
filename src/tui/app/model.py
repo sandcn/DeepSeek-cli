@@ -637,8 +637,11 @@ class AppModel(_ToolOutputMixin):
         self.bottom_view = ""
         # ★ 2026-08-18（editmsg 独立协议）：清屏同时重置消息编辑选择弹窗
         #   （与 user_select 同语义——残留 editmsg_select 让 /editmsg 轮询
-        #   done 期间弹窗消失，轮询等待空转到超时）。
-        self.editmsg_select = EditMsgSelectState()
+        #   done 期间弹窗消失，轮询等待空转到超时）。**保留 seq**（与
+        #   user_select 清理同修复——seq 单调递增保证 key 唯一，清屏后再次
+        #   打开 editmsg 强制重挂载，不残留旧选中）。
+        prev_es_seq = getattr(self.editmsg_select, "seq", 0)
+        self.editmsg_select = EditMsgSelectState(seq=prev_es_seq)
 
     # ── trace_open 兼容别名（2026-08-17 通用化：模态全屏视图） ──
     # 轨迹视图打开 = model.fullscreen == "trace"。property 保持旧字段读写

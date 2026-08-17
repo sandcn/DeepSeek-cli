@@ -31,7 +31,7 @@ from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from src.tui.app.input_area import _truncate_width
 from src.tui.ink import TEXT, h, Column
-from src.tui.ink.hooks import use_state, use_modal
+from src.tui.ink.hooks import use_modal, use_ref, use_state
 from src.tui.ink.widgets.interactive import SelectInput
 
 __all__ = ["EditMsgSelectPopup"]
@@ -87,6 +87,17 @@ def EditMsgSelectPopup(props) -> object:
     # 初始值从 model.editmsg_select 读取（App 以 key=seq 强制重挂载，
     # seq 变化 → fiber 重建 → use_state 重新初始化）。
     selected, set_selected = use_state(es.selected if es is not None else 0)
+    # ★ 2026-08-18（连续弹出显示错乱修复 · 组件级双保险，与 UserSelectPopup
+    #   同机制）：es 实例变化（清理后重新打开产生新 EditMsgSelectState 对象）
+    #   时本帧即以新 es.selected 计算高亮，并排队 set_selected 让下一帧 state
+    #   收敛——即使调和器因 key 复用（seq 修复后理论不会发生）保留旧 fiber，
+    #   也不残留旧选中（标题 (n/N) 与高亮行显示正确）。
+    es_ref = use_ref(None)
+    fresh_es = es_ref.current is not es
+    if fresh_es:
+        es_ref.current = es
+        if es is not None and selected != es.selected:
+            set_selected(es.selected)
     # ★ 模态底部视图声明（与 UserSelectPopup 同机制）：visible 时独占键盘
     #   输入——未消费按键被 input router 吞掉（不落入输入缓冲；输入区已
     #   不渲染）。visible=False 时 hook 不参与路由（零影响）。
@@ -98,7 +109,15 @@ def EditMsgSelectPopup(props) -> object:
     options = list(es.options)
     total = len(options)
     # ── 渲染 ──
-    cur = max(0, min(selected, total - 1))
+    # 本帧高亮源：es 实例变化（fresh_es——组件防御，防 fiber 复用残留旧
+    # 选中）时用新 es.selected；否则用 use_state 值（控件导航权威）。
+    if fresh_es and es is not None:
+        try:
+            cur = max(0, min(int(es.selected or 0), total - 1))
+        except (TypeError, ValueError):
+            cur = max(0, min(selected, total - 1))
+    else:
+        cur = max(0, min(selected, total - 1))
     title = es.title or "选择要编辑的消息"
     rows: list = []
 
@@ -156,7 +175,7 @@ def EditMsgSelectPopup(props) -> object:
         })
 
     rows.append(h(SelectInput, {
-        "key": "em-select",
+        "key": f"em-select-{getattr(es, 'seq', 0)}",
         "items": items,
         "initialIndex": cur,
         "limit": limit,
