@@ -54,6 +54,15 @@ _tools_cache: tuple[float, TraceRecord] | None = None
 #:   与 apply._append_assistant_rich 同阈值语义）
 _TOOL_DETAIL_MAX_LEN = 80
 
+#: 内容消毒/换行缓存上限（条数，超限清空重建——miss 仅多一次消毒/拆分，
+#:   无正确性影响；流式期间 records 每帧重建，历史消息内容不变 → 命中缓存
+#:   零重复 ANSI 消毒/换行拆分，见 ``_content_str``/``_split_lines``）。
+_CONTENT_CACHE_MAX = 128
+#: content（str）→ 消毒文本缓存（_records_from_messages 每帧重建时命中）
+_content_str_cache: dict = {}
+#: 文本 → 换行列表缓存（tuple 存值——不可变防污染；返回 list() 复制）
+_split_lines_cache: dict = {}
+
 
 @dataclass
 class TraceRecord:
@@ -184,7 +193,7 @@ def _system_prompt_record(index: int) -> TraceRecord | None:
     if not parts:
         return None
     text = "\n\n".join(parts)
-    lines = [ln for ln in text.splitlines()]
+    lines = _split_lines(text)
     return TraceRecord(
         index=index,
         kind="system",
@@ -194,12 +203,58 @@ def _system_prompt_record(index: int) -> TraceRecord | None:
 
 
 def _block_plain_lines(block) -> list:
-    """块内 AnsiLine 的纯文本行列表（防御：非 AnsiLine 行 str() 化）。"""
+    """块内 AnsiLine 的纯文本行列表（防御：非 AnsiLine 行 str() 化）。
+
+    ★ 性能（2026-08-19 用户需求：轨迹 Trace 优化性能）：**块级增量缓存**
+    （``block._plain_lines_cache``）——流式期间开放块行只追加（append-only，
+    与 ``_block_styled_rows`` 增量缓存同契约），缓存记录已转换行数，增长仅
+    转换**新增行**（既有行复用），避免每帧全量遍历 O(n²)；行数倒退 / lines
+    引用变化（非 append-only 异常）→ 全量重建。返回共享列表（调用方只读，
+    与 ``_block_styled_rows`` 共享 rows 列表同模式）。
+    """
+    blines = getattr(block, "lines", None) or []
+    cache = getattr(block, "_plain_lines_cache", None)
+    if cache is not None:
+        ckey, cout, ccount = cache
+        if ckey == id(blines) and len(blines) >= ccount:
+            for line in blines[ccount:]:
+                plain = getattr(line, "plain", None)
+                cout.append(plain if plain is not None else str(line))
+            block._plain_lines_cache = (id(blines), cout, len(blines))
+            return cout
     out: list = []
-    for line in getattr(block, "lines", None) or []:
+    for line in blines:
         plain = getattr(line, "plain", None)
         out.append(plain if plain is not None else str(line))
+    block._plain_lines_cache = (id(blines), out, len(blines))
     return out
+
+
+def _block_content_len(block, lines) -> int:
+    """块内容总字符长度（增量缓存——``_live_fingerprint`` 流式增长扫描用）。
+
+    ★ 性能（2026-08-19 用户需求：轨迹 Trace 优化性能）：``_live_fingerprint``
+    每帧计算开放块（流式生成中思考/回答）内容总长度——全量扫描 O(行数/内容)
+    在长回答下每帧重复。块级增量缓存（``block._content_len_cache``）：
+    行只追加 → 仅对**新增行**累加长度；行数倒退 / lines 引用变化 → 全量
+    重算（防御非 append-only 异常，与 ``_block_plain_lines`` 同契约）。
+    """
+    cache = getattr(block, "_content_len_cache", None)
+    if cache is not None:
+        ckey, ccount, ctotal = cache
+        if ckey == id(lines) and len(lines) >= ccount:
+            extra = ctotal
+            for ln in lines[ccount:]:
+                plain = getattr(ln, "plain", None)
+                extra += len(plain if plain is not None else str(ln))
+            block._content_len_cache = (id(lines), len(lines), extra)
+            return extra
+    total = 0
+    for ln in lines:
+        plain = getattr(ln, "plain", None)
+        total += len(plain if plain is not None else str(ln))
+    block._content_len_cache = (id(lines), len(lines), total)
+    return total
 
 
 def _first_plain_line(block) -> str:
@@ -257,16 +312,32 @@ def block_detail_lines(block) -> list:
     调用行从 extra 重建（``⚡ 工具名 参数``），剔除原始标题行（``lines[0]``
     旧式 ``  · 工具 · 参数``）与状态数据行（``  ✔``/``  ✖``，状态由检查器
     标题行图标表达）——「工具调用跟返回合并成一条」的完整详情。
+
+    ★ 性能（2026-08-19 用户需求：轨迹 Trace 优化性能）：工具块详情**缓存**
+    （``block._trace_detail_cache``）——流式期间选中 tool 记录每帧经
+    ``_detail_lines_of`` 调本函数：内容/状态未变 → 命中缓存零重建（返回
+    同一列表引用，TEXT wrap 引用级命中）；行数增长 / 状态变化（tool_status
+    更新、状态行下标变化）→ 重建。``_block_plain_lines`` 自身有增量缓存
+    （纯文本提取 O(新增)），过滤遍历 O(行数) 引用比较（远低于字符串处理）。
     """
-    lines = _block_plain_lines(block)
+    blines = getattr(block, "lines", None) or []
     kind = getattr(block, "kind", "")
     if kind != "tool":
-        return lines
+        return _block_plain_lines(block)
     extra = getattr(block, "extra", None) or {}
     tool_name = extra.get("tool_name") or "工具"
     detail = extra.get("tool_detail", "")
-    call_line = f"{tool_name} {detail}".strip() or tool_name
     status_idx = _tool_status_data_index(block)
+    cache = getattr(block, "_trace_detail_cache", None)
+    ckey = (
+        id(blines), len(blines), kind,
+        bool(getattr(block, "closed", False)), status_idx,
+        tool_name, detail,
+    )
+    if cache is not None and cache[0] == ckey:
+        return cache[1]
+    lines = _block_plain_lines(block)
+    call_line = f"{tool_name} {detail}".strip() or tool_name
     out = [call_line]
     for i, ln in enumerate(lines):
         if i == 0:
@@ -274,6 +345,7 @@ def block_detail_lines(block) -> list:
         if i == status_idx:
             continue  # 状态数据行——检查器标题行已表达状态
         out.append(ln)
+    block._trace_detail_cache = (ckey, out)
     return out
 
 
@@ -351,6 +423,12 @@ def _messages_fingerprint(model) -> tuple:
     覆盖流式/追加/编辑场景：列表身份 + 长度 + 末条消息（身份/角色/内容
     长度）——流式增长（content 变长）、新消息追加、/editmsg 替换尾消息均
     触发重建；中间消息编辑（罕见，随后续追加自然刷新）短暂陈旧可接受。
+
+    ★ 2026-08-19（用户需求：轨迹 Trace 优化性能）：**返回展平原子值**
+    （无嵌套 tuple）——``use_memo`` deps 逐项 ``_object_is``（嵌套 tuple 按
+    is 引用比较恒 miss → 缓存永久失效 → 每帧全量重建 records）。展平后
+    元素全为 int/str（按值比较），内容不变 → deps 稳定 → use_memo 命中
+    零重建。
     """
     source = getattr(model, "message_source", None)
     if source is None:
@@ -373,7 +451,7 @@ def _messages_fingerprint(model) -> tuple:
         )
     else:
         tail_fp = (id(tail), str(tail)[:40])
-    return (id(messages), len(messages), tail_fp)
+    return (id(messages), len(messages), *tail_fp)
 
 
 def _live_fingerprint(model) -> tuple:
@@ -390,6 +468,12 @@ def _live_fingerprint(model) -> tuple:
     时间基元素不入指纹（台账静态色，不随动画重建）。流式完成（块关闭/
     工具 box pop）后实时元素消失 → 指纹回退基线（消息指纹接管，无重复
     重建）。
+
+    ★ 2026-08-19（用户需求：轨迹 Trace 优化性能）：
+      1. **返回展平原子值**（无嵌套 tuple——use_memo deps 逐项按值比较，
+         嵌套 tuple 按 is 恒 miss 导致缓存永久失效，见 ``_messages_fingerprint``）；
+      2. **内容总长度增量计算**（``_block_content_len`` 块级缓存）——开放块
+         行只追加，仅对新增行累加长度（长回答下每帧 O(新增) 而非 O(全部)）。
     """
     fp: list = []
     for b in getattr(model, "blocks", None) or []:
@@ -398,17 +482,14 @@ def _live_fingerprint(model) -> tuple:
         if getattr(b, "kind", "") not in ("reasoning", "content"):
             continue
         lines = getattr(b, "lines", None) or []
-        total = 0
-        for ln in lines:
-            plain = getattr(ln, "plain", None)
-            total += len(plain if plain is not None else str(ln))
-        fp.append((getattr(b, "kind", ""), len(lines), total))
+        total = _block_content_len(b, lines)
+        fp.extend((getattr(b, "kind", ""), len(lines), total))
     for key, box in (getattr(model, "tool_boxes", None) or {}).items():
         if getattr(box, "closed", False):
             continue
         extra = getattr(box, "extra", None) or {}
         lines = getattr(box, "lines", None) or []
-        fp.append((key, extra.get("tool_status", ""), len(lines)))
+        fp.extend((key, extra.get("tool_status", ""), len(lines)))
     return tuple(fp)
 
 
@@ -470,7 +551,7 @@ def _live_records(model, index_holder: list, out_records: list, rows: list,
             kind=kind,
             summary=summary,
             status="running",
-            lines=list(lines),
+            lines=lines,
             # ★ 2026-08-17（用户需求：回答/思考用流式 markdown 显示在右边）：
             #   live 记录挂 source_block → 检查器直接复用块渲染输出（AnsiLine
             #   已带 markdown 样式：标题青色粗体/代码 pygments 高亮等）——流式
@@ -540,9 +621,48 @@ def _content_str(content) -> str:
 
     委托 ``src.tui.pipeline.message_display._content_str``（apply 历史回放
     同源）——工具输出透传的转义序列会被剥除（残留 ANSI 破坏宽度测量/渲染）。
+
+    ★ 性能（2026-08-19 用户需求：轨迹 Trace 优化性能）：**str content 消毒
+    结果模块级缓存**（``_content_str_cache``）——流式期间 records 每帧重建，
+    ``_records_from_messages`` 对每条消息调用本函数：历史消息 content 为
+    持久 str 对象（内容不变）→ 缓存命中零重复正则消毒；仅流式追加的末条
+    （新 str）miss。list/None 不缓存（list 多模态场景少、None 恒返回空串）。
+    有界防无限增长（超限清空重建——miss 仅多一次消毒，无正确性影响）。
     """
     from src.tui.pipeline.message_display import _content_str as _src
+    if isinstance(content, str):
+        cached = _content_str_cache.get(content)
+        if cached is not None:
+            return cached
+        text = _src(content)
+        if len(_content_str_cache) >= _CONTENT_CACHE_MAX:
+            _content_str_cache.clear()
+        _content_str_cache[content] = text
+        return text
     return _src(content)
+
+
+def _split_lines(text: str) -> list:
+    """文本换行拆分（splitlines）缓存（性能：records 每帧重建时命中）。
+
+    ★ 2026-08-19（用户需求：轨迹 Trace 优化性能）：``text.splitlines()``
+    对每条消息每帧执行（O(内容) 字符串切片分配）——历史消息内容不变 →
+    缓存命中零重复拆分。缓存存 **list**（调用方只读契约——rec.lines 与缓存
+    共享同一列表引用，id 稳定 → ``_detail_deps`` 的 ``id(lines)`` 跨帧命中
+    → 检查器 use_memo 零重建；若每次返回副本，id 恒变 → use_memo 恒 miss
+    抵消优化）。调用方（``_records_from_messages``/``_merge_subagent_*``/
+    ``_inspector_children`` 纯文本分支）均只读不修改——共享安全（与
+    ``_block_plain_lines`` 共享列表同契约）。有界防无限增长（与
+    ``_content_str`` 同 ``_CONTENT_CACHE_MAX``）。
+    """
+    cached = _split_lines_cache.get(text)
+    if cached is not None:
+        return cached
+    lines = text.splitlines()
+    if len(_split_lines_cache) >= _CONTENT_CACHE_MAX:
+        _split_lines_cache.clear()
+    _split_lines_cache[text] = lines
+    return lines
 
 
 def _tool_detail(name: str, args) -> str:
@@ -602,7 +722,7 @@ def _records_from_messages(messages) -> tuple:
             text = _content_str(msg.get("content", "")).strip()
             if not text:
                 continue
-            lines = text.splitlines()
+            lines = _split_lines(text)
             index += 1
             rec = TraceRecord(
                 index=index, kind="system",
@@ -615,7 +735,7 @@ def _records_from_messages(messages) -> tuple:
             if not text:
                 continue
             rows.append(None)  # 轮次分隔行（新用户消息 = 新轮次）
-            lines = text.splitlines()
+            lines = _split_lines(text)
             index += 1
             rec = TraceRecord(
                 index=index, kind="user",
@@ -626,7 +746,7 @@ def _records_from_messages(messages) -> tuple:
         elif role == "assistant":
             reasoning = _content_str(msg.get("reasoning_content", "")).strip()
             if reasoning:
-                lines = reasoning.splitlines()
+                lines = _split_lines(reasoning)
                 index += 1
                 rec = TraceRecord(
                     index=index, kind="reasoning",
@@ -636,7 +756,7 @@ def _records_from_messages(messages) -> tuple:
                 rows.append(rec)
             content = _content_str(msg.get("content", "")).strip()
             if content:
-                lines = content.splitlines()
+                lines = _split_lines(content)
                 index += 1
                 rec = TraceRecord(
                     index=index, kind="content",
@@ -676,7 +796,7 @@ def _records_from_messages(messages) -> tuple:
                 continue
             cid = msg.get("tool_call_id") or ""
             rec = pending.pop(cid, None) if cid else None
-            lines = text.splitlines()
+            lines = _split_lines(text)
             if rec is not None:
                 # ★ 工具调用 + 返回合并一条：返回追加到调用记录
                 rec.result = _first_text(lines)
@@ -957,7 +1077,7 @@ def _subagent_live_records(index_holder: list, out_records: list, rows: list,
     if phase in ("thinking", "reasoning"):
         # 思考阶段：显示正在生成的思考（实际流式内容，逐帧增长）
         if live_reasoning:
-            lines = live_reasoning.splitlines()
+            lines = _slot_live_lines(slot, "live_reasoning")
             index_holder[0] += 1
             rec = TraceRecord(
                 index=index_holder[0], kind="reasoning",
@@ -971,7 +1091,7 @@ def _subagent_live_records(index_holder: list, out_records: list, rows: list,
         # 与 mainagent 同时显示 reasoning/content 记录语义一致（SubAgent
         # messages 整轮完成后才追加，动态部分先行展示实际生成内容）
         if live_reasoning:
-            lines = live_reasoning.splitlines()
+            lines = _slot_live_lines(slot, "live_reasoning")
             index_holder[0] += 1
             rec = TraceRecord(
                 index=index_holder[0], kind="reasoning",
@@ -981,7 +1101,7 @@ def _subagent_live_records(index_holder: list, out_records: list, rows: list,
             out_records.append(rec)
             rows.append(rec)
         if live_content:
-            lines = live_content.splitlines()
+            lines = _slot_live_lines(slot, "live_content")
             index_holder[0] += 1
             rec = TraceRecord(
                 index=index_holder[0], kind="content",
@@ -990,6 +1110,27 @@ def _subagent_live_records(index_holder: list, out_records: list, rows: list,
             )
             out_records.append(rec)
             rows.append(rec)
+
+
+def _slot_live_lines(slot, attr: str) -> list:
+    """subagent 槽位 live 内容换行拆分缓存（``live_reasoning``/``live_content``）。
+
+    ★ 性能（2026-08-19 用户需求：轨迹 Trace 优化性能）：subagent 模型调用
+    为流式管线（chunk 逐帧累积到 slot.live_reasoning/live_content）——
+    内容逐帧增长时每次全量 ``splitlines()`` O(内容)；同内容（无新 chunk
+    帧，如工具运行中触发重建）→ 缓存命中零拆分。缓存挂在槽位对象
+    （``slot._live_lines_cache = (文本, 行列表)``），str 按值比较（内容
+    变化 → 重新拆分）。
+    """
+    text = (getattr(slot, attr, "") or "").strip()
+    cache = getattr(slot, "_live_lines_cache", None)
+    if cache is not None:
+        ctext, clines = cache
+        if ctext == text:
+            return clines
+    lines = text.splitlines()
+    slot._live_lines_cache = (text, lines)
+    return lines
 
 
 def _subagent_slot(label: str):
@@ -1039,7 +1180,7 @@ def _subagent_fallback_records(label: str, slot) -> tuple:
         rows.append(tools_rec)
     prompt = (getattr(slot, "prompt", "") or "").strip()
     if prompt:
-        lines = prompt.splitlines()
+        lines = _split_lines(prompt)
         index += 1
         rec = TraceRecord(
             index=index, kind="user",
@@ -1079,7 +1220,7 @@ def _subagent_fallback_records(label: str, slot) -> tuple:
         records.append(rec)
         rows.append(rec)
     elif result_text:
-        lines = result_text.splitlines()
+        lines = _split_lines(result_text)
         index += 1
         rec = TraceRecord(
             index=index, kind="content",
@@ -1230,4 +1371,9 @@ __all__ = [
     "_subagent_label_order",
     "_subagent_tool_targets",
     "_merge_subagent_into_tool_record",
+    "_content_str",
+    "_split_lines",
+    "_block_plain_lines",
+    "_block_content_len",
+    "_slot_live_lines",
 ]

@@ -37,7 +37,7 @@ from src.tui.app.trace import (
     build_trace_records,
 )
 from src.tui.core.style import Style
-from src.tui.ink import TEXT, Column, Row, StyledRun, h, use_input, use_memo
+from src.tui.ink import TEXT, Column, Row, StyledRun, h, use_input, use_memo, use_ref
 from src.tui.ink.helpers import truncate_runs
 from src.tui.ink.widgets.listview import ListView
 
@@ -62,6 +62,15 @@ _TREE_LEAF = "  "         # 叶子占位（对齐 Tree._TREE_LEAF）
 _TREE_INDENT = 2          # 每层缩进空格数（对齐 Tree._TREE_INDENT）
 #: 参数/返回值小节标题前缀
 _SECTION_PREFIX = "\u25b8 "  # ▸
+
+#: 台账行 runs 模块级缓存（性能：ListView 每帧对可见行调 renderItem——
+#:   同内容记录跨 rec 命中返回同一 runs 引用，零重建 + TEXT wrap 引用级
+#:   命中零重写；运行中耗时按整数秒入指纹，每秒刷新一次）。有界防无限
+#:   增长（超限清空重建——miss 仅多一次 runs 构建，无正确性影响）。
+_LEDGER_RUNS_CACHE: dict = {}
+_LEDGER_RUNS_CACHE_MAX = 256
+#: 轮次分隔行 runs 缓存（与 _ledger_row_runs 同缓存上限——纯函数输出复用）
+_SEP_RUNS_CACHE: dict = {}
 
 #: 种类图标（台账行）与名称（检查器标题）——对齐既有角色头 emoji 语义
 _KIND_ICON = {
@@ -115,7 +124,30 @@ def _ledger_row_runs(rec, sel: bool, left_w: int) -> list:
         rec: TraceRecord。
         sel: 是否选中。
         left_w: 左栏宽（>0 时截断；<=0 不截断防御）。
+
+    ★ 性能（2026-08-19 用户需求：轨迹 Trace 优化性能）：**内容指纹缓存**
+    （``_LEDGER_RUNS_CACHE``）——ListView 每帧对可见行调用 renderItem →
+    本函数每帧重建 StyledRun（含 truncate 宽计算）；同内容记录（records
+    流式重建新对象但字段值相同）→ 指纹命中 → 返回同一 runs 列表引用（零
+    重建；TEXT ``_wrap_cache`` 按 styled 引用命中 → 渲染层也零重写）。运行
+    中耗时（``time_seconds``）按**整数秒**入指纹（每秒刷新一次，避免每帧
+    重建——与检查器 meta 同语义）。有界防无限增长（超限清空重建）。
     """
+    t_raw = getattr(rec, "time_seconds", None)
+    t_key = int(t_raw) if t_raw is not None else None
+    key = (
+        getattr(rec, "index", 0),
+        getattr(rec, "kind", ""),
+        getattr(rec, "summary", "") or "",
+        getattr(rec, "status", "") or "",
+        getattr(rec, "result", "") or "",
+        t_key,
+        bool(sel),
+        left_w,
+    )
+    cached = _LEDGER_RUNS_CACHE.get(key)
+    if cached is not None:
+        return cached
     runs: list = []
     # 选择标记（2 列）
     if sel:
@@ -145,9 +177,8 @@ def _ledger_row_runs(rec, sel: bool, left_w: int) -> list:
             runs.extend(prev_runs)
     # 耗时右对齐（尾列）
     t = ""
-    ts = getattr(rec, "time_seconds", None)
-    if ts is not None:
-        t = format_duration(ts)
+    if t_raw is not None:
+        t = format_duration(t_raw)
     if t and left_w > 0:
         used = sum(getattr(r, "width", 1) for r in runs)
         pad = left_w - used - len(t) - 1
@@ -156,13 +187,30 @@ def _ledger_row_runs(rec, sel: bool, left_w: int) -> list:
         runs.append(StyledRun(t, _S_TIME))
     if sel:
         runs = [StyledRun(r.text, (r.style or Style()).merge(_S_SEL_BG)) for r in runs]
-    return truncate_runs(runs, left_w) if left_w > 0 else runs
+    runs = truncate_runs(runs, left_w) if left_w > 0 else runs
+    _LEDGER_RUNS_CACHE[key] = runs
+    if len(_LEDGER_RUNS_CACHE) > _LEDGER_RUNS_CACHE_MAX:
+        _LEDGER_RUNS_CACHE.clear()
+    return runs
 
 
 def _sep_row_runs(n: int, left_w: int) -> list:
-    """轮次分隔行 runs（``── 轮次 N ──``，深灰）。"""
+    """轮次分隔行 runs（``── 轮次 N ──``，深灰）。
+
+    ★ 性能（2026-08-19 用户需求：轨迹 Trace 优化性能）：内容纯函数
+    （同 n/left_w 输出恒同）——模块级缓存返回同一 runs 引用（零重建 +
+    TEXT wrap 引用级命中）；与 ``_ledger_row_runs`` 同缓存上限。
+    """
+    key = (n, left_w)
+    cached = _SEP_RUNS_CACHE.get(key)
+    if cached is not None:
+        return cached
     runs = [StyledRun(f"\u2500\u2500 轮次 {n} \u2500\u2500", _S_SEP_ROW)]
-    return truncate_runs(runs, left_w) if left_w > 0 else runs
+    runs = truncate_runs(runs, left_w) if left_w > 0 else runs
+    _SEP_RUNS_CACHE[key] = runs
+    if len(_SEP_RUNS_CACHE) > _LEDGER_RUNS_CACHE_MAX:
+        _SEP_RUNS_CACHE.clear()
+    return runs
 
 
 def _detail_lines_of(rec) -> list:
@@ -754,14 +802,46 @@ def _inspector_children(rec, right_w: int, vh: int) -> list:
     return children
 
 
+def _inspector_deps(rec, right_w: int, vh: int) -> tuple:
+    """检查器 use_memo 依赖（TraceView 内 ``_inspector_children`` 包装）。
+
+    ★ 2026-08-19（用户需求：轨迹 Trace 优化性能）：检查器元素树（标题 +
+    元信息 + 内容行 TEXT）在 TraceView 组件体内每帧直接构建（h() 调用）——
+    选中记录内容不变时**元素树每帧重建**（仅内容行缓存命中）。use_memo
+    包装后：deps = ``_detail_deps``（内容行数据源——块行数/树内容/lines 身份，
+    展平原子值）+ 标题/元信息字段（index/kind/status/tokens/time）+ 栏宽/
+    视口。内容不变 → deps 稳定 → 元素树引用稳定 → reconciler 短路零重建。
+    运行中耗时按**整数秒**入指纹（meta 行每秒刷新一次，避免每帧重建）。
+    """
+    if rec is None:
+        return (None, right_w, vh)
+    tok = getattr(rec, "tokens", None) or {}
+    t_raw = getattr(rec, "time_seconds", None)
+    return tuple(_detail_deps(rec)) + (
+        getattr(rec, "index", 0),
+        getattr(rec, "kind", "") or "",
+        getattr(rec, "status", "") or "",
+        int(t_raw) if t_raw is not None else None,
+        int(tok.get("input", 0) or 0),
+        int(tok.get("output", 0) or 0),
+        right_w,
+        vh,
+    )
+
+
 def _block_fingerprint(model) -> tuple:
     """块指纹（use_memo deps）：块种类/行数/关闭态/工具状态——行数变化
     （流式追加）或状态变化才重建记录列表；时间基元素不入指纹（台账静态
-    色，不随动画重建）。"""
-    fp = []
+    色，不随动画重建）。
+
+    ★ 2026-08-19（用户需求：轨迹 Trace 优化性能）：**返回展平原子值**
+    （无嵌套 tuple——use_memo deps 逐项按值比较，嵌套 tuple 按 is 恒 miss
+    导致缓存永久失效，见 trace._messages_fingerprint 说明）。
+    """
+    fp: list = []
     for b in getattr(model, "blocks", None) or []:
         extra = getattr(b, "extra", None) or {}
-        fp.append((
+        fp.extend((
             getattr(b, "kind", ""),
             len(getattr(b, "lines", None) or []),
             bool(getattr(b, "closed", False)),
@@ -794,14 +874,18 @@ def _subagent_fingerprint() -> tuple:
             agents = getattr(store, "_agents", None) or {}
             archive = getattr(controller, "_trace_archive", None) or {}
             labels = _subagent_label_order(order, archive)
-            fp = tuple(
-                (label,
-                 getattr(agents.get(label) or archive.get(label), "status", ""),
-                 len(getattr(agents.get(label) or archive.get(label),
-                             "tool_history", None) or []))
-                for label in labels
-            )
-        return fp
+            fp: list = []
+            for label in labels:
+                slot = agents.get(label) or archive.get(label)
+                fp.extend((
+                    label,
+                    getattr(slot, "status", "") or "",
+                    len(getattr(slot, "tool_history", None) or []),
+                ))
+        # ★ 2026-08-19（用户需求：轨迹 Trace 优化性能）：返回展平原子值
+        #   （无嵌套 tuple——use_memo deps 逐项按值比较；嵌套 tuple 按 is
+        #   恒 miss 导致缓存永久失效，见 trace._messages_fingerprint 说明）。
+        return tuple(fp)
     except Exception:
         return ()
 
@@ -817,12 +901,25 @@ def _records_deps(model) -> tuple:
     不变，靠实时指纹驱动台账动态显示正在生成的内容（用户需求 2026-08-19）。
     块模式：块指纹 + subagent 指纹（内容变化才重建）。时间基元素不入指纹
     （台账静态色，不随动画重建）。
+
+    ★ 2026-08-19（用户需求：轨迹 Trace 优化性能）：**返回展平原子值**
+    （``itertools.chain`` 拼接各指纹——各指纹已展平为原子值；use_memo deps
+    逐项 ``_object_is`` 按值比较，嵌套 tuple 按 is 恒 miss 导致缓存永久
+    失效 → 每帧全量重建 records + ListView 全重渲染。修复后内容不变 →
+    deps 稳定 → use_memo 命中零重建）。
     """
+    from itertools import chain
     if getattr(model, "message_source", None) is not None:
         from src.tui.app.trace import _live_fingerprint, _messages_fingerprint
-        return (_messages_fingerprint(model), _live_fingerprint(model),
-                _subagent_fingerprint())
-    return (_block_fingerprint(model), _subagent_fingerprint())
+        return tuple(chain(
+            _messages_fingerprint(model),
+            _live_fingerprint(model),
+            _subagent_fingerprint(),
+        ))
+    return tuple(chain(
+        _block_fingerprint(model),
+        _subagent_fingerprint(),
+    ))
 
 
 def _subagent_trace_deps(label: str) -> tuple:
@@ -833,12 +930,19 @@ def _subagent_trace_deps(label: str) -> tuple:
     SubAgent 模型调用为非流式，运行中内容以占位记录动态显示；阶段/工具
     状态变化触发重建）——subagent 消息逐轮追加 + 运行中状态推进时轨迹台账
     实时更新；时间基元素（耗时）不入指纹（台账静态色）。
+
+    ★ 2026-08-19（用户需求：轨迹 Trace 优化性能）：**返回展平原子值**
+    （无嵌套 tuple——use_memo deps 逐项按值比较；嵌套 tuple 按 is 恒 miss
+    导致缓存永久失效，见 trace._messages_fingerprint 说明）。工具 phase
+    序列（``tool_live``）逐对展平为 (name, phase, name, phase, ...)。
     """
+    from itertools import chain
     from src.tui.app.trace import _subagent_slot
     slot = _subagent_slot(label)
     if slot is None:
         return ("missing", label)
     messages = getattr(slot, "messages", None) or []
+    tail_fp: tuple = ()
     if isinstance(messages, list) and messages:
         tail = messages[-1]
         if isinstance(tail, dict):
@@ -849,24 +953,23 @@ def _subagent_trace_deps(label: str) -> tuple:
             )
         else:
             tail_fp = (id(tail), str(tail)[:40])
-        msg_fp = (id(messages), len(messages), tail_fp)
+        msg_fp = (id(messages), len(messages))
     else:
         msg_fp = (id(messages), len(messages))
     # 动态元素（subagent 动态部分——与 mainagent _live_fingerprint 同语义：
     # 运行中工具/阶段/流式内容长度变化触发台账重建）
-    tool_live = tuple(
+    tool_live = tuple(chain.from_iterable(
         (getattr(r, "tool_name", ""), getattr(r, "phase", ""))
         for r in getattr(slot, "tool_history", None) or []
-    )
+    ))
     live_fp = (
-        getattr(slot, "status", ""),
+        getattr(slot, "status", "") or "",
         getattr(slot, "model_phase", "") or "",
         getattr(slot, "parse_info", "") or "",
         len(getattr(slot, "live_reasoning", "") or ""),
         len(getattr(slot, "live_content", "") or ""),
-        tool_live,
     )
-    return (label, msg_fp, live_fp)
+    return (label, *msg_fp, *tail_fp, *live_fp, *tool_live)
 
 
 def _row_of_record(rows: list, sel: int, records: list) -> int:
@@ -941,6 +1044,13 @@ def TraceView(props) -> object:
     #   subagent 轨迹，内容与 mainagent 同构：system/user/思考/回答/工具）。
     sub_label = getattr(model, "trace_subagent_label", None) or None
 
+    # ★ 2026-08-17（用户需求：选最后一行时新行自动选择最新行）：上次渲染
+    #   记录总数（use_ref 跨帧持久）——渲染期据此检测「上次选中最后一条 +
+    #   本次记录增长」→ 自动转为尾部跟随（选择最新行）。hooks 顺序稳定：
+    #   首个 hook（渲染数据 use_memo 之前）。
+    prev_total_ref = use_ref(0)
+    prev_total = prev_total_ref.current
+
     # ── 数据（use_memo 指纹缓存：消息源/块/subagent 内容变化才重建） ──
     if sub_label:
         records, rows = use_memo(
@@ -953,9 +1063,18 @@ def TraceView(props) -> object:
             _records_deps(model),
         )
     total = len(records)
+    prev_total_ref.current = total
 
     # ── 选中解析（-1 = 跟随尾部：渲染期解析为最新记录，流式追加自动跟进） ──
     sel = getattr(model, "trace_selected", -1)
+    # ★ 2026-08-17（用户需求：选最后一行时新行自动选择最新行）：上次渲染
+    #   选中**最后一条**（具体索引 == 上次 total-1）且本次记录增长 → 自动
+    #   转为尾部跟随（trace_selected 置 -1，下方解析为最新记录）——覆盖
+    #   非导航路径（历史遗留具体索引 == 末行）与「导航到末行后追加」的
+    #   兜底（正常导航到末行经 ``_on_navigate`` 直接写 -1，见下）。
+    if prev_total > 0 and sel == prev_total - 1 and total > prev_total:
+        model.trace_selected = -1
+        sel = -1
     if total == 0:
         sel = 0
     elif sel == -1 or sel >= total:
@@ -979,6 +1098,17 @@ def TraceView(props) -> object:
     )
     if rec is not None:
         rec._detail_lines = detail_lines
+
+    # ── 右栏（检查器：use_memo 包装——选中记录内容不变时元素树零重建） ──
+    # ★ 2026-08-19（用户需求：轨迹 Trace 优化性能）：修复前组件体内每帧
+    #   直接调用 ``_inspector_children``（h(TEXT) 元素树每帧重建，仅内容行
+    #   缓存命中）；use_memo 包装后 deps（``_inspector_deps`` = 内容行数据
+    #   源 + 标题/元信息字段 + 栏宽/视口）不变 → 元素树引用稳定 → reconciler
+    #   短路零重建。运行中耗时按整数秒入指纹（meta 每秒刷新一次）。
+    right_rows = use_memo(
+        lambda: _inspector_children(rec, right_w, vh),
+        _inspector_deps(rec, right_w, vh),
+    )
 
     # ── 台账可见窗口（选中记录在 rows 中的下标——ListView 受控光标） ──
     row_count = len(rows)
@@ -1026,9 +1156,19 @@ def TraceView(props) -> object:
     use_input(_handle, bool(getattr(model, "trace_open", False)))
 
     def _on_navigate(row_idx: int) -> None:
-        """台账导航回调（ListView 导航后）：写回 model.trace_selected（退出跟随）。"""
+        """台账导航回调（ListView 导航后）：写回 model.trace_selected（退出跟随）。
+
+        ★ 2026-08-17（用户需求：选最后一行时新行自动选择最新行）：导航到
+        **最后一条记录** → 写 -1（尾部跟随语义——渲染期解析为最新记录，
+        流式追加/新记录出现自动跟进最新行）；其余位置写具体索引（退出
+        跟随、停留在选中记录）。
+        """
         rec_idx = _records_index_of_row(rows, row_idx)
-        if rec_idx >= 0:
+        if rec_idx < 0:
+            return
+        if rec_idx == total - 1:
+            model.trace_selected = -1
+        else:
             model.trace_selected = rec_idx
 
     # ── 渲染 ──
@@ -1059,8 +1199,7 @@ def TraceView(props) -> object:
         "onNavigate": _on_navigate,
         "focus": bool(getattr(model, "trace_open", False)),
     })
-    # 右栏（检查器）
-    right_rows = _inspector_children(rec, right_w, vh)
+    # 右栏（检查器——use_memo 包装见上文 `right_rows` 定义处）
 
     return h(Column, None, [
         h(TEXT, {"styled": header_runs, "height": 1}),
@@ -1076,6 +1215,7 @@ __all__ = [
     "TraceView",
     "_ledger_row_runs",
     "_inspector_children",
+    "_inspector_deps",
     "_viewport_rows",
     "_subagent_trace_deps",
     "_md_detail_rows",

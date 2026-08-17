@@ -229,6 +229,29 @@ def cursor_forward(n: int = 1) -> str:
     return f"\033[{n}C"
 
 
+def cursor_hide() -> str:
+    """隐藏终端光标（DECTCEM DECSET ?25l）。
+
+    全屏/无输入区模式（如轨迹 Trace 视图整屏替换消息区）时隐藏光标——
+    避免光标停留在残留位置闪烁。
+
+    Returns:
+        ANSI DECTCEM 隐藏序列。
+    """
+    return "\033[?25l"
+
+
+def cursor_show() -> str:
+    """显示终端光标（DECTCEM DECRST ?25h）。
+
+    恢复正常模式（输入区可见）时恢复光标显示。
+
+    Returns:
+        ANSI DECTCEM 显示序列。
+    """
+    return "\033[?25h"
+
+
 # ═══════════════════════════════════════════════════════════
 # 清屏/清行
 # ═══════════════════════════════════════════════════════════

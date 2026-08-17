@@ -57,7 +57,10 @@ import io
 import logging
 import sys
 
-from src.tui._screen import cursor_up, cursor_down, clear_line, cursor_forward, clear_screen
+from src.tui._screen import (
+    cursor_up, cursor_down, clear_line, cursor_forward, clear_screen,
+    cursor_hide, cursor_show,
+)
 from .output import Frame
 from .diff import first_diff_line
 
@@ -125,6 +128,11 @@ class InkRenderer:
         #   （reset(full=False)/suspend/full_clear）不清零——历史已记录的行
         #   不因 TUI 内部重绘重复回调。
         self._history_lines: int = 0
+        # ★ 光标可见性状态（2026-08-17 用户需求：轨迹 Trace 不显示光标）：
+        #   None=未知（终端默认可见；首次 set 显式对齐实际状态）；True/False
+        #   = 上次设置值。``set_cursor_visible`` 仅变化时输出 DECTCEM 序列
+        #   （每帧 _position_cursor 调用——状态跟踪避免每帧重复写转义码）。
+        self._cursor_visible: bool | None = None
 
     # ── 屏幕坐标（height>0 时文档高于屏幕的滚动偏移处理） ──────────
 
@@ -1046,6 +1054,29 @@ class InkRenderer:
             _logger.debug("_emit_new_lines 行回调异常", exc_info=True)
 
     # ── 光标 ─────────────────────────────────────────
+
+    def set_cursor_visible(self, visible: bool) -> None:
+        """设置终端光标可见性（DECTCEM；状态跟踪，仅变化时输出序列）。
+
+        ★ 2026-08-17（用户需求：轨迹 Trace 不显示光标）：全屏模式
+        （``model.trace_open`` 时 App 整屏渲染 TraceView、无输入区）下
+        ``_position_cursor`` 找不到 input fiber → 隐藏光标（避免光标停留在
+        残留位置闪烁）；正常模式（找到 input fiber）显示光标并定位。渲染
+        循环每帧调用本方法——内部 ``_cursor_visible`` 状态跟踪保证**仅在
+        显隐切换时**写转义序列（不变帧零输出，防每帧重复写）。
+
+        Args:
+            visible: True=显示光标；False=隐藏光标。
+        """
+        visible = bool(visible)
+        if self._cursor_visible == visible:
+            return
+        self._cursor_visible = visible
+        try:
+            self._stream.write(cursor_show() if visible else cursor_hide())
+            self._stream.flush()
+        except (OSError, ValueError):
+            pass
 
     def place_cursor(self, row: int, col: int) -> None:
         """将光标放置到文档坐标 (row, col)（1-based）。

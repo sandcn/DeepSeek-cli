@@ -521,11 +521,12 @@ def test_trace_view_navigation_writes_model():
     router = rec._build_input_router(root)
     assert router(KeyEvent(kind="arrow_down", raw=b"\x1b[B")) is True
     assert m.trace_selected == 4
-    # End → 尾部
+    # End → 末行（工具 #5）：导航到最后一条 → 写 -1（尾部跟随语义——新行
+    # 追加自动选择最新行，用户需求 2026-08-17）
     rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
     router = rec._build_input_router(root)
     assert router(KeyEvent(kind="end", raw=b"\x1b[F")) is True
-    assert m.trace_selected == 5
+    assert m.trace_selected == -1, "导航到末行应进入尾部跟随（-1）"
     # g → 首条（工具列表 #0）
     rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
     router = rec._build_input_router(root)
@@ -3272,3 +3273,418 @@ def test_trace_view_tool_record_shows_tree():
     assert "\u25b8 返回值" in joined
     assert "总用量 4462" in joined
     assert "drwxrwxr-x" in joined
+
+
+# ═══════════════════════════════════════════════════════════
+# 17. 性能优化回归（2026-08-19 用户需求：轨迹 Trace 优化性能）
+# ═══════════════════════════════════════════════════════════
+# 覆盖：
+#   1. use_memo deps 展平为原子值（嵌套 tuple 按 is 恒 miss → 缓存永久失效
+#      → 每帧全量重建 records + ListView 全重渲染）——_records_deps /
+#      _messages_fingerprint / _live_fingerprint / _subagent_trace_deps；
+#   2. 台账行 runs 缓存（同内容跨 rec 命中同一引用——TEXT wrap 引用级命中）；
+#   3. 内容消毒/换行拆分缓存（_content_str / _split_lines——流式重建时历史
+#      消息零重复消毒/拆分）；
+#   4. 块级增量缓存（_block_plain_lines / _block_content_len / block_detail_lines
+#      ——append-only 增量，长内容每帧 O(新增) 而非 O(全部)）；
+#   5. subagent live 内容换行缓存（_slot_live_lines——无新 chunk 帧零拆分）。
+
+def _assert_atomic_tuple(fp):
+    """断言指纹为展平原子值元组（元素 int/float/str/bool/None——无嵌套
+    tuple/list/dict；use_memo deps 逐项 _object_is 按值比较的前提）。"""
+    assert isinstance(fp, tuple), f"应为 tuple: {type(fp)}"
+    for v in fp:
+        assert isinstance(v, (int, float, str, bool)) or v is None, \
+            f"非原子值: {type(v)}: {v!r}"
+
+
+def test_records_deps_flat_atomic():
+    """_records_deps 返回展平原子值（块路径 + 消息源路径——use_memo 命中前提）。"""
+    from src.tui.app.trace_view import _records_deps
+    _assert_atomic_tuple(_records_deps(_make_model_with_blocks()))
+    m = AppModel()
+    m.message_source = lambda: _sample_messages()
+    _assert_atomic_tuple(_records_deps(m))
+    # 空消息源（无消息）也原子
+    m2 = AppModel()
+    m2.message_source = lambda: []
+    _assert_atomic_tuple(_records_deps(m2))
+
+
+def test_records_deps_stable_when_content_unchanged():
+    """同内容 deps 逐项相等（_deps_equal True）——use_memo 缓存命中的前提；
+    内容增长 → deps 变化（重建触发）。"""
+    from src.tui.ink._hooks_core import _deps_equal
+    from src.tui.app.trace_view import _records_deps
+    m = _make_model_with_blocks()
+    d1 = _records_deps(m)
+    d2 = _records_deps(m)
+    assert _deps_equal(list(d1), list(d2)) is True, "同内容 deps 应相等（命中）"
+    # 开放 content 块增长（流式）→ deps 变化
+    b = m.append_block("content")
+    b.lines.append(AnsiLine.of("新内容"))
+    d3 = _records_deps(m)
+    assert _deps_equal(list(d1), list(d3)) is False, "内容增长应触发重建"
+    # 消息源模式：尾消息 content 增长 → deps 变化
+    msgs = _sample_messages()
+    m2 = AppModel()
+    m2.message_source = lambda: msgs
+    e1 = _records_deps(m2)
+    msgs[-1]["content"] = msgs[-1]["content"] + "追加"
+    e2 = _records_deps(m2)
+    assert _deps_equal(list(e1), list(e2)) is False
+
+
+def test_messages_fingerprint_flat_atomic():
+    """_messages_fingerprint 展平原子值（含尾消息指纹展开）。"""
+    m = AppModel()
+    m.message_source = lambda: _sample_messages()
+    _assert_atomic_tuple(_messages_fingerprint(m))
+    m2 = AppModel()
+    m2.message_source = lambda: []
+    _assert_atomic_tuple(_messages_fingerprint(m2))
+
+
+def test_live_fingerprint_flat_atomic():
+    """_live_fingerprint 展平原子值（开放块/运行中工具逐字段展开）。"""
+    m = AppModel()
+    m.message_source = lambda: []
+    _assert_atomic_tuple(_live_fingerprint(m))
+    _open_content_block(m, "内容")
+    _assert_atomic_tuple(_live_fingerprint(m))
+    m.open_tool_box("t1", "bash", "pwd")
+    _assert_atomic_tuple(_live_fingerprint(m))
+
+
+def test_subagent_trace_deps_flat_atomic():
+    """_subagent_trace_deps 展平原子值（消息指纹/动态元素/工具 phase 逐对展开）。"""
+    from src.tui.subagent import SubAgentPanelController
+    ctl = SubAgentPanelController.get_default()
+    try:
+        ctl._store.clear()
+        ctl._store.add_agent("agent-1", "解析", status="running")
+        slot = ctl._store._agents["agent-1"]
+        slot.messages = [{"role": "user", "content": "hi"}]
+        from src.tui._subagent_state import _ToolRecord
+        rec = _ToolRecord(tool_name="read_file", detail="a.py")
+        rec.phase = "running"
+        slot.tool_history.append(rec)
+        _assert_atomic_tuple(_subagent_trace_deps("agent-1"))
+        # 槽位缺失 → ("missing", label) 原子
+        _assert_atomic_tuple(_subagent_trace_deps("ghost"))
+    finally:
+        ctl._store.clear()
+
+
+def test_ledger_row_runs_cache_reuse():
+    """台账行 runs 缓存：同内容跨 rec（records 流式重建新对象）→ 同一列表
+    引用（TEXT wrap 引用级命中零重写）；内容/sel 变化 → 重建。"""
+    rec1 = TraceRecord(index=1, kind="user", summary="你好", status="",
+                       result="", time_seconds=None)
+    runs1 = _ledger_row_runs(rec1, False, 40)
+    rec2 = TraceRecord(index=1, kind="user", summary="你好", status="",
+                       result="", time_seconds=None)
+    runs2 = _ledger_row_runs(rec2, False, 40)
+    assert runs1 is runs2, "同内容跨 rec 应命中缓存（同一引用）"
+    # 内容变化 → 重建
+    rec3 = TraceRecord(index=1, kind="user", summary="不同摘要", status="",
+                       result="", time_seconds=None)
+    runs3 = _ledger_row_runs(rec3, False, 40)
+    assert runs3 is not runs1, "内容变化应重建"
+    # 选中态变化 → 重建（背景高亮不同）
+    runs4 = _ledger_row_runs(rec1, True, 40)
+    assert runs4 is not runs1, "选中态变化应重建"
+    assert runs4[0].text.startswith("\u25b6")
+    # 栏宽变化 → 重建
+    runs5 = _ledger_row_runs(rec1, False, 60)
+    assert runs5 is not runs1, "栏宽变化应重建"
+
+
+def test_ledger_row_runs_cache_time_second_granularity():
+    """运行中耗时按整数秒入指纹——亚秒增长不重建（每秒刷新一次）。"""
+    rec1 = TraceRecord(index=1, kind="tool", summary="bash", time_seconds=1.1)
+    runs1 = _ledger_row_runs(rec1, False, 40)
+    rec2 = TraceRecord(index=1, kind="tool", summary="bash", time_seconds=1.9)
+    runs2 = _ledger_row_runs(rec2, False, 40)
+    assert runs1 is runs2, "同整数秒耗时（1.1/1.9）应命中缓存"
+    rec3 = TraceRecord(index=1, kind="tool", summary="bash", time_seconds=2.0)
+    runs3 = _ledger_row_runs(rec3, False, 40)
+    assert runs3 is not runs1, "跨整数秒应重建（耗时文本变化）"
+
+
+def test_sep_row_runs_cache_reuse():
+    """轮次分隔行 runs 缓存：同 n/left_w 命中同一引用；n 变化重建。"""
+    from src.tui.app.trace_view import _sep_row_runs
+    r1 = _sep_row_runs(1, 40)
+    r2 = _sep_row_runs(1, 40)
+    assert r1 is r2, "同 n/left_w 应命中缓存"
+    r3 = _sep_row_runs(2, 40)
+    assert r3 is not r1, "轮次变化应重建"
+
+
+def test_content_str_cache_reuse():
+    """_content_str 消毒结果缓存：str content 两次调用结果一致（缓存命中不
+    破坏功能）；ANSI 消毒语义保持。"""
+    from src.tui.app.trace import _content_str, _content_str_cache
+    _content_str_cache.clear()
+    s = "abc\x1b[31mdef"
+    assert _content_str(s) == "abcdef", "ANSI 应被消毒"
+    assert _content_str(s) == _content_str(s), "同 content 两次结果一致"
+    assert len(_content_str_cache) == 1, "str content 应写入缓存"
+    # list/None 不缓存（走原路径，不抛）
+    assert _content_str(None) == ""
+    assert _content_str(["a", "b"]) == "a b"
+
+
+def test_split_lines_cached_shared():
+    """_split_lines 缓存：同文本命中同一列表引用（rec.lines id 稳定 →
+    检查器 use_memo 命中）；功能与 splitlines 一致。"""
+    from src.tui.app.trace import _split_lines, _split_lines_cache
+    _split_lines_cache.clear()
+    text = "第一行\n第二行\n第三行"
+    l1 = _split_lines(text)
+    l2 = _split_lines(text)
+    assert l1 == ["第一行", "第二行", "第三行"]
+    assert l1 is l2, "同文本应命中缓存（共享引用——id 稳定供 use_memo 命中）"
+    # 空文本（splitlines 语义：返回空列表）
+    assert _split_lines("") == []
+
+
+def test_block_plain_lines_incremental():
+    """_block_plain_lines 块级增量缓存：同引用命中；append-only 增量（同一
+    列表对象）；行数倒退全量重建。"""
+    from src.tui.app.trace import _block_plain_lines
+    m = AppModel()
+    b = m.append_block("content")
+    b.lines.append(AnsiLine.of("行一"))
+    r1 = _block_plain_lines(b)
+    r2 = _block_plain_lines(b)
+    assert r1 is r2, "同引用应命中缓存"
+    # 流式增长：append-only → 增量转换（同一列表对象复用）
+    b.lines.append(AnsiLine.of("行二"))
+    r3 = _block_plain_lines(b)
+    assert r3 is r1, "增量路径应复用同一列表对象"
+    assert r3 == ["行一", "行二"]
+    # 行数倒退（非 append-only 异常）→ 全量重建
+    b.lines.pop()
+    r4 = _block_plain_lines(b)
+    assert r4 is not r1, "行数倒退应全量重建"
+    assert r4 == ["行一"]
+
+
+def test_block_content_len_incremental():
+    """_block_content_len 增量长度缓存：append-only 累加；行数倒退全量重算。"""
+    from src.tui.app.trace import _block_content_len
+    m = AppModel()
+    b = m.append_block("content")
+    b.lines.append(AnsiLine.of("abc"))
+    assert _block_content_len(b, b.lines) == 3
+    b.lines.append(AnsiLine.of("de"))
+    assert _block_content_len(b, b.lines) == 5, "增量 3+2"
+    b.lines.pop()
+    assert _block_content_len(b, b.lines) == 3, "行数倒退全量重算"
+
+
+def test_block_detail_lines_tool_cache():
+    """block_detail_lines 工具块缓存：同状态命中同一引用；输出增长重建含新行；
+    状态行下标变化重建。"""
+    m = _make_model_with_blocks()
+    records, _ = build_trace_records(m)
+    tool = next(r for r in records if r.kind == "tool")
+    block = tool.source_block
+    d1 = block_detail_lines(block)
+    d2 = block_detail_lines(block)
+    assert d1 is d2, "同状态应命中缓存（同一引用）"
+    # 输出增长（流式）→ 重建含新行
+    block.lines.append(AnsiLine.of("file3.txt"))
+    d3 = block_detail_lines(block)
+    assert d3 is not d1, "行数增长应重建"
+    assert d3[0] == "bash ls -la", "调用行保持"
+    assert "file3.txt" in d3
+    # 状态行下标变化（extra._status_line_index）→ 重建（剔除新状态行）
+    block.extra["_status_line_index"] = len(block.lines) - 1
+    d4 = block_detail_lines(block)
+    assert d4 is not d3, "状态行下标变化应重建"
+    assert "file3.txt" not in d4, "新状态行应被剔除"
+
+
+def test_slot_live_lines_cached():
+    """_slot_live_lines 槽位缓存：同内容命中同一引用；内容增长重新拆分；
+    strip 语义与调用方一致（行为零变化）。"""
+    from src.tui._subagent_state import _AgentSlot
+    from src.tui.app.trace import _slot_live_lines
+    slot = _AgentSlot("agent-1", "解析")
+    slot.live_reasoning = " 第一行\n第二行 "
+    l1 = _slot_live_lines(slot, "live_reasoning")
+    l2 = _slot_live_lines(slot, "live_reasoning")
+    assert l1 is l2, "同内容应命中缓存"
+    assert l1 == ["第一行", "第二行"], "strip 后拆分（与调用方原语义一致）"
+    # 内容增长（新 chunk）→ 重新拆分
+    slot.live_reasoning = " 第一行\n第二行\n第三行 "
+    l3 = _slot_live_lines(slot, "live_reasoning")
+    assert l3 is not l1, "内容变化应重新拆分"
+    assert l3 == ["第一行", "第二行", "第三行"]
+    # 空内容 → []
+    slot.live_reasoning = ""
+    assert _slot_live_lines(slot, "live_reasoning") == []
+
+
+def test_trace_view_use_memo_hits_second_render():
+    """端到端：同一 fiber 连续两次渲染（同模型状态）→ use_memo 命中——
+    第二次 ListView items（rows）引用与第一次相同（deps 展平原子值后缓存
+    生效；修复前嵌套 tuple 按 is 恒 miss → 每帧全量重建 records/rows）。"""
+    from src.tui.app.trace_view import TraceView as TV
+    from src.tui.ink.widgets.listview import ListView
+    m = _make_model_with_blocks()
+    m.trace_open = True
+    m.trace_selected = 2  # 固定选中（非尾部跟随——避免重建依赖变化）
+    # 同一 fiber 连续渲染两次（use_memo 的 last_deps 挂载在 fiber.hooks——
+    # 跨渲染持久；新建 fiber 会重置 hook 状态，无法验证命中）。每次渲染前
+    # reset_hooks()（对齐 reconciler：渲染函数组件前清零 hook_index 复用节点）。
+    fiber = Fiber(TAG_FUNCTION, TV, {"model": m, "width": 100})
+
+    def _render_once():
+        fiber.reset_hooks()
+        hooks._push_current(fiber)
+        try:
+            return TV({"model": m, "width": 100})
+        finally:
+            hooks._pop_current()
+
+    def _listview_items(el):
+        row_el = list(el.children)[1]
+        left = list(row_el.children)[0]
+        assert left.type is ListView
+        return left.props["items"]
+
+    el1 = _render_once()
+    el2 = _render_once()
+    items1 = _listview_items(el1)
+    items2 = _listview_items(el2)
+    assert items1 is items2, "同状态二次渲染应命中 use_memo（rows 引用稳定）"
+    # 内容变化（新增块）→ deps 变化 → 重建（新 rows 引用）
+    b = m.append_block("content")
+    b.lines.append(AnsiLine.of("追加块"))
+    el3 = _render_once()
+    items3 = _listview_items(el3)
+    assert items3 is not items1, "内容变化应触发重建（新 rows 引用）"
+
+
+# ═══════════════════════════════════════════════════════════
+# 18. 选最后一行时新行自动选择最新行（2026-08-17 用户需求）
+# ═══════════════════════════════════════════════════════════
+# 用户需求：如果当前选择是最后一行，这时候多了一行，自动选择最新行。
+# 实现：① 导航（↑↓/PgUp/PgDn/Home/End/g/G）到**最后一条记录** → 写 -1
+# （尾部跟随语义——渲染期解析为最新记录，新记录出现自动跟进）；② 渲染期
+# 兜底：上次选中最后一条（具体索引 == 上次 total-1）且本次记录增长 →
+# 自动转为尾部跟随（覆盖非导航路径/历史遗留具体索引 == 末行）。
+
+def test_navigate_to_last_row_sets_tail_follow():
+    """End/↓ 导航到末行 → trace_selected 写 -1（尾部跟随——新行自动选择
+    最新行）；离开末行 → 写具体索引（退出跟随）。"""
+    from src.tui.ink.element import h as h_el
+    from src.tui.ink.reconciler import Reconciler
+    m = _make_model_with_blocks()
+    m.trace_open = True
+    m.trace_selected = 0
+    rec = Reconciler()
+    root = rec.create_root()
+    rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+    router = rec._build_input_router(root)
+    # 记录：tools(0) system(1) user(2) reasoning(3) content(4) tool(5)
+    # End → 末行（tool #5）→ 尾部跟随（-1）
+    assert router(KeyEvent(kind="end", raw=b"\x1b[F")) is True
+    assert m.trace_selected == -1, "End 到末行应写 -1（尾部跟随）"
+    # 下一帧渲染后 ↓ 在末行无操作（不消费）——仍在尾部跟随
+    rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+    router = rec._build_input_router(root)
+    assert router(KeyEvent(kind="arrow_down", raw=b"\x1b[B")) is False
+    assert m.trace_selected == -1
+    # ↑ 离开末行（#4 回答）→ 写具体索引（退出跟随）
+    rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+    router = rec._build_input_router(root)
+    assert router(KeyEvent(kind="arrow_up", raw=b"\x1b[A")) is True
+    assert m.trace_selected == 4, "离开末行应写具体索引"
+    # G → 末行（尾部跟随）；g → 首条（具体索引）
+    rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+    router = rec._build_input_router(root)
+    assert router(KeyEvent(kind="char", char="G", raw=b"G")) is True
+    assert m.trace_selected == -1, "G 到末行应写 -1"
+    rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
+    router = rec._build_input_router(root)
+    assert router(KeyEvent(kind="char", char="g", raw=b"g")) is True
+    assert m.trace_selected == 0, "g 到首条应写具体索引"
+
+
+def test_selected_last_row_follows_new_record():
+    """选中最后一条（具体索引 == 末行）时追加记录 → 自动选择最新行：
+    trace_selected 转 -1（尾部跟随），ListView 光标指向新末行。"""
+    from src.tui.app.trace_view import TraceView as TV
+    from src.tui.ink.widgets.listview import ListView
+    m = _make_model_with_blocks()  # 6 条记录（tools/system/user/reasoning/content/tool）
+    m.trace_open = True
+    m.trace_selected = 5  # 最后一条（tool #5）——模拟非导航路径的具体索引
+    fiber = Fiber(TAG_FUNCTION, TV, {"model": m, "width": 100})
+
+    def _render_once():
+        fiber.reset_hooks()
+        hooks._push_current(fiber)
+        try:
+            return TV({"model": m, "width": 100})
+        finally:
+            hooks._pop_current()
+
+    def _listview_cursor(el):
+        row_el = list(el.children)[1]
+        left = list(row_el.children)[0]
+        assert left.type is ListView
+        return left.props["cursor"], len(left.props["items"])
+
+    # 首次渲染：选中末行（cursor 指向 tool #5 在 rows 中的下标）
+    el1 = _render_once()
+    cur1, n1 = _listview_cursor(el1)
+    assert m.trace_selected == 5  # 未追加 → 保持具体索引（无增长不转跟随）
+    assert cur1 == n1 - 1, "首次渲染应选中末行"
+    # 追加新记录（content 块——未关闭，running 动态记录）→ total 增长
+    b = m.append_block("content")
+    b.lines.append(AnsiLine.of("新追加内容"))
+    el2 = _render_once()
+    cur2, n2 = _listview_cursor(el2)
+    assert n2 == n1 + 1, "记录应增长一条"
+    assert m.trace_selected == -1, "选中末行 + 增长 → 自动转尾部跟随（-1）"
+    assert cur2 == n2 - 1, "光标应指向最新记录（新追加行）"
+    # 新末行是追加的 content 记录（渲染行选中标记 ▶ + 摘要）
+    items = list(el2.children)[1].children[0].props["items"]
+    last_el = list(el2.children)[1].children[0].props["renderItem"](items[-1], len(items) - 1, True)
+    last_text = "".join(r.text for r in last_el.props.get("styled", []))
+    assert "新追加内容" in last_text, "最新选中行应为新追加记录"
+
+
+def test_selected_last_row_stays_until_growth():
+    """选中最后一条且无新记录 → 保持具体索引（不误转尾部跟随）；离开末行
+    后增长 → 不跟随（停留在选中记录）。"""
+    from src.tui.app.trace_view import TraceView as TV
+    m = _make_model_with_blocks()
+    m.trace_open = True
+    m.trace_selected = 5
+    fiber = Fiber(TAG_FUNCTION, TV, {"model": m, "width": 100})
+
+    def _render_once():
+        fiber.reset_hooks()
+        hooks._push_current(fiber)
+        try:
+            return TV({"model": m, "width": 100})
+        finally:
+            hooks._pop_current()
+
+    _render_once()
+    # 无增长：再渲染 → 保持具体索引（不误转）
+    _render_once()
+    assert m.trace_selected == 5, "无增长应保持具体索引"
+    # 离开末行（选中倒数第二 #4）→ 增长 → 不跟随（停留 #4）
+    m.trace_selected = 4
+    _render_once()
+    b = m.append_block("content")
+    b.lines.append(AnsiLine.of("新增"))
+    _render_once()
+    assert m.trace_selected == 4, "未选中末行时增长不应跟随（停留选中记录）"

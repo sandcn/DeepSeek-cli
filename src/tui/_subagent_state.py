@@ -65,6 +65,9 @@ class _AgentSlot:
         'messages', 'prompt',
         'live_reasoning', 'live_content',
         '_prev_phase',
+        # ★ 2026-08-19（轨迹 Trace 性能优化）：live 内容换行拆分缓存
+        #   （``_slot_live_lines`` 用——(文本, 行列表)，内容变化重新拆分）
+        '_live_lines_cache',
     )
 
     def __init__(self, label: str, description: str, status: str = "running",
@@ -111,6 +114,8 @@ class _AgentSlot:
         self.live_content: str = ""
         # 上一模型阶段（set_model_phase 阶段切换检测用；__slots__ 白名单）
         self._prev_phase: str = ""
+        # live 内容换行拆分缓存（_slot_live_lines 用；None=未缓存）
+        self._live_lines_cache = None
 
 
 class StateStore:
