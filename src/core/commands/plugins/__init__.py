@@ -16,6 +16,7 @@ from .editmsg_plugin import EditmsgPlugin
 from .model_plugin import ModelPlugin
 from .loop_plugin import LoopPlugin
 from .skill_plugin import SkillPlugin
+from .addmsg_plugin import AddmsgPlugin
 from .registry import get_interactive_registry
 
 __all__ = [
@@ -25,5 +26,6 @@ __all__ = [
     "ModelPlugin",
     "LoopPlugin",
     "SkillPlugin",
+    "AddmsgPlugin",
     "get_interactive_registry",
 ]

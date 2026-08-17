@@ -537,6 +537,17 @@ class InteractiveLoop:
         self._chat_ui.bottom_bar.set_model_name(state.model)
         self._chat_ui.setup_bottom_bar()
         _register_session_handlers(session, self._monitor, self._loop_state, self._chat_ui)
+        # ★ addmsg 注入：为主 Agent 注入 Input / ChatUI 访问器，
+        #   AddmsgMiddleware 据此在流式阶段完成点捕获 /addmsg 命令输入
+        #   并渲染插入的用户消息（仅主 Agent 生效）。
+        agent = getattr(session, "agent", None)
+        if agent is not None and hasattr(agent, "set_addmsg_input_provider"):
+            agent.set_addmsg_input_provider(
+                lambda: self._chat_ui.input if self._chat_ui is not None else None
+            )
+            agent.set_addmsg_chat_ui_provider(
+                lambda: self._chat_ui if self._chat_ui is not None else None
+            )
         return session, state
 
     async def run(self) -> None:

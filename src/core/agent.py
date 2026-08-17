@@ -115,6 +115,10 @@ class Agent(BaseAgent):
         self._pipeline.use_async(_InterruptCheckMiddleware())
         self._pipeline.use_async(_AsyncObservabilityMiddleware())
         self._pipeline.use_async(_AuditLogMiddleware())
+        # ★ addmsg 流式插入中间件：/addmsg 命令在思考/回答/工具调用
+        #   阶段完成后把用户消息插入对话（仅主 Agent 生效）。
+        from .middleware.addmsg import AddmsgMiddleware
+        self._pipeline.use_async(AddmsgMiddleware())
 
     # ── _async_tool_executor 废弃属性（property + setter） ──
 

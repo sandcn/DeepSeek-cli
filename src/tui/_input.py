@@ -487,6 +487,13 @@ class Input:
         """获取排队输入（Enter 提交的文本），返回 None 表示无排队输入。"""
         return self._buffer_editor.get_queued_input()
 
+    def peek_queued_input(self) -> str | None:
+        """查看排队输入（Enter 提交的文本），不消费。
+
+        供 addmsg 中间件探测流式期间的 /addmsg 命令输入。
+        """
+        return self._buffer_editor.peek_queued_input()
+
     def has_queued_input(self) -> bool:
         """是否有排队输入等待处理。"""
         return self._buffer_editor.has_queued_input()
