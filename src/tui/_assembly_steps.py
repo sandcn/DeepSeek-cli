@@ -109,9 +109,14 @@ def create_framework(model, tui_config, line_tracker, input_instance):
     # 未注入时 dispatcher 记 debug 跳过，测试兼容）
     input_instance.set_clear_screen_callback(session.clear_screen)
     # ★ 2026-08-19：Ctrl+H 轨迹视图开关（DSH 风格左台账 + 右检查器）——
-    #   翻转 model.trace_open + 请求重绘（非全屏流动模型文档随重绘重建；
-    #   trace_open 时 App 消息区替换为 TraceView，不显示聊天消息区）。
-    input_instance.set_trace_toggle_callback(_make_trace_toggle_cb(model, session))
+    #   翻转 model.fullscreen（"trace" ↔ ""）+ 请求重绘（非全屏流动模型文档
+    #   随重绘重建；fullscreen 时 App 按全屏视图注册表整屏渲染 TraceView，
+    #   不显示聊天消息区）。2026-08-17 通用化：toggle 由通用工厂
+    #   ``_make_fullscreen_toggle_cb`` 构建（view_id 参数化，其他全屏视图
+    #   可绑定其他快捷键复用）。
+    input_instance.set_trace_toggle_callback(
+        _make_trace_toggle_cb(model, session)
+    )
     # SIGWINCH → 刷新宽度 + 重绘（架构改进方向 C：实例方法 + token 去重注册，
     # 替代旧模块级 ``_active_session`` 全局引用——多 TUI 实例各持自身回调，
     # stop 时由 session 注销，消除全局可变引用与陈旧会话刷新错乱）
@@ -183,20 +188,64 @@ def _make_reverse_search_cb(model, session):
     return _cb
 
 
-def _make_trace_toggle_cb(model, session):
-    """构建 Ctrl+H 轨迹视图开关回调（翻转 model.trace_open + 重绘）。
+def _make_fullscreen_toggle_cb(model, session, view_id: str):
+    """构建**通用**模态全屏视图开关回调（翻转 model.fullscreen + 重绘）。
 
-    2026-08-19：InputDispatcher 在 render 线程调用本回调——翻转
-    ``model.trace_open`` 并请求重绘（App 据此在消息区与 TraceView 间切换）。
-    选中索引（``trace_selected``，-1=跟随尾部）跨开关保留——重新打开时回到
-    上次浏览位置；聊天内容清空（Ctrl+L reset_display）时模型侧已复位为 -1。
+    2026-08-17（用户需求：轨迹 Trace 输入接管通用化）：通用工厂——传入
+    view_id 即可为任意全屏视图构建「快捷键开关」回调：已在该视图时关闭
+    （置 ""），否则切换到该视图。InputDispatcher 在 render 线程调用——
+    翻转 ``model.fullscreen`` 并请求重绘（App 据此在正常界面与全屏视图间
+    切换；整屏渲染 / 模态输入接管 / 光标隐藏全部由通用机制自动生效）。
+
+    ★ 窗口约束（2026-08-17 review 方向）：回调置位 fullscreen 后，router
+    在下一帧渲染（reconciler 每帧重建）生效——当前帧内剩余输入仍走旧
+    router（≤1 帧渲染周期 ≈100ms，架构固有窗口，与所有状态切换一致）。
+
+    Args:
+        model: AppModel 实例。
+        session: InkSession（request_bottom_redraw）。
+        view_id: 目标全屏视图 id（如 "trace"——须在 ``FULLSCREEN_VIEWS``
+            注册表存在；未注册时记 warning 仍执行——App 回退正常界面安全，
+            状态残留由 toggle 可覆盖）。
+
+    ★ 校验为**创建时快照**（2026-08-17 review 方向）：注册表校验仅在工厂
+    调用时执行一次，运行期 ``FULLSCREEN_VIEWS`` 增删不反映到已创建回调
+    （删除条目后 toggle 仍写入该 view_id——App 回退正常界面、残留由 toggle
+    覆盖，与未知 id 设计语义一致；当前无运行期动态注册场景）。
     """
+    # ★ review 方向 P3：调用方误用（view_id 未注册）防御提示——惰性 import
+    #   防循环依赖（app → trace_view → ... ；assembly 层仅运行期引用）。
+    try:
+        from src.tui.app.app import FULLSCREEN_VIEWS
+        if view_id not in FULLSCREEN_VIEWS:
+            _logger.warning(
+                "fullscreen toggle view_id=%r 未注册（FULLSCREEN_VIEWS 键：%s）",
+                view_id, sorted(FULLSCREEN_VIEWS),
+            )
+    except Exception:
+        _logger.debug("fullscreen toggle 注册表校验异常", exc_info=True)
 
     def _cb():
-        model.trace_open = not getattr(model, "trace_open", False)
+        if getattr(model, "fullscreen", "") == view_id:
+            model.fullscreen = ""
+        else:
+            model.fullscreen = view_id
         session.request_bottom_redraw()
 
     return _cb
+
+
+def _make_trace_toggle_cb(model, session):
+    """构建 Ctrl+H 轨迹视图开关回调（``_make_fullscreen_toggle_cb`` 的
+    view_id="trace" 实例——兼容入口，测试/装配调用面不变）。
+
+    2026-08-19：InputDispatcher 在 render 线程调用本回调——翻转
+    ``model.trace_open``（= ``model.fullscreen``）并请求重绘（App 据此在
+    消息区与 TraceView 间切换）。选中索引（``trace_selected``，-1=跟随尾部）
+    跨开关保留——重新打开时回到上次浏览位置；聊天内容清空（Ctrl+L
+    reset_display）时模型侧已复位为 -1。
+    """
+    return _make_fullscreen_toggle_cb(model, session, "trace")
 
 
 def _make_active_status_cb(model):
@@ -221,4 +270,5 @@ __all__ = [
     "_make_reverse_search_cb",
     "_make_active_status_cb",
     "_make_trace_toggle_cb",
+    "_make_fullscreen_toggle_cb",
 ]

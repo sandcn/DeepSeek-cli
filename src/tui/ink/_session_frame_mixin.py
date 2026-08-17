@@ -252,12 +252,12 @@ class _SessionFrameMixin:
         方向B（2026-08-05）：布局/坐标计算委托 ``_cursor.position_cursor``
         （纯函数模块）；本方法只负责 fiber 获取与异常兜底。
 
-        ★ 2026-08-17（用户需求：轨迹 Trace 不显示光标）：全屏模式
-        （``model.trace_open`` 时 App 整屏渲染 TraceView、无输入区）下
-        ``find_input_fiber`` 返回 None → **隐藏终端光标**（避免光标停留在
-        残留位置闪烁）；正常模式（找到 input fiber）→ 显示光标并定位。
-        显隐经 ``InkRenderer.set_cursor_visible`` 状态跟踪（仅变化时写
-        DECTCEM 序列，不变帧零输出——每帧调用开销可忽略）。
+        ★ 2026-08-17（用户需求：轨迹 Trace 不显示光标；2026-08-17 通用化）：
+        **模态全屏视图**（``model.fullscreen`` 非空——App 整屏渲染全屏视图
+        组件、无输入区）下 ``find_input_fiber`` 返回 None → **隐藏终端光标**
+        （避免光标停留在残留位置闪烁）；正常模式（找到 input fiber）→ 显示
+        光标并定位。显隐经 ``InkRenderer.set_cursor_visible`` 状态跟踪（仅
+        变化时写 DECTCEM 序列，不变帧零输出——每帧调用开销可忽略）。
         """
         if self._model is None:
             return

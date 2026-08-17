@@ -232,8 +232,9 @@ def cursor_forward(n: int = 1) -> str:
 def cursor_hide() -> str:
     """隐藏终端光标（DECTCEM DECSET ?25l）。
 
-    全屏/无输入区模式（如轨迹 Trace 视图整屏替换消息区）时隐藏光标——
-    避免光标停留在残留位置闪烁。
+    模态全屏视图模式（2026-08-17 通用机制：``model.fullscreen`` 非空——App
+    整屏渲染全屏视图组件、无输入区）时隐藏光标——避免光标停留在残留位置
+    闪烁。
 
     Returns:
         ANSI DECTCEM 隐藏序列。

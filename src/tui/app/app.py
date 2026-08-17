@@ -7,9 +7,11 @@
   - 底部区：状态栏 + 输入区（固定内容高度）。
   - Static 包裹聊天历史（静态内容，首差异行之前永不重写）
 
-轨迹视图（2026-08-19，Ctrl+H 开关）：``model.trace_open`` 时消息区替换为
-``TraceView``（DSH 风格左台账 + 右检查器）——不再显示聊天消息区，显示
-DSH 轨迹的全部内容（轮次/记录/详情/耗时/token）；底部区保留（非模态）。
+轨迹视图（2026-08-19，Ctrl+H 开关；2026-08-17 迁移到**模态全屏视图通用
+机制**）：``model.fullscreen == "trace"`` 时整屏渲染 ``TraceView``（DSH
+风格左台账 + 右检查器）——不再显示聊天消息区，显示 DSH 轨迹的全部内容
+（轮次/记录/详情/耗时/token）；底部区不渲染（模态独占输入——未消费按键
+不落入输入缓冲）。
 
 Claude Code 视觉对齐：顶部标题栏（TopHeader）为文档首行，其后 committed
 聊天历史（committed-chat）落到 y>=1 走非顶部前缀路径（render_frame 正确
@@ -32,6 +34,16 @@ from .status_bar import StatusBar
 from .user_select import UserSelectPopup
 from .input_area import InputArea
 from .trace_view import TraceView
+
+#: 模态全屏视图注册表（2026-08-17 通用机制）：view_id → 组件函数。
+#: App 在 ``model.fullscreen`` 非空时按 id 查注册表**整屏渲染**对应组件；
+#: 组件内部须 ``use_fullscreen(True)`` 声明模态（独占键盘输入——未消费按键
+#: 不落入输入缓冲，杜绝看不见的输入）与 ``use_input`` 处理关闭/导航键。
+#: 新增全屏视图两步：注册表加条目 + 设置 ``model.fullscreen``——整屏渲染 /
+#: 输入接管 / 光标隐藏（全屏无输入区自动隐藏）全部自动生效，无需改 App 分支。
+FULLSCREEN_VIEWS: dict = {
+    "trace": TraceView,
+}
 
 
 def App(props) -> object:
@@ -59,13 +71,20 @@ def App(props) -> object:
         "width": width,
     }
 
-    # ★ 轨迹视图（2026-08-19，Ctrl+H 开关）：trace_open 时**整屏只显示
-    #   TraceView**（消息区/顶部标题栏/状态栏/输入区全部不渲染）——「打开时
-    #   其他 TUI 不显示，只显示这个界面」。关闭（Esc/Ctrl+H）后恢复完整
-    #   组件树（顶部标题栏 + 聊天 + 状态栏 + 输入区）。根元素类型切换
-    #   （APP ↔ TraceView）由调和器卸载/重建整树（10Hz 渲染循环自动）。
-    if getattr(model, "trace_open", False):
-        return h(TraceView, {"model": model, "width": width})
+    # ★ 模态全屏视图（2026-08-17 通用机制）：model.fullscreen 非空 → 按
+    #   注册表**整屏只显示对应视图**（其他 TUI 组件不渲染、不接收键盘输入
+    #   ——模态独占）。组件经 use_fullscreen(True) 声明模态（未消费按键不落入
+    #   输入缓冲）；Esc/Ctrl+H 等关闭键由组件自身 use_input 处理。关闭后恢复
+    #   完整组件树（顶部标题栏 + 聊天 + 状态栏 + 输入区）。根元素类型切换
+    #   （APP ↔ 全屏视图）由调和器卸载/重建整树（10Hz 渲染循环自动）。
+    #   未知视图 id 防御回退正常界面（防注册表删除后残留状态崩溃）；此时
+    #   model.fullscreen 残留非空为设计（toggle 回调可覆盖；App 渲染分支/
+    #   输入接管/光标隐藏均按实际渲染结果判断，无误判路径）。
+    fullscreen_id = getattr(model, "fullscreen", "") or ""
+    if fullscreen_id:
+        view = FULLSCREEN_VIEWS.get(fullscreen_id)
+        if view is not None:
+            return h(view, {"model": model, "width": width})
 
     # ★ 方向1（Flexbox 布局消息区 + 底部区）：根容器 flexbox column——消息区
     #   （flexGrow=1，聊天历史/实时解析行/工具状态头/subagent 面板）与底部区

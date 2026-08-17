@@ -116,6 +116,23 @@ class InputHook:
 
 
 @dataclass
+class FullscreenHook:
+    """use_fullscreen hook 节点（模态全屏视图声明，2026-08-17 通用机制）。
+
+    Attributes:
+        is_active: 是否处于模态全屏激活态。True 时 input router 在全部
+            use_input handler 未消费时**吞掉**事件（返回 True）→ 事件不落入
+            InputDispatcher 旧路径（输入缓冲），实现「打开时独占键盘输入」。
+            False 时 hook 零影响（组件非全屏渲染/已关闭）。
+        seq: 稳定递增序号（与 InputHook 共享 ``_HOOK_SEQ`` 计数器——序号
+            仅需全局唯一，router 签名依赖；替代 id 复用风险）。
+    """
+
+    is_active: bool = True
+    seq: int = field(default_factory=lambda: next(_HOOK_SEQ))
+
+
+@dataclass
 class PasteHook:
     """usePaste hook 节点（React Ink usePaste 等价物）。
 
@@ -171,7 +188,7 @@ class SyncStoreHook:
 
 
 #: hook 节点联合类型（Python 3.9 兼容：不用 `X | Y` 运行时求值）。
-HookNode = Union[StateHook, RefHook, EffectHook, MemoHook, InputHook, SyncStoreHook, PasteHook]
+HookNode = Union[StateHook, RefHook, EffectHook, MemoHook, InputHook, SyncStoreHook, PasteHook, FullscreenHook]
 
 
 @dataclass
@@ -303,6 +320,7 @@ __all__ = [
     "MemoHook",
     "InputHook",
     "PasteHook",
+    "FullscreenHook",
     "SyncStoreHook",
     "Context",
     "HookNode",

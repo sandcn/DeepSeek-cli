@@ -1058,12 +1058,12 @@ class InkRenderer:
     def set_cursor_visible(self, visible: bool) -> None:
         """设置终端光标可见性（DECTCEM；状态跟踪，仅变化时输出序列）。
 
-        ★ 2026-08-17（用户需求：轨迹 Trace 不显示光标）：全屏模式
-        （``model.trace_open`` 时 App 整屏渲染 TraceView、无输入区）下
-        ``_position_cursor`` 找不到 input fiber → 隐藏光标（避免光标停留在
-        残留位置闪烁）；正常模式（找到 input fiber）显示光标并定位。渲染
-        循环每帧调用本方法——内部 ``_cursor_visible`` 状态跟踪保证**仅在
-        显隐切换时**写转义序列（不变帧零输出，防每帧重复写）。
+        ★ 2026-08-17（用户需求：轨迹 Trace 不显示光标；2026-08-17 通用化）：
+        **模态全屏视图**（``model.fullscreen`` 非空——App 整屏渲染全屏视图
+        组件、无输入区）下 ``_position_cursor`` 找不到 input fiber → 隐藏
+        光标（避免光标停留在残留位置闪烁）；正常模式（找到 input fiber）显示
+        光标并定位。渲染循环每帧调用本方法——内部 ``_cursor_visible`` 状态
+        跟踪保证**仅在显隐切换时**写转义序列（不变帧零输出，防每帧重复写）。
 
         Args:
             visible: True=显示光标；False=隐藏光标。

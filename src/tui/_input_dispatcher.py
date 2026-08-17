@@ -1138,8 +1138,12 @@ class InputDispatcher:
     def set_trace_toggle_callback(self, cb) -> None:
         """设置 Ctrl+H 轨迹视图开关回调（2026-08-19，装配注入）。
 
-        cb 签名: ``() -> None``（翻转 model.trace_open + 请求重绘）；None 可
-        清除注入。未注入时 Ctrl+H 回退 backspace（0x08 传统 BS 语义）。
+        cb 签名: ``() -> None``（翻转 model.fullscreen "trace" ↔ "" + 请求
+        重绘——见 ``_make_fullscreen_toggle_cb`` 通用工厂）；None 可清除注入。
+        未注入时 Ctrl+H 回退 backspace（0x08 传统 BS 语义）。
+        ★ 2026-08-17（review 方向）：**仅正常界面可达**——Trace 打开期间
+        Ctrl+H（0x08）被 TraceView 模态 handler 经 router 消费（关闭/返回
+        主轨迹），本回调不再被调用（不会重复翻转）。
         """
         self._trace_toggle_callback = cb
 

@@ -535,7 +535,8 @@ def test_trace_view_navigation_writes_model():
 
 
 def test_trace_view_close_keys():
-    """Esc / Ctrl+H 关闭轨迹视图（trace_open=False）；Enter/字符放行。"""
+    """Esc / Ctrl+H 关闭轨迹视图（trace_open=False）；Enter/字符 TraceView
+    自身不消费（返回 False——放行给 router，模态全屏吞掉不落入输入缓冲）。"""
     m = _make_model_with_blocks()
     m.trace_open = True
     m.trace_selected = 1
@@ -548,11 +549,11 @@ def test_trace_view_close_keys():
     m.trace_open = True
     assert handler(KeyEvent(kind="ctrl_key", char="\x08", raw=b"\x08")) is True
     assert m.trace_open is False
-    # Enter 放行（非模态——提交消息）
+    # Enter 不消费（返回 False——router 模态吞掉：不提交消息）
     m.trace_open = True
     assert handler(KeyEvent(kind="enter", raw=b"\r")) is False
     assert m.trace_open is True
-    # 普通字符放行（输入区打字）
+    # 普通字符不消费（返回 False——router 模态吞掉：不进输入缓冲）
     assert handler(KeyEvent(kind="char", char="a", raw=b"a")) is False
 
 
@@ -1268,7 +1269,8 @@ def test_trace_view_enter_subagent_opens_subagent_trace():
 
 
 def test_trace_view_enter_non_subagent_passes_through():
-    """主轨迹 Enter 非 subagent 记录 → 放行（不进入 subagent 轨迹）。"""
+    """主轨迹 Enter 非 subagent 记录 → 不进入 subagent 轨迹；模态全屏吞掉
+    （True——不提交消息、不落入输入缓冲，2026-08-17 通用模态机制）。"""
     from src.tui.ink.element import h as h_el
     from src.tui.ink.reconciler import Reconciler
     m = _make_model_with_blocks()  # 无 subagent 记录
@@ -1278,7 +1280,7 @@ def test_trace_view_enter_non_subagent_passes_through():
     root = rec.create_root()
     rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
     router = rec._build_input_router(root)
-    assert router(KeyEvent(kind="enter", raw=b"\r")) is False
+    assert router(KeyEvent(kind="enter", raw=b"\r")) is True
     assert getattr(m, "trace_subagent_label", None) is None
     assert m.trace_open is True
 
@@ -3595,10 +3597,11 @@ def test_navigate_to_last_row_sets_tail_follow():
     # End → 末行（tool #5）→ 尾部跟随（-1）
     assert router(KeyEvent(kind="end", raw=b"\x1b[F")) is True
     assert m.trace_selected == -1, "End 到末行应写 -1（尾部跟随）"
-    # 下一帧渲染后 ↓ 在末行无操作（不消费）——仍在尾部跟随
+    # 下一帧渲染后 ↓ 在末行无操作（ListView 不消费）——模态全屏吞掉（True），
+    # 不落入输入缓冲；仍在尾部跟随
     rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)
     router = rec._build_input_router(root)
-    assert router(KeyEvent(kind="arrow_down", raw=b"\x1b[B")) is False
+    assert router(KeyEvent(kind="arrow_down", raw=b"\x1b[B")) is True
     assert m.trace_selected == -1
     # ↑ 离开末行（#4 回答）→ 写具体索引（退出跟随）
     rec.render(root, h_el(TraceView, {"model": m, "width": 100}), 100, 24)

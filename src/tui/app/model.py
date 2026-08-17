@@ -107,8 +107,16 @@ class AppModel(_ToolOutputMixin):
         self.subagent_lines: list = []
         # 反向历史搜索状态（None=未激活；input_area 渲染覆盖行）
         self.history_search: "HistorySearchState | None" = None
-        # ── 轨迹视图（2026-08-19，Ctrl+H 开关；DSH 风格左台账 + 右检查器） ──
-        # trace_open: 轨迹视图是否打开（打开时 App 消息区替换为 TraceView）。
+        # ── 模态全屏视图（2026-08-17 通用机制） ──
+        # fullscreen: 当前模态全屏视图 id（""=正常界面；"trace"=轨迹视图；
+        #   未来可扩展其他全屏视图）。fullscreen 非空时 App 按视图注册表
+        #   （``app.FULLSCREEN_VIEWS``）**整屏渲染**对应组件，组件经
+        #   ``use_fullscreen(True)`` 声明模态——独占键盘输入（未消费按键不
+        #   落入输入缓冲，杜绝看不见的输入）。新增全屏视图两步：注册表加
+        #   条目 + 设置 model.fullscreen（整屏渲染/输入接管/光标隐藏全部
+        #   自动生效）。
+        # trace_open: fullscreen=="trace" 的兼容别名（property，见类底部）。
+        self.fullscreen: str = ""
         # trace_selected: 选中记录索引（records 下标，0-based）；-1 表示
         #   「跟随尾部」（默认——打开时定位最新记录，流式追加自动跟进；用户
         #   导航后写回具体索引退出尾部跟随）。
@@ -117,7 +125,6 @@ class AppModel(_ToolOutputMixin):
         #   **以 agent 消息列表为数据源**（对齐 DSH：从 Session 消息组装业务
         #   记录，而非 TUI 渲染过的聊天块）；None=未注入（回退块构建路径，
         #   测试/无装配场景）。
-        self.trace_open: bool = False
         self.trace_selected: int = -1
         self.message_source: object | None = None
         # trace_subagent_label: 轨迹视图当前显示的 subagent 轨迹 label
@@ -590,6 +597,27 @@ class AppModel(_ToolOutputMixin):
         # ★ 2026-08-16：清屏同时退出 subagent 轨迹（嵌套视图）——残留 label
         #   指向的 subagent 记录可能已随面板清空（无记录可显示）。
         self.trace_subagent_label = None
+        # ★ 2026-08-17（review 方向 P2）：清屏同时退出模态全屏视图——残留
+        #   fullscreen 会让 App 整屏渲染全屏视图组件（如 TraceView），而
+        #   blocks 已清空 → 残留渲染空数据全屏界面。与 trace_subagent_label
+        #   同语义（全屏态不跨清屏保留）。
+        self.fullscreen = ""
+
+    # ── trace_open 兼容别名（2026-08-17 通用化：模态全屏视图） ──
+    # 轨迹视图打开 = model.fullscreen == "trace"。property 保持旧字段读写
+    # 语义（旧代码/测试 ``model.trace_open = True/False`` 与
+    # ``getattr(model, "trace_open", False)`` 均兼容），读写统一映射到
+    # fullscreen——轨迹开关不再独立于通用全屏视图状态。
+
+    @property
+    def trace_open(self) -> bool:
+        """轨迹视图是否打开（``fullscreen == "trace"`` 的兼容别名）。"""
+        return self.fullscreen == "trace"
+
+    @trace_open.setter
+    def trace_open(self, value: bool) -> None:
+        """设置轨迹视图开关（映射到 ``fullscreen``）。"""
+        self.fullscreen = "trace" if value else ""
 
 
 __all__ = [

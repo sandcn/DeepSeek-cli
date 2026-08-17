@@ -1,9 +1,9 @@
 """trace_view — TraceView 轨迹视图组件（DSH 风格左台账 + 右检查器，2026-08-19）。
 
-Ctrl+H（0x08）打开/关闭：App 在 ``model.trace_open`` 时**整屏只渲染本组件**
-（消息区/顶部标题栏/状态栏/输入区全部不显示——「打开时其他 TUI 不显示，
-只显示这个界面」），台账/检查器占满整个终端高度；Esc/Ctrl+H 关闭后恢复
-完整聊天界面。
+Ctrl+H（0x08）打开/关闭：App 在 ``model.fullscreen == "trace"``（兼容别名
+``model.trace_open``）时经全屏视图注册表**整屏只渲染本组件**（消息区/顶部
+标题栏/状态栏/输入区全部不显示——「打开时其他 TUI 不显示，只显示这个
+界面」），台账/检查器占满整个终端高度；Esc/Ctrl+H 关闭后恢复完整聊天界面。
 
 布局（React Ink 左右布局）：
   - 左栏「台账」：轮次分隔行 + 记录行（#N · 种类图标 · 摘要 · 右对齐耗时），
@@ -17,12 +17,13 @@ Ctrl+H（0x08）打开/关闭：App 在 ``model.trace_open`` 时**整屏只渲�
 记录数据：``build_trace_records``（agent 消息列表为主数据源；use_memo 指纹
 缓存——消息/块内容变化才重建；详情行仅对选中记录惰性提取）。
 
-键盘（use_input 路由，trace_open 期间激活）：
+键盘（use_input 路由 + 模态全屏声明，trace_open 期间激活）：
   - ↑↓ 选择 · PgUp/PgDn 翻页 · Home/End、g/G 首末 · Esc/Ctrl+H 关闭；
   - Enter 选中 subagent 记录 → **进入 subagent 轨迹**（嵌套 TraceView——
     显示内容与 mainagent 同构：system/user/思考/回答/工具，Esc/Ctrl+H 返回
-    主轨迹）；其余记录 Enter/其余按键**放行**（无输入区显示；Enter 仍可
-    提交消息——轨迹界面持续显示会话最新记录）。
+    主轨迹）；其余记录 Enter/其余按键**不消费**——经 ``use_fullscreen``
+    （2026-08-17 模态全屏视图通用机制）被 input router 吞掉：字符/Enter 不
+    落入输入缓冲（杜绝看不见的输入），关闭视图后恢复输入区正常输入。
 """
 
 from __future__ import annotations
@@ -37,7 +38,9 @@ from src.tui.app.trace import (
     build_trace_records,
 )
 from src.tui.core.style import Style
-from src.tui.ink import TEXT, Column, Row, StyledRun, h, use_input, use_memo, use_ref
+from src.tui.ink import (
+    TEXT, Column, Row, StyledRun, h, use_fullscreen, use_input, use_memo, use_ref,
+)
 from src.tui.ink.helpers import truncate_runs
 from src.tui.ink.widgets.listview import ListView
 
@@ -1022,10 +1025,10 @@ def _ledger_renderer(rows: list, left_w: int, records: list, model):
 
 
 def TraceView(props) -> object:
-    """轨迹视图组件（App 消息区替换渲染；Ctrl+H 开关）。
+    """轨迹视图组件（模态全屏视图；App 按 FULLSCREEN_VIEWS 整屏渲染）。
 
     Props:
-        model: AppModel 实例（blocks/subagent_lines/trace_open/trace_selected）。
+        model: AppModel 实例（blocks/subagent_lines/fullscreen/trace_selected）。
         width: 终端宽度（左右栏宽分配）。
 
     ★ 全面控件化（方案B）：台账左栏经标准控件 ``ListView`` 表达——
@@ -1035,7 +1038,8 @@ def TraceView(props) -> object:
     （``renderItem`` 三参 isSelected）；导航结果经 ``onNavigate`` 写回
     ``model.trace_selected``（退出尾部跟随）。本组件 use_input 仅处理
     关闭类按键（Esc/Ctrl+H）——其余导航/选择键放行 ListView 消费，
-    Enter 放行（非模态：提交消息）。
+    Enter/字符等由 ``use_fullscreen``（模态全屏视图通用机制）吞掉——
+    不落入输入缓冲（杜绝看不见的输入）。
     """
     model = props["model"]
     width = props.get("width", 0) or 0
@@ -1119,7 +1123,9 @@ def TraceView(props) -> object:
         if not getattr(model, "trace_open", False):
             return False
         # 关闭类按键（Esc / Ctrl+H）——subagent 轨迹优先返回主轨迹
-        #   （trace_subagent_label 置 None），主轨迹才关闭整个视图
+        #   （trace_subagent_label 置 None），主轨迹才关闭整个视图。
+        #   关闭统一经 trace_open setter（= fullscreen=""，2026-08-17 review
+        #   方向：与 toggle 工厂/测试写法一致，避免 property 扩展遗漏联动）。
         if event.kind == "escape":
             if getattr(model, "trace_subagent_label", None):
                 model.trace_subagent_label = None
@@ -1136,7 +1142,8 @@ def TraceView(props) -> object:
             return True
         # Enter：主轨迹中选中 subagent 记录 → 进入 subagent 轨迹（嵌套
         #   TraceView——显示内容与 mainagent 同构）。subagent 轨迹内 Enter
-        #   放行（提交消息）；sub-subagent 下钻不阻断（覆盖 label）。
+        #   放行（模态：由 use_fullscreen 吞掉，不落入输入缓冲）；sub-subagent
+        #   下钻不阻断（覆盖 label）。
         # ★ 2026-08-17（用户需求：agent 内容合并到 subagent）：合并
         #   后的 subagent 工具记录携带 subagent_label（kind 仍为 tool）
         #   ——下钻条件从 kind=="subagent" 放宽为 subagent_label 非空（独立
@@ -1149,11 +1156,16 @@ def TraceView(props) -> object:
                     model.trace_subagent_label = sub
                     model.trace_selected = -1  # subagent 轨迹：尾部跟随
                     return True
-        # 其余按键（↑↓/PgUp/PgDn/Home/End/g/G/Enter/字符）放行——导航由
-        # ListView 消费，Enter/字符放行（非模态：提交消息/打字）
+        # 其余按键（↑↓/PgUp/PgDn/Home/End/g/G/Enter/字符）不消费——导航由
+        # ListView 消费；Enter/字符等被 use_fullscreen 模态吞掉（不落入输入
+        # 缓冲，杜绝看不见的输入；2026-08-17 通用模态全屏视图机制）
         return False
 
     use_input(_handle, bool(getattr(model, "trace_open", False)))
+    # ★ 模态全屏视图声明（2026-08-17 通用机制）：trace_open 期间未消费按键
+    #   被 input router 吞掉（不落入输入缓冲）——字符/Enter 不误编辑/误提交；
+    #   关闭后（trace_open=False）hook 不激活零影响，输入区恢复正常输入。
+    use_fullscreen(bool(getattr(model, "trace_open", False)))
 
     def _on_navigate(row_idx: int) -> None:
         """台账导航回调（ListView 导航后）：写回 model.trace_selected（退出跟随）。

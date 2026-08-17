@@ -24,6 +24,7 @@ from .fiber import (
     EffectHook,
     InputHook,
     PasteHook,
+    FullscreenHook,
     SyncStoreHook,
     _MISSING,
 )
@@ -737,19 +738,26 @@ class Reconciler:
     # ── input router 构建（INK-1） ─────────────────────
 
     def _build_input_router(self, root_fiber: Fiber):
-        """前序遍历收集 active InputHook/PasteHook，构建 composite router。
+        """前序遍历收集 active InputHook/FullscreenHook/PasteHook，构建 composite router。
 
         兼容入口（测试/外部调用）：收集 + 构建两步。生产渲染经
         ``_collect_render_metadata``（PERF-25 合并遍历）收集后直接调
         ``_build_input_router_from_hooks``（免重复全树遍历）。
         """
-        hooks_list: list[InputHook] = []
+        hooks_list: list = []
         paste_hooks: list[PasteHook] = []
         self._collect_input_hooks(root_fiber, hooks_list, paste_hooks)
         return self._build_input_router_from_hooks(hooks_list, paste_hooks)
 
-    def _build_input_router_from_hooks(self, hooks_list: list[InputHook], paste_hooks: list[PasteHook]):
+    def _build_input_router_from_hooks(self, hooks_list: list, paste_hooks: list[PasteHook]):
         """由已收集的 hooks 构建 composite router（PERF-25：合并遍历后免重复收集）。
+
+        Args:
+            hooks_list: InputHook 与 FullscreenHook 的混合列表（**契约**：
+                仅允许这两种类型——PasteHook 须走 paste_hooks 参数；其他
+                hook 类型会被静默忽略）。收集阶段（``_collect_input_hooks`` /
+                ``_collect_render_metadata``）已按 active 过滤。
+            paste_hooks: 粘贴钩子列表（usePaste，React Ink 独立通道）。
 
         无 active hooks 时返回 None（输入走旧路径，零行为变化）。
         Router 按 hook 顺序调用各 handler；任一返回 True 视为消费（返回 True）；
@@ -774,14 +782,26 @@ class Reconciler:
         ``(signature, router, hooks_list)`` 三元组——签名命中时逐一 ``is`` 比对
         hook/handler 引用仍有效（handler 被 GC 后新对象复用旧 id → 签名相同但
         引用不同 → 重建，闭环修复 id 复用）。
+
+        ★ 2026-08-17（通用模态全屏视图）：hooks_list 兼容混入
+        ``FullscreenHook``（use_fullscreen——模态全屏视图声明）：构建时分离
+        为 input_hooks 与 fullscreen_hooks。全屏激活（任一 fullscreen hook
+        ``is_active``）时，全部 use_input 未消费的事件被 router **吞掉**
+        （返回 True）→ 事件不落入 InputDispatcher 旧路径（输入缓冲）——
+        「打开时独占键盘输入」，杜绝看不见的输入（字符/Enter 被误编辑/误提交）。
         """
-        if not hooks_list and not paste_hooks:
+        # ★ 2026-08-17（通用模态全屏视图）：hooks_list 中混入 FullscreenHook
+        #   （收集阶段一并收集）；分离两类 hook——router 迭代 input_hooks，
+        #   fullscreen_hooks 仅用于末尾吞掉判定。
+        fullscreen_hooks = [h for h in hooks_list if isinstance(h, FullscreenHook)]
+        input_hooks = [h for h in hooks_list if isinstance(h, InputHook)]
+        if not input_hooks and not paste_hooks and not fullscreen_hooks:
             self._input_router_cache = None
             return None
         # ★ 焦点仲裁：focused 集合非空 → 仅保留 focused；为空 → 回退全部 active
-        focused_hooks = [h for h in hooks_list if getattr(h, "focused", True)]
+        focused_hooks = [h for h in input_hooks if getattr(h, "focused", True)]
         if focused_hooks:
-            hooks_list = focused_hooks
+            input_hooks = focused_hooks
         # ★ P3-18 说明（review 方向）：签名含 ``id(hook.handler)``（对象身份
         #   依赖）——id 在 handler 被 GC 后可能复用 → 签名误判未变 → 复用过期
         #   router 闭包（handler 已失效）。兜底机制：缓存三元组
@@ -791,7 +811,11 @@ class Reconciler:
         signature = tuple(
             (hook.seq, hook.is_active, id(hook.handler), getattr(hook, "mask", None),
              getattr(hook, "focused", True))
-            for hook in hooks_list
+            for hook in input_hooks
+        ) + tuple(
+            # ★ fullscreen hook 的 is_active 参与签名：打开/关闭全屏（active
+            #   切换）→ 签名变化 → router 重建（吞掉/放行语义立即生效）。
+            (hook.seq, hook.is_active) for hook in fullscreen_hooks
         )
         has_focus_ids = bool(getattr(_hooks, "_focus_ids", None)) and bool(getattr(_hooks, "_focus_enabled", True))
         if self._input_router_cache is not None:
@@ -800,9 +824,10 @@ class Reconciler:
                 # ★ 方向1 步骤3（router id 复用修复）：id(hook.handler) 在 handler
                 #   被 GC 后 id 可复用 → 签名误判未变 → 复用过期 router 闭包。
                 #   缓存保存 hooks_list，命中时逐一 ``is`` 比对 hook/handler
-                #   引用仍有效（低开销：每帧一次、hooks 数量极少）。
+                #   引用仍有效（低开销：每帧一次、hooks 数量极少）。FullscreenHook
+                #   无 handler——getattr 兜底（None is None）。
                 if len(cached_hooks) == len(hooks_list) and all(
-                    a is b and a.handler is b.handler
+                    a is b and getattr(a, "handler", None) is getattr(b, "handler", None)
                     for a, b in zip(cached_hooks, hooks_list)
                 ):
                     return cached_router
@@ -833,7 +858,7 @@ class Reconciler:
                 else:
                     _hooks._focus_next()
                 return True
-            for hook in hooks_list:
+            for hook in input_hooks:
                 try:
                     if hook.handler is not None:
                         ev = event
@@ -844,6 +869,16 @@ class Reconciler:
                             return True
                 except Exception:
                     continue
+            # ── 模态全屏视图（use_fullscreen，2026-08-17）：全部 handler 未
+            #   消费 → 全屏激活时吞掉事件（返回 True）→ InputDispatcher 跳过
+            #   旧路径（输入缓冲）；未激活返回 False（放行旧路径，零行为变化）。
+            #   ★ interrupt（Ctrl+C）说明：生产路径 ``_interrupt_routable``
+            #   默认 False（interrupt 不先进 router，直接中断——全屏不影响）；
+            #   仅 render() 独立会话 exitOnCtrlC=False 时 interrupt 先进 router
+            #   ——全屏激活时被吞掉（模态独占语义：全屏视图内 Ctrl+C 交
+            #   useInput handler 处理，不触发中断），符合既有设计。
+            if any(h.is_active for h in fullscreen_hooks):
+                return True
             return False
 
         router._ink_has_focus_ids = has_focus_ids
@@ -851,7 +886,10 @@ class Reconciler:
         return router
 
     def _collect_input_hooks(self, fiber: Fiber | None, out: list[InputHook], paste_out: list[PasteHook] | None = None) -> None:
-        """前序遍历 fiber 树，收集 active 且已设 handler 的 InputHook（跳过已删除）。
+        """前序遍历 fiber 树，收集 active 的 InputHook / FullscreenHook（跳过已删除）。
+
+        out 混入两种类型：InputHook（active 且有 handler）+ FullscreenHook
+        （active——use_fullscreen 模态声明，router 构建时分离处理）。
 
         paste_out 非 None 时同步收集 active PasteHook（usePaste——React Ink v6）。
 
@@ -876,6 +914,8 @@ class Reconciler:
                     for hook in f.hooks:
                         if isinstance(hook, InputHook) and hook.is_active and hook.handler is not None:
                             out.append(hook)
+                        elif isinstance(hook, FullscreenHook) and hook.is_active:
+                            out.append(hook)
                         elif paste_out is not None and isinstance(hook, PasteHook) and hook.is_active and hook.handler is not None:
                             paste_out.append(hook)
                 if f.child is not None:
@@ -893,8 +933,8 @@ class Reconciler:
 
           - ``function_fibers``：function fiber 前序列表（effects 后序提交用）；
           - ``ref_fibers``：带 ``_host_ref`` 的 fiber（layout_box 填充用）；
-          - ``input_hooks`` / ``paste_hooks``：active 且有 handler 的输入钩子
-            （composite router 用）。
+          - ``input_hooks`` / ``paste_hooks``：active 的输入钩子（InputHook /
+            FullscreenHook 混入 input_hooks，composite router 用）。
 
         遍历保持前序（与各自原实现一致：ref 填充顺序无消费方、effects 后序
         reversed 提交、router 按 hooks_list 顺序调用）；跳过已删除 fiber。
@@ -918,6 +958,8 @@ class Reconciler:
                     function_fibers.append(f)
                     for hook in f.hooks:
                         if isinstance(hook, InputHook) and hook.is_active and hook.handler is not None:
+                            input_hooks.append(hook)
+                        elif isinstance(hook, FullscreenHook) and hook.is_active:
                             input_hooks.append(hook)
                         elif isinstance(hook, PasteHook) and hook.is_active and hook.handler is not None:
                             paste_hooks.append(hook)
