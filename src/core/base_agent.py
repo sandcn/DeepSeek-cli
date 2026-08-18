@@ -27,6 +27,38 @@ _logger = logging.getLogger(__name__)
 _BACKGROUND_WAIT_TIMEOUT: float = 120.0
 
 
+def _parse_bash_result_fields(result: str) -> tuple[str, str, "int | None"]:
+    """解析 bash 工具的三元 JSON 结果为 (stdout, stderr, returncode) 三元组。
+
+    bash 工具返回给大模型的结构为 ``{"stdout", "stderr", "returncode"}``；
+    后台任务完成时该 JSON 字符串存入任务记录 ``result`` 字段。本函数供
+    ``_complete_background_task``（写入时展开为独立字段）与消费侧
+    （bash_opt wait / _collect_done_background_messages）解析复用。
+
+    回退语义：result 不是合法三元 JSON（旧格式纯文本、空串、异常路径
+    文本）时返回 ``(result, "", None)``——原文进 stdout、无退出码。
+
+    Args:
+        result: bash 工具结果字符串（三元 JSON 或任意文本）。
+
+    Returns:
+        (stdout, stderr, returncode) 三元组；returncode 解析失败时为 None。
+    """
+    if not result:
+        return ("", "", None)
+    try:
+        data = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        return (result, "", None)
+    if isinstance(data, dict) and "returncode" in data:
+        return (
+            str(data.get("stdout", "") or ""),
+            str(data.get("stderr", "") or ""),
+            data.get("returncode"),
+        )
+    return (result, "", None)
+
+
 def _serialize_tool_arguments(arguments: Any) -> str:
     """安全序列化 tool_call arguments 为 JSON 字符串。
 
@@ -160,8 +192,9 @@ class BaseAgent:
     # - 两表完全独立，各配一套 *_background_task / *_subagent_task 方法；
     #   一轮对话完成后由 _process_background_tasks()（bash 表）与
     #   _process_subagent_tasks()（subagent 表）分别检查处理：
-    #   ① 有已完成的后台任务 → 收集结果（JSON：task_id + 命令输出）作为
-    #      用户消息插入对话，返回 True（调用方应继续一轮对话让模型处理）
+    #   ① 有已完成的后台任务 → 收集结果（JSON：task_id + 命令输出按
+    #      stdout/stderr/returncode 三元展开）作为用户消息插入对话，
+    #      返回 True（调用方应继续一轮对话让模型处理）
     #   ② 无已完成但仍有运行中 → 等待全部完成 → 插入结果消息 → 返回 True
     #   ③ 无任何后台任务 → 返回 False（对话可正常结束）
 
@@ -196,11 +229,17 @@ class BaseAgent:
 
     def _complete_background_task(self, task_id: str, result: str,
                                   status: str = "completed") -> None:
-        """标记 bash 后台任务完成并写入命令输出。
+        """标记 bash 后台任务完成并写入命令输出（三元 JSON 结果）。
+
+        result 为 bash 工具的三元 JSON 字符串（{"stdout", "stderr",
+        "returncode"}）；写入时同步解析展开为任务记录的独立字段
+        stdout / stderr / returncode，供 bash_opt wait 与
+        _collect_done_background_messages 直接读取（无需二次解析）。
+        解析失败（旧格式纯文本）时 stdout 取原文、returncode 为 None。
 
         Args:
             task_id: 后台 bash 任务 ID
-            result: 命令输出（stdout+stderr 合并，已截断）
+            result: 命令结果（三元 JSON 字符串）
             status: 完成状态（默认 completed）
         """
         if not hasattr(self, "_background_tasks"):
@@ -208,6 +247,9 @@ class BaseAgent:
         record = self._background_tasks.get(task_id)
         if record is not None:
             record["result"] = result
+            record["stdout"], record["stderr"], record["returncode"] = (
+                _parse_bash_result_fields(result)
+            )
             record["status"] = status
             record["done"] = True
         # TUI 状态栏右下角统计（含 subagent 聚合）
@@ -336,8 +378,11 @@ class BaseAgent:
     def _collect_done_background_messages(self) -> list[str]:
         """收集所有已完成 **bash** 后台任务的结果为 JSON 用户消息，并从 bash 表移除。
 
-        每条消息格式：{"task_id": "...", "command": "...", "status": "...", "output": "..."}
-        满足需求：插入的用户消息为 JSON 格式，含 taskid 和命令输出。
+        每条消息格式：{"task_id": "...", "command": "...", "status": "...",
+        "stdout": "...", "stderr": "...", "returncode": N}——命令输出按
+        bash 三元 JSON 结构展开（stdout/stderr/returncode 分离）。
+        _complete_background_task 已把三字段写入任务记录，这里直接读取；
+        记录缺失字段（异常路径）时回退解析 result 原文。
 
         ★ 被 bash_opt 工具管理的任务（managed_by_tool=True）只清理、不生成消息：
         其结果已由大模型通过 bash_opt wait 主动获取（或由 stdin/keys 交互管理），
@@ -353,11 +398,20 @@ class BaseAgent:
         for task_id, record in self._background_tasks.items():
             if record.get("done"):
                 if not record.get("managed_by_tool"):
+                    if "stdout" in record or "returncode" in record:
+                        stdout = record.get("stdout", "")
+                        stderr = record.get("stderr", "")
+                        returncode = record.get("returncode")
+                    else:
+                        stdout, stderr, returncode = _parse_bash_result_fields(
+                            record.get("result", ""))
                     payload = {
                         "task_id": task_id,
                         "command": record.get("command", ""),
                         "status": record.get("status", "completed"),
-                        "output": record.get("result", ""),
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "returncode": returncode,
                     }
                     messages.append(json.dumps(payload, ensure_ascii=False))
                 done_ids.append(task_id)
@@ -522,11 +576,15 @@ class BaseAgent:
                         if rec.get("task") is task:
                             if not rec.get("managed_by_tool"):
                                 rec["managed_by_tool"] = True
+                            # 任务仍在运行：result 尚无最终输出（空串），
+                            # 三元字段占位，完整结果由 bash_opt wait 获取
                             running_msgs.append(json.dumps({
                                 "task_id": task_id,
                                 "command": rec.get("command", ""),
                                 "status": "running",
-                                "output": rec.get("result", ""),
+                                "stdout": rec.get("stdout", ""),
+                                "stderr": rec.get("stderr", ""),
+                                "returncode": rec.get("returncode"),
                             }, ensure_ascii=False))
                             break
                 if running_msgs:

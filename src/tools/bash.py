@@ -74,7 +74,10 @@ class BashFunc(Func):
             "function": {
                 "name": "bash",
                 "description": (
-                    "执行 shell 命令，返回 stdout+stderr 合并输出（超 1000 行截断保留尾部）。"
+                    "执行 shell 命令，返回 JSON：{\"stdout\":..., \"stderr\":..., \"returncode\": 退出码}"
+                    "（stdout 与 stderr 分离收集，各自超 1000 行截断保留尾部；"
+                    "returncode 是命令的退出码，等价 bash 的 $?：0 成功、非 0 命令失败、被信号杀死为 128+sig、"
+                    "-1 工具级错误——错误说明在 stderr 字段）。"
                     "用途：编译构建、git、包管理、进程管理、系统信息查询。"
                     "禁止替代专用工具：读文件用 read_file、改文件用 update_file、写文件用 write_file、搜索用 search、找文件用 find/ls、建目录用 mkdir。"
                     "仅当专用工具功能不足（如正则多行匹配、二进制）时才用 bash，并加注释 `# 例外原因：<原因>`。"
@@ -89,7 +92,8 @@ class BashFunc(Func):
                             "type": "string",
                             "description": (
                                 "要执行的 shell 命令，支持管道 |、重定向 > >> <、环境变量、&& || 串联、$(...) 子 shell、通配符等完整语法。"
-                                "返回 stdout+stderr 合并输出，无输出返回 '(无输出)'，超 1000 行截断保留尾部。"
+                                "返回 JSON：stdout 与 stderr 分离，无输出时对应字段为空字符串；"
+                                "returncode 为退出码；stdout/stderr 各自超 1000 行截断保留尾部。"
                             )
                         },
                         "cwd": {
@@ -159,10 +163,8 @@ class BashFunc(Func):
         多出 1 个空串），恰好 max_lines 行时被误判超限触发截断（用户侧表现
         为「没到 1000 行就被截断」）。
 
-        超长输出一律截断（无论是否以 '(' 开头）——错误提示（如 "(无输出)"）
-        本身仅 1 行，远低于 max_lines，不会触发截断；移除旧的
-        ``startswith('(')`` 特例避免命令真实输出以 '(' 开头时超长内容
-        绕过截断撑爆上下文。
+        超长输出一律截断（无论是否以 '(' 开头）——三元 JSON 返回结构中
+        stdout / stderr 各自独立调用本方法截断。
         """
         if max_lines is None:
             max_lines = BashFunc.MAX_LINES
@@ -181,6 +183,64 @@ class BashFunc(Func):
                 f'\n...(输出已截断：超过 {max_lines} 行，仅展示最后 {max_lines} 行)'
             )
         return output
+
+    # ── 三元 JSON 结果组装 ─────────────────────────────
+    # 返回给大模型的结构：{"stdout": ..., "stderr": ..., "returncode": N}
+    #   - stdout / stderr：各自截断（MAX_LINES 行，保留尾部）后输出
+    #   - returncode：**命令的退出码（bash $? 语义）**——正常退出即 shell
+    #     进程退出码；被信号杀死转换为 128+sig（如 SIGKILL → 137，与 bash
+    #     一致）；-1 仅用于工具级错误（命令未真正执行：拒绝/取消/异常）
+
+    @staticmethod
+    def _bash_rc(returncode: "int | None") -> int:
+        """把子进程退出码规范化为 bash ``$?`` 语义。
+
+        - ``returncode >= 0``：正常退出，原样返回（即命令退出码）；
+        - ``returncode < 0``：子进程被信号杀死（asyncio 约定取负值），
+          转换为 bash 风格 ``128 + sig``（SIGTERM/-15 → 143、SIGKILL/-9
+          → 137），与真实终端 ``$?`` 一致；
+        - ``None``（进程未收尸等异常时序）：返回 -1。
+        """
+        if returncode is None:
+            return -1
+        if returncode < 0:
+            return 128 - returncode  # 128 + sig
+        return returncode
+
+    @staticmethod
+    def _format_result(res: dict) -> str:
+        """把结构化执行结果 dict 组装为返回给大模型的三元 JSON 字符串。
+
+        Args:
+            res: {"stdout": str, "stderr": str, "returncode": int}
+
+        Returns:
+            JSON 字符串：stdout/stderr 分别截断（超 MAX_LINES 行保留尾部），
+            returncode 原样输出。
+        """
+        stdout = BashFunc._truncate_output(res.get("stdout", "") or "")
+        stderr = BashFunc._truncate_output(res.get("stderr", "") or "")
+        return json.dumps({
+            "stdout": stdout,
+            "stderr": stderr,
+            "returncode": res.get("returncode"),
+        }, ensure_ascii=False)
+
+    @staticmethod
+    def _error_result(message: str) -> str:
+        """工具级错误的三元 JSON（未真正执行命令时使用）。
+
+        Args:
+            message: 错误说明（如 "(拒绝执行危险命令: ...)"）
+
+        Returns:
+            {"stdout": "", "stderr": message, "returncode": -1}
+        """
+        return json.dumps({
+            "stdout": "",
+            "stderr": message,
+            "returncode": -1,
+        }, ensure_ascii=False)
 
     # ── 共享读取循环 ─────────────────────────────────────
 
@@ -316,6 +376,11 @@ class BashFunc(Func):
         子进程 stdout/stderr 连接到 PIPE，存在全缓冲问题，
         输出不会逐行实时刷新。仅在 PTY 不可用时使用。
 
+        Returns:
+            结构化结果 dict：{"stdout": str, "stderr": str, "returncode": int}
+            （stdout / stderr 分离收集；returncode 为子进程退出码；
+            被中断时 stderr 放中断提示、returncode 为 -1）
+
         Args:
             show_command: 是否打印命令行到终端
             show_output: 是否实时打印输出到终端
@@ -396,15 +461,13 @@ class BashFunc(Func):
             await process.wait()
 
         if _interrupted:
-            return "(命令已被中断)"
-        output = ''.join(stdout_lines)
-        if stderr_lines:
-            stderr_output = ''.join(stderr_lines)
-            if output:
-                output = output.rstrip('\n') + '\n' + stderr_output
-            else:
-                output = stderr_output
-        return output.strip() or "(无输出)"
+            return {"stdout": "", "stderr": "(命令已被中断)",
+                    "returncode": self._bash_rc(process.returncode)}
+        return {
+            "stdout": ''.join(stdout_lines).strip(),
+            "stderr": ''.join(stderr_lines).strip(),
+            "returncode": self._bash_rc(process.returncode),
+        }
 
     async def _run_pty(self, show_command=False, show_output=False,
                        publish_line_fn=None, pty_ready_fn=None,
@@ -431,7 +494,10 @@ class BashFunc(Func):
                           供后台任务记录进程句柄（bash_opt 工具写入输入用）。
 
         Returns:
-            命令完整输出字符串
+            结构化结果 dict：{"stdout": str, "stderr": str, "returncode": int}
+            （PTY 模式 stdout/stderr 物理合并到同一 master fd，无法分离，
+            全部输出归入 stdout、stderr 恒为空字符串；returncode 为子进程
+            退出码；被中断时 stderr 放中断提示、returncode 为 -1）
         """
         import fcntl
         import pty
@@ -530,9 +596,14 @@ class BashFunc(Func):
             await process.wait()
 
         if _interrupted:
-            return "(命令已被中断)"
-        output = ''.join(lines)
-        return output.strip() or "(无输出)"
+            return {"stdout": "", "stderr": "(命令已被中断)",
+                    "returncode": self._bash_rc(process.returncode)}
+        return {
+            "stdout": ''.join(lines).strip(),
+            # PTY 模式 stdout/stderr 合并到同一 master fd，无法分离
+            "stderr": "",
+            "returncode": self._bash_rc(process.returncode),
+        }
 
     async def _run_async(self, show_command=False, show_output=False,
                          publish_line_fn=None):
@@ -545,17 +616,25 @@ class BashFunc(Func):
           {"task_id": ..., "status": "running", "command": ...} JSON，
           大模型可用 bash_opt 工具按 task_id 继续管理（read/wait/kill/stdin/keys）。
 
+        ★ 前台统一使用 PIPE 分离模式（stdout/stderr 双流独立收集）：
+        返回给大模型的三元 JSON 中 stdout、stderr 真实分离，returncode
+        为子进程退出码。PIPE 双流并发读取 + 行回调仍实时；代价是部分
+        程序在非终端下使用全缓冲（实时性略降），交互能力经 stdin PIPE
+        （stdin_writer）保留——超时转后台后 bash_opt stdin/keys 仍可用。
+        PTY 模式保留给后台交互任务（_run_interactive_async）。
+
         Args:
             show_command: 是否打印命令行到终端
             show_output: 是否实时打印输出到终端（_read_loop 内部）
             publish_line_fn: 可选的行回调（display 用）
 
         Returns:
-            命令输出字符串（已截断）；超时转后台时返回 task_id JSON 字符串
+            三元 JSON 字符串 {"stdout", "stderr", "returncode"}（已截断）；
+            超时转后台时返回 task_id JSON 字符串
         """
         ret = self._check_cwd_or_return(self.cwd)
         if ret:
-            return ret
+            return self._error_result(ret)
 
         # ★ 子进程句柄记录：自动转后台时写入任务记录，供 bash_opt 工具操作
         #   （wait 等待 / kill 杀进程树 / stdin、keys 交互）。
@@ -586,23 +665,16 @@ class BashFunc(Func):
                 await fn(text, is_stderr)
 
         async def _run_exec():
-            if _HAS_PTY:
-                result = await self._run_pty(
-                    show_command=False,
-                    show_output=show_output,
-                    publish_line_fn=_line_proxy,
-                    interactive=True,
-                    interactive_ready_fn=_on_ready,
-                )
-            else:
-                result = await self._run_pipe(
-                    show_command=False,
-                    show_output=show_output,
-                    publish_line_fn=_line_proxy,
-                    interactive=True,
-                    interactive_ready_fn=_on_ready,
-                )
-            return self._truncate_output(result)
+            # ★ 前台统一 PIPE 分离模式（见 _run_async docstring）：
+            #   stdout/stderr 独立收集 → 三元 JSON 真实分离。
+            result = await self._run_pipe(
+                show_command=False,
+                show_output=show_output,
+                publish_line_fn=_line_proxy,
+                interactive=True,
+                interactive_ready_fn=_on_ready,
+            )
+            return self._format_result(result)
 
         exec_task = asyncio.ensure_future(_run_exec())
         try:
@@ -625,10 +697,10 @@ class BashFunc(Func):
             try:
                 result = exec_task.result()
             except asyncio.CancelledError:
-                return "(命令已被取消)"
+                return self._error_result("(命令已被取消)")
             except Exception as e:
                 logger.exception("异步命令执行异常: %s", self.command[:200])
-                return f"(执行出错: {e})"
+                return self._error_result(f"(执行出错: {e})")
             return result
 
         # 超过 _AUTO_BG_TIMEOUT 秒 → 自动转后台执行（不终止进程）。
@@ -661,8 +733,9 @@ class BashFunc(Func):
         """
         agent = getattr(self, 'agent', None)
         if agent is None or not hasattr(agent, '_register_background_task'):
-            return (f"(命令执行超过 {self._AUTO_BG_TIMEOUT} 秒，但当前未关联 "
-                    f"Agent 上下文，无法自动转后台管理)")
+            return self._error_result(
+                f"(命令执行超过 {self._AUTO_BG_TIMEOUT} 秒，但当前未关联 "
+                f"Agent 上下文，无法自动转后台管理)")
 
         task_id = f"bg-{uuid.uuid4().hex[:12]}"
         process = holder.get("process")
@@ -698,10 +771,10 @@ class BashFunc(Func):
             try:
                 result = t.result()
             except asyncio.CancelledError:
-                result = "(后台命令已被取消)"
+                result = self._error_result("(后台命令已被取消)")
             except Exception as e:
                 logger.exception("自动转后台命令执行异常: %s", self.command[:200])
-                result = f"(后台命令执行出错: {e})"
+                result = self._error_result(f"(后台命令执行出错: {e})")
             if agent is not None and hasattr(agent, '_complete_background_task'):
                 try:
                     agent._complete_background_task(task_id, result)
@@ -739,11 +812,12 @@ class BashFunc(Func):
             publish_line_fn: 可选 async (text, is_stderr) -> None 行回调
 
         Returns:
-            命令完整输出字符串（已截断）
+            三元 JSON 字符串 {"stdout", "stderr", "returncode"}（已截断）。
+            PTY 模式下 stdout/stderr 物理合并，输出归 stdout、stderr 为空。
         """
         ret = self._check_cwd_or_return(self.cwd)
         if ret:
-            return ret
+            return self._error_result(ret)
 
         try:
             if _HAS_PTY:
@@ -758,12 +832,12 @@ class BashFunc(Func):
                     publish_line_fn=publish_line_fn,
                     interactive=True, interactive_ready_fn=on_ready,
                 )
-            return self._truncate_output(result)
+            return self._format_result(result)
         except asyncio.CancelledError:
-            return "(命令已被取消)"
+            return self._error_result("(后台命令已被取消)")
         except Exception as e:
             logger.exception("交互式命令执行异常: %s", self.command[:200])
-            return f"(执行出错: {e})"
+            return self._error_result(f"(执行出错: {e})")
 
     # ── 后台执行模式 ────────────────────────────────────────
     # background=True 时：命令在 asyncio 后台任务中运行，工具立即返回
@@ -771,8 +845,8 @@ class BashFunc(Func):
     # Agent 的 _background_tasks 成员（bash 专用表，task_id 恒为 "bg-xxx"；
     # subagent 后台任务独立注册在 _subagent_tasks）。一轮对话完成后，
     # Agent 主循环检查 bash 后台任务：已完成的把结果（JSON：task_id +
-    # 命令输出）作为用户消息插入对话继续处理；未完成的则等待全部完成后
-    # 再次插入。
+    # 命令输出按 stdout/stderr/returncode 三元展开）作为用户消息插入对话
+    # 继续处理；未完成的则等待全部完成后再次插入。
 
     async def _execute_background(self) -> str:
         """后台执行命令：生成 task_id、注册到 agent 后台任务列表，立即返回 JSON。
@@ -783,11 +857,11 @@ class BashFunc(Func):
         # ★ 危险命令检查：display() 路径（主 Agent）进入后台前也需运行时防护
         danger = _has_dangerous_command(self.command)
         if danger:
-            return f"(拒绝执行危险命令: {danger})"
+            return self._error_result(f"(拒绝执行危险命令: {danger})")
 
         agent = getattr(self, 'agent', None)
         if agent is None or not hasattr(agent, '_register_background_task'):
-            return "(后台执行需要关联 Agent 上下文，当前未关联)"
+            return self._error_result("(后台执行需要关联 Agent 上下文，当前未关联)")
 
         # 显示启动命令（后台任务本身不再重复打印）
 
@@ -873,10 +947,10 @@ class BashFunc(Func):
         try:
             result = await bg._run_interactive_async(_on_ready, publish_line_fn=_publish_line)
         except asyncio.CancelledError:
-            result = "(后台命令已被取消)"
+            result = self._error_result("(后台命令已被取消)")
         except Exception as e:
             logger.exception("后台命令执行异常: %s", self.command[:200])
-            result = f"(后台命令执行出错: {e})"
+            result = self._error_result(f"(后台命令执行出错: {e})")
 
         if agent is not None and hasattr(agent, '_complete_background_task'):
             try:
@@ -905,24 +979,29 @@ class BashFunc(Func):
     # display() → 负责 UI 展示（实时输出到终端）
 
     async def execute(self) -> str:
-        """异步执行命令并返回结果。
+        """异步执行命令并返回三元 JSON 结果。
 
-        有 UI 副作用（通过 _run_async(show_command=True) 将 cmd 输出到工具调用面板）。
-        危险命令时在终端输出红色警告。
+        返回给大模型的结构：{"stdout": ..., "stderr": ..., "returncode": N}——
+        stdout/stderr 分离（前台 PIPE 模式），returncode 是**命令的退出码**
+        （bash $? 语义：被信号杀死为 128+sig）；工具级错误（危险命令拒绝 /
+        cwd 不存在 / 执行异常 / 中断取消）时 stdout 为空、stderr 放错误说明、
+        returncode 为 -1。
+
+        有 UI 副作用（危险命令时终端输出红色警告）。
         使用 asyncio.create_subprocess_shell 避免阻塞事件循环。
         """
         # ★ P0 安全防护：运行时检查危险命令（schema 侧 + 运行时侧双保险）
         danger = _has_dangerous_command(self.command)
         if danger:
             await print_to_terminal(f"{RED}$ {self.command}{RESET}\n{RED}(拒绝执行危险命令: {danger}){RESET}\n")
-            return f"(拒绝执行危险命令: {danger})"
+            return self._error_result(f"(拒绝执行危险命令: {danger})")
         # ── 后台模式：不等待命令完成，立即返回 task_id JSON ──
         if self.background:
             return await self._execute_background()
         return await self._run_async(show_command=False, show_output=False)
 
     async def _run_with_line_callback(self, on_line) -> str:
-        """共享的 UI 执行框架：检查 cwd、显示命令、执行 PTY/PIPE、异常处理。
+        """共享的 UI 执行框架：检查 cwd、执行命令、异常处理（display 路径）。
 
         前台执行与 _run_async 一致：超过 _AUTO_BG_TIMEOUT 秒自动转后台
         （命令不终止，返回 task_id JSON）；publish_line_fn 持续接收实时输出行。
@@ -931,16 +1010,12 @@ class BashFunc(Func):
             on_line: 异步回调 async (text: str, is_stderr: bool) -> None
 
         Returns:
-            命令输出字符串（已截断）；超时转后台时返回 task_id JSON 字符串
+            三元 JSON 字符串 {"stdout", "stderr", "returncode"}（已截断）；
+            超时转后台时返回 task_id JSON 字符串
         """
         # ── 后台模式：display 路径同样不等待命令完成 ──
         if self.background:
             return await self._execute_background()
-
-        ret = self._check_cwd_or_return(self.cwd)
-        if ret:
-            return ret
-
 
         return await self._run_async(
             show_command=False, show_output=False,

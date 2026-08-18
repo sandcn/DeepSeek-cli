@@ -6,7 +6,7 @@ bash_opt — 按 task_id 操作后台 bash 任务
 大模型可据此用 bash_opt 工具按 task_id 操作：
 
 - op=read   读取后台命令**当前已产生**的全部输出并清空缓冲，立即返回（不等待完成）
-- op=wait   等待任务执行完成并获取命令输出（JSON：task_id/command/status/output）
+- op=wait   等待任务执行完成并获取结果（JSON：task_id/command/status/stdout/stderr/returncode）
 - op=kill   杀死后台命令的所有进程树（killpg + /proc 递归补杀后代）
 - op=stdin  向后台命令的 stdin 发送文本输入（text 参数，newline 可选是否追加换行）
 - op=keys   向后台命令发送光标/键盘消息（跨平台 ANSI/VT100 转义序列）
@@ -30,6 +30,7 @@ import os
 
 from .base import Func, tool_metadata
 from .bash import kill_process_tree
+from ..core.base_agent import _parse_bash_result_fields
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,8 @@ class BashOptFunc(Func):
                 "description": (
                     "按 task_id 操作后台 bash 任务（由 bash background=true 启动）。"
                     "op：read（读取当前已产生的全部输出并清空缓冲，立即返回不等待完成）、"
-                    "wait（等待完成取输出，timeout 秒，默认 300/0 无限）、"
+                    "wait（等待完成取结果 JSON：task_id/command/status/stdout/stderr/returncode，"
+                    "timeout 秒，默认 300/0 无限）、"
                     "kill（杀进程树）、stdin（发文本，需 text）、keys（发按键，需 key）。"
                     "task_id 必须是当前对话 bash 后台返回的 bg-xxx。返回：操作结果 JSON 或输出；失败以 ( 开头。"
                 ),
@@ -325,7 +327,11 @@ class BashOptFunc(Func):
     # ── op=wait ──────────────────────────────────────────
 
     async def _op_wait(self, agent, rec: dict) -> str:
-        """等待任务完成并返回输出（JSON：task_id/command/status/output）。
+        """等待任务完成并返回结果（JSON：task_id/command/status/stdout/stderr/returncode）。
+
+        命令输出按 bash 三元 JSON 结构展开（stdout/stderr/returncode 分离）：
+        优先读取任务记录中 _complete_background_task 写入的独立字段，
+        缺失时回退解析 result 原文。
 
         完成（或已完成后）把任务记录从 tasklist 移除——大模型已通过本工具
         拿到输出，避免 _process_background_tasks 再以用户消息重复插入。
@@ -348,14 +354,23 @@ class BashOptFunc(Func):
             except Exception as e:
                 logger.debug("后台任务 wait 异常: %s", e)
 
-        # 读取最终结果（任务完成后由 _run_background_task 写入 rec）
-        result = rec.get("result", "")
+        # 读取最终结果（任务完成后由 _run_background_task 写入 rec），
+        # 三元 JSON 展开为 stdout / stderr / returncode 独立字段
+        if "stdout" in rec or "returncode" in rec:
+            stdout = rec.get("stdout", "")
+            stderr = rec.get("stderr", "")
+            returncode = rec.get("returncode")
+        else:
+            stdout, stderr, returncode = _parse_bash_result_fields(
+                rec.get("result", ""))
         status = rec.get("status", "completed")
         payload = {
             "task_id": self.task_id,
             "command": rec.get("command", ""),
             "status": status,
-            "output": result,
+            "stdout": stdout,
+            "stderr": stderr,
+            "returncode": returncode,
         }
         # 移除任务记录（避免 _process_background_tasks 重复插入用户消息）
         if hasattr(agent, "_remove_background_task"):
