@@ -552,6 +552,23 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             h = 0
         else:
             h = len(lines)
+        # ★ 显式 height（2026-08-19，补全菜单缩小时光标差一行修复）：
+        #   TEXT 尊重显式 ``height`` prop（min-height 语义——取内容行数与
+        #   显式值较大者，不截断内容）。修复前 TEXT 分支完全忽略 height，
+        #   高度恒 = len(lines)（空文本 0 行）——CompletionPopup 高度锁定
+        #   补白行 ``h(TEXT, {"children": "", "height": pad_rows})`` 实际
+        #   渲染高度为 0，弹窗实际高度比 ``_completion_height``（锁定值，
+        #   position_cursor 据此定位输入行）矮 pad_rows 行 → 光标偏下
+        #   pad_rows 行（items 缩小 1 项时即「差一行」）。全项目既有调用
+        #   均传 height=1（len(lines)>=1，max 语义零回归）；百分比/畸形值
+        #   回退内容高度（与容器 _resolve_height 的非数字兜底一致）。
+        if not (width == 0 and not fill):
+            explicit_th = fiber.props.get("height")
+            if explicit_th is not None:
+                try:
+                    h = max(h, int(explicit_th))
+                except (TypeError, ValueError, OverflowError):
+                    pass
         # ★ 性能（PERF-14 + props 引用级缓存）：写回 props 引用级测量缓存
         #   （下次同 props 引用 + styled 长度 + avail_w + fill 直接复用 w/h，
         #   跳过全部解析与换行）。缓存结构含 ftype（归属校验）、styled 长度
