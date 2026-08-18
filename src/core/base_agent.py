@@ -22,8 +22,8 @@ _logger = logging.getLogger(__name__)
 # 在等待这类任务时必须有一个有界上限，否则任一长时 bash 任务会让
 # Agent/SubAgent 无限阻塞——用户侧现象：多个 SubAgent 并发执行时，
 # 只要一个 SubAgent 的 bash 命令长时间不退出，整个并行执行永久卡死。
-# 超时后未完成任务被标记为 bash_task 管理（模型已拿到 task_id），
-# 由模型经 bash_task 工具主动 wait/kill 管理，不再自动阻塞对话。
+# 超时后未完成任务被标记为 bash_opt 管理（模型已拿到 task_id），
+# 由模型经 bash_opt 工具主动 wait/kill 管理，不再自动阻塞对话。
 _BACKGROUND_WAIT_TIMEOUT: float = 120.0
 
 
@@ -188,8 +188,8 @@ class BaseAgent:
     def _pending_background_tasks(self) -> list[dict]:
         """返回所有未完成的后台任务记录列表。
 
-        ★ 被 bash_task 工具管理的任务（managed_by_tool=True）不在此列：
-        其生命周期由大模型通过 bash_task 工具主动控制（read/wait/kill/stdin/keys），
+        ★ 被 bash_opt 工具管理的任务（managed_by_tool=True）不在此列：
+        其生命周期由大模型通过 bash_opt 工具主动控制（read/wait/kill/stdin/keys），
         不需要对话轮次自动等待其完成（交互式任务可能长期运行）。
         """
         if not hasattr(self, "_background_tasks"):
@@ -200,15 +200,15 @@ class BaseAgent:
         ]
 
     def _get_background_task(self, task_id: str) -> dict | None:
-        """按 task_id 获取后台任务记录（bash_task 工具使用）。"""
+        """按 task_id 获取后台任务记录（bash_opt 工具使用）。"""
         if not hasattr(self, "_background_tasks"):
             return None
         return self._background_tasks.get(task_id)
 
     def _remove_background_task(self, task_id: str) -> dict | None:
-        """移除并返回指定后台任务记录（bash_task 工具使用）。
+        """移除并返回指定后台任务记录（bash_opt 工具使用）。
 
-        任务被 bash_task 工具主动消费（wait 拿到输出 / kill 终止）时，
+        任务被 bash_opt 工具主动消费（wait 拿到输出 / kill 终止）时，
         从 tasklist 移除，避免 _process_background_tasks 再次把结果
         作为用户消息重复插入对话。
         """
@@ -250,8 +250,8 @@ class BaseAgent:
         每条消息格式：{"task_id": "...", "command": "...", "status": "...", "output": "..."}
         满足需求：插入的用户消息为 JSON 格式，含 taskid 和命令输出。
 
-        ★ 被 bash_task 工具管理的任务（managed_by_tool=True）只清理、不生成消息：
-        其结果已由大模型通过 bash_task wait 主动获取（或由 stdin/keys 交互管理），
+        ★ 被 bash_opt 工具管理的任务（managed_by_tool=True）只清理、不生成消息：
+        其结果已由大模型通过 bash_opt wait 主动获取（或由 stdin/keys 交互管理），
         不再重复插入用户消息。
         """
         if not hasattr(self, "_background_tasks"):
@@ -297,7 +297,7 @@ class BaseAgent:
         """等待所有后台任务完成，带超时上限（防无限卡死）。
 
         返回仍未完成的任务集合（空集合表示全部完成，或被中断取消）。
-        超时后未完成的任务由调用方处理（标记 managed_by_tool 交 bash_task
+        超时后未完成的任务由调用方处理（标记 managed_by_tool 交 bash_opt
         工具管理），避免长时/挂起的 bash 后台任务（如自动转后台后命令
         永不退出）让 Agent/SubAgent 无限阻塞。
 
@@ -355,7 +355,7 @@ class BaseAgent:
         防卡死：等待运行中后台任务完成带 _BACKGROUND_WAIT_TIMEOUT 超时。
         超时后仍在运行的任务被标记为 ``managed_by_tool=True``（不再自动等待），
         并插入「仍在运行」用户消息——模型已在前台 bash 工具返回中拿到
-        task_id，可经 bash_task 工具继续 wait/kill 管理。
+        task_id，可经 bash_opt 工具继续 wait/kill 管理。
         """
         if not hasattr(self, "_background_tasks") or not self._background_tasks:
             return False
@@ -383,13 +383,13 @@ class BaseAgent:
             if unfinished:
                 # ★ 超时未完成（长时/挂起后台任务）：
                 #   1. 标记 managed_by_tool——后续不再自动等待其完成
-                #      （模型已拿到 task_id，可经 bash_task 继续管理）；
+                #      （模型已拿到 task_id，可经 bash_opt 继续管理）；
                 #   2. 插入「仍在运行」用户消息，让模型知道任务未结束，
                 #      可选择继续管理或结束对话（不再无限阻塞）。
                 running_msgs: list[str] = []
                 for task in unfinished:
                     # 快照遍历（P3 防御）：当前循环内无 await 不会结构性修改，
-                    # 但快照可防未来加入 await 时 bash_task/完成回调并发 pop。
+                    # 但快照可防未来加入 await 时 bash_opt/完成回调并发 pop。
                     for task_id, rec in list(self._background_tasks.items()):
                         if rec.get("task") is task:
                             if not rec.get("managed_by_tool"):
@@ -406,7 +406,7 @@ class BaseAgent:
                     self._publish_background_task_event()
                     return True
                 # 防御：running_msgs 为空（极端时序下 unfinished 任务已被
-                # bash_task 移除或刚完成）→ 仅移除这些任务的残留记录，
+                # bash_opt 移除或刚完成）→ 仅移除这些任务的残留记录，
                 # 不清空全表（避免误删其他仍在管理的任务记录）。
                 removed_any = False
                 for task in unfinished:
@@ -420,7 +420,7 @@ class BaseAgent:
             else:
                 # unfinished 为空（tasks 全为 None/done、或中断取消后已收集）：
                 # 仅清理「非 managed 且 task 缺失或已结束」的残留记录，
-                # 保留 managed_by_tool 任务（模型可经 bash_task 继续管理，
+                # 保留 managed_by_tool 任务（模型可经 bash_opt 继续管理，
                 # 全表 clear 会使其失联——P2 修复）。
                 #
                 # ★ P1 修复（2026-08-08）：stale 判定必须同时满足

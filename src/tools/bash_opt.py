@@ -1,9 +1,9 @@
 """
-bash_task — 按 task_id 操作后台 bash 任务
+bash_opt — 按 task_id 操作后台 bash 任务
 
 配合 bash 工具 background=True 模式使用。bash 后台启动后返回
 {"task_id": "bg-xxx", "status": "running", "command": "..."}，
-大模型可据此用 bash_task 工具按 task_id 操作：
+大模型可据此用 bash_opt 工具按 task_id 操作：
 
 - op=read   读取后台命令**当前已产生**的全部输出并清空缓冲，立即返回（不等待完成）
 - op=wait   等待任务执行完成并获取命令输出（JSON：task_id/command/status/output）
@@ -136,10 +136,10 @@ async def _write_pty_all(fd: int, data: bytes) -> None:
     tool_category="bash",
     description="操作后台bash任务",
 )
-class BashTaskFunc(Func):
+class BashOptFunc(Func):
     """按 task_id 操作后台 bash 任务（bash background=True 启动）。"""
 
-    name = "bash_task"
+    name = "bash_opt"
     _DEFAULT_WAIT_TIMEOUT: int = 300
 
     @classmethod
@@ -147,7 +147,7 @@ class BashTaskFunc(Func):
         return {
             "type": "function",
             "function": {
-                "name": "bash_task",
+                "name": "bash_opt",
                 "description": (
                     "按 task_id 操作后台 bash 任务（由 bash background=true 启动）。"
                     "op：read（读取当前已产生的全部输出并清空缓冲，立即返回不等待完成）、"
@@ -264,7 +264,7 @@ class BashTaskFunc(Func):
             return (f"(后台任务不存在: {self.task_id}。"
                     f"请先用 bash background=True 启动后台任务获取 task_id)")
 
-        # ★ 标记为 bash_task 管理：该任务的结果由大模型通过本工具主动获取
+        # ★ 标记为 bash_opt 管理：该任务的结果由大模型通过本工具主动获取
         #   （wait 拿到输出 / kill 终止 / stdin / keys 交互），后续
         #   _process_background_tasks 不再把结果作为用户消息自动插入，
         #   也不自动等待其完成（避免交互任务阻塞对话轮次）。

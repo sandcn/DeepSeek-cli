@@ -279,7 +279,7 @@ def _kill_process_tree(pid: int) -> None:
 
 
 def kill_process_tree(pid: int) -> None:
-    """杀死进程及其所有后代（公开 API，供 bash_task 工具按 task_id 操作）。
+    """杀死进程及其所有后代（公开 API，供 bash_opt 工具按 task_id 操作）。
 
     策略与 _kill_process_tree 相同（两阶段）：
       1. killpg：先杀死进程组（shell + 前台子进程），快路径覆盖

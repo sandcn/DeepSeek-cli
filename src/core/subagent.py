@@ -35,16 +35,16 @@ _NETWORK_RETRY_MAX = 3
 #   无路径白名单限制，用于执行计划文件步骤并返回修改文件列表
 _TOOL_EXCLUSION_MAP = {
     "map": {
-        "bash", "bash_task", "write_file", "update_file", "rm", "mv", "cp", "mkdir",
+        "bash", "bash_opt", "write_file", "update_file", "rm", "mv", "cp", "mkdir",
         "web_search",
         "subagent", "user_select",
     },
     "review": {
-        "bash", "bash_task", "write_file", "update_file", "rm", "mv", "cp", "mkdir",
+        "bash", "bash_opt", "write_file", "update_file", "rm", "mv", "cp", "mkdir",
         "subagent", "user_select",
     },
     "plan": {
-        "bash", "bash_task",
+        "bash", "bash_opt",
         "rm",
         "mv",
         "cp",
