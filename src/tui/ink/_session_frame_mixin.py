@@ -8,9 +8,11 @@ session 保留渲染循环调度（_render/_drain_queue/_should_render）与生�
 
 本 mixin 承载：
   - ``_render_frame`` — 构建组件树 → 调和 → 渲染 → 输出 → 光标（含 resize
-    宽度/高度传播、全量刷新标志、input-area fiber 缓存）；
+    宽度/高度传播、全量刷新标志、input-area fiber 缓存、``_frame_active``
+    帧执行标记包装、末尾 ``_advance_frame_seq`` 帧完成通知）；
   - ``_apply_commands`` — 批量应用命令到模型（CLEAR_MSGS 置 resize 全量刷新）；
-  - ``_update_system_stats`` — 每 2 秒采集 CPU/MEM 写入模型（输入区分隔线）；
+  - ``_update_system_stats`` — 每采集间隔（TuiConfig.sys_stats_interval）采集
+    CPU/MEM 写入模型（输入区分隔线）；
   - ``_position_cursor`` / ``_find_input_fiber`` — 输入光标定位（委托纯函数
     模块 ``._cursor``）。
 
@@ -19,13 +21,18 @@ session 保留渲染循环调度（_render/_drain_queue/_should_render）与生�
   - ``_reconciler`` / ``_root_fiber`` — React Ink 调和器与根 fiber；
   - ``_ink_renderer`` / ``_width_cache`` / ``_config`` — 渲染器与尺寸缓存；
   - ``_input_fiber`` / ``_last_render_width`` / ``_last_render_height`` /
-    ``_resize_pending`` / ``_dirty`` — 帧状态（缓存/全量刷新/脏标记）；
+    ``_resize_pending`` / ``_dirty`` / ``_frame_active`` — 帧状态（缓存/全量
+    刷新/脏标记/帧执行标记——标记由本 mixin ``_render_frame`` 包装器维护，
+    session 侧等待方读取）；
+  - ``_advance_frame_seq``（经 getattr 调用的 session 方法，宿主类提供）—
+    帧完成通知（唤醒 flush_input_router 等待者）；
   - ``_system_monitor`` / ``_last_sys_stats_time`` / ``_sys_stats_interval``
     — 系统监控状态。
 
-行为零变化（2026-08-16 拆分确认）：方法体为原 InkSession 同名方法原样
-迁移——测试以实例属性替换（monkeypatch）方法仍生效（本 mixin 方法即实例
-方法）。
+行为说明：2026-08-16 拆分时为原 InkSession 同名方法原样迁移；此后
+``_render_frame`` 增量演进（帧执行标记包装 + 帧完成通知，见上），其余
+方法仍为迁移原样。测试以实例属性替换（monkeypatch）方法仍生效（本
+mixin 方法即实例方法）。
 """
 
 from __future__ import annotations
@@ -55,11 +62,12 @@ def _safe_int(value, default: int = 0) -> int:
         default: 转换失败回退值。
 
     Returns:
-        转换后的整数；失败返回 ``default``。
+        转换后的整数；失败（TypeError/ValueError/OverflowError——含
+        ``int(float('inf'))`` 的溢出）返回 ``default``。
     """
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -84,6 +92,7 @@ class _SessionFrameMixin:
     _last_render_height: int
     _resize_pending: bool
     _dirty: bool
+    _frame_active: bool
     _system_monitor: object
     _last_sys_stats_time: float
     _sys_stats_interval: float
@@ -114,7 +123,20 @@ class _SessionFrameMixin:
     # ── 渲染帧 ───────────────────────────────────────
 
     def _render_frame(self) -> None:
-        """构建组件树 → 调和 → 渲染 → 输出 → 光标。"""
+        """构建组件树 → 调和 → 渲染 → 输出 → 光标。
+
+        ★ 帧执行标记（``_frame_active``）：进入置位 / finally 复位——外部
+        等待方（flush_input_router / _wait_render_flush / _join_render_thread）
+        据此区分「正在执行超长单帧」（单帧耗时无上界，视作有进展续期等待）
+        与「渲染线程挂起」（无进展，按软超时/硬上限降级）。
+        """
+        self._frame_active = True
+        try:
+            self._render_frame_impl()
+        finally:
+            self._frame_active = False
+
+    def _render_frame_impl(self) -> None:
         if self._build_tree is None:
             return
         width = self._width_cache.get_width()
@@ -257,10 +279,17 @@ class _SessionFrameMixin:
         #   调用本方法）。``_safe_int`` 转换失败回退 0，不中断渲染循环。
         cpu_i = _safe_int(cpu)
         mem_i = _safe_int(mem)
-        if cpu_i != status.cpu or mem_i != status.mem:
-            status.cpu = cpu_i
-            status.mem = mem_i
-            self._dirty = True  # 触发渲染显示新值
+        # ★ P2（review 2026-08-19）：status.cpu/mem 比较与赋值纳入防御——
+        #   status 存在但缺 cpu/mem 字段（测试桩/未来模型变更）时
+        #   AttributeError 传播致渲染线程崩溃恢复，与本文件其它模型访问
+        #   （reflow/set_width）全部 try 保护的风格一致。
+        try:
+            if cpu_i != status.cpu or mem_i != status.mem:
+                status.cpu = cpu_i
+                status.mem = mem_i
+                self._dirty = True  # 触发渲染显示新值
+        except AttributeError:
+            _logger.debug("status 缺少 cpu/mem 字段，跳过系统监控更新", exc_info=True)
 
     # ── 光标 ─────────────────────────────────────────
 

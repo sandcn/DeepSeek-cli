@@ -77,6 +77,9 @@ class TuiConfig(ConfigBase):
     max_recover_attempts: int = 3           # render 线程最大重建次数
     recover_delay: float = 0.5              # 崩溃后重建等待（秒）
 
+    # ── 系统监控 ──────────────────────────────────────
+    sys_stats_interval: float = 2.0         # 系统监控采集间隔（秒），空闲 2s 一刷输入区分隔线
+
     # ── 方向D 步骤14：Ctrl+R 反向历史搜索 ──────────────
     # 默认 False 保持既有 Ctrl+R switch_model 语义（键位冲突配置门控）。
     # 启用后 Ctrl+R 进入/推进反向历史搜索；Esc 退出、Enter/Tab 应用匹配。

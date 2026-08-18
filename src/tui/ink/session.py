@@ -46,7 +46,6 @@ from ._cmd_priority import (
     _STREAM_CMDS,
     _get_cmd_id,
     _get_cmd_priority,
-    _cmd_name,
 )
 # ★ 架构改进方向 A（2026-08-16，InkSession 上帝类拆分）：
 #   - 命令队列管理（入队/背压/排空安全）→ _session_queue_mixin
@@ -71,6 +70,23 @@ _CONTENT_COMMANDS = CONTENT_COMMANDS
 #: BUG-39：崩溃恢复后视为「稳定」的最小运行时长（秒）——恢复成功且持续运行
 #: 超过该阈值后复位 ``_recover_attempts``（防长时间运行后恢复预算耗尽）。
 _RECOVER_STABLE_SECS = 60.0
+
+# ── 渲染线程自适应等待参数（★ 单帧耗时无上界约束） ──────────────
+# 约束（2026-08-19）：渲染线程为 10Hz 循环，**单帧执行没有耗时上限**——
+# 大量上文重放/超长 markdown 渲染一帧可达数秒以上。所有「等待渲染线程」
+# 的逻辑不得把慢帧误判为超时/挂起：
+#   - 帧号推进（``_frame_seq``）或帧执行中（``_frame_active``）= 有进展，
+#     续期软超时继续等（每帧执行多久都可以）；
+#   - 硬上限仅防**真挂起**（如 PTY 缓冲区满 write 永久阻塞）——远大于正常
+#     帧耗时的兜底值，触达时降级并记 warning。
+#: flush_input_router 总硬上限（秒）——真挂起防护（软超时仍由 timeout 参数决定）
+_ROUTER_FLUSH_HARD_CEILING = 60.0
+#: _wait_render_flush 无进展软超时（秒）——帧执行中/帧号推进时续期
+_RENDER_FLUSH_SOFT_TIMEOUT = 5.0
+#: _wait_render_flush 总硬上限（秒）——真挂起防护
+_RENDER_FLUSH_HARD_TIMEOUT = 60.0
+#: _join_render_thread 硬上限（秒）——真挂起防护（线程活着且未达上限就一直等）
+_JOIN_RENDER_HARD_TIMEOUT = 30.0
 
 # ★ 架构改进方向 A：``_KEEP_CONTENT_CMDS`` / ``_PUT_NO_DROP_TIMEOUT`` 定义已
 #   迁至 ``_session_queue_mixin``（唯一使用方），本模块 re-export 保持旧导入
@@ -183,6 +199,10 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         # ★ 脏标记：模型有变更（命令应用/输入/重绘请求）时置位，
         #   空闲时跳过渲染（避免 10Hz 全量重建整棵树 → CPU 100%）
         self._dirty: bool = False
+        # ★ 帧执行标记（2026-08-19，单帧耗时无上界约束）：``_render_frame``
+        #   进入置位 / finally 复位——等待方据此区分「正在执行超长单帧」
+        #   （有进展，续期等待）与「渲染线程挂起」（无进展，降级）。
+        self._frame_active: bool = False
         self._recover_attempts: int = 0
         self._render_version: int = 0
         self._cmd_seq = itertools.count()
@@ -194,6 +214,15 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._line_tracker = None
         # use_input router 发布缓存（_input 未注入时记录，set_input 后补发）
         self._pending_input_router = None
+        # ★ hooks 全局接线约束（review 方向，单会话约束声明）：下方
+        #   set_input_router_callback / set_app_control / set_std_accessors /
+        #   set_window_size_accessor / set_cursor_position_fn /
+        #   set_render_flush_fn / set_suspend_terminal_fn 为**模块级全局**
+        #   （hooks 模块字段），持有本 session 强引用——本框架为单 InkSession
+        #   会话模型（reconciler P3-17 同约束）：重复 assemble 时旧会话回调被
+        #   新会话覆盖（最后一次构造者生效），stop() 不注销 hooks（与
+        #   SIGWINCH 回调按 token 注销不对称——hooks 全局无多会话注册表，
+        #   引入即多会话支持改造，超出单会话约束范围）。
         _hooks.set_input_router_callback(self._on_input_router)
         # ★ useApp 控制（方向B 步骤10）：session 注入 exit/clear 回调
         self._exit_requested = False
@@ -229,10 +258,10 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         # ★ 方向3（resize 全量刷新）：终端尺寸变化（width/height 任一）置位，
         #   _render_frame 消费后重置渲染器 prev——resize 后全量重写而非增量 diff。
         self._resize_pending: bool = False
-        # 系统监控（CPU/MEM；每 2 秒刷新输入区顶部分隔线显示）
+        # 系统监控（CPU/MEM；每 sys_stats_interval 秒刷新输入区顶部分隔线显示）
         self._system_monitor = None
         self._last_sys_stats_time: float = 0.0
-        self._sys_stats_interval: float = 2.0
+        self._sys_stats_interval: float = self._config.sys_stats_interval
         # ★ React Ink render() options（官方 API 补齐）：
         #   - ``_debug``：调试模式（True 时每渲染帧输出统计到 stderr）
         #   - ``_exit_on_ctrl_c``：Ctrl+C 是否退出（True 时 render() 独立会话
@@ -436,13 +465,15 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   共用 _try_acquire_output_lock（同一 output lock）——避免 suspend
         #   期间同步渲染与外部输出竞争撕裂；locked=False（锁超时）时跳过
         #   并记 debug（弹窗显示延迟一帧可接受，与 _drain_queue 超时跳过一致）。
-        #   ★ P3-20 竞态窗口说明（review 方向）：``not self._render_running``
-        #   检查与同步渲染之间存在竞态窗口——render 线程可能恰在检查后启动
-        #   （start()/resume() 并发调用）→ 本帧同步渲染与线程渲染并行（双写
-        #   终端）。output lock 串行化实际写入（同一锁互斥），但存在双帧渲染
-        #   （同步帧 + 线程帧）顺序不确定性：同步帧内容与线程下一帧内容一致
-        #   （同一模型状态），后写帧覆盖先写帧，最终显示一致——可接受（已知
-        #   权衡，输出锁已消除撕裂主风险）。
+        #   ★ P3-20 竞态窗口说明（review 方向，2026-08-19 修正表述）：
+        #   ``not self._render_running`` 检查与同步渲染之间存在竞态窗口——
+        #   render 线程可能恰在检查后启动（start()/resume() 并发调用）→
+        #   本帧同步渲染与线程渲染并行。注意：渲染线程的 RENDER 阶段在
+        #   output lock **外**执行（InkRenderer 内部无锁），output lock 只
+        #   串行化「同步帧 + DRAIN 阶段」与「外部写入方」，**不能**阻止
+        #   同步帧与线程帧并发写 stream——已知权衡：双帧内容一致（同一
+        #   模型状态），后写覆盖先写，最终显示一致；彻底消除需独立渲染
+        #   互斥（见 _drain_queue P3-20 注释，未来方向）。
         if not self._render_running:
             with _try_acquire_output_lock(
                 name="ink_session.sync_render",
@@ -481,14 +512,18 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         ★ W5 加固（慢渲染自适应，2026-08-19）：固定 2s 超时在慢渲染场景
         （一帧 >1s，大量上文 clear+display 重放）下会过早降级（两帧 >2s →
         返回 False → 旧 router 残留 → 用户 Enter 仍被吞）。改为**分段等待 +
-        帧号进展续期**：每段 0.5s；段末检查 ``_frame_seq`` 是否推进——推进
-        （渲染线程活着，只是帧慢）则续期软超时继续等；无进展最多等满
-        ``timeout``；总时长硬上限 ``max(timeout, 10s)``（渲染线程挂起时不
-        死锁调用方）。
+        进展续期**：每段 0.5s；段末检查进展——**帧号推进 或 帧执行中
+        （``_frame_active``）**则续期软超时继续等；无进展最多等满
+        ``timeout``；总时长硬上限 ``max(timeout, _ROUTER_FLUSH_HARD_CEILING)``
+        （渲染线程真挂起时不死锁调用方）。
+
+        ★ 单帧耗时无上界（2026-08-19）：超长单帧执行期间帧号不推进（帧号
+        仅在帧完成时递增）——``_frame_active`` 信号保证「正在渲染」被视作
+        有进展（每帧执行多久都可以），不因慢帧误降级。
 
         Args:
-            timeout: 软超时（秒）——无帧进展时的最长等待；有进展时按段续期，
-                受硬上限（``max(timeout, 10)``）约束。
+            timeout: 软超时（秒）——无进展时的最长等待；有进展时按段续期，
+                受硬上限（``max(timeout, 60)``）约束。
 
         Returns:
             True — 目标帧已完成（新 router 已发布）；
@@ -511,7 +546,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._cmd_event.set()
         now = time.monotonic()
         soft_deadline = now + timeout
-        hard_deadline = now + max(timeout, 10.0)
+        hard_deadline = now + max(timeout, _ROUTER_FLUSH_HARD_CEILING)
         while True:
             limit = min(soft_deadline, hard_deadline)
             remain = limit - time.monotonic()
@@ -519,11 +554,13 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 break
             if ev.wait(min(0.5, remain)):
                 return True
-            # 段末检查帧号进展：推进 → 慢渲染场景续期软超时（硬上限内
-            # 继续等）；未推进 → 可能是超长单帧，按软超时继续分段等。
+            # 段末检查进展：帧号推进 或 帧执行中（超长单帧——帧号仅在帧
+            # 完成时递增，帧内执行多久都视作有进展）→ 慢渲染场景续期软
+            # 超时（硬上限内继续等）；无进展 → 可能是线程挂起，按软超时
+            # 继续分段等。
             with self._frame_seq_lock:
                 cur = self._frame_seq
-            if cur > base_seq:
+            if cur > base_seq or self._frame_active:
                 base_seq = cur
                 soft_deadline = time.monotonic() + timeout
         # 超时：移除 waiter（防列表增长；事件无人等待，唤醒无害但清理干净）
@@ -576,21 +613,97 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         """useApp().waitUntilRenderFlush：等待渲染 flush 的 awaitable。
 
         当前渲染模型为同步渲染线程处理命令队列——返回协程：等待队列排空
-        且无脏标记（渲染完成）后返回。队列持续生产时最多等待（渲染线程
-        停止则退出）。
+        且无脏标记（渲染完成）后返回。
+
+        ★ 单帧耗时无上界（2026-08-19）：原固定 5s 死线在慢渲染场景（超长
+        单帧 >5s，大量上文 markdown 重放）下会提前返回——调用方误以为渲染
+        已完成。改为自适应等待：
+          - 完成（队列排空 + 无脏标记 + **无帧执行中**——渲染线程时序为
+            DRAIN 取空队列 → 清 ``_dirty`` → ``_render_frame`` 执行，若只判
+            前两者会在帧执行中提前返回假阳性）或渲染线程停止 → 立即返回；
+          - 帧号推进 或 帧执行中（``_frame_active``）= 有进展 → 续期软超时
+            （``_RENDER_FLUSH_SOFT_TIMEOUT``，每帧执行多久都可以）；
+          - 无进展超软超时 / 达硬上限（``_RENDER_FLUSH_HARD_TIMEOUT``，
+            真挂起防护）→ 降级返回（记 warning，与 flush_input_router /
+            _join_render_thread 同族降级日志对齐）。
         """
         async def _waiter():
             import asyncio
             try:
                 import time as _t
-                deadline = _t.monotonic() + 5.0
-                while _t.monotonic() < deadline:
-                    if (self._cmd_queue.empty() and not self._dirty) or not self._render_running:
-                        break
+                soft_deadline = _t.monotonic() + _RENDER_FLUSH_SOFT_TIMEOUT
+                hard_deadline = _t.monotonic() + _RENDER_FLUSH_HARD_TIMEOUT
+                last_seq = self._frame_seq
+                while True:
+                    if (
+                        self._cmd_queue.empty()
+                        and not self._dirty
+                        and not self._frame_active
+                    ) or not self._render_running:
+                        return
+                    thread = self._render_thread
+                    if thread is None or not thread.is_alive():
+                        return
+                    now = _t.monotonic()
+                    if now >= min(soft_deadline, hard_deadline):
+                        reason = (
+                            "硬上限（渲染线程可能挂起）"
+                            if now >= hard_deadline
+                            else "无进展软超时"
+                        )
+                        _logger.warning(
+                            "wait_render_flush 降级返回（%s）：seq=%d queue_empty=%s "
+                            "dirty=%s frame_active=%s",
+                            reason, self._frame_seq,
+                            self._cmd_queue.empty(), self._dirty,
+                            self._frame_active,
+                        )
+                        return
                     await asyncio.sleep(0.01)
+                    with self._frame_seq_lock:
+                        cur = self._frame_seq
+                    if cur != last_seq or self._frame_active:
+                        last_seq = cur
+                        soft_deadline = _t.monotonic() + _RENDER_FLUSH_SOFT_TIMEOUT
             except Exception:
                 _logger.debug("wait_render_flush 异常", exc_info=True)
         return _waiter()
+
+    def _join_render_thread(self, *, hard_timeout: float | None = None) -> bool:
+        """自适应等待渲染线程退出（stop/suspend/resume 共用）。
+
+        ★ 单帧耗时无上界（2026-08-19）：原固定 join(timeout=2.0) 在渲染
+        线程执行超长单帧（>2s）时误判「卡住」→ 强制清理与仍在写 stream
+        的渲染线程并发（输出撕裂）/ resume 强启新线程（双线程双写终端）。
+        改为分段 join（每段 0.2s）：线程活着且未达硬上限就一直等——线程
+        正在执行慢帧（无论多久）终会退出；硬上限（真挂起，如 PTY 缓冲区
+        满 write 永久阻塞）触达时放弃并返回 False（调用方按既有降级语义
+        处理）。每段重读 ``self._render_thread``——崩溃恢复重启新线程
+        （BUG-T9）时自动跟随 join 新线程。
+
+        Args:
+            hard_timeout: 硬上限秒数；None 用 ``_JOIN_RENDER_HARD_TIMEOUT``。
+
+        Returns:
+            True — 线程已退出（或本就无线程）；
+            False — 达硬上限放弃（线程可能仍在运行）。
+        """
+        if hard_timeout is None:
+            hard_timeout = _JOIN_RENDER_HARD_TIMEOUT
+        deadline = time.monotonic() + hard_timeout
+        while True:
+            thread = self._render_thread
+            if thread is None or not thread.is_alive():
+                return True
+            thread.join(timeout=0.2)
+            if not thread.is_alive():
+                return True
+            if time.monotonic() >= deadline:
+                _logger.warning(
+                    "等待 render 线程退出超时（硬上限 %.0fs，版本=%d），放弃等待",
+                    hard_timeout, self._render_version,
+                )
+                return False
 
     def _suspend_terminal(self, callback=None):
         """useApp().suspendTerminal：终端挂起（近似）。
@@ -663,32 +776,19 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
 
     def stop(self) -> None:
         self._render_running = False
-        if self._render_thread is not None:
-            max_retries = 2
-            for attempt in range(max_retries):
-                # BUG-T9：崩溃恢复可能已重启新线程——每轮重新捕获最新线程/版本，
-                #   确保版本变化时仍能 join 到新线程（不提前返回）。
-                thread = self._render_thread
-                version = self._render_version
-                if thread is None:
-                    break
-                thread.join(timeout=2.0)
-                if not thread.is_alive():
-                    break
-                if self._render_version != version:
-                    # 崩溃恢复重启了新线程 → 继续下一轮 join 新线程
-                    self._render_running = False
-                    continue
-                # ★ P2 修复（review 方向）：join 超时但版本未变——不提前 break，
-                #   继续下一轮二次等待确认线程退出（渲染线程卡住时仍在写
-                #   stream，未确认退出即 reset/suspend 会造成输出撕裂竞态）。
-                continue
-            # 兜底：循环结束后线程仍存活 → 记 warning 并排空队列（不无限等待）
-            if self._render_thread is not None and self._render_thread.is_alive():
-                _logger.warning(
-                    "stop() 等待 render 线程超时（版本=%d），排空队列后退出",
-                    self._render_version,
-                )
+        # ★ 单帧耗时无上界（2026-08-19）：自适应 join——渲染线程正在执行
+        #   超长单帧（>2s 的 markdown 重放等）时不再按固定 2s 误判「卡住」
+        #   强制清理（与仍在写 stream 的线程并发 → 输出撕裂）。线程活着
+        #   就等到它退出（每帧执行多久都可以）；仅真挂起时硬上限放弃。
+        #   BUG-T9：崩溃恢复重启新线程——_join_render_thread 每段重读
+        #   self._render_thread，自动跟随 join 新线程。
+        joined = self._join_render_thread()
+        if not joined:
+            # 兜底：线程仍存活（真挂起）→ 记 warning 并排空队列（不无限等待）
+            _logger.warning(
+                "stop() 等待 render 线程超时（版本=%d），排空队列后退出",
+                self._render_version,
+            )
         # 重置渲染器状态（suspend/resume 路径：下次 start 全量重绘）。
         # ★ P2-4（review 方向）：join 超时（渲染线程仍存活）时**跳过渲染器
         #   suspend**——修复前超时后仍无条件执行 ``_ink_renderer.suspend()``
@@ -722,12 +822,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         （``_render_running=False`` / 线程退出）才丢弃兜底，避免无限等待。
         """
         if self._render_thread is None or not self._render_thread.is_alive():
-            while not self._cmd_queue.empty():
-                try:
-                    self._cmd_queue.get_nowait()
-                    self._cmd_queue.task_done()
-                except queue.Empty:
-                    break
+            self._drain_queue_safe()
             return
         # ★ P1-1（review 方向）：daemon=True——修复前 ``daemon=False`` 泄漏
         #   非 daemon 线程：flush 超时后 ``_drain_queue_safe(keep_content=True)``
@@ -736,26 +831,26 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   进程退出不等待本线程（渲染线程停止时 ``_drain_queue_safe`` 兜底
         #   已清理队列；线程随进程退出自然终止，无资源泄漏）。flush() 其余
         #   创建线程处（start/resume/崩溃恢复）均已 daemon=True，仅此一处遗漏。
-        task_done = threading.Thread(target=self._cmd_queue.join, daemon=True)
-        task_done.start()
-        task_done.join(timeout=timeout)
-        if task_done.is_alive():
+        drain_waiter = threading.Thread(target=self._cmd_queue.join, daemon=True)
+        drain_waiter.start()
+        drain_waiter.join(timeout=timeout)
+        if drain_waiter.is_alive():
             # ★ 修复（长任务思考/回答丢失）：超时后渲染线程存活则继续等待排空
             #   （每次 1s 轮询），仅当渲染线程停止（_render_running=False 或
             #   线程退出）才丢弃剩余命令兜底——避免超时即丢内容命令。
             while (
-                task_done.is_alive()
+                drain_waiter.is_alive()
                 and self._render_running
                 and self._render_thread is not None
                 and self._render_thread.is_alive()
             ):
-                task_done.join(timeout=1.0)
-            if task_done.is_alive():
+                drain_waiter.join(timeout=1.0)
+            if drain_waiter.is_alive():
                 # ★ 2026-08-15（短内容丢失修复）：flush 超时兜底丢弃时保留
                 #   内容命令（思考/回答/工具卡）——修复前超时即丢弃队列中
                 #   未消费的 reasoning/content，长任务/渲染暂停后短内容丢失。
                 self._drain_queue_safe(keep_content=True)
-                task_done.join(timeout=1.0)
+                drain_waiter.join(timeout=1.0)
 
     def suspend(self) -> None:
         """暂停渲染（供交互工具独占终端）。
@@ -772,22 +867,15 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         except Exception:
             _logger.debug("suspend flush 异常", exc_info=True)
         self._render_running = False
-        if self._render_thread is not None:
-            self._render_thread.join(timeout=2.0)
-            if self._render_thread.is_alive():
-                # ★ P2 修复（review 方向）：join 超时后检查 is_alive()——线程
-                #   仍存活时记 warning 并二次等待确认退出后再继续清理（防渲染
-                #   线程卡住仍在写 stream → 让出终端后输出撕裂竞态）。
-                _logger.warning(
-                    "suspend() 等待 render 线程超时（版本=%d），二次等待确认退出",
-                    self._render_version,
-                )
-                self._render_thread.join(timeout=2.0)
-                if self._render_thread.is_alive():
-                    _logger.warning(
-                        "suspend() render 线程二次等待仍存活（版本=%d），强制继续清理",
-                        self._render_version,
-                    )
+        # ★ 单帧耗时无上界（2026-08-19）：自适应 join（原固定 2s+2s——渲染
+        #   线程执行超长单帧时被误判卡住，强制清理与仍在写 stream 的线程
+        #   并发 → 让出终端后输出撕裂）。真挂起时硬上限放弃 + warning。
+        joined = self._join_render_thread()
+        if not joined:
+            _logger.warning(
+                "suspend() render 线程等待超时仍存活（版本=%d），强制继续清理",
+                self._render_version,
+            )
         self._ink_renderer.suspend()
         # ★ 2026-08-15（短内容丢失修复）：suspend 清空队列时**保留内容命令**
         #   （思考/回答/工具卡等）——模型在交互工具挂起期间输出的短内容命令
@@ -818,8 +906,11 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 "resume() 旧 render 线程仍存活（版本=%d），先等待其退出",
                 self._render_version,
             )
-            self._render_thread.join(timeout=2.0)
-            if self._render_thread.is_alive():
+            # ★ 单帧耗时无上界（2026-08-19）：自适应 join（原固定 2s——超长
+            #   单帧误判 → 强启新线程 → 双渲染线程并发双写终端）。真挂起时
+            #   硬上限放弃后才强制启动新线程。
+            joined = self._join_render_thread()
+            if not joined:
                 _logger.warning(
                     "resume() 旧 render 线程等待超时仍存活（版本=%d），强制启动新线程",
                     self._render_version,
@@ -1150,6 +1241,11 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             True — 本拍渲染（render_interval 已到期或 force）。
         """
         now = time.monotonic()
+        # ★ TOCTOU 说明（review 方向，已知权衡）：force 读-清两步非原子——
+        #   ``is_set()`` 与 ``clear()`` 之间并发 set 的 force 会被本次 clear
+        #   吞掉（该请求降级为下一 10Hz 拍渲染，延迟 ≤ render_interval 0.1s，
+        #   用户不可感知）。原子化需 Condition/锁，热路径成本不值——窗口内
+        #   丢失的 force 语义由 10Hz 全程渲染兜底。
         force = self._bottom_redraw_requested.is_set()
         self._bottom_redraw_requested.clear()
         if changed or force:

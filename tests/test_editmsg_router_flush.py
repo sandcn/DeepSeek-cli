@@ -65,6 +65,9 @@ class _SessionStub:
         self._bottom_redraw_requested = threading.Event()
         self._dirty = False
         self._cmd_event = threading.Event()
+        # ★ 帧执行标记（2026-08-19 单帧耗时无上界修复）：flush_input_router
+        #   进展续期信号之一（真实 InkSession 由 _render_frame 包装器维护）。
+        self._frame_active = False
 
     def request_bottom_redraw(self):
         pass
