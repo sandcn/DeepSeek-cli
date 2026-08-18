@@ -2,6 +2,8 @@
 
 子模块：
 - client_async.py —— httpx 异步客户端封装、连接恢复、SSE 流解析
+- errors.py      —— API 错误分类体系：语义化异常、统一重试判定、
+                    指数退避（含 Retry-After）、友好错误消息
 - model_async.py  —— call_model_async / call_model_sync_async 公开接口 + 重试逻辑
 - stream/         —— 流式输出处理、可中断异步迭代器
 - tokens.py      —— Token 启发式估算

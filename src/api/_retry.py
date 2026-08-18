@@ -7,8 +7,9 @@ import logging
 
 import httpx
 
-from .client_async import (
-    RateLimitError, APIError, _CONNECTION_ERRORS,
+from .errors import (
+    APIError, RateLimitError, CONNECTION_ERRORS as _CONNECTION_ERRORS,
+    is_retryable, compute_retry_delay, format_user_error,
 )
 from .interrupt_async import is_interrupted_async, wait_for_interrupt_async
 from ..config import MAX_RETRIES, RETRY_BASE_SEC
@@ -18,9 +19,13 @@ _logger = logging.getLogger(__name__)
 
 _MAX_PARSE_RETRIES = 1
 
-# 可重试的 HTTP 状态码（瞬时错误）：请求超时/速率限制/服务端过载/网关超时。
-# 其余（400/401/403/404/422 等）为永久错误，重试无意义，直接抛出。
-_RETRYABLE_HTTP_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+# 候选可重试异常：捕获后交由 is_retryable() 统一判定（连接错误 /
+# httpx 传输错误 / JSON 解析错误 / 超时 / 语义化 API 错误）
+_RETRY_EXCEPTIONS = _CONNECTION_ERRORS + (
+    httpx.HTTPStatusError, httpx.RequestError,
+    json.JSONDecodeError, TimeoutError, asyncio.TimeoutError,
+    RateLimitError, APIError,
+)
 
 
 async def retry_api_call_async(
@@ -52,7 +57,7 @@ async def retry_api_call_async(
             publish_output(f"\n{YELLOW}{msg}{RESET}", level="raw")
         # silent=True 且无 display 时：不输出
 
-    empty = ("", "(已中断，无内容)", {"input": 0, "output": 0}, [])
+    empty: tuple = ("", "(已中断，无内容)", {"input": 0, "output": 0}, [])
 
     effective_max_retries = override_max_retries if override_max_retries is not None else MAX_RETRIES
     effective_max_retries = max(effective_max_retries, 1)  # 至少尝试 1 次
@@ -71,39 +76,29 @@ async def retry_api_call_async(
         except KeyboardInterrupt:
             await _report("已中断生成（保留部分内容）")
             return empty
-        except _CONNECTION_ERRORS as e:
-            _logger.warning(
-                "连接错误 (尝试 %d/%d): %s", attempt, effective_max_retries, e, exc_info=True,
-            )
-            if attempt < effective_max_retries:
-                wait = fixed_delay_sec if fixed_delay_sec is not None else RETRY_BASE_SEC
-                await _report(f"连接错误 (第{attempt}次): {e}，{wait:.1f}秒后重试...")
-                if await wait_for_interrupt_async(wait):
-                    return ("", "(已中断)", {"input": 0, "output": 0}, [])
-            else:
-                await _report(f"连接错误 (已重试{effective_max_retries}次): {e}")
-                return ("", f"连接错误: {str(e)}", {"input": 0, "output": 0}, [])
-        except (
-            httpx.HTTPStatusError, httpx.RequestError,
-            json.JSONDecodeError, TimeoutError,
-            RateLimitError, APIError,
-        ) as e:
-            # APIError 仅在瞬时状态码（5xx/408/425/429）时重试；
-            # 永久性错误（400/401/403/404/422 等）重试无意义，直接抛出不重试。
-            if isinstance(e, APIError) and e.status_code not in _RETRYABLE_HTTP_STATUS:
-                _logger.warning("API 调用返回不可重试状态码 %d: %s", e.status_code, e)
+        except _RETRY_EXCEPTIONS as e:
+            # 统一重试判定：瞬时错误（连接错误/超时/429/5xx 等）重试；
+            # 永久错误（400/401/403/404/422 等）重试无意义，直接抛出。
+            if not is_retryable(e):
+                _logger.warning("API 调用返回不可重试错误: %s", e)
                 raise
+            category = "连接错误" if isinstance(e, _CONNECTION_ERRORS) else "API 调用失败"
             _logger.warning(
-                "API 调用失败 (尝试 %d/%d): %s", attempt, effective_max_retries, e, exc_info=True,
+                "%s (尝试 %d/%d): %s", category, attempt, effective_max_retries, e, exc_info=True,
             )
             if attempt < effective_max_retries:
-                wait = fixed_delay_sec if fixed_delay_sec is not None else RETRY_BASE_SEC
-                await _report(f"API 调用失败 (第{attempt}次): {e}，{wait:.1f}秒后重试...")
+                # 显式 fixed_delay_sec（含 SubAgent 的 0）优先；
+                # 否则指数退避，429 时优先尊重服务端 Retry-After
+                if fixed_delay_sec is not None:
+                    wait = max(fixed_delay_sec, 0.0)
+                else:
+                    wait = compute_retry_delay(attempt, RETRY_BASE_SEC, e)
+                await _report(f"{category} (第{attempt}次): {e}，{wait:.1f}秒后重试...")
                 if await wait_for_interrupt_async(wait):
                     return ("", "(已中断)", {"input": 0, "output": 0}, [])
             else:
-                await _report(f"API 调用失败 (已重试{effective_max_retries}次): {e}")
-                return ("", f"抱歉，API 调用出错: {str(e)}", {"input": 0, "output": 0}, [])
+                await _report(f"{category} (已重试{effective_max_retries}次): {e}")
+                return ("", format_user_error(e), {"input": 0, "output": 0}, [])
         except asyncio.CancelledError:
             await _report("已中断生成（保留部分内容）")
             raise

@@ -135,7 +135,10 @@ _NETWORK_ERROR_KEYWORDS: tuple[str, ...] = (
 def is_network_error(content: str | None, exc: BaseException | None = None) -> bool:
     """检测是否为网络错误。
 
-    支持两种检测策略（OR 组合）：
+    支持三种检测策略（OR 组合，按可靠性从高到低）：
+    0. 结构化异常识别：exc 为 src.api.errors 语义化 API 错误时，直接按
+       异常类型/重试属性判定（瞬时 API 错误视为网络错误；401/403 等永久
+       错误视为 False）——类型信息精确，不受错误文案变化影响
     1. 内容关键词匹配：在 content 字符串中搜索网络错误关键词
     2. 异常类型匹配：检查 exc 是否为网络相关异常类型
 
@@ -148,6 +151,20 @@ def is_network_error(content: str | None, exc: BaseException | None = None) -> b
     Returns:
         True 如果检测到网络错误，否则 False
     """
+    # ── 策略 0：结构化 API 错误异常识别（最可靠） ──
+    if exc is not None:
+        try:
+            from ..api.errors import APIError as _StructuredAPIError
+            from ..api.errors import CONNECTION_ERRORS as _StructuredConnErrors
+            from ..api.errors import is_retryable as _is_retryable
+        except ImportError:
+            _logger.debug("src.api.errors 不可用，跳过结构化异常识别")
+        else:
+            if isinstance(exc, _StructuredConnErrors):
+                return True
+            if isinstance(exc, _StructuredAPIError):
+                return _is_retryable(exc)
+
     # ── 策略 1：内容关键词匹配 ──
     if content:
         content_lower = content.lower()

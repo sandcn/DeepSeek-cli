@@ -25,6 +25,10 @@ from ..config import (
     HTTP_MAX_CONNECTIONS, HTTP_MAX_CONNECTIONS_PER_HOST, HTTP_KEEP_ALIVE_TIMEOUT,
     HTTP_ENABLE_POOL, HTTP_ENABLE_HTTP2, API_KEY,
 )
+from .errors import (  # noqa: F401  （re-export 保持既有导入路径兼容）
+    APIError, RateLimitError, classify_http_error, parse_retry_after,
+)
+from .errors import CONNECTION_ERRORS as _CONNECTION_ERRORS
 
 _logger = logging.getLogger(__name__)
 
@@ -116,33 +120,6 @@ async def reset_async_client() -> None:
 
 
 
-# ── 连接错误类型 ────────────────────────────────────────────
-
-_CONNECTION_ERRORS = (
-    ConnectionError,
-    httpx.ConnectError,
-    httpx.ConnectTimeout,
-    httpx.ReadTimeout,
-    httpx.WriteTimeout,
-    httpx.PoolTimeout,
-    httpx.RemoteProtocolError,
-    httpx.ReadError,
-    httpx.WriteError,
-)
-
-
-# ── 自定义异常 ──────────────────────────────────────────────
-
-class RateLimitError(Exception):
-    pass
-
-
-class APIError(Exception):
-    def __init__(self, status_code: int, message: str):
-        self.status_code = status_code
-        super().__init__(f"API error {status_code}: {message}")
-
-
 # ── 请求头 ──────────────────────────────────────────────────
 
 _api_key_warned = False
@@ -180,10 +157,16 @@ def _headers_anthropic() -> dict[str, str]:
 # ── 响应检查 ────────────────────────────────────────────────
 
 def _check_response(resp: httpx.Response) -> None:
-    if resp.status_code == 429:
-        raise RateLimitError(f"Rate limited: {resp.text[:500]}")
-    if resp.status_code != 200:
-        raise APIError(resp.status_code, resp.text[:500])
+    """非 200 响应统一转换为语义化异常（含 Retry-After 解析）。
+
+    - 429 → RateLimitError（携带服务端建议的等待秒数）
+    - 401/403 → AuthError；404 → NotFoundError；400/422 → InvalidRequestError
+    - 5xx/408/425 → ServerError；其余未知状态码 → APIError
+    """
+    if resp.status_code == 200:
+        return
+    retry_after = parse_retry_after(resp.headers.get("retry-after"))
+    raise classify_http_error(resp.status_code, resp.text[:500], retry_after=retry_after)
 
 
 def _has_finish_reason(chunk: dict) -> bool:
