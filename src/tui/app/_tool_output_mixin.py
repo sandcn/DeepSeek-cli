@@ -70,9 +70,22 @@ class _ToolOutputMixin:
             if existing is not None:
                 # 复用已开放 box：更新工具名/状态/detail + 标题行
                 # （live 渲染下一帧生效；开放 box 未提交，更新安全）
+                # ★ P3（review 2026-08-18）：复用路径检测**兜底空 box**
+                #   （``append_tool_output`` 未知 tool_id 兜底建的
+                #   ``open_tool_box(tool_id, "")``——原 tool_name 为空且无
+                #   主体输出）时重置 ``_tool_started_at``——兜底 box 的开始
+                #   时间是首个输出到达时间，后到的真实 ToolStartedEvent 才
+                #   是执行开始，耗时自真实开始起算（纯重复投递场景——
+                #   原本就有 tool_name——保持首次时间不变，防重复事件刷耗时）。
+                was_fallback_empty = (
+                    not existing.extra.get("tool_name")
+                    and len(existing.lines) <= 1
+                )
                 existing.extra["tool_name"] = tool_name
                 existing.extra["tool_status"] = "running"
                 existing.extra["tool_detail"] = detail
+                if was_fallback_empty:
+                    existing.extra["_tool_started_at"] = time.monotonic()
                 title = f"  \u00b7 {display}"
                 if detail:
                     title = f"  \u00b7 {display} \u00b7 {detail}"
@@ -368,6 +381,7 @@ class _ToolOutputMixin:
                 runs = list(top_line.runs)
                 # 标题行结构：[0]=状态图标, [1:]=标题内容
                 idx = 0
+                scan_failed = False
                 if not (runs and runs[0].text.strip() in ("\u25cf", "\u2714", "\u2716")):
                     # 防御：超窄宽度下标题被截断时按图标字符扫描定位
                     for i, r in enumerate(runs):
@@ -375,16 +389,24 @@ class _ToolOutputMixin:
                             idx = i
                             break
                     else:
-                        # ★ P2-5（review 修复）：扫描失败（标题被截断致图标
-                        #   字符丢失/结构异常）时**头部插入** icon 而非替换——
-                        #   替换 ``icon + runs[1:]`` 会丢弃标题首 run（内容
-                        #   丢失）；``icon + runs`` 保留全部内容（仅补状态）。
-                        from src.tui.ink import Line
-                        self._replace_committed_line(offset, Line(icon + runs))
-                        return
-                # ★ BUG-30：新建 Line 对象（不复用旧对象）+ 列表身份变化
+                        scan_failed = True
+                # ★ P1（review 2026-08-18）：扫描失败分支**不得 return**——
+                #   修复前此处 ``return`` 跳过后续 ``block.closed = True``、
+                #   冻结/缓存释放与 ``commit_block``：该块永不闭合 → 连续
+                #   提交窗口守卫（committed_count 卡在未闭合块）被永久卡住 →
+                #   其后所有块永不进 committed_lines（全部走 live 渲染受 64 行
+                #   截断），且缓存永不释放。改为 ``scan_failed`` 标志分支，
+                #   仅跳过图标替换方式，关闭主流程照常继续。
                 from src.tui.ink import Line
-                self._replace_committed_line(offset, Line(runs[:idx] + icon + runs[idx + 1:]))
+                if scan_failed:
+                    # ★ P2-5（review 修复）：扫描失败（标题被截断致图标
+                    #   字符丢失/结构异常）时**头部插入** icon 而非替换——
+                    #   替换 ``icon + runs[1:]`` 会丢弃标题首 run（内容
+                    #   丢失）；``icon + runs`` 保留全部内容（仅补状态）。
+                    self._replace_committed_line(offset, Line(icon + runs))
+                else:
+                    # ★ BUG-30：新建 Line 对象（不复用旧对象）+ 列表身份变化
+                    self._replace_committed_line(offset, Line(runs[:idx] + icon + runs[idx + 1:]))
 
         block.closed = True
         # ★ 方向4（增量提交协同）：冻结仅**未提交部分**（已提交行在

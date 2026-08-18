@@ -123,6 +123,17 @@ def ListView(props: dict) -> Element:
     offset_ref = use_ref(offset)
     cursor_ref.current = cursor
     offset_ref.current = offset
+    # ★ P3（review 2026-08-18，受控模式同批连续导航）：外部受控 cursor prop
+    #   变化（新渲染到达）时同步导航基准 ref——修复前 ``_handle`` 基准固定
+    #   读 ``cursor_prop``：外部受控值经 on_navigate 写回后需下一渲染帧才
+    #   生效，同一输入批内第二次导航仍从旧基准计算（净移动 1 行）。现基准
+    #   统一读 ``cursor_ref.current``（``_move`` 已同步推进），渲染期检测
+    #   prop 变化才重置 ref（外部直接改值场景保持既有语义）。
+    last_ctrl_ref = use_ref(None)
+    if controlled:
+        if cursor_prop != last_ctrl_ref.current:
+            cursor_ref.current = cursor_prop
+            last_ctrl_ref.current = cursor_prop
 
     def _move(new: int, base: int) -> bool:
         """内部移动光标（跳过不可选项）；返回是否实际移动。
@@ -181,9 +192,11 @@ def ListView(props: dict) -> Element:
     def _handle(event) -> bool:
         if not focus or total == 0:
             return False
-        # ★ 受控模式（方案B）：导航基准用 cursor_prop（外部值），否则内部
-        #   state——修复受控模式导航基于陈旧内部 state（初始 0）而非受控值。
-        base_cur = cursor_prop if controlled else cursor_ref.current
+        # ★ 受控/非受控统一基准：``cursor_ref.current``（P3 review 2026-08-18）
+        #   ——受控 prop 变化经渲染期同步块写入 ref；同批连续导航 ref 保持
+        #   ``_move`` 推进值（修复前受控模式恒读 prop，同批第二次导航从旧
+        #   基准计算净移动 1 行）。
+        base_cur = cursor_ref.current
         cur = _clamp_index(base_cur, total)
         cur_offset = offset_ref.current
         moved = False

@@ -415,6 +415,21 @@ class InputIO:
         """
         # 批量读取剩余字节（突发输入）——有则无需等待，直接作为粘贴读全部
         extra = self.drain_pending()
+        # ★ P2（review 2026-08-18）：短突发降级——渲染循环 10Hz 轮询下，
+        #   同帧快速连击的 1-2 个 ASCII 可打印字符也会批量进 pending；
+        #   原实现 pending 非空即判「粘贴」，快速连击被误判（usePaste 钩子
+        #   存在时整段消费致输入丢失；单字符语义 handler 收到 char="ab"）。
+        #   判定：extra ≤2 字节且全部为 ASCII 可打印（0x20-0x7E，无控制码/
+        #   无多字节高位字节）→ 非粘贴，回写 pending 交由解析器逐字节分发，
+        #   仅返回首字符（与下方 ESC 回写分支同模式）。粘贴/IME 上屏（多
+        #   字节或更长突发）不受影响；2 字符纯 ASCII 粘贴被降级为逐字符
+        #   输入，语义等价（无实质危害）。
+        if extra and len(extra) <= 2 and all(0x20 <= b < 0x7F for b in extra):
+            # 与单字符非粘贴路径对齐：清空跨调用残留的截断 UTF-8 尾部
+            # （粘贴边界结束——上一粘贴的 partial 不与本次键入混淆）。
+            self._paste_partial = b""
+            self.prepend_pending(extra)
+            return first_chars
         if not extra:
             # 单字符：短窗口确认是否还有后续（打字 1ms 无感知；粘贴可捕捉）
             try:

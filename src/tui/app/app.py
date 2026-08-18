@@ -224,6 +224,10 @@ def _ParseLine(props) -> object:
         # ★ BUG-40（review 方向）：仅替换**行首固定前缀位**（前导空格后的
         #   第一个 `~`）——修复前 ``text.replace("~", sp, 1)`` 替换首个 run 内
         #   **第一个** `~`，工具名/参数含 `~`（如 ``~/proj``）时替换错误字符。
+        # ★ P3（review 2026-08-18）：``first_text`` 在首个文本 run 处理后
+        #   **无条件复位**——修复前仅匹配 ``~`` 前缀时复位，首 run 不匹配
+        #   （结构变化）时标志保持 True，后续 run 行中的 ``~``（如 ``~/proj``
+        #   路径）仍可能被误替换为 spinner（防御缺口，当前单 run 结构不可达）。
         if first_text:
             stripped = text.lstrip(" ")
             lead = len(text) - len(stripped)
@@ -235,7 +239,7 @@ def _ParseLine(props) -> object:
                     runs.append(StyledRun(text[:lead], st))
                 runs.append(StyledRun(sp, Style(fg=sp_glow)))
                 text = stripped[1:]
-                first_text = False
+            first_text = False
         runs.append(StyledRun(text, st))
     # ★ 窄屏防溢出：解析进度行截断至终端宽度（不拆 CJK）——修复前多工具
     #   并行解析行（``  ~ tool1, tool2 ... 123t 12.3s``）在窄终端被自动换行

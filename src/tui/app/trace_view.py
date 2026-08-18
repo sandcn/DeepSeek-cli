@@ -1050,8 +1050,12 @@ def _records_index_of_row(rows: list, row_idx: int) -> int:
     return row_to_rec[row_idx]
 
 
-def _ledger_renderer(rows: list, left_w: int, records: list, model):
+def _ledger_renderer(rows: list, left_w: int):
     """台账行渲染函数（ListView renderItem 三参签名）。
+
+    ★ P3（review 2026-08-18）：删除未使用的 ``records``/``model`` 死参数
+      ——渲染仅消费 rows/left_w（分隔行编号经 ``_rows_index`` 查表），
+      死参数误导后续维护（调用点同步收紧签名）。
 
     items 为 ``rows``（TraceRecord 或 None 分隔行）：
       - 分隔行（None）→ 轮次分隔行 TEXT（``── 轮次 N ──``）；
@@ -1281,7 +1285,7 @@ def TraceView(props) -> object:
         "height": vh,
         "width": left_w,
         "cursor": sel_row if row_count else 0,
-        "renderItem": _ledger_renderer(rows, left_w, records, model),
+        "renderItem": _ledger_renderer(rows, left_w),
         "onNavigate": _on_navigate,
         "focus": bool(getattr(model, "trace_open", False)),
     })

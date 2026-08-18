@@ -147,6 +147,13 @@ class _SessionFrameMixin:
                             renderer.set_width(width)
                         except Exception:
                             _logger.debug("set_width 传播异常", exc_info=True)
+                # ★ P3（review 2026-08-18）：同步向 InkRenderer 传播宽度
+                #   （set_width）——place_cursor 列上限防御钳制需要终端宽度
+                #   （与下方 set_height 传播同模式；幂等，宽度未变不触发）。
+                try:
+                    self._ink_renderer.set_width(width)
+                except Exception:
+                    _logger.debug("InkRenderer set_width 传播异常", exc_info=True)
                 self._last_render_width = width
                 self._resize_pending = True
                 width_changed = True

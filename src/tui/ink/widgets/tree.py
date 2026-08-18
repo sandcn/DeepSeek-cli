@@ -249,12 +249,17 @@ def Tree(props: dict) -> Element:
             if cur > 0:
                 cursor_ref.current = cur - 1
                 set_cursor(cursor_ref.current)
-            return True
+                return True
+            # ★ P3（review 2026-08-18）：首项按上键无移动——返回 False 放行
+            #   （与 ListView/RadioList/Menu/SelectInput「无效移动不消费」
+            #   契约一致；Tree 嵌套可滚动父容器时边界导航放行父级滚动）。
+            return False
         if event.kind == "arrow_down":
             if cur < len(cur_vis) - 1:
                 cursor_ref.current = cur + 1
                 set_cursor(cursor_ref.current)
-            return True
+                return True
+            return False  # 末项按下键无移动——放行（同上）
         # ★ P3（review）：``event.kind == "space"`` 为死分支（InputParser 从不
         #   产生 kind=="space"，空格为 ``kind=="char", char==" "``）——删除。
         if (event.kind == "char" and event.char == " ") or event.kind == "enter":

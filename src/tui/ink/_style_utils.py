@@ -22,12 +22,15 @@ def _parse_color(value):
     if isinstance(value, int):
         return value
     if isinstance(value, str):
+        # ★ P3（review 2026-08-18）：键全小写——修复前键含 "brightBlack" 等
+        #   混合大小写而查找用 ``value.lower()``，bright* 系列永不命中
+        #   （静默失效回退默认色）。键与查找统一小写。
         named = {
             "black": 0, "red": 1, "green": 2, "yellow": 3, "blue": 4,
-            "magenta": 5, "cyan": 6, "white": 7, "brightBlack": 8,
-            "gray": 8, "brightRed": 9, "brightGreen": 10, "brightYellow": 11,
-            "brightBlue": 12, "brightMagenta": 13, "brightCyan": 14,
-            "brightWhite": 15, "grey": 8,
+            "magenta": 5, "cyan": 6, "white": 7, "brightblack": 8,
+            "gray": 8, "brightred": 9, "brightgreen": 10, "brightyellow": 11,
+            "brightblue": 12, "brightmagenta": 13, "brightcyan": 14,
+            "brightwhite": 15, "grey": 8,
         }
         return named.get(value.lower())
     return None

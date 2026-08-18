@@ -88,8 +88,13 @@ def Tabs(props: dict) -> Element:
     default_key = props.get("defaultActiveKey")
     onChange = props.get("onChange")
     focus = bool(props.get("focus", True))
-    active_style = props.get("activeStyle") or _TAB_ACTIVE
-    inactive_style = props.get("inactiveStyle") or _TAB_INACTIVE
+    # ★ P3（review 2026-08-18）：``is not None`` 判断——修复前 ``or`` 把显式
+    #   空 Style()（falsy）替换为默认样式（与其他控件契约一致；
+    #   activeStyle/inactiveStyle 两处）。
+    active_style_prop = props.get("activeStyle")
+    active_style = active_style_prop if active_style_prop is not None else _TAB_ACTIVE
+    inactive_style_prop = props.get("inactiveStyle")
+    inactive_style = inactive_style_prop if inactive_style_prop is not None else _TAB_INACTIVE
     show_marks = bool(props.get("showMarks", True))
     try:
         gap = max(0, int(props.get("gap", 2)))

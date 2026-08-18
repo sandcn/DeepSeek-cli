@@ -200,15 +200,15 @@ def CodeBlock(props: dict) -> Element:
         if show_lines:
             num_text = f"{i + 1:>{num_w}}"
             code_runs.append(h(TEXT, {"children": num_text, "style": Style(fg=240)}))
-            code_runs.append(h(TEXT, {"children": "\u2502 ", "style": border}))
+            code_runs.append(h(TEXT, {"children": chars[5] + " ", "style": border}))
         else:
-            code_runs.append(h(TEXT, {"children": "\u2502 ", "style": border}))
+            code_runs.append(h(TEXT, {"children": chars[5] + " ", "style": border}))
         if highlight_style is not None:
             code_runs.append(h(TEXT, {"children": content, "style": highlight_style}))
         else:
             code_runs.append(h(TEXT, {"children": content}))
         # 右侧边框（无行号时补右侧；有行号时行号栏已占左侧，右侧补竖线）
-        code_runs.append(h(TEXT, {"children": " \u2502", "style": border}))
+        code_runs.append(h(TEXT, {"children": " " + chars[5], "style": border}))
         children.append(h(Row, None, code_runs))
     # ── 底边框 ──
     children.append(

@@ -15,10 +15,14 @@
 
 from __future__ import annotations
 
+import logging
+
 from ..element import BOX, TEXT, Element, h
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_children 原本地定义（与
 #   focus/_panel 逐字重复）——收敛至 _widget_common 单一真源。
 from ._widget_common import _children
+
+_logger = logging.getLogger(__name__)
 
 __all__ = [
     "Row", "Column", "Box", "Text", "Flex", "Spacer",
@@ -222,6 +226,13 @@ def ZStack(props: dict) -> Element:
     ``position="relative"`` 作为定位基准。Z 顺序 = 元素声明顺序（后者绘制
     在上，与树遍历 paint 顺序一致）。
 
+    ★ P2（review 2026-08-18，契约声明）：absolute 子节点被布局引擎从正常
+    流剔除 → 容器**无显式 ``height`` 时塌缩为 0 行**（absolute 子节点仍被
+    绘制，可能与后续兄弟内容重叠）。因此使用本容器**必须显式指定
+    ``width``/``height``**（或由父容器约束撑开）；缺省显式尺寸时记 debug
+    日志提示（防静默塌缩不可排查）。后续如需自动尺寸，须在布局引擎增加
+    absolute 子节点探针测量（fill=False measure pass），不在控件层模拟。
+
     Props:
         children: 子元素（Element 被包装为 absolute；纯字符串转为 TEXT）。
     """
@@ -239,4 +250,9 @@ def ZStack(props: dict) -> Element:
     p = dict(props)
     p.pop("children", None)
     p["position"] = "relative"
+    if wrapped and p.get("height") is None:
+        _logger.debug(
+            "ZStack 无显式 height：absolute 子节点不入流，容器塌缩为 0 行"
+            "（子节点仍绘制，可能与后续内容重叠）——请显式指定 height",
+        )
     return h(BOX, p, *wrapped)

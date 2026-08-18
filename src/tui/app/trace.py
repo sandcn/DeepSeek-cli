@@ -268,7 +268,14 @@ def _param_node(name: str, pinfo: dict, is_required: bool) -> list:
     （minimum/maximum/minLength/maxLength/format/pattern——schema 常见
     约束键，防御忽略未知键）。参数名 label 追加 `` *`` 必需标记（对齐
     表单必填语义，一眼识别必需参数）。
+
+    ★ P2（review 2026-08-18）：``pinfo`` 非 dict（畸形/自定义工具 schema
+    的 properties 值为 str/int 等）时防御归一为空 dict——修复前
+    ``pinfo.get`` 抛 AttributeError 经 ``build_tools_params_tree`` 无 try
+    包裹直达渲染线程（触发崩溃恢复，累计后渲染永久终止）。
     """
+    if not isinstance(pinfo, dict):
+        pinfo = {}
     children: list = []
     ptype = pinfo.get("type", "")
     if ptype:
@@ -346,22 +353,29 @@ def _block_plain_lines(block) -> list:
     转换**新增行**（既有行复用），避免每帧全量遍历 O(n²)；行数倒退 / lines
     引用变化（非 append-only 异常）→ 全量重建。返回共享列表（调用方只读，
     与 ``_block_styled_rows`` 共享 rows 列表同模式）。
+    ★ P3（review 2026-08-18，缓存键完整性）：键补工具卡标题指纹
+    （``tool_name``/``tool_detail``）——``open_tool_box`` 复用路径会**原地
+    替换** ``lines[0]`` 标题行（同长、id 不变），仅凭 ``(id(lines), len)``
+    无法感知（对齐 toolcard ``_frame_key`` 的 BUG-71 做法）；非 tool 块
+    extra 无这些键 → ``(None, None)`` 稳定原子，缓存行为不变。
     """
     blines = getattr(block, "lines", None) or []
+    extra = getattr(block, "extra", None) or {}
+    tkey = (extra.get("tool_name"), extra.get("tool_detail"))
     cache = getattr(block, "_plain_lines_cache", None)
     if cache is not None:
-        ckey, cout, ccount = cache
-        if ckey == id(blines) and len(blines) >= ccount:
+        ckey, ctitle, cout, ccount = cache
+        if ckey == id(blines) and ctitle == tkey and len(blines) >= ccount:
             for line in blines[ccount:]:
                 plain = getattr(line, "plain", None)
                 cout.append(plain if plain is not None else str(line))
-            block._plain_lines_cache = (id(blines), cout, len(blines))
+            block._plain_lines_cache = (id(blines), tkey, cout, len(blines))
             return cout
     out: list = []
     for line in blines:
         plain = getattr(line, "plain", None)
         out.append(plain if plain is not None else str(line))
-    block._plain_lines_cache = (id(blines), out, len(blines))
+    block._plain_lines_cache = (id(blines), tkey, out, len(blines))
     return out
 
 
@@ -669,7 +683,14 @@ def _live_fingerprint(model) -> tuple:
             continue
         extra = getattr(box, "extra", None) or {}
         lines = getattr(box, "lines", None) or []
-        fp.extend((key, extra.get("tool_status", ""), len(lines)))
+        # ★ P3（review 2026-08-18，缓存键完整性）：补 ``tool_name``/
+        #   ``tool_detail`` 原子——``open_tool_box`` 复用路径原地替换标题行
+        #   （同长、id 不变），仅凭行数无法感知工具名补全（如兜底 box 的
+        #   空工具名 → 后到 start 补全 Bash），台账 running 记录摘要陈旧。
+        fp.extend((
+            key, extra.get("tool_status", ""), len(lines),
+            extra.get("tool_name") or "", extra.get("tool_detail") or "",
+        ))
     return tuple(fp)
 
 

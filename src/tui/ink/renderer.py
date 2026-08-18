@@ -98,6 +98,10 @@ class InkRenderer:
         self._cursor_row: int = 0
         # 终端屏幕高度（行）；0 = 未知/无限（测试用，文档坐标即屏幕坐标）
         self._height: int = int(height) if height else 0
+        # ★ P3（review 2026-08-18）：终端屏幕宽度（列）；0 = 未知（测试用，
+        #   place_cursor 列上限不钳制）。set_width 由 session 渲染帧传播
+        #   （与 set_height 同模式，宽度变化时同步）。
+        self._width: int = 0
         # ★ 物理缓冲行数（用户需求「除 resize 外均增量」）：
         #   - ``_write_full``（首帧/reset(full=True) 后） = doc_h（无末尾空行，
         #     最后一行不写 \n）；★ 无末尾空行模型（2026-08-15）；
@@ -148,6 +152,18 @@ class InkRenderer:
         self._height = int(height) if height else 0
         if self._height > 0:
             self._cursor_row = max(1, min(self._cursor_row, self._height))
+
+    def set_width(self, width: int) -> None:
+        """设置终端屏幕宽度（resize 时更新）。
+
+        ★ P3（review 2026-08-18）：为 ``place_cursor`` 列上限提供渲染器内
+        防御——修复前列上限（``min(col, width)``）完全依赖调用方钳制
+        （``_cursor.position_cursor`` 已钳），未来新增直接调用方遗漏钳制时
+        ``cursor_forward`` 输出越列 ANSI（光标停在 wrap 边界，pyte/Termux
+        等终端行为不可预期）。宽度 0/未知（缺省）时不钳制，保持既有行为
+        （测试用文档坐标模式零回归）。
+        """
+        self._width = int(width) if width else 0
 
     def _screen_offset(self, doc_h: int) -> int:
         """文档高于屏幕时被滚出可见区上方的行数（屏幕坐标偏移）。
@@ -1107,10 +1123,15 @@ class InkRenderer:
         # ★ P3-1（review 方向）：col 防御钳制下限——修复前对 col 无钳制，
         #   col<=0 时 ``cursor_forward(col-1)`` 输出非法 ANSI（``\033[0C`` /
         #   负数列）污染终端。钳制 ``col >= 1`` 保证归位后至少原地（无前进
-        #   序列）。上限钳制（``min(col, width)``）渲染器无法实现——本类
-        #   无终端宽度状态（仅高度），列上限由调用方负责（``_cursor.
-        #   position_cursor`` 已 ``min(..., width)`` 钳到终端宽度）。
+        #   序列）。
+        #   ★ P3（review 2026-08-18）：col 防御钳制上限——``set_width`` 传播
+        #   终端宽度后渲染器内钳 ``col <= width``，未来直接调用方遗漏钳制
+        #   时光标不越出终端右边界（宽度未知（0）时不钳制，既有行为不变；
+        #   ``_cursor.position_cursor`` 调用方的 ``min(..., width)`` 钳制
+        #   幂等保留）。
         col = max(1, col)
+        if self._width > 0:
+            col = min(col, self._width)
         doc_h = self._prev.height if self._prev is not None else row
         # ★ 用 `_effective_offset`（含物理缓冲漂移，可为负）而非 `_screen_offset`
         #   （max(0,...)）——漂移时文档物理位置可能偏下，max 偏移会把光标放偏上。

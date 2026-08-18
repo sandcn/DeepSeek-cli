@@ -322,9 +322,13 @@ class SubAgentPanelController:
             self._active = True
 
     def stop(self, clear_panel: bool = True) -> None:
-        if not self._active:
-            return
+        # ★ P3（review 2026-08-18）：``_active`` 检查移入 ``_active_lock``
+        #   临界区——修复前 check-then-act 在锁外，与 ``ensure_active()`` 并发
+        #   时存在竞态窗口（最坏情形重复执行幂等清理，无正确性损害；移入锁内
+        #   消除窗口，与 ensure_active 的锁内检查风格对齐）。
         with self._active_lock:
+            if not self._active:
+                return
             # ★ 2026-08-18（后台 subagent）：活跃引用计数 -1——仅当全部活跃方
             #   都 stop 后（refs==0）才真正清理面板。修复前后台 subagent
             #   独立执行完毕即 stop：并发时先完成者清空面板/取消订阅，破坏

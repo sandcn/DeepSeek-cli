@@ -656,18 +656,32 @@ def InputArea(props: dict) -> object:
     #   起始时间（fiber._placeholder_fade_key）。组件化后 fiber 为临时对象，
     #   渐显 key 若不持久，use_memo 跨桶重算时渐显永远停在起点色。
     fade_ref = use_ref({})
+    # ★ P2（review 2026-08-18）：外层 deps 时间桶对齐 _build_lines 的 fading
+    #   判定——渐显期（fade_key 起始后 elapsed < fade_duration）同样用 0.1s
+    #   桶驱动 use_memo 重算。修复前仅 status_active 用 0.1s 桶，空闲渐显期
+    #   外层 0.25s 桶粒度重算 → 内层 0.1s 桶形同虚设，占位符渐显以 ~3 个
+    #   粗糙步进呈现（注释声称对齐与实现不符）。fade_duration 惰性读取
+    #   TuiConfig（与 _build_lines/_placeholder_fade_color 一致）。
+    fade_key = fade_ref.current.get("_placeholder_fade_key")
+    fading = False
+    if fade_key is not None:
+        try:
+            fade_duration = _fx._default_fx_params()[0]
+            fading = fade_duration > 0 and (now - fade_key[1]) < fade_duration
+        except (TypeError, IndexError, ValueError):
+            fading = False
     # ★ deps 直接传原子值元组（不可再包一层——use_memo 内部 list(deps) 后
     #   逐项 _object_is：嵌套 tuple 按 is 引用比较恒 miss → 缓存永远失效）。
     children = use_memo(
         lambda: _input_elements(props, width, now, fade_ref.current),
-        _input_snap_key(props, width, now),
+        _input_snap_key(props, width, now, fading),
     )
     # ★ key 保留传入值（缺省 "input-area"）——多实例/测试 fiber 替换检测。
     key = props.get("key", "input-area")
     return h(Column, {**props, "dataInputArea": True, "key": key}, children)
 
 
-def _input_snap_key(props: dict, width: int, now: float):
+def _input_snap_key(props: dict, width: int, now: float, fading: bool = False):
     """InputArea use_memo 依赖（纯原子值，逐项 Object.is 值比较）。
 
     use_memo deps 逐项 ``_object_is``（React Object.is：int/bool/str 按值
@@ -678,12 +692,18 @@ def _input_snap_key(props: dict, width: int, now: float):
     指纹（两个不同 query hash 与 len 均相同时错误命中缓存，搜索覆盖行显示
     陈旧查询）；``_object_is`` 对 str 按值比较已支持，指纹无必要。嵌套
     tuple 每帧新建会 is miss，已展开为原子值。时间桶与 _build_lines 对齐
-    （status_active 0.1s 桶 / 空闲 0.25s 桶）。
+    （status_active **或 fading 渐显期** 0.1s 桶 / 空闲 0.25s 桶——P2 review
+    2026-08-18：fading 由 InputArea 从持久 fade_state 读取传入，对齐内层
+    ``status_active or fading`` 判定）。
 
     ★ 性能（PERF-24）：props.get 去重——history_search 经局部变量一次提取
     （修复前逐字段 ``props.get("history_search")`` 调用 8 次；空值快路径
     直接返回常量元组，免重复 dict 查找 + 字段求值）。text 同样一次提取
     （修复前 ``props.get("text")`` 调用 3 次）。
+
+    Args:
+        fading: 占位符渐显期标志（InputArea 从 fade_ref 读取 fade_key 判定）；
+            缺省 False 保持既有调用方兼容。
     """
     text = props.get("text")
     text_str = "" if text is None else str(text)
@@ -729,8 +749,9 @@ def _input_snap_key(props: dict, width: int, now: float):
         id(getattr(search, "matches", None)) if search is not None else -1,
         len(getattr(search, "matches", None) or []) if search is not None else 0,
         getattr(search, "index", -1) if search is not None else -1,
-        # 时间桶
-        int(now / 0.1) if status_active else int(now / 0.25),
+        # 时间桶（★ P2 review 2026-08-18：fading 渐显期同样 0.1s 桶——
+        #   对齐 _build_lines 内层 ``status_active or fading`` 判定）
+        int(now / 0.1) if (status_active or fading) else int(now / 0.25),
     )
 
 

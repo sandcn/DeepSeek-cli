@@ -269,12 +269,16 @@ def TraceToolsView(props) -> object:
     name, props_map, required, description = (
         schemas[sel] if schemas else ("", {}, [], "")
     )
+    # ★ P2（review 2026-08-18）：deps 展平原子值——修复前 ``tuple(required or [])``
+    #   每帧新建嵌套元组，``_hooks_core._object_is`` 对 tuple 按 is 引用比较恒
+    #   False → 右栏检查器每帧全量重建（与 trace.py 各指纹模块「展平原子值」
+    #   契约相悖）。required 为参数名 str 列表 → join 单一 str（值比较稳定）。
     right_children = use_memo(
         lambda: _inspector_children(
             name, props_map, required, description, right_w, vh,
         ),
-        (name, len(props_map or {}), tuple(required or []), description,
-         right_w, vh),
+        (name, len(props_map or {}), ";".join(map(str, required or [])),
+         description, right_w, vh),
     )
 
     return h(Column, None, [

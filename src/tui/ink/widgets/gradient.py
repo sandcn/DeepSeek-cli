@@ -51,8 +51,17 @@ def _gradient_runs(text: str, colors) -> list:
         return [StyledRun(text, Style(fg=stops[0]))]
     seg = len(stops) - 1
     runs = []
-    for i, ch in enumerate(text):
-        t = i / (n - 1)
+    # ★ P3（review 2026-08-18）：按**累计显示宽度**归一化渐变进度——修复前
+    #   按字符索引 ``i/(n-1)``，CJK（宽 2）/ASCII（宽 1）混排文本的渐变
+    #   进度与显示列位置不成比例（视觉上色偏移）；纯 ASCII/纯 CJK 不受
+    #   影响。t = 该字符起始显示列 / 全文显示宽（末字符 t=1 收敛）。
+    from src.tui._width import wcswidth_simple
+    total_w = wcswidth_simple(text)
+    acc_w = 0
+    for ch in text:
+        cw = wcswidth_simple(ch)
+        t = (acc_w / (total_w - cw)) if (total_w - cw) > 0 else 0.0
+        acc_w += cw
         pos = t * seg
         idx = int(pos)
         if idx >= seg:
