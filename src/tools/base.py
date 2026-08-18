@@ -161,6 +161,38 @@ class Func(abc.ABC):
             _logger.debug("_publish_tool_text 失败")
 
     @staticmethod
+    def _publish_tool_notice(text: str, tool_id: str = "") -> None:
+        """将工具通知（警告/提示）以「▎通知」块发布（所有工具通用）。
+
+        与 ``_publish_tool_text``（工具卡内输出）互补——通知类文本经
+        ``ToolNoticeEvent`` → ``NotificationCmd`` 上屏为通知块：
+        ``▎通知`` 角色头 + ``  │ + 文本`` 行，与 Ctrl+B 空模式切换通知
+        （``+ 主 Agent 已进入空模式``）同款显示。
+
+        Args:
+            text: 通知文本（纯文本；空文本跳过。``+ `` 前缀由本方法
+                统一添加，调用方无需拼接）。
+            tool_id: 可选工具调用 ID。为空时从 contextvar（当前工具上下文）
+                解析归属；仍为空回退 "assistant"（无归属，dispatcher 过滤）。
+        """
+        text = str(text or "").rstrip("\n")
+        if not text:
+            return
+        if not text.startswith("+ "):
+            text = f"+ {text}"
+        from ..tui.events.event_types import ToolNoticeEvent
+        from ..tui.events.publish import emit
+        from ..core.internal.agent._tool_context import get_current_tool_id
+        try:
+            resolved = tool_id or get_current_tool_id() or "assistant"
+            emit(ToolNoticeEvent(
+                label=resolved, tool_id=resolved, text=text, source="agent",
+            ))
+        except Exception:
+            _logger = logging.getLogger(__name__)
+            _logger.debug("_publish_tool_notice 失败")
+
+    @staticmethod
     def _print_operation(description: str) -> None:
         """打印操作描述到终端（通用格式）"""
         from ..core.constants import DIM, RESET

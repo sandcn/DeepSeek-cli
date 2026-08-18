@@ -91,11 +91,11 @@ class ReadFileFunc(Func):
         try:
             n = int(value)
             if n < 1:
-                Func._publish_tool_text(f"警告：{name} 必须 >= 1，已自动调整为 1")
+                Func._publish_tool_notice(f"警告：{name} 必须 >= 1，已自动调整为 1")
                 return 1
             return n
         except (ValueError, TypeError):
-            Func._publish_tool_text(f"警告：{name} 应为整数，收到 {value}，已忽略该参数")
+            Func._publish_tool_notice(f"警告：{name} 应为整数，收到 {value}，已忽略该参数")
             return None
 
     @classmethod
@@ -114,9 +114,11 @@ class ReadFileFunc(Func):
         start_line = cls._validate_line_number(start_line, "start_line")
         end_line = cls._validate_line_number(end_line, "end_line")
 
-        # 如果两者都提供且 start_line > end_line，交换并警告
+        # 如果两者都提供且 start_line > end_line，交换并警告（▎通知 块）
         if start_line is not None and end_line is not None and start_line > end_line:
-            Func._publish_tool_text(f"警告：start_line ({start_line}) 大于 end_line ({end_line})，已自动交换")
+            Func._publish_tool_notice(
+                f"警告：start_line ({start_line}) 大于 end_line ({end_line})，已自动交换"
+            )
             start_line, end_line = end_line, start_line
 
         return cls(path, start_line, end_line)

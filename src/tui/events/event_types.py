@@ -122,6 +122,26 @@ class ToolOutputChunkEvent(DisplayEvent):
 
 
 @dataclass(frozen=True)
+class ToolNoticeEvent(DisplayEvent):
+    """工具通知 — 工具执行期间的警告/提示，经通知块（``▎通知``）上屏。
+
+    与 ``ToolOutputChunkEvent``（工具卡内输出）互补：警告/提示类文本走
+    本事件 → ``NotificationCmd`` → ``▎通知`` 角色头 + ``  │ + ...`` 行
+    （与 Ctrl+B 空模式切换通知 ``+ 主 Agent 已进入空模式`` 同款显示）。
+
+    发布入口：``Func._publish_tool_notice``（工具基类通用方法）。
+
+    Attributes:
+        label: 工具标识（tool_call_id）
+        text: 通知文本（不含 ``+ `` 前缀，由发布入口统一添加）
+        tool_id: 工具调用唯一 ID（tool_call_id），用于前端精确匹配
+    """
+    label: str = ""
+    text: str = ""
+    tool_id: str = ""
+
+
+@dataclass(frozen=True)
 class ToolBatchStartedEvent(DisplayEvent):
     """批量工具开始执行（多个工具并行/顺序执行）。
 
@@ -374,7 +394,7 @@ class BackgroundTaskChangedEvent(DisplayEvent):
 # 所有事件类型的集合，用于 EventBus 按类型过滤订阅
 ALL_EVENT_TYPES: tuple = (
     SessionStarted, SessionStopped,
-    ToolParsingEvent, ToolStartedEvent, ToolDoneEvent, ToolOutputChunkEvent, ToolBatchStartedEvent,
+    ToolParsingEvent, ToolStartedEvent, ToolDoneEvent, ToolOutputChunkEvent, ToolBatchStartedEvent, ToolNoticeEvent,
     AgentAddedEvent, AgentStatusChanged,
     ModelPhaseEvent, PhaseDoneEvent, UsageUpdatedEvent,
     ContentChunkEvent, ReasoningChunkEvent,

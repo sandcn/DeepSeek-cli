@@ -17,7 +17,7 @@
 from .event_types import (
     DisplayEvent,
     SessionStarted, SessionStopped,
-    ToolParsingEvent, ToolStartedEvent, ToolDoneEvent, ToolOutputChunkEvent, ToolBatchStartedEvent,
+    ToolParsingEvent, ToolStartedEvent, ToolDoneEvent, ToolOutputChunkEvent, ToolBatchStartedEvent, ToolNoticeEvent,
     AgentAddedEvent, AgentStatusChanged,
     ModelPhaseEvent, PhaseDoneEvent, UsageUpdatedEvent,
     ContentChunkEvent, ReasoningChunkEvent,
@@ -44,7 +44,7 @@ __all__ = [
     # 事件类型
     "DisplayEvent",
     "SessionStarted", "SessionStopped",
-    "ToolParsingEvent", "ToolStartedEvent", "ToolDoneEvent", "ToolOutputChunkEvent", "ToolBatchStartedEvent",
+    "ToolParsingEvent", "ToolStartedEvent", "ToolDoneEvent", "ToolOutputChunkEvent", "ToolBatchStartedEvent", "ToolNoticeEvent",
     "AgentAddedEvent", "AgentStatusChanged", "AgentResultEvent",
     "SubagentPromptEvent",
     "ModelPhaseEvent", "PhaseDoneEvent", "UsageUpdatedEvent",

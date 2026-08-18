@@ -19,6 +19,7 @@ from src.tui._const import (
     MainPhaseCmd,
     SubagentMarkdownCmd,
     BgBashCountCmd,
+    NotificationCmd,
     _CLEAR_PARSE_LINE,
     is_agent_source,
     truncate_error_message,
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
         ToolSummaryEvent,
         SubagentPromptEvent,
         AgentResultEvent,
+        ToolNoticeEvent,
     )
 
 _logger = logging.getLogger(__name__)
@@ -173,6 +175,7 @@ class EventDispatcher:
             _ET.SubagentPromptEvent: self._on_subagent_prompt,
             _ET.AgentResultEvent: self._on_agent_result,
             _ET.BackgroundTaskChangedEvent: self._on_bg_bash_changed,
+            _ET.ToolNoticeEvent: self._on_tool_notice,
         }
         for group in self._handler_groups.values():
             result.update(group)
@@ -267,6 +270,28 @@ class EventDispatcher:
         if text:
             tool_id = event.tool_id or event.label
             self._push_cmd(ToolOutputCmd(text=text, tool_id=tool_id))
+
+    def _on_tool_notice(self, event: "ToolNoticeEvent") -> None:
+        """工具通知（警告/提示）→ 通知块（``▎通知`` + ``  │ + ...``）。
+
+        与 ``_on_tool_output`` 过滤策略一致：
+        - 仅主 agent 工具（``source == "agent"``）进主聊天区；
+        - subagent 工具（label/tool_id ``agent-`` 前缀）由面板自渲染，
+          不在主聊天区刷通知；
+        - 工具执行上下文退出后的兜底 label（``assistant``）忽略，
+          避免无归属通知块。
+        """
+        if not self._is_agent_source(event.source):
+            return
+        if event.source != "agent":
+            return
+        if self._is_subagent_label(event.label) or self._is_subagent_label(event.tool_id):
+            return
+        if (event.label or "") == "assistant" or (event.tool_id or "") == "assistant":
+            return
+        text = str(event.text).rstrip("\n")
+        if text:
+            self._push_cmd(NotificationCmd(text=text))
 
     def _on_parse_info(self, event: "ParseInfoEvent") -> None:
         if not self._is_agent_source(event.source):
