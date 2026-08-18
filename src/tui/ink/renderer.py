@@ -249,6 +249,56 @@ class InkRenderer:
             return self._height
         return row + 1
 
+    def _write_row(self, buf, frame, idx: int, last_idx: int) -> bool:
+        """写一行（\r 归位 + EL 清行 + 内容 + \r 归位）；非段末行写 \n 换行。
+
+        **当前语义（必须遵守）**：
+          - 行写入序列恒为 ``\r`` + ``\033[K``（清行）+ 行内容 + ``\r``；
+          - ``last_idx`` 为**段末行号**（该行不写 \n，光标停在行尾，由调用方
+            后续 cursor 定位衔接）——runs/位移区段末为 ``new_h-1``（文档
+            最后一行，无末尾空行模型）；head_runs 段末为 ``end-1``（重写
+            旧行不驱动滚动——2026-08-18 修复）；
+          - **返回值必须被消费**：返回 True（写了 \n）时调用方**必须**
+            ``current_row = self._advance_row(...)`` 推进光标——漏处理会
+            导致渲染器光标状态与终端脱节（滚动计数错位根因同类）。
+
+        ★ 2026-08-18（公共写行辅助重构·历史背景）：四处写行循环（delta==0
+        差异区间 / delta!=0 head_runs / 位移区 / ``_grow_drifted`` 追加循环）
+        行写入语义统一收敛——修复 head_runs 段末行 \n（user_select 连续弹出
+        显示错乱根因）后各处段末条件不一致（``new_h-1`` vs ``end-1``），提取
+        公共函数防「修一处漏四处」。
+
+        Args:
+            buf: 输出缓冲（io.StringIO）。
+            frame: 新帧（``render_line(idx)`` 渲染行内容）。
+            idx: 待写行号（0-based）。
+            last_idx: 段末行号（不写 \n 的行，见「当前语义」）。
+
+        Returns:
+            True 写了 \n（调用方须推进 current_row）；False 未写（段末行）。
+        """
+        buf.write("\r")
+        # ★ 历史修复背景（2026-08-06 行尾宽字符）：EL 0（\033[K）从内容后移
+        #   到内容前——修复前写满宽行（内容恰好 = 终端列宽）后光标停在 wrap
+        #   边界（x==width），此时 EL 0 在 Termux 等终端会清除行尾刚写入的
+        #   宽字符（CJK/emoji 占 2 列，第二列处于行尾）→ 行尾中文字符显示
+        #   不出来。EL 前移：先清整行旧残留再写新内容，行尾宽字符不被清除。
+        buf.write(_CLEAR_EOL)
+        buf.write(frame.render_line(idx))
+        # ★ 历史修复背景（2026-08-05 满宽行 wrap）：行内容恰好填满终端宽度时
+        #   光标停在 wrap 边界（x==width），直接 ``\n`` 在 pyte/Termux 等终端
+        #   会先触发 wraparound 再 LF → 光标额外下移 1 行 → 后续光标定位逐次
+        #   偏移。写行前 ``\r`` 归位（清除 wrap 待触发态），``\n`` 只下移 1 行。
+        #   ★ 历史修复背景（2026-08-15 无末尾空行模型）：文档最后一行
+        #   （idx == new_h-1）不写 \n；★ 2026-08-18 扩展：head_runs 段末行
+        #   （非文档末行）同样不写 \n——重写旧行不驱动滚动（滚动只应由位移区
+        #   新增行承担，次数 = delta）。
+        buf.write("\r")
+        if idx < last_idx:
+            buf.write("\n")
+            return True
+        return False
+
     # ── 渲染 ─────────────────────────────────────────
 
     def _assert_renderer_invariants(self) -> None:
@@ -510,22 +560,7 @@ class InkRenderer:
                     buf.write(cursor_down(target_row - current_row))
                 current_row = target_row
                 for idx in range(start, end):
-                    buf.write("\r")
-                    # ★ 行尾宽字符修复（2026-08-06）：EL 0 前移（先清行再写
-                    #   内容）——满宽行尾 CJK 不再被清除（见平移快路径注释）。
-                    buf.write(_CLEAR_EOL)
-                    buf.write(frame.render_line(idx))
-                    # ★ 满宽行 wrap 修复（2026-08-05）：行内容恰好填满终端宽度时，
-                    #   光标停在 wrap 边界（x==width），直接 ``\n`` 在 pyte/Termux
-                    #   等终端会先触发 wraparound 再 LF → 光标额外下移 1 行 →
-                    #   后续光标定位逐次偏移，弹窗按键导航内容错乱。写行前 ``\r``
-                    #   归位（清除 wrap 待触发态），``\n`` 只下移 1 行。
-                    #   ★ 无末尾空行模型（2026-08-15）：文档最后一行
-                    #   （idx == new_h-1）不写 \n（不触发滚动/不产生末尾空行）；
-                    #   current_row 仅在写 \n 时推进（否则与终端光标错位）。
-                    buf.write("\r")
-                    if idx < new_h - 1:
-                        buf.write("\n")
+                    if self._write_row(buf, frame, idx, new_h - 1):
                         current_row = self._advance_row(current_row)
         else:
             # ★ 方向4 优化（delta!=0）：头部差异区间逐区间重写 + 位移区连续
@@ -534,6 +569,18 @@ class InkRenderer:
             #   非差异行）零重写。
             #   重写目标一律按 **prev 帧偏移** 换算（终端缓冲此刻仍是 prev
             #   布局，只能经底部写行触发滚动）。
+            #   ★ 2026-08-18（user_select 连续弹出显示错乱根因修复）：
+            #   head_runs 重写的是**旧行**（位移前的 doc 行），其 \n 不应驱动
+            #   滚动（滚动只应由位移区新增行承担，次数 = delta）——段末行
+            #   （``end-1``）不写 \n。修复前段末行 ``idx < new_h-1`` 恒写 \n：
+            #   文档超屏（prev_h >= height）时 head_runs 末尾行写到屏幕底部，
+            #   其 \n 触发终端滚动（内容上移），而渲染器 ``_advance_row`` 仅
+            #   钳制光标不计数滚动 → 位移区补滚动（shift_start-prev_h+1 次）
+            #   叠加 head_runs 的额外滚动，总滚动比 delta 多 1 次 → 内容整体
+            #   上移错位一行。复现：超屏文档（30 行历史 + 16 选项弹窗 = 49 行
+            #   doc、24 行终端）中弹窗打开（增长 +13 行）后导航，标题行被写
+            #   在错误位置，旧标题（如 (1/16)）残留在新标题（如 (7/16)）上方
+            #   形成双标题。修复后 head_runs 零滚动，总滚动恰好 = delta。
             for start, end in head_runs:
                 target_row = self._clamp(self._to_screen(start + 1, prev_h))
                 if current_row > target_row:
@@ -542,22 +589,7 @@ class InkRenderer:
                     buf.write(cursor_down(target_row - current_row))
                 current_row = target_row
                 for idx in range(start, end):
-                    buf.write("\r")
-                    # ★ 行尾宽字符修复（2026-08-06）：EL 0 前移（先清行再写
-                    #   内容）——满宽行尾 CJK 不再被清除（见平移快路径注释）。
-                    buf.write(_CLEAR_EOL)
-                    buf.write(frame.render_line(idx))
-                    # ★ 满宽行 wrap 修复（2026-08-05）：行内容恰好填满终端宽度时，
-                    #   光标停在 wrap 边界（x==width），直接 ``\n`` 在 pyte/Termux
-                    #   等终端会先触发 wraparound 再 LF → 光标额外下移 1 行 →
-                    #   后续光标定位逐次偏移，弹窗按键导航内容错乱。写行前 ``\r``
-                    #   归位（清除 wrap 待触发态），``\n`` 只下移 1 行。
-                    #   ★ 无末尾空行模型（2026-08-15）：文档最后一行
-                    #   （idx == new_h-1）不写 \n（不触发滚动/不产生末尾空行）；
-                    #   current_row 仅在写 \n 时推进（否则与终端光标错位）。
-                    buf.write("\r")
-                    if idx < new_h - 1:
-                        buf.write("\n")
+                    if self._write_row(buf, frame, idx, end - 1):
                         current_row = self._advance_row(current_row)
             # 位移区（锚点起连续重写到新帧末尾）
             if self._height <= 0 or shift_start < new_h:
@@ -575,6 +607,9 @@ class InkRenderer:
                     #   滚动 → 缺 ``delta-(m-1) = shift_start-prev_h+1`` 次。
                     #   不补则尾部整体不位移、末行原地覆盖旧末行（review P1，
                     #   如「增长 + 末行内容变化同帧」位移区退化为仅末行）。
+                    #   ★ 2026-08-18（与 head_runs 修复协同）：head_runs 段末
+                    #   行不写 \n 后本补滚动精确补足缺口（不再叠加 head_runs
+                    #   的额外滚动）——总滚动恰好 = delta。
                     if (
                         idx == shift_start
                         and idx >= prev_h
@@ -585,22 +620,7 @@ class InkRenderer:
                             buf.write("\r")
                             buf.write("\n")
                             current_row = self._advance_row(current_row)
-                    buf.write("\r")
-                    # ★ 行尾宽字符修复（2026-08-06）：EL 0 前移（先清行再写
-                    #   内容）——满宽行尾 CJK 不再被清除（见平移快路径注释）。
-                    buf.write(_CLEAR_EOL)
-                    buf.write(frame.render_line(idx))
-                    # ★ 满宽行 wrap 修复（2026-08-05）：行内容恰好填满终端宽度时，
-                    #   光标停在 wrap 边界（x==width），直接 ``\n`` 在 pyte/Termux
-                    #   等终端会先触发 wraparound 再 LF → 光标额外下移 1 行 →
-                    #   后续光标定位逐次偏移，弹窗按键导航内容错乱。写行前 ``\r``
-                    #   归位（清除 wrap 待触发态），``\n`` 只下移 1 行。
-                    #   ★ 无末尾空行模型（2026-08-15）：文档最后一行
-                    #   （idx == new_h-1）不写 \n（不触发滚动/不产生末尾空行）；
-                    #   current_row 仅在写 \n 时推进（否则与终端光标错位）。
-                    buf.write("\r")
-                    if idx < new_h - 1:
-                        buf.write("\n")
+                    if self._write_row(buf, frame, idx, new_h - 1):
                         current_row = self._advance_row(current_row)
             # 缩短：清除残留行（prev 帧 rows new_h+1 .. prev_h）
             if delta < 0:
@@ -787,19 +807,10 @@ class InkRenderer:
             buf.write("\n")
             current_row = self._advance_row(current_row)
             for doc_idx in range(append_start, new_h):
-                buf.write("\r")
-                # ★ 行尾宽字符修复（2026-08-06）：EL 0 前移（先清行再写
-                #   内容）——满宽行尾 CJK 不再被清除（见平移快路径注释）。
-                buf.write(_CLEAR_EOL)
-                buf.write(frame.render_line(doc_idx))
-                # ★ 满宽行 wrap 修复（同 _diff_runs 写行循环）：行内容填满宽度时
-                #   \r 归位避免 \n 触发 wraparound 额外下移。
-                #   ★ 无末尾空行模型（2026-08-15）：文档最后一行
-                #   （doc_idx == new_h-1）不写 \n；current_row 仅在写 \n 时
-                #   推进（否则与终端光标错位）。
-                buf.write("\r")
-                if doc_idx < new_h - 1:
-                    buf.write("\n")
+                # ★ 与 _write_row 逐字节等价（追加行 = 位移区新增行语义：
+                #   last_idx = new_h-1 文档末行不写 \n）；统一走公共写行辅助
+                #   防「修一处漏四处」（2026-08-18）。
+                if self._write_row(buf, frame, doc_idx, new_h - 1):
                     current_row = self._advance_row(current_row)
         bottom_row = max(1, min(buf_h1, height))
         if current_row != bottom_row:
