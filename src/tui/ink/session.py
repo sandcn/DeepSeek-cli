@@ -168,6 +168,15 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._last_recover_time: float = 0.0
         self._bottom_redraw_requested = threading.Event()
         self._panel_refresh_cb: Callable[[], None] | None = None
+        # ★ 渲染帧序号 + router flush 等待者（2026-08-19，editmsg「很多上文
+        #   时按回车不能编辑对应消息」根因修复）：弹窗清理后渲染线程发布
+        #   新 input router 前存在窗口——旧 router（含已卸载弹窗的
+        #   SelectInput handler + use_modal 吞噬）仍会把用户的 Enter 消费
+        #   掉（``_enter()`` 不执行 → prefill 不提交）。``flush_input_router``
+        #   同步等待渲染线程完成「清理后状态」的帧（router 已更新）再返回。
+        self._frame_seq: int = 0
+        self._frame_seq_lock = threading.Lock()
+        self._frame_flush_waiters: list = []
         self._cmd_queue_dropped: int = 0
         self._render_crashed: threading.Event = threading.Event()
         self._last_bottom_redraw: float = 0.0
@@ -446,6 +455,81 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                     self._render_frame()
                 except Exception:
                     _logger.debug("request_bottom_redraw 同步渲染异常", exc_info=True)
+
+    def flush_input_router(self, timeout: float = 2.0) -> bool:
+        """同步等待渲染线程完成「当前调用之后」状态的帧（input router 已更新）。
+
+        ★ 2026-08-19（editmsg「很多上文时按回车不能编辑对应消息」根因修复）：
+        模态弹窗（EditMsgSelectPopup / UserSelectPopup 等）清理后，渲染线程
+        发布**新 input router** 前存在窗口——旧 router（含已卸载弹窗的
+        ``SelectInput`` use_input handler + ``use_modal`` 吞噬）仍会把用户的
+        Enter **消费掉**（router 返回 True → InputDispatcher 跳过 ``_enter()``
+        → prefill 不提交 →「按回车没反应，要再按一次」）。窗口时长 =
+        清理时刻 → 渲染线程完成下一帧（10Hz 节流 + 帧耗时——大量上文重放
+        时一帧 100ms~1s+）——「很多上文时大概率复现，1 条消息快速连按也
+        会命中」。
+
+        本方法阻塞等待渲染线程完成两帧（``_frame_seq + 2``）后返回，保证
+        调用方此前的模型清理（如 ``model.editmsg_select`` 重置、
+        ``bottom_view`` 复位）已被至少一帧渲染消费——新 router 不再含弹窗
+        hooks，用户的 Enter 走正常 ``_enter()`` 提交路径。
+
+        等两帧（而非一帧）的原因：调用时渲染线程可能正在渲染「读到清理前
+        模型」的旧帧（该帧发布的 router 仍含弹窗 hooks，早退会误判完成）；
+        再等一帧确保读到清理后状态。force 渲染下两帧通常 <300ms。
+
+        Args:
+            timeout: 等待超时（秒）。超时返回 False（降级为旧行为——调用方
+                继续执行，用户可能需再按一次 Enter；渲染线程崩溃/挂起时不
+                死锁主协程）。
+
+        Returns:
+            True — 目标帧已完成（新 router 已发布）；
+            False — 超时（渲染线程未完成两帧）。
+        """
+        if not self._render_running:
+            # render 线程未运行（suspend 等）：request_bottom_redraw 内部
+            # 同步渲染一帧（router 随 reconciler.render 发布）——无需等待。
+            self.request_bottom_redraw()
+            return True
+        ev = threading.Event()
+        with self._frame_seq_lock:
+            target = self._frame_seq + 2
+            self._frame_flush_waiters.append((target, ev))
+        # force 唤醒：设置重绘请求（跳过 10Hz 节流）+ 命令事件（提前退出
+        # 节流等待），渲染线程尽快完成目标帧。
+        self._bottom_redraw_requested.set()
+        self._dirty = True
+        self._cmd_event.set()
+        ok = ev.wait(timeout)
+        if not ok:
+            # 超时移除 waiter（防列表增长；事件无人等待，唤醒无害但清理干净）
+            with self._frame_seq_lock:
+                self._frame_flush_waiters = [
+                    w for w in self._frame_flush_waiters if w[1] is not ev
+                ]
+            _logger.warning(
+                "flush_input_router 等待渲染帧超时（%.1fs）——旧 router 可能"
+                "短暂残留，弹窗后首次 Enter 可能被吞", timeout,
+            )
+        return ok
+
+    def _advance_frame_seq(self) -> None:
+        """帧序号递增并唤醒达到目标的 flush 等待者（渲染线程调用）。
+
+        由 ``_render_frame`` 末尾调用——reconciler.render 已发布本帧的
+        input router，达到 ``target <= _frame_seq`` 的等待者可以安全返回。
+        """
+        with self._frame_seq_lock:
+            self._frame_seq += 1
+            seq = self._frame_seq
+            ready = [w for w in self._frame_flush_waiters if w[0] <= seq]
+            if ready:
+                self._frame_flush_waiters = [
+                    w for w in self._frame_flush_waiters if w[0] > seq
+                ]
+        for _target, ev in ready:
+            ev.set()
 
     # ── React Ink v6 hooks 回调（useCursor / useApp 扩展） ──
 

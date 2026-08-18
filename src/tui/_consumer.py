@@ -244,6 +244,21 @@ class ChatUIConsumer:
     def request_bottom_redraw(self) -> None:
         self._engine.request_bottom_redraw()
 
+    def flush_input_router(self, timeout: float = 2.0) -> bool:
+        """同步等待渲染线程发布新 input router（模态弹窗清理后防旧 router 吞输入）。
+
+        ★ 2026-08-19（editmsg「很多上文时按回车不能编辑对应消息」根因修复，
+        user_select 同类窗口预防）：模态弹窗（UserSelectPopup 等）清理后、
+        渲染线程发布新 input router 前，旧 router（含已卸载弹窗控件 handler +
+        use_modal 吞噬）会把用户后续按键（Enter 等）消费掉——事件被吞、
+        ``_enter()`` 不执行。弹窗 finally 清理后调用本方法同步等待新 router
+        发布，再放行后续输入处理。详见 ``InkSession.flush_input_router``。
+        """
+        try:
+            return self._engine.flush_input_router(timeout)
+        except AttributeError:
+            return False
+
     def get_input_component(self):
         """返回输入组件实例（兼容旧 _components.input 访问路径）。"""
         return self._components.input

@@ -215,6 +215,17 @@ class _SessionFrameMixin:
         ):
             self._input_fiber = self._find_input_fiber(self._root_fiber)
         self._position_cursor()
+        # ★ 帧完成通知（2026-08-19，editmsg「很多上文时按回车不能编辑对应
+        #   消息」根因修复）：本帧 input router 已发布（reconciler.render 内
+        #   _publish_input_router → session._on_input_router → dispatcher
+        #   接线）——唤醒 flush_input_router 等待者（弹窗清理方同步等待新
+        #   router，防旧 router 吞掉用户后续 Enter）。
+        advance = getattr(self, "_advance_frame_seq", None)
+        if callable(advance):
+            try:
+                advance()
+            except Exception:
+                _logger.debug("_advance_frame_seq 异常", exc_info=True)
 
     # ── 系统监控 ─────────────────────────────────────
 

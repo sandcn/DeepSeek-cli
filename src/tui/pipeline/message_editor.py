@@ -669,6 +669,25 @@ class MessageEditor:
                 session.request_bottom_redraw()
             except Exception:
                 _logger.debug("_interactive_message_select: cleanup redraw 异常", exc_info=True)
+            # ★ 2026-08-19 根因修复（很多上文时按回车不能编辑对应消息，
+            #   1 条消息快速连按也复现）：弹窗清理后、渲染线程发布新
+            #   input router 前，旧 router 仍含已卸载弹窗的 SelectInput
+            #   handler + use_modal 吞噬——用户确认后紧接着的 Enter
+            #   （prefill 注入后提交）被旧 router 消费（``_enter()`` 不
+            #   执行 → prefill 不提交 →「按回车没反应，要再按一次」）。
+            #   窗口 = 清理 → 渲染线程完成下一帧（10Hz 节流 + 帧耗时，
+            #   大量上文重放时一帧 100ms~1s+）。同步等待两帧完成（新
+            #   router 已发布，不含弹窗 hooks）再返回——后续 Enter 走
+            #   正常提交路径。超时（2s）降级继续（渲染线程挂起不死锁）。
+            flush_router = getattr(session, "flush_input_router", None)
+            if callable(flush_router):
+                try:
+                    flush_router(2.0)
+                except Exception:
+                    _logger.debug(
+                        "_interactive_message_select: flush_input_router 异常",
+                        exc_info=True,
+                    )
 
         if action != "confirmed":
             return None

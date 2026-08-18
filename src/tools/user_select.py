@@ -281,6 +281,16 @@ class UserSelectFunc(Func):
                 prev_seq = getattr(model.user_select, "seq", 0)
                 model.user_select = UserSelectState(seq=prev_seq)
                 chat_ui.request_bottom_redraw()
+                # ★ 2026-08-19 根因修复（同 editmsg——很多上文时按回车不能
+                #   编辑对应消息）：弹窗清理后、渲染线程发布新 input router
+                #   前，旧 router 仍含已卸载弹窗控件的 handler——用户紧接
+                #   着的按键（Enter 等）被旧 router 消费吞掉。同步等待新
+                #   router 发布（两帧）再清理 stdin，之后的用户按键不再被
+                #   吞。超时（2s）降级继续。
+                try:
+                    chat_ui.flush_input_router(2.0)
+                except Exception:
+                    _logger.debug("user_select: flush_input_router 异常", exc_info=True)
             except Exception:
                 _logger.debug("user_select: cleanup 失败", exc_info=True)
             # 清空 stdin 残留
