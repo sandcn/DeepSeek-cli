@@ -55,6 +55,7 @@ TOOL_ICONS: dict[str, str] = {
     "str_replace_editor": "\u270e",  # 笔
     "file_editor":       "\u270e",   # 笔
     "subagent":    "\u2699",   # 齿轮
+    "subagent_opt": "\u2699",   # 齿轮
     "user_select":       "\u2753",   # 问号
     "web_search":        "\U0001f310",  # 地球
     "web_fetch":         "\U0001f310",  # 地球
@@ -73,6 +74,7 @@ TOOL_CATEGORY_MAP: dict[str, str] = {
     "grep": "search", "find": "search", "glob": "search",
     "web_search": "search", "web_fetch": "search",
     "subagent": "agent",
+    "subagent_opt": "agent",
     "user_select": "interact",
     "rm": "delete",
 }

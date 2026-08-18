@@ -146,6 +146,13 @@ class SubAgentPanelController:
         # 上一推送帧（变更检测，避免空转推送）
         self._last_pushed_frame: List[Line] | None = None
         self._active: bool = False
+        # ★ 2026-08-18（后台 subagent）：活跃引用计数——多个并发 subagent
+        #   （前台/后台）共享面板：每个活跃方 ensure_active() +1、
+        #   stop() -1，最后一个 stop 才真正清理面板（取消订阅/清空 store/
+        #   推空帧）。修复前后台 subagent 独立 ParallelExecutor.run() 的
+        #   finally 无条件 stop：先完成者清空面板并取消订阅，破坏仍在运行
+        #   的其他后台/前台 subagent 显示（P1，review 2026-08-18）。
+        self._active_refs: int = 0
         # P3：ensure_active 订阅原子性锁——active 检查与订阅合并为原子操作，
         #   防止并发调用重复订阅（修复前 ``if self._active: return`` 非原子）。
         self._active_lock = threading.Lock()
@@ -283,6 +290,10 @@ class SubAgentPanelController:
         # return`` 非原子，并发调用可能同时通过检查重复订阅（同一 handler
         # 重复注册到 bus）。锁内完成全部订阅/回滚/置位。
         with self._active_lock:
+            # ★ 2026-08-18（后台 subagent）：活跃引用计数 +1——并发 subagent
+            #   （前台/后台）各自 ensure_active/stop 配对，最后一个 stop 才
+            #   真正清理面板。已 active 时仅计数递增（订阅保持，避免重复订阅）。
+            self._active_refs += 1
             if self._active:
                 return
             from .events import DisplayEventBus
@@ -297,6 +308,10 @@ class SubAgentPanelController:
                     subscribed.append((ev_type, handler))
                 self._register_panel_refresh()
             except Exception:
+                # ★ 引用计数回滚（P1，review 2026-08-18）：订阅失败时本次
+                #   ensure_active 未生效——计数归位，避免与后续 stop() 失衡
+                #   （refs 恒正导致面板永不清理）。
+                self._active_refs = max(0, self._active_refs - 1)
                 # 回滚已订阅项（尽力而为，日志不抛）
                 for ev_type, handler in subscribed:
                     try:
@@ -309,28 +324,36 @@ class SubAgentPanelController:
     def stop(self, clear_panel: bool = True) -> None:
         if not self._active:
             return
-        from .events import DisplayEventBus
-        bus = DisplayEventBus.get_default()
-        for ev_type, method_name in self._SUBSCRIPTIONS:
-            try:
-                bus.unsubscribe(getattr(self, method_name), event_type=ev_type)
-            except Exception:
-                _logger.debug("stop() 取消订阅异常", exc_info=True)
-        if clear_panel:
-            self._push_frame([])
-            # 强制立即重绘底部栏，确保面板立即消失
-            if self._chat_ui is not None:
+        with self._active_lock:
+            # ★ 2026-08-18（后台 subagent）：活跃引用计数 -1——仅当全部活跃方
+            #   都 stop 后（refs==0）才真正清理面板。修复前后台 subagent
+            #   独立执行完毕即 stop：并发时先完成者清空面板/取消订阅，破坏
+            #   仍在运行的其他 subagent 显示（P1，review 2026-08-18）。
+            self._active_refs = max(0, self._active_refs - 1)
+            if self._active_refs > 0:
+                return  # 仍有活跃引用（其他后台/前台 subagent 运行中）
+            from .events import DisplayEventBus
+            bus = DisplayEventBus.get_default()
+            for ev_type, method_name in self._SUBSCRIPTIONS:
                 try:
-                    self._chat_ui.request_bottom_redraw()
+                    bus.unsubscribe(getattr(self, method_name), event_type=ev_type)
                 except Exception:
-                    _logger.debug("request_bottom_redraw 异常", exc_info=True)
-        self._unregister_panel_refresh()
-        self._store.clear()
-        # ★ 2026-08-17（用户需求：已完成 subagent 仍可查看轨迹）：**不清空**
-        #   轨迹存档（``_trace_archive``）——store 清空仅复位面板渲染状态；
-        #   主轨迹仍从存档读取已完成 subagent 记录并可 Enter 进入查看完整
-        #   轨迹（历史复盘）。显式清理走 ``clear_trace_archive()``。
-        self._active = False
+                    _logger.debug("stop() 取消订阅异常", exc_info=True)
+            if clear_panel:
+                self._push_frame([])
+                # 强制立即重绘底部栏，确保面板立即消失
+                if self._chat_ui is not None:
+                    try:
+                        self._chat_ui.request_bottom_redraw()
+                    except Exception:
+                        _logger.debug("request_bottom_redraw 异常", exc_info=True)
+            self._unregister_panel_refresh()
+            self._store.clear()
+            # ★ 2026-08-17（用户需求：已完成 subagent 仍可查看轨迹）：**不清空**
+            #   轨迹存档（``_trace_archive``）——store 清空仅复位面板渲染状态；
+            #   主轨迹仍从存档读取已完成 subagent 记录并可 Enter 进入查看完整
+            #   轨迹（历史复盘）。显式清理走 ``clear_trace_archive()``。
+            self._active = False
 
     # ── 事件处理器（委托 StateStore 变更 + 置脏 + 节流推送） ──
 

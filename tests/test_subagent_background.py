@@ -1,0 +1,726 @@
+"""subagent 后台执行 + subagent_opt 工具测试（2026-08-18）。
+
+需求：
+  1. subagent 工具新增 background 参数（boolean，默认 false）：
+     background=true 时立即返回 {"task_id": "sa-xxx", "status": "running"} JSON，
+     后台 subagent 在独立 asyncio 后台任务中执行（类似 bash background=True）；
+  2. 新增 subagent_opt 工具（类似 bash_opt）：按 task_id 操作后台 subagent
+     任务（op=read / wait / kill）；
+  3. 后台 subagent 仅主 Agent 独有：
+     - SubAgent 工具白名单全类型排除 subagent（已有）与 subagent_opt（新增）；
+     - subagent / subagent_opt 运行时 isinstance(agent, SubAgent) 强制校验；
+     - 同轮 barrier 计数排除 background=true（_count_dispatch_subagents）。
+  4. 并发/沙盒正确性（review 2026-08-18 修复）：
+     - 后台 subagent 使用唯一 label（task_id），并发不互相覆盖；
+     - SubAgentPanelController 活跃引用计数：最后一个活跃方 stop 才清理面板；
+     - 沙盒记录可重挂（reindex_records），上下文压缩后索引失效不悬空；
+     - 取消后台 subagent 时任务记录 status="cancelled"。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import threading
+
+from src.core.base_agent import BaseAgent
+from src.core.subagent import SubAgent
+from src.tools import Subagent, SubagentOpt
+from src.tools.subagent import SubagentFunc
+from src.tools.subagent_opt import SubagentOptFunc
+
+
+# ── 测试辅助 ──────────────────────────────────────────────
+
+class _FakeMainAgent(BaseAgent):
+    """最小主 Agent 桩：继承 BaseAgent 提供 _background_tasks 任务表。"""
+
+
+def _bare_subagent() -> SubAgent:
+    """构造不调用 __init__ 的 SubAgent 实例（仅用于 isinstance 校验）。"""
+    return SubAgent.__new__(SubAgent)
+
+
+def _make_rec(task, task_id="sa-1", done=False, result="", status="running"):
+    return {
+        "task": task,
+        "command": "subagent(任务A)",
+        "description": "任务A",
+        "agent_type": "execute",
+        "created_at": 0.0,
+        "done": done,
+        "result": result,
+        "status": status,
+        "read_buffer": "",
+    }
+
+
+async def _async_noop(*args, **kwargs):
+    return None
+
+
+# ── 1. subagent schema 与参数解析 ─────────────────────────
+
+def test_schema_has_background_param():
+    """subagent schema 含 background 参数（boolean，默认 false，非必填）。"""
+    schema = SubagentFunc.to_tool_schema()
+    props = schema["function"]["parameters"]["properties"]
+    assert "background" in props
+    assert props["background"]["type"] == "boolean"
+    assert "background" not in schema["function"]["parameters"]["required"]
+
+
+def test_from_args_parses_background():
+    """from_args 正确解析 background（默认 false）。"""
+    f1 = SubagentFunc.from_args({"description": "a", "prompt": "p"})
+    assert f1.background is False
+    f2 = SubagentFunc.from_args(
+        {"description": "a", "prompt": "p", "background": True}
+    )
+    assert f2.background is True
+    f3 = SubagentFunc.from_args(
+        {"description": "a", "prompt": "p", "background": "yes"}
+    )
+    assert f3.background is True  # 任意真值 → bool() 转换
+
+
+def test_display_params_background_prefix():
+    """display_params 后台调用带 bg 前缀（UI 摘要）。"""
+    assert SubagentFunc.display_params(
+        {"description": "解析 user.py", "background": True}
+    ).startswith("bg agent:")
+    assert not SubagentFunc.display_params(
+        {"description": "解析 user.py"}
+    ).startswith("bg agent:")
+
+
+# ── 2. 后台执行（background=True） ────────────────────────
+
+async def test_background_execute_returns_task_id_and_registers(monkeypatch):
+    """后台模式立即返回 task_id JSON，并把任务注册到主 Agent 后台任务表。"""
+    agent = _FakeMainAgent()
+    func = SubagentFunc(
+        description="任务A", prompt="指令", target_agent_type="map", background=True,
+    )
+    func.set_agent(agent)
+    monkeypatch.setattr(
+        "src.tools.subagent.SubagentFunc._run_background_subagent",
+        _async_noop,
+    )
+    monkeypatch.setattr("src.tools.subagent.print_to_terminal", _async_noop)
+
+    result = await func.execute()
+    payload = json.loads(result)
+    assert payload["task_id"].startswith("sa-")
+    assert payload["status"] == "running"
+    assert payload["description"] == "任务A"
+    assert payload["type"] == "map"
+
+    rec = agent._background_tasks[payload["task_id"]]
+    assert rec["done"] is False
+    assert rec["status"] == "running"
+    assert rec["description"] == "任务A"
+    assert rec["agent_type"] == "map"
+    assert rec["command"].startswith("subagent(")
+
+
+async def test_background_execute_without_agent():
+    """后台模式未关联 Agent 上下文时返回错误提示。"""
+    func = SubagentFunc(description="a", prompt="p", background=True)
+    result = await func.execute()
+    assert "未关联父 Agent" in result
+
+
+async def test_background_execute_rejected_in_subagent():
+    """后台 subagent 仅主 Agent 独有：SubAgent 内运行时强制拒绝。"""
+    func = SubagentFunc(description="a", prompt="p", background=True)
+    func.set_agent(_bare_subagent())
+    result = await func.execute()
+    assert result.startswith("错误")
+    assert "仅主 Agent" in result
+
+
+async def test_background_run_completes_record(monkeypatch):
+    """后台任务完成后把格式化结果写入任务记录（_complete_background_task）。"""
+    agent = _FakeMainAgent()
+    func = SubagentFunc(
+        description="任务A", prompt="指令", target_agent_type="execute", background=True,
+    )
+    func.set_agent(agent)
+    monkeypatch.setattr("src.tools.subagent.print_to_terminal", _async_noop)
+    monkeypatch.setattr("src.core.display_target.get_output_publisher", lambda: None)
+
+    captured_spec = {}
+
+    async def fake_run(self, specs, max_workers=None):
+        captured_spec.update(specs[0])
+        return [{
+            "label": "agent-1",
+            "description": "任务A",
+            "result": "结果内容",
+            "error": "",
+            "agent_type": "execute",
+        }]
+
+    monkeypatch.setattr(
+        "src.core.parallel_executor.ParallelExecutor.run", fake_run,
+    )
+
+    result = await func.execute()
+    task_id = json.loads(result)["task_id"]
+    # 等待后台任务完成
+    await asyncio.wait_for(agent._background_tasks[task_id]["task"], timeout=5)
+
+    rec = agent._background_tasks[task_id]
+    assert rec["done"] is True
+    assert rec["status"] == "completed"
+    assert rec["result"] == "## 任务A\n结果内容"
+
+    # spec 传参正确（tool_label 为空串 → dispatch_label 兼容）
+    assert captured_spec["description"] == "任务A"
+    assert captured_spec["prompt"] == "指令"
+    assert captured_spec["agent_type"] == "execute"
+    assert captured_spec["tool_label"] == ""
+    # ★ P1（review 2026-08-18）：后台 subagent 使用唯一 label（task_id），
+    #   并发执行不互相覆盖（TUI 槽位 / 导出去重键 / 轨迹存档）
+    assert captured_spec["label"] == task_id
+
+
+async def test_background_run_error_writes_failure(monkeypatch):
+    """后台执行异常时任务记录写入错误结果而非崩溃。"""
+    agent = _FakeMainAgent()
+    func = SubagentFunc(description="任务A", prompt="指令", background=True)
+    func.set_agent(agent)
+    monkeypatch.setattr("src.tools.subagent.print_to_terminal", _async_noop)
+    monkeypatch.setattr("src.core.display_target.get_output_publisher", lambda: None)
+
+    async def fake_run(self, specs, max_workers=None):
+        raise RuntimeError("模拟执行失败")
+
+    monkeypatch.setattr(
+        "src.core.parallel_executor.ParallelExecutor.run", fake_run,
+    )
+
+    result = await func.execute()
+    task_id = json.loads(result)["task_id"]
+    await asyncio.wait_for(agent._background_tasks[task_id]["task"], timeout=5)
+
+    rec = agent._background_tasks[task_id]
+    assert rec["done"] is True
+    assert "执行出错" in rec["result"]
+
+
+async def test_background_subagent_captures_sandbox_index(monkeypatch):
+    """后台 subagent 的文件沙盒：变更关联派发轮次的消息索引（与前台一致）。
+
+    后台任务由 asyncio.ensure_future 创建，复制派发时 contextvars（含
+    message_index）。MainAgent 后续对话更新沙盒索引不影响后台 subagent
+    的文件变更关联（SubAgent 文件操作经 record_file_change_from_context
+    读取后台任务上下文中的索引）——保证沙盒可精确回滚到派发轮次。
+    """
+    from src.core.sandbox_manager import (
+        SandboxManager,
+        get_current_message_index,
+        get_sandbox_manager,
+        set_current_message_index,
+        set_sandbox_manager,
+    )
+
+    old_sm = get_sandbox_manager()
+    sm = SandboxManager()
+    set_sandbox_manager(sm)
+    try:
+        # 派发时（subagent 工具调用所在轮次）：assistant tool_calls 消息索引 = 3
+        set_current_message_index(3)
+
+        captured = {}
+
+        async def fake_run(self, specs, max_workers=None):
+            # 模拟后台 subagent 执行期间的文件操作索引读取
+            await asyncio.sleep(0.01)
+            captured["bg_index"] = get_current_message_index()
+            return [{
+                "label": "agent-1", "description": "任务A",
+                "result": "ok", "error": "", "agent_type": "execute",
+            }]
+
+        monkeypatch.setattr(
+            "src.core.parallel_executor.ParallelExecutor.run", fake_run,
+        )
+        monkeypatch.setattr("src.tools.subagent.print_to_terminal", _async_noop)
+        monkeypatch.setattr(
+            "src.core.display_target.get_output_publisher", lambda: None,
+        )
+
+        agent = _FakeMainAgent()
+        func = SubagentFunc(description="任务A", prompt="指令", background=True)
+        func.set_agent(agent)
+        result = await func.execute()
+        task_id = json.loads(result)["task_id"]
+
+        # MainAgent 继续对话：沙盒索引前进到 10
+        set_current_message_index(10)
+
+        await asyncio.wait_for(agent._background_tasks[task_id]["task"], timeout=5)
+        # 后台 subagent 执行期间读取的索引 = 派发时索引（3），
+        # 不受 MainAgent 后续轮次更新影响（contextvars 快照语义）
+        assert captured["bg_index"] == 3
+        assert get_current_message_index() == 10
+    finally:
+        set_sandbox_manager(old_sm)
+
+
+def test_foreground_path_unchanged():
+    """前台路径（background 缺省）行为不变：无共享 executor 时报错提示。"""
+    agent = _FakeMainAgent()
+    func = SubagentFunc(description="a", prompt="p")
+    func.set_agent(agent)
+
+    # 同步执行需事件循环；此处直接验证独立模式回退提示
+    async def _run():
+        return await func.execute()
+
+    result = asyncio.run(_run())
+    assert "未处于有效的并行执行上下文" in result
+
+
+# ── 3. subagent_opt 工具 ─────────────────────────────────
+
+def test_subagent_opt_tool_name_and_schema():
+    """subagent_opt 注册名 / schema name / op 枚举 / 必填参数。"""
+    assert SubagentOptFunc.name == "subagent_opt"
+    schema = SubagentOptFunc.to_tool_schema()
+    assert schema["function"]["name"] == "subagent_opt"
+    assert schema["function"]["parameters"]["required"] == ["task_id", "op"]
+    assert set(schema["function"]["parameters"]["properties"]["op"]["enum"]) == {
+        "read", "wait", "kill",
+    }
+
+
+def test_registry_discovers_subagent_opt():
+    """注册表自动发现 subagent_opt；包导出别名可用。"""
+    from src.tools.registry import ToolRegistry
+
+    reg = ToolRegistry()
+    tools = reg.get_tools()
+    assert "subagent_opt" in tools
+    assert tools["subagent_opt"] is SubagentOptFunc
+
+    inst = reg.dispatch("subagent_opt", {"task_id": "sa-x", "op": "read"})
+    assert isinstance(inst, SubagentOptFunc)
+    assert getattr(SubagentOpt, "name", None) == "subagent_opt" or SubagentOpt is SubagentOptFunc
+
+
+def test_display_name_mapping():
+    """UI 显示名映射：subagent_opt → SubagentOpt。"""
+    from src.tools._constants import TOOL_DISPLAY_NAME
+    from src.tools.registry import get_tool_display_name
+
+    assert TOOL_DISPLAY_NAME.get("subagent_opt") == "SubagentOpt"
+    assert get_tool_display_name("subagent_opt") == "SubagentOpt"
+
+
+async def test_subagent_opt_read():
+    """op=read 返回状态与已产生结果，并标记 managed_by_tool。"""
+    agent = _FakeMainAgent()
+    rec = _make_rec(task=None, done=False, result="")
+    agent._background_tasks["sa-1"] = rec
+
+    func = SubagentOptFunc(task_id="sa-1", op="read")
+    func.set_agent(agent)
+    payload = json.loads(await func.execute())
+    assert payload["task_id"] == "sa-1"
+    assert payload["status"] == "running"
+    assert payload["output"] == ""
+    assert payload["description"] == "任务A"
+    assert rec["managed_by_tool"] is True
+
+
+async def test_subagent_opt_read_completed():
+    """op=read 已完成任务返回 completed 状态与结果。"""
+    agent = _FakeMainAgent()
+    rec = _make_rec(task=None, done=True, result="## 任务A\n结果", status="completed")
+    agent._background_tasks["sa-1"] = rec
+
+    func = SubagentOptFunc(task_id="sa-1", op="read")
+    func.set_agent(agent)
+    payload = json.loads(await func.execute())
+    assert payload["status"] == "completed"
+    assert payload["output"] == "## 任务A\n结果"
+
+
+async def test_subagent_opt_wait_completed_removes_record():
+    """op=wait 已完成任务：返回结果并从任务表移除（避免重复插入用户消息）。"""
+    agent = _FakeMainAgent()
+    rec = _make_rec(task=None, done=True, result="## 任务A\n结果", status="completed")
+    agent._background_tasks["sa-1"] = rec
+
+    func = SubagentOptFunc(task_id="sa-1", op="wait")
+    func.set_agent(agent)
+    payload = json.loads(await func.execute())
+    assert payload["output"] == "## 任务A\n结果"
+    assert "sa-1" not in agent._background_tasks
+
+
+async def test_subagent_opt_wait_running_completes():
+    """op=wait 运行中任务：等待完成并拿到结果（完成回调写入记录）。"""
+    agent = _FakeMainAgent()
+    task_id = "sa-wait"
+    agent._background_tasks[task_id] = _make_rec(task=None)
+
+    async def _work():
+        await asyncio.sleep(0.01)
+        agent._complete_background_task(task_id, "## 任务A\n最终结果")
+
+    task = asyncio.ensure_future(_work())
+    agent._background_tasks[task_id]["task"] = task
+
+    func = SubagentOptFunc(task_id=task_id, op="wait", timeout=5)
+    func.set_agent(agent)
+    payload = json.loads(await func.execute())
+    assert payload["status"] == "completed"
+    assert payload["output"] == "## 任务A\n最终结果"
+    assert task_id not in agent._background_tasks
+
+
+async def test_subagent_opt_wait_timeout():
+    """op=wait 超时（短 timeout）：返回错误提示且任务继续运行、记录保留。"""
+    agent = _FakeMainAgent()
+    task_id = "sa-slow"
+    agent._background_tasks[task_id] = _make_rec(task=None)
+
+    async def _slow():
+        await asyncio.sleep(100)
+
+    task = asyncio.ensure_future(_slow())
+    agent._background_tasks[task_id]["task"] = task
+
+    func = SubagentOptFunc(task_id=task_id, op="wait", timeout=0.05)
+    func.set_agent(agent)
+    result = await func.execute()
+    assert result.startswith("(")
+    assert "超时" in result
+    assert not task.done()          # 任务继续运行（wait 只观察不干预）
+    assert task_id in agent._background_tasks
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+async def test_subagent_opt_kill():
+    """op=kill 取消后台任务并从任务表移除。"""
+    agent = _FakeMainAgent()
+    task_id = "sa-kill"
+    agent._background_tasks[task_id] = _make_rec(task=None)
+
+    async def _long_running():
+        await asyncio.sleep(100)
+
+    task = asyncio.ensure_future(_long_running())
+    agent._background_tasks[task_id]["task"] = task
+
+    func = SubagentOptFunc(task_id=task_id, op="kill")
+    func.set_agent(agent)
+    result = await func.execute()
+    assert "已取消" in result
+    assert task_id not in agent._background_tasks
+    assert task.cancelled()
+
+
+async def test_subagent_opt_unknown_task():
+    """task_id 不存在时返回错误提示并引导使用 subagent background=True。"""
+    agent = _FakeMainAgent()
+    func = SubagentOptFunc(task_id="sa-nope", op="read")
+    func.set_agent(agent)
+    result = await func.execute()
+    assert result.startswith("(")
+    assert "sa-nope" in result
+    assert "background=True" in result
+
+
+async def test_subagent_opt_rejects_bash_task_id():
+    """task_id 非 sa- 前缀（如 bash 后台 bg-xxx）时拒绝，防止误操作 bash 任务。"""
+    agent = _FakeMainAgent()
+    # 模拟误传 bash 后台任务 id（bash 任务需 bash_opt 管理：kill 要杀进程树）
+    agent._background_tasks["bg-abc"] = {"task": None, "done": False}
+    func = SubagentOptFunc(task_id="bg-abc", op="kill")
+    func.set_agent(agent)
+    result = await func.execute()
+    assert result.startswith("(")
+    assert "sa-xxx" in result
+    assert "bash_opt" in result
+    # bash 任务记录未被修改（managed_by_tool 未设置、未被移除）
+    assert "managed_by_tool" not in agent._background_tasks["bg-abc"]
+    assert "bg-abc" in agent._background_tasks
+
+
+async def test_subagent_opt_without_agent():
+    """未关联 Agent 上下文时返回提示。"""
+    func = SubagentOptFunc(task_id="sa-1", op="read")
+    result = await func.execute()
+    assert result.startswith("(")
+    assert "Agent" in result
+
+
+async def test_subagent_opt_rejected_in_subagent():
+    """subagent_opt 仅主 Agent 独有：SubAgent 内运行时强制拒绝。"""
+    func = SubagentOptFunc(task_id="sa-1", op="read")
+    func.set_agent(_bare_subagent())
+    result = await func.execute()
+    assert result.startswith("错误")
+    assert "仅主 Agent" in result
+
+
+async def test_subagent_opt_unknown_op():
+    """未知 op 返回错误提示，且不标记 managed_by_tool（任务不失联）。"""
+    agent = _FakeMainAgent()
+    rec = _make_rec(task=None)
+    agent._background_tasks["sa-1"] = rec
+    func = SubagentOptFunc(task_id="sa-1", op="pause")
+    func.set_agent(agent)
+    result = await func.execute()
+    assert "未知操作" in result
+    # ★ P2（review 2026-08-18）：无效 op 不修改任务管理状态——否则
+    #   _process_background_tasks 不再自动等待/插入结果，任务失联。
+    assert "managed_by_tool" not in rec
+
+
+def test_display_params():
+    """display_params 摘要展示（UI 短参数）。"""
+    assert SubagentOptFunc.display_params(
+        {"task_id": "sa-1", "op": "wait"}
+    ) == "'wait sa-1'"
+
+
+# ── 4. 独有性机制（仅主 Agent） ───────────────────────────
+
+def test_exclusion_map_excludes_subagent_opt():
+    """SubAgent 工具白名单全类型排除 subagent_opt（含 execute）。"""
+    from src.core.subagent import _TOOL_EXCLUSION_MAP, _get_excluded_tools
+
+    for agent_type in ("map", "review", "plan", "execute"):
+        assert "subagent_opt" in _get_excluded_tools(agent_type), (
+            f"{agent_type} 应排除 subagent_opt"
+        )
+        assert "subagent" in _TOOL_EXCLUSION_MAP[agent_type]
+
+
+def test_can_use_subagent_opt():
+    """Func.can_use：所有 SubAgent 类型拒绝 subagent_opt。"""
+    from src.tools.base import Func
+
+    for agent_type in ("map", "review", "plan", "execute"):
+        ok, _err = Func.can_use("subagent_opt", agent_type=agent_type)
+        assert ok is False, f"{agent_type} 应拒绝 subagent_opt"
+
+
+def test_count_dispatch_subagents_excludes_background():
+    """同轮 barrier 计数排除 background=true 的 subagent 调用。"""
+    from src.core.internal.agent._tool_callbacks import (
+        _count_dispatch_subagents,
+    )
+
+    calls = [
+        # 后台 subagent（dict 参数）→ 不计入
+        {"id": "1", "name": "subagent",
+         "arguments": {"description": "a", "prompt": "p", "background": True}},
+        # 普通 subagent → 计入
+        {"id": "2", "name": "subagent",
+         "arguments": {"description": "b", "prompt": "p"}},
+        # 后台 subagent（JSON 字符串参数）→ 不计入
+        {"id": "3", "name": "subagent",
+         "arguments": '{"description": "c", "prompt": "p", "background": true}'},
+        # 非 subagent 工具 → 不计入
+        {"id": "4", "name": "read_file", "arguments": {"path": "x"}},
+    ]
+    assert _count_dispatch_subagents(calls) == 1
+
+    # 全后台 → 0（不创建共享 barrier）
+    assert _count_dispatch_subagents(calls[:1]) == 0
+    assert _count_dispatch_subagents(calls[2:3]) == 0
+    # 全普通 → 全部计入
+    assert _count_dispatch_subagents(calls[1:2]) == 1
+    # 空列表 → 0
+    assert _count_dispatch_subagents([]) == 0
+
+
+def test_call_is_background_subagent_parsing():
+    """后台判定兼容 dict / JSON 字符串 / 非 subagent / 解析失败。"""
+    from src.core.internal.agent._tool_callbacks import (
+        _call_is_background_subagent,
+    )
+
+    assert _call_is_background_subagent(
+        {"id": "1", "name": "subagent",
+         "arguments": {"background": True}}
+    ) is True
+    assert _call_is_background_subagent(
+        {"id": "2", "name": "subagent",
+         "arguments": '{"background": true}'}
+    ) is True
+    assert _call_is_background_subagent(
+        {"id": "3", "name": "subagent", "arguments": {"background": False}}
+    ) is False
+    # 非 subagent 工具
+    assert _call_is_background_subagent(
+        {"id": "4", "name": "bash", "arguments": {"background": True}}
+    ) is False
+    # 非法 JSON 字符串 → 安全降级 false
+    assert _call_is_background_subagent(
+        {"id": "5", "name": "subagent", "arguments": "{broken"}
+    ) is False
+    # 无 arguments
+    assert _call_is_background_subagent({"id": "6", "name": "subagent"}) is False
+
+
+# ── 5. review 2026-08-18 修复项 ──────────────────────────
+
+async def test_background_cancel_writes_cancelled_status(monkeypatch):
+    """后台 subagent 被取消时任务记录写入 status="cancelled"（read 可区分）。"""
+    agent = _FakeMainAgent()
+    func = SubagentFunc(description="任务A", prompt="指令", background=True)
+    func.set_agent(agent)
+    monkeypatch.setattr("src.tools.subagent.print_to_terminal", _async_noop)
+    monkeypatch.setattr("src.core.display_target.get_output_publisher", lambda: None)
+
+    async def fake_run(self, specs, max_workers=None):
+        await asyncio.sleep(100)
+
+    monkeypatch.setattr(
+        "src.core.parallel_executor.ParallelExecutor.run", fake_run,
+    )
+
+    result = await func.execute()
+    task_id = json.loads(result)["task_id"]
+    task = agent._background_tasks[task_id]["task"]
+    # 先让后台任务运行起来（进入 fake_run 的 sleep），再模拟 kill 的取消动作
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.wait_for(task, timeout=5)
+
+    rec = agent._background_tasks[task_id]
+    assert rec["status"] == "cancelled"
+    assert "已被取消" in rec["result"]
+
+
+def test_spawn_subagent_uses_spec_label():
+    """spawner 支持 spec 唯一 label（后台 subagent 并发不互相覆盖）。"""
+    from src.core.internal.agent._subagent_spawner import SubAgentSpawner
+    from src.core.subagent import SubAgent
+
+    created = {}
+
+    def fake_factory(label, description, prompt, parent_agent, model=None,
+                     agent_type="execute", dispatch_label=""):
+        sa = SubAgent.__new__(SubAgent)
+        sa.label = label
+        sa.description = description
+        sa.agent_type = agent_type
+        created["label"] = label
+        return sa
+
+    class FakeDisplay:
+        def add_agent(self, *args, **kwargs):
+            pass
+
+    class FakePort:
+        def publish_event(self, event):
+            pass
+
+    spawner = SubAgentSpawner(
+        parent_agent=object(), agent_factory=fake_factory, event_port=FakePort(),
+    )
+    sa = spawner.spawn(
+        {"description": "d", "prompt": "p", "agent_type": "execute",
+         "label": "sa-abc123"},
+        0, FakeDisplay(),
+    )
+    assert created["label"] == "sa-abc123"
+    assert sa.label == "sa-abc123"
+    # 缺省 label（前台路径）→ agent-N
+    created.clear()
+    spawner.spawn(
+        {"description": "d", "prompt": "p", "agent_type": "execute"},
+        1, FakeDisplay(),
+    )
+    assert created["label"] == "agent-2"
+
+
+def test_panel_refcount_last_stop_cleans_up():
+    """SubAgentPanelController 引用计数：最后一个活跃方 stop 才真正清理面板。
+
+    模拟两个后台 subagent 并发：各自 ensure_active/stop 配对，
+    先完成者的 stop 不清面板（refs>0），最后一个 stop 才真正清理。
+    """
+    from src.tui._subagent_panel import SubAgentPanelController
+
+    ctrl = SubAgentPanelController()
+    try:
+        # 后台 subagent A 启动
+        ctrl.ensure_active()
+        assert ctrl._active_refs == 1
+        assert ctrl._active is True
+        # 后台 subagent B 启动（已 active → 仅计数递增，不重复订阅）
+        ctrl.ensure_active()
+        assert ctrl._active_refs == 2
+
+        # A 完成 → stop：refs=1，面板保持活跃（B 还在显示）
+        ctrl.stop()
+        assert ctrl._active_refs == 1
+        assert ctrl._active is True
+
+        # B 完成 → stop：refs=0，真正清理面板
+        ctrl.stop()
+        assert ctrl._active_refs == 0
+        assert ctrl._active is False
+    finally:
+        # 清理残留订阅（防御）
+        if ctrl._active:
+            ctrl.stop()
+
+
+def test_panel_refcount_does_not_go_negative():
+    """引用计数防御：多余 stop 不产生负数（恢复为 0）。"""
+    from src.tui._subagent_panel import SubAgentPanelController
+
+    ctrl = SubAgentPanelController()
+    try:
+        ctrl.ensure_active()   # refs=1
+        ctrl.stop()            # refs=0，真正清理
+        ctrl.stop()            # 已 inactive → 直接返回，refs 保持 0
+        assert ctrl._active_refs == 0
+        assert ctrl._active is False
+        # 再次激活恢复正常
+        ctrl.ensure_active()   # refs=1
+        assert ctrl._active is True
+        ctrl.stop()
+        assert ctrl._active is False
+    finally:
+        if ctrl._active:
+            ctrl.stop()
+
+
+def test_sandbox_reindex_records():
+    """沙盒 reindex_records：按 predicate 重挂记录到新索引并重建 message_history。"""
+    from src.core.sandbox_manager import SandboxManager
+
+    sm = SandboxManager()
+    sm.record_file_change("a.txt", None, "v1", 3, tool_name="write_file")
+    sm.record_file_change("b.txt", None, "v2", 3, tool_name="write_file")
+    # 不匹配的记录（索引 7）保持不动
+    sm.record_file_change("c.txt", None, "v3", 7, tool_name="write_file")
+
+    moved = sm.reindex_records(lambda r: r.message_index == 3, 5)
+    assert moved == 2
+    for rec in sm.get_all_file_changes():
+        assert rec.message_index in (5, 7)
+    assert 5 in sm.message_history
+    assert 3 not in sm.message_history
+    assert sm.get_current_message_index_safe() == 7  # max(7, 5) 不倒退
+
+    # 无匹配 → 0，不重建
+    moved2 = sm.reindex_records(lambda r: r.message_index == 99, 5)
+    assert moved2 == 0

@@ -1499,7 +1499,15 @@ def build_subagent_trace_records(label: str, model=None) -> tuple:
     if slot is not None:
         messages = getattr(slot, "messages", None) or []
         if isinstance(messages, (list, tuple)) and messages:
-            records, rows = _records_from_messages(messages)
+            # ★ 2026-08-19（用户需求：轨迹 Trace 也能用回车显示后台 subagent）：
+            #   消息数据防御——异常消息内容（非 dict/损坏字段）经
+            #   ``_records_from_messages`` 内部跳过，但极端数据仍可能抛错
+            #   （如 content 结构异常）：捕获后回退槽位活动记录，保证
+            #   Enter 进入 subagent 轨迹**恒有内容**（不空白/不崩溃）。
+            try:
+                records, rows = _records_from_messages(messages)
+            except Exception:
+                records, rows = [], []
             if records:
                 # ★ 2026-08-16（用户需求：subagent 动态部分显示也跟 mainagent
                 #   一样）：追加运行中内容（运行中工具 / 正在思考/生成占位）
@@ -1510,8 +1518,17 @@ def build_subagent_trace_records(label: str, model=None) -> tuple:
     # 回退：槽位活动记录（无 messages / 消息为空 / 槽位不存在）
     if slot is not None:
         records, rows = _subagent_fallback_records(label, slot)
-        _subagent_live_records([len(records)], records, rows, slot)
-        return records, rows
+        if records:
+            _subagent_live_records([len(records)], records, rows, slot)
+            return records, rows
+        # ★ 2026-08-19（用户需求：轨迹 Trace 也能用回车显示后台 subagent）：
+        #   槽位存在但消息/提词/工具历史/结果全部缺失（异常数据）→ 兜底
+        #   单条占位记录——保证回车后台账/检查器不空白（有可读内容）。
+        rec = TraceRecord(
+            index=0, kind="content", summary="（该子代理无轨迹内容）",
+            lines=["（该子代理无轨迹内容）"],
+        )
+        return [rec], [rec]
     return [], []
 
 

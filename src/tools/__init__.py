@@ -20,11 +20,12 @@ from .web_search import WebSearchFunc as WebSearch
 from .web_fetch import WebFetchFunc as WebFetch
 from .skill_tool import SkillFunc as Skill
 from .subagent import SubagentFunc as Subagent
+from .subagent_opt import SubagentOptFunc as SubagentOpt
 from .mkdir import MkdirFunc as Mk
 from .registry import get_tools, register_tool
 
 __all__ = [
     'Func',
-    'Bash', 'BashOpt', 'ReadFile', 'Rm', 'WriteFile', 'UpdateFile', 'UserSelect', 'Search', 'Find', 'Ls', 'Mv', 'Cp', 'Mk', 'WebSearch', 'WebFetch', 'Subagent', 'Skill',
+    'Bash', 'BashOpt', 'ReadFile', 'Rm', 'WriteFile', 'UpdateFile', 'UserSelect', 'Search', 'Find', 'Ls', 'Mv', 'Cp', 'Mk', 'WebSearch', 'WebFetch', 'Subagent', 'SubagentOpt', 'Skill',
     'get_tools', 'register_tool'
 ]

@@ -155,6 +155,7 @@ TOOL_DISPLAY_NAME: dict[str, str] = {
     "str_replace_editor": "Edit",
     "file_editor": "Edit",
     "subagent": "Task",
+    "subagent_opt": "SubagentOpt",
     "find": "Grep",
     "grep": "Grep",
     "glob": "Glob",

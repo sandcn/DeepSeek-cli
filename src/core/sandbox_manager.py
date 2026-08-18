@@ -228,6 +228,38 @@ class SandboxManager:
                     if not self.message_history[idx]:
                         del self.message_history[idx]
 
+    def reindex_records(self, predicate, new_index: int) -> int:
+        """将满足 predicate 的文件变更记录重映射到 new_index（后台 subagent 索引修复用）。
+
+        场景（2026-08-18，后台 subagent 与上下文压缩并发）：后台 subagent
+        的文件变更经 contextvar 快照关联到派发轮次的消息索引；若 MainAgent
+        在后台 subagent 运行期间发生上下文压缩（remap_indices 删除派发轮次
+        消息），派发索引已失效（悬空记录——消息列表无该索引，回滚丢失）。
+        本方法把满足 predicate 的记录 message_index 改为 new_index 并重建
+        message_history，使记录关联到当前有效索引（语义降级：文件变更本身
+        已生效，重挂保证「回滚到当前状态」仍可恢复）。
+
+        Args:
+            predicate: 单参函数（FileChangeRecord）→ bool，选择要重挂的记录。
+            new_index: 重挂后的消息索引。
+
+        Returns:
+            实际重挂的记录数（0 表示无匹配记录）。
+        """
+        count = 0
+        with self.lock:
+            for records in self._fh.file_history.values():
+                for r in records:
+                    if predicate(r) and r.message_index != new_index:
+                        r.message_index = new_index
+                        count += 1
+            if count:
+                self._rebuild_message_history()
+                self._update_current_index(
+                    max(self.current_message_index, new_index),
+                )
+        return count
+
     def get_sandbox_info(self, message_index: int) -> Dict[str, Any]:
         """
         获取指定消息的沙盒信息
