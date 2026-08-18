@@ -150,6 +150,10 @@ class AppModel(_ToolOutputMixin):
         #   记录后进入其轨迹——嵌套 TraceView，内容与 mainagent 轨迹同构：
         #   system/user/assistant/tool 消息 → 台账 + 检查器；Esc/Ctrl+H 返回
         #   主轨迹，再次 Esc/Ctrl+H 关闭整个轨迹视图）。
+        # ★ P2（review）：显式初始化为 None——修复前仅在 ``reset_display``
+        #   赋值（消费方 trace_view 全走 ``getattr(model, "trace_subagent_label",
+        #   None)`` 防御读取）；显式初始化后直接属性访问不再抛 AttributeError。
+        self.trace_subagent_label: str | None = None
         # trace_tools_selected: 工具列表详情视图（fullscreen=="trace_tools"，
         #   主轨迹选中 #0 工具列表记录按 Enter 进入——2026-08-17 用户需求）
         #   当前选中的工具索引（schemas 下标，0-based；进入时置 0，导航写回

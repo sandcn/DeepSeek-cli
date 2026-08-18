@@ -268,7 +268,12 @@ def OpenBlockLines(props) -> object:
         lambda: _build_open_children(
             block, live_start, width, block_idx, is_live_content, sp,
         ),
-        (id(block.lines), n, live_start, width, block_idx, sp),
+        # ★ P3（review）：deps 补块身份 ``id(block)``——原 deps 仅
+        #   ``id(block.lines)``：当前 block.lines 只原地 extend（不替换）
+        #   时安全，但这是「lines 永不重新赋值」的调用方隐式约定；补块
+        #   身份后即使 lines 被整体替换（新列表复用旧 id 且行数相同）
+        #   也能识别块变化重建 children（消除 id 复用错误命中窗口）。
+        (id(block), id(block.lines), n, live_start, width, block_idx, sp),
     )
     return h(FRAGMENT, None, children)
 

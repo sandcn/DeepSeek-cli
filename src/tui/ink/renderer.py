@@ -59,10 +59,14 @@ import sys
 
 from src.tui._screen import (
     cursor_up, cursor_down, clear_line, cursor_forward, clear_screen,
-    cursor_hide, cursor_show,
+    cursor_hide, cursor_show, cursor_goto,
 )
 from .output import Frame
 from .diff import first_diff_line
+# ★ P3（review）：帧 diff 纯函数模块级导入——修复前 ``_diff_runs``/
+#   ``_is_tail_shifted``/``_find_tail_anchor`` 三个热路径包装方法每次调用
+#   执行函数内 import（渲染每帧多次 sys.modules 查找 + 属性解析）。
+from . import _frame_diff as _fd
 
 _logger = logging.getLogger(__name__)
 
@@ -837,10 +841,10 @@ class InkRenderer:
 
         ★ 模块边界（2026-08-05）：实现已迁至 ``_frame_diff.py``（纯函数，
         不依赖实例状态）；本方法为薄包装（测试 ``r._diff_runs(...)`` 实例
-        调用兼容）。
+        调用兼容）。★ P3（review）：经模块级 ``_fd`` 引用调用（免函数内
+        import 热路径开销）。
         """
-        from ._frame_diff import _diff_runs
-        return _diff_runs(prev, frame, n, start)
+        return _fd._diff_runs(prev, frame, n, start)
 
     def _is_tail_shifted(self, prev: Frame, frame: Frame, i: int, delta: int) -> bool:
         """检测尾部内容是否只是整体下移（仅新增 delta 行）。
@@ -848,8 +852,7 @@ class InkRenderer:
         ★ 模块边界（2026-08-05）：实现已迁至 ``_frame_diff.py``（纯函数）；
         本方法为薄包装（测试实例调用兼容）。
         """
-        from ._frame_diff import _is_tail_shifted
-        return _is_tail_shifted(prev, frame, i, delta)
+        return _fd._is_tail_shifted(prev, frame, i, delta)
 
     def _find_tail_anchor(self, prev: Frame, frame: Frame, delta: int) -> int:
         """从文档末尾向前找尾部位移锚点（方向4 优化）。
@@ -857,8 +860,7 @@ class InkRenderer:
         ★ 模块边界（2026-08-05）：实现已迁至 ``_frame_diff.py``（纯函数）；
         本方法为薄包装（测试实例调用兼容）。
         """
-        from ._frame_diff import _find_tail_anchor
-        return _find_tail_anchor(prev, frame, delta)
+        return _fd._find_tail_anchor(prev, frame, delta)
 
     def _rewrite_drifted(
         self, frame: Frame, prev_h: int, new_h: int, first_diff: int | None = None,
@@ -1087,7 +1089,10 @@ class InkRenderer:
             self._stream.write(cursor_show() if visible else cursor_hide())
             self._stream.flush()
         except (OSError, ValueError):
-            pass
+            # ★ P3（review）：光标序列写失败留痕（不裸吞）——仅记 debug。
+            _logger.debug(
+                "set_cursor_visible 写入失败 visible=%s", visible, exc_info=True,
+            )
 
     def place_cursor(self, row: int, col: int) -> None:
         """将光标放置到文档坐标 (row, col)（1-based）。
@@ -1141,6 +1146,29 @@ class InkRenderer:
     def set_line_callback(self, callback) -> None:
         """设置新增行回调（输出历史跟踪）。"""
         self._line_callback = callback
+
+    # ── 公开访问器 ───────────────────────────────────
+
+    @property
+    def stream(self):
+        """底层输出流（useStdout 等外部消费方的公开访问入口）。
+
+        ★ P3（review）：暴露公开 property——修复前 ``session.py`` 等跨对象
+        直读私有成员 ``renderer._stream``。
+        """
+        return self._stream
+
+    def goto_bottom(self, rows: int) -> None:
+        """将物理光标绝对定位到第 rows 行第 1 列（suspend 后弹窗起点）。
+
+        ★ P3（review）：公开 API——修复前 ``session.suspend`` 直写私有成员
+        ``renderer._stream``（跨对象私有访问）。
+
+        Args:
+            rows: 终端行号（1-based；内部钳制 >= 1）。
+        """
+        self._stream.write(cursor_goto(max(1, int(rows)), 1))
+        self._stream.flush()
 
     def full_clear(self) -> None:
         """全帧清屏（Claude TUI parity 步骤 3.1，Ctrl+L 清屏）。

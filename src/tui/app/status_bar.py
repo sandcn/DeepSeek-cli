@@ -51,21 +51,28 @@ from src.tui.app._fx import SPINNER_FRAMES as _SPINNER_FRAMES  # noqa: F401
 # 方向D 步骤16：TTL 常量化（_SNAPSHOT_TTL）——与状态栏 1s 时间桶对齐，
 # 快照与显示节奏不产生错位。
 _SNAPSHOT_TTL = 1.0
-_snapshot_cache: tuple[float, dict] = (0.0, {})
 
 
-def _snapshot() -> dict:
-    global _snapshot_cache
+def _snapshot(model) -> dict:
+    """api 快照查询（TTL 缓存 ≤1Hz）。
+
+    ★ P2（review）：缓存挂 model 实例（``model._status_snapshot_cache``）
+    ——修复前为模块级全局 ``_snapshot_cache``：多个 AppModel 实例（测试
+    隔离/多会话）共享同一 TTL 快照，A 实例刷新后 B 实例在 TTL 内读到 A
+    的 token/耗时数据。实例缓存后各模型互不串扰（渲染线程单写，GIL 原子
+    赋值足够）。
+    """
     now = time.monotonic()
-    if now - _snapshot_cache[0] < _SNAPSHOT_TTL:
-        return _snapshot_cache[1]
+    cache = getattr(model, "_status_snapshot_cache", None)
+    if cache is not None and now - cache[0] < _SNAPSHOT_TTL:
+        return cache[1]
     try:
         from src.tui._snapshot import _get_snapshot
         fn = _get_snapshot()
         data = fn() if fn is not None else {}
     except Exception:
         data = {}
-    _snapshot_cache = (now, data)
+    model._status_snapshot_cache = (now, data)
     return data
 
 
@@ -146,7 +153,7 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             return model_part + [StyledRun("  ", None)] + _build_bg_bash_runs(bg_bash_count, False)
         return model_part
 
-    snap = _snapshot()
+    snap = _snapshot(model)
     total = snap.get("total_tokens", 0)
     elapsed = snap.get("elapsed_seconds", 0.0)
     speed = snap.get("per_second_speed", 0.0)

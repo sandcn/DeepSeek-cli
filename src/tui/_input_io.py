@@ -430,6 +430,7 @@ class InputIO:
                 self._paste_partial = b""
                 return first_chars
         # 有更多数据（pending 或 select 确认）→ 读取全部可读字节
+        truncated = False
         try:
             while True:
                 has_more, _, _ = select.select([fd], [], [], 0.01)
@@ -440,9 +441,20 @@ class InputIO:
                     break
                 extra += more
                 if len(extra) >= 262144:
+                    # ★ P2（review）：粘贴上限静默截断修复——超出部分被
+                    #   丢弃且无任何提示，粘贴大文件的用户会莫名丢失尾部
+                    #   内容且无观测线索。达上限记 warning（含读取字节数，
+                    #   可观测）；剩余缓冲字节由下一轮按键路径自然消费
+                    #   （不再循环读取，防超大粘贴占满内存）。
+                    truncated = True
                     break
         except (ValueError, OSError, TypeError, AttributeError):
             pass
+        if truncated:
+            _logger.warning(
+                "粘贴内容超过 256KB 上限已截断（本次读取 %d 字节）",
+                len(extra),
+            )
         if not extra:
             return first_chars
         # P1-1（review）：批量读取/select 读入的 extra 若含 ESC（0x1b）——

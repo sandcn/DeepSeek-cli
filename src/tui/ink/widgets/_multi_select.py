@@ -123,7 +123,16 @@ def MultiSelect(props: dict) -> Element:
             set_cursor_idx(cur_cursor)
         cur_selected = selected_ref.current
         if event.kind == "escape" and on_cancel is not None:
-            _call(on_cancel, items[cur_cursor])
+            # ★ P1（review）：onCancel 实参改为选中 values 列表——修复前传
+            #   ``items[cur_cursor]``（当前光标项 dict），与 docstring 声明的
+            #   ``(selected: list) -> None`` 契约不符（取消场景常需回填已勾
+            #   选项）。与 onSubmit 的 ordered 收集逻辑一致（按 items 顺序、
+            #   原始 value、_hashable 成员判断）。
+            ordered = [
+                item["value"] for item in items
+                if _hashable(item["value"]) in cur_selected
+            ]
+            _call(on_cancel, ordered)
             return True
         nav = None
         if event.kind == "arrow_up":

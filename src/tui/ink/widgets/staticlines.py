@@ -31,20 +31,34 @@ from ..registry import register_host
 __all__ = ["StaticLines"]
 
 
+def _resolve_lines(fiber) -> list:
+    """解析 props.lines 为 list（list 直接返回；其他可迭代 list 化）。
+
+    ★ P2（review）：解析结果挂 fiber 缓存（键为原始对象身份）——修复前
+    ``_measure`` 将 list 化结果**写回 fiber.props**（违反 reconciler
+    「props 从不原地修改，仅整体替换」契约：污染 ``_set_props`` 值比较
+    基准，props 引用每帧更新 → ``_measure_cache`` 引用级命中失效）。
+    改挂 fiber 属性后 props 保持不可变；生成器场景 measure/paint 共享同
+    一次 list 化结果（measure 先耗尽生成器，paint 经缓存取同一列表——
+    修复写回前「paint 拿到已耗尽生成器渲染空行」的原始问题同样解决）。
+    """
+    lines = fiber.props.get("lines") or []
+    if isinstance(lines, list):
+        return lines
+    cached = getattr(fiber, "_resolved_lines", None)
+    if cached is not None and cached[0] is lines:
+        return cached[1]
+    try:
+        resolved = list(lines)
+    except TypeError:
+        resolved = []
+    fiber._resolved_lines = (lines, resolved)
+    return resolved
+
+
 def _measure(fiber, avail_w) -> tuple[int, int]:
     """测量：宽度取可用宽度，高度 = 行数。"""
-    lines = fiber.props.get("lines") or []
-    if not isinstance(lines, list):
-        # ★ P3（review）防御层：绕过组件函数直接 h("static-lines") 时 lines
-        #   可能非 list（生成器）——list() 化防 ``len()`` TypeError（组件函数
-        #   StaticLines 已守卫，此处兜底非常规路径）。list 化结果**写回
-        #   fiber.props**——修复前 _measure/_paint 各自 ``list(lines)`` 消费
-        #   生成器：_paint 拿到已耗尽生成器渲染空行。
-        try:
-            lines = list(lines)
-        except TypeError:
-            lines = []
-        fiber.props["lines"] = lines
+    lines = _resolve_lines(fiber)
     return (avail_w, len(lines))
 
 
@@ -58,14 +72,10 @@ def _paint(fiber, canvas) -> None:
     box = fiber.layout_box
     if box is None:
         return
-    lines = fiber.props.get("lines") or []
-    if not isinstance(lines, list):
-        # ★ P3（review）防御层：同 _measure——非常规路径（绕过组件函数）下
-        #   lines 可能非 list（生成器），list() 化防 ``len()`` TypeError。
-        try:
-            lines = list(lines)
-        except TypeError:
-            lines = []
+    # ★ P2（review）：经 ``_resolve_lines`` 解析（非 list 可迭代 list 化 +
+    #   fiber 缓存）——修复前 _paint 独立 list() 化，measure 先耗尽生成器
+    #   时 paint 拿到空列表渲染空行；缓存后共享同一次解析结果。
+    lines = _resolve_lines(fiber)
     n = len(lines)
     if box.x == 0:
         # ★ 增量快路径（大历史 O(1)/帧）：静态行跨帧身份复用——前缀缓存挂

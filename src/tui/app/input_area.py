@@ -674,7 +674,9 @@ def _input_snap_key(props: dict, width: int, now: float):
     比较——BUG-44 修复后 str 按值比较；其余按 is 引用比较）。text 直接放
     ``text_str`` 值（修复前 ``hash()+len()`` 指纹：哈希碰撞可致**错误命中**
     ——不同文本 hash 相同且 len 相同时代入旧缓存；str 已按值比较，无需指纹）。
-    query 保持 hash()+len() 指纹（兼容旧行为，query 通常较短且稳定）。嵌套
+    ★ P3（review）：query 同样直传字符串值——修复前保留 ``hash()+len()``
+    指纹（两个不同 query hash 与 len 均相同时错误命中缓存，搜索覆盖行显示
+    陈旧查询）；``_object_is`` 对 str 按值比较已支持，指纹无必要。嵌套
     tuple 每帧新建会 is miss，已展开为原子值。时间桶与 _build_lines 对齐
     （status_active 0.1s 桶 / 空闲 0.25s 桶）。
 
@@ -700,8 +702,8 @@ def _input_snap_key(props: dict, width: int, now: float):
         empty_mode_flag = False
     # ★ P2-3（review 修复）：text 直接放 ``text_str`` 值——``_object_is`` 对
     #   str 按值比较（BUG-44 修复后），无需 hash()+len() 指纹（哈希碰撞可致
-    #   错误命中：不同文本 hash+len 相同时代入旧缓存）。query 保持指纹（兼容
-    #   旧行为）。
+    #   错误命中：不同文本 hash+len 相同时代入旧缓存）。
+    # ★ P3（review）：query 同样直传字符串值（同上指纹去除）。
     return (
         text_str,
         max_input,
@@ -723,8 +725,7 @@ def _input_snap_key(props: dict, width: int, now: float):
         empty_mode_flag,  # ★ 主 Agent 运行模式（Ctrl+B 切换即时刷新）
         # history_search 指纹（局部变量提取——一次 props.get）
         bool(search is not None and bool(getattr(search, "active", False))),
-        hash(getattr(search, "query", "") or "") if search is not None else 0,
-        len(getattr(search, "query", "") or "") if search is not None else 0,
+        str(getattr(search, "query", "") or "") if search is not None else "",
         id(getattr(search, "matches", None)) if search is not None else -1,
         len(getattr(search, "matches", None) or []) if search is not None else 0,
         getattr(search, "index", -1) if search is not None else -1,

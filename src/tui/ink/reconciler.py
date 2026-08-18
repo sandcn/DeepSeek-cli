@@ -114,8 +114,9 @@ class Reconciler:
     def __init__(self, schedule_callback: Callable[[], None] | None = None) -> None:
         self._schedule_callback = schedule_callback
         self._pending_destroys: list[tuple[Fiber, EffectHook]] = []
-        #: input router 签名缓存（同签名复用上次 router，免每帧重建闭包）
-        self._input_router_cache: tuple[tuple, object] | None = None
+        #: input router 签名缓存（同签名复用上次 router，免每帧重建闭包）：
+        #: ``(signature, router, hooks_list, paste_hooks)`` 四元组
+        self._input_router_cache: tuple | None = None
         # ★ P3-17 说明（review 方向）：``_hooks.set_schedule_callback`` 为
         #   **模块级单例**（hooks 模块全局状态，非实例字段）——**单会话约束**：
         #   同一进程仅一个活跃 Reconciler/InkSession 会话。多会话并发会相互
@@ -816,19 +817,37 @@ class Reconciler:
             # ★ fullscreen hook 的 is_active 参与签名：打开/关闭全屏（active
             #   切换）→ 签名变化 → router 重建（吞掉/放行语义立即生效）。
             (hook.seq, hook.is_active) for hook in fullscreen_hooks
+        ) + tuple(
+            # ★ P1（review）：paste_hooks 纳入签名——修复前粘贴钩子完全不
+            #   参与签名：组件动态挂载 usePaste（paste_hooks 从空变非空）
+            #   而 input/fullscreen hooks 未变 → 签名不变 → 命中旧缓存 →
+            #   新粘贴 handler 永不生效；卸载 usePaste → 旧 router 闭包仍
+            #   持有已卸载组件的 paste handler 引用（陈旧路由）。签名加入
+            #   (seq, is_active, id(handler)) 后挂载/卸载/替换均触发重建。
+            (hook.seq, hook.is_active, id(hook.handler)) for hook in paste_hooks
         )
         has_focus_ids = bool(getattr(_hooks, "_focus_ids", None)) and bool(getattr(_hooks, "_focus_enabled", True))
         if self._input_router_cache is not None:
-            cached_signature, cached_router, cached_hooks = self._input_router_cache
+            cached_signature, cached_router, cached_hooks, cached_paste = self._input_router_cache
             if cached_signature == signature and cached_router._ink_has_focus_ids == has_focus_ids:
                 # ★ 方向1 步骤3（router id 复用修复）：id(hook.handler) 在 handler
                 #   被 GC 后 id 可复用 → 签名误判未变 → 复用过期 router 闭包。
                 #   缓存保存 hooks_list，命中时逐一 ``is`` 比对 hook/handler
                 #   引用仍有效（低开销：每帧一次、hooks 数量极少）。FullscreenHook
                 #   无 handler——getattr 兜底（None is None）。
-                if len(cached_hooks) == len(hooks_list) and all(
-                    a is b and getattr(a, "handler", None) is getattr(b, "handler", None)
-                    for a, b in zip(cached_hooks, hooks_list)
+                #   ★ P1（review）：paste_hooks 同步保存缓存并逐项 ``is`` 比对
+                #   （与 input_hooks 同构——粘贴 handler 引用失效同样触发重建）。
+                if (
+                    len(cached_hooks) == len(hooks_list)
+                    and all(
+                        a is b and getattr(a, "handler", None) is getattr(b, "handler", None)
+                        for a, b in zip(cached_hooks, hooks_list)
+                    )
+                    and len(cached_paste) == len(paste_hooks)
+                    and all(
+                        a is b and getattr(a, "handler", None) is getattr(b, "handler", None)
+                        for a, b in zip(cached_paste, paste_hooks)
+                    )
                 ):
                     return cached_router
 
@@ -853,7 +872,10 @@ class Reconciler:
             # ── Tab/Shift+Tab 焦点切换（React Ink useFocusManager）──
             if has_focus_ids and _event_key_tab(event):
                 # 非 CSI u 时 modifier=0（普通 Tab）；Shift+Tab 需 CSI u 协议
-                if getattr(event, "modifier", 0) >= 2:
+                # ★ P3（review）：``>= 2`` → ``== 2``——modifier=3（Alt+Tab）
+                #   /4（Alt+Shift）等不应误判为 Shift+Tab 触发 focus_previous
+                #   （精确匹配 CSI u modifier=2 的 Shift 语义）。
+                if getattr(event, "modifier", 0) == 2:
                     _hooks._focus_previous()
                 else:
                     _hooks._focus_next()
@@ -882,7 +904,7 @@ class Reconciler:
             return False
 
         router._ink_has_focus_ids = has_focus_ids
-        self._input_router_cache = (signature, router, hooks_list)
+        self._input_router_cache = (signature, router, hooks_list, paste_hooks)
         return router
 
     def _collect_input_hooks(self, fiber: Fiber | None, out: list[InputHook], paste_out: list[PasteHook] | None = None) -> None:

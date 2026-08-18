@@ -125,10 +125,13 @@ def Table(props: dict) -> Element:
                 cell = r[i] if i < len(r) else ""
                 cells.append(cell + " " * (widths[i] - wcswidth_simple(cell)))
             text = (" " * padding).join(cells).rstrip()
+            # ★ P2（review）：行元素补显式 key（``tbl-{ri}``）——免位置匹配
+            #   依赖（数据行数变化时按索引复用），与 listview/tree 等全 key
+            #   化组件风格一致。
             if has_header and ri == 0:
-                lines.append(h(TEXT, {"children": text, "style": header_style}))
+                lines.append(h(TEXT, {"children": text, "style": header_style, "key": f"tbl-{ri}"}))
             else:
-                lines.append(h(TEXT, {"children": text, "style": cell_style}))
+                lines.append(h(TEXT, {"children": text, "style": cell_style, "key": f"tbl-{ri}"}))
         # ★ 阶段2（标准布局容器重构）：column BOX → Column（语义化门面，输出等价）。
         return h(Column, None, lines)
 
@@ -140,7 +143,9 @@ def Table(props: dict) -> Element:
     sep = _table_border_row(chars, cell_w, ml, cr, mr)
     bottom = _table_border_row(chars, cell_w, bl, mb, br)
 
-    lines = [h(TEXT, {"children": top, "style": border_style})]
+    # ★ P2（review）：带边框行元素补显式 key（top/数据行/分隔线/bottom）
+    #   ——同无边框分支，免位置匹配依赖。
+    lines = [h(TEXT, {"children": top, "style": border_style, "key": "tbl-top"})]
     for ri, r in enumerate(rows):
         cells = []
         for i in range(ncols):
@@ -148,11 +153,11 @@ def Table(props: dict) -> Element:
             cells.append(" " * padding + cell + " " * (widths[i] - wcswidth_simple(cell)) + " " * padding)
         row_text = vt + vt.join(cells) + vt
         if has_header and ri == 0:
-            lines.append(h(TEXT, {"children": row_text, "style": header_style}))
-            lines.append(h(TEXT, {"children": sep, "style": border_style}))
+            lines.append(h(TEXT, {"children": row_text, "style": header_style, "key": f"tbl-{ri}"}))
+            lines.append(h(TEXT, {"children": sep, "style": border_style, "key": "tbl-sep"}))
         else:
-            lines.append(h(TEXT, {"children": row_text, "style": cell_style}))
-    lines.append(h(TEXT, {"children": bottom, "style": border_style}))
+            lines.append(h(TEXT, {"children": row_text, "style": cell_style, "key": f"tbl-{ri}"}))
+    lines.append(h(TEXT, {"children": bottom, "style": border_style, "key": "tbl-bottom"}))
     # ★ 阶段2（标准布局容器重构）：column BOX → Column（语义化门面，输出等价）。
     return h(Column, None, lines)
 

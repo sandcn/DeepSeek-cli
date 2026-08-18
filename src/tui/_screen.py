@@ -492,7 +492,10 @@ def process_sigwinch() -> bool:
         width, height = _get_terminal_size()
     except Exception:
         width, height = 80, 24
-    for _, cb in _sigwinch_callbacks:
+    # ★ P3（review）：迭代前快照——回调内调用 register/unregister 会修改
+    #   被迭代列表（漏项/错位，不抛异常）。快照迭代保证本帧注册表增删不
+    #   影响当前遍历（下帧起生效，语义安全）。
+    for _, cb in list(_sigwinch_callbacks):
         try:
             cb(width, height)
         except Exception:

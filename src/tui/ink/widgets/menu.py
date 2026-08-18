@@ -76,6 +76,25 @@ def _next_selectable(items: list, cur: int, delta: int) -> int:
     return cur
 
 
+def _selectable_from(items: list, start: int, delta: int) -> int:
+    """从 start 出发找可选项——**先查自身**再沿方向前进（循环；无则返回 start）。
+
+    ★ P1（review）：Home/End 落点偏移修复——``_next_selectable`` 先移动再
+    检查（跳过起始位置自身），用于 Home（应落在首项若其可选）时若第 0 项
+    可选会跳到第 1 个可选项；End 同理无法到达末项。本函数先检查 start
+    自身可选性，可选即落 start，否则沿 delta 前进（含自身共检查 n 个位置）。
+    """
+    n = len(items)
+    if n == 0:
+        return start
+    cur = start % n
+    for _ in range(n):
+        if _is_selectable(items[cur]):
+            return cur
+        cur = (cur + delta) % n
+    return start
+
+
 def Menu(props: dict) -> Element:
     """React Ink 风格垂直菜单控件。
 
@@ -177,7 +196,12 @@ def Menu(props: dict) -> Element:
                         _logger.debug("Menu onHighlight 回调异常", exc_info=True)
             return True
         if event.kind in ("home", "end"):
-            new = _next_selectable(items, 0, 1) if event.kind == "home" else _next_selectable(items, len(items) - 1, -1)
+            # ★ P1（review）：Home/End 落点偏移修复——``_next_selectable`` 先
+            #   移动再检查（跳过起始位置），Home（起点 0）在第 0 项可选时会
+            #   落到第 1 个可选项、End（起点 n-1）在末项可选时落到倒数第二
+            #   个可选项。改用 ``_selectable_from``（先查自身再前进）：Home
+            #   落首个可选项、End 落末个可选项（含起点自身可选的情况）。
+            new = _selectable_from(items, 0, 1) if event.kind == "home" else _selectable_from(items, len(items) - 1, -1)
             # ★ P3（review）：new == cur（已在首/末可选项且目标即当前）时不再
             #   重复触发 onHighlight——修复前 home/end 无条件回调（重复回调）。
             if new != cur:
@@ -254,7 +278,10 @@ def Menu(props: dict) -> Element:
         if shortcut and shortcut_align == "right":
             # 行内两端对齐：标签 + 间距 + 快捷键（右侧对齐）
             pad = max(min_gap, max_label_w - wcswidth_simple(label) + min_gap)
-            rows.append(h(Row, {"height": 1}, [
+            # ★ P2（review）：Row 补显式 key——与其他分支（``menu-{i}``）对齐，
+            #   免无 key 元素与相邻 keyed TEXT 混排走位置匹配（兄弟增删时
+            #   复用错位风险）。
+            rows.append(h(Row, {"height": 1, "key": f"menu-{i}"}, [
                 h(TEXT, {"children": label, "style": style, "height": 1}),
                 h(TEXT, {"children": " " * pad, "height": 1}),
                 h(TEXT, {"children": shortcut, "style": shortcut_style, "height": 1}),

@@ -33,7 +33,6 @@ from src.renderer._locks import _try_acquire_output_lock
 from src.tui._screen import (
     TerminalWidthCache,
     _get_terminal_size,
-    cursor_goto,
     process_sigwinch,
 )
 from .reconciler import Reconciler
@@ -176,10 +175,14 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   空闲时跳过渲染（避免 10Hz 全量重建整棵树 → CPU 100%）
         self._dirty: bool = False
         self._recover_attempts: int = 0
-        self._recovering_event: threading.Event = threading.Event()
         self._render_version: int = 0
         self._cmd_seq = itertools.count()
         self._input = None  # Phase F 接线注入
+        # ★ P2（review）：``_line_tracker`` 显式初始化——修复前首帧赋值仅在
+        #   ``set_line_tracker``（属性初始化依赖调用时序），消费方
+        #   ``_lifecycle.py`` 走 ``getattr(self._engine, "_line_tracker", None)``
+        #   防御式访问；显式 None 后直接属性访问不再抛 AttributeError。
+        self._line_tracker = None
         # use_input router 发布缓存（_input 未注入时记录，set_input 后补发）
         self._pending_input_router = None
         _hooks.set_input_router_callback(self._on_input_router)
@@ -191,7 +194,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   输出流，stderr 为 sys.__stderr__（紧急路径一致）。
         _hooks.set_std_accessors(
             lambda: self._input,
-            lambda: getattr(self._ink_renderer, "_stream", None),
+            lambda: self._ink_renderer.stream,
             lambda: sys.__stderr__,
         )
         # ★ React Ink v6 hooks（方向 E）：session 注入 window size accessor /
@@ -269,7 +272,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._stderr_stream = stream if stream is not None else sys.__stderr__
         _hooks.set_std_accessors(
             lambda: self._input,
-            lambda: getattr(self._ink_renderer, "_stream", None),
+            lambda: self._ink_renderer.stream,
             lambda: self._stderr_stream,
         )
 
@@ -329,7 +332,10 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             f.write(text)
             f.flush()
         except (OSError, ValueError):
-            pass
+            # ★ P3（review）：紧急写失败留痕（不裸吞）——紧急路径失败完全
+            #   不可观测会掩盖流已关闭等问题；仅记 debug（紧急路径不宜
+            #   再生副作用）。
+            _logger.debug("紧急输出写入失败 stream=%s", stream, exc_info=True)
 
     # ── 公开访问器 ───────────────────────────────────
 
@@ -681,10 +687,11 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   不丢弃，resume 后渲染线程处理显示（修复前无条件丢弃 → 偶发丢失）。
         self._drain_queue_safe(keep_content=True)
         # 定位光标到终端底部：交互工具同步渲染弹窗的起点
+        # ★ P3（review）：经 InkRenderer 公开 API（``goto_bottom``）——修复前
+        #   跨对象直写私有成员 ``_ink_renderer._stream``。
         try:
             _, h = _get_terminal_size()
-            self._ink_renderer._stream.write(cursor_goto(max(1, h), 1))
-            self._ink_renderer._stream.flush()
+            self._ink_renderer.goto_bottom(max(1, h))
         except Exception:
             _logger.debug("suspend 光标定位异常", exc_info=True)
 
@@ -1138,7 +1145,9 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 self._render_crashed.clear()
             except Exception:
                 pass
-            self._recovering_event.set()
+            # ★ P3（review）：删除死状态 ``_recovering_event``——原字段仅在此
+            #   ``set()`` 从未被读取/清除（全项目无消费方），崩溃恢复进行中
+            #   的可观测性已由 ``_render_crashed`` / 日志覆盖。
             self._render_thread = threading.Thread(target=self._render, daemon=True)
             self._render_thread.start()
             _logger.info("render 线程已自动恢复 (第 %d/%d 次)",

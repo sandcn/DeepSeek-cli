@@ -367,7 +367,12 @@ def UserSelectPopup(props) -> object:
             # 每个 item 重复 total 次 → 弹窗选项重复多份）。
             checked_now = list(getattr(us, "checked", []) or [])
             if multi and is_checked is not None:
-                checked_now = [i for i, _v in enumerate(options) if is_checked]
+                # ★ P2（review）：``[i for i, _v in enumerate(options) if
+                #   is_checked]`` 的 if 判断的是循环外常量——结果为「全选
+                #   索引」或空列表。改为与 _split_renderer 一致的单点写法
+                #   （当前 item 勾选与否），防未来消费方读取完整勾选集时
+                #   产生「全部勾选」错误。
+                checked_now = [idx] if is_checked else []
             return _build_regular_row(
                 us, options, multi, idx, cur, checked_now, opt_w,
             )

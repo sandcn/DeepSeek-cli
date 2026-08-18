@@ -196,6 +196,14 @@ class Line:
             return NotImplemented
         return self.runs == other.runs
 
+    # ★ P3（review）：显式声明不可哈希（固化契约）——定义 ``__eq__`` 后
+    #   Python 自动置 ``__hash__ = None``；Line 为**可变**对象（append 可
+    #   修改 runs，值比较基于 runs），可变对象实现哈希会违反哈希不变式
+    #   （append 后哈希漂移，已入 set/dict 的对象丢失）。显式声明 + 注释
+    #   固化：如需集合/字典键用法须经 ``_hashable`` 归一化（业务值转
+    #   可哈希键，全项目现状即如此）。
+    __hash__ = None
+
 
 # ═══════════════════════════════════════════════════════════
 # Frame — 一帧（行列表）
