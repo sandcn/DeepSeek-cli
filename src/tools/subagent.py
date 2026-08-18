@@ -195,18 +195,20 @@ class SubagentFunc(Func):
         if isinstance(agent, SubAgent):
             return ("错误：后台 subagent 仅主 Agent 可派发"
                     "（SubAgent 内不可后台派发 subagent）")
-        if agent is None or not hasattr(agent, '_register_background_task'):
+        if agent is None or not hasattr(agent, '_register_subagent_task'):
             return "(后台 subagent 需要关联 Agent 上下文，当前未关联)"
 
         task_id = f"sa-{uuid.uuid4().hex[:12]}"
         task = asyncio.ensure_future(self._run_background_subagent(task_id))
 
-        # ── 任务记录注册到 agent._background_tasks（与 bash 后台同表） ──
-        # _process_background_tasks 据此在对话轮次间隙自动处理：
-        #   已完成 → 结果（JSON：task_id + 输出）作为用户消息插入；
-        #   未完成 → 带超时等待（_BACKGROUND_WAIT_TIMEOUT），超时后标记
-        #   managed_by_tool 交 subagent_opt 工具管理。
-        agent._register_background_task(task_id, {
+        # ── 任务记录注册到 agent._subagent_tasks（subagent 专用表） ──
+        # ★ 与 bash 后台任务（_background_tasks）分表独立：bash_opt 无法
+        #   触达本表，subagent_opt 仅操作本表。_process_subagent_tasks
+        #   据此在对话轮次间隙自动处理：
+        #     已完成 → 结果（JSON：task_id + 输出）作为用户消息插入；
+        #     未完成 → 带超时等待（_BACKGROUND_WAIT_TIMEOUT），超时后标记
+        #     managed_by_tool 交 subagent_opt 工具管理。
+        agent._register_subagent_task(task_id, {
             "task": task,
             "command": f"subagent({self.description})",
             "description": self.description,
@@ -237,8 +239,9 @@ class SubagentFunc(Func):
         复用 ParallelExecutor.run()（独立模式）执行单个 SubAgent——
         与前台路径一致的 UI 事件（SubagentPromptEvent/AgentResultEvent）、
         面板管理、stdout 泄漏检测与结果格式化。完成后经
-        ``agent._complete_background_task`` 写入任务记录，供
-        _process_background_tasks / subagent_opt 读取。
+        ``agent._complete_subagent_task`` 写入 subagent 任务记录（subagent
+        专用表 _subagent_tasks），供 _process_subagent_tasks / subagent_opt
+        读取——与 bash 后台任务（_background_tasks）完全独立。
 
         文件沙盒（SandboxManager）处理：
         - 后台任务由 asyncio.ensure_future 创建，复制派发时 contextvars
@@ -295,9 +298,9 @@ class SubagentFunc(Func):
                 result = f"(后台 subagent {task_id} 未返回结果)"
         except asyncio.CancelledError:
             result = f"(后台 subagent {task_id} 已被取消)"
-            if agent is not None and hasattr(agent, '_complete_background_task'):
+            if agent is not None and hasattr(agent, '_complete_subagent_task'):
                 try:
-                    agent._complete_background_task(task_id, result, status="cancelled")
+                    agent._complete_subagent_task(task_id, result, status="cancelled")
                 except Exception:
                     logger.exception("后台 subagent 取消结果写入失败")
             return
@@ -332,9 +335,9 @@ class SubagentFunc(Func):
             except Exception:
                 logger.debug("后台 subagent 沙盒索引修复失败", exc_info=True)
 
-        if agent is not None and hasattr(agent, '_complete_background_task'):
+        if agent is not None and hasattr(agent, '_complete_subagent_task'):
             try:
-                agent._complete_background_task(task_id, result)
+                agent._complete_subagent_task(task_id, result)
             except Exception:
                 logger.exception("后台 subagent 结果写入失败")
         else:

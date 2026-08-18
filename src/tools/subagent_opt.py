@@ -122,26 +122,26 @@ class SubagentOptFunc(Func):
         if isinstance(agent, SubAgent):
             return ("错误：subagent_opt 仅主 Agent 可用"
                     "（SubAgent 内不可管理后台 subagent）")
-        if agent is None or not hasattr(agent, '_background_tasks'):
+        if agent is None or not hasattr(agent, '_subagent_tasks'):
             return "(后台 subagent 操作需要关联 Agent 上下文，当前未关联)"
 
         # ★ task_id 前缀校验（P2，review 2026-08-18）：subagent 后台任务 id
-        #   恒为 "sa-xxx"——误传 bash 后台任务（bg-xxx）时直接提示，防止
-        #   kill 只 cancel 任务不杀进程树导致 bash 子进程泄漏（bash 任务应
-        #   用 bash_opt 管理）。
+        #   恒为 "sa-xxx"，且注册在 subagent 专用表 _subagent_tasks 中——
+        #   误传 bash 后台任务（bg-xxx）时直接提示（bash 任务在 bash 专用表
+        #   _background_tasks，本工具查不到也不该操作，需用 bash_opt 管理）。
         if not self.task_id.startswith("sa-"):
             return (f"(错误：task_id 必须是 subagent 后台启动（默认后台）返回的 "
                     f"'sa-xxx' 格式 ID，当前: {self.task_id}。"
                     f"bash 后台任务请用 bash_opt 操作)")
 
-        rec = agent._background_tasks.get(self.task_id)
+        rec = agent._subagent_tasks.get(self.task_id)
         if rec is None:
             return (f"(后台 subagent 任务不存在: {self.task_id}。"
                     f"请先用 subagent 启动后台任务（默认后台）获取 task_id)")
 
         # ★ 仅对有效 op 标记 managed_by_tool（P2，review 2026-08-18）：
         #   未知 op（如 "pause"）不修改任务管理状态——否则任务被标记为
-        #   "已由工具管理"但模型不知道如何继续，_process_background_tasks
+        #   "已由工具管理"但模型不知道如何继续，_process_subagent_tasks
         #   不再自动等待/插入结果，任务进入「失联」状态。
         if self.op in ("read", "wait", "kill"):
             rec["managed_by_tool"] = True
@@ -180,8 +180,8 @@ class SubagentOptFunc(Func):
     async def _op_wait(self, agent, rec: dict) -> str:
         """等待任务完成并返回结果（JSON：task_id/description/status/output）。
 
-        完成（或已完成后）把任务记录从 tasklist 移除——大模型已通过本工具
-        拿到结果，避免 _process_background_tasks 再以用户消息重复插入。
+        完成（或已完成后）把任务记录从 subagent 表移除——大模型已通过本工具
+        拿到结果，避免 _process_subagent_tasks 再以用户消息重复插入。
 
         ★ 使用 asyncio.wait 而非 wait_for：wait_for 超时会 cancel 后台任务
         本身（任务被误杀），wait 只观察不干预，超时后任务继续运行。
@@ -211,11 +211,11 @@ class SubagentOptFunc(Func):
             "status": status,
             "output": result,
         }
-        # 移除任务记录（避免 _process_background_tasks 重复插入用户消息）
-        if hasattr(agent, "_remove_background_task"):
-            agent._remove_background_task(self.task_id)
+        # 移除任务记录（避免 _process_subagent_tasks 重复插入用户消息）
+        if hasattr(agent, "_remove_subagent_task"):
+            agent._remove_subagent_task(self.task_id)
         else:
-            agent._background_tasks.pop(self.task_id, None)
+            agent._subagent_tasks.pop(self.task_id, None)
         return json.dumps(payload, ensure_ascii=False)
 
     # ── op=kill ──────────────────────────────────────────
@@ -224,7 +224,7 @@ class SubagentOptFunc(Func):
         """取消后台 subagent 任务并从 tasklist 移除。
 
         取消后台 asyncio 任务：_run_background_subagent 的 CancelledError
-        分支会把结果写为「已被取消」（_complete_background_task），随后
+        分支会把结果写为「已被取消」（_complete_subagent_task），随后
         记录被移除（后台任务已终止，无需再被对话轮次处理）。
         """
         task = rec.get("task")
@@ -236,8 +236,8 @@ class SubagentOptFunc(Func):
                 pass  # 任务取消过程异常忽略
 
         # 移除任务记录并更新 TUI 计数
-        if hasattr(agent, "_remove_background_task"):
-            agent._remove_background_task(self.task_id)
+        if hasattr(agent, "_remove_subagent_task"):
+            agent._remove_subagent_task(self.task_id)
         else:
-            agent._background_tasks.pop(self.task_id, None)
+            agent._subagent_tasks.pop(self.task_id, None)
         return f"(已取消后台 subagent 任务 {self.task_id})"

@@ -109,10 +109,15 @@ def Func_can_use(tool_name: str, agent_type: str) -> bool:
 # ── 3. 行为冒烟：改名不影响工具逻辑 ──────────────────────
 
 class _FakeAgent:
-    """最小 Agent 桩：仅提供 _background_tasks 任务记录表。"""
+    """最小 Agent 桩：提供 bash 表 _background_tasks 与 subagent 表 _subagent_tasks。
+
+    两表独立（与 BaseAgent 设计一致）：bash_opt 只查 _background_tasks，
+    subagent_opt 只查 _subagent_tasks。
+    """
 
     def __init__(self, records: dict):
         self._background_tasks = records
+        self._subagent_tasks = {}
 
 
 async def test_execute_read_smoke():
@@ -153,6 +158,59 @@ async def test_execute_unknown_task_id():
     assert result.startswith("(")
     assert "bg-nope" in result
     assert "background=True" in result
+
+
+async def test_execute_rejects_subagent_task_id():
+    """bash_opt 收到 subagent 后台 task_id（sa-xxx）立即拒绝，不误操作。
+
+    bash 与 subagent 后台任务分表独立（_background_tasks / _subagent_tasks）：
+    即使同名 subagent 记录确实存在于 subagent 表，bash_opt 查 bash 表也
+    不可得；叠加 task_id 前缀校验（"bg-"），误传 sa-xxx 时直接在查表前
+    返回错误——杜绝误 cancel subagent 任务 / 误标 managed_by_tool 失联。
+    """
+    import asyncio
+
+    agent = _FakeAgent({})
+    # 模拟真实的 subagent 后台记录（含运行中的 asyncio task），
+    # 注册在**独立的 subagent 表** _subagent_tasks 中
+    task_id = "sa-7e79af9c9586"
+
+    async def _long_running():
+        await asyncio.sleep(100)
+
+    task = asyncio.ensure_future(_long_running())
+    agent._subagent_tasks[task_id] = {
+        "task": task,
+        "command": "subagent(解析 user.py)",
+        "description": "解析 user.py",
+        "agent_type": "map",
+        "done": False,
+        "result": "",
+        "status": "running",
+        "read_buffer": "",
+    }
+
+    for op in ("read", "wait", "kill", "stdin", "keys"):
+        func = BashOptFunc(task_id=task_id, op=op)
+        func.set_agent(agent)
+        result = await func.execute()
+        assert result.startswith("(")
+        assert "bg-xxx" in result
+        assert "subagent_opt" in result
+
+    # bash 表保持为空（bash_opt 未触达 subagent 表），
+    # subagent 任务完全未被误操作：未标记 managed_by_tool、未取消、记录保留
+    assert agent._background_tasks == {}
+    rec = agent._subagent_tasks[task_id]
+    assert "managed_by_tool" not in rec
+    assert not task.cancelled()
+    assert task_id in agent._subagent_tasks
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 def test_display_params():

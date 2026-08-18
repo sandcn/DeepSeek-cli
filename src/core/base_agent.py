@@ -70,8 +70,17 @@ class BaseAgent:
         self.model: str | None = None
         self.tools: list[dict] = []
         # ── 后台任务列表（task_id → 任务记录） ──
-        # bash 工具后台模式（background=True）把任务记录注册到这里，
-        # 一轮对话完成后由 _process_background_tasks() 检查并处理。
+        # ★ 两类后台任务使用**独立**列表（2026-08-18）：
+        #   - _background_tasks：bash 后台任务（bash background=True /
+        #     自动转后台），task_id 恒为 "bg-xxx"，主 Agent 与 SubAgent
+        #     都持有（SubAgent 内可跑 bash 后台任务）
+        #   - _subagent_tasks：subagent 后台任务（subagent 默认后台），
+        #     task_id 恒为 "sa-xxx"，**仅主 Agent（Agent 类）独有**——
+        #     后台 subagent 仅主 Agent 可派发（白名单排除 + 运行时校验），
+        #     SubAgent 不持有该表，在 Agent.__init__ 中显式初始化
+        # 两列表互不共享：bash_opt 只操作 _background_tasks，subagent_opt
+        # 只操作 _subagent_tasks——误传对方 task_id 时天然查不到记录，从
+        # 结构上杜绝跨类型误操作（工具内部另有 task_id 前缀校验双保险）。
         self._background_tasks: dict[str, dict] = {}
 
     # ── 沙盒索引同步 ──────────────────────────────────
@@ -143,21 +152,24 @@ class BaseAgent:
         self._sync_sandbox_index(len(self.messages) - 1)
 
     # ═══════════════════════════════════════════════════════════
-    # 后台任务（bash background=True）管理
+    # 后台任务管理（bash / subagent 各自独立）
     # ═══════════════════════════════════════════════════════════
     # 设计：
-    # - bash 工具后台模式把任务记录注册到 self._background_tasks（tasklist）
-    # - 一轮对话完成后由 _process_background_tasks() 检查：
+    # - bash 后台任务注册到 self._background_tasks（bash_opt 专用表）
+    # - subagent 后台任务注册到 self._subagent_tasks（subagent_opt 专用表）
+    # - 两表完全独立，各配一套 *_background_task / *_subagent_task 方法；
+    #   一轮对话完成后由 _process_background_tasks()（bash 表）与
+    #   _process_subagent_tasks()（subagent 表）分别检查处理：
     #   ① 有已完成的后台任务 → 收集结果（JSON：task_id + 命令输出）作为
     #      用户消息插入对话，返回 True（调用方应继续一轮对话让模型处理）
     #   ② 无已完成但仍有运行中 → 等待全部完成 → 插入结果消息 → 返回 True
     #   ③ 无任何后台任务 → 返回 False（对话可正常结束）
 
     def _register_background_task(self, task_id: str, record: dict) -> None:
-        """注册后台任务记录到 tasklist。
+        """注册 bash 后台任务记录到 bash 任务表（_background_tasks）。
 
         Args:
-            task_id: 后台任务 ID（如 bg-xxxx）
+            task_id: 后台 bash 任务 ID（如 bg-xxxx）
             record: 任务记录 dict，至少包含 task/command/done 等键
         """
         if not hasattr(self, "_background_tasks"):
@@ -166,12 +178,28 @@ class BaseAgent:
         # TUI 状态栏右下角统计（含 subagent 聚合）
         self._publish_background_task_event()
 
-    def _complete_background_task(self, task_id: str, result: str,
-                                  status: str = "completed") -> None:
-        """标记后台任务完成并写入命令输出。
+    def _register_subagent_task(self, task_id: str, record: dict) -> None:
+        """注册 subagent 后台任务记录到 subagent 任务表（_subagent_tasks）。
+
+        subagent 后台任务与 bash 后台任务分表独立管理：subagent_opt 只操作
+        本表，与 bash_opt 的 _background_tasks 互不干扰。
 
         Args:
-            task_id: 后台任务 ID
+            task_id: 后台 subagent 任务 ID（如 sa-xxxx）
+            record: 任务记录 dict，至少包含 task/description/done 等键
+        """
+        if not hasattr(self, "_subagent_tasks"):
+            self._subagent_tasks = {}
+        self._subagent_tasks[task_id] = record
+        # TUI 状态栏右下角统计（含 bash 聚合）
+        self._publish_background_task_event()
+
+    def _complete_background_task(self, task_id: str, result: str,
+                                  status: str = "completed") -> None:
+        """标记 bash 后台任务完成并写入命令输出。
+
+        Args:
+            task_id: 后台 bash 任务 ID
             result: 命令输出（stdout+stderr 合并，已截断）
             status: 完成状态（默认 completed）
         """
@@ -185,8 +213,27 @@ class BaseAgent:
         # TUI 状态栏右下角统计（含 subagent 聚合）
         self._publish_background_task_event()
 
+    def _complete_subagent_task(self, task_id: str, result: str,
+                                status: str = "completed") -> None:
+        """标记 subagent 后台任务完成并写入结果。
+
+        Args:
+            task_id: 后台 subagent 任务 ID
+            result: 任务结果文本
+            status: 完成状态（默认 completed）
+        """
+        if not hasattr(self, "_subagent_tasks"):
+            return
+        record = self._subagent_tasks.get(task_id)
+        if record is not None:
+            record["result"] = result
+            record["status"] = status
+            record["done"] = True
+        # TUI 状态栏右下角统计（含 bash 聚合）
+        self._publish_background_task_event()
+
     def _pending_background_tasks(self) -> list[dict]:
-        """返回所有未完成的后台任务记录列表。
+        """返回所有未完成的 bash 后台任务记录列表。
 
         ★ 被 bash_opt 工具管理的任务（managed_by_tool=True）不在此列：
         其生命周期由大模型通过 bash_opt 工具主动控制（read/wait/kill/stdin/keys），
@@ -199,17 +246,37 @@ class BaseAgent:
             if not r.get("done") and not r.get("managed_by_tool")
         ]
 
+    def _pending_subagent_tasks(self) -> list[dict]:
+        """返回所有未完成的 subagent 后台任务记录列表。
+
+        ★ 被 subagent_opt 工具管理的任务（managed_by_tool=True）不在此列：
+        其生命周期由大模型通过 subagent_opt 工具主动控制（read/wait/kill），
+        不需要对话轮次自动等待其完成。
+        """
+        if not hasattr(self, "_subagent_tasks"):
+            return []
+        return [
+            r for r in self._subagent_tasks.values()
+            if not r.get("done") and not r.get("managed_by_tool")
+        ]
+
     def _get_background_task(self, task_id: str) -> dict | None:
-        """按 task_id 获取后台任务记录（bash_opt 工具使用）。"""
+        """按 task_id 获取 bash 后台任务记录（bash_opt 工具使用）。"""
         if not hasattr(self, "_background_tasks"):
             return None
         return self._background_tasks.get(task_id)
 
+    def _get_subagent_task(self, task_id: str) -> dict | None:
+        """按 task_id 获取 subagent 后台任务记录（subagent_opt 工具使用）。"""
+        if not hasattr(self, "_subagent_tasks"):
+            return None
+        return self._subagent_tasks.get(task_id)
+
     def _remove_background_task(self, task_id: str) -> dict | None:
-        """移除并返回指定后台任务记录（bash_opt 工具使用）。
+        """移除并返回指定 bash 后台任务记录（bash_opt 工具使用）。
 
         任务被 bash_opt 工具主动消费（wait 拿到输出 / kill 终止）时，
-        从 tasklist 移除，避免 _process_background_tasks 再次把结果
+        从 bash 任务表移除，避免 _process_background_tasks 再次把结果
         作为用户消息重复插入对话。
         """
         if not hasattr(self, "_background_tasks"):
@@ -219,11 +286,33 @@ class BaseAgent:
             self._publish_background_task_event()
         return rec
 
+    def _remove_subagent_task(self, task_id: str) -> dict | None:
+        """移除并返回指定 subagent 后台任务记录（subagent_opt 工具使用）。
+
+        任务被 subagent_opt 工具主动消费（wait 拿到结果 / kill 取消）时，
+        从 subagent 任务表移除，避免 _process_subagent_tasks 再次把结果
+        作为用户消息重复插入对话。
+        """
+        if not hasattr(self, "_subagent_tasks"):
+            return None
+        rec = self._subagent_tasks.pop(task_id, None)
+        if rec is not None:
+            self._publish_background_task_event()
+        return rec
+
     def _count_running_background_tasks(self) -> int:
-        """返回当前运行中（未完成）的后台 bash 任务数量。"""
-        if not hasattr(self, "_background_tasks"):
-            return 0
-        return sum(1 for r in self._background_tasks.values() if not r.get("done"))
+        """返回当前运行中（未完成）的后台任务总数（bash + subagent 聚合）。
+
+        TUI 状态栏计数用：两表独立存储，但展示上合并为一个总数。
+        """
+        total = 0
+        for table in (
+            getattr(self, "_background_tasks", None),
+            getattr(self, "_subagent_tasks", None),
+        ):
+            if table:
+                total += sum(1 for r in table.values() if not r.get("done"))
+        return total
 
     def _publish_background_task_event(self) -> None:
         """发布后台任务数量变更事件（TUI 状态栏统计用）。
@@ -245,7 +334,7 @@ class BaseAgent:
             _logger.debug("发布后台任务数量事件失败", exc_info=True)
 
     def _collect_done_background_messages(self) -> list[str]:
-        """收集所有已完成后台任务的结果为 JSON 用户消息，并从 tasklist 移除。
+        """收集所有已完成 **bash** 后台任务的结果为 JSON 用户消息，并从 bash 表移除。
 
         每条消息格式：{"task_id": "...", "command": "...", "status": "...", "output": "..."}
         满足需求：插入的用户消息为 JSON 格式，含 taskid 和命令输出。
@@ -253,6 +342,9 @@ class BaseAgent:
         ★ 被 bash_opt 工具管理的任务（managed_by_tool=True）只清理、不生成消息：
         其结果已由大模型通过 bash_opt wait 主动获取（或由 stdin/keys 交互管理），
         不再重复插入用户消息。
+
+        仅操作 self._background_tasks（bash 表）；subagent 表由
+        _collect_done_subagent_messages 独立处理。
         """
         if not hasattr(self, "_background_tasks"):
             return []
@@ -273,6 +365,41 @@ class BaseAgent:
             self._background_tasks.pop(task_id, None)
         if done_ids:
             # 任务移除后发布最新计数（含 subagent 聚合）
+            self._publish_background_task_event()
+        return messages
+
+    def _collect_done_subagent_messages(self) -> list[str]:
+        """收集所有已完成 **subagent** 后台任务的结果为 JSON 用户消息，并从 subagent 表移除。
+
+        每条消息格式：{"task_id": "...", "command": "...", "status": "...", "output": "..."}
+        subagent 记录与 bash 记录共用 command 字段（"subagent(描述)"），
+        插入的用户消息同样为 JSON 格式（含 taskid 与结果）。
+
+        ★ 被 subagent_opt 工具管理的任务（managed_by_tool=True）只清理、不生成消息：
+        其结果已由大模型通过 subagent_opt wait 主动获取，不再重复插入用户消息。
+
+        仅操作 self._subagent_tasks（subagent 表）；bash 表由
+        _collect_done_background_messages 独立处理。
+        """
+        if not hasattr(self, "_subagent_tasks"):
+            return []
+        messages: list[str] = []
+        done_ids: list[str] = []
+        for task_id, record in self._subagent_tasks.items():
+            if record.get("done"):
+                if not record.get("managed_by_tool"):
+                    payload = {
+                        "task_id": task_id,
+                        "command": record.get("command", ""),
+                        "status": record.get("status", "completed"),
+                        "output": record.get("result", ""),
+                    }
+                    messages.append(json.dumps(payload, ensure_ascii=False))
+                done_ids.append(task_id)
+        for task_id in done_ids:
+            self._subagent_tasks.pop(task_id, None)
+        if done_ids:
+            # 任务移除后发布最新计数（含 bash 聚合）
             self._publish_background_task_event()
         return messages
 
@@ -347,10 +474,11 @@ class BaseAgent:
         return pending
 
     async def _process_background_tasks(self) -> bool:
-        """一轮对话完成后处理后台任务（主 Agent 与 SubAgent 共用）。
+        """一轮对话完成后处理 **bash** 后台任务（主 Agent 与 SubAgent 共用）。
 
-        返回 True 表示已把后台任务结果插入用户消息，需要继续一轮对话；
-        返回 False 表示无后台任务可处理，对话可以结束。
+        仅处理 self._background_tasks（bash 表）；返回 True 表示已把 bash
+        后台任务结果插入用户消息，需要继续一轮对话；返回 False 表示 bash
+        表无后台任务可处理。
 
         防卡死：等待运行中后台任务完成带 _BACKGROUND_WAIT_TIMEOUT 超时。
         超时后仍在运行的任务被标记为 ``managed_by_tool=True``（不再自动等待），
@@ -440,6 +568,101 @@ class BaseAgent:
                         stale_ids.append(tid)
                 for tid in stale_ids:
                     del self._background_tasks[tid]
+                if stale_ids:
+                    self._publish_background_task_event()
+
+        return False
+
+    async def _process_subagent_tasks(self) -> bool:
+        """一轮对话完成后处理 **subagent** 后台任务（仅主 Agent 需要）。
+
+        仅处理 self._subagent_tasks（subagent 表）；返回 True 表示已把
+        subagent 后台任务结果插入用户消息，需要继续一轮对话；返回 False
+        表示 subagent 表无后台任务可处理。
+
+        与 _process_background_tasks（bash 表）完全独立：本方法不触碰
+        _background_tasks，只消费 subagent 后台任务（task_id 恒为 "sa-xxx"，
+        由 subagent 工具默认后台派发注册）。
+
+        防卡死：等待运行中后台任务完成带 _BACKGROUND_WAIT_TIMEOUT 超时。
+        超时后仍在运行的任务被标记为 ``managed_by_tool=True``（不再自动等待），
+        并插入「仍在运行」用户消息——模型已在 subagent 工具返回中拿到
+        task_id，可经 subagent_opt 工具继续 read/wait/kill 管理。
+        """
+        if not hasattr(self, "_subagent_tasks") or not self._subagent_tasks:
+            return False
+
+        # ① 有已完成的后台任务 → 收集结果插入用户消息
+        done_msgs = self._collect_done_subagent_messages()
+        if done_msgs:
+            self._append_background_result_messages(done_msgs)
+            return True
+
+        # ② 无已完成，但有运行中的后台任务 → 等待全部完成后处理（带超时）
+        pending = self._pending_subagent_tasks()
+        if pending:
+            tasks = [
+                r.get("task") for r in pending
+                if r.get("task") is not None and not r["task"].done()
+            ]
+            unfinished: set = set()
+            if tasks:
+                unfinished = await self._wait_background_tasks(tasks)
+            done_msgs = self._collect_done_subagent_messages()
+            if done_msgs:
+                self._append_background_result_messages(done_msgs)
+                return True
+            if unfinished:
+                # ★ 超时未完成（长时/挂起后台 subagent）：
+                #   1. 标记 managed_by_tool——后续不再自动等待其完成
+                #      （模型已拿到 task_id，可经 subagent_opt 继续管理）；
+                #   2. 插入「仍在运行」用户消息，让模型知道任务未结束，
+                #      可选择继续管理或结束对话（不再无限阻塞）。
+                running_msgs: list[str] = []
+                for task in unfinished:
+                    # 快照遍历（P3 防御）：当前循环内无 await 不会结构性修改，
+                    # 但快照可防未来加入 await 时 subagent_opt/完成回调并发 pop。
+                    for task_id, rec in list(self._subagent_tasks.items()):
+                        if rec.get("task") is task:
+                            if not rec.get("managed_by_tool"):
+                                rec["managed_by_tool"] = True
+                            running_msgs.append(json.dumps({
+                                "task_id": task_id,
+                                "command": rec.get("command", ""),
+                                "status": "running",
+                                "output": rec.get("result", ""),
+                            }, ensure_ascii=False))
+                            break
+                if running_msgs:
+                    self._append_background_result_messages(running_msgs)
+                    self._publish_background_task_event()
+                    return True
+                # 防御：running_msgs 为空（极端时序下 unfinished 任务已被
+                # subagent_opt 移除或刚完成）→ 仅移除这些任务的残留记录，
+                # 不清空全表（避免误删其他仍在管理的任务记录）。
+                removed_any = False
+                for task in unfinished:
+                    for task_id, rec in list(self._subagent_tasks.items()):
+                        if rec.get("task") is task:
+                            del self._subagent_tasks[task_id]
+                            removed_any = True
+                            break
+                if removed_any:
+                    self._publish_background_task_event()
+            else:
+                # unfinished 为空（tasks 全为 None/done、或中断取消后已收集）：
+                # 仅清理「非 managed 且 task 缺失或已结束」的残留记录，
+                # 保留 managed_by_tool 任务（模型可经 subagent_opt 继续管理，
+                # 全表 clear 会使其失联——P2 修复）。
+                stale_ids: list[str] = []
+                for tid, rec in self._subagent_tasks.items():
+                    if rec.get("managed_by_tool"):
+                        continue
+                    task = rec.get("task")
+                    if task is None or (task.done() and rec.get("done")):
+                        stale_ids.append(tid)
+                for tid in stale_ids:
+                    del self._subagent_tasks[tid]
                 if stale_ids:
                     self._publish_background_task_event()
 

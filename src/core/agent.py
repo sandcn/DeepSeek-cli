@@ -52,6 +52,12 @@ class Agent(BaseAgent):
                                 默认 DefaultObservabilityAdapter()
         """
         super().__init__()
+        # ── subagent 后台任务表（仅主 Agent 独有） ──
+        # 后台 subagent 仅主 Agent 可派发（SubAgent 工具白名单全类型排除 +
+        # 运行时 isinstance 校验双保险），因此 _subagent_tasks 表只在主
+        # Agent（本类）显式初始化；SubAgent 继承 BaseAgent 不持有该表，
+        # subagent_opt 的 hasattr 检查在 SubAgent 内天然失败。
+        self._subagent_tasks: dict[str, dict] = {}
         # CaptureManager — 统一的 stdout 捕获管理器
         self._capture_mgr = CaptureManager()
         # ToolCallbackChain — 工具回调链独立封装
@@ -242,7 +248,12 @@ class Agent(BaseAgent):
             if interrupted:
                 break
             # ── 后台任务处理：一轮对话完成后检查后台任务结果 ──
-            if not await self._process_background_tasks():
+            # bash 后台任务（_background_tasks）与 subagent 后台任务
+            # （_subagent_tasks）分表独立，各自检查处理；任一表有结果插入
+            # 用户消息（返回 True）即继续一轮对话让模型处理。
+            bg_handled = await self._process_background_tasks()
+            sa_handled = await self._process_subagent_tasks()
+            if not bg_handled and not sa_handled:
                 break
         return interrupted
 

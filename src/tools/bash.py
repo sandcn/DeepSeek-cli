@@ -768,9 +768,11 @@ class BashFunc(Func):
     # ── 后台执行模式 ────────────────────────────────────────
     # background=True 时：命令在 asyncio 后台任务中运行，工具立即返回
     # {"task_id": ..., "status": "running"} JSON；任务记录注册到当前
-    # Agent 的 _background_tasks 成员（tasklist）。一轮对话完成后，
-    # Agent 主循环检查后台任务：已完成的把结果（JSON：task_id + 命令输出）
-    # 作为用户消息插入对话继续处理；未完成的则等待全部完成后再次插入。
+    # Agent 的 _background_tasks 成员（bash 专用表，task_id 恒为 "bg-xxx"；
+    # subagent 后台任务独立注册在 _subagent_tasks）。一轮对话完成后，
+    # Agent 主循环检查 bash 后台任务：已完成的把结果（JSON：task_id +
+    # 命令输出）作为用户消息插入对话继续处理；未完成的则等待全部完成后
+    # 再次插入。
 
     async def _execute_background(self) -> str:
         """后台执行命令：生成 task_id、注册到 agent 后台任务列表，立即返回 JSON。
@@ -796,10 +798,12 @@ class BashFunc(Func):
 
         task = asyncio.ensure_future(self._run_background_task(bg, task_id))
 
-        # ── tasklist 放入对应 agent 的成员 _background_tasks ──
-        # ★ 交互控制字段（bash_opt 工具按 task_id 操作后台任务）：
-        #   process/pid/mode/master_fd/stdin_writer 由 _run_background_task
-        #   的子进程创建回调（_on_ready）填充；io_lock 串行化 stdin/keys 写入。
+        # ── 任务记录注册到 agent 的 bash 专用表 _background_tasks ──
+        # ★ 与 subagent 后台任务（_subagent_tasks）分表独立：bash_opt 仅操作
+        #   本表，subagent_opt 无法触达；交互控制字段（bash_opt 工具按
+        #   task_id 操作后台任务）：process/pid/mode/master_fd/stdin_writer
+        #   由 _run_background_task 的子进程创建回调（_on_ready）填充；
+        #   io_lock 串行化 stdin/keys 写入。
         agent._register_background_task(task_id, {
             "task": task,
             "command": self.command,

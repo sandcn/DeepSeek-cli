@@ -259,6 +259,15 @@ class BashOptFunc(Func):
         if agent is None or not hasattr(agent, '_background_tasks'):
             return "(后台任务操作需要关联 Agent 上下文，当前未关联)"
 
+        # ★ task_id 前缀校验（与 subagent_opt 对称，双保险）：bash 后台任务
+        #   id 恒为 "bg-xxx"，且注册在 bash 专用表 _background_tasks——subagent
+        #   后台任务（sa-xxx）注册在独立的 _subagent_tasks 表，本工具查不到也
+        #   不该操作；误传时直接提示走 subagent_opt。
+        if not self.task_id.startswith("bg-"):
+            return (f"(错误：task_id 必须是 bash 后台启动（background=True）返回的 "
+                    f"'bg-xxx' 格式 ID，当前: {self.task_id}。"
+                    f"subagent 后台任务请用 subagent_opt 操作)")
+
         rec = agent._background_tasks.get(self.task_id)
         if rec is None:
             return (f"(后台任务不存在: {self.task_id}。"

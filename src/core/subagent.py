@@ -160,7 +160,8 @@ class SubAgent(BaseAgent):
         finally:
             # ★ SubAgent 结束时清理未完成的后台 bash 任务（防资源泄漏）：
             #   SubAgent 内部自动转后台 / background=True 的 bash 任务若未完成，
-            #   父 Agent 无法访问其任务记录（挂在 SubAgent 的 _background_tasks），
+            #   父 Agent 无法访问其任务记录（挂在 SubAgent 的 _background_tasks
+            #   ——bash 专用表；SubAgent 无 subagent 后台任务，_subagent_tasks 恒空），
             #   必须在此取消 asyncio task 并终止子进程，防止 task + 子进程长期
             #   残留（fd/进程资源累积 → 后续并行执行卡死）。
             #   清理异常（如再入 CancelledError）不得阻断 _record_to_parent

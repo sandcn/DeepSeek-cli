@@ -35,7 +35,16 @@ from src.tools.subagent_opt import SubagentOptFunc
 # ── 测试辅助 ──────────────────────────────────────────────
 
 class _FakeMainAgent(BaseAgent):
-    """最小主 Agent 桩：继承 BaseAgent 提供 _background_tasks 任务表。"""
+    """最小主 Agent 桩：模拟主 Agent——显式初始化 subagent 后台任务表。
+
+    _subagent_tasks 仅主 Agent 独有（后台 subagent 仅主 Agent 可派发），
+    SubAgent 继承 BaseAgent 不持有该表；bash 表 _background_tasks 由
+    BaseAgent 统一初始化（主 Agent / SubAgent 都有）。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._subagent_tasks: dict[str, dict] = {}
 
 
 def _bare_subagent() -> SubAgent:
@@ -125,12 +134,91 @@ async def test_background_execute_returns_task_id_and_registers(monkeypatch):
     assert payload["description"] == "任务A"
     assert payload["type"] == "map"
 
-    rec = agent._background_tasks[payload["task_id"]]
+    rec = agent._subagent_tasks[payload["task_id"]]
     assert rec["done"] is False
     assert rec["status"] == "running"
     assert rec["description"] == "任务A"
     assert rec["agent_type"] == "map"
     assert rec["command"].startswith("subagent(")
+
+
+async def test_background_tables_are_independent():
+    """subagent 与 bash 后台任务分表独立（_subagent_tasks / _background_tasks）。
+
+    同一 Agent 上同时存在 subagent 后台任务与 bash 后台任务时：
+      - subagent 记录只落在 _subagent_tasks（task_id 前缀 sa-）；
+      - bash 记录只落在 _background_tasks（task_id 前缀 bg-）；
+      - 两表互不可见：bash_opt 查 _background_tasks、subagent_opt 查
+        _subagent_tasks，误传对方 task_id 时天然查不到对方记录。
+    """
+    import asyncio
+
+    from src.tools.subagent_opt import SubagentOptFunc
+    from src.tools.bash_opt import BashOptFunc
+
+    agent = _FakeMainAgent()
+
+    # subagent 后台任务 → _subagent_tasks
+    sa_id = "sa-aaaa"
+    agent._subagent_tasks[sa_id] = _make_rec(task=None)
+    # bash 后台任务 → _background_tasks
+    bg_id = "bg-bbbb"
+    bg_task = asyncio.ensure_future(_async_noop())
+    agent._background_tasks[bg_id] = {"task": bg_task, "done": False}
+
+    # 表内容互斥：subagent 记录不在 bash 表，bash 记录不在 subagent 表
+    assert sa_id not in agent._background_tasks
+    assert bg_id not in agent._subagent_tasks
+
+    # subagent_opt 只看 subagent 表：能查到 sa- 任务，查不到 bg- 任务
+    f1 = SubagentOptFunc(task_id=sa_id, op="read")
+    f1.set_agent(agent)
+    payload1 = json.loads(await f1.execute())
+    assert payload1["task_id"] == sa_id
+    f2 = SubagentOptFunc(task_id=bg_id, op="read")
+    f2.set_agent(agent)
+    assert "sa-xxx" in await f2.execute()  # 前缀校验拒绝
+
+    # bash_opt 只看 bash 表：能查到 bg- 任务，查不到 sa- 任务
+    b1 = BashOptFunc(task_id=bg_id, op="read")
+    b1.set_agent(agent)
+    payload2 = json.loads(await b1.execute())
+    assert payload2["task_id"] == bg_id
+    b2 = BashOptFunc(task_id=sa_id, op="read")
+    b2.set_agent(agent)
+    assert "bg-xxx" in await b2.execute()  # 前缀校验拒绝
+
+    await bg_task
+    # subagent 记录仍保留（bash_opt 的 read 未触达 subagent 表）
+    assert sa_id in agent._subagent_tasks
+
+
+async def test_process_subagent_tasks_independent():
+    """_process_subagent_tasks 独立处理 subagent 表（不触碰 bash 表）。
+
+    两表各自完成的任务分别由 _process_subagent_tasks / _process_background_tasks
+    消费：subagent 表有已完成任务时 _process_subagent_tasks 返回 True 并插入
+    用户消息；bash 表中的未完成任务不受影响、不被误消费。
+    """
+    agent = _FakeMainAgent()
+
+    # subagent 表：一个已完成任务 + 一个运行中任务
+    agent._subagent_tasks["sa-done"] = _make_rec(
+        task=None, done=True, result="## 任务A\n结果", status="completed",
+    )
+    agent._subagent_tasks["sa-running"] = _make_rec(task=None, done=False)
+
+    # bash 表：一个运行中任务（不应被 subagent 处理流程消费）
+    agent._background_tasks["bg-keep"] = {"task": None, "done": False}
+
+    assert await agent._process_subagent_tasks() is True
+    # 已完成 subagent 记录被消费移除，运行中 subagent 记录保留
+    assert "sa-done" not in agent._subagent_tasks
+    assert "sa-running" in agent._subagent_tasks
+    # bash 表记录完全未被触碰
+    assert "bg-keep" in agent._background_tasks
+    # 插入的用户消息为 subagent 结果 JSON
+    assert any("sa-done" in m["content"] for m in agent.messages)
 
 
 async def test_background_execute_without_agent():
@@ -178,9 +266,9 @@ async def test_background_run_completes_record(monkeypatch):
     result = await func.execute()
     task_id = json.loads(result)["task_id"]
     # 等待后台任务完成
-    await asyncio.wait_for(agent._background_tasks[task_id]["task"], timeout=5)
+    await asyncio.wait_for(agent._subagent_tasks[task_id]["task"], timeout=5)
 
-    rec = agent._background_tasks[task_id]
+    rec = agent._subagent_tasks[task_id]
     assert rec["done"] is True
     assert rec["status"] == "completed"
     assert rec["result"] == "## 任务A\n结果内容"
@@ -212,9 +300,9 @@ async def test_background_run_error_writes_failure(monkeypatch):
 
     result = await func.execute()
     task_id = json.loads(result)["task_id"]
-    await asyncio.wait_for(agent._background_tasks[task_id]["task"], timeout=5)
+    await asyncio.wait_for(agent._subagent_tasks[task_id]["task"], timeout=5)
 
-    rec = agent._background_tasks[task_id]
+    rec = agent._subagent_tasks[task_id]
     assert rec["done"] is True
     assert "执行出错" in rec["result"]
 
@@ -270,7 +358,7 @@ async def test_background_subagent_captures_sandbox_index(monkeypatch):
         # MainAgent 继续对话：沙盒索引前进到 10
         set_current_message_index(10)
 
-        await asyncio.wait_for(agent._background_tasks[task_id]["task"], timeout=5)
+        await asyncio.wait_for(agent._subagent_tasks[task_id]["task"], timeout=5)
         # 后台 subagent 执行期间读取的索引 = 派发时索引（3），
         # 不受 MainAgent 后续轮次更新影响（contextvars 快照语义）
         assert captured["bg_index"] == 3
@@ -307,7 +395,7 @@ async def test_default_background_executes_background(monkeypatch):
     assert payload["description"] == "任务A"
     assert payload["type"] == "execute"
 
-    rec = agent._background_tasks[payload["task_id"]]
+    rec = agent._subagent_tasks[payload["task_id"]]
     assert rec["done"] is False
     assert rec["status"] == "running"
 
@@ -352,7 +440,7 @@ async def test_subagent_opt_read():
     """op=read 返回状态与已产生结果，并标记 managed_by_tool。"""
     agent = _FakeMainAgent()
     rec = _make_rec(task=None, done=False, result="")
-    agent._background_tasks["sa-1"] = rec
+    agent._subagent_tasks["sa-1"] = rec
 
     func = SubagentOptFunc(task_id="sa-1", op="read")
     func.set_agent(agent)
@@ -368,7 +456,7 @@ async def test_subagent_opt_read_completed():
     """op=read 已完成任务返回 completed 状态与结果。"""
     agent = _FakeMainAgent()
     rec = _make_rec(task=None, done=True, result="## 任务A\n结果", status="completed")
-    agent._background_tasks["sa-1"] = rec
+    agent._subagent_tasks["sa-1"] = rec
 
     func = SubagentOptFunc(task_id="sa-1", op="read")
     func.set_agent(agent)
@@ -381,47 +469,47 @@ async def test_subagent_opt_wait_completed_removes_record():
     """op=wait 已完成任务：返回结果并从任务表移除（避免重复插入用户消息）。"""
     agent = _FakeMainAgent()
     rec = _make_rec(task=None, done=True, result="## 任务A\n结果", status="completed")
-    agent._background_tasks["sa-1"] = rec
+    agent._subagent_tasks["sa-1"] = rec
 
     func = SubagentOptFunc(task_id="sa-1", op="wait")
     func.set_agent(agent)
     payload = json.loads(await func.execute())
     assert payload["output"] == "## 任务A\n结果"
-    assert "sa-1" not in agent._background_tasks
+    assert "sa-1" not in agent._subagent_tasks
 
 
 async def test_subagent_opt_wait_running_completes():
     """op=wait 运行中任务：等待完成并拿到结果（完成回调写入记录）。"""
     agent = _FakeMainAgent()
     task_id = "sa-wait"
-    agent._background_tasks[task_id] = _make_rec(task=None)
+    agent._subagent_tasks[task_id] = _make_rec(task=None)
 
     async def _work():
         await asyncio.sleep(0.01)
-        agent._complete_background_task(task_id, "## 任务A\n最终结果")
+        agent._complete_subagent_task(task_id, "## 任务A\n最终结果")
 
     task = asyncio.ensure_future(_work())
-    agent._background_tasks[task_id]["task"] = task
+    agent._subagent_tasks[task_id]["task"] = task
 
     func = SubagentOptFunc(task_id=task_id, op="wait", timeout=5)
     func.set_agent(agent)
     payload = json.loads(await func.execute())
     assert payload["status"] == "completed"
     assert payload["output"] == "## 任务A\n最终结果"
-    assert task_id not in agent._background_tasks
+    assert task_id not in agent._subagent_tasks
 
 
 async def test_subagent_opt_wait_timeout():
     """op=wait 超时（短 timeout）：返回错误提示且任务继续运行、记录保留。"""
     agent = _FakeMainAgent()
     task_id = "sa-slow"
-    agent._background_tasks[task_id] = _make_rec(task=None)
+    agent._subagent_tasks[task_id] = _make_rec(task=None)
 
     async def _slow():
         await asyncio.sleep(100)
 
     task = asyncio.ensure_future(_slow())
-    agent._background_tasks[task_id]["task"] = task
+    agent._subagent_tasks[task_id]["task"] = task
 
     func = SubagentOptFunc(task_id=task_id, op="wait", timeout=0.05)
     func.set_agent(agent)
@@ -429,7 +517,7 @@ async def test_subagent_opt_wait_timeout():
     assert result.startswith("(")
     assert "超时" in result
     assert not task.done()          # 任务继续运行（wait 只观察不干预）
-    assert task_id in agent._background_tasks
+    assert task_id in agent._subagent_tasks
 
     task.cancel()
     try:
@@ -442,19 +530,19 @@ async def test_subagent_opt_kill():
     """op=kill 取消后台任务并从任务表移除。"""
     agent = _FakeMainAgent()
     task_id = "sa-kill"
-    agent._background_tasks[task_id] = _make_rec(task=None)
+    agent._subagent_tasks[task_id] = _make_rec(task=None)
 
     async def _long_running():
         await asyncio.sleep(100)
 
     task = asyncio.ensure_future(_long_running())
-    agent._background_tasks[task_id]["task"] = task
+    agent._subagent_tasks[task_id]["task"] = task
 
     func = SubagentOptFunc(task_id=task_id, op="kill")
     func.set_agent(agent)
     result = await func.execute()
     assert "已取消" in result
-    assert task_id not in agent._background_tasks
+    assert task_id not in agent._subagent_tasks
     assert task.cancelled()
 
 
@@ -472,17 +560,36 @@ async def test_subagent_opt_unknown_task():
 async def test_subagent_opt_rejects_bash_task_id():
     """task_id 非 sa- 前缀（如 bash 后台 bg-xxx）时拒绝，防止误操作 bash 任务。"""
     agent = _FakeMainAgent()
-    # 模拟误传 bash 后台任务 id（bash 任务需 bash_opt 管理：kill 要杀进程树）
-    agent._background_tasks["bg-abc"] = {"task": None, "done": False}
-    func = SubagentOptFunc(task_id="bg-abc", op="kill")
-    func.set_agent(agent)
-    result = await func.execute()
-    assert result.startswith("(")
-    assert "sa-xxx" in result
-    assert "bash_opt" in result
-    # bash 任务记录未被修改（managed_by_tool 未设置、未被移除）
-    assert "managed_by_tool" not in agent._background_tasks["bg-abc"]
-    assert "bg-abc" in agent._background_tasks
+    # 模拟误传 bash 后台任务 id（bash 任务注册在 bash 专用表 _background_tasks；
+    # 需 bash_opt 管理：kill 要杀进程树，且 subagent_opt 的 kill 不杀进程树——
+    # 若误操作会 cancel task 导致 bash 子进程泄漏）。使用含真实运行中 task 的
+    # 记录验证「立即拒绝、零副作用」。
+    task_id = "bg-abc"
+
+    async def _long_running():
+        await asyncio.sleep(100)
+
+    task = asyncio.ensure_future(_long_running())
+    agent._background_tasks[task_id] = {"task": task, "done": False}
+    for op in ("read", "wait", "kill"):
+        func = SubagentOptFunc(task_id=task_id, op=op)
+        func.set_agent(agent)
+        result = await func.execute()
+        assert result.startswith("(")
+        assert "sa-xxx" in result
+        assert "bash_opt" in result
+    # bash 任务记录完全未被误操作：managed_by_tool 未设置、task 未被取消、未被移除
+    assert "managed_by_tool" not in agent._background_tasks[task_id]
+    assert not task.cancelled()
+    assert task_id in agent._background_tasks
+    # subagent 表始终为空（subagent_opt 未触达 bash 表记录）
+    assert agent._subagent_tasks == {}
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 async def test_subagent_opt_without_agent():
@@ -506,13 +613,13 @@ async def test_subagent_opt_unknown_op():
     """未知 op 返回错误提示，且不标记 managed_by_tool（任务不失联）。"""
     agent = _FakeMainAgent()
     rec = _make_rec(task=None)
-    agent._background_tasks["sa-1"] = rec
+    agent._subagent_tasks["sa-1"] = rec
     func = SubagentOptFunc(task_id="sa-1", op="pause")
     func.set_agent(agent)
     result = await func.execute()
     assert "未知操作" in result
     # ★ P2（review 2026-08-18）：无效 op 不修改任务管理状态——否则
-    #   _process_background_tasks 不再自动等待/插入结果，任务失联。
+    #   _process_subagent_tasks 不再自动等待/插入结果，任务失联。
     assert "managed_by_tool" not in rec
 
 
@@ -524,6 +631,30 @@ def test_display_params():
 
 
 # ── 4. 独有性机制（仅主 Agent） ───────────────────────────
+
+def test_subagent_tasks_table_only_on_main_agent():
+    """_subagent_tasks 表仅主 Agent 独有：SubAgent 不持有。
+
+    - BaseAgent（SubAgent 的基类）默认**不**初始化 _subagent_tasks——
+      SubAgent 无法派发后台 subagent（白名单 + 运行时 isinstance 双保险），
+      不该持有 subagent 后台任务表；
+    - 主 Agent 形态（Agent 类 / 测试桩 _FakeMainAgent）显式初始化后才持有；
+    - subagent_opt 的 hasattr(agent, '_subagent_tasks') 检查在 SubAgent 内
+      天然失败（叠加 isinstance 检查双保险）。
+    """
+    from src.core.base_agent import BaseAgent
+
+    plain = BaseAgent()          # SubAgent 的基类形态：无 subagent 表
+    assert not hasattr(plain, "_subagent_tasks")
+
+    main = _FakeMainAgent()      # 主 Agent 形态：显式初始化 subagent 表
+    assert hasattr(main, "_subagent_tasks")
+    assert main._subagent_tasks == {}
+
+    # SubAgent 实例形态（__new__ 不跑 __init__，也不持有该表）
+    sub = _bare_subagent()
+    assert not hasattr(sub, "_subagent_tasks")
+
 
 def test_exclusion_map_excludes_subagent_opt():
     """SubAgent 工具白名单全类型排除 subagent_opt（含 execute）。"""
@@ -637,13 +768,13 @@ async def test_background_cancel_writes_cancelled_status(monkeypatch):
 
     result = await func.execute()
     task_id = json.loads(result)["task_id"]
-    task = agent._background_tasks[task_id]["task"]
+    task = agent._subagent_tasks[task_id]["task"]
     # 先让后台任务运行起来（进入 fake_run 的 sleep），再模拟 kill 的取消动作
     await asyncio.sleep(0.05)
     task.cancel()
     await asyncio.wait_for(task, timeout=5)
 
-    rec = agent._background_tasks[task_id]
+    rec = agent._subagent_tasks[task_id]
     assert rec["status"] == "cancelled"
     assert "已被取消" in rec["result"]
 
