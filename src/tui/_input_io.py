@@ -480,6 +480,35 @@ class InputIO:
         if b"\x1b" in extra:
             self.set_pending(extra)
             return first_chars
+        # ★ Enter 键剥离（2026-08-19，很多上文时按回车不能编辑对应消息修复）：
+        #   渲染线程忙（大量上文一帧 100ms~1s）时，打字与 Enter 在同一次
+        #   批量 os.read 中累积——Enter 字节（\r / \n / \r\n）混入粘贴流，
+        #   handle_chars 把 CR 过滤、LF 留在缓冲 → **enter 事件丢失**（用户
+        #   按回车无反应；再按一次提交的命令文本带 \n → /editmsg 等命令
+        #   不匹配 →「未编辑任何消息」）。剥离规则（与上方 ESC 回写同模式）：
+        #     - 末尾 \r 总是剥离——单独 CR 几乎必是 Enter 键（ICRNL 终端
+        #       Enter 读到 \n 不产生单独 \r；粘贴文本的 \r 伴随 \n 且
+        #       handle_chars 本就 replace 过滤，剥离无行为差异）；
+        #     - 末尾 \n / \r\n 仅当剩余部分无换行时剥离——多行粘贴（中间
+        #       有换行）保持原行为（整段进缓冲不自动提交）。
+        #   剥离字节回写 pending，交由 read_stdin_once 正常分发为 enter
+        #   事件（衔接 CR+LF 残留丢弃链路——_mark_enter_residual）。
+        if extra.endswith(b"\r\n"):
+            tail, body = b"\r\n", extra[:-2]
+        elif extra.endswith(b"\n"):
+            tail, body = b"\n", extra[:-1]
+        elif extra.endswith(b"\r"):
+            tail, body = b"\r", extra[:-1]
+        else:
+            tail, body = b"", extra
+        if tail and (
+            tail == b"\r"
+            or (b"\n" not in body and b"\r" not in body)
+        ):
+            self.prepend_pending(tail)
+            extra = body
+            if not extra:
+                return first_chars
         # 方向1 B4：粘贴正文经 _decode_paste_bytes 解码——extra 尾部若为截断
         # 多字节 UTF-8 序列，保留到 _paste_partial 留待下次补齐，不再产生
         # U+FFFD 污染（旧实现 extra.decode("utf-8", errors="replace") 直解

@@ -364,7 +364,12 @@ def test_deitmsg_sync_execute_no_raise():
 
 
 def test_handle_command_editmsg_sync_path_no_crash():
-    """旧命令表同步路径（registry 自动注册）：/editmsg 不再抛 RuntimeError。"""
+    """旧命令表同步路径（registry 自动注册）：/editmsg 不再抛 RuntimeError。
+
+    注：显式 import 插件模块触发模块级自注册——生产路径由 app_loop
+    ``from ..core.commands.plugins import ...`` 链触发；单测独立运行时
+    无该链（修复前依赖文件内其他测试先 import 的顺序副作用）。"""
+    import src.core.commands.plugins  # noqa: F401 — 触发 EditmsgPlugin 注册
     from src.core.commands import handle_command
 
     messages = [{"role": "user", "content": "hi"}]
