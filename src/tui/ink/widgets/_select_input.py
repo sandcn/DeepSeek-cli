@@ -25,19 +25,54 @@ from ._interactive_common import (
 )
 
 
-def _is_vim_nav(event) -> str | None:
-    """vim 风格导航判定：返回 "down"/"up"/"first"/"last" 或 None。
+def _nav_for_char(ch: str) -> str | None:
+    """单字符 vim 导航判定：返回 "down"/"up"/"first"/"last" 或 None。
 
     j/J 下、k/K 上、g 首、G 末（大小写等效——UserSelectPopup 既有语义）。
     非导航字符返回 None。
     """
-    if event.kind == "char" and event.char in ("j", "J"):
+    if ch == "j" or ch == "J":
         return "down"
-    if event.kind == "char" and event.char in ("k", "K"):
+    if ch == "k" or ch == "K":
         return "up"
-    if event.kind == "char" and event.char in ("g", "G"):
-        return "first" if event.char == "g" else "last"
+    if ch == "g":
+        return "first"
+    if ch == "G":
+        return "last"
     return None
+
+
+def _is_vim_nav(event) -> str | None:
+    """vim 风格导航判定：返回 "down"/"up"/"first"/"last" 或 None。
+
+    仅匹配**单字符** char 事件（``event.char`` 为单字符 j/J/k/K/g/G）；
+    多字符（粘贴流）经 ``_vim_navs_from_paste`` 逐字符判定。
+    """
+    if event.kind == "char" and event.char:
+        return _nav_for_char(event.char)
+    return None
+
+
+def _vim_navs_from_paste(event) -> list:
+    """从多字符 char 事件（粘贴流）逐字符提取导航序列。
+
+    ★ 2026-08-19（很多上文时按回车不能编辑对应消息修复）：渲染线程忙
+    （大量上文一帧 100ms~1s）时，弹窗内 vim 导航键（j/k）与 Enter 在同一
+    次批量 ``os.read`` 中累积——``try_read_paste`` 末尾 Enter 剥离后剩余
+    字节仍与首字符拼成多字符粘贴文本（如 ``"jj"``）。修复前
+    ``_is_vim_nav`` 只匹配单字符 → 粘贴流整体被 consumeAll 吞掉 → 导航
+    丢失 → Enter 确认的是未导航的默认选中（最后一条）。逐字符判定后
+    粘贴流中的导航键逐个生效（Enter 由尾部剥离链路正常分发）。
+    """
+    text = getattr(event, "char", "") or ""
+    if len(text) <= 1:
+        return []
+    navs = []
+    for ch in text:
+        nav = _nav_for_char(ch)
+        if nav is not None:
+            navs.append(nav)
+    return navs
 
 
 def SelectInput(props: dict) -> Element:
@@ -117,39 +152,53 @@ def SelectInput(props: dict) -> Element:
             #   True 阻断旧路径 Esc 中断语义——弹窗激活期间由协议接管取消）。
             _call(on_cancel, items[cur])
             return True
-        nav = None
+        navs: list = []
         if event.kind == "arrow_up":
-            nav = "up"
+            navs = ["up"]
         elif event.kind == "arrow_down":
-            nav = "down"
+            navs = ["down"]
         else:
             nav = _is_vim_nav(event)
+            if nav is not None:
+                navs = [nav]
+            elif consume_all:
+                # ★ 粘贴流逐字符导航（2026-08-19）：多字符 char 事件中的
+                #   j/k/g/G 逐个生效（渲染忙时导航键与 Enter 同批 os.read
+                #   累积被 try_read_paste 判为粘贴——修复前整段被吞导航
+                #   丢失，Enter 确认的是未导航的默认选中）。
+                #   仅 consumeAll（模态弹窗独占模式）启用——命令补全弹窗
+                #   （consumeAll=False）粘贴文本仍放行进输入缓冲（零回归）。
+                navs = _vim_navs_from_paste(event)
         moved = False
         new = cur
-        if nav == "up":
-            # ★ P3（review）：已在首项时按上键不移动——无效移动返回 False
-            #   （不消费，放行父级；与 ListView/Menu 对齐）。
-            if cur > 0:
-                new = cur - 1
+        for nav in navs:
+            step = new
+            if nav == "up":
+                # ★ P3（review）：已在首项时按上键不移动——无效移动返回 False
+                #   （不消费，放行父级；与 ListView/Menu 对齐）。
+                if new > 0:
+                    step = new - 1
+            elif nav == "down":
+                # ★ P3（review）：已在末项时按下键不移动——无效移动返回 False。
+                if new < len(items) - 1:
+                    step = new + 1
+            elif nav == "first":
+                if new != 0:
+                    step = 0
+            elif nav == "last":
+                if new != len(items) - 1:
+                    step = len(items) - 1
+            if step != new:
+                new = step
                 moved = True
-        elif nav == "down":
-            # ★ P3（review）：已在末项时按下键不移动——无效移动返回 False。
-            if cur < len(items) - 1:
-                new = cur + 1
-                moved = True
-        elif nav == "first":
-            if cur != 0:
-                new = 0
-                moved = True
-        elif nav == "last":
-            if cur != len(items) - 1:
-                new = len(items) - 1
-                moved = True
+                # 逐字符逐键语义：每步同步 ref/state/onHighlight（对齐正常
+                # 速度下逐键分发的行为——每键一次高亮回调；set_selected
+                # 排队合并，渲染无中间闪烁）。
+                selected_ref.current = new
+                set_selected(new)
+                if on_highlight is not None:
+                    _call(on_highlight, new)
         if moved:
-            selected_ref.current = new
-            set_selected(new)
-            if on_highlight is not None:
-                _call(on_highlight, new)
             return True
         if event.kind == "enter":
             # ★ 方案B：onSelect 未提供时 enter 放行（返回 False 不消费——

@@ -22,7 +22,7 @@ from ._interactive_common import (
     _clamp_index,
     _hashable,
 )
-from ._select_input import _is_vim_nav
+from ._select_input import _is_vim_nav, _vim_navs_from_paste
 
 #: 选中/未选中指示符（几何符号单宽，wcswidth_simple 宽度 1——安全对齐）
 _CHECKED = "\u25cf "   # ●
@@ -134,39 +134,51 @@ def MultiSelect(props: dict) -> Element:
             ]
             _call(on_cancel, ordered)
             return True
-        nav = None
+        navs: list = []
         if event.kind == "arrow_up":
-            nav = "up"
+            navs = ["up"]
         elif event.kind == "arrow_down":
-            nav = "down"
+            navs = ["down"]
         else:
             nav = _is_vim_nav(event)
+            if nav is not None:
+                navs = [nav]
+            elif consume_all:
+                # ★ 粘贴流逐字符导航（2026-08-19，与 SelectInput 同修复）：
+                #   多字符 char 事件中的 j/k/g/G 逐个生效（渲染忙时导航键
+                #   与 Enter 同批累积被 try_read_paste 判为粘贴——修复前
+                #   整段被吞导航丢失）。仅 consumeAll（模态弹窗独占模式）
+                #   启用，非弹窗消费方粘贴文本仍放行（零回归）。
+                navs = _vim_navs_from_paste(event)
         moved = False
         new = cur_cursor
-        if nav == "up":
-            # ★ P3（review）：已在首项时按上键不移动——无效移动返回 False
-            #   （不消费，放行父级；与 ListView/Menu 对齐）。
-            if cur_cursor > 0:
-                new = cur_cursor - 1
+        for nav in navs:
+            step = new
+            if nav == "up":
+                # ★ P3（review）：已在首项时按上键不移动——无效移动返回 False
+                #   （不消费，放行父级；与 ListView/Menu 对齐）。
+                if new > 0:
+                    step = new - 1
+            elif nav == "down":
+                # ★ P3（review）：已在末项时按下键不移动——无效移动返回 False。
+                if new < len(items) - 1:
+                    step = new + 1
+            elif nav == "first":
+                if new != 0:
+                    step = 0
+            elif nav == "last":
+                if new != len(items) - 1:
+                    step = len(items) - 1
+            if step != new:
+                new = step
                 moved = True
-        elif nav == "down":
-            # ★ P3（review）：已在末项时按下键不移动——无效移动返回 False。
-            if cur_cursor < len(items) - 1:
-                new = cur_cursor + 1
-                moved = True
-        elif nav == "first":
-            if cur_cursor != 0:
-                new = 0
-                moved = True
-        elif nav == "last":
-            if cur_cursor != len(items) - 1:
-                new = len(items) - 1
-                moved = True
+                # 逐字符逐键语义：每步同步 ref/state/onHighlight（与
+                # SelectInput 同修复——对齐正常速度逐键分发行为）。
+                cursor_ref.current = new
+                set_cursor_idx(new)
+                if on_highlight is not None:
+                    _call(on_highlight, new)
         if moved:
-            cursor_ref.current = new
-            set_cursor_idx(new)
-            if on_highlight is not None:
-                _call(on_highlight, new)
             return True
         if event.kind == "space" or (event.kind == "char" and event.char == " "):
             value = items[cur_cursor]["value"]
