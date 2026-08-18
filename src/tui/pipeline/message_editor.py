@@ -579,6 +579,18 @@ class MessageEditor:
             selected=sel_count - 1,  # 默认选中最后一条
             deadline=time.monotonic() + 120,  # 2 分钟超时
         )
+        # ★ W6 修复（2026-08-19，编辑错消息——不能编辑对应的用户消息）：
+        #   Enter 落在「dismiss 回调已替换 → es 设置前」窗口时经
+        #   ``_editmsg_dismiss_cb``（es 未设置 visible=False → es_active
+        #   守卫不生效）**提前置位** ``_selection_ready``——轮询第一轮即
+        #   break，selected 取 es 初始值（默认最后一条）→ 用户导航目标被
+        #   丢弃，编辑的是最后一条。es 设置（visible=True）之后立即清除
+        #   信号：此后到达的 Enter 由 es_active 守卫忽略（c56a21e——组件
+        #   才是确认权威），组件确认经 ``es.done`` 生效。仅标准路径清除
+        #   （legacy 路径依赖 ``_selection_ready`` 作为 Enter 确认信号）。
+        self._selection_ready.clear()
+        self._selection_confirmed = False
+        self._selection_cancelled = False
         # ★ 模态底部视图（2026-08-17 通用机制）：激活独立底部视图
         #   （bottom_view="editmsg"——底部区只渲染 EditMsgSelectPopup，
         #   状态栏/输入区不显示；与 user_select 的 "user_select" 视图独立）。

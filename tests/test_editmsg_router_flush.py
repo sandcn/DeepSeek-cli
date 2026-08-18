@@ -405,3 +405,179 @@ def test_consumer_flush_input_router_attribute_error_safe():
 
     consumer = SimpleNamespace(_engine=SimpleNamespace())
     assert ChatUIConsumer.flush_input_router.__get__(consumer)(0.1) is False
+
+
+# ═══════════════════════════════════════════════════════════
+# 4. W4：prefill 注入前的用户 Enter（空提交）自动提交
+# ═══════════════════════════════════════════════════════════
+
+class _W4Input:
+    """W4 测试桩：可控排队提交 + 缓冲，wait 恒超时。"""
+
+    def __init__(self, queued=None, current=""):
+        self._queued = queued
+        self._current = current
+        self.set_calls = []
+        self.echo_calls = []
+
+    def get_queued_input(self):
+        v = self._queued
+        self._queued = None
+        return v
+
+    def get_current_text(self):
+        return self._current
+
+    def set_buffer(self, text):
+        self.set_calls.append(text)
+        self._current = text
+
+    def echo(self, text=""):
+        self.echo_calls.append(text)
+
+    def wait_until_ready(self, timeout=None):
+        return False
+
+    def drain_all(self):
+        return ("", "")
+
+
+class _Monitor:
+    is_alive = True
+
+
+def test_w4_empty_stale_submit_auto_submits_prefill():
+    """W4 修复：stale 为空串（用户在 prefill 注入前按的 Enter，缓冲恒空
+    的空提交）→ 注入 prefill 后直接作为已提交文本返回——按一次 Enter 即
+    完成编辑（修复前被静默丢弃，用户需再按一次）。"""
+    from src.tui._input_orchestrator import TuiInputOrchestrator
+
+    inp = _W4Input(queued="")  # 用户 Enter 产生的空提交
+    orch = TuiInputOrchestrator(inp)
+    ret = orch.wait_for_user_input(_Monitor(), prefill="编辑后的消息", timeout=0.1)
+    assert ret == "编辑后的消息"  # 自动提交（不再等待新 Enter）
+    # set_buffer 注入了 prefill（随后按提交语义清空）
+    assert inp.set_calls == ["编辑后的消息", ""]
+
+
+def test_w4_nonempty_stale_still_drained():
+    """W4 边界：stale 非空（流程内部残留，如 '/editmsg' 重复提交）仍照旧
+    丢弃——等待用户新输入（超时返回空，不自动提交）。"""
+    from src.tui._input_orchestrator import TuiInputOrchestrator
+
+    inp = _W4Input(queued="/editmsg")
+    orch = TuiInputOrchestrator(inp)
+    ret = orch.wait_for_user_input(_Monitor(), prefill="旧内容", timeout=0.1)
+    assert ret == ""
+    assert inp.set_calls == ["旧内容"]  # 仅注入（含窗口期字符拼接为 prefill）
+
+
+def test_w4_no_stale_normal_inject():
+    """W4 边界：无排队提交（None）→ 行为不变（注入 prefill 等待 Enter）。"""
+    from src.tui._input_orchestrator import TuiInputOrchestrator
+
+    inp = _W4Input(queued=None)
+    orch = TuiInputOrchestrator(inp)
+    ret = orch.wait_for_user_input(_Monitor(), prefill="旧内容", timeout=0.1)
+    assert ret == ""
+    assert inp.set_calls == ["旧内容"]
+
+
+# ═══════════════════════════════════════════════════════════
+# 5. W6：es 设置前 dismiss 提前置位 _selection_ready → 清除
+# ═══════════════════════════════════════════════════════════
+
+def test_w6_early_dismiss_signal_cleared_before_polling(monkeypatch):
+    """W6 修复：Enter 在「dismiss 替换 → es 设置」窗口经 dismiss 路径提前
+    置位 _selection_ready → 轮询前清除 → 组件确认为准（导航后的目标
+    消息）——修复前轮询第一轮即 break，编辑的是默认最后一条（错误消息）。"""
+    import src.tui.pipeline.message_editor as me_mod
+    from src.tui.pipeline.message_editor import MessageEditor
+
+    model = AppModel()
+    editor = MessageEditor(bottom_bar=_BB(model, _SessionStub()), input_=_InputStub())
+
+    # 模拟：用户按 Ctrl+O 后见无反应又按 Enter（es 尚未设置，
+    # visible=False → es_active 守卫不生效 → _selection_confirmed 置位）
+    editor._editmsg_dismiss_cb()
+    assert editor._selection_ready.is_set() is True
+
+    # 组件在轮询期间确认（用户导航到第 2 条后 Enter）
+    def _sleep_confirm(_s):
+        es = model.editmsg_select
+        if not es.done:
+            es.selected = 1
+            es.try_set_final("confirmed", [es.options[1]])
+
+    monkeypatch.setattr(me_mod.time, "sleep", _sleep_confirm)
+    user_msgs = [(0, {"role": "user", "content": "m0"}),
+                 (2, {"role": "user", "content": "m2"}),
+                 (4, {"role": "user", "content": "m4"})]
+    idx = editor._interactive_message_select(user_msgs, ["1. m0", "2. m2", "3. m4"])
+    # 修复前：提前置位 → 第一轮 break → selected=默认最后一条 → idx=4（错）
+    assert idx == 2  # 组件确认的第 2 条
+
+
+def test_w6_no_component_confirm_times_out_not_confirmed(monkeypatch):
+    """W6 边界：提前置位被清除且组件从未确认 → 不因残留信号误确认
+    （deadline 到 → timeout → 返回 None，不编辑任何消息）。"""
+    import src.tui.pipeline.message_editor as me_mod
+    from src.tui.pipeline.message_editor import MessageEditor
+
+    model = AppModel()
+    editor = MessageEditor(bottom_bar=_BB(model, _SessionStub()), input_=_InputStub())
+    editor._editmsg_dismiss_cb()  # 提前置位
+    editor._selection_confirmed = True
+
+    model2 = model
+
+    # 缩短 deadline：第一次 sleep 时把 deadline 置为已过（立即超时退出）
+    def _sleep_expire(_s):
+        es = model2.editmsg_select
+        if not es.done:
+            es.deadline = 0.0
+
+    monkeypatch.setattr(me_mod.time, "sleep", _sleep_expire)
+    user_msgs = [(0, {"role": "user", "content": "m0"}),
+                 (2, {"role": "user", "content": "m2"})]
+    idx = editor._interactive_message_select(user_msgs, ["1. m0", "2. m2"])
+    # 修复前：_selection_ready 提前置位 → break → action=confirmed → idx=2
+    # 修复后：信号已清除 + done 未置位 → 超时 → None（取消语义）
+    assert idx is None
+
+
+# ═══════════════════════════════════════════════════════════
+# 6. W5 加固：flush_input_router 慢渲染自适应（帧进展续期）
+# ═══════════════════════════════════════════════════════════
+
+def test_w5_flush_router_slow_render_progress_extends_wait():
+    """W5 加固：慢渲染（0.3s/帧，两帧 0.6s > 软超时 0.5s）帧号持续推进 →
+    续期等待 → 两帧完成后返回 True（修复前固定 0.5s 超时误降级）。"""
+    stub = _SessionStub()
+    stop = threading.Event()
+
+    def _slow_frames():
+        while not stop.is_set():
+            time.sleep(0.3)
+            stub._advance_frame_seq()
+
+    t = threading.Thread(target=_slow_frames, daemon=True)
+    t.start()
+    try:
+        ok = stub.flush_input_router(timeout=0.5)
+        assert ok is True  # 帧进展续期 → 两帧（0.6s+）后达标唤醒
+    finally:
+        stop.set()
+        t.join(timeout=2.0)
+
+
+def test_w5_flush_router_hung_render_times_out_fast():
+    """W5 加固：渲染线程挂起（帧号零推进）→ 软超时内返回 False（硬上限
+    只在有进展续期时生效——不无限等）。"""
+    stub = _SessionStub()  # 无任何帧推进
+    t0 = time.monotonic()
+    ok = stub.flush_input_router(timeout=0.3)
+    elapsed = time.monotonic() - t0
+    assert ok is False
+    assert elapsed < 2.0  # 无进展不触发 10s 硬上限
+    assert stub._frame_flush_waiters == []

@@ -34,8 +34,9 @@ from ._session_cmd import (
     ChangesCommand,
 )
 
+from ._model_cmd import _cmd_model
+
 from ._config_cmd import (
-    _cmd_model,
     _cmd_cost,
     _cmd_theme,
     _cmd_reasoning,

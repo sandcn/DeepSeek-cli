@@ -1,4 +1,8 @@
-"""配置命令 — 模型/费用/主题相关命令处理函数"""
+"""配置命令 — 费用/主题/推理等级/温度相关命令处理函数
+
+★ 2026-08-19（模型选择界面代码独立）：/model 命令已迁至 ``_model_cmd.py``
+（模型选择单一真源）；本模块保留 re-export 向后兼容（旧导入路径不变）。
+"""
 
 from __future__ import annotations
 
@@ -6,140 +10,10 @@ from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
 from ..adapters.output import get_default_output_port
 from ..internal.commands._command_core import CommandContext, show_cost
 
+# 向后兼容 re-export：/model 命令已独立到 _model_cmd.py
+from ._model_cmd import _cmd_model, _infer_model_provider  # noqa: F401
+
 _out = get_default_output_port()
-
-
-# ── 辅助函数：根据模型名推断 provider ─────────────────
-def _infer_model_provider(model_name: str) -> str | None:
-    """遍历 PROVIDERS，返回模型名对应的 provider 名称，未找到返回 None。
-
-    模块级函数，可供 _special_keys.py 等外部模块导入使用。
-    """
-    try:
-        from ...config.defaults import PROVIDERS as _providers
-        for _p_name, _p_cfg in _providers.items():
-            if model_name in _p_cfg.get("models", []):
-                return _p_name
-    except (ImportError, KeyError):
-        pass
-    return None
-
-
-# ── /model 命令 ─────────────────────────────────────────
-
-def _cmd_model(ctx):
-    # 通过 ConfigPort 获取模型列表和当前模型
-    if ctx.config_port is not None:
-        models = ctx.config_port.get_models()
-        default_model = ctx.config_port.get_model()
-    else:
-        from ...config import MODELS as models, MODEL as default_model  # 配置常量 — 函数体内延迟导入（回退）
-
-    # ── PROVIDERS fallback：MODELS 为空时从所有 PROVIDERS 聚合 ──
-    if not models:
-        try:
-            from ...config.defaults import PROVIDERS
-            _seen: set[str] = set()
-            fallback_models: list[str] = []
-            for _p in PROVIDERS.values():
-                for _m in _p.get("models", []):
-                    if _m not in _seen:
-                        _seen.add(_m)
-                        fallback_models.append(_m)
-            models = fallback_models
-        except Exception:
-            pass
-
-    # ── 辅助函数：根据模型名同步 provider ──────────────
-    def _sync_provider(model_name: str) -> None:
-        """若模型对应的 provider 与当前不一致，更新 RC（通过闭包使用外层 ctx）"""
-        inferred = _infer_model_provider(model_name)
-        if inferred is None:
-            return  # 自定义模型，不修改 provider
-        # 获取当前 provider
-        if ctx.config_port is not None:
-            current_provider = ctx.config_port.get("provider", "")
-        else:
-            try:
-                from ...config.loader import get_rc as _get_rc
-                current_provider = _get_rc().get("provider", "")
-            except (ImportError, KeyError):
-                current_provider = ""
-        if inferred != current_provider:
-            from ...config.loader import update_config as _upd
-            _upd("provider", inferred)
-
-    current = ctx.state.get("model", default_model)
-    arg = ctx.arg.strip()
-
-    # ── 优先处理直接参数：按序号或名称切换 ──────────────
-    if arg:
-        # 按序号：/model 2
-        if arg.isdigit():
-            idx = int(arg)
-            if 1 <= idx <= len(models):
-                selected = models[idx - 1]
-                ctx.state["model"] = selected
-                _sync_provider(selected)
-                _out.write(f"{GREEN}  + 已切换到 {selected}{RESET}", level="raw", source="cmd")
-                return True
-            _out.write(f"{YELLOW}  ! 无效序号，范围 1-{len(models)}{RESET}", level="raw", source="cmd")
-            return True
-        # 按名称（模糊匹配）：/model deepseek-v4-pro
-        matched = [m for m in models if arg.lower() in m.lower()]
-        if len(matched) == 1:
-            ctx.state["model"] = matched[0]
-            _sync_provider(matched[0])
-            _out.write(f"{GREEN}  + 已切换到 {matched[0]}{RESET}", level="raw", source="cmd")
-            return True
-        elif len(matched) > 1:
-            _out.write(f"{YELLOW}  ! 匹配到多个模型: {', '.join(matched)}{RESET}", level="raw", source="cmd")
-            _out.write(f"  {DIM}  请使用序号或更精确的名称{RESET}", level="raw", source="cmd")
-            return True
-        else:
-            _out.write(f"{YELLOW}  ! 未找到匹配的模型: {arg}{RESET}", level="raw", source="cmd")
-            _out.write(f"  {DIM}  可用模型: {', '.join(models)}{RESET}", level="raw", source="cmd")
-            return True
-
-    # ── 无参数：底部栏补全弹窗交互式选择 ──────────────
-    if not models:
-        _out.write(f"{YELLOW}  ! 没有可用的模型，请在配置文件中添加{RESET}", level="raw", source="cmd")
-        return True
-
-    # 光标定位到当前模型
-    current_idx = 0
-    for i, m in enumerate(models):
-        if m == current:
-            current_idx = i
-            break
-
-    # 构建显示项（纯文本，不含 ANSI 码 → 避免弹窗截断问题）
-    display_items = []
-    for m in models:
-        marker = "  <-当前" if m == current else ""
-        display_items.append(f"{m}{marker}")
-
-    if ctx.ui_adapter is not None:
-        result = ctx.ui_adapter.run_bottom_bar_selection(
-            models, display_items, current_idx, title="模型选择",
-        )
-    else:
-        result = {"action": "error", "index": None}
-
-    if result["action"] == "confirmed" and result["index"] is not None:
-        selected = models[result["index"]]
-        if selected != current:
-            ctx.state["model"] = selected
-            _sync_provider(selected)
-            _out.write(f"{GREEN}  + 已切换到 {selected}{RESET}", level="raw", source="cmd")
-        else:
-            _out.write(f"{DIM}  当前已是 {selected}{RESET}", level="raw", source="cmd")
-    elif result["action"] == "cancel":
-        _out.write(f"{YELLOW}  ! 已取消{RESET}", level="raw", source="cmd")
-    elif result["action"] == "error":
-        _out.write(f"{YELLOW}  ! 底部栏不可用，请直接指定模型名称{RESET}", level="raw", source="cmd")
-        _out.write(f"  {DIM}  可用模型: {', '.join(models)}{RESET}", level="raw", source="cmd")
-    return True
 
 
 def _cmd_cost(ctx):

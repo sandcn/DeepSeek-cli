@@ -75,6 +75,29 @@ class TuiInputOrchestrator:
                     "wait_for_user_input: drained stale input %r "
                     "before setting prefill", stale,
                 )
+            # ★ W4 修复（2026-08-19，很多上文时按回车不能编辑对应消息
+            #   ——1 条用户消息也复现）：stale 为**空串**时是用户在
+            #   「弹窗消失 → prefill 注入前」窗口按下的 Enter（EditmsgPlugin
+            #   的 clear+display 全量重放在很多上文时耗时 100ms~1s+，用户
+            #   看到弹窗消失即按 Enter 提交——此时缓冲恒空，`_enter()` 产生
+            #   空提交）。修复前该空提交被静默丢弃 → prefill 注入后无提交
+            #   → 用户需再按一次 Enter（「按回车没反应」）。用户意图明确
+            #   是提交（按了 Enter），注入 prefill 后直接作为已提交文本
+            #   返回——按一次 Enter 即完成编辑重发。stale 非空（如流程
+            #   内部残留的 '/editmsg' 重复提交）仍照旧丢弃。
+            auto_submit = stale == ""
+            if auto_submit:
+                _logger.debug(
+                    "wait_for_user_input: 用户 Enter 先于 prefill 注入——"
+                    "注入后自动提交（不再要求再按一次）",
+                )
+                input_.set_buffer(prefill)
+                input_.echo(prefill)
+                # 提交语义收尾：缓冲清空 + 输入行清屏（对齐 _enter() 提交后
+                # 状态——文本已作为返回值交给上层，输入行不残留显示）。
+                input_.set_buffer("")
+                input_.echo("")
+                return prefill
             # ★ P2-5 修复（窗口期输入保留）：prefill 注入前若缓冲已有用户
             #   键入（editmsg 确认选择后 → prefill 注入前窗口期字符，由
             #   editmsg_plugin 经 drain_all 保存 + handle_chars 写回），拼接

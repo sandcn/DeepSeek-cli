@@ -476,16 +476,23 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
 
         等两帧（而非一帧）的原因：调用时渲染线程可能正在渲染「读到清理前
         模型」的旧帧（该帧发布的 router 仍含弹窗 hooks，早退会误判完成）；
-        再等一帧确保读到清理后状态。force 渲染下两帧通常 <300ms。
+        再等一帧确保读到清理后状态。
+
+        ★ W5 加固（慢渲染自适应，2026-08-19）：固定 2s 超时在慢渲染场景
+        （一帧 >1s，大量上文 clear+display 重放）下会过早降级（两帧 >2s →
+        返回 False → 旧 router 残留 → 用户 Enter 仍被吞）。改为**分段等待 +
+        帧号进展续期**：每段 0.5s；段末检查 ``_frame_seq`` 是否推进——推进
+        （渲染线程活着，只是帧慢）则续期软超时继续等；无进展最多等满
+        ``timeout``；总时长硬上限 ``max(timeout, 10s)``（渲染线程挂起时不
+        死锁调用方）。
 
         Args:
-            timeout: 等待超时（秒）。超时返回 False（降级为旧行为——调用方
-                继续执行，用户可能需再按一次 Enter；渲染线程崩溃/挂起时不
-                死锁主协程）。
+            timeout: 软超时（秒）——无帧进展时的最长等待；有进展时按段续期，
+                受硬上限（``max(timeout, 10)``）约束。
 
         Returns:
             True — 目标帧已完成（新 router 已发布）；
-            False — 超时（渲染线程未完成两帧）。
+            False — 超时（渲染线程未完成两帧/已挂起）。
         """
         if not self._render_running:
             # render 线程未运行（suspend 等）：request_bottom_redraw 内部
@@ -495,24 +502,40 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         ev = threading.Event()
         with self._frame_seq_lock:
             target = self._frame_seq + 2
+            base_seq = self._frame_seq
             self._frame_flush_waiters.append((target, ev))
         # force 唤醒：设置重绘请求（跳过 10Hz 节流）+ 命令事件（提前退出
         # 节流等待），渲染线程尽快完成目标帧。
         self._bottom_redraw_requested.set()
         self._dirty = True
         self._cmd_event.set()
-        ok = ev.wait(timeout)
-        if not ok:
-            # 超时移除 waiter（防列表增长；事件无人等待，唤醒无害但清理干净）
+        now = time.monotonic()
+        soft_deadline = now + timeout
+        hard_deadline = now + max(timeout, 10.0)
+        while True:
+            limit = min(soft_deadline, hard_deadline)
+            remain = limit - time.monotonic()
+            if remain <= 0:
+                break
+            if ev.wait(min(0.5, remain)):
+                return True
+            # 段末检查帧号进展：推进 → 慢渲染场景续期软超时（硬上限内
+            # 继续等）；未推进 → 可能是超长单帧，按软超时继续分段等。
             with self._frame_seq_lock:
-                self._frame_flush_waiters = [
-                    w for w in self._frame_flush_waiters if w[1] is not ev
-                ]
-            _logger.warning(
-                "flush_input_router 等待渲染帧超时（%.1fs）——旧 router 可能"
-                "短暂残留，弹窗后首次 Enter 可能被吞", timeout,
-            )
-        return ok
+                cur = self._frame_seq
+            if cur > base_seq:
+                base_seq = cur
+                soft_deadline = time.monotonic() + timeout
+        # 超时：移除 waiter（防列表增长；事件无人等待，唤醒无害但清理干净）
+        with self._frame_seq_lock:
+            self._frame_flush_waiters = [
+                w for w in self._frame_flush_waiters if w[1] is not ev
+            ]
+        _logger.warning(
+            "flush_input_router 等待渲染帧超时——旧 router 可能短暂残留，"
+            "弹窗后首次 Enter 可能被吞",
+        )
+        return False
 
     def _advance_frame_seq(self) -> None:
         """帧序号递增并唤醒达到目标的 flush 等待者（渲染线程调用）。

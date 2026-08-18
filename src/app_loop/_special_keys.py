@@ -105,7 +105,7 @@ def make_special_key_callback(loop, session, state, chat_ui, monitor=None):
             state.model = next_model
             # ── 同步 provider（与 /model 命令逻辑一致） ─────
             try:
-                from ..core.commands._config_cmd import _infer_model_provider
+                from ..core.commands._model_cmd import _infer_model_provider
                 from ..config.loader import get_rc, update_config
                 _inferred = _infer_model_provider(next_model)
                 if _inferred is not None:
