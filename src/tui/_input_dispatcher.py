@@ -493,13 +493,22 @@ class InputDispatcher:
                             # 方向D 步骤16：Esc 取消输入（启用 + 空闲 + 非空缓冲）
                             self._cancel_input()
                         else:
-                            # 方向3（Esc 补全弹窗残留修复）：中断前先关闭补全
-                            # 弹窗——修复前默认路径仅 ``_do_interrupt()``（reset
-                            # 回显 + 中断标志），弹窗可见时 Esc 不关闭弹窗 → 陈旧
-                            # 选中项残留（后续 Tab 会误应用）。dismiss 幂等（弹窗
-                            # 不可见时无副作用）。
-                            self._dismiss_completion()
+                            # 方向3（Esc 补全弹窗残留修复）：中断后关闭补全弹窗。
+                            # ★ P1-2 修复（顺序调换，editmsg Esc 误判取消）：
+                            #   先 ``_do_interrupt()``（置位中断标志）再
+                            #   ``_dismiss_completion()``——editmsg 选择期间
+                            #   （dismiss 回调被替换为 ``_editmsg_dismiss``）
+                            #   Esc 经旧路径触发 dismiss 时可读 ``interrupted``
+                            #   标志判定为**取消**而非确认；Enter 路径不设置
+                            #   中断标志，dismiss 仍判定为确认。调换前顺序相反，
+                            #   dismiss 时标志尚未置位，挂载窗口内 Esc 被误判为
+                            #   确认（截断+预填最后一条消息）。
+                            #   （``_cancel_input`` 分支在 editmsg 场景不可达：
+                            #   进入选择前缓冲恒为空——Ctrl+O reset 清空 /
+                            #   /editmsg Enter 提交清空，``_should_cancel_input``
+                            #   对空缓冲返回 False。）
                             self._do_interrupt()
+                            self._dismiss_completion()
                     elif kind in (
                         "arrow_up", "arrow_down", "arrow_right", "arrow_left",
                         "home", "end", "delete", "backspace", "char",

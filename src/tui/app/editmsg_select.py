@@ -31,7 +31,7 @@ from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from src.tui.app.input_area import _truncate_width
 from src.tui.ink import TEXT, h, Column
-from src.tui.ink.hooks import use_modal, use_ref, use_state
+from src.tui.ink.hooks import use_modal, use_ref, use_state, use_memo
 from src.tui.ink.widgets.interactive import SelectInput
 
 __all__ = ["EditMsgSelectPopup"]
@@ -52,13 +52,19 @@ def _editmsg_item_rows() -> int:
     提示行 1 ≈ ``h - 3``（与 UserSelectPopup 的高度预算语义相同，独立实现
     ——editmsg 与 user_select 不共用代码）。
 
+    ★ P3-1 修复（矮终端溢出）：下限从 6 收紧到 1——修复前 ``max(6, h-3)``
+    在矮终端（h < 9）强制 6 行，弹窗溢出屏幕底部（无滚动）。下限 1 时调用
+    处 ``min(total, rows)`` 自然钳制；异常/未知高度回退 12。
+
     Returns:
-        选项最大渲染行数。
+        选项最大渲染行数（≥1）。
     """
     try:
         from src.tui._screen import TerminalWidthCache
         h = TerminalWidthCache.get_default().get_height()
-        return max(6, h - 3)
+        if h and h > 0:
+            return max(1, h - 3)
+        return 12
     except Exception:
         return 12
 
@@ -143,8 +149,16 @@ def EditMsgSelectPopup(props) -> object:
 
     def _on_select(item) -> None:
         # 单选 Enter：经 try_set_final 原子终态写入（编辑器超时已置位则
-        # 放弃覆盖——first-write-wins）
-        result = [item["value"]] if 0 <= cur < total else []
+        # 放弃覆盖——first-write-wins）。
+        # ★ P2-4 修复（闭包 cur 陈旧）：SelectInput 事件期经 selected_ref
+        #   （即时值）选中正确的 item 传入——result 直接取 item["value"]
+        #   （权威值）；修复前用渲染帧闭包 ``cur`` 判定
+        #   ``0 <= cur < total``，同批多按键无重渲染时 cur 陈旧，es.result
+        #   可能与 es.selected 不一致（协议数据漂移，未来消费方即踩坑）。
+        try:
+            result = [item["value"]] if item is not None else []
+        except (TypeError, KeyError):
+            result = []
         _commit(result, "confirmed")
 
     def _on_cancel(*_args) -> None:
@@ -159,7 +173,10 @@ def EditMsgSelectPopup(props) -> object:
     items = [{"label": opt, "value": opt} for opt in options]
     # 每条消息只显示一行：单行选项 → 行数预算即可见项数（交互仍可导航到
     # 隐藏项）。
-    limit = max(1, min(total, _editmsg_item_rows()))
+    # ★ P3-4 修复（高度查询 memo 化）：``_editmsg_item_rows`` 读终端高度
+    #   （TerminalWidthCache）——修复前每渲染帧调用；options 固定不变，
+    #   经 use_memo 按 [total] 缓存，帧内零查询。
+    limit = max(1, min(total, use_memo(lambda: _editmsg_item_rows(), [total])))
 
     def _render_item(item, idx, is_sel):
         """单行渲染：▶ 高亮前缀 + 消息单行摘要（超宽截断不拆 CJK）。"""

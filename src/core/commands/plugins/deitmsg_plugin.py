@@ -53,7 +53,6 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
         直接定位到最后一条 user 消息，恢复沙盒、截断消息、预填旧内容。
         """
         from ....core.constants import YELLOW, RESET, GREEN, DIM
-        from ....core.sandbox_manager import get_sandbox_manager as _get_sandbox_manager
         from ....app_loop import _non_system_messages
         from ....api.interrupt_async import flush_stdin, reset_interrupt_async
 
@@ -77,7 +76,7 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
             return True
 
         needs_rerender = False
-        restored_count = 0
+        restore_text = ""
         try:
             # Layer 2 防御：排空 stdin 残余字节
             flush_stdin(input_instance=chat_ui._input if chat_ui else None)
@@ -98,25 +97,17 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
 
             old_content = _content_str(messages[last_user_idx].get("content", ""))
 
-            # ── 恢复沙盒 ──
-            target_index = last_user_idx - 1 if last_user_idx > 0 else 0
-            sandbox_manager = _get_sandbox_manager()
-            if sandbox_manager:
-                results = sandbox_manager.restore_to_message(target_index)
-                if results:
-                    restored_count = sum(
-                        1 for success in results.values() if success
-                    )
-
-            # ── 截断消息 ──
-            original_len = len(messages)
-            del messages[last_user_idx:]
-
-            # ── 同步沙盒索引 ──
-            if sandbox_manager:
-                sandbox_manager.remap_indices(
-                    list(range(last_user_idx, original_len))
-                )
+            # ── 恢复沙盒 + 截断 + remap（统一公共助手） ──
+            # ★ P1-1 修复（先 remap 后删）：修复前本插件内联「restore → del
+            #   messages → remap_indices」顺序——remap 抛异常时消息已删且
+            #   prefill 未设置（old_content 只存于局部变量，用户内容永久
+            #   丢失），沙盒记录与消息索引不一致且无补偿；界面也不重渲染
+            #   （needs_rerender=False）残留已删消息。editmsg 侧同逻辑已在
+            #   _truncate_messages（P2-7）修复为「先 remap 后删」，本插件
+            #   未同步。现复用同一助手：remap 失败时异常在消息删除**前**
+            #   抛出（无中间态），被 except 捕获显示「编辑失败」。
+            from ....tui.pipeline.message_editor import _truncate_messages
+            restore_text = _truncate_messages(session.agent, last_user_idx)
 
             # ── 设置 prefill ──
             state["prefill"] = old_content
@@ -175,15 +166,15 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
                     "DeitmsgPlugin display_messages 异常: %s", exc
                 )
             # 3. 视觉分隔线 + 沙盒还原信息（在 display_messages 之后，避免被消息渲染滚动覆盖）
+            # ★ P2-3 修复：恢复失败以 ⚠ 渲染（与 editmsg 统一经
+            #   _restore_feedback 判定），不再无条件绿色 ✓。
             chat_ui.write_line(f"  {DIM}{'─' * 40}{RESET}")
-            if restored_count > 0:
-                chat_ui.write_line(
-                    f"  {GREEN}\u2713{RESET} \u5df2\u8fd8\u539f {restored_count} \u4e2a\u6587\u4ef6\u6c99\u76d2"
-                )
+            from ....tui.pipeline.message_editor import _restore_feedback
+            feedback_text, restore_failed = _restore_feedback(restore_text)
+            if restore_failed:
+                chat_ui.write_line(f"  {YELLOW}\u26a0{RESET} {feedback_text}")
             else:
-                chat_ui.write_line(
-                    f"  {DIM}\u6c99\u76d2\u65e0\u6587\u4ef6\u9700\u8fd8\u539f{RESET}"
-                )
+                chat_ui.write_line(f"  {GREEN}\u2713{RESET} {feedback_text}")
 
             # 确保渲染命令在插件返回前排空
             try:
@@ -196,10 +187,20 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
         return True
 
     def execute(self, ctx: Any) -> bool:
-        """同步版本 — 抛出异常，防止误调用"""
-        raise RuntimeError(
-            "DeitmsgPlugin 需要异步执行，请调用 async_execute()"
-        )
+        """同步版本 — 旧命令系统路径友好降级（不抛异常）。
+
+        ★ P2-2 附带修复：registry 自动注册同步 handler——同步路径
+        （handle_command）触发本方法。修复前直接 raise RuntimeError 使
+        调用方崩溃；现输出提示并返回 True。
+        """
+        try:
+            from ....core.adapters.output import get_default_output_port
+            get_default_output_port().write(
+                f"  {YELLOW}\u26a0{RESET} /deitmsg \u9700\u8981\u4ea4\u4e92\u5f0f TUI \u73af\u5883\uff0c\u8bf7\u5728 TUI \u4e2d\u4f7f\u7528"
+            )
+        except Exception:
+            _logger.debug("deitmsg_plugin: 同步降级提示输出异常", exc_info=True)
+        return True
 
 # 模块级自注册
 get_plugin_registry().register(DeitmsgPlugin())

@@ -75,8 +75,19 @@ class TuiInputOrchestrator:
                     "wait_for_user_input: drained stale input %r "
                     "before setting prefill", stale,
                 )
-            input_.set_buffer(prefill)
-            input_.echo(prefill)
+            # ★ P2-5 修复（窗口期输入保留）：prefill 注入前若缓冲已有用户
+            #   键入（editmsg 确认选择后 → prefill 注入前窗口期字符，由
+            #   editmsg_plugin 经 drain_all 保存 + handle_chars 写回），拼接
+            #   ``prefill + existing`` 而非无条件覆盖——修复前 set_buffer
+            #   (prefill) 静默丢弃窗口期输入。
+            existing = ""
+            try:
+                existing = input_.get_current_text() or ""
+            except Exception:
+                existing = ""
+            merged = prefill + existing if existing else prefill
+            input_.set_buffer(merged)
+            input_.echo(merged)
             # 残留提交检查与恢复（editmsg 竞态兜底修复，2026-08-01；
             # P2 2026-08-07：检查移至 echo 之后）：
             # 修复 1 已在源头（dispatcher）丢弃被抑制 Enter 后的 LF；此处防御
@@ -93,7 +104,7 @@ class TuiInputOrchestrator:
                     "wait_for_user_input: 残留 Enter 已提交 prefill (%r)，"
                     "重新注入恢复", residual,
                 )
-                input_.set_buffer(prefill)
+                input_.set_buffer(merged)
             _logger.debug("wait_for_user_input: prefill done, entering poll loop")
 
         deadline = None if timeout is None else time.monotonic() + timeout

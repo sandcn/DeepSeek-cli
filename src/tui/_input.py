@@ -189,6 +189,15 @@ class Input:
         """中断标志是否被设置。"""
         return self._io.interrupted
 
+    def clear_interrupted(self) -> None:
+        """清除中断标志（不清空输入缓冲/队列——区别于 reset）。
+
+        message_editor 进入 /editmsg 选择前清除残留中断标志（上一轮 Esc
+        中断后 Input.interrupted 可能残留 True），使选择期间轮询中断检查
+        只对**新**中断（Ctrl+C/双 Esc）生效，不误判取消。
+        """
+        self._io.clear_interrupted()
+
     # ── 私有属性委托（保持拆分前测试/调用方访问路径） ──────
 
     @property

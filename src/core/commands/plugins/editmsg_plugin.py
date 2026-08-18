@@ -78,6 +78,7 @@ class EditmsgPlugin(InteractiveCommandPlugin):
             return True
 
         needs_rerender = False
+        saved_buffer = ""
         try:
             # ★ 不执行 chat_ui.suspend() — 保持 render 线程 + _BottomBar 运行
             # ★ 不执行 monitor.stop() — 保持 cbreak 模式供 render 线程驱动 ↑↓/Enter
@@ -145,8 +146,16 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                             # 双重保障：清除残留的 submitted_text 和 buffer
                             # 即使 _input_ready 清除后仍有 Enter 被处理设置 _submitted_text，
                             # drain_all() 也会将其清空
+                            # ★ P2-5 修复（窗口期输入保留）：drain_all 返回
+                            #   (submitted, buffer)——保存 buffer（用户在「确认
+                            #   选择后 → prefill 注入前」窗口期键入的字符），
+                            #   渲染完成后经 handle_chars 写回，下一轮
+                            #   wait_for_user_input 与 prefill 拼接（不再静默
+                            #   丢弃窗口期输入）。
                             try:
-                                input_inst.drain_all()
+                                drained = input_inst.drain_all()
+                                if drained and len(drained) > 1 and drained[1]:
+                                    saved_buffer = drained[1]
                             except Exception:
                                 _logger.debug("editmsg_plugin: drain_all 异常", exc_info=True)
 
@@ -178,19 +187,49 @@ class EditmsgPlugin(InteractiveCommandPlugin):
             chat_ui.display_messages(non_system, speed=0)
             # 3. 显示沙盒恢复提示（在 display_messages 之后，避免被消息渲染滚动覆盖）
             chat_ui.write_line(f"  {DIM}{'─' * 40}{RESET}")
-            if restore_text:
-                chat_ui.write_line(f"  {GREEN}\u2713{RESET} {restore_text}")
+            # ★ P2-3 修复：恢复失败（降级继续编辑语义）以 ⚠ 黄色渲染——
+            #   修复前无条件 GREEN ✓ 把「沙盒恢复失败: …」显示成成功结果。
+            from ....tui.pipeline.message_editor import _restore_feedback
+            feedback_text, restore_failed = _restore_feedback(restore_text)
+            if restore_failed:
+                chat_ui.write_line(f"  {YELLOW}\u26a0{RESET} {feedback_text}")
             else:
-                chat_ui.write_line(f"  {DIM}\u6c99\u76d2\u65e0\u6587\u4ef6\u9700\u8fd8\u539f{RESET}")
+                chat_ui.write_line(f"  {GREEN}\u2713{RESET} {feedback_text}")
+            # ★ P3-3：多模态消息编辑警告（EditCommand 检测非文本 content）
+            prefill_warning = edit_state.get("_prefill_warning", "")
+            if prefill_warning:
+                chat_ui.write_line(f"  {YELLOW}\u26a0{RESET} {prefill_warning}")
             chat_ui.flush()
+            # ★ P2-5：写回窗口期输入（drain_all 保存的 buffer）——渲染完成
+            #   后追加到输入缓冲（handle_chars 光标尾插入 + 回显），下一轮
+            #   wait_for_user_input 与 prefill 拼接不丢。
+            if saved_buffer:
+                try:
+                    input_inst = chat_ui.get_input()
+                    if input_inst is not None:
+                        input_inst.handle_chars(saved_buffer)
+                except Exception:
+                    _logger.debug("editmsg_plugin: 恢复窗口期输入异常", exc_info=True)
 
         return True
 
     def execute(self, ctx: Any) -> bool:
-        """同步版本 — 抛出异常，防止误调用"""
-        raise RuntimeError(
-            "EditmsgPlugin 需要异步执行，请调用 async_execute()"
-        )
+        """同步版本 — 旧命令系统路径友好降级（不抛异常）。
+
+        ★ P2-2 附带修复：CommandPluginRegistry.register 自动把插件的
+        execute 注册进旧命令表（``_commands["/editmsg"]``）——同步路径
+        （handle_command，如非 TUI 调用方）会触发本方法。修复前直接
+        raise RuntimeError 使调用方崩溃；现输出提示并返回 True（命令已
+        处理——TUI 主循环走 async_execute，不受影响）。
+        """
+        try:
+            from ....core.adapters.output import get_default_output_port
+            get_default_output_port().write(
+                f"  {YELLOW}\u26a0{RESET} /editmsg \u9700\u8981\u4ea4\u4e92\u5f0f TUI \u73af\u5883\uff0c\u8bf7\u5728 TUI \u4e2d\u4f7f\u7528\uff08Ctrl+O\uff09"
+            )
+        except Exception:
+            _logger.debug("editmsg_plugin: 同步降级提示输出异常", exc_info=True)
+        return True
 
 
 # 模块级自注册

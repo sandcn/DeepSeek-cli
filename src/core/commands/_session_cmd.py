@@ -166,20 +166,14 @@ def _cmd_loop(ctx):
 
 
 def _cmd_editmsg(ctx):
-    """编辑当前会话消息（由 app.py 异步执行实际的编辑操作）
+    """编辑当前会话消息（已迁移至 EditmsgPlugin 插件路径）
 
-    设置 edit_msg 联络信号，让 app.py 执行异步编辑流程。
+    ★ P2-2 清理：本函数原设置 ``ctx.edit_msg`` 联络信号交由 app.py 异步
+    执行——该信号全仓无消费方（死路径），且函数未注册进命令表（非 TUI
+    入口返回「未知命令」）。/editmsg 现统一由 EditmsgPlugin
+    （plugins/editmsg_plugin.py，TUI 插件注册表）处理；保留本壳仅维持
+    ``_cmd_editmsg`` 符号可导入（向后兼容），直接委托无操作。
     """
-    if ctx.ui_adapter is not None:
-        _edit_msgs = ctx.ui_adapter.edit_current_messages
-    else:
-        _edit_msgs = None
-    ctx.edit_msg = {
-        "handler": _edit_msgs,
-        "model": ctx.state.get("model", ""),
-        "retry": ctx.state.get("retry", False),
-        "prefill": ctx.state.get("prefill", ""),
-    }
     return True
 
 

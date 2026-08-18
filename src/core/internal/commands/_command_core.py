@@ -72,7 +72,6 @@ class CommandContext:
     session: object | None = None  # ChatSession 引用，供 compress 等需要 session 方法的命令使用
     persistence_port: object | None = None  # PersistencePort，供数据命令走端口而非直连 chat_msgs
     config_port: object | None = None  # ConfigPort，供 show_cost 等走端口读配置而非直连 config 模块
-    edit_msg: dict | None = None  # /editmsg 联络信号: dict 或 None
     ui_adapter: object | None = None  # CommandUiAdapter 实例，供 UI 交互操作（底部栏/主题/diff 渲染等）
 
 

@@ -47,7 +47,8 @@ _logger = logging.getLogger(__name__)
 def _user_msg_summary(msg: dict, idx: int, max_w: int = 60) -> str:
     """生成用户消息的简短摘要（用于消息选择弹窗显示，**每条一行**）。
 
-    格式: N. ● │ 消息内容摘要...
+    格式: N. ● │ 消息内容摘要...（N 为 1 基显示编号——与 user_select
+    弹窗视觉一致，用户可直接对应第几条）
 
     ★ 2026-08-18（用户需求：editmsg 每条信息只显示一行）：消息选择弹窗
     不再使用 TUI 多行渲染（option_lines），改为单行摘要——多行消息内容
@@ -55,7 +56,7 @@ def _user_msg_summary(msg: dict, idx: int, max_w: int = 60) -> str:
 
     Args:
         msg: 消息字典。
-        idx: 显示编号。
+        idx: 显示编号（0 基；内部 +1 转为 1 基显示）。
         max_w: 最大宽度。
 
     Returns:
@@ -63,7 +64,74 @@ def _user_msg_summary(msg: dict, idx: int, max_w: int = 60) -> str:
     """
     content = _content_str(msg.get("content", ""))
     text = content.strip()
-    return f"{idx}. \u25cf \u2502 {_truncate(text, max_w)}"
+    return f"{idx + 1}. \u25cf \u2502 {_truncate(text, max_w)}"
+
+
+def _restore_feedback(restore_text: str) -> tuple[str, bool]:
+    """沙盒恢复反馈行（editmsg/deitmsg 共用，P2-3 修复）。
+
+    恢复失败（降级继续编辑语义，见 ``_restore_sandbox_to``）返回的文本
+    以「沙盒恢复失败: …」标识——调用方须以 ⚠（黄）渲染而非 ✓（绿），
+    修复前无条件绿色 ✓ 把失败提示显示成成功结果。
+
+    Args:
+        restore_text: ``_restore_sandbox_to`` / ``_truncate_messages`` 返回文本。
+
+    Returns:
+        (显示文本, is_failure)：is_failure=True 时调用方用警告色渲染。
+    """
+    if not restore_text:
+        return ("\u6c99\u76d2\u65e0\u6587\u4ef6\u9700\u8fd8\u539f", False)
+    is_failure = "\u5931\u8d25" in restore_text
+    return (restore_text, is_failure)
+
+
+def _content_has_nontext(content: Any) -> bool:
+    """检测多模态 content 是否含非文本部分（图片等，P3-3）。
+
+    Edit 语义是「预填旧文本供编辑重发」——多模态消息的非文本部分无法经
+    文本编辑行表达，重发后将静默丢失。检测到时调用方须显式提示用户。
+
+    Args:
+        content: 消息 content（str 或 list[dict]）。
+
+    Returns:
+        True — content 为 list 且含 type 非 text/None 的部分。
+    """
+    if not isinstance(content, list):
+        return False
+    for part in content:
+        if isinstance(part, dict) and part.get("type") not in (None, "text"):
+            return True
+    return False
+
+
+def _text_part_str(content: Any) -> str:
+    """提取多模态 content 的纯文本部分（P3-3）。
+
+    ``_content_str``（显示摘要用）会把非文本 dict 拍平为 str 混入结果
+    （如 ``看图 {'type': 'image_url', ...}``）——**编辑预填**用途不应携带：
+    prefill 是文本编辑行内容，图片等部分重发后丢失（调用方经
+    ``_content_has_nontext`` 提示用户）。本函数只拼接 text 部分
+    （type 为 text/None 的 ``text`` 字段），非 list 输入回退 ``_content_str``。
+
+    Args:
+        content: 消息 content（str 或 list[dict]）。
+
+    Returns:
+        纯文本字符串（多 text 部分以空格拼接，与 _content_str 分隔一致）。
+    """
+    if not isinstance(content, list):
+        return _content_str(content)
+    parts: list[str] = []
+    for part in content:
+        if isinstance(part, dict) and part.get("type") in (None, "text"):
+            t = part.get("text", "")
+            if t:
+                parts.append(str(t))
+        elif isinstance(part, str):
+            parts.append(part)
+    return " ".join(parts)
 
 
 def _restore_sandbox_to(agent: Any, target_idx: int) -> str:
@@ -137,12 +205,25 @@ class EditCommand:
         if self.real_idx < 0 or self.real_idx >= len(messages):
             return False
 
-        old_content = _content_str(messages[self.real_idx].get("content", ""))
+        old_msg = messages[self.real_idx]
+        old_content_raw = old_msg.get("content", "")
+        # ★ P3-3：prefill 取**纯文本部分**——多模态消息（含图片等非文本
+        #   部分）经 _content_str 拍平会把 image dict 的 str 形式混入编辑行
+        #   （垃圾文本）；改用 _text_part_str 只取 text 部分 + 显式警告。
+        old_content = _text_part_str(old_content_raw)
 
         # 截断 + 沙盒恢复 + remap（P2-6：公共助手，恢复失败语义见
         # _restore_sandbox_to —— 明确降级：记录 warning 并继续编辑）
         state["_restore_text"] = _truncate_messages(agent, self.real_idx)
 
+        # ★ P3-3：多模态消息（含图片等非文本部分）经文本预填重发后非文本
+        #   部分静默丢失——显式提示用户（editmsg_plugin 渲染 ⚠ 行）。
+        if _content_has_nontext(old_content_raw):
+            state["_prefill_warning"] = (
+                "\u539f\u6d88\u606f\u542b\u975e\u6587\u672c\u5185\u5bb9"
+                "\uff08\u5982\u56fe\u7247\uff09\uff0c\u7f16\u8f91\u91cd\u53d1"
+                "\u540e\u975e\u6587\u672c\u90e8\u5206\u5c06\u4e22\u5931"
+            )
         state["prefill"] = old_content
         state["_edit_performed"] = True
         return True
@@ -266,6 +347,40 @@ class MessageEditor:
             self._session = candidate_session
         self._selection_ready: threading.Event = threading.Event()
         self._selection_confirmed: bool = False
+        # ★ P1-2：取消信号——dismiss 回调触发时输入中断标志已置位
+        #   （Esc 路径 ``_do_interrupt`` 先于 dismiss 执行）视为取消；
+        #   与 _selection_confirmed 互斥（中断优先）。
+        self._selection_cancelled: bool = False
+
+    def _editmsg_dismiss_cb(self) -> None:
+        """自定义补全关闭回调 — 设置选择完成/取消信号（原闭包提取为方法）。
+
+        在 render 线程中调用：``_dispatch_key_event(enter/escape) →
+        _dismiss_completion()`` → 本回调。
+
+        ★ P1-2 修复（Esc 误判确认）：dismiss 的语义是「关闭补全弹窗」，
+        触发方不止 Enter——组件挂载窗口（编辑器设置 model.editmsg_select
+        到 EditMsgSelectPopup 挂载并注册 router 之间，约 1 帧）内按 Esc
+        也经旧路径触发本回调。修复前无条件视为「已确认」→ 截断并预填
+        最后一条用户消息（用户数据被动截断，且与挂载后 Esc=取消语义相反）。
+        现按中断标志区分：
+          - ``input.interrupted`` 已置位（escape else 分支 ``_do_interrupt``
+            先于 dismiss 执行——见 _input_dispatcher 调换顺序修复）→ 取消；
+          - 未置位（enter 分支不设置中断）→ 确认（覆盖挂载窗口双击
+            Enter 场景，行为与组件确认等价）。
+        """
+        cancelled = False
+        try:
+            inp = self._input
+            if inp is not None and bool(getattr(inp, "interrupted", False)):
+                cancelled = True
+        except Exception:
+            cancelled = False
+        if cancelled:
+            self._selection_cancelled = True
+        else:
+            self._selection_confirmed = True
+        self._selection_ready.set()
 
     @staticmethod
     def _is_mock_model(model) -> bool:
@@ -320,6 +435,18 @@ class MessageEditor:
         if input_ is None:
             return False
 
+        # ★ P1-3 前置：清除残留中断标志——上一轮 Esc 中断后
+        #   Input.interrupted 可能残留 True（仅 dispatcher.reset() 清除），
+        #   不清则选择期间轮询中断检查立即误判取消。clear_interrupted
+        #   只清标志不清缓冲/队列（区别于 reset），不丢用户输入。
+        try:
+            input_.clear_interrupted()
+        except Exception:
+            _logger.debug(
+                "edit_current_messages: clear_interrupted 异常（桩实例无方法）",
+                exc_info=True,
+            )
+
         # ★ P2-5：将「set_suppress_enter(True) + get_dismiss_completion_callback
         #   + set_dismiss_completion_callback」整个序列移入 try/finally——
         #   修复前若任一步抛异常（input 状态异常等），Enter 抑制永久卡死
@@ -331,17 +458,7 @@ class MessageEditor:
             # （不直接读写 input_._dismiss_completion_callback 私有字段）。
             orig_dismiss_cb = input_.get_dismiss_completion_callback()
 
-            def _editmsg_dismiss():
-                """自定义补全关闭回调 — 设置选择完成信号。
-
-                在 render 线程中调用：
-                  _dispatch_key_event(enter) → _dismiss_completion()
-                → 调用此回调 → 设置 _selection_ready 通知 executor 线程。
-                """
-                self._selection_confirmed = True
-                self._selection_ready.set()
-
-            input_.set_dismiss_completion_callback(_editmsg_dismiss)
+            input_.set_dismiss_completion_callback(self._editmsg_dismiss_cb)
 
             real_idx = self._interactive_message_select(user_msgs, display_items)
         finally:
@@ -371,6 +488,7 @@ class MessageEditor:
             # 清理独立信号（防残留）
             self._selection_ready.clear()
             self._selection_confirmed = False
+            self._selection_cancelled = False
             # ★ review 修复（P2）：底部视图兜底清理——_interactive_message_select
             #   自身 finally 已清理（异常路径安全）；此处作第二道防线（防御
             #   未来新增调用路径未清理/异常中断导致 bottom_view 残留——App
@@ -453,9 +571,14 @@ class MessageEditor:
         # ★ P2（review 修复）：轮询 + 解析 + 清理整段 try/finally——异常路径
         #   也保证 editmsg_select + bottom_view 恢复（不残留弹窗/底部视图，
         #   输入区不消失）；与 tools/user_select.py 的 finally 清理模式对齐。
+        # ★ P1-3：进入轮询前保存 es 引用——循环内每轮检测
+        #   ``model.editmsg_select is not es``（外部替换，如 Ctrl+L 清屏
+        #   reset_display 重建实例）与输入中断标志，二者均视为取消立即退出，
+        #   不再空转到 120s 超时挂起。
+        es = model.editmsg_select
         try:
-            deadline = model.editmsg_select.deadline
-            while not model.editmsg_select.done:
+            deadline = es.deadline
+            while not es.done:
                 if self._selection_ready.is_set():
                     # ★ P2-7：标准路径同时响应 _selection_ready 信号（自定义
                     #   dismiss 回调 _editmsg_dismiss 设置，legacy 路径已响应）——
@@ -463,11 +586,27 @@ class MessageEditor:
                     #   ``_dismiss_completion → _editmsg_dismiss`` 路径确认而 done
                     #   未及时写回，轮询可能空转到超时；同时检查双信号更稳。
                     break
+                # ★ P1-3：Ctrl+C / 双 Esc 中断（_do_interrupt 置位
+                #   Input.interrupted）→ 视为取消退出——修复前弹窗期间 Ctrl+C
+                #   完全失效（SelectInput consumeAll 放行 \x03 的意图经
+                #   kind=="char" 判定永假：raw 0x03 解析为 kind="interrupt"
+                #   直接走 _do_interrupt，不进 router），轮询也不检查中断标志
+                #   → 无响应无取消，只能 Esc 或等 120s 超时。
+                try:
+                    if self._input is not None and bool(
+                        getattr(self._input, "interrupted", False)
+                    ):
+                        break
+                except Exception:
+                    pass
+                # ★ P3-5：es 实例被外部替换（清屏 reset_display 等）→ 取消退出
+                if model.editmsg_select is not es:
+                    break
                 if deadline > 0 and time.monotonic() >= deadline:
                     # 超时：原子终态写入（first-write-wins）——组件已确认
                     # （done 已置位）则放弃覆盖，保留组件结果（2026-08-17
                     # 修复：修复前无条件写 done/action 覆盖组件确认结果）。
-                    model.editmsg_select.try_set_final("timeout", [])
+                    es.try_set_final("timeout", [])
                     break
                 time.sleep(0.05)
 
@@ -477,8 +616,14 @@ class MessageEditor:
             #   ``_dismiss_completion → _editmsg_dismiss`` 路径确认时 st.action
             #   可能未写回 "confirmed"（修复前 action 归为 "timeout" 丢弃已确认的
             #   选择）；此处回退按 confirmed 处理（st.selected 读取紧随其后）。
-            if action == "timeout" and self._selection_confirmed:
-                action = "confirmed"
+            # ★ P1-2：取消信号优先于确认（二者互斥，防御性排序）——Esc 路径
+            #   dismiss（中断标志已置位）判定为取消；中断检查 break 时
+            #   st.action 为空 → timeout，同样经此处归一为 cancel。
+            if action == "timeout":
+                if self._selection_cancelled:
+                    action = "cancel"
+                elif self._selection_confirmed:
+                    action = "confirmed"
             # ★ 修复（P2）：selected 可能为 None（外部注入）——
             #   int(None) 抛 TypeError；归一化失败回退默认选中最后一条。
             try:
