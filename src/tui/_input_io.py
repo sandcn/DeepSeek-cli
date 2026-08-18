@@ -104,6 +104,12 @@ class InputIO:
         # 中文不丢首字节（修复前解码失败返回 None → 首字节被 capture）。
         self._utf8_partial: bytes = b""
 
+        # ── 窗口期 Enter 丢弃记录（editmsg「很多上文时按回车不能编辑」修复） ──
+        # _flush_stdin_residual 丢弃 Enter 字节（0x0a/0x0d）时置位；
+        # flush_stdin_buffer 开头重置、结尾读取返回（Input 外观转发给
+        # dispatcher 记为提交意图——capture 激活期）。
+        self._residual_dropped_enter: bool = False
+
         # ── 故障检测 ──
         self._eof_count = 0
         self._select_error_count = 0
@@ -677,6 +683,11 @@ class InputIO:
         不变（新增可选参数默认值向后兼容）。termios 可用时
         ``flush_stdin_buffer`` 后续 tcflush 兜底刷洗内核队列（极端输入下少排
         若干字节语义安全）。
+
+        ★ 窗口期 Enter 记录（editmsg「很多上文时按回车不能编辑」修复）：
+        丢弃的字节含 Enter（0x0a/0x0d）时置 ``self._residual_dropped_enter``
+        ——``flush_stdin_buffer`` 读取并返回，供 Input 外观通知 dispatcher
+        记为提交意图（capture 激活期）。
         """
         if self._fd_status == "error":
             return
@@ -694,13 +705,16 @@ class InputIO:
                 )
                 if not ready:
                     break
-                os.read(self._fd, 1)
+                dropped = os.read(self._fd, 1)
+                # ★ 记录丢弃的 Enter 字节（供 flush_stdin_buffer 报告）
+                if dropped in (b"\n", b"\r"):
+                    self._residual_dropped_enter = True
                 flushed += 1
             except (ValueError, OSError, TypeError, AttributeError):
                 _logger.debug("排空 stdin 残留时异常", exc_info=True)
                 break
 
-    def flush_stdin_buffer(self, max_flush: int = 50) -> None:
+    def flush_stdin_buffer(self, max_flush: int = 50) -> bool:
         """公开方法：非阻塞清理 stdin 残留字节 + termios 缓冲区刷洗。
 
         先使用 select 排空可读字节（委托 _flush_stdin_residual），
@@ -708,13 +722,22 @@ class InputIO:
 
         Args:
             max_flush: 最大排空字节数限制（传递给 _flush_stdin_residual）。
+
+        Returns:
+            True — 本次排空丢弃的字节中含 Enter（0x0a/0x0d）；
+            False — 无 Enter 字节被丢弃（含无可读字节的快速返回）。
+            （窗口期 Enter 提交意图捕获用——Input 外观转发给 dispatcher；
+            原 None 返回语义的调用方忽略返回值，签名兼容。）
         """
+        self._residual_dropped_enter = False
         self._flush_stdin_residual(max_flush)
+        dropped_enter = self._residual_dropped_enter
         if HAS_TERMIOS:
             try:
                 termios.tcflush(self._fd, termios.TCIFLUSH)
             except Exception:
                 _logger.debug("tcflush 失败", exc_info=True)
+        return dropped_enter
 
 
 __all__ = ["InputIO"]

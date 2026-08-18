@@ -681,6 +681,28 @@ class MessageEditor:
                 session.request_bottom_redraw()
             except Exception:
                 _logger.debug("_interactive_message_select: cleanup redraw 异常", exc_info=True)
+            # ★ 窗口期 Enter 捕获开启（2026-08-19，editmsg「很多上文时按回车
+            #   不能编辑对应消息」根因修复）：弹窗已到终态（确认/取消/超时）
+            #   ——此后用户按 Enter 的语义是「提交编辑」而非「确认弹窗」。
+            #   弹窗关闭 → prefill 注入之间存在长窗口（flush_input_router
+            #   等慢帧 + flush_stdin_buffer 丢字节 + 截断 + 插件清 _input_ready
+            #   丢空提交 + clear/display 全量重放 flush——大量上文时 1s~10s），
+            #   期间 Enter 被 suppress 吞 / 被 flush 丢弃均无痕丢失（用户
+            #   「按回车没反应，要再按一次」）。capture 开启后这些 Enter 记
+            #   为提交意图（deferred），editmsg_plugin 注入 prefill 后消费
+            #   并自动提交兑现。放在 flush_input_router **之前**——覆盖
+            #   flush 等待期间（大量上文 200ms~数秒）被吞的 Enter（弹窗
+            #   刚关闭用户最可能立即按 Enter 的时机）。取消/超时路径同样
+            #   开启（editmsg_plugin 结束时统一关闭并清残留，无泄漏）。
+            try:
+                set_capture = getattr(self._input, "set_enter_capture", None)
+                if callable(set_capture):
+                    set_capture(True)
+            except Exception:
+                _logger.debug(
+                    "_interactive_message_select: set_enter_capture 异常",
+                    exc_info=True,
+                )
             # ★ 2026-08-19 根因修复（很多上文时按回车不能编辑对应消息，
             #   1 条消息快速连按也复现）：弹窗清理后、渲染线程发布新
             #   input router 前，旧 router 仍含已卸载弹窗的 SelectInput

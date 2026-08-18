@@ -138,6 +138,26 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                         input_inst = chat_ui.get_input()
                         if input_inst is not None:
                             try:
+                                # ★ 窗口期提交意图转换（2026-08-19，editmsg
+                                #   「很多上文时按回车不能编辑」根因修复）：
+                                #   清除前若已有排队提交（用户在「弹窗关闭 →
+                                #   prefill 注入前」窗口按的 Enter 产生的空
+                                #   提交——缓冲恒空），先转为 deferred 提交
+                                #   意图——修复前直接清除 = 无痕丢弃，用户
+                                #   「按回车没反应，要再按一次」；注入 prefill
+                                #   后消费兑现（自动提交）。
+                                try:
+                                    if input_inst.has_queued_input():
+                                        mark_intent = getattr(
+                                            input_inst, "mark_deferred_enter", None,
+                                        )
+                                        if callable(mark_intent):
+                                            mark_intent()
+                                except Exception:
+                                    _logger.debug(
+                                        "editmsg_plugin: 窗口期提交意图转换异常",
+                                        exc_info=True,
+                                    )
                                 with input_inst._lock:
                                     input_inst._input_ready.clear()
                                     input_inst._submitted_text = ""
@@ -179,37 +199,98 @@ class EditmsgPlugin(InteractiveCommandPlugin):
         #    用户需求（/editmsg TUI）：按下回车确认选择后，删除消息区原来显示的
         #    信息（含被编辑消息及其后内容的旧渲染），把剩下信息重新渲染一次，
         #    再进入 prefill 编辑输入行。
-        if needs_rerender and chat_ui is not None:
-            # 1. 先清空消息区旧显示（ClearMsgsCmd + DisplayMsgsCmd 同批按序处理）
-            chat_ui.clear_messages()
-            # 2. 重新渲染截断后的剩余消息（一次，不追加残留副本）
-            non_system = _non_system_messages(session)
-            chat_ui.display_messages(non_system, speed=0)
-            # 3. 显示沙盒恢复提示（在 display_messages 之后，避免被消息渲染滚动覆盖）
-            chat_ui.write_line(f"  {DIM}{'─' * 40}{RESET}")
-            # ★ P2-3 修复：恢复失败（降级继续编辑语义）以 ⚠ 黄色渲染——
-            #   修复前无条件 GREEN ✓ 把「沙盒恢复失败: …」显示成成功结果。
-            from ....tui.pipeline.message_editor import _restore_feedback
-            feedback_text, restore_failed = _restore_feedback(restore_text)
-            if restore_failed:
-                chat_ui.write_line(f"  {YELLOW}\u26a0{RESET} {feedback_text}")
-            else:
-                chat_ui.write_line(f"  {GREEN}\u2713{RESET} {feedback_text}")
-            # ★ P3-3：多模态消息编辑警告（EditCommand 检测非文本 content）
-            prefill_warning = edit_state.get("_prefill_warning", "")
-            if prefill_warning:
-                chat_ui.write_line(f"  {YELLOW}\u26a0{RESET} {prefill_warning}")
-            chat_ui.flush()
-            # ★ P2-5：写回窗口期输入（drain_all 保存的 buffer）——渲染完成
-            #   后追加到输入缓冲（handle_chars 光标尾插入 + 回显），下一轮
-            #   wait_for_user_input 与 prefill 拼接不丢。
-            if saved_buffer:
+        try:
+            if needs_rerender and chat_ui is not None:
+                input_inst = chat_ui.get_input()
+                prefill_text = state.get("prefill", "")
+                # ★ prefill 提前注入（2026-08-19，editmsg「很多上文时按回车不能
+                #   编辑对应消息」根因修复——注入时机从 wait_for_user_input
+                #   （在 clear+display 全量重放 + flush 之后，大量上文时
+                #   1s~10s）提前到本处）：输入框**立即**显示旧消息内容
+                #   （可编辑可提交），重放期间用户按 Enter 提交的是实际内容
+                #   （非空提交，wait_for_user_input 直接从队列返回）——一次
+                #   Enter 完成编辑。注入后清空 state["prefill"]（已履行
+                #   注入职责，防 orchestrator 重复注入/拼接覆盖用户已见内容）。
+                if prefill_text and input_inst is not None:
+                    try:
+                        # 窗口期已有存活提交（Enter 已分发）→ 先消费并转
+                        # deferred 意图（防 set_buffer 清 _input_ready 丢弃）
+                        try:
+                            if input_inst.has_queued_input():
+                                input_inst.get_queued_input()
+                                mark_intent = getattr(
+                                    input_inst, "mark_deferred_enter", None,
+                                )
+                                if callable(mark_intent):
+                                    mark_intent()
+                        except Exception:
+                            _logger.debug(
+                                "editmsg_plugin: 注入前提交转换异常", exc_info=True,
+                            )
+                        merged = prefill_text + (saved_buffer or "")
+                        input_inst.set_buffer(merged)
+                        input_inst.echo(merged)
+                        state["prefill"] = ""
+                    except Exception:
+                        _logger.debug(
+                            "editmsg_plugin: prefill 提前注入异常", exc_info=True,
+                        )
+                # 1. 先清空消息区旧显示（ClearMsgsCmd + DisplayMsgsCmd 同批按序处理）
+                chat_ui.clear_messages()
+                # 2. 重新渲染截断后的剩余消息（一次，不追加残留副本）
+                non_system = _non_system_messages(session)
+                chat_ui.display_messages(non_system, speed=0)
+                # 3. 显示沙盒恢复提示（在 display_messages 之后，避免被消息渲染滚动覆盖）
+                chat_ui.write_line(f"  {DIM}{'─' * 40}{RESET}")
+                # ★ P2-3 修复：恢复失败（降级继续编辑语义）以 ⚠ 黄色渲染——
+                #   修复前无条件 GREEN ✓ 把「沙盒恢复失败: …」显示成成功结果。
+                from ....tui.pipeline.message_editor import _restore_feedback
+                feedback_text, restore_failed = _restore_feedback(restore_text)
+                if restore_failed:
+                    chat_ui.write_line(f"  {YELLOW}\u26a0{RESET} {feedback_text}")
+                else:
+                    chat_ui.write_line(f"  {GREEN}\u2713{RESET} {feedback_text}")
+                # ★ P3-3：多模态消息编辑警告（EditCommand 检测非文本 content）
+                prefill_warning = edit_state.get("_prefill_warning", "")
+                if prefill_warning:
+                    chat_ui.write_line(f"  {YELLOW}\u26a0{RESET} {prefill_warning}")
+                chat_ui.flush()
+                # ★ deferred 提交兑现（2026-08-19 根因修复）：重放期间被吞/
+                #   被丢的 Enter（capture 激活期记录为提交意图）在 prefill
+                #   已注入缓冲后自动提交——用户「弹窗确认后按的那次 Enter」
+                #   直接完成编辑重发（无需再按一次）。无存活提交时才兑现
+                #   （防用户重放期间又实际按 Enter 提交造成重复提交）。
+                if prefill_text and input_inst is not None:
+                    try:
+                        if not input_inst.has_queued_input():
+                            consume = getattr(
+                                input_inst, "consume_deferred_enter", None,
+                            )
+                            if callable(consume) and consume():
+                                input_inst._enter()
+                    except Exception:
+                        _logger.debug(
+                            "editmsg_plugin: deferred 提交兑现异常", exc_info=True,
+                        )
+        finally:
+            # ★ capture 收尾（取消/异常/编辑全路径）：关闭窗口期 Enter 捕获 +
+            #   清 deferred 残留——修复前标志泄漏会让下一轮正常 Enter 提交
+            #   意外触发/残留状态错乱。取消路径（needs_rerender=False）也
+            #   经此清理。
+            if chat_ui is not None:
                 try:
                     input_inst = chat_ui.get_input()
                     if input_inst is not None:
-                        input_inst.handle_chars(saved_buffer)
+                        set_capture = getattr(input_inst, "set_enter_capture", None)
+                        if callable(set_capture):
+                            set_capture(False)
+                        consume = getattr(input_inst, "consume_deferred_enter", None)
+                        if callable(consume):
+                            consume()
                 except Exception:
-                    _logger.debug("editmsg_plugin: 恢复窗口期输入异常", exc_info=True)
+                    _logger.debug(
+                        "editmsg_plugin: capture 收尾异常", exc_info=True,
+                    )
 
         return True
 

@@ -70,12 +70,23 @@ class _FakeInput:
         self.set_calls = []
         self.echo_calls = []
         self.buffer = ""
+        self.enter_calls = 0
+        self.capture_calls = []
+        self.deferred_marks = 0
+        self.queued = None
+        self.has_queued = False
 
     def clear_interrupted(self):
         self.interrupted = False
 
     def get_queued_input(self):
-        return None
+        text = self.queued
+        self.queued = None
+        self.has_queued = False
+        return text
+
+    def has_queued_input(self):
+        return self.has_queued
 
     def get_current_text(self):
         return self.buffer
@@ -104,6 +115,23 @@ class _FakeInput:
 
     def handle_chars(self, text):
         self.buffer += text
+
+    def set_enter_capture(self, active):
+        self.capture_calls.append(active)
+
+    def mark_deferred_enter(self):
+        self.deferred_marks += 1
+
+    def consume_deferred_enter(self):
+        consumed = self.deferred_marks > 0
+        self.deferred_marks = 0
+        return consumed
+
+    def _enter(self):
+        self.enter_calls += 1
+        self.queued = self.buffer
+        self.has_queued = True
+        self.buffer = ""
 
 
 class _FakeInkSession:
@@ -218,7 +246,8 @@ async def test_deitmsg_normal_path_uses_truncate_helper(monkeypatch):
         {"role": "user", "content": "第二条"},
     ]
     session = _FakeSession(messages)
-    chat_ui = _FakeChatUI(_FakeInput())
+    inp = _FakeInput()
+    chat_ui = _FakeChatUI(inp)
 
     class _OkSandbox:
         def restore_to_message(self, idx):
@@ -235,7 +264,12 @@ async def test_deitmsg_normal_path_uses_truncate_helper(monkeypatch):
     await plugin.async_execute(SimpleNamespace(session=session, state=state))
 
     assert len(messages) == 2  # 最后一条 user + 其后被删
-    assert state["prefill"] == "第二条"
+    # ★ 提前注入（2026-08-19 修复）：prefill 已注入输入缓冲 + state["prefill"]
+    #   清空（已履行注入职责，防 wait_for_user_input 重复注入）。
+    assert "第二条" in inp.set_calls
+    assert inp.buffer == "第二条"
+    assert "第二条" in inp.echo_calls
+    assert state["prefill"] == ""
     assert ("<clear>",) in chat_ui.lines
     # 恢复 2 个文件 → ✓ 前缀
     feedback = [l for l in chat_ui.lines if isinstance(l, str) and "已恢复" in l]
@@ -427,7 +461,11 @@ async def test_editmsg_plugin_renders_warning_on_restore_failure(monkeypatch):
     state = {"model": "", "retry": False, "prefill": ""}
     await plugin.async_execute(SimpleNamespace(session=session, state=state))
 
-    assert state["prefill"] == "hi"
+    # ★ 提前注入（2026-08-19 修复）：prefill 已注入输入缓冲 + state["prefill"]
+    #   清空（已履行注入职责）。
+    assert "hi" in inp.set_calls
+    assert inp.buffer == "hi"
+    assert state["prefill"] == ""
     assert messages == []  # 截断生效
     feedback = [l for l in chat_ui.lines if isinstance(l, str) and "恢复失败" in l]
     assert feedback, chat_ui.lines

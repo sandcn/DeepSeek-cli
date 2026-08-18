@@ -359,9 +359,39 @@ class Input:
         """非阻塞清理 stdin 残留字节（委托 InputIO）。"""
         self._io._flush_stdin_residual(max_flush)
 
-    def flush_stdin_buffer(self, max_flush: int = 50) -> None:
-        """公开方法：非阻塞清理 stdin 残留字节 + termios 缓冲区刷洗（委托 InputIO）。"""
-        self._io.flush_stdin_buffer(max_flush)
+    def flush_stdin_buffer(self, max_flush: int = 50) -> bool:
+        """公开方法：非阻塞清理 stdin 残留字节 + termios 缓冲区刷洗（委托 InputIO）。
+
+        ★ 窗口期 Enter 转发（editmsg 修复）：InputIO 报告丢弃的字节含
+        Enter 时通知 dispatcher（capture 激活期记为提交意图 deferred，
+        插件注入 prefill 后自动提交兑现）——修复前 pending 中的 Enter
+        字节被无痕丢弃，用户需再按一次（「按回车没反应」）。
+        """
+        dropped_enter = self._io.flush_stdin_buffer(max_flush)
+        if dropped_enter:
+            self._dispatcher.notify_flushed_enter()
+        return dropped_enter
+
+    # ═══════════════════════════════════════════════════════
+    # 窗口期 Enter 提交意图捕获（editmsg「很多上文时按回车不能编辑」修复）
+    # ═══════════════════════════════════════════════════════
+
+    def set_enter_capture(self, active: bool) -> None:
+        """开关窗口期 Enter 捕获模式（委托 InputDispatcher）。
+
+        message_editor 弹窗确认后开启：此后被抑制吞掉 / 被 flush 丢弃的
+        Enter 记为「提交编辑」意图（deferred）；editmsg 插件注入 prefill
+        后消费兑现（自动提交），结束/取消路径关闭并清残留。
+        """
+        self._dispatcher.set_enter_capture(active)
+
+    def mark_deferred_enter(self) -> None:
+        """外部置位提交意图（窗口期即将被清理的排队提交转换，委托 InputDispatcher）。"""
+        self._dispatcher.mark_deferred_enter()
+
+    def consume_deferred_enter(self) -> bool:
+        """读取并清除提交意图标志（委托 InputDispatcher）。"""
+        return self._dispatcher.consume_deferred_enter()
 
     # ═══════════════════════════════════════════════════════
     # stdin 直接读取（委托 InputDispatcher）

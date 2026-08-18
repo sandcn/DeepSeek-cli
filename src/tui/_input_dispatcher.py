@@ -107,6 +107,15 @@ class InputDispatcher:
         #   只影响紧邻 CR 的下一个字节，无误丢用户新输入）。
         self._enter_residual_pending: bool = False
 
+        # ── 窗口期 Enter 提交意图捕获（editmsg「很多上文时按回车不能编辑」修复） ──
+        # 弹窗确认后 → prefill 注入前存在长窗口（flush_input_router 等慢帧 +
+        # flush_stdin_buffer 丢字节 + 插件清 _input_ready 丢空提交），期间
+        # 用户按的 Enter 会被无痕丢弃 →「按回车没反应，要再按一次」。
+        # capture 激活期（message_editor 弹窗确认后开启）内被吞/被丢的 Enter
+        # 记为「提交意图」（deferred），插件注入 prefill 后消费并自动提交。
+        self._enter_capture_active: bool = False
+        self._deferred_enter_pending: bool = False
+
         # ── 非可打印字符捕获 ──
         self._captured_input: bytearray = bytearray()
         self._captured_lock = threading.Lock()
@@ -757,6 +766,15 @@ class InputDispatcher:
                 # 确认（LF）被 _dispatch_byte 误吞 → 弹窗无响应（"按回车
                 # 有时不能编辑消息"）。
                 self._mark_enter_residual(event)
+                # ★ 窗口期提交意图捕获（editmsg「很多上文时按回车不能编辑」
+                #   修复）：弹窗确认后（capture 激活期）被抑制吞掉的 Enter
+                #   是用户「提交编辑」的意图——修复前无痕丢弃 → 用户需再按
+                #   一次（「按回车没反应」）。记为 deferred，插件注入 prefill
+                #   后消费并自动提交（对齐用户单次 Enter 完成编辑的预期）。
+                #   capture 未激活（弹窗打开期间 suppress 吞的 Enter 是
+                #   「确认弹窗」意图——组件才是确认权威）不记录。
+                if self._enter_capture_active:
+                    self._deferred_enter_pending = True
         elif kind == "tab":
             if self._buffer_editor.is_search_active():
                 # 方向D 步骤14：搜索模式 Tab 应用匹配并退出搜索（与 Enter 一致）
@@ -1190,6 +1208,62 @@ class InputDispatcher:
         """获取当前 Enter 抑制状态。线程安全。"""
         with self._suppress_enter_lock:
             return self._suppress_enter
+
+    # ═══════════════════════════════════════════════════════
+    # 窗口期 Enter 提交意图捕获（editmsg「很多上文时按回车不能编辑」修复）
+    # ═══════════════════════════════════════════════════════
+
+    def set_enter_capture(self, active: bool) -> None:
+        """开关窗口期 Enter 捕获模式（message_editor 弹窗确认后开启）。
+
+        激活期内：抑制吞掉的 Enter（``_dispatch_key_event`` enter 分支
+        else）与 flush 丢弃的 Enter 字节（``notify_flushed_enter``）记为
+        「提交意图」（deferred）——弹窗已确认，此后用户的 Enter 语义是
+        提交编辑而非确认弹窗。插件注入 prefill 后经
+        ``consume_deferred_enter`` 消费并自动提交；结束/取消路径必须
+        关闭（False）并清残留（consume），防标志泄漏影响下一轮输入。
+
+        Args:
+            active: True 开启捕获；False 关闭（不清除已记录的 deferred）。
+        """
+        self._enter_capture_active = bool(active)
+
+    def is_enter_capture_active(self) -> bool:
+        """查询捕获模式是否激活。"""
+        return self._enter_capture_active
+
+    def mark_deferred_enter(self) -> None:
+        """外部置位提交意图（窗口期已分发但即将被清理的提交转换）。
+
+        editmsg 插件 finally 清理 ``_input_ready`` / ``set_buffer`` 覆盖
+        缓冲**之前**调用：窗口期用户 Enter 产生的排队提交（多为空提交——
+        prefill 未注入缓冲恒空）即将被丢弃，先转为 deferred 意图，注入
+        prefill 后统一兑现（自动提交）。
+        """
+        self._deferred_enter_pending = True
+
+    def consume_deferred_enter(self) -> bool:
+        """读取并清除提交意图标志。
+
+        Returns:
+            True — 捕获期内记录到用户 Enter（调用方应兑现提交）；
+            False — 无记录（标志已清，幂等）。
+        """
+        pending = self._deferred_enter_pending
+        self._deferred_enter_pending = False
+        return pending
+
+    def notify_flushed_enter(self) -> None:
+        """通知 flush 丢弃了 Enter 字节（capture 激活时记为提交意图）。
+
+        由 Input 外观 ``flush_stdin_buffer`` 转发 InputIO 返回值调用——
+        ``flush_stdin_buffer`` 排空 stdin 残留字节时丢弃的字节含
+        Enter（0x0a/0x0d）即通知：capture 激活期该 Enter 是用户「提交
+        编辑」意图，记为 deferred（未激活不记——普通 flush 丢弃的
+        Enter 与提交意图无关）。
+        """
+        if self._enter_capture_active:
+            self._deferred_enter_pending = True
 
     # ═══════════════════════════════════════════════════════
     # 便捷方法

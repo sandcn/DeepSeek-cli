@@ -149,40 +149,108 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
 
         # ── 显示沙盒还原信息并重新渲染 ──
         #    与 /editmsg 同语义：先清空消息区旧显示，再重新渲染剩余消息一次。
-        if needs_rerender and chat_ui is not None:
-            # 1. 先清空消息区旧显示（删除被编辑消息及其后内容的旧渲染）
-            try:
-                chat_ui.clear_messages()
-            except Exception as exc:
-                _logger.warning(
-                    "DeitmsgPlugin clear_messages 异常: %s", exc
-                )
-            # 2. 重新渲染截断后的剩余消息（一次，不追加残留副本）
-            try:
-                non_system = _non_system_messages(session)
-                chat_ui.display_messages(non_system, speed=0)
-            except Exception as exc:
-                _logger.warning(
-                    "DeitmsgPlugin display_messages 异常: %s", exc
-                )
-            # 3. 视觉分隔线 + 沙盒还原信息（在 display_messages 之后，避免被消息渲染滚动覆盖）
-            # ★ P2-3 修复：恢复失败以 ⚠ 渲染（与 editmsg 统一经
-            #   _restore_feedback 判定），不再无条件绿色 ✓。
-            chat_ui.write_line(f"  {DIM}{'─' * 40}{RESET}")
-            from ....tui.pipeline.message_editor import _restore_feedback
-            feedback_text, restore_failed = _restore_feedback(restore_text)
-            if restore_failed:
-                chat_ui.write_line(f"  {YELLOW}\u26a0{RESET} {feedback_text}")
-            else:
-                chat_ui.write_line(f"  {GREEN}\u2713{RESET} {feedback_text}")
+        try:
+            if needs_rerender and chat_ui is not None:
+                input_inst = chat_ui.get_input()
+                prefill_text = state.get("prefill", "")
+                # ★ prefill 提前注入（2026-08-19，与 /editmsg 同构——
+                #   「很多上文时按回车不能编辑对应消息」根因修复）：注入时机
+                #   从 wait_for_user_input（在 clear+display 全量重放 + flush
+                #   之后，大量上文时 1s~10s）提前到本处——输入框立即显示旧
+                #   消息内容（可编辑可提交），重放期间用户按 Enter 提交的是
+                #   实际内容（非空提交，wait_for_user_input 直接从队列返回）。
+                #   注入后清空 state["prefill"]（已履行注入职责，防
+                #   orchestrator 重复注入/拼接覆盖用户已见内容）。
+                if prefill_text and input_inst is not None:
+                    try:
+                        # 窗口期已有存活提交（Enter 已分发的空提交）→ 先消费
+                        # 并转 deferred 提交意图（防 set_buffer 清 _input_ready
+                        # 丢弃——注入后兑现，一次 Enter 完成编辑）。
+                        try:
+                            if input_inst.has_queued_input():
+                                input_inst.get_queued_input()
+                                mark_intent = getattr(
+                                    input_inst, "mark_deferred_enter", None,
+                                )
+                                if callable(mark_intent):
+                                    mark_intent()
+                        except Exception:
+                            _logger.debug(
+                                "deitmsg_plugin: 注入前提交转换异常",
+                                exc_info=True,
+                            )
+                        input_inst.set_buffer(prefill_text)
+                        input_inst.echo(prefill_text)
+                        state["prefill"] = ""
+                    except Exception:
+                        _logger.debug(
+                            "deitmsg_plugin: prefill 提前注入异常",
+                            exc_info=True,
+                        )
+                # 1. 先清空消息区旧显示（删除被编辑消息及其后内容的旧渲染）
+                try:
+                    chat_ui.clear_messages()
+                except Exception as exc:
+                    _logger.warning(
+                        "DeitmsgPlugin clear_messages 异常: %s", exc
+                    )
+                # 2. 重新渲染截断后的剩余消息（一次，不追加残留副本）
+                try:
+                    non_system = _non_system_messages(session)
+                    chat_ui.display_messages(non_system, speed=0)
+                except Exception as exc:
+                    _logger.warning(
+                        "DeitmsgPlugin display_messages 异常: %s", exc
+                    )
+                # 3. 视觉分隔线 + 沙盒还原信息（在 display_messages 之后，避免被消息渲染滚动覆盖）
+                # ★ P2-3 修复：恢复失败以 ⚠ 渲染（与 editmsg 统一经
+                #   _restore_feedback 判定），不再无条件绿色 ✓。
+                chat_ui.write_line(f"  {DIM}{'─' * 40}{RESET}")
+                from ....tui.pipeline.message_editor import _restore_feedback
+                feedback_text, restore_failed = _restore_feedback(restore_text)
+                if restore_failed:
+                    chat_ui.write_line(f"  {YELLOW}\u26a0{RESET} {feedback_text}")
+                else:
+                    chat_ui.write_line(f"  {GREEN}\u2713{RESET} {feedback_text}")
 
-            # 确保渲染命令在插件返回前排空
-            try:
-                chat_ui.flush()
-            except Exception:
-                _logger.warning(
-                    "DeitmsgPlugin chat_ui.flush() post-finally 异常", exc_info=True
-                )
+                # 确保渲染命令在插件返回前排空
+                try:
+                    chat_ui.flush()
+                except Exception:
+                    _logger.warning(
+                        "DeitmsgPlugin chat_ui.flush() post-finally 异常", exc_info=True
+                    )
+                # ★ deferred 提交兑现（与 /editmsg 同构）：窗口期（截断 →
+                #   prefill 注入前）用户按的 Enter 已转提交意图，prefill 注入
+                #   缓冲后自动提交——一次 Enter 完成编辑重发（无需再按一次）。
+                #   无存活提交时才兑现（防重复提交）。
+                if prefill_text and input_inst is not None:
+                    try:
+                        if not input_inst.has_queued_input():
+                            consume = getattr(
+                                input_inst, "consume_deferred_enter", None,
+                            )
+                            if callable(consume) and consume():
+                                input_inst._enter()
+                    except Exception:
+                        _logger.debug(
+                            "deitmsg_plugin: deferred 提交兑现异常",
+                            exc_info=True,
+                        )
+        finally:
+            # ★ deferred 残留清理（取消/异常/编辑全路径）：未兑现的提交意图
+            #   必须清除——标志泄漏会让下一轮正常 Enter 意外触发自动提交。
+            if chat_ui is not None:
+                try:
+                    input_inst = chat_ui.get_input()
+                    if input_inst is not None:
+                        consume = getattr(input_inst, "consume_deferred_enter", None)
+                        if callable(consume):
+                            consume()
+                except Exception:
+                    _logger.debug(
+                        "deitmsg_plugin: deferred 残留清理异常", exc_info=True,
+                    )
 
         return True
 
