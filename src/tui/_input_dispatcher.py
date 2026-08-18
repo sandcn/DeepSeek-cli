@@ -27,7 +27,6 @@ import logging
 import os
 import select
 import threading
-import time
 from typing import TYPE_CHECKING
 
 from ._input_parser import InputParser, KeyEvent
@@ -38,12 +37,6 @@ if TYPE_CHECKING:
     from ._input_buffer import InputBufferEditor
 
 _logger = logging.getLogger(__name__)
-
-# ── 残留 Enter 丢弃窗口（秒） ──
-# CR+LF 终端按 Enter 发送 \r\n：LF 是同一按键的第二个字节，正常毫秒级到达。
-# 该窗口内到达的 LF/CR 视为残留 Enter 丢弃；窗口超时视为无残留（单 CR 终端），
-# 后续 LF/CR 为用户新输入不丢弃（防用户后续回车被误丢）。
-_ENTER_RESIDUAL_WINDOW = 0.5
 
 # ── 批量读取大小（字节） ──
 # read_stdin_once 一次 os.read 读入的最大字节数——快速打字/IME 上屏/粘贴时
@@ -102,13 +95,17 @@ class InputDispatcher:
         # ── 残留 Enter 标记（editmsg 竞态修复） ──
         # editmsg 选择确认 Enter（CR）被抑制后，标记可能存在残留 LF（\n）待丢弃。
         # GIL 原子 bool，与 _suppress_enter 同等无锁访问（不改 API 签名）。
-        # ``_enter_residual_deadline``：标记丢弃窗口截止时间（monotonic 秒）。
-        #   - CR+LF 终端：LF 在窗口内到达 → 被 read_stdin_once 丢弃（残留 Enter
-        #     不触发 _enter()）；
-        #   - 单 CR 终端 / 窗口超时：无 LF 待丢弃 → read_stdin_once 不丢弃
-        #     （用户后续回车正常提交）。
+        # ★ 2026-08-19（很多上文时按回车不能编辑对应消息修复）：丢弃判定改为
+        #   **纯字节序语义**（无时间窗口）——CR 置位后下一个分发的字节是 LF
+        #   则丢弃，无论多久之后到达。修复前带 0.5s 固定窗口（
+        #   ``_ENTER_RESIDUAL_WINDOW``）：消息很多时渲染线程一帧（大消息区
+        #   重放/markdown 渲染）耗时可超 0.5s，CR 与 LF 分开被 os.read 读到
+        #   （终端/SSH 分包）时 LF 的消费时刻超出窗口 → 被当作用户新按的
+        #   Enter（弹窗被自动确认编辑默认最后一条 / prefill 被 _enter() 误
+        #   提交重发）。字节流语义上 CR 后紧邻的 LF 只可能是同一次按键——
+        #   时间窗口在该场景是误判源，移除（标记在任何字节处理时先清除，
+        #   只影响紧邻 CR 的下一个字节，无误丢用户新输入）。
         self._enter_residual_pending: bool = False
-        self._enter_residual_deadline: float = 0.0
 
         # ── 非可打印字符捕获 ──
         self._captured_input: bytearray = bytearray()
@@ -444,22 +441,26 @@ class InputDispatcher:
         """
         fd = self._io.fd
 
-        # ── 残留 Enter 后置 LF/CR 丢弃（editmsg 竞态修复） ──
+        # ── 残留 Enter 后置 LF 丢弃（editmsg 竞态修复） ──
         # 若 _enter_residual_pending 置位（Enter 提交/被抑制/router 消费后可能
-        # 残留 LF），先清标记；首字节为 LF（0x0a）/ CR（0x0d）且仍在丢弃窗口内
-        # （deadline 未超时）时丢弃并返回 True（不触发 _enter()，prefill 保持
-        # 可编辑）；非 LF/CR 首字节（如用户立即输入字符）不误丢，继续正常分发。
-        # 窗口超时（单 CR 终端无 LF / 渲染线程忙）后 LF/CR 视为用户新输入，
-        # 继续分发（不丢弃）。
+        # 残留 LF），先清标记；首字节为 LF（0x0a）时丢弃并返回 True（不触发
+        # _enter()，prefill 保持可编辑）；非 LF 首字节（如用户立即输入字符）
+        # 不误丢，继续正常分发。
+        # ★ 2026-08-19（很多上文时按回车不能编辑对应消息修复）：去除 0.5s
+        #   时间窗口——残留 LF 与 CR 是**同一次按键**的两个字节，仅消费时机
+        #   受渲染线程帧耗时影响（大量消息时 CR/LF 分包到达，LF 消费可晚于
+        #   CR 数百 ms~数秒）。字节流语义上 CR 后紧邻的 LF 恒为残留（LF-only
+        #   终端 Enter 不产生 CR、不置标记），时间窗口超时把残留误判为用户
+        #   新 Enter（弹窗自动确认 / prefill 误提交）是 bug 根源。标记在任
+        #   何字节处理时先清除，只影响紧邻 CR 的下一个字节，不误丢新输入。
         if self._enter_residual_pending:
             self._enter_residual_pending = False
             if (
                 # ★ 仅丢弃 LF（0x0a）——CR+LF 终端 Enter 提交后紧随的残留 LF。
                 #   CR（0x0d）永不丢弃：单 CR 终端（Enter 只发 0x0d）用户
-                #   在窗口内二次按 Enter 时，第二个 CR 是新的提交而非残留，
-                #   丢弃会丢失第二次提交（2026-08-06 双击误吞修复）。
+                #   二次按 Enter 时，第二个 CR 是新的提交而非残留，丢弃会
+                #   丢失第二次提交（2026-08-06 双击误吞修复）。
                 first_byte == 0x0a
-                and time.monotonic() <= self._enter_residual_deadline
             ):
                 return True
 
@@ -655,32 +656,37 @@ class InputDispatcher:
             return False
 
     def _mark_enter_residual(self, event: KeyEvent) -> None:
-        """按触发字节标记残留 LF 丢弃窗口（editmsg 竞态修复）。
+        """按触发字节标记残留 LF 待丢弃（editmsg 竞态修复）。
 
         设计意图：CR+LF 终端（Windows 原生控制台等）Enter 发 ``\\r\\n``——
-        CR 触发 enter 事件后紧随的 LF 是同一按键的残留字节，须在窗口内
-        丢弃防误提交/误确认（LF 若被解析为第二个 enter，会在 editmsg 弹窗
-        打开后误判确认、或在 prefill 注入后被 ``_enter()`` 误提交）。
+        CR 触发 enter 事件后紧随的 LF 是同一按键的残留字节，须丢弃防误
+        提交/误确认（LF 若被解析为第二个 enter，会在 editmsg 弹窗打开后
+        误判确认、或在 prefill 注入后被 ``_enter()`` 误提交）。
 
         ★ 修复（2026-08-16，LF-only 终端误吞确认 Enter）：Python 3.9
         ``tty.setcbreak`` 只关 ICANON+ECHO、**不关 ICRNL**——POSIX/Cygwin
         驱动将 Enter 的 ``\\r`` 转换为 ``\\n``，程序读到的是 **LF (0x0a)**，
         LF 本身就是完整按键，不存在"残留"。修复前无条件置标记：``/editmsg``
-        提交回车（LF）置标记后，0.5s 窗口内用户在弹窗按 Enter 确认（LF）
-        会被 ``_dispatch_byte`` 误吞 → 弹窗无响应（"按回车有时不能编辑
-        消息"，需再按一次）。
+        提交回车（LF）置标记后，用户在弹窗按 Enter 确认（LF）会被
+        ``_dispatch_byte`` 误吞 → 弹窗无响应（"按回车有时不能编辑消息"，
+        需再按一次）。
+
+        ★ 修复（2026-08-19，很多上文时按回车不能编辑对应消息）：去除
+        0.5s 时间窗口——丢弃判定改为**纯字节序语义**：CR 置位后下一个
+        分发的字节是 LF 则丢弃，无论多久之后到达（大量消息时渲染线程
+        一帧耗时可超 0.5s，CR/LF 分包到达的 LF 消费时刻晚于固定窗口 →
+        残留被误判为用户新 Enter：弹窗被自动确认编辑默认最后一条 /
+        prefill 被 ``_enter()`` 误提交重发）。标记在任何字节处理时先
+        清除（见 ``_dispatch_byte``），只影响紧邻 CR 的下一个字节。
 
         规则：仅当触发 enter 的原始字节为 CR（0x0d）时置标记丢弃紧随 LF；
         LF 触发（LF-only 终端）或 CSI u 增强键盘协议（``\\x1b[13;1u`` 等，
-        完整序列无 CR+LF 字节对）不置标记——LF/CSI u 已是完整按键，窗口内
-        后续 LF/CR 为用户新输入，不误丢。
+        完整序列无 CR+LF 字节对）不置标记——LF/CSI u 已是完整按键，后续
+        LF/CR 为用户新输入，不误丢。
         """
         raw = getattr(event, "raw", None) or b""
         if raw and raw[0] == 0x0d:
             self._enter_residual_pending = True
-            self._enter_residual_deadline = (
-                time.monotonic() + _ENTER_RESIDUAL_WINDOW
-            )
 
     def _dispatch_key_event(self, event: KeyEvent) -> None:
         """根据 KeyEvent.kind 分发到对应的输入处理器。
@@ -702,15 +708,16 @@ class InputDispatcher:
             #   的 LF 会残留在 stdin——若后续被 read_stdin_once 解析为第二个
             #   Enter，会在 prefill 注入后被 _enter() 误提交（用户看到
             #   「prefill 没效果，要再按回车」）。标记残留 LF 待丢弃：
-            #   read_stdin_once 读取紧随的一个 LF/CR（0x0a/0x0d）时直接丢弃；
+            #   read_stdin_once 读取紧随的一个 LF（0x0a）时直接丢弃；
             #   无 LF（单 CR 终端）或用户后续输入普通字符时标记自动清除
             #   （不误丢）。非 Enter 事件不设置（↑↓/Esc 等无 CR+LF 问题）。
-            # ★ 窗口截止（2026-08-06）：deadline 超时后标记失效——渲染线程
-            #   忙/单 CR 终端时 LF 不晚于窗口到达；超时后 LF/CR 为用户新输入。
             # ★ 修复（2026-08-16）：置标记改经 _mark_enter_residual 按触发
             #   字节判断——LF-only 终端（Python 3.9 setcbreak 不关 ICRNL，
             #   POSIX/Cygwin 驱动 \r→\n）Enter 读到 LF，LF 即完整按键无残留，
-            #   无条件置标记会在窗口内误吞用户下一次真实 Enter（见该方法）。
+            #   无条件置标记会误吞用户下一次真实 Enter（见该方法）。
+            # ★ 修复（2026-08-19）：丢弃无时间窗口——大量消息时渲染线程
+            #   一帧耗时可超原 0.5s 窗口，分包晚到的残留 LF 被误判为用户
+            #   新 Enter（弹窗自动确认/误提交），见 _mark_enter_residual。
             if event.kind == "enter":
                 self._mark_enter_residual(event)
             return  # 已消费，跳过旧回调路径
@@ -724,7 +731,7 @@ class InputDispatcher:
                 #   CR+LF 终端 Enter 应用匹配退出搜索后，紧随 LF 若不丢弃会
                 #   被解析为第二个 enter 事件 → 搜索已退出 → _enter() 立即
                 #   提交搜索匹配文本（用户无法继续编辑）。与正常 Enter 提交
-                #   分支统一标记丢弃（窗口内）。按触发字节判断见
+                #   分支统一标记丢弃。按触发字节判断见
                 #   _mark_enter_residual（LF-only 终端不置标记）。
                 self._mark_enter_residual(event)
                 return
@@ -738,7 +745,7 @@ class InputDispatcher:
                 #   /editmsg /deitmsg 等命令的 CR+LF 中 LF 可能晚到（终端/
                 #   蓝牙/SSH 延迟）——若在弹窗打开后到达会被 UserSelectPopup
                 #   误判为确认 Enter（弹窗自动确认/直接编辑最后一条），或在
-                #   prefill 注入后被 _enter() 误提交。统一标记丢弃（窗口内）；
+                #   prefill 注入后被 _enter() 误提交。统一标记丢弃；
                 #   按触发字节判断（LF-only 终端不置标记）见
                 #   _mark_enter_residual。
                 self._mark_enter_residual(event)
@@ -746,9 +753,9 @@ class InputDispatcher:
                 # editmsg 选择确认 CR 被抑制后标记残留 LF（\n），
                 # 由 read_stdin_once 丢弃，避免 LF 在 prefill 注入后被误提交。
                 # 按触发字节判断：LF-only 终端（Enter 读到 LF）不置标记——
-                # 修复前 /editmsg 提交回车（LF）置标记，0.5s 窗口内用户在
-                # 弹窗按 Enter 确认（LF）被 _dispatch_byte 误吞 → 弹窗无响应
-                # （"按回车有时不能编辑消息"）。
+                # 修复前 /editmsg 提交回车（LF）置标记，用户在弹窗按 Enter
+                # 确认（LF）被 _dispatch_byte 误吞 → 弹窗无响应（"按回车
+                # 有时不能编辑消息"）。
                 self._mark_enter_residual(event)
         elif kind == "tab":
             if self._buffer_editor.is_search_active():
@@ -1164,23 +1171,20 @@ class InputDispatcher:
 
         线程安全：使用 _suppress_enter_lock 保护。
 
-        ★ 修复（2026-08-06）：恢复 Enter（suppress=False）时**不**无条件清除
+        ★ 修复（2026-08-06）：恢复 Enter（suppress=False）时**不**清除
         残留标记——弹窗确认 Enter 的 LF 可能晚到（渲染线程忙/终端 I/O 延迟），
         若清除标记，LF 会在 prefill 注入后被 _enter() 误提交（用户看到
-        「编辑无效/要再输入」）。改为 deadline 超时自动失效：
-          - CR+LF 终端：LF 在窗口内到达 → 被 read_stdin_once 丢弃；
-          - 单 CR 终端：无 LF 到达 → 窗口超时后标记失效（`set_suppress_enter`
-            此处或 `read_stdin_once` 消费时清）→ 用户后续回车正常提交。
+        「编辑无效/要再输入」）。
+
+        ★ 修复（2026-08-19，很多上文时按回车不能编辑对应消息）：不再按
+        超时清除残留标记（原 deadline 逻辑已随 0.5s 时间窗口移除）——
+        标记只经 ``_dispatch_byte`` 的字节级判定清除（下一个分发字节是 LF
+        则丢弃、非 LF 则清标记正常分发），恢复 suppress 期间保留标记：
+        弹窗确认 Enter 的 LF 无论多晚到达（大量消息时渲染一帧耗时可超
+        数百 ms~数秒）都会被丢弃，prefill 注入后不被 ``_enter()`` 误提交。
         """
         with self._suppress_enter_lock:
             self._suppress_enter = suppress
-            # suppress=True 时不清标记（保留至 LF 被处理或窗口超时）。
-            # suppress=False 时仅清理**已超时**标记（无待丢弃 LF）；未超时
-            # 保留——read_stdin_once 消费紧随 LF/CR 丢弃，或窗口超时后
-            # read_stdin_once 不丢弃并清标记（用户新输入正常分发）。
-            if not suppress and self._enter_residual_pending:
-                if time.monotonic() > self._enter_residual_deadline:
-                    self._enter_residual_pending = False
 
     def get_suppress_enter(self) -> bool:
         """获取当前 Enter 抑制状态。线程安全。"""

@@ -366,9 +366,27 @@ class MessageEditor:
         现按中断标志区分：
           - ``input.interrupted`` 已置位（escape else 分支 ``_do_interrupt``
             先于 dismiss 执行——见 _input_dispatcher 调换顺序修复）→ 取消；
-          - 未置位（enter 分支不设置中断）→ 确认（覆盖挂载窗口双击
-            Enter 场景，行为与组件确认等价）。
+          - 未置位（enter 分支不设置中断）→ legacy 路径（无 model）视为
+            确认（行为与旧补全弹窗确认等价）。
+
+        ★ 2026-08-19 修复（很多上文时按回车不能编辑对应消息）：标准路径
+        （EditMsgSelectPopup）弹窗**活跃期间**（visible 且未 done）的
+        Enter-dismiss **忽略**——dismiss 确认不携带用户导航后的 selected
+        （编辑的是默认选中的最后一条），而组件才是确认权威（持有导航值）；
+        挂载窗口期经旧路径到达的 Enter 大概率是 /editmsg 提交回车的残留
+        LF（超窗误判）或弹窗未显示时的误触，不应截断消息。Esc（中断标志
+        置位）的取消语义保留（挂载窗口 Esc 用户意图即取消）。
         """
+        # ── 标准路径守卫：弹窗活跃（组件挂载窗口）→ Enter-dismiss 忽略 ──
+        es_active = False
+        model = self._model
+        if model is not None and hasattr(model, "editmsg_select"):
+            es = getattr(model, "editmsg_select", None)
+            es_active = bool(
+                es is not None
+                and getattr(es, "visible", False)
+                and not getattr(es, "done", False)
+            )
         cancelled = False
         try:
             inp = self._input
@@ -378,9 +396,14 @@ class MessageEditor:
             cancelled = False
         if cancelled:
             self._selection_cancelled = True
+            self._selection_ready.set()
+        elif es_active:
+            # 组件确认权威：忽略挂载窗口期的旧路径 Enter（轮询继续等组件
+            # 写 done——含用户导航后的 selected）。
+            return
         else:
             self._selection_confirmed = True
-        self._selection_ready.set()
+            self._selection_ready.set()
 
     @staticmethod
     def _is_mock_model(model) -> bool:
