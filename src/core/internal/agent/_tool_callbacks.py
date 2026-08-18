@@ -43,33 +43,39 @@ async def _run_file_display(func, display=None):
 
 
 def _call_is_background_subagent(tc: dict) -> bool:
-    """判断 tool_call 是否为后台 subagent 调用（background=true）。
+    """判断 tool_call 是否为后台 subagent 调用（默认后台）。
 
     arguments 可能为 dict（原始 JSON 对象）或 str（JSON 字符串），
-    统一解析后读取 background 字段；解析失败按非后台处理（安全降级）。
+    统一解析后读取 background 字段。subagent 默认后台执行（background
+    缺省即视为后台）——与 ``SubagentFunc.from_args`` 的默认值 True 一致，
+    避免 barrier 计数与 subagent 工具实际执行路径不一致（否则后台 subagent
+    计入 dispatch_count 后不注册 barrier，只能靠 _BARRIER_TIMEOUT 兜底）；
+    仅显式 background=false 视为前台。解析失败也按后台处理（安全降级：
+    默认语义即后台，且不会造成 barrier 计数不匹配）。
     """
     if tc.get("name") != "subagent":
         return False
     args = tc.get("arguments")
     if isinstance(args, dict):
-        return bool(args.get("background"))
+        return bool(args.get("background", True))
     if isinstance(args, str):
         try:
-            return bool(json.loads(args).get("background"))
+            return bool(json.loads(args).get("background", True))
         except (json.JSONDecodeError, TypeError):
-            return False
-    return False
+            return True
+    return True
 
 
 def _count_dispatch_subagents(tool_calls: list) -> int:
     """统计需进入共享 barrier 的 subagent 调用数（排除后台 subagent）。
 
-    ★ 后台 subagent（background=true）不进入共享 ParallelExecutor barrier：
-    其执行体由 subagent 工具内部自启独立 asyncio 后台任务（_execute_background），
-    不参与同轮普通 subagent 的注册/等待协调。若把后台 subagent 计入
-    dispatch_count，barrier 期望的注册数（含后台 subagent）与实际上会
-    注册的协程数（仅普通 subagent）不匹配，只能靠 _BARRIER_TIMEOUT=60s
-    兜底超时唤醒，白白拖慢整轮工具返回。
+    ★ 后台 subagent（默认：background 缺省或为 true）不进入共享
+    ParallelExecutor barrier：其执行体由 subagent 工具内部自启独立 asyncio
+    后台任务（_execute_background），立即返回 task_id JSON，不参与同轮普通
+    subagent 的注册/等待协调。若把后台 subagent 计入 dispatch_count，barrier
+    期望的注册数（含后台 subagent）与实际上会注册的协程数（仅前台 subagent）
+    不匹配，只能靠 _BARRIER_TIMEOUT=60s 兜底超时唤醒，白白拖慢整轮工具返回。
+    仅显式 background=false 的前台 subagent 计入 barrier。
     """
     return sum(
         1 for tc in tool_calls
@@ -102,10 +108,12 @@ class ToolCallbackChain:
 
         # subagent 调用时创建共享 ParallelExecutor
         # 单次调用独立执行，多次调用共享实例实现真正并行
-        # ★ 后台 subagent（background=true）不进入共享 barrier：其执行体在
-        #   subagent 工具内部自启独立 asyncio 后台任务（_execute_background），
-        #   立即返回 task_id JSON；不计入 dispatch_count 避免 barrier 计数
-        #   不匹配拖到 _BARRIER_TIMEOUT=60s 兜底（见 _count_dispatch_subagents）。
+        # ★ 后台 subagent（默认：background 缺省或为 true）不进入共享 barrier：
+        #   其执行体在 subagent 工具内部自启独立 asyncio 后台任务
+        #   （_execute_background），立即返回 task_id JSON；不计入 dispatch_count
+        #   避免 barrier 计数不匹配拖到 _BARRIER_TIMEOUT=60s 兜底
+        #   （见 _count_dispatch_subagents）。仅显式 background=false 的前台
+        #   subagent 计入 barrier（同轮多个前台 subagent 真正并行）。
         dispatch_count = _count_dispatch_subagents(tool_calls)
         if dispatch_count > 0:
             agent._shared_executor = ParallelExecutor(agent)

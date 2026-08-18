@@ -2,12 +2,16 @@
 subagent — 并行子 Agent 调度工具
 
 模型通过此工具同时派发多个独立子任务，并行执行后汇总结果。
-当同一轮有多个 subagent 调用时，共享一个 ParallelExecutor 实现真正的并行。
+当同一轮有多个 subagent 调用（前台模式）时，共享一个 ParallelExecutor
+实现真正的并行。
 
-后台模式（background=True）：立即返回 {"task_id": "sa-xxx", ...} JSON，
+后台模式（默认，background=True）：立即返回 {"task_id": "sa-xxx", ...} JSON，
 后台 subagent 在独立 asyncio 后台任务中执行（不阻塞当前工具调用），
 完成后结果由对话轮次自动插入用户消息（_process_background_tasks），
 或由 subagent_opt 工具按 task_id 主动管理（read/wait/kill）。
+
+前台模式（background=False）：阻塞等待子 Agent 执行完成，直接返回结果；
+同轮多个前台 subagent 共享 ParallelExecutor 真正并行。
 
 ★ 后台 subagent 仅主 Agent（MainAgent）可派发：SubAgent 的工具白名单
   本就不含 subagent（_TOOL_EXCLUSION_MAP 全类型排除），此处运行时再强制
@@ -44,17 +48,18 @@ class SubagentFunc(Func):
     name = "subagent"
 
     def __init__(self, description: str, prompt: str, target_agent_type: str = "execute",
-                 background: bool = False):
+                 background: bool = True):
         super().__init__()
         self.description = description
         self.prompt = prompt
         self.target_agent_type = target_agent_type  # 目标子Agent类型，与 Func.agent_type 独立
-        self.background = bool(background)          # 后台执行模式（仅主 Agent 可派发）
+        self.background = bool(background)          # 后台执行模式（默认 True，仅主 Agent 可派发）
 
     @classmethod
     def display_params(cls, arguments: dict, max_len: int = 80) -> str:
         desc = arguments.get("description", "?")
-        prefix = "bg " if arguments.get("background") else ""
+        # 默认后台：仅显式 background=false（前台）时不带 bg 前缀
+        prefix = "" if arguments.get("background") is False else "bg "
         return f"{prefix}agent: {desc}"[:max_len]
 
     @classmethod
@@ -67,10 +72,10 @@ class SubagentFunc(Func):
                     "派发子 Agent 执行任务（独立上下文+文件沙盒），同轮多次调用自动并行。"
                     "type：execute（读写+bash，默认）/ map（只读分析）/ review（代码审查 P0-P3）/ plan（生成计划，仅写 .chat/plan/）。"
                     "同一文件的所有修改必须在单次调用内完成。"
-                    "返回：子 Agent 执行结果。"
-                    "background=true 时后台执行：立即返回 {\"task_id\": ...} JSON，"
+                    "默认后台执行：立即返回 {\"task_id\": ...} JSON，"
                     "后台 subagent 继续运行，完成后结果自动插入对话（或由 subagent_opt "
-                    "工具按 task_id 主动管理）。后台 subagent 仅主 Agent 可派发。"
+                    "工具按 task_id 主动管理）。background=false 时前台阻塞执行并直接返回"
+                    "子 Agent 执行结果。后台 subagent 仅主 Agent 可派发。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -91,10 +96,11 @@ class SubagentFunc(Func):
                         "background": {
                             "type": "boolean",
                             "description": (
-                                "是否后台执行（默认 false）。true 立即返回 {\"task_id\": \"sa-xxx\", ...} JSON，"
+                                "是否后台执行（默认 true）。true 立即返回 {\"task_id\": \"sa-xxx\", ...} JSON，"
                                 "后台 subagent 继续执行（不阻塞当前工具调用）；"
                                 "完成后结果由对话轮次自动插入用户消息，"
                                 "或用 subagent_opt 工具按 task_id 主动管理（read/wait/kill）。"
+                                "false 时前台阻塞执行并直接返回子 Agent 执行结果。"
                                 "后台 subagent 仅主 Agent 可派发。"
                             ),
                         },
@@ -110,7 +116,7 @@ class SubagentFunc(Func):
             description=args.get("description", ""),
             prompt=args.get("prompt", ""),
             target_agent_type=args.get("type", "execute"),
-            background=args.get("background", False),
+            background=args.get("background", True),
         )
 
     @classmethod
@@ -136,7 +142,7 @@ class SubagentFunc(Func):
         if not self.agent:
             return "错误：未关联父 Agent"
 
-        # ── 后台模式：立即返回 task_id JSON，不阻塞当前工具调用 ──
+        # ── 后台模式（默认）：立即返回 task_id JSON，不阻塞当前工具调用 ──
         if self.background:
             return await self._execute_background()
 
@@ -168,8 +174,8 @@ class SubagentFunc(Func):
         return ("错误：subagent 未处于有效的并行执行上下文中。"
                 "请通过 tools 系统正常调用 subagent。")
 
-    # ── 后台执行模式 ────────────────────────────────────────
-    # background=True 时：SubAgent 在独立 asyncio 后台任务中执行，
+    # ── 后台执行模式（默认） ──────────────────────────────
+    # background 缺省/true 时：SubAgent 在独立 asyncio 后台任务中执行，
     # 任务记录注册到当前 Agent 的 _background_tasks（与 bash 后台同表），
     # 工具立即返回 {"task_id": "sa-xxx", "status": "running"} JSON。
     # 一轮对话完成后 _process_background_tasks 检查：已完成 → 结果作为
