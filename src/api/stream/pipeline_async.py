@@ -36,7 +36,7 @@ from ...tui.events.consumers import publish_output
 
 _logger = logging.getLogger(__name__)
 
-_STREAM_IDLE_TIMEOUT = 60.0
+_STREAM_IDLE_TIMEOUT = 120.0
 _INTERRUPTED_MSG = f"\n{YELLOW}  ● 已中断{RESET}"
 _INTERRUPTED_MSG_TEXT = "(已中断)"
 
