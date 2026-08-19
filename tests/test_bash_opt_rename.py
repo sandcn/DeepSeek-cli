@@ -80,13 +80,17 @@ def test_display_name_mapping():
 # ── 2. subagent 工具排除表 ───────────────────────────────
 
 def test_subagent_exclusion_map_uses_bash_opt():
-    """map/review/plan 排除表使用 bash_opt；旧名不在任何排除表中。"""
+    """map/plan 排除表使用 bash_opt；review 已放开（只读查询用）；旧名不在任何排除表中。"""
     from src.core.subagent import _TOOL_EXCLUSION_MAP, _get_excluded_tools
 
-    for agent_type in ("map", "review", "plan"):
+    for agent_type in ("map", "plan"):
         excluded = _get_excluded_tools(agent_type)
         assert "bash_opt" in excluded, f"{agent_type} 应排除 bash_opt"
         assert "bash_task" not in excluded
+    # ★ 2026-08-20（用户需求）：review 放开 bash/bash_opt（可做只读查询，
+    #   但提示词强制禁止用 bash 修改文件）
+    assert "bash_opt" not in _get_excluded_tools("review")
+    assert "bash" not in _get_excluded_tools("review")
     # execute 保留 bash_opt（不在排除表中）
     assert "bash_opt" not in _get_excluded_tools("execute")
     for excluded in _TOOL_EXCLUSION_MAP.values():
