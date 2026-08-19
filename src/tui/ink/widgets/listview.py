@@ -42,6 +42,48 @@ def _is_selectable(item) -> bool:
     return item is not None
 
 
+def _build_rows(items, render_item, offset_shown: int, cursor_shown: int,
+                viewport_h: int, highlight_style) -> list:
+    """构建视口内可见行元素（模块级纯辅助，P3 review 2026-08-19 提取）。
+
+    仅渲染 ``[offset_shown, offset_shown+viewport_h)`` 内的项（虚拟化）；
+    选中行（``i == cursor_shown``）在返回元素无 style/styled 时注入
+    highlightStyle（与旧版内联实现逐行一致）。
+
+    降级（P2-9 / P2 review 2026-08-19）：renderItem 抛异常 → warning 日志 +
+    占位文本（str(item)）；返回 None → 空 TEXT（不渲染字面 "None"）。
+    """
+    rows: list = []
+    total = len(items)
+    for i in range(offset_shown, min(total, offset_shown + viewport_h)):
+        item = items[i]
+        is_sel = i == cursor_shown
+        try:
+            child = render_item(item, i, is_sel)
+        except Exception:
+            _logger.warning("ListView renderItem 异常，降级为占位文本", exc_info=True)
+            child = h(TEXT, {"children": str(item), "height": 1})
+        if isinstance(child, Element):
+            cp = dict(child.props)
+            if is_sel and "style" not in cp and "styled" not in cp:
+                cp["style"] = highlight_style
+            cp.setdefault("key", f"lv-{i}")
+            rows.append(Element(child.type, cp, child.children))
+        elif child is None:
+            rows.append(h(TEXT, {
+                "children": "",
+                "style": highlight_style if is_sel else None,
+                "key": f"lv-{i}", "height": 1,
+            }))
+        else:
+            rows.append(h(TEXT, {
+                "children": str(child),
+                "style": highlight_style if is_sel else None,
+                "key": f"lv-{i}", "height": 1,
+            }))
+    return rows
+
+
 def ListView(props: dict) -> Element:
     """React Ink 风格虚拟滚动列表控件（``ink-listview`` 对齐）。
 
@@ -54,7 +96,9 @@ def ListView(props: dict) -> Element:
             第三参 isSelected 提供选中态，选中行注入 highlightStyle 仅在
             返回元素无 style/styled 时发生——与旧版一致）。
         focus: 是否参与输入路由（默认 True）。
-        initialIndex: 初始光标下标（默认 0）。
+        initialIndex: 初始光标下标（默认 0）。仅**首帧渲染**生效（use_state
+            初始值语义）；首帧 items 为空（异步候选未达）时固化 0，后续
+            到达的 initialIndex 静默失效——异步 items 场景请用受控 cursor。
         cursor: 受控光标下标（提供时渲染期用该值——外部控制；导航仍更新
             内部 state 并经 onNavigate 回调同步外部；None 时用内部 state）。
         onNavigate: ``(index) -> None``——光标变化回调（导航后触发；
@@ -92,7 +136,11 @@ def ListView(props: dict) -> Element:
         viewport_h = 10
     render_item = props.get("renderItem")
     if render_item is None:
-        render_item = lambda item, i, is_sel=None: h(TEXT, {"children": str(item), "height": 1})
+        # ★ P3（review）：默认渲染器对 None 分隔行渲染空文本（模块语义
+        #   「None=不可选分隔行」），而非字面 "None"。
+        render_item = lambda item, i, is_sel=None: h(TEXT, {
+            "children": "" if item is None else str(item), "height": 1,
+        })
     on_select = props.get("onSelect")
     on_navigate = props.get("onNavigate")
     focus = bool(props.get("focus", True))
@@ -121,26 +169,31 @@ def ListView(props: dict) -> Element:
     # ★ ref 镜像（同批连续按键修复）：handler 读 ref 而非闭包 state。
     cursor_ref = use_ref(cursor)
     offset_ref = use_ref(offset)
-    cursor_ref.current = cursor
-    offset_ref.current = offset
-    # ★ P3（review 2026-08-18，受控模式同批连续导航）：外部受控 cursor prop
-    #   变化（新渲染到达）时同步导航基准 ref——修复前 ``_handle`` 基准固定
-    #   读 ``cursor_prop``：外部受控值经 on_navigate 写回后需下一渲染帧才
-    #   生效，同一输入批内第二次导航仍从旧基准计算（净移动 1 行）。现基准
-    #   统一读 ``cursor_ref.current``（``_move`` 已同步推进），渲染期检测
-    #   prop 变化才重置 ref（外部直接改值场景保持既有语义）。
-    last_ctrl_ref = use_ref(None)
     if controlled:
-        if cursor_prop != last_ctrl_ref.current:
-            cursor_ref.current = cursor_prop
-            last_ctrl_ref.current = cursor_prop
+        # ★ 修复（受控 ref 基准，2026-08-19「轨迹 Trace 按上键不移动」）：
+        #   受控模式渲染期基准**无条件统一为外部受控值**（cursor_prop）——
+        #   修复前无条件 ``cursor_ref.current = cursor``（内部 state）覆盖：
+        #   尾部跟随场景（TraceView ``trace_selected=-1`` → cursor prop=
+        #   末行）内部 state 恒为初始 0（无人导航、set_cursor 从未提交），
+        #   每帧渲染把 ref 拉回首行 → handler 基准=首行 → 按上键无处可移
+        #   返回 False → 事件被 use_fullscreen 模态吞掉（用户看到按上键
+        #   完全不动）。
+        #   语义（P3 review 2026-08-18 同批连续导航 + 2026-08-19 修正）：
+        #   渲染后基准=受控值（外部经 onNavigate 写回或直接改值，下一帧
+        #   生效）；**批内**（同输入批、无中间渲染）基准=``_move`` 推进值
+        #   ——连续按键沿推进值计算，不回退受控旧值。
+        cursor_ref.current = cursor_prop
+    else:
+        cursor_ref.current = cursor
+    offset_ref.current = offset
 
     def _move(new: int, base: int) -> bool:
         """内部移动光标（跳过不可选项）；返回是否实际移动。
 
         Args:
             new: 目标下标（调用方已确保可选）。
-            base: 移动前光标基准（受控模式用 cursor_prop，否则内部 state）。
+            base: 移动前光标基准（``cursor_ref.current`` 的钳制值——受控/
+                非受控统一，不区分模式）。
         """
         if new == base:
             return False
@@ -151,7 +204,14 @@ def ListView(props: dict) -> Element:
         return True
 
     def _step(delta: int, page: bool = False, base: int | None = None) -> bool:
-        """从基准光标沿 delta 方向移动到下一可选（可选项）；不可达返回 False。"""
+        """从基准光标沿 delta 方向移动到下一可选（可选项）；不可达返回 False。
+
+        ★ P3（review 2026-08-19，翻页边缘钳制）：翻页（page=True）目标越过
+        列表边缘时**钳制到边缘最近可选项**（距末项 2 行按 PgDn → 跳到末项）
+        ——与 home/end 的跳边缘语义一致；修复前整体失败返回 False（事件
+        放行被模态吞掉，用户看到「近边缘翻页完全不动」）。单步（page=False）
+        边缘不可达仍返回 False（上键首项/下键末项放行语义保持）。
+        """
         cur = _clamp_index(base if base is not None else cursor_ref.current, total)
         if delta > 0:
             step = max(1, page * viewport_h)
@@ -159,7 +219,14 @@ def ListView(props: dict) -> Element:
             while i < total and not _is_selectable(items[i]):
                 i += 1
             if i >= total:
-                return False
+                if not page:
+                    return False
+                # 翻页越界 → 钳制到最后一个可选项（仍不可达=已在边缘 → False）
+                i = total - 1
+                while i >= 0 and not _is_selectable(items[i]):
+                    i -= 1
+                if i < 0 or i <= cur:
+                    return False
             # 翻页时若越过一个不可选区落在可选项上即可（跳过多项）
             return _move(i, cur)
         else:
@@ -168,14 +235,21 @@ def ListView(props: dict) -> Element:
             while i >= 0 and not _is_selectable(items[i]):
                 i -= 1
             if i < 0:
-                return False
+                if not page:
+                    return False
+                # 翻页越界 → 钳制到第一个可选项
+                i = 0
+                while i < total and not _is_selectable(items[i]):
+                    i += 1
+                if i >= total or i >= cur:
+                    return False
             return _move(i, cur)
 
-    def _jump(target: int, base: int | None = None) -> bool:
-        """跳转到指定位置（跳过不可选项向前/后找最近可选项）。"""
+    def _jump(to_end: bool, base: int | None = None) -> bool:
+        """跳转到首/末（to_end 二值语义；跳过不可选项找最近可选项）。"""
         if total == 0:
             return False
-        if target <= 0:
+        if not to_end:
             i = 0
             while i < total and not _is_selectable(items[i]):
                 i += 1
@@ -211,22 +285,19 @@ def ListView(props: dict) -> Element:
         elif event.kind == "page_down":
             moved = _step(1, page=True, base=base_cur)
         elif event.kind == "home":
-            moved = _jump(0, base_cur)
+            moved = _jump(False, base_cur)
         elif event.kind == "end":
-            moved = _jump(1, base_cur)
+            moved = _jump(True, base_cur)
         elif event.kind == "char" and event.char in ("g", "G"):
             # vim 风格：g 首 / G 末（TraceView 台账既有语义）
-            moved = _jump(0 if event.char == "g" else 1, base_cur)
+            moved = _jump(event.char == "G", base_cur)
         elif event.kind == "enter":
             # ★ 方案B：onSelect 未提供时 enter 放行（返回 False 不消费——
             #   TraceView 台账 Enter 提交消息的放行语义）；提供时消费并回调。
             if _is_selectable(items[cur]) and on_select is not None:
-                try:
-                    on_select(items[cur], cur)
-                except Exception:
-                    # ★ P3（review）：onSelect 异常静默吞（无日志）——补 debug
-                    #   日志便于排查回调崩溃。
-                    _logger.debug("ListView onSelect 回调异常", exc_info=True)
+                # ★ P3（review 2026-08-19）：回调经 ``_call`` 统一（与
+                #   on_navigate 同一异常处理路径），warning 级日志可观测。
+                _call(on_select, items[cur], cur)
                 return True
             if on_select is None:
                 return False
@@ -258,39 +329,8 @@ def ListView(props: dict) -> Element:
         offset_shown = cursor_shown
     if cursor_shown >= offset_shown + viewport_h and total > viewport_h:
         offset_shown = max(0, cursor_shown - viewport_h + 1)
-    rows: list = []
-    for i in range(offset_shown, min(total, offset_shown + viewport_h)):
-        item = items[i]
-        is_sel = i == cursor_shown
-        # ★ P2-9（review）：renderItem 抛异常时 try/except + 日志，降级为渲染
-        #   占位文本（str(item)）——修复前 renderItem 异常直接崩溃整个列表渲染。
-        try:
-            child = render_item(item, i, is_sel)
-        except Exception:
-            _logger.debug("ListView renderItem 异常，降级为占位文本", exc_info=True)
-            child = h(TEXT, {"children": str(item), "height": 1})
-        if isinstance(child, Element):
-            cp = dict(child.props)
-            if is_sel and "style" not in cp and "styled" not in cp:
-                cp["style"] = highlight_style
-            cp.setdefault("key", f"lv-{i}")
-            rows.append(Element(child.type, cp, child.children))
-        elif child is None:
-            # ★ P3（review）：render_item 返回 None 时渲染空 TEXT——修复前走
-            #   ``str(None)`` 渲染出字面 "None"。
-            rows.append(h(TEXT, {
-                "children": "",
-                "style": highlight_style if is_sel else None,
-                "key": f"lv-{i}", "height": 1,
-            }))
-        else:
-            rows.append(h(TEXT, {
-                "children": str(child),
-                "style": highlight_style if is_sel else None,
-                "key": f"lv-{i}", "height": 1,
-            }))
+    # 可见行构建（P3 review 2026-08-19 提取为模块级 _build_rows 纯辅助）
+    rows = _build_rows(items, render_item, offset_shown, cursor_shown,
+                       viewport_h, highlight_style)
     # ★ 标准布局：Column 显式 height 视口裁剪（超出部分不渲染——虚拟化）
     return h(Column, {"height": viewport_h, "width": props.get("width")}, rows)
-
-
-__all__ = ["ListView"]

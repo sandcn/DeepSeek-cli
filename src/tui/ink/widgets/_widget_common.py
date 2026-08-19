@@ -75,13 +75,17 @@ def _color(value, default: int = 6) -> int | None:
 
 
 def _call(fn, *args) -> None:
-    """安全调用可选回调（异常仅记录日志，不阻断输入分发）。"""
+    """安全调用可选回调（异常仅记录日志，不阻断输入分发）。
+
+    ★ P2（review 2026-08-19）：日志级别 debug → warning——回调异常在生产
+    默认日志配置下不可见（交互静默失败无法排查）；warning 级可观测。
+    """
     if fn is None:
         return
     try:
         fn(*args)
     except Exception:
-        _logger.debug("控件回调异常", exc_info=True)
+        _logger.warning("控件回调异常", exc_info=True)
 
 
 __all__ = ["_clamp_index", "_children", "_color", "_call"]
