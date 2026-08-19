@@ -23,6 +23,11 @@ from src.tui.app.toolcard import ToolCard
 from src.tui.core.style import Style
 from src.tui.ink import h, TEXT, StyledRun, StaticLines, use_memo, Column, FRAGMENT
 from .subagent_panel import SubAgentCard
+# ★ P3-7：time_glow/_fx 模块顶部集中导入（_theme/_fx 仅依赖 core 层，无
+#   app 依赖，模块级导入无循环风险）——_ParseLine 自 app.py 迁入本模块后
+#   保持同模式（修复前每帧在函数体内重复惰性导入）。
+from src.tui.app import _fx
+from src.tui.app._theme import time_glow
 
 _S_REASONING = Style(fg=242)
 
@@ -335,6 +340,82 @@ def OpenBlockLines(props) -> object:
     return h(FRAGMENT, None, children)
 
 
+def _ParseLine(props) -> object:
+    """实时解析进度行（同位置刷新；model.parse_line 为 None 时不占行）。
+
+    方向3（动效）：解析进度行前缀/内容呼吸色（时间基）——解析活跃时进度行
+    从暗灰 242 呼吸到 252 亮灰，视觉提示「正在解析」（空闲静态保持原色）。
+
+    方向4（动效）：前缀 ``~`` 替换为时间基 spinner（⠋⠙⠹… 10Hz 推进）——
+    解析进行中更生动（与 subagent 卡片 spinner 共用语义）。
+
+    ★ 2026-08-20（用户需求：subagent 界面打开时接收参数进度行在 subagent
+    界面上面）：本组件自 ``app.py`` 迁入 ``chat_view.py``——subagent 卡片
+    打开（``model.subagent_lines`` 非空）时由 ChatView 在 SubAgentCard
+    **之前**渲染（进度行显示在 subagent 界面上方）；无 subagent 时由 App
+    渲染在 ChatView 之后（位置与原布局一致，两处互斥不重复）。
+    """
+    model = props["model"]
+    width = props.get("width") or 0
+    line = model.parse_line
+    if line is None:
+        # ★ P2（review）：空状态统一返回空 TEXT（h=0 不占行），与活跃状态
+        #   TEXT 类型一致——避免 BOX↔TEXT 类型切换导致 fiber 销毁重建。
+        return h(TEXT, {"children": ""})
+    # ★ 呼吸色：仅当解析行存在时计算（每帧一次 time_glow，0.1s 桶缓存命中；
+    #   time_glow/_fx 已模块顶部导入——P3-7）
+    glow = time_glow(242, 252, 8.0)
+    # ★ BEAUTY-30（体验动效）：spinner 金色呼吸色（178→190 脉动，8s 周期，
+    #   与解析行文本呼吸同步周期）——解析进行中 spinner 更醒目（金色提示
+    #   「工具解析中」，与状态栏 parsing 阶段标签 178 同色系）。
+    sp_glow = time_glow(178, 190, 8.0)
+    # 时间基 spinner（解析进度行常驻 live，10Hz 渲染时平滑推进）
+    # ★ 方向4：帧序列唯一真源 _fx.SPINNER_FRAMES（原内联字符串收敛）
+    sp = _fx.spinner_char()
+    runs = []
+    first_text = True
+    for r in line.runs:
+        if not r.text:
+            continue
+        st = r.style
+        # 解析行基础样式为 Style(fg=242)（apply.py _S_PARSE）——运行时替换为
+        # 呼吸色（保留其他属性）；非 242 样式（防御：未来改样式）原样保留。
+        if st is not None and getattr(st, "fg", None) == 242:
+            st = Style(fg=glow)
+        text = r.text
+        # 首个文本 run 中的 `~` 前缀替换为 spinner（apply 结构：
+        # ``f"  ~ {tool_names}..."``——`~` 出现在首个 run 行首前缀位）
+        # ★ BUG-40（review 方向）：仅替换**行首固定前缀位**（前导空格后的
+        #   第一个 `~`）——修复前 ``text.replace("~", sp, 1)`` 替换首个 run 内
+        #   **第一个** `~`，工具名/参数含 `~`（如 ``~/proj``）时替换错误字符。
+        # ★ P3（review 2026-08-18）：``first_text`` 在首个文本 run 处理后
+        #   **无条件复位**——修复前仅匹配 ``~`` 前缀时复位，首 run 不匹配
+        #   （结构变化）时标志保持 True，后续 run 行中的 ``~``（如 ``~/proj``
+        #   路径）仍可能被误替换为 spinner（防御缺口，当前单 run 结构不可达）。
+        if first_text:
+            stripped = text.lstrip(" ")
+            lead = len(text) - len(stripped)
+            if stripped.startswith("~"):
+                # ★ BEAUTY-30：spinner 独立金色呼吸 run（前导空格保持原样、
+                #   spinner 金色、剩余文本呼吸灰）——视觉上 spinner 与文本
+                #   区分（原实现整段同呼吸灰）。
+                if lead > 0:
+                    runs.append(StyledRun(text[:lead], st))
+                runs.append(StyledRun(sp, Style(fg=sp_glow)))
+                text = stripped[1:]
+            first_text = False
+        runs.append(StyledRun(text, st))
+    # ★ 窄屏防溢出：解析进度行截断至终端宽度（不拆 CJK）——修复前多工具
+    #   并行解析行（``  ~ tool1, tool2 ... 123t 12.3s``）在窄终端被自动换行
+    #   拆成多行，破坏「同位置刷新」的进度行语义（视觉跳动/错乱）。
+    if width and width > 0:
+        from src.tui.ink.helpers import truncate_runs
+        runs = truncate_runs(runs, width)
+    # ★ 阶段2（标准布局容器重构）：单子 BOX 展开为直接 TEXT（父容器 Column
+    #   中 fill 语义与 BOX 内 TEXT 等价，输出与重构前一致）。
+    return h(TEXT, {"styled": runs})
+
+
 def ChatView(props) -> object:
     """ChatView 组件：缓存已提交块 + 渲染未提交块。
 
@@ -427,7 +508,14 @@ def ChatView(props) -> object:
     # _subagent_render 产出的树图 Line 行（无边框/无 emoji 图标），经标准组件
     # SubAgentCard 渲染（内部 use_memo 缓存——引用不变帧零重建；组件卸载
     # 由 subagent_lines 空/非空自动驱动，不占 ChatView hook 槽位）。
+    # ★ 2026-08-20（用户需求：subagent 界面打开时接收参数进度行在 subagent
+    #   界面上面）：subagent 卡片打开时，工具参数接收进度行（_ParseLine /
+    #   model.parse_line）在 SubAgentCard **之前**渲染——进度行显示在 subagent
+    #   界面上方；无 subagent 时进度行由 App 渲染在 ChatView 之后（原位置，
+    #   两处互斥不重复）。
     if model.subagent_lines:
+        if getattr(model, "parse_line", None) is not None:
+            children.append(h(_ParseLine, {"model": model, "width": width}))
         children.append(h(SubAgentCard, {
             "key": "subagent-cards",
             "lines": model.subagent_lines,
