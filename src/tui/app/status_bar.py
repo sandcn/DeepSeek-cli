@@ -113,42 +113,14 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
         eff = (reasoning_effort or "").strip().lower()
         if eff:
             model_part.append(StyledRun(f" [{eff}]", _S_DIM))
-    # ★ 主 Agent 模型阶段标签（2026-08-05 美化+动效）：流式/工具活跃期间在
-    #   模型名后追加当前阶段（thinking→…思考 / answering→…回答 / parsing→…解析 /
-    #   未知→原文）。思考 dim 灰、回答亮青呼吸（45-55，8s，与模型名呼吸同步）、
-    #   解析金色（178）。阶段标签即时刷新（main_phase 变化经 use_memo deps
-    #   触发重建；呼吸色 0.1s 桶平滑推进）。空闲不显示（阶段为空字符串或
-    #   status_active=False 时跳过）。getattr 防御：测试桩状态对象可能无
-    #   main_phase 字段（回退空串不显示）。
-    main_phase = getattr(st, "main_phase", "") or ""
-    if status_active and main_phase:
-        if main_phase == "answering":
-            # BEAUTY-17（动效）：回答阶段标签亮青呼吸（与模型名呼吸同步周期）
-            phase_style = Style(fg=time_glow(45, 55, 8.0))
-            phase_text = "\u2026回答"
-        elif main_phase == "parsing":
-            phase_style = Style(fg=178)
-            phase_text = "\u2026解析"
-        elif main_phase == "thinking":
-            # ★ BEAUTY-28（体验动效）：思考阶段标签弱呼吸——暗灰 242→252 脉动
-            #   （8s 周期，与推理块角色头呼吸同步）。思考中提示「正在进行」的
-            #   动态感（区别于静态 dim）；阶段切换即刷新（use_memo deps 含
-            #   main_phase）。
-            phase_style = Style(fg=time_glow(242, 252, 8.0))
-            phase_text = "\u2026思考"
-        else:
-            phase_style = _S_DIM
-            phase_text = f"\u2026{main_phase}"
-        model_part.append(StyledRun(" ", None))
-        model_part.append(StyledRun(phase_text, phase_style))
+    # ★ 2026-08-19（用户需求）：主 Agent 模型阶段标签（…思考/…回答/…解析/
+    #   其他原文）**所有显示已删除**——状态栏模型名后不再追加阶段提示
+    #   （parsing→…解析 上一轮已删，本轮回删 answering/thinking/未知）。
 
-    # ★ 后台 bash 任务数（右侧显示；主 agent + subagent 聚合）
-    #   无论活跃/空闲都显示（后台任务可能在对话结束后仍在运行）。
-    bg_bash_count = getattr(st, "bg_bash_count", 0) or 0
+    # ★ 后台任务数量已迁至模式行行首（input_area._build_mode_line：
+    #   bash · N · subagent · N）——状态栏不再显示。
 
     if not status_active:
-        if bg_bash_count > 0:
-            return model_part + [StyledRun("  ", None)] + _build_bg_bash_runs(bg_bash_count, False)
         return model_part
 
     snap = _snapshot(model)
@@ -213,10 +185,6 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
         # 单一真源：format_speed（subagent 卡与状态栏统一 tok/s 显示）
         parts.append(StyledRun(f"\u00bb {_format_speed(speed)}", speed_style))
 
-    # ★ 后台 bash 任务数（右侧最末显示；主 agent + subagent 聚合）
-    if bg_bash_count > 0:
-        parts.extend(_build_bg_bash_runs(bg_bash_count, status_active))
-
     if not parts:
         return model_part
     sep = StyledRun(" \u00b7 ", _S_DIM)
@@ -233,23 +201,6 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
 def _glow(lo: int, hi: int, period: float) -> int:
     """状态点呼吸色（时间基正弦插值）。参数语义与 ``time_glow(lo, hi, period)`` 一致。"""
     return time_glow(lo, hi, period)
-
-
-#: 后台 bash 任务数图标（循环箭头，表示后台运行中）
-_BG_BASH_ICON = "\u21bb"
-
-
-def _build_bg_bash_runs(count: int, active: bool) -> list[StyledRun]:
-    """后台 bash 任务数 runs（状态栏右下角显示；主 agent + subagent 聚合）。
-
-    Args:
-        count: 当前运行中的后台 bash 任务总数。
-        active: 是否活跃（流式/工具运行）；活跃期呼吸色，空闲静态强调色。
-    """
-    if count <= 0:
-        return []
-    style = Style(fg=time_glow(45, 55, 8.0)) if active else _S_ACCENT
-    return [StyledRun(f"{_BG_BASH_ICON} {count}", style)]
 
 
 def StatusBar(props) -> object:
@@ -317,13 +268,8 @@ def StatusBar(props) -> object:
             getattr(st, "tool_total", 0),
             getattr(st, "tool_count", 0),
             getattr(st, "tool_fail", 0),
-            # ★ 2026-08-05：deps 补充 st.main_phase——阶段标签（思考/回答/解析）
-            #   变化时触发重建（修复前缺 main_phase：阶段切换后状态栏仍显示旧
-            #   阶段直至其他 deps 变化）。getattr 防御（测试桩对象无该字段）。
-            getattr(st, "main_phase", ""),
-            # ★ 后台 bash 任务数（主 agent + subagent 聚合）——计数变化时
-            #   状态栏右下角刷新。
-            getattr(st, "bg_bash_count", 0),
+            # ★ 2026-08-19（用户需求）：阶段标签（…思考/…回答/…解析）全部
+            #   删除——main_phase 不再进 deps（状态栏不再依赖阶段切换）。
             time_dep,
             # ★ BUG-43（review 方向）：deps 补充 spinner_char——修复前依赖
             #   time_dep（0.1s 桶）兜底，``int(now/0.1)`` 与 ``int(now*10)``

@@ -213,13 +213,15 @@ class SubagentMarkdownCmd(RenderCmd):
 
 @dataclass(frozen=True)
 class BgBashCountCmd(RenderCmd):
-    """后台 bash 任务总数更新（主 agent + 全部 subagent 聚合）。
+    """后台任务数量更新（bash 与 subagent 分开聚合）。
 
     Attributes:
-        count: 当前运行中的后台 bash 任务总数。
+        count: 当前运行中的后台 bash 任务总数（主 agent + 全部 subagent）。
+        subagent_count: 当前运行中的后台 subagent 任务总数（主 agent 派发）。
     """
     cid: int = RenderCommand.BG_BASH_COUNT
     count: int = 0
+    subagent_count: int = 0
 
 
 # ═══════════════════════════════════════════════════════════

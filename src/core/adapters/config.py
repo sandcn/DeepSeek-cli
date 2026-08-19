@@ -90,6 +90,9 @@ class MockConfigAdapter(ConfigPort):
     def get_max_context_tokens(self) -> int:
         return int(self._data.get("max_context_tokens", 60000))
 
+    def get_model_context_tokens(self) -> int:
+        return int(self._data.get("model_context_tokens", 1000000))
+
     def get_max_session_messages(self) -> int:
         return int(self._data.get("max_session_messages", 0))
 

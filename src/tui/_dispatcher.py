@@ -93,14 +93,16 @@ class EventDispatcher:
         self._handler_groups: dict[str, dict[type, Callable]] = {}
         # list_handlers 结果缓存：register_handler / register_group 后置 None 失效重建
         self._handlers_cache: dict[type, Callable] | None = None
-        # 后台 bash 数量聚合映射（label → 运行中任务数）：
-        # 主 Agent（"main"）与每个 SubAgent（"agent-N"）发布各自计数，
-        # 状态栏显示聚合总数（右下方）。
+        # 后台任务数量聚合映射（label → 运行中任务数）：
+        # 主 Agent（"main"）与每个 SubAgent（"agent-N"）发布各自计数；
+        # bash（_bg_bash_counts）与 subagent（_bg_subagent_counts）分列聚合，
+        # 模式行行首显示（bash · N · subagent · N）。
         # ★ P3-6（无锁可接受）：聚合 dict 无锁——GIL 下单条 get/set/pop 原子；
         #   ``_on_bg_bash_changed`` 的「更新 + sum」为复合操作，但结果仅用于
-        #   状态栏显示（允许瞬时轻微偏差，最终一致），不加锁可接受（避免
+        #   模式行显示（允许瞬时轻微偏差，最终一致），不加锁可接受（避免
         #   事件分发热路径锁开销）。
         self._bg_bash_counts: dict[str, int] = {}
+        self._bg_subagent_counts: dict[str, int] = {}
 
     @staticmethod
     def _default_filter_fn(source: str | None) -> bool:
@@ -349,24 +351,35 @@ class EventDispatcher:
         self._push_cmd(SubagentMarkdownCmd(text="\n".join(parts)))
 
     def _on_bg_bash_changed(self, event) -> None:
-        """后台 bash 数量变更：聚合主 Agent + 全部 SubAgent 的运行中任务数。
+        """后台任务数量变更：聚合主 Agent + 全部 SubAgent 的运行中任务数。
 
         每个 Agent（主 "main" / SubAgent "agent-N"）在后台任务注册/完成/
-        移除时发布自己的运行中计数；这里按 label 聚合后推送总数到状态栏
-        （右下角显示当前后台 bash 数量）。
+        移除时发布自己的运行中计数（bash 与 subagent 分列）；这里按 label
+        分别聚合后推送总数到模式行行首（bash · N · subagent · N）。
         """
         label = event.label or "main"
         try:
             count = max(0, int(event.count))
         except (TypeError, ValueError):
             # 防御性：count 可能为 None/非数字（外部 Agent 发布异常事件）——
-            # 回退 0，避免抛异常被 EventBus 吞掉（无日志且状态栏数量错乱）。
+            # 回退 0，避免抛异常被 EventBus 吞掉（无日志且数量错乱）。
             count = 0
+        try:
+            sa_count = max(0, int(getattr(event, "subagent_count", 0) or 0))
+        except (TypeError, ValueError):
+            sa_count = 0
         if count <= 0:
             self._bg_bash_counts.pop(label, None)
         else:
             self._bg_bash_counts[label] = count
-        self._push_cmd(BgBashCountCmd(count=sum(self._bg_bash_counts.values())))
+        if sa_count <= 0:
+            self._bg_subagent_counts.pop(label, None)
+        else:
+            self._bg_subagent_counts[label] = sa_count
+        self._push_cmd(BgBashCountCmd(
+            count=sum(self._bg_bash_counts.values()),
+            subagent_count=sum(self._bg_subagent_counts.values()),
+        ))
 
 
 __all__ = ["EventDispatcher"]

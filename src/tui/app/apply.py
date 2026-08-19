@@ -536,10 +536,10 @@ def _do_clear_msgs(model, cmd) -> None:
 
 
 def _do_bg_bash_count(model, cmd) -> None:
-    """后台 bash 任务总数更新（主 agent + subagent 聚合）。
+    """后台任务数量更新（bash 与 subagent 分开聚合）。
 
-    由 BackgroundTaskChangedEvent → BgBashCountCmd 驱动，更新状态栏
-    右侧显示的后台任务数量。
+    由 BackgroundTaskChangedEvent → BgBashCountCmd 驱动，更新模式行行首
+    显示的后台 bash / subagent 任务数量。
     """
     # ★ 修复（P3）：cmd.count 可能为 None/非数字字符串（外部注入）——
     #   int() 抛 ValueError 被 apply_cmd 吞、计数不更新；归一化失败回退 0。
@@ -549,7 +549,12 @@ def _do_bg_bash_count(model, cmd) -> None:
         count = int(cmd.count)
     except (TypeError, ValueError, OverflowError):
         count = 0
+    try:
+        sa_count = int(getattr(cmd, "subagent_count", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        sa_count = 0
     model.status.bg_bash_count = max(0, count)
+    model.status.bg_subagent_count = max(0, sa_count)
 
 
 _HANDLERS: dict[int, object] = {

@@ -122,34 +122,99 @@ _MODE_STANDARD_TEXT = "标准模式"
 _S_MODE_EMPTY = Style(fg=178)
 
 
-def _build_mode_line(width: int, empty_mode: bool) -> Line:
-    """构建主 Agent 运行模式行（时间戳分隔线下方，最右侧显示当前运行模式）。
+def _build_bg_task_prefix(ctx_percent: "float | None",
+                          bash_count: int, subagent_count: int) -> "Line":
+    """构建模式行行首的信息前缀（main · 45.3% · bash · N · subagent · N）。
+
+    显示格式（用户需求 2026-08-19）：
+      - main 段：``main · 45.3%``——主 Agent 上下文使用百分比（1 位小数；
+        ctx_percent 为 None 时不显示）；
+      - bash/subagent 段：``bash · 1 · subagent · 1``——后台任务计数，
+        对应计数 <=0 的项不显示；
+      - 全部不可用时返回空行（调用方不显示前缀）。
+    格式中 ``·`` 为行内分隔符（U+00B7，与模式行/状态栏分隔符同字符），
+    前缀整体亮青强调（_S_ACCENT——上下文占用与后台任务均为运行中活跃
+    信息，与旧状态栏 ↻ 计数同色系）。
+
+    Args:
+        ctx_percent: 主 Agent 上下文使用百分比（0-100；None=不可用不显示）。
+        bash_count: 当前运行中的后台 bash 任务总数。
+        subagent_count: 当前运行中的后台 subagent 任务总数。
+
+    Returns:
+        前缀 Line（全部不可用/计数为 0 时为空行，width=0）。
+    """
+    line = Line()
+    first = True
+    if ctx_percent is not None:
+        line.append(f"main \u00b7 {ctx_percent:.1f}%", _S_ACCENT)
+        first = False
+    for label, count in (("bash", bash_count), ("subagent", subagent_count)):
+        if count <= 0:
+            continue
+        if not first:
+            line.append(" \u00b7 ", _S_ACCENT)
+        line.append(f"{label} \u00b7 {count}", _S_ACCENT)
+        first = False
+    return line
+
+
+def _build_mode_line(width: int, empty_mode: bool,
+                     ctx_percent: "float | None" = None,
+                     bash_count: int = 0, subagent_count: int = 0) -> Line:
+    """构建主 Agent 运行模式行（时间戳分隔线下方，行首信息 + 最右模式）。
 
     Ctrl+B 切换空模式（``src/prompt_builder.builder.is_empty_mode()``）：
       - 空模式（True）：显示「空模式」（金色 178 强调——特殊状态醒目）；
       - 标准模式（False）：显示「标准模式」（暗灰 dim——常规状态零打扰）。
+    ★ 行首（2026-08-19 用户需求）：主 Agent 上下文使用百分比 + 后台任务
+    信息自状态栏迁至本行行首——``main · 45.3% · bash · 1 · subagent · 1``
+    （上下文不可用 / bash / subagent 各自没有就不显示对应段；全部不可用
+    时行首保持空白，与旧版一致）。上下文百分比经全局快照
+    （context_manager.get_context_usage_percent，O(1) 无锁读）获取——性能
+    好（渲染线程每帧零计算成本）。
     ★ 左侧无分隔线填充（2026-08-14 用户反馈：模式行左边不要分割线）——
-    左侧空白 + 最右侧模式文本。行宽恒 = width（行级 diff 行宽不变量）；
-    窄屏时内容按预算截断不溢出（与 CPU/MEM/时间戳分隔线截断语义一致）。
+    行首信息 + 空白 + 最右侧模式文本。行宽恒 = width（行级 diff 行宽
+    不变量）；窄屏时内容按预算截断不溢出（与 CPU/MEM/时间戳分隔线截断
+    语义一致）。
 
     Args:
         width: 行总宽（终端列宽）。
         empty_mode: 是否处于主 Agent 空模式（True=空模式）。
+        ctx_percent: 主 Agent 上下文使用百分比（0-100；None=不可用不显示）。
+        bash_count: 后台 bash 任务数（>0 时行首显示 bash · N）。
+        subagent_count: 后台 subagent 任务数（>0 时行首显示 subagent · N）。
 
     Returns:
-        模式行（Line，行宽 = width；左侧空白 + 右侧模式文本）。
+        模式行（Line，行宽 = width；行首信息 + 右侧模式文本）。
     """
     text = _MODE_EMPTY_TEXT if empty_mode else _MODE_STANDARD_TEXT
     style = _S_MODE_EMPTY if empty_mode else _S_DIM
     line = Line()
+    # 行首信息前缀（main · N% · bash · N · subagent · N；全部不可用为空）
+    prefix = _build_bg_task_prefix(ctx_percent, bash_count, subagent_count)
+    # 极窄屏防御：前缀超宽时截断至 width（保持行级 diff 行宽不变量；
+    #   truncate_line 不拆 CJK——前缀为 ASCII+·，截断安全）。
+    if width > 0 and prefix.width > width:
+        from src.tui.ink.helpers import truncate_line
+        prefix = truncate_line(prefix, width)
+    prefix_w = 0
+    for run in prefix.runs:
+        prefix_w += wcswidth_simple(run.text)
+        line.append_run(run)
+    # 右侧模式文本预算（前缀占位后剩余宽度）
+    mode_budget = max(0, width - prefix_w)
     # 预算按显示宽度计（CJK 字符显示宽 2 列——len() 为字符数不准确）
     mode_w = wcswidth_simple(f" {text}")
-    pad = max(0, width - mode_w)
+    pad = max(0, mode_budget - mode_w)
     if pad > 0:
         line.append(" " * pad, None)
+    # 预算传整行 width（line 已含前缀 + pad 填充）——remaining 基于
+    # 当前行宽计算，保证模式文本完整显示或按剩余空间截断（修复前误传
+    # mode_budget：pad 填满后 remaining 为负 → 模式文本被整体丢弃）。
     _append_truncated(line, f" {text}", style, max(0, width))
-    # 窄屏（width < mode_w）内容截断后可能不足 width——补空格保持行宽
-    # 不变量（行级 diff 行宽恒 = width，与分隔线行语义一致）。
+    # 窄屏（width < 前缀+模式文本）内容截断后可能不足 width——补空格保持
+    # 行宽不变量（行级 diff 行宽恒 = width，与分隔线行语义一致）。
     if width > 0 and line.width < width:
         line.append(" " * (width - line.width), None)
     return line
@@ -170,6 +235,25 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
     completion = props.get("completion")
     status_active = bool(props.get("status_active", False))
     max_input = max(1, width - len(_PROMPT))
+    # ★ 后台任务计数（2026-08-19 用户需求：自状态栏迁至模式行行首）——
+    #   从 props 读取（app.py _normal_bottom_area 经 model.status 传入）。
+    #   归一化防御（外部注入异常值回退 0，不中断输入区渲染）。
+    try:
+        bash_count = int(props.get("bg_bash_count", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        bash_count = 0
+    try:
+        subagent_count = int(props.get("bg_subagent_count", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        subagent_count = 0
+    # ★ 主 Agent 上下文使用百分比（2026-08-19 用户需求：模式行行首 main 段）。
+    #   经全局快照 O(1) 无锁读取（context_manager 缓存同步点写入）——性能好：
+    #   渲染线程每帧零计算（无除法/无扫描）；异常回退 None（不显示）。
+    try:
+        from src.core.context_manager import get_context_usage_percent
+        ctx_percent = get_context_usage_percent()
+    except Exception:
+        ctx_percent = None
 
     # ★ 快照缓存（方向4）：同快照（text/max_input/completion 全字段/cpu/mem/
     #   status_active/history_search/时间桶）命中直接返回缓存的 Line 列表——
@@ -267,6 +351,14 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
         int(props.get("mem", 0)),
         status_active,
         empty_mode,  # ★ 主 Agent 运行模式（Ctrl+B 切换即时刷新模式行）
+        # ★ 后台任务计数（bash/subagent 分列）——变化时模式行行首即时刷新
+        #   （app.py 经 model.status 传入 props）。
+        bash_count,
+        subagent_count,
+        # ★ 主 Agent 上下文使用百分比——全局快照变化（ContextManager 缓存
+        #   同步点写入）时模式行行首 main 段即时刷新。None 归一化为 -1
+        #   （int 值比较，避免 None/str 混入 key 类型不一致）。
+        ctx_percent if ctx_percent is not None else -1,
         search_snap,
         time_bucket,
     )
@@ -421,12 +513,17 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
     _append_truncated(content, f" {ts_disp}", _S_TIME, content_budget)
     lines.append(_theme_sep_line(width, content, status_active))
 
-    # ── 主 Agent 运行模式行（时间戳下方，最右侧显示空模式/标准模式） ──
+    # ── 主 Agent 运行模式行（时间戳下方，行首后台任务 + 最右运行模式） ──
     # ★ 2026-08-14：时间戳分隔线下方新增一行——最右侧显示当前运行模式
     #   （Ctrl+B 切换：空模式金色强调 / 标准模式暗灰 dim）。左侧无分隔线
     #   （用户反馈：模式行左边不要分割线）；模式状态已进 snap_key，
     #   Ctrl+B 切换后本函数重建（外层 InputArea use_memo deps 亦含模式）。
-    lines.append(_build_mode_line(width, empty_mode))
+    # ★ 2026-08-19（用户需求）：后台任务信息自状态栏迁至本行**行首**——
+    #   ``main · 45% · bash · N · subagent · N``（上下文/ bash / subagent
+    #   分列，没有就不显示）；计数与上下文百分比已进 snap_key
+    #   （bash_count/subagent_count/ctx_percent），任务注册/完成/移除、
+    #   上下文缓存同步后模式行行首即时刷新。
+    lines.append(_build_mode_line(width, empty_mode, ctx_percent, bash_count, subagent_count))
 
     # ★ 快照缓存写回（方向4）：未命中重建后更新缓存（同快照下次命中）
     fiber._lines_cache = (snap_key, lines)
@@ -733,6 +830,26 @@ def _input_snap_key(props: dict, width: int, now: float, fading: bool = False):
         empty_mode_flag = is_empty_mode()
     except Exception:
         empty_mode_flag = False
+    # ★ 后台任务计数（2026-08-19 用户需求：模式行行首显示）——进 use_memo
+    #   deps：任务注册/完成/移除（app.py 更新 model.status 后 props 变化）
+    #   → InputArea 重建 → 模式行行首即时刷新。归一化防御（异常值回退 0）。
+    try:
+        bash_count = int(props.get("bg_bash_count", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        bash_count = 0
+    try:
+        subagent_count = int(props.get("bg_subagent_count", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        subagent_count = 0
+    # ★ 主 Agent 上下文使用百分比（2026-08-19 用户需求）——进 use_memo deps：
+    #   ContextManager 缓存同步点更新全局快照后 InputArea 重建（模式行行首
+    #   main 段即时刷新）。O(1) 无锁读（性能好）；异常回退 None → -1。
+    try:
+        from src.core.context_manager import get_context_usage_percent
+        ctx_percent = get_context_usage_percent()
+    except Exception:
+        ctx_percent = None
+    ctx_percent_key = ctx_percent if ctx_percent is not None else -1
     # ★ P2-3（review 修复）：text 直接放 ``text_str`` 值——``_object_is`` 对
     #   str 按值比较（BUG-44 修复后），无需 hash()+len() 指纹（哈希碰撞可致
     #   错误命中：不同文本 hash+len 相同时代入旧缓存）。
@@ -756,6 +873,11 @@ def _input_snap_key(props: dict, width: int, now: float, fading: bool = False):
         int(props.get("mem", 0)),
         status_active,
         empty_mode_flag,  # ★ 主 Agent 运行模式（Ctrl+B 切换即时刷新）
+        # ★ 后台任务计数（bash/subagent 分列）——模式行行首显示即时刷新
+        bash_count,
+        subagent_count,
+        # ★ 主 Agent 上下文使用百分比——模式行行首 main 段即时刷新
+        ctx_percent_key,
         # history_search 指纹（局部变量提取——一次 props.get）
         bool(search is not None and bool(getattr(search, "active", False))),
         str(getattr(search, "query", "") or "") if search is not None else "",

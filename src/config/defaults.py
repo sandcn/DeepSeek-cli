@@ -79,6 +79,9 @@ DEFAULTS = {
     "max_session_messages": 0,
     "keep_recent_messages": 0,
     "max_context_tokens": 60000,
+    # 模型上下文窗口（tokens）——TUI 模式行行首上下文使用率百分比的分母。
+    # 默认 1M（用户环境 deepseek 1M 上下文；不同模型可配置覆盖）。
+    "model_context_tokens": 1000000,
     "summary_token_budget": 2000,
     "auto_force_compress_threshold": 60000,
     "enable_notifications": True,
@@ -183,6 +186,12 @@ CONFIG_KEYS = {
         "rc_path": ("max_context_tokens",),
         "type": int,
         "default": 60000,
+        "cacheable": True,
+    },
+    "MODEL_CONTEXT_TOKENS": {
+        "rc_path": ("model_context_tokens",),
+        "type": int,
+        "default": 1000000,
         "cacheable": True,
     },
     "SUMMARY_TOKEN_BUDGET": {

@@ -173,6 +173,12 @@ def _normal_bottom_area(model, width: int) -> list:
             "status_active": model.status.status_active,
             "cpu": model.status.cpu,
             "mem": model.status.mem,
+            # ★ 后台任务计数（2026-08-19 用户需求：模式行行首显示）——
+            #   bash 与 subagent 分列传入；任务注册/完成/移除时经
+            #   BgBashCountCmd 更新 model.status，props 变化 → InputArea
+            #   use_memo deps 变化 → 模式行行首即时刷新。
+            "bg_bash_count": model.status.bg_bash_count,
+            "bg_subagent_count": model.status.bg_subagent_count,
             # 方向D 步骤14：Ctrl+R 反向历史搜索状态（input-area 渲染覆盖行）
             "history_search": model.history_search,
             # ★ 标准 React Ink 组件化（2026-08-05）：InputArea 标准组件接收

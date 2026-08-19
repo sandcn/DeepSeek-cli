@@ -364,6 +364,9 @@ class ChatSession:
             model=self._model,
             on_messages_changed=_sandbox_callback,
             config_port=self._config_port,
+            # ★ 工具列表 schemas（上下文使用率统计的一部分——工具随系统提词
+            #   一起发送给模型，须计入上下文占用）
+            tools=getattr(self._agent, "tools", None),
         )
         self._agent.context_manager = self._ctx_mgr
 
@@ -433,10 +436,19 @@ class ChatSession:
             pass
 
         mgr = self._init_msg_mgr()
-        return mgr.clear_messages(
+        removed = mgr.clear_messages(
             system_messages_fn=lambda: self._system_messages,
             build_system_prompt_fn=lambda: self._agent.build_system_prompt(),
         )
+        # ★ 清空/空模式同步后刷新上下文使用率（TUI 模式行行首动态刷新）。
+        #   force=True：system 可能按当前空模式重建且**条数不变**（仅内容
+        #   替换）——懒同步（len 判断）会命中旧缓存；强制 resync 重算。
+        if self._ctx_mgr is not None:
+            try:
+                self._ctx_mgr.refresh_usage(force=True)
+            except Exception:
+                _logger.debug("clear_messages 后刷新上下文使用率失败", exc_info=True)
+        return removed
 
     def undo_last_round(self) -> int:
         """撤销上一轮对话。"""

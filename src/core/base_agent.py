@@ -142,6 +142,21 @@ class BaseAgent:
 
     # ── 消息管理 ──────────────────────────────────────
 
+    def _refresh_context_usage(self) -> None:
+        """消息变更后刷新上下文使用率全局快照（TUI 模式行行首动态刷新）。
+
+        ContextManager.refresh_usage() 为 O(len(messages)) 懒同步（长度变化
+        才全量 resync，否则复用缓存）——消息追加属低频路径，TUI 渲染线程
+        读取侧仍每帧 O(1)。SubAgent 无 context_manager（getattr 防御跳过）。
+        """
+        cm = getattr(self, "context_manager", None)
+        if cm is None:
+            return
+        try:
+            cm.refresh_usage()
+        except Exception:
+            _logger.debug("消息变更后刷新上下文使用率失败", exc_info=True)
+
     def add_user_message(self, content: str | None) -> None:
         """添加用户消息到消息列表。"""
         if content is None:
@@ -149,6 +164,7 @@ class BaseAgent:
         elif not isinstance(content, str):
             content = str(content)
         self.messages.append({"role": "user", "content": content})
+        self._refresh_context_usage()
 
     def _append_assistant_message(
         self,
@@ -184,6 +200,7 @@ class BaseAgent:
 
         self.messages.append(msg)
         self._sync_sandbox_index(len(self.messages) - 1)
+        self._refresh_context_usage()
 
     def _append_tool_result(self, tool_call_id: str, content) -> None:
         """追加 tool 角色消息。
@@ -205,6 +222,7 @@ class BaseAgent:
             "content": content,
         })
         self._sync_sandbox_index(len(self.messages) - 1)
+        self._refresh_context_usage()
 
     # ═══════════════════════════════════════════════════════════
     # 后台任务管理（bash / subagent 各自独立）
@@ -231,7 +249,7 @@ class BaseAgent:
         if not hasattr(self, "_background_tasks"):
             self._background_tasks = {}
         self._background_tasks[task_id] = record
-        # TUI 状态栏右下角统计（含 subagent 聚合）
+        # TUI 模式行行首统计（bash · N · subagent · N；bash/subagent 分列）
         self._publish_background_task_event()
 
     def _register_subagent_task(self, task_id: str, record: dict) -> None:
@@ -247,7 +265,7 @@ class BaseAgent:
         if not hasattr(self, "_subagent_tasks"):
             self._subagent_tasks = {}
         self._subagent_tasks[task_id] = record
-        # TUI 状态栏右下角统计（含 bash 聚合）
+        # TUI 模式行行首统计（bash · N · subagent · N；bash/subagent 分列）
         self._publish_background_task_event()
 
     def _complete_background_task(self, task_id: str, result: str,
@@ -275,7 +293,7 @@ class BaseAgent:
             )
             record["status"] = status
             record["done"] = True
-        # TUI 状态栏右下角统计（含 subagent 聚合）
+        # TUI 模式行行首统计（bash · N · subagent · N；bash/subagent 分列）
         self._publish_background_task_event()
 
     def _complete_subagent_task(self, task_id: str, result: str,
@@ -294,7 +312,7 @@ class BaseAgent:
             record["result"] = result
             record["status"] = status
             record["done"] = True
-        # TUI 状态栏右下角统计（含 bash 聚合）
+        # TUI 模式行行首统计（bash · N · subagent · N；bash/subagent 分列）
         self._publish_background_task_event()
 
     def _pending_background_tasks(self) -> list[dict]:
@@ -365,25 +383,35 @@ class BaseAgent:
             self._publish_background_task_event()
         return rec
 
-    def _count_running_background_tasks(self) -> int:
-        """返回当前运行中（未完成）的后台任务总数（bash + subagent 聚合）。
+    def _count_running_bash_tasks(self) -> int:
+        """返回当前运行中（未完成）的后台 bash 任务总数。
 
-        TUI 状态栏计数用：两表独立存储，但展示上合并为一个总数。
+        TUI 模式行行首显示用（bash · N）：仅统计 bash 任务表
+        （_background_tasks，task_id 恒为 "bg-xxx"，主 Agent 与 SubAgent
+        各自独立持有）。
         """
-        total = 0
-        for table in (
-            getattr(self, "_background_tasks", None),
-            getattr(self, "_subagent_tasks", None),
-        ):
-            if table:
-                total += sum(1 for r in table.values() if not r.get("done"))
-        return total
+        table = getattr(self, "_background_tasks", None)
+        if not table:
+            return 0
+        return sum(1 for r in table.values() if not r.get("done"))
+
+    def _count_running_subagent_tasks(self) -> int:
+        """返回当前运行中（未完成）的后台 subagent 任务总数。
+
+        TUI 模式行行首显示用（subagent · N）：仅统计 subagent 任务表
+        （_subagent_tasks，task_id 恒为 "sa-xxx"，仅主 Agent 独有）。
+        """
+        table = getattr(self, "_subagent_tasks", None)
+        if not table:
+            return 0
+        return sum(1 for r in table.values() if not r.get("done"))
 
     def _publish_background_task_event(self) -> None:
-        """发布后台任务数量变更事件（TUI 状态栏统计用）。
+        """发布后台任务数量变更事件（TUI 模式行行首统计用）。
 
         主 Agent 发布 label="main"，SubAgent 发布自身 label（agent-N）；
-        事件携带该 agent 当前运行中的后台任务数，TUI 聚合所有 label 显示总数。
+        事件携带该 agent 当前运行中的后台 bash 与 subagent 任务数，TUI
+        分别聚合所有 label 显示（bash · N · subagent · N）。
         """
         try:
             from ..tui.events.event_types import BackgroundTaskChangedEvent
@@ -391,9 +419,11 @@ class BaseAgent:
             if port is None or not hasattr(port, "publish_event"):
                 return
             label = getattr(self, "label", None) or "main"
-            count = self._count_running_background_tasks()
+            bash_count = self._count_running_bash_tasks()
+            subagent_count = self._count_running_subagent_tasks()
             port.publish_event(BackgroundTaskChangedEvent(
-                label=label, count=count, source="agent",
+                label=label, count=bash_count,
+                subagent_count=subagent_count, source="agent",
             ))
         except Exception:
             _logger.debug("发布后台任务数量事件失败", exc_info=True)

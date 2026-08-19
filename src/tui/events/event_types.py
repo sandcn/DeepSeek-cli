@@ -376,17 +376,21 @@ class AgentResultEvent(DisplayEvent):
 
 @dataclass(frozen=True)
 class BackgroundTaskChangedEvent(DisplayEvent):
-    """后台 bash 任务数量变更 — 任务注册/完成/移除时发布。
+    """后台任务数量变更 — 任务注册/完成/移除时发布。
 
     主 Agent（label="main"）与每个 SubAgent（label="agent-N"）都发布
-    自己的**当前运行中**后台任务数；TUI 状态栏聚合所有 label 显示总数。
+    自己的**当前运行中**后台任务数（bash 与 subagent 分列）；TUI 聚合
+    所有 label 后在模式行行首显示（bash · N · subagent · N）。
 
     Attributes:
         label: Agent 标识（主 Agent 为 "main"，SubAgent 为自身 label）
         count: 该 agent 当前运行中（未完成）的后台 bash 任务数量
+        subagent_count: 该 agent 当前运行中（未完成）的后台 subagent
+            任务数量（仅主 Agent 派发后台 subagent，SubAgent 恒为 0）
     """
     label: str = ""
     count: int = 0
+    subagent_count: int = 0
 
 
 # ── 事件类型注册表 ──────────────────────────────────────

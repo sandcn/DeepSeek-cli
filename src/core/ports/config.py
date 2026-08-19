@@ -91,6 +91,15 @@ class ConfigPort(ABC):
         ...
 
     @abstractmethod
+    def get_model_context_tokens(self) -> int:
+        """获取模型上下文窗口（tokens）——上下文使用率百分比的分母。
+
+        对应模型提供商声明的最大上下文长度（如 deepseek 1M token）；
+        为 0/负值时 TUI 不显示上下文使用率。
+        """
+        ...
+
+    @abstractmethod
     def get_max_session_messages(self) -> int:
         """获取 max_session_messages 配置值（0=无限制）"""
         ...

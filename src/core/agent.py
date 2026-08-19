@@ -175,7 +175,20 @@ class Agent(BaseAgent):
         parts = self.build_system_prompt()
         system_msgs = [{"role": "system", "content": part} for part in parts]
         non_system = [m for m in self.messages if m.get("role") != "system"]
-        self.messages = system_msgs + non_system
+        # ★ 就地更新（``[:]``）保持 messages 列表**引用不变**——ContextManager
+        #   持有同一引用（session 初始化时 ``messages=self._agent.messages`` 传入），
+        #   若重新绑定 self.messages 会与 ContextManager 脱节（百分比统计旧列表）。
+        self.messages[:] = system_msgs + non_system
+        # ★ 系统提词变化后刷新上下文使用率（TUI 模式行行首动态刷新）。
+        #   force=True：Ctrl+B 空模式切换时 system 消息**条数**可能不变、
+        #   仅内容替换——懒同步（len 判断）会命中旧缓存，百分比不更新；
+        #   强制 resync 重算（低频，O(n) 可接受）。
+        cm = getattr(self, "context_manager", None)
+        if cm is not None:
+            try:
+                cm.refresh_usage(force=True)
+            except Exception:
+                _logger.debug("系统提词重建后刷新上下文使用率失败", exc_info=True)
 
     def _get_active_tools(self) -> list[dict]:
         """返回当前工具 schemas。"""

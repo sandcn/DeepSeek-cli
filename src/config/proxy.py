@@ -80,6 +80,10 @@ class ConfigProxy(ConfigPort):
     def get_max_context_tokens(self) -> int:
         return _config.MAX_CONTEXT_TOKENS
 
+    def get_model_context_tokens(self) -> int:
+        """获取模型上下文窗口（tokens）——上下文使用率百分比的分母。"""
+        return _config.MODEL_CONTEXT_TOKENS
+
     def get_max_session_messages(self) -> int:
         return _config.MAX_SESSION_MESSAGES
 
@@ -165,6 +169,10 @@ class ConfigProxy(ConfigPort):
     @property
     def MAX_CONTEXT_TOKENS(self) -> int:
         return _config.MAX_CONTEXT_TOKENS
+
+    @property
+    def MODEL_CONTEXT_TOKENS(self) -> int:
+        return _config.MODEL_CONTEXT_TOKENS
 
     @property
     def SUMMARY_TOKEN_BUDGET(self) -> int:

@@ -21,6 +21,7 @@ ContextManager 是上下文压缩的唯一对外接口。
 # 桥接，消除对 api 层的直接导入依赖。
 # ═══════════════════════════════════════════════════════════════
 
+import json
 import logging
 import threading
 from typing import Optional
@@ -29,10 +30,48 @@ _logger = logging.getLogger(__name__)
 from .constants import YELLOW, DIM, RESET, audit_log as _log
 from . import context_selector as selector
 from .context_selector import MessageStatsCache
+from ..api.tokens import estimate_tokens
 from .compression import CompressionResult, CompressionStrategy, SummarizeStrategy, DropStrategy  # noqa: F401 — re-exported for backward compat
 from .ports.config import ConfigPort
 from .ports.output import OutputPort
 from .adapters.config import DefaultConfigAdapter
+
+
+# ═══════════════════════════════════════════════════════════════
+# 全局上下文使用率快照（TUI 模式行行首显示用，性能：O(1) 无锁读）
+#
+# 设计（2026-08-19 用户需求「mainagent 上下文使用百分比，要性能好」）：
+#   - 写入侧：ContextManager 在**缓存同步点**（_ensure_cache resync /
+#     _do_compress / enforce_message_limit / invalidate_cache）一次性计算
+#     百分比并写入本模块级全局（低频，锁/开销可忽略）；
+#   - 读取侧：TUI 渲染线程每帧直接读本全局 int（无锁、无除法、无扫描），
+#     与状态栏 token 速度快照（api.stats）同模式，零每帧计算成本；
+#   - 常驻显示（2026-08-19 用户反馈「空闲也要显示」）：会话启动即写 0，
+#     空闲/无消息时保持 0% 显示（不隐藏）——上下文使用率是会话级指标，
+#     与是否活跃无关；仅配置禁用（model_context_tokens<=0）时写 None 不显示。
+#   - 精度（2026-08-19 用户反馈「百分比有 1 位小数」）：快照存 round 到
+#     1 位小数的 float 百分比，TUI 显示 ``main · 45.3%``。
+# ═══════════════════════════════════════════════════════════════
+_context_usage_percent: Optional[float] = None
+
+
+def set_context_usage_percent(pct: Optional[float]) -> None:
+    """写入全局上下文使用百分比快照（ContextManager 缓存同步点调用）。
+
+    Args:
+        pct: 上下文使用百分比（0-100，1 位小数）；None 表示不可用（配置禁用）。
+    """
+    global _context_usage_percent
+    _context_usage_percent = pct
+
+
+def get_context_usage_percent() -> Optional[float]:
+    """读取全局上下文使用百分比（O(1) 无锁，适合 UI 渲染每帧调用）。
+
+    Returns:
+        0-100 的浮点百分比（1 位小数）；None 表示不可用（配置禁用，TUI 不显示）。
+    """
+    return _context_usage_percent
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -60,13 +99,18 @@ class ContextManager:
             {"type": "remove", "indices": list[int]}
         strategies: 压缩策略列表（按优先级排序），
                     默认 [SummarizeStrategy, DropStrategy]
+        config_port: 配置端口（max_context_chars 等读取）
+        output_port: 输出端口
+        tools: 当前工具 schemas（list[dict]）——上下文使用率统计的一部分
+            （工具列表随系统提词一起发送给模型，须计入上下文占用）。
     """
 
     def __init__(self, messages, model, summarize_fn=None,
                  on_messages_changed=None,
                  strategies: Optional[list[CompressionStrategy]] = None,
                  config_port: Optional[ConfigPort] = None,
-                 output_port: Optional[OutputPort] = None):
+                 output_port: Optional[OutputPort] = None,
+                 tools: Optional[list] = None):
         self.messages = messages
         self.model = model
         self._on_changed = on_messages_changed
@@ -84,15 +128,29 @@ class ContextManager:
         # 提示缓存（无锁读取，用于 get_compress_hint）
         self._hint_chars = 0
 
+        # 工具 schemas（上下文使用率统计的一部分；可经 set_tools 更新）
+        self.tools = list(tools or [])
+
         # 策略链：依次尝试，第一个成功即停止
         self._strategies = strategies or [
             SummarizeStrategy(),
             DropStrategy(),
         ]
 
+        # ★ 会话启动即刷新全局上下文使用率（2026-08-19 用户反馈「空闲也要
+        #   显示」+「统计系统提词跟工具列表的上下文」）——启动/空闲时行首
+        #   常驻显示 ``main · N%``（含系统提词 + 工具列表基础上下文，不再
+        #   因「程序没跑」隐藏或归零；上一会话残留值一并覆盖）。
+        self.refresh_usage()
+
     def update_model(self, model):
         """更新模型名称。"""
         self.model = model
+
+    def set_tools(self, tools: Optional[list]) -> None:
+        """更新工具 schemas 并刷新上下文使用率（工具列表变化后调用）。"""
+        self.tools = list(tools or [])
+        self.refresh_usage()
 
     # ── 缓存管理 ──────────────────────────────────────────
 
@@ -103,6 +161,8 @@ class ContextManager:
 
         # 同步提示缓存
         self._hint_chars = self._cache.total_chars
+        # 同步全局上下文使用率快照（TUI 模式行行首显示）
+        self._sync_usage_percent()
 
     def invalidate_cache(self):
         """使缓存失效，下次访问时通过 _ensure_cache() 自动重新同步。
@@ -113,6 +173,8 @@ class ContextManager:
         with self._lock:
             self._cache.invalidate()
             self._hint_chars = 0
+            # 同步全局上下文使用率快照（保持显示，下次 resync 恢复精确值）
+            self._sync_usage_percent()
 
     # ── 压缩入口 ──────────────────────────────────────────
 
@@ -186,6 +248,8 @@ class ContextManager:
             if result.success:
                 # 同步提示缓存
                 self._hint_chars = self._cache.total_chars if self._cache.is_valid else 0
+                # 同步全局上下文使用率快照（TUI 模式行行首显示）
+                self._sync_usage_percent()
                 return
 
         _log("CONTEXT_TRIM", "所有压缩策略均失败")
@@ -228,6 +292,8 @@ class ContextManager:
             if self._cache.is_valid:
                 self._cache.on_remove(to_delete)
                 self._hint_chars = self._cache.total_chars
+                # 同步全局上下文使用率快照（TUI 模式行行首显示）
+                self._sync_usage_percent()
 
             self._notify_changed({"type": "remove", "indices": unpinned_indices})
 
@@ -241,7 +307,81 @@ class ContextManager:
 
             return removed
 
-    # ── 压缩提示 ──────────────────────────────────────────
+    # ── 上下文使用率（TUI 模式行行首显示） ────────────────
+
+    def _tools_tokens(self) -> int:
+        """工具列表（schemas）序列化后的估算 token 数——上下文固定开销。
+
+        工具 schemas 随系统提词一起发送给模型（每个请求都占用上下文），
+        须计入上下文使用率统计。estimate_tokens 有 lru_cache（性能好）；
+        JSON 序列化失败的单条 schema 跳过。
+        """
+        total = 0
+        for schema in getattr(self, "tools", None) or []:
+            try:
+                total += estimate_tokens(json.dumps(schema, ensure_ascii=False))
+            except (TypeError, ValueError):
+                continue
+        return total
+
+    def refresh_usage(self, force: bool = False) -> None:
+        """刷新全局上下文使用率（动态刷新入口，2026-08-19 用户需求）。
+
+        统计口径：**系统提词 + 工具列表 + 全部消息**占**模型上下文窗口**
+        （model_context_tokens，默认 1M tokens）的百分比——
+          - 系统提词：messages 中 role=system 的消息全文（MessageStatsCache
+            resync 全量统计 token，含于 total_tokens）；
+          - 工具列表：self.tools schemas 序列化估算 token（_tools_tokens）；
+          - 消息：MessageStatsCache.total_tokens（含 system，懒同步——长度
+            变化才全量 resync，否则复用缓存，性能好）；
+          - 分母：get_model_context_tokens()（模型上下文窗口，默认 1M token）。
+        计算一次性写入全局快照，TUI 渲染线程每帧 O(1) 无锁读取。
+
+        Args:
+            force: 强制全量 resync（默认 False 懒同步）。系统提词**内容**变化
+                但消息条数不变时（如 Ctrl+B 空模式切换 rebuild_system_prompt
+                ——system 消息数相同、内容替换）懒同步会命中旧缓存 → 百分比
+                不更新；此类场景须传 force=True 强制重算（低频，O(n) 可接受）。
+
+        动态刷新调用点：会话启动（__init__）、消息追加（BaseAgent 消息
+        方法）、系统提词重建（rebuild_system_prompt 传 force=True）、工具
+        更新（set_tools）、缓存同步（_ensure_cache/_do_compress/
+        enforce_message_limit/invalidate_cache）。
+
+        常驻显示语义（「空闲也要显示」）：无消息时系统提词+工具列表仍占
+        上下文（写实际百分比，不隐藏）；仅配置禁用（model_context_tokens
+        <=0）时写 None（TUI 不显示该段）。
+
+        精度（「百分比有 1 位小数」）：百分比 round 到 1 位小数后写入全局。
+        """
+        try:
+            ctx_tokens = self._config_port.get_model_context_tokens()
+            if ctx_tokens <= 0:
+                set_context_usage_percent(None)
+                return
+            # 懒同步缓存（长度变化才全量 resync；复用避免每帧重算）；
+            # force=True（Ctrl+B 空模式切换等 system 内容变化场景）强制重算。
+            if force or not self._cache.is_valid or len(self._cache) != len(self.messages):
+                self._cache.resync(self.messages)
+            self._hint_chars = self._cache.total_chars
+            tokens = self._cache.total_tokens + self._tools_tokens()
+            if tokens <= 0:
+                set_context_usage_percent(0.0)
+                return
+            pct = round(tokens / ctx_tokens * 100, 1)
+            set_context_usage_percent(pct)
+        except Exception:
+            # 防御：配置读取异常等 → 不可用（不中断上下文管理主流程）
+            set_context_usage_percent(None)
+
+    def _sync_usage_percent(self) -> None:
+        """兼容内部别名：委托 refresh_usage（既有调用点语义不变）。
+
+        _ensure_cache / _do_compress / enforce_message_limit /
+        invalidate_cache 内的同步点统一走 refresh_usage 全量统计口径
+        （含系统提词 + 工具列表）。
+        """
+        self.refresh_usage()
 
     def get_compress_hint(self):
         """返回压缩提示文本，无需提示时返回空字符串。
