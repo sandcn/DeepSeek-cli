@@ -26,6 +26,12 @@ class StreamContext:
         # 内容累积
         self.content_full: str = ""
         self.reasoning_full: str = ""
+        #: 流式输出已生成内容的估算 tokens 总量（只增不清零）——供上下文
+        #:   使用率实时刷新（update_streaming_usage）使用。与 token_estimate
+        #:   不同：token_estimate 在真实 usage 到达时被 _handle_usage 清零
+        #:   （SpeedHandler 增量语义），本字段保持单调累积，避免流式未结束时
+        #:   百分比短暂回落（视觉抖动）。
+        self.streamed_output_tokens: int = 0
 
         # 使用量
         self.usage = {"input": 0, "output": 0, "input_cache_hit": 0, "input_cache_miss": 0}

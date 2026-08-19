@@ -95,13 +95,8 @@ async def _interruptible_iter_async(
         # CancelledError 处理仍能正确感知中断状态。
         _logger.debug("_interruptible_iter_async caught CancelledError, exiting stream gracefully")
         ctx.task_cancelled = True  # 标记 task 被取消
-        # ★ 保护：退出 async with aclosing(response_iter) 时，aclose()
-        # 可能再次抛出 CancelledError。此处显式关闭迭代器并用
-        # try/except 消化该异常，防止透出到 process() 上层。
-        try:
-            await response_iter.aclose()
-        except (asyncio.CancelledError, StopAsyncIteration):
-            pass
+        # ★ 清理统一交给 finally（对已关闭 async generator 幂等安全）——
+        #   except 内不再显式 aclose，避免双重关闭冗余调用。
         return
     except StreamIdleTimeoutError:
         # 空闲超时/连接错误是预期可重试条件：降级为 WARNING 而非 ERROR，
@@ -190,7 +185,24 @@ class AsyncStreamPipeline:
                 now = time.perf_counter()
                 if now - _last_progress >= _PROGRESS_INTERVAL:
                     _last_progress = now
+                    # 注（review 说明）：与 SpeedHandler.try_update 内的
+                    # _notify_stream_progress（≈0.5s 间隔）为**双重通知**——
+                    # 下游按需消费（进度 UI 用 0.1s 粒度、速度统计用 0.5s
+                    # 粒度），回调内不假设调用频率，幂等安全。
                     _notify_stream_progress()
+                    # ★ 上下文百分比实时刷新（2026-08-19 用户需求）：每 ~0.1s
+                    #   把当前流式输出估算 tokens（ctx.streamed_output_tokens，
+                    #   单调累积不清零——真实 usage 到达不影响）写入全局并
+                    #   触发活跃 ContextManager.refresh_usage() 重算——AI 生成
+                    #   时行首 ``main · N%`` 随输出增长实时上升（缓存有效时
+                    #   O(1)）。延迟导入避免 api→core 模块加载期循环依赖
+                    #   （项目既有模式：core 依赖 api，api 侧延迟引用）；
+                    #   SubAgent（label="agent-N"）由函数内部跳过。
+                    try:
+                        from ...core.context_manager import update_streaming_usage
+                        update_streaming_usage(ctx.streamed_output_tokens, ctx.label)
+                    except Exception:
+                        _logger.debug("实时刷新上下文使用率失败", exc_info=True)
 
                 # 处理 usage
                 self._handle_usage(ctx, chunk)
@@ -257,6 +269,16 @@ class AsyncStreamPipeline:
                     #     content done 由 tool_calls_handler 按 content_full
                     #     发布）——重置只影响「工具调用后」的新一轮，不破坏
                     #   当前阶段关闭（关闭幂等，重复发布无害）。
+                    # ★ 2026-08-19 修复（review P1：新一轮推理被静默丢弃）：
+                    #   同时把 is_reasoning 重置为 True——DeepSeek 推理模型
+                    #   多轮工具循环每轮均输出 thinking；修复前 is_reasoning
+                    #   在首次工具调用被置 False 后不再复位，新一轮
+                    #   reasoning_content chunk 命中 ``if rc and ctx.is_reasoning``
+                    #   为 False → 推理内容不累积/不渲染/不发布 done。
+                    #   重置后新一轮推理正常接收；若新一轮直接 content（无
+                    #   推理），content.py 首次 content 到达时发布 reasoning
+                    #   done（sent 已重置，幂等无害）。
+                    ctx.is_reasoning = True
                     ctx.phase_done_reasoning_sent = False
                     ctx.phase_done_content_sent = False
                     self._speed_handler.try_update(ctx)
@@ -392,10 +414,6 @@ class AsyncStreamPipeline:
             else:
                 raise
 
-        # ── 第 2a 步：清除 tracker 显示行（合并到尾部换行处理）──
-        # 为避免 publish_output 附加的 \n 导致多余空行，
-        # tracker 行清除已合并到尾部换行步骤统一处理。
-
         # ── 第 2b 步：发布 PhaseDoneEvent（即使 silent=True 也要发） ─
         # ★ 标记追踪：在 content.py 或 tool_calls.py 中已发布的阶段事件，此处不再重复发送
         #   PhaseDoneEvent("reasoning") 由 content.py 在首次 content 到达时发布，
@@ -465,6 +483,17 @@ class AsyncStreamPipeline:
             text = "\r\033[K" if ctx.tracker.started else ""
             publish_output(text, level="raw")
 
+        # ★ 流式增量清零（2026-08-19「上下文百分比要实时刷新」）：流式结束
+        #   时把全局流式增量归零——随后上层把 assistant 消息追加进 messages
+        #   并经 refresh_usage() 按消息全文重算真实百分比。若不清零，消息
+        #   内容与流式增量会双计（百分比虚高）。本方法幂等（_cleaned_up
+        #   保护），process() finally 与 stream_call_async 补调均只执行一次。
+        try:
+            from ...core.context_manager import update_streaming_usage
+            update_streaming_usage(0, ctx.label)
+        except Exception:
+            _logger.debug("流式结束清零上下文使用率失败", exc_info=True)
+
     def _print_usage_summary(self, ctx: StreamContext) -> None:
         """打印使用量摘要。"""
         if ctx.usage["input"] <= 0 and ctx.usage["output"] <= 0:
@@ -517,6 +546,10 @@ async def stream_call_async(
     pipeline = AsyncStreamPipeline()
 
     # 流式开始时估算输入 token
+    # 注（review 口径说明）：仅统计 content 字段，不含 tool_calls 参数——
+    # 与上下文使用率统计（message_to_text 含工具调用参数）口径不同，live
+    # input 显示为下限估算（可接受：live 展示为估计值，真实 usage 到达后
+    # 由 _handle_usage 以精确值覆盖）。
     if display and label:
         input_est = sum(estimate_tokens(m.get("content", "") or "") for m in messages)
         display.update_live_input(label, input_est)

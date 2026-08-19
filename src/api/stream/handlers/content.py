@@ -41,6 +41,7 @@ class ContentHandler(StreamChunkHandler):
                               info="", source=ctx.label or "")
 
         ctx.token_estimate += token_est if token_est is not None else estimate_tokens(dc)
+        ctx.streamed_output_tokens = ctx.token_estimate  # 上下文使用率实时刷新增量
         ctx.content_full += dc
         ctx.speed_chunk_count += 1
         ctx._live_total_dirty = True

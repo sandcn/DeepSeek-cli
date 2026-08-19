@@ -33,6 +33,7 @@ class ReasoningHandler(StreamChunkHandler):
         ctx.reasoning_full += rc
 
         ctx.token_estimate += token_est if token_est is not None else estimate_tokens(rc)
+        ctx.streamed_output_tokens = ctx.token_estimate  # 上下文使用率实时刷新增量
         ctx._live_total_dirty = True
 
         # 🔥 发布推理 chunk 事件到 EventBus
