@@ -29,6 +29,7 @@ Ctrl+H（0x08）打开/关闭：App 在 ``model.fullscreen == "trace"``（兼容
 from __future__ import annotations
 
 import json
+import time as _time
 
 from src.tui._format import format_duration, format_tokens
 from src.tui._input_layout import _wrap_by_width
@@ -127,6 +128,35 @@ def _status_fg(status: str) -> int:
     return _STATUS_FG.get(status, 242)
 
 
+def _rec_time_seconds(rec) -> float | None:
+    """记录实时耗时（运行中记录按起始时间戳实时计算；其余用快照）。
+
+    ★ 2026-08-19（用户需求：轨迹 Trace 正运行的工具耗时没有刷新）：运行中
+    工具/subagent 耗时随时间增长，但 records 仅在内容变化时重建
+    （``_records_deps``/``_subagent_trace_deps`` 时间基元素不入指纹——工具
+    无输出/状态不变期间 use_memo 命中）——rec.time_seconds 为构建时**快照**
+    会冻结。渲染层（台账行每帧读取 / 检查器 use_memo deps）改经本函数取
+    实时值：running 记录按 ``time_started``（构建时保留的起始时间戳）实时
+    计算，并按**整数秒**入指纹（每秒刷新一次，避免每帧重建）。
+
+    时间基准（``time_started_monotonic``）：True=单调时钟（主轨迹工具 box
+    ``_tool_started_at``=time.monotonic）；False=墙上时钟（subagent 槽位
+    ``start_time``=time.time）。异常/缺失起始时间戳回退快照（防御）。
+    """
+    if getattr(rec, "status", "") != "running":
+        return getattr(rec, "time_seconds", None)
+    started = getattr(rec, "time_started", None)
+    if started is None:
+        return getattr(rec, "time_seconds", None)
+    try:
+        started_f = float(started)
+    except (TypeError, ValueError):
+        return getattr(rec, "time_seconds", None)
+    if getattr(rec, "time_started_monotonic", True):
+        return max(0.0, _time.monotonic() - started_f)
+    return max(0.0, _time.time() - started_f)
+
+
 def _ledger_row_runs(rec, sel: bool, left_w: int) -> list:
     """台账行 runs（选中行整行背景高亮 + ▶ 标记；耗时右对齐；宽截断）。
 
@@ -140,10 +170,10 @@ def _ledger_row_runs(rec, sel: bool, left_w: int) -> list:
     本函数每帧重建 StyledRun（含 truncate 宽计算）；同内容记录（records
     流式重建新对象但字段值相同）→ 指纹命中 → 返回同一 runs 列表引用（零
     重建；TEXT ``_wrap_cache`` 按 styled 引用命中 → 渲染层也零重写）。运行
-    中耗时（``time_seconds``）按**整数秒**入指纹（每秒刷新一次，避免每帧
-    重建——与检查器 meta 同语义）。有界防无限增长（超限清空重建）。
+    中耗时（``_rec_time_seconds`` 实时值）按**整数秒**入指纹（每秒刷新一次，
+    避免每帧重建——与检查器 meta 同语义）。有界防无限增长（超限清空重建）。
     """
-    t_raw = getattr(rec, "time_seconds", None)
+    t_raw = _rec_time_seconds(rec)
     t_key = int(t_raw) if t_raw is not None else None
     key = (
         getattr(rec, "index", 0),
@@ -674,8 +704,11 @@ def _inspector_children(rec, right_w: int, vh: int) -> list:
         "children": title, "style": _S_TITLE, "height": 1, "key": "tinsp-title",
     }))
     # 元信息（耗时 / token）
+    # ★ 2026-08-19（用户需求：轨迹 Trace 正运行的工具耗时没有刷新）：耗时
+    #   经 ``_rec_time_seconds`` 实时计算（运行中记录按起始时间戳走动——
+    #   工具无输出/records 不重建期间 meta 行每秒刷新）。
     meta: list = []
-    ts = getattr(rec, "time_seconds", None)
+    ts = _rec_time_seconds(rec)
     if ts is not None:
         meta.append(f"耗时 {format_duration(ts)}")
     tokens = getattr(rec, "tokens", None) or {}
@@ -844,14 +877,15 @@ def _inspector_deps(rec, right_w: int, vh: int) -> tuple:
     包装后：deps = ``_detail_deps``（内容行数据源——块行数/树内容/lines 身份，
     展平原子值）+ 标题/元信息字段（index/kind/status/tokens/time）+ 栏宽/
     视口。内容不变 → deps 稳定 → 元素树引用稳定 → reconciler 短路零重建。
-    运行中耗时按**整数秒**入指纹（meta 行每秒刷新一次，避免每帧重建）。
+    运行中耗时（``_rec_time_seconds`` 实时值）按**整数秒**入指纹（meta 行
+    每秒刷新一次，避免每帧重建）。
     ★ P3（review 2026-08-19）：time/tokens 经 ``_safe_int`` 归一化——
     异常注入值（str/NaN/inf）不再中断渲染。
     """
     if rec is None:
         return (None, right_w, vh)
     tok = getattr(rec, "tokens", None) or {}
-    t_raw = getattr(rec, "time_seconds", None)
+    t_raw = _rec_time_seconds(rec)
     return tuple(_detail_deps(rec)) + (
         getattr(rec, "index", 0),
         getattr(rec, "kind", "") or "",
@@ -1339,6 +1373,7 @@ __all__ = [
     "_ledger_row_runs",
     "_inspector_children",
     "_inspector_deps",
+    "_rec_time_seconds",
     "_viewport_rows",
     "_subagent_trace_deps",
     "_md_detail_rows",

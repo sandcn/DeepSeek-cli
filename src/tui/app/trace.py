@@ -77,7 +77,14 @@ class TraceRecord:
         kind: 记录种类（system/user/reasoning/content/tool/subagent/context）。
         summary: 单行摘要（台账行主文本；超宽由渲染层截断）。
         status: 状态（tool/subagent：running/done/fail/error；其余空串）。
-        time_seconds: 耗时秒数；None=未知（运行中/无计时）。
+        time_seconds: 耗时秒数；None=未知（运行中/无计时）。运行中记录为
+            构建时**快照**（渲染层经 ``time_started`` 实时计算刷新）。
+        time_started: 运行中起始时间戳（渲染层实时计算耗时用；records 仅在
+            内容变化时重建，快照 time_seconds 会冻结——工具无输出/状态不变
+            期间耗时须按此实时走动；非运行中记录为 None）。
+        time_started_monotonic: time_started 时间基准——True=单调时钟
+            （time.monotonic，主轨迹工具 box ``_tool_started_at``）；
+            False=墙上时钟（time.time，subagent 槽位 ``start_time``）。
         tokens: token 统计 dict（input/output/live_input/live_output）。
         result: 工具返回首行预览（tool 记录；台账行与调用合并显示）。
         lines: 详情行（纯文本）——仅 system/subagent 记录内联携带（小体积）；
@@ -102,6 +109,11 @@ class TraceRecord:
     summary: str = ""
     status: str = ""
     time_seconds: float | None = None
+    # ★ 2026-08-19（用户需求：轨迹 Trace 正运行的工具耗时没有刷新）：
+    #   运行中起始时间戳 + 时间基准——渲染层实时计算耗时（见
+    #   trace_view._rec_time_seconds）。
+    time_started: float | None = None
+    time_started_monotonic: bool = True
     tokens: dict = field(default_factory=dict)
     result: str = ""
     lines: list = field(default_factory=list)
@@ -600,6 +612,11 @@ def _record_from_block(block, index: int) -> TraceRecord | None:
                 duration if duration is not None
                 else max(0.0, _time.monotonic() - started)
             )
+            # ★ 2026-08-19（用户需求：轨迹 Trace 正运行的工具耗时没有刷新）：
+            #   记录起始时间戳（monotonic）——渲染层对 running 状态实时计算
+            #   耗时（工具无输出期间耗时也持续走动）。
+            rec.time_started = started
+            rec.time_started_monotonic = True
     else:
         rec.summary = _first_plain_line(block)
         # ★ 2026-08-19（用户需求：轨迹 Trace 正在生成的内容动态显示）：
@@ -847,6 +864,12 @@ def _live_records(model, index_holder: list, out_records: list, rows: list,
             result=result or "（运行中…）",
             lines=detail_lines,
             time_seconds=time_sec,
+            # ★ 2026-08-19（用户需求：轨迹 Trace 正运行的工具耗时没有刷新）：
+            #   起始时间戳（monotonic，``_tool_started_at``）——渲染层实时
+            #   计算耗时（记录快照 time_seconds 会冻结：工具无输出/状态不变
+            #   期间 records 不重建）。
+            time_started=started,
+            time_started_monotonic=True,
             # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树控件
             #   显示）：运行中工具同样填充树显示数据源——参数 = 标题 detail
             #   （关键参数摘要）；返回值 = 当前已输出行（流式增长驱动检查器
@@ -1200,6 +1223,12 @@ def _merge_subagent_into_tool_record(rec, slot, label: str) -> None:
     rec.status = status
     time_sec, tokens = _subagent_slot_metrics(slot)
     rec.time_seconds = time_sec
+    # ★ 2026-08-19（用户需求：轨迹 Trace 正运行的工具耗时没有刷新）：subagent
+    #   运行中（槽位 status=running）→ 起始时间戳（epoch，time.time()）——
+    #   渲染层实时计算耗时（记录快照 time_seconds=None 会冻结）。
+    start = getattr(slot, "start_time", 0.0) or 0.0
+    rec.time_started = start if status == "running" and start > 0 else None
+    rec.time_started_monotonic = False
     rec.tokens = tokens
     rec.result = _subagent_slot_summary(slot, label, status)
     rec.subagent_label = label
@@ -1279,6 +1308,13 @@ def _subagent_records(index_holder: list, out_records: list, rows: list) -> set:
             summary=summary,
             status=status,
             time_seconds=time_sec,
+            # ★ 2026-08-19（用户需求：轨迹 Trace 正运行的工具耗时没有刷新）：
+            #   subagent 运行中 → 起始时间戳（epoch）——渲染层实时计算耗时。
+            time_started=(
+                (getattr(slot, "start_time", 0.0) or 0.0)
+                if status == "running" else None
+            ),
+            time_started_monotonic=False,
             tokens=tokens,
             lines=detail,
             subagent_label=label,
@@ -1330,6 +1366,11 @@ def _subagent_live_records(index_holder: list, out_records: list, rows: list,
             index=index_holder[0], kind="tool", summary=call,
             status="running", result="（运行中…）",
             time_seconds=time_sec, lines=[call],
+            # ★ 2026-08-19（用户需求：轨迹 Trace 正运行的工具耗时没有刷新）：
+            #   subagent 工具槽位时间基准为墙上时钟（time.time()）——渲染层
+            #   按 epoch 实时计算耗时。
+            time_started=start if start > 0 else None,
+            time_started_monotonic=False,
             # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树控件
             #   显示）：subagent 运行中工具同样填充参数树数据源。
             tool_args=det,
@@ -1471,6 +1512,10 @@ def _subagent_fallback_records(label: str, slot) -> tuple:
         tool_rec = TraceRecord(
             index=index, kind="tool", summary=call,
             status=status, time_seconds=time_sec, lines=[call],
+            # ★ 2026-08-19（用户需求：轨迹 Trace 正运行的工具耗时没有刷新）：
+            #   running 工具起始时间戳（epoch）——渲染层实时计算耗时。
+            time_started=r_start if (status == "running" and r_start > 0) else None,
+            time_started_monotonic=False,
             # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树控件
             #   显示）：subagent 回退路径工具记录同样填充参数树数据源。
             tool_args=det,
