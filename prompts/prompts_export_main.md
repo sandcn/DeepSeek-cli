@@ -110,15 +110,15 @@ prompt 必须含：
 ## review — 代码审查
 ### 怎么引发
 ```
-subagent(type="review", description="CR: <模块>", prompt="计划文件: <路径>\n\n修复文件列表:\n<N. src/... 格式>")
+subagent(type="review", description="CR: <模块>", prompt="计划文件: <路径>\n\n所有修改文件列表:\n<N. src/... 格式>")
 ```
 - **调用时机**：所有文件修改完成后、标记任务完成前。审查必须覆盖本次对话/任务所有**累计修改**（含之前轮次），非仅当前轮
-- **用户指定审查（强制）**：用户明确指定文件/模块要求 review → 直接派发，无需 map→plan→execute 流程，prompt 以用户指定的文件列表作为修复文件列表，计划文件路径填「无」
-- **Bug 分析（强制）**：分析 Bug 时可直接派发 `subagent(type="review")` 执行只读分析（review 工具集含 read_file/search/find，可深入读码定位根因），无需 map→plan→execute 流程，prompt 以 Bug 相关文件列表作为修复文件列表，计划文件路径填「无」
+- **用户指定审查（强制）**：用户明确指定文件/模块要求 review → 直接派发，无需 map→plan→execute 流程，prompt 以用户指定的文件列表作为所有修改文件列表，计划文件填「无」
+- **Bug 分析（强制）**：分析 Bug 时可直接派发 `subagent(type="review")` 执行只读分析（review 工具集含 read_file/search/find，可深入读码定位根因），无需 map→plan→execute 流程，prompt 以 Bug 相关文件列表作为所有修改文件列表，计划文件填「无」
 - **并发**：多文件按文件粒度强制并发
 
 ### 怎么给提词
-prompt 强制只含：修复文件列表（所有累计修改文件，N. 格式）+ 计划文件路径（无则「无」）。严禁附加任何其他内容（修改类型、修改摘要、审查关注点、目标、要求、约束、说明、上下文等一律禁止）
+review agent 的系统提词（prompt）强制只含两项：所有修改文件列表（N. 格式）+ 计划文件（无则「无」）。严禁附加任何其他内容（修改类型、修改摘要、审查关注点、目标、要求、约束、说明、上下文等一律禁止）
 
 ### 执行之后干嘛
 1. 返回 P0/P1/P2/P3 分级结果，必须含之前轮次的累积 diff
