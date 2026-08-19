@@ -143,30 +143,43 @@ def _append_truncated(line: Line, text: str, style, budget: int) -> None:
     line.append(_truncate_width(text, remaining), style)
 
 
-def _completion_scroll_offset(sel: int, total: int, n_rows: int) -> int:
-    """补全弹窗渲染窗口起始偏移（选中项保持可见）。
+def _completion_scroll_offset(sel: int, total: int, n_rows: int, current: int = 0) -> int:
+    """补全弹窗渲染窗口起始偏移（跟随选中项滚动——选中项保持可见）。
 
-    修复（2026-08-15）：/load 会话候选多时一直按下键，弹窗固定从
-    ``items[0]`` 渲染——选中项移出首屏后不可见（无自动滚动）。本函数
-    计算渲染窗口起始索引：
+    ★ 跟随滚动（2026-08-19）：分栏说明模式（split_desc）下选中项多于可见
+    行数时按 ↑↓ 高亮在窗口内逐行移动、仅越过窗口边界后窗口才滚动——
+    与 SelectInput ``_visible_window`` 跟随光标语义一致（按上下能移动到
+    未显示的行）：
 
-      - 候选总数 ≤ 可见行数（n_rows）→ 不滚动（offset=0，全部可见）；
-      - 选中项在首屏内（sel < n_rows）→ 窗口在顶部（offset=0）；
-      - 选中项越过首屏底部（sel >= n_rows）→ 窗口跟随，选中项贴底
+      - 选中项在当前窗口内（``current <= sel < current + n_rows``）→
+        窗口不动（offset 保持 current）；
+      - 选中项越过窗口底部（``sel >= current + n_rows``）→ 窗口贴底
         （offset = sel - n_rows + 1）；
-      - 结果钳制到 ``[0, total - n_rows]``（末屏不越界）。
+      - 选中项越过窗口顶部（``sel < current``）→ 窗口贴顶（offset = sel）；
+      - ``current`` 先钳制到 ``[0, total - n_rows]``（items 动态缩小防护）；
+      - 候选总数 ≤ 可见行数（n_rows）→ 不滚动（offset=0，全部可见）。
+
+    调用方（``_build_popup_lines``）把每帧计算结果写回
+    ``completion._popup_scroll`` 作为下一帧的 ``current``（有状态跟随；
+    hide_completions 重建 CompletionState 自动归零）。
 
     Args:
         sel: 归一化后的选中索引（调用方已钳制到 [0, total-1]）。
         total: 候选总数（len(items)）。
         n_rows: 弹窗可见候选项行数。
+        current: 当前窗口起始偏移（上一帧；默认 0 顶部）。
 
     Returns:
         渲染起始偏移（0 <= offset <= max(0, total - n_rows)）。
     """
     if total <= 0 or n_rows <= 0 or total <= n_rows:
         return 0
-    return max(0, min(sel - n_rows + 1, total - n_rows))
+    offset = max(0, min(current, total - n_rows))
+    if sel < offset:
+        return max(0, min(sel, total - n_rows))
+    if sel >= offset + n_rows:
+        return max(0, min(sel - n_rows + 1, total - n_rows))
+    return offset
 
 
 def _build_popup_lines(completion, width: int, now: float) -> list:
@@ -300,11 +313,15 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
         #   （锁定高度）而非当前内容需求——items 减少时弹窗高度保持（底部
         #   补白），doc 高度不变 → 等高 diff 只重写弹窗行（不闪）。
         n_rows = max(0, _completion_height(completion, width) - 2)
-        # ★ 滚动窗口（2026-08-15 修复）：/load 会话候选多时一直按下键，
-        #   选中项移出首屏后弹窗固定从 items[0] 渲染——选中项不可见。
-        #   计算起始偏移使选中项保持在可见区域内（越过底部时选中项贴底、
-        #   回首屏内时窗口回顶）。
-        scroll = _completion_scroll_offset(sel, len(items), n_rows)
+        # ★ 滚动窗口（2026-08-15 修复 + 2026-08-19 跟随滚动）：/load 会话
+        #   候选多时一直按下键，选中项移出首屏后弹窗固定从 items[0] 渲染
+        #   ——选中项不可见。计算起始偏移使选中项保持在可见区域内；2026-08-19
+        #   起为**跟随滚动**（窗口内不动、越过边界才滚，按 ↑↓ 能移动到未
+        #   显示的行）——当前窗口偏移读写 ``completion._popup_scroll``。
+        scroll = _completion_scroll_offset(
+            sel, len(items), n_rows, getattr(completion, "_popup_scroll", 0),
+        )
+        completion._popup_scroll = scroll
         for row in range(n_rows):
             line = Line()
             # 左栏：选项（i 为 items 真实索引，行号 row = i - scroll）
@@ -344,9 +361,13 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
         #   （锁定高度）而非当前 items 数量——items 减少时弹窗高度保持
         #   （底部补白空行），doc 高度不变 → 等高 diff 只重写弹窗行（不闪）。
         n_rows = max(0, _completion_height(completion, width) - 2)
-        # ★ 滚动窗口（2026-08-15 修复，同分栏分支）：选中项超出可见区域时
-        #   窗口跟随（选中项贴底/回顶），修复前固定从 items[0] 渲染。
-        scroll = _completion_scroll_offset(sel, len(items), n_rows)
+        # ★ 滚动窗口（2026-08-15 修复，同分栏分支；2026-08-19 跟随滚动）：
+        #   选中项超出可见区域时窗口跟随（贴底/贴顶），修复前固定从
+        #   items[0] 渲染；窗口偏移读写 ``completion._popup_scroll``。
+        scroll = _completion_scroll_offset(
+            sel, len(items), n_rows, getattr(completion, "_popup_scroll", 0),
+        )
+        completion._popup_scroll = scroll
         for row in range(n_rows):
             i = scroll + row
             if i >= len(items):

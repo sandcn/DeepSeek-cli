@@ -52,11 +52,44 @@ def _normalize_items(items) -> list[dict]:
     return out
 
 
-def _visible_window(selected: int, total: int, limit: int | None) -> tuple[int, int]:
-    """计算可见窗口 ``(offset, count)``（limit 无/超界时返回全量）。"""
-    if limit is None or total <= limit:
+def _visible_window(selected: int, total: int, limit: int | None,
+                    current_offset: int = 0) -> tuple[int, int]:
+    """计算可见窗口 ``(offset, count)``——跟随光标滚动语义（limit 无/超界全量）。
+
+    ★ 跟随光标滚动（2026-08-19，补全弹窗候选多时按 ↑↓ 高亮可移动到
+    未显示行）：光标在当前窗口**内部**移动时窗口不动（高亮逐行移动），
+    仅越过窗口边界时滚动——
+
+      - ``selected < offset``（越过上边界，如 ↑ 回到窗口之上）→ 窗口贴顶
+        （``offset = selected``，高亮在首行）；
+      - ``selected >= offset + limit``（越过下边界，如 ↓ 到窗口之下）→
+        窗口贴底（``offset = selected - limit + 1``，高亮在末行）；
+      - 其余（窗口内）→ 窗口保持 ``current_offset`` 不变；
+      - ``current_offset`` 先钳制到 ``[0, total - limit]``（items 动态缩小
+        后旧 offset 越界防护）。
+
+    修复前为无状态贴顶语义（``offset = min(selected, total - limit)``）——
+    每按一次 ↑/↓ 窗口立即滚动一行、高亮钉在窗口首行（用户看到高亮
+    不动、列表乱滚，无法感知「按上下移动到未显示的行」）。与 ListView
+    的跟随光标滚动语义对齐。
+
+    Args:
+        selected: 光标/选中下标（调用方已钳制到 [0, total-1]）。
+        total: 项总数。
+        limit: 可见行数（None 时全量显示，无滚动）。
+        current_offset: 当前窗口起始偏移（上一帧渲染窗口；默认 0 顶部）。
+
+    Returns:
+        ``(offset, count)``：窗口起始偏移与可见行数。
+    """
+    if limit is None or limit <= 0 or total <= limit:
         return 0, total
-    offset = max(0, min(selected, total - limit))
+    max_offset = total - limit
+    offset = max(0, min(current_offset, max_offset))
+    if selected < offset:
+        return max(0, min(selected, max_offset)), limit
+    if selected >= offset + limit:
+        return max(0, min(selected - limit + 1, max_offset)), limit
     return offset, limit
 
 

@@ -81,6 +81,19 @@ def RadioList(props: dict) -> Element:
     #   捕获渲染期 state，同批按键之间无重渲染，ref 保存最新值。
     selected_ref = use_ref(selected)
     selected_ref.current = selected
+    # ★ 滚动窗口 offset（2026-08-19，跟随光标滚动——与 SelectInput/MultiSelect
+    #   同语义）：选项多于可见行数时 ↑/↓ 选中在窗口内逐行移动、越过窗口
+    #   边界后窗口才滚动（能移动到未显示的行）。
+    win_offset, set_win_offset = use_state(0)
+    offset_ref = use_ref(0)
+    offset_ref.current = win_offset
+
+    def _scroll_follow(idx: int) -> None:
+        """跟随光标滚动窗口（光标越过边界时推进 offset，保持光标可见）。"""
+        new_off = _visible_window(idx, len(items), limit, offset_ref.current)[0]
+        if new_off != offset_ref.current:
+            offset_ref.current = new_off
+            set_win_offset(new_off)
 
     def _handle(event) -> bool:
         if not focus or not items:
@@ -97,6 +110,8 @@ def RadioList(props: dict) -> Element:
             new = cur - 1
             selected_ref.current = new
             set_selected(new)
+            # ★ 跟随光标滚动（2026-08-19）：越过窗口上边界时窗口上滚贴顶。
+            _scroll_follow(new)
             return True
         if event.kind == "arrow_down":
             # ★ P3（review）：已在末项时按下键不移动——无效移动返回 False。
@@ -105,6 +120,8 @@ def RadioList(props: dict) -> Element:
             new = cur + 1
             selected_ref.current = new
             set_selected(new)
+            # ★ 跟随光标滚动（2026-08-19）：越过窗口下边界时窗口下滚贴底。
+            _scroll_follow(new)
             return True
         # ★ P3（review）：``event.kind == "space"`` 为死分支（InputParser 从不
         #   产生 kind=="space"，空格为 ``kind=="char", char==" "``）——删除。
@@ -116,7 +133,9 @@ def RadioList(props: dict) -> Element:
     use_input(_handle, focus)
 
     selected_shown = _clamp_index(selected, len(items))
-    offset, count = _visible_window(selected_shown, len(items), limit)
+    # ★ 跟随光标滚动窗口（2026-08-19）：传当前 offset_ref（事件期推进后的
+    #   即时值）——光标在窗口内窗口不动，越过边界才滚动。
+    offset, count = _visible_window(selected_shown, len(items), limit, offset_ref.current)
     rows = []
     for i in range(count):
         idx = offset + i

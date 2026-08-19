@@ -138,6 +138,20 @@ def SelectInput(props: dict) -> Element:
     #   保存最新值（渲染期同步 + 事件期即时更新），handler 一律读 ref。
     selected_ref = use_ref(selected)
     selected_ref.current = selected
+    # ★ 滚动窗口 offset（2026-08-19，跟随光标滚动）：候选多于可见行数时
+    #   按 ↑↓ 高亮在窗口内逐行移动、越过窗口边界后窗口才滚动（能移动到
+    #   未显示的行）。offset state 为跨帧权威基准；ref 镜像供事件期即时
+    #   推进（同批连续按键无中间渲染时沿推进值滚动，与 ListView 语义一致）。
+    win_offset, set_win_offset = use_state(0)
+    offset_ref = use_ref(0)
+    offset_ref.current = win_offset
+
+    def _scroll_follow(idx: int) -> None:
+        """跟随光标滚动窗口（光标越过边界时推进 offset，保持光标可见）。"""
+        new_off = _visible_window(idx, len(items), limit, offset_ref.current)[0]
+        if new_off != offset_ref.current:
+            offset_ref.current = new_off
+            set_win_offset(new_off)
     # ★ P1（review 2026-08-19）：受控 ``index`` prop——外部权威选中下标
     #   （如 InputDispatcher 旧路径 PgUp/PgDn/Shift+Tab/边界回绕写回
     #   completion.selected）与内部 state 不一致时渲染期同步（ref 即时
@@ -156,6 +170,9 @@ def SelectInput(props: dict) -> Element:
         if ci != selected_ref.current:
             selected_ref.current = ci
             set_selected(ci)
+        # ★ 跟随滚动（2026-08-19）：受控值跳变（翻页 PgUp/PgDn/边界回绕）时
+        #   同样滚动窗口使受控选中项保持可见（与内部导航同一滚动语义）。
+        _scroll_follow(ci)
 
     def _handle(event) -> bool:
         if not focus or not items:
@@ -225,6 +242,10 @@ def SelectInput(props: dict) -> Element:
                 if on_highlight is not None:
                     _call(on_highlight, new)
         if moved:
+            # ★ 跟随光标滚动（2026-08-19）：导航实际移动后滚动窗口——光标
+            #   在窗口内移动时窗口保持（高亮逐行移动），越过边界才滚动
+            #   （贴底/贴顶），按 ↑↓ 能移动到未显示的行。
+            _scroll_follow(selected_ref.current)
             return True
         if event.kind == "enter":
             # ★ 方案B：onSelect 未提供时 enter 放行（返回 False 不消费——
@@ -248,8 +269,16 @@ def SelectInput(props: dict) -> Element:
     #   selected state 仍越界，若不钳制则 `idx == selected` 恒 False、无行
     #   高亮（瞬态视觉缺陷）。钳制仅用于高亮/窗口计算，不改 state 本身
     #   （避免渲染期副作用；下一帧事件期钳制会同步 state）。
-    selected_shown = _clamp_index(selected, len(items))
-    offset, count = _visible_window(selected_shown, len(items), limit)
+    # ★ 受控渲染源（2026-08-19）：受控模式高亮直接用受控值（本帧生效，
+    #   无 set_selected 排队的一帧延迟——与 ListView 受控光标语义一致：
+    #   外部 cycle_completion/翻页写回 completion.selected 后本帧即见）。
+    if controlled_index is not None:
+        selected_shown = _clamp_index(ci, len(items))
+    else:
+        selected_shown = _clamp_index(selected, len(items))
+    # ★ 跟随光标滚动窗口（2026-08-19）：传当前 offset_ref（事件期/受控同步
+    #   推进后的即时值）——光标在窗口内窗口不动，越过边界才滚动。
+    offset, count = _visible_window(selected_shown, len(items), limit, offset_ref.current)
     rows = []
     # ★ P3（review）：pad 恒按 prefix 显示宽度——修复前 ``if prefix else 2``
     #   在 prefix=""（空串）时仍 pad 2 空格（未选中行比选中行宽 2 错位）。

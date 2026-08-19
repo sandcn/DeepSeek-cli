@@ -109,6 +109,19 @@ def MultiSelect(props: dict) -> Element:
     selected_ref = use_ref(selected)
     cursor_ref.current = cursor_idx
     selected_ref.current = selected
+    # ★ 滚动窗口 offset（2026-08-19，跟随光标滚动——与 SelectInput 同语义）：
+    #   选项多于可见行数时 ↑/↓ 光标在窗口内逐行移动、越过窗口边界后窗口
+    #   才滚动（能移动到未显示的行）。
+    win_offset, set_win_offset = use_state(0)
+    offset_ref = use_ref(0)
+    offset_ref.current = win_offset
+
+    def _scroll_follow(idx: int) -> None:
+        """跟随光标滚动窗口（光标越过边界时推进 offset，保持光标可见）。"""
+        new_off = _visible_window(idx, len(items), limit, offset_ref.current)[0]
+        if new_off != offset_ref.current:
+            offset_ref.current = new_off
+            set_win_offset(new_off)
 
     def _handle(event) -> bool:
         if not focus or not items:
@@ -179,6 +192,9 @@ def MultiSelect(props: dict) -> Element:
                 if on_highlight is not None:
                     _call(on_highlight, new)
         if moved:
+            # ★ 跟随光标滚动（2026-08-19）：导航移动后窗口跟随（越过边界才
+            #   滚动，光标行保持可见）。
+            _scroll_follow(cursor_ref.current)
             return True
         if event.kind == "space" or (event.kind == "char" and event.char == " "):
             value = items[cur_cursor]["value"]
@@ -213,7 +229,9 @@ def MultiSelect(props: dict) -> Element:
     #   cursor_idx state 仍越界，钳制后光标行高亮不消失（与 SelectInput
     #   渲染期钳制一致；不改 state，事件期钳制会同步）。
     cursor_shown = _clamp_index(cursor_idx, len(items))
-    offset, count = _visible_window(cursor_shown, len(items), limit)
+    # ★ 跟随光标滚动窗口（2026-08-19）：传当前 offset_ref（事件期推进后的
+    #   即时值）——光标在窗口内窗口不动，越过边界才滚动。
+    offset, count = _visible_window(cursor_shown, len(items), limit, offset_ref.current)
     rows = []
     for i in range(count):
         idx = offset + i
