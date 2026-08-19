@@ -334,7 +334,20 @@ class AppModel(_ToolOutputMixin):
                 self._append_card_trailer(block)
                 block.extra["_trailer_appended"] = True
             if block._cached_ink_lines is None and block.kind != "reasoning":
-                block._cached_ink_lines = self._block_to_ink_lines(block, 0)
+                # ★ 2026-08-20（review P2）：冻结仅**未提交部分**（从
+                #   ``committed_line_count`` 起）——修复前全量 ``_block_to_ink_lines
+                #   (block, 0)``：到本分支时块已全量提交（上方 if 分支已把
+                #   committed_line_count 更新到 len(lines)）→ 冻结缓存与
+                #   committed_lines 各存一份全部行（大响应内存约翻倍），与
+                #   BUG-21（close_*/close_tool_box 只冻结未提交尾）修复精神
+                #   相悖——该修复只覆盖了 close_* 路径，漏了 commit_block
+                #   （append_committed 立即关闭块等未走 close_* 冻结的路径）。
+                #   冻结缓存消费方（``_block_styled_lines`` 的 ``cache[offset:]``
+                #   切片）对已提交块无渲染需求（committed_count 已推进，ChatView
+                #   只渲染 committed_count 之后的块）——空冻结零正确性影响。
+                block._cached_ink_lines = self._block_to_ink_lines(
+                    block, block.committed_line_count,
+                )
                 # ★ 方向1（内存回收）：冻结后开放 styled 缓存不再被
                 #   ``_block_styled_lines`` 使用（改走冻结缓存）——释放引用防
                 #   大会话累积（dict 持有全部已转换行引用）。
@@ -728,6 +741,15 @@ class AppModel(_ToolOutputMixin):
         #   弹窗态不跨清屏保留（与 bottom_view 同语义；user_select 工具轮询
         #   done 期间若清屏，弹窗消失但工具仍在等待，超时兜底）。
         self.user_selects = []
+        # ★ 2026-08-20（review P2）：清屏同时重置 ``user_select``（单数兼容
+        #   字段）——修复前仅清空并发队列：``model.user_select`` 仍指向清屏
+        #   前残留 state（done/action/result 残留，旧代码/测试/命令适配器读取
+        #   该字段会读到清屏前终态立即返回旧结果），与「弹窗态不跨清屏保留」
+        #   注释意图不一致。**保留 seq**（与 user_select 清理协议同修复——
+        #   seq 单调递增保证 App key（us-{seq}）永不重复，清屏后再次打开
+        #   UserSelectPopup 强制重挂载，不残留旧选中/旧勾选）。
+        prev_us_seq = getattr(self.user_select, "seq", 0)
+        self.user_select = UserSelectState(seq=prev_us_seq)
         # ★ 2026-08-18（editmsg 独立协议）：清屏同时重置消息编辑选择弹窗
         #   （与 user_select 同语义——残留 editmsg_select 让 /editmsg 轮询
         #   done 期间弹窗消失，轮询等待空转到超时）。**保留 seq**（与

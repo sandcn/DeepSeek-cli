@@ -249,7 +249,12 @@ class TestTraceViewSearch:
         assert model.trace_selected == 0
 
     def test_backspace_edits_query(self):
-        """退格删除输入字符（空 query 退格不消费）。"""
+        """退格删除输入字符（空 query 退格也吞掉——搜索输入模式全事件消费）。
+
+        ★ 2026-08-20（review P3）：空 query 退格由返回 False（放行）改为
+        返回 True（搜索输入模式吞掉所有未识别事件——vim 搜索输入模式不
+        导航）。
+        """
         model, handler = self._setup()
         assert handler(_ev("char", "/")) is True
         self._type(handler, "he")
@@ -257,7 +262,7 @@ class TestTraceViewSearch:
         assert model.trace_search_query == "h"
         assert handler(_ev("backspace")) is True
         assert model.trace_search_query == ""
-        assert handler(_ev("backspace")) is False  # 空 query 不消费
+        assert handler(_ev("backspace")) is True  # 空 query 仍吞掉（不导航）
 
     def test_escape_cancels_input_keeps_search(self):
         """Esc 取消输入模式（保留已执行搜索）。"""
@@ -318,12 +323,76 @@ class TestTraceViewSearch:
         assert model.trace_search_matches == []
         assert model.trace_search_idx == -1
 
-    def test_inspector_search_locate_cursor(self):
-        """检查器焦点搜索内容行 → 定位光标到匹配行（side=inspector）。"""
+    def test_whitespace_pattern_kept(self):
+        """首尾空格是 pattern 一部分（不 strip——vim 语义）。
+
+        ★ 2026-08-20（review P3）：修复前 ``_exec_search`` 里
+        ``pattern.strip()`` 去除首尾空格——无法搜索含首尾空格的 pattern，
+        纯空格 pattern 被当作空清除。现保留原始输入——空串（直接回车）
+        才清除搜索。
+        """
+        model, handler = self._setup()
+        # 含首尾空格 pattern：精确匹配含空格的文本
+        assert handler(_ev("char", "/")) is True
+        self._type(handler, "hello ")
+        assert handler(_ev("enter")) is True
+        assert model.trace_search_pattern == "hello "
+        assert model.trace_search_matches == [0, 2]
+        # 纯空格 pattern 合法（搜索空格——三条记录摘要均含空格）
+        assert handler(_ev("char", "/")) is True
+        while model.trace_search_query:
+            handler(_ev("backspace"))
+        self._type(handler, " ")
+        assert handler(_ev("enter")) is True
+        assert model.trace_search_pattern == " "
+        assert model.trace_search_matches == [0, 1, 2]
+
+    def test_search_mode_swallows_navigation(self):
+        """搜索输入模式未识别事件全部吞掉（方向键不导航台账）。
+
+        ★ 2026-08-20（review P3）：修复前搜索模式对未识别事件 return False
+        放行——台账焦点时 ListView 仍激活消费方向键/翻页 → 搜索输入中按
+        ↑↓ 意外导航选中记录（vim 中搜索输入模式不导航）。
+        """
+        model, handler = self._setup()
+        assert handler(_ev("char", "/")) is True
+        assert handler(_ev("arrow_down")) is True
+        assert handler(_ev("arrow_up")) is True
+        assert handler(_ev("page_down")) is True
+        assert handler(_ev("home")) is True
+        assert handler(_ev("end")) is True
+        assert model.trace_selected == -1  # 尾部跟随未变（未导航）
+        # 字符仍累积进 query（vim 语义：搜索输入模式接受字符）
+        assert handler(_ev("char", "j")) is True
+        assert model.trace_search_query == "j"
+
+    def test_query_length_cap(self):
+        """query 长度上限——超长输入截断丢弃。
+
+        ★ 2026-08-20（review P3）：底部 ``/${query}`` 渲染行按栏宽截断，
+        无上限累积只浪费内存（输入侧 ``_SEARCH_QUERY_MAX`` 限制 + 渲染侧
+        截断双保险）。
+        """
+        from src.tui.app.trace_view import _SEARCH_QUERY_MAX
+        model, handler = self._setup()
+        assert handler(_ev("char", "/")) is True
+        for _ in range(_SEARCH_QUERY_MAX + 50):
+            assert handler(_ev("char", "a")) is True
+        assert len(model.trace_search_query) == _SEARCH_QUERY_MAX
+        # 退格仍可删除
+        assert handler(_ev("backspace")) is True
+        assert len(model.trace_search_query) == _SEARCH_QUERY_MAX - 1
+
+    def test_inspector_search_locate_cursor(self, monkeypatch):
+        """检查器焦点搜索内容行 → 定位光标到匹配行（side=inspector）。
+
+        ★ 2026-08-20（review P3）：``tv.build_trace_records = lambda`` 直接
+        赋值污染模块属性 → 改 ``monkeypatch.setattr``（测试隔离）。
+        """
         from src.tui.app import trace_view as tv
         from src.tui.app.trace_view import TraceView
         rec = _plain_rec(1, "content", kind="content", lines=["alpha", "beta"])
-        tv.build_trace_records = lambda model: ([rec], [rec])
+        monkeypatch.setattr(tv, "build_trace_records", lambda model: ([rec], [rec]))
         from src.tui.app.model import AppModel
         model = AppModel()
         model.fullscreen = "trace"
@@ -372,12 +441,15 @@ class TestTraceViewSearch:
         assert handler(_ev("enter")) is True
         assert model.trace_search_mode is False
 
-    def test_navigate_resets_inspector_search(self):
-        """切换记录 → 检查器搜索清除（台账搜索保留）。"""
+    def test_navigate_resets_inspector_search(self, monkeypatch):
+        """切换记录 → 检查器搜索清除（台账搜索保留）。
+
+        ★ 2026-08-20（review P3）：直接赋值改 ``monkeypatch.setattr``。
+        """
         from src.tui.app import trace_view as tv
         from src.tui.app.trace_view import TraceView
         recs = [self.recs[0], self.recs[1]]
-        tv.build_trace_records = lambda model: (recs, recs)
+        monkeypatch.setattr(tv, "build_trace_records", lambda model: (recs, recs))
         from src.tui.app.model import AppModel
         model = AppModel()
         model.fullscreen = "trace"

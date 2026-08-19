@@ -325,8 +325,12 @@ def TraceToolsView(props) -> object:
         lambda: _tools_inspector_content_rows(
             name, props_map, required, description, right_w, collapsed,
         ),
+        # ★ 2026-08-20（review P2，与 trace_view ``_inspector_content_deps``
+        #   同族修复）：折叠集合展平原子值——``tuple(sorted(collapsed))``
+        #   嵌套 tuple 按 is 引用比较，折叠状态非空时每帧新建对象 → use_memo
+        #   恒 miss → 内容行每帧全量重建；改 ``";".join`` 单一 str 按值比较。
         (name, len(props_map or {}), ";".join(map(str, required or [])),
-         description, right_w, tuple(sorted(collapsed))),
+         description, right_w, ";".join(sorted(collapsed))),
     )
     content_rows, row_keys = content
     total_content = len(content_rows)

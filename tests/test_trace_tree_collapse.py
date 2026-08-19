@@ -122,6 +122,44 @@ class TestTreeNodeRowsCollapse:
 
 
 # ═══════════════════════════════════════════════════════════
+# 1b. 工具参数采样指纹（_args_dep——2026-08-20 review P2）
+# ═══════════════════════════════════════════════════════════
+
+class TestArgsDep:
+
+    def test_scalar_repr_truncated(self):
+        """标量参数 repr 截断（超长截断、短值原样、None 空串）。"""
+        from src.tui.app.trace_view import _args_dep
+        assert _args_dep(None) == ""
+        assert _args_dep("abc") == repr("abc")   # 标量走 repr（带引号）
+        assert _args_dep(123) == "123"
+        long = "x" * 500
+        assert len(_args_dep(long)) == 200
+
+    def test_dict_sampled_not_full_repr(self):
+        """dict 只采样前若干键值（超限截断标记，不做全量 repr）。"""
+        from src.tui.app.trace_view import _args_dep
+        d = {f"k{i}": "v" * 50 for i in range(100)}
+        s = _args_dep(d, limit=100)
+        assert "..100keys" in s       # 超限截断标记（未全量展开）
+        assert len(s) < 1000          # 远小于全量 repr 长度（100 项 × 50+）
+
+    def test_nested_dict_list_fingerprint(self):
+        """嵌套 dict/list：同内容同指纹；采样区内容变化 → 指纹变化。"""
+        from src.tui.app.trace_view import _args_dep
+        a = {"config": {"a": 1, "b": 2}, "list": [1, 2, 3]}
+        b = {"config": {"a": 1, "b": 9}, "list": [1, 2, 3]}
+        c = {"config": {"a": 1, "b": 2}, "list": [1, 2, 3]}
+        assert _args_dep(a) == _args_dep(c)   # 同内容同指纹
+        assert _args_dep(a) != _args_dep(b)   # 采样区变化 → 指纹变化
+        # 列表尾部变化（超出采样区）→ 指纹不变（接受——采样指纹语义：
+        # 100 元素前 200 字符采样区只覆盖前部元素，尾部差异不触发重建）
+        d = {"config": {"a": 1, "b": 2}, "list": list(range(100))}
+        e = {"config": {"a": 1, "b": 2}, "list": list(range(99)) + [999]}
+        assert _args_dep(d) == _args_dep(e)
+
+
+# ═══════════════════════════════════════════════════════════
 # 2. 纯函数：tool 树 / 检查器内容行折叠
 # ═══════════════════════════════════════════════════════════
 
@@ -173,8 +211,17 @@ class TestToolTreeCollapse:
         assert "args/0/0" not in keys_fold
 
     def test_content_deps_include_collapsed(self):
-        """_inspector_content_deps 含折叠集合（折叠触发重建）。"""
+        """_inspector_content_deps 含折叠集合（折叠触发重建）；全原子值。
+
+        ★ 2026-08-20（review P1 修复）：折叠集合由嵌套 tuple（``tuple(sorted
+        (collapsed))``）改为 ``";".join`` 单一 str 原子值——``_object_is`` 对
+        tuple 按 is 引用比较、str 按值比较：嵌套 tuple 每帧新建对象 → deps
+        跨帧恒不等 → use_memo 恒 miss → 检查器内容行每帧全量重建（纯文本
+        每帧全量换行 / md 每帧 hash / 树每帧 repr）。断言 deps 全元素原子值
+        + 跨帧同值相等（``_deps_equal`` True）+ 折叠变化触发 deps 变化。
+        """
         from src.tui.app.trace_view import _inspector_content_deps
+        from src.tui.ink._hooks_core import _deps_equal
         rec = TraceRecord(
             index=1, kind="tool", summary="t", status="done",
             tool_args='{"config": {"a": 1}}', tool_result="",
@@ -182,8 +229,17 @@ class TestToolTreeCollapse:
         d0 = _inspector_content_deps(rec, 40)
         d1 = _inspector_content_deps(rec, 40, {"args/0"})
         assert d0 != d1
-        assert d0[-1] == ()            # 折叠集合展平：空元组
-        assert d1[-1] == ("args/0",)   # 折叠集合展平：排序元组
+        # 原子值契约：deps 全元素为 int/str/None（嵌套 tuple/list 按 is 恒 miss）
+        assert all(isinstance(x, (int, str)) or x is None for x in d0)
+        assert all(isinstance(x, (int, str)) or x is None for x in d1)
+        assert d0[-1] == ""             # 折叠集合展平：空 str
+        assert d1[-1] == "args/0"       # 折叠集合展平：";".join 排序
+        # use_memo 跨帧命中：同折叠状态重新计算 deps → _deps_equal True
+        # （修复前嵌套 tuple 每帧新对象 → False → 恒 miss）
+        assert _deps_equal(d0, _inspector_content_deps(rec, 40))
+        assert _deps_equal(d1, _inspector_content_deps(rec, 40, {"args/0"}))
+        # 折叠状态变化 → deps 不等 → 触发重建
+        assert not _deps_equal(d0, d1)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -213,6 +269,44 @@ class TestToolsViewTreeCollapse:
         assert any("desc" == t for t in texts_fold)
         assert any("\u25b8 \u53c2\u6570" in t for t in texts_fold)
 
+    def test_content_deps_flattened_same_collapsed_hits(self, monkeypatch):
+        """工具列表内容 use_memo deps 折叠集合展平——同折叠状态跨帧命中。
+
+        ★ 2026-08-20（review P2，与 trace_view ``_inspector_content_deps``
+        同族修复）：修复前 ``tuple(sorted(collapsed))`` 嵌套 tuple 每帧新建
+        对象（``_object_is`` 按 is 引用比较）→ use_memo 恒 miss → 内容行
+        每帧全量重建（描述长文本每帧 ``_wrap_by_width``）；修复后折叠集合
+        展平为 ``";".join`` 单一 str 按值比较 → 同折叠状态第二次渲染不重建
+        （``_tools_inspector_content_rows`` 调用计数不增）。
+        """
+        from src.tui.app import trace_tools_view as ttv
+        from src.tui.app.model import AppModel
+        from src.tui.app.trace_tools_view import TraceToolsView
+        from src.tui.ink import h
+        from src.tui.ink.reconciler import Reconciler
+        model = AppModel()
+        model.fullscreen = "trace_tools"
+        # 有折叠状态时（修复前 miss 最明显）
+        model.trace_tools_tree_collapsed = {"0"}
+        props = {"model": model, "width": 100}
+        calls: list = []
+        orig = ttv._tools_inspector_content_rows
+
+        def spy(*a, **k):
+            calls.append(1)
+            return orig(*a, **k)
+
+        monkeypatch.setattr(ttv, "_tools_inspector_content_rows", spy)
+        rec = Reconciler(schedule_callback=None)
+        root = rec.create_root()
+        el = h(TraceToolsView, props)
+        rec.render(root, el, 100, 24)
+        n1 = len(calls)
+        assert n1 >= 1  # 首次挂载必重建
+        rec.render(root, el, 100, 24)
+        n2 = len(calls)
+        assert n2 == n1  # 同折叠状态跨帧命中（use_memo deps 原子值）
+
 
 # ═══════════════════════════════════════════════════════════
 # 4. model 折叠集合字段
@@ -236,6 +330,30 @@ class TestModelTreeCollapsed:
         model.reset_display()
         assert model.trace_tree_collapsed == set()
         assert model.trace_tools_tree_collapsed == set()
+
+    def test_reset_display_resets_user_select(self):
+        """reset_display 重置 user_select 兼容字段（保留 seq）。
+
+        ★ 2026-08-20（review P2）：修复前仅清空 ``user_selects`` 并发队列
+        ——``model.user_select`` 仍指向清屏前残留 state（done/action/result
+        残留，旧代码/测试/命令适配器读取该字段会读到清屏前终态立即返回
+        旧结果）。
+        """
+        from src.tui.app.model import AppModel, UserSelectState
+        model = AppModel()
+        state = UserSelectState(
+            visible=True, seq=5, title="t", options=["a"],
+            done=True, action="confirmed", result=["a"],
+        )
+        model.user_select = state
+        model.user_selects = [state]
+        model.reset_display()
+        assert model.user_selects == []
+        assert model.user_select is not state            # 新实例
+        assert model.user_select.done is False
+        assert model.user_select.action == ""
+        assert model.user_select.result == []
+        assert model.user_select.seq == 5                # 保留 seq（key 单调）
 
 
 # ═══════════════════════════════════════════════════════════

@@ -29,6 +29,7 @@ Ctrl+H（0x08）打开/关闭：App 在 ``model.fullscreen == "trace"``（兼容
 from __future__ import annotations
 
 import json
+import re
 import time as _time
 
 from src.tui._format import format_duration, format_tokens
@@ -70,6 +71,9 @@ _S_SEARCH_BG = Style(bg=236)
 _S_SEARCH_CUR_BG = Style(bg=25)
 #: 搜索输入行提示样式（底部 ``/${query}``——vim 风格，亮青加粗）
 _S_SEARCH_PROMPT = Style(fg=45, bold=True)
+#: 搜索 query 长度上限（2026-08-20 review P3：超长输入截断丢弃——底部
+#:   ``/${query}`` 渲染行按栏宽截断，无上限累积只浪费内存）
+_SEARCH_QUERY_MAX = 200
 
 #: 树节点指示符/缩进（对齐 ink Tree 控件渲染语义——检查器参数/返回值
 #:   以树形结构展示：层级缩进 + 展开指示符）
@@ -228,7 +232,7 @@ def _trace_search_matches(pattern: str, side: str, records: list,
     if not pattern or side not in ("ledger", "inspector"):
         return []
     try:
-        rx = __import__("re").compile(pattern)
+        rx = re.compile(pattern)
     except Exception:
         return []  # 非法正则 → 无匹配（不崩溃，vim 中非法正则报错后无结果）
     matches: list = []
@@ -278,7 +282,7 @@ def _ledger_row_runs(rec, sel: bool, left_w: int,
         getattr(rec, "kind", ""),
         getattr(rec, "summary", "") or "",
         getattr(rec, "status", "") or "",
-        getattr(rec, "result", "") or "",
+        (getattr(rec, "result", "") or "")[:80],
         t_key,
         bool(sel),
         left_w,
@@ -385,6 +389,45 @@ def _detail_lines_of(rec) -> list:
     return []
 
 
+def _args_dep(args, limit: int = 200) -> str:
+    """工具参数采样指纹（防超大参数每帧全量 repr——dict/list 只采样前
+    ``limit`` 字符量，标量 repr 截断）。
+
+    ★ 2026-08-20（review P2）：修复前 ``repr(args)[:200]`` 对超大 dict
+    参数（1MB+）每帧 O(全量) repr——deps/缓存键每帧调用，大参数拖慢帧
+    渲染。本函数对 dict/list 按前若干键值/元素采样（累计不超过 limit
+    字符，超限截断标记 ``..Nkeys/..Nitems``），标量 repr 超长截断；内容
+    变化落在采样区 → 指纹变化触发重建（与全量 repr 同判定语义），采样区
+    外变化不触发（接受——缓存键/指纹只需区分主要内容）。纯函数，无状态。
+    """
+    if args is None:
+        return ""
+    if isinstance(args, dict):
+        out: list = []
+        size = 0
+        for k, v in args.items():
+            seg = f"{k!r}:{_args_dep(v, limit)};"
+            if size + len(seg) > limit:
+                out.append(f"..{len(args)}keys")
+                break
+            out.append(seg)
+            size += len(seg)
+        return "{" + "".join(out)
+    if isinstance(args, (list, tuple)):
+        out = []
+        size = 0
+        for v in args:
+            seg = f"{_args_dep(v, limit)};"
+            if size + len(seg) > limit:
+                out.append(f"..{len(args)}items")
+                break
+            out.append(seg)
+            size += len(seg)
+        return "[" + "".join(out)
+    s = repr(args)
+    return s[:limit] if len(s) > limit else s
+
+
 def _detail_deps(rec) -> tuple:
     """详情行 use_memo 依赖（块记录：行列表身份 + 行数；subagent：lines 身份）。
 
@@ -399,13 +442,16 @@ def _detail_deps(rec) -> tuple:
     tool 记录检查器树显示数据源 = ``tool_args``/``tool_result``——运行中
     工具输出流式增长（``tool_result`` 变长）须触发重建；时间基元素
     （``time_seconds``）不入指纹（台账静态色，不随动画重建）。
+
+    ★ 2026-08-20（review P2）：``repr(args)[:200]`` 改为 ``_args_dep(args)``
+    （采样指纹——超大 dict 参数免每帧全量 repr，见 ``_args_dep`` 注释）。
     """
     if rec is None:
         return (None,)
     if getattr(rec, "kind", "") == "tool":
         args = getattr(rec, "tool_args", None)
         result = str(getattr(rec, "tool_result", "") or "")
-        return ("tool-tree", repr(args)[:200], result[:200], len(result))
+        return ("tool-tree", _args_dep(args), result[:200], len(result))
     block = getattr(rec, "source_block", None)
     if block is not None:
         return (id(getattr(block, "lines", None)), len(getattr(block, "lines", None) or []))
@@ -778,8 +824,12 @@ def _tool_tree_rows(rec, right_w: int, collapsed: set | None = None) -> tuple:
     right_w = max(1, right_w)
     args = getattr(rec, "tool_args", None)
     result = str(getattr(rec, "tool_result", "") or "")
-    key = (repr(args)[:200], result[:200], len(result), right_w,
-           tuple(sorted(collapsed or ())))
+    # ★ 2026-08-20（review P2）：缓存键展平原子值——``repr(args)[:200]``
+    #   改为 ``_args_dep(args)``（采样指纹，超大参数免每帧全量 repr）；
+    #   ``tuple(sorted(collapsed or ()))`` 嵌套 tuple 按 is 引用比较恒 miss
+    #   （折叠状态变化/每帧新对象）→ 改为 ``";".join`` 单一 str 原子值。
+    key = (_args_dep(args), result[:200], len(result), right_w,
+           ";".join(sorted(collapsed or ())))
     cached = _TOOL_TREE_CACHE.get(key)
     if cached is not None:
         return cached
@@ -956,10 +1006,18 @@ def _inspector_content_deps(rec, right_w: int, collapsed: set | None = None) -> 
     栏宽 + **折叠集合**（空格展开/收缩触发重建）——内容变化（流式增长/
     树输出变化）、栏宽变化或折叠状态变化才重建全量内容行；时间基元素
     （耗时）不入指纹（检查器 meta 经 ``_inspector_deps`` 每秒刷新）。
+
+    ★ 2026-08-20（review P1 修复）：折叠集合由 ``tuple(sorted(...))``
+    嵌套 tuple 改为 ``";".join(sorted(...))`` 单一 str 原子值——``_object_is``
+    对 tuple 仅按 is 引用比较（int/float/str 才按值），嵌套 tuple 每帧新建
+    对象 → use_memo 恒 miss → 每帧全量重建检查器内容行（纯文本记录每帧
+    全量换行、md 行每帧 hash、树行每帧 repr）。str 不可变按值比较，跨帧
+    同折叠状态命中缓存（与 trace.py ``_messages_fingerprint`` 等「展平
+    原子值」契约一致）。
     """
     if rec is None:
-        return (None, right_w, ())
-    return tuple(_detail_deps(rec)) + (right_w,) + (tuple(sorted(collapsed or ())),)
+        return (None, right_w, "")
+    return tuple(_detail_deps(rec)) + (right_w, ";".join(sorted(collapsed or ())))
 
 
 def _inspector_children(
@@ -1696,8 +1754,13 @@ def TraceView(props) -> object:
 
     def _exec_search() -> None:
         """回车执行搜索：当前焦点面板（台账搜记录 / 检查器搜内容行）、
-        正则 re.search、所有匹配行高亮；定位到首个匹配。"""
-        pattern = (getattr(model, "trace_search_query", "") or "").strip()
+        正则 re.search、所有匹配行高亮；定位到首个匹配。
+
+        ★ 2026-08-20（review P3）：不再 ``strip()``——首尾空格是正则
+        pattern 的一部分（vim 语义：搜索含首尾空格的 pattern 合法，纯空格
+        pattern 即搜索空格）；清除搜索 = 空串直接回车（``if not pattern``）。
+        """
+        pattern = getattr(model, "trace_search_query", "") or ""
         model.trace_search_mode = False
         if not pattern:
             _clear_search()
@@ -1728,21 +1791,28 @@ def TraceView(props) -> object:
             if event.kind == "char":
                 ch = getattr(event, "char", "") or ""
                 if ch and "\n" not in ch and "\r" not in ch:
-                    model.trace_search_query = (
-                        getattr(model, "trace_search_query", "") or ""
-                    ) + ch
+                    # ★ 2026-08-20（review P3）：query 长度上限——超长输入
+                    #   截断丢弃（渲染行按栏宽截断，无上限累积只浪费内存）。
+                    q = getattr(model, "trace_search_query", "") or ""
+                    if len(q) < _SEARCH_QUERY_MAX:
+                        model.trace_search_query = q + ch
                     return True
-                return False
+                # 含换行 char（多行粘贴）不入 query——吞掉（vim 搜索输入
+                #   模式不接受换行）。
+                return True
             if event.kind == "backspace":
                 q = getattr(model, "trace_search_query", "") or ""
                 if q:
                     model.trace_search_query = q[:-1]
-                    return True
-                return False
+                return True
             if event.kind == "enter":
                 _exec_search()
                 return True
-            return False
+            # ★ 2026-08-20（review P3）：搜索输入模式未识别事件返回 True
+            #   （模态吞掉）——修复前 return False 放行：台账焦点时 ListView
+            #   仍激活消费方向键/翻页等 → 搜索输入中按 ↑↓ 意外导航台账
+            #   （vim 中搜索输入模式不导航）。
+            return True
         # 关闭类按键（Esc / Ctrl+H）——subagent 轨迹优先返回主轨迹
         #   （trace_subagent_label 置 None），主轨迹才关闭整个视图。
         #   关闭统一经 trace_open setter（= fullscreen=""，2026-08-17 review
@@ -2028,6 +2098,11 @@ def TraceView(props) -> object:
     search_line = None
     if search_mode:
         query_text = getattr(model, "trace_search_query", "") or ""
+        # ★ 2026-08-20（review P3）：渲染截断——底部 ``/${query}▏`` 按栏宽
+        #   预算截断（`/` 1 列 + query + `▏` 1 列 ≤ width），防超长 query 撑
+        #   破行级 diff 宽度不变量（依赖 render_frame 超宽防线兜底改为显式
+        #   截断；超长输入已在输入侧 _SEARCH_QUERY_MAX 限制，双保险）。
+        query_text = query_text[: max(0, width - 2)]
         search_line = h(TEXT, {
             "children": f"/{query_text}\u258f",
             "style": _S_SEARCH_PROMPT,
