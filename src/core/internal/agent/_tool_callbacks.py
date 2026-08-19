@@ -16,6 +16,7 @@ from ...parallel_executor import ParallelExecutor
 from ...tool_executor_async import ToolScheduler
 from ...telemetry import get_default_collector
 from ....api.tokens import estimate_tokens
+from ....tools.base import to_tool_text
 from ....tools.registry import get_tool_display_name
 
 _logger = logging.getLogger(__name__)
@@ -290,7 +291,6 @@ class ToolCallbackChain:
         tool_label = tc["id"]
 
         # 多模态结构化结果（ToolResult）归一化为纯文本用于展示/统计
-        from ...tools.base import to_tool_text
         output = to_tool_text(output)
 
         if success:
