@@ -185,6 +185,21 @@ def _truncate_messages(agent: Any, keep_idx: int) -> str:
             )
             raise
     del messages[keep_idx:]
+    # ★ 2026-08-19（用户需求修复：editmsg 按回车后不更新上下文百分比）：
+    #   消息列表被截断（长度变化）后**立即**刷新上下文使用率全局快照
+    #   （ContextManager.refresh_usage——模式行行首 ``main · N%`` 即时更新）。
+    #   修复前 Edit/Delete/Resume 命令直接操作 messages 列表、未触发
+    #   ContextManager 缓存同步点，全局百分比保持旧值直至下一次消息追加
+    #   （用户按回车确认编辑后看到百分比不变）。refresh_usage 内部按
+    #   len 变化自动 resync 重算（O(n)，编辑为低频路径可接受）。经
+    #   BaseAgent._refresh_context_usage 调用（getattr 防御——SubAgent/
+    #   测试桩无 context_manager 或方法时静默跳过，不崩溃）。
+    try:
+        _refresh = getattr(agent, "_refresh_context_usage", None)
+        if callable(_refresh):
+            _refresh()
+    except Exception:
+        _logger.debug("截断消息后刷新上下文使用率失败", exc_info=True)
     return restore_text
 
 

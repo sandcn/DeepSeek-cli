@@ -2,12 +2,36 @@
 
 from __future__ import annotations
 
+import logging
+
 from ..adapters.output import get_default_output_port
 from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
 from ..sandbox_manager import get_sandbox_manager
 from ..internal.commands._command_core import CommandContext, _pop_assistant_tool_messages
 
+_logger = logging.getLogger(__name__)
 _out = get_default_output_port()
+
+
+def _refresh_ctx_usage(ctx, force: bool = False) -> None:
+    """命令直接修改消息列表后刷新上下文使用率全局快照（TUI 模式行行首动态刷新）。
+
+    与 editmsg ``_truncate_messages`` 同根因修复（2026-08-19）：命令直接
+    操作 ``ctx.messages`` 列表（pop/截断/清空）不触发 ContextManager 缓存
+    同步点 → 模式行行首 ``main · N%`` 保持旧值直至下一次消息追加。
+    ``refresh_usage`` 按 len 变化自动 resync 重算（O(n)，命令为低频路径）；
+    force=True（/clear 等 system 条数不变仅内容替换场景）强制全量重算。
+
+    Args:
+        ctx: CommandContext（context_manager 可能为 None——getattr 防御）。
+        force: 是否强制全量 resync（默认 False 懒同步）。
+    """
+    try:
+        cm = getattr(ctx, "context_manager", None)
+        if cm is not None:
+            cm.refresh_usage(force=force)
+    except Exception:
+        _logger.debug("命令修改消息后刷新上下文使用率失败", exc_info=True)
 
 
 def _cmd_clear(ctx):
@@ -49,6 +73,11 @@ def _cmd_clear(ctx):
         SubAgentPanelController.get_default().clear_trace_archive()
     except Exception:
         pass
+    # ★ 2026-08-19（editmsg 同根因修复：/clear 清空后上下文百分比不更新）：
+    #   清空（保留 system）后刷新上下文使用率全局快照——force=True：system
+    #   可能按当前空模式重建且**条数不变**（仅内容替换），懒同步（len 判断）
+    #   会命中旧缓存（与 session.clear_messages 的 force 语义一致）。
+    _refresh_ctx_usage(ctx, force=True)
     _out.write(f"{GREEN}  + 对话已清空（系统提词已保留）{RESET}", level="raw", source="cmd")
     return True
 
@@ -102,6 +131,11 @@ def _cmd_undo(ctx):
     # 撤销后如果最后一条是 user 消息，标记需要重新生成
     if ctx.messages and ctx.messages[-1].get("role") == "user":
         ctx.state["retry"] = True
+    # ★ 2026-08-19（editmsg 同根因修复：/undo 撤销后上下文百分比不更新）：
+    #   消息被移除（长度变化）后刷新上下文使用率全局快照——refresh_usage
+    #   按 len 变化自动 resync 重算（O(n)，撤销为低频路径可接受）。
+    if removed > 0:
+        _refresh_ctx_usage(ctx)
     _out.write(f"{GREEN}  + 已撤销 {removed} 条消息{RESET}", level="raw", source="cmd")
     return True
 
@@ -115,6 +149,10 @@ def _cmd_retry(ctx):
         _out.write(f"{YELLOW}  ! 删除了回答但未找到对应的用户消息，请手动输入{RESET}", level="raw", source="cmd")
     else:
         _out.write(f"{YELLOW}  ! 没有可重试的回答{RESET}", level="raw", source="cmd")
+    # ★ 2026-08-19（editmsg 同根因修复：/retry 移除回答后上下文百分比不更新）：
+    #   回答被移除（长度变化）后刷新上下文使用率全局快照。
+    if removed > 0:
+        _refresh_ctx_usage(ctx)
     return True
 
 
@@ -142,6 +180,11 @@ def _cmd_edit(ctx):
     if sm:
         sm.remap_indices(list(range(last_user_idx, original_len)))
     ctx.messages.append({"role": "user", "content": new_content})
+    # ★ 2026-08-19（editmsg 同根因修复：/edit 截断重发后上下文百分比不更新）：
+    #   消息列表被截断 + 追加（**条数可能不变**——截断 N 条 + 追加 1 条后
+    #   len 相同，懒同步按 len 判断会命中旧缓存）→ force=True 强制 resync
+    #   重算上下文使用率全局快照。
+    _refresh_ctx_usage(ctx, force=True)
     _out.write(f"{GREEN}  + 已更新输入，重新生成中...{RESET}", level="raw", source="cmd")
     ctx.state["retry"] = True
     return True

@@ -135,6 +135,18 @@ class SessionMessagingManager:
             removed += 1
         self._emit("messages_changed", action="undo", removed=removed)
         self._observability.gauge("session.messages", len(self._messages))
+        # ★ 2026-08-19（editmsg 同根因修复：撤销后上下文百分比不更新）：
+        #   消息被移除（长度变化）后刷新上下文使用率全局快照——修复前 undo
+        #   直接 pop 消息、未触发 ContextManager 缓存同步点，模式行行首
+        #   ``main · N%`` 保持旧值直至下一次消息追加。refresh_usage 按 len
+        #   变化自动 resync 重算（O(n)，撤销为低频路径可接受）。
+        if removed > 0:
+            try:
+                cm = self._get_ctx_mgr()
+                if cm is not None:
+                    cm.refresh_usage()
+            except Exception:
+                _logger.debug("undo 后刷新上下文使用率失败", exc_info=True)
         return removed
 
     # ── retry_pending 同步 ──────────────────────────────
