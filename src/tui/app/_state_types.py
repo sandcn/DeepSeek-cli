@@ -9,6 +9,7 @@ Layer 0 — 仅依赖 dataclass/typing（无 TUI 运行时依赖）。
 from __future__ import annotations
 
 import threading
+from typing import Any
 
 from src._compat import dataclass
 from dataclasses import field
@@ -20,6 +21,7 @@ __all__ = [
     "CompletionState",
     "UserSelectState",
     "EditMsgSelectState",
+    "ConfigViewState",
     "StatusState",
     "HistorySearchState",
 ]
@@ -291,6 +293,107 @@ class EditMsgSelectState:
                 return False
             self.action = action
             self.result = list(result)
+            self.done = True
+            return True
+
+
+@dataclass
+class ConfigViewState:
+    """配置中心视图状态（/config 命令注入，ConfigView 组件消费）。
+
+    ★ 2026-08-20（用户需求：config 命令独立界面）：/config 打开全屏配置
+    视图（``model.fullscreen == "config"``），ConfigView 组件整屏渲染配置
+    列表并支持浏览/编辑。与 user_select/editmsg 同构的**跨线程协议**
+    （命令线程轮询 done 清理，组件写导航/编辑状态）：
+
+      - 命令线程（``_cmd_config``）：构建 entries
+        （``view_model.build_config_entries``）→ 设置本状态（visible=True,
+        seq+1, entries）→ ``model.fullscreen="config"`` →
+        request_bottom_redraw → 轮询 ``done``（带 deadline 超时）→ finally
+        清理（重置本状态 + fullscreen 置空 + request_bottom_redraw）；
+      - 组件（ConfigView）：浏览模式写 ``selected``；Enter 进入编辑模式
+        （editing/edit_key/edit_value）；编辑确认经类型校验后**直接调用
+        ``update_config`` 持久化**（config loader 有锁 + 原子写，线程安全）
+        并刷新 ``entries[i].value/value_text`` + 写 ``message``；Esc 关闭
+        经 ``try_set_final("cancel")`` 原子终态写入（first-write-wins）。
+
+    Attributes:
+        visible: 视图是否显示（命令打开/清理）。
+        seq: 视图会话序号（每次打开递增）——App 组件用 key 强制
+            ConfigView 重挂载，重置内部 use_state（连续打开不残留选中）。
+        entries: 配置项列表（``view_model.build_config_entries`` 产出；
+            组件只读，编辑确认后更新 value/value_text 显示）。
+        selected: 当前选中配置项索引（组件导航维护）。
+        editing: 是否处于编辑模式（Enter 进入 / 确认或取消退出）。
+        edit_mode: 编辑界面类型（"input"=文本/JSON 输入行；"select"=
+            候选选项选择列表——枚举/布尔/模型等有候选集合的配置项；
+            "json"=子 JSON 结构化编辑界面——list/dict 有子结构的配置项；
+            "json_input"=json 界面内的子输入——编辑元素/追加条目）。
+        edit_key: 当前编辑项的写回键（CONFIG_KEYS 大写键名或直接键名）。
+        edit_value: 文本输入模式的编辑缓冲（字符累积/退格删除）。
+        edit_options: 选择模式的候选值列表（来自 entry["options"]）。
+        edit_options_desc: 与 edit_options 等长的候选说明列表。
+        edit_selected: 选择模式当前高亮索引（组件导航维护）。
+        edit_json_data: json 界面正在编辑的**根**子 JSON 数据（list/dict）。
+        edit_json_path: json 界面当前容器的**递归路径段**（list/dict 段；
+            空=顶层根容器）。嵌套条目（值为 list/dict）Enter 递归进入
+            （path 追加段），Esc 逐级返回上层；回到顶层 Esc 才保存写回。
+        edit_json_keys: 当前容器为 dict 时的键列表（有序；list 为空）。
+        edit_json_selected: json 界面当前选中条目索引（组件导航维护）。
+        edit_json_action: json 子输入提交动作（"edit"=更新选中条目 /
+            "append"=追加新条目；list 元素与 dict 值统一文本编辑）。
+        edit_error: 编辑校验/写入失败提示（空串=无错误）。
+        message: 操作反馈消息（如「已更新 model = xxx」）。
+        deadline: 超时截止（time.monotonic()）；0 表示无限等待。
+        done: 交互是否已结束（Esc 关闭或命令超时置位）。
+        action: 结束方式（cancel/timeout）。
+        _final_lock: 终态写入锁（done/action 原子写，first-write-wins
+            跨线程安全——组件 Esc 关闭 vs 命令超时竞态）。
+    """
+
+    visible: bool = False
+    seq: int = 0
+    entries: list = field(default_factory=list)
+    selected: int = 0
+    editing: bool = False
+    edit_mode: str = "input"
+    edit_key: str = ""
+    edit_value: str = ""
+    edit_options: list = field(default_factory=list)
+    edit_options_desc: list = field(default_factory=list)
+    edit_selected: int = 0
+    edit_json_data: Any = None
+    edit_json_path: list = field(default_factory=list)
+    edit_json_keys: list = field(default_factory=list)
+    edit_json_selected: int = 0
+    edit_json_action: str = "edit"
+    edit_error: str = ""
+    message: str = ""
+    deadline: float = 0.0
+    done: bool = False
+    action: str = ""
+    #: 终态写入锁（repr/比较忽略——纯同步原语，非状态数据）
+    _final_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False,
+    )
+
+    def try_set_final(self, action: str) -> bool:
+        """原子写入终态（first-write-wins，跨线程安全）。
+
+        done/action 在锁内一次性提交：done 已置位（其他线程已关闭/已超时）
+        时返回 False 且不覆盖，调用方放弃写入。与 UserSelectState/
+        EditMsgSelectState 的 try_set_final 同语义——独立实现，不共用代码。
+
+        Args:
+            action: 结束方式（cancel/timeout）。
+
+        Returns:
+            True 本次写入生效；False 终态已由其他线程置位。
+        """
+        with self._final_lock:
+            if self.done:
+                return False
+            self.action = action
             self.done = True
             return True
 

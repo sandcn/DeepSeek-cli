@@ -89,6 +89,7 @@ COMMANDS_HELP = (
     f"  {TEAL}/reasoning{RESET} 调整推理等级: /reasoning <low|medium|high|max>\n"
     f"  {TEAL}/temperature{RESET} 调整大模型温度: /temperature <0.0~2.0>\n"
     f"  {TEAL}/cost{RESET}     查看 token 用量和费用\n"
+    f"  {TEAL}/config{RESET}   显示/编辑配置（独立界面）: /config [show|get|set|reset]\n"
     f"  {TEAL}/load{RESET}     加载保存的对话 /load <id>\n"
     f"  {TEAL}/sessions{RESET} 列出所有保存的对话\n"
     f"  {TEAL}/theme{RESET}    切换配色主题: /theme <dark|light|high-contrast>\n"
@@ -217,7 +218,13 @@ def show_cost(ctx):
     保持原输出格式、全部输入按全价计费。
     """
     from ....config import TOKEN_PRICES  # 配置常量 — 函数体内延迟导入（回退）
-    model = ctx.state.get("model", TOKEN_PRICES and next(iter(TOKEN_PRICES), ""))
+    # ★ P2（review 2026-08-20）：TOKEN_PRICES 为空 dict 时修复前
+    #   ``TOKEN_PRICES and next(...)`` 表达式值为 ``{}``（falsy 值本身）——
+    #   model 显示为 ``{}``。改为显式三元（空表回退空串）。
+    model = ctx.state.get(
+        "model",
+        next(iter(TOKEN_PRICES), "") if TOKEN_PRICES else "",
+    )
     if ctx.config_port is not None:
         prices = ctx.config_port.get_token_prices().get(model)
     else:

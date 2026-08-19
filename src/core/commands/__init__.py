@@ -41,11 +41,13 @@ from ._config_cmd import (
     _cmd_theme,
     _cmd_reasoning,
     _cmd_temperature,
+    _cmd_config,
     # 插件子类
     CostCommand,
     ThemeCommand,
     ReasoningCommand,
     TemperatureCommand,
+    ConfigCommand,
 )
 
 from ._data_cmd import (

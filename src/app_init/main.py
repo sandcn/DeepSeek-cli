@@ -9,9 +9,10 @@ import asyncio
 import logging
 import os
 
-from ._args import _parse_args, VERSION, _apply_theme
+from ._args import _parse_args, VERSION
 from ._signal import SignalManager
 from ._session_cmd import _handle_session_command
+from ._config_cmd import _handle_config_command
 
 from ..chat_msgs import load_session, list_sessions
 from ..tui.events import OutputConsumer
@@ -29,11 +30,6 @@ async def main():
     """异步主入口 — 使用 asyncio.run() 调用"""
     args = _parse_args()
 
-    # ── 处理版本信息 ──
-    if args.version or args.command == 'version':
-        publish_output(f"  Chat {VERSION}", level="raw")
-        return
-
     # ── 设置日志级别（先 basicConfig 再注册 ChatUI 错误处理器——root 已有
     #    handler 时 basicConfig 静默失效，方向2 修复调用顺序） ──
     if args.verbose >= 2:
@@ -49,7 +45,7 @@ async def main():
     if args.model:
         os.environ["CHAT_MODEL"] = args.model
 
-    # ── 初始化可观测性与输出 ──
+    # ── 初始化可观测性 ──
     obs = get_default_facade()
     if not get_current_trace_id():
         set_current_trace_id(generate_trace_id())
@@ -60,9 +56,32 @@ async def main():
     output_consumer = OutputConsumer(chat_ui_managed=True)
     output_consumer.start()
 
-    # ── session 子命令：无异步操作，快速返回 ──
+    # ── 处理版本信息 ──
+    # ★ 修复（2026-08-20）：版本分支须在 output_consumer.start() 之后
+    #   publish_output（输出经 EventBus → OutputConsumer 消费）——修复前在
+    #   最前面调用（无消费者），``python chat.py --version`` 静默无输出。
+    if args.version or args.command == 'version':
+        try:
+            publish_output(f"  Chat {VERSION}", level="raw")
+        finally:
+            output_consumer.stop()
+        return
+
+    # ★ P3（review 2026-08-20）：session/config 子命令输出依赖
+    #   output_consumer 消费（publish_output → EventBus），故保留在 start()
+    #   之后处理；return 前显式 stop（修复前跳过 finally 中的 stop，清理
+    #   路径不一致——输出消费者订阅随进程退出由 OS 回收，但显式清理更干净）。
     if args.command == 'session':
-        _handle_session_command(args)
+        try:
+            _handle_session_command(args)
+        finally:
+            output_consumer.stop()
+        return
+    if args.command == 'config':
+        try:
+            _handle_config_command(args)
+        finally:
+            output_consumer.stop()
         return
 
     # ── 信号处理 ──
@@ -71,7 +90,6 @@ async def main():
 
     try:
         # ── run 模式 ──
-        _apply_theme(args)
 
         # ── clawbot 模式：微信 ClawBot 远程控制（默认 TUI：非全屏聊天界面
         #     + 本地输入 + 微信多用户共享同一会话） ──

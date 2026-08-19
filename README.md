@@ -182,6 +182,10 @@ python chat.py version
 | `python chat.py session list` | 列出所有会话 |
 | `python chat.py session delete abc123` | 删除会话 |
 | `python chat.py session export abc123` | 导出会话 |
+| `python chat.py config` | 显示全部配置（含敏感值脱敏） |
+| `python chat.py config get model` | 查询单个配置 |
+| `python chat.py config set model deepseek-v4-pro` | 设置配置并持久化 |
+| `python chat.py config reset model` | 重置配置为默认值 |
 | `python chat.py --version` | 显示版本信息 |
 | `python chat.py clawbot` | 微信 ClawBot 远程控制（扫码登录） |
 | `python chat.py clawbot --re-login` | 强制重新扫码登录 |
@@ -275,6 +279,7 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | `/reasoning [等级]` | — | 调整推理等级（low / medium / high / max，无参数时显示当前值） |
 | `/temperature [数值]` | — | 调整大模型温度（0.0 ~ 2.0，无参数时显示当前值，保存到配置） |
 | `/cost` | — | 查看 token 用量和费用 |
+| `/config` | — | 显示/编辑程序配置（无参数打开**独立配置界面**：↑↓/jk 选择、Enter 编辑、Esc 关闭；枚举/布尔/模型走**选择界面**、list/dict 子 JSON 走**递归结构化编辑界面**（Enter 逐层下钻嵌套 · 标量编辑 · a 追加 · d 删除 · Esc 逐级返回、顶层保存）、数值/字符串走输入界面；亦支持 `show`/`list`/`get <键>`/`set <键> <值>`/`reset <键>`） |
 | `/load <ID>` | — | 加载保存的对话 |
 | `/sessions` | — | 列出所有保存的对话 |
 | `/export [路径]` | — | 导出当前对话为 Markdown（含 SubAgent 聊天信息） |

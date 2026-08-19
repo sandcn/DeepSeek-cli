@@ -174,7 +174,9 @@ class CompletionEngine:
     """
 
     # 支持参数补全的命令
-    _PARAM_COMMANDS: frozenset = frozenset({"/model", "/theme", "/load"})
+    # ★ 2026-08-20（用户需求：config 命令独立界面）：/config 加入参数补全
+    #   ——子命令（show/list/get/set/reset）+ 配置键名（view_model 构建）。
+    _PARAM_COMMANDS: frozenset = frozenset({"/model", "/theme", "/load", "/config"})
 
     def __init__(
         self, commands_source: Callable[[], list[str]] | None = None,
@@ -192,6 +194,11 @@ class CompletionEngine:
         )
         self._theme_cache = _TTLCache(
             fetcher=self._fetch_themes, ttl=60.0,
+        )
+        # ★ P2（review 2026-08-20）：/config 补全键名 TTL 缓存——与命令/
+        #   模型/主题缓存一致（60s），避免每次 Tab 重建全部配置条目。
+        self._config_keys_cache = _TTLCache(
+            fetcher=self._fetch_config_keys, ttl=60.0,
         )
 
     # ── 缓存 fetcher ───────────────────────────────────
@@ -416,7 +423,99 @@ class CompletionEngine:
                 ))
             return result
 
+        elif cmd_name == "/config":
+            return self._complete_config_param(
+                parts, param_last, replace_full, start,
+            )
+
         return []
+
+    # ── /config 参数补全（2026-08-20 用户需求） ─────────────
+
+    @staticmethod
+    def _config_subcommands() -> list[str]:
+        """/config 子命令列表（与 _cmd_config 分支一致）。"""
+        return ["show", "list", "get", "set", "reset"]
+
+    def _config_key_names(self) -> list[str]:
+        """配置键名列表（显示路径；异常回退 []——补全失败不崩溃）。
+
+        ★ P2（review 2026-08-20）：经 ``_config_keys_cache``（TTL 60s）缓存
+        ——修复前每次 Tab 重建全部配置条目（``build_config_entries`` 内部
+        ``get_rc()`` + MODEL 聚合 PROVIDERS），高频补全按键下 IO 开销；
+        与命令/模型/主题缓存 TTL 一致。
+        """
+        try:
+            return self._config_keys_cache.get()
+        except Exception:
+            return []
+
+    def _fetch_config_keys(self) -> list[str]:
+        """配置键名 fetcher（TTL 缓存底层；异常回退 []）。"""
+        try:
+            from src.config.view_model import build_config_entries
+            return [str(e["path"]) for e in build_config_entries()]
+        except Exception:
+            return []
+
+    def _complete_config_param(
+        self, parts: list[str], param_last: str, replace_full: bool, start: int,
+    ) -> list[CompletionItem]:
+        """/config 参数补全：子命令 + 配置键名（二级结构，替换参数独立计算）。
+
+        形态：
+          - ``/config`` / ``/config <子命令前缀>`` → 补全子命令
+            （show/list/get/set/reset）；
+          - ``/config get|set|reset <前缀>`` → 补全配置键名（view_model 构建）。
+
+        ★ P1（review 2026-08-20）：``param_last``/``start``/``replace_full``
+        由外层按「最后一个词」统一计算，对 /config 二级结构不适用——子命令
+        后**无参数**（``/config set`` + Tab）时按最后一个词替换会把子命令
+        整体替换为键名（``/config model``，子命令丢失）。本函数内部分支
+        重新计算（统一词边界替换语义，见 ``_completion._apply_completion``
+        的 orig_prefix 分支）：
+          - 无参数 → 候选 ``set {key}`` + start_pos=-len("set")——弹窗
+            orig_prefix=last_word("set") 词边界匹配 ``" set"`` → 拼接为
+            ``/config set model``（子命令保留）；
+          - 有参数 → 候选 ``key`` + start_pos=-len(key_prefix)——替换最后词。
+        """
+        result: list[CompletionItem] = []
+        if len(parts) < 2 or not parts[1].strip():
+            # 无参数 → 补全子命令（空前缀匹配全部）
+            for sub in _ranked(self._config_subcommands(), param_last):
+                result.append(CompletionItem(
+                    f"/config {sub}" if replace_full else sub,
+                    start_pos=start, item_type="param",
+                ))
+            return result
+        words = parts[1].split()
+        sub = words[0].lower()
+        if sub in ("show", "list"):
+            # 无更多参数可补全
+            return result
+        if sub in ("get", "set", "reset"):
+            if len(words) == 1:
+                # 子命令后无参数：候选 ``{sub} {key}`` + 替换子命令词
+                # （词边界拼接后保留 ``/config {sub}`` 前缀）
+                for key in _ranked(self._config_key_names(), ""):
+                    result.append(CompletionItem(
+                        f"{sub} {key}", start_pos=-len(sub), item_type="param",
+                    ))
+                return result
+            # 已有参数词：替换最后一个词（key_prefix）
+            key_prefix = words[-1]
+            for key in _ranked(self._config_key_names(), key_prefix):
+                result.append(CompletionItem(
+                    key, start_pos=-len(key_prefix), item_type="param",
+                ))
+            return result
+        # 子命令前缀输入（如 ``/config se``）→ 补全完整子命令
+        for s in _ranked(self._config_subcommands(), sub):
+            result.append(CompletionItem(
+                f"/config {s}" if replace_full else s,
+                start_pos=start, item_type="param",
+            ))
+        return result
 
     # ── 路径补全 ───────────────────────────────────────
 

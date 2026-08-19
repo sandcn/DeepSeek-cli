@@ -43,6 +43,7 @@ from src.tui.app._state_types import (
     CompletionState,
     UserSelectState,
     EditMsgSelectState,
+    ConfigViewState,
     StatusState,
     HistorySearchState,
     ReasoningState,
@@ -113,6 +114,11 @@ class AppModel(_ToolOutputMixin):
         # model.editmsg_select + EditMsgSelectPopup + bottom_view="editmsg"。
         # 每条消息只显示一行（options 为单行摘要）。）
         self.editmsg_select: EditMsgSelectState = EditMsgSelectState()
+        # 配置中心视图状态（2026-08-20 用户需求：config 命令独立界面——
+        # /config 打开全屏配置视图，ConfigView 组件整屏渲染配置列表并支持
+        # 浏览/编辑；命令线程轮询 done 清理。状态类型见 _state_types.py
+        # ConfigViewState，组件见 app/config_view.py。）
+        self.config_view: ConfigViewState = ConfigViewState()
         # 实时解析进度行（同位置刷新；ParseInfoDone 后提交并清空）
         self.parse_line: Any = None
         # subagent 面板行（控制器推送）
@@ -757,6 +763,14 @@ class AppModel(_ToolOutputMixin):
         #   打开 editmsg 强制重挂载，不残留旧选中）。
         prev_es_seq = getattr(self.editmsg_select, "seq", 0)
         self.editmsg_select = EditMsgSelectState(seq=prev_es_seq)
+        # ★ 2026-08-20（config 独立界面）：清屏同时重置配置中心视图状态
+        #   （与 fullscreen 同语义——残留 config_view 让 /config 命令轮询
+        #   done 期间视图消失，轮询等待空转到超时；fullscreen 已复位使残留
+        #   的 visible 状态不会再次渲染 ConfigView）。**保留 seq**（与
+        #   user_select 清理同修复——seq 单调递增保证 key 唯一，清屏后再次
+        #   打开 config 强制重挂载，不残留旧选中/旧编辑态）。
+        prev_cv_seq = getattr(self.config_view, "seq", 0)
+        self.config_view = ConfigViewState(seq=prev_cv_seq)
 
     # ── trace_open 兼容别名（2026-08-17 通用化：模态全屏视图） ──
     # 轨迹视图打开 = model.fullscreen == "trace"。property 保持旧字段读写
@@ -783,5 +797,6 @@ __all__ = [
     "HistorySearchState",
     "UserSelectState",
     "EditMsgSelectState",
+    "ConfigViewState",
     "ReasoningState",
 ]

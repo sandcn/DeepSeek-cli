@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import logging
+import time as _time
+
 from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
 from ..adapters.output import get_default_output_port
 from ..internal.commands._command_core import CommandContext, show_cost
@@ -13,6 +16,7 @@ from ..internal.commands._command_core import CommandContext, show_cost
 # 向后兼容 re-export：/model 命令已独立到 _model_cmd.py
 from ._model_cmd import _cmd_model, _infer_model_provider  # noqa: F401
 
+_logger = logging.getLogger(__name__)
 _out = get_default_output_port()
 
 
@@ -172,6 +176,230 @@ def _cmd_temperature(ctx):
     return True
 
 
+# ── /config 命令 ───────────────────────────────────────
+
+def _open_config_ui(ctx) -> bool:
+    """打开全屏配置界面（ConfigView 模态全屏视图）。
+
+    协议（与 CommandUiAdapter.run_bottom_bar_selection 同构）：设置
+    ``model.config_view``（visible=True, seq+1, entries）→
+    ``model.fullscreen = "config"`` → request_bottom_redraw → 轮询
+    ``state.done``（deadline 超时兜底）→ finally 清理（重置 config_view
+    保留 seq + fullscreen 置空 + request_bottom_redraw + flush router）。
+
+    无活跃 ChatUI / 模型不可用（单次模式、测试桩）返回 False——调用方
+    回退文本显示配置。
+    """
+    try:
+        from ...tui.consumer import get_active_chat_ui
+        chat_ui = get_active_chat_ui()
+        if chat_ui is None:
+            return False
+        model = chat_ui.get_model() if hasattr(chat_ui, "get_model") else None
+        if model is None or not hasattr(model, "config_view"):
+            return False
+    except Exception:
+        return False
+
+    from ...config.view_model import build_config_entries
+    from ...config.loader import get_rc
+    from ...tui.app._state_types import ConfigViewState
+
+    entries = build_config_entries(get_rc())
+    prev_seq = getattr(model.config_view, "seq", 0)
+    state = ConfigViewState(
+        visible=True,
+        seq=prev_seq + 1,
+        entries=entries,
+        # 超时兜底（默认 600s=10 分钟）：用户长时间无操作自动关闭，
+        # 命令线程不永久阻塞（与 run_bottom_bar_selection 的 60s 语义同源）
+        deadline=_time.monotonic() + 600,
+    )
+    model.config_view = state
+    model.fullscreen = "config"
+    try:
+        chat_ui.request_bottom_redraw()
+    except Exception:
+        pass
+
+    try:
+        while not state.done:
+            if _time.monotonic() >= state.deadline:
+                # 超时：原子终态写入（first-write-wins——组件恰在临界窗口
+                # 已关闭则放弃覆盖，保留组件结果）
+                state.try_set_final("timeout")
+                break
+            _time.sleep(0.05)
+        if state.action == "timeout":
+            _out.write(f"{YELLOW}  ! 配置界面超时关闭{RESET}", level="raw", source="cmd")
+        else:
+            _out.write(f"{DIM}  配置界面已关闭{RESET}", level="raw", source="cmd")
+        return True
+    finally:
+        # 清理：重置 config_view（**保留当前 seq**——重新读取清理前的
+        # ``model.config_view.seq``（即本次打开的 seq），保证 seq 单调递增
+        # → App key（cv-{seq}）永不重复 → 调和器每次强制重挂载 ConfigView，
+        # 不残留旧选中/旧编辑态）+ 仅当仍占用 fullscreen 时置空（用户可能
+        # 已切换到其他全屏视图）+ request_bottom_redraw + flush router。
+        # ★ P3（review 2026-08-20）：identity 比较防御——清理仅覆盖**本次
+        #   打开**的 state（``model.config_view is state``）；若清理前用户/
+        #   其他协程已重新打开新 config（新 ConfigViewState 对象），旧命令
+        #   线程不覆盖新状态（命令串行执行使窗口极小，防御性兜底）。
+        try:
+            if not state.done:
+                state.try_set_final("timeout")
+            if getattr(model, "config_view", None) is state:
+                cur_seq = getattr(model.config_view, "seq", 0)
+                model.config_view = ConfigViewState(seq=cur_seq)
+            if getattr(model, "fullscreen", "") == "config":
+                model.fullscreen = ""
+            try:
+                chat_ui.request_bottom_redraw()
+            except Exception:
+                pass
+            try:
+                chat_ui.flush_input_router(2.0)
+            except Exception:
+                pass
+        except Exception:
+            _logger.debug("_open_config_ui cleanup 失败", exc_info=True)
+
+
+def _show_config_text(ctx) -> bool:
+    """文本显示全部配置（TUI 消息区输出 / CLI 回退显示共用）。"""
+    from ...config.view_model import build_config_entries, format_config_text
+    from ...config.defaults import RC_FILE
+    text = format_config_text(build_config_entries(), rc_file=RC_FILE)
+    _out.write("\n" + text, level="raw", source="cmd")
+    return True
+
+
+def _find_entry(key_input: str) -> dict | None:
+    """解析用户输入的键名并返回对应配置项条目（未找到返回 None）。"""
+    from ...config.view_model import resolve_config_key, build_config_entries
+    key = resolve_config_key(key_input)
+    if key is None:
+        return None
+    for e in build_config_entries():
+        if e["key"] == key:
+            return e
+    return None
+
+
+def _get_config_value(ctx, key_input: str) -> bool:
+    """查询单项配置并显示。"""
+    entry = _find_entry(key_input)
+    if entry is None:
+        _out.write(f"{YELLOW}  ! 未找到配置键: {key_input}{RESET}", level="raw", source="cmd")
+        _out.write(f"  {DIM}  使用 /config 查看全部配置键{RESET}", level="raw", source="cmd")
+        return True
+    _out.write(f"\n{CYAN}  {entry['path']}{RESET} = {entry['value_text']}  {DIM}(默认: {entry['default_text']}){RESET}", level="raw", source="cmd")
+    if entry.get("desc"):
+        _out.write(f"  {DIM}  {entry['desc']}{RESET}", level="raw", source="cmd")
+    return True
+
+
+def _set_config_value(ctx, key_input: str, value_text: str) -> bool:
+    """设置单项配置并持久化（类型校验失败给出错误提示）。"""
+    entry = _find_entry(key_input)
+    if entry is None:
+        _out.write(f"{YELLOW}  ! 未找到配置键: {key_input}{RESET}", level="raw", source="cmd")
+        _out.write(f"  {DIM}  使用 /config 查看全部配置键{RESET}", level="raw", source="cmd")
+        return True
+    from ...config.view_model import parse_config_value, format_config_value
+    value, err = parse_config_value(entry["type"], value_text)
+    if err:
+        _out.write(f"{YELLOW}  ! {entry['path']}: {err}{RESET}", level="raw", source="cmd")
+        return True
+    try:
+        from ...config.loader import update_config
+        update_config(entry["key"], value)
+    except Exception as e:
+        _out.write(f"{YELLOW}  ! 写入配置失败: {e}{RESET}", level="raw", source="cmd")
+        return True
+    shown = format_config_value(
+        value, entry["type"], sensitive=bool(entry.get("sensitive")),
+    )
+    _out.write(f"{GREEN}  + 已设置 {entry['path']} = {shown}{RESET}", level="raw", source="cmd")
+    return True
+
+
+def _reset_config_value(ctx, key_input: str) -> bool:
+    """重置单项配置为默认值并持久化。"""
+    from ...config.view_model import resolve_config_key, format_config_value
+    from ...config.defaults import CONFIG_KEYS, DEFAULTS
+    key = resolve_config_key(key_input)
+    if key is None:
+        _out.write(f"{YELLOW}  ! 未找到配置键: {key_input}{RESET}", level="raw", source="cmd")
+        return True
+    if key in CONFIG_KEYS:
+        default = CONFIG_KEYS[key]["default"]
+        typ = CONFIG_KEYS[key]["type"]
+    else:
+        default = DEFAULTS.get(key)
+        typ = type(default) if default is not None else str
+    try:
+        from ...config.loader import update_config
+        update_config(key, default)
+    except Exception as e:
+        _out.write(f"{YELLOW}  ! 写入配置失败: {e}{RESET}", level="raw", source="cmd")
+        return True
+    shown = format_config_value(default, typ)
+    _out.write(f"{GREEN}  + 已重置 {key} = {shown} (默认){RESET}", level="raw", source="cmd")
+    return True
+
+
+def _cmd_config(ctx):
+    """配置管理：显示 / 编辑程序配置（/config）
+
+    - 无参数：有 ChatUI 时打开**全屏配置界面**（ConfigView——配置列表
+      浏览 + Enter 编辑 + Esc/Ctrl+H 关闭）；无 ChatUI 回退文本显示全部配置；
+    - ``/config show`` / ``/config list``：文本显示全部配置；
+    - ``/config get <键>``：查询单项配置；
+    - ``/config set <键> <值>``（或 ``<键>=<值>``）：设置单项并持久化；
+    - ``/config reset <键>``：重置为默认值。
+    """
+    arg = ctx.arg.strip()
+    if not arg:
+        # 无参数：优先打开全屏配置界面；无 ChatUI 回退文本显示
+        if _open_config_ui(ctx):
+            return True
+        return _show_config_text(ctx)
+
+    parts = arg.split(maxsplit=1)
+    sub = parts[0].lower()
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    if sub in ("show", "list"):
+        return _show_config_text(ctx)
+    if sub == "get":
+        if not rest:
+            _out.write(f"{YELLOW}  ! 用法: /config get <键>{RESET}", level="raw", source="cmd")
+            return True
+        return _get_config_value(ctx, rest)
+    if sub == "set":
+        # 支持两种形态：``/config set <键> <值>`` 与 ``/config set <键>=<值>``
+        if "=" in rest:
+            key_part, _, val_part = rest.partition("=")
+        else:
+            key_part, _, val_part = rest.partition(" ")
+        key_part = key_part.strip()
+        val_part = val_part.strip()
+        if not key_part or not val_part:
+            _out.write(f"{YELLOW}  ! 用法: /config set <键> <值>（或 <键>=<值>）{RESET}", level="raw", source="cmd")
+            return True
+        return _set_config_value(ctx, key_part, val_part)
+    if sub == "reset":
+        if not rest:
+            _out.write(f"{YELLOW}  ! 用法: /config reset <键>{RESET}", level="raw", source="cmd")
+            return True
+        return _reset_config_value(ctx, rest)
+
+    _out.write(f"{YELLOW}  ! 未知 config 子命令: {sub}{RESET}", level="raw", source="cmd")
+    _out.write(f"  {DIM}  可用: show|list, get <键>, set <键> <值>, reset <键>{RESET}", level="raw", source="cmd")
+    return True
+
+
 # ── CommandPlugin 子类 ──────────────────────────────
 # 命令通过 get_plugin_registry().register() 注册，不再使用 register_command()。
 # CommandPluginRegistry.register() 内部自动调用 register_command() 确保向后兼容。
@@ -215,8 +443,18 @@ class TemperatureCommand(CommandPlugin):
         return _cmd_temperature(ctx)
 
 
+class ConfigCommand(CommandPlugin):
+    """显示/编辑程序配置（独立界面）"""
+    def __init__(self):
+        self.meta = CommandMeta(name="config", description="显示/编辑程序配置（/config 打开独立界面）")
+
+    def execute(self, ctx: CommandContext) -> bool:
+        return _cmd_config(ctx)
+
+
 # ── 自动注册插件 ────────────────────────────────────
 get_plugin_registry().register(CostCommand())
 get_plugin_registry().register(ThemeCommand())
 get_plugin_registry().register(ReasoningCommand())
 get_plugin_registry().register(TemperatureCommand())
+get_plugin_registry().register(ConfigCommand())
