@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 
 from .base import Func, tool_metadata
@@ -221,7 +222,7 @@ class BashOptFunc(Func):
 
     @classmethod
     def display_params(cls, arguments: dict, max_len: int = 80) -> str:
-        task_id = arguments.get("task_id", "")
+        task_id = arguments.get("task_id") or ""  # 防御 None（模型传 null）
         op = arguments.get("op", "")
         extra = ""
         if op == "stdin":
@@ -237,7 +238,9 @@ class BashOptFunc(Func):
                  text: str | None = None, newline: bool = True,
                  key: str | None = None):
         super().__init__()
-        self.task_id = task_id
+        # task_id 归一化（防御 None/缺失）：模型传 {"task_id": null} 时
+        # from_args 把 None 传入（默认值不生效），后续 startswith 崩溃。
+        self.task_id = task_id or ""
         self.op = op
         # timeout 仅对 wait 生效：省略/None → 300s；<=0 → 无限等待
         # 使用 float 保留小数（如 0.5 秒短超时），避免 int() 截断
@@ -246,9 +249,15 @@ class BashOptFunc(Func):
         else:
             try:
                 timeout = float(timeout)
+                # NaN 防御：NaN <= 0 恒为 False，会以 NaN 传入 asyncio.wait
+                # 导致行为未定义——按缺省超时处理
+                if math.isnan(timeout):
+                    timeout = self._DEFAULT_WAIT_TIMEOUT
             except (TypeError, ValueError):
                 timeout = self._DEFAULT_WAIT_TIMEOUT
-            self.timeout = None if timeout <= 0 else timeout
+            # inf（+∞）归一化为无限等待（None）：asyncio.wait 对 inf 超时
+            # 的 deadline 计算不可预期，显式映射为「无限」语义更安全
+            self.timeout = None if timeout <= 0 or math.isinf(timeout) else timeout
         self.text = text
         self.newline = bool(newline)
         self.key = key

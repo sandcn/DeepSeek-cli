@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
 
 from src.core.base_agent import BaseAgent
 from src.core.subagent import SubAgent
@@ -408,13 +407,16 @@ async def test_execute_always_background(monkeypatch):
 # ── 3. subagent_opt 工具 ─────────────────────────────────
 
 def test_subagent_opt_tool_name_and_schema():
-    """subagent_opt 注册名 / schema name / op 枚举 / 必填参数。"""
+    """subagent_opt 注册名 / schema name / op 枚举 / 必填参数。
+
+    wait_all 为批量操作无需 task_id，因此必填参数仅 op（task_id 可选）。
+    """
     assert SubagentOptFunc.name == "subagent_opt"
     schema = SubagentOptFunc.to_tool_schema()
     assert schema["function"]["name"] == "subagent_opt"
-    assert schema["function"]["parameters"]["required"] == ["task_id", "op"]
+    assert schema["function"]["parameters"]["required"] == ["op"]
     assert set(schema["function"]["parameters"]["properties"]["op"]["enum"]) == {
-        "read", "wait", "kill",
+        "read", "wait", "kill", "wait_all",
     }
 
 
@@ -551,6 +553,273 @@ async def test_subagent_opt_kill():
     assert task.cancelled()
 
 
+# ── 3.1 op=wait_all（批量等待所有后台 subagent） ─────────
+
+async def test_subagent_opt_wait_all_empty():
+    """op=wait_all 空表：返回 count=0 的空结果 JSON（不报错）。"""
+    agent = _FakeMainAgent()
+    func = SubagentOptFunc(op="wait_all")
+    func.set_agent(agent)
+    payload = json.loads(await func.execute())
+    assert payload["count"] == 0
+    assert payload["completed"] == 0
+    assert payload["running"] == 0
+    assert payload["timed_out"] is False
+    assert payload["tasks"] == []
+
+
+async def test_subagent_opt_wait_all_all_done():
+    """op=wait_all 全部已完成：返回每个任务结果 JSON 并从任务表移除。
+
+    tasks 中每个元素是一个 subagent 的结果对象（与 op=wait 返回结构一致：
+    task_id/description/agent_type/status/output）；已完成记录全部消费移除，
+    避免 _process_subagent_tasks 再以用户消息重复插入。
+    """
+    agent = _FakeMainAgent()
+    agent._subagent_tasks["sa-1"] = _make_rec(
+        task=None, task_id="sa-1", done=True, result="## 任务A\n结果1",
+        status="completed",
+    )
+    agent._subagent_tasks["sa-2"] = _make_rec(
+        task=None, task_id="sa-2", done=True, result="## 任务B\n结果2",
+        status="completed",
+    )
+    func = SubagentOptFunc(op="wait_all")
+    func.set_agent(agent)
+    payload = json.loads(await func.execute())
+    assert payload["count"] == 2
+    assert payload["completed"] == 2
+    assert payload["running"] == 0
+    assert payload["timed_out"] is False
+    assert [t["task_id"] for t in payload["tasks"]] == ["sa-1", "sa-2"]
+    assert payload["tasks"][0]["status"] == "completed"
+    assert payload["tasks"][0]["output"] == "## 任务A\n结果1"
+    assert payload["tasks"][1]["output"] == "## 任务B\n结果2"
+    # 已消费：全部记录移除
+    assert agent._subagent_tasks == {}
+
+
+async def test_subagent_opt_wait_all_mixed_done_running():
+    """op=wait_all 混合完成/运行中：等待运行中任务完成后返回全部结果并移除。"""
+    agent = _FakeMainAgent()
+    agent._subagent_tasks["sa-1"] = _make_rec(
+        task=None, task_id="sa-1", done=True, result="## 任务A\n结果1",
+        status="completed",
+    )
+    task_id = "sa-2"
+    agent._subagent_tasks[task_id] = _make_rec(task=None, task_id=task_id)
+
+    async def _work():
+        await asyncio.sleep(0.01)
+        agent._complete_subagent_task(task_id, "## 任务B\n结果2")
+
+    task = asyncio.ensure_future(_work())
+    agent._subagent_tasks[task_id]["task"] = task
+
+    func = SubagentOptFunc(op="wait_all", timeout=5)
+    func.set_agent(agent)
+    payload = json.loads(await func.execute())
+    assert payload["count"] == 2
+    assert payload["completed"] == 2
+    assert payload["running"] == 0
+    assert payload["timed_out"] is False
+    outputs = {t["task_id"]: t["output"] for t in payload["tasks"]}
+    assert outputs["sa-1"] == "## 任务A\n结果1"
+    assert outputs["sa-2"] == "## 任务B\n结果2"
+    assert agent._subagent_tasks == {}
+
+
+async def test_subagent_opt_wait_all_timeout_keeps_running():
+    """op=wait_all 超时：已完成任务消费移除，未完成任务保留并标记 managed_by_tool。
+
+    超时后返回 timed_out=true 与当前状态（完成的任务给结果、未完成的 status=
+    running）——模型可据此再次 wait_all / wait / kill 管理未完成任务。
+    """
+    agent = _FakeMainAgent()
+    agent._subagent_tasks["sa-1"] = _make_rec(
+        task=None, task_id="sa-1", done=True, result="## 任务A\n结果1",
+        status="completed",
+    )
+    task_id = "sa-slow"
+    agent._subagent_tasks[task_id] = _make_rec(task=None, task_id=task_id)
+
+    async def _slow():
+        await asyncio.sleep(100)
+
+    task = asyncio.ensure_future(_slow())
+    agent._subagent_tasks[task_id]["task"] = task
+
+    func = SubagentOptFunc(op="wait_all", timeout=0.05)
+    func.set_agent(agent)
+    payload = json.loads(await func.execute())
+    assert payload["count"] == 2
+    assert payload["completed"] == 1
+    assert payload["running"] == 1
+    assert payload["timed_out"] is True
+    # 已完成任务被消费移除
+    assert "sa-1" not in agent._subagent_tasks
+    # 未完成任务保留（标记 managed_by_tool，可再次管理）且未被取消
+    assert task_id in agent._subagent_tasks
+    assert agent._subagent_tasks[task_id]["managed_by_tool"] is True
+    assert not task.done()
+    # 返回结果中 running 任务 output 为空
+    slow = next(t for t in payload["tasks"] if t["task_id"] == task_id)
+    assert slow["status"] == "running"
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+async def test_subagent_opt_wait_all_no_task_id_required():
+    """op=wait_all 无需 task_id：from_args 缺省 task_id 可正常构造并执行。"""
+    from src.tools.registry import ToolRegistry
+
+    reg = ToolRegistry()
+    inst = reg.dispatch("subagent_opt", {"op": "wait_all"})
+    assert isinstance(inst, SubagentOptFunc)
+    assert inst.task_id == ""
+    assert inst.op == "wait_all"
+    assert inst.timeout == SubagentOptFunc._DEFAULT_WAIT_TIMEOUT
+
+
+async def test_subagent_opt_wait_all_marks_managed():
+    """op=wait_all 标记所有任务 managed_by_tool（含已完成——先标记后消费）。
+
+    与单个 wait 语义一致：结果由本工具主动获取后，
+    _process_subagent_tasks 不再自动等待/插入其结果。
+    """
+    agent = _FakeMainAgent()
+    agent._subagent_tasks["sa-1"] = _make_rec(
+        task=None, task_id="sa-1", done=True, result="结果1", status="completed",
+    )
+    func = SubagentOptFunc(op="wait_all")
+    func.set_agent(agent)
+    payload = json.loads(await func.execute())
+    assert payload["completed"] == 1
+    # 已完成记录已被消费移除（managed_by_tool 标记随记录一并移除，
+    # 不影响 _process_subagent_tasks——表内已无该任务）
+    assert agent._subagent_tasks == {}
+
+
+async def test_subagent_opt_task_id_none_defensive():
+    """task_id 传 None（模型传 null）：归一化为空串，不崩溃（P1 防御）。
+
+    from_args 会把 None 传入 __init__（默认值不生效）；__init__ 归一化
+    self.task_id = task_id or ""，execute 前缀校验拒绝并提示，零副作用。
+    """
+    agent = _FakeMainAgent()
+    agent._subagent_tasks["sa-1"] = _make_rec(
+        task=None, task_id="sa-1", done=True, result="结果1", status="completed",
+    )
+    for op in ("read", "wait", "kill"):
+        func = SubagentOptFunc(task_id=None, op=op)
+        func.set_agent(agent)
+        result = await func.execute()
+        assert result.startswith("(")
+        assert "sa-xxx" in result
+    # 未误操作：任务记录未被标记/移除（前缀校验在查表之前返回）
+    rec = agent._subagent_tasks["sa-1"]
+    assert "managed_by_tool" not in rec
+
+
+async def test_subagent_opt_wait_all_ignores_task_id():
+    """op=wait_all 传任意 task_id（含 bg-xxx）：批量语义，task_id 被忽略。"""
+    agent = _FakeMainAgent()
+    agent._subagent_tasks["sa-1"] = _make_rec(
+        task=None, task_id="sa-1", done=True, result="结果1", status="completed",
+    )
+    func = SubagentOptFunc(task_id="bg-xxx", op="wait_all")
+    func.set_agent(agent)
+    payload = json.loads(await func.execute())
+    assert payload["count"] == 1
+    assert payload["tasks"][0]["task_id"] == "sa-1"
+
+
+async def test_subagent_opt_wait_exception_keeps_record(monkeypatch):
+    """op=wait 等待异常：返回错误提示且任务记录保留（避免结果永久丢失）。
+
+    异常分支（非超时）不移除记录——否则任务仍在后台运行但记录已移除，
+    _process_subagent_tasks 也无法再收集其结果。
+    """
+    agent = _FakeMainAgent()
+    task_id = "sa-waiterr"
+    agent._subagent_tasks[task_id] = _make_rec(task=None, task_id=task_id)
+
+    async def _never_finish():
+        await asyncio.sleep(100)
+
+    task = asyncio.ensure_future(_never_finish())
+    agent._subagent_tasks[task_id]["task"] = task
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("模拟 wait 异常")
+
+    monkeypatch.setattr("src.tools.subagent_opt.asyncio.wait", _boom)
+
+    func = SubagentOptFunc(task_id=task_id, op="wait", timeout=5)
+    func.set_agent(agent)
+    result = await func.execute()
+    assert result.startswith("(")
+    assert "出错" in result
+    # 记录保留、任务未被取消
+    assert task_id in agent._subagent_tasks
+    assert not task.done()
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+async def test_subagent_opt_kill_completed_returns_result():
+    """op=kill 已完成任务：不取消，返回结果提示并移除记录。
+
+    避免模型误以为结果丢失（此前无条件返回"已取消"）。
+    """
+    agent = _FakeMainAgent()
+    task_id = "sa-done"
+    agent._subagent_tasks[task_id] = _make_rec(
+        task=None, task_id=task_id, done=True, result="## 任务A\n完整结果",
+        status="completed",
+    )
+    func = SubagentOptFunc(task_id=task_id, op="kill")
+    func.set_agent(agent)
+    result = await func.execute()
+    assert "已完成" in result
+    assert "完整结果" in result
+    assert task_id not in agent._subagent_tasks
+
+
+def test_subagent_opt_timeout_nan_defensive():
+    """timeout=NaN 防御：按缺省超时（300s）处理，不产生 NaN 行为未定义。"""
+    func = SubagentOptFunc(task_id="sa-1", op="wait", timeout=float("nan"))
+    assert func.timeout == SubagentOptFunc._DEFAULT_WAIT_TIMEOUT
+    func2 = SubagentOptFunc(task_id="sa-1", op="wait", timeout=float("inf"))
+    assert func2.timeout is None  # inf > 0 → 无限等待
+
+
+async def test_subagent_opt_wait_all_status_consistent_with_done():
+    """op=wait_all status 与 done 标志一致：rec 内 status/done 不一致时以 done 为准。
+
+    异常记录（status="completed" 但 done=False）返回 status=running，
+    与 running 计数一致，避免 payload 内自相矛盾。
+    """
+    agent = _FakeMainAgent()
+    agent._subagent_tasks["sa-x"] = _make_rec(
+        task=None, task_id="sa-x", done=False, result="", status="completed",
+    )
+    func = SubagentOptFunc(op="wait_all", timeout=0.01)
+    func.set_agent(agent)
+    payload = json.loads(await func.execute())
+    assert payload["completed"] == 0
+    assert payload["running"] == 1
+    assert payload["tasks"][0]["status"] == "running"
+
+
 async def test_subagent_opt_unknown_task():
     """task_id 不存在时返回错误提示并引导使用 subagent 启动后台任务。"""
     agent = _FakeMainAgent()
@@ -633,6 +902,8 @@ def test_display_params():
     assert SubagentOptFunc.display_params(
         {"task_id": "sa-1", "op": "wait"}
     ) == "'wait sa-1'"
+    # wait_all 为批量操作：无 task_id，只显示 op
+    assert SubagentOptFunc.display_params({"op": "wait_all"}) == "'wait_all'"
 
 
 # ── 4. 独有性机制（仅主 Agent） ───────────────────────────
@@ -691,7 +962,10 @@ async def test_background_cancel_writes_cancelled_status(monkeypatch):
     monkeypatch.setattr("src.tools.subagent.print_to_terminal", _async_noop)
     monkeypatch.setattr("src.core.display_target.get_output_publisher", lambda: None)
 
+    entered = asyncio.Event()
+
     async def fake_run(self, specs, max_workers=None):
+        entered.set()  # 已进入执行体，可安全 cancel（消除 sleep 竞态）
         await asyncio.sleep(100)
 
     monkeypatch.setattr(
@@ -701,8 +975,9 @@ async def test_background_cancel_writes_cancelled_status(monkeypatch):
     result = await func.execute()
     task_id = json.loads(result)["task_id"]
     task = agent._subagent_tasks[task_id]["task"]
-    # 先让后台任务运行起来（进入 fake_run 的 sleep），再模拟 kill 的取消动作
-    await asyncio.sleep(0.05)
+    # 等待后台任务进入 fake_run 后再 cancel（消除时间竞态：0.05s sleep
+    # 在 CI 高负载下可能早于调度完成，导致 CancelledError 落在 try 块外）
+    await asyncio.wait_for(entered.wait(), timeout=5)
     task.cancel()
     await asyncio.wait_for(task, timeout=5)
 

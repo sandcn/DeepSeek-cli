@@ -5,9 +5,11 @@ subagent_opt — 按 task_id 操作后台 subagent 任务
 {"task_id": "sa-xxx", "status": "running", "description": "...", "type": "..."}，
 大模型可据此用 subagent_opt 工具按 task_id 操作：
 
-- op=read  读取后台 subagent 任务当前状态与已产生的结果，立即返回（不等待完成）
-- op=wait  等待任务执行完成并获取结果（JSON：task_id/description/status/output）
-- op=kill  取消后台 subagent 任务（级联取消其内部 SubAgent）
+- op=read     读取后台 subagent 任务当前状态与已产生的结果，立即返回（不等待完成）
+- op=wait     等待任务执行完成并获取结果（JSON：task_id/description/status/output）
+- op=kill     取消后台 subagent 任务（级联取消其内部 SubAgent）
+- op=wait_all 等待**所有**后台 subagent 任务完成，返回每个任务结果的 JSON 数组
+             （无需 task_id；timeout 秒，默认 300/0 无限）
 
 后台 subagent 仅主 Agent 独有（subagent 工具运行时校验 + SubAgent 工具
 白名单排除），因此 subagent_opt 同样仅主 Agent 可用（SubAgent 内无
@@ -19,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 
 from .base import Func, tool_metadata
 
@@ -51,7 +54,9 @@ class SubagentOptFunc(Func):
                     "按 task_id 操作后台 subagent 任务（subagent 直接后台启动）。"
                     "op：read（读取当前状态与已产生的结果，立即返回不等待完成）、"
                     "wait（等待完成取结果，timeout 秒，默认 300/0 无限）、"
-                    "kill（取消后台 subagent 任务）。"
+                    "kill（取消后台 subagent 任务）、"
+                    "wait_all（等待所有后台 subagent 任务完成，返回每个任务结果的"
+                    "JSON 数组，timeout 秒，默认 300/0 无限；无需 task_id）。"
                     "task_id 必须是当前对话 subagent 后台返回的 sa-xxx。"
                     "后台 subagent 仅主 Agent 可派发。返回：操作结果 JSON 或输出；失败以 ( 开头。"
                 ),
@@ -62,54 +67,68 @@ class SubagentOptFunc(Func):
                             "type": "string",
                             "description": (
                                 "后台 subagent 任务的 task_id（subagent 直接后台返回的 "
-                                "'sa-xxx' 格式 ID）。"
+                                "'sa-xxx' 格式 ID）。仅 read/wait/kill 需要；"
+                                "wait_all 为批量操作无需 task_id。"
                             ),
                         },
                         "op": {
                             "type": "string",
-                            "enum": ["read", "wait", "kill"],
+                            "enum": ["read", "wait", "kill", "wait_all"],
                             "description": (
                                 "要执行的操作："
                                 "\n- read：读取后台 subagent 任务当前状态与已产生的结果，"
                                 "立即返回（不等待任务完成）；任务继续运行"
                                 "\n- wait：等待任务完成并获取结果"
                                 "\n- kill：取消后台 subagent 任务（级联取消其内部 SubAgent）"
+                                "\n- wait_all：等待**所有**后台 subagent 任务完成，"
+                                "返回每个任务结果的 JSON 数组（无需 task_id）"
                             ),
                         },
                         "timeout": {
                             "type": "number",
                             "description": (
-                                "仅 wait 操作生效：等待完成的超时秒数（默认 300；"
-                                "传 0 表示无限等待）。支持小数（如 0.5）。"
-                                "超时后任务继续运行，可再次等待或 kill。"
+                                "仅 wait / wait_all 操作生效：等待完成的超时秒数"
+                                "（默认 300；传 0 表示无限等待）。支持小数（如 0.5）。"
+                                "超时后任务继续运行，可再次 wait / wait_all 或 kill。"
                             ),
                         },
                     },
-                    "required": ["task_id", "op"],
+                    "required": ["op"],
                 },
             },
         }
 
     @classmethod
     def display_params(cls, arguments: dict, max_len: int = 80) -> str:
-        task_id = arguments.get("task_id", "")
         op = arguments.get("op", "")
+        if op == "wait_all":
+            return "'wait_all'"
+        task_id = arguments.get("task_id") or ""  # 防御 None（模型传 null）
         return f"'{op} {task_id}'"
 
-    def __init__(self, task_id: str, op: str, timeout=None):
+    def __init__(self, task_id: str = "", op: str = "read", timeout=None):
         super().__init__()
-        self.task_id = task_id
+        # task_id 归一化（防御 None/缺失）：模型传 {"task_id": null} 时
+        # from_args 把 None 传入（默认值不生效），后续 startswith 崩溃——
+        # 统一归一化为空串（wait_all 批量操作本就无需 task_id）。
+        self.task_id = task_id or ""
         self.op = op
-        # timeout 仅对 wait 生效：省略/None → 300s；<=0 → 无限等待
+        # timeout 仅对 wait / wait_all 生效：省略/None → 300s；<=0 → 无限等待
         # 使用 float 保留小数（如 0.5 秒短超时），避免 int() 截断
         if timeout is None:
             self.timeout = self._DEFAULT_WAIT_TIMEOUT
         else:
             try:
                 timeout = float(timeout)
+                # NaN 防御：NaN <= 0 恒为 False，会以 NaN 传入 asyncio.wait
+                # 导致行为未定义——按缺省超时处理
+                if math.isnan(timeout):
+                    timeout = self._DEFAULT_WAIT_TIMEOUT
             except (TypeError, ValueError):
                 timeout = self._DEFAULT_WAIT_TIMEOUT
-            self.timeout = None if timeout <= 0 else timeout
+            # inf（+∞）归一化为无限等待（None）：asyncio.wait 对 inf 超时
+            # 的 deadline 计算不可预期，显式映射为「无限」语义更安全
+            self.timeout = None if timeout <= 0 or math.isinf(timeout) else timeout
 
     # ── execute ──────────────────────────────────────────
 
@@ -123,6 +142,12 @@ class SubagentOptFunc(Func):
                     "（SubAgent 内不可管理后台 subagent）")
         if agent is None or not hasattr(agent, '_subagent_tasks'):
             return "(后台 subagent 操作需要关联 Agent 上下文，当前未关联)"
+
+        # ★ wait_all：批量等待**所有**后台 subagent 任务完成，无需 task_id。
+        #   在 task_id 前缀校验之前处理——wait_all 是批量操作，task_id 参数
+        #   可选（缺省为空串），不参与单任务校验。
+        if self.op == "wait_all":
+            return await self._op_wait_all(agent)
 
         # ★ task_id 前缀校验（P2，review 2026-08-18）：subagent 后台任务 id
         #   恒为 "sa-xxx"，且注册在 subagent 专用表 _subagent_tasks 中——
@@ -151,7 +176,7 @@ class SubagentOptFunc(Func):
             return await self._op_wait(agent, rec)
         if self.op == "kill":
             return await self._op_kill(agent, rec)
-        return f"(未知操作: {self.op}。支持: read/wait/kill)"
+        return f"(未知操作: {self.op}。支持: read/wait/kill/wait_all)"
 
     # ── op=read ──────────────────────────────────────────
 
@@ -192,13 +217,20 @@ class SubagentOptFunc(Func):
                     done, _pending = await asyncio.wait({task}, timeout=self.timeout)
                     if not done:
                         return (f"(等待后台 subagent {self.task_id} 超时（{self.timeout} 秒），"
-                                f"任务仍在运行。可再次 wait 或 op=kill 取消)")
+                                f"任务仍在运行。任务已标记为工具管理，"
+                                f"若不再 wait/kill 其结果不会自动插入对话，"
+                                f"可再次 wait 或 op=kill 取消)")
                 else:
                     await task
             except asyncio.CancelledError:
                 return f"(等待后台 subagent {self.task_id} 被取消)"
             except Exception as e:
+                # 等待异常（非超时）：返回错误提示并**保留任务记录**——
+                # 否则任务仍在后台运行但记录被移除，结果永久丢失
+                # （_process_subagent_tasks 也无法再收集）。
                 logger.debug("后台 subagent wait 异常: %s", e)
+                return (f"(等待后台 subagent {self.task_id} 出错: {e}。"
+                        f"任务记录保留，可再次 wait 或 op=kill 取消)")
 
         # 读取最终结果（任务完成后由 _run_background_subagent 写入 rec）
         result = rec.get("result", "")
@@ -225,14 +257,38 @@ class SubagentOptFunc(Func):
         取消后台 asyncio 任务：_run_background_subagent 的 CancelledError
         分支会把结果写为「已被取消」（_complete_subagent_task），随后
         记录被移除（后台任务已终止，无需再被对话轮次处理）。
+
+        ★ 任务已完成（done）时不取消任何东西：直接消费结果并移除记录，
+          返回结果提示（避免模型误以为结果丢失）。
+        ★ 取消超时（2s 内任务未结束，卡在不可取消点）时保留记录并提示，
+          避免任务成为孤儿（cancelled 结果丢失且无告警）。
         """
         task = rec.get("task")
+        already_done = bool(rec.get("done")) or (task is not None and task.done())
+
+        if already_done:
+            # 已完成任务：kill 退化为「消费结果」——返回结果摘要并移除记录
+            result = rec.get("result", "")
+            status = rec.get("status", "completed")
+            preview = result[:200] + ("..." if len(result) > 200 else "")
+            if hasattr(agent, "_remove_subagent_task"):
+                agent._remove_subagent_task(self.task_id)
+            else:
+                agent._subagent_tasks.pop(self.task_id, None)
+            return (f"(后台 subagent 任务 {self.task_id} 已完成（{status}），"
+                    f"记录已移除。结果：{preview})")
+
         if task is not None and not task.done():
             task.cancel()
             try:
                 await asyncio.wait({task}, timeout=2.0)
             except Exception:
                 pass  # 任务取消过程异常忽略
+            if not task.done():
+                # 取消未完成（任务卡在不可取消点，如子进程 process.wait()）：
+                # 保留记录返回提示，避免孤儿任务 + 结果永久丢失
+                return (f"(取消后台 subagent 任务 {self.task_id} 未完成"
+                        f"（任务卡在不可取消点），记录保留，可稍后再次 op=kill)")
 
         # 移除任务记录并更新 TUI 计数
         if hasattr(agent, "_remove_subagent_task"):
@@ -240,3 +296,90 @@ class SubagentOptFunc(Func):
         else:
             agent._subagent_tasks.pop(self.task_id, None)
         return f"(已取消后台 subagent 任务 {self.task_id})"
+
+    # ── op=wait_all ───────────────────────────────────────
+
+    async def _op_wait_all(self, agent) -> str:
+        """等待**所有**后台 subagent 任务完成，返回每个任务结果的 JSON 数组。
+
+        返回 JSON：{"count": N, "completed": N, "running": N, "timed_out": bool,
+        "tasks": [{task_id, description, agent_type, status, output}, ...]}——
+        tasks 中每个元素是一个 subagent 的结果对象（与 op=wait 返回结构一致）。
+
+        - 全部完成：所有任务结果返回，任务记录从表移除（避免 _process_subagent_tasks
+          以用户消息重复插入）；
+        - 超时（timeout 秒，默认 300 / 0 无限）：已完成任务消费移除，未完成任务
+          保留在表并标记 managed_by_tool（可再次 wait_all / wait / kill 管理）。
+        - 空表：返回 count=0 的空结果 JSON。
+
+        ★ 等待使用 asyncio.wait 而非 wait_for：wait_for 超时会 cancel 后台任务
+        本身（任务被误杀），wait 只观察不干预，超时后任务继续运行（与 op=wait
+        单任务超时语义一致）。
+        """
+        # 快照遍历：等待期间 _complete_subagent_task 仅更新 rec 字段，不改表结构；
+        # 快照可防未来加入并发修改时遍历中 dict 变更（与 _process_subagent_tasks
+        # 的快照遍历同思路）。
+        records = list(agent._subagent_tasks.items())
+        if not records:
+            return json.dumps({
+                "count": 0, "completed": 0, "running": 0, "timed_out": False,
+                "tasks": [],
+            }, ensure_ascii=False)
+
+        # 标记所有任务为工具管理（wait_all 语义与单个 wait 一致：结果由本工具
+        # 主动获取，_process_subagent_tasks 不再自动等待/插入其结果）。
+        for _tid, rec in records:
+            rec["managed_by_tool"] = True
+
+        # 等待所有运行中任务完成（asyncio.wait 只观察不干预，超时任务继续运行）
+        pending_tasks = [
+            rec.get("task") for _tid, rec in records
+            if not rec.get("done")
+            and rec.get("task") is not None
+            and not rec["task"].done()
+        ]
+        unfinished: set = set()
+        if pending_tasks:
+            if self.timeout:
+                _done, pending = await asyncio.wait(pending_tasks, timeout=self.timeout)
+                unfinished = pending
+            else:
+                await asyncio.wait(pending_tasks)
+
+        # 汇总每个任务的最新结果（等待期间完成回调可能已更新 rec）
+        tasks_payload: list[dict] = []
+        completed_ids: list[str] = []
+        for task_id, _rec in records:
+            current = agent._subagent_tasks.get(task_id, _rec)
+            done = bool(current.get("done"))
+            # status 与 done 标志保持一致：done=False 时恒为 running
+            # （防止 rec 内 status 与 done 异常不一致导致计数矛盾）
+            if done:
+                status = current.get("status") or "completed"
+            else:
+                status = "running"
+            tasks_payload.append({
+                "task_id": task_id,
+                "description": current.get("description", ""),
+                "agent_type": current.get("agent_type", ""),
+                "status": status,
+                "output": current.get("result", ""),
+            })
+            if done:
+                completed_ids.append(task_id)
+
+        # 已完成任务记录移除（结果已由本工具获取）
+        for task_id in completed_ids:
+            if hasattr(agent, "_remove_subagent_task"):
+                agent._remove_subagent_task(task_id)
+            else:
+                agent._subagent_tasks.pop(task_id, None)
+
+        payload = {
+            "count": len(tasks_payload),
+            "completed": len(completed_ids),
+            "running": len(tasks_payload) - len(completed_ids),
+            "timed_out": bool(unfinished),
+            "tasks": tasks_payload,
+        }
+        return json.dumps(payload, ensure_ascii=False)

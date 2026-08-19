@@ -218,3 +218,29 @@ def test_display_params():
     assert BashOptFunc.display_params(
         {"task_id": "bg-1", "op": "read"}
     ) == "'read bg-1'"
+
+
+async def test_execute_task_id_none_defensive():
+    """task_id 传 None（模型传 null）：归一化为空串，不崩溃（与 subagent_opt 对称防御）。
+
+    from_args 会把 None 传入 __init__（默认值不生效）；__init__ 归一化
+    self.task_id = task_id or ""，execute 前缀校验拒绝并提示，零副作用。
+    """
+    agent = _FakeAgent({})
+    for op in ("read", "wait", "kill", "stdin", "keys"):
+        func = BashOptFunc(task_id=None, op=op)
+        func.set_agent(agent)
+        result = await func.execute()
+        assert result.startswith("(")
+        assert "bg-xxx" in result
+        assert "subagent_opt" in result
+    # 未误操作：bash 表未被触碰、无 managed_by_tool 标记
+    assert agent._background_tasks == {}
+
+
+def test_timeout_nan_defensive():
+    """timeout=NaN 防御：按缺省超时（300s）处理，不产生 NaN 行为未定义。"""
+    func = BashOptFunc(task_id="bg-1", op="wait", timeout=float("nan"))
+    assert func.timeout == BashOptFunc._DEFAULT_WAIT_TIMEOUT
+    func2 = BashOptFunc(task_id="bg-1", op="wait", timeout=float("inf"))
+    assert func2.timeout is None  # inf > 0 → 无限等待

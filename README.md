@@ -291,7 +291,7 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 
 ## 工具系统（Tool System）
 
-AI 代理在对话中可调用以下工具完成各类操作。共 **17 个内置工具**，涵盖文件操作、代码搜索、网络请求、用户交互等能力。
+AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内置工具**，涵盖文件操作、代码搜索、网络请求、用户交互等能力。
 
 ### 工具列表
 
@@ -308,23 +308,26 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **17 个内�
 | `cp` | cp | IO | ✅ | 复制文件或目录，保留元数据，支持沙盒撤回 |
 | `mv` | mv | IO | ✅ | 移动文件或目录，支持跨文件系统 |
 | `rm` | rm | IO | ❌ | 删除文件或目录（删除前自动备份到沙盒） |
-| `mk` | mk | IO | ✅ | 创建目录，支持递归创建父目录 |
+| `mkdir` | mk | IO | ✅ | 创建目录，支持递归创建父目录 |
+| `read_image` | ri | IO | ✅ | 读取图像文件内容，支持分块读取与图像操作（灰度/旋转/翻转/缩放） |
 | `web_search` | ws | 网络 | ❌ | DeepSeek 官方原生联网搜索（Anthropic 兼容 Messages API + web_search_20250305），返回来源列表（标题/URL/摘要） |
 | `web_fetch` | — | 网络 | ✅ | 获取指定 URL 的网页全文（自动提取正文，SSRF 防护，仅 http/https） |
 | `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/超时回退/非交互回退，选项可带说明，TUI 中高亮选项时说明显示在右侧；支持并发提问——多个问题可同一轮同时弹出、以 tab 形式一起回答） |
 | `subagent` | sa | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：map/review/plan/execute）；直接后台执行，立即返回 `{"task_id": "sa-xxx"}` JSON，完成后结果自动插入对话（或由 subagent_opt 管理）。后台 subagent 仅主 Agent 可派发 |
-| `subagent_opt` | so | Agent | ❌ | 按 task_id 操作后台 subagent 任务（subagent 直接后台启动）：read（读取当前状态与已产生的结果，立即返回）/ wait（等待完成取结果，timeout 秒，默认 300/0 无限）/ kill（取消后台 subagent 任务）。仅主 Agent 可用 |
+| `subagent_opt` | so | Agent | ❌ | 按 task_id 操作后台 subagent 任务（subagent 直接后台启动）：read（读取当前状态与已产生的结果，立即返回）/ wait（等待完成取结果，timeout 秒，默认 300/0 无限）/ kill（取消后台 subagent 任务）/ wait_all（等待**所有**后台 subagent 任务完成，返回每个任务结果的 JSON 数组，无需 task_id）。仅主 Agent 可用 |
+| `skill` | sk | 技能 | ✅ | 加载技能（skill）的完整指令（技能目录随系统提示词注入，任务与技能匹配或点名技能时调用） |
 
 ### 工具分类
 
 | 分类 | 工具 | 说明 |
 |------|------|------|
-| **文件 IO** | read_file, write_file, update_file, ls, cp, mv, rm, mk | 读写文件、目录操作、文件管理 |
+| **文件 IO** | read_file, write_file, update_file, ls, cp, mv, rm, mkdir, read_image | 读写文件、目录操作、文件管理、图像读取 |
 | **代码搜索** | search, find | 正则搜索源码、通配符查找文件 |
 | **命令执行** | bash, bash_opt | 安全沙盒中执行 shell 命令；按 task_id 操作后台 bash 任务（bash 后台任务注册在 bash 专用表 `_background_tasks`） |
 | **网络访问** | web_search, web_fetch | 网页搜索（DeepSeek 官方原生搜索）与网页全文获取 |
 | **用户交互** | user_select | 交互式选择弹窗（单选/多选/超时回退；支持并发提问，多问题 tab 一起显示） |
 | **Agent 调度** | subagent, subagent_opt | 并发派发原子 Agent 执行独立任务；按 task_id 操作后台 subagent 任务（subagent 后台任务注册在独立表 `_subagent_tasks`，与 bash 后台任务分表隔离） |
+| **技能** | skill | 加载可用技能（skill）的完整指令 |
 
 ### 工具设计原则
 
@@ -437,12 +440,12 @@ ChatUIConsumer
 
 | 类型 | 可用工具 | 用途 |
 |---|---|---|
-| **plan** | 只读分析 + write_file/update_file（仅限 `.chat/plan/` 目录） | 任务拆解、依赖分析、生成计划文件到 `.chat/plan/` |
-| **map** | 只读（read_file/search/find/ls） | 项目探底、模块地图、调用链追踪、引用关系分析 |
+| **plan** | 只读分析 + write_file/update_file/mkdir（仅限 `.chat/plan/` 目录） | 任务拆解、依赖分析、生成计划文件到 `.chat/plan/` |
+| **map** | 只读（read_file/search/find/ls 等只读工具） | 项目探底、模块地图、调用链追踪、引用关系分析 |
 | **review** | 只读 + web_search | Code Review、P0-P3 分级审查、跨文件一致性验证 |
-| **execute** | 全工具（不含 user_select/subagent/subagent_opt） | 读/写/改代码、执行测试、通用任务 |
+| **execute** | 全工具（不含 user_select/subagent/subagent_opt/web_search） | 读/写/改代码、执行测试、通用任务 |
 
-> **工具排除策略**：execute 排除 `subagent/subagent_opt/user_select`；map 排除 `bash/write_file/update_file/rm/mv/cp/mk/web_search/subagent/subagent_opt/user_select`；review 排除 `bash/write_file/update_file/rm/mv/cp/mk/subagent/subagent_opt/user_select`（保留 web_search）；plan 排除 `bash/rm/mv/cp/mk/subagent/subagent_opt/user_select`，write_file/update_file 仅限 `.chat/plan/` 目录。`subagent_opt` 与后台 subagent（`subagent background=true`）均仅主 Agent 独有：SubAgent 工具白名单全类型排除 + 工具运行时 `isinstance(agent, SubAgent)` 双保险。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan Agent 路径白名单校验。
+> **工具排除策略**（与 `src/core/subagent.py` 的 `_TOOL_EXCLUSION_MAP` 一致）：execute 排除 `subagent/subagent_opt/user_select/web_search`；map 排除 `bash/bash_opt/write_file/update_file/rm/mv/cp/mkdir/web_search/subagent/subagent_opt/user_select`；review 排除 `bash/bash_opt/write_file/update_file/rm/mv/cp/mkdir/subagent/subagent_opt/user_select`（保留 web_search）；plan 排除 `bash/bash_opt/rm/mv/cp/subagent/subagent_opt/user_select`，write_file/update_file/mkdir 仅限 `.chat/plan/` 目录。`subagent_opt` 与后台 subagent 均仅主 Agent 独有：SubAgent 工具白名单全类型排除 + 工具运行时 `isinstance(agent, SubAgent)` 双保险。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan Agent 路径白名单校验。
 
 ### 并发调度策略
 
@@ -455,14 +458,15 @@ ChatUIConsumer
 ```
 ├── chat.py                # 入口脚本（asyncio.run(main())）
 ├── pyproject.toml         # 项目配置与依赖
-├── prompts/               # 系统提示词（5 个文件）
+├── prompts/               # 系统提示词（6 个文件）
 │   ├── prompts_export_main.md    # 主 Agent 系统提示词
+│   ├── prompts_export_main_empty.md  # 主 Agent 系统提示词（精简/空版本）
 │   ├── prompts_export_map.md     # map SubAgent 探底提示词
 │   ├── prompts_export_plan.md    # plan SubAgent 计划提示词
 │   ├── prompts_export_execute.md  # execute SubAgent 提示词
 │   ├── prompts_export_review.md  # review SubAgent 审查提示词
 
-├── tests/                 # 测试（128 个测试文件）
+├── tests/                 # 测试（34 个测试文件）
 ├── .chat/                 # 运行时数据目录（首次运行自动创建）
 │   ├── memory/            # 跨对话记忆系统（索引 + 详情）
 │   ├── plan/              # Plan Agent 计划文件
@@ -522,10 +526,8 @@ ChatUIConsumer
 │   │   ├── tool_dag.py        # 工具 DAG 调度
 │   │   ├── cache.py           # 增量统计缓存
 │   │   ├── constants.py       # 主题常量
-│   │   ├── commands.py        # 命令系统入口
-│   │   ├── commands/          # 命令插件子模块（含 base / _ui_adapter / plugins/）
+│   │   ├── commands/          # 命令系统（base / _ui_adapter / plugins/）
 │   │   ├── exceptions.py      # 异常定义
-│   │   ├── hooks.py           # Hook 系统
 │   │   ├── internal/          # 内部实现子模块
 │   │   │   ├── agent/         # Agent 内部（spawner / callbacks / capture）
 │   │   │   ├── shared/        # 共享工具（sandbox_history / stats_cache）
@@ -573,13 +575,13 @@ ChatUIConsumer
 │   │   ├── _rendering/        # 内部渲染辅助
 │   │   └── _utils/            # 内部工具函数
 │   │
-│   ├── tools/              # 工具调用系统（17 个内置工具）
+│   ├── tools/              # 工具调用系统（19 个内置工具）
 │   │   ├── base.py            # Func 基类 + 元数据系统（含 can_use 工具可用性检查 / agent_type）
 │   │   ├── file_base.py       # FileToolBase 文件操作基类（含 plan agent 路径白名单）
 │   │   ├── registry.py        # 工具注册表（自动发现 + 调度 + 元数据索引）
-│   │   ├── read_file.py / write_file.py / update_file.py
+│   │   ├── read_file.py / write_file.py / update_file.py / read_image.py
 │   │   ├── search.py / find.py / ls.py
-│   │   ├── bash.py / cp.py / mv.py / rm.py / mk.py
+│   │   ├── bash.py / cp.py / mv.py / rm.py / mkdir.py / skill_tool.py
 │   │   ├── web_search.py / web_fetch.py / user_select.py / subagent.py / subagent_opt.py
 │   │   ├── file_ops.py        # 文件操作原子工具（原子写入、路径安全校验、沙盒记录）
 │   │   ├── _constants.py      # 共享常量（排除目录、安全路径、编码等）
