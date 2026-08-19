@@ -65,16 +65,14 @@ class MkdirFunc(FileSystemToolBase):
 
         async def _do_mkdir():
             # plan agent 路径白名单校验：仅允许创建 .chat/plan/ 下的目录
+            # （与 file_base / base.can_use 共用 get_plan_allowed_dir +
+            #  is_path_within_dir，realpath 解析符号链接防绕过）
             agent_type_val = getattr(self, 'agent_type', None)
             if agent_type_val == 'plan':
-                allowed_dir = os.path.realpath(os.path.abspath(os.path.join(os.getcwd(), '.chat', 'plan')))
-                abs_path = os.path.abspath(self.path)
-                try:
-                    common = os.path.commonpath([allowed_dir, abs_path])
-                    if common != allowed_dir:
-                        return f"(创建失败: plan agent 只能在 {allowed_dir} 下创建目录。当前路径: {self.path}（解析后: {abs_path}）)"
-                except ValueError:
-                    return f"(创建失败: plan agent 只能在 {allowed_dir} 下创建目录。当前路径: {self.path} 无法与 {allowed_dir} 比较)"
+                from .file_ops import get_plan_allowed_dir, is_path_within_dir
+                allowed_dir = get_plan_allowed_dir()
+                if not is_path_within_dir(self.path, allowed_dir):
+                    return f"(创建失败: plan agent 只能在 {allowed_dir} 下创建目录。当前路径: {self.path}（解析后: {os.path.realpath(self.path)}）)"
 
             # 检查路径是否已存在
             if await async_file_exists(self.path):

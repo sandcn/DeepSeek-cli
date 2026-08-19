@@ -41,8 +41,43 @@ def validate_path_security(path):
     stem = basename.split(".")[0].upper() if "." in basename else basename.upper()
     if stem in DOS_DEVICE_NAMES:
         raise ValueError(f"不允许写入 DOS 设备名: {check_path}")
+    if ":" in basename and os.name == "nt":
+        # Windows 上冒号是 NTFS ADS 流语法（"file:stream"）——整体拒绝；
+        # POSIX 允许冒号文件名，仅拒绝 $ 流/多冒号形态（下行）
+        raise ValueError(f"路径包含 NTFS 流或非法冒号: {check_path}")
     if ":" in basename and (":$" in basename or basename.count(":") > 1):
         raise ValueError(f"路径包含 NTFS 流或非法冒号: {check_path}")
+
+
+def get_plan_allowed_dir() -> str:
+    """返回 plan agent 允许写入的目录（``.chat/plan``，realpath 解析符号链接）。
+
+    plan 白名单三处使用点（file_base._validate_path_and_size、mkdir.execute、
+    base.Func.can_use）统一经本函数 + :func:`is_path_within_dir` 校验，
+    避免 realpath/abspath 混用导致的符号链接绕过（安全一致性）。
+    """
+    return os.path.realpath(os.path.join(os.getcwd(), '.chat', 'plan'))
+
+
+def is_path_within_dir(path: str, allowed_dir: str) -> bool:
+    """判断 path（realpath 解析符号链接）是否位于 allowed_dir 目录下。
+
+    - realpath 解析符号链接：防止 ``.chat/plan/link``（指向目录外）绕过白名单
+    - commonpath 判断子路径关系：防 ``../`` 穿越
+    - 不同驱动器（Windows）等无法比较时返回 False（拒绝）
+
+    Args:
+        path: 待校验路径（可相对/绝对/含符号链接）。
+        allowed_dir: 允许的目录（应为本函数族生成的 realpath 绝对路径）。
+
+    Returns:
+        True — path 在 allowed_dir 下；False — 不在或无法比较。
+    """
+    real = os.path.realpath(path)
+    try:
+        return os.path.commonpath([allowed_dir, real]) == allowed_dir
+    except ValueError:
+        return False
 
 
 
@@ -54,7 +89,9 @@ def check_file_size(path, max_mb=100):
         if size_mb > max_mb:
             raise ValueError(f"文件大小({size_mb:.1f}MB)超过最大限制({max_mb}MB)")
     except (OSError, FileNotFoundError):
-        pass
+        # 文件不可读/不存在：跳过大小检查（调用方后续打开文件会报错），
+        # 记录 debug 便于排查
+        _logger.debug("check_file_size 无法读取文件 %s", path, exc_info=True)
 
 
 async def async_check_file_size(path: str, max_mb: int = 100) -> None:
@@ -65,18 +102,22 @@ async def async_check_file_size(path: str, max_mb: int = 100) -> None:
         if size_mb > max_mb:
             raise ValueError(f"文件大小({size_mb:.1f}MB)超过最大限制({max_mb}MB)")
     except (OSError, FileNotFoundError):
-        pass
+        _logger.debug("async_check_file_size 无法读取文件 %s", path, exc_info=True)
 
 
 def _copy_file_permissions(src, dst):
-    """跨平台复制文件权限。"""
+    """跨平台复制文件权限。
+
+    ★ 只复制权限位（st_mode & 0o777），不复制 setuid/setgid/sticky
+      特殊位——意外传播特权位是安全风险。
+    """
     import stat as _stat
     if os.name == 'nt':
         src_ro = not os.access(src, os.W_OK)
         if src_ro:
             os.chmod(dst, _stat.S_IREAD)
     else:
-        os.chmod(dst, os.stat(src).st_mode)
+        os.chmod(dst, os.stat(src).st_mode & 0o777)
 
 
 def atomic_write_file(path, content, encoding='utf-8', errors='replace'):
@@ -91,7 +132,10 @@ def atomic_write_file(path, content, encoding='utf-8', errors='replace'):
     try:
         dir_path = os.path.dirname(path)
         if not dir_path:
-            dir_path = tempfile.gettempdir()
+            # 无目录的相对路径（如 "notes.md"）：临时文件必须建在目标同目录
+            # （"."），否则 tempfile 建到系统临时目录（可能跨文件系统），
+            # os.replace 跨设备（EXDEV）必然失败
+            dir_path = "."
         # 在写入前重新校验路径（防 TOCTOU）
         validate_path_security(path)
         fd, temp_path = tempfile.mkstemp(

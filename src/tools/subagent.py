@@ -34,6 +34,36 @@ logger = logging.getLogger(__name__)
 _LOW_MODEL_TYPES = {"map", "execute"}
 
 
+def parse_background_flag(args) -> bool:
+    """解析 subagent 调用的 background 标志（缺省视为后台）。
+
+    兼容 dict（原始 JSON 对象）与 str（JSON 字符串）；字符串布尔
+    （"true"/"false"）正确解析——修复前 ``bool("false")`` 误判为后台。
+    解析失败/缺省回退 True（默认后台语义，安全降级）。
+
+    调度层 barrier 计数（core/internal/agent/_tool_callbacks 与
+    core/subagent._handle_tool_calls）与本工具 from_args 共用本函数，
+    保证「后台判定」与「实际执行模式」一致。
+    """
+    raw = None
+    if isinstance(args, dict):
+        raw = args.get("background", True)
+    elif isinstance(args, str):
+        try:
+            data = json.loads(args)
+            if isinstance(data, dict):
+                raw = data.get("background", True)
+        except (json.JSONDecodeError, TypeError):
+            return True
+    else:
+        return True
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("true", "1", "yes", "on")
+    return bool(raw)
+
+
 @tool_metadata(
     parallel_safe=False,
     requires_network=False,
@@ -116,7 +146,7 @@ class SubagentFunc(Func):
             description=args.get("description", ""),
             prompt=args.get("prompt", ""),
             target_agent_type=args.get("type", "execute"),
-            background=args.get("background", True),
+            background=parse_background_flag(args),
         )
 
     @classmethod
@@ -199,6 +229,10 @@ class SubagentFunc(Func):
             return "(后台 subagent 需要关联 Agent 上下文，当前未关联)"
 
         task_id = f"sa-{uuid.uuid4().hex[:12]}"
+        # ensure_future 先于注册：若注册（_register_subagent_task）抛异常，
+        # 后台任务仍在运行但记录缺失（结果不会被对话轮次收集）——
+        # 风险极低（注册为内存 dict 写入），且 task 由事件循环持有，
+        # 不会泄漏；保持顺序以让任务尽快启动（review P3 注释说明）
         task = asyncio.ensure_future(self._run_background_subagent(task_id))
 
         # ── 任务记录注册到 agent._subagent_tasks（subagent 专用表） ──
@@ -271,6 +305,8 @@ class SubagentFunc(Func):
         before_record_ids: set = set()
         if sandbox is not None:
             try:
+                # id(r) 身份快照：记录对象在本函数存活期间不被 GC，id 复用
+                # 风险仅存在于极端对象生命周期交错场景，当前安全（review P3）
                 before_record_ids = {
                     id(r) for r in sandbox.get_all_file_changes()
                 }

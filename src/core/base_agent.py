@@ -51,10 +51,15 @@ def _parse_bash_result_fields(result: str) -> tuple[str, str, "int | None"]:
     except (json.JSONDecodeError, TypeError):
         return (result, "", None)
     if isinstance(data, dict) and "returncode" in data:
+        rc = data.get("returncode")
+        # 校验 returncode 为 int（bash 返回字符串 "0" 等异常形态时置 None，
+        # 保持下游 json.dumps 输出的 returncode 类型与 int 约定一致）
+        if not isinstance(rc, int):
+            rc = None
         return (
             str(data.get("stdout", "") or ""),
             str(data.get("stderr", "") or ""),
-            data.get("returncode"),
+            rc,
         )
     return (result, "", None)
 
@@ -163,10 +168,16 @@ class BaseAgent:
         msg["content"] = None if tool_calls else (content or "")
 
         # reasoning_content: DeepSeek 要求 key 始终存在
-        msg["reasoning_content"] = (
-            reasoning_content if isinstance(reasoning_content, str)
-            else _logger.debug("reasoning_content 类型异常 (%s)，回退为空", type(reasoning_content).__name__) or ""
-        )
+        if isinstance(reasoning_content, str):
+            msg["reasoning_content"] = reasoning_content
+        else:
+            # 非 str（None/异常类型）：记录日志并回退空字符串（保持 key 存在）
+            if reasoning_content is not None:
+                _logger.debug(
+                    "reasoning_content 类型异常 (%s)，回退为空",
+                    type(reasoning_content).__name__,
+                )
+            msg["reasoning_content"] = ""
 
         if tool_calls:
             msg["tool_calls"] = _build_tool_calls_payload(tool_calls)
@@ -174,8 +185,20 @@ class BaseAgent:
         self.messages.append(msg)
         self._sync_sandbox_index(len(self.messages) - 1)
 
-    def _append_tool_result(self, tool_call_id: str, content: str) -> None:
-        """追加 tool 角色消息。"""
+    def _append_tool_result(self, tool_call_id: str, content) -> None:
+        """追加 tool 角色消息。
+
+        content 支持三种类型：
+        - str：纯文本结果（原有行为）。
+        - ToolResult：结构化结果（工具设置了 result_blocks 时由执行链路
+          包装）——有 blocks 时 content 为 OpenAI 兼容 content blocks list
+          （多模态模型可见图片），无 blocks 时退化为 text。
+        - list[dict]：直接作为 content blocks（多模态，OpenAI 兼容格式，
+          如 [{"type": "image_url", "image_url": {...}}]）。
+        """
+        from ..tools.base import ToolResult
+        if isinstance(content, ToolResult):
+            content = content.to_content()
         self.messages.append({
             "role": "tool",
             "tool_call_id": tool_call_id,
@@ -538,6 +561,10 @@ class BaseAgent:
         超时后仍在运行的任务被标记为 ``managed_by_tool=True``（不再自动等待），
         并插入「仍在运行」用户消息——模型已在前台 bash 工具返回中拿到
         task_id，可经 bash_opt 工具继续 wait/kill 管理。
+
+        注（review P3）：与 _process_subagent_tasks 高度同构（同一处理模板，
+        仅表名/字段不同）——刻意保留两份以独立演进两表语义（bash 三元结果
+        展开 vs subagent 输出），重构提取公共模板收益低且引入回归风险。
         """
         if not hasattr(self, "_background_tasks") or not self._background_tasks:
             return False
@@ -572,6 +599,9 @@ class BaseAgent:
                 for task in unfinished:
                     # 快照遍历（P3 防御）：当前循环内无 await 不会结构性修改，
                     # 但快照可防未来加入 await 时 bash_opt/完成回调并发 pop。
+                    # 注（review P3）：unfinished × 任务表双重遍历为 O(N²)——
+                    # 未完成任务数量极小（≤ 少数后台 bash），开销可忽略，
+                    # 换取与任务表强一致的精确匹配。
                     for task_id, rec in list(self._background_tasks.items()):
                         if rec.get("task") is task:
                             if not rec.get("managed_by_tool"):

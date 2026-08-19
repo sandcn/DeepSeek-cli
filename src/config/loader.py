@@ -22,6 +22,11 @@ def _safe_merge(defaults: dict, overrides: dict) -> dict:
 
     同时保留 overrides 中 defaults 不存在的顶层键（如 "performance"），
     信任 _validate_rc 做校验和回退。
+
+    注（review P3）：浅合并——RC 只配置复合键部分子键（如 skills 只写
+    {"enabled": false}）时会整体替换 defaults 的 skills。读取方有 .get
+    默认值兜底不崩溃，但用户配置会部分丢失；深合并复合键需按类型递归，
+    当前复合键消费方均容忍，暂不实施。
     """
     result = dict(defaults)
     for key in result:
@@ -57,6 +62,12 @@ def get_rc():
 
 
 def update_config(key: str, value) -> None:
+    """更新配置键并持久化到 RC 文件。
+
+    注（review P3）：无并发锁——多线程同时写 RC 文件存在写坏风险。
+    调用频率低（命令式配置修改）且写为原子 write_text（整文件重写），
+    实际风险可控；如需并发安全需加 threading.Lock 保护整个读改写序列。
+    """
     rc = get_rc()
     # 使用 CONFIG_KEYS 中的 rc_path 进行键名映射
     if key in CONFIG_KEYS:
@@ -84,6 +95,13 @@ def update_config(key: str, value) -> None:
     else:
         from . import _clear_value_cache
         _clear_value_cache()
+        # multimodal 模型判定缓存联动失效：RC 配置 multimodal_models 变更后
+        # 清除 is_multimodal_model 的结果缓存（延迟导入避免 config ↔ api 循环）
+        try:
+            from ..api.multimodal import clear_multimodal_cache
+            clear_multimodal_cache()
+        except Exception:
+            pass
 
 
 def get_base_url(provider=None):

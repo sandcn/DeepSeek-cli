@@ -107,6 +107,12 @@ class ParallelExecutor:
         self._all_done.clear()
         self._barrier_deadline = time.monotonic() + _BARRIER_TIMEOUT
 
+    def release(self) -> None:
+        """释放 barrier（取消/异常路径兜底）：唤醒所有等待 register_and_wait
+        的协程，防止 SubAgent 等待者永久阻塞。调度层（ToolCallbackChain /
+        SubAgent）在工具执行 finally 中调用，替代直接访问 _all_done 私有字段。"""
+        self._all_done.set()
+
     async def register_and_wait(self) -> None:
         """
         注册当前协程，等待全部 agent 注册完成后执行。
@@ -270,6 +276,9 @@ class ParallelExecutor:
 
             # ★ 在 CancelledError 传播前执行输出逻辑，避免 finally 中
             #   asyncio.to_thread 被取消导致输出丢失
+            # 注（review P3）：取消路径与 finally 各调用一次 await_stop——
+            # EventBusDisplayProxy.await_stop 为幂等实现（首次停止刷新线程，
+            # 再次调用安全返回），不会重复渲染
             try:
                 await display.await_stop(timeout=_TIMEOUT)
             except Exception:

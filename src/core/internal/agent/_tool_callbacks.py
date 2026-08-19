@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from ...parallel_executor import ParallelExecutor
 from ...tool_executor_async import ToolScheduler
 from ...telemetry import get_default_collector
@@ -30,6 +31,73 @@ def _safe_json_dumps(obj) -> str:
         return str(obj)
 
 
+# 敏感键名掩码正则（str 形态参数无法 JSON 解析时的兜底脱敏）
+# 匹配 "key": "value" / 'key': 'value'（键名忽略大小写）
+_SENSITIVE_KEY_JSON_RE = re.compile(
+    r'(["\'](?:api[_-]?key|apikey|token|secret|password|passwd|'
+    r'authorization|auth|private[_-]?key|access[_-]?key|key)["\']\s*:\s*["\'])'
+    r'[^"\']*["\']',
+    re.IGNORECASE,
+)
+
+
+def _mask_sensitive_json_text(text: str) -> str:
+    """将 str 形态参数文本中的敏感键值对掩码为 ***。
+
+    与 dict 路径的 SENSITIVE_KEYS 集合对应；仅作 JSON 解析失败时
+    的兜底（正常 JSON 走递归脱敏，语义更精确）。
+    """
+    return _SENSITIVE_KEY_JSON_RE.sub(r'\1***"', text)
+
+
+# 敏感键名集合（dict 路径递归脱敏用；与 _mask_sensitive_json_text 对应）
+_SENSITIVE_ARGS_KEYS = frozenset({
+    "api_key", "api-key", "apikey", "token", "secret",
+    "password", "passwd", "authorization", "auth",
+    "key", "private_key", "access_key",
+})
+
+
+def _sanitize_args_impl(args, _depth: int = 0) -> str:
+    """过滤工具参数中的敏感字段，用于审计日志记录（模块级实现）。
+
+    args 可能为 dict（正常）或 str（JSON 字符串形态，见
+    ``_call_is_background_subagent`` 的处理场景）。str 形态先尝试
+    JSON 解析后递归脱敏——否则 ``{"password": "xxx"}`` 等敏感字段
+    会原样写入 audit.log（安全缺陷）；解析失败时按 JSON 键名模式
+    掩码值。模块级函数：避免 Python 3.9 下 staticmethod 经类名
+    递归引用不可调用的问题。
+    """
+    _MAX_RECURSION_DEPTH = 20
+    if _depth >= _MAX_RECURSION_DEPTH:
+        return "{...}"
+
+    if not isinstance(args, dict):
+        text = str(args)[:2000]
+        # 尝试 JSON 解析 → 递归脱敏
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return _sanitize_args_impl(parsed, _depth)
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # 解析失败（截断/非 JSON）：按键名模式掩码 "key": "value"
+        return _mask_sensitive_json_text(text)
+
+    sanitized = {}
+    for k, v in args.items():
+        if k.lower() in _SENSITIVE_ARGS_KEYS:
+            sanitized[k] = "***"
+        elif isinstance(v, dict):
+            sanitized[k] = _sanitize_args_impl(v, _depth + 1)
+        elif isinstance(v, str) and len(v) > 100:
+            sanitized[k] = v[:100] + "..."
+        else:
+            sanitized[k] = v
+    result = str(sanitized)
+    return result[:200]
+
+
 async def _run_file_display(func, display=None):
     """通过 display 管道执行文件操作工具（write_file/update_file），获取 diff 输出。
 
@@ -42,28 +110,27 @@ async def _run_file_display(func, display=None):
     return await func.display()
 
 
+def _parse_background_flag(args) -> bool:
+    """解析 subagent 调用的 background 标志（缺省视为后台）。
+
+    委托 :func:`src.tools.subagent.parse_background_flag`（单一实现源，
+    与 SubagentFunc.from_args 保持一致——保证 barrier 计数判定与
+    subagent 工具实际执行模式一致）。"""
+    from ....tools.subagent import parse_background_flag as _parse
+    return _parse(args)
+
+
 def _call_is_background_subagent(tc: dict) -> bool:
     """判断 tool_call 是否为后台 subagent 调用（默认后台）。
 
-    arguments 可能为 dict（原始 JSON 对象）或 str（JSON 字符串），
-    统一解析后读取 background 字段。subagent 默认后台执行（background
-    缺省即视为后台）——与 ``SubagentFunc.from_args`` 的默认值 True 一致，
-    避免 barrier 计数与 subagent 工具实际执行路径不一致（否则后台 subagent
-    计入 dispatch_count 后不注册 barrier，只能靠 _BARRIER_TIMEOUT 兜底）；
-    仅显式 background=false 视为前台。解析失败也按后台处理（安全降级：
-    默认语义即后台，且不会造成 barrier 计数不匹配）。
+    subagent 默认后台执行（background 缺省即视为后台）——与
+    ``SubagentFunc.from_args`` 的默认值 True 一致，避免 barrier 计数与
+    subagent 工具实际执行路径不一致（否则后台 subagent 计入 dispatch_count
+    后不注册 barrier，只能靠 _BARRIER_TIMEOUT 兜底）。
     """
     if tc.get("name") != "subagent":
         return False
-    args = tc.get("arguments")
-    if isinstance(args, dict):
-        return bool(args.get("background", True))
-    if isinstance(args, str):
-        try:
-            return bool(json.loads(args).get("background", True))
-        except (json.JSONDecodeError, TypeError):
-            return True
-    return True
+    return _parse_background_flag(tc.get("arguments"))
 
 
 def _count_dispatch_subagents(tool_calls: list) -> int:
@@ -121,8 +188,6 @@ class ToolCallbackChain:
         else:
             agent._shared_executor = None
 
-        agent._append_assistant_message(content, tool_calls, reasoning_content)
-
         # ── 回调工厂（消除 lambda 重复） ────────────────
         def _on_before(tc, detail):
             return self._on_before_tool(tc, detail, parse_elapsed)
@@ -131,8 +196,11 @@ class ToolCallbackChain:
 
         # ── ToolScheduler 统一调度 ──────────────────────
         # UNIQUE_PATH: MainAgent 工具执行入口，项目唯二 schedule() 调用方之一
-        results: list[tuple[str, str, bool]] = []
+        results: list[tuple[str, Any, bool]] = []
         try:
+            # _append_assistant_message 也在 try 内：若消息构造抛异常（罕见），
+            # finally 仍会释放 barrier（防 SubAgent 等待者死锁）
+            agent._append_assistant_message(content, tool_calls, reasoning_content)
             results = await ToolScheduler.default().schedule(
                 tool_calls,
                 agent_ref=agent,
@@ -141,9 +209,9 @@ class ToolCallbackChain:
                 run_method=self._run_tool_method,
             )
         finally:
-            # 确保取消/异常时释放 barrier
+            # 确保取消/异常时释放 barrier（经公开 release()，不直接触碰私有字段）
             if agent._shared_executor is not None:
-                agent._shared_executor._all_done.set()
+                agent._shared_executor.release()
             agent._shared_executor = None
 
         successful_tools = []
@@ -154,7 +222,7 @@ class ToolCallbackChain:
             if success:
                 successful_tools.append(tc_name)
             else:
-                failed_tools.append((tc_name, output))
+                failed_tools.append((tc_name, to_tool_text(output)))
 
         # ★ P3-时序修复（2026-08-08）：subagent 提前返回后，剩余 dispatch
         #   由后台任务执行并补发 tool result（_bg_subagents）。等待其完成，
@@ -192,27 +260,13 @@ class ToolCallbackChain:
     # ── 工具回调（从 _handle_tool_calls 内联闭包提取） ──────
 
     @staticmethod
-    def _sanitize_args_for_log(args: dict, _depth: int = 0) -> str:
-        """过滤工具参数中的敏感字段，用于审计日志记录。"""
-        _MAX_RECURSION_DEPTH = 20
-        if _depth >= _MAX_RECURSION_DEPTH:
-            return "{...}"
+    def _sanitize_args_for_log(args, _depth: int = 0) -> str:
+        """过滤工具参数中的敏感字段，用于审计日志记录。
 
-        SENSITIVE_KEYS = {"api_key", "api-key", "apikey", "token", "secret",
-                          "password", "passwd", "authorization", "auth",
-                          "key", "private_key", "access_key"}
-        sanitized = {}
-        for k, v in args.items():
-            if k.lower() in SENSITIVE_KEYS:
-                sanitized[k] = "***"
-            elif isinstance(v, dict):
-                sanitized[k] = ToolCallbackChain._sanitize_args_for_log(v, _depth + 1)
-            elif isinstance(v, str) and len(v) > 100:
-                sanitized[k] = v[:100] + "..."
-            else:
-                sanitized[k] = v
-        result = str(sanitized)
-        return result[:200]
+        委托模块级 :func:`_sanitize_args_impl`（Python 3.9 下 staticmethod
+        不可直接调用，模块级函数避免类名引用递归问题）。
+        """
+        return _sanitize_args_impl(args, _depth)
 
     def _on_before_tool(self, tc: dict, detail: str, parse_elapsed: float) -> None:
         """工具执行前回调：审计日志 + display 进度展示。"""
@@ -230,10 +284,14 @@ class ToolCallbackChain:
         agent.display.tool_parsing(tool_label, tool_name, arg_str)
         agent.display.tool_start(tool_label, tool_name, detail, metadata)
 
-    def _on_after_tool(self, tc: dict, output: str, success: bool) -> None:
+    def _on_after_tool(self, tc: dict, output, success: bool) -> None:
         """工具执行后回调：display 完成进度 + TUI 刷新通知。"""
         agent = self._agent
         tool_label = tc["id"]
+
+        # 多模态结构化结果（ToolResult）归一化为纯文本用于展示/统计
+        from ...tools.base import to_tool_text
+        output = to_tool_text(output)
 
         if success:
             metadata: dict = {

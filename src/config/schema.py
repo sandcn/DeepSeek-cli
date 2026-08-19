@@ -17,7 +17,9 @@ def _detect_provider_from_api_key(api_key: str) -> tuple[Optional[str], Optional
     # Anthropic: sk-ant-api03-...
     if api_key.startswith("sk-ant-"):
         return "anthropic", "claude-sonnet-4-6"
-    # 可在此扩展更多 key 前缀检测
+    # 注：deepseek/glm/mimo 的 API Key 无稳定可识别前缀，不做前缀探测——
+    # 这些 provider 由用户显式配置 provider/base_url 生效（_validate_rc 的
+    # "修正 base_url" 分支兜底）；如需扩展需确认各服务商 Key 格式。
     return None, None
 
 
@@ -39,15 +41,22 @@ _INT_FIELDS = _derive_rc_fields(int)
 _FLOAT_FIELDS = _derive_rc_fields(float)
 _BOOL_FIELDS = _derive_rc_fields(bool)
 
+# reasoning_effort 允许值域（模块级常量，避免每次 _validate_rc 调用重建）
+_REASONING_EFFORT_LEVELS = frozenset({"low", "medium", "high", "max"})
+
 
 def _validate_rc(rc):
-    """校验配置值类型，无效值回退到默认值"""
+    """校验配置值类型，无效值回退到默认值
+
+    注（review P3）：嵌套 HTTP 性能配置（``performance.*``，见 CONFIG_KEYS
+    rc_path 含 2 段的条目）不做类型校验——其消费方（client_async）读取时
+    有类型兜底；如需严格校验需按路径段递归遍历，当前收益低不实施。
+    """
     int_fields = _INT_FIELDS
     for field in int_fields:
         if field in rc:
             if isinstance(rc[field], bool):
                 rc[field] = DEFAULTS.get(field, 0)
-                pass
             if not isinstance(rc[field], int):
                 try:
                     rc[field] = int(rc[field])
@@ -57,7 +66,10 @@ def _validate_rc(rc):
     float_fields = _FLOAT_FIELDS
     for field in float_fields:
         if field in rc:
-            if not isinstance(rc[field], (int, float)):
+            # bool 是 int 子类：显式排除（True/False 不应作为 float 配置）
+            if isinstance(rc[field], bool):
+                rc[field] = DEFAULTS.get(field, 1.0)
+            elif not isinstance(rc[field], (int, float)):
                 try:
                     rc[field] = float(rc[field])
                 except (ValueError, TypeError):
@@ -67,7 +79,7 @@ def _validate_rc(rc):
     for field in bool_fields:
         if field in rc:
             if isinstance(rc[field], bool):
-                pass
+                continue
             elif isinstance(rc[field], str):
                 rc[field] = rc[field].lower() in ("true", "1", "yes", "on")
             elif isinstance(rc[field], int):
@@ -85,7 +97,7 @@ def _validate_rc(rc):
         rc["api_key"] = DEFAULTS["api_key"]
 
     # reasoning_effort 值域校验：非 str 或不在允许集合时回退默认值
-    _REASONING_EFFORT_LEVELS = frozenset({"low", "medium", "high", "max"})
+    # （_REASONING_EFFORT_LEVELS 为模块级常量，见上方定义）
     if "reasoning_effort" in rc:
         effort = rc["reasoning_effort"]
         if not isinstance(effort, str) or effort.lower() not in _REASONING_EFFORT_LEVELS:
@@ -131,6 +143,12 @@ def _validate_rc(rc):
                         continue
             rc["token_prices"] = cleaned
 
+    if "multimodal_models" in rc:
+        if not isinstance(rc["multimodal_models"], (list, tuple)):
+            rc["multimodal_models"] = DEFAULTS["multimodal_models"]
+        else:
+            rc["multimodal_models"] = [str(m) for m in rc["multimodal_models"]]
+
     if rc.get("max_retries", 1) < 0:
         rc["max_retries"] = DEFAULTS["max_retries"]
     if rc.get("max_context_chars", 1) < 0:
@@ -161,8 +179,17 @@ def _validate_rc(rc):
     if _api_key and not _env_model:
         detected_provider, detected_model = _detect_provider_from_api_key(_api_key)
         current_provider = rc.get("provider", DEFAULTS["provider"])
-        if detected_provider and detected_provider != current_provider:
-            # 检测到不同 provider → 完整切换
+        # 用户是否显式配置了 provider（RC provider 非默认，或 base_url 非默认）？
+        # 显式配置时不自动切换——否则 CHAT_API_KEY 前缀探测会覆盖用户的
+        # 显式 provider/model 选择（review P3）
+        rc_base_url = rc.get("base_url", "") or ""
+        _default_base_url = PROVIDERS.get(DEFAULTS["provider"], {}).get("base_url", "")
+        explicit_provider = (
+            current_provider != DEFAULTS["provider"]
+            or (rc_base_url and rc_base_url != _default_base_url)
+        )
+        if detected_provider and detected_provider != current_provider and not explicit_provider:
+            # 检测到不同 provider 且用户未显式配置 → 完整切换
             provider_config = PROVIDERS.get(detected_provider, {})
             rc["provider"] = detected_provider
             rc["model"] = detected_model

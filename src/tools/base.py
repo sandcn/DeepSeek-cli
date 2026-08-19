@@ -5,20 +5,20 @@ import functools
 import inspect
 import logging
 import os
+from dataclasses import dataclass as _std_dataclass
+from typing import Any, List, Optional, Union
 
 from src._compat import dataclass
-from typing import Optional
 
 # ── inspect.signature 缓存 ─────────────────────────────────
 # from_args() 每次调用 inspect.signature(cls.__init__) 约 0.1-0.3ms，
 # 对频繁调用的工具而言是可避免的开销。使用 lru_cache 消除重复计算，
 # 线程安全（GIL 下 dict 操作虽原子，但 lru_cache 语义更清晰）。
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=256)
 def _get_init_sig(cls: type) -> inspect.Signature:
-    """获取类的 __init__ 签名，结果无限期缓存。"""
+    """获取类的 __init__ 签名，结果有界缓存（工具类数量远小于 256）。"""
     return inspect.signature(cls.__init__)
-
 
 
 async def print_to_terminal(text: str, tool_id: str = "") -> None:
@@ -27,18 +27,15 @@ async def print_to_terminal(text: str, tool_id: str = "") -> None:
     通过 EventBus 发布 ToolOutputChunkEvent，由 ChatUIConsumer
     render 线程统一排队渲染，不与底部栏刷新竞态。
 
+    实现委托给 ``Func._publish_tool_text``（二者解析逻辑完全一致：
+    tool_id 为空时从 contextvar 解析归属，仍为空回退 "assistant"）。
+
     Args:
         text: 输出文本。
         tool_id: 可选工具调用 ID。为空时从 contextvar（当前工具上下文）
             解析归属；仍为空回退 "assistant"（兼容旧行为）。
     """
-    from ..tui.events.event_types import ToolOutputChunkEvent
-    from ..tui.events.publish import emit
-    from ..core.internal.agent._tool_context import get_current_tool_id
-    resolved = tool_id or get_current_tool_id() or "assistant"
-    emit(ToolOutputChunkEvent(
-        label=resolved, tool_id=resolved, text=text, source="agent",
-    ))
+    Func._publish_tool_text(text, tool_id)
 
 
 # 基类
@@ -52,6 +49,10 @@ class Func(abc.ABC):
         self.execution_count: int = 0
         self.execution_success: int = 0
         self.execution_failed: int = 0
+        # 多模态结构化结果（OpenAI 兼容 content blocks，如 image_url）。
+        # 工具在 execute() 中设置后，执行链路自动将返回包装为 ToolResult，
+        # tool 消息 content 变为 blocks list（多模态模型可见图片）。
+        self.result_blocks: list[dict] | None = None
 
     def set_agent(self, agent):
         self.agent = agent
@@ -77,20 +78,16 @@ class Func(abc.ABC):
             return (False, f"工具 '{tool_name}' 不可用于 '{agent_type}' 类型 agent，"
                     f"该 agent 类型的工具白名单已排除此工具")
         # 路径白名单校验：plan agent 使用 write_file / update_file / mkdir 时限制写入目录
+        # （与 file_base._validate_path_and_size / mkdir.execute 共用
+        #  get_plan_allowed_dir + is_path_within_dir，realpath 解析符号链接防绕过）
         if path is not None and agent_type == 'plan' and tool_name in ('write_file', 'update_file', 'mkdir'):
-            allowed_dir = os.path.realpath(os.path.abspath(os.path.join(os.getcwd(), '.chat', 'plan')))
+            from .file_ops import get_plan_allowed_dir, is_path_within_dir
+            allowed_dir = get_plan_allowed_dir()
             agent_label = "plan agent"
-            try:
-                abs_path = os.path.abspath(path)
-                common = os.path.commonpath([allowed_dir, abs_path])
-                if common != allowed_dir:
-                    return (False, f"{agent_label} 只能在 {allowed_dir} 目录下写入文件。"
-                            f"当前路径: {path}（解析后: {abs_path}），"
-                            f"不在允许的目录: {allowed_dir}")
-            except ValueError:
+            if not is_path_within_dir(path, allowed_dir):
                 return (False, f"{agent_label} 只能在 {allowed_dir} 目录下写入文件。"
-                        f"当前路径: {path}（解析后: {abs_path}），"
-                        f"无法与 {allowed_dir} 比较")
+                        f"当前路径: {path}（解析后: {os.path.realpath(path)}），"
+                        f"不在允许的目录: {allowed_dir}")
         return (True, None)
 
     @classmethod
@@ -121,6 +118,14 @@ class Func(abc.ABC):
             raise ValueError(
                 f"工具 '{cls.name}' 缺少必需参数: {names}。"
                 f"调用时必须提供所有必需参数。"
+            )
+        # 多余参数（非 __init__ 参数名）：记录 debug 日志，不阻塞执行——
+        # 模型传错参数名时下游 execute 会给出错误，debug 日志便于排查
+        _extra = set(args) - {p.name for p in _init_params}
+        if _extra:
+            logging.getLogger(__name__).debug(
+                "工具 '%s' 收到多余参数: %s（已忽略）",
+                cls.name, sorted(_extra),
             )
         kwargs = {p.name: args[p.name] for p in _init_params if p.name in args}
         return cls(**kwargs)
@@ -157,8 +162,9 @@ class Func(abc.ABC):
                 label=resolved, tool_id=resolved, text=text, source="agent",
             ))
         except Exception:
+            # 事件发布失败 → warning（用户侧工具输出静默丢失需可感知）
             _logger = logging.getLogger(__name__)
-            _logger.debug("_publish_tool_text 失败")
+            _logger.warning("_publish_tool_text 失败", exc_info=True)
 
     @staticmethod
     def _publish_tool_notice(text: str, tool_id: str = "") -> None:
@@ -190,7 +196,7 @@ class Func(abc.ABC):
             ))
         except Exception:
             _logger = logging.getLogger(__name__)
-            _logger.debug("_publish_tool_notice 失败")
+            _logger.warning("_publish_tool_notice 失败", exc_info=True)
 
     @staticmethod
     def _print_operation(description: str) -> None:
@@ -344,3 +350,59 @@ def tool_metadata(
 def get_tool_metadata(tool_class) -> Optional[ToolMetadata]:
     """获取工具类的元数据，未设置时返回 None"""
     return getattr(tool_class, _METADATA_ATTR, None)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 工具结构化结果（多模态支持）
+# ═══════════════════════════════════════════════════════════════
+# 使用标准库 dataclass（非 slots）定义：_compat.dataclass 的 slots 兼容
+# 包装在 mypy 下无法识别为 dataclass（无自动生成的 __init__），
+# 而 ToolResult 对 slots 无性能诉求，标准 dataclass 可同时满足
+# 运行（Python 3.9）与类型检查。
+
+@_std_dataclass
+class ToolResult:
+    """工具结构化结果 — 文本摘要 + 多模态 content blocks
+
+    工具 execute() 返回人类可读文本的同时，可通过 ``func.result_blocks``
+    携带 OpenAI 兼容的多模态 content blocks（如 image_url data URI）。
+    执行链路（ToolScheduler._run_tool_func）检测到 result_blocks 后，
+    将返回包装为本对象；``BaseAgent._append_tool_result`` 据此把 tool
+    消息 content 设为 blocks list（多模态模型可直接看到图片），
+    Anthropic 适配器再转换为 image block。
+
+    Attributes:
+        text: 给模型的文本摘要（execute() 返回值语义，展示/统计用）。
+        blocks: OpenAI 兼容 content blocks 列表（如
+            ``[{"type": "text", ...}, {"type": "image_url", ...}]``），
+            可空（空时退化为纯文本 content）。
+    """
+    text: str
+    blocks: list[dict] | None = None
+
+    def to_content(self) -> Union[str, List[dict]]:
+        """转换为 tool 消息 content（str 或 list[dict]）。
+
+        有 blocks 时返回 blocks（多模态），否则返回 text（纯文本）。
+        """
+        if self.blocks:
+            return self.blocks
+        return self.text
+
+    @property
+    def display_text(self) -> str:
+        """展示/统计用文本（TUI 工具卡、token 估算等）。"""
+        return self.text
+
+
+def to_tool_text(value: Any) -> str:
+    """将工具输出值（str 或 ToolResult）归一化为纯文本。
+
+    供展示/统计链路（on_after 回调、token 估算等）复用，
+    避免各消费方重复 ``isinstance(value, ToolResult)`` 判断。
+    """
+    if isinstance(value, ToolResult):
+        return value.text
+    if value is None:
+        return ""
+    return str(value)

@@ -399,7 +399,10 @@ class SubAgent(BaseAgent):
           提供有限次快速重试（每次请求秒级失败，不叠加长等待）。
         """
         if self._model_port is not None:
-            # 兼容不支持重试参数的自定义端口（旧 Mock 等）：TypeError 回退默认调用
+            # 兼容不支持重试参数的自定义端口（旧 Mock 等）：TypeError 回退默认调用。
+            # 注：若 ModelPort.call 内部因真实 bug 抛 TypeError，此处会误回退并
+            # 掩盖错误——权衡取兼容性优先（自定义端口以旧签名为主，内部 TypeError
+            # 罕见且二次调用会再次暴露）；如需精确可改签名探测（review P3）。
             try:
                 result = await self._model_port.call(
                     messages, model, tools, display, label, silent,
@@ -446,7 +449,10 @@ class SubAgent(BaseAgent):
         - 全部工具 → 通过全局 DAG 拓扑分层调度（单工具/多工具统一）
         """
         # 检测 subagent 调用，创建共享 ParallelExecutor
-        dispatch_count = sum(1 for tc in tool_calls if tc.get("name") == "subagent")
+        # （复用 MainAgent 的 _count_dispatch_subagents：排除后台 subagent，
+        #  仅显式 background=false 的前台 subagent 计入 barrier）
+        from .internal.agent._tool_callbacks import _count_dispatch_subagents
+        dispatch_count = _count_dispatch_subagents(tool_calls)
         if dispatch_count > 0:
             from .parallel_executor import ParallelExecutor
             self._shared_executor = ParallelExecutor(self)
@@ -469,8 +475,9 @@ class SubAgent(BaseAgent):
             )
         finally:
             # 确保取消/异常时释放 barrier，防止死锁
+            # （经公开 release()，不直接触碰 _all_done 私有字段）
             if self._shared_executor is not None:
-                self._shared_executor._all_done.set()
+                self._shared_executor.release()
             self._shared_executor = None
 
         # 收集所有工具结果，确保 messages 序列完整

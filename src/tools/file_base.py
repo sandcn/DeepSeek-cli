@@ -13,6 +13,8 @@ from .file_ops import (
     validate_path_security,
     check_file_size,
     async_file_exists,
+    get_plan_allowed_dir,
+    is_path_within_dir,
 )
 from ..core.constants import GREEN, RED, DIM, RESET
 from ..tui._diff_renderer import render_diff_to_ansi
@@ -100,9 +102,9 @@ class PathSecurityError(FileToolError):
 class FileSizeError(FileToolError):
     pass
 
-# plan agent 路径白名单目录（模块级常量）
-# cwd 在进程生命周期内不变，提前计算避免每次 _validate_path_and_size 重复解析
-_PLAN_ALLOWED_DIR = os.path.realpath(os.path.join(os.getcwd(), '.chat', 'plan'))
+# 注：plan 白名单目录不再做模块级缓存——get_plan_allowed_dir() 基于
+# os.getcwd()，os.chdir（含测试 chdir）后缓存会陈旧；与 mkdir / base.can_use
+# 一致，每次 _validate_path_and_size 动态解析（realpath，开销可忽略）。
 
 @tool_metadata(
     parallel_safe=False,
@@ -158,23 +160,15 @@ class FileToolBase(Func):
         # 上下文即无语义，不限制是正确行为。
         agent_type_val = getattr(self, 'agent_type', None)
         if agent_type_val == 'plan':
-            allowed_dir = _PLAN_ALLOWED_DIR
+            allowed_dir = get_plan_allowed_dir()
             agent_label = "plan agent"
-            # real 已是解析符号链接后的绝对路径，无需再次 abspath
-            # os.path.commonpath 判断子路径关系，防 ../ 穿越
-            try:
-                common = os.path.commonpath([allowed_dir, real])
-                if common != allowed_dir:
-                    raise PathSecurityError(
-                        f"{agent_label} 只能在 {allowed_dir} 目录下写入文件。"
-                        f"当前路径: {self.path}（解析后: {real}），"
-                        f"不在允许的目录: {allowed_dir}"
-                    )
-            except ValueError:
-                # 不同驱动器（Windows）等无法比较的情况
+            # realpath 解析符号链接 + commonpath 防穿越（与 mkdir / base.can_use
+            # 共用 is_path_within_dir，统一语义防符号链接绕过）
+            if not is_path_within_dir(real, allowed_dir):
                 raise PathSecurityError(
                     f"{agent_label} 只能在 {allowed_dir} 目录下写入文件。"
-                    f"当前路径: {self.path} 无法与 {allowed_dir} 比较"
+                    f"当前路径: {self.path}（解析后: {real}），"
+                    f"不在允许的目录: {allowed_dir}"
                 )
 
         if os.path.exists(real):
@@ -332,20 +326,7 @@ class FileToolBase(Func):
         else:
             return f"  {RED}x {output}{RESET}"
 
-    async def _prepare_diff_content(self) -> tuple[str | None, str | None, bool]:
-        """准备 diff 所需的新旧内容，返回 (old_content, new_content, exists)
-        若 _get_new_content 出错，返回 (None, None, exists)
-        """
-        exists = await async_file_exists(self.path)
-        old_content = await self._read_original() if exists else None
-        try:
-            new_content = await self._get_new_content()
-        except FileToolError:
-            return None, None, exists
-        return old_content, new_content, exists
-
     async def execute(self, precomputed_content=None) -> str:
-        """异步执行文件写入，直接 await async 文件操作（不再通过 run_in_executor 包装同步方法）"""
         total_start = time.time()
         try:
             # 路径安全校验 + 文件大小检查（在异步上下文中执行，避免构造时阻塞）
@@ -362,9 +343,16 @@ class FileToolBase(Func):
             result = f"{self._success_verb()} {lines_count}L {size}B"
 
             # 沙盒记录（异步版本，通过 to_thread 安全记录）
-            await async_record_file_change_from_context(
-                self.path, old_content, new_content, self.name
-            )
+            # ★ 记录失败不视为写入失败：文件已落盘，报失败会让模型重试/重复
+            #   写入，且 undo 回滚失效。与 cp/mv/rm 的 async_record_sandbox
+            #   （捕获 + warning）策略一致——捕获 + warning，工具仍报成功。
+            try:
+                await async_record_file_change_from_context(
+                    self.path, old_content, new_content, self.name
+                )
+            except Exception:
+                _logger.warning("沙盒记录失败（文件已写入，忽略）: %s", self.path,
+                                exc_info=True)
             return result
 
         except FileToolError as e:
@@ -389,7 +377,7 @@ class FileToolBase(Func):
             old_content = await self._read_original()
         try:
             new_content = await self._get_new_content()
-        except (FileToolError, Exception) as e:
+        except Exception as e:
             if not isinstance(e, FileToolError):
                 _logger.exception("display() 内容生成异常: %s", e)
                 err_msg = f"({self._success_verb().replace('成功','失败')}: 内容生成失败)"

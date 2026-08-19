@@ -66,6 +66,9 @@ DEFAULTS = {
     "provider": "deepseek",
     "base_url": "",
     "api_key": "",
+    # 全局默认模型（用户未显式选择 provider/模型时使用快速版）；
+    # PROVIDERS[provider]["default_model"] 是**显式切换**到该 provider 时的
+    # 模型（deepseek=pro 旗舰）——两者用途不同，非笔误。
     "model": "deepseek-v4-flash",
     "reasoning_effort": "max",
     "temperature": 0.2,
@@ -152,13 +155,16 @@ CONFIG_KEYS = {
     "MAX_RETRIES": {
         "rc_path": ("max_retries",),
         "type": int,
-        "default": 3,
+        # 引用 DEFAULTS 保持单一事实源（_safe_merge 以 DEFAULTS 为 base，
+        # 此处 default 仅作 rc 键缺失时的兜底，双源漂移会导致两种路径
+        # 返回不同默认值——见 review P1）
+        "default": DEFAULTS["max_retries"],
         "cacheable": True,
     },
     "RETRY_BASE_SEC": {
         "rc_path": ("retry_base_sec",),
         "type": float,
-        "default": 1,
+        "default": DEFAULTS["retry_base_sec"],
         "cacheable": True,
     },
     "MAX_SESSION_MESSAGES": {
@@ -209,6 +215,12 @@ CONFIG_KEYS = {
         "rc_path": ("token_prices",),
         "type": dict,
         "default": {},
+        "cacheable": True,
+    },
+    "MULTIMODAL_MODELS": {
+        "rc_path": ("multimodal_models",),
+        "type": list,
+        "default": [],
         "cacheable": True,
     },
     # ---- HTTP 性能配置（嵌套路径） ----

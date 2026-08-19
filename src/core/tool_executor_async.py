@@ -27,6 +27,7 @@ import time
 from typing import Any, List, Tuple, Optional, Callable
 
 from ..tools.registry import ToolRegistry
+from ..tools.base import ToolResult
 from .param_formatter import extract_key_params
 from .tool_dag import ToolDAG
 
@@ -135,6 +136,13 @@ class ToolScheduler:
         #   未完成的任务保留，由 schedule() finally 在确认全部完成后统一清理。
         #   ⚠ 过滤方向：保留未完成（not t.done()），移除已完成——否则本方法在
         #   全部 bg done 后调用时列表全量保留、永久累积（内存泄漏）。
+        #
+        #   生命周期设计（review P3）：未完成 bg 任务在 SubAgent 运行期间
+        #   必须保留（其结果需补发到 agent 消息保证消息序列完整）；SubAgent
+        #   自然结束（模型调用无超时、等待到底）后任务完成，由下一次
+        #   _cleanup_batch_records 移除——滞留时长与 SubAgent 执行时长一致，
+        #   非泄漏。仅当 SubAgent 永久挂起（极端网络场景）时任务长期保留，
+        #   属"等待到底"设计语义，不做强制回收。
         self._background_dispatch_tasks = [
             t for t in self._background_dispatch_tasks if not t.done()
         ]
@@ -504,11 +512,15 @@ class ToolScheduler:
             except asyncio.CancelledError:
                 raise
 
-    async def _run_tool_func(self, func, tc, run_method) -> Tuple[str, bool]:
+    async def _run_tool_func(self, func, tc, run_method) -> Tuple[Any, bool]:
         """统一执行工具调用，处理 run_method 和直接执行两种路径
 
+        若工具设置了 ``func.result_blocks``（多模态结构化结果），
+        将文本返回包装为 ``ToolResult``（text + blocks），供消息链路
+        转为多模态 content blocks；未设置时行为不变（返回 str）。
+
         Returns:
-            (output, success) 元组
+            (output, success) 元组；output 为 str 或 ToolResult。
         """
         if run_method:
             coro = run_method(func, tc)
@@ -517,9 +529,23 @@ class ToolScheduler:
         result = await coro
         if run_method:
             if isinstance(result, tuple):
-                return result[0], result[1]
-            return result, True
-        return result, True
+                # 防御：run_method 可能返回长度不足的 tuple（异常实现），
+                # 仅取首元素为文本，success 缺省视为成功
+                if len(result) >= 2:
+                    text, success = result[0], result[1]
+                else:
+                    text, success = result[0], True
+            else:
+                text, success = result, True
+        else:
+            text, success = result, True
+        # 多模态结构化结果包装：execute() 返回文本 + result_blocks 提供 blocks
+        blocks = getattr(func, "result_blocks", None)
+        if blocks:
+            if not isinstance(text, str):
+                text = str(text or "")
+            return ToolResult(text=text, blocks=blocks), success
+        return text, success
 
     async def _execute_one_async(
         self,
@@ -529,19 +555,30 @@ class ToolScheduler:
         on_before: Optional[Callable],
         on_after: Optional[Callable],
         run_method: Optional[Callable],
-    ) -> Tuple[str, str, bool]:
+    ) -> Tuple[str, Any, bool]:
         """异步执行单个工具调用，无超时限制，等待到底。
 
         所有工具（含 subagent）统一使用 async/await 路径，
         subagent 内部使用 asyncio.Event 纯异步等待 barrier，
         不消耗任何线程池工人。
+
+        Returns:
+            (tool_call_id, output, success)；output 为 str 或 ToolResult
+            （多模态结构化结果，见 _run_tool_func）。
         """
         # 对齐 Claude Code：工具卡 detail 用关键参数**值**（非 JSON）——已知工具
         # 显示如 `Read pyproject.toml` 的路径/命令，未知工具显示紧凑 `k=v`
-        detail = extract_key_params(tc["name"], tc["arguments"])
-
-        if on_before:
-            on_before(tc, detail)
+        try:
+            detail = extract_key_params(tc["name"], tc["arguments"])
+            if on_before:
+                on_before(tc, detail)
+        except Exception:
+            # on_before（审计日志/参数摘要/display）异常不应让工具执行失败：
+            # 仅记录日志，工具照常执行（避免模型收到虚假失败结果浪费一轮）
+            _logger.warning(
+                "工具 %s on_before 回调异常（忽略，继续执行）: %s",
+                tc.get("name", "?"), exc_info=True,
+            )
 
         try:
             func = self._registry.dispatch(tc["name"], tc["arguments"], agent=agent_ref)
@@ -550,14 +587,25 @@ class ToolScheduler:
                 func.agent_type = agent_ref.agent_type
             output, success = await self._run_tool_func(func, tc, run_method)
             if on_after:
-                on_after(tc, output, success)
+                try:
+                    on_after(tc, output, success)
+                except Exception:
+                    # on_after（展示/统计）异常不应改变工具结果
+                    _logger.warning(
+                        "工具 %s on_after 回调异常（忽略）: %s",
+                        tc.get("name", "?"), exc_info=True,
+                    )
             return (tc["id"], output, success)
 
         except asyncio.CancelledError:
             output = f"工具执行被取消: {tc['name']}"
             _logger.warning("Async tool %s cancelled", tc["name"])
             if on_after:
-                on_after(tc, output, False)
+                try:
+                    on_after(tc, output, False)
+                except Exception:
+                    _logger.warning("工具 %s on_after 回调异常（忽略）: %s",
+                                    tc.get("name", "?"), exc_info=True)
             raise
 
         except Exception as e:
@@ -565,7 +613,11 @@ class ToolScheduler:
             _logger.error("Async tool %s failed: %s", tc["name"], e, exc_info=True)
 
             if on_after:
-                on_after(tc, output, False)
+                try:
+                    on_after(tc, output, False)
+                except Exception:
+                    _logger.warning("工具 %s on_after 回调异常（忽略）: %s",
+                                    tc.get("name", "?"), exc_info=True)
 
             return (tc["id"], output, False)
 
@@ -578,7 +630,7 @@ class ToolScheduler:
         on_after: Optional[Callable] = None,
         run_method: Optional[Callable] = None,
         current_batch_ids: set[str],
-    ) -> List[Tuple[str, str, bool]]:
+    ) -> List[Tuple[str, Any, bool]]:
         """在全局 DAG 上执行，仅返回当前批次工具的结果。
 
         支持多批并发：
@@ -756,7 +808,7 @@ class ToolScheduler:
         on_before: Optional[Callable] = None,
         on_after: Optional[Callable] = None,
         run_method: Optional[Callable] = None,
-    ) -> List[Tuple[str, str, bool]]:
+    ) -> List[Tuple[str, Any, bool]]:
         """统一调度入口：通过全局 DAG 进行多批拓扑调度。
 
         本方法是项目中唯一的工具执行路径，所有工具调用（MainAgent + SubAgent）
@@ -912,7 +964,7 @@ class ToolScheduler:
         agent_ref, on_before: Optional[Callable] = None,
         on_after: Optional[Callable] = None,
         run_method: Optional[Callable] = None,
-    ) -> List[Tuple[str, str, bool]]:
+    ) -> List[Tuple[str, Any, bool]]:
         """并发执行工具调用列表，使用类级 Semaphore 限流（0 表示无限制）+ FIRST_EXCEPTION 级联取消。"""
         sem = ToolScheduler._semaphore
 
@@ -993,5 +1045,12 @@ class ToolScheduler:
                 await asyncio.gather(*remaining_tasks, return_exceptions=True)
             tasks.clear()  # P0-2: 确保 tasks 引用在所有路径上被清除，消除 Task 残留引用
 
-        # 按原顺序返回结果
-        return [results_map[tc["id"]] for tc in tool_calls]
+        # 按原顺序返回结果（防御极端时序下 results_map 缺失：asyncio.wait
+        # 异常路径等，用失败占位保证调用方消息序列完整）
+        return [
+            results_map.get(
+                tc["id"],
+                (tc["id"], f"工具执行失败: 调度器未返回该工具调用的结果 ({tc['id']})", False),
+            )
+            for tc in tool_calls
+        ]
