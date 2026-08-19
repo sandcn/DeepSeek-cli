@@ -51,6 +51,10 @@ class ASTFlattener:
             NodeType.TEXT: self._handle_text,
         }
 
+    def flatten(self, node: ASTNode) -> list[Token]:
+        """将 AST 节点（通常为 DOCUMENT 根节点）展平为 Token 序列。"""
+        return self._flatten_node(node)
+
     def _flatten_node(self, node: ASTNode) -> list[Token]:
         """递归展平单个节点，按 NodeType 派发到对应 handler。"""
         handler = self._handlers.get(node.type)

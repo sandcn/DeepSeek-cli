@@ -45,6 +45,14 @@ class ASTOptimizer:
     # 公开接口
     # ═══════════════════════════════════════════════════════
 
+    def optimize(self, root_node: ASTNode) -> ASTNode:
+        """优化整棵 AST 树。
+
+        先深拷贝输入树（确保不修改原始输入），再递归优化并返回新树。
+        """
+        copied = self._deep_copy(root_node)
+        return self._optimize_recursive(copied)
+
     # ═══════════════════════════════════════════════════════
     # 内部递归
     # ═══════════════════════════════════════════════════════
