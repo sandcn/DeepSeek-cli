@@ -8,10 +8,8 @@ subagent 调用 tool_call_id）——只写入了 SubAgent 实例
 subagent（独立模式 run）无法与主轨迹中派发它的 subagent 工具记录
 匹配合并 → 生成独立 subagent 记录，选中派发工具记录回车无反应。
 
-修复后与前台批量模式（_execute_all 的 AgentAddedEvent 已带
-dispatch_label）语义一致：主轨迹合并到工具记录（subagent_label
-设置）→ Enter 进入后台 subagent 轨迹；槽位内容缺失时兜底占位
-记录（不空白）。
+修复后主轨迹合并到工具记录（subagent_label 设置）→ Enter 进入
+后台 subagent 轨迹；槽位内容缺失时兜底占位记录（不空白）。
 
 固化项：
   1. spawn 的 display.add_agent 透传 dispatch_label；
@@ -80,7 +78,7 @@ class _FakeModel:
             {"role": "assistant", "content": "好的",
              "tool_calls": [{"id": tool_call_id, "type": "function",
                              "function": {"name": "subagent",
-                                          "arguments": '{"description": "后台任务", "background": true}'}}]},
+                                          "arguments": '{"description": "后台任务"}'}}]},
             {"role": "tool", "tool_call_id": tool_call_id,
              "content": f'{{"task_id": "{task_id}", "status": "running"}}'},
         ]
@@ -163,8 +161,8 @@ def test_spawn_subagent_passes_dispatch_label():
 def test_background_subagent_merges_into_tool_record():
     """后台 subagent 槽位带 dispatch_label → 主轨迹合并进 subagent 调用记录。
 
-    合并后 tool 记录带 subagent_label（Enter 可进入后台 subagent 轨迹），
-    与前台 subagent 行为一致；不再生成独立 subagent 记录（不分两条）。
+    合并后 tool 记录带 subagent_label（Enter 可进入后台 subagent 轨迹）；
+    不再生成独立 subagent 记录（不分两条）。
     """
     from src.tui.app.trace import build_trace_records
 

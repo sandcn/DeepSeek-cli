@@ -58,7 +58,7 @@
 | 规则 | 说明 |
 |------|------|
 | 串行依赖 | map → 用户选择计划方向 → plan → execute → review，不可跳跃 |
-| subagent 默认后台 | `subagent` 默认后台执行：立即返回 task_id JSON（结果随后自动插入对话，也可经 subagent_opt 按 task_id read/wait/kill 管理）；显式 `background=false` 时前台阻塞并行执行并直接返回结果，同轮多次 dispatch 合法（自动共享执行器真并行），前台模式不能与普通工具同轮并行 |
+| subagent 直接后台 | `subagent` 直接后台执行：立即返回 task_id JSON（结果随后自动插入对话，也可经 subagent_opt 按 task_id read/wait/kill 管理）；同轮多次 dispatch 各自独立后台并行执行，互不阻塞 |
 | map 并发（强制） | 按模块/文件粒度强制并发，禁止逐个串行；同批 ≤8 个（参数速查） |
 | execute 串行（强制） | 场景一：整个计划强制由 1 个 execute Agent 一次性串行执行全部步骤，禁止分批派发；Review后修复（子类型B）：强制串行，一个修复任务完成后再派下一个；两者均禁止并行 |
 | review 并发（强制） | 按文件粒度强制并发派发 |

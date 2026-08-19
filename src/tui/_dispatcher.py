@@ -233,7 +233,7 @@ class EventDispatcher:
         if not self._is_agent_source(event.source) and not self._is_subagent_label(event.label):
             return
         # ★ 调用 subagent（subagent）未开工具卡 → 无需 ToolCloseCmd
-        #   （ParallelExecutor 批量结束会经 parent_display.tool_done 补发 done）
+        #   （subagent 工具卡由 subagent 面板/轨迹自渲染，不开放/闭合主工具卡）
         if event.source == "agent" and event.tool_name != "subagent":
             tool_id = event.tool_id or event.label
             self._push_cmd(ToolCloseCmd(tool_id=tool_id, success=event.success))

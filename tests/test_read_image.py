@@ -721,27 +721,21 @@ def test_is_path_within_dir(tmp_path):
     assert is_path_within_dir(str(tmp_path.parent / "out.txt"), base) is False
 
 
-def test_parse_background_flag_string():
-    """parse_background_flag：字符串布尔正确解析（"false" → 前台）。"""
-    from src.tools.subagent import parse_background_flag
-    assert parse_background_flag({"background": "false"}) is False
-    assert parse_background_flag({"background": "true"}) is True
-    assert parse_background_flag('{"background": "false"}') is False
-    assert parse_background_flag({"background": False}) is False
-    assert parse_background_flag({}) is True  # 缺省后台
-    assert parse_background_flag("{broken") is True  # 解析失败回退后台
-    assert parse_background_flag(None) is True
+def test_subagent_from_args_ignores_background():
+    """SubagentFunc.from_args：忽略 background 参数（无前台模式，恒后台执行）。
 
-
-def test_subagent_from_args_background_string():
-    """SubagentFunc.from_args：字符串 "false" → 前台执行。"""
+    subagent 工具已删除 background 参数、直接后台执行——模型即使传入
+    background（历史/幻觉参数）也被忽略，不产生 background 属性。
+    """
     from src.tools import Subagent
     f = Subagent.from_args({
         "description": "d", "prompt": "p", "background": "false",
     })
-    assert f.background is False
+    assert not hasattr(f, "background")
     f = Subagent.from_args({"description": "d", "prompt": "p"})
-    assert f.background is True
+    assert not hasattr(f, "background")
+    assert f.description == "d"
+    assert f.prompt == "p"
 
 
 # ── 14. 安全与文件边界（review 修复回归） ────────────

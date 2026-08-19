@@ -126,7 +126,6 @@ class SubAgent(BaseAgent):
         self._skip_sandbox_update = True
 
         self.display = None
-        self._shared_executor = None
         self._display_port = None
         self.result: str = ""
         self.error: str = ""
@@ -447,38 +446,24 @@ class SubAgent(BaseAgent):
         ToolScheduler 自动根据工具数量和依赖关系选择执行策略：
         - 空列表 → 直接返回
         - 全部工具 → 通过全局 DAG 拓扑分层调度（单工具/多工具统一）
-        """
-        # 检测 subagent 调用，创建共享 ParallelExecutor
-        # （复用 MainAgent 的 _count_dispatch_subagents：排除后台 subagent，
-        #  仅显式 background=false 的前台 subagent 计入 barrier）
-        from .internal.agent._tool_callbacks import _count_dispatch_subagents
-        dispatch_count = _count_dispatch_subagents(tool_calls)
-        if dispatch_count > 0:
-            from .parallel_executor import ParallelExecutor
-            self._shared_executor = ParallelExecutor(self)
-            self._shared_executor.setup_barrier(dispatch_count)
-        else:
-            self._shared_executor = None
 
+        ★ subagent 直接后台执行：SubAgent 工具白名单本就排除 subagent
+        （_TOOL_EXCLUSION_MAP 全类型排除），本层无需也不应创建共享
+        ParallelExecutor barrier（旧共享批量并行模式已随 background 参数
+        移除——subagent 工具在内部自启独立 asyncio 后台任务）。
+        """
         self._append_assistant_message(content, tool_calls, reasoning_content)
 
         on_before, on_after, run_method = self._build_tool_callbacks()
 
         # UNIQUE_PATH: SubAgent 工具执行入口，项目唯二 schedule() 调用方之一
-        try:
-            results = await ToolScheduler.default().schedule(
-                tool_calls,
-                agent_ref=self,
-                on_before=on_before,
-                on_after=on_after,
-                run_method=run_method,
-            )
-        finally:
-            # 确保取消/异常时释放 barrier，防止死锁
-            # （经公开 release()，不直接触碰 _all_done 私有字段）
-            if self._shared_executor is not None:
-                self._shared_executor.release()
-            self._shared_executor = None
+        results = await ToolScheduler.default().schedule(
+            tool_calls,
+            agent_ref=self,
+            on_before=on_before,
+            on_after=on_after,
+            run_method=run_method,
+        )
 
         # 收集所有工具结果，确保 messages 序列完整
         # ★ 防御性修复：ToolScheduler 调度结果可能因极端时序/异常而缺失

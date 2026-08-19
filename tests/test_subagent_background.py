@@ -1,17 +1,16 @@
-"""subagent 后台执行 + subagent_opt 工具测试（2026-08-18）。
+"""subagent 后台执行 + subagent_opt 工具测试（2026-08-18，2026-08-19 更新）。
 
 需求：
-  1. subagent 工具含 background 参数（boolean，默认 true）：
-     默认后台执行：立即返回 {"task_id": "sa-xxx", "status": "running"} JSON，
-     后台 subagent 在独立 asyncio 后台任务中执行（类似 bash background=True）；
-     显式 background=false 时前台阻塞执行并直接返回子 Agent 执行结果；
+  1. subagent 工具**无 background 参数、直接后台执行**（2026-08-19）：
+     每次调用立即返回 {"task_id": "sa-xxx", "status": "running"} JSON，
+     后台 subagent 在独立 asyncio 后台任务中执行（无前台阻塞模式）；
   2. 新增 subagent_opt 工具（类似 bash_opt）：按 task_id 操作后台 subagent
      任务（op=read / wait / kill）；
   3. 后台 subagent 仅主 Agent 独有：
      - SubAgent 工具白名单全类型排除 subagent（已有）与 subagent_opt（新增）；
      - subagent / subagent_opt 运行时 isinstance(agent, SubAgent) 强制校验；
-     - 同轮 barrier 计数排除后台 subagent（_count_dispatch_subagents）——
-       background 缺省即后台，仅显式 background=false 计入 barrier。
+     - 共享 ParallelExecutor barrier 批量并行模式已随 background 参数一并
+       移除（每次调用独立后台执行，互不阻塞）。
   4. 并发/沙盒正确性（review 2026-08-18 修复）：
      - 后台 subagent 使用唯一 label（task_id），并发不互相覆盖；
      - SubAgentPanelController 活跃引用计数：最后一个活跃方 stop 才清理面板；
@@ -72,53 +71,46 @@ async def _async_noop(*args, **kwargs):
 
 # ── 1. subagent schema 与参数解析 ─────────────────────────
 
-def test_schema_has_background_param():
-    """subagent schema 含 background 参数（boolean，默认 true，非必填）。"""
+def test_schema_has_no_background_param():
+    """subagent schema 不含 background 参数（直接后台执行，无前台模式）。"""
     schema = SubagentFunc.to_tool_schema()
     props = schema["function"]["parameters"]["properties"]
-    assert "background" in props
-    assert props["background"]["type"] == "boolean"
+    assert "background" not in props
+    assert set(props) == {"description", "prompt", "type"}
     assert "background" not in schema["function"]["parameters"]["required"]
 
 
-def test_from_args_parses_background():
-    """from_args 正确解析 background（默认 true——subagent 默认后台）。"""
+def test_from_args_no_background_always_background():
+    """from_args 不解析 background：无论参数是否携带 background 均直接后台执行。
+
+    subagent 工具无 background 参数、无前台模式——模型即使传入 background
+    （历史/幻觉参数）也被忽略，执行恒为后台。
+    """
     f1 = SubagentFunc.from_args({"description": "a", "prompt": "p"})
-    assert f1.background is True
+    assert not hasattr(f1, "background")
     f2 = SubagentFunc.from_args(
-        {"description": "a", "prompt": "p", "background": True}
-    )
-    assert f2.background is True
-    f3 = SubagentFunc.from_args(
-        {"description": "a", "prompt": "p", "background": "yes"}
-    )
-    assert f3.background is True  # 任意真值 → bool() 转换
-    f4 = SubagentFunc.from_args(
         {"description": "a", "prompt": "p", "background": False}
     )
-    assert f4.background is False  # 显式 false → 前台
+    assert not hasattr(f2, "background")  # 传入 background 也被忽略
 
 
-def test_display_params_background_prefix():
-    """display_params 默认后台调用带 bg 前缀；显式 false（前台）不带。"""
+def test_display_params_no_bg_prefix():
+    """display_params 直接后台：无 bg 前缀（所有调用恒后台）。"""
     assert SubagentFunc.display_params(
         {"description": "解析 user.py"}
-    ).startswith("bg agent:")
+    ) == "agent: 解析 user.py"
     assert SubagentFunc.display_params(
-        {"description": "解析 user.py", "background": True}
-    ).startswith("bg agent:")
-    assert not SubagentFunc.display_params(
         {"description": "解析 user.py", "background": False}
-    ).startswith("bg agent:")
+    ) == "agent: 解析 user.py"  # 遗留 background 参数不影响展示
 
 
-# ── 2. 后台执行（background=True） ────────────────────────
+# ── 2. 后台执行 ────────────────────────────────────────
 
 async def test_background_execute_returns_task_id_and_registers(monkeypatch):
-    """后台模式立即返回 task_id JSON，并把任务注册到主 Agent 后台任务表。"""
+    """后台执行立即返回 task_id JSON，并把任务注册到主 Agent 后台任务表。"""
     agent = _FakeMainAgent()
     func = SubagentFunc(
-        description="任务A", prompt="指令", target_agent_type="map", background=True,
+        description="任务A", prompt="指令", target_agent_type="map",
     )
     func.set_agent(agent)
     monkeypatch.setattr(
@@ -222,15 +214,15 @@ async def test_process_subagent_tasks_independent():
 
 
 async def test_background_execute_without_agent():
-    """后台模式未关联 Agent 上下文时返回错误提示。"""
-    func = SubagentFunc(description="a", prompt="p", background=True)
+    """后台执行未关联 Agent 上下文时返回错误提示。"""
+    func = SubagentFunc(description="a", prompt="p")
     result = await func.execute()
     assert "未关联父 Agent" in result
 
 
 async def test_background_execute_rejected_in_subagent():
     """后台 subagent 仅主 Agent 独有：SubAgent 内运行时强制拒绝。"""
-    func = SubagentFunc(description="a", prompt="p", background=True)
+    func = SubagentFunc(description="a", prompt="p")
     func.set_agent(_bare_subagent())
     result = await func.execute()
     assert result.startswith("错误")
@@ -238,10 +230,10 @@ async def test_background_execute_rejected_in_subagent():
 
 
 async def test_background_run_completes_record(monkeypatch):
-    """后台任务完成后把格式化结果写入任务记录（_complete_background_task）。"""
+    """后台任务完成后把格式化结果写入任务记录（_complete_subagent_task）。"""
     agent = _FakeMainAgent()
     func = SubagentFunc(
-        description="任务A", prompt="指令", target_agent_type="execute", background=True,
+        description="任务A", prompt="指令", target_agent_type="execute",
     )
     func.set_agent(agent)
     monkeypatch.setattr("src.tools.subagent.print_to_terminal", _async_noop)
@@ -286,7 +278,7 @@ async def test_background_run_completes_record(monkeypatch):
 async def test_background_run_error_writes_failure(monkeypatch):
     """后台执行异常时任务记录写入错误结果而非崩溃。"""
     agent = _FakeMainAgent()
-    func = SubagentFunc(description="任务A", prompt="指令", background=True)
+    func = SubagentFunc(description="任务A", prompt="指令")
     func.set_agent(agent)
     monkeypatch.setattr("src.tools.subagent.print_to_terminal", _async_noop)
     monkeypatch.setattr("src.core.display_target.get_output_publisher", lambda: None)
@@ -308,7 +300,7 @@ async def test_background_run_error_writes_failure(monkeypatch):
 
 
 async def test_background_subagent_captures_sandbox_index(monkeypatch):
-    """后台 subagent 的文件沙盒：变更关联派发轮次的消息索引（与前台一致）。
+    """后台 subagent 的文件沙盒：变更关联派发轮次的消息索引（与执行语义一致）。
 
     后台任务由 asyncio.ensure_future 创建，复制派发时 contextvars（含
     message_index）。MainAgent 后续对话更新沙盒索引不影响后台 subagent
@@ -350,7 +342,7 @@ async def test_background_subagent_captures_sandbox_index(monkeypatch):
         )
 
         agent = _FakeMainAgent()
-        func = SubagentFunc(description="任务A", prompt="指令", background=True)
+        func = SubagentFunc(description="任务A", prompt="指令")
         func.set_agent(agent)
         result = await func.execute()
         task_id = json.loads(result)["task_id"]
@@ -367,18 +359,31 @@ async def test_background_subagent_captures_sandbox_index(monkeypatch):
         set_sandbox_manager(old_sm)
 
 
-async def test_foreground_path_unchanged():
-    """前台路径（显式 background=False）行为不变：无共享 executor 时报错提示。"""
+async def test_execute_always_background_without_shared_executor(monkeypatch):
+    """无共享 executor（同轮仅 subagent 或异常场景）仍直接后台执行。
+
+    旧前台模式依赖调度层创建的共享 ParallelExecutor barrier（无共享实例时报错）；
+    改为直接后台执行后，无论是否存在共享 executor，execute() 恒走后台路径。
+    """
     agent = _FakeMainAgent()
-    func = SubagentFunc(description="a", prompt="p", background=False)
+    func = SubagentFunc(description="a", prompt="p")
     func.set_agent(agent)
+    monkeypatch.setattr(
+        "src.tools.subagent.SubagentFunc._run_background_subagent",
+        _async_noop,
+    )
+    monkeypatch.setattr("src.tools.subagent.print_to_terminal", _async_noop)
 
     result = await func.execute()
-    assert "未处于有效的并行执行上下文" in result
+    payload = json.loads(result)
+    assert payload["task_id"].startswith("sa-")
+    assert payload["status"] == "running"
+    assert payload["description"] == "a"
+    assert any(k.startswith("sa-") for k in agent._subagent_tasks)
 
 
-async def test_default_background_executes_background(monkeypatch):
-    """background 缺省（默认）即后台：execute() 走 _execute_background 并返回 task_id。"""
+async def test_execute_always_background(monkeypatch):
+    """execute() 恒走 _execute_background（无 background 参数、无前台分支）并返回 task_id。"""
     agent = _FakeMainAgent()
     func = SubagentFunc(description="任务A", prompt="指令")
     func.set_agent(agent)
@@ -547,14 +552,14 @@ async def test_subagent_opt_kill():
 
 
 async def test_subagent_opt_unknown_task():
-    """task_id 不存在时返回错误提示并引导使用 subagent（默认后台）启动。"""
+    """task_id 不存在时返回错误提示并引导使用 subagent 启动后台任务。"""
     agent = _FakeMainAgent()
     func = SubagentOptFunc(task_id="sa-nope", op="read")
     func.set_agent(agent)
     result = await func.execute()
     assert result.startswith("(")
     assert "sa-nope" in result
-    assert "默认后台" in result
+    assert "启动后台任务" in result
 
 
 async def test_subagent_opt_rejects_bash_task_id():
@@ -676,85 +681,12 @@ def test_can_use_subagent_opt():
         assert ok is False, f"{agent_type} 应拒绝 subagent_opt"
 
 
-def test_count_dispatch_subagents_excludes_background():
-    """同轮 barrier 计数排除后台 subagent（background 缺省/true）；仅显式 false 计入。"""
-    from src.core.internal.agent._tool_callbacks import (
-        _count_dispatch_subagents,
-    )
-
-    calls = [
-        # 后台 subagent（dict 参数，显式 true）→ 不计入
-        {"id": "1", "name": "subagent",
-         "arguments": {"description": "a", "prompt": "p", "background": True}},
-        # 后台 subagent（background 缺省 → 默认后台）→ 不计入
-        {"id": "2", "name": "subagent",
-         "arguments": {"description": "b", "prompt": "p"}},
-        # 后台 subagent（JSON 字符串参数）→ 不计入
-        {"id": "3", "name": "subagent",
-         "arguments": '{"description": "c", "prompt": "p", "background": true}'},
-        # 前台 subagent（显式 background=false）→ 计入 barrier
-        {"id": "4", "name": "subagent",
-         "arguments": {"description": "d", "prompt": "p", "background": False}},
-        # 非 subagent 工具 → 不计入
-        {"id": "5", "name": "read_file", "arguments": {"path": "x"}},
-    ]
-    assert _count_dispatch_subagents(calls) == 1
-
-    # 全后台 → 0（不创建共享 barrier）
-    assert _count_dispatch_subagents(calls[:1]) == 0
-    assert _count_dispatch_subagents(calls[1:2]) == 0
-    assert _count_dispatch_subagents(calls[2:3]) == 0
-    # 全前台 → 计入
-    assert _count_dispatch_subagents(calls[3:4]) == 1
-    # 空列表 → 0
-    assert _count_dispatch_subagents([]) == 0
-
-
-def test_call_is_background_subagent_parsing():
-    """后台判定兼容 dict / JSON 字符串 / 非 subagent / 缺省 / 解析失败（均默认后台）。"""
-    from src.core.internal.agent._tool_callbacks import (
-        _call_is_background_subagent,
-    )
-
-    assert _call_is_background_subagent(
-        {"id": "1", "name": "subagent",
-         "arguments": {"background": True}}
-    ) is True
-    assert _call_is_background_subagent(
-        {"id": "2", "name": "subagent",
-         "arguments": '{"background": true}'}
-    ) is True
-    assert _call_is_background_subagent(
-        {"id": "3", "name": "subagent", "arguments": {"background": False}}
-    ) is False
-    # 非 subagent 工具
-    assert _call_is_background_subagent(
-        {"id": "4", "name": "bash", "arguments": {"background": True}}
-    ) is False
-    # 非法 JSON 字符串 → 安全降级为后台（默认语义）
-    assert _call_is_background_subagent(
-        {"id": "5", "name": "subagent", "arguments": "{broken"}
-    ) is True
-    # 无 arguments → 默认后台
-    assert _call_is_background_subagent({"id": "6", "name": "subagent"}) is True
-    # 缺省 background 字段（dict）→ 默认后台
-    assert _call_is_background_subagent(
-        {"id": "7", "name": "subagent",
-         "arguments": {"description": "a", "prompt": "p"}}
-    ) is True
-    # 缺省 background 字段（JSON 字符串）→ 默认后台
-    assert _call_is_background_subagent(
-        {"id": "8", "name": "subagent",
-         "arguments": '{"description": "a", "prompt": "p"}'}
-    ) is True
-
-
 # ── 5. review 2026-08-18 修复项 ──────────────────────────
 
 async def test_background_cancel_writes_cancelled_status(monkeypatch):
     """后台 subagent 被取消时任务记录写入 status="cancelled"（read 可区分）。"""
     agent = _FakeMainAgent()
-    func = SubagentFunc(description="任务A", prompt="指令", background=True)
+    func = SubagentFunc(description="任务A", prompt="指令")
     func.set_agent(agent)
     monkeypatch.setattr("src.tools.subagent.print_to_terminal", _async_noop)
     monkeypatch.setattr("src.core.display_target.get_output_publisher", lambda: None)
@@ -813,7 +745,7 @@ def test_spawn_subagent_uses_spec_label():
     )
     assert created["label"] == "sa-abc123"
     assert sa.label == "sa-abc123"
-    # 缺省 label（前台路径）→ agent-N
+    # 缺省 label（spec 未携带，如直接调用 spawner）→ agent-N
     created.clear()
     spawner.spawn(
         {"description": "d", "prompt": "p", "agent_type": "execute"},

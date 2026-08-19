@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from ...parallel_executor import ParallelExecutor
 from ...tool_executor_async import ToolScheduler
 from ...telemetry import get_default_collector
 from ....api.tokens import estimate_tokens
@@ -62,12 +61,10 @@ _SENSITIVE_ARGS_KEYS = frozenset({
 def _sanitize_args_impl(args, _depth: int = 0) -> str:
     """过滤工具参数中的敏感字段，用于审计日志记录（模块级实现）。
 
-    args 可能为 dict（正常）或 str（JSON 字符串形态，见
-    ``_call_is_background_subagent`` 的处理场景）。str 形态先尝试
-    JSON 解析后递归脱敏——否则 ``{"password": "xxx"}`` 等敏感字段
-    会原样写入 audit.log（安全缺陷）；解析失败时按 JSON 键名模式
-    掩码值。模块级函数：避免 Python 3.9 下 staticmethod 经类名
-    递归引用不可调用的问题。
+    args 可能为 dict（正常）或 str（JSON 字符串形态，模型以字符串传参时）。
+    str 形态先尝试 JSON 解析后递归脱敏——否则 ``{"password": "xxx"}`` 等敏感字段
+    会原样写入 audit.log（安全缺陷）；解析失败时按 JSON 键名模式掩码值。
+    模块级函数：避免 Python 3.9 下 staticmethod 经类名递归引用不可调用的问题。
     """
     _MAX_RECURSION_DEPTH = 20
     if _depth >= _MAX_RECURSION_DEPTH:
@@ -111,46 +108,6 @@ async def _run_file_display(func, display=None):
     return await func.display()
 
 
-def _parse_background_flag(args) -> bool:
-    """解析 subagent 调用的 background 标志（缺省视为后台）。
-
-    委托 :func:`src.tools.subagent.parse_background_flag`（单一实现源，
-    与 SubagentFunc.from_args 保持一致——保证 barrier 计数判定与
-    subagent 工具实际执行模式一致）。"""
-    from ....tools.subagent import parse_background_flag as _parse
-    return _parse(args)
-
-
-def _call_is_background_subagent(tc: dict) -> bool:
-    """判断 tool_call 是否为后台 subagent 调用（默认后台）。
-
-    subagent 默认后台执行（background 缺省即视为后台）——与
-    ``SubagentFunc.from_args`` 的默认值 True 一致，避免 barrier 计数与
-    subagent 工具实际执行路径不一致（否则后台 subagent 计入 dispatch_count
-    后不注册 barrier，只能靠 _BARRIER_TIMEOUT 兜底）。
-    """
-    if tc.get("name") != "subagent":
-        return False
-    return _parse_background_flag(tc.get("arguments"))
-
-
-def _count_dispatch_subagents(tool_calls: list) -> int:
-    """统计需进入共享 barrier 的 subagent 调用数（排除后台 subagent）。
-
-    ★ 后台 subagent（默认：background 缺省或为 true）不进入共享
-    ParallelExecutor barrier：其执行体由 subagent 工具内部自启独立 asyncio
-    后台任务（_execute_background），立即返回 task_id JSON，不参与同轮普通
-    subagent 的注册/等待协调。若把后台 subagent 计入 dispatch_count，barrier
-    期望的注册数（含后台 subagent）与实际上会注册的协程数（仅前台 subagent）
-    不匹配，只能靠 _BARRIER_TIMEOUT=60s 兜底超时唤醒，白白拖慢整轮工具返回。
-    仅显式 background=false 的前台 subagent 计入 barrier。
-    """
-    return sum(
-        1 for tc in tool_calls
-        if tc.get("name") == "subagent" and not _call_is_background_subagent(tc)
-    )
-
-
 class ToolCallbackChain:
     """工具回调链 — 封装 Agent 中工具调用的完整生命周期。
 
@@ -174,20 +131,11 @@ class ToolCallbackChain:
         agent = self._agent
         parse_elapsed = (usage or {}).get("tool_parse_elapsed", 0.0)
 
-        # subagent 调用时创建共享 ParallelExecutor
-        # 单次调用独立执行，多次调用共享实例实现真正并行
-        # ★ 后台 subagent（默认：background 缺省或为 true）不进入共享 barrier：
-        #   其执行体在 subagent 工具内部自启独立 asyncio 后台任务
-        #   （_execute_background），立即返回 task_id JSON；不计入 dispatch_count
-        #   避免 barrier 计数不匹配拖到 _BARRIER_TIMEOUT=60s 兜底
-        #   （见 _count_dispatch_subagents）。仅显式 background=false 的前台
-        #   subagent 计入 barrier（同轮多个前台 subagent 真正并行）。
-        dispatch_count = _count_dispatch_subagents(tool_calls)
-        if dispatch_count > 0:
-            agent._shared_executor = ParallelExecutor(agent)
-            agent._shared_executor.setup_barrier(dispatch_count)
-        else:
-            agent._shared_executor = None
+        # ── subagent 直接后台执行：无需共享 ParallelExecutor barrier ──
+        # subagent 工具无 background 参数、无前台阻塞模式：每次调用在工具
+        # 内部自启独立 asyncio 后台任务（_execute_background），立即返回
+        # task_id JSON。因此本层不再创建共享 barrier（旧共享批量并行模式
+        # 已随 background 参数一并移除）。
 
         # ── 回调工厂（消除 lambda 重复） ────────────────
         def _on_before(tc, detail):
@@ -198,22 +146,14 @@ class ToolCallbackChain:
         # ── ToolScheduler 统一调度 ──────────────────────
         # UNIQUE_PATH: MainAgent 工具执行入口，项目唯二 schedule() 调用方之一
         results: list[tuple[str, Any, bool]] = []
-        try:
-            # _append_assistant_message 也在 try 内：若消息构造抛异常（罕见），
-            # finally 仍会释放 barrier（防 SubAgent 等待者死锁）
-            agent._append_assistant_message(content, tool_calls, reasoning_content)
-            results = await ToolScheduler.default().schedule(
-                tool_calls,
-                agent_ref=agent,
-                on_before=_on_before,
-                on_after=_on_after,
-                run_method=self._run_tool_method,
-            )
-        finally:
-            # 确保取消/异常时释放 barrier（经公开 release()，不直接触碰私有字段）
-            if agent._shared_executor is not None:
-                agent._shared_executor.release()
-            agent._shared_executor = None
+        agent._append_assistant_message(content, tool_calls, reasoning_content)
+        results = await ToolScheduler.default().schedule(
+            tool_calls,
+            agent_ref=agent,
+            on_before=_on_before,
+            on_after=_on_after,
+            run_method=self._run_tool_method,
+        )
 
         successful_tools = []
         failed_tools = []

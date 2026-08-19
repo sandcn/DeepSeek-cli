@@ -147,11 +147,11 @@ class SubAgentPanelController:
         self._last_pushed_frame: List[Line] | None = None
         self._active: bool = False
         # ★ 2026-08-18（后台 subagent）：活跃引用计数——多个并发 subagent
-        #   （前台/后台）共享面板：每个活跃方 ensure_active() +1、
-        #   stop() -1，最后一个 stop 才真正清理面板（取消订阅/清空 store/
-        #   推空帧）。修复前后台 subagent 独立 ParallelExecutor.run() 的
-        #   finally 无条件 stop：先完成者清空面板并取消订阅，破坏仍在运行
-        #   的其他后台/前台 subagent 显示（P1，review 2026-08-18）。
+        #   共享面板：每个活跃方 ensure_active() +1、stop() -1，最后一个
+        #   stop 才真正清理面板（取消订阅/清空 store/推空帧）。修复前每个
+        #   subagent 独立 ParallelExecutor.run() 的 finally 无条件 stop：
+        #   先完成者清空面板并取消订阅，破坏仍在运行的其他 subagent 显示
+        #   （P1，review 2026-08-18）。
         self._active_refs: int = 0
         # P3：ensure_active 订阅原子性锁——active 检查与订阅合并为原子操作，
         #   防止并发调用重复订阅（修复前 ``if self._active: return`` 非原子）。
@@ -291,7 +291,7 @@ class SubAgentPanelController:
         # 重复注册到 bus）。锁内完成全部订阅/回滚/置位。
         with self._active_lock:
             # ★ 2026-08-18（后台 subagent）：活跃引用计数 +1——并发 subagent
-            #   （前台/后台）各自 ensure_active/stop 配对，最后一个 stop 才
+            #   各自 ensure_active/stop 配对，最后一个 stop 才
             #   真正清理面板。已 active 时仅计数递增（订阅保持，避免重复订阅）。
             self._active_refs += 1
             if self._active:
@@ -335,7 +335,7 @@ class SubAgentPanelController:
             #   仍在运行的其他 subagent 显示（P1，review 2026-08-18）。
             self._active_refs = max(0, self._active_refs - 1)
             if self._active_refs > 0:
-                return  # 仍有活跃引用（其他后台/前台 subagent 运行中）
+                return  # 仍有活跃引用（其他 subagent 运行中）
             from .events import DisplayEventBus
             bus = DisplayEventBus.get_default()
             for ev_type, method_name in self._SUBSCRIPTIONS:

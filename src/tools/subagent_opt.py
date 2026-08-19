@@ -1,7 +1,7 @@
 """
 subagent_opt — 按 task_id 操作后台 subagent 任务
 
-配合 subagent 工具（默认后台）使用。subagent 后台启动后返回
+配合 subagent 工具（直接后台执行）使用。subagent 后台启动后返回
 {"task_id": "sa-xxx", "status": "running", "description": "...", "type": "..."}，
 大模型可据此用 subagent_opt 工具按 task_id 操作：
 
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
     description="操作后台subagent任务",
 )
 class SubagentOptFunc(Func):
-    """按 task_id 操作后台 subagent 任务（subagent 默认后台启动）。"""
+    """按 task_id 操作后台 subagent 任务（subagent 直接后台启动）。"""
 
     name = "subagent_opt"
     _DEFAULT_WAIT_TIMEOUT: int = 300
@@ -48,8 +48,7 @@ class SubagentOptFunc(Func):
             "function": {
                 "name": "subagent_opt",
                 "description": (
-                    "按 task_id 操作后台 subagent 任务（subagent 默认后台启动，"
-                    "background 缺省即后台）。"
+                    "按 task_id 操作后台 subagent 任务（subagent 直接后台启动）。"
                     "op：read（读取当前状态与已产生的结果，立即返回不等待完成）、"
                     "wait（等待完成取结果，timeout 秒，默认 300/0 无限）、"
                     "kill（取消后台 subagent 任务）。"
@@ -62,7 +61,7 @@ class SubagentOptFunc(Func):
                         "task_id": {
                             "type": "string",
                             "description": (
-                                "后台 subagent 任务的 task_id（subagent 默认后台返回的 "
+                                "后台 subagent 任务的 task_id（subagent 直接后台返回的 "
                                 "'sa-xxx' 格式 ID）。"
                             ),
                         },
@@ -130,14 +129,14 @@ class SubagentOptFunc(Func):
         #   误传 bash 后台任务（bg-xxx）时直接提示（bash 任务在 bash 专用表
         #   _background_tasks，本工具查不到也不该操作，需用 bash_opt 管理）。
         if not self.task_id.startswith("sa-"):
-            return (f"(错误：task_id 必须是 subagent 后台启动（默认后台）返回的 "
+            return (f"(错误：task_id 必须是 subagent 后台启动返回的 "
                     f"'sa-xxx' 格式 ID，当前: {self.task_id}。"
                     f"bash 后台任务请用 bash_opt 操作)")
 
         rec = agent._subagent_tasks.get(self.task_id)
         if rec is None:
             return (f"(后台 subagent 任务不存在: {self.task_id}。"
-                    f"请先用 subagent 启动后台任务（默认后台）获取 task_id)")
+                    f"请先用 subagent 启动后台任务获取 task_id)")
 
         # ★ 仅对有效 op 标记 managed_by_tool（P2，review 2026-08-18）：
         #   未知 op（如 "pause"）不修改任务管理状态——否则任务被标记为

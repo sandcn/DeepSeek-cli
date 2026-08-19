@@ -103,7 +103,6 @@ class Agent(BaseAgent):
             self._output_port = _defaults["output"]
         self.display = self._display_port
         self.context_manager = None
-        self._shared_executor = None
         # ── InterruptPort（中断检查） ────────────────────
         self._interrupt_port = DefaultInterruptAdapter()
 

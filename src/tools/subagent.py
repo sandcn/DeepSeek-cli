@@ -1,22 +1,18 @@
 """
-subagent — 并行子 Agent 调度工具
+subagent — 子 Agent 调度工具
 
-模型通过此工具同时派发多个独立子任务，并行执行后汇总结果。
-当同一轮有多个 subagent 调用（前台模式）时，共享一个 ParallelExecutor
-实现真正的并行。
-
-后台模式（默认，background=True）：立即返回 {"task_id": "sa-xxx", ...} JSON，
+模型通过此工具派发独立子任务，**直接后台执行**（无 background 参数、
+无前台阻塞模式）：工具立即返回 {"task_id": "sa-xxx", ...} JSON，
 后台 subagent 在独立 asyncio 后台任务中执行（不阻塞当前工具调用），
-完成后结果由对话轮次自动插入用户消息（_process_background_tasks），
+完成后结果由对话轮次自动插入用户消息（_process_subagent_tasks），
 或由 subagent_opt 工具按 task_id 主动管理（read/wait/kill）。
 
-前台模式（background=False）：阻塞等待子 Agent 执行完成，直接返回结果；
-同轮多个前台 subagent 共享 ParallelExecutor 真正并行。
+同轮多次调用自动并行——每次调用各自独立后台执行，互不阻塞。
 
 ★ 后台 subagent 仅主 Agent（MainAgent）可派发：SubAgent 的工具白名单
   本就不含 subagent（_TOOL_EXCLUSION_MAP 全类型排除），此处运行时再强制
   校验 isinstance(agent, SubAgent)，双保险确保 SubAgent 内无法派发后台
-  subagent（任务记录也只注册在主 Agent 的 _background_tasks）。
+  subagent（任务记录也只注册在主 Agent 的 _subagent_tasks）。
 """
 
 import asyncio
@@ -30,38 +26,8 @@ from ..core.constants import DIM, RESET
 
 logger = logging.getLogger(__name__)
 
-# 低优先级模型适用的 subagent 类型（与前台 execute() 一致）
+# 低优先级模型适用的 subagent 类型（与后台执行体一致）
 _LOW_MODEL_TYPES = {"map", "execute"}
-
-
-def parse_background_flag(args) -> bool:
-    """解析 subagent 调用的 background 标志（缺省视为后台）。
-
-    兼容 dict（原始 JSON 对象）与 str（JSON 字符串）；字符串布尔
-    （"true"/"false"）正确解析——修复前 ``bool("false")`` 误判为后台。
-    解析失败/缺省回退 True（默认后台语义，安全降级）。
-
-    调度层 barrier 计数（core/internal/agent/_tool_callbacks 与
-    core/subagent._handle_tool_calls）与本工具 from_args 共用本函数，
-    保证「后台判定」与「实际执行模式」一致。
-    """
-    raw = None
-    if isinstance(args, dict):
-        raw = args.get("background", True)
-    elif isinstance(args, str):
-        try:
-            data = json.loads(args)
-            if isinstance(data, dict):
-                raw = data.get("background", True)
-        except (json.JSONDecodeError, TypeError):
-            return True
-    else:
-        return True
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, str):
-        return raw.strip().lower() in ("true", "1", "yes", "on")
-    return bool(raw)
 
 
 @tool_metadata(
@@ -77,20 +43,16 @@ def parse_background_flag(args) -> bool:
 class SubagentFunc(Func):
     name = "subagent"
 
-    def __init__(self, description: str, prompt: str, target_agent_type: str = "execute",
-                 background: bool = True):
+    def __init__(self, description: str, prompt: str, target_agent_type: str = "execute"):
         super().__init__()
         self.description = description
         self.prompt = prompt
         self.target_agent_type = target_agent_type  # 目标子Agent类型，与 Func.agent_type 独立
-        self.background = bool(background)          # 后台执行模式（默认 True，仅主 Agent 可派发）
 
     @classmethod
     def display_params(cls, arguments: dict, max_len: int = 80) -> str:
         desc = arguments.get("description", "?")
-        # 默认后台：仅显式 background=false（前台）时不带 bg 前缀
-        prefix = "" if arguments.get("background") is False else "bg "
-        return f"{prefix}agent: {desc}"[:max_len]
+        return f"agent: {desc}"[:max_len]
 
     @classmethod
     def to_tool_schema(cls):
@@ -99,13 +61,13 @@ class SubagentFunc(Func):
             "function": {
                 "name": cls.name,
                 "description": (
-                    "派发子 Agent 执行任务（独立上下文+文件沙盒），同轮多次调用自动并行。"
+                    "派发子 Agent 执行任务（独立上下文+文件沙盒），同轮多次调用自动并行"
+                    "（每次调用独立后台执行、互不阻塞）。"
                     "type：execute（读写+bash，默认）/ map（只读分析）/ review（代码审查 P0-P3）/ plan（生成计划，仅写 .chat/plan/）。"
                     "同一文件的所有修改必须在单次调用内完成。"
-                    "默认后台执行：立即返回 {\"task_id\": ...} JSON，"
+                    "直接后台执行：立即返回 {\"task_id\": ...} JSON，"
                     "后台 subagent 继续运行，完成后结果自动插入对话（或由 subagent_opt "
-                    "工具按 task_id 主动管理）。background=false 时前台阻塞执行并直接返回"
-                    "子 Agent 执行结果。后台 subagent 仅主 Agent 可派发。"
+                    "工具按 task_id 主动管理）。后台 subagent 仅主 Agent 可派发。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -123,17 +85,6 @@ class SubagentFunc(Func):
                             "enum": ["map", "review", "plan", "execute"],
                             "description": "子Agent类型。execute（默认）：排除 subagent、user_select 和 web_search，保留所有读写工具+bash，无路径限制，用于执行计划文件步骤并返回修改文件列表。map：只读分析型，仅保留 read_file/search/find/ls 等读取工具，专用于项目代码分析和地图生成。review：代码审查型，只读工具集（含 read_file/search/find/ls/web_search），专用于文件列表的 Code Review（P0-P3 分级输出）。plan：计划型，只读分析工具 + write_file/update_file/mkdir（仅限写入 .chat/plan/ 目录），根据指令生成计划。",
                         },
-                        "background": {
-                            "type": "boolean",
-                            "description": (
-                                "是否后台执行（默认 true）。true 立即返回 {\"task_id\": \"sa-xxx\", ...} JSON，"
-                                "后台 subagent 继续执行（不阻塞当前工具调用）；"
-                                "完成后结果由对话轮次自动插入用户消息，"
-                                "或用 subagent_opt 工具按 task_id 主动管理（read/wait/kill）。"
-                                "false 时前台阻塞执行并直接返回子 Agent 执行结果。"
-                                "后台 subagent 仅主 Agent 可派发。"
-                            ),
-                        },
                     },
                     "required": ["description", "prompt"],
                 },
@@ -146,12 +97,11 @@ class SubagentFunc(Func):
             description=args.get("description", ""),
             prompt=args.get("prompt", ""),
             target_agent_type=args.get("type", "execute"),
-            background=parse_background_flag(args),
         )
 
     @classmethod
     def _resolve_model(cls, agent, agent_type: str):
-        """解析子 Agent 使用的模型：指定类型优先使用低优先级模型（与前台路径一致）。
+        """解析子 Agent 使用的模型：指定类型优先使用低优先级模型（后台执行路径同样生效）。
 
         返回 None 时由 SubAgent 构造回退到父 Agent 模型（model or parent_agent.model）。
         """
@@ -172,43 +122,15 @@ class SubagentFunc(Func):
         if not self.agent:
             return "错误：未关联父 Agent"
 
-        # ── 后台模式（默认）：立即返回 task_id JSON，不阻塞当前工具调用 ──
-        if self.background:
-            return await self._execute_background()
+        # ── 直接后台执行：立即返回 task_id JSON，不阻塞当前工具调用 ──
+        return await self._execute_background()
 
-        # 检查是否有共享的 ParallelExecutor（同一轮多个 subagent）
-        shared = getattr(self.agent, '_shared_executor', None)
-        if shared is not None and shared.is_batch_mode:
-            # 传递 tool_label，用于前端将 subagent 路由到对应的 dispatch 工具容器
-            tool_label = getattr(self, 'tool_label', '')
-
-            # 模型选择：对指定类型的 subagent 检查是否应使用低优先级模型
-            model = self._resolve_model(self.agent, self.target_agent_type)
-
-            idx = shared.add_agent(self.description, self.prompt, agent_type=self.target_agent_type, model=model, tool_label=tool_label)
-            try:
-                await shared.register_and_wait()
-            except asyncio.CancelledError:
-                # 被级联取消时（如同层工具异常触发 FIRST_EXCEPTION），
-                # 若自己是最后一个已注册 agent，则唤醒其他等待者防止死锁
-                async with shared._agents_lock:
-                    if shared._registered_count >= shared._expected_count:
-                        shared._all_done.set()
-                raise
-            r = shared.get_result(idx)
-            return self._format_single(r)
-
-        # 独立模式（无 shared_executor）→ 无法执行
-        # 正常流程下由 _tool_callbacks.py 创建 shared executor，
-        # 此处为异常回退路径（外部非正常调用）
-        return ("错误：subagent 未处于有效的并行执行上下文中。"
-                "请通过 tools 系统正常调用 subagent。")
-
-    # ── 后台执行模式（默认） ──────────────────────────────
-    # background 缺省/true 时：SubAgent 在独立 asyncio 后台任务中执行，
-    # 任务记录注册到当前 Agent 的 _background_tasks（与 bash 后台同表），
-    # 工具立即返回 {"task_id": "sa-xxx", "status": "running"} JSON。
-    # 一轮对话完成后 _process_background_tasks 检查：已完成 → 结果作为
+    # ── 后台执行模式 ────────────────────────────────────
+    # subagent 工具**直接后台执行**（无 background 参数、无前台模式）：
+    # SubAgent 在独立 asyncio 后台任务中执行，任务记录注册到当前 Agent
+    # 的 _subagent_tasks（subagent 专用表），工具立即返回
+    # {"task_id": "sa-xxx", "status": "running"} JSON。
+    # 一轮对话完成后 _process_subagent_tasks 检查：已完成 → 结果作为
     # 用户消息插入对话；未完成 → 带超时等待后同样插入（模型可经
     # subagent_opt 工具继续 read/wait/kill 管理）。
 
@@ -216,8 +138,8 @@ class SubagentFunc(Func):
         """后台执行 subagent：生成 task_id、注册到主 Agent 后台任务列表，立即返回 JSON。
 
         仅主 Agent 可派发（运行时强制校验，与工具白名单双保险）。
-        任务记录注册到 ``agent._background_tasks``，一轮对话完成后由
-        ``_process_background_tasks`` 自动处理（与 bash 后台任务同机制）。
+        任务记录注册到 ``agent._subagent_tasks``，一轮对话完成后由
+        ``_process_subagent_tasks`` 自动处理（与 bash 后台任务同机制）。
         """
         from ..core.subagent import SubAgent  # 延迟导入避免模块加载循环
 
@@ -271,7 +193,7 @@ class SubagentFunc(Func):
         """后台 subagent 执行体：运行 SubAgent 并把结果写入后台任务记录。
 
         复用 ParallelExecutor.run()（独立模式）执行单个 SubAgent——
-        与前台路径一致的 UI 事件（SubagentPromptEvent/AgentResultEvent）、
+        与执行路径一致的 UI 事件（SubagentPromptEvent/AgentResultEvent）、
         面板管理、stdout 泄漏检测与结果格式化。完成后经
         ``agent._complete_subagent_task`` 写入 subagent 任务记录（subagent
         专用表 _subagent_tasks），供 _process_subagent_tasks / subagent_opt
@@ -280,7 +202,7 @@ class SubagentFunc(Func):
         文件沙盒（SandboxManager）处理：
         - 后台任务由 asyncio.ensure_future 创建，复制派发时 contextvars
           （含 message_index）——SubAgent 文件操作经 record_file_change_
-          from_context 关联到**派发轮次**的消息索引（与前台 subagent 语义
+          from_context 关联到**派发轮次**的消息索引（与 subagent 执行语义
           一致，沙盒可精确回滚到派发轮次）；
         - 若 MainAgent 在后台 subagent 运行期间发生上下文压缩
           （remap_indices 删除派发轮次消息），派发索引可能已失效：完成后
@@ -289,7 +211,7 @@ class SubagentFunc(Func):
         """
         agent = self.agent
 
-        # 模型选择：与前台 execute() 一致（map/execute 类型优先低优先级模型）
+        # 模型选择：与 execute() 一致（map/execute 类型优先低优先级模型）
         model = self._resolve_model(agent, self.target_agent_type)
 
         # ── 文件沙盒快照（执行前） ──

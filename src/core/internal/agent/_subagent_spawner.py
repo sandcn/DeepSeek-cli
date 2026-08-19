@@ -72,7 +72,7 @@ class SubAgentSpawner:
         ``sa-xxx``）——后台 subagent 并发执行时每个 label 唯一，避免默认
         ``agent-N``（index 恒 0 → 全部 ``agent-1``）互相覆盖 TUI 槽位 /
         ``_subagent_records`` 导出去重键 / 轨迹存档（P1，review）。
-        前台路径 spec 无 label → 保持 ``agent-{index+1}`` 原行为。
+        spec 无 label（直接调用 spawner 场景）→ 保持 ``agent-{index+1}``。
         """
         label = spec.get("label") or f"agent-{index + 1}"
         desc = spec.get(_DESCRIPTION_KEY, f"子任务 {index + 1}")
@@ -97,9 +97,8 @@ class SubAgentSpawner:
         #   而面板槽位 dispatch_label 恒为空：后台 subagent（独立模式 run）
         #   槽位无法与主轨迹中派发它的 subagent 工具记录匹配合并 → 生成独立
         #   subagent 记录，用户选中派发工具记录回车无反应（无 subagent_label
-        #   无法进入 subagent 轨迹）。透传后与前台批量模式（_execute_all 的
-        #   AgentAddedEvent 已带 dispatch_label）语义一致：主轨迹合并到工具
-        #   记录（subagent_label 设置）→ Enter 进入后台 subagent 轨迹。
+        #   无法进入 subagent 轨迹）。透传后主轨迹合并到工具记录
+        #   （subagent_label 设置）→ Enter 进入后台 subagent 轨迹。
         display.add_agent(
             label, desc, status="running", agent_type=agent_type,
             dispatch_label=spec.get("tool_label", ""),
@@ -119,7 +118,8 @@ class SubAgentSpawner:
             agent_type = spec.get("agent_type", "execute")
             prompt = spec.get("prompt", "")
             # ★ 2026-08-18（后台 subagent）：优先使用 spec 唯一 label（如
-            #   task_id ``sa-xxx``），缺省回退序号 ``agent-{i}``（前台路径）。
+            #   task_id ``sa-xxx``），缺省回退序号 ``agent-{i}``（直接调用
+            #   spawner / spec 无 label 场景）。
             label = spec.get("label") or f"agent-{i}"
             if prompt:
                 self._event_port.publish_event(_SubagentPromptEvent(

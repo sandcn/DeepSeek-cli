@@ -111,7 +111,7 @@ class BaseAgent:
         #   - _background_tasks：bash 后台任务（bash background=True /
         #     自动转后台），task_id 恒为 "bg-xxx"，主 Agent 与 SubAgent
         #     都持有（SubAgent 内可跑 bash 后台任务）
-        #   - _subagent_tasks：subagent 后台任务（subagent 默认后台），
+        #   - _subagent_tasks：subagent 后台任务（subagent 直接后台执行），
         #     task_id 恒为 "sa-xxx"，**仅主 Agent（Agent 类）独有**——
         #     后台 subagent 仅主 Agent 可派发（白名单排除 + 运行时校验），
         #     SubAgent 不持有该表，在 Agent.__init__ 中显式初始化
@@ -700,7 +700,7 @@ class BaseAgent:
 
         与 _process_background_tasks（bash 表）完全独立：本方法不触碰
         _background_tasks，只消费 subagent 后台任务（task_id 恒为 "sa-xxx"，
-        由 subagent 工具默认后台派发注册）。
+        由 subagent 工具直接后台派发注册）。
 
         防卡死：等待运行中后台任务完成带 _BACKGROUND_WAIT_TIMEOUT 超时。
         超时后仍在运行的任务被标记为 ``managed_by_tool=True``（不再自动等待），
