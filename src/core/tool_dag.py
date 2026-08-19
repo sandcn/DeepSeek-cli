@@ -567,8 +567,12 @@ class ToolDAG:
         因此与所有其他节点建立依赖关系（所有其他节点依赖 user_select）。
 
         这确保 user_select 独占一层。
-        多个 user_select 节点之间按原始顺序串行化（Bug #2 修复），
-        确保不会在同一层并发执行。
+        ★ 2026-08-19（用户需求：user_select 并发 + tab 切换，参考 Claude
+        AskUserQuestion）：多个 user_select 节点**不再串行化**——允许同一
+        层内并发执行（并发弹窗以 tab 形式一起显示：``UserSelectPopup``
+        多 tab 渲染 + ``model.user_selects`` 并发队列，见 tools/
+        user_select.py）。与「其他节点依赖 user_select」的独占层约束保持
+        （user_select 与文件/网络等工具不同层，先于其他工具执行）。
         """
         user_select_ids = [
             tc_id for tc_id, node in self._nodes.items()
@@ -579,19 +583,9 @@ class ToolDAG:
             if tc_id not in user_select_ids
         ]
 
-        # —— 多个 user_select 节点串行化（按原始顺序） ——
-        # user_select[i] → user_select[i+1]，确保各占一层
-        if len(user_select_ids) >= 2:
-            # 按 _original_order 排序保证确定性的层顺序
-            us_sorted = sorted(
-                user_select_ids,
-                key=lambda tid: self._original_order.index(tid) if tid in self._original_order else -1,
-            )
-            for i in range(len(us_sorted) - 1):
-                earlier_id = us_sorted[i]
-                later_id = us_sorted[i + 1]
-                self._nodes[later_id].dependencies.add(earlier_id)
-                self._nodes[earlier_id].dependents.add(later_id)
+        # —— 移除原「多个 user_select 按原始顺序串行化」约束（2026-08-19）——
+        # 修复前 user_select[i] → user_select[i+1] 链式依赖保证各占一层；
+        # 并发需求下同一层多个 user_select 并行等待用户交互（各自独立 tab）。
 
         for us_id in user_select_ids:
             us_node = self._nodes[us_id]

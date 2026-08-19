@@ -70,7 +70,12 @@ FULLSCREEN_VIEWS: dict = {
 BOTTOM_VIEWS: dict = {
     "user_select": (
         UserSelectPopup,
-        lambda model: f"us-{getattr(getattr(model, 'user_select', None), 'seq', 0)}",
+        # ★ 2026-08-19（并发 tab 弹窗）：key 固定为常量——弹窗激活期间
+        #   **不因新问题加入/问题确认而重挂载**（active_tab 焦点保留，否则
+        #   Tab 切到的问题会被新 append 强制重置回第一个）。连续会话（关闭
+        #   帧被渲染节流合并跳过 → fiber 复用）由组件内部会话检测防御
+        #   （us_ref/prev_states_ref 实例变化时重置焦点与选中）。
+        lambda model: "us-popup",
     ),
     # ★ 2026-08-18（用户需求：editmsg 与 user_select 不能用同一份代码）：
     #   /editmsg 消息选择独立为底部视图——独立状态 model.editmsg_select +

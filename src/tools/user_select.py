@@ -1,4 +1,4 @@
-"""user_select — 用户交互选择工具（React Ink 化）。
+"""user_select — 用户交互选择工具（React Ink 化，支持并发多问题 tab）。
 
 React Ink 化（2026-08-05）：终端交互从「命令补全弹窗（show_completions +
 CompletionState）+ 手动 raw I/O（select/read_byte/cbreak）」迁移为独立的
@@ -14,6 +14,23 @@ React Ink 组件 ``UserSelectPopup``（src/tui/app/user_select.py）：
     锁内原子写）——工具超时分支与组件确认并发时不会互相覆盖
     （2026-08-17 修复：修复前工具侧超时分支无条件覆盖，用户已确认却
     可能返回 timeout，UserSelect timeout 精确性验证（1s）有机率复现）。
+
+★ 2026-08-19（用户需求：user_select 并发 + tab 切换，参考 Claude Code
+AskUserQuestion）：``parallel_safe=True``——多个 user_select 工具调用可
+**并发执行**（ToolDAG 不再强制 user_select 串行化，见 tool_dag.py
+``_add_user_select_constraints``）。每个并发调用**追加**一个
+``UserSelectState`` 到 ``model.user_selects`` 并发队列，``UserSelectPopup``
+以 tab 形式全部一起显示、Tab/←/→ 切换焦点。交互协议：
+
+  - 打开：append ``model.user_selects`` + 同步 ``model.user_select`` +
+    ``bottom_view="user_select"`` + request_bottom_redraw；
+  - 组件：问题 Enter 确认仅 ``mark_answered`` 标记 answered（**提交前可
+    重新回答**）；最后一个 tab = Submit 页——Enter 统一 ``try_set_final``
+    置 done（已答按各自 action/result、未答取 default_options）；
+  - 工具：轮询自己的 state.done（Submit 提交或超时置位）→ 读 result 返回；
+  - 清理：已完成（done）的 tab **保留显示**（[×] 标记，参考 Claude）；
+    当**全部**问题都 done 时（最后一个完成的协程）统一清空列表 + 关闭
+    bottom_view——单问题（非并发）行为与旧版一致（Enter 直接提交）。
 """
 
 from __future__ import annotations
@@ -34,7 +51,7 @@ from ..tui.consumer import get_active_chat_ui
 _logger = logging.getLogger(__name__)
 
 @tool_metadata(
-    parallel_safe=False,
+    parallel_safe=True,
     requires_network=False,
     requires_terminal=True,
     timeout_estimate=120,
@@ -214,10 +231,17 @@ class UserSelectFunc(Func):
                 checked.append(i)
 
         from ..tui.app.model import UserSelectState
+        state = None  # 并发队列元素（finally 引用；构造异常时兜底 None）
         try:
-            # 设置弹窗状态（seq+1 强制 UserSelectPopup 重挂载）
+            # ★ 并发弹窗（2026-08-19 用户需求：user_select 并发 + tab 切换，
+            #   参考 Claude AskUserQuestion）：多个并发 user_select 工具调用
+            #   各自**追加**一个 ``UserSelectState`` 到 ``model.user_selects``
+            #   并发队列（真源，UserSelectPopup 以 tab 形式全部显示）；
+            #   ``model.user_select`` 兼容字段同步指向本 state（旧代码/测试
+            #   读取）。打开前清理已完成（done）的残留 state（旧协程已返回、
+            #   无人清理的场景）——同一轮并发问题不互相清理。
             prev_seq = getattr(model.user_select, "seq", 0)
-            model.user_select = UserSelectState(
+            state = UserSelectState(
                 visible=True,
                 seq=prev_seq + 1,
                 title=self.title or "选择",
@@ -229,6 +253,16 @@ class UserSelectFunc(Func):
                 checked=checked,
                 deadline=0.0 if self.timeout <= 0 else time.monotonic() + self.timeout,
             )
+            try:
+                if not hasattr(model, "user_selects"):
+                    model.user_selects = []
+                model.user_selects[:] = [
+                    s for s in model.user_selects if not getattr(s, "done", False)
+                ]
+                model.user_selects.append(state)
+            except Exception:
+                _logger.debug("user_select: 追加并发队列失败，回退单例", exc_info=True)
+            model.user_select = state
             # ★ 模态底部视图（2026-08-17 通用机制）：激活底部视图——App
             #   底部区只渲染 UserSelectPopup（状态栏/输入区不显示，弹窗在
             #   原来底部框位置独立显示）。user_select 工具协议：打开设置
@@ -238,18 +272,21 @@ class UserSelectFunc(Func):
             chat_ui.request_bottom_redraw()
 
             # 轮询等待组件交互完成（render 线程运行中；组件写 done）
-            deadline = model.user_select.deadline
-            while not model.user_select.done:
+            # ★ 2026-08-19：轮询**本 state**（并发队列中的元素），不再读
+            #   ``model.user_select``——并发场景下 model.user_select 可能被
+            #   其他协程覆盖。
+            deadline = state.deadline
+            while not state.done:
                 if deadline > 0 and time.monotonic() >= deadline:
                     # 超时：原子终态写入（first-write-wins）——若组件恰在
                     # 临界窗口已确认（done 已置位），try_set_final 返回 False
                     # 且不覆盖，保留组件结果（2026-08-17 修复：修复前无条件
                     # 写 done/action/result，用户已确认却可能返回 timeout）。
-                    model.user_select.try_set_final("timeout", default_opts)
+                    state.try_set_final("timeout", default_opts)
                     break
                 await asyncio.sleep(0.05)
 
-            st = model.user_select
+            st = state
             action = st.action or "timeout"
             result = list(st.result) if st.result else default_opts
             return json.dumps({
@@ -264,33 +301,48 @@ class UserSelectFunc(Func):
                 "action": f"error: {error_msg}",
             }, ensure_ascii=False)
         finally:
-            # 清理弹窗状态 + 主动重绘（底部栏立即恢复正常显示）
+            # 清理弹窗状态 + 主动重绘（底部栏立即恢复正常显示）。
+            # ★ 并发清理（2026-08-19）：已完成（done）的 tab **保留显示**
+            #   （[×] 标记，参考 Claude AskUserQuestion）——自己的协程不
+            #   立即移除；当**全部**问题都 done 时（最后一个完成的协程）
+            #   统一清空列表 + 关闭 bottom_view。异常路径（state 未 done）
+            #   先置终态避免弹窗残留卡死。
             try:
-                # ★ 模态底部视图：**先关闭底部视图**（App 恢复状态栏 + 输入区，
-                #   弹窗关闭后正常底部框重新显示）再清理弹窗状态——避免
-                #   「user_select 已重置但 bottom_view 仍指向弹窗」的空白帧
-                #   窗口（渲染线程可能在此窗口取帧，弹窗消失但底部区未恢复）。
-                if hasattr(model, "bottom_view"):
-                    model.bottom_view = ""
-                # ★ 2026-08-18（连续弹出显示错乱修复）：清理**保留 seq**——
-                #   seq 单调递增保证 App key（us-{seq}）永不重复 → 调和器每次
-                #   强制重挂载 UserSelectPopup（重置内部 selected/checked state）。
-                #   修复前归零：连续两次弹出之间若关闭帧被渲染节流合并跳过，
-                #   第二次 seq 与第一次相同 → key 复用 → fiber 复用 → 旧选中/
-                #   勾选残留（标题 (n/N)/高亮/勾选显示错乱）。
-                prev_seq = getattr(model.user_select, "seq", 0)
-                model.user_select = UserSelectState(seq=prev_seq)
-                chat_ui.request_bottom_redraw()
-                # ★ 2026-08-19 根因修复（同 editmsg——很多上文时按回车不能
-                #   编辑对应消息）：弹窗清理后、渲染线程发布新 input router
-                #   前，旧 router 仍含已卸载弹窗控件的 handler——用户紧接
-                #   着的按键（Enter 等）被旧 router 消费吞掉。同步等待新
-                #   router 发布（两帧）再清理 stdin，之后的用户按键不再被
-                #   吞。超时（2s）降级继续。
-                try:
-                    chat_ui.flush_input_router(2.0)
-                except Exception:
-                    _logger.debug("user_select: flush_input_router 异常", exc_info=True)
+                if state is not None and not state.done:
+                    state.try_set_final("timeout", default_opts)
+                if state is None or not getattr(model, "user_selects", None) or all(
+                    getattr(s, "done", False) for s in model.user_selects
+                ):
+                    # 全部完成（或队列已空）：整体关闭弹窗
+                    try:
+                        model.user_selects.clear()
+                    except Exception:
+                        _logger.debug("user_select: clear 队列失败", exc_info=True)
+                    # ★ 模态底部视图：**先关闭底部视图**（App 恢复状态栏 +
+                    #   输入区，弹窗关闭后正常底部框重新显示）再清理弹窗状态
+                    #   ——避免「user_select 已重置但 bottom_view 仍指向弹窗」
+                    #   的空白帧窗口（渲染线程可能在此窗口取帧，弹窗消失但
+                    #   底部区未恢复）。
+                    if hasattr(model, "bottom_view"):
+                        model.bottom_view = ""
+                    # ★ 2026-08-18（连续弹出显示错乱修复）：清理**保留 seq**——
+                    #   seq 单调递增保证 App key（us-{seq}）永不重复 → 调和器
+                    #   每次强制重挂载 UserSelectPopup（重置内部 selected/
+                    #   checked state）。修复前归零：连续两次弹出之间若关闭帧
+                    #   被渲染节流合并跳过，第二次 seq 与第一次相同 → key 复用
+                    #   → fiber 复用 → 旧选中/勾选残留。
+                    prev_seq = getattr(model.user_select, "seq", 0)
+                    model.user_select = UserSelectState(seq=prev_seq)
+                    chat_ui.request_bottom_redraw()
+                    # ★ 2026-08-19 根因修复（同 editmsg）：弹窗清理后、渲染
+                    #   线程发布新 input router 前，旧 router 仍含已卸载弹窗
+                    #   控件的 handler——用户紧接着的按键（Enter 等）被旧
+                    #   router 消费吞掉。同步等待新 router 发布（两帧）再清理
+                    #   stdin，之后的用户按键不再被吞。超时（2s）降级继续。
+                    try:
+                        chat_ui.flush_input_router(2.0)
+                    except Exception:
+                        _logger.debug("user_select: flush_input_router 异常", exc_info=True)
             except Exception:
                 _logger.debug("user_select: cleanup 失败", exc_info=True)
             # 清空 stdin 残留

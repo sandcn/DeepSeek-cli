@@ -121,6 +121,12 @@ class UserSelectState:
     （CompletionState + show_completions + raw I/O），改为独立的 React Ink
     组件 ``UserSelectPopup`` 渲染与交互（use_input + use_state）。
 
+    ★ 2026-08-19（用户需求：user_select 并发 + tab 切换，参考 Claude
+    AskUserQuestion）：多个并发 user_select 工具调用各自构造一个本状态并
+    append 到 ``model.user_selects`` 并发队列（真源）——``UserSelectPopup``
+    以 tab 形式全部一起显示、Tab/←/→ 切换焦点。``model.user_select``
+    保留为兼容字段（指向最近打开/活跃的 state）。
+
     ★ 2026-08-18（用户需求：editmsg 与 user_select 不能用同一份代码）：
     /editmsg 消息选择已拆分为独立协议（EditMsgSelectState +
     EditMsgSelectPopup + bottom_view="editmsg"），本状态仅服务
@@ -140,7 +146,11 @@ class UserSelectState:
         selected: 当前高亮索引（组件维护）。
         checked: 多选勾选索引列表（组件维护，提交时按索引排序）。
         deadline: 超时截止（time.monotonic()）；0 表示无限等待。
-        done: 交互是否已结束（组件写入）。
+        answered: 该问题是否**已回答**（Enter 确认/Esc 取消；tab 标记
+            [×]）——提交（done）前可**重新回答**（mark_answered 覆盖
+            action/result，2026-08-19 用户需求：已经回答的可以重新答）。
+        done: 交互是否已结束（**整体提交**或工具超时置位）——done 后 tab
+            [×] 终态锁定（只读），工具协程轮询到 done 返回结果。
         action: 结束方式（confirmed/cancel/timeout）。
         result: 选中的 options 子集（组件/工具写入）。
         _final_lock: 终态写入锁（done/action/result 三字段原子写，
@@ -157,6 +167,7 @@ class UserSelectState:
     selected: int = 0
     checked: list = field(default_factory=list)
     deadline: float = 0.0
+    answered: bool = False
     done: bool = False
     action: str = ""
     result: list = field(default_factory=list)
@@ -164,6 +175,29 @@ class UserSelectState:
     _final_lock: threading.Lock = field(
         default_factory=threading.Lock, repr=False, compare=False,
     )
+
+    def mark_answered(self, action: str, result: list) -> bool:
+        """标记该问题已回答（Enter 确认 / Esc 取消 / **重新回答**）。
+
+        ★ 2026-08-19（用户需求：已经回答的可以重新答）：与
+        ``try_set_final``（整体提交终态，first-write-wins 置 done）区分——
+        本方法只写 ``action/result/answered``（不置 done），提交前可**反复
+        覆盖**（重答：切回已答 tab 重新导航选择后 Enter，新选择覆盖旧值）。
+
+        Args:
+            action: 结束方式（confirmed/cancel）。
+            result: 该问题的选择结果（入参浅拷贝）。
+
+        Returns:
+            True 本次写入生效；False 已提交/超时（done 置位，终态锁定）。
+        """
+        with self._final_lock:
+            if self.done:
+                return False
+            self.action = action
+            self.result = list(result)
+            self.answered = True
+            return True
 
     def try_set_final(self, action: str, result: list) -> bool:
         """原子写入终态（first-write-wins，跨线程安全）。

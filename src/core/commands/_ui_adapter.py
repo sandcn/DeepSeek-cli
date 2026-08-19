@@ -63,7 +63,10 @@ class CommandUiAdapter:
             from ...tui.app.model import UserSelectState
             display = display_items if display_items else items
             prev_seq = getattr(model.user_select, "seq", 0)
-            model.user_select = UserSelectState(
+            # ★ 2026-08-19（并发 tab 弹窗，与 user_select 工具同协议）：追加
+            #   到 ``model.user_selects`` 并发队列（真源）+ 同步兼容字段
+            #   ``model.user_select``——并发弹窗以 tab 形式一起显示。
+            state = UserSelectState(
                 visible=True,
                 seq=prev_seq + 1,
                 title=title or "选择",
@@ -71,6 +74,16 @@ class CommandUiAdapter:
                 selected=max(0, min(int(initial_idx), len(display) - 1)),
                 deadline=time.monotonic() + 60,
             )
+            try:
+                if not hasattr(model, "user_selects"):
+                    model.user_selects = []
+                model.user_selects[:] = [
+                    s for s in model.user_selects if not getattr(s, "done", False)
+                ]
+                model.user_selects.append(state)
+            except Exception:
+                _logger.debug("run_bottom_bar_selection: 追加并发队列失败", exc_info=True)
+            model.user_select = state
             # ★ 模态底部视图（2026-08-17 通用机制）：与 user_select 工具同协议
             #   ——激活底部视图（底部区只渲染弹窗，状态栏/输入区不显示）。
             if hasattr(model, "bottom_view"):
@@ -85,16 +98,16 @@ class CommandUiAdapter:
             #   （selected 可能为 None/非数字，int() 抛 TypeError 会跳过清理
             #   泄漏 bottom_view → App 持续只渲染弹窗，输入区消失）。
             try:
-                deadline = model.user_select.deadline
-                while not model.user_select.done:
+                deadline = state.deadline
+                while not state.done:
                     if deadline > 0 and time.monotonic() >= deadline:
                         # 超时：原子终态写入（first-write-wins）——组件已
                         # 确认（done 已置位）则放弃覆盖（2026-08-17 修复：
                         # 修复前无条件写 done/action 覆盖组件确认结果）。
-                        model.user_select.try_set_final("timeout", [])
+                        state.try_set_final("timeout", [])
                         break
                     time.sleep(0.05)
-                st = model.user_select
+                st = state
                 action = st.action or "timeout"
                 try:
                     selected = int(getattr(st, "selected", -1))
@@ -105,20 +118,36 @@ class CommandUiAdapter:
                 return {"action": "confirmed", "index": selected if selected >= 0 else initial_idx}
             finally:
                 # 清理弹窗状态 + 关闭底部视图 → App 恢复状态栏 + 输入区。
-                # ★ 2026-08-18（连续弹出显示错乱修复）：先关闭底部视图再清理
-                #   状态（避免「状态已重置但 bottom_view 仍指向弹窗」的空白帧
-                #   窗口）；且清理**保留 seq**——seq 单调递增保证 App key
-                #   （us-{seq}）永不重复 → 调和器强制重挂载 UserSelectPopup
-                #   （修复前归零 → 连续打开 key 复用 → fiber 复用 → use_state
-                #   残留旧选中，弹窗显示错乱）。
-                if hasattr(model, "bottom_view"):
-                    model.bottom_view = ""
-                prev_seq = getattr(model.user_select, "seq", 0)
-                model.user_select = UserSelectState(seq=prev_seq)
+                # ★ 并发清理（2026-08-19，与 user_select 工具同协议）：已完成
+                #   （done）的 tab 保留显示（[×]）；**全部**完成（最后一个
+                #   完成的协程）才整体关闭。
                 try:
-                    session.request_bottom_redraw()
+                    if not state.done:
+                        state.try_set_final("timeout", [])
+                    if not getattr(model, "user_selects", None) or all(
+                        getattr(s, "done", False) for s in model.user_selects
+                    ):
+                        try:
+                            model.user_selects.clear()
+                        except Exception:
+                            pass
+                        # ★ 2026-08-18（连续弹出显示错乱修复）：先关闭底部视图
+                        #   再清理状态（避免「状态已重置但 bottom_view 仍指向
+                        #   弹窗」的空白帧窗口）；且清理**保留 seq**——seq 单调
+                        #   递增保证 App key（us-{seq}）永不重复 → 调和器强制
+                        #   重挂载 UserSelectPopup（修复前归零 → 连续打开 key
+                        #   复用 → fiber 复用 → use_state 残留旧选中，弹窗显示
+                        #   错乱）。
+                        if hasattr(model, "bottom_view"):
+                            model.bottom_view = ""
+                        prev_seq = getattr(model.user_select, "seq", 0)
+                        model.user_select = UserSelectState(seq=prev_seq)
+                        try:
+                            session.request_bottom_redraw()
+                        except Exception:
+                            pass
                 except Exception:
-                    pass
+                    _logger.debug("run_bottom_bar_selection: cleanup 失败", exc_info=True)
 
         # ── 旧补全弹窗路径（无 ChatUI 兼容） ──
         if bottom_bar is None:

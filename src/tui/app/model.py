@@ -102,6 +102,12 @@ class AppModel(_ToolOutputMixin):
         self.completion: CompletionState = CompletionState()
         # 用户选择弹窗（React Ink 化：user_select 工具 → UserSelectPopup 组件）
         self.user_select: UserSelectState = UserSelectState()
+        # 用户选择弹窗**并发队列**（2026-08-19 用户需求：user_select 并发 +
+        # tab 切换，参考 Claude AskUserQuestion）：多个并发 user_select 工具
+        # 调用各自 append 一个 UserSelectState，UserSelectPopup 以 tab 形式
+        # 全部一起显示。本列表为**真源**；``model.user_select`` 保留为兼容
+        # 字段（指向最近打开/活跃的 state，旧代码/测试读取）。
+        self.user_selects: list = []
         # 消息编辑选择弹窗（2026-08-18 用户需求：editmsg 与 user_select 不能
         # 用同一份代码——/editmsg 消息选择独立于 user_select 协议：
         # model.editmsg_select + EditMsgSelectPopup + bottom_view="editmsg"。
@@ -672,6 +678,10 @@ class AppModel(_ToolOutputMixin):
         #   工具轮询 done 期间若清屏，弹窗消失但工具仍在等待（超时兜底）。
         #   与 fullscreen 同语义（底部视图态不跨清屏保留）。
         self.bottom_view = ""
+        # ★ 2026-08-19（并发 tab 弹窗）：清屏同时清空用户选择并发队列——
+        #   弹窗态不跨清屏保留（与 bottom_view 同语义；user_select 工具轮询
+        #   done 期间若清屏，弹窗消失但工具仍在等待，超时兜底）。
+        self.user_selects = []
         # ★ 2026-08-18（editmsg 独立协议）：清屏同时重置消息编辑选择弹窗
         #   （与 user_select 同语义——残留 editmsg_select 让 /editmsg 轮询
         #   done 期间弹窗消失，轮询等待空转到超时）。**保留 seq**（与
