@@ -16,7 +16,7 @@ import asyncio
 import logging
 import threading
 import weakref
-from typing import AsyncIterator, Any
+from typing import AsyncIterator, Any, Optional
 
 import httpx
 
@@ -84,7 +84,18 @@ def _create_async_client() -> httpx.AsyncClient:
 # ★ 使用 asyncio.Lock 而非 threading.RLock：避免阻塞事件循环。
 #   所有访问 _clients 的操作均为 async def，可用 async with 安全等待。
 _clients: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
-_clients_lock = asyncio.Lock()
+# ★ 2026-08-20（稳定性修复）：模块级 asyncio.Lock() 在 import 时依赖事件循环
+#   （Python 3.9 get_event_loop）——asyncio.run 之后的同进程内 import 本模块会抛
+#   RuntimeError（xdist 全量测试偶发）。改为 None + 首次 async 使用惰性创建。
+_clients_lock: Optional[asyncio.Lock] = None
+
+
+def _get_clients_lock() -> asyncio.Lock:
+    """惰性创建客户端池锁（仅 async 上下文调用，保证存在运行事件循环）。"""
+    global _clients_lock
+    if _clients_lock is None:
+        _clients_lock = asyncio.Lock()
+    return _clients_lock
 
 
 async def get_async_client() -> httpx.AsyncClient:
@@ -94,7 +105,7 @@ async def get_async_client() -> httpx.AsyncClient:
     导致 asyncio 原语（Event/Lock）"bound to a different event loop" 错误。
     """
     loop = asyncio.get_running_loop()
-    async with _clients_lock:
+    async with _get_clients_lock():
         client = _clients.get(loop)
         if client is None:
             client = _create_async_client()
@@ -108,7 +119,7 @@ async def reset_async_client() -> None:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    async with _clients_lock:
+    async with _get_clients_lock():
         client = _clients.pop(loop, None)
         if client is not None:
             try:

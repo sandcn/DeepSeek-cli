@@ -70,7 +70,18 @@ class WebSearchError(Exception):
 # ═══════════════════════════════════════════════════════════
 
 _shared_client: Optional[httpx.AsyncClient] = None
-_client_lock = asyncio.Lock()
+# ★ 2026-08-20（稳定性修复）：模块级 asyncio.Lock() 在 import 时依赖事件循环
+#   （Python 3.9 get_event_loop）——asyncio.run 之后的同进程内 import 本模块会抛
+#   RuntimeError（xdist 全量测试偶发）。改为 None + 首次 async 使用惰性创建。
+_client_lock: Optional[asyncio.Lock] = None
+
+
+def _get_client_lock() -> asyncio.Lock:
+    """惰性创建共享客户端锁（仅 async 上下文调用，保证存在运行事件循环）。"""
+    global _client_lock
+    if _client_lock is None:
+        _client_lock = asyncio.Lock()
+    return _client_lock
 
 
 async def get_shared_client() -> httpx.AsyncClient:
@@ -80,7 +91,7 @@ async def get_shared_client() -> httpx.AsyncClient:
     """
     global _shared_client
     if _shared_client is None or _shared_client.is_closed:
-        async with _client_lock:
+        async with _get_client_lock():
             if _shared_client is None or _shared_client.is_closed:
                 limits = httpx.Limits(
                     max_keepalive_connections=5,
@@ -99,7 +110,7 @@ async def shutdown_client() -> None:
     """关闭共享 AsyncClient，释放连接池资源（应用退出时调用）"""
     global _shared_client
     if _shared_client is not None:
-        async with _client_lock:
+        async with _get_client_lock():
             if _shared_client is not None:
                 await _shared_client.aclose()
                 _shared_client = None

@@ -250,19 +250,27 @@ def test_poll_loop_stop_not_enqueue():
     runner = _make_runner(client=client)
     runner._allowed_users.add("u1")
     runner._ai_running = True
-    queue: asyncio.Queue = asyncio.Queue()
 
     async def _run():
+        # ★ 2026-08-20（稳定性修复）：asyncio.Queue() 在 asyncio.run 外构造
+        #   依赖已关闭的事件循环（Python 3.9 get_event_loop 抛 RuntimeError，
+        #   xdist 并行下偶发）——移入运行中的循环内创建；等待 /stop 已被实时
+        #   拦截处理（sent 已写）再取消，替代固定 0.3s sleep（更快更稳）。
+        queue: asyncio.Queue = asyncio.Queue()
         task = asyncio.create_task(runner._poll_loop(queue))
-        await asyncio.sleep(0.3)
+        for _ in range(100):
+            if client.sent:
+                break
+            await asyncio.sleep(0.01)
         task.cancel()
         try:
             await task
         except asyncio.CancelledError:
             pass
+        return queue
 
     try:
-        asyncio.run(_run())
+        queue = asyncio.run(_run())
         assert queue.empty()  # /stop 被实时拦截，未进入消息队列
         assert client.sent and client.sent[0][2] == "⏹ 已停止当前生成"
     finally:
@@ -296,18 +304,25 @@ def test_poll_loop_regular_msg_still_enqueued():
     runner = _make_runner(client=client)
     runner._allowed_users.add("u1")
     runner._ai_running = True
-    queue: asyncio.Queue = asyncio.Queue()
 
     async def _run():
+        # ★ 2026-08-20（稳定性修复）：queue 移入运行中的循环内创建（避免
+        #   asyncio.run 后残留无循环状态下构造 Queue 抛 RuntimeError）；
+        #   等待消息已入队再取消，替代固定 0.3s sleep（更快更稳）。
+        queue: asyncio.Queue = asyncio.Queue()
         task = asyncio.create_task(runner._poll_loop(queue))
-        await asyncio.sleep(0.3)
+        for _ in range(100):
+            if queue.qsize() >= 1:
+                break
+            await asyncio.sleep(0.01)
         task.cancel()
         try:
             await task
         except asyncio.CancelledError:
             pass
+        return queue
 
-    asyncio.run(_run())
+    queue = asyncio.run(_run())
     assert queue.qsize() == 1
     item = queue.get_nowait()
     assert item["source"] == "wechat"

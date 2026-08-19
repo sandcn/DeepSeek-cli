@@ -534,11 +534,12 @@ def test_w6_no_component_confirm_times_out_not_confirmed(monkeypatch):
 
     model2 = model
 
-    # 缩短 deadline：第一次 sleep 时把 deadline 置为已过（立即超时退出）
+    # 缩短 deadline：第一次 sleep 时把 deadline 置为已过（立即超时退出；
+    # deadline 语义：0=无限等待，须用 >0 且已过的时间点）。
     def _sleep_expire(_s):
         es = model2.editmsg_select
         if not es.done:
-            es.deadline = 0.0
+            es.deadline = 1e-9
 
     monkeypatch.setattr(me_mod.time, "sleep", _sleep_expire)
     user_msgs = [(0, {"role": "user", "content": "m0"}),
@@ -547,6 +548,32 @@ def test_w6_no_component_confirm_times_out_not_confirmed(monkeypatch):
     # 修复前：_selection_ready 提前置位 → break → action=confirmed → idx=2
     # 修复后：信号已清除 + done 未置位 → 超时 → None（取消语义）
     assert idx is None
+
+
+def test_deadline_update_during_poll_exits_immediately(monkeypatch):
+    """W6 加固（2026-08-20 性能修复）：轮询期间外部更新 es.deadline 为已过
+    → 下一轮立即超时退出。修复前 deadline 在循环外只读一次，更新无效 →
+    空转到初始 120s 截止才退出（全量测试 122s 热点）；修复后每轮重读
+    es.deadline，外部可提前超时（deadline>0 且已过才触发——0 语义为无限等待）。"""
+    import src.tui.pipeline.message_editor as me_mod
+    from src.tui.pipeline.message_editor import MessageEditor
+
+    model = AppModel()
+    editor = MessageEditor(bottom_bar=_BB(model, _SessionStub()), input_=_InputStub())
+
+    # 首次 sleep 时把 deadline 置为已过（1e-9：>0 且早于 now，立即触发超时）
+    def _sleep_expire(_s):
+        es = model.editmsg_select
+        if not es.done:
+            es.deadline = 1e-9
+
+    monkeypatch.setattr(me_mod.time, "sleep", _sleep_expire)
+    t0 = time.monotonic()
+    user_msgs = [(0, {"role": "user", "content": "m0"})]
+    idx = editor._interactive_message_select(user_msgs, ["1. m0"])
+    elapsed = time.monotonic() - t0
+    assert idx is None  # deadline 更新生效 → 快速超时取消（不空转 120s）
+    assert elapsed < 5.0  # 远小于初始 120s 截止（忙循环兜底断言）
 
 
 # ═══════════════════════════════════════════════════════════

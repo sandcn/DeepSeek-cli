@@ -83,7 +83,17 @@ class ToolScheduler:
         # _schedule_depth：int 防语义污染 — SubAgent 嵌套调用时只有
         #   最外层 MainAgent 的调用才更新 _prev_non_dispatch_ids。
         self._schedule_depth: int = 0
-        self._schedule_lock = asyncio.Lock()
+        # ★ 2026-08-20（性能/稳定性修复）：_schedule_lock 惰性创建——asyncio.Lock()
+        #   构造依赖当前事件循环（Python 3.9 get_event_loop），无运行循环时构造
+        #   抛 RuntimeError（asyncio.run 之后的同进程内）。None + 首次 async
+        #   使用创建，构造调度器不再绑定循环。
+        self._schedule_lock: Optional[asyncio.Lock] = None
+
+    def _get_schedule_lock(self) -> asyncio.Lock:
+        """惰性创建调度锁（仅 async 上下文调用，保证存在运行事件循环）。"""
+        if self._schedule_lock is None:
+            self._schedule_lock = asyncio.Lock()
+        return self._schedule_lock
 
     @classmethod
     def default(cls) -> ToolScheduler:
@@ -106,7 +116,7 @@ class ToolScheduler:
         self._background_dispatch_tasks.clear()
         self._execution_depth = 0
         self._schedule_depth = 0
-        self._schedule_lock = asyncio.Lock()
+        self._schedule_lock = None
 
     async def _cleanup_batch_records(self) -> None:
         """清除跨批累积记录（最外层 schedule() 返回后调用）
@@ -872,7 +882,7 @@ class ToolScheduler:
                 # ── 临界区：最小化锁保护（P0-4: add_batch 移出锁外） ──
                 # 锁内仅做：首批创建 DAG / 后续批捕获 add_batch 所需参数
                 # add_batch 调用在锁外执行，消除嵌套 SubAgent schedule() 死锁风险
-                async with self._schedule_lock:
+                async with self._get_schedule_lock():
                     if self._global_dag is None:
                         # 首批：在锁内创建 DAG（轻量操作，无 await，无死锁风险）
                         _logger.debug("schedule[%s]: 首批 %d 个工具 → 创建全局 DAG",
@@ -907,7 +917,7 @@ class ToolScheduler:
                 )
 
                 # ── 临界区：更新 _prev_non_dispatch_ids ──
-                async with self._schedule_lock:
+                async with self._get_schedule_lock():
                     _update_prev_ids()
                 return results
 
@@ -915,7 +925,7 @@ class ToolScheduler:
                 # Python 3.9+: CancelledError 继承自 BaseException 而非 Exception，
                 # 不会被 except Exception 捕获。此处单独处理以保证 _prev_non_dispatch_ids
                 # 更新，防止 SubAgent 残留 ID 泄漏到下一批。
-                async with self._schedule_lock:
+                async with self._get_schedule_lock():
                     _update_prev_ids()
                 _logger.warning(
                     "schedule[%s]: 全局 DAG 调度被取消 (%d 个工具)",
@@ -924,7 +934,7 @@ class ToolScheduler:
                 raise
 
             except Exception:
-                async with self._schedule_lock:
+                async with self._get_schedule_lock():
                     _update_prev_ids()
                 _logger.error(
                     "schedule[%s]: 全局 DAG 调度失败 (%d 个工具)",

@@ -627,7 +627,6 @@ class MessageEditor:
         #   不再空转到 120s 超时挂起。
         es = model.editmsg_select
         try:
-            deadline = es.deadline
             while not es.done:
                 if self._selection_ready.is_set():
                     # ★ P2-7：标准路径同时响应 _selection_ready 信号（自定义
@@ -652,6 +651,10 @@ class MessageEditor:
                 # ★ P3-5：es 实例被外部替换（清屏 reset_display 等）→ 取消退出
                 if model.editmsg_select is not es:
                     break
+                # ★ 每轮重读 es.deadline：deadline 可在轮询期间被外部更新
+                #   （提前超时/延长等待），循环外只读一次会忽略更新——
+                #   空转到初始 120s 截止才退出（2026-08-20 性能修复）。
+                deadline = es.deadline
                 if deadline > 0 and time.monotonic() >= deadline:
                     # 超时：原子终态写入（first-write-wins）——组件已确认
                     # （done 已置位）则放弃覆盖，保留组件结果（2026-08-17
