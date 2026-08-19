@@ -6,6 +6,9 @@ __pycache__/
 dist/
 build/
 .venv/
+.coverage
+htmlcov/
+.coverage.*
 
 # IDE
 .idea/
