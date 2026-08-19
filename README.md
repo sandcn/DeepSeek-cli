@@ -311,7 +311,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **17 个内�
 | `mk` | mk | IO | ✅ | 创建目录，支持递归创建父目录 |
 | `web_search` | ws | 网络 | ❌ | DeepSeek 官方原生联网搜索（Anthropic 兼容 Messages API + web_search_20250305），返回来源列表（标题/URL/摘要） |
 | `web_fetch` | — | 网络 | ✅ | 获取指定 URL 的网页全文（自动提取正文，SSRF 防护，仅 http/https） |
-| `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/超时回退/非交互回退，选项可带说明，TUI 中高亮选项时说明显示在右侧） |
+| `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/超时回退/非交互回退，选项可带说明，TUI 中高亮选项时说明显示在右侧；支持并发提问——多个问题可同一轮同时弹出、以 tab 形式一起回答） |
 | `subagent` | sa | Agent | ❌ | 并行派发子 Agent 执行独立任务（支持类型：map/review/plan/execute）；默认后台执行，立即返回 `{"task_id": "sa-xxx"}` JSON，完成后结果自动插入对话（或由 subagent_opt 管理）；background=false 时前台阻塞执行并直接返回结果。后台 subagent 仅主 Agent 可派发 |
 | `subagent_opt` | so | Agent | ❌ | 按 task_id 操作后台 subagent 任务（subagent 默认后台启动）：read（读取当前状态与已产生的结果，立即返回）/ wait（等待完成取结果，timeout 秒，默认 300/0 无限）/ kill（取消后台 subagent 任务）。仅主 Agent 可用 |
 
@@ -323,7 +323,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **17 个内�
 | **代码搜索** | search, find | 正则搜索源码、通配符查找文件 |
 | **命令执行** | bash, bash_opt | 安全沙盒中执行 shell 命令；按 task_id 操作后台 bash 任务（bash 后台任务注册在 bash 专用表 `_background_tasks`） |
 | **网络访问** | web_search, web_fetch | 网页搜索（DeepSeek 官方原生搜索）与网页全文获取 |
-| **用户交互** | user_select | 交互式选择弹窗（单选/多选/超时回退） |
+| **用户交互** | user_select | 交互式选择弹窗（单选/多选/超时回退；支持并发提问，多问题 tab 一起显示） |
 | **Agent 调度** | subagent, subagent_opt | 并发派发原子 Agent 执行独立任务；按 task_id 操作后台 subagent 任务（subagent 后台任务注册在独立表 `_subagent_tasks`，与 bash 后台任务分表隔离） |
 
 ### 工具设计原则

@@ -31,6 +31,12 @@ AskUserQuestion）：``parallel_safe=True``——多个 user_select 工具调用
   - 清理：已完成（done）的 tab **保留显示**（[×] 标记，参考 Claude）；
     当**全部**问题都 done 时（最后一个完成的协程）统一清空列表 + 关闭
     bottom_view——单问题（非并发）行为与旧版一致（Enter 直接提交）。
+
+★ 2026-08-19（用户需求：user_select.py 增加可以并发向用户提问的提词）：
+``to_tool_schema()`` 的 description（模型可见的工具提词）显式声明「支持
+并发向用户提问」——引导模型在需要多个决策/确认/澄清的问题时，同一轮
+**同时**发起多个 user_select 调用（并行提问、一次问完），弹窗以 tab 形式
+全部显示、用户一次答完，避免逐个串行提问打断用户。
 """
 
 from __future__ import annotations
@@ -79,6 +85,11 @@ class UserSelectFunc(Func):
                 "name": "user_select",
                 "description": (
                     "向用户显示交互式选择界面，用于确认方案、选择选项或澄清歧义；需用户确认时优先使用。"
+                    "★ 支持并发向用户提问：当有多个需要用户决策/确认/澄清的问题时，"
+                    "应在同一轮同时发起多个 user_select 调用（并行提问、一次问完所有问题），"
+                    "所有问题会在一个弹窗界面里以 tab 形式一起显示给用户"
+                    "（Tab/←/→ 切换焦点、逐题 Enter 确认、最后统一提交）——"
+                    "用户一次答完所有问题，避免逐个串行提问打断用户。"
                     "支持单选/多选（multi_select），超时/非交互自动回退 default_options。"
                     "返回 JSON：{\"selected\":[...], \"action\":...}，"
                     "action 为 confirmed/cancel/timeout/non_interactive/empty/error。"
