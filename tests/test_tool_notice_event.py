@@ -303,5 +303,5 @@ def test_role_header_notification_is_notice_label():
     from src.tui.app._model_helpers import _role_header_runs
 
     block = SimpleNamespace(kind="notification", closed=True)
-    runs = _role_header_runs(block, model=None, live=False)
+    runs = _role_header_runs(block, live=False)
     assert "".join(r.text for r in runs) == "▎通知"

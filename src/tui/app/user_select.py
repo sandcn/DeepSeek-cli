@@ -42,7 +42,7 @@ from __future__ import annotations
 
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
-from src.tui._input import _wrap_by_width
+from src.tui._input_layout import _wrap_by_width
 from src.tui.app.input_area import _desc_column_width, _truncate_width
 from src.tui.app._theme import _S_DIM, _S_SEP
 from src.tui.ink import TEXT, h, Column, Row

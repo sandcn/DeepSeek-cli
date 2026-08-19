@@ -84,6 +84,9 @@ def SelectInput(props: dict) -> Element:
             ``{"label", "value"}`` dict）。
         focus: 是否参与输入路由（默认 True）。
         initialIndex: 初始选中下标（默认 0）。
+        index: 受控选中下标（默认 None 非受控）——每帧与内部 state 同步：
+            外部权威源（如 InputDispatcher 旧路径写回 completion.selected）
+            变化时弹窗 ▶ 高亮即时跟随；None 时保持纯非受控（零回归）。
         limit: 可见 item 数（超出滚动窗口；默认 None 全部显示）。
         highlightStyle: 选中行样式（默认 ``Style(fg=6)`` cyan）。
         prefix: 选中行前缀（默认 ``"> "``）；未选中行用同宽空格对齐。
@@ -135,6 +138,24 @@ def SelectInput(props: dict) -> Element:
     #   保存最新值（渲染期同步 + 事件期即时更新），handler 一律读 ref。
     selected_ref = use_ref(selected)
     selected_ref.current = selected
+    # ★ P1（review 2026-08-19）：受控 ``index`` prop——外部权威选中下标
+    #   （如 InputDispatcher 旧路径 PgUp/PgDn/Shift+Tab/边界回绕写回
+    #   completion.selected）与内部 state 不一致时渲染期同步（ref 即时
+    #   生效 + set_selected 排队收敛），弹窗 ▶ 高亮与外部选中不再脱节。
+    #   None（缺省）保持非受控模式（既有调用零回归）。
+    controlled_index = props.get("index")
+    if controlled_index is not None:
+        try:
+            ci = int(controlled_index)
+        except (TypeError, ValueError, OverflowError):
+            ci = 0
+        if items:
+            ci = max(0, min(ci, len(items) - 1))
+        else:
+            ci = 0
+        if ci != selected_ref.current:
+            selected_ref.current = ci
+            set_selected(ci)
 
     def _handle(event) -> bool:
         if not focus or not items:
@@ -158,7 +179,12 @@ def SelectInput(props: dict) -> Element:
         elif event.kind == "arrow_down":
             navs = ["down"]
         else:
-            nav = _is_vim_nav(event)
+            # ★ P0（review 2026-08-19）：单字符 vim 导航同样门控于 consume_all
+            #   ——修复前不受门控：consumeAll=False（命令补全弹窗 CompletionPopup
+            #   focus=True）时单字符 j/k/g/G 被 router 消费、进不了输入缓冲
+            #   （`/journal` 打成 `/ournal`）。模态弹窗（UserSelectPopup/
+            #   EditMsgSelectPopup，consumeAll=True）提示行宣传 jk 导航不受影响。
+            nav = _is_vim_nav(event) if consume_all else None
             if nav is not None:
                 navs = [nav]
             elif consume_all:

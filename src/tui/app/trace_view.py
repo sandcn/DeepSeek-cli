@@ -55,8 +55,8 @@ _S_DIM = Style(fg=242)                     # 推理摘要/元信息（暗灰）
 _S_SEL_BG = Style(bg=237)                  # 选中行背景（静态 237，不呼吸）
 _S_SEL_MARK = Style(fg=45, bold=True)      # 选中 ▶ 标记（亮青加粗）
 _S_SECTION = Style(fg=110, bold=True)      # 检查器小节标题（参数/返回值，浅蓝加粗）
-_S_TREE_KEY = Style(fg=75)                 # 树节点键（浅紫蓝）
-_S_TREE_VAL = Style(fg=252)                # 树节点标量值（亮白）
+_S_TREE_KEY = Style(fg=75)                 # 树节点键（浅紫蓝——BEAUTY-36 键值分色）
+_S_TREE_VAL = Style(fg=252)                # 树节点标量值（亮白——BEAUTY-36 键值分色）
 
 #: 树节点指示符/缩进（对齐 ink Tree 控件渲染语义——检查器参数/返回值
 #:   以树形结构展示：层级缩进 + 展开指示符）
@@ -505,6 +505,10 @@ def _tree_node_rows(nodes: list, right_w: int, out: list, depth: int = 0) -> Non
     只读展示（检查器不参与树交互——台账 ListView 独占导航焦点），默认展开
     全部层级；label 含 ``\\n`` 归一化单行（防行级 diff 宽度不变量破坏）；
     行超宽截断到 right_w（行级 diff 宽度不变量）。
+    ★ BEAUTY-36（2026-08-19 美化）：键/值分色——``key: value`` 形态的叶子
+    行键（含缩进 + 展开指示符）浅紫蓝（_S_TREE_KEY 75）、值亮白
+    （_S_TREE_VAL 252），树形参数/返回值的层级更易扫读；无 ``": "``
+    分隔（纯值/纯文本行）整行 _S_TEXT（零回归）。
     """
     if depth > _TREE_MAX_DEPTH:
         return
@@ -515,8 +519,15 @@ def _tree_node_rows(nodes: list, right_w: int, out: list, depth: int = 0) -> Non
         label = node.get("label", "")
         if "\n" in label:
             label = label.replace("\n", " ")
-        text = f"{prefix}{indicator}{label}"
-        out.append(truncate_runs([StyledRun(text, _S_TEXT)], max(1, right_w)))
+        sep_idx = label.find(": ")
+        if sep_idx >= 0:
+            runs = [
+                StyledRun(f"{prefix}{indicator}{label[:sep_idx]}: ", _S_TREE_KEY),
+                StyledRun(label[sep_idx + 2:], _S_TREE_VAL),
+            ]
+        else:
+            runs = [StyledRun(f"{prefix}{indicator}{label}", _S_TEXT)]
+        out.append(truncate_runs(runs, max(1, right_w)))
         if children:
             _tree_node_rows(children, right_w, out, depth + 1)
 
@@ -669,8 +680,8 @@ def _inspector_children(rec, right_w: int, vh: int) -> list:
         meta.append(f"耗时 {format_duration(ts)}")
     tokens = getattr(rec, "tokens", None) or {}
     if tokens:
-        meta.append(f"输入 {format_tokens(int(tokens.get('input', 0) or 0))}")
-        meta.append(f"输出 {format_tokens(int(tokens.get('output', 0) or 0))}")
+        meta.append(f"输入 {format_tokens(_safe_int(tokens.get('input', 0) or 0))}")
+        meta.append(f"输出 {format_tokens(_safe_int(tokens.get('output', 0) or 0))}")
     if meta:
         children.append(h(TEXT, {
             "children": " · ".join(meta), "style": _S_DIM, "height": 1,
@@ -812,6 +823,18 @@ def _inspector_children(rec, right_w: int, vh: int) -> list:
     return children
 
 
+def _safe_int(v, default=0) -> int:
+    """int 归一化（P3 review 防御）：str/None/NaN/inf 等异常注入值回退默认。
+
+    ``int(nan)`` ValueError / ``int(inf)`` OverflowError——异常冒泡会中断
+    TraceView 渲染（与 ``_clamp_color`` 的全面防御风格对齐）。
+    """
+    try:
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _inspector_deps(rec, right_w: int, vh: int) -> tuple:
     """检查器 use_memo 依赖（TraceView 内 ``_inspector_children`` 包装）。
 
@@ -822,6 +845,8 @@ def _inspector_deps(rec, right_w: int, vh: int) -> tuple:
     展平原子值）+ 标题/元信息字段（index/kind/status/tokens/time）+ 栏宽/
     视口。内容不变 → deps 稳定 → 元素树引用稳定 → reconciler 短路零重建。
     运行中耗时按**整数秒**入指纹（meta 行每秒刷新一次，避免每帧重建）。
+    ★ P3（review 2026-08-19）：time/tokens 经 ``_safe_int`` 归一化——
+    异常注入值（str/NaN/inf）不再中断渲染。
     """
     if rec is None:
         return (None, right_w, vh)
@@ -831,9 +856,9 @@ def _inspector_deps(rec, right_w: int, vh: int) -> tuple:
         getattr(rec, "index", 0),
         getattr(rec, "kind", "") or "",
         getattr(rec, "status", "") or "",
-        int(t_raw) if t_raw is not None else None,
-        int(tok.get("input", 0) or 0),
-        int(tok.get("output", 0) or 0),
+        _safe_int(t_raw) if t_raw is not None else None,
+        _safe_int(tok.get("input", 0) or 0),
+        _safe_int(tok.get("output", 0) or 0),
         right_w,
         vh,
     )
@@ -1278,6 +1303,14 @@ def TraceView(props) -> object:
     ]
     if width > 0:
         header_runs = truncate_runs(header_runs, width)
+    # ★ BEAUTY-36（2026-08-19 美化）：头部行尾 ``─`` 分隔线填充至满宽——
+    #   标题区与台账/检查器内容形成清晰视觉分层（对齐 status_bar 分隔线
+    #   语义；填充用 _S_SEP_ROW 深灰，低调不抢焦点）。
+    if width > 0:
+        used = sum(getattr(r, "width", 1) for r in header_runs)
+        pad = width - used
+        if pad > 0:
+            header_runs.append(StyledRun("\u2500" * pad, _S_SEP_ROW))
 
     # 左栏（台账——ListView 标准控件：受控光标 + 虚拟滚动 + 分隔行跳过）
     ledger = h(ListView, {

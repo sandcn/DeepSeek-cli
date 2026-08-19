@@ -29,10 +29,8 @@ from src.tui.ink import h, TEXT, Line, StyledRun, use_memo, use_ref, Column
 from src.tui.app import _fx
 from src.tui.app._theme import time_glow, _S_ACCENT, _S_ACCENT_BOLD, _S_DIM, _S_TIME
 # ★ 方向5：分隔线样式统一真源（_theme.sep_style）——别名 _theme_sep_style
-# 避免与下方局部变量 sep_style 命名冲突。分隔线构建统一经 _theme.sep_line
-# （通用组件，input_area/status_bar 共用同一构建语义）。
+# 避免与下方局部变量 sep_style 命名冲突。
 from src.tui.app._theme import sep_style as _theme_sep_style
-from src.tui.app._theme import sep_line as _theme_sep_line
 # 方向C 步骤4：_format_duration 唯一真源在 src/tui/_format.py（Layer 0）；
 # 模块级 re-export 保持 patch("src.tui.app.status_bar._format_duration") 路径有效。
 from src.tui._format import format_duration as _format_duration
@@ -196,20 +194,24 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
         # ★ BEAUTY-20（体验动效）：耗时显示呼吸——活跃期浅蓝 110→120 脉动
         #   （12s 周期，弱呼吸提示状态栏活跃；空闲静态 _S_TIME 零成本）。
         #   time_glow 0.1s 桶缓存，10Hz 渲染平滑推进。
+        # ★ BEAUTY-36（2026-08-19 美化）：耗时加 ⏱ 图标前缀——信息图标化，
+        #   状态栏各项一眼可辨（⏱ 单宽符号，wcswidth_simple 计 1）。
         elapsed_style = Style(fg=time_glow(110, 120, 12.0)) if status_active else _S_TIME
-        parts.append(StyledRun(_format_duration(elapsed), elapsed_style))
+        parts.append(StyledRun(f"\u23f1 {_format_duration(elapsed)}", elapsed_style))
     if total > 0:
         # ★ BEAUTY-20：token 计数呼吸——活跃期紫蓝 68→78 脉动（12s 周期，
         #   与耗时呼吸同步周期；空闲静态 _S_TOKEN 零成本）。
+        # ★ BEAUTY-36（美化）：token 加 ◆ 图标前缀（单宽几何符号）。
         token_style = Style(fg=time_glow(68, 78, 12.0)) if status_active else _S_TOKEN
         tok = f"{total / 1000:.1f}k" if total >= 1000 else str(total)
-        parts.append(StyledRun(f"{tok}t", token_style))
+        parts.append(StyledRun(f"\u25c6 {tok}t", token_style))
     if speed > 0:
         # ★ BEAUTY-20：速度显示呼吸——活跃期橙黄 214→224 脉动（12s 周期，
         #   与耗时/token 呼吸同步周期；空闲静态 _S_SPEED 零成本）。
+        # ★ BEAUTY-36（美化）：速度加 » 图标前缀（流速语义，单宽符号）。
         speed_style = Style(fg=time_glow(214, 224, 12.0)) if status_active else _S_SPEED
         # 单一真源：format_speed（subagent 卡与状态栏统一 tok/s 显示）
-        parts.append(StyledRun(_format_speed(speed), speed_style))
+        parts.append(StyledRun(f"\u00bb {_format_speed(speed)}", speed_style))
 
     # ★ 后台 bash 任务数（右侧最末显示；主 agent + subagent 聚合）
     if bg_bash_count > 0:
@@ -338,22 +340,17 @@ def StatusBar(props) -> object:
     #   截断至 width（内容从 col3 起 ≤ width-2）——宽度统一为 width。
     # 方向3（动效）：流式/活跃期间分隔线用青色呼吸（32-45，8s 周期）——
     #   活跃状态的分隔线更生动；空闲保持静态深灰（_S_SEP）。
-    # ★ 方向5：统一经 _theme.sep_line 通用组件（input_area 上下分隔线 +
+    # ★ 方向5：分隔线样式统一经 _theme.sep_style（input_area 上下分隔线 +
     #   status_bar 分隔线共用同一构建语义）。
-    # ★ 性能（PERF-11）：分隔线 Line **缓存**（use_memo 键 width + sep_style）
-    #   ——修复前 ``sep_style(active=True)`` 每次返回新 Style 对象，use_memo
-    #   deps 引用比较永远 miss（``_object_is`` 对 Style 仅 ``is`` 比较）→ 每帧
-    #   重建分隔线 Line。修复后同 0.1s 时间桶内返回**同一 Style 实例** →
-    #   use_memo 引用命中 → 分隔线 Line 跨帧复用（零重建）；跨桶呼吸色更新
-    #   自动重建。空闲期 _S_SEP 常量恒同对象，同样命中。
     # ★ 全面控件化（方案B）：分隔线经标准控件 ``Divider`` 渲染
     #   （``h(Divider, {"width", "char": "━", "style": sep_style})``——纯
     #   填充分隔线，与 sep_line 构建语义等价，控件化表达）。
+    # ★ P2（review 2026-08-19）：删除死代码 sep use_memo——Divider 控件化后
+    #   结果未被消费（原 PERF-11 的 Line 缓存已由 Divider 内部承担；
+    #   sep_style 的对象稳定性契约仍由 _theme.sep_style/_sep_style_active
+    #   保持——Divider 内部跨帧复用同 Style）。PERF-10 的 status_line memo
+    #   真实生效，保留。
     sep_style = _theme_sep_style(st.status_active)
-    sep = use_memo(
-        lambda: _theme_sep_line(width, None, st.status_active),
-        (width, sep_style),
-    )
     # 状态行（下面）
     # ★ 性能（PERF-10）：状态行 Line **缓存**（use_memo 键 status_runs 引用）
     #   ——status_runs 已 use_memo 缓存（引用稳定），Line 跨帧复用同一 runs

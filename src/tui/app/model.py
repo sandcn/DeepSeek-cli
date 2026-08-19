@@ -361,7 +361,7 @@ class AppModel(_ToolOutputMixin):
         """
         out = self._block_to_ink_lines(block, start)
         if start == 0:
-            header = _role_header_line(block, self, getattr(self, "width", 0))
+            header = _role_header_line(block, getattr(self, "width", 0))
             if header is not None:
                 out = [header] + out
         return out
@@ -392,7 +392,7 @@ class AppModel(_ToolOutputMixin):
         if count <= 0:
             return []
         out = self._block_to_ink_lines(block, 0, stop=count)
-        header = _role_header_line(block, self, width)
+        header = _role_header_line(block, width)
         if header is not None:
             out = [header] + out
         if block.closed and count >= len(block.lines) and block.lines:

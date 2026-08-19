@@ -93,7 +93,7 @@ from src.tui.core.style import Style
 from src.tui.ink import h, TEXT, Column, Line, use_memo, use_ref
 from src.tui.ink.widgets.interactive import SelectInput
 from src.tui.app import _fx
-from src.tui.app._theme import sep_line as _theme_sep_line, time_glow, _S_ACCENT, _S_DIM, _S_SEP, _S_TEXT, _S_TIME
+from src.tui.app._theme import sep_line as _theme_sep_line, time_glow, _S_ACCENT, _S_DIM, _S_TEXT, _S_TIME
 
 # 占位符
 _PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 · Tab 补全"
@@ -236,7 +236,10 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
             bool(search.active),
             search.query,
             id(search.matches),
-            len(search.matches),
+            # ★ P3（review 2026-08-19）：matches 可能为 None（外部注入）——
+            #   与 _input_snap_key 同防御（``or []``），len(None) 抛
+            #   TypeError 中断输入区渲染。
+            len(search.matches or []),
             search.index,
         )
     else:
@@ -401,7 +404,10 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
     # ── 下分隔线（时间戳） ──
     now_local = time.localtime()
     ts = f"{now_local.tm_year}-{now_local.tm_mon:02d}-{now_local.tm_mday:02d} {now_local.tm_hour:02d}:{now_local.tm_min:02d}:{now_local.tm_sec:02d}"
-    time_w = len(ts) + 2
+    # ★ BEAUTY-36（2026-08-19 美化）：时间戳加 ◷ 时钟盘面图标前缀
+    #   （单宽符号，wcswidth_simple 计 1）——时间信息一眼可辨。
+    ts_disp = f"\u25f7 {ts}"
+    time_w = len(ts_disp) + 2
     # ★ BEAUTY-13（动效）：下分隔线（时间戳行）呼吸——活跃/流式期间与
     #   上分隔线/状态栏分隔线同周期青色呼吸（32-45，8s），三条分隔线视觉
     #   联动；空闲保持静态深灰（_S_SEP，零额外渲染成本）。★ 方向5：统一
@@ -412,7 +418,7 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
     #   为等价 ``max(1, min(width, time_w))``。
     content_budget = max(1, min(width, time_w))
     content = Line()
-    _append_truncated(content, f" {ts}", _S_TIME, content_budget)
+    _append_truncated(content, f" {ts_disp}", _S_TIME, content_budget)
     lines.append(_theme_sep_line(width, content, status_active))
 
     # ── 主 Agent 运行模式行（时间戳下方，最右侧显示空模式/标准模式） ──
@@ -509,7 +515,9 @@ def CompletionPopup(props: dict) -> object:
     sel_bg = 237
 
     # ── 标题行（静态色——弹窗不呼吸，避免每帧重绘） ──
-    title_color = 38
+    # ★ BEAUTY-36（2026-08-19 美化）：标题色 38 → 45——与 _build_popup_lines /
+    #   user_select / editmsg 三处弹窗标题统一亮青加粗。
+    title_color = 45
     head = Line.of(" \u258d", Style(fg=title_color, bold=True))
     head.append(" ", Style(fg=title_color, bold=True))
     head.append(title, Style(fg=title_color, bold=True))
@@ -554,6 +562,11 @@ def CompletionPopup(props: dict) -> object:
         "key": "popup-items",
         "items": select_items,
         "initialIndex": sel,
+        # ★ P1（review 2026-08-19）：受控 index——InputDispatcher 旧路径
+        #   （PgUp/PgDn/Shift+Tab/边界回绕经 cycle_completion 写回
+        #   completion.selected）外部改写后，SelectInput 内部高亮渲染期
+        #   同步跟随（可见高亮 == 实际选中，Tab 补全项一致）。
+        "index": sel,
         "limit": n_rows if n_rows > 0 else None,
         "onHighlight": lambda idx: setattr(completion, "selected", idx),
         "renderItem": _render_item,

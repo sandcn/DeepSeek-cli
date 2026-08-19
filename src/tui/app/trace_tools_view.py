@@ -143,14 +143,17 @@ def _inspector_children(
                 "key": f"tinsp-desc-{len(children)}",
             }))
             shown += 1
-        if not truncated:
+        # ★ P3（review 2026-08-19）：分割线/小节标题追加前检查预算——desc 行
+        #   恰好填满 budget 时自然结束（truncated=False），无条件追加会使
+        #   右栏内容超视口预算 2 行。
+        if not truncated and shown < budget:
             children.append(h(TEXT, {
                 "children": "\u2500" * max(1, right_w - 1),
                 "style": _S_SEP_ROW, "height": 1,
                 "key": f"tinsp-sep-{len(children)}",
             }))
             shown += 1
-    if not truncated:
+    if not truncated and shown < budget:
         children.append(h(TEXT, {
             "children": "\u25b8 \u53c2\u6570", "style": _S_SECTION, "height": 1,
             "key": f"tinsp-section-{len(children)}",
@@ -235,8 +238,8 @@ def TraceToolsView(props) -> object:
 
     # ── 渲染 ──
     header_title = "\u258d\u5de5\u5177\u5217\u8868"
-    header_hint = ("  \u2191\u2193 \u9009\u62e9\u5de5\u5177 \u00b7 PgUp/PgDn \u7ffb\u9875 \u00b7 "
-                   "g/G \u9996\u672b \u00b7 Esc/Ctrl+H \u8fd4\u56de")
+    # ★ BEAUTY-36（美化）：提示精简（80 宽终端下为行尾 ─ 分隔线留出空间）。
+    header_hint = ("  \u2191\u2193 \u9009\u62e9 \u00b7 PgUp/PgDn \u00b7 Esc/Ctrl+H \u8fd4\u56de")
     header_runs = [
         StyledRun(header_title, _S_TITLE),
         StyledRun(f" \u00b7 {len(schemas)} \u4e2a\u5de5\u5177", _S_HINT),
@@ -244,6 +247,13 @@ def TraceToolsView(props) -> object:
     ]
     if width > 0:
         header_runs = truncate_runs(header_runs, width)
+    # ★ BEAUTY-36（2026-08-19 美化）：头部行尾 ``─`` 分隔线填充至满宽——
+    #   与 TraceView 头部同视觉分层（标题区 / 内容区）。
+    if width > 0:
+        used = sum(getattr(r, "width", 1) for r in header_runs)
+        pad = width - used
+        if pad > 0:
+            header_runs.append(StyledRun("\u2500" * pad, _S_SEP_ROW))
 
     # 左栏（工具名列表——ListView 标准控件：受控光标 + 虚拟滚动）
     names = [s[0] for s in schemas]

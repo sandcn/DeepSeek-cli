@@ -137,10 +137,11 @@ def _do_error(model, cmd) -> None:
     if not cmd.message:
         return
     # ★ 渲染错误（BUG-75 同族）：错误消息可能含 ``\n``——按 \n 拆行，每行
-    #   前缀 ``! `` 标记（与 ``build_user_line`` 多行前缀语义一致）。
+    #   前缀 ``✖ `` 标记（2026-08-19 美化：``!`` 升级为 ✖ 图标，红色醒目；
+    #   与 ``build_user_line`` 多行前缀语义一致）。
     lines = []
     for segment in str(cmd.message).split("\n"):
-        line = AnsiLine.of("  ! ", _S_ERROR_ICON)
+        line = AnsiLine.of("  \u2716 ", _S_ERROR_ICON)
         if segment:
             line.append(segment, _S_ERROR)
         lines.append(line)
@@ -148,19 +149,30 @@ def _do_error(model, cmd) -> None:
 
 
 def _do_splash(model, cmd) -> None:
-    """启动品牌屏：仅显示模型名。
+    """启动品牌屏：✦ 品牌符号 + 模型名 + 版本。
 
-    「品牌屏只显示模型名」：移除品牌标识前缀（``✦ DeepSeek CLI``）与
-    ``·`` 分隔符；无模型名时回退显示版本号（``v2.x.x``）避免空屏。
+    ★ BEAUTY-36（2026-08-19 美化）：品牌符号 ``✦``（强调青加粗）+ 模型名
+    （亮青加粗）+ ``· 版本``（dim 弱化）三层视觉分层；无模型名时回退显示
+    版本号（``v2.x.x``）避免空屏。
+    ★ P3（review 2026-08-19）：VERSION 导入 try/except 防御（与
+    chat_view._welcome_version 一致——加载循环/未来重构失败时回退空版本
+    段，仍渲染 ✦ + 模型名，不丢整块启动屏）。
     """
-    from src.app_init._args import VERSION
-    line = AnsiLine.of("  ", _S_SPLASH)
+    try:
+        from src.app_init._args import VERSION
+        version = str(VERSION)
+    except Exception:
+        version = ""
+    line = AnsiLine.of("  ", None)
+    line.append("\u2726 ", Style(fg=45, bold=True))
     if model.status.model_name:
         line.append(model.status.model_name, _S_SPLASH)
+        if version:
+            # VERSION 已含 ``v`` 前缀（"v2.2.0"）——直接拼接
+            # （修复前 ``v{VERSION}`` 产生 ``vv2.2.0``）。
+            line.append(f" \u00b7 {version}", Style(fg=242))
     else:
-        # VERSION 已含 ``v`` 前缀（"v2.2.0"）——直接拼接
-        # （修复前 ``v{VERSION}`` 产生 ``vv2.2.0``）。
-        line.append(VERSION, _S_SPLASH)
+        line.append(version or "\u2726", _S_SPLASH)
     model.append_committed("splash", [line, AnsiLine.of("")])
 
 
@@ -307,8 +319,16 @@ def _do_tool_summary(model, cmd) -> None:
     # 关闭残留开放 box（兼容旧调用方）。
     # Bug A 修复：不再依赖单值指针（close_tool_group 已删除），
     # 遍历 tool_boxes 逐个防御性关闭。
+    # ★ P3（review 2026-08-19）：按块真实状态传递成功位——残留开放 box
+    #   的 ``tool_status`` 已为 fail 时按失败关闭（✔/✖ 与真实结果一致，
+    #   修复前一律 success=True 把失败工具标成完成态）。
     for tool_id in list(model.tool_boxes.keys()):
-        model.close_tool_box(tool_id, True)
+        box = model.tool_boxes.get(tool_id)
+        success = True
+        if box is not None:
+            extra = getattr(box, "extra", None) or {}
+            success = extra.get("tool_status", "running") != "fail"
+        model.close_tool_box(tool_id, success)
 
 
 def _do_parse_info(model, cmd) -> None:
@@ -523,9 +543,11 @@ def _do_bg_bash_count(model, cmd) -> None:
     """
     # ★ 修复（P3）：cmd.count 可能为 None/非数字字符串（外部注入）——
     #   int() 抛 ValueError 被 apply_cmd 吞、计数不更新；归一化失败回退 0。
+    #   ★ P3（review 2026-08-19）：补捕获 OverflowError——``int(inf)`` 抛
+    #   OverflowError（与 _do_parse_info 的 elapsed 归一化同族防御）。
     try:
         count = int(cmd.count)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         count = 0
     model.status.bg_bash_count = max(0, count)
 

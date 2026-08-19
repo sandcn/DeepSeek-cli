@@ -26,48 +26,105 @@ from .subagent_panel import SubAgentCard
 
 _S_REASONING = Style(fg=242)
 
-#: 空状态欢迎提示（2026-08-05 美化）：模块级单例 styled runs——✦ 强调青 +
-#: 欢迎文本亮白 + 操作提示 dim。静态样式（无时间基呼吸——空状态渲染循环
-#: 空闲跳过，避免每帧重建）。
+#: 空状态欢迎屏（2026-08-19 美化升级）：单行 → 多行欢迎卡——
+#:   行1  ``✦ `` 呼吸 + 渐变品牌标题 "DeepSeek CLI" + `` · 版本``（dim）
+#:   行2  空行（呼吸）
+#:   行3  ``  › 直接输入消息开始对话``（› 强调青 + 文本亮白）
+#:   行4  ``  › /help 查看命令 · /model 选择模型 · /theme 主题``（dim）
+#:   行5  ``  › Tab 补全 · Ctrl+N 切换模型 · Ctrl+H 轨迹视图``（dim）
+#: 静态样式（无时间基呼吸——空状态渲染循环空闲跳过，避免每帧重建）；
+#: 空闲期同 (active, width) 快照命中模块级缓存（同引用跨帧复用，TEXT
+#: ``_wrap_cache`` 引用级命中零重建）。
 #: ★ BEAUTY-25（2026-08-05 体验动效）：**活跃期**（模型已配置 + 流式/工具
-#:   执行中）欢迎行 ✦ 图标呼吸化——渲染循环已因动画状态持续 10Hz 推进，零
-#:   额外渲染成本；空闲期（无动画状态）回退本静态单例（CPU ~0）。
-_WELCOME_STYLED = [
-    StyledRun("\u2726 ", Style(fg=45, bold=True)),
-    StyledRun("欢迎使用 DeepSeek CLI", Style(fg=252)),
-    StyledRun("  \u00b7  ", Style(fg=242)),
-    StyledRun("/help 查看命令 · Ctrl+N 切换模型 · Tab 补全", Style(fg=242)),
-]
+#:   执行中）欢迎卡 ✦ 图标呼吸化——渲染循环已因动画状态持续 10Hz 推进，零
+#:   额外渲染成本；空闲期（无动画状态）回退静态缓存（CPU ~0）。
+#: ★ BEAUTY-36（2026-08-19 全界面美化）：欢迎屏多行化 + 渐变品牌标题
+#:   （色标与 TopHeader 同源：青 → 蓝 → 紫 → 品红）+ › 引导行分组。
+_WELCOME_BRAND = "DeepSeek CLI"
+_WELCOME_GRADIENT_STOPS = (45, 39, 141, 213)
+#: 引导行前缀符号（› 单宽几何符号，强调青）
+_WELCOME_BULLET = "\u203a"
 
 #: 欢迎行 ✦ 呼吸色域（亮青 45 邻域脉动，8s 周期——与工具卡标题/模型名呼吸同步）
 _WELCOME_DOT_LO = 45
 _WELCOME_DOT_HI = 61
 _WELCOME_DOT_PERIOD = 8.0
 
+#: 欢迎屏静态缓存：``((active, width), rows)``——空闲 (False, w) 快照命中
+#: 返回同一 rows 列表引用（跨帧零重建）；宽度变化/首帧构建新缓存。
+_WELCOME_STATIC_CACHE: list = [None, None]
 
-def _welcome_element(model, width: int) -> object:
-    """空状态欢迎行元素（活跃期 ✦ 呼吸，空闲静态单例）。
 
-    ★ BEAUTY-25（体验动效）：渲染循环仅在动画状态（status_active/工具运行/
-    弹窗等，见 session._needs_animation）下持续 10Hz 推进——欢迎行 ✦ 图标
-    仅在活跃期呼吸（渲染已推进，零额外成本）；空闲期返回模块级静态单例
-    ``_WELCOME_STYLED``（同引用跨帧复用，TEXT ``_wrap_cache`` 引用级命中
-    零重建）。返回 ``(children, key)``——ChatView 直接 ``h(TEXT, ...)``。
+def _welcome_version() -> str:
+    """版本号（惰性导入——app_init._args 存在模块加载循环，见 header.py）。"""
+    try:
+        from src.app_init._args import VERSION
+        return str(VERSION)
+    except Exception:
+        return ""
+
+
+def _welcome_rows(active: bool, width: int) -> list:
+    """空状态欢迎屏行 runs 列表（活跃期 ✦ 呼吸，空闲静态缓存）。
+
+    ★ BEAUTY-36：多行欢迎卡（品牌行 + 空行 + 3 行引导）；每行按 width
+    截断（不拆 CJK，行级 diff 宽度不变量）。空闲 (False, width) 快照命中
+    模块级缓存（同引用跨帧复用——单一真源：本函数读写缓存，
+    ``_welcome_elements`` 直接委托）；active=True（每帧呼吸色变化）不缓存。
+
+    Returns:
+        list[list[StyledRun]]——欢迎屏每行 runs。
+    """
+    # 空闲态缓存命中（同 (False, width) 快照返回同一 rows 引用）
+    if not active:
+        cached = _WELCOME_STATIC_CACHE
+        if cached[0] == (False, width) and cached[1] is not None:
+            return cached[1]
+    from src.tui.core.style import Style
+    from src.tui.ink.helpers import truncate_runs
+    from src.tui.ink.widgets.gradient import _gradient_runs
+    version = _welcome_version()
+    # 品牌行：✦（活跃呼吸 / 空闲静态强调青）+ 渐变标题 + 版本 dim
+    if active:
+        from src.tui.app._theme import time_glow
+        dot_fg = time_glow(_WELCOME_DOT_LO, _WELCOME_DOT_HI, _WELCOME_DOT_PERIOD)
+    else:
+        dot_fg = 45
+    brand_runs: list = [StyledRun("\u2726 ", Style(fg=dot_fg, bold=True))]
+    brand_runs.extend(_gradient_runs(_WELCOME_BRAND, _WELCOME_GRADIENT_STOPS))
+    if version:
+        brand_runs.append(StyledRun(f" \u00b7 {version}", Style(fg=242)))
+    # 引导行（› 强调青 + 文本；首行亮白、其余 dim）
+    bullet = Style(fg=45)
+    lead = [StyledRun("  ", None), StyledRun(f"{_WELCOME_BULLET} ", bullet),
+            StyledRun("直接输入消息开始对话", Style(fg=252))]
+    cmd = [StyledRun("  ", None), StyledRun(f"{_WELCOME_BULLET} ", bullet),
+           StyledRun("/help 查看命令 · /model 选择模型 · /theme 主题", Style(fg=242))]
+    keys = [StyledRun("  ", None), StyledRun(f"{_WELCOME_BULLET} ", bullet),
+            StyledRun("Tab 补全 · Ctrl+N 切换模型 · Ctrl+H 轨迹视图", Style(fg=242))]
+    rows: list = [brand_runs, [StyledRun(" ", None)], lead, cmd, keys]
+    if width and width > 0:
+        rows = [truncate_runs(r, width) if r else r for r in rows]
+    if not active:
+        _WELCOME_STATIC_CACHE[0] = (False, width)
+        _WELCOME_STATIC_CACHE[1] = rows
+    return rows
+
+
+def _welcome_elements(model, width: int) -> list:
+    """空状态欢迎屏 TEXT 元素列表（活跃期 ✦ 呼吸，空闲静态缓存）。
+
+    ★ BEAUTY-36：返回元素**列表**（多行欢迎卡）——ChatView 直接
+    ``children.extend(...)``。每行 TEXT 带索引 key（``welcome-{i}``）。
+    缓存语义由 ``_welcome_rows`` 单一真源承担（空闲命中静态缓存）。
     """
     st = getattr(model, "status", None)
     active = bool(st is not None and getattr(st, "status_active", False))
-    if active:
-        from src.tui.app._theme import time_glow
-        dot = time_glow(_WELCOME_DOT_LO, _WELCOME_DOT_HI, _WELCOME_DOT_PERIOD)
-        styled = [
-            StyledRun("\u2726 ", Style(fg=dot, bold=True)),
-            StyledRun("欢迎使用 DeepSeek CLI", Style(fg=252)),
-            StyledRun("  \u00b7  ", Style(fg=242)),
-            StyledRun("/help 查看命令 · Ctrl+N 切换模型 · Tab 补全", Style(fg=242)),
-        ]
-    else:
-        styled = _WELCOME_STYLED
-    return h(TEXT, {"key": "welcome", "styled": styled, "height": 1})
+    rows = _welcome_rows(active, width)
+    return [
+        h(TEXT, {"key": f"welcome-{i}", "styled": r, "height": 1})
+        for i, r in enumerate(rows)
+    ]
 
 #: 开放块 live 渲染行数上限（PERF-7 防御）：未提交尾超过该行数时只渲染
 #: 最后 N 行（对齐终端 tail 语义）——content/reasoning 块被未提交工具卡
@@ -321,7 +378,7 @@ def ChatView(props) -> object:
         #   提交路径（模型 _card_lines）默认 live=False 回退静态 💭（防历史
         #   冻结随机 spinner 帧）。
         if block.committed_line_count == 0:
-            header_line = _role_header_line(block, model, width, live=True)
+            header_line = _role_header_line(block, width, live=True)
             if header_line is not None:
                 children.append(h(TEXT, {
                     "key": f"chat-{block_idx}-h",
@@ -382,7 +439,7 @@ def ChatView(props) -> object:
     #   工具执行中）✦ 图标时间基呼吸（渲染循环已推进，零额外成本）；空闲期
     #   回退静态单例（CPU ~0）。
     if not children:
-        children.append(_welcome_element(model, width))
+        children.extend(_welcome_elements(model, width))
     # ★ 阶段2（标准布局容器重构）：BOX(None) → Column（默认 flexDirection=
     #   column，输出与重构前一致；committed-chat host 子节点不受容器 type
     #   变化影响——容器仍是 "box" host）。

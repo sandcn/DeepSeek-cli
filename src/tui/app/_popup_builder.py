@@ -19,9 +19,10 @@ from functools import lru_cache
 from src.tui._screen import (
     wcswidth_simple,
 )
-from src.tui._input import (
-    _wrap_by_width,
-)
+# ★ P3（review 2026-08-19）：``_wrap_by_width`` 改从真源 ``_input_layout``
+#   导入（``src.tui._input`` 仅为兼容 re-export 门面——对 ``_input_layout``
+#   打 patch 不会拦截经 ``_input`` 绑定的引用，monkeypatch 漏拦截隐患）。
+from src.tui._input_layout import _wrap_by_width
 from src.tui._input_metrics import (
     _desc_column_width,
     _completion_height,
@@ -255,7 +256,9 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
     #   ——弹窗是交互界面，呼吸色使弹窗行每帧随 time_glow 变化 → 渲染器每帧
     #   重写弹窗行（Termux 等终端闪烁/错乱）；静态色弹窗内容不变时 diff 零输出
     #   （仅打字 items 变化 / 导航 selected 变化时重绘）。
-    title_color = 38
+    # ★ BEAUTY-36（2026-08-19 美化）：标题色 38 → 45——三处弹窗（补全/
+    #   user_select/editmsg）标题统一亮青加粗，弹窗视觉风格一致。
+    title_color = 45
     head = Line.of(" \u258d", Style(fg=title_color, bold=True))
     head.append(" ", Style(fg=title_color, bold=True))
     head.append(title, Style(fg=title_color, bold=True))
