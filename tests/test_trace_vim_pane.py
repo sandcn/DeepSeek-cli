@@ -195,10 +195,11 @@ class TestInspectorContentRows:
         """纯文本记录 → 按栏宽换行的全量内容行（正序）。"""
         from src.tui.app.trace_view import _inspector_content_rows
         rec = _plain_rec(["a" * 100, "b"])
-        rows = _inspector_content_rows(rec, 40)
+        rows, keys = _inspector_content_rows(rec, 40)
         assert len(rows) >= 4  # 100 宽拆 3 行 + "b" 1 行
         assert rows[0] == "a" * 40
         assert rows[-1] == "b"
+        assert keys == [None] * len(rows)  # 非树行无节点 key
 
     def test_tool_tree_rows(self):
         """tool 记录（带参数/返回值）→ 树内容行（参数 → 分割线 → 返回值）。"""
@@ -207,7 +208,7 @@ class TestInspectorContentRows:
             ["x"], kind="tool", tool_args='{"command": "ls"}',
             tool_result="out1",
         )
-        rows = _inspector_content_rows(rec, 40)
+        rows, keys = _inspector_content_rows(rec, 40)
         texts = ["".join(r.text for r in row) if isinstance(row, list) else row
                  for row in rows]
         joined = "\n".join(texts)
@@ -215,14 +216,18 @@ class TestInspectorContentRows:
         assert "返回值" in joined
         assert "command" in joined
         assert "out1" in joined
+        # 标量参数树无容器节点 → keys 全 None（与行对齐）
+        assert len(keys) == len(rows)
+        assert all(k is None for k in keys)
 
     def test_md_rows(self):
         """reasoning/content/system → markdown 渲染行（StyledRun 列表）。"""
         from src.tui.app.trace_view import _inspector_content_rows
         rec = _plain_rec(["**bold** text"], kind="content")
-        rows = _inspector_content_rows(rec, 40)
+        rows, keys = _inspector_content_rows(rec, 40)
         assert rows, "markdown 内容应生成行"
         assert all(isinstance(r, list) for r in rows)
+        assert keys == [None] * len(rows)
 
     def test_max_rows_cap(self):
         """超上限 → 截断 + 追加「内容过长」提示行（滚动到底部可见）。"""
@@ -230,17 +235,20 @@ class TestInspectorContentRows:
             _INSPECTOR_MAX_ROWS, _inspector_content_rows,
         )
         rec = _plain_rec([f"line{i}" for i in range(_INSPECTOR_MAX_ROWS + 500)])
-        rows = _inspector_content_rows(rec, 40)
+        rows, keys = _inspector_content_rows(rec, 40)
         assert len(rows) == _INSPECTOR_MAX_ROWS + 1
         last = rows[-1]
         assert isinstance(last, list)
         assert "内容过长" in "".join(r.text for r in last)
+        assert len(keys) == len(rows)
 
     def test_empty_rec(self):
         """无内容记录 → 空列表（检查器显示 (无内容) 占位）。"""
         from src.tui.app.trace_view import _inspector_content_rows
         rec = _plain_rec([])
-        assert _inspector_content_rows(rec, 40) == []
+        rows, keys = _inspector_content_rows(rec, 40)
+        assert rows == []
+        assert keys == []
 
 
 # ═══════════════════════════════════════════════════════════
@@ -918,7 +926,7 @@ class TestToolsInspectorScroll:
             _INSPECTOR_MAX_ROWS, _tools_inspector_content_rows,
         )
         # 超长描述（40 宽下每行 40 字符 → 远超上限行数）
-        rows = _tools_inspector_content_rows(
+        rows, keys = _tools_inspector_content_rows(
             "bash", {"command": {"type": "string"}}, ["command"],
             "x" * (_INSPECTOR_MAX_ROWS * 80), 40,
         )
@@ -926,6 +934,7 @@ class TestToolsInspectorScroll:
         last = rows[-1]
         assert isinstance(last, list)
         assert "内容过长" in "".join(r.text for r in last)
+        assert len(keys) == len(rows)
 
     # ── 光标行高亮（2026-08-19：右边高亮当前行背景色） ──
 

@@ -76,21 +76,28 @@ def _tool_row_runs(name: str, sel: bool, left_w: int) -> list:
     return truncate_runs(runs, left_w) if left_w > 0 else runs
 
 
-def _tree_rows(nodes: list, right_w: int) -> list:
+def _tree_rows(nodes: list, right_w: int, collapsed: set | None = None,
+               keys: list | None = None) -> list:
     """树节点列表 → StyledRun 行列表（前序；缩进 + 展开指示符）。
 
     复用 ``trace_view._tree_node_rows``（轨迹工具调用参数/返回值树同渲染
-    管线：层级缩进 + ▾ 展开指示符 + 超宽截断）——右栏参数树与轨迹检查器
-    树视觉一致。
+    管线：层级缩进 + ▾/▸ 展开指示符 + 超宽换行完整）——右栏参数树与轨迹
+    检查器树视觉一致。
+
+    ★ 2026-08-19（用户需求：树控件按空格可以展开和收缩，默认展开所有）：
+    ``collapsed`` 为折叠节点路径 key 集合（None/空 = 全部展开——默认）；
+    ``keys`` 与返回行对齐（可折叠节点行 = 节点路径 key，其余 None）——
+    空格经 keys[cursor] 定位光标所在节点。
     """
     out: list = []
-    _tree_node_rows(nodes, max(1, right_w), out)
+    _tree_node_rows(nodes, max(1, right_w), out, collapsed=collapsed, keys=keys)
     return out
 
 
 def _tools_inspector_content_rows(
     name: str, props_map: dict, required: list, description: str, right_w: int,
-) -> list:
+    collapsed: set | None = None,
+) -> tuple:
     """工具参数检查器**全量内容行**（正序；上限防御）——滚动查看数据源。
 
     ★ 2026-08-19（vim 面板浏览一致化）：与 trace_view 检查器同模式——
@@ -98,35 +105,53 @@ def _tools_inspector_content_rows(
     窗口切片显示。返回元素为 ``list[StyledRun]``（分割线/小节标题/树行）
     或 ``str``（描述行）——由 ``_inspector_children`` 统一转 TEXT 元素。
 
+    ★ 2026-08-19（用户需求：树控件按空格可以展开和收缩，默认展开所有）：
+    返回 ``(rows, keys)``——keys 与 rows 逐行对齐（树行 = 节点路径 key，
+    其余 None），空格经 keys[cursor] 定位光标所在节点；``collapsed`` 为
+    折叠节点路径 key 集合（None/空 = 全部展开——默认）。
+
     Args:
         name: 工具名（空串 = 空态——调用方提前返回占位，此处不处理）。
         props_map: 参数名 → 参数定义 dict。
         required: 必需参数名列表。
         description: 工具描述（可为空串）。
         right_w: 右栏宽（换行/截断宽度）。
+        collapsed: 参数树折叠节点路径 key 集合（None/空 = 全部展开）。
+
+    Returns:
+        (rows, keys)：rows 为内容行列表；keys 为与 rows 对齐的节点路径
+        key 列表（str=可折叠节点行；None=叶子/非树行）。
     """
     right_w = max(1, right_w)
     rows: list = []
+    keys: list = []
     desc_lines = _wrap_by_width(description, right_w) if description else []
     rows.extend(desc_lines)
+    keys.extend([None] * len(desc_lines))
     if desc_lines:
         rows.append([StyledRun("\u2500" * max(1, right_w - 1), _S_SEP_ROW)])
+        keys.append(None)
     rows.append([StyledRun("\u25b8 \u53c2\u6570", _S_SECTION)])
+    keys.append(None)
     rows.extend(_tree_rows(
         build_tools_params_tree(props_map or {}, required or []), right_w,
+        collapsed, keys,
     ))
     if len(rows) > _INSPECTOR_MAX_ROWS:
         rows = rows[:_INSPECTOR_MAX_ROWS]
+        keys = keys[:_INSPECTOR_MAX_ROWS]
         rows.append([StyledRun(
             f"\u2026 内容过长，仅显示前 {_INSPECTOR_MAX_ROWS} 行", _S_HINT,
         )])
-    return rows
+        keys.append(None)
+    return rows, keys
 
 
 def _inspector_children(
     name: str, props_map: dict, required: list, description: str,
     right_w: int, vh: int, scroll: int = 0,
     content_rows: list | None = None, cursor: int = -1,
+    row_keys: list | None = None, collapsed: set | None = None,
 ) -> list:
     """右栏参数检查器子元素（标题 + 元信息 + 内容行滚动窗口 + 光标行高亮 +
     省略提示）。
@@ -142,6 +167,11 @@ def _inspector_children(
          高亮**（vim cursorline——2026-08-19 用户需求：右边高亮当前行
          背景色）。
 
+    ★ 2026-08-19（用户需求：树控件按空格可以展开和收缩，默认展开所有）：
+    ``row_keys`` 为与 content_rows 对齐的节点路径 key 列表（None=惰性
+    生成时同步生成）——空格切换经 ``row_keys[cursor]`` 定位光标所在可
+    折叠节点；``collapsed`` 为折叠集合（惰性生成时传入）。
+
     工具名为空（空数据源防御）→ 返回「无可用工具」占位。
 
     Args:
@@ -155,6 +185,8 @@ def _inspector_children(
         content_rows: 预生成的全量内容行（组件 use_memo 传入）；None 时
             内部惰性生成（直接调用/测试兼容）。
         cursor: 内容光标行绝对索引（-1 = 不高亮）。
+        row_keys: 与 content_rows 对齐的节点路径 key 列表（None=惰性生成）。
+        collapsed: 参数树折叠节点路径 key 集合（惰性生成时传入）。
 
     Returns:
         list——TEXT 元素列表（检查器子元素）。
@@ -176,8 +208,8 @@ def _inspector_children(
     }))
     # ── 内容行（全量生成 → 滚动窗口切片；光标行高亮；省略提示两侧） ──
     if content_rows is None:
-        content_rows = _tools_inspector_content_rows(
-            name, props_map, required, description, right_w,
+        content_rows, row_keys = _tools_inspector_content_rows(
+            name, props_map, required, description, right_w, collapsed,
         )
     total = len(content_rows)
     try:
@@ -284,13 +316,19 @@ def TraceToolsView(props) -> object:
     name, props_map, required, description = (
         schemas[sel] if schemas else ("", {}, [], "")
     )
-    content_rows = use_memo(
+    # ★ 2026-08-19（用户需求：树控件按空格可以展开和收缩，默认展开所有）：
+    #   折叠集合（``model.trace_tools_tree_collapsed``——空 = 全部展开，
+    #   默认）传入内容行生成（折叠节点子级行不进入可见列表）；keys 与行
+    #   对齐——空格经 keys[cursor] 定位光标所在节点。
+    collapsed = set(getattr(model, "trace_tools_tree_collapsed", None) or ())
+    content = use_memo(
         lambda: _tools_inspector_content_rows(
-            name, props_map, required, description, right_w,
+            name, props_map, required, description, right_w, collapsed,
         ),
         (name, len(props_map or {}), ";".join(map(str, required or [])),
-         description, right_w),
+         description, right_w, tuple(sorted(collapsed))),
     )
+    content_rows, row_keys = content
     total_content = len(content_rows)
     approx_content_vh = max(_INSPECTOR_MIN_CONTENT, vh - 3)
     # 光标渲染期钳制（写回 model——越界残留收敛；空内容 → 0）
@@ -350,9 +388,13 @@ def TraceToolsView(props) -> object:
         # 返回主轨迹（TraceView 恢复；主轨迹再次 Esc/Ctrl+H 关闭整个视图）
         if event.kind == "escape":
             model.fullscreen = "trace"
+            # ★ 2026-08-19（树控件空格展开/收缩）：返回主轨迹同时复位树
+            #   折叠集合（浏览状态不跨视图残留；默认展开所有）。
+            model.trace_tools_tree_collapsed = set()
             return True
         if event.kind == "ctrl_key" and getattr(event, "char", "") == "\x08":
             model.fullscreen = "trace"
+            model.trace_tools_tree_collapsed = set()
             return True
         # ── 面板切换（vim h/l）与右栏光标（char 单字符） ──
         # ★ 2026-08-19（vim 面板浏览一致化）：左栏焦点 l → 右检查器、
@@ -370,6 +412,27 @@ def TraceToolsView(props) -> object:
                     model.trace_tools_pane = "ledger"
                     return True
                 cur_cursor = getattr(model, "trace_tools_cursor", 0) or 0
+                # ★ 2026-08-19（用户需求：树控件按空格可以展开和收缩）：
+                #   右栏焦点空格 → 切换光标所在节点的展开/收缩（row_keys
+                #   [cursor] = 节点路径 key；叶子/非树行 None 不消费——放行
+                #   被模态吞掉）。折叠集合写回 model → 下一帧 use_memo deps
+                #   （含折叠展平）变化 → 内容行重建。
+                if ch == " ":
+                    node_key = (
+                        row_keys[cur_cursor]
+                        if 0 <= cur_cursor < len(row_keys) else None
+                    )
+                    if node_key:
+                        collapsed_now = set(
+                            getattr(model, "trace_tools_tree_collapsed", None)
+                            or ()
+                        )
+                        if node_key in collapsed_now:
+                            collapsed_now.discard(node_key)
+                        else:
+                            collapsed_now.add(node_key)
+                        model.trace_tools_tree_collapsed = collapsed_now
+                        return True
                 if ch in ("j", "J"):
                     _move_cursor(cur_cursor + 1)
                     return True
@@ -417,10 +480,14 @@ def TraceToolsView(props) -> object:
 
     def _on_navigate(idx: int) -> None:
         """工具列表导航回调（ListView 导航后）：写回选中索引（受控光标）；
-        切换工具同时复位右栏滚动/光标（新工具参数从顶部查看）。"""
+        切换工具同时复位右栏滚动/光标（新工具参数从顶部查看）。
+        ★ 2026-08-19（树控件空格展开/收缩）：切换工具同时复位树折叠集合
+        （折叠状态是「当前选中工具」的临时浏览状态——不同工具 schema 树
+        不同，从默认全展开开始）。"""
         model.trace_tools_selected = int(idx)
         model.trace_tools_scroll = 0
         model.trace_tools_cursor = 0
+        model.trace_tools_tree_collapsed = set()
 
     # ── 渲染 ──
     header_title = "\u258d\u5de5\u5177\u5217\u8868"
@@ -476,7 +543,7 @@ def TraceToolsView(props) -> object:
     right_children = use_memo(
         lambda: _inspector_children(
             name, props_map, required, description, right_w, vh, scroll,
-            content_rows, cursor_arg,
+            content_rows, cursor_arg, row_keys, collapsed,
         ),
         (name, len(props_map or {}), ";".join(map(str, required or [])),
          description, right_w, vh, scroll, total_content, cursor_arg),

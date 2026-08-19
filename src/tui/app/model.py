@@ -188,6 +188,39 @@ class AppModel(_ToolOutputMixin):
         self.trace_tools_pane: str = "ledger"
         self.trace_tools_scroll: int = 0
         self.trace_tools_cursor: int = 0
+        # trace_tree_collapsed: 轨迹 Trace 检查器**树折叠节点路径集合**
+        #   （工具实参树/返回值树——2026-08-19 用户需求：树控件按空格可以
+        #   展开和收缩，默认展开所有）。元素为树节点路径 key（如
+        #   "args/0/old_string"——参数树 "args" 前缀、返回值树 "res" 前缀）；
+        #   空集合 = 全部展开（默认）。空格在检查器焦点且光标落在可折叠
+        #   节点行时切换；切换记录/进入 subagent 轨迹/关闭视图时复位
+        #   （折叠状态是「当前选中记录」的临时浏览状态，与
+        #   trace_inspector_scroll/cursor 同语义）。
+        self.trace_tree_collapsed: set = set()
+        # trace_tools_tree_collapsed: 工具列表详情视图（fullscreen==
+        #   "trace_tools"）右栏参数 schema 树的折叠节点路径集合（与
+        #   trace_tree_collapsed 同语义；切换工具时复位）。
+        self.trace_tools_tree_collapsed: set = set()
+        # ── 轨迹 Trace vim 风格搜索（2026-08-19 用户需求） ──
+        # trace_search_mode: 搜索输入模式（"/" 进入——底部显示 ``/${query}``
+        #   输入行 + 光标；回车执行后退出；Esc 取消）。搜索范围 = 当前焦点
+        #   面板（台账搜记录 / 检查器搜内容行——用户确认 A 方案），正则
+        #   匹配（re.search），所有匹配行高亮（vim hlsearch 风格，用户确认）。
+        self.trace_search_mode: bool = False
+        # trace_search_query: 搜索输入缓冲（"/" 时预填上次 pattern 可编辑）。
+        self.trace_search_query: str = ""
+        # trace_search_pattern: 已执行的正则（"" = 无搜索；n/N/p 切换与
+        #   匹配高亮仅在非空时生效）。
+        self.trace_search_pattern: str = ""
+        # trace_search_side: 匹配所属面板（"ledger"=台账记录 / "inspector"=
+        #   检查器内容行；"" = 无搜索）。
+        self.trace_search_side: str = ""
+        # trace_search_matches: 匹配索引列表（台账=记录索引；检查器=内容行
+        #   索引；按首次出现顺序）。
+        self.trace_search_matches: list = []
+        # trace_search_idx: 当前匹配在 matches 中的位置（-1 = 无匹配/未定位；
+        #   n/N/p 环绕切换）。
+        self.trace_search_idx: int = -1
         # 顶部工具调用状态（Claude TUI parity 步骤 2.2：active_tool 为模型
         # 数据——原 ToolStatusHeader 渲染消费，组件已移除（工具状态改由工具
         # 卡片顶边框 ● 展示，双份冗余）；字段保留供测试/未来消费，None=无
@@ -667,6 +700,19 @@ class AppModel(_ToolOutputMixin):
         self.trace_tools_pane = "ledger"
         self.trace_tools_scroll = 0
         self.trace_tools_cursor = 0
+        # ★ 2026-08-19（用户需求：树控件空格展开/收缩）：清屏同时复位两处
+        #   树折叠集合（折叠状态是「当前选中记录/工具」的临时浏览状态——
+        #   与 scroll/cursor 同语义，不跨清屏保留；默认展开所有）。
+        self.trace_tree_collapsed = set()
+        self.trace_tools_tree_collapsed = set()
+        # ★ 2026-08-19（轨迹 Trace vim 搜索）：清屏同时复位搜索状态
+        #   （搜索高亮/输入模式不跨清屏保留）。
+        self.trace_search_mode = False
+        self.trace_search_query = ""
+        self.trace_search_pattern = ""
+        self.trace_search_side = ""
+        self.trace_search_matches = []
+        self.trace_search_idx = -1
         # ★ 2026-08-17（review 方向 P2）：清屏同时退出模态全屏视图——残留
         #   fullscreen 会让 App 整屏渲染全屏视图组件（如 TraceView），而
         #   blocks 已清空 → 残留渲染空数据全屏界面。与 trace_subagent_label
