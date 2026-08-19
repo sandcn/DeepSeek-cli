@@ -58,6 +58,10 @@ _S_SEL_MARK = Style(fg=45, bold=True)      # 选中 ▶ 标记（亮青加粗）
 _S_SECTION = Style(fg=110, bold=True)      # 检查器小节标题（参数/返回值，浅蓝加粗）
 _S_TREE_KEY = Style(fg=75)                 # 树节点键（浅紫蓝——BEAUTY-36 键值分色）
 _S_TREE_VAL = Style(fg=252)                # 树节点标量值（亮白——BEAUTY-36 键值分色）
+#: 检查器光标行背景（2026-08-19 用户需求：右边高亮当前行背景色）——vim
+#:   cursorline 语义：检查器焦点时 j/k 移动光标，光标所在行整行背景高亮
+#:   （与台账选中行 _S_SEL_BG 同色 237，两栏视觉一致）
+_S_INSP_BG = Style(bg=237)
 
 #: 树节点指示符/缩进（对齐 ink Tree 控件渲染语义——检查器参数/返回值
 #:   以树形结构展示：层级缩进 + 展开指示符）
@@ -108,6 +112,10 @@ _STATUS_FG = {"running": 208, "done": 41, "fail": 196, "error": 196}
 _VIEWPORT_RESERVED = 1
 #: 检查器内容行预算下限（标题 + 元信息 + 省略提示占用后至少保留的行数）
 _INSPECTOR_MIN_CONTENT = 4
+#: 检查器内容行全量生成上限（2026-08-19 用户需求：轨迹 Trace 移动到右边
+#:   滚动查看——内容行**全量生成**后按滚动窗口切片；超大内容（如大文件
+#:   工具返回）防御性截断，超限追加「内容过长」提示行，滚动到底部可见）
+_INSPECTOR_MAX_ROWS = 2000
 
 
 def _viewport_rows() -> int:
@@ -675,18 +683,105 @@ def _md_detail_rows(rec, right_w: int, kind: str) -> list:
     return rows
 
 
-def _inspector_children(rec, right_w: int, vh: int) -> list:
-    """检查器子元素（标题 + 元信息 + 内容行；内容按栏宽换行 + 视口截断）。
+def _inspector_content_rows(rec, right_w: int) -> list:
+    """检查器**全量内容行**（正序；上限防御）——滚动查看数据源。
+
+    ★ 2026-08-19（用户需求：轨迹 Trace 移动到右边查看东西 + vim 风格）：
+    检查器由「视口截断」改为「**全量生成 + 滚动窗口切片**」——焦点移到
+    右栏后 j/k/↑↓/PgUp/PgDn/g/G 滚动浏览全部内容（含被省略部分）。内容
+    行按 kind 分支生成（与旧 ``_inspector_children`` 截断逻辑同源）：
+      - tool 且携带树数据 → ``_tool_tree_rows``（参数树 + 分割线 + 返回值树）；
+      - reasoning/content/system → ``_md_detail_rows``（markdown 渲染行）；
+      - 其余 → 纯文本按栏宽换行（``_wrap_by_width``）。
+    返回元素为 ``list[StyledRun]``（markdown/树样式行）或 ``str``（纯文本
+    行）——窗口切片后由 ``_inspector_children`` 统一转 TEXT 元素。
+
+    ★ 上限防御：超大内容（大文件工具返回/长回答）全量生成有界
+    （``_INSPECTOR_MAX_ROWS``）——超限截断并追加「内容过长」提示行
+    （滚动到底部可见，不静默丢内容；与 less 分页提示同语义）。
+
+    Args:
+        rec: 选中 TraceRecord。
+        right_w: 右栏宽（换行/截断宽度；<=0 外部调用防御）。
+    """
+    right_w = max(1, right_w)
+    kind = getattr(rec, "kind", "context")
+    rows: list = []
+    # ★ 2026-08-17（工具调用参数/返回值用树控件）：tool 记录且携带树数据 →
+    #   参数树 + 分割线 + 返回值树（全量——滚动可查看全部层级）
+    use_tool_tree = kind == "tool" and (
+        (getattr(rec, "tool_args", None) is not None
+         and str(getattr(rec, "tool_args", "")) != "")
+        or (getattr(rec, "tool_result", "") or "")
+    )
+    if use_tool_tree:
+        rows = list(_tool_tree_rows(rec, right_w))
+    elif kind in ("reasoning", "content", "system"):
+        # markdown 渲染行（块记录直接复用渲染输出 / 内联原始文本重渲染）
+        rows = list(_md_detail_rows(rec, right_w, kind))
+    else:
+        lines = getattr(rec, "_detail_lines", None)
+        if lines is None:
+            # 直接调用（测试/外部使用）未挂载惰性详情时回退记录内联 lines
+            lines = getattr(rec, "lines", None) or []
+        for line in lines:
+            if not isinstance(line, str):
+                line = str(line)
+            rows.extend(_wrap_by_width(line, right_w))
+    if len(rows) > _INSPECTOR_MAX_ROWS:
+        rows = rows[:_INSPECTOR_MAX_ROWS]
+        rows.append([StyledRun(
+            f"\u2026 内容过长，仅显示前 {_INSPECTOR_MAX_ROWS} 行", _S_HINT,
+        )])
+    return rows
+
+
+def _inspector_content_deps(rec, right_w: int) -> tuple:
+    """检查器内容行 use_memo 依赖（TraceView 内 ``_inspector_content_rows``
+    包装）。
+
+    与 ``_detail_deps`` 同源（块行数/树内容/lines 身份，展平原子值）+
+    栏宽——内容变化（流式增长/树输出变化）或栏宽变化才重建全量内容行；
+    时间基元素（耗时）不入指纹（检查器 meta 经 ``_inspector_deps`` 每秒
+    刷新）。
+    """
+    if rec is None:
+        return (None, right_w)
+    return tuple(_detail_deps(rec)) + (right_w,)
+
+
+def _inspector_children(
+    rec, right_w: int, vh: int, scroll: int = 0, content_rows: list | None = None,
+    cursor: int = -1,
+) -> list:
+    """检查器子元素（标题 + 元信息 + 内容行滚动窗口 + 光标行高亮 + 省略提示）。
 
     每行 TEXT 带**唯一 key**（``tinsp-*``）——修复 fiber 共享环（2026-08-19）：
     同层多个无 key TEXT 被调和器按派生 key（``host:text``）匹配到同一 fiber →
     同一 fiber 挂到多个位置（sibling 链环）→ ``find_input_fiber`` 全树 DFS
     无限循环（渲染线程卡死）。key 唯一后调和按 key 1:1 复用。
 
+    ★ 2026-08-19（用户需求：轨迹 Trace 移动到右边查看东西 + vim 风格）：
+    **滚动窗口渲染**——标题/meta 固定顶部，内容行按 ``scroll`` 偏移取
+    视口窗口（``content_rows`` 全量行切片）；scroll>0 时置顶「… 前 N 行
+    省略」，窗口未到尾部时后置「… 后 N 行省略」。scroll 越界钳制到合法
+    范围（内容不足一屏 → 0）。reasoning/content 不再特判尾部优先——滚动
+    能力取代（vim/less 语义：scroll=0=顶部，G 跳尾部看最新内容）。
+
+    ★ 2026-08-19（用户需求：右边高亮当前行背景色）：``cursor`` 为内容
+    光标行（绝对行索引，0-based；-1 = 不高亮——台账焦点/直接调用默认）。
+    cursor 落在窗口内的行**整行背景高亮**（``_S_INSP_BG``——vim
+    cursorline 语义，与台账选中行同色；markdown/树 StyledRun 行逐 run
+    合并背景，纯文本行样式合并背景）。
+
     Args:
         rec: 选中 TraceRecord（None = 空台账）。
         right_w: 右栏宽。
         vh: 视口行数预算（内容行数上限）。
+        scroll: 内容滚动偏移（0=顶部；越界钳制）。
+        content_rows: 预生成的全量内容行（TraceView 组件经 use_memo 传入，
+            避免双份生成）；None 时内部惰性生成（直接调用/测试兼容）。
+        cursor: 内容光标行绝对索引（-1 = 不高亮）。
     """
     if rec is None:
         return [h(TEXT, {
@@ -720,100 +815,49 @@ def _inspector_children(rec, right_w: int, vh: int) -> list:
             "children": " · ".join(meta), "style": _S_DIM, "height": 1,
             "key": "tinsp-meta",
         }))
-    # 内容行（按栏宽换行；视口行数截断 + 省略提示）
-    budget = max(_INSPECTOR_MIN_CONTENT, vh - 2 - (1 if meta else 0))
-    shown = 0
-    truncated = False
-    lines = getattr(rec, "_detail_lines", None)
-    if lines is None:
-        # 直接调用（测试/外部使用）未挂载惰性详情时回退记录内联 lines
-        lines = getattr(rec, "lines", None) or []
-    if right_w <= 0:
-        right_w = 40  # 无栏宽上下文防御（_wrap_by_width max_width<=0 返回空）
-    # ★ 2026-08-16（用户需求：思考/回答省略提示改「… 前 N 行省略」）：
-    #   思考（reasoning）/回答（content）为流式生成内容——检查器优先显示
-    #   **最新内容（尾部）**（与轨迹尾部跟随语义一致：用户关注正在生成的
-    #   最新行），被截断时置顶提示「… 前 N 行省略」（省略的是前部旧内容）；
-    #   其余种类（system/user/tool/subagent/context）保持从头部显示（省略
-    #   尾部，「… 后 N 行省略」）。
-    # ★ 2026-08-17（用户需求：回答/思考/system 用流式 markdown 显示在右边）：
-    #   reasoning/content/system 详情经 markdown 渲染管线（``_md_detail_rows``
-    #   ——消息源模式原始文本重新渲染 / 块记录直接复用渲染输出）显示带样式
-    #   StyledRun 行，内容增长（流式）自动重渲染（rec/block 缓存）；其余种类
-    #   保持纯文本按宽换行（零回归）。
-    tail_first = kind in ("reasoning", "content")
-    segs: list = []
-    md_rows: list = []
-    use_md = kind in ("reasoning", "content", "system")
-    if use_md:
-        md_rows = _md_detail_rows(rec, right_w, kind)
-    # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用修改——参数用树控件显示，
-    #   然后分割线，返回值用树控件显示）：tool 记录且携带参数/返回值树数据
-    #   （``tool_args``/``tool_result``）→ 检查器内容 = 参数树 + 分割线 +
-    #   返回值树（``_tool_tree_rows``——head-first 截断 + 「… 后 N 行省略」
-    #   后置，与既有 tool 纯文本分支语义一致）；无树数据（手动构造/异常
-    #   路径）回退纯文本 lines（零回归——既有 test_inspector_tool_* 直接
-    #   构造无树数据的记录）。
-    use_tool_tree = kind == "tool" and (
-        (getattr(rec, "tool_args", None) is not None
-         and str(getattr(rec, "tool_args", "")) != "")
-        or (getattr(rec, "tool_result", "") or "")
-    )
-    if use_tool_tree:
-        tree_rows = _tool_tree_rows(rec, right_w)
-        total_lines = len(tree_rows)
-        for runs in tree_rows:
-            if shown >= budget:
-                truncated = True
-                break
-            segs.append(runs)
-            shown += 1
-    elif use_md and md_rows:
-        total_lines = len(md_rows)
-        src_rows = reversed(md_rows) if tail_first else md_rows
-        for runs in src_rows:
-            if shown >= budget:
-                truncated = True
-                break
-            segs.append(runs)
-            shown += 1
+    # ── 内容行（全量生成 → 滚动窗口切片；光标行高亮；省略提示两侧） ──
+    if content_rows is None:
+        content_rows = _inspector_content_rows(rec, right_w)
+    total = len(content_rows)
+    try:
+        scroll = int(scroll) or 0
+    except (TypeError, ValueError, OverflowError):
+        scroll = 0
+    try:
+        cursor = int(cursor) if cursor is not None else -1
+    except (TypeError, ValueError, OverflowError):
+        cursor = -1
+    # 内容区行数预算（标题/meta/省略提示/subagent 提示占位后）
+    fixed = 2 + (1 if meta else 0) + (1 if getattr(rec, "subagent_label", "") else 0)
+    content_vh = max(_INSPECTOR_MIN_CONTENT, vh - fixed)
+    if total > content_vh:
+        scroll = max(0, min(scroll, total - content_vh))
     else:
-        # ★ review 修复（P1-2）：纯文本分支统计**换行后总行数**（单行拆
-        #   多行/截断提前 break 均计入）——省略提示数值 = 总行数 - 已显示
-        #   行数，修复前 ``len(lines) - shown + 1`` 用原始行数减换行后行数
-        #   可显示负数（如 1 行拆 11 行显示 8 行 → 1-8+1 = -2）。
-        total_lines = 0
-        for li, line in enumerate(lines):
-            if not isinstance(line, str):
-                line = str(line)
-            wrapped = _wrap_by_width(line, right_w)
-            total_lines += len(wrapped)
-            for seg in wrapped:
-                if shown >= budget:
-                    truncated = True
-                    break
-                segs.append(seg)
-                shown += 1
-            if truncated:
-                # 补算剩余行的换行数（省略提示数值准确）
-                for rest in lines[li + 1:]:
-                    r = str(rest) if not isinstance(rest, str) else rest
-                    total_lines += len(_wrap_by_width(r, right_w))
-                break
-    if tail_first:
-        segs.reverse()  # reversed 遍历恢复正序（省略提示在前、最新内容在后）
-    omitted = max(1, total_lines - shown) if truncated else 0
-    if truncated and tail_first:
-        # 思考/回答（tail_first）：省略的是前部旧内容 → 「… 前 N 行省略」
-        # 置顶（在内容行之前——与 toolcard bash 尾显示「… 前 N 行省略」
-        # 前置语义一致，提示紧跟被省略内容一侧）
+        scroll = 0
+    # 顶部省略提示（scroll>0：省略的是前部内容）
+    if scroll > 0:
         children.append(h(TEXT, {
-            "children": f"\u2026 前 {omitted} 行省略",
-            "style": _S_HINT, "height": 1, "key": "tinsp-omitted",
+            "children": f"\u2026 前 {scroll} 行省略",
+            "style": _S_HINT, "height": 1, "key": "tinsp-omitted-top",
         }))
-    for seg in segs:
+    window = content_rows[scroll:scroll + content_vh]
+    # 底部省略提示预留 1 行（内容未到尾部时窗口收缩，提示后置可见）
+    if scroll + len(window) < total:
+        window = window[:max(0, len(window) - 1)]
+        bottom_omitted = total - scroll - len(window)
+    else:
+        bottom_omitted = 0
+    for i, seg in enumerate(window):
+        abs_idx = scroll + i
+        is_cursor = cursor >= 0 and abs_idx == cursor
+        if is_cursor and isinstance(seg, list):
+            # markdown/树渲染行（StyledRun 列表）——逐 run 合并光标背景色
+            seg = [
+                StyledRun(r.text, (r.style or Style()).merge(_S_INSP_BG))
+                for r in seg
+            ]
         if isinstance(seg, list):
-            # markdown 渲染行（StyledRun 列表——children 纯文本仅供测试/
+            # markdown/树渲染行（StyledRun 列表——children 纯文本仅供测试/
             # 调试可见，渲染走 styled 优先分支）
             children.append(h(TEXT, {
                 "children": "".join(r.text for r in seg) if seg else " ",
@@ -822,22 +866,22 @@ def _inspector_children(rec, right_w: int, vh: int) -> list:
                 "key": f"tinsp-{len(children)}",
             }))
         else:
+            # 纯文本行——光标行样式合并背景色（vim cursorline 高亮）
+            style = _S_DIM if kind == "reasoning" else _S_TEXT
+            if is_cursor:
+                style = style.merge(_S_INSP_BG)
             children.append(h(TEXT, {
                 "children": seg if seg else " ",
-                "style": _S_DIM if kind == "reasoning" else _S_TEXT,
+                "style": style,
                 "height": 1,
                 "key": f"tinsp-{len(children)}",
             }))
-    if truncated and not tail_first:
-        # 其余种类（system/user/tool/subagent/context，head-first）：省略的
-        # 是尾部内容 → 「… 后 N 行省略」**后置在内容行之后**（最后一行——
-        # 与 toolcard 头显示「head 省略的行在末尾——提示置于内容行之后，
-        # 对齐终端 head 语义」一致；修复前统一前置在内容上方，与语义不符）
+    if bottom_omitted:
         children.append(h(TEXT, {
-            "children": f"\u2026 后 {omitted} 行省略",
+            "children": f"\u2026 后 {bottom_omitted} 行省略",
             "style": _S_HINT, "height": 1, "key": "tinsp-omitted",
         }))
-    if not lines and not md_rows and not use_tool_tree:
+    if total == 0:
         children.append(h(TEXT, {
             "children": "(无内容)", "style": _S_HINT, "height": 1,
             "key": "tinsp-none",
@@ -868,7 +912,9 @@ def _safe_int(v, default=0) -> int:
         return default
 
 
-def _inspector_deps(rec, right_w: int, vh: int) -> tuple:
+def _inspector_deps(
+    rec, right_w: int, vh: int, scroll: int = 0, cursor: int = -1,
+) -> tuple:
     """检查器 use_memo 依赖（TraceView 内 ``_inspector_children`` 包装）。
 
     ★ 2026-08-19（用户需求：轨迹 Trace 优化性能）：检查器元素树（标题 +
@@ -876,14 +922,18 @@ def _inspector_deps(rec, right_w: int, vh: int) -> tuple:
     选中记录内容不变时**元素树每帧重建**（仅内容行缓存命中）。use_memo
     包装后：deps = ``_detail_deps``（内容行数据源——块行数/树内容/lines 身份，
     展平原子值）+ 标题/元信息字段（index/kind/status/tokens/time）+ 栏宽/
-    视口。内容不变 → deps 稳定 → 元素树引用稳定 → reconciler 短路零重建。
-    运行中耗时（``_rec_time_seconds`` 实时值）按**整数秒**入指纹（meta 行
-    每秒刷新一次，避免每帧重建）。
+    视口 + **滚动偏移**（scroll 变化触发重建——vim 滚动）+ **光标行**
+    （cursor 变化触发重建——高亮行移动）。内容不变 → deps 稳定 → 元素树
+    引用稳定 → reconciler 短路零重建。运行中耗时（``_rec_time_seconds``
+    实时值）按**整数秒**入指纹（meta 行每秒刷新一次，避免每帧重建）。
     ★ P3（review 2026-08-19）：time/tokens 经 ``_safe_int`` 归一化——
     异常注入值（str/NaN/inf）不再中断渲染。
+    ★ 2026-08-19（vim 面板浏览）：末尾追加 scroll（滚动窗口位置）与
+    cursor（光标行，-1=不高亮）——滚动/光标键触发重建；越界残留经
+    ``_safe_int`` 归一化防御。
     """
     if rec is None:
-        return (None, right_w, vh)
+        return (None, right_w, vh, 0, -1)
     tok = getattr(rec, "tokens", None) or {}
     t_raw = _rec_time_seconds(rec)
     return tuple(_detail_deps(rec)) + (
@@ -895,6 +945,8 @@ def _inspector_deps(rec, right_w: int, vh: int) -> tuple:
         _safe_int(tok.get("output", 0) or 0),
         right_w,
         vh,
+        _safe_int(scroll, 0),
+        _safe_int(cursor, -1),
     )
 
 
@@ -1223,15 +1275,63 @@ def TraceView(props) -> object:
     if rec is not None:
         rec._detail_lines = detail_lines
 
-    # ── 右栏（检查器：use_memo 包装——选中记录内容不变时元素树零重建） ──
+    # ── 面板焦点 / 检查器滚动与光标（2026-08-19：移动到右边查看东西 + vim） ──
+    # trace_pane: "ledger"=左台账（ListView 焦点） / "inspector"=右检查器
+    #   （内容光标浏览——当前行背景高亮）；l/h 切换，j/k 在台账移动选中 /
+    #   在检查器移动光标（vim cursorline 语义）。
+    pane = getattr(model, "trace_pane", "ledger") or "ledger"
+    if pane not in ("ledger", "inspector"):
+        pane = "ledger"
+    scroll_raw = getattr(model, "trace_inspector_scroll", 0) or 0
+    cursor_raw = getattr(model, "trace_inspector_cursor", 0) or 0
+
+    # ── 右栏（检查器） ──
+    # 全量内容行（use_memo：内容/栏宽变化才重建）——滚动窗口数据源
+    #   （total_content 供 _handle 光标钳制与 scroll 渲染期协调）
+    content_rows = use_memo(
+        lambda: _inspector_content_rows(rec, right_w),
+        _inspector_content_deps(rec, right_w),
+    )
+    total_content = len(content_rows)
+    approx_content_vh = max(_INSPECTOR_MIN_CONTENT, vh - 3)
+    # 光标渲染期钳制（写回 model——越界残留收敛；空内容 → 0）
+    if total_content:
+        cursor = max(0, min(cursor_raw, total_content - 1))
+    else:
+        cursor = 0
+    if cursor != cursor_raw:
+        model.trace_inspector_cursor = cursor
+        cursor_raw = cursor
+    # scroll 渲染期协调：钳制 + 跟随光标保持可见（vim 视口语义——光标在
+    #   窗口内移动不滚动，到边界才滚动；与 _handle ``_scroll_for_cursor``
+    #   同逻辑）
+    if total_content > approx_content_vh:
+        if scroll_raw < 0:
+            scroll_raw = 0
+        elif scroll_raw > total_content - approx_content_vh:
+            scroll_raw = total_content - approx_content_vh
+        if cursor < scroll_raw:
+            scroll_raw = cursor
+        elif cursor >= scroll_raw + approx_content_vh:
+            scroll_raw = cursor - approx_content_vh + 1
+    else:
+        scroll_raw = 0
+    if scroll_raw != (getattr(model, "trace_inspector_scroll", 0) or 0):
+        model.trace_inspector_scroll = scroll_raw
+    scroll = scroll_raw
+    # 检查器光标参数：仅检查器焦点传入（高亮）；台账焦点 -1（不高亮）
+    cursor_arg = cursor if pane == "inspector" else -1
     # ★ 2026-08-19（用户需求：轨迹 Trace 优化性能）：修复前组件体内每帧
     #   直接调用 ``_inspector_children``（h(TEXT) 元素树每帧重建，仅内容行
     #   缓存命中）；use_memo 包装后 deps（``_inspector_deps`` = 内容行数据
-    #   源 + 标题/元信息字段 + 栏宽/视口）不变 → 元素树引用稳定 → reconciler
-    #   短路零重建。运行中耗时按整数秒入指纹（meta 每秒刷新一次）。
+    #   源 + 标题/元信息字段 + 栏宽/视口 + scroll + cursor）不变 → 元素树
+    #   引用稳定 → reconciler 短路零重建。运行中耗时按整数秒入指纹（meta
+    #   每秒刷新一次）。
     right_rows = use_memo(
-        lambda: _inspector_children(rec, right_w, vh),
-        _inspector_deps(rec, right_w, vh),
+        lambda: _inspector_children(
+            rec, right_w, vh, scroll, content_rows, cursor_arg,
+        ),
+        _inspector_deps(rec, right_w, vh, scroll, cursor_arg) + (total_content,),
     )
 
     # ── 台账可见窗口（选中记录在 rows 中的下标——ListView 受控光标） ──
@@ -1239,17 +1339,52 @@ def TraceView(props) -> object:
     sel_row = _row_of_record(rows, sel, records) if row_count else 0
 
     # ── 输入（trace_open 期间激活；关闭类按键本组件消费，导航放行 ListView） ──
+    def _scroll_for_cursor(cursor: int, scroll: int) -> int:
+        """检查器视口滚动：钳制 + 跟随光标保持可见（vim 视口语义）。
+
+        cursor 在窗口内（``[scroll, scroll+approx_content_vh)``）不滚动；
+        光标越过上/下边界 → 滚动窗口使光标回到边缘可见。内容不足一屏 →
+        0。``_inspector_children`` 内部对 scroll 做精确钳制（本函数为近似
+        视口，差异 ≤ 省略提示行数，渲染兜底）。
+        """
+        if total_content <= approx_content_vh:
+            return 0
+        scroll = max(0, min(int(scroll), total_content - approx_content_vh))
+        cursor = max(0, min(int(cursor), total_content - 1))
+        if cursor < scroll:
+            return cursor
+        if cursor >= scroll + approx_content_vh:
+            return cursor - approx_content_vh + 1
+        return scroll
+
+    def _move_cursor(new_cursor: int) -> None:
+        """检查器光标移动：写回 cursor + scroll 跟随（保持光标可见）。"""
+        if total_content:
+            new_cursor = max(0, min(int(new_cursor), total_content - 1))
+        else:
+            new_cursor = 0
+        model.trace_inspector_cursor = new_cursor
+        model.trace_inspector_scroll = _scroll_for_cursor(
+            new_cursor, getattr(model, "trace_inspector_scroll", 0) or 0,
+        )
+
     def _handle(event) -> bool:
         if not getattr(model, "trace_open", False):
             return False
+        pane_now = getattr(model, "trace_pane", "ledger") or "ledger"
         # 关闭类按键（Esc / Ctrl+H）——subagent 轨迹优先返回主轨迹
         #   （trace_subagent_label 置 None），主轨迹才关闭整个视图。
         #   关闭统一经 trace_open setter（= fullscreen=""，2026-08-17 review
         #   方向：与 toggle 工厂/测试写法一致，避免 property 扩展遗漏联动）。
+        #   ★ 2026-08-19（vim 面板浏览）：返回主轨迹同时复位焦点面板/滚动/
+        #   光标（残留 pane/scroll/cursor 指向 subagent 轨迹的浏览状态）。
         if event.kind == "escape":
             if getattr(model, "trace_subagent_label", None):
                 model.trace_subagent_label = None
                 model.trace_selected = -1  # 返回主轨迹：回到尾部跟随
+                model.trace_pane = "ledger"
+                model.trace_inspector_scroll = 0
+                model.trace_inspector_cursor = 0
             else:
                 model.trace_open = False
             return True
@@ -1257,13 +1392,71 @@ def TraceView(props) -> object:
             if getattr(model, "trace_subagent_label", None):
                 model.trace_subagent_label = None
                 model.trace_selected = -1
+                model.trace_pane = "ledger"
+                model.trace_inspector_scroll = 0
+                model.trace_inspector_cursor = 0
             else:
                 model.trace_open = False
             return True
+        # ── 面板切换（vim h/l）与检查器光标（char 单字符） ──
+        # ★ 2026-08-19（用户需求：轨迹 Trace 移动到右边查看东西 + vim 风格）：
+        #   台账焦点：l → 右移检查器（光标浏览详情）、h 已在最左放行；
+        #   检查器焦点：h → 返回台账、l 已在最右放行、j/k/↑↓ 移动光标
+        #   （当前行背景高亮，视口跟随）、g/G 顶部/底部、PgUp/PgDn 翻页、
+        #   Home/End 首末、← 返回台账。
+        ch = getattr(event, "char", "") or ""
+        if event.kind == "char" and len(ch) == 1:
+            if pane_now == "ledger":
+                if ch == "l":
+                    model.trace_pane = "inspector"
+                    return True
+                # ch == "h"：已在最左 → 放行（模态吞掉，无副作用）
+            else:
+                if ch == "h":
+                    model.trace_pane = "ledger"
+                    return True
+                # ch == "l"：已在最右 → 放行（模态吞掉）
+                cur_cursor = getattr(model, "trace_inspector_cursor", 0) or 0
+                if ch in ("j", "J"):
+                    _move_cursor(cur_cursor + 1)
+                    return True
+                if ch in ("k", "K"):
+                    _move_cursor(cur_cursor - 1)
+                    return True
+                if ch == "g":
+                    _move_cursor(0)
+                    return True
+                if ch == "G":
+                    _move_cursor(total_content)
+                    return True
+        # ── 检查器焦点：方向键/翻页/首末（ListView focus=False 不消费） ──
+        if pane_now == "inspector":
+            cur_cursor = getattr(model, "trace_inspector_cursor", 0) or 0
+            if event.kind == "arrow_down":
+                _move_cursor(cur_cursor + 1)
+                return True
+            if event.kind == "arrow_up":
+                _move_cursor(cur_cursor - 1)
+                return True
+            if event.kind == "page_down":
+                _move_cursor(cur_cursor + max(1, approx_content_vh))
+                return True
+            if event.kind == "page_up":
+                _move_cursor(cur_cursor - max(1, approx_content_vh))
+                return True
+            if event.kind == "home":
+                _move_cursor(0)
+                return True
+            if event.kind == "end":
+                _move_cursor(total_content)
+                return True
+            if event.kind == "arrow_left":
+                model.trace_pane = "ledger"
+                return True
         # Enter：选中 subagent 记录 → 进入 subagent 轨迹（嵌套 TraceView——
         #   显示内容与 mainagent 同构）。subagent 轨迹内 Enter 放行（模态：
         #   由 use_fullscreen 吞掉，不落入输入缓冲）；sub-subagent 下钻不
-        #   阻断（覆盖 label）。
+        #   阻断（覆盖 label）。台账与检查器焦点一致（选中记录相同）。
         # ★ 2026-08-17（用户需求：agent 内容合并到 subagent）：合并
         #   后的 subagent 工具记录携带 subagent_label（kind 仍为 tool）
         #   ——下钻条件从 kind=="subagent" 放宽为 subagent_label 非空（独立
@@ -1276,7 +1469,8 @@ def TraceView(props) -> object:
         #   + trace_subagent_label 保留语义回到原轨迹（subagent 轨迹内进入
         #   后 Esc 仍回 subagent 轨迹，再 Esc 回主轨迹）。选中索引归零
         #   （从首个工具开始浏览），trace_selected 保留（返回时选中记录
-        #   不变）。
+        #   不变）。★ 2026-08-19（vim 面板浏览）：进入新轨迹/新视图同时
+        #   复位焦点面板/滚动（从台账开始浏览）。
         if event.kind == "enter":
             rec = records[sel] if 0 <= sel < total else None
             if rec is not None:
@@ -1284,14 +1478,23 @@ def TraceView(props) -> object:
                 if sub:
                     model.trace_subagent_label = sub
                     model.trace_selected = -1  # subagent 轨迹：尾部跟随
+                    model.trace_pane = "ledger"
+                    model.trace_inspector_scroll = 0
+                    model.trace_inspector_cursor = 0
                     return True
                 if getattr(rec, "kind", "") == "tools":
                     model.fullscreen = "trace_tools"
                     model.trace_tools_selected = 0
+                    model.trace_tools_pane = "ledger"
+                    model.trace_tools_scroll = 0
+                    model.trace_tools_cursor = 0
+                    model.trace_pane = "ledger"  # 返回主轨迹保持台账
+                    model.trace_inspector_scroll = 0
+                    model.trace_inspector_cursor = 0
                     return True
-        # 其余按键（↑↓/PgUp/PgDn/Home/End/g/G/Enter/字符）不消费——导航由
-        # ListView 消费；Enter/字符等被 use_fullscreen 模态吞掉（不落入输入
-        # 缓冲，杜绝看不见的输入；2026-08-17 通用模态全屏视图机制）
+        # 其余按键不消费——台账：放行 ListView（j/k/↑↓/PgUp/PgDn/Home/End/
+        # g/G 导航）；检查器：未消费按键被 use_fullscreen 模态吞掉（不落入
+        # 输入缓冲，杜绝看不见的输入；2026-08-17 通用模态全屏视图机制）
         return False
 
     use_input(_handle, bool(getattr(model, "trace_open", False)))
@@ -1307,6 +1510,8 @@ def TraceView(props) -> object:
         **最后一条记录** → 写 -1（尾部跟随语义——渲染期解析为最新记录，
         流式追加/新记录出现自动跟进最新行）；其余位置写具体索引（退出
         跟随、停留在选中记录）。
+        ★ 2026-08-19（vim 面板浏览）：切换记录同时复位检查器滚动/光标
+        （新记录详情从顶部查看——浏览位置不跨记录残留）。
         """
         rec_idx = _records_index_of_row(rows, row_idx)
         if rec_idx < 0:
@@ -1315,6 +1520,8 @@ def TraceView(props) -> object:
             model.trace_selected = -1
         else:
             model.trace_selected = rec_idx
+        model.trace_inspector_scroll = 0
+        model.trace_inspector_cursor = 0
 
     # ── 渲染 ──
     # 头部（静态色——轨迹视图为浏览界面，不呼吸，diff 零输出）
@@ -1325,11 +1532,18 @@ def TraceView(props) -> object:
     turn_count = len(sep_nums)
     if sub_label:
         header_title = f"\u258d子代理轨迹 {sub_label}"
-        header_hint = "  \u2191\u2193 选择 · PgUp/PgDn 翻页 · g/G 首末 · Esc/Ctrl+H 返回"
+        if pane == "inspector":
+            header_hint = "  jk/\u2191\u2193 \u6eda\u52a8 \u00b7 h \u53f0\u8d26 \u00b7 g/G \u9996\u672b \u00b7 Esc \u8fd4\u56de"
+        else:
+            header_hint = "  \u2191\u2193/jk \u9009\u62e9 \u00b7 l \u8be6\u60c5 \u00b7 g/G \u9996\u672b \u00b7 Esc \u8fd4\u56de"
     else:
         header_title = "\u258d轨迹 Trace"
-        header_hint = ("  \u2191\u2193 选择 · PgUp/PgDn 翻页 · g/G 首末 · "
-                       "Enter 进入子代理 · Esc/Ctrl+H 关闭")
+        if pane == "inspector":
+            header_hint = ("  jk/\u2191\u2193 \u6eda\u52a8 \u00b7 h \u53f0\u8d26 \u00b7 g/G \u9996\u672b \u00b7 "
+                           "Enter \u5b50\u4ee3\u7406 \u00b7 Esc \u5173\u95ed")
+        else:
+            header_hint = ("  \u2191\u2193/jk \u9009\u62e9 \u00b7 l \u8be6\u60c5 \u00b7 g/G \u9996\u672b \u00b7 "
+                           "Enter \u5b50\u4ee3\u7406 \u00b7 Esc \u5173\u95ed")
     header_runs = [
         StyledRun(header_title, _S_TITLE),
         StyledRun(f" · {total} 条 · {turn_count} 轮", _S_HINT),
@@ -1347,6 +1561,9 @@ def TraceView(props) -> object:
             header_runs.append(StyledRun("\u2500" * pad, _S_SEP_ROW))
 
     # 左栏（台账——ListView 标准控件：受控光标 + 虚拟滚动 + 分隔行跳过）
+    # ★ 2026-08-19（vim 面板浏览）：focus 仅在台账焦点时激活（检查器焦点
+    #   放行 j/k/↑↓ 等给 TraceView 滚动处理——ListView focus=False 不注册
+    #   use_input，事件直达 TraceView _handle）。
     ledger = h(ListView, {
         "items": rows,
         "height": vh,
@@ -1354,7 +1571,7 @@ def TraceView(props) -> object:
         "cursor": sel_row if row_count else 0,
         "renderItem": _ledger_renderer(rows, left_w),
         "onNavigate": _on_navigate,
-        "focus": bool(getattr(model, "trace_open", False)),
+        "focus": bool(getattr(model, "trace_open", False)) and pane == "ledger",
     })
     # 右栏（检查器——use_memo 包装见上文 `right_rows` 定义处）
 
@@ -1373,6 +1590,8 @@ __all__ = [
     "_ledger_row_runs",
     "_inspector_children",
     "_inspector_deps",
+    "_inspector_content_rows",
+    "_inspector_content_deps",
     "_rec_time_seconds",
     "_viewport_rows",
     "_subagent_trace_deps",

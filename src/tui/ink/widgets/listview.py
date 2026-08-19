@@ -291,6 +291,13 @@ def ListView(props: dict) -> Element:
         elif event.kind == "char" and event.char in ("g", "G"):
             # vim 风格：g 首 / G 末（TraceView 台账既有语义）
             moved = _jump(event.char == "G", base_cur)
+        elif event.kind == "char" and event.char in ("j", "J", "k", "K"):
+            # vim 风格：j/J 下、k/K 上（与 SelectInput ``_nav_for_char``
+            # 大小写等效语义一致——TraceView 台账 / TraceToolsView 工具
+            # 列表 vim 导航，2026-08-19 用户需求「像 vim 一样」）。
+            # 多字符（粘贴流）整体不匹配（单字符判定），放行——与
+            # g/G 处理一致。
+            moved = _step(1 if event.char in ("j", "J") else -1, base=base_cur)
         elif event.kind == "enter":
             # ★ 方案B：onSelect 未提供时 enter 放行（返回 False 不消费——
             #   TraceView 台账 Enter 提交消息的放行语义）；提供时消费并回调。

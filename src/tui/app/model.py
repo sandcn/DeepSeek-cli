@@ -145,6 +145,21 @@ class AppModel(_ToolOutputMixin):
         #   测试/无装配场景）。
         self.trace_selected: int = -1
         self.message_source: object | None = None
+        # trace_pane: 轨迹视图当前焦点面板（"ledger"=左台账 / "inspector"=
+        #   右检查器）——2026-08-19（用户需求：轨迹 Trace 移动到右边查看
+        #   东西 + vim 风格）：l 从台账移到检查器（右栏滚动查看详情）、h
+        #   返回台账；j/k 在台账移动选中、在检查器滚动内容。默认台账。
+        self.trace_pane: str = "ledger"
+        # trace_inspector_scroll: 检查器内容滚动偏移（0=顶部；检查器焦点
+        #   时滚动——渲染期跟随 trace_inspector_cursor 保持光标可见）。
+        #   切换记录时复位 0（新记录从头查看），台账↔检查器切换间保留
+        #   （浏览位置不丢）。
+        self.trace_inspector_scroll: int = 0
+        # trace_inspector_cursor: 检查器内容**光标行**（绝对行索引，
+        #   0-based；vim cursorline 语义——2026-08-19 用户需求：右边高亮
+        #   当前行背景色）。检查器焦点时 j/k/↑↓/PgUp/PgDn/g/G 移动光标，
+        #   光标所在行整行背景高亮（_S_INSP_BG），视口跟随光标滚动。
+        self.trace_inspector_cursor: int = 0
         # trace_subagent_label: 轨迹视图当前显示的 subagent 轨迹 label
         #   （None=显示主 agent 轨迹；非 None=主轨迹中按 Enter 选中 subagent
         #   记录后进入其轨迹——嵌套 TraceView，内容与 mainagent 轨迹同构：
@@ -159,6 +174,14 @@ class AppModel(_ToolOutputMixin):
         #   当前选中的工具索引（schemas 下标，0-based；进入时置 0，导航写回
         #   ——返回主轨迹再进入保持上次选择）。
         self.trace_tools_selected: int = 0
+        # trace_tools_pane / trace_tools_scroll / trace_tools_cursor: 工具
+        #   列表详情视图（与 trace_pane/trace_inspector_scroll/trace_
+        #   inspector_cursor 同语义的独立状态，2026-08-19 vim 风格一致化）：
+        #   "ledger"=左工具名列表 / "inspector"=右参数检查器；l/h 面板切换、
+        #   j/k 在左列表移动选中 / 在右检查器移动光标（当前行背景高亮）。
+        self.trace_tools_pane: str = "ledger"
+        self.trace_tools_scroll: int = 0
+        self.trace_tools_cursor: int = 0
         # 顶部工具调用状态（Claude TUI parity 步骤 2.2：active_tool 为模型
         # 数据——原 ToolStatusHeader 渲染消费，组件已移除（工具状态改由工具
         # 卡片顶边框 ● 展示，双份冗余）；字段保留供测试/未来消费，None=无
@@ -621,6 +644,11 @@ class AppModel(_ToolOutputMixin):
         # ★ 轨迹视图状态复位（2026-08-19）：清屏后轨迹记录清空，选中回到
         #   尾部跟随（-1）——避免残留索引指向已清空的记录列表。
         self.trace_selected = -1
+        # ★ 2026-08-19（vim 面板浏览状态）：清屏同时复位焦点面板/检查器
+        #   滚动与光标（残留 pane/scroll/cursor 指向已清空的记录列表）。
+        self.trace_pane = "ledger"
+        self.trace_inspector_scroll = 0
+        self.trace_inspector_cursor = 0
         # ★ 2026-08-16：清屏同时退出 subagent 轨迹（嵌套视图）——残留 label
         #   指向的 subagent 记录可能已随面板清空（无记录可显示）。
         self.trace_subagent_label = None
@@ -628,6 +656,11 @@ class AppModel(_ToolOutputMixin):
         #   （fullscreen 已复位——工具列表视图随清屏退出；选中索引回到 0，
         #   避免残留索引指向已清空的工具 schema 列表）。
         self.trace_tools_selected = 0
+        # ★ 2026-08-19（vim 面板浏览状态）：清屏同时复位工具列表焦点面板/
+        #   右栏滚动与光标（与 trace_pane 同语义）。
+        self.trace_tools_pane = "ledger"
+        self.trace_tools_scroll = 0
+        self.trace_tools_cursor = 0
         # ★ 2026-08-17（review 方向 P2）：清屏同时退出模态全屏视图——残留
         #   fullscreen 会让 App 整屏渲染全屏视图组件（如 TraceView），而
         #   blocks 已清空 → 残留渲染空数据全屏界面。与 trace_subagent_label

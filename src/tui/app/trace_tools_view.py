@@ -46,9 +46,15 @@ _S_DIM = Style(fg=242)                     # 元信息/描述（暗灰）
 _S_SEL_BG = Style(bg=237)                  # 选中行背景（静态 237，不呼吸）
 _S_SEL_MARK = Style(fg=45, bold=True)      # 选中 ▶ 标记（亮青加粗）
 _S_SECTION = Style(fg=110, bold=True)      # 参数小节标题（浅蓝加粗）
+#: 右栏光标行背景（2026-08-19 用户需求：右边高亮当前行背景色）——与
+#: trace_view 检查器同色 237（两视图视觉一致；vim cursorline 语义）
+_S_INSP_BG = Style(bg=237)
 
 #: 右栏内容行预算下限（标题 + 元信息 + 省略提示占用后至少保留的行数）
 _INSPECTOR_MIN_CONTENT = 4
+#: 右栏内容行全量生成上限（2026-08-19 vim 滚动查看——超限截断 + 「内容
+#:   过长」提示行，与 trace_view ``_INSPECTOR_MAX_ROWS`` 同语义）
+_INSPECTOR_MAX_ROWS = 2000
 
 
 def _tool_row_runs(name: str, sel: bool, left_w: int) -> list:
@@ -82,21 +88,60 @@ def _tree_rows(nodes: list, right_w: int) -> list:
     return out
 
 
+def _tools_inspector_content_rows(
+    name: str, props_map: dict, required: list, description: str, right_w: int,
+) -> list:
+    """工具参数检查器**全量内容行**（正序；上限防御）——滚动查看数据源。
+
+    ★ 2026-08-19（vim 面板浏览一致化）：与 trace_view 检查器同模式——
+    内容行全量生成（描述 + 分割线 + ``▸ 参数`` 小节 + 参数树行），滚动
+    窗口切片显示。返回元素为 ``list[StyledRun]``（分割线/小节标题/树行）
+    或 ``str``（描述行）——由 ``_inspector_children`` 统一转 TEXT 元素。
+
+    Args:
+        name: 工具名（空串 = 空态——调用方提前返回占位，此处不处理）。
+        props_map: 参数名 → 参数定义 dict。
+        required: 必需参数名列表。
+        description: 工具描述（可为空串）。
+        right_w: 右栏宽（换行/截断宽度）。
+    """
+    right_w = max(1, right_w)
+    rows: list = []
+    desc_lines = _wrap_by_width(description, right_w) if description else []
+    rows.extend(desc_lines)
+    if desc_lines:
+        rows.append([StyledRun("\u2500" * max(1, right_w - 1), _S_SEP_ROW)])
+    rows.append([StyledRun("\u25b8 \u53c2\u6570", _S_SECTION)])
+    rows.extend(_tree_rows(
+        build_tools_params_tree(props_map or {}, required or []), right_w,
+    ))
+    if len(rows) > _INSPECTOR_MAX_ROWS:
+        rows = rows[:_INSPECTOR_MAX_ROWS]
+        rows.append([StyledRun(
+            f"\u2026 内容过长，仅显示前 {_INSPECTOR_MAX_ROWS} 行", _S_HINT,
+        )])
+    return rows
+
+
 def _inspector_children(
     name: str, props_map: dict, required: list, description: str,
-    right_w: int, vh: int,
+    right_w: int, vh: int, scroll: int = 0,
+    content_rows: list | None = None, cursor: int = -1,
 ) -> list:
-    """右栏参数检查器子元素（标题 + 元信息 + 描述 + 参数树）。
+    """右栏参数检查器子元素（标题 + 元信息 + 内容行滚动窗口 + 光标行高亮 +
+    省略提示）。
 
     内容顺序：
       1. 标题（工具名，亮青加粗）；
       2. 元信息（``N 个参数 · M 个必需``，暗灰）；
-      3. 描述（按栏宽换行；空描述跳过）；
-      4. 分割线（描述存在时，参数树之前）；
-      5. ``▸ 参数`` 小节标题 + 参数树行（``build_tools_params_tree`` 树形
-         展开——每个参数的类型/描述/必需/默认值/枚举/约束叶子）。
+      3. 内容滚动窗口：描述（按栏宽换行）→ 分割线（描述存在时）→
+         ``▸ 参数`` 小节标题 → 参数树行（``build_tools_params_tree`` 树形
+         展开）。scroll>0 置顶「… 前 N 行省略」、未到尾部后置「… 后 N 行
+         省略」（vim/less 滚动语义——焦点移到右栏后滚动查看全部参数）；
+         ``cursor``（绝对行索引，-1=不高亮）落在窗口内的行**整行背景
+         高亮**（vim cursorline——2026-08-19 用户需求：右边高亮当前行
+         背景色）。
 
-    行数按 ``vh`` 预算截断（head-first，省略尾部，「… 后 N 行省略」后置）。
     工具名为空（空数据源防御）→ 返回「无可用工具」占位。
 
     Args:
@@ -106,6 +151,10 @@ def _inspector_children(
         description: 工具描述（可为空串）。
         right_w: 右栏宽（换行/截断宽度；<=0 外部调用防御）。
         vh: 视口行数预算（内容行数上限）。
+        scroll: 内容滚动偏移（0=顶部；越界钳制）。
+        content_rows: 预生成的全量内容行（组件 use_memo 传入）；None 时
+            内部惰性生成（直接调用/测试兼容）。
+        cursor: 内容光标行绝对索引（-1 = 不高亮）。
 
     Returns:
         list——TEXT 元素列表（检查器子元素）。
@@ -125,55 +174,65 @@ def _inspector_children(
         "children": f"{len(props_map or {})} 个参数 · {n_req} 个必需",
         "style": _S_DIM, "height": 1, "key": "tinsp-meta",
     }))
-    # 内容行（描述 + 分割线 + 小节标题 + 树行；按预算截断）
-    desc_lines = _wrap_by_width(description, right_w) if description else []
-    tree_rows = _tree_rows(build_tools_params_tree(props_map or {}, required or []), right_w)
-    total = len(desc_lines) + (1 if desc_lines else 0) + 1 + len(tree_rows)
-    budget = max(_INSPECTOR_MIN_CONTENT, vh - 2)
-    shown = 0
-    truncated = False
-    if desc_lines:
-        for line in desc_lines:
-            if shown >= budget:
-                truncated = True
-                break
-            children.append(h(TEXT, {
-                "children": line if line else " ",
-                "style": _S_DIM, "height": 1,
-                "key": f"tinsp-desc-{len(children)}",
-            }))
-            shown += 1
-        # ★ P3（review 2026-08-19）：分割线/小节标题追加前检查预算——desc 行
-        #   恰好填满 budget 时自然结束（truncated=False），无条件追加会使
-        #   右栏内容超视口预算 2 行。
-        if not truncated and shown < budget:
-            children.append(h(TEXT, {
-                "children": "\u2500" * max(1, right_w - 1),
-                "style": _S_SEP_ROW, "height": 1,
-                "key": f"tinsp-sep-{len(children)}",
-            }))
-            shown += 1
-    if not truncated and shown < budget:
+    # ── 内容行（全量生成 → 滚动窗口切片；光标行高亮；省略提示两侧） ──
+    if content_rows is None:
+        content_rows = _tools_inspector_content_rows(
+            name, props_map, required, description, right_w,
+        )
+    total = len(content_rows)
+    try:
+        scroll = int(scroll) or 0
+    except (TypeError, ValueError, OverflowError):
+        scroll = 0
+    try:
+        cursor = int(cursor) if cursor is not None else -1
+    except (TypeError, ValueError, OverflowError):
+        cursor = -1
+    content_vh = max(_INSPECTOR_MIN_CONTENT, vh - 2)
+    if total > content_vh:
+        scroll = max(0, min(scroll, total - content_vh))
+    else:
+        scroll = 0
+    if scroll > 0:
         children.append(h(TEXT, {
-            "children": "\u25b8 \u53c2\u6570", "style": _S_SECTION, "height": 1,
-            "key": f"tinsp-section-{len(children)}",
+            "children": f"\u2026 前 {scroll} 行省略",
+            "style": _S_HINT, "height": 1, "key": "tinsp-omitted-top",
         }))
-        shown += 1
-    for runs in tree_rows:
-        if shown >= budget:
-            truncated = True
-            break
+    window = content_rows[scroll:scroll + content_vh]
+    if scroll + len(window) < total:
+        window = window[:max(0, len(window) - 1)]
+        bottom_omitted = total - scroll - len(window)
+    else:
+        bottom_omitted = 0
+    for i, seg in enumerate(window):
+        abs_idx = scroll + i
+        is_cursor = cursor >= 0 and abs_idx == cursor
+        if is_cursor and isinstance(seg, list):
+            # 树/分割线/小节标题 StyledRun 行——逐 run 合并光标背景色
+            seg = [
+                StyledRun(r.text, (r.style or Style()).merge(_S_INSP_BG))
+                for r in seg
+            ]
+        if isinstance(seg, list):
+            children.append(h(TEXT, {
+                "children": "".join(r.text for r in seg) if seg else " ",
+                "styled": seg,
+                "height": 1,
+                "key": f"tinsp-{len(children)}",
+            }))
+        else:
+            # 描述纯文本行——光标行样式合并背景色
+            style = _S_DIM
+            if is_cursor:
+                style = style.merge(_S_INSP_BG)
+            children.append(h(TEXT, {
+                "children": seg if seg else " ",
+                "style": style, "height": 1,
+                "key": f"tinsp-{len(children)}",
+            }))
+    if bottom_omitted:
         children.append(h(TEXT, {
-            "children": "".join(r.text for r in runs) if runs else " ",
-            "styled": runs,
-            "height": 1,
-            "key": f"tinsp-{len(children)}",
-        }))
-        shown += 1
-    if truncated:
-        omitted = max(1, total - shown)
-        children.append(h(TEXT, {
-            "children": f"\u2026 \u540e {omitted} \u884c\u7701\u7565",
+            "children": f"\u2026 后 {bottom_omitted} 行省略",
             "style": _S_HINT, "height": 1, "key": "tinsp-omitted",
         }))
     return children
@@ -204,6 +263,13 @@ def TraceToolsView(props) -> object:
         max(0, len(schemas) - 1),
     )) if schemas else 0
 
+    # ── 面板焦点 / 右栏滚动与光标（2026-08-19 vim 面板浏览一致化） ──
+    pane = getattr(model, "trace_tools_pane", "ledger") or "ledger"
+    if pane not in ("ledger", "inspector"):
+        pane = "ledger"
+    scroll_raw = getattr(model, "trace_tools_scroll", 0) or 0
+    cursor_raw = getattr(model, "trace_tools_cursor", 0) or 0
+
     # ── 视口 / 栏宽（左栏窄于台账——工具名短；右栏参数树占主体） ──
     vh = _viewport_rows()
     if width > 0:
@@ -214,10 +280,73 @@ def TraceToolsView(props) -> object:
     else:
         left_w, right_w = 28, 52
 
-    # ── 输入（激活期间：Esc/Ctrl+H 返回主轨迹；导航放行 ListView 消费） ──
+    # ── 右栏内容（全量行 + 光标/scroll 渲染期协调 + use_memo 元素树） ──
+    name, props_map, required, description = (
+        schemas[sel] if schemas else ("", {}, [], "")
+    )
+    content_rows = use_memo(
+        lambda: _tools_inspector_content_rows(
+            name, props_map, required, description, right_w,
+        ),
+        (name, len(props_map or {}), ";".join(map(str, required or [])),
+         description, right_w),
+    )
+    total_content = len(content_rows)
+    approx_content_vh = max(_INSPECTOR_MIN_CONTENT, vh - 3)
+    # 光标渲染期钳制（写回 model——越界残留收敛；空内容 → 0）
+    if total_content:
+        cursor = max(0, min(cursor_raw, total_content - 1))
+    else:
+        cursor = 0
+    if cursor != cursor_raw:
+        model.trace_tools_cursor = cursor
+        cursor_raw = cursor
+    # scroll 渲染期协调：钳制 + 跟随光标保持可见（vim 视口语义）
+    if total_content > approx_content_vh:
+        if scroll_raw < 0:
+            scroll_raw = 0
+        elif scroll_raw > total_content - approx_content_vh:
+            scroll_raw = total_content - approx_content_vh
+        if cursor < scroll_raw:
+            scroll_raw = cursor
+        elif cursor >= scroll_raw + approx_content_vh:
+            scroll_raw = cursor - approx_content_vh + 1
+    else:
+        scroll_raw = 0
+    if scroll_raw != (getattr(model, "trace_tools_scroll", 0) or 0):
+        model.trace_tools_scroll = scroll_raw
+    scroll = scroll_raw
+    # 光标参数：仅右栏焦点传入（高亮）；左栏焦点 -1（不高亮）
+    cursor_arg = cursor if pane == "inspector" else -1
+
+    # ── 输入（激活期间：Esc/Ctrl+H 返回主轨迹；l/h 面板切换 + 光标移动） ──
+    def _scroll_for_cursor(cursor: int, scroll: int) -> int:
+        """右栏视口滚动：钳制 + 跟随光标保持可见（vim 视口语义）。"""
+        if total_content <= approx_content_vh:
+            return 0
+        scroll = max(0, min(int(scroll), total_content - approx_content_vh))
+        cursor = max(0, min(int(cursor), total_content - 1))
+        if cursor < scroll:
+            return cursor
+        if cursor >= scroll + approx_content_vh:
+            return cursor - approx_content_vh + 1
+        return scroll
+
+    def _move_cursor(new_cursor: int) -> None:
+        """右栏光标移动：写回 cursor + scroll 跟随（保持光标可见）。"""
+        if total_content:
+            new_cursor = max(0, min(int(new_cursor), total_content - 1))
+        else:
+            new_cursor = 0
+        model.trace_tools_cursor = new_cursor
+        model.trace_tools_scroll = _scroll_for_cursor(
+            new_cursor, getattr(model, "trace_tools_scroll", 0) or 0,
+        )
+
     def _handle(event) -> bool:
         if not active:
             return False
+        pane_now = getattr(model, "trace_tools_pane", "ledger") or "ledger"
         # 返回主轨迹（TraceView 恢复；主轨迹再次 Esc/Ctrl+H 关闭整个视图）
         if event.kind == "escape":
             model.fullscreen = "trace"
@@ -225,6 +354,60 @@ def TraceToolsView(props) -> object:
         if event.kind == "ctrl_key" and getattr(event, "char", "") == "\x08":
             model.fullscreen = "trace"
             return True
+        # ── 面板切换（vim h/l）与右栏光标（char 单字符） ──
+        # ★ 2026-08-19（vim 面板浏览一致化）：左栏焦点 l → 右检查器、
+        #   h 已在最左放行；右栏焦点 h → 返回左栏、j/k/↑↓ 移动光标
+        #   （当前行背景高亮，视口跟随）、g/G 顶部/底部、PgUp/PgDn 翻页、
+        #   Home/End 首末、← 返回左栏。
+        ch = getattr(event, "char", "") or ""
+        if event.kind == "char" and len(ch) == 1:
+            if pane_now == "ledger":
+                if ch == "l":
+                    model.trace_tools_pane = "inspector"
+                    return True
+            else:
+                if ch == "h":
+                    model.trace_tools_pane = "ledger"
+                    return True
+                cur_cursor = getattr(model, "trace_tools_cursor", 0) or 0
+                if ch in ("j", "J"):
+                    _move_cursor(cur_cursor + 1)
+                    return True
+                if ch in ("k", "K"):
+                    _move_cursor(cur_cursor - 1)
+                    return True
+                if ch == "g":
+                    _move_cursor(0)
+                    return True
+                if ch == "G":
+                    _move_cursor(total_content)
+                    return True
+        # ── 右栏焦点：方向键/翻页/首末（ListView focus=False 不消费） ──
+        if pane_now == "inspector":
+            cur_cursor = getattr(model, "trace_tools_cursor", 0) or 0
+            if event.kind == "arrow_down":
+                _move_cursor(cur_cursor + 1)
+                return True
+            if event.kind == "arrow_up":
+                _move_cursor(cur_cursor - 1)
+                return True
+            if event.kind == "page_down":
+                _move_cursor(cur_cursor + max(1, approx_content_vh))
+                return True
+            if event.kind == "page_up":
+                _move_cursor(cur_cursor - max(1, approx_content_vh))
+                return True
+            if event.kind == "home":
+                _move_cursor(0)
+                return True
+            if event.kind == "end":
+                _move_cursor(total_content)
+                return True
+            if event.kind == "arrow_left":
+                model.trace_tools_pane = "ledger"
+                return True
+        # 其余按键不消费——左栏：放行 ListView（j/k/↑↓/PgUp/PgDn/g/G 导航）；
+        # 右栏：未消费按键被 use_fullscreen 模态吞掉
         return False
 
     use_input(_handle, active)
@@ -233,13 +416,21 @@ def TraceToolsView(props) -> object:
     use_fullscreen(active)
 
     def _on_navigate(idx: int) -> None:
-        """工具列表导航回调（ListView 导航后）：写回选中索引（受控光标）。"""
+        """工具列表导航回调（ListView 导航后）：写回选中索引（受控光标）；
+        切换工具同时复位右栏滚动/光标（新工具参数从顶部查看）。"""
         model.trace_tools_selected = int(idx)
+        model.trace_tools_scroll = 0
+        model.trace_tools_cursor = 0
 
     # ── 渲染 ──
     header_title = "\u258d\u5de5\u5177\u5217\u8868"
     # ★ BEAUTY-36（美化）：提示精简（80 宽终端下为行尾 ─ 分隔线留出空间）。
-    header_hint = ("  \u2191\u2193 \u9009\u62e9 \u00b7 PgUp/PgDn \u00b7 Esc/Ctrl+H \u8fd4\u56de")
+    if pane == "inspector":
+        header_hint = ("  jk/\u2191\u2193 \u6eda\u52a8 \u00b7 h \u5217\u8868 \u00b7 g/G \u9996\u672b \u00b7 "
+                       "Esc \u8fd4\u56de")
+    else:
+        header_hint = ("  \u2191\u2193/jk \u9009\u62e9 \u00b7 l \u8be6\u60c5 \u00b7 g/G \u9996\u672b \u00b7 "
+                       "Esc \u8fd4\u56de")
     header_runs = [
         StyledRun(header_title, _S_TITLE),
         StyledRun(f" \u00b7 {len(schemas)} \u4e2a\u5de5\u5177", _S_HINT),
@@ -265,6 +456,8 @@ def TraceToolsView(props) -> object:
             "height": 1,
         })
 
+    # ★ 2026-08-19（vim 面板浏览）：focus 仅在左栏焦点时激活（右栏焦点
+    #   放行 j/k/↑↓ 等给本组件滚动处理）。
     ledger = h(ListView, {
         "items": names,
         "height": vh,
@@ -272,23 +465,21 @@ def TraceToolsView(props) -> object:
         "cursor": sel,
         "renderItem": _render_item,
         "onNavigate": _on_navigate,
-        "focus": active,
+        "focus": active and pane == "ledger",
     })
 
-    # 右栏（参数检查器——use_memo：选中工具/栏宽/视口变化才重建）
-    name, props_map, required, description = (
-        schemas[sel] if schemas else ("", {}, [], "")
-    )
+    # 右栏（参数检查器——use_memo：选中工具/栏宽/视口/滚动/光标变化才重建）
     # ★ P2（review 2026-08-18）：deps 展平原子值——修复前 ``tuple(required or [])``
     #   每帧新建嵌套元组，``_hooks_core._object_is`` 对 tuple 按 is 引用比较恒
     #   False → 右栏检查器每帧全量重建（与 trace.py 各指纹模块「展平原子值」
     #   契约相悖）。required 为参数名 str 列表 → join 单一 str（值比较稳定）。
     right_children = use_memo(
         lambda: _inspector_children(
-            name, props_map, required, description, right_w, vh,
+            name, props_map, required, description, right_w, vh, scroll,
+            content_rows, cursor_arg,
         ),
         (name, len(props_map or {}), ";".join(map(str, required or [])),
-         description, right_w, vh),
+         description, right_w, vh, scroll, total_content, cursor_arg),
     )
 
     return h(Column, None, [
@@ -304,6 +495,7 @@ def TraceToolsView(props) -> object:
 __all__ = [
     "TraceToolsView",
     "_inspector_children",
+    "_tools_inspector_content_rows",
     "_tool_row_runs",
     "_tree_rows",
 ]
