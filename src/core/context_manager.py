@@ -68,8 +68,12 @@ _context_usage_percent: Optional[float] = None
 #   - 清零：流式结束（_cleanup_display，幂等）调用 update_streaming_usage(0)
 #     清零——随后 assistant 消息追加由 refresh_usage() 按消息全文重算真实值，
 #     避免「流式增量 + 消息内容」双计；
-#   - SubAgent（label 以 "agent-" 前缀）跳过：其输出计入 SubAgent 独立上下文，
-#     不占主 Agent 上下文；主 Agent 流式 label 为 "assistant"（pipeline.py）。
+#   - SubAgent（label "agent-N" / 后台 "sa-xxx"）跳过：其输出计入 SubAgent
+#     独立上下文，不占主 Agent 上下文；主 Agent 流式 label 为 "assistant"
+#     （pipeline.py）。★ 2026-08-20 修复：后台 subagent（subagent 工具直接
+#     后台派发）label 为 task_id（"sa-xxx"）而非 "agent-" 前缀——修复前其
+#     流式增量写入全局并触发主 Agent refresh_usage()，主 Agent 上下文百分比
+#     被 subagent 动态信息污染（虚高/抖动/干扰主 Agent 流式增量）。
 #   - 性能：全局读写为 GIL 原子（无锁）；refresh_usage 在流式期间缓存有效
 #     （消息未变不 resync）+ _tools_tokens 结果缓存（_tools_tokens_cache），
 #     每 0.1s 刷新路径 O(1)。
@@ -123,6 +127,27 @@ def get_streaming_extra_tokens() -> int:
     return _streaming_extra_tokens
 
 
+def _is_subagent_stream_label(label: Optional[str]) -> bool:
+    """判断流式调用 label 是否属于 SubAgent（其输出不占主 Agent 上下文）。
+
+    两种 SubAgent label 约定（与 TUI 面板/轨迹/后台任务表一致）：
+      - 前台 subagent（ParallelExecutor 直接 spawner 调用）：``agent-N``
+        （序号生成，见 _subagent_spawner._spawn_subagent）；
+      - 后台 subagent（subagent 工具直接后台派发）：``sa-xxx``（task_id，
+        见 tools/subagent.py._execute_background——spec["label"]=task_id）。
+    主 Agent 流式 label 为 "assistant"（pipeline.py）；label 为 None
+    （非 TUI/缺省路径）计入主 Agent。SubAgent 输出占用其独立上下文，
+    不应写入全局流式增量、也不应触发主 Agent 百分比重算。
+
+    Args:
+        label: 流式调用标签。
+
+    Returns:
+        True 表示该流式属于 SubAgent（应跳过主 Agent 上下文统计）。
+    """
+    return bool(label and (label.startswith("agent-") or label.startswith("sa-")))
+
+
 def set_active_context_manager(cm: Optional["ContextManager"]) -> None:
     """注册当前活跃 ContextManager 实例（ContextManager.__init__ 调用）。
 
@@ -136,16 +161,18 @@ def set_active_context_manager(cm: Optional["ContextManager"]) -> None:
 def update_streaming_usage(delta_tokens: int, label: Optional[str] = None) -> None:
     """流式输出过程中实时刷新上下文使用率（api 流式管线调用入口）。
 
-    仅主 Agent 流式计入（label 以 "agent-" 前缀的 SubAgent 跳过——其输出
-    占用 SubAgent 独立上下文，不影响主 Agent 百分比）。写入全局流式增量
-    后触发活跃 ContextManager.refresh_usage()（缓存有效时 O(1)，性能好）。
+    仅主 Agent 流式计入（SubAgent 跳过——label "agent-N" 前台 / "sa-xxx"
+    后台，其输出占用 SubAgent 独立上下文，不影响主 Agent 百分比；★ 2026-08-20
+    修复：后台 subagent label 为 task_id "sa-xxx" 而非 "agent-" 前缀，修复前
+    其流式增量被计入主 Agent 百分比）。写入全局流式增量后触发活跃
+    ContextManager.refresh_usage()（缓存有效时 O(1)，性能好）。
 
     Args:
         delta_tokens: 当前流式输出估算 tokens（ctx.streamed_output_tokens）。
         label: 流式调用标签；None/主 Agent（"assistant"）计入，SubAgent
-            （"agent-N"）跳过。
+            （"agent-N"/"sa-xxx"）跳过。
     """
-    if label and label.startswith("agent-"):
+    if _is_subagent_stream_label(label):
         return
     global _streaming_extra_tokens, _streaming_fail_logged
     _streaming_extra_tokens = max(0, int(delta_tokens or 0))

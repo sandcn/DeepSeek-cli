@@ -193,6 +193,54 @@ class TestUpdateStreamingUsage:
         assert get_context_usage_percent() == base
         assert get_streaming_extra_tokens() == 0  # 全局增量未被污染
 
+    def test_background_subagent_label_skipped(self):
+        """后台 SubAgent 流式（label="sa-xxx" task_id）同样不更新主 Agent pct。
+
+        ★ 2026-08-20 修复：后台 subagent（subagent 工具直接后台派发）label 为
+        task_id（"sa-xxx"）而非 "agent-" 前缀——修复前其流式增量被写入全局
+        并触发主 Agent refresh_usage()，主 Agent 上下文百分比被 subagent
+        动态信息污染（虚高）。
+        """
+        from src.core.context_manager import (
+            set_context_usage_percent, get_context_usage_percent,
+            update_streaming_usage, get_streaming_extra_tokens,
+        )
+        set_context_usage_percent(None)
+        self._active_cm()
+        base = get_context_usage_percent()
+        update_streaming_usage(5000, "sa-abc123def456")
+        assert get_context_usage_percent() == base
+        assert get_streaming_extra_tokens() == 0  # 全局增量未被污染
+
+    def test_background_subagent_clear_does_not_touch_main_delta(self):
+        """后台 SubAgent 流式结束清零（update_streaming_usage(0, "sa-xxx")）
+        不得清除主 Agent 的流式增量（流式增量互不干扰）。"""
+        from src.core.context_manager import (
+            set_context_usage_percent, get_context_usage_percent,
+            update_streaming_usage, get_streaming_extra_tokens,
+        )
+        set_context_usage_percent(None)
+        self._active_cm()
+        base = get_context_usage_percent()
+        # 主 Agent 流式进行中：增量 2000
+        update_streaming_usage(2000, "assistant")
+        assert get_context_usage_percent() > base
+        # 后台 SubAgent 流式期间写入 + 结束清零（修复前会覆盖/清零主 Agent 增量）
+        update_streaming_usage(1500, "sa-abc123def456")
+        update_streaming_usage(0, "sa-abc123def456")
+        assert get_context_usage_percent() > base   # 主 Agent 增量保持
+        assert get_streaming_extra_tokens() == 2000  # 未被覆盖/清零
+
+    def test_is_subagent_stream_label(self):
+        """_is_subagent_stream_label 辅助函数：前台/后台 SubAgent 均识别。"""
+        from src.core.context_manager import _is_subagent_stream_label
+        assert _is_subagent_stream_label("agent-1") is True
+        assert _is_subagent_stream_label("agent-10") is True
+        assert _is_subagent_stream_label("sa-abc123def456") is True
+        assert _is_subagent_stream_label("assistant") is False
+        assert _is_subagent_stream_label(None) is False
+        assert _is_subagent_stream_label("") is False
+
     def test_clear_after_stream(self):
         """流式结束清零（update_streaming_usage(0)）→ 百分比回落基线。"""
         from src.core.context_manager import (
@@ -359,6 +407,30 @@ class TestPipelineIntegration:
         await asyncio.sleep(0.3)   # 覆盖 0.1s 节流窗口（若错误计入应已触发）
         p = get_context_usage_percent()
         assert p == base           # SubAgent 流不影响主 Agent 百分比
+        assert get_streaming_extra_tokens() == 0
+        await task
+
+    async def test_background_subagent_stream_does_not_touch_main_percent(self):
+        """后台 SubAgent 流式（label="sa-xxx" task_id）process 不更新主 Agent pct。
+
+        ★ 2026-08-20 修复：后台 subagent label 为 task_id（"sa-xxx"）而非
+        "agent-" 前缀——修复前 pipeline 每 ~0.1s 调 update_streaming_usage
+        时该 label 不被识别为 SubAgent，流式增量污染主 Agent 全局百分比。
+        """
+        from src.core.context_manager import (
+            set_context_usage_percent, get_context_usage_percent,
+            get_streaming_extra_tokens,
+        )
+        from src.api.stream.context import StreamContext
+        set_context_usage_percent(None)
+        _make_cm([{"role": "system", "content": "s" * 1000}], ctx_tokens=10000)
+        base = get_context_usage_percent()
+        ctx = StreamContext("test-model", None, "sa-abc123def456", True)
+        chunks = [{"choices": [{"delta": {"content": "a" * 100}}]} for _ in range(5)]
+        task = await self._run_stream(ctx, chunks)
+        await asyncio.sleep(0.3)   # 覆盖 0.1s 节流窗口（若错误计入应已触发）
+        p = get_context_usage_percent()
+        assert p == base           # 后台 SubAgent 流不影响主 Agent 百分比
         assert get_streaming_extra_tokens() == 0
         await task
 
