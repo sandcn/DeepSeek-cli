@@ -28,10 +28,9 @@ _NETWORK_RETRY_MAX = 3
 #
 # 策略差异说明：
 # - map: 只读分析，排除所有写入类工具 + web_search
-# - review: 代码审查，排除所有写入类工具，保留 web_search（可查文档）；
-#   2026-08-20（用户需求）起放开 bash/bash_opt——review 可用 bash 做只读查询
-#   （系统信息/进程状态/日志查看/环境探测等），但提示词 prompts_export_review.md
-#   中强制禁止用 bash 修改文件（重定向写文件 / sed -i / echo 落盘 / rm / mv 等一律禁止）
+# - review: 代码审查，排除所有写入类工具 + bash/bash_opt，保留 web_search（可查文档）；
+#   2026-08-21（用户需求）起删除 bash/bash_opt——review 为纯只读审查（read_file/
+#   search/find/ls/web_search），彻底无 shell 执行能力，从工具层杜绝任何修改行为
 # - plan: 计划生成，保留 write_file/update_file，但在 FileToolBase
 #   ._validate_path_and_size() 中有额外的路径白名单校验（仅限 .chat/plan/）
 # - execute: 计划执行型（默认），保留读写工具 + bash，排除 web_search + subagent + user_select，
@@ -43,8 +42,9 @@ _TOOL_EXCLUSION_MAP = {
         "subagent", "user_select",
     },
     "review": {
-        # bash/bash_opt 已放开（2026-08-20 用户需求）：review 可用 bash 做只读查询，
-        # 但提示词 prompts_export_review.md 强制禁止用 bash 修改文件（红线）。
+        # bash/bash_opt 已删除（2026-08-21 用户需求）：review 为纯只读审查，
+        # 无任何 shell 执行能力，从工具层杜绝用 bash 修改文件的可能。
+        "bash", "bash_opt",
         "subagent_opt", "write_file", "update_file", "rm", "mv", "cp", "mkdir",
         "subagent", "user_select",
     },

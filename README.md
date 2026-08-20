@@ -446,10 +446,10 @@ ChatUIConsumer
 |---|---|---|
 | **plan** | 只读分析 + write_file/update_file/mkdir（仅限 `.chat/plan/` 目录） | 任务拆解、依赖分析、生成计划文件到 `.chat/plan/` |
 | **map** | 只读（read_file/search/find/ls 等只读工具） | 项目探底、模块地图、调用链追踪、引用关系分析 |
-| **review** | 只读 + web_search + bash（仅只读查询，提词强制禁止改文件） | Code Review、P0-P3 分级审查、跨文件一致性验证 |
+| **review** | 只读 + web_search（无 bash/bash_opt 等任何 shell 执行工具） | Code Review、P0-P3 分级审查、跨文件一致性验证 |
 | **execute** | 全工具（不含 user_select/subagent/subagent_opt/web_search） | 读/写/改代码、执行测试、通用任务 |
 
-> **工具排除策略**（与 `src/core/subagent.py` 的 `_TOOL_EXCLUSION_MAP` 一致）：execute 排除 `subagent/subagent_opt/user_select/web_search`；map 排除 `bash/bash_opt/write_file/update_file/rm/mv/cp/mkdir/web_search/subagent/subagent_opt/user_select`；review 排除 `write_file/update_file/rm/mv/cp/mkdir/subagent/subagent_opt/user_select`（保留 web_search 与 bash/bash_opt——bash 仅限只读查询，提词 `prompts_export_review.md` 强制禁止用 bash 修改文件）；plan 排除 `bash/bash_opt/rm/mv/cp/subagent/subagent_opt/user_select`，write_file/update_file/mkdir 仅限 `.chat/plan/` 目录。`subagent_opt` 与后台 subagent 均仅主 Agent 独有：SubAgent 工具白名单全类型排除 + 工具运行时 `isinstance(agent, SubAgent)` 双保险。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan Agent 路径白名单校验。
+> **工具排除策略**（与 `src/core/subagent.py` 的 `_TOOL_EXCLUSION_MAP` 一致）：execute 排除 `subagent/subagent_opt/user_select/web_search`；map 排除 `bash/bash_opt/write_file/update_file/rm/mv/cp/mkdir/web_search/subagent/subagent_opt/user_select`；review 排除 `bash/bash_opt/write_file/update_file/rm/mv/cp/mkdir/subagent/subagent_opt/user_select`（纯只读审查：仅 read_file/search/find/ls/web_search，无任何 shell 执行能力）；plan 排除 `bash/bash_opt/rm/mv/cp/subagent/subagent_opt/user_select`，write_file/update_file/mkdir 仅限 `.chat/plan/` 目录。`subagent_opt` 与后台 subagent 均仅主 Agent 独有：SubAgent 工具白名单全类型排除 + 工具运行时 `isinstance(agent, SubAgent)` 双保险。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan Agent 路径白名单校验。
 
 ### 并发调度策略
 

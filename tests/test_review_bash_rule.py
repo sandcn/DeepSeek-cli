@@ -1,9 +1,9 @@
-"""review agent 放开 bash 工具 + 提词强制禁止用 bash 改文件 回归测试。
+"""review agent 删除 bash/bash_opt 工具 回归测试。
 
-需求（2026-08-20）：
-1. review 类型 SubAgent 增加 bash/bash_opt 工具（可做只读查询：系统信息/进程状态/日志查看）。
-2. 提词（prompts_export_review.md）中强制禁止 review 用 bash 修改文件
-   （重定向写文件、sed -i、echo 落盘、rm/mv 等一律禁止）。
+需求（2026-08-21）：
+1. review 类型 SubAgent 的排除表包含 bash/bash_opt（彻底无 shell 执行能力）。
+2. Func.can_use：review 类型不可调用 bash / bash_opt。
+3. 提词（prompts_export_review.md）中不再声明 bash 工具相关使用规则。
 """
 
 from __future__ import annotations
@@ -32,18 +32,18 @@ def review_prompt_text() -> str:
     return REVIEW_PROMPT.read_text(encoding="utf-8")
 
 
-class TestReviewBashToolEnabled:
+class TestReviewBashToolRemoved:
 
-    def test_review_not_exclude_bash(self):
-        """review 排除表不含 bash / bash_opt（已放开）。"""
+    def test_review_exclude_bash(self):
+        """review 排除表含 bash / bash_opt（已删除）。"""
         excluded = _review_excluded()
-        assert "bash" not in excluded
-        assert "bash_opt" not in excluded
+        assert "bash" in excluded
+        assert "bash_opt" in excluded
 
-    def test_review_can_use_bash(self):
-        """Func.can_use：review 类型可调用 bash / bash_opt。"""
-        assert _can_use("bash", "review") is True
-        assert _can_use("bash_opt", "review") is True
+    def test_review_cannot_use_bash(self):
+        """Func.can_use：review 类型不可调用 bash / bash_opt。"""
+        assert _can_use("bash", "review") is False
+        assert _can_use("bash_opt", "review") is False
 
     def test_review_still_exclude_write_tools(self):
         """review 仍排除全部内部写入类工具（write_file/update_file/rm/mv/cp/mkdir）。"""
@@ -51,32 +51,34 @@ class TestReviewBashToolEnabled:
         for tool in ("write_file", "update_file", "rm", "mv", "cp", "mkdir"):
             assert tool in excluded, f"review 应排除内部写入工具 {tool}"
 
+    def test_review_keep_readonly_and_web_search(self):
+        """review 保留只读工具与 web_search（read_file/search/find/ls/web_search 不在排除表）。"""
+        excluded = _review_excluded()
+        for tool in ("read_file", "search", "find", "ls", "web_search"):
+            assert tool not in excluded, f"review 应保留只读工具 {tool}"
 
-class TestReviewBashNoFileModifyRule:
+    def test_review_still_exclude_subagent_and_user_select(self):
+        """review 仍排除 subagent/subagent_opt/user_select。"""
+        excluded = _review_excluded()
+        for tool in ("subagent", "subagent_opt", "user_select"):
+            assert tool in excluded, f"review 应排除 {tool}"
 
-    def test_prompt_allows_bash_readonly(self, review_prompt_text: str):
-        """提词须声明 bash 仅限只读查询用途。"""
-        assert "bash" in review_prompt_text
-        assert "只读查询" in review_prompt_text
 
-    def test_prompt_forbids_bash_file_modify(self, review_prompt_text: str):
-        """提词须含强制禁止用 bash 修改文件的规则。"""
-        assert "禁止" in review_prompt_text and "bash" in review_prompt_text
-        assert "修改" in review_prompt_text and "文件" in review_prompt_text
+class TestReviewPromptNoBashRule:
 
-    def test_prompt_covers_redirect_write(self, review_prompt_text: str):
-        """提词须点名重定向写文件（> / >>）与原地编辑（sed -i）等典型改文件手段。"""
-        assert ">" in review_prompt_text and ">>" in review_prompt_text
-        assert "sed -i" in review_prompt_text
+    def test_prompt_does_not_mention_bash_tools(self, review_prompt_text: str):
+        """提词不再声明 bash/bash_opt 工具使用规则（review 无 shell 执行能力）。"""
+        assert "bash" not in review_prompt_text
+        assert "bash_opt" not in review_prompt_text
 
-    def test_prompt_covers_fs_mutating_commands(self, review_prompt_text: str):
-        """提词须点名 rm/mv/cp/mkdir 等文件系统变更命令被禁止。"""
-        for cmd in ("rm", "mv", "cp", "mkdir", "touch", "chmod"):
-            assert cmd in review_prompt_text, f"提词应禁止 bash 执行 {cmd}"
-
-    def test_prompt_marks_rule_as_red_line(self, review_prompt_text: str):
-        """禁止 bash 改文件须标注为红线/强制（一票否决语义）。"""
-        assert "红线" in review_prompt_text or "强制" in review_prompt_text
+    def test_prompt_states_readonly_toolset(self, review_prompt_text: str):
+        """提词仍声明只读工具集（read_file/search/find/ls/web_search）且禁止任何修改操作。"""
+        assert "read_file" in review_prompt_text
+        assert "search" in review_prompt_text
+        assert "find" in review_prompt_text
+        assert "ls" in review_prompt_text
+        assert "web_search" in review_prompt_text
+        assert "禁止任何修改操作" in review_prompt_text
 
 
 if __name__ == "__main__":
