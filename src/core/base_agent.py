@@ -9,12 +9,23 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
+import weakref
 from typing import Any
 
 from .sandbox_manager import get_sandbox_manager, set_current_message_index
 
 _logger = logging.getLogger(__name__)
+
+# ── 全局活跃 Agent 注册表（ESC 中断杀后台任务用） ──────────
+# weakref.WeakSet：Agent/SubAgent 实例被 GC 后自动移除，无需显式注销，
+# 避免生命周期管理遗漏导致的内存泄漏或悬挂引用。主 Agent 与所有
+# SubAgent 实例在 BaseAgent.__init__ 中注册；ESC 中断时
+# kill_all_active_background_tasks() 遍历本表统一杀掉全部后台任务
+# （bash + subagent，含 managed_by_tool 的）。
+_active_agents: "weakref.WeakSet[BaseAgent]" = weakref.WeakSet()
+_active_agents_lock = threading.Lock()
 
 # ── 后台 bash 任务自动等待超时（防无限卡死） ──────────────
 # 前台 bash 超过 _AUTO_BG_TIMEOUT 秒会自动转后台（命令不终止），
@@ -119,6 +130,9 @@ class BaseAgent:
         # 只操作 _subagent_tasks——误传对方 task_id 时天然查不到记录，从
         # 结构上杜绝跨类型误操作（工具内部另有 task_id 前缀校验双保险）。
         self._background_tasks: dict[str, dict] = {}
+        # ★ 注册到全局活跃 Agent 注册表（ESC 中断时统一杀掉所有后台任务）
+        with _active_agents_lock:
+            _active_agents.add(self)
 
     # ── 沙盒索引同步 ──────────────────────────────────
 
@@ -530,7 +544,12 @@ class BaseAgent:
     async def _wait_background_tasks(self, tasks: list, timeout: float | None = None) -> set:
         """等待所有后台任务完成，带超时上限（防无限卡死）。
 
-        返回仍未完成的任务集合（空集合表示全部完成，或被中断取消）。
+        返回仍未完成的任务集合。空集合表示：
+          - 全部任务已完成；或
+          - 中断退出等待——用户按 ESC（kill_background 标志置位）时已杀掉
+            所有后台任务（含 managed_by_tool）；普通中断（Ctrl+C/双 Esc/
+            clawbot /stop/网络错误，kill 标志未置位）仅退出等待、任务继续
+            运行（由 bash_opt/subagent_opt 或下一轮对话继续管理）。
         超时后未完成的任务由调用方处理（标记 managed_by_tool 交 bash_opt
         工具管理），避免长时/挂起的 bash 后台任务（如自动转后台后命令
         永不退出）让 Agent/SubAgent 无限阻塞。
@@ -540,7 +559,7 @@ class BaseAgent:
             timeout: 最长等待秒数。None 使用 _BACKGROUND_WAIT_TIMEOUT。
 
         Returns:
-            仍未完成（超时）的任务集合；全部完成或中断取消时返回空集合。
+            仍未完成（超时）的任务集合；全部完成或中断退出等待时返回空集合。
         """
         if not tasks:
             return set()
@@ -555,26 +574,27 @@ class BaseAgent:
             _, pending = await asyncio.wait(pending, timeout=min(0.2, remaining))
             if not pending:
                 break
-            # 等待期间检查中断信号：用户按 ESC 时取消剩余后台任务
+            # 等待期间检查中断信号：用户按 ESC（kill_background 标志置位）
+            # 时杀掉所有后台任务（含 managed_by_tool 的 bash/subagent，
+            # 跨所有活跃 Agent——由 kill_all_active_background_tasks 遍历
+            # 全局注册表统一处理）；普通中断（Ctrl+C/双 Esc/网络错误等，
+            # kill 标志未置位）仅退出等待、不杀后台任务（新语义，见
+            # docstring——区别于旧实现无条件取消 pending 任务）。
             try:
                 port = getattr(self, "_interrupt_port", None)
-                if port is not None and await port.is_interrupted():
-                    for t in pending:
-                        t.cancel()
-                    # ★ 取消等待带超时（P1）：被取消的后台 bash 任务可能卡在
-                    #   _run_pty/_run_pipe 的 process.wait()（子进程不可杀），
-                    #   无界等待会让 Agent/SubAgent 永久阻塞（卡死）。进程树
-                    #   已由 _run_pty 的 CancelledError 分支 kill，超时后放弃。
-                    try:
-                        await asyncio.wait_for(
-                            asyncio.gather(*pending, return_exceptions=True),
-                            timeout=5.0,
-                        )
-                    except asyncio.TimeoutError:
-                        _logger.warning(
-                            "后台任务取消等待超时（%d 个任务），放弃等待",
-                            len(pending),
-                        )
+                interrupted = False
+                if port is not None:
+                    interrupted = await port.is_interrupted()
+                if not interrupted:
+                    # 全局中断信号兜底：SubAgent 无 _interrupt_port 时仍可
+                    # 响应中断（ESC kill 经 kill_all_active_background_tasks
+                    # 遍历注册表兜底达成）
+                    from ..api.interrupt_async import is_interrupted
+                    interrupted = is_interrupted()
+                if interrupted:
+                    from ..api.interrupt_async import is_kill_background_requested
+                    if is_kill_background_requested():
+                        await kill_all_active_background_tasks()
                     return set()
             except Exception:
                 _logger.debug("后台任务等待中断检查失败", exc_info=True)
@@ -614,6 +634,10 @@ class BaseAgent:
             ]
             unfinished: set = set()
             if tasks:
+                # 注意：_wait_background_tasks 中断退出等待时也返回空集
+                # （ESC kill 已清表 / 普通中断运行中任务保留）——与"全部
+                # 完成"语义区分见其 docstring；运行中任务由下方 stale 清理
+                # 分支保留（非 managed），下一轮对话继续处理
                 unfinished = await self._wait_background_tasks(tasks)
             done_msgs = self._collect_done_background_messages()
             if done_msgs:
@@ -725,6 +749,10 @@ class BaseAgent:
             ]
             unfinished: set = set()
             if tasks:
+                # 注意：_wait_background_tasks 中断退出等待时也返回空集
+                # （ESC kill 已清表 / 普通中断运行中任务保留）——与"全部
+                # 完成"语义区分见其 docstring；运行中任务由下方 stale 清理
+                # 分支保留（非 managed），下一轮对话继续处理
                 unfinished = await self._wait_background_tasks(tasks)
             done_msgs = self._collect_done_subagent_messages()
             if done_msgs:
@@ -785,3 +813,251 @@ class BaseAgent:
                     self._publish_background_task_event()
 
         return False
+
+    # ═══════════════════════════════════════════════════════════
+    # ESC 中断：杀掉全部后台任务（bash + subagent）
+    # ═══════════════════════════════════════════════════════════
+
+    async def _kill_all_background_tasks(self) -> int:
+        """杀掉本 Agent 的全部后台任务（bash + subagent，含 managed_by_tool）。
+
+        用户按 ESC 中断时调用（Agent.run interrupted 分支 /
+        _wait_background_tasks 中断检查，均在事件循环线程中执行，
+        task.cancel() 线程安全）：
+          1. bash 表（_background_tasks）：取消运行中的 asyncio task
+             （_run_pty/_run_pipe 的 CancelledError 分支会杀进程树），
+             对已记录 pid 且进程仍存活的记录兜底杀进程树（pid 复用
+             安全红线：仅当进程仍可能存活时执行）；
+          2. subagent 表（_subagent_tasks）：取消运行中的 asyncio task
+             （SubAgent.run() 的 finally 会清理其内部 bash 任务）；
+          3. 清空两张任务表（不再生成"已取消"结果消息，保持中断语义
+             干净——模型不会收到后台任务取消通知）。
+
+        Returns:
+            被取消的 asyncio 任务数量。
+        """
+        tasks_to_cancel: list = []
+        pids_to_kill: list = []
+
+        # ── bash 后台任务表 ──
+        bg = getattr(self, "_background_tasks", None)
+        if isinstance(bg, dict):
+            for rec in list(bg.values()):
+                if not isinstance(rec, dict):
+                    continue
+                task = rec.get("task")
+                # 非 Task 防御（异常记录）：仅当 task 具备 done() 才调用
+                if task is not None and getattr(task, "done", None) is not None and not task.done():
+                    tasks_to_cancel.append(task)
+                # 收集待杀进程树 pid（pid 复用安全红线见 _should_kill_process）
+                pid = rec.get("pid")
+                if pid is not None and _should_kill_process(rec.get("process")):
+                    pids_to_kill.append(pid)
+
+        # ── subagent 后台任务表（仅主 Agent 持有，SubAgent 无此表） ──
+        sa = getattr(self, "_subagent_tasks", None)
+        if isinstance(sa, dict):
+            for rec in list(sa.values()):
+                if not isinstance(rec, dict):
+                    continue
+                task = rec.get("task")
+                if task is not None and getattr(task, "done", None) is not None and not task.done():
+                    tasks_to_cancel.append(task)
+
+        # 取消任务 + 移出事件循环线程杀进程树 + 超时等待（公共助手，与
+        # SubAgent._cleanup_background_tasks 共用，避免两处漂移）
+        await _cancel_tasks_and_kill_pids(tasks_to_cancel, pids_to_kill)
+        cancelled = len(tasks_to_cancel)
+
+        # ── 清空任务表并发布计数更新（TUI 行首统计） ──
+        cleared = False
+        if isinstance(bg, dict) and bg:
+            bg.clear()
+            cleared = True
+        if isinstance(sa, dict) and sa:
+            sa.clear()
+            cleared = True
+        if cleared:
+            self._publish_background_task_event()
+        return cancelled
+
+
+# ── 后台任务杀公共助手（ESC kill 与 SubAgent 清理共用） ──
+
+def _should_kill_process(process) -> bool:
+    """pid 复用安全红线：仅当持有 process 对象且进程仍可能存活时才杀进程树。
+
+    - process 为 None（记录不完整/异常数据）时无法确认进程是否已退出，pid
+      可能已被 OS 复用——此时 killpg(pid) 会误杀无关进程组，跳过进程树杀
+      （仅依赖 task.cancel() 的 CancelledError 分支清理）；
+    - process.returncode 非 None 表示进程已退出、进程组已解散，同样跳过。
+
+    ⚠ 已知窗口（有意的权衡）：asyncio 的 ``Process.returncode`` 仅在
+    ``process.wait()`` 完成后才更新——后台 bash 进程被外部杀死后、读取循环
+    尚未 break 到 ``finally: await process.wait()`` 之前，returncode 仍为
+    None → 判定「存活」→ 对已解散的进程组执行 killpg。实际窗口极窄
+    （pid 复用需大量进程创建，毫秒级内几乎不可能），且进程树杀是尽力而为
+    的兜底（正常路径 task.cancel() 的 CancelledError 分支已杀进程树）。
+    """
+    return process is not None and process.returncode is None
+
+
+async def _cancel_tasks_and_kill_pids(tasks_to_cancel: list, pids_to_kill: list) -> None:
+    """取消 asyncio 任务 + 移出事件循环线程杀进程树 + 取消等待带超时。
+
+    被 ``_kill_all_background_tasks`` 与 ``SubAgent._cleanup_background_tasks``
+    共用，统一 pid 存活判定（``_should_kill_process``）与取消等待语义，防止
+    两处逻辑漂移（尤其 pid 复用安全红线判定）。
+
+    - kill_process_tree 内部同步遍历 /proc（进程多时可达数百 ms），移出事件
+      循环线程执行（asyncio.to_thread），避免中断瞬间阻塞事件循环；
+    - 取消等待带超时（5s）：被取消的后台 bash 任务可能卡在 process.wait()
+      （子进程不可杀），无界等待会阻塞中断路径；进程树已杀，超时后放弃，
+      残余 task 由取消流程最终完成（wait_for 超时不撤销 cancel 请求）。
+    """
+    if pids_to_kill:
+        try:
+            from ..tools.bash import kill_process_tree
+        except Exception:
+            # 导入失败（依赖链异常）：杀进程树整体失效——显式 warning 便于
+            # 排查，并清空 pids 避免 _kill_pids 内冗余 TypeError（任务取消
+            # 仍执行，子进程由 CancelledError 分支尽力清理）
+            _logger.warning(
+                "导入 kill_process_tree 失败，杀后台任务进程树不可用",
+                exc_info=True,
+            )
+            pids_to_kill.clear()
+            kill_process_tree = None
+
+        def _kill_pids() -> None:
+            for pid in pids_to_kill:
+                try:
+                    kill_process_tree(pid)
+                except Exception:
+                    _logger.debug(
+                        "杀后台任务进程树失败: %s", pid, exc_info=True,
+                    )
+
+        try:
+            await asyncio.to_thread(_kill_pids)
+        except Exception:
+            _logger.debug("杀后台任务进程树批量执行异常", exc_info=True)
+
+    for t in tasks_to_cancel:
+        t.cancel()
+    if tasks_to_cancel:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks_to_cancel, return_exceptions=True),
+                timeout=5.0,
+            )
+        except asyncio.TimeoutError:
+            _logger.warning(
+                "后台任务取消等待超时（%d 个任务），放弃等待"
+                "（进程树已杀，取消请求仍生效）",
+                len(tasks_to_cancel),
+            )
+        except Exception:
+            _logger.debug("后台任务取消等待异常", exc_info=True)
+
+
+# ── 全局杀后台任务去重标志 ─────────────────────────────
+# ESC 时 render 线程经 run_coroutine_threadsafe 调度杀任务（实时），同时
+# 事件循环处理点（Agent.run interrupted 分支 / _wait_background_tasks 中断
+# 检查）也会触发——两次调用间 task.cancel()/dict.clear() 幂等无害，但
+# kill_process_tree 会重复执行。用标志去重：正在执行时后续调用直接返回 0。
+_kill_in_progress = False
+_kill_in_progress_lock = threading.Lock()
+
+
+async def kill_all_active_background_tasks() -> int:
+    """ESC 中断时杀掉所有活跃 Agent 的后台任务（bash + subagent）。
+
+    ★ 全局语义：遍历**进程内所有**活跃 Agent（主 Agent + 各 SubAgent，
+    WeakSet 自动清理已 GC 实例）的后台任务，不区分归属——ESC 是全局中断
+    语义（假定单主 Agent 产品形态；若未来支持多主 Agent 独立运行，需按
+    agent 实例维度去重/隔离）。逐个调用 ``_kill_all_background_tasks``：
+      - 主 Agent 的 bash 后台任务（_background_tasks，含 managed_by_tool）
+      - 主 Agent 的 subagent 后台任务（_subagent_tasks，含 managed_by_tool）
+      - 各 SubAgent 内部的 bash 后台任务（SubAgent 的 _background_tasks）
+
+    由中断路径（Agent.run() interrupted 分支 / _wait_background_tasks
+    中断检查 / render 线程跨线程调度）在事件循环线程中调用，task.cancel()
+    线程安全。带去重标志（_kill_in_progress）：正在执行时并发调用直接返回
+    0（ESC 实时调度与事件循环兜底可能同时触发，避免 kill_process_tree
+    重复执行；多 Agent 场景下 A 的 kill 进行中时 B 的调用会被去重吞掉，
+    符合全局 ESC 语义）。
+
+    Returns:
+        被取消的 asyncio 任务总数（去重命中时为 0）。
+    """
+    global _kill_in_progress
+    with _kill_in_progress_lock:
+        if _kill_in_progress:
+            return 0
+        _kill_in_progress = True
+    try:
+        with _active_agents_lock:
+            agents = list(_active_agents)
+        total = 0
+        for agent in agents:
+            try:
+                total += await agent._kill_all_background_tasks()
+            except Exception:
+                _logger.debug(
+                    "ESC 杀后台任务失败（agent=%r）", agent, exc_info=True,
+                )
+        return total
+    finally:
+        with _kill_in_progress_lock:
+            _kill_in_progress = False
+
+
+def schedule_kill_all_background_tasks(loop=None) -> None:
+    """render 线程 ESC 中断时调度杀掉所有后台任务（事件循环线程执行）。
+
+    ESC 中断发生在 render 线程（``_do_interrupt`` → kill_background 回调），
+    而 ``asyncio.Task.cancel()`` 须在事件循环线程执行；本函数经
+    ``asyncio.run_coroutine_threadsafe`` 把 ``kill_all_active_background_tasks()``
+    调度到主事件循环立即执行（事件循环运行中即杀；排队中的后台任务被杀）。
+
+    Args:
+        loop: 主事件循环（UI 层在 async 上下文经 ``asyncio.get_running_loop()``
+              传入——render 线程中 ``asyncio.get_event_loop()`` 必然抛
+              RuntimeError，不可达实时调度）。None 时直接返回（Python 3.9
+              的 ``get_event_loop()`` 可能隐式创建并设置临时循环且永不关闭，
+              悬空泄漏——调用方应总是传入运行中的主事件循环）。
+
+    事件循环不可用/未运行时仅记日志降级——中断信号已由调用方置位，
+    杀任务由下一个事件循环处理点兜底（Agent.run() interrupted 分支 /
+    _wait_background_tasks 中断检查），保证最终一致性。
+    """
+    if loop is None:
+        return
+    coro = None
+    try:
+        if not loop.is_running():
+            # 事件循环未运行：run_coroutine_threadsafe 排队后永不执行
+            # （协程泄漏），跳过——由事件循环处理点兜底
+            return
+        coro = kill_all_active_background_tasks()
+        fut = asyncio.run_coroutine_threadsafe(coro, loop)
+        # 消费 Future 异常：协程内部异常（如未来新增的发布路径）不 retrieve
+        # 会在 GC 时打印 "Task exception was never retrieved"——done 回调
+        # 取出异常（仅触发 retrieve，异常已被协程内部 try/except 消化）
+        fut.add_done_callback(
+            lambda f: f.exception() if not f.cancelled() else None,
+        )
+    except Exception:
+        # 调度失败（loop 不可用/不匹配）：关闭已创建的协程避免资源泄漏
+        # （真实场景中 run_coroutine_threadsafe 会消费协程；异常路径下
+        #   协程对象悬空，显式 close 消除 "coroutine was never awaited"）
+        if coro is not None:
+            try:
+                coro.close()
+            except Exception:
+                pass
+        _logger.debug(
+            "ESC 中断调度杀后台任务失败（将由事件循环处理点兜底）",
+            exc_info=True,
+        )

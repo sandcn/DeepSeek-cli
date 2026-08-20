@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 
 from .internal.agent._capture_manager import CaptureManager
-from .base_agent import BaseAgent
+from .base_agent import BaseAgent, kill_all_active_background_tasks
 from .internal.agent._tool_callbacks import ToolCallbackChain
 from .pipeline import Pipeline, PipelineContext
 from .tool_executor_async import ToolScheduler
@@ -259,6 +259,22 @@ class Agent(BaseAgent):
             ctx.interrupt_port = self._interrupt_port
             interrupted = await self._pipeline.run_round_async(ctx)
             if interrupted:
+                # ★ 用户按 ESC（kill_background 标志置位）：杀掉所有后台
+                #   bash 和 subagent（含 managed_by_tool 的；遍历全局活跃
+                #   Agent 注册表，覆盖主 Agent 与所有 SubAgent 的后台任务表）。
+                #   普通中断（Ctrl+C/双 Esc/clawbot /stop/网络错误/中间件或
+                #   工具异常置位 interrupted）不杀后台任务——只终止当前生成，
+                #   后台任务继续运行（既有语义，P0 修复）。
+                try:
+                    from ..api.interrupt_async import is_kill_background_requested
+                    if is_kill_background_requested():
+                        # 若 render 线程实时调度已先行杀任务，此处经
+                        # _kill_in_progress 去重返回 0（幂等兜底，无副作用）
+                        await kill_all_active_background_tasks()
+                except Exception:
+                    _logger.debug(
+                        "ESC 中断后杀后台任务异常", exc_info=True,
+                    )
                 break
             # ── 后台任务处理：一轮对话完成后检查后台任务结果 ──
             # bash 后台任务（_background_tasks）与 subagent 后台任务
@@ -267,6 +283,17 @@ class Agent(BaseAgent):
             bg_handled = await self._process_background_tasks()
             sa_handled = await self._process_subagent_tasks()
             if not bg_handled and not sa_handled:
+                # ★ ESC 在等待后台任务期间杀任务（_wait_background_tasks 的
+                #   kill 分支）后，会话层保持中断语义：返回 interrupted=True
+                #   ——_finalize_round 据此发射中断事件 / 保存 checkpoint /
+                #   走 interrupted 状态转换，与用户按 ESC 中断生成一致
+                #   （P1-2 修复：修复前 kill 后返回 False，中断"无痕消失"）。
+                try:
+                    from ..api.interrupt_async import is_kill_background_requested
+                    if is_kill_background_requested():
+                        interrupted = True
+                except Exception:
+                    _logger.debug("检查 kill_background 标志异常", exc_info=True)
                 break
         return interrupted
 

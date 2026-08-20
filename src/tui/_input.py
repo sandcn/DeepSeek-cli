@@ -347,9 +347,15 @@ class Input:
     # 中断与特殊按键处理（委托 InputDispatcher）
     # ═══════════════════════════════════════════════════════
 
-    def _do_interrupt(self) -> None:
-        """内联中断处理（委托 InputDispatcher，interrupt 回调注入）。"""
-        self._dispatcher._do_interrupt()
+    def _do_interrupt(self, kill_background: bool = False) -> None:
+        """内联中断处理（委托 InputDispatcher，interrupt 回调注入）。
+
+        Args:
+            kill_background: True 表示纯 Esc（用户明确要求杀掉所有后台
+                bash/subagent）；False 表示普通中断（Ctrl+C/双 Esc，只终止
+                当前生成）。与 InputDispatcher._do_interrupt 签名对齐透传。
+        """
+        self._dispatcher._do_interrupt(kill_background=kill_background)
 
     def _handle_special_key(self, action: str) -> None:
         """处理特殊按键（Ctrl+G/O/N/R）（委托 InputDispatcher）。"""
@@ -776,6 +782,15 @@ class Input:
         None 缺省时 ``_do_interrupt`` 记 debug 日志并跳过（测试兼容）。
         """
         self._dispatcher.set_interrupt_callback(cb)
+
+    def set_kill_background_callback(self, cb) -> None:
+        """设置纯 Esc 杀后台任务回调（2026-08-21 用户需求注入点）。
+
+        cb 签名: () -> None
+        仅纯 Esc（kind="escape"）中断时调用（Ctrl+C/双 Esc 不触发）；
+        由 _loop.py / clawbot.runner 注入。None 缺省时跳过（测试兼容）。
+        """
+        self._dispatcher.set_kill_background_callback(cb)
 
     def set_suppress_enter(self, suppress: bool) -> None:
         """设置 Enter 抑制标志（用于 editmsg 消息选择期间）。

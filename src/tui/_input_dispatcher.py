@@ -80,6 +80,11 @@ class InputDispatcher:
         # ★ interrupt 回调注入（方向A 步骤1）：由 _loop.py _setup_monitor 注入，
         #   None 缺省时 _do_interrupt 记 debug 日志并跳过（保证测试兼容）。
         self._interrupt_callback = None
+        # ★ kill_background 回调注入（2026-08-21 用户需求：按 ESC 杀后台任务）：
+        #   仅纯 Esc（kind="escape"）中断时调用（Ctrl+C/双 Esc 不杀后台任务），
+        #   由 _loop.py / clawbot.runner 注入（request_kill_background +
+        #   跨线程调度杀任务）；None 缺省时跳过（测试兼容）。
+        self._kill_background_callback = None
 
         # ★ P2-8（review）：Enter 提交历史追加回调注入——``_handle_special_key``
         #   的 ``_enter`` 经此回调注入（与 ``Input._enter`` 的 append_history
@@ -165,10 +170,15 @@ class InputDispatcher:
     # 中断与特殊按键处理（render 线程调用）
     # ═══════════════════════════════════════════════════════
 
-    def _do_interrupt(self) -> None:
+    def _do_interrupt(self, kill_background: bool = False) -> None:
         """内联中断处理：设置中断标志 + 清空回显 + 请求异步中断（回调注入）。
 
         在 render 线程中调用（快速路径，由 ``read_stdin_once()`` 直接分发）。
+
+        Args:
+            kill_background: True 表示本次中断来自**纯 Esc**（kind="escape"，
+                用户明确要求杀掉所有后台 bash/subagent）；False 表示普通中断
+                （Ctrl+C/双 Esc，只终止当前生成，不杀后台任务）。
 
         ★ interrupt 回调注入（方向A 步骤1）：原实现直接调用
         ``src.api.interrupt_async.request_interrupt_async()``（L42 import + L419 调用），
@@ -198,6 +208,34 @@ class InputDispatcher:
                 cb()
             except Exception:
                 _logger.debug("_do_interrupt: interrupt 回调异常", exc_info=True)
+        # ★ 纯 Esc：额外触发 kill_background 回调（杀所有后台 bash/subagent）。
+        #   普通中断（Ctrl+C/双 Esc/命令触发）不置位——后台任务继续运行。
+        #   注：kill 回调在 reset_and_echo（清空输入缓冲）之后执行——ESC
+        #   中断语义下用户输入缓冲本就清空（既有行为），杀后台任务紧随其后；
+        #   若未来需求「ESC 保留输入缓冲」需调整此处顺序。
+        if kill_background:
+            self._trigger_kill_background()
+
+    def _trigger_kill_background(self) -> None:
+        """触发纯 Esc 杀后台任务回调（_do_interrupt / _cancel_input 共用）。
+
+        回调由 UI 层注入（_loop.py / clawbot.runner 的 _on_escape_kill：
+        request_kill_background + 跨线程调度杀所有后台任务）；未注入时记
+        debug 日志跳过（测试兼容，不抛异常）。
+        """
+        kcb = self._kill_background_callback
+        if kcb is None:
+            _logger.debug(
+                "_trigger_kill_background: 未注入 kill_background 回调，"
+                "跳过杀后台任务",
+            )
+        else:
+            try:
+                kcb()
+            except Exception:
+                _logger.debug(
+                    "_trigger_kill_background: 回调异常", exc_info=True,
+                )
 
     def _handle_ctrl_key(self, ch: str) -> None:
         """Ctrl 组合键统一分发（Claude TUI parity 步骤 3）。
@@ -502,6 +540,11 @@ class InputDispatcher:
                         elif kind == "escape" and self._should_cancel_input():
                             # 方向D 步骤16：Esc 取消输入（启用 + 空闲 + 非空缓冲）
                             self._cancel_input()
+                            # ★ 2026-08-21（用户需求：按 Esc 杀后台任务）：
+                            #   esc_cancel_input 配置下纯 Esc 走取消输入而非中断
+                            #   路径，但"杀所有后台 bash/subagent"语义仍应生效
+                            #   （取消输入不置位中断标志，仅触发 kill 回调）。
+                            self._trigger_kill_background()
                         else:
                             # 方向3（Esc 补全弹窗残留修复）：中断后关闭补全弹窗。
                             # ★ P1-2 修复（顺序调换，editmsg Esc 误判取消）：
@@ -517,7 +560,12 @@ class InputDispatcher:
                             #   进入选择前缓冲恒为空——Ctrl+O reset 清空 /
                             #   /editmsg Enter 提交清空，``_should_cancel_input``
                             #   对空缓冲返回 False。）
-                            self._do_interrupt()
+                            # ★ 2026-08-21（用户需求：按 Esc 杀后台任务）：
+                            #   仅纯 Esc（kind=="escape"）传 kill_background=True
+                            #   ——触发杀所有后台 bash/subagent；双 Esc
+                            #   （kind=="interrupt"）与 Ctrl+C 语义一致，只
+                            #   中断生成不杀后台任务。
+                            self._do_interrupt(kill_background=(kind == "escape"))
                             self._dismiss_completion()
                     elif kind in (
                         "arrow_up", "arrow_down", "arrow_right", "arrow_left",
@@ -1076,6 +1124,16 @@ class InputDispatcher:
         None 缺省时 ``_do_interrupt`` 记 debug 日志并跳过（测试兼容）。
         """
         self._interrupt_callback = cb
+
+    def set_kill_background_callback(self, cb) -> None:
+        """设置纯 Esc 杀后台任务回调（2026-08-21 用户需求注入点）。
+
+        cb 签名: () -> None
+        仅纯 Esc（kind="escape"）中断时调用（Ctrl+C/双 Esc 不触发）；
+        由 _loop.py / clawbot.runner 注入（request_kill_background +
+        跨线程调度杀所有后台 bash/subagent）。None 缺省时跳过（测试兼容）。
+        """
+        self._kill_background_callback = cb
 
     def set_enter_append_history(self, cb) -> None:
         """设置 Enter 提交历史追加回调（P2-8）。

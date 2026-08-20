@@ -319,7 +319,8 @@ def test_escape_orders_interrupt_before_dispatch(monkeypatch):
 
     # 验证源码顺序（防回归）：_do_interrupt 在 _dismiss_completion 之前
     src = open(disp_mod.__file__, encoding="utf-8").read()
-    marker = "self._do_interrupt()\n                            self._dismiss_completion()"
+    marker = ("self._do_interrupt(kill_background=(kind == \"escape\"))\n"
+              "                            self._dismiss_completion()")
     assert marker in src, "escape 分支顺序回退：dismiss 先于 interrupt"
 
 
@@ -333,8 +334,6 @@ def test_select_interrupt_marks_cancel(monkeypatch):
     monkeypatch.setattr(me.time, "sleep", lambda s: None)
 
     # 弹窗打开后置中断标志（模拟 Ctrl+C）
-    orig_sleep = me.time.sleep
-
     def _sleep_and_interrupt(_s):
         inp.interrupted = True
 

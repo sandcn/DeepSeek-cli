@@ -184,9 +184,14 @@ class SubAgent(BaseAgent):
         """清理 SubAgent 内部未完成的后台 bash 任务。
 
         取消仍在运行的 asyncio task（_run_pty 的 CancelledError 分支会杀进程树），
-        对已记录 pid 且进程尚未退出的任务兜底杀进程树，最后清空任务记录。
+        对已记录 pid 且进程尚未退出的任务兜底杀进程树（经公共助手
+        ``_cancel_tasks_and_kill_pids``，与 ESC kill 路径共用同一 pid 存活
+        判定与取消等待语义），最后清空任务记录。
         """
+        from .base_agent import _cancel_tasks_and_kill_pids, _should_kill_process
+
         tasks_to_cancel: list = []
+        pids_to_kill: list = []
         bg = getattr(self, "_background_tasks", {})
         if bg is None:
             bg = {}
@@ -207,43 +212,20 @@ class SubAgent(BaseAgent):
             task = rec.get("task")
             if task is not None and not task.done():
                 tasks_to_cancel.append(task)
-            process = rec.get("process")
-            # 兜底杀进程树（P1-2）：仅当进程仍可能存活时执行。
-            #   process.returncode 非 None 表示进程已退出（进程组已解散），
-            #   pid 可能已被 OS 复用，此时 killpg(pid) 会误杀无关进程组——
-            #   安全红线（禁止影响未授权进程）。
+            # 兜底杀进程树（P1-2）：仅当持有 process 对象且进程仍可能存活时
+            # 执行（_should_kill_process——process.returncode 非 None 表示
+            # 进程已退出、进程组已解散，pid 可能已被 OS 复用，killpg(pid)
+            # 会误杀无关进程组——安全红线；process 为 None 无法确认进程
+            # 状态，跳过进程树杀——子进程由 task.cancel() 的 CancelledError
+            # 分支兜底清理，属有意权衡）。
             pid = rec.get("pid")
-            process_alive = (process is None or process.returncode is None)
-            if pid is not None and process_alive:
-                try:
-                    from ..tools.bash import kill_process_tree
-                    kill_process_tree(pid)
-                except Exception:
-                    _logger.debug("SubAgent 清理后台任务进程树失败: %s", pid, exc_info=True)
+            if pid is not None and _should_kill_process(rec.get("process")):
+                pids_to_kill.append(pid)
             # ★ P2-2：不再单独 process.kill()——kill_process_tree 已覆盖
             #   进程组 + /proc 后代补杀；此处若再用同一 pid 调用 process.kill()，
             #   killpg 之后 returncode 更新有延迟，pid 可能已被 OS 复用，
             #   存在误杀无关进程的风险（安全红线）。
-        for t in tasks_to_cancel:
-            t.cancel()
-        if tasks_to_cancel:
-            # ★ 取消等待带超时（P1-3）：被取消的后台 bash 任务可能卡在
-            #   process.wait()（子进程不可杀），无界等待会让 SubAgent.run
-            #   的 finally 永不结束 → 父 Agent dispatch 等待 → 整个并行执行
-            #   卡死（与本次修复目标冲突）。进程树已 kill，超时后放弃等待，
-            #   残余 task 由事件循环 GC 回收。
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*tasks_to_cancel, return_exceptions=True),
-                    timeout=5.0,
-                )
-            except asyncio.TimeoutError:
-                _logger.warning(
-                    "SubAgent %s 后台任务取消等待超时（%d 个任务），放弃等待",
-                    self.label, len(tasks_to_cancel),
-                )
-            except Exception:
-                _logger.debug("SubAgent 清理后台任务等待取消异常", exc_info=True)
+        await _cancel_tasks_and_kill_pids(tasks_to_cancel, pids_to_kill)
         # ★ 时序说明（P3-3）：此处的 task 完成回调（_complete_background_task
         #   → 写 record）在上面的 await gather 等待期间于事件循环中执行，
         #   先更新 record 再 clear，无数据丢失。

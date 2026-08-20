@@ -243,6 +243,7 @@ class ClawBotRunner:
         from ..api.escape_monitor import EscapeMonitor, stop_active_monitor
         from ..api.interrupt_async import (
             request_interrupt_async,
+            request_kill_background,
             reset_interrupt_async,
         )
         from ..app_loop._session_setup import SessionState, _register_session_handlers
@@ -298,7 +299,21 @@ class ClawBotRunner:
         input_.set_special_key_callback(
             make_special_key_callback(self, session, state, chat_ui, monitor=monitor)
         )
+        # interrupt 回调：普通中断（Ctrl+C/双 Esc//stop 命令）只终止当前生成
         input_.set_interrupt_callback(lambda: request_interrupt_async())
+        # ★ 纯 Esc 杀后台任务回调（2026-08-21 用户需求：按 Esc 后杀掉所有
+        #   后台 bash/subagent）：仅纯 Esc（kind="escape"）触发；置位独立
+        #   kill_background 标志 + 跨线程调度杀任务（render 线程经
+        #   run_coroutine_threadsafe 调度到主事件循环；调度失败由
+        #   Agent.run interrupted 分支 / _wait_background_tasks 兜底）。
+        from ..core.base_agent import schedule_kill_all_background_tasks
+        _main_loop = asyncio.get_running_loop()
+
+        def _on_escape_kill() -> None:
+            request_kill_background()
+            schedule_kill_all_background_tasks(_main_loop)
+
+        input_.set_kill_background_callback(_on_escape_kill)
         input_.set_echo_callback(
             lambda text, cursor_pos=-1: chat_ui.refresh_bottom_bar(text, cursor_pos)
         )

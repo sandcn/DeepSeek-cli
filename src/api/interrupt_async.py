@@ -21,11 +21,20 @@ __all__ = [
     "reset_interrupt_async",
     "is_interrupted",
     "wait_for_interrupt_async",
+    "request_kill_background",
+    "is_kill_background_requested",
+    "reset_kill_background",
     "_flush_stdin",  # 向后兼容别名
 ]
 
 # 全局 threading Event — 不绑定任何事件循环，跨循环安全
 _interrupted = threading.Event()
+
+# ── ESC 杀后台任务标志（独立于普通中断信号） ──────────────
+# 用户按 ESC（纯 Esc，非 Ctrl+C/双 Esc/命令触发）时置位，表示"明确要求
+# 杀掉所有后台 bash/subagent"。与 _interrupted 解耦：普通中断（Ctrl+C、
+# 双 Esc、clawbot /stop、网络错误/异常取消）只终止当前生成，不杀后台任务。
+_kill_background = threading.Event()
 
 
 async def is_interrupted_async() -> bool:
@@ -36,6 +45,28 @@ async def is_interrupted_async() -> bool:
 def request_interrupt_async() -> None:
     """请求中断所有异步任务。线程安全（threading.Event.set() 是线程安全的）。"""
     _interrupted.set()
+
+
+def request_kill_background() -> None:
+    """请求杀掉所有后台 bash/subagent 任务（ESC 用户意图，独立于普通中断）。
+
+    与 ``request_interrupt_async`` 的区别：普通中断（Ctrl+C/双 Esc/网络
+    错误/异常取消/clawbot /stop）只终止当前生成；本函数表示用户**明确
+    按 Esc**要求杀掉所有后台任务（bash 后台 + subagent 后台，含
+    managed_by_tool）。ESC 中断回调同时调用 request_interrupt_async +
+    request_kill_background。线程安全。
+    """
+    _kill_background.set()
+
+
+def is_kill_background_requested() -> bool:
+    """检查是否已请求杀掉所有后台任务（ESC 用户意图）。线程安全。"""
+    return _kill_background.is_set()
+
+
+def reset_kill_background() -> None:
+    """清除杀后台任务标志（每轮交互开始/中断复位时调用）。线程安全。"""
+    _kill_background.clear()
 
 
 def flush_stdin(input_instance=None) -> None:
@@ -103,6 +134,8 @@ def reset_interrupt_async(input_instance=None) -> None:
             方法清空缓冲区；None 时走旧路径（直接操作 sys.stdin）。
     """
     _interrupted.clear()
+    # ★ ESC 杀后台任务标志一并复位（每轮交互开始，避免跨轮残留误杀）
+    _kill_background.clear()
     flush_stdin(input_instance)
 
 

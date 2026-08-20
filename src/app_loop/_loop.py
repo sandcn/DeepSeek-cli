@@ -30,7 +30,12 @@ from ..core.exceptions import is_fatal_exception, is_network_error
 from ..core.constants import DIM, RESET, GREEN, YELLOW
 from ..tui._screen import TerminalWidthCache
 from ..api.escape_monitor import EscapeMonitor
-from ..api.interrupt_async import reset_interrupt_async, request_interrupt_async
+from ..api.interrupt_async import (
+    reset_interrupt_async,
+    request_interrupt_async,
+    request_kill_background,
+)
+from ..core.base_agent import schedule_kill_all_background_tasks
 from ..api.stats import reset_token_speed
 from ..tui.consumer import ChatUIConsumer
 
@@ -52,6 +57,9 @@ class InteractiveLoop:
         self._loop_state: dict = {}
         # ★ EscapeMonitor 恢复计数器（防止无限重启）
         self._monitor_recovery_count = 0
+        # ★ ESC 杀后台任务跨线程调度用的主事件循环（run() 中保存——
+        #   render 线程中 asyncio.get_event_loop() 不可用）
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def _get_term_width(self) -> int:
         return TerminalWidthCache.get_default().get_width()
@@ -513,9 +521,29 @@ class InteractiveLoop:
         # ★ interrupt 回调注入（方向A 步骤1）：_input.py 不再直接 import
         #   src.api.interrupt_async，改为经本注入点回调 request_interrupt_async()。
         #   ESC 中断路径（_do_interrupt）行为不变：注入后仍 set 全局中断信号。
-        input_instance.set_interrupt_callback(
-            lambda: request_interrupt_async()
-        )
+        def _on_interrupt() -> None:
+            request_interrupt_async()
+
+        input_instance.set_interrupt_callback(_on_interrupt)
+        # ★ 纯 Esc 杀后台任务回调注入（2026-08-21 用户需求：按 Esc 后杀掉
+        #   所有后台 bash 和 subagent）：仅纯 Esc（kind="escape"）触发；
+        #   Ctrl+C/双 Esc 只走 _on_interrupt（普通中断，不杀后台任务）。
+        #   置位独立 kill_background 标志 + 跨线程调度杀任务（事件循环线程
+        #   执行 task.cancel；调度失败由 Agent.run interrupted 分支 /
+        #   _wait_background_tasks 中断检查兜底，最终一致）。
+        def _on_escape_kill() -> None:
+            request_kill_background()
+            if self._loop is None:
+                # 防御：run() 之外调用 _setup_monitor 时 self._loop 未设置，
+                # 调度跳过——由 Agent.run interrupted 分支 / _wait_background_tasks
+                # 中断检查兜底（kill 标志已置位，最终一致）
+                _logger.debug(
+                    "_on_escape_kill: self._loop 未设置，调度跳过（由处理点兜底）",
+                )
+                return
+            schedule_kill_all_background_tasks(self._loop)
+
+        input_instance.set_kill_background_callback(_on_escape_kill)
         input_instance.set_echo_callback(
             lambda text, cursor_pos=-1: self._chat_ui.refresh_bottom_bar(text, cursor_pos)
         )
@@ -542,6 +570,9 @@ class InteractiveLoop:
     async def run(self) -> None:
         """执行交互模式主循环"""
         self._force_exit.clear()
+        # ★ 保存主事件循环引用：render 线程 ESC 中断经 run_coroutine_threadsafe
+        #   调度杀后台任务（render 线程中 get_event_loop 必然抛错）
+        self._loop = asyncio.get_running_loop()
 
         # ── 初始化 ChatUI ──
         self._setup_chat_ui()
