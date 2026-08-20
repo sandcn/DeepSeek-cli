@@ -84,10 +84,10 @@ async def test_rgba_output_explicit_format(tmp_path, monkeypatch):
 
 
 async def test_rgba_max_dimension_capped(tmp_path, monkeypatch):
-    """RGBA 模式超出 64 上限时自动缩小到 64。"""
+    """RGBA 模式超出 64 上限时自动缩小到 64（max_tokens=0 禁用预算约束）。"""
     monkeypatch.setattr("src.tools.read_image.is_multimodal_model", lambda m: False)
     p = _write_test_image(tmp_path / "big.png", 100, 100)
-    out = await ReadImageFunc(path=p, max_dimension=512).execute()
+    out = await ReadImageFunc(path=p, max_dimension=512, max_tokens=0).execute()
     # 100x100 缩小到 64x64 → 64 行像素
     pixel_rows = [l for l in out.splitlines() if l.startswith("#")]
     assert len(pixel_rows) == 64
@@ -499,7 +499,7 @@ def test_tool_schema_mentions_features():
     assert "grayscale" in desc
     props = ReadImageFunc.to_tool_schema()["function"]["parameters"]["properties"]
     assert "path" in props and "operation" in props and "format" in props
-    assert props["format"]["enum"] == ["auto", "multimodal", "rgba_hex"]
+    assert props["format"]["enum"] == ["auto", "multimodal", "rgba_hex", "palette"]
 
 
 # ── 11. from_args / display_params 边界 ───────────────
@@ -515,7 +515,9 @@ def test_from_args_defaults():
     f = ReadImageFunc.from_args({"path": "/tmp/a.png"})
     assert f.operation == "none"
     assert f.format == "auto"
-    assert f.max_dimension == 512
+    assert f.max_dimension == 256
+    assert f.max_tokens == 8000
+    assert f.palette_colors == 16
 
 
 def test_display_params():
@@ -790,3 +792,162 @@ def test_file_ops_copy_permissions_no_special_bits(tmp_path):
     mode = stat.S_IMODE(os.stat(str(dst)).st_mode)
     assert mode == 0o755  # 特殊位被剥离
     assert stat.S_IMODE(os.stat(str(src)).st_mode) == 0o4755
+
+
+# ── 15. token 预算（防爆上下文，2026-08-20 重构） ──────
+
+def _pixel_rows(out: str) -> list[str]:
+    return [l for l in out.splitlines() if l.startswith("#")]
+
+
+async def test_output_token_hint(tmp_path, monkeypatch):
+    """输出始终附带「预计占用 tokens / 预算」提示（透明可见）。"""
+    monkeypatch.setattr("src.tools.read_image.is_multimodal_model", lambda m: False)
+    p = _write_test_image(tmp_path / "t.png", 2, 2)
+    out = await ReadImageFunc(path=p).execute()
+    assert "预计占用: 约" in out
+    assert "预算 max_tokens=8000" in out
+
+
+async def test_max_tokens_zero_disables_budget(tmp_path, monkeypatch):
+    """max_tokens=0 禁用预算约束（仅保留格式硬上限 64）。"""
+    monkeypatch.setattr("src.tools.read_image.is_multimodal_model", lambda m: False)
+    p = _write_test_image(tmp_path / "big.png", 100, 100)
+    out = await ReadImageFunc(path=p, max_dimension=512, max_tokens=0).execute()
+    assert len(_pixel_rows(out)) == 64  # 100x100 → RGBA 硬上限 64
+    assert "预算 不限制" in out
+    assert "已自动缩小" not in out
+
+
+async def test_rgba_budget_shrinks(tmp_path, monkeypatch):
+    """RGBA 模式：大图超出 max_tokens 预算时自动降采样。"""
+    monkeypatch.setattr("src.tools.read_image.is_multimodal_model", lambda m: False)
+    p = _write_test_image(tmp_path / "big.png", 100, 100)
+    out = await ReadImageFunc(path=p, max_dimension=512, max_tokens=2000).execute()
+    assert "已自动缩小" in out
+    rows = _pixel_rows(out)
+    assert 0 < len(rows) < 64  # 预算强制缩小到 64 以下
+    # 输出 token 估算（估算行内数字）不超过预算（含缓冲）
+    hint_line = next(l for l in out.splitlines() if "预计占用" in l)
+
+
+async def test_rgba_budget_output_size_bounded(tmp_path, monkeypatch):
+    """RGBA 预算缩小后的像素数满足 token 预算（用 estimate_tokens 验证）。"""
+    from src.api.tokens import estimate_tokens
+    monkeypatch.setattr("src.tools.read_image.is_multimodal_model", lambda m: False)
+    p = _write_test_image(tmp_path / "big.png", 100, 100)
+    out = await ReadImageFunc(path=p, max_dimension=512, max_tokens=2000).execute()
+    assert "已自动缩小" in out
+    # 完整输出（含中文 meta）的估算 token 应不超过预算
+    assert estimate_tokens(out) <= 2000
+
+
+async def test_palette_output(tmp_path, monkeypatch):
+    """format=palette：颜色表 + 每像素 1 字符索引矩阵。"""
+    monkeypatch.setattr("src.tools.read_image.is_multimodal_model", lambda m: True)
+    p = _write_test_image(tmp_path / "t.png", 4, 3)
+    f = ReadImageFunc(path=p, format="palette")
+    out = await f.execute()
+    assert f.result_blocks is None  # palette 是文本格式，不产生多模态 blocks
+    lines = out.splitlines()
+    assert any(l.startswith("调色板(") for l in lines)
+    assert any(l.startswith(" #") and " #" in l for l in lines)  # 颜色表行
+    assert any("像素索引" in l for l in lines)
+    # 3 行像素，每行 4 个字符（每像素 1 字符）
+    idx_lines = lines[lines.index(next(l for l in lines if "像素索引" in l)) + 1:]
+    assert len(idx_lines) == 3
+    for row in idx_lines:
+        assert len(row) == 4
+        assert all(c in "0123456789abcdefghijklmnopqrstuvwxyz." for c in row)
+
+
+async def test_palette_transparent_marker(tmp_path, monkeypatch):
+    """palette：alpha=0 像素输出 '.' 透明标记。"""
+    monkeypatch.setattr("src.tools.read_image.is_multimodal_model", lambda m: True)
+    from PIL import Image as PILImage
+    p = tmp_path / "alpha.png"
+    img = PILImage.new("RGBA", (2, 1))
+    img.putpixel((0, 0), (255, 0, 0, 255))
+    img.putpixel((1, 0), (0, 0, 0, 0))  # 全透明
+    img.save(str(p), format="PNG")
+    out = await ReadImageFunc(path=str(p), format="palette").execute()
+    assert "调色板(" in out
+    idx_lines = [l for l in out.splitlines() if len(l) == 2 and all(
+        c in "0123456789abcdefghijklmnopqrstuvwxyz." for c in l)]
+    assert idx_lines and idx_lines[0].endswith(".")  # 透明像素在行尾
+
+
+async def test_palette_budget_shrinks(tmp_path, monkeypatch):
+    """palette 大图超出预算时自动降采样。"""
+    monkeypatch.setattr("src.tools.read_image.is_multimodal_model", lambda m: True)
+    p = _write_test_image(tmp_path / "big.png", 256, 256)
+    out = await ReadImageFunc(path=p, format="palette", max_tokens=2000).execute()
+    assert "已自动缩小" in out
+    # 256x256 → 预算强制缩小（调色板 256 边长远超 2000 tokens 预算）
+    idx_lines = [l for l in out.splitlines() if l and all(
+        c in "0123456789abcdefghijklmnopqrstuvwxyz." for c in l)]
+    assert 0 < len(idx_lines) < 256
+
+
+async def test_multimodal_budget_shrinks(tmp_path, monkeypatch):
+    """多模态：base64 输出超出预算时以真实 PNG 编码长度迭代降采样。"""
+    import random
+    from PIL import Image as PILImage
+    from src.api.tokens import estimate_tokens
+    monkeypatch.setattr("src.tools.read_image.is_multimodal_model", lambda m: True)
+    # 噪声图（PNG 压缩率低 → 编码体积大 → 必超预算触发缩小）
+    p = tmp_path / "noise.png"
+    noise = PILImage.new("RGB", (256, 256))
+    rnd = random.Random(42)
+    noise.putdata([(rnd.randrange(256), rnd.randrange(256), rnd.randrange(256))
+                   for _ in range(256 * 256)])
+    noise.save(str(p), format="PNG")
+    f = ReadImageFunc(path=str(p), format="multimodal", max_dimension=256, max_tokens=2000)
+    out = await f.execute()
+    assert "已自动缩小" in out
+    blocks = f.result_blocks
+    assert blocks is not None and blocks[1]["type"] == "image_url"
+    url = blocks[1]["image_url"]["url"]
+    assert estimate_tokens(url) <= 2000  # data URI 本身 token 不超预算
+
+
+async def test_palette_explicit_beats_auto(tmp_path, monkeypatch):
+    """format=palette 强制调色板（即使模型支持多模态），不产生多模态 blocks。"""
+    monkeypatch.setattr("src.tools.read_image.is_multimodal_model", lambda m: True)
+    p = _write_test_image(tmp_path / "t.png", 2, 2)
+    f = ReadImageFunc(path=p, format="palette")
+    out = await f.execute()
+    assert "调色板(" in out
+    assert f.result_blocks is None
+    assert "多模态" not in out
+
+
+def test_schema_new_budget_params():
+    """schema：max_tokens / palette_colors 参数 + palette 格式声明。"""
+    props = ReadImageFunc.to_tool_schema()["function"]["parameters"]["properties"]
+    assert props["max_tokens"]["default"] == 8000
+    assert props["max_tokens"]["minimum"] == 0
+    assert props["palette_colors"]["default"] == 16
+    assert props["palette_colors"]["minimum"] == 2
+    assert props["palette_colors"]["maximum"] == 36
+    assert props["max_dimension"]["default"] == 256
+    assert "palette" in props["format"]["enum"]
+    desc = ReadImageFunc.to_tool_schema()["function"]["description"]
+    assert "max_tokens" in desc
+    assert "palette" in desc
+    assert "start_x/start_y/end_x/end_y" in desc
+
+
+def test_palette_colors_clamped():
+    """palette_colors 越界钳制到 [2, 36]。"""
+    from src.tools.read_image import ReadImageFunc as RIF
+    assert RIF(path="/tmp/a.png", format="palette", palette_colors=1).palette_colors == 2
+    assert RIF(path="/tmp/a.png", format="palette", palette_colors=99).palette_colors == 36
+    assert RIF(path="/tmp/a.png", format="palette", palette_colors="abc").palette_colors == 16
+
+
+def test_max_tokens_negative_normalized():
+    """max_tokens 负值归一化为 0（不限制）。"""
+    from src.tools.read_image import ReadImageFunc as RIF
+    assert RIF(path="/tmp/a.png", max_tokens=-5).max_tokens == 0
+    assert RIF(path="/tmp/a.png", max_tokens=None).max_tokens == 8000
