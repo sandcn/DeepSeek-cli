@@ -143,12 +143,6 @@ def _validate_rc(rc):
                         continue
             rc["token_prices"] = cleaned
 
-    if "multimodal_models" in rc:
-        if not isinstance(rc["multimodal_models"], (list, tuple)):
-            rc["multimodal_models"] = DEFAULTS["multimodal_models"]
-        else:
-            rc["multimodal_models"] = [str(m) for m in rc["multimodal_models"]]
-
     if rc.get("max_retries", 1) < 0:
         rc["max_retries"] = DEFAULTS["max_retries"]
     if rc.get("max_context_chars", 1) < 0:

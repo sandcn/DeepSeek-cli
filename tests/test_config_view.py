@@ -162,8 +162,8 @@ class TestViewModel:
     def test_build_config_entries_structure(self, isolated_rc):
         from src.config.view_model import build_config_entries
         entries = build_config_entries()
-        # CONFIG_KEYS(27) + 额外键(4) = 31
-        assert len(entries) == 31
+        # CONFIG_KEYS(26) + 额外键(4) = 30
+        assert len(entries) == 30
         keys = [e["key"] for e in entries]
         assert "MODEL" in keys and "HTTP_CONNECT_TIMEOUT" in keys
         assert "provider" in keys and "api_key" in keys
@@ -217,7 +217,6 @@ class TestViewModel:
         # json：list/dict 有子结构的配置项
         assert entries["MODELS"]["edit_kind"] == "json"
         assert entries["TOKEN_PRICES"]["edit_kind"] == "json"
-        assert entries["MULTIMODAL_MODELS"]["edit_kind"] == "json"
         assert entries["skills"]["edit_kind"] == "json"
         # input：数值/字符串
         assert entries["TEMPERATURE"]["edit_kind"] == "input"

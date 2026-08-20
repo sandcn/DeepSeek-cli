@@ -17,7 +17,7 @@ _logger = logging.getLogger(__name__)
 def _convert_image_url_to_anthropic(url: str) -> dict | None:
     """将 OpenAI image_url data URI 转换为 Anthropic image block。
 
-    支持 ``data:image/<type>;base64,<data>`` 格式（read_image 工具输出）。
+    支持 ``data:image/<type>;base64,<data>`` 格式（OpenAI 兼容 image_url）。
     无法解析时返回 None（调用方跳过该 block，不中断消息转换）。
     """
     if not url or not isinstance(url, str) or not url.startswith("data:"):

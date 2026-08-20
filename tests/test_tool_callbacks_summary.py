@@ -123,9 +123,9 @@ def test_on_after_tool_normalizes_tool_result():
     agent = _FakeToolAgent()
     chain = ToolCallbackChain(agent)
 
-    tc = {"id": "tc-1", "name": "read_image", "arguments": {}}
-    output = ToolResult(text="图片已读取", blocks=[{"type": "image_url"}])
+    tc = {"id": "tc-1", "name": "read_file", "arguments": {"path": "x.py"}}
+    output = ToolResult(text="内容已读取", blocks=[{"type": "text"}])
     chain._on_after_tool(tc, output, success=True)
 
     # tool_done 收到的 output_preview 应为纯文本（ToolResult → text）
-    assert agent.display.last_done_output == "图片已读取"
+    assert agent.display.last_done_output == "内容已读取"

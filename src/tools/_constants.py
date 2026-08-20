@@ -150,7 +150,6 @@ LARGE_FILE_THRESHOLD = 10 * 1024 * 1024  # 10MB
 
 TOOL_DISPLAY_NAME: dict[str, str] = {
     "read_file": "Read",
-    "read_image": "ReadImage",
     "write_file": "Write",
     "update_file": "Edit",
     "str_replace_editor": "Edit",

@@ -314,7 +314,6 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 | `mv` | mv | IO | ✅ | 移动文件或目录，支持跨文件系统 |
 | `rm` | rm | IO | ❌ | 删除文件或目录（删除前自动备份到沙盒） |
 | `mkdir` | mk | IO | ✅ | 创建目录，支持递归创建父目录 |
-| `read_image` | ri | IO | ✅ | 读取图像文件内容，支持分块读取与图像操作（灰度/旋转/翻转/缩放）；输出受 max_tokens 预算约束（默认 8000，超预算自动缩小，防爆上下文）；支持多模态 base64 / RGBA 十六进制 / palette 调色板三种格式 |
 | `web_search` | ws | 网络 | ❌ | DeepSeek 官方原生联网搜索（Anthropic 兼容 Messages API + web_search_20250305），返回来源列表（标题/URL/摘要） |
 | `web_fetch` | — | 网络 | ✅ | 获取指定 URL 的网页全文（自动提取正文，SSRF 防护，仅 http/https） |
 | `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/超时回退/非交互回退，选项可带说明，TUI 中高亮选项时说明显示在右侧；支持并发提问——多个问题可同一轮同时弹出、以 tab 形式一起回答） |
@@ -326,7 +325,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 
 | 分类 | 工具 | 说明 |
 |------|------|------|
-| **文件 IO** | read_file, write_file, update_file, ls, cp, mv, rm, mkdir, read_image | 读写文件、目录操作、文件管理、图像读取 |
+| **文件 IO** | read_file, write_file, update_file, ls, cp, mv, rm, mkdir | 读写文件、目录操作、文件管理 |
 | **代码搜索** | search, find | 正则搜索源码、通配符查找文件 |
 | **命令执行** | bash, bash_opt | 安全沙盒中执行 shell 命令；按 task_id 操作后台 bash 任务（bash 后台任务注册在 bash 专用表 `_background_tasks`） |
 | **网络访问** | web_search, web_fetch | 网页搜索（DeepSeek 官方原生搜索）与网页全文获取 |
@@ -580,11 +579,11 @@ ChatUIConsumer
 │   │   ├── _rendering/        # 内部渲染辅助
 │   │   └── _utils/            # 内部工具函数
 │   │
-│   ├── tools/              # 工具调用系统（19 个内置工具）
+│   ├── tools/              # 工具调用系统（18 个内置工具）
 │   │   ├── base.py            # Func 基类 + 元数据系统（含 can_use 工具可用性检查 / agent_type）
 │   │   ├── file_base.py       # FileToolBase 文件操作基类（含 plan agent 路径白名单）
 │   │   ├── registry.py        # 工具注册表（自动发现 + 调度 + 元数据索引）
-│   │   ├── read_file.py / write_file.py / update_file.py / read_image.py
+│   │   ├── read_file.py / write_file.py / update_file.py
 │   │   ├── search.py / find.py / ls.py
 │   │   ├── bash.py / cp.py / mv.py / rm.py / mkdir.py / skill_tool.py
 │   │   ├── web_search.py / web_fetch.py / user_select.py / subagent.py / subagent_opt.py

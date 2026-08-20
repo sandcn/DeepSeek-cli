@@ -12,7 +12,7 @@
     列表）Enter 后主区切换为**候选选项列表**（↑↓/jk 导航、g/G 首末、
     PgUp/PgDn 翻页、Enter 确认写回、Esc 取消）；
   - **子 JSON 结构化编辑界面**（``edit_mode == "json"``）：list/dict 有
-    子结构的配置项（MODELS/MULTIMODAL_MODELS/TOKEN_PRICES/skills 等）
+    子结构的配置项（MODELS/TOKEN_PRICES/skills 等）
     Enter 后主区显示**子 JSON 条目列表**（list ``[i] 元素`` / dict
     ``key = 值``），支持增删改（Enter 编辑选中条目 · a 追加 · d 删除 ·
     Esc 保存写回返回浏览模式）；条目编辑/追加走**子输入行**

@@ -39,7 +39,6 @@ CONFIG_ENTRY_DESCS: dict[str, str] = {
     "NOTIFY_ON_CHAT_COMPLETION": "聊天完成时通知",
     # ── 复合配置 ──
     "TOKEN_PRICES": "token 价格表（input/output/input_cache_hit，$/M）",
-    "MULTIMODAL_MODELS": "多模态模型列表",
     # ── HTTP 性能配置（嵌套路径） ──
     "HTTP_CONNECT_TIMEOUT": "HTTP 连接超时（秒）",
     "HTTP_READ_TIMEOUT": "HTTP 读取超时（秒）",

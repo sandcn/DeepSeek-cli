@@ -95,13 +95,6 @@ def update_config(key: str, value) -> None:
     else:
         from . import _clear_value_cache
         _clear_value_cache()
-        # multimodal 模型判定缓存联动失效：RC 配置 multimodal_models 变更后
-        # 清除 is_multimodal_model 的结果缓存（延迟导入避免 config ↔ api 循环）
-        try:
-            from ..api.multimodal import clear_multimodal_cache
-            clear_multimodal_cache()
-        except Exception:
-            pass
 
 
 def get_base_url(provider=None):

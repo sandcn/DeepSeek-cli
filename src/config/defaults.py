@@ -226,12 +226,6 @@ CONFIG_KEYS = {
         "default": {},
         "cacheable": True,
     },
-    "MULTIMODAL_MODELS": {
-        "rc_path": ("multimodal_models",),
-        "type": list,
-        "default": [],
-        "cacheable": True,
-    },
     # ---- HTTP 性能配置（嵌套路径） ----
     "HTTP_CONNECT_TIMEOUT": {
         "rc_path": ("performance", "http_client", "connect_timeout"),
