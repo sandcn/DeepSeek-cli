@@ -334,7 +334,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 
 | 工具名 | 缩写 | 分类 | 并行安全 | 功能说明 |
 |--------|------|------|---------|---------|
-| `read_file` | rf | IO | ✅ | 读取文件内容，支持指定行号范围、自动编码检测 |
+| `read_file` | rf | IO | ✅ | 读取文件内容，支持指定行号范围、自动编码检测，可显示行号（默认关闭） |
 | `write_file` | wf | IO | ✅ | 覆盖写入文件，自动创建父目录，原子写入 |
 | `update_file` | uf | IO | ❌ | 精确替换文件中的文本（old_string → new_string），支持 use_regex 正则替换 |
 | `search` | sr | 搜索 | ✅ | 在项目源码中搜索正则表达式，自动排除非源码目录 |
@@ -379,7 +379,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 
 ```python
 @classmethod
-def can_use(cls, tool_name: str, agent_type: str = "execute") -> tuple[bool, str | None]:
+def can_use(cls, tool_name: str, agent_type: str = "execute", path: str | None = None) -> tuple[bool, str | None]:
     """检查指定类型的 agent 能否使用某工具。"""
 ```
 
@@ -503,7 +503,7 @@ ChatUIConsumer
 │   ├── prompts_export_execute.md  # execute SubAgent 提示词
 │   ├── prompts_export_review.md  # review SubAgent 审查提示词
 
-├── tests/                 # 测试（37 个测试文件）
+├── tests/                 # 测试（按模块划分，覆盖各功能域）
 ├── .chat/                 # 运行时数据目录（首次运行自动创建）
 │   ├── memory/            # 跨对话记忆系统（索引 + 详情）
 │   ├── plan/              # Plan Agent 计划文件

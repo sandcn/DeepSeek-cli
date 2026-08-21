@@ -11,9 +11,9 @@ import aiofiles.os
 from rich.syntax import Syntax
 from rich.console import Console as RichConsole
 from .base import Func, tool_metadata
-from .file_ops import validate_path_security
+from .file_ops import validate_path_security, check_file_size
 from .encoding import async_detect_encoding, pick_best_decoding, FALLBACK_ENCODINGS
-from ._constants import LARGE_FILE_THRESHOLD, MAX_DETECT_BYTES
+from ._constants import LARGE_FILE_THRESHOLD, MAX_FILE_SIZE_MB
 from ..core.constants import CYAN, DIM, RESET, RED
 
 _UNSUPPORTED_EXTENSIONS = frozenset({"txt", "text"})
@@ -30,7 +30,12 @@ def _resolve_lexer_name(ext: str) -> str:
     """将文件扩展名转为安全的 Pygments lexer 名称，未知扩展默认用 text。"""
     if not ext or ext.lower() in _UNSUPPORTED_EXTENSIONS:
         return "text"
-    return ext
+    try:
+        from pygments.lexers import get_lexer_by_name
+        get_lexer_by_name(ext)
+        return ext
+    except Exception:
+        return "text"
 
 
 @tool_metadata(
@@ -55,10 +60,11 @@ class ReadFileFunc(Func):
                 "description": (
                     "读取文件内容，返回文件文本。支持整文件读取或按行号范围读取"
                     "（start_line/end_line，含两端，行号从 1 开始）。"
+                    "show_line_numbers 开启时在返回内容中为每行附加行号（默认关闭）。"
                     "首次读取某文件必须读完整内容（不设行号限制）以全面理解；"
                     "读取多个文件时并发调用多个 read_file。"
-                    "返回：文件内容；文件不存在返回「文件不存在: xxx」；"
-                    "编码自动检测（UTF-8/GBK/Latin-1），二进制/编码错误自动降级不崩溃；路径穿越被拒绝。"
+                    "返回：文件内容；错误以「(」开头（如「(文件不存在: xxx)」）；"
+                    "编码自动检测（UTF-8/GBK/Latin-1），二进制/编码错误自动降级不崩溃；危险/系统关键路径被拒绝。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -76,6 +82,11 @@ class ReadFileFunc(Func):
                             "type": "integer",
                             "minimum": 1,
                             "description": "结束行号（含该行）。省略时读到文件末尾；start_line>end_line 时自动交换。"
+                        },
+                        "show_line_numbers": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "是否在返回内容中为每行附加行号（行号从 1 开始；配合行号范围读取时从 start_line 起连续编号）。默认关闭。"
                         }
                     },
                     "required": ["path"]
@@ -98,6 +109,31 @@ class ReadFileFunc(Func):
             Func._publish_tool_notice(f"警告：{name} 应为整数，收到 {value}，已忽略该参数")
             return None
 
+    @staticmethod
+    def _coerce_bool(value) -> bool:
+        """将 show_line_numbers 等布尔参数从 bool/字符串/数字归一化为 bool。"""
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        if isinstance(value, (int, float)):
+            return value != 0
+        return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
+
+    @staticmethod
+    def _clamp_line(value) -> int | None:
+        """将行号参数安全 clamp 为 >=1 的整数，非法/None 返回 None。
+
+        仅做行号基础防护；start>end 的交换在 __init__ 中统一处理，
+        保证直接构造与 from_args 行为一致。
+        """
+        if value is None:
+            return None
+        try:
+            return max(1, int(value))
+        except (ValueError, TypeError):
+            return None
+
     @classmethod
     def from_args(cls, args):
         path = args.get("path") or args.get("paths")
@@ -109,6 +145,8 @@ class ReadFileFunc(Func):
         # 兼容旧的 paths 数组格式
         if isinstance(path, list):
             path = path[0] if path else ""
+        if not path:
+            raise ValueError("缺少有效路径: path")
 
         # 验证行号参数
         start_line = cls._validate_line_number(start_line, "start_line")
@@ -121,7 +159,10 @@ class ReadFileFunc(Func):
             )
             start_line, end_line = end_line, start_line
 
-        return cls(path, start_line, end_line)
+        # 解析 show_line_numbers（布尔：兼容 bool/字符串/数字）
+        show_line_numbers = cls._coerce_bool(args.get("show_line_numbers", False))
+
+        return cls(path, start_line, end_line, show_line_numbers)
 
     @classmethod
     def display_params(cls, arguments: dict, max_len: int = 80) -> str:
@@ -132,42 +173,46 @@ class ReadFileFunc(Func):
             return ""
         display = f"'{cls._sanitize_display(path)}'"
         extras = []
-        if arguments.get("start_line") is not None:
-            extras.append(f"offset:{arguments['start_line']}")
-        if arguments.get("end_line") is not None:
-            extras.append(f"limit:{arguments['end_line']}")
+        start_line = arguments.get("start_line")
+        end_line = arguments.get("end_line")
+        if start_line is not None and end_line is not None:
+            extras.append(f"L{start_line}-{end_line}")
+        elif start_line is not None:
+            extras.append(f"L{start_line}+")
+        elif end_line is not None:
+            extras.append(f"L1-{end_line}")
+        if arguments.get("show_line_numbers"):
+            extras.append("line-num")
         if extras:
             display += " " + " ".join(extras)
         return display
 
-    def __init__(self, path, start_line=None, end_line=None):
+    def __init__(self, path, start_line=None, end_line=None, show_line_numbers=False):
         super().__init__()
+        if not path:
+            raise ValueError("缺少有效路径: path")
         validate_path_security(path)
         self.path = path
         self.encoding = "utf-8"
         self.errors = "strict"
-        self.start_line = start_line
-        self.end_line = end_line
+        self.start_line = self._clamp_line(start_line)
+        self.end_line = self._clamp_line(end_line)
+        # 与 from_args 一致：start_line > end_line 时交换
+        if self.start_line is not None and self.end_line is not None and self.start_line > self.end_line:
+            self.start_line, self.end_line = self.end_line, self.start_line
+        self.show_line_numbers = self._coerce_bool(show_line_numbers)
 
         self._file_result = None
 
-    async def _determine_encoding(self, file_path, max_bytes=None):
-        """读取文件字节并检测编码，返回 (encoding, raw_bytes)
-
-        参数：
-          max_bytes: 最大读取字节数，None 表示读取全部文件。
-                    用于无行号范围场景——仅读 64KB 做编码检测即可，
-                    detect_encoding 内部同样使用 MAX_DETECT_BYTES 样本。
+    async def _determine_encoding(self, file_path):
+        """读取文件全部字节并检测编码，返回 (encoding, raw_bytes)。
 
         合并编码检测和文件读取为一次 IO，并将已读取的 raw_bytes
         传给编码检测器，避免重复 IO 且使用整体数据进行检测，大幅
         提高 GBK 等中文编码的检测准确率。
         """
         async with aiofiles.open(file_path, 'rb') as f:
-            if max_bytes is not None:
-                raw_bytes = await f.read(max_bytes)
-            else:
-                raw_bytes = await f.read()
+            raw_bytes = await f.read()
         encoding = await async_detect_encoding(file_path, raw_bytes=raw_bytes)
         return encoding, raw_bytes
 
@@ -180,11 +225,13 @@ class ReadFileFunc(Func):
         """
         start = max(1, self.start_line) if self.start_line is not None else 1
         end = self.end_line  # 用户传入，可能为 None
+        if end is not None and end < 1:
+            end = 1
 
         if not content:
             return {
                 _CONTENT_KEY: '',
-                _LINE_NUMBERS_KEY: (start, end),
+                _LINE_NUMBERS_KEY: None,
                 _ERROR_KEY: None,
                 _SUCCESS_KEY: True,
             }
@@ -202,9 +249,9 @@ class ReadFileFunc(Func):
         if start > total:
             return {
                 _CONTENT_KEY: '',
-                _LINE_NUMBERS_KEY: (start, end),
-                _ERROR_KEY: None,
-                _SUCCESS_KEY: True,
+                _LINE_NUMBERS_KEY: (start, total),
+                _ERROR_KEY: f"(行号越界: 文件共 {total} 行，起始行 {start})",
+                _SUCCESS_KEY: False,
             }
 
         if end is None or end > total:
@@ -239,6 +286,26 @@ class ReadFileFunc(Func):
             _SUCCESS_KEY: True,
         }
 
+    def _format_with_line_numbers(self, content: str) -> str:
+        """为内容逐行附加行号前缀（返回给大模型的文本）。
+
+        行号基准：行号范围读取时从实际起始行号（_LINE_NUMBERS_KEY[0]）起，
+        整文件读取时从 1 起；末尾换行符不额外产生空行行号。
+        """
+        start = 1
+        if self._file_result is not None and self._file_result.get(_LINE_NUMBERS_KEY) is not None:
+            start = self._file_result[_LINE_NUMBERS_KEY][0]
+        lines = content.split('\n')
+        if lines and lines[-1] == '':
+            lines = lines[:-1]
+        if not lines:
+            return content
+        width = len(str(start + len(lines) - 1))
+        return '\n'.join(
+            f"{str(start + idx).rjust(width)}  {line}"
+            for idx, line in enumerate(lines)
+        )
+
     async def execute(self):
         """异步读取文件并返回内容（无UI输出）"""
         file_path = self.path
@@ -252,33 +319,47 @@ class ReadFileFunc(Func):
             }
             return self._file_result[_ERROR_KEY]
 
+        # 文件大小上限（与 write_file 一致）：超过 MAX_FILE_SIZE_MB 拒绝，
+        # 避免超大文件被全量读入引发内存尖峰（LLM 上下文也无法容纳）。
         try:
-            if self.start_line is not None or self.end_line is not None:
-                # ===== 行号范围场景：全量读字节 → pick_best_decoding → 内存切片 =====
-                actual_encoding, raw_bytes = await self._determine_encoding(file_path)
-                decode_candidates = [actual_encoding]
-                full_candidates = decode_candidates + [e for e in FALLBACK_ENCODINGS if e not in decode_candidates]
-                final_encoding, content = await asyncio.to_thread(
-                    pick_best_decoding, raw_bytes, full_candidates,
+            await asyncio.to_thread(check_file_size, file_path, MAX_FILE_SIZE_MB)
+        except ValueError as e:
+            self._file_result = {
+                _CONTENT_KEY: None, _LINE_NUMBERS_KEY: None,
+                _ERROR_KEY: f"({e})",
+                _SUCCESS_KEY: False,
+            }
+            return self._file_result[_ERROR_KEY]
+
+        # 大文件感知（不阻断读取）——超出 LARGE_FILE_THRESHOLD 时通过通知提示
+        try:
+            _size = (await aiofiles.os.stat(file_path)).st_size
+            if _size > LARGE_FILE_THRESHOLD:
+                Func._publish_tool_notice(
+                    f"提示：{file_path} 大小 {_size // (1024 * 1024)}MB，读取内容可能较大"
                 )
-                if final_encoding != actual_encoding:
-                    logger = logging.getLogger(__name__)
-                    logger.info(
-                        "编码回退(行范围): %s → %s (文件 %s)",
-                        actual_encoding, final_encoding, file_path,
-                    )
+        except OSError:
+            pass
+
+        try:
+            # 统一编码策略：读全文件字节 → async_detect_encoding 检测 →
+            # pick_best_decoding 候选解码。行号范围与整文件读取共用同一解码链路，
+            # 避免同一文件因读取方式不同而得到不同编码结果（GBK 等中文编码一致）。
+            actual_encoding, raw_bytes = await self._determine_encoding(file_path)
+            decode_candidates = [actual_encoding]
+            full_candidates = decode_candidates + [e for e in FALLBACK_ENCODINGS if e not in decode_candidates]
+            final_encoding, content = await asyncio.to_thread(
+                pick_best_decoding, raw_bytes, full_candidates,
+            )
+            if final_encoding != actual_encoding:
+                logger = logging.getLogger(__name__)
+                logger.info(
+                    "编码回退: %s → %s (文件 %s)",
+                    actual_encoding, final_encoding, file_path,
+                )
+            if self.start_line is not None or self.end_line is not None:
                 self._file_result = self._slice_lines(content)
             else:
-                # ===== 无行号范围：64KB 检测编码 → 文本模式读全文件 =====
-                # MAX_DETECT_BYTES (64KB) 足够 BOM + chardet，与 detect_encoding
-                # 默认行为一致；async_detect_encoding 内部已做编码质量验证和回退
-                actual_encoding, _ = await self._determine_encoding(
-                    file_path, max_bytes=MAX_DETECT_BYTES,
-                )
-                async with aiofiles.open(
-                    file_path, 'r', encoding=actual_encoding, errors='replace',
-                ) as f:
-                    content = await f.read()
                 self._file_result = {
                     _CONTENT_KEY: content,
                     _LINE_NUMBERS_KEY: None,
@@ -296,8 +377,11 @@ class ReadFileFunc(Func):
             return self._file_result[_ERROR_KEY]
 
         content = self._file_result[_CONTENT_KEY]
-        cleaned = content.replace('\r', '')
+        cleaned = content.replace('\r\n', '\n').replace('\r', '\n')
         if cleaned:
+            if self.show_line_numbers:
+                body = self._format_with_line_numbers(cleaned)
+                return f"文件: {self.path}\n{body}"
             return f"文件: {self.path}\n{cleaned}"
         return f"(文件为空: {self.path})"
 
@@ -309,7 +393,10 @@ class ReadFileFunc(Func):
         if not exists:
             return f"\n{CYAN}{file_path}{RESET}"
 
-        stat = await aiofiles.os.stat(file_path)
+        try:
+            stat = await aiofiles.os.stat(file_path)
+        except OSError:
+            return f"\n{CYAN}{file_path}{RESET}"
         size = stat.st_size
         mtime = _time.strftime('%Y-%m-%d %H:%M:%S', _time.localtime(stat.st_mtime))
         size_warning = ""
