@@ -39,6 +39,7 @@ from src.tui.app.trace import (
     build_subagent_trace_records,
     build_trace_records,
 )
+from src.tui.app.trace_image import thumbnail_rows as _thumbnail_rows
 from src.tui.core.style import Style
 from src.tui.ink import (
     TEXT, Column, Row, StyledRun, h, use_fullscreen, use_input, use_memo, use_ref,
@@ -456,9 +457,11 @@ def _detail_deps(rec) -> tuple:
     if block is not None:
         return (id(getattr(block, "lines", None)), len(getattr(block, "lines", None) or []))
     lines = getattr(rec, "lines", None) or []
+    images = getattr(rec, "images", None) or []
+    img_fp = tuple(img.get("sha", "") for img in images if isinstance(img, dict))
     if lines:
-        return (id(lines), getattr(rec, "index", 0))
-    return (None,)
+        return (id(lines), getattr(rec, "index", 0), img_fp)
+    return (None, img_fp)
 
 
 def _clamp_color(v):
@@ -988,6 +991,13 @@ def _inspector_content_rows(rec, right_w: int, collapsed: set | None = None) -> 
                 line = str(line)
             rows.extend(_wrap_by_width(line, right_w))
         keys = [None] * len(rows)
+    # ── 多模态图片缩略图（检查器追加渲染；右栏宽驱动尺寸） ──
+    images = getattr(rec, "images", None) or []
+    if images:
+        for img in images:
+            for r in _thumbnail_rows(img, right_w):
+                rows.append(r)
+                keys.append(None)
     if len(rows) > _INSPECTOR_MAX_ROWS:
         rows = rows[:_INSPECTOR_MAX_ROWS]
         keys = keys[:_INSPECTOR_MAX_ROWS]

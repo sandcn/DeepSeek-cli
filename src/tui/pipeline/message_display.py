@@ -55,6 +55,17 @@ def _content_str(content: Any) -> str:
             if c is None:
                 continue
             if isinstance(c, dict):
+                btype = c.get("type", "")
+                if btype == "text":
+                    t = c.get("text", c)
+                    if t is not None:
+                        parts.append(str(t))
+                    continue
+                if btype == "image_url":
+                    url_container = c.get("image_url")
+                    url = url_container.get("url", "") if isinstance(url_container, dict) else ""
+                    parts.append(f"[图片: {url}]" if url else "[图片]")
+                    continue
                 t = c.get("text", c)
                 if t is None:
                     continue

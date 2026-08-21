@@ -39,8 +39,33 @@ def _infer_model_provider(model_name: str) -> str | None:
     return None
 
 
+def _merge_provider_models(models: list[str]) -> list[str]:
+    """将 RC 模型列表与 PROVIDERS 内置模型合并（去重保序）。
+
+    保证 provider 新增的默认模型（如 deepseek-v4-flash-vision-exp）始终
+    出现在可用/切换列表——RC 旧配置的 models 列表（如仅 pro/flash）不会
+    因未同步更新而缺失新模型。
+    """
+    try:
+        from ...config.defaults import PROVIDERS as _providers
+    except (ImportError, KeyError):
+        return list(models)
+    _seen: set[str] = set()
+    merged: list[str] = []
+    for _m in models:
+        if _m not in _seen:
+            _seen.add(_m)
+            merged.append(_m)
+    for _p in _providers.values():
+        for _m in _p.get("models", []):
+            if _m not in _seen:
+                _seen.add(_m)
+                merged.append(_m)
+    return merged
+
+
 def _collect_models(ctx) -> list[str]:
-    """获取模型列表：ConfigPort 优先，空时 PROVIDERS 聚合回退。"""
+    """获取模型列表：ConfigPort 优先 + PROVIDERS 合并，空时 PROVIDERS 聚合回退。"""
     if ctx.config_port is not None:
         models = ctx.config_port.get_models()
     else:
@@ -59,7 +84,8 @@ def _collect_models(ctx) -> list[str]:
             models = fallback_models
         except Exception:
             pass
-    return list(models or [])
+    # 合并 PROVIDERS 内置模型（RC 旧 models 未包含的新模型自动出现）
+    return _merge_provider_models(list(models or []))
 
 
 def _sync_provider(ctx, model_name: str) -> None:

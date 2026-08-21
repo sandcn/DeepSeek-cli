@@ -164,10 +164,28 @@ def test_switch_model_cycles_models(ctx, monkeypatch, patch_model_source):
 
 
 def test_switch_model_wraps_around(ctx, monkeypatch, patch_model_source):
+    """合并 PROVIDERS 为空时（仅 m1/m2/m3）循环回绕到首个模型。"""
+    import src.config.defaults as defaults_mod
+    monkeypatch.setattr(defaults_mod, "PROVIDERS", {})
     cb, state, session, _, _ = ctx
     state.model = "m3"
     cb("switch_model", "t")
     assert state.model == "m1"  # 回绕
+
+
+def test_switch_model_merges_provider_models(ctx, monkeypatch):
+    """RC models 未包含的 provider 新模型自动进入切换列表（Ctrl+N 可达）。"""
+    import src.config as config_mod
+    import src.core.commands._model_cmd as model_cmd_mod
+
+    monkeypatch.setattr(config_mod, "MODELS", ["deepseek-v4-pro", "deepseek-v4-flash"])
+    monkeypatch.setattr(model_cmd_mod, "_infer_model_provider", lambda m: "deepseek")
+    cb, state, session, _, _ = ctx
+    state.model = "deepseek-v4-flash"
+    cb("switch_model", "t")
+    # 下一个即 PROVIDERS 聚合追加的 deepseek-v4-flash-vision-exp
+    assert state.model == "deepseek-v4-flash-vision-exp"
+    assert session.model == "deepseek-v4-flash-vision-exp"
 
 
 def test_switch_model_current_not_in_list(ctx, monkeypatch, patch_model_source):

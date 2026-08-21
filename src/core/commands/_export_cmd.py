@@ -71,10 +71,18 @@ def _code_block(text: str, lang: str = "") -> str:
 
 
 def _msg_content(msg: dict) -> str:
-    """提取消息正文（content 可能为 None）。"""
+    """提取消息正文（content 可能为 None / str / list[dict] content blocks）。"""
     content = msg.get("content")
     if content is None:
         return ""
+    if isinstance(content, list):
+        # 多模态 content blocks（text + image_url）——提取文本部分
+        try:
+            from ...api.multimodal import content_to_text
+            return content_to_text(content)
+        except Exception:
+            # 防御回退：不输出原始 list 字面量（避免图片 data URI/base64 泄出）
+            return ""
     return str(content)
 
 
@@ -264,9 +272,11 @@ def _resolve_output_path(arg: str) -> Path | None:
             _out.write(f"{YELLOW}  ! 错误: 导出路径必须在当前目录下: {resolved}{RESET}",
                        level="raw", source="cmd")
             return None
-        if resolved.exists() and resolved.is_dir():
-            _out.write(f"{YELLOW}  ! 错误: 导出路径是目录: {resolved}{RESET}",
-                       level="raw", source="cmd")
+        if resolved.exists():
+            _out.write(
+                f"{YELLOW}  ! 错误: 文件已存在: {resolved}（避免覆盖，请换路径）{RESET}",
+                level="raw", source="cmd",
+            )
             return None
         return resolved
 

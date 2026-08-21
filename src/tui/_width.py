@@ -383,8 +383,33 @@ def wcswidth_simple(text: str) -> int:
     return width
 
 
+def truncate_width(s: str, max_w: int) -> str:
+    """按显示宽度截断字符串（不拆 CJK），返回截断后文本。
+
+    公共工具（单一真源）：由 ``_popup_builder._truncate_width`` 提升为公共函数，
+    供 config_view（配置显示截断）等消费——避免跨模块依赖下划线私有 API。
+    纯 ASCII 可打印字符串宽度 == 字符数——C 实现的 ``isascii()`` +
+    ``isprintable()`` 单趟扫描后直接切片（逐字符 ``wcswidth_simple`` 的
+    Python 循环仅用于含 CJK/emoji/控制字符的文本）。
+    """
+    if max_w <= 0:
+        return ""
+    if s.isascii() and s.isprintable():
+        return s if len(s) <= max_w else s[:max_w]
+    w = 0
+    out = []
+    for ch in s:
+        cw = wcswidth_simple(ch)
+        if w + cw > max_w:
+            break
+        out.append(ch)
+        w += cw
+    return "".join(out)
+
+
 __all__ = [
     "wcswidth_simple",
+    "truncate_width",
     "_CJK_RANGES",
     "_ZERO_WIDTH_RANGES",
     "_FULLWIDTH_RANGES",

@@ -106,7 +106,7 @@ pip install ".[dev]"
 
 | Provider | 适配器 | 说明 |
 |---|---|---|
-| `deepseek` | `DeepSeekAdapter` | DeepSeek 官方 API（默认），支持 v4-pro、v4-flash、reasoner、chat、coder 系列 |
+| `deepseek` | `DeepSeekAdapter` | DeepSeek 官方 API（默认），支持 v4-pro、v4-flash、v4-flash-vision-exp（多模态视觉）、reasoner、chat、coder 系列 |
 | `custom` | `OpenAICompatAdapter` | 任意 OpenAI 兼容 API（OpenAI / GLM / 通义千问等），自动检测 reasoner 模型 |
 | `anthropic` | `AnthropicAdapter` | Anthropic Claude 系列模型（API 格式自动转换） |
 | `ollama` | `OllamaAdapter` | 本地 Ollama 部署模型（默认 `localhost:11434`） |
@@ -145,6 +145,38 @@ python chat.py --model deepseek-v4-pro
 ```
 
 通过 `-m` / `--model` 临时覆盖配置文件中的模型，不影响配置文件。
+
+#### 多模态视觉（deepseek-v4-flash-vision-exp）
+
+`deepseek-v4-flash-vision-exp` 是 DeepSeek 的多模态视觉模型（实验性质），
+图片按 token 计费（单图最多 384 tokens），计费价格与 `deepseek-v4-flash` 一致。
+接入方式：
+
+```bash
+python chat.py -m deepseek-v4-flash-vision-exp
+```
+
+该模型支持两种图片输入方式（图片仅支持出现在用户消息中）：
+
+1. **用户消息直接传图**：在输入中携带本地图片路径、`![描述](图片路径或URL)` 或
+   裸 http(s) 图片 URL，CLI 自动转换为图片 content blocks（本地图片自动
+   base64 内联，URL 原样传递）：
+
+   ```
+   分析 /path/to/screenshot.png 里的报错信息
+   看下 ![架构图](https://example.com/diagram.png)
+   ```
+
+2. **read_image 工具**：AI 代理可主动调用 `read_image` 工具读取本地图像
+   （支持分块/灰度/旋转/缩放/调色板等），多模态模型直接看到 base64 图片，
+   非多模态模型自动降级为 RGBA 十六进制 / 调色板文本。
+
+非多模态模型下，用户消息中的图片引用保持纯文本原样传递（模型不可见图片）。
+如有多模态模型未被内置模式识别，可通过配置扩展：
+
+```bash
+python chat.py config set multimodal_models '["my-vision-model"]'
+```
 
 #### 详细日志模式
 
@@ -235,7 +267,7 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | `Esc`（双击） | 清空当前输入框内容 |
 | `Ctrl+G` | 使用 vim 编辑器编辑当前输入内容（支持 $EDITOR 环境变量） |
 | `Ctrl+O` | 编辑当前会话中的已有消息（触发 `/editmsg` 命令） |
-| `Ctrl+N` | 循环切换对话模型 |
+| `Ctrl+N` | 循环切换对话模型（RC 模型列表与内置 provider 模型合并，新增模型如 deepseek-v4-flash-vision-exp 自动可切换） |
 | `Ctrl+P` / `↑` | 浏览输入历史（上一条） |
 | `↓` | 浏览输入历史（下一条） |
 | `Ctrl+R` | 反向历史搜索（配置门控；默认重试上一轮） |
@@ -314,6 +346,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 | `mv` | mv | IO | ✅ | 移动文件或目录，支持跨文件系统 |
 | `rm` | rm | IO | ❌ | 删除文件或目录（删除前自动备份到沙盒） |
 | `mkdir` | mk | IO | ✅ | 创建目录，支持递归创建父目录 |
+| `read_image` | ri | IO | ✅ | 读取图像文件内容，支持分块读取与图像操作（灰度/旋转/翻转/缩放）；输出受 max_tokens 预算约束（默认 8000，超预算自动缩小，防爆上下文）；支持多模态 base64 / RGBA 十六进制 / palette 调色板三种格式（多模态模型直接看到图片） |
 | `web_search` | ws | 网络 | ❌ | DeepSeek 官方原生联网搜索（Anthropic 兼容 Messages API + web_search_20250305），返回来源列表（标题/URL/摘要） |
 | `web_fetch` | — | 网络 | ✅ | 获取指定 URL 的网页全文（自动提取正文，SSRF 防护，仅 http/https） |
 | `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/超时回退/非交互回退，选项可带说明，TUI 中高亮选项时说明显示在右侧；支持并发提问——多个问题可同一轮同时弹出、以 tab 形式一起回答） |
@@ -325,7 +358,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 
 | 分类 | 工具 | 说明 |
 |------|------|------|
-| **文件 IO** | read_file, write_file, update_file, ls, cp, mv, rm, mkdir | 读写文件、目录操作、文件管理 |
+| **文件 IO** | read_file, write_file, update_file, ls, cp, mv, rm, mkdir, read_image | 读写文件、目录操作、文件管理、图像读取 |
 | **代码搜索** | search, find | 正则搜索源码、通配符查找文件 |
 | **命令执行** | bash, bash_opt | 安全沙盒中执行 shell 命令；按 task_id 操作后台 bash 任务（bash 后台任务注册在 bash 专用表 `_background_tasks`） |
 | **网络访问** | web_search, web_fetch | 网页搜索（DeepSeek 官方原生搜索）与网页全文获取 |
@@ -501,6 +534,7 @@ ChatUIConsumer
 │   │   ├── escape_monitor.py   # 键盘输入监听
 │   │   ├── events.py           # API 事件定义
 │   │   ├── _model_loops.py / _stats_core.py / _stream_lifecycle.py / _token_speed.py / _tool_parse_utils.py  # 内部辅助模块
+│   │   ├── multimodal.py       # 多模态模型判定 + 图片 content blocks 构造（read_image 依赖）
 │   │   ├── adapters/          # 多模型适配器（DeepSeek/OpenAI/Anthropic/Ollama）
 │   │   └── _adapter_manager.py   # 适配器管理
 │   │
@@ -579,11 +613,11 @@ ChatUIConsumer
 │   │   ├── _rendering/        # 内部渲染辅助
 │   │   └── _utils/            # 内部工具函数
 │   │
-│   ├── tools/              # 工具调用系统（18 个内置工具）
+│   ├── tools/              # 工具调用系统（19 个内置工具）
 │   │   ├── base.py            # Func 基类 + 元数据系统（含 can_use 工具可用性检查 / agent_type）
 │   │   ├── file_base.py       # FileToolBase 文件操作基类（含 plan agent 路径白名单）
 │   │   ├── registry.py        # 工具注册表（自动发现 + 调度 + 元数据索引）
-│   │   ├── read_file.py / write_file.py / update_file.py
+│   │   ├── read_file.py / write_file.py / update_file.py / read_image.py
 │   │   ├── search.py / find.py / ls.py
 │   │   ├── bash.py / cp.py / mv.py / rm.py / mkdir.py / skill_tool.py
 │   │   ├── web_search.py / web_fetch.py / user_select.py / subagent.py / subagent_opt.py

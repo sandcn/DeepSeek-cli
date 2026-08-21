@@ -13,6 +13,20 @@ _logger = logging.getLogger(__name__)
 _out = get_default_output_port()
 
 
+def _msg_preview(content, max_len: int) -> str:
+    """消息内容预览（content 可能为 str 或 list[dict] content blocks）。"""
+    if isinstance(content, list):
+        try:
+            from ...api.multimodal import content_to_text
+            content = content_to_text(content)
+        except Exception:
+            content = ""
+    text = content if isinstance(content, str) else ""
+    if len(text) <= max_len:
+        return text
+    return text[:max_len] + "..."
+
+
 def _refresh_ctx_usage(ctx, force: bool = False) -> None:
     """命令直接修改消息列表后刷新上下文使用率全局快照（TUI 模式行行首动态刷新）。
 
@@ -95,7 +109,7 @@ def _cmd_pin(ctx):
             msg = messages[idx]
             msg["pinned"] = not msg.get("pinned", False)
             role = msg.get("role", "")
-            content_preview = (msg.get("content") or "")[:60]
+            content_preview = _msg_preview(msg.get("content"), 60)
             if msg["pinned"]:
                 _out.write(f"{GREEN}  * 已标记第 {idx} 条消息 ({role}): {content_preview}...{RESET}", level="raw", source="cmd")
             else:
@@ -167,7 +181,8 @@ def _cmd_edit(ctx):
         return True
 
     old_content = ctx.messages[last_user_idx]["content"]
-    _out.write(f"  {DIM}原内容: {old_content[:100]}{'...' if len(old_content) > 100 else ''}{RESET}", level="raw", source="cmd")
+    old_preview = _msg_preview(old_content, 100)
+    _out.write(f"  {DIM}原内容: {old_preview}{RESET}", level="raw", source="cmd")
     new_content = ctx.get_user_input()
     if not new_content:
         _out.write(f"{YELLOW}  ! 已取消{RESET}", level="raw", source="cmd")

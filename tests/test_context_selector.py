@@ -45,6 +45,34 @@ def test_message_to_text_tool_role():
     assert "result" in message_to_text(msg)
 
 
+def test_message_to_text_tool_role_multimodal():
+    """tool 角色多模态 content（list blocks）→ 归一化文本，不输出 base64。"""
+    msg = {
+        "role": "tool", "tool_call_id": "call_abc",
+        "content": [
+            {"type": "text", "text": "图片是"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}},
+        ],
+    }
+    text = message_to_text(msg)
+    assert "工具结果" in text
+    assert "图片是" in text
+    assert "base64" not in text
+    assert "data:image" not in text
+
+
+def test_message_to_text_assistant_content_list():
+    """assistant 带 tool_calls 且 content 为 list → 归一化后 join 不崩溃。"""
+    msg = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "done"}],
+        "tool_calls": [{"function": {"name": "read_file", "arguments": '{"path": "x"}'}}],
+    }
+    text = message_to_text(msg)
+    assert "调用工具 read_file" in text
+    assert "done" in text
+
+
 # ── find_tool_groups ──────────────────────────────────────
 
 def test_find_tool_groups():

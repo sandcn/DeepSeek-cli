@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sys
+import threading
 
 from .defaults import CONFIG_DIR, LOG_FILE, RC_FILE, DEFAULTS, PROVIDERS, CONFIG_KEYS
 from .schema import _validate_rc
@@ -11,6 +12,8 @@ from .schema import _validate_rc
 
 _RC = None
 _RC_LOADED = False
+# 并发写 RC 防护（review P3）：读改写序列加锁，避免多线程同时写文件写坏。
+_update_lock = threading.Lock()
 
 
 def _ensure_config_dir():
@@ -64,37 +67,52 @@ def get_rc():
 def update_config(key: str, value) -> None:
     """更新配置键并持久化到 RC 文件。
 
-    注（review P3）：无并发锁——多线程同时写 RC 文件存在写坏风险。
-    调用频率低（命令式配置修改）且写为原子 write_text（整文件重写），
-    实际风险可控；如需并发安全需加 threading.Lock 保护整个读改写序列。
+    ★ P3（review 2026-08-22）：读改写序列加 ``_update_lock`` 防护——修复前
+    无锁，多线程同时写 RC 文件存在整文件写坏风险（单条 write_text 原子但
+    读-改-写序列并发交错仍可能丢写）。调用频率低，锁开销可忽略。
     """
-    rc = get_rc()
-    # 使用 CONFIG_KEYS 中的 rc_path 进行键名映射
-    if key in CONFIG_KEYS:
-        path = CONFIG_KEYS[key]["rc_path"]
-        if path:
-            assert all(isinstance(p, str) and p for p in path), (
-                f"CONFIG_KEYS['{key}']['rc_path'] 包含无效路径段: {path}"
-            )
-            target = rc
-            for part in path[:-1]:
-                target = target.setdefault(part, {})
-            target[path[-1]] = value
+    with _update_lock:
+        rc = get_rc()
+        # 使用 CONFIG_KEYS 中的 rc_path 进行键名映射
+        if key in CONFIG_KEYS:
+            path = CONFIG_KEYS[key]["rc_path"]
+            if path:
+                assert all(isinstance(p, str) and p for p in path), (
+                    f"CONFIG_KEYS['{key}']['rc_path'] 包含无效路径段: {path}"
+                )
+                target = rc
+                for part in path[:-1]:
+                    nxt = target.setdefault(part, {})
+                    # 防御：RC 嵌套键（如 performance.*）被写成非 dict（字符串等）
+                    # 时 setdefault 返回非 dict → 再 .setdefault 抛 AttributeError。
+                    # 此处重建为 dict，保证配置写入路径健壮。
+                    if not isinstance(nxt, dict):
+                        nxt = {}
+                        target[part] = nxt
+                    target = nxt
+                target[path[-1]] = value
+            else:
+                rc[key] = value
         else:
             rc[key] = value
-    else:
-        rc[key] = value
-    _ensure_config_dir()
-    try:
-        RC_FILE.write_text(
-            json.dumps(rc, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except OSError as e:
-        sys.__stderr__.write(f"警告: 无法写入配置文件 {RC_FILE}: {e}\n")
-    else:
-        from . import _clear_value_cache
-        _clear_value_cache()
+        _ensure_config_dir()
+        try:
+            RC_FILE.write_text(
+                json.dumps(rc, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            sys.__stderr__.write(f"警告: 无法写入配置文件 {RC_FILE}: {e}\n")
+        else:
+            from . import _clear_value_cache
+            _clear_value_cache()
+            # multimodal 模型判定缓存联动失效：RC 配置 multimodal_models 变更后
+            # 清除 is_multimodal_model 的结果缓存（延迟导入避免 config ↔ api 循环）
+            try:
+                from ..api.multimodal import clear_multimodal_cache
+                clear_multimodal_cache()
+            except Exception:
+                pass
 
 
 def get_base_url(provider=None):

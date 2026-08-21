@@ -39,6 +39,7 @@ CONFIG_ENTRY_DESCS: dict[str, str] = {
     "NOTIFY_ON_CHAT_COMPLETION": "聊天完成时通知",
     # ── 复合配置 ──
     "TOKEN_PRICES": "token 价格表（input/output/input_cache_hit，$/M）",
+    "MULTIMODAL_MODELS": "多模态模型列表（小写子串匹配，read_image 据此返回图片）",
     # ── HTTP 性能配置（嵌套路径） ──
     "HTTP_CONNECT_TIMEOUT": "HTTP 连接超时（秒）",
     "HTTP_READ_TIMEOUT": "HTTP 读取超时（秒）",
@@ -124,7 +125,15 @@ def _truncate(text: str, max_len: int) -> str:
 
 
 def _display_width(text: str) -> int:
-    """显示宽度（CJK 等宽字符按 2 列计；与 _truncate 同一宽度口径）。"""
+    """显示宽度（CJK 等宽字符按 2 列计；与 _truncate 同一宽度口径）。
+
+    ★ 口径边界（review 2026-08-22）：本函数以 ``ord(ch) > 0x2E7F`` 单阈值判定
+    宽字符（计 2），与 ``src.tui._width.wcswidth_simple``（精确区间表）在个别
+    码点不一致：Hangul Jamo（0x1100-0x11FF）此处计 1、_width 计 2；零宽组合
+    标记（0x0300-0x036F 等）此处计 1、_width 计 0。view_model 为纯逻辑层，
+    刻意不依赖 tui 层宽度工具；配置路径/值多为 CJK 与 ASCII，二者在常见场景
+    一致。如需与 _width 完全对齐可改用其区间表。
+    """
     return sum(2 if ord(ch) > 0x2E7F else 1 for ch in text)
 
 
@@ -341,11 +350,14 @@ def format_config_text(entries: list[dict] | None = None, rc_file=None) -> str:
     if not entries:
         lines.append("  (无配置项)")
         return "\n".join(lines)
-    key_w = max(len(e["path"]) for e in entries)
+    key_w = max(_display_width(e["path"]) for e in entries)
     key_w = min(key_w, 40)
     for e in entries:
         marker = "*" if e.get("sensitive") else " "
-        key = e["path"].ljust(key_w)
+        key = e["path"]
+        fill = key_w - _display_width(key)
+        if fill > 0:
+            key += " " * fill
         lines.append(
             f"  {marker} {key} = {e['value_text']}"
             + (f"    {e['desc']}" if e.get("desc") else "")

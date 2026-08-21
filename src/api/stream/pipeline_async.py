@@ -551,7 +551,17 @@ async def stream_call_async(
     # input 显示为下限估算（可接受：live 展示为估计值，真实 usage 到达后
     # 由 _handle_usage 以精确值覆盖）。
     if display and label:
-        input_est = sum(estimate_tokens(m.get("content", "") or "") for m in messages)
+        # content 可能为 list（多模态 content blocks）——estimate_tokens 前转 str
+        def _content_text(m):
+            content = m.get("content", "") or ""
+            if isinstance(content, list):
+                try:
+                    from ...core.context_selector import message_to_text
+                    return message_to_text(m)
+                except Exception:
+                    return ""
+            return content
+        input_est = sum(estimate_tokens(_content_text(m)) for m in messages)
         display.update_live_input(label, input_est)
 
     try:

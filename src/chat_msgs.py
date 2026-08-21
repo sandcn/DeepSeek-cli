@@ -42,6 +42,37 @@ def _invalidate_session_cache() -> None:
 # ── 会话ID校验 ────────────────────────────────────────────
 _SESSION_ID_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
 
+def _content_to_text(content) -> str:
+    """将消息 content（str 或 list[dict] content blocks）转换为纯文本。
+
+    委托 ``multimodal.content_to_text`` 作为单一真源（多模态 user/tool 消息
+    content 为 OpenAI 兼容 content blocks（text + image_url），标题提取/列
+    表摘要等场景需要其中的文本部分）。统一归一化，避免四处行为分叉。
+    """
+    try:
+        from .api.multimodal import content_to_text as _impl
+        return _impl(content)
+    except Exception:
+        # 防御回退（content_to_text 内部已对 str/list/None 做兜底）
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for b in content:
+                if isinstance(b, dict):
+                    if b.get("type") == "text":
+                        t = b.get("text", "")
+                        if isinstance(t, str):
+                            parts.append(t)
+                    elif b.get("type") == "image_url":
+                        parts.append("[图片]")
+                elif b is not None:
+                    parts.append(str(b))
+            return " ".join(parts)
+        return str(content)
+
 def _validate_session_id(session_id: str) -> str | None:
     """校验 session_id 格式，防止路径遍历。只允许字母数字下划线连字符。"""
     sid = session_id.removesuffix(".json")
@@ -100,7 +131,11 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
         保存的会话 ID
     """
     ensure_chat_msgs_dir()
-    sid = session_id or generate_id()
+    # ★ P1（review）：与其他会话函数一致做路径校验——session_id 非法/含
+    #   ../ 等路径穿越字符时回退到自动生成 id，避免越权写入任意路径。
+    sid = _validate_session_id(session_id) if session_id else None
+    if sid is None:
+        sid = generate_id()
     filepath = CHAT_MSGS_DIR / f"{sid}.json"
 
     # 有意过滤 system 消息（标题提取也用 filtered），调用方需自行拼接 system 消息
@@ -123,7 +158,9 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
         # 基于 filtered 提取标题（跳过 system 消息），保持与保存内容一致
         for m in filtered:
             if m.get("role") == "user":
-                content = (m.get("content") or "").strip()
+                # content 可能为 list（多模态 content blocks）——提取文本部分
+                content = _content_to_text(m.get("content"))
+                content = content.strip()
                 title = content[:40]
                 if len(content) > 40:
                     title += "…"
@@ -234,7 +271,9 @@ def list_sessions() -> list[dict[str, Any]]:
             title = ""
             for m in data.get("messages", []) or []:
                 if isinstance(m, dict) and m.get("role") == "user":
-                    content = (m.get("content") or "").strip()
+                    # content 可能为 list（多模态 content blocks）——提取文本
+                    content = _content_to_text(m.get("content"))
+                    content = content.strip()
                     title = content[:40] + ("…" if len(content) > 40 else "")
                     break
         sessions.append({

@@ -77,6 +77,13 @@ def make_special_key_callback(loop, session, state, chat_ui, monitor=None):
                 _models = _MODELS
             except Exception:
                 pass
+            # 合并 PROVIDERS 内置模型（去重保序）：RC 旧 models 未包含的
+            # 新模型（如 deepseek-v4-flash-vision-exp）也能通过 Ctrl+N 切换
+            try:
+                from ..core.commands._model_cmd import _merge_provider_models
+                _models = _merge_provider_models(list(_models or []))
+            except Exception:
+                pass
             if not _models:
                 try:
                     from ..config.defaults import PROVIDERS as _PROVIDERS

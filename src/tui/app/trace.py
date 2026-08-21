@@ -35,6 +35,7 @@ from __future__ import annotations
 import json as _json
 import time as _time
 from dataclasses import dataclass, field
+from .trace_image import parse_image_blocks, image_summary, _is_image_block
 
 #: 记录种类（展示顺序/图标映射在 trace_view 消费）
 TRACE_KIND_ORDER = ("tools", "system", "user", "reasoning", "content", "tool", "subagent", "context")
@@ -122,6 +123,10 @@ class TraceRecord:
     tool_call_id: str = ""
     tool_args: object = None
     tool_result: str = ""
+    #: 多模态图片元信息列表（消息 content 里的 image block；检查器据此渲染
+    #:   半块真彩缩略图）。每个元素为 trace_image.parse_image_blocks 的结构。
+    #:   记录构建只存元信息（不解码），渲染在检查器按需 + 缓存进行。
+    images: list = field(default_factory=list)
 
 
 #: 块种类 → 轨迹记录种类（separator 跳过；splash 品牌屏跳过——非业务记录）
@@ -907,6 +912,26 @@ def _content_str(content) -> str:
     return _src(content)
 
 
+def _content_text(content) -> str:
+    """content 的**文本部分**（剔除图片 block，避免 base64 灌入台账）。
+
+    多模态消息 content 里含 ``image_url``/``image`` block——原始
+    ``_content_str`` 会把它们折叠成超长 ``[图片: data:image/...;base64,...]``。
+    本函数先过滤图片 block，再交 ``_content_str``（文本块仍按原有空格拼接 +
+    ANSI 消毒），图片本身另经 ``parse_image_blocks`` 提取并在检查器渲染缩略图。
+
+    Args:
+        content: 消息 content（str / list[dict]）。
+
+    Returns:
+        消毒后的文本部分（纯 str；无文本时为空串）。
+    """
+    if isinstance(content, list):
+        filtered = [b for b in content if not _is_image_block(b)]
+        return _content_str(filtered)
+    return _content_str(content)
+
+
 def _split_lines(text: str) -> list:
     """文本换行拆分（splitlines）缓存（性能：records 每帧重建时命中）。
 
@@ -1020,15 +1045,19 @@ def _records_from_messages(messages) -> tuple:
             records.append(rec)
             rows.append(rec)
         elif role == "user":
-            text = _content_str(msg.get("content", "")).strip()
-            if not text:
+            content = msg.get("content", "")
+            images = parse_image_blocks(content)
+            text = _content_text(content).strip()
+            if not text and not images:
                 continue
             rows.append(None)  # 轮次分隔行（新用户消息 = 新轮次）
-            lines = _split_lines(text)
+            lines = _split_lines(text) if text else []
+            if images:
+                lines = list(lines) + [image_summary(img) for img in images]
             index += 1
             rec = TraceRecord(
                 index=index, kind="user",
-                summary=_first_text(lines), lines=lines,
+                summary=_first_text(lines), lines=lines, images=images,
             )
             records.append(rec)
             rows.append(rec)
@@ -1043,13 +1072,17 @@ def _records_from_messages(messages) -> tuple:
                 )
                 records.append(rec)
                 rows.append(rec)
-            content = _content_str(msg.get("content", "")).strip()
-            if content:
-                lines = _split_lines(content)
+            content = msg.get("content", "")
+            images = parse_image_blocks(content)
+            text = _content_text(content).strip()
+            if text or images:
+                lines = _split_lines(text) if text else []
+                if images:
+                    lines = list(lines) + [image_summary(img) for img in images]
                 index += 1
                 rec = TraceRecord(
                     index=index, kind="content",
-                    summary=_first_text(lines), lines=lines,
+                    summary=_first_text(lines), lines=lines, images=images,
                 )
                 records.append(rec)
                 rows.append(rec)
@@ -1080,18 +1113,25 @@ def _records_from_messages(messages) -> tuple:
                 if cid:
                     pending[cid] = rec
         elif role == "tool":
-            text = _content_str(msg.get("content", "")).strip()
-            if not text:
+            content = msg.get("content", "")
+            images = parse_image_blocks(content)
+            text = _content_text(content).strip()
+            if not text and not images:
                 continue
             cid = msg.get("tool_call_id") or ""
             rec = pending.pop(cid, None) if cid else None
-            lines = _split_lines(text)
+            lines = _split_lines(text) if text else []
+            if images:
+                lines = list(lines) + [image_summary(img) for img in images]
             if rec is not None:
                 # ★ 工具调用 + 返回合并一条：返回追加到调用记录
                 rec.result = _first_text(lines)
                 # ★ 性能（O(N²) 优化）：合并列表缓存（内容不变 → 每帧零重建，
-                #   长工具返回不再每帧 O(返回行数) 复制）。
-                rec.lines = _merge_call_lines(rec.summary, text, lines)
+                #   长工具返回不再每帧 O(返回行数) 复制）。无图片走缓存路径；
+                #   带图片时图片摘要行依赖图片元信息（非 text），直接拼接。
+                rec.lines = _merge_call_lines(rec.summary, text, lines) if not images \
+                    else [rec.summary] + lines
+                rec.images = images
                 # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树
                 #   控件显示）：保存**原始返回文本**——检查器据此用树控件显示
                 #   返回值（JSON 树形展开；非 JSON 文本每行一个叶子节点）。
@@ -1103,7 +1143,7 @@ def _records_from_messages(messages) -> tuple:
                     index=index, kind="tool", summary="工具返回",
                     result=_first_text(lines),
                     lines=["工具返回"] + lines,
-                    tool_result=text,
+                    tool_result=text, images=images,
                 )
                 records.append(rec)
                 rows.append(rec)

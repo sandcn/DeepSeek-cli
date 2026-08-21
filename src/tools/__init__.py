@@ -7,6 +7,7 @@ from .base import Func
 from .bash import BashFunc as Bash
 from .bash_opt import BashOptFunc as BashOpt
 from .read_file import ReadFileFunc as ReadFile
+from .read_image import ReadImageFunc as ReadImage
 from .rm import RmFunc as Rm
 from .cp import CpFunc as Cp
 from .write_file import WriteFileFunc as WriteFile
@@ -28,6 +29,6 @@ from .registry import get_tools, register_tool
 # 漏加 __all__ 不影响 registry 自动发现，但影响 ``from src.tools import *``）
 __all__ = [
     'Func',
-    'Bash', 'BashOpt', 'ReadFile', 'Rm', 'WriteFile', 'UpdateFile', 'UserSelect', 'Search', 'Find', 'Ls', 'Mv', 'Cp', 'Mk', 'WebSearch', 'WebFetch', 'Subagent', 'SubagentOpt', 'Skill',
+    'Bash', 'BashOpt', 'ReadFile', 'ReadImage', 'Rm', 'WriteFile', 'UpdateFile', 'UserSelect', 'Search', 'Find', 'Ls', 'Mv', 'Cp', 'Mk', 'WebSearch', 'WebFetch', 'Subagent', 'SubagentOpt', 'Skill',
     'get_tools', 'register_tool'
 ]

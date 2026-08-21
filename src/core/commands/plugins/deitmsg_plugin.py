@@ -25,6 +25,12 @@ def _content_str(content: Any) -> str:
         parts = []
         for c in content:
             if isinstance(c, dict):
+                btype = c.get("type", "")
+                if btype == "image_url":
+                    url_container = c.get("image_url")
+                    url = url_container.get("url", "") if isinstance(url_container, dict) else ""
+                    parts.append(f"[图片: {url}]" if url else "[图片]")
+                    continue
                 parts.append(str(c.get("text", c)))
             else:
                 parts.append(str(c))

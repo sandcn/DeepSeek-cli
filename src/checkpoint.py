@@ -29,7 +29,15 @@ def save_checkpoint(messages: list[dict], model: str,
     if not task_description:
         for msg in reversed(messages):
             if msg.get("role") == "user":
-                content = msg.get("content", "") or ""
+                # content 可能为 list（多模态 content blocks）——提取文本
+                raw = msg.get("content", "") or ""
+                if isinstance(raw, list):
+                    try:
+                        from .api.multimodal import content_to_text
+                        raw = content_to_text(raw)
+                    except Exception:
+                        raw = ""
+                content = raw if isinstance(raw, str) else ""
                 task_description = content[:200]
                 if len(content) > 200:
                     task_description += "…"

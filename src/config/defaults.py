@@ -15,13 +15,16 @@ PROVIDERS = {
     "deepseek": {
         "base_url": "https://api.deepseek.com/v1/chat/completions",
         "default_model": "deepseek-v4-pro",
-        "models": ["deepseek-v4-pro", "deepseek-v4-flash"],
+        "models": ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"],
         "token_prices": {
             # 价格单位：美元 / 百万 tokens。input_cache_hit 为缓存命中输入价格
             # （DeepSeek 上下文缓存：命中部分按未命中价 ~1/8 计费，缺失时 /cost
             # 回退按 input 全价计费，保守不低估）。
+            # deepseek-v4-flash-vision-exp（实验性多模态模型）：计费价格与
+            # V4-Flash 一致，图片按 token 计费（一张图最多占 384 tokens）。
             "deepseek-v4-pro": {"input": 0.55, "output": 2.19, "input_cache_hit": 0.07},
             "deepseek-v4-flash": {"input": 0.55, "output": 2.19, "input_cache_hit": 0.07},
+            "deepseek-v4-flash-vision-exp": {"input": 0.55, "output": 2.19, "input_cache_hit": 0.07},
         }
     },
     "custom": {
@@ -88,6 +91,10 @@ DEFAULTS = {
     "notify_on_chat_completion": True,
     "models": [],
     "token_prices": {},
+    # 显式声明为多模态（视觉输入）的模型名列表（小写子串匹配，覆盖
+    # src/api/multimodal.py 内置模式未覆盖的模型；read_image 等图像工具
+    # 据此判断是否返回 base64 图片 content blocks）
+    "multimodal_models": [],
     "theme": "dark",
     # 技能（skill）子系统配置
     "skills": {
@@ -224,6 +231,12 @@ CONFIG_KEYS = {
         "rc_path": ("token_prices",),
         "type": dict,
         "default": {},
+        "cacheable": True,
+    },
+    "MULTIMODAL_MODELS": {
+        "rc_path": ("multimodal_models",),
+        "type": list,
+        "default": [],
         "cacheable": True,
     },
     # ---- HTTP 性能配置（嵌套路径） ----

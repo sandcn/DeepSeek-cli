@@ -129,3 +129,22 @@ def test_on_after_tool_normalizes_tool_result():
 
     # tool_done 收到的 output_preview 应为纯文本（ToolResult → text）
     assert agent.display.last_done_output == "内容已读取"
+
+
+def test_on_after_tool_normalizes_read_image_blocks():
+    """read_image 多模态 ToolResult（image_url blocks）→ tool_done 纯文本预览。"""
+    from src.core.internal.agent._tool_callbacks import ToolCallbackChain
+    from src.tools.base import ToolResult
+
+    agent = _FakeToolAgent()
+    chain = ToolCallbackChain(agent)
+
+    tc = {"id": "tc-1", "name": "read_image", "arguments": {"path": "a.png"}}
+    output = ToolResult(
+        text="图片已读取",
+        blocks=[{"type": "text", "text": "图片: a.png"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}}],
+    )
+    chain._on_after_tool(tc, output, success=True)
+
+    assert agent.display.last_done_output == "图片已读取"

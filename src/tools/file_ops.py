@@ -178,7 +178,15 @@ def get_last_user_message_preview(messages, max_chars=100):
     """从消息列表中提取最后一条用户消息的前 max_chars 个字"""
     for msg in reversed(messages):
         if msg.get("role") == "user" and msg.get("content"):
-            text = msg["content"].strip()
+            # content 可能为 list（多模态 content blocks）——提取文本
+            content = msg["content"]
+            if isinstance(content, list):
+                try:
+                    from ..api.multimodal import content_to_text
+                    content = content_to_text(content)
+                except Exception:
+                    content = ""
+            text = content.strip() if isinstance(content, str) else ""
             if len(text) <= max_chars:
                 return text
             return text[:max_chars] + "..."

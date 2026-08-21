@@ -24,10 +24,11 @@ class _AsyncObservabilityMiddleware(AsyncMiddleware):
     def _resolve(self, ctx: PipelineContext):
         """从 agent 获取 ObservabilityPort"""
         agent = ctx.agent
-        # 优先检查类属性（真实 agent），回退到实例属性（mock agent）
-        get_port = getattr(type(agent), 'get_observability_port', None)
-        if get_port is None or not callable(get_port):
-            get_port = getattr(agent, 'get_observability_port', None)
+        # 直接取实例属性：真实 Agent 的 get_observability_port 是实例方法，
+        # 若改用 type(agent) 取值会拿到未绑定函数（缺 self → TypeError → 被
+        # except 吞掉 → 必然返回 None，观测采集整体失效）。实例属性同时覆盖
+        # 真实 Agent（实例方法）与 mock agent（实例属性）两种场景。
+        get_port = getattr(agent, 'get_observability_port', None)
         if get_port is not None and callable(get_port):
             try:
                 return get_port()
@@ -58,11 +59,21 @@ class _AsyncObservabilityMiddleware(AsyncMiddleware):
                 port.counter("tokens.input", usage.get("input", 0))
                 port.counter("tokens.output", usage.get("output", 0))
                 if usage.get("input", 0) > 0 or usage.get("output", 0) > 0:
-                    port.histogram("model.latency_ms",
-                                   usage.get("latency_ms", 0))
-            total_chars = sum(
-                len(m.get("content", "") or "") for m in ctx.agent.messages
-            )
+                    # 仅当字段存在才记录——否则向直方图注入 0ms 采样会严重
+                    # 拉低 P50/P99（多数适配器不返回 latency_ms）。
+                    latency_ms = usage.get("latency_ms")
+                    if latency_ms is not None:
+                        port.histogram("model.latency_ms", latency_ms)
+            def _msg_text(chars_total):
+                content = chars_total.get("content", "") or ""
+                if isinstance(content, list):
+                    try:
+                        from ...api.multimodal import content_to_text
+                        return content_to_text(content)
+                    except Exception:
+                        return ""
+                return content if isinstance(content, str) else ""
+            total_chars = sum(len(_msg_text(m)) for m in ctx.agent.messages)
             port.gauge("context.chars", total_chars)
         except Exception:
             _logger.exception("AsyncObservability.after_model_call 异常")

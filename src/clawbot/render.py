@@ -77,7 +77,15 @@ def extract_tool_summary(messages: list[dict]) -> str:
                 args = str(fn.get("arguments") or "")[:120]
                 lines.append(f"🔧 调用工具 {name} {args}".rstrip())
         elif msg.get("role") == "tool":
-            content = strip_ansi(str(msg.get("content") or "")).strip()
+            # content 可能为 list（多模态 content blocks）——提取文本
+            raw = msg.get("content") or ""
+            if isinstance(raw, list):
+                try:
+                    from ..api.multimodal import content_to_text
+                    raw = content_to_text(raw)
+                except Exception:
+                    raw = ""
+            content = strip_ansi(str(raw)).strip()
             if content:
                 lines.append(f"  ↳ {content[:300]}")
     return "\n".join(lines)

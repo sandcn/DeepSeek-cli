@@ -123,6 +123,12 @@ def _validate_rc(rc):
         else:
             rc["models"] = [str(m) for m in rc["models"]]
 
+    if "multimodal_models" in rc:
+        if not isinstance(rc["multimodal_models"], (list, tuple)):
+            rc["multimodal_models"] = DEFAULTS.get("multimodal_models", [])
+        else:
+            rc["multimodal_models"] = [str(m) for m in rc["multimodal_models"]]
+
     if "token_prices" in rc:
         if not isinstance(rc["token_prices"], dict):
             rc["token_prices"] = DEFAULTS["token_prices"]

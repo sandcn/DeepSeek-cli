@@ -172,11 +172,23 @@ class BaseAgent:
             _logger.debug("消息变更后刷新上下文使用率失败", exc_info=True)
 
     def add_user_message(self, content: str | None) -> None:
-        """添加用户消息到消息列表。"""
+        """添加用户消息到消息列表。
+
+        多模态模型（如 deepseek-v4-flash-vision-exp）下，用户输入中携带的
+        图片引用（Markdown ``![alt](path)``、本地图片路径、http(s) 图片
+        URL）会被转换为 OpenAI 兼容 content blocks（text + image_url），
+        模型可直接看到图片；非多模态模型保持纯文本原样传入。
+        """
         if content is None:
             content = ""
         elif not isinstance(content, str):
             content = str(content)
+        # 多模态图片输入：当前模型支持视觉且文本含图片引用 → content blocks
+        try:
+            from ..api.multimodal import build_user_content_blocks
+            content = build_user_content_blocks(content, self.model)
+        except Exception:
+            _logger.debug("多模态图片输入转换失败，按纯文本处理", exc_info=True)
         self.messages.append({"role": "user", "content": content})
         self._refresh_context_usage()
 

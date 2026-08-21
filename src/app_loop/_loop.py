@@ -323,7 +323,12 @@ class InteractiveLoop:
             if not interrupted and session.messages:
                 last_msg = session.messages[-1] or {}
                 if last_msg.get("role") == "assistant":
+                    # content 可能为 list（多模态 content blocks，仅 user/tool
+                    # 消息；assistant 恒为 str/None）——is_network_error 前转 str 防御
                     last_content = last_msg.get("content", "") or ""
+                    if isinstance(last_content, list):
+                        from ..core.context_selector import message_to_text
+                        last_content = message_to_text(last_msg)
                     if is_network_error(last_content, None):
                         if attempt < max_attempts:
                             _logger.warning(

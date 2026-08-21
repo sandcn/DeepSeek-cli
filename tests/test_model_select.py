@@ -266,6 +266,27 @@ def test_collect_models_providers_fallback(monkeypatch):
     assert len(models) == len(set(models)), "聚合应去重"
 
 
+def test_collect_models_merges_provider_models():
+    """RC models 与 PROVIDERS 合并：新模型（vision）自动出现在列表。"""
+    port = _FakeConfigPort(["deepseek-v4-pro", "deepseek-v4-flash"], "deepseek-v4-flash")
+    models = _model_cmd._collect_models(_Ctx({}, config_port=port))
+    # RC 模型保持原序在前
+    assert models[:2] == ["deepseek-v4-pro", "deepseek-v4-flash"]
+    # provider 内置新模型被合并追加
+    assert "deepseek-v4-flash-vision-exp" in models
+    assert len(models) == len(set(models))
+
+
+def test_merge_provider_models_dedup_and_order():
+    """_merge_provider_models：去重保序 + 自定义模型保留。"""
+    merged = _model_cmd._merge_provider_models(
+        ["custom-model", "deepseek-v4-pro", "deepseek-v4-pro"],
+    )
+    assert merged.count("deepseek-v4-pro") == 1
+    assert merged[0] == "custom-model"
+    assert "deepseek-v4-flash-vision-exp" in merged
+
+
 # ── 3. /model 无参数：弹窗交互选择协议 ───────────────────
 
 def test_cmd_model_popup_confirmed_switch():
@@ -275,7 +296,9 @@ def test_cmd_model_popup_confirmed_switch():
     state = {"model": _MODELS[0]}
     assert _model_cmd._cmd_model(_Ctx(state, config_port=port, ui_adapter=adapter)) is True
     call = adapter.calls[0]
-    assert call["items"] == _MODELS
+    # RC 模型列表保持原序在前，PROVIDERS 内置模型追加在后
+    assert call["items"][:len(_MODELS)] == _MODELS
+    assert len(call["items"]) > len(_MODELS)
     assert call["title"] == "模型选择"
     assert call["initial_idx"] == 0
     assert "<-当前" in call["display_items"][0]

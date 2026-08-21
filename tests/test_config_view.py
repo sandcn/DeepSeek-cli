@@ -162,8 +162,8 @@ class TestViewModel:
     def test_build_config_entries_structure(self, isolated_rc):
         from src.config.view_model import build_config_entries
         entries = build_config_entries()
-        # CONFIG_KEYS(26) + 额外键(4) = 30
-        assert len(entries) == 30
+        # CONFIG_KEYS(27) + 额外键(4) = 31
+        assert len(entries) == 31
         keys = [e["key"] for e in entries]
         assert "MODEL" in keys and "HTTP_CONNECT_TIMEOUT" in keys
         assert "provider" in keys and "api_key" in keys
@@ -217,6 +217,7 @@ class TestViewModel:
         # json：list/dict 有子结构的配置项
         assert entries["MODELS"]["edit_kind"] == "json"
         assert entries["TOKEN_PRICES"]["edit_kind"] == "json"
+        assert entries["MULTIMODAL_MODELS"]["edit_kind"] == "json"
         assert entries["skills"]["edit_kind"] == "json"
         # input：数值/字符串
         assert entries["TEMPERATURE"]["edit_kind"] == "input"
@@ -1158,3 +1159,26 @@ class TestConfigCompletion:
     def test_config_show_no_more_params(self):
         items = self._complete("/config show")
         assert items == []
+
+
+def test_config_view_uses_public_truncate_width():
+    """config_view 的截断函数来自 _width 公共工具（不再依赖 input_area 私有）。"""
+    import src.tui.app.config_view as cv
+    fn = getattr(cv, "_truncate_width", None)
+    assert fn is not None
+    assert fn.__module__ == "src.tui._width"
+
+
+def test_start_edit_bool_false_selects_false():
+    """布尔配置项当前为 False 时，选择界面初始高亮应指向 false（P1 修复）。"""
+    from types import SimpleNamespace
+    from src.tui.app.config_view import _start_edit
+    cv = SimpleNamespace()
+    entry = {
+        "key": "ENABLE_NOTIFICATIONS", "type": bool, "value": False,
+        "options": [("true", "开启"), ("false", "关闭")],
+        "edit_kind": "select",
+    }
+    _start_edit(cv, entry)
+    assert cv.edit_mode == "select"
+    assert cv.edit_selected == 1  # 候选 "false"

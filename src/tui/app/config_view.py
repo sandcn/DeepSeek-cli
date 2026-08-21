@@ -12,7 +12,7 @@
     列表）Enter 后主区切换为**候选选项列表**（↑↓/jk 导航、g/G 首末、
     PgUp/PgDn 翻页、Enter 确认写回、Esc 取消）；
   - **子 JSON 结构化编辑界面**（``edit_mode == "json"``）：list/dict 有
-    子结构的配置项（MODELS/TOKEN_PRICES/skills 等）
+    子结构的配置项（MODELS/MULTIMODAL_MODELS/TOKEN_PRICES/skills 等）
     Enter 后主区显示**子 JSON 条目列表**（list ``[i] 元素`` / dict
     ``key = 值``），支持增删改（Enter 编辑选中条目 · a 追加 · d 删除 ·
     Esc 保存写回返回浏览模式）；条目编辑/追加走**子输入行**
@@ -54,10 +54,9 @@ import copy
 import json
 
 from src.tui.core.style import Style
-from src.tui._width import wcswidth_simple
-from src.tui.app.input_area import _truncate_width
+from src.tui._width import wcswidth_simple, truncate_width as _truncate_width
 from src.tui.ink import TEXT, Column, Row, StyledRun, h
-from src.tui.ink.hooks import use_fullscreen, use_input
+from src.tui.ink.hooks import use_fullscreen, use_input, usePaste
 from src.tui.ink.helpers import truncate_runs
 from src.tui.ink.widgets.listview import ListView
 from src.config.view_model import format_config_value, parse_config_value
@@ -95,7 +94,9 @@ def _viewport_rows() -> int:
     try:
         from src.tui._screen import TerminalWidthCache
         h = TerminalWidthCache.get_default().get_height()
-        return max(8, int(h) - 2)
+        # 预算 = header 1 行 + 底部提示/错误最多 2 行（json 模式）→ 预留 3 行，
+        # 避免窄终端 list_h 溢出。
+        return max(8, int(h) - 3)
     except Exception:
         return 16
 
@@ -181,6 +182,7 @@ def _start_edit(cv, entry) -> None:
     cv.editing = True
     cv.edit_key = entry["key"]
     cv.edit_error = ""
+    cv.message = ""
     # edit_kind 缺失时按 options 回退（select）；两者皆无 → input
     edit_kind = entry.get("edit_kind") or ("select" if entry.get("options") else "input")
     if edit_kind == "select":
@@ -188,7 +190,13 @@ def _start_edit(cv, entry) -> None:
         cv.edit_mode = "select"
         cv.edit_options = [str(o[0]) for o in options]
         cv.edit_options_desc = [str(o[1]) for o in options]
-        cur = str(entry.get("value") or "")
+        cur = entry.get("value")
+        if isinstance(cur, bool):
+            cur = "true" if cur else "false"
+        elif cur is None:
+            cur = ""
+        else:
+            cur = str(cur)
         idx = 0
         for i, o in enumerate(cv.edit_options):
             if o == cur:
@@ -254,6 +262,10 @@ def ConfigView(props) -> object:
         parsed, err = parse_config_value(entry.get("type", str), str(value))
         if err:
             cv.edit_error = err
+            return False
+        # 敏感项（api_key）空输入确认不得清空已有密钥（数据丢失防御）
+        if entry.get("sensitive") and (parsed is None or parsed == ""):
+            cv.edit_error = "敏感项不能为空，请输入新值（Esc 取消）"
             return False
         try:
             from src.config.loader import update_config
@@ -589,6 +601,22 @@ def ConfigView(props) -> object:
         return False
 
     use_input(_handle, visible)
+
+    def _handle_paste(text: str) -> bool:
+        """编辑输入界面粘贴追加（input / json_input；单行化）。"""
+        if not visible or cv is None:
+            return False
+        if not cv.editing or cv.edit_mode not in ("input", "json_input"):
+            return False
+        paste = (text or "").replace("\r", "").replace("\n", "")
+        if not paste:
+            return True
+        remaining = _EDIT_VALUE_MAX - len(cv.edit_value)
+        if remaining > 0:
+            cv.edit_value += paste[:remaining]
+        return True
+
+    usePaste(_handle_paste, {"isActive": bool(visible and cv and cv.editing)})
     # ★ 模态全屏视图声明（2026-08-17 通用机制）：visible 期间未消费按键被
     #   input router 吞掉（不落入输入缓冲）——字符/Enter 不误编辑/误提交；
     #   关闭后（visible=False）hook 不激活零影响，输入区恢复正常输入。
