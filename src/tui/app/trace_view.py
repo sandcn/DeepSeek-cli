@@ -452,13 +452,24 @@ def _detail_deps(rec) -> tuple:
     if getattr(rec, "kind", "") == "tool":
         args = getattr(rec, "tool_args", None)
         result = str(getattr(rec, "tool_result", "") or "")
-        return ("tool-tree", _args_dep(args), result[:200], len(result))
+        # ★ 多模态工具（read_image 等）：图片指纹并入 deps——若工具返回了
+        #   图片，但元信息文本（尺寸/格式/占用）恰好相同，use_memo 也能感知
+        #   图片变化而重建缩略图（修复前 deps 不含 images → 缩略图恒不刷新）。
+        #   展平为 ";".join（str 原子值——use_memo deps 逐项按值比较，嵌套
+        #   tuple 按 is 恒 miss，见 docstring「展平原子值」契约）。
+        images = getattr(rec, "images", None) or []
+        img_fp = ";".join((img.get("sha", "") or "") for img in images if isinstance(img, dict))
+        return ("tool-tree", _args_dep(args), result[:200], len(result), img_fp)
     block = getattr(rec, "source_block", None)
     if block is not None:
         return (id(getattr(block, "lines", None)), len(getattr(block, "lines", None) or []))
     lines = getattr(rec, "lines", None) or []
     images = getattr(rec, "images", None) or []
-    img_fp = tuple(img.get("sha", "") for img in images if isinstance(img, dict))
+    # ★ 2026-08-22（review P2-3）：展平为 str 原子值——use_memo deps 逐项按值
+    #   比较，嵌套 tuple 按 is 恒 miss（与 trace.py `_messages_fingerprint` 等
+    #   契约一致）；修复前非 tool 分支返回嵌套 tuple（每帧重建新对象），带图
+    #   user/assistant 记录内容行缓存恒失效、每帧全量重建（抵消近期优化）。
+    img_fp = ";".join((img.get("sha", "") or "") for img in images if isinstance(img, dict))
     if lines:
         return (id(lines), getattr(rec, "index", 0), img_fp)
     return (None, img_fp)
@@ -827,11 +838,15 @@ def _tool_tree_rows(rec, right_w: int, collapsed: set | None = None) -> tuple:
     right_w = max(1, right_w)
     args = getattr(rec, "tool_args", None)
     result = str(getattr(rec, "tool_result", "") or "")
+    # ★ 多模态工具（read_image 等）：图片指纹并入缓存键——图片变化但元信息
+    #   文本不变时（_TOOL_TREE_CACHE 键否则命中旧缩略图）仍能重建。
+    images = getattr(rec, "images", None) or []
+    img_fp = tuple((img.get("sha", "") or "") for img in images if isinstance(img, dict))
     # ★ 2026-08-20（review P2）：缓存键展平原子值——``repr(args)[:200]``
     #   改为 ``_args_dep(args)``（采样指纹，超大参数免每帧全量 repr）；
     #   ``tuple(sorted(collapsed or ()))`` 嵌套 tuple 按 is 引用比较恒 miss
     #   （折叠状态变化/每帧新对象）→ 改为 ``";".join`` 单一 str 原子值。
-    key = (_args_dep(args), result[:200], len(result), right_w,
+    key = (_args_dep(args), result[:200], len(result), img_fp, right_w,
            ";".join(sorted(collapsed or ())))
     cached = _TOOL_TREE_CACHE.get(key)
     if cached is not None:
@@ -851,7 +866,18 @@ def _tool_tree_rows(rec, right_w: int, collapsed: set | None = None) -> tuple:
     # ── 2. 分割线（参数 / 返回值 之间的分隔） ──
     rows.append([StyledRun("\u2500" * max(1, right_w - 1), _S_SEP_ROW)])
     keys.append(None)
-    # ── 3. 返回值小节（树控件显示返回值） ──
+    # ── 3. 图片小节（多模态工具返回图片；缩略图作为返回视觉主体优先展示） ──
+    #   read_image 等工具的返回值本质上是一张图，元信息文本仅是对图片的说明——
+    #   把缩略图独立成「▸ 图片」小节、置于「▸ 返回值」文本之前，避免图片被
+    #   埋在一堆元信息文本之后（修复前缩略图被追加到树外、无标题、信息割裂）。
+    if images:
+        rows.append([StyledRun(f"{_SECTION_PREFIX}图片", _S_SECTION)])
+        keys.append(None)
+        for img in images:
+            for r in _thumbnail_rows(img, right_w):
+                rows.append(r)
+                keys.append(None)
+    # ── 4. 返回值小节（树控件显示返回值） ──
     rows.append([StyledRun(f"{_SECTION_PREFIX}返回值", _S_SECTION)])
     keys.append(None)
     result_nodes = _parse_tree_text(result)
@@ -991,13 +1017,17 @@ def _inspector_content_rows(rec, right_w: int, collapsed: set | None = None) -> 
                 line = str(line)
             rows.extend(_wrap_by_width(line, right_w))
         keys = [None] * len(rows)
-    # ── 多模态图片缩略图（检查器追加渲染；右栏宽驱动尺寸） ──
-    images = getattr(rec, "images", None) or []
-    if images:
-        for img in images:
-            for r in _thumbnail_rows(img, right_w):
-                rows.append(r)
-                keys.append(None)
+    # ── 多模态图片缩略图（非工具树分支追加渲染；右栏宽驱动尺寸） ──
+    #   tool 树分支（use_tool_tree=True）已在 _tool_tree_rows 内联「▸ 图片」
+    #   小节渲染缩略图；此处只覆盖纯文本/markdown 分支（user/assistant 消息
+    #   带图、tool 无参数/无返回但带图等），避免重复追加。
+    if not use_tool_tree:
+        images = getattr(rec, "images", None) or []
+        if images:
+            for img in images:
+                for r in _thumbnail_rows(img, right_w):
+                    rows.append(r)
+                    keys.append(None)
     if len(rows) > _INSPECTOR_MAX_ROWS:
         rows = rows[:_INSPECTOR_MAX_ROWS]
         keys = keys[:_INSPECTOR_MAX_ROWS]

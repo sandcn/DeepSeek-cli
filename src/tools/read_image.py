@@ -14,7 +14,7 @@ DSH 对齐的加工语义（2026-08 重构）：
 保留当前项目特性：
 - 分块读取（start_x/start_y/end_x/end_y 像素区域裁剪）
 - 图像操作（grayscale / rotate90/180/270 / flip_h / flip_v / scale）
-- 防爆上下文：max_tokens 预算 + 「预计占用 tokens」透明提示
+- 防爆上下文：max_tokens 预算 + 字节硬上限（自动等比缩小，保证上下文可控）
 
 返回格式固定为多模态：文本元信息 + OpenAI 兼容 image_url data URI
 content blocks（Anthropic 适配器自动转 image block）。
@@ -176,8 +176,7 @@ def _estimate_uri_tokens(data_len: int) -> int:
 
     公式：base64 文本 ≈ len*4/3 + 前缀（data:image/png;base64, 等）；token
     按 0.3/字符，另加 300 缓冲覆盖元信息中文。供 ``_fit_multimodal_to_budget``
-    （预算阈值）与 ``_measure_output_tokens``（元信息展示）共用，避免两处
-    公式漂移。
+    （预算阈值）与字节硬上限适配共用，避免两处公式漂移。
     """
     b64_chars = int(data_len * 4 / 3) + 64
     return max(1, int(b64_chars * 0.3) + 300)
@@ -369,6 +368,7 @@ class ReadImageFunc(Func):
 
         operation = str(args.get("operation") or "none").strip().lower()
         if operation not in _SUPPORTED_OPERATIONS:
+            _logger.debug("read_image operation %r 非法，回退 'none'", operation)
             operation = "none"
 
         return cls(
@@ -427,7 +427,12 @@ class ReadImageFunc(Func):
         self.start_y = start_y
         self.end_x = end_x
         self.end_y = end_y
-        self.operation = operation if operation in _SUPPORTED_OPERATIONS else "none"
+        if operation in _SUPPORTED_OPERATIONS:
+            self.operation = operation
+        else:
+            if operation != "none":
+                _logger.debug("read_image operation %r 非法，回退 'none'", operation)
+            self.operation = "none"
         self.scale_width = scale_width
         self.scale_height = scale_height
         self.max_dimension = _to_int(max_dimension, 256)
@@ -494,6 +499,16 @@ class ReadImageFunc(Func):
         except Exception as e:
             return f"(读取失败: {e})"
 
+        # ── 应用 EXIF 方向（在取尺寸/裁剪前——带 orientation 的 JPEG 先摆正，
+        #   使 start_x/start_y/end_x/end_y 与用户目视方向一致；修复前
+        #   exif_transpose 在 crop 之后才执行，按原始未摆正坐标裁剪后整体
+        #   旋转 → 返回区域与用户期望的视觉区域不符） ──
+        try:
+            from PIL import ImageOps
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass  # 摆正失败（异常图）→ 原样继续（防御，幂等：_normalize_srgb 再次 exif_transpose 为 no-op）
+
         width, height = img.size
 
         # ── 分块区域（像素坐标，含端点） ────────────────
@@ -532,17 +547,16 @@ class ReadImageFunc(Func):
         img = _fit_dimension(img, limit)
 
         # ── 6. token 预算适配（软约束，防爆上下文） ──────
-        budget = self.max_tokens
-        budget_shrunk = False
-        if budget > 0:
-            before_wh = img.size
-            img = _fit_multimodal_to_budget(img, budget)
-            budget_shrunk = img.size != before_wh
+        if self.max_tokens > 0:
+            img = _fit_multimodal_to_budget(img, self.max_tokens)
 
         # ── 7. 字节硬上限（DSH normalizedImageMaxBytes） ──
         img = _fit_to_byte_cap(img, _DSH_NORMALIZED_MAX_BYTES)
 
-        # ── 元信息 ───────────────────────────────────────
+        # ── 元信息（精简：不再携带面向模型的技术尾注——「模式: 多模态(base64
+        #   PNG)」「预计占用: … tokens」「如需细节…」此前会在轨迹 Trace 检查器
+        #   「▸ 返回值」中显示为多余叶子行；图片本身经 image_url block 返回，
+        #   模型天然可见，无需文本复述） ──
         fmt_name = (getattr(img, "format", None) or "PNG").upper()
         out_w, out_h = img.size
         meta = [
@@ -554,28 +568,8 @@ class ReadImageFunc(Func):
             meta.append(f"区域: ({start_x},{start_y})-({end_x},{end_y})")
         meta.append(f"操作: {self.operation}")
         meta.append(f"格式: {fmt_name}")
-        meta.append("模式: 多模态(base64 PNG)")
-        budget_label = "不限制" if budget <= 0 else f"max_tokens={budget}"
-        if budget_shrunk:
-            meta.append(f"预计占用: 约 {self._measure_output_tokens(img)} tokens"
-                        f"（预算 {budget_label}，已自动缩小）")
-        else:
-            meta.append(f"预计占用: 约 {self._measure_output_tokens(img)} tokens"
-                        f"（预算 {budget_label}）")
-        if not region_changed and budget_shrunk:
-            meta.append("如需细节，可用 start_x/start_y/end_x/end_y 放大查看局部区域。")
 
         return self._build_multimodal_output(img, meta)
-
-    def _measure_output_tokens(self, img) -> int:
-        """估算最终多模态输出（含 base64 图像数据）的 token 数，用于元信息展示。"""
-        try:
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            # data URI 文本长度（近似，不需真实 base64 编码）
-            return _estimate_uri_tokens(len(buf.getvalue()))
-        except Exception:
-            return 0
 
     # ── 图像操作 ─────────────────────────────────────────
 
@@ -626,6 +620,10 @@ class ReadImageFunc(Func):
             return f"(编码失败: {e})"
         data = buf.getvalue()
         text = "\n".join(meta)
-        text += "\n图片已编码为 base64 PNG（data URI）随 content blocks 返回。"
+        # ★ 2026-08-22（轨迹 Trace 尾注噪音）：不再把「图片已编码为 base64
+        #   PNG（data URI）随 content blocks 返回。」拼进返回文本——该句是给
+        #   模型的技术提示，在 Trace 检查器「▸ 返回值」中显示为多余叶子行；
+        #   data URI 图片本身随 image_url block 返回，模型天然可见，无需文本
+        #   复述（跟踪显示更干净）。
         self.result_blocks = build_image_content_blocks(text, data, "image/png")
         return text

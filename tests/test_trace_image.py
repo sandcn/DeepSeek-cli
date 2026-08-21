@@ -17,7 +17,7 @@ import pytest
 
 pytest.importorskip("PIL")  # 缩略图渲染依赖 Pillow
 
-from src.tui.app.trace import _records_from_messages
+from src.tui.app.trace import _records_from_messages, _next_record_index, TraceRecord
 from src.tui.app.trace_view import _inspector_content_rows
 from src.tui.app.trace_image import (
     parse_image_blocks, image_summary, thumbnail_rows,
@@ -133,3 +133,20 @@ def test_inspector_appends_thumbnail_row():
     styled = [r for r in rows if isinstance(r, list)]
     assert styled, "检查器应渲染半块缩略图行"
     assert styled[0][0].text == "\u2580"
+
+
+def test_next_record_index_handles_tools_record():
+    """P2-2/P3-4：_next_record_index 以「现有最大 index + 1」编号，避免台账 #N 断号。
+
+    修复前 _subagent_records/_live_records 以 len(records) 作起点：_records_from_messages
+    在 #0 工具列表存在时记录 index 为 0..len-1（连续），末条 = len-1，函数体
+    index_holder[0] += 1 从 len 起 → 首条追加取 len+1 → 跳过 len（断号）。
+    """
+    recs = [
+        TraceRecord(index=0, kind="tools"),   # #0 工具列表
+        TraceRecord(index=1, kind="user"),    # 消息记录
+        TraceRecord(index=2, kind="content"),
+    ]
+    # 末条 index=2 → 下一条应为 3（修复前 len(records)=3 → 3+1=4 断号）
+    assert _next_record_index(recs) == 3
+    assert _next_record_index([]) == 0

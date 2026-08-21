@@ -955,8 +955,9 @@ def _split_lines(text: str) -> list:
     return lines
 
 
-def _merge_call_lines(call: str, text: str, lines: list) -> list:
-    """工具调用行 + 返回行 → 合并列表（缓存：records 每帧重建时命中）。
+def _merge_call_lines(call: str, text: str, lines: list,
+                      images: list | None = None) -> list:
+    """工具调用行 + 返回行（+图片摘要行）→ 合并列表（缓存：每帧重建命中）。
 
     ★ 性能（2026-08-19 用户需求：轨迹 Trace 优化性能，O(N²) 优化）：
     消息源模式下历史 tool 返回消息每帧经 ``list(rec.lines) + lines`` 重建
@@ -967,12 +968,22 @@ def _merge_call_lines(call: str, text: str, lines: list) -> list:
     与 ``_split_lines`` 共享引用同契约；``_merge_subagent_into_tool_record``
     先 ``list(rec.lines)`` 复制再扩展，不污染缓存）。有界防无限增长（与
     ``_content_str`` 同 ``_CONTENT_CACHE_MAX``）。
+
+    ★ 2026-08-22（多模态工具）：``images`` 非空时在返回行末追加图片摘要
+    行（``[图片 image/png ~81B]``，供台账搜索/一致性）——缓存键加入图片
+    sha 指纹（图片变化但文本不变时仍能重建，修复前带图分支整体绕过缓存
+    每帧重建）。
     """
-    key = (call, text)
+    img_fp: tuple = ()
+    if images:
+        img_fp = tuple((img.get("sha", "") or "") for img in images if isinstance(img, dict))
+    key = (call, text, img_fp)
     cached = _merge_lines_cache.get(key)
     if cached is not None:
         return cached
     merged = [call] + lines
+    if images:
+        merged = merged + [image_summary(img) for img in images]
     if len(_merge_lines_cache) >= _CONTENT_CACHE_MAX:
         _merge_lines_cache.clear()
     _merge_lines_cache[key] = merged
@@ -1121,23 +1132,27 @@ def _records_from_messages(messages) -> tuple:
             cid = msg.get("tool_call_id") or ""
             rec = pending.pop(cid, None) if cid else None
             lines = _split_lines(text) if text else []
-            if images:
-                lines = list(lines) + [image_summary(img) for img in images]
             if rec is not None:
                 # ★ 工具调用 + 返回合并一条：返回追加到调用记录
                 rec.result = _first_text(lines)
                 # ★ 性能（O(N²) 优化）：合并列表缓存（内容不变 → 每帧零重建，
-                #   长工具返回不再每帧 O(返回行数) 复制）。无图片走缓存路径；
-                #   带图片时图片摘要行依赖图片元信息（非 text），直接拼接。
-                rec.lines = _merge_call_lines(rec.summary, text, lines) if not images \
-                    else [rec.summary] + lines
+                #   长工具返回不再每帧 O(返回行数) 复制）。图片摘要行经
+                #   ``_merge_call_lines`` 的 images 分支追加（含缓存），
+                #   不再绕过缓存直接 ``[rec.summary] + lines`` 每帧重建。
+                #   ★ 2026-08-22（P1 修复）：调用方**不重复**预加图片摘要——
+                #   修复前 ``lines`` 先 ``+ [image_summary(...)]`` 再传
+                #   ``_merge_call_lines``（内部又 ``+ [...]``）→ 图片摘要行
+                #   重复两次；现由 ``_merge_call_lines`` 统一追加一次。
+                rec.lines = _merge_call_lines(rec.summary, text, lines, images)
                 rec.images = images
                 # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树
                 #   控件显示）：保存**原始返回文本**——检查器据此用树控件显示
                 #   返回值（JSON 树形展开；非 JSON 文本每行一个叶子节点）。
                 rec.tool_result = text
             else:
-                # 无匹配调用（异常/截断会话）→ 独立返回记录
+                # 无匹配调用（异常/截断会话）→ 独立返回记录（图片摘要追加到返回行）
+                if images:
+                    lines = list(lines) + [image_summary(img) for img in images]
                 index += 1
                 rec = TraceRecord(
                     index=index, kind="tool", summary="工具返回",
@@ -1276,6 +1291,19 @@ def _merge_subagent_into_tool_record(rec, slot, label: str) -> None:
     detail.append(rec.result)
     detail.extend(_subagent_slot_detail(slot))
     rec.lines = detail
+
+
+def _next_record_index(records: list) -> int:
+    """现有记录的最大 index + 1（追加记录起始编号；records 为空 → 0）。
+
+    ★ 2026-08-22（review P2-2/P3-4，台账 #N 断号修复）：此前
+    ``_subagent_records``/``_live_records`` 以 ``len(records)`` 作 index_holder
+    起点——``_records_from_messages`` 在 #0 工具列表存在时记录 index 为
+    0..len-1（连续），末条 = len-1，函数体 ``index_holder[0] += 1`` 从 len 起
+    → 首条追加记录取 len+1 → 台账 #N 断号跳过 len。改为「现有最大 index + 1」，
+    无论是否含工具列表（#0）均连续编号。
+    """
+    return max((r.index for r in records if r is not None), default=-1) + 1
 
 
 def _subagent_records(index_holder: list, out_records: list, rows: list) -> set:
@@ -1619,13 +1647,13 @@ def build_subagent_trace_records(label: str, model=None) -> tuple:
                 #   一样）：追加运行中内容（运行中工具 / 正在思考/生成占位）
                 #   ——● running 记录动态显示 subagent 正在生成的内容，完成后
                 #   由消息记录接管（无重复）。
-                _subagent_live_records([len(records)], records, rows, slot)
+                _subagent_live_records([_next_record_index(records) - 1], records, rows, slot)
                 return records, rows
     # 回退：槽位活动记录（无 messages / 消息为空 / 槽位不存在）
     if slot is not None:
         records, rows = _subagent_fallback_records(label, slot)
         if records:
-            _subagent_live_records([len(records)], records, rows, slot)
+            _subagent_live_records([_next_record_index(records) - 1], records, rows, slot)
             return records, rows
         # ★ 2026-08-19（用户需求：轨迹 Trace 也能用回车显示后台 subagent）：
         #   槽位存在但消息/提词/工具历史/结果全部缺失（异常数据）→ 兜底
@@ -1675,7 +1703,7 @@ def build_trace_records(model) -> tuple:
                     #   tool_call_id 集合——_live_records 据此跳过这些 box 的
                     #   重复 running 记录（运行期也只显示一条）。
                     merged_tool_ids = _subagent_records(
-                        [len(records)], records, rows,
+                        [_next_record_index(records) - 1], records, rows,
                     )
                     # ★ 2026-08-19（用户需求：轨迹 Trace 正在生成的内容也要
                     #   动态显示）：消息源（agent.messages）仅在流式完成后才
@@ -1684,7 +1712,8 @@ def build_trace_records(model) -> tuple:
                     #   追加为 running 记录（台账尾部；trace_selected=-1
                     #   跟随尾部自动展示最新生成内容；完成后记录消失由
                     #   消息记录接管，无重复）。
-                    _live_records(model, [len(records)], records, rows,
+                    _live_records(model, [_next_record_index(records) - 1],
+                                  records, rows,
                                   merged_tool_ids=merged_tool_ids)
                     return records, rows
         except Exception:

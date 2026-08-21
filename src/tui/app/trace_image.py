@@ -27,6 +27,8 @@ _IMAGE_B64_RE = re.compile(r"^data:(image/[A-Za-z0-9.+-]+);base64,(.*)$", re.S)
 _HALF = "\u2580"
 #: 缩略图单元上限（列=右栏宽自适应，行=17 个半块）
 _THUMB_ROWS = 16
+#: 缩略图放大倍数上限（小图允许放大以贴近显示盒，上限防过度放大模糊）
+_THUMB_MAX_UPSCALE = 4
 #: 渲染/解码缓存上限（超限清空重建——miss 仅多一次渲染）
 _ROW_CACHE_MAX = 64
 _rows_cache: dict = {}
@@ -205,7 +207,11 @@ def _render(b64: str, w_cells: int, h_cells: int) -> list:
 
     # 像素目标：w_cells 宽 × h_cells*2 高（半块：每格 = 1 像素宽 × 2 像素高）
     pw, ph = w_cells, h_cells * 2
-    scale = min(pw / w, ph / h, 1.0)
+    # ★ 2026-08-22：允许等比放大至填满显示盒（不再硬限 1.0）——小图（如 4x4）
+    #   不再显示成几列的窄条；放大倍数受 _THUMB_MAX_UPSCALE 上限约束防模糊。
+    scale = min(pw / w, ph / h)
+    if scale > _THUMB_MAX_UPSCALE:
+        scale = _THUMB_MAX_UPSCALE
     nw = max(1, int(w * scale))
     nh = max(1, int(h * scale))
     try:

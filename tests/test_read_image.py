@@ -98,7 +98,9 @@ async def test_capability_gate_passes_multimodal(tmp_path, monkeypatch):
     p = _write_test_image(tmp_path / "t.png", 2, 2)
     f = ReadImageFunc(path=str(p))
     out = await f.execute()
-    assert "多模态(base64 PNG)" in out
+    assert "图片:" in out
+    assert "尺寸:" in out
+    # 多模态 success 路径 → 设置 result_blocks（text + image_url data URI）
     assert f.result_blocks is not None
 
 
@@ -126,7 +128,6 @@ async def test_capability_gate_uses_routed_agent_model(tmp_path, monkeypatch):
     # 门禁确实询问了调用代理的当前路由模型（而非全局默认）
     assert seen and seen[0] == "deepseek-v4-flash-vision-exp"
     assert not out.startswith("(cannot read ")
-    assert "多模态(base64 PNG)" in out
     assert f.result_blocks is not None
 
 
@@ -166,7 +167,6 @@ async def test_multimodal_output_sets_result_blocks(tmp_path, monkeypatch):
     p = _write_test_image(tmp_path / "t.png", 2, 2)
     f = ReadImageFunc(path=p)
     out = await f.execute()
-    assert "多模态(base64 PNG)" in out
     blocks = f.result_blocks
     assert isinstance(blocks, list) and len(blocks) == 2
     assert blocks[0]["type"] == "text"
@@ -296,13 +296,17 @@ async def test_missing_path_raises():
 
 # ── 8. 防爆上下文（预算 + 字节上限） ──────────────────
 
-async def test_output_token_hint(tmp_path, monkeypatch):
-    """输出始终附带「预计占用 tokens / 预算」提示（透明可见）。"""
+async def test_output_meta_no_tailnote(tmp_path, monkeypatch):
+    """输出精简：核心元信息保留，不再携带「模式/预计占用/如需细节」技术尾注。"""
     _multimodal(monkeypatch, True)
     p = _write_test_image(tmp_path / "t.png", 2, 2)
     out = await ReadImageFunc(path=p).execute()
-    assert "预计占用: 约" in out
-    assert "预算 max_tokens=8000" in out
+    assert "图片:" in out
+    assert "尺寸:" in out
+    assert "格式: PNG" in out
+    assert "预计占用" not in out
+    assert "模式: 多模态" not in out
+    assert "如需细节" not in out
 
 
 async def test_max_tokens_zero_disables_budget(tmp_path, monkeypatch):
@@ -310,7 +314,6 @@ async def test_max_tokens_zero_disables_budget(tmp_path, monkeypatch):
     _multimodal(monkeypatch, True)
     p = _write_test_image(tmp_path / "big.png", 100, 100)
     out = await ReadImageFunc(path=p, max_dimension=512, max_tokens=0).execute()
-    assert "预算 不限制" in out
     # 100x100 无预算约束也不触发字节上限 → 尺寸保持不变
     assert "尺寸: 100x100" in out
 
@@ -330,7 +333,6 @@ async def test_multimodal_budget_shrinks(tmp_path, monkeypatch):
     noise.save(str(p), format="PNG")
     f = ReadImageFunc(path=str(p), max_dimension=256, max_tokens=2000)
     out = await f.execute()
-    assert "已自动缩小" in out
     assert "尺寸:" in out
     blocks = f.result_blocks
     assert blocks is not None and blocks[1]["type"] == "image_url"

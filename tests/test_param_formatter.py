@@ -56,3 +56,17 @@ def test_extract_truncates_long_value():
 
 def test_extract_missing_key_returns_empty():
     assert extract_key_params("read_file", {"other": "x"}) == ""
+
+
+def test_extract_read_image_path():
+    """read_image 归入已知工具 → 显示纯 path 值（修复前走未知工具 k=v → `path=…`）。"""
+    assert extract_key_params("read_image", {"path": "a.png"}) == "a.png"
+    assert extract_key_params("read_image", '{"path": "x.png"}') == "x.png"
+
+
+def test_extract_non_dict_json_falls_back():
+    """合法 JSON 但顶层非 dict（"5"/"null"/"[1,2]"/"\"str\""）→ 回退原始串（修复前静默返回空）。"""
+    assert extract_key_params("read_file", "5") == "5"
+    assert extract_key_params("read_file", "null") == "null"
+    assert extract_key_params("read_file", '"s"') == '"s"'
+    assert extract_key_params("read_file", "[1, 2]") == "[1, 2]"
