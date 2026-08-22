@@ -23,6 +23,7 @@
 - 强制所有修改完成了，再检查：所有修改必须全部落实完成、确认无遗漏无未完成项后，才能进入检查/审查/验收阶段；禁止修改未全部完成就提前检查，禁止跳过检查直接结束任务
 - 所有代码修改完之后，必须强制派发一个 review agent 进行代码审查，并清空它返回的 P0~P3 级问题（逐条修复，直到全部清零）；review agent 的提词强制只能包含要 review 的文件列表，严禁附加任何其它内容（如目标、要求、约束、说明、上下文等一律禁止）
 - 禁止用 cat、sed、tail、head、awk 等 shell 命令代替 read_file 读代码；读代码一律用内部工具 `read_file`
+- 有 UI 或渲染的界面（图片、图表、渲染输出等），必须强制用 `read_image` 工具读取并验证正确性
 - **强制用内部工具实现所有（红线 · 一票否决）**：所有功能实现必须使用内部工具完成（读文件用 `read_file`、写文件用 `write_file`/`update_file`、搜索用 `search`、找文件用 `find`/`ls`、建目录用 `mkdir`、复制用 `cp`、移动用 `mv`、删除用 `rm`），禁止用 bash 命令替换/替代内部工具（禁止 `cat` 读文件、`grep` 搜索、`sed`/`awk` 修改、`echo` 写文件、`find`/`ls` 列目录等）；**强制禁止用 bash 修改文件（因为没有文件沙盒：bash 直接修改文件无保护、不可撤回，必须改用内部工具 `write_file`/`update_file`/`mkdir`/`cp`/`mv`/`rm`）**；bash 仅限内部工具无法覆盖的场景（编译构建、git、包管理、进程管理、系统信息查询），且需注明例外原因
 - **元文件保护**：未经用户明确指定，禁止读取和修改 7 个运行时元文件：**global.md、main.md、plan.md、think.md、map.md、review.md、execute.md**
 - 禁止 rm -rf / mkfs / dd / chmod 777 / sudo / chown
