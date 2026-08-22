@@ -268,7 +268,17 @@ class _StdoutLineTracker:
         """
         thread = threading.Thread(target=self._flush_worker, daemon=True)
         self._flush_worker_thread = thread
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            # ★ P1（review 2026-08-22）：thread.start() 抛异常（OS 线程资源
+            #   耗尽/RuntimeError）时单飞标志已被调用方置 True——若不复位，
+            #   此后 _buffer_to_output 的 ``not self._flush_in_progress`` 恒为
+            #   False，永久不再刷盘（历史行不落盘）。复位标志并记日志，
+            #   交由定时器 2s 后重试。
+            self._flush_in_progress = False
+            self._flush_worker_thread = None
+            _logger.warning("flush worker 启动失败，交由定时器重试", exc_info=True)
 
     def _flush_worker(self) -> None:
         """刷盘工作线程：执行刷盘后复位单飞标志并检查残留。
@@ -300,9 +310,7 @@ class _StdoutLineTracker:
                     if self._pending_flush and len(self._output_buffer) < 50:
                         self._pending_flush = False
                     self._flush_in_progress = True
-                    thread = threading.Thread(target=self._flush_worker, daemon=True)
-                    self._flush_worker_thread = thread
-                    thread.start()
+                    self._spawn_flush_worker_locked()
                 else:
                     # 失败或缓冲不足：交还定时器重试（防线程风暴）
                     self._flush_worker_thread = None
@@ -417,26 +425,32 @@ class _StdoutLineTracker:
         for _ in range(2000):
             with self._buffer_lock:
                 pending = len(self._output_buffer)
+                # ★ P2（review 2026-08-22）：读 in_flight 与置位合并到同一锁块
+                #   （消除 TOCTOU）——修复前先读 in_flight 释放锁、再独立锁块置
+                #   True，窗口内 _buffer_to_output/_timer_flush_callback 可能已
+                #   启动 worker，与 _flush_history 并发取批（行序颠倒）。
                 in_flight = self._flush_in_progress
-            if pending == 0 and not in_flight:
-                break
-            thread = self._flush_worker_thread
-            if thread is not None and thread.is_alive():
-                # 先等待在途 worker 完成（保证文件行序：先写入其持有的块）
-                thread.join(timeout=0.01)
+                if pending == 0 and not in_flight:
+                    break
+                if not in_flight:
+                    self._flush_in_progress = True
+            if in_flight:
+                thread = self._flush_worker_thread
+                if thread is not None and thread.is_alive():
+                    # 先等待在途 worker 完成（保证文件行序：先写入其持有的块）
+                    thread.join(timeout=0.01)
                 continue
             try:
-                # ★ P2（单飞）：同步取批前先置 _flush_in_progress——修复前
-                #   _stop_flush_timer() 时 timer 回调在途可能启动新 worker，与
-                #   _flush_history 并发取批 → 历史行序颠倒。置位后 timer 回调
-                #   只置 _pending_flush（不启动 worker），本同步刷盘完成后复位。
-                with self._buffer_lock:
-                    self._flush_in_progress = True
-                try:
-                    self._flush_buffered_lines()
-                except Exception:
-                    _logger.warning("_flush_history: 最终刷盘异常", exc_info=True)
-                    break
+                # ★ P2（单飞）：已在锁内置 _flush_in_progress——timer 回调只置
+                #   _pending_flush（不启动新 worker），本同步刷盘完成后复位。
+                if not self._flush_buffered_lines():
+                    # ★ P2（review 2026-08-22）：失败（磁盘满/flock 冲突）不
+                    #   忙轮询——退避 0.05s 后再重试（避免连续失败高频
+                    #   open+flock+fsync I/O）。
+                    time.sleep(0.05)
+            except Exception:
+                _logger.warning("_flush_history: 最终刷盘异常", exc_info=True)
+                break
             finally:
                 with self._buffer_lock:
                     self._flush_in_progress = False

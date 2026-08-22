@@ -68,14 +68,21 @@ class ChatUIErrorHandler(logging.Handler):
                             "ChatUIErrorHandler 投递错误上屏失败 (name=%s): %s",
                             record.name, msg, exc_info=True,
                         )
-                # ★ P2-2 语义修订：无论投递成功/失败（consumer 为 None 或
-                #   on_error 抛异常）均标记 ``_chatui_reported``——修复前注释
-                #   声称「留待后续 emit 重放」实际**不会重放**（emit 仅在新
-                #   日志记录触发时被调用，旧 record 不会再次进入本 handler）；
-                #   统一为「不重放，仅记录」：同一错误最多尝试投递一次，
-                #   避免后续相关日志每次重复尝试。
-                record._chatui_reported = True
+            except Exception:
+                # ★ P3（review 2026-08-22）：get_active_chat_ui() 抛异常时原
+                #   未捕获 → 传播到 logging.handleError 打印 "Logging error"
+                #   污染终端（与「不污染终端」意图相悖）。纳入 try/except。
+                _logger.warning(
+                    "ChatUIErrorHandler 获取 active chat_ui 失败 (name=%s): %s",
+                    record.name, msg, exc_info=True,
+                )
             finally:
+                # ★ P2-2 语义修订：无论投递成功/失败/获取失败均标记
+                #   ``_chatui_reported``——修复前注释声称「留待后续 emit 重放」
+                #   实际**不会重放**（emit 仅在新日志记录触发时被调用，旧
+                #   record 不会再次进入本 handler）；统一为「不重放，仅记录」：
+                #   同一错误最多尝试投递一次。
+                record._chatui_reported = True
                 _handler_reentrant.is_active = False
 
 

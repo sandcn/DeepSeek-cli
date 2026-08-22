@@ -18,21 +18,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 
 __all__: list[str] = ["ConfigBase", "TuiConfig"]
+
+# ★ P3（review 2026-08-22）：类级 TypeVar 收窄 defaults()/with_overrides()
+#   返回类型——修复前标注 "ConfigBase"（基类），子类 TuiConfig 实际返回
+#   TuiConfig 实例，调用方按 ConfigBase 接收后需 cast 才能访问子类字段。
+_C = TypeVar("_C", bound="ConfigBase")
 
 
 class ConfigBase:
     """Frozen dataclass 工厂方法基类 — 提供 defaults() 和 with_overrides()。"""
 
     @classmethod
-    def defaults(cls) -> "ConfigBase":
+    def defaults(cls: type[_C]) -> _C:
         """返回默认配置实例。"""
         return cls()
 
-    def with_overrides(self, **kwargs: Any) -> "ConfigBase":
+    def with_overrides(self: _C, **kwargs: Any) -> _C:
         """返回覆盖指定字段的新实例，原实例不变。"""
         return type(self)(**{**self.__dict__, **kwargs})
 

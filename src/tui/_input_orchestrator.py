@@ -128,6 +128,10 @@ class TuiInputOrchestrator:
                     "重新注入恢复", residual,
                 )
                 input_.set_buffer(merged)
+                # ★ P3（review 2026-08-22）：_enter() 已清屏（echo("")），此处
+                #   恢复缓冲须重新 echo(merged)——修复前只 set_buffer 不 echo，
+                #   缓冲含 merged 但输入行显示为空（用户不可见直到下次编辑）。
+                input_.echo(merged)
             _logger.debug("wait_for_user_input: prefill done, entering poll loop")
 
         deadline = None if timeout is None else time.monotonic() + timeout

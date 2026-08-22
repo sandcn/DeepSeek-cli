@@ -343,6 +343,15 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
     def set_build_tree(self, fn: Callable | None) -> None:
         self._build_tree = fn
 
+    @property
+    def renderer(self) -> "InkRenderer":
+        """公开访问底层 InkRenderer（读取渲染器实例）。
+
+        ★ P3（review 2026-08-22）：装配层 ``_assembly_steps`` 曾直读私有字段
+        ``session._ink_renderer``——经本 property 统一走公开接口（封装）。
+        """
+        return self._ink_renderer
+
     def set_line_tracker(self, tracker) -> None:
         """绑定输出行追踪器（输出历史落盘 + line callback 接线）。
 
@@ -1320,7 +1329,9 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 stream="stderr",
             )
         except Exception:
-            pass
+            # ★ P3（review 2026-08-22）：修复前 ``except Exception: pass`` 空捕获
+            #   丢弃紧急输出失败——补日志（exc_info）供崩溃恢复排障。
+            _logger.debug("_handle_render_crash 紧急输出失败", exc_info=True)
         self._recover_attempts += 1
         if self._render_running and self._recover_attempts <= self._config.max_recover_attempts:
             _logger.info("render 线程将在 %.1f 秒后自动恢复 (第 %d/%d 次)",

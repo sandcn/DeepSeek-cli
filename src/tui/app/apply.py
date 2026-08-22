@@ -456,6 +456,10 @@ def _append_assistant_rich(model, msg) -> None:
         if not isinstance(tc, dict):
             continue
         fn = tc.get("function") or {}
+        # ★ P3（review 2026-08-22）：function 值为非 dict（str 等异常数据）时
+        #   fn.get 抛 AttributeError——回退空 dict（tc 已判 dict，fn 此处补判）。
+        if not isinstance(fn, dict):
+            fn = {}
         name = fn.get("name", "") or ""
         # 保留空 dict 形态（{} → extract_key_params 空 dict 分支返回 ""）；
         # `or ""` 仅兜底 None（arguments 键缺失/显式 None），不拦截空 dict。

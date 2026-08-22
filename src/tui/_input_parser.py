@@ -109,7 +109,7 @@ class InputParser:
             单字节 bytes；None — 超时/EOF/异常（无后续字节）。
         """
         if self._io is not None:
-            return self._io.read_with_timeout(timeout)
+            return self._io.read_with_timeout(timeout, fd)
         try:
             ready, _, _ = select.select([fd], [], [], timeout)
         except (ValueError, OSError, TypeError, AttributeError):
@@ -363,6 +363,17 @@ class InputParser:
             # 对 Unicode 数字/字母（'²'/'٣'/'é' 等）返回 True——UTF-8 续字节
             # 或异常字节 decode 后可能被误当参数数字/终止符（污染 current 或
             # 提前终止 CSI 解析）。限制为 ASCII（``c.isascii()``，Py3.7+）。
+            elif c.isascii() and 0x3A <= ord(c) <= 0x3F and c != ';':
+                # ★ P3（review 2026-08-22）：ECMA-48 参数中间字节（':' 0x3A 及
+                #   '<' 0x3C '=' 0x3D '>' 0x3E '?' 0x3F）——修复前落入无分支，
+                #   仅累积 raw_acc（如 \x1b[38:2:255:0:0m 被解析 params=[382,...]
+                #   数字粘连）。按参数分隔符处理（与 ';' 等价）：完成当前 param
+                #   并忽略该字节（框架仅支持 ';' 分隔；子参数子分隔语义无消费方）。
+                try:
+                    params.append(int(current) if current else 0)
+                except ValueError:
+                    params.append(0)
+                current = ""
             elif c.isascii() and c.isdigit():
                 current += c
             # P2-2（review）：CSI 终止符集合不完整——原仅 ``isalpha()`` 或
@@ -531,9 +542,10 @@ class InputParser:
             # 协议终端以 keycode 而非 ASCII 字母发送 Ctrl 组合（修复 Ctrl 组合
             # 经 CSI u 路径失效）。keycode 1-26 即 ASCII 控制码（Ctrl+X 编码
             # = X 在字母表中的位置），直接经 _decode_control_char 解码
-            # （keycode=5 → 0x05 → ctrl_key '\x05'）。keycode 9/13 已在更早
-            # 分支处理（L2：modifier=5 时 13 → enter 提交语义），防御排除
-            # 防重复。
+            # （keycode=5 → 0x05 → ctrl_key '\x05'）。★ 防御排除修正（P3
+            # review）：13（modifier=5 → enter 提交语义）已在更早分支处理；
+            # 9 仅 modifier=2（Tab）已处理——9/5（Ctrl+Tab）未在其他分支处理，
+            # 落入本分支排除后走 csi_u（router 可消费），语义归属以本注释为准。
             if 1 <= keycode <= 26 and modifier == 5 and keycode not in (9, 13):
                 decoded = InputParser._decode_control_char(keycode)
                 return KeyEvent(kind=decoded.kind, char=decoded.char,

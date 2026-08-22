@@ -44,6 +44,12 @@ def _wrap_by_width(s: str, max_width: int) -> list[str]:
         return []
     if not s:
         return [""]
+    # ★ P3（review 2026-08-22）：调用方（_input_metrics._completion_height /
+    #   _popup_builder / user_select / trace_view）直接以原始描述文本调用，未先
+    #   _expand_tabs；\t 经 wcswidth_simple 计宽 0（控制字符分支）——含制表符
+    #   的描述按下标不连续断行/宽度虚低。此处内部统一展开制表符（对已展开
+    #   调用方幂等），消除前置条件依赖。
+    s = _expand_tabs(s)
     lines: list[str] = []
     for segment in s.split('\n'):
         remaining = segment

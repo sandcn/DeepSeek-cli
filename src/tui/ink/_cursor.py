@@ -92,7 +92,14 @@ def position_cursor(renderer, width: int, fiber) -> None:
     if box is None:
         return
     text = str(fiber.props.get("text", ""))
-    cursor_pos = int(fiber.props.get("cursor_pos", -1))
+    # ★ P1（review 2026-08-22）：cursor_pos 显式为 None/非数字时 int() 抛
+    #   TypeError，导致本函数整段失败、光标每帧无法定位（静默退化）。与
+    #   下方 popup_height 的防御一致，回退 -1 并记 debug。
+    try:
+        cursor_pos = int(fiber.props.get("cursor_pos", -1))
+    except (TypeError, ValueError):
+        cursor_pos = -1
+        _logger.debug("position_cursor: cursor_pos 非法，回退 -1", exc_info=True)
     prompt = str(fiber.props.get("prompt", "> "))
     completion = fiber.props.get("completion")
     # 方向1 步骤4（缺失 completion 属性守卫）：popup_height 与 row 计算

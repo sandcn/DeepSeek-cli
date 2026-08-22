@@ -1003,6 +1003,17 @@ def _inspector_content_rows(rec, right_w: int, collapsed: set | None = None) -> 
     )
     if use_tool_tree:
         rows, keys = _tool_tree_rows(rec, right_w, collapsed)
+        # ★ P1（review 2026-08-22）：合并 subagent 的 tool 记录
+        #   （``subagent_label`` 非空）——``_tool_tree_rows`` 只渲染参数树/
+        #   返回值树，忽略 ``rec.lines`` 中 ``_merge_subagent_into_tool_record``
+        #   写入的 subagent 详情（结果/错误/工具历史），docstring 声明的
+        #   「检查器完整表达两次动作」未兑现（仅留台账行摘要）。此处追加
+        #   markdown 渲染 ``rec.lines``，保证检查器完整表达。
+        if getattr(rec, "subagent_label", ""):
+            sub_rows = list(_md_detail_rows(rec, right_w, "content"))
+            if sub_rows:
+                rows.extend(sub_rows)
+                keys.extend([None] * len(sub_rows))
     elif kind in ("reasoning", "content", "system"):
         # markdown 渲染行（块记录直接复用渲染输出 / 内联原始文本重渲染）
         rows = list(_md_detail_rows(rec, right_w, kind))
@@ -1401,7 +1412,9 @@ def _subagent_trace_deps(label: str) -> tuple:
     slot = _subagent_slot(label)
     if slot is None:
         return ("missing", label)
-    messages = getattr(slot, "messages", None) or []
+    messages = getattr(slot, "messages", None)
+    if messages is None:
+        messages = ()
     tail_fp: tuple = ()
     if isinstance(messages, list) and messages:
         tail = messages[-1]
@@ -1413,9 +1426,12 @@ def _subagent_trace_deps(label: str) -> tuple:
             )
         else:
             tail_fp = (id(tail), str(tail)[:40])
-        msg_fp = (id(messages), len(messages))
+        msg_fp = (len(messages), id(messages))
     else:
-        msg_fp = (id(messages), len(messages))
+        # ★ P2（review 2026-08-22）：messages 为空/None 时 getattr(...) or []
+        #   每次新建 [] 导致 id 每帧变化 → use_memo 恒 miss → subagent 轨迹
+        #   每帧重建。空态指纹恒定 (0, 0)；非空时以 (len, id) 捕捉内容变化。
+        msg_fp = (0, 0)
     # 动态元素（subagent 动态部分——与 mainagent _live_fingerprint 同语义：
     # 运行中工具/阶段/流式内容长度变化触发台账重建）
     tool_live = tuple(chain.from_iterable(

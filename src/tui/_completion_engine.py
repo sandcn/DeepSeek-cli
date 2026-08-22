@@ -18,14 +18,36 @@ import re
 import threading
 import time
 import glob as _glob_module
+import logging
 from typing import Callable, TypeVar
 
 T = TypeVar("T")
+
+_logger = logging.getLogger(__name__)
 
 #: 路径补全候选项数量上限（P3：原魔法数字 20 提升为模块级常量）——
 #: 与补全弹窗可见行数耦合（弹窗最多显示 20 行候选项，超出部分无 UI 消费
 #: 方）；限制避免超大目录下返回过多候选拖慢渲染。
 _MAX_COMPLETION_ITEMS = 20
+
+# ★ P3（review 2026-08-22）：get_command_help 模块级惰性缓存——修复前
+#   ``_complete_command`` 每次 Tab 重复 ``from ... import get_command_help`` +
+#   try/except（Python 缓存 import 但函数体每 Tab 仍解析一次模块查找）。
+_get_command_help_ready = False
+_get_command_help_impl = None
+
+
+def _get_command_help() -> Callable | None:
+    """返回 get_command_help 函数引用（模块级缓存；导入失败回退 None）。"""
+    global _get_command_help_ready, _get_command_help_impl
+    if not _get_command_help_ready:
+        try:
+            from ..core.internal.commands._command_core import get_command_help
+            _get_command_help_impl = get_command_help
+        except Exception:
+            _get_command_help_impl = None
+        _get_command_help_ready = True
+    return _get_command_help_impl
 
 # ── 简易 TTL 缓存 ────────────────────────────────────────
 
@@ -312,12 +334,10 @@ class CompletionEngine:
         """
         commands = self._commands_cache.get()
         ranked = _ranked(commands, prefix)
-        # ★ review 方向：``get_command_help`` 导入移出循环（原每候选命令
-        #   try/except 重复导入——命令描述查询可缓存）。
-        try:
-            from ..core.internal.commands._command_core import get_command_help
-        except Exception:
-            get_command_help = None
+        # ★ P3（review 2026-08-22）：``get_command_help`` 经模块级惰性缓存
+        #   （``_get_command_help``）取得——修复前每 Tab 重复 from import +
+        #   try/except。
+        get_command_help = _get_command_help()
         result: list[CompletionItem] = []
         for cmd in ranked:
             # Claude TUI parity 步骤 3.7：命令描述（注册表 help；无则空串）
@@ -326,7 +346,11 @@ class CompletionEngine:
                 try:
                     desc = get_command_help(cmd)
                 except Exception:
-                    pass
+                    # ★ P3（review 2026-08-22）：修复前 ``except Exception: pass``
+                    #   静默丢弃命令描述获取失败——补 debug 日志（exc_info）。
+                    _logger.debug(
+                        "get_command_help(%r) 失败", cmd, exc_info=True,
+                    )
             result.append(CompletionItem(
                 cmd, start_pos=-len(prefix), item_type="command", desc=desc,
             ))
@@ -524,6 +548,12 @@ class CompletionEngine:
 
         支持 ~ 展开、相对/绝对路径、目录尾缀 /。
         """
+        # ★ P1（review）：空前缀直接返回空——避免 ``os.path.expanduser("")``
+        #   回退 "." 后 ``file_prefix=os.path.basename(".")="."`` 非空，绕过
+        #   下方「空前缀不搜索」守卫，导致 ``cd ``（尾随空格）+ Tab glob 出
+        #   当前目录 dotfiles（``"./.*"``）。与注释「空前缀不搜索」语义一致。
+        if not prefix:
+            return []
         try:
             expanded = os.path.expanduser(prefix) if prefix else "."
         except Exception:

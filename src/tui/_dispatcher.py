@@ -244,52 +244,42 @@ class EventDispatcher:
             self._push_cmd(ToolCountDecCmd())
 
     def _on_tool_output(self, event: "ToolOutputChunkEvent") -> None:
-        if not self._is_agent_source(event.source):
-            return
-        # 仅主 agent 工具输出进入主内容 box；subagent 输出由面板自渲染
-        if event.source != "agent":
-            return
-        # ★ BUG-63（subagent 写文件全量刷新）：subagent 工具执行期间
-        #   ``_publish_tool_text``/``SharedCapture.write`` 统一发布
-        #   ``ToolOutputChunkEvent(source="agent")``，但 subagent 上下文
-        #   ``get_current_tool_id()`` 为 ``self.label``（``agent-N``）——
-        #   label/tool_id 以 ``agent-`` 前缀标记。修复前这些事件被误判为主
-        #   agent 工具输出 → ``append_tool_output`` 兜底创建**永不关闭**的
-        #   工具 box（subagent 的 ToolDoneEvent source="" 不触发 close），
-        #   subagent 每次写文件主聊天区累积一个大 diff 开放 box → 文档高度
-        #   爆炸、每帧重写量逼近整屏（视觉上"全量刷新闪烁"）。
-        #   修复：subagent label（``agent-N``）的工具输出不进主内容 box
-        #   （subagent 面板自渲染）。
-        if self._is_subagent_label(event.label) or self._is_subagent_label(event.tool_id):
-            return
-        # ★ 空工具卡防御（后台任务等非工具上下文的输出）：工具执行上下文
-        #   退出后 print_to_terminal 回退 label/tool_id="assistant"——不作为
-        #   工具输出（避免 append_tool_output 兜底创建永不闭合的空「工具」卡
-        #   ● ⚙ 工具；2026-08-06 去边框后为空标题行）。
-        if (event.label or "") == "assistant" or (event.tool_id or "") == "assistant":
+        # ★ BUG-63（subagent 写文件全量刷新）与空工具卡防御的过滤逻辑
+        #   已收敛至 ``_should_render_main_agent``（单一真源，见其 docstring）。
+        if not self._should_render_main_agent(event):
             return
         text = event.text.rstrip("\n")
         if text:
             tool_id = event.tool_id or event.label
             self._push_cmd(ToolOutputCmd(text=text, tool_id=tool_id))
 
+    def _should_render_main_agent(self, event) -> bool:
+        """判断事件是否进主聊天区（主 agent 工具输出/通知过滤策略，单一真源）。
+
+        ★ P2（review 2026-08-22）：从 ``_on_tool_output``/``_on_tool_notice``
+        提取的重复（复制变异）过滤逻辑，统一语义：
+        - 仅主 agent 工具（``source == "agent"``）进主聊天区；
+        - subagent 工具（label/tool_id ``agent-`` 前缀）由面板自渲染，
+          不在主聊天区刷输出/通知（修复前 ``agent-*`` source 二次拦截 + 面板自渲染）；
+        - 工具执行上下文退出后的兜底 label（``assistant``）忽略，
+          避免无归属的空工具卡/通知块。
+        """
+        if not self._is_agent_source(event.source):
+            return False
+        if event.source != "agent":
+            return False
+        if self._is_subagent_label(event.label) or self._is_subagent_label(event.tool_id):
+            return False
+        if (event.label or "") == "assistant" or (event.tool_id or "") == "assistant":
+            return False
+        return True
+
     def _on_tool_notice(self, event: "ToolNoticeEvent") -> None:
         """工具通知（警告/提示）→ 通知块（``▎通知`` + ``  │ + ...``）。
 
-        与 ``_on_tool_output`` 过滤策略一致：
-        - 仅主 agent 工具（``source == "agent"``）进主聊天区；
-        - subagent 工具（label/tool_id ``agent-`` 前缀）由面板自渲染，
-          不在主聊天区刷通知；
-        - 工具执行上下文退出后的兜底 label（``assistant``）忽略，
-          避免无归属通知块。
+        与 ``_on_tool_output`` 共用 ``_should_render_main_agent`` 过滤策略。
         """
-        if not self._is_agent_source(event.source):
-            return
-        if event.source != "agent":
-            return
-        if self._is_subagent_label(event.label) or self._is_subagent_label(event.tool_id):
-            return
-        if (event.label or "") == "assistant" or (event.tool_id or "") == "assistant":
+        if not self._should_render_main_agent(event):
             return
         text = str(event.text).rstrip("\n")
         if text:

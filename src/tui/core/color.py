@@ -380,9 +380,17 @@ def hex_to_rgb(hex_color: str) -> RGB:
             f"hex_color must be 6 hex digits, got '{cleaned}' "
             f"(from '{hex_color}')"
         )
-    r = int(cleaned[0:2], 16)
-    g = int(cleaned[2:4], 16)
-    b = int(cleaned[4:6], 16)
+    # ★ P3（review 2026-08-22）：非十六进制字符（如 ``#gg8800``）int(...,16)
+    #   抛裸 ValueError——转抛带 hex_color 上下文的 ValueError。
+    try:
+        r = int(cleaned[0:2], 16)
+        g = int(cleaned[2:4], 16)
+        b = int(cleaned[4:6], 16)
+    except ValueError:
+        raise ValueError(
+            f"hex_color must be 6 hex digits, got '{cleaned}' "
+            f"(from '{hex_color}')"
+        )
     return RGB(r, g, b)
 
 
@@ -420,8 +428,6 @@ def lerp_color(a: int, b: int, t: float) -> int:
     #   isfinite 防护一致）——修复前 NaN 走完比较后 ``round(NaN)`` 抛
     #   ValueError 中断渲染（时间基动效的 t 来自正弦插值，理论不产生 NaN，
     #   防御外部调用方传入异常 t）。
-    if not math.isfinite(t):
-        return a
     # ★ P1-1（最关键）：a/b 超出 [0, 255]（如负值）时 ``_XTERM_PALETTE[a]``
     #   抛 IndexError（无范围校验）——入口显式校验并抛 ValueError，
     #   与 Color256 构造校验语义一致（明确报错而非越界索引）。
@@ -429,6 +435,11 @@ def lerp_color(a: int, b: int, t: float) -> int:
         raise ValueError(
             f"lerp_color a/b must be in [0, 255], got a={a}, b={b}"
         )
+    # ★ P3（review 2026-08-22）：非有限 t 检查移到范围校验**之后**——修复前
+    #   ``if not math.isfinite(t): return a`` 位于范围校验前，越界 a + NaN t
+    #   时返回越界色号（此时 a 已保证合法）。
+    if not math.isfinite(t):
+        return a
     if t <= 0.0:
         return a
     if t >= 1.0:

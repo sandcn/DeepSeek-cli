@@ -355,20 +355,8 @@ def ConfigView(props) -> object:
         segs = list(getattr(cv, "edit_json_path", None) or [])
         return ".".join(str(s) for s in segs) if segs else ""
 
-    def _json_item_text(idx: int) -> str:
-        """当前容器条目显示文本（list ``[i] 值`` / dict ``key = 值``）。"""
-        container = _json_container()
-        if isinstance(container, list):
-            if 0 <= idx < len(container):
-                return _json_text(container[idx])
-            return ""
-        if isinstance(container, dict):
-            keys = list(container.keys())
-            if 0 <= idx < len(keys):
-                k = keys[idx]
-                return f"{k} = {_json_text(container.get(k))}"
-        return ""
-
+    # ★ P2（review 2026-08-22）：``_json_item_text`` 死代码已删除——渲染走
+    #   ``_render_json_item``（见下属列表 renderItem），此方法无任何调用方。
     def _json_edit_selected() -> None:
         """json 界面 Enter：嵌套（list/dict 值）→ 递归进入下一层；
         标量 → 子输入编辑。"""
@@ -705,7 +693,9 @@ def ConfigView(props) -> object:
         desc = pick_descs[i] if i < len(pick_descs) else ""
         if desc and width > 0:
             used = sum(getattr(r, "width", 1) for r in runs) + 2
-            desc_budget = max(8, width - used)
+            # ★ P3（review 2026-08-22）：desc_budget 下限 8 在极窄终端
+            #   （width < used）溢出——改为 1（行本体已超宽时不强行 8 列）。
+            desc_budget = max(1, width - used)
             desc_txt = _truncate_width(str(desc), desc_budget)
             runs.append(StyledRun(" " * 2 + desc_txt, _S_DESC))
         if width > 0:

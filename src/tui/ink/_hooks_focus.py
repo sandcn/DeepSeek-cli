@@ -140,7 +140,10 @@ def useFocus(options: "bool | dict | None" = None) -> dict:
     ``useFocus({isActive, autoFocus})``——``isActive`` 控制是否参与路由
     （覆盖 use_input 的 is_active），``autoFocus`` 控制焦点标志
     （True=参与焦点优先路由）；也兼容既有 bool 参数（``useFocus(False)``
-    等价 ``useFocus({"autoFocus": False})``）。返回 ``{"isFocused": bool}``
+    等于「不参与路由」。★ P3（review 2026-08-22）：bool 参数恢复旧语义
+    ``is_active=bool(options)``——修复前把 ``useFocus(False)`` 改写为
+    ``autoFocus=False``（语义漂移，旧调用方按「不参与」理解会被静默改变）。
+    返回 ``{"isFocused": bool}``
     （react-ink 语义；组件可据此条件渲染焦点样式）。
 
     方向 E（完善 react ink v6）：支持 ``id`` 参数——可聚焦组件收集到焦点
@@ -169,8 +172,12 @@ def useFocus(options: "bool | dict | None" = None) -> dict:
         auto_focus = options.get("autoFocus", False)
         fid = options.get("id")
     else:
-        is_active = True
-        auto_focus = False if options is None else bool(options)
+        # ★ P3（review 2026-08-22）：恢复 bool 旧语义——`useFocus(False)` 原
+        #   意为「不参与焦点路由」（is_active=False）；修复前被改写成
+        #   is_active=True + autoFocus=False（语义漂移）。True/None → 参与路由
+        #   （auto_focus=False），False → 不参与。
+        is_active = True if options is None else bool(options)
+        auto_focus = False
         fid = None
     # 焦点管理器注册（React Ink v6）：active 组件进入可聚焦列表。
     if is_active:

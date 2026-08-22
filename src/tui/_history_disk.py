@@ -166,6 +166,11 @@ class _HistoryDiskWriter:
                     self._sentinel_count -= 1
                 else:
                     pending.append(item)
+            # ★ P2（review 2026-08-22）：flush() 超时后哨兵可能已被后台线程
+            #   消费（_sentinel_count 未归零残留 1）——重建新队列时无条件清零
+            #   （新队列无哨兵），否则后续 submit 因 _sentinel_count>0 永远走
+            #   同步写盘（回落到 fsync 阻塞渲染线程的原始问题）。
+            self._sentinel_count = 0
             new_queue: queue.Queue = queue.Queue(maxsize=self._MAX_PENDING)
             for item in pending:
                 try:

@@ -167,7 +167,14 @@ def useImperativeHandle(ref, factory: Callable, deps: list | tuple | None = None
         #   memo_changed 时重置（None=首次需执行）；memo_changed=False 时
         #   保留上帧 last_deps（提交后 mark_effect_committed 记录）——
         #   deps 未变 → deps_changed() False → 不执行 destroy，句柄保留。
-        eff.deps = (id(ref), id(hook), id(hook.value))
+        # ★ P1（review 2026-08-22）：deps 不含 id(ref)——修复前含 id(ref)，
+        #   父组件换 ref（A→B）且用户 deps 未变时 deps_changed() 因 id 不同
+        #   返回 True → 提交期执行旧 destroy → hook._last_ref 已被渲染期更新
+        #   为 B、B.current is 旧句柄（同一对象）→ B.current=None 清空新句柄，
+        #   直到下一帧才恢复（换 ref 帧句柄瞬时丢失）。deps 仅 (hook 槽身份,
+        #   hook.value 身份)：换 ref 不重建 effect（句柄不变，渲染期已写入新
+        #   ref）；用户 deps 变化时 id(hook.value) 变化触发重建。
+        eff.deps = (id(hook), id(hook.value))
         eff.last_deps = None if memo_changed else getattr(eff, "last_deps", None)
     else:
         eff = _next_hook(EffectHook, None, None, None, None)

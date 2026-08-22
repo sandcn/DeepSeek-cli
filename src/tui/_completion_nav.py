@@ -25,8 +25,9 @@ class _CompletionNavHandler:
     （输入缓冲编辑）。
     """
 
-    #: 翻页步进（PageUp/PageDown 一次移动项数——与弹窗可见行数相当）
-    _PAGE_STEP = 5
+    #: 翻页步进说明（P3 review 2026-08-22）：PageUp/PageDown 步进量由
+    #: ``_input_dispatcher`` 传入（±5），此处不定义死常量——修复前
+    #: ``_PAGE_STEP = 5`` 定义后全模块无引用（与 dispatcher 的 ±5 双真源）。
 
     def __init__(self, dispatcher) -> None:
         self._d = dispatcher

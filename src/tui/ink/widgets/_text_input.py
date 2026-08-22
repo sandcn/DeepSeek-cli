@@ -60,6 +60,10 @@ def TextInput(props: dict) -> Element:
     cursor_ref.current = cursor
 
     # 外部受控值变化 → 同步内部缓冲（deps 仅 value——受控覆盖）
+    # ★ P3（review 2026-08-22）语义说明：外部 value 变化时保持光标（钳制到
+    #   新长度）而非跳尾——用户输入路径依赖此行为（父组件经 onChange 回传
+    #   value 时，value 变化触发此处但光标须保留编辑位置）；若用于「预填」场景
+    #   需外部注入时显式置光标，属设计取舍（框架未区分来源）。
     def _sync_external():
         set_text(value)
         set_cursor(max(0, min(cursor_ref.current, len(value))))
@@ -153,10 +157,11 @@ def TextInput(props: dict) -> Element:
     else:
         disp_eff = eff
     before = display[:disp_eff]
-    after = display[disp_eff:]
+    in_cursor = disp_eff < len(display)
+    after = display[disp_eff + 1:] if in_cursor else display[disp_eff:]
     if not show_cursor:
         return h(TEXT, {"children": display})
-    cursor_ch = " " if disp_eff >= len(display) else display[disp_eff]
+    cursor_ch = " " if not in_cursor else display[disp_eff]
     cursor_style = Style(bg=cursor_color)
     # ★ P3（review E10）：光标列对齐由 row 布局按显示宽度累加保证——``before``
     #   含 CJK/emoji（宽字符）时其**显示宽度** ≠ 字符数，row 布局子节点按

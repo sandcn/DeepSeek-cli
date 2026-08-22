@@ -43,7 +43,10 @@ def _desc_column_width(width: int) -> int:
         # ``max(1, ...)`` 返回 1（右栏等于终端总宽甚至超宽）。下限钳制到
         # ``max(0, ...)``：右栏宽度不超可用宽度（≤ width-1），width<=1 时
         # 右栏为 0（左栏占满，不溢出）。
-        return max(0, min(int(width) - 1, int(width) // 2))
+        # ★ P3（review 2026-08-22）：上限补 8（与常规分支下限 8 对齐）——
+        #   修复前 19 时返回 9、20 时返回 8（非单调跳变）；现 15~20 单调
+        #   递减/平（7,8,8,8,8,8）无跳变。
+        return max(0, min(int(width) - 1, int(width) // 2, 8))
     return max(8, min(int(width) // 3, 40, int(width) - 12))
 
 
@@ -136,6 +139,16 @@ def _completion_height(completion, width=None) -> int:
     #     到 need——避免弹窗底部渲染十余行空白（视觉异常；一次 diff 重写
     #     换取无空白更优）。
     locked = getattr(completion, "locked_height", 0)
+    return _sync_locked_height(completion, locked, need)
+
+
+def _sync_locked_height(completion, locked: int, need: int) -> int:
+    """高度锁定决策（写回 ``completion.locked_height``）。
+
+    ★ P2（review 2026-08-22）：从 ``_completion_height`` 提取的副作用——把
+    高度锁定写回决策与度量分离，使 ``_completion_height`` 保持纯读（度量）
+    语义；本函数明确承接写回副作用（可测性/可推理性更好）。
+    """
     if need > locked:
         completion.locked_height = need
     elif locked - need > _LOCKED_PAD_LIMIT:
@@ -153,5 +166,6 @@ __all__ = [
     "_desc_column_width",
     "_completion_item_rows",
     "_completion_height",
+    "_sync_locked_height",
     "_is_search_active",
 ]

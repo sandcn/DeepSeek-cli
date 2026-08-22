@@ -409,16 +409,23 @@ class StateStore:
                 return
             if not isinstance(usage, dict):
                 return
+            # ★ P2（review 2026-08-22）：usage 值可能为 None（键存在但值为
+            #   None）——``usage.get("input", 0)`` 在键值为 None 时不返回默认 0
+            #   而是 None，``+= None`` 抛 TypeError；异常被 EventBus 吞掉后整条
+            #   usage 更新丢失（面板 token 统计静默停滞）。与下方 speed 的
+            #   float() 防御一致，统一用 ``or 0`` 兜底。
+            def _i(k):
+                return usage.get(k) or 0
             if replace:
-                slot.input_tokens = usage.get("input", 0)
-                slot.output_tokens = usage.get("output", 0)
-                slot.live_input_tokens = usage.get("live_input", 0)
-                slot.live_output_tokens = usage.get("live_output", 0)
+                slot.input_tokens = _i("input")
+                slot.output_tokens = _i("output")
+                slot.live_input_tokens = _i("live_input")
+                slot.live_output_tokens = _i("live_output")
             else:
-                slot.input_tokens += usage.get("input", 0)
-                slot.output_tokens += usage.get("output", 0)
-                slot.live_input_tokens += usage.get("live_input", 0)
-                slot.live_output_tokens += usage.get("live_output", 0)
+                slot.input_tokens += _i("input")
+                slot.output_tokens += _i("output")
+                slot.live_input_tokens += _i("live_input")
+                slot.live_output_tokens += _i("live_output")
             # ★ BUG（review 方向）：``float(usage.get("speed", 0))`` 在 speed 为
             #   None/非数字时抛 TypeError/ValueError——事件处理器无本地 try，异常被
             #   EventBus.publish 捕获后该事件全部 token/速度更新丢失（面板统计静默

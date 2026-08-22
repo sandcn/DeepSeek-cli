@@ -10,7 +10,7 @@ from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
 from ..widgets.layout import Row
-from ._display_common import _color, _resolve_style, _repeat_to_width
+from ._display_common import _color, _resolve_style, _repeat_to_width, _truncate_to_width
 
 
 # ═══════════════════════════════════════════════════════════
@@ -106,25 +106,8 @@ def Badge(props: dict) -> Element:
 _DIVIDER_DEFAULT_WIDTH = 40
 
 
-def _truncate_to_width(text: str, max_w: int) -> str:
-    """按显示宽度截断标题（不拆 CJK；超宽时末尾补省略号）。
-
-    与 codeblock._truncate_to_width 同思路（保留 ``max_w-1`` 字符宽 +
-    省略号 1 宽，返回宽度 <= max_w）；``max_w <= 0`` 返回空串。
-    """
-    if max_w <= 0:
-        return ""
-    if wcswidth_simple(text) <= max_w:
-        return text
-    w = 0
-    out = []
-    for ch in text:
-        cw = wcswidth_simple(ch)
-        if w + cw > max_w - 1:
-            break
-        out.append(ch)
-        w += cw
-    return "".join(out) + "\u2026"
+# ★ P2（review 2026-08-22）：``_truncate_to_width`` 收敛至 ``_display_common``
+#   （与 codeblock 重复实现合并，见上方 import）。
 
 
 def Divider(props: dict) -> Element:

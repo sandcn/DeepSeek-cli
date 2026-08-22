@@ -108,12 +108,18 @@ def EditMsgSelectPopup(props) -> object:
     #   输入——未消费按键被 input router 吞掉（不落入输入缓冲；输入区已
     #   不渲染）。visible=False 时 hook 不参与路由（零影响）。
     use_modal(visible)
+    # ★ P2（review 2026-08-22）：use_memo 无条件调用（移到 early return 前）
+    #   ——修复前 use_memo 仅在 visible 分支调用，违反「unconditional hooks」
+    #   契约（下方 ``if not visible: return`` 早退后 use_memo 被跳过；若日后
+    #   在该 return 与 use_memo 之间新增 hook 将触发 HookStateError 或 hook
+    #   顺序错乱）。options/total 提前计算（es 可能为 None——防御）。
+    options = list(es.options) if (es is not None and getattr(es, "options", None)) else []
+    total = len(options)
+    limit = max(1, min(total, use_memo(lambda: _editmsg_item_rows(), [total])))
 
     if not visible:
         return h(TEXT, {"children": ""})
 
-    options = list(es.options)
-    total = len(options)
     # ── 渲染 ──
     # 本帧高亮源：es 实例变化（fresh_es——组件防御，防 fiber 复用残留旧
     # 选中）时用新 es.selected；否则用 use_state 值（控件导航权威）。
@@ -173,10 +179,9 @@ def EditMsgSelectPopup(props) -> object:
     items = [{"label": opt, "value": opt} for opt in options]
     # 每条消息只显示一行：单行选项 → 行数预算即可见项数（交互仍可导航到
     # 隐藏项）。
-    # ★ P3-4 修复（高度查询 memo 化）：``_editmsg_item_rows`` 读终端高度
-    #   （TerminalWidthCache）——修复前每渲染帧调用；options 固定不变，
-    #   经 use_memo 按 [total] 缓存，帧内零查询。
-    limit = max(1, min(total, use_memo(lambda: _editmsg_item_rows(), [total])))
+    # ★ P3-4 修复（高度查询 memo 化）+ P2（review 2026-08-22）：
+    #   ``_editmsg_item_rows`` 的 use_memo 已上移至 early return 前无条件
+    #   调用（见上方 hooks 顺序修复），此处仅保留渲染说明。
 
     def _render_item(item, idx, is_sel):
         """单行渲染：▶ 高亮前缀 + 消息单行摘要（超宽截断不拆 CJK）。"""

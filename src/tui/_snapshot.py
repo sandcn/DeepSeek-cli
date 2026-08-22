@@ -20,11 +20,14 @@ token/速度展示）与 ``src/tui/_ink_bridge.py`` 的 ``get_status_elapsed()``
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 # ── 模块级缓存 ──────────────────────────────────────────
 # P3-18：Optional[callable] → Optional[Callable[[], Any]]（from typing 导入）
-_TOKEN_SPEED_SNAPSHOT: Optional[Callable[[], Any]] = None  # 也可赋值为 False（标记不可用）
+# ★ P2（review 2026-08-22）：类型标注与实际赋值不符——实际可被赋值为
+#   False（bool，标记「模块不可用」），原 Optional 语义误导（None 与 False
+#   语义不同：None=未加载，False=加载失败不可用）。改用 ``Callable | bool``。
+_TOKEN_SPEED_SNAPSHOT: Callable[[], Any] | bool | None = None  # 也可赋值为 False（标记不可用）
 
 
 def _get_snapshot():

@@ -135,7 +135,9 @@ def thumbnail_rows(image: dict, right_w: int) -> list:
     """
     if right_w <= 0:
         return []
-    w_cells = max(8, min(44, right_w - 2))
+    # ★ P3（review 2026-08-22）：下限 8 在极窄右栏（right_w-2 < 8）时超宽——
+    #   改为 1（缩略图行宽不超右栏，维持行级 diff 宽度不变量）。
+    w_cells = max(1, min(44, right_w - 2))
     h_cells = _THUMB_ROWS
     key = (image["sha"], w_cells, h_cells)
     cached = _rows_cache.get(key)

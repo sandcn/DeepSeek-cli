@@ -22,8 +22,11 @@ import logging
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
-from ..helpers import strip_ansi
 from ..widgets.layout import Row, Column
+# ★ P2（review 2026-08-22）：_repeat/_truncate_to_width 收敛至 _display_common
+#   （重复实现 → 单一真源；_repeat 原实现零宽字符 n//cw 除零——_repeat_to_width
+#   已兜底）。
+from ._display_common import _repeat_to_width, _truncate_to_width
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_color 原本地定义（与
 #   _interactive_common/_display_common 逻辑一致，仅默认值 23 vs 6）——收敛
 #   至 _widget_common（调用处显式传 default=23，行为不变）。
@@ -47,43 +50,8 @@ _DEFAULT_BORDER = ("\u250c", "\u2510", "\u2514", "\u2518", "\u2500", "\u2502")
 
 
 
-def _repeat(ch: str, n: int) -> str:
-    """将字符重复到目标显示宽度（宽字符按显示宽度换算）。
-
-    ★ P3（review）：宽字符非偶数倍时补空格——修复前 ``ch * (n // cw)``
-    总宽 < n（如 cw=2、n=3 → ``ch*1`` 仅 2 宽）；补 ``n % cw`` 空格对齐
-    目标宽度。``wcswidth_simple`` 对单字符返回 1（窄）或 2（宽），换算正确。
-    """
-    if n <= 0:
-        return ""
-    cw = wcswidth_simple(ch)
-    if cw <= 1:
-        return ch * n
-    return ch * max(0, n // cw) + " " * max(0, n % cw)
-
-
-def _truncate_to_width(text: str, max_w: int) -> str:
-    """按显示宽度截断（不拆 CJK；超宽时末尾补省略号）。
-
-    ★ P3（review）：截断前 ``strip_ansi`` 剥离 ANSI 转义序列——修复前 ANSI
-    序列逐字符参与宽度累计（转义字符 ``\\x1b``/``[``/``3``/``1``/``m`` 各计
-    1 宽），截断可能切在序列中间（渲染畸形）且宽度统计错误。剥离后按可见
-    字符截断（ANSI 样式信息在截断后丢失——展示用途可接受）。
-    """
-    if max_w <= 0:
-        return ""
-    text = strip_ansi(text)
-    if wcswidth_simple(text) <= max_w:
-        return text
-    w = 0
-    out = []
-    for ch in text:
-        cw = wcswidth_simple(ch)
-        if w + cw > max_w - 1:
-            break
-        out.append(ch)
-        w += cw
-    return "".join(out) + "\u2026"
+# ★ P2（review 2026-08-22）：``_repeat`` / ``_truncate_to_width`` 已收敛至
+#   ``_display_common``（见上方 import 注释），本节本地定义删除。
 
 
 def CodeBlock(props: dict) -> Element:
@@ -161,20 +129,20 @@ def CodeBlock(props: dict) -> Element:
         #   丢失）——先截断 label_text 至可用宽度（``width_eff - 3`` =
         #   ``┌ + ─ + 标题`` 占 3 后的剩余），再计算 fill 保证总宽 ==
         #   width_eff（``_truncate_to_width`` 返回宽度 <= max_w）。
-        label_text = _truncate_to_width(label_text, max(0, width_eff - 3))
+        label_text = _truncate_to_width(label_text, max(0, width_eff - 3), True)
         label_w = wcswidth_simple(label_text)
         fill = max(0, width_eff - 3 - label_w)
         children.append(
             h(TEXT, {
-                "children": chars[0] + _repeat(chars[4], 1) + label_text
-                            + _repeat(chars[4], fill) + chars[1],
+                "children": chars[0] + _repeat_to_width(chars[4], 1) + label_text
+                            + _repeat_to_width(chars[4], fill) + chars[1],
                 "style": border,
             })
         )
     else:
         children.append(
             h(TEXT, {
-                "children": chars[0] + _repeat(chars[4], max(0, width_eff - 2)) + chars[1],
+                "children": chars[0] + _repeat_to_width(chars[4], max(0, width_eff - 2)) + chars[1],
                 "style": border,
             })
         )
@@ -188,7 +156,9 @@ def CodeBlock(props: dict) -> Element:
     for i, line in enumerate(lines):
         content = line if line else ""
         if not wrap:
-            content = _truncate_to_width(content, inner_w)
+            # ★ P2（review）：_truncate_to_width 收敛至 _display_common——
+            #   codeblock 传 strip_ansi_seq=True（保留剥离 ANSI 语义）。
+            content = _truncate_to_width(content, inner_w, True)
         # ★ P1-2（review）：content 填充到 inner_w——修复前 Row 无显式宽度、
         #   内容自适应，content 短于 inner_w 时右侧竖线（` │`）落在错误列
         #   （与底边框 ┘ 不对齐）。填充后 content 显示宽 == inner_w，行总宽
@@ -213,7 +183,7 @@ def CodeBlock(props: dict) -> Element:
     # ── 底边框 ──
     children.append(
         h(TEXT, {
-            "children": chars[2] + _repeat(chars[4], max(0, width_eff - 2)) + chars[3],
+            "children": chars[2] + _repeat_to_width(chars[4], max(0, width_eff - 2)) + chars[3],
             "style": border,
         })
     )

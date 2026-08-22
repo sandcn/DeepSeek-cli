@@ -227,19 +227,21 @@ class _SystemMonitor:
 
     def _read_cpu_windows(self) -> float:
         try:
+            # ★ P2（review 2026-08-22）：wmic 已被 Windows 11 24H2 弃用——
+            #   改用 PowerShell Get-CimInstance 读 CPU LoadPercentage。
             result = subprocess.run(
-                ["wmic", "cpu", "get", "loadpercentage", "/format:value"],
+                ["powershell", "-NoProfile", "-Command",
+                 "(Get-CimInstance Win32_Processor).LoadPercentage"],
                 capture_output=True, text=True, timeout=5.0,
             )
             if result.returncode != 0:
                 return 0.0
-            for line in result.stdout.strip().splitlines():
-                line = line.strip()
-                if line.startswith("LoadPercentage="):
-                    return float(line.split("=", 1)[1].strip())
-            return 0.0
+            text = result.stdout.strip()
+            if not text:
+                return 0.0
+            return float(text.splitlines()[-1].strip())
         except subprocess.TimeoutExpired:
-            _logger.warning("子进程超时: wmic cpu get loadpercentage", exc_info=True)
+            _logger.warning("子进程超时: powershell cpu load", exc_info=True)
             return 0.0
         except (OSError, ValueError, IndexError):
             return 0.0
@@ -325,36 +327,27 @@ class _SystemMonitor:
 
     def _read_mem_windows(self) -> float:
         try:
+            # ★ P2（review 2026-08-22）：wmic 已被 Windows 11 24H2 弃用——
+            #   改用 PowerShell Get-CimInstance 计算内存占用百分比。
             result = subprocess.run(
-                ["wmic", "OS", "get",
-                 "TotalVisibleMemorySize,FreePhysicalMemory",
-                 "/format:value"],
+                ["powershell", "-NoProfile", "-Command",
+                 "$os = Get-CimInstance Win32_OperatingSystem; "
+                 "if ($os.TotalVisibleMemorySize) { "
+                 "[math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / "
+                 "$os.TotalVisibleMemorySize * 100, 2) } else { 0 }"],
                 capture_output=True, text=True, timeout=5.0,
             )
             if result.returncode != 0:
                 return 0.0
+            text = result.stdout.strip()
+            if not text:
+                return 0.0
+            return float(text.splitlines()[-1].strip())
         except subprocess.TimeoutExpired:
-            _logger.warning("子进程超时: wmic OS get TotalVisibleMemorySize,FreePhysicalMemory", exc_info=True)
+            _logger.warning("子进程超时: powershell mem", exc_info=True)
             return 0.0
-        except OSError:
+        except (OSError, ValueError, IndexError):
             return 0.0
-        total_kb = 0
-        free_kb = 0
-        for line in result.stdout.strip().splitlines():
-            line = line.strip()
-            if line.startswith("TotalVisibleMemorySize="):
-                try:
-                    total_kb = int(line.split("=", 1)[1].strip())
-                except (ValueError, IndexError):
-                    pass
-            elif line.startswith("FreePhysicalMemory="):
-                try:
-                    free_kb = int(line.split("=", 1)[1].strip())
-                except (ValueError, IndexError):
-                    pass
-        if total_kb <= 0:
-            return 0.0
-        return 100.0 * (total_kb - free_kb) / total_kb
 
 
 __all__ = ["_SystemMonitor"]

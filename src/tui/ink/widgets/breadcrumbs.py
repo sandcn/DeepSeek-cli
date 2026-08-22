@@ -37,6 +37,10 @@ def _normalize_items(items) -> list[dict]:
         return []
     if not hasattr(items, "__iter__"):
         return []
+    # ★ P2（review 2026-08-22）：str/bytes 是 Iterable（逐字符）——作为 items
+    #   被逐字符拆成面包屑项（意外语义）；与 _interactive_common 守卫一致。
+    if isinstance(items, (str, bytes)):
+        return []
     out: list[dict] = []
     for it in items:
         if isinstance(it, dict):

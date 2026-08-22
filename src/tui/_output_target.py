@@ -17,7 +17,10 @@ from typing import Protocol, runtime_checkable
 class IOutputTarget(Protocol):
     """输出目标协议 — 定义终端渲染输出的抽象接口。
 
-    由 BaseDisplay / ChatUIConsumer 等实现。
+    ★ P2（review 2026-08-22）：docstring 原称「由 BaseDisplay / ChatUIConsumer
+    等实现」与实际不符——BaseDisplay 仅持有 ``output_target`` 实例（未实现
+    ``write_line``/``flush``/``display_messages`` 三方法）；实际实现者是
+    ``ChatUIConsumer``（及 ``_diff_renderer`` 的 ``show_file_diff`` 目标）。
     """
 
     def write_line(self, text: str) -> None: ...

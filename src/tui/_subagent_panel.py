@@ -497,6 +497,11 @@ class SubAgentPanelController:
             return
         self._store.append_live(event.label, "reasoning", event.text)
         self._dirty = True
+        # ★ P3（review 2026-08-22）：panel refresh 回调未注册（_cb_registered=
+        #   False，测试桩/异常装配）时流式内容无法经 _panel_refresh 推进——
+        #   补走 _emit_frame 推送路径，保证 push_cmd 路径下也刷新。
+        if not self._cb_registered:
+            self._emit_frame()
 
     def _on_content_chunk(self, event) -> None:
         """ContentChunkEvent → 累积 subagent 流式回答内容（动态部分）。"""
@@ -504,6 +509,9 @@ class SubAgentPanelController:
             return
         self._store.append_live(event.label, "content", event.text)
         self._dirty = True
+        # ★ P3（review 2026-08-22）：同上——无 panel refresh 回调时补 _emit_frame。
+        if not self._cb_registered:
+            self._emit_frame()
 
     # ── 面板刷新回调 ────────────────────────────────────
 

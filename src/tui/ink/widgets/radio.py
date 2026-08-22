@@ -19,7 +19,10 @@ from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
 from ..hooks import use_state, use_input, use_ref
 from ..widgets.layout import Column
-from ..widgets.interactive import _normalize_items, _clamp_index, _visible_window, _call
+# ★ P3（review 2026-08-22）：导入路径从 ``widgets.interactive`` 门面改为
+#   直接 ``._interactive_common``（与 _select_input/_multi_select 一致，
+#   减少门面链依赖层级）。
+from ._interactive_common import _normalize_items, _clamp_index, _visible_window, _call
 
 _logger = logging.getLogger(__name__)
 
@@ -125,7 +128,13 @@ def RadioList(props: dict) -> Element:
             return True
         # ★ P3（review）：``event.kind == "space"`` 为死分支（InputParser 从不
         #   产生 kind=="space"，空格为 ``kind=="char", char==" "``）——删除。
-        if event.kind == "enter" or (event.kind == "char" and event.char == " "):
+        if event.kind == "enter" or (
+            event.kind == "char" and event.char == " " and len(event.char) == 1
+        ):
+            if on_select is None:
+                # ★ P3（review 2026-08-22）：on_select 未注册时放行（与
+                #   _select_input 对齐），勿阻断父级 Enter/空格分发。
+                return False
             _call(on_select, items[cur])
             return True
         return False

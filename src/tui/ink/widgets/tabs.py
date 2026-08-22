@@ -53,6 +53,10 @@ def _normalize_tabs(tabs) -> list[dict]:
         return []
     if not hasattr(tabs, "__iter__"):
         return []
+    # ★ P2（review 2026-08-22）：str/bytes 是 Iterable（逐字符）——作为 tabs
+    #   被逐字符拆成标签（意外语义）；与 _interactive_common 守卫一致。
+    if isinstance(tabs, (str, bytes)):
+        return []
     out: list[dict] = []
     for t in tabs:
         if isinstance(t, dict):

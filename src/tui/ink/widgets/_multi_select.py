@@ -196,7 +196,9 @@ def MultiSelect(props: dict) -> Element:
             #   滚动，光标行保持可见）。
             _scroll_follow(cursor_ref.current)
             return True
-        if event.kind == "space" or (event.kind == "char" and event.char == " "):
+        if event.kind == "char" and event.char == " ":
+            # ★ P3（review 2026-08-22）：删除 ``event.kind == "space"`` 死分支——
+            #   InputParser 从不产生 kind=="space"（其他控件均删该分支）。
             value = items[cur_cursor]["value"]
             new_selected = set(cur_selected)
             hval = _hashable(value)
@@ -208,6 +210,10 @@ def MultiSelect(props: dict) -> Element:
             set_selected(new_selected)
             return True
         if event.kind == "enter":
+            if onSubmit is None:
+                # ★ P3（review 2026-08-22）：onSubmit 未注册时放行（Return False，
+                #   与 _select_input 的 on_select None 放行对齐），勿阻断父级。
+                return False
             # ★ E9：onSubmit ordered 按 items **原始 value** 收集（不归一化）——
             #   不可哈希 value（dict/list）原样输出；集合成员判断经 _hashable。
             ordered = [

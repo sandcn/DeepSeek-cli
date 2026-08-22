@@ -115,12 +115,18 @@ def Panel(props: dict) -> Element:
     inner: list = []
     if title:
         inner.append(h(TEXT, {
-            "children": title, "style": title_style or border_style, "height": 1,
+            "children": title,
+            # ★ P3（review 2026-08-22）：``or`` 改 ``is not None``——显式空 Style()
+            #   （falsy）不应被 border_style 静默替换（库内共识）。
+            "style": title_style if title_style is not None else border_style,
+            "height": 1,
         }))
     inner.extend(children)
     if status:
         inner.append(h(TEXT, {
-            "children": status, "style": status_style or border_style, "height": 1,
+            "children": status,
+            "style": status_style if status_style is not None else border_style,
+            "height": 1,
         }))
     # ★ 无边框模式（方案B）：border=0/"none"/None/False → 直接渲染 inner
     #   （Column）——工具卡等「无边框裸行」界面控件化表达，无边框字符。

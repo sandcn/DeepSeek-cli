@@ -64,6 +64,16 @@ def _show_completions_for(bb, engine, text: str) -> bool:
     # 与 split(" ") 空格语义一致，且兼容制表符）。
     words = re.split(r"\s+", text)
     last_word = words[-1] if words else ""
+    # ★ P1（review）：尾随空格时 re.split 保留空串（``"cd "`` → ``['cd', '']``），
+    #   使 ``last_word=""`` 而引擎 ``_complete_param`` 的 ``param_last`` 取
+    #   非空词（``start_pos=-len(sub)``）——两者失配导致 ``/config set `` + Tab
+    #   应用出 ``/config sset api_base_url``（重复 ``s``）。此处取最后一个非空词，
+    #   使 ``orig_prefix`` 与引擎 ``start_pos`` 的「替换最后一个词」语义对齐。
+    if last_word == "" and words:
+        for w in reversed(words):
+            if w:
+                last_word = w
+                break
 
     match_prefix = _get_match_prefix(items, last_word)
 
@@ -156,7 +166,10 @@ class _CmplHandler:
             # glob 当前目录（engine.complete → _complete_path）是渲染线程
             # 性能热点（大目录下输入卡顿）。Tab 明确补全（_first_tab）不走
             # 本分支，路径补全功能完整保留。方向3 性能优化。
-            words = text.split(" ")
+            # ★ P2（review）：统一用 re.split(r"\s+")（与引擎口径一致）——
+            #   split(" ") 对含 \t 输入不切分（cd\t/src 中 last_word 取整段
+            #   含制表符串，路径判定失效）。
+            words = re.split(r"\s+", text)
             last_word = words[-1] if words else ""
             # ★ 修复（review 方向）：路径分隔符兼容——与 _get_match_prefix
             #   一致按 os.sep/os.altsep 判断（修复前硬编码 "/"：Windows 上
@@ -240,7 +253,9 @@ def _apply_completion(
             return repl_text
         return text[:len(text) - trim_len] + repl_text
 
-    # start_pos > 0：保留供非 CompletionEngine 来源的调用（当前路径未触发）
+    # start_pos > 0：保留供非 CompletionEngine 来源的调用（本引擎 complete 产出
+    #   start_pos 恒 <=0——死分支为兼容潜在外部/测试调用方保留，勿删除；若未来
+    #   确认无外部调用可评估移除）。★ P3（review 2026-08-22）补注释明确。
     if start_pos > 0 and start_pos < len(text):
         return text[:start_pos] + repl_text
     return repl_text

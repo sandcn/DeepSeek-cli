@@ -655,7 +655,11 @@ def UserSelectPopup(props) -> object:
 
     def _on_select(item) -> None:
         # 单选 Enter：单问题直接提交；多问题标记回答 + 自动推进。
-        result = [item["value"]] if 0 <= cur < total else list(us.default_options or [])
+        # ★ P2（review 2026-08-22，对齐 editmsg_select P2-4 修复）：result 直接
+        #   取 item["value"]（权威选中值）——修复前用渲染帧闭包 ``cur`` 判定
+        #   范围 ``0 <= cur < total``，同批多按键无重渲染时 cur 陈旧，可能与
+        #   item 不一致（如列表收缩后误走 default_options）。
+        result = [item["value"]] if item is not None else []
         if multi_mode:
             _commit_answer(result, "confirmed")
         else:

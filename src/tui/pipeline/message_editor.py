@@ -39,6 +39,9 @@ from .message_display import _content_str, _truncate
 
 _logger = logging.getLogger(__name__)
 
+#: 交互式消息选择超时（秒）——两处复用（1 分钟；修复前魔法数字 120 重复）。
+_SELECT_DEADLINE = 120.0
+
 
 # ═══════════════════════════════════════════════════════════
 # 工具函数
@@ -592,7 +595,7 @@ class MessageEditor:
             title="\u9009\u62e9\u8981\u7f16\u8f91\u7684\u6d88\u606f",  # 选择要编辑的消息
             options=list(display_items),
             selected=sel_count - 1,  # 默认选中最后一条
-            deadline=time.monotonic() + 120,  # 2 分钟超时
+            deadline=time.monotonic() + _SELECT_DEADLINE,  # 2 分钟超时
         )
         # ★ W6 修复（2026-08-19，编辑错消息——不能编辑对应的用户消息）：
         #   Enter 落在「dismiss 回调已替换 → es 设置前」窗口时经
@@ -787,7 +790,7 @@ class MessageEditor:
 
         # 轮询等待用户选择
         last_sel_idx = sel_count - 1
-        deadline = time.monotonic() + 120  # 2 分钟超时
+        deadline = time.monotonic() + _SELECT_DEADLINE  # 2 分钟超时
         try:
             while time.monotonic() < deadline:
                 # ★ 使用独立信号检测 Enter（不经过 get_queued_input / _enter 路径）

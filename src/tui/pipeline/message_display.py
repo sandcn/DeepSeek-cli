@@ -66,8 +66,13 @@ def _content_str(content: Any) -> str:
                     url = url_container.get("url", "") if isinstance(url_container, dict) else ""
                     parts.append(f"[图片: {url}]" if url else "[图片]")
                     continue
-                t = c.get("text", c)
+                # ★ P3（review 2026-08-22）：未知 dict 类型（如 Anthropic
+                #   tool_use）原 ``c.get("text", c)`` 回退整 dict → str(dict)
+                #   垃圾文本进预览。输出摘要（含 name），未污染消息预览。
+                t = c.get("text")
                 if t is None:
+                    name = c.get("name")
+                    parts.append(f"[工具调用: {name}]" if name else "[工具调用]")
                     continue
                 parts.append(str(t))
             else:

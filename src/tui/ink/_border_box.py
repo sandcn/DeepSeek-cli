@@ -49,8 +49,12 @@ def build_border_box(
     #   修复前 ``Line.of("┌─ ")`` 固定占 3 列，width=1/2 时 head 宽超目标
     #   宽度（且无条件追加右角 ┐ 使行宽进一步超宽）。width>=3 正常路径
     #   不变（head 前缀 3 列 + title + fill，┐ 恒追加）。
+    # ★ P2（review 2026-08-22）：width==3 特殊处理——head="┌─ "（3 宽）后
+    #   ``head.width < width``（3<3）False 不追加 ┐，顶行缺右角（底行同）。
     if width < 3:
         head = Line.of("┌─"[:max(0, width)], border_style)
+    elif width == 3:
+        head = Line.of("┌─┐", border_style)
     else:
         head = Line.of("┌─ ", border_style)
     # ★ P3（review）：预算下限 1 → 0——标题为空时不该硬塞 1 列（宽度极小
@@ -84,8 +88,11 @@ def build_border_box(
     if status != "open":
         # ★ P2 修复（review 方向）：与顶行同构——width<3 时省略前缀空格/
         #   按宽裁剪前缀（底行右角 ┘ 同样仅当行宽未达目标宽度时追加）。
+        # ★ P2（review 2026-08-22）：width==3 特殊处理（同顶行缺右角）。
         if width < 3:
             tail = Line.of("└─"[:max(0, width)], border_style)
+        elif width == 3:
+            tail = Line.of("└─┘", border_style)
         else:
             tail = Line.of("└─ ", border_style)
         # ★ P3（review）：status 文本截断到 width-4（与 title 相同处理）——

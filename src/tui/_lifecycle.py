@@ -126,7 +126,22 @@ class TuiLifecycle:
             # 若未来需要启用须先解决顺序保障。同步测试见
             # tests/test_tui/test_consumer.py::TestLifecycleBatchedRegistration
             # （断言 start() 后 bus._batched_events 为空）。
-            self._engine.start()
+            try:
+                self._engine.start()
+            except Exception:
+                # ★ P1（review 2026-08-22）：engine.start() 抛异常时订阅已完成
+                #   但 _started 未置位——回滚全部已订阅 handler + 复位
+                #   _handlers_bound=False（修复前 stop() 因 not _started 提前返回，
+                #   handler 永久残留 DisplayEventBus、持续回调已停止的引擎）。
+                for ev_type, h in subscribed:
+                    try:
+                        self._bus.unsubscribe(h, event_type=ev_type)
+                    except Exception:
+                        _logger.debug(
+                            "start 回滚取消订阅异常", exc_info=True,
+                        )
+                self._handlers_bound = False
+                raise
             try:
                 self._engine.push_cmd(SplashCmd())
             except Exception:

@@ -126,7 +126,7 @@ def create_framework(model, tui_config, line_tracker, input_instance):
     #   渲染器（InkRenderer）——旧 ``_InkRendererFacade`` 占位类已删除
     #   （其唯一职责 output_adapter 恒 None 无生产消费方，ChatUIConsumer.
     #   output_adapter 改为直接返回 None）。
-    renderer = session._ink_renderer
+    renderer = session.renderer
     return session, bridge, renderer
 
 

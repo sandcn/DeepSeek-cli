@@ -183,7 +183,10 @@ def Menu(props: dict) -> Element:
                         on_highlight(items[new], new)
                     except Exception:
                         _logger.debug("Menu onHighlight 回调异常", exc_info=True)
-            return True
+                return True
+            # ★ P3（review 2026-08-22）：无效移动（new == cur，无可移动项）返回
+            #   False 放行——修复前无条件 return True 阻断父级滚动。
+            return False
         if event.kind == "arrow_down":
             new = _next_selectable(items, cur, 1)
             if new != cur:
@@ -194,7 +197,9 @@ def Menu(props: dict) -> Element:
                         on_highlight(items[new], new)
                     except Exception:
                         _logger.debug("Menu onHighlight 回调异常", exc_info=True)
-            return True
+                return True
+            # ★ P3（review 2026-08-22）：同上——无效移动放行。
+            return False
         if event.kind in ("home", "end"):
             # ★ P1（review）：Home/End 落点偏移修复——``_next_selectable`` 先
             #   移动再检查（跳过起始位置），Home（起点 0）在第 0 项可选时会

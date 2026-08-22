@@ -23,6 +23,10 @@ T = TypeVar("T")
 class ThreadSafeList:
     """线程安全列表封装，提供 list 兼容接口（**基础操作子集**）。
 
+    ★ P3（review 2026-08-22）：**已弃用（deprecated）**——``captured_*`` 机制
+    已删除后生产无调用方（仅 ``state/__init__.py`` re-export；除非未来有新的
+    线程安全集合场景，否则可评估删除）。保留仅为兼容潜在外部引用。
+
     使用 threading.Lock 保护所有写操作和读操作，
     确保多线程环境下的 append/clear/__len__/__iter__ 等操作安全。
 

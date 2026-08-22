@@ -100,7 +100,9 @@ class DisplayEventBus(metaclass=SingletonMeta):
         如需仅触发一次请勿同时注册。
         """
         if event_type is not None:
-            if not issubclass(event_type, DisplayEvent):
+            # ★ P3（review 2026-08-22）：前置 isinstance 校验——event_type 为
+            #   实例（非类）时 issubclass 抛裸 TypeError，转成带上下文。
+            if not isinstance(event_type, type) or not issubclass(event_type, DisplayEvent):
                 raise TypeError(f"event_type 必须是 DisplayEvent 的子类，收到: {event_type}")
             with self._lock:
                 handlers = self._handlers.setdefault(event_type, [])
@@ -128,8 +130,9 @@ class DisplayEventBus(metaclass=SingletonMeta):
         """
         # P3-7：与 subscribe 对齐的类型校验（修复前 unsubscribe 无校验，
         # 非法 event_type 静默走 ``_handlers.get(event_type)`` 不报错）。
+        # ★ P3（review 2026-08-22）：前置 isinstance 校验（同 subscribe）。
         if event_type is not None:
-            if not issubclass(event_type, DisplayEvent):
+            if not isinstance(event_type, type) or not issubclass(event_type, DisplayEvent):
                 raise TypeError(f"event_type 必须是 DisplayEvent 的子类，收到: {event_type}")
         with self._lock:
             if event_type is not None:

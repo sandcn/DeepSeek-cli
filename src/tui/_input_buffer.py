@@ -632,7 +632,13 @@ class InputBufferEditor:
         return self._search_active
 
     def _append_history_locked(self, text: str) -> None:
-        """保存输入到历史（需持 _lock；写盘部分异步执行）。
+        """保存输入到历史（写盘部分异步执行）。
+
+        ★ P2（review 2026-08-22）：方法名含 ``_locked`` 但实际在 ``_enter``
+        的 ``with self._lock`` 块**外**调用（锁外提交后台写盘避免 render 线程
+        阻塞）——命名/锁纪律误导。``_history`` 内存更新仅 render/装配期单线程
+        访问（_up/_down/search/load_history 同线程），无跨线程竞态；方法名
+        保留以兼容 patch 路径，语义以本说明为准。
 
         历史写盘决策（方向A 步骤1 评估，2026-07-31）：保持每 Enter 调用一次
         ``_append_to_history_file``（**保持现状**）——批量化会引入崩溃时历史丢失

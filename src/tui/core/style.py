@@ -99,6 +99,13 @@ class Style:
                 raise ValueError(
                     f"Style.{_name} 不接受 bool 色号（bool 是 int 子类），收到: {_value!r}"
                 )
+            # ★ P2（review 2026-08-22）：非 bool 非 int 非 TrueColor 数值
+            #   （如 float 45.5）原通过校验——to_ansi 生成非法 ``\033[38;5;45.5m``
+            #   损坏终端渲染。显式拒绝，与 to_ansi_fg（非 int 返回空串）语义对齐。
+            if _value is not None and not isinstance(_value, (int, TrueColor)):
+                raise ValueError(
+                    f"Style.{_name} 色号须为 int(0-255) 或 TrueColor, 收到: {_value!r}"
+                )
             if (
                 _value is not None
                 and isinstance(_value, int)

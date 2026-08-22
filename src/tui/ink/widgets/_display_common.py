@@ -15,6 +15,7 @@ from src.tui._width import wcswidth_simple
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_color 原本地定义（与
 #   _interactive_common 逐字重复）——收敛至 _widget_common 单一真源。
 from ._widget_common import _color
+from ..helpers import strip_ansi
 
 
 def _resolve_style(props: dict, default_fg: int | None = None) -> Style | None:
@@ -51,4 +52,29 @@ def _repeat_to_width(char: str, width: int) -> str:
     return out
 
 
-__all__ = ["_color", "_resolve_style", "_repeat_to_width"]
+def _truncate_to_width(text: str, max_w: int, strip_ansi_seq: bool = False) -> str:
+    """按显示宽度截断（不拆 CJK；超宽时末尾补省略号）。
+
+    ★ P2（review 2026-08-22）：从 codeblock / _badge_divider 重复实现收敛——
+    ``strip_ansi_seq`` 参数化两处差异：codeblock 截断前剥离 ANSI 转义（避免
+    截断切在序列中间/宽度统计错误），badge_divider 标题保留样式不剥离。
+    返回宽度 <= max_w（保留 ``max_w-1`` 字符宽 + 省略号 1 宽）。
+    """
+    if max_w <= 0:
+        return ""
+    if strip_ansi_seq:
+        text = strip_ansi(text)
+    if wcswidth_simple(text) <= max_w:
+        return text
+    w = 0
+    out = []
+    for ch in text:
+        cw = wcswidth_simple(ch)
+        if w + cw > max_w - 1:
+            break
+        out.append(ch)
+        w += cw
+    return "".join(out) + "\u2026"
+
+
+__all__ = ["_color", "_resolve_style", "_repeat_to_width", "_truncate_to_width"]

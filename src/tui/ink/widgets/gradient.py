@@ -12,6 +12,7 @@ import logging
 
 from src.tui.core.color import lerp_color
 from src.tui.core.style import Style
+from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
 from ..output import StyledRun
 
@@ -55,7 +56,6 @@ def _gradient_runs(text: str, colors) -> list:
     #   按字符索引 ``i/(n-1)``，CJK（宽 2）/ASCII（宽 1）混排文本的渐变
     #   进度与显示列位置不成比例（视觉上色偏移）；纯 ASCII/纯 CJK 不受
     #   影响。t = 该字符起始显示列 / 全文显示宽（末字符 t=1 收敛）。
-    from src.tui._width import wcswidth_simple
     total_w = wcswidth_simple(text)
     acc_w = 0
     for ch in text:

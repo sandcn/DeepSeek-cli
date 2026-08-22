@@ -208,9 +208,20 @@ def _make_compat_handler(handler: Callable) -> Callable:
             1 for p in sig.parameters.values()
             if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
         )
+        # ★ P3（review 2026-08-22）：VAR_POSITIONAL（*args）handler 被误判为
+        #   单参——*args 能接收 (input, key) 双参，按双参适配（对齐 React Ink 生态
+        #   handler 语义；KEYWORD_ONLY 参数难以按位置适配，不在此处理）。
+        if any(p.kind == p.VAR_POSITIONAL for p in sig.parameters.values()):
+            n = 2
     except (TypeError, ValueError):
         n = 1
     if n < 2:
+        # ★ P2（review 2026-08-22）：单参 handler 也写入缓存——修复前直接
+        #   return 不写入，每帧重跑 inspect.signature（与注释「零额外开销」
+        #   不符）；写入后后续帧命中缓存零签名探测。
+        if len(_compat_handler_cache) >= _COMPAT_CACHE_MAX:
+            _compat_handler_cache.popitem(last=False)
+        _compat_handler_cache[hid] = (handler, handler)
         return handler
 
     def _wrapped(event) -> bool:

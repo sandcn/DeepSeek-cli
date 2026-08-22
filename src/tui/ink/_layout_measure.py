@@ -387,7 +387,8 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             if pstyled is not None:
                 styled_len = len(pstyled)
             if (
-                mc[1] is fiber.props
+                mc[0] == "text"
+                and mc[1] is fiber.props
                 and mc[2] == avail_w
                 and mc[3] == fill
                 and mc[4] == styled_len
@@ -1086,8 +1087,8 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         total_h = row_h
     else:
         # 子节点纵向堆叠（填充宽度），高度为内容累加
-        #: 探针测量结果（fill=False 分支缓存；其他分支保持 None）
-        probe_boxes: list | None = None
+        #: 探针测量标志（fill=False 分支置位；其他分支保持 False）
+        probe_done: bool = False
         if explicit_w is not None:
             # 方向1 步骤3：width 畸形兜底（复用 _resolve_width）
             width = _resolve_width(fiber, avail_w)
@@ -1098,17 +1099,17 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             #   先以 fill=False 测量子节点自然宽度（内容宽度 = 子节点自然宽度，
             #   纵向堆叠取最大），加 padding/border 且不超可用宽度。修复前 column
             #   分支忽略 fill 恒填满剩余行宽（row 内 BOX 子节点错误占满整行）。
-            # ★ 性能（方向1）：探针测量结果缓存到 ``probe_boxes``——主循环
-            #   （fill=False 且非 stretch）复用探针盒（仅更新 y），避免同一
-            #   子树测量两次（修复前 fill=False 列容器每帧子节点测量两遍）。
-            probe_boxes = []
+            # ★ 性能（方向1）★ P3（review 2026-08-22）：探针测量仅需布尔标志
+            #   （``probe_done``）——修复前 ``probe_boxes`` 列表把探针盒存入数组，
+            #   但主循环复用的是 ``child.layout_box``（_measure 已写入），列表仅靠
+            #   ``is not None`` 作哨兵、从未索引（死数据，注释误导）。
+            probe_done = True
             probe_w = 0
             for child in children:
                 probe_box = _measure(
                     child, inner_x, inner_y,
                     max(0, avail_w - (pad_h + 2 * border)), fill=False,
                 )
-                probe_boxes.append(probe_box)
                 if probe_box.w > probe_w:
                     probe_w = probe_box.w
             width = _clamp_width(
@@ -1152,7 +1153,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             else:
                 eff_align = align
             child_fill = fill if eff_align == "stretch" else False
-            if child_fill is False and probe_boxes is not None:
+            if child_fill is False and probe_done:
                 # 探针测量把**子树全部**按 inner_y 测（y 重叠）——仅更新自身
                 # box 不够，后代 y 停留在 inner_y 基准（多子节点时第 2+ 个子树
                 # 与首个重叠，方向3 修复）。整棵子树平移 delta_y。

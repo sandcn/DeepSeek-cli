@@ -289,28 +289,31 @@ def _windows_monitor(monkeypatch):
     return m
 
 
-def test_cpu_windows_parses_wmic(monkeypatch):
+def test_cpu_windows_parses_powershell(monkeypatch):
     m = _windows_monitor(monkeypatch)
     _fake_subprocess(monkeypatch, {
-        ("wmic", "cpu", "get", "loadpercentage", "/format:value"): (0, "LoadPercentage=47\n"),
+        ("powershell", "-NoProfile", "-Command",
+         "(Get-CimInstance Win32_Processor).LoadPercentage"): (0, "47\n"),
     })
     assert m.get_cpu_percent() == pytest.approx(47.0)
 
 
-def test_mem_windows_parses_wmic(monkeypatch):
+def test_mem_windows_parses_powershell(monkeypatch):
     m = _windows_monitor(monkeypatch)
     _fake_subprocess(monkeypatch, {
-        ("wmic", "OS", "get", "TotalVisibleMemorySize,FreePhysicalMemory", "/format:value"): (
-            0, "TotalVisibleMemorySize=16000000\nFreePhysicalMemory=4000000\n"),
+        ("powershell", "-NoProfile", "-Command",
+         "$os = Get-CimInstance Win32_OperatingSystem; if ($os.TotalVisibleMemorySize) "
+         "{ [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / "
+         "$os.TotalVisibleMemorySize * 100, 2) } else { 0 }"): (0, "75\n"),
     })
     # used = (16M-4M)/16M = 75%
     assert m.get_memory_percent() == pytest.approx(75.0)
 
 
-def test_windows_wmic_error(monkeypatch):
+def test_windows_powershell_error(monkeypatch):
     m = _windows_monitor(monkeypatch)
     monkeypatch.setattr(sm.subprocess, "run",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("no wmic")))
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("no powershell")))
     assert m.get_cpu_percent() == 0.0
     assert m.get_memory_percent() == 0.0
 
