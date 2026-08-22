@@ -63,21 +63,30 @@ def _multimodal(monkeypatch, value: bool = True):
 # ── 0. 扩展名格式门禁（仅 PNG/JPEG/WebP/GIF） ──────────
 
 async def test_format_gate_rejects_txt(tmp_path):
-    """非图片扩展名（.txt）→ DSH 式拒绝。"""
+    """非图片扩展名（.txt）→ 扩展名门禁拒绝。"""
     p = tmp_path / "t.txt"
     p.write_text("hello", encoding="utf-8")
     out = await ReadImageFunc(path=str(p)).execute()
     assert out.startswith('(cannot read "')
-    assert "read_image only accepts PNG/JPEG/WebP/GIF paths" in out
+    assert "not a recognized image extension" in out
 
 
-async def test_format_gate_rejects_bmp(tmp_path):
-    """BMP（DSH 不接受）→ 扩展名门禁拒绝（即使 Pillow 能解码）。"""
+async def test_format_gate_accepts_bmp_converts_png(tmp_path, monkeypatch):
+    """BMP（非 vision 原生格式）→ 允许读取并自动转换为 PNG（模型支持格式）。"""
+    _multimodal(monkeypatch, True)
     from PIL import Image
     p = tmp_path / "t.bmp"
     Image.new("RGB", (2, 2)).save(str(p), format="BMP")
-    out = await ReadImageFunc(path=str(p)).execute()
-    assert "read_image only accepts PNG/JPEG/WebP/GIF paths" in out
+    f = ReadImageFunc(path=str(p))
+    out = await f.execute()
+    assert "图片:" in out
+    assert "格式: PNG" in out
+    blocks = f.result_blocks
+    assert blocks is not None and len(blocks) == 2
+    url = blocks[1]["image_url"]["url"]
+    assert url.startswith("data:image/png;base64,")
+    raw = base64.b64decode(url.split(",", 1)[1])
+    assert raw[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 # ── 1. 严格图像能力门禁 ───────────────────────────────
@@ -334,6 +343,11 @@ async def test_multimodal_budget_shrinks(tmp_path, monkeypatch):
     f = ReadImageFunc(path=str(p), max_dimension=256, max_tokens=2000)
     out = await f.execute()
     assert "尺寸:" in out
+    import re
+    dim = re.search(r"^尺寸: (\d+)x(\d+)", out, re.M)
+    assert dim is not None
+    ow, oh = int(dim.group(1)), int(dim.group(2))
+    assert max(ow, oh) < 256  # 预算适配应把 256x256 噪声图缩小
     blocks = f.result_blocks
     assert blocks is not None and blocks[1]["type"] == "image_url"
     url = blocks[1]["image_url"]["url"]
@@ -551,27 +565,36 @@ def test_build_image_content_blocks():
 # ── 13. schema 描述同步 ──────────────────────────────
 
 def test_tool_schema_mentions_features():
-    """schema 描述向大模型声明分块/操作/格式门禁/能力门禁。"""
+    """schema 描述向大模型声明分块/操作/全量格式/能力门禁。"""
     desc = ReadImageFunc.to_tool_schema()["function"]["description"]
     assert "分块" in desc or "start_x" in desc
     assert "多模态" in desc
     assert "grayscale" in desc
     assert "PNG/JPEG/WebP/GIF" in desc
+    assert "BMP" in desc  # 全量图片格式已声明
     props = ReadImageFunc.to_tool_schema()["function"]["parameters"]["properties"]
     assert "path" in props and "operation" in props and "max_tokens" in props
     # 已移除 rgba_hex/palette 降级格式
     assert "format" not in props and "palette_colors" not in props
 
 
-def test_image_extensions_includes_four():
-    """扩展名映射仅含 PNG/JPEG/WebP/GIF（对齐 DSH）。"""
-    assert IMAGE_EXTENSIONS == {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".webp": "image/webp",
-        ".gif": "image/gif",
-    }
+def test_image_extensions_full():
+    """扩展名映射覆盖全量常用图像格式（PNG/JPEG/WebP/GIF/BMP/TIFF/ICO/PNM…）。"""
+    for ext, mime in {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp",
+    }.items():
+        assert IMAGE_EXTENSIONS[ext] == mime
+    # 非 vision 原生格式也在全量支持范围内（自动转 PNG）
+    assert IMAGE_EXTENSIONS[".bmp"] == "image/bmp"
+    assert IMAGE_EXTENSIONS[".tiff"] == "image/tiff"
+    assert IMAGE_EXTENSIONS[".ico"] == "image/vnd.microsoft.icon"
+    assert IMAGE_EXTENSIONS[".ppm"] == "image/x-portable-pixmap"
+    assert IMAGE_EXTENSIONS[".tga"] == "image/x-targa"
+    # 无法识别为非图片的扩展名不在映射中
+    assert ".txt" not in IMAGE_EXTENSIONS
+    assert ".pdf" not in IMAGE_EXTENSIONS
+    assert ".mpg" not in IMAGE_EXTENSIONS
 
 
 # ── 14. from_args / display_params 边界 ───────────────

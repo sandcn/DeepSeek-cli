@@ -1,8 +1,11 @@
 """read_image — 读取图像文件工具（对齐 DSH read_image 加工契约）
 
 DSH 对齐的加工语义（2026-08 重构）：
-- 仅接受 PNG/JPEG/WebP/GIF：按扩展名路由声明媒体类型，拒绝 BMP 等其它格式；
-- magic-byte / 声明类型一致校验：解码后实际格式必须与扩展名声明一致，
+- 全量图片类型：接受所有 Pillow 可解码的图像格式（PNG/JPEG/WebP/GIF/BMP/
+  TIFF/ICO/PNM(PPM/PGM/PBM)/TGA/SGI/…），不再局限于四种；深度求索
+  deepseek-v4-flash-vision-exp 仅支持 JPEG/PNG/GIF/WebP，故所有输入统一
+  转码为 PNG 返回（模型支持格式之一），非支持格式（如 BMP/TIFF）自动转换；
+- magic-byte / 声明类型一致校验：解码后实际格式必须与扩展名声明的格式一致，
   否则报 DSH 式「扩展名与实际格式不符，重命名文件」错误；
 - 严格图像能力门禁：当前模型若不声明图像输入（非多模态），直接拒绝并提示
   切换到图像模型——对齐 DSH 的「switch to an image-capable model」，不再降级
@@ -17,7 +20,8 @@ DSH 对齐的加工语义（2026-08 重构）：
 - 防爆上下文：max_tokens 预算 + 字节硬上限（自动等比缩小，保证上下文可控）
 
 返回格式固定为多模态：文本元信息 + OpenAI 兼容 image_url data URI
-content blocks（Anthropic 适配器自动转 image block）。
+content blocks（Anthropic 适配器自动转 image block）；图片统一编码为 PNG
+（deepseek-v4-flash-vision-exp 支持的格式之一）。
 """
 
 from __future__ import annotations
@@ -39,23 +43,89 @@ _SUPPORTED_OPERATIONS = frozenset({
     "flip_h", "flip_v", "scale",
 })
 
-# ── DSH 对齐：扩展名 → 声明媒体类型（仅四种） ──────────
-# 与 dsh-tool-fs 的 IMAGE_EXTENSIONS 一致；magic-byte 校验以实际解码为准。
-IMAGE_EXTENSIONS = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".webp": "image/webp",
-    ".gif": "image/gif",
+# ── 全量图片类型：扩展名 → Pillow 格式名（声明格式） ──
+# 覆盖 Pillow 常见可解码图像格式；magic-byte 校验以实际解码为准。
+# 深度求索 deepseek-v4-flash-vision-exp 仅支持 JPEG/PNG/GIF/WebP，
+# 故所有输入统一转码为 PNG 返回（模型支持格式之一）。
+_EXT_TO_FORMAT: dict[str, str] = {
+    # 深度求索原生支持格式（输出统一转 PNG，保留语义）
+    ".png": "PNG", ".apng": "PNG",
+    ".jpg": "JPEG", ".jpeg": "JPEG", ".jpe": "JPEG", ".jfif": "JPEG",
+    ".gif": "GIF",
+    ".webp": "WEBP",
+    # 其它 Pillow 可解码图像格式（自动转换 PNG 后交给视觉模型）
+    ".bmp": "BMP", ".dib": "BMP",
+    ".tif": "TIFF", ".tiff": "TIFF",
+    ".ico": "ICO", ".cur": "ICO",
+    ".icns": "ICNS",
+    ".pbm": "PPM", ".pgm": "PPM", ".pnm": "PPM", ".ppm": "PPM",
+    ".tga": "TGA", ".icb": "TGA", ".vda": "TGA", ".vst": "TGA",
+    ".sgi": "SGI", ".bw": "SGI", ".rgb": "SGI", ".rgba": "SGI",
+    ".ras": "SUN",
+    ".pcx": "PCX",
+    ".xbm": "XBM",
+    ".xpm": "XPM",
+    ".psd": "PSD",
+    ".im": "IM",
+    ".dcx": "DCX",
+    ".dds": "DDS",
+    ".fli": "FLI", ".flc": "FLI",
+    ".fpx": "FPX",
+    ".ftc": "FTEX", ".ftu": "FTEX",
+    ".gbr": "GBR",
+    ".msp": "MSP",
+    ".pcd": "PCD",
+    ".pxr": "PIXAR",
+    ".blp": "BLP",
+    ".palm": "PALM",
+    ".jp2": "JPEG2000", ".j2k": "JPEG2000", ".j2c": "JPEG2000",
+    ".jpc": "JPEG2000", ".jpf": "JPEG2000", ".jpx": "JPEG2000",
+    ".mpo": "MPO",
 }
-# Pillow ``img.format`` → 媒体类型（用于声明/实际一致校验）。
-# 仅覆盖 read_image 接受的四种格式；其它（BMP 等）走扩展名门禁先拒绝。
-_ACTUAL_FORMAT_MEDIA = {
+
+# Pillow ``img.format`` → 媒体类型（用于声明媒体类型展示）。
+_FORMAT_MEDIA: dict[str, str] = {
     "PNG": "image/png",
     "JPEG": "image/jpeg",
-    "WEBP": "image/webp",
     "GIF": "image/gif",
+    "WEBP": "image/webp",
+    "BMP": "image/bmp",
+    "DIB": "image/bmp",
+    "TIFF": "image/tiff",
+    "ICO": "image/vnd.microsoft.icon",
+    "ICNS": "image/icns",
+    "PPM": "image/x-portable-pixmap",
+    "TGA": "image/x-targa",
+    "SGI": "image/x-sgi",
+    "SUN": "image/x-cmu-raster",
+    "PCX": "image/x-pcx",
+    "XBM": "image/x-xbitmap",
+    "XPM": "image/x-xpixmap",
+    "PSD": "image/vnd.adobe.photoshop",
+    "IM": "image/x-im",
+    "DCX": "image/vnd.dcx",
+    "DDS": "image/vnd-ms.dds",
+    "FLI": "image/x-flic",
+    "FPX": "image/vnd.fpx",
+    "FTEX": "image/x-ftex",
+    "GBR": "image/x-gbr",
+    "MSP": "image/x-msp",
+    "PCD": "image/x-photo-cd",
+    "PIXAR": "image/x-pixar",
+    "BLP": "image/x-blp",
+    "PALM": "image/x-palm",
+    "JPEG2000": "image/jp2",
+    "MPO": "image/mpo",
 }
+
+# 扩展名 → 声明媒体类型（由 _EXT_TO_FORMAT + _FORMAT_MEDIA 派生，保持一致）。
+IMAGE_EXTENSIONS: dict[str, str] = {
+    ext: _FORMAT_MEDIA.get(fmt, f"image/{fmt.lower()}")
+    for ext, fmt in _EXT_TO_FORMAT.items()
+}
+# Pillow 可识别的图像格式名集合（用于 registered_extensions 动态过滤：
+# 仅接受静态表认可的「图像」格式，排除 PDF/视频/数据文件等非图像扩展名）。
+_IMAGE_FORMAT_NAMES: frozenset[str] = frozenset(_EXT_TO_FORMAT.values())
 
 # ── DSH 对齐：规范化上限 ───────────────────────────────
 # normalizedImageMaxDimension / normalizedImageMaxBytes（attachment-local 默认值）。
@@ -69,6 +139,10 @@ _DEFAULT_MAX_TOKENS = 8000
 _MIN_DIMENSION = 16
 # 预算/字节上限迭代上限（每次迭代需真实 PNG 编码，控制耗时）
 _BUDGET_MAX_ITER = 5
+# data URI token 估算：base64 前缀字节偏移 / 每字符 token 系数 / 元信息缓冲 tokens
+_URI_PREFIX_OFFSET = 64
+_TOKEN_PER_CHAR = 0.3
+_META_BUF_TOKENS = 300
 # 单文件大小上限（MB）
 _MAX_FILE_SIZE_MB = 50
 # 解码前像素面积上限（3000 万像素：解码 RGBA ≈120MB、copy 后峰值 ≈240MB；
@@ -125,17 +199,39 @@ def _current_model(agent=None) -> str:
 # ── DSH 风格错误文案（返回给模型；前缀 '(' 对齐本项目错误显示约定） ──
 
 def _format_gate_error(path: str) -> str:
-    """扩展名非 PNG/JPEG/WebP/GIF → 拒绝（对齐 DSH extension 路由）。"""
-    return f'(cannot read "{path}": read_image only accepts PNG/JPEG/WebP/GIF paths)'
+    """扩展名非 Pillow 可解码图像格式 → 拒绝（扩展名门禁）。"""
+    return (
+        f'(cannot read "{path}": the file extension is not a recognized image '
+        "extension; read_image supports all image formats readable by Pillow "
+        "(PNG/JPEG/WebP/GIF/BMP/TIFF/ICO/PNM/TGA/...), which are converted to "
+        "PNG for the vision model)"
+    )
 
 
 def _format_mismatch_error(path: str, ext: str, declared: str) -> str:
     """声明（扩展名）与实际解码格式不一致 → 拒绝（对齐 IMAGE_TYPE_MISMATCH）。"""
     return (
         f'(cannot read "{path}": the {ext} extension declares {declared}, but the bytes '
-        "use a different image format; rename the file to match its actual format if it is "
-        "PNG/JPEG/WebP/GIF, or convert it to one of those formats)"
+        "use a different image format; rename the file to match its actual format, or "
+        "convert it to a supported image format)"
     )
+
+
+def _declared_format(ext: str) -> str | None:
+    """返回扩展名对应的 Pillow 格式名（声明格式）。
+
+    优先用 Pillow 运行时 ``registered_extensions()``（该 Pillow 实例支持的全部
+    扩展名→格式），但仅接受静态表认可的「图像」格式（排除 PDF/视频/数据文件
+    等非图像扩展名）；无 PIL 或未覆盖时回退静态 ``_EXT_TO_FORMAT``。
+    """
+    try:
+        from PIL import Image
+        dyn = Image.registered_extensions().get(ext)
+        if dyn and dyn in _IMAGE_FORMAT_NAMES:
+            return dyn
+    except Exception:
+        pass
+    return _EXT_TO_FORMAT.get(ext)
 
 
 def _capability_error(path: str, model: str) -> str:
@@ -175,40 +271,57 @@ def _estimate_uri_tokens(data_len: int) -> int:
     """按编码后 PNG 字节长度估算 data URI 文本的 token 数。
 
     公式：base64 文本 ≈ len*4/3 + 前缀（data:image/png;base64, 等）；token
-    按 0.3/字符，另加 300 缓冲覆盖元信息中文。供 ``_fit_multimodal_to_budget``
-    （预算阈值）与字节硬上限适配共用，避免两处公式漂移。
+    按 _TOKEN_PER_CHAR/字符，另加 _META_BUF_TOKENS 缓冲覆盖元信息中文。
+    供预算/字节上限适配共用，避免两处公式漂移。
     """
-    b64_chars = int(data_len * 4 / 3) + 64
-    return max(1, int(b64_chars * 0.3) + 300)
+    b64_chars = int(data_len * 4 / 3) + _URI_PREFIX_OFFSET
+    return max(1, int(b64_chars * _TOKEN_PER_CHAR) + _META_BUF_TOKENS)
+
+
+def _png_measure(img) -> int | None:
+    """返回 img 编码为 PNG 的字节长；编码失败返回 None（无法测量）。"""
+    buf = io.BytesIO()
+    try:
+        img.save(buf, format="PNG")
+    except Exception:
+        return None
+    return len(buf.getvalue())
+
+
+def _fit_to_bound(img, bound: int, measure):
+    """按 measure 口径迭代等比缩小 img，使 measure(img) ≤ bound。
+
+    measure 返回 img 的当前「值」（token 估算或字节数），None 表示测量失败
+    （停止缩放，原样返回）。每轮以 sqrt 比例强缩（近似平方根——值随面积
+    线性，边长按 sqrt 缩小），到 _MIN_DIMENSION 下限后放弃。
+    """
+    for _ in range(_BUDGET_MAX_ITER):
+        w, h = img.size
+        if w <= 0 or h <= 0 or max(w, h) <= _MIN_DIMENSION:
+            return img
+        value = measure(img)
+        if value is None or value <= bound:
+            return img
+        ratio = (bound / value) ** 0.5
+        img = _fit_dimension(img, max(_MIN_DIMENSION, int(max(w, h) * ratio)))
+    return img
 
 
 def _fit_multimodal_to_budget(img, budget_tokens: int):
     """多模态预算适配：以真实 PNG 编码长度迭代降采样。
 
-    data URI 文本 ≈ len(png) * 4/3（base64）+ 前缀；token 按 0.3/字符，
-    另加 300 缓冲覆盖元信息中文。每次迭代需一次真实编码（尺寸受预算
-    约束后边长通常 < 256，编码毫秒级，可接受）。
+    data URI 文本 ≈ len(png) * 4/3（base64）+ 前缀；token 按 _TOKEN_PER_CHAR/字符，
+    另加 _META_BUF_TOKENS 缓冲覆盖元信息中文。每次迭代需一次真实编码（尺寸受
+    预算约束后边长通常 < 256，编码毫秒级，可接受）。
     """
     if budget_tokens <= 0:
         return img
-    for _ in range(_BUDGET_MAX_ITER):
-        w, h = img.size
-        if w <= 0 or h <= 0:
-            return img
-        if max(w, h) <= _MIN_DIMENSION:
-            return img
-        try:
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            data_len = len(buf.getvalue())
-        except Exception:
-            return img
-        current = _estimate_uri_tokens(data_len)
-        if current <= budget_tokens:
-            return img
-        ratio = (budget_tokens / current) ** 0.5
-        img = _fit_dimension(img, max(_MIN_DIMENSION, int(max(w, h) * ratio)))
-    return img
+
+    def _measure(im):
+        n = _png_measure(im)
+        return None if n is None else _estimate_uri_tokens(n)
+
+    return _fit_to_bound(img, budget_tokens, _measure)
 
 
 def _fit_to_byte_cap(img, max_bytes: int):
@@ -217,31 +330,20 @@ def _fit_to_byte_cap(img, max_bytes: int):
     独立于 token 预算——即使 max_tokens=0（不限预算），编码字节数也不得
     超过部署上限，避免单张图撑爆上下文/存储。
     """
-    for _ in range(_BUDGET_MAX_ITER):
-        w, h = img.size
-        if w <= 0 or h <= 0 or max(w, h) <= _MIN_DIMENSION:
-            return img
-        buf = io.BytesIO()
-        try:
-            img.save(buf, format="PNG")
-        except Exception:
-            return img
-        data_len = len(buf.getvalue())
-        if data_len <= max_bytes:
-            return img
-        ratio = (max_bytes / data_len) ** 0.5
-        img = _fit_dimension(img, max(_MIN_DIMENSION, int(max(w, h) * ratio)))
-    return img
+    return _fit_to_bound(img, max_bytes, _png_measure)
 
 
-def _normalize_srgb(img):
-    """应用 EXIF 方向并转换为 8-bit sRGB 单帧（RGB/RGBA）。
+def _normalize_srgb(img, apply_exif: bool = True):
+    """（可选）应用 EXIF 方向并转换为 8-bit sRGB 单帧（RGB/RGBA）。
 
     对齐 DSH 规范化（canPassThroughNormalization 之后的重编码）：输出必须为
     单帧、8-bit、sRGB。16 位 PNG / 高位深灰度等无法归一化时抛 ValueError。
+    apply_exif=False 时跳过 EXIF 摆正——调用方（_execute_sync）已在裁剪前应用
+    过 exif_transpose 一次，避免同一对象重复摆正（Pillow 幂等性不可靠）。
     """
     from PIL import ImageOps
-    img = ImageOps.exif_transpose(img)
+    if apply_exif:
+        img = ImageOps.exif_transpose(img)
     # 非 8-bit（16 位灰度 / 32 位 int / float）→ 无法归一化为 8-bit sRGB
     if img.mode in ("I;16", "I;16B", "I;16L", "I", "F"):
         raise ValueError("non-8-bit depth")
@@ -273,8 +375,10 @@ class ReadImageFunc(Func):
             "function": {
                 "name": "read_image",
                 "description": (
-                    "读取图像文件内容。仅支持 PNG/JPEG/WebP/GIF，且要求当前模型支持"
-                    "图像输入（多模态）；返回 base64 PNG 图片并附文本元信息。"
+                    "读取图像文件内容。支持全量图片类型（所有 Pillow 可解码格式，"
+                    "含 PNG/JPEG/WebP/GIF/BMP/TIFF/ICO/PNM/TGA/…），非模型原生"
+                    "支持的格式自动转换为 PNG 返回；要求当前模型支持图像输入"
+                    "（多模态）；返回 base64 PNG 图片并附文本元信息。"
                     "支持分块读取（start_x/start_y/end_x/end_y 指定像素区域，类似"
                     "read_file 的行号范围）；支持对图像操作后返回（operation：grayscale"
                     "灰度/rotate90/rotate180/rotate270/flip_h/flip_v/scale 缩放，"
@@ -290,7 +394,7 @@ class ReadImageFunc(Func):
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "图像文件路径，支持相对路径或绝对路径（PNG/JPEG/WebP/GIF）。"
+                            "description": "图像文件路径，支持相对路径或绝对路径（所有 Pillow 可解码图片格式）。"
                         },
                         "start_x": {
                             "type": "integer",
@@ -337,6 +441,7 @@ class ReadImageFunc(Func):
                         "max_dimension": {
                             "type": "integer",
                             "minimum": 16,
+                            "maximum": 2048,
                             "default": 256,
                             "description": (
                                 "返回图像最大边长（超出则等比缩小）。上限 2048。"
@@ -454,10 +559,10 @@ class ReadImageFunc(Func):
         self.result_blocks = None
         file_path = self.path
 
-        # ── 1. 扩展名格式门禁（仅 PNG/JPEG/WebP/GIF） ────
+        # ── 1. 扩展名格式门禁（全量 Pillow 图像格式） ────
         ext = os.path.splitext(file_path)[1].lower()
-        declared = IMAGE_EXTENSIONS.get(ext)
-        if declared is None:
+        declared_format = _declared_format(ext)
+        if declared_format is None:
             return _format_gate_error(file_path)
 
         if not os.path.exists(file_path):
@@ -492,9 +597,11 @@ class ReadImageFunc(Func):
                             f"超过 {_MAX_IMAGE_PIXELS} 像素上限)")
                 img.load()  # 触发解码
                 # ── 3. magic-byte / 声明类型一致校验 ───────
-                actual = _ACTUAL_FORMAT_MEDIA.get(img.format)
-                if actual is None or actual != declared:
-                    return _format_mismatch_error(file_path, ext, declared)
+                actual_format = getattr(img, "format", None)
+                if actual_format is None or actual_format != declared_format:
+                    declared_mime = _FORMAT_MEDIA.get(
+                        declared_format, f"image/{declared_format.lower()}")
+                    return _format_mismatch_error(file_path, ext, declared_mime)
                 img = img.copy()  # 复制后源文件可关闭，后续操作安全
         except Exception as e:
             return f"(读取失败: {e})"
@@ -535,8 +642,9 @@ class ReadImageFunc(Func):
             return f"(操作失败: {e})"
 
         # ── 4. 规范化到 8-bit sRGB 单帧（对齐 DSH） ──────
+        # apply_exif=False：EXIF 方向已在裁剪前摆正一次，避免同一对象重复摆正。
         try:
-            img = _normalize_srgb(img)
+            img = _normalize_srgb(img, apply_exif=False)
         except ValueError:
             return _normalization_error(file_path)
         except Exception as e:
@@ -557,7 +665,8 @@ class ReadImageFunc(Func):
         #   PNG)」「预计占用: … tokens」「如需细节…」此前会在轨迹 Trace 检查器
         #   「▸ 返回值」中显示为多余叶子行；图片本身经 image_url block 返回，
         #   模型天然可见，无需文本复述） ──
-        fmt_name = (getattr(img, "format", None) or "PNG").upper()
+        # 输出恒为 PNG（deepseek-v4-flash-vision-exp 支持格式之一）：不依赖 img.format。
+        fmt_name = "PNG"
         out_w, out_h = img.size
         meta = [
             f"图片: {file_path}",
