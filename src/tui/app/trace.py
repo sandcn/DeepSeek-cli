@@ -1366,6 +1366,12 @@ def _subagent_records(index_holder: list, out_records: list, rows: list) -> set:
             merged_tool_ids.add(target.tool_call_id)
             continue
         status = getattr(slot, "status", "") or "running"
+        # ★ 2026-08-23（用户需求：subagent 运行完成后不再在「轨迹 Trace」中
+        #   留下独立记录）：完成/失败/错误态不再生成独立 subagent 记录
+        #   （<?> ✔ sa-xxx · desc），仅运行中显示 ● running。完成后 subagent
+        #   结果由 subagent_opt wait 主动获取；主轨迹不再保留该类残留记录。
+        if status in ("done", "fail", "error"):
+            continue
         summary = _subagent_slot_summary(slot, label, status)
         time_sec, tokens = _subagent_slot_metrics(slot)
         detail = _subagent_slot_detail(slot)
