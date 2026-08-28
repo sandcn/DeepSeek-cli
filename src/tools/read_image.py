@@ -11,13 +11,12 @@ DSH 对齐的加工语义（2026-08 重构）：
   切换到图像模型——对齐 DSH 的「switch to an image-capable model」，不再降级
   为 rgba_hex / palette 文本；
 - 规范化：应用 EXIF 方向并转换为 8-bit sRGB 单帧（RGB/RGBA），16 位 PNG 等
-  无法转换时返回 DSH 式错误；输出前按 max_dimension 硬上限（DSH 长边 2048）
-  与 max_tokens 预算（默认 8000）等比缩小，保证上下文可控。
+  无法转换时返回 DSH 式错误；不做任何自动缩放，图片按原始尺寸返回。
 
 保留当前项目特性：
 - 分块读取（start_x/start_y/end_x/end_y 像素区域裁剪）
 - 图像操作（grayscale / rotate90/180/270 / flip_h / flip_v / scale）
-- 防爆上下文：max_tokens 预算 + 字节硬上限（自动等比缩小，保证上下文可控）
+- 不自动缩放：返回给大模型的图片保持原始尺寸（仅显式 operation=scale 缩放）
 
 返回格式固定为多模态：文本元信息 + OpenAI 兼容 image_url data URI
 content blocks（Anthropic 适配器自动转 image block）；图片统一编码为 PNG
@@ -127,22 +126,6 @@ IMAGE_EXTENSIONS: dict[str, str] = {
 # 仅接受静态表认可的「图像」格式，排除 PDF/视频/数据文件等非图像扩展名）。
 _IMAGE_FORMAT_NAMES: frozenset[str] = frozenset(_EXT_TO_FORMAT.values())
 
-# ── DSH 对齐：规范化上限 ───────────────────────────────
-# normalizedImageMaxDimension / normalizedImageMaxBytes（attachment-local 默认值）。
-_DSH_NORMALIZED_MAX_DIMENSION = 2048            # 长边硬上限
-_DSH_NORMALIZED_MAX_BYTES = 4 * 1024 * 1024     # PNG 编码字节硬上限
-
-# ── 输出体积控制（防爆上下文） ─────────────────────────
-# 默认 token 预算：单次 read_image 输出上限（estimate_tokens 口径）。
-_DEFAULT_MAX_TOKENS = 8000
-# 预算适配最小边长（低于此值放弃继续缩小，接受超预算并提示）
-_MIN_DIMENSION = 16
-# 预算/字节上限迭代上限（每次迭代需真实 PNG 编码，控制耗时）
-_BUDGET_MAX_ITER = 5
-# data URI token 估算：base64 前缀字节偏移 / 每字符 token 系数 / 元信息缓冲 tokens
-_URI_PREFIX_OFFSET = 64
-_TOKEN_PER_CHAR = 0.3
-_META_BUF_TOKENS = 300
 # 单文件大小上限（MB）
 _MAX_FILE_SIZE_MB = 50
 # 解码前像素面积上限（3000 万像素：解码 RGBA ≈120MB、copy 后峰值 ≈240MB；
@@ -251,88 +234,6 @@ def _normalization_error(path: str) -> str:
     )
 
 
-# ── 图像加工（DSH 规范化语义） ─────────────────────────
-
-def _fit_dimension(img, limit: int):
-    """等比缩小图像，使最大边长不超过 limit。零尺寸图像原样返回（无法缩放）。"""
-    w, h = img.size
-    if w <= 0 or h <= 0:
-        return img
-    longest = max(w, h)
-    if longest <= limit:
-        return img
-    ratio = limit / longest
-    nw = max(1, round(w * ratio))
-    nh = max(1, round(h * ratio))
-    return img.resize((nw, nh))
-
-
-def _estimate_uri_tokens(data_len: int) -> int:
-    """按编码后 PNG 字节长度估算 data URI 文本的 token 数。
-
-    公式：base64 文本 ≈ len*4/3 + 前缀（data:image/png;base64, 等）；token
-    按 _TOKEN_PER_CHAR/字符，另加 _META_BUF_TOKENS 缓冲覆盖元信息中文。
-    供预算/字节上限适配共用，避免两处公式漂移。
-    """
-    b64_chars = int(data_len * 4 / 3) + _URI_PREFIX_OFFSET
-    return max(1, int(b64_chars * _TOKEN_PER_CHAR) + _META_BUF_TOKENS)
-
-
-def _png_measure(img) -> int | None:
-    """返回 img 编码为 PNG 的字节长；编码失败返回 None（无法测量）。"""
-    buf = io.BytesIO()
-    try:
-        img.save(buf, format="PNG")
-    except Exception:
-        return None
-    return len(buf.getvalue())
-
-
-def _fit_to_bound(img, bound: int, measure):
-    """按 measure 口径迭代等比缩小 img，使 measure(img) ≤ bound。
-
-    measure 返回 img 的当前「值」（token 估算或字节数），None 表示测量失败
-    （停止缩放，原样返回）。每轮以 sqrt 比例强缩（近似平方根——值随面积
-    线性，边长按 sqrt 缩小），到 _MIN_DIMENSION 下限后放弃。
-    """
-    for _ in range(_BUDGET_MAX_ITER):
-        w, h = img.size
-        if w <= 0 or h <= 0 or max(w, h) <= _MIN_DIMENSION:
-            return img
-        value = measure(img)
-        if value is None or value <= bound:
-            return img
-        ratio = (bound / value) ** 0.5
-        img = _fit_dimension(img, max(_MIN_DIMENSION, int(max(w, h) * ratio)))
-    return img
-
-
-def _fit_multimodal_to_budget(img, budget_tokens: int):
-    """多模态预算适配：以真实 PNG 编码长度迭代降采样。
-
-    data URI 文本 ≈ len(png) * 4/3（base64）+ 前缀；token 按 _TOKEN_PER_CHAR/字符，
-    另加 _META_BUF_TOKENS 缓冲覆盖元信息中文。每次迭代需一次真实编码（尺寸受
-    预算约束后边长通常 < 256，编码毫秒级，可接受）。
-    """
-    if budget_tokens <= 0:
-        return img
-
-    def _measure(im):
-        n = _png_measure(im)
-        return None if n is None else _estimate_uri_tokens(n)
-
-    return _fit_to_bound(img, budget_tokens, _measure)
-
-
-def _fit_to_byte_cap(img, max_bytes: int):
-    """DSH normalizedImageMaxBytes 硬上限：PNG 编码超限时迭代等比缩小。
-
-    独立于 token 预算——即使 max_tokens=0（不限预算），编码字节数也不得
-    超过部署上限，避免单张图撑爆上下文/存储。
-    """
-    return _fit_to_bound(img, max_bytes, _png_measure)
-
-
 def _normalize_srgb(img, apply_exif: bool = True):
     """（可选）应用 EXIF 方向并转换为 8-bit sRGB 单帧（RGB/RGBA）。
 
@@ -378,15 +279,12 @@ class ReadImageFunc(Func):
                     "读取图像文件内容。支持全量图片类型（所有 Pillow 可解码格式，"
                     "含 PNG/JPEG/WebP/GIF/BMP/TIFF/ICO/PNM/TGA/…），非模型原生"
                     "支持的格式自动转换为 PNG 返回；要求当前模型支持图像输入"
-                    "（多模态）；返回 base64 PNG 图片并附文本元信息。"
+                    "（多模态）；返回 base64 PNG 图片并附文本元信息，"
+                    "图片按原始尺寸返回（不做自动缩放）。"
                     "支持分块读取（start_x/start_y/end_x/end_y 指定像素区域，类似"
                     "read_file 的行号范围）；支持对图像操作后返回（operation：grayscale"
                     "灰度/rotate90/rotate180/rotate270/flip_h/flip_v/scale 缩放，"
                     "先裁剪区域再应用操作）。"
-                    "防爆上下文：输出受 max_tokens 预算约束（默认 8000 tokens，"
-                    "0=不限制），超预算自动等比缩小，另受字节硬上限约束；"
-                    "推荐先默认小图看整体轮廓，需要细节时再用"
-                    "start_x/start_y/end_x/end_y 放大局部区域。"
                     "路径安全校验拒绝危险路径（设备文件/系统关键路径等）。"
                 ),
                 "parameters": {
@@ -438,25 +336,6 @@ class ReadImageFunc(Func):
                             "minimum": 1,
                             "description": "缩放目标高度（operation=scale 时使用，省略时按比例自动计算）。"
                         },
-                        "max_dimension": {
-                            "type": "integer",
-                            "minimum": 16,
-                            "maximum": 2048,
-                            "default": 256,
-                            "description": (
-                                "返回图像最大边长（超出则等比缩小）。上限 2048。"
-                                "实际输出还受 max_tokens 预算与字节上限约束。"
-                            )
-                        },
-                        "max_tokens": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "default": 8000,
-                            "description": (
-                                "输出内容估算 token 预算（防止撑爆上下文；0=不限制）。"
-                                "超预算时自动等比缩小图像。默认 8000。"
-                            )
-                        },
                     },
                     "required": ["path"]
                 }
@@ -485,8 +364,6 @@ class ReadImageFunc(Func):
             operation=operation,
             scale_width=args.get("scale_width"),
             scale_height=args.get("scale_height"),
-            max_dimension=args.get("max_dimension", 256),
-            max_tokens=args.get("max_tokens", _DEFAULT_MAX_TOKENS),
         )
 
     @classmethod
@@ -522,8 +399,6 @@ class ReadImageFunc(Func):
         start_x=None, start_y=None, end_x=None, end_y=None,
         operation: str = "none",
         scale_width=None, scale_height=None,
-        max_dimension: int = 256,
-        max_tokens: int = _DEFAULT_MAX_TOKENS,
     ):
         super().__init__()
         validate_path_security(path)
@@ -540,8 +415,6 @@ class ReadImageFunc(Func):
             self.operation = "none"
         self.scale_width = scale_width
         self.scale_height = scale_height
-        self.max_dimension = _to_int(max_dimension, 256)
-        self.max_tokens = max(0, _to_int(max_tokens, _DEFAULT_MAX_TOKENS))
         self.result_blocks = None  # 多模态 content blocks（execute 内设置）
 
     # ── 执行 ──────────────────────────────────────────
@@ -650,16 +523,7 @@ class ReadImageFunc(Func):
         except Exception as e:
             return f"(规范化失败: {e})"
 
-        # ── 5. 长边硬上限（DSH normalizedImageMaxDimension） ──
-        limit = _clamp(self.max_dimension, _MIN_DIMENSION, _DSH_NORMALIZED_MAX_DIMENSION)
-        img = _fit_dimension(img, limit)
-
-        # ── 6. token 预算适配（软约束，防爆上下文） ──────
-        if self.max_tokens > 0:
-            img = _fit_multimodal_to_budget(img, self.max_tokens)
-
-        # ── 7. 字节硬上限（DSH normalizedImageMaxBytes） ──
-        img = _fit_to_byte_cap(img, _DSH_NORMALIZED_MAX_BYTES)
+        # ── 不缩放：图片按原始尺寸返回给大模型（仅显式 operation=scale 缩放） ──
 
         # ── 元信息（精简：不再携带面向模型的技术尾注——「模式: 多模态(base64
         #   PNG)」「预计占用: … tokens」「如需细节…」此前会在轨迹 Trace 检查器

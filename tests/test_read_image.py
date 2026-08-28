@@ -8,7 +8,7 @@
 - 多模态输出（result_blocks = image_url data URI content blocks）
 - 分块读取（start_x/start_y/end_x/end_y 像素区域裁剪）
 - 图像操作（grayscale / rotate / flip / scale）
-- 防爆上下文（max_tokens 预算 + 字节硬上限）
+- 不缩放契约（图片按原始尺寸返回，无自动缩小）
 - ToolResult 机制（_run_tool_func 包装 + _append_tool_result 展开）
 - Anthropic tool_result image block 转换
 - is_multimodal_model 检测（模式匹配 + 配置扩展）
@@ -303,7 +303,7 @@ async def test_missing_path_raises():
         ReadImageFunc.from_args({})
 
 
-# ── 8. 防爆上下文（预算 + 字节上限） ──────────────────
+# ── 8. 不缩放契约（原始尺寸返回） ─────────────────────
 
 async def test_output_meta_no_tailnote(tmp_path, monkeypatch):
     """输出精简：核心元信息保留，不再携带「模式/预计占用/如需细节」技术尾注。"""
@@ -318,40 +318,41 @@ async def test_output_meta_no_tailnote(tmp_path, monkeypatch):
     assert "如需细节" not in out
 
 
-async def test_max_tokens_zero_disables_budget(tmp_path, monkeypatch):
-    """max_tokens=0 禁用预算约束（仍保留字节硬上限/长边上限）。"""
+async def test_no_autoscale_keeps_original_size(tmp_path, monkeypatch):
+    """不缩放契约：不传任何缩放参数，图片按原始尺寸返回（不再自动缩小）。"""
     _multimodal(monkeypatch, True)
     p = _write_test_image(tmp_path / "big.png", 100, 100)
-    out = await ReadImageFunc(path=p, max_dimension=512, max_tokens=0).execute()
-    # 100x100 无预算约束也不触发字节上限 → 尺寸保持不变
+    out = await ReadImageFunc(path=p).execute()
     assert "尺寸: 100x100" in out
+    assert "原始尺寸: 100x100" in out
 
 
-async def test_multimodal_budget_shrinks(tmp_path, monkeypatch):
-    """多模态：base64 输出超出预算时以真实 PNG 编码长度迭代降采样。"""
-    from src.api.tokens import estimate_tokens
+async def test_noise_image_no_shrink(tmp_path, monkeypatch):
+    """不缩放契约：高熵噪声大图（PNG 编码体积大）同样按原始尺寸返回。"""
     import random
     from PIL import Image as PILImage
     _multimodal(monkeypatch, True)
-    # 噪声图（PNG 压缩率低 → 编码体积大 → 必超预算触发缩小）
     p = tmp_path / "noise.png"
     noise = PILImage.new("RGB", (256, 256))
     rnd = random.Random(42)
     noise.putdata([(rnd.randrange(256), rnd.randrange(256), rnd.randrange(256))
                    for _ in range(256 * 256)])
     noise.save(str(p), format="PNG")
-    f = ReadImageFunc(path=str(p), max_dimension=256, max_tokens=2000)
+    f = ReadImageFunc(path=str(p))
     out = await f.execute()
-    assert "尺寸:" in out
     import re
     dim = re.search(r"^尺寸: (\d+)x(\d+)", out, re.M)
     assert dim is not None
-    ow, oh = int(dim.group(1)), int(dim.group(2))
-    assert max(ow, oh) < 256  # 预算适配应把 256x256 噪声图缩小
+    assert (int(dim.group(1)), int(dim.group(2))) == (256, 256)
     blocks = f.result_blocks
     assert blocks is not None and blocks[1]["type"] == "image_url"
     url = blocks[1]["image_url"]["url"]
-    assert estimate_tokens(url) <= 2000  # data URI 本身 token 不超预算
+    # 返回给模型的图片就是原始尺寸的完整 PNG
+    from PIL import Image
+    import io as _io
+    raw = base64.b64decode(url.split(",", 1)[1])
+    decoded = Image.open(_io.BytesIO(raw))
+    assert decoded.size == (256, 256)
 
 
 # ── 9. ToolResult 机制 ───────────────────────────────
@@ -565,15 +566,18 @@ def test_build_image_content_blocks():
 # ── 13. schema 描述同步 ──────────────────────────────
 
 def test_tool_schema_mentions_features():
-    """schema 描述向大模型声明分块/操作/全量格式/能力门禁。"""
+    """schema 描述向大模型声明分块/操作/全量格式/能力门禁/不缩放契约。"""
     desc = ReadImageFunc.to_tool_schema()["function"]["description"]
     assert "分块" in desc or "start_x" in desc
     assert "多模态" in desc
     assert "grayscale" in desc
     assert "PNG/JPEG/WebP/GIF" in desc
     assert "BMP" in desc  # 全量图片格式已声明
+    assert "不做自动缩放" in desc  # 不缩放契约已向模型声明
     props = ReadImageFunc.to_tool_schema()["function"]["parameters"]["properties"]
-    assert "path" in props and "operation" in props and "max_tokens" in props
+    assert "path" in props and "operation" in props
+    # 不缩放契约：schema 不再暴露自动缩放参数
+    assert "max_dimension" not in props and "max_tokens" not in props
     # 已移除 rgba_hex/palette 降级格式
     assert "format" not in props and "palette_colors" not in props
 
@@ -606,22 +610,23 @@ def test_from_args_paths_list():
 
 
 def test_from_args_defaults():
-    """from_args 缺省参数取默认值；非法 operation 回退。"""
+    """from_args 缺省参数取默认值；非法 operation 回退；无缩放参数。"""
     f = ReadImageFunc.from_args({"path": "/tmp/a.png"})
     assert f.operation == "none"
-    assert f.max_dimension == 256
-    assert f.max_tokens == 8000
+    assert not hasattr(f, "max_dimension")
+    assert not hasattr(f, "max_tokens")
     # rgba/palette 相关已移除
     assert not hasattr(f, "format")
     assert not hasattr(f, "palette_colors")
 
 
-def test_max_tokens_negative_normalized():
-    """max_tokens 负值归一化为 0（不限制）。"""
-    f = ReadImageFunc(path="/tmp/a.png", max_tokens=-5)
-    assert f.max_tokens == 0
-    f2 = ReadImageFunc(path="/tmp/a.png", max_tokens=None)
-    assert f2.max_tokens == 8000
+def test_from_args_ignores_scale_params():
+    """from_args 传入 max_dimension/max_tokens 时被忽略（参数已移除）。"""
+    f = ReadImageFunc.from_args({
+        "path": "/tmp/a.png", "max_dimension": 512, "max_tokens": 4096,
+    })
+    assert not hasattr(f, "max_dimension")
+    assert not hasattr(f, "max_tokens")
 
 
 def test_display_params():
