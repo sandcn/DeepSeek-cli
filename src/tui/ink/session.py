@@ -1025,20 +1025,20 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         finally:
             if self._render_version != entry_version:
                 _logger.debug("render 线程版本已更新（新线程已启动），跳过排空")
-                return
-            # ★ 2026-08-15（短内容丢失修复）：渲染线程退出时保留内容命令
-            #   （思考/回答/工具卡等）——suspend 流程中 ``_render_thread.join()``
-            #   等待本线程退出，若 finally 以 keep_content=False 排空，会丢弃
-            #   suspend 清理刚保留的内容命令（模型输出短内容永久丢失）；统一
-            #   保留，resume 后新线程处理显示。stop() 的排空仍会清空全部。
-            dropped = self._drain_queue_safe(keep_content=True)
-            _logger.debug("render 线程 finally 排空 %d 条命令", dropped)
-            if dropped > 0:
-                self._write_emergency(
-                    f"{ANSI_EMERGENCY_RED}[ChatUI] render 线程已终止，"
-                    f"丢弃 {dropped} 条待处理命令{ANSI_EMERGENCY_RESET}\n",
-                    stream="stderr",
-                )
+            else:
+                # ★ 2026-08-15（短内容丢失修复）：渲染线程退出时保留内容命令
+                #   （思考/回答/工具卡等）——suspend 流程中 ``_render_thread.join()``
+                #   等待本线程退出，若 finally 以 keep_content=False 排空，会丢弃
+                #   suspend 清理刚保留的内容命令（模型输出短内容永久丢失）；统一
+                #   保留，resume 后新线程处理显示。stop() 的排空仍会清空全部。
+                dropped = self._drain_queue_safe(keep_content=True)
+                _logger.debug("render 线程 finally 排空 %d 条命令", dropped)
+                if dropped > 0:
+                    self._write_emergency(
+                        f"{ANSI_EMERGENCY_RED}[ChatUI] render 线程已终止，"
+                        f"丢弃 {dropped} 条待处理命令{ANSI_EMERGENCY_RESET}\n",
+                        stream="stderr",
+                    )
 
     def _drain_queue(self) -> bool:
         """单帧处理：六阶段显式状态机（架构改进方向 E，2026-08-16）。
