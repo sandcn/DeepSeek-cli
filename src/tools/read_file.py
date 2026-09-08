@@ -4,7 +4,6 @@ import asyncio
 import io
 import logging
 import os
-import time as _time
 from functools import lru_cache
 import aiofiles
 import aiofiles.os
@@ -14,7 +13,7 @@ from .base import Func, tool_metadata
 from .file_ops import validate_path_security, check_file_size
 from .encoding import async_detect_encoding, pick_best_decoding, FALLBACK_ENCODINGS
 from ._constants import LARGE_FILE_THRESHOLD, MAX_FILE_SIZE_MB
-from ..core.constants import CYAN, DIM, RESET, RED
+from ..core.constants import RESET, RED
 
 _UNSUPPORTED_EXTENSIONS = frozenset({"txt", "text"})
 
@@ -387,32 +386,6 @@ class ReadFileFunc(Func):
 
     # ── 公共 UI 辅助方法 ──
 
-    async def _build_file_info_line(self, file_path: str, result: dict) -> str:
-        """构建文件信息行（大小、修改时间、范围等），返回 ANSI 格式化字符串。"""
-        exists = await aiofiles.os.path.exists(file_path)
-        if not exists:
-            return f"\n{CYAN}{file_path}{RESET}"
-
-        try:
-            stat = await aiofiles.os.stat(file_path)
-        except OSError:
-            return f"\n{CYAN}{file_path}{RESET}"
-        size = stat.st_size
-        mtime = _time.strftime('%Y-%m-%d %H:%M:%S', _time.localtime(stat.st_mtime))
-        size_warning = ""
-        if size > LARGE_FILE_THRESHOLD:
-            size_warning = f" {DIM}(大文件){RESET}"
-
-        range_info = ""
-        if result.get(_LINE_NUMBERS_KEY) is not None:
-            start, end = result[_LINE_NUMBERS_KEY]
-            if end is not None:
-                range_info = f" {DIM}L{start}-{end}{RESET}"
-            else:
-                range_info = f" {DIM}L{start}+{RESET}"
-
-        return f"\n{CYAN}{file_path}{RESET} {DIM}{size}B {mtime}{size_warning}{range_info}{RESET}"
-
     def _build_syntax(self, result: dict, file_path: str) -> Syntax | None:
         """从 result 构建 Syntax 对象（含 lexer 解析和 fallback），返回 Syntax 或 None。"""
         if not result[_CONTENT_KEY]:
@@ -457,19 +430,13 @@ class ReadFileFunc(Func):
             Func._publish_tool_text(output)
 
     async def display(self):
-        """异步显示文件内容并返回给大模型"""
+        """异步显示文件内容并返回给大模型（toolcard 仅上屏语法高亮内容）"""
         output = await self.execute()
 
         if not self._file_result[_SUCCESS_KEY]:
             Func._publish_tool_text(f"  {RED}x {self._file_result[_ERROR_KEY]}{RESET}")
             return output
 
-        file_path = self.path
-        result = self._file_result
-
-        info_line = await self._build_file_info_line(file_path, result)
-        Func._publish_tool_text(info_line)
-
-        self._render_syntax_to_output(file_path, result)
+        self._render_syntax_to_output(self.path, self._file_result)
 
         return output

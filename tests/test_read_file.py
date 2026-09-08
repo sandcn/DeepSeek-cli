@@ -216,3 +216,49 @@ async def test_crlf_line_ending_normalized(tmp_path):
     assert body == "1  a\n2  b\n3  c"
     assert "\r" not in body
 
+
+# ── 10. display 上屏内容（toolcard 不显示文件信息行） ──────────
+
+def _capture_publish(monkeypatch) -> list:
+    from src.tools.base import Func
+    calls: list = []
+    monkeypatch.setattr(
+        Func, "_publish_tool_text",
+        lambda text, tool_id="": calls.append(text),
+    )
+    return calls
+
+
+async def test_display_omits_file_info_line(tmp_path, monkeypatch):
+    """display() 成功时不再上屏「路径 + 大小 + 修改时间」信息行。"""
+    import re
+    calls = _capture_publish(monkeypatch)
+    p = _write(tmp_path / "a.py", "x = 1\n")
+    await ReadFileFunc(path=p).display()
+    assert calls, "语法高亮内容仍应上屏"
+    joined = "\n".join(calls)
+    assert not re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", joined)
+    assert f"{p} " not in joined
+    assert f"{p}B" not in joined
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", joined)
+    assert "x = 1" in plain
+
+
+async def test_display_error_still_published(tmp_path, monkeypatch):
+    """display() 读取失败时错误信息仍上屏。"""
+    calls = _capture_publish(monkeypatch)
+    missing = str(tmp_path / "missing.txt")
+    out = await ReadFileFunc(path=missing).display()
+    assert out == f"(文件不存在: {missing})"
+    assert calls
+    assert "文件不存在" in calls[-1]
+
+
+async def test_display_empty_file_no_output_crash(tmp_path, monkeypatch):
+    """display() 空文件时仅返回提示，不上屏崩溃。"""
+    calls = _capture_publish(monkeypatch)
+    p = _write(tmp_path / "empty.txt", "")
+    out = await ReadFileFunc(path=p).display()
+    assert out == f"(文件为空: {p})"
+    assert calls == []
+
