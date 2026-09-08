@@ -33,6 +33,21 @@ from typing import Dict, List
 _MAX_TOOL_HISTORY = 50
 
 
+def _stream_detail(tool_name: str, arguments: str) -> str:
+    """流式工具参数 → 关键参数值摘要（显示对齐 mainagent extract_key_params）。
+
+    ★ 2026-09-08（用户需求：subagent 面板接收参数的显示跟 mainagent 一样）：
+    parsing 记录不再存原始 JSON 参数预览（与 mainagent 工具卡 `k=v`/JSON
+    串风格不一致），改为 `extract_key_params_stream` 关键参数值（宽容截断
+    JSON——流式参数逐段到达时提取已到达部分）。格式化失败回退原串截断。
+    """
+    try:
+        from src.core.param_formatter import extract_key_params_stream
+        return extract_key_params_stream(tool_name, arguments)
+    except Exception:
+        return str(arguments or "")[:80]
+
+
 class _ToolRecord:
     __slots__ = ('tool_name', 'tool_id', 'detail', 'start_time', 'end_time', 'phase')
 
@@ -56,7 +71,7 @@ class _AgentSlot:
         'start_time', 'end_time',
         'appear_time',
         'model_phase', 'model_info', 'model_phase_start',
-        'parse_info',
+        'parse_info', 'parse_stats',
         'input_tokens', 'output_tokens',
         'live_input_tokens', 'live_output_tokens',
         'last_speed',
@@ -89,6 +104,10 @@ class _AgentSlot:
         self.model_info: str = ""
         self.model_phase_start: float = 0.0
         self.parse_info: str = ""
+        # ★ 2026-09-08（用户需求：subagent 面板接收参数显示对齐 mainagent）：
+        #   解析进度统计段（"{tokens}t {elapsed}s"，无工具名前缀）——面板
+        #   parsing 工具行消费（工具名由记录行自身显示，不重复）。
+        self.parse_stats: str = ""
         self.input_tokens: int = 0
         self.output_tokens: int = 0
         self.live_input_tokens: int = 0
@@ -254,6 +273,10 @@ class StateStore:
                             arguments: str, tool_id: str = "") -> None:
         """ToolParsingEvent — 流式解析工具参数时创建/更新 parsing 记录。
 
+        记录 detail 存流式参数的**关键参数值摘要**（extract_key_params_stream
+        ——宽容截断 JSON），不存原始 JSON 串（接收参数显示对齐 mainagent，
+        2026-09-08 用户需求）。
+
         Args:
             tool_id: 工具调用唯一 ID（tool_call_id）；缺省空串时降级按
                 tool_name 匹配（旧调用方兼容）。
@@ -274,7 +297,7 @@ class StateStore:
             # parsing 记录
             rec = self._find_record(slot, tool_name, tool_id, ("parsing",))
             if rec is not None:
-                rec.detail = arguments
+                rec.detail = _stream_detail(tool_name, arguments)
             # ★ BUG（2026-08-16，显示多一行修复）：迟到的 parsing 事件不新建
             #   残留记录——同 tool_id 已存在任意阶段记录（running/done/fail）
             #   说明该工具调用已开始/已闭合，后续再到达的 parsing 是重复/迟到
@@ -284,7 +307,7 @@ class StateStore:
             #   （执行路径 parsing 总是在 start 前到达，无迟到语义）。
             elif not self._has_tool_record(slot, tool_id):
                 rec = _ToolRecord(tool_name=tool_name, tool_id=tool_id)
-                rec.detail = arguments
+                rec.detail = _stream_detail(tool_name, arguments)
                 self._append_record(slot, rec)  # BUG-55：历史条数上限
 
     @staticmethod
@@ -391,6 +414,9 @@ class StateStore:
             except (TypeError, ValueError):
                 elapsed_str = "0.00s"
             slot.parse_info = f"{tool_names} {tokens_str} {elapsed_str}"
+            # 统计段（无工具名前缀）——面板 parsing 记录行消费（工具名由
+            # 记录行自身显示，不与 parse_info 的 names 段重复）。
+            slot.parse_stats = f"{tokens_str} {elapsed_str}"
 
     def clear_parse_info(self, label: str) -> None:
         """ParseInfoDoneEvent — 工具解析完成，清除解析摘要和 phase。"""
@@ -399,6 +425,7 @@ class StateStore:
             if slot is None:
                 return
             slot.parse_info = ""
+            slot.parse_stats = ""
             if slot.model_phase == "parsing":
                 slot.model_phase = ""
 

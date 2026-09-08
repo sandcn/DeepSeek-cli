@@ -97,4 +97,77 @@ def extract_key_params(
     return result
 
 
-__all__ = ["extract_key_params"]
+def _complete_partial_json(s: str):
+    """截断流式 JSON 宽容补全解析（提取已到达部分的键值）。
+
+    状态机扫描字符串/转义/括号栈，补全未闭合的引号与括号后 json.loads；
+    解析失败或顶层非 dict 返回 None。
+    """
+    if not s:
+        return None
+    stack: list[str] = []
+    in_string = False
+    escape = False
+    for ch in s:
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append(ch)
+        elif ch == "}":
+            if not stack or stack[-1] != "{":
+                return None
+            stack.pop()
+        elif ch == "]":
+            if not stack or stack[-1] != "[":
+                return None
+            stack.pop()
+    text = s
+    if escape:
+        text = text[:-1]
+    if in_string:
+        text += '"'
+    for ch in reversed(stack):
+        text += "}" if ch == "{" else "]"
+    try:
+        obj = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def extract_key_params_stream(
+    tool_name: str,
+    arguments: dict[str, Any] | str,
+    show_all: bool = False,
+) -> str:
+    """流式工具参数预览 → 关键参数值摘要（宽容截断 JSON）。
+
+    与 ``extract_key_params`` 同一显示格式（关键参数值，非 JSON），供
+    流式解析阶段（ToolParsingEvent 参数逐段到达）实时显示：
+    - 完整 JSON / 截断 JSON：宽容补全未闭合引号与括号后提取关键参数值；
+    - 非 JSON 文本：回退 ``extract_key_params`` 原串截断路径。
+    """
+    if isinstance(arguments, dict):
+        return extract_key_params(tool_name, arguments, show_all=show_all)
+    s = str(arguments or "").strip()
+    if not s:
+        return ""
+    obj = None
+    try:
+        obj = json.loads(s)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        obj = _complete_partial_json(s)
+    if isinstance(obj, dict):
+        return extract_key_params(tool_name, obj, show_all=show_all)
+    return extract_key_params(tool_name, s, show_all=show_all)
+
+
+__all__ = ["extract_key_params", "extract_key_params_stream"]

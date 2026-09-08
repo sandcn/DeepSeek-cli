@@ -1252,7 +1252,8 @@ def _subagent_slot_detail(slot) -> list:
         r_start = getattr(rec, "start_time", 0.0) or 0.0
         r_end = getattr(rec, "end_time", 0.0) or 0.0
         dur = f" {r_end - r_start:.1f}s" if r_end > r_start else ""
-        detail.append(f"{name} {det} · {phase}{dur}")
+        head = " ".join(x for x in (name, det) if x)
+        detail.append(f"{head} · {phase}{dur}")
     return detail
 
 

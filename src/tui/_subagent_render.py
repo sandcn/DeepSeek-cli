@@ -461,7 +461,12 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
         if max_history > 0:
             history = slot.tool_history[-max_history:]
             for rec in reversed(history):
-                parse_info = slot.parse_info if rec.phase == "parsing" else ""
+                # ★ 2026-09-08（用户需求：接收参数显示对齐 mainagent）：parsing
+                #   记录行传 parse_stats（"{tokens}t {elapsed}s" 统计段）——
+                #   工具名由记录行自身显示，不与 parse_info 的 names 段重复；
+                #   detail 已为关键参数值（StateStore._stream_detail），组合
+                #   显示 = 工具名 + 参数值 + token数 + 耗时。
+                parse_info = slot.parse_stats if rec.phase == "parsing" else ""
                 sub_items.append(format_tool_record(rec, now, "", parse_info=parse_info))
 
     # 统一编号二级子行：最后子行 └─（闭合），其余 ├─；前缀 = 一级延续线 +
@@ -485,9 +490,12 @@ def format_tool_record(rec: _ToolRecord, now: float, cont: str = "",
         cont: 行首前缀（树形分支线，如 ``"│  ├─ "``）；空字符串时不加前缀。
             2026-08-06 树图：恢复历史语义——前缀（_S_BRANCH 暗灰）作为
             首个 StyledRun 插入，表达工具在树中的二级层级。
-        parse_info: 解析进度摘要（如 ``"rf,rf 51t 0.74s"``）——仅 parsing
-            记录附加到该行。修复前为独立 ``…parsing`` 阶段行（``build_agent_lines``
-            追加），工具开始瞬间引起面板高度 +2 → -1 波动 → 缩短全量重建。
+        parse_info: 解析进度统计段（``"51t 0.74s"``，无工具名前缀——工具名
+            由记录行自身显示）——仅 parsing 记录附加到该行。修复前为独立
+            ``…parsing`` 阶段行（``build_agent_lines`` 追加），工具开始瞬间
+            引起面板高度 +2 → -1 波动 → 缩短全量重建。2026-09-08 起数据源
+            为 ``slot.parse_stats``（接收参数显示对齐 mainagent：工具名 +
+            关键参数值 + token数 + 耗时）。
     """
     elapsed = (rec.end_time or now) - rec.start_time if rec.start_time else 0
     detail = _single_line(rec.detail)
