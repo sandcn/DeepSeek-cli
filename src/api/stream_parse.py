@@ -20,6 +20,17 @@ from ..tools.registry import get_tool_display_name
 _logger = logging.getLogger(__name__)
 
 
+#: 解析进度刷新间隔（秒）——10Hz（每秒 10 拍）。
+#: ★ 2026-09-10 修复（用户需求：``⠙ Write 384t 1.01s`` 不会每 10Hz 刷新信息）：
+#:   修复前为 0.2s（5Hz）——解析进度行（工具名 + token 数 + 耗时）每 0.2s 才
+#:   推送一次 ``update_parse_info``，而 TUI 渲染循环为 **10Hz**、进度行 spinner
+#:   帧序列（``_fx.spinner_char``）也按 10Hz 逐帧推进：spinner 每帧都在动，
+#:   但 token/耗时两拍才动一次（0.2s 跳变，如 ``1.01s → 1.21s``），视觉上
+#:   「信息不刷新」。现与渲染循环同频（10Hz）——每拍推送一次，渲染循环每帧
+#:   消费一次，进度行信息随 spinner 平滑刷新。
+_PARSE_INFO_REFRESH_INTERVAL = 0.1
+
+
 # ── 解析计时器 ──
 
 class ToolParseTracker:
@@ -27,7 +38,13 @@ class ToolParseTracker:
 
     全异步实现：使用 asyncio.Task 替代 threading.Thread，
     使用 asyncio.Event 替代 threading.Event。
+
+    刷新频率：``REFRESH_INTERVAL``（10Hz）——与 TUI 渲染循环／解析进度行
+    spinner 帧率对齐（见 ``_PARSE_INFO_REFRESH_INTERVAL`` 注释）。
     """
+
+    #: 解析进度刷新间隔（秒）——10Hz。类属性便于测试注入（惰性读取）。
+    REFRESH_INTERVAL = _PARSE_INFO_REFRESH_INTERVAL
 
     def __init__(self, tool_calls_map, display=None, label=None, silent=False):
         self._tool_calls_map = tool_calls_map
@@ -43,7 +60,12 @@ class ToolParseTracker:
         self._task = asyncio.get_running_loop().create_task(self._update_loop_async())
 
     async def _update_loop_async(self):
-        """异步更新循环：每秒刷新5次，仅更新 display（不打印终端）。"""
+        """异步更新循环：每秒刷新 10 次（10Hz），仅更新 display（不打印终端）。
+
+        间隔取 ``self.REFRESH_INTERVAL``（10Hz）——与 TUI 渲染循环 10Hz 对齐
+        （修复前 0.2s＝5Hz：spinner 每帧推进而 token/耗时两拍一更，进度行
+        信息「不随 10Hz 刷新」）。
+        """
         try:
             while True:
                 if await is_interrupted_async():
@@ -61,7 +83,9 @@ class ToolParseTracker:
                         self._display.update_parse_info(self._label, name_str, tokens, elapsed)
                     except Exception:
                         _logger.debug("update_parse_info 失败（非关键）")
-                await asyncio.sleep(0.2)
+                # ★ 10Hz（0.1s）——与渲染循环同帧率；每拍刷新（不累积多拍后
+                #   一次推送，否则进度行信息又退化为低频跳变）。
+                await asyncio.sleep(self.REFRESH_INTERVAL)
         except asyncio.CancelledError:
             _logger.debug("ToolParseTracker update task cancelled")
             raise

@@ -460,8 +460,10 @@ class AsyncStreamPipeline:
                 ctx.publish_phase_done_once("content")
             publish_event("PhaseDoneEvent", label=ctx.label or "", phase="segment_end")
 
-        # ⏳ 再次保护：tracker.finalize() 内部有 asyncio.sleep(0.2) 取消 Task，
-        # 如果被取消跳过，tracker 的 _update_loop_async Task 泄漏。
+        # ⏳ 再次保护：tracker.finalize() 需 await 取消内部 update Task
+        # （该 Task 处于 ``asyncio.sleep(REFRESH_INTERVAL)`` 等待中，取消后
+        # 需 await 回收），如果被取消跳过，tracker 的 _update_loop_async
+        # Task 泄漏。
         try:
             await ctx.tracker.finalize()
         except asyncio.CancelledError:
