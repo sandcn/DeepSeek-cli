@@ -132,12 +132,35 @@ def Panel(props: dict) -> Element:
     #   （Column）——工具卡等「无边框裸行」界面控件化表达，无边框字符。
     #   与 BOX border=0 等价（内部 Column 结构，视觉零变化）。
     border = props.get("border", 1)
-    if border in (0, "none", None, False):
+    # ★ P3（review）：无边框判定统一——修复前 ``border in (0, "none", None,
+    #   False)`` 未覆盖 ``""``/``-1`` 等非法值（落入「有边框」分支后由 BOX
+    #   层归 0，行为不一致）；现按「假值或非正数/none 字符串」统一判定。
+    if border is None or border is False or border in (0, "none", "") or border == "none":
         return h(Column, None, inner)
+    try:
+        if int(border) <= 0:
+            return h(Column, None, inner)
+    except (TypeError, ValueError, OverflowError):
+        pass
     # ★ 标准布局：BOX border 绘制完整边框（竖线自动覆盖全部行高——修复了
     #   Row 拼接方案的竖线高度问题）；内部 Column 填充标题 + 内容 + 状态。
     #   边框样式经 ``borderStyle``（字符串变体或 dict 自定义对象）与
     #   ``borderColor`` 透传——components/_paint_border 消费（缺省暗青 23）。
+    # ★ P3（review）：优先读显式 paddingTop/paddingBottom——修复前仅按
+    #   title/children/status 推导并**强制覆盖**用户传入值（隐式忽略）。
+    def _pad_or(default: int, key: str) -> int:
+        v = props.get(key)
+        if v is None:
+            return default
+        try:
+            return max(0, int(v))
+        except (TypeError, ValueError, OverflowError):
+            return default
+
+    pad_top = _pad_or(1 if (title or children) else 0, "paddingTop")
+    pad_bottom = _pad_or(
+        1 if (title or children or status) else 0, "paddingBottom",
+    )
     return h(BOX, {
         "border": 1,
         "width": width,
@@ -145,8 +168,8 @@ def Panel(props: dict) -> Element:
         "borderColor": border_color,
         "paddingLeft": pad_left,
         "paddingRight": pad_right,
-        "paddingTop": 1 if (title or children) else 0,
-        "paddingBottom": 1 if (title or children or status) else 0,
+        "paddingTop": pad_top,
+        "paddingBottom": pad_bottom,
     }, inner)
 
 

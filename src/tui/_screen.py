@@ -400,6 +400,11 @@ def set_window_title(title: str) -> None:
 # ═══════════════════════════════════════════════════════════
 
 _sigwinch_callbacks: list[tuple[int, Callable[[int, int], None]]] = []
+#: ★ P2（review）：回调注册表互斥锁——register/unregister（装配线程）与
+#: process_sigwinch（渲染线程快照迭代）并发读写同一列表；修复前无锁保护
+#: （``del list[i]`` 与 ``append`` 竞争）。锁只保护注册表增删；回调执行在
+#: 锁外（回调可能重新注册，避免自死锁）。
+_sigwinch_lock = threading.Lock()
 _sigwinch_registered: bool = False
 # BUG-T4：信号处理器只置标志（信号安全），渲染循环经 process_sigwinch() 消费
 _sigwinch_pending: bool = False
@@ -425,19 +430,22 @@ def register_sigwinch_callback(
     """
     global _sigwinch_registered
     key = id(token) if token is not None else id(cb)
-    for i, (existing_key, _) in enumerate(_sigwinch_callbacks):
-        if existing_key == key:
-            # 同 token 已注册：替换回调（幂等 + 最新绑定生效）
-            _sigwinch_callbacks[i] = (key, cb)
-            break
-    else:
-        _sigwinch_callbacks.append((key, cb))
-    if not _sigwinch_registered:
-        try:
-            signal.signal(signal.SIGWINCH, _handle_sigwinch)
-            _sigwinch_registered = True
-        except (OSError, ValueError):
-            pass
+    # ★ P2（review）：注册表增删在锁内（与渲染线程的 process_sigwinch 快照
+    #   迭代互斥）；signal.signal 亦在锁内（只注册一次的判定与置位原子）。
+    with _sigwinch_lock:
+        for i, (existing_key, _) in enumerate(_sigwinch_callbacks):
+            if existing_key == key:
+                # 同 token 已注册：替换回调（幂等 + 最新绑定生效）
+                _sigwinch_callbacks[i] = (key, cb)
+                break
+        else:
+            _sigwinch_callbacks.append((key, cb))
+        if not _sigwinch_registered:
+            try:
+                signal.signal(signal.SIGWINCH, _handle_sigwinch)
+                _sigwinch_registered = True
+            except (OSError, ValueError):
+                pass
 
 
 def unregister_sigwinch_callback(token: object) -> None:
@@ -452,10 +460,12 @@ def unregister_sigwinch_callback(token: object) -> None:
         token: 注册时传入的 token（会话/引擎实例）。
     """
     key = id(token)
-    for i, (existing_key, _) in enumerate(_sigwinch_callbacks):
-        if existing_key == key:
-            del _sigwinch_callbacks[i]
-            return
+    # ★ P2（review）：注销在锁内（与 register/快照迭代互斥）。
+    with _sigwinch_lock:
+        for i, (existing_key, _) in enumerate(_sigwinch_callbacks):
+            if existing_key == key:
+                del _sigwinch_callbacks[i]
+                return
 
 
 def _handle_sigwinch(signum: int, frame: object) -> None:
@@ -495,7 +505,11 @@ def process_sigwinch() -> bool:
     # ★ P3（review）：迭代前快照——回调内调用 register/unregister 会修改
     #   被迭代列表（漏项/错位，不抛异常）。快照迭代保证本帧注册表增删不
     #   影响当前遍历（下帧起生效，语义安全）。
-    for _, cb in list(_sigwinch_callbacks):
+    #   ★ P2（review）：快照在注册表锁内拷贝（与 register/unregister 互斥）；
+    #   回调执行在锁外（回调可重新注册，锁外避免自死锁）。
+    with _sigwinch_lock:
+        callbacks = list(_sigwinch_callbacks)
+    for _, cb in callbacks:
         try:
             cb(width, height)
         except Exception:
@@ -508,6 +522,12 @@ def process_sigwinch() -> bool:
 # ═══════════════════════════════════════════════════════════
 # TerminalWidthCache — 终端宽度缓存（TTL 惰性缓存 + 主动失效）
 # ═══════════════════════════════════════════════════════════
+
+#: TerminalWidthCache 单例双检锁（get_default 并发首次调用互斥）。
+#: ★ P3（review）：定义位置上移至类前——修复前置于类之后（运行期可用但
+#: 风格异常，易被后续重构误删）。
+_instance_lock = threading.Lock()
+
 
 class TerminalWidthCache:
     """终端宽度缓存 — TTL 惰性缓存 + 主动失效。
@@ -533,11 +553,49 @@ class TerminalWidthCache:
         self._height: int = 0
         self._last_width_fetch: float = 0.0
         self._last_height_fetch: float = 0.0
+        # ★ P2（review）：显式尺寸覆盖标志——``set_dimensions`` 置位后
+        #   ``_fetch`` 不再探测真实终端（render() 的 width/height 选项语义：
+        #   本会话固定尺寸，TTL 到期不静默失效）。
+        self._override: bool = False
         # ★ P2-3（多线程安全）：缓存读写锁——_fetch 整体加锁，防止多线程
         #   交错更新读到宽/高来自不同 ioctl 的组合（渲染线程与 SIGWINCH
         #   处理线程并发查询）。
         self._lock = threading.Lock()
         self._fetch()
+
+    def set_dimensions(
+        self,
+        width: int | None = None,
+        height: int | None = None,
+    ) -> None:
+        """显式覆盖终端尺寸（render() 的 width/height 选项）。
+
+        ★ P2（review）：替代外部直接写私有字段——修复前 ``_render_api`` 直接
+        赋值 ``_width``/``_height``/时间戳（破坏封装），且 ``_fetch()`` 到期
+        会**同时**覆盖宽高与时间戳（覆盖值在约 TTL 后被真实终端值替换）。
+        本入口置 ``_override`` 标志：覆盖期间 TTL 到期不重新探测（尺寸稳定），
+        直至 ``clear_override()``。
+
+        Args:
+            width: 覆盖宽度；None 表示不修改。
+            height: 覆盖高度；None 表示不修改。
+        """
+        with self._lock:
+            if width is not None:
+                self._width = max(0, int(width))
+            if height is not None:
+                self._height = max(0, int(height))
+            self._override = True
+            now = time.monotonic()
+            self._last_width_fetch = now
+            self._last_height_fetch = now
+
+    def clear_override(self) -> None:
+        """解除显式尺寸覆盖（恢复 TTL 终端探测）。"""
+        with self._lock:
+            self._override = False
+            self._last_width_fetch = 0.0
+            self._last_height_fetch = 0.0
 
     def _fetch(self) -> None:
         """从底层获取终端尺寸并更新缓存。
@@ -545,8 +603,16 @@ class TerminalWidthCache:
         ★ P2-3：整体加锁——修复前多步字段更新（_width/_height/时间戳）在
         多线程交错下可能读到宽/高来自不同 ioctl 的组合；现于锁内用局部变量
         一次性计算后统一赋值（原子一致）。
+
+        ★ P2（review）：``_override`` 生效时只续期时间戳、不改宽高——
+        显式覆盖的尺寸不被 TTL 刷新替换。
         """
         with self._lock:
+            if self._override:
+                now = time.monotonic()
+                self._last_width_fetch = now
+                self._last_height_fetch = now
+                return
             try:
                 w, h = _get_terminal_size()
             except Exception:
@@ -562,16 +628,23 @@ class TerminalWidthCache:
         return (time.monotonic() - last_fetch) > self._ttl
 
     def get_width(self) -> int:
-        """获取终端宽度（TTL 缓存）。"""
+        """获取终端宽度（TTL 缓存）。
+
+        ★ P3（review）：读取在锁内 + TOCTOU 说明——``_is_expired`` 在锁外
+        判断、``_fetch`` 内加锁，多线程可重复 fetch（``_fetch`` 幂等：结果
+        一致，仅多一次 ioctl）；返回值读取置于锁内保证读到完整字段。
+        """
         if self._is_expired(self._last_width_fetch):
             self._fetch()
-        return self._width
+        with self._lock:
+            return self._width
 
     def get_height(self) -> int:
-        """获取终端高度（TTL 缓存）。"""
+        """获取终端高度（TTL 缓存；读取在锁内，TOCTOU 语义同 get_width）。"""
         if self._is_expired(self._last_height_fetch):
             self._fetch()
-        return self._height
+        with self._lock:
+            return self._height
 
     def get_dimensions(self) -> tuple[int, int]:
         """获取终端尺寸 (宽度, 高度)。
@@ -601,11 +674,16 @@ class TerminalWidthCache:
     def refresh_height(self) -> int:
         """强制刷新高度缓存，返回新高度。
 
+        ★ P3（review）：``_fetch()`` 会**同时**刷新宽度缓存与两个时间戳
+        （实现共用一次终端探测）——即「仅刷新高度」的语义实为「刷新全部」，
+        此处显式记录该副作用（调用方不应假定宽度时间戳不变）。
+
         Returns:
             当前终端高度。
         """
         self._fetch()
-        return self._height
+        with self._lock:
+            return self._height
 
     @classmethod
     def get_default(cls) -> TerminalWidthCache:
@@ -619,10 +697,6 @@ class TerminalWidthCache:
                 if cls._instance is None:
                     cls._instance = cls()
         return cls._instance
-
-
-#: TerminalWidthCache 单例双检锁（get_default 并发首次调用互斥）
-_instance_lock = threading.Lock()
 
 
 # ═══════════════════════════════════════════════════════════

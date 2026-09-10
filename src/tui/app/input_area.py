@@ -33,9 +33,13 @@
 稳定 → reconciler/layout/paint 短路（零重建）。★ P2-6：组件内部经**持久
 fiber 引用**（use_ref 持有）使 ``_build_lines`` 的快照/换行布局缓存跨帧命中
 （修复前每帧新建临时 fiber，缓存写回当帧即弃恒 miss——死缓存）。光标定位
-由 session 经 ``dataInputArea`` 容器 + ``_compute_cursor_visual_pos`` 计算；
-换行布局缓存（``fiber._input_layout_cache``）由 ``_build_lines`` 单点写入
-（原遗留 ``_measure`` 写入职责收拢，session._position_cursor 复用）。
+由 session 经 ``dataInputArea`` 容器 + ``_compute_cursor_visual_pos`` 计算。
+★ P2（review 更正）：换行布局缓存（``fiber._input_layout_cache``）实际写入
+的是 ``_input_elements`` 创建的**临时 SimpleNamespace fiber**（非组件真实
+容器 fiber），与 ``ink/_cursor.position_cursor`` 写入的真实 Column fiber
+缓存**分离**——原注释「单点写入 + session 复用」不成立（同 text/max_input
+每帧最多做 2 次 ``_compute_input_layout``，功能正确、性能未达最优）。共享
+缓存载体需统一 fiber 归属（改动面大），当前保留分离缓存并如实记录。
 
 模式行（2026-08-14）：时间戳分隔线（下分隔线）下方新增一行——行最右侧
 显示主 Agent 运行模式（Ctrl+B 切换，``src/prompt_builder.builder`` 的
@@ -347,8 +351,8 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
         #   width 3→2 时 max_input 1→1）下命中旧快照，分隔线/弹窗按旧宽渲染
         #   （测量与绘制错位）。
         completion_snap,
-        int(props.get("cpu", 0)),
-        int(props.get("mem", 0)),
+        _safe_int_prop(props.get("cpu", 0)),
+        _safe_int_prop(props.get("mem", 0)),
         status_active,
         empty_mode,  # ★ 主 Agent 运行模式（Ctrl+B 切换即时刷新模式行）
         # ★ 后台任务计数（bash/subagent 分列）——变化时模式行行首即时刷新
@@ -391,8 +395,11 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
         lines.extend(_build_popup_lines(completion, width, now))
 
     # ── 上分隔线（CPU/MEM） ──
-    cpu = int(props.get("cpu", 0))
-    mem = int(props.get("mem", 0))
+    # ★ P2（review）：int() 归一化防御——异常注入（如 "50%"）抛 ValueError 会
+    #   中断整个 InputArea 渲染；与同文件 bash_count/ctx_percent 的 try 防御
+    #   一致（_safe_int 语义）。
+    cpu = _safe_int_prop(props.get("cpu", 0))
+    mem = _safe_int_prop(props.get("mem", 0))
     cpu_mem = f"CPU:{cpu}% \u00b7 MEM:{mem}%"
     cpu_mem_w = len(cpu_mem) + 2
     # 方向3（动效）：活跃期间上分隔线用青色呼吸（32-45，8s 周期），与状态栏
@@ -791,6 +798,19 @@ def InputArea(props: dict) -> object:
     return h(Column, {**props, "dataInputArea": True, "key": key}, children)
 
 
+def _safe_int_prop(value, default: int = 0) -> int:
+    """props 数值归一化（★ P2 review）。
+
+    异常值（``"50%"``/None/对象）回退默认值——与同文件
+    ``bash_count``/``ctx_percent`` 的 try 防御一致（修复前 ``int(props["cpu"])``
+    异常会中断整个 InputArea 渲染）。
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _input_snap_key(props: dict, width: int, now: float, fading: bool = False):
     """InputArea use_memo 依赖（纯原子值，逐项 Object.is 值比较）。
 
@@ -869,8 +889,8 @@ def _input_snap_key(props: dict, width: int, now: float, fading: bool = False):
         len(completion.descriptions) if completion is not None and completion.descriptions else 0,
         bool(completion is not None and getattr(completion, "split_desc", False)),
         # 状态
-        int(props.get("cpu", 0)),
-        int(props.get("mem", 0)),
+        _safe_int_prop(props.get("cpu", 0)),
+        _safe_int_prop(props.get("mem", 0)),
         status_active,
         empty_mode_flag,  # ★ 主 Agent 运行模式（Ctrl+B 切换即时刷新）
         # ★ 后台任务计数（bash/subagent 分列）——模式行行首显示即时刷新

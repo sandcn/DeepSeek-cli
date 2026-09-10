@@ -31,6 +31,12 @@ from src.tui.core.style import Style
 from src.tui.ink import Line
 from src.tui.app import _fx
 from src.tui.app._theme import time_glow, _S_DIM, _S_SEP
+# ★ P3（review，单一真源）：``_truncate_width`` 改为真源 re-export——
+#   修复前本模块保留了一份与 ``src.tui._width.truncate_width`` 逐行相同的
+#   副本（且缺少 ANSI 感知——同 bug 双份）；input_area/user_select/
+#   editmsg_select 经 ``from ...input_area import _truncate_width`` 间接消费
+#   本符号，改真源后统一升级（ANSI 序列整段穿透，不产生残缺转义）。
+from src.tui._width import truncate_width as _truncate_width  # noqa: F401
 
 #: 候选行样式说明（2026-08-15 L5）：选中高亮背景静态色 237 由
 #: ``_build_popup_lines`` 函数内局部定义（弹窗不呼吸，避免每帧重绘）。
@@ -106,29 +112,6 @@ def _styled_completion(text: str, item_type: str, match_prefix: str, cell_w: int
     稳定（diff 身份短路受益）。
     """
     return _styled_completion_cached(text, item_type, match_prefix, cell_w)
-
-
-def _truncate_width(s: str, max_w: int) -> str:
-    """按显示宽度截断字符串（不拆 CJK），返回截断后文本。
-
-    ★ 性能（PERF-7）：纯 ASCII 可打印字符串宽度 == 字符数——C 实现的
-    ``isascii()`` + ``isprintable()`` 单趟扫描后直接切片（逐字符
-    ``wcswidth_simple`` 的 Python 循环仅用于含 CJK/emoji/控制字符的文本）。
-    命令名/工具名等 ASCII 输入截断热路径受益。
-    """
-    if max_w <= 0:
-        return ""
-    if s.isascii() and s.isprintable():
-        return s if len(s) <= max_w else s[:max_w]
-    w = 0
-    out = []
-    for ch in s:
-        cw = wcswidth_simple(ch)
-        if w + cw > max_w:
-            break
-        out.append(ch)
-        w += cw
-    return "".join(out)
 
 
 def _append_truncated(line: Line, text: str, style, budget: int) -> None:

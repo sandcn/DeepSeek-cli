@@ -29,7 +29,11 @@ def _wrap_by_width(s: str, max_width: int) -> list[str]:
     """按终端列宽拆分文本为多行，每行不超过 max_width 列。
 
     优先按 \\n 拆分（强制换行），再对每段按列宽拆行。
-    调用方应先通过 _expand_tabs 展开制表符。
+
+    ★ P3（review）：实现内部经 ``_expand_tabs`` 展开制表符（对已展开的
+    调用方幂等）——修复前 docstring 声明「调用方应先展开」，而实际调用方
+    （``_input_metrics``/``_popup_builder``/``user_select``/``trace_view``）
+    直接传原始文本，依赖前置条件不成立。
 
     ★ 单一真源（2026-08-05 重构）：定义归位于本模块（纯布局函数层）——
     ``_input.py`` re-export 保持旧导入路径兼容；``_input_metrics`` /
@@ -72,10 +76,13 @@ def _wrap_by_width(s: str, max_width: int) -> list[str]:
                 # ★ L1（2026-08-15）：首字符超宽分支——max_width=1 且首字符
                 #   CJK（宽 2）时原 ``idx=1`` 强制拆出宽 2 行 > max_width，
                 #   破坏行宽不变量。宁可窄不可宽：最小 1 列预算仍放不下该
-                #   字符（``wcswidth_simple(remaining[0]) > max_width``）时
-                #   跳过该字符（每轮至少推进 1 字符，无死循环；不产生超宽
-                #   行）；否则保持 ``idx=1``。调用方 ``_compute_input_layout``
-                #   以 ``or [""]`` 兜底空段。
+                #   字符时跳过该字符（每轮至少推进 1 字符，无死循环；不产生
+                #   超宽行）。调用方 ``_compute_input_layout`` 以 ``or [""]``
+                #   兜底空段。
+                #   ★ P3（review）：``idx == 0`` 仅可能由「首字符宽度 >
+                #   max_width」产生（其余字符在累加循环中必推进 idx）——
+                #   修复前保留的 ``if wcswidth_simple(remaining[0]) > max_width``
+                #   内层判断恒真（死条件），已删除。
                 # P2-10（review）：跳过超宽字符时保留零宽占位（U+200B，宽 0）
                 #   ——修复前直接 ``remaining = remaining[1:]`` 丢弃字符，混合
                 #   内容（如 "a가b" / "a가", max_width=1）中超宽字符从输出消失，
@@ -85,12 +92,10 @@ def _wrap_by_width(s: str, max_width: int) -> list[str]:
                 #   存在可显示内容**时保留占位——全部字符均超宽（极端窄终端 +
                 #   全宽文本，如 "가나", max_width=1）时保持 L1 空段语义（调用
                 #   方 ``or [""]`` 兜底），不破坏既有回归断言。
-                if wcswidth_simple(remaining[0]) > max_width:
-                    if has_fittable:
-                        lines.append("\u200b")
-                    remaining = remaining[1:]
-                    continue
-                idx = 1
+                if has_fittable:
+                    lines.append("\u200b")
+                remaining = remaining[1:]
+                continue
             lines.append(remaining[:idx])
             remaining = remaining[idx:]
         if not segment:

@@ -547,6 +547,15 @@ class InputParser:
             # 9 仅 modifier=2（Tab）已处理——9/5（Ctrl+Tab）未在其他分支处理，
             # 落入本分支排除后走 csi_u（router 可消费），语义归属以本注释为准。
             if 1 <= keycode <= 26 and modifier == 5 and keycode not in (9, 13):
+                # ★ P3（review）：Ctrl+Backspace（增强键盘协议 keycode=8/127,
+                #   modifier=5）显式映射为词删除——修复前 keycode=8 落入本分支
+                #   经 ``_decode_control_char(8)`` 得 ctrl_key "\x08"，生产路径
+                #   dispatcher 将其消费为轨迹视图开关（与 Ctrl+W /
+                #   Alt+Backspace 的既有词删除语义冲突）。
+                if keycode in (8, 127):
+                    return KeyEvent(
+                        kind="delete", modifier=1, keycode=keycode, raw=raw,
+                    )
                 decoded = InputParser._decode_control_char(keycode)
                 return KeyEvent(kind=decoded.kind, char=decoded.char,
                                 modifier=decoded.modifier, keycode=keycode, raw=raw)

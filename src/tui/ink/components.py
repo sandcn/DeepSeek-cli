@@ -183,10 +183,12 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
         #   [cx, cx+cw) 求交并切片）。
         if clip is not None:
             cx, cy, cw, ch = clip
+            # ★ P3（review）：裁剪行列数为常量条件，提到循环外一次判断
+            #   （修复前每行重复判断与行无关的 ``cw <= 0 or ch <= 0``）。
+            if cw <= 0 or ch <= 0:
+                return
             for i, line in enumerate(lines):
                 row = box.y + i
-                if cw <= 0 or ch <= 0:
-                    continue
                 if row < cy or row >= cy + ch:
                     continue
                 if box.x >= cx + cw:
@@ -254,7 +256,7 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
         bg_color = _parse_color(bg_prop)
         if bg_color is not None:
             bg_style = Style(bg=bg_color)
-            _paint_box_background(box, canvas, bg_style)
+            _paint_box_background(box, canvas, bg_style, clip)
     child_bg = bg_style if bg_style is not None else inherit_bg
     # overflow 裁剪（完善 react ink v6）：容器有 overflow hidden 时压入
     # 裁剪区域，子节点绘制受限（_resolve_clip 处理父裁剪合并）。
@@ -338,6 +340,24 @@ def _find_committed_chat(root: Fiber):
     return found
 
 
+def _to_line(row, width: int) -> Line:
+    """画布行转 Line（行宽不变量 E-OVERFLOW-GUARD：超宽行截断到 width）。
+
+    布局层异常（嵌套容器内容超宽/宽字符硬塞等导致行宽超文档宽）时，行级
+    截断保证**行宽恒 <= width**——行级 diff 模型依赖该不变量（超宽行会
+    破坏 diff/光标定位）。截断重建 Line 对象（身份短路失效），仅异常行
+    触发（正常布局行宽 <= width，原样返回零开销）。
+
+    ★ P3（review）：由 ``render_frame`` 内闭包提升为模块级函数——修复前
+    每次 ``render_frame`` 都新建闭包对象（每帧一次分配）。
+    """
+    line = _canvas_row_to_line(row)
+    if line.width > width:
+        from .helpers import truncate_line
+        return truncate_line(line, width)
+    return line
+
+
 def render_frame(root: Fiber, width: int) -> Frame:
     """渲染布局好的 host 树为整帧 Frame。
 
@@ -359,20 +379,6 @@ def render_frame(root: Fiber, width: int) -> Frame:
     #   TEXT 命中行直接放 Line 对象，免逐字符重绘）。
     canvas: list = [None] * max(1, total_h)
     _paint(root, canvas)
-
-    def _to_line(row) -> Line:
-        """画布行转 Line（行宽不变量 E-OVERFLOW-GUARD：超宽行截断到 width）。
-
-        布局层异常（嵌套容器内容超宽/宽字符硬塞等导致行宽超文档宽）时，行级
-        截断保证**行宽恒 <= width**——行级 diff 模型依赖该不变量（超宽行会
-        破坏 diff/光标定位）。截断重建 Line 对象（身份短路失效），仅异常行
-        触发（正常布局行宽 <= width，原样返回零开销）。
-        """
-        line = _canvas_row_to_line(row)
-        if line.width > width:
-            from .helpers import truncate_line
-            return truncate_line(line, width)
-        return line
 
     # ★ committed-chat 前缀复用（大历史下渲染 O(live)）：静态提交行跨帧身份
     #   复用（``chat_view._paint`` 维护 ``_committed_prefix``），不再每帧全量
@@ -408,7 +414,7 @@ def render_frame(root: Fiber, width: int) -> Frame:
                 #   tail`` 直接拼接把超长前缀行写入 Frame（破坏行宽不变量
                 #   E-OVERFLOW-GUARD）。fit = 前缀实际覆盖行数（≤画布行数）。
                 fit = min(len(prefix), max(0, len(canvas)))
-                tail = [_to_line(r) for r in canvas[fit:]]
+                tail = [_to_line(r, width) for r in canvas[fit:]]
                 # ★ 稳定前缀（PERF-7）：prefix 为复用列表对象（``_committed_prefix``
                 # 缓存命中），标记 stable_prefix 使 ``first_diff_line`` 跳过前缀
                 # 区间（避免大文档每帧全量逐行 is 比较）。防御：fit 可能 <
@@ -431,8 +437,8 @@ def render_frame(root: Fiber, width: int) -> Frame:
             #   （与旧实现「超出画布的前缀行丢弃」行为一致）。
             y0 = committed_box.y if committed_box is not None else 0
             fit = min(len(prefix), max(0, len(canvas) - y0))
-            header = [_to_line(r) for r in canvas[:y0]]
-            tail = [_to_line(r) for r in canvas[y0 + fit:]]
+            header = [_to_line(r, width) for r in canvas[:y0]]
+            tail = [_to_line(r, width) for r in canvas[y0 + fit:]]
             # ★ 稳定前缀（PERF-7）：prefix 为复用列表对象（缓存命中），其
             #   ``[:fit]`` 部分在 Frame.lines 的 [y0, y0+fit) 区间——标记
             #   stable_prefix 使 ``first_diff_line`` 跳过该区间（前缀区间外
@@ -444,7 +450,7 @@ def render_frame(root: Fiber, width: int) -> Frame:
                 stable_prefix_offset=y0,
                 stable_prefix_len=fit,
             )
-    return Frame(_to_line(row) for row in canvas)
+    return Frame(_to_line(row, width) for row in canvas)
 
 
 __all__ = ["render_frame"]

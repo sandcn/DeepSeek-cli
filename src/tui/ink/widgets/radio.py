@@ -12,8 +12,6 @@
 
 from __future__ import annotations
 
-import logging
-
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
@@ -23,8 +21,6 @@ from ..widgets.layout import Column
 #   直接 ``._interactive_common``（与 _select_input/_multi_select 一致，
 #   减少门面链依赖层级）。
 from ._interactive_common import _normalize_items, _clamp_index, _visible_window, _call
-
-_logger = logging.getLogger(__name__)
 
 __all__ = ["RadioList"]
 

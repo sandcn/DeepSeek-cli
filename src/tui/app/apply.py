@@ -418,7 +418,7 @@ def _render_markdown_lines(text: str, width: int) -> list:
     return renderer.take_lines()
 
 
-def _append_assistant_rich(model, msg) -> None:
+def _append_assistant_rich(model, msg, anon_ids: list | None = None) -> None:
     """assistant 历史消息按 ChatView 语义分块渲染（reasoning/content/tool）。
 
     用户需求（/editmsg 等历史回放）：思考/回答/工具调用显示与消息区
@@ -427,6 +427,13 @@ def _append_assistant_rich(model, msg) -> None:
       - content → content 块（💬 回答 角色头 + markdown 行）；
       - tool_calls → 工具块（ToolCard 卡片，open_tool_box 后续 tool 消息
         经 ``_append_tool_rich`` 追加输出并关闭）。
+
+    Args:
+        anon_ids: 匿名（无 tool_call_id）工具调用的**合成 id 队列**（★ P3
+            review）——回放中无 id 的 tool_calls 生成稳定合成 id（
+            ``__replay_N``）并登记，后续无 id 的 tool 消息按序取用配对，
+            修复前统一以空 id 打开/关闭（多无 id 调用时用 FIFO 匹配，
+            与 tool 结果消息错配）。
     """
     from src.tui.pipeline.message_display import _content_str
     reasoning = _content_str(msg.get("reasoning_content", "")).strip()
@@ -450,7 +457,7 @@ def _append_assistant_rich(model, msg) -> None:
     # 兼容 str（JSON 串）与 dict 两种 arguments 形态。
     # import 置于循环外（函数体内惰性 import，与 _do_parse_info 风格一致）
     from src.core.param_formatter import extract_key_params
-    for tc in tool_calls:
+    for _ti, tc in enumerate(tool_calls):
         # ★ 修复（P3）：tool_calls 元素可能非 dict（str 等异常数据）——
         #   tc.get 抛 AttributeError；非 dict 跳过（安全处理）。
         if not isinstance(tc, dict):
@@ -472,18 +479,36 @@ def _append_assistant_rich(model, msg) -> None:
         # 单行化（\n → 字面量 \n）由 open_tool_box 内部统一承担（同源单行）。
         if len(detail) > _TOOL_DETAIL_MAX_LEN:
             detail = detail[:_TOOL_DETAIL_MAX_LEN] + "..."
-        model.open_tool_box(tc.get("id") or "", name, detail)
+        # ★ P3（review）：无 tool_call_id 时生成稳定合成 id（并登记配对队列）
+        #   ——修复前统一空 id 打开（匿名 box 靠 FIFO 关闭），多个无 id 调用
+        #   与 tool 结果消息混排时易错配。
+        tid = tc.get("id") or ""
+        if not tid and anon_ids is not None:
+            tid = f"__replay_{_ti}"
+            anon_ids.append(tid)
+        model.open_tool_box(tid, name, detail)
 
 
-def _append_tool_rich(model, msg) -> None:
-    """tool 历史消息：追加工具输出并关闭对应工具块（ToolCard 完整显示）。"""
+def _append_tool_rich(model, msg, anon_ids: list | None = None) -> None:
+    """tool 历史消息：追加工具输出并关闭对应工具块（ToolCard 完整显示）。
+
+    ★ P3（review）：无 ``tool_call_id`` 时从 ``anon_ids`` 队列取配对合成 id
+    （见 ``_append_assistant_rich``）；成功位按消息携带的失败标记还原
+    （``is_error``/``status``）——修复前无条件 ``True``，历史回放中原失败的
+    工具被渲染为 ✔（信息失真）。消息无该字段时保持 True（无法还原）。
+    """
     from src.tui.pipeline.message_display import _content_str
     tool_call_id = msg.get("tool_call_id") or ""
+    if not tool_call_id and anon_ids:
+        tool_call_id = anon_ids.pop(0)
     content = _content_str(msg.get("content", ""))
     if content.strip():
         model.append_tool_output(tool_call_id, content)
-    # 历史回放中的工具调用均已执行完成
-    model.close_tool_box(tool_call_id, True)
+    # 历史回放中的工具调用均已执行完成；失败信息按消息字段还原
+    _is_err = bool(msg.get("is_error")) or str(msg.get("status", "")).lower() in (
+        "error", "failed", "fail",
+    )
+    model.close_tool_box(tool_call_id, not _is_err)
 
 
 def _do_display_messages(model, cmd) -> None:
@@ -498,6 +523,8 @@ def _do_display_messages(model, cmd) -> None:
     """
     from src.tui.pipeline.message_display import _content_str
     messages = cmd.messages or []
+    # ★ P3（review）：匿名（无 tool_call_id）工具调用的合成 id 配对队列
+    anon_ids: list = []
     for msg in messages:
         # ★ P2-4（review 修复）：消息元素可能非 dict（str/None 等外部注入）——
         #   ``msg.get`` 抛 AttributeError 中断回放；非 dict 跳过（安全处理，
@@ -513,9 +540,9 @@ def _do_display_messages(model, cmd) -> None:
                 continue
             model.append_committed("user", build_user_line(content))
         elif role == "assistant":
-            _append_assistant_rich(model, msg)
+            _append_assistant_rich(model, msg, anon_ids)
         elif role == "tool":
-            _append_tool_rich(model, msg)
+            _append_tool_rich(model, msg, anon_ids)
         elif role in ("other",):
             content = _content_str(msg.get("content", ""))
             if not content.strip():

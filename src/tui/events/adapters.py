@@ -104,6 +104,33 @@ class DisplayEventAdapter:
         self._handlers: dict[Type[DisplayEvent], EventHandler] = {}
         self._event_bus: DisplayEventBus | None = None
 
+    def _implements_display_method(self, display: Any, method_name: str) -> bool:
+        """判定 display 是否**真实实现**指定方法（★ P2 review）。
+
+        ``hasattr`` 对继承自 ``BaseDisplay`` 的具体 no-op 也返回 True——
+        ``BaseDisplay.update_agent_status`` 为空实现，导致仅覆盖
+        ``update_status`` 的显示实现被订阅到 no-op（状态更新静默丢弃）。
+        本方法沿 MRO 查找首个定义该方法的类：若其为 ``BaseDisplay`` 则视为
+        「继承的 no-op」（不订阅）；否则视为真实实现（订阅）。
+
+        Args:
+            display: 显示对象（鸭类型）。
+            method_name: 方法名。
+
+        Returns:
+            True — 该方法由 display 自身类（或非 BaseDisplay 祖先）实现。
+        """
+        if not hasattr(display, method_name):
+            return False
+        try:
+            from src.tui._base_display import BaseDisplay
+        except Exception:
+            return True
+        for klass in type(display).__mro__:
+            if method_name in klass.__dict__:
+                return klass is not BaseDisplay
+        return True
+
     def subscribe_to(self, event_bus: DisplayEventBus) -> None:
         """订阅 EventBus 上的所有可映射事件。
 
@@ -115,7 +142,14 @@ class DisplayEventAdapter:
         for event_type, method_name in self._EVENT_METHOD_MAP.items():
             if self._include_types is not None and event_type not in self._include_types:
                 continue
-            if hasattr(self._display, method_name):
+            # ★ P2（review）：按「真实覆盖」判定而非 ``hasattr``——修复前
+            #   ``hasattr`` 无法区分「子类覆盖」与「继承基类 no-op」
+            #   （``BaseDisplay.update_agent_status`` 为具体空实现）→ 仅覆盖
+            #   ``update_status`` 的显示实现被订阅到 no-op（状态更新静默
+            #   丢弃）。现要求方法来自 display 自身类（或其非 BaseDisplay
+            #   祖先）的实现；纯继承的 no-op 不订阅。
+            if not self._implements_display_method(self._display, method_name):
+                continue
                 # 为每个事件类型创建绑定的 handler
                 handler = self._make_handler(event_type, method_name)
                 self._handlers[event_type] = handler

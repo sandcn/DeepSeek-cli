@@ -94,8 +94,12 @@ def Checkbox(props: dict) -> Element:
     if isinstance(label, Element):
         children.append(label)
     elif label is not None:
+        # ★ P3（review）：label 内换行/回车归一化为空格——与
+        #   Breadcrumbs/Menu/Tree/Tabs/Table 等同族控件的行级归一化一致
+        #   （防行高/对齐被字面换行破坏）。
+        _label_txt = str(label).replace("\r", " ").replace("\n", " ")
         children.append(h(TEXT, {
-            "children": " " + str(label), "style": label_style, "height": 1,
+            "children": " " + _label_txt, "style": label_style, "height": 1,
         }))
     # ★ 标准布局：Row 横向排列方框 + 标签
     return h(Row, {"height": 1}, children)

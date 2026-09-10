@@ -38,8 +38,15 @@ class ConfigBase:
         return cls()
 
     def with_overrides(self: _C, **kwargs: Any) -> _C:
-        """返回覆盖指定字段的新实例，原实例不变。"""
-        return type(self)(**{**self.__dict__, **kwargs})
+        """返回覆盖指定字段的新实例，原实例不变。
+
+        ★ P2（review）：用 ``dataclasses.replace`` 替代 ``self.__dict__``——
+        修复前 ``type(self)(**{**self.__dict__, **kwargs})`` 在启用
+        ``slots=True`` 的子类上无 ``__dict__``（AttributeError）；replace
+        基于字段元数据，兼容 slots/frozen 子类。
+        """
+        import dataclasses as _dc
+        return _dc.replace(self, **kwargs)
 
 
 @dataclass(frozen=True)

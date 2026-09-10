@@ -30,6 +30,7 @@ import heapq
 import itertools
 import logging
 import queue
+import threading
 import time
 
 from src.tui._const import (
@@ -306,6 +307,13 @@ class _SessionQueueMixin:
                 #   （否则后续 heappush/heappop 在损坏堆上操作可能返回非最小项）。
                 heapq.heapify(self._cmd_queue.queue)
                 dropped = len(drop_items)
+                # ★ P3（review）：容量释放后唤醒 not_full 等待者——修复前直接
+                #   替换 ``queue.queue[:]`` 未 notify，并发 ``push_cmd(block=True)``
+                #   /``_put_no_drop`` 可能虚假超时（关键命令走紧急直写、内容
+                #   命令被记丢弃告警）。not_full 与 mutex 同源锁，须在持锁时
+                #   notify。
+                if drop_items:
+                    self._cmd_queue.not_full.notify_all()
             # 丢弃的命令补 task_done（unfinished_tasks 一致性：put 增加、task_done
             # 减少；丢弃的命令不再被消费 → 补一次 task_done）。与 push_cmd 腾位
             # 语义一致：task_done 在 mutex 外调用（all_tasks_done Condition 与
@@ -328,8 +336,10 @@ class _SessionQueueMixin:
                 dropped += 1
             except queue.Empty:
                 break
-        if self._cmd_queue_dropped > 0:
-            _logger.info("render 线程终止，共丢弃 %d 条命令", self._cmd_queue_dropped)
+        if dropped > 0:
+            # ★ P3（review）：日志用本次丢弃数（``dropped``）——修复前打印累计
+            #   计数 ``_cmd_queue_dropped``（从不重置、含历史其它丢弃），误导排障。
+            _logger.info("render 线程终止，本次丢弃 %d 条命令", dropped)
         return dropped
 
 

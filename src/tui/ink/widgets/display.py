@@ -41,4 +41,18 @@ from ._table import Table
 from ._badge_divider import Badge, Divider
 from ._panel import Panel
 
-__all__ = ["Spinner", "ProgressBar", "Table", "Badge", "Divider", "Panel"]
+__all__ = [
+    "Spinner",
+    "ProgressBar",
+    "Table",
+    "Badge",
+    "Divider",
+    "Panel",
+    # ★ P3（review）：re-export 辅助符号补入 __all__——与 helpers/hooks 门面
+    #   「补全 __all__」约定一致（修复前通配导入丢失这些符号）。
+    "_color",
+    "_resolve_style",
+    "_repeat_to_width",
+    "SPINNER_FRAMES",
+]
+

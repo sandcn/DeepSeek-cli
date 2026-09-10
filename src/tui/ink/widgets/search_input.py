@@ -118,7 +118,9 @@ def SearchInput(props: dict) -> Element:
     #   虽经 ``_clamp_index`` 钳制显示，但 state 保持越界（items 恢复时错乱）。
     #   空 items 时 ``len-1 == -1``，max(0, ...) 兜底回 0。
     initial_index = max(0, min(initial_index, len(all_items) - 1))
-    prefix = str(props.get("prefix", "❯ "))
+    # ★ P3（review）：显式 None 不渲染字面 "None"。
+    _prefix = props.get("prefix")
+    prefix = "❯ " if _prefix is None else str(_prefix)
 
     query, set_query = use_state("")
     cursor, set_cursor = use_state(initial_index)
@@ -223,6 +225,12 @@ def SearchInput(props: dict) -> Element:
     cursor_shown = _clamp_index(cursor, len(filtered))
     # 可见窗口（limit 滚动）
     if limit is not None and len(filtered) > limit:
+        # ★ P3（review）语义说明：本控件为无状态**贴顶**滚动语义
+        #   （``offset = min(cursor_shown, total - limit)``：窗口随光标贴顶，
+        #   高亮钉在窗口首行）。与 SelectInput/MultiSelect/RadioList/ListView
+        #   的「跟随光标（窗口内不动、越界才滚动）」语义不同——统一需引入
+        #   offset state 与过滤结果重置逻辑（改动面大），当前显式记录该差异
+        #   （调用方按需选择控件语义），行为保持不变。
         offset = max(0, min(cursor_shown, len(filtered) - limit))
         shown = filtered[offset:offset + limit]
         shown_cursor = cursor_shown - offset

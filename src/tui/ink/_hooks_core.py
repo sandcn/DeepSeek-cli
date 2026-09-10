@@ -61,7 +61,20 @@ class HookStateError(RuntimeError):
 
 
 def set_schedule_callback(cb: Callable[[], None] | None) -> None:
-    """注入状态更新重渲染回调。"""
+    """注入状态更新重渲染回调。
+
+    ★ P3（review）：覆盖已有回调时记 warning——hooks 模块级状态为**进程级
+    单例**（单会话假设）：多会话/多渲染根共存时后注入者生效，先注入者的
+    状态更新回调被静默替换（表现为该会话 set_state 不再触发重渲染）。告警
+    使该约束可观测（不改变行为，保持既有单会话语义）。
+    """
+    existing = getattr(_hooks_module, "_schedule_callback", None)
+    if cb is not None and existing is not None and existing is not cb:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "set_schedule_callback 覆盖已有回调（hooks 状态为进程级单例，"
+            "多会话共存时仅最后注入者生效）"
+        )
     _hooks_module._schedule_callback = cb
 
 
@@ -147,20 +160,28 @@ def _next_hook(hook_cls: type, *init_args) -> HookNode:
 _INIT_PENDING = object()
 
 
-def _next_state_hook(reducer: Callable[[Any, Any], Any] | None, initial: Any) -> StateHook:
+def _next_state_hook(
+    reducer: Callable[[Any, Any], Any] | None,
+    initial: Any,
+    lazy_init: bool = True,
+) -> StateHook:
     """获取/创建当前 fiber 的下一个 StateHook 并应用待处理更新。
 
-    React 惰性初始化（方向1）：initial 为 callable 时仅首个渲染调用一次
-    （``hook.state is _INIT_PENDING`` 标记），后续渲染复用既有 state——
-    修复前 callable initial 被原样存入 state（渲染出 ``<function ...>``）且
-    每次渲染重新求值（意外副作用）。
+    React 惰性初始化（方向1）：initial 为 callable 且 ``lazy_init`` 时仅首个
+    渲染调用一次（``hook.state is _INIT_PENDING`` 标记），后续渲染复用既有
+    state——修复前 callable initial 被原样存入 state（渲染出
+    ``<function ...>``）且每次渲染重新求值（意外副作用）。
+
+    ★ P3（review）：``lazy_init=False`` 时不把 callable initial 当惰性初值
+    ——React ``useReducer(reducer, initial)`` 未提供 ``init`` 时，函数本身即
+    初值（不调用）；修复前统一走惰性路径导致函数初值被误调用。
     """
-    init_value = _INIT_PENDING if callable(initial) else initial
+    init_value = _INIT_PENDING if (lazy_init and callable(initial)) else initial
     hook = _next_hook(StateHook, init_value, None, reducer)
     if reducer is not None:
         hook.reducer = reducer
     if hook.state is _INIT_PENDING:
-        hook.state = initial() if callable(initial) else initial
+        hook.state = initial() if (lazy_init and callable(initial)) else initial
     if hook.queue:
         if hook.reducer is not None:
             # use_reducer：queue 中为 action，经 reducer 归约
@@ -186,7 +207,14 @@ def _make_setter(fiber: Fiber, hook: StateHook) -> Callable[[Any], None]:
     fiber 复用时 reconciler 会重置 ``deleted=False``（setter 闭包捕获的 fiber
     对象在复用时仍有效，deleted 已复位）；Python 引用计数保证 fiber 对象存活
     （闭包持有），deleted 检查仅读布尔字段无风险。
+
+    ★ P3（review）：setter 缓存于 ``hook.setter``——React 保证 dispatch 身份
+    稳定；修复前每次渲染新建闭包，``memo`` 子组件 props 浅比较（函数按
+    identity）恒不等 → memo 短路失效。
     """
+    cached = hook.setter
+    if cached is not None:
+        return cached
 
     def _set(value: Any) -> None:
         if getattr(fiber, "deleted", False):
@@ -196,6 +224,7 @@ def _make_setter(fiber: Fiber, hook: StateHook) -> Callable[[Any], None]:
         hook.queue.append(value)
         _schedule()
 
+    hook.setter = _set
     return _set
 
 
@@ -247,7 +276,9 @@ def use_reducer(
         # callable 惰性路径求值（``lambda: init(initial)`` 仅首渲染调用）。
         hook = _next_state_hook(reducer, (lambda: init(initial)))
     else:
-        hook = _next_state_hook(reducer, initial)
+        # ★ P3（review）：未提供 init 时 callable initial 即初值本身
+        #   （React useReducer 语义）——lazy_init=False 避免误调用。
+        hook = _next_state_hook(reducer, initial, lazy_init=False)
     return (hook.state, _make_setter(_current(), hook))
 
 

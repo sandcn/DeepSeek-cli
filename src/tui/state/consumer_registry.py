@@ -118,4 +118,14 @@ def _unregister_consumer() -> None:
             #   try 内，``-= 1`` 在 try 外——mock 场景递减即抛异常）——
             #   兼容测试 mock 场景（MagicMock 不支持 int 运算/比较），直接清空。
             _active_consumer = None
-        _weak_consumer_registry.pop(threading.get_ident(), None)
+        # ★ P2（review）：仅在本实例已不再活跃（refcount<=0）时移除弱表兜底项
+        #   ——修复前无条件 ``pop(threading.get_ident())``：同线程先后
+        #   A.start()→B.start()（registry[tid] 被 B 覆盖）后 A.stop()（refcount
+        #   仍 >0）会误删 B 的兜底项，使 get_active_chat_ui() 在
+        #   ``_active_consumer`` 悬空时无法经弱表恢复。
+        try:
+            still_active = _active_consumer_refcount > 0
+        except TypeError:
+            still_active = False
+        if not still_active:
+            _weak_consumer_registry.pop(threading.get_ident(), None)

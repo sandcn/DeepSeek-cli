@@ -147,6 +147,17 @@ def _tools_inspector_content_rows(
     return rows, keys
 
 
+def _tools_viewport_rows(vh: int) -> int:
+    """工具检查器内容区可用行数（★ P3 review：单一真源）。
+
+    固定占用 2 行（标题 + meta），与 TraceView 的
+    ``_inspector_viewport_rows`` 同构；内容窗口（``_inspector_children``）
+    与调用方（滚动协调）共用，消除此前 ``vh - 2``（内容）与 ``vh - 3``
+    （调用方）的不一致（光标行可越出可见窗口）。
+    """
+    return max(_INSPECTOR_MIN_CONTENT, vh - 2)
+
+
 def _inspector_children(
     name: str, props_map: dict, required: list, description: str,
     right_w: int, vh: int, scroll: int = 0,
@@ -220,7 +231,9 @@ def _inspector_children(
         cursor = int(cursor) if cursor is not None else -1
     except (TypeError, ValueError, OverflowError):
         cursor = -1
-    content_vh = max(_INSPECTOR_MIN_CONTENT, vh - 2)
+    # ★ P3（review）：预算经 ``_tools_viewport_rows`` 与调用方滚动协调共用
+    #   （单一真源），修复前此处 ``vh - 2`` 而调用方 ``vh - 3`` 不一致。
+    content_vh = _tools_viewport_rows(vh)
     if total > content_vh:
         scroll = max(0, min(scroll, total - content_vh))
     else:
@@ -231,9 +244,14 @@ def _inspector_children(
             "style": _S_HINT, "height": 1, "key": "tinsp-omitted-top",
         }))
     window = content_rows[scroll:scroll + content_vh]
+    # ★ P3（review）：窗口收缩时优先保留光标行（同 TraceView 修复）——
+    #   修复前无条件 ``window[:-1]``，光标恰在末行时被删除。
     if scroll + len(window) < total:
-        window = window[:max(0, len(window) - 1)]
-        bottom_omitted = total - scroll - len(window)
+        if cursor >= 0 and cursor == scroll + len(window) - 1:
+            bottom_omitted = total - scroll - len(window)
+        else:
+            window = window[:max(0, len(window) - 1)]
+            bottom_omitted = total - scroll - len(window)
     else:
         bottom_omitted = 0
     for i, seg in enumerate(window):
@@ -329,12 +347,16 @@ def TraceToolsView(props) -> object:
         #   同族修复）：折叠集合展平原子值——``tuple(sorted(collapsed))``
         #   嵌套 tuple 按 is 引用比较，折叠状态非空时每帧新建对象 → use_memo
         #   恒 miss → 内容行每帧全量重建；改 ``";".join`` 单一 str 按值比较。
-        (name, len(props_map or {}), ";".join(map(str, required or [])),
+        #   ★ P3（review）：``len(props_map)`` 改为**参数名指纹**——修复前
+        #   同一工具名下 schema 内容变化（参数名增删但数量相同、注册表热更新）
+        #   不触发重建，内容行陈旧。
+        (name, ";".join(sorted(map(str, (props_map or {}).keys()))),
+         ";".join(map(str, required or [])),
          description, right_w, ";".join(sorted(collapsed))),
     )
     content_rows, row_keys = content
     total_content = len(content_rows)
-    approx_content_vh = max(_INSPECTOR_MIN_CONTENT, vh - 3)
+    approx_content_vh = _tools_viewport_rows(vh)
     # 光标渲染期钳制（写回 model——越界残留收敛；空内容 → 0）
     if total_content:
         cursor = max(0, min(cursor_raw, total_content - 1))

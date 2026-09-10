@@ -57,43 +57,47 @@ class _CompletionNavHandler:
             d._buffer_editor._echo(result)
             self.trigger_auto_completion()
 
-    def handle_arrow_up(self) -> None:
-        """处理上箭头：补全弹窗可见时仅移动高亮，否则历史浏览。"""
+    def _nav(self, delta: int, log_label: str) -> bool:
+        """调用补全导航回调并应用结果（★ P3 review：4 处逐字重复的收敛实现）。
+
+        统一语义：回调未注入 → 返回 False（调用方走各自回退，如历史浏览）；
+        回调异常 → 记 debug 并返回 False；返回非 None 且文本变化 →
+        ``set_buffer`` + ``_echo`` + 触发自动补全，返回 True。
+
+        Args:
+            delta: 导航步进（±1 翻页时 ±5）。
+            log_label: 异常日志标签（区分调用来源，便于排障）。
+
+        Returns:
+            True — 回调已消费（result 非 None）；False — 未消费。
+        """
         d = self._d
         cb = d._completion_navigate_callback
-        if cb is not None:
-            try:
-                text = d._buffer_editor.get_current_text()
-                result = cb(-1, text)
-            except Exception:
-                _logger.debug("补全导航回调异常", exc_info=True)
-                result = None
-            if result is not None:
-                if result != text:
-                    d._buffer_editor.set_buffer(result)
-                    d._buffer_editor._echo(result)
-                    self.trigger_auto_completion()
-                return
-        d._buffer_editor._up()
+        if cb is None:
+            return False
+        try:
+            text = d._buffer_editor.get_current_text()
+            result = cb(delta, text)
+        except Exception:
+            _logger.debug("%s 回调异常", log_label, exc_info=True)
+            return False
+        if result is not None:
+            if result != text:
+                d._buffer_editor.set_buffer(result)
+                d._buffer_editor._echo(result)
+                self.trigger_auto_completion()
+            return True
+        return False
+
+    def handle_arrow_up(self) -> None:
+        """处理上箭头：补全弹窗可见时仅移动高亮，否则历史浏览。"""
+        if not self._nav(-1, "补全导航"):
+            self._d._buffer_editor._up()
 
     def handle_arrow_down(self) -> None:
         """处理下箭头：补全弹窗可见时仅移动高亮，否则历史浏览。"""
-        d = self._d
-        cb = d._completion_navigate_callback
-        if cb is not None:
-            try:
-                text = d._buffer_editor.get_current_text()
-                result = cb(1, text)
-            except Exception:
-                _logger.debug("补全导航回调异常", exc_info=True)
-                result = None
-            if result is not None:
-                if result != text:
-                    d._buffer_editor.set_buffer(result)
-                    d._buffer_editor._echo(result)
-                    self.trigger_auto_completion()
-                return
-        d._buffer_editor._down()
+        if not self._nav(1, "补全导航"):
+            self._d._buffer_editor._down()
 
     def handle_page_nav(self, delta: int) -> None:
         """处理 PageUp/PageDown：补全弹窗可见时按页步进高亮，否则 no-op。
@@ -104,20 +108,7 @@ class _CompletionNavHandler:
         delta 步进并钳制/回绕）；补全不可见或回调未消费时 no-op（不改变
         输入缓冲/光标，与 Shift+Tab 语义一致）。
         """
-        d = self._d
-        cb = d._completion_navigate_callback
-        if cb is None:
-            return
-        try:
-            text = d._buffer_editor.get_current_text()
-            result = cb(delta, text)
-        except Exception:
-            _logger.debug("补全翻页回调异常", exc_info=True)
-            return
-        if result is not None and result != text:
-            d._buffer_editor.set_buffer(result)
-            d._buffer_editor._echo(result)
-            self.trigger_auto_completion()
+        self._nav(delta, "补全翻页")
 
     def handle_shift_tab_reverse(self) -> None:
         """处理 Shift+Tab：补全弹窗可见时反向循环，否则 no-op。
@@ -125,20 +116,7 @@ class _CompletionNavHandler:
         方向A 步骤1：CSI u Shift+Tab（keycode=9, modifier=2）→ tab/modifier=2
         事件分发至此；补全导航回调未消费（补全不可见）时 no-op（不插入制表符）。
         """
-        d = self._d
-        cb = d._completion_navigate_callback
-        if cb is None:
-            return
-        try:
-            text = d._buffer_editor.get_current_text()
-            result = cb(-1, text)
-        except Exception:
-            _logger.debug("补全导航回调异常", exc_info=True)
-            return
-        if result is not None and result != text:
-            d._buffer_editor.set_buffer(result)
-            d._buffer_editor._echo(result)
-            self.trigger_auto_completion()
+        self._nav(-1, "补全导航")
 
     def handle_editmsg_tab(self) -> None:
         """editmsg 模式 Tab：正向循环补全高亮（不写缓冲、不确认）。

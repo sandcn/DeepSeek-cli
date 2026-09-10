@@ -45,7 +45,8 @@ def _desc_column_width(width: int) -> int:
         # 右栏为 0（左栏占满，不溢出）。
         # ★ P3（review 2026-08-22）：上限补 8（与常规分支下限 8 对齐）——
         #   修复前 19 时返回 9、20 时返回 8（非单调跳变）；现 15~20 单调
-        #   递减/平（7,8,8,8,8,8）无跳变。
+        #   不减（15→7, 16→8, 17~20→8），无跳变。
+        # ★ P3（review）：注释方向修正——原写「单调递减」与实现不符。
         return max(0, min(int(width) - 1, int(width) // 2, 8))
     return max(8, min(int(width) // 3, 40, int(width) - 12))
 
@@ -59,9 +60,11 @@ def _completion_item_rows() -> int:
     """补全弹窗候选项最大行数（终端高度约束，防超屏）。
 
     预留顶部标题 1 + 弹窗标题 1 + 弹窗提示行 1 + 状态栏 1 + 输入区分隔线 1
-    + 输入行 1 + 输入下分隔线 1 + 时间戳 1 + 模式行 1 ≈ 9 行（2026-08-14
-    新增模式行后底部固定占用 +1）；候选项 + 说明行数限制在
-    ``max(6, h - 11)``。正常补全（≤20 项）不受影响；极长说明 / user_select
+    + 输入行 1 + 输入下分隔线 1 + 时间戳 1 + 模式行 1 = 9 行，另加弹窗自身
+    上下留白/滚动提示等 2 行 ≈ 11 行（2026-08-14 新增模式行后底部固定占用
+    +1）；候选项 + 说明行数限制在 ``max(6, h - 11)``。★ P3（review）：原
+    docstring 只列 9 行清单而公式减 11，清单与公式不一致，现补齐差额说明。
+    正常补全（≤20 项）不受影响；极长说明 / user_select
     大量选项时弹窗不超屏。
 
     ★ 性能（方向4）：终端高度经 ``TerminalWidthCache`` 读取——修复前每次
@@ -107,10 +110,14 @@ def _completion_height(completion, width=None) -> int:
     Returns:
         弹窗高度（行数）；弹窗不可见/无 items 时 0。
     """
-    if completion is None or not completion.visible or not completion.items:
+    # ★ P3（review）：属性访问经 getattr 防御——修复前直接
+    #   ``completion.visible``/``.items``/``.descriptions``（仅 split_desc 用
+    #   getattr），外部注入部分字段的对象（SimpleNamespace 桩）会
+    #   AttributeError；与 ``_cursor.position_cursor`` 的 try 兜底口径统一。
+    if completion is None or not getattr(completion, "visible", False) or not getattr(completion, "items", None):
         return 0
     n = len(completion.items)
-    descs = completion.descriptions or []
+    descs = getattr(completion, "descriptions", None) or []
     if not (getattr(completion, "split_desc", False) and descs) or width is None:
         need = min(n, _completion_item_rows()) + 2
     else:

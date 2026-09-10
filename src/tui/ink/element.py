@@ -50,6 +50,12 @@ class Element:
     #: key 惰性缓存（None=未计算；首次访问 key property 时填充）
     _key: str | None = field(init=False, repr=False, compare=False, default=None)
 
+    #: ★ P3（review）：显式声明不可哈希——frozen dataclass 默认生成
+    #: ``__hash__``（内部调用 ``hash(props)``），而 props 为 dict（不可哈希）
+    #: → 任何把 Element 放进 set/dict 的调用方在运行时抛 TypeError。显式
+    #: ``__hash__ = None`` 固化契约（与 ``Line`` 一致），使误用在定义层面可见。
+    __hash__ = None  # type: ignore[assignment]
+
     def __post_init__(self) -> None:
         """规范化 props/children 为不可变副本。"""
         object.__setattr__(self, "props", dict(self.props) if self.props else {})

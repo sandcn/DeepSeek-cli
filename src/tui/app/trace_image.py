@@ -25,12 +25,14 @@ from io import BytesIO
 _IMAGE_B64_RE = re.compile(r"^data:(image/[A-Za-z0-9.+-]+);base64,(.*)$", re.S)
 #: 半块字符（上=fg，下=bg）
 _HALF = "\u2580"
-#: 缩略图单元上限（列=右栏宽自适应，行=17 个半块）
+#: 缩略图单元上限（列=右栏宽自适应，行=16 个半块单元）
 _THUMB_ROWS = 16
 #: 缩略图放大倍数上限（小图允许放大以贴近显示盒，上限防过度放大模糊）
 _THUMB_MAX_UPSCALE = 4
 #: 渲染/解码缓存上限（超限清空重建——miss 仅多一次渲染）
 _ROW_CACHE_MAX = 64
+#: 解码像素上限（★ P2 review：超大 data URI 不进入全量解码，直接占位）
+_MAX_DECODE_PIXELS = 40_000_000
 _rows_cache: dict = {}
 
 
@@ -139,11 +141,13 @@ def thumbnail_rows(image: dict, right_w: int) -> list:
     #   改为 1（缩略图行宽不超右栏，维持行级 diff 宽度不变量）。
     w_cells = max(1, min(44, right_w - 2))
     h_cells = _THUMB_ROWS
-    key = (image["sha"], w_cells, h_cells)
+    # ★ P3（review）：sha 经 get 兜底——修复前直接 ``image["sha"]``（缺失
+    #   KeyError 未防御；调用方目前均来自 parse_image_blocks，防御性保留）。
+    key = (image.get("sha", ""), w_cells, h_cells)
     cached = _rows_cache.get(key)
     if cached is not None:
         return cached
-    rows = _render(image["b64"], w_cells, h_cells)
+    rows = _render(image.get("b64", ""), w_cells, h_cells)
     if len(_rows_cache) >= _ROW_CACHE_MAX:
         _rows_cache.clear()
     _rows_cache[key] = rows
@@ -178,6 +182,15 @@ def _render(b64: str, w_cells: int, h_cells: int) -> list:
     try:
         raw = base64.b64decode(b64)
         img = Image.open(BytesIO(raw))
+        # ★ P2（review）：像素上限防护——`Image.open` 仅惰性解析头部，先读
+        #   尺寸，超限直接占位（避免 `img.load()` 全量解码致内存暴涨）。
+        #   不修改 Pillow 全局 `MAX_IMAGE_PIXELS`（避免影响其它模块）。
+        try:
+            _iw, _ih = img.size
+        except Exception:
+            _iw, _ih = 0, 0
+        if _iw * _ih > _MAX_DECODE_PIXELS:
+            return _placeholder()
         img.load()
     except Exception:
         return _placeholder()

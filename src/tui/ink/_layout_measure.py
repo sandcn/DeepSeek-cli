@@ -283,10 +283,17 @@ def _shrink_row_children(
     if children:
         used_new += spacing * (len(children) - 1)
     _guard = 0
+    # ★ P3（review）：可缩子节点**轮转**选择——修复前每轮 ``break`` 于首个
+    #   满足 ``cb.w > 1 and weights[i] > 0`` 的子节点，反复减该子节点至最小
+    #   宽度后才轮到下一个 → 宽度分布失真（两子各需缩 0.5 列时首子被多缩
+    #   1 列）。轮转使补偿均摊。
+    _cursor = 0
+    _n = len(children)
     while used_new > target_w:
         pick = -1
-        for i, child in enumerate(children):
-            cb = child.layout_box
+        for _k in range(_n):
+            i = (_cursor + _k) % _n
+            cb = children[i].layout_box
             if cb is not None and cb.w > 1 and weights[i] > 0:
                 pick = i
                 break
@@ -296,6 +303,7 @@ def _shrink_row_children(
         cb.w -= 1
         children[pick].layout_box = cb
         used_new -= 1
+        _cursor = (pick + 1) % _n if _n else 0
         _guard += 1
         # 有界保护：每轮至少减 1，正常远小于 len*4（防 weights 与 children
         # 长度不一致等异常导致死循环）
@@ -1008,17 +1016,27 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
             #   欠分配导致剩余列未被填满（row 宽度不足 inner_w_row）。
             weights = [_flex_grow(child) for child in children]
             per, extra_shares = _compute_weight_shares(weights, extra_w)
-            old_xs = [child.layout_box.x for child in children]
             for i, child in enumerate(children):
                 if weights[i] > 0:
                     cb = child.layout_box
                     cb.w += per * weights[i] + extra_shares[i]
                     child.layout_box = cb
+                    # ★ P3（review）：按新宽度重新测量——修复前仅改盒宽，子节点
+                    #   内部内容未 reflow（与 shrink 分支「重新测量」不对称）；
+                    #   fill=True 使内部内容按新宽度 wrap/截断。测量异常降级
+                    #   （paint 侧截断兜底），不中断布局。
+                    try:
+                        _measure(child, inner_x, inner_y, cb.w, fill=True)
+                    except Exception:
+                        pass
+            # ★ P3（review）：grow 后子节点高度可能因 reflow 变化（换行减少），
+            #   同步 row_h（后续 alignItems 偏移以此为准）。
+            row_h = max((c.layout_box.h for c in children if c.layout_box is not None), default=row_h)
             # 重排 x（grow 改变宽度后；最后子节点不计 spacing）
             cx = inner_x
             for i, child in enumerate(children):
                 cb = child.layout_box
-                delta = cx - old_xs[i]
+                delta = cx - cb.x
                 if delta:
                     # ★ BUG-15：x 变化后整棵子树平移（``_translate_subtree_x``
                     #   内部 cb.x += delta + 后代随动）——修复前仅改直接子节点

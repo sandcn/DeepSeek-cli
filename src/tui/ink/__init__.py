@@ -218,6 +218,7 @@ __all__ = [
     "ErrorBoundary",
     "create_error_boundary",
     # render API
+    "render",
     "measureElement",
     # generic components
     "Transform",

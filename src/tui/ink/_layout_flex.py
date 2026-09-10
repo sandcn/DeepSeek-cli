@@ -131,7 +131,12 @@ def _distribute_extra(
         cursor = inner_y
         for i, child in enumerate(children):
             cb = child.layout_box
-            cb.h = max(lo, heights[i])
+            # ★ P3（review）：直接写回迭代结果——修复前 ``max(lo, heights[i])``
+            #   对所有子节点（含未参与收缩的权重 0 节点与原本高度 0 的节点）
+            #   生效，把 0 高子节点抬升到 lo（1 行）→ 容器多出 1 行、可能溢出。
+            #   收缩循环内已对参与收缩的节点钳制 ``max(lo, ...)``，故此处
+            #   heights[i] 对收缩节点必然 >= lo，直接写回语义等价且不抬升他者。
+            cb.h = heights[i]
             cb.y = cursor
             child.layout_box = cb
             cursor += cb.h + margin

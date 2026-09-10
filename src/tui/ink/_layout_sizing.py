@@ -18,9 +18,12 @@
 
 from __future__ import annotations
 
+import logging
 import math
 
 from .fiber import Fiber
+
+_logger = logging.getLogger(__name__)
 
 
 def _resolve_length(value, avail: int) -> int:
@@ -29,7 +32,9 @@ def _resolve_length(value, avail: int) -> int:
     - int/数字字符串 → 原样（``max(0, int(value))``）；
     - ``"50%"`` 百分比 → ``avail * pct / 100``（React Ink 百分比尺寸语义，
       相对可用宽度/高度）；
-    - 畸形值（None/对象/畸形串）→ 回退 avail。
+    - 畸形值（None/对象/畸形串）→ 回退 avail（★ P3：记 debug 日志，
+      修复前静默回退掩盖调用方错误——非关键降级记日志，与同目录模块
+      策略一致）。
     """
     if isinstance(value, str) and value.endswith("%"):
         try:
@@ -41,10 +46,12 @@ def _resolve_length(value, avail: int) -> int:
             #   布局测试/像素级断言不一致）。
             return max(0, int(avail * pct / 100.0))
         except (TypeError, ValueError, OverflowError):
+            _logger.debug("_resolve_length 百分比解析失败: %r", value)
             return avail
     try:
         return max(0, int(value))
     except (TypeError, ValueError, OverflowError):
+        _logger.debug("_resolve_length 非数值长度回退 avail: %r", value)
         return avail
 
 

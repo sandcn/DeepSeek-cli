@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import math
 import time
+from dataclasses import fields as _dc_fields
 from functools import lru_cache
 
 from src._compat import dataclass
@@ -100,6 +101,14 @@ class Palette:
     selection_bg: Style = Style(bg=_SEMANTIC_COLOR["select_bg"])
     selection_fg: Style = Style(fg=_SEMANTIC_COLOR["select_fg"])
     placeholder: Style = Style(fg=_SEMANTIC_COLOR["placeholder"])
+
+
+# ★ P3（review）：``_PALETTE_SLOTS`` 与 ``Palette`` 字段集一致性断言——修复前
+#   两者仅靠人工对齐（新增字段时无校验，易漂移）。契约：槽位表是 Palette 的
+#   子集（Palette 可含未列入槽位表的辅助字段，反之不允许）。
+assert set(_PALETTE_SLOTS) <= {
+    f.name for f in _dc_fields(Palette)
+}, "_PALETTE_SLOTS 含 Palette 不存在的槽位"
 
 
 def _light_palette() -> Palette:

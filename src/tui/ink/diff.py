@@ -34,26 +34,35 @@ def first_diff_line(prev: Frame, new: Frame) -> int:
     """
     p_lines = prev.lines
     n_lines = new.lines
-    start = 0
     sp = prev._stable_prefix
+    skip_lo = skip_hi = 0
     if (
         sp is not None
         and sp is new._stable_prefix
         and prev._stable_prefix_offset == new._stable_prefix_offset
         and prev._stable_prefix_len == new._stable_prefix_len
     ):
-        start = prev._stable_prefix_offset + prev._stable_prefix_len
-        if start > len(p_lines):
-            start = len(p_lines)
-        if start > len(n_lines):
-            start = len(n_lines)
+        skip_lo = prev._stable_prefix_offset
+        skip_hi = skip_lo + prev._stable_prefix_len
     n = min(len(p_lines), len(n_lines))
-    for i in range(start, n):
+    # ★ P0（review）：跳过区间**只跳过自身**——修复前 ``start = offset + len``
+    #   直接作为扫描起点，导致 ``[0, offset)``（非顶部前缀路径下的 TopHeader
+    #   等每帧新建行）永不参与比较：仅顶部行变化时返回 -1（判定帧完全一致、
+    #   不写任何字节），标题栏呼吸色/版本号在空闲帧冻结。现逐行扫描并在
+    #   命中跳过区间时跳到其末尾（区间外行仍逐行比较）。
+    i = 0
+    if skip_lo <= 0:
+        i = max(0, skip_hi)
+    while i < n:
+        if skip_lo <= i < skip_hi:
+            i = skip_hi
+            continue
         # ★ 身份短路：缓存行（committed-chat）为同一对象 → O(1) 跳过比较
         p = p_lines[i]
         f = n_lines[i]
         if p is not f and p.runs != f.runs:
             return i
+        i += 1
     if len(p_lines) != len(n_lines):
         return n
     return -1

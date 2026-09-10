@@ -33,7 +33,8 @@ def build_border_box(
     Args:
         title_runs: 标题 StyledRun 列表（如 ``[("⚡ " ...), ("工具名" ...)]``）。
         body_lines: 主体行列表（每行前缀 ``│ ``）；None 表示无主体。
-        width: 边框块总宽度。
+        width: 边框块总宽度（``<= 0`` 返回空列表；``== 3`` 时 title/status
+            无可用预算而静默丢弃——仅渲染角字符）。
         status: ``"open"`` 不画底边；其他值作为底边状态文本（如 ``"✔ 完成"``）。
         border_style: 边框字符样式；None 默认 ``Style(fg=23)``。
 
@@ -42,6 +43,11 @@ def build_border_box(
     """
     if border_style is None:
         border_style = Style(fg=23)
+    # ★ P3（review）：width<=0 直接返回空列表——修复前产出「含空 run 的行」
+    #   （``Line.of("")`` = 1 个空 StyledRun），调用方拿到 1~3 行零宽行而非
+    #   空列表（语义不一致：零宽块不应占行）。
+    if width <= 0:
+        return []
     lines: list[Line] = []
 
     # ── 顶行：┌─ title ─……─┐ ──

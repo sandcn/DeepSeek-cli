@@ -17,8 +17,6 @@ React Ink 生态 ``<CodeBlock>`` 风格代码块：顶边框（可选语言标�
 
 from __future__ import annotations
 
-import logging
-
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
@@ -32,7 +30,7 @@ from ._display_common import _repeat_to_width, _truncate_to_width
 #   至 _widget_common（调用处显式传 default=23，行为不变）。
 from ._widget_common import _color
 
-_logger = logging.getLogger(__name__)
+# ★ P3（review）：删除未使用的 ``_logger``（本模块无日志调用）。
 
 __all__ = ["CodeBlock"]
 
@@ -81,10 +79,18 @@ def CodeBlock(props: dict) -> Element:
     label = language or title
     border_style = str(props.get("borderStyle", "single"))
     chars = _BORDER_CHARS.get(border_style, _DEFAULT_BORDER)
-    border = Style(fg=_color(props.get("borderColor"), 23))
     base_style = props.get("style")
-    if base_style is not None:
-        border = base_style.merge(border)
+    border_color_prop = props.get("borderColor")
+    if border_color_prop is None:
+        # ★ P2（review）：未显式提供 ``borderColor`` 时不覆盖 ``style.fg``——
+        #   修复前 ``Style(fg=23)`` 恒被 merge（other 覆盖 self），用户的
+        #   ``style.fg`` 被默认 23 覆盖（与 Divider/Spinner/ProgressBar 的
+        #   「仅显式 color 才覆盖 style.fg」语义不一致）。
+        border = base_style if base_style is not None else Style(fg=23)
+    else:
+        border = Style(fg=_color(border_color_prop, 23))
+        if base_style is not None:
+            border = base_style.merge(border)
     show_lines = bool(props.get("lineNumbers", False))
     wrap = bool(props.get("wrap", False))
     highlight_style = props.get("highlightStyle")
@@ -155,31 +161,39 @@ def CodeBlock(props: dict) -> Element:
     inner_w = max(1, width_eff - num_prefix_w - (2 if show_lines else 4))
     for i, line in enumerate(lines):
         content = line if line else ""
-        if not wrap:
+        if wrap:
+            # ★ P1（review）：``wrap=True`` 实现按容器内宽换行——修复前即
+            #   不截断也不填充，超宽代码行溢出内宽（右侧竖线落错列、与顶/底
+            #   边框错位，破坏行宽不变量）。经 ``_wrap_by_width``（CJK 安全）
+            #   拆分为多段，逐段渲染（续行不重复行号）。
+            from src.tui._input_layout import _wrap_by_width
+            seg_lines = _wrap_by_width(content, inner_w) or [""]
+        else:
             # ★ P2（review）：_truncate_to_width 收敛至 _display_common——
             #   codeblock 传 strip_ansi_seq=True（保留剥离 ANSI 语义）。
-            content = _truncate_to_width(content, inner_w, True)
-        # ★ P1-2（review）：content 填充到 inner_w——修复前 Row 无显式宽度、
-        #   内容自适应，content 短于 inner_w 时右侧竖线（` │`）落在错误列
-        #   （与底边框 ┘ 不对齐）。填充后 content 显示宽 == inner_w，行总宽
-        #   == width_eff（右侧竖线对齐边框）。
-        pad_w = inner_w - wcswidth_simple(content)
-        if pad_w > 0:
-            content = content + " " * pad_w
-        code_runs: list[Element] = []
-        if show_lines:
-            num_text = f"{i + 1:>{num_w}}"
-            code_runs.append(h(TEXT, {"children": num_text, "style": Style(fg=240)}))
-            code_runs.append(h(TEXT, {"children": chars[5] + " ", "style": border}))
-        else:
-            code_runs.append(h(TEXT, {"children": chars[5] + " ", "style": border}))
-        if highlight_style is not None:
-            code_runs.append(h(TEXT, {"children": content, "style": highlight_style}))
-        else:
-            code_runs.append(h(TEXT, {"children": content}))
-        # 右侧边框（无行号时补右侧；有行号时行号栏已占左侧，右侧补竖线）
-        code_runs.append(h(TEXT, {"children": " " + chars[5], "style": border}))
-        children.append(h(Row, None, code_runs))
+            seg_lines = [_truncate_to_width(content, inner_w, True)]
+        for seg_i, seg in enumerate(seg_lines):
+            # ★ P1-2（review）：content 填充到 inner_w——修复前 Row 无显式宽度、
+            #   内容自适应，content 短于 inner_w 时右侧竖线（` │`）落在错误列
+            #   （与底边框 ┘ 不对齐）。填充后行总宽 == width_eff。
+            pad_w = inner_w - wcswidth_simple(seg)
+            if pad_w > 0:
+                seg = seg + " " * pad_w
+            code_runs: list[Element] = []
+            if show_lines:
+                # 续行仅留空白行号位（保持代码列对齐）
+                num_text = f"{i + 1:>{num_w}}" if seg_i == 0 else " " * num_w
+                code_runs.append(h(TEXT, {"children": num_text, "style": Style(fg=240)}))
+                code_runs.append(h(TEXT, {"children": chars[5] + " ", "style": border}))
+            else:
+                code_runs.append(h(TEXT, {"children": chars[5] + " ", "style": border}))
+            if highlight_style is not None:
+                code_runs.append(h(TEXT, {"children": seg, "style": highlight_style}))
+            else:
+                code_runs.append(h(TEXT, {"children": seg}))
+            # 右侧边框（无行号时补右侧；有行号时行号栏已占左侧，右侧补竖线）
+            code_runs.append(h(TEXT, {"children": " " + chars[5], "style": border}))
+            children.append(h(Row, None, code_runs))
     # ── 底边框 ──
     children.append(
         h(TEXT, {

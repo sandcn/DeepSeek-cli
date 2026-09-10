@@ -88,7 +88,9 @@ def Breadcrumbs(props: dict) -> Element:
         Row 元素（横向排列的项 + 分隔符）。
     """
     items = _normalize_items(props.get("items", []))
-    separator = str(props.get("separator", " / "))
+    # ★ P3（review）：显式 None 不渲染字面 "None"。
+    _sep = props.get("separator")
+    separator = " / " if _sep is None else str(_sep)
     # ★ P3（review）：样式 prop 改 ``is not None`` 判断——修复前 ``or`` 把
     #   显式空 Style()（falsy）当默认替换。
     separator_style_prop = props.get("separatorStyle")

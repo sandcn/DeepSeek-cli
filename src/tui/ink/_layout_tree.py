@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from collections import deque
+
 from .fiber import Fiber
 
 
@@ -31,20 +33,34 @@ def layout_children(fiber: Fiber) -> list[Fiber]:
     每容器每帧重复调用）。改为：function fiber 才走 ``_skip_function``，
     普通 host 子节点直接处理（行为与 ``_skip_function`` 等价——其对 host
     节点恒返回自身）。
+
+    ★ P3（review）：Fragment 展开改显式队列——修复前递归 ``layout_children``
+    在深层 Fragment 嵌套下触发 RecursionError；队列（popleft + extendleft）
+    保持文档顺序且无栈深度限制。
     """
     result: list[Fiber] = []
+    pending: deque[Fiber] = deque()
     child = fiber.child
     while child is not None:
-        if child.is_function:
-            host = _skip_function(child)
+        pending.append(child)
+        child = child.sibling
+    while pending:
+        node = pending.popleft()
+        if node.is_function:
+            host = _skip_function(node)
         else:
-            host = child
+            host = node
         if host is not None:
             if host.is_host and host.type == "fragment":
-                result.extend(layout_children(host))
+                sub: list[Fiber] = []
+                c = host.child
+                while c is not None:
+                    sub.append(c)
+                    c = c.sibling
+                # extendleft 逆序插入 → sub[0] 回到队首（保持文档顺序）
+                pending.extendleft(reversed(sub))
             else:
                 result.append(host)
-        child = child.sibling
     return result
 
 

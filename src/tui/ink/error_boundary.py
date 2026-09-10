@@ -32,8 +32,10 @@ from typing import Any, Callable
 from src.tui.ink import hooks as _hooks
 from src.tui.ink.element import Element, TEXT, h
 
-#: callable fallback 构造元素时的内部标记（props 键）——reconciler 据此识别
-#: fallback 组件 fiber，其渲染异常不二次参与 boundary 捕获（防递归）。
+#: callable fallback 构造元素时的内部标记（props 键）——**仅作 element→fiber
+#: 的传输通道**：reconciler 在 ``_begin_work`` 中读取该键后立即置位 fiber 私有
+#: 字段 ``_is_fallback_root`` 并从 fiber.props 剥除该键（不进组件可见 props，
+#: 也不会被用户同名 prop 绕过——见 reconciler 同名字段说明）。
 _FALLBACK_MARKER = "_fallback"
 
 
@@ -92,6 +94,10 @@ def ErrorBoundary(props: dict) -> Element:
     P3-1（React 语义对齐）：一旦捕获错误**永久**渲染 fallback——``_boundary_error``
     不清零，即使下一帧抛异常组件已被移除，``use_error_state()`` 仍返回旧错误；
     需经 key 变化/重新挂载重置。
+
+    ★ P3（review）：``fiber._is_boundary`` 标记由 reconciler 在每次实际渲染该
+    组件前重置（见 reconciler ``_begin_work``），本组件每帧渲染重新置 True——
+    避免 fiber 复用时边界标记残留（组件条件性不再声明边界时语义漂移）。
     """
     fiber = _hooks._current()
     fiber._is_boundary = True

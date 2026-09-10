@@ -25,4 +25,16 @@ from src.tui.core._fx import (
     spinner_char,
 )
 
-__all__ = ["fade_color", "spinner_frame", "spinner_char", "SPINNER_FRAMES"]
+__all__ = [
+    "fade_color",
+    "spinner_frame",
+    "spinner_char",
+    "SPINNER_FRAMES",
+    # ★ P3（review）：re-export 符号补入 __all__（与导入面一致；修复前
+    #   `from src.tui.app._fx import *` 缺项，与「re-export 存根兼容旧导入
+    #   路径」的声明不完全一致）。
+    "_DEFAULT_FADE_DURATION",
+    "_DEFAULT_SPINNER_HZ",
+    "_default_fx_params",
+    "time",
+]

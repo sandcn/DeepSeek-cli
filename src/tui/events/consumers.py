@@ -34,8 +34,8 @@ _logger = logging.getLogger(__name__)
 #   message_display 兜底 / _diff_renderer 已迁移语义一致：回退路径与界面渲染
 #   共用同一输出模型/样式体系）。色号取与旧 16 色视觉等价的 256 色语义色
 #   （error 亮红 196 / warning 黄 220 / success 绿 41 / info 中灰 244）。
-#   旧 ``_LEVEL_COLORS``/``_RESET`` 保留为 deprecated 兼容 re-export（外部
-#   既有引用/测试兼容；生产路径不再消费）。
+#   ★ P3（review）：旧 ``_LEVEL_COLORS``/``_RESET`` 已删除（全项目零消费者
+#   ——sed/grep 确认），避免死代码滞留。
 
 from src.tui.core.style import Style
 
@@ -46,16 +46,6 @@ _LEVEL_STYLES: dict[str, Style] = {
     "info":    Style(fg=244),   # 中灰（旧 \033[90m DARK_GRAY）
     "raw":     Style(),         # 原样输出（无样式）
 }
-#: 旧 ANSI 色串映射（deprecated 兼容 re-export——生产路径经 ``_LEVEL_STYLES``；
-#: 保留供外部既有引用/测试，勿在生产代码新增引用）
-_LEVEL_COLORS: dict[str, str] = {
-    "error": "\033[31m",      # RED
-    "warning": "\033[33m",    # YELLOW
-    "success": "\033[32m",    # GREEN
-    "info": "\033[90m",       # DARK_GRAY
-    "raw": "",                # 原样输出
-}
-_RESET = "\033[0m"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -158,7 +148,11 @@ class OutputConsumer:
         """
         with _try_acquire_output_lock(name="output_consumer._write", timeout=1.0):
             try:
-                if self._stream.closed:
+                # ★ P3（review）：``closed`` 经 getattr 兜底——修复前直接
+                #   ``self._stream.closed``：自定义 stream（无 closed 属性）
+                #   抛 AttributeError 且不在下方 except 集合内（ValueError/
+                #   OSError）→ 异常穿透。
+                if getattr(self._stream, "closed", False):
                     return
                 if level == "raw":
                     line = text

@@ -37,11 +37,14 @@ def TextInput(props: dict) -> Element:
     Returns:
         BOX 元素（文本 + 光标，横向排列）。
     """
-    value = str(props.get("value", ""))
+    # ★ P3（review）：显式 None 不渲染字面 "None"（value/placeholder）。
+    _value_prop = props.get("value")
+    value = "" if _value_prop is None else str(_value_prop)
     onChange = props.get("onChange")
     onSubmit = props.get("onSubmit")
     focus = bool(props.get("focus", True))
-    placeholder = str(props.get("placeholder", ""))
+    _ph = props.get("placeholder")
+    placeholder = "" if _ph is None else str(_ph)
     mask = props.get("mask")
     show_cursor = bool(props.get("showCursor", True))
     cursor_color = _color(props.get("cursorColor", "cyan"))

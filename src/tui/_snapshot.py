@@ -20,7 +20,10 @@ token/速度展示）与 ``src/tui/_ink_bridge.py`` 的 ``get_status_elapsed()``
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
+
+_logger = logging.getLogger(__name__)
 
 # ── 模块级缓存 ──────────────────────────────────────────
 # P3-18：Optional[callable] → Optional[Callable[[], Any]]（from typing 导入）
@@ -31,12 +34,19 @@ _TOKEN_SPEED_SNAPSHOT: Callable[[], Any] | bool | None = None  # 也可赋值为
 
 
 def _get_snapshot():
-    """获取 get_token_speed_snapshot 函数引用（惰性加载，异常静默）。"""
+    """获取 get_token_speed_snapshot 函数引用（惰性加载，异常静默）。
+
+    ★ P3（review）：异常集与「异常静默」声明对齐——修复前仅捕获
+    ``ImportError``，stats 模块内部其它异常（如依赖缺失导致的其它错误）
+    会向上传播（与文档声明不符）。现捕获 ``Exception`` 并记 debug（可观测），
+    仍标记不可用。
+    """
     global _TOKEN_SPEED_SNAPSHOT
     if _TOKEN_SPEED_SNAPSHOT is None:
         try:
             from ..api.stats import get_token_speed_snapshot
             _TOKEN_SPEED_SNAPSHOT = get_token_speed_snapshot
-        except ImportError:
+        except Exception:
+            _logger.debug("token 速度快照惰性加载失败，标记不可用", exc_info=True)
             _TOKEN_SPEED_SNAPSHOT = False  # 标记不可用
     return _TOKEN_SPEED_SNAPSHOT if callable(_TOKEN_SPEED_SNAPSHOT) else None

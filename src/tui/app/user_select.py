@@ -79,14 +79,18 @@ EditMsgSelectPopup + bottom_view="editmsg"，见 editmsg_select.py）——
 
 from __future__ import annotations
 
+import logging
+
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from src.tui._input_layout import _wrap_by_width
 from src.tui.app.input_area import _desc_column_width, _truncate_width
 from src.tui.app._theme import _S_DIM, _S_SEP
 from src.tui.ink import TEXT, h, Column, Row
-from src.tui.ink.hooks import use_modal, use_ref, use_state, use_input
+from src.tui.ink.hooks import use_effect, use_modal, use_ref, use_state, use_input
 from src.tui.ink.widgets.interactive import SelectInput, MultiSelect
+
+_logger = logging.getLogger(__name__)
 
 __all__ = ["UserSelectPopup"]
 
@@ -132,7 +136,11 @@ def _popup_item_rows() -> int:
     try:
         from src.tui._screen import TerminalWidthCache
         h = TerminalWidthCache.get_default().get_height()
-        return max(6, h - 3)
+        # ★ P0（review）：下限由 6 改为 1——修复前 ``max(6, h - 3)`` 在矮终端
+        #   （h < 9）强制 6 行，弹窗溢出屏幕底部（无滚动）；与
+        #   ``editmsg_select._editmsg_item_rows`` 的 ``max(1, h - 3)`` 同根因，
+        #   属同类缺陷跨模块未同步修复。二者均为模态底部视图，预算语义一致。
+        return max(1, h - 3)
     except Exception:
         return 12
 
@@ -164,7 +172,13 @@ def _build_tab_bar(states: list, active: int, width: int) -> object:
     submit_label = "[✓ 提交]" if all_answered else "[提交]"
     submit_w = wcswidth_simple(submit_label) + 2
     gap_w = 2 * n  # 问题间（含 Submit 前）间距
-    budget = max(8, (width - submit_w - gap_w) // n) if width and width > 0 else 20
+    # ★ P2（review）：预算下限由 8 改为 1——修复前 ``max(8, ...)`` 使窄终端/
+    #   多问题的总宽（n*budget + 间距 + Submit 宽）超过 width，标签被布局层
+    #   flexShrink 硬裁（而非按预算省略）。改为按剩余宽度整除分配后，
+    #   ``Σlabel + gap_w + submit_w <= width`` 恒成立（每个 label 经
+    #   ``_truncate_width`` 限制在 budget 内）。
+    avail_w = width if (width and width > 0) else 80
+    budget = max(1, (avail_w - submit_w - gap_w) // n)
     children: list = []
     for i, s in enumerate(states):
         marked = getattr(s, "answered", False) or getattr(s, "done", False)
@@ -255,6 +269,7 @@ def _regular_item_limit(us, total: int) -> int:
 def _build_split_row(
     us, options: list, multi: bool, cur: int, checked: list,
     opt_w: int, desc_w: int, width: int, row_i: int, total: int,
+    desc_lines: list | None = None,
 ) -> object:
     """分栏说明模式单行构建（左栏选项 + │ + 右栏当前选中项说明）。
 
@@ -273,6 +288,10 @@ def _build_split_row(
         width: 终端宽度。
         row_i: 弹窗行号（0-based；超选项数时左栏留白）。
         total: 选项总数。
+        desc_lines: 当前选中项说明的换行结果（★ P2 review：调用方算一次
+            传入——修复前每个可见行调用本函数都重算一次
+            ``_wrap_by_width(说明)``，N 行即 N 次换行计算（大说明/多选项时
+            每帧 O(N×说明长度)）；None 时兼容旧行为自行计算。
 
     Returns:
         Row 元素（左栏 + │ + 右栏说明）。
@@ -300,7 +319,8 @@ def _build_split_row(
     else:
         left = h(TEXT, {"children": " " * opt_w, "style": _S_DIM, "height": 1})
     desc_sel = max(0, min(cur, len(descs) - 1)) if descs else 0
-    desc_lines = _wrap_by_width((descs[desc_sel] if descs else "") or "", desc_w)
+    if desc_lines is None:
+        desc_lines = _wrap_by_width((descs[desc_sel] if descs else "") or "", desc_w)
     desc_txt = _truncate_width(
         desc_lines[row_i] if row_i < len(desc_lines) else "", desc_w,
     )
@@ -343,12 +363,18 @@ def UserSelectPopup(props) -> object:
     #   选项——静默不可见（visible=False）会让工具协程（无超时 deadline=0）
     #   永远轮询 ``us.done`` → 交互卡死。修复：自动以 default_options 回退
     #   （置 done=True；first-write-wins——done 已由工具超时置位则跳过）。
-    for s in states:
-        if (
-            s is not None and s.visible and not s.done
-            and not getattr(s, "options", None)
-        ):
-            s.try_set_final("confirmed", list(getattr(s, "default_options", None) or []))
+    #   ★ P3（review）：副作用从渲染期移到 effect 提交期——渲染阶段不应修改
+    #   跨线程共享终态（工具协程可能并发读取）；本函数每帧提交期执行，
+    #   内部 done/visible 判断保证幂等（首写生效后不再触发）。
+    def _fallback_empty_options() -> None:
+        for s in states:
+            if (
+                s is not None and s.visible and not s.done
+                and not getattr(s, "options", None)
+            ):
+                s.try_set_final("confirmed", list(getattr(s, "default_options", None) or []))
+
+    use_effect(_fallback_empty_options, None)
     visible = bool(states)
 
     # ── hooks（无条件调用，保持 fiber hook 顺序稳定） ──
@@ -438,6 +464,9 @@ def UserSelectPopup(props) -> object:
                         list(getattr(s, "default_options", None) or []),
                     )
         except Exception:
+            # ★ P3（review）：不静默吞异常——记 debug 日志（提交路径异常
+            #   会导致部分问题未写入终态，须可观测）。
+            _logger.debug("user_select Submit 页提交异常", exc_info=True)
             return
 
     def _back_to_questions() -> None:
@@ -455,6 +484,7 @@ def UserSelectPopup(props) -> object:
             active_ref.current = 0
             set_active(0)
         except Exception:
+            _logger.debug("user_select 返回问题 tab 异常", exc_info=True)
             return
 
     def _handle_tab(event) -> bool:
@@ -640,6 +670,7 @@ def UserSelectPopup(props) -> object:
             active_ref.current = n
             set_active(n)
         except Exception:
+            _logger.debug("user_select 推进下一问题异常", exc_info=True)
             return
 
     def _commit_answer(result, action: str) -> None:
@@ -712,6 +743,15 @@ def UserSelectPopup(props) -> object:
             # limit 即可见选项数上限（控件窗口滚动交互仍可导航到隐藏项）。
             limit = min(max(total, 1), _popup_item_rows())
 
+            # ★ P2（review）：当前选中项说明换行只算一次——修复前每个可见行
+            #   调用 renderItem 都重算一次 ``_wrap_by_width(说明)``（N 行 =
+            #   N 次换行计算）。此处计算一次后闭包传入。
+            _descs = us.option_descriptions or []
+            _desc_sel = max(0, min(cur, len(_descs) - 1)) if _descs else 0
+            desc_lines_cur = _wrap_by_width(
+                (_descs[_desc_sel] if _descs else "") or "", desc_w,
+            )
+
             def _split_renderer(item, idx, is_sel, is_checked=None):
                 # 分栏说明模式单行：控件对每个 item 调用一次 renderItem——
                 # 只构建 item 索引对应的那一行（修复前循环渲染整个选项列表，
@@ -722,6 +762,7 @@ def UserSelectPopup(props) -> object:
                 return _build_split_row(
                     us, options, multi, cur, checked_now,
                     opt_w, desc_w, width, idx, total,
+                    desc_lines=desc_lines_cur,
                 )
         else:
             opt_w = max(1, width - 4) if width and width > 0 else 40

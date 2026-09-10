@@ -89,10 +89,13 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             配置）；None 或空串不显示推理等级标签。
     """
     st = model.status
-    status_active = st.status_active
+    # ★ P3（review）：与同函数其它字段（tool_total/tool_count 等）防御风格
+    #   统一——测试桩模型缺字段时回退默认值而非 AttributeError。
+    status_active = bool(getattr(st, "status_active", False))
+    _model_name = getattr(st, "model_name", "")
 
     model_part: list[StyledRun] = []
-    if st.model_name:
+    if _model_name:
         if status_active:
             # BEAUTY-1：模型名点出现时从暗色渐显到呼吸色（时间基）
             dot_color = _fx.fade_color(dot_elapsed, None, 238, _glow(36, 45, 4))
@@ -104,7 +107,7 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             dot_style = _S_ACCENT
             model_name_style = _S_ACCENT_BOLD
         model_part.append(StyledRun(f"{spinner_char} ", dot_style))
-        model_part.append(StyledRun(st.model_name, model_name_style))
+        model_part.append(StyledRun(_model_name, model_name_style))
         # ★ 推理等级标签（2026-08-14）：模型名后追加当前推理等级
         #   （low/medium/high/max，/reasoning 命令配置）。暗灰 dim 弱化——
         #   与模型名（亮青 bold）区分信息层级；格式 [level] 与 /reasoning
@@ -214,13 +217,17 @@ def StatusBar(props) -> object:
     model = props["model"]
     width = props.get("width", 80)
     st = model.status
+    # ★ P3（review）：属性读取经 getattr 归一化——与 ``_build_status_runs``
+    #   的防御风格一致（测试桩模型缺字段时不再 AttributeError 中断渲染）。
+    st_active = bool(getattr(st, "status_active", False))
+    st_model_name = getattr(st, "model_name", "")
     # BEAUTY-1：模型名点渐显起始时间（use_ref 跨渲染保持；status_active 切换
     # 或 model_name 变化时重置——模型名变化后新名称出现重新渐显，time.monotonic
     # 时间基，非帧计数）。★ 方向4：fade 键含 model_name——修复前仅含
     # status_active，切换模型（Ctrl+N）时旧 fade 状态残留（新模型名直接以
     # 呼吸色显示，无渐显过渡）。
     dot_fade_ref = use_ref(None)
-    fade_key = (st.status_active, st.model_name)
+    fade_key = (st_active, st_model_name)
     if dot_fade_ref.current is None or dot_fade_ref.current[0] != fade_key:
         dot_fade_ref.current = (fade_key, time.monotonic())
     dot_elapsed = time.monotonic() - dot_fade_ref.current[1]
@@ -234,7 +241,7 @@ def StatusBar(props) -> object:
     # BEAUTY-7：status_active 期间恒用 0.1s 桶——streaming spinner + 模型点
     #   呼吸以 10Hz 平滑推进（流式期间帧率本就 10Hz，零额外渲染成本）；
     #   空闲非渐显期回 1s 桶（静态显示，CPU 保持低占用）。
-    if st.status_active:
+    if st_active:
         time_dep = int(time.monotonic() / 0.1)
         # BEAUTY-7：streaming spinner 帧（10Hz）——spinner_frame 返回帧索引，
         # 必须经 _SPINNER_FRAMES 查表取字符（修复前直接格式化索引 → 显示数字
@@ -263,8 +270,8 @@ def StatusBar(props) -> object:
     status_runs = use_memo(
         lambda: _build_status_runs(model, dot_elapsed, spinner_char, reasoning_effort),
         (
-            st.status_active,
-            st.model_name,
+            st_active,
+            st_model_name,
             getattr(st, "tool_total", 0),
             getattr(st, "tool_count", 0),
             getattr(st, "tool_fail", 0),
@@ -296,7 +303,7 @@ def StatusBar(props) -> object:
     #   sep_style 的对象稳定性契约仍由 _theme.sep_style/_sep_style_active
     #   保持——Divider 内部跨帧复用同 Style）。PERF-10 的 status_line memo
     #   真实生效，保留。
-    sep_style = _theme_sep_style(st.status_active)
+    sep_style = _theme_sep_style(st_active)
     # 状态行（下面）
     # ★ 性能（PERF-10）：状态行 Line **缓存**（use_memo 键 status_runs 引用）
     #   ——status_runs 已 use_memo 缓存（引用稳定），Line 跨帧复用同一 runs

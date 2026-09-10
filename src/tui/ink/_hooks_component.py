@@ -204,11 +204,17 @@ def memo(Component: Callable, are_equal: Callable | None = None) -> Callable:
     Returns:
         包装后的 memo 组件函数（保留原组件名/模块，避免 fiber key 冲突）。
     """
-    def Memoized(props):
-        return Component(props)
+    def Memoized(props, ref=None):
+        return Component(props, ref)
 
     Memoized._is_memo = True
     Memoized._are_equal = are_equal
+    # ★ P3（review）：透传 forwardRef 标记——``memo(forwardRef(fn))`` 组合下
+    #   reconciler 仅按 ``fiber.type._is_forward_ref`` 决定双参调用，修复前
+    #   标记丢失 → ref 不传给组件（React 允许该组合）。Memoized 同时接受
+    #   ``ref`` 位置参并透传。
+    if getattr(Component, "_is_forward_ref", False):
+        Memoized._is_forward_ref = True
     Memoized.__name__ = getattr(Component, "__name__", "Memoized")
     Memoized.__module__ = getattr(Component, "__module__", __name__)
     return Memoized
@@ -286,12 +292,22 @@ def useApp() -> dict:
                 _logger.debug("suspendTerminal 降级 callback 异常", exc_info=True)
         return None
 
-    return {
-        "exit": control.get("exit") or _noop,
-        "clear": control.get("clear") or _noop,
-        "waitUntilRenderFlush": _flush,
-        "suspendTerminal": _suspend,
-    }
+    # ★ P3（review）：缓存返回对象——修复前每次渲染新建 ``_flush``/``_suspend``
+    #   闭包与 dict（身份不稳定，作为 props 传给 memo 子组件时短路失效）。
+    #   ref 缓存后同一 fiber 内身份稳定；``exit``/``clear`` 每次渲染刷新
+    #   （control 注入可能延迟到首帧后）。
+    cached = use_ref(None)
+    if cached.current is None:
+        cached.current = {
+            "exit": control.get("exit") or _noop,
+            "clear": control.get("clear") or _noop,
+            "waitUntilRenderFlush": _flush,
+            "suspendTerminal": _suspend,
+        }
+    else:
+        cached.current["exit"] = control.get("exit") or _noop
+        cached.current["clear"] = control.get("clear") or _noop
+    return cached.current
 
 
 # ═══════════════════════════════════════════════════════════

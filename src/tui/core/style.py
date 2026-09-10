@@ -506,8 +506,16 @@ class StyleSheet:
 
     @classmethod
     def clear(cls) -> None:
-        """清空注册表（供测试使用）。"""
+        """清空注册表并**恢复内置样式集**（供测试使用）。
+
+        ★ P3（review）：修复前仅 ``_registry.clear()``——测试调用后全局
+        内置样式永久丢失（影响后续用例，跨测试状态污染）。现清空后重新
+        注册模块导入时的同一内置集合（``_BUILTIN_STYLES``）。
+        """
         cls._registry.clear()
+        builtin = globals().get("_BUILTIN_STYLES")
+        if builtin:
+            cls.register_many(builtin)
 
     @classmethod
     def all_names(cls) -> list[str]:
@@ -526,7 +534,9 @@ class StyleSheet:
 # 槽位不同源——如 "success"=47 与槽 tool_ok=41 语义不同不强制合并）；仅
 # "error"（196）与槽 tool_fail 同值同语义，引用槽位防漂移（零视觉变化）。
 
-StyleSheet.register_many({
+#: 内置命名样式集（★ P3 review：提为模块常量——``StyleSheet.clear()``
+#: 清空后据此恢复内置集，避免测试清空后全局样式永久丢失）。
+_BUILTIN_STYLES: dict = {
     # ── 基础字型 ──
     "dim":       Style(dim=True),
     "bold":      Style(bold=True),
@@ -561,7 +571,9 @@ StyleSheet.register_many({
     # ── 树视图色 ──
     "tree_branch": Style(fg=239),   # 树分支灰色
     "tree_leaf":   Style(fg=45),    # 树叶青色
-})
+}
+
+StyleSheet.register_many(_BUILTIN_STYLES)
 
 # ════════════════════════════════════════════════════════
 # 命名色号常量（消除魔法数字 — 供 text_utils 等模块引用）

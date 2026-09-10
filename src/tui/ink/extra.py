@@ -261,6 +261,12 @@ def Static(props: dict) -> Element:
         children = ()
     if isinstance(children, (tuple, list)):
         children = tuple(children)
+    # ★ P3（review）：非 items 分支同样消费 use_ref（与 items 模式 hook 数量
+    #   一致，均为 2）——修复前两分支 hook 数不同（2 vs 1），同一组件在渲染间
+    #   切换模式时抛 HookStateError（reconciler 对 HookStateError 直接
+    #   re-raise → 渲染线程级异常）。补齐后结构性安全（无论模式是否切换，
+    #   hook 槽位数量恒定）。
+    use_ref(children)
     frozen = use_memo(lambda: children, ())
     return h(STATIC, style_props, frozen)
 

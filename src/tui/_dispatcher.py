@@ -148,10 +148,11 @@ class EventDispatcher:
         self._handlers_cache = None  # 缓存失效，下次 list_handlers() 重建
 
     def list_handlers(self) -> dict[type, Callable]:
-        """返回事件类型 → 处理器映射（结果缓存，只读使用）。
+        """返回事件类型 → 处理器映射（返回**浅拷贝**，调用方可安全只读）。
 
-        返回的 dict 为内部缓存对象，调用方应只读使用（勿修改，避免污染缓存）。
-        register_handler / register_group 后缓存失效，下次调用重新构建。
+        ★ P3（review）：返回 ``dict(...)`` 浅拷贝——修复前直接返回内部缓存
+        对象（隐式「只读」契约，调用方误改会污染缓存）。调用频率为启动期
+        （每次订阅一次），拷贝成本可忽略。
 
         P3-9 并发说明：``_handlers_cache`` 无锁缓存——**注册仅在启动阶段
         单线程执行**（TuiAssembly 装配 + _lifecycle.start 订阅），运行期
@@ -159,7 +160,7 @@ class EventDispatcher:
         若未来引入运行期动态注册须改用 RLock 保护。
         """
         if self._handlers_cache is not None:
-            return self._handlers_cache
+            return dict(self._handlers_cache)
         from src.tui.events import event_types as _ET
         result: dict[type, Callable] = {
             _ET.ReasoningChunkEvent: self._on_reasoning_chunk,
@@ -183,7 +184,7 @@ class EventDispatcher:
             result.update(group)
         result.update(self._custom_handlers)
         self._handlers_cache = result
-        return result
+        return dict(result)
 
     # ── 事件处理器 ────────────────────────────────
 

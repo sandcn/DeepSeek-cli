@@ -493,12 +493,19 @@ class MessageEditor:
         #   修复前若任一步抛异常（input 状态异常等），Enter 抑制永久卡死
         #   （输入无法提交）；finally 确保恢复。
         orig_dismiss_cb = None
+        # ★ P2（review）：先保存原回调再置 suppress——修复前
+        #   ``set_suppress_enter(True)`` 在保存之前执行：若其抛异常，
+        #   ``orig_dismiss_cb`` 仍为 None，finally 会把调用方原有 dismiss
+        #   回调覆盖为 None（破坏调用方状态）。``_cb_saved`` 标志保证仅在
+        #   成功保存后才执行恢复。
+        _cb_saved = False
         try:
-            input_.set_suppress_enter(True)
             # 方向2（私有属性访问公开化）：dismiss 回调经公开 API 保存/替换/恢复
             # （不直接读写 input_._dismiss_completion_callback 私有字段）。
             orig_dismiss_cb = input_.get_dismiss_completion_callback()
+            _cb_saved = True
 
+            input_.set_suppress_enter(True)
             input_.set_dismiss_completion_callback(self._editmsg_dismiss_cb)
 
             real_idx = self._interactive_message_select(user_msgs, display_items)
@@ -508,7 +515,8 @@ class MessageEditor:
             #   None 分支跳过恢复，_editmsg_dismiss 永久残留，后续 Enter 误
             #   触发选择完成信号 _selection_ready）。
             try:
-                input_.set_dismiss_completion_callback(orig_dismiss_cb)
+                if _cb_saved:
+                    input_.set_dismiss_completion_callback(orig_dismiss_cb)
             except Exception:
                 _logger.debug(
                     "edit_current_messages: 恢复 dismiss 回调异常", exc_info=True,
@@ -541,7 +549,13 @@ class MessageEditor:
             return False
 
         # 执行命令
-        cmd_cls = _COMMANDS.get(action, EditCommand)
+        # ★ P3（review）：未知 action 不再静默回退 ``EditCommand``——修复前
+        #   拼写错误/未来新增动作会误执行「截断并预填旧消息」（有数据破坏
+        #   语义）。现未知动作记 warning 并返回 False（不执行）。
+        cmd_cls = _COMMANDS.get(action)
+        if cmd_cls is None:
+            _logger.warning("edit_current_messages: 未知 action=%r，忽略本次执行", action)
+            return False
         cmd = cmd_cls(agent, real_idx)
         return cmd.execute(state)
 

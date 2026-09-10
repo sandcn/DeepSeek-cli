@@ -145,22 +145,32 @@ from ._diff_renderer import render_diff_to_ansi, show_file_diff
 from ._base_display import BaseDisplay
 
 
+#: ★ P3（review）：模块级 ``frozenset``（修复前在 ``__getattr__`` 内每次
+#: 未命中属性都重建集合——属性探测热路径无谓分配）。
+_OBSOLETE_SYMBOLS = frozenset({
+    "Box", "BoxStyle", "RoundedBox", "DoubleBox", "Separator",
+    "Spinner", "ProgressBar", "SplashScreen",
+    "Widget", "WidgetTree",
+    "create_widget", "get_animator", "get_framework", "frame_from_context",
+    "create_component",
+    "Vertical", "Horizontal", "Padding", "Border", "Grid", "Center",
+    "apply_fade_in",
+    "MockConsumer", "MockTerminal",
+})
+
+
 def __getattr__(name: str):
-    """模块级 __getattr__ — 对已删除的旧组件符号提供明确的 ImportError 提示。"""
-    _OBSOLETE_SYMBOLS = {
-        "Box", "BoxStyle", "RoundedBox", "DoubleBox", "Separator",
-        "Spinner", "ProgressBar", "SplashScreen",
-        "Widget", "WidgetTree",
-        "create_widget", "get_animator", "get_framework", "frame_from_context",
-        "create_component",
-        "Vertical", "Horizontal", "Padding", "Border", "Grid", "Center",
-        "apply_fade_in",
-        "MockConsumer", "MockTerminal",
-    }
+    """模块级 ``__getattr__`` — 对已删除的旧组件符号提供明确的移除提示。
+
+    ★ P2（review）：抛 ``AttributeError``（而非 ImportError）——修复前对
+    废弃符号抛 ImportError，导致 ``hasattr(tui, "Box")`` / ``getattr(tui,
+    "Box", default)`` **抛异常而非返回 False/默认值**（``hasattr`` 只捕获
+    AttributeError），插件/反射式探测意外中断。消息中保留移除说明与替代
+    指引（``from src.tui import Box`` 会得到同一提示信息）。
+    """
     if name in _OBSOLETE_SYMBOLS:
-        raise ImportError(
-            f"{name!r} 已在 TUI 重构中移除。"
-            f" 请参考 src/tui/* 新模块。"
+        raise AttributeError(
+            f"{name!r} 已在 TUI 重构中移除。请参考 src/tui/* 新模块。"
         )
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

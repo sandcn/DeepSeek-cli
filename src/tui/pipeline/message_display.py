@@ -13,9 +13,15 @@ DisplayMsgsCmd → TuiRenderer._do_display_messages → on_display_messages``，
 
 from __future__ import annotations
 
+import logging
 import sys
 from src._compat import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.tui.ink.output import Line
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -57,7 +63,11 @@ def _content_str(content: Any) -> str:
             if isinstance(c, dict):
                 btype = c.get("type", "")
                 if btype == "text":
-                    t = c.get("text", c)
+                    # ★ P2（review）：``text`` 分支与「未知类型」分支口径统一
+                    #   ——修复前 ``c.get("text", c)`` 在缺 text 键时把整个 dict
+                    #   ``str(c)``（如 "{'type': 'text'}"）落入预览；现缺键时
+                    #   回退空串（不污染消息预览）。
+                    t = c.get("text")
                     if t is not None:
                         parts.append(str(t))
                     continue
@@ -207,11 +217,13 @@ def display_messages(
             # ★ BUG-60（review 方向）+ P2-4：兜底直写无 TTY/管道关闭时抛
             #   异常——**跳过当前消息**（continue），修复前 ``return`` 中断
             #   整个循环与注释「不中断消息展示循环」矛盾。
+            # ★ P3（review）：记录 debug 日志（修复前静默吞，故障不可观测）。
+            _logger.debug("display_messages 直写消息失败，跳过该条", exc_info=True)
             continue
     try:
         sys.__stdout__.flush()
     except (OSError, ValueError, AttributeError):
-        pass
+        _logger.debug("display_messages flush 失败", exc_info=True)
 
 
 __all__ = [

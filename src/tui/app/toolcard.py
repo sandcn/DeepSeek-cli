@@ -156,8 +156,11 @@ def _omitted_line(text: str, width: int) -> list:
     from src.tui.ink.helpers import truncate_runs
     guide = [StyledRun("│ ", _GUIDE_STYLE)]
     if width <= 0:
-        # 无宽度防御：不截断（与旧行为一致）
-        return guide + [StyledRun(text, Style(fg=242))]
+        # ★ P3（review）：无宽度上下文（width<=0）时仅返回竖线引导——修复前
+        #   返回 ``guide + 全文``（行宽 2+len(text)），与函数自身声明的
+        #   「提示文本超宽时截断至 width」冲突（破坏行宽不变量，靠帧级守卫
+        #   兜底）。空/极窄宽度下不渲染文本。
+        return []
     if width == 1:
         # 极端窄屏：仅竖线（1 列）
         return [StyledRun("│", _GUIDE_STYLE)]

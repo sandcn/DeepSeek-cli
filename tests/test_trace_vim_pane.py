@@ -586,6 +586,7 @@ class TestTraceViewVimPane:
         from src.tui.app import trace_view as tv
         from src.tui.app.trace_view import (
             _INSPECTOR_MIN_CONTENT, TraceView, _viewport_rows,
+            _inspector_viewport_rows,
         )
         from src.tui.app.model import AppModel
         rec0 = _plain_rec([f"line-{i}" for i in range(30)])
@@ -597,7 +598,11 @@ class TestTraceViewVimPane:
         rec, root = _render_root(TraceView, {"model": model, "width": 100})
         router = rec._build_input_router(root)
         vh = _viewport_rows()
-        approx = max(_INSPECTOR_MIN_CONTENT, vh - 3)
+        # ★ 2026-09-10（review P1 修复）：滚动协调预算改用与
+        #   ``_inspector_children`` 同一真源 ``_inspector_viewport_rows``
+        #   （修复前测试按固定的 ``vh - 3`` 近似计算，与内容窗口
+        #   ``vh - fixed`` 不一致）。
+        approx = _inspector_viewport_rows(rec0, vh)
         max_scroll = max(0, 30 - approx)
         assert router(_ev("char", "G")) is True
         assert model.trace_inspector_cursor == 29  # 末行
@@ -611,6 +616,7 @@ class TestTraceViewVimPane:
         from src.tui.app import trace_view as tv
         from src.tui.app.trace_view import (
             _INSPECTOR_MIN_CONTENT, TraceView, _viewport_rows,
+            _inspector_viewport_rows,
         )
         from src.tui.app.model import AppModel
         rec0 = _plain_rec([f"line-{i}" for i in range(30)])
@@ -621,7 +627,8 @@ class TestTraceViewVimPane:
         rec, root = _render_root(TraceView, {"model": model, "width": 100})
         router = rec._build_input_router(root)
         vh = _viewport_rows()
-        approx = max(_INSPECTOR_MIN_CONTENT, vh - 3)
+        # ★ 2026-09-10（review P1 修复）：预算与内容窗口同源。
+        approx = _inspector_viewport_rows(rec0, vh)
         assert router(_ev("arrow_down")) is True
         assert model.trace_inspector_cursor == 1
         assert router(_ev("arrow_up")) is True
@@ -644,6 +651,7 @@ class TestTraceViewVimPane:
         from src.tui.app import trace_view as tv
         from src.tui.app.trace_view import (
             _INSPECTOR_MIN_CONTENT, TraceView, _viewport_rows,
+            _inspector_viewport_rows,
         )
         from src.tui.app.model import AppModel
         rec0 = _plain_rec([f"line-{i}" for i in range(30)])
@@ -654,7 +662,8 @@ class TestTraceViewVimPane:
         rec, root = _render_root(TraceView, {"model": model, "width": 100})
         router = rec._build_input_router(root)
         vh = _viewport_rows()
-        approx = max(_INSPECTOR_MIN_CONTENT, vh - 3)
+        # ★ 2026-09-10（review P1 修复）：预算与内容窗口同源。
+        approx = _inspector_viewport_rows(rec0, vh)
         # 连续按 j 至窗口下边界（光标 = scroll+approx-1，视口仍不滚动）
         for _ in range(approx - 1):
             router(_ev("char", "j"))

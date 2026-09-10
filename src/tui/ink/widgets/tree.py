@@ -49,9 +49,6 @@ _TREE_INDENT = 2
 #: 光标行样式（默认青色 fg=6）
 _TREE_HIGHLIGHT = Style(fg=6)
 
-#: 叶子节点选中样式（可选，默认 None——不区分）
-_TREE_LEAF_STYLE = None
-
 #: 递归深度上限（P3-22 防御）：超过则停止展开 children（截断深层，避免
 #: Python 默认递归深度 ~1000 触发 RecursionError）。200 层对正常树结构远
 #: 超裕量；文档化：深度 > 200 的树子级将被截断。
@@ -275,12 +272,16 @@ def Tree(props: dict) -> Element:
                 set_open_set(new_open)
             else:
                 # 叶子：选择回调
-                if on_select is not None:
-                    try:
-                        on_select(node)
-                    except Exception:
-                        # ★ 2026-08-06：补日志（修复前静默吞，与 listview 对齐）
-                        _logger.debug("Tree onSelect 回调异常", exc_info=True)
+                # ★ P3（review）：on_select 未注册时放行（False）——修复前仍
+                #   消费 space/enter（阻断父级输入），与 radio/_select_input/
+                #   _multi_select 的「回调 None 放行」契约不一致。
+                if on_select is None:
+                    return False
+                try:
+                    on_select(node)
+                except Exception:
+                    # ★ 2026-08-06：补日志（修复前静默吞，与 listview 对齐）
+                    _logger.debug("Tree onSelect 回调异常", exc_info=True)
             return True
         return False
 

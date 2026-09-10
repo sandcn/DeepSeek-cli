@@ -46,8 +46,12 @@ def ProgressBar(props: dict) -> Element:
         width = max(1, int(props.get("width", 40)))
     except (TypeError, ValueError, OverflowError):
         width = 40
-    left = str(props.get("left", ""))
-    right = str(props.get("right", ""))
+    # ★ P3（review）：显式 None 不再渲染字面 "None"——修复前
+    #   ``str(props.get("left", ""))`` 对显式 ``left=None`` 返回 "None"。
+    _left = props.get("left")
+    _right = props.get("right")
+    left = "" if _left is None else str(_left)
+    right = "" if _right is None else str(_right)
     char = str(props.get("char", "█")) or "█"
     style = _resolve_style(props)
 

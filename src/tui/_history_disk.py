@@ -234,14 +234,22 @@ class _HistoryDiskWriter:
                     self._sentinel_count -= 1
                 else:
                     drained.append(item)
+            put_failed = False
             try:
                 self._queue.put(None, block=True, timeout=timeout)
             except queue.Full:
+                # ★ P3（review）：置哨兵失败不再提前 return——修复前
+                #   ``return False`` 位于锁内，跳过了随后的 drained 落盘循环
+                #   （已从队列移除的条目未写盘，潜在数据丢失）。现记录标志、
+                #   锁外统一落盘 drained 后再返回。
                 _logger.warning("历史写盘队列满，无法置退出哨兵（条目可能丢失）")
-                return False
-            self._sentinel_count += 1
+                put_failed = True
+            else:
+                self._sentinel_count += 1
         for history_io, escaped in drained:
             _safe_disk_append(history_io, escaped)
+        if put_failed:
+            return False
         self._thread.join(timeout=timeout)
         if self._thread.is_alive():
             _logger.warning("历史写盘线程 %s 秒内未退出", timeout)

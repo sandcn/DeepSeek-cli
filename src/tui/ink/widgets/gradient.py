@@ -8,15 +8,13 @@
 
 from __future__ import annotations
 
-import logging
-
 from src.tui.core.color import lerp_color
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
 from ..output import StyledRun
 
-_logger = logging.getLogger(__name__)
+# ★ P3（review）：删除未使用的 ``_logger``（本模块无日志调用）。
 
 __all__ = ["Gradient"]
 
@@ -96,6 +94,9 @@ def Gradient(props: dict) -> Element:
     if styled is not None:
         runs = list(styled)
         if style is not None and runs:
+            # ★ P3（review）：合并方向明确——``style.merge(r.style)`` 中
+            #   ``r.style``（other）覆盖 ``style``（self）：**styled run 自身
+            #   样式优先**，style 仅作为无样式 run 的兜底。
             runs = [
                 StyledRun(r.text, style.merge(r.style)) if r.style is not None else StyledRun(r.text, style)
                 for r in runs

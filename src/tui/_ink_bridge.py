@@ -43,6 +43,10 @@ class InkBridge(_BottomBarCompatMixin):
     def __init__(self, model, session):
         self._model = model
         self._session = session
+        # ★ P3（review）：显式初始化 ``_last_completion_idx``——修复前仅在
+        #   show/hide/cycle 时动态赋值、读取经 ``getattr(..., 0)`` 兜底
+        #   （隐式契约）。
+        self._last_completion_idx = 0
 
     # ── 状态域 ─────────────────────────────────────
 
@@ -139,8 +143,8 @@ class InkBridge(_BottomBarCompatMixin):
             return
         # 保存隐藏前选中索引（兼容 _BottomBar.get_selected_completion_index）
         self._last_completion_idx = self._model.completion.selected
-        # 重置弹窗高度锁定（补全弹窗闪烁修复）：下次打开重新锁定
-        self._model.completion.locked_height = 0
+        # ★ P3（review）：删除冗余的 ``locked_height = 0``（下方整体替换为
+        #   ``CompletionState()``，其 locked_height 本就是 0）。
         self._model.completion = CompletionState()
         self._request_redraw()
 

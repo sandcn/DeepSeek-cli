@@ -52,6 +52,15 @@ _LOW_CMDS = frozenset({
     RenderCommand.DISPLAY_MSGS,
     # 与 WRITE_LINE 同优先级（低优先级批量投递，不抢占流式内容）
     RenderCommand.SUBAGENT_MARKDOWN,
+    # ★ P3（review）：显式归类（修复前二者落入 ``_get_cmd_priority`` 尾分支
+    #   默认 LOW——行为一致但无显式记录）——
+    #   CLEAR_MSGS：清屏命令，可与其它低优先级命令一同被腾位淘汰（其后再由
+    #   调用方重新触发）；
+    #   BG_BASH_COUNT：后台任务计数刷新，下一帧同值重发，丢弃无害。
+    #   二者与 ``_session_queue_mixin._KEEP_CONTENT_CMDS`` 的「可丢弃」集合
+    #   一致。
+    RenderCommand.CLEAR_MSGS,
+    RenderCommand.BG_BASH_COUNT,
 })
 
 

@@ -255,8 +255,12 @@ class _SystemMonitor:
                         continue
                     key, rest = line.split(":", 1)
                     key = key.strip()
-                    val_str = rest.strip().split()[0]
+                    # ★ P2（review）：``rest.strip().split()[0]`` 移入 try——
+                    #   修复前形如 ``"Key:"``（无值）的畸形行触发 IndexError
+                    #   冒泡出循环（外层只捕获 OSError/IOError）→ **整块
+                    #   meminfo 解析被放弃**（其它正常字段全丢）。
                     try:
+                        val_str = rest.strip().split()[0]
                         meminfo[key] = int(val_str)
                     except (ValueError, IndexError):
                         continue

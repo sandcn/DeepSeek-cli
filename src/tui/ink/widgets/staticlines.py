@@ -126,7 +126,10 @@ def _paint(fiber, canvas) -> None:
     # box.x != 0（缩进/padded）：逐行合并（保留已有边框/内容——修复前
     # ``canvas[row] = padded`` 整体替换：父容器边框（行内已写 cols x0/x1）
     # 被 padded 空格覆盖，缩进框内 committed 行丢失左/右边框）。
-    from ..components import _merge_line
+    # ★ P3（review）：直接从 ``_paint_canvas`` 导入 ``_merge_line``（绘制层面
+    #   工具）——修复前从 ``..components`` 导入（components 为绘制主模块，
+    #   跨层依赖；components 自身也是从 _paint_canvas 再导出该函数）。
+    from .._paint_canvas import _merge_line
     for i, line in enumerate(lines):
         row = box.y + i
         if 0 <= row < len(canvas):

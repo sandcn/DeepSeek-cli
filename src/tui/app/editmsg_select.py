@@ -27,12 +27,16 @@
 
 from __future__ import annotations
 
+import logging
+
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from src.tui.app.input_area import _truncate_width
 from src.tui.ink import TEXT, h, Column
 from src.tui.ink.hooks import use_modal, use_ref, use_state, use_memo
 from src.tui.ink.widgets.interactive import SelectInput
+
+_logger = logging.getLogger(__name__)
 
 __all__ = ["EditMsgSelectPopup"]
 
@@ -115,7 +119,12 @@ def EditMsgSelectPopup(props) -> object:
     #   顺序错乱）。options/total 提前计算（es 可能为 None——防御）。
     options = list(es.options) if (es is not None and getattr(es, "options", None)) else []
     total = len(options)
-    limit = max(1, min(total, use_memo(lambda: _editmsg_item_rows(), [total])))
+    # ★ P2（review）：弹窗行数纳入 deps——修复前仅 ``[total]``，终端 resize
+    #   （item 数不变）后可见行数不刷新（弹窗高度陈旧）；同构的
+    #   ``user_select._popup_item_rows()`` 为每帧直调。此处按高度入 deps
+    #   保持 use_memo 缓存收益且响应 resize。
+    _rows = _editmsg_item_rows()
+    limit = max(1, min(total, use_memo(lambda: _rows, [total, _rows])))
 
     if not visible:
         return h(TEXT, {"children": ""})
@@ -164,6 +173,9 @@ def EditMsgSelectPopup(props) -> object:
         try:
             result = [item["value"]] if item is not None else []
         except (TypeError, KeyError):
+            # ★ P3（review）：不静默吞异常——item 非订阅结构时记录 debug
+            #   （result 退化为空 → 提交空结果，须可观测）。
+            _logger.debug("editmsg_select 提交结果构建异常，退化为空结果", exc_info=True)
             result = []
         _commit(result, "confirmed")
 

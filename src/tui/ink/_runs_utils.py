@@ -111,16 +111,14 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
             width += cw
             j += 1
         if j == i:
-            # 行首字符即超宽（无法放下）或行首为强制换行
-            if items[i][0] == "\n":
-                # 行首强制换行：产生空行（Newline 组件渲染语义）
-                lines.append(Line())
-                i += 1
-                continue
-            # 行首字符即超宽：硬塞一个字符（CJK 宽字符仍可能单字符超宽——
-            # 无法避免，与既有行为一致）。
-            end = i + 1
-            next_i = i + 1
+            # ★ P3（review）：此处仅剩「行首强制换行」一种可能——修复前还有
+            #   「行首字符即超宽：硬塞一个字符」分支，但内层循环的
+            #   ``and j > i`` 条件保证首字符超宽时仍推进 j（``j == i`` 不可能
+            #   由超宽产生），该分支不可达（死代码）→ 删除。
+            #   行首强制换行：产生空行（Newline 组件渲染语义）
+            lines.append(Line())
+            i += 1
+            continue
         elif j < n and items[j][0] == "\n":
             # 强制换行：本行到 \n 前，下一行从 \n 后开始
             end = j
@@ -388,8 +386,13 @@ def truncate_line(line: Line, max_width: int) -> Line:
     不拆分宽字符（CJK）。
 
     含 ``\\n`` 文本先归一化为首个逻辑行（单行截断语义，防字面换行破坏行宽）。
+
+    ★ P3（review）：边界口径与同族统一（``truncate_runs``/``truncate_runs_ellipsis``/
+    ``truncate_runs_start``/``truncate_runs_middle`` 均为 ``<= 0``）——修复前
+    仅判 ``< 0``，``max_width == 0`` 时走逐字符循环（首个字符即超预算，
+    功能等价但口径不一致）。
     """
-    if max_width < 0:
+    if max_width <= 0:
         return Line()
     if line.width <= max_width:
         return line.clone()

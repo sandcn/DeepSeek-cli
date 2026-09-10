@@ -203,8 +203,10 @@ def Grid(props: dict) -> Element:
         for child in row_children:
             if isinstance(child, Element):
                 cp = dict(child.props)
-                cp["flexGrow"] = 1
-                cp["flexShrink"] = 1
+                # ★ P3（review）：用 setdefault——修复前无条件覆盖调用方显式
+                #   提供的 flexGrow/flexShrink（隐式忽略，文档未声明）。
+                cp.setdefault("flexGrow", 1)
+                cp.setdefault("flexShrink", 1)
                 cells.append(Element(child.type, cp, child.children))
             else:
                 cells.append(child)

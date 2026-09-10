@@ -34,81 +34,96 @@ def _reflow_subtree(fiber: Fiber, new_y: int, new_x: int | None = None) -> None:
         重排 y，x 由测量阶段确定**（``_measure`` 已按最终 x 测量，重排只修正
         纵向堆叠后的 y；传入 new_x 会覆盖测量阶段的 x 布局结果）。
     """
-    cb = fiber.layout_box
-    if cb is None:
-        return
-    cb.y = new_y
-    if new_x is not None:
-        cb.x = new_x
-    fiber.layout_box = cb
-    pad_l, pad_r, pad_t, pad_b = _resolve_padding(fiber)
-    # ★ 健壮性（PERF-12 同批）：``fiber.props.get("border", 0)`` 在 props 显式
-    #   传 ``None``（键存在但值为 None）时返回 None → ``if border:`` 为 False
-    #   → border 保持 None → ``cursor_x = cb.x + pad_l + border`` 崩溃。统一
-    #   用 ``or 0`` 兜底（None/0 归 0；非法值走 try/except 归 0）。
-    border = fiber.props.get("border") or 0
-    if border:
-        try:
-            border = max(0, int(border))
-        except (TypeError, ValueError, OverflowError):
-            border = 0
-    margin = fiber.props.get("margin") or 0
-    if margin:
-        try:
-            margin = max(0, int(margin))
-        except (TypeError, ValueError, OverflowError):
-            margin = 0
-    gap = fiber.props.get("gap")
-    if gap is not None:
-        try:
-            spacing = max(0, int(gap))
-        except (TypeError, ValueError, OverflowError):
+    stack: list[tuple[Fiber, int, int | None]] = [(fiber, new_y, new_x)]
+    while stack:
+        node, ny, nx = stack.pop()
+        cb = node.layout_box
+        if cb is None:
+            continue
+        cb.y = ny
+        if nx is not None:
+            cb.x = nx
+        node.layout_box = cb
+        pad_l, pad_r, pad_t, pad_b = _resolve_padding(node)
+        # ★ 健壮性（PERF-12 同批）：``fiber.props.get("border", 0)`` 在 props 显式
+        #   传 ``None``（键存在但值为 None）时返回 None → ``if border:`` 为 False
+        #   → border 保持 None → ``cursor_x = cb.x + pad_l + border`` 崩溃。统一
+        #   用 ``or 0`` 兜底（None/0 归 0；非法值走 try/except 归 0）。
+        border = node.props.get("border") or 0
+        if border:
+            try:
+                border = max(0, int(border))
+            except (TypeError, ValueError, OverflowError):
+                border = 0
+        margin = node.props.get("margin") or 0
+        if margin:
+            try:
+                margin = max(0, int(margin))
+            except (TypeError, ValueError, OverflowError):
+                margin = 0
+        gap = node.props.get("gap")
+        if gap is not None:
+            try:
+                spacing = max(0, int(gap))
+            except (TypeError, ValueError, OverflowError):
+                spacing = margin
+        else:
             spacing = margin
-    else:
-        spacing = margin
-    # ★ P1-1 修复（review 方向）：与 ``_measure`` 一致解析 columnGap/rowGap
-    #   显式覆盖——flexGrow/flexShrink 后孙节点重排的兄弟间距须与测量阶段
-    #   一致（``_measure`` 用 ``col_gap``/``row_gap``；columnGap/rowGap 显式
-    #   覆盖 gap 时若此处仍用 gap，重排后孙节点间距错乱）。row 分支用
-    #   ``col_gap``、column 分支用 ``row_gap``；畸形值回退 gap。
-    col_gap = spacing
-    row_gap = spacing
-    if "columnGap" in fiber.props:
-        try:
-            col_gap = max(0, int(fiber.props.get("columnGap")))
-        except (TypeError, ValueError, OverflowError):
-            col_gap = spacing
-    if "rowGap" in fiber.props:
-        try:
-            row_gap = max(0, int(fiber.props.get("rowGap")))
-        except (TypeError, ValueError, OverflowError):
-            row_gap = spacing
-    direction = fiber.props.get("flexDirection", "column")
-    if direction == "row":
-        # row：横向排列——子节点 x 累加，y 保持内边距基准（纵向偏移由
-        # alignItems 承担；与 _measure row 分支语义一致）。
-        cursor_x = cb.x + pad_l + border
-        row_children = layout_children(fiber)
-        for i, child in enumerate(row_children):
-            _reflow_subtree(child, new_y + pad_t + border, cursor_x)
-            ccb = child.layout_box
-            if ccb is not None:
-                cursor_x += ccb.w
-                # ★ P3-7 修复（review 方向）：最后子节点后不计 spacing——与
-                #   ``_measure`` row 分支（``if i < n_children - 1: cursor_x +=
-                #   spacing``）一致。修复前无条件累加 spacing（局部变量无
-                #   副作用——最后子节点后 cursor_x 不再被消费——但语义误导，
-                #   未来若复用 cursor_x 会多出间隔）。
-                if i < len(row_children) - 1:
-                    cursor_x += col_gap
-    else:
-        # column：纵向堆叠——子节点 y 累加（默认方向，与既有语义一致）。
-        cursor_y = new_y + pad_t + border
-        for child in layout_children(fiber):
-            _reflow_subtree(child, cursor_y)
-            ccb = child.layout_box
-            if ccb is not None:
-                cursor_y += ccb.h + row_gap
+        # ★ P1-1 修复（review 方向）：与 ``_measure`` 一致解析 columnGap/rowGap
+        #   显式覆盖——flexGrow/flexShrink 后孙节点重排的兄弟间距须与测量阶段
+        #   一致（``_measure`` 用 ``col_gap``/``row_gap``；columnGap/rowGap 显式
+        #   覆盖 gap 时若此处仍用 gap，重排后孙节点间距错乱）。row 分支用
+        #   ``col_gap``、column 分支用 ``row_gap``；畸形值回退 gap。
+        col_gap = spacing
+        row_gap = spacing
+        if "columnGap" in node.props:
+            try:
+                col_gap = max(0, int(node.props.get("columnGap")))
+            except (TypeError, ValueError, OverflowError):
+                col_gap = spacing
+        if "rowGap" in node.props:
+            try:
+                row_gap = max(0, int(node.props.get("rowGap")))
+            except (TypeError, ValueError, OverflowError):
+                row_gap = spacing
+        direction = node.props.get("flexDirection", "column")
+        # ★ P2（review）：与 ``_measure`` 一致归一化 ``-reverse`` 变体——
+        #   修复前仅判断 ``direction == "row"``，``row-reverse`` 落入 else
+        #   的「纵向堆叠」分支、``column-reverse`` 丢失倒序 → flexGrow/
+        #   flexShrink 重排后同帧坐标错误。归一化后 row/column 各自处理，
+        #   并按其 reverse 变体倒序子节点。
+        if not isinstance(direction, str):
+            direction = "column"
+        reverse = direction.endswith("-reverse")
+        if reverse:
+            direction = direction[:-8]
+        children = layout_children(node)
+        if reverse:
+            children = list(reversed(children))
+        if direction == "row":
+            # row：横向排列——子节点 x 累加，y 保持内边距基准（纵向偏移由
+            # alignItems 承担；与 _measure row 分支语义一致）。
+            cursor_x = cb.x + pad_l + border
+            for i, child in enumerate(children):
+                stack.append((child, ny + pad_t + border, cursor_x))
+                ccb = child.layout_box
+                if ccb is not None:
+                    cursor_x += ccb.w
+                    # ★ P3-7 修复（review 方向）：最后子节点后不计 spacing——与
+                    #   ``_measure`` row 分支（``if i < n_children - 1: cursor_x +=
+                    #   spacing``）一致。修复前无条件累加 spacing（局部变量无
+                    #   副作用——最后子节点后 cursor_x 不再被消费——但语义误导，
+                    #   未来若复用 cursor_x 会多出间隔）。
+                    if i < len(children) - 1:
+                        cursor_x += col_gap
+        else:
+            # column：纵向堆叠——子节点 y 累加（默认方向，与既有语义一致）。
+            cursor_y = ny + pad_t + border
+            for child in children:
+                stack.append((child, cursor_y, None))
+                ccb = child.layout_box
+                if ccb is not None:
+                    cursor_y += ccb.h + row_gap
 
 
 def _translate_subtree_y(fiber: Fiber, delta_y: int) -> None:
@@ -135,14 +150,19 @@ def _translate_subtree_y(fiber: Fiber, delta_y: int) -> None:
     """
     if fiber is None:
         return
-    if fiber.layout_box is not None:
-        cb = fiber.layout_box
-        cb.y += delta_y
-        fiber.layout_box = cb
-    child = fiber.child
-    while child is not None:
-        _translate_subtree_y(child, delta_y)
-        child = child.sibling
+    # ★ P3（review）：递归改显式栈——深层嵌套树（1000+ 层）下递归触发
+    #   RecursionError；与 ``_cursor.find_input_fiber`` 的显式栈修复同族。
+    stack = [fiber]
+    while stack:
+        node = stack.pop()
+        if node.layout_box is not None:
+            cb = node.layout_box
+            cb.y += delta_y
+            node.layout_box = cb
+        child = node.child
+        while child is not None:
+            stack.append(child)
+            child = child.sibling
 
 
 def _translate_subtree_x(fiber: Fiber, delta_x: int) -> None:
@@ -164,14 +184,18 @@ def _translate_subtree_x(fiber: Fiber, delta_x: int) -> None:
     """
     if fiber is None:
         return
-    if fiber.layout_box is not None:
-        cb = fiber.layout_box
-        cb.x += delta_x
-        fiber.layout_box = cb
-    child = fiber.child
-    while child is not None:
-        _translate_subtree_x(child, delta_x)
-        child = child.sibling
+    # ★ P3（review）：递归改显式栈（同 ``_translate_subtree_y``）。
+    stack = [fiber]
+    while stack:
+        node = stack.pop()
+        if node.layout_box is not None:
+            cb = node.layout_box
+            cb.x += delta_x
+            node.layout_box = cb
+        child = node.child
+        while child is not None:
+            stack.append(child)
+            child = child.sibling
 
 
 __all__ = ["_reflow_subtree", "_translate_subtree_y", "_translate_subtree_x"]

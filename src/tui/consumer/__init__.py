@@ -14,7 +14,7 @@ import logging
 import threading
 
 from .._consumer import ChatUIConsumer
-from ..state.consumer_registry import get_active_chat_ui, _active_consumer
+from ..state.consumer_registry import get_active_chat_ui
 from .._const import RenderCommand, FrameworkCommand, ChatCommand, truncate_error_message
 from .chat_config import ChatConfig
 
@@ -88,6 +88,9 @@ class ChatUIErrorHandler(logging.Handler):
 
 _error_handler_registered = False
 _error_handler_lock = threading.Lock()
+#: ★ P3（review）：保存已注册 handler 实例——修复前仅置布尔标志（丢弃实例），
+#: 外部清理 root handler（如测试隔离）后标志仍为 True → 无法重新注册。
+_error_handler_instance: "ChatUIErrorHandler | None" = None
 
 
 def setup_chat_ui_error_handler() -> None:
@@ -98,12 +101,31 @@ def setup_chat_ui_error_handler() -> None:
     静默不生效（level/format 配置丢失）。调用方（``src/app_init/main.py``）已
     保证顺序（先 basicConfig 再注册）。
     """
-    global _error_handler_registered
+    global _error_handler_registered, _error_handler_instance
     with _error_handler_lock:
         if _error_handler_registered:
             return
-        logging.getLogger().addHandler(ChatUIErrorHandler())
+        _error_handler_instance = ChatUIErrorHandler()
+        logging.getLogger().addHandler(_error_handler_instance)
         _error_handler_registered = True
+
+
+def teardown_chat_ui_error_handler() -> None:
+    """注销 ChatUIErrorHandler（幂等；★ P3 review：配套注销入口）。
+
+    修复前无注销接口：注册后无法移除，且标志与真实状态可脱节（外部清空
+    root handler 后仍认为「已注册」）。本入口移除 handler 并复位标志，
+    供测试隔离/多次初始化场景使用。
+    """
+    global _error_handler_registered, _error_handler_instance
+    with _error_handler_lock:
+        if _error_handler_instance is not None:
+            try:
+                logging.getLogger().removeHandler(_error_handler_instance)
+            except Exception:
+                _logger.debug("移除 ChatUIErrorHandler 异常", exc_info=True)
+        _error_handler_instance = None
+        _error_handler_registered = False
 
 
 __all__ = [
@@ -113,7 +135,7 @@ __all__ = [
     "FrameworkCommand",
     "ChatCommand",
     "ChatConfig",
-    "_active_consumer",
     "setup_chat_ui_error_handler",
+    "teardown_chat_ui_error_handler",
     "ChatUIErrorHandler",
 ]

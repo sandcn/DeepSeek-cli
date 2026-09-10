@@ -36,8 +36,10 @@ if TYPE_CHECKING:
 def default_bus() -> "DisplayEventBus":
     """获取默认发布总线（进程级单例，惰性获取）。
 
-    首次调用时经 ``DisplayEventBus.get_default()`` 获取并缓存于模块级——
-    惰性语义保证：TUI 事件模块仅被引用而不发布时，不强制初始化单例。
+    ★ P2/P3（review）：docstring 更正——修复前声称「获取并缓存于模块级」，
+    实际每次调用直接委托 ``DisplayEventBus.get_default()``（单例缓存由该
+    方法自身承担，模块级无额外缓存；行为正确，注释不实）。惰性语义保持：
+    TUI 事件模块仅被引用而不发布时，不强制初始化单例。
     """
     from .event_bus import DisplayEventBus
     return DisplayEventBus.get_default()

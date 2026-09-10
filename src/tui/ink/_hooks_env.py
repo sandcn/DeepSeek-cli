@@ -14,6 +14,7 @@ session（``set_window_size_accessor``/``set_cursor_position_fn``）、组件库
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Any, Callable
 
@@ -198,8 +199,10 @@ def useSyncExternalStore(
         #   listener 在渲染中途触发重渲染请求，存在重入风险。提交期渲染
         #   已结束，subscribe 的同步通知经 ``_schedule()`` 调度下帧渲染，
         #   无重入。deps=None 每次渲染提交期执行——内部按 last_subscribe
-        #   身份判断是否重订阅（subscribe 身份不变仅置 subscribed=True）；
-        #   订阅异常置 last_subscribe=None，下帧可重试（保持原语义）。
+        #   身份判断是否重订阅；订阅异常置 last_subscribe=None，下帧可重试
+        #   （保持原语义）。
+        #   ★ P3（review）：删除 ``subscribed`` 死字段（仅写不读，重订阅
+        #   判定完全由 ``last_subscribe`` 身份承担）。
         if hook.last_subscribe is not subscribe:
             if hook.cleanup is not None:
                 try:
@@ -208,22 +211,16 @@ def useSyncExternalStore(
                     _logger.debug("useSyncExternalStore 旧订阅清理异常", exc_info=True)
                 hook.cleanup = None
             hook.last_subscribe = subscribe
-            hook.subscribed = False
             try:
                 cleanup = subscribe(lambda: _schedule())
                 hook.cleanup = cleanup if callable(cleanup) else None
-                hook.subscribed = True
             except Exception:
-                # ★ P3 修复（review 方向）：订阅抛异常后置 subscribed=False +
-                #   复位 last_subscribe（cleanup 已置 None）——下帧重试订阅。
-                #   修复前 subscribed 保持 True 且 last_subscribe 已更新 → 永不
-                #   重试，组件永久失去 store 更新。
+                # ★ P3 修复（review 方向）：订阅抛异常后复位 last_subscribe
+                #   （cleanup 已置 None）——下帧重试订阅。修复前 last_subscribe
+                #   已更新 → 永不重试，组件永久失去 store 更新。
                 _logger.debug("useSyncExternalStore 订阅异常", exc_info=True)
                 hook.cleanup = None
-                hook.subscribed = False
                 hook.last_subscribe = None
-        else:
-            hook.subscribed = True
 
     # ★ P2-3：layout effect 提交期执行订阅（deps=None 每次渲染提交期执行，
     #   内部按 last_subscribe 身份判断重订阅；订阅异常可下帧重试）。
@@ -369,7 +366,16 @@ def useWindowSize() -> dict:
     """
     useSyncExternalStore(_subscribe_window_size, lambda: _hooks_module._window_size_version)
     _refresh_window_size()
-    columns, rows = _hooks_module._window_size
+    # ★ P3（review）：解包防御——accessor 返回非二元组/非可迭代（畸形值）时
+    #   ``columns, rows = ...`` 抛 ValueError/TypeError；修复前解包在 try 之外
+    #   （accessor 本身异常已捕获，但「返回畸形值」未覆盖）→ 回退 (80, 24)。
+    try:
+        columns, rows = _hooks_module._window_size
+        columns = int(columns)
+        rows = int(rows)
+    except (TypeError, ValueError):
+        _logger.debug("窗口尺寸 accessor 返回畸形值，回退 (80, 24)", exc_info=True)
+        columns, rows = 80, 24
     return {"columns": columns, "rows": rows}
 
 
@@ -459,6 +465,11 @@ def useAnimation(options: "dict | None" = None) -> dict:
             duration = max(0.0, float(options.get("duration", 0)))
         except (TypeError, ValueError, OverflowError):
             duration = 0.0
+    # ★ P2（review）：非有限 duration（``float("inf")``）防护——修复前
+    #   ``inf > 0`` 成立后 ``int(round(inf * fps))`` 抛 OverflowError（渲染
+    #   组件崩溃）；fps 解析已有 OverflowError 防御，唯此遗漏。
+    if not math.isfinite(duration):
+        duration = 0.0
     now = time.monotonic()
     if duration > 0:
         total_frames = max(1, int(round(duration * fps)))

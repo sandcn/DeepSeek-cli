@@ -1036,6 +1036,12 @@ class InkRenderer:
         n = len(frame.lines)
         for idx, line in enumerate(frame.lines):
             buf.write("\r")
+            # ★ P2（review）：全量写行补 ``_CLEAR_EOL``——修复前仅写
+            #   「\r + 内容 + \r」，与增量路径（``_diff_runs``/``_grow_drifted``/
+            #   ``_rewrite_drifted`` 均「\r + EL + 内容 + \r」）不一致：resize
+            #   后物理行上更宽的旧内容尾部残留到行尾（EL 前置语义同增量路径，
+            #   行尾宽字符不被清除）。
+            buf.write(_CLEAR_EOL)
             buf.write(line.render())
             # ★ 满宽行 wrap 修复（同 _diff_runs 写行循环）：行内容填满宽度时
             #   \r 归位避免 \n 触发 wraparound 额外下移。

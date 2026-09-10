@@ -71,6 +71,18 @@ def FocusGroup(props: dict) -> Element:
     n_keys = sum(
         1 for c in children if isinstance(c, Element) and c.type is Key
     )
+    # ★ P3（review）：``use_input`` 无条件调用（hook 数恒定）——修复前
+    #   ``n_keys == 0`` 时提前 return 跳过 use_input，子级 Key 数量跨帧变化
+    #   （0 ↔ N）时 hook 顺序契约被破坏（当前因 use_state 恒在首位未抛错，
+    #   属隐式契约风险）。事件回调内部按 n_keys 判定后放行。
+    def _clamp_focus(event) -> bool:
+        if n_keys == 0:
+            return False
+        if active >= n_keys:
+            set_active(0)
+        return False
+
+    use_input(_clamp_focus, True)
     if n_keys == 0:
         return h(Column, None, children)
     # ★ P2-2（review）：渲染期只做显示钳制（active_display），不 set_active——
@@ -78,15 +90,6 @@ def FocusGroup(props: dict) -> Element:
     #   副作用 → 多余重渲染）。越界 state 在事件期（_clamp_focus）钳制并同步。
     active_display = 0 if active >= n_keys else active
 
-    # 事件期钳制：n_keys 缩小导致 active 越界后，下次按键触发 set_active(0)
-    # （仅触发一次，下帧 active 已合法，无循环）；不消费事件（钳制副作用，
-    # 放行子组件输入路由）。
-    def _clamp_focus(event) -> bool:
-        if active >= n_keys:
-            set_active(0)
-        return False
-
-    use_input(_clamp_focus, True)
     wrapped: list = []
     key_idx = 0
     for child in children:

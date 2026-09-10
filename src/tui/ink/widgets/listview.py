@@ -301,14 +301,16 @@ def ListView(props: dict) -> Element:
         elif event.kind == "enter":
             # ★ 方案B：onSelect 未提供时 enter 放行（返回 False 不消费——
             #   TraceView 台账 Enter 提交消息的放行语义）；提供时消费并回调。
+            # ★ P3（review）：不可选分隔行（items[cur] is None）一律放行——
+            #   修复前「onSelect 已提供且当前为分隔行」落入末尾 ``return True``
+            #   （消费事件但无动作，阻断父级）；现与 SelectInput 的
+            #   「无效项放行」语义对齐。
             if _is_selectable(items[cur]) and on_select is not None:
                 # ★ P3（review 2026-08-19）：回调经 ``_call`` 统一（与
                 #   on_navigate 同一异常处理路径），warning 级日志可观测。
                 _call(on_select, items[cur], cur)
                 return True
-            if on_select is None:
-                return False
-            return True
+            return False
         else:
             return False
         if not moved:

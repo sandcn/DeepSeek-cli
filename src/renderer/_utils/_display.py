@@ -11,6 +11,8 @@ emoji 宽集、零宽集合），H1 补齐的是 ``wcswidth_simple._CJK_RANGES``
 
 from __future__ import annotations
 
+import bisect
+
 
 # 组合标记区段（零宽——终端以其上方基准字符渲染，不占列；与
 # ``src.tui._screen._ZERO_WIDTH_RANGES`` 对齐，双宽度函数一致——方向1 修复：
@@ -74,6 +76,12 @@ def cjk_display_width(s: str) -> int:
             width += 2
         elif 0xF900 <= cp <= 0xFAFF:    # CJK 兼容
             width += 2
+        elif 0x2F800 <= cp <= 0x2FA1F:  # ★ P1（review）：CJK 兼容表意补充
+            # 修复前缺失该分支——此段在 ``src.tui._width.wcswidth_simple``
+            # （``_CJK_RANGES`` 含 0x2F800-0x2FA1F）计 2、此处计 1，双宽度
+            # 函数测量分歧（含该段字符的行 ink 侧宽 2 / renderer 侧宽 1，
+            # 行宽不变量破裂）。
+            width += 2
         elif 0xFF01 <= cp <= 0xFF60:    # 全角 ASCII
             width += 2
         elif 0xFFE0 <= cp <= 0xFFE6:    # 全角符号
@@ -132,9 +140,27 @@ _EMOJI_WIDE: tuple[tuple[int, int], ...] = (
 )
 
 
+def _build_flat(ranges: tuple[tuple[int, int], ...]) -> list[int]:
+    """构建排序扁平边界数组（每个区间起点/终点后一位交替，供 bisect 定位）。"""
+    ordered = sorted(ranges, key=lambda r: r[0])
+    flat: list[int] = []
+    for lo, hi in ordered:
+        flat.append(lo)
+        flat.append(hi + 1)
+    return flat
+
+
+#: emoji 宽符号扁平边界表（``_in_emoji_wide`` 热路径二分用）
+_EMOJI_WIDE_FLAT: list[int] = _build_flat(_EMOJI_WIDE)
+
+
 def _in_emoji_wide(cp: int) -> bool:
-    """检查码点是否在 emoji 宽符号范围内。"""
-    for lo, hi in _EMOJI_WIDE:
-        if lo <= cp <= hi:
-            return True
-    return False
+    """检查码点是否在 emoji 宽符号范围内。
+
+    ★ P3（review）：线性扫描改二分——修复前对 34 个区间逐项比较（每字符
+    O(34)），而 ``src.tui._width`` 同语义已用 bisect O(log n)；本函数位于
+    ``cjk_display_width`` 逐字符热路径（行/块/表格宽度测量），性能不对称。
+    区间表有序不重叠，``bisect_right`` 命中奇数索引即落在区间内。
+    """
+    idx = bisect.bisect_right(_EMOJI_WIDE_FLAT, cp)
+    return (idx % 2) == 1

@@ -128,10 +128,15 @@ class Line:
         self._r = None
         if self.runs and self.runs[-1].style == style:
             last = self.runs[-1]
-            # ★ 增量宽度：替换末 run（新宽 = 旧宽 + text 宽）——直接加 text 宽
-            self.runs[-1] = StyledRun(last.text + text, style)
+            # ★ P3（review）：宽度以 run 整串宽度差更新——修复前
+            #   ``self._w += _text_width(text)``（逐段测宽）与
+            #   ``StyledRun.width``（整串测宽）在 ANSI 序列被两次 append 切分
+            #   时口径不一致（如先 "\\x1b[3" 再 "1m"）→ ``Line.width`` 与
+            #   ``sum(run.width)`` 分叉，破坏行级 diff 宽度不变量。
+            merged = StyledRun(last.text + text, style)
+            self.runs[-1] = merged
             if self._w is not None:
-                self._w += _text_width(text)
+                self._w += merged.width - last.width
             return
         self.runs.append(StyledRun(text, style))
         if self._w is not None:

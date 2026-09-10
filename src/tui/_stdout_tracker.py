@@ -64,6 +64,11 @@ class _StdoutLineTracker:
 
     _MAX_LINES = 1000
 
+    #: ★ P1（review）：``_flush_history``/``close`` 的总时限预算（秒）——
+    #: 修复前为固定迭代次数（2000 × sleep(0.05) ≈ 100s 实际阻塞），持续
+    #: 失败（磁盘满/flock 冲突）时进程退出被冻结。20s 与文档声明一致。
+    _FLUSH_HISTORY_DEADLINE = 20.0
+
     # flush timer 生命周期管理：
     #   _flush_timer_stop Event 用于防止 teardown() 后已触发的 callback
     #   创建新定时器（资源泄露）。停止流程：_stop_flush_timer() 先 set
@@ -417,12 +422,21 @@ class _StdoutLineTracker:
         本方法循环「等待在途 worker 完成 → 排空缓冲」，直到缓冲为空且无
         在途 worker，确保最终刷盘后文件内容完整且行序正确。
 
-        ★ BUG-29（review 方向）：循环上限（2000 次 × join 0.01s ≈ 20s）后
-        追加一次**无条件最终刷盘**——修复前若 worker 被慢盘挂起超过上限，
-        退出时 ``_output_buffer`` 残留行不再刷盘 → 进程退出后历史行丢失。
+        ★ BUG-29（review 方向）：循环上限后追加一次**无条件最终刷盘**——修复前
+        若 worker 被慢盘挂起超过上限，退出时 ``_output_buffer`` 残留行不再
+        刷盘 → 进程退出后历史行丢失。
+
+        ★ P1（review）：用**总时限预算**（``_FLUSH_HISTORY_DEADLINE`` 秒）
+        替代固定迭代次数——修复前持续刷盘失败分支 ``sleep(0.05) × 2000``
+        实际阻塞约 100s（远超注释所称 20s），而 ``close()`` 由
+        ``TuiLifecycle.stop()``（持 ``_state_lock``）调用，磁盘满/只读 FS/
+        flock 持续冲突时进程退出被冻结。现每轮检查 deadline，失败退避为
+        指数（0.05→0.5 封顶）且不越过 deadline。
         """
         self._stop_flush_timer()
-        for _ in range(2000):
+        deadline = time.monotonic() + self._FLUSH_HISTORY_DEADLINE
+        backoff = 0.05
+        while time.monotonic() < deadline:
             with self._buffer_lock:
                 pending = len(self._output_buffer)
                 # ★ P2（review 2026-08-22）：读 in_flight 与置位合并到同一锁块
@@ -445,9 +459,12 @@ class _StdoutLineTracker:
                 #   _pending_flush（不启动新 worker），本同步刷盘完成后复位。
                 if not self._flush_buffered_lines():
                     # ★ P2（review 2026-08-22）：失败（磁盘满/flock 冲突）不
-                    #   忙轮询——退避 0.05s 后再重试（避免连续失败高频
-                    #   open+flock+fsync I/O）。
-                    time.sleep(0.05)
+                    #   忙轮询——退避（指数封顶 0.5s，且不越过总时限）后再重试
+                    #   （避免连续失败高频 open+flock+fsync I/O）。
+                    time.sleep(min(backoff, max(0.0, deadline - time.monotonic())))
+                    backoff = min(backoff * 2, 0.5)
+                else:
+                    backoff = 0.05
             except Exception:
                 _logger.warning("_flush_history: 最终刷盘异常", exc_info=True)
                 break
@@ -455,7 +472,7 @@ class _StdoutLineTracker:
                 with self._buffer_lock:
                     self._flush_in_progress = False
         else:
-            # 循环自然耗尽（20s 上限）：残留行兜底刷盘（尽力而为，不丢行）。
+            # 循环自然耗尽（时限预算用尽）：残留行兜底刷盘（尽力而为，不丢行）。
             # ★ P2-3（review 方向）：兜底前检查在途 worker——循环耗尽时
             #   ``_flush_in_progress`` 可能仍为 True（慢盘 worker 挂起致 20s
             #   未完成）；直接 ``_flush_buffered_lines()`` 会与在途 worker 并发
@@ -597,13 +614,17 @@ class _StdoutLineTracker:
                 keep = unique[-2000:] if len(unique) > 2000 else unique
 
                 # 原子写入（P3-1：随机后缀跨进程互斥）
+                # ★ P2（review）：``os.replace`` 替代 ``os.rename``——Windows
+                #   上目标存在时 ``os.rename`` 抛 FileExistsError（被下方
+                #   except 捕获 → 压缩永不生效，静默失效）；replace 为原子
+                #   覆盖且跨平台一致。
                 tmp_path = path.with_name(f"{path.name}.tmp.{os.urandom(4).hex()}")
                 with open(tmp_path, "w", encoding="utf-8") as tmp:
                     for line in keep:
                         tmp.write(line + "\n")
                     tmp.flush()
                     os.fsync(tmp.fileno())
-                os.rename(tmp_path, path)
+                os.replace(tmp_path, path)
                 _logger.debug("输出历史压缩完成: %d行→去重%d行→保留%d行", len(lines), len(unique), len(keep))
                 return True
 

@@ -85,6 +85,15 @@ def _place_absolute(fiber: Fiber, base: Fiber) -> None:
                 return _measure(fiber, x, y, avail_w, fill)
             finally:
                 fiber.props = saved
+                # ★ P3（review）：清除测量缓存——``_measure`` 把**临时 props
+                #   引用**写入 ``_measure_cache``（mc[1]），恢复原引用后该条目
+                #   永久 miss（缓存条目持临时 dict，且占内存）。删除条目避免
+                #   缓存污染（TEXT 命中路径下一条目即失效，功能正确）。
+                if hasattr(fiber, "_measure_cache"):
+                    try:
+                        del fiber._measure_cache
+                    except AttributeError:
+                        pass
         return _measure(fiber, x, y, avail_w, fill)
 
     # ── 尺寸解析 ──
@@ -146,13 +155,25 @@ def _place_absolute(fiber: Fiber, base: Fiber) -> None:
         # ★ P1 修复（review 方向）：cb.h 仅在显式 height 或纵向拉伸时覆盖——
         #   无显式 height（内容高度已由测量推导）时保留 fill=True 重测的
         #   高度，避免把内容高度覆盖为 0。
-        _measure_abs(x, y, max(1, w), fill=True, w_override=w)
+        # ★ P3（review）：零尺寸分支跳过重测量——修复前 ``w == 0`` 时仍以
+        #   ``max(1, w)``（1 列）测量子内容，随后把容器宽置 0（子节点按 1 列
+        #   布局溢出零宽容器）；现将零宽/零高直接置零盒（不浪费一次测量，
+        #   子内容不再按错误宽度布局）。
         cb = fiber.layout_box
-        if cb is not None:
-            cb.w = w
-            if has_h or stretch_y:
-                cb.h = h
-            fiber.layout_box = cb
+        if w <= 0 or ((has_h or stretch_y) and h <= 0):
+            if cb is not None:
+                cb.w = max(0, w)
+                if has_h or stretch_y:
+                    cb.h = max(0, h)
+                fiber.layout_box = cb
+        else:
+            _measure_abs(x, y, max(1, w), fill=True, w_override=w)
+            cb = fiber.layout_box
+            if cb is not None:
+                cb.w = w
+                if has_h or stretch_y:
+                    cb.h = h
+                fiber.layout_box = cb
     else:
         # 纯内容尺寸 → 平移子树到锚点（后代坐标随动）
         box = fiber.layout_box

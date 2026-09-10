@@ -35,9 +35,15 @@ class ReasoningState(Enum):
     CLOSED = "closed"
 
 
-@dataclass
+@dataclass(eq=False)
 class ChatBlock:
     """聊天块 — 一组已渲染行。
+
+    ★ P3（review）：``eq=False``（身份语义）——ChatBlock 是**身份对象**
+    （块查找一律用 ``is``，见 model.py BUG-11）；修复前 dataclass 默认
+    ``__eq__`` 为逐字段值比较（含 ``lines``/``extra``/各缓存字段），
+    两个内容相同的空块恒等 → ``list.index(block)``/``in`` 等值语义操作
+    取到错误块（BUG-11 同根因），且大块比较成本高。
 
     Attributes:
         kind: 块类型（reasoning/content/user/tool/notification/error/
@@ -113,6 +119,11 @@ class CompletionState:
     #   （防类型不完整/动态属性隐患），None=未缓存（弹窗不可见/内容变化后
     #   重建）。
     _popup_lines_cache: tuple | None = None
+    # ★ P3（review）：补全弹窗滚动偏移显式声明——修复前由
+    #   ``_popup_builder`` 动态挂载（``getattr(..., 0)`` + 动态赋值），与
+    #   ``_popup_lines_cache`` 的「dataclass 显式声明（防类型不完整/动态属性
+    #   隐患）」约定不一致（dataclass ``__eq__``/静态检查亦不覆盖）。
+    _popup_scroll: int = 0
 
 
 @dataclass
@@ -376,6 +387,25 @@ class ConfigViewState:
     _final_lock: threading.Lock = field(
         default_factory=threading.Lock, repr=False, compare=False,
     )
+
+    def reset_edit_state(self) -> None:
+        """复位编辑态字段（★ P3 review：集中重置入口）。
+
+        ``config_view._cancel_edit`` 原为散点复位，新增字段易遗漏（如
+        ``edit_json_action`` 曾残留 ``"append"``、``message`` 残留陈旧提示）；
+        集中在单一实现，两者共用（``_cancel_edit`` 委托本方法）。
+        """
+        self.editing = False
+        self.edit_mode = "input"
+        self.edit_error = ""
+        self.edit_options = []
+        self.edit_options_desc = []
+        self.edit_json_data = None
+        self.edit_json_path = []
+        self.edit_json_keys = []
+        self.edit_json_selected = 0
+        self.edit_json_action = "edit"
+        self.message = ""
 
     def try_set_final(self, action: str) -> bool:
         """原子写入终态（first-write-wins，跨线程安全）。

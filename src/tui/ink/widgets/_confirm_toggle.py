@@ -55,11 +55,17 @@ def ConfirmInput(props: dict) -> Element:
         no_keys = ("n", "N")
     else:
         no_keys = tuple(no_keys)
-    label = str(props.get("label", "(y/n)"))
+    label = props.get("label")
+    label = "(y/n)" if label is None else str(label)
     label_style = props.get("labelStyle")
 
     def _handle(event) -> bool:
         if not focus:
+            return False
+        # ★ P3（review）：回调未注册时放行（False）——修复前仍消费
+        #   y/n/enter/escape（阻断父级输入），与 _select_input/radio 的
+        #   「回调 None 放行」契约不一致。
+        if onConfirm is None:
             return False
         if event.kind == "char":
             ch = event.char

@@ -58,11 +58,12 @@ def format_tokens(n: int) -> str:
 def format_speed(s: float) -> str:
     """格式化速度（tok/s，统一 ``t/s`` 显示）。
 
-    ≤0 → ``-``（无速度）；≥1M → ``x.xMt/s``；≥1k → **整数 k 值 + kt/s
-    （``.0f`` 舍入）**；≥100 → ``xt/s``；≥1 → ``x.xt/s``；否则 ``x.xxt/s``。
+    ≤0 → ``-``（无速度）；≥1M → ``x.xMt/s``；≥1k → ``x.xkt/s``；
+    ≥100 → ``xt/s``；≥1 → ``x.xt/s``；否则 ``x.xxt/s``。
 
-    P3-10：docstring 与实现对齐——≥1k 分支为 ``{:.0f}kt/s``（整数舍入，
-    如 1500 → ``2kt/s``）。
+    ★ P3（review）：≥1k 分支由 ``{:.0f}kt/s`` 改为 ``{:.1f}kt/s``——修复前
+    整数舍入（1500 → ``2kt/s``）与前后的 ``x.xM``/``x.xt/s`` 精度不一致
+    （相邻档读感不连续）。
 
     ★ BUG-47（review 方向）：非有限值（inf/NaN）返回 ``-``（与
     ``format_duration`` 的 isfinite 防护一致）——修复前 NaN 走完所有比较后
@@ -75,7 +76,7 @@ def format_speed(s: float) -> str:
     if s >= 1_000_000:
         return f"{s / 1_000_000:.1f}Mt/s"
     elif s >= 1_000:
-        return f"{s / 1_000:.0f}kt/s"
+        return f"{s / 1_000:.1f}kt/s"
     elif s >= 100:
         return f"{s:.0f}t/s"
     elif s >= 1:

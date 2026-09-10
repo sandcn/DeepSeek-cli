@@ -226,16 +226,13 @@ def _start_edit(cv, entry) -> None:
 
 
 def _cancel_edit(cv) -> None:
-    """取消当前编辑（退出编辑界面，不保存）。"""
-    cv.editing = False
-    cv.edit_mode = "input"
-    cv.edit_error = ""
-    cv.edit_options = []
-    cv.edit_options_desc = []
-    cv.edit_json_data = None
-    cv.edit_json_path = []
-    cv.edit_json_keys = []
-    cv.edit_json_selected = 0
+    """取消当前编辑（退出编辑界面，不保存）。
+
+    ★ P3（review）：委托 ``ConfigViewState.reset_edit_state()`` 集中复位
+    （修复前为散点复位，``edit_json_action`` 残留 ``"append"``——下次进入
+    JSON 编辑时沿用旧动作误判追加模式；``message`` 陈旧提示残留）。
+    """
+    cv.reset_edit_state()
 
 
 def ConfigView(props) -> object:
@@ -636,10 +633,12 @@ def ConfigView(props) -> object:
     # json 界面条目高亮钳制（基于递归路径导航到的当前容器）
     json_container = _json_container()
     json_is_dict = isinstance(json_container, dict)
+    # dict 容器的键列表（提示行显示当前选中键名）
     json_keys = list(cv.edit_json_keys or []) if json_is_dict else []
-    json_item_count = (
-        len(json_keys) if json_is_dict else len(json_container or [])
-    )
+    # ★ P3（review）：条目数直接取容器长度——修复前 dict 分支取
+    #   ``len(cv.edit_json_keys)``（派生显示态），与真实容器不同步时选中
+    #   钳制错误（越界/无法到达末项）。
+    json_item_count = len(json_container) if json_container is not None else 0
     json_path_text = _json_path_text()
     try:
         json_sel = max(0, min(int(cv.edit_json_selected), json_item_count - 1)) if json_item_count else 0
@@ -778,7 +777,10 @@ def ConfigView(props) -> object:
     # ── 主列表区 ──
     # ★ P2（review 2026-08-20）：修复前 ``vh - (1 if editing else 1)`` 恒等于
     #   ``vh - 1``（冗余条件表达式）——编辑模式与浏览模式底部行同为 1 行。
-    list_h = max(4, vh - 1)
+    #   ★ P2（review）：下限由 4 改为 1——修复前 ``max(4, vh - 1)`` 在矮终端
+    #   时总行数（header 1 + list ≥4 + 底部提示 ≤2）可能超终端高（溢出/裁剪）；
+    #   与 editmsg_select/user_select 等模态弹窗的下限处置一致。
+    list_h = max(1, vh - 1)
     if pick_mode:
         ledger = h(ListView, {
             "items": list(cv.edit_options or []),
@@ -843,6 +845,10 @@ def ConfigView(props) -> object:
             prompt = f"  \u258d \u270e {path} 追加 key=value: {cv.edit_value}\u258f"
         elif isinstance(json_container, list) and cv.edit_json_action == "append":
             prompt = f"  \u258d \u270e {path} 追加元素: {cv.edit_value}\u258f"
+        elif json_container is None:
+            # ★ P3（review）：容器缺失（路径失效）——修复前落入最后 else 分支
+            #   输出 ``path[sel] = value`` 形式的误导性提示。
+            prompt = f"  \u258d \u270e {path}（容器不存在）: {cv.edit_value}\u258f"
         elif json_is_dict:
             k = json_keys[cv.edit_json_selected] if cv.edit_json_selected < len(json_keys) else ""
             prompt = f"  \u258d \u270e {path}.{k} = {cv.edit_value}\u258f"

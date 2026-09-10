@@ -29,7 +29,7 @@ from .fiber import (
     _MISSING,
 )
 from .element import Element
-from .error_boundary import _build_fallback_element
+from .error_boundary import _build_fallback_element, _FALLBACK_MARKER
 from . import hooks as _hooks
 from . import layout as _layout
 
@@ -102,6 +102,35 @@ def _clear_context_cache_subtree(fiber: Fiber | None) -> None:
         f._context_dirty = True
         _clear_context_cache_subtree(f.child)
         f = f.sibling
+
+
+def _classify_input_hooks(fiber: Fiber, input_out: list, paste_out: list | None) -> None:
+    """将 fiber 上的输入类 hook 按类型/active 状态分类追加到输出列表。
+
+    ★ P3（review）：``_collect_render_metadata`` 与 ``_collect_input_hooks``
+    两处曾逐字重复该分类逻辑（改动易漏一处）——抽为单一实现，两处共用。
+
+    InputHook（active 且有 handler）与 FullscreenHook（active）混入
+    ``input_out``（router 构建时分离处理）；PasteHook（active 且有 handler）
+    独立进入 ``paste_out``（usePaste 独立通道）。
+
+    Args:
+        fiber: 待分类的 function fiber。
+        input_out: InputHook/FullscreenHook 输出列表。
+        paste_out: PasteHook 输出列表；None 时忽略 PasteHook。
+    """
+    for hook in fiber.hooks:
+        if isinstance(hook, InputHook) and hook.is_active and hook.handler is not None:
+            input_out.append(hook)
+        elif isinstance(hook, FullscreenHook) and hook.is_active:
+            input_out.append(hook)
+        elif (
+            paste_out is not None
+            and isinstance(hook, PasteHook)
+            and hook.is_active
+            and hook.handler is not None
+        ):
+            paste_out.append(hook)
 
 
 class Reconciler:
@@ -502,6 +531,16 @@ class Reconciler:
           「use_context 逐 fiber 缓存 + provider 值变更清缓存传播」，
           不做消费者级剪枝（评估结论在代码注释中可追溯）。
         """
+        # ★ P3（review）：fallback 标记落位到 fiber 私有字段并从组件可见 props
+        #   剥除——修复前 reconciler 用 ``fiber.props.get("_fallback")`` 判断
+        #   「fallback 组件（防递归捕获）」，该键会透传给 fallback 组件且可被
+        #   用户同名 prop 绕过（用户组件自带 ``_fallback`` → 其异常不再被边界
+        #   捕获）。现改为 fiber 私有布尔字段。
+        if fiber.props.get(_FALLBACK_MARKER):
+            fiber._is_fallback_root = True
+            clean_props = dict(fiber.props)
+            clean_props.pop(_FALLBACK_MARKER, None)
+            fiber.props = clean_props
         if fiber.is_function:
             fiber.reset_hooks()
             _hooks._push_current(fiber)
@@ -511,6 +550,10 @@ class Reconciler:
                     memo_skip = True
                     rendered = None
                 else:
+                    # ★ P3（review）：边界标记每帧重置——ErrorBoundary 组件在
+                    #   本次调用中重新置 True；其它组件复用该字段时不会残留
+                    #   旧边界语义（memo 跳过路径不重置，保留既有标记）。
+                    fiber._is_boundary = False
                     # ★ 完善 react ink：函数组件 children 注入——React 中 children
                     #   属于 props 一部分（``props.children``）。本框架元素 children
                     #   为独立字段（``element.children``），函数组件仅收到 props；
@@ -538,9 +581,10 @@ class Reconciler:
                     raise  # hook 状态机异常：编程错误，不参与 boundary 捕获
                 # P1-3：fallback 函数组件自身渲染异常——直接传播（递归边界）。
                 #   _build_fallback_element 为 callable fallback 构造独立 fiber
-                #   渲染（props 带内部 ``_fallback`` 标记）；若此处再次被 boundary
-                #   捕获会递归重建 fallback（无限循环）→ 传播保持崩溃恢复语义。
-                if fiber.props.get("_fallback"):
+                #   渲染（fiber 私有 ``_is_fallback_root`` 标记）；若此处再次被
+                #   boundary 捕获会递归重建 fallback（无限循环）→ 传播保持崩溃
+                #   恢复语义。
+                if getattr(fiber, "_is_fallback_root", False):
                     raise
                 boundary = self._find_boundary(fiber)
                 if boundary is None:
@@ -553,6 +597,18 @@ class Reconciler:
                 _hooks._pop_current()
             if memo_skip:
                 return  # 保留 fiber.child（不重建子树）
+            # ★ P3（review）：hook 数减少检测（Rules of Hooks）——本帧组件调用
+            #   的 hook 数少于上次（``hook_index < len(fiber.hooks)``）时残留
+            #   hook 仍会被 ``_commit_live`` 遍历执行（EffectHook 的
+            #   destroy/create）→ 记录 warning 使违规可观测（条件性 hook 调用
+            #   是编程错误，不中断渲染保持既有健壮性）。
+            if fiber.hook_index < len(fiber.hooks):
+                _logger.warning(
+                    "组件 %s 本帧 hook 数减少（%d < %d），违反 Rules of Hooks",
+                    getattr(fiber.type, "__name__", fiber.type),
+                    fiber.hook_index,
+                    len(fiber.hooks),
+                )
             # ★ BUG-36（review 方向）：本帧组件已渲染（使用最新 context 值，
             #   含不消费 context 的 memo 组件）→ 清除 ``_context_dirty`` 标记。
             #   修复前标记仅由 ``use_context`` 消费时清除——位于 provider 子树内
@@ -933,13 +989,7 @@ class Reconciler:
                     f = f.sibling
                     continue
                 if f.is_function:
-                    for hook in f.hooks:
-                        if isinstance(hook, InputHook) and hook.is_active and hook.handler is not None:
-                            out.append(hook)
-                        elif isinstance(hook, FullscreenHook) and hook.is_active:
-                            out.append(hook)
-                        elif paste_out is not None and isinstance(hook, PasteHook) and hook.is_active and hook.handler is not None:
-                            paste_out.append(hook)
+                    _classify_input_hooks(f, out, paste_out)
                 if f.child is not None:
                     stack.append(f.sibling)
                     f = f.child
@@ -978,13 +1028,7 @@ class Reconciler:
                     continue
                 if f.is_function:
                     function_fibers.append(f)
-                    for hook in f.hooks:
-                        if isinstance(hook, InputHook) and hook.is_active and hook.handler is not None:
-                            input_hooks.append(hook)
-                        elif isinstance(hook, FullscreenHook) and hook.is_active:
-                            input_hooks.append(hook)
-                        elif isinstance(hook, PasteHook) and hook.is_active and hook.handler is not None:
-                            paste_hooks.append(hook)
+                    _classify_input_hooks(f, input_hooks, paste_hooks)
                 else:
                     ref = f._host_ref
                     if ref is not None:
@@ -1038,7 +1082,11 @@ class Reconciler:
         fiber.sibling = None
         self._traverse_functions(fiber, self._queue_destroys, include_self=True)
         fiber.deleted = True
-        self._cleanup_contexts(fiber)
+        # ★ P3（review）：移除 ``_cleanup_contexts(fiber)`` 调用——该函数自
+        #   BUG-18 起为 no-op（context 注册表条目为进程级 Context 对象，与
+        #   Provider 挂载解耦；「卸载回退 default」由 use_context 的 return_
+        #   链查找自然实现）。删除调用避免每次删除走一次空调用 + 长注释
+        #   （函数定义一并删除）。
         # ★ 递归标记子树全部 fiber deleted（含 host 子节点——外部缓存指向
         #   子树内 host fiber，仅标记根无法让缓存失效；复用路径会重置
         #   ``existing.deleted = False``）。
@@ -1051,28 +1099,6 @@ class Reconciler:
                 stack.append(c)
                 c = c.sibling
 
-    def _cleanup_contexts(self, fiber: Fiber | None) -> None:
-        """遍历被删子树（当前为 no-op，保留接口签名与调用点）。
-
-        ★ BUG-18（review 方向）修复：**不再 pop 注册表**——``_context_registry``
-        保存的是 ``create_context`` 模块级创建的全局 Context 对象（进程生命周期），
-        与 Provider 挂载状态无关。修复前卸载时 ``pop(f.type)`` 后，同一组件重新
-        挂载 ``h(ctx.Provider, ...)`` 时 ``begin_work`` 查注册表返回 None →
-        ``fiber.contexts`` 不写入 → 子树 ``use_context`` 沿 return_ 链找不到
-        provider，静默回退 ``ctx.default``（Provider 重挂载失效）。
-
-        「卸载回退 default」语义由 ``use_context`` 的 return_ 链查找自然实现：
-        Provider 卸载后其 fiber 不再在树中，消费者沿 return_ 链找不到 provider
-        → 返回 default，无需注册表干预。
-
-        遍历范围注释（历史，可追溯）：`_mark_deleted` 已切断顶层 fiber.sibling，
-        内部 sibling 遍历仅覆盖删除子树的**后代兄弟**，安全。多 Provider 同
-        Context 卸载语义由 return_ 链查找自然保证（无注册表计数需求）。
-        """
-        # 当前实现为 no-op——注册表条目（Context 对象）生命周期与 Provider
-        # 挂载解耦；保留函数以维持 `_mark_deleted` 调用面与未来挂载计数扩展点。
-        return
-
     def _queue_destroys(self, fiber: Fiber) -> None:
         # ★ P3 修复（review 方向）：组件卸载时若焦点激活指向自身（同自动
         #   id）则清空——防焦点悬挂（见 _hooks_focus ``_clear_focus_active``）。
@@ -1083,51 +1109,6 @@ class Reconciler:
             elif isinstance(hook, SyncStoreHook) and hook.cleanup is not None:
                 self._pending_destroys.append((fiber, hook))
 
-    def _attach_host_refs(self, fiber: Fiber | None) -> None:
-        """遍历 host 树，将 layout_box 写入绑定的 ref（useMeasure 支持，方向8）。
-
-        仅处理 ``_host_ref`` 非空的 fiber（React 语义：host ref 指向 DOM
-        节点——本框架非全屏流动模型下为布局盒 LayoutBox，含 x/y/w/h）。
-        支持两种 ref 形态：
-          - RefHook（``use_ref`` 返回）：写入 ``ref.current = box``；
-          - 函数 ref（React 回调 ref）：``ref(box)`` 调用。
-
-        与 React 差异（文档注明）：卸载时不置 null（非全屏模型无 DOM 节点
-        回收语义；useMeasure 仅挂载期读取尺寸，卸载清理无消费方）。
-
-        ★ P-H10（性能）：绝大多数 fiber 无 ``_host_ref``（仅 useMeasure
-        绑定的 host）——仍须递归遍历（无法从根短路判定子树内是否有 ref），
-        但跳过 ``hasattr`` 判定（直接读字段，Fiber 定义恒有该属性）。
-
-        ★ 性能（PERF-19）：递归 → 显式栈迭代（大组件树每帧数千节点的
-        ``f.child`` 递归调用开销可感知；迭代保持前序语义，ref 填充顺序与
-        递归一致——回调 ref 顺序无消费方依赖）。
-
-        Args:
-            fiber: 遍历起点（root fiber）。
-        """
-        stack = [fiber]
-        while stack:
-            f = stack.pop()
-            while f is not None:
-                if f.deleted:
-                    f = f.sibling
-                    continue
-                ref = f._host_ref
-                if ref is not None and f.layout_box is not None:
-                    if callable(ref):
-                        try:
-                            ref(f.layout_box)
-                        except Exception:
-                            _logger.debug("host ref 回调异常 fiber=%s", f.type, exc_info=True)
-                    elif hasattr(ref, "current"):
-                        ref.current = f.layout_box
-                if f.child is not None:
-                    stack.append(f.sibling)
-                    f = f.child
-                else:
-                    f = f.sibling
-
     # ── effects 提交 ────────────────────────────────
 
     def _run_destroy(self, fiber: Fiber, hook: EffectHook) -> None:
@@ -1137,7 +1118,6 @@ class Reconciler:
                 if hook.cleanup is not None:
                     hook.cleanup()
                 hook.cleanup = None
-                hook.subscribed = False
                 return
             if hook.destroy is not None:
                 hook.destroy()

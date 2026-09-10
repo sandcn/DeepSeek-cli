@@ -52,6 +52,12 @@ def find_input_fiber(root_fiber):
     pushed.add(id(root_fiber))
     while stack:
         f = stack.pop()
+        # ★ P3（review）：过滤已删除 fiber——与同项目其它全树遍历
+        #   （reconciler._collect_input_hooks/_collect_render_metadata、
+        #   components._find_committed_chat）口径一致；修复前未过滤，可能
+        #   返回已删除但仍可达的 input fiber（光标定位到失效节点）。
+        if getattr(f, "deleted", False):
+            continue
         if f.is_host and (
             f.type == "input-area"
             or bool(f.props.get("dataInputArea"))

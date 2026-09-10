@@ -110,10 +110,12 @@ def Tabs(props: dict) -> Element:
     # ★ P2（review）：受控/非受控分支条件性调用 use_state（违反 hook 顺序
     #   规则）——修复为无条件调用 use_state，再按 active_key 是否受控决定
     #   是否用内部值。受控时 set_internal_idx 仍可用（事件期不调用）。
+    #   ★ P3（review）：初值改用 callable 惰性初始化——修复前每次渲染都
+    #   eager 计算 ``next(...)``（仅首渲染需要），无变化帧重复 O(tabs) 迭代。
     internal_idx, set_internal_idx = use_state(
-        next(
+        (lambda: next(
             (i for i, t in enumerate(tabs) if t["key"] == str(default_key)), 0,
-        ) if default_key is not None else 0,
+        )) if default_key is not None else (lambda: 0)
     )
     if active_key is not None:
         active_idx = next(

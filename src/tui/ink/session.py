@@ -87,6 +87,9 @@ _RENDER_FLUSH_SOFT_TIMEOUT = 5.0
 _RENDER_FLUSH_HARD_TIMEOUT = 60.0
 #: _join_render_thread 硬上限（秒）——真挂起防护（线程活着且未达上限就一直等）
 _JOIN_RENDER_HARD_TIMEOUT = 30.0
+#: flush() 队列排空总硬上限（秒）——真挂起防护（渲染线程存活但停滞时调用方
+#: 不得永久阻塞；见 flush 实现）
+_FLUSH_HARD_CEILING = 60.0
 
 # ★ 架构改进方向 A：``_KEEP_CONTENT_CMDS`` / ``_PUT_NO_DROP_TIMEOUT`` 定义已
 #   迁至 ``_session_queue_mixin``（唯一使用方），本模块 re-export 保持旧导入
@@ -427,6 +430,17 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             self._ink_renderer.full_clear()
         except Exception:
             _logger.debug("clear_screen full_clear 异常", exc_info=True)
+        # ★ P3（review）：渲染线程内（INPUT 阶段回调）不重入 ``_render_frame``
+        #   ——修复前构成「_drain_queue 的 INPUT 阶段内嵌套一次完整调和+渲染」，
+        #   随后 DRAIN/RENDER 阶段再渲染一帧（双帧开销），且嵌套渲染期间
+        #   ``_on_input_router`` 会替换 dispatcher 正在使用的 router，且不经
+        #   输出锁（``request_bottom_redraw`` 的同步渲染有锁保护，本处没有）。
+        #   改为置脏标记交由本帧 RENDER 阶段统一渲染（全程 10Hz 保证渲染
+        #   发生）；非渲染线程调用保持同步渲染语义（外部 API 期望立即重建）。
+        if threading.current_thread() is self._render_thread:
+            self._dirty = True
+            self._bottom_redraw_requested.set()
+            return
         try:
             self._render_frame()
         except Exception:
@@ -775,6 +789,11 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 _logger.warning("start() 被重复调用，render 线程仍在运行，跳过")
                 return
             self._render_thread.join()
+        # ★ P3（review）：复位 ``_exit_requested``——该标志由 useApp().exit /
+        #   request_exit 置位后从不清除，渲染循环首帧即 ``break``；修复前
+        #   start()/resume() 重启会话时旧标志残留 → 重启后首个渲染帧立刻
+        #   自行终止（状态不一致）。
+        self._exit_requested = False
         self._render_running = True
         # 请求首帧渲染：resume 后立即重绘（prev 已重置 → 全量写入）
         self._bottom_redraw_requested.set()
@@ -842,11 +861,21 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   创建线程处（start/resume/崩溃恢复）均已 daemon=True，仅此一处遗漏。
         drain_waiter = threading.Thread(target=self._cmd_queue.join, daemon=True)
         drain_waiter.start()
-        drain_waiter.join(timeout=timeout)
+        # ★ P1（review）：timeout 为 None/非正时用硬上限——修复前
+        #   ``join(timeout=None)`` 无限等待（渲染线程停滞时调用方永久阻塞）。
+        wait_timeout = timeout if (timeout is not None and timeout > 0) else _FLUSH_HARD_CEILING
+        drain_waiter.join(timeout=wait_timeout)
         if drain_waiter.is_alive():
             # ★ 修复（长任务思考/回答丢失）：超时后渲染线程存活则继续等待排空
             #   （每次 1s 轮询），仅当渲染线程停止（_render_running=False 或
             #   线程退出）才丢弃剩余命令兜底——避免超时即丢内容命令。
+            #   ★ P1（review）：增加总时长硬上限——修复前该 ``while`` 无时间
+            #   上界（渲染线程存活但停滞时，如输出锁被外部长期占用致每帧
+            #   ``locked=False`` 跳过消费，或渲染线程阻塞在慢 I/O），调用方
+            #   （可能是事件循环/退出流程）永久挂起；其它等待方
+            #   （``_ROUTER_FLUSH_HARD_CEILING``/``_RENDER_FLUSH_HARD_TIMEOUT``/
+            #   ``_JOIN_RENDER_HARD_TIMEOUT``）均有硬上限，本处是唯一缺口。
+            hard_deadline = time.monotonic() + max(wait_timeout, _FLUSH_HARD_CEILING)
             while (
                 drain_waiter.is_alive()
                 and self._render_running
@@ -854,6 +883,12 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 and self._render_thread.is_alive()
             ):
                 drain_waiter.join(timeout=1.0)
+                if time.monotonic() >= hard_deadline:
+                    _logger.warning(
+                        "flush 排队排空超过硬上限 %.0fs，降级丢弃未消费命令",
+                        max(wait_timeout, _FLUSH_HARD_CEILING),
+                    )
+                    break
             if drain_waiter.is_alive():
                 # ★ 2026-08-15（短内容丢失修复）：flush 超时兜底丢弃时保留
                 #   内容命令（思考/回答/工具卡）——修复前超时即丢弃队列中
@@ -925,6 +960,9 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                     self._render_version,
                 )
         self._render_running = True
+        # ★ P3（review）：复位 ``_exit_requested``（同 start()）——修复前
+        #   exit 后 resume 重启会话时首帧即退出。
+        self._exit_requested = False
         self._ink_renderer.reset()
         # 立即渲染一帧（从当前位置重绘文档）
         try:

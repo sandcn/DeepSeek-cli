@@ -7,7 +7,12 @@
 
 from __future__ import annotations
 
+import logging
+from typing import Mapping
+
 from src.tui.core.style import Style
+
+_logger = logging.getLogger(__name__)
 
 
 def _parse_color(value):
@@ -36,6 +41,35 @@ def _parse_color(value):
     return None
 
 
+def _coerce_style(base) -> Style | None:
+    """将 ``props["style"]`` 归一化为 ``Style`` 或 None。
+
+    ★ P2（review）：修复前 ``resolve_text_style`` 直接访问 ``base.fg``——当
+    ``style`` 传 dict（CSS-like，React Ink 生态 <Text style={{...}}> 常见用法）
+    时抛 AttributeError；layout 侧 ``_measure`` 的 TEXT 分支调用本模块且无
+    兜底 → 异常冒泡至 session 渲染阶段（每帧渲染失败 + 退避重试，UI 停在
+    旧帧）。现 dict 按常见键解析为 Style；其它不支持类型忽略（返回 None）
+    并记 debug（非关键降级可观测）。
+    """
+    if base is None or isinstance(base, Style):
+        return base
+    if isinstance(base, Mapping):
+        fg_raw = base.get("fg", base.get("color"))
+        bg_raw = base.get("bg", base.get("backgroundColor"))
+        return Style(
+            fg=_parse_color(fg_raw),
+            bg=_parse_color(bg_raw),
+            bold=bool(base.get("bold", False)),
+            italic=bool(base.get("italic", False)),
+            underline=bool(base.get("underline", False)),
+            strikethrough=bool(base.get("strikethrough", False)),
+            inverse=bool(base.get("inverse", False)),
+            dim=bool(base.get("dim", False)),
+        )
+    _logger.debug("style prop 类型不支持（忽略）: %r", type(base))
+    return None
+
+
 def resolve_text_style(props) -> Style | None:
     """解析 TEXT shorthand 样式属性（react-ink 语义）为 Style。
 
@@ -55,7 +89,7 @@ def resolve_text_style(props) -> Style | None:
     Returns:
         合并后的 Style；无任何样式属性时返回 None。
     """
-    base = props.get("style")
+    base = _coerce_style(props.get("style"))
     color = _parse_color(props.get("color"))
     bg = _parse_color(props.get("backgroundColor"))
     bold = props.get("bold")
@@ -123,4 +157,4 @@ def apply_text_transform(text: str, transform: str | None) -> str:
     return text
 
 
-__all__ = ["_parse_color", "resolve_text_style", "apply_text_transform"]
+__all__ = ["_parse_color", "_coerce_style", "resolve_text_style", "apply_text_transform"]

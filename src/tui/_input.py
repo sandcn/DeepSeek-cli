@@ -161,6 +161,16 @@ class Input:
             buffer_editor=self._buffer_editor,
             parser=self._parser,
         )
+        # ★ P2（review）：把外观的 ``_append_history_locked`` 注入 dispatcher
+        #   ——修复前 ``set_enter_append_history`` 全项目零调用，
+        #   ``_handle_special_key`` 的 ``_enter`` 恒取 None（回落 buffer_editor
+        #   自身实现）：测试对 ``patch.object(inp, "_append_history_locked")``
+        #   的拦截在 editmsg/retry 特殊键路径不生效（与 ``_enter`` 的注入语义
+        #   不一致）。
+        try:
+            self._dispatcher.set_enter_append_history(self._append_history_locked)
+        except Exception:
+            _logger.debug("注入 enter append history 回调失败", exc_info=True)
 
     # ── 公开属性 ──────────────────────────────────────────
 
@@ -782,6 +792,14 @@ class Input:
         None 缺省时 ``_do_interrupt`` 记 debug 日志并跳过（测试兼容）。
         """
         self._dispatcher.set_interrupt_callback(cb)
+
+    def get_interrupt_callback(self):
+        """读取当前中断回调（★ P3 review：供外部保存/还原，见 ink.render）."""
+        return getattr(self._dispatcher, "_interrupt_callback", None)
+
+    def is_interrupt_routable(self) -> bool:
+        """读取当前 interrupt 放行标志（★ P3 review：供外部保存/还原）."""
+        return bool(getattr(self._dispatcher, "_interrupt_routable", False))
 
     def set_kill_background_callback(self, cb) -> None:
         """设置纯 Esc 杀后台任务回调（2026-08-21 用户需求注入点）。

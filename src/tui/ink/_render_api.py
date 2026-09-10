@@ -253,16 +253,13 @@ def render(
     #   不再被 TTL 刷新覆盖）。优先方案（为 ``TerminalWidthCache`` 增加公开
     #   ``set_dimensions(w, h)``）因 ``_screen.py`` 不在本次修改范围而放弃，
     #   采用等价方案 b（保持向后兼容，不破坏 _screen.py 现有测试）。
-    if width is not None:
-        session._width_cache._width = width
-        session._width_cache._last_width_fetch = (
-            time.monotonic() + getattr(session._width_cache, "_ttl", 60.0)
-        )
-    if height is not None:
-        session._width_cache._height = height
-        session._width_cache._last_height_fetch = (
-            time.monotonic() + getattr(session._width_cache, "_ttl", 60.0)
-        )
+    # 尺寸覆盖（★ P2 review：改用公开入口 ``set_dimensions``——修复前直接写
+    #   私有字段 ``_width``/``_height``/时间戳，破坏封装；且 ``_fetch()`` 到期
+    #   会同时覆盖宽高与时间戳，仅覆盖其一时另一维度覆盖值静默失效。
+    #   ``set_dimensions`` 置 ``_override`` 标志：覆盖期间 TTL 到期不重新探测
+    #   真实终端（本会话尺寸稳定），语义与旧实现兼容）。
+    if width is not None or height is not None:
+        session._width_cache.set_dimensions(width, height)
 
     # ── React Ink render() options（官方 API 补齐） ──
     # stderr / debug / exitOnCtrlC / patchConsole / stdin
@@ -270,7 +267,18 @@ def render(
         session.set_stderr(stderr)
     session._debug = bool(debug)
     session.set_exit_on_ctrl_c(exitOnCtrlC)
+    # ★ P2（review）：保存调用方 stdin 的 interrupt 配置——修复前
+    #   ``set_interrupt_callback``/``set_interrupt_routable`` 修改传入的 Input
+    #   实例且 unmount/cleanup 均不还原，会话退出后该 stdin 的 Ctrl+C 仍指向
+    #   已退出会话（复用同一 stdin 开启新会话时行为取决于最后一次配置）。
+    _saved_interrupt = None
+    _saved_routable = None
     if stdin is not None:
+        try:
+            _saved_interrupt = stdin.get_interrupt_callback()
+            _saved_routable = stdin.is_interrupt_routable()
+        except Exception:
+            _logger.debug("render 保存 stdin interrupt 配置异常", exc_info=True)
         session.set_input(stdin)
         if exitOnCtrlC:
             # Ctrl+C → 请求退出会话（interrupt 回调注入；生产 CLI 不经
@@ -292,7 +300,17 @@ def render(
         except Exception:
             _logger.debug("render patchConsole 补丁失败", exc_info=True)
 
-    session.start()
+    try:
+        session.start()
+    except Exception:
+        # ★ P3（review）：start() 抛异常时恢复控制台补丁——修复前无 try/finally
+        #   兜底，补丁残留（sys.stdout/sys.stderr 仍为 _ConsoleProxy）。
+        if patchConsole:
+            try:
+                patcher.restore()
+            except Exception:
+                _logger.debug("render start 失败后恢复控制台异常", exc_info=True)
+        raise
 
     def _wait_until_exit():
         async def _waiter():
@@ -301,20 +319,36 @@ def render(
                 await _aio.sleep(0.05)
         return _waiter()
 
+    def _restore_stdin() -> None:
+        """还原调用方 stdin 的 interrupt 配置（幂等）。"""
+        if stdin is None:
+            return
+        try:
+            stdin.set_interrupt_callback(_saved_interrupt)
+            stdin.set_interrupt_routable(bool(_saved_routable))
+        except Exception:
+            _logger.debug("render 还原 stdin interrupt 配置异常", exc_info=True)
+
     def _unmount():
         try:
             session.request_exit()
         except Exception:
             _logger.debug("render unmount 异常", exc_info=True)
-
-    def _cleanup():
-        """unmount + 控制台补丁恢复（patchConsole 时）。"""
-        _unmount()
+        # ★ P2（review）：unmount 同时恢复控制台补丁与 stdin 配置（与文档
+        #   「unmount()：停止渲染线程；patchConsole 时恢复控制台」一致）——
+        #   修复前仅 cleanup() 恢复，调用方只调 unmount() 时 sys.stdout/
+        #   sys.stderr 仍为 _ConsoleProxy（进程后续 print 被重定向进 TUI 流），
+        #   stdin 的 Ctrl+C 仍指向已退出会话。两处恢复均幂等。
         if patchConsole:
             try:
                 patcher.restore()
             except Exception:
-                _logger.debug("render cleanup 恢复控制台异常", exc_info=True)
+                _logger.debug("render unmount 恢复控制台异常", exc_info=True)
+        _restore_stdin()
+
+    def _cleanup():
+        """unmount + 控制台补丁/stdin 配置恢复（均幂等）。"""
+        _unmount()
 
     def _rerender(new_element):
         _state["element"] = new_element

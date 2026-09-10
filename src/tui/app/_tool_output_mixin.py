@@ -239,19 +239,32 @@ class _ToolOutputMixin:
         被删则回退计数，防越界/重复提交）。修剪后行数 ≤ 1+keep，远低于增量
         提交阈值 → 无增量提交。
 
-        方向3（trim 与增量提交协同）：已增量提交的行（``committed_line_count>0``）
-        不可删除——删除会令 committed_lines 前缀与块行映射错位（回退计数但
-        前缀残留 → 渲染重复/错位）。已提交场景跳过 trim（保留全部，正确性
-        优先）。正常路径 trim 在增量提交前已压缩到 ≤keep 行，本分支仅覆盖
-        「空名 box 输出 >64 行触发增量提交后工具名补全」的罕见时序。
+        方向3（trim 与增量提交协同）：已提交前缀（``committed_line_count`` 行）
+        不可删除——删除会令 committed_lines 前缀与块行映射错位。★ P2（review）：
+        已提交场景改为修剪其**之后的未提交尾部**（下标 >= committed_line_count
+        可安全删除，计数不变），不再整体跳过（修复前「已提交即永不修剪」致
+        块行随输出线性增长）。
         """
         lines = block.lines
         if len(lines) <= 1 + keep:
             return
-        if block.committed_line_count > 0:
-            _logger.debug(
-                "bash tail trim 跳过（块已增量提交 %d 行，无法安全删除）",
-                block.committed_line_count,
+        # ★ P2（review）：已增量提交的块改为修剪**未提交尾部**——修复前直接
+        #   return（「已提交即永不修剪」），长输出工具（空名兜底 box 输出
+        #   >64 行触发增量提交后补全工具名）后续 `block.lines` 随输出线性
+        #   增长（渲染/内存无上限）。已提交前缀不可删（committed_lines 映射），
+        #   但下标 >= committed_line_count 的未提交行可安全删除（计数不变）。
+        committed = block.committed_line_count
+        if committed > 0:
+            pending = len(lines) - committed
+            if pending <= keep:
+                return
+            del_count = pending - keep
+            removed = lines[committed:committed + del_count]
+            for line in removed:
+                self._drop_tool_body_cache(block, line)
+            del lines[committed:committed + del_count]
+            block.extra["_bash_omitted_lines"] = (
+                block.extra.get("_bash_omitted_lines", 0) + del_count
             )
             return
         del_count = len(lines) - 1 - keep
@@ -276,15 +289,25 @@ class _ToolOutputMixin:
         ``committed_line_count``（已提交行被删则回退计数，防越界/重复提交）。
         修剪后行数 ≤ 1+keep，远低于增量提交阈值 → 无增量提交。
 
-        方向3（trim 与增量提交协同）：已增量提交的行（``committed_line_count>0``）
-        不可删除——删除会令 committed_lines 前缀与块行映射错位。已提交场景
-        跳过 trim（保留全部，正确性优先；与 ``_trim_tool_output_tail`` 一致）。
+        方向3（trim 与增量提交协同）：已提交前缀（``committed_line_count`` 行）
+        不可删除——删除会令 committed_lines 前缀与块行映射错位。★ P2（review）：
+        已提交场景改为仅保留「已提交前缀 + 前 keep 行未提交内容」，删除其后
+        未提交行（计数不变），不再整体跳过（与 ``_trim_tool_output_tail`` 一致）。
         """
         lines = block.lines
-        if block.committed_line_count > 0:
-            _logger.debug(
-                "head trim 跳过（块已增量提交 %d 行，无法安全删除）",
-                block.committed_line_count,
+        # ★ P2（review）：已增量提交 → 修剪未提交尾部（见 docstring）。
+        committed = block.committed_line_count
+        if committed > 0:
+            keep_end = committed + keep
+            if len(lines) <= keep_end:
+                return
+            del_count = len(lines) - keep_end
+            removed = lines[keep_end:]
+            for line in removed:
+                self._drop_tool_body_cache(block, line)
+            del lines[keep_end:]
+            block.extra["_head_omitted_lines"] = (
+                block.extra.get("_head_omitted_lines", 0) + del_count
             )
             return
         # 尾部换行符产生的空行（text.split("\n") 尾空 seg → 仅前缀的空行）不

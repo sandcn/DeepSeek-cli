@@ -102,7 +102,14 @@ def _focus_previous() -> None:
 
 
 def _focus_to(fid: str) -> None:
-    """切换到指定 id 的组件。React Ink useFocusManager.focus(id)。"""
+    """切换到指定 id 的组件。React Ink useFocusManager.focus(id)。
+
+    ★ P3（review）：校验 ``_focus_enabled``——修复前 ``disableFocus()`` 期间
+    仍可经 ``focus(id)`` 写入 ``_focus_active``（与「禁用即失焦」语义冲突，
+    且会 ``_schedule()`` 触发重渲染）。
+    """
+    if not _hooks_module._focus_enabled:
+        return
     if fid in _hooks_module._focus_ids:
         _hooks_module._focus_active = fid
         _schedule()
@@ -208,15 +215,21 @@ def useFocus(options: "bool | dict | None" = None) -> dict:
     is_focused = bool(
         is_active and _hooks_module._focus_enabled and fid == _hooks_module._focus_active
     )
-    for hook in reversed(fiber.hooks):
-        if isinstance(hook, InputHook):
-            if not is_active:
-                hook.is_active = False
-            hook.focused = is_focused
-            return {"isFocused": is_focused}
-    raise HookStateError(
-        "useFocus 必须在 use_input 之后调用（当前 fiber 未注册 InputHook）"
-    )
+    # ★ P3（review）：标记**全部** InputHook——修复前仅标记
+    #   ``reversed(fiber.hooks)`` 命中的最近一个 InputHook，其余 InputHook 的
+    #   ``focused`` 保持默认 True（焦点仲裁对该组件失效：多个 input hook 的
+    #   组件中非最近 hook 仍被当作聚焦）。先 ``use_input`` 后 ``useFocus``
+    #   契约不变（无 InputHook 抛 HookStateError）。
+    input_hooks = [h for h in fiber.hooks if isinstance(h, InputHook)]
+    if not input_hooks:
+        raise HookStateError(
+            "useFocus 必须在 use_input 之后调用（当前 fiber 未注册 InputHook）"
+        )
+    for hook in input_hooks:
+        if not is_active:
+            hook.is_active = False
+        hook.focused = is_focused
+    return {"isFocused": is_focused}
 
 
 def useFocusManager() -> dict:

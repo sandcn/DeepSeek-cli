@@ -375,7 +375,15 @@ class InputBufferEditor:
         P3-1 修复：加 ``_lock`` 防御——原实现不加锁直接改写 ``_history``，
         仅靠文档约定装配期调用（render 线程启动前）；加锁后即使未来在运行
         期调用亦安全（锁内文件读取为装配期一次性成本，可接受）。
+
+        ★ P2（review）：``_history_io is None`` 防御——构造签名
+        ``history_io=None`` 为默认值，修复前直接 ``self._history_io.read()``
+        抛 AttributeError（与 ``_append_history_locked`` 经 ``_safe_disk_append``
+        的兜底不对称）。无 I/O 后端时直接返回（历史保持为空）。
         """
+        if self._history_io is None:
+            _logger.debug("load_history: 无 history_io 后端，跳过加载")
+            return
         with self._lock:
             raw, locked = self._history_io.read()
             if not raw:

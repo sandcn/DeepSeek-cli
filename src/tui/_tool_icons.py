@@ -79,6 +79,15 @@ TOOL_CATEGORY_MAP: dict[str, str] = {
     "rm": "delete",
 }
 
+# ★ P3（review）：两表键集一致性断言——``TOOL_ICONS``（兼容 re-export）与
+#   ``TOOL_CATEGORY_MAP``（生产真源）当前键集一致；新增工具时漏改任一表会
+#   在此立即暴露（避免静默缺项/图标回退默认）。导入期一次性检查，成本可忽略。
+assert set(TOOL_ICONS) == set(TOOL_CATEGORY_MAP), (
+    "TOOL_ICONS 与 TOOL_CATEGORY_MAP 键集不一致："
+    f"icons-only={sorted(set(TOOL_ICONS) - set(TOOL_CATEGORY_MAP))} "
+    f"map-only={sorted(set(TOOL_CATEGORY_MAP) - set(TOOL_ICONS))}"
+)
+
 # ── 工具类别 → Style（唯一真源，标准 React Ink） ──
 TOOL_CATEGORY_STYLES: dict[str, Style] = {
     "shell":      Style(fg=41),

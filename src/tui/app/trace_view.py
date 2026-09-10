@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import re
 import time as _time
+from weakref import WeakKeyDictionary
 
 from src.tui._format import format_duration, format_tokens
 from src.tui._input_layout import _wrap_by_width
@@ -388,6 +389,32 @@ def _detail_lines_of(rec) -> list:
     if lines:
         return lines
     return []
+
+
+#: 详情行缓存（★ P3 review）：键为 TraceRecord（弱引用，不延长记录生命周期）。
+#: 修复前详情行经 ``rec._detail_lines = detail_lines`` 直接写共享记录对象
+#: （渲染期副作用 + 跨视图/跨帧串扰）。弱引用字典把该派生缓存与记录对象
+#: 绑定但不持有强引用；记录消失即自动清理。
+_DETAIL_LINES_CACHE: "WeakKeyDictionary" = WeakKeyDictionary()
+
+
+def _set_cached_detail_lines(rec, lines) -> None:
+    """写入记录详情行缓存（不可弱引用对象退化为实例属性，兜底不抛）。"""
+    try:
+        _DETAIL_LINES_CACHE[rec] = lines
+    except TypeError:
+        try:
+            rec._detail_lines = lines
+        except Exception:
+            pass
+
+
+def _get_cached_detail_lines(rec):
+    """读取记录详情行缓存（不存在返回 None）。"""
+    try:
+        return _DETAIL_LINES_CACHE.get(rec)
+    except TypeError:
+        return getattr(rec, "_detail_lines", None)
 
 
 def _args_dep(args, limit: int = 200) -> str:
@@ -934,7 +961,7 @@ def _md_detail_rows(rec, right_w: int, kind: str) -> list:
     block = getattr(rec, "source_block", None)
     if block is not None:
         return _block_styled_rows(block, right_w, kind)
-    lines = getattr(rec, "_detail_lines", None)
+    lines = _get_cached_detail_lines(rec)
     if lines is None:
         lines = getattr(rec, "lines", None) or []
     if not lines:
@@ -1019,7 +1046,7 @@ def _inspector_content_rows(rec, right_w: int, collapsed: set | None = None) -> 
         rows = list(_md_detail_rows(rec, right_w, kind))
         keys = [None] * len(rows)
     else:
-        lines = getattr(rec, "_detail_lines", None)
+        lines = _get_cached_detail_lines(rec)
         if lines is None:
             # 直接调用（测试/外部使用）未挂载惰性详情时回退记录内联 lines
             lines = getattr(rec, "lines", None) or []
@@ -1069,6 +1096,31 @@ def _inspector_content_deps(rec, right_w: int, collapsed: set | None = None) -> 
     if rec is None:
         return (None, right_w, "")
     return tuple(_detail_deps(rec)) + (right_w, ";".join(sorted(collapsed or ())))
+
+
+def _inspector_fixed_rows(rec) -> int:
+    """检查器非内容区固定占用行数（★ P1 review：单一真源）。
+
+    标题 2 行（标题 + 分隔/提示占位）+ meta 行（耗时/token 存在时 1 行）
+    + subagent 提示行（``subagent_label`` 非空时 1 行）。
+
+    ``_inspector_children``（窗口预算）与 TraceView（滚动协调）共用本函数，
+    消除此前「精确 ``content_vh = vh - fixed``」与「近似
+    ``approx_content_vh = vh - 3``」两套预算不一致（fixed=4 时光标可落到
+    窗口外，光标行高亮消失、j/k 视口跟随在边界失效）。
+    """
+    fixed = 2
+    if rec is not None:
+        if _rec_time_seconds(rec) is not None or (getattr(rec, "tokens", None) or {}):
+            fixed += 1
+        if getattr(rec, "subagent_label", ""):
+            fixed += 1
+    return fixed
+
+
+def _inspector_viewport_rows(rec, vh: int) -> int:
+    """检查器内容区可用行数（单一真源，见 ``_inspector_fixed_rows``）。"""
+    return max(_INSPECTOR_MIN_CONTENT, vh - _inspector_fixed_rows(rec))
 
 
 def _inspector_children(
@@ -1165,8 +1217,10 @@ def _inspector_children(
     except (TypeError, ValueError, OverflowError):
         cursor = -1
     # 内容区行数预算（标题/meta/省略提示/subagent 提示占位后）
-    fixed = 2 + (1 if meta else 0) + (1 if getattr(rec, "subagent_label", "") else 0)
-    content_vh = max(_INSPECTOR_MIN_CONTENT, vh - fixed)
+    # ★ P1（review）：预算经 ``_inspector_viewport_rows`` 与 TraceView 滚动
+    #   协调共用（单一真源），修复前此处为 ``vh - fixed`` 而调用方用
+    #   ``vh - 3`` 近似，二者不一致时光标行落到窗口外。
+    content_vh = _inspector_viewport_rows(rec, vh)
     if total > content_vh:
         scroll = max(0, min(scroll, total - content_vh))
     else:
@@ -1178,10 +1232,16 @@ def _inspector_children(
             "style": _S_HINT, "height": 1, "key": "tinsp-omitted-top",
         }))
     window = content_rows[scroll:scroll + content_vh]
-    # 底部省略提示预留 1 行（内容未到尾部时窗口收缩，提示后置可见）
+    # ★ P1（review）：窗口收缩时**优先保留光标行**——修复前无条件
+    #   ``window[:-1]`` 为底部省略提示让位，光标恰在窗口末行时该行被删除
+    #   （光标行背景高亮消失、j/k 视口跟随边界失效）。光标在末行时保留
+    #   光标行、改为不显示底部省略提示（信息性提示让位于光标可见性）。
     if scroll + len(window) < total:
-        window = window[:max(0, len(window) - 1)]
-        bottom_omitted = total - scroll - len(window)
+        if cursor >= 0 and cursor == scroll + len(window) - 1:
+            bottom_omitted = total - scroll - len(window)
+        else:
+            window = window[:max(0, len(window) - 1)]
+            bottom_omitted = total - scroll - len(window)
     else:
         bottom_omitted = 0
     for i, seg in enumerate(window):
@@ -1642,7 +1702,10 @@ def TraceView(props) -> object:
         _detail_deps(rec),
     )
     if rec is not None:
-        rec._detail_lines = detail_lines
+        # ★ P3（review）：详情行写入弱引用缓存（不写记录对象属性）——
+        #   修复前 ``rec._detail_lines = detail_lines`` 为渲染期写共享记录
+        #   对象的副作用（跨视图/跨帧串扰）。
+        _set_cached_detail_lines(rec, detail_lines)
 
     # ── 面板焦点 / 检查器滚动与光标（2026-08-19：移动到右边查看东西 + vim） ──
     # trace_pane: "ledger"=左台账（ListView 焦点） / "inspector"=右检查器
@@ -1668,7 +1731,11 @@ def TraceView(props) -> object:
     )
     content_rows, row_keys = content
     total_content = len(content_rows)
-    approx_content_vh = max(_INSPECTOR_MIN_CONTENT, vh - 3)
+    # ★ P1（review）：滚动协调用与 ``_inspector_children`` 相同的视口预算
+    #   （单一真源）——修复前为固定 ``vh - 3`` 近似，与内容生成的
+    #   ``vh - fixed``（fixed 随 meta/subagent 变化）不一致 → 光标越出可见
+    #   窗口（高亮消失/视口跟随失效）。
+    approx_content_vh = _inspector_viewport_rows(rec, vh)
     # 光标渲染期钳制（写回 model——越界残留收敛；空内容 → 0）
     if total_content:
         cursor = max(0, min(cursor_raw, total_content - 1))
@@ -1922,6 +1989,10 @@ def TraceView(props) -> object:
                 )
                 return True
             if ch in ("n", "N", "p") and getattr(model, "trace_search_pattern", ""):
+                # ★ 语义说明（P3 review）：n/N/p 在**任何焦点**（台账/检查器）
+                #   下均消费——搜索结果导航是跨面板的全局操作（匹配集合来自
+                #   台账 records，定位同时移动台账选中与检查器光标）；仅在
+                #   已有搜索 pattern 时生效，未搜索时字符照常放行。
                 _search_jump(1 if ch == "n" else -1)
                 return True
             if pane_now == "ledger":

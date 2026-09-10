@@ -39,11 +39,15 @@ class StateHook:
         state: 当前状态值。
         queue: 待处理更新队列（列表，None 表示无）。
         reducer: use_reducer 传入的 reducer（None 表示 use_state）。
+        setter: 缓存的 set_state/dispatch 闭包（★ P3：身份跨渲染稳定——
+            React 保证 dispatch 身份稳定；修复前每次渲染新建闭包导致
+            ``memo`` 子组件 props 浅比较恒不等、memo 短路失效）。
     """
 
     state: Any = None
     queue: list | None = None
     reducer: Callable[[Any, Any], Any] | None = None
+    setter: Any = None
 
 
 @dataclass
@@ -182,7 +186,6 @@ class SyncStoreHook:
         get_snapshot: 快照读取函数 ``() -> snapshot``。
         snapshot: 最近一次读取的快照值（跨渲染缓存）。
         cleanup: 订阅清理函数（卸载时调用取消订阅）。
-        subscribed: 是否已订阅（防止重复订阅）。
         last_subscribe: 上次订阅的 subscribe 函数引用——subscribe 身份变化
             时重订阅（BUG-38：修复前 ``subscribed=True`` 短路，新 subscribe
             永不调用、旧订阅永不取消）。
@@ -192,7 +195,6 @@ class SyncStoreHook:
     get_snapshot: Any = None
     snapshot: Any = None
     cleanup: Any = None
-    subscribed: bool = False
     last_subscribe: Any = None
 
 

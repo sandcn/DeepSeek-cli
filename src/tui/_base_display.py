@@ -73,10 +73,22 @@ class BaseDisplay(ABC):
         display_func(lines)
         return "\n".join(lines)
 
-    def capture_and_print_async(self, display_func) -> str:
-        """异步捕获显示函数的输出并打印。
+    async def capture_and_print_async(self, display_func) -> str:
+        """异步捕获显示函数的输出。
 
-        默认回退到同步的 capture_and_print，子类可覆盖以提供异步实现。
+        ★ P2（review）：改为 ``async def``——修复前为同步方法却按异步契约被
+        调用方 ``await``（``core/internal/agent/_tool_callbacks.py`` 的
+        ``await display.capture_and_print_async(...)``）：对未覆盖本方法且
+        ``capture_and_print`` 走默认协议的 ``BaseDisplay`` 子类，``await``
+        一个 str 会抛 ``TypeError: object str can't be used in 'await'
+        expression``。现基类提供可 await 的默认实现（内部调用同步协议）。
+        子类覆盖时可直接 ``async def`` 返回结果（无需再包 coroutine）。
+
+        Args:
+            display_func: 可调用对象（协议同 ``capture_and_print``）。
+
+        Returns:
+            str: 捕获的输出字符串。
         """
         return self.capture_and_print(display_func)
 

@@ -10,6 +10,7 @@ reconciler（``_publish_input_router``）/session（``set_input_router_callback`
 
 from __future__ import annotations
 
+import functools
 import logging
 from collections import OrderedDict
 from typing import Any, Callable
@@ -175,6 +176,16 @@ _compat_handler_cache: "OrderedDict[int, tuple[Callable, Callable]]" = OrderedDi
 _COMPAT_CACHE_MAX = 512
 
 
+def clear_compat_handler_cache() -> None:
+    """清空 use_input 兼容包装缓存（★ P3 review：会话重置入口）。
+
+    缓存为模块级全局（强引用 handler 与包装闭包），跨会话/测试共享——
+    提供显式清空入口释放驻留引用（避免长期运行/多次会话后累积持有已卸载
+    组件的 handler）。
+    """
+    _compat_handler_cache.clear()
+
+
 def _make_compat_handler(handler: Callable) -> Callable:
     """适配 use_input handler 两种签名：``(event)`` 或 ``(input, key)``。
 
@@ -192,15 +203,23 @@ def _make_compat_handler(handler: Callable) -> Callable:
     Returns:
         包装后的 handler（单参数 handler 原样返回）。
     """
-    # MagicMock 等动态对象：不缓存（getattr 自动创建属性会误判命中）
-    if getattr(handler, "__name__", None) is None and not isinstance(handler, type):
+    # MagicMock 等动态对象：不缓存（getattr 自动创建属性会误判命中）。
+    # ★ P3（review）：``functools.partial`` / 可调用实例（无 ``__name__``）仍
+    #   可经 ``inspect.signature`` 适配双参签名——修复前一律直接返回，双参
+    #   partial handler 被按单参调用（key 信息丢失）。partial/实例不缓存
+    #   （id 复用风险低但无 __name__ 稳定性保证），仅 MagicMock 等无稳定签名
+    #   的动态对象保持既有「直接返回」行为。
+    dynamic = getattr(handler, "__name__", None) is None and not isinstance(handler, type)
+    if dynamic and not isinstance(handler, functools.partial):
         return handler
+    cacheable = not dynamic
     hid = id(handler)
-    cached = _compat_handler_cache.get(hid)
-    if cached is not None and cached[0] is handler:
-        # LRU 命中：移到末尾（OrderedDict 保持插入序——头部为最久未访问）
-        _compat_handler_cache.move_to_end(hid)
-        return cached[1]
+    if cacheable:
+        cached = _compat_handler_cache.get(hid)
+        if cached is not None and cached[0] is handler:
+            # LRU 命中：移到末尾（OrderedDict 保持插入序——头部为最久未访问）
+            _compat_handler_cache.move_to_end(hid)
+            return cached[1]
     try:
         import inspect as _inspect
         sig = _inspect.signature(handler)
@@ -219,9 +238,10 @@ def _make_compat_handler(handler: Callable) -> Callable:
         # ★ P2（review 2026-08-22）：单参 handler 也写入缓存——修复前直接
         #   return 不写入，每帧重跑 inspect.signature（与注释「零额外开销」
         #   不符）；写入后后续帧命中缓存零签名探测。
-        if len(_compat_handler_cache) >= _COMPAT_CACHE_MAX:
-            _compat_handler_cache.popitem(last=False)
-        _compat_handler_cache[hid] = (handler, handler)
+        if cacheable:
+            if len(_compat_handler_cache) >= _COMPAT_CACHE_MAX:
+                _compat_handler_cache.popitem(last=False)
+            _compat_handler_cache[hid] = (handler, handler)
         return handler
 
     def _wrapped(event) -> bool:
@@ -230,9 +250,10 @@ def _make_compat_handler(handler: Callable) -> Callable:
     # 仅缓存普通函数（有 __name__）；P2-1 LRU 淘汰：超上限时弹出头部
     # （popitem(last=False)——最久未访问项）。缓存 key 为 id，同 id 复用
     # 覆盖（handler 存活期间 id 稳定；hook 持有 handler 引用）。
-    if len(_compat_handler_cache) >= _COMPAT_CACHE_MAX:
-        _compat_handler_cache.popitem(last=False)
-    _compat_handler_cache[hid] = (handler, _wrapped)
+    if cacheable:
+        if len(_compat_handler_cache) >= _COMPAT_CACHE_MAX:
+            _compat_handler_cache.popitem(last=False)
+        _compat_handler_cache[hid] = (handler, _wrapped)
     return _wrapped
 
 
@@ -305,6 +326,7 @@ __all__ = [
     "use_fullscreen",
     "use_modal",
     "_compat_handler_cache",
+    "clear_compat_handler_cache",
     "_make_compat_handler",
     "_event_input",
     "_event_key",

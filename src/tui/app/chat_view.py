@@ -18,6 +18,8 @@ content/reasoning 有角色头（content ``▍💬 回答``、reasoning ``▍�
 
 from __future__ import annotations
 
+import threading
+
 from src.tui.app.model import _role_header_line
 from src.tui.app.toolcard import ToolCard
 from src.tui.core.style import Style
@@ -57,7 +59,11 @@ _WELCOME_DOT_PERIOD = 8.0
 
 #: 欢迎屏静态缓存：``((active, width), rows)``——空闲 (False, w) 快照命中
 #: 返回同一 rows 列表引用（跨帧零重建）；宽度变化/首帧构建新缓存。
+#: ★ P3（review）：缓存为模块级可变对象（跨 AppModel 实例共享）——键含
+#: ``(active, width)`` 故串扰风险低；读写以 ``_WELCOME_CACHE_LOCK`` 保护
+#: （渲染线程写 / 多实例读场景下避免读到半更新状态）。
 _WELCOME_STATIC_CACHE: list = [None, None]
+_WELCOME_CACHE_LOCK = threading.Lock()
 
 
 def _welcome_version() -> str:
@@ -82,9 +88,10 @@ def _welcome_rows(active: bool, width: int) -> list:
     """
     # 空闲态缓存命中（同 (False, width) 快照返回同一 rows 引用）
     if not active:
-        cached = _WELCOME_STATIC_CACHE
-        if cached[0] == (False, width) and cached[1] is not None:
-            return cached[1]
+        with _WELCOME_CACHE_LOCK:
+            cached = _WELCOME_STATIC_CACHE
+            if cached[0] == (False, width) and cached[1] is not None:
+                return cached[1]
     from src.tui.core.style import Style
     from src.tui.ink.helpers import truncate_runs
     from src.tui.ink.widgets.gradient import _gradient_runs
@@ -111,8 +118,9 @@ def _welcome_rows(active: bool, width: int) -> list:
     if width and width > 0:
         rows = [truncate_runs(r, width) if r else r for r in rows]
     if not active:
-        _WELCOME_STATIC_CACHE[0] = (False, width)
-        _WELCOME_STATIC_CACHE[1] = rows
+        with _WELCOME_CACHE_LOCK:
+            _WELCOME_STATIC_CACHE[0] = (False, width)
+            _WELCOME_STATIC_CACHE[1] = rows
     return rows
 
 
@@ -270,10 +278,30 @@ def _build_open_children(
     use_memo miss 时调用（deps 未变帧零计算，与 PERF-26 契约一致）。
     BEAUTY-32：live content 时最后一行经 ``_with_stream_indicator`` 追加
     spinner（截断防溢出）。
+
+    ★ P1（review）：被未关闭块夹住的开放块无法增量提交（``commit_open_block``
+    的连续提交窗口约束——低层顺序不变量：``committed_lines`` 只按块顺序追加，
+    乱序提交会致内容交错），未提交尾随流式增长，上层仅渲染最后
+    ``_LIVE_TAIL_LINES`` 行 → 中间行在块关闭前不可见。低层「安全前缀提交」
+    需重写 ``committed_lines`` 追加模型（并影响输出历史行号单调性），风险
+    过高且有数据交错回归风险，故在**上层提供可感知降级**：截断时插入
+    「中间 N 行省略（稍后显示）」提示行，避免误判内容丢失。
     """
     rows = _block_styled_lines(block, live_start, width)
     n_rows = len(rows)
-    return tuple(
+    head: tuple = ()
+    omitted = live_start - block.committed_line_count
+    if omitted > 0:
+        from src.tui.ink.helpers import truncate_runs
+        text = f"\u2026 中间 {omitted} 行省略（本块结束后完整显示）"
+        runs = truncate_runs([StyledRun(text, Style(fg=238))], max(1, width))
+        head = (
+            h(TEXT, {
+                "key": f"chat-{block_idx}-omitted-{live_start}",
+                "styled": list(runs),
+            }),
+        )
+    return head + tuple(
         h(TEXT, {
             "key": f"chat-{block_idx}-{live_start + i}",
             "styled": (

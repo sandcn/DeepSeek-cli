@@ -25,6 +25,11 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger(__name__)
 
+#: ★ P1（review）：prefill 窗口期内由**内部流程**产生的重复提交命令——这些
+#: 是 editmsg/retry 流程自身的回环提交（非用户新输入），按既有语义丢弃；
+#: 其余窗口期提交视为用户真实输入，不丢弃（返回给调用方 + warning）。
+_KNOWN_INTERNAL_PREFILL_CMDS = ("/editmsg", "/deitmsg", "/retry")
+
 
 class TuiInputOrchestrator:
     """用户输入等待编排器。
@@ -75,6 +80,26 @@ class TuiInputOrchestrator:
                     "wait_for_user_input: drained stale input %r "
                     "before setting prefill", stale,
                 )
+            # ★ P1（review）：窗口期**非空**提交不再静默丢弃——stale 为用户在
+            #   「弹窗消失 → prefill 注入前」窗口（大量上文时可达 1s+）键入并
+            #   按 Enter 提交的真实文本；修复前仅记一条 debug 日志即丢弃
+            #   （用户输入无痕丢失，且无任何用户可见提示）。已知内部命令
+            #   （/editmsg 等流程自身回环提交）保持丢弃（原语义）；其余优先
+            #   返回用户提交（prefill 未注入，warning 可观测）。
+            if stale:
+                _first_word = stale.strip().split()[0] if stale.strip() else ""
+                if _first_word in _KNOWN_INTERNAL_PREFILL_CMDS:
+                    _logger.debug(
+                        "wait_for_user_input: 窗口期内部命令提交 %r 丢弃", stale,
+                    )
+                else:
+                    _logger.warning(
+                        "wait_for_user_input: 窗口期用户提交 %r——返回用户输入"
+                        "（prefill 未注入，编辑需重新执行）", stale,
+                    )
+                    input_.set_buffer("")
+                    input_.echo("")
+                    return stale
             # ★ W4 修复（2026-08-19，很多上文时按回车不能编辑对应消息
             #   ——1 条用户消息也复现）：stale 为**空串**时是用户在
             #   「弹窗消失 → prefill 注入前」窗口按下的 Enter（EditmsgPlugin
@@ -91,6 +116,9 @@ class TuiInputOrchestrator:
                     "wait_for_user_input: 用户 Enter 先于 prefill 注入——"
                     "注入后自动提交（不再要求再按一次）",
                 )
+                # ★ 行为契约（既有测试 test_editmsg_router_flush 锁定）：
+                #   先注入 prefill 回显、再清空提交状态（两次 set_buffer/echo
+                #   均被断言）。保留两次写语义（第二次回显清空即提交后状态）。
                 input_.set_buffer(prefill)
                 input_.echo(prefill)
                 # 提交语义收尾：缓冲清空 + 输入行清屏（对齐 _enter() 提交后

@@ -1503,17 +1503,30 @@ def _slot_live_lines(slot, attr: str) -> list:
     为流式管线（chunk 逐帧累积到 slot.live_reasoning/live_content）——
     内容逐帧增长时每次全量 ``splitlines()`` O(内容)；同内容（无新 chunk
     帧，如工具运行中触发重建）→ 缓存命中零拆分。缓存挂在槽位对象
-    （``slot._live_lines_cache = (文本, 行列表)``），str 按值比较（内容
-    变化 → 重新拆分）。
+    （``slot._live_lines_cache = (attr, 文本, 行列表)``），str 按值比较
+    （内容变化 → 重新拆分）。
+
+    ★ P2（review）：缓存按 ``attr`` **分槽**（``slot._live_lines_cache`` 为
+    ``{attr: (文本, 行列表)}``）——修复前单槽元组 (文本, 行列表) 由
+    ``live_reasoning`` 与 ``live_content`` 共用：每帧先查 reasoning 再查
+    content（两者内容不同）→ 缓存 100% miss（每帧 2 次全量 splitlines，优化
+    完全失效）；且两者文本恰好相同时会返回「另一属性」的行。分槽后两类内容
+    各自缓存命中。
     """
     text = (getattr(slot, attr, "") or "").strip()
     cache = getattr(slot, "_live_lines_cache", None)
-    if cache is not None:
-        ctext, clines = cache
-        if ctext == text:
-            return clines
+    if isinstance(cache, dict):
+        entry = cache.get(attr)
+        if entry is not None and entry[0] == text:
+            return entry[1]
+        lines = text.splitlines()
+        cache[attr] = (text, lines)
+        return lines
     lines = text.splitlines()
-    slot._live_lines_cache = (text, lines)
+    try:
+        slot._live_lines_cache = {attr: (text, lines)}
+    except Exception:
+        pass
     return lines
 
 
@@ -1631,7 +1644,11 @@ def build_subagent_trace_records(label: str, model=None) -> tuple:
 
     Args:
         label: subagent 标识（如 "agent-1"）。
-        model: AppModel 实例（备用，当前未使用——保留签名一致性）。
+        model: AppModel 实例——**保留签名兼容**（历史调用方按位置传入
+            ``build_subagent_trace_records(label, model)``，如
+            ``trace_view``）；当前实现不消费该参数（数据源经
+            ``_subagent_slot(label)`` 从面板 store/存档获取），保留以避免
+            破坏既有调用契约。
 
     Returns:
         (records: list[TraceRecord], rows: list[TraceRecord | None])。
@@ -1755,7 +1772,14 @@ def build_trace_records(model) -> tuple:
         records.append(rec)
         rows.append(rec)
     # 子代理记录（追加于块记录之后，按状态存储顺序）
-    _subagent_records([index], records, rows)
+    # ★ P3（review）：接收返回的 merged_tool_ids——修复前回退路径丢弃返回值
+    #   （当前契约下回退路径不再调用 ``_live_records``，故无重复记录；保留
+    #   接收以固化契约：后续若在回退路径追加 live 记录，须据此跳过已合并
+    #   进 tool 记录的 subagent box）。
+    merged_tool_ids = _subagent_records([index], records, rows)
+    if merged_tool_ids:
+        # 显式消费（保持契约可追溯；当前无 live 追加，行为不变）
+        pass
     return records, rows
 
 

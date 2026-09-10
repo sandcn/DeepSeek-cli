@@ -192,7 +192,9 @@ class _CmplHandler:
             self._last_auto_text = text
             return
 
-        self._request_redraw()
+        # ★ P3（review）：删除成功的冗余 ``_request_redraw()``——
+        #   ``_show_completions_for`` 内的 ``bb.show_completions`` 已请求重绘
+        #   （见 InkBridge.show_completions 末尾），原第二次调用幂等冗余。
         self._last_auto_text = text
 
     # ── 内部方法 ──────────────────────────────────────
@@ -210,12 +212,15 @@ class _CmplHandler:
         return _apply_completion(text, repl_text, start_pos, orig_prefix)
 
     def _first_tab(self, text: str) -> str | None:
-        """首次 Tab → 计算候选项，设置状态 + 请求重绘。"""
+        """首次 Tab → 计算候选项，设置状态 + 请求重绘。
+
+        ★ P3（review）：成功分支不再重复 ``_request_redraw()``——
+        ``_show_completions_for`` 内 ``bb.show_completions`` 已请求重绘。
+        """
         if not _show_completions_for(self._bb, self._engine, text):
             self._bb.hide_completions()
             self._request_redraw()
             return None
-        self._request_redraw()
         return text
 
 

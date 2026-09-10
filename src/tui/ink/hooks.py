@@ -149,6 +149,7 @@ from ._hooks_input import (
     use_fullscreen,
     use_modal,
     _make_compat_handler,
+    clear_compat_handler_cache,
     _event_input,
     _event_key,
 )
@@ -274,6 +275,7 @@ __all__ = [
     "_bump_context_version",
     "_publish_input_router",
     "_make_compat_handler",
+    "clear_compat_handler_cache",
     "_event_input",
     "_event_key",
     "_make_imperative_cleanup",

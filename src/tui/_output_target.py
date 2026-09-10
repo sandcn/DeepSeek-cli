@@ -21,10 +21,15 @@ class IOutputTarget(Protocol):
     等实现」与实际不符——BaseDisplay 仅持有 ``output_target`` 实例（未实现
     ``write_line``/``flush``/``display_messages`` 三方法）；实际实现者是
     ``ChatUIConsumer``（及 ``_diff_renderer`` 的 ``show_file_diff`` 目标）。
+
+    ★ P3（review）：``flush``/``display_messages`` 签名与实现对齐——
+    ``ChatUIConsumer.flush(timeout=None)`` 支持可选超时参数（协议此前为无参
+    形式，``runtime_checkable`` 只校验方法存在故运行期不失败，但静态检查/
+    文档层面契约漂移）。协议按实现放宽（额外可选参数）。
     """
 
     def write_line(self, text: str) -> None: ...
-    def flush(self) -> None: ...
+    def flush(self, timeout: float | None = None) -> None: ...
     def display_messages(self, messages: list[dict], speed: int = 0) -> None: ...
 
 

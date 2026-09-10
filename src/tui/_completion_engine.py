@@ -29,6 +29,9 @@ _logger = logging.getLogger(__name__)
 #: 与补全弹窗可见行数耦合（弹窗最多显示 20 行候选项，超出部分无 UI 消费
 #: 方）；限制避免超大目录下返回过多候选拖慢渲染。
 _MAX_COMPLETION_ITEMS = 20
+#: ★ P2（review）：路径补全扫描结果硬上限（超大目录防抖）——超限截断后再
+#: 排序/取前 N 候选（正常目录远小于该值，零行为变化）。
+_MAX_SCAN_ITEMS = 5000
 
 # ★ P3（review 2026-08-22）：get_command_help 模块级惰性缓存——修复前
 #   ``_complete_command`` 每次 Tab 重复 ``from ... import get_command_help`` +
@@ -66,15 +69,20 @@ class _TTLCache:
         self._value: T | None = None
         self._expires: float = 0.0
         self._lock = threading.Lock()
+        # ★ P3（review）：独立的「未加载」标志——修复前以 ``self._value is
+        #   None`` 判定未命中：若某 fetcher 合法返回 None，缓存将永久失效、
+        #   每次按键重跑 fetcher。
+        self._loaded: bool = False
 
     def get(self) -> T:
         now = time.monotonic()
-        if self._value is None or now >= self._expires:
+        if not self._loaded or now >= self._expires:
             with self._lock:
                 # 双重检查：等待锁期间可能已被其他线程刷新
                 now = time.monotonic()
-                if self._value is None or now >= self._expires:
+                if not self._loaded or now >= self._expires:
                     self._value = self._fetcher()
+                    self._loaded = True
                     self._expires = now + self._ttl
         return self._value  # type: ignore[return-value]
 
@@ -309,8 +317,15 @@ class CompletionEngine:
                     if param_items:
                         return param_items
                 return items
-            # 命令补全无结果时也尝试参数补全
-            return self._complete_param(text)
+            # ★ P3（review）：命令补全无结果时，若词形为**绝对路径**（含
+            #   ``os.sep`` 且非单个 "/"）→ 回退路径补全——修复前一律走参数
+            #   补全（``/tmp/fo`` 这类行首绝对路径拿不到路径补全）。
+            param_items = self._complete_param(text)
+            if param_items:
+                return param_items
+            if os.sep in last_word[1:] or last_word.endswith(os.sep):
+                return self._complete_path(last_word)
+            return []
         elif text.startswith("/"):
             # /xxx yyy → 参数补全（行首命令 + 非 / 词）
             return self._complete_param(text)
@@ -555,7 +570,9 @@ class CompletionEngine:
         if not prefix:
             return []
         try:
-            expanded = os.path.expanduser(prefix) if prefix else "."
+            # ★ P3（review）：去掉死分支 ``if prefix else "."``——上方已保证
+            #   prefix 非空。
+            expanded = os.path.expanduser(prefix)
         except Exception:
             return []
 
@@ -597,8 +614,33 @@ class CompletionEngine:
         except Exception:
             return []
 
+        # ★ P2（review，超大目录性能）：扫描结果截断上限——修复前对 glob 的
+        #   全部结果（无上限）做排序 + 逐项 os.path.isdir；``~``/``.`` 会枚举
+        #   整目录，数万项时每次按键 O(N log N)+N 次 stat，渲染线程卡顿。
+        #   截断到上限（排序后取前 N 候选，语义近似；正常目录远小于上限，
+        #   零行为变化）。
+        if len(matches) > _MAX_SCAN_ITEMS:
+            _logger.debug(
+                "路径补全扫描结果 %d 项超上限 %d，截断", len(matches), _MAX_SCAN_ITEMS,
+            )
+            matches = matches[:_MAX_SCAN_ITEMS]
+
         # 排序：目录优先，然后按字母
-        matches.sort(key=lambda p: (not os.path.isdir(p), os.path.basename(p).lower()))
+        # ★ P2（review）：isdir 结果一次性缓存——修复前排序 key 与后续循环
+        #   各自调用 os.path.isdir（同一路径重复 stat）。
+        _dir_flags: dict[str, bool] = {}
+
+        def _is_dir(path: str) -> bool:
+            flag = _dir_flags.get(path)
+            if flag is None:
+                try:
+                    flag = os.path.isdir(path)
+                except OSError:
+                    flag = False
+                _dir_flags[path] = flag
+            return flag
+
+        matches.sort(key=lambda p: (not _is_dir(p), os.path.basename(p).lower()))
 
         # 限制数量（模块级常量 _MAX_COMPLETION_ITEMS，与补全弹窗可见行数耦合）
         max_items = _MAX_COMPLETION_ITEMS
@@ -622,7 +664,7 @@ class CompletionEngine:
         result: list[CompletionItem] = []
         for p in matches[:max_items]:
             name = os.path.basename(p)
-            is_dir = os.path.isdir(p)
+            is_dir = _is_dir(p)
             if is_dir:
                 name += os.sep
             # 计算替换范围：从 base 末尾到词尾

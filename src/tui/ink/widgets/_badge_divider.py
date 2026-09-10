@@ -17,9 +17,12 @@ from ._display_common import _color, _resolve_style, _repeat_to_width, _truncate
 # Badge — 背景色块徽章
 # ═══════════════════════════════════════════════════════════
 
-#: Badge 前景自动对比色（bg 偏暗 → 亮前景；bg 偏亮 → 暗前景）
-_BADGE_FG_DARK = 231
-_BADGE_FG_LIGHT = 232
+#: Badge 前景自动对比色（bg 偏暗 → 亮前景 231；bg 偏亮 → 暗前景 232）。
+#: ★ P3（review）：常量名与语义对齐（原 ``_BADGE_FG_DARK``/``_BADGE_FG_LIGHT``
+#: 命名指向前景亮度，易与背景混淆——实为「暗背景上用的亮前景」/「亮背景上
+#: 用的暗前景」）。
+_BADGE_FG_ON_DARK = 231
+_BADGE_FG_ON_LIGHT = 232
 
 #: 基础 16 色近似亮度（0-255 标度；用于前景对比判断）
 _BASE_BRIGHTNESS: dict[int, int] = {
@@ -61,8 +64,8 @@ def _ansi256_brightness(color: int) -> float:
 def _badge_fg_for_bg(bg: int) -> int:
     """根据背景色近似亮度返回可读前景色号（亮背景→暗前景，反之亦然）。"""
     if _ansi256_brightness(bg) > _BADGE_BRIGHTNESS_THRESHOLD:
-        return _BADGE_FG_LIGHT  # 亮背景 → 暗前景
-    return _BADGE_FG_DARK  # 暗背景 → 亮前景
+        return _BADGE_FG_ON_LIGHT  # 亮背景 → 暗前景
+    return _BADGE_FG_ON_DARK  # 暗背景 → 亮前景
 
 
 def Badge(props: dict) -> Element:
@@ -148,7 +151,16 @@ def Divider(props: dict) -> Element:
     #   ``_theme.sep_line`` 语义对齐（控件化表达，行宽不变量保持）。
     trailing = props.get("trailing")
     if trailing is not None and not title:
-        trailing_runs = list(trailing.runs) if hasattr(trailing, "runs") else list(trailing)
+        # ★ P3（review）：不可迭代表达式守卫——修复前 ``list(trailing)`` 对
+        #   标量（int/None 以外）抛 TypeError；现统一经列表化兜底（不可迭代
+        #   → 空内容，不崩溃）。
+        try:
+            if hasattr(trailing, "runs"):
+                trailing_runs = list(trailing.runs)
+            else:
+                trailing_runs = list(trailing)
+        except TypeError:
+            trailing_runs = []
         trailing_w = sum(getattr(r, "width", len(str(getattr(r, "text", "")))) for r in trailing_runs)
         if width > 0 and trailing_w > width:
             # 防御：右侧内容超宽时截断至 width（复用 _theme.sep_line 语义）

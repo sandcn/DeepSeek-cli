@@ -138,7 +138,9 @@ def TopHeader(props) -> object:
     from src.tui.ink.widgets.gradient import Gradient
     return h(Row, {"height": 1}, [
         h(TEXT, {"styled": dot_runs, "height": 1}),
-        h(Gradient, {"styled": title_styled, "height": 1}),
+        # ★ P3（review）：删除 Gradient 不消费的 ``height`` prop（修复前被
+        #   静默忽略——Gradient 组件仅处理 styled/runs/colors）。
+        h(Gradient, {"styled": title_styled}),
         h(TEXT, {"styled": ver_runs, "height": 1}),
     ])
 

@@ -39,8 +39,8 @@ def _put_char(d: dict, col: int, ch: str, st) -> int:
         下一个列键（零宽字符合并后不递增）。
     """
     w = wcswidth_simple(ch)
-    if w == 0 and col > 0:
-        # 零宽字符合并到最近的既有前键（画布行宽有界 ≤ 终端列数，向前
+    if w == 0:
+        # 零宽字符：合并到最近的既有前键（画布行宽有界 ≤ 终端列数，向前
         # 扫描可接受；正常文本零宽字符紧跟基字符，扫描至多 1-2 次）。
         prev_col = col - 1
         while prev_col >= 0 and prev_col not in d:
@@ -50,6 +50,21 @@ def _put_char(d: dict, col: int, ch: str, st) -> int:
             # 样式合并：保留基字符样式；基字符无样式时用零宽字符自身样式
             d[prev_col] = (prev_ch + ch, prev_st if prev_st is not None else st)
             return col
+        # ★ P3（review）：行首零宽字符（无前键可依附）——修复前直接
+        #   ``d[col] = (ch, st)`` 且 col 不递增，下一字符以同键覆盖 → 行首
+        #   组合标记/ZWJ 丢失。现暂存于当前键，由下一非零宽字符合并（见下）。
+        ex = d.get(col)
+        if ex is not None and wcswidth_simple(ex[0]) == 0:
+            d[col] = (ex[0] + ch, ex[1] if ex[1] is not None else st)
+        else:
+            d[col] = (ch, st)
+        return col
+    # ★ P3（review）：当前键已有「零宽累积」（行首零宽暂存）时与基字符合并
+    #   ——零宽字符不占列，与基字符同键（宽度以基字符计）。
+    ex = d.get(col)
+    if ex is not None and ex[0] and wcswidth_simple(ex[0]) == 0:
+        d[col] = (ex[0] + ch, st)
+        return col + w
     d[col] = (ch, st)
     return col + w
 
@@ -125,6 +140,29 @@ def _overlaps_wide_second_col(row: dict, slice_: dict) -> bool:
     return False
 
 
+def _overwrites_wide_second_col(row: dict, slice_: dict) -> bool:
+    """检测 slice_ 的新宽字符是否与既有行的「第二列键」冲突（P2）。
+
+    条件：任一 ``c in slice_`` 满足——新字符显示宽度 2（宽字符首列在 c，
+    占 c 与 c+1 两列）且 ``(c+1) in row`` 且 ``(c+1) not in slice_``。
+    快路径批量 ``row.update(slice_)`` 后行同时含 c（宽字符首列）与 c+1
+    （旧残字），而 ``_canvas_row_to_line`` 的连续段宽度推导
+    （``keys[j+1] == c2 + 1 → cw = 1``）会把宽字符按宽度 1 处理并拼接残字
+    → 后续字符错位/重叠。
+
+    Args:
+        row: 目标画布行（dict 形态）。
+        slice_: 待合并片段（dict 形态）。
+
+    Returns:
+        True — 存在冲突，须走逐键覆盖分支。
+    """
+    for c, v in slice_.items():
+        if wcswidth_simple(v[0]) == 2 and (c + 1) in row and (c + 1) not in slice_:
+            return True
+    return False
+
+
 def _merge_line(row, x: int, line: Line) -> dict:
     """将 Line 合并到画布行（从第 x 列开始），返回合并后的行。
 
@@ -163,9 +201,18 @@ def _merge_line(row, x: int, line: Line) -> dict:
                 # ★ P1-1 修复：零宽字符合并到前键（见 _put_char）
                 col = _put_char(slice_, col, ch, st)
     row = _ensure_row_dict(row)
-    # ★ P2（review）：空行（row={}）场景跳过宽字符第二列扫描（常见合并热路径
-    #   零额外开销）——``not row`` 短路后不调用 ``_overlaps_wide_second_col``。
-    if slice_.keys().isdisjoint(row) and (not row or not _overlaps_wide_second_col(row, slice_)):
+    # ★ P2（review）：空行（row={}）场景跳过宽字符扫描（常见合并热路径
+    #   零额外开销）；非空行还需检测「新宽字符覆盖既有第二列键」
+    #   （_overwrites_wide_second_col：修复前 disjoint 快路径批量 update 后
+    #   行同含宽字符首列与旧第二列残字 → _canvas_row_to_line 宽度推导
+    #   把宽字符按 1 列处理并拼接残字，后续内容错位）。
+    if slice_.keys().isdisjoint(row) and (
+        not row
+        or (
+            not _overlaps_wide_second_col(row, slice_)
+            and not _overwrites_wide_second_col(row, slice_)
+        )
+    ):
         row.update(slice_)
     else:
         for c, v in slice_.items():
@@ -333,6 +380,7 @@ __all__ = [
     "_line_as_dict",
     "_ensure_row_dict",
     "_overlaps_wide_second_col",
+    "_overwrites_wide_second_col",
     "_merge_line",
     "_slice_run_text",
     "_slice_line",

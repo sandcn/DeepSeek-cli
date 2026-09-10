@@ -61,6 +61,35 @@ _PASTE_CONFIRM_TIMEOUT = 0.001
 # InputIO — stdin 原始读取 + I/O 状态机
 # ═══════════════════════════════════════════════════════════
 
+def _is_utf8_prefix(b: bytes) -> bool:
+    """判断字节串是否为「可补齐的 UTF-8 序列前缀」（★ P3 review 新增）。
+
+    合法前缀 = 首字节为 2/3/4 字节序列首字节 + 后续字节均为续字节
+    （0x80-0xBF）+ 长度不足该首字节声明的总长（足够长却解码失败说明不是
+    单纯截断，不能留作 partial）。
+
+    Args:
+        b: 尾部字节串。
+
+    Returns:
+        True — 可下次拼接补齐；False — 非法/已完整，不应存入 partial。
+    """
+    if not b:
+        return False
+    first = b[0]
+    if (first & 0xE0) == 0xC0:
+        need = 2
+    elif (first & 0xF0) == 0xE0:
+        need = 3
+    elif (first & 0xF8) == 0xF0:
+        need = 4
+    else:
+        return False
+    if len(b) >= need:
+        return False
+    return all(0x80 <= x <= 0xBF for x in b[1:])
+
+
 class InputIO:
     """stdin 原始读取层 + I/O 状态机。
 
@@ -586,6 +615,12 @@ class InputIO:
             tail = buf[-cut:]
             if any(b < 0x20 for b in tail):
                 return text, b""
+            # ★ P3（review）：尾部必须是「可补齐的 UTF-8 前缀」才存入
+            #   partial——修复前完全非法字节（如 b"\xff\xfe"）被存入
+            #   ``_paste_partial``，后续粘贴拼接持续解码失败（污染粘贴
+            #   缓冲、字节永久滞留）。
+            if not _is_utf8_prefix(tail):
+                return text, b""
             return text, tail
         # 前缀均无法严格解码（中部损坏）→ replace 兜底，残留全部丢弃
         return buf.decode("utf-8", errors="replace"), b""
@@ -731,6 +766,18 @@ class InputIO:
         """
         self._residual_dropped_enter = False
         self._flush_stdin_residual(max_flush)
+        # ★ P2（review）：同步清理批量读取残留（``_pending`` 缓冲）——修复前
+        #   仅排空 fd，批量读取遗留在 ``_pending`` 的字节（含 Enter）会在后续
+        #   帧被重新分发为真实提交，污染调用方「丢弃窗口期残留输入」的语义
+        #   （message_editor 防误提交 / tools.user_select 防误触）。
+        try:
+            if self._pending:
+                if any(b in (0x0A, 0x0D) for b in self._pending):
+                    self._residual_dropped_enter = True
+                self._pending = b""
+                self._pending_pos = 0
+        except Exception:
+            _logger.debug("清理 _pending 残留异常", exc_info=True)
         dropped_enter = self._residual_dropped_enter
         if HAS_TERMIOS:
             try:

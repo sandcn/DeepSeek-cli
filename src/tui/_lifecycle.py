@@ -200,22 +200,11 @@ class TuiLifecycle:
                 #   文件缺失末尾行与 daemon Timer 泄漏（修复前位于 try 主体，
                 #   flush/stop 异常时 line tracker 不关闭）。
             finally:
-                try:
-                    self._close_line_tracker()
-                except Exception:
-                    _logger.debug("line_tracker.close 异常", exc_info=True)
-                # ★ 2026-08-06（输入历史落盘冲刷）：放入 finally——即使
-                #   unsubscribe/flush/stop/render_lock 清理抛异常（如渲染线程
-                #   崩溃恢复路径）也确保冲刷共享输入历史写盘队列（修复前
-                #   _HistoryDiskWriter 无冲刷接口，daemon 线程随进程强制终止时
-                #   队列中最多 256 条未落盘历史丢失）。
-                try:
-                    flush_history_disk(timeout=2.0)
-                except Exception:
-                    _logger.debug("flush_history_disk 异常", exc_info=True)
                 # 无论 unsubscribe/flush/stop/render_lock 清理是否抛异常，都必须
                 # 复位状态——保证 _started=False、_bound_handlers=None（下次 start
                 # 可重新订阅，不残留半停止状态）。
+                # ★ P2（review）：状态复位留在锁内（锁内一致性），耗时 I/O
+                #   （line tracker 关闭 / 输入历史冲刷）移到锁外执行。
                 self._started = False
                 self._bound_handlers = None
                 # ★ P2-5（review 方向）：stop 复位订阅绑定标志——修复前仅复位
@@ -224,6 +213,24 @@ class TuiLifecycle:
                 #   handlers 执行多余 unsubscribe（无害但错误），且外部经
                 #   handlers_bound 属性误判为「仍已绑定」。
                 self._handlers_bound = False
+        # ★ P2（review）：耗时 I/O 移出 ``_state_lock``——line tracker 关闭
+        #   （内部输出历史刷盘，总量时限 20s）与共享输入历史冲刷（2s）原在
+        #   锁内执行，会阻塞并发 start/suspend/resume（review 指出的
+        #   「临界区内执行阻塞 I/O」）。锁内状态已复位，锁外清理不影响
+        #   锁内一致性（stop 幂等由 _started=False 保证）。
+        try:
+            self._close_line_tracker()
+        except Exception:
+            _logger.debug("line_tracker.close 异常", exc_info=True)
+        # ★ 2026-08-06（输入历史落盘冲刷）：即使
+        #   unsubscribe/flush/stop/render_lock 清理抛异常（如渲染线程
+        #   崩溃恢复路径）也确保冲刷共享输入历史写盘队列（修复前
+        #   _HistoryDiskWriter 无冲刷接口，daemon 线程随进程强制终止时
+        #   队列中最多 256 条未落盘历史丢失）。
+        try:
+            flush_history_disk(timeout=2.0)
+        except Exception:
+            _logger.debug("flush_history_disk 异常", exc_info=True)
 
     def _close_line_tracker(self) -> None:
         """关闭输出历史 line tracker（flush 剩余行 + 停止 daemon 定时器）。

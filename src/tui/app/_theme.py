@@ -86,6 +86,12 @@ def sep_line(width: int, content: "Line | None" = None,
     #   截断至 width（复用 ink.helpers.truncate_line，不拆 CJK）再填充。
     #   正常路径（调用方已按预算截断）行为不变（truncate_line 宽度不足时
     #   原样返回）。
+    # ★ P3（review）：width<=0 且带 content 时同样返回空行——修复前仅
+    #   ``content is None`` 分支处理 width<=0，content 分支
+    #   ``sep_len = max(0, width - content.width) = 0`` 后仍原样 append
+    #   content（行宽 = content.width > width，破坏行宽不变量）。
+    if width <= 0:
+        return Line()
     if content.width > width and width > 0:
         from src.tui.ink.helpers import truncate_line
         content = truncate_line(content, width)
@@ -115,4 +121,10 @@ __all__ = [
     "get_active_palette",
     "_invalidate_palette_cache",
     "_PALETTE_SLOTS",
+    # ★ P3（review）：re-export 符号补入 __all__（与注释声明的「测试兼容
+    #   re-export」一致；修复前注释称三者为本模块 re-export 但未列入，
+    #   `from ... import *` 不可见）。
+    "_glow_bucket",
+    "_active_palette_cache",
+    "_sep_style_active",
 ]

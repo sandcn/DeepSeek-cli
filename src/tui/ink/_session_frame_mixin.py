@@ -216,11 +216,12 @@ class _SessionFrameMixin:
         frame = _components.render_frame(self._root_fiber, width)
         self._ink_renderer.render(frame)
         # ★ render() debug 选项：记录最近帧行数（session._debug_log_frame 统计）
-        if hasattr(self, "_last_frame_lines"):
-            try:
-                self._last_frame_lines = len(frame.lines)
-            except Exception:
-                pass
+        #   ★ P3（review）：``_last_frame_lines`` 由 ``InkSession.__init__``
+        #   恒初始化，原 ``hasattr`` 守卫恒真（死条件，掩盖属性来源）→ 直接赋值。
+        try:
+            self._last_frame_lines = len(frame.lines)
+        except Exception:
+            pass
         # ★ P5：input-area fiber 缓存——仅在失效时重建（避免每帧全树递归查找）。
         #   调和器复用 fiber 时重置 deleted=False；input-area 被删除/替换（旧
         #   fiber 未复用 → deleted 保持 True）时缓存自动失效重建。
@@ -259,15 +260,18 @@ class _SessionFrameMixin:
         now = time.monotonic()
         if now - self._last_sys_stats_time < self._sys_stats_interval:
             return
-        self._last_sys_stats_time = now
+        # ★ P3（review）：先判 model/status 再刷新时间戳——修复前先刷新
+        #   ``_last_sys_stats_time`` 再判 status，无 status 的模型每 2s 均会
+        #   进入采集路径一次（空转）；顺序调整后无 status 时零开销早退。
         if self._model is None:
             return
-        if self._system_monitor is None:
-            from src.tui._system_monitor import _SystemMonitor
-            self._system_monitor = _SystemMonitor()
         status = getattr(self._model, "status", None)
         if status is None:
             return  # 测试桩模型无 status
+        self._last_sys_stats_time = now
+        if self._system_monitor is None:
+            from src.tui._system_monitor import _SystemMonitor
+            self._system_monitor = _SystemMonitor()
         try:
             cpu, mem = self._system_monitor.get_cpu_and_mem()
         except Exception:

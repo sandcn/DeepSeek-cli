@@ -88,9 +88,9 @@ class AppModel(_ToolOutputMixin):
         self.content_block_index: int = -1
         # 终端宽度（session 每帧更新；渲染器 TOC 边框用）
         self.width: int = 80
-        # 工具调用组
-        self.in_tool_group: bool = False
-        self.tool_block_index: int = -1
+        # ★ P3（review）：status_bar 快照 TTL 缓存字段显式声明（修复前为动态
+        #   挂载属性，未在模型中声明，与「显式声明防动态属性隐患」约定不符）。
+        self._status_snapshot_cache = None
         # 每工具 box 跟踪（tool_id → 开放 box）
         self.tool_boxes: dict = {}
         self._tool_id_seq: int = 0
@@ -687,8 +687,6 @@ class AppModel(_ToolOutputMixin):
         self.content_closed = False
         self.reasoning_block_index = -1
         self.content_block_index = -1
-        self.in_tool_group = False
-        self.tool_block_index = -1
         self.tool_boxes = {}
         self._tool_id_seq = 0
         self.parse_line = None
@@ -785,8 +783,16 @@ class AppModel(_ToolOutputMixin):
 
     @trace_open.setter
     def trace_open(self, value: bool) -> None:
-        """设置轨迹视图开关（映射到 ``fullscreen``）。"""
-        self.fullscreen = "trace" if value else ""
+        """设置轨迹视图开关（映射到 ``fullscreen``）。
+
+        ★ P3（review）：置 False 时仅当当前全屏视图为 ``"trace"`` 才清空——
+        修复前无条件 ``self.fullscreen = ""``，会误关闭其它全屏视图
+        （``"config"``/``"trace_tools"`` 等），与通用 fullscreen 机制语义冲突。
+        """
+        if value:
+            self.fullscreen = "trace"
+        elif self.fullscreen == "trace":
+            self.fullscreen = ""
 
 
 __all__ = [

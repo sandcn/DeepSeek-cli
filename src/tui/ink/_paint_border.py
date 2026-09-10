@@ -38,22 +38,26 @@ def _border_style(props: dict, edge: str | None = None) -> Style:
         base = Style(fg=23)
     from .helpers import _parse_color
     if edge is None:
+        # ★ P3（review）：edge=None 与单边分支统一——修复前忽略
+        #   ``borderDimColor``/``borderBackgroundColor``（单边分支已合并），
+        #   且 ``borderColor`` 缺失时直接返回 base（不解析 dim/bg）。
         border_color = props.get("borderColor")
-        if border_color is not None:
-            color = _parse_color(border_color)
-            if color is not None:
-                # ★ P3 修复（review 方向）：重建 Style(fg=color) 丢失 base 的
-                #   bg/dim/bold/italic/underline/strikethrough/inverse——
-                #   borderStyle 传 Style 对象（含字型/背景）或
-                #   borderDimColor/borderBackgroundColor 已并入 base 时须保留。
-                return Style(
-                    fg=color, bg=base.bg, dim=base.dim,
-                    bold=base.bold, italic=base.italic,
-                    underline=base.underline,
-                    strikethrough=base.strikethrough,
-                    inverse=base.inverse,
-                )
-        return base
+        dim_color = props.get("borderDimColor")
+        bg_color = props.get("borderBackgroundColor")
+        fg = _parse_color(border_color) if border_color is not None else None
+        bg = _parse_color(bg_color) if bg_color is not None else None
+        if fg is None and bg is None and dim_color is None:
+            return base
+        return Style(
+            fg=fg if fg is not None else base.fg,
+            bg=bg if bg is not None else base.bg,
+            dim=bool(dim_color) or base.dim,
+            bold=base.bold,
+            italic=base.italic,
+            underline=base.underline,
+            strikethrough=base.strikethrough,
+            inverse=base.inverse,
+        )
     # 单边：edge = "top"/"bottom"/"left"/"right"
     edge_color = props.get(f"border{edge.capitalize()}Color")
     color = edge_color if edge_color is not None else props.get("borderColor")
@@ -190,10 +194,21 @@ def _paint_border(fiber: Fiber, canvas: list[dict], border: int, clip=None) -> N
     x1 = max(x1, 0)
     # overflow 裁剪范围（None=不裁剪）
     clip_x0 = clip_y0 = clip_x1 = clip_y1 = None
-    if clip is not None and clip[2] > 0 and clip[3] > 0:
+    if clip is not None:
+        # ★ P1（review）：空交集哨兵 ``(0, 0, 0, 0)``（_resolve_clip 返回）
+        #   表示全部裁剪——修复前 ``clip[2] > 0 and clip[3] > 0`` 为假时按
+        #   「不裁剪」处理，overflow:hidden 且裁剪区为空（如显式 height=0
+        #   容器）时子盒边框仍全量绘制（渲染越界，与 TEXT 分支
+        #   ``if cw <= 0 or ch <= 0: continue`` 不一致）。
+        if clip[2] <= 0 or clip[3] <= 0:
+            return
         clip_x0, clip_y0, cw, ch = clip
         clip_x1, clip_y1 = clip_x0 + cw, clip_y0 + ch
-    if y0 < 0 or y0 >= len(canvas):
+    # ★ P1（review）：仅当 box 完全在画布下方时早退——修复前 ``y0 < 0``
+    #   提前返回，box 顶部在画布上方（负 top / bottom 锚点内容高于容器）时
+    #   底边与左右边的**可见部分**被一并跳过（内容缺失）。行级越界由
+    #   ``_prepare_row`` 逐行过滤。
+    if y0 >= len(canvas):
         return
 
     def _prepare_row(y) -> dict | None:
@@ -277,21 +292,35 @@ def _paint_border(fiber: Fiber, canvas: list[dict], border: int, clip=None) -> N
             row[x1] = (vline_r, right_style)
 
 
-def _paint_box_background(box, canvas: list[dict], style: Style) -> None:
+def _paint_box_background(box, canvas: list[dict], style: Style, clip=None) -> None:
     """填充 Box 背景色到画布区域（完善 react ink v6 ``<Box backgroundColor>``）。
 
     以空格字符 + 背景样式填充 box 区域内所有单元格；随后子节点 TEXT 绘制
     会覆盖对应列（文本优先）。画布行初始为 None/Line 时先归一化为 dict。
 
+    ★ P3（review）：新增 ``clip`` 参数——修复前背景按 box 全区域写入画布，
+    父容器 ``overflow:hidden`` 裁剪区外的单元格同样被填充（与边框/TEXT 的
+    裁剪行为不一致）。空交集哨兵 ``(0, 0, 0, 0)`` 视为全部裁剪。
+
     Args:
         box: 容器布局盒。
         canvas: 画布。
         style: 背景样式（``Style(bg=...)``）。
+        clip: 裁剪区域 (x, y, w, h)；None 表示不裁剪。
     """
     if box is None or box.w <= 0 or box.h <= 0:
         return
+    clip_x0 = clip_y0 = clip_x1 = clip_y1 = None
+    if clip is not None:
+        if clip[2] <= 0 or clip[3] <= 0:
+            return
+        clip_x0, clip_y0, clip_x1, clip_y1 = (
+            clip[0], clip[1], clip[0] + clip[2], clip[1] + clip[3],
+        )
     for r in range(box.y, box.y + box.h):
         if r < 0 or r >= len(canvas):
+            continue
+        if clip_y0 is not None and (r < clip_y0 or r >= clip_y1):
             continue
         row = canvas[r]
         if isinstance(row, Line):
@@ -300,7 +329,12 @@ def _paint_box_background(box, canvas: list[dict], style: Style) -> None:
         elif row is None:
             row = {}
             canvas[r] = row
-        for c in range(max(0, box.x), box.x + box.w):
+        c0 = max(0, box.x)
+        c1 = box.x + box.w
+        if clip_x0 is not None:
+            c0 = max(c0, clip_x0)
+            c1 = min(c1, clip_x1)
+        for c in range(c0, c1):
             # 只填充空格位（已有内容不覆盖——本函数在子节点绘制前调用，
             # 但兄弟节点/边框可能已写；空格字符保证无文本时背景可见）
             if c not in row:

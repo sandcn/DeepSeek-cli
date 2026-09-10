@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 import time
+from functools import lru_cache
 
 from src.tui.core.color import lerp_color
 
@@ -32,6 +33,12 @@ def _default_fx_params() -> tuple[float, float]:
     """读取 TuiConfig 动效默认参数（fade_duration_sec / spinner_tick_hz）。
 
     惰性导入避免循环依赖；读取失败时回退与配置默认值一致的字面量。
+
+    ★ P2（review）：``functools.lru_cache`` 缓存结果——修复前每次调用都
+    构造 ``TuiConfig.defaults()``（25 字段 dataclass 分配），而本函数位于
+    逐帧渲染热路径（``fade_color``/``spinner_frame``/状态栏/弹窗构建）。
+    ``TuiConfig`` 为 frozen 且 ``defaults()`` 恒返回字面量默认值，不存在
+    运行期覆盖机制，缓存安全（调用方若需动态值应显式传参）。
     """
     try:
         from src.tui._config import TuiConfig
@@ -39,6 +46,10 @@ def _default_fx_params() -> tuple[float, float]:
         return (cfg.fade_duration_sec, cfg.spinner_tick_hz)
     except Exception:
         return (0.6, 10.0)
+
+
+# ★ P2（review）：包装缓存（保持 ``_default_fx_params`` 可 patch/可读语义）。
+_default_fx_params = lru_cache(maxsize=1)(_default_fx_params)
 
 
 #: 模块级默认参数快照（对齐 TuiConfig 配置默认值，兼容外部导入引用——

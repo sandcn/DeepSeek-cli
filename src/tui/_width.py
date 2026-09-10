@@ -17,8 +17,8 @@ ASCII 快速路径/单字符缓存）。从 ``_screen.py`` 拆分独立，使屏
   - CJK 统一表意 0x4E00-0x9FFF
   - 韩文音节 0xAC00-0xD7AF
   - CJK 兼容表意 0xF900-0xFAFF
-  - CJK 兼容表意补充 0x2F800-0x2FA1F
-  - CJK 扩展 B-F 0x20000-0x2CEAF
+  - CJK 兼容表意补充 0x2F800-0x2FA1F（已并入 0x20000-0x2FFFF 区间）
+  - CJK 扩展 B-F + 兼容表意补充 0x20000-0x2FFFF
   - CJK 扩展 G-H 0x30000-0x3134F
   零宽/全角/emoji 区间两表亦已对齐（见下）。改动任一侧须同步另一侧。
 
@@ -68,8 +68,13 @@ _CJK_RANGES: list[tuple[int, int]] = [
     #   ``cjk_display_width`` 对齐（宽度 2）。
     (0xAC00, 0xD7AF),    # Hangul Syllables（韩文音节，宽度 2）
     (0xF900, 0xFAFF),    # CJK Compatibility Ideographs
-    (0x2F800, 0x2FA1F),  # CJK Compatibility Ideographs Supplement
-    (0x20000, 0x2CEAF),  # CJK Unified Ideographs Extension B-F
+    # ★ P1（review）：区间扩展到 0x2FFFF——修复前上界 0x2CEAF 遗漏
+    #   CJK Extension F（0x2CEB0-0x2EBEF），与
+    #   ``renderer/_utils/_display.cjk_display_width`` 的 0x20000-0x3134F
+    #   不一致（该段 ink 侧计 1、renderer 侧计 2 → 含 Ext F 字符的行宽度
+    #   测量分歧，破坏行级 diff 宽度不变量）。该区间同时覆盖 CJK 兼容表意
+    #   补充（0x2F800-0x2FA1F，原独立条目已并入本区间，避免区间表重叠）。
+    (0x20000, 0x2FFFF),  # CJK Ext B-F + 兼容表意补充（0x2F800-0x2FA1F）
     (0x30000, 0x3134F),  # CJK Unified Ideographs Extension G-H
 ]
 
@@ -249,8 +254,15 @@ def _skip_ansi_at(text: str, i: int) -> int:
         if k < n and text[k] == "\x1b" and k + 1 < n and text[k + 1] == "\\":
             return k + 2
         return k  # 残缺 OSC
-    # 单字符控制序列：\x1bX（X 为 @-Z \ - _）
-    if ("@" <= c <= "Z") or c in ("\\", "-", "_"):
+    # 单字符控制序列：\x1bX（X 为 Fe 终字节 0x40-0x5F：@A-Z[\]^_）
+    # ★ P3（review）：字符类与 ``ink/_ansi_utils._ANSI_RE`` 第三分支
+    #   ``\x1b[@-Z\\-_]``（解析为 0x40-0x5A ∪ 0x5C-0x5F）统一为 Fe 集合
+    #   0x40-0x5F——修复前用 ``("@" <= c <= "Z") or c in ("\\", "-", "_")``
+    #   （含 0x2D '-'、不含 0x5D ']'/0x5E '^'），与 ``strip_ansi`` 口径分裂：
+    #   ``"\x1b-"`` 在 strip_ansi 保留 '-'（视觉宽 1）而本函数跳过 ESC+'-'
+    #   （宽 0）→ 两套宽度测量不一致。'['（0x5B）在 CSI 分支已先行处理，
+    #   不达此分支。
+    if 0x40 <= ord(c) <= 0x5F:
         return j + 1
     return j  # 孤立 ESC：仅跳过 ESC 本身
 
@@ -392,6 +404,12 @@ def truncate_width(s: str, max_w: int) -> str:
     纯 ASCII 可打印字符串宽度 == 字符数——C 实现的 ``isascii()`` +
     ``isprintable()`` 单趟扫描后直接切片（逐字符 ``wcswidth_simple`` 的
     Python 循环仅用于含 CJK/emoji/控制字符的文本）。
+
+    ★ P2（review）：识别 ANSI 转义序列——修复前逐字符 ``wcswidth_simple``
+    把 ESC 后序列正文（``[31m`` 等）按可见字符计宽，且截断可能停在序列中间
+    产出残缺转义（如 ``truncate_width("\\x1b[31mabcdef", 3) == "\\x1b[31"``，
+    宽度应为 0）。现经 ``_skip_ansi_at`` 整段穿透（序列宽度 0，不计入预算、
+    不被截断拆散）。
     """
     if max_w <= 0:
         return ""
@@ -399,12 +417,21 @@ def truncate_width(s: str, max_w: int) -> str:
         return s if len(s) <= max_w else s[:max_w]
     w = 0
     out = []
-    for ch in s:
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if ch == "\x1b":
+            j = _skip_ansi_at(s, i)
+            out.append(s[i:j])
+            i = j
+            continue
         cw = wcswidth_simple(ch)
         if w + cw > max_w:
             break
         out.append(ch)
         w += cw
+        i += 1
     return "".join(out)
 
 

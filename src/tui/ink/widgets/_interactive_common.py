@@ -11,14 +11,12 @@
 
 from __future__ import annotations
 
-import logging
-
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：``_clamp_index`` / ``_color`` /
 #   ``_call`` 与多个控件模块重复的实现收敛至 ``_widget_common``（单一真源）；
 #   本模块 re-export 保持 interactive 门面/测试 patch 路径兼容。
 from ._widget_common import _clamp_index, _color, _call
 
-_logger = logging.getLogger(__name__)
+# ★ P3（review）：删除未使用的 ``_logger``（本模块无日志调用）。
 
 
 def _normalize_items(items) -> list[dict]:

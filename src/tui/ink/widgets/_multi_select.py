@@ -11,6 +11,8 @@ vim 风格 ``j/k/g/G`` 导航。未传新 props 时行为与旧版完全一致�
 
 from __future__ import annotations
 
+import logging
+
 from src.tui.core.style import Style
 from ..element import TEXT, Element, h
 from ..hooks import use_state, use_input, use_ref
@@ -23,6 +25,8 @@ from ._interactive_common import (
     _hashable,
 )
 from ._select_input import _is_vim_nav, _vim_navs_from_paste
+
+_logger = logging.getLogger(__name__)
 
 #: 选中/未选中指示符（几何符号单宽，wcswidth_simple 宽度 1——安全对齐）
 _CHECKED = "\u25cf "   # ●
@@ -251,6 +255,12 @@ def MultiSelect(props: dict) -> Element:
             try:
                 child = render_item(item, idx, is_cursor, is_checked)
             except Exception:
+                # ★ P2（review）：不静默降级——记录 warning（与 listview
+                #   renderItem 降级日志口径一致），便于排查自定义渲染异常。
+                _logger.warning(
+                    "MultiSelect renderItem 异常（idx=%s），降级默认行", idx,
+                    exc_info=True,
+                )
                 indicator = checked_prefix if is_checked else unchecked_prefix
                 child = h(TEXT, {"children": indicator + item["label"], "style": highlight_style if is_cursor else None})
             if isinstance(child, Element):
@@ -260,6 +270,12 @@ def MultiSelect(props: dict) -> Element:
             elif child is None:
                 rows.append(h(TEXT, {"children": "", "key": f"item-{idx}"}))
             else:
+                # ★ P3（review）：非 Element/None 返回值（list/dict 等）会渲染
+                #   repr 文本（如 ``"[...]"``）——记 warning 便于排查（保持
+                #   ``str()`` 渲染兼容既有调用方）。
+                _logger.warning(
+                    "MultiSelect renderItem 返回非 Element 类型: %r", type(child),
+                )
                 rows.append(h(TEXT, {"children": str(child), "key": f"item-{idx}"}))
             continue
         indicator = checked_prefix if is_checked else unchecked_prefix

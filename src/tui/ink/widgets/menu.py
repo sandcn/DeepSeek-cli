@@ -251,10 +251,13 @@ def Menu(props: dict) -> Element:
     if not _is_selectable(items[cursor_shown]):
         cursor_shown = _next_selectable(items, cursor_shown, 1)
     # 计算标签最大宽（快捷键右对齐定位）
+    # ★ P3（review）：测宽前先做与渲染相同的 ``\n`` → 空格归一化——修复前
+    #   用原始 label 宽度（含 ``\n`` 的 label 少算列数），快捷键右对齐偏移。
     max_label_w = 0
     for it in items:
         if it.get("type") != "header":
-            w = wcswidth_simple(str(it.get("label", "")))
+            _lbl = str(it.get("label", "")).replace("\r", " ").replace("\n", " ")
+            w = wcswidth_simple(_lbl)
             if w > max_label_w:
                 max_label_w = w
     rows: list = []

@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
@@ -23,6 +25,8 @@ from ._interactive_common import (
     _visible_window,
     _clamp_index,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 def _nav_for_char(ch: str) -> str | None:
@@ -294,6 +298,11 @@ def SelectInput(props: dict) -> Element:
             try:
                 child = render_item(item, idx, is_sel)
             except Exception:
+                # ★ P2（review）：不静默降级——记录 warning（与 listview 口径一致）。
+                _logger.warning(
+                    "SelectInput renderItem 异常（idx=%s），降级默认行", idx,
+                    exc_info=True,
+                )
                 child = h(TEXT, {"children": prefix + item["label"], "style": highlight_style if is_sel else None})
             if isinstance(child, Element):
                 cp = dict(child.props)

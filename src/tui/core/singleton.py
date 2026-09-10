@@ -68,9 +68,14 @@ class SingletonMeta(ABCMeta):
             创建的类。
         """
         cls = super().__new__(mcs, name, bases, namespace, **kwargs)
-        # 为每个使用 SingletonMeta 的类注入独立的单例缓存和锁
-        cls._instance: ClassVar[Optional[Any]] = None
-        cls._instance_lock: ClassVar[threading.Lock] = threading.Lock()
+        # 为每个使用 SingletonMeta 的类注入独立的单例缓存和锁。
+        # ★ P3（review）：仅在类命名空间未显式声明时注入——修复前无条件
+        #   覆盖 ``cls._instance``/``cls._instance_lock``（用户显式声明同名
+        #   属性被静默丢弃）。
+        if "_instance" not in namespace:
+            cls._instance: ClassVar[Optional[Any]] = None
+        if "_instance_lock" not in namespace:
+            cls._instance_lock: ClassVar[threading.Lock] = threading.Lock()
         return cls
 
     def get_default(cls: type) -> Any:
