@@ -1,8 +1,9 @@
-"""deepseek-v4-flash-vision-exp 接入测试（2026-08-22）。
+"""DeepSeek 多模态视觉接入测试（2026-08-22，2026-09-10 更新）。
 
 覆盖：
-- 默认模型列表 / token 价格包含 deepseek-v4-flash-vision-exp
-- V4 模型判定（is_deepseek_v4_model）与多模态判定（is_multimodal_model）
+- 默认模型列表 / token 价格包含 deepseek-flash（V4.1 Flash，原生多模态）
+  与旧名 deepseek-v4-flash-vision-exp
+- V4 系列判定（is_deepseek_v4_model）与多模态判定（is_multimodal_model）
 - 用户消息图片输入（build_user_content_blocks：本地路径 base64 / URL /
   非多模态模型回退纯文本）
 - 图片引用提取（extract_image_refs：Markdown / 裸 URL / 本地路径）
@@ -24,6 +25,8 @@ from src.api.multimodal import (
 )
 
 _VISION_MODEL = "deepseek-v4-flash-vision-exp"
+# V4.1 Flash：最新一代多模态模型（旧名请求路由到它）
+_FLASH_MODEL = "deepseek-flash"
 
 
 def _make_image_bytes(w: int = 2, h: int = 2, fmt: str = "PNG") -> bytes:
@@ -38,31 +41,38 @@ def _make_image_bytes(w: int = 2, h: int = 2, fmt: str = "PNG") -> bytes:
 # ── 1. 模型列表 / 价格 ────────────────────────────────
 
 def test_deepseek_provider_models_include_vision():
-    """deepseek provider 默认模型列表包含 vision 模型。"""
+    """deepseek provider 默认模型列表包含 vision 模型与 deepseek-flash。"""
     assert _VISION_MODEL in PROVIDERS["deepseek"]["models"]
+    assert _FLASH_MODEL in PROVIDERS["deepseek"]["models"]
 
 
 def test_deepseek_provider_token_prices_include_vision():
-    """vision 模型价格与 V4-Flash 一致（input 0.55 / output 2.19）。"""
+    """vision 模型价格采用 V4.1 Flash 新价（input 0.3 / output 1.2 / cache 0.006）。"""
     prices = PROVIDERS["deepseek"]["token_prices"][_VISION_MODEL]
-    assert prices["input"] == 0.55
-    assert prices["output"] == 2.19
-    assert prices["input_cache_hit"] == 0.07
+    assert prices["input"] == 0.3
+    assert prices["output"] == 1.2
+    assert prices["input_cache_hit"] == 0.006
     assert prices == PROVIDERS["deepseek"]["token_prices"]["deepseek-v4-flash"]
+    assert prices == PROVIDERS["deepseek"]["token_prices"][_FLASH_MODEL]
 
 
 # ── 2. 模型判定 ───────────────────────────────────────
 
 def test_is_v4_model_vision():
-    """deepseek-v4-flash-vision-exp 属于 V4 系列（注入 thinking 参数）。"""
+    """vision 旧名与 deepseek-flash 同属 V4 系列（注入 thinking 参数）。"""
     assert is_deepseek_v4_model(_VISION_MODEL) is True
+    assert is_deepseek_v4_model(_FLASH_MODEL) is True
+    assert is_deepseek_v4_model("deepseek-v4-flash") is True
 
 
 def test_is_multimodal_model_vision():
-    """deepseek-v4-flash-vision-exp 判定为多模态；deepseek-v4-flash 不是。"""
+    """vision 旧名 / deepseek-flash / deepseek-v4-flash 均多模态。"""
     clear_multimodal_cache()
     assert is_multimodal_model(_VISION_MODEL) is True
-    assert is_multimodal_model("deepseek-v4-flash") is False
+    assert is_multimodal_model(_FLASH_MODEL) is True
+    # 旧名 deepseek-v4-flash 已路由到 V4.1 Flash（原生多模态）
+    assert is_multimodal_model("deepseek-v4-flash") is True
+    # deepseek-v4-pro 当前不声明图像输入
     assert is_multimodal_model("deepseek-v4-pro") is False
     clear_multimodal_cache()
 
@@ -117,7 +127,7 @@ def test_extract_image_refs_no_false_positive(tmp_path):
 
 def test_build_user_blocks_non_multimodal_returns_text():
     """非多模态模型：原样返回纯文本。"""
-    out = build_user_content_blocks("看图 ![a](x.png)", "deepseek-v4-flash")
+    out = build_user_content_blocks("看图 ![a](x.png)", "deepseek-v4-pro")
     assert out == "看图 ![a](x.png)"
 
 
@@ -214,7 +224,7 @@ def test_agent_add_user_message_non_vision_plain(monkeypatch):
     """非多模态模型：add_user_message 保持纯文本 content。"""
     from src.core.base_agent import BaseAgent
     agent = BaseAgent()
-    agent.model = "deepseek-v4-flash"
+    agent.model = "deepseek-v4-pro"
     agent.add_user_message("看下 /no/such.png 文件")
     msg = agent.messages[-1]
     assert msg["role"] == "user"

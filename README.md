@@ -106,7 +106,7 @@ pip install ".[dev]"
 
 | Provider | 适配器 | 说明 |
 |---|---|---|
-| `deepseek` | `DeepSeekAdapter` | DeepSeek 官方 API（默认），支持 v4-pro、v4-flash、v4-flash-vision-exp（多模态视觉）、reasoner、chat、coder 系列 |
+| `deepseek` | `DeepSeekAdapter` | DeepSeek 官方 API（默认），支持 deepseek-flash（V4.1 Flash，原生多模态视觉）、v4-pro、v4-flash / v4-flash-vision-exp（旧名，已路由到 V4.1 Flash）、reasoner、chat、coder 系列 |
 | `custom` | `OpenAICompatAdapter` | 任意 OpenAI 兼容 API（OpenAI / GLM / 通义千问等），自动检测 reasoner 模型 |
 | `anthropic` | `AnthropicAdapter` | Anthropic Claude 系列模型（API 格式自动转换） |
 | `ollama` | `OllamaAdapter` | 本地 Ollama 部署模型（默认 `localhost:11434`） |
@@ -146,14 +146,15 @@ python chat.py --model deepseek-v4-pro
 
 通过 `-m` / `--model` 临时覆盖配置文件中的模型，不影响配置文件。
 
-#### 多模态视觉（deepseek-v4-flash-vision-exp）
+#### 多模态视觉（deepseek-flash）
 
-`deepseek-v4-flash-vision-exp` 是 DeepSeek 的多模态视觉模型（实验性质），
-图片按 token 计费（单图最多 384 tokens），计费价格与 `deepseek-v4-flash` 一致。
-接入方式：
+`deepseek-flash`（DeepSeek V4.1 Flash）是 DeepSeek 最新一代模型，原生支持
+多模态视觉理解，图片按 token 计费。旧模型名 `deepseek-v4-flash` 与
+`deepseek-v4-flash-vision-exp` 已下线，请求统一路由到 V4.1 Flash（按相同
+单价计费，同样具备视觉能力）。接入方式：
 
 ```bash
-python chat.py -m deepseek-v4-flash-vision-exp
+python chat.py -m deepseek-flash
 ```
 
 该模型支持两种图片输入方式（图片仅支持出现在用户消息中）：
@@ -267,7 +268,7 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | `Esc`（双击） | 清空当前输入框内容 |
 | `Ctrl+G` | 使用 vim 编辑器编辑当前输入内容（支持 $EDITOR 环境变量） |
 | `Ctrl+O` | 编辑当前会话中的已有消息（触发 `/editmsg` 命令） |
-| `Ctrl+N` | 循环切换对话模型（RC 模型列表与内置 provider 模型合并，新增模型如 deepseek-v4-flash-vision-exp 自动可切换） |
+| `Ctrl+N` | 循环切换对话模型（RC 模型列表与内置 provider 模型合并，新增模型如 deepseek-flash 自动可切换） |
 | `Ctrl+P` / `↑` | 浏览输入历史（上一条） |
 | `↓` | 浏览输入历史（下一条） |
 | `Ctrl+R` | 反向历史搜索（配置门控；默认重试上一轮） |
@@ -346,7 +347,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 | `mv` | mv | IO | ✅ | 移动文件或目录，支持跨文件系统 |
 | `rm` | rm | IO | ❌ | 删除文件或目录（删除前自动备份到沙盒） |
 | `mkdir` | mk | IO | ✅ | 创建目录，支持递归创建父目录 |
-| `read_image` | ri | IO | ✅ | 读取图像文件内容，支持分块读取与图像操作（灰度/旋转/翻转/缩放）；图片按原始尺寸返回给模型（不做自动缩放）；多模态 base64 图片（多模态模型直接看到图片） |
+| `read_image` | ri | IO | ✅ | 读取图像文件内容，支持分块读取与图像操作（灰度/旋转/翻转/缩放）；图片按原始尺寸返回给模型（不做自动缩放）；多模态 base64 图片（多模态模型如 deepseek-flash 直接看到图片） |
 | `web_search` | ws | 网络 | ❌ | DeepSeek 官方原生联网搜索（Anthropic 兼容 Messages API + web_search_20250305），返回来源列表（标题/URL/摘要） |
 | `web_fetch` | — | 网络 | ✅ | 获取指定 URL 的网页全文（自动提取正文，SSRF 防护，仅 http/https） |
 | `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/超时回退/非交互回退，选项可带说明，TUI 中高亮选项时说明显示在右侧；支持并发提问——多个问题可同一轮同时弹出、以 tab 形式一起回答） |

@@ -183,9 +183,9 @@ def test_switch_model_merges_provider_models(ctx, monkeypatch):
     cb, state, session, _, _ = ctx
     state.model = "deepseek-v4-flash"
     cb("switch_model", "t")
-    # 下一个即 PROVIDERS 聚合追加的 deepseek-v4-flash-vision-exp
-    assert state.model == "deepseek-v4-flash-vision-exp"
-    assert session.model == "deepseek-v4-flash-vision-exp"
+    # 下一个即 PROVIDERS 聚合追加的 deepseek-flash（V4.1 Flash 多模态）
+    assert state.model == "deepseek-flash"
+    assert session.model == "deepseek-flash"
 
 
 def test_switch_model_current_not_in_list(ctx, monkeypatch, patch_model_source):

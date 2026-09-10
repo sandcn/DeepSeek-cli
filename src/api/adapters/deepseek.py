@@ -69,8 +69,9 @@ class DeepSeekAdapter(BaseLLMAdapter):
     """DeepSeek API 专用适配器
 
     当前支持的模型系列：
+    - deepseek-flash        — V4.1 Flash（最新一代，原生多模态，thinking mode）
     - deepseek-v4-pro       — V4 旗舰版（thinking mode）
-    - deepseek-v4-flash     — V4 快速版（thinking mode）
+    - deepseek-v4-flash     — V4 快速版（旧名，已路由到 V4.1 Flash）
     - deepseek-reasoner     — 推理模型
     - deepseek-chat         — 经典对话模型
     - deepseek-coder        — 经典代码模型

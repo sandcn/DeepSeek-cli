@@ -1,7 +1,8 @@
-"""read_image 全量图片类型 + 转换到 deepseek-v4-flash-vision-exp 支持格式测试。
+"""read_image 全量图片类型 + 转换到 deepseek-flash 支持格式测试。
 
 背景：用户要求 read_image 支持全量图片类型（所有 Pillow 可解码图像格式），
-并转换为 deepseek-v4-flash-vision-exp 支持的格式（JPEG/PNG/GIF/WebP）——
+并转换为 deepseek-flash（V4.1 Flash，原生多模态；旧名
+deepseek-v4-flash-vision-exp 路由到该模型）支持的格式（JPEG/PNG/GIF/WebP）——
 本实现统一转码为 PNG 返回（模型支持格式之一）。
 
 覆盖：

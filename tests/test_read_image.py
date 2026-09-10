@@ -517,10 +517,14 @@ def test_multimodal_model_patterns():
     assert is_multimodal_model("qwen2.5-vl-7b")
     assert is_multimodal_model("llava-v1.6")
     assert is_multimodal_model("gemini-2.0-flash")
-    assert not is_multimodal_model("deepseek-v4-flash")
-    assert not is_multimodal_model("gpt-3.5-turbo")
-    # DeepSeek V4 多模态实验模型（deepseek-v4-flash-vision-exp）
+    # DeepSeek 多模态：deepseek-flash（V4.1 Flash）；旧名 deepseek-v4-flash /
+    # deepseek-v4-flash-vision-exp 已路由到 V4.1 Flash，同样多模态
+    assert is_multimodal_model("deepseek-flash")
+    assert is_multimodal_model("deepseek-v4-flash")
     assert is_multimodal_model("deepseek-v4-flash-vision-exp")
+    # deepseek-v4-pro 当前不声明图像输入
+    assert not is_multimodal_model("deepseek-v4-pro")
+    assert not is_multimodal_model("gpt-3.5-turbo")
     clear_multimodal_cache()
 
 

@@ -3,8 +3,10 @@
 DSH 对齐的加工语义（2026-08 重构）：
 - 全量图片类型：接受所有 Pillow 可解码的图像格式（PNG/JPEG/WebP/GIF/BMP/
   TIFF/ICO/PNM(PPM/PGM/PBM)/TGA/SGI/…），不再局限于四种；深度求索
-  deepseek-v4-flash-vision-exp 仅支持 JPEG/PNG/GIF/WebP，故所有输入统一
-  转码为 PNG 返回（模型支持格式之一），非支持格式（如 BMP/TIFF）自动转换；
+  deepseek-flash（V4.1 Flash，原生多模态；旧名 deepseek-v4-flash 与
+  deepseek-v4-flash-vision-exp 均路由到该模型）仅支持 JPEG/PNG/GIF/WebP，
+  故所有输入统一转码为 PNG 返回（模型支持格式之一），非支持格式（如
+  BMP/TIFF）自动转换；
 - magic-byte / 声明类型一致校验：解码后实际格式必须与扩展名声明的格式一致，
   否则报 DSH 式「扩展名与实际格式不符，重命名文件」错误；
 - 严格图像能力门禁：当前模型若不声明图像输入（非多模态），直接拒绝并提示
@@ -20,7 +22,7 @@ DSH 对齐的加工语义（2026-08 重构）：
 
 返回格式固定为多模态：文本元信息 + OpenAI 兼容 image_url data URI
 content blocks（Anthropic 适配器自动转 image block）；图片统一编码为 PNG
-（deepseek-v4-flash-vision-exp 支持的格式之一）。
+（deepseek-flash 支持的格式之一）。
 """
 
 from __future__ import annotations
@@ -44,8 +46,8 @@ _SUPPORTED_OPERATIONS = frozenset({
 
 # ── 全量图片类型：扩展名 → Pillow 格式名（声明格式） ──
 # 覆盖 Pillow 常见可解码图像格式；magic-byte 校验以实际解码为准。
-# 深度求索 deepseek-v4-flash-vision-exp 仅支持 JPEG/PNG/GIF/WebP，
-# 故所有输入统一转码为 PNG 返回（模型支持格式之一）。
+# 深度求索 deepseek-flash（V4.1 Flash，原生多模态）仅支持
+# JPEG/PNG/GIF/WebP，故所有输入统一转码为 PNG 返回（模型支持格式之一）。
 _EXT_TO_FORMAT: dict[str, str] = {
     # 深度求索原生支持格式（输出统一转 PNG，保留语义）
     ".png": "PNG", ".apng": "PNG",
@@ -162,7 +164,7 @@ def _current_model(agent=None) -> str:
     """解析「当前实际使用的模型」名（严格门禁用），优先取调用代理的当前路由模型。
 
     对齐 DSH 的 assertImageCapableRoute：模型可能已在运行期通过 /model（或会话
-    切换）换成多模态（如 deepseek-v4-flash-vision-exp），而全局 MODEL 配置仍为
+    切换）换成多模态（如 deepseek-flash），而全局 MODEL 配置仍为
     旧值；因此先读 registry.dispatch 注入的调用代理（self.agent）当前路由模型
     （agent.model，即当前会话/子代理实际请求所用的模型），失败才回退全局 MODEL。
     两种情况都取不到返回空串（视为非多模态）。
@@ -529,7 +531,7 @@ class ReadImageFunc(Func):
         #   PNG)」「预计占用: … tokens」「如需细节…」此前会在轨迹 Trace 检查器
         #   「▸ 返回值」中显示为多余叶子行；图片本身经 image_url block 返回，
         #   模型天然可见，无需文本复述） ──
-        # 输出恒为 PNG（deepseek-v4-flash-vision-exp 支持格式之一）：不依赖 img.format。
+        # 输出恒为 PNG（deepseek-flash 支持格式之一）：不依赖 img.format。
         fmt_name = "PNG"
         out_w, out_h = img.size
         meta = [

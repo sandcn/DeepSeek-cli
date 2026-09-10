@@ -7,16 +7,20 @@ from typing import Optional
 # ── 推理模型名称匹配模式 ──────────────────────────────────
 _REASONER_PATTERNS: frozenset[str] = frozenset({"reasoner"})
 
-# ── V4 模型检测 ─────────────────────────────────────────
-_V4_PREFIX = "deepseek-v4"
+# ── V4 系列模型检测 ─────────────────────────────────────
+# 含 V4 命名系列（deepseek-v4-*）与 V4.1 新架构命名（deepseek-flash）。
+_V4_PREFIXES: tuple[str, ...] = ("deepseek-v4", "deepseek-flash")
 
 
 def is_deepseek_v4_model(model: str) -> bool:
-    """判断模型是否为 DeepSeek V4 系列（deepseek-v4-*）。
+    """判断模型是否为 DeepSeek V4 系列（deepseek-v4-* / deepseek-flash）。
 
-    V4 模型使用 thinking mode，需要在 API 请求中注入 thinking 参数。
+    V4 系列使用 thinking mode，需要在 API 请求中注入 thinking 参数。
+    ``deepseek-flash`` 为 V4.1 新架构模型（官方默认 thinking mode）；
+    旧名 ``deepseek-v4-flash`` / ``deepseek-v4-flash-vision-exp`` 已路由到
+    V4.1 Flash，故同属该系列。
     """
-    return model.startswith(_V4_PREFIX)
+    return model.startswith(_V4_PREFIXES)
 
 
 def ensure_reasoning_content(messages: list, model: Optional[str] = None) -> list:

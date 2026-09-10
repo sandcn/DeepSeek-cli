@@ -174,7 +174,7 @@ class BaseAgent:
     def add_user_message(self, content: str | None) -> None:
         """添加用户消息到消息列表。
 
-        多模态模型（如 deepseek-v4-flash-vision-exp）下，用户输入中携带的
+        多模态模型（如 deepseek-flash）下，用户输入中携带的
         图片引用（Markdown ``![alt](path)``、本地图片路径、http(s) 图片
         URL）会被转换为 OpenAI 兼容 content blocks（text + image_url），
         模型可直接看到图片；非多模态模型保持纯文本原样传入。

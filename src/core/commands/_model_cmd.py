@@ -42,7 +42,7 @@ def _infer_model_provider(model_name: str) -> str | None:
 def _merge_provider_models(models: list[str]) -> list[str]:
     """将 RC 模型列表与 PROVIDERS 内置模型合并（去重保序）。
 
-    保证 provider 新增的默认模型（如 deepseek-v4-flash-vision-exp）始终
+    保证 provider 新增的默认模型（如 deepseek-flash）始终
     出现在可用/切换列表——RC 旧配置的 models 列表（如仅 pro/flash）不会
     因未同步更新而缺失新模型。
     """

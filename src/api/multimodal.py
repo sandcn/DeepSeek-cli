@@ -6,8 +6,13 @@ read_image 等图像工具依赖本模块判断当前模型是否支持多模态
 - 不支持 → 返回 RGBA 十六进制字符
 
 判定依据（命中其一即为多模态）：
-1. 模型名匹配已知多模态模型模式（claude / gpt-4o / glm-4v / llava 等）
+1. 模型名匹配已知多模态模型模式（claude / gpt-4o / glm-4v / llava /
+   deepseek-flash 等）
 2. 用户通过 RC 配置 ``multimodal_models`` 列表显式声明
+
+注：DeepSeek V4.1 Flash（``deepseek-flash``）原生支持多模态视觉；旧名
+``deepseek-v4-flash`` 与 ``deepseek-v4-flash-vision-exp`` 已下线并路由到
+V4.1 Flash，因此同样判定为多模态。
 """
 
 from __future__ import annotations
@@ -45,8 +50,11 @@ _MULTIMODAL_MODEL_PATTERNS: tuple[str, ...] = (
     "kosmos-2", "paligemma", "bakllava", "moondream", "fuyu-8b", "flamingo",
     # 小米 MiMo（视觉版）
     "mimo-vision", "mimo-vl", "mimo-v2.5",
-    # DeepSeek V4 多模态（实验性视觉模型）
-    "deepseek-v4-flash-vision-exp",
+    # DeepSeek V4.1 Flash（deepseek-flash）：原生多模态视觉理解。
+    # 旧名 deepseek-v4-flash / deepseek-v4-flash-vision-exp 已下线，请求统一
+    # 路由到 V4.1 Flash（同样具备视觉能力）——故一并判定为多模态。
+    # 注：deepseek-v4-pro 当前不声明图像输入，保持非多模态。
+    "deepseek-flash", "deepseek-v4-flash",
 )
 
 # 短模型名（o1/o3/o4 等）需边界匹配防误命中（如 "foo1" 含 "o1"）
@@ -102,7 +110,7 @@ def is_multimodal_model(model: Optional[str]) -> bool:
     """判断模型是否支持多模态（视觉输入）。
 
     Args:
-        model: 模型名（如 "claude-sonnet-4-6"、"deepseek-v4-flash-vision-exp"）。
+        model: 模型名（如 "claude-sonnet-4-6"、"deepseek-flash"）。
 
     Returns:
         True — 支持多模态；False — 不支持（或无法判断）。
