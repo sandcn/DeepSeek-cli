@@ -13,6 +13,7 @@ import pytest
 MAIN_PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "prompts_export_main_empty.md"
 
 KEPT_RULES = (
+    "测试强制（红线 · 零豁免）",
     "强制完整实现用户的所有要求（红线 · 零豁免）",
     "强制用内部工具实现所有（红线 · 一票否决）",
     "只能使用相对路径（红线 · 一票否决）",
@@ -47,9 +48,9 @@ class TestMainPromptSlim:
         assert MAIN_PROMPT.exists()
 
     def test_prompt_is_slim(self, main_prompt_text: str):
-        """精简后行数显著下降（不含空行统计）。"""
+        """精简后行数仍受限（不含空行统计）；红线级条目增补后上限同步放宽。"""
         lines = [ln for ln in main_prompt_text.splitlines() if ln.strip()]
-        assert len(lines) <= 10, f"精简后非空行数应 <= 10，实际 {len(lines)}"
+        assert len(lines) <= 12, f"精简后非空行数应 <= 12，实际 {len(lines)}"
 
     def test_prompt_keeps_red_line_rules(self, main_prompt_text: str):
         """红线级与安全类规则必须保留。"""
