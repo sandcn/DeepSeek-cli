@@ -252,7 +252,10 @@ class EventDispatcher:
         text = event.text.rstrip("\n")
         if text:
             tool_id = event.tool_id or event.label
-            self._push_cmd(ToolOutputCmd(text=text, tool_id=tool_id))
+            self._push_cmd(ToolOutputCmd(
+                text=text, tool_id=tool_id,
+                chat_hidden=bool(getattr(event, "chat_hidden", False)),
+            ))
 
     def _should_render_main_agent(self, event) -> bool:
         """判断事件是否进主聊天区（主 agent 工具输出/通知过滤策略，单一真源）。

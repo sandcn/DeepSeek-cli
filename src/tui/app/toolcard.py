@@ -218,6 +218,7 @@ def tool_card_lines(block, width, start=0, stop=None):
         block.extra.get("tool_detail", ""),
         block.extra.get("_bash_omitted_lines", 0),
         block.extra.get("_head_omitted_lines", 0),
+        len(block.extra.get("_chat_hidden_lines") or ()),
         width,
     )
     _frame_cache = getattr(block, "_tool_card_frame_cache", None)
@@ -264,23 +265,43 @@ def tool_card_lines(block, width, start=0, stop=None):
     # 关闭状态行数据行（_tool_status_index）跳过——状态由标题行状态图标表达
     body_end = len(block.lines) if stop is None else min(stop, len(block.lines))
     body_start = start if start > 0 else 1
+    # ★ 用户需求（read_file 聊天卡只显示标题行）：聊天卡隐藏行集合
+    #   （``block.extra["_chat_hidden_lines"]`` 行对象引用，由
+    #   ``append_tool_output(chat_hidden=True)`` 登记）——按 id() 判定跳过；
+    #   数据仍保留在 block.lines（轨迹 Trace / 详情视图可见）。
+    _hidden_rows = block.extra.get("_chat_hidden_lines")
+    _hidden_ids = {id(l) for l in _hidden_rows} if _hidden_rows else None
+    # 全隐藏判定（read_file 成功读取：body 全部为隐藏行）——跳过省略提示行
+    # （否则聊天卡残留「… 后 N 行省略」，破坏「只显示标题行」语义）。
+    _hidden_body_count = 0
+    _body_count = 0
+    if _hidden_ids is not None:
+        for _i in range(body_start, body_end):
+            if status_idx is not None and _i == status_idx:
+                continue
+            _body_count += 1
+            if id(block.lines[_i]) in _hidden_ids:
+                _hidden_body_count += 1
+    _body_all_hidden = _body_count > 0 and _hidden_body_count == _body_count
     # ★ PERF-6b：内容行整体缓存——跨帧/跨桶复用列表对象，TEXT
     #   ``_wrap_cache`` 按 styled 引用命中（大工具卡跨桶渲染不再每帧全量
     #   wrap；frame_cache 同桶快速路径之外的兜底）。key 仅依赖块内容/宽度/
-    #   省略计数（不含呼吸色）——行数/宽度/省略变化时自动重建。
+    #   省略计数/隐藏集合（不含呼吸色）——变化时自动重建。
     _body_key = (
         start, len(block.lines), body_start, body_end, width, status_idx,
         block.extra.get("_bash_omitted_lines", 0),
         block.extra.get("_head_omitted_lines", 0),
+        len(_hidden_rows) if _hidden_rows else 0,
     )
     body_lines_cache = getattr(block, "_tool_card_body_lines_cache", None)
     if body_lines_cache is not None and body_lines_cache[0] == _body_key:
         body_lines = body_lines_cache[1]
     else:
         body_lines: list[list[StyledRun]] = []
-        # bash 尾显示：前置省略提示行「… 前 N 行省略」（仅首次提交 start==0）
+        # bash 尾显示：前置省略提示行「… 前 N 行省略」（仅首次提交 start==0）；
+        # 全隐藏（read_file 成功内容）时一并跳过（保持「只显示标题行」）
         omitted = block.extra.get("_bash_omitted_lines", 0)
-        if omitted > 0:
+        if omitted > 0 and not _body_all_hidden:
             body_lines.append(_omitted_line(f"\u2026 前 {omitted} 行省略", width))
         # ★ PERF-6（性能）：开放工具卡内容行按 ``(行对象, width)`` 缓存
         #   wrap+截断后的内容 runs——修复前每帧对全部内容行重新 ``wrap_line``
@@ -295,6 +316,10 @@ def tool_card_lines(block, width, start=0, stop=None):
             if status_idx is not None and abs_idx == status_idx:
                 continue
             ansi_line = block.lines[abs_idx]
+            # ★ 用户需求（read_file 聊天卡只显示标题行）：隐藏行不渲染——
+            #   数据仍在 block.lines（Trace 可见），仅聊天卡跳过。
+            if _hidden_ids is not None and id(ansi_line) in _hidden_ids:
+                continue
             key = (ansi_line, width)
             cached = body_cache.get(key)
             if cached is None:
@@ -356,7 +381,7 @@ def tool_card_lines(block, width, start=0, stop=None):
         # find/search/ls/read_file 头显示：后置省略提示行「… 后 N 行省略」
         # （head 省略的行在末尾——提示置于内容行之后，对齐终端 head 语义）
         omitted_head = block.extra.get("_head_omitted_lines", 0)
-        if omitted_head > 0:
+        if omitted_head > 0 and not _body_all_hidden:
             body_lines.append(_omitted_line(f"\u2026 后 {omitted_head} 行省略", width))
         block._tool_card_body_lines_cache = (_body_key, body_lines)
     out.extend(body_lines)

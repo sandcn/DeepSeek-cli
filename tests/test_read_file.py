@@ -224,7 +224,7 @@ def _capture_publish(monkeypatch) -> list:
     calls: list = []
     monkeypatch.setattr(
         Func, "_publish_tool_text",
-        lambda text, tool_id="": calls.append(text),
+        lambda text, tool_id="", chat_hidden=False: calls.append(text),
     )
     return calls
 

@@ -115,10 +115,15 @@ class ToolOutputChunkEvent(DisplayEvent):
         label: 工具标识（tool_call_id）
         text: 输出文本块
         tool_id: 工具调用唯一 ID（tool_call_id），用于前端精确匹配
+        chat_hidden: 聊天区工具卡是否隐藏该输出行（默认 False）。read_file
+            成功读取的整文件语法高亮内容置 True——聊天区工具卡只显示标题行，
+            内容行仍留在工具块数据中（轨迹 Trace / 详情视图照常可见）。
+            读取失败/空文件等错误提示仍为 False（照常显示）。
     """
     label: str = ""
     text: str = ""
     tool_id: str = ""
+    chat_hidden: bool = False
 
 
 @dataclass(frozen=True)

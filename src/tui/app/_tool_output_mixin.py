@@ -150,8 +150,12 @@ class _ToolOutputMixin:
         }
         return block
 
-    def append_tool_output(self, tool_id: str, text: str) -> None:
+    def append_tool_output(self, tool_id: str, text: str, chat_hidden: bool = False) -> None:
         """追加工具输出行到对应分组（卡片主体行）。
+
+        ``chat_hidden=True``（用户需求：read_file 聊天区工具卡只显示标题行）——
+        追加的行登记到 ``block.extra["_chat_hidden_lines"]``，聊天区工具卡渲染
+        时跳过这些行（内容仍保留在 ``block.lines``，轨迹 Trace / 详情视图可见）。
 
         方向4（开放工具块增量提交）：输出行数超过阈值
         （``_TOOL_INCREMENTAL_THRESHOLD``）时经 ``commit_open_block`` 增量提交
@@ -180,6 +184,12 @@ class _ToolOutputMixin:
                 )
                 return
             block = self.open_tool_box(tool_id, "")
+        # ★ 用户需求（read_file 聊天卡隐藏内容）：chat_hidden 输出行登记到
+        #   ``_chat_hidden_lines``（行对象引用）——聊天卡渲染跳过（数据保留，
+        #   Trace 可见）。非 hidden 调用零开销（hidden_rows 保持 None）。
+        hidden_rows = (
+            block.extra.setdefault("_chat_hidden_lines", []) if chat_hidden else None
+        )
         segs = text.split("\n")
         # ★ BUG-78（工具卡尾部空行）：工具输出常以 ``\n`` 结尾（bash/ls 等
         #   命令回显）——``split("\n")`` 产生尾部空 segment，追加后渲染为
@@ -198,6 +208,8 @@ class _ToolOutputMixin:
             for r in ansi_to_line(seg).runs:
                 l.append_run(r)
             block.lines.append(l)
+            if hidden_rows is not None:
+                hidden_rows.append(l)
         # bash/execute_command：输出超过阈值行数时只保留最后 N 行（tail 显示，
         # 对齐 Claude Code 收敛冗长 bash 输出；修剪后行数 ≤ N+1，不触发增量提交）
         if block.extra.get("tool_name") in ("bash", "execute_command"):
@@ -206,6 +218,10 @@ class _ToolOutputMixin:
         # 对齐终端 head 语义——目录列表/文件预览等有序输出看开头即可，防卡片撑爆）
         if block.extra.get("tool_name") in _TOOL_HEAD_TOOLS:
             self._trim_tool_output_head(block, _TOOL_HEAD_LINES)
+        # ★ 用户需求：trim 删除行后同步清理聊天卡隐藏行登记——被删行对象滞留
+        #   会被 id() 复用误判（隐藏错误行）。read_file 走 head trim。
+        if hidden_rows is not None:
+            self._prune_chat_hidden(block)
         # ★ 方向4：增量提交阈值——长工具输出不每帧全量重渲染（超过阈值即提交
         #   已闭合行到 committed_lines；开放块渲染只取未提交尾）。
         if len(block.lines) - block.committed_line_count >= _TOOL_INCREMENTAL_THRESHOLD:
@@ -229,6 +245,21 @@ class _ToolOutputMixin:
             #   （长输出工具内存线性增长）。遍历删除键首元素 is line 的条目。
             for k in [k for k in body_cache if k[0] is line]:
                 body_cache.pop(k, None)
+
+    def _prune_chat_hidden(self, block) -> None:
+        """清理聊天卡隐藏行登记中已不在 ``block.lines`` 的行（trim 删除后同步）。
+
+        ``_chat_hidden_lines`` 存行对象引用（``toolcard.tool_card_lines`` 按
+        ``id()`` 判定跳过）——trim 从 ``block.lines`` 删除行后若不同步清理，
+        被删行对象仍被列表持有（长工具内存滞留），且对象释放后 ``id()`` 可能
+        被新行复用导致误隐藏。按 ``id`` 集合做 O(N) 重建（低频：仅隐藏输出
+        追加后调用一次）。
+        """
+        hidden = block.extra.get("_chat_hidden_lines")
+        if not hidden:
+            return
+        live = {id(l) for l in block.lines}
+        block.extra["_chat_hidden_lines"] = [l for l in hidden if id(l) in live]
 
     def _trim_tool_output_tail(self, block, keep: int) -> None:
         """工具块输出修剪为最后 keep 行（保留标题行 block.lines[0]）。

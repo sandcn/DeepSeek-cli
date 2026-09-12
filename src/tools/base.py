@@ -145,13 +145,16 @@ class Func(abc.ABC):
     # ── 通用显示辅助 ──
 
     @staticmethod
-    def _publish_tool_text(text: str, tool_id: str = "") -> None:
+    def _publish_tool_text(text: str, tool_id: str = "", chat_hidden: bool = False) -> None:
         """将工具显示文本发布到 EventBus，统一走 ChatUIConsumer cmd 队列渲染。
 
         Args:
             text: 显示文本。
             tool_id: 可选工具调用 ID。为空时从 contextvar 解析归属；
                 仍为空回退 "assistant"（兼容旧行为）。
+            chat_hidden: 聊天区工具卡是否隐藏该输出行（默认 False）。
+                read_file 成功读取的整文件内容置 True——聊天卡只显示标题行，
+                内容仍保留在工具块数据中（轨迹 Trace 照常可见）。
         """
         from ..tui.events.event_types import ToolOutputChunkEvent
         from ..tui.events.publish import emit
@@ -160,6 +163,7 @@ class Func(abc.ABC):
             resolved = tool_id or get_current_tool_id() or "assistant"
             emit(ToolOutputChunkEvent(
                 label=resolved, tool_id=resolved, text=text, source="agent",
+                chat_hidden=chat_hidden,
             ))
         except Exception:
             # 事件发布失败 → warning（用户侧工具输出静默丢失需可感知）

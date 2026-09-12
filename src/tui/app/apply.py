@@ -306,7 +306,10 @@ def _do_tool_open(model, cmd) -> None:
 def _do_tool_output(model, cmd) -> None:
     if not cmd.text:
         return
-    model.append_tool_output(cmd.tool_id, cmd.text)
+    model.append_tool_output(
+        cmd.tool_id, cmd.text,
+        chat_hidden=bool(getattr(cmd, "chat_hidden", False)),
+    )
 
 
 def _do_tool_close(model, cmd) -> None:
@@ -502,8 +505,21 @@ def _append_tool_rich(model, msg, anon_ids: list | None = None) -> None:
     if not tool_call_id and anon_ids:
         tool_call_id = anon_ids.pop(0)
     content = _content_str(msg.get("content", ""))
+    # ★ 用户需求：read_file 聊天区工具卡只显示标题行（隐藏读到的文件内容）——
+    #   历史回放的工具消息内容为工具返回值（成功读取 = ``文件: <path>\n<内容>``），
+    #   命中该形态即标记聊天卡隐藏该内容行；内容行仍保留在工具块数据中
+    #   （轨迹 Trace / 详情视图照常可见）。读取失败/空文件等提示不隐藏。
+    chat_hidden = False
+    _box = getattr(model, "tool_boxes", {}).get(tool_call_id)
+    if _box is not None:
+        _extra = getattr(_box, "extra", None) or {}
+        if (
+            _extra.get("tool_name") == "read_file"
+            and content.lstrip().startswith("文件: ")
+        ):
+            chat_hidden = True
     if content.strip():
-        model.append_tool_output(tool_call_id, content)
+        model.append_tool_output(tool_call_id, content, chat_hidden=chat_hidden)
     # 历史回放中的工具调用均已执行完成；失败信息按消息字段还原
     _is_err = bool(msg.get("is_error")) or str(msg.get("status", "")).lower() in (
         "error", "failed", "fail",

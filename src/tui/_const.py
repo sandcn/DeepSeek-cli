@@ -121,6 +121,7 @@ class ToolOutputCmd(RenderCmd):
     cid: int = RenderCommand.TOOL_OUTPUT
     text: str = ""
     tool_id: str = ""
+    chat_hidden: bool = False
 
 @dataclass(frozen=True)
 class ToolSummaryCmd(RenderCmd):
