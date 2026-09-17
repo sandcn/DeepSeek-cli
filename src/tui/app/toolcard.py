@@ -8,7 +8,7 @@
 对齐 Claude Code 的极简样式（方案 A，2026-08-06）：
   - 标题行：``状态图标 + 工具名 + 参数``（如 ``● Bash ls -la``）——去掉
     ▎ 引导线、去掉 emoji 工具图标、detail 用空格分隔（Claude Code
-    ``Read src/main.py`` 语义，非 ``·``）；状态图标恒为 runs[0]
+    ``ReadFile src/main.py`` 语义，非 ``·``）；状态图标恒为 runs[0]
     （close_tool_box 原位翻转图标与 ``startswith(●/✔/✖)`` 测试不变式依赖）；
   - 工具名类别配色：唯一真源 ``_tool_icons.TOOL_CATEGORY_STYLES``（shell 绿 /
     file_read 浅蓝 / file_write 粉 / search 金 / agent 蓝 / interact 青 /
@@ -236,7 +236,7 @@ def tool_card_lines(block, width, start=0, stop=None):
         running = _status == "running" and not block.closed
         # ★ Claude Code 极简样式（2026-08-06 用户需求）：标题行 = 状态图标 +
         #   工具名（类别色，加粗）+ 参数（空格分隔，dim）——去掉 ▎ 引导线、
-        #   emoji 工具图标（Claude Code ``Read src/main.py`` 语义）。工具名
+        #   emoji 工具图标（工具注册名语义，如 ``ReadFile src/main.py``）。工具名
         #   按类别着色——运行中在类别色邻域呼吸（12s 周期，与 detail 呼吸
         #   同步；同 _cat_fg 值，整体同色脉动），关闭/提交后静态类别色
         #   （frozen 缓存不再重算，零额外渲染成本）。runs[0] 保持状态图标

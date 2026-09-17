@@ -111,7 +111,7 @@ async def test_handle_tool_calls_success_tool(monkeypatch):
     )
 
     assert agent._event_port.summary_data is not None
-    assert agent._event_port.summary_data["successful_tools"] == ["Read"]
+    assert agent._event_port.summary_data["successful_tools"] == ["ReadFile"]
     assert agent._event_port.summary_data["failed_tools"] == []
 
 

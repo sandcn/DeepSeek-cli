@@ -14,8 +14,8 @@
   ● 子代理 · 3
   ├─ ● 分析代码结构  12.5k out  1.2k/s  15.3s
   │  ├─ …thinking  3.2s
-  │  ├─ ● Read /path/to/file.py  0.3s
-  │  └─ ✔ Grep pattern src/  0.1s
+  │  ├─ ● ReadFile /path/to/file.py  0.3s
+  │  └─ ✔ Find pattern src/  0.1s
   ├─ ✔ 分析代码结构  8.2k out  10.1s
   └─ ✖ 测试 auth.py  5.1s
   ✔ 完成

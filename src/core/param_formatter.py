@@ -66,7 +66,7 @@ def extract_key_params(
 ) -> str:
     """从工具参数中提取关键参数用于显示（纯参数值，非 JSON）。
 
-    - 已知工具名：关键参数值（纯值空格连接，对齐 Claude Code `Read pyproject.toml`）；
+    - 已知工具名：关键参数值（纯值空格连接，如 `ReadFile pyproject.toml`）；
     - 未知工具/show_all：紧凑 ``k=v`` 空格连接（不输出 JSON 大括号，防参数字符串
       膨胀破坏工具卡顶边框宽度约束），截断至 80 字符。
     """

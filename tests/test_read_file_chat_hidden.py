@@ -1,6 +1,6 @@
 """read_file 聊天区工具卡隐藏文件内容（2026-09 用户需求）。
 
-需求：read_file 聊天区工具卡只显示标题行（``✔ Read '<path>'``），不显示
+需求：read_file 聊天区工具卡只显示标题行（``✔ ReadFile '<path>'``），不显示
 读到的文件内容；读取失败/空文件等错误提示仍显示。内容行仍保留在工具块
 数据 ``block.lines`` 中（轨迹 Trace / 详情视图照常可见）。
 
@@ -193,7 +193,7 @@ def test_tool_card_hides_success_content():
     block = _tool_block(m, "t3")
     rows = tool_card_lines(block, 80)
     assert len(rows) == 1, f"read_file 聊天卡应仅标题行，实际：{_plain(rows)!r}"
-    assert "Read" in _plain(rows)
+    assert "ReadFile" in _plain(rows)
     # 内容仍保留在块数据中（Trace 可见）——head trim 保留前 3 行
     assert len(block.lines) == 4
     assert block.extra.get("_head_omitted_lines", 0) == 7

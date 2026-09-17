@@ -255,5 +255,8 @@ def clear_registry() -> None:
 # ── 工具显示名映射（UI显示用，映射表见 _constants.TOOL_DISPLAY_NAME） ──
 
 def get_tool_display_name(tool_name: str) -> str:
-    """获取工具在UI上显示的完整名称（对齐 Claude Code），无映射则返回原名称。"""
+    """获取工具在 UI 上显示的完整名称（工具注册名 PascalCase，如 ReadFile）。
+
+    映射表见 ``_constants.TOOL_DISPLAY_NAME``；无映射（未知工具）返回原名称。
+    """
     return TOOL_DISPLAY_NAME.get(tool_name, tool_name)

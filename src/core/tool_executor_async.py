@@ -577,7 +577,7 @@ class ToolScheduler:
             （多模态结构化结果，见 _run_tool_func）。
         """
         # 对齐 Claude Code：工具卡 detail 用关键参数**值**（非 JSON）——已知工具
-        # 显示如 `Read pyproject.toml` 的路径/命令，未知工具显示紧凑 `k=v`
+        # 显示如 `ReadFile pyproject.toml` 的路径/命令，未知工具显示紧凑 `k=v`
         try:
             detail = extract_key_params(tc["name"], tc["arguments"])
             if on_before:

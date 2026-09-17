@@ -419,7 +419,7 @@ class ReadFileFunc(Func):
     def _render_syntax_to_output(self, file_path: str, result: dict) -> None:
         """将语法高亮渲染为 ANSI 字符串，通过 EventBus 上屏（聊天卡隐藏）。
 
-        用户需求：read_file 聊天区工具卡只显示标题行（``✔ Read path``），
+        用户需求：read_file 聊天区工具卡只显示标题行（``✔ ReadFile path``），
         不显示读到的文件内容——内容上屏时携带 ``chat_hidden=True``，聊天卡
         渲染跳过该内容行；内容行仍保留在工具块数据中（轨迹 Trace / 详情视图
         照常可见）。读取失败/空文件等错误提示不经本方法（照常显示）。

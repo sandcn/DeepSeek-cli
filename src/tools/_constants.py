@@ -146,30 +146,36 @@ ENCODING_ALIASES: dict[str, str] = {
 
 LARGE_FILE_THRESHOLD = 10 * 1024 * 1024  # 10MB
 
-# ── 工具显示名映射（UI显示用，对齐 Claude Code 完整名） ──
+# ── 工具显示名映射（UI 显示用：一律取工具注册名的 PascalCase） ──
+# 2026-09-18 用户需求：工具卡/子代理面板显示工具**真实注册名**（如
+# ``ReadFile engine/rendering/FrameGraph.cpp``），不再用 Claude Code 风格
+# 缩写（Read/Write/Edit/Task/Grep/RM 等）——UI 名称与模型调用的工具名一一对应。
+# 新增工具时在此补一行；tests/test_tool_display_name_pascal.py 校验
+# 「映射完整 + 值 == 注册名 PascalCase」。
 
 TOOL_DISPLAY_NAME: dict[str, str] = {
-    "read_file": "Read",
+    "read_file": "ReadFile",
     "read_image": "ReadImage",
-    "write_file": "Write",
-    "update_file": "Edit",
-    "str_replace_editor": "Edit",
-    "file_editor": "Edit",
-    "subagent": "Task",
+    "write_file": "WriteFile",
+    "update_file": "UpdateFile",
+    "str_replace_editor": "StrReplaceEditor",
+    "file_editor": "FileEditor",
+    "bash": "Bash",
+    "execute_command": "ExecuteCommand",
+    "bash_opt": "BashOpt",
+    "subagent": "Subagent",
     "subagent_opt": "SubagentOpt",
-    "find": "Grep",
+    "find": "Find",
     "grep": "Grep",
     "glob": "Glob",
-    "search": "Grep",
-    "bash": "Bash",
-    "execute_command": "Bash",
-    "bash_opt": "BashOpt",
-    "cp": "CP",
-    "mv": "MV",
-    "rm": "RM",
+    "search": "Search",
+    "cp": "Cp",
+    "mv": "Mv",
+    "rm": "Rm",
     "mkdir": "Mkdir",
     "user_select": "UserSelect",
     "web_search": "WebSearch",
     "web_fetch": "WebFetch",
-    "ls": "LS",
+    "ls": "Ls",
+    "skill": "Skill",
 }
