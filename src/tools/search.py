@@ -11,6 +11,7 @@ search — 代码搜索工具（三路引擎）
 - 按文件类型/路径过滤
 - 自动排除非源码目录
 - 结构化返回结果（文件:行号:内容）
+- 结果超过 1000 行时自动截断（保留前 500 行与后 500 行）
 """
 
 from __future__ import annotations
@@ -114,6 +115,7 @@ class SearchFunc(Func):
                     "query 始终按正则处理；未知符号建议用 | 覆盖命名变体（snake|camel|Pascal）或中英同义词；"
                     "搜调用链加 ( 过滤 import 噪音；搜定义用 \"def |class \"；锚定用 ^ $ \\b。"
                     "path 缩小范围，include 过滤文件类型（如 *.py）。自动排除 node_modules/.git/venv 等。无结果返回明确提示。"
+                    "结果超过 1000 行时自动截断（保留前 500 行与后 500 行，中间以省略标记替代）。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -479,6 +481,35 @@ class SearchFunc(Func):
 
         return self._format_results(parsed, skipped_binary)
 
+    # ── 返回给大模型的结果截断（三路引擎共用的 _format_results 出口）──
+    MAX_LINES = 1000        # 返回行数硬上限
+    HEAD_LINES = 500        # 截断后保留的头部行数
+    TAIL_LINES = 500        # 截断后保留的尾部行数
+
+    @classmethod
+    def _truncate_output(cls, output: str) -> str:
+        """搜索结果超 MAX_LINES 行时截断：保留前 HEAD_LINES 行 + 后 TAIL_LINES 行。
+
+        行数按逻辑行统计（末尾换行产生的空元素不计入，与 bash 工具口径一致）；
+        未超上限时原样返回。截断处插入省略标记行（含总行数与省略行数）。
+        """
+        if not output:
+            return output
+        lines = output.split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()
+        total = len(lines)
+        if total <= cls.MAX_LINES:
+            return output
+        head = lines[: cls.HEAD_LINES]
+        tail = lines[-cls.TAIL_LINES:]
+        omitted = total - cls.HEAD_LINES - cls.TAIL_LINES
+        marker = (
+            f"...(结果已截断：共 {total} 行，中间省略 {omitted} 行，"
+            f"仅展示前 {cls.HEAD_LINES} 行与后 {cls.TAIL_LINES} 行)"
+        )
+        return "\n".join(head + [marker] + tail)
+
     def _format_results(
         self,
         results: list[tuple[str, int, str]],
@@ -510,7 +541,7 @@ class SearchFunc(Func):
         if skipped_binary:
             parts.append(f"\n  (跳过了 {skipped_binary} 个二进制文件匹配)")
 
-        return "\n".join(parts)
+        return self._truncate_output("\n".join(parts))
 
     # ── 显示 ──
 
