@@ -14,28 +14,21 @@ from typing import Any
 
 from .base import InteractiveCommandPlugin
 from ..base import CommandMeta, get_plugin_registry
+# ★ 修复（/deitmsg 同步降级路径 NameError）：常量原先仅在 ``async_execute``
+#   内局部导入，``execute``（同步降级路径）引用 YELLOW/RESET 时抛 NameError
+#   ——被 ``except Exception`` 吞掉，用户在非交互环境执行 /deitmsg 得不到
+#   任何提示（提示串的 f-string 求值先于 write 失败）。改为模块级导入（唯一
+#   真源 src.core.constants 为纯常量模块，无循环导入风险），两条路径共用。
+from ....core.constants import YELLOW, RESET, GREEN, DIM
 
 _logger = logging.getLogger(__name__)
 
-def _content_str(content: Any) -> str:
-    """将 content（可能是 str 或 list[dict]）转换为纯文本字符串。"""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for c in content:
-            if isinstance(c, dict):
-                btype = c.get("type", "")
-                if btype == "image_url":
-                    url_container = c.get("image_url")
-                    url = url_container.get("url", "") if isinstance(url_container, dict) else ""
-                    parts.append(f"[图片: {url}]" if url else "[图片]")
-                    continue
-                parts.append(str(c.get("text", c)))
-            else:
-                parts.append(str(c))
-        return " ".join(parts)
-    return str(content)
+# ★ P0（review 修复）：删除本地 ``_content_str`` 副本——它与
+#   ``tui/pipeline/message_display._content_str``（消毒/兜底更全）重复，且
+#   **预填用途错误**：把非文本部分拍平成 ``[图片: <url>]``（provider 常用
+#   base64 data URL，可能极大）注入编辑行。``/editmsg`` 已修（``_text_part_str``
+#   + ``_content_has_nontext`` + ⚠ 提示），本插件为同语义快捷路径必须同步
+#   （见 ``async_execute`` 内注释）。
 
 class DeitmsgPlugin(InteractiveCommandPlugin):
     """直接编辑上一条用户消息 (/deitmsg)
@@ -58,7 +51,6 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
 
         直接定位到最后一条 user 消息，恢复沙盒、截断消息、预填旧内容。
         """
-        from ....core.constants import YELLOW, RESET, GREEN, DIM
         from ....app_loop import _non_system_messages
         from ....api.interrupt_async import flush_stdin, reset_interrupt_async
 
@@ -101,7 +93,25 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
                     )
                 return True
 
-            old_content = _content_str(messages[last_user_idx].get("content", ""))
+            from ....tui.pipeline.message_editor import (
+                _content_has_nontext,
+                _text_part_str,
+                _truncate_messages,
+            )
+            # ★ P0（review 修复）：与 /editmsg 同步——预填只取**纯文本部分**
+            #   （``_text_part_str``）。修复前用本模块 ``_content_str`` 拍平：
+            #   多模态消息（含图片）的非文本部分被展开为 ``[图片: <url>]``
+            #   （provider 常用 base64 data URL，可能极大）注入输入行（垃圾
+            #   文本），且重发后非文本部分静默丢失、无任何提示。检测到非文本
+            #   内容时记录警告（下方渲染 ⚠ 行，与 editmsg_plugin 一致）。
+            old_content_raw = messages[last_user_idx].get("content", "")
+            old_content = _text_part_str(old_content_raw)
+            if _content_has_nontext(old_content_raw):
+                state["_prefill_warning"] = (
+                    "\u539f\u6d88\u606f\u542b\u975e\u6587\u672c\u5185\u5bb9"
+                    "\uff08\u5982\u56fe\u7247\uff09\uff0c\u7f16\u8f91\u91cd\u53d1"
+                    "\u540e\u975e\u6587\u672c\u90e8\u5206\u5c06\u4e22\u5931"
+                )
 
             # ── 恢复沙盒 + 截断 + remap（统一公共助手） ──
             # ★ P1-1 修复（先 remap 后删）：修复前本插件内联「restore → del
@@ -112,7 +122,6 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
             #   _truncate_messages（P2-7）修复为「先 remap 后删」，本插件
             #   未同步。现复用同一助手：remap 失败时异常在消息删除**前**
             #   抛出（无中间态），被 except 捕获显示「编辑失败」。
-            from ....tui.pipeline.message_editor import _truncate_messages
             restore_text = _truncate_messages(session.agent, last_user_idx)
 
             # ── 设置 prefill ──
@@ -218,6 +227,12 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
                     chat_ui.write_line(f"  {YELLOW}\u26a0{RESET} {feedback_text}")
                 else:
                     chat_ui.write_line(f"  {GREEN}\u2713{RESET} {feedback_text}")
+
+                # ★ P0（review 修复）：多模态消息编辑警告（与 /editmsg 同语义）
+                #   ——预填仅含文本部分，非文本部分重发后丢失，显式提示用户。
+                prefill_warning = state.get("_prefill_warning", "")
+                if prefill_warning:
+                    chat_ui.write_line(f"  {YELLOW}\u26a0{RESET} {prefill_warning}")
 
                 # 确保渲染命令在插件返回前排空
                 try:

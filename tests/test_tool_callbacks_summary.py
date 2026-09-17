@@ -148,3 +148,61 @@ def test_on_after_tool_normalizes_read_image_blocks():
     chain._on_after_tool(tc, output, success=True)
 
     assert agent.display.last_done_output == "图片已读取"
+
+
+# ── 审计脱敏：容器（list/tuple）递归 + 非 str 键防御 ─────────
+# 修复背景（review P1，安全）：
+#   1. ``_sanitize_args_impl`` 原仅对 dict 值递归脱敏，list/tuple 值落入 else
+#      原样保留 → ``{"items": [{"api_key": "sk-..."}]}`` /
+#      ``{"messages": [{"authorization": "Bearer ..."}]}`` 等**嵌套在容器内的
+#      密钥明文写入 audit.log**；
+#   2. ``k.lower()`` 对非 str 键（异常注入/直接构造的 dict）抛 AttributeError，
+#      异常从 ``_on_before_tool`` 首行冒出被上游 except 吞掉 → 审计记录与
+#      tool_parsing/tool_start（工具卡开卡）一并丢失。
+
+class TestSanitizeArgsContainers:
+    def test_secret_in_list_of_dicts_masked(self):
+        from src.core.internal.agent._tool_callbacks import _sanitize_args_impl
+
+        out = _sanitize_args_impl({
+            "items": [{"api_key": "sk-super-secret", "name": "a"}],
+        })
+        assert "sk-super-secret" not in out
+        assert "***" in out
+
+    def test_secret_in_nested_message_list_masked(self):
+        from src.core.internal.agent._tool_callbacks import _sanitize_args_impl
+
+        out = _sanitize_args_impl({
+            "messages": [
+                {"authorization": "Bearer abc123"},
+                {"token": "t-999"},
+            ],
+        })
+        assert "abc123" not in out
+        assert "t-999" not in out
+
+    def test_tuple_input_masked(self):
+        from src.core.internal.agent._tool_callbacks import _sanitize_args_impl
+
+        out = _sanitize_args_impl({"pair": ({"password": "pw"}, "plain")})
+        assert "pw" not in out
+
+    def test_long_string_in_list_truncated(self):
+        from src.core.internal.agent._tool_callbacks import _sanitize_args_impl
+
+        out = _sanitize_args_impl({"blob": ["x" * 300]})
+        assert "..." in out
+
+    def test_non_str_key_no_raise(self):
+        from src.core.internal.agent._tool_callbacks import _sanitize_args_impl
+
+        out = _sanitize_args_impl({1: "v", "password": "pw"})
+        assert "pw" not in out
+        assert isinstance(out, str)
+
+    def test_plain_args_untouched(self):
+        from src.core.internal.agent._tool_callbacks import _sanitize_args_impl
+
+        out = _sanitize_args_impl({"path": "a.py", "limit": 3})
+        assert "a.py" in out

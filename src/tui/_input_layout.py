@@ -24,6 +24,31 @@ from src.tui._width import wcswidth_simple
 
 _TAB_WIDTH = 4  # 制表符宽度（列数）—— 唯一真源
 
+#: 输入提示符默认值（单一真源）。
+#: ★ P1（review 修复）：修复前提示符存在**双源**——``app/input_area._build_lines``
+#: 硬编码 ``_PROMPT = "> "``（渲染 + ``max_input`` 计算），而 ``ink/_cursor.
+#: position_cursor`` 读 ``props["prompt"]``（光标行/列计算）。生产调用
+#: （``app.py``）恒传 ``"> "`` 故当前一致，但契约已分裂：调用方传自定义
+#: 提示符时渲染与光标错位、``max_input`` 与换行缓存不一致；``prompt=None``
+#: 时 ``str(None) == "None"`` 更会算出错误的可用宽度。现统一经 ``_prompt_of``
+#: 取值（渲染 / 快照键 / 光标定位三处共用）。
+_DEFAULT_PROMPT = "> "
+
+
+def _prompt_of(props) -> str:
+    """取输入提示符（``props["prompt"]`` → 缺省 ``_DEFAULT_PROMPT``）。
+
+    None / 空串 / 缺键回退默认（防 ``str(None) == "None"`` 产生 4 列宽的
+    "None" 提示符）；非 str 值经 ``str()`` 归一化。
+    """
+    try:
+        value = props.get("prompt") if props is not None else None
+    except AttributeError:
+        value = None
+    if value is None or value == "":
+        return _DEFAULT_PROMPT
+    return value if isinstance(value, str) else str(value)
+
 
 def _wrap_by_width(s: str, max_width: int) -> list[str]:
     """按终端列宽拆分文本为多行，每行不超过 max_width 列。
@@ -285,6 +310,8 @@ def _compute_cursor_visual_pos(
 
 __all__ = [
     "_TAB_WIDTH",
+    "_DEFAULT_PROMPT",
+    "_prompt_of",
     "_wrap_by_width",
     "_expand_tabs",
     "_tab_pos_to_expanded",

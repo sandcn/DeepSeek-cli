@@ -110,6 +110,18 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
                 break
             width += cw
             j += 1
+        # ★ P1（review 修复，行宽不变量）：行首单字符超宽（``max_width`` < 该字符
+        #   显示宽度，如 width=1 遇 CJK 宽 2）——内层循环的 ``and j > i`` 使首字符
+        #   被无条件接受 → 产出**超宽行**（``Line.width`` 2 > max_width 1），违反
+        #   本函数「每行最大显示宽度」契约；而 ``_paint_impl`` 的 TEXT 分支不做
+        #   水平裁剪 → 溢出列经 ``_merge_line`` 覆盖相邻元素内容（E-OVERFLOW-GUARD
+        #   破坏）。同项目 ``_input_layout._wrap_by_width`` 的 L1 已确立「宁可窄
+        #   不可宽：放不下的字符跳过，不产生超宽行」语义，本函数对齐：跳过该字符
+        #   （每轮至少推进 1 字符，无死循环），不为它产出超宽行（该字符无法在给定
+        #   宽度内呈现，丢弃优于破坏行宽不变量）。
+        if j == i + 1 and width > max_width:
+            i += 1
+            continue
         if j == i:
             # ★ P3（review）：此处仅剩「行首强制换行」一种可能——修复前还有
             #   「行首字符即超宽：硬塞一个字符」分支，但内层循环的
@@ -193,7 +205,11 @@ def truncate_runs(runs: list[StyledRun], max_width: int) -> list[StyledRun]:
 
     含 ``\\n`` 文本先归一化为首个逻辑行（单行截断语义，防字面换行破坏行宽）。
     """
-    if max_width < 0:
+    # ★ P3（review）：边界口径与同族统一为 ``<= 0``（``truncate_runs_ellipsis``/
+    #   ``_start``/``_middle``/``truncate_line`` 均 ``<= 0``）——修复前为 ``< 0``，
+    #   与 ``truncate_line`` docstring 声称的「同族统一」不符（max_width=0 行为
+    #   等价但口径分裂）。
+    if max_width <= 0:
         return []
     runs = _first_logical_line_runs(runs)
     out: list[StyledRun] = []
@@ -400,12 +416,22 @@ def truncate_line(line: Line, max_width: int) -> Line:
     out = Line()
     width = 0
     for run in runs:
+        # 段级累积：run 内可容纳字符先收集，段末一次 ``Line.append``——
+        # 修复前逐字符 append 会与上一 run 反复合并（``StyledRun(last.text+ch)``
+        # 整串重测宽），单行截断退化 O(n²)（实测 400 列 11.9ms、800 列 46ms）。
+        # 语义等价：Line.append 对同样式相邻段自动合并，故「逐段 append 一次」
+        # 与「逐字符 append」产出相同 runs；放不下的字符触发 flush 后返回。
+        buf: list[str] = []
         for ch in run.text:
             cw = wcswidth_simple(ch)
             if width + cw > max_width:
+                if buf:
+                    out.append("".join(buf), run.style)
                 return out
-            out.append(ch, run.style)
+            buf.append(ch)
             width += cw
+        if buf:
+            out.append("".join(buf), run.style)
     return out
 
 

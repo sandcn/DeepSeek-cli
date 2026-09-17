@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import logging
 import sys
-import time
 
 from src.tui._screen import TerminalWidthCache
 from .element import Element
@@ -244,20 +243,13 @@ def render(
         width_cache=TerminalWidthCache(),
     )
     # 尺寸覆盖（TerminalWidthCache 只读接口——直接写独立缓存字段）
-    # ★ P1-1 修复（review 方向）：写覆盖值的同时**同步延长时间戳**——修复前
-    #   仅写 ``_width/_height`` 不更新 ``_last_width_fetch/_last_height_fetch``：
-    #   60s TTL 过期后 ``get_width()``/``get_height()`` 重新执行
-    #   ``_get_terminal_size()`` 覆盖覆盖值（尺寸覆盖静默失效）。时间戳设为
-    #   ``monotonic() + ttl``（等价于把 TTL 起点延后到未来——``_is_expired``
-    #   判 ``monotonic() - last_fetch > ttl`` 恒 False，覆盖值在本会话期间
-    #   不再被 TTL 刷新覆盖）。优先方案（为 ``TerminalWidthCache`` 增加公开
-    #   ``set_dimensions(w, h)``）因 ``_screen.py`` 不在本次修改范围而放弃，
-    #   采用等价方案 b（保持向后兼容，不破坏 _screen.py 现有测试）。
-    # 尺寸覆盖（★ P2 review：改用公开入口 ``set_dimensions``——修复前直接写
+    # ★ P2 review：改用公开入口 ``set_dimensions``——修复前直接写
     #   私有字段 ``_width``/``_height``/时间戳，破坏封装；且 ``_fetch()`` 到期
     #   会同时覆盖宽高与时间戳，仅覆盖其一时另一维度覆盖值静默失效。
     #   ``set_dimensions`` 置 ``_override`` 标志：覆盖期间 TTL 到期不重新探测
-    #   真实终端（本会话尺寸稳定），语义与旧实现兼容）。
+    #   真实终端（本会话尺寸稳定），语义与旧实现兼容）。（P3 review：删除
+    #   此前描述「直接写私有字段 + 时间戳设为 monotonic()+ttl」的过时注释段
+    #   ——实现已改用公开入口，两段注释互相矛盾。）
     if width is not None or height is not None:
         session._width_cache.set_dimensions(width, height)
 
@@ -300,25 +292,6 @@ def render(
         except Exception:
             _logger.debug("render patchConsole 补丁失败", exc_info=True)
 
-    try:
-        session.start()
-    except Exception:
-        # ★ P3（review）：start() 抛异常时恢复控制台补丁——修复前无 try/finally
-        #   兜底，补丁残留（sys.stdout/sys.stderr 仍为 _ConsoleProxy）。
-        if patchConsole:
-            try:
-                patcher.restore()
-            except Exception:
-                _logger.debug("render start 失败后恢复控制台异常", exc_info=True)
-        raise
-
-    def _wait_until_exit():
-        async def _waiter():
-            import asyncio as _aio
-            while session._render_running:
-                await _aio.sleep(0.05)
-        return _waiter()
-
     def _restore_stdin() -> None:
         """还原调用方 stdin 的 interrupt 配置（幂等）。"""
         if stdin is None:
@@ -328,6 +301,31 @@ def render(
             stdin.set_interrupt_routable(bool(_saved_routable))
         except Exception:
             _logger.debug("render 还原 stdin interrupt 配置异常", exc_info=True)
+
+    try:
+        session.start()
+    except Exception:
+        # ★ P3（review）：start() 抛异常时恢复控制台补丁——修复前无 try/finally
+        #   兜底，补丁残留（sys.stdout/sys.stderr 仍为 _ConsoleProxy）。
+        # ★ P2（review 修复）：同时还原调用方 stdin 的 interrupt 配置——修复前
+        #   启动失败路径只恢复控制台补丁，stdin 仍持有
+        #   ``lambda: session.request_exit()``（指向已失败的会话）；且
+        #   ``_restore_stdin`` 定义在 try 之后（此处调用会 NameError）→ 定义
+        #   上移到 try 之前并在本分支调用（幂等）。
+        if patchConsole:
+            try:
+                patcher.restore()
+            except Exception:
+                _logger.debug("render start 失败后恢复控制台异常", exc_info=True)
+        _restore_stdin()
+        raise
+
+    def _wait_until_exit():
+        async def _waiter():
+            import asyncio as _aio
+            while session._render_running:
+                await _aio.sleep(0.05)
+        return _waiter()
 
     def _unmount():
         try:

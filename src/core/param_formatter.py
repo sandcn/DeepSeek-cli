@@ -44,6 +44,21 @@ _KEY_PARAMS: dict[str, list[str]] = {
 }
 
 
+def _truncate_raw(raw: str, limit: int = 80) -> str:
+    """非 JSON 原始串回退显示（超长截断并追加省略号）。
+
+    ★ 修复（TUI 显示一致性）：修复前该分支直接 ``str(raw)[:80]`` —— 与同函数
+    未知工具分支（``result[:77] + "..."``）口径不一致：超长原始串（流式截断
+    的非 JSON 参数文本）既不显示省略号也不提示被截断，用户误以为参数完整
+    （``test_non_json_long_truncated_80`` 因该不一致长期失败）。现统一
+    「超长才截断到 limit-3 并追加 ``...``」，短串原样返回。
+    """
+    s = str(raw)
+    if len(s) > limit:
+        return s[: limit - 3] + "..."
+    return s
+
+
 def extract_key_params(
     tool_name: str,
     arguments: dict[str, Any] | str,
@@ -60,16 +75,22 @@ def extract_key_params(
         try:
             arguments = json.loads(arguments)
         except (json.JSONDecodeError, TypeError):
-            return str(raw)[:80]
+            return _truncate_raw(raw)
         # ★ 2026-08-22（review P3-1）：合法 JSON 但顶层非 dict（如 "5"/"[1,2]"/
         #   "null"/"\"str\""）时，json.loads 成功但 arguments 变为非 dict——
         #   原实现静默返回 ""（丢参数值）；与 JSONDecodeError 分支（返回原串）
         #   语义不一致。统一回退原始串。
         if not isinstance(arguments, dict):
-            return str(raw)[:80]
+            return _truncate_raw(raw)
 
     if not arguments:
         return ""
+
+    # ★ P3（review）：非 dict 入参（list/int/其它对象——签名外调用）此前在下方
+    #   ``arguments.get(k)`` 抛 AttributeError；与「合法 JSON 但顶层非 dict」
+    #   分支的兜底口径统一（回退原始串摘要，不抛异常）。
+    if not isinstance(arguments, dict):
+        return _truncate_raw(arguments)
 
     keys = _KEY_PARAMS.get(tool_name)
     if keys and not show_all:

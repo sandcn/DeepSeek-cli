@@ -276,6 +276,97 @@ async def test_deitmsg_normal_path_uses_truncate_helper(monkeypatch):
     assert feedback and "✓" in feedback[0]
 
 
+# ── review P0：/deitmsg 多模态预填与 /editmsg 同步 ────────
+
+@pytest.mark.asyncio
+async def test_deitmsg_multimodal_prefill_text_only_with_warning(monkeypatch):
+    """多模态消息：预填只含文本部分 + 渲染非文本丢失警告。
+
+    修复前本插件用本地 ``_content_str`` 把非文本部分拍平成
+    ``[图片: <url>]``（provider 常用 base64 data URL，可能极大）注入编辑行，
+    且重发后非文本部分静默丢失、无任何提示；``/editmsg`` 已修（``_text_part_str``
+    + ``_content_has_nontext`` + ⚠ 行），本插件为同语义快捷路径须同步。
+    """
+    from src.core.commands.plugins.deitmsg_plugin import DeitmsgPlugin
+
+    data_url = "data:image/png;base64," + "A" * 200
+    messages = [
+        {"role": "assistant", "content": "回答"},
+        {"role": "user", "content": [
+            {"type": "text", "text": "看图说明"},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ]},
+    ]
+    session = _FakeSession(messages)
+    inp = _FakeInput()
+    chat_ui = _FakeChatUI(inp)
+
+    class _OkSandbox:
+        def restore_to_message(self, idx):
+            return {}
+
+        def remap_indices(self, indices):
+            pass
+
+    monkeypatch.setattr(me, "_get_sandbox_manager", lambda: _OkSandbox())
+
+    plugin = DeitmsgPlugin()
+    plugin.bind_loop(SimpleNamespace(_chat_ui=chat_ui, _monitor=_FakeMonitor()))
+    state = {"model": "", "retry": False, "prefill": ""}
+    handled = await plugin.async_execute(SimpleNamespace(session=session, state=state))
+
+    assert handled is True
+    # 预填 = 纯文本部分（不含 base64 / 图片占位文本）
+    assert inp.buffer == "看图说明"
+    assert "base64" not in inp.buffer
+    assert "图片" not in inp.buffer
+    # 非文本部分丢失 → 显式警告行
+    assert state.get("_prefill_warning")
+    assert any(
+        isinstance(l, str) and "非文本" in l for l in chat_ui.lines
+    ), chat_ui.lines
+
+
+@pytest.mark.asyncio
+async def test_deitmsg_text_only_no_warning(monkeypatch):
+    """纯文本消息：不产生非文本警告（无回归）。"""
+    from src.core.commands.plugins.deitmsg_plugin import DeitmsgPlugin
+
+    messages = [
+        {"role": "assistant", "content": "回答"},
+        {"role": "user", "content": "纯文本消息"},
+    ]
+    session = _FakeSession(messages)
+    inp = _FakeInput()
+    chat_ui = _FakeChatUI(inp)
+
+    class _OkSandbox:
+        def restore_to_message(self, idx):
+            return {}
+
+        def remap_indices(self, indices):
+            pass
+
+    monkeypatch.setattr(me, "_get_sandbox_manager", lambda: _OkSandbox())
+
+    plugin = DeitmsgPlugin()
+    plugin.bind_loop(SimpleNamespace(_chat_ui=chat_ui, _monitor=_FakeMonitor()))
+    state = {"model": "", "retry": False, "prefill": ""}
+    await plugin.async_execute(SimpleNamespace(session=session, state=state))
+
+    assert inp.buffer == "纯文本消息"
+    assert not state.get("_prefill_warning")
+    assert not any(isinstance(l, str) and "非文本" in l for l in chat_ui.lines)
+
+
+def test_deitmsg_plugin_has_no_local_content_str_copy():
+    """回归：本地 ``_content_str`` 副本已删除（多模态拍平根因）。"""
+    from src.core.commands.plugins import deitmsg_plugin as mod
+
+    assert not hasattr(mod, "_content_str")
+
+
+
 # ── P1-2 dismiss 回调按中断标志区分 ───────────────────────
 
 def test_dismiss_cb_interrupted_marks_cancel():

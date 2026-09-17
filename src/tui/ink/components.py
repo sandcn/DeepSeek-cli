@@ -32,7 +32,7 @@ from .layout import layout_tree, wrap_text_lines, _skip_function
 from .output import Frame, Line
 from ._paint_canvas import (
     _merge_line,
-    _slice_line,
+    _slice_line_with_offset,
     _canvas_row_to_line,
 )
 from ._paint_border import (
@@ -198,8 +198,16 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
                 if s >= e:
                     continue
                 if s != box.x or e != box.x + line.width:
-                    line = _slice_line(line, s - box.x, e - box.x)
-                draw_x = s
+                    # ★ P2（review 修复）：宽字符横跨左裁剪边界时整体保留（见
+                    #   ``_slice_run_text``）——修复前仍按 ``s`` 绘制，导致该字符
+                    #   及其后内容右移 1 列（尾部越界覆盖相邻单元格）。现取
+                    #   切片返回的绘制偏移（0 / -1），宽字符落到真实列。
+                    line, slice_offset = _slice_line_with_offset(
+                        line, s - box.x, e - box.x,
+                    )
+                    draw_x = s + slice_offset
+                else:
+                    draw_x = s
                 if 0 <= row < len(canvas):
                     canvas[row] = _merge_line(canvas[row], draw_x, line)
             return
@@ -395,7 +403,8 @@ def render_frame(root: Fiber, width: int) -> Frame:
         prefix_info = getattr(committed, "_committed_prefix", None)
         if prefix_info is not None:
             committed_box = committed.layout_box
-            prefix = prefix_info[1]
+            prefix_src = prefix_info[1]
+            prefix = prefix_src
             # ★ 行宽守卫（E-COMMITTED-OVERFLOW 防御）：前缀含超宽行
             #   （reflow_committed 未执行/失败——终端宽度变化后 committed_lines
             #   按旧宽度 wrap）时截断超宽行（E-OVERFLOW-GUARD 语义），正常行
@@ -404,10 +413,38 @@ def render_frame(root: Fiber, width: int) -> Frame:
             prefix_ok = prefix_info[2] if len(prefix_info) > 2 else True
             if not prefix_ok:
                 from .helpers import truncate_line
-                prefix = [
-                    truncate_line(ln, width) if ln.width > width else ln
-                    for ln in prefix
-                ]
+                # ★ 性能（超宽前缀截断缓存 + 增量扩展）：截断结果挂 committed
+                #   fiber 缓存——修复前**每帧**对全部前缀行重截断（大历史每帧
+                #   O(全前缀字符)：Line 重建 + 逐字符测宽），且重建列表每帧新
+                #   对象 → 帧间身份不等 → ``first_diff_line`` 的 stable_prefix
+                #   跳过失效（每帧全前缀比较）。
+                #   缓存键用**前缀列表对象本身**（``is`` 比较，非 id——id 复用
+                #   风险归零：缓存持强引用使旧列表不被回收，其地址不可能被新
+                #   列表复用）；附带长度只增校验（前缀原地 extend 的增量提交
+                #   场景）与布局宽度校验（resize 后必须按新宽度重截断）。
+                #   命中时**只截断新增行**（每帧新增 N 行 → 只处理 N 行）；
+                #   对象更换/长度回退/宽度变化 → 全量重建。
+                #   缓存的截断列表对象跨帧稳定 → stable_prefix 区间跳过生效。
+                truncated_cache = getattr(committed, "_truncated_prefix_cache", None)
+                if (
+                    truncated_cache is not None
+                    and truncated_cache[0] is prefix_src
+                    and truncated_cache[3] == width
+                    and truncated_cache[1] <= len(prefix_src)
+                ):
+                    prefix = truncated_cache[2]
+                    for ln in prefix_src[truncated_cache[1]:]:
+                        prefix.append(
+                            truncate_line(ln, width) if ln.width > width else ln
+                        )
+                else:
+                    prefix = [
+                        truncate_line(ln, width) if ln.width > width else ln
+                        for ln in prefix_src
+                    ]
+                committed._truncated_prefix_cache = (
+                    prefix_src, len(prefix_src), prefix, width,
+                )
             if committed_box is not None and committed_box.y == 0 and prefix_ok:
                 # ★ P3 修复（review 方向）：与 fallback 路径一致加 fit 截断——
                 #   reflow 期间前缀可能超画布（布局陈旧），修复前 ``prefix +

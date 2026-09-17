@@ -16,7 +16,11 @@ from __future__ import annotations
 
 import logging
 
-from src.tui._input_layout import _compute_input_layout, _cursor_visual_from_layout
+from src.tui._input_layout import (
+    _compute_input_layout,
+    _cursor_visual_from_layout,
+    _prompt_of,
+)
 from src.tui._input_metrics import _completion_height, _is_search_active
 from ._ansi_utils import visual_width
 
@@ -45,8 +49,6 @@ def find_input_fiber(root_fiber):
     （child 深度优先、sibling 从左到右）与无环树结果完全一致；有环/共享
     节点（异常树）由去重天然防死循环。
     """
-    from .fiber import Fiber
-
     pushed: set = set()
     stack = [root_fiber]
     pushed.add(id(root_fiber))
@@ -106,7 +108,11 @@ def position_cursor(renderer, width: int, fiber) -> None:
     except (TypeError, ValueError):
         cursor_pos = -1
         _logger.debug("position_cursor: cursor_pos 非法，回退 -1", exc_info=True)
-    prompt = str(fiber.props.get("prompt", "> "))
+    # ★ P1（review 修复）：提示符经单一真源 ``_prompt_of``——修复前
+    #   ``str(props.get("prompt", "> "))``：传 None 得 ``"None"``（视觉宽 4），
+    #   ``max_input``/光标列与渲染（``"> "``）分裂；且与 ``_build_lines`` 的
+    #   提示符取值口径不一致（自定义 prompt 时错位）。
+    prompt = _prompt_of(fiber.props)
     completion = fiber.props.get("completion")
     # 方向1 步骤4（缺失 completion 属性守卫）：popup_height 与 row 计算
     # 纳入 try/except——completion 缺 ``items`` 等属性时抛 AttributeError

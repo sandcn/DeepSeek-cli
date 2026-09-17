@@ -12,6 +12,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+# ★ 修复（未定义名）：函数内局部注解 ``list[tuple[str, Any, bool]]`` 引用 Any，
+#   但本模块未导入（``from __future__ import annotations`` 下局部注解不求值，
+#   故当前不抛 NameError）——补齐导入消除隐患（工具探测/introspect 或未来
+#   注解求值时不再中断）。同类问题见 deitmsg_plugin（YELLOW/RESET 真实抛错）。
+from typing import Any
+
 from ...tool_executor_async import ToolScheduler
 from ...telemetry import get_default_collector
 from ....api.tokens import estimate_tokens
@@ -57,6 +63,10 @@ _SENSITIVE_ARGS_KEYS = frozenset({
     "key", "private_key", "access_key",
 })
 
+#: 脱敏递归深度上限（★ P3 review：原为 ``_sanitize_args_impl`` 函数体内局部
+#: 常量，每次调用重建——提升为模块级常量，与项目常量风格一致）。
+_MAX_RECURSION_DEPTH = 20
+
 
 def _sanitize_args_impl(args, _depth: int = 0) -> str:
     """过滤工具参数中的敏感字段，用于审计日志记录（模块级实现）。
@@ -66,7 +76,6 @@ def _sanitize_args_impl(args, _depth: int = 0) -> str:
     会原样写入 audit.log（安全缺陷）；解析失败时按 JSON 键名模式掩码值。
     模块级函数：避免 Python 3.9 下 staticmethod 经类名递归引用不可调用的问题。
     """
-    _MAX_RECURSION_DEPTH = 20
     if _depth >= _MAX_RECURSION_DEPTH:
         return "{...}"
 
@@ -84,10 +93,27 @@ def _sanitize_args_impl(args, _depth: int = 0) -> str:
 
     sanitized = {}
     for k, v in args.items():
-        if k.lower() in _SENSITIVE_ARGS_KEYS:
+        # ★ P1（review 修复，安全）：键名归一化——修复前直接 ``k.lower()``，非
+        #   str 键（直接构造的 dict / 异常注入）抛 AttributeError，异常从
+        #   ``_on_before_tool`` 首行冒出被上游 except 吞掉 → 审计记录与
+        #   tool_parsing/tool_start（工具卡开卡）一并丢失。
+        key_str = k if isinstance(k, str) else str(k)
+        if key_str.lower() in _SENSITIVE_ARGS_KEYS:
             sanitized[k] = "***"
         elif isinstance(v, dict):
             sanitized[k] = _sanitize_args_impl(v, _depth + 1)
+        elif isinstance(v, (list, tuple)):
+            # ★ P1（review 修复，安全）：容器递归脱敏——修复前 list/tuple 落入
+            #   else 分支原样保留：``{"items": [{"api_key": "sk-..."}]}``、
+            #   ``{"messages": [{"authorization": "Bearer ..."}]}`` 等**嵌套在
+            #   容器内的密钥明文写入 audit.log**（同一安全函数仅对 dict 路径
+            #   生效 → 同类缺陷未覆盖）。现逐元素递归（dict 走脱敏、超长
+            #   字符串截断、其余原样）。
+            sanitized[k] = [
+                _sanitize_args_impl(x, _depth + 1) if isinstance(x, dict)
+                else (x[:100] + "..." if isinstance(x, str) and len(x) > 100 else x)
+                for x in v
+            ]
         elif isinstance(v, str) and len(v) > 100:
             sanitized[k] = v[:100] + "..."
         else:
@@ -189,7 +215,11 @@ class ToolCallbackChain:
                     if _success:
                         successful_tools.append("subagent")
                     else:
-                        failed_tools.append(("subagent", _output))
+                        # ★ P2（review）：与主分支（``failed_tools.append((tc_name,
+                        #   to_tool_text(output)))``）统一归一化——修复前此处直接塞
+                        #   ToolResult 对象，而 ``ToolSummaryEvent.failed_tools``
+                        #   声明为 ``tuple[tuple[str, str], ...]``（类型契约违反）。
+                        failed_tools.append(("subagent", to_tool_text(_output)))
 
         self._show_tool_execution_summary(successful_tools, failed_tools)
 
@@ -263,7 +293,6 @@ class ToolCallbackChain:
         执行期间设置 contextvar（当前 tool_id），使 print_to_terminal /
         SharedCapture.write 能定向分发输出事件到正确的工具 box。
         """
-        agent = self._agent
         tool_label = tc.get("id", "")
         if tool_label:
             func.tool_label = tool_label

@@ -80,6 +80,10 @@ from src.tui._input_metrics import (
     _completion_height,
     _is_search_active,
 )
+# ★ P1（review 修复）：提示符单一真源（渲染/快照键/光标定位共用）——
+#   修复前本模块硬编码 ``_PROMPT`` 而 ``ink/_cursor`` 读 ``props["prompt"]``，
+#   双源在自定义 prompt 下渲染与光标错位。
+from src.tui._input_layout import _DEFAULT_PROMPT, _prompt_of
 # ★ 补全弹窗行构建（模块边界优化，2026-08-05）：弹窗标题/候选项/提示行
 #   Line 生成 + 样式辅助迁至 _popup_builder.py（弹窗构建独立职责）；本模块
 #   re-export 保持旧导入路径兼容（test_completion_flash_fix.py 等）。
@@ -105,7 +109,7 @@ _PLACEHOLDER_COMPACT = "/help · Ctrl+N · Tab"
 #: 流式占位符动画基文本（无尾点；BEAUTY-8 动态追加 0-3 个点循环）
 _PLACEHOLDER_STREAMING_BASE = "AI 生成中"
 
-_PROMPT = "> "
+_PROMPT = _DEFAULT_PROMPT  # 兼容别名（真源 src.tui._input_layout._DEFAULT_PROMPT）
 
 # 方向C 步骤4：_S_TEXT 被多处使用 → 迁入 app/_theme.py 共享池；以下单处使用
 # 常量保留模块私有（享元收敛原则：仅多处使用才共享）。
@@ -202,9 +206,8 @@ def _build_mode_line(width: int, empty_mode: bool,
     if width > 0 and prefix.width > width:
         from src.tui.ink.helpers import truncate_line
         prefix = truncate_line(prefix, width)
-    prefix_w = 0
+    prefix_w = prefix.width
     for run in prefix.runs:
-        prefix_w += wcswidth_simple(run.text)
         line.append_run(run)
     # 右侧模式文本预算（前缀占位后剩余宽度）
     mode_budget = max(0, width - prefix_w)
@@ -238,7 +241,12 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
     text = str(props.get("text", ""))
     completion = props.get("completion")
     status_active = bool(props.get("status_active", False))
-    max_input = max(1, width - len(_PROMPT))
+    # ★ P1（review 修复）：提示符经单一真源取（``props["prompt"]``），可用宽度
+    #   按**显示宽度**计（原 ``len(_PROMPT)`` 硬编码——自定义/宽字符提示符时
+    #   与光标定位口径分裂）。
+    prompt = _prompt_of(props)
+    prompt_w = wcswidth_simple(prompt)
+    max_input = max(1, width - prompt_w)
     # ★ 后台任务计数（2026-08-19 用户需求：自状态栏迁至模式行行首）——
     #   从 props 读取（app.py _normal_bottom_area 经 model.status 传入）。
     #   归一化防御（外部注入异常值回退 0，不中断输入区渲染）。
@@ -464,7 +472,7 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
                 color = _glow_color(45, 55)
             else:
                 color = _glow_color(32, 49)
-            line.append(_PROMPT, Style(fg=color, bold=True))
+            line.append(prompt, Style(fg=color, bold=True))
             if text:
                 line.append(segment, _S_TEXT)
             else:
@@ -481,7 +489,7 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
                 # （提示符后；_truncate_width 不拆 CJK）——width < 占位符长度
                 # 时不再撑爆行宽。截断后的 base_ph 作为渐显键（同占位符持续
                 # 显示语义一致）。
-                ph_budget = max(1, width - len(_PROMPT))
+                ph_budget = max(1, width - prompt_w)
                 if wcswidth_simple(ph) > ph_budget:
                     ph = _truncate_width(ph, ph_budget)
                 fade_key_ph = base_ph
@@ -839,7 +847,9 @@ def _input_snap_key(props: dict, width: int, now: float, fading: bool = False):
     text_str = "" if text is None else str(text)
     completion = props.get("completion")
     status_active = bool(props.get("status_active", False))
-    max_input = max(1, width - len(_PROMPT))
+    # ★ P1（review 修复）：提示符经单一真源（与 _build_lines 同口径——修复前
+    #   此处硬编码 _PROMPT，自定义 prompt 时外层 memo deps 不失效 → 陈旧行）。
+    max_input = max(1, width - wcswidth_simple(_prompt_of(props)))
     # history_search 一次提取（多处字段共享）
     search = props.get("history_search")
     # ★ 主 Agent 运行模式（Ctrl+B 切换，2026-08-14）：进 use_memo deps——

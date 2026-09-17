@@ -56,8 +56,23 @@ class TestCompletePartialJson:
         assert _complete_partial_json('{"path": "src/ma\\') == {"path": "src/ma"}
 
     def test_escaped_quote_inside_value(self):
-        obj = _complete_partial_json('{"command": "echo \\"hi')
-        assert obj == {"command": 'echo \\"hi'}
+        """字符串值内的转义引号不得提前终止字符串，补全后按 JSON 语义解码。
+
+        输入 ``{"command": "echo \\"hi``（截断：值内含转义引号 ``\\"`` 且字符串
+        未闭合）——状态机须把 ``\\"`` 识别为值内转义（不结束字符串），补全引号
+        后交 ``json.loads`` 解码 → 值 ``echo "hi``（与完整 JSON 同格式）。
+        ★ 修复（错误期望）：原用例期望值为 ``echo \\"hi``（保留原始转义符）——
+        与输入值雷同（复制输入所得），且与「完整 JSON 走 json.loads 解码」
+        的显示语义相悖（主 agent 工具卡 / subagent 面板 / 轨迹均为解码后的
+        参数值，保留反斜杠会显示多余字符）。
+        """
+        assert _complete_partial_json('{"command": "echo \\"hi') == {
+            "command": 'echo "hi',
+        }
+        # 对照：完整 JSON（值内含转义引号）解码结果与截断补全一致
+        assert _complete_partial_json('{"command": "echo \\"hi\\" ok"}') == {
+            "command": 'echo "hi" ok',
+        }
 
     def test_mismatched_close_returns_none(self):
         assert _complete_partial_json('{"a": 1}}') is None
@@ -102,6 +117,18 @@ class TestExtractKeyParamsStream:
     def test_non_json_long_truncated_80(self):
         out = extract_key_params_stream("unknown_tool", "a" * 200)
         assert out == "a" * 77 + "..."
+        assert len(out) == 80
+
+    def test_non_json_exactly_80_unchanged(self):
+        """恰好 80 字符不截断（省略号仅在超长时追加）。"""
+        raw = "b" * 80
+        assert extract_key_params_stream("unknown_tool", raw) == raw
+
+    def test_non_json_81_truncated_with_ellipsis(self):
+        """81 字符触发截断 → 77 + "..."（与未知工具 k=v 分支口径一致）。"""
+        out = extract_key_params_stream("unknown_tool", "c" * 81)
+        assert out == "c" * 77 + "..."
+        assert len(out) == 80
 
     def test_empty_input(self):
         assert extract_key_params_stream("read_file", "") == ""

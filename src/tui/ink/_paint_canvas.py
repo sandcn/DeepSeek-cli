@@ -242,6 +242,38 @@ def _merge_line(row, x: int, line: Line) -> dict:
     return row
 
 
+def _slice_run_text_with_offset(text: str, start_w: int, end_w: int) -> tuple[str, int]:
+    """同 ``_slice_run_text``，另返回首个保留字符相对 ``start_w`` 的起始偏移。
+
+    宽字符横跨左边界时整体保留（``_slice_run_text`` 语义）→ 该字符实际起始列
+    ``< start_w``（偏移为负，最多 -1）；正常情况偏移 0。供 ``_slice_line_with_offset``
+    把绘制列回退到真实位置。
+
+    Returns:
+        ``(text, offset)``：切片文本 + 首个保留字符实际起始列与 ``start_w`` 之差
+        （``<= 0``；无保留字符时为 0）。
+    """
+    if start_w <= 0 and end_w >= 10**9:
+        return text, 0
+    chars: list[str] = []
+    col = 0
+    first_start = 0
+    got = False
+    for ch in text:
+        w = wcswidth_simple(ch)
+        if col < end_w and col + w > start_w:
+            if not got:
+                got = True
+                first_start = col
+            chars.append(ch)
+        col += w
+        if col >= end_w and chars and col - w >= end_w:
+            break
+    if not got:
+        return "", 0
+    return "".join(chars), first_start - start_w
+
+
 def _slice_run_text(text: str, start_w: int, end_w: int) -> str:
     """按显示宽度切片文本（``[start_w, end_w)``，CJK 安全）。
 
@@ -256,18 +288,42 @@ def _slice_run_text(text: str, start_w: int, end_w: int) -> str:
     Returns:
         切片后的文本。
     """
-    if start_w <= 0 and end_w >= 10**9:
-        return text
-    chars: list[str] = []
+    return _slice_run_text_with_offset(text, start_w, end_w)[0]
+
+
+def _slice_line_with_offset(
+    line: Line, start_col: int, end_col: int,
+) -> tuple[Line, int]:
+    """同 ``_slice_line``，另返回**绘制起点偏移**（首个保留内容相对 ``start_col``）。
+
+    ★ P2（review 修复）：宽字符横跨左裁剪边界时 ``_slice_run_text`` 整体保留该
+    字符，但调用方原先仍按 ``start_col`` 绘制 → 该字符及其后内容整体**右移 1 列**
+    （尾部越界覆盖相邻单元格）。本函数返回偏移（``0`` 或 ``-1``），调用方以
+    ``start_col + offset`` 为绘制列，宽字符落在真实列（整体保留、略出裁剪区，
+    与「视觉正确优先」语义一致）。
+
+    Returns:
+        ``(line, offset)``：裁剪后的行 + 绘制起点偏移（``<= 0``）。
+    """
+    out = Line()
     col = 0
-    for ch in text:
-        w = wcswidth_simple(ch)
-        if col < end_w and col + w > start_w:
-            chars.append(ch)
-        col += w
-        if col >= end_w and chars and col - w >= end_w:
+    offset = 0
+    recorded = False
+    for run in line.runs:
+        run_end = col + getattr(run, "width", 0)
+        s = max(col, start_col)
+        e = min(run_end, end_col)
+        if s < e:
+            text, rel = _slice_run_text_with_offset(run.text, s - col, e - col)
+            if text:
+                if not recorded:
+                    recorded = True
+                    offset = rel
+                out.append(text, run.style)
+        col = run_end
+        if col >= end_col:
             break
-    return "".join(chars)
+    return out, offset
 
 
 def _slice_line(line: Line, start_col: int, end_col: int) -> Line:
@@ -284,20 +340,7 @@ def _slice_line(line: Line, start_col: int, end_col: int) -> Line:
     Returns:
         裁剪后的新 Line（可能为空）。
     """
-    out = Line()
-    col = 0
-    for run in line.runs:
-        run_end = col + getattr(run, "width", 0)
-        s = max(col, start_col)
-        e = min(run_end, end_col)
-        if s < e:
-            text = _slice_run_text(run.text, s - col, e - col)
-            if text:
-                out.append(text, run.style)
-        col = run_end
-        if col >= end_col:
-            break
-    return out
+    return _slice_line_with_offset(line, start_col, end_col)[0]
 
 
 def _canvas_row_to_line(row) -> Line:
@@ -383,6 +426,8 @@ __all__ = [
     "_overwrites_wide_second_col",
     "_merge_line",
     "_slice_run_text",
+    "_slice_run_text_with_offset",
     "_slice_line",
+    "_slice_line_with_offset",
     "_canvas_row_to_line",
 ]
