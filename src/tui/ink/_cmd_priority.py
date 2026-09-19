@@ -63,6 +63,24 @@ _LOW_CMDS = frozenset({
     RenderCommand.BG_BASH_COUNT,
 })
 
+#: 「最新值覆盖」语义命令集合（2026-09-20 解析进度行卡住修复）：
+#: 这些命令是**状态快照**而非增量事件——队列中同类命令未消费时，新命令直接
+#: **替换**旧命令（保持 ``(priority, seq)`` 位置、不新增条目），队列中恒至多
+#: 一条：
+#:   - PARSE_INFO：解析进度行（工具名 + token 数 + 耗时）——只有最新值有意义，
+#:     中间值无信息损失；替换后队列不增长，最新进度**不会因队列满**走丢弃
+#:     路径（修复前队列满时丢弃 → 进度行数字长时间停在上一次入队成功的值）。
+#:   - BG_BASH_COUNT：后台任务计数（下一拍同值重发，仅最新有意义）。
+#: 消费侧：``_SessionQueueMixin.push_cmd`` 优先走就地替换；
+#: ``_SessionFrameMixin._drain_commands_locked`` 在本批未包含该类命令时额外
+#: 捞取一条（防饥饿）——有界批处理 + 严格优先级队列会让低优先级命令在
+#: prio0 洪流（模型高速流式输出：每 chunk 一条内容命令）下永久得不到处理
+#: （渲染帧持续推进、spinner 在转，而解析进度行数字长时间不刷新）。
+_COALESCE_CMDS = frozenset({
+    RenderCommand.PARSE_INFO,
+    RenderCommand.BG_BASH_COUNT,
+})
+
 
 def _get_cmd_id(cmd: RenderCmd) -> int:
     return cmd.cid
@@ -97,6 +115,7 @@ __all__ = [
     "_HIGH_CMDS",
     "_NORMAL_CMDS",
     "_LOW_CMDS",
+    "_COALESCE_CMDS",
     "_get_cmd_id",
     "_get_cmd_priority",
     "_cmd_name",

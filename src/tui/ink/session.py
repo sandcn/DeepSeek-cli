@@ -14,6 +14,7 @@ InkRenderer 非全屏输出。
 
 from __future__ import annotations
 
+import heapq
 import itertools
 import logging
 import queue
@@ -43,6 +44,7 @@ from . import hooks as _hooks
 #   ``from src.tui.ink.session import _get_cmd_priority`` 兼容）。
 from ._cmd_priority import (
     _CRITICAL_CMDS,
+    _COALESCE_CMDS,
     _STREAM_CMDS,
     _get_cmd_id,
     _get_cmd_priority,
@@ -1200,9 +1202,21 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         锁块内**仅排空命令**——命令应用（``_apply_commands``）与渲染在锁外
         执行（见 ``_drain_queue`` APPLY/RENDER 阶段说明）。
 
+        ★ 2026-09-20（解析进度行卡住修复）**批处理防饥饿**：有界批处理
+        （``max_batch_size``）+ 严格优先级队列下，低优先级命令在高优先级
+        洪流持续积压时**永久得不到处理**——模型高速流式输出时每个 chunk
+        产生一条 prio0 内容命令，队列积压 ≥ 批处理上限后，prio2 的
+        ``ParseInfoCmd``（解析进度行）再也不会进入任何批次：渲染帧持续推进
+        （进度行 spinner 在转）而 token 数/耗时数字长时间不刷新（用户报障
+        「⠹ WriteFile 25t 0.11s 卡住，数据仍在传」）。本方法在本批未包含
+        「最新值覆盖」状态命令（``_COALESCE_CMDS``）且队列中仍有优先级更低
+        （数值更大）的该类命令时，额外捞取**最新**一条（seq 最大）并入本批
+        ——进度行最多延迟一个渲染节拍刷新。
+
         Returns:
             (commands, changed, locked) 三元组：
-              - commands: 本帧排空的命令列表（≤ max_batch_size）；
+              - commands: 本帧排空的命令列表（≤ max_batch_size，防饥饿捞取
+                时可能为 max_batch_size + 1）；
               - changed:  是否有命令被排空；
               - locked:   True=锁已获取；False=锁超时（调用方跳过本帧）。
         """
@@ -1220,7 +1234,52 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                     commands.append(cmd)
                 except queue.Empty:
                     break
+            if commands:
+                victim = self._pop_starved_state_cmd(
+                    max(_get_cmd_priority(c) for c in commands),
+                )
+                if victim is not None:
+                    commands.append(victim)
         return commands, bool(commands), True
+
+    def _pop_starved_state_cmd(self, batch_lowest_priority: int):
+        """从队列中捞出被高优先级洪流饿死的「最新值覆盖」状态命令。
+
+        仅在队列中存在优先级**低于**本批所有命令（priority 数值更大）的
+        ``_COALESCE_CMDS`` 命令时生效（正常无积压场景零开销：队列中该类命令
+        的优先级通常不低）。
+
+        取**最新**一条（seq 最大）——该类命令是状态快照，最新值即最终显示
+        状态；取出后堆数组任意下标 pop 须 ``heapq.heapify`` 恢复堆序
+        （BUG-31 同族），``task_done()`` 在 ``queue.mutex`` 外调用（mutex 与
+        ``all_tasks_done`` Condition 同源、不可重入）。
+
+        Args:
+            batch_lowest_priority: 本批命令的最低优先级（priority 最大值）。
+
+        Returns:
+            捞取到的命令；无该类命令被饿死时为 None。
+        """
+        victim = None
+        with self._cmd_queue.mutex:
+            idx = None
+            for i, item in enumerate(self._cmd_queue.queue):
+                if item[0] <= batch_lowest_priority:
+                    continue
+                if _get_cmd_id(item[2]) not in _COALESCE_CMDS:
+                    continue
+                if idx is None or item[1] > self._cmd_queue.queue[idx][1]:
+                    idx = i
+            if idx is not None:
+                victim = self._cmd_queue.queue.pop(idx)
+                heapq.heapify(self._cmd_queue.queue)
+        if victim is not None:
+            try:
+                self._cmd_queue.task_done()
+            except ValueError:
+                pass
+            return victim[2]
+        return None
 
     def _needs_animation(self) -> bool:
         """是否存在活跃动画状态需要持续 10Hz 渲染（时间基动画推进）。
@@ -1429,4 +1488,6 @@ __all__ = [
     "_KEEP_CONTENT_CMDS",
     "_PUT_NO_DROP_TIMEOUT",
     "_safe_int",
+    # ★ 2026-09-20：可合并状态命令集合 re-export（真源 ``_cmd_priority``）
+    "_COALESCE_CMDS",
 ]

@@ -43,6 +43,7 @@ from src.tui._const import (
 from src.tui.ink._cmd_priority import (
     _CMD_PRIORITY_CRITICAL,
     _CMD_PRIORITY_LOW,
+    _COALESCE_CMDS,
     _CRITICAL_CMDS,
     _STREAM_CMDS,
     _get_cmd_id,
@@ -87,6 +88,10 @@ _KEEP_CONTENT_CMDS = frozenset({
 #: 永久阻塞。
 _PUT_NO_DROP_TIMEOUT = 30.0
 
+#: 「最新值覆盖」语义命令集合 —— 真源在 ``_cmd_priority._COALESCE_CMDS``
+#: （2026-09-20 解析进度行卡住修复；本模块经上方 import re-export，消费方为
+#: ``push_cmd`` 就地替换 + ``InkSession._pop_starved_state_cmd`` 防饥饿捞取）。
+
 
 class _SessionQueueMixin:
     """InkSession 命令队列管理子域（mixin）。
@@ -107,10 +112,47 @@ class _SessionQueueMixin:
 
     # ── 命令入队 ─────────────────────────────────────
 
+    def _replace_queued_same_kind(self, cmd_id: int, cmd: RenderCmd) -> bool:
+        """就地替换队列中同类型未消费命令（「最新值覆盖」语义，2026-09-20）。
+
+        在 ``_cmd_queue.mutex`` 内遍历底层堆数组，命中首个同 ``cmd_id`` 条目后
+        替换其命令对象：**保留原 ``(priority, seq)``**——比较键不变，堆序与
+        「同批插入序」语义完全不变（无需 heapq.heapify）；条目数不变，
+        ``unfinished_tasks`` 一致（不额外 ``task_done``，不破坏 ``queue.join``）。
+
+        仅操作 ``queue.queue`` 数组（不调用 put/get/task_done），故持 mutex
+        安全（``all_tasks_done`` Condition 复用同一 mutex，不可在内调用
+        ``task_done``）。
+
+        Args:
+            cmd_id: 命令类型 id（``RenderCmd.cid``）。
+            cmd: 新的（最新值）命令。
+
+        Returns:
+            True — 已替换（调用方无需再入队）；False — 队列中无同类命令。
+        """
+        with self._cmd_queue.mutex:
+            for i, item in enumerate(self._cmd_queue.queue):
+                if _get_cmd_id(item[2]) == cmd_id:
+                    self._cmd_queue.queue[i] = (item[0], item[1], cmd)
+                    return True
+        return False
+
     def push_cmd(self, cmd: RenderCmd) -> None:
         """入队渲染命令（阻塞语义与 TuiEngine.push_cmd 一致）。"""
         priority = _get_cmd_priority(cmd)
-        blocking = _get_cmd_id(cmd) in _CRITICAL_CMDS
+        cmd_id = _get_cmd_id(cmd)
+        blocking = cmd_id in _CRITICAL_CMDS
+        # ★ 2026-09-20（解析进度行卡住修复）：「最新值覆盖」类命令（PARSE_INFO/
+        #   BG_BASH_COUNT）合并——队列中已有同类未消费命令时**就地替换**（保持
+        #   原 (priority, seq) 位置，堆序/顺序语义不变；不新增条目、不增加
+        #   unfinished_tasks），队列中恒至多一条且始终是最新值；替换先于 put
+        #   执行，故队列已满时最新进度仍能落地（修复前队列满直接丢弃
+        #   ParseInfoCmd → 进度行数字停在上一次入队成功的值）。
+        if cmd_id in _COALESCE_CMDS and self._replace_queued_same_kind(cmd_id, cmd):
+            self._consecutive_full = 0
+            self._cmd_event.set()
+            return
         try:
             if blocking:
                 self._cmd_queue.put(
@@ -193,7 +235,6 @@ class _SessionQueueMixin:
                 return
             self._consecutive_full += 1
             self._cmd_queue_dropped += 1
-            cmd_id = _get_cmd_id(cmd)
             _logger.warning(
                 "渲染命令队列已满（%s 条），丢弃命令: %s (优先级=%d)",
                 self._cmd_queue.qsize(), _cmd_name(cmd_id), priority,
@@ -349,4 +390,6 @@ __all__ = [
     "_SessionQueueMixin",
     "_KEEP_CONTENT_CMDS",
     "_PUT_NO_DROP_TIMEOUT",
+    # ★ 2026-09-20：真源在 _cmd_priority（本模块 re-export 供旧导入路径）
+    "_COALESCE_CMDS",
 ]

@@ -66,7 +66,20 @@ class ToolCallsHandler:
                 if tool_name:
                     _entry["name"] = tool_name
                 if ctx.display is not None:
-                    if _entry.get("_args_preview"):
+                    _preview = _entry.get("_args_preview")
+                    # ★ 2026-09-20（解析进度行卡住修复）：参数预览**未变化**时
+                    #   不再重复发布 tool_parsing——修复前每个 tool_calls 增量
+                    #   chunk 都发布一次（预览一旦达到 200 字符上限即恒定），
+                    #   主 agent 侧每次映射为一条 CRITICAL（prio0）的
+                    #   ``MainPhaseCmd(phase="parsing")``：单次工具解析实测可产生
+                    #   上千条**完全幂等**的重复命令（``_do_main_phase`` 对同
+                    #   phase 不重置计时，重复推送零信息增量），洪流挤满渲染
+                    #   队列批处理 → 低优先级的解析进度行（ParseInfoCmd）被饿死
+                    #   → 进度行数字长时间不刷新（「数据仍在传」）。
+                    #   预览值变化才发布（前 200 字符内约数次），命令数从 O(分片
+                    #   数) 降到 O(预览变化次数)；subagent 面板依赖的预览详情在
+                    #   值不变时无需刷新，行为等价。
+                    if _preview and _preview != _entry.get("_published_preview"):
                         try:
                             # ★ 使用缓存的 _stream_label，确保标签在整个流式过程中一致
                             #   即使后续 chunk 提供了 id，也不改变已创建的流式标签，
@@ -79,9 +92,10 @@ class ToolCallsHandler:
                             ctx.display.tool_parsing(
                                 ctx.label or "",
                                 tool_name or _entry.get("name", ""),
-                                _entry["_args_preview"],
+                                _preview,
                                 tool_id=entry_id,
                             )
+                            _entry["_published_preview"] = _preview
                         except Exception:
                             _logger.warning("tool_parsing 更新调用异常", exc_info=True)
 
