@@ -71,6 +71,10 @@ pip install ".[dev]"
     "auto_force_compress_threshold": 60000,
     "enable_notifications": true,
     "notify_on_chat_completion": true,
+    "image_upload_optimize": true,
+    "image_upload_keep_recent": 4,
+    "image_upload_max_dimension": 1568,
+    "image_upload_quality": 80,
     "performance": {
         "http_client": {
             "connect_timeout": 30,
@@ -171,6 +175,22 @@ python chat.py -m deepseek-flash
 2. **read_image 工具**：AI 代理可主动调用 `read_image` 工具读取本地图像
    （支持分块/灰度/旋转/翻转/缩放操作），多模态模型直接看到 base64 图片
    （图片按原始尺寸返回，不做自动缩放）。
+
+> **上传前图片瘦身（默认开启）**：图片按原始尺寸进入会话历史，而每轮 API
+> 请求都会重传**整个**历史（含全部历史图片的 base64），图片一多请求体便随
+> 图片数量线性膨胀（实测 6 张 1080p 截图 ≈ 47MB/请求），表现为"图片多了每次
+> 都很卡"。客户端在**发送副本**上自动做三件事：
+> ① 折叠——仅保留最近 `image_upload_keep_recent` 张图片，更早的图片块替换为
+> 文本占位；② 压缩——超过 `image_upload_max_dimension` 长边或体积阈值的图片
+> 降采样并重编码为 JPEG；③ 编码缓存——同一图片不重复解码/编码。
+> 该优化**不改动**会话存档、TUI 显示与 `read_image` 的「原始尺寸返回」契约。
+>
+> ```bash
+> python chat.py config set image_upload_optimize false        # 关闭优化
+> python chat.py config set image_upload_keep_recent 8         # 多保留几张（0=不折叠）
+> python chat.py config set image_upload_max_dimension 1024    # 上传长边上限
+> python chat.py config set image_upload_quality 80            # JPEG 质量 1~100
+> ```
 
 非多模态模型下，用户消息中的图片引用保持纯文本原样传递（模型不可见图片）。
 如有多模态模型未被内置模式识别，可通过配置扩展：
@@ -347,7 +367,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 | `mv` | mv | IO | ✅ | 移动文件或目录，支持跨文件系统 |
 | `rm` | rm | IO | ❌ | 删除文件或目录（删除前自动备份到沙盒） |
 | `mkdir` | mk | IO | ✅ | 创建目录，支持递归创建父目录 |
-| `read_image` | ri | IO | ✅ | 读取图像文件内容，支持分块读取与图像操作（灰度/旋转/翻转/缩放）；图片按原始尺寸返回给模型（不做自动缩放）；多模态 base64 图片（多模态模型如 deepseek-flash 直接看到图片） |
+| `read_image` | ri | IO | ✅ | 读取图像文件内容，支持分块读取与图像操作（灰度/旋转/翻转/缩放）；图片按原始尺寸返回给模型（不做自动缩放）；多模态 base64 图片（多模态模型如 deepseek-flash 直接看到图片）。发送前客户端会自动瘦身（折叠旧图+压缩大图+编码缓存），缓解多图场景每轮重传导致的请求卡顿 |
 | `web_search` | ws | 网络 | ❌ | DeepSeek 官方原生联网搜索（Anthropic 兼容 Messages API + web_search_20250305），返回来源列表（标题/URL/摘要） |
 | `web_fetch` | — | 网络 | ✅ | 获取指定 URL 的网页全文（自动提取正文，SSRF 防护，仅 http/https） |
 | `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/超时回退/非交互回退，选项可带说明，TUI 中高亮选项时说明显示在右侧；支持并发提问——多个问题可同一轮同时弹出、以 tab 形式一起回答） |

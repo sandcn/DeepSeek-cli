@@ -191,6 +191,26 @@ class ConfigProxy(ConfigPort):
         return _config.NOTIFY_ON_CHAT_COMPLETION
 
     @property
+    def MULTIMODAL_MODELS(self) -> list:
+        return _config.MULTIMODAL_MODELS
+
+    @property
+    def IMAGE_UPLOAD_OPTIMIZE(self) -> bool:
+        return _config.IMAGE_UPLOAD_OPTIMIZE
+
+    @property
+    def IMAGE_UPLOAD_KEEP_RECENT(self) -> int:
+        return _config.IMAGE_UPLOAD_KEEP_RECENT
+
+    @property
+    def IMAGE_UPLOAD_MAX_DIMENSION(self) -> int:
+        return _config.IMAGE_UPLOAD_MAX_DIMENSION
+
+    @property
+    def IMAGE_UPLOAD_QUALITY(self) -> int:
+        return _config.IMAGE_UPLOAD_QUALITY
+
+    @property
     def CONFIG_DIR(self) -> Path:
         return _config.CONFIG_DIR
 

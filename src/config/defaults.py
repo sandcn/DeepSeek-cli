@@ -100,6 +100,13 @@ DEFAULTS = {
     # src/api/multimodal.py 内置模式未覆盖的模型；read_image 等图像工具
     # 据此判断是否返回 base64 图片 content blocks）
     "multimodal_models": [],
+    # ── 上传前图片优化（发送副本上执行，不改 read_image 输出/会话存档）──
+    # 多图场景下每轮请求都会重传全部历史图片 base64，体积线性膨胀导致
+    # 请求卡顿；以下配置控制：折叠旧图 + 压缩大图 + 编码缓存。
+    "image_upload_optimize": True,
+    "image_upload_keep_recent": 4,
+    "image_upload_max_dimension": 1568,
+    "image_upload_quality": 80,
     "theme": "dark",
     # 技能（skill）子系统配置
     "skills": {
@@ -242,6 +249,31 @@ CONFIG_KEYS = {
         "rc_path": ("multimodal_models",),
         "type": list,
         "default": [],
+        "cacheable": True,
+    },
+    # ---- 上传前图片优化（多模态图片瘦身） ----
+    "IMAGE_UPLOAD_OPTIMIZE": {
+        "rc_path": ("image_upload_optimize",),
+        "type": bool,
+        "default": DEFAULTS["image_upload_optimize"],
+        "cacheable": True,
+    },
+    "IMAGE_UPLOAD_KEEP_RECENT": {
+        "rc_path": ("image_upload_keep_recent",),
+        "type": int,
+        "default": DEFAULTS["image_upload_keep_recent"],
+        "cacheable": True,
+    },
+    "IMAGE_UPLOAD_MAX_DIMENSION": {
+        "rc_path": ("image_upload_max_dimension",),
+        "type": int,
+        "default": DEFAULTS["image_upload_max_dimension"],
+        "cacheable": True,
+    },
+    "IMAGE_UPLOAD_QUALITY": {
+        "rc_path": ("image_upload_quality",),
+        "type": int,
+        "default": DEFAULTS["image_upload_quality"],
         "cacheable": True,
     },
     # ---- HTTP 性能配置（嵌套路径） ----
