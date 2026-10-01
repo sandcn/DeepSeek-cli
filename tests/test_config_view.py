@@ -162,14 +162,16 @@ class TestViewModel:
     def test_build_config_entries_structure(self, isolated_rc):
         from src.config.view_model import build_config_entries
         entries = build_config_entries()
-        # CONFIG_KEYS(31) + 额外键(4) = 35
-        assert len(entries) == 35
+        # CONFIG_KEYS(32) + 额外键(4) = 36
+        assert len(entries) == 36
         keys = [e["key"] for e in entries]
         assert "MODEL" in keys and "HTTP_CONNECT_TIMEOUT" in keys
         assert "provider" in keys and "api_key" in keys
         # 上传前图片优化（多图请求卡顿）配置项
         assert {"IMAGE_UPLOAD_OPTIMIZE", "IMAGE_UPLOAD_KEEP_RECENT",
                 "IMAGE_UPLOAD_MAX_DIMENSION", "IMAGE_UPLOAD_QUALITY"} <= set(keys)
+        # MCP 外部工具服务器配置项
+        assert "MCP_SERVERS" in keys
         # 每条目字段齐全
         for e in entries:
             assert {"key", "path", "type", "value", "value_text",

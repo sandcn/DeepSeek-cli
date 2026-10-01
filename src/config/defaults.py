@@ -83,7 +83,7 @@ DEFAULTS = {
     "max_context_chars": 60000,
     "max_output_chars": 3000,
     "max_retries": 10,
-    "retry_base_sec": 30,
+    "retry_base_sec": 30.0,
     "max_session_messages": 0,
     "keep_recent_messages": 0,
     "max_context_tokens": 60000,
@@ -107,6 +107,11 @@ DEFAULTS = {
     "image_upload_keep_recent": 4,
     "image_upload_max_dimension": 1568,
     "image_upload_quality": 80,
+    # ── MCP（Model Context Protocol）外部工具服务器 ──
+    # 列表元素：{"name","transport"(stdio/http/sse),"command","args","env","cwd",
+    #   "url","headers","enabled","agents","timeout","parallel_safe","description"}
+    # 空列表 → 不连接任何外部 server（零开销）；应用启动时 setup_mcp() 读取。
+    "mcp_servers": [],
     "theme": "dark",
     # 技能（skill）子系统配置
     "skills": {
@@ -274,6 +279,13 @@ CONFIG_KEYS = {
         "rc_path": ("image_upload_quality",),
         "type": int,
         "default": DEFAULTS["image_upload_quality"],
+        "cacheable": True,
+    },
+    # ---- MCP 外部工具服务器 ----
+    "MCP_SERVERS": {
+        "rc_path": ("mcp_servers",),
+        "type": list,
+        "default": [],
         "cacheable": True,
     },
     # ---- HTTP 性能配置（嵌套路径） ----

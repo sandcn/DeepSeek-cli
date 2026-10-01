@@ -134,6 +134,41 @@ _FALLBACK_MAIN_PROMPT = f"""# 核心目标
 
 # ── 公共构建逻辑 ────────────────────────────────────
 
+#: agent 名 → MCP 工具权限类型（用于提示词章节按权限过滤；
+#: main/sub 走 execute 策略——主 Agent 与通用子代理可用 MCP 工具全集）
+_MCP_AGENT_TYPE: dict = {
+    "main": "execute",
+    "sub": "execute",
+    "execute": "execute",
+    "map": "map",
+    "review": "review",
+    "plan": "plan",
+}
+
+
+def _build_mcp_section(agent_name: str = "main") -> str:
+    """构建系统提示词中的 MCP 外部工具章节（无 MCP 配置时返回空字符串）。
+
+    先读配置门控：``mcp_servers`` 为空时直接返回，避免无 MCP 场景为构建
+    提示词而导入整个 mcp 子系统（httpx / 工具适配层）。
+
+    章节按目标 agent 类型过滤工具：只读型 SubAgent（map/review/plan）默认被
+    排除的 MCP 工具不会出现在其提示词中，避免"提示词宣称可用但工具集被移除"
+    导致模型反复发起被拒调用。
+    """
+    try:
+        from ..config import MCP_SERVERS
+    except Exception:
+        return ""
+    if not MCP_SERVERS:
+        return ""
+    try:
+        from ..mcp import get_mcp_prompt_section
+        return get_mcp_prompt_section(_MCP_AGENT_TYPE.get(agent_name, "execute"))
+    except Exception:
+        _logger.debug("构建 MCP 提示词章节失败", exc_info=True)
+        return ""
+
 
 def _build_prompt(
     agent_name:str,
@@ -143,6 +178,7 @@ def _build_prompt(
     cwd: str | None = None,
     include_global_md: bool = True,
     include_skills: bool = False,
+    include_mcp: bool = True,
 ) -> list[str]:
     """构建提示词的公共逻辑。
 
@@ -156,6 +192,7 @@ def _build_prompt(
         include_global_md: 是否从 global.md 加载项目摘要信息
         include_skills: 是否在环境信息后注入技能章节（主 Agent 专用，
             构建时只注入一次；技能变更后经 rebuild_system_prompt 重建）
+        include_mcp: 是否在技能章节后注入 MCP 外部工具章节（无 MCP 配置时为空）
     """
     cwd = _resolve_cwd(cwd)
     parts: list[str] = []
@@ -177,7 +214,7 @@ def _build_prompt(
 
     agent_summary = build_work_md(agent_name + ".md",cwd=cwd)
     if agent_summary:
-            parts.append(agent_summary)
+        parts.append(agent_summary)
 
     # 运行时动态信息
     env_info = build_environment_info(cwd)
@@ -191,6 +228,12 @@ def _build_prompt(
         skills_section = build_skills_prompt_section(cwd)
         if skills_section:
             parts.append(skills_section)
+
+    # MCP 外部工具章节：技能章节之后注入（无 MCP 配置时为空，不影响既有提示词）
+    if include_mcp:
+        mcp_section = _build_mcp_section(agent_name)
+        if mcp_section:
+            parts.append(mcp_section)
 
     # 过滤空字符串（文件丢失/读取失败时 _load_prompt 返回空字符串）
     return [p for p in parts if p]

@@ -63,6 +63,22 @@ class ToolRegistry:
         self._schema_cache = None  # 使 schema 缓存失效
         logger.debug(f"注册工具: {tool_name}")
 
+    def unregister(self, tool_name: str) -> bool:
+        """从当前实例注销一个工具（MCP 动态工具关闭时清理）。
+
+        Args:
+            tool_name: 工具名称
+
+        Returns:
+            True 表示确实移除了该工具，False 表示原本不存在。
+        """
+        if tool_name not in self._tools:
+            return False
+        del self._tools[tool_name]
+        self._schema_cache = None  # 使 schema 缓存失效
+        logger.debug(f"注销工具: {tool_name}")
+        return True
+
     def get_tools(self) -> Dict[str, Type[Func]]:
         """
         获取当前实例中所有已注册的工具
@@ -88,12 +104,13 @@ class ToolRegistry:
             return None
         return get_tool_metadata(tool_class)
 
-    def get_schemas(self) -> List[Dict[str, Any]]:
+    def get_schemas(self) -> tuple:
         """
         获取当前实例中所有工具的函数调用模式
 
         Returns:
-            工具模式列表，适用于OpenAI函数调用
+            工具模式元组（不可变；调用方如需列表请自行 list(...)），
+            适用于 OpenAI 函数调用
         """
         self._ensure_initialized()
 

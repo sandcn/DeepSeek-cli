@@ -75,6 +75,7 @@ pip install ".[dev]"
     "image_upload_keep_recent": 4,
     "image_upload_max_dimension": 1568,
     "image_upload_quality": 80,
+    "mcp_servers": [],
     "performance": {
         "http_client": {
             "connect_timeout": 30,
@@ -111,9 +112,13 @@ pip install ".[dev]"
 | Provider | 适配器 | 说明 |
 |---|---|---|
 | `deepseek` | `DeepSeekAdapter` | DeepSeek 官方 API（默认），支持 deepseek-flash（V4.1 Flash，原生多模态视觉）、v4-pro、v4-flash / v4-flash-vision-exp（旧名，已路由到 V4.1 Flash）、reasoner、chat、coder 系列 |
-| `custom` | `OpenAICompatAdapter` | 任意 OpenAI 兼容 API（OpenAI / GLM / 通义千问等），自动检测 reasoner 模型 |
+| `custom` | `OpenAICompatAdapter` | 任意 OpenAI 兼容 API（OpenAI / 通义千问 / 本地 Ollama 的 OpenAI 兼容端点等），自动检测 reasoner 模型 |
 | `anthropic` | `AnthropicAdapter` | Anthropic Claude 系列模型（API 格式自动转换） |
-| `ollama` | `OllamaAdapter` | 本地 Ollama 部署模型（默认 `localhost:11434`） |
+| `glm` | `OpenAICompatAdapter` | 智谱 GLM（open.bigmodel.cn） |
+| `mimo` | `OpenAICompatAdapter` | 小米 MiMo（token-plan-cn） |
+
+> 模型名以 `ollama` 开头时按 `OllamaAdapter` 路由（本地 Ollama 部署，默认
+> `localhost:11434`）；该路由由模型名决定，不需要 `provider: ollama`。
 
 ---
 
@@ -351,6 +356,9 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 
 AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内置工具**，涵盖文件操作、代码搜索、网络请求、用户交互等能力。
 
+> 除内置工具外，还可通过 **MCP（Model Context Protocol）** 接入外部服务器提供的工具，
+> 注册后与内置工具同构调用（详见下方 [MCP 外部工具接入](#mcp-外部工具接入model-context-protocol)）。
+
 ### 工具列表
 
 | 工具名 | 缩写 | 分类 | 并行安全 | 功能说明 |
@@ -407,6 +415,91 @@ def can_use(cls, tool_name: str, agent_type: str = "execute", path: str | None =
 - **agent_type 注入** — SubAgent 在 `_handle_tool_calls()` 中自动注入 `func.agent_type = self.agent_type`
 - **排除规则** — 定义在 `src/core/subagent.py` 的 `_TOOL_EXCLUSION_MAP`（详见下方 SubAgent 类型表）
 - **路径白名单** — `FileToolBase._validate_path_and_size()` 对 plan Agent 实施路径限制，仅允许写入 `.chat/plan/` 目录，防止误写项目源码
+
+---
+
+## MCP 外部工具接入（Model Context Protocol）
+
+除 19 个内置工具外，本 CLI 还支持接入**外部 MCP 服务器**（[Model Context Protocol](https://modelcontextprotocol.io/) 2025-06-18），
+把第三方工具（文件系统、数据库、浏览器、自定义服务……）无缝变成模型可调用的工具。
+
+### 配置
+
+在 `~/.chat_config/chatrc.json` 顶层添加 `mcp_servers`（列表，默认 `[]`）：
+
+```json
+{
+    "mcp_servers": [
+        {
+            "name": "filesystem",
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            "agents": ["execute"],
+            "timeout": 30
+        },
+        {
+            "name": "remote",
+            "transport": "http",
+            "url": "https://example.com/mcp",
+            "headers": {"Authorization": "Bearer xxx"}
+        }
+    ]
+}
+```
+
+也可用 `/config` 界面或 CLI 编辑：
+
+```bash
+python chat.py config set mcp_servers '[{"name":"fs","transport":"stdio","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"]}]'
+```
+
+### 字段说明
+
+| 字段 | 适用 | 默认 | 说明 |
+|---|---|---|---|
+| `name` | 必填 | — | 服务器唯一名（工具名前缀 + 状态显示） |
+| `transport` | 可选 | `stdio` | `stdio` / `http`（Streamable HTTP）/ `sse`（旧式 HTTP+SSE） |
+| `command` | stdio 必填 | — | 可执行文件（如 `npx` / `uvx` / `python`） |
+| `args` | stdio 可选 | `[]` | 命令行参数 |
+| `env` | stdio 可选 | `{}` | 追加/覆盖子进程环境变量 |
+| `cwd` | stdio 可选 | 当前目录 | 子进程工作目录 |
+| `url` | http/sse 必填 | — | MCP 端点（仅 http/https） |
+| `headers` | http/sse 可选 | `{}` | 附加请求头（如 `Authorization`） |
+| `enabled` | 可选 | `true` | 是否启用（`false` 时跳过连接） |
+| `agents` | 可选 | `["execute"]` | 允许使用该服务器工具的 SubAgent 类型（`map`/`review`/`plan`/`execute`） |
+| `timeout` | 可选 | `30` | 单次请求超时（秒，上限 600） |
+| `parallel_safe` | 可选 | `false` | 是否声明并行安全（影响工具 DAG 调度） |
+| `inherit_env` | stdio 可选 | `false` | 是否把当前进程**全部**环境变量继承给子进程；默认只透传基础变量白名单（PATH/HOME/temp/LANG 等）+ `env`，避免 `CHAT_API_KEY` 等凭据外泄给第三方 server |
+| `description` | 可选 | `""` | 人类可读说明（仅展示） |
+
+### 行为
+
+- **启动连接** — `chat.py` 启动时（交互 / 单次 / clawbot 模式统一入口）连接全部启用的服务器，
+  完成 `initialize` 握手 → `tools/list` 发现工具 → 以 `mcp__<server>__<tool>` 名字注册进工具注册表；
+  单个服务器连接失败只记 WARNING 并跳过，**不阻断应用启动**。
+- **调用** — 模型调用 MCP 工具的方式与内置工具完全一致（工具卡、轨迹、token 统计、审计日志、
+  沙盒记录等链路自动生效）；结果文本直接回传，图片结果在多模态模型下自动转成
+  `image_url` content blocks（非多模态模型只回占位文本）。
+- **权限** — MCP 工具默认**仅 `execute` 型 Agent 可用**（主 Agent + execute SubAgent）；
+  `map` / `review` / `plan` 只读型 Agent 默认被排除（避免只读审查链路写入外部系统），
+  可用 `agents` 字段按服务器显式放开（如 `["execute", "review"]`）。
+- **提示词** — 已连接的服务器与工具清单会注入系统提示词（`## MCP 外部工具` 章节，无 MCP 配置时不注入）；
+  该章节按目标 agent 类型过滤，只读型 SubAgent 不会看到自己被排除的 MCP 工具。
+- **关闭** — 进程退出时关闭全部连接（terminate stdio 子进程 / DELETE HTTP 会话）、
+  注销动态工具与权限策略。
+- **零开销** — 未配置 `mcp_servers` 时不建立任何连接、不注册任何工具、不导入 mcp 子系统。
+
+### 实现结构（`src/mcp/`）
+
+| 模块 | 职责 |
+|------|------|
+| `protocol.py` | JSON-RPC 报文构造/解析、协议版本协商、方法名与头部常量 |
+| `config.py` | `mcp_servers` 解析与校验（字段清洗、非法条目跳过、同名去重） |
+| `transport.py` | 传输层：`StdioTransport`（子进程）/ `HttpTransport`（Streamable HTTP）/ `SseTransport`（旧式 HTTP+SSE） |
+| `client.py` | 单服务器客户端：`initialize` 握手 + `tools/list`（cursor 分页）+ `tools/call`，结果归一化 |
+| `tool.py` | MCP 工具 → 动态 `Func` 子类（名称清洗限长、schema 归一化、图片转 content blocks） |
+| `manager.py` | 进程级单例：连接编排、工具注册、调用路由、权限策略、状态与提示词章节 |
 
 ---
 
@@ -650,6 +743,7 @@ ChatUIConsumer
 │   │   └── page_fetcher.py    # 网页内容抓取（web_fetch 依赖）
 │   │
 │   ├── prompt_builder/     # 系统提示词构建
+│   ├── mcp/                # MCP 外部工具接入（stdio / Streamable HTTP / 旧式 SSE）
 │   ├── notifications/      # 桌面通知（Termux/Linux/Windows）
 │   └── observability/      # 可观测性门面（聚合指标/追踪/遥测日志）
 ```

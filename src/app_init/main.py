@@ -89,6 +89,15 @@ async def main():
     signal_mgr.register_handlers()
 
     try:
+        # ── MCP 外部工具接入：连接配置的 MCP server 并注册其工具 ──
+        # 未配置 mcp_servers 时零开销（不建连接、不注册工具）；单个 server
+        # 连接/发现失败只记 WARNING 并跳过，不阻断应用启动。
+        try:
+            from ..mcp import setup_mcp
+            await setup_mcp()
+        except Exception:
+            _logger.warning("MCP 初始化失败（忽略，继续启动）", exc_info=True)
+
         # ── run 模式 ──
 
         # ── clawbot 模式：微信 ClawBot 远程控制（默认 TUI：非全屏聊天界面
@@ -131,6 +140,12 @@ async def main():
         publish_output(f"\n  ❌ 致命错误: {e}", level="raw")
         logging.critical("应用崩溃", exc_info=True)
     finally:
+        # ── 关闭 MCP 连接（注销动态工具 + 终止 stdio 子进程 / 关闭 HTTP 客户端） ──
+        try:
+            from ..mcp import shutdown_mcp
+            await shutdown_mcp()
+        except Exception:
+            _logger.debug("MCP 关闭异常", exc_info=True)
         stop_active_monitor()
         if output_consumer is not None:
             output_consumer.stop()

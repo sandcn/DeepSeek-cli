@@ -129,6 +129,20 @@ def _validate_rc(rc):
         else:
             rc["multimodal_models"] = [str(m) for m in rc["multimodal_models"]]
 
+    # MCP 外部工具服务器：非列表回退空列表；有配置时才导入 mcp 包做结构清洗
+    # （默认空列表路径零导入开销，避免无 MCP 场景拖慢配置加载）
+    if "mcp_servers" in rc:
+        if not isinstance(rc["mcp_servers"], (list, tuple)):
+            rc["mcp_servers"] = []
+        elif rc["mcp_servers"]:
+            try:
+                from ..mcp.config import validate_mcp_servers
+                rc["mcp_servers"] = validate_mcp_servers(rc["mcp_servers"])
+            except Exception:
+                # mcp 子系统导入失败（依赖缺失等）不应让配置加载崩溃：
+                # 退化为结构过滤（仅保留对象条目），副作用是条目不被清洗。
+                rc["mcp_servers"] = [c for c in rc["mcp_servers"] if isinstance(c, dict)]
+
     if "token_prices" in rc:
         if not isinstance(rc["token_prices"], dict):
             rc["token_prices"] = DEFAULTS["token_prices"]

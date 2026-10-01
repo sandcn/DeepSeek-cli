@@ -22,3 +22,6 @@ Thumbs.db
 
 # Project specific
 .chat/
+
+# 临时调试产物（asar 探针脚本、抓取输出等）
+.dsh-*
