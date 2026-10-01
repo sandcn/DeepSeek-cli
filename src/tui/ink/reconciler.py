@@ -47,7 +47,7 @@ class _MaskedCharEvent:
     ``_event_input/_event_key`` 鸭子类型约定一致）。
     """
 
-    __slots__ = ("kind", "char", "modifier", "keycode", "raw")
+    __slots__ = ("kind", "char", "modifier", "keycode", "raw", "kitty_bits", "event_type")
 
     def __init__(self, event, mask: str) -> None:
         text = getattr(event, "char", "") or ""
@@ -56,6 +56,11 @@ class _MaskedCharEvent:
         self.modifier = getattr(event, "modifier", 0)
         self.keycode = getattr(event, "keycode", 0)
         self.raw = getattr(event, "raw", None)
+        # ★ P3（review）：透传 kitty 元信息——修复前掩码事件丢失
+        #   ``kitty_bits``/``event_type``，``_event_key`` 的 super/hyper/
+        #   capsLock/numLock/eventType 在密码输入路径静默降级为默认值。
+        self.kitty_bits = getattr(event, "kitty_bits", -1)
+        self.event_type = getattr(event, "event_type", "")
 
 #: 内置 host 标签集合——绝不可能是 context provider（create_context 生成
 #: 唯一 ``__ctx_*__`` 标签；内置标签无 provider 注册路径）。reconciler
@@ -237,6 +242,15 @@ class Reconciler:
         old = fiber.props
         if old is props:
             return
+        # ★ 性能：长度不等 → 内容必不等（免 O(n) 深比较）——大 props（如
+        #   TEXT 的 styled run 列表）在无变化帧的深比较是热路径可感知开销。
+        try:
+            if len(old) != len(props):
+                fiber.props = props
+                fiber._key_cache = None
+                return
+        except TypeError:
+            pass
         try:
             if old == props:
                 return  # 内容相等：保持引用稳定（_measure_cache 引用级命中）
@@ -919,12 +933,18 @@ class Reconciler:
                 if getattr(event, "kind", "") == "char":
                     text = getattr(event, "char", "") or ""
                     if len(text) > 1:
+                        # 官方语义：存在 active usePaste 时粘贴内容**不转发**给
+                        # useInput handler（独立通道）——无论 handler 返回值如
+                        # 何，粘贴事件均被消费（handler 官方签名为 `(text) ->
+                        # void`，返回 None 也应阻断 use_input 通道）。
                         for hook in paste_hooks:
                             try:
-                                if hook.handler is not None and hook.handler(text):
-                                    return True
+                                if hook.handler is not None:
+                                    hook.handler(text)
                             except Exception:
+                                _logger.debug("usePaste handler 异常", exc_info=True)
                                 continue
+                        return True
             # ── Tab/Shift+Tab 焦点切换（React Ink useFocusManager）──
             if has_focus_ids and _event_key_tab(event):
                 # 非 CSI u 时 modifier=0（普通 Tab）；Shift+Tab 需 CSI u 协议
@@ -946,6 +966,9 @@ class Reconciler:
                         if hook.handler(ev):
                             return True
                 except Exception:
+                    # ★ P3（review）：handler 异常不再静默——记 debug（按键
+                    #   「无响应」时可观测）；语义不变（异常视为未消费，放行）。
+                    _logger.debug("use_input handler 异常", exc_info=True)
                     continue
             # ── 模态全屏视图（use_fullscreen，2026-08-17）：全部 handler 未
             #   消费 → 全屏激活时吞掉事件（返回 True）→ InputDispatcher 跳过
@@ -1080,7 +1103,7 @@ class Reconciler:
         外部缓存经 ``deleted`` 正确失效重建。
         """
         fiber.sibling = None
-        self._traverse_functions(fiber, self._queue_destroys, include_self=True)
+        self._traverse_functions(fiber, self._queue_destroys)
         fiber.deleted = True
         # ★ P3（review）：移除 ``_cleanup_contexts(fiber)`` 调用——该函数自
         #   BUG-18 起为 no-op（context 注册表条目为进程级 Context 对象，与
@@ -1163,27 +1186,24 @@ class Reconciler:
         self,
         fiber: Fiber | None,
         cb: Callable[[Fiber], None],
-        include_self: bool = False,
     ) -> None:
         """前序遍历 fiber 树，对 function fiber 调用 cb（跳过已删除）。
 
         Args:
-            fiber: 遍历起点。
+            fiber: 遍历起点（未置 deleted；``_mark_deleted`` 在调用本方法后
+                才置位，起点由其自身遍历覆盖）。
             cb: 对 function fiber 调用的回调。
-            include_self: True 时对起点 fiber 自身也调用 cb（即使其已置
-                deleted 标记——``_mark_deleted`` 收集删除子树 destroy 的
-                前置场景；默认 False 保持 ``_collect_input_hooks``
-                等既有调用语义不变）。
+
+        ★ P3（review 清理）：删除 ``include_self`` 参数及其分支——该分支
+        要求「起点已 deleted 且为 function」，但唯一调用方 ``_mark_deleted``
+        在调用**之后**才置 ``fiber.deleted = True``，分支恒为 False（死代码）。
+        起点 fiber 由下方迭代遍历正常覆盖。
 
         ★ 性能（PERF-19）：递归 → 显式栈迭代（大组件树每帧数千节点的递归
         调用开销可感知；回调顺序保持前序——``_collect_render_metadata`` 收集
         effects 后 reversed 执行（顺序无关）、``_queue_destroys`` 收集 destroy
         （顺序无关），显式栈后进先出的兄弟顺序不影响语义）。
         """
-        # include_self：起点 fiber 已 deleted 时仍调用 cb（收集其 destroy）——
-        # 正常路径（起点未 deleted）由下方遍历处理，不重复。
-        if include_self and fiber is not None and fiber.deleted and fiber.is_function:
-            cb(fiber)
         stack = [fiber]
         while stack:
             f = stack.pop()

@@ -91,6 +91,8 @@ _cursor_position_fn: Callable[[Any], None] | None = None
 # 任意键已按下标志（useStdin().isAnyKeyPressed——React Ink 语义：用户曾
 # 按过任意键后恒 True，不复位；session 经 InputDispatcher 注入置位回调）
 _any_key_pressed: bool = False
+# 屏幕阅读器开关（render({isScreenReaderEnabled}) 经 set_screen_reader_enabled 注入）
+_screen_reader_enabled: bool = False
 
 
 def mark_any_key_pressed() -> None:
@@ -195,7 +197,14 @@ from ._hooks_env import (
     set_cursor_position_fn,
     useCursor,
     useIsScreenReaderEnabled,
+    set_screen_reader_enabled,
     useAnimation,
+)
+from ._animation import (
+    advance_animation,
+    reset_animation_state,
+    animation_snapshot,
+    has_active_animations,
 )
 
 __all__ = [
@@ -253,9 +262,6 @@ __all__ = [
     "_focus_to",
     "_focus_enable",
     "_focus_disable",
-    "_focus_enabled",
-    "_focus_ids",
-    "_focus_active",
     "_notify_window_size",
     # ── P3-2 补全（review 方向）：内部 re-export 符号补全 __all__——与门面
     #    import 列表一致（``from src.tui.ink.hooks import *`` 可获取全部符号，
@@ -283,4 +289,10 @@ __all__ = [
     "_refresh_window_size",
     "_subscribe_window_size",
     "HookStateError",
+    # useAnimation 共享驱动
+    "advance_animation",
+    "reset_animation_state",
+    "animation_snapshot",
+    "has_active_animations",
+    "set_screen_reader_enabled",
 ]

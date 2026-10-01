@@ -81,8 +81,9 @@ def measureElement(dom_node) -> dict:
             （未测量到）。
 
     Returns:
-        dict：``{"width": int, "height": int}``——未测量（None/无尺寸）时
-        返回 0x0（与官方未挂载节点行为对齐：无测量返回 0）。
+        dict：``{"x": int, "y": int, "width": int, "height": int}``——x/y 为
+        布局树坐标（相对文档原点），未测量（None/无尺寸）时返回全 0（与官方
+        未挂载节点行为对齐）。
 
     用法::
 
@@ -94,14 +95,16 @@ def measureElement(dom_node) -> dict:
     if box is not None and hasattr(box, "current"):
         box = box.current
     if box is None:
-        return {"width": 0, "height": 0}
+        return {"x": 0, "y": 0, "width": 0, "height": 0}
     try:
         w = max(0, int(getattr(box, "w", 0) or 0))
         h = max(0, int(getattr(box, "h", 0) or 0))
+        x = int(getattr(box, "x", 0) or 0)
+        y = int(getattr(box, "y", 0) or 0)
     except (TypeError, ValueError, OverflowError):
         # 畸形尺寸（inf/nan/非数值）→ 0x0（渲染错误修复一贯防御）
-        w, h = 0, 0
-    return {"width": w, "height": h}
+        w, h, x, y = 0, 0, 0, 0
+    return {"x": x, "y": y, "width": w, "height": h}
 
 
 class _ConsoleProxy:
@@ -185,6 +188,10 @@ def render(
     debug: bool = False,
     exitOnCtrlC: bool = True,
     patchConsole: bool = False,
+    maxFps: float | None = None,
+    isScreenReaderEnabled: bool = False,
+    kittyKeyboard=None,
+    onRender=None,
 ) -> dict:
     """React Ink ``render()`` 等价物（轻量入口）：渲染组件树到终端。
 
@@ -211,9 +218,19 @@ def render(
         patchConsole: 控制台补丁（默认 False；True 时替换 sys.stdout/
             sys.stderr 的 write 为代理——print()/错误输出重定向到 TUI 流；
             unmount/cleanup 时恢复原流）。
+        maxFps: 渲染帧率上限（覆盖 render_interval；None 用默认 10Hz）。
+        isScreenReaderEnabled: 屏幕阅读器模式（useIsScreenReaderEnabled 返回
+            True；供组件输出无障碍文本）。
+        kittyKeyboard: kitty 键盘协议配置——None/False 不启用；True 启用；
+            ``{"mode": "auto"|"enabled"|"disabled", "flags": [...]}`` 精细控制。
+            启用时 render() 向 stdout 写协议启用序列（``CSI > flags u``），
+            unmount/cleanup 时写禁用序列（``CSI < u``）。
+        onRender: 每帧渲染后回调 ``(metrics: dict) -> None``（``width``/
+            ``height``）。
 
     Returns:
-        dict：控制对象（waitUntilExit/unmount/cleanup/rerender/clear）。
+        dict：控制对象（waitUntilExit/unmount/cleanup/rerender/clear/
+        waitUntilRenderFlush）。
     """
     # 惰性 import InkSession——避免 ``_render_api → session → _render_api``
     # 模块加载期循环（session.py 顶层 re-export 本模块 render）。
@@ -252,6 +269,27 @@ def render(
     #   ——实现已改用公开入口，两段注释互相矛盾。）
     if width is not None or height is not None:
         session._width_cache.set_dimensions(width, height)
+
+    # ── React Ink render() 扩展 options ──
+    # maxFps：限制渲染帧率上限（覆盖 render_interval）
+    if maxFps is not None:
+        try:
+            fps = float(maxFps)
+            if fps > 0:
+                session._config = session._config.with_overrides(render_interval=1.0 / fps)
+        except (TypeError, ValueError, OverflowError):
+            _logger.debug("render maxFps 非法，忽略", exc_info=True)
+    # isScreenReaderEnabled：注入屏幕阅读器开关（useIsScreenReaderEnabled）
+    from . import hooks as _hooks
+    _saved_screen_reader = getattr(_hooks, "_screen_reader_enabled", False)
+    if isScreenReaderEnabled:
+        _hooks.set_screen_reader_enabled(True)
+    # onRender：每帧渲染后回调（React Ink v6）
+    if callable(onRender):
+        session._on_render_callback = onRender
+    # kittyKeyboard：启用 kitty 键盘协议（render 内写终端序列；unmount 时禁用）
+    from .kitty import resolve_kitty_options as _resolve_kitty
+    kitty_flags = _resolve_kitty(kittyKeyboard)
 
     # ── React Ink render() options（官方 API 补齐） ──
     # stderr / debug / exitOnCtrlC / patchConsole / stdin
@@ -292,6 +330,14 @@ def render(
         except Exception:
             _logger.debug("render patchConsole 补丁失败", exc_info=True)
 
+    def _restore_screen_reader() -> None:
+        """还原屏幕阅读器开关（幂等；render 退出后不泄漏全局状态）。"""
+        try:
+            if getattr(_hooks, "_screen_reader_enabled", False) != _saved_screen_reader:
+                _hooks.set_screen_reader_enabled(_saved_screen_reader)
+        except Exception:
+            _logger.debug("render 还原屏幕阅读器开关异常", exc_info=True)
+
     def _restore_stdin() -> None:
         """还原调用方 stdin 的 interrupt 配置（幂等）。"""
         if stdin is None:
@@ -318,13 +364,39 @@ def render(
             except Exception:
                 _logger.debug("render start 失败后恢复控制台异常", exc_info=True)
         _restore_stdin()
+        _restore_screen_reader()
         raise
+
+    # kitty 键盘协议：启动后写启用序列（官方 render({kittyKeyboard}) 语义）
+    if kitty_flags >= 0:
+        try:
+            from .kitty import enable_sequence as _kitty_enable
+            _kitty_stream = out_stream if out_stream is not None else sys.stdout
+            _kitty_stream.write(_kitty_enable(kitty_flags))
+            _kitty_stream.flush()
+        except Exception:
+            _logger.debug("render 启用 kitty 键盘协议失败", exc_info=True)
+
+    def _disable_kitty() -> None:
+        if kitty_flags < 0:
+            return
+        try:
+            from .kitty import disable_sequence as _kitty_disable
+            _kitty_stream = out_stream if out_stream is not None else sys.stdout
+            _kitty_stream.write(_kitty_disable())
+            _kitty_stream.flush()
+        except Exception:
+            _logger.debug("render 禁用 kitty 键盘协议失败", exc_info=True)
 
     def _wait_until_exit():
         async def _waiter():
             import asyncio as _aio
             while session._render_running:
                 await _aio.sleep(0.05)
+            result = getattr(session, "exit_result", None)
+            if isinstance(result, BaseException):
+                raise result
+            return result
         return _waiter()
 
     def _unmount():
@@ -343,6 +415,8 @@ def render(
             except Exception:
                 _logger.debug("render unmount 恢复控制台异常", exc_info=True)
         _restore_stdin()
+        _restore_screen_reader()
+        _disable_kitty()
 
     def _cleanup():
         """unmount + 控制台补丁/stdin 配置恢复（均幂等）。"""
@@ -358,7 +432,108 @@ def render(
         "cleanup": _cleanup,
         "rerender": _rerender,
         "clear": session.request_clear,
+        "waitUntilRenderFlush": session._wait_render_flush,
     }
 
 
-__all__ = ["render", "measureElement", "_SimpleModel"]
+_RENDER_TO_STRING_MAX_PASSES = 10
+
+
+def _snapshot_isolated_hook_state() -> dict:
+    """保存 hooks 门面的全局可变状态（renderToString 隔离用）。"""
+    from . import hooks as _hooks
+
+    return {
+        "_schedule_callback": _hooks._schedule_callback,
+        "_stdin_accessor": _hooks._stdin_accessor,
+        "_stdout_accessor": _hooks._stdout_accessor,
+        "_stderr_accessor": _hooks._stderr_accessor,
+        "_app_control": _hooks._app_control,
+        "_render_flush_fn": _hooks._render_flush_fn,
+        "_suspend_terminal_fn": _hooks._suspend_terminal_fn,
+        "_cursor_position_fn": _hooks._cursor_position_fn,
+        "_window_size_accessor": _hooks._window_size_accessor,
+        "_input_router_callback": _hooks._input_router_callback,
+        "_screen_reader_enabled": getattr(_hooks, "_screen_reader_enabled", False),
+    }
+
+
+def _restore_isolated_hook_state(saved: dict) -> None:
+    """恢复 hooks 门面的全局可变状态（renderToString 结束/异常路径）。"""
+    from . import hooks as _hooks
+
+    for name, value in saved.items():
+        setattr(_hooks, name, value)
+
+
+def _install_headless_hooks(columns: int) -> None:
+    """安装字符串渲染会话的环境钩子（无终端：流/焦点/光标返回安全默认）。"""
+    from . import hooks as _hooks
+
+    _hooks._stdin_accessor = lambda: None
+    _hooks._stdout_accessor = lambda: None
+    _hooks._stderr_accessor = lambda: None
+    _hooks._app_control = None
+    _hooks._render_flush_fn = None
+    _hooks._suspend_terminal_fn = None
+    _hooks._cursor_position_fn = None
+    _hooks._window_size_accessor = lambda: (columns, 24)
+    _hooks._input_router_callback = None
+
+
+def renderToString(element: Element, options: dict | None = None) -> str:
+    """React Ink ``renderToString()`` 等价物：同步渲染组件树为字符串。
+
+    与 ``render()`` 不同：不写 stdout、不建立终端事件监听、不启动渲染线程，
+    直接把组件树调和/布局/绘制后的整帧文本返回。适用于文档生成、测试与
+    需要字符串输出的场景。
+
+    与官方语义差异（已文档化）：
+      - 终端相关 hooks（useStdin/useStdout/useStderr/useApp/useFocus 等）返回
+        安全默认（不抛异常，但无真实终端能力）；
+      - ``useLayoutEffect``/``useEffect`` 在渲染提交期同步执行；两者触发的
+        state 更新都会被**有界重渲染**（最多 ``_RENDER_TO_STRING_MAX_PASSES``
+        轮）反映到最终输出（官方仅 layout effect 更新反射——本实现为超集，
+        上限保护防被动 effect 每帧 set_state 造成死循环）。
+
+    Args:
+        element: 根元素（函数组件或 Element）。
+        options: ``{"columns": int}``——虚拟终端列宽（默认 80）。
+
+    Returns:
+        渲染后的字符串（行间以 ``\\n`` 连接，末尾无换行）。
+    """
+    from .reconciler import Reconciler
+    from . import components as _components
+
+    columns = 80
+    if isinstance(options, dict):
+        try:
+            columns = max(1, int(options.get("columns", 80)))
+        except (TypeError, ValueError, OverflowError):
+            columns = 80
+
+    saved = _snapshot_isolated_hook_state()
+    dirty = {"n": 0}
+
+    def _schedule_cb() -> None:
+        dirty["n"] += 1
+
+    try:
+        # 先安装无终端环境钩子，再构造 Reconciler（其 __init__ 会覆盖
+        # schedule 回调为内部统计回调——本会话的「是否有待处理更新」信号）。
+        _install_headless_hooks(columns)
+        reconciler = Reconciler(schedule_callback=_schedule_cb)
+        root = Reconciler.create_root()
+        for _ in range(_RENDER_TO_STRING_MAX_PASSES):
+            dirty["n"] = 0
+            reconciler.render(root, element, columns, 0)
+            if dirty["n"] == 0:
+                break
+        frame = _components.render_frame(root, columns)
+        return "\n".join(line.render() for line in frame.lines)
+    finally:
+        _restore_isolated_hook_state(saved)
+
+
+__all__ = ["render", "renderToString", "measureElement", "_SimpleModel"]

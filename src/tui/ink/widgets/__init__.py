@@ -61,7 +61,9 @@ from .layout import (
     ZStack,
 )
 from .radio import RadioList
-from .codeblock import CodeBlock
+from .codeblock import CodeBlock, CollapsibleCodeBlock
+from .viewport import Viewport
+from .multipanel import MultiPanel
 from .spinner import InlineSpinner
 from .gradient import Gradient
 from .staticlines import StaticLines
@@ -91,6 +93,9 @@ __all__ = [
     # 新增标准控件
     "RadioList",
     "CodeBlock",
+    "CollapsibleCodeBlock",
+    "Viewport",
+    "MultiPanel",
     "InlineSpinner",
     "Gradient",
     "StaticLines",

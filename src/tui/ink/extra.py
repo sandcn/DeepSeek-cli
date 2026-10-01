@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Callable
 
 from .element import Element, TEXT, STATIC, h, _as_element
-from .hooks import use_memo, use_ref
+from .hooks import use_memo, use_ref, useIsScreenReaderEnabled
 
 __all__ = ["Transform", "Static", "Newline", "Fragment", "STATIC_TEXT"]
 
@@ -137,6 +137,17 @@ def Transform(props: dict) -> Element:
     children = props.get("children")
     transform = props.get("transform")
     style = props.get("style")
+    # ★ 官方 React Ink ``<Transform accessibilityLabel>``：屏幕阅读器专用文本，
+    #   设置后忽略 children（仅在屏幕阅读器模式输出——本框架单一输出流，
+    #   非屏幕阅读器模式保持既有 children 渲染）。
+    #   ★ P3（review）：hook 调用移出条件（先取值再判断）——避免「条件式
+    #   hook 调用」写法；即便当前该 hook 不消费槽位，也保持 Rules of Hooks
+    #   形态（未来改为槽位型 hook 时不致错位）。
+    accessibility_label = props.get("accessibilityLabel")
+    if accessibility_label is not None:
+        screen_reader_enabled = useIsScreenReaderEnabled()
+        if screen_reader_enabled:
+            return h(TEXT, {"children": str(accessibility_label), "style": style})
     if isinstance(children, (tuple, list)):
         # 变参子级（reconciler 注入 Element 元组）：单元素递归应用；多元素
         # 以 Fragment 包裹（不引入额外布局盒）。

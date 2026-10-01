@@ -45,6 +45,7 @@ from src.tui.ink._cmd_priority import _get_cmd_id, _cmd_name
 from src.tui.ink import components as _components
 from src.tui.ink import hooks as _hooks
 from src.tui.ink import _cursor
+from src.tui.ink._animation import advance_animation
 
 _logger = logging.getLogger(__name__)
 
@@ -139,6 +140,12 @@ class _SessionFrameMixin:
     def _render_frame_impl(self) -> None:
         if self._build_tree is None:
             return
+        # ★ useAnimation 共享动画驱动：每帧推进一次 tick 并通知订阅组件
+        #   （多个动画组件合并为一轮渲染，React Ink v7 语义）。
+        try:
+            advance_animation()
+        except Exception:
+            _logger.debug("advance_animation 异常", exc_info=True)
         width = self._width_cache.get_width()
         if self._model is not None:
             # ★ 终端 resize：宽度变化时重排已提交历史（committed_lines 提交时
@@ -215,13 +222,18 @@ class _SessionFrameMixin:
         self._reconciler.render(self._root_fiber, element, width, self._width_cache.get_height())
         frame = _components.render_frame(self._root_fiber, width)
         self._ink_renderer.render(frame)
+        # ★ render({onRender})：每帧渲染后回调（官方 RenderMetrics 语义）——
+        #   回调异常仅记录日志，不中断渲染循环。
+        if self._on_render_callback is not None:
+            try:
+                self._on_render_callback({
+                    "width": width,
+                    "height": len(frame.lines),
+                })
+            except Exception:
+                _logger.debug("onRender 回调异常", exc_info=True)
         # ★ render() debug 选项：记录最近帧行数（session._debug_log_frame 统计）
-        #   ★ P3（review）：``_last_frame_lines`` 由 ``InkSession.__init__``
-        #   恒初始化，原 ``hasattr`` 守卫恒真（死条件，掩盖属性来源）→ 直接赋值。
-        try:
-            self._last_frame_lines = len(frame.lines)
-        except Exception:
-            pass
+        self._last_frame_lines = len(frame.lines)
         # ★ P5：input-area fiber 缓存——仅在失效时重建（避免每帧全树递归查找）。
         #   调和器复用 fiber 时重置 deleted=False；input-area 被删除/替换（旧
         #   fiber 未复用 → deleted 保持 True）时缓存自动失效重建。

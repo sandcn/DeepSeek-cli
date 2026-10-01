@@ -88,4 +88,41 @@ def _call(fn, *args) -> None:
         _logger.warning("控件回调异常", exc_info=True)
 
 
-__all__ = ["_clamp_index", "_children", "_color", "_call"]
+def _border_count(props: dict, default: int = 1) -> int:
+    """解析 BOX 边框层数（0/1）。"""
+    border = props.get("border", default)
+    if border is None or border is False or border in (0, "none", ""):
+        return 0
+    try:
+        return 1 if int(border) > 0 else 0
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _vertical_padding(props: dict) -> tuple[int, int]:
+    """解析 BOX 上下内边距 ``(top, bottom)``（padding/paddingY 兜底）。"""
+    def _int_or(value, fallback):
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError, OverflowError):
+            return fallback
+
+    base = props.get("padding", props.get("paddingY", 0))
+    base = _int_or(base, 0)
+    top = _int_or(props.get("paddingTop", base), base)
+    bottom = _int_or(props.get("paddingBottom", base), base)
+    return top, bottom
+
+
+def _outer_height(props: dict, content_h: int, default_border: int = 1) -> int:
+    """内容行数 → BOX 总高（内容 + 上下边框 + 上下内边距）。
+
+    供「``height`` 表示可见内容行数」的控件把内容行数换算为 BOX 的
+    ``height``（BOX 的 height 是**总高**，显式值会覆盖内容推导高——不换算
+    时内容会越出边框）。
+    """
+    top, bottom = _vertical_padding(props)
+    return max(0, int(content_h)) + 2 * _border_count(props, default_border) + top + bottom
+
+
+__all__ = ["_clamp_index", "_children", "_color", "_call", "_border_count", "_vertical_padding", "_outer_height"]

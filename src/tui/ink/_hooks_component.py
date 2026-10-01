@@ -204,7 +204,14 @@ def memo(Component: Callable, are_equal: Callable | None = None) -> Callable:
     Returns:
         包装后的 memo 组件函数（保留原组件名/模块，避免 fiber key 冲突）。
     """
+    # ★ P0（review 修复）：包装函数按 ref 是否存在**单参/双参**调用被包装
+    #   组件——修复前无条件 ``Component(props, ref)``：普通单参组件
+    #   （``def X(props)``）被传 2 个位置参数 → ``TypeError``（memo 公开
+    #   API 对常规组件完全不可用）。ref 为 None（非 forwardRef 场景/reconciler
+    #   单参调用路径）时单参调用。
     def Memoized(props, ref=None):
+        if ref is None:
+            return Component(props)
         return Component(props, ref)
 
     Memoized._is_memo = True
@@ -215,6 +222,8 @@ def memo(Component: Callable, are_equal: Callable | None = None) -> Callable:
     #   ``ref`` 位置参并透传。
     if getattr(Component, "_is_forward_ref", False):
         Memoized._is_forward_ref = True
+        # 同步透传原始函数引用（供调试/工具链按 ``_forward_ref_fn`` 取回）
+        Memoized._forward_ref_fn = getattr(Component, "_forward_ref_fn", None)
     Memoized.__name__ = getattr(Component, "__name__", "Memoized")
     Memoized.__module__ = getattr(Component, "__module__", __name__)
     return Memoized
@@ -247,7 +256,9 @@ def useApp() -> dict:
     """React useApp 等价物：返回应用控制函数 ``{"exit", "clear",
     "waitUntilRenderFlush", "suspendTerminal"}``。
 
-    - ``exit``：请求退出（session 置 exit_requested + 停止渲染，幂等）。
+    - ``exit``：请求退出。``exit()`` 无结果、``exit(value)`` 令
+      ``waitUntilExit()`` 以 value resolve、``exit(error)`` 令其 reject（官方
+      语义）；session 置 exit_requested + 停止渲染，幂等。
     - ``clear``：请求全帧清屏重绘（非全屏模型：强制全量重绘，非 DECSTBM
       清屏——文档注明与 react-ink 的差异）。
     - ``waitUntilRenderFlush``（React Ink v6）：返回 awaitable，等待渲染
@@ -257,11 +268,6 @@ def useApp() -> dict:
 
     未注入控制时返回 no-op（安全兜底，不抛异常）。
     """
-    control = _hooks_module._app_control or {}
-
-    def _noop(*args, **kwargs):
-        return None
-
     async def _already_flushed():
         return None
 
@@ -292,21 +298,31 @@ def useApp() -> dict:
                 _logger.debug("suspendTerminal 降级 callback 异常", exc_info=True)
         return None
 
-    # ★ P3（review）：缓存返回对象——修复前每次渲染新建 ``_flush``/``_suspend``
-    #   闭包与 dict（身份不稳定，作为 props 传给 memo 子组件时短路失效）。
-    #   ref 缓存后同一 fiber 内身份稳定；``exit``/``clear`` 每次渲染刷新
-    #   （control 注入可能延迟到首帧后）。
+    # ★ P3（review）+ 官方 exit(errorOrResult) 语义：缓存返回对象——身份跨渲染
+    #   稳定（作为 props 传给 memo 子组件时短路有效）；``exit``/``clear`` 为
+    #   **转发包装**（惰性读取模块级 ``_app_control``，支持延迟注入 + 透传
+    #   ``exit(value)`` 的参数）。
     cached = use_ref(None)
+
+    def _exit(*args, **kwargs):
+        fn = (_hooks_module._app_control or {}).get("exit")
+        if fn is not None:
+            return fn(*args, **kwargs)
+        return None
+
+    def _clear():
+        fn = (_hooks_module._app_control or {}).get("clear")
+        if fn is not None:
+            return fn()
+        return None
+
     if cached.current is None:
         cached.current = {
-            "exit": control.get("exit") or _noop,
-            "clear": control.get("clear") or _noop,
+            "exit": _exit,
+            "clear": _clear,
             "waitUntilRenderFlush": _flush,
             "suspendTerminal": _suspend,
         }
-    else:
-        cached.current["exit"] = control.get("exit") or _noop
-        cached.current["clear"] = control.get("clear") or _noop
     return cached.current
 
 

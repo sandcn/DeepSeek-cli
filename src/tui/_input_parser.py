@@ -74,6 +74,60 @@ class KeyEvent:
     modifier: int = 0
     keycode: int = 0
     raw: bytes = b""
+    #: kitty 键盘协议修饰位（``modifier`` 字段减 1；-1 表示非 kitty 来源）。
+    #: kittyModifiers 位定义：shift=1/alt=2/ctrl=4/super=8/hyper=16/meta=32/
+    #: capsLock=64/numLock=128。
+    kitty_bits: int = -1
+    #: kitty 事件类型（``press``/``repeat``/``release``；空串表示未知/非 kitty）。
+    event_type: str = ""
+
+
+# ═══════════════════════════════════════════════════════════
+# kitty 键盘协议辅助（修饰位 / 事件类型）
+# ═══════════════════════════════════════════════════════════
+
+#: kitty 键盘协议 —— 修饰键位定义（与 ``src.tui.ink.kitty.kittyModifiers``
+#: 同源语义；此处独立定义避免 _input_parser → tui.ink 的依赖倒挂）。
+_KITTY_MODIFIER_BITS = {
+    "shift": 1,
+    "alt": 2,
+    "ctrl": 4,
+    "super": 8,
+    "hyper": 16,
+    "meta": 32,
+    "capsLock": 64,
+    "numLock": 128,
+}
+
+#: kitty 事件类型码 → 名称（reportEventTypes 标志下 CSI-u 的 ``:<event>`` 子参数）。
+_KITTY_EVENT_TYPES = {1: "press", 2: "repeat", 3: "release"}
+
+
+def decode_kitty_modifiers(bits: int) -> dict:
+    """把 kitty 修饰位掩码解码为 ``{名称: bool}``（未知/负数位 → 全 False）。"""
+    try:
+        bits = int(bits)
+    except (TypeError, ValueError):
+        bits = 0
+    if bits <= 0:
+        return {name: False for name in _KITTY_MODIFIER_BITS}
+    return {name: bool(bits & flag) for name, flag in _KITTY_MODIFIER_BITS.items()}
+
+
+def _kitty_bits_from_modifier(modifier: int) -> int:
+    """kitty 修饰值 → 位掩码（协议规定 ``值 = 1 + 位掩码``）。"""
+    try:
+        value = int(modifier)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, value - 1)
+
+
+def _kitty_event_type(groups) -> str:
+    """从 CSI-u 子参数分组提取事件类型名（无 → 空串）。"""
+    if len(groups) >= 2 and len(groups[1]) >= 2:
+        return _KITTY_EVENT_TYPES.get(groups[1][1], "")
+    return ""
 
 
 # ═══════════════════════════════════════════════════════════
@@ -336,9 +390,22 @@ class InputParser:
         select 等待 ``_CSI_READ_TIMEOUT``。
         """
         params: list[int] = []
+        #: 子参数分组（kitty 键盘协议）：外层按 ';' 分组、内层按 ':' 分子参数。
+        #: 例如 ``\x1b[97:65;5:2u`` → ``[[97, 65], [5, 2]]``。``params`` 为其
+        #: 扁平化（保持既有参数消费路径完全不变）。
+        groups: list[list[int]] = [[]]
         current = ""
         terminator: str | None = None
         raw_acc = b"\x1b["  # 方向1 B6：累积已读原始字节（超时 raw 保留）
+
+        def _flush_group_value() -> None:
+            """把当前数字串落入当前分组末尾（空则 0，与旧行为一致）。"""
+            try:
+                value = int(current) if current else 0
+            except ValueError:
+                value = 0
+            params.append(value)
+            groups[-1].append(value)
 
         while True:
             # P1-1（review 2026-08-06）：无终止符输入流（fd 持续可读的
@@ -354,10 +421,8 @@ class InputParser:
             raw_acc += raw_c  # 方向1 B6：先累积再 decode 处理
             c = raw_c.decode("utf-8", errors="replace")
             if c == ';':
-                try:
-                    params.append(int(current) if current else 0)
-                except ValueError:
-                    params.append(0)
+                _flush_group_value()
+                groups.append([])
                 current = ""
             # P1-1（review 2026-08-06）：``str.isdigit()`` / ``str.isalpha()``
             # 对 Unicode 数字/字母（'²'/'٣'/'é' 等）返回 True——UTF-8 续字节
@@ -369,10 +434,9 @@ class InputParser:
                 #   仅累积 raw_acc（如 \x1b[38:2:255:0:0m 被解析 params=[382,...]
                 #   数字粘连）。按参数分隔符处理（与 ';' 等价）：完成当前 param
                 #   并忽略该字节（框架仅支持 ';' 分隔；子参数子分隔语义无消费方）。
-                try:
-                    params.append(int(current) if current else 0)
-                except ValueError:
-                    params.append(0)
+                #   ★ kitty 键盘协议：':' 为**同组子参数分隔**（不新开外层组，
+                #   供 ``\x1b[<code>:<shifted>:<base>;<mod>:<event>u`` 解析）。
+                _flush_group_value()
                 current = ""
             elif c.isascii() and c.isdigit():
                 current += c
@@ -383,10 +447,7 @@ class InputParser:
             # 此处）。
             elif c.isascii() and 0x40 <= ord(c) <= 0x7E:
                 if current:
-                    try:
-                        params.append(int(current))
-                    except ValueError:
-                        params.append(0)
+                    _flush_group_value()
                 terminator = c
                 break
 
@@ -394,7 +455,19 @@ class InputParser:
             # 方向1 B6：超时 → unknown raw 保留已读参数（原返回 b"\x1b[" 丢失）
             return KeyEvent(kind="unknown", raw=raw_acc)
 
-        return self._dispatch_csi(params, terminator)
+        event = self._dispatch_csi(params, terminator, groups)
+        if terminator == 'u':
+            # ★ kitty 键盘协议元信息落位（统一在解析出口写入，避免在
+            #   ``_dispatch_csi`` 的多个 return 分支逐处补字段）：
+            #   kitty_bits = 原始 CSI-u 修饰值 - 1（**取自分组参数，而非
+            #   ``event.modifier``**——映射分支可能重写 modifier，如 Ctrl+A
+            #   → home 的 modifier 被置 0，用事件字段会丢失超键/锁定键位）；
+            #   event_type = 次组第二子参数映射（press/repeat/release）。
+            #   非 'u' 终结符保持默认（kitty_bits=-1 / event_type=""）。
+            kitty_modifier = groups[1][0] if len(groups) >= 2 and groups[1] else 1
+            event.kitty_bits = _kitty_bits_from_modifier(kitty_modifier)
+            event.event_type = _kitty_event_type(groups)
+        return event
 
     def _read_ss3_sequence(self, fd: int) -> KeyEvent:
         """读取 SS3 序列（ESC O + 字符，通常为 F1-F4）。
@@ -429,12 +502,28 @@ class InputParser:
         return KeyEvent(kind="unknown", raw=b"\x1bO")
 
     @staticmethod
-    def _dispatch_csi(params: list[int], terminator: str) -> KeyEvent:
-        """根据 CSI 参数和终结符分发到对应的 KeyEvent。"""
+    def _dispatch_csi(params: list[int], terminator: str, groups: list[list[int]] | None = None) -> KeyEvent:
+        """根据 CSI 参数和终结符分发到对应的 KeyEvent。
+
+        Args:
+            params: 扁平参数列表（所有分组按顺序展开——既有消费路径不变）。
+            terminator: CSI 最终字节。
+            groups: 子参数分组（kitty 键盘协议 ``':'`` 子参数分隔）——
+                ``\\x1b[97:65;5:2u`` → ``[[97, 65], [5, 2]]``；None 时按每个
+                param 独立成组（兼容仅传 params 的旧调用/测试）。
+        """
+        if groups is None:
+            groups = [[p] for p in params]
         # ── CSI u 模式: \x1b[<keycode>;<modifier>u ──
         if terminator == 'u':
-            keycode = params[0] if len(params) >= 1 else 0
-            modifier = params[1] if len(params) >= 2 else 1
+            # ★ kitty 键盘协议（子参数分组）：完整形式
+            #   ``\x1b[<code>:<shifted>:<base>;<mod>:<event>u`` 的参数经 ':' 分子
+            #   参数（groups）解析——keycode 取首组首值、modifier 取次组首值
+            #   （标准形式 ``\x1b[<code>;<mod>u`` 下与旧的 params[0]/params[1]
+            #   完全等价，零回归）。event 子参数（次组第二值）由
+            #   ``_read_csi_sequence`` 事后写入 ``KeyEvent.event_type``。
+            keycode = groups[0][0] if groups and groups[0] else 0
+            modifier = (groups[1][0] if len(groups) >= 2 and groups[1] else 1)
             raw = b"\x1b[" + InputParser._params_to_bytes(params) + b"u"
             # ★ L2（2026-08-15）：CSI-u 修饰 Enter 语义对齐——Shift/Ctrl/Alt+
             #   Enter（keycode=13, modifier 2/3/5）由「插入换行」（kind="char"

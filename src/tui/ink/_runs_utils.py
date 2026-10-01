@@ -79,6 +79,76 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
                 Line([StyledRun(_text[i:i + mw], style)])
                 for i in range(0, len(_text), mw)
             ]
+    # ★ 性能（多 run 纯 ASCII 快路径）：所有 run 均为非空可打印 ASCII 时——
+    #   每字符宽度恒 1（免逐字符 ``wcswidth_simple``）、无 ``\n``（isprintable
+    #   排除换行）、空格断点用 ``str.rfind``（C 级）——按 span 切片产出，免
+    #   通用路径的 ``items`` 逐字符 tuple 展开（长文本 / 语法高亮多 run 场景
+    #   显著提速）。语义与通用路径等价（字符级硬拆 / 词边界 / 样式分段）。
+    if runs and all(r.text and r.text.isascii() and r.text.isprintable() for r in runs):
+        from bisect import bisect_right
+
+        span_start: list[int] = []
+        span_end: list[int] = []
+        span_style: list = []
+        parts: list[str] = []
+        pos = 0
+        for r in runs:
+            t = r.text
+            span_start.append(pos)
+            span_end.append(pos + len(t))
+            span_style.append(r.style)
+            parts.append(t)
+            pos += len(t)
+        ascii_text = "".join(parts)
+        n_ascii = len(ascii_text)
+        n_spans = len(span_start)
+
+        def _emit(line: Line, start: int, end: int) -> None:
+            # 二分定位首个覆盖 start 的 span（避免逐行全量扫描 spans——
+            # O(lines × spans) 退化；改为 O(lines·log(spans)) + 实际重叠数）。
+            idx = bisect_right(span_start, start) - 1
+            if idx < 0:
+                idx = 0
+            while idx < n_spans:
+                a = span_start[idx]
+                if a >= end:
+                    break
+                b = span_end[idx]
+                lo = a if a > start else start
+                hi = b if b < end else end
+                if lo < hi:
+                    line.append(ascii_text[lo:hi], span_style[idx])
+                idx += 1
+
+        if n_ascii:
+            out_lines: list[Line] = []
+            i = 0
+            while i < n_ascii:
+                end = i + max_width
+                if end >= n_ascii:
+                    ln = Line()
+                    _emit(ln, i, n_ascii)
+                    if ln.runs:
+                        out_lines.append(ln)
+                    break
+                # 词边界断点：通用算法在「首个放不下的字符」（索引 end）处也
+                # 记录空格断点（记录先于超宽判断）→ 断点范围含索引 end。
+                if not hard:
+                    sp = ascii_text.rfind(" ", i, end + 1)
+                    if sp > i:
+                        ln = Line()
+                        _emit(ln, i, sp)
+                        if ln.runs:
+                            out_lines.append(ln)
+                        i = sp + 1
+                        continue
+                ln = Line()
+                _emit(ln, i, end)
+                if ln.runs:
+                    out_lines.append(ln)
+                i = end
+            return out_lines
+
     # 展开为 (ch, style) 序列——词边界断行需跨 run 追踪行内空格位置
     items: list[tuple[str, Style | None]] = []
     for run in runs:

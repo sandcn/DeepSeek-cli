@@ -231,6 +231,11 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         _hooks.set_input_router_callback(self._on_input_router)
         # ★ useApp 控制（方向B 步骤10）：session 注入 exit/clear 回调
         self._exit_requested = False
+        #: useApp().exit(value) 的退出结果（官方语义：waitUntilExit 以该值
+        #: resolve；值为 Exception 时 reject）。None = 无结果。
+        self._exit_result = None
+        #: render({onRender}) 每帧渲染后回调（React Ink v6 RenderMetrics）。
+        self._on_render_callback: Callable | None = None
         _hooks.set_app_control({"exit": self.request_exit, "clear": self.request_clear})
         # ★ useStdin/useStdout/useStderr（完善 react ink）：session 注入惰性
         #   访问器——stdin 为 Input 实例（set_input 后可用），stdout 为渲染器
@@ -400,21 +405,35 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         """是否已请求退出（useApp().exit 置位）。"""
         return self._exit_requested
 
-    def request_exit(self) -> None:
+    def request_exit(self, result=None) -> None:
         """请求退出（useApp().exit 触发）。
+
+        官方 React Ink 语义：``exit()`` 以 undefined resolve；``exit(value)``
+        以 value resolve ``waitUntilExit()``；``exit(error)`` 以 error reject。
 
         P3-2（渲染期死锁修复）：**渲染线程内**（组件渲染期调用 useApp().exit）
         仅置位 ``_exit_requested``、延迟到渲染循环本帧结束后退出——直接
         ``stop()`` 会 ``join(timeout=2.0)`` 自身（渲染线程）造成死锁；
         **非渲染线程**调用时同步 ``stop()``（幂等：render 线程未启动/已停止
         时安全返回）。
+
+        Args:
+            result: 退出结果（传给 ``waitUntilExit()``；Exception 实例将被
+                reject）。
         """
+        if result is not None:
+            self._exit_result = result
         self._exit_requested = True
         if threading.current_thread() is self._render_thread:
             # 渲染线程内：仅置位 + 唤醒循环（下一帧退出）
             self._cmd_event.set()
             return
         self.stop()
+
+    @property
+    def exit_result(self):
+        """退出结果（useApp().exit(value) 的 value；未传 → None）。"""
+        return self._exit_result
 
     def clear_screen(self) -> None:
         """Ctrl+L 清屏（Claude TUI parity 步骤 3.1）。
@@ -1273,6 +1292,11 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             if idx is not None:
                 victim = self._cmd_queue.queue.pop(idx)
                 heapq.heapify(self._cmd_queue.queue)
+                # ★ P3（review）：弹出后释放容量——通知 ``not_full`` 等待者
+                #   （``push_cmd(block=True)``/``_put_no_drop`` 可能正阻塞在
+                #   not_full；不经 ``get()`` 的私有弹出须自行通知，否则空等
+                #   到超时）。
+                self._cmd_queue.not_full.notify_all()
         if victim is not None:
             try:
                 self._cmd_queue.task_done()
@@ -1320,12 +1344,13 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   搜索行 query 已静态化（见 input_area.py _build_lines），无需 10Hz
         #   渲染推进呼吸。修复前搜索激活持续 10Hz 渲染（Termux 等终端闪烁）；
         #   搜索行内容仅随按键（query/matches 变化）更新，经事件驱动渲染。
-        # ★ user_select 弹窗（2026-08-05 修复）：不驱动动画循环——弹窗已
-        #   静态化（标题/高亮/说明/提示均为静态色，见 user_select.py），
-        #   无需 10Hz 渲染推进呼吸。修复前弹窗激活持续 10Hz 渲染，每帧
-        #   重写弹窗行（呼吸色 time_glow 变化），Termux 等终端每帧刷新/
-        #   闪烁（「每 fps 刷出错乱显示」）。弹窗内容仅随交互（按键导航/
-        #   确认/取消）变化，经 use_state setter → _request_render 重绘。
+        # ★ useAnimation 共享驱动：存在活跃动画订阅时视为有动画需求（标记
+        #   脏；渲染循环为全程 10Hz，本方法不决定是否渲染）。
+        try:
+            if _hooks.has_active_animations():
+                return True
+        except Exception:
+            _logger.debug("has_active_animations 异常", exc_info=True)
         return False
 
     def _should_render(self, changed: bool) -> bool:
@@ -1455,7 +1480,8 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             try:
                 self._render_crashed.clear()
             except Exception:
-                pass
+                # ★ P2（review）：不裸吞——崩溃恢复路径的二次故障须可观测。
+                _logger.debug("清除崩溃标志异常", exc_info=True)
             # ★ P3（review）：删除死状态 ``_recovering_event``——原字段仅在此
             #   ``set()`` 从未被读取/清除（全项目无消费方），崩溃恢复进行中
             #   的可观测性已由 ``_render_crashed`` / 日志覆盖。
@@ -1473,11 +1499,18 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
 # ★ render() 轻量入口（方向 F1）已拆分至独立模块 _render_api.py
 #   （2026-08-05 架构优化）——本模块 re-export 保持旧导入路径兼容
 #   （``from src.tui.ink.session import render`` 仍可用，测试锁定）。
-from ._render_api import render, measureElement, _SimpleModel  # noqa: F401  re-export 兼容
+from ._render_api import (  # noqa: F401  re-export 兼容
+    render,
+    renderToString,
+    measureElement,
+    _SimpleModel,
+)
 
 __all__ = [
     "InkSession",
     "render",
+    "renderToString",
+    "measureElement",
     "_get_cmd_priority",
     "_get_cmd_id",
     "_CRITICAL_CMDS",

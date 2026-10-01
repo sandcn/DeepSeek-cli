@@ -185,6 +185,7 @@ __all__ = [
     "STATIC",
     "SPACER",
     "APP",
+    "FRAGMENT",
     "Element",
     "ElementType",
     "Child",

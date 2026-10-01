@@ -274,6 +274,10 @@ def _event_key(event) -> dict:
     """
     kind = getattr(event, "kind", "")
     modifier = getattr(event, "modifier", 0) or 0
+    # kitty 键盘协议修饰位（-1/负数 = 非 kitty 事件 → 相关字段全 False）
+    kitty_bits = getattr(event, "kitty_bits", -1)
+    if not isinstance(kitty_bits, int) or kitty_bits < 0:
+        kitty_bits = 0
     # ★ P1-1（review 方向）：CSI-u modifier 编码 = 1 + shift*1 + alt*2 +
     #   ctrl*4（Shift=1, Alt=2, Ctrl=4 位标志）——2=Shift, 3=Alt,
     #   4=Shift+Alt, 5=Ctrl, 6=Shift+Ctrl, 7=Alt+Ctrl, 8=Shift+Alt+Ctrl。
@@ -293,8 +297,13 @@ def _event_key(event) -> dict:
         #   router（生产中断路径不变）；仅 render() 独立会话 exitOnCtrlC=False
         #   时经 ``_interrupt_routable`` 放行进 router——此时 handler 按
         #   ctrl=True 识别 Ctrl+C（与官方语义对齐）。
-        "ctrl": kind == "ctrl_key" or kind == "interrupt" or modifier in (5, 6, 7, 8),
-        "shift": modifier in (2, 4, 6, 8),
+        # ★ P2（review 修复）：ctrl/shift 兼含 kitty 位掩码——CSI-u Ctrl+字母
+        #   （如 ``\x1b[97;5u``）经映射分支重写 kind（home/csi_u）且 modifier
+        #   被置 0，仅靠 modifier 会丢失 ctrl 标志；kitty_bits 的 ctrl 位（4）
+        #   / shift 位（1）补齐（meta 同理，见下）。
+        "ctrl": kind == "ctrl_key" or kind == "interrupt"
+                or modifier in (5, 6, 7, 8) or bool(kitty_bits & 0b100),
+        "shift": modifier in (2, 4, 6, 8) or bool(kitty_bits & 0b1),
         "tab": kind == "tab",
         "backspace": kind == "backspace",
         "delete": kind == "delete",
@@ -310,12 +319,17 @@ def _event_key(event) -> dict:
         "pageUp": kind == "page_up",
         "home": kind == "home",
         "end": kind == "end",
-        "meta": modifier in (3, 4, 7, 8),
-        "super": False,
-        "hyper": False,
-        "capsLock": False,
-        "numLock": False,
-        "eventType": None,
+        "meta": modifier in (3, 4, 7, 8) or bool(kitty_bits & 0b100000),
+        # ★ kitty 键盘协议（React Ink v6/v7）：super/hyper/capsLock/numLock 与
+        #   eventType 仅在启用 kitty 协议并收到 CSI-u 扩展序列时可用——从
+        #   ``KeyEvent.kitty_bits``（修饰位掩码）与 ``KeyEvent.event_type``
+        #   （press/repeat/release）读取；非 kitty 事件保持 False/None（与官方
+        #   「仅 kitty 下可用」语义一致）。
+        "super": bool(kitty_bits & 0b1000),
+        "hyper": bool(kitty_bits & 0b10000),
+        "capsLock": bool(kitty_bits & 0b1000000),
+        "numLock": bool(kitty_bits & 0b10000000),
+        "eventType": getattr(event, "event_type", "") or None,
     }
 
 

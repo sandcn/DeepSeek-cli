@@ -21,10 +21,17 @@ from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
 from ..widgets.layout import Row, Column
+from ..hooks import use_input, use_state
+from . import _syntax
+
 # ★ P2（review 2026-08-22）：_repeat/_truncate_to_width 收敛至 _display_common
 #   （重复实现 → 单一真源；_repeat 原实现零宽字符 n//cw 除零——_repeat_to_width
 #   已兜底）。
 from ._display_common import _repeat_to_width, _truncate_to_width
+# ★ P2（review）：边框字符表收敛至 ``_paint_border._BORDER_CHARS``（单一真源）
+#   ——修复前本模块维护 5 变体副本（缺 dashed/singleDouble/doubleSingle，
+#   ``borderStyle="dashed"`` 静默回退默认边框，与 BOX 边框行为不一致）。
+from .._paint_border import _BORDER_CHARS
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_color 原本地定义（与
 #   _interactive_common/_display_common 逻辑一致，仅默认值 23 vs 6）——收敛
 #   至 _widget_common（调用处显式传 default=23，行为不变）。
@@ -32,16 +39,8 @@ from ._widget_common import _color
 
 # ★ P3（review）：删除未使用的 ``_logger``（本模块无日志调用）。
 
-__all__ = ["CodeBlock"]
+__all__ = ["CodeBlock", "CollapsibleCodeBlock"]
 
-#: 边框字符（single/double/round/bold/classic）：(左上, 右上, 左下, 右下, 横线, 竖线)
-_BORDER_CHARS: dict[str, tuple[str, str, str, str, str, str]] = {
-    "single": ("\u250c", "\u2510", "\u2514", "\u2518", "\u2500", "\u2502"),   # ┌ ┐ └ ┘ ─ │
-    "double": ("\u2554", "\u2557", "\u255a", "\u255d", "\u2550", "\u2551"),   # ╔ ╗ ╚ ╝ ═ ║
-    "round": ("\u256d", "\u256e", "\u2570", "\u256f", "\u2500", "\u2502"),    # ╭ ╮ ╰ ╯ ─ │
-    "bold": ("\u250f", "\u2513", "\u2517", "\u251b", "\u2501", "\u2503"),     # ┏ ┓ ┗ ┛ ━ ┃
-    "classic": ("+", "+", "+", "+", "-", "|"),
-}
 _DEFAULT_BORDER = ("\u250c", "\u2510", "\u2514", "\u2518", "\u2500", "\u2502")
 
 
@@ -103,6 +102,27 @@ def CodeBlock(props: dict) -> Element:
 
     lines = code.split("\n") if code else [""]
 
+    # ── 折叠/展开（长代码段；纯 props 驱动，无 hook——保持直接调用契约） ──
+    expandable = bool(props.get("expandable", False))
+    expanded = bool(props.get("expanded", False))
+    try:
+        max_lines = props.get("maxLines")
+        max_lines = int(max_lines) if max_lines is not None else None
+    except (TypeError, ValueError, OverflowError):
+        max_lines = None
+    if max_lines is not None and max_lines < 1:
+        max_lines = None
+    foldable = expandable and max_lines is not None and len(lines) > max_lines
+    folded = foldable and not expanded
+    visible_lines = lines[:max_lines] if folded else lines
+    hidden_count = len(lines) - len(visible_lines) if folded else 0
+    if foldable:
+        label = f"{label or 'code'} · {len(lines)} 行{'（已折叠）' if folded else ''}"
+
+    # ── 语法高亮 ──
+    syntax_on = bool(props.get("syntaxHighlight", props.get("highlight", False)))
+    highlight_lang = _syntax.normalize_language(language) if syntax_on else ""
+
     # ── 行号栏宽度 ──
     num_w = 0
     if show_lines:
@@ -159,7 +179,7 @@ def CodeBlock(props: dict) -> Element:
     #   ` │` 2——修复前统一 `- 4` 重复计入左侧 `│ `，有行号时代码行比边框
     #   窄 2 列。
     inner_w = max(1, width_eff - num_prefix_w - (2 if show_lines else 4))
-    for i, line in enumerate(lines):
+    for i, line in enumerate(visible_lines):
         content = line if line else ""
         if wrap:
             # ★ P1（review）：``wrap=True`` 实现按容器内宽换行——修复前即
@@ -187,13 +207,24 @@ def CodeBlock(props: dict) -> Element:
                 code_runs.append(h(TEXT, {"children": chars[5] + " ", "style": border}))
             else:
                 code_runs.append(h(TEXT, {"children": chars[5] + " ", "style": border}))
-            if highlight_style is not None:
+            if highlight_lang:
+                for run in _syntax.tokenize_line(seg, highlight_lang):
+                    code_runs.append(h(TEXT, {"children": run.text, "style": run.style}))
+            elif highlight_style is not None:
                 code_runs.append(h(TEXT, {"children": seg, "style": highlight_style}))
             else:
                 code_runs.append(h(TEXT, {"children": seg}))
             # 右侧边框（无行号时补右侧；有行号时行号栏已占左侧，右侧补竖线）
             code_runs.append(h(TEXT, {"children": " " + chars[5], "style": border}))
             children.append(h(Row, None, code_runs))
+    # ── 折叠提示行（长代码段） ──
+    if foldable:
+        if folded:
+            hint = f"▸ 还有 {hidden_count} 行，Enter 展开"
+        else:
+            hint = "▾ Enter 收起"
+        hint = _truncate_to_width(hint, max(0, width_eff), True)
+        children.append(h(TEXT, {"children": hint, "style": Style(fg=244, italic=True)}))
     # ── 底边框 ──
     children.append(
         h(TEXT, {
@@ -202,3 +233,57 @@ def CodeBlock(props: dict) -> Element:
         })
     )
     return h(Column, None, children)
+
+
+def CollapsibleCodeBlock(props: dict) -> Element:
+    """可交互折叠代码块：``CodeBlock`` + 键盘展开/收起（Enter/空格）。
+
+    与 ``CodeBlock`` 的区别：本组件使用 hooks（``use_state``/``use_input``），
+    维护内部展开状态并响应键盘；``CodeBlock`` 保持纯 props + 无 hook（可
+    直接调用构造元素）。需要受控行为时给 ``CodeBlock`` 传 ``expanded``。
+
+    Props: 同 ``CodeBlock``，另加——
+        maxLines: 折叠时显示行数（必填方可折叠）。
+        defaultExpanded: 初始是否展开（默认 False）。
+        focusable: 是否响应键盘（默认 True）。
+        onToggle: 状态变化回调 ``(expanded) -> None``。
+
+    Returns:
+        折叠代码块元素（Enter/空格切换展开态）。
+    """
+    max_lines = props.get("maxLines")
+    foldable = False
+    try:
+        if max_lines is not None and int(max_lines) >= 1:
+            code = props.get("code")
+            code = "" if code is None else str(code)
+            foldable = len(code.split("\n")) > int(max_lines)
+    except (TypeError, ValueError, OverflowError):
+        foldable = False
+
+    expanded_state, set_expanded = use_state(bool(props.get("defaultExpanded", False)))
+
+    def _handle(event) -> bool:
+        kind = getattr(event, "kind", "")
+        ch = getattr(event, "char", "")
+        if kind == "enter" or (kind == "char" and ch == " "):
+            new_value = not expanded_state
+            set_expanded(new_value)
+            cb = props.get("onToggle")
+            if cb is not None:
+                try:
+                    cb(new_value)
+                except Exception:
+                    pass
+            return True
+        return False
+
+    use_input(_handle, {"isActive": bool(foldable and props.get("focusable", True) is not False)})
+
+    inner = dict(props)
+    inner["expandable"] = foldable
+    inner["expanded"] = bool(expanded_state)
+    inner.pop("defaultExpanded", None)
+    inner.pop("onToggle", None)
+    inner.pop("focusable", None)
+    return CodeBlock(inner)

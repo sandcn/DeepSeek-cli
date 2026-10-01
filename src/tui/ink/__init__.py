@@ -99,7 +99,9 @@ from .helpers import (
 from .registry import register_host, unregister_host, get_host, has_host
 from .error_boundary import ErrorBoundary, create_error_boundary
 from .extra import Transform, Static, Newline, Fragment, STATIC_TEXT
-from ._render_api import render, measureElement
+from ._render_api import render, renderToString, measureElement
+from .kitty import kittyFlags, kittyModifiers, resolveFlags
+from .accessibility import get_accessibility, screen_reader_text, ARIA_ROLES, ARIA_STATE_KEYS
 from .widgets import (
     SelectInput,
     TextInput,
@@ -136,6 +138,9 @@ from .widgets import (
     ZStack,
     RadioList,
     CodeBlock,
+    CollapsibleCodeBlock,
+    Viewport,
+    MultiPanel,
     InlineSpinner,
     Gradient,
     StaticLines,
@@ -219,7 +224,17 @@ __all__ = [
     "create_error_boundary",
     # render API
     "render",
+    "renderToString",
     "measureElement",
+    # kitty keyboard protocol
+    "kittyFlags",
+    "kittyModifiers",
+    "resolveFlags",
+    # accessibility（aria-*）
+    "get_accessibility",
+    "screen_reader_text",
+    "ARIA_ROLES",
+    "ARIA_STATE_KEYS",
     # generic components
     "Transform",
     "Static",
@@ -264,6 +279,9 @@ __all__ = [
     "Breadcrumbs",
     "RadioList",
     "CodeBlock",
+    "CollapsibleCodeBlock",
+    "Viewport",
+    "MultiPanel",
     "InlineSpinner",
     "Gradient",
     "StaticLines",
