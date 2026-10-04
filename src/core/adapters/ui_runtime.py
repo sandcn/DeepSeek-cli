@@ -57,6 +57,12 @@ def get_config_view_state_cls():
     return _cls
 
 
+def get_plugin_view_state_cls():
+    """返回 PluginViewState 数据类。"""
+    from ...tui.app._state_types import PluginViewState as _cls
+    return _cls
+
+
 def get_theme_registry():
     """返回 ThemeRegistry（主题集单一真源）。"""
     from ...tui.core._theme import ThemeRegistry as _cls
@@ -127,6 +133,7 @@ __all__ = [
     "get_subagent_panel_controller",
     "get_user_select_state_cls",
     "get_config_view_state_cls",
+    "get_plugin_view_state_cls",
     "get_theme_registry",
     "invalidate_palette_cache",
     "render_diff_to_ansi",

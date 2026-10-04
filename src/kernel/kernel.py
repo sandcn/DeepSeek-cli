@@ -22,8 +22,10 @@ _logger = logging.getLogger(__name__)
 class Kernel:
     """插件内核：服务容器 + Fiber 生命周期 + 依赖驱动加载。"""
 
-    def __init__(self, name: str = "root") -> None:
+    def __init__(self, name: str = "root", profile: str = "") -> None:
         self.name = name
+        #: 构建本内核的 Profile 名（组合根写入；空串=未记录，自省/展示回退默认）
+        self.profile = profile
         self.bus = EventBus()
         # key -> [(value, owner_fiber)] 栈式覆盖
         self._services: dict[str, list[tuple[Any, Optional[Fiber]]]] = {}

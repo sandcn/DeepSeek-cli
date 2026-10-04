@@ -34,6 +34,16 @@ def _ensure_builtin_commands():
     return registry
 
 
+def ensure_builtin_commands():
+    """确保内置命令插件已注册（公开入口——自省/展示按需补注册）。
+
+    命令服务卸载会注销全部内置命令（可逆副作用）；长期驻留的全局注册表
+    （``get_plugin_registry`` 回退路径）在无活跃内核时可能为空，自省/展示
+    方（如 /plugin 命令）经本入口按需补注册，保证命令插件信息可见。
+    """
+    return _ensure_builtin_commands()
+
+
 class CommandService(Service):
     """命令服务 — 占据 ``ctx.commands``。"""
 

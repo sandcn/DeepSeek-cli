@@ -36,6 +36,12 @@ from ._session_cmd import (
 
 from ._model_cmd import _cmd_model
 
+from ._plugin_cmd import (
+    _cmd_plugin,
+    # 插件子类
+    PluginCommand,
+)
+
 from ._config_cmd import (
     _cmd_cost,
     _cmd_theme,

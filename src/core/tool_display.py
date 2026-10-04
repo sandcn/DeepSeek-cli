@@ -32,6 +32,11 @@ TOOL_DISPLAY_NAME: dict[str, str] = {
     "web_fetch": "WebFetch",
     "ls": "Ls",
     "skill": "Skill",
+    "cordis_inspect": "CordisInspect",
+    "cordis_define": "CordisDefine",
+    "cordis_run": "CordisRun",
+    "cordis_stop": "CordisStop",
+    "cordis_undefine": "CordisUndefine",
 }
 
 

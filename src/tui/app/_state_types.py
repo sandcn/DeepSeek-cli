@@ -22,6 +22,7 @@ __all__ = [
     "UserSelectState",
     "EditMsgSelectState",
     "ConfigViewState",
+    "PluginViewState",
     "StatusState",
     "HistorySearchState",
 ]
@@ -305,6 +306,69 @@ class ConfigViewState:
         done/action 在锁内一次性提交：done 已置位（其他线程已关闭/已超时）
         时返回 False 且不覆盖，调用方放弃写入。与 UserSelectState/
         EditMsgSelectState 的 try_set_final 同语义——独立实现，不共用代码。
+
+        Args:
+            action: 结束方式（cancel/timeout）。
+
+        Returns:
+            True 本次写入生效；False 终态已由其他线程置位。
+        """
+        with self._final_lock:
+            if self.done:
+                return False
+            self.action = action
+            self.done = True
+            return True
+
+
+@dataclass
+class PluginViewState:
+    """插件总览视图状态（/plugin 命令注入，PluginView 组件消费）。
+
+    /plugin 打开全屏插件总览视图（``model.fullscreen == "plugin"``）——
+    PluginView 组件整屏渲染（左插件列表 + 右详细信息）。与 config/user_select
+    同构的跨线程协议：命令线程设置本状态（visible=True, seq+1, entries）→
+    ``model.fullscreen="plugin"`` → request_bottom_redraw → 轮询 ``done``
+    （带 deadline 超时）→ finally 清理；组件写导航状态，Esc 经
+    ``try_set_final("cancel")`` 原子终态写入（first-write-wins）。
+
+    Attributes:
+        visible: 视图是否显示（命令打开/清理）。
+        seq: 视图会话序号（每次打开递增；供重挂载/调试）。
+        entries: 插件条目列表（``plugins.view_model.build_plugin_entries``
+            产出；组件只读）。
+        selected: 左栏当前选中条目索引（组件导航维护）。
+        scroll: 右栏详情滚动偏移（0=顶部）。
+        cursor: 右栏详情光标行（绝对行索引，vim cursorline 语义）。
+        pane: 当前焦点面板（"list"=左列表 / "detail"=右详情）。
+        deadline: 超时截止（time.monotonic()）；0 表示无限等待。
+        done: 交互是否已结束（Esc 关闭或命令超时置位）。
+        action: 结束方式（cancel/timeout）。
+        _final_lock: 终态写入锁（done/action 原子写，first-write-wins
+            跨线程安全——组件 Esc 关闭 vs 命令超时竞态）。
+    """
+
+    visible: bool = False
+    seq: int = 0
+    entries: list = field(default_factory=list)
+    selected: int = 0
+    scroll: int = 0
+    cursor: int = 0
+    pane: str = "list"
+    deadline: float = 0.0
+    done: bool = False
+    action: str = ""
+    #: 终态写入锁（repr/比较忽略——纯同步原语，非状态数据）
+    _final_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False,
+    )
+
+    def try_set_final(self, action: str) -> bool:
+        """原子写入终态（first-write-wins，跨线程安全）。
+
+        done/action 在锁内一次性提交：done 已置位（其他线程已关闭/已超时）
+        时返回 False 且不覆盖，调用方放弃写入。与 ConfigViewState/
+        UserSelectState 的 try_set_final 同语义——独立实现，不共用代码。
 
         Args:
             action: 结束方式（cancel/timeout）。

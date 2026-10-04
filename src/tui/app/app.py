@@ -28,6 +28,7 @@ from .status_bar import StatusBar
 from .user_select import UserSelectPopup
 from .editmsg_select import EditMsgSelectPopup
 from .config_view import ConfigView
+from .plugin_view import PluginView
 from .input_area import InputArea
 from .trace_view import TraceView
 from .trace_tools_view import TraceToolsView
@@ -51,6 +52,11 @@ FULLSCREEN_VIEWS: dict = {
     #   ConfigView（配置列表浏览 + Enter 编辑 + Esc/Ctrl+H 关闭）；
     #   关闭（命令线程清理 fullscreen 置空）后恢复完整聊天界面。
     "config": ConfigView,
+    # ★ 2026-10-04（用户需求：/plugin 命令独立界面）：插件总览视图——
+    #   /plugin 命令 → ``model.fullscreen = "plugin"`` → 整屏渲染
+    #   PluginView（左插件列表 + 右详细信息 + Esc/Ctrl+H 关闭）；
+    #   关闭（命令线程清理 fullscreen 置空）后恢复完整聊天界面。
+    "plugin": PluginView,
 }
 
 #: 模态底部视图注册表（2026-08-17 通用机制）：view_id → 组件 或

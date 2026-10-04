@@ -173,7 +173,7 @@ async def build_kernel(
         extra_dirs=extra_dirs,
     )
 
-    kernel = Kernel(name="chat")
+    kernel = Kernel(name="chat", profile=profile)
     for entry, plug in materialize(entries):
         if entry.disabled:
             continue

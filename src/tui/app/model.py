@@ -44,6 +44,7 @@ from src.tui.app._state_types import (
     UserSelectState,
     EditMsgSelectState,
     ConfigViewState,
+    PluginViewState,
     StatusState,
     HistorySearchState,
     ReasoningState,
@@ -119,6 +120,10 @@ class AppModel(_ToolOutputMixin):
         # 浏览/编辑；命令线程轮询 done 清理。状态类型见 _state_types.py
         # ConfigViewState，组件见 app/config_view.py。）
         self.config_view: ConfigViewState = ConfigViewState()
+        # 插件总览视图状态（/plugin 命令独立界面——全屏插件总览视图：
+        # 左插件列表 + 右详细信息；命令线程轮询 done 清理。状态类型见
+        # _state_types.py PluginViewState，组件见 app/plugin_view.py。）
+        self.plugin_view: PluginViewState = PluginViewState()
         # 实时解析进度行（同位置刷新；ParseInfoDone 后提交并清空）
         self.parse_line: Any = None
         # subagent 面板行（控制器推送）
@@ -769,6 +774,12 @@ class AppModel(_ToolOutputMixin):
         #   打开 config 强制重挂载，不残留旧选中/旧编辑态）。
         prev_cv_seq = getattr(self.config_view, "seq", 0)
         self.config_view = ConfigViewState(seq=prev_cv_seq)
+        # ★ 2026-10-04（plugin 总览独立界面）：清屏同时重置插件总览视图状态
+        #   （与 config_view 同语义——残留 plugin_view 让 /plugin 命令轮询
+        #   done 期间视图消失，轮询等待空转到超时）。**保留 seq**（seq 单调
+        #   递增保证 key 唯一，清屏后再次打开强制重挂载，不残留旧选中）。
+        prev_pv_seq = getattr(self.plugin_view, "seq", 0)
+        self.plugin_view = PluginViewState(seq=prev_pv_seq)
 
     # ── trace_open 兼容别名（2026-08-17 通用化：模态全屏视图） ──
     # 轨迹视图打开 = model.fullscreen == "trace"。property 保持旧字段读写
@@ -804,5 +815,6 @@ __all__ = [
     "UserSelectState",
     "EditMsgSelectState",
     "ConfigViewState",
+    "PluginViewState",
     "ReasoningState",
 ]
