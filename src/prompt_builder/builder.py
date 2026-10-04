@@ -31,10 +31,10 @@ from .vcs_info import _build_vcs_info
 # ── Prompts 目录路径 ────────────────────────────────────────
 _PROMPTS_DIR: str | None = None
 
-# ── 主 agent 空模式（Ctrl+M 切换） ───────────────────────────
+# ── 主 agent 空模式（Ctrl+B 切换，默认开启） ─────────────────
 # True 时 build_system_prompt 加载 prompts_export_main_empty.md
-# （仅基础安全/通用规范，无完整规则集）。
-_EMPTY_MODE: bool = False
+# （仅基础安全/通用规范，无完整规则集）。默认 True：启动即进入空模式。
+_EMPTY_MODE: bool = True
 
 
 def is_empty_mode() -> bool:
@@ -318,7 +318,8 @@ def build_system_prompt(
     """构建主代理系统提示词。
 
     从 prompts_export_main.md 加载静态规则，追加运行时动态信息。
-    空模式（``is_empty_mode()``，Ctrl+M 切换）加载 prompts_export_main_empty.md。
+    空模式默认开启（``is_empty_mode()``，Ctrl+B 切换）：默认加载
+    prompts_export_main_empty.md。
     环境信息之后注入技能章节（构建时一次；技能变更后经
     ``rebuild_system_prompt()`` 重建）。
     """

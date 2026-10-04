@@ -17,6 +17,8 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from src.tui._const import ErrorCmd, SplashCmd
 from src.tui.app.apply import apply_cmd
 from src.tui.app.model import AppModel
@@ -199,6 +201,15 @@ class TestStatusBarIcons:
 
 class TestTimestampClockIcon:
     """下分隔线时间戳带 ◷ 时钟图标。"""
+
+    @pytest.fixture(autouse=True)
+    def _standard_mode(self):
+        """本类只验证时间戳/模式行存在，固定为标准模式（与全局默认模式解耦）。"""
+        from src.prompt_builder import builder
+        original = builder.is_empty_mode()
+        builder.set_empty_mode(False)
+        yield
+        builder.set_empty_mode(original)
 
     def _fiber(self, width: int = 80):
         props = {

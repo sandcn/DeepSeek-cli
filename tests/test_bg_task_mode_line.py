@@ -24,6 +24,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from src.tui.app.input_area import _build_mode_line, _build_lines, _input_snap_key
 from src.tui.app.status_bar import _build_status_runs
 from src.tui.app.apply import apply_cmd
@@ -143,6 +145,15 @@ class TestModeLineBgPrefix:
 
 class TestBuildLinesBgCount:
     """_build_lines 从 props 读取计数并在模式行行首渲染。"""
+
+    @pytest.fixture(autouse=True)
+    def _standard_mode(self):
+        """本类只验证 bg 计数前缀，固定为标准模式（与全局默认模式解耦）。"""
+        from src.prompt_builder import builder
+        original = builder.is_empty_mode()
+        builder.set_empty_mode(False)
+        yield
+        builder.set_empty_mode(original)
 
     def _fiber(self, width: int = 80, bash: int = 0, subagent: int = 0):
         props = {
@@ -498,6 +509,15 @@ class TestAppPropsBgCount:
 
 class TestInputAreaRealRender:
     """真实组件渲染：模式行行首显示 bash · N · subagent · N。"""
+
+    @pytest.fixture(autouse=True)
+    def _standard_mode(self):
+        """本类只验证 bg 计数前缀，固定为标准模式（与全局默认模式解耦）。"""
+        from src.prompt_builder import builder
+        original = builder.is_empty_mode()
+        builder.set_empty_mode(False)
+        yield
+        builder.set_empty_mode(original)
 
     def _render(self, rec, root, props, width: int = 80):
         from src.tui.ink.element import h
