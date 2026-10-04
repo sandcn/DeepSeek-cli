@@ -7,11 +7,7 @@ Layer 0 — 仅依赖 typing，被 _consumer + 外部调用方引用。
 from __future__ import annotations
 
 import threading
-from typing import TYPE_CHECKING
 from weakref import WeakValueDictionary, ref as _weakref
-
-if TYPE_CHECKING:
-    from .._consumer import ChatUIConsumer
 
 # ── 活跃实例引用（供交互式工具暂停/恢复，引用计数防竞态） ──
 # 多实例场景下，start() 递增计数并设置引用，stop() 递减计数，

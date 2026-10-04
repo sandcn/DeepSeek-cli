@@ -199,8 +199,8 @@ class AsyncStreamPipeline:
                     #   （项目既有模式：core 依赖 api，api 侧延迟引用）；
                     #   SubAgent（label="agent-N"）由函数内部跳过。
                     try:
-                        from ...core.context_manager import update_streaming_usage
-                        update_streaming_usage(ctx.streamed_output_tokens, ctx.label)
+                        from ._usage_hook import notify_streaming_usage
+                        notify_streaming_usage(ctx.streamed_output_tokens, ctx.label)
                     except Exception:
                         _logger.debug("实时刷新上下文使用率失败", exc_info=True)
 
@@ -491,8 +491,8 @@ class AsyncStreamPipeline:
         #   内容与流式增量会双计（百分比虚高）。本方法幂等（_cleaned_up
         #   保护），process() finally 与 stream_call_async 补调均只执行一次。
         try:
-            from ...core.context_manager import update_streaming_usage
-            update_streaming_usage(0, ctx.label)
+            from ._usage_hook import notify_streaming_usage
+            notify_streaming_usage(0, ctx.label)
         except Exception:
             _logger.debug("流式结束清零上下文使用率失败", exc_info=True)
 

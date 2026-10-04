@@ -362,7 +362,7 @@ class ToolCallbackChain:
             return
 
         try:
-            from ....tui.events.event_types import ToolOutputChunkEvent
+            from ...events.display_types import ToolOutputChunkEvent
             self._agent._event_port.publish_event(ToolOutputChunkEvent(
                 label=tool_label, tool_id=tool_label, text=text, source="agent",
             ))

@@ -71,8 +71,8 @@ class Func(abc.ABC):
             - True + None：可以使用
             - False + 错误信息：不可使用，附带原因
         """
-        # 延迟导入：避免 tools.base ↔ core.subagent 的循环依赖
-        from ..core.subagent import _get_excluded_tools
+        # 工具可用性策略（单一真源 tools/_tool_policy）
+        from ._tool_policy import _get_excluded_tools
         excluded = _get_excluded_tools(agent_type)
         if tool_name in excluded:
             return (False, f"工具 '{tool_name}' 不可用于 '{agent_type}' 类型 agent，"

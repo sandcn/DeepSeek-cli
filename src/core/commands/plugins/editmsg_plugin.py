@@ -53,7 +53,9 @@ class EditmsgPlugin(InteractiveCommandPlugin):
         而是保持 render 线程运行，在补全弹窗中完成选择。
         """
         from ....app_loop import _non_system_messages
-        from ....tui.pipeline.message_editor import MessageEditor
+        from ...adapters.ui_runtime import get_message_editor_cls
+
+        MessageEditor = get_message_editor_cls()
 
         loop = self._loop
         if loop is None:
@@ -244,7 +246,7 @@ class EditmsgPlugin(InteractiveCommandPlugin):
                 chat_ui.write_line(f"  {DIM}{'─' * 40}{RESET}")
                 # ★ P2-3 修复：恢复失败（降级继续编辑语义）以 ⚠ 黄色渲染——
                 #   修复前无条件 GREEN ✓ 把「沙盒恢复失败: …」显示成成功结果。
-                from ....tui.pipeline.message_editor import _restore_feedback
+                from ...adapters.ui_runtime import restore_feedback as _restore_feedback
                 feedback_text, restore_failed = _restore_feedback(restore_text)
                 if restore_failed:
                     chat_ui.write_line(f"  {YELLOW}\u26a0{RESET} {feedback_text}")

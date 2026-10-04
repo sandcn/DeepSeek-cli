@@ -100,29 +100,7 @@ class StreamContext:
         return True
 
     # ═══════════════════════════════════════════════════════════
-    # 渲染器属性（已迁移到 ChatUIConsumer，此处保留向后兼容占位）
+    # 渲染器属性已移除（2026-10 架构清理）：渲染统一由 ChatUIConsumer 管理，
+    # 原向后兼容占位属性 reasoning_renderer / content_renderer 无外部引用，
+    # 已删除（避免死代码滞留）。
     # ═══════════════════════════════════════════════════════════
-
-    @property
-    def reasoning_renderer(self):
-        """推理渲染器（已废弃，ChatUIConsumer 管理终端渲染）。
-
-        返回 None，不再创建渲染器实例。
-        """
-        return None
-
-    @reasoning_renderer.setter
-    def reasoning_renderer(self, _value):
-        pass  # 接受赋值但不存储（向后兼容）
-
-    @property
-    def content_renderer(self):
-        """内容渲染器（已废弃，ChatUIConsumer 管理终端渲染）。
-
-        返回 None，不再创建渲染器实例。
-        """
-        return None
-
-    @content_renderer.setter
-    def content_renderer(self, _value):
-        pass  # 接受赋值但不存储（向后兼容）

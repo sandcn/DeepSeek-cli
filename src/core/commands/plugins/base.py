@@ -12,13 +12,10 @@ from __future__ import annotations
 
 import logging
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from ..base import CommandPlugin
 
-
-if TYPE_CHECKING:
-    pass  # 延迟导入避免循环
 
 _logger = logging.getLogger(__name__)
 

@@ -327,3 +327,8 @@ __all__ = [
     "set_render_flush_fn",
     "set_suspend_terminal_fn",
 ]
+
+
+# 确保 render()/renderToString()/measureElement() 可用：
+# 导入 session 定义 InkSession 并注册到 _render_api（打破循环依赖）。
+from . import session as _ink_session  # noqa: E402,F401

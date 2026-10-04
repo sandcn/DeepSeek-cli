@@ -77,8 +77,8 @@ def _cmd_load(ctx):
     #   ``_subagent_records``/``build_subagent_trace_records``，无第二份
     #   实现；非 TUI 环境/异常记 debug 日志零成本跳过）。
     try:
-        from ...tui.subagent import SubAgentPanelController
-        SubAgentPanelController.get_default().restore_trace_archive(loaded_subagents)
+        from ..adapters.ui_runtime import get_subagent_panel_controller
+        get_subagent_panel_controller().get_default().restore_trace_archive(loaded_subagents)
     except Exception:
         _logger.debug("恢复 subagent 轨迹存档异常", exc_info=True)
 

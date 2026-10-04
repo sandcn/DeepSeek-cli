@@ -142,9 +142,9 @@ class _McpToolBase(Func):
         return result
 
     async def execute(self) -> str:
-        from .manager import McpManager
+        from ._runtime import call_tool
 
-        result = await McpManager.default().call_tool(
+        result = await call_tool(
             self.mcp_server, self.mcp_tool, self.arguments,
         )
         blocks = result.content_blocks()

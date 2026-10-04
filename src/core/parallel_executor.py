@@ -19,10 +19,6 @@ from .internal.agent._capture_manager import _safe_restore as safe_restore_stdou
 from .internal.agent._subagent_spawner import SubAgentSpawner
 from .subagent import SubAgent
 
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from ..tui.events import EventBusDisplayProxy
-
 _logger = logging.getLogger(__name__)
 
 
@@ -74,14 +70,14 @@ class ParallelExecutor:
     # -- 独立模式 --
 
     async def _execute_with_error_handling(
-        self, coro, specs: List[Dict[str, Any]], display: EventBusDisplayProxy,
+        self, coro, specs: List[Dict[str, Any]], display: Any,
     ) -> List[Dict[str, Any]]:
         """封装 try/except/finally 错误处理模式，消除重复（run 独立模式）。
 
         Args:
             coro: 主协程（通常是 self._run_agents(specs, display)）
             specs: agent specs 列表（用于构造降级结果）
-            display: EventBusDisplayProxy 实例
+            display: Any 实例
 
         Returns:
             结果列表 [{label, description, result, error}]
@@ -181,15 +177,16 @@ class ParallelExecutor:
         max_workers: 最大并行数，默认 None（无限制，等于 task 数量）
         返回: [{_LABEL_KEY: str, _DESCRIPTION_KEY: str, _RESULT_KEY: str, _ERROR_KEY: str}]
         """
-        from ..tui.subagent import SubAgentPanelController as _PanelCtrl
+        from .adapters.ui_runtime import get_subagent_panel_controller
+        _PanelCtrl = get_subagent_panel_controller()
         _panel = _PanelCtrl.get_default()
         _panel.ensure_active()
 
         try:
             self._spawner.render_display(agent_specs)
 
-            from ..tui.events import EventBusDisplayProxy as _EventBusDisplayProxy
-            display = _EventBusDisplayProxy(max_history=self.max_history)
+            from .adapters.ui_runtime import create_display_proxy
+            display = create_display_proxy(max_history=self.max_history)
             coro = self._run_agents(agent_specs, display)
             return await self._execute_with_error_handling(
                 coro, agent_specs, display,
@@ -197,14 +194,14 @@ class ParallelExecutor:
         finally:
             _panel.stop(clear_panel=True)
 
-    async def _run_agents(self, specs: List[Dict[str, Any]], display: EventBusDisplayProxy) -> List[Dict[str, Any]]:
+    async def _run_agents(self, specs: List[Dict[str, Any]], display: Any) -> List[Dict[str, Any]]:
         """创建 SubAgent 列表 → gather 执行 → 结果收集
 
         供 run() 独立模式调用。
 
         Args:
             specs: agent specs 列表
-            display: EventBusDisplayProxy 实例
+            display: Any 实例
 
         Returns:
             结果列表 [{"label", "description", "result", "error"}]
@@ -219,8 +216,8 @@ class ParallelExecutor:
             #   system/user/assistant/tool 消息 → 台账 + 检查器）。注册失败
             #   非致命（面板无槽位/异常时跳过，轨迹回退槽位活动记录）。
             try:
-                from ..tui.subagent import SubAgentPanelController as _PanelCtrl
-                _PanelCtrl.get_default().register_subagent(sa.label, sa)
+                from .adapters.ui_runtime import get_subagent_panel_controller
+                get_subagent_panel_controller().get_default().register_subagent(sa.label, sa)
             except Exception:
                 _logger.debug("注册 SubAgent 到面板控制器失败: %s", sa.label, exc_info=True)
 
@@ -241,7 +238,7 @@ class ParallelExecutor:
                 results.append(r)
         return results
 
-    async def _run_one(self, sa: SubAgent, display: EventBusDisplayProxy, stagger: int = 0) -> Dict[str, Any]:
+    async def _run_one(self, sa: SubAgent, display: Any, stagger: int = 0) -> Dict[str, Any]:
         if stagger > 0:
             if self._config_port is not None:
                 stagger_min = self._config_port.get_stagger_min_delay()
@@ -254,8 +251,8 @@ class ParallelExecutor:
             delay = min(stagger * base, stagger_max * 3)
             await asyncio.sleep(delay)
         try:
-            from ..tui.events.event_types import AgentStatusChanged as _AgentStatusChanged
-            from ..tui.events.publish import emit
+            from .events.display_types import AgentStatusChanged as _AgentStatusChanged
+            from .adapters.ui_runtime import emit_display_event as emit
 
             result = await sa.run()
             display.update_agent_status(sa.label, "done")
@@ -272,7 +269,7 @@ class ParallelExecutor:
             display.update_model_phase(sa.label, "error", "cancelled")
             display.update_agent_status(sa.label, "fail")
             display.set_result(sa.label, error="cancelled")
-            from ..tui.events.event_types import AgentStatusChanged as _AgentStatusChanged
+            from .events.display_types import AgentStatusChanged as _AgentStatusChanged
             emit(_AgentStatusChanged(
                 label=sa.label, status="fail", source="parallel",
             ))
@@ -281,7 +278,7 @@ class ParallelExecutor:
                     _RESULT_KEY: "", _ERROR_KEY: "cancelled",
                     _AGENT_TYPE_KEY: sa.agent_type}
         except Exception as e:
-            from ..tui.events.event_types import AgentStatusChanged as _AgentStatusChanged
+            from .events.display_types import AgentStatusChanged as _AgentStatusChanged
 
             _logger.error("SubAgent %s failed: %s", sa.label, e)
             display.update_model_phase(sa.label, "error", str(e))

@@ -1504,6 +1504,7 @@ from ._render_api import (  # noqa: F401  re-export 兼容
     renderToString,
     measureElement,
     _SimpleModel,
+    register_session_cls as _register_session_cls,
 )
 
 __all__ = [
@@ -1524,3 +1525,7 @@ __all__ = [
     # ★ 2026-09-20：可合并状态命令集合 re-export（真源 ``_cmd_priority``）
     "_COALESCE_CMDS",
 ]
+
+
+# ── 注册 InkSession 类到 _render_api（打破 _render_api ↔ session 循环依赖）──
+_register_session_cls(InkSession)

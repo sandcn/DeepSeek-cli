@@ -37,6 +37,17 @@ from .element import Element
 _logger = logging.getLogger(__name__)
 
 
+#: InkSession 类注册槽（session.py 定义后经 register_session_cls 注入）——
+#: 避免 ``_render_api → session → _render_api`` 模块加载期循环。
+_session_cls = None
+
+
+def register_session_cls(cls) -> None:
+    """注册 InkSession 类（session.py 定义 InkSession 后调用）。"""
+    global _session_cls
+    _session_cls = cls
+
+
 class _SimpleModel:
     """render() 独立会话的最小模型占位（满足 InkSession 读取的属性）。
 
@@ -232,9 +243,11 @@ def render(
         dict：控制对象（waitUntilExit/unmount/cleanup/rerender/clear/
         waitUntilRenderFlush）。
     """
-    # 惰性 import InkSession——避免 ``_render_api → session → _render_api``
-    # 模块加载期循环（session.py 顶层 re-export 本模块 render）。
-    from .session import InkSession
+    InkSession = _session_cls
+    if InkSession is None:
+        raise RuntimeError(
+            "InkSession 未注册：render() 独立会话需先导入 src.tui.ink.session"
+        )
 
     model = _SimpleModel()
     if width is not None:

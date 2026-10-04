@@ -112,7 +112,7 @@ class SubAgentSpawner:
         sys.__stdout__ 渲染路径；渲染统一由 TUI 侧消费事件完成
         （EventDispatcher → SubagentMarkdownCmd → apply_cmd → 消息区块）。
         """
-        from ....tui.events.event_types import SubagentPromptEvent as _SubagentPromptEvent
+        from ...events.display_types import SubagentPromptEvent as _SubagentPromptEvent
         for i, spec in enumerate(specs, 1):
             desc = spec.get(_DESCRIPTION_KEY, f"子任务 {i}")
             agent_type = spec.get("agent_type", "execute")
@@ -133,7 +133,7 @@ class SubAgentSpawner:
 
     def _publish_tool_summary(self, results: List[Dict[str, Any]]) -> None:
         """批量发布所有 subagent 的 AgentResultEvent（全部完成后统一发送）。"""
-        from ....tui.events.event_types import AgentResultEvent as _AgentResultEvent
+        from ...events.display_types import AgentResultEvent as _AgentResultEvent
         for i, r in enumerate(results, 1):
             self._event_port.publish_event(_AgentResultEvent(
                 label=r.get(_LABEL_KEY, "?"),

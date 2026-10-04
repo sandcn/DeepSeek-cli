@@ -591,3 +591,11 @@ class ContextManager:
         global _active_context_manager
         if _active_context_manager is self:
             _active_context_manager = None
+
+
+# ── 流式用量刷新钩子注册（api 流式管线经钩子回调，避免 api→core 循环依赖）──
+try:
+    from ..api.stream._usage_hook import register_usage_hook as _register_usage_hook
+    _register_usage_hook(update_streaming_usage)
+except Exception:  # pragma: no cover — 导入失败时静默（实时刷新降级）
+    pass

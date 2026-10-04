@@ -156,8 +156,8 @@ class SessionPersistenceManager:
         记 debug 日志零成本跳过（轨迹恢复属增强能力，不阻断会话加载）。
         """
         try:
-            from ....tui.subagent import SubAgentPanelController
-            SubAgentPanelController.get_default().restore_trace_archive(records)
+            from ...adapters.ui_runtime import get_subagent_panel_controller
+            get_subagent_panel_controller().get_default().restore_trace_archive(records)
         except Exception:
             _logger.debug("恢复 subagent 轨迹存档异常", exc_info=True)
 

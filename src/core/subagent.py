@@ -16,59 +16,13 @@ from typing import List, Dict, Any, Optional, Tuple, Callable
 from .base_agent import BaseAgent
 from .tool_executor_async import ToolScheduler
 from .exceptions import is_network_error
+from ..tools._tool_policy import _TOOL_EXCLUSION_MAP, _get_excluded_tools  # noqa: F401 — re-export 兼容
 
 _logger = logging.getLogger(__name__)
 
 # ── 网络错误重试上限 ────────────────────────────────────
 # SubAgent.run() 中每次独立模型调用最多重试 3 次（含首次）
 _NETWORK_RETRY_MAX = 3
-
-# ── 类型策略：agent_type → 排除的工具集合 ─────────────
-# 每种类型映射一个不可用工具集，便于未来扩展。
-#
-# 策略差异说明：
-# - map: 只读分析，排除所有写入类工具 + web_search
-# - review: 代码审查，排除所有写入类工具 + bash/bash_opt，保留 web_search（可查文档）；
-#   2026-08-21（用户需求）起删除 bash/bash_opt——review 为纯只读审查（read_file/
-#   search/find/ls/web_search），彻底无 shell 执行能力，从工具层杜绝任何修改行为
-# - plan: 计划生成，保留 write_file/update_file，但在 FileToolBase
-#   ._validate_path_and_size() 中有额外的路径白名单校验（仅限 .chat/plan/）
-# - execute: 计划执行型（默认），保留读写工具 + bash，排除 web_search + subagent + user_select，
-#   无路径白名单限制，用于执行计划文件步骤并返回修改文件列表
-_TOOL_EXCLUSION_MAP = {
-    "map": {
-        "bash", "bash_opt", "subagent_opt", "write_file", "update_file", "rm", "mv", "cp", "mkdir",
-        "web_search",
-        "subagent", "user_select",
-    },
-    "review": {
-        # bash/bash_opt 已删除（2026-08-21 用户需求）：review 为纯只读审查，
-        # 无任何 shell 执行能力，从工具层杜绝用 bash 修改文件的可能。
-        "bash", "bash_opt",
-        "subagent_opt", "write_file", "update_file", "rm", "mv", "cp", "mkdir",
-        "subagent", "user_select",
-    },
-    "plan": {
-        "bash", "bash_opt", "subagent_opt",
-        "rm",
-        "mv",
-        "cp",
-        "subagent",
-        "user_select",
-    },
-    "execute": {
-        "subagent",
-        "subagent_opt",
-        "user_select",
-        "web_search",
-    },
-}
-
-
-def _get_excluded_tools(agent_type: str) -> set:
-    """根据 agent_type 返回应排除的工具名集合。未知类型回退 execute 策略。"""
-    return _TOOL_EXCLUSION_MAP.get(agent_type, _TOOL_EXCLUSION_MAP["execute"])
-
 
 class SubAgent(BaseAgent):
     """独立子代理，在独立线程中运行"""
@@ -411,7 +365,7 @@ class SubAgent(BaseAgent):
         此处不再重复累计，否则 SubAgent 每次模型调用的 input/output/calls
         会被统计两次，导致 /cost 输入 tok 翻倍（Bug 修复）。
         """
-        from ..tui.events.event_types import UsageUpdatedEvent, ModelPhaseEvent
+        from .events.display_types import UsageUpdatedEvent, ModelPhaseEvent
 
         if self.display:
             if usage is not None:

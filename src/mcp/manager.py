@@ -37,7 +37,7 @@ def register_tool_policy(tool_names: List[str], allowed_agents: Optional[set] = 
     """
     allowed = set(allowed_agents or DEFAULT_AGENT_TYPES)
     try:
-        from ..core.subagent import _TOOL_EXCLUSION_MAP
+        from ..tools._tool_policy import _TOOL_EXCLUSION_MAP
     except Exception:
         _logger.debug("导入 _TOOL_EXCLUSION_MAP 失败，跳过 MCP 权限策略", exc_info=True)
         return
@@ -55,7 +55,7 @@ def register_tool_policy(tool_names: List[str], allowed_agents: Optional[set] = 
 def unregister_tool_policy(tool_names: List[str]) -> None:
     """从所有 agent 类型的排除集合中移除 MCP 工具名（关闭时清理）。"""
     try:
-        from ..core.subagent import _TOOL_EXCLUSION_MAP
+        from ..tools._tool_policy import _TOOL_EXCLUSION_MAP
     except Exception:
         return
     for name in tool_names:
@@ -259,7 +259,7 @@ class McpManager:
         if not agent_type:
             return set()
         try:
-            from ..core.subagent import _TOOL_EXCLUSION_MAP
+            from ..tools._tool_policy import _TOOL_EXCLUSION_MAP
         except Exception:
             return set()
         excluded = _TOOL_EXCLUSION_MAP.get(agent_type)
@@ -336,3 +336,14 @@ __all__ = [
     "is_mcp_tool",
     "mcp_tool_name",
 ]
+
+
+# ── MCP 工具调用钩子注册（tool.MCPTool.execute 经钩子回调，避免 manager↔tool 循环）──
+from . import _runtime as _mcp_runtime  # noqa: E402
+
+
+async def _default_call_tool(server: str, tool: str, arguments=None):
+    return await McpManager.default().call_tool(server, tool, arguments)
+
+
+_mcp_runtime.register_caller(_default_call_tool)

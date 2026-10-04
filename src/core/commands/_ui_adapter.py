@@ -1,8 +1,8 @@
 """CommandUiAdapter — 命令系统的 UI 适配器（依赖倒置）
 
 封装命令函数中需要的 UI 交互操作（底部栏选择、主题切换、diff 渲染、
-消息显示、消息编辑等），所有 ui/ 包的导入被限制在此适配器内部，
-通过延迟导入（函数体内 import）确保 core/ 层不直接依赖 ui/ 基础设施。
+消息显示、消息编辑等）。所有表现层（tui/renderer）访问经
+``core.adapters.ui_runtime`` 桥接工厂完成，core.commands 不直接依赖表现层。
 
 2026-07-29 TUI 重构适配：
   - run_bottom_bar_selection → 使用 _bottom_bar.py 内置方法
@@ -60,7 +60,8 @@ class CommandUiAdapter:
                 model = cand
                 session = getattr(bottom_bar, "_session", None) or session
         if model is not None and session is not None and hasattr(model, "user_select"):
-            from ...tui.app.model import UserSelectState
+            from ..adapters.ui_runtime import get_user_select_state_cls
+            UserSelectState = get_user_select_state_cls()
             display = display_items if display_items else items
             prev_seq = getattr(model.user_select, "seq", 0)
             # ★ 2026-08-19（并发 tab 弹窗，与 user_select 工具同协议）：追加
@@ -191,9 +192,9 @@ class CommandUiAdapter:
 
     @staticmethod
     def _get_active_chat_ui():
-        """获取活跃 ChatUIConsumer（惰性导入，无活跃时 None）。"""
+        """获取活跃 ChatUIConsumer（经适配器桥接，无活跃时 None）。"""
         try:
-            from ...tui.consumer import get_active_chat_ui as _fn
+            from ..adapters.ui_runtime import get_active_chat_ui as _fn
             return _fn()
         except Exception:
             return None
@@ -206,7 +207,8 @@ class CommandUiAdapter:
         归位 core 层）；描述为中文文案。
         """
         try:
-            from ...tui.core._theme import ThemeRegistry
+            from ..adapters.ui_runtime import get_theme_registry
+            ThemeRegistry = get_theme_registry()
             desc = {"dark": "暗色", "light": "亮色", "high-contrast": "高对比"}
             return [(n, desc.get(n, n)) for n in ThemeRegistry.names()]
         except Exception:
@@ -244,14 +246,14 @@ class CommandUiAdapter:
             except Exception:
                 _logger.debug("set_theme(%s): config 持久化失败", name, exc_info=True)
         try:
-            from ...tui.core._theme import _invalidate_palette_cache
-            _invalidate_palette_cache()
+            from ..adapters.ui_runtime import invalidate_palette_cache
+            invalidate_palette_cache()
         except Exception:
             _logger.debug("set_theme(%s): 调色板缓存失效异常", name, exc_info=True)
 
     def render_diff_to_ansi(self, path: str, old_content: str, new_content: str) -> str:
         """将文件差异渲染为带 ANSI 颜色的纯文本字符串。"""
-        from ...tui._diff_renderer import render_diff_to_ansi as _fn
+        from ..adapters.ui_runtime import render_diff_to_ansi as _fn
         return _fn(path, old_content, new_content)
 
     def display_messages(
@@ -271,7 +273,7 @@ class CommandUiAdapter:
         ChatUIConsumer.display_messages 仅接受 messages/speed，不传递二者；
         委托异常时降级兜底直写并 warning 日志（与 deitmsg_plugin 防御风格对齐）。
         """
-        from ...tui.consumer import get_active_chat_ui
+        from ..adapters.ui_runtime import get_active_chat_ui
         chat_ui = get_active_chat_ui()
         if chat_ui is not None:
             try:
@@ -283,7 +285,7 @@ class CommandUiAdapter:
                     exc_info=True,
                 )
                 # 降级兜底直写，保证消息不丢失（仅此分支传递 agent/idx_map）
-        from ...tui.pipeline.message_display import display_messages as _fn
+        from ..adapters.ui_runtime import display_messages as _fn
         _fn(data, agent=agent, idx_map=idx_map, speed=speed)
 
     def edit_current_messages(
@@ -294,7 +296,7 @@ class CommandUiAdapter:
 
         委托到 pipeline/message_editor.py（已恢复）。
         """
-        from ...tui.pipeline.message_editor import edit_current_messages as _fn
+        from ..adapters.ui_runtime import edit_current_messages as _fn
         return _fn(agent, state, bottom_bar=bottom_bar, input_=input_)
 
 

@@ -40,7 +40,7 @@ class SharedCapture(io.StringIO):
 
     def write(self, s: str) -> int:
         if s and s.strip():
-            from ....tui.events.event_types import ToolOutputChunkEvent
+            from ...events.display_types import ToolOutputChunkEvent
             from ._tool_context import get_current_tool_id
             # Bug A 修复：按 contextvar 定向分发——命中当前工具 label 时仅
             # 发布给该 label（O(1) 事件，消除并发 O(N²) 广播放大 + 错路由）；

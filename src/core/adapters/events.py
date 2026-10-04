@@ -139,7 +139,7 @@ class DisplayEventBusAdapter(EventPort):
 
     def _publish_tool_summary(self, data: dict, source: str = "core") -> None:
         """发布工具摘要事件"""
-        from ...tui.events.event_types import ToolSummaryEvent
+        from ..events.display_types import ToolSummaryEvent
         event = ToolSummaryEvent(
             successful_tools=tuple(data.get("successful_tools", [])),
             failed_tools=tuple(data.get("failed_tools", [])),

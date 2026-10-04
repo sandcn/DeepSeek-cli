@@ -21,10 +21,7 @@ import logging
 import sys
 from dataclasses import field
 from src._compat import dataclass
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from .agent import Agent
+from typing import Any
 
 _logger = logging.getLogger(__name__)
 

@@ -440,7 +440,7 @@ class BaseAgent:
         分别聚合所有 label 显示（bash · N · subagent · N）。
         """
         try:
-            from ..tui.events.event_types import BackgroundTaskChangedEvent
+            from .events.display_types import BackgroundTaskChangedEvent
             port = getattr(self, "_event_port", None)
             if port is None or not hasattr(port, "publish_event"):
                 return

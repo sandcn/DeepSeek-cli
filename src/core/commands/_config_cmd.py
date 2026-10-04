@@ -191,7 +191,7 @@ def _open_config_ui(ctx) -> bool:
     回退文本显示配置。
     """
     try:
-        from ...tui.consumer import get_active_chat_ui
+        from ..adapters.ui_runtime import get_active_chat_ui
         chat_ui = get_active_chat_ui()
         if chat_ui is None:
             return False
@@ -203,8 +203,9 @@ def _open_config_ui(ctx) -> bool:
 
     from ...config.view_model import build_config_entries
     from ...config.loader import get_rc
-    from ...tui.app._state_types import ConfigViewState
+    from ..adapters.ui_runtime import get_config_view_state_cls
 
+    ConfigViewState = get_config_view_state_cls()
     entries = build_config_entries(get_rc())
     prev_seq = getattr(model.config_view, "seq", 0)
     state = ConfigViewState(

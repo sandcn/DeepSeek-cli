@@ -93,11 +93,12 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
                     )
                 return True
 
-            from ....tui.pipeline.message_editor import (
+            from ...adapters.ui_runtime import get_message_editor_helpers
+            (
                 _content_has_nontext,
                 _text_part_str,
                 _truncate_messages,
-            )
+            ) = get_message_editor_helpers()
             # ★ P0（review 修复）：与 /editmsg 同步——预填只取**纯文本部分**
             #   （``_text_part_str``）。修复前用本模块 ``_content_str`` 拍平：
             #   多模态消息（含图片）的非文本部分被展开为 ``[图片: <url>]``
@@ -221,7 +222,7 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
                 # ★ P2-3 修复：恢复失败以 ⚠ 渲染（与 editmsg 统一经
                 #   _restore_feedback 判定），不再无条件绿色 ✓。
                 chat_ui.write_line(f"  {DIM}{'─' * 40}{RESET}")
-                from ....tui.pipeline.message_editor import _restore_feedback
+                from ...adapters.ui_runtime import restore_feedback as _restore_feedback
                 feedback_text, restore_failed = _restore_feedback(restore_text)
                 if restore_failed:
                     chat_ui.write_line(f"  {YELLOW}\u26a0{RESET} {feedback_text}")

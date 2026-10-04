@@ -83,8 +83,8 @@ def _cmd_clear(ctx):
     #   subagent 记录属于被清空的对话，主轨迹不应残留其 subagent 记录
     #   （与 `_subagent_records` 清空语义对齐；非 TUI 环境/异常零成本跳过）。
     try:
-        from ...tui.subagent import SubAgentPanelController
-        SubAgentPanelController.get_default().clear_trace_archive()
+        from ..adapters.ui_runtime import get_subagent_panel_controller
+        get_subagent_panel_controller().get_default().clear_trace_archive()
     except Exception:
         pass
     # ★ 2026-08-19（editmsg 同根因修复：/clear 清空后上下文百分比不更新）：

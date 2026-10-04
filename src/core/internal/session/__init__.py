@@ -5,7 +5,6 @@
 - _session_messages        — 消息操作函数
 - _session_state           — 会话可变状态容器与 CoreEventBus
 - _session_compression     — 压缩前置条件验证
-- _session_persistence     — 旧持久化存根（已迁移至 _session_persistence_manager）
 - _session_persistence_manager — 会话持久化管理器
 - _session_messaging_manager   — 消息管理器
 """
@@ -14,7 +13,6 @@ from __future__ import annotations
 from ._session_messages import *
 from ._session_state import CoreEventBus, SessionState
 from ._session_compression import *
-from ._session_persistence import *
 from ._session_persistence_manager import *
 from ._session_messaging_manager import *
 from ._session_compression import _validate_compress_preconditions  # noqa: E402 — _ 前缀，显式导入

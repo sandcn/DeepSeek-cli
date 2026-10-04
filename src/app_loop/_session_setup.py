@@ -42,7 +42,7 @@ class _RoundResult:
 
 def _setup_session(loaded_data: dict | None = None, chat_ui=None) -> tuple:
     """初始化会话并加载历史消息"""
-    from ._single import _make_event_agent
+    from ._agent_factory import _make_event_agent
     session = ChatSession(agent=_make_event_agent())
     session.initialize()
 

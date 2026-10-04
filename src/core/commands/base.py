@@ -12,10 +12,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
-
-if TYPE_CHECKING:
-    from .plugins.base import InteractiveCommandPlugin
+from typing import Any, Optional
 
 _logger = logging.getLogger(__name__)
 

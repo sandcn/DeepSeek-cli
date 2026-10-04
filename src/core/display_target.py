@@ -88,9 +88,9 @@ def get_display_target() -> DisplayTarget | None:
     Returns:
         DisplayTarget 实例，无活跃显示目标时返回 None。
     """
-    # 延迟导入避免循环依赖
-    from src.tui.consumer import get_active_chat_ui
-    return get_active_chat_ui()
+    # 经适配器层延迟导入（core 顶层协议模块不直接依赖表现层）
+    from .adapters.display_target import get_display_target as _impl
+    return _impl()
 
 
 def get_output_publisher() -> OutputPublisher | None:
@@ -111,6 +111,6 @@ def get_output_publisher() -> OutputPublisher | None:
     Returns:
         输出发布函数（publish_output）。
     """
-    # 延迟导入避免循环依赖（与原 core 侧函数内延迟导入行为一致）
-    from src.tui.events import publish_output
-    return publish_output
+    # 经适配器层延迟导入（core 顶层协议模块不直接依赖表现层）
+    from .adapters.display_target import get_output_publisher as _impl
+    return _impl()

@@ -86,13 +86,3 @@ class DefaultOutputAdapter(OutputPort):
 def get_default_output_port() -> DefaultOutputAdapter:
     """获取全局默认输出端口（已废弃，请使用 DefaultOutputAdapter.get_default()）"""
     return DefaultOutputAdapter.get_default()
-
-
-def set_default_output_port(port: DefaultOutputAdapter) -> None:
-    """设置全局默认输出端口（已废弃，请使用 DefaultOutputAdapter.set_default()）"""
-    DefaultOutputAdapter.set_default(port)
-
-
-def reset_default_output_port() -> None:
-    """重置全局默认输出端口（已废弃，请使用 DefaultOutputAdapter.reset_default()）"""
-    DefaultOutputAdapter.reset_default()
