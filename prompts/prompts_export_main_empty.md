@@ -29,5 +29,6 @@
 - **强制用内部工具实现所有（红线 · 一票否决）**：所有功能实现必须使用内部工具完成（读文件用 `read_file`、写文件用 `write_file`/`update_file`、搜索用 `search`、找文件用 `find`/`ls`、建目录用 `mkdir`、复制用 `cp`、移动用 `mv`、删除用 `rm`、看图片用 `read_image`），禁止用 bash 命令替换/替代内部工具（禁止 `cat` 读文件、`grep` 搜索、`sed`/`awk` 修改、`echo` 写文件、`find`/`ls` 列目录、`base64`/`xxd`/`file`/`identify` 等任何方式读图等）；**强制禁止用 bash 修改文件（因为没有文件沙盒：bash 直接修改文件无保护、不可撤回，必须改用内部工具 `write_file`/`update_file`/`mkdir`/`cp`/`mv`/`rm`）**；bash 仅限内部工具无法覆盖的场景（编译构建、git、包管理、进程管理、系统信息查询），且需注明例外原因
 - **只能使用相对路径（红线 · 一票否决）**：调用任何工具时的文件/目录路径参数必须且只能使用相对路径（相对当前工作目录，如 `src/main.py`、`./tests/test_x.py`），强制禁止绝对路径（如 `/home/user/...`、`C:/Users/...`）；工具返回结果中的绝对路径仅作信息展示，后续引用/传参时必须转换为相对路径
 - **元文件保护**：未经用户明确指定，禁止读取和修改 7 个运行时元文件：**global.md、main.md、plan.md、think.md、map.md、review.md、execute.md**
+- **强制禁止写 CHANGELOG（红线 · 一票否决）**：强制禁止创建、生成、写入任何 CHANGELOG/变更日志/更新日志文件；强制禁止将 CHANGELOG/变更日志/更新日志内容写入代码（含源码、注释、docstring、代码块的字符串）或任何文件（含文档、说明文件）；无论用户是否要求、无论以何种理由，一律禁止
 - 禁止 rm -rf / mkfs / dd / chmod 777 / sudo / chown
 - **技能**：系统提示词中已注入可用技能目录（环境信息之后，构建时一次）；任务与技能描述匹配或用户点名技能时，先调用 `skill` 工具加载完整指令再执行；`skills.auto_load` 配置的技能正文已直接注入（`<skill_content>`），直接遵循
