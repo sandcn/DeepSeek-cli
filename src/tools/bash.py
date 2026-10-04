@@ -406,13 +406,15 @@ class BashFunc(Func):
         else:
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
-        process = await asyncio.create_subprocess_shell(
+        from ..core.adapters.kernel_runtime import spawn_process
+
+        process = await spawn_process(
             self.command,
+            shell=True,
             cwd=self.cwd,
             stdin=asyncio.subprocess.PIPE if interactive else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            shell=True,
             close_fds=True,
             env=self._get_subprocess_env(),
             **popen_kwargs,
@@ -527,8 +529,11 @@ class BashFunc(Func):
         _shell = 'bash' if sys.platform.startswith('linux') else 'sh'
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                _shell, '-c', self.command,
+            from ..core.adapters.kernel_runtime import spawn_process
+
+            process = await spawn_process(
+                [_shell, '-c', self.command],
+                shell=False,
                 cwd=self.cwd,
                 stdin=slave_fd if interactive else asyncio.subprocess.DEVNULL,
                 stdout=slave_fd,

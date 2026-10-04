@@ -44,6 +44,8 @@ class SessionPersistenceManager:
         observability_port,
         subagents_getter=None,
         subagents_setter=None,
+        log_getter=None,
+        log_setter=None,
     ):
         """初始化持久化管理器
 
@@ -73,6 +75,8 @@ class SessionPersistenceManager:
         self._observability = observability_port
         self._get_subagents = subagents_getter
         self._set_subagents = subagents_setter
+        self._get_log = log_getter
+        self._set_log = log_setter
 
     # ── 会话保存 ────────────────────────────────────────
 
@@ -89,16 +93,34 @@ class SessionPersistenceManager:
             return self._get_session_id()
 
         subagents = self._get_subagents() if self._get_subagents is not None else None
+        log_snapshot = self._log_snapshot()
         sid = self._persistence.save_session(
             messages=non_system,
             model=self._get_model(),
             session_id=self._get_session_id(),
             subagents=subagents,
+            session_log=log_snapshot,
         )
         self._set_session_id(sid)
         self._safe_save_state()
         self._emit("saved", session_id=sid)
         return sid
+
+    def _log_snapshot(self):
+        """返回会话日志快照（无日志源时返回 None）。"""
+        if self._get_log is None:
+            return None
+        try:
+            log = self._get_log()
+        except Exception:
+            return None
+        if log is None:
+            return None
+        try:
+            return log.snapshot()
+        except Exception:
+            _logger.debug("会话日志快照失败", exc_info=True)
+            return None
 
     def load(self, session_id: str) -> dict | None:
         """加载历史会话。
@@ -114,14 +136,27 @@ class SessionPersistenceManager:
             return None
 
         loaded_msgs = data.get("messages", [])
-        if not loaded_msgs:
+        log_events = data.get("session_log") or []
+        if not loaded_msgs and not log_events:
             return None
 
-        messages = self._get_messages()
-        system_msgs = [m for m in messages if m.get(_ROLE_KEY) == _SYSTEM_ROLE]
-        messages[:] = system_msgs
-        for msg in loaded_msgs:
-            messages.append(msg)
+        # ── 会话日志即唯一事实源：优先用日志快照重建消息视图 ──
+        restored = False
+        if log_events and self._set_log is not None:
+            try:
+                from ...session_log import SessionLog
+
+                self._set_log(SessionLog.restore(log_events, session_id=session_id))
+                restored = True
+            except Exception:
+                _logger.debug("会话日志恢复失败，回退消息列表", exc_info=True)
+
+        if not restored:
+            messages = self._get_messages()
+            system_msgs = [m for m in messages if m.get(_ROLE_KEY) == _SYSTEM_ROLE]
+            messages[:] = system_msgs
+            for msg in loaded_msgs:
+                messages.append(msg)
 
         # 恢复 SubAgent 记录（含完整聊天信息，供 /export 导出）
         if self._set_subagents is not None:
@@ -189,6 +224,7 @@ class SessionPersistenceManager:
                 snapshot_model,
                 snapshot_sid,
                 subagents,
+                self._log_snapshot(),
             )
             self._set_session_id(session_id)
             self._safe_save_state()

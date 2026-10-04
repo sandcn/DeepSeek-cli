@@ -36,6 +36,15 @@ def format_config_dump(dump: dict, *, indent: int = 2) -> str:
         lines.append(
             f"{pad}{pad}- {entry.get('id')}{marker}  ({entry.get('plugin')})"
         )
+        provides = entry.get("provides") or []
+        inject = entry.get("inject") or []
+        if provides or inject:
+            detail = []
+            if inject:
+                detail.append(f"inject=[{', '.join(inject)}]")
+            if provides:
+                detail.append(f"provide=[{', '.join(provides)}]")
+            lines.append(f"{pad}{pad}{pad}{'  '.join(detail)}")
         config = entry.get("config") or {}
         if config:
             serialized = json.dumps(config, ensure_ascii=False, sort_keys=True)

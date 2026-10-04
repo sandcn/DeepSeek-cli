@@ -26,12 +26,18 @@ from .cache import CachePort
 from .config import ConfigPort
 from .display import DisplayPort
 from .events import EventPort
+from .fs import FsPort
 from .interrupt import InterruptPort
+from .jobs import JobsPort
 from .message_queue import MessageQueuePort, Message
 from .model import AsyncModelPort, ModelResult
 from .observability import ObservabilityPort
 from .output import OutputPort
 from .persistence import PersistencePort, CheckpointPort
+from .sandbox import SandboxPort
+from .shell import ShellPort
+from .subprocess import ProcessResult, SubprocessPort
+from .terminals import TerminalsPort
 
 
 __all__ = [
@@ -51,4 +57,11 @@ __all__ = [
     "InterruptPort",
     # 可观测性
     "ObservabilityPort",
+    # 能力接缝（seam）
+    "FsPort",
+    "ShellPort",
+    "SubprocessPort", "ProcessResult",
+    "TerminalsPort",
+    "JobsPort",
+    "SandboxPort",
 ]

@@ -35,6 +35,11 @@ class AgentLoopService(Service):
         with_event_ports: bool = True,
         null_ports: bool = False,
         preset: str = "",
+        kind: str = "main",
+        session_id: str = None,
+        parent=None,
+        isolated=None,
+        meta=None,
         **extra,
     ):
         """按内核服务组装 Agent。
@@ -43,6 +48,9 @@ class AgentLoopService(Service):
           （DisplayEventBus → ChatUIConsumer 渲染）；
         - ``null_ports=True``：注入 NullPort（无 UI 依赖，供 ChatSession 默认）；
         - 两者皆否：使用 Agent 自身默认端口。
+
+        组装完成后把 Agent 登记到 ``ctx.agents`` 活跃注册表（存在该服务时），
+        使其出现在 Agent 事件域并拥有独立作用域。
         """
         from ..core.agent import Agent
 
@@ -69,7 +77,42 @@ class AgentLoopService(Service):
         agent = Agent(model=model, **kwargs)
         if preset:
             self.ctx.consume("presets").apply_to_agent(preset, agent)
+        self.register(agent, kind=kind, session_id=session_id, parent=parent,
+                      isolated=isolated, meta=meta)
         return agent
+
+    def register(self, agent, *, kind: str = "main", session_id=None,
+                 parent=None, isolated=None, meta=None):
+        """把 Agent 登记到活跃注册表（无 agents 服务时静默跳过）。"""
+        if not self.ctx.has("agents"):
+            return None
+        try:
+            return self.ctx.consume("agents").register(
+                agent,
+                kind=kind,
+                session_id=session_id,
+                parent=parent,
+                isolated=isolated,
+                meta=meta,
+                model=getattr(agent, "model", ""),
+            )
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).debug("agent_loop 登记 agent 失败", exc_info=True)
+            return None
+
+    def unregister(self, agent) -> bool:
+        """从活跃注册表注销 Agent。"""
+        if not self.ctx.has("agents"):
+            return False
+        return self.ctx.consume("agents").unregister(agent)
+
+    def active_agents(self):
+        """活跃 Agent 记录列表（无 agents 服务时为空）。"""
+        if not self.ctx.has("agents"):
+            return []
+        return self.ctx.consume("agents").active()
 
     def make_event_agent(self, model=None):
         """事件化 Agent（显示/工具调用经 DisplayEventBus 渲染到 TUI）。"""

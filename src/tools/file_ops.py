@@ -120,8 +120,36 @@ def _copy_file_permissions(src, dst):
         os.chmod(dst, os.stat(src).st_mode & 0o777)
 
 
+def _fs_service():
+    """获取内核 fs 能力接缝服务（无内核/未提供时返回 None）。
+
+    经零业务依赖的 ``kernel.runtime`` 访问点解析，避免 tools → core.adapters
+    的循环依赖。
+    """
+    try:
+        from ..kernel.runtime import active_service
+
+        return active_service("fs")
+    except Exception:
+        return None
+
+
 def atomic_write_file(path, content, encoding='utf-8', errors='replace'):
-    """原子写入文件，返回 (lines_count, size_bytes)
+    """原子写入文件，返回 (lines_count, size_bytes)。
+
+    经 fs 能力接缝写入（Provider 可替换为远程沙箱，Consumer 无需改动）；
+    无内核 / 未提供 fs 服务时回退本地实现。
+    """
+    service = _fs_service()
+    if service is not None:
+        service.write_text(path, content, encoding=encoding)
+        lines_count = content.count('\n') + (1 if content and not content.endswith('\n') else 0)
+        return lines_count, len(content.encode(encoding))
+    return _atomic_write_local(path, content, encoding, errors)
+
+
+def _atomic_write_local(path, content, encoding='utf-8', errors='replace'):
+    """本地原子写入实现（默认 Provider / 无内核回退）。
 
     使用 tempfile + os.replace 实现原子写入。
     不依赖 flock 文件锁：同一进程内并发写同一文件已由 ToolDAG 的路径依赖
@@ -210,13 +238,26 @@ async def async_read_file_content(path, encoding='utf-8', errors='replace') -> s
         return None
 
 
-def _sync_read_file(path: str, encoding: str = 'utf-8', errors: str = 'replace') -> str | None:
-    """同步读取文件（在 asyncio.to_thread 中执行）"""
+def _sync_read_local(path: str, encoding: str = 'utf-8', errors: str = 'replace') -> str | None:
+    """本地同步读取（默认 Provider / 无内核回退）"""
     try:
         with open(path, 'r', encoding=encoding, errors=errors) as f:
             return f.read()
     except Exception:
         return None
+
+
+def _sync_read_file(path: str, encoding: str = 'utf-8', errors: str = 'replace') -> str | None:
+    """同步读取文件（经 fs 能力接缝；无内核时回退本地实现）"""
+    service = _fs_service()
+    if service is not None:
+        try:
+            return service.read_text(path, encoding=encoding, errors=errors)
+        except FileNotFoundError:
+            return None
+        except Exception:
+            return None
+    return _sync_read_local(path, encoding, errors)
 
 
 async def async_file_exists(path: str) -> bool:

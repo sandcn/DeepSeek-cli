@@ -213,15 +213,25 @@ def dump_profile(
     tree: Optional[ConfigTree] = None,
     patch_paths: Optional[List[str]] = None,
 ) -> str:
-    """产出最终运行时配置文本（供 ``--dump-config``）。"""
+    """产出最终运行时配置文本（供 ``--dump-config``）。
+
+    每行显示插件 id、引用、inject / provide 与 config，等价于 dsh 的
+    ``--dump-config``（打印插件树中任意条目，均可被自有 patch 顶替）。
+    """
     entries = resolve_entries(profile, tree=tree, patch_paths=patch_paths)
     tree = tree or build_config_tree()
+    plugins = []
+    for entry, plug in materialize(entries):
+        item = entry.to_dict()
+        item["provides"] = list(getattr(plug, "provide", ()) or ())
+        item["inject"] = list(getattr(plug, "inject", ()) or ())
+        plugins.append(item)
     dump = {
         "profile": profile,
         "description": tree.profile(profile).description if profile in tree.profiles() else "",
         "bundles": list(tree.profile(profile).bundles) if profile in tree.profiles() else [],
         "patches": [patch.to_dict() for patch in tree.profile(profile).patches] if profile in tree.profiles() else [],
-        "plugins": [entry.to_dict() for entry in entries],
+        "plugins": plugins,
     }
     return format_config_dump(dump)
 

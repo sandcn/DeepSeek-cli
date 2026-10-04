@@ -17,6 +17,31 @@ from ..kernel import Service, plugin
 _logger = logging.getLogger(__name__)
 
 
+class _PolicySandboxProvider:
+    """策略沙盒 Provider — 经 ``validate_path_security`` 做路径安全校验。"""
+
+    def __init__(self, policy):
+        self._policy = policy
+
+    def check_path(self, path, *, operation: str = "read"):
+        try:
+            from ..tools.file_ops import validate_path_security
+
+            validate_path_security(path)
+        except Exception as exc:  # noqa: BLE001 - 校验失败即拒绝
+            return False, str(exc)
+        return True, None
+
+    def check_argv(self, argv):
+        return True, None
+
+    def wrap_argv(self, argv):
+        return argv
+
+    def wrap_env(self, env):
+        return env
+
+
 class PolicyService(Service):
     """策略服务 — 占据 ``ctx.policy``。"""
 
@@ -27,6 +52,25 @@ class PolicyService(Service):
         super().__init__(ctx, config)
         # 注册策略钩子（注册即副作用；卸载时自动移除）
         ctx.on("tools/pre-execute", self._on_pre_execute)
+        # 为 sandbox 能力接缝注册策略 Provider（注册即副作用，卸载时回退默认）
+        self._sandbox_previous = None
+        if ctx.has("sandbox"):
+            try:
+                self._sandbox_previous = ctx.consume("sandbox").set_provider(
+                    _PolicySandboxProvider(self)
+                )
+                ctx.effect(lambda: (lambda: self._restore_sandbox()))
+            except Exception:
+                _logger.debug("注册 policy sandbox provider 失败", exc_info=True)
+
+    def _restore_sandbox(self) -> None:
+        if self._sandbox_previous is None:
+            return
+        try:
+            self.ctx.consume("sandbox").set_provider(self._sandbox_previous)
+        except Exception:
+            _logger.debug("恢复 sandbox provider 失败", exc_info=True)
+        self._sandbox_previous = None
 
     # ── 工具可用性 ───────────────────────────────────────
 

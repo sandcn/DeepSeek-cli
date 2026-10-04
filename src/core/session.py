@@ -137,6 +137,8 @@ class ChatSession:
             # SubAgent 完整聊天记录：保存时收集、加载时恢复到 Agent（供 /export 导出）
             subagents_getter=lambda: list(getattr(self._agent, "_subagent_records", None) or []),
             subagents_setter=lambda v: setattr(self._agent, "_subagent_records", list(v or [])),
+            log_getter=lambda: self.session_log,
+            log_setter=lambda log: self._rebind_log(log),
         )
 
         # ── 消息管理器（延迟初始化，等待 messages 和 ctx_mgr 就绪） ──
@@ -223,6 +225,21 @@ class ChatSession:
     @session_id.setter
     def session_id(self, value: str | None) -> None:
         self._state.session_id = value
+        log = self.session_log
+        if log is not None:
+            log.session_id = value
+
+    @property
+    def session_log(self):
+        """会话事实源日志（消息视图由它驱动；非日志视图时返回 None）。"""
+        return getattr(self._agent.messages, "log", None)
+
+    def _rebind_log(self, log) -> None:
+        """切换消息视图的事实源（会话恢复 / 回放 / fork）。"""
+        messages = self._agent.messages
+        rebind = getattr(messages, "rebind", None)
+        if callable(rebind):
+            rebind(log)
 
     @property
     def agent(self) -> Agent:

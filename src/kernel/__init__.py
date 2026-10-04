@@ -34,6 +34,7 @@ from .kernel import (
     set_current_kernel,
 )
 from .plugin import Plugin, as_plugin, plugin
+from .scope import Scope, ScopeRegistry
 from .service import Service
 
 __all__ = [
@@ -43,6 +44,8 @@ __all__ = [
     "Plugin",
     "plugin",
     "as_plugin",
+    "Scope",
+    "ScopeRegistry",
     "Fiber",
     "FiberState",
     "EventBus",

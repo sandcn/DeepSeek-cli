@@ -20,8 +20,8 @@ def fake_chat_msgs(monkeypatch):
 
     import src.chat_msgs as chat_msgs_mod
 
-    def _save(messages, model, session_id=None, subagents=None):
-        calls["save"] = (messages, model, session_id, subagents)
+    def _save(messages, model, session_id=None, subagents=None, session_log=None):
+        calls["save"] = (messages, model, session_id, subagents, session_log)
         return "sid-1"
 
     def _load(session_id):
@@ -57,11 +57,18 @@ def test_persistence_save_session(fake_chat_msgs):
     p = JsonFilePersistence()
     sid = p.save_session([{"role": "user", "content": "hi"}], "m", "sid-9", [1])
     assert sid == "sid-1"
-    msgs, model, session_id, subagents = fake_chat_msgs["save"]
+    msgs, model, session_id, subagents, session_log = fake_chat_msgs["save"]
     assert msgs == [{"role": "user", "content": "hi"}]
     assert model == "m"
     assert session_id == "sid-9"
     assert subagents == [1]
+    assert session_log is None
+
+
+def test_persistence_save_session_forwards_log(fake_chat_msgs):
+    p = JsonFilePersistence()
+    p.save_session([{"role": "user", "content": "hi"}], "m", "sid-9", None, [{"type": "user/message"}])
+    assert fake_chat_msgs["save"][4] == [{"type": "user/message"}]
 
 
 def test_persistence_load_session(fake_chat_msgs):

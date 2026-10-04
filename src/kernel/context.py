@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re
 from typing import Any, Callable, List, Optional
 
 from .errors import ServiceExists, ServiceNotFound
@@ -168,6 +169,22 @@ class Context:
         child = self._derive(scoped=True, isolated={name})
         return child
 
+    def isolate_many(self, *names: str) -> "Context":
+        """派生隔离子上下文：多个 ``names`` 同时只解析本地提供。
+
+        与逐个 ``isolate`` 不同，本方法在**同一次**派生中隔离全部给定 key
+        （``isolate`` 重复调用会重置隔离集合）。供 ``core.scope`` 按作用域
+        一次性隔离一组能力使用。
+        """
+        keys = set()
+        for name in names:
+            if not isinstance(name, str) or not name:
+                raise ValueError(f"isolate_many 的服务 key 必须是非空字符串: {name!r}")
+            keys.add(name)
+        if not keys:
+            raise ValueError("isolate_many 至少需要一个服务 key")
+        return self._derive(scoped=True, isolated=keys)
+
     def intercept(self, name: str, callback: Callable[[Any], Any]) -> "Context":
         """派生拦截子上下文：解析 ``name`` 时对结果应用 callback。"""
         if not callable(callback):
@@ -252,6 +269,14 @@ class Context:
     async def emit(self, event: str, *args: Any) -> None:
         await self._kernel.bus.emit(event, *args)
 
+    def notify(self, event: str, *args: Any) -> None:
+        """同步触发事件（emit 的同步形态）。
+
+        立即调用同步监听器；协程监听器在有运行事件循环时被调度为后台
+        任务，否则跳过。供同步上下文（注册钩子、构造期）发布事件。
+        """
+        self._kernel.bus.emit_sync(event, *args)
+
     async def parallel(self, event: str, *args: Any) -> None:
         await self._kernel.bus.parallel(event, *args)
 
@@ -279,6 +304,12 @@ class Context:
 
     def _resolve(self, key: str) -> tuple[Any, bool]:
         value, found = self._resolve_raw(key)
+        if not found:
+            alternate = _alternate_service_key(key)
+            if alternate:
+                value, found = self._resolve_raw(alternate)
+                if found:
+                    key = alternate
         if not found:
             return _MISSING, False
         return self._apply_interceptors(key, value), True
@@ -335,6 +366,22 @@ class Context:
 
 # 服务缺失哨兵
 _MISSING = object()
+
+
+def _alternate_service_key(name: str) -> str:
+    """服务 key 的命名别名：snake_case ↔ camelCase。
+
+    项目内部服务 key 采用 snake_case（如 ``agent_loop``）；DeepSeek Harness
+    的 ctx 键采用 camelCase（如 ``agentLoop``）。为对齐两种写法，解析服务时
+    在名字未命中时尝试另一种命名形态。
+    """
+    if not isinstance(name, str) or not name:
+        return ""
+    if "_" in name:
+        head, *rest = name.split("_")
+        return head + "".join(part[:1].upper() + part[1:] for part in rest if part)
+    converted = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+    return converted if converted != name else ""
 
 
 def _make_disposer(result: Any) -> Callable[[], Any]:

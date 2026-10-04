@@ -114,9 +114,19 @@ python chat.py run --profile minimal --dump-config
 | `config` | `ctx.config` | 运行时配置、base_url、模型列表 |
 | `events` | `ctx.events` | 核心事件总线 + 显示事件总线 |
 | `prompt` | `ctx.prompt` | 系统提词、子代理提词、空模式 |
-| `policy` | `ctx.policy` | 工具可用性、路径白名单、沙盒 |
+| `fs` | `ctx.fs` | 文件系统能力接缝（Definition+Provider+Consumer） |
+| `subprocess` | `ctx.subprocess` | 子进程能力接缝 |
+| `shell` | `ctx.shell` | Shell 能力接缝（默认经 subprocess 语义） |
+| `terminals` | `ctx.terminals` | 持久终端能力接缝 |
+| `jobs` | `ctx.jobs` | 后台任务能力接缝 |
+| `sandbox` | `ctx.sandbox` | 沙盒能力接缝（路径/argv 校验与包装） |
+| `policy` | `ctx.policy` | 工具可用性、路径白名单、沙盒 Provider |
+| `agents` | `ctx.agents` | 活跃 Agent 注册表 + `agent/*` 事件域 |
+| `session_log` | `ctx.session_log` | 仅追加会话日志（会话事实源） |
+| `session_projections` | `ctx.session_projections` | 投影 seam（增量折叠已提交事件） |
 | `tools` | `ctx.tools` | 工具注册表 + 工具执行管线 |
 | `tools_builtin` | — | 显式注册全部内置工具（每个注册都是可逆副作用） |
+| `seams` | `ctx.seams` | 能力接缝汇总（自省与批量替换 Provider） |
 | `skills` | `ctx.skills` | 技能注册表 |
 | `presets` | `ctx.presets` | 每会话能力组合（isolate 作用域） |
 | `invariants` | `ctx.invariants` | 运行时自检（断言插件树关系） |
@@ -270,3 +280,126 @@ cordis 工具族**全局禁用**：任何 agent（主 Agent 与全部 SubAgent �
 ```bash
 python chat.py --check-invariants      # 构建内核后运行自检并退出
 ```
+
+`ctx.invariants` 现内置 `agents.messages_recorded` 不变量——断言每个活跃
+Agent 的消息视图与其会话日志投影一致（见第 11 节「模型可见即已记录」）。
+
+## 10. 事件域：会话事件 / Agent 事件 / 能力事件
+
+对应 dsh 的三类事件域（定义于 `src/core/events/agent_types.py`），选对事件域
+是大多数改动的第一个决定：
+
+| 事件域 | 类型常量 | 语义 | 用法 |
+|---|---|---|---|
+| 会话事件（持久） | `SessionEventType` | 追加到会话日志的持久事实 | 需要在重载后仍存在（上下文、回放、fork、遥测） |
+| Agent 事件（实时） | `AgentEventType` | 携带活跃 Agent 的扩展点 | 观察或拦截进行中的工作 |
+| 能力事件（接缝） | `CapabilityEventType` | 向 `fs/*`、`tools/*`、`telemetry/*` 附加策略 | 策略与适配器，无需导入循环 |
+
+会话事件包括 `turn/start`、`turn/end`、`step/start`、`step/end`、
+`system/message`、`user/message`、`assistant/message`、`assistant/attempt`、
+`tool/result`、`request/header`、`request/context`，以及结构变更
+`session/insert|replace|delete|truncate|reset`。所有会话事件同时经
+`session/event` 通道广播。
+
+Agent 事件包括 `agent/created`、`agent/destroyed`、`agent/inbox`、
+`agent/pre-step`、`agent/step-start|step-end`、`agent/request`、
+`agent/assistant-stream`、`agent/turn-stopping`、`agent/status`、
+`agent/validation`、`agent/continuation`。
+
+## 11. 会话日志即唯一事实源
+
+`src/core/session_log/`（dsh `core/session` 的对应实现）：
+
+- **`SessionLog`**：仅追加的 `SessionEvent` 日志，唯一写入入口 `append()`；
+- **`LoggedMessageList`**：由日志驱动的消息列表视图，实现完整
+  `MutableSequence` 语义（append/pop/切片赋值/删除/清空），运行时
+  `Agent.messages` / `SubAgent.messages` 即此视图，读写都落到日志；
+- **`derive_messages()`**：从事件投影模型历史；fork / 恢复 / 回放 / 遥测
+  都从同一份持久事实派生；
+- **`LoggedMessageList.verify()`**：断言视图与日志投影一致——即
+  **「模型可见即已记录」**，由 `agents.messages_recorded` 不变量在运行期
+  持续校验。
+
+```python
+from src.core.session_log import SessionLog, LoggedMessageList
+
+log = SessionLog(session_id="s1")
+view = LoggedMessageList(log, initial=[{"role": "system", "content": "sys"}])
+view.append({"role": "user", "content": "hi"})
+assert view.verify()                       # 视图 == 日志投影
+forked = log.fork(at=1)                     # 会话 fork：派生到指定事件位置
+replayed = SessionLog.restore(log.snapshot())  # 恢复 / 回放
+```
+
+## 12. 投影 seam：`ctx.sessionProjections`
+
+`ProjectionRegistry`（dsh `ctx.sessionProjections`）：已注册单元**增量折叠**
+已提交事件，host 消费方通过 `state_of(name, events)` 读取单个类型化状态，
+载体通过 `snapshot(events)` 批量取得裁剪后的客户端视图。内置
+`turnBoundary` 投影折叠 `turn/*` 与 `step/*`，产出当前轮次边界。
+
+```python
+projections = kernel.resolve_service("session_projections")
+projections.register("myCounter", lambda state, event: (state or 0) + 1, initial=lambda: 0)
+state = projections.state_of("myCounter", log.events())
+```
+
+## 13. 主循环事件切面：turn / step
+
+`src/core/internal/agent/_event_facets.py` 把主循环暴露为可拦截的事件切面，
+`Pipeline.run_round_async` 依次驱动：
+
+```
+turn/start → agent/pre-step → [ step/start → agent/request → llm/stream
+            → tools/pre-execute → tools/execute → tools/post-execute
+            → agent/turn-stopping → step/end ]* → turn/end
+```
+
+| 切面 | 分发模式 | 监听器签名 | 用途 |
+|---|---|---|---|
+| `agent/pre-step` | waterfall | `(agent, decision, next)` | 改写或拒绝已领取输入（`reject`/`enter`） |
+| `agent/request` | waterfall | `(agent, call, next)` | 改写 `messages`/`model`/`tools` |
+| `llm/stream` | waterfall | `(agent, call, next)` | 环绕流式模型调用（超时/重试/审计） |
+| `tools/pre-execute` | waterfall | `(call, next)` | allow/deny/ask 决策 |
+| `tools/execute` | waterfall | `(call, next)` | 环绕执行 |
+| `tools/post-execute` | waterfall | `(call, output, next)` | 改写结果 |
+| `agent/turn-stopping` | serial | `(agent, state)` | 声明是否仍欠工作（`{"stop": bool}`） |
+
+无内核时全部切面退化为 no-op，保证单元测试与独立调用兼容。
+
+## 14. 能力接缝：三段式 seam
+
+每项能力是 **Service Definition + Service Provider + Consumer**：
+
+- **Definition**（`src/core/ports/`）：`FsPort` / `ShellPort` /
+  `SubprocessPort` / `TerminalsPort` / `JobsPort` / `SandboxPort`；
+- **Provider**（`src/core/adapters/capabilities.py` 默认实现）：
+  `LocalFsProvider` / `LocalShellProvider` / ...；
+- **Consumer**：`read_file` / `write_file` / `bash` 等工具经 `ctx.fs` /
+  `ctx.shell` 使用能力。
+
+```python
+seams = kernel.resolve_service("seams")
+seams.replace("fs", RemoteSandboxFs())      # 一次替换，读写/遍历/删除整体迁移
+```
+
+`file_ops.atomic_write_file` / `_sync_read_file` 与 bash 的进程创建均已经
+接缝（无内核时回退本地实现）；每次操作广播 `fs/*` / `shell/spawn` 等能力
+事件。
+
+## 15. 作用域原语：`Scope` / `ScopeRegistry`
+
+`src/kernel/scope.py`（dsh `core/scope` 的角色）按 key 划分注册空间：
+
+```python
+from src.kernel import ScopeRegistry
+
+registry = ScopeRegistry(kernel.root)
+scope = registry.open("agent-1", isolated=["llm"])   # llm 只解析本地
+scope.provide("persona", "reviewer")
+scope.on("tools/pre-execute", guard)
+registry.close("agent-1")                            # 撤销全部注册
+```
+
+`ctx.agents` 为每个活跃 Agent 打开独立作用域（`agent.agent_scope`），
+每个 Agent 的能力注册互不污染；`presets.scope()` 同样基于隔离作用域。

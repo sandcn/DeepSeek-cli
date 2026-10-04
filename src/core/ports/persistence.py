@@ -20,6 +20,7 @@ class PersistencePort(ABC):
         model: str,
         session_id: str | None = None,
         subagents: list | None = None,
+        session_log: list | None = None,
     ) -> str:
         """保存对话并返回会话 ID。
 
@@ -28,6 +29,7 @@ class PersistencePort(ABC):
             model: 模型名称
             session_id: 指定 ID，None 时自动生成
             subagents: SubAgent 任务记录列表（含完整聊天信息），可选
+            session_log: 会话事件日志快照（仅追加事实源），可选
         """
 
     @abstractmethod

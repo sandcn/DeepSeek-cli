@@ -122,6 +122,14 @@ class EventBus:
 
     async def emit(self, event: str, *args: Any) -> None:
         """emit 模式：依次触发监听器，不等待协程监听器、忽略返回值。"""
+        self.emit_sync(event, *args)
+
+    def emit_sync(self, event: str, *args: Any) -> None:
+        """emit 的同步形态：立即调用同步监听器，协程监听器被调度为后台任务。
+
+        供从同步上下文（插件构造期、无 await 点的注册钩子）发布事件的场景
+        使用；有运行中的事件循环时才调度协程监听器，否则跳过并记调试日志。
+        """
         handlers = list(self.listeners(event))
         if not handlers:
             return

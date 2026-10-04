@@ -104,6 +104,9 @@ class CommandPluginRegistry:
         self._alias_map: dict[str, str] = {}  # alias → name
         self._groups: dict[str, list[str]] = {}  # group → [names]
         self._interactive_plugins: dict[str, InteractiveCommandPlugin] = {}  # InteractiveCommandPlugin: name → plugin
+        #: 曾注册过的插件快照（注册不清除）——命令服务卸载注销后，
+        #: 全局注册表可据此按需恢复，避免「模块已导入但注册表被清空」。
+        self._known_plugins: dict[str, CommandPlugin] = {}
 
     def register(self, plugin: CommandPlugin) -> None:
         """注册一个命令插件"""
@@ -113,6 +116,7 @@ class CommandPluginRegistry:
             _logger.warning("命令已存在，覆盖: %s", name)
 
         self._plugins[name] = plugin
+        self._known_plugins[name] = plugin
         self._alias_map[name] = name
 
         # 注册别名
@@ -151,6 +155,20 @@ class CommandPluginRegistry:
     def register_interactive(self, plugin: InteractiveCommandPlugin) -> None:
         """注册交互式命令插件（委托 register 处理）"""
         self.register(plugin)
+
+    def restore(self) -> int:
+        """按已知插件快照重建活跃注册（命令服务卸载清空后按需恢复）。
+
+        命令插件在模块导入时经装饰器注册；命令服务卸载会注销全部内置命令。
+        若此后同一进程仍要访问命令能力（自省、单元测试隔离），注册表可按
+        快照恢复，无需重新导入模块。返回恢复的命令数。
+        """
+        restored = 0
+        for name, plugin in self._known_plugins.items():
+            if name not in self._plugins:
+                self.register(plugin)
+                restored += 1
+        return restored
 
     def bind_loop(self, loop: Any) -> None:
         """遍历所有已注册的 interactive plugin 调用 plugin.bind_loop(loop)
@@ -277,4 +295,8 @@ def get_plugin_registry() -> CommandPluginRegistry:
             return registry
     except Exception:
         pass
+    # 命令服务卸载会注销内置命令（可逆副作用），但命令插件模块已导入——
+    # 全局注册表为空时按已知快照恢复，避免后续访问拿到空注册表。
+    if not _command_plugins._plugins and _command_plugins._known_plugins:
+        _command_plugins.restore()
     return _command_plugins

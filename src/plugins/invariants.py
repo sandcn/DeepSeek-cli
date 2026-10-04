@@ -63,12 +63,37 @@ def _presets_have_standard(kernel) -> str | None:
     return None
 
 
+def _agents_messages_recorded(kernel) -> str | None:
+    """「模型可见即已记录」：活跃 Agent 的消息视图必须与其会话日志投影一致。"""
+    if not kernel.has_service("agents"):
+        return None
+    registry = kernel.resolve_service("agents")
+    for record in registry.active():
+        messages = getattr(record.agent, "messages", None)
+        if messages is None:
+            continue
+        verify = getattr(messages, "verify", None)
+        if verify is None:
+            continue
+        try:
+            consistent = verify()
+        except Exception as exc:  # noqa: BLE001 - 校验失败即上报
+            return f"Agent {record.id!r} 会话日志校验异常: {exc}"
+        if not consistent:
+            return (
+                f"Agent {record.id!r} 的消息列表与会话日志投影不一致"
+                "（「模型可见即已记录」被违反）"
+            )
+    return None
+
+
 _BUILTIN_CHECKS = (
     ("services.keys_valid", _service_keys_valid),
     ("fibers.active_have_deps", _fibers_active_have_deps),
     ("tools.registry_consistent", _tools_registry_consistent),
     ("agent_loop.dependencies", _agent_loop_dependencies),
     ("presets.has_standard", _presets_have_standard),
+    ("agents.messages_recorded", _agents_messages_recorded),
 )
 
 

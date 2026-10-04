@@ -77,10 +77,15 @@ class SubAgent(BaseAgent):
             system_parts = prompt_port.build_execute_agent_system_prompt()
         else:
             system_parts = prompt_port.build_subagent_prompt()
-        self.messages: List[Dict[str, Any]] = [
-            *[{"role": "system", "content": part} for part in system_parts],
-            {"role": "user", "content": prompt},
-        ]
+        # 「会话日志即唯一事实源」：SubAgent 拥有自己的会话日志
+        from .session_log import LoggedMessageList
+
+        self.messages = LoggedMessageList(
+            initial=[
+                *[{"role": "system", "content": part} for part in system_parts],
+                {"role": "user", "content": prompt},
+            ]
+        )
 
         # SubAgent 不更新全局沙盒索引，避免多个并发 SubAgent
         # 在 asyncio 单线程中通过 thread local 互相覆盖 parent_idx，
@@ -93,6 +98,30 @@ class SubAgent(BaseAgent):
         self.error: str = ""
         self.tool_calls_count = 0
         self._tool_calls_count_lock = threading.Lock()
+
+        # 「一切皆插件」：SubAgent 登记到活跃 Agent 注册表（kind=agent_type），
+        # 与主 Agent 同处一棵注册表，拥有独立作用域（无内核时静默跳过）。
+        try:
+            from .adapters import kernel_runtime as _kr
+
+            service = _kr.active_agents_service()
+            parent_record = service.of(parent_agent) if service is not None else None
+            _kr.register_agent(
+                self, kind=agent_type, parent=parent_record, model=self.model, owned=False,
+            )
+        except Exception:
+            _logger.debug("SubAgent 登记到活跃注册表失败", exc_info=True)
+
+    def _unregister_from_agents(self) -> None:
+        """从活跃 Agent 注册表注销本 SubAgent（完成 / 失败 / 取消均调用）。"""
+        try:
+            from .adapters import kernel_runtime as _kr
+
+            service = _kr.active_agents_service()
+            if service is not None:
+                service.unregister(self)
+        except Exception:
+            _logger.debug("SubAgent 注销活跃注册表失败", exc_info=True)
 
     def get_config_port(self):
         """返回 ConfigPort 实例（委托给 parent Agent）"""
@@ -136,6 +165,7 @@ class SubAgent(BaseAgent):
             finally:
                 # 无论成功/失败/取消，均将完整对话记录到父 Agent（供 /export 导出）
                 self._record_to_parent()
+                self._unregister_from_agents()
 
     async def _cleanup_background_tasks(self) -> None:
         """清理 SubAgent 内部未完成的后台 bash 任务。

@@ -113,7 +113,7 @@ def _sync_terminal_title(title: str) -> None:
 
 # ── 保存对话 ──────────────────────────────────────────────
 def save_session(messages: list[dict], model: str, session_id: str | None = None,
-                 subagents: list | None = None) -> str:
+                 subagents: list | None = None, session_log: list | None = None) -> str:
     """保存对话到 .chat/msg_list/<id>.json
 
     自动过滤 system 角色消息，仅保留 user/assistant/tool 对话消息。
@@ -126,6 +126,8 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
         subagents: SubAgent 任务记录列表（含每个 subagent 的完整聊天信息），
             由 SubAgent._record_to_parent() 收集、/export 命令消费。
             None 时保存为空列表（旧会话兼容）。
+        session_log: 会话事件日志快照（仅追加事实源）；None 时保存为空列表。
+            加载时据此重建日志，实现 fork / 回放 / 「模型可见即已记录」校验。
 
     Returns:
         保存的会话 ID
@@ -177,6 +179,7 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
         "token_stats": dict(stats),
         "messages": filtered,
         "subagents": list(subagents) if subagents else [],
+        "session_log": list(session_log) if session_log else [],
     }
 
     try:
@@ -210,8 +213,9 @@ def load_session(session_id: str) -> dict[str, Any] | None:
 
     try:
         data = json.loads(filepath.read_text(encoding="utf-8"))
-        # 归一化：旧会话文件可能缺少 subagents 字段
+        # 归一化：旧会话文件可能缺少 subagents / session_log 字段
         data.setdefault("subagents", [])
+        data.setdefault("session_log", [])
         return data
     except (json.JSONDecodeError, OSError):
         return None

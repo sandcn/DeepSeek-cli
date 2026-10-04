@@ -90,7 +90,16 @@ class Agent(BaseAgent):
         self._async_model_port = _resolve_port(async_model_port, _defaults, "async_model")
         self._call_model_async = self._wrap_async_model_port(self._async_model_port)
 
-        self.messages = [{"role": "system", "content": part} for part in self._registry.build_system_prompt()]
+        # 「会话日志即唯一事实源」：消息视图由 SessionLog 驱动
+        # （LoggedMessageList 完整兼容 list 语义，读写都落到日志）。
+        from .session_log import LoggedMessageList
+
+        self.messages = LoggedMessageList(
+            initial=[
+                {"role": "system", "content": part}
+                for part in self._registry.build_system_prompt()
+            ]
+        )
 
         # ── ConfigPort 注入 ───────────────────────────────
         self._config_port = _resolve_port(config_port, _defaults, "config")
