@@ -12,16 +12,15 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import List, Optional
+from typing import Optional
 
 from .event_bus import DisplayEventBus
-from .publish import emit
-from src.renderer._locks import _try_acquire_output_lock
+from ...core.events.publish import publish_output, publish_tool_summary
+from src.renderer.locks import _try_acquire_output_lock
 from src.tui.ink.output import Line
 from .event_types import (
     DisplayEvent,
     OutputEvent,
-    ToolSummaryEvent,
 )
 
 _logger = logging.getLogger(__name__)
@@ -166,39 +165,4 @@ class OutputConsumer:
                 _logger.warning("输出写失败", exc_info=True)
 
 
-# -- 便捷函数 -----------------------------------------------------------
-
-
-def publish_output(text: str, level: str = "info", source: str = "") -> None:
-    """便捷函数：发布输出事件到默认 EventBus。
-
-    这是替代 print() 的标准方式，任何模块都可直接调用。
-
-    Args:
-        text: 输出文本（不带 ANSI 颜色码，由消费者添加）
-        level: 输出级别: "info", "success", "warning", "error", "raw"
-        source: 事件来源标识
-    """
-    emit(OutputEvent(text=text, level=level, source=source))
-
-def publish_tool_summary(
-    successful_tools: List[str],
-    failed_tools: List[tuple[str, str]],
-    source: str = "",
-) -> None:
-    """便捷函数：发布工具执行汇总事件到默认 EventBus。
-
-    替代 agent.py 中 _show_tool_execution_summary 的 print 调用。
-
-    Args:
-        successful_tools: 成功执行的工具名称列表
-        failed_tools: 失败的工具列表 [(name, error), ...]
-        source: 事件来源标识
-    """
-    emit(
-        ToolSummaryEvent(
-            successful_tools=tuple(successful_tools),
-            failed_tools=tuple(failed_tools),
-            source=source,
-        )
-    )
+# -- 便捷函数（实现已下沉 core.events.publish，本模块 re-export 兼容） ----

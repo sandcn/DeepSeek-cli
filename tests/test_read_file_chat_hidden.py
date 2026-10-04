@@ -33,7 +33,7 @@ from src.tui.events import ToolOutputChunkEvent
 # ── 测试辅助 ─────────────────────────────────────────────
 
 class _Capture:
-    """捕获 emit(event)（monkeypatch src.tui.events.publish.emit）。"""
+    """捕获 emit(event)（monkeypatch src.core.events.publish.emit）。"""
 
     def __init__(self):
         self.events: list = []
@@ -45,7 +45,7 @@ class _Capture:
 @pytest.fixture()
 def capture_emit(monkeypatch):
     cap = _Capture()
-    import src.tui.events.publish as publish_mod
+    import src.core.events.publish as publish_mod
     monkeypatch.setattr(publish_mod, "emit", cap)
     return cap
 

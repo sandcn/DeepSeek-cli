@@ -2,7 +2,7 @@ import logging
 import os
 import re
 from typing import List, Tuple, Dict, Any
-from ..api.tokens import estimate_tokens
+from ..core.tokens import estimate_tokens
 
 _logger = logging.getLogger(__name__)
 

@@ -52,7 +52,7 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
         直接定位到最后一条 user 消息，恢复沙盒、截断消息、预填旧内容。
         """
         from ....app_loop import _non_system_messages
-        from ....api.interrupt_async import flush_stdin, reset_interrupt_async
+        from ...interrupt_state import flush_stdin, reset_interrupt_async
 
         loop = self._loop
         if loop is None:

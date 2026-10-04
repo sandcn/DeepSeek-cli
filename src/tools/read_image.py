@@ -34,7 +34,7 @@ import os
 
 from .base import Func, tool_metadata
 from .file_ops import validate_path_security
-from ..api.multimodal import is_multimodal_model, build_image_content_blocks
+from ..core.multimodal import is_multimodal_model, build_image_content_blocks
 
 _logger = logging.getLogger(__name__)
 

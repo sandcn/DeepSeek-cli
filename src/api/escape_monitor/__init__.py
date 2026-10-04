@@ -14,7 +14,7 @@ from ._monitor import (
     _active_monitor,
     _active_monitor_lock,
 )
-from ._history import (
+from .history import (
     _append_to_history_file,
     _compact_history_file,
     _read_history_file,

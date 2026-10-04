@@ -71,9 +71,9 @@ class Func(abc.ABC):
             - True + None：可以使用
             - False + 错误信息：不可使用，附带原因
         """
-        # 工具可用性策略（单一真源 tools/_tool_policy）
-        from ._tool_policy import _get_excluded_tools
-        excluded = _get_excluded_tools(agent_type)
+        # 工具可用性策略（单一真源 tools/tool_policy）
+        from .tool_policy import get_excluded_tools
+        excluded = get_excluded_tools(agent_type)
         if tool_name in excluded:
             return (False, f"工具 '{tool_name}' 不可用于 '{agent_type}' 类型 agent，"
                     f"该 agent 类型的工具白名单已排除此工具")
@@ -156,8 +156,8 @@ class Func(abc.ABC):
                 read_file 成功读取的整文件内容置 True——聊天卡只显示标题行，
                 内容仍保留在工具块数据中（轨迹 Trace 照常可见）。
         """
-        from ..tui.events.event_types import ToolOutputChunkEvent
-        from ..tui.events.publish import emit
+        from ..core.events.display_types import ToolOutputChunkEvent
+        from ..core.events.publish import emit
         from ..core.internal.agent._tool_context import get_current_tool_id
         try:
             resolved = tool_id or get_current_tool_id() or "assistant"
@@ -190,8 +190,8 @@ class Func(abc.ABC):
             return
         if not text.startswith("+ "):
             text = f"+ {text}"
-        from ..tui.events.event_types import ToolNoticeEvent
-        from ..tui.events.publish import emit
+        from ..core.events.display_types import ToolNoticeEvent
+        from ..core.events.publish import emit
         from ..core.internal.agent._tool_context import get_current_tool_id
         try:
             resolved = tool_id or get_current_tool_id() or "assistant"
@@ -364,39 +364,8 @@ def get_tool_metadata(tool_class) -> Optional[ToolMetadata]:
 # 而 ToolResult 对 slots 无性能诉求，标准 dataclass 可同时满足
 # 运行（Python 3.9）与类型检查。
 
-@_std_dataclass
-class ToolResult:
-    """工具结构化结果 — 文本摘要 + 多模态 content blocks
-
-    工具 execute() 返回人类可读文本的同时，可通过 ``func.result_blocks``
-    携带 OpenAI 兼容的多模态 content blocks（如 image_url data URI）。
-    执行链路（ToolScheduler._run_tool_func）检测到 result_blocks 后，
-    将返回包装为本对象；``BaseAgent._append_tool_result`` 据此把 tool
-    消息 content 设为 blocks list（多模态模型可直接看到图片），
-    Anthropic 适配器再转换为 image block。
-
-    Attributes:
-        text: 给模型的文本摘要（execute() 返回值语义，展示/统计用）。
-        blocks: OpenAI 兼容 content blocks 列表（如
-            ``[{"type": "text", ...}, {"type": "image_url", ...}]``），
-            可空（空时退化为纯文本 content）。
-    """
-    text: str
-    blocks: list[dict] | None = None
-
-    def to_content(self) -> Union[str, List[dict]]:
-        """转换为 tool 消息 content（str 或 list[dict]）。
-
-        有 blocks 时返回 blocks（多模态），否则返回 text（纯文本）。
-        """
-        if self.blocks:
-            return self.blocks
-        return self.text
-
-    @property
-    def display_text(self) -> str:
-        """展示/统计用文本（TUI 工具卡、token 估算等）。"""
-        return self.text
+# ToolResult 已下沉核心层端口（core.ports.tools），此处 re-export 兼容。
+from ..core.ports.tools import ToolResult  # noqa: E402,F401
 
 
 def to_tool_text(value: Any) -> str:

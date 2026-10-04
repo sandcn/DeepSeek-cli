@@ -15,7 +15,7 @@ from __future__ import annotations
 import sys
 import threading
 import logging
-from ._history import (
+from .history import (
     _active_monitor,
     _active_monitor_lock,
 )

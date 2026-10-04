@@ -24,8 +24,8 @@ def publish_event(event_type: str, **kwargs) -> bool:
         True 发布成功，False 跳过（模块不可用或事件类型不存在）
     """
     try:
-        from src.tui.events import event_types as evt
-        from src.tui.events.publish import emit
+        from src.core.events import display_types as evt
+        from src.core.events.publish import emit
         event_cls = getattr(evt, event_type, None)
         if event_cls is not None:
             emit(event_cls(**kwargs))

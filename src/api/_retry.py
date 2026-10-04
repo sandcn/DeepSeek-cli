@@ -13,7 +13,7 @@ from .errors import (
 )
 from .interrupt_async import is_interrupted_async, wait_for_interrupt_async
 from ..config import MAX_RETRIES, RETRY_BASE_SEC
-from ..tui.events.consumers import publish_output
+from ..core.events.publish import publish_output
 
 _logger = logging.getLogger(__name__)
 

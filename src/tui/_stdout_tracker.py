@@ -21,7 +21,7 @@ import logging
 import os
 from pathlib import Path
 from src.config.defaults import OUTPUT_HISTORY_FILE
-from src.api.escape_monitor._history import (
+from src.api.escape_monitor.history import (
     _lock_history_file,
     _unlock_history_file,
 )

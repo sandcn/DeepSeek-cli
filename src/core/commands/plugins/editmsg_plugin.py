@@ -24,7 +24,7 @@ from typing import Any
 
 from .base import InteractiveCommandPlugin
 from ..base import CommandMeta, get_plugin_registry
-from ....api.interrupt_async import flush_stdin, reset_interrupt_async
+from ...interrupt_state import flush_stdin, reset_interrupt_async
 from ....core.constants import YELLOW, RESET, GREEN, DIM
 
 _logger = logging.getLogger(__name__)

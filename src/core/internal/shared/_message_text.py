@@ -34,7 +34,7 @@ def message_to_text(msg):
     # 避免 assistant+tool_calls 分支对 list join 抛 TypeError、tool 分支把
     # base64 data URI 以 list repr 灌入上下文统计。
     if isinstance(content, list):
-        from ....api.multimodal import content_to_text
+        from ...multimodal import content_to_text
         content = content_to_text(content)
     tool_calls = msg.get("tool_calls")
 

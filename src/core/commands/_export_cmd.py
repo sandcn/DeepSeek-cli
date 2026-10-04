@@ -78,7 +78,7 @@ def _msg_content(msg: dict) -> str:
     if isinstance(content, list):
         # 多模态 content blocks（text + image_url）——提取文本部分
         try:
-            from ...api.multimodal import content_to_text
+            from ..multimodal import content_to_text
             return content_to_text(content)
         except Exception:
             # 防御回退：不输出原始 list 字面量（避免图片 data URI/base64 泄出）

@@ -6,6 +6,15 @@ from typing import Any
 from ..ports.model import AsyncModelPort, ModelResult
 
 
+def get_sync_call_model():
+    """返回同步模型调用函数（``api.model_async.call_model``）。
+
+    适配器层延迟导入基础设施层，供核心层在无异步端口时的兜底同步调用。
+    """
+    from ...api.model_async import call_model
+    return call_model
+
+
 class DefaultAsyncModelAdapter(AsyncModelPort):
     """异步默认适配器 — 包装 src/api/model_async.py 中的 async 函数。"""
 

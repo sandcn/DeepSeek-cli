@@ -182,7 +182,7 @@ def get_last_user_message_preview(messages, max_chars=100):
             content = msg["content"]
             if isinstance(content, list):
                 try:
-                    from ..api.multimodal import content_to_text
+                    from ..core.multimodal import content_to_text
                     content = content_to_text(content)
                 except Exception:
                     content = ""

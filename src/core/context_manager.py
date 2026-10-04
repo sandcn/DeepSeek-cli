@@ -30,7 +30,7 @@ _logger = logging.getLogger(__name__)
 from .constants import YELLOW, DIM, RESET, audit_log as _log
 from . import context_selector as selector
 from .context_selector import MessageStatsCache
-from ..api.tokens import estimate_tokens
+from .tokens import estimate_tokens
 from .compression import CompressionResult, CompressionStrategy, SummarizeStrategy, DropStrategy  # noqa: F401 — re-exported for backward compat
 from .ports.config import ConfigPort
 from .ports.output import OutputPort

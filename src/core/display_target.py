@@ -31,6 +31,8 @@ __all__: list[str] = [
     "get_display_target",
     "OutputPublisher",
     "get_output_publisher",
+    "DiffRenderer",
+    "get_diff_renderer",
 ]
 
 
@@ -90,6 +92,30 @@ def get_display_target() -> DisplayTarget | None:
     """
     # 经适配器层延迟导入（core 顶层协议模块不直接依赖表现层）
     from .adapters.display_target import get_display_target as _impl
+    return _impl()
+
+
+@runtime_checkable
+class DiffRenderer(Protocol):
+    """核心层可见的 diff 渲染协议。
+
+    ``render_diff_to_ansi``（src.tui._diff_renderer）隐式满足此协议
+    （实现了 ``__call__(path, old, new) -> str`` 签名）。基础设施层
+    （tools）经此协议渲染文件变更 diff，不再直接依赖表现层。
+    """
+
+    def __call__(self, path: str, old: str, new: str) -> str:
+        """渲染文件 diff 为 ANSI 字符串（无差异返回空串）。"""
+        ...
+
+
+def get_diff_renderer() -> DiffRenderer | None:
+    """返回当前 diff 渲染函数（render_diff_to_ansi）。
+
+    经适配器层延迟导入（core 顶层协议模块不直接依赖表现层）。
+    表现层不可用时返回 None，调用方自行降级（不渲染 diff）。
+    """
+    from .adapters.display_target import get_diff_renderer as _impl
     return _impl()
 
 

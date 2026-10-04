@@ -17,7 +17,7 @@ def _msg_preview(content, max_len: int) -> str:
     """消息内容预览（content 可能为 str 或 list[dict] content blocks）。"""
     if isinstance(content, list):
         try:
-            from ...api.multimodal import content_to_text
+            from ..multimodal import content_to_text
             content = content_to_text(content)
         except Exception:
             content = ""

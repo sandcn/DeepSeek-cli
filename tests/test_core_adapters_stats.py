@@ -71,14 +71,14 @@ def test_mock_reset():
 
 @pytest.fixture
 def fake_stats(monkeypatch):
-    """用记录式假模块替换 src.api.stats 的全局函数，验证透传。
+    """用记录式假模块替换 src.core.stats 的全局函数，验证透传。
 
-    DefaultStatsAdapter 在方法体内 ``from ...api.stats import xxx`` 延迟导入，
-    因此必须 patch ``src.api.stats`` 上的名字（patch 适配器模块无效）。
+    DefaultStatsAdapter 在方法体内 ``from ..stats import xxx`` 延迟导入，
+    因此必须 patch ``src.core.stats`` 上的名字（patch 适配器模块无效）。
     """
     calls = {"accumulate": [], "tool_parse": None, "speed": None, "reset": 0}
 
-    import src.api.stats as api_stats
+    import src.core.stats as api_stats
 
     class _FakeStats:
         @staticmethod
@@ -161,7 +161,7 @@ def test_default_adapter_snapshot(fake_stats):
 
 def test_default_adapter_snapshot_non_dict(fake_stats, monkeypatch):
     """snapshot 遇到非 dict 返回值时兜底为空 dict。"""
-    import src.api.stats as api_stats
+    import src.core.stats as api_stats
 
     monkeypatch.setattr(api_stats, "get_token_stats", lambda: None)
     d = DefaultStatsAdapter()

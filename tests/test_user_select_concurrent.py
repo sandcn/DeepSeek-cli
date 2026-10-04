@@ -140,7 +140,7 @@ def _make_tool_env(monkeypatch):
     monkeypatch.setattr(us_mod, "sys", _FakeSys(_FakeStdin()))
     model = AppModel()
     fake = _FakeChatUI(model)
-    monkeypatch.setattr(us_mod, "get_active_chat_ui", lambda: fake)
+    monkeypatch.setattr(us_mod, "get_display_target", lambda: fake)
     return us_mod, model, fake
 
 

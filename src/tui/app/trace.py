@@ -36,9 +36,11 @@ import json as _json
 import time as _time
 from dataclasses import dataclass, field
 from .trace_image import parse_image_blocks, image_summary, _is_image_block
-
-#: 记录种类（展示顺序/图标映射在 trace_view 消费）
-TRACE_KIND_ORDER = ("tools", "system", "user", "reasoning", "content", "tool", "subagent", "context")
+from .trace_types import (
+    TRACE_KIND_ORDER,  # noqa: F401  （re-export 兼容）
+    TraceRecord,  # noqa: F401  （re-export 兼容）
+    _BLOCK_KIND_MAP,  # noqa: F401  （re-export 兼容）
+)
 
 #: 系统提词 TTL 缓存时长（秒）——build_system_prompt 含文件读取 + git
 #:   子进程调用，台账每帧重建时仅命中缓存；超时才重新构建（空模式切换等
@@ -67,80 +69,6 @@ _split_lines_cache: dict = {}
 #: 工具调用行 + 返回行 → 合并列表缓存（消息源模式 tool 调用+返回合并一条；
 #:   键 = (调用行, 返回全文)——内容不变 → 每帧重建 records 时零重建）
 _merge_lines_cache: dict = {}
-
-
-@dataclass
-class TraceRecord:
-    """一条轨迹记录（台账行 + 检查器详情的数据源）。
-
-    Attributes:
-        index: 1-based 记录号（#N，与 DSH 台账索引语义一致）。
-        kind: 记录种类（system/user/reasoning/content/tool/subagent/context）。
-        summary: 单行摘要（台账行主文本；超宽由渲染层截断）。
-        status: 状态（tool/subagent：running/done/fail/error；其余空串）。
-        time_seconds: 耗时秒数；None=未知（运行中/无计时）。运行中记录为
-            构建时**快照**（渲染层经 ``time_started`` 实时计算刷新）。
-        time_started: 运行中起始时间戳（渲染层实时计算耗时用；records 仅在
-            内容变化时重建，快照 time_seconds 会冻结——工具无输出/状态不变
-            期间耗时须按此实时走动；非运行中记录为 None）。
-        time_started_monotonic: time_started 时间基准——True=单调时钟
-            （time.monotonic，主轨迹工具 box ``_tool_started_at``）；
-            False=墙上时钟（time.time，subagent 槽位 ``start_time``）。
-        tokens: token 统计 dict（input/output/live_input/live_output）。
-        result: 工具返回首行预览（tool 记录；台账行与调用合并显示）。
-        lines: 详情行（纯文本）——仅 system/subagent 记录内联携带（小体积）；
-            块记录详情由检查器按需经 ``block_detail_lines(source_block)``
-            惰性提取（大块不随台账构建全量扫描）。
-        source_block: 来源 ChatBlock（块记录；system/subagent 记录为 None）。
-        subagent_label: subagent 记录关联的 subagent label（Enter 进入其
-            轨迹 Trace 用；非 subagent 记录为空串）。
-        tool_call_id: 工具调用唯一 ID（tool_call_id；tool 记录专用——主轨迹
-            台账按此把 subagent 记录合并到对应的 subagent 工具调用
-            记录；块回退路径/无 ID 为空串）。
-        tool_args: 工具调用原始参数（tool 记录专用——str JSON 或 dict；
-            None=无参数数据）。检查器据此用**树控件**显示参数
-            （``_value_to_tree`` JSON 树形展开；非 JSON 文本回退单节点）。
-        tool_result: 工具返回原始文本（tool 记录专用——消息模型 tool 返回
-            content 原文；空串=无返回）。检查器据此用**树控件**显示返回值
-            （JSON 树形展开；非 JSON 文本每行一个叶子节点）。
-    """
-
-    index: int = 0
-    kind: str = "context"
-    summary: str = ""
-    status: str = ""
-    time_seconds: float | None = None
-    # ★ 2026-08-19（用户需求：轨迹 Trace 正运行的工具耗时没有刷新）：
-    #   运行中起始时间戳 + 时间基准——渲染层实时计算耗时（见
-    #   trace_view._rec_time_seconds）。
-    time_started: float | None = None
-    time_started_monotonic: bool = True
-    tokens: dict = field(default_factory=dict)
-    result: str = ""
-    lines: list = field(default_factory=list)
-    source_block: object | None = None
-    subagent_label: str = ""
-    tool_call_id: str = ""
-    tool_args: object = None
-    tool_result: str = ""
-    #: 多模态图片元信息列表（消息 content 里的 image block；检查器据此渲染
-    #:   半块真彩缩略图）。每个元素为 trace_image.parse_image_blocks 的结构。
-    #:   记录构建只存元信息（不解码），渲染在检查器按需 + 缓存进行。
-    images: list = field(default_factory=list)
-
-
-#: 块种类 → 轨迹记录种类（separator 跳过；splash 品牌屏跳过——非业务记录）
-_BLOCK_KIND_MAP = {
-    "user": "user",
-    "reasoning": "reasoning",
-    "content": "content",
-    "tool": "tool",
-    "subagent": "subagent",
-    "parse_info": "context",
-    "notification": "context",
-    "error": "system",
-    "write_line": "system",
-}
 
 
 def _system_prompt_parts() -> list:

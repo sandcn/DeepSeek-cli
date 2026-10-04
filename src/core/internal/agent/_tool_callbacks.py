@@ -20,9 +20,9 @@ from typing import Any
 
 from ...tool_executor_async import ToolScheduler
 from ...telemetry import get_default_collector
-from ....api.tokens import estimate_tokens
+from ...tokens import estimate_tokens
 from ....tools.base import to_tool_text
-from ....tools.registry import get_tool_display_name
+from ...tool_display import get_tool_display_name
 
 _logger = logging.getLogger(__name__)
 

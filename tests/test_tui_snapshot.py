@@ -28,8 +28,8 @@ def test_get_snapshot_loads_from_api_stats(monkeypatch):
         return marker
 
     monkeypatch.setattr(snap, "get_token_speed_snapshot", fake_loader, raising=False)
-    # 构造「导入成功」路径：把 src.api.stats.get_token_speed_snapshot 换成假的
-    import src.api.stats as api_stats
+    # 构造「导入成功」路径：把 src.core.stats.get_token_speed_snapshot 换成假的
+    import src.core.stats as api_stats
 
     monkeypatch.setattr(api_stats, "get_token_speed_snapshot", fake_loader)
     assert snap._get_snapshot() is fake_loader
@@ -56,19 +56,19 @@ def test_get_snapshot_caches_result():
 def test_get_snapshot_import_failure_returns_none(monkeypatch):
     """导入失败：标记 False（不可用），返回 None。
 
-    将 sys.modules['src.api.stats'] 置 None 令 from-import 抛 ImportError。
+    将 sys.modules['src.core.stats'] 置 None 令 from-import 抛 ImportError。
     """
     import sys
 
-    saved = sys.modules.get("src.api.stats")
-    sys.modules["src.api.stats"] = None
+    saved = sys.modules.get("src.core.stats")
+    sys.modules["src.core.stats"] = None
     try:
         assert snap._get_snapshot() is None
     finally:
         if saved is not None:
-            sys.modules["src.api.stats"] = saved
+            sys.modules["src.core.stats"] = saved
         else:
-            sys.modules.pop("src.api.stats", None)
+            sys.modules.pop("src.core.stats", None)
     # 已标记不可用，二次调用不重试导入
     assert snap._TOKEN_SPEED_SNAPSHOT is False
     assert snap._get_snapshot() is None

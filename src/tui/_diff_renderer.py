@@ -27,7 +27,7 @@ from functools import lru_cache
 from typing import Optional, TYPE_CHECKING
 
 from .core.style import Style, StyleSheet
-from src.renderer._locks import diff_active, _try_acquire_output_lock
+from src.renderer.locks import diff_active, _try_acquire_output_lock
 from .events.consumers import publish_output
 # 方向1 步骤2（ANSI 单一工具）：消毒复用统一 ``ink.helpers.strip_ansi``
 # 主真源（本文件不再定义独立正则；先剥离合法序列 + 兜底移除孤立 ESC）。

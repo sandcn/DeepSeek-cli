@@ -51,7 +51,7 @@ import time
 from src._compat_termios import HAS_TERMIOS
 from .base import Func, tool_metadata
 from ..core.constants import GREEN, YELLOW, RED, DIM, RESET
-from ..tui.consumer import get_active_chat_ui
+from ..core.display_target import get_display_target
 
 
 _logger = logging.getLogger(__name__)
@@ -196,7 +196,7 @@ class UserSelectFunc(Func):
             }, ensure_ascii=False)
 
         # 获取 ChatUIConsumer 与 AppModel
-        chat_ui = get_active_chat_ui()
+        chat_ui = get_display_target()
         if chat_ui is None:
             return json.dumps({
                 "selected": list(self.default_options or []),
@@ -241,7 +241,7 @@ class UserSelectFunc(Func):
                     initial_idx = i
                 checked.append(i)
 
-        from ..tui.app.model import UserSelectState
+        from ..core.user_select_state import UserSelectState
         state = None  # 并发队列元素（finally 引用；构造异常时兜底 None）
         try:
             # ★ 并发弹窗（2026-08-19 用户需求：user_select 并发 + tab 切换，

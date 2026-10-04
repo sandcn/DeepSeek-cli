@@ -36,7 +36,7 @@ from ..api.interrupt_async import (
     request_kill_background,
 )
 from ..core.base_agent import schedule_kill_all_background_tasks
-from ..api.stats import reset_token_speed
+from ..core.stats import reset_token_speed
 from ..tui.consumer import ChatUIConsumer
 
 _logger = logging.getLogger(__name__)

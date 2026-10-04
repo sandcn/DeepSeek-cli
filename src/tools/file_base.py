@@ -17,10 +17,7 @@ from .file_ops import (
     is_path_within_dir,
 )
 from ..core.constants import GREEN, RED, DIM, RESET
-from ..tui._diff_renderer import render_diff_to_ansi
-from ..renderer._locks import (
-    diff_active,
-)
+from ..core.diff_state import diff_active
 from ..core.sandbox_manager import async_record_file_change_from_context
 from ._constants import DEFAULT_ENCODING, DEFAULT_ERRORS as DEFAULT_ERRORS_HANDLING, MAX_FILE_SIZE_MB
 
@@ -217,7 +214,11 @@ class FileToolBase(Func):
         return lines_count, size_bytes
 
     def _show_diff(self, old: str, new: str) -> str:
-        diff_text = render_diff_to_ansi(self.path, old, new)
+        from ..core.display_target import get_diff_renderer
+        renderer = get_diff_renderer()
+        if renderer is None:
+            return ""
+        diff_text = renderer(self.path, old, new)
         if diff_text:
             return diff_text + "\n"
         return ""
@@ -248,7 +249,7 @@ class FileToolBase(Func):
         可见（不创建工具 box，避免 BUG-63 的永不关闭 box 问题）。
         """
         if self._is_subagent_context():
-            from ..tui.events.consumers import publish_output
+            from ..core.events.publish import publish_output
             try:
                 publish_output(text, level="raw")
             except Exception:

@@ -14,7 +14,7 @@ import logging
 from typing import Dict, Type, Any, List, Optional
 
 from .base import Func, ToolMetadata, get_tool_metadata
-from ._constants import TOOL_DISPLAY_NAME
+from ..core.tool_display import TOOL_DISPLAY_NAME, get_tool_display_name  # noqa: F401  （re-export）
 
 logger = logging.getLogger(__name__)
 
@@ -269,11 +269,4 @@ def clear_registry() -> None:
     logger.info("工具注册表已清空")
 
 
-# ── 工具显示名映射（UI显示用，映射表见 _constants.TOOL_DISPLAY_NAME） ──
-
-def get_tool_display_name(tool_name: str) -> str:
-    """获取工具在 UI 上显示的完整名称（工具注册名 PascalCase，如 ReadFile）。
-
-    映射表见 ``_constants.TOOL_DISPLAY_NAME``；无映射（未知工具）返回原名称。
-    """
-    return TOOL_DISPLAY_NAME.get(tool_name, tool_name)
+# ── 工具显示名映射（实现已下沉 core.tool_display，此处 re-export） ──

@@ -10,7 +10,7 @@ MessageStatsCache 维护与 messages 列表对应的每消息字符/token 数缓
 
 from dataclasses import field
 from src._compat import dataclass
-from ....api.tokens import estimate_tokens
+from ...tokens import estimate_tokens
 
 
 @dataclass(slots=True)

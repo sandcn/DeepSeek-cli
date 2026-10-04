@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 from src.tui._const import SplashCmd
 from src.tui._history_disk import flush_history_disk
-from src.renderer._locks import render_lock
+from src.renderer.locks import render_lock
 
 _logger = logging.getLogger(__name__)
 

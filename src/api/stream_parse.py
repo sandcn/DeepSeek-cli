@@ -13,9 +13,9 @@ import asyncio
 
 from ._tool_parse_utils import convert_tool_calls_map, convert_tool_calls_map_with_status, parse_raw_tool_calls, parse_raw_tool_calls_with_status, full_args_str  # noqa: F401 — 重导出
 from .tokens import estimate_tokens
-from .stats import set_tool_parse_elapsed
+from ..core.stats import set_tool_parse_elapsed
 from .interrupt_async import is_interrupted_async
-from ..tools.registry import get_tool_display_name
+from ..core.tool_display import get_tool_display_name
 
 _logger = logging.getLogger(__name__)
 

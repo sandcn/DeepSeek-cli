@@ -185,7 +185,7 @@ class BaseAgent:
             content = str(content)
         # 多模态图片输入：当前模型支持视觉且文本含图片引用 → content blocks
         try:
-            from ..api.multimodal import build_user_content_blocks
+            from .multimodal import build_user_content_blocks
             content = build_user_content_blocks(content, self.model)
         except Exception:
             _logger.debug("多模态图片输入转换失败，按纯文本处理", exc_info=True)
@@ -601,10 +601,10 @@ class BaseAgent:
                     # 全局中断信号兜底：SubAgent 无 _interrupt_port 时仍可
                     # 响应中断（ESC kill 经 kill_all_active_background_tasks
                     # 遍历注册表兜底达成）
-                    from ..api.interrupt_async import is_interrupted
+                    from .interrupt_state import is_interrupted
                     interrupted = is_interrupted()
                 if interrupted:
-                    from ..api.interrupt_async import is_kill_background_requested
+                    from .interrupt_state import is_kill_background_requested
                     if is_kill_background_requested():
                         await kill_all_active_background_tasks()
                     return set()

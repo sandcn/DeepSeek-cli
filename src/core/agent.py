@@ -8,7 +8,8 @@ from .base_agent import BaseAgent, kill_all_active_background_tasks
 from .internal.agent._tool_callbacks import ToolCallbackChain
 from .pipeline import Pipeline, PipelineContext
 from .tool_executor_async import ToolScheduler
-from ..tools.registry import ToolRegistry
+from .ports.tools import ToolRegistryPort
+from .adapters.tools import get_default_tool_registry
 from ..core.ports import ConfigPort
 from ..core.adapters.prompt_builder import DefaultPromptBuilderAdapter
 from ..core.ports.observability import ObservabilityPort
@@ -63,7 +64,7 @@ class Agent(BaseAgent):
         # ToolCallbackChain — 工具回调链独立封装
         self._tool_callbacks = ToolCallbackChain(self)
 
-        self._registry = registry or ToolRegistry.default()
+        self._registry = registry or get_default_tool_registry()
 
         # ── 默认端口工厂（延迟导入） ────────────────────
         _defaults = _create_default_ports()
@@ -86,7 +87,7 @@ class Agent(BaseAgent):
         self._observability_port = _resolve_port(observability_port, _defaults, "observability")
 
         # ── ToolRegistry 包装 ─────────────────────────
-        self._tool_registry_port: ToolRegistry = _ToolRegistryAdapter(self._registry)
+        self._tool_registry_port: ToolRegistryPort = _ToolRegistryAdapter(self._registry)
 
         # _async_tool_executor: [DEPRECATED] 向后兼容别名，实际指向 ToolScheduler 全局单例。
         # 新代码请直接使用 ToolScheduler.default()。无 `.` 调用方，仅作为属性引用存在。
@@ -213,7 +214,7 @@ class Agent(BaseAgent):
         """返回当前 AsyncModelPort 实例（供 AsyncSubAgent 等使用）"""
         return self._async_model_port
 
-    def get_tool_registry_port(self) -> ToolRegistry:
+    def get_tool_registry_port(self) -> ToolRegistryPort:
         """返回 ToolRegistry 实例"""
         return self._tool_registry_port
 
@@ -266,7 +267,7 @@ class Agent(BaseAgent):
                 #   工具异常置位 interrupted）不杀后台任务——只终止当前生成，
                 #   后台任务继续运行（既有语义，P0 修复）。
                 try:
-                    from ..api.interrupt_async import is_kill_background_requested
+                    from .interrupt_state import is_kill_background_requested
                     if is_kill_background_requested():
                         # 若 render 线程实时调度已先行杀任务，此处经
                         # _kill_in_progress 去重返回 0（幂等兜底，无副作用）
@@ -289,7 +290,7 @@ class Agent(BaseAgent):
                 #   走 interrupted 状态转换，与用户按 ESC 中断生成一致
                 #   （P1-2 修复：修复前 kill 后返回 False，中断"无痕消失"）。
                 try:
-                    from ..api.interrupt_async import is_kill_background_requested
+                    from .interrupt_state import is_kill_background_requested
                     if is_kill_background_requested():
                         interrupted = True
                 except Exception:

@@ -542,7 +542,7 @@ def test_multimodal_config_extension(monkeypatch):
     """RC 配置 multimodal_models 扩展判定。"""
     clear_multimodal_cache()
     monkeypatch.setattr(
-        "src.api.multimodal._configured_multimodal_models",
+        "src.core.multimodal._configured_multimodal_models",
         lambda: ("my-vision-model",),
     )
     assert is_multimodal_model("my-vision-model-v2")

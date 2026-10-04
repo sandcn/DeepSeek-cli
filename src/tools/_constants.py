@@ -153,29 +153,4 @@ LARGE_FILE_THRESHOLD = 10 * 1024 * 1024  # 10MB
 # 新增工具时在此补一行；tests/test_tool_display_name_pascal.py 校验
 # 「映射完整 + 值 == 注册名 PascalCase」。
 
-TOOL_DISPLAY_NAME: dict[str, str] = {
-    "read_file": "ReadFile",
-    "read_image": "ReadImage",
-    "write_file": "WriteFile",
-    "update_file": "UpdateFile",
-    "str_replace_editor": "StrReplaceEditor",
-    "file_editor": "FileEditor",
-    "bash": "Bash",
-    "execute_command": "ExecuteCommand",
-    "bash_opt": "BashOpt",
-    "subagent": "Subagent",
-    "subagent_opt": "SubagentOpt",
-    "find": "Find",
-    "grep": "Grep",
-    "glob": "Glob",
-    "search": "Search",
-    "cp": "Cp",
-    "mv": "Mv",
-    "rm": "Rm",
-    "mkdir": "Mkdir",
-    "user_select": "UserSelect",
-    "web_search": "WebSearch",
-    "web_fetch": "WebFetch",
-    "ls": "Ls",
-    "skill": "Skill",
-}
+from ..core.tool_display import TOOL_DISPLAY_NAME  # noqa: E402,F401  （下沉核心层，re-export 兼容）

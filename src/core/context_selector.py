@@ -19,7 +19,7 @@ _EXCESS_BUFFER = 1.3  # 30% 超额释放缓冲，避免频繁触发压缩
 def compute_message_stats(messages):
     """单次遍历计算总字符数和总 token 数。"""
     # import 提升到循环外（避免每条消息重复解析 sys.modules 绑定）
-    from ..api.tokens import estimate_tokens
+    from .tokens import estimate_tokens
     total_chars_val = 0
     total_tokens_val = 0
     for m in messages:

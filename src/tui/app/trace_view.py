@@ -48,50 +48,44 @@ from src.tui.ink import (
 from src.tui.ink.helpers import truncate_runs, wrap_runs_by_width
 from src.tui.ink.widgets.listview import ListView
 
-# ── 样式 ─────────────────────────────────────────────
-_S_TITLE = Style(fg=45, bold=True)        # 视图标题前缀（亮青加粗）
-_S_HINT = Style(fg=242)                    # 提示/分隔弱化（暗灰）
-_S_SEP_ROW = Style(fg=238)                 # 轮次分隔行（深灰）
-_S_INDEX = Style(fg=242)                   # #N 记录号（暗灰）
-_S_TIME = Style(fg=110)                    # 耗时（浅蓝）
-_S_TEXT = Style(fg=252)                    # 摘要/内容文本（亮白）
-_S_DIM = Style(fg=242)                     # 推理摘要/元信息（暗灰）
-_S_SEL_BG = Style(bg=237)                  # 选中行背景（静态 237，不呼吸）
-_S_SEL_MARK = Style(fg=45, bold=True)      # 选中 ▶ 标记（亮青加粗）
-_S_SECTION = Style(fg=110, bold=True)      # 检查器小节标题（参数/返回值，浅蓝加粗）
-_S_TREE_KEY = Style(fg=75)                 # 树节点键（浅紫蓝——BEAUTY-36 键值分色）
-_S_TREE_VAL = Style(fg=252)                # 树节点标量值（亮白——BEAUTY-36 键值分色）
-#: 检查器光标行背景（2026-08-19 用户需求：右边高亮当前行背景色）——vim
-#:   cursorline 语义：检查器焦点时 j/k 移动光标，光标所在行整行背景高亮
-#:   （与台账选中行 _S_SEL_BG 同色 237，两栏视觉一致）
-_S_INSP_BG = Style(bg=237)
-#: 搜索匹配行背景（2026-08-19 用户需求：轨迹 Trace vim 风格搜索——所有
-#:   匹配行高亮，vim hlsearch 风格；暗蓝灰 236，低调不抢选中焦点）
-_S_SEARCH_BG = Style(bg=236)
-#: 当前匹配行背景（匹配 + 选中/光标叠加——n/N 定位到的当前匹配行用亮蓝
-#:   25 区分，与 _S_SEL_BG 237 形成视觉层级：所有匹配 < 当前匹配）
-_S_SEARCH_CUR_BG = Style(bg=25)
-#: 搜索输入行提示样式（底部 ``/${query}``——vim 风格，亮青加粗）
-_S_SEARCH_PROMPT = Style(fg=45, bold=True)
-#: 搜索 query 长度上限（2026-08-20 review P3：超长输入截断丢弃——底部
-#:   ``/${query}`` 渲染行按栏宽截断，无上限累积只浪费内存）
-_SEARCH_QUERY_MAX = 200
+# ── 样式（共享定义位于 trace_styles，此处 re-import） ──────
+from .trace_styles import (  # noqa: E402
+    _S_DIM,
+    _S_HINT,
+    _S_INDEX,
+    _S_INSP_BG,
+    _S_SEARCH_BG,
+    _S_SEARCH_CUR_BG,
+    _S_SEARCH_PROMPT,
+    _SEARCH_QUERY_MAX,
+    _S_SECTION,
+    _S_SEL_BG,
+    _S_SEL_MARK,
+    _S_SEP_ROW,
+    _S_TEXT,
+    _S_TIME,
+    _S_TITLE,
+    _S_TREE_KEY,
+    _S_TREE_VAL,
+)
 
-#: 树节点指示符/缩进（对齐 ink Tree 控件渲染语义——检查器参数/返回值
-#:   以树形结构展示：层级缩进 + 展开指示符）
-_TREE_OPEN = "\u25be "    # ▾ 展开
-_TREE_CLOSED = "\u25b8 "  # ▸ 折叠（2026-08-19 用户需求：树控件空格展开/收缩）
-_TREE_LEAF = "  "         # 叶子占位（对齐 Tree._TREE_LEAF）
-_TREE_INDENT = 2          # 每层缩进空格数（对齐 Tree._TREE_INDENT）
+# ── 树渲染（实现位于 trace_tree，此处 re-import） ──────────
+from .trace_tree import (  # noqa: E402
+    _TREE_CLOSED,
+    _TREE_INDENT,
+    _TREE_LEAF,
+    _TREE_MAX_DEPTH,
+    _TREE_OPEN,
+    _args_to_tree,
+    _parse_tree_text,
+    _tree_node_rows,
+    _tree_row_wrap,
+    _value_to_tree,
+)
+
 #: 参数/返回值小节标题前缀
 _SECTION_PREFIX = "\u25b8 "  # ▸
 
-#: 台账行 runs 模块级缓存（性能：ListView 每帧对可见行调 renderItem——
-#:   同内容记录跨 rec 命中返回同一 runs 引用，零重建 + TEXT wrap 引用级
-#:   命中零重写；运行中耗时按整数秒入指纹，每秒刷新一次）。有界防无限
-#:   增长（超限清空重建——miss 仅多一次 runs 构建，无正确性影响）。
-_LEDGER_RUNS_CACHE: dict = {}
-_LEDGER_RUNS_CACHE_MAX = 256
 #: 台账行预计算索引缓存（性能：O(N²) 优化——分隔行编号/记录↔行映射/轮次
 #:   数一次 O(N) 预计算，跨帧 O(1) 查表；rows 来自 use_memo（内容不变引用
 #:   稳定）→ 命中零重建；records 重建 → 新 rows 引用 → 一次性 O(N) 重建，
@@ -99,275 +93,34 @@ _LEDGER_RUNS_CACHE_MAX = 256
 #:   清空重建——miss 仅多一次索引构建，无正确性影响）。
 _ROWS_INDEX_CACHE_MAX = 4
 _rows_index_cache: dict = {}  # id(rows) → (rows_ref, (sep_nums, rec_to_row, row_to_rec))
-#: 轮次分隔行 runs 缓存（与 _ledger_row_runs 同缓存上限——纯函数输出复用）
-_SEP_RUNS_CACHE: dict = {}
 
-#: 种类图标（台账行）与名称（检查器标题）——对齐既有角色头 emoji 语义
-_KIND_ICON = {
-    "tools": "\U0001F9F0", "system": "\u2699", "user": "\U0001F464",
-    "reasoning": "\U0001F4AD", "content": "\U0001F4AC", "tool": "\u26A1",
-    "subagent": "\U0001F916", "context": "\U0001F4C4",
-}
-_KIND_NAME = {
-    "tools": "工具列表", "system": "系统", "user": "用户", "reasoning": "思考",
-    "content": "回答", "tool": "工具", "subagent": "子代理", "context": "上下文",
-}
-#: 种类图标色（摘要文本 reasoning 用暗灰，其余亮白）
-_KIND_FG = {
-    "tools": 214, "system": 110, "user": 39, "reasoning": 242, "content": 45,
-    "tool": 214, "subagent": 75, "context": 110,
-}
-#: 状态图标与色（tool/subagent：● 运行中 / ✔ 完成 / ✖ 失败）
-_STATUS_ICON = {"running": "\u25cf", "done": "\u2714", "fail": "\u2716", "error": "\u2716"}
-_STATUS_FG = {"running": 208, "done": 41, "fail": 196, "error": 196}
+# ── 台账渲染（实现位于 trace_ledger，此处 re-import） ──────
+from .trace_ledger import (  # noqa: E402
+    _KIND_FG,
+    _KIND_ICON,
+    _KIND_NAME,
+    _LEDGER_RUNS_CACHE,
+    _LEDGER_RUNS_CACHE_MAX,
+    _SEP_RUNS_CACHE,
+    _STATUS_FG,
+    _STATUS_ICON,
+    _kind_fg,
+    _ledger_row_runs,
+    _rec_time_seconds,
+    _record_search_text,
+    _row_search_text,
+    _sep_row_runs,
+    _status_fg,
+    _trace_search_matches,
+    _viewport_rows,
+)
 
-#: 台账可见行数 = 终端高度 - 保留行（**全屏模式**：仅轨迹头 1 行——trace_open
-#:   时消息区/顶部标题栏/状态栏/输入区全部不渲染，「打开时其他 TUI 不显示，
-#:   只显示轨迹界面」，台账/检查器占满整个终端）
-_VIEWPORT_RESERVED = 1
 #: 检查器内容行预算下限（标题 + 元信息 + 省略提示占用后至少保留的行数）
 _INSPECTOR_MIN_CONTENT = 4
 #: 检查器内容行全量生成上限（2026-08-19 用户需求：轨迹 Trace 移动到右边
 #:   滚动查看——内容行**全量生成**后按滚动窗口切片；超大内容（如大文件
 #:   工具返回）防御性截断，超限追加「内容过长」提示行，滚动到底部可见）
 _INSPECTOR_MAX_ROWS = 2000
-
-
-def _viewport_rows() -> int:
-    """台账可见行数（终端高度自适应；无高度上下文回退 16）。"""
-    try:
-        from src.tui._screen import TerminalWidthCache
-        h = TerminalWidthCache.get_default().get_height()
-        return max(6, int(h) - _VIEWPORT_RESERVED)
-    except Exception:
-        return 16
-
-
-def _kind_fg(kind: str) -> int:
-    return _KIND_FG.get(kind, 242)
-
-
-def _status_fg(status: str) -> int:
-    return _STATUS_FG.get(status, 242)
-
-
-def _rec_time_seconds(rec) -> float | None:
-    """记录实时耗时（运行中记录按起始时间戳实时计算；其余用快照）。
-
-    ★ 2026-08-19（用户需求：轨迹 Trace 正运行的工具耗时没有刷新）：运行中
-    工具/subagent 耗时随时间增长，但 records 仅在内容变化时重建
-    （``_records_deps``/``_subagent_trace_deps`` 时间基元素不入指纹——工具
-    无输出/状态不变期间 use_memo 命中）——rec.time_seconds 为构建时**快照**
-    会冻结。渲染层（台账行每帧读取 / 检查器 use_memo deps）改经本函数取
-    实时值：running 记录按 ``time_started``（构建时保留的起始时间戳）实时
-    计算，并按**整数秒**入指纹（每秒刷新一次，避免每帧重建）。
-
-    时间基准（``time_started_monotonic``）：True=单调时钟（主轨迹工具 box
-    ``_tool_started_at``=time.monotonic）；False=墙上时钟（subagent 槽位
-    ``start_time``=time.time）。异常/缺失起始时间戳回退快照（防御）。
-    """
-    if getattr(rec, "status", "") != "running":
-        return getattr(rec, "time_seconds", None)
-    started = getattr(rec, "time_started", None)
-    if started is None:
-        return getattr(rec, "time_seconds", None)
-    try:
-        started_f = float(started)
-    except (TypeError, ValueError):
-        return getattr(rec, "time_seconds", None)
-    if getattr(rec, "time_started_monotonic", True):
-        return max(0.0, _time.monotonic() - started_f)
-    return max(0.0, _time.time() - started_f)
-
-
-def _record_search_text(rec) -> str:
-    """记录全文（台账搜索匹配文本源——summary + 详情行 + 返回 + 参数/返回值）。
-
-    搜索目标 = 记录的可视内容全集：摘要（台账行）、详情行（lines）、返回
-    预览（result）、工具参数/返回值（tool_args/tool_result）、subagent
-    label。块记录详情（source_block）不展开（惰性提取，搜索覆盖摘要/返回
-    已足够——记录正文经 lines/result 表达）。字段缺失/异常防御拼接。
-    """
-    parts: list = []
-    for attr in ("summary", "result", "subagent_label"):
-        v = getattr(rec, attr, None)
-        if v:
-            parts.append(str(v))
-    lines = getattr(rec, "lines", None) or []
-    for ln in lines:
-        if isinstance(ln, str):
-            parts.append(ln)
-        else:
-            plain = getattr(ln, "plain", None)
-            parts.append(plain if plain is not None else str(ln))
-    for attr in ("tool_args", "tool_result"):
-        v = getattr(rec, attr, None)
-        if v is not None:
-            parts.append(str(v))
-    return "\n".join(p for p in parts if p)
-
-
-def _row_search_text(row) -> str:
-    """内容行文本（检查器搜索匹配文本源——StyledRun 行/纯文本行归一化）。"""
-    if isinstance(row, str):
-        return row
-    if isinstance(row, (list, tuple)):
-        return "".join(getattr(r, "text", "") or "" for r in row)
-    return str(row)
-
-
-def _trace_search_matches(pattern: str, side: str, records: list,
-                          content_rows: list | None = None) -> list:
-    """正则搜索 → 匹配索引列表（当前焦点面板；非法正则 → 空列表）。
-
-    Args:
-        pattern: 正则表达式（re.search 语义——子串匹配，非全匹配）。
-        side: "ledger"=搜索台账记录（索引 = 记录索引）/ "inspector"=搜索
-            检查器内容行（索引 = 内容行索引）。
-        records: 台账记录列表。
-        content_rows: 检查器全量内容行（side=="inspector" 时需要；None 时
-            视为无内容）。
-
-    Returns:
-        list[int]——匹配索引（首次出现顺序）。
-    """
-    if not pattern or side not in ("ledger", "inspector"):
-        return []
-    try:
-        rx = re.compile(pattern)
-    except Exception:
-        return []  # 非法正则 → 无匹配（不崩溃，vim 中非法正则报错后无结果）
-    matches: list = []
-    if side == "ledger":
-        for i, rec in enumerate(records):
-            if rec is None:
-                continue
-            try:
-                if rx.search(_record_search_text(rec)):
-                    matches.append(i)
-            except Exception:
-                continue
-    else:
-        for i, row in enumerate(content_rows or []):
-            try:
-                if rx.search(_row_search_text(row)):
-                    matches.append(i)
-            except Exception:
-                continue
-    return matches
-
-
-def _ledger_row_runs(rec, sel: bool, left_w: int,
-                     matched: bool = False, cur_match: bool = False) -> list:
-    """台账行 runs（选中行整行背景高亮 + ▶ 标记；耗时右对齐；宽截断）。
-
-    Args:
-        rec: TraceRecord。
-        sel: 是否选中。
-        left_w: 左栏宽（>0 时截断；<=0 不截断防御）。
-        matched: 是否搜索匹配行（vim hlsearch 风格——匹配行背景 _S_SEARCH_BG）。
-        cur_match: 是否当前匹配行（n/N 定位到的匹配——背景 _S_SEARCH_CUR_BG，
-            比普通匹配更醒目；与 sel 叠加）。
-
-    ★ 性能（2026-08-19 用户需求：轨迹 Trace 优化性能）：**内容指纹缓存**
-    （``_LEDGER_RUNS_CACHE``）——ListView 每帧对可见行调用 renderItem →
-    本函数每帧重建 StyledRun（含 truncate 宽计算）；同内容记录（records
-    流式重建新对象但字段值相同）→ 指纹命中 → 返回同一 runs 列表引用（零
-    重建；TEXT ``_wrap_cache`` 按 styled 引用命中 → 渲染层也零重写）。运行
-    中耗时（``_rec_time_seconds`` 实时值）按**整数秒**入指纹（每秒刷新一次，
-    避免每帧重建——与检查器 meta 同语义）。有界防无限增长（超限清空重建）。
-    """
-    t_raw = _rec_time_seconds(rec)
-    t_key = int(t_raw) if t_raw is not None else None
-    key = (
-        getattr(rec, "index", 0),
-        getattr(rec, "kind", ""),
-        getattr(rec, "summary", "") or "",
-        getattr(rec, "status", "") or "",
-        (getattr(rec, "result", "") or "")[:80],
-        t_key,
-        bool(sel),
-        left_w,
-        bool(matched),
-        bool(cur_match),
-    )
-    cached = _LEDGER_RUNS_CACHE.get(key)
-    if cached is not None:
-        return cached
-    runs: list = []
-    # 选择标记（2 列）
-    if sel:
-        runs.append(StyledRun("\u25b6 ", _S_SEL_MARK))
-    else:
-        runs.append(StyledRun("  ", None))
-    runs.append(StyledRun(f"#{rec.index:>2} ", _S_INDEX))
-    kind = getattr(rec, "kind", "context")
-    icon = _KIND_ICON.get(kind, "\u00b7")
-    runs.append(StyledRun(f"{icon} ", Style(fg=_kind_fg(kind))))
-    # 状态图标（tool/subagent 才携带；running 呼吸色由 time_glow 负担过重，
-    # 静态色——台账行不每帧重建）
-    status = getattr(rec, "status", "") or ""
-    if status:
-        sicon = _STATUS_ICON.get(status, "\u00b7")
-        runs.append(StyledRun(f"{sicon} ", Style(fg=_status_fg(status))))
-    summary = getattr(rec, "summary", "") or "(空)"
-    runs.append(StyledRun(summary, _S_DIM if kind == "reasoning" else _S_TEXT))
-    # ★ 2026-08-19（工具调用+返回合并一条）：tool 记录在台账行追加返回首行
-    #   预览（``· 返回…``，暗灰）——调用与返回同一条记录可见
-    result = getattr(rec, "result", "") or ""
-    if result and left_w > 0:
-        budget = max(8, left_w // 3)
-        prev_runs = truncate_runs([StyledRun(result, _S_DIM)], budget)
-        if prev_runs:
-            runs.append(StyledRun(" \u00b7 ", _S_HINT))
-            runs.extend(prev_runs)
-    # 耗时右对齐（尾列）
-    t = ""
-    if t_raw is not None:
-        t = format_duration(t_raw)
-    if t and left_w > 0:
-        used = sum(getattr(r, "width", 1) for r in runs)
-        pad = left_w - used - len(t) - 1
-        if pad > 0:
-            runs.append(StyledRun(" " * pad, None))
-        runs.append(StyledRun(t, _S_TIME))
-    # ★ 2026-08-19（vim 搜索匹配高亮）：背景优先级——
-    #   当前匹配（_S_SEARCH_CUR_BG）> 匹配行（_S_SEARCH_BG）> 选中（_S_SEL_BG）
-    #   > 无。当前匹配行与选中同时成立时用亮蓝（区分普通匹配的暗蓝灰）。
-    if cur_match:
-        bg = _S_SEARCH_CUR_BG
-    elif matched:
-        bg = _S_SEARCH_BG
-    elif sel:
-        bg = _S_SEL_BG
-    else:
-        bg = None
-    if bg is not None:
-        runs = [StyledRun(r.text, (r.style or Style()).merge(bg)) for r in runs]
-    runs = truncate_runs(runs, left_w) if left_w > 0 else runs
-    _LEDGER_RUNS_CACHE[key] = runs
-    if len(_LEDGER_RUNS_CACHE) > _LEDGER_RUNS_CACHE_MAX:
-        _LEDGER_RUNS_CACHE.clear()
-    return runs
-
-
-def _sep_row_runs(n: int, left_w: int) -> list:
-    """轮次分隔行 runs（``── 轮次 N ──``，深灰）。
-
-    ★ 性能（2026-08-19 用户需求：轨迹 Trace 优化性能）：内容纯函数
-    （同 n/left_w 输出恒同）——模块级缓存返回同一 runs 引用（零重建 +
-    TEXT wrap 引用级命中）；与 ``_ledger_row_runs`` 同缓存上限。
-    """
-    key = (n, left_w)
-    cached = _SEP_RUNS_CACHE.get(key)
-    if cached is not None:
-        return cached
-    runs = [StyledRun(f"\u2500\u2500 轮次 {n} \u2500\u2500", _S_SEP_ROW)]
-    runs = truncate_runs(runs, left_w) if left_w > 0 else runs
-    _SEP_RUNS_CACHE[key] = runs
-    if len(_SEP_RUNS_CACHE) > _LEDGER_RUNS_CACHE_MAX:
-        _SEP_RUNS_CACHE.clear()
-    return runs
 
 
 def _detail_lines_of(rec) -> list:
@@ -640,197 +393,6 @@ def _lines_fp(lines) -> int:
 #: 增长（超限清空重建——miss 仅多一次渲染，无正确性影响）。
 _TOOL_TREE_CACHE: dict = {}
 _TOOL_TREE_CACHE_MAX = 64
-
-
-#: 树递归深度上限（防御：超过则停止展开 children——与 ink Tree 控件
-#: ``_TREE_MAX_DEPTH`` 同语义，避免异常深层 JSON 触发 RecursionError）。
-_TREE_MAX_DEPTH = 200
-
-
-def _value_to_tree(value, key: str = "", depth: int = 0) -> list:
-    """任意值 → 树控件 data 格式节点列表（{label, children}）。
-
-    ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树控件显示）：
-    JSON 值 → 树形节点（对齐 ink Tree 控件 data 形态——label/children）：
-      - dict → 键值对子节点；key 非空时包装为 ``key (N 项)`` 节点（根 key
-        为空直接列出子节点——省略无名根，紧凑展示）；
-      - list → 下标子节点（``[i]``）；key 非空时包装为 ``key (N 项)``；
-      - 标量 → 叶子 ``key: value``（key 为空则纯 value）；
-      - 空 dict/list → 叶子 ``key: {}``/``key: []``。
-    """
-    if depth > _TREE_MAX_DEPTH:
-        return []
-    if isinstance(value, dict):
-        if not value:
-            return [{"label": (f"{key}: {{}}" if key else "{}"), "children": []}]
-        children: list = []
-        for k, v in value.items():
-            children.extend(_value_to_tree(v, str(k), depth + 1))
-        if key:
-            return [{"label": f"{key} ({len(value)} 项)", "children": children}]
-        return children
-    if isinstance(value, (list, tuple)):
-        if not value:
-            return [{"label": (f"{key}: []" if key else "[]"), "children": []}]
-        children = []
-        for i, v in enumerate(value):
-            children.extend(_value_to_tree(v, f"[{i}]", depth + 1))
-        if key:
-            return [{"label": f"{key} ({len(value)} 项)", "children": children}]
-        return children
-    # 标量：JSON 字面量语义（null/true/false——对齐 JSON 原文，而非 Python
-    # 的 None/True/False 字符串化）
-    if value is None:
-        display = "null"
-    elif isinstance(value, bool):
-        display = "true" if value else "false"
-    else:
-        display = str(value)
-    return [{"label": (f"{key}: {display}" if key else display), "children": []}]
-
-
-def _args_to_tree(args) -> list:
-    """工具调用参数 → 树节点列表（str JSON / dict；None/空 → []）。
-
-    str 形态尝试 JSON 解析（消息模型 arguments 原始 JSON 串）；解析失败
-    （块路径 tool_detail 关键参数摘要等非 JSON 文本）→ 单叶子节点。
-    """
-    if args is None:
-        return []
-    if isinstance(args, dict):
-        return _value_to_tree(args)
-    text = str(args).strip()
-    if not text:
-        return []
-    try:
-        return _value_to_tree(json.loads(text))
-    except (ValueError, TypeError):
-        return [{"label": text, "children": []}]
-
-
-def _parse_tree_text(text) -> list:
-    """工具返回文本 → 树节点列表（JSON 解析成功 → 树；失败 → 每行一个叶子）。
-
-    ★ 2026-08-17（用户需求：轨迹 Trace 工具调用返回值用树控件显示）：
-    bash/read_file 等工具返回值通常为**非 JSON 纯文本**（命令回显/文件
-    内容）——以文本行叶子树形展示（对齐 Tree 控件叶子行语义）。
-    """
-    if text is None:
-        return []
-    s = str(text).strip()
-    if not s:
-        return []
-    try:
-        return _value_to_tree(json.loads(s))
-    except (ValueError, TypeError):
-        lines = s.splitlines() or [s]
-        return [{"label": ln, "children": []} for ln in lines]
-
-
-def _tree_node_rows(nodes: list, right_w: int, out: list, depth: int = 0,
-                    collapsed: set | None = None, path: str = "",
-                    keys: list | None = None) -> None:
-    """树节点列表 → 可见行（前序；缩进 + 展开指示符；对齐 Tree 控件渲染）。
-
-    只读展示（检查器不参与树交互——台账 ListView 独占导航焦点），label 含
-    ``\\n`` 归一化单行（防行级 diff 宽度不变量破坏）。
-
-    ★ 2026-08-19（用户需求：轨迹 Trace 的工具的实参要显示完整）：超宽行
-    由截断（``truncate_runs``——超宽部分直接丢弃，长实参在检查器不可见）
-    改为**换行显示完整**（``_tree_row_wrap`` → ``wrap_runs_by_width`` hard
-    字符级硬拆，与检查器纯文本 ``_wrap_by_width`` 同语义）——续行带
-    hanging indent（缩进到首行内容起始列，值与层级视觉连贯）；极窄栏
-    （缩进 >= 栏宽）续行不缩进（预算不足防御，内容仍完整）。换行增多的
-    行数由检查器滚动窗口（vim j/k/g/G）浏览，受 ``_INSPECTOR_MAX_ROWS``
-    上限保护。
-
-    ★ 2026-08-19（用户需求：树控件按空格可以展开和收缩，默认展开所有）：
-    ``collapsed`` 为**折叠节点路径 key 集合**（空集合/None = 全部展开——
-    默认）——折叠节点不递归 children（其子级行不进入可见列表，与 ink Tree
-    控件 ``_collect_visible`` 同语义），指示符切换为 ``▸``（_TREE_CLOSED）。
-    节点路径 key（``path`` 递归拼接：``f"{path}/{i}"``，根为 ``"i"``——
-    同数据同 key 稳定，可区分同 label 兄弟）写入 ``keys``（与 out 行对齐：
-    可折叠节点首行 = 节点 key，叶子/续行为 None）——检查器空格切换展开/
-    收缩经此把光标行映射到节点。参数树/返回值树经 ``path="args"/"res"``
-    前缀隔离（两树路径 key 不冲突）。
-
-    ★ BEAUTY-36（2026-08-19 美化）：键/值分色——``key: value`` 形态的叶子
-    行键（含缩进 + 展开指示符）浅紫蓝（_S_TREE_KEY 75）、值亮白
-    （_S_TREE_VAL 252），树形参数/返回值的层级更易扫读；无 ``": "``
-    分隔（纯值/纯文本行）整行 _S_TEXT（零回归）。
-    """
-    if depth > _TREE_MAX_DEPTH:
-        return
-    for i, node in enumerate(nodes):
-        node_path = f"{path}/{i}" if path else str(i)
-        children = node.get("children") or []
-        folded = bool(collapsed) and node_path in collapsed
-        if children:
-            indicator = _TREE_CLOSED if folded else _TREE_OPEN
-        else:
-            indicator = _TREE_LEAF
-        prefix = " " * (depth * _TREE_INDENT)
-        label = node.get("label", "")
-        if "\n" in label:
-            label = label.replace("\n", " ")
-        sep_idx = label.find(": ")
-        if sep_idx >= 0:
-            runs = [
-                StyledRun(f"{prefix}{indicator}{label[:sep_idx]}: ", _S_TREE_KEY),
-                StyledRun(label[sep_idx + 2:], _S_TREE_VAL),
-            ]
-        else:
-            runs = [StyledRun(f"{prefix}{indicator}{label}", _S_TEXT)]
-        _tree_row_wrap(
-            runs, len(prefix) + len(indicator), max(1, right_w), out,
-            node_key=node_path if children else None, keys=keys,
-        )
-        if children and not folded:
-            _tree_node_rows(
-                children, right_w, out, depth + 1, collapsed, node_path, keys,
-            )
-
-
-def _tree_row_wrap(runs: list, hang: int, right_w: int, out: list,
-                   node_key: str | None = None, keys: list | None = None) -> None:
-    """树行换行：首行预算 right_w；续行 hanging indent=hang（内容完整）。
-
-    ★ 用户需求（2026-08-19：轨迹 Trace 的工具的实参要显示完整）：修复前
-    ``truncate_runs(runs, right_w)`` 直接丢弃超宽部分——长实参（bash
-    command / update_file old_string 全文等）在轨迹检查器不可见。换行后
-    每行宽度 <= right_w（行级 diff 宽度不变量保持）；续行缩进 hang 列
-    （对齐首行内容起始列——值与层级视觉连贯）；hang >= right_w（极窄栏）
-    时续行不缩进（预算不足防御，内容仍完整）。宽度依据
-    ``wrap_runs_by_width``（hard 字符级硬拆，与检查器纯文本换行同语义——
-    CJK 安全、不拆宽字符）。
-
-    ★ 2026-08-19（树控件空格展开/收缩）：``keys`` 与 out 行对齐——首行写
-    ``node_key``（可折叠节点路径 key；叶子 None）、续行写 None（换行行
-    不可折叠）。检查器空格经 ``row_keys[cursor]`` 定位光标所在节点。
-    """
-    if keys is not None:
-        keys.append(node_key)
-    if right_w <= 0:
-        out.append(list(runs))
-        return
-    if not runs:
-        out.append([])
-        return
-    lines = wrap_runs_by_width(runs, right_w, hard=True)
-    out.append(list(lines[0].runs))
-    if len(lines) <= 1:
-        return
-    rest: list = []
-    for ln in lines[1:]:
-        rest.extend(ln.runs)
-    indent = hang if hang < right_w else 0
-    cont_w = max(1, right_w - indent)
-    for ln in wrap_runs_by_width(rest, cont_w, hard=True):
-        if keys is not None:
-            keys.append(None)
-        row = [StyledRun(" " * indent, None)] if indent else []
-        row.extend(ln.runs)
-        out.append(row)
 
 
 def _tool_tree_rows(rec, right_w: int, collapsed: set | None = None) -> tuple:

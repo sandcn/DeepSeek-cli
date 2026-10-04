@@ -28,7 +28,7 @@ from src.tui._const import (
     UserMsgCmd, NotificationCmd, ErrorCmd,
     WriteLineCmd, DisplayMsgsCmd, ClearMsgsCmd,
 )
-from src.renderer._locks import render_lock
+from src.renderer.locks import render_lock
 from src.tui.state.consumer_registry import (
     _register_consumer,
     _unregister_consumer,

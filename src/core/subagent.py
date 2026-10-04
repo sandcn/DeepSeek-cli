@@ -16,7 +16,10 @@ from typing import List, Dict, Any, Optional, Tuple, Callable
 from .base_agent import BaseAgent
 from .tool_executor_async import ToolScheduler
 from .exceptions import is_network_error
-from ..tools._tool_policy import _TOOL_EXCLUSION_MAP, _get_excluded_tools  # noqa: F401 — re-export 兼容
+from ..tools.tool_policy import TOOL_EXCLUSION_MAP, get_excluded_tools
+# 旧私有名 re-export 兼容（既有测试/外部引用沿用）
+_TOOL_EXCLUSION_MAP = TOOL_EXCLUSION_MAP  # noqa: F401
+_get_excluded_tools = get_excluded_tools  # noqa: F401
 
 _logger = logging.getLogger(__name__)
 
@@ -57,7 +60,7 @@ class SubAgent(BaseAgent):
         self._model_port = model_port or getattr(parent_agent, '_async_model_port', None)
 
         self.model = model or parent_agent.model
-        excluded = _get_excluded_tools(agent_type)
+        excluded = get_excluded_tools(agent_type)
         self.tools = [t for t in self._registry.get_schemas()
                       if t.get("function", {}).get("name") not in excluded]
 
@@ -353,7 +356,8 @@ class SubAgent(BaseAgent):
                     messages, model, tools, display, label, silent,
                 )
             return result.reasoning, result.content, result.usage, result.tool_calls
-        from ..api.model_async import call_model as _sync_call_model
+        from .adapters.model import get_sync_call_model
+        _sync_call_model = get_sync_call_model()
         result = await asyncio.to_thread(_sync_call_model, messages, model, tools, display, label, silent)
         return result
 

@@ -5,7 +5,7 @@
 
 迁移说明（2026-07-29 TUI 重构）：
   - 从 src/tui/widgets/_snapshot.py 迁移至 TUI 根层级
-  - 导入路径更新为 ..api.stats
+  - 导入路径更新为 ..core.stats
 
 消费方说明（2026-07-31 方向F）：本模块仅含私有函数 ``_get_snapshot``，
 **非死代码**——被 ``src/tui/app/status_bar.py`` 的 ``_snapshot()``（状态栏
@@ -44,7 +44,7 @@ def _get_snapshot():
     global _TOKEN_SPEED_SNAPSHOT
     if _TOKEN_SPEED_SNAPSHOT is None:
         try:
-            from ..api.stats import get_token_speed_snapshot
+            from ..core.stats import get_token_speed_snapshot
             _TOKEN_SPEED_SNAPSHOT = get_token_speed_snapshot
         except Exception:
             _logger.debug("token 速度快照惰性加载失败，标记不可用", exc_info=True)

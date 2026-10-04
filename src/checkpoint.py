@@ -33,7 +33,7 @@ def save_checkpoint(messages: list[dict], model: str,
                 raw = msg.get("content", "") or ""
                 if isinstance(raw, list):
                     try:
-                        from .api.multimodal import content_to_text
+                        from .core.multimodal import content_to_text
                         raw = content_to_text(raw)
                     except Exception:
                         raw = ""

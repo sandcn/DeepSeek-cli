@@ -340,7 +340,7 @@ def _prepare_round(session) -> None:
 
 def _snapshot_token_stats(session) -> tuple[int, int, int]:
     """获取前置 token 统计快照，返回 (prev_input, prev_output, prev_calls)。"""
-    from ....api.stats import get_token_stats
+    from ...stats import get_token_stats
     current = get_token_stats()
     return current["input"], current["output"], current["calls"]
 
@@ -422,7 +422,7 @@ def _compute_token_delta(session, prev_stats: tuple[int, int, int]) -> dict:
     Returns:
         {"input": int, "output": int, "calls": int}
     """
-    from ....api.stats import get_token_stats
+    from ...stats import get_token_stats
     prev_input, prev_output, prev_calls = prev_stats
     current = get_token_stats()
     delta = {
@@ -450,7 +450,7 @@ def _emit_round_events(session, interrupted: bool, session_id: str | None,
     """发射 round 事件，返回结果字典。
     interrupted 分支中无条件调用 save_checkpoint() 确保中断时持久化状态。
     """
-    from ....api.stats import get_token_stats, get_session_start_time
+    from ...stats import get_token_stats, get_session_start_time
 
     current = get_token_stats()
     elapsed = time.time() - get_session_start_time()

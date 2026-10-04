@@ -1,6 +1,6 @@
 """输出适配器 — 默认输出实现
 
-职责：桥接核心层与基础设施层（tui.events / renderer._locks）。
+职责：桥接核心层与基础设施层（tui.events / renderer.locks）。
 适配器层允许导入 tui/ 模块（这是适配器层的职责——桥接核心与基础设施）。
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ class DefaultOutputAdapter(OutputPort):
 
     def _get_lock(self):
         if self._lock is None:
-            from ...renderer._locks import render_lock
+            from ...renderer.locks import render_lock
             self._lock = render_lock
         return self._lock
 

@@ -114,7 +114,7 @@ async def test_user_select_tool_cleanup_preserves_seq(monkeypatch):
     monkeypatch.setattr(us_mod, "sys", _FakeSys(_FakeStdin()))
     model = AppModel()
     fake = _FakeChatUI(model)
-    monkeypatch.setattr(us_mod, "get_active_chat_ui", lambda: fake)
+    monkeypatch.setattr(us_mod, "get_display_target", lambda: fake)
 
     async def fake_sleep(_sec):
         # 模拟组件确认（first-write-wins：done 已置位则放弃）

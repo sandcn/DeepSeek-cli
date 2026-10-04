@@ -38,7 +38,7 @@ import threading
 from pathlib import Path
 from typing import Callable
 
-from src.api.escape_monitor._history import _HISTORY_MAX_ENTRIES
+from src.api.escape_monitor.history import _HISTORY_MAX_ENTRIES
 
 # ★ 历史写盘（模块边界优化，2026-08-05）：_safe_disk_append /
 #   _HistoryDiskWriter / _HISTORY_DISK_WRITER 迁至 _history_disk.py（后台

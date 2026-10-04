@@ -42,7 +42,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from src.api.escape_monitor._history import (
+from src.api.escape_monitor.history import (
     _read_history_file,
     _append_to_history_file,
     _compact_history_file,

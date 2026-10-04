@@ -17,7 +17,7 @@ from .client_async import (
 from .tokens import estimate_tokens
 from .interrupt_async import is_interrupted_async
 from .stream.pipeline_async import stream_call_async
-from .stats import (
+from ..core.stats import (
     accumulate_usage, set_tool_parse_elapsed, set_stream_speed,
     add_token_size,
 )

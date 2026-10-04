@@ -155,6 +155,40 @@ def test_full_ast_imports_have_no_cycles():
     assert not cycles, f"检测到循环依赖环: {[sorted(c) for c in cycles]}"
 
 
+# 基础设施层包前缀（不得直接依赖表现层）
+_INFRA_PREFIXES = (
+    "src.api", "src.tools", "src.mcp", "src.skills", "src.prompt_builder",
+)
+
+
+def test_infrastructure_does_not_depend_on_presentation():
+    """基础设施层（api/tools/mcp/skills/prompt_builder）不得直接 import 表现层。
+
+    基础设施层需要表现层能力（输出/显示/diff 渲染/交互 UI）时，一律经
+    核心层端口/协议（``core.display_target``、``core.ports``、
+    ``core.events`` 等）依赖倒置访问。
+    """
+    violations = []
+    for prefix in _INFRA_PREFIXES:
+        pkg_dir = os.path.join(SRC_DIR, *prefix.split(".")[1:])
+        if not os.path.isdir(pkg_dir):
+            continue
+        for path in _iter_py_files(pkg_dir):
+            mod = _module_name(path)
+            if not mod.startswith(prefix):
+                continue
+            try:
+                tree = ast.parse(open(path, encoding="utf-8").read())
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            for node in ast.walk(tree):
+                for target in _import_targets(node, mod):
+                    for forbidden in _FORBIDDEN_PREFIXES:
+                        if target == forbidden or target.startswith(forbidden + "."):
+                            violations.append(f"{mod} → {target} (L{node.lineno})")
+    assert not violations, "基础设施层违规依赖表现层:\n" + "\n".join(violations)
+
+
 def test_core_domain_does_not_depend_on_presentation():
     """core 领域层不得直接 import 表现层（tui/renderer）。"""
     violations = []

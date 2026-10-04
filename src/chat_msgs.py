@@ -22,7 +22,7 @@ from pathlib import Path
 
 import logging
 
-from .api.stats import get_token_stats
+from .core.stats import get_token_stats
 from .tui.events.consumers import publish_output
 from .paths import CHAT_MSGS_DIR, ensure_chat_msgs_dir
 
@@ -50,7 +50,7 @@ def _content_to_text(content) -> str:
     表摘要等场景需要其中的文本部分）。统一归一化，避免四处行为分叉。
     """
     try:
-        from .api.multimodal import content_to_text as _impl
+        from .core.multimodal import content_to_text as _impl
         return _impl(content)
     except Exception:
         # 防御回退（content_to_text 内部已对 str/list/None 做兜底）

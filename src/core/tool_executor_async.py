@@ -26,8 +26,8 @@ import logging
 import time
 from typing import Any, List, Tuple, Optional, Callable
 
-from ..tools.registry import ToolRegistry
-from ..tools.base import ToolResult
+from .ports.tools import ToolResult, ToolRegistryPort
+from .adapters.tools import get_default_tool_registry
 from .param_formatter import extract_key_params
 from .tool_dag import ToolDAG
 
@@ -53,14 +53,14 @@ class ToolScheduler:
     # 类级 Semaphore（所有实例共享）
     _semaphore: Optional[asyncio.Semaphore] = None
 
-    def __init__(self, registry: Optional[ToolRegistry] = None):
+    def __init__(self, registry: Optional[ToolRegistryPort] = None):
         """初始化调度器。
 
         Args:
-            registry: 工具注册表，None 时使用 ToolRegistry.default()。
+            registry: 工具注册表，None 时使用默认工具注册表（延迟导入）。
                       保留可选参数用于测试注入 mock registry。
         """
-        self._registry = registry or ToolRegistry.default()
+        self._registry = registry or get_default_tool_registry()
 
         # 类级 Semaphore 懒初始化（跨所有实例共享，0 表示无限制）
         if ToolScheduler._semaphore is None and _MAX_CONCURRENT_TOOLS > 0:

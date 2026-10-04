@@ -31,19 +31,19 @@ _INSTRUCTIONS_MAX = 500
 def register_tool_policy(tool_names: List[str], allowed_agents: Optional[set] = None) -> None:
     """把 MCP 工具名写入 SubAgent 工具排除表（默认仅 execute 型可用）。
 
-    实现方式：动态维护 ``src.core.subagent._TOOL_EXCLUSION_MAP``——
+    实现方式：动态维护 ``src.tools.tool_policy.TOOL_EXCLUSION_MAP``——
     未授权该工具的 agent 类型把工具名加入排除集合，授权的移除。
     主 Agent 不受该表约束（其工具列表为注册表全集）。
     """
     allowed = set(allowed_agents or DEFAULT_AGENT_TYPES)
     try:
-        from ..tools._tool_policy import _TOOL_EXCLUSION_MAP
+        from ..tools.tool_policy import TOOL_EXCLUSION_MAP
     except Exception:
-        _logger.debug("导入 _TOOL_EXCLUSION_MAP 失败，跳过 MCP 权限策略", exc_info=True)
+        _logger.debug("导入 TOOL_EXCLUSION_MAP 失败，跳过 MCP 权限策略", exc_info=True)
         return
     for name in tool_names:
         for agent_type in VALID_AGENT_TYPES:
-            excluded = _TOOL_EXCLUSION_MAP.get(agent_type)
+            excluded = TOOL_EXCLUSION_MAP.get(agent_type)
             if not isinstance(excluded, set):
                 continue
             if agent_type in allowed:
@@ -55,12 +55,12 @@ def register_tool_policy(tool_names: List[str], allowed_agents: Optional[set] = 
 def unregister_tool_policy(tool_names: List[str]) -> None:
     """从所有 agent 类型的排除集合中移除 MCP 工具名（关闭时清理）。"""
     try:
-        from ..tools._tool_policy import _TOOL_EXCLUSION_MAP
+        from ..tools.tool_policy import TOOL_EXCLUSION_MAP
     except Exception:
         return
     for name in tool_names:
         for agent_type in VALID_AGENT_TYPES:
-            excluded = _TOOL_EXCLUSION_MAP.get(agent_type)
+            excluded = TOOL_EXCLUSION_MAP.get(agent_type)
             if isinstance(excluded, set):
                 excluded.discard(name)
 
@@ -259,10 +259,10 @@ class McpManager:
         if not agent_type:
             return set()
         try:
-            from ..tools._tool_policy import _TOOL_EXCLUSION_MAP
+            from ..tools.tool_policy import TOOL_EXCLUSION_MAP
         except Exception:
             return set()
-        excluded = _TOOL_EXCLUSION_MAP.get(agent_type)
+        excluded = TOOL_EXCLUSION_MAP.get(agent_type)
         return set(excluded) if isinstance(excluded, set) else set()
 
     def build_prompt_section(self, agent_type: Optional[str] = None) -> str:
@@ -270,7 +270,7 @@ class McpManager:
 
         Args:
             agent_type: 目标 agent 类型（map/review/plan/execute）。给定时会
-                按 ``_TOOL_EXCLUSION_MAP`` 过滤掉该类型不可用的 MCP 工具，
+                按 ``TOOL_EXCLUSION_MAP`` 过滤掉该类型不可用的 MCP 工具，
                 避免提示词宣称的工具与 SubAgent 实际工具集不一致
                 （模型发起必然被拒的调用）。None 表示不过滤（主 Agent 全量）。
         """

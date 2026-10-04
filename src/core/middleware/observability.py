@@ -68,7 +68,7 @@ class _AsyncObservabilityMiddleware(AsyncMiddleware):
                 content = chars_total.get("content", "") or ""
                 if isinstance(content, list):
                     try:
-                        from ...api.multimodal import content_to_text
+                        from ..multimodal import content_to_text
                         return content_to_text(content)
                     except Exception:
                         return ""

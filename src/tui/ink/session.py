@@ -30,7 +30,7 @@ from src.tui._const import (
     ANSI_EMERGENCY_RESET,
 )
 from src.tui._config import TuiConfig
-from src.renderer._locks import _try_acquire_output_lock
+from src.renderer.locks import _try_acquire_output_lock
 from src.tui._screen import (
     TerminalWidthCache,
     _get_terminal_size,

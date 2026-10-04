@@ -5,7 +5,7 @@ from __future__ import annotations
 import time as _time
 from src._compat import dataclass
 from ...constants import DIM, RESET, TEAL
-from ....api.stats import get_token_stats, get_session_start_time
+from ...stats import get_token_stats, get_session_start_time
 from ...constants import format_token_k
 
 

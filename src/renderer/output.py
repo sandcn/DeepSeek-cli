@@ -24,7 +24,7 @@ from rich.text import Text
 import logging
 import time
 from io import StringIO
-from ._locks import _try_acquire_output_lock
+from .locks import _try_acquire_output_lock
 
 _logger = logging.getLogger(__name__)
 

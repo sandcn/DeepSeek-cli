@@ -29,7 +29,7 @@ from src.tui._const import NotificationCmd, RenderCommand
 # ── 测试辅助 ─────────────────────────────────────────────
 
 class _Capture:
-    """捕获 emit(event) 调用（monkeypatch src.tui.events.publish.emit）。"""
+    """捕获 emit(event) 调用（monkeypatch src.core.events.publish.emit）。"""
 
     def __init__(self):
         self.events: list = []
@@ -41,7 +41,7 @@ class _Capture:
 @pytest.fixture()
 def capture_emit(monkeypatch):
     cap = _Capture()
-    import src.tui.events.publish as publish_mod
+    import src.core.events.publish as publish_mod
     monkeypatch.setattr(publish_mod, "emit", cap)
     return cap
 
@@ -130,7 +130,7 @@ def test_publish_tool_notice_exception_swallowed(capture_emit, monkeypatch):
     def _boom(event, *, bus=None):
         raise RuntimeError("bus down")
 
-    monkeypatch.setattr("src.tui.events.publish.emit", _boom)
+    monkeypatch.setattr("src.core.events.publish.emit", _boom)
     Func._publish_tool_notice("警告：y", "call_4")  # 不应抛出
 
 

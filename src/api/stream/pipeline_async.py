@@ -32,7 +32,7 @@ from ..stream_parse import convert_tool_calls_map_with_status
 from .context import StreamContext
 from .handlers import ReasoningHandler, ContentHandler, ToolCallsHandler, SpeedHandler
 from ...core.constants import YELLOW, RESET
-from ...tui.events.consumers import publish_output
+from ...core.events.publish import publish_output
 
 _logger = logging.getLogger(__name__)
 

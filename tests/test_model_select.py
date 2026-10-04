@@ -359,9 +359,9 @@ async def test_plugin_popup_keeps_render_thread_alive(monkeypatch):
         flush_calls.append(input_instance)
 
     monkeypatch.setattr(
-        "src.api.interrupt_async.flush_stdin", fake_flush_stdin,
+        "src.core.interrupt_state.flush_stdin", fake_flush_stdin,
     )
-    # model_plugin 经 from ....api.interrupt_async import flush_stdin 延迟导入
+    # model_plugin 经 from ...interrupt_state import flush_stdin 延迟导入
     # （_prepare_selection_input 内函数体 import）——patch 源模块即可命中。
 
     async def fake_to_thread(fn, *args):
@@ -403,7 +403,7 @@ async def test_plugin_with_args_direct_switch(monkeypatch):
     def fake_flush_stdin(input_instance=None):
         flush_calls.append(input_instance)
 
-    monkeypatch.setattr("src.api.interrupt_async.flush_stdin", fake_flush_stdin)
+    monkeypatch.setattr("src.core.interrupt_state.flush_stdin", fake_flush_stdin)
 
     async def fake_to_thread(fn, *args):
         ctx = args[0]

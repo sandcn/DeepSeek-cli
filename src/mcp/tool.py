@@ -160,7 +160,7 @@ class _McpToolBase(Func):
 def _model_supports_images(tool) -> bool:
     """当前 Agent 模型是否支持多模态（决定是否附图片 blocks）。"""
     try:
-        from ..api.multimodal import is_multimodal_model
+        from ..core.multimodal import is_multimodal_model
         model = getattr(getattr(tool, "agent", None), "model", None)
         return bool(is_multimodal_model(model))
     except Exception:

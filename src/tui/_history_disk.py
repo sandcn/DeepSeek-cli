@@ -2,7 +2,7 @@
 
 模块边界（2026-08-05 架构优化）：从 ``_input_buffer.py`` 拆分——历史持久化
 为独立职责（后台线程 + 队列），与输入缓冲编辑（InputBufferEditor）解耦。
-本模块无输入状态依赖，仅依赖 ``src.api.escape_monitor._history`` 的写盘
+本模块无输入状态依赖，仅依赖 ``src.api.escape_monitor.history`` 的写盘
 适配器协议（``history_io.append``）。
 
 设计（review 方向，2026-08-05 线程模型收敛）：替代原「每 Enter 创建 daemon

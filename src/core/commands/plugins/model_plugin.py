@@ -104,7 +104,7 @@ class ModelPlugin(InteractiveCommandPlugin):
         插件的入口清理语义一致。
         """
         try:
-            from ....api.interrupt_async import flush_stdin
+            from ...interrupt_state import flush_stdin
             flush_stdin(input_instance=chat_ui.get_input() if chat_ui is not None else None)
         except Exception:
             _logger.debug("ModelPlugin flush_stdin 异常", exc_info=True)

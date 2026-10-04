@@ -43,7 +43,7 @@ from src._compat_termios import HAS_TERMIOS, termios
 # P3-1 说明：从 escape_monitor._history 导入仅取常量（_EOF_THRESHOLD /
 # _SELECT_ERROR_THRESHOLD），不导入历史 I/O 函数；阈值常量收敛在
 # escape_monitor 模块（既有真源），不复制魔数。
-from src.api.escape_monitor._history import (
+from src.api.escape_monitor.history import (
     _EOF_THRESHOLD,
     _SELECT_ERROR_THRESHOLD,
 )

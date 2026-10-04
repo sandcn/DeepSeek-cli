@@ -24,4 +24,13 @@ def get_output_publisher():
     return publish_output
 
 
-__all__ = ["get_display_target", "get_output_publisher"]
+def get_diff_renderer():
+    """返回文件 diff 渲染函数（render_diff_to_ansi）；表现层不可用时 None。"""
+    try:
+        from ...tui._diff_renderer import render_diff_to_ansi
+    except ImportError:
+        return None
+    return render_diff_to_ansi
+
+
+__all__ = ["get_display_target", "get_output_publisher", "get_diff_renderer"]
