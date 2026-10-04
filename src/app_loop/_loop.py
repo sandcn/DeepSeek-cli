@@ -473,8 +473,10 @@ class InteractiveLoop:
     # ── UI 生命周期管理 ──────────────────────────────────
 
     def _setup_chat_ui(self):
-        """初始化 ChatUI 消费者并显示启动信息"""
-        self._chat_ui = ChatUIConsumer()
+        """初始化 ChatUI 消费者并显示启动信息（内核 ui 服务优先）"""
+        from ._ui_factory import create_chat_ui
+
+        self._chat_ui = create_chat_ui()
         self._chat_ui.start()
 
     def _teardown_chat_ui(self):

@@ -70,12 +70,14 @@ class SessionManager:
         Returns:
             初始化好的 ChatSession 实例
         """
-        session = ChatSession(
+        # 内核 sessions 服务优先（一切皆插件），回退直接构造并 initialize。
+        from .app_loop._session_factory import create_session
+
+        session = create_session(
             persistence_port=self._ctx.persistence_port,
             checkpoint_port=self._ctx.checkpoint_port,
             config_port=self._ctx.config_port,
         )
-        session.initialize()
         self._ctx.session = session
         return session
 

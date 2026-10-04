@@ -71,7 +71,17 @@ class Func(abc.ABC):
             - True + None：可以使用
             - False + 错误信息：不可使用，附带原因
         """
-        # 工具可用性策略（单一真源 tools/tool_policy）
+        # 工具可用性策略：内核策略插件优先（「一切皆插件」），缺失时回退静态真源。
+        # 经 kernel.runtime（零业务依赖）解析，避免 tools → core.adapters 循环。
+        try:
+            from ..kernel.runtime import active_service
+
+            policy = active_service("policy")
+        except Exception:
+            policy = None
+        if policy is not None:
+            return policy.check(tool_name, agent_type, path)
+
         from .tool_policy import get_excluded_tools
         excluded = get_excluded_tools(agent_type)
         if tool_name in excluded:

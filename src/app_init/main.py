@@ -1,6 +1,10 @@
 """应用主入口 — 从 app_init.py 拆分而来
 
 包含 async main() 函数，是应用的异步入口点。
+
+「一切皆插件」：main() 作为组合根，从 Profile（默认 cli）构建内核插件树，
+工具、技能、MCP、模型适配器、Agent 循环、会话、命令、事件、UI/渲染器、
+策略均由内核插件提供；运行时组件经内核服务解析（无内核时回退默认实现）。
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from ._args import _parse_args, VERSION
 from ._signal import SignalManager
 from ._session_cmd import _handle_session_command
 from ._config_cmd import _handle_config_command
+from ._plugin_cmd import _handle_plugin_command
 
 from ..chat_msgs import load_session, list_sessions
 from ..tui.events import OutputConsumer
@@ -24,6 +29,8 @@ from ..api.escape_monitor import stop_active_monitor
 from ..application import Application, AppContext, InteractiveMode, SingleMode
 
 _logger = logging.getLogger(__name__)
+
+_DEFAULT_PROFILE = "cli"
 
 
 async def main():
@@ -56,6 +63,9 @@ async def main():
     output_consumer = OutputConsumer(chat_ui_managed=True)
     output_consumer.start()
 
+    profile = getattr(args, "profile", "") or _DEFAULT_PROFILE
+    patch_paths = list(getattr(args, "patch", None) or [])
+
     # ── 处理版本信息 ──
     # ★ 修复（2026-08-20）：版本分支须在 output_consumer.start() 之后
     #   publish_output（输出经 EventBus → OutputConsumer 消费）——修复前在
@@ -63,6 +73,25 @@ async def main():
     if args.version or args.command == 'version':
         try:
             publish_output(f"  Chat {VERSION}", level="raw")
+        finally:
+            output_consumer.stop()
+        return
+
+    # ── 打印最终运行时插件配置（Profile/Bundle/Patch）后退出 ──
+    if getattr(args, "dump_config", False) or args.command == 'dump-config':
+        try:
+            from ..plugins.bootstrap import dump_profile
+            publish_output(dump_profile(profile, patch_paths=patch_paths), level="raw")
+        except Exception as exc:  # noqa: BLE001 - 展示错误后退出
+            publish_output(f"  ❌ dump-config 失败: {exc}", level="raw")
+        finally:
+            output_consumer.stop()
+        return
+
+    # ── 插件管理（list/add/remove）——不需要构建内核 ──
+    if args.command == 'plugin':
+        try:
+            _handle_plugin_command(args)
         finally:
             output_consumer.stop()
         return
@@ -88,15 +117,36 @@ async def main():
     signal_mgr = SignalManager()
     signal_mgr.register_handlers()
 
+    kernel = None
+    mcp = None
     try:
+        # ── 构建内核插件树（一切皆插件的组合根） ──
+        from ..plugins.bootstrap import build_kernel, shutdown_kernel
+        kernel = await build_kernel(profile, patch_paths=patch_paths)
+        mcp = kernel.resolve_service("mcp")
+
         # ── MCP 外部工具接入：连接配置的 MCP server 并注册其工具 ──
         # 未配置 mcp_servers 时零开销（不建连接、不注册工具）；单个 server
         # 连接/发现失败只记 WARNING 并跳过，不阻断应用启动。
-        try:
-            from ..mcp import setup_mcp
-            await setup_mcp()
-        except Exception:
-            _logger.warning("MCP 初始化失败（忽略，继续启动）", exc_info=True)
+        if mcp is not None:
+            try:
+                await mcp.setup_mcp()
+            except Exception:
+                _logger.warning("MCP 初始化失败（忽略，继续启动）", exc_info=True)
+
+        # ── 运行时不变量检查（--check-invariants）后退出 ──
+        if getattr(args, "check_invariants", False):
+            if kernel.has_service("invariants"):
+                failures = kernel.resolve_service("invariants").check()
+            else:
+                failures = ["invariants 插件未加载"]
+            if failures:
+                publish_output("  ✗ 运行时不变量检查失败:", level="raw")
+                for failure in failures:
+                    publish_output(f"    - {failure}", level="raw")
+            else:
+                publish_output("  ✓ 运行时不变量检查通过", level="raw")
+            return
 
         # ── run 模式 ──
 
@@ -141,11 +191,17 @@ async def main():
         logging.critical("应用崩溃", exc_info=True)
     finally:
         # ── 关闭 MCP 连接（注销动态工具 + 终止 stdio 子进程 / 关闭 HTTP 客户端） ──
+        if mcp is not None:
+            try:
+                await mcp.shutdown_mcp()
+            except Exception:
+                _logger.debug("MCP 关闭异常", exc_info=True)
+        # ── 卸载内核插件树（逆序撤销全部注册） ──
         try:
-            from ..mcp import shutdown_mcp
-            await shutdown_mcp()
+            from ..plugins.bootstrap import shutdown_kernel
+            await shutdown_kernel(kernel)
         except Exception:
-            _logger.debug("MCP 关闭异常", exc_info=True)
+            _logger.debug("内核卸载异常", exc_info=True)
         stop_active_monitor()
         if output_consumer is not None:
             output_consumer.stop()

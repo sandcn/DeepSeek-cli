@@ -28,6 +28,11 @@ from typing import Any, List, Tuple, Optional, Callable
 
 from .ports.tools import ToolResult, ToolRegistryPort
 from .adapters.tools import get_default_tool_registry
+from .adapters.kernel_runtime import (
+    tool_execute as _pipeline_execute,
+    tool_post_execute as _pipeline_post_execute,
+    tool_pre_execute as _pipeline_pre_execute,
+)
 from .param_formatter import extract_key_params
 from .tool_dag import ToolDAG
 
@@ -590,12 +595,43 @@ class ToolScheduler:
                 tc.get("name", "?"), exc_info=True,
             )
 
+        call_ctx = {
+            "id": tc.get("id", ""),
+            "name": tc["name"],
+            "arguments": tc.get("arguments") or {},
+            "agent": agent_ref,
+            "agent_type": getattr(agent_ref, "agent_type", None),
+        }
+
         try:
+            # ── 工具执行管线：pre-execute（allow/deny/ask） ──
+            decision = await _pipeline_pre_execute(call_ctx)
+            if isinstance(decision, dict) and decision.get("allow") is False:
+                output = decision.get("reason") or f"工具 {tc['name']} 被策略拒绝"
+                if on_after:
+                    try:
+                        on_after(tc, output, False)
+                    except Exception:
+                        _logger.warning("工具 %s on_after 回调异常（忽略）: %s",
+                                        tc.get("name", "?"), exc_info=True)
+                return (tc["id"], output, False)
+
             func = self._registry.dispatch(tc["name"], tc["arguments"], agent=agent_ref)
             # 注入 agent_type（SubAgent 通过此属性限制 plan 的写入路径）
             if hasattr(agent_ref, 'agent_type') and agent_ref.agent_type is not None:
                 func.agent_type = agent_ref.agent_type
-            output, success = await self._run_tool_func(func, tc, run_method)
+
+            async def _run_tool_func_via_pipeline():
+                return await self._run_tool_func(func, tc, run_method)
+
+            # ── 工具执行管线：execute（环绕超时/重试/审计） ──
+            result = await _pipeline_execute(call_ctx, _run_tool_func_via_pipeline)
+            if isinstance(result, tuple) and len(result) >= 2:
+                output, success = result[0], result[1]
+            else:
+                output, success = result, True
+            # ── 工具执行管线：post-execute（改写结果） ──
+            output = await _pipeline_post_execute(call_ctx, output)
             if on_after:
                 try:
                     on_after(tc, output, success)

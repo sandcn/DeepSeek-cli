@@ -104,17 +104,9 @@ class ChatSession:
         self._model: str = model or self._config_port.get_model()
 
         # 创建 Agent（注入 NullPort 避免 UI 依赖，传递 observability_port）
-        null_display = _NullDisplayPort()
-        null_event = _NullEventPort()
-        null_output = _NullOutputPort()
-        self._agent = agent or Agent(
-            model=self._model,
-            display_port=null_display,
-            event_port=null_event,
-            output_port=null_output,
-            sandbox=sandbox,
-            observability_port=self._observability_port,
-        )
+        # 「一切皆插件」：优先经内核 ctx.agent_loop 服务组装无 UI Agent；
+        # 内核缺失时回退直接构造（既有默认路径）。
+        self._agent = agent or self._create_default_agent(sandbox)
 
         # 上下文管理器（延迟初始化，需等待 messages 就绪）
         self._ctx_mgr: ContextManager | None = None
@@ -149,6 +141,29 @@ class ChatSession:
 
         # ── 消息管理器（延迟初始化，等待 messages 和 ctx_mgr 就绪） ──
         self._msg_mgr: SessionMessagingManager | None = None
+
+    def _create_default_agent(self, sandbox):
+        """创建默认无 UI Agent（内核 agent_loop 服务优先，回退 NullPort 构造）。"""
+        try:
+            from .adapters.kernel_runtime import active_headless_agent_factory
+
+            factory = active_headless_agent_factory()
+        except Exception:
+            factory = None
+        if factory is not None:
+            return factory(
+                model=self._model,
+                observability_port=self._observability_port,
+                sandbox=sandbox,
+            )
+        return Agent(
+            model=self._model,
+            display_port=_NullDisplayPort(),
+            event_port=_NullEventPort(),
+            output_port=_NullOutputPort(),
+            sandbox=sandbox,
+            observability_port=self._observability_port,
+        )
 
     def _init_msg_mgr(self) -> SessionMessagingManager:
         """惰性初始化消息管理器（需等待 ctx_mgr 就绪）。"""

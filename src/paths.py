@@ -13,6 +13,14 @@ CHAT_MSGS_DIR = CHAT_DIR / "msg_list"
 # 跨对话记忆文件（由 MainAgent 手动维护）保存在 .chat/memory/
 CHAT_MEMORY_DIR = CHAT_DIR / "memory"
 
+# 运行时自修改插件目录（cordis_define/run/stop/undefine 工具使用）
+RUNTIME_PLUGINS_DIR = CHAT_DIR / "runtime_plugins"
+
+
+def ensure_runtime_plugins_dir() -> None:
+    """确保 .chat/runtime_plugins/ 目录存在"""
+    RUNTIME_PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def ensure_memory_dir() -> None:
     """确保 .chat/memory/ 目录存在"""

@@ -9,7 +9,13 @@ from .internal.agent._tool_callbacks import ToolCallbackChain
 from .pipeline import Pipeline, PipelineContext
 from .tool_executor_async import ToolScheduler
 from .ports.tools import ToolRegistryPort
-from .adapters.tools import get_default_tool_registry
+from .adapters.tools import get_default_tool_registry  # noqa: F401  （re-export 兼容）
+from .adapters.kernel_runtime import (
+    active_tool_registry,
+    active_async_model_port,
+    active_config_port,
+    active_prompt_builder_port,
+)
 from ..core.ports import ConfigPort
 from ..core.adapters.prompt_builder import DefaultPromptBuilderAdapter
 from ..core.ports.observability import ObservabilityPort
@@ -64,10 +70,18 @@ class Agent(BaseAgent):
         # ToolCallbackChain — 工具回调链独立封装
         self._tool_callbacks = ToolCallbackChain(self)
 
-        self._registry = registry or get_default_tool_registry()
+        self._registry = registry or active_tool_registry()
 
         # ── 默认端口工厂（延迟导入） ────────────────────
         _defaults = _create_default_ports()
+
+        # ── 内核服务优先（一切皆插件）：无内核时回退默认适配器 ──
+        if prompt_builder_port is None:
+            prompt_builder_port = active_prompt_builder_port()
+        if async_model_port is None:
+            async_model_port = active_async_model_port()
+        if config_port is None:
+            config_port = active_config_port()
 
         # ── PromptBuilderPort ────────────────────────────
         self._prompt_builder_port = _resolve_port(prompt_builder_port, _defaults, "prompt_builder")

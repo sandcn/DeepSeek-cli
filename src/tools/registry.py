@@ -177,45 +177,18 @@ class ToolRegistry:
         """自动发现并注册所有工具到当前实例"""
         logger.info("开始自动发现工具...")
         _start = time.perf_counter()
-
-        package = sys.modules[__name__].__package__
-        if not package:
-            logger.warning("__package__ 为空，从 __name__ 推断包名: %s", __name__.rsplit('.', 1)[0])
-            package = __name__.rsplit('.', 1)[0]
-
-        try:
-            tools_package = importlib.import_module(package)
-            package_path = list(tools_package.__path__)
-        except (ImportError, AttributeError) as e:
-            logger.error(f"无法导入工具包: {e}")
-            return
-
-        for _, module_name, is_pkg in pkgutil.iter_modules(package_path):
-            if is_pkg:
-                continue
-
-            full_module_name = f"{package}.{module_name}"
-
-            try:
-                module = importlib.import_module(full_module_name)
-                logger.debug(f"导入模块: {full_module_name}")
-
-                for name, obj in vars(module).items():
-                    if (inspect.isclass(obj) and
-                        issubclass(obj, Func) and
-                        obj != Func and
-                        obj.__module__ == module.__name__ and
-                        obj.name is not None):
-
-                        self.register(obj)
-                        logger.info(f"发现并注册工具: {name} ({full_module_name})")
-
-            except Exception as e:
-                logger.error(f"导入模块失败 {full_module_name}: {e}")
-
+        for tool_class in discover_builtin_tools().values():
+            self.register(tool_class)
         logger.info(f"工具发现完成，共注册 {len(self._tools)} 个工具")
         elapsed = time.perf_counter() - _start
         logger.debug("工具发现耗时: %.2fms", elapsed * 1000)
+
+    def mark_initialized(self) -> None:
+        """标记注册表已初始化（显式注册路径使用，避免懒发现重复注册）。"""
+        self._initialized = True
+
+    def is_initialized(self) -> bool:
+        return self._initialized
 
     # ── 类方法 ──────────────────────────────────────────────
 
@@ -226,6 +199,48 @@ class ToolRegistry:
         if _default_registry is None:
             _default_registry = cls()
         return _default_registry
+
+
+# ============================================================
+#   内置工具发现（无副作用 — 返回 name → 工具类映射）
+# ============================================================
+
+def discover_builtin_tools() -> Dict[str, Type[Func]]:
+    """扫描 ``src.tools`` 包，返回内置工具类映射（name → class）。
+
+    纯函数：只导入模块并收集 ``Func`` 子类，不修改任何注册表。
+    供 ``ToolRegistry._discover_and_register`` 与内核 ``tools_builtin``
+    插件（显式以插件方式注册内置工具）共用。
+    """
+    package = sys.modules[__name__].__package__
+    if not package:
+        package = __name__.rsplit('.', 1)[0]
+
+    found: Dict[str, Type[Func]] = {}
+    try:
+        tools_package = importlib.import_module(package)
+        package_path = list(tools_package.__path__)
+    except (ImportError, AttributeError) as e:
+        logger.error(f"无法导入工具包: {e}")
+        return found
+
+    for _, module_name, is_pkg in pkgutil.iter_modules(package_path):
+        if is_pkg:
+            continue
+        full_module_name = f"{package}.{module_name}"
+        try:
+            module = importlib.import_module(full_module_name)
+        except Exception as e:
+            logger.error(f"导入模块失败 {full_module_name}: {e}")
+            continue
+        for name, obj in vars(module).items():
+            if (inspect.isclass(obj) and
+                    issubclass(obj, Func) and
+                    obj != Func and
+                    obj.__module__ == module.__name__ and
+                    obj.name is not None):
+                found.setdefault(obj.name, obj)
+    return found
 
 
 # ============================================================

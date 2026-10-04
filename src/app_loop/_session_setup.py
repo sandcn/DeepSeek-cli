@@ -12,7 +12,7 @@ from src._compat import dataclass
 
 from ._utils import _non_system_messages
 
-from ..core.session import ChatSession
+from ._session_factory import create_session
 from ..core.constants import DIM, RESET
 from ..core.stats import reset_token_speed
 from ..api.escape_monitor import EscapeMonitor
@@ -41,10 +41,8 @@ class _RoundResult:
 # ── 会话初始化 ──
 
 def _setup_session(loaded_data: dict | None = None, chat_ui=None) -> tuple:
-    """初始化会话并加载历史消息"""
-    from ._agent_factory import _make_event_agent
-    session = ChatSession(agent=_make_event_agent())
-    session.initialize()
+    """初始化会话并加载历史消息（内核 sessions 服务优先）"""
+    session = create_session(event_agent=True)
 
     state: SessionState = SessionState(model=session.model)
 

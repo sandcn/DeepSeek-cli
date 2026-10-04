@@ -52,7 +52,16 @@ def _parse_args() -> argparse.Namespace:
     # ── 全局选项默认值（所有子命令共享；-m/-v 实际参数注册在 run 子命令上，
     #   旧语法兼容把 -m/-v 放在 run 之后解析——见 p_run） ──
     parser.add_argument('--version', action='store_true', help='显示版本信息并退出')
-    parser.set_defaults(model='', verbose=0)
+    parser.add_argument('--dump-config', action='store_true',
+                        help='打印最终运行时插件配置（Profile/Bundle/Patch）后退出')
+    parser.add_argument('--profile', type=str, default='',
+                        help='选择插件 Profile（cli/headless/minimal/full，默认 cli）')
+    parser.add_argument('--patch', action='append', default=None,
+                        help='叠加插件 Overlay 文件（可多次；insert/replace/disable）')
+    parser.add_argument('--check-invariants', action='store_true',
+                        help='构建内核后运行运行时不变量检查并退出')
+    parser.set_defaults(model='', verbose=0, dump_config=False, profile='', patch=None,
+                        check_invariants=False)
 
     # ── 子命令 ──
     subparsers = parser.add_subparsers(dest='command', title='子命令')
@@ -71,6 +80,12 @@ def _parse_args() -> argparse.Namespace:
     p_run.add_argument('-m', '--model', type=str, default='', help='指定模型（覆盖配置文件）')
     p_run.add_argument('-v', '--verbose', action='count', default=0, help='增加日志详细度（-v INFO, -vv DEBUG）')
     p_run.add_argument('--version', action='store_true', help='显示版本信息并退出')
+    p_run.add_argument('--dump-config', action='store_true', help='打印最终运行时插件配置后退出')
+    p_run.add_argument('--profile', type=str, default='', help='选择插件 Profile（默认 cli）')
+    p_run.add_argument('--patch', action='append', default=None,
+                       help='叠加插件 Overlay 文件（可多次）')
+    p_run.add_argument('--check-invariants', action='store_true',
+                       help='构建内核后运行运行时不变量检查并退出')
 
     # session — 会话管理
     p_session = subparsers.add_parser('session', help='会话管理')
@@ -104,6 +119,21 @@ def _parse_args() -> argparse.Namespace:
 
     # version
     subparsers.add_parser('version', help='显示版本信息并退出')
+
+    # dump-config — 打印最终运行时插件配置
+    p_dump = subparsers.add_parser('dump-config', help='打印最终运行时插件配置（Profile/Bundle/Patch）')
+    p_dump.add_argument('--profile', type=str, default='', help='选择插件 Profile（默认 cli）')
+    p_dump.add_argument('--patch', action='append', default=None, help='叠加插件 Overlay 文件（可多次）')
+
+    # plugin — 插件管理（发现/安装/卸载）
+    p_plugin = subparsers.add_parser('plugin', help='插件管理（list/add/remove）')
+    p_plugin_sub = p_plugin.add_subparsers(dest='plugin_cmd', title='插件操作')
+    p_plugin_sub.add_parser('list', help='列出插件清单（内置/外部/entry-point）')
+    p_plugin_add = p_plugin_sub.add_parser('add', help='安装本地插件文件/目录')
+    p_plugin_add.add_argument('source', type=str, help='插件文件（.py）或目录路径')
+    p_plugin_add.add_argument('--name', type=str, default='', help='安装后的条目名（默认取文件名）')
+    p_plugin_rm = p_plugin_sub.add_parser('remove', help='卸载已安装插件')
+    p_plugin_rm.add_argument('name', type=str, help='插件条目名')
 
     # clawbot — 微信 ClawBot 远程控制
     p_clawbot = subparsers.add_parser(

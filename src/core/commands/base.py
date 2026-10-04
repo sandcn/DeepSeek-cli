@@ -262,5 +262,19 @@ def command_plugin(
 
 
 def get_plugin_registry() -> CommandPluginRegistry:
-    """获取全局命令插件注册表"""
+    """获取命令插件注册表（内核 ``ctx.commands`` 优先，回退全局单例）。
+
+    「一切皆插件」：内核挂载命令插件后，命令能力经内核服务解析；内核缺失
+    （单元测试、独立调用）或命令插件尚在构造中时回退全局单例。两者在正常
+    运行时指向同一实例（命令插件包装的正是该单例）。
+    """
+    try:
+        from ...kernel.runtime import active_service
+
+        service = active_service("commands")
+        registry = getattr(service, "registry", None) if service is not None else None
+        if registry is not None:
+            return registry
+    except Exception:
+        pass
     return _command_plugins

@@ -21,6 +21,12 @@ def get_active_chat_ui():
     return _fn()
 
 
+def create_chat_ui():
+    """创建 ChatUIConsumer（终端界面事件消费者）。"""
+    from ...tui.consumer import ChatUIConsumer as _cls
+    return _cls()
+
+
 def create_display_proxy(source: str = "", max_history: int = 3):
     """创建 BaseDisplay 接口代理（事件驱动显示）。"""
     from ...tui.events import EventBusDisplayProxy as _cls
@@ -115,6 +121,7 @@ def get_message_editor_helpers():
 
 __all__ = [
     "get_active_chat_ui",
+    "create_chat_ui",
     "create_display_proxy",
     "emit_display_event",
     "get_subagent_panel_controller",

@@ -1,0 +1,110 @@
+"""策略插件 — 提供 ``ctx.policy``。
+
+独立的运行时策略：工具可用性（按 agent 类型排除表）、文件写入路径白名单、
+沙盒管理。策略不提供新工具，只决定某次调用是否符合约束。
+
+策略经内核事件 ``tools/pre-execute``（waterfall）挂进工具执行管线：任何工具
+调用在 dispatch 之前先经策略裁决，拒绝则直接返回拒绝结果（与 dsh 的
+``tools/pre-execute`` allow/deny 决策瀑布同构）。
+"""
+
+from __future__ import annotations
+
+import logging
+
+from ..kernel import Service, plugin
+
+_logger = logging.getLogger(__name__)
+
+
+class PolicyService(Service):
+    """策略服务 — 占据 ``ctx.policy``。"""
+
+    provide = "policy"
+    name = "policy"
+
+    def __init__(self, ctx, config=None):
+        super().__init__(ctx, config)
+        # 注册策略钩子（注册即副作用；卸载时自动移除）
+        ctx.on("tools/pre-execute", self._on_pre_execute)
+
+    # ── 工具可用性 ───────────────────────────────────────
+
+    def excluded_tools(self, agent_type: str = "execute") -> set:
+        from ..tools.tool_policy import TOOL_EXCLUSION_MAP
+
+        return set(TOOL_EXCLUSION_MAP.get(agent_type, TOOL_EXCLUSION_MAP["execute"]))
+
+    def exclusion_map(self) -> dict:
+        from ..tools.tool_policy import TOOL_EXCLUSION_MAP
+
+        return TOOL_EXCLUSION_MAP
+
+    def check(self, tool_name: str, agent_type: str = "execute", path: str | None = None):
+        """裁决某次工具调用是否允许（不经过全局函数，避免解析递归）。"""
+        from ..tools.tool_policy import TOOL_EXCLUSION_MAP
+
+        if agent_type in TOOL_EXCLUSION_MAP and tool_name in TOOL_EXCLUSION_MAP[agent_type]:
+            return (
+                False,
+                f"工具 '{tool_name}' 不可用于 '{agent_type}' 类型 agent，"
+                f"该 agent 类型的工具白名单已排除此工具",
+            )
+        if path is not None and agent_type == "plan" and tool_name in (
+            "write_file",
+            "update_file",
+            "mkdir",
+        ):
+            from ..tools.file_ops import get_plan_allowed_dir, is_path_within_dir
+
+            allowed_dir = get_plan_allowed_dir()
+            if not is_path_within_dir(path, allowed_dir):
+                import os
+
+                return (
+                    False,
+                    f"plan agent 只能在 {allowed_dir} 目录下写入文件。"
+                    f"当前路径: {path}（解析后: {os.path.realpath(path)}），"
+                    f"不在允许的目录: {allowed_dir}",
+                )
+        return (True, None)
+
+    def can_use(self, tool_name: str, agent_type: str = "execute", path: str | None = None):
+        from ..tools.base import Func
+
+        return Func.can_use(tool_name, agent_type, path)
+
+    # ── 工具执行管线钩子 ─────────────────────────────────
+
+    async def _on_pre_execute(self, call, next_):
+        agent_type = call.get("agent_type") or "execute"
+        arguments = call.get("arguments") or {}
+        path = arguments.get("path") if isinstance(arguments, dict) else None
+        allowed, reason = self.check(call.get("name", ""), agent_type, path)
+        if not allowed:
+            return {"allow": False, "reason": reason}
+        return await next_()
+
+    # ── 文件路径白名单 ───────────────────────────────────
+
+    def plan_allowed_dir(self) -> str:
+        from ..tools.file_ops import get_plan_allowed_dir
+
+        return get_plan_allowed_dir()
+
+    def is_path_allowed(self, path: str) -> bool:
+        from ..tools.file_ops import get_plan_allowed_dir, is_path_within_dir
+
+        return is_path_within_dir(path, get_plan_allowed_dir())
+
+    # ── 沙盒 ─────────────────────────────────────────────
+
+    def sandbox(self):
+        from ..core.sandbox_manager import get_sandbox_manager
+
+        return get_sandbox_manager()
+
+
+@plugin("policy", provide=["policy"])
+def apply(ctx):
+    return PolicyService(ctx)

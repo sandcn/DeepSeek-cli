@@ -20,11 +20,13 @@ TOOL_EXCLUSION_MAP = {
         "bash", "bash_opt", "subagent_opt", "write_file", "update_file", "rm", "mv", "cp", "mkdir",
         "web_search",
         "subagent", "user_select",
+        "cordis_define", "cordis_run", "cordis_stop", "cordis_undefine",
     },
     "review": {
         "bash", "bash_opt",
         "subagent_opt", "write_file", "update_file", "rm", "mv", "cp", "mkdir",
         "subagent", "user_select",
+        "cordis_define", "cordis_run", "cordis_stop", "cordis_undefine",
     },
     "plan": {
         "bash", "bash_opt", "subagent_opt",
@@ -33,6 +35,7 @@ TOOL_EXCLUSION_MAP = {
         "cp",
         "subagent",
         "user_select",
+        "cordis_define", "cordis_run", "cordis_stop", "cordis_undefine",
     },
     "execute": {
         "subagent",
@@ -44,7 +47,23 @@ TOOL_EXCLUSION_MAP = {
 
 
 def get_excluded_tools(agent_type: str) -> set:
-    """根据 agent_type 返回应排除的工具名集合。未知类型回退 execute 策略。"""
+    """根据 agent_type 返回应排除的工具名集合。未知类型回退 execute 策略。
+
+    「一切皆插件」：内核挂载策略插件后经 ``ctx.policy`` 解析（策略是独立插件，
+    可整体替换）；内核缺失或插件尚在构造中时回退本模块的静态真源。
+    策略服务的 ``excluded_tools`` 直接读取 ``TOOL_EXCLUSION_MAP``，不会回调
+    本函数，故无递归。
+    """
+    try:
+        from ..kernel.runtime import active_service
+
+        service = active_service("policy")
+        if service is not None:
+            excluded = service.excluded_tools(agent_type)
+            if excluded is not None:
+                return excluded
+    except Exception:
+        pass
     return TOOL_EXCLUSION_MAP.get(agent_type, TOOL_EXCLUSION_MAP["execute"])
 
 

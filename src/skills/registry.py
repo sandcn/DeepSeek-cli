@@ -318,7 +318,22 @@ _default_registry: Optional[SkillRegistry] = None
 
 
 def default_registry() -> SkillRegistry:
-    """返回进程级默认注册表（单例）。"""
+    """返回技能注册表（内核 ``ctx.skills`` 优先，回退进程级单例）。
+
+    「一切皆插件」：内核挂载技能插件后，技能能力经内核服务解析；内核缺失
+    （单元测试、独立调用）或插件尚在构造中时回退进程级单例。两者在正常运行
+    时指向同一实例（技能插件包装的正是该单例）。
+    """
+    try:
+        from ..kernel.runtime import active_service
+
+        service = active_service("skills")
+        registry = getattr(service, "registry", None) if service is not None else None
+        if registry is not None:
+            return registry
+    except Exception:
+        pass
+
     global _default_registry
     if _default_registry is None:
         _default_registry = SkillRegistry()

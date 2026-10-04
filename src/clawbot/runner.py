@@ -112,10 +112,13 @@ class ClawBotRunner:
 
     @staticmethod
     def _default_session_factory(model: str = "") -> ChatSession:
-        """创建 ChatSession（注入 NullPort，无 UI 依赖，保留全部工具）。"""
-        session = ChatSession(model=model or None)
-        session.initialize()
-        return session
+        """创建 ChatSession（注入 NullPort，无 UI 依赖，保留全部工具）。
+
+        内核 sessions 服务优先（一切皆插件），回退直接构造。
+        """
+        from ..app_loop._session_factory import create_session
+
+        return create_session(model=model or None)
 
     @staticmethod
     def _tui_session_factory(model: str = "") -> ChatSession:
@@ -123,11 +126,11 @@ class ClawBotRunner:
 
         与 app_loop 交互模式同源：agent 使用 EventBus 适配器，
         用户消息/工具调用/AI 回复自动在 ChatUIConsumer 上渲染。
+        内核 sessions 服务优先（一切皆插件），回退直接构造。
         """
-        from ..app_loop._single import _make_event_agent
-        session = ChatSession(agent=_make_event_agent(), model=model or None)
-        session.initialize()
-        return session
+        from ..app_loop._session_factory import create_session
+
+        return create_session(event_agent=True, model=model or None)
 
     # ── 授权管理 ──────────────────────────────────────
 
@@ -239,7 +242,6 @@ class ClawBotRunner:
         - 本地输入任务：wait_for_user_input 收本地输入 → 入队
         - 消息消费者任务：串行处理队列消息（配对/命令/AI 对话）
         """
-        from ..tui.consumer import ChatUIConsumer
         from ..api.escape_monitor import EscapeMonitor, stop_active_monitor
         from ..api.interrupt_async import (
             request_interrupt_async,
@@ -248,10 +250,11 @@ class ClawBotRunner:
         )
         from ..app_loop._session_setup import SessionState, _register_session_handlers
         from ..app_loop._special_keys import make_special_key_callback
+        from ..app_loop._ui_factory import create_chat_ui
         from ..app_loop._utils import _exit_save_and_stop, _merge_prefill
 
-        # ── 装配非全屏 TUI ─────────────────────────────
-        chat_ui = ChatUIConsumer()
+        # ── 装配非全屏 TUI（内核 ui 服务优先） ─────────
+        chat_ui = create_chat_ui()
         chat_ui.start()
         self._chat_ui = chat_ui
         self._print = lambda *a: chat_ui.write_line(" ".join(str(x) for x in a))
