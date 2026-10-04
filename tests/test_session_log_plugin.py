@@ -115,8 +115,9 @@ async def test_invariant_messages_recorded(cli_kernel):
 async def test_invariant_detects_divergence(cli_kernel):
     loop = cli_kernel.resolve_service("agent_loop")
     agent = loop.create_agent(model="deepseek-v4-pro")
-    # 人为破坏视图与日志的一致性
-    agent.messages._items.append({"role": "user", "content": "ghost"})
+    # 人为破坏视图与日志的一致性（绕过重写的 append，直接改 list 存储，
+    # 使视图缓存与 SessionLog 投影脱节）
+    list.append(agent.messages, {"role": "user", "content": "ghost"})
     invariants = cli_kernel.resolve_service("invariants")
     failures = invariants.check()
     assert any("模型可见即已记录" in f for f in failures)
