@@ -33,6 +33,9 @@ class PolicyService(Service):
     def excluded_tools(self, agent_type: str = "execute") -> set:
         from ..tools.tool_policy import TOOL_EXCLUSION_MAP
 
+        # 主 Agent / 未标注类型（agent_type 为 None/空）不受子代理排除表约束
+        if not agent_type:
+            return set()
         return set(TOOL_EXCLUSION_MAP.get(agent_type, TOOL_EXCLUSION_MAP["execute"]))
 
     def exclusion_map(self) -> dict:
@@ -41,10 +44,14 @@ class PolicyService(Service):
         return TOOL_EXCLUSION_MAP
 
     def check(self, tool_name: str, agent_type: str = "execute", path: str | None = None):
-        """裁决某次工具调用是否允许（不经过全局函数，避免解析递归）。"""
+        """裁决某次工具调用是否允许（不经过全局函数，避免解析递归）。
+
+        ``agent_type`` 为 None/空表示主 Agent（无子代理类型）——排除表不适用，
+        仅放行；只有明确的子代理类型（map/review/plan/execute）才按表排除。
+        """
         from ..tools.tool_policy import TOOL_EXCLUSION_MAP
 
-        if agent_type in TOOL_EXCLUSION_MAP and tool_name in TOOL_EXCLUSION_MAP[agent_type]:
+        if agent_type and agent_type in TOOL_EXCLUSION_MAP and tool_name in TOOL_EXCLUSION_MAP[agent_type]:
             return (
                 False,
                 f"工具 '{tool_name}' 不可用于 '{agent_type}' 类型 agent，"
@@ -77,7 +84,10 @@ class PolicyService(Service):
     # ── 工具执行管线钩子 ─────────────────────────────────
 
     async def _on_pre_execute(self, call, next_):
-        agent_type = call.get("agent_type") or "execute"
+        # ★ 主 Agent 不设 agent_type（None）——不得回退为 "execute"：那会把主
+        #   Agent 当成 execute 型 SubAgent，user_select/web_search/subagent 等
+        #   被误拒（修复前 bug）。None 交给 check() 按「主 Agent」放行。
+        agent_type = call.get("agent_type")
         arguments = call.get("arguments") or {}
         path = arguments.get("path") if isinstance(arguments, dict) else None
         allowed, reason = self.check(call.get("name", ""), agent_type, path)

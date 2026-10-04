@@ -63,7 +63,9 @@ class Func(abc.ABC):
 
         Args:
             tool_name: 工具名称
-            agent_type: Agent 类型（map/review/plan/execute），默认 execute
+            agent_type: Agent 类型（map/review/plan/execute），默认 execute。
+                None/空表示主 Agent（无子代理类型）——排除表不适用，直接放行
+                排除项校验（主 Agent 工具集含 user_select/web_search/subagent）。
             path: 目标文件路径（可选），用于 plan agent 写入文件时的路径白名单校验
 
         Returns:
