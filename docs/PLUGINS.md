@@ -244,9 +244,12 @@ wrapped = ctx.intercept("svc", lambda v: LoggingProxy(v))  # 拦截解析结果
 
 ## 8. 运行时自省与自修改（cordis 工具）
 
-模型可在运行时检查并改造自己的插件树（对应 dsh 的 cordis 工具族）：
+cordis 工具族**全局禁用**：任何 agent（主 Agent 与全部 SubAgent 类型）都不能
+加载。工具类仍保留在 `src/tools/cordis.py`，但工具发现
+（`discover_builtin_tools`）会跳过 `tool_policy.GLOBAL_DISABLED_TOOLS` 中的工具，
+它们不会进入注册表，也不会出现在任何 agent 的 schema 中。
 
-| 工具 | 作用 |
+| 工具 | 原作用（已禁用） |
 |---|---|
 | `cordis_inspect` | 列出内核已有服务与插件 Fiber 状态/依赖 |
 | `cordis_define` | 把插件源码写入 `.chat/runtime_plugins/<name>.py` |
@@ -255,7 +258,8 @@ wrapped = ctx.intercept("svc", lambda v: LoggingProxy(v))  # 拦截解析结果
 | `cordis_undefine` | 卸载并删除插件文件 |
 
 动态插件只存在于当前进程内存（不写 `~/.chat_config`、不改 profile、不跨重启）；
-注册随 Fiber 生命周期撤销。安全边界与 bash 同级。
+注册随 Fiber 生命周期撤销。安全边界与 bash 同级。工具禁用后，该机制不再由
+模型经 agent 工具触发。
 
 ## 9. 运行时不变量
 

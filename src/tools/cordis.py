@@ -7,6 +7,10 @@
 安全边界：动态插件只写进项目 ``.chat/runtime_plugins/`` 目录并挂载到当前
 进程内存（不写 ``~/.chat_config``、不改 profile、不跨重启）。沙盒只约束
 诚实代码，不是安全边界——应像对待 bash 一样对待它。
+
+★ 本工具族已全局禁用（``tool_policy.GLOBAL_DISABLED_TOOLS``）：工具发现阶段
+即被跳过，任何 agent（主 Agent 与全部 SubAgent 类型）都不能加载。类与实现
+保留，供内核 / 测试直接使用。
 """
 
 from __future__ import annotations

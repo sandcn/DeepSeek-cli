@@ -94,7 +94,56 @@ async def test_run_missing_file(cli_kernel, runtime_dir):
     assert "不存在" in out
 
 
-def test_cordis_tools_registered(cli_kernel):
+_CORDIS_TOOLS = (
+    "cordis_inspect",
+    "cordis_define",
+    "cordis_run",
+    "cordis_stop",
+    "cordis_undefine",
+)
+
+
+async def test_cordis_tools_not_registered_for_any_agent(cli_kernel):
+    """任何 agent 都不能加载 cordis 工具：注册表 / schema / 发现结果均不含。"""
     tools = cli_kernel.resolve_service("tools")
-    for name in ("cordis_inspect", "cordis_define", "cordis_run", "cordis_stop", "cordis_undefine"):
-        assert name in tools.names()
+    names = set(tools.names())
+    schemas = {s["function"]["name"] for s in tools.schemas()}
+    from src.tools.registry import discover_builtin_tools
+
+    discovered = set(discover_builtin_tools())
+    for name in _CORDIS_TOOLS:
+        assert name not in names
+        assert name not in schemas
+        assert name not in discovered
+
+
+def test_global_disabled_tools_cover_cordis():
+    from src.tools.tool_policy import GLOBAL_DISABLED_TOOLS, is_globally_disabled
+
+    assert set(_CORDIS_TOOLS) <= set(GLOBAL_DISABLED_TOOLS)
+    for name in _CORDIS_TOOLS:
+        assert is_globally_disabled(name) is True
+    assert is_globally_disabled("read_file") is False
+
+
+async def test_main_agent_schema_excludes_cordis(cli_kernel):
+    """主 Agent 的工具 schema 不含 cordis 工具。"""
+    agent = cli_kernel.root.agent_loop.make_event_agent()
+    names = {s["function"]["name"] for s in agent.tools}
+    assert not any(n.startswith("cordis") for n in names)
+
+
+async def test_subagent_types_exclude_cordis(cli_kernel):
+    """各 SubAgent 类型（map/review/plan/execute）的工具集均不含 cordis。"""
+    from src.core.subagent import get_excluded_tools
+
+    tools = cli_kernel.resolve_service("tools")
+    schemas = tools.schemas()
+    for agent_type in ("map", "review", "plan", "execute"):
+        excluded = get_excluded_tools(agent_type)
+        names = {
+            s["function"]["name"]
+            for s in schemas
+            if s["function"]["name"] not in excluded
+        }
+        assert not any(n.startswith("cordis") for n in names)

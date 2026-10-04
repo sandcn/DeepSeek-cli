@@ -49,6 +49,23 @@ TOOL_EXCLUSION_MAP = {
 }
 
 
+# 全局禁用工具：对**任何** agent（主 Agent 与全部 SubAgent 类型）都不可加载。
+# 与 TOOL_EXCLUSION_MAP（按 SubAgent 类型排除）不同，本集合在工具发现/注册
+# 阶段即剔除，任何 agent 的 schema 都不会出现这些工具——从加载层杜绝其可用性。
+GLOBAL_DISABLED_TOOLS = frozenset({
+    "cordis_inspect",
+    "cordis_define",
+    "cordis_run",
+    "cordis_stop",
+    "cordis_undefine",
+})
+
+
+def is_globally_disabled(tool_name: str) -> bool:
+    """该工具是否被全局禁用（任何 agent 都不能加载）。"""
+    return tool_name in GLOBAL_DISABLED_TOOLS
+
+
 def get_excluded_tools(agent_type: str) -> set:
     """根据 agent_type 返回应排除的工具名集合。未知类型回退 execute 策略。
 
@@ -77,4 +94,9 @@ def get_excluded_tools(agent_type: str) -> set:
     return TOOL_EXCLUSION_MAP.get(agent_type, TOOL_EXCLUSION_MAP["execute"])
 
 
-__all__ = ["TOOL_EXCLUSION_MAP", "get_excluded_tools"]
+__all__ = [
+    "TOOL_EXCLUSION_MAP",
+    "GLOBAL_DISABLED_TOOLS",
+    "is_globally_disabled",
+    "get_excluded_tools",
+]

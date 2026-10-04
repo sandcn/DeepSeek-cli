@@ -14,6 +14,7 @@ import logging
 from typing import Dict, Type, Any, List, Optional
 
 from .base import Func, ToolMetadata, get_tool_metadata
+from .tool_policy import is_globally_disabled
 from ..core.tool_display import TOOL_DISPLAY_NAME, get_tool_display_name  # noqa: F401  （re-export）
 
 logger = logging.getLogger(__name__)
@@ -211,6 +212,10 @@ def discover_builtin_tools() -> Dict[str, Type[Func]]:
     纯函数：只导入模块并收集 ``Func`` 子类，不修改任何注册表。
     供 ``ToolRegistry._discover_and_register`` 与内核 ``tools_builtin``
     插件（显式以插件方式注册内置工具）共用。
+
+    ★ 全局禁用工具（``tool_policy.GLOBAL_DISABLED_TOOLS``，如 cordis 工具族）
+    在此即被跳过——任何 agent（主 Agent 与全部 SubAgent 类型）的工具集中都不会
+    出现它们，从加载层保证「任何 agent 都不能加载」。
     """
     package = sys.modules[__name__].__package__
     if not package:
@@ -238,7 +243,8 @@ def discover_builtin_tools() -> Dict[str, Type[Func]]:
                     issubclass(obj, Func) and
                     obj != Func and
                     obj.__module__ == module.__name__ and
-                    obj.name is not None):
+                    obj.name is not None and
+                    not is_globally_disabled(obj.name)):
                 found.setdefault(obj.name, obj)
     return found
 
