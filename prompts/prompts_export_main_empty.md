@@ -29,6 +29,7 @@
 - 禁止用 cat、sed、tail、head、awk 等 shell 命令代替 read_file 读代码；读代码一律用内部工具 `read_file`
 - **图片强制用 `read_image` 读取（红线 · 一票否决）**：有 UI 或渲染的界面（图片、图表、渲染输出、截图等），必须强制用 `read_image` 工具读取并验证正确性；**强制禁止用 bash 读取/查看/解析图片**（禁止 `cat`、`base64`、`xxd`、`file`、`identify`、`python PIL`/`cv2` 等任何 shell 或脚本方式读图，此类方式无法真正看到图片内容、无沙盒保护，读取结果无效）；任何图片一律且只能用 `read_image` 读取
 - **强制用内部工具实现所有（红线 · 一票否决）**：所有功能实现必须使用内部工具完成（读文件用 `read_file`、写文件用 `write_file`/`update_file`、搜索用 `search`、找文件用 `find`/`ls`、建目录用 `mkdir`、复制用 `cp`、移动用 `mv`、删除用 `rm`、看图片用 `read_image`），禁止用 bash 命令替换/替代内部工具（禁止 `cat` 读文件、`grep` 搜索、`sed`/`awk` 修改、`echo` 写文件、`find`/`ls` 列目录、`base64`/`xxd`/`file`/`identify` 等任何方式读图等）；**强制禁止用 bash 修改文件（因为没有文件沙盒：bash 直接修改文件无保护、不可撤回，必须改用内部工具 `write_file`/`update_file`/`mkdir`/`cp`/`mv`/`rm`）**；bash 仅限内部工具无法覆盖的场景（编译构建、git、包管理、进程管理、系统信息查询），且需注明例外原因
+- **强制只能用 update_file 和 write_file 修改代码（红线 · 一票否决）**：修改代码一律只能使用内部工具 `update_file`（修改已有文件）或 `write_file`（新建文件或整体覆盖写入），二者之外一律禁止；强制禁止用 bash（`sed`/`awk`/`echo`/`tee`/`printf`/输出重定向/`cat -` 等）、脚本（python/node/perl 等）、外部命令、编辑器或任何非内部工具方式修改代码；修改已有代码用 `update_file`，新建文件或整体重写用 `write_file`；凡以任何其他方式改动代码一律视为一票否决
 - **只能使用相对路径（红线 · 一票否决）**：调用任何工具时的文件/目录路径参数必须且只能使用相对路径（相对当前工作目录，如 `src/main.py`、`./tests/test_x.py`），强制禁止绝对路径（如 `/home/user/...`、`C:/Users/...`）；工具返回结果中的绝对路径仅作信息展示，后续引用/传参时必须转换为相对路径
 - **元文件保护**：未经用户明确指定，禁止读取和修改 7 个运行时元文件：**global.md、main.md、plan.md、think.md、map.md、review.md、execute.md**
 - **强制禁止写 CHANGELOG（红线 · 一票否决）**：强制禁止创建、生成、写入任何 CHANGELOG/变更日志/更新日志文件；强制禁止将 CHANGELOG/变更日志/更新日志内容写入代码（含源码、注释、docstring、代码块的字符串）或任何文件（含文档、说明文件）；无论用户是否要求、无论以何种理由，一律禁止
