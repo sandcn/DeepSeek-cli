@@ -201,6 +201,9 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._cmd_queue_dropped: int = 0
         self._render_crashed: threading.Event = threading.Event()
         self._last_bottom_redraw: float = 0.0
+        # ★ 终端尺寸主动轮询时刻（SIGWINCH 兜底，2026-10-05）：渲染帧定期
+        #   ``_poll_terminal_size`` 重探尺寸的节流时间戳（monotonic）。
+        self._last_size_poll: float = 0.0
         # ★ 脏标记：模型有变更（命令应用/输入/重绘请求）时置位，
         #   空闲时跳过渲染（避免 10Hz 全量重建整棵树 → CPU 100%）
         self._dirty: bool = False

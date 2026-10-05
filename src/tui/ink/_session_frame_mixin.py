@@ -49,6 +49,13 @@ from src.tui.ink._animation import advance_animation
 
 _logger = logging.getLogger(__name__)
 
+#: 终端尺寸主动轮询间隔（秒）——SIGWINCH 兜底（2026-10-05）：部分终端/平台
+#: 窗口 resize **不发送 SIGWINCH**（Cygwin pty 实测 winsize 变化不触发信号），
+#: ``TerminalWidthCache`` 默认 TTL 60s 内宽度陈旧——工具卡/布局宽度不随窗口
+#: 变化。渲染帧每帧经 ``_poll_terminal_size`` 按本间隔主动重探（5 次/秒
+#: ioctl 成本可忽略，渲染帧本就 10Hz）。
+_SIZE_POLL_INTERVAL = 0.2
+
 
 def _safe_int(value, default: int = 0) -> int:
     """安全整数转换（系统监控值防御）。
@@ -91,6 +98,7 @@ class _SessionFrameMixin:
     _input_fiber: object
     _last_render_width: int
     _last_render_height: int
+    _last_size_poll: float
     _resize_pending: bool
     _dirty: bool
     _frame_active: bool
@@ -145,6 +153,28 @@ class _SessionFrameMixin:
         finally:
             self._frame_active = False
 
+    def _poll_terminal_size(self) -> None:
+        """SIGWINCH 兜底：定期主动重探终端尺寸（刷新 ``_width_cache``）。
+
+        ★ 2026-10-05（用户需求：工具卡宽度跟随终端宽度变化）：部分终端/
+        平台窗口 resize 不发送 SIGWINCH（Cygwin pty 实测 winsize 变化不
+        触发信号），仅靠 TTL（默认 60s）刷新时宽度长时间陈旧——工具卡/
+        布局不随窗口变化。渲染帧每帧调用本方法（内部按
+        ``_SIZE_POLL_INTERVAL`` 节流）：陈旧即重探；宽度变化由调用方
+        （``_render_frame_impl``）的 ``width != _last_render_width`` 分支
+        感知 → reflow 已提交行 + 全量重绘 + 向开放通道传播新宽度。
+
+        ``_override``（``render()`` 显式尺寸）时 ``poll`` 不探测（尺寸固定）。
+        """
+        now = time.monotonic()
+        if now - self._last_size_poll < _SIZE_POLL_INTERVAL:
+            return
+        self._last_size_poll = now
+        try:
+            self._width_cache.poll(_SIZE_POLL_INTERVAL)
+        except Exception:
+            _logger.debug("终端尺寸轮询异常", exc_info=True)
+
     def _render_frame_impl(self) -> None:
         if self._build_tree is None:
             return
@@ -156,6 +186,11 @@ class _SessionFrameMixin:
             advance_animation()
         except Exception:
             _logger.debug("advance_animation 异常", exc_info=True)
+        # ★ SIGWINCH 兜底（2026-10-05）：渲染帧主动重探终端尺寸——部分终端/
+        #   平台 resize 不发送 SIGWINCH，仅靠 TTL 缓存刷新会使宽度长时间陈旧
+        #   （工具卡/布局不跟随窗口）。尺寸变化经下方 ``width !=
+        #   _last_render_width`` 分支触发 reflow + 全量重绘。
+        self._poll_terminal_size()
         width = self._width_cache.get_width()
         if self._model is not None:
             # ★ 终端 resize：宽度变化时重排已提交历史（committed_lines 提交时
@@ -376,4 +411,4 @@ class _SessionFrameMixin:
         return _cursor.find_input_fiber(root_fiber)
 
 
-__all__ = ["_SessionFrameMixin", "_safe_int"]
+__all__ = ["_SessionFrameMixin", "_safe_int", "_SIZE_POLL_INTERVAL"]

@@ -671,6 +671,38 @@ class TerminalWidthCache:
             self._last_width_fetch = 0.0
             self._last_height_fetch = 0.0
 
+    def poll(self, max_age: float) -> bool:
+        """主动轮询兜底：陈旧超过 ``max_age`` 秒时重新探测终端尺寸。
+
+        ★ 2026-10-05（用户需求：工具卡宽度跟随终端宽度变化）：部分终端/
+        平台窗口 resize **不发送 SIGWINCH**（Cygwin pty 实测 winsize 变化
+        不触发信号），仅靠 TTL（默认 60s）刷新时 ``get_width`` 长时间返回
+        陈旧宽度——工具卡/布局宽度不随窗口变化。渲染帧定期调用本方法，
+        陈旧即重探，使宽度变化在 ``max_age`` 内被感知。
+
+        ``_override``（``render()`` 显式尺寸）生效时不探测（该会话尺寸固定，
+        TTL 到期也不静默失效——与 ``_fetch`` 的 override 语义一致）。
+
+        Args:
+            max_age: 允许的最大陈旧秒数（距上次刷新的间隔）；<=0 恒重探。
+
+        Returns:
+            True — 本次重探发现宽/高任一变化；False — 未探测或尺寸未变。
+        """
+        if self._override:
+            return False
+        now = time.monotonic()
+        with self._lock:
+            if (
+                (now - self._last_width_fetch) <= max_age
+                and (now - self._last_height_fetch) <= max_age
+            ):
+                return False
+            old = (self._width, self._height)
+        self._fetch()
+        with self._lock:
+            return (self._width, self._height) != old
+
     def refresh_height(self) -> int:
         """强制刷新高度缓存，返回新高度。
 
