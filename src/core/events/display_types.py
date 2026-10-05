@@ -222,7 +222,14 @@ class PhaseDoneEvent(DisplayEvent):
 
     Attributes:
         label: Agent 标识
-        phase: 已结束的阶段名称（"reasoning", "content"）
+        phase: 已结束的阶段名称。
+            - "reasoning"/"content"：推理/回答阶段结束（同阶段每流至多一次，
+              由 ``StreamContext.publish_phase_done_once`` 去重），主 Agent
+              消息区据此分阶段关闭对应流式 markdown 渲染通道；
+            - "segment_end"：本段「思考和回答都完成」的收尾信号（正常结束且
+              本流有产出时发送，中断/工具参数中断不发送），主 Agent 消息区
+              据此收尾全部流式 markdown：渲染出所有剩余内容 + 清空流式指示
+              （未闭合块末尾 spinner / 角色头 spinner 帧随块 closed 回退静态）。
     """
     label: str = ""
     phase: str = ""

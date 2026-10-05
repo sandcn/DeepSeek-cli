@@ -273,6 +273,14 @@ def _do_phase_done(model, cmd) -> None:
         model.close_reasoning()
     elif cmd.phase == "content":
         model.close_content()
+    elif cmd.phase == "segment_end":
+        # ★ 思考和回答都完成（segment_end 收尾信号）：让流式 markdown 渲染
+        #   出所有剩余内容并清空流式指示（spinner）。
+        #   - close_reasoning/close_content 幂等——推理/回答已由前序
+        #     PhaseDone("reasoning"/"content") 分阶段关闭时零成本跳过；
+        #   - 纯思考/仅回答等场景由本事件兜底收尾，保证「思考和回答完成」
+        #     在所有正常结束路径都会收尾（不再依赖工具调用分支）。
+        model.finish_stream_render()
 
 
 # ── 工具计数单一真源（方向5：apply 与 _ink_bridge 共用） ─────────

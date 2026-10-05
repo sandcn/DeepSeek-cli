@@ -663,6 +663,30 @@ class AppModel(_ToolOutputMixin):
         #   一致，不破坏正常流程）。
         self.content_renderer = None
 
+    def finish_stream_render(self) -> None:
+        """思考和回答都完成：收尾流式 markdown 渲染（渲染出所有 + 清空流式指示）。
+
+        由主 Agent 消息区的「完成」事件驱动（``PhaseDoneEvent(phase=
+        "segment_end")`` → ``PhaseDoneCmd`` → ``apply._do_phase_done``）。
+        语义：
+
+          - **渲染出所有**：关闭推理/内容两个流式通道——``renderer.close()``
+            刷出解析器残差并把最后一段（无尾换行的行、未闭合块）渲染成行后
+            固化到块（``take_lines`` → ``block.lines``）；
+          - **清空流式指示**：块标记 ``closed`` 后，未闭合块末尾的流式指示
+            spinner（``chat_view._with_stream_indicator`` 的 live content
+            分支）与角色头 spinner 帧（``_model_helpers._role_header_runs``
+            的 ``not block.closed and live`` 分支）自动回退静态图标。
+
+        幂等：已关闭通道零成本跳过（``close_reasoning`` 自带 CLOSED 守卫；
+        content 通道按 ``content_closed`` 守卫），可被收尾事件重复触发，
+        也可在思考/回答分阶段关闭（reasoning/content PhaseDone）之后再调用。
+        """
+        if self.reasoning_state != ReasoningState.CLOSED:
+            self.close_reasoning()
+        if not self.content_closed:
+            self.close_content()
+
     def flush_open_channels(self) -> None:
         """停止时固化所有开放通道。"""
         try:

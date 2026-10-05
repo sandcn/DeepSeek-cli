@@ -455,13 +455,21 @@ class AsyncStreamPipeline:
             # 🔥 发布 PhaseDoneEvent("content")（去重助手：每流恰一次）
             ctx.publish_phase_done_once("content")
 
-        # 🔥 有工具调用时，先闭合 content 气泡，再发送 segment_end 信号。
-        #    中断时不发送 segment_end：不完整工具调用不应触发完成信号。
-        #    工具参数接收中断（tracker.interrupted）同样不发送：不完整参数不应触发生成信号。
-        if ctx.tool_calls_map and not ctx.esc_interrupted and not ctx.tracker.interrupted:
-            if ctx.content_full:
-                # 🔥 发布 PhaseDoneEvent("content")（去重助手：tool_calls.py 已置位时幂等跳过）
-                ctx.publish_phase_done_once("content")
+        # 🔥 思考和回答完成 → segment_end 收尾信号。
+        #    前端（主 Agent 消息区）据此收尾流式 markdown：渲染出所有剩余
+        #    内容（close 渲染器刷出解析器残差）+ 清空流式指示（spinner 随块
+        #    closed 回退静态）。
+        #    - content 气泡已在第 2b 步闭合（content_full 时发布 content
+        #      PhaseDone），故此处只需在内容命令之后发送收尾信号；
+        #    - 无工具调用的纯思考/回答（含仅思考/仅回答）同样发送——不再只在
+        #      工具调用分支发送，保证「思考和回答完成」在所有正常收尾路径都有
+        #      事件；
+        #    - 中断（esc_interrupted）不发送：不完整内容不应触发完成信号；
+        #    - 工具参数接收中断（tracker.interrupted）同样不发送：不完整参数
+        #      不应触发生成信号。
+        if not ctx.esc_interrupted and not ctx.tracker.interrupted and (
+            ctx.content_full or ctx.reasoning_full or ctx.tool_calls_map
+        ):
             publish_event("PhaseDoneEvent", label=ctx.label or "", phase="segment_end")
 
         # ⏳ 再次保护：tracker.finalize() 需 await 取消内部 update Task
