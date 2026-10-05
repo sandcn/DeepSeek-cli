@@ -23,11 +23,9 @@ import uuid
 
 from .base import Func, tool_metadata, print_to_terminal
 from ..core.constants import DIM, RESET
+from ..core.agent_types import uses_low_model
 
 logger = logging.getLogger(__name__)
-
-# 低优先级模型适用的 subagent 类型（与后台执行体一致）
-_LOW_MODEL_TYPES = {"map", "execute"}
 
 
 @tool_metadata(
@@ -103,10 +101,12 @@ class SubagentFunc(Func):
     def _resolve_model(cls, agent, agent_type: str):
         """解析子 Agent 使用的模型：指定类型优先使用低优先级模型（后台执行路径同样生效）。
 
+        是否使用低优先级模型来自 Agent 类型注册表
+        （``src.core.agent_types.uses_low_model``，类型是清单中的独立插件条目）。
         返回 None 时由 SubAgent 构造回退到父 Agent 模型（model or parent_agent.model）。
         """
         model = getattr(agent, 'model', None)
-        if agent_type in _LOW_MODEL_TYPES:
+        if uses_low_model(agent_type):
             try:
                 config_port = agent.get_config_port()
                 low_model = config_port.get_low_model()
@@ -247,9 +247,17 @@ class SubagentFunc(Func):
             "tool_label": getattr(self, 'tool_label', ''),
         }
         try:
-            from ..core.parallel_executor import ParallelExecutor
-            executor = ParallelExecutor(agent)
-            results = await executor.run([spec])
+            # 「一切皆插件」：SubAgent 运行经内核 ``ctx.subagents`` 服务
+            # （可替换的执行器装配）；内核缺失时回退既有 ParallelExecutor。
+            from ..core.adapters import kernel_runtime as _kr
+
+            service = _kr.active_subagents_service()
+            if service is not None:
+                results = await service.run(agent, [spec])
+            else:
+                from ..core.parallel_executor import ParallelExecutor
+
+                results = await ParallelExecutor(agent).run([spec])
             if results:
                 result = self._format_single(results[0])
             else:

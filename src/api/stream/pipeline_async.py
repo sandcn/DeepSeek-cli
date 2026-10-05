@@ -30,7 +30,7 @@ from ..stats import (
 )
 from ..stream_parse import convert_tool_calls_map_with_status
 from .context import StreamContext
-from .handlers import ReasoningHandler, ContentHandler, ToolCallsHandler, SpeedHandler
+from .registry import resolved_stream_handler
 from ...core.constants import YELLOW, RESET
 from ...core.events.publish import publish_output
 
@@ -146,10 +146,13 @@ class AsyncStreamPipeline:
     """Async 流式处理 Pipeline — 协调各 handler 处理 chunk。"""
 
     def __init__(self):
-        self._reasoning_handler = ReasoningHandler()
-        self._content_handler = ContentHandler()
-        self._tool_calls_handler = ToolCallsHandler()
-        self._speed_handler = SpeedHandler()
+        # 「一切皆插件」：四个内置处理器经流式处理器注册表解析（清单独立条目，
+        # 可被 Profile/Patch/Overlay 覆盖或禁用）；缺席时回退空处理器（保留
+        # 核心累积/状态，禁用副作用），保证流不中断。
+        self._reasoning_handler = resolved_stream_handler("reasoning")
+        self._content_handler = resolved_stream_handler("content")
+        self._tool_calls_handler = resolved_stream_handler("tool_calls")
+        self._speed_handler = resolved_stream_handler("speed")
 
     async def process(
         self,
@@ -545,7 +548,19 @@ async def stream_call_async(
     )
 
     ctx = StreamContext(model, display, label, silent)
-    pipeline = AsyncStreamPipeline()
+    # 「一切皆插件」：流式管线本身可经内核 ``ctx.stream`` 服务替换
+    # （``create_pipeline()``）；内核缺失时回退内置 AsyncStreamPipeline。
+    pipeline = None
+    try:
+        from ...core.adapters import kernel_runtime as _kr
+
+        service = _kr.get_service("stream")
+        if service is not None:
+            pipeline = service.create_pipeline()
+    except Exception:
+        pipeline = None
+    if pipeline is None:
+        pipeline = AsyncStreamPipeline()
 
     # 流式开始时估算输入 token
     # 注（review 口径说明）：仅统计 content 字段，不含 tool_calls 参数——

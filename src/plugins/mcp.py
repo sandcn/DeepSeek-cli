@@ -22,11 +22,33 @@ class McpService(Service):
 
     def __init__(self, ctx, config=None):
         super().__init__(ctx, config)
+        cfg = config or getattr(ctx, "config", None) or {}
+        managed = cfg.get("managed_mcp_transports") or ()
+        if managed:
+            from ..mcp.transport_registry import set_managed_builtin_mcp_transports
+
+            undo_managed = set_managed_builtin_mcp_transports(managed)
+            ctx.effect(lambda: undo_managed)
+        disabled = cfg.get("disabled_mcp_transports") or ()
+        if disabled:
+            from ..mcp.transport_registry import disable_builtin_mcp_transports
+
+            undo_disabled = disable_builtin_mcp_transports(disabled)
+            ctx.effect(lambda: undo_disabled)
         from ..mcp.manager import McpManager
 
         self._manager = McpManager(registry=self._tool_registry())
         self._active = False
         ctx.effect(lambda: self._aclose)
+
+    def transports(self) -> list:
+        """当前生效的 MCP 传输 id 列表（自省）。"""
+        from ..mcp.transport_registry import (
+            builtin_mcp_transport_factories,
+            mcp_transport_factories,
+        )
+
+        return sorted(set(builtin_mcp_transport_factories()) | set(mcp_transport_factories()))
 
     def _tool_registry(self):
         if self.ctx.has("tools"):
@@ -74,4 +96,4 @@ class McpService(Service):
 
 @plugin("mcp", inject=["tools", "config"], provide=["mcp"])
 def apply(ctx):
-    return McpService(ctx)
+    return McpService(ctx, ctx.config)

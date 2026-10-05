@@ -25,42 +25,24 @@ from src.tui.ink import h, APP, Column
 from .chat_view import ChatView, _ParseLine
 from .header import TopHeader
 from .status_bar import StatusBar
-from .user_select import UserSelectPopup
-from .editmsg_select import EditMsgSelectPopup
-from .config_view import ConfigView
-from .plugin_view import PluginView
 from .input_area import InputArea
-from .trace_view import TraceView
-from .trace_tools_view import TraceToolsView
+from .view_registry import bottom_views, fullscreen_views
 
-#: 模态全屏视图注册表（2026-08-17 通用机制）：view_id → 组件函数。
-#: App 在 ``model.fullscreen`` 非空时按 id 查注册表**整屏渲染**对应组件；
-#: 组件内部须 ``use_fullscreen(True)`` 声明模态（独占键盘输入——未消费按键
-#: 不落入输入缓冲，杜绝看不见的输入）与 ``use_input`` 处理关闭/导航键。
-#: 新增全屏视图两步：注册表加条目 + 设置 ``model.fullscreen``——整屏渲染 /
-#: 输入接管 / 光标隐藏（全屏无输入区自动隐藏）全部自动生效，无需改 App 分支。
-FULLSCREEN_VIEWS: dict = {
-    "trace": TraceView,
-    # ★ 2026-08-17（用户需求：轨迹 Trace 工具列表 Enter 进入新界面）：工具
-    #   列表详情视图——主轨迹选中 #0 工具列表记录按 Enter → ``model.fullscreen
-    #   = "trace_tools"`` → 整屏渲染 TraceToolsView（左右布局：左工具名列表
-    #   上下选择 + 右树控件显示需要的参数）；Esc/Ctrl+H 返回主轨迹
-    #   （``model.fullscreen = "trace"``）。
-    "trace_tools": TraceToolsView,
-    # ★ 2026-08-20（用户需求：config 命令独立界面）：配置中心视图——
-    #   /config 命令 → ``model.fullscreen = "config"`` → 整屏渲染
-    #   ConfigView（配置列表浏览 + Enter 编辑 + Esc/Ctrl+H 关闭）；
-    #   关闭（命令线程清理 fullscreen 置空）后恢复完整聊天界面。
-    "config": ConfigView,
-    # ★ 2026-10-04（用户需求：/plugin 命令独立界面）：插件总览视图——
-    #   /plugin 命令 → ``model.fullscreen = "plugin"`` → 整屏渲染
-    #   PluginView（左插件列表 + 右详细信息 + Esc/Ctrl+H 关闭）；
-    #   关闭（命令线程清理 fullscreen 置空）后恢复完整聊天界面。
-    "plugin": PluginView,
-}
+#: 模态全屏视图注册表（2026-08-17 通用机制；「一切皆插件」）：
+#: view_id → 组件函数。App 在 ``model.fullscreen`` 非空时按 id 查注册表**整屏
+#: 渲染**对应组件；组件内部须 ``use_fullscreen(True)`` 声明模态（独占键盘
+#: 输入——未消费按键不落入输入缓冲，杜绝看不见的输入）与 ``use_input`` 处理
+#: 关闭/导航键。
+#:
+#: 视图声明为清单中的**独立插件条目**（``ui_view``，经
+#: ``src/tui/app/view_registry.py``）——可被 Profile/Bundle 声明，也可被
+#: Patch/Overlay 按 id 禁用、覆盖或替换；本字典与注册表**同源**（同一对象，
+#: 注册表变更经 ``_refresh()`` 原地更新）。新增视图只需注册表加声明 + 设置
+#: ``model.fullscreen``——整屏渲染/输入接管/光标隐藏全部自动生效。
+FULLSCREEN_VIEWS: dict = fullscreen_views()
 
-#: 模态底部视图注册表（2026-08-17 通用机制）：view_id → 组件 或
-#: ``(组件, key_fn)`` 元组。
+#: 模态底部视图注册表（2026-08-17 通用机制；「一切皆插件」）：
+#: view_id → 组件 或 ``(组件, key_fn)`` 元组。
 #: App 在 ``model.bottom_view`` 非空时按 id 查注册表**只渲染对应组件**作为
 #: 底部区（状态栏/输入区不显示——「弹窗打开时底部框不显示，弹窗在原来
 #: 底部框位置独立显示」）；组件内部须 ``use_modal(True)`` 声明模态（独占
@@ -68,30 +50,9 @@ FULLSCREEN_VIEWS: dict = {
 #: 输入）与 ``use_input`` 处理导航/确认/取消键。
 #: key 约定：无内部 use_state 的简单组件用固定 key ``bv-{view_id}``（fiber
 #: 复用保持组件状态）；带内部状态且须每次打开重置的组件用 ``(组件, key_fn)``
-#: 元组（key_fn 接收 model 返回 key 字符串——如 UserSelectPopup 用
-#: ``model.user_select.seq`` 递增序号强制重挂载，重置内部选中/勾选 state）。
-#: 新增底部视图两步：注册表加条目 + 设置 ``model.bottom_view``——底部区
-#: 渲染 / 输入接管 / 光标隐藏（输入区不渲染自动隐藏）全部自动生效，无需
-#: 改 App 分支。
-BOTTOM_VIEWS: dict = {
-    "user_select": (
-        UserSelectPopup,
-        # ★ 2026-08-19（并发 tab 弹窗）：key 固定为常量——弹窗激活期间
-        #   **不因新问题加入/问题确认而重挂载**（active_tab 焦点保留，否则
-        #   Tab 切到的问题会被新 append 强制重置回第一个）。连续会话（关闭
-        #   帧被渲染节流合并跳过 → fiber 复用）由组件内部会话检测防御
-        #   （us_ref/prev_states_ref 实例变化时重置焦点与选中）。
-        lambda model: "us-popup",
-    ),
-    # ★ 2026-08-18（用户需求：editmsg 与 user_select 不能用同一份代码）：
-    #   /editmsg 消息选择独立为底部视图——独立状态 model.editmsg_select +
-    #   独立组件 EditMsgSelectPopup（每条消息只显示一行）。key 用
-    #   editmsg_select.seq 递增序号强制重挂载，重置组件内部 use_state。
-    "editmsg": (
-        EditMsgSelectPopup,
-        lambda model: f"em-{getattr(getattr(model, 'editmsg_select', None), 'seq', 0)}",
-    ),
-}
+#: 元组（key_fn 接收 model 返回 key 字符串——如 UserSelectPopup 用递增序号
+#: 强制重挂载，重置内部选中/勾选 state）。视图声明同样为清单独立插件条目。
+BOTTOM_VIEWS: dict = bottom_views()
 
 
 def App(props) -> object:

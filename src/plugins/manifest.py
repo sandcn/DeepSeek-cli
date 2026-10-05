@@ -172,6 +172,149 @@ MIDDLEWARE_ENTRIES = [
      "config": {"id": "audit"}},
 ]
 
+# ── SubAgent 类型条目（每个内置类型一个独立插件条目） ──────
+#
+# 条目经 ``src.plugins.agent_type_entries`` 把 ``config.name`` 指向的内置类型
+# 注册进 ``src.core.agent_types``（Agent 类型注册表）；``config.name`` 供组合根
+# 收集「清单已接管的类型」（注入 ``subagents``，抑制默认装配，使 overlay disable
+# 单个类型真正生效）。
+
+AGENT_TYPE_ENTRIES = [
+    {"id": "agent_type_map", "plugin": "src.plugins.agent_type_entries:apply_agent_type",
+     "config": {"name": "map"}},
+    {"id": "agent_type_review", "plugin": "src.plugins.agent_type_entries:apply_agent_type",
+     "config": {"name": "review"}},
+    {"id": "agent_type_plan", "plugin": "src.plugins.agent_type_entries:apply_agent_type",
+     "config": {"name": "plan"}},
+    {"id": "agent_type_execute", "plugin": "src.plugins.agent_type_entries:apply_agent_type",
+     "config": {"name": "execute"}},
+]
+
+# ── 流式处理器条目（每个内置流式 chunk 处理器一个独立插件条目） ──
+#
+# 条目经 ``src.plugins.stream_entries`` 把 ``config.id`` 指向的内置项注册进
+# ``src.api.stream.registry``；``config.id`` 供组合根收集「清单已接管的处理器」
+# （注入 ``stream``，抑制默认装配，使 overlay disable 单个处理器真正生效）。
+
+STREAM_HANDLER_ENTRIES = [
+    {"id": "stream_handler_reasoning", "plugin": "src.plugins.stream_entries:apply_stream_handler",
+     "config": {"id": "reasoning"}},
+    {"id": "stream_handler_content", "plugin": "src.plugins.stream_entries:apply_stream_handler",
+     "config": {"id": "content"}},
+    {"id": "stream_handler_tool_calls", "plugin": "src.plugins.stream_entries:apply_stream_handler",
+     "config": {"id": "tool_calls"}},
+    {"id": "stream_handler_speed", "plugin": "src.plugins.stream_entries:apply_stream_handler",
+     "config": {"id": "speed"}},
+]
+
+# ── 通知后端条目（每个内置平台后端一个独立插件条目） ──────
+#
+# 条目经 ``src.plugins.notification_backends`` 把 ``config.id`` 指向的内置后端
+# 注册进 ``src.notifications.registry``；``config.id`` 供组合根收集「清单已接管
+# 的后端」（注入 notifications，抑制默认装配）。
+
+NOTIFICATION_BACKEND_ENTRIES = [
+    {"id": "notification_backend_termux", "plugin": "src.plugins.notification_backends:apply_notification_backend",
+     "config": {"id": "termux"}},
+    {"id": "notification_backend_linux", "plugin": "src.plugins.notification_backends:apply_notification_backend",
+     "config": {"id": "linux"}},
+    {"id": "notification_backend_windows", "plugin": "src.plugins.notification_backends:apply_notification_backend",
+     "config": {"id": "windows"}},
+]
+
+# ── 上下文压缩策略条目（每个内置策略一个独立插件条目） ──────
+#
+# 条目经 ``src.plugins.context_strategy_entries`` 把 ``config.name`` 指向的内置
+# 策略注册进 ``ctx.context``；``config.name`` 供组合根收集「清单已接管的策略」
+# （注入 context，抑制默认装配）。
+
+CONTEXT_STRATEGY_ENTRIES = [
+    {"id": "context_strategy_summarize", "plugin": "src.plugins.context_strategy_entries:apply_context_strategy",
+     "config": {"name": "summarize"}},
+    {"id": "context_strategy_drop", "plugin": "src.plugins.context_strategy_entries:apply_context_strategy",
+     "config": {"name": "drop"}},
+]
+
+# ── MCP 传输条目（每个内置传输一个独立插件条目） ────────────
+#
+# 条目经 ``src.plugins.mcp_transports`` 把 ``config.name`` 指向的内置传输注册进
+# ``src.mcp.transport_registry``；``config.name`` 供组合根收集「清单已接管的
+# 传输」（注入 mcp，抑制默认装配）。
+
+MCP_TRANSPORT_ENTRIES = [
+    {"id": "mcp_transport_stdio", "plugin": "src.plugins.mcp_transports:apply_mcp_transport",
+     "config": {"name": "stdio"}},
+    {"id": "mcp_transport_http", "plugin": "src.plugins.mcp_transports:apply_mcp_transport",
+     "config": {"name": "http"}},
+    {"id": "mcp_transport_sse", "plugin": "src.plugins.mcp_transports:apply_mcp_transport",
+     "config": {"name": "sse"}},
+]
+
+# ── 工具执行引擎条目（每个内置引擎一个独立插件条目） ────────
+#
+# 条目经 ``src.plugins.tool_engine_entries`` 把 ``config.id`` 指向的内置引擎注册
+# 进 ``src.core.tool_engines``；``config.id`` 供组合根收集「清单已接管的引擎」
+# （注入 tool_scheduler，抑制默认装配）。
+
+TOOL_ENGINE_ENTRIES = [
+    {"id": "tool_engine_dag", "plugin": "src.plugins.tool_engine_entries:apply_tool_engine",
+     "config": {"id": "dag"}},
+    {"id": "tool_engine_serial", "plugin": "src.plugins.tool_engine_entries:apply_tool_engine",
+     "config": {"id": "serial"}},
+    {"id": "tool_engine_parallel", "plugin": "src.plugins.tool_engine_entries:apply_tool_engine",
+     "config": {"id": "parallel"}},
+]
+
+# ── 事件消费者条目（每个内置消费者一个独立插件条目） ────────
+#
+# 条目经 ``src.plugins.consumer_entries`` 把 ``config.id`` 指向的内置消费者注册
+# 进 ``src.tui.events.consumer_registry``；``config.id`` 供组合根收集「清单已
+# 接管的消费者」（注入 consumers，抑制默认装配）。
+
+CONSUMER_ENTRIES = [
+    {"id": "consumer_output", "plugin": "src.plugins.consumer_entries:apply_consumer",
+     "config": {"id": "output"}},
+    {"id": "consumer_chat_ui", "plugin": "src.plugins.consumer_entries:apply_consumer",
+     "config": {"id": "chat_ui"}},
+    {"id": "consumer_error_handler", "plugin": "src.plugins.consumer_entries:apply_consumer",
+     "config": {"id": "error_handler"}},
+]
+
+# ── UI 视图条目（每个内置 TUI 视图一个独立插件条目） ────────
+#
+# 条目经 ``src.plugins.ui_views`` 把 ``config.id`` 指向的内置视图注册进
+# ``src.tui.app.view_registry``；``config.id`` 供组合根收集「清单已接管的视图」
+# （注入 ui，抑制默认装配）。
+
+UI_VIEW_ENTRIES = [
+    {"id": "ui_view_trace", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "trace"}},
+    {"id": "ui_view_trace_tools", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "trace_tools"}},
+    {"id": "ui_view_config", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "config"}},
+    {"id": "ui_view_plugin", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "plugin"}},
+    {"id": "ui_view_user_select", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "user_select"}},
+    {"id": "ui_view_editmsg", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "editmsg"}},
+]
+
+# ── 运行时数据服务条目（未接缝能力下沉为 ctx.* 服务） ────────
+#
+# 每项一个独立插件条目（经 ``src.plugins.runtime_data`` 提供对应服务），可按
+# Profile/Patch 禁用或替换。
+
+RUNTIME_DATA_ENTRIES = [
+    {"id": "message_queue", "plugin": "src.plugins.runtime_data:apply_message_queue"},
+    {"id": "multimodal", "plugin": "src.plugins.runtime_data:apply_multimodal"},
+    {"id": "context_selector", "plugin": "src.plugins.runtime_data:apply_context_selector"},
+    {"id": "context_summarizer", "plugin": "src.plugins.runtime_data:apply_context_summarizer"},
+    {"id": "stats", "plugin": "src.plugins.runtime_data:apply_stats"},
+    {"id": "tokens", "plugin": "src.plugins.runtime_data:apply_tokens"},
+]
+
 # ── Bundle 定义 ─────────────────────────────────────────────
 
 BUNDLES = [
@@ -196,9 +339,54 @@ BUNDLES = [
         "plugins": list(MIDDLEWARE_ENTRIES),
     },
     {
+        "id": "agent_types",
+        "description": "SubAgent 类型：每个内置类型一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(AGENT_TYPE_ENTRIES),
+    },
+    {
+        "id": "stream",
+        "description": "流式处理器：每个内置流式 chunk 处理器一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(STREAM_HANDLER_ENTRIES),
+    },
+    {
+        "id": "notification_backends",
+        "description": "通知后端：每个内置平台后端一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(NOTIFICATION_BACKEND_ENTRIES),
+    },
+    {
+        "id": "context_strategies",
+        "description": "上下文压缩策略：每个内置策略一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(CONTEXT_STRATEGY_ENTRIES),
+    },
+    {
+        "id": "mcp_transports",
+        "description": "MCP 传输：每个内置传输一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(MCP_TRANSPORT_ENTRIES),
+    },
+    {
+        "id": "tool_engines",
+        "description": "工具执行引擎：每个内置引擎一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(TOOL_ENGINE_ENTRIES),
+    },
+    {
+        "id": "consumers",
+        "description": "事件消费者：每个内置消费者一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(CONSUMER_ENTRIES),
+    },
+    {
+        "id": "ui_views",
+        "description": "UI 视图：每个内置 TUI 视图一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(UI_VIEW_ENTRIES),
+    },
+    {
+        "id": "runtime_data",
+        "description": "运行时数据服务：消息队列 / 多模态 / 上下文选择与摘要 / 统计 / token 估算",
+        "plugins": list(RUNTIME_DATA_ENTRIES),
+    },
+    {
         "id": "core",
-        "description": "基础层：配置、事件、提词、策略、工具、技能",
-        "includes": ["tools", "commands"],
+        "description": "基础层：配置、事件、提词、策略、工具、技能、通知后端",
+        "includes": ["tools", "commands", "notification_backends", "context_strategies", "runtime_data"],
         "plugins": [
             {"id": "config", "plugin": "src.plugins.config"},
             {"id": "events", "plugin": "src.plugins.events"},
@@ -242,10 +430,12 @@ BUNDLES = [
     },
     {
         "id": "runtime",
-        "description": "运行时：会话、Agent 循环、命令、MCP",
-        "includes": ["middleware"],
+        "description": "运行时：会话、SubAgent、流式管线、Agent 循环、命令、MCP",
+        "includes": ["middleware", "agent_types", "stream", "mcp_transports", "tool_engines"],
         "plugins": [
             {"id": "sessions", "plugin": "src.plugins.sessions"},
+            {"id": "subagents", "plugin": "src.plugins.subagents"},
+            {"id": "stream", "plugin": "src.plugins.stream"},
             {"id": "tool_scheduler", "plugin": "src.plugins.tool_scheduler"},
             {"id": "agent_middleware", "plugin": "src.plugins.agent_middleware"},
             {"id": "agent_loop", "plugin": "src.plugins.agent_loop"},
@@ -259,7 +449,7 @@ BUNDLES = [
     {
         "id": "presentation",
         "description": "表现层：UI、渲染器、事件消费者",
-        "includes": ["renderer_ext"],
+        "includes": ["renderer_ext", "consumers", "ui_views"],
         "plugins": [
             {"id": "renderer", "plugin": "src.plugins.renderer"},
             {"id": "renderer_builtin", "plugin": "src.plugins.renderer_builtin"},
@@ -316,5 +506,14 @@ __all__ = [
     "RENDERER_HANDLER_ENTRIES",
     "RENDERER_FILTER_ENTRIES",
     "MIDDLEWARE_ENTRIES",
+    "AGENT_TYPE_ENTRIES",
+    "STREAM_HANDLER_ENTRIES",
+    "NOTIFICATION_BACKEND_ENTRIES",
+    "CONTEXT_STRATEGY_ENTRIES",
+    "MCP_TRANSPORT_ENTRIES",
+    "TOOL_ENGINE_ENTRIES",
+    "CONSUMER_ENTRIES",
+    "UI_VIEW_ENTRIES",
+    "RUNTIME_DATA_ENTRIES",
     "build_config_tree",
 ]

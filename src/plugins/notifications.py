@@ -41,11 +41,33 @@ class NotificationsService(Service):
 
     def __init__(self, ctx, config=None):
         super().__init__(ctx, config)
+        cfg = config or getattr(ctx, "config", None) or {}
+        managed = cfg.get("managed_notification_backends") or ()
+        if managed:
+            from ..notifications.registry import set_managed_builtin_notification_backends
+
+            undo_managed = set_managed_builtin_notification_backends(managed)
+            ctx.effect(lambda: undo_managed)
+        disabled = cfg.get("disabled_notification_backends") or ()
+        if disabled:
+            from ..notifications.registry import disable_builtin_notification_backends
+
+            undo_disabled = disable_builtin_notification_backends(disabled)
+            ctx.effect(lambda: undo_disabled)
         self._provider: Any = _DefaultNotificationsProvider()
         ctx.effect(lambda: self._on_unload)
 
     def _on_unload(self) -> None:
         self._provider = None
+
+    def backends(self) -> list:
+        """当前生效的通知后端 id 列表（自省）。"""
+        from ..notifications.registry import (
+            builtin_notification_backend_factories,
+            notification_backend_factories,
+        )
+
+        return sorted(set(builtin_notification_backend_factories()) | set(notification_backend_factories()))
 
     @property
     def provider(self):
@@ -85,7 +107,7 @@ class NotificationsService(Service):
 
 @plugin("notifications", provide=["notifications"])
 def apply(ctx):
-    return NotificationsService(ctx)
+    return NotificationsService(ctx, ctx.config)
 
 
 __all__ = ["NotificationsService", "apply"]

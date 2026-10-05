@@ -51,19 +51,33 @@ class ContextService(Service):
 
     def __init__(self, ctx, config=None):
         super().__init__(ctx, config)
+        cfg = config or getattr(ctx, "config", None) or {}
         self._strategies: Dict[str, Callable[[], Any]] = _builtin_strategies()
-        self._default_names: Tuple[str, ...] = DEFAULT_STRATEGY_NAMES
+        self._default_names: Tuple[str, ...] = tuple(cfg.get("default_strategies") or DEFAULT_STRATEGY_NAMES)
         self._builder: Optional[Callable[[Optional[Tuple[str, ...]]], list]] = None
+        # 清单接管 / 显式禁用：内置策略的默认装配被抑制，仅条目注册者生效
+        self._managed: set = set(cfg.get("managed_strategies") or ())
+        self._disabled: set = set(cfg.get("disabled_strategies") or ())
+        for name in self._managed | self._disabled:
+            self._strategies.pop(name, None)
         ctx.effect(lambda: self._on_unload)
 
     def _on_unload(self) -> None:
         self._strategies = {}
         self._builder = None
 
-    # ── 策略注册表 ───────────────────────────────────────
+    # ── 注册表 ───────────────────────────────────────────
 
     def strategy_names(self) -> List[str]:
         return sorted(self._strategies)
+
+    def managed(self) -> List[str]:
+        """被清单接管的策略名（默认装配被抑制，由独立条目注册）。"""
+        return sorted(self._managed)
+
+    def disabled(self) -> List[str]:
+        """被显式禁用的策略名。"""
+        return sorted(self._disabled)
 
     def register_strategy(self, name: str, factory: Callable[[], Any]) -> Callable[[], None]:
         """注册自定义压缩策略工厂（注册即副作用，卸载时自动撤销）。"""
@@ -94,11 +108,14 @@ class ContextService(Service):
         return factory
 
     def build_strategies(self, names: Optional[Tuple[str, ...]] = None) -> list:
-        """按名字构建策略实例列表（None 使用默认策略链）。"""
+        """按名字构建策略实例列表（None 使用默认策略链）。
+
+        清单接管/禁用导致某默认策略缺失时自动跳过，保证压缩链路不因缺项中断。
+        """
         if self._builder is not None:
             return list(self._builder(names))
         selected = tuple(names) if names else self._default_names
-        return [self.get_strategy(name)() for name in selected]
+        return [self.get_strategy(name)() for name in selected if name in self._strategies]
 
     def set_strategy_builder(self, builder: Optional[Callable]) -> Any:
         """整体替换策略构建器，返回旧构建器（None 表示回退内置构建）。"""
@@ -131,7 +148,7 @@ class ContextService(Service):
 
 @plugin("context", inject=["config"], provide=["context"])
 def apply(ctx):
-    return ContextService(ctx)
+    return ContextService(ctx, ctx.config)
 
 
 __all__ = ["ContextService", "DEFAULT_STRATEGY_NAMES", "apply"]

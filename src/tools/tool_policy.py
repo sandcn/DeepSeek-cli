@@ -18,35 +18,13 @@ core.subagent`` 循环依赖而提取为独立零依赖模块。
 
 from __future__ import annotations
 
-TOOL_EXCLUSION_MAP = {
-    "map": {
-        "bash", "bash_opt", "subagent_opt", "write_file", "update_file", "rm", "mv", "cp", "mkdir",
-        "web_search",
-        "subagent", "user_select",
-        "cordis_define", "cordis_run", "cordis_stop", "cordis_undefine",
-    },
-    "review": {
-        "bash", "bash_opt",
-        "subagent_opt", "write_file", "update_file", "rm", "mv", "cp", "mkdir",
-        "subagent", "user_select",
-        "cordis_define", "cordis_run", "cordis_stop", "cordis_undefine",
-    },
-    "plan": {
-        "bash", "bash_opt", "subagent_opt",
-        "rm",
-        "mv",
-        "cp",
-        "subagent",
-        "user_select",
-        "cordis_define", "cordis_run", "cordis_stop", "cordis_undefine",
-    },
-    "execute": {
-        "subagent",
-        "subagent_opt",
-        "user_select",
-        "web_search",
-    },
-}
+from ..core.agent_types import exclusion_map as _exclusion_map
+
+#: agent_type → 排除工具集合。真源下沉到 ``src.core.agent_types`` 的 Agent 类型
+#: 注册表（每个类型是清单中的独立插件条目，可被 Profile/Patch/Overlay 声明、
+#: 禁用或替换）；此处持有注册表的**同一** dict 引用——MCP 工具策略在运行期向
+#: 具体集合 ``add`` 动态工具名仍然可见（向后兼容）。
+TOOL_EXCLUSION_MAP = _exclusion_map()
 
 
 # 全局禁用工具：对**任何** agent（主 Agent 与全部 SubAgent 类型）都不可加载。

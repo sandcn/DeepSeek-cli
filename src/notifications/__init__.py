@@ -1,27 +1,27 @@
-"""桌面通知模块 — 封装多平台通知逻辑
+"""桌面通知模块 — 按生效后端扇出多平台通知。
 
 支持 Termux、Linux notify-send、Windows Toast 三种通知方式。
+
+「一切皆插件」：具体平台发送逻辑拆为独立通知后端
+（``src.notifications.backends``），由注册表（``src.notifications.registry``）
+装配；每个后端是清单中的独立插件条目（``notification_backend``），可被
+Profile/Patch/Overlay 禁用或替换。本模块只保留标题/预览构建与 30 秒冷却，
+并按**生效后端**扇出发送。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 import time
 
-
-import shutil
-
 from ..config import get_rc
-
-from ..tools.utils import async_termux_notify, termux_notify, get_last_user_message_preview
+from ..tools.utils import get_last_user_message_preview
 
 _logger = logging.getLogger(__name__)
 
 # -- 内部状态 --------------------------------------------
 _last_notify_time: float = 0.0
 _COOLDOWN_SECONDS = 30
-_HAS_NOTIFY_SEND: bool | None = None
 
 
 # -- 公开函数 --------------------------------------------
@@ -54,86 +54,6 @@ def _build_notification(messages: list[dict], elapsed: float | None = None) -> t
     return (preview, _format_notify_title(elapsed))
 
 
-def notify_chat_completed(messages: list[dict], elapsed: float | None = None) -> None:
-    """对话完成时发送桌面通知（同步/异步非阻塞）
-
-    带 30 秒冷却：同一进程内连续重复通知会被静默跳过。
-
-    Args:
-        messages: 当前对话消息列表
-        elapsed: 本轮对话耗时（秒），用于在标题中显示耗时
-    """
-    result = _build_notification(messages, elapsed)
-    if result is None:
-        return
-    preview, title = result
-
-    # Termux 通知（纯同步，不依赖事件循环）
-    termux_notify(
-        message=preview,
-        title=title,
-        vibrate=True, duration=10000, notification=True,
-        sound=True, toast=False,
-    )
-
-    # Linux / Windows 需要事件循环
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError as e:
-        _logger.debug("跳过通知（无事件循环）: %s", e)
-        return
-
-    _notify_linux(loop, preview, title)
-    if sys.platform == "win32":
-        _notify_windows(loop, preview, title)
-
-
-async def async_notify_chat_completed(messages: list[dict], elapsed: float | None = None) -> None:
-    """对话完成时发送桌面通知（异步协程版本）
-
-    带 30 秒冷却：同一进程内连续重复通知会被静默跳过。
-
-    Args:
-        messages: 当前对话消息列表
-        elapsed: 本轮对话耗时（秒），用于在标题中显示耗时
-    """
-    result = _build_notification(messages, elapsed)
-    if result is None:
-        return
-    preview, title = result
-
-    # Termux 通知（异步）
-    await async_termux_notify(
-        message=preview,
-        title=title,
-        vibrate=True, duration=10000, notification=True,
-        sound=True, toast=False,
-    )
-
-    # Linux notify-send + Windows Toast 的 Future，用于收集异常
-    pending_futures: list[asyncio.Future] = []
-    loop = asyncio.get_running_loop()
-
-    pending_futures.append(loop.run_in_executor(None, _run_notify_send, preview, title))
-
-    if sys.platform == "win32":
-        pending_futures.append(loop.run_in_executor(None, _run_windows_toast, preview, title))
-
-    try:
-        # 等待通知完成，但不阻塞其他异步任务
-        for fut in pending_futures:
-            try:
-                await asyncio.wrap_future(fut)
-            except Exception as e:
-                _logger.debug("通知执行失败: %s", e)
-    finally:
-        for fut in pending_futures:
-            if not fut.done():
-                fut.cancel()
-
-
-# -- 内部函数 --------------------------------------------
-
 def _prepare_notify(messages: list[dict]) -> str | None:
     """检查冷却并生成 preview，返回 preview 或 None（跳过）。"""
     global _last_notify_time
@@ -147,64 +67,56 @@ def _prepare_notify(messages: list[dict]) -> str | None:
     return preview
 
 
-def _check_notify_send() -> bool:
-    """检查 notify-send 是否可用（结果缓存）。"""
-    global _HAS_NOTIFY_SEND
-    if _HAS_NOTIFY_SEND is None:
-        _HAS_NOTIFY_SEND = shutil.which("notify-send") is not None
-    return _HAS_NOTIFY_SEND
+def notify_chat_completed(messages: list[dict], elapsed: float | None = None) -> None:
+    """对话完成时发送桌面通知（同步/非阻塞）。
 
-
-def _notify_linux(loop: asyncio.AbstractEventLoop, preview: str, title: str = "聊天完成") -> None:
-    """Linux notify-send 通知"""
-    if not _check_notify_send():
+    带 30 秒冷却：同一进程内连续重复通知会被静默跳过。
+    按注册表的**生效后端**依次发送；单个后端异常只记日志，不影响其他后端。
+    """
+    result = _build_notification(messages, elapsed)
+    if result is None:
         return
-    loop.run_in_executor(None, _run_notify_send, preview, title)
+    preview, title = result
+
+    from .registry import active_notification_backends
+
+    for backend in active_notification_backends():
+        try:
+            backend.send(preview, title)
+        except Exception:
+            _logger.debug("通知后端发送失败: %s", type(backend).__name__, exc_info=True)
 
 
-def _notify_windows(loop: asyncio.AbstractEventLoop, preview: str, title: str = "聊天完成") -> None:
-    """Windows PowerShell Toast 通知"""
-    loop.run_in_executor(None, _run_windows_toast, preview, title)
+async def async_notify_chat_completed(messages: list[dict], elapsed: float | None = None) -> None:
+    """对话完成时发送桌面通知（异步协程版本）。
+
+    带 30 秒冷却：同一进程内连续重复通知会被静默跳过。
+    """
+    result = _build_notification(messages, elapsed)
+    if result is None:
+        return
+    preview, title = result
+
+    from .registry import active_notification_backends
+
+    backends = active_notification_backends()
+    if not backends:
+        return
+
+    async def _send(backend) -> None:
+        try:
+            asend = getattr(backend, "asend", None)
+            if callable(asend):
+                await asend(preview, title)
+            else:
+                backend.send(preview, title)
+        except Exception:
+            _logger.debug("通知后端异步发送失败: %s", type(backend).__name__, exc_info=True)
+
+    await asyncio.gather(*(_send(backend) for backend in backends), return_exceptions=True)
 
 
-def _run_notify_send(preview: str, title: str = "聊天完成") -> None:
-    """子线程执行 notify-send"""
-    import subprocess
-    try:
-        subprocess.run(
-            ["notify-send", title, preview, "-t", "10000"],
-            capture_output=True, timeout=3,
-        )
-    except Exception as e:
-        _logger.debug("notify-send 失败: %s", e)
-
-
-def _run_windows_toast(preview: str, title: str = "聊天完成") -> None:
-    """子线程执行 PowerShell Toast（通过环境变量传参，避免注入）"""
-    import subprocess
-    import os
-    try:
-        # 通过环境变量传递参数，避免 PowerShell 命令注入
-        env = os.environ.copy()
-        env['_CHAT_TOAST_TITLE'] = title
-        env['_CHAT_TOAST_MSG'] = preview
-        ps_script = '''
-$title = $env:_CHAT_TOAST_TITLE
-$msg = $env:_CHAT_TOAST_MSG
-$appId = "Chat"
-try {
-    [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
-    $t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
-    $x = $t.GetElementsByTagName("text")
-    $x.Item(0).AppendChild($t.CreateTextNode($title)) | Out-Null
-    $x.Item(1).AppendChild($t.CreateTextNode($msg)) | Out-Null
-    $n = [Windows.UI.Notifications.ToastNotification]::new($t)
-    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($n)
-} catch {}
-'''
-        subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps_script],
-            capture_output=True, timeout=10, env=env,
-        )
-    except Exception as e:
-        _logger.debug("PowerShell Toast 失败: %s", e)
+__all__ = [
+    "notify_chat_completed",
+    "async_notify_chat_completed",
+]

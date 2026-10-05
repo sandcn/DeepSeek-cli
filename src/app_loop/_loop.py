@@ -39,6 +39,19 @@ from ..core.base_agent import schedule_kill_all_background_tasks
 from ..core.stats import reset_token_speed
 from ..tui.consumer import ChatUIConsumer
 
+
+def _create_message_queue():
+    """创建消息队列（「一切皆插件」：内核 ``ctx.message_queue`` 优先，内核缺失回退直接构造）。"""
+    try:
+        from ..kernel.runtime import active_service
+
+        service = active_service("message_queue")
+        if service is not None:
+            return service.create()
+    except Exception:
+        pass
+    return MessageQueue()
+
 _logger = logging.getLogger(__name__)
 
 
@@ -598,7 +611,7 @@ class InteractiveLoop:
         self._setup_monitor(session, state)
 
         # ── 创建 MessageQueue + 消费者 ──
-        queue = MessageQueue()
+        queue = _create_message_queue()
         msg_done = asyncio.Event()
         self._msg_done_ref = msg_done
 

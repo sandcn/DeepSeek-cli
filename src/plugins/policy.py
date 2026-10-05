@@ -87,12 +87,12 @@ class PolicyService(Service):
         return self._global_disabled
 
     def excluded_tools(self, agent_type: str = "execute") -> set:
-        from ..tools.tool_policy import TOOL_EXCLUSION_MAP
+        from ..core.agent_types import excluded_tools
 
         # 主 Agent / 未标注类型（agent_type 为 None/空）不受子代理排除表约束
         if not agent_type:
             return set()
-        return set(TOOL_EXCLUSION_MAP.get(agent_type, TOOL_EXCLUSION_MAP["execute"]))
+        return excluded_tools(agent_type)
 
     def exclusion_map(self) -> dict:
         from ..tools.tool_policy import TOOL_EXCLUSION_MAP
@@ -104,16 +104,18 @@ class PolicyService(Service):
 
         ``agent_type`` 为 None/空表示主 Agent（无子代理类型）——排除表不适用，
         仅放行；只有明确的子代理类型（map/review/plan/execute）才按表排除。
+        写入路径白名单标识（如 ``plan``）来自 Agent 类型注册表（类型是清单中
+        的独立插件条目）。
         """
-        from ..tools.tool_policy import TOOL_EXCLUSION_MAP
+        from ..core.agent_types import path_whitelist
 
-        if agent_type and agent_type in TOOL_EXCLUSION_MAP and tool_name in TOOL_EXCLUSION_MAP[agent_type]:
+        if agent_type and tool_name in self.excluded_tools(agent_type):
             return (
                 False,
                 f"工具 '{tool_name}' 不可用于 '{agent_type}' 类型 agent，"
                 f"该 agent 类型的工具白名单已排除此工具",
             )
-        if path is not None and agent_type == "plan" and tool_name in (
+        if path is not None and path_whitelist(agent_type) == "plan" and tool_name in (
             "write_file",
             "update_file",
             "mkdir",

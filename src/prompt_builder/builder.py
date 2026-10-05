@@ -146,6 +146,18 @@ _MCP_AGENT_TYPE: dict = {
 }
 
 
+def _resolve_mcp_agent_type(agent_name: str) -> str:
+    """agent 名 → MCP 工具权限类型（注册表驱动，可插拔）。"""
+    if agent_name in ("main", "sub"):
+        return "execute"
+    try:
+        from ..core.agent_types import mcp_agent_type
+
+        return mcp_agent_type(agent_name)
+    except Exception:
+        return _MCP_AGENT_TYPE.get(agent_name, "execute")
+
+
 def _build_mcp_section(agent_name: str = "main") -> str:
     """构建系统提示词中的 MCP 外部工具章节（无 MCP 配置时返回空字符串）。
 
@@ -164,7 +176,7 @@ def _build_mcp_section(agent_name: str = "main") -> str:
         return ""
     try:
         from ..mcp import get_mcp_prompt_section
-        return get_mcp_prompt_section(_MCP_AGENT_TYPE.get(agent_name, "execute"))
+        return get_mcp_prompt_section(_resolve_mcp_agent_type(agent_name))
     except Exception:
         _logger.debug("构建 MCP 提示词章节失败", exc_info=True)
         return ""

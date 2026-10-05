@@ -26,14 +26,14 @@ class PromptService(Service):
 
     def build_for(self, agent_type: str) -> str:
         from ..prompt_builder import builder
+        from ..core.agent_types import get_spec
 
-        mapping = {
-            "map": builder.build_map_agent_system_prompt,
-            "review": builder.build_review_agent_system_prompt,
-            "plan": builder.build_plan_agent_system_prompt,
-            "execute": builder.build_execute_agent_system_prompt,
-        }
-        builder_fn = mapping.get(agent_type, builder.build_subagent_system_prompt)
+        # 「一切皆插件」：类型 → 提示词文件的映射来自 Agent 类型注册表
+        # （每个类型是清单中的独立插件条目，可禁用/替换）。
+        name = get_spec(agent_type).agent_name or "sub"
+        builder_fn = getattr(builder, f"build_{name}_agent_system_prompt", None)
+        if builder_fn is None:
+            builder_fn = builder.build_subagent_system_prompt
         return builder_fn()
 
     def environment_info(self) -> str:

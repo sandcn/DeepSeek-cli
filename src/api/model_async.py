@@ -28,6 +28,22 @@ from .image_upload import optimize_messages_for_upload
 
 _logger = logging.getLogger(__name__)
 
+
+def _optimize_messages_for_upload(messages: list) -> dict:
+    """上传前图片瘦身（「一切皆插件」：内核 ``ctx.multimodal`` 优先，回退直接调用）。
+
+    保持模块级 ``optimize_messages_for_upload`` 仍为可 monkeypatch 的回退实现。
+    """
+    try:
+        from ..kernel.runtime import active_service
+
+        service = active_service("multimodal")
+        if service is not None:
+            return service.optimize_messages_for_upload(messages)
+    except Exception:
+        pass
+    return optimize_messages_for_upload(messages)
+
 # 向后兼容别名（供旧代码和测试引用）
 _retry_api_call_async = retry_api_call_async
 _retry_on_parse_failure_async = retry_on_parse_failure_async
@@ -61,7 +77,7 @@ async def call_model_async(
     messages_copy = adapter.prepare_messages(messages_copy, model)
     # 上传前图片瘦身（折叠/压缩/缓存）：缓解多图场景每轮请求重复上传全量
     # base64 导致的卡顿；只作用于发送副本，不影响 agent.messages。
-    optimize_messages_for_upload(messages_copy)
+    _optimize_messages_for_upload(messages_copy)
     is_reasoner = adapter.is_reasoner_model(model)
     return await retry_on_parse_failure_async(
         stream_call_async,
@@ -89,7 +105,7 @@ async def call_model_sync_async(
     messages_copy = copy.deepcopy(messages)
     messages_copy = adapter.prepare_messages(messages_copy, model)
     # 上传前图片瘦身（折叠/压缩/缓存）：同 call_model_async。
-    optimize_messages_for_upload(messages_copy)
+    _optimize_messages_for_upload(messages_copy)
     return await retry_on_parse_failure_async(
         _call_sync_async,
         silent=True, display=display, label=label,

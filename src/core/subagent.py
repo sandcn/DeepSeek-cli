@@ -65,18 +65,13 @@ class SubAgent(BaseAgent):
                       if t.get("function", {}).get("name") not in excluded]
 
         # 通过 parent_agent 的 DefaultPromptBuilderAdapter 构建 system prompt，
-        # 确保与 MainAgent 使用一致的 cwd 和环境信息（修复 Bug#4）
+        # 确保与 MainAgent 使用一致的 cwd 和环境信息（修复 Bug#4）。
+        # 「一切皆插件」：类型 → 提示词方法的映射来自 Agent 类型注册表
+        # （``src.core.agent_types``，每个类型是清单中的独立插件条目）。
         prompt_port = parent_agent.get_prompt_builder_port()
-        if agent_type == "map":
-            system_parts = prompt_port.build_map_agent_prompt()
-        elif agent_type == "review":
-            system_parts = prompt_port.build_review_agent_prompt()
-        elif agent_type == "plan":
-            system_parts = prompt_port.build_plan_agent_prompt()
-        elif agent_type == "execute":
-            system_parts = prompt_port.build_execute_agent_system_prompt()
-        else:
-            system_parts = prompt_port.build_subagent_prompt()
+        from .agent_types import build_prompt_parts
+
+        system_parts = build_prompt_parts(prompt_port, agent_type)
         # 「会话日志即唯一事实源」：SubAgent 拥有自己的会话日志
         from .session_log import LoggedMessageList
 

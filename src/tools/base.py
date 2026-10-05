@@ -91,8 +91,10 @@ class Func(abc.ABC):
                     f"该 agent 类型的工具白名单已排除此工具")
         # 路径白名单校验：plan agent 使用 write_file / update_file / mkdir 时限制写入目录
         # （与 file_base._validate_path_and_size / mkdir.execute 共用
-        #  get_plan_allowed_dir + is_path_within_dir，realpath 解析符号链接防绕过）
-        if path is not None and agent_type == 'plan' and tool_name in ('write_file', 'update_file', 'mkdir'):
+        #  get_plan_allowed_dir + is_path_within_dir，realpath 解析符号链接防绕过）。
+        # 白名单标识来自 Agent 类型注册表（类型是清单中的独立插件条目）。
+        from ..core.agent_types import path_whitelist as _path_whitelist
+        if path is not None and _path_whitelist(agent_type) == "plan" and tool_name in ('write_file', 'update_file', 'mkdir'):
             from .file_ops import get_plan_allowed_dir, is_path_within_dir
             allowed_dir = get_plan_allowed_dir()
             agent_label = "plan agent"
@@ -376,8 +378,26 @@ def get_tool_metadata(tool_class) -> Optional[ToolMetadata]:
 # 而 ToolResult 对 slots 无性能诉求，标准 dataclass 可同时满足
 # 运行（Python 3.9）与类型检查。
 
-# ToolResult 已下沉核心层端口（core.ports.tools），此处 re-export 兼容。
-from ..core.ports.tools import ToolResult  # noqa: E402,F401
+# ToolResult 已下沉核心层端口（core.ports.tools），此处以**惰性导出**兼容：
+# 模块级 ``__getattr__``（PEP 562）按需导入，避免 ``from ..core.ports.tools
+# import ToolResult`` 在 tools.base 模块加载期触发 ``src.core.__init__``
+# （→ agent_builder → internal/agent → tools.base）形成导入环——单独导入
+# ``src.tools.base``（部分单测）不再崩溃。``from ...tools.base import ToolResult``
+# 与运行时 ``isinstance(value, ToolResult)`` 均照常工作。
+_LAZY_EXPORTS = {"ToolResult": ("..core.ports.tools", "ToolResult")}
+
+
+def __getattr__(name: str):
+    target = _LAZY_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attr = target
+    import importlib
+
+    module = importlib.import_module(module_name, __package__)
+    value = getattr(module, attr)
+    globals()[name] = value
+    return value
 
 
 def to_tool_text(value: Any) -> str:
@@ -386,6 +406,8 @@ def to_tool_text(value: Any) -> str:
     供展示/统计链路（on_after 回调、token 估算等）复用，
     避免各消费方重复 ``isinstance(value, ToolResult)`` 判断。
     """
+    from ..core.ports.tools import ToolResult
+
     if isinstance(value, ToolResult):
         return value.text
     if value is None:

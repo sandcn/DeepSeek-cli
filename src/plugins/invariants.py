@@ -152,6 +152,169 @@ def _agent_middleware_readable(kernel) -> str | None:
     return None
 
 
+def _subagents_types_registered(kernel) -> str | None:
+    """``ctx.subagents`` 必须注册全部内置 Agent 类型（类型是清单独立条目）。"""
+    if not kernel.has_service("subagents"):
+        return None
+    service = kernel.resolve_service("subagents")
+    try:
+        types = set(service.types())
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"subagents 类型注册表读取失败: {exc}"
+    if not types:
+        return "subagents 服务没有任何已注册的 Agent 类型"
+    missing = sorted({"map", "review", "plan", "execute"} - types)
+    if missing:
+        return f"subagents 服务缺少内置 Agent 类型: {missing}"
+    return None
+
+
+def _stream_handlers_readable(kernel) -> str | None:
+    """流式处理器注册表必须可读，且 ``ctx.stream`` 覆盖全部内置角色。"""
+    try:
+        from ..api.stream.registry import (
+            builtin_stream_handler_factories,
+            builtin_stream_handler_ids,
+        )
+
+        ids = list(builtin_stream_handler_ids())
+        builtin_stream_handler_factories()
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"流式处理器注册表读取失败: {exc}"
+    if not kernel.has_service("stream"):
+        return None
+    service = kernel.resolve_service("stream")
+    try:
+        active = set(service.handlers())
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"ctx.stream 处理器读取失败: {exc}"
+    missing = sorted(set(ids) - active)
+    if missing:
+        return f"ctx.stream 缺少内置流式处理器: {missing}"
+    return None
+
+
+def _ui_consumers_views_readable(kernel) -> str | None:
+    """事件消费者 / UI 视图注册表必须可读，且生效项覆盖全部内置项。"""
+    try:
+        from ..tui.events.consumer_registry import builtin_consumer_ids, consumer_names
+        from ..tui.app.view_registry import builtin_view_ids, active_view_ids
+
+        builtin_consumer_ids()
+        builtin_view_ids()
+        consumers = set(consumer_names())
+        views = set(active_view_ids())
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"事件消费者/UI 视图注册表读取失败: {exc}"
+    if kernel.has_service("consumers"):
+        try:
+            active = set(kernel.resolve_service("consumers").consumers())
+        except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+            return f"ctx.consumers 消费者读取失败: {exc}"
+        missing = sorted(consumers - active)
+        if missing:
+            return f"ctx.consumers 缺少内置消费者: {missing}"
+    if kernel.has_service("ui"):
+        try:
+            active_views = set(kernel.resolve_service("ui").views())
+        except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+            return f"ctx.ui 视图读取失败: {exc}"
+        missing = sorted(views - active_views)
+        if missing:
+            return f"ctx.ui 缺少内置视图: {missing}"
+    return None
+
+
+def _declared_provides_present(kernel) -> str | None:
+    """活跃 Fiber 声明的 ``provide`` 服务必须全部在册（严格模式的运行期保障）。"""
+    missing = []
+    for fiber in kernel.fibers():
+        if fiber.state is not FiberState.ACTIVE:
+            continue
+        for key in getattr(fiber.definition, "provide", ()) or ():
+            if not kernel.has_service(str(key)):
+                missing.append(str(key))
+    if missing:
+        return f"已声明提供的服务缺失: {sorted(set(missing))}"
+    return None
+
+
+def _runtime_data_services_readable(kernel) -> str | None:
+    """运行时数据服务（消息队列/多模态/上下文选择与摘要/统计/token）可读。"""
+    checks = (
+        ("message_queue", ("create",)),
+        ("multimodal", ("is_multimodal", "optimize_messages_for_upload")),
+        ("context_selector", ("select_for_compression",)),
+        ("context_summarizer", ("summarize",)),
+        ("stats", ("token_stats",)),
+        ("tokens", ("estimate",)),
+    )
+    for key, methods in checks:
+        if not kernel.has_service(key):
+            continue
+        service = kernel.resolve_service(key)
+        for method in methods:
+            if not callable(getattr(service, method, None)):
+                return f"服务 {key!r} 缺少方法 {method!r}"
+    return None
+
+
+def _tool_engines_readable(kernel) -> str | None:
+    """工具执行引擎注册表必须可读，且默认引擎可解析（调度不中断）。"""
+    try:
+        from ..core.tool_engines import (
+            builtin_tool_engine_factories,
+            builtin_tool_engine_ids,
+            default_tool_engine,
+        )
+
+        list(builtin_tool_engine_ids())
+        builtin_tool_engine_factories()
+        if not callable(default_tool_engine()):
+            return "工具执行引擎默认引擎不可调用"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"工具执行引擎注册表读取失败: {exc}"
+    return None
+
+
+def _providers_readable(kernel) -> str | None:
+    """可替换 provider 注册表必须可读，且生效项非空。
+
+    覆盖：通知后端 / 上下文压缩策略 / MCP 传输。
+    """
+    if kernel.has_service("notifications"):
+        try:
+            service = kernel.resolve_service("notifications")
+            backends = list(service.backends())
+            from ..notifications.registry import builtin_notification_backend_ids
+
+            missing = sorted(set(builtin_notification_backend_ids()) - set(backends))
+            if missing:
+                return f"ctx.notifications 缺少内置通知后端: {missing}"
+        except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+            return f"通知后端注册表读取失败: {exc}"
+    if kernel.has_service("context"):
+        try:
+            service = kernel.resolve_service("context")
+            names = list(service.strategy_names())
+            if not names:
+                return "ctx.context 没有任何已注册的压缩策略"
+        except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+            return f"压缩策略注册表读取失败: {exc}"
+    if kernel.has_service("mcp"):
+        try:
+            from ..mcp.transport_registry import builtin_mcp_transport_ids
+
+            service = kernel.resolve_service("mcp")
+            transports = set(service.transports())
+            missing = sorted(set(builtin_mcp_transport_ids()) - transports)
+            if missing:
+                return f"ctx.mcp 缺少内置传输: {missing}"
+        except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+            return f"MCP 传输注册表读取失败: {exc}"
+    return None
+
+
 def _singletons_kernel_source(kernel) -> str | None:
     """进程级单例访问函数必须解析到内核服务独占实例（内核服务为唯一真源）。"""
     if kernel.has_service("events"):
@@ -216,6 +379,13 @@ _BUILTIN_CHECKS = (
     ("llm.providers_available", _llm_providers_available),
     ("renderer.extensions_readable", _renderer_extensions_readable),
     ("middleware.registry_readable", _agent_middleware_readable),
+    ("subagents.types_registered", _subagents_types_registered),
+    ("stream.handlers_readable", _stream_handlers_readable),
+    ("providers.readable", _providers_readable),
+    ("tool_engines.readable", _tool_engines_readable),
+    ("ui.consumers_views_readable", _ui_consumers_views_readable),
+    ("runtime_data.readable", _runtime_data_services_readable),
+    ("services.declared_provides", _declared_provides_present),
     ("singletons.kernel_source", _singletons_kernel_source),
 )
 
@@ -233,8 +403,37 @@ class InvariantsService(Service):
         for name, check in _BUILTIN_CHECKS:
             self._registry.register(name, check)
         ctx.effect(lambda: self._registry.clear)
-        # 启动自检：失败只记日志，不阻断启动（与 dsh 的 invariant fiber 一致）
-        failures = self.check()
+        # 启动自检：等内核稳定（无 PENDING/LOADING）后再跑，失败只记日志、不阻断
+        # 启动（与 dsh 的 invariant fiber 一致）。若在此同步自检，部分依赖其它
+        # 插件注册的服务（如清单条目注册的压缩策略/流式处理器）尚未就绪，会
+        # 产生假阳性告警。
+        self._schedule_startup_check()
+
+    def _schedule_startup_check(self) -> None:
+        import asyncio
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._deferred_startup_check())
+
+    async def _deferred_startup_check(self) -> None:
+        import asyncio
+
+        for _ in range(500):
+            await asyncio.sleep(0)
+            try:
+                fibers = list(self.ctx.kernel.fibers())
+            except Exception:
+                break
+            if all(f.state.value not in ("PENDING", "LOADING") for f in fibers):
+                break
+        try:
+            failures = self.check()
+        except Exception:
+            _logger.debug("启动不变量自检异常", exc_info=True)
+            return
         for failure in failures:
             _logger.warning("运行时不变量失败: %s", failure)
 

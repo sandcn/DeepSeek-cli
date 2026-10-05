@@ -87,7 +87,20 @@ def _log_notification(server_name: str, msg: dict) -> None:
 
 
 def create_transport(cfg: McpServerConfig):
-    """按配置创建传输实例。"""
+    """按配置创建传输实例。
+
+    「一切皆插件」：传输实现经 ``src.mcp.transport_registry`` 的注册表路由
+    （每个内置传输是清单中的独立插件条目，可被 Patch/Overlay 禁用或替换）；
+    注册表不可用时回退内置 ``if/elif`` 分派。
+    """
+    try:
+        from .transport_registry import resolve_transport
+
+        transport = resolve_transport(cfg.transport, cfg)
+        if transport is not None:
+            return transport
+    except Exception:
+        _logger.debug("传输注册表解析失败，回退内置分派", exc_info=True)
     if cfg.transport == "stdio":
         return StdioTransport(cfg)
     if cfg.transport == "sse":

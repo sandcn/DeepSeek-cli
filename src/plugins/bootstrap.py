@@ -52,6 +52,14 @@ _SINGLE_DECL_PLUGINS = {
     "renderer_handler": "id",
     "renderer_filter": "id",
     "middleware": "id",
+    "agent_type": "name",
+    "stream_handler": "id",
+    "notification_backend": "id",
+    "context_strategy": "name",
+    "mcp_transport": "name",
+    "tool_engine": "id",
+    "consumer": "id",
+    "ui_view": "id",
 }
 
 #: 单条目声明插件名 → 汇入的托管分组
@@ -61,6 +69,14 @@ _MANAGED_GROUP = {
     "renderer_handler": "managed_handlers",
     "renderer_filter": "managed_filters",
     "middleware": "managed_middlewares",
+    "agent_type": "managed_agent_types",
+    "stream_handler": "managed_stream_handlers",
+    "notification_backend": "managed_notification_backends",
+    "context_strategy": "managed_strategies",
+    "mcp_transport": "managed_mcp_transports",
+    "tool_engine": "managed_tool_engines",
+    "consumer": "managed_consumers",
+    "ui_view": "managed_ui_views",
 }
 
 #: 只统计「启用」条目的托管分组（命令沿用旧语义；工具/渲染/中间件把禁用项也
@@ -73,6 +89,14 @@ _AGGREGATE_MANAGED_KEYS = {
     "commands": ("managed_commands",),
     "renderer_builtin": ("managed_handlers", "managed_filters"),
     "agent_middleware": ("managed_middlewares",),
+    "subagents": ("managed_agent_types",),
+    "stream": ("managed_stream_handlers",),
+    "notifications": ("managed_notification_backends",),
+    "context": ("managed_strategies",),
+    "mcp": ("managed_mcp_transports",),
+    "tool_scheduler": ("managed_tool_engines",),
+    "consumers": ("managed_consumers",),
+    "ui": ("managed_ui_views",),
 }
 
 
@@ -293,8 +317,24 @@ async def build_kernel(
                 _logger.exception("挂载 entry-point 插件失败: %s", name)
 
     await kernel.settle()
+    # 严格模式（生产路径）：凡由 Profile 插件树 ``provide`` 声明的服务，运行期
+    # 缺失即显式失败（不再静默回退直接 import / 进程级单例）。
+    from ..kernel.runtime import activate_strict
+
+    activate_strict(declared_provide_keys(resolved), kernel=kernel)
     set_current_kernel(kernel)
     return kernel
+
+
+def declared_provide_keys(resolved) -> list:
+    """从解析后的插件条目收集所有已声明提供的服务 key（含被禁用条目？否）。"""
+    keys = set()
+    for entry, plug in resolved:
+        if getattr(entry, "disabled", False):
+            continue
+        for key in getattr(plug, "provide", ()) or ():
+            keys.add(str(key))
+    return sorted(keys)
 
 
 async def shutdown_kernel(kernel: Optional[Kernel]) -> None:
@@ -302,11 +342,13 @@ async def shutdown_kernel(kernel: Optional[Kernel]) -> None:
     if kernel is None:
         return
     await kernel.dispose()
-    if kernel is not None:
-        from ..kernel import get_current_kernel
+    from ..kernel import get_current_kernel
 
-        if get_current_kernel() is kernel:
-            set_current_kernel(None)
+    if get_current_kernel() is kernel:
+        set_current_kernel(None)
+    from ..kernel.runtime import deactivate_strict
+
+    deactivate_strict()
 
 
 def dump_profile(

@@ -196,16 +196,14 @@ def fs_write_text(path, content, *, encoding: str = "utf-8"):
 
 
 def get_service(key: str, default: Any = None) -> Any:
-    """按 key 解析内核服务（缺失时返回 default）。"""
-    kernel = _kernel()
-    if kernel is None:
-        return default
-    value = kernel.resolve_service(key)
-    from ...kernel.context import _MISSING
+    """按 key 解析内核服务（缺失时返回 default）。
 
-    if value is _MISSING:
-        return default
-    return value
+    严格模式下（组合根按 Profile 声明激活），必需服务缺失抛
+    ``kernel.runtime.ServiceUnavailable``——生产路径不再静默回退。
+    """
+    from ...kernel.runtime import active_service
+
+    return active_service(key, default)
 
 
 # ── 组合层工厂：内核服务提供的运行时组件构造器 ─────────────
@@ -281,6 +279,11 @@ def active_policy():
 def active_agents_service():
     """内核 Agent 注册表服务；无内核时返回 None。"""
     return get_service("agents")
+
+
+def active_subagents_service():
+    """内核 SubAgent 运行时服务（``ctx.subagents``）；无内核时返回 None。"""
+    return get_service("subagents")
 
 
 def register_agent(agent, **kwargs):
@@ -401,5 +404,6 @@ __all__ = [
     "active_context_manager_factory",
     "active_policy",
     "active_agents_service",
+    "active_subagents_service",
     "register_agent",
 ]

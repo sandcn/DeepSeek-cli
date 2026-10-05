@@ -24,8 +24,42 @@ class UiService(Service):
 
     def __init__(self, ctx, config=None):
         super().__init__(ctx, config)
+        cfg = config or getattr(ctx, "config", None) or {}
+        managed = cfg.get("managed_ui_views") or ()
+        if managed:
+            from ..tui.app.view_registry import set_managed_builtin_views
+
+            undo_managed = set_managed_builtin_views(managed)
+            ctx.effect(lambda: undo_managed)
+        disabled = cfg.get("disabled_ui_views") or ()
+        if disabled:
+            from ..tui.app.view_registry import disable_builtin_views
+
+            undo_disabled = disable_builtin_views(disabled)
+            ctx.effect(lambda: undo_disabled)
         self._width_cache = None
         self._subagent_panel = None
+
+    # ── TUI 视图注册表 ─────────────────────────────────
+
+    def views(self) -> list:
+        """当前生效的 TUI 视图 id 列表（自省）。"""
+        from ..tui.app.view_registry import active_view_ids
+
+        return active_view_ids()
+
+    def describe_views(self) -> list:
+        from ..tui.app.view_registry import describe
+
+        return describe()
+
+    def register_view(self, spec):
+        """注册一个扩展视图（注册即副作用，卸载时自动撤销）。"""
+        from ..tui.app.view_registry import register_view
+
+        undo = register_view(spec)
+        self.ctx.effect(lambda: undo)
+        return undo
 
     # ── 表现层单例（内核真源） ─────────────────────────
 
@@ -85,7 +119,7 @@ class UiService(Service):
 
 @plugin("ui", inject=["config", "events"], provide=["ui"])
 def apply(ctx):
-    return UiService(ctx)
+    return UiService(ctx, ctx.config)
 
 
 __all__ = ["UiService", "apply"]

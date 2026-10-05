@@ -58,14 +58,17 @@ class ToolScheduler:
     # 类级 Semaphore（所有实例共享）
     _semaphore: Optional[asyncio.Semaphore] = None
 
-    def __init__(self, registry: Optional[ToolRegistryPort] = None):
+    def __init__(self, registry: Optional[ToolRegistryPort] = None, engine: Optional[str] = None):
         """初始化调度器。
 
         Args:
             registry: 工具注册表，None 时使用默认工具注册表（延迟导入）。
                       保留可选参数用于测试注入 mock registry。
+            engine: 执行引擎名（``dag`` / ``serial`` / ``parallel`` 或注册的
+                      扩展引擎）；None/空表示走默认引擎（``dag``）。
         """
         self._registry = registry or get_default_tool_registry()
+        self._engine = engine or ""
 
         # 类级 Semaphore 懒初始化（跨所有实例共享，0 表示无限制）
         if ToolScheduler._semaphore is None and _MAX_CONCURRENT_TOOLS > 0:
@@ -99,6 +102,29 @@ class ToolScheduler:
         if self._schedule_lock is None:
             self._schedule_lock = asyncio.Lock()
         return self._schedule_lock
+
+    # ── 执行引擎（「一切皆插件」：dag/serial/parallel 可插拔） ──
+
+    def engine_name(self) -> str:
+        """当前执行引擎名（未指定时为默认 ``dag``）。"""
+        from .tool_engines import DEFAULT_ENGINE
+
+        return self._engine or DEFAULT_ENGINE
+
+    def set_engine(self, name: str) -> str:
+        """设置当前执行引擎，返回旧引擎名（空串表示走默认）。"""
+        previous = self._engine
+        self._engine = name or ""
+        return previous
+
+    def _resolve_engine(self):
+        """解析当前生效的引擎可调用（注册表解析失败回退默认引擎）。"""
+        from .tool_engines import default_tool_engine, resolve_tool_engine
+
+        engine = resolve_tool_engine(self.engine_name())
+        if engine is None:
+            engine = default_tool_engine()
+        return engine
 
     @classmethod
     def default(cls) -> ToolScheduler:
@@ -916,6 +942,22 @@ class ToolScheduler:
             if not tool_calls:
                 _logger.debug("schedule[%s]: 空列表，返回 []", agent_label)
                 return []
+
+            # ── 执行引擎分派（「一切皆插件」）：非默认引擎（serial/parallel/
+            #    自定义）走注册表解析的引擎；默认 dag 引擎走下方内联路径
+            #    （多批累积 / bash 独占 / subagent 放行等既有语义）。 ──
+            from .tool_engines import _dag_engine
+
+            engine = self._resolve_engine()
+            if engine is not _dag_engine:
+                _logger.debug(
+                    "schedule[%s]: %d 个工具 → %s 引擎", agent_label, len(tool_calls), self.engine_name(),
+                )
+                return await engine(
+                    self, tool_calls, agent_ref=agent_ref,
+                    on_before=on_before, on_after=on_after, run_method=run_method,
+                    is_outermost=is_outermost_schedule,
+                )
 
             # ── 全局 DAG 路径（单工具/多工具统一） ──────────────
             _logger.debug("schedule[%s]: %d 个工具 → 全局 DAG 调度",
