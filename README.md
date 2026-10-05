@@ -804,7 +804,7 @@ CLI 顶层子命令、TUI 键位绑定与特殊键处理器、工具表现（类
 
 组合根支持 `--dump-config` 打印最终插件树、`--check-invariants` 运行时不变量自检；
 `python chat.py plugin list/add/remove` 管理外部插件（`~/.chat_config/plugins`），
-`/plugin` 界面总览运行期内核 Fiber 与清单条目。
+`/plugin` 界面总览当前内核已加载的插件（运行时 Fiber）。
 
 ---
 

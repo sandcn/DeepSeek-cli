@@ -79,7 +79,7 @@ _BUILTIN_SPECS: tuple = (
     ViewSpec("config", "fullscreen", "src.tui.app.config_view.ConfigView",
              description="配置中心视图"),
     ViewSpec("plugin", "fullscreen", "src.tui.app.plugin_view.PluginView",
-             description="插件总览视图"),
+             description="已加载插件视图"),
     ViewSpec("user_select", "bottom", "src.tui.app.user_select.UserSelectPopup",
              key_mode="user_select_seq", description="user_select 弹窗（底部模态视图）"),
     ViewSpec("editmsg", "bottom", "src.tui.app.editmsg_select.EditMsgSelectPopup",

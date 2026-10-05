@@ -1,8 +1,8 @@
-"""plugin 命令 / 插件总览视图测试（2026-10-04 用户需求：/plugin 独立界面）。
+"""plugin 命令 / 已加载插件视图测试（用户需求：/plugin 只显示当前已加载的插件）。
 
 覆盖：
-  1. ``plugins.view_model`` 纯逻辑：内核 Fiber / 清单条目 / 命令插件 /
-     外部与已安装插件条目构建 + format_plugin_text；
+  1. ``plugins.view_model`` 纯逻辑：内核 Fiber（当前已加载插件，排除
+     DISPOSED）条目构建 + format_plugin_text；
   2. ``PluginViewState`` 跨线程终态协议（try_set_final first-write-wins）；
   3. ``_cmd_plugin`` 命令分支（无 ChatUI 文本回退 + 有 ChatUI 打开/清理协议）；
   4. ``PluginView`` 组件渲染与交互（左列表选择 / l 进入详情 / 右栏滚动 /
@@ -91,7 +91,7 @@ def _make_ctx(arg: str, ui_adapter=None):
 
 
 def _sample_entries():
-    """最小插件条目列表（三类 kind——覆盖分类标题/左右渲染）。"""
+    """最小已加载插件条目列表（kernel 单类——覆盖分类标题/左右渲染）。"""
     return [
         {
             "name": "config", "kind": "kernel", "kind_label": "内核运行时插件",
@@ -104,22 +104,23 @@ def _sample_entries():
             ],
         },
         {
-            "name": "core::config", "kind": "manifest", "kind_label": "内置清单插件",
-            "subtitle": "src.plugins.config",
+            "name": "tools", "kind": "kernel", "kind_label": "内核运行时插件",
+            "subtitle": "ACTIVE",
             "fields": [
-                ("分类", "内置清单插件（Profile/Bundle）"),
-                ("插件 id", "core::config"),
-                ("插件引用", "src.plugins.config"),
-                ("是否禁用", "否"),
+                ("分类", "内核运行时插件（Fiber）"),
+                ("状态", "ACTIVE"),
+                ("提供服务", "tools"),
+                ("配置", "{}"),
             ],
         },
         {
-            "name": "/plugin", "kind": "command", "kind_label": "命令插件",
-            "subtitle": "general",
+            "name": "renderer", "kind": "kernel", "kind_label": "内核运行时插件",
+            "subtitle": "ACTIVE",
             "fields": [
-                ("分类", "命令插件（CommandPlugin）"),
-                ("命令", "/plugin"),
-                ("描述", "查看插件"),
+                ("分类", "内核运行时插件（Fiber）"),
+                ("状态", "ACTIVE"),
+                ("提供服务", "renderer"),
+                ("配置", "{}"),
             ],
         },
     ]
@@ -162,70 +163,66 @@ class TestViewModel:
         broken_fields = dict(entries[1]["fields"])
         assert "ValueError" in broken_fields["错误"]
 
-    def test_manifest_entries(self):
+    def test_kernel_entries_skips_disposed(self):
+        """已卸载（DISPOSED）的历史 Fiber 不属于「当前已加载」。"""
         from src.plugins import view_model as vm
 
-        entries = vm._manifest_entries([
-            {"id": "core::config", "bundle": "core", "plugin": "src.plugins.config",
-             "disabled": False, "config": {"a": 1}},
-            {"id": "x::y", "bundle": "x", "plugin": "pkg.mod", "disabled": True, "config": {}},
+        def _fiber(name, state):
+            return SimpleNamespace(
+                name=name, state=SimpleNamespace(value=state),
+                definition=SimpleNamespace(source="", provide=(), service_cls=None),
+                inject=(), missing_dependencies=lambda: [], config={}, error=None,
+                _children=[],
+            )
+
+        fake = SimpleNamespace(fibers=lambda: [
+            _fiber("live", "ACTIVE"),
+            _fiber("old", "DISPOSED"),
+            _fiber("boot", "PENDING"),
         ])
-        assert [e["name"] for e in entries] == ["core::config", "x::y"]
-        fields = dict(entries[0]["fields"])
-        assert fields["所属 bundle"] == "core"
-        assert fields["插件引用"] == "src.plugins.config"
-        assert fields["是否禁用"] == "否"
-        assert '"a": 1' in fields["配置"]
-        assert dict(entries[1]["fields"])["是否禁用"] == "是"
+        entries = vm._kernel_entries(fake)
+        assert [e["name"] for e in entries] == ["live", "boot"]
 
-    def test_command_entries_registered(self):
-        import src.core.commands  # noqa: F401  触发命令插件注册
+    def test_kernel_entries_without_kernel(self):
         from src.plugins import view_model as vm
 
-        entries = vm._command_entries()
-        names = [e["name"] for e in entries]
-        assert "/plugin" in names
-        plugin_entry = next(e for e in entries if e["name"] == "/plugin")
-        fields = dict(plugin_entry["fields"])
-        assert fields["命令"] == "/plugin"
-        assert fields["实现类"] == "PluginCommand"
+        assert vm._kernel_entries(None) == []
 
-    def test_external_entries(self):
-        from src.plugins import view_model as vm
-
-        summary = {
-            "external_dirs": [{"dir": "/tmp/plugins", "files": ["my_plugin.py", "pkg/"]}],
-            "installed": {"my_plugin.py": {"source": "/src/my_plugin.py"}},
-            "entry_points": [{"name": "ep1", "plugin": "pkg:plug"}],
-        }
-        entries = vm._external_entries(summary, "/install")
-        names = [e["name"] for e in entries]
-        assert "my_plugin.py" in names and "pkg" in names and "ep1" in names
-        # 已安装条目来源/安装目录
-        installed = next(e for e in entries if dict(e["fields"]).get("分类", "").endswith("（已安装）"))
-        assert dict(installed["fields"])["来源"] == "/src/my_plugin.py"
-        assert dict(installed["fields"])["安装目录"] == "/install"
-
-    def test_build_plugin_entries_returns_wellformed(self):
-        import src.core.commands  # noqa: F401
+    def test_build_plugin_entries_kernel_only(self):
+        """build_plugin_entries 只产出内核已加载插件（kernel 单类）。"""
         from src.plugins.view_model import build_plugin_entries
 
-        entries = build_plugin_entries(kernel=None)
-        assert isinstance(entries, list) and entries
+        fake = SimpleNamespace(fibers=lambda: [
+            SimpleNamespace(
+                name="config", state=SimpleNamespace(value="ACTIVE"),
+                definition=SimpleNamespace(source="src.plugins.config", provide=("config",),
+                                           service_cls=None),
+                inject=(), missing_dependencies=lambda: [], config={}, error=None,
+                _children=[],
+            ),
+        ])
+        entries = build_plugin_entries(kernel=fake)
+        assert [e["kind"] for e in entries] == ["kernel"]
+        assert entries[0]["name"] == "config"
         for e in entries:
             assert {"name", "kind", "kind_label", "subtitle", "fields"} <= set(e)
-            assert e["kind"] in ("kernel", "manifest", "command", "external")
+            assert e["kind_label"] == "内核运行时插件"
+
+    def test_build_plugin_entries_empty_kernel(self):
+        """内核无已加载插件 → 空列表（界面显示「无已加载插件」）。"""
+        from src.plugins.view_model import build_plugin_entries
+
+        empty = SimpleNamespace(fibers=lambda: [])
+        assert build_plugin_entries(kernel=empty) == []
 
     def test_format_plugin_text(self):
         from src.plugins.view_model import format_plugin_text
 
         text = format_plugin_text(_sample_entries())
-        assert "插件总览" in text
-        assert "内核运行时插件（1）" in text
-        assert "内置清单插件（1）" in text
-        assert "命令插件（1）" in text
-        assert "core::config" in text and "/plugin" in text
-        assert format_plugin_text([]) == "插件总览\n  (无插件数据)"
+        assert "已加载插件" in text
+        assert "内核运行时插件（3）" in text
+        assert "config" in text and "renderer" in text
+        assert format_plugin_text([]) == "已加载插件\n  (无已加载插件)"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -258,8 +255,7 @@ class TestCmdPlugin:
         monkeypatch.setattr(pc, "_out", rec)
         assert pc._cmd_plugin(_make_ctx("")) is True
         joined = "\n".join(rec.calls)
-        assert "插件总览" in joined
-        assert "命令插件" in joined
+        assert "已加载插件" in joined
 
     def test_open_plugin_ui_opens_and_cleans(self, monkeypatch):
         from src.core.commands import _plugin_cmd as pc
@@ -336,8 +332,8 @@ class TestPluginViewComponent:
         header = el.children[0]
         runs = header.props.get("styled") or []
         plain = "".join(getattr(r, "text", "") or "" for r in runs)
-        assert "插件总览" in plain
-        assert "3 个插件" in plain
+        assert "已加载插件" in plain
+        assert "共 3 个" in plain
 
     def test_esc_closes(self):
         model = self._visible_model()
@@ -434,7 +430,7 @@ class TestIntegration:
         rec = _Recorder()
         monkeypatch.setattr(pc, "_out", rec)
         assert handle_command("/plugin", [], {}, None, None) is True
-        assert any("插件总览" in c for c in rec.calls)
+        assert any("已加载插件" in c for c in rec.calls)
 
     def test_app_renders_fullscreen_without_error(self):
         """整屏渲染 PluginView（经 App + 调和器 + 布局）无异常且内容正确。"""
@@ -455,9 +451,9 @@ class TestIntegration:
             "".join(getattr(r, "text", "") for r in getattr(line, "runs", line))
             for line in frame.lines
         )
-        assert "插件总览" in text
+        assert "已加载插件" in text
         assert "内核运行时插件" in text
-        assert "core::config" in text
+        assert "renderer" in text
 
     def test_reset_display_preserves_seq(self):
         from src.tui.app.model import AppModel, PluginViewState

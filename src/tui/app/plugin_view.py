@@ -1,8 +1,8 @@
-"""plugin_view — PluginView 插件总览视图组件（模态全屏视图，2026-10-04）。
+"""plugin_view — PluginView 插件视图组件（模态全屏视图，2026-10-04）。
 
 /plugin 命令打开：App 在 ``model.fullscreen == "plugin"`` 时经全屏视图注册表
 **整屏只渲染本组件**（消息区/顶部标题栏/状态栏/输入区全部不显示），关闭后
-恢复完整聊天界面。
+恢复完整聊天界面。视图只展示**当前内核已加载的插件**（运行时 Fiber）。
 
 布局（React Ink 左右布局）：
   - 左栏「插件列表」：分类标题（不可选分隔行）+ 插件名（行尾分类标签），
@@ -17,9 +17,10 @@
   - 右栏：jk/↑↓ 滚动 · g/G 首末 · PgUp/PgDn 翻页 · h 返回左栏 ·
     Esc/Ctrl+H 关闭。
 
-数据源：``plugins.view_model.build_plugin_entries``（命令线程构建后注入
-``model.plugin_view.entries``；组件只读）。依赖约束：仅依赖 app 同层
-（_state_types）与 ink 框架（Layer 0/1），无 tools 层反向依赖。
+数据源：``plugins.view_model.build_plugin_entries``（当前内核已加载插件——
+运行时 Fiber；命令线程构建后注入 ``model.plugin_view.entries``；组件只读）。
+依赖约束：仅依赖 app 同层（_state_types）与 ink 框架（Layer 0/1），无 tools
+层反向依赖。
 """
 
 from __future__ import annotations
@@ -92,7 +93,7 @@ def _detail_rows(entry: dict, right_w: int) -> list:
     """选中条目 → 详情内容行（``list[list[StyledRun]]``；按栏宽换行）。"""
     rows: list = []
     if entry is None:
-        return [[StyledRun("无插件数据", _S_HINT)]]
+        return [[StyledRun("无已加载插件", _S_HINT)]]
 
     header = [
         StyledRun(str(entry.get("name", "")), _S_TITLE),
@@ -117,7 +118,7 @@ def _detail_rows(entry: dict, right_w: int) -> list:
 
 
 def PluginView(props) -> object:
-    """插件总览视图组件（模态全屏视图；App 按 FULLSCREEN_VIEWS 整屏渲染）。
+    """已加载插件视图组件（模态全屏视图；App 按 FULLSCREEN_VIEWS 整屏渲染）。
 
     Props:
         model: AppModel 实例（读 ``model.plugin_view`` / ``model.fullscreen``）。
@@ -312,7 +313,7 @@ def PluginView(props) -> object:
     right_children: list = []
     if entry is None:
         right_children.append(h(TEXT, {
-            "children": "无插件数据", "style": _S_HINT, "height": 1,
+            "children": "无已加载插件", "style": _S_HINT, "height": 1,
             "key": "pv-empty",
         }))
     else:
@@ -334,11 +335,11 @@ def PluginView(props) -> object:
         header_hint = "\u2191\u2193/jk \u6eda\u52a8 \u00b7 h \u5217\u8868 \u00b7 g/G \u9996\u672b \u00b7 Esc \u5173\u95ed"
     else:
         header_hint = "\u2191\u2193/jk \u9009\u62e9 \u00b7 l/\u21b5 \u8be6\u60c5 \u00b7 g/G \u9996\u672b \u00b7 Esc \u5173\u95ed"
-    count_text = f" \u00b7 {len(entries)} \u4e2a\u63d2\u4ef6"
+    count_text = f" \u00b7 \u5171 {len(entries)} \u4e2a"
     if entry is not None and total_content > content_vh:
         count_text += f" \u00b7 \u8be6\u60c5 {scroll + 1}-{scroll + len(window)}/{total_content}"
     header_runs = [
-        StyledRun("\u258d\U0001f9e9 \u63d2\u4ef6\u603b\u89c8", _S_TITLE),
+        StyledRun("\u258d\U0001f9e9 \u5df2\u52a0\u8f7d\u63d2\u4ef6", _S_TITLE),
         StyledRun(count_text, _S_HINT),
         StyledRun(f"  {header_hint}", _S_HINT),
     ]

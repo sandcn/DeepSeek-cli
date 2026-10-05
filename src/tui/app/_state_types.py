@@ -324,9 +324,9 @@ class ConfigViewState:
 
 @dataclass
 class PluginViewState:
-    """插件总览视图状态（/plugin 命令注入，PluginView 组件消费）。
+    """已加载插件视图状态（/plugin 命令注入，PluginView 组件消费）。
 
-    /plugin 打开全屏插件总览视图（``model.fullscreen == "plugin"``）——
+    /plugin 打开全屏已加载插件视图（``model.fullscreen == "plugin"``）——
     PluginView 组件整屏渲染（左插件列表 + 右详细信息）。与 config/user_select
     同构的跨线程协议：命令线程设置本状态（visible=True, seq+1, entries）→
     ``model.fullscreen="plugin"`` → request_bottom_redraw → 轮询 ``done``
@@ -336,7 +336,7 @@ class PluginViewState:
     Attributes:
         visible: 视图是否显示（命令打开/清理）。
         seq: 视图会话序号（每次打开递增；供重挂载/调试）。
-        entries: 插件条目列表（``plugins.view_model.build_plugin_entries``
+        entries: 已加载插件条目列表（``plugins.view_model.build_plugin_entries``
             产出；组件只读）。
         selected: 左栏当前选中条目索引（组件导航维护）。
         scroll: 右栏详情滚动偏移（0=顶部）。

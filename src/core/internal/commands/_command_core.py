@@ -102,7 +102,7 @@ COMMANDS_HELP = (
     f"  {TEAL}/temperature{RESET} 调整大模型温度: /temperature <0.0~2.0>\n"
     f"  {TEAL}/cost{RESET}     查看 token 用量和费用\n"
     f"  {TEAL}/config{RESET}   显示/编辑配置（独立界面）: /config [show|get|set|reset]\n"
-    f"  {TEAL}/plugin{RESET}   查看插件（内核/清单/命令/外部，独立界面）\n"
+    f"  {TEAL}/plugin{RESET}   查看当前已加载的插件（独立界面）\n"
     f"  {TEAL}/load{RESET}     加载保存的对话 /load <id>\n"
     f"  {TEAL}/sessions{RESET} 列出所有保存的对话\n"
     f"  {TEAL}/theme{RESET}    切换配色主题: /theme <dark|light|high-contrast>\n"

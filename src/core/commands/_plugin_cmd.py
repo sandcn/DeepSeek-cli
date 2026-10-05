@@ -1,9 +1,9 @@
-"""plugin 命令 — /plugin 打开插件总览独立界面。
+"""plugin 命令 — /plugin 只显示当前所有已加载的插件。
 
-用户需求（2026-10-04）：执行 ``/plugin`` 后左边显示所有插件名称，右边显示
-选中插件的详细信息。数据由 ``plugins.view_model.build_plugin_entries``
-汇总四类来源（内核运行时 Fiber / 内置清单条目 / 命令插件 / 外部与已安装
-插件）；有活跃 ChatUI 时打开**全屏插件总览界面**（PluginView——
+用户需求：执行 ``/plugin`` 后只列出**当前内核已加载的插件**——左边显示
+插件名，右边显示选中插件的详细信息（数据由
+``plugins.view_model.build_plugin_entries`` 取自内核运行时 Fiber，已卸载的
+历史实例不显示）。有活跃 ChatUI 时打开**全屏已加载插件界面**（PluginView——
 ``model.fullscreen = "plugin"``，左右布局 + ↑↓ 选择 + Esc 关闭），无 ChatUI
 （单次模式/测试桩）时回退文本显示。
 """
@@ -22,7 +22,7 @@ _out = get_default_output_port()
 
 
 def _show_plugin_text(ctx) -> bool:
-    """文本显示插件总览（无 ChatUI / 单次模式回退共用）。"""
+    """文本显示已加载插件清单（无 ChatUI / 单次模式回退共用）。"""
     from ...plugins.view_model import build_plugin_entries, format_plugin_text
 
     text = format_plugin_text(build_plugin_entries())
@@ -31,7 +31,7 @@ def _show_plugin_text(ctx) -> bool:
 
 
 def _open_plugin_ui(ctx) -> bool:
-    """打开全屏插件总览界面（PluginView 模态全屏视图）。
+    """打开全屏已加载插件界面（PluginView 模态全屏视图）。
 
     协议（与 ``_config_cmd._open_config_ui`` 同构）：设置
     ``model.plugin_view``（visible=True, seq+1, entries）→
@@ -115,10 +115,10 @@ def _open_plugin_ui(ctx) -> bool:
 
 
 def _cmd_plugin(ctx):
-    """查看插件（/plugin）。
+    """查看当前已加载的插件（/plugin）。
 
-    - 无 ChatUI：文本显示插件总览（四类来源分组）。
-    - 有 ChatUI：打开**全屏插件总览界面**（PluginView——左插件列表 +
+    - 无 ChatUI：文本显示已加载插件清单。
+    - 有 ChatUI：打开**全屏已加载插件界面**（PluginView——左插件列表 +
       右详细信息 + ↑↓ 选择 + Esc 关闭）。
     """
     if _open_plugin_ui(ctx):
@@ -134,11 +134,11 @@ from .base import CommandPlugin, CommandMeta, declare_command_plugin
 
 
 class PluginCommand(CommandPlugin):
-    """查看插件总览（独立界面）"""
+    """查看当前已加载的插件（独立界面）"""
     def __init__(self):
         self.meta = CommandMeta(
             name="plugin",
-            description="查看插件（内核/清单/命令/外部，独立界面）",
+            description="查看当前已加载的插件（独立界面）",
         )
 
     def execute(self, ctx: CommandContext) -> bool:
