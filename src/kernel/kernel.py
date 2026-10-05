@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 from .context import Context, _MISSING
 from .errors import PluginError
@@ -243,6 +243,26 @@ _current: Optional[Kernel] = None
 def set_current_kernel(kernel: Optional[Kernel]) -> None:
     global _current
     _current = kernel
+
+
+def _activate_kernel(kernel: Kernel) -> Callable[[], None]:
+    """插件构造期把内核临时登记为进程级当前内核，返回恢复函数。
+
+    插件 apply 中经 ``active_service`` 解析到的进程级单例必须与内核服务同源
+    （内核服务是唯一真源）；构造期内核尚未被组合根登记为当前内核，若不激活
+    则单例会回退到游离的模块级默认实例，导致运行时不变量误报。恢复函数具备
+    嵌套安全：仅当当前登记仍指向本次内核时才回退到进入前的登记。
+    """
+    global _current
+    previous = _current
+    _current = kernel
+
+    def _restore() -> None:
+        global _current
+        if _current is kernel:
+            _current = previous
+
+    return _restore
 
 
 def get_current_kernel() -> Optional[Kernel]:

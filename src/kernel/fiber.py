@@ -130,6 +130,9 @@ class Fiber:
         self.state = FiberState.LOADING
         self.error = None
         self.ctx = self.kernel._make_context(self, self._parent_ctx, self.config)
+        from .kernel import _activate_kernel
+
+        restore_kernel = _activate_kernel(self.kernel)
         try:
             result = self.definition.instantiate(self.ctx)
             if inspect.isawaitable(result):
@@ -147,6 +150,8 @@ class Fiber:
             _logger.exception("插件加载失败: %s", self.definition.name)
             await self._run_disposers()
             return
+        finally:
+            restore_kernel()
         self.state = FiberState.ACTIVE
 
     async def unload(self) -> None:

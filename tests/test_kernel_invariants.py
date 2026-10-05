@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
-from src.kernel import Kernel, plugin
+from src.kernel import Kernel, get_current_kernel, plugin
 from src.plugins.bootstrap import build_kernel, shutdown_kernel
 
 
@@ -53,5 +55,55 @@ async def test_custom_invariant_registered_by_plugin():
         assert any("custom.fail" in f for f in service.check())
         assert service.unregister("custom.fail") is True
         assert service.check() == []
+    finally:
+        await shutdown_kernel(kernel)
+
+
+async def test_plugin_construction_activates_current_kernel():
+    """插件 apply 期间内核被登记为进程级当前内核，结束后恢复原登记。"""
+    kernel = Kernel(name="probe")
+    seen = []
+
+    @plugin("probe", provide=["probe"])
+    def apply(ctx):
+        seen.append(get_current_kernel())
+        return object()
+
+    kernel.mount(apply)
+    assert get_current_kernel() is None
+    await kernel.settle()
+    assert seen == [kernel]
+    assert get_current_kernel() is None
+
+
+async def test_plugin_restart_activates_current_kernel():
+    """未经 settle 的 restart 同样在构造期激活内核，结束后恢复。"""
+    kernel = Kernel(name="probe")
+    seen = []
+
+    @plugin("probe", provide=["probe"])
+    def apply(ctx):
+        seen.append(get_current_kernel())
+        return object()
+
+    fiber = kernel.mount(apply)
+    await kernel.settle()
+    seen.clear()
+    await fiber.restart()
+    assert seen == [kernel]
+    assert get_current_kernel() is None
+
+
+async def test_build_kernel_startup_invariants_pass(caplog):
+    """构建内核时启动自检不产生「运行时不变量失败」告警。"""
+    with caplog.at_level(logging.WARNING, logger="src.plugins.invariants"):
+        kernel = await build_kernel("minimal", discover_external=False)
+    try:
+        failures = [
+            record.getMessage()
+            for record in caplog.records
+            if "运行时不变量失败" in record.getMessage()
+        ]
+        assert failures == []
     finally:
         await shutdown_kernel(kernel)
