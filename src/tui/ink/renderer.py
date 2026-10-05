@@ -177,16 +177,15 @@ class InkRenderer:
         self._width = int(width) if width else 0
 
     def _screen_offset(self, doc_h: int) -> int:
-        """文档高于屏幕时被滚出可见区上方的行数（屏幕坐标偏移）。
+        """文档高于屏幕时被滚出可见区上方的行数（**可见区起点**偏移，钳制 >= 0）。
 
         ★ 无末尾空行模型（2026-08-15）：按「理想物理缓冲 = doc_h」推导
-        ``max(0, doc_h-height)``——文档行 ``row``（1-based）的物理屏幕位置 =
-        ``row - (doc_h-height)``（推导：物理行 = 文档行 + drift，drift 恰好
-        抵消物理偏移 ``_buf_h-height``）。
-        因此**所有文档坐标→屏幕坐标换算用理想偏移**（``_screen_offset``/
-        ``_to_screen``/``_bottom_row``），而非 ``_buf_h`` 物理偏移——否则漂移
-        状态下 place_cursor 偏上 drift 行（输入光标错位）。物理偏移
-        （``_buf_h - height``）仅用于漂移方法内部可见区定位。
+        ``max(0, doc_h-height)``——用于渲染路径判断「文档第几行起进入可见
+        区」（``vis_start``，避免重写屏幕外不可达行）。
+        ★ 2026-10-06：仅保留给可见区起点判断；**文档行 → 屏幕行换算**
+        （``_to_screen``/``_bottom_row``）改用 ``_effective_offset``（含物理
+        缓冲漂移、可为负）——底部对齐且文档矮于屏幕时文档实际偏下
+        ``height - doc_h`` 行，钳制偏移会把写行/光标目标定位到偏上位置。
 
         Args:
             doc_h: 文档总行数。
@@ -215,7 +214,9 @@ class InkRenderer:
         - 漂移 + 文档高于屏幕：offset = doc_h-height（>0，底部对齐）；
         - 漂移 + 文档屏幕内（缩短/增长进入屏幕内）：offset 为负——文档显示在
           可见区底部（物理缓冲无法收缩，偏移模型用负偏移表达文档偏下）。
-        供 ``place_cursor`` 使用（每帧渲染后输入光标定位必须与物理位置一致）。
+        供 ``place_cursor`` 使用（每帧渲染后输入光标定位必须与物理位置一致）；
+        ★ 2026-10-06：「命令行在底部时启动渲染错乱」修复后 ``_to_screen`` /
+        ``_bottom_row`` 的文档行 → 屏幕行换算同样经本方法（三者口径统一）。
 
         Args:
             doc_h: 文档总行数。
@@ -242,8 +243,14 @@ class InkRenderer:
     def _to_screen(self, buffer_row: int, doc_h: int) -> int:
         """将文档 1-based 行号转为屏幕 1-based 行号（未钳制）。
 
-        返回可能 <1（位于可见区上方，滚动区）或 >height（下方）——
-        调用方据此判断可达性；height=0 时恒等返回（文档坐标即屏幕坐标）。
+        ★ 2026-10-06（「命令行在底部时启动渲染错乱」修复）：偏移改用
+        ``_effective_offset``（含物理缓冲漂移，可为负）——修复前用
+        ``_screen_offset``（钳制 >=0，隐含「文档顶部 = 屏幕第 1 行」）：文档
+        矮于屏幕且底部对齐（启动时光标贴底、首帧锚定屏幕底部后即此状态）时
+        文档实际偏下 ``height - doc_h`` 行，按 0 偏移换算会把写行/光标目标
+        定位到偏上位置 → 相对定位逐帧错位（重复行/内容堆叠）。返回仍可能
+        <1（可见区上方）或 >height（下方），调用方据此判断可达性；height=0
+        时恒等返回（文档坐标即屏幕坐标）。
 
         Args:
             buffer_row: 文档 1-based 行号。
@@ -252,7 +259,7 @@ class InkRenderer:
         Returns:
             屏幕 1-based 行号（未钳制）。
         """
-        return buffer_row - self._screen_offset(doc_h)
+        return buffer_row - self._effective_offset(doc_h)
 
     def _clamp(self, row: int) -> int:
         """将屏幕行号钳制到 [1, height]（height=0 时原样返回）。"""
@@ -263,10 +270,11 @@ class InkRenderer:
     def _bottom_row(self, doc_h: int) -> int:
         """文档写入后物理光标所在屏幕行（1-based，已钳制）。
 
-        文档底部（doc_h，1-based）物理屏幕位置 = 理想偏移推导
-        （``_to_screen`` 语义）——无漂移时物理缓冲 = doc_h，即缓冲末尾。
-        ★ 无末尾空行模型（2026-08-15）：文档最后一行即缓冲末尾（无
-        doc_h+1 末尾空行），底部 = doc_h 而非 doc_h+1。
+        文档底部（doc_h，1-based）物理屏幕位置经 ``_to_screen`` 推导
+        （= ``doc_h - _effective_offset(doc_h)``）——顶部对齐时物理缓冲 =
+        doc_h（缓冲末尾）；底部对齐且文档矮于屏幕时文档整体偏移到可见区
+        底部（``height``）。★ 无末尾空行模型（2026-08-15）：文档最后一行
+        即缓冲末尾（无 doc_h+1 末尾空行），底部 = doc_h 而非 doc_h+1。
         """
         return self._clamp(self._to_screen(doc_h, doc_h))
 
@@ -1057,6 +1065,15 @@ class InkRenderer:
             return
         buf = io.StringIO()
         n = len(frame.lines)
+        # ★ 2026-10-06（「命令行在底部时启动渲染错乱」修复）：首帧/全量写入
+        #   前把光标**绝对定位**到文档起始行（文档底部贴屏幕底部）——非全屏
+        #   模型从当前光标位置追加，光标可能停在屏幕任意行（常见：shell 提示
+        #   符贴底）；本渲染器底部对齐坐标模型以「文档底部对齐屏幕底部」为
+        #   基准，不定位则首帧实际落位与模型不符，后续相对定位逐帧漂移
+        #   （重复行/内容堆叠/底部输入区错位）。height=0（未知）时保持原
+        #   行为（测试/无约束场景）。
+        if self._height > 0:
+            buf.write(cursor_goto(max(1, self._height - n + 1), 1))
         for idx, line in enumerate(frame.lines):
             buf.write("\r")
             # ★ P2（review）：全量写行补 ``_CLEAR_EOL``——修复前仅写
@@ -1074,10 +1091,18 @@ class InkRenderer:
             #   下方多一行空行」：doc_h == height 时首行不再被滚动挤出）。
             if idx < n - 1:
                 buf.write("\n")
-        # 物理缓冲行数 = 文档行数（无末尾空行）
-        self._buf_h = frame.height
-        self._top_aligned = True
-        self._cursor_row = self._bottom_row(frame.height)
+        # ★ 无末尾空行模型（2026-08-15 + 2026-10-06 底部锚定）：物理缓冲 =
+        #   文档行数（文档高于屏幕）或屏幕高度（文档矮于屏幕时文档底部贴
+        #   屏幕底部）——「文档底部对齐屏幕底部」契约（顶部锚定会让矮文档
+        #   被误判为「顶部对齐屏幕第 1 行」，后续定位逐帧漂移）。height=0
+        #   时保持原文档坐标行为。
+        if self._height > 0:
+            self._buf_h = max(self._height, n)
+            self._top_aligned = False
+        else:
+            self._buf_h = n
+            self._top_aligned = True
+        self._cursor_row = self._bottom_row(n)
         self._stream.write(buf.getvalue())
         self._stream.flush()
 
