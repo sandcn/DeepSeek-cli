@@ -73,6 +73,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._block_attrs: str = ''
         self._block_title: str = ''
         self._block_lines: list[str] = []
+        # 代码类块（CODE_FENCE/INDENTED_CODE）已发射行的预览缓冲——
+        # 代码行经 CODE_LINE 即时 emit（不进 _block_lines），单独记录供
+        # 流式预览整块重渲染。
+        self._preview_code_lines: list[str] = []
         self._block_html_tag: str = ''
         self._block_nested_fence: int = 0
         self._block_div_type: str = ''
@@ -133,6 +137,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
     def _reset_for_buffer_trim(self):
         """缓冲区裁剪后重置所有可能残留的状态。"""
         self._reset_normal_state()
+        self._preview_code_lines.clear()
         self._table_rows.clear()
         self._table_alignments.clear()
         self._deferred_fence = None
@@ -199,9 +204,15 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 else:
                     self._parse_normal_line(line, tokens)
             except Exception:
-                _logger.debug("行处理异常，跳过本行", exc_info=True)
+                # ★ 修复（跨 chunk 内容丢失）：异常行不再清空整段缓冲
+                #   （``self._buffer``）——已从缓冲切出的当前行降级为段落内容，
+                #   后续行继续处理，避免单行解析异常丢弃整段未处理输入。
+                _logger.debug("行处理异常，降级为段落并继续", exc_info=True)
                 self._state = _State.NORMAL
-                self._buffer = ""
+                try:
+                    self._handle_paragraph_line(line, tokens)
+                except Exception:
+                    _logger.debug("异常行降级段落失败", exc_info=True)
 
         # 每次 feed 结束后重置预扫描位置，下次 feed 从头扫描
         self._prescan_pos = 0
@@ -272,6 +283,144 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             self._emit_pending_table(tokens)
 
         return tokens
+
+    # ═══════════════════════════════════════════════════════════
+    # 流式预览（未闭合块实时渲染）
+    # ═══════════════════════════════════════════════════════════
+
+    #: 预览尾部行数上限——未闭合块预览每次 write 都整块重渲染，超长块
+    #: （如大代码块）限制只预览最近 N 行，避免每帧 O(n²) 重渲染。
+    _PREVIEW_MAX_LINES = 200
+
+    def _preview_tail(self, lines: list, max_lines: int | None = None) -> list:
+        """取预览尾部行（超限时只保留最近行）。"""
+        limit = self._PREVIEW_MAX_LINES if max_lines is None else max_lines
+        if len(lines) <= limit:
+            return list(lines)
+        return lines[-limit:]
+
+    def peek_pending(self) -> list[Token]:
+        """返回当前未闭合状态的可渲染预览 Token（只读，不改解析器状态）。
+
+        流式渲染器每次 ``write`` 后调用：把「尚未闭合」的内容（段落/代码块/
+        表格/引用/折叠块/Mermaid/数学）渲染为预览行，使流式输出实时可见；
+        待块真正闭合时由 ``feed``/``flush`` 产出确定 Token 替换预览。
+        返回 Token 均为**自包含序列**——可脱离解析器状态单独渲染，渲染后
+        渲染引擎状态复原（成对的 OPEN/CLOSE 或一次性 token）。
+        """
+        try:
+            return self._peek_pending_inner()
+        except Exception:
+            _logger.debug("peek_pending 异常，跳过本帧预览", exc_info=True)
+            return []
+
+    def _peek_pending_inner(self) -> list[Token]:
+        out: list[Token] = []
+        st = self._state
+
+        # ── 代码类块（fenced / 缩进 / Mermaid / 数学）──
+        if st == _State.CODE_FENCE:
+            out.append(Token(TokenType.CODE_BLOCK, "\n".join(
+                self._preview_tail(self._preview_code_lines)), {
+                "lang": self._block_lang, "attrs": self._block_attrs,
+                "title": self._block_title, "preview": True, "closed": False,
+            }))
+            return out
+        if st == _State.INDENTED_CODE:
+            out.append(Token(TokenType.CODE_BLOCK, "\n".join(
+                self._preview_tail(self._preview_code_lines)), {
+                "lang": "text", "attrs": "", "title": "",
+                "preview": True, "closed": False,
+            }))
+            return out
+        if st == _State.MERMAID_BLOCK:
+            src = "".join(self._preview_tail(self._block_lines))
+            out.append(Token(TokenType.MERMAID_BLOCK_CLOSE, src,
+                             {"source": src, "preview": True}))
+            return out
+        if st in (_State.MATH_BLOCK, _State.DISPLAY_MATH_BLOCK):
+            src = "\n".join(self._preview_tail(self._block_lines))
+            out.append(Token(TokenType.MATH_BLOCK_CLOSE, src,
+                             {"source": src, "preview": True}))
+            return out
+        if st == _State.DETAILS_BLOCK:
+            out.append(Token(TokenType.DETAILS_CLOSE, "", {
+                "summary": self._details_summary,
+                "body_lines": list(self._block_lines), "preview": True,
+            }))
+            return out
+        if st == _State.FENCED_DIV:
+            out.append(Token(TokenType.FENCED_DIV_CLOSE, "", {
+                "type": self._block_div_type,
+                "body_lines": self._preview_tail(self._block_lines),
+                "preview": True,
+            }))
+            return out
+        # HTML_BLOCK：行已即时 emit（引擎直接逐行渲染），无需预览
+
+        # ── 表格活动状态 ──
+        if st == _State.TABLE_ACTIVE:
+            if self._table_rows and self._table_alignments:
+                out.append(Token(TokenType.TABLE, "", {
+                    "rows": [list(r) for r in self._table_rows],
+                    "alignments": list(self._table_alignments),
+                    "preview": True,
+                }))
+            return out
+
+        # ── NORMAL 状态 ──
+        if self._deferred_fence is not None:
+            fence = self._deferred_fence
+            out.append(Token(TokenType.CODE_BLOCK, "", {
+                "lang": fence.get("lang") or "text",
+                "attrs": fence.get("attrs", ""),
+                "title": fence.get("title", ""),
+                "preview": True, "closed": False,
+            }))
+            return out
+
+        if self._bq_active:
+            depth = self._bq_depth_stack[-1] if self._bq_depth_stack else 1
+            out.append(Token(TokenType.BLOCKQUOTE_OPEN, "", {"depth": depth}))
+            out.append(Token(TokenType.BLOCKQUOTE_LINE,
+                             "\n".join(self._preview_tail(self._pending_lines)),
+                             {"depth": depth}))
+            out.append(Token(TokenType.BLOCKQUOTE_CLOSE, "", {"depth": depth}))
+            return out
+
+        if self._in_admonition:
+            out.append(Token(TokenType.ADMONITION_CLOSE, "", {
+                "type": self._admonition_type,
+                "body_lines": self._preview_tail(self._block_lines),
+                "preview": True,
+            }))
+            return out
+
+        if self._table_pending_rows:
+            rows_src = self._table_pending_rows
+            if len(rows_src) >= 2:
+                header = _parse_table_row(rows_src[0])
+                num_cols = len(header)
+                aligns = ['left'] * num_cols
+                data_rows = [_parse_table_row(r) for r in rows_src[1:]]
+                rows = [header] + [
+                    (r + [''] * num_cols)[:num_cols] for r in data_rows
+                ]
+                out.append(Token(TokenType.TABLE, "", {
+                    "rows": rows, "alignments": aligns, "preview": True,
+                }))
+            else:
+                out.append(Token(TokenType.PARAGRAPH, rows_src[0],
+                                 {"preview": True}))
+            return out
+
+        if self._pending_lines:
+            out.append(Token(TokenType.PARAGRAPH,
+                             "\n".join(self._preview_tail(self._pending_lines)),
+                             {"preview": True}))
+            return out
+
+        return out
 
     # ═══════════════════════════════════════════════════════════
     # 预扫描
@@ -412,10 +561,15 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             if self._table_pending_rows:
                 self._emit_pending_table(tokens)
 
-            # ── 列表续行检测：如果上一 Token 是 LIST_ITEM 且当前行缩进匹配 → 合并为续行 ──
+            # ── 列表续行检测：上一 Token 是 LIST_ITEM 且当前行缩进匹配 →
+            #   产出续行 Token（渲染为对齐列表内容的缩进行）。
+            #   ★ 修复（跨 chunk 状态丢失）：不再要求「本次 feed 的 tokens
+            #   末项为 LIST_ITEM」——跨 feed 时 tokens 为空，原条件失效导致
+            #   续行降级为普通段落；改用实例级 ``_last_token_type``（跨 feed
+            #   保留），且不再把续行拼进上一 Token（拼入的多行内容含 \n，
+            #   渲染为字面换行破坏单行模型），统一产出独立续行 Token。
             if (self._last_token_type is TokenType.LIST_ITEM
-                    and self._last_list_indent >= 0
-                    and tokens and tokens[-1].type is TokenType.LIST_ITEM):
+                    and self._last_list_indent >= 0):
                 leading = 0
                 for ch in line:
                     if ch in ' \t':
@@ -423,13 +577,11 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     else:
                         break
                 if leading >= self._last_list_content_col:
-                    raw = line.rstrip('\n')
-                    old_token = tokens[-1]
-                    tokens[-1] = Token(
-                        TokenType.LIST_ITEM,
-                        old_token.content + '\n' + raw,
-                        old_token.meta,
-                    )
+                    tokens.append(Token(TokenType.LIST_ITEM, line.rstrip('\n'), {
+                        "continuation": True,
+                        "indent": self._last_list_indent,
+                        "depth": len(self._list_indents) or 1,
+                    }))
                     return
 
             self._handle_paragraph_line(line, tokens)
@@ -501,9 +653,11 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                                             {"type": self._admonition_type}))
                         self._admonition_type = new_type
                         adm_text = text[close_bracket + 1:].strip()
+                        self._block_lines = [adm_text] if adm_text else []  # 供流式预览
                         tokens.append(Token(TokenType.ADMONITION_OPEN, adm_text,
                                             {"type": new_type, "depth": 1}))
                         return
+            self._block_lines.append(text)  # 供流式预览
             tokens.append(Token(TokenType.ADMONITION_LINE, text,
                                 {"depth": 1, "type": self._admonition_type}))
             return
@@ -974,10 +1128,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     self._in_admonition = True
                     self._admonition_type = adm_type
                     adm_text = inner_stripped[adm_end + 1:].strip()
+                    self._block_lines = [adm_text] if adm_text else []  # 供流式预览
                     tokens.append(Token(TokenType.ADMONITION_OPEN, adm_text,
                                         {"type": adm_type, "depth": depth}))
                     return
         if self._in_admonition:
+            self._block_lines.append(gt_text.strip())  # 供流式预览
             tokens.append(Token(TokenType.ADMONITION_LINE, gt_text.strip(),
                                 {"depth": depth, "type": self._admonition_type}))
             return
@@ -1256,22 +1412,30 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if not stripped or _is_empty_line(line):
             # ★ 空行在 fenced div 内：不关闭 div，发射空行标记作为一条空白线
             tokens.append(Token(TokenType.FENCED_DIV_LINE, "", {"type": self._block_div_type, "empty": True}))
+            self._block_lines.append("")  # 供流式预览
             return
         if stripped.strip() == ':::':
             tokens.append(Token(TokenType.FENCED_DIV_CLOSE, "", {"type": self._block_div_type}))
             self._state = _State.NORMAL
             return
         tokens.append(Token(TokenType.FENCED_DIV_LINE, stripped, {"type": self._block_div_type}))
+        self._block_lines.append(stripped)  # 供流式预览
 
     # ── 缩进代码块 ─────────────────────────────────────
 
+    def _emit_code_line(self, content: str, tokens: list[Token]) -> None:
+        """发射 CODE_LINE 并记录到预览缓冲（供流式预览整块重渲染）。"""
+        tokens.append(Token(TokenType.CODE_LINE, content))
+        self._preview_code_lines.append(content)
+
     def _start_indented_code(self, line: str, tokens: list[Token]):
         self._state = _State.INDENTED_CODE
+        self._preview_code_lines = []
         tokens.append(Token(TokenType.CODE_FENCE_OPEN, "", {
             "lang": "text", "indented": True, "attrs": "",
         }))
         content = line[4:] if line[:4] == '    ' else line[1:]
-        tokens.append(Token(TokenType.CODE_LINE, content.rstrip('\n')))
+        self._emit_code_line(content.rstrip('\n'), tokens)
 
     # ── 缩写定义 ───────────────────────────────────────
 

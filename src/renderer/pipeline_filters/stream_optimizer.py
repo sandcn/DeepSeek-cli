@@ -23,71 +23,77 @@ class TokenStreamOptimizer(TokenFilter):
       pipeline.add_filter(TokenStreamOptimizer())
     """
 
+    def __init__(self):
+        super().__init__()
+        # ★ 跨 feed 状态（流式）：连续空行计数 / 上一 Token 类型 / 列表深度跨
+        #   feed 保留——修复前每次 process 重置，跨 chunk 的连续空行压缩与
+        #   列表边界空行处理失效（同一列表被 chunk 拆分时空行判定不一致）。
+        #   ``_discarded_empty`` 仅本次 feed 内有效（每次 process 重置）。
+        self._discarded_empty = False
+        self._list_depth: int | None = None
+        self._empty_count = 0
+        self._prev_type: TokenType | None = None
+
     def process(self, tokens: list[Token], ctx: RenderContext) -> list[Token]:
         if not tokens:
             return tokens
-
-        # ★ 每次 process 调用重置所有实例状态，防止跨调用残留。
-        #   try/finally 确保异常时状态也被重置，避免泄漏到下一次 process()。
+        # ★ 每次 process 仅重置「本次 feed 内有效」的标记；跨 feed 状态
+        #   （_empty_count/_prev_type/_list_depth）保留，使流式跨 chunk 的
+        #   空行/列表处理连续一致。try/finally 确保异常时本次标记复位。
         self._discarded_empty = False
-        self._list_depth: int | None = None
         try:
             return self._process_inner(tokens)
         except Exception:
-            # 异常时强制重置状态，防止残留影响下一次 process()
             self._discarded_empty = False
-            self._list_depth = None
             raise
 
     def _process_inner(self, tokens: list[Token]) -> list[Token]:
         result: list[Token] = []
-        prev_type: TokenType | None = None
-        empty_count = 0  # 连续 EMPTY_LINE 计数
 
         for token in tokens:
             curr = token.type
 
             # ── EMPTY_LINE 处理 ──
             if curr is TokenType.EMPTY_LINE:
-                empty_count += 1
-                prev_type = curr
+                self._empty_count += 1
+                self._prev_type = curr
                 continue
 
             # ── 从 EMPTY_LINE 切换到实际 Token ──
-            if empty_count > 0:
+            if self._empty_count > 0:
                 # 列表项之间空行处理：同深度丢弃，不同深度保留
                 if curr is TokenType.LIST_ITEM:
                     item_depth = token.meta.get("depth")
                     if self._list_depth == item_depth:
                         # 同深度列表 → 丢弃空行（同一列表续行）
-                        empty_count = 0
+                        self._empty_count = 0
                     else:
                         # 不同深度或首个列表 → 保留空行（列表边界）
                         result.append(Token(TokenType.EMPTY_LINE))
-                        empty_count = 0
-                elif prev_type is TokenType.EMPTY_LINE and curr is TokenType.PARAGRAPH:
-                    empty_count = 0  # 段落前丢弃空行
+                        self._empty_count = 0
+                elif self._prev_type is TokenType.EMPTY_LINE and curr is TokenType.PARAGRAPH:
+                    self._empty_count = 0  # 段落前丢弃空行
                     self._discarded_empty = True
                 else:
                     # 保留 1 个空行
                     result.append(Token(TokenType.EMPTY_LINE))
-                    empty_count = 0
-                prev_type = curr
+                    self._empty_count = 0
+                self._prev_type = curr
                 if curr is not TokenType.LIST_ITEM:
                     self._list_depth = None
 
             # ── PARAGRAPH 合并（仅当 result 最后一个是 PARAGRAPH 时才合并）──
-            if curr is TokenType.PARAGRAPH and prev_type is TokenType.PARAGRAPH and result and result[-1].type is TokenType.PARAGRAPH:
+            if curr is TokenType.PARAGRAPH and self._prev_type is TokenType.PARAGRAPH and result and result[-1].type is TokenType.PARAGRAPH:
                 # ★ 修复：如果上一个段落前有空行被丢弃，不合并
                 if self._discarded_empty:
                     self._discarded_empty = False
                     result.append(token)
-                    prev_type = curr
+                    self._prev_type = curr
                     continue
                 # 合并到前一个 PARAGRAPH
                 prev_token = result[-1]
                 prev_token.content += "\n\n" + token.content
-                prev_type = curr
+                self._prev_type = curr
                 continue
 
             # ── 列表状态跟踪（按 depth 而非布尔标志）──
@@ -98,10 +104,6 @@ class TokenStreamOptimizer(TokenFilter):
 
             # ── 普通 Token ──
             result.append(token)
-            prev_type = curr
-
-        # 末尾残留的 EMPTY_LINE 保留 1 个
-        if empty_count > 0:
-            result.append(Token(TokenType.EMPTY_LINE))
+            self._prev_type = curr
 
         return result

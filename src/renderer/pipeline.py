@@ -123,6 +123,9 @@ class CodeBlockBatcher(TokenFilter):
         """当前未闭合代码块经历的连续 feed 调用次数（仅用于诊断）。"""
         self._flushed_in_feed: bool = False
         self._had_force_flush_this_call: bool = False
+        #: 强制刷出时保留的语言名——刷出后后续 CODE_LINE 无上下文时补的
+        #: fence 对沿用原语言（问题5：修复前一律补 "text"，丢失高亮）。
+        self._flushed_lang: str = "text"
         """跨 feed 强制刷出标记：刷出后后续 CODE_LINE 失去上下文，需自动补 fence 对。"""
 
     def process(self, tokens: list[Token], ctx: RenderContext) -> list[Token]:
@@ -154,6 +157,7 @@ class CodeBlockBatcher(TokenFilter):
                     self._block_meta = None
                     self._feed_count = 0
                     self._flushed_in_feed = True  # 标记刷出状态，后续 CODE_LINE 需自动补 fence 对
+                    self._flushed_lang = lang
                     self._had_force_flush_this_call = True
                     local_buffer: list[str] = []
                     local_buffer_chars: int = 0
@@ -204,11 +208,15 @@ class CodeBlockBatcher(TokenFilter):
                     self._flushed_in_feed = False
                 elif token.type is TokenType.CODE_LINE and (local_meta is not None or self._flushed_in_feed):
                     if self._flushed_in_feed and local_meta is None:
-                        # 跨 feed 刷出后遇到 CODE_LINE，无上下文 → 自动补上 CODE_FENCE_OPEN/CODE_FENCE_CLOSE 对
-                        result.append(Token(TokenType.CODE_FENCE_OPEN, "", {"lang": "text", "indented": False}))
+                        # 跨 feed 刷出后遇到 CODE_LINE，无上下文 → 自动补上
+                        # CODE_FENCE_OPEN/CODE_FENCE_CLOSE 对（沿用原语言，
+                        # 问题5：修复前一律补 "text" 丢失高亮）。
+                        result.append(Token(TokenType.CODE_FENCE_OPEN, "", {
+                            "lang": self._flushed_lang, "indented": False,
+                        }))
                         result.append(token)
                         result.append(Token(TokenType.CODE_FENCE_CLOSE, "", {
-                            "lang": "text",
+                            "lang": self._flushed_lang,
                             "indented": False,
                         }))
                         self._flushed_in_feed = False
@@ -237,6 +245,7 @@ class CodeBlockBatcher(TokenFilter):
                         self._feed_count = 0
                         self._flushed_in_feed = True
                         self._had_force_flush_this_call = True
+                        self._flushed_lang = lang
                 elif token.type is TokenType.CODE_FENCE_CLOSE and local_meta is not None:
                     # 块结束 → 发射 CODE_BLOCK
                     _logger.debug(
@@ -304,6 +313,7 @@ class CodeBlockBatcher(TokenFilter):
                     # ★ 末位强制刷出后 block_meta 已清空，但解析器状态机仍在该代码块内。
                     # 下一 feed 的 CODE_LINE 需触发自动补 fence 对逻辑，因此置为 True。
                     self._flushed_in_feed = True
+                    self._flushed_lang = lang
 
             # 缓冲区残留（未闭合的代码块）→ 缓存到实例属性，等待下次 process 调用
             if local_meta is not None:

@@ -239,6 +239,7 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
         from src.tui.app.toolcard import tool_card_lines
         return tool_card_lines(block, width, start, None)
     slice_lines = block.lines[start:]
+    preview_lines = getattr(block, "preview_lines", None) or []
     # ★ 方向1（open 块 styled 引用缓存）：开放块行转换结果按**行对象**缓存于
     #   block——修复前每帧 ``_to_styled_runs`` 重建全部 StyledRun 列表（新对象
     #   每帧），``_measure`` 的 ``cache[0] is styled`` 身份快路径恒 miss →
@@ -258,6 +259,13 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
                 # 推理行叠加 dim 基础样式（不斜体）
                 runs = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING)) for r in runs]
             open_cache[line] = runs
+        out.append(runs)
+    # 未闭合块预览行（preview_lines 每次整体替换，行对象每次新建）——
+    # 不进 open_cache（避免缓存随预览替换无限累积）。
+    for line in preview_lines:
+        runs = _to_styled_runs(line)
+        if kind == "reasoning" and runs:
+            runs = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING)) for r in runs]
         out.append(runs)
     return out
 
@@ -398,7 +406,12 @@ def OpenBlockLines(props) -> object:
         #   时安全，但这是「lines 永不重新赋值」的调用方隐式约定；补块
         #   身份后即使 lines 被整体替换（新列表复用旧 id 且行数相同）
         #   也能识别块变化重建 children（消除 id 复用错误命中窗口）。
-        (id(block), id(block.lines), n, live_start, width, block_idx, sp),
+        # ★ 问题1：deps 补 ``id(block.preview_lines)``——预览行不进入
+        #   block.lines，行数 n 不变时（如段落持续追加但 preview 行数相同）
+        #   预览内容变化须使 memo 失效重建（每次替换 preview_lines 为新列表
+        #   对象，id 变化即失效）。
+        (id(block), id(block.lines), n, live_start, width, block_idx, sp,
+         id(getattr(block, "preview_lines", None))),
     )
     return h(FRAGMENT, None, children)
 

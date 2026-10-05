@@ -301,13 +301,10 @@ class IncrementalRenderer:
             except Exception:
                 _logger.debug("引用链接列表渲染异常", exc_info=True)
 
-        # TOC — 使用共享的 render_toc()
-        toc = getattr(self._ctx, 'toc', None)
-        if toc:
-            try:
-                self._output.write(render_toc(toc, self._output.width))
-            except Exception:
-                _logger.debug("TOC 渲染异常", exc_info=True)
+        # ★ 问题7（位置修复）：目录仅由文档中的 [TOC] 标记触发（RenderEngine
+        #   已处理 TOC_MARKER），不再于 close() 时无条件追加到内容末尾——
+        #   与 AnsiStreamRenderer（TUI 路径）行为一致，避免每条消息末尾
+        #   突兀追加目录框。
 
         # 渲染统计摘要（新特性）
         if self._show_summary and self._ctx.token_count > 0:

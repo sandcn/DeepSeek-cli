@@ -44,8 +44,12 @@ class AnsiRenderEngine:
         self._mermaid_state: list | None = None
         self._bq_lines: list[str] | None = None
         self._admonition: tuple[str, int] | None = None
-        self._details: str | None = None
-        self._fenced_div: str | None = None
+        # 折叠块 / FencedDiv 流式状态：
+        #   _details = (summary, [正文行])；_fenced_div = (type, 头行文本, [正文行])
+        # ★ 修复：原为 str（仅 summary/type）——正文行（DETAILS_LINE /
+        #   FENCED_DIV_LINE）被直接丢弃，块内内容全部丢失、summary 也不显示。
+        self._details: tuple | None = None
+        self._fenced_div: tuple | None = None
 
     def reset(self) -> None:
         """重置所有流式状态（close() 后调用）。"""
@@ -130,31 +134,57 @@ class AnsiRenderEngine:
                     self._admonition[1].append(token.content)
                 return []
             if t == TokenType.ADMONITION_CLOSE:
-                if self._admonition is None:
-                    return []
-                atype, lines = self._admonition
-                self._admonition = None
-                return blocks.render_admonition(_StrToken("\n".join(lines), {"type": atype, "depth": 0}))
+                if self._admonition is not None:
+                    atype, lines = self._admonition
+                    self._admonition = None
+                else:
+                    # 流式预览：无引擎缓冲时从 token meta 渲染（body_lines）
+                    atype = token.meta.get("type", "NOTE")
+                    lines = list(token.meta.get("body_lines") or [])
+                if token.content:
+                    lines = [token.content] + lines
+                return blocks.render_admonition(
+                    _StrToken("\n".join(lines), {"type": atype, "depth": 0})
+                )
 
             if t == TokenType.DETAILS_OPEN:
-                self._details = token.meta.get("summary", "")
+                # 收集 summary + 正文行（DETAILS_LINE 到来时追加）
+                self._details = (token.meta.get("summary", ""), [])
                 return []
             if t == TokenType.DETAILS_LINE:
+                if self._details is not None and token.content:
+                    self._details[1].append(token.content)
                 return []
             if t == TokenType.DETAILS_CLOSE:
-                tok = _StrToken(self._details or "")
-                self._details = None
-                return blocks.render_details(tok)
+                if self._details is not None:
+                    summary, body = self._details
+                    self._details = None
+                else:
+                    summary, body = token.meta.get("summary", ""), []
+                if token.content:
+                    body = body + str(token.content).split("\n")
+                return blocks.render_details(
+                    _StrToken("", {"summary": summary, "body_lines": body})
+                )
 
             if t == TokenType.FENCED_DIV_OPEN:
-                self._fenced_div = token.meta.get("type", "NOTE")
+                # 收集 type + 头行文本 + 正文行（FENCED_DIV_LINE 到来时追加）
+                self._fenced_div = (token.meta.get("type", "NOTE"),
+                                    token.content or "", [])
                 return []
             if t == TokenType.FENCED_DIV_LINE:
+                if self._fenced_div is not None and token.content:
+                    self._fenced_div[2].append(token.content)
                 return []
             if t == TokenType.FENCED_DIV_CLOSE:
-                tok = _StrToken(self._fenced_div or "NOTE")
-                self._fenced_div = None
-                return blocks.render_fenced_div(tok)
+                if self._fenced_div is not None:
+                    dtype, head_text, body = self._fenced_div
+                    self._fenced_div = None
+                else:
+                    dtype, head_text, body = token.meta.get("type", "NOTE"), "", []
+                return blocks.render_fenced_div(
+                    _StrToken(head_text, {"type": dtype, "body_lines": body})
+                )
 
             # HTML 块：纯文本透传
             if t in (TokenType.HTML_BLOCK_OPEN, TokenType.HTML_BLOCK_LINE, TokenType.HTML_BLOCK_CLOSE):
@@ -175,7 +205,11 @@ class AnsiRenderEngine:
         lang = token.meta.get("lang", "")
         title = token.meta.get("title", "")
         hl = token.meta.get("highlight_lines") or []
-        return _code.render_code_block(source, lang, self._code_theme, hl, title)
+        # 流式预览 token（meta["closed"]=False）不渲染关闭围栏
+        closed = token.meta.get("closed", True)
+        return _code.render_code_block(
+            source, lang, self._code_theme, hl, title, closed=closed,
+        )
 
     def _flush_code(self) -> list[AnsiLine]:
         if self._code_state is None:

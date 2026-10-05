@@ -505,6 +505,14 @@ class AppModel(_ToolOutputMixin):
         self.width = width
         committed: list = []
         for block in self.blocks:
+            # ★ 未关闭块（content/reasoning）：保留源时按新宽度整块重渲染
+            #   （表格/代码块等定宽内容随宽度重排），并清空已提交计数——其行
+            #   改由 live 渲染路径发射，避免与重建后的 committed_lines 重复。
+            #   重渲染失败时保留原状（不清计数，走下方常规重排路径）。
+            if (not block.closed and getattr(block, "source_text", "")):
+                if self._rerender_open_block(block, width):
+                    block.committed_line_count = 0
+                    continue
             count = block.committed_line_count
             if count <= 0:
                 continue
@@ -519,6 +527,29 @@ class AppModel(_ToolOutputMixin):
             if block._cached_ink_lines is not None and count < len(block.lines):
                 block._cached_ink_lines = self._block_to_ink_lines(block, count)
         self.committed_lines = committed
+
+    def _rerender_open_block(self, block, width: int) -> bool:
+        """按新宽度整块重渲染未关闭块（源文本重渲染，重排表格/代码块）。
+
+        终端 resize 时，未关闭块已渲染行是按旧宽度产出（表格框线/代码块
+        定宽）——重渲染用块源文本按新宽度重建 ``block.lines`` + 预览行。
+        返回是否成功（失败时调用方保留原状）。
+        """
+        source = getattr(block, "source_text", "")
+        if not source:
+            return False
+        try:
+            from src.renderer.ansi import AnsiStreamRenderer
+            r = AnsiStreamRenderer(width=max(width, 20))
+            r.write(source)
+            block.lines = list(r.take_lines())
+            block.preview_lines = list(r.take_preview_lines())
+        except Exception:
+            _logger.debug("未关闭块 resize 重渲染异常", exc_info=True)
+            return False
+        block._open_styled_cache = None
+        block._cached_ink_lines = None
+        return True
 
     # ── 推理/内容通道 ───────────────────────────────
 
@@ -552,13 +583,15 @@ class AppModel(_ToolOutputMixin):
         if rr is None or self.reasoning_state != ReasoningState.ACTIVE:
             return
         lines = rr.take_lines()
-        if not lines:
-            return
+        take_preview = getattr(rr, "take_preview_lines", None)
+        preview = take_preview() if callable(take_preview) else []
         idx = self.reasoning_block_index
         if 0 <= idx < len(self.blocks):
             block = self.blocks[idx]
-            block.lines.extend(lines)
-            self.commit_open_block(block)
+            if lines:
+                block.lines.extend(lines)
+                self.commit_open_block(block)
+            block.preview_lines = list(preview)
 
     def close_reasoning(self) -> None:
         """关闭推理通道：固化渲染器输出（无分隔线——对齐 Claude Code 消息间仅空行）。"""
@@ -577,6 +610,7 @@ class AppModel(_ToolOutputMixin):
         if 0 <= self.reasoning_block_index < len(self.blocks):
             block = self.blocks[self.reasoning_block_index]
             block.closed = True
+            block.preview_lines = []  # 闭合：预览由确定行替换，清空
             # ★ BUG-21（review 方向）：仅冻结**未提交尾**
             #   （``committed_line_count`` 起）——修复前全量冻结
             #   ``_block_to_ink_lines(block, 0)``：已增量提交过的行（已在
@@ -635,6 +669,7 @@ class AppModel(_ToolOutputMixin):
         if 0 <= self.content_block_index < len(self.blocks):
             block = self.blocks[self.content_block_index]
             block.closed = True
+            block.preview_lines = []  # 闭合：预览由确定行替换，清空
             # ★ BUG-21（review 方向）：仅冻结未提交尾（同 close_reasoning）——
             #   已增量提交的行不重复存 ink Line（大响应内存不翻倍）。
             block._cached_ink_lines = self._block_to_ink_lines(

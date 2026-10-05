@@ -87,6 +87,13 @@ def render_list_item(token) -> list[AnsiLine]:
     meta = token.meta
     depth = int(meta.get("depth", 1))
     indent = int(meta.get("indent", 0))
+    # 列表续行（continuation）：对齐列表内容的缩进行（无项目符号）
+    if meta.get("continuation"):
+        prefix = "  " * max(0, indent) + "  "
+        line = AnsiLine.of(prefix, _STYLE_BQ)
+        for run in render_inline(token.content.lstrip()):
+            line.append_run(run)
+        return [line]
     # 缩进按 indent；项目符号按嵌套深度（depth 为 1-based）
     prefix = "  " * max(0, indent)
     if meta.get("bullet"):
@@ -159,24 +166,47 @@ def render_admonition(token) -> list[AnsiLine]:
 
 
 def render_details(token) -> list[AnsiLine]:
+    """折叠块（<details>）：``▶ summary`` 头 + 逐行缩进正文。
+
+    ★ 修复（流式渲染引擎丢内容）：修复前仅接受 meta["summary"] 且正文行被
+    engine 直接丢弃——summary 不显示、正文全部丢失。现支持 meta["summary"]
+    （头）与 meta["body_lines"]（正文行列表，缩进渲染）。
+    """
     summary = token.meta.get("summary", "")
     head = AnsiLine.of("\u25b6 ", _STYLE_LIST_BULLET)
     for run in render_inline(str(summary)):
         head.append_run(run)
-    return [head]
+    lines = [head]
+    for seg in (token.meta.get("body_lines") or []):
+        body = AnsiLine.of("  ", _STYLE_BQ)
+        for run in render_inline(str(seg)):
+            body.append_run(run)
+        lines.append(body)
+    return lines
 
 
 # ── FencedDiv ────────────────────────────────────────
 
 
 def render_fenced_div(token) -> list[AnsiLine]:
+    """Fenced Div（``:::type``）：``▪ TYPE`` 头 + 逐行缩进正文。
+
+    ★ 修复（流式渲染引擎丢内容）：修复前正文行（FENCED_DIV_LINE）被 engine
+    丢弃——仅显示容器头。现支持 meta["body_lines"]（正文行列表，缩进渲染）。
+    """
     dtype = str(token.meta.get("type", "NOTE")).upper()
     color = _ADMONITION_COLORS.get(dtype, _STYLE_LIST_BULLET)
     head = AnsiLine.of(f"\u25aa {dtype} ", color)
     if token.content:
         for run in render_inline(str(token.content)):
             head.append_run(run)
-    return [head]
+    lines = [head]
+    for seg in (token.meta.get("body_lines") or []):
+        body = AnsiLine.of("  ", _STYLE_BQ)
+        for run in render_inline(str(seg)):
+            body.append_run(run)
+        lines.append(body)
+    return lines
 
 
 # ── 空行 ─────────────────────────────────────────────

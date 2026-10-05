@@ -208,23 +208,23 @@ class _BlockParserStreamMixin:
             return
         fchar, flen, _ = _get_fence_info(stripped)
         if not fchar:
-            tokens.append(Token(TokenType.CODE_LINE, line.rstrip('\n')))
+            self._emit_code_line(line.rstrip('\n'), tokens)
             return
         if fchar != self._block_fence_char:
-            tokens.append(Token(TokenType.CODE_LINE, line.rstrip('\n')))
+            self._emit_code_line(line.rstrip('\n'), tokens)
             return
         if flen < self._block_fence_len:
-            tokens.append(Token(TokenType.CODE_LINE, line.rstrip('\n')))
+            self._emit_code_line(line.rstrip('\n'), tokens)
             return
         close_lang = _get_fence_lang(stripped[flen:].strip())
         is_markdown = self._block_lang.lower() in ('markdown', 'md')
         if close_lang and is_markdown:
             self._block_nested_fence += 1
-            tokens.append(Token(TokenType.CODE_LINE, line.rstrip('\n')))
+            self._emit_code_line(line.rstrip('\n'), tokens)
             return
         if not close_lang and is_markdown and self._block_nested_fence > 0:
             self._block_nested_fence -= 1
-            tokens.append(Token(TokenType.CODE_LINE, line.rstrip('\n')))
+            self._emit_code_line(line.rstrip('\n'), tokens)
             return
         tokens.append(Token(TokenType.CODE_FENCE_CLOSE, "",
                             {"lang": self._block_lang, "indented": False}))
@@ -294,11 +294,11 @@ class _BlockParserStreamMixin:
 
     def _feed_indented_code_line(self, line: str, stripped: str, tokens: list[Token]):
         if _is_empty_line(stripped):
-            tokens.append(Token(TokenType.CODE_LINE, ""))
+            self._emit_code_line("", tokens)
             return
         if line[:4] == '    ' or (line and line[0] == '\t'):
             content = line[4:] if line[:4] == '    ' else line[1:]
-            tokens.append(Token(TokenType.CODE_LINE, content.rstrip('\n')))
+            self._emit_code_line(content.rstrip('\n'), tokens)
             return
         tokens.append(Token(TokenType.CODE_FENCE_CLOSE, "", {
             "lang": "text", "indented": True,
@@ -546,6 +546,7 @@ class _BlockParserStreamMixin:
         self._block_attrs = info.get('attrs', '')
         self._block_title = info.get('title', '')
         self._block_lines = []
+        self._preview_code_lines = []
         self._block_nested_fence = 0
         self._auto_close_streak = 0
         lang = self._block_lang
@@ -574,8 +575,8 @@ class _BlockParserStreamMixin:
                 if self._state == _State.MERMAID_BLOCK:
                     tokens.append(Token(TokenType.MERMAID_LINE, fence['extra']))
                 else:
-                    tokens.append(Token(TokenType.CODE_LINE, fence['extra']))
-            tokens.append(Token(TokenType.CODE_LINE, ""))
+                    self._emit_code_line(fence['extra'], tokens)
+            self._emit_code_line("", tokens)
             return
         if stripped and stripped[0] in ('`', '~'):
             fchar, flen, _ = _get_fence_info(stripped)
@@ -585,7 +586,7 @@ class _BlockParserStreamMixin:
                     if self._state == _State.MERMAID_BLOCK:
                         tokens.append(Token(TokenType.MERMAID_LINE, fence['extra']))
                     else:
-                        tokens.append(Token(TokenType.CODE_LINE, fence['extra']))
+                        self._emit_code_line(fence['extra'], tokens)
                 self._feed_code_fence_line(stripped + '\n', stripped, tokens)
                 return
         lang = _get_fence_lang(stripped)
@@ -596,7 +597,7 @@ class _BlockParserStreamMixin:
                 if self._state == _State.MERMAID_BLOCK:
                     tokens.append(Token(TokenType.MERMAID_LINE, fence['extra']))
                 else:
-                    tokens.append(Token(TokenType.CODE_LINE, fence['extra']))
+                    self._emit_code_line(fence['extra'], tokens)
             return
         if lang and lang in _MERMAID_KEYWORDS:
             fence['lang'] = 'mermaid'
@@ -605,7 +606,7 @@ class _BlockParserStreamMixin:
                 if self._state == _State.MERMAID_BLOCK:
                     tokens.append(Token(TokenType.MERMAID_LINE, fence['extra']))
                 else:
-                    tokens.append(Token(TokenType.CODE_LINE, fence['extra']))
+                    self._emit_code_line(fence['extra'], tokens)
             self._block_lines.append(stripped)
             return
         self._start_code_fence(fence, tokens)

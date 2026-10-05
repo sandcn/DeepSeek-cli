@@ -79,6 +79,7 @@ def render_code_block(
     theme: str = _CODE_THEME,
     highlight_lines: list[int] | None = None,
     title: str = "",
+    closed: bool = True,
 ) -> list[AnsiLine]:
     """渲染代码块（含标题栏与围栏）为 AnsiLine 列表。
 
@@ -88,6 +89,8 @@ def render_code_block(
         theme: pygments 主题名。
         highlight_lines: 高亮行号（1-based）。
         title: 代码块标题（文件名等）。
+        closed: 代码块是否已闭合。流式预览未闭合块时传 False——不渲染
+            伪造的关闭围栏（```）。
 
     Returns:
         渲染后的行列表。
@@ -114,21 +117,22 @@ def render_code_block(
     if lexer is not None:
         # get_code_style 返回 pygments 样式类；_highlight_line 经 styles dict 取色
         pyg_style = get_code_style(theme)
-        for idx, src_line in enumerate(source.split("\n"), start=1):
+        for idx, src_line in enumerate(source.split("\n") if source else [], start=1):
             aline = _highlight_line(src_line, lexer, pyg_style)
             if idx in hl:
                 aline = _apply_highlight(aline)
             out.append(aline)
     else:
         # 无词法分析器：纯文本（dim）
-        for idx, src_line in enumerate(source.split("\n"), start=1):
+        for idx, src_line in enumerate(source.split("\n") if source else [], start=1):
             aline = AnsiLine.of(src_line, _STYLE_DIM)
             if idx in hl:
                 aline = _apply_highlight(aline)
             out.append(aline)
 
-    # 关闭围栏
-    out.append(AnsiLine.of("```", _STYLE_FENCE))
+    # 关闭围栏（流式预览未闭合代码块时不渲染伪造的关闭围栏）
+    if closed:
+        out.append(AnsiLine.of("```", _STYLE_FENCE))
     return out
 
 

@@ -56,6 +56,13 @@ class ChatBlock:
     kind: str
     lines: list = field(default_factory=list)
     extra: dict = field(default_factory=dict)
+    #: 未闭合块预览行（流式实时可见）——段落/代码块/表格等未闭合时由
+    #: AnsiStreamRenderer 的预览渲染产出，每次 write 整体替换；块闭合时清空
+    #: （确定行经 ``lines`` 落地）。不参与 committed_lines 提交。
+    preview_lines: list = field(default_factory=list)
+    #: 块的完整 markdown 源文本（流式累积）——终端 resize 时按新宽度整块
+    #: 重渲染未关闭块（表格/代码块等定宽内容随宽度重排），修复宽度陈旧。
+    source_text: str = ""
     #: 块是否已关闭（不再追加行）。仅连续的已关闭块可提交到增量缓存。
     closed: bool = False
     #: 已提交到缓存的行数（开放块随段落闭合增量提交 → 每帧只处理未提交尾）。

@@ -230,7 +230,7 @@ def _do_reasoning(model, cmd) -> None:
         if rr is None:
             return  # 重开后仍不可用（防御）：丢弃
     rr.write(cmd.text)
-    _flush_renderer_to_block(model, "reasoning", rr)
+    _flush_renderer_to_block(model, "reasoning", rr, source_delta=cmd.text)
 
 
 def _do_content(model, cmd) -> None:
@@ -249,23 +249,30 @@ def _do_content(model, cmd) -> None:
         if cr is None:
             return  # 重开后仍不可用（防御）：丢弃
     cr.write(cmd.text)
-    _flush_renderer_to_block(model, "content", cr)
+    _flush_renderer_to_block(model, "content", cr, source_delta=cmd.text)
 
 
-def _flush_renderer_to_block(model, channel: str, renderer) -> None:
+def _flush_renderer_to_block(model, channel: str, renderer,
+                             source_delta: str = "") -> None:
     """将渲染器新产出的行固化到对应块，并**增量提交**已闭合行到缓存。
 
     流式内容只把未闭合尾留在开放块，闭段行立即进 committed_lines 缓存 →
-    大响应渲染成本不随响应增长。
+    大响应渲染成本不随响应增长。未闭合块预览行（preview_lines）同步刷新
+    ——整体替换语义，使段落/代码块/表格在闭合前实时可见。``source_delta``
+    累积块的 markdown 源文本（供终端 resize 时整块重渲染重排）。
     """
     lines = renderer.take_lines()
-    if not lines:
-        return
+    take_preview = getattr(renderer, "take_preview_lines", None)
+    preview = take_preview() if callable(take_preview) else []
     idx = model.reasoning_block_index if channel == "reasoning" else model.content_block_index
     if 0 <= idx < len(model.blocks):
         block = model.blocks[idx]
-        block.lines.extend(lines)
-        model.commit_open_block(block)
+        if source_delta:
+            block.source_text = getattr(block, "source_text", "") + source_delta
+        if lines:
+            block.lines.extend(lines)
+            model.commit_open_block(block)
+        block.preview_lines = list(preview)
 
 
 def _do_phase_done(model, cmd) -> None:
