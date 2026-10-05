@@ -50,10 +50,9 @@ from src.tui._config import TuiConfig
 # 对象——TOOL_CATEGORY_STYLES / AGENT_TYPE_STYLES（直接取 Style.fg 色号，
 # 不再经 _ansi_color_code 解析）。旧 ANSI 映射保留在 _tool_icons（兼容），
 # 本模块不再消费。
-from src.tui._tool_icons import (
-    AGENT_TYPE_STYLES,
-    TOOL_CATEGORY_MAP,
-    TOOL_CATEGORY_STYLES,
+from src.tui._tool_styles import (
+    agent_type_style as _agent_type_style,
+    tool_style as _tool_style,
 )
 from src.tui.core import _fx
 from src.tui._format import format_duration, format_tokens, format_speed, single_line
@@ -102,7 +101,7 @@ def _fade_type_style(agent_type: str, elapsed: float) -> Style:
     参数更名 ``agent_type_ansi`` → ``agent_type``（原传 ANSI 色串，现传
     类型名）；未知类型回退 ``_S_DIMMER``（与原 ``code is None`` 分支一致）。
     """
-    style = AGENT_TYPE_STYLES.get(agent_type)
+    style = _agent_type_style(agent_type)
     if style is None or getattr(style, "fg", None) is None:
         return _S_DIMMER
     code = style.fg
@@ -120,10 +119,9 @@ def _get_tool_color(tool_name: str) -> Style:
     ``TOOL_CATEGORY_STYLES`` 映射，不再经 ANSI 色串解析。未知工具回退
     ``Style(fg=245)``（与原 ANSI 默认色号一致）。线程安全只读。
     """
-    cat = TOOL_CATEGORY_MAP.get(tool_name, "")
-    style = TOOL_CATEGORY_STYLES.get(cat)
-    if style is not None:
-        return style
+    cat = _tool_style(tool_name)
+    if cat is not None:
+        return cat
     return Style(fg=245)
 
 

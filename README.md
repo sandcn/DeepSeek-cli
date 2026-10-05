@@ -757,7 +757,9 @@ ChatUIConsumer
 其余一切——工具、命令、渲染 handler/filter/target、Agent 类型与中间件、流式处理器、
 通知后端、上下文策略、MCP 传输、工具引擎、事件消费者、UI 视图、Web 提供者、主题、
 技能来源、会话投影、全局禁用工具策略、Preset、提示词运行模式/来源、ClawBot 远程指令、
-CLI 顶层子命令、运行时数据服务与能力接缝——都是清单（Profile/Bundle/Patch）中的
+CLI 顶层子命令、TUI 键位绑定与特殊键处理器、工具表现（类别/图标/Agent 类型标签）、
+语法高亮语言、表现层数据表（Emoji/上下标/HTML 配色/列表符号/轨迹样式/模式文本）、
+内核 host 组件、补全提供者、状态栏段、运行时数据服务与能力接缝——都是清单（Profile/Bundle/Patch）中的
 **独立插件条目**，可被 `~/.chat_config/cordis.patch.yml`、`--patch` 或用户 Profile
 目录按 id 覆盖配置、禁用或替换。
 

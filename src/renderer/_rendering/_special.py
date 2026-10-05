@@ -11,6 +11,7 @@ from rich.text import Text
 from rich.style import Style
 
 from .._utils import cjk_display_width
+from src.presentation_data import LiveMapping, html_tag_color as _html_tag_color
 
 
 # ═══════════════════════════════════════════════════════════
@@ -32,16 +33,12 @@ def render_mermaid_close() -> Text:
 # HTML 块框线
 # ═══════════════════════════════════════════════════════════
 
-_HTML_BLOCK_TAG_COLORS = {
-    "div":   "blue",
-    "pre":   "green",
-    "table": "yellow",
-}
+_HTML_BLOCK_TAG_COLORS = LiveMapping("html_tag_color")
 
 
 def get_html_tag_color(tag: str) -> str:
     """获取 HTML tag 对应的颜色名。"""
-    return _HTML_BLOCK_TAG_COLORS.get(tag, "bright_black")
+    return _html_tag_color(tag)
 
 
 def render_html_block_open(tag: str, output_width: int) -> Text:

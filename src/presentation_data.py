@@ -1,0 +1,504 @@
+"""表现层数据注册表 — 渲染/TUI 数据表的单一来源（一切皆插件）。
+
+「一切皆插件」：渲染与 TUI 的纯数据表——Emoji 短代码、上下标/圈号 Unicode、
+HTML 块标签配色、无序列表符号、轨迹视图 KIND/STATUS 图标配色、主 Agent 运行
+模式文本样式——不再是散落在各模块里的硬编码字典，而是注册到本模块的数据表；
+每张表由清单中的**独立插件条目**（``presentation_data``）显式注册，因而可被
+Profile/Bundle 声明，也可被 Patch/Overlay 按 id 单独禁用、覆盖（整表替换）或
+替换。
+
+**清单接管**：``presentation_data`` 聚合插件收到组合根注入的
+``managed_presentation_data``（清单已接管的 id，含被禁用的）时经
+``set_managed_builtin_data`` 声明这些 id 由清单条目负责——对应内置表不再走
+默认装配；被禁用（未挂载）的条目因此真正缺席。无清单（单元测试、独立调用）
+时无接管，全部内置表默认生效。
+
+本模块为**叶子模块**（仅依赖标准库），供 ``src.renderer`` 与 ``src.tui`` 消费，
+避免引入重依赖。
+"""
+
+from __future__ import annotations
+
+import threading
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+_lock = threading.RLock()
+_ABSENT = object()
+
+
+class LiveMapping(Mapping):
+    """只读映射视图 — 实时委托到注册表（overlay 变更即时可见）。
+
+    供消费方以「模块级映射常量」形态保留旧调用面（``M[x]`` / ``x in M`` /
+    ``M.get`` / 迭代），同时底层数据取自注册表当前生效表。
+    """
+
+    def __init__(self, name: str, default=None):
+        self._name = name
+        self._default = {} if default is None else default
+
+    def _data(self):
+        data = data_table(self._name)
+        return data if data is not None else self._default
+
+    def __getitem__(self, key):
+        return self._data()[key]
+
+    def __iter__(self):
+        return iter(self._data())
+
+    def __len__(self):
+        return len(self._data())
+
+    def get(self, key, default=None):
+        return self._data().get(key, default)
+
+
+
+@dataclass(frozen=True)
+class DataTable:
+    """一张表现层数据表。"""
+
+    id: str
+    name: str
+    data: Any
+
+    def to_dict(self) -> dict:
+        size = len(self.data) if hasattr(self.data, "__len__") else 0
+        return {"id": self.id, "name": self.name, "size": size}
+
+
+# ── Emoji 短代码表 ───────────────────────────────────────
+
+EMOJI_MAP: dict[str, str] = {
+    ":smile:": "\U0001f60a", ":smiley:": "\U0001f603", ":happy:": "\U0001f604",
+    ":wink:": "\U0001f609", ":blush:": "\U0001f60a", ":laugh:": "\U0001f606",
+    ":joy:": "\U0001f602", ":cool:": "\U0001f60e", ":thinking:": "\U0001f914",
+    ":sweat:": "\U0001f605", ":cry:": "\U0001f622", ":sad:": "\U0001f61e",
+    ":angry:": "\U0001f620", ":heart_eyes:": "\U0001f60d", ":kiss:": "\U0001f618",
+    ":shock:": "\U0001f62e", ":sleep:": "\U0001f634", ":grimacing:": "\U0001f62c",
+    ":relieved:": "\U0001f60c", ":satisfied:": "\U0001f60b", ":stuck_out_tongue:": "\U0001f61b",
+    ":sunglasses:": "\U0001f60e", ":smirk:": "\U0001f60f", ":unamused:": "\U0001f612",
+    ":worried:": "\U0001f61f", ":frowning:": "\U0001f626", ":persevere:": "\U0001f623",
+    ":confounded:": "\U0001f616", ":tired:": "\U0001f62b", ":weary:": "\U0001f629",
+    ":thumbsup:": "\U0001f44d", ":thumbsdown:": "\U0001f44e", ":ok:": "\U0001f44c",
+    ":clap:": "\U0001f44f", ":wave:": "\U0001f44b", ":pray:": "\U0001f64f",
+    ":muscle:": "\U0001f4aa", ":point_up:": "\U0001f446", ":point_down:": "\U0001f447",
+    ":point_left:": "\U0001f448", ":point_right:": "\U0001f449", ":fist:": "\u270a",
+    ":raised_hand:": "\u270b", ":v:": "\u270c\ufe0f", ":crossed_fingers:": "\U0001f91e",
+    ":handshake:": "\U0001f91d", ":writing_hand:": "\u270d\ufe0f", ":nail_care:": "\U0001f485",
+    ":heart:": "\u2764\ufe0f", ":broken_heart:": "\U0001f494",
+    ":fire:": "\U0001f525", ":star:": "\u2b50", ":sparkles:": "\u2728",
+    ":rainbow:": "\U0001f308", ":sunny:": "\u2600\ufe0f", ":moon:": "\U0001f319",
+    ":two_hearts:": "\U0001f495", ":sparkling_heart:": "\U0001f496", ":heartbeat:": "\U0001f493",
+    ":yellow_heart:": "\U0001f49b", ":green_heart:": "\U0001f49a", ":blue_heart:": "\U0001f499",
+    ":check:": "\u2705", ":x:": "\u274c", ":warning:": "\u26a0\ufe0f",
+    ":info:": "\u2139\ufe0f", ":question:": "\u2753", ":exclamation:": "\u2757",
+    ":tick:": "\u2714\ufe0f", ":cross:": "\u2716\ufe0f", ":plus:": "\u2795",
+    ":minus:": "\u2796", ":heavy_check_mark:": "\u2714\ufe0f",
+    ":recycle:": "\u267b\ufe0f", ":copyright:": "\u00a9\ufe0f", ":registered:": "\u00ae\ufe0f",
+    ":arrow_up:": "\u2b06\ufe0f", ":arrow_down:": "\u2b07\ufe0f",
+    ":arrow_left:": "\u2b05\ufe0f", ":arrow_right:": "\u27a1\ufe0f",
+    ":arrow_forward:": "\u25b6\ufe0f", ":arrow_backward:": "\u25c0\ufe0f",
+    ":bulb:": "\U0001f4a1", ":book:": "\U0001f4d6", ":computer:": "\U0001f4bb",
+    ":bug:": "\U0001f41b", ":gear:": "\u2699\ufe0f", ":lock:": "\U0001f512",
+    ":key:": "\U0001f511", ":mail:": "\U0001f4e7", ":phone:": "\U0001f4de",
+    ":clock:": "\u23f0", ":calendar:": "\U0001f4c5", ":pencil:": "\u270f\ufe0f",
+    ":memo:": "\U0001f4dd", ":folder:": "\U0001f4c1", ":file:": "\U0001f4c4",
+    ":search:": "\U0001f50d", ":trash:": "\U0001f5d1\ufe0f", ":rocket:": "\U0001f680",
+    ":hammer:": "\U0001f528", ":wrench:": "\U0001f527", ":link:": "\U0001f517",
+    ":flag:": "\U0001f6a9", ":trophy:": "\U0001f3c6", ":medal:": "\U0001f947",
+    ":gift:": "\U0001f381", ":party:": "\U0001f389", ":balloon:": "\U0001f388",
+    ":target:": "\U0001f3af", ":camera:": "\U0001f4f7",
+    ":sun:": "\u2600\ufe0f", ":cloud:": "\u2601\ufe0f", ":umbrella:": "\u2602\ufe0f",
+    ":snowflake:": "\u2744\ufe0f", ":zap:": "\u26a1", ":tornado:": "\U0001f32a\ufe0f",
+    ":ocean:": "\U0001f30a", ":droplet:": "\U0001f4a7",
+    ":apple:": "\U0001f34e", ":banana:": "\U0001f34c", ":coffee:": "\u2615",
+    ":tea:": "\U0001f375", ":beer:": "\U0001f37a", ":pizza:": "\U0001f355",
+    ":dog:": "\U0001f415", ":cat:": "\U0001f408", ":mouse:": "\U0001f401",
+    ":hamster:": "\U0001f439", ":rabbit:": "\U0001f407", ":fox:": "\U0001f98a",
+    ":bear:": "\U0001f43b", ":panda:": "\U0001f43c", ":lion:": "\U0001f981",
+    ":tiger:": "\U0001f405", ":monkey:": "\U0001f412",
+    ":soccer:": "\u26bd", ":basketball:": "\U0001f3c0", ":football:": "\U0001f3c8",
+    ":baseball:": "\u26be", ":tennis:": "\U0001f3be",
+    ":car:": "\U0001f697", ":taxi:": "\U0001f695", ":bus:": "\U0001f68c",
+    ":train:": "\U0001f686", ":airplane:": "\u2708\ufe0f", ":helicopter:": "\U0001f681",
+    ":ship:": "\U0001f6a2", ":bicycle:": "\U0001f6b2",
+    ":tada:": "\U0001f389", ":package:": "\U0001f4e6",
+    ":bell:": "\U0001f514", ":robot:": "\U0001f916",
+    ":brain:": "\U0001f9e0", ":chart:": "\U0001f4ca",
+    ":clipboard:": "\U0001f4cb", ":mag:": "\U0001f50d",
+    ":speech:": "\U0001f4ac",
+    ":grin:": "\U0001f601",
+    ":smile_cat:": "\U0001f638",
+    ":100:": "\U0001f4af",
+    ":eyes:": "\U0001f440",
+    ":hourglass:": "\u23f3",
+    ":star2:": "\U0001f31f",
+    ":white_check_mark:": "\u2705",
+    ":unlock:": "\U0001f513",
+    ":email:": "\U0001f4e7",
+    ":music:": "\U0001f3b5",
+    ":movie:": "\U0001f3ac",
+    ":art:": "\U0001f3a8",
+}
+
+# ── 上下标 / 圈号 Unicode 表 ─────────────────────────────
+
+SUBSCRIPT_MAP: dict[str, str] = {
+    "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄",
+    "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉",
+    "a": "ₐ", "e": "ₑ", "h": "ₕ", "i": "ᵢ", "j": "ⱼ",
+    "k": "ₖ", "l": "ₗ", "m": "ₘ", "n": "ₙ", "o": "ₒ",
+    "p": "ₚ", "r": "ᵣ", "s": "ₛ", "t": "ₜ", "u": "ᵤ",
+    "v": "ᵥ", "x": "ₓ",
+    "+": "₊", "-": "₋", "(": "₍", ")": "₎",
+}
+
+SUPERSCRIPT_MAP: dict[str, str] = {
+    "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
+    "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+    "+": "⁺", "-": "⁻", "(": "⁽", ")": "⁾",
+    "a": "ᵃ", "b": "ᵇ", "c": "ᶜ", "d": "ᵈ", "e": "ᵉ",
+    "f": "ᶠ", "g": "ᵍ", "h": "ʰ", "i": "ⁱ", "j": "ʲ",
+    "k": "ᵏ", "l": "ˡ", "m": "ᵐ", "n": "ⁿ", "o": "ᵒ",
+    "p": "ᵖ", "r": "ʳ", "s": "ˢ", "t": "ᵗ", "u": "ᵘ",
+    "v": "ᵛ", "w": "ʷ", "x": "ˣ", "y": "ʸ", "z": "ᶻ",
+}
+
+CIRCLED_DIGITS: list[str] = [
+    "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩",
+    "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳",
+]
+
+# ── HTML 块标签配色 / 列表符号 ───────────────────────────
+
+HTML_TAG_COLORS: dict[str, str] = {"div": "blue", "pre": "green", "table": "yellow"}
+
+BULLETS: list[str] = ["\u2022", "\u25e6", "\u25aa"]
+
+# ── 轨迹视图 KIND / STATUS 表现 ──────────────────────────
+
+TRACE_KIND: dict[str, dict] = {
+    "tools": {"icon": "\U0001F9F0", "name": "工具列表", "fg": 214},
+    "system": {"icon": "\u2699", "name": "系统", "fg": 110},
+    "user": {"icon": "\U0001F464", "name": "用户", "fg": 39},
+    "reasoning": {"icon": "\U0001F4AD", "name": "思考", "fg": 242},
+    "content": {"icon": "\U0001F4AC", "name": "回答", "fg": 45},
+    "tool": {"icon": "\u26A1", "name": "工具", "fg": 214},
+    "subagent": {"icon": "\U0001F916", "name": "子代理", "fg": 75},
+    "context": {"icon": "\U0001F4C4", "name": "上下文", "fg": 110},
+}
+
+TRACE_STATUS: dict[str, dict] = {
+    "running": {"icon": "\u25cf", "fg": 208},
+    "done": {"icon": "\u2714", "fg": 41},
+    "fail": {"icon": "\u2716", "fg": 196},
+    "error": {"icon": "\u2716", "fg": 196},
+}
+
+# ── 主 Agent 运行模式文本 / 样式 ─────────────────────────
+
+MODE_TEXT: dict[str, str] = {
+    "empty": "空模式",
+    "simple": "简单模式",
+    "standard": "标准模式",
+}
+
+MODE_STYLE_FG: dict[str, int] = {"empty": 178, "simple": 45, "standard": 242}
+
+#: 内置数据表声明
+_BUILTIN_SPECS: Tuple[DataTable, ...] = (
+    DataTable("emoji", "emoji", EMOJI_MAP),
+    DataTable("inline_subscript", "inline_subscript", SUBSCRIPT_MAP),
+    DataTable("inline_superscript", "inline_superscript", SUPERSCRIPT_MAP),
+    DataTable("circled_digits", "circled_digits", CIRCLED_DIGITS),
+    DataTable("html_tag_color", "html_tag_color", HTML_TAG_COLORS),
+    DataTable("bullet", "bullet", BULLETS),
+    DataTable("trace_kind", "trace_kind", TRACE_KIND),
+    DataTable("trace_status", "trace_status", TRACE_STATUS),
+    DataTable("mode_text", "mode_text", MODE_TEXT),
+    DataTable("mode_style", "mode_style", MODE_STYLE_FG),
+)
+
+_builtin_specs: Dict[str, DataTable] = {spec.id: spec for spec in _BUILTIN_SPECS}
+
+_registered_builtin: Dict[str, DataTable] = {}
+_managed_builtin: set = set()
+_disabled_builtin: set = set()
+_extension: Dict[str, DataTable] = {}
+
+_cache: Optional[dict] = None
+
+
+def _normalize_ids(ids) -> List[str]:
+    if isinstance(ids, str):
+        ids = [ids]
+    selected: List[str] = []
+    for item in ids or ():
+        if item not in _builtin_specs:
+            raise KeyError(f"未知内置数据表: {item!r}（可用: {list(_builtin_specs)}）")
+        selected.append(item)
+    return selected
+
+
+def builtin_data_ids() -> list[str]:
+    return list(_builtin_specs)
+
+
+def default_data_table(spec_id: str) -> DataTable:
+    try:
+        return _builtin_specs[spec_id]
+    except KeyError:
+        raise KeyError(f"未知内置数据表: {spec_id!r}（可用: {list(_builtin_specs)}）") from None
+
+
+def active_data_tables() -> Dict[str, DataTable]:
+    with _lock:
+        result: Dict[str, DataTable] = {}
+        for spec_id, default in _builtin_specs.items():
+            if spec_id in _disabled_builtin:
+                continue
+            override = _registered_builtin.get(spec_id)
+            if override is not None:
+                result[spec_id] = override
+                continue
+            if spec_id in _managed_builtin:
+                continue
+            result[spec_id] = default
+        return result
+
+
+def _invalidate() -> None:
+    global _cache
+    _cache = None
+
+
+def register_builtin_data(spec_id: str, spec: Optional[DataTable] = None) -> Callable[[], None]:
+    if spec_id not in _builtin_specs:
+        raise KeyError(f"未知内置数据表: {spec_id!r}（可用: {list(_builtin_specs)}）")
+    with _lock:
+        previous = _registered_builtin.get(spec_id, _ABSENT)
+        _registered_builtin[spec_id] = spec if spec is not None else _builtin_specs[spec_id]
+        _invalidate()
+
+    def _undo() -> None:
+        with _lock:
+            if previous is _ABSENT:
+                _registered_builtin.pop(spec_id, None)
+            else:
+                _registered_builtin[spec_id] = previous
+            _invalidate()
+
+    return _undo
+
+
+def unregister_builtin_data(spec_id: str) -> bool:
+    with _lock:
+        removed = _registered_builtin.pop(spec_id, None) is not None
+        if removed:
+            _invalidate()
+    return removed
+
+
+def set_managed_builtin_data(ids) -> Callable[[], None]:
+    selected = _normalize_ids(ids)
+    with _lock:
+        added = [item for item in selected if item not in _managed_builtin]
+        _managed_builtin.update(added)
+        _invalidate()
+
+    def _undo() -> None:
+        with _lock:
+            for item in added:
+                _managed_builtin.discard(item)
+            _invalidate()
+
+    return _undo
+
+
+def managed_data_ids() -> list[str]:
+    with _lock:
+        return sorted(_managed_builtin)
+
+
+def disable_builtin_data(ids) -> Callable[[], None]:
+    selected = _normalize_ids(ids)
+    with _lock:
+        added = [item for item in selected if item not in _disabled_builtin]
+        _disabled_builtin.update(added)
+        _invalidate()
+
+    def _undo() -> None:
+        with _lock:
+            for item in added:
+                _disabled_builtin.discard(item)
+            _invalidate()
+
+    return _undo
+
+
+def register_data_table(spec: DataTable) -> Callable[[], None]:
+    if not isinstance(spec, DataTable):
+        raise TypeError(f"扩展数据表必须是 DataTable: {spec!r}")
+    with _lock:
+        previous = _extension.get(spec.id, _ABSENT)
+        _extension[spec.id] = spec
+        _invalidate()
+
+    def _undo() -> None:
+        with _lock:
+            if previous is _ABSENT:
+                _extension.pop(spec.id, None)
+            else:
+                _extension[spec.id] = previous
+            _invalidate()
+
+    return _undo
+
+
+def unregister_data_table(spec_id: str) -> bool:
+    with _lock:
+        removed = _extension.pop(spec_id, None) is not None
+        if removed:
+            _invalidate()
+    return removed
+
+
+def _active_by_name() -> dict:
+    global _cache
+    with _lock:
+        if _cache is not None:
+            return _cache
+        by_name: Dict[str, Any] = {}
+        for spec in active_data_tables().values():
+            by_name[spec.name] = spec.data
+        for spec in _extension.values():
+            by_name[spec.name] = spec.data
+        _cache = by_name
+        return _cache
+
+
+def data_table(name: str, default=None):
+    """按表名取当前生效的数据（缺席返回 ``default``）。"""
+    return _active_by_name().get(name, default)
+
+
+# ── 消费方查询辅助 ───────────────────────────────────────
+
+
+def emoji_map() -> dict:
+    return data_table("emoji", {}) or {}
+
+
+def subscript_map() -> dict:
+    return data_table("inline_subscript", {}) or {}
+
+
+def superscript_map() -> dict:
+    return data_table("inline_superscript", {}) or {}
+
+
+def circled_digits() -> list:
+    return list(data_table("circled_digits", []) or [])
+
+
+def bullets() -> list:
+    return list(data_table("bullet", []) or [])
+
+
+def html_tag_colors() -> dict:
+    return data_table("html_tag_color", {}) or {}
+
+
+def html_tag_color(tag: str, default: str = "bright_black") -> str:
+    return html_tag_colors().get(tag, default)
+
+
+def trace_kind(kind: str) -> dict:
+    return (data_table("trace_kind", {}) or {}).get(kind, {})
+
+
+def trace_kind_icon(kind: str, default: str = "\u00b7") -> str:
+    return trace_kind(kind).get("icon", default)
+
+
+def trace_kind_name(kind: str, default: str = "") -> str:
+    return trace_kind(kind).get("name", default or kind)
+
+
+def trace_kind_fg(kind: str, default: int = 242) -> int:
+    return trace_kind(kind).get("fg", default)
+
+
+def trace_status(status: str) -> dict:
+    return (data_table("trace_status", {}) or {}).get(status, {})
+
+
+def trace_status_icon(status: str, default: str = "\u00b7") -> str:
+    return trace_status(status).get("icon", default)
+
+
+def trace_status_fg(status: str, default: int = 242) -> int:
+    return trace_status(status).get("fg", default)
+
+
+def mode_text(mode: str, default: str = "") -> str:
+    return (data_table("mode_text", {}) or {}).get(mode, default)
+
+
+def mode_style_fg(mode: str, default: int = 242) -> int:
+    return (data_table("mode_style", {}) or {}).get(mode, default)
+
+
+def clear() -> None:
+    with _lock:
+        _extension.clear()
+        _registered_builtin.clear()
+        _invalidate()
+
+
+def reset() -> None:
+    with _lock:
+        _extension.clear()
+        _registered_builtin.clear()
+        _managed_builtin.clear()
+        _disabled_builtin.clear()
+        _invalidate()
+
+
+__all__ = [
+    "DataTable",
+    "LiveMapping",
+    "builtin_data_ids",
+    "default_data_table",
+    "active_data_tables",
+    "register_builtin_data",
+    "unregister_builtin_data",
+    "set_managed_builtin_data",
+    "managed_data_ids",
+    "disable_builtin_data",
+    "register_data_table",
+    "unregister_data_table",
+    "data_table",
+    "emoji_map",
+    "subscript_map",
+    "superscript_map",
+    "circled_digits",
+    "bullets",
+    "html_tag_colors",
+    "html_tag_color",
+    "trace_kind",
+    "trace_kind_icon",
+    "trace_kind_name",
+    "trace_kind_fg",
+    "trace_status",
+    "trace_status_icon",
+    "trace_status_fg",
+    "mode_text",
+    "mode_style_fg",
+    "clear",
+    "reset",
+]

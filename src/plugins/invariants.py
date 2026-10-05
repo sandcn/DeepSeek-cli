@@ -550,6 +550,142 @@ def _subcommands_readable(kernel) -> str | None:
     return None
 
 
+def _keybindings_readable(kernel) -> str | None:
+    """键位绑定注册表必须可读，且生效项覆盖全部内置绑定。"""
+    if not kernel.has_service("keybindings"):
+        return None
+    try:
+        from ..tui._keybindings import builtin_keybinding_ids
+
+        service = kernel.resolve_service("keybindings")
+        names = set(service.active())
+        missing = sorted(set(builtin_keybinding_ids()) - names)
+        if missing:
+            return f"ctx.keybindings 缺少内置绑定: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"键位绑定注册表读取失败: {exc}"
+    return None
+
+
+def _special_keys_readable(kernel) -> str | None:
+    """特殊键处理器注册表必须可读，且生效项覆盖全部内置处理器。"""
+    if not kernel.has_service("special_keys"):
+        return None
+    try:
+        from ..app_loop._special_handlers import builtin_special_key_ids
+
+        service = kernel.resolve_service("special_keys")
+        names = set(service.active())
+        missing = sorted(set(builtin_special_key_ids()) - names)
+        if missing:
+            return f"ctx.special_keys 缺少内置处理器: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"特殊键处理器注册表读取失败: {exc}"
+    return None
+
+
+def _tool_styles_readable(kernel) -> str | None:
+    """工具表现注册表必须可读，且生效项覆盖全部内置表现条目。"""
+    if not kernel.has_service("tool_styles"):
+        return None
+    try:
+        from ..tui._tool_styles import builtin_presentation_ids
+
+        service = kernel.resolve_service("tool_styles")
+        names = set(service.active())
+        missing = sorted(set(builtin_presentation_ids()) - names)
+        if missing:
+            return f"ctx.tool_styles 缺少内置表现条目: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"工具表现注册表读取失败: {exc}"
+    return None
+
+
+def _syntax_readable(kernel) -> str | None:
+    """语法高亮语言注册表必须可读，且生效项覆盖全部内置语言。"""
+    if not kernel.has_service("syntax"):
+        return None
+    try:
+        from ..tui.ink.widgets._syntax_registry import builtin_language_ids
+
+        service = kernel.resolve_service("syntax")
+        names = set(service.active())
+        missing = sorted(set(builtin_language_ids()) - names)
+        if missing:
+            return f"ctx.syntax 缺少内置语言: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"语法高亮语言注册表读取失败: {exc}"
+    return None
+
+
+def _presentation_data_readable(kernel) -> str | None:
+    """表现层数据注册表必须可读，且生效项覆盖全部内置数据表。"""
+    if not kernel.has_service("presentation_data"):
+        return None
+    try:
+        from ..presentation_data import builtin_data_ids
+
+        service = kernel.resolve_service("presentation_data")
+        names = set(service.active())
+        missing = sorted(set(builtin_data_ids()) - names)
+        if missing:
+            return f"ctx.presentation_data 缺少内置数据表: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"表现层数据注册表读取失败: {exc}"
+    return None
+
+
+def _hosts_readable(kernel) -> str | None:
+    """host 组件注册表必须可读，且生效项覆盖全部内置 host。"""
+    if not kernel.has_service("hosts"):
+        return None
+    try:
+        from ..tui.ink.registry import builtin_host_ids
+
+        service = kernel.resolve_service("hosts")
+        names = set(service.active())
+        missing = sorted(set(builtin_host_ids()) - names)
+        if missing:
+            return f"ctx.hosts 缺少内置 host: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"host 组件注册表读取失败: {exc}"
+    return None
+
+
+def _completion_providers_readable(kernel) -> str | None:
+    """补全提供者注册表必须可读，且生效项覆盖全部内置提供者。"""
+    if not kernel.has_service("completion_providers"):
+        return None
+    try:
+        from ..tui._completion_providers import builtin_provider_ids
+
+        service = kernel.resolve_service("completion_providers")
+        names = set(service.active())
+        missing = sorted(set(builtin_provider_ids()) - names)
+        if missing:
+            return f"ctx.completion_providers 缺少内置提供者: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"补全提供者注册表读取失败: {exc}"
+    return None
+
+
+def _status_segments_readable(kernel) -> str | None:
+    """状态栏段注册表必须可读，且生效项覆盖全部内置段。"""
+    if not kernel.has_service("status_segments"):
+        return None
+    try:
+        from ..tui.app._status_segments import builtin_segment_ids
+
+        service = kernel.resolve_service("status_segments")
+        names = set(service.active())
+        missing = sorted(set(builtin_segment_ids()) - names)
+        if missing:
+            return f"ctx.status_segments 缺少内置段: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"状态栏段注册表读取失败: {exc}"
+    return None
+
+
 def _kernel_admin_readable(kernel) -> str | None:
     """内核管理服务必须可读（运行时启停 / 诊断 / 热重载接入点齐全）。"""
     if not kernel.has_service("kernel_admin"):
@@ -601,6 +737,14 @@ _BUILTIN_CHECKS = (
     ("prompt.registry_readable", _prompt_registry_readable),
     ("clawbot.commands_readable", _clawbot_commands_readable),
     ("subcommands.readable", _subcommands_readable),
+    ("keybindings.readable", _keybindings_readable),
+    ("special_keys.readable", _special_keys_readable),
+    ("tool_styles.readable", _tool_styles_readable),
+    ("syntax.readable", _syntax_readable),
+    ("presentation_data.readable", _presentation_data_readable),
+    ("hosts.readable", _hosts_readable),
+    ("completion_providers.readable", _completion_providers_readable),
+    ("status_segments.readable", _status_segments_readable),
     ("kernel_admin.readable", _kernel_admin_readable),
     ("services.declared_provides", _declared_provides_present),
     ("singletons.kernel_source", _singletons_kernel_source),

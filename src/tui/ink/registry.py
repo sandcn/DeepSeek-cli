@@ -1,4 +1,4 @@
-"""host 组件注册表 — 允许应用注册自定义 host 标签。
+"""host 组件注册表 — 自定义 host 标签 + 内置 host 条目（一切皆插件）。
 
 布局与绘制泛化：应用可注册 ``(tag, measure_fn, paint_fn)``：
   - measure_fn(fiber, avail_w) -> (width, height)：测量容器/叶子尺寸。
@@ -6,6 +6,12 @@
 
 由 layout._measure / components._paint 在标准 host 标签（box/text/static/
 spacer/app）之外查询本注册表。
+
+「一切皆插件」：内置 host（``static-lines``）的 measure/paint 不再是
+``staticlines`` 模块导入期的一次性副作用，而是注册到本模块的规格表；由清单
+中的**独立插件条目**（``host``）显式注册，因而可被 Profile/Bundle 声明，也可
+被 Patch/Overlay 按 id 单独禁用或替换（`hosts` 聚合插件经 ``managed_hosts``
+抑制默认装配）。
 
 ★ P3（review）：注册表为全局可变对象，被 ``_measure``/``_paint`` 热路径查询
 ——运行期被任意模块 ``register_host`` 覆盖即静默改变渲染行为。现对「同 tag
@@ -15,12 +21,137 @@ spacer/app）之外查询本注册表。
 
 from __future__ import annotations
 
+import importlib
 import logging
-from typing import Callable
+import threading
+from typing import Callable, Dict, List, Optional, Tuple
 
 _logger = logging.getLogger(__name__)
 
-_REGISTRY: dict[str, tuple[Callable, Callable]] = {}
+_lock = threading.RLock()
+_ABSENT = object()
+
+#: (tag, measure 点分引用, paint 点分引用)
+_BUILTIN_SPECS: Tuple[Tuple[str, str, str], ...] = (
+    ("static-lines", "src.tui.ink.widgets.staticlines:_measure", "src.tui.ink.widgets.staticlines:_paint"),
+)
+
+_builtin_specs: Dict[str, Tuple[str, str]] = {
+    tag: (measure_ref, paint_ref) for tag, measure_ref, paint_ref in _BUILTIN_SPECS
+}
+
+#: 由清单条目注册/覆盖的内置 host（tag → (measure, paint)）
+_registered_builtin: Dict[str, Tuple[Callable, Callable]] = {}
+#: 由清单接管的内置 host tag（默认装配被抑制）
+_managed_builtin: set = set()
+#: 显式禁用的内置 host tag
+_disabled_builtin: set = set()
+#: 扩展 host（tag → (measure, paint)）
+_REGISTRY: Dict[str, Tuple[Callable, Callable]] = {}
+
+
+def _import_attr(dotted: str):
+    module_name, _, attr = dotted.partition(":")
+    return getattr(importlib.import_module(module_name), attr)
+
+
+def _normalize_ids(tags) -> List[str]:
+    if isinstance(tags, str):
+        tags = [tags]
+    selected: List[str] = []
+    for item in tags or ():
+        if item not in _builtin_specs:
+            raise KeyError(f"未知内置 host: {item!r}（可用: {list(_builtin_specs)}）")
+        selected.append(item)
+    return selected
+
+
+def builtin_host_ids() -> list[str]:
+    """全部内置 host tag（按声明顺序）。"""
+    return list(_builtin_specs)
+
+
+def default_host(tag: str) -> Tuple[Callable, Callable]:
+    try:
+        measure_ref, paint_ref = _builtin_specs[tag]
+    except KeyError:
+        raise KeyError(f"未知内置 host: {tag!r}（可用: {list(_builtin_specs)}）") from None
+    return (_import_attr(measure_ref), _import_attr(paint_ref))
+
+
+def active_hosts() -> Dict[str, Tuple[Callable, Callable]]:
+    """当前生效的内置 host（``tag → (measure, paint)``）。"""
+    with _lock:
+        result: Dict[str, Tuple[Callable, Callable]] = {}
+        for tag, refs in _builtin_specs.items():
+            if tag in _disabled_builtin:
+                continue
+            override = _registered_builtin.get(tag)
+            if override is not None:
+                result[tag] = override
+                continue
+            if tag in _managed_builtin:
+                continue
+            result[tag] = (_import_attr(refs[0]), _import_attr(refs[1]))
+        return result
+
+
+def register_builtin_host(tag: str, pair: Optional[Tuple[Callable, Callable]] = None) -> Callable[[], None]:
+    """注册/覆盖一个内置 host（``pair=None`` 用默认实现）；返回幂等撤销。"""
+    if tag not in _builtin_specs:
+        raise KeyError(f"未知内置 host: {tag!r}（可用: {list(_builtin_specs)}）")
+    with _lock:
+        previous = _registered_builtin.get(tag, _ABSENT)
+        _registered_builtin[tag] = pair if pair is not None else default_host(tag)
+
+    def _undo() -> None:
+        with _lock:
+            if previous is _ABSENT:
+                _registered_builtin.pop(tag, None)
+            else:
+                _registered_builtin[tag] = previous
+
+    return _undo
+
+
+def unregister_builtin_host(tag: str) -> bool:
+    with _lock:
+        return _registered_builtin.pop(tag, None) is not None
+
+
+def set_managed_builtin_hosts(ids) -> Callable[[], None]:
+    """声明这些内置 host tag 由清单条目负责（默认装配被抑制）；返回撤销。"""
+    selected = _normalize_ids(ids)
+    with _lock:
+        added = [item for item in selected if item not in _managed_builtin]
+        _managed_builtin.update(added)
+
+    def _undo() -> None:
+        with _lock:
+            for item in added:
+                _managed_builtin.discard(item)
+
+    return _undo
+
+
+def managed_host_ids() -> list[str]:
+    with _lock:
+        return sorted(_managed_builtin)
+
+
+def disable_builtin_hosts(ids) -> Callable[[], None]:
+    """禁用一个或多个内置 host（返回幂等撤销）。"""
+    selected = _normalize_ids(ids)
+    with _lock:
+        added = [item for item in selected if item not in _disabled_builtin]
+        _disabled_builtin.update(added)
+
+    def _undo() -> None:
+        with _lock:
+            for item in added:
+                _disabled_builtin.discard(item)
+
+    return _undo
 
 
 def register_host(tag: str, measure_fn: Callable, paint_fn: Callable) -> None:
@@ -31,24 +162,61 @@ def register_host(tag: str, measure_fn: Callable, paint_fn: Callable) -> None:
         measure_fn: ``(fiber, avail_w) -> (width, height)``。
         paint_fn: ``(fiber, canvas)``。
     """
-    existing = _REGISTRY.get(tag)
-    if existing is not None and existing != (measure_fn, paint_fn):
-        _logger.warning("register_host 覆盖已注册 host %s（实现不相同的重注册）", tag)
-    _REGISTRY[tag] = (measure_fn, paint_fn)
+    with _lock:
+        existing = _REGISTRY.get(tag)
+        if existing is not None and existing != (measure_fn, paint_fn):
+            _logger.warning("register_host 覆盖已注册 host %s（实现不相同的重注册）", tag)
+        _REGISTRY[tag] = (measure_fn, paint_fn)
 
 
 def unregister_host(tag: str) -> None:
     """注销自定义 host（测试用）。"""
-    _REGISTRY.pop(tag, None)
+    with _lock:
+        _REGISTRY.pop(tag, None)
 
 
-def get_host(tag: str) -> tuple[Callable, Callable] | None:
-    """查询自定义 host 组件。"""
-    return _REGISTRY.get(tag)
+def get_host(tag: str) -> Optional[Tuple[Callable, Callable]]:
+    """查询 host 组件（扩展优先 → 生效内置；无匹配返回 None）。"""
+    with _lock:
+        host = _REGISTRY.get(tag)
+        if host is not None:
+            return host
+    return active_hosts().get(tag)
 
 
 def has_host(tag: str) -> bool:
-    return tag in _REGISTRY
+    return get_host(tag) is not None
 
 
-__all__ = ["register_host", "unregister_host", "get_host", "has_host"]
+def clear() -> None:
+    """清空扩展项与清单注册（测试用；不影响内置默认与禁用状态）。"""
+    with _lock:
+        _REGISTRY.clear()
+        _registered_builtin.clear()
+
+
+def reset() -> None:
+    """重置全部状态到「无清单、无禁用、全部默认」（测试隔离用）。"""
+    with _lock:
+        _REGISTRY.clear()
+        _registered_builtin.clear()
+        _managed_builtin.clear()
+        _disabled_builtin.clear()
+
+
+__all__ = [
+    "builtin_host_ids",
+    "default_host",
+    "active_hosts",
+    "register_builtin_host",
+    "unregister_builtin_host",
+    "set_managed_builtin_hosts",
+    "managed_host_ids",
+    "disable_builtin_hosts",
+    "register_host",
+    "unregister_host",
+    "get_host",
+    "has_host",
+    "clear",
+    "reset",
+]

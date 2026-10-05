@@ -72,6 +72,15 @@ _SINGLE_DECL_PLUGINS = {
     "skill_source": "id",
     "session_projection": "name",
     "renderer_target": "id",
+    "keybinding": "id",
+    "special_key": "id",
+    "tool_style": "id",
+    "syntax_language": "id",
+    "presentation_data": "id",
+    "presentation_data_table": "id",
+    "host": "id",
+    "completion_provider": "id",
+    "status_segment": "id",
 }
 
 #: 单条目声明插件名 → 汇入的托管分组
@@ -101,6 +110,15 @@ _MANAGED_GROUP = {
     "skill_source": "managed_skill_sources",
     "session_projection": "managed_session_projections",
     "renderer_target": "managed_render_targets",
+    "keybinding": "managed_keybindings",
+    "special_key": "managed_special_keys",
+    "tool_style": "managed_tool_styles",
+    "syntax_language": "managed_syntax_languages",
+    "presentation_data": "managed_presentation_data",
+    "presentation_data_table": "managed_presentation_data",
+    "host": "managed_hosts",
+    "completion_provider": "managed_completion_providers",
+    "status_segment": "managed_status_segments",
 }
 
 #: 只统计「启用」条目的托管分组（命令沿用旧语义；工具/渲染/中间件把禁用项也
@@ -132,6 +150,14 @@ _AGGREGATE_MANAGED_KEYS = {
     "prompt": ("managed_prompt_modes", "managed_prompt_sources"),
     "clawbot": ("managed_clawbot_commands",),
     "app": ("managed_subcommands",),
+    "keybindings": ("managed_keybindings",),
+    "special_keys": ("managed_special_keys",),
+    "tool_styles": ("managed_tool_styles",),
+    "syntax": ("managed_syntax_languages",),
+    "presentation_data": ("managed_presentation_data",),
+    "hosts": ("managed_hosts",),
+    "completion_providers": ("managed_completion_providers",),
+    "status_segments": ("managed_status_segments",),
 }
 
 

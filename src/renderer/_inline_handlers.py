@@ -10,6 +10,7 @@ from rich.text import Text
 from rich.style import Style
 
 from ._inline_preprocess import _preprocess_text
+from src.presentation_data import LiveMapping, circled_digits
 
 
 # ── 模块级调度器辅助函数（避免 lambda 闭包问题） ──────────
@@ -59,31 +60,11 @@ def _abbr_node_handler(self, n, ctx, d):
 
 # ── 上下标 Unicode 渲染辅助函数 ──────────────────────────
 
-_SUB_SCRIPT_MAP = {
-    '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄',
-    '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉',
-    'a': 'ₐ', 'e': 'ₑ', 'h': 'ₕ', 'i': 'ᵢ', 'j': 'ⱼ',
-    'k': 'ₖ', 'l': 'ₗ', 'm': 'ₘ', 'n': 'ₙ', 'o': 'ₒ',
-    'p': 'ₚ', 'r': 'ᵣ', 's': 'ₛ', 't': 'ₜ', 'u': 'ᵤ',
-    'v': 'ᵥ', 'x': 'ₓ',
-    '+': '₊', '-': '₋', '(': '₍', ')': '₎',
-}
+_SUB_SCRIPT_MAP = LiveMapping("inline_subscript")
 
-_SUPER_SCRIPT_MAP = {
-    '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
-    '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
-    '+': '⁺', '-': '⁻', '(': '⁽', ')': '⁾',
-    'a': 'ᵃ', 'b': 'ᵇ', 'c': 'ᶜ', 'd': 'ᵈ', 'e': 'ᵉ',
-    'f': 'ᶠ', 'g': 'ᵍ', 'h': 'ʰ', 'i': 'ⁱ', 'j': 'ʲ',
-    'k': 'ᵏ', 'l': 'ˡ', 'm': 'ᵐ', 'n': 'ⁿ', 'o': 'ᵒ',
-    'p': 'ᵖ', 'r': 'ʳ', 's': 'ˢ', 't': 'ᵗ', 'u': 'ᵘ',
-    'v': 'ᵛ', 'w': 'ʷ', 'x': 'ˣ', 'y': 'ʸ', 'z': 'ᶻ',
-}
+_SUPER_SCRIPT_MAP = LiveMapping("inline_superscript")
 
-_CIRCLED_DIGITS = [
-    '①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩',
-    '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱', '⑲', '⑳',
-]
+_CIRCLED_DIGITS = LiveMapping("circled_digits")
 
 
 def _render_subscript_node(self, node, ctx, depth) -> Text:
@@ -253,7 +234,8 @@ def _link_node_handler(self, n, ctx, depth):
             # ── 圈数字编号（基于 ref_map 插入顺序） ────────────
             ref_keys = list(ctx.ref_map.keys())
             ref_idx = ref_keys.index(ref_id) + 1  # 1-based
-            circled = _CIRCLED_DIGITS[ref_idx - 1] if ref_idx <= 20 else f"[{ref_idx}]"
+            digits = circled_digits()
+            circled = digits[ref_idx - 1] if ref_idx <= len(digits) else f"[{ref_idx}]"
             result.append(f" {circled}", style=Style(dim=True, color="bright_black"))
             # ── URL 行尾悬停提示 ──────────────────────────────
             result.append(f" ({actual_url})", style=Style(dim=True, color="bright_black"))

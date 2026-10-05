@@ -96,21 +96,18 @@ _rows_index_cache: dict = {}  # id(rows) → (rows_ref, (sep_nums, rec_to_row, r
 
 # ── 台账渲染（实现位于 trace_ledger，此处 re-import） ──────
 from .trace_ledger import (  # noqa: E402
-    _KIND_FG,
-    _KIND_ICON,
-    _KIND_NAME,
     _LEDGER_RUNS_CACHE,
     _LEDGER_RUNS_CACHE_MAX,
     _SEP_RUNS_CACHE,
-    _STATUS_FG,
-    _STATUS_ICON,
     _kind_fg,
+    _kind_name,
     _ledger_row_runs,
     _rec_time_seconds,
     _record_search_text,
     _row_search_text,
     _sep_row_runs,
     _status_fg,
+    _status_icon,
     _trace_search_matches,
     _viewport_rows,
 )
@@ -741,10 +738,10 @@ def _inspector_children(
         })]
     children: list = []
     kind = getattr(rec, "kind", "context")
-    title = f"#{getattr(rec, 'index', 0)} {_KIND_NAME.get(kind, kind)}"
+    title = f"#{getattr(rec, 'index', 0)} {_kind_name(kind)}"
     status = getattr(rec, "status", "") or ""
     if status:
-        sicon = _STATUS_ICON.get(status, "\u00b7")
+        sicon = _status_icon(status)
         title = f"{title} {sicon} {status}"
     children.append(h(TEXT, {
         "children": title, "style": _S_TITLE, "height": 1, "key": "tinsp-title",

@@ -26,7 +26,6 @@ React Ink 标准组件：渲染静态行列表（``lines: list[Line]``）。对�
 from __future__ import annotations
 
 from ..element import h
-from ..registry import register_host
 
 __all__ = ["StaticLines"]
 
@@ -163,6 +162,6 @@ def StaticLines(props: dict):
     return h("static-lines", props)
 
 
-# 模块导入时注册 host（组件库 import 即可用；幂等）
-register_host("static-lines", _measure, _paint)
+# host 注册迁移到清单条目（src.plugins.host_entries）——``static-lines`` 的
+# measure/paint 由注册表内置规格声明，见 src.tui.ink.registry。
 

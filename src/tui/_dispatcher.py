@@ -326,8 +326,8 @@ class EventDispatcher:
         """subagent 提词 → markdown 消息区块（事件投递，替代 core 直渲）。"""
         if not event.prompt:
             return
-        from src.tui._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
-        abbr = _AGENT_TYPE_ABBREV.get(event.agent_type, "??")
+        from src.tui._tool_styles import agent_type_abbrev as _agent_type_abbrev
+        abbr = _agent_type_abbrev(event.agent_type) or "??"
         md = f"### {event.index}. [{abbr}] {event.description}\n{event.prompt}"
         self._push_cmd(SubagentMarkdownCmd(text=md))
 
@@ -335,8 +335,8 @@ class EventDispatcher:
         """subagent 返回 → markdown 消息区块（事件投递，替代 core 直渲）。"""
         if not event.result and not event.error:
             return
-        from src.tui._tool_icons import AGENT_TYPE_ABBREV as _AGENT_TYPE_ABBREV
-        abbr = _AGENT_TYPE_ABBREV.get(event.agent_type, "??")
+        from src.tui._tool_styles import agent_type_abbrev as _agent_type_abbrev
+        abbr = _agent_type_abbrev(event.agent_type) or "??"
         parts = [f"### {event.index}. [{abbr}] {event.description}"]
         if event.error:
             parts.append(f"\n> 错误: {event.error}\n")

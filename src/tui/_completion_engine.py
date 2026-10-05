@@ -19,6 +19,7 @@ import threading
 import time
 import glob as _glob_module
 import logging
+from dataclasses import dataclass
 from typing import Callable, TypeVar
 
 T = TypeVar("T")
@@ -196,6 +197,30 @@ _THEME_ADAPTER = None
 _THEME_ADAPTER_LOCK = threading.Lock()
 
 
+@dataclass
+class CompletionContext:
+    """补全分发的上下文（文本 / 词列表 / 当前词）。"""
+
+    text: str
+    words: list
+    last_word: str
+
+
+# ── 内置补全提供者实现（清单条目经点分引用解析到这些函数） ──────
+
+
+def _command_provider(engine: "CompletionEngine", ctx: CompletionContext) -> list:
+    return engine._complete_command(ctx.last_word)
+
+
+def _param_provider(engine: "CompletionEngine", ctx: CompletionContext) -> list:
+    return engine._complete_param(ctx.text)
+
+
+def _path_provider(engine: "CompletionEngine", ctx: CompletionContext) -> list:
+    return engine._complete_path(ctx.last_word)
+
+
 class CompletionEngine:
     """终端补全引擎：/ 开头补全命令，否则补全文件路径。
 
@@ -306,38 +331,64 @@ class CompletionEngine:
         # 一致，且兼容制表符）。与 _complete_param 的空白切分口径统一。
         words = re.split(r"\s+", text)
         last_word = words[-1] if words else ""
+        return self._dispatch(CompletionContext(text=text, words=words, last_word=last_word))
 
-        if last_word.startswith("/") and text.startswith("/"):
+    def _dispatch(self, ctx: "CompletionContext") -> list[CompletionItem]:
+        """按启用的补全提供者分发（「一切皆插件」——每个提供者一个清单条目）。
+
+        分发语义与旧内联分支等价：
+          - 行首 ``/`` 词：命令补全（精确匹配已完成命令 → 尝试参数补全）；
+            命令无结果 → 参数补全 → 绝对路径词回退路径补全；
+          - 行首 ``/`` 但当前词非 ``/``：参数补全；
+          - 非行首 ``/`` 词：绝对路径补全；
+          - 其余：路径补全。
+
+        提供者被 Patch/Overlay 禁用即从 ``active_provider_ids`` 缺席，对应
+        分支跳过（返回空）。
+        """
+        from ._completion_providers import active_provider_ids
+
+        active = set(active_provider_ids())
+        last_word = ctx.last_word
+        if "command" in active and last_word.startswith("/") and ctx.text.startswith("/"):
             # ── 命令补全（行首命令 + / 开头的词） ──
-            items = self._complete_command(last_word)
+            items = self._call_provider("command", ctx)
             if items:
                 # 精确匹配已完成命令 → 跳过命令补全，尝试参数补全
-                if len(items) == 1 and items[0].text == last_word:
-                    param_items = self._complete_param(text)
+                if len(items) == 1 and items[0].text == last_word and "param" in active:
+                    param_items = self._call_provider("param", ctx)
                     if param_items:
                         return param_items
                 return items
             # ★ P3（review）：命令补全无结果时，若词形为**绝对路径**（含
-            #   ``os.sep`` 且非单个 "/"）→ 回退路径补全——修复前一律走参数
-            #   补全（``/tmp/fo`` 这类行首绝对路径拿不到路径补全）。
-            param_items = self._complete_param(text)
-            if param_items:
-                return param_items
-            if os.sep in last_word[1:] or last_word.endswith(os.sep):
-                return self._complete_path(last_word)
+            #   ``os.sep`` 且非单个 "/"）→ 回退路径补全。
+            if "param" in active:
+                param_items = self._call_provider("param", ctx)
+                if param_items:
+                    return param_items
+            if "path" in active and (os.sep in last_word[1:] or last_word.endswith(os.sep)):
+                return self._call_provider("path", ctx)
             return []
-        elif text.startswith("/"):
+        elif "param" in active and ctx.text.startswith("/"):
             # /xxx yyy → 参数补全（行首命令 + 非 / 词）
-            return self._complete_param(text)
-        elif last_word.startswith("/"):
+            return self._call_provider("param", ctx)
+        elif "path" in active and last_word.startswith("/"):
             # ★ 绝对路径补全修复：普通命令后的 / 开头的词（如 ``cd /tmp/fo``、
-            #   ``ls /usr/``）是绝对路径——修复前落入 ``_complete_command``
-            #   （命令注册表无匹配返回 []）→ ``_complete_param``（cd 非参数
-            #   命令返回 []）→ 永远走不到路径补全，Tab 还会插入制表符。
-            return self._complete_path(last_word)
-        else:
+            #   ``ls /usr/``）是绝对路径。
+            return self._call_provider("path", ctx)
+        elif "path" in active:
             # ── 路径补全 ──
-            return self._complete_path(last_word)
+            return self._call_provider("path", ctx)
+        return []
+
+    def _call_provider(self, pid: str, ctx: "CompletionContext") -> list[CompletionItem]:
+        """调用某提供者的实现（注册表解析；缺席返回空）。"""
+        from ._completion_providers import resolve_provider
+
+        fn = resolve_provider(pid)
+        if fn is None:
+            return []
+        return fn(self, ctx)
 
     # ── 命令补全 ───────────────────────────────────────
 

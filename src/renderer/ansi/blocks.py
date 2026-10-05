@@ -9,6 +9,7 @@ from __future__ import annotations
 from .style import Style
 from .helpers import AnsiLine
 from .inline import render_inline
+from src.presentation_data import LiveMapping
 
 # ── 块级样式常量 ──────────────────────────────────────────
 _HEADING_STYLES: list[Style] = [
@@ -43,8 +44,8 @@ _ADMONITION_COLORS: dict[str, Style] = {
     "DANGER": Style(fg=196, bold=True),
 }
 
-# 无序列表项目符号（按深度）
-_BULLETS = ["\u2022", "\u25e6", "\u25aa"]
+# 无序列表项目符号（按深度；真源 == 表现层数据注册表 bullet 表）
+_BULLETS = LiveMapping("bullet")
 
 # ── 标题 ─────────────────────────────────────────────
 

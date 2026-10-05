@@ -77,9 +77,8 @@ def _category_style(tool_name: str) -> Style:
     Returns:
         类别 Style（frozen 对象，可复用）。
     """
-    from src.tui._tool_icons import TOOL_CATEGORY_MAP, TOOL_CATEGORY_STYLES
-    cat = TOOL_CATEGORY_MAP.get(tool_name, "")
-    return TOOL_CATEGORY_STYLES.get(cat, _CATEGORY_DEFAULT_STYLE)
+    from src.tui._tool_styles import tool_style
+    return tool_style(tool_name) or _CATEGORY_DEFAULT_STYLE
 
 
 def _category_breath_fg(tool_name: str) -> int:
@@ -92,8 +91,8 @@ def _category_breath_fg(tool_name: str) -> int:
         [lo, hi] 区间内的 256 色号（与 detail 呼吸同周期，视觉联动）。
     """
     from src.tui.app._theme import time_glow
-    from src.tui._tool_icons import TOOL_CATEGORY_MAP
-    cat = TOOL_CATEGORY_MAP.get(tool_name, "")
+    from src.tui._tool_styles import tool_category
+    cat = tool_category(tool_name)
     lo, hi = _CATEGORY_BREATH.get(cat, _CATEGORY_DEFAULT_BREATH)
     return time_glow(lo, hi, 12.0)
 

@@ -29,21 +29,13 @@ from .trace_styles import (
     _S_TIME,
 )
 
-_KIND_ICON = {
-    "tools": "\U0001F9F0", "system": "\u2699", "user": "\U0001F464",
-    "reasoning": "\U0001F4AD", "content": "\U0001F4AC", "tool": "\u26A1",
-    "subagent": "\U0001F916", "context": "\U0001F4C4",
-}
-_KIND_NAME = {
-    "tools": "工具列表", "system": "系统", "user": "用户", "reasoning": "思考",
-    "content": "回答", "tool": "工具", "subagent": "子代理", "context": "上下文",
-}
-_KIND_FG = {
-    "tools": 214, "system": 110, "user": 39, "reasoning": 242, "content": 45,
-    "tool": 214, "subagent": 75, "context": 110,
-}
-_STATUS_ICON = {"running": "\u25cf", "done": "\u2714", "fail": "\u2716", "error": "\u2716"}
-_STATUS_FG = {"running": 208, "done": 41, "fail": 196, "error": 196}
+from src.presentation_data import (
+    trace_kind_fg as _trace_kind_fg,
+    trace_kind_icon as _trace_kind_icon,
+    trace_kind_name as _trace_kind_name,
+    trace_status_fg as _trace_status_fg,
+    trace_status_icon as _trace_status_icon,
+)
 
 #: 台账可见行数预留（全屏模式仅轨迹头 1 行）
 _VIEWPORT_RESERVED = 1
@@ -63,12 +55,27 @@ def _viewport_rows() -> int:
         return 16
 
 
+def _kind_icon(kind: str) -> str:
+    """记录种类 → 图标（表现层数据注册表；未知回退 ``·``）。"""
+    return _trace_kind_icon(kind)
+
+
+def _kind_name(kind: str) -> str:
+    """记录种类 → 显示名（表现层数据注册表；未知回退种类名）。"""
+    return _trace_kind_name(kind)
+
+
+def _status_icon(status: str) -> str:
+    """记录状态 → 图标（表现层数据注册表；未知回退 ``·``）。"""
+    return _trace_status_icon(status)
+
+
 def _kind_fg(kind: str) -> int:
-    return _KIND_FG.get(kind, 242)
+    return _trace_kind_fg(kind)
 
 
 def _status_fg(status: str) -> int:
-    return _STATUS_FG.get(status, 242)
+    return _trace_status_fg(status)
 
 
 def _rec_time_seconds(rec) -> float | None:
@@ -177,11 +184,11 @@ def _ledger_row_runs(rec, sel: bool, left_w: int,
         runs.append(StyledRun("  ", None))
     runs.append(StyledRun(f"#{rec.index:>2} ", _S_INDEX))
     kind = getattr(rec, "kind", "context")
-    icon = _KIND_ICON.get(kind, "\u00b7")
+    icon = _kind_icon(kind)
     runs.append(StyledRun(f"{icon} ", Style(fg=_kind_fg(kind))))
     status = getattr(rec, "status", "") or ""
     if status:
-        sicon = _STATUS_ICON.get(status, "\u00b7")
+        sicon = _status_icon(status)
         runs.append(StyledRun(f"{sicon} ", Style(fg=_status_fg(status))))
     summary = getattr(rec, "summary", "") or "(空)"
     runs.append(StyledRun(summary, _S_DIM if kind == "reasoning" else _S_TEXT))
@@ -233,9 +240,9 @@ def _sep_row_runs(n: int, left_w: int) -> list:
 
 
 __all__ = [
-    "_KIND_ICON", "_KIND_NAME", "_KIND_FG", "_STATUS_ICON", "_STATUS_FG",
     "_LEDGER_RUNS_CACHE", "_LEDGER_RUNS_CACHE_MAX", "_SEP_RUNS_CACHE",
     "_VIEWPORT_RESERVED", "_viewport_rows", "_kind_fg", "_status_fg",
+    "_kind_icon", "_kind_name", "_status_icon",
     "_rec_time_seconds", "_record_search_text", "_row_search_text",
     "_trace_search_matches", "_ledger_row_runs", "_sep_row_runs",
 ]

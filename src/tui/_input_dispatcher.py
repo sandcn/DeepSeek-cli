@@ -238,61 +238,59 @@ class InputDispatcher:
                 )
 
     def _handle_ctrl_key(self, ch: str) -> None:
-        """Ctrl 组合键统一分发（Claude TUI parity 步骤 3）。
+        """Ctrl 组合键统一分发（键位绑定注册表驱动，「一切皆插件」）。
 
-        直接控制字符路径与 CSI u 转义路径共用（避免两处分支漂移）：
-          - Ctrl+G/O → vim / editmsg（既有）
+        直接控制字符路径与 CSI u 转义路径共用（避免两处分支漂移）。键位绑定
+        由 ``src.tui._keybindings`` 注册表解析——每个绑定一个清单条目，可被
+        Patch/Overlay 禁用 / 改键 / 换 action：
+
+          - Ctrl+G/O → vim / editmsg
+          - Ctrl+H → 轨迹视图开关（未注入回调时回退 backspace）
           - Ctrl+R → 反向历史搜索（配置门控）或 retry（重生成上一轮）
-          - Ctrl+N → switch_model（保留）
           - Ctrl+L → 清屏（非流式时；未注入回调跳过）
           - Ctrl+D → EOF（空缓冲提交 exit；非空 no-op 防误退）
           - Ctrl+T → 主题切换
-          - P2-5：Ctrl+E（\x05）由 _decode_control_char 映射为 end 事件
-            （readline 行尾），本分支不可达（不再有 no-op 兜底）。
+          - Ctrl+N → switch_model
+          - Ctrl+P → 历史上一条（readline previous-history）
+          - Ctrl+B → 主 agent 运行模式循环切换（空→简单→标准）
+          - 未知 ctrl_key → no-op
         """
-        if ch == '\x07':          # Ctrl+G → vim
-            self._handle_special_key('vim')
-        elif ch == '\x0f':        # Ctrl+O → /editmsg
-            self._handle_special_key('editmsg')
-        elif ch == '\x08':        # Ctrl+H → 轨迹视图开关（2026-08-19）
-            # ★ 字节语义：0x08（BS）在现代终端为 Ctrl+H；Backspace 键发送
-            #   0x7f（DEL，_decode_control_char 已改判 backspace）。未注入
-            #   轨迹回调时回退 backspace（0x08 传统 BS 语义兼容——仅发送
-            #   ^H 而非 DEL 的旧式终端退格仍可用）。
+        from ._keybindings import resolve_binding
+
+        action = resolve_binding(ch)
+        if action is None:
+            return
+        self._dispatch_ctrl_action(action)
+
+    def _dispatch_ctrl_action(self, action: str) -> None:
+        """按键位绑定解析出的 action 分发（具体步骤，供注册表驱动调用）。"""
+        if action == "ctrl_r":
+            # Ctrl+R：反向历史搜索（配置门控，默认 False）与 retry 互斥。
+            if self._reverse_search_enabled:
+                self._handle_reverse_search()
+            else:
+                self._handle_special_key("retry")
+        elif action == "trace_toggle":
+            # Ctrl+H → 轨迹视图开关（2026-08-19）。未注入轨迹回调时
+            # ``_handle_trace_toggle`` 回退 backspace（0x08 传统 BS 语义）。
             self._handle_trace_toggle()
-        elif ch == '\x12' and self._reverse_search_enabled:
-            # 方向D 步骤14：Ctrl+R 反向历史搜索（配置门控，默认 False）
-            self._handle_reverse_search()
-        elif ch == '\x0c':        # Ctrl+L → 清屏（流式保护：生成中忽略）
+        elif action == "clear_screen":
+            # Ctrl+L → 清屏（流式保护：生成中忽略）
             if not self._is_active_status():
                 self._handle_clear_screen()
-        elif ch == '\x04':        # Ctrl+D → EOF
+        elif action == "ctrl_d":
+            # Ctrl+D → EOF
             self._handle_ctrl_d()
-        elif ch == '\x14':        # Ctrl+T → 主题切换
-            self._handle_special_key('toggle_theme')
-        elif ch == '\x12':        # Ctrl+R → 重新生成上一轮（Claude parity 3.4）
-            # ★ review 方向（门控语义明确）：本分支仅在
-            # ``reverse_search_enabled=False`` 时可达——elif 链中上一分支
-            # ``ch == '\x12' and self._reverse_search_enabled`` 已拦截反向
-            # 搜索；两分支互斥，不存在"同时触发"路径。
-            self._handle_special_key('retry')
-        elif ch == '\x0e':        # Ctrl+N → 切换模型（保留）
-            self._handle_special_key('switch_model')
-        elif ch == '\x10':        # Ctrl+P → 历史上一条（readline previous-history，
-            # 直接调 _up（与 ↑ 语义一致但**不经过补全导航**——补全弹窗可见时
-            # ↑ 移动高亮，Ctrl+P 恒为历史浏览，readline 用户习惯）。
-            # 与 Ctrl+N（switch_model）非对称——Ctrl+N 已占用，Ctrl+P 独立提供
-            # 历史回退（readline 前向键由 ↓ 承担）。
-            # 防御：反向搜索激活时先退出搜索（Ctrl+P 不与搜索状态叠加——
-            # 搜索模式查询/匹配被历史浏览干扰时状态错乱）。
+        elif action == "history_prev":
+            # Ctrl+P → 历史上一条（不经补全导航）；反向搜索激活时先退出搜索。
             if self._buffer_editor.is_search_active():
                 self._buffer_editor.search_exit(apply=False)
                 self._sync_reverse_search()
             else:
                 self._buffer_editor._up()
-        elif ch == '\x02':        # Ctrl+B → 主 agent 运行模式循环切换（空→简单→标准）
-            self._handle_special_key('cycle_mode')
-        # else：未知 ctrl_key → no-op
+        else:
+            # vim / editmsg / toggle_theme / switch_model / cycle_mode
+            self._handle_special_key(action)
 
     def _handle_clear_screen(self) -> None:
         """Ctrl+L 清屏：调用注入的 clear_screen 回调（未注入记 debug 跳过）。"""

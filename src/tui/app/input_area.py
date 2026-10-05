@@ -102,6 +102,7 @@ from src.tui.ink import h, TEXT, Column, Line, use_memo, use_ref
 from src.tui.ink.widgets.interactive import SelectInput
 from src.tui.app import _fx
 from src.tui.app._theme import sep_line as _theme_sep_line, time_glow, _S_ACCENT, _S_DIM, _S_TEXT, _S_TIME
+from src.presentation_data import LiveMapping
 
 # 占位符
 _PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 · Tab 补全"
@@ -132,18 +133,14 @@ _MODE_STANDARD_TEXT = "标准模式"
 _S_MODE_EMPTY = Style(fg=178)
 #: 简单模式文本强调色（亮青 45——介于空/标准之间，与 accent 同色系）
 _S_MODE_SIMPLE = Style(fg=45)
-#: 模式 → 显示文本（三态：empty / simple / standard）
-_MODE_TEXTS = {
-    "empty": _MODE_EMPTY_TEXT,
-    "simple": _MODE_SIMPLE_TEXT,
-    "standard": _MODE_STANDARD_TEXT,
-}
-#: 模式 → 文本样式（empty 金色 / simple 亮青 / standard 暗灰）
-_MODE_STYLES = {
-    "empty": _S_MODE_EMPTY,
-    "simple": _S_MODE_SIMPLE,
-    "standard": _S_DIM,
-}
+#: 模式 → 显示文本（实时视图；真源 == 表现层数据注册表 mode_text 表）
+_MODE_TEXTS: dict = LiveMapping("mode_text")
+#: 模式 → 文本样式（empty 金色 / simple 亮青 / standard 暗灰；实时取注册表）
+
+
+def _mode_style(mode_key: str) -> Style:
+    from src.presentation_data import mode_style_fg
+    return Style(fg=mode_style_fg(mode_key))
 
 
 def _normalize_mode(mode) -> str:
@@ -249,7 +246,7 @@ def _build_mode_line(width: int, mode,
     """
     mode_key = _normalize_mode(mode)
     text = _mode_text(mode_key)
-    style = _MODE_STYLES[mode_key]
+    style = _mode_style(mode_key)
     line = Line()
     # 行首信息前缀（main · N% · bash · N · subagent · N；全部不可用为空）
     prefix = _build_bg_task_prefix(ctx_percent, bash_count, subagent_count)

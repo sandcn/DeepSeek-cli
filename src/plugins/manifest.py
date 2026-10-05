@@ -412,6 +412,159 @@ SUBCOMMAND_ENTRIES = [
      "config": {"name": "clawbot"}},
 ]
 
+# ── 键位绑定条目（每个内置 Ctrl 绑定一个独立插件条目） ──────
+#
+# 条目经 ``src.plugins.keybinding_entries`` 把 ``config.id`` 指向的内置绑定
+# 注册进 ``src.tui._keybindings`` 注册表；``config.id`` 供组合根收集「清单已
+# 接管的绑定」（注入 keybindings 聚合插件，抑制默认装配，使 overlay 禁用单项
+# 真正生效）。
+
+KEYBINDING_ENTRIES = [
+    {"id": "keybinding_ctrl_g", "plugin": "src.plugins.keybinding_entries:apply_keybinding",
+     "config": {"id": "ctrl_g"}},
+    {"id": "keybinding_ctrl_o", "plugin": "src.plugins.keybinding_entries:apply_keybinding",
+     "config": {"id": "ctrl_o"}},
+    {"id": "keybinding_ctrl_h", "plugin": "src.plugins.keybinding_entries:apply_keybinding",
+     "config": {"id": "ctrl_h"}},
+    {"id": "keybinding_ctrl_r", "plugin": "src.plugins.keybinding_entries:apply_keybinding",
+     "config": {"id": "ctrl_r"}},
+    {"id": "keybinding_ctrl_l", "plugin": "src.plugins.keybinding_entries:apply_keybinding",
+     "config": {"id": "ctrl_l"}},
+    {"id": "keybinding_ctrl_d", "plugin": "src.plugins.keybinding_entries:apply_keybinding",
+     "config": {"id": "ctrl_d"}},
+    {"id": "keybinding_ctrl_t", "plugin": "src.plugins.keybinding_entries:apply_keybinding",
+     "config": {"id": "ctrl_t"}},
+    {"id": "keybinding_ctrl_n", "plugin": "src.plugins.keybinding_entries:apply_keybinding",
+     "config": {"id": "ctrl_n"}},
+    {"id": "keybinding_ctrl_p", "plugin": "src.plugins.keybinding_entries:apply_keybinding",
+     "config": {"id": "ctrl_p"}},
+    {"id": "keybinding_ctrl_b", "plugin": "src.plugins.keybinding_entries:apply_keybinding",
+     "config": {"id": "ctrl_b"}},
+]
+
+# ── 特殊键处理器条目（每个内置 action 一个独立插件条目） ──────
+#
+# 条目经 ``src.plugins.special_key_entries`` 把 ``config.id`` 指向的内置处理器
+# 注册进 ``src.app_loop._special_handlers`` 注册表；``config.id`` 供组合根收集
+# 「清单已接管的处理器」（注入 special_keys 聚合插件，抑制默认装配）。
+
+SPECIAL_KEY_ENTRIES = [
+    {"id": "special_key_vim", "plugin": "src.plugins.special_key_entries:apply_special_key",
+     "config": {"id": "vim"}},
+    {"id": "special_key_editmsg", "plugin": "src.plugins.special_key_entries:apply_special_key",
+     "config": {"id": "editmsg"}},
+    {"id": "special_key_retry", "plugin": "src.plugins.special_key_entries:apply_special_key",
+     "config": {"id": "retry"}},
+    {"id": "special_key_toggle_theme", "plugin": "src.plugins.special_key_entries:apply_special_key",
+     "config": {"id": "toggle_theme"}},
+    {"id": "special_key_switch_model", "plugin": "src.plugins.special_key_entries:apply_special_key",
+     "config": {"id": "switch_model"}},
+    {"id": "special_key_cycle_mode", "plugin": "src.plugins.special_key_entries:apply_special_key",
+     "config": {"id": "cycle_mode"}},
+]
+
+# ── 工具表现条目（每个工具 / 类别 / Agent 类型一个独立插件条目） ──
+#
+# 条目经 ``src.plugins.tool_style_entries`` 把 ``config.id`` 指向的内置表现注册
+# 进 ``src.tui._tool_styles`` 注册表；``config.id`` 供组合根收集「清单已接管的
+# 表现」（注入 tool_styles 聚合插件，抑制默认装配，使 overlay 覆盖/禁用单项真正
+# 生效）。
+
+_TOOL_STYLE_IDS = (
+    "tool_bash", "tool_execute_command", "tool_read_file", "tool_write_file",
+    "tool_update_file", "tool_str_replace_editor", "tool_file_editor",
+    "tool_subagent", "tool_subagent_opt", "tool_user_select",
+    "tool_web_search", "tool_web_fetch", "tool_rm", "tool_grep", "tool_find", "tool_glob",
+    "cat_shell", "cat_file_read", "cat_file_write", "cat_search",
+    "cat_agent", "cat_interact", "cat_delete",
+    "agent_map", "agent_review", "agent_plan", "agent_execute",
+)
+
+TOOL_STYLE_ENTRIES = [
+    {"id": f"tool_style_{spec_id}",
+     "plugin": "src.plugins.tool_style_entries:apply_tool_style",
+     "config": {"id": spec_id}}
+    for spec_id in _TOOL_STYLE_IDS
+]
+
+# ── 语法高亮语言条目（每个内置语言一个独立插件条目） ──────────
+#
+# 条目经 ``src.plugins.syntax_entries`` 把 ``config.id`` 指向的内置语言注册进
+# ``src.tui.ink.widgets._syntax_registry`` 注册表；``config.id`` 供组合根收集
+# 「清单已接管的语言」（注入 syntax 聚合插件，抑制默认装配）。
+
+SYNTAX_LANGUAGE_ENTRIES = [
+    {"id": f"syntax_language_{lang_id}",
+     "plugin": "src.plugins.syntax_entries:apply_syntax_language",
+     "config": {"id": lang_id}}
+    for lang_id in (
+        "python", "javascript", "typescript", "go", "rust", "java", "c", "cpp",
+        "ruby", "shell", "sql", "yaml", "json", "css", "html",
+    )
+]
+
+# ── 表现层数据条目（每张数据表一个独立插件条目） ──────────────
+#
+# 条目经 ``src.plugins.presentation_data_entries`` 把 ``config.id`` 指向的内置表
+# 注册进 ``src.presentation_data`` 注册表；``config.id`` 供组合根收集「清单已
+# 接管的数据表」（注入 presentation_data 聚合插件，抑制默认装配）。
+
+PRESENTATION_DATA_ENTRIES = [
+    {"id": f"presentation_data_{table_id}",
+     "plugin": "src.plugins.presentation_data_entries:apply_presentation_data",
+     "config": {"id": table_id}}
+    for table_id in (
+        "emoji", "inline_subscript", "inline_superscript", "circled_digits",
+        "html_tag_color", "bullet", "trace_kind", "trace_status",
+        "mode_text", "mode_style",
+    )
+]
+
+# ── host 组件条目（每个内置 host 一个独立插件条目） ───────────
+#
+# 条目经 ``src.plugins.host_entries`` 把 ``config.id`` 指向的内置 host 注册进
+# ``src.tui.ink.registry`` 注册表；``config.id`` 供组合根收集「清单已接管的
+# host」（注入 hosts 聚合插件，抑制默认装配）。
+
+HOST_ENTRIES = [
+    {"id": "host_static_lines", "plugin": "src.plugins.host_entries:apply_host",
+     "config": {"id": "static-lines"}},
+]
+
+# ── 补全提供者条目（每个内置提供者一个独立插件条目） ──────────
+#
+# 条目经 ``src.plugins.completion_provider_entries`` 把 ``config.id`` 指向的内置
+# 提供者注册进 ``src.tui._completion_providers`` 注册表；``config.id`` 供组合根
+# 收集「清单已接管的提供者」（注入 completion_providers 聚合插件，抑制默认装配）。
+
+COMPLETION_PROVIDER_ENTRIES = [
+    {"id": "completion_provider_command", "plugin": "src.plugins.completion_provider_entries:apply_completion_provider",
+     "config": {"id": "command"}},
+    {"id": "completion_provider_param", "plugin": "src.plugins.completion_provider_entries:apply_completion_provider",
+     "config": {"id": "param"}},
+    {"id": "completion_provider_path", "plugin": "src.plugins.completion_provider_entries:apply_completion_provider",
+     "config": {"id": "path"}},
+]
+
+# ── 状态栏段条目（每个内置段一个独立插件条目） ────────────────
+#
+# 条目经 ``src.plugins.status_segment_entries`` 把 ``config.id`` 指向的内置段注册
+# 进 ``src.tui.app._status_segments`` 注册表；``config.id`` 供组合根收集「清单已
+# 接管的段」（注入 status_segments 聚合插件，抑制默认装配）。
+
+STATUS_SEGMENT_ENTRIES = [
+    {"id": "status_segment_model", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
+     "config": {"id": "model"}},
+    {"id": "status_segment_tools", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
+     "config": {"id": "tools"}},
+    {"id": "status_segment_elapsed", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
+     "config": {"id": "elapsed"}},
+    {"id": "status_segment_tokens", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
+     "config": {"id": "tokens"}},
+    {"id": "status_segment_speed", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
+     "config": {"id": "speed"}},
+]
+
 # ── 运行时数据服务条目（未接缝能力下沉为 ctx.* 服务） ────────
 #
 # 每项一个独立插件条目（经 ``src.plugins.runtime_data`` 提供对应服务），可按
@@ -614,6 +767,62 @@ BUNDLES = [
         "plugins": list(SUBCOMMAND_ENTRIES),
     },
     {
+        "id": "keybindings",
+        "description": "TUI 键位绑定：每个 Ctrl 绑定一个独立插件条目（可 patch/overlay 改键/禁用/替换）",
+        "plugins": [
+            {"id": "keybindings", "plugin": "src.plugins.keybindings"},
+        ] + list(KEYBINDING_ENTRIES),
+    },
+    {
+        "id": "special_keys",
+        "description": "特殊键处理器：每个 action 一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": [
+            {"id": "special_keys", "plugin": "src.plugins.special_keys"},
+        ] + list(SPECIAL_KEY_ENTRIES),
+    },
+    {
+        "id": "tool_styles",
+        "description": "工具表现：每个工具/类别/Agent 类型一个独立插件条目（可 patch/overlay 覆盖/禁用/替换）",
+        "plugins": [
+            {"id": "tool_styles", "plugin": "src.plugins.tool_styles"},
+        ] + list(TOOL_STYLE_ENTRIES),
+    },
+    {
+        "id": "syntax_languages",
+        "description": "语法高亮语言：每个内置语言一个独立插件条目（可 patch/overlay 覆盖/禁用/替换）",
+        "plugins": [
+            {"id": "syntax", "plugin": "src.plugins.syntax"},
+        ] + list(SYNTAX_LANGUAGE_ENTRIES),
+    },
+    {
+        "id": "presentation_data",
+        "description": "表现层数据表：每张数据表一个独立插件条目（可 patch/overlay 覆盖/禁用/替换）",
+        "plugins": [
+            {"id": "presentation_data", "plugin": "src.plugins.presentation_data"},
+        ] + list(PRESENTATION_DATA_ENTRIES),
+    },
+    {
+        "id": "hosts",
+        "description": "内核 host 组件：每个内置 host 一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": [
+            {"id": "hosts", "plugin": "src.plugins.hosts"},
+        ] + list(HOST_ENTRIES),
+    },
+    {
+        "id": "completion_providers",
+        "description": "补全提供者：每个提供者一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": [
+            {"id": "completion_providers", "plugin": "src.plugins.completion_providers"},
+        ] + list(COMPLETION_PROVIDER_ENTRIES),
+    },
+    {
+        "id": "status_segments",
+        "description": "状态栏段：每个段一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": [
+            {"id": "status_segments", "plugin": "src.plugins.status_segments"},
+        ] + list(STATUS_SEGMENT_ENTRIES),
+    },
+    {
         "id": "core",
         "description": "基础层：配置、事件、提词、策略、工具、技能、通知后端",
         "includes": ["tools", "tool_policy", "commands", "notification_backends", "context_strategies", "runtime_data", "presets", "prompts", "subcommands", "web", "skill_sources"],
@@ -679,8 +888,8 @@ BUNDLES = [
     },
     {
         "id": "presentation",
-        "description": "表现层：UI、渲染器、事件消费者",
-        "includes": ["renderer_ext", "consumers", "ui_views", "themes"],
+        "description": "表现层：UI、渲染器、事件消费者、键位",
+        "includes": ["renderer_ext", "consumers", "ui_views", "themes", "keybindings", "special_keys", "tool_styles", "syntax_languages", "presentation_data", "hosts", "completion_providers", "status_segments"],
         "plugins": [
             {"id": "renderer", "plugin": "src.plugins.renderer"},
             {"id": "renderer_builtin", "plugin": "src.plugins.renderer_builtin"},
@@ -752,6 +961,14 @@ __all__ = [
     "PROMPT_SOURCE_ENTRIES",
     "CLAWBOT_COMMAND_ENTRIES",
     "SUBCOMMAND_ENTRIES",
+    "KEYBINDING_ENTRIES",
+    "SPECIAL_KEY_ENTRIES",
+    "TOOL_STYLE_ENTRIES",
+    "SYNTAX_LANGUAGE_ENTRIES",
+    "PRESENTATION_DATA_ENTRIES",
+    "HOST_ENTRIES",
+    "COMPLETION_PROVIDER_ENTRIES",
+    "STATUS_SEGMENT_ENTRIES",
     "WEB_SEARCH_PROVIDER_ENTRIES",
     "WEB_FETCH_PROVIDER_ENTRIES",
     "THEME_ENTRIES",
