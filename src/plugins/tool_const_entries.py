@@ -24,8 +24,13 @@ from ..kernel import plugin
 #: 由工具模块（非 ``_constants``）声明到注册表的内置常量 → 声明模块。
 #: 条目独立挂载顺序不确定，注册前按需导入声明模块，保证常量已登记。
 _CONST_DECLARERS = {
+    "IMAGE_EXT_FORMAT": "src.tools.read_image",
+    "IMAGE_FORMAT_MEDIA": "src.tools.read_image",
     "IMAGE_EXTENSIONS": "src.tools.read_image",
     "REMOVE_TAGS": "src.tools.page_fetcher",
+    "REMOVE_CLASS_KEYWORDS": "src.tools.page_fetcher",
+    "PRIVATE_PREFIXES": "src.tools.page_fetcher",
+    "DATE_META_PATTERNS": "src.tools.page_fetcher",
 }
 
 

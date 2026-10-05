@@ -195,6 +195,8 @@ def test_new_tables_declared():
     for table_id in (
         "tool_display_name", "admonition_style", "spinner_frames",
         "inline_spinner_frames", "config_entry_desc", "config_entry_option",
+        "trace_kind_order", "trace_block_kind", "message_role_icon",
+        "border_chars", "border_object_default",
     ):
         assert table_id in builtin_data_ids()
     assert {(e.get("config") or {}).get("id") for e in PRESENTATION_DATA_ENTRIES} == set(builtin_data_ids())
@@ -270,6 +272,45 @@ async def test_entry_config_override_new_tables():
 
         assert spinner_preset("dots") == "abcd"
         assert CONFIG_ENTRY_DESCS["MCP_SERVERS"] == "自定义说明"
+    finally:
+        await kernel.dispose()
+
+
+async def test_new_tables_trace_role_border():
+    from src.presentation_data import (
+        border_chars,
+        border_object_default,
+        message_role_icons,
+        trace_block_kind,
+        trace_kind_order,
+    )
+    from src.tui.app.trace_types import _BLOCK_KIND_MAP, TRACE_KIND_ORDER
+    from src.tui.pipeline.message_display import _DEFAULT_ROLE_MAP
+
+    kernel = await build_kernel("cli")
+    try:
+        assert trace_kind_order()[0] == "tools"
+        assert "tool" in TRACE_KIND_ORDER
+        assert trace_block_kind()["parse_info"] == "context"
+        assert _BLOCK_KIND_MAP["error"] == "system"
+        assert message_role_icons()["user"] == "\u25cf"
+        assert _DEFAULT_ROLE_MAP["assistant"] == "\u25c6"
+        assert border_chars()["double"][0] == "╔"
+        assert border_object_default()["topLeft"] == "┌"
+    finally:
+        await shutdown_kernel(kernel)
+
+
+async def test_overlay_disable_border_chars():
+    from src.presentation_data import border_chars, message_role_icons
+
+    kernel = await _build_with_disable([
+        "presentation_data::presentation_data_border_chars",
+        "presentation_data::presentation_data_message_role_icon",
+    ])
+    try:
+        assert border_chars() == {}
+        assert message_role_icons() == {}
     finally:
         await kernel.dispose()
 

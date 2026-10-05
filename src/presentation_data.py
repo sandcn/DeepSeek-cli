@@ -365,6 +365,52 @@ CONFIG_ENTRY_OPTION_MAP: dict[str, tuple[tuple[str, str], ...]] = {
     ),
 }
 
+# ── 轨迹记录种类顺序 / 块种类映射 ─────────────────────────
+
+TRACE_KIND_ORDER_DATA: list = [
+    "tools", "system", "user", "reasoning", "content", "tool", "subagent", "context",
+]
+
+TRACE_BLOCK_KIND_MAP: dict = {
+    "user": "user",
+    "reasoning": "reasoning",
+    "content": "content",
+    "tool": "tool",
+    "subagent": "subagent",
+    "parse_info": "context",
+    "notification": "context",
+    "error": "system",
+    "write_line": "system",
+}
+
+# ── 消息角色图标 ──────────────────────────────────────────
+
+MESSAGE_ROLE_ICON_MAP: dict = {
+    "user": "\u25cf",       # ●
+    "assistant": "\u25c6",  # ◆
+    "tool": "\u2699",       # ⚙
+}
+
+# ── 边框样式字符表 / 自定义边框缺省 ───────────────────────
+
+BORDER_CHARS_MAP: dict = {
+    "single": ("┌", "┐", "└", "┘", "─", "│"),
+    "double": ("╔", "╗", "╚", "╝", "═", "║"),
+    "round": ("╭", "╮", "╰", "╯", "─", "│"),
+    "bold": ("┏", "┓", "┗", "┛", "━", "┃"),
+    "classic": ("+", "+", "+", "+", "-", "|"),
+    "dashed": ("┌", "┐", "└", "┘", "┄", "┆"),
+    "singleDouble": ("╓", "╖", "╙", "╜", "═", "│"),
+    "doubleSingle": ("╒", "╕", "╘", "╛", "─", "║"),
+}
+
+BORDER_OBJECT_DEFAULT: dict = {
+    "topLeft": "┌", "top": "─", "topRight": "┐",
+    "left": "│",
+    "bottomLeft": "└", "bottom": "─", "bottomRight": "┘",
+    "right": "│",
+}
+
 #: 内置数据表声明
 _BUILTIN_SPECS: Tuple[DataTable, ...] = (
     DataTable("emoji", "emoji", EMOJI_MAP),
@@ -383,6 +429,11 @@ _BUILTIN_SPECS: Tuple[DataTable, ...] = (
     DataTable("inline_spinner_frames", "inline_spinner_frames", INLINE_SPINNER_FRAMES),
     DataTable("config_entry_desc", "config_entry_desc", CONFIG_ENTRY_DESC_MAP),
     DataTable("config_entry_option", "config_entry_option", CONFIG_ENTRY_OPTION_MAP),
+    DataTable("trace_kind_order", "trace_kind_order", TRACE_KIND_ORDER_DATA),
+    DataTable("trace_block_kind", "trace_block_kind", TRACE_BLOCK_KIND_MAP),
+    DataTable("message_role_icon", "message_role_icon", MESSAGE_ROLE_ICON_MAP),
+    DataTable("border_chars", "border_chars", BORDER_CHARS_MAP),
+    DataTable("border_object_default", "border_object_default", BORDER_OBJECT_DEFAULT),
 )
 
 _builtin_specs: Dict[str, DataTable] = {spec.id: spec for spec in _BUILTIN_SPECS}
@@ -656,6 +707,26 @@ def config_entry_options() -> dict:
     return data_table("config_entry_option", {}) or {}
 
 
+def trace_kind_order() -> list:
+    return list(data_table("trace_kind_order", []) or [])
+
+
+def trace_block_kind() -> dict:
+    return data_table("trace_block_kind", {}) or {}
+
+
+def message_role_icons() -> dict:
+    return data_table("message_role_icon", {}) or {}
+
+
+def border_chars() -> dict:
+    return data_table("border_chars", {}) or {}
+
+
+def border_object_default() -> dict:
+    return data_table("border_object_default", {}) or {}
+
+
 def clear() -> None:
     with _lock:
         _extension.clear()
@@ -711,6 +782,16 @@ __all__ = [
     "inline_spinner_frames",
     "config_entry_descs",
     "config_entry_options",
+    "trace_kind_order",
+    "trace_block_kind",
+    "message_role_icons",
+    "border_chars",
+    "border_object_default",
+    "TRACE_KIND_ORDER_DATA",
+    "TRACE_BLOCK_KIND_MAP",
+    "MESSAGE_ROLE_ICON_MAP",
+    "BORDER_CHARS_MAP",
+    "BORDER_OBJECT_DEFAULT",
     "TOOL_DISPLAY_NAME_MAP",
     "ADMONITION_STYLE_MAP",
     "SPINNER_PRESET_FRAMES",

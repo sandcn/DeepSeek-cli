@@ -70,12 +70,26 @@ async def test_default_profile_constants():
         assert C.max_file_size_mb() == 100
         assert "latin-1" in C.catchall_encodings()
         assert C.common_encodings()[0] == "utf-8"
-        from src.tools.read_image import image_extensions
-        from src.tools.page_fetcher import remove_tags
+        from src.tools.read_image import (
+            image_ext_format,
+            image_extensions,
+            image_format_media,
+        )
+        from src.tools.page_fetcher import (
+            date_meta_patterns,
+            private_prefixes,
+            remove_class_keywords,
+            remove_tags,
+        )
 
         assert image_extensions()[".bmp"] == "image/bmp"
         assert image_extensions()[".png"] == "image/png"
+        assert image_ext_format()[".bmp"] == "BMP"
+        assert image_format_media()["BMP"] == "image/bmp"
         assert "script" in remove_tags()
+        assert "sidebar" in remove_class_keywords()
+        assert "10." in private_prefixes()
+        assert date_meta_patterns()
     finally:
         await shutdown_kernel(kernel)
 
@@ -103,6 +117,22 @@ async def test_overlay_disable_single_constant():
         assert C.excluded_dirs() == set()
         assert C.should_exclude_dir("node_modules") is False
         assert C.const("EXCLUDED_FILE_PATTERNS")
+    finally:
+        await kernel.dispose()
+
+
+async def test_overlay_disable_page_fetcher_tables():
+    from src.tools.page_fetcher import private_prefixes, remove_class_keywords, remove_tags
+
+    kernel = await _build_with_disable([
+        "tool_consts::tool_const_private_prefixes",
+        "tool_consts::tool_const_remove_class_keywords",
+        "tool_consts::tool_const_remove_tags",
+    ])
+    try:
+        assert private_prefixes() == ()
+        assert remove_class_keywords() == ()
+        assert remove_tags() == set()
     finally:
         await kernel.dispose()
 

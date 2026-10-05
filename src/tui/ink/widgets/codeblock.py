@@ -77,7 +77,7 @@ def CodeBlock(props: dict) -> Element:
     title = None if title is None else str(title)
     label = language or title
     border_style = str(props.get("borderStyle", "single"))
-    chars = _BORDER_CHARS.get(border_style, _DEFAULT_BORDER)
+    chars = _BORDER_CHARS.get(border_style) or _DEFAULT_BORDER
     base_style = props.get("style")
     border_color_prop = props.get("borderColor")
     if border_color_prop is None:

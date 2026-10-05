@@ -24,6 +24,9 @@ from ..kernel import plugin
 _DOMAIN_DECLARERS = {
     "core": "src.core.events.event_types",
     "display": "src.core.events.display_types",
+    "session": "src.core.events.agent_types",
+    "agent": "src.core.events.agent_types",
+    "capability": "src.core.events.agent_types",
 }
 
 

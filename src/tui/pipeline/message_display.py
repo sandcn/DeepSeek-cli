@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import sys
 from src._compat import dataclass
+from src.presentation_data import LiveMapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -30,11 +31,9 @@ class RoleConfig:
     icon: str = "?"
 
 
-_DEFAULT_ROLE_MAP: dict[str, RoleConfig] = {
-    "user": RoleConfig(icon="\u25cf"),       # ●
-    "assistant": RoleConfig(icon="\u25c6"),  # ◆
-    "tool": RoleConfig(icon="\u2699"),       # ⚙
-}
+#: 角色 → 图标映射。「一切皆插件」：实时委托表现层数据注册表
+#: （``presentation_data`` → ``message_role_icon`` 表，可按 Patch/Overlay 覆盖/禁用）。
+_DEFAULT_ROLE_MAP = LiveMapping("message_role_icon")
 
 #: 消息预览最大显示长度（P3-2：消除魔法数字——display_messages 截断参数）
 _DISPLAY_PREVIEW_MAX_LEN = 120
@@ -204,8 +203,7 @@ def display_messages(
         if not isinstance(msg, dict):
             continue
         role = msg.get("role", "")
-        cfg = _DEFAULT_ROLE_MAP.get(role)
-        icon = cfg.icon if cfg else "\u00b7"
+        icon = _DEFAULT_ROLE_MAP.get(role, "\u00b7")
         content = _content_str(msg.get("content", ""))
         if not content.strip():
             continue

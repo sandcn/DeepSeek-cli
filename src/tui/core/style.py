@@ -20,6 +20,7 @@ from typing import ClassVar
 # 下为字符串，不求值——显式导入消除 pyflakes 未定义名告警；color 模块不反向
 # 依赖 style，无循环导入）。
 from .color import TrueColor
+from ...declarative import DeclarativeRegistry
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import rich  # noqa: F401  # 字符串注解 "rich.style.Style" 的类型检查
@@ -474,7 +475,10 @@ class StyleSheet:
         Returns:
             Style 实例，不存在时返回 None。
         """
-        return cls._registry.get(name)
+        result = cls._registry.get(name)
+        if result is not None:
+            return result
+        return active_style(name)
 
     @classmethod
     def resolve(cls, name: str, default: Style | None = None) -> Style:
@@ -487,7 +491,7 @@ class StyleSheet:
         Returns:
             Style 实例。不存在时返回 default 或空 Style。
         """
-        result = cls._registry.get(name)
+        result = cls.get(name)
         if result is not None:
             return result
         return default if default is not None else Style()
@@ -502,29 +506,30 @@ class StyleSheet:
         Returns:
             是否已注册。
         """
-        return name in cls._registry
+        return name in cls._registry or active_style(name) is not None
 
     @classmethod
     def clear(cls) -> None:
-        """清空注册表并**恢复内置样式集**（供测试使用）。
+        """清空运行时注册表（内置样式来自注册表，清空后仍可用）。
 
         ★ P3（review）：修复前仅 ``_registry.clear()``——测试调用后全局
-        内置样式永久丢失（影响后续用例，跨测试状态污染）。现清空后重新
-        注册模块导入时的同一内置集合（``_BUILTIN_STYLES``）。
+        内置样式永久丢失；现内置样式集来自命名样式注册表（``_STYLE_REGISTRY``），
+        清空运行时表不影响内置集。
         """
         cls._registry.clear()
-        builtin = globals().get("_BUILTIN_STYLES")
-        if builtin:
-            cls.register_many(builtin)
 
     @classmethod
     def all_names(cls) -> list[str]:
-        """获取所有已注册的样式名称列表。
+        """获取所有已注册的样式名称列表（内置 + 运行时注册）。
 
         Returns:
             样式名称列表。
         """
-        return list(cls._registry.keys())
+        names = list(active_style_names())
+        for name in cls._registry:
+            if name not in names:
+                names.append(name)
+        return names
 
 
 # ════════════════════════════════════════════════════════
@@ -573,7 +578,114 @@ _BUILTIN_STYLES: dict = {
     "tree_leaf":   Style(fg=45),    # 树叶青色
 }
 
-StyleSheet.register_many(_BUILTIN_STYLES)
+# ════════════════════════════════════════════════════════════
+# 命名样式注册表（一切皆插件）
+# ════════════════════════════════════════════════════════════
+# 「一切皆插件」：内置命名样式集不再是模块级硬编码字典，而是注册到声明式
+# 注册表；每个样式由清单中的独立插件条目（``named_style``，经
+# ``src.plugins.style_entries``）注册，可按 Profile/Patch/Overlay 覆盖或禁用。
+
+_STYLE_REGISTRY = DeclarativeRegistry("命名样式")
+_STYLE_REGISTRY.declare(_BUILTIN_STYLES)
+
+_style_gen = 0
+_style_active_cache: dict = {"gen": -1, "data": {}}
+
+
+def _bump_style_generation() -> None:
+    global _style_gen
+    _style_gen += 1
+
+
+def style_registry_generation() -> int:
+    """命名样式注册表代际（每次变更递增，供外部缓存失效判断）。"""
+    return _style_gen
+
+
+def _active_styles() -> dict:
+    global _style_active_cache
+    if _style_active_cache.get("gen") != _style_gen:
+        _style_active_cache = {"gen": _style_gen, "data": _STYLE_REGISTRY.active()}
+    return _style_active_cache["data"]
+
+
+def _wrapped_style(undo) -> "object":
+    def _undo() -> None:
+        undo()
+        _bump_style_generation()
+
+    return _undo
+
+
+def builtin_style_names() -> list:
+    """全部内置命名样式名（含被接管/禁用的，按声明顺序）。"""
+    return list(_STYLE_REGISTRY.builtin_ids())
+
+
+def default_style(name: str) -> Style:
+    return _STYLE_REGISTRY.default(name)
+
+
+def active_style_names() -> list:
+    """当前生效的内置命名样式名。"""
+    return list(_active_styles())
+
+
+def active_style(name: str) -> "Style | None":
+    """按名称取当前生效的内置样式（缺席返回 None）。"""
+    return _active_styles().get(name)
+
+
+def register_builtin_style(name: str, value: "Style | None" = None):
+    """注册/覆盖内置命名样式（``value=None`` 用默认声明）；返回幂等撤销。"""
+    undo = _STYLE_REGISTRY.register_builtin(name, value)
+    _bump_style_generation()
+    return _wrapped_style(undo)
+
+
+def unregister_builtin_style(name: str) -> bool:
+    if _STYLE_REGISTRY.unregister_builtin(name):
+        _bump_style_generation()
+        return True
+    return False
+
+
+def set_managed_builtin_styles(ids):
+    undo = _STYLE_REGISTRY.set_managed(ids)
+    _bump_style_generation()
+    return _wrapped_style(undo)
+
+
+def managed_style_names() -> list:
+    return list(_STYLE_REGISTRY.managed_ids())
+
+
+def disable_builtin_styles(ids):
+    undo = _STYLE_REGISTRY.disable_builtin(ids)
+    _bump_style_generation()
+    return _wrapped_style(undo)
+
+
+def register_style_extension(name: str, value: Style):
+    undo = _STYLE_REGISTRY.register_extension(name, value)
+    _bump_style_generation()
+    return _wrapped_style(undo)
+
+
+def unregister_style_extension(name: str) -> bool:
+    if _STYLE_REGISTRY.unregister_extension(name):
+        _bump_style_generation()
+        return True
+    return False
+
+
+def describe_style_registry() -> list:
+    return _STYLE_REGISTRY.describe()
+
+
+def reset_style_registry() -> None:
+    _STYLE_REGISTRY.reset()
+    _bump_style_generation()
 
 # ════════════════════════════════════════════════════════
 # 命名色号常量（消除魔法数字 — 供 text_utils 等模块引用）

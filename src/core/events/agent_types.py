@@ -12,6 +12,12 @@ DeepSeek Harness 把事件分为三个域，选对事件域是大多数改动的
 3. **能力事件**（``CapabilityEventType``）——向某个接缝（``fs/*``、
    ``tools/*``、``telemetry/*``）附加策略与适配器，无需导入循环。
 
+「一切皆插件」：三类事件域的事件类型不再是本模块的硬编码字面量，而是登记到
+``type_registry``（域 ``session`` / ``agent`` / ``capability``）——由清单中的
+独立插件条目（``event_type``，经 ``src.plugins.event_type_entries``）注册，
+可按 Profile/Patch/Overlay 覆盖或禁用；类属性经元类 ``__getattr__`` 实时解析
+（``SessionEventType.TURN_START``），``ALL`` 为当前生效项元组的实时属性。
+
 本模块零业务依赖（仅常量与轻量数据类），核心层、插件层与适配器层均可引用。
 """
 
@@ -20,40 +26,134 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from .type_registry import active_events, declare_events, event_value
+
+_MISSING = object()
+
 
 # ═══════════════════════════════════════════════════════════════
 # 1. 会话事件（持久事实）
 # ═══════════════════════════════════════════════════════════════
 
-class SessionEventType:
+_SESSION_EVENT_TYPES: dict = {
+    "TURN_START": "turn/start",
+    "TURN_END": "turn/end",
+    "STEP_START": "step/start",
+    "STEP_END": "step/end",
+    "SYSTEM_MESSAGE": "system/message",
+    "USER_MESSAGE": "user/message",
+    "ASSISTANT_MESSAGE": "assistant/message",
+    "ASSISTANT_ATTEMPT": "assistant/attempt",
+    "TOOL_RESULT": "tool/result",
+    "REQUEST_HEADER": "request/header",
+    "REQUEST_CONTEXT": "request/context",
+    # ── 结构变更（也是仅追加事实，回放时在对应位置生效） ──
+    "INSERT": "session/insert",
+    "REPLACE": "session/replace",
+    "DELETE": "session/delete",
+    "TRUNCATE": "session/truncate",
+    "RESET": "session/reset",
+    #: 所有会话事件的广播通道（订阅者监听一次即可看到全部事件；不计入 ALL）
+    "EMIT": "session/event",
+}
+
+
+# ═══════════════════════════════════════════════════════════════
+# 2. Agent 事件（实时扩展点）
+# ═══════════════════════════════════════════════════════════════
+
+_AGENT_EVENT_TYPES: dict = {
+    "CREATED": "agent/created",
+    "DESTROYED": "agent/destroyed",
+    "INBOX": "agent/inbox",
+    "PRE_STEP": "agent/pre-step",
+    "STEP_START": "agent/step-start",
+    "STEP_END": "agent/step-end",
+    "REQUEST": "agent/request",
+    "ASSISTANT_STREAM": "agent/assistant-stream",
+    "TURN_STOPPING": "agent/turn-stopping",
+    "STATUS": "agent/status",
+    "VALIDATION": "agent/validation",
+    "CONTINUATION": "agent/continuation",
+}
+
+
+# ═══════════════════════════════════════════════════════════════
+# 3. 能力事件（接缝）
+# ═══════════════════════════════════════════════════════════════
+
+_CAPABILITY_EVENT_TYPES: dict = {
+    # 工具执行流水线
+    "TOOLS_PRE_EXECUTE": "tools/pre-execute",
+    "TOOLS_EXECUTE": "tools/execute",
+    "TOOLS_POST_EXECUTE": "tools/post-execute",
+    # 文件系统接缝
+    "FS_READ": "fs/read",
+    "FS_WRITE": "fs/write",
+    "FS_REMOVE": "fs/remove",
+    "FS_MOVE": "fs/move",
+    "FS_LIST": "fs/list",
+    # 子进程 / Shell 接缝
+    "SHELL_SPAWN": "shell/spawn",
+    "SUBPROCESS_SPAWN": "subprocess/spawn",
+    # 终端 / 后台任务接缝
+    "TERMINALS_OPEN": "terminals/open",
+    "TERMINALS_CLOSE": "terminals/close",
+    "JOBS_START": "jobs/start",
+    "JOBS_STOP": "jobs/stop",
+    # 沙盒 / 审批接缝
+    "SANDBOX_CHECK": "sandbox/check",
+    "APPROVAL_REQUEST": "approval/request",
+    # 遥测接缝
+    "TELEMETRY_EVENT": "telemetry/event",
+}
+
+declare_events("session", _SESSION_EVENT_TYPES)
+declare_events("agent", _AGENT_EVENT_TYPES)
+declare_events("capability", _CAPABILITY_EVENT_TYPES)
+
+
+class _EventDomainMeta(type):
+    """事件域元类 — 类属性实时解析注册表当前生效值。"""
+
+    _domain = ""
+    _exclude_from_all: tuple = ()
+
+    def __getattr__(cls, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        value = event_value(cls._domain, name, _MISSING)
+        if value is _MISSING:
+            raise AttributeError(f"{cls.__name__} 无事件类型 {name!r}")
+        return value
+
+    @property
+    def ALL(cls) -> tuple:
+        excluded = set(cls._exclude_from_all)
+        return tuple(
+            value
+            for name, value in active_events(cls._domain).items()
+            if name not in excluded
+        )
+
+
+class SessionEventType(metaclass=_EventDomainMeta):
     """会话事件类型 — 追加到会话日志、可回放/投影的持久事实。"""
 
-    TURN_START = "turn/start"
-    TURN_END = "turn/end"
-    STEP_START = "step/start"
-    STEP_END = "step/end"
-    SYSTEM_MESSAGE = "system/message"
-    USER_MESSAGE = "user/message"
-    ASSISTANT_MESSAGE = "assistant/message"
-    ASSISTANT_ATTEMPT = "assistant/attempt"
-    TOOL_RESULT = "tool/result"
-    REQUEST_HEADER = "request/header"
-    REQUEST_CONTEXT = "request/context"
-    # ── 结构变更（也是仅追加事实，回放时在对应位置生效） ──
-    INSERT = "session/insert"
-    REPLACE = "session/replace"
-    DELETE = "session/delete"
-    TRUNCATE = "session/truncate"
-    RESET = "session/reset"
-    #: 所有会话事件的广播通道（订阅者监听一次即可看到全部事件）
-    EMIT = "session/event"
+    _domain = "session"
+    _exclude_from_all = ("EMIT",)
 
-    ALL = (
-        TURN_START, TURN_END, STEP_START, STEP_END,
-        SYSTEM_MESSAGE, USER_MESSAGE, ASSISTANT_MESSAGE, ASSISTANT_ATTEMPT,
-        TOOL_RESULT, REQUEST_HEADER, REQUEST_CONTEXT,
-        INSERT, REPLACE, DELETE, TRUNCATE, RESET,
-    )
+
+class AgentEventType(metaclass=_EventDomainMeta):
+    """Agent 事件类型 — 携带活跃 Agent 的实时扩展点。"""
+
+    _domain = "agent"
+
+
+class CapabilityEventType(metaclass=_EventDomainMeta):
+    """能力事件类型 — 向接缝附加策略与适配器。"""
+
+    _domain = "capability"
 
 
 #: 会进入模型历史投影的会话事件（「模型可见即已记录」约束的作用域）
@@ -63,81 +163,6 @@ MESSAGE_EVENTS = frozenset({
     SessionEventType.ASSISTANT_MESSAGE,
     SessionEventType.TOOL_RESULT,
 })
-
-
-# ═══════════════════════════════════════════════════════════════
-# 2. Agent 事件（实时扩展点）
-# ═══════════════════════════════════════════════════════════════
-
-class AgentEventType:
-    """Agent 事件类型 — 携带活跃 Agent 的实时扩展点。"""
-
-    #: Agent 创建（串行等待；初始化失败会回滚创建）
-    CREATED = "agent/created"
-    #: Agent 销毁（teardown 顺序由 agent-loop 定义）
-    DESTROYED = "agent/destroyed"
-    #: 输入进入 inbox
-    INBOX = "agent/inbox"
-    #: 步骤前（waterfall；可改写或拒绝已领取消息）
-    PRE_STEP = "agent/pre-step"
-    #: 一次步骤开始 / 结束
-    STEP_START = "agent/step-start"
-    STEP_END = "agent/step-end"
-    #: 请求前（waterfall；解析路由后提交系统提示词与用户消息）
-    REQUEST = "agent/request"
-    #: 助手流（start / chunk / end）
-    ASSISTANT_STREAM = "agent/assistant-stream"
-    #: 轮次停止判定（serial；无 next）
-    TURN_STOPPING = "agent/turn-stopping"
-    #: Agent 状态变化
-    STATUS = "agent/status"
-    #: 校验（消息可重建性等）
-    VALIDATION = "agent/validation"
-    #: 续跑（后台任务完成后继续一轮）
-    CONTINUATION = "agent/continuation"
-
-    ALL = (
-        CREATED, DESTROYED, INBOX, PRE_STEP, STEP_START, STEP_END,
-        REQUEST, ASSISTANT_STREAM, TURN_STOPPING, STATUS, VALIDATION,
-        CONTINUATION,
-    )
-
-
-# ═══════════════════════════════════════════════════════════════
-# 3. 能力事件（接缝）
-# ═══════════════════════════════════════════════════════════════
-
-class CapabilityEventType:
-    """能力事件类型 — 向接缝附加策略与适配器。"""
-
-    # 工具执行流水线
-    TOOLS_PRE_EXECUTE = "tools/pre-execute"
-    TOOLS_EXECUTE = "tools/execute"
-    TOOLS_POST_EXECUTE = "tools/post-execute"
-
-    # 文件系统接缝
-    FS_READ = "fs/read"
-    FS_WRITE = "fs/write"
-    FS_REMOVE = "fs/remove"
-    FS_MOVE = "fs/move"
-    FS_LIST = "fs/list"
-
-    # 子进程 / Shell 接缝
-    SHELL_SPAWN = "shell/spawn"
-    SUBPROCESS_SPAWN = "subprocess/spawn"
-
-    # 终端 / 后台任务接缝
-    TERMINALS_OPEN = "terminals/open"
-    TERMINALS_CLOSE = "terminals/close"
-    JOBS_START = "jobs/start"
-    JOBS_STOP = "jobs/stop"
-
-    # 沙盒 / 审批接缝
-    SANDBOX_CHECK = "sandbox/check"
-    APPROVAL_REQUEST = "approval/request"
-
-    # 遥测接缝
-    TELEMETRY_EVENT = "telemetry/event"
 
 
 # ═══════════════════════════════════════════════════════════════

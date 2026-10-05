@@ -8,21 +8,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-#: 记录种类（展示顺序/图标映射在 trace_view 消费）
-TRACE_KIND_ORDER = ("tools", "system", "user", "reasoning", "content", "tool", "subagent", "context")
+from src.declarative import LiveSequence
+from src.presentation_data import LiveMapping, trace_kind_order
 
-#: 块种类 → 轨迹记录种类（separator/splash 跳过——非业务记录）
-_BLOCK_KIND_MAP = {
-    "user": "user",
-    "reasoning": "reasoning",
-    "content": "content",
-    "tool": "tool",
-    "subagent": "subagent",
-    "parse_info": "context",
-    "notification": "context",
-    "error": "system",
-    "write_line": "system",
-}
+#: 记录种类（展示顺序；「一切皆插件」：实时委托表现层数据注册表
+#: ``presentation_data`` → ``trace_kind_order`` 表，可按 Patch/Overlay 覆盖/禁用）
+TRACE_KIND_ORDER = LiveSequence(trace_kind_order)
+
+#: 块种类 → 轨迹记录种类（separator/splash 跳过——非业务记录）；
+#: 「一切皆插件」：实时委托 ``presentation_data`` → ``trace_block_kind`` 表。
+_BLOCK_KIND_MAP = LiveMapping("trace_block_kind")
 
 
 @dataclass

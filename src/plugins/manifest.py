@@ -104,7 +104,10 @@ _TOOL_CONST_NAMES = (
     "DEFAULT_ENCODING", "DEFAULT_ERRORS", "MAX_FILE_SIZE_MB",
     "CATCHALL_ENCODINGS", "MAX_DETECT_BYTES", "COMMON_ENCODINGS",
     "FALLBACK_ENCODINGS", "BOM_MARKERS", "ENCODING_ALIASES",
-    "LARGE_FILE_THRESHOLD", "IMAGE_EXTENSIONS", "REMOVE_TAGS",
+    "LARGE_FILE_THRESHOLD",
+    "IMAGE_EXT_FORMAT", "IMAGE_FORMAT_MEDIA", "IMAGE_EXTENSIONS",
+    "REMOVE_TAGS", "REMOVE_CLASS_KEYWORDS", "PRIVATE_PREFIXES",
+    "DATE_META_PATTERNS",
 )
 
 TOOL_CONST_ENTRIES = [
@@ -146,6 +149,29 @@ _EVENT_TYPE_DISPLAY_NAMES = (
     "BackgroundTaskChangedEvent",
 )
 
+_EVENT_TYPE_SESSION_NAMES = (
+    "TURN_START", "TURN_END", "STEP_START", "STEP_END",
+    "SYSTEM_MESSAGE", "USER_MESSAGE", "ASSISTANT_MESSAGE", "ASSISTANT_ATTEMPT",
+    "TOOL_RESULT", "REQUEST_HEADER", "REQUEST_CONTEXT",
+    "INSERT", "REPLACE", "DELETE", "TRUNCATE", "RESET",
+    "EMIT",
+)
+
+_EVENT_TYPE_AGENT_NAMES = (
+    "CREATED", "DESTROYED", "INBOX", "PRE_STEP", "STEP_START", "STEP_END",
+    "REQUEST", "ASSISTANT_STREAM", "TURN_STOPPING", "STATUS", "VALIDATION",
+    "CONTINUATION",
+)
+
+_EVENT_TYPE_CAPABILITY_NAMES = (
+    "TOOLS_PRE_EXECUTE", "TOOLS_EXECUTE", "TOOLS_POST_EXECUTE",
+    "FS_READ", "FS_WRITE", "FS_REMOVE", "FS_MOVE", "FS_LIST",
+    "SHELL_SPAWN", "SUBPROCESS_SPAWN",
+    "TERMINALS_OPEN", "TERMINALS_CLOSE", "JOBS_START", "JOBS_STOP",
+    "SANDBOX_CHECK", "APPROVAL_REQUEST",
+    "TELEMETRY_EVENT",
+)
+
 EVENT_TYPE_ENTRIES = [
     {"id": f"event_type_core_{name.lower()}",
      "plugin": "src.plugins.event_type_entries:apply_event_type",
@@ -156,6 +182,39 @@ EVENT_TYPE_ENTRIES = [
      "plugin": "src.plugins.event_type_entries:apply_event_type",
      "config": {"name": f"display::{name}"}}
     for name in _EVENT_TYPE_DISPLAY_NAMES
+] + [
+    {"id": f"event_type_{domain}_{name.lower()}",
+     "plugin": "src.plugins.event_type_entries:apply_event_type",
+     "config": {"name": f"{domain}::{name}"}}
+    for domain, names in (
+        ("session", _EVENT_TYPE_SESSION_NAMES),
+        ("agent", _EVENT_TYPE_AGENT_NAMES),
+        ("capability", _EVENT_TYPE_CAPABILITY_NAMES),
+    )
+    for name in names
+]
+
+# ── 命名样式条目（每个内置命名样式一条独立条目） ────────────
+#
+# 条目经 ``src.plugins.style_entries`` 把 ``config.name`` 指向的内置命名样式
+# 注册进 ``src.tui.core.style`` 的命名样式注册表；``config.name`` 供组合根收集
+# 「清单已接管的样式」（注入 named_styles 聚合插件，抑制默认装配，使 overlay
+# 禁用单项真正生效）。
+
+_NAMED_STYLE_NAMES = (
+    "dim", "bold", "italic", "underline", "bold_dim", "dim_italic", "bold_italic",
+    "error", "success", "warn", "info", "muted", "border_breath",
+    "diff_add", "diff_del", "diff_ctx",
+    "user_icon", "asst_icon", "tool_icon", "tool_txt",
+    "separator", "highlight", "accent", "deco", "neon",
+    "tree_branch", "tree_leaf",
+)
+
+NAMED_STYLE_ENTRIES = [
+    {"id": f"named_style_{name}",
+     "plugin": "src.plugins.style_entries:apply_named_style",
+     "config": {"name": name}}
+    for name in _NAMED_STYLE_NAMES
 ]
 
 # ── 全局禁用工具条目（每个禁用项一个独立插件条目） ──────────
@@ -607,6 +666,8 @@ PRESENTATION_DATA_ENTRIES = [
         "mode_text", "mode_style",
         "tool_display_name", "admonition_style", "spinner_frames",
         "inline_spinner_frames", "config_entry_desc", "config_entry_option",
+        "trace_kind_order", "trace_block_kind", "message_role_icon",
+        "border_chars", "border_object_default",
     )
 ]
 
@@ -765,6 +826,13 @@ BUNDLES = [
         "plugins": [
             {"id": "event_types", "plugin": "src.plugins.event_types"},
         ] + list(EVENT_TYPE_ENTRIES),
+    },
+    {
+        "id": "named_styles",
+        "description": "命名样式：每个内置命名样式一条独立条目（可 patch/overlay 覆盖/禁用/替换）",
+        "plugins": [
+            {"id": "named_styles", "plugin": "src.plugins.named_styles"},
+        ] + list(NAMED_STYLE_ENTRIES),
     },
     {
         "id": "tool_policy",
@@ -1000,7 +1068,7 @@ BUNDLES = [
     {
         "id": "presentation",
         "description": "表现层：UI、渲染器、事件消费者、键位",
-        "includes": ["renderer_ext", "consumers", "ui_views", "themes", "keybindings", "special_keys", "tool_styles", "syntax_languages", "presentation_data", "hosts", "completion_providers", "status_segments"],
+        "includes": ["renderer_ext", "consumers", "ui_views", "themes", "named_styles", "keybindings", "special_keys", "tool_styles", "syntax_languages", "presentation_data", "hosts", "completion_providers", "status_segments"],
         "plugins": [
             {"id": "renderer", "plugin": "src.plugins.renderer"},
             {"id": "renderer_builtin", "plugin": "src.plugins.renderer_builtin"},
@@ -1056,6 +1124,7 @@ __all__ = [
     "TOOL_METADATA_ENTRIES",
     "TOOL_CONST_ENTRIES",
     "EVENT_TYPE_ENTRIES",
+    "NAMED_STYLE_ENTRIES",
     "GLOBAL_DISABLED_TOOL_ENTRIES",
     "COMMAND_PLUGIN_ENTRIES",
     "RENDERER_HANDLER_ENTRIES",

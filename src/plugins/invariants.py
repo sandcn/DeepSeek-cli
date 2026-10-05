@@ -760,6 +760,23 @@ def _event_types_readable(kernel) -> str | None:
     return None
 
 
+def _named_styles_readable(kernel) -> str | None:
+    """命名样式注册表必须可读，且生效项覆盖全部内置命名样式。"""
+    if not kernel.has_service("named_styles"):
+        return None
+    try:
+        from ..tui.core.style import builtin_style_names
+
+        service = kernel.resolve_service("named_styles")
+        names = set(service.active())
+        missing = sorted(set(builtin_style_names()) - names)
+        if missing:
+            return f"ctx.named_styles 缺少内置命名样式: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"命名样式注册表读取失败: {exc}"
+    return None
+
+
 _BUILTIN_CHECKS = (
     ("services.keys_valid", _service_keys_valid),
     ("fibers.active_have_deps", _fibers_active_have_deps),
@@ -767,6 +784,7 @@ _BUILTIN_CHECKS = (
     ("tool_metadata.readable", _tool_metadata_readable),
     ("tool_consts.readable", _tool_consts_readable),
     ("event_types.readable", _event_types_readable),
+    ("named_styles.readable", _named_styles_readable),
     ("agent_loop.dependencies", _agent_loop_dependencies),
     ("presets.has_standard", _presets_have_standard),
     ("agents.messages_recorded", _agents_messages_recorded),

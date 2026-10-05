@@ -28,6 +28,7 @@ def _resolved(profile="cli"):
 
 
 def test_manifest_declares_each_builtin_event_type():
+    import src.core.events.agent_types  # noqa: F401
     import src.core.events.display_types  # noqa: F401
     import src.core.events.event_types  # noqa: F401
     from src.core.events.type_registry import builtin_composite_ids
@@ -43,6 +44,7 @@ def test_manifest_declares_each_builtin_event_type():
 
 
 def test_manifest_entries_match_registry_declaration():
+    import src.core.events.agent_types  # noqa: F401
     import src.core.events.display_types  # noqa: F401
     import src.core.events.event_types  # noqa: F401
     from src.core.events.type_registry import builtin_composite_ids
@@ -129,7 +131,46 @@ async def test_entry_config_override_core_event_type():
         await kernel.dispose()
 
 
+async def test_event_domains_session_agent_capability():
+    from src.core.events.agent_types import (
+        AgentEventType,
+        CapabilityEventType,
+        MESSAGE_EVENTS,
+        SessionEventType,
+    )
+
+    kernel = await build_kernel("cli")
+    try:
+        assert SessionEventType.TURN_START == "turn/start"
+        assert SessionEventType.USER_MESSAGE == "user/message"
+        assert SessionEventType.EMIT == "session/event"
+        assert "turn/start" in SessionEventType.ALL
+        assert "session/event" not in SessionEventType.ALL
+        assert AgentEventType.CREATED == "agent/created"
+        assert "agent/status" in AgentEventType.ALL
+        assert CapabilityEventType.TOOLS_EXECUTE == "tools/execute"
+        assert "telemetry/event" in CapabilityEventType.ALL
+        assert SessionEventType.USER_MESSAGE in MESSAGE_EVENTS
+    finally:
+        await shutdown_kernel(kernel)
+
+
+async def test_overlay_disable_session_event_type():
+    from src.core.events.agent_types import SessionEventType
+
+    kernel = await _build_with_disable(
+        ["event_types::event_type_session_turn_start"]
+    )
+    try:
+        with pytest.raises(AttributeError):
+            _ = SessionEventType.TURN_START
+        assert SessionEventType.TURN_END == "turn/end"
+    finally:
+        await kernel.dispose()
+
+
 def test_registry_api_roundtrip():
+    import src.core.events.agent_types  # noqa: F401
     import src.core.events.display_types  # noqa: F401
     import src.core.events.event_types  # noqa: F401
     from src.core.events.type_registry import (

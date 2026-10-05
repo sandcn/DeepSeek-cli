@@ -120,23 +120,48 @@ _FORMAT_MEDIA: dict[str, str] = {
 }
 
 # 扩展名 → 声明媒体类型（由 _EXT_TO_FORMAT + _FORMAT_MEDIA 派生，保持一致）。
-# 「一切皆插件」：登记到 ``const_registry``（清单条目 ``tool_const`` 可覆盖/
-# 禁用）；``image_extensions()`` 为实时查询入口，模块名保留向后兼容快照。
+# 「一切皆插件」：三张表（扩展名→格式 / 格式→媒体类型 / 派生扩展名→媒体类型）
+# 登记到 ``const_registry``（清单条目 ``tool_const`` 可覆盖/禁用）；
+# ``image_ext_format`` / ``image_format_media`` / ``image_extensions`` 为实时
+# 查询入口，模块级名保留向后兼容快照。
+from .const_registry import const as _const, declare_constants as _declare_constants  # noqa: E402
+
 IMAGE_EXTENSIONS: dict[str, str] = {
     ext: _FORMAT_MEDIA.get(fmt, f"image/{fmt.lower()}")
     for ext, fmt in _EXT_TO_FORMAT.items()
 }
-from .const_registry import const as _const, declare_constants as _declare_constants  # noqa: E402
 
-_declare_constants({"IMAGE_EXTENSIONS": IMAGE_EXTENSIONS})
+_declare_constants({
+    "IMAGE_EXT_FORMAT": _EXT_TO_FORMAT,
+    "IMAGE_FORMAT_MEDIA": _FORMAT_MEDIA,
+    "IMAGE_EXTENSIONS": IMAGE_EXTENSIONS,
+})
+
+
+def image_ext_format() -> dict:
+    """当前生效的「扩展名 → Pillow 格式名」映射（被禁用时为空）。"""
+    return dict(_const("IMAGE_EXT_FORMAT", {}) or {})
+
+
+def image_format_media() -> dict:
+    """当前生效的「Pillow 格式名 → 媒体类型」映射（被禁用时为空）。"""
+    return dict(_const("IMAGE_FORMAT_MEDIA", {}) or {})
 
 
 def image_extensions() -> dict:
     """当前生效的「扩展名 → 声明媒体类型」映射（被禁用时为空）。"""
     return dict(_const("IMAGE_EXTENSIONS", {}) or {})
-# Pillow 可识别的图像格式名集合（用于 registered_extensions 动态过滤：
+# Pillow 可识别的图像格式名集合兼容快照（用于 registered_extensions 动态过滤：
 # 仅接受静态表认可的「图像」格式，排除 PDF/视频/数据文件等非图像扩展名）。
+# 运行时经 ``_image_format_names()`` 实时查询（可被清单条目覆盖/禁用）。
 _IMAGE_FORMAT_NAMES: frozenset[str] = frozenset(_EXT_TO_FORMAT.values())
+
+
+def _image_format_names() -> frozenset:
+    ext_format = image_ext_format()
+    if not ext_format:
+        return frozenset()
+    return frozenset(ext_format.values())
 
 # 单文件大小上限（MB）
 _MAX_FILE_SIZE_MB = 50
@@ -222,11 +247,11 @@ def _declared_format(ext: str) -> str | None:
     try:
         from PIL import Image
         dyn = Image.registered_extensions().get(ext)
-        if dyn and dyn in _IMAGE_FORMAT_NAMES:
+        if dyn and dyn in _image_format_names():
             return dyn
     except Exception:
         pass
-    return _EXT_TO_FORMAT.get(ext)
+    return image_ext_format().get(ext)
 
 
 def _capability_error(path: str, model: str) -> str:
@@ -474,7 +499,7 @@ class ReadImageFunc(Func):
                 # ── 3. magic-byte / 声明类型一致校验 ───────
                 actual_format = getattr(img, "format", None)
                 if actual_format is None or actual_format != declared_format:
-                    declared_mime = _FORMAT_MEDIA.get(
+                    declared_mime = image_format_media().get(
                         declared_format, f"image/{declared_format.lower()}")
                     return _format_mismatch_error(file_path, ext, declared_mime)
                 img = img.copy()  # 复制后源文件可关闭，后续操作安全

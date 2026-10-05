@@ -20,6 +20,7 @@ from bs4 import BeautifulSoup, Tag
 
 # 编码检测（复用 tools.encoding 模块，含二次质量校验）
 from .encoding import detect_encoding
+from .const_registry import const as _const, declare_constants as _declare_constants
 
 _logger = logging.getLogger(__name__)
 
@@ -56,14 +57,6 @@ REMOVE_TAGS = {
     "svg", "canvas", "video", "audio", "object",
     "embed", "select", "option", "datalist",
 }
-from .const_registry import const as _const, declare_constants as _declare_constants  # noqa: E402
-
-_declare_constants({"REMOVE_TAGS": REMOVE_TAGS})
-
-
-def remove_tags() -> set:
-    """当前生效的内容提取排除标签集合（被禁用时为空）。"""
-    return set(_const("REMOVE_TAGS", set()) or set())
 
 # 内容提取时排除的 class/id 关键词（小写匹配）
 REMOVE_CLASS_KEYWORDS = (
@@ -76,11 +69,20 @@ REMOVE_CLASS_KEYWORDS = (
     "siderail", "side",
 )
 
-# 预编译噪音关键词正则（替代逐关键词循环，O(n) 替代 O(n*k)）
-_NOISE_KEYWORD_RE = re.compile(
-    '|'.join(re.escape(k) for k in REMOVE_CLASS_KEYWORDS),
-    re.IGNORECASE,
-)
+# 预编译噪音关键词正则（替代逐关键词循环，O(n) 替代 O(n*k)）；
+# 按生效关键词集缓存（可被清单条目覆盖/禁用——见 remove_class_keywords）。
+_NOISE_RE_CACHE: dict = {}
+
+
+def _noise_keyword_re():
+    keywords = tuple(remove_class_keywords())
+    if _NOISE_RE_CACHE.get("key") != keywords:
+        _NOISE_RE_CACHE["key"] = keywords
+        _NOISE_RE_CACHE["re"] = (
+            re.compile('|'.join(re.escape(k) for k in keywords), re.IGNORECASE)
+            if keywords else None
+        )
+    return _NOISE_RE_CACHE["re"]
 
 # 发布日期提取的 meta 属性组合
 _META_KEY = "meta"
@@ -96,6 +98,39 @@ DATE_META_PATTERNS = [
     ("time", {"itemprop": "datePublished"}),
     ("time", {"datetime": True}),  # 任何 <time datetime="...">
 ]
+
+# 「一切皆插件」：四张表（私有网段前缀 / 内容移除标签 / 噪音 class 关键词 /
+# 发布日期 meta 模式）登记到 ``const_registry``（清单条目 ``tool_const`` 可
+# 覆盖/禁用）；各 accessor 为实时查询入口，模块级名保留向后兼容快照。
+_declare_constants({
+    "PRIVATE_PREFIXES": PRIVATE_PREFIXES,
+    "REMOVE_TAGS": REMOVE_TAGS,
+    "REMOVE_CLASS_KEYWORDS": REMOVE_CLASS_KEYWORDS,
+    "DATE_META_PATTERNS": DATE_META_PATTERNS,
+})
+
+
+def private_prefixes() -> tuple:
+    """当前生效的禁止请求私有网段前缀（被禁用时为空）。"""
+    return tuple(_const("PRIVATE_PREFIXES", ()) or ())
+
+
+def remove_tags() -> set:
+    """当前生效的内容提取排除标签集合（被禁用时为空）。"""
+    return set(_const("REMOVE_TAGS", set()) or set())
+
+
+def remove_class_keywords() -> tuple:
+    """当前生效的内容提取排除 class/id 关键词（被禁用时为空）。"""
+    return tuple(_const("REMOVE_CLASS_KEYWORDS", ()) or ())
+
+
+def date_meta_patterns() -> list:
+    """当前生效的发布日期 meta 属性组合（被禁用时为空）。"""
+    return list(_const("DATE_META_PATTERNS", []) or [])
+
+
+_NOISE_KEYWORD_RE = _noise_keyword_re()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -133,7 +168,7 @@ def _is_private_url(url: str) -> bool:
 
     # 检查私有 IP 前缀（仅对纯 IP 地址生效）
     if is_numeric_ip:
-        for prefix in PRIVATE_PREFIXES:
+        for prefix in private_prefixes():
             if hostname.startswith(prefix):
                 return True
 
@@ -223,7 +258,7 @@ async def _validate_fetch_url(url: str) -> Optional[str]:
 
 def _extract_date(soup: BeautifulSoup) -> str:
     """从 HTML 的 meta 标签和 time 标签中提取发布时间"""
-    for tag_name, attrs in DATE_META_PATTERNS:
+    for tag_name, attrs in date_meta_patterns():
         if "datetime" in attrs and attrs["datetime"] is True:
             # 匹配任何 <time datetime="...">
             for tag in soup.find_all("time"):
@@ -329,7 +364,8 @@ def _format_date_str(date_str: str) -> str:
 def _is_noise_element(tag: Tag) -> bool:
     """判断元素是否为噪音（导航/广告/侧栏等），基于 class/id 关键词"""
     classes = " ".join(tag.get("class", [])) + " " + (tag.get("id", "") or "")
-    return bool(_NOISE_KEYWORD_RE.search(classes))
+    noise_re = _noise_keyword_re()
+    return bool(noise_re.search(classes)) if noise_re is not None else False
 
 
 # 策略3 常见内容区 CSS 选择器（模块级常量，避免每次调用重新构建）

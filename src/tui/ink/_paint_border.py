@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from src.presentation_data import LiveMapping
 from src.tui.core.style import Style
 from .fiber import Fiber
 from .output import Line
@@ -103,25 +104,14 @@ def _border_style(props: dict, edge: str | None = None) -> Style:
 #: 边框（``┄``/``┆``，视觉更轻）。
 #: singleDouble：顶/底双线、左右单线（``╓ ╖ ╙ ╜ ═ ║``）；doubleSingle：
 #: 顶/底单线、左右双线（``╒ ╕ ╘ ╛ ─ ╞`` 类）——react-ink 完整变体。
-_BORDER_CHARS: dict[str, tuple[str, str, str, str, str, str]] = {
-    "single": ("┌", "┐", "└", "┘", "─", "│"),
-    "double": ("╔", "╗", "╚", "╝", "═", "║"),
-    "round": ("╭", "╮", "╰", "╯", "─", "│"),
-    "bold": ("┏", "┓", "┗", "┛", "━", "┃"),
-    "classic": ("+", "+", "+", "+", "-", "|"),
-    "dashed": ("┌", "┐", "└", "┘", "┄", "┆"),
-    "singleDouble": ("╓", "╖", "╙", "╜", "═", "│"),
-    "doubleSingle": ("╒", "╕", "╘", "╛", "─", "║"),
-}
+_BORDER_CHARS = LiveMapping("border_chars")
 
 #: 自定义 borderStyle 对象缺省值（React Ink v6：``{topLeft, top, topRight,
 #: left, bottomLeft, bottom, bottomRight, right}``——缺省项回退 "single"）。
-_DEFAULT_BORDER_OBJECT: dict[str, str] = {
-    "topLeft": "┌", "top": "─", "topRight": "┐",
-    "left": "│",
-    "bottomLeft": "└", "bottom": "─", "bottomRight": "┘",
-    "right": "│",
-}
+_DEFAULT_BORDER_OBJECT = LiveMapping("border_object_default")
+
+#: 边框字符兜底（注册表缺席/被禁用时使用，与 single 变体一致）。
+_FALLBACK_BORDER = ("┌", "┐", "└", "┘", "─", "│")
 
 
 def _border_chars(fiber: Fiber) -> tuple[str, str, str, str, str, str, str]:
@@ -132,20 +122,26 @@ def _border_chars(fiber: Fiber) -> tuple[str, str, str, str, str, str, str]:
     缺省项回退 single。返回 ``(tl, tr, bl, br, hline, vline_l, vline_r)``
     ——vline_l/vline_r 左右独立（自定义对象 left/right 可不同字符）。
     """
+    defaults = _DEFAULT_BORDER_OBJECT or {}
+    single = _BORDER_CHARS.get("single") or _FALLBACK_BORDER
+
+    def _d(key: str, fallback_index: int) -> str:
+        return str(defaults.get(key, single[fallback_index]))
+
     name = fiber.props.get("borderStyle")
     if isinstance(name, dict):
         return (
-            str(name.get("topLeft", _DEFAULT_BORDER_OBJECT["topLeft"])),
-            str(name.get("topRight", _DEFAULT_BORDER_OBJECT["topRight"])),
-            str(name.get("bottomLeft", _DEFAULT_BORDER_OBJECT["bottomLeft"])),
-            str(name.get("bottomRight", _DEFAULT_BORDER_OBJECT["bottomRight"])),
-            str(name.get("top", _DEFAULT_BORDER_OBJECT["top"])),
-            str(name.get("left", _DEFAULT_BORDER_OBJECT["left"])),
-            str(name.get("right", _DEFAULT_BORDER_OBJECT["right"])),
+            str(name.get("topLeft", _d("topLeft", 0))),
+            str(name.get("topRight", _d("topRight", 1))),
+            str(name.get("bottomLeft", _d("bottomLeft", 2))),
+            str(name.get("bottomRight", _d("bottomRight", 3))),
+            str(name.get("top", _d("top", 4))),
+            str(name.get("left", _d("left", 5))),
+            str(name.get("right", _d("right", 5))),
         )
     if not isinstance(name, str):
-        return _BORDER_CHARS["single"] + (_BORDER_CHARS["single"][5],)
-    base = _BORDER_CHARS.get(name, _BORDER_CHARS["single"])
+        return single + (single[5],)
+    base = _BORDER_CHARS.get(name) or single
     return base + (base[5],)
 
 
