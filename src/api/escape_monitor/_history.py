@@ -19,11 +19,10 @@ from .history import (  # noqa: F401  （显式重导出，含下划线私有名
     _HISTORY_MAX_ENTRIES,
     _POLL_INTERVAL,
     _SELECT_ERROR_THRESHOLD,
-    _active_monitor,
-    _active_monitor_lock,
     _append_to_history_file,
     _compact_history_file,
     _lock_history_file,
     _read_history_file,
     _unlock_history_file,
 )
+from ._registry import _active_monitor, _active_monitor_lock  # noqa: F401  （活跃实例注册表）

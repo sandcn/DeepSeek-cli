@@ -16,6 +16,23 @@ class RendererService(Service):
     name = "renderer"
     inject = ("config",)
 
+    def __init__(self, ctx, config=None):
+        super().__init__(ctx, config)
+        cfg = config or getattr(ctx, "config", None) or {}
+        managed = cfg.get("managed_render_targets") or ()
+        if managed:
+            from ..renderer.targets.registry import set_managed_builtin_render_targets
+
+            undo_managed = set_managed_builtin_render_targets(managed)
+            ctx.effect(lambda: undo_managed)
+        disabled = cfg.get("disabled_render_targets") or ()
+        self._disabled_targets = list(disabled)
+        if disabled:
+            from ..renderer.targets.registry import disable_builtin_render_targets
+
+            undo_disabled = disable_builtin_render_targets(disabled)
+            ctx.effect(lambda: undo_disabled)
+
     def create(self, **kwargs):
         from ..renderer import IncrementalRenderer
 
@@ -88,6 +105,45 @@ class RendererService(Service):
 
         return list(builtin_filter_ids())
 
+    # ── 渲染目标（「一切皆插件」：目标可插拔） ─────────────
+
+    def target_ids(self) -> list:
+        """当前生效的渲染目标 id（生效内置 + 扩展）。"""
+        from ..renderer.targets.registry import (
+            builtin_render_target_factories,
+            render_target_factories,
+        )
+
+        return sorted(set(builtin_render_target_factories()) | set(render_target_factories()))
+
+    def builtin_target_ids(self) -> list:
+        """全部内置渲染目标 id（含被接管/禁用的）。"""
+        from ..renderer.targets.registry import builtin_render_target_ids
+
+        return list(builtin_render_target_ids())
+
+    def managed_targets(self) -> list:
+        from ..renderer.targets.registry import managed_render_target_ids
+
+        return list(managed_render_target_ids())
+
+    def disabled_targets(self) -> list:
+        return sorted(self._disabled_targets)
+
+    def register_target(self, name: str, factory) -> object:
+        """注册扩展渲染目标（注册即副作用，卸载时自动撤销）。"""
+        from ..renderer.targets.registry import register_render_target
+
+        undo = register_render_target(name, factory)
+        self.ctx.effect(lambda: undo)
+        return undo
+
+    def create_target(self, name=None, **kwargs):
+        """按名构造渲染目标实例（None/空用默认目标）。"""
+        from ..renderer.targets.registry import resolve_render_target
+
+        return resolve_render_target(name or "", **kwargs)
+
     def render_diff(self, path: str, old_content: str, new_content: str) -> str:
         if self.ctx.has("ui"):
             return self.ctx.consume("ui").render_diff(path, old_content, new_content)
@@ -98,4 +154,4 @@ class RendererService(Service):
 
 @plugin("renderer", inject=["config"], provide=["renderer"])
 def apply(ctx):
-    return RendererService(ctx)
+    return RendererService(ctx, ctx.config)

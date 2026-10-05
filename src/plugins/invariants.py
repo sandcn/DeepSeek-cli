@@ -368,6 +368,112 @@ def _singletons_kernel_source(kernel) -> str | None:
     return None
 
 
+def _web_providers_readable(kernel) -> str | None:
+    """Web 搜索/抓取提供者注册表必须可读，且生效项覆盖内置项。"""
+    if kernel.has_service("web_search"):
+        try:
+            from ..tools.search_provider_registry import builtin_search_provider_ids
+
+            service = kernel.resolve_service("web_search")
+            names = set(service.provider_names())
+            missing = sorted(set(builtin_search_provider_ids()) - names)
+            if missing:
+                return f"ctx.web_search 缺少内置搜索提供者: {missing}"
+        except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+            return f"Web 搜索提供者注册表读取失败: {exc}"
+    if kernel.has_service("web_fetch"):
+        try:
+            from ..tools.fetch_provider_registry import builtin_fetch_provider_ids
+
+            service = kernel.resolve_service("web_fetch")
+            names = set(service.provider_names())
+            missing = sorted(set(builtin_fetch_provider_ids()) - names)
+            if missing:
+                return f"ctx.web_fetch 缺少内置抓取提供者: {missing}"
+        except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+            return f"Web 抓取提供者注册表读取失败: {exc}"
+    return None
+
+
+def _themes_readable(kernel) -> str | None:
+    """主题注册表必须可读，且生效项覆盖全部内置主题。"""
+    if not kernel.has_service("themes"):
+        return None
+    try:
+        from ..tui.core._theme import builtin_theme_names
+
+        service = kernel.resolve_service("themes")
+        names = set(service.names())
+        missing = sorted(set(builtin_theme_names()) - names)
+        if missing:
+            return f"ctx.themes 缺少内置主题: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"主题注册表读取失败: {exc}"
+    return None
+
+
+def _skill_sources_readable(kernel) -> str | None:
+    """技能来源注册表必须可读，且生效项覆盖全部内置来源。"""
+    if not kernel.has_service("skill_sources"):
+        return None
+    try:
+        from ..skills.source_registry import builtin_skill_source_ids
+
+        service = kernel.resolve_service("skill_sources")
+        names = set(service.source_names())
+        missing = sorted(set(builtin_skill_source_ids()) - names)
+        if missing:
+            return f"ctx.skill_sources 缺少内置来源: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"技能来源注册表读取失败: {exc}"
+    return None
+
+
+def _session_projections_readable(kernel) -> str | None:
+    """会话投影注册表必须可读，且生效项覆盖全部内置投影。"""
+    if not kernel.has_service("session_projections"):
+        return None
+    try:
+        from ..core.session_log.builtin_projections import builtin_projection_names
+
+        service = kernel.resolve_service("session_projections")
+        names = set(service.names())
+        missing = sorted(set(builtin_projection_names()) - names)
+        if missing:
+            return f"ctx.session_projections 缺少内置投影: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"会话投影注册表读取失败: {exc}"
+    return None
+
+
+def _renderer_targets_readable(kernel) -> str | None:
+    """渲染目标注册表必须可读，且生效项覆盖全部内置目标。"""
+    if not kernel.has_service("renderer"):
+        return None
+    try:
+        from ..renderer.targets.registry import builtin_render_target_ids
+
+        service = kernel.resolve_service("renderer")
+        names = set(service.target_ids())
+        missing = sorted(set(builtin_render_target_ids()) - names)
+        if missing:
+            return f"ctx.renderer 缺少内置渲染目标: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"渲染目标注册表读取失败: {exc}"
+    return None
+
+
+def _escape_monitor_readable(kernel) -> str | None:
+    """Escape 监看服务必须可读（活跃实例查询/停止/创建接入点齐全）。"""
+    if not kernel.has_service("escape_monitor"):
+        return None
+    service = kernel.resolve_service("escape_monitor")
+    for method in ("active", "stop", "create"):
+        if not callable(getattr(service, method, None)):
+            return f"escape_monitor 服务缺少方法 {method!r}"
+    return None
+
+
 _BUILTIN_CHECKS = (
     ("services.keys_valid", _service_keys_valid),
     ("fibers.active_have_deps", _fibers_active_have_deps),
@@ -385,6 +491,12 @@ _BUILTIN_CHECKS = (
     ("tool_engines.readable", _tool_engines_readable),
     ("ui.consumers_views_readable", _ui_consumers_views_readable),
     ("runtime_data.readable", _runtime_data_services_readable),
+    ("web.providers_readable", _web_providers_readable),
+    ("themes.readable", _themes_readable),
+    ("skill_sources.readable", _skill_sources_readable),
+    ("session_projections.readable", _session_projections_readable),
+    ("renderer.targets_readable", _renderer_targets_readable),
+    ("escape_monitor.readable", _escape_monitor_readable),
     ("services.declared_provides", _declared_provides_present),
     ("singletons.kernel_source", _singletons_kernel_source),
 )

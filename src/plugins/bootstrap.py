@@ -60,6 +60,12 @@ _SINGLE_DECL_PLUGINS = {
     "tool_engine": "id",
     "consumer": "id",
     "ui_view": "id",
+    "web_search_provider": "id",
+    "web_fetch_provider": "id",
+    "theme": "name",
+    "skill_source": "id",
+    "session_projection": "name",
+    "renderer_target": "id",
 }
 
 #: 单条目声明插件名 → 汇入的托管分组
@@ -77,6 +83,12 @@ _MANAGED_GROUP = {
     "tool_engine": "managed_tool_engines",
     "consumer": "managed_consumers",
     "ui_view": "managed_ui_views",
+    "web_search_provider": "managed_search_providers",
+    "web_fetch_provider": "managed_fetch_providers",
+    "theme": "managed_themes",
+    "skill_source": "managed_skill_sources",
+    "session_projection": "managed_session_projections",
+    "renderer_target": "managed_render_targets",
 }
 
 #: 只统计「启用」条目的托管分组（命令沿用旧语义；工具/渲染/中间件把禁用项也
@@ -97,6 +109,12 @@ _AGGREGATE_MANAGED_KEYS = {
     "tool_scheduler": ("managed_tool_engines",),
     "consumers": ("managed_consumers",),
     "ui": ("managed_ui_views",),
+    "web_search": ("managed_search_providers",),
+    "web_fetch": ("managed_fetch_providers",),
+    "themes": ("managed_themes",),
+    "skill_sources": ("managed_skill_sources",),
+    "session_projections": ("managed_session_projections",),
+    "renderer": ("managed_render_targets",),
 }
 
 

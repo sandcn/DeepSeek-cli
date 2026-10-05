@@ -46,8 +46,15 @@ class WebSearchFunc(Func):
     # 摘要片段最大字符数（超出截断，保持输出精炼）
     MAX_SNIPPET_CHARS = 200
 
-    # 搜索提供者（对齐 DSH：工具只依赖接口，提供者可替换）
+    # 默认搜索提供者（无内核/无清单条目时的回退；对齐 DSH：工具只依赖接口）
     PROVIDER = DeepSeekSearchProvider
+
+    @classmethod
+    def _resolve_provider(cls):
+        """解析搜索提供者（内核 ``ctx.web_search`` 服务优先，回退默认注册表）。"""
+        from .search_provider_registry import active_search_provider
+
+        return active_search_provider() or cls.PROVIDER()
 
     @classmethod
     def to_tool_schema(cls):
@@ -92,7 +99,7 @@ class WebSearchFunc(Func):
         if not query:
             return "(搜索失败: 参数 query 不能为空)"
         try:
-            result = await self.PROVIDER().search(query)
+            result = await self._resolve_provider().search(query)
         except httpx.TimeoutException:
             return f"(搜索超时: {query})"
         except WebSearchError as e:

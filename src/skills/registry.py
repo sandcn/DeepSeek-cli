@@ -29,8 +29,6 @@ from typing import Dict, List, Optional, Tuple
 from ..config.loader import get_rc
 from .discovery import parse_skill_file, scan_skill_root
 from .models import (
-    RANK_INSTALLED,
-    RANK_PROJECT,
     RANK_RUNTIME,
     InvocationPolicy,
     SkillCandidate,
@@ -130,23 +128,17 @@ class SkillRegistry:
         return self.skills_dir(cwd) / INSTALLED_DIR
 
     def roots(self, cwd: Optional[str] = None) -> List[Tuple[Path, str, int]]:
-        """返回 (路径, source, rank) 根目录列表，按 rank 升序。"""
+        """返回 (路径, source, rank) 根目录列表（技能来源注册表解析）。
+
+        「一切皆插件」：来源（项目 ``.skills`` / GitHub 安装 ``installed`` /
+        自定义）由 ``src.skills.source_registry`` 的注册表解析，清单中的独立
+        条目（``skill_source``）声明内置来源；无清单时全部内置来源默认生效。
+        """
         if not self.enabled():
             return []
-        roots: List[Tuple[Path, str, int]] = [
-            (self.skills_dir(cwd), "project", RANK_PROJECT),
-        ]
-        installed = self.installed_root(cwd)
-        if installed.is_dir():
-            try:
-                for sub in sorted(installed.iterdir()):
-                    if sub.name.startswith("."):
-                        continue
-                    if sub.is_dir():
-                        roots.append((sub, "github", RANK_INSTALLED))
-            except OSError:
-                _logger.debug("读取 .skills/installed 目录异常", exc_info=True)
-        return roots
+        from .source_registry import active_skill_sources
+
+        return list(active_skill_sources(self, cwd))
 
     # ── 发现（带根目录 mtime 缓存） ──────────────────────
 

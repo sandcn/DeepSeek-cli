@@ -15,10 +15,8 @@ from __future__ import annotations
 import sys
 import threading
 import logging
-from .history import (
-    _active_monitor,
-    _active_monitor_lock,
-)
+from . import _registry
+from ._registry import get_active_monitor, stop_active_monitor
 from ..interrupt_async import reset_interrupt_async
 from src._compat_termios import termios, tty
 
@@ -63,7 +61,6 @@ class EscapeMonitor:
         Args:
             prefill: 可选的预填文本。
         """
-        global _active_monitor
         self._started = True
         reset_interrupt_async(input_instance=self._input)
         self._interrupted.clear()
@@ -81,21 +78,17 @@ class EscapeMonitor:
         self.apply_monitor_settings()
         self._input.start_io()
         self._input.echo(self._input.get_current_text())
-        with _active_monitor_lock:
-            _active_monitor = self
+        _registry.set_active_monitor(self)
 
     def stop(self):
         """停止监听，恢复终端设置。"""
-        global _active_monitor
         self._stop.set()
         self._active.set()
         self._interrupted.clear()
         reset_interrupt_async(input_instance=self._input)
         self._input.stop_io()
         self._restore_terminal_settings_impl()
-        with _active_monitor_lock:
-            if _active_monitor is self:
-                _active_monitor = None
+        _registry.clear_active_monitor(self)
 
     def resume(self):
         """恢复监听。"""
@@ -165,20 +158,7 @@ class EscapeMonitor:
         self._interrupted.clear()
 
 
-# ── 模块级导出函数 ──────────────────────────────────────────
-
-
-def get_active_monitor():
-    """获取当前活跃的 EscapeMonitor 实例（如果有）。"""
-    with _active_monitor_lock:
-        return _active_monitor
-
-
-def stop_active_monitor():
-    """停止当前活跃的 EscapeMonitor（如果存在）。"""
-    monitor = get_active_monitor()
-    if monitor is not None:
-        try:
-            monitor.stop()
-        except Exception:
-            _logger.warning("EscapeMonitor.stop() 异常", exc_info=True)
+# ── 模块级导出函数（re-export 自 ``_registry``，内核服务优先） ──
+# ``get_active_monitor`` / ``stop_active_monitor`` 已上移至 ``._registry``
+# （活跃实例单例真源 + 内核 ``ctx.escape_monitor`` 服务接入点），此处保持
+# 既有 ``from ._monitor import ...`` 调用路径兼容。

@@ -315,6 +315,74 @@ RUNTIME_DATA_ENTRIES = [
     {"id": "tokens", "plugin": "src.plugins.runtime_data:apply_tokens"},
 ]
 
+# ── Web 搜索/抓取提供者条目（每个内置提供者一个独立插件条目） ──
+#
+# 条目经 ``src.plugins.web_search_providers`` / ``web_fetch_providers`` 把该
+# id 的内置提供者注册进对应注册表；``config.id`` 供组合根收集「清单已接管的
+# 提供者」（注入 web_search / web_fetch 聚合插件，抑制默认装配）。
+
+WEB_SEARCH_PROVIDER_ENTRIES = [
+    {"id": "web_search_provider_deepseek", "plugin": "src.plugins.web_search_providers:apply_search_provider",
+     "config": {"id": "deepseek"}},
+]
+
+WEB_FETCH_PROVIDER_ENTRIES = [
+    {"id": "web_fetch_provider_http", "plugin": "src.plugins.web_fetch_providers:apply_fetch_provider",
+     "config": {"id": "http"}},
+]
+
+# ── 主题条目（每个内置主题一个独立插件条目） ────────────────
+#
+# 条目经 ``src.plugins.theme_entries`` 把 ``config.name`` 指向的内置主题注册
+# 进 ``src.tui.core._theme``；``config.name`` 供组合根收集「清单已接管的主题」
+# （注入 themes 聚合插件，抑制默认装配）。
+
+THEME_ENTRIES = [
+    {"id": "theme_dark", "plugin": "src.plugins.theme_entries:apply_theme",
+     "config": {"name": "dark"}},
+    {"id": "theme_light", "plugin": "src.plugins.theme_entries:apply_theme",
+     "config": {"name": "light"}},
+    {"id": "theme_high_contrast", "plugin": "src.plugins.theme_entries:apply_theme",
+     "config": {"name": "high-contrast"}},
+]
+
+# ── 技能来源条目（每个内置来源一个独立插件条目） ────────────
+#
+# 条目经 ``src.plugins.skill_source_entries`` 把 ``config.id`` 指向的内置来源
+# 注册进 ``src.skills.source_registry``；``config.id`` 供组合根收集「清单已
+# 接管的来源」（注入 skill_sources 聚合插件，抑制默认装配）。
+
+SKILL_SOURCE_ENTRIES = [
+    {"id": "skill_source_project", "plugin": "src.plugins.skill_source_entries:apply_skill_source",
+     "config": {"id": "project"}},
+    {"id": "skill_source_installed", "plugin": "src.plugins.skill_source_entries:apply_skill_source",
+     "config": {"id": "installed"}},
+]
+
+# ── 会话投影条目（每个内置投影一个独立插件条目） ────────────
+#
+# 条目经 ``src.plugins.session_projection_entries`` 把 ``config.name`` 指向的
+# 内置投影注册进 ``ctx.session_projections``；``config.name`` 供组合根收集
+# 「清单已接管的投影」（注入 session_projections 聚合插件，抑制默认装配）。
+
+SESSION_PROJECTION_ENTRIES = [
+    {"id": "session_projection_turn_boundary", "plugin": "src.plugins.session_projection_entries:apply_projection",
+     "config": {"name": "turnBoundary"}},
+]
+
+# ── 渲染目标条目（每个内置目标一个独立插件条目） ────────────
+#
+# 条目经 ``src.plugins.renderer_targets`` 把 ``config.id`` 指向的内置目标注册
+# 进 ``src.renderer.targets.registry``；``config.id`` 供组合根收集「清单已
+# 接管的渲染目标」（注入 renderer 聚合插件，抑制默认装配）。
+
+RENDERER_TARGET_ENTRIES = [
+    {"id": "renderer_target_terminal", "plugin": "src.plugins.renderer_targets:apply_renderer_target",
+     "config": {"id": "terminal"}},
+    {"id": "renderer_target_file", "plugin": "src.plugins.renderer_targets:apply_renderer_target",
+     "config": {"id": "file"}},
+]
+
 # ── Bundle 定义 ─────────────────────────────────────────────
 
 BUNDLES = [
@@ -330,8 +398,30 @@ BUNDLES = [
     },
     {
         "id": "renderer_ext",
-        "description": "渲染扩展：每个内置 handler/filter 一个独立插件条目（可 patch/overlay 禁用/替换）",
-        "plugins": list(RENDERER_HANDLER_ENTRIES) + list(RENDERER_FILTER_ENTRIES),
+        "description": "渲染扩展：每个内置 handler/filter/target 一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(RENDERER_HANDLER_ENTRIES) + list(RENDERER_FILTER_ENTRIES) + list(RENDERER_TARGET_ENTRIES),
+    },
+    {
+        "id": "web",
+        "description": "Web 能力：搜索/抓取提供者各一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": [
+            {"id": "web_search", "plugin": "src.plugins.web_search"},
+            {"id": "web_fetch", "plugin": "src.plugins.web_fetch"},
+        ] + list(WEB_SEARCH_PROVIDER_ENTRIES) + list(WEB_FETCH_PROVIDER_ENTRIES),
+    },
+    {
+        "id": "themes",
+        "description": "主题：每个内置主题一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": [
+            {"id": "themes", "plugin": "src.plugins.themes"},
+        ] + list(THEME_ENTRIES),
+    },
+    {
+        "id": "skill_sources",
+        "description": "技能来源：每个内置来源一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": [
+            {"id": "skill_sources", "plugin": "src.plugins.skill_sources"},
+        ] + list(SKILL_SOURCE_ENTRIES),
     },
     {
         "id": "middleware",
@@ -386,7 +476,7 @@ BUNDLES = [
     {
         "id": "core",
         "description": "基础层：配置、事件、提词、策略、工具、技能、通知后端",
-        "includes": ["tools", "commands", "notification_backends", "context_strategies", "runtime_data"],
+        "includes": ["tools", "commands", "notification_backends", "context_strategies", "runtime_data", "web", "skill_sources"],
         "plugins": [
             {"id": "config", "plugin": "src.plugins.config"},
             {"id": "events", "plugin": "src.plugins.events"},
@@ -407,6 +497,7 @@ BUNDLES = [
             {"id": "checkpoint", "plugin": "src.plugins.persistence:apply_checkpoint"},
             {"id": "session_log", "plugin": "src.plugins.session_log"},
             {"id": "session_projections", "plugin": "src.plugins.session_projections"},
+            {"id": "session_projection_turn_boundary", "plugin": "src.plugins.session_projection_entries:apply_projection", "config": {"name": "turnBoundary"}},
             {"id": "tools", "plugin": "src.plugins.tools"},
             {"id": "tools_builtin", "plugin": "src.plugins.tools_builtin"},
             {"id": "context", "plugin": "src.plugins.context"},
@@ -415,6 +506,7 @@ BUNDLES = [
             {"id": "presets", "plugin": "src.plugins.presets"},
             {"id": "invariants", "plugin": "src.plugins.invariants"},
             {"id": "app", "plugin": "src.plugins.app"},
+            {"id": "escape_monitor", "plugin": "src.plugins.escape_monitor"},
         ],
     },
     {
@@ -449,7 +541,7 @@ BUNDLES = [
     {
         "id": "presentation",
         "description": "表现层：UI、渲染器、事件消费者",
-        "includes": ["renderer_ext", "consumers", "ui_views"],
+        "includes": ["renderer_ext", "consumers", "ui_views", "themes"],
         "plugins": [
             {"id": "renderer", "plugin": "src.plugins.renderer"},
             {"id": "renderer_builtin", "plugin": "src.plugins.renderer_builtin"},
@@ -515,5 +607,11 @@ __all__ = [
     "CONSUMER_ENTRIES",
     "UI_VIEW_ENTRIES",
     "RUNTIME_DATA_ENTRIES",
+    "WEB_SEARCH_PROVIDER_ENTRIES",
+    "WEB_FETCH_PROVIDER_ENTRIES",
+    "THEME_ENTRIES",
+    "SKILL_SOURCE_ENTRIES",
+    "SESSION_PROJECTION_ENTRIES",
+    "RENDERER_TARGET_ENTRIES",
     "build_config_tree",
 ]

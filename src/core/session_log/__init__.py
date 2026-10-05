@@ -9,6 +9,11 @@
 
 from __future__ import annotations
 
+from .builtin_projections import (
+    BUILTIN_PROJECTIONS,
+    builtin_projection_names,
+    builtin_projection_spec,
+)
 from .events import SessionEvent, message_event_type, message_to_event_data
 from .log import SessionLog
 from .projection import MessageProjection, ProjectionRegistry, StateFolder, derive_messages
@@ -24,4 +29,7 @@ __all__ = [
     "StateFolder",
     "message_event_type",
     "message_to_event_data",
+    "BUILTIN_PROJECTIONS",
+    "builtin_projection_names",
+    "builtin_projection_spec",
 ]

@@ -1,11 +1,15 @@
 """会话投影插件 — 提供 ``ctx.session_projections``（投影 seam）。
 
-对应 DeepSeek Harness 的 ``ctx.sessionProjections``：已注册单元增量折叠
-已提交的会话事件，host 消费方通过 ``state_of()`` 读取单个类型化状态，载体
-通过 ``snapshot()`` 批量取得裁剪后的客户端视图。
+对应 DeepSeek Harness 的 ``ctx.sessionProjections``：已注册单元增量折叠已
+提交的会话事件，host 消费方通过 ``state_of()`` 读取单个类型化状态，载体通过
+``snapshot()`` 批量取得裁剪后的客户端视图。
 
-内置 ``turnBoundary`` 投影（agent loop 为读取方注册的共享状态）：折叠
-``turn/start`` / ``step/*`` / ``turn/end`` 事件，产出当前轮次边界视图。
+「一切皆插件」：内置 ``turnBoundary`` 投影（agent loop 为读取方注册的共享
+状态：折叠 ``turn/start`` / ``step/*`` / ``turn/end`` 事件，产出当前轮次边界
+视图）不再硬编码在本服务构造里，而是由清单中的独立条目
+（``session_projection``，经 ``src.plugins.session_projection_entries``）注册；
+本聚合插件按组合根注入的 ``managed_session_projections``（清单已接管的 name，
+含被禁用的）抑制默认注册，使 overlay 禁用单个投影真正生效。
 """
 
 from __future__ import annotations
@@ -13,25 +17,14 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from ..core.events.agent_types import SessionEventType
 from ..core.session_log import ProjectionRegistry
+from ..core.session_log.builtin_projections import (
+    builtin_projection_names,
+    builtin_projection_spec,
+)
 from ..kernel import Service, plugin
 
 _logger = logging.getLogger(__name__)
-
-
-def _turn_boundary_initial() -> Dict[str, Any]:
-    return {"turn": 0, "open": False, "steps": 0, "interrupted": False}
-
-
-def _turn_boundary_folder(state: Dict[str, Any], event: Any) -> Dict[str, Any]:
-    if event.type == SessionEventType.TURN_START:
-        state = {"turn": state.get("turn", 0) + 1, "open": True, "steps": 0, "interrupted": False}
-    elif event.type == SessionEventType.STEP_START:
-        state = {**state, "steps": state.get("steps", 0) + 1}
-    elif event.type == SessionEventType.TURN_END:
-        state = {**state, "open": False, "interrupted": bool((event.data or {}).get("interrupted", False))}
-    return state
 
 
 class SessionProjectionsService(Service):
@@ -42,16 +35,47 @@ class SessionProjectionsService(Service):
 
     def __init__(self, ctx, config=None):
         super().__init__(ctx, config)
+        cfg = config or getattr(ctx, "config", None) or {}
         self._registry = ProjectionRegistry()
-        self._registry.register("turnBoundary", _turn_boundary_folder, initial=_turn_boundary_initial)
+        self._managed = set(cfg.get("managed_session_projections") or ())
+        self._disabled = set(cfg.get("disabled_session_projections") or ())
+        for name in builtin_projection_names():
+            if name in self._managed or name in self._disabled:
+                continue
+            initial, folder = builtin_projection_spec(name)
+            self._registry.register(name, folder, initial=initial)
         ctx.effect(lambda: self._registry.clear)
 
     @property
     def registry(self) -> ProjectionRegistry:
         return self._registry
 
+    # ── 自省 ─────────────────────────────────────────────
+
+    def builtin_names(self) -> list:
+        """全部内置投影名（含被接管/禁用的）。"""
+        return list(builtin_projection_names())
+
+    def managed(self) -> list:
+        return sorted(self._managed)
+
+    def disabled(self) -> list:
+        return sorted(self._disabled)
+
+    # ── 注册 ─────────────────────────────────────────────
+
     def register(self, name: str, folder, *, initial=None):
         """注册一个投影单元，返回注销函数（注册即副作用）。"""
+        return self._registry.register(name, folder, initial=initial)
+
+    def register_builtin(self, name: str, folder=None, initial=None):
+        """按内置投影 id 注册（``folder=None`` 用内置声明）；返回注销函数。"""
+        if name in builtin_projection_names():
+            spec_initial, spec_folder = builtin_projection_spec(name)
+            if folder is None:
+                folder = spec_folder
+            if initial is None:
+                initial = spec_initial
         return self._registry.register(name, folder, initial=initial)
 
     def unregister(self, name: str) -> bool:
@@ -75,4 +99,7 @@ class SessionProjectionsService(Service):
 
 @plugin("session_projections", provide=["session_projections"])
 def apply(ctx):
-    return SessionProjectionsService(ctx)
+    return SessionProjectionsService(ctx, ctx.config)
+
+
+__all__ = ["SessionProjectionsService", "apply"]

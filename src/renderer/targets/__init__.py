@@ -18,9 +18,37 @@
 from __future__ import annotations
 
 from .base import RenderTarget, CompositeRenderTarget, RenderTargetContext
+from .file import FileRenderTarget
+from .registry import (
+    active_render_target,
+    builtin_render_target_factories,
+    builtin_render_target_ids,
+    disable_builtin_render_targets,
+    managed_render_target_ids,
+    register_builtin_render_target,
+    register_render_target,
+    render_target_factories,
+    resolve_render_target,
+    set_managed_builtin_render_targets,
+    unregister_builtin_render_target,
+)
+from .terminal import TerminalRenderTarget
 
 __all__ = [
     "RenderTarget",
     "CompositeRenderTarget",
     "RenderTargetContext",
+    "TerminalRenderTarget",
+    "FileRenderTarget",
+    "active_render_target",
+    "builtin_render_target_factories",
+    "builtin_render_target_ids",
+    "disable_builtin_render_targets",
+    "managed_render_target_ids",
+    "register_builtin_render_target",
+    "register_render_target",
+    "render_target_factories",
+    "resolve_render_target",
+    "set_managed_builtin_render_targets",
+    "unregister_builtin_render_target",
 ]

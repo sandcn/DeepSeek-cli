@@ -31,9 +31,11 @@ src/tui/core.style.Style 与标准库（math/time），不依赖 _animator、不
 from __future__ import annotations
 
 import math
+import threading
 import time
 from dataclasses import fields as _dc_fields
 from functools import lru_cache
+from typing import Any, Callable
 
 from src._compat import dataclass
 from src.tui._const import _SEMANTIC_COLOR
@@ -142,26 +144,223 @@ def _high_contrast_palette() -> Palette:
 
 
 class ThemeRegistry:
-    """主题注册表（按名解析 Palette，不可变）。"""
+    """主题注册表（按名解析 Palette，不可变）。
 
-    _themes: dict[str, Palette] = {
-        "dark": Palette(),
-        "light": _light_palette(),
-        "high-contrast": _high_contrast_palette(),
-    }
+    「一切皆插件」：内置主题（dark/light/high-contrast）的**声明**集中在本
+    模块的规格表中，每一项都由清单中的**独立插件条目**（``theme``，经
+    ``src.plugins.theme_entries``）显式注册，因而可被 Profile/Bundle 声明，
+    也可被 Patch/Overlay 按 id 单独禁用、覆盖或替换。无清单（单元测试、独立
+    调用）时无接管，全部内置主题默认生效（向后兼容）。
+    """
 
     @classmethod
     def names(cls) -> tuple[str, ...]:
-        return tuple(cls._themes.keys())
+        """当前生效的主题名（内置 + 扩展，内置按声明顺序在前）。"""
+        return tuple(active_theme_factories().keys())
 
     @classmethod
     def get(cls, name: str) -> Palette | None:
-        return cls._themes.get(name)
+        return _get_theme_palette(name)
 
     @classmethod
     def resolve(cls, name: str) -> Palette:
         """按名解析调色板；未知名回退 dark（零回归安全侧）。"""
-        return cls._themes.get(name, cls._themes["dark"])
+        palette = _get_theme_palette(name)
+        if palette is not None:
+            return palette
+        return _get_theme_palette("dark") or Palette()
+
+
+#: 内置主题声明（id → 工厂）——每项由清单中的独立插件条目注册。
+_BUILTIN_THEME_SPECS: dict[str, Callable[[], Palette]] = {
+    "dark": lambda: Palette(),
+    "light": _light_palette,
+    "high-contrast": _high_contrast_palette,
+}
+
+_theme_lock = threading.RLock()
+_ABSENT = object()
+_registered_builtin_themes: dict[str, Callable[[], Palette]] = {}
+_managed_builtin_themes: set = set()
+_disabled_builtin_themes: set = set()
+_extension_themes: dict[str, Callable[[], Palette]] = {}
+#: 主题名 → Palette 实例缓存（保持「主题调色板实例长期稳定」既有语义，
+#: 组件以 palette 字段作 use_memo 依赖时引用长期命中）
+_palette_instances: dict[str, Palette] = {}
+
+
+def builtin_theme_names() -> list[str]:
+    """全部内置主题名（含被接管/禁用的，按声明顺序）。"""
+    return list(_BUILTIN_THEME_SPECS)
+
+
+def _normalize_theme_ids(ids) -> list[str]:
+    if isinstance(ids, str):
+        ids = [ids]
+    selected: list[str] = []
+    for item in ids or ():
+        if item not in _BUILTIN_THEME_SPECS:
+            raise KeyError(f"未知内置主题: {item!r}（可用: {list(_BUILTIN_THEME_SPECS)}）")
+        selected.append(item)
+    return selected
+
+
+def active_theme_factories() -> dict[str, Callable[[], Palette]]:
+    """当前生效的主题工厂（内置 + 扩展；内置按声明顺序在前）。"""
+    with _theme_lock:
+        result: dict[str, Callable[[], Palette]] = {}
+        for name, default in _BUILTIN_THEME_SPECS.items():
+            if name in _disabled_builtin_themes:
+                continue
+            override = _registered_builtin_themes.get(name)
+            if override is not None:
+                result[name] = override
+                continue
+            if name in _managed_builtin_themes:
+                continue
+            result[name] = default
+        for name, factory in _extension_themes.items():
+            result[name] = factory
+        return result
+
+
+def _invalidate_palette_instances() -> None:
+    with _theme_lock:
+        _palette_instances.clear()
+
+
+def _get_theme_palette(name: str) -> Palette | None:
+    """按名取得（缓存的）调色板实例；不存在返回 None。"""
+    with _theme_lock:
+        cached = _palette_instances.get(name)
+        if cached is not None:
+            return cached
+        factory = active_theme_factories().get(name)
+        if factory is None:
+            return None
+        palette = factory()
+        _palette_instances[name] = palette
+        return palette
+
+
+def register_builtin_theme(name: str, factory: Any = None) -> Callable[[], None]:
+    """注册/覆盖一个内置主题（``factory=None`` 用默认工厂）；返回幂等撤销。"""
+    if name not in _BUILTIN_THEME_SPECS:
+        raise KeyError(f"未知内置主题: {name!r}（可用: {list(_BUILTIN_THEME_SPECS)}）")
+    with _theme_lock:
+        previous = _registered_builtin_themes.get(name, _ABSENT)
+        _registered_builtin_themes[name] = factory if factory is not None else _BUILTIN_THEME_SPECS[name]
+    _invalidate_palette_instances()
+
+    def _undo() -> None:
+        with _theme_lock:
+            if previous is _ABSENT:
+                _registered_builtin_themes.pop(name, None)
+            else:
+                _registered_builtin_themes[name] = previous
+        _invalidate_palette_instances()
+
+    return _undo
+
+
+def unregister_builtin_theme(name: str) -> bool:
+    with _theme_lock:
+        removed = _registered_builtin_themes.pop(name, None) is not None
+    if removed:
+        _invalidate_palette_instances()
+    return removed
+
+
+def set_managed_builtin_themes(ids) -> Callable[[], None]:
+    """声明这些内置主题 id 由清单条目负责（默认装配被抑制）；返回撤销。"""
+    selected = _normalize_theme_ids(ids)
+    with _theme_lock:
+        added = [item for item in selected if item not in _managed_builtin_themes]
+        _managed_builtin_themes.update(added)
+    _invalidate_palette_instances()
+
+    def _undo() -> None:
+        with _theme_lock:
+            for item in added:
+                _managed_builtin_themes.discard(item)
+        _invalidate_palette_instances()
+
+    return _undo
+
+
+def managed_theme_names() -> list[str]:
+    with _theme_lock:
+        return sorted(_managed_builtin_themes)
+
+
+def disable_builtin_themes(ids) -> Callable[[], None]:
+    """禁用一个或多个内置主题（返回幂等撤销）。"""
+    selected = _normalize_theme_ids(ids)
+    with _theme_lock:
+        added = [item for item in selected if item not in _disabled_builtin_themes]
+        _disabled_builtin_themes.update(added)
+    _invalidate_palette_instances()
+
+    def _undo() -> None:
+        with _theme_lock:
+            for item in added:
+                _disabled_builtin_themes.discard(item)
+        _invalidate_palette_instances()
+
+    return _undo
+
+
+def register_theme(name: str, factory: Callable[[], Palette]) -> Callable[[], None]:
+    """注册一个扩展主题（``factory() -> Palette``）；返回幂等撤销。"""
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"主题名必须是非空字符串: {name!r}")
+    if not callable(factory):
+        raise TypeError(f"主题工厂必须可调用: {factory!r}")
+    with _theme_lock:
+        previous = _extension_themes.get(name, _ABSENT)
+        _extension_themes[name] = factory
+    _invalidate_palette_instances()
+
+    def _undo() -> None:
+        with _theme_lock:
+            if previous is _ABSENT:
+                _extension_themes.pop(name, None)
+            else:
+                _extension_themes[name] = previous
+        _invalidate_palette_instances()
+
+    return _undo
+
+
+def unregister_theme(name: str) -> bool:
+    with _theme_lock:
+        removed = _extension_themes.pop(name, None) is not None
+    if removed:
+        _invalidate_palette_instances()
+    return removed
+
+
+def theme_factories() -> dict[str, Callable[[], Palette]]:
+    with _theme_lock:
+        return dict(_extension_themes)
+
+
+def clear() -> None:
+    """清空扩展主题与清单注册（测试用；不影响内置默认与禁用状态）。"""
+    with _theme_lock:
+        _extension_themes.clear()
+        _registered_builtin_themes.clear()
+    _invalidate_palette_instances()
+
+
+def reset() -> None:
+    """重置全部主题状态到「无清单、无禁用、全部默认」（测试隔离用）。"""
+    with _theme_lock:
+        _extension_themes.clear()
+        _registered_builtin_themes.clear()
+        _managed_builtin_themes.clear()
+        _disabled_builtin_themes.clear()
+    _invalidate_palette_instances()
 
 
 def resolve_theme(name: str) -> Palette:
@@ -337,4 +536,16 @@ __all__ = [
     "get_active_palette",
     "_invalidate_palette_cache",
     "_PALETTE_SLOTS",
+    "builtin_theme_names",
+    "active_theme_factories",
+    "register_builtin_theme",
+    "unregister_builtin_theme",
+    "set_managed_builtin_themes",
+    "managed_theme_names",
+    "disable_builtin_themes",
+    "register_theme",
+    "unregister_theme",
+    "theme_factories",
+    "clear",
+    "reset",
 ]

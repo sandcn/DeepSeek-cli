@@ -7,8 +7,8 @@
 
 from __future__ import annotations
 
-from ._monitor import (
-    EscapeMonitor,
+from ._monitor import EscapeMonitor
+from ._registry import (
     get_active_monitor,
     stop_active_monitor,
     _active_monitor,

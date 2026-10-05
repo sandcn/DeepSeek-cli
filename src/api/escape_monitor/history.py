@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import os
-import threading
 import logging
 
 from ...config.defaults import INPUT_HISTORY_FILE
@@ -28,10 +27,6 @@ _SELECT_ERROR_THRESHOLD = 30  # select 连续错误阈值：select 持续抛异�
 # ── 输入历史多进程写入配置 ────────────────────────────────
 _HISTORY_MAX_ENTRIES = 1000       # 内存历史最大条目数
 _HISTORY_COMPACT_RATIO = 1.5      # 压缩触发比例：行数 > 去重后*1.5 时触发
-
-# 全局活跃实例（供其他模块暂停/恢复）
-_active_monitor = None
-_active_monitor_lock = threading.RLock()
 
 # ── 跨进程文件锁辅助函数（输入历史多进程写入） ──────────────
 

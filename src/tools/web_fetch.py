@@ -12,7 +12,7 @@ from __future__ import annotations
 import httpx
 
 from .base import Func, tool_metadata
-from .page_fetcher import fetch_page, format_fetch_result
+from .fetch_providers import HttpPageFetcher
 from .search_providers import get_shared_client
 from ..core.constants import GREEN, YELLOW, DIM, RESET
 
@@ -29,6 +29,16 @@ from ..core.constants import GREEN, YELLOW, DIM, RESET
 )
 class WebFetchFunc(Func):
     name = "web_fetch"
+
+    # 默认抓取提供者（无内核/无清单条目时的回退）
+    PROVIDER = HttpPageFetcher
+
+    @classmethod
+    def _resolve_provider(cls):
+        """解析抓取提供者（内核 ``ctx.web_fetch`` 服务优先，回退默认注册表）。"""
+        from .fetch_provider_registry import active_fetch_provider
+
+        return active_fetch_provider() or cls.PROVIDER()
 
     @classmethod
     def to_tool_schema(cls):
@@ -71,10 +81,11 @@ class WebFetchFunc(Func):
         url = (self.url or "").strip()
         if not url:
             return "(获取网页失败: 参数 url 不能为空)"
+        provider = self._resolve_provider()
         try:
             # 复用 search_providers 的共享连接池，避免重复建连
             client = await get_shared_client()
-            result = await fetch_page(url, client=client)
+            result = await provider.fetch(url, client=client)
         except httpx.TimeoutException:
             return f"(获取网页超时: {url})"
         except Exception as e:
@@ -83,7 +94,7 @@ class WebFetchFunc(Func):
         if "error" in result:
             return result["error"]
 
-        return format_fetch_result(result)
+        return provider.format(result)
 
     async def display(self) -> str:
         Func._publish_tool_text(f"\n  {GREEN}📄 获取网页: {self.url}{RESET}")
