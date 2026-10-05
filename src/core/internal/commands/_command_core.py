@@ -38,6 +38,18 @@ def handle_command(cmd, messages, state, build_system_prompt, get_user_input, co
     command = parts[0].lower()
     arg = parts[1].strip() if len(parts) > 1 else ""
 
+    if command not in _commands:
+        # 「一切皆插件」：命令由清单条目 / ctx.commands 服务注册。独立调用
+        #（无内核、模块导入仅声明）时按需触发一次声明命令的兜底注册。
+        # 经 importlib 动态导入，避免与 commands.base 形成静态导入环。
+        try:
+            import importlib
+
+            base = importlib.import_module("src.core.commands.base")
+            base.get_plugin_registry()
+        except Exception:
+            pass
+
     if command in _commands:
         persistence_port = None
         if session is not None and hasattr(session, '_persistence_port'):

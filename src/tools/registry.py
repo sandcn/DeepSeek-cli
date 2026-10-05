@@ -195,7 +195,20 @@ class ToolRegistry:
 
     @classmethod
     def default(cls) -> 'ToolRegistry':
-        """返回模块级默认 ToolRegistry 实例（单例模式）"""
+        """返回默认 ToolRegistry 实例。
+
+        内核优先：内核挂载 ``ctx.tools`` 服务后返回其注册表（与工具服务、
+        工具调度器同源）；内核缺失或服务尚在构造中时回退进程级单例。
+        """
+        try:
+            from ..kernel.runtime import active_service
+
+            service = active_service("tools")
+            registry = getattr(service, "registry", None) if service is not None else None
+            if registry is not None:
+                return registry
+        except Exception:
+            pass
         global _default_registry
         if _default_registry is None:
             _default_registry = cls()

@@ -14,6 +14,21 @@ _logger = logging.getLogger(__name__)
 _SESSION_ID_TRUNCATE = 12     # 会话ID显示截断长度
 
 
+def _resolve_persistence(ctx):
+    """解析持久化端口：命令上下文注入 > 内核服务 > 默认 JSON 文件实现。"""
+    port = getattr(ctx, "persistence_port", None)
+    if port is not None:
+        return port
+    from ..adapters.kernel_runtime import active_persistence_port
+
+    port = active_persistence_port()
+    if port is not None:
+        return port
+    from ..adapters.persistence import JsonFilePersistence
+
+    return JsonFilePersistence()
+
+
 def _cmd_load(ctx):
     """加载保存的对话（自动保存当前会话并清空沙盒）"""
     arg = ctx.arg.strip()
@@ -24,8 +39,7 @@ def _cmd_load(ctx):
 
     # ── 第1步：自动保存当前会话（如有非 system 消息） ──────────
     non_system_current = filter_non_system(ctx.messages)
-    from ..adapters.persistence import JsonFilePersistence
-    _p = ctx.persistence_port if ctx.persistence_port is not None else JsonFilePersistence()
+    _p = _resolve_persistence(ctx)
     if non_system_current:
         current_model = ctx.state.get("model", MODEL)
         # 连同 SubAgent 记录一起保存（含完整聊天信息）
@@ -105,8 +119,7 @@ def _cmd_load(ctx):
 
 def _cmd_sessions(ctx):
     """列出所有保存的对话"""
-    from ..adapters.persistence import JsonFilePersistence
-    _p = ctx.persistence_port if ctx.persistence_port is not None else JsonFilePersistence()
+    _p = _resolve_persistence(ctx)
     sessions = _p.list_sessions()
     if not sessions:
         _out.write(f"{YELLOW}  ! 没有保存的对话{RESET}", level="raw", source="cmd")
@@ -126,10 +139,10 @@ def _cmd_sessions(ctx):
 
 
 # ── CommandPlugin 子类 ──────────────────────────────
-# 命令通过 get_plugin_registry().register() 注册，不再使用 register_command()。
-# CommandPluginRegistry.register() 内部自动调用 register_command() 确保向后兼容。
+# 命令在此声明（declare_command_plugin）；注册由清单条目 / ctx.commands 服务按需触发。
+# 注册时内部调用 register_command() 保持向后兼容。
 
-from .base import CommandPlugin, CommandMeta, get_plugin_registry
+from .base import CommandPlugin, CommandMeta, declare_command_plugin
 
 
 class LoadCommand(CommandPlugin):
@@ -160,7 +173,7 @@ class HelpCommand(CommandPlugin):
         return _cmd_help(ctx)
 
 
-# ── 自动注册插件 ────────────────────────────────────
-get_plugin_registry().register(LoadCommand())
-get_plugin_registry().register(SessionsCommand())
-get_plugin_registry().register(HelpCommand())
+# ── 声明插件（注册由清单条目 / ctx.commands 服务按需触发） ──
+declare_command_plugin(LoadCommand())
+declare_command_plugin(SessionsCommand())
+declare_command_plugin(HelpCommand())

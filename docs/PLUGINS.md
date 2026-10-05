@@ -113,6 +113,7 @@ python chat.py run --profile minimal --dump-config
 |---|---|---|
 | `config` | `ctx.config` | 运行时配置、base_url、模型列表 |
 | `events` | `ctx.events` | 核心事件总线 + 显示事件总线 |
+| `observability` | `ctx.observability` | 可观测性 provider（指标/追踪/遥测，可替换） |
 | `prompt` | `ctx.prompt` | 系统提词、子代理提词、空模式 |
 | `fs` | `ctx.fs` | 文件系统能力接缝（Definition+Provider+Consumer） |
 | `subprocess` | `ctx.subprocess` | 子进程能力接缝 |
@@ -121,16 +122,21 @@ python chat.py run --profile minimal --dump-config
 | `jobs` | `ctx.jobs` | 后台任务能力接缝 |
 | `sandbox` | `ctx.sandbox` | 沙盒能力接缝（路径/argv 校验与包装） |
 | `policy` | `ctx.policy` | 工具可用性、路径白名单、沙盒 Provider |
+| `notifications` | `ctx.notifications` | 桌面通知 provider（可替换/禁用） |
 | `agents` | `ctx.agents` | 活跃 Agent 注册表 + `agent/*` 事件域 |
+| `persistence` | `ctx.persistence` | 会话持久化 provider（可替换存储后端） |
+| `checkpoint` | `ctx.checkpoint` | 断点存储 provider（可替换存储后端） |
 | `session_log` | `ctx.session_log` | 仅追加会话日志（会话事实源） |
 | `session_projections` | `ctx.session_projections` | 投影 seam（增量折叠已提交事件） |
 | `tools` | `ctx.tools` | 工具注册表 + 工具执行管线 |
 | `tools_builtin` | — | 显式注册全部内置工具（每个注册都是可逆副作用） |
+| `context` | `ctx.context` | 上下文管理器创建 + 压缩策略注册（可替换） |
 | `seams` | `ctx.seams` | 能力接缝汇总（自省与批量替换 Provider） |
 | `skills` | `ctx.skills` | 技能注册表 |
 | `presets` | `ctx.presets` | 每会话能力组合（isolate 作用域） |
 | `invariants` | `ctx.invariants` | 运行时自检（断言插件树关系） |
 | `llm` | `ctx.llm` | 模型适配器路由 + 异步模型端口 |
+| `llm_provider_deepseek` / `llm_provider_anthropic` / `llm_provider_ollama` / `llm_provider_openai_compat` | — | 内置模型 provider（独立注册项，外部插件可覆盖/扩展） |
 | `sessions` | `ctx.sessions` | 会话创建/恢复/保存 |
 | `agent_loop` | `ctx.agent_loop` | Agent 组装与循环 |
 | `commands` | `ctx.commands` | 命令插件注册表 |
@@ -250,7 +256,8 @@ wrapped = ctx.intercept("svc", lambda v: LoggingProxy(v))  # 拦截解析结果
   python chat.py plugin remove my_plugin.py
   ```
 
-- **entry-points**：安装的 Python 包若声明 `dsh.plugins` 组，启动时自动发现。
+- **entry-points**：安装的 Python 包若声明 `dsh.plugins` 组，启动时由组合根
+  `build_kernel` 自动发现并挂载（单个加载失败被隔离，不影响其余插件）。
 
 ## 8. 运行时自省与自修改（cordis 工具）
 
@@ -403,3 +410,57 @@ registry.close("agent-1")                            # 撤销全部注册
 
 `ctx.agents` 为每个活跃 Agent 打开独立作用域（`agent.agent_scope`），
 每个 Agent 的能力注册互不污染；`presets.scope()` 同样基于隔离作用域。
+
+## 16. 可替换 Provider 一览
+
+除三段式能力接缝（第 14 节）外，以下运行时能力同样以「provider 可替换」的
+插件形态提供，替换入口与默认实现如下：
+
+| 服务 | 替换入口 | 默认 provider |
+|---|---|---|
+| `ctx.llm` | `ctx.llm.register_provider(name, factory, prefixes=…, substrings=…, fallback=…)` | 内置 deepseek / anthropic / ollama / openai_compat（各自独立的 provider 插件） |
+| `ctx.renderer` | `ctx.renderer.register_handler(factory)` / `register_filter(factory)` | 内置 TokenHandler 集合 + 三个内置过滤器 |
+| `ctx.observability` | `ctx.observability.set_provider(port)` | `ObservabilityFacade` |
+| `ctx.notifications` | `ctx.notifications.set_provider(provider)` | `src.notifications` 平台实现 |
+| `ctx.persistence` | `ctx.persistence.set_provider(port)` | `JsonFilePersistence` |
+| `ctx.checkpoint` | `ctx.checkpoint.set_provider(port)` | `JsonFileCheckpoint` |
+| `ctx.context` | `ctx.context.register_strategy(name, factory)` / `set_strategy_builder(fn)` | `SummarizeStrategy` → `DropStrategy` |
+
+provider / 扩展的注册都是挂在当前 Fiber 上的可逆副作用：插件卸载时自动撤销，
+外部插件可覆盖内置实现，卸载后自动回退内置。
+
+## 17. 细粒度插件化：工具 / 命令 / 渲染 / 中间件
+
+「一切皆插件」落实到**单个能力**：内置工具、内置命令、渲染 handler/filter、
+Agent 主循环中间件都是清单中的独立条目，可被 Profile/Bundle 声明、被
+Patch/Overlay 按 id 禁用或替换。
+
+| 能力 | 清单 bundle | 条目引用 | 组合根注入 |
+|---|---|---|---|
+| 内置工具 | `tools`（`tools::tool_*`） | `src.plugins.tool_plugin`（`config.tool` = `Func` 子类路径） | `tools_builtin` 的 `managed_tools` |
+| 内置命令 | `commands`（`commands::cmd_*`） | `src.plugins.command_plugin`（`config.command` = `CommandPlugin` 子类路径） | `ctx.commands` 的 `managed_commands` |
+| 渲染内置项 | `presentation`（`renderer_builtin`） | `src.plugins.renderer_builtin` | `config.disabled_handlers` / `disabled_filters` |
+| Agent 中间件 | `runtime`（`agent_middleware`） | `src.plugins.agent_middleware` | `config.disabled` |
+| 工具调度器 | `runtime`（`tool_scheduler`） | `src.plugins.tool_scheduler` | 提供 `ctx.tool_scheduler` |
+
+- **工具**：默认 profile 为每个内置工具声明独立条目；`tools_builtin` 只兜底
+  注册「清单未接管」的工具，并跳过 `managed_tools`（含被禁用的工具名），因此
+  `--patch` 禁用单个工具不会被兜底重注册。
+- **命令**：命令模块导入时只 `declare_command_plugin(...)`（声明，不注册）；
+  `ctx.commands` 按 `managed_commands`（清单启用的命令名）注册，`command_plugin`
+  条目再逐个确保注册（可逆副作用）。禁用命令即从清单移除其 `cmd_*` 条目。
+- **渲染内置项**：`src/renderer/extensions.py` 持有内置 handler/filter 注册表，
+  `RenderEngine` / `IncrementalRenderer` / `AnsiStreamRenderer` 只从注册表装配；
+  `renderer_builtin` 插件可禁用/替换内置项。
+- **Agent 中间件**：`src/core/middleware/registry.py` 持有内置中间件注册表，
+  `Agent` 只从注册表装配；`agent_middleware` 插件可禁用内置项，插件也可经
+  `register_middleware` 追加扩展。
+
+### 17.1 单例收敛为内核服务
+
+`ToolRegistry.default()`、`ToolScheduler.default()`、`LlmProviderRegistry.default_registry()`、
+`SkillRegistry.default_registry()`、`get_plugin_registry()` 均**内核优先**：
+内核挂载对应服务后返回其持有的实例（与 `ctx.tools` / `ctx.tool_scheduler` /
+`ctx.llm` / `ctx.skills` / `ctx.commands` 同源），内核缺失或服务尚在构造中时
+回退进程级单例，保证独立调用与单元测试兼容。
+

@@ -13,7 +13,7 @@ import logging
 from typing import Any
 
 from .base import InteractiveCommandPlugin
-from ..base import CommandMeta, get_plugin_registry
+from ..base import CommandMeta, declare_command_plugin
 # ★ 修复（/deitmsg 同步降级路径 NameError）：常量原先仅在 ``async_execute``
 #   内局部导入，``execute``（同步降级路径）引用 YELLOW/RESET 时抛 NameError
 #   ——被 ``except Exception`` 吞掉，用户在非交互环境执行 /deitmsg 得不到
@@ -293,4 +293,4 @@ class DeitmsgPlugin(InteractiveCommandPlugin):
         return True
 
 # 模块级自注册
-get_plugin_registry().register(DeitmsgPlugin())
+declare_command_plugin(DeitmsgPlugin())

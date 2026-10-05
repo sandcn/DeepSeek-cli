@@ -170,6 +170,26 @@ class CommandPluginRegistry:
                 restored += 1
         return restored
 
+    def register_declared(self, name: str) -> bool:
+        """把已声明的命令插件注册进本注册表（未声明/已注册返回 False）。
+
+        清单条目经此精确注册单个命令；``ctx.commands`` 服务按 Profile 决定
+        注册哪些声明命令。
+        """
+        plugin = _declared_plugins.get(name)
+        if plugin is None or name in self._plugins:
+            return False
+        self.register(plugin)
+        return True
+
+    def register_all_declared(self) -> int:
+        """注册全部已声明的命令插件（兜底路径：无清单接管时）。"""
+        count = 0
+        for name in declared_command_names():
+            if self.register_declared(name):
+                count += 1
+        return count
+
     def bind_loop(self, loop: Any) -> None:
         """遍历所有已注册的 interactive plugin 调用 plugin.bind_loop(loop)
 
@@ -241,6 +261,32 @@ class CommandPluginRegistry:
 
 _command_plugins = CommandPluginRegistry()
 
+#: 已声明但未注册的命令插件（导入即声明，注册由清单条目/服务按需触发）
+_declared_plugins: dict[str, CommandPlugin] = {}
+
+
+def declare_command_plugin(plugin: CommandPlugin) -> CommandPlugin:
+    """声明一个命令插件（登记实例，不注册进任何注册表）。
+
+    「一切皆插件」：命令模块导入时只**声明**自身提供的命令插件（幂等），
+    是否注册、注册哪些由清单条目（``src.plugins.command_plugin``）或
+    ``ctx.commands`` 服务按 Profile/Patch 决定——因此单个命令可被禁用/替换。
+    """
+    if not isinstance(plugin, CommandPlugin):
+        raise TypeError(f"必须声明 CommandPlugin 实例: {plugin!r}")
+    _declared_plugins[plugin.meta.name] = plugin
+    return plugin
+
+
+def declared_command_plugin(name: str) -> Optional[CommandPlugin]:
+    """返回已声明的命令插件实例（未声明返回 None）。"""
+    return _declared_plugins.get(name)
+
+
+def declared_command_names() -> list[str]:
+    """返回全部已声明的命令名。"""
+    return sorted(_declared_plugins)
+
 
 def command_plugin(
     name: Optional[str] = None,
@@ -274,9 +320,18 @@ def command_plugin(
             usage=usage,
             hidden=hidden,
         )
-        _command_plugins.register(cls())
+        declare_command_plugin(cls())
         return cls
     return decorator
+
+
+def command_registry_singleton() -> CommandPluginRegistry:
+    """返回进程级命令注册表单例（**不触发**声明的自动注册）。
+
+    供 ``ctx.commands`` 服务构造期使用：服务需要按 Profile 精确决定注册哪些
+    声明命令，不能被 ``get_plugin_registry`` 的兜底自动注册抢先填满。
+    """
+    return _command_plugins
 
 
 def get_plugin_registry() -> CommandPluginRegistry:
@@ -296,7 +351,9 @@ def get_plugin_registry() -> CommandPluginRegistry:
     except Exception:
         pass
     # 命令服务卸载会注销内置命令（可逆副作用），但命令插件模块已导入——
-    # 全局注册表为空时按已知快照恢复，避免后续访问拿到空注册表。
-    if not _command_plugins._plugins and _command_plugins._known_plugins:
+    # 全局注册表为空时按已知快照 / 声明集合恢复，避免后续访问拿到空注册表。
+    if not _command_plugins._plugins:
         _command_plugins.restore()
+        if not _command_plugins._plugins:
+            _command_plugins.register_all_declared()
     return _command_plugins

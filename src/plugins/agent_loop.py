@@ -59,6 +59,11 @@ class AgentLoopService(Service):
         kwargs.setdefault("config_port", self.ctx.consume("config").port)
         kwargs.setdefault("async_model_port", self.ctx.llm.model_port())
         kwargs.setdefault("prompt_builder_port", self.ctx.prompt.port)
+        # 可观测性端口（内核 observability 服务优先；缺失回退 Agent 默认适配器）
+        if self.ctx.has("observability"):
+            observability_port = self.ctx.consume("observability").port()
+            if observability_port is not None:
+                kwargs.setdefault("observability_port", observability_port)
         if null_ports:
             from ..core.adapters.null import (
                 _NullDisplayPort,
@@ -120,7 +125,9 @@ class AgentLoopService(Service):
 
     def create_headless_agent(self, *, model=None, observability_port=None, sandbox=None):
         """无 UI Agent（NullPort），供 ChatSession 默认构造。"""
-        kwargs = {"observability_port": observability_port}
+        kwargs = {}
+        if observability_port is not None:
+            kwargs["observability_port"] = observability_port
         if sandbox is not None:
             kwargs["sandbox"] = sandbox
         return self.create_agent(model=model, null_ports=True, **kwargs)

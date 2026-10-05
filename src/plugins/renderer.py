@@ -26,8 +26,48 @@ class RendererService(Service):
 
         return create_stream_renderers(output_file)
 
+    # ── 扩展点（「一切皆插件」：渲染 handler/filter 可插拔） ──
+
+    def register_handler(self, factory):
+        """注册 TokenHandler 工厂（注册即副作用，卸载时自动撤销）。
+
+        工厂为无参可调用，每次创建渲染器时实例化；返回的 handler 需实现
+        ``get_token_types()`` 与 ``handle(token, engine)``。
+        """
+        from ..renderer.extensions import register_handler
+
+        undo = register_handler(factory)
+        self.ctx.effect(lambda: undo)
+        return undo
+
+    def register_filter(self, factory):
+        """注册 TokenFilter 工厂（注册即副作用，卸载时自动撤销）。
+
+        工厂为无参可调用，每次创建渲染器时实例化；返回的 filter 需实现
+        ``process(tokens, ctx) -> tokens``。
+        """
+        from ..renderer.extensions import register_filter
+
+        undo = register_filter(factory)
+        self.ctx.effect(lambda: undo)
+        return undo
+
+    def handlers(self) -> list:
+        """列出已注册的扩展 handler 工厂。"""
+        from ..renderer.extensions import handler_factories
+
+        return list(handler_factories())
+
+    def filters(self) -> list:
+        """列出已注册的扩展 filter 工厂。"""
+        from ..renderer.extensions import filter_factories
+
+        return list(filter_factories())
+
     def render_diff(self, path: str, old_content: str, new_content: str) -> str:
-        from .ui import _ui_runtime
+        if self.ctx.has("ui"):
+            return self.ctx.consume("ui").render_diff(path, old_content, new_content)
+        from ..core.adapters import ui_runtime as _ui_runtime
 
         return _ui_runtime.render_diff_to_ansi(path, old_content, new_content)
 

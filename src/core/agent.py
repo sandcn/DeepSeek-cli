@@ -139,11 +139,23 @@ class Agent(BaseAgent):
             from .sandbox_manager import get_sandbox_manager
             self.sandbox = get_sandbox_manager()
 
-        # ── Pipeline（中间件管道） ─────────────────────────
+        # ── Pipeline（中间件管道）：从中间件注册表装配 ─────
         self._pipeline = Pipeline()
-        self._pipeline.use_async(_InterruptCheckMiddleware())
-        self._pipeline.use_async(_AsyncObservabilityMiddleware())
-        self._pipeline.use_async(_AuditLogMiddleware())
+        from .middleware.registry import (
+            builtin_middleware_factories,
+            middleware_factories,
+        )
+
+        for factory in builtin_middleware_factories():
+            try:
+                self._pipeline.use_async(factory())
+            except Exception:
+                _logger.warning("内置中间件装配失败: %r", factory, exc_info=True)
+        for factory in middleware_factories():
+            try:
+                self._pipeline.use_async(factory())
+            except Exception:
+                _logger.warning("扩展中间件装配失败: %r", factory, exc_info=True)
 
     # ── _async_tool_executor 废弃属性（property + setter） ──
 

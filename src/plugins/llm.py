@@ -16,10 +16,64 @@ class LlmService(Service):
     name = "llm"
     inject = ("config",)
 
+    def __init__(self, ctx, config=None):
+        # 先建自有 provider 注册表（在 super().__init__ 提供 ctx.llm 之前），
+        # 避免构造期解析服务时自引用递归。
+        from ..api.provider_registry import build_default_registry
+
+        self._provider_registry = build_default_registry()
+        super().__init__(ctx, config)
+
     def adapter(self, model: str):
         from ..api._adapter_manager import get_adapter
 
         return get_adapter(model)
+
+    # ── Provider 注册（「一切皆插件」：模型 provider 可插拔） ──
+
+    def provider_registry(self):
+        """返回本服务的 LLM provider 注册表（内核服务自有实例）。"""
+        return self._provider_registry
+
+    def register_provider(self, name, factory, *, prefixes=(), substrings=(), fallback=False):
+        """注册一个模型 provider（注册即副作用，卸载时自动撤销）。
+
+        Args:
+            name: provider 名（同名注册覆盖旧条目，卸载时恢复）。
+            factory: 无参可调用，返回适配器实例。
+            prefixes: 前缀匹配列表（模型名小写后以某前缀开头即匹配）。
+            substrings: 子串匹配列表（模型名包含某子串即匹配）。
+            fallback: 作为兜底 provider（无其它条目匹配时使用）。
+
+        Returns:
+            撤销函数（幂等）。
+        """
+        registry = self.provider_registry()
+        undo = registry.register(
+            name,
+            factory,
+            prefixes=prefixes,
+            substrings=substrings,
+            fallback=fallback,
+            source="plugin",
+        )
+        self.ctx.effect(lambda: undo)
+        return undo
+
+    def unregister_provider(self, name) -> bool:
+        """注销一个 provider（返回是否存在）。"""
+        return self.provider_registry().unregister(name)
+
+    def providers(self) -> list:
+        """列出全部 provider 条目（自省）。"""
+        return self.provider_registry().describe()
+
+    def provider_names(self) -> list:
+        return self.provider_registry().names()
+
+    def resolve_provider(self, model: str) -> str:
+        """返回某模型匹配到的 provider 名（无匹配返回 None）。"""
+        return self.provider_registry().match_name(model)
 
     def model_port(self):
         from ..core.adapters.model import DefaultAsyncModelAdapter

@@ -41,8 +41,7 @@ from .indicator import StreamingIndicator
 from .recursive_parser import RecursiveDescentParser
 from .types import RenderContext, TokenType
 from .engine import RenderEngine
-from .pipeline import TokenPipeline, CodeBlockBatcher
-from .pipeline_filters import HeadingAnchorFilter, TokenStreamOptimizer
+from .pipeline import TokenPipeline
 
 from ..terminal import get_safe_console_config
 from ._rendering import render_toc, render_render_summary
@@ -178,11 +177,21 @@ class IncrementalRenderer:
         self._parser = RecursiveDescentParser(ctx=self._ctx)
         self._indicator = StreamingIndicator(self._output)
 
-        # 内置 Token 过滤器链
+        # 过滤器链：内置（渲染扩展注册表提供，可被禁用/替换）→ 扩展（插件注册）
         self._pipeline = TokenPipeline()
-        self._pipeline.add_filter(CodeBlockBatcher())
-        self._pipeline.add_filter(HeadingAnchorFilter(collect_toc=True))
-        self._pipeline.add_filter(TokenStreamOptimizer())
+        from .extensions import builtin_filter_factories, filter_factories
+
+        for factory in builtin_filter_factories():
+            try:
+                self._pipeline.add_filter(factory())
+            except Exception:
+                _logger.warning("内置渲染过滤器装配失败: %r", factory, exc_info=True)
+
+        for factory in filter_factories():
+            try:
+                self._pipeline.add_filter(factory())
+            except Exception:
+                _logger.warning("扩展渲染过滤器注册失败: %r", factory, exc_info=True)
 
         # 渲染引擎
         self._engine = RenderEngine(

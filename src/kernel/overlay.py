@@ -44,10 +44,16 @@ def normalize_overlay(data: Any) -> dict:
     if isinstance(data, dict):
         for item in data.get("insert", []) or []:
             insert.append(_entry_dict(item))
-        for item in data.get("replace", []) or []:
-            _record_replace(item, replace, disable)
-        for item in data.get("patch", []) or []:
-            _record_replace(item, replace, disable)
+        for key in ("replace", "patch"):
+            value = data.get(key) or []
+            if isinstance(value, dict):
+                # 已归一化形态（id → config 映射）
+                for entry_id, config in value.items():
+                    if config is not None:
+                        replace[entry_id] = dict(config)
+                continue
+            for item in value:
+                _record_replace(item, replace, disable)
         for item in data.get("disable", []) or []:
             disable.add(_target_of(item))
         # 字典本身也可能是单条 patch

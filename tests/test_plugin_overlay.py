@@ -55,6 +55,21 @@ def test_apply_overlay_insert_replace_disable():
     assert by_id["extra::c"].plugin == "x.c"
 
 
+def test_normalize_overlay_idempotent_normalized_shape():
+    """已归一化形态（replace 为 id→config 映射）再次归一化不报错且保持语义。"""
+    once = normalize_overlay(
+        {"replace": [{"id": "core::a", "config": {"v": 2}}], "disable": ["core::b"]}
+    )
+    twice = normalize_overlay(once)
+    assert twice["replace"]["core::a"] == {"v": 2}
+    assert "core::b" in twice["disable"]
+
+    entries = apply_overlay(_entries(), once)
+    by_id = {e.id: e for e in entries}
+    assert by_id["core::a"].config == {"v": 2}
+    assert by_id["core::b"].disabled is True
+
+
 def test_apply_overlay_replace_missing_raises():
     from src.kernel import PluginError
 

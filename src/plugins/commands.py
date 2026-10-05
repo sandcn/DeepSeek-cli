@@ -1,45 +1,35 @@
 """命令插件 — 提供 ``ctx.commands``。
 
-命令系统的插件注册表（``CommandPluginRegistry``）本身就管理一批命令插件；
-本插件负责确保内置命令插件已加载，并把注册表作为服务暴露；卸载时注销
-本插件注册的命令（可逆副作用）。
+「一切皆插件」：每个内置命令是清单中的独立条目（``commands`` bundle 的
+``cmd_*`` 条目，经 ``src.plugins.command_plugin`` 显式注册）。命令模块导入
+时只**声明**自身提供的命令插件（``declare_command_plugin``），是否注册由本
+服务按 Profile/Patch 决定——因此单个命令可被禁用/替换。
+
+本服务按组合根注入的 ``config.managed_commands``（清单接管的命令名，含被
+禁用的）注册声明的命令；未注入时兜底注册全部已声明命令（无清单场景）。
 """
 
 from __future__ import annotations
 
 from ..kernel import Service, plugin
 
-# 内置命令插件的名 → 实例缓存（模块级，确保卸载后可重新注册）
-_BUILTIN_COMMAND_CACHE: dict | None = None
-
 
 def _ensure_builtin_commands():
-    """导入内置命令模块；首次快照，后续按需补注册。"""
-    global _BUILTIN_COMMAND_CACHE
-    from ..core.commands.base import get_plugin_registry
-
-    registry = get_plugin_registry()
-    # 触发命令模块导入（导入副作用完成注册）
+    """导入内置命令模块（填充声明；注册由本服务或清单条目触发）。"""
     import importlib
 
     importlib.import_module("src.core.commands")
     importlib.import_module("src.core.commands.plugins")
+    from ..core.commands.base import command_registry_singleton
 
-    if _BUILTIN_COMMAND_CACHE is None:
-        _BUILTIN_COMMAND_CACHE = dict(registry._plugins)
-    else:
-        for name, command in _BUILTIN_COMMAND_CACHE.items():
-            if name not in registry._plugins:
-                registry.register(command)
-    return registry
+    return command_registry_singleton()
 
 
 def ensure_builtin_commands():
-    """确保内置命令插件已注册（公开入口——自省/展示按需补注册）。
+    """确保内置命令模块已导入（声明已填充）。
 
-    命令服务卸载会注销全部内置命令（可逆副作用）；长期驻留的全局注册表
-    （``get_plugin_registry`` 回退路径）在无活跃内核时可能为空，自省/展示
-    方（如 /plugin 命令）经本入口按需补注册，保证命令插件信息可见。
+    公开入口——自省/展示方（如 /plugin 命令）按需调用，保证命令插件信息在
+    任意入口下可见。
     """
     return _ensure_builtin_commands()
 
@@ -53,8 +43,26 @@ class CommandService(Service):
 
     def __init__(self, ctx, config=None):
         super().__init__(ctx, config)
-        self._registry = _ensure_builtin_commands()
-        self._names = list(self._registry._plugins)
+        from ..core.commands.base import command_registry_singleton
+
+        _ensure_builtin_commands()
+        self._registry = command_registry_singleton()
+        managed = (config or ctx.config or {}).get("managed_commands")
+        self._names: list[str] = []
+        if managed:
+            from ..core.commands.base import declared_command_names
+
+            wanted = {str(item) for item in managed}
+            # 清除兜底路径可能预注册的、清单未接管的声明命令（保证 disable 生效）
+            for existing in declared_command_names():
+                if existing not in wanted:
+                    self._registry.unregister(existing)
+            for name in wanted:
+                if self._registry.register_declared(name):
+                    self._names.append(name)
+        else:
+            self._registry.register_all_declared()
+            self._names = list(self._registry._plugins)
         ctx.effect(lambda: self._unregister_all)
 
     def _unregister_all(self) -> None:

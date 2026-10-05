@@ -24,7 +24,7 @@ from ....skills import (
     is_model_invocable,
     is_user_invocable,
 )
-from ..base import CommandMeta, get_plugin_registry
+from ..base import CommandMeta, declare_command_plugin
 from .base import InteractiveCommandPlugin
 
 _logger = logging.getLogger(__name__)
@@ -252,7 +252,7 @@ class SkillPlugin(InteractiveCommandPlugin):
 
 
 # 模块级自注册（与 ModelPlugin 等一致）
-get_plugin_registry().register(SkillPlugin())
+declare_command_plugin(SkillPlugin())
 
 
 __all__ = ["SkillPlugin"]

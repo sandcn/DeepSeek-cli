@@ -50,6 +50,14 @@ class PolicyService(Service):
 
     def __init__(self, ctx, config=None):
         super().__init__(ctx, config)
+        # ── 全局禁用工具集合（config 可覆盖静态常量） ──
+        from ..tools.tool_policy import GLOBAL_DISABLED_TOOLS
+
+        configured = (config or ctx.config or {}).get("globally_disabled_tools")
+        self._global_disabled = (
+            frozenset(configured) if configured is not None
+            else frozenset(GLOBAL_DISABLED_TOOLS)
+        )
         # 注册策略钩子（注册即副作用；卸载时自动移除）
         ctx.on("tools/pre-execute", self._on_pre_execute)
         # 为 sandbox 能力接缝注册策略 Provider（注册即副作用，卸载时回退默认）
@@ -73,6 +81,10 @@ class PolicyService(Service):
         self._sandbox_previous = None
 
     # ── 工具可用性 ───────────────────────────────────────
+
+    def globally_disabled_tools(self) -> frozenset:
+        """全局禁用工具集合（任何 agent 都不能加载）。"""
+        return self._global_disabled
 
     def excluded_tools(self, agent_type: str = "execute") -> set:
         from ..tools.tool_policy import TOOL_EXCLUSION_MAP

@@ -44,15 +44,32 @@ class AnsiStreamRenderer:
     def __init__(self, code_theme: str = "monokai", width: int = 80):
         from src.renderer.recursive_parser import RecursiveDescentParser
         from src.renderer.types import RenderContext
-        from src.renderer.pipeline import TokenPipeline, CodeBlockBatcher
-        from src.renderer.pipeline_filters import HeadingAnchorFilter, TokenStreamOptimizer
+        from src.renderer.pipeline import TokenPipeline
+        from src.renderer.extensions import builtin_filter_factories, filter_factories
 
         self._ctx = RenderContext()
         self._parser = RecursiveDescentParser(ctx=self._ctx)
         self._pipeline = TokenPipeline()
-        self._pipeline.add_filter(CodeBlockBatcher())
-        self._pipeline.add_filter(HeadingAnchorFilter(collect_toc=True))
-        self._pipeline.add_filter(TokenStreamOptimizer())
+        # 内置过滤器（渲染扩展注册表提供，可被禁用/替换）
+        for _factory in builtin_filter_factories():
+            try:
+                self._pipeline.add_filter(_factory())
+            except Exception:
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "内置 ANSI 渲染过滤器装配失败: %r", _factory, exc_info=True
+                )
+        # 扩展过滤器（插件经 ctx.renderer.register_filter 注册）
+        for _factory in filter_factories():
+            try:
+                self._pipeline.add_filter(_factory())
+            except Exception:
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "扩展 ANSI 渲染过滤器注册失败: %r", _factory, exc_info=True
+                )
         self._engine = AnsiRenderEngine(code_theme=code_theme, width=width)
         self._lines: list[AnsiLine] = []
         self._closed = False

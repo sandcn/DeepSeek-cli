@@ -4,6 +4,15 @@
 叠加用户 Overlay（``--patch`` / ``~/.chat_config/profiles/<profile>/`` /
 ``~/.chat_config/cordis.patch.yml``），把插件逐个挂载到内核，等待依赖稳定，
 并登记为进程级当前内核。
+
+除清单声明的插件外，组合根还负责两类「分发渠道」的挂载：
+
+- **外部目录插件**：``./plugins``、``~/.chat_config/plugins`` 内的 ``*.py``；
+- **entry-points**：已安装 Python 包声明的 ``dsh.plugins`` 组。
+
+组合根同时把「清单已接管的工具名 / 命令名」注入对应聚合插件
+（``tools_builtin`` / ``commands``），使单个工具或命令的 overlay 禁用不会被
+兜底注册重新引入。
 """
 
 from __future__ import annotations
@@ -14,7 +23,7 @@ from typing import List, Optional
 
 from ..kernel import Kernel, format_config_dump, materialize, set_current_kernel
 from ..kernel.config_tree import ConfigTree, ResolvedPlugin
-from ..kernel.loader import discover_plugin_entries
+from ..kernel.loader import discover_plugin_entries, entry_points_plugins
 from ..kernel import manifest as kernel_manifest
 from ..kernel.overlay import apply_overlay, normalize_overlay
 from .manifest import DEFAULT_PROFILE, build_config_tree
@@ -35,6 +44,13 @@ _OVERLAY_NAMES = frozenset({
     "cordis.patch.yml", "cordis.patch.yaml", "cordis.patch.json",
     "overlay.yml", "overlay.yaml", "overlay.json",
 })
+
+#: 聚合插件的插件名 → 注入的 config 键（收集自清单中同类的单条目声明）
+_AGGREGATE_MANAGED_KEY = {
+    "tools_builtin": "managed_tools",
+    "commands": "managed_commands",
+}
+_SINGLE_DECL_PLUGINS = {"tool": "name", "command": "name"}
 
 
 # ── 清单合并 ─────────────────────────────────────────────
@@ -156,6 +172,53 @@ def resolve_entries(
     return entries
 
 
+# ── 清单接管的工具/命令名收集（供聚合插件兜底跳过） ─────────
+
+
+def collect_managed_names(resolved) -> dict:
+    """从解析后的插件条目收集「清单已接管的工具名 / 命令名」。
+
+    Args:
+        resolved: ``materialize(entries)`` 的结果（``(entry, Plugin)`` 列表）。
+
+    Returns:
+        ``{"managed_tools": [..], "managed_commands": [..]}``。
+
+    语义差异（由各自的聚合插件兜底方式决定）：
+
+    - ``managed_tools`` 含**被禁用**的工具名——``tools_builtin`` 据此跳过兜底
+      自动发现，使 overlay 禁用单个工具真正生效；
+    - ``managed_commands`` 只含**启用**的命令名——``ctx.commands`` 只注册清单
+      接管的命令，被禁用的命令不会被兜底注册（命令无自动发现兜底路径）。
+    """
+    managed = {"managed_tools": set(), "managed_commands": set()}
+    for entry, plug in resolved:
+        name = getattr(plug, "name", "")
+        value = (entry.config or {}).get("name")
+        if not value:
+            continue
+        if name == "tool":
+            managed["managed_tools"].add(str(value))
+        elif name == "command" and not entry.disabled:
+            managed["managed_commands"].add(str(value))
+    return {key: sorted(value) for key, value in managed.items()}
+
+
+def inject_managed_config(resolved) -> None:
+    """把清单接管的工具名/命令名注入聚合插件条目（原地修改 entry.config）。"""
+    managed = collect_managed_names(resolved)
+    for entry, plug in resolved:
+        managed_key = _AGGREGATE_MANAGED_KEY.get(getattr(plug, "name", ""))
+        if managed_key is None:
+            continue
+        config = dict(entry.config or {})
+        config[managed_key] = list(managed[managed_key])
+        entry.config = config
+
+
+# ── 构建 ─────────────────────────────────────────────────
+
+
 async def build_kernel(
     profile: str = DEFAULT_PROFILE,
     *,
@@ -172,9 +235,11 @@ async def build_kernel(
         discover_external=discover_external,
         extra_dirs=extra_dirs,
     )
+    resolved = materialize(entries)
+    inject_managed_config(resolved)
 
     kernel = Kernel(name="chat", profile=profile)
-    for entry, plug in materialize(entries):
+    for entry, plug in resolved:
         if entry.disabled:
             continue
         kernel.mount(plug, config=entry.config)
@@ -189,6 +254,14 @@ async def build_kernel(
                     kernel.mount(plug)
                 except Exception:
                     _logger.exception("挂载外部插件失败: %s", name)
+
+    # entry-points（Python 包声明的 ``dsh.plugins`` 组）自动发现并挂载
+    if discover_external:
+        for name, plug in entry_points_plugins():
+            try:
+                kernel.mount(plug)
+            except Exception:
+                _logger.exception("挂载 entry-point 插件失败: %s", name)
 
     await kernel.settle()
     set_current_kernel(kernel)
@@ -242,6 +315,8 @@ __all__ = [
     "dump_profile",
     "resolve_entries",
     "collect_overlay",
+    "collect_managed_names",
+    "inject_managed_config",
     "load_overlay_file",
     "EXTERNAL_PLUGIN_DIRS",
     "PROFILES_HOME",

@@ -23,7 +23,7 @@ import logging
 from typing import Any
 
 from .base import InteractiveCommandPlugin
-from ..base import CommandMeta, get_plugin_registry
+from ..base import CommandMeta, declare_command_plugin
 from ...interrupt_state import flush_stdin, reset_interrupt_async
 from ....core.constants import YELLOW, RESET, GREEN, DIM
 
@@ -316,4 +316,4 @@ class EditmsgPlugin(InteractiveCommandPlugin):
 
 
 # 模块级自注册
-get_plugin_registry().register(EditmsgPlugin())
+declare_command_plugin(EditmsgPlugin())

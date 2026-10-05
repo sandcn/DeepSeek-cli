@@ -81,23 +81,41 @@ class ChatSession:
                  checkpoint_port: CheckpointPort | None = None,
                  config_port: ConfigPort | None = None,
                  observability_port: ObservabilityPort | None = None):
-        # ── ObservablePort（可观测性，优先传入） ──────────
+        # ── ObservablePort（可观测性，优先传入；内核服务次之） ──
         if observability_port is not None:
             self._observability_port = observability_port
         else:
-            self._observability_port = DefaultObservabilityAdapter()
+            self._observability_port = None
+            try:
+                from .adapters.kernel_runtime import active_observability_port
 
-        # ── 端口注入（默认适配器保持向后兼容） ──────────
+                self._observability_port = active_observability_port()
+            except Exception:
+                self._observability_port = None
+            if self._observability_port is None:
+                self._observability_port = DefaultObservabilityAdapter()
+
+        # ── 端口注入（显式传入 > 内核服务 > 默认适配器，保持向后兼容） ──
         if persistence_port is not None:
             self._persistence_port = persistence_port
         else:
-            from ..core.adapters.persistence import JsonFilePersistence
-            self._persistence_port = JsonFilePersistence()
+            from .adapters.kernel_runtime import active_persistence_port
+
+            self._persistence_port = active_persistence_port()
+            if self._persistence_port is None:
+                from ..core.adapters.persistence import JsonFilePersistence
+
+                self._persistence_port = JsonFilePersistence()
         if checkpoint_port is not None:
             self._checkpoint_port = checkpoint_port
         else:
-            from ..core.adapters.persistence import JsonFileCheckpoint
-            self._checkpoint_port = JsonFileCheckpoint()
+            from .adapters.kernel_runtime import active_checkpoint_port
+
+            self._checkpoint_port = active_checkpoint_port()
+            if self._checkpoint_port is None:
+                from ..core.adapters.persistence import JsonFileCheckpoint
+
+                self._checkpoint_port = JsonFileCheckpoint()
         self._config_port = config_port or DefaultConfigAdapter()
 
         # ── 核心对象 ──────────────────────────────────────
@@ -391,7 +409,16 @@ class ChatSession:
             elif event["type"] == "remove":
                 sm.remap_indices(event["indices"])
 
-        self._ctx_mgr = ContextManager(
+        # 创建 ContextManager（内核 ctx.context 服务优先，回退直接构造）
+        _cm_factory = None
+        try:
+            from .adapters.kernel_runtime import active_context_manager_factory
+
+            _cm_factory = active_context_manager_factory()
+        except Exception:
+            _cm_factory = None
+
+        _cm_kwargs = dict(
             messages=self._agent.messages,
             model=self._model,
             on_messages_changed=_sandbox_callback,
@@ -400,6 +427,10 @@ class ChatSession:
             #   一起发送给模型，须计入上下文占用）
             tools=getattr(self._agent, "tools", None),
         )
+        if _cm_factory is not None:
+            self._ctx_mgr = _cm_factory(**_cm_kwargs)
+        else:
+            self._ctx_mgr = ContextManager(**_cm_kwargs)
         self._agent.context_manager = self._ctx_mgr
 
         # 加载历史消息

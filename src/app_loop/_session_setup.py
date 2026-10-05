@@ -16,9 +16,28 @@ from ._session_factory import create_session
 from ..core.constants import DIM, RESET
 from ..core.stats import reset_token_speed
 from ..api.escape_monitor import EscapeMonitor
-from ..notifications import notify_chat_completed
 
 _logger = logging.getLogger(__name__)
+
+
+def _notify_chat_completed(messages, elapsed) -> None:
+    """发送「对话完成」通知：内核 notifications 服务优先，回退直接调用。
+
+    「一切皆插件」：应用层不直接依赖通知实现——经 ``ctx.notifications``
+    服务（provider 可替换 / 可禁用），内核缺失时回退 ``src.notifications``。
+    """
+    try:
+        from ..core.adapters.kernel_runtime import active_notifications
+
+        service = active_notifications()
+    except Exception:
+        service = None
+    if service is not None:
+        service.notify_chat_completed(messages, elapsed=elapsed)
+        return
+    from ..notifications import notify_chat_completed
+
+    notify_chat_completed(messages, elapsed=elapsed)
 
 
 # ── 会话状态 ──
@@ -132,7 +151,7 @@ def _make_round_callbacks(
                 if status_elapsed > 0:
                     notify_elapsed = status_elapsed
             # 桌面通知
-            notify_chat_completed(session.messages, elapsed=notify_elapsed)
+            _notify_chat_completed(session.messages, notify_elapsed)
 
         # ★ 排出流式输入：queued（Enter提交）优先 → 跳过下轮输入提示
         #   buffer_text（未提交）→ 作为 prefill

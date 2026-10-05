@@ -327,10 +327,10 @@ def _cmd_export(ctx: CommandContext) -> bool:
 
 
 # ── CommandPlugin 子类 ──────────────────────────────
-# 命令通过 get_plugin_registry().register() 注册，不再使用 register_command()。
-# CommandPluginRegistry.register() 内部自动调用 register_command() 确保向后兼容。
+# 命令在此声明（declare_command_plugin）；注册由清单条目 / ctx.commands 服务按需触发。
+# 注册时内部调用 register_command() 保持向后兼容。
 
-from .base import CommandPlugin, CommandMeta, get_plugin_registry
+from .base import CommandPlugin, CommandMeta, declare_command_plugin
 
 
 class ExportCommand(CommandPlugin):
@@ -345,4 +345,4 @@ class ExportCommand(CommandPlugin):
         return _cmd_export(ctx)
 
 
-get_plugin_registry().register(ExportCommand())
+declare_command_plugin(ExportCommand())

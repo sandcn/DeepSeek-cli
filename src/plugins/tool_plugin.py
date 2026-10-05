@@ -44,5 +44,6 @@ def apply(ctx):
     tool_class = import_attr(ref)
     if not (isinstance(tool_class, type) and issubclass(tool_class, Func)):
         raise TypeError(f"不是 Func 子类: {ref!r}")
-    ctx.tools.register(tool_class)
-    ctx.effect(lambda: (lambda: ctx.tools.unregister(tool_class.name)))
+    registry = ctx.tools.registry
+    registry.register(tool_class)
+    ctx.effect(lambda: (lambda: registry.unregister(tool_class.name)))

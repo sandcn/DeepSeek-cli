@@ -24,9 +24,7 @@ from .output import OutputAdapter
 from .types import Token, TokenType, RenderContext
 from .inline_renderer import InlineRenderer
 from ._utils import get_code_style
-from .handlers import HandlerRegistry, InlineHandler, CodeHandler, MathHandler, \
-    MermaidHandler, DetailsHandler, AdmonitionHandler, HtmlBlockHandler, TableHandler, \
-    FencedDivHandler
+from .handlers import HandlerRegistry
 
 from .states import _CodeBlockState, _DetailsState, _TodoState
 from ._rendering import render_todo_progress_bar as _render_todo_progress_bar
@@ -59,7 +57,8 @@ class RenderEngine:
     """
 
     def __init__(self, output: OutputAdapter, ctx: RenderContext | None = None,
-                 code_theme: str = "monokai"):
+                 code_theme: str = "monokai",
+                 extra_handlers: list | None = None):
         self._output = output
         self._ctx = ctx if ctx is not None else RenderContext()
         self._code_theme = code_theme
@@ -85,12 +84,24 @@ class RenderEngine:
 
         # Handler 注册表 — 所有 handler 通过独立模块注册
         self._handler_registry = HandlerRegistry()
-        for handler_cls in [
-            InlineHandler, CodeHandler, MathHandler,
-            MermaidHandler, DetailsHandler, AdmonitionHandler,
-            HtmlBlockHandler, TableHandler, FencedDivHandler,
-        ]:
-            self._handler_registry.register(handler_cls())
+        from .extensions import builtin_handler_factories, handler_factories
+
+        # 内置 handler（由渲染扩展注册表提供，可被 renderer_builtin 插件禁用/替换）
+        for factory in builtin_handler_factories():
+            try:
+                self._handler_registry.register(factory())
+            except Exception:
+                logger.warning("内置 handler 装配失败: %r", factory, exc_info=True)
+
+        # 扩展 handler（插件经 ctx.renderer.register_handler 注册）
+        if extra_handlers is None:
+            extra_handlers = list(handler_factories())
+        for factory in extra_handlers:
+            try:
+                handler = factory() if callable(factory) else factory
+                self._handler_registry.register(handler)
+            except Exception:
+                logger.warning("扩展 handler 注册失败: %r", factory, exc_info=True)
 
         # 块级元素间距跟踪
         self._prev_token_type: TokenType | None = None

@@ -402,10 +402,10 @@ def _cmd_config(ctx):
 
 
 # ── CommandPlugin 子类 ──────────────────────────────
-# 命令通过 get_plugin_registry().register() 注册，不再使用 register_command()。
-# CommandPluginRegistry.register() 内部自动调用 register_command() 确保向后兼容。
+# 命令在此声明（declare_command_plugin）；注册由清单条目 / ctx.commands 服务按需触发。
+# 注册时内部调用 register_command() 保持向后兼容。
 
-from .base import CommandPlugin, CommandMeta, get_plugin_registry
+from .base import CommandPlugin, CommandMeta, declare_command_plugin
 
 
 class CostCommand(CommandPlugin):
@@ -453,9 +453,9 @@ class ConfigCommand(CommandPlugin):
         return _cmd_config(ctx)
 
 
-# ── 自动注册插件 ────────────────────────────────────
-get_plugin_registry().register(CostCommand())
-get_plugin_registry().register(ThemeCommand())
-get_plugin_registry().register(ReasoningCommand())
-get_plugin_registry().register(TemperatureCommand())
-get_plugin_registry().register(ConfigCommand())
+# ── 声明插件（注册由清单条目 / ctx.commands 服务按需触发） ──
+declare_command_plugin(CostCommand())
+declare_command_plugin(ThemeCommand())
+declare_command_plugin(ReasoningCommand())
+declare_command_plugin(TemperatureCommand())
+declare_command_plugin(ConfigCommand())

@@ -311,10 +311,10 @@ def _cmd_changes(ctx):
 
 
 # ── CommandPlugin 子类 ──────────────────────────────
-# 命令通过 get_plugin_registry().register() 注册，不再使用 register_command()。
-# CommandPluginRegistry.register() 内部自动调用 register_command() 确保向后兼容。
+# 命令在此声明（declare_command_plugin）；注册由清单条目 / ctx.commands 服务按需触发。
+# 注册时内部调用 register_command() 保持向后兼容。
 
-from .base import CommandPlugin, CommandMeta, get_plugin_registry
+from .base import CommandPlugin, CommandMeta, declare_command_plugin
 
 
 class ClearCommand(CommandPlugin):
@@ -372,10 +372,10 @@ class ChangesCommand(CommandPlugin):
         return _cmd_changes(ctx)
 
 
-# ── 自动注册插件 ────────────────────────────────────
-get_plugin_registry().register(ClearCommand())
-get_plugin_registry().register(PinCommand())
-get_plugin_registry().register(UndoCommand())
-get_plugin_registry().register(RetryCommand())
-get_plugin_registry().register(EditCommand())
-get_plugin_registry().register(ChangesCommand())
+# ── 声明插件（注册由清单条目 / ctx.commands 服务按需触发） ──
+declare_command_plugin(ClearCommand())
+declare_command_plugin(PinCommand())
+declare_command_plugin(UndoCommand())
+declare_command_plugin(RetryCommand())
+declare_command_plugin(EditCommand())
+declare_command_plugin(ChangesCommand())

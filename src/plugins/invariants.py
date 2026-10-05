@@ -87,6 +87,58 @@ def _agents_messages_recorded(kernel) -> str | None:
     return None
 
 
+def _service_providers_present(kernel) -> str | None:
+    """可替换 provider 的服务必须持有 provider（可插拔服务不得为空壳）。"""
+    checks = (
+        ("observability", "port"),
+        ("notifications", "port"),
+        ("persistence", "port"),
+        ("checkpoint", "port"),
+    )
+    for key, getter in checks:
+        if not kernel.has_service(key):
+            continue
+        service = kernel.resolve_service(key)
+        provider = getattr(service, getter, None)
+        if callable(provider):
+            provider = provider()
+        if provider is None:
+            return f"服务 {key!r} 的 provider 为空"
+    return None
+
+
+def _llm_providers_available(kernel) -> str | None:
+    """llm 服务必须至少有注册 provider，且保留兜底 provider。"""
+    if not kernel.has_service("llm"):
+        return None
+    service = kernel.resolve_service("llm")
+    names = getattr(service, "provider_names", None)
+    if not callable(names):
+        return None
+    providers = list(names())
+    if not providers:
+        return "llm 服务没有任何已注册的模型 provider"
+    if "openai_compat" not in providers:
+        return "llm 服务缺少兜底 provider openai_compat"
+    return None
+
+
+def _renderer_extensions_readable(kernel) -> str | None:
+    """renderer 扩展点必须可读（handler/filter 注册表自省不抛异常）。"""
+    if not kernel.has_service("renderer"):
+        return None
+    service = kernel.resolve_service("renderer")
+    for method in ("handlers", "filters"):
+        read = getattr(service, method, None)
+        if not callable(read):
+            continue
+        try:
+            list(read())
+        except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+            return f"renderer 扩展 {method} 读取失败: {exc}"
+    return None
+
+
 _BUILTIN_CHECKS = (
     ("services.keys_valid", _service_keys_valid),
     ("fibers.active_have_deps", _fibers_active_have_deps),
@@ -94,6 +146,9 @@ _BUILTIN_CHECKS = (
     ("agent_loop.dependencies", _agent_loop_dependencies),
     ("presets.has_standard", _presets_have_standard),
     ("agents.messages_recorded", _agents_messages_recorded),
+    ("services.providers_present", _service_providers_present),
+    ("llm.providers_available", _llm_providers_available),
+    ("renderer.extensions_readable", _renderer_extensions_readable),
 )
 
 

@@ -325,6 +325,50 @@ def active_prompt_builder_port() -> Optional[Any]:
     return service.port if service is not None else None
 
 
+# ── 观测 / 通知 / 持久化 / 上下文：内核服务优先，回退默认实现 ──
+
+
+def active_observability_port() -> Optional[Any]:
+    """内核 observability 服务的端口；无内核/无服务时返回 None。"""
+    service = get_service("observability")
+    if service is None:
+        return None
+    port = getattr(service, "port", None)
+    return port() if callable(port) else service
+
+
+def active_notifications() -> Optional[Any]:
+    """内核 notifications 服务；无内核/无服务时返回 None。"""
+    return get_service("notifications")
+
+
+def active_persistence_port() -> Optional[Any]:
+    """内核 persistence 服务的端口；无内核/无服务时返回 None。"""
+    service = get_service("persistence")
+    if service is None:
+        return None
+    port = getattr(service, "port", None)
+    return port() if callable(port) else service
+
+
+def active_checkpoint_port() -> Optional[Any]:
+    """内核 checkpoint 服务的端口；无内核/无服务时返回 None。"""
+    service = get_service("checkpoint")
+    if service is None:
+        return None
+    port = getattr(service, "port", None)
+    return port() if callable(port) else service
+
+
+def active_context_manager_factory() -> Optional[Callable[..., Any]]:
+    """内核 context 服务的 ContextManager 工厂；无内核/无服务时返回 None。"""
+    service = get_service("context")
+    if service is None:
+        return None
+    factory = getattr(service, "manager", None)
+    return factory if callable(factory) else None
+
+
 __all__ = [
     "has_kernel",
     "get_service",
@@ -350,6 +394,11 @@ __all__ = [
     "active_async_model_port",
     "active_config_port",
     "active_prompt_builder_port",
+    "active_observability_port",
+    "active_notifications",
+    "active_persistence_port",
+    "active_checkpoint_port",
+    "active_context_manager_factory",
     "active_policy",
     "active_agents_service",
     "register_agent",

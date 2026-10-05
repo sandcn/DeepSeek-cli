@@ -62,7 +62,22 @@ GLOBAL_DISABLED_TOOLS = frozenset({
 
 
 def is_globally_disabled(tool_name: str) -> bool:
-    """该工具是否被全局禁用（任何 agent 都不能加载）。"""
+    """该工具是否被全局禁用（任何 agent 都不能加载）。
+
+    「一切皆插件」：全局禁用集合不再只是模块常量——内核挂载策略插件
+    （``ctx.policy``）后，以其 config ``globally_disabled_tools`` 为准（可经
+    Profile/Patch/Overlay 调整）；内核缺失或策略插件尚在构造中时回退静态常量。
+    """
+    try:
+        from ..kernel.runtime import active_service
+
+        service = active_service("policy")
+        if service is not None:
+            disabled = service.globally_disabled_tools()
+            if disabled is not None:
+                return tool_name in disabled
+    except Exception:
+        pass
     return tool_name in GLOBAL_DISABLED_TOOLS
 
 

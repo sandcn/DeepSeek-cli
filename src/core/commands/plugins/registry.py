@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import logging
 
-from ..base import get_plugin_registry, CommandPluginRegistry
+from ..base import command_registry_singleton, CommandPluginRegistry
 
 _logger = logging.getLogger(__name__)
 
 
 # 向后兼容：_interactive_registry 指向统一的 CommandPluginRegistry 实例
-_interactive_registry: CommandPluginRegistry = get_plugin_registry()
+# （用 command_registry_singleton 而非 get_plugin_registry：模块导入期不触发
+#  声明命令的兜底自动注册，避免抢在 ctx.commands 服务按清单过滤之前注册全部）
+_interactive_registry: CommandPluginRegistry = command_registry_singleton()
 
 
 def get_interactive_registry() -> CommandPluginRegistry:

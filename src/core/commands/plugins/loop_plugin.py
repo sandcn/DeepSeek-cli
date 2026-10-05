@@ -13,7 +13,7 @@ import logging
 from typing import Any
 
 from .base import InteractiveCommandPlugin
-from ..base import CommandMeta, get_plugin_registry
+from ..base import CommandMeta, declare_command_plugin
 
 _logger = logging.getLogger(__name__)
 
@@ -123,4 +123,4 @@ class LoopPlugin(InteractiveCommandPlugin):
         )
 
 # 模块级自注册
-get_plugin_registry().register(LoopPlugin())
+declare_command_plugin(LoopPlugin())

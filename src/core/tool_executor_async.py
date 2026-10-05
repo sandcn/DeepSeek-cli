@@ -102,7 +102,20 @@ class ToolScheduler:
 
     @classmethod
     def default(cls) -> ToolScheduler:
-        """返回模块级默认 ToolScheduler 实例（单例模式）"""
+        """返回默认调度器。
+
+        内核优先：内核挂载 ``ctx.tool_scheduler`` 服务后返回其调度器（与
+        ``ctx.tools`` 注册表同源）；内核缺失或服务尚在构造中时回退进程级单例。
+        """
+        try:
+            from .adapters.kernel_runtime import get_service
+
+            service = get_service("tool_scheduler")
+            scheduler = getattr(service, "scheduler", None) if service is not None else None
+            if scheduler is not None:
+                return scheduler
+        except Exception:
+            pass
         global _default_scheduler
         if _default_scheduler is None:
             _default_scheduler = cls()
