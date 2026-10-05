@@ -411,6 +411,32 @@ BORDER_OBJECT_DEFAULT: dict = {
     "right": "│",
 }
 
+# ── 运行期默认值表（计费单价 / 指标百分位 / UI 默认参数） ──
+#
+# 「一切皆插件」：此前散落在各模块的默认常量（telemetry 默认定价、
+# metrics 默认百分位、配置项截断宽度、项目摘要 token 上限、输入提示符、
+# Divider 默认宽度、工具卡兜底配色、代码块兜底边框）上移为数据表，
+# 可按 Patch/Overlay 覆盖或禁用（禁用后消费方回退模块内兜底字面量）。
+
+BILLING_DEFAULT_DATA: dict = {
+    "input_per_1m": 0.55,
+    "output_per_1m": 2.19,
+}
+
+METRIC_DEFAULTS_DATA: dict = {
+    "percentiles": [50, 90, 95, 99],
+}
+
+UI_DEFAULTS_DATA: dict = {
+    "prompt": "> ",
+    "truncate_width": 48,
+    "divider_width": 40,
+    "summary_max_tokens": 8000,
+    "tool_fallback_fg": 242,
+    "tool_fallback_breath": [242, 252],
+    "codeblock_border": ["┌", "┐", "└", "┘", "─", "│"],
+}
+
 #: 内置数据表声明
 _BUILTIN_SPECS: Tuple[DataTable, ...] = (
     DataTable("emoji", "emoji", EMOJI_MAP),
@@ -434,6 +460,9 @@ _BUILTIN_SPECS: Tuple[DataTable, ...] = (
     DataTable("message_role_icon", "message_role_icon", MESSAGE_ROLE_ICON_MAP),
     DataTable("border_chars", "border_chars", BORDER_CHARS_MAP),
     DataTable("border_object_default", "border_object_default", BORDER_OBJECT_DEFAULT),
+    DataTable("billing_default", "billing_default", BILLING_DEFAULT_DATA),
+    DataTable("metric_defaults", "metric_defaults", METRIC_DEFAULTS_DATA),
+    DataTable("ui_defaults", "ui_defaults", UI_DEFAULTS_DATA),
 )
 
 _builtin_specs: Dict[str, DataTable] = {spec.id: spec for spec in _BUILTIN_SPECS}
@@ -727,6 +756,23 @@ def border_object_default() -> dict:
     return data_table("border_object_default", {}) or {}
 
 
+def billing_defaults() -> dict:
+    return data_table("billing_default", {}) or {}
+
+
+def metric_defaults() -> dict:
+    return data_table("metric_defaults", {}) or {}
+
+
+def ui_defaults() -> dict:
+    return data_table("ui_defaults", {}) or {}
+
+
+def ui_default(key: str, default=None):
+    """按 key 取 UI 默认参数（缺席返回 ``default``）。"""
+    return ui_defaults().get(key, default)
+
+
 def clear() -> None:
     with _lock:
         _extension.clear()
@@ -787,6 +833,10 @@ __all__ = [
     "message_role_icons",
     "border_chars",
     "border_object_default",
+    "billing_defaults",
+    "metric_defaults",
+    "ui_defaults",
+    "ui_default",
     "TRACE_KIND_ORDER_DATA",
     "TRACE_BLOCK_KIND_MAP",
     "MESSAGE_ROLE_ICON_MAP",

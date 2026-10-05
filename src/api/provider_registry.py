@@ -260,10 +260,28 @@ BUILTIN_PROVIDERS: tuple = (
 )
 
 
-def register_builtin_providers(registry: Optional[LlmProviderRegistry] = None) -> LlmProviderRegistry:
-    """把内置 provider 注册到注册表（默认进程级注册表）。"""
-    registry = registry if registry is not None else default_registry()
-    for spec in BUILTIN_PROVIDERS:
+def builtin_provider_names() -> list:
+    """全部内置 provider 名（按声明顺序）。"""
+    return [str(spec["name"]) for spec in BUILTIN_PROVIDERS]
+
+
+def active_builtin_provider_specs(*, managed=(), disabled=()) -> list:
+    """当前应由默认装配注册的内置 provider 规格。
+
+    「一切皆插件」：清单已接管的 provider（``managed``）由条目注册，默认装配
+    抑制；显式禁用（``disabled``）的直接缺席。
+    """
+    managed_names = {str(item) for item in managed or ()}
+    disabled_names = {str(item) for item in disabled or ()}
+    return [
+        spec for spec in BUILTIN_PROVIDERS
+        if str(spec["name"]) not in managed_names
+        and str(spec["name"]) not in disabled_names
+    ]
+
+
+def _install(registry: LlmProviderRegistry, specs) -> LlmProviderRegistry:
+    for spec in specs:
         registry.register(
             spec["name"],
             spec["factory"],
@@ -273,6 +291,21 @@ def register_builtin_providers(registry: Optional[LlmProviderRegistry] = None) -
             source="builtin",
         )
     return registry
+
+
+def register_builtin_providers(
+    registry: Optional[LlmProviderRegistry] = None,
+    *,
+    managed=(),
+    disabled=(),
+) -> LlmProviderRegistry:
+    """把内置 provider 注册到注册表（默认进程级注册表）。
+
+    ``managed`` / ``disabled`` 分别表示「清单条目已接管」与「显式禁用」的
+    provider 名——两者都不由本函数注册。
+    """
+    registry = registry if registry is not None else default_registry()
+    return _install(registry, active_builtin_provider_specs(managed=managed, disabled=disabled))
 
 
 # ── 进程级默认注册表 ─────────────────────────────────────
@@ -281,23 +314,17 @@ _default_registry: Optional[LlmProviderRegistry] = None
 _default_lock = threading.Lock()
 
 
-def build_default_registry() -> LlmProviderRegistry:
+def build_default_registry(*, managed=(), disabled=()) -> LlmProviderRegistry:
     """构建一个含全部内置 provider 的新注册表（不接入进程级单例）。
 
     供 ``ctx.llm`` 服务在构造期持有自己的注册表实例（「一切皆插件」：模型
     provider 路由是内核服务的一部分）；也供无内核回退路径构建默认单例。
+
+    ``managed``（清单已接管的 provider 名）与 ``disabled``（显式禁用的）不
+    由默认装配注册——前者由清单中的独立 provider 条目注册。
     """
     registry = LlmProviderRegistry()
-    for spec in BUILTIN_PROVIDERS:
-        registry.register(
-            spec["name"],
-            spec["factory"],
-            prefixes=spec.get("prefixes", ()),
-            substrings=spec.get("substrings", ()),
-            fallback=bool(spec.get("fallback", False)),
-            source="builtin",
-        )
-    return registry
+    return _install(registry, active_builtin_provider_specs(managed=managed, disabled=disabled))
 
 
 def default_registry() -> LlmProviderRegistry:
@@ -340,6 +367,8 @@ __all__ = [
     "LlmProviderRegistry",
     "ProviderEntry",
     "BUILTIN_PROVIDERS",
+    "builtin_provider_names",
+    "active_builtin_provider_specs",
     "default_registry",
     "reset_default_registry",
     "register_builtin_providers",

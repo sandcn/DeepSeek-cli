@@ -109,6 +109,18 @@ def Badge(props: dict) -> Element:
 _DIVIDER_DEFAULT_WIDTH = 40
 
 
+def _divider_default_width() -> int:
+    """Divider 无标题时的默认宽度（数据注册表优先，非法时回退兜底快照）。"""
+    from src.presentation_data import ui_default
+
+    value = ui_default("divider_width", _DIVIDER_DEFAULT_WIDTH)
+    try:
+        width = int(value)
+    except (TypeError, ValueError):
+        return _DIVIDER_DEFAULT_WIDTH
+    return width if width > 0 else _DIVIDER_DEFAULT_WIDTH
+
+
 # ★ P2（review 2026-08-22）：``_truncate_to_width`` 收敛至 ``_display_common``
 #   （与 codeblock 重复实现合并，见上方 import）。
 
@@ -142,7 +154,7 @@ def Divider(props: dict) -> Element:
         except (TypeError, ValueError, OverflowError):
             width = None
     if width is None:
-        width = wcswidth_simple(title) + 4 if title else _DIVIDER_DEFAULT_WIDTH
+        width = wcswidth_simple(title) + 4 if title else _divider_default_width()
     hz_style = _resolve_style(props)
     title_style = props.get("titleStyle")
 

@@ -63,9 +63,48 @@ _CATEGORY_BREATH: dict[str, tuple[int, int]] = {
     "interact":   (51, 87),    # 青 → 亮青
     "delete":     (203, 210),  # 红 → 亮红
 }
-_CATEGORY_DEFAULT_STYLE = Style(fg=242)     # 未知名工具兜底（dim）
-_CATEGORY_DEFAULT_BREATH = (242, 252)       # 未知名工具呼吸（暗灰→亮白）
+#: 未知名工具兜底样式 / 呼吸区间兜底快照。
+#: 「一切皆插件」：默认值来自表现层数据注册表（``ui_defaults`` 表 →
+#: ``tool_fallback_fg`` / ``tool_fallback_breath``），可按 Patch/Overlay 覆盖
+#: 或禁用；此处为兜底字面量（Style 对象按色号缓存，避免每帧重建）。
+_CATEGORY_DEFAULT_FG = 242
+_CATEGORY_DEFAULT_BREATH = (242, 252)
 _GUIDE_STYLE = Style(fg=238)                # 内容竖线引导色（深灰，低调）
+
+_fallback_style_cache: dict[int, Style] = {}
+
+
+def _ui_int(key: str, default: int) -> int:
+    from src.presentation_data import ui_default
+
+    value = ui_default(key, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _category_default_style() -> Style:
+    """未知名工具兜底 Style（数据注册表优先；按色号缓存复用对象）。"""
+    fg = _ui_int("tool_fallback_fg", _CATEGORY_DEFAULT_FG)
+    style = _fallback_style_cache.get(fg)
+    if style is None:
+        style = Style(fg=fg)
+        _fallback_style_cache[fg] = style
+    return style
+
+
+def _category_default_breath() -> tuple[int, int]:
+    """未知名工具呼吸区间（数据注册表优先，非法时回退兜底快照）。"""
+    from src.presentation_data import ui_default
+
+    value = ui_default("tool_fallback_breath", _CATEGORY_DEFAULT_BREATH)
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        try:
+            return (int(value[0]), int(value[1]))
+        except (TypeError, ValueError):
+            pass
+    return _CATEGORY_DEFAULT_BREATH
 
 
 def _category_style(tool_name: str) -> Style:
@@ -78,7 +117,7 @@ def _category_style(tool_name: str) -> Style:
         类别 Style（frozen 对象，可复用）。
     """
     from src.tui._tool_styles import tool_style
-    return tool_style(tool_name) or _CATEGORY_DEFAULT_STYLE
+    return tool_style(tool_name) or _category_default_style()
 
 
 def _category_breath_fg(tool_name: str) -> int:
@@ -93,7 +132,7 @@ def _category_breath_fg(tool_name: str) -> int:
     from src.tui.app._theme import time_glow
     from src.tui._tool_styles import tool_category
     cat = tool_category(tool_name)
-    lo, hi = _CATEGORY_BREATH.get(cat, _CATEGORY_DEFAULT_BREATH)
+    lo, hi = _CATEGORY_BREATH.get(cat, _category_default_breath())
     return time_glow(lo, hi, 12.0)
 
 

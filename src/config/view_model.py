@@ -37,8 +37,22 @@ _EXTRA_KEYS: tuple = (
 #: ``config_entry_option`` 表），本视图实时委托（可按 Patch/Overlay 覆盖/禁用）。
 CONFIG_ENTRY_OPTIONS = LiveMapping("config_entry_option")
 
-#: 显示文本截断长度（防超宽行破坏行级 diff 宽度不变量）
+#: 显示文本截断长度兜底快照（防超宽行破坏行级 diff 宽度不变量）。
+#: 「一切皆插件」：默认值来自表现层数据注册表（``ui_defaults`` 表 →
+#: ``truncate_width``），可按 Patch/Overlay 覆盖或禁用；此处为兜底字面量。
 _DEFAULT_TRUNCATE = 48
+
+
+def _default_truncate() -> int:
+    """当前默认截断宽度（数据注册表优先，非法时回退兜底快照）。"""
+    from ..presentation_data import ui_default
+
+    value = ui_default("truncate_width", _DEFAULT_TRUNCATE)
+    try:
+        width = int(value)
+    except (TypeError, ValueError):
+        return _DEFAULT_TRUNCATE
+    return width if width > 0 else _DEFAULT_TRUNCATE
 
 
 def _rc_get(rc: dict, path: tuple, default: Any) -> Any:
@@ -92,9 +106,15 @@ def _display_width(text: str) -> int:
 
 def format_config_value(
     value: Any, typ: type,
-    sensitive: bool = False, max_len: int = _DEFAULT_TRUNCATE,
+    sensitive: bool = False, max_len: int | None = None,
 ) -> str:
-    """配置值 → 显示文本（bool→true/false；list/dict→JSON 摘要；敏感脱敏）。"""
+    """配置值 → 显示文本（bool→true/false；list/dict→JSON 摘要；敏感脱敏）。
+
+    ``max_len=None`` 时取当前默认截断宽度（表现层数据注册表
+    ``ui_defaults.truncate_width``）。
+    """
+    if max_len is None:
+        max_len = _default_truncate()
     if sensitive:
         s = str(value or "")
         if len(s) > 8:

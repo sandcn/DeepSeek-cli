@@ -31,7 +31,7 @@ from ._display_common import _repeat_to_width, _truncate_to_width
 # ★ P2（review）：边框字符表收敛至 ``_paint_border._BORDER_CHARS``（单一真源）
 #   ——修复前本模块维护 5 变体副本（缺 dashed/singleDouble/doubleSingle，
 #   ``borderStyle="dashed"`` 静默回退默认边框，与 BOX 边框行为不一致）。
-from .._paint_border import _BORDER_CHARS
+from .._paint_border import _BORDER_CHARS, _FALLBACK_BORDER
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_color 原本地定义（与
 #   _interactive_common/_display_common 逻辑一致，仅默认值 23 vs 6）——收敛
 #   至 _widget_common（调用处显式传 default=23，行为不变）。
@@ -41,7 +41,21 @@ from ._widget_common import _color
 
 __all__ = ["CodeBlock", "CollapsibleCodeBlock"]
 
-_DEFAULT_BORDER = ("\u250c", "\u2510", "\u2514", "\u2518", "\u2500", "\u2502")
+#: 兜底边框字符快照（注册表缺席 / 被 overlay 禁用时使用）。
+#: 「一切皆插件」：默认值来自表现层数据注册表（``ui_defaults`` 表 →
+#: ``codeblock_border``），可按 Patch/Overlay 覆盖或禁用；单一真源回退为
+#: ``_paint_border._FALLBACK_BORDER``（与 ``border_chars`` 的 single 变体一致）。
+_DEFAULT_BORDER = _FALLBACK_BORDER
+
+
+def _default_border() -> tuple:
+    """当前代码块兜底边框字符（数据注册表优先，非法时回退快照）。"""
+    from src.presentation_data import ui_default
+
+    value = ui_default("codeblock_border", _FALLBACK_BORDER)
+    if isinstance(value, (list, tuple)) and len(value) == 6:
+        return tuple(str(item) for item in value)
+    return _FALLBACK_BORDER
 
 
 
@@ -77,7 +91,7 @@ def CodeBlock(props: dict) -> Element:
     title = None if title is None else str(title)
     label = language or title
     border_style = str(props.get("borderStyle", "single"))
-    chars = _BORDER_CHARS.get(border_style) or _DEFAULT_BORDER
+    chars = _BORDER_CHARS.get(border_style) or _BORDER_CHARS.get("single") or _default_border()
     base_style = props.get("style")
     border_color_prop = props.get("borderColor")
     if border_color_prop is None:

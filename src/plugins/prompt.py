@@ -44,6 +44,19 @@ class PromptService(Service):
 
             undo = disable_builtin_prompt_sources(disabled_sources)
             ctx.effect(lambda: undo)
+        managed_sections = cfg.get("managed_prompt_sections") or ()
+        if managed_sections:
+            from ..prompt_builder.sections import set_managed_builtin_sections
+
+            undo = set_managed_builtin_sections(managed_sections)
+            ctx.effect(lambda: undo)
+        disabled_sections = cfg.get("disabled_prompt_sections") or ()
+        self._disabled_sections = list(disabled_sections)
+        if disabled_sections:
+            from ..prompt_builder.sections import disable_builtin_sections
+
+            undo = disable_builtin_sections(disabled_sections)
+            ctx.effect(lambda: undo)
         from ..prompt_builder.builder import _EMPTY_MODE  # noqa: F401  触发加载
 
     # ── 自省（运行模式 / 提词来源注册表） ───────────────
@@ -79,6 +92,30 @@ class PromptService(Service):
         from ..prompt_builder.sources import builtin_prompt_source_ids
 
         return list(builtin_prompt_source_ids())
+
+    def sections(self) -> list:
+        """当前生效的提词片段 id（内置 + 扩展，按声明顺序）。"""
+        from ..prompt_builder.sections import active_sections
+
+        return list(active_sections())
+
+    def builtin_sections(self) -> list:
+        from ..prompt_builder.sections import builtin_section_ids
+
+        return list(builtin_section_ids())
+
+    def managed_sections(self) -> list:
+        from ..prompt_builder.sections import managed_section_ids
+
+        return list(managed_section_ids())
+
+    def disabled_sections(self) -> list:
+        return sorted(self._disabled_sections)
+
+    def section_order(self) -> list:
+        from ..prompt_builder.sections import ordered_sections
+
+        return [section.id for section in ordered_sections()]
 
     def build(self) -> list[str]:
         from ..prompt_builder.builder import build_system_prompt

@@ -46,7 +46,14 @@ _OVERLAY_NAMES = frozenset({
 })
 
 #: 单条目声明插件名 → 其 config 中作为「名」的键
+#: （LLM provider 是每 provider 一个独立插件名，故逐项列出）
 _SINGLE_DECL_PLUGINS = {
+    "invariant": "name",
+    "llm_provider_deepseek": "name",
+    "llm_provider_anthropic": "name",
+    "llm_provider_ollama": "name",
+    "llm_provider_openai_compat": "name",
+    "prompt_section": "name",
     "tool": "name",
     "tool_metadata_entry": "name",
     "tool_const_entry": "name",
@@ -89,6 +96,12 @@ _SINGLE_DECL_PLUGINS = {
 
 #: 单条目声明插件名 → 汇入的托管分组
 _MANAGED_GROUP = {
+    "invariant": "managed_invariants",
+    "llm_provider_deepseek": "managed_llm_providers",
+    "llm_provider_anthropic": "managed_llm_providers",
+    "llm_provider_ollama": "managed_llm_providers",
+    "llm_provider_openai_compat": "managed_llm_providers",
+    "prompt_section": "managed_prompt_sections",
     "tool": "managed_tools",
     "tool_metadata_entry": "managed_tool_metadata",
     "tool_const_entry": "managed_tool_consts",
@@ -135,6 +148,8 @@ _ENABLED_ONLY_GROUPS = frozenset({"managed_commands"})
 
 #: 聚合插件的插件名 → 注入的 config 键（收集自清单中同类的单条目声明）
 _AGGREGATE_MANAGED_KEYS = {
+    "invariants": ("managed_invariants",),
+    "llm": ("managed_llm_providers",),
     "tools_builtin": ("managed_tools",),
     "tool_metadata": ("managed_tool_metadata",),
     "tool_consts": ("managed_tool_consts",),
@@ -159,7 +174,7 @@ _AGGREGATE_MANAGED_KEYS = {
     "session_projections": ("managed_session_projections",),
     "renderer": ("managed_render_targets",),
     "presets": ("managed_presets",),
-    "prompt": ("managed_prompt_modes", "managed_prompt_sources"),
+    "prompt": ("managed_prompt_modes", "managed_prompt_sources", "managed_prompt_sections"),
     "clawbot": ("managed_clawbot_commands",),
     "app": ("managed_subcommands",),
     "keybindings": ("managed_keybindings",),

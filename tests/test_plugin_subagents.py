@@ -230,7 +230,7 @@ def test_register_and_reset_direct_api():
 
 
 def test_invariant_subagents_types():
-    from src.plugins.invariants import _subagents_types_registered
+    from src.plugins.invariant_checks import subagents_types_registered
 
     class _Svc:
         def types(self):
@@ -243,7 +243,7 @@ def test_invariant_subagents_types():
         def resolve_service(self, key):
             return _Svc()
 
-    assert _subagents_types_registered(_Kernel()) is None
+    assert subagents_types_registered(_Kernel()) is None
 
     class _BadSvc:
         def types(self):
@@ -256,4 +256,4 @@ def test_invariant_subagents_types():
         def resolve_service(self, key):
             return _BadSvc()
 
-    assert "缺少" in _subagents_types_registered(_BadKernel())
+    assert "缺少" in subagents_types_registered(_BadKernel())

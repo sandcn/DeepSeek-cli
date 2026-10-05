@@ -1,15 +1,29 @@
 import logging
 import os
 import re
-from typing import List, Tuple, Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
 from ..core.tokens import estimate_tokens
 
 _logger = logging.getLogger(__name__)
 
 _MAX_FILE_CHARS = 1000
-# _read_file_contents 的默认 token 上限；调用方可传入自定义值覆盖
+# _read_file_contents 的默认 token 上限兜底快照；「一切皆插件」：默认值来自
+# 表现层数据注册表（``ui_defaults`` 表 → ``summary_max_tokens``），可按
+# Patch/Overlay 覆盖或禁用；调用方可传入自定义值覆盖。
 _DEFAULT_MAX_TOKENS = 8000
 _MAX_WALK_DEPTH = 5
+
+
+def _default_max_tokens() -> int:
+    """当前默认摘要 token 上限（数据注册表优先，非法时回退兜底快照）。"""
+    from ..presentation_data import ui_default
+
+    value = ui_default("summary_max_tokens", _DEFAULT_MAX_TOKENS)
+    try:
+        tokens = int(value)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_TOKENS
+    return tokens if tokens > 0 else _DEFAULT_MAX_TOKENS
 
 # 敏感模式：匹配后替换为占位符，防止 API key/密钥泄漏到 LLM prompt
 _SENSITIVE_PATTERNS: list[tuple[str, str]] = [
@@ -86,20 +100,22 @@ def _scan_project_files(cwd: str = ".") -> Tuple[List[Tuple[str, int]], int]:
 
 def _read_file_contents(
     files_info: List[Tuple[str, int]],
-    max_tokens: int = _DEFAULT_MAX_TOKENS,
+    max_tokens: Optional[int] = None,
     max_file_chars: int = _MAX_FILE_CHARS,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """读取文件内容，直到达到 token 上限。
 
     Args:
         files_info: 文件信息列表 [(路径, 大小), ...]
-        max_tokens: 最大 token 数上限
+        max_tokens: 最大 token 数上限；None 取当前默认值（数据注册表）
         max_file_chars: 每个文件最多读取字符数
 
     Returns:
         (file_contents, accumulated_tokens) 元组
         file_contents: [{"path": str, "size": int, "content": str}, ...]
     """
+    if max_tokens is None:
+        max_tokens = _default_max_tokens()
     accumulated_tokens = 0
     file_contents: List[Dict[str, Any]] = []
 

@@ -23,10 +23,24 @@ from collections import defaultdict
 from typing import Any
 
 
-# ── 默认百分位配置 ─────────────────────────────────────────
+# ── 默认百分位配置（「一切皆插件」：默认值来自表现层数据注册表
+#    ``metric_defaults``，可按 Patch/Overlay 覆盖或禁用；此处为兜底快照） ──
 _DEFAULT_PERCENTILES = [50, 90, 95, 99]
 # 直方图最大采样数 — 超过后丢弃较早的一半数据
 _MAX_HISTOGRAM_SAMPLES = 10000
+
+
+def _default_percentiles() -> list:
+    """当前默认百分位列表（表现层数据注册表优先，非法时回退内置快照）。"""
+    from ...presentation_data import metric_defaults
+
+    data = metric_defaults().get("percentiles")
+    if isinstance(data, (list, tuple)) and data:
+        try:
+            return [int(p) for p in data]
+        except (TypeError, ValueError):
+            pass
+    return list(_DEFAULT_PERCENTILES)
 
 
 class MetricsCollector:
@@ -123,7 +137,7 @@ class MetricsCollector:
              "p50": float, "p90": float, "p95": float, "p99": float}
             无数据时返回 None
         """
-        pcts = percentiles or _DEFAULT_PERCENTILES
+        pcts = percentiles or _default_percentiles()
         with self._histogram_lock:
             values = self._histograms.get(name)
             if not values:
@@ -174,7 +188,7 @@ class MetricsCollector:
                                  for name, vals in self._histograms.items()}
 
         # 在锁外计算直方图统计（O(n log n) 排序不阻塞其他指标操作）
-        pcts = _DEFAULT_PERCENTILES
+        pcts = _default_percentiles()
         histograms = {}
         for name, values in hist_data.items():
             if not values:

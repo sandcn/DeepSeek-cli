@@ -24,7 +24,8 @@ from src.tui._width import wcswidth_simple
 
 _TAB_WIDTH = 4  # 制表符宽度（列数）—— 唯一真源
 
-#: 输入提示符默认值（单一真源）。
+#: 输入提示符兜底快照（单一真源；默认值来自表现层数据注册表 ``ui_defaults``
+#: → ``prompt``，可按 Patch/Overlay 覆盖或禁用）。
 #: ★ P1（review 修复）：修复前提示符存在**双源**——``app/input_area._build_lines``
 #: 硬编码 ``_PROMPT = "> "``（渲染 + ``max_input`` 计算），而 ``ink/_cursor.
 #: position_cursor`` 读 ``props["prompt"]``（光标行/列计算）。生产调用
@@ -35,8 +36,16 @@ _TAB_WIDTH = 4  # 制表符宽度（列数）—— 唯一真源
 _DEFAULT_PROMPT = "> "
 
 
+def _default_prompt() -> str:
+    """当前默认提示符（数据注册表优先，非法时回退兜底快照）。"""
+    from src.presentation_data import ui_default
+
+    value = ui_default("prompt", _DEFAULT_PROMPT)
+    return value if isinstance(value, str) and value else _DEFAULT_PROMPT
+
+
 def _prompt_of(props) -> str:
-    """取输入提示符（``props["prompt"]`` → 缺省 ``_DEFAULT_PROMPT``）。
+    """取输入提示符（``props["prompt"]`` → 缺省默认提示符）。
 
     None / 空串 / 缺键回退默认（防 ``str(None) == "None"`` 产生 4 列宽的
     "None" 提示符）；非 str 值经 ``str()`` 归一化。
@@ -46,7 +55,7 @@ def _prompt_of(props) -> str:
     except AttributeError:
         value = None
     if value is None or value == "":
-        return _DEFAULT_PROMPT
+        return _default_prompt()
     return value if isinstance(value, str) else str(value)
 
 

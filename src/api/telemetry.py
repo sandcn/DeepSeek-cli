@@ -58,29 +58,48 @@ def _ensure_dir():
     _TELEMETRY_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _default_prices() -> tuple:
+    """默认 token 单价（USD/1M tokens）。
+
+    「一切皆插件」：默认值来自表现层数据注册表（``billing_default`` 表），
+    可按 Patch/Overlay 覆盖或禁用；禁用/非法时回退模块内兜底字面量。
+    """
+    from ..presentation_data import billing_defaults
+
+    data = billing_defaults()
+    try:
+        return (
+            float(data.get("input_per_1m", _DEFAULT_INPUT_PRICE_PER_1M)),
+            float(data.get("output_per_1m", _DEFAULT_OUTPUT_PRICE_PER_1M)),
+        )
+    except (TypeError, ValueError):
+        return _DEFAULT_INPUT_PRICE_PER_1M, _DEFAULT_OUTPUT_PRICE_PER_1M
+
+
 def _estimate_cost(model, input_tokens, output_tokens, provider="unknown"):
     """估算本次调用的费用（USD）。
 
     优先从运行时配置读取 token 单价，回退默认值。
     """
+    default_input, default_output = _default_prices()
     try:
         from ..config import TOKEN_PRICES
         prices = TOKEN_PRICES
         if model in prices:
             price = prices[model]
-            input_price = price.get("input", _DEFAULT_INPUT_PRICE_PER_1M)
-            output_price = price.get("output", _DEFAULT_OUTPUT_PRICE_PER_1M)
+            input_price = price.get("input", default_input)
+            output_price = price.get("output", default_output)
         else:
-            input_price = _DEFAULT_INPUT_PRICE_PER_1M
-            output_price = _DEFAULT_OUTPUT_PRICE_PER_1M
+            input_price = default_input
+            output_price = default_output
             for m, p in prices.items():
                 if m in model or model in m:
-                    input_price = p.get("input", _DEFAULT_INPUT_PRICE_PER_1M)
-                    output_price = p.get("output", _DEFAULT_OUTPUT_PRICE_PER_1M)
+                    input_price = p.get("input", default_input)
+                    output_price = p.get("output", default_output)
                     break
     except (ImportError, Exception):
-        input_price = _DEFAULT_INPUT_PRICE_PER_1M
-        output_price = _DEFAULT_OUTPUT_PRICE_PER_1M
+        input_price = default_input
+        output_price = default_output
 
     # 单价单位为 USD/百万 tokens → 除以 1_000_000（与 /cost 的 compute_cost 一致）
     return (input_tokens / 1_000_000 * input_price) + (output_tokens / 1_000_000 * output_price)

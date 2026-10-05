@@ -21,6 +21,22 @@
 from __future__ import annotations
 
 from ..kernel.config_tree import ConfigTree
+from ..kernel.invariant_registry import builtin_invariant_ids
+from ..prompt_builder.sections import builtin_section_ids
+
+# ── 运行时不变量条目（每条检查一个独立插件条目，可被 patch/overlay 禁用/替换） ──
+#
+# 条目经 ``src.plugins.invariant_entries`` 把 ``config.name`` 指向的内置检查
+# 注册进 ``src.kernel.invariant_registry``；``config.name`` 供组合根收集
+# 「清单已接管的检查」（注入 invariants 聚合插件，抑制默认装配，使 overlay
+# 禁用单项真正生效）。
+
+INVARIANT_ENTRIES = [
+    {"id": f"invariant_{name.replace('.', '_')}",
+     "plugin": "src.plugins.invariant_entries:apply_invariant",
+     "config": {"name": name}}
+    for name in builtin_invariant_ids()
+]
 
 # ── 内置工具条目（每个工具一个独立插件条目，可被 patch/overlay 禁用/替换） ──
 #
@@ -511,6 +527,20 @@ PROMPT_SOURCE_ENTRIES = [
      "config": {"name": "execute"}},
 ]
 
+# ── 提示词片段条目（每个系统提词片段一个独立插件条目） ────────
+#
+# 条目经 ``src.plugins.prompt_section_entries`` 把 ``config.name`` 指向的内置
+# 片段注册进 ``src.prompt_builder.sections`` 注册表；``config.name`` 供组合根
+# 收集「清单已接管的片段」（注入 prompt 聚合插件，抑制默认装配，使 overlay
+# 禁用单项真正生效）。
+
+PROMPT_SECTION_ENTRIES = [
+    {"id": f"prompt_section_{name}",
+     "plugin": "src.plugins.prompt_section_entries:apply_prompt_section",
+     "config": {"name": name}}
+    for name in builtin_section_ids()
+]
+
 # ── ClawBot 远程命令条目（每个斜杠指令一个独立插件条目） ──────
 #
 # 条目经 ``src.plugins.clawbot_commands`` 把 ``config.name`` 指向的内置指令注册
@@ -668,6 +698,7 @@ PRESENTATION_DATA_ENTRIES = [
         "inline_spinner_frames", "config_entry_desc", "config_entry_option",
         "trace_kind_order", "trace_block_kind", "message_role_icon",
         "border_chars", "border_object_default",
+        "billing_default", "metric_defaults", "ui_defaults",
     )
 ]
 
@@ -802,6 +833,11 @@ RENDERER_TARGET_ENTRIES = [
 
 BUNDLES = [
     {
+        "id": "invariants",
+        "description": "运行时不变量：每条检查一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(INVARIANT_ENTRIES),
+    },
+    {
         "id": "tools",
         "description": "内置工具：每个工具一个独立插件条目（可 patch/overlay 禁用/替换）",
         "plugins": list(TOOL_PLUGIN_ENTRIES),
@@ -930,8 +966,8 @@ BUNDLES = [
     },
     {
         "id": "prompts",
-        "description": "提示词：每个运行模式 / 提词来源一个独立插件条目（可 patch/overlay 禁用/替换）",
-        "plugins": list(PROMPT_MODE_ENTRIES) + list(PROMPT_SOURCE_ENTRIES),
+        "description": "提示词：每个运行模式 / 提词来源 / 提词片段一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(PROMPT_MODE_ENTRIES) + list(PROMPT_SOURCE_ENTRIES) + list(PROMPT_SECTION_ENTRIES),
     },
     {
         "id": "clawbot",
@@ -1004,7 +1040,7 @@ BUNDLES = [
     {
         "id": "core",
         "description": "基础层：配置、事件、提词、策略、工具、技能、通知后端",
-        "includes": ["tools", "tool_metadata", "tool_consts", "tool_policy", "event_types", "commands", "notification_backends", "context_strategies", "runtime_data", "presets", "prompts", "subcommands", "web", "skill_sources"],
+        "includes": ["tools", "tool_metadata", "tool_consts", "tool_policy", "event_types", "commands", "notification_backends", "context_strategies", "runtime_data", "presets", "prompts", "subcommands", "web", "skill_sources", "invariants"],
         "plugins": [
             {"id": "config", "plugin": "src.plugins.config"},
             {"id": "events", "plugin": "src.plugins.events"},
@@ -1042,10 +1078,14 @@ BUNDLES = [
         "description": "模型适配器（Provider 路由 + 内置 Provider 插件）",
         "plugins": [
             {"id": "llm", "plugin": "src.plugins.llm"},
-            {"id": "llm_provider_deepseek", "plugin": "src.plugins.llm_providers:apply_deepseek"},
-            {"id": "llm_provider_anthropic", "plugin": "src.plugins.llm_providers:apply_anthropic"},
-            {"id": "llm_provider_ollama", "plugin": "src.plugins.llm_providers:apply_ollama"},
-            {"id": "llm_provider_openai_compat", "plugin": "src.plugins.llm_providers:apply_openai_compat"},
+            {"id": "llm_provider_deepseek", "plugin": "src.plugins.llm_providers:apply_deepseek",
+             "config": {"name": "deepseek"}},
+            {"id": "llm_provider_anthropic", "plugin": "src.plugins.llm_providers:apply_anthropic",
+             "config": {"name": "anthropic"}},
+            {"id": "llm_provider_ollama", "plugin": "src.plugins.llm_providers:apply_ollama",
+             "config": {"name": "ollama"}},
+            {"id": "llm_provider_openai_compat", "plugin": "src.plugins.llm_providers:apply_openai_compat",
+             "config": {"name": "openai_compat"}},
         ],
     },
     {
@@ -1120,6 +1160,7 @@ __all__ = [
     "BUNDLES",
     "PROFILES",
     "DEFAULT_PROFILE",
+    "INVARIANT_ENTRIES",
     "TOOL_PLUGIN_ENTRIES",
     "TOOL_METADATA_ENTRIES",
     "TOOL_CONST_ENTRIES",
@@ -1142,6 +1183,7 @@ __all__ = [
     "PRESET_ENTRIES",
     "PROMPT_MODE_ENTRIES",
     "PROMPT_SOURCE_ENTRIES",
+    "PROMPT_SECTION_ENTRIES",
     "CLAWBOT_COMMAND_ENTRIES",
     "SUBCOMMAND_ENTRIES",
     "KEYBINDING_ENTRIES",

@@ -19,9 +19,20 @@ class LlmService(Service):
     def __init__(self, ctx, config=None):
         # 先建自有 provider 注册表（在 super().__init__ 提供 ctx.llm 之前），
         # 避免构造期解析服务时自引用递归。
+        # 「一切皆插件」：内置 provider 由清单中的独立条目
+        # （``llm_provider_*``）注册；本服务收到组合根注入的
+        # ``managed_llm_providers`` 后抑制对应内置项的默认装配，使 overlay
+        # 禁用单个 provider 条目真正生效。``disabled_llm_providers`` 为显式
+        # 禁用（不注册，也不由条目注册）。
+        cfg = config or getattr(ctx, "config", None) or {}
+        self._managed_providers = [str(item) for item in (cfg.get("managed_llm_providers") or ())]
+        self._disabled_providers = [str(item) for item in (cfg.get("disabled_llm_providers") or ())]
         from ..api.provider_registry import build_default_registry
 
-        self._provider_registry = build_default_registry()
+        self._provider_registry = build_default_registry(
+            managed=self._managed_providers,
+            disabled=self._disabled_providers,
+        )
         super().__init__(ctx, config)
 
     def adapter(self, model: str):
@@ -70,6 +81,20 @@ class LlmService(Service):
 
     def provider_names(self) -> list:
         return self.provider_registry().names()
+
+    def builtin_providers(self) -> list:
+        """全部内置 provider 名（含被接管/禁用的）。"""
+        from ..api.provider_registry import builtin_provider_names
+
+        return builtin_provider_names()
+
+    def managed_providers(self) -> list:
+        """清单已接管的内置 provider 名（默认装配被抑制）。"""
+        return list(self._managed_providers)
+
+    def disabled_providers(self) -> list:
+        """显式禁用的内置 provider 名。"""
+        return list(self._disabled_providers)
 
     def resolve_provider(self, model: str) -> str:
         """返回某模型匹配到的 provider 名（无匹配返回 None）。"""

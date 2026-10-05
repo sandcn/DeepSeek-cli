@@ -47,6 +47,10 @@ from .sources import (
     resolve_prompt_source,
     set_managed_builtin_prompt_sources,
 )
+from .sections import (
+    ordered_sections,
+    resolve_builder,
+)
 from .vcs_info import _build_vcs_info
 
 # ── Prompts 目录路径 ────────────────────────────────────────
@@ -273,9 +277,13 @@ def _build_prompt(
     include_skills: bool = False,
     include_mcp: bool = True,
 ) -> list[str]:
-    """构建提示词的公共逻辑。
+    """按当前生效的提词片段注册表装配系统提示词。
 
-    从 prompts_export_*.md 加载静态规则，追加运行时动态信息。
+    「一切皆插件」：片段顺序与装配不再硬编码，而是由
+    ``src.prompt_builder.sections`` 注册表（每个片段一个清单独立条目）驱动
+    ——可按 Patch/Overlay 禁用、替换或调整顺序。``attach_to`` 非空的片段
+    （版本控制信息）追加到目标片段的输出，保持「环境信息 + 版本控制」为同一
+    条 system 消息（与既有行为完全一致）。
 
     Args:
         export_name: 导出的 prompts 文件名（不含 .md 后缀）
@@ -287,49 +295,92 @@ def _build_prompt(
             构建时只注入一次；技能变更后经 rebuild_system_prompt 重建）
         include_mcp: 是否在技能章节后注入 MCP 外部工具章节（无 MCP 配置时为空）
     """
-    cwd = _resolve_cwd(cwd)
+    ctx = {
+        "agent_name": agent_name,
+        "export_name": export_name,
+        "fallback": fallback,
+        "cwd": _resolve_cwd(cwd),
+        "include_version_control": include_version_control,
+        "include_global_md": include_global_md,
+        "include_skills": include_skills,
+        "include_mcp": include_mcp,
+    }
     parts: list[str] = []
+    part_index: dict[str, int] = {}
+    for section in ordered_sections():
+        text = _invoke_section(section, ctx)
+        if not text:
+            continue
+        host = section.attach_to
+        if host and host in part_index:
+            parts[part_index[host]] = parts[part_index[host]] + text
+            continue
+        part_index[section.id] = len(parts)
+        parts.append(text)
+    return parts
 
-    # 加载预合并的系统提词（文件丢失时用兜底版本）
-    if export_name:
-        export_content = _load_prompt(export_name)
-    else:
-        export_content = ""
+
+def _invoke_section(section, ctx: dict) -> str:
+    """解析并调用片段构造函数；失败只记日志并跳过（不阻断提词构建）。"""
+    try:
+        builder = resolve_builder(section)
+    except Exception:
+        _logger.warning("提词片段 %s 构造引用解析失败", section.id, exc_info=True)
+        return ""
+    try:
+        text = builder(ctx)
+    except Exception:
+        _logger.warning("提词片段 %s 构造失败", section.id, exc_info=True)
+        return ""
+    return text if isinstance(text, str) else ""
+
+
+# ── 内置片段构造函数（经 sections 注册表的点分引用调用） ─────
+
+
+def _section_export(ctx: dict) -> str:
+    """静态提词：prompts_export_*.md（缺失时用兜底提词）。"""
+    export_name = str(ctx.get("export_name") or "")
+    export_content = _load_prompt(export_name) if export_name else ""
     if not export_content:
         _logger.warning("提示词文件 %s 未找到或读取失败，使用 fallback 兜底提示词", export_name)
-    parts.append(export_content if export_content else fallback)
+    return export_content if export_content else str(ctx.get("fallback") or "")
 
-    # 运行时：从 init.md 动态加载项目摘要（放在环境信息前）
-    if include_global_md:
-        global_summary = build_work_md("global.md",cwd=cwd)
-        if global_summary:
-            parts.append(global_summary)
 
-    agent_summary = build_work_md(agent_name + ".md",cwd=cwd)
-    if agent_summary:
-        parts.append(agent_summary)
+def _section_global_md(ctx: dict) -> str:
+    if not ctx.get("include_global_md", True):
+        return ""
+    return build_work_md("global.md", cwd=ctx.get("cwd"))
 
-    # 运行时动态信息
-    env_info = build_environment_info(cwd)
-    if include_version_control:
-        vcs_info, _has_git = _build_vcs_info(cwd)
-        env_info += vcs_info
-    parts.append(env_info)
 
-    # 技能章节：环境信息之后注入，构建时只注入一次
-    if include_skills:
-        skills_section = build_skills_prompt_section(cwd)
-        if skills_section:
-            parts.append(skills_section)
+def _section_agent_md(ctx: dict) -> str:
+    name = str(ctx.get("agent_name") or "")
+    if not name:
+        return ""
+    return build_work_md(name + ".md", cwd=ctx.get("cwd"))
 
-    # MCP 外部工具章节：技能章节之后注入（无 MCP 配置时为空，不影响既有提示词）
-    if include_mcp:
-        mcp_section = _build_mcp_section(agent_name)
-        if mcp_section:
-            parts.append(mcp_section)
 
-    # 过滤空字符串（文件丢失/读取失败时 _load_prompt 返回空字符串）
-    return [p for p in parts if p]
+def _section_env_info(ctx: dict) -> str:
+    return build_environment_info(ctx.get("cwd"))
+
+
+def _section_vcs_info(ctx: dict) -> str:
+    if not ctx.get("include_version_control", True):
+        return ""
+    info, _has_git = _build_vcs_info(_resolve_cwd(ctx.get("cwd")))
+    return info or ""
+
+
+def _section_skills(ctx: dict) -> str:
+    if not ctx.get("include_skills"):
+        return ""
+    return build_skills_prompt_section(ctx.get("cwd"))
+
+
+def _section_mcp(ctx: dict) -> str:
+    if not ctx.get("include_mcp", True):
+        return ""
+    return _build_mcp_section(str(ctx.get("agent_name") or "main"))
 
 
 # =================== 子代理提示词 ===================

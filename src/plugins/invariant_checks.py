@@ -1,0 +1,846 @@
+"""内置运行时不变量检查实现 — 每条检查由清单中的独立插件条目注册。
+
+「一切皆插件」：检查函数的**声明**（id → 点分引用）在
+``src.kernel.invariant_registry``，每条对应清单中的独立条目
+（``invariant``，经 ``src.plugins.invariant_entries``）；本模块只承载实现，
+不持有装配逻辑——条目被 Patch/Overlay 禁用即该检查缺席。
+
+检查实现各自惰性 import 其依赖领域，保持与内核的零静态依赖（避免 import 环）。
+"""
+
+from __future__ import annotations
+
+from ..kernel.fiber import FiberState
+
+
+def service_keys_valid(kernel) -> str | None:
+    for key in kernel.service_keys():
+        if not isinstance(key, str) or not key:
+            return f"非法服务 key: {key!r}"
+        if kernel.resolve_service(key) is None:
+            return f"服务 {key!r} 的值为 None"
+    return None
+
+
+def fibers_active_have_deps(kernel) -> str | None:
+    for fiber in kernel.fibers():
+        if fiber.state is FiberState.ACTIVE and not fiber.deps_ready():
+            return f"Fiber {fiber.name!r} 处于 ACTIVE 但依赖未就绪: {fiber.missing_dependencies()}"
+    return None
+
+
+def tools_registry_consistent(kernel) -> str | None:
+    if not kernel.has_service("tools"):
+        return None
+    service = kernel.resolve_service("tools")
+    registry = service.registry
+    for name, tool_class in registry.get_tools().items():
+        if getattr(tool_class, "name", None) != name:
+            return f"工具 {name!r} 的 name 属性不匹配: {getattr(tool_class, 'name', None)!r}"
+    if registry is not type(registry).default():
+        return "工具注册表不是进程级默认注册表（与调度器/MCP 不同源）"
+    return None
+
+
+def agent_loop_dependencies(kernel) -> str | None:
+    if not kernel.has_service("agent_loop"):
+        return None
+    required = {"tools", "llm", "config", "prompt", "events", "presets"}
+    missing = sorted(required - set(kernel.service_keys()))
+    if missing:
+        return f"agent_loop 已加载但缺少服务: {missing}"
+    return None
+
+
+def presets_have_standard(kernel) -> str | None:
+    if not kernel.has_service("presets"):
+        return None
+    if "standard" not in kernel.resolve_service("presets").list():
+        return "presets 服务缺少内置 standard 预设"
+    return None
+
+
+def agents_messages_recorded(kernel) -> str | None:
+    """「模型可见即已记录」：活跃 Agent 的消息视图必须与其会话日志投影一致。"""
+    if not kernel.has_service("agents"):
+        return None
+    registry = kernel.resolve_service("agents")
+    for record in registry.active():
+        messages = getattr(record.agent, "messages", None)
+        if messages is None:
+            continue
+        verify = getattr(messages, "verify", None)
+        if verify is None:
+            continue
+        try:
+            consistent = verify()
+        except Exception as exc:  # noqa: BLE001 - 校验失败即上报
+            return f"Agent {record.id!r} 会话日志校验异常: {exc}"
+        if not consistent:
+            return (
+                f"Agent {record.id!r} 的消息列表与会话日志投影不一致"
+                "（「模型可见即已记录」被违反）"
+            )
+    return None
+
+
+def service_providers_present(kernel) -> str | None:
+    """可替换 provider 的服务必须持有 provider（可插拔服务不得为空壳）。"""
+    checks = (
+        ("observability", "port"),
+        ("notifications", "port"),
+        ("persistence", "port"),
+        ("checkpoint", "port"),
+    )
+    for key, getter in checks:
+        if not kernel.has_service(key):
+            continue
+        service = kernel.resolve_service(key)
+        provider = getattr(service, getter, None)
+        if callable(provider):
+            provider = provider()
+        if provider is None:
+            return f"服务 {key!r} 的 provider 为空"
+    return None
+
+
+def llm_providers_available(kernel) -> str | None:
+    """llm 服务必须至少有注册 provider，且覆盖未被接管/禁用的内置 provider。"""
+    if not kernel.has_service("llm"):
+        return None
+    service = kernel.resolve_service("llm")
+    names = getattr(service, "provider_names", None)
+    if not callable(names):
+        return None
+    providers = list(names())
+    if not providers:
+        return "llm 服务没有任何已注册的模型 provider"
+    try:
+        from ..api.provider_registry import builtin_provider_names
+    except Exception:  # noqa: BLE001 - 读取失败即跳过后置校验
+        return None
+    managed = _provider_list(service, "managed_providers")
+    disabled = _provider_list(service, "disabled_providers")
+    allowed = managed | disabled
+    missing = sorted(
+        name for name in builtin_provider_names()
+        if name not in providers and name not in allowed
+    )
+    if missing:
+        return f"llm 服务缺少内置模型 provider: {missing}"
+    return None
+
+
+def _provider_list(service, method: str) -> set:
+    getter = getattr(service, method, None)
+    if not callable(getter):
+        return set()
+    try:
+        return {str(item) for item in getter()}
+    except Exception:  # noqa: BLE001 - 读取失败按空集处理
+        return set()
+
+
+def renderer_extensions_readable(kernel) -> str | None:
+    """renderer 扩展点必须可读（handler/filter 注册表自省不抛异常）。"""
+    if not kernel.has_service("renderer"):
+        return None
+    service = kernel.resolve_service("renderer")
+    for method in ("handlers", "filters", "builtin_handlers", "builtin_filters",
+                   "builtin_handler_ids", "builtin_filter_ids"):
+        read = getattr(service, method, None)
+        if not callable(read):
+            continue
+        try:
+            list(read())
+        except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+            return f"renderer 扩展 {method} 读取失败: {exc}"
+    return None
+
+
+def agent_middleware_readable(kernel) -> str | None:
+    """Agent 中间件注册表必须可读（清单接管/禁用自省不抛异常）。"""
+    try:
+        from ..core.middleware.registry import builtin_middleware_factories, builtin_middleware_ids
+
+        list(builtin_middleware_ids())
+        list(builtin_middleware_factories())
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"Agent 中间件注册表读取失败: {exc}"
+    return None
+
+
+def subagents_types_registered(kernel) -> str | None:
+    """``ctx.subagents`` 必须注册全部内置 Agent 类型（类型是清单独立条目）。"""
+    if not kernel.has_service("subagents"):
+        return None
+    service = kernel.resolve_service("subagents")
+    try:
+        types = set(service.types())
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"subagents 类型注册表读取失败: {exc}"
+    if not types:
+        return "subagents 服务没有任何已注册的 Agent 类型"
+    missing = sorted({"map", "review", "plan", "execute"} - types)
+    if missing:
+        return f"subagents 服务缺少内置 Agent 类型: {missing}"
+    return None
+
+
+def stream_handlers_readable(kernel) -> str | None:
+    """流式处理器注册表必须可读，且 ``ctx.stream`` 覆盖全部内置角色。"""
+    try:
+        from ..api.stream.registry import (
+            builtin_stream_handler_factories,
+            builtin_stream_handler_ids,
+        )
+
+        ids = list(builtin_stream_handler_ids())
+        builtin_stream_handler_factories()
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"流式处理器注册表读取失败: {exc}"
+    if not kernel.has_service("stream"):
+        return None
+    service = kernel.resolve_service("stream")
+    try:
+        active = set(service.handlers())
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"ctx.stream 处理器读取失败: {exc}"
+    missing = sorted(set(ids) - active)
+    if missing:
+        return f"ctx.stream 缺少内置流式处理器: {missing}"
+    return None
+
+
+def ui_consumers_views_readable(kernel) -> str | None:
+    """事件消费者 / UI 视图注册表必须可读，且生效项覆盖全部内置项。"""
+    try:
+        from ..tui.events.consumer_registry import builtin_consumer_ids, consumer_names
+        from ..tui.app.view_registry import builtin_view_ids, active_view_ids
+
+        builtin_consumer_ids()
+        builtin_view_ids()
+        consumers = set(consumer_names())
+        views = set(active_view_ids())
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"事件消费者/UI 视图注册表读取失败: {exc}"
+    if kernel.has_service("consumers"):
+        try:
+            active = set(kernel.resolve_service("consumers").consumers())
+        except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+            return f"ctx.consumers 消费者读取失败: {exc}"
+        missing = sorted(consumers - active)
+        if missing:
+            return f"ctx.consumers 缺少内置消费者: {missing}"
+    if kernel.has_service("ui"):
+        try:
+            active_views = set(kernel.resolve_service("ui").views())
+        except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+            return f"ctx.ui 视图读取失败: {exc}"
+        missing = sorted(views - active_views)
+        if missing:
+            return f"ctx.ui 缺少内置视图: {missing}"
+    return None
+
+
+def declared_provides_present(kernel) -> str | None:
+    """活跃 Fiber 声明的 ``provide`` 服务必须全部在册（严格模式的运行期保障）。"""
+    missing = []
+    for fiber in kernel.fibers():
+        if fiber.state is not FiberState.ACTIVE:
+            continue
+        for key in getattr(fiber.definition, "provide", ()) or ():
+            if not kernel.has_service(str(key)):
+                missing.append(str(key))
+    if missing:
+        return f"已声明提供的服务缺失: {sorted(set(missing))}"
+    return None
+
+
+def runtime_data_services_readable(kernel) -> str | None:
+    """运行时数据服务（消息队列/多模态/上下文选择与摘要/统计/token）可读。"""
+    checks = (
+        ("message_queue", ("create",)),
+        ("multimodal", ("is_multimodal", "optimize_messages_for_upload")),
+        ("context_selector", ("select_for_compression",)),
+        ("context_summarizer", ("summarize",)),
+        ("stats", ("token_stats",)),
+        ("tokens", ("estimate",)),
+    )
+    for key, methods in checks:
+        if not kernel.has_service(key):
+            continue
+        service = kernel.resolve_service(key)
+        for method in methods:
+            if not callable(getattr(service, method, None)):
+                return f"服务 {key!r} 缺少方法 {method!r}"
+    return None
+
+
+def tool_engines_readable(kernel) -> str | None:
+    """工具执行引擎注册表必须可读，且默认引擎可解析（调度不中断）。"""
+    try:
+        from ..core.tool_engines import (
+            builtin_tool_engine_factories,
+            builtin_tool_engine_ids,
+            default_tool_engine,
+        )
+
+        list(builtin_tool_engine_ids())
+        builtin_tool_engine_factories()
+        if not callable(default_tool_engine()):
+            return "工具执行引擎默认引擎不可调用"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"工具执行引擎注册表读取失败: {exc}"
+    return None
+
+
+def providers_readable(kernel) -> str | None:
+    """可替换 provider 注册表必须可读，且生效项非空。
+
+    覆盖：通知后端 / 上下文压缩策略 / MCP 传输。
+    """
+    if kernel.has_service("notifications"):
+        try:
+            service = kernel.resolve_service("notifications")
+            backends = list(service.backends())
+            from ..notifications.registry import builtin_notification_backend_ids
+
+            missing = sorted(set(builtin_notification_backend_ids()) - set(backends))
+            if missing:
+                return f"ctx.notifications 缺少内置通知后端: {missing}"
+        except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+            return f"通知后端注册表读取失败: {exc}"
+    if kernel.has_service("context"):
+        try:
+            service = kernel.resolve_service("context")
+            names = list(service.strategy_names())
+            if not names:
+                return "ctx.context 没有任何已注册的压缩策略"
+        except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+            return f"压缩策略注册表读取失败: {exc}"
+    if kernel.has_service("mcp"):
+        try:
+            from ..mcp.transport_registry import builtin_mcp_transport_ids
+
+            service = kernel.resolve_service("mcp")
+            transports = set(service.transports())
+            missing = sorted(set(builtin_mcp_transport_ids()) - transports)
+            if missing:
+                return f"ctx.mcp 缺少内置传输: {missing}"
+        except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+            return f"MCP 传输注册表读取失败: {exc}"
+    return None
+
+
+def singletons_kernel_source(kernel) -> str | None:
+    """进程级单例访问函数必须解析到内核服务独占实例（内核服务为唯一真源）。"""
+    if kernel.has_service("events"):
+        from ..core.adapters.events import DisplayEventBusAdapter
+        from ..core.events.display_bus import DisplayEventBus
+        from ..core.events.event_bus import get_default_bus
+
+        events = kernel.resolve_service("events")
+        if get_default_bus() is not events.bus:
+            return "核心事件总线单例未指向 ctx.events 服务"
+        if DisplayEventBus.get_default() is not events.display_bus:
+            return "显示事件总线单例未指向 ctx.events 服务"
+        if DisplayEventBusAdapter.get_default() is not events.event_adapter():
+            return "显示事件适配器单例未指向 ctx.events 服务"
+    if kernel.has_service("output"):
+        from ..core.adapters.output import DefaultOutputAdapter
+
+        if DefaultOutputAdapter.get_default() is not kernel.resolve_service("output").port:
+            return "默认输出端口单例未指向 ctx.output 服务"
+    if kernel.has_service("cache"):
+        from ..core.cache import get_default_cache
+
+        if get_default_cache() is not kernel.resolve_service("cache").cache:
+            return "默认缓存单例未指向 ctx.cache 服务"
+    if kernel.has_service("observability"):
+        from ..core.telemetry.metrics import get_default_collector
+        from ..core.telemetry.tracer import get_default_tracer
+        from ..observability.facade import get_default_facade
+
+        observability = kernel.resolve_service("observability")
+        if get_default_facade() is not observability.provider:
+            return "默认可观测门面单例未指向 ctx.observability 服务"
+        if get_default_collector() is not observability.collector:
+            return "默认指标收集器单例未指向 ctx.observability 服务"
+        if get_default_tracer() is not observability.tracer:
+            return "默认追踪器单例未指向 ctx.observability 服务"
+    if kernel.has_service("mcp"):
+        from ..mcp.manager import McpManager
+
+        if McpManager.default() is not kernel.resolve_service("mcp").manager:
+            return "McpManager 单例未指向 ctx.mcp 服务"
+    if kernel.has_service("ui"):
+        from ..tui._screen import TerminalWidthCache
+        from ..tui._subagent_panel import SubAgentPanelController
+
+        ui = kernel.resolve_service("ui")
+        if TerminalWidthCache.get_default() is not ui.width_cache:
+            return "终端宽度缓存单例未指向 ctx.ui 服务"
+        if SubAgentPanelController.get_default() is not ui.subagent_panel:
+            return "SubAgent 面板控制器单例未指向 ctx.ui 服务"
+    return None
+
+
+def web_providers_readable(kernel) -> str | None:
+    """Web 搜索/抓取提供者注册表必须可读，且生效项覆盖内置项。"""
+    if kernel.has_service("web_search"):
+        try:
+            from ..tools.search_provider_registry import builtin_search_provider_ids
+
+            service = kernel.resolve_service("web_search")
+            names = set(service.provider_names())
+            missing = sorted(set(builtin_search_provider_ids()) - names)
+            if missing:
+                return f"ctx.web_search 缺少内置搜索提供者: {missing}"
+        except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+            return f"Web 搜索提供者注册表读取失败: {exc}"
+    if kernel.has_service("web_fetch"):
+        try:
+            from ..tools.fetch_provider_registry import builtin_fetch_provider_ids
+
+            service = kernel.resolve_service("web_fetch")
+            names = set(service.provider_names())
+            missing = sorted(set(builtin_fetch_provider_ids()) - names)
+            if missing:
+                return f"ctx.web_fetch 缺少内置抓取提供者: {missing}"
+        except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+            return f"Web 抓取提供者注册表读取失败: {exc}"
+    return None
+
+
+def themes_readable(kernel) -> str | None:
+    """主题注册表必须可读，且生效项覆盖全部内置主题。"""
+    if not kernel.has_service("themes"):
+        return None
+    try:
+        from ..tui.core._theme import builtin_theme_names
+
+        service = kernel.resolve_service("themes")
+        names = set(service.names())
+        missing = sorted(set(builtin_theme_names()) - names)
+        if missing:
+            return f"ctx.themes 缺少内置主题: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"主题注册表读取失败: {exc}"
+    return None
+
+
+def skill_sources_readable(kernel) -> str | None:
+    """技能来源注册表必须可读，且生效项覆盖全部内置来源。"""
+    if not kernel.has_service("skill_sources"):
+        return None
+    try:
+        from ..skills.source_registry import builtin_skill_source_ids
+
+        service = kernel.resolve_service("skill_sources")
+        names = set(service.source_names())
+        missing = sorted(set(builtin_skill_source_ids()) - names)
+        if missing:
+            return f"ctx.skill_sources 缺少内置来源: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"技能来源注册表读取失败: {exc}"
+    return None
+
+
+def session_projections_readable(kernel) -> str | None:
+    """会话投影注册表必须可读，且生效项覆盖全部内置投影。"""
+    if not kernel.has_service("session_projections"):
+        return None
+    try:
+        from ..core.session_log.builtin_projections import builtin_projection_names
+
+        service = kernel.resolve_service("session_projections")
+        names = set(service.names())
+        missing = sorted(set(builtin_projection_names()) - names)
+        if missing:
+            return f"ctx.session_projections 缺少内置投影: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"会话投影注册表读取失败: {exc}"
+    return None
+
+
+def renderer_targets_readable(kernel) -> str | None:
+    """渲染目标注册表必须可读，且生效项覆盖全部内置目标。"""
+    if not kernel.has_service("renderer"):
+        return None
+    try:
+        from ..renderer.targets.registry import builtin_render_target_ids
+
+        service = kernel.resolve_service("renderer")
+        names = set(service.target_ids())
+        missing = sorted(set(builtin_render_target_ids()) - names)
+        if missing:
+            return f"ctx.renderer 缺少内置渲染目标: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"渲染目标注册表读取失败: {exc}"
+    return None
+
+
+def global_disabled_tools_readable(kernel) -> str | None:
+    """全局禁用工具注册表必须可读，且生效项覆盖全部内置项。"""
+    try:
+        from ..tools.tool_policy import (
+            active_global_disabled_tools,
+            builtin_global_disabled_tool_ids,
+        )
+
+        active = set(active_global_disabled_tools())
+        missing = sorted(set(builtin_global_disabled_tool_ids()) - active)
+        if missing:
+            return f"全局禁用工具注册表缺少内置项: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"全局禁用工具注册表读取失败: {exc}"
+    return None
+
+
+def presets_readable(kernel) -> str | None:
+    """Preset 注册表必须可读，且生效项覆盖全部内置 preset。"""
+    if not kernel.has_service("presets"):
+        return None
+    try:
+        from ..core.presets import builtin_preset_names
+
+        service = kernel.resolve_service("presets")
+        names = set(service.list())
+        missing = sorted(set(builtin_preset_names()) - names)
+        if missing:
+            return f"ctx.presets 缺少内置 preset: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"Preset 注册表读取失败: {exc}"
+    return None
+
+
+def prompt_registry_readable(kernel) -> str | None:
+    """提示词注册表必须可读，且覆盖全部内置运行模式/提词来源/提词片段。"""
+    if not kernel.has_service("prompt"):
+        return None
+    try:
+        from ..prompt_builder.modes import builtin_mode_names
+        from ..prompt_builder.sections import builtin_section_ids
+        from ..prompt_builder.sources import builtin_prompt_source_ids
+
+        service = kernel.resolve_service("prompt")
+        modes = set(service.modes())
+        missing_modes = sorted(set(builtin_mode_names()) - modes)
+        if missing_modes:
+            return f"ctx.prompt 缺少内置运行模式: {missing_modes}"
+        sources = set(service.sources())
+        missing_sources = sorted(set(builtin_prompt_source_ids()) - sources)
+        if missing_sources:
+            return f"ctx.prompt 缺少内置提词来源: {missing_sources}"
+        sections = set(service.sections())
+        missing_sections = sorted(set(builtin_section_ids()) - sections)
+        if missing_sections:
+            return f"ctx.prompt 缺少内置提词片段: {missing_sections}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"提示词注册表读取失败: {exc}"
+    return None
+
+
+def clawbot_commands_readable(kernel) -> str | None:
+    """ClawBot 命令注册表必须可读，且生效项覆盖全部内置指令。"""
+    if not kernel.has_service("clawbot"):
+        return None
+    try:
+        from ..clawbot.command_registry import builtin_clawbot_command_ids
+
+        service = kernel.resolve_service("clawbot")
+        names = set(service.commands())
+        missing = sorted(set(builtin_clawbot_command_ids()) - names)
+        if missing:
+            return f"ctx.clawbot 缺少内置远程命令: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"ClawBot 命令注册表读取失败: {exc}"
+    return None
+
+
+def subcommands_readable(kernel) -> str | None:
+    """CLI 子命令注册表必须可读，且生效项覆盖全部内置子命令。"""
+    try:
+        from ..app_init.subcommands import active_subcommands, builtin_subcommand_ids
+
+        active = set(active_subcommands())
+        missing = sorted(set(builtin_subcommand_ids()) - active)
+        if missing:
+            return f"CLI 子命令注册表缺少内置项: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"CLI 子命令注册表读取失败: {exc}"
+    return None
+
+
+def keybindings_readable(kernel) -> str | None:
+    """键位绑定注册表必须可读，且生效项覆盖全部内置绑定。"""
+    if not kernel.has_service("keybindings"):
+        return None
+    try:
+        from ..tui._keybindings import builtin_keybinding_ids
+
+        service = kernel.resolve_service("keybindings")
+        names = set(service.active())
+        missing = sorted(set(builtin_keybinding_ids()) - names)
+        if missing:
+            return f"ctx.keybindings 缺少内置绑定: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"键位绑定注册表读取失败: {exc}"
+    return None
+
+
+def special_keys_readable(kernel) -> str | None:
+    """特殊键处理器注册表必须可读，且生效项覆盖全部内置处理器。"""
+    if not kernel.has_service("special_keys"):
+        return None
+    try:
+        from ..app_loop._special_handlers import builtin_special_key_ids
+
+        service = kernel.resolve_service("special_keys")
+        names = set(service.active())
+        missing = sorted(set(builtin_special_key_ids()) - names)
+        if missing:
+            return f"ctx.special_keys 缺少内置处理器: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"特殊键处理器注册表读取失败: {exc}"
+    return None
+
+
+def tool_styles_readable(kernel) -> str | None:
+    """工具表现注册表必须可读，且生效项覆盖全部内置表现条目。"""
+    if not kernel.has_service("tool_styles"):
+        return None
+    try:
+        from ..tui._tool_styles import builtin_presentation_ids
+
+        service = kernel.resolve_service("tool_styles")
+        names = set(service.active())
+        missing = sorted(set(builtin_presentation_ids()) - names)
+        if missing:
+            return f"ctx.tool_styles 缺少内置表现条目: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"工具表现注册表读取失败: {exc}"
+    return None
+
+
+def syntax_readable(kernel) -> str | None:
+    """语法高亮语言注册表必须可读，且生效项覆盖全部内置语言。"""
+    if not kernel.has_service("syntax"):
+        return None
+    try:
+        from ..tui.ink.widgets._syntax_registry import builtin_language_ids
+
+        service = kernel.resolve_service("syntax")
+        names = set(service.active())
+        missing = sorted(set(builtin_language_ids()) - names)
+        if missing:
+            return f"ctx.syntax 缺少内置语言: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"语法高亮语言注册表读取失败: {exc}"
+    return None
+
+
+def presentation_data_readable(kernel) -> str | None:
+    """表现层数据注册表必须可读，且生效项覆盖全部内置数据表。"""
+    if not kernel.has_service("presentation_data"):
+        return None
+    try:
+        from ..presentation_data import builtin_data_ids
+
+        service = kernel.resolve_service("presentation_data")
+        names = set(service.active())
+        missing = sorted(set(builtin_data_ids()) - names)
+        if missing:
+            return f"ctx.presentation_data 缺少内置数据表: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"表现层数据注册表读取失败: {exc}"
+    return None
+
+
+def hosts_readable(kernel) -> str | None:
+    """host 组件注册表必须可读，且生效项覆盖全部内置 host。"""
+    if not kernel.has_service("hosts"):
+        return None
+    try:
+        from ..tui.ink.registry import builtin_host_ids
+
+        service = kernel.resolve_service("hosts")
+        names = set(service.active())
+        missing = sorted(set(builtin_host_ids()) - names)
+        if missing:
+            return f"ctx.hosts 缺少内置 host: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"host 组件注册表读取失败: {exc}"
+    return None
+
+
+def completion_providers_readable(kernel) -> str | None:
+    """补全提供者注册表必须可读，且生效项覆盖全部内置提供者。"""
+    if not kernel.has_service("completion_providers"):
+        return None
+    try:
+        from ..tui._completion_providers import builtin_provider_ids
+
+        service = kernel.resolve_service("completion_providers")
+        names = set(service.active())
+        missing = sorted(set(builtin_provider_ids()) - names)
+        if missing:
+            return f"ctx.completion_providers 缺少内置提供者: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"补全提供者注册表读取失败: {exc}"
+    return None
+
+
+def status_segments_readable(kernel) -> str | None:
+    """状态栏段注册表必须可读，且生效项覆盖全部内置段。"""
+    if not kernel.has_service("status_segments"):
+        return None
+    try:
+        from ..tui.app._status_segments import builtin_segment_ids
+
+        service = kernel.resolve_service("status_segments")
+        names = set(service.active())
+        missing = sorted(set(builtin_segment_ids()) - names)
+        if missing:
+            return f"ctx.status_segments 缺少内置段: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"状态栏段注册表读取失败: {exc}"
+    return None
+
+
+def kernel_admin_readable(kernel) -> str | None:
+    """内核管理服务必须可读（运行时启停 / 诊断 / 热重载接入点齐全）。"""
+    if not kernel.has_service("kernel_admin"):
+        return None
+    service = kernel.resolve_service("kernel_admin")
+    for method in ("stats", "enabled", "disabled", "plugins", "diagnose",
+                   "why_blocked", "service_providers", "watch_file"):
+        if not callable(getattr(service, method, None)):
+            return f"kernel_admin 服务缺少方法 {method!r}"
+    return None
+
+
+def escape_monitor_readable(kernel) -> str | None:
+    """Escape 监看服务必须可读（活跃实例查询/停止/创建接入点齐全）。"""
+    if not kernel.has_service("escape_monitor"):
+        return None
+    service = kernel.resolve_service("escape_monitor")
+    for method in ("active", "stop", "create"):
+        if not callable(getattr(service, method, None)):
+            return f"escape_monitor 服务缺少方法 {method!r}"
+    return None
+
+
+def tool_metadata_readable(kernel) -> str | None:
+    """工具元数据注册表必须可读，且生效项覆盖全部内置工具。"""
+    if not kernel.has_service("tool_metadata"):
+        return None
+    try:
+        from ..tools.metadata_registry import builtin_tool_names
+
+        service = kernel.resolve_service("tool_metadata")
+        names = set(service.active())
+        missing = sorted(set(builtin_tool_names()) - names)
+        if missing:
+            return f"ctx.tool_metadata 缺少内置工具元数据: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"工具元数据注册表读取失败: {exc}"
+    return None
+
+
+def tool_consts_readable(kernel) -> str | None:
+    """工具常量注册表必须可读，且生效项覆盖全部内置常量。"""
+    if not kernel.has_service("tool_consts"):
+        return None
+    try:
+        from ..tools.const_registry import builtin_constant_names
+
+        service = kernel.resolve_service("tool_consts")
+        names = set(service.active())
+        missing = sorted(set(builtin_constant_names()) - names)
+        if missing:
+            return f"ctx.tool_consts 缺少内置常量: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"工具常量注册表读取失败: {exc}"
+    return None
+
+
+def event_types_readable(kernel) -> str | None:
+    """事件类型注册表必须可读，且生效项覆盖全部内置事件类型。"""
+    if not kernel.has_service("event_types"):
+        return None
+    try:
+        from ..core.events.type_registry import builtin_composite_ids
+
+        service = kernel.resolve_service("event_types")
+        names = set(service.active())
+        missing = sorted(set(builtin_composite_ids()) - names)
+        if missing:
+            return f"ctx.event_types 缺少内置事件类型: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"事件类型注册表读取失败: {exc}"
+    return None
+
+
+def named_styles_readable(kernel) -> str | None:
+    """命名样式注册表必须可读，且生效项覆盖全部内置命名样式。"""
+    if not kernel.has_service("named_styles"):
+        return None
+    try:
+        from ..tui.core.style import builtin_style_names
+
+        service = kernel.resolve_service("named_styles")
+        names = set(service.active())
+        missing = sorted(set(builtin_style_names()) - names)
+        if missing:
+            return f"ctx.named_styles 缺少内置命名样式: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"命名样式注册表读取失败: {exc}"
+    return None
+
+
+__all__ = [
+    "service_keys_valid",
+    "fibers_active_have_deps",
+    "tools_registry_consistent",
+    "agent_loop_dependencies",
+    "presets_have_standard",
+    "agents_messages_recorded",
+    "service_providers_present",
+    "llm_providers_available",
+    "renderer_extensions_readable",
+    "agent_middleware_readable",
+    "subagents_types_registered",
+    "stream_handlers_readable",
+    "ui_consumers_views_readable",
+    "declared_provides_present",
+    "runtime_data_services_readable",
+    "tool_engines_readable",
+    "providers_readable",
+    "singletons_kernel_source",
+    "web_providers_readable",
+    "themes_readable",
+    "skill_sources_readable",
+    "session_projections_readable",
+    "renderer_targets_readable",
+    "global_disabled_tools_readable",
+    "presets_readable",
+    "prompt_registry_readable",
+    "clawbot_commands_readable",
+    "subcommands_readable",
+    "keybindings_readable",
+    "special_keys_readable",
+    "tool_styles_readable",
+    "syntax_readable",
+    "presentation_data_readable",
+    "hosts_readable",
+    "completion_providers_readable",
+    "status_segments_readable",
+    "kernel_admin_readable",
+    "escape_monitor_readable",
+    "tool_metadata_readable",
+    "tool_consts_readable",
+    "event_types_readable",
+    "named_styles_readable",
+]
