@@ -17,6 +17,35 @@ class ClawbotService(Service):
     name = "clawbot"
     inject = ("config", "sessions")
 
+    def __init__(self, ctx, config=None):
+        super().__init__(ctx, config)
+        cfg = config or getattr(ctx, "config", None) or {}
+        # 「一切皆插件」：远程指令由清单独立条目注册；本服务收到组合根注入的
+        # managed_clawbot_commands 后抑制对应内置命令的默认装配（条目被禁用即缺席）。
+        managed = cfg.get("managed_clawbot_commands") or ()
+        if managed:
+            from ..clawbot.command_registry import set_managed_builtin_clawbot_commands
+
+            undo = set_managed_builtin_clawbot_commands(managed)
+            ctx.effect(lambda: undo)
+        disabled = cfg.get("disabled_clawbot_commands") or ()
+        if disabled:
+            from ..clawbot.command_registry import disable_builtin_clawbot_commands
+
+            undo = disable_builtin_clawbot_commands(disabled)
+            ctx.effect(lambda: undo)
+
+    def commands(self) -> list:
+        """当前生效的远程指令名（自省）。"""
+        from ..clawbot.command_registry import active_clawbot_commands
+
+        return sorted(active_clawbot_commands())
+
+    def builtin_commands(self) -> list:
+        from ..clawbot.command_registry import builtin_clawbot_command_ids
+
+        return list(builtin_clawbot_command_ids())
+
     async def run(self, *, model=None, re_login: bool = False, tui: bool = True):
         from ..clawbot.runner import run_clawbot
 

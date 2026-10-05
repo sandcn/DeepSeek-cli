@@ -26,7 +26,6 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from ..config.loader import get_rc
 from .discovery import parse_skill_file, scan_skill_root
 from .models import (
     RANK_RUNTIME,
@@ -75,6 +74,8 @@ class SkillRegistry:
 
     def _rc_skills(self) -> dict:
         try:
+            from ..config.loader import get_rc
+
             rc = get_rc()
         except Exception:
             rc = {}

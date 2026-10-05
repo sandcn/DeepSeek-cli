@@ -26,6 +26,27 @@ from .env_info import (
     build_environment_info,
     build_work_md,
 )
+from .modes import (
+    DEFAULT_MODE,
+    active_modes,
+    builtin_mode_names,
+    default_mode,
+    disable_builtin_modes,
+    managed_mode_names,
+    mode_order,
+    register_builtin_mode,
+    resolve_mode_export,
+    resolve_mode_label,
+    set_managed_builtin_modes,
+)
+from .sources import (
+    builtin_prompt_source_ids,
+    disable_builtin_prompt_sources,
+    managed_prompt_source_ids,
+    register_builtin_prompt_source,
+    resolve_prompt_source,
+    set_managed_builtin_prompt_sources,
+)
 from .vcs_info import _build_vcs_info
 
 # ── Prompts 目录路径 ────────────────────────────────────────
@@ -40,21 +61,9 @@ _PROMPTS_DIR: str | None = None
 _MODE_EMPTY = "empty"
 _MODE_SIMPLE = "simple"
 _MODE_STANDARD = "standard"
-#: Ctrl+B 循环顺序（规则量递增）
+#: Ctrl+B 循环顺序的静态兜底（规则量递增）；生效顺序来自运行模式注册表
 _MODE_CYCLE = (_MODE_EMPTY, _MODE_SIMPLE, _MODE_STANDARD)
-#: 模式 → 系统提词文件（不含 .md 后缀）
-_MODE_EXPORT = {
-    _MODE_EMPTY: "prompts_export_main_empty",
-    _MODE_SIMPLE: "prompts_export_main_simple",
-    _MODE_STANDARD: "prompts_export_main",
-}
-#: 模式 → 显示名（模式行 / 切换通知）
-_MODE_LABELS = {
-    _MODE_EMPTY: "空模式",
-    _MODE_SIMPLE: "简单模式",
-    _MODE_STANDARD: "标准模式",
-}
-#: 当前模式（真源）
+#: 当前模式（真源；模式元数据 label/export/order 来自 ``modes`` 注册表）
 _MODE: str = _MODE_EMPTY
 #: 兼容旧布尔标志：与 _MODE 同步（True=空模式）
 _EMPTY_MODE: bool = True
@@ -75,24 +84,25 @@ def get_mode() -> str:
 
 def set_mode(mode: str) -> str:
     """设置主 agent 运行模式（非法值回退空模式），返回生效模式。"""
-    if mode not in _MODE_EXPORT:
-        mode = _MODE_EMPTY
+    if mode not in active_modes():
+        mode = DEFAULT_MODE
     return _apply_mode(mode)
 
 
 def cycle_mode() -> str:
-    """按 ``_MODE_CYCLE`` 顺序循环切换到下一模式，返回新模式。"""
+    """按运行模式注册表的 ``order`` 顺序循环切换到下一模式，返回新模式。"""
+    order = mode_order() or list(_MODE_CYCLE)
     try:
-        idx = _MODE_CYCLE.index(_MODE)
+        idx = order.index(_MODE)
     except ValueError:
         idx = -1
-    return _apply_mode(_MODE_CYCLE[(idx + 1) % len(_MODE_CYCLE)])
+    return _apply_mode(order[(idx + 1) % len(order)])
 
 
 def mode_label(mode: str | None = None) -> str:
     """模式显示名（默认当前模式）；未知模式回退空模式显示名。"""
     key = _MODE if mode is None else mode
-    return _MODE_LABELS.get(key, _MODE_LABELS[_MODE_EMPTY])
+    return resolve_mode_label(key)
 
 
 def is_empty_mode() -> bool:
@@ -334,7 +344,7 @@ def build_subagent_system_prompt(
     prompts_export_sub.md 不存在，直接使用 fallback 兜底提示词，
     追加运行时动态信息。环境信息后注入技能章节（每个 agent 均可使用技能）。
     """
-    return _build_prompt("sub","", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True, include_skills=True)
+    return _build_prompt("sub", resolve_prompt_source("sub") or "", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True, include_skills=True)
 
 
 def build_map_agent_system_prompt(
@@ -347,7 +357,7 @@ def build_map_agent_system_prompt(
     Map 类型专用于项目代码分析，只读工具集。
     环境信息后注入技能章节（每个 agent 均可使用技能）。
     """
-    return _build_prompt("map","prompts_export_map", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True, include_skills=True)
+    return _build_prompt("map", resolve_prompt_source("map") or "", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True, include_skills=True)
 
 
 def build_review_agent_system_prompt(
@@ -360,7 +370,7 @@ def build_review_agent_system_prompt(
     Review 类型专用于代码审查（Code Review），只读工具集，P0-P3 分级输出。
     环境信息后注入技能章节（每个 agent 均可使用技能）。
     """
-    return _build_prompt("review","prompts_export_review", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True, include_skills=True)
+    return _build_prompt("review", resolve_prompt_source("review") or "", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True, include_skills=True)
 
 
 def build_plan_agent_system_prompt(
@@ -374,7 +384,7 @@ def build_plan_agent_system_prompt(
     只读分析工具 + write_file/update_file。
     环境信息后注入技能章节（每个 agent 均可使用技能）。
     """
-    return _build_prompt("plan","prompts_export_plan", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True, include_skills=True)
+    return _build_prompt("plan", resolve_prompt_source("plan") or "", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True, include_skills=True)
 
 
 def build_execute_agent_system_prompt(
@@ -388,7 +398,7 @@ def build_execute_agent_system_prompt(
     用于执行计划文件中的具体步骤，完成后返回修改的文件列表。
     环境信息后注入技能章节（每个 agent 均可使用技能）。
     """
-    return _build_prompt("execute","prompts_export_execute", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True, include_skills=True)
+    return _build_prompt("execute", resolve_prompt_source("execute") or "", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True, include_skills=True)
 
 
 # =================== 主代理提示词 ===================
@@ -408,7 +418,7 @@ def build_system_prompt(
     环境信息之后注入技能章节（构建时一次；技能变更后经
     ``rebuild_system_prompt()`` 重建）。
     """
-    export_name = _MODE_EXPORT.get(_MODE, _MODE_EXPORT[_MODE_EMPTY])
+    export_name = resolve_mode_export(_MODE)
     return _build_prompt("main", export_name, _FALLBACK_MAIN_PROMPT, include_version_control, cwd, include_skills=True)
 
 
@@ -431,4 +441,21 @@ __all__ = [
     "toggle_empty_mode",
     "set_empty_mode",
     "set_simple_mode",
+    "DEFAULT_MODE",
+    "active_modes",
+    "builtin_mode_names",
+    "default_mode",
+    "managed_mode_names",
+    "mode_order",
+    "register_builtin_mode",
+    "resolve_mode_export",
+    "resolve_mode_label",
+    "set_managed_builtin_modes",
+    "disable_builtin_modes",
+    "builtin_prompt_source_ids",
+    "managed_prompt_source_ids",
+    "register_builtin_prompt_source",
+    "resolve_prompt_source",
+    "set_managed_builtin_prompt_sources",
+    "disable_builtin_prompt_sources",
 ]

@@ -60,6 +60,7 @@ class Fiber:
         self._disposers: List[Any] = []
         self._children: List[Fiber] = []
         self._manual_dispose = False
+        self._user_disabled = False
         self._provide_keys: List[str] = []
         self._extra_inject: List[str] = []
 
@@ -84,6 +85,11 @@ class Fiber:
     @property
     def disposed(self) -> bool:
         return self.state == FiberState.DISPOSED
+
+    @property
+    def disabled(self) -> bool:
+        """是否被运行时显式禁用（可经 ``enable`` 恢复）。"""
+        return self._user_disabled
 
     # ── 依赖 ─────────────────────────────────────────────
 
@@ -165,6 +171,27 @@ class Fiber:
         if self.state in (FiberState.ACTIVE, FiberState.FAILED, FiberState.UNLOADING):
             await self._teardown()
         self._manual_dispose = False
+        self._user_disabled = False
+        await self.start()
+
+    async def disable(self) -> None:
+        """运行时禁用插件：撤销全部注册与子插件，保留重新启用的能力。
+
+        与 :meth:`dispose` 的区别：禁用是**可逆**的（``enable`` 重新执行
+        apply）；dispose 是永久卸载。禁用的 Fiber 不参与依赖重规划（不会被
+        自动重新加载），直到被显式 enable。
+        """
+        self._manual_dispose = True
+        self._user_disabled = True
+        if self.state in (FiberState.DISPOSED, FiberState.PENDING) and not self._children:
+            self.state = FiberState.DISPOSED
+            return
+        await self._teardown()
+
+    async def enable(self) -> None:
+        """重新启用被禁用的插件（重新执行 apply；依赖不满足则停在 PENDING）。"""
+        self._manual_dispose = False
+        self._user_disabled = False
         await self.start()
 
     async def dispose(self) -> None:

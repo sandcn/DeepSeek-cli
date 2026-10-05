@@ -751,6 +751,46 @@ ChatUIConsumer
 
 ---
 
+## 插件内核（一切皆插件）
+
+`chat.py` 的启动是**最薄组合根**：解析参数 → 构建内核插件树 → `ctx.app.run` → 卸载内核。
+其余一切——工具、命令、渲染 handler/filter/target、Agent 类型与中间件、流式处理器、
+通知后端、上下文策略、MCP 传输、工具引擎、事件消费者、UI 视图、Web 提供者、主题、
+技能来源、会话投影、全局禁用工具策略、Preset、提示词运行模式/来源、ClawBot 远程指令、
+CLI 顶层子命令、运行时数据服务与能力接缝——都是清单（Profile/Bundle/Patch）中的
+**独立插件条目**，可被 `~/.chat_config/cordis.patch.yml`、`--patch` 或用户 Profile
+目录按 id 覆盖配置、禁用或替换。
+
+### 内核模型（`src/kernel/`）
+
+| 概念 | 说明 |
+|---|---|
+| `Kernel` | 无特权内核：服务容器 + Fiber 生命周期 + 依赖驱动加载（`settle`） |
+| `Context` (`ctx`) | 服务容器与可逆副作用注册点；`provide`/`consume`/`on`/`effect`/`plugin`；空间可组合性 `extend`/`isolate`/`intercept` |
+| `Service` | 插件向其它插件提供能力的基类（占据稳定的 `ctx.<key>`） |
+| `Fiber` | 插件生命周期状态机（PENDING→LOADING→ACTIVE / FAILED / DISPOSED），支持 `restart`/`disable`/`enable` |
+| `EventBus` | 五种分发模式：`emit` / `waterfall` / `parallel` / `serial` / `bail` |
+| `Scope` | 按 key 划分的作用域注册原语（同一进程多 Agent/会话互不污染） |
+| `ConfigTree` | Profile / Bundle / Patch 三层组装；`Overlay` 提供 `--patch` / 用户补丁叠加 |
+| `loader` | 目录扫描、模块提取、`dsh.plugins` entry-points 发现（源码直编，热重载确定性） |
+| `diagnostics` | 依赖诊断（`dependency_report` / `why_blocked` / `service_providers` / `kernel_stats`） |
+| `watch` | 插件文件热重载监听（mtime 轮询 → 自动 `reload_file`） |
+
+### 运行时管理（`ctx.kernel_admin`）
+
+| 能力 | 说明 |
+|---|---|
+| 启用 / 禁用 | `await admin.disable(name)` / `await admin.enable(name)`（可逆，撤销全部注册并提供重新启用） |
+| 重载 | `await admin.reload(name)` / `await admin.reload_file(path)` |
+| 热重载监听 | `admin.watch_file(path)` + `await admin.start_watching(interval)` |
+| 依赖诊断 | `admin.plugins()` / `admin.why_blocked(name)` / `admin.stats()` / `admin.diagnose()` |
+
+组合根支持 `--dump-config` 打印最终插件树、`--check-invariants` 运行时不变量自检；
+`python chat.py plugin list/add/remove` 管理外部插件（`~/.chat_config/plugins`），
+`/plugin` 界面总览运行期内核 Fiber 与清单条目。
+
+---
+
 ## 六边形架构（Ports & Adapters）
 
 核心层通过 **8 个端口接口** 访问基础设施，实现依赖倒置——核心层不直接依赖 `api`、`tui`、`chat_msgs` 等具体实现模块，基础设施层通过适配器模式实现这些端口。

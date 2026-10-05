@@ -20,7 +20,12 @@ _logger = logging.getLogger(__name__)
 
 
 def load_module(path: str):
-    """按文件路径导入模块（每次调用以唯一模块名隔离，便于热重载）。"""
+    """按文件路径导入模块（每次调用以唯一模块名隔离，便于热重载）。
+
+    ★ 从 bytes 源码 ``compile`` + ``exec``（绕过 importlib 的 ``__pycache__``
+    字节码缓存）——同一秒内重写文件（mtime 秒级、size 未变）时，仍会执行到
+    最新源码，保证文件热重载确定性生效。
+    """
     if not os.path.isfile(path):
         raise PluginError(f"插件文件不存在: {path}")
     abs_path = os.path.abspath(path)
@@ -31,7 +36,10 @@ def load_module(path: str):
         raise PluginError(f"无法从路径加载插件: {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    with open(abs_path, "rb") as handle:
+        source = handle.read()
+    code = compile(source, abs_path, "exec")
+    exec(code, module.__dict__)
     return module
 
 

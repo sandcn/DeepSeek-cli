@@ -4,57 +4,28 @@
 组合。Preset 声明工具排除/包含集合与可选模型覆盖；``scope(name)`` 经
 ``ctx.isolate`` 派生隔离子上下文（空间可组合性），把 preset 挂到会话自己的
 作用域下，互不污染。
+
+「一切皆插件」：内置 preset（standard/minimal/code）不再是本模块的硬编码元组，
+而是由清单中的独立条目（``preset``，经 ``src.plugins.preset_entries``）注册进
+``src.core.presets`` 注册表——可按 Profile/Patch 禁用、覆盖或替换；外部插件可
+经 ``ctx.presets.register(...)`` 注册自定义 preset。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional
 
-from ..kernel import Service, plugin
-
-
-@dataclass(frozen=True)
-class Preset:
-    """一个能力组合预设。"""
-
-    name: str
-    description: str = ""
-    tool_excludes: Tuple[str, ...] = ()
-    tool_includes: Tuple[str, ...] = ()
-    model: str = ""
-
-    def to_dict(self) -> dict:
-        return {
-            "name": self.name,
-            "description": self.description,
-            "tool_excludes": list(self.tool_excludes),
-            "tool_includes": list(self.tool_includes),
-            "model": self.model,
-        }
-
-    def allows(self, tool_name: str) -> bool:
-        if self.tool_includes and tool_name not in self.tool_includes:
-            return False
-        return tool_name not in self.tool_excludes
-
-
-BUILTIN_PRESETS = (
-    Preset("standard", "标准模式：全部工具可用（默认）"),
-    Preset(
-        "minimal",
-        "最小模式：只读 + 基础交互工具",
-        tool_excludes=(
-            "bash", "bash_opt", "subagent", "subagent_opt", "user_select",
-            "web_search", "write_file", "update_file", "rm", "mv", "cp", "mkdir",
-        ),
-    ),
-    Preset(
-        "code",
-        "编码模式：读写 + shell，无网络与委派",
-        tool_excludes=("web_search", "subagent", "subagent_opt", "user_select"),
-    ),
+from ..core.presets import (
+    Preset,
+    active_presets,
+    builtin_preset_names,
+    disable_builtin_presets,
+    managed_preset_names,
+    register_preset,
+    set_managed_builtin_presets,
+    unregister_preset,
 )
+from ..kernel import Service, plugin
 
 
 class PresetsService(Service):
@@ -65,29 +36,52 @@ class PresetsService(Service):
 
     def __init__(self, ctx, config=None):
         super().__init__(ctx, config)
-        self._presets: Dict[str, Preset] = {}
-        for preset in BUILTIN_PRESETS:
-            self._presets[preset.name] = preset
+        cfg = config or getattr(ctx, "config", None) or {}
+        managed = cfg.get("managed_presets") or ()
+        if managed:
+            undo_managed = set_managed_builtin_presets(managed)
+            ctx.effect(lambda: undo_managed)
+        disabled = cfg.get("disabled_presets") or ()
+        self._disabled = list(disabled)
+        if disabled:
+            undo_disabled = disable_builtin_presets(disabled)
+            ctx.effect(lambda: undo_disabled)
 
     # ── 注册表 ───────────────────────────────────────────
 
     def list(self) -> List[str]:
-        return sorted(self._presets)
+        return sorted(active_presets())
 
     def all(self) -> List[Preset]:
-        return [self._presets[name] for name in self.list()]
+        presets = active_presets()
+        return [presets[name] for name in sorted(presets)]
 
     def get(self, name: str) -> Preset:
-        preset = self._presets.get(name)
+        preset = active_presets().get(name)
         if preset is None:
             raise KeyError(f"未定义的 preset: {name!r}（可用: {self.list()}）")
         return preset
 
-    def register(self, preset: Preset) -> None:
-        self._presets[preset.name] = preset
+    def register(self, preset: Preset):
+        """注册一个扩展 preset（注册即副作用，卸载时自动撤销）。"""
+        undo = register_preset(preset)
+        self.ctx.effect(lambda: undo)
+        return undo
 
     def unregister(self, name: str) -> bool:
-        return self._presets.pop(name, None) is not None
+        return unregister_preset(name)
+
+    # ── 自省 ─────────────────────────────────────────────
+
+    def builtin(self) -> List[str]:
+        """全部内置 preset 名（含被接管/禁用的）。"""
+        return builtin_preset_names()
+
+    def managed(self) -> List[str]:
+        return managed_preset_names()
+
+    def disabled(self) -> List[str]:
+        return sorted(self._disabled)
 
     # ── 作用域（空间可组合性） ───────────────────────────
 
@@ -136,4 +130,7 @@ class PresetsService(Service):
 
 @plugin("presets", provide=["presets"])
 def apply(ctx):
-    return PresetsService(ctx)
+    return PresetsService(ctx, ctx.config)
+
+
+__all__ = ["Preset", "PresetsService", "apply"]

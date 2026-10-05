@@ -17,7 +17,68 @@ class PromptService(Service):
 
     def __init__(self, ctx, config=None):
         super().__init__(ctx, config)
+        cfg = config or getattr(ctx, "config", None) or {}
+        # 「一切皆插件」：运行模式 / 提词来源由清单独立条目注册；本服务收到
+        # 组合根注入的 managed_* 后抑制对应内置项的默认装配（条目被禁用即缺席）。
+        managed_modes = cfg.get("managed_prompt_modes") or ()
+        if managed_modes:
+            from ..prompt_builder.modes import set_managed_builtin_modes
+
+            undo = set_managed_builtin_modes(managed_modes)
+            ctx.effect(lambda: undo)
+        disabled_modes = cfg.get("disabled_prompt_modes") or ()
+        if disabled_modes:
+            from ..prompt_builder.modes import disable_builtin_modes
+
+            undo = disable_builtin_modes(disabled_modes)
+            ctx.effect(lambda: undo)
+        managed_sources = cfg.get("managed_prompt_sources") or ()
+        if managed_sources:
+            from ..prompt_builder.sources import set_managed_builtin_prompt_sources
+
+            undo = set_managed_builtin_prompt_sources(managed_sources)
+            ctx.effect(lambda: undo)
+        disabled_sources = cfg.get("disabled_prompt_sources") or ()
+        if disabled_sources:
+            from ..prompt_builder.sources import disable_builtin_prompt_sources
+
+            undo = disable_builtin_prompt_sources(disabled_sources)
+            ctx.effect(lambda: undo)
         from ..prompt_builder.builder import _EMPTY_MODE  # noqa: F401  触发加载
+
+    # ── 自省（运行模式 / 提词来源注册表） ───────────────
+
+    def modes(self) -> list:
+        """当前生效的主 Agent 运行模式名（内置 + 扩展）。"""
+        from ..prompt_builder.modes import active_modes
+
+        return list(active_modes())
+
+    def builtin_modes(self) -> list:
+        from ..prompt_builder.modes import builtin_mode_names
+
+        return list(builtin_mode_names())
+
+    def managed_modes(self) -> list:
+        from ..prompt_builder.modes import managed_mode_names
+
+        return list(managed_mode_names())
+
+    def mode_order(self) -> list:
+        from ..prompt_builder.modes import mode_order
+
+        return list(mode_order())
+
+    def sources(self) -> dict:
+        """当前生效的提词来源（agent → 文件基名）。"""
+        from ..prompt_builder.sources import active_prompt_sources
+
+        return dict(active_prompt_sources())
+
+    def builtin_sources(self) -> list:
+        from ..prompt_builder.sources import builtin_prompt_source_ids
+
+        return list(builtin_prompt_source_ids())
 
     def build(self) -> list[str]:
         from ..prompt_builder.builder import build_system_prompt

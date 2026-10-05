@@ -70,6 +70,26 @@ TOOL_PLUGIN_ENTRIES = [
      "config": {"tool": "src.tools.write_file.WriteFileFunc", "name": "write_file"}},
 ]
 
+# ── 全局禁用工具条目（每个禁用项一个独立插件条目） ──────────
+#
+# 条目经 ``src.plugins.tool_policy_entries`` 把 ``config.name`` 指向的内置项注册
+# 进 ``src.tools.tool_policy`` 的全局禁用注册表；``config.name`` 供组合根收集
+# 「清单已接管的禁用项」（注入 policy，抑制默认装配，使 overlay 禁用单项真正生效
+# ——被禁用的条目不再注册，对应工具随之解除全局禁用）。
+
+GLOBAL_DISABLED_TOOL_ENTRIES = [
+    {"id": "global_disabled_tool_cordis_inspect", "plugin": "src.plugins.tool_policy_entries:apply_global_disabled_tool",
+     "config": {"name": "cordis_inspect"}},
+    {"id": "global_disabled_tool_cordis_define", "plugin": "src.plugins.tool_policy_entries:apply_global_disabled_tool",
+     "config": {"name": "cordis_define"}},
+    {"id": "global_disabled_tool_cordis_run", "plugin": "src.plugins.tool_policy_entries:apply_global_disabled_tool",
+     "config": {"name": "cordis_run"}},
+    {"id": "global_disabled_tool_cordis_stop", "plugin": "src.plugins.tool_policy_entries:apply_global_disabled_tool",
+     "config": {"name": "cordis_stop"}},
+    {"id": "global_disabled_tool_cordis_undefine", "plugin": "src.plugins.tool_policy_entries:apply_global_disabled_tool",
+     "config": {"name": "cordis_undefine"}},
+]
+
 # ── 内置命令条目（每个命令一个独立插件条目，可被 patch/overlay 禁用/替换） ──
 #
 # 条目经 ``src.plugins.command_plugin`` 导入 ``config.command`` 指向的
@@ -301,6 +321,97 @@ UI_VIEW_ENTRIES = [
      "config": {"id": "editmsg"}},
 ]
 
+# ── Preset 条目（每个内置 preset 一个独立插件条目） ─────────
+#
+# 条目经 ``src.plugins.preset_entries`` 把 ``config.name`` 指向的内置 preset 注册
+# 进 ``src.core.presets`` 注册表；``config.name`` 供组合根收集「清单已接管的
+# preset」（注入 presets 聚合插件，抑制默认装配，使 overlay 禁用单项真正生效）。
+
+PRESET_ENTRIES = [
+    {"id": "preset_standard", "plugin": "src.plugins.preset_entries:apply_preset",
+     "config": {"name": "standard"}},
+    {"id": "preset_minimal", "plugin": "src.plugins.preset_entries:apply_preset",
+     "config": {"name": "minimal"}},
+    {"id": "preset_code", "plugin": "src.plugins.preset_entries:apply_preset",
+     "config": {"name": "code"}},
+]
+
+# ── 提示词条目（每个运行模式 / 提词来源一个独立插件条目） ──────
+#
+# 条目经 ``src.plugins.prompt_entries`` 把 ``config.name`` 指向的内置模式 /
+# 来源注册进 ``src.prompt_builder.modes`` / ``sources`` 注册表；``config.name``
+# 供组合根收集「清单已接管项」（注入 prompt 聚合插件，抑制默认装配）。
+
+PROMPT_MODE_ENTRIES = [
+    {"id": "prompt_mode_empty", "plugin": "src.plugins.prompt_entries:apply_prompt_mode",
+     "config": {"name": "empty"}},
+    {"id": "prompt_mode_simple", "plugin": "src.plugins.prompt_entries:apply_prompt_mode",
+     "config": {"name": "simple"}},
+    {"id": "prompt_mode_standard", "plugin": "src.plugins.prompt_entries:apply_prompt_mode",
+     "config": {"name": "standard"}},
+]
+
+PROMPT_SOURCE_ENTRIES = [
+    {"id": "prompt_source_sub", "plugin": "src.plugins.prompt_entries:apply_prompt_source",
+     "config": {"name": "sub"}},
+    {"id": "prompt_source_map", "plugin": "src.plugins.prompt_entries:apply_prompt_source",
+     "config": {"name": "map"}},
+    {"id": "prompt_source_review", "plugin": "src.plugins.prompt_entries:apply_prompt_source",
+     "config": {"name": "review"}},
+    {"id": "prompt_source_plan", "plugin": "src.plugins.prompt_entries:apply_prompt_source",
+     "config": {"name": "plan"}},
+    {"id": "prompt_source_execute", "plugin": "src.plugins.prompt_entries:apply_prompt_source",
+     "config": {"name": "execute"}},
+]
+
+# ── ClawBot 远程命令条目（每个斜杠指令一个独立插件条目） ──────
+#
+# 条目经 ``src.plugins.clawbot_commands`` 把 ``config.name`` 指向的内置指令注册
+# 进 ``src.clawbot.command_registry`` 注册表；``config.name`` 供组合根收集
+# 「清单已接管的指令」（注入 clawbot 聚合插件，抑制默认装配）。
+
+CLAWBOT_COMMAND_ENTRIES = [
+    {"id": "clawbot_command_help", "plugin": "src.plugins.clawbot_commands:apply_clawbot_command",
+     "config": {"name": "help"}},
+    {"id": "clawbot_command_shell", "plugin": "src.plugins.clawbot_commands:apply_clawbot_command",
+     "config": {"name": "shell"}},
+    {"id": "clawbot_command_clear", "plugin": "src.plugins.clawbot_commands:apply_clawbot_command",
+     "config": {"name": "clear"}},
+    {"id": "clawbot_command_new", "plugin": "src.plugins.clawbot_commands:apply_clawbot_command",
+     "config": {"name": "new"}},
+    {"id": "clawbot_command_time", "plugin": "src.plugins.clawbot_commands:apply_clawbot_command",
+     "config": {"name": "time"}},
+    {"id": "clawbot_command_status", "plugin": "src.plugins.clawbot_commands:apply_clawbot_command",
+     "config": {"name": "status"}},
+    {"id": "clawbot_command_model", "plugin": "src.plugins.clawbot_commands:apply_clawbot_command",
+     "config": {"name": "model"}},
+    {"id": "clawbot_command_stop", "plugin": "src.plugins.clawbot_commands:apply_clawbot_command",
+     "config": {"name": "stop"}},
+]
+
+# ── CLI 子命令条目（每个顶层子命令一个独立插件条目） ──────────
+#
+# 条目经 ``src.plugins.subcommand_entries`` 把 ``config.name`` 指向的内置子命令
+# 注册进 ``src.app_init.subcommands`` 注册表；``config.name`` 供组合根收集
+# 「清单已接管的子命令」（注入 app 聚合插件，抑制默认装配）。
+
+SUBCOMMAND_ENTRIES = [
+    {"id": "subcommand_version", "plugin": "src.plugins.subcommand_entries:apply_subcommand",
+     "config": {"name": "version"}},
+    {"id": "subcommand_dump_config", "plugin": "src.plugins.subcommand_entries:apply_subcommand",
+     "config": {"name": "dump-config"}},
+    {"id": "subcommand_plugin", "plugin": "src.plugins.subcommand_entries:apply_subcommand",
+     "config": {"name": "plugin"}},
+    {"id": "subcommand_session", "plugin": "src.plugins.subcommand_entries:apply_subcommand",
+     "config": {"name": "session"}},
+    {"id": "subcommand_config", "plugin": "src.plugins.subcommand_entries:apply_subcommand",
+     "config": {"name": "config"}},
+    {"id": "subcommand_check_invariants", "plugin": "src.plugins.subcommand_entries:apply_subcommand",
+     "config": {"name": "check-invariants"}},
+    {"id": "subcommand_clawbot", "plugin": "src.plugins.subcommand_entries:apply_subcommand",
+     "config": {"name": "clawbot"}},
+]
+
 # ── 运行时数据服务条目（未接缝能力下沉为 ctx.* 服务） ────────
 #
 # 每项一个独立插件条目（经 ``src.plugins.runtime_data`` 提供对应服务），可按
@@ -392,6 +503,11 @@ BUNDLES = [
         "plugins": list(TOOL_PLUGIN_ENTRIES),
     },
     {
+        "id": "tool_policy",
+        "description": "全局禁用工具：每个禁用项一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(GLOBAL_DISABLED_TOOL_ENTRIES),
+    },
+    {
         "id": "commands",
         "description": "内置命令：每个命令一个独立插件条目（可 patch/overlay 禁用/替换）",
         "plugins": list(COMMAND_PLUGIN_ENTRIES),
@@ -474,9 +590,33 @@ BUNDLES = [
         "plugins": list(RUNTIME_DATA_ENTRIES),
     },
     {
+        "id": "presets",
+        "description": "Preset：每个内置能力组合一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": [
+            {"id": "presets", "plugin": "src.plugins.presets"},
+        ] + list(PRESET_ENTRIES),
+    },
+    {
+        "id": "prompts",
+        "description": "提示词：每个运行模式 / 提词来源一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(PROMPT_MODE_ENTRIES) + list(PROMPT_SOURCE_ENTRIES),
+    },
+    {
+        "id": "clawbot",
+        "description": "ClawBot 远程控制：每个斜杠指令一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": [
+            {"id": "clawbot", "plugin": "src.plugins.clawbot"},
+        ] + list(CLAWBOT_COMMAND_ENTRIES),
+    },
+    {
+        "id": "subcommands",
+        "description": "CLI 顶层子命令：每个子命令一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(SUBCOMMAND_ENTRIES),
+    },
+    {
         "id": "core",
         "description": "基础层：配置、事件、提词、策略、工具、技能、通知后端",
-        "includes": ["tools", "commands", "notification_backends", "context_strategies", "runtime_data", "web", "skill_sources"],
+        "includes": ["tools", "tool_policy", "commands", "notification_backends", "context_strategies", "runtime_data", "presets", "prompts", "subcommands", "web", "skill_sources"],
         "plugins": [
             {"id": "config", "plugin": "src.plugins.config"},
             {"id": "events", "plugin": "src.plugins.events"},
@@ -503,8 +643,8 @@ BUNDLES = [
             {"id": "context", "plugin": "src.plugins.context"},
             {"id": "seams", "plugin": "src.plugins.seams:apply_seams"},
             {"id": "skills", "plugin": "src.plugins.skills"},
-            {"id": "presets", "plugin": "src.plugins.presets"},
             {"id": "invariants", "plugin": "src.plugins.invariants"},
+            {"id": "kernel_admin", "plugin": "src.plugins.kernel_admin"},
             {"id": "app", "plugin": "src.plugins.app"},
             {"id": "escape_monitor", "plugin": "src.plugins.escape_monitor"},
         ],
@@ -523,7 +663,7 @@ BUNDLES = [
     {
         "id": "runtime",
         "description": "运行时：会话、SubAgent、流式管线、Agent 循环、命令、MCP",
-        "includes": ["middleware", "agent_types", "stream", "mcp_transports", "tool_engines"],
+        "includes": ["middleware", "agent_types", "stream", "mcp_transports", "tool_engines", "clawbot"],
         "plugins": [
             {"id": "sessions", "plugin": "src.plugins.sessions"},
             {"id": "subagents", "plugin": "src.plugins.subagents"},
@@ -535,7 +675,6 @@ BUNDLES = [
             {"id": "application", "plugin": "src.plugins.application:apply_application"},
             {"id": "commands", "plugin": "src.plugins.commands"},
             {"id": "mcp", "plugin": "src.plugins.mcp"},
-            {"id": "clawbot", "plugin": "src.plugins.clawbot"},
         ],
     },
     {
@@ -594,6 +733,7 @@ __all__ = [
     "PROFILES",
     "DEFAULT_PROFILE",
     "TOOL_PLUGIN_ENTRIES",
+    "GLOBAL_DISABLED_TOOL_ENTRIES",
     "COMMAND_PLUGIN_ENTRIES",
     "RENDERER_HANDLER_ENTRIES",
     "RENDERER_FILTER_ENTRIES",
@@ -607,6 +747,11 @@ __all__ = [
     "CONSUMER_ENTRIES",
     "UI_VIEW_ENTRIES",
     "RUNTIME_DATA_ENTRIES",
+    "PRESET_ENTRIES",
+    "PROMPT_MODE_ENTRIES",
+    "PROMPT_SOURCE_ENTRIES",
+    "CLAWBOT_COMMAND_ENTRIES",
+    "SUBCOMMAND_ENTRIES",
     "WEB_SEARCH_PROVIDER_ENTRIES",
     "WEB_FETCH_PROVIDER_ENTRIES",
     "THEME_ENTRIES",

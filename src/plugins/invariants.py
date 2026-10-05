@@ -463,6 +463,105 @@ def _renderer_targets_readable(kernel) -> str | None:
     return None
 
 
+def _global_disabled_tools_readable(kernel) -> str | None:
+    """全局禁用工具注册表必须可读，且生效项覆盖全部内置项。"""
+    try:
+        from ..tools.tool_policy import (
+            active_global_disabled_tools,
+            builtin_global_disabled_tool_ids,
+        )
+
+        active = set(active_global_disabled_tools())
+        missing = sorted(set(builtin_global_disabled_tool_ids()) - active)
+        if missing:
+            return f"全局禁用工具注册表缺少内置项: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"全局禁用工具注册表读取失败: {exc}"
+    return None
+
+
+def _presets_readable(kernel) -> str | None:
+    """Preset 注册表必须可读，且生效项覆盖全部内置 preset。"""
+    if not kernel.has_service("presets"):
+        return None
+    try:
+        from ..core.presets import builtin_preset_names
+
+        service = kernel.resolve_service("presets")
+        names = set(service.list())
+        missing = sorted(set(builtin_preset_names()) - names)
+        if missing:
+            return f"ctx.presets 缺少内置 preset: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"Preset 注册表读取失败: {exc}"
+    return None
+
+
+def _prompt_registry_readable(kernel) -> str | None:
+    """提示词注册表必须可读，且生效项覆盖全部内置运行模式与提词来源。"""
+    if not kernel.has_service("prompt"):
+        return None
+    try:
+        from ..prompt_builder.modes import builtin_mode_names
+        from ..prompt_builder.sources import builtin_prompt_source_ids
+
+        service = kernel.resolve_service("prompt")
+        modes = set(service.modes())
+        missing_modes = sorted(set(builtin_mode_names()) - modes)
+        if missing_modes:
+            return f"ctx.prompt 缺少内置运行模式: {missing_modes}"
+        sources = set(service.sources())
+        missing_sources = sorted(set(builtin_prompt_source_ids()) - sources)
+        if missing_sources:
+            return f"ctx.prompt 缺少内置提词来源: {missing_sources}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"提示词注册表读取失败: {exc}"
+    return None
+
+
+def _clawbot_commands_readable(kernel) -> str | None:
+    """ClawBot 命令注册表必须可读，且生效项覆盖全部内置指令。"""
+    if not kernel.has_service("clawbot"):
+        return None
+    try:
+        from ..clawbot.command_registry import builtin_clawbot_command_ids
+
+        service = kernel.resolve_service("clawbot")
+        names = set(service.commands())
+        missing = sorted(set(builtin_clawbot_command_ids()) - names)
+        if missing:
+            return f"ctx.clawbot 缺少内置远程命令: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"ClawBot 命令注册表读取失败: {exc}"
+    return None
+
+
+def _subcommands_readable(kernel) -> str | None:
+    """CLI 子命令注册表必须可读，且生效项覆盖全部内置子命令。"""
+    try:
+        from ..app_init.subcommands import active_subcommands, builtin_subcommand_ids
+
+        active = set(active_subcommands())
+        missing = sorted(set(builtin_subcommand_ids()) - active)
+        if missing:
+            return f"CLI 子命令注册表缺少内置项: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"CLI 子命令注册表读取失败: {exc}"
+    return None
+
+
+def _kernel_admin_readable(kernel) -> str | None:
+    """内核管理服务必须可读（运行时启停 / 诊断 / 热重载接入点齐全）。"""
+    if not kernel.has_service("kernel_admin"):
+        return None
+    service = kernel.resolve_service("kernel_admin")
+    for method in ("stats", "enabled", "disabled", "plugins", "diagnose",
+                   "why_blocked", "service_providers", "watch_file"):
+        if not callable(getattr(service, method, None)):
+            return f"kernel_admin 服务缺少方法 {method!r}"
+    return None
+
+
 def _escape_monitor_readable(kernel) -> str | None:
     """Escape 监看服务必须可读（活跃实例查询/停止/创建接入点齐全）。"""
     if not kernel.has_service("escape_monitor"):
@@ -497,6 +596,12 @@ _BUILTIN_CHECKS = (
     ("session_projections.readable", _session_projections_readable),
     ("renderer.targets_readable", _renderer_targets_readable),
     ("escape_monitor.readable", _escape_monitor_readable),
+    ("tool_policy.globally_disabled_readable", _global_disabled_tools_readable),
+    ("presets.readable", _presets_readable),
+    ("prompt.registry_readable", _prompt_registry_readable),
+    ("clawbot.commands_readable", _clawbot_commands_readable),
+    ("subcommands.readable", _subcommands_readable),
+    ("kernel_admin.readable", _kernel_admin_readable),
     ("services.declared_provides", _declared_provides_present),
     ("singletons.kernel_source", _singletons_kernel_source),
 )

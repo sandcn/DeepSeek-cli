@@ -33,6 +33,7 @@ class Kernel:
         self._booted = False
         self._settling = False
         self._settle_task: Optional[asyncio.Task] = None
+        self._watcher: Optional[Any] = None
         self.root = Context(self, fiber=None, parent=None, config={})
 
     # ── 服务容器 ─────────────────────────────────────────
@@ -136,6 +137,93 @@ class Kernel:
         await self.settle()
         return fiber
 
+    # ── 运行时启用 / 禁用 ────────────────────────────────
+
+    async def disable(self, name: str) -> Fiber:
+        """运行时禁用插件（撤销其全部注册；可用 ``enable`` 恢复）。"""
+        fiber = self.fiber(name)
+        if fiber is None:
+            raise PluginError(f"未找到插件: {name!r}")
+        await fiber.disable()
+        await self.settle()
+        return fiber
+
+    async def enable(self, name: str) -> Fiber:
+        """重新启用被禁用的插件（重新执行 apply）。"""
+        fiber = self.fiber(name)
+        if fiber is None:
+            raise PluginError(f"未找到插件: {name!r}")
+        await fiber.enable()
+        await self.settle()
+        return fiber
+
+    async def set_enabled(self, name: str, enabled: bool) -> Fiber:
+        """按布尔值启用/禁用插件。"""
+        return await (self.enable(name) if enabled else self.disable(name))
+
+    def is_enabled(self, name: str) -> bool:
+        """插件当前是否处于启用（ACTIVE 且未被显式禁用）状态。"""
+        fiber = self.fiber(name)
+        return bool(fiber is not None and fiber.active and not fiber.disabled)
+
+    def enabled_plugins(self) -> list[str]:
+        """当前启用（ACTIVE）的插件名。"""
+        return sorted({f.name for f in self._fibers if f.active})
+
+    def disabled_plugins(self) -> list[str]:
+        """当前被运行时显式禁用的插件名。"""
+        return sorted({f.name for f in self._fibers if f.disabled})
+
+    # ── 自省 / 依赖诊断 ──────────────────────────────────
+
+    def service_providers(self, key: str) -> list[str]:
+        """提供某服务的插件名列表（按栈序，最近的在前）。"""
+        from .diagnostics import service_providers
+
+        return service_providers(self, key)
+
+    def dependency_report(self) -> list[dict]:
+        """逐插件依赖诊断报告（状态 / inject / 缺失依赖 / 提供 / 来源）。"""
+        from .diagnostics import dependency_report
+
+        return dependency_report(self)
+
+    def why_blocked(self, name: str) -> list[str]:
+        """插件被阻塞（PENDING/缺失依赖）的原因说明。"""
+        from .diagnostics import why_blocked
+
+        return why_blocked(self, name)
+
+    def kernel_stats(self) -> dict:
+        """内核运行统计（Fiber 状态计数 / 服务数 / 监听器数）。"""
+        from .diagnostics import kernel_stats
+
+        return kernel_stats(self)
+
+    def diagnose(self) -> str:
+        """人类可读的内核诊断文本。"""
+        from .diagnostics import format_diagnostics
+
+        return format_diagnostics(self)
+
+    # ── 热重载监听 ───────────────────────────────────────
+
+    def watcher(self):
+        """返回本内核的插件文件监听器（懒创建）。"""
+        if self._watcher is None:
+            from .watch import PluginWatcher
+
+            self._watcher = PluginWatcher(self)
+        return self._watcher
+
+    def watch_file(self, path: str):
+        """监听一个插件文件，变更时自动重载其中的插件；返回停止监听的 disposer。"""
+        return self.watcher().watch_file(path)
+
+    async def reload_file(self, path: str) -> list[str]:
+        """按文件路径重新加载并替换其中的插件（返回受影响的插件名）。"""
+        return await self.watcher().reload_file(path)
+
     def fibers(self) -> list[Fiber]:
         return list(self._fibers)
 
@@ -217,6 +305,12 @@ class Kernel:
         self._services.clear()
         self.bus.clear()
         self._booted = False
+        if self._watcher is not None:
+            try:
+                await self._watcher.stop()
+            except Exception:
+                _logger.debug("停止插件监听器异常", exc_info=True)
+            self._watcher = None
         if self._settle_task is not None:
             self._settle_task.cancel()
             self._settle_task = None

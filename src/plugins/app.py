@@ -32,6 +32,21 @@ class AppService(Service):
         self._output_consumer = None
         self._signal_manager = None
         self._bootstrapped = False
+        # 「一切皆插件」：顶层子命令由清单独立条目注册；本服务收到组合根注入的
+        # managed_subcommands 后抑制对应内置子命令的默认装配（条目被禁用即缺席）。
+        cfg = config or getattr(ctx, "config", None) or {}
+        managed = cfg.get("managed_subcommands") or ()
+        if managed:
+            from ..app_init.subcommands import set_managed_builtin_subcommands
+
+            undo = set_managed_builtin_subcommands(managed)
+            ctx.effect(lambda: undo)
+        disabled = cfg.get("disabled_subcommands") or ()
+        if disabled:
+            from ..app_init.subcommands import disable_builtin_subcommands
+
+            undo = disable_builtin_subcommands(disabled)
+            ctx.effect(lambda: undo)
 
     # ── 启动 / 停止 ──────────────────────────────────────
 
@@ -116,49 +131,36 @@ class AppService(Service):
             self.stop()
 
     async def _dispatch(self, args) -> None:
-        from ..app_init._args import VERSION
-        from ..tui.events.consumers import publish_output
+        # 「一切皆插件」：顶层子命令分派经 ``app_init.subcommands`` 注册表
+        # （每个子命令是清单中的独立插件条目，可被 patch/overlay 禁用/替换）。
+        # pre 阶段（version/dump-config/plugin/session/config）先于 MCP 初始化；
+        # post 阶段（check-invariants/clawbot）后于 MCP 初始化。
+        from ..app_init.subcommands import PHASE_PRE
 
-        if args.version or args.command == "version":
-            publish_output(f"  Chat {VERSION}", level="raw")
-            return
-
-        if getattr(args, "dump_config", False) or args.command == "dump-config":
-            await self._dump_config(args)
-            return
-
-        if args.command == "plugin":
-            from ..app_init._plugin_cmd import _handle_plugin_command
-
-            _handle_plugin_command(args)
-            return
-
-        if args.command == "session":
-            from ..app_init._session_cmd import _handle_session_command
-
-            _handle_session_command(args)
-            return
-
-        if args.command == "config":
-            from ..app_init._config_cmd import _handle_config_command
-
-            _handle_config_command(args)
+        if await self._run_subcommand_phase(args, PHASE_PRE):
             return
 
         await self._setup_mcp()
 
-        if getattr(args, "check_invariants", False):
-            self._check_invariants()
-            return
+        from ..app_init.subcommands import PHASE_POST
 
-        if args.command == "clawbot":
-            await self._run_clawbot(args)
+        if await self._run_subcommand_phase(args, PHASE_POST):
             return
 
         loaded_data = await self._load_session(args)
         if args.load and loaded_data is None:
             return
         await self._run_modes(args, loaded_data)
+
+    async def _run_subcommand_phase(self, args, phase: str) -> bool:
+        """按阶段依次判定并执行子命令（首个命中即执行并返回 True）。"""
+        from ..app_init.subcommands import subcommands_for_phase
+
+        for command in subcommands_for_phase(phase):
+            if command.matches(args):
+                await command.handler(self, args)
+                return True
+        return False
 
     async def _dump_config(self, args) -> None:
         from ..tui.events.consumers import publish_output

@@ -161,6 +161,23 @@ def _normalize_mode(mode) -> str:
     return "standard"
 
 
+def _mode_text(mode_key: str) -> str:
+    """模式显示文本 — 优先取运行模式注册表（``prompt_builder.modes``）的 label。
+
+    「一切皆插件」：label 的单一真源是运行模式注册表（每个模式由清单独立条目
+    声明，可 patch/overlay 覆盖）；注册表不可用时回退本模块静态文本常量。
+    """
+    try:
+        from src.prompt_builder.modes import resolve_mode_label
+
+        label = resolve_mode_label(mode_key)
+        if label:
+            return label
+    except Exception:
+        pass
+    return _MODE_TEXTS.get(mode_key, _MODE_STANDARD_TEXT)
+
+
 def _build_bg_task_prefix(ctx_percent: "float | None",
                           bash_count: int, subagent_count: int) -> "Line":
     """构建模式行行首的信息前缀（main · 45.3% · bash · N · subagent · N）。
@@ -231,7 +248,7 @@ def _build_mode_line(width: int, mode,
         模式行（Line，行宽 = width；行首信息 + 右侧模式文本）。
     """
     mode_key = _normalize_mode(mode)
-    text = _MODE_TEXTS[mode_key]
+    text = _mode_text(mode_key)
     style = _MODE_STYLES[mode_key]
     line = Line()
     # 行首信息前缀（main · N% · bash · N · subagent · N；全部不可用为空）

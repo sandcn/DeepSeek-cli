@@ -48,6 +48,7 @@ _OVERLAY_NAMES = frozenset({
 #: 单条目声明插件名 → 其 config 中作为「名」的键
 _SINGLE_DECL_PLUGINS = {
     "tool": "name",
+    "global_disabled_tool": "name",
     "command": "name",
     "renderer_handler": "id",
     "renderer_filter": "id",
@@ -63,6 +64,11 @@ _SINGLE_DECL_PLUGINS = {
     "web_search_provider": "id",
     "web_fetch_provider": "id",
     "theme": "name",
+    "preset": "name",
+    "prompt_mode": "name",
+    "prompt_source": "name",
+    "clawbot_command": "name",
+    "subcommand": "name",
     "skill_source": "id",
     "session_projection": "name",
     "renderer_target": "id",
@@ -71,6 +77,7 @@ _SINGLE_DECL_PLUGINS = {
 #: 单条目声明插件名 → 汇入的托管分组
 _MANAGED_GROUP = {
     "tool": "managed_tools",
+    "global_disabled_tool": "managed_global_disabled_tools",
     "command": "managed_commands",
     "renderer_handler": "managed_handlers",
     "renderer_filter": "managed_filters",
@@ -86,6 +93,11 @@ _MANAGED_GROUP = {
     "web_search_provider": "managed_search_providers",
     "web_fetch_provider": "managed_fetch_providers",
     "theme": "managed_themes",
+    "preset": "managed_presets",
+    "prompt_mode": "managed_prompt_modes",
+    "prompt_source": "managed_prompt_sources",
+    "clawbot_command": "managed_clawbot_commands",
+    "subcommand": "managed_subcommands",
     "skill_source": "managed_skill_sources",
     "session_projection": "managed_session_projections",
     "renderer_target": "managed_render_targets",
@@ -98,6 +110,7 @@ _ENABLED_ONLY_GROUPS = frozenset({"managed_commands"})
 #: 聚合插件的插件名 → 注入的 config 键（收集自清单中同类的单条目声明）
 _AGGREGATE_MANAGED_KEYS = {
     "tools_builtin": ("managed_tools",),
+    "policy": ("managed_global_disabled_tools",),
     "commands": ("managed_commands",),
     "renderer_builtin": ("managed_handlers", "managed_filters"),
     "agent_middleware": ("managed_middlewares",),
@@ -115,6 +128,10 @@ _AGGREGATE_MANAGED_KEYS = {
     "skill_sources": ("managed_skill_sources",),
     "session_projections": ("managed_session_projections",),
     "renderer": ("managed_render_targets",),
+    "presets": ("managed_presets",),
+    "prompt": ("managed_prompt_modes", "managed_prompt_sources"),
+    "clawbot": ("managed_clawbot_commands",),
+    "app": ("managed_subcommands",),
 }
 
 

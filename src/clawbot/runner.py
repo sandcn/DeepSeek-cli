@@ -33,8 +33,8 @@ from ..core.session import ChatSession
 from ..api.interrupt_async import request_interrupt_async
 from .client import IlinkClient, extract_text, is_user_message
 from .auth import SESSION_DURATION, login, save_cred
+from .command_registry import build_help_text, resolve_clawbot_command
 from .commands import (
-    HELP_TEXT,
     SHELL_USAGE,
     parse_command,
     run_shell_command,
@@ -551,27 +551,17 @@ class ClawBotRunner:
             await self._handle_reconnect_reply(from_id, ctx, text.strip().upper())
             return
 
+        # 「一切皆插件」：指令分派经命令注册表（每个指令是清单中的独立插件
+        # 条目，可被 patch/overlay 禁用/替换）；未注册名字 → 未知指令提示。
         name, arg = parse_command(text)
-        if name == "help":
-            await self._send(from_id, ctx, HELP_TEXT)
-        elif name == "shell":
-            await self._cmd_shell(from_id, ctx, arg)
-        elif name == "clear":
-            await self._cmd_clear(from_id, ctx)
-        elif name == "new":
-            await self._cmd_new(from_id, ctx)
-        elif name == "time":
-            await self._cmd_time(from_id, ctx)
-        elif name == "status":
-            await self._cmd_status(from_id, ctx)
-        elif name == "model":
-            await self._cmd_model(from_id, ctx, arg)
-        elif name == "stop":
-            await self._cmd_stop(from_id, ctx)
-        elif name:
-            await self._send(from_id, ctx, f"未知指令 /{name}\n{HELP_TEXT}")
-        else:
+        if not name:
             await self._ai_chat(from_id, ctx, text)
+            return
+        command = resolve_clawbot_command(name)
+        if command is None:
+            await self._send(from_id, ctx, f"未知指令 /{name}\n{build_help_text()}")
+            return
+        await command.handler(self, from_id, ctx, arg)
 
     # ── 配对流程 ──────────────────────────────────────
 
@@ -595,7 +585,7 @@ class ClawBotRunner:
             self._save_allowed()
             self._pairing_codes.pop(from_id, None)
             self._print(f"[配对] 用户 {from_id} 已授权 ✅")
-            await self._send(from_id, ctx, "✅ 配对成功！现在可以使用远程控制。\n\n" + HELP_TEXT)
+            await self._send(from_id, ctx, "✅ 配对成功！现在可以使用远程控制。\n\n" + build_help_text())
             return
         pairing["tries"] += 1
         if pairing["tries"] >= MAX_PAIRING_TRIES:
@@ -700,7 +690,7 @@ class ClawBotRunner:
         """
         if from_id not in self._allowed_users or not self._ai_running:
             return False
-        if text.strip().lower() != "/stop":
+        if not self._is_stop_command(text):
             return False
         request_interrupt_async()
         self._print(f"[stop] 微信用户 {from_id} 请求停止当前生成")
@@ -715,11 +705,23 @@ class ClawBotRunner:
         """
         if not self._ai_running:
             return False
-        if text.strip().lower() != "/stop":
+        if not self._is_stop_command(text):
             return False
         request_interrupt_async()
         self._print("⏹ 已停止当前生成")
         return True
+
+    @staticmethod
+    def _is_stop_command(text: str) -> bool:
+        """文本是否为 ``/stop`` 指令（且该指令在命令注册表中生效）。
+
+        「一切皆插件」：``stop`` 命令由清单独立条目声明；条目被 patch/overlay
+        禁用后，实时中断特判随之失效（与命令分派行为一致）。
+        """
+        name, _arg = parse_command(text)
+        if name != "stop":
+            return False
+        return resolve_clawbot_command("stop") is not None
 
     # ── AI 对话 ───────────────────────────────────────
 

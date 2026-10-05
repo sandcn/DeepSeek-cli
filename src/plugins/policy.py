@@ -50,14 +50,26 @@ class PolicyService(Service):
 
     def __init__(self, ctx, config=None):
         super().__init__(ctx, config)
-        # ── 全局禁用工具集合（config 可覆盖静态常量） ──
-        from ..tools.tool_policy import GLOBAL_DISABLED_TOOLS
-
-        configured = (config or ctx.config or {}).get("globally_disabled_tools")
-        self._global_disabled = (
-            frozenset(configured) if configured is not None
-            else frozenset(GLOBAL_DISABLED_TOOLS)
+        # ── 全局禁用工具集合 ──
+        # 「一切皆插件」：每个禁用项由清单独立条目声明进注册表；本插件收到
+        # 组合根注入的 managed_global_disabled_tools（清单已接管的 id，含被
+        # 禁用的）后抑制对应默认装配。config.globally_disabled_tools 仍是整体
+        # 显式覆盖（最高优先，语义：只需列出要禁用的工具名）。
+        from ..tools.tool_policy import (
+            active_global_disabled_tools,
+            set_managed_builtin_global_disabled_tools,
         )
+
+        cfg = config or ctx.config or {}
+        managed = cfg.get("managed_global_disabled_tools") or ()
+        if managed:
+            undo_managed = set_managed_builtin_global_disabled_tools(managed)
+            ctx.effect(lambda: undo_managed)
+        configured = cfg.get("globally_disabled_tools")
+        if configured is not None:
+            self._global_disabled = frozenset(configured)
+        else:
+            self._global_disabled = frozenset(active_global_disabled_tools())
         # 注册策略钩子（注册即副作用；卸载时自动移除）
         ctx.on("tools/pre-execute", self._on_pre_execute)
         # 为 sandbox 能力接缝注册策略 Provider（注册即副作用，卸载时回退默认）
