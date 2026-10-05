@@ -86,11 +86,14 @@ def test_policy_can_grant_review_access():
 
 def test_app_startup_wires_mcp_lifecycle():
     from src.app_init import main as main_module
+    from src.plugins import app as app_module
+    from src.plugins import mcp as mcp_module
 
-    source = inspect.getsource(main_module)
-    # 启动/退出生命周期接线（MCP 接入必须覆盖全部运行模式统一入口）
-    assert "setup_mcp" in source
-    assert "shutdown_mcp" in source
+    # main 只保留组合根（经 ctx.app 运行）；MCP 启动接线在 app 插件，
+    # 关闭经 ctx.mcp 服务（McpService 卸载副作用）。
+    assert 'resolve_service("app")' in inspect.getsource(main_module)
+    assert "setup_mcp" in inspect.getsource(app_module)
+    assert "shutdown_mcp" in inspect.getsource(mcp_module)
 
 
 def test_tool_display_name_unknown_mcp_tool_falls_back():

@@ -190,7 +190,20 @@ _default_cache: CachePort | None = None
 _cache_lock = threading.RLock()
 
 def get_default_cache() -> CachePort:
-    """获取全局默认缓存（线程安全单例）"""
+    """获取默认缓存。
+
+    内核优先：内核挂载 ``ctx.cache`` 服务后返回其独占的缓存实例；内核缺失
+    或服务尚在构造中时回退进程级单例。
+    """
+    try:
+        from ..kernel.runtime import active_service
+
+        service = active_service("cache")
+        cache = getattr(service, "cache", None) if service is not None else None
+        if cache is not None:
+            return cache
+    except Exception:
+        pass
     global _default_cache
     if _default_cache is None:
         with _cache_lock:

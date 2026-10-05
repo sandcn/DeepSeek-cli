@@ -62,7 +62,20 @@ class DefaultOutputAdapter(OutputPort):
 
     @classmethod
     def get_default(cls) -> DefaultOutputAdapter:
-        """获取全局默认输出端口实例（线程安全单例）"""
+        """获取默认输出端口实例。
+
+        内核优先：内核挂载 ``ctx.output`` 服务后返回其独占的端口（与输出
+        服务同源）；内核缺失或服务尚在构造中时回退进程级单例。
+        """
+        try:
+            from ...kernel.runtime import active_service
+
+            service = active_service("output")
+            port = getattr(service, "port", None) if service is not None else None
+            if port is not None:
+                return port
+        except Exception:
+            pass
         if cls._default_instance is None:
             with cls._default_instance_lock:
                 if cls._default_instance is None:
@@ -84,5 +97,5 @@ class DefaultOutputAdapter(OutputPort):
 
 # ── 向后兼容导出别名（@deprecated: 请使用 DefaultOutputAdapter 类方法） ──
 def get_default_output_port() -> DefaultOutputAdapter:
-    """获取全局默认输出端口（已废弃，请使用 DefaultOutputAdapter.get_default()）"""
+    """获取默认输出端口（内核 ``ctx.output`` 优先，回退进程级单例）。"""
     return DefaultOutputAdapter.get_default()

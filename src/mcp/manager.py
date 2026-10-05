@@ -1,9 +1,13 @@
 """MCP 管理器 — 连接编排 + 工具注册 + 调用路由 + 权限策略。
 
-进程级单例（``McpManager.default()``）：应用启动时 ``setup_mcp()`` 一次性
-连接配置中的所有 MCP server、发现工具并注册进 ``ToolRegistry``；运行时
-MCP 工具的 ``execute()`` 经 ``call_tool()`` 路由到对应 server；退出时
-``shutdown_mcp()`` 关闭全部连接并注销注册表条目与权限策略。
+MCP 管理器由内核 ``ctx.mcp`` 服务独占（``ctx.mcp.manager``）：应用启动时经
+``ctx.mcp.setup_mcp()`` 一次性连接配置中的所有 MCP server、发现工具并注册进
+``ToolRegistry``；运行时 MCP 工具的 ``execute()`` 经 ``call_tool()`` 路由到
+对应 server；退出时经 ``ctx.mcp.shutdown_mcp()`` 关闭全部连接并注销注册表
+条目与权限策略。
+
+``McpManager.default()`` 内核优先返回 ``ctx.mcp.manager``；内核缺失
+（单元测试、独立调用）时回退进程级单例，保证既有调用面兼容。
 """
 
 from __future__ import annotations
@@ -83,6 +87,21 @@ class McpManager:
 
     @classmethod
     def default(cls) -> "McpManager":
+        """返回默认 McpManager。
+
+        内核优先：内核挂载 ``ctx.mcp`` 服务后返回服务独占的 manager（与
+        ``ctx.mcp`` 同源，非游离的模块级全局状态）；内核缺失或服务尚在
+        构造中时回退进程级单例。
+        """
+        try:
+            from ..kernel.runtime import active_service
+
+            service = active_service("mcp")
+            manager = getattr(service, "manager", None) if service is not None else None
+            if manager is not None:
+                return manager
+        except Exception:
+            pass
         if cls._default is None:
             cls._default = cls()
         return cls._default

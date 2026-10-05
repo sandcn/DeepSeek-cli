@@ -41,6 +41,25 @@ from src.tui._input_orchestrator import TuiInputOrchestrator
 _logger = logging.getLogger(__name__)
 
 
+def _assemble_subsystems() -> TuiAssemblyResult:
+    """装配 TUI 子系统（内核 ``ctx.ui`` 服务优先，回退 ``TuiAssembly``）。
+
+    「一切皆插件」：终端 UI 子系统装配经 ``ctx.ui.assemble()`` 暴露，构造方
+    经内核服务装配，可按插件替换装配实现；内核缺失（单元测试、独立调用）
+    时回退 ``TuiAssembly.assemble()``。
+    """
+    try:
+        from ..kernel.runtime import active_service
+
+        service = active_service("ui")
+        assemble = getattr(service, "assemble", None) if service is not None else None
+        if callable(assemble):
+            return assemble()
+    except Exception:
+        pass
+    return TuiAssembly.assemble()
+
+
 # ═══════════════════════════════════════════════════════════
 # ChatUIConsumer — 对外公开 API（薄外观）
 # ═══════════════════════════════════════════════════════════
@@ -74,7 +93,7 @@ class ChatUIConsumer:
         # ── 通过 TuiAssembly 装配子系统 ──
         # 方向3 步骤16：assemble(on_display_messages=) 死参数已移除，
         # 显示路径统一由 DisplayMsgsCmd → apply._do_display_messages 承载。
-        result: TuiAssemblyResult = TuiAssembly.assemble()
+        result: TuiAssemblyResult = _assemble_subsystems()
         self._rs = result.rs
         self._engine: "InkSession" = result.engine
         self._bb: "InkBridge" = result.bb

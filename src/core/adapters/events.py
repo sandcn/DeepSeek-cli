@@ -21,16 +21,32 @@ class DisplayEventBusAdapter(EventPort):
     _default_instance: Optional["DisplayEventBusAdapter"] = None
     _default_lock = threading.RLock()
 
-    def __init__(self, source: str = "core"):
-        from ...tui.events.event_bus import DisplayEventBus
-        self._bus = DisplayEventBus.get_default()
+    def __init__(self, source: str = "core", bus=None):
+        if bus is None:
+            from ...tui.events.event_bus import DisplayEventBus
+            bus = DisplayEventBus.get_default()
+        self._bus = bus
         self._source = source
 
     # ── 工厂方法与默认实例 ──────────────────────────────
 
     @classmethod
     def get_default(cls, source: str = "core") -> "DisplayEventBusAdapter":
-        """获取全局默认适配器实例（线程安全单例）"""
+        """获取默认适配器实例。
+
+        内核优先：内核挂载 ``ctx.events`` 服务后返回其基于服务总线的适配器
+        （同一实例，忽略后续 source 差异，与既有单例语义一致）；内核缺失或
+        服务尚在构造中时回退进程级单例。
+        """
+        try:
+            from ...kernel.runtime import active_service
+
+            service = active_service("events")
+            factory = getattr(service, "event_adapter", None) if service is not None else None
+            if callable(factory):
+                return factory(source)
+        except Exception:
+            pass
         if cls._default_instance is None:
             with cls._default_lock:
                 if cls._default_instance is None:

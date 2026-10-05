@@ -1,7 +1,12 @@
 """UI 插件 — 提供 ``ctx.ui``。
 
 桥接表现层（tui/renderer）运行时能力：活跃 ChatUI、显示事件代理、主题、
-diff 渲染、消息展示。经 ``core.adapters.ui_runtime`` 单一入口访问。
+diff 渲染、消息展示，并**独占**终端宽度缓存（``TerminalWidthCache``）与
+SubAgent 面板控制器（``SubAgentPanelController``）——二者的 ``get_default()``
+内核优先返回本服务实例，内核缺失时才回退进程级单例。
+
+TUI 子系统装配（``TuiAssembly``）经 ``ctx.ui.assemble()`` 暴露，终端 UI
+构造方经内核服务装配子系统，可按插件替换装配实现。
 """
 
 from __future__ import annotations
@@ -16,6 +21,41 @@ class UiService(Service):
     provide = "ui"
     name = "ui"
     inject = ("config", "events")
+
+    def __init__(self, ctx, config=None):
+        super().__init__(ctx, config)
+        self._width_cache = None
+        self._subagent_panel = None
+
+    # ── 表现层单例（内核真源） ─────────────────────────
+
+    @property
+    def width_cache(self):
+        """本服务独占的终端宽度缓存（``TerminalWidthCache.get_default`` 真源）。"""
+        if self._width_cache is None:
+            from ..tui._screen import TerminalWidthCache
+
+            self._width_cache = TerminalWidthCache()
+        return self._width_cache
+
+    @property
+    def subagent_panel(self):
+        """本服务独占的 SubAgent 面板控制器（``get_default`` 真源）。"""
+        if self._subagent_panel is None:
+            from ..tui.subagent import SubAgentPanelController
+
+            self._subagent_panel = SubAgentPanelController()
+        return self._subagent_panel
+
+    # ── TUI 子系统装配 ─────────────────────────────────
+
+    def assemble(self):
+        """装配 TUI 子系统，返回 ``TuiAssemblyResult``（可替换装配实现）。"""
+        from ..tui._assembly import TuiAssembly
+
+        return TuiAssembly.assemble()
+
+    # ── 桥接能力 ───────────────────────────────────────
 
     def active_chat_ui(self):
         return _ui_runtime.get_active_chat_ui()
@@ -46,3 +86,6 @@ class UiService(Service):
 @plugin("ui", inject=["config", "events"], provide=["ui"])
 def apply(ctx):
     return UiService(ctx)
+
+
+__all__ = ["UiService", "apply"]

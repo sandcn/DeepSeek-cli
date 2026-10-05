@@ -250,7 +250,20 @@ _collector_lock = threading.RLock()
 
 
 def get_default_collector() -> MetricsCollector:
-    """获取全局默认指标收集器（线程安全单例）"""
+    """获取默认指标收集器。
+
+    内核优先：内核挂载 ``ctx.observability`` 服务后返回其持有的收集器
+    （与内核观测服务同源）；内核缺失或服务尚在构造中时回退进程级单例。
+    """
+    try:
+        from ...kernel.runtime import active_service
+
+        service = active_service("observability")
+        collector = getattr(service, "collector", None) if service is not None else None
+        if collector is not None:
+            return collector
+    except Exception:
+        pass
     global _default_collector
     if _default_collector is None:
         with _collector_lock:

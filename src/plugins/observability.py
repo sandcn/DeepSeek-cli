@@ -28,16 +28,18 @@ class ObservabilityService(Service):
 
     def __init__(self, ctx, config=None):
         super().__init__(ctx, config)
-        self._provider = self._make_default_provider()
+        from ..core.telemetry.metrics import MetricsCollector
+        from ..core.telemetry.tracer import Tracer
+        from ..observability.facade import ObservabilityFacade
+
+        self._collector = MetricsCollector()
+        self._tracer = Tracer()
+        self._facade = ObservabilityFacade(metrics=self._collector, tracer=self._tracer)
+        self._provider = self._facade
         self._previous: Optional[Any] = None
         ctx.effect(lambda: self._on_unload)
 
     # ── Provider ─────────────────────────────────────────
-
-    def _make_default_provider(self):
-        from ..observability import get_default_facade
-
-        return get_default_facade()
 
     def _on_unload(self) -> None:
         self._provider = None
@@ -47,12 +49,23 @@ class ObservabilityService(Service):
     def provider(self):
         return self._provider
 
+    @property
+    def collector(self):
+        """本服务独占的指标收集器（``get_default_collector`` 内核真源）。"""
+        return self._collector
+
+    @property
+    def tracer(self):
+        """本服务独占的调用链追踪器（``get_default_tracer`` 内核真源）。"""
+        return self._tracer
+
+    @property
+    def facade(self):
+        """本服务独占的默认门面（provider 被替换时仍指向默认门面）。"""
+        return self._facade
+
     def port(self):
         """供 Agent/Session 注入的 ObservabilityPort（未加载时返回 None）。"""
-        return self._provider
-
-    def facade(self):
-        """默认门面（ObservabilityFacade）；provider 被替换时为替换值。"""
         return self._provider
 
     def set_provider(self, provider) -> Any:

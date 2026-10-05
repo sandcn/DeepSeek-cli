@@ -173,6 +173,21 @@ class SubAgentPanelController:
 
     @classmethod
     def get_default(cls) -> "SubAgentPanelController":
+        """获取默认面板控制器。
+
+        内核优先：内核挂载 ``ctx.ui`` 服务后返回其独占的控制器（同一实例，
+        事件订阅/状态在服务上累积）；内核缺失或服务尚在构造中时回退进程级
+        单例。
+        """
+        try:
+            from ..kernel.runtime import active_service
+
+            service = active_service("ui")
+            panel = getattr(service, "subagent_panel", None) if service is not None else None
+            if panel is not None:
+                return panel
+        except Exception:
+            pass
         if cls._instance is None:
             with cls._class_lock:
                 if cls._instance is None:

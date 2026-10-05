@@ -112,7 +112,9 @@ python chat.py run --profile minimal --dump-config
 | 插件 | 服务 key | 内容 |
 |---|---|---|
 | `config` | `ctx.config` | 运行时配置、base_url、模型列表 |
-| `events` | `ctx.events` | 核心事件总线 + 显示事件总线 |
+| `events` | `ctx.events` | 核心事件总线 + 显示事件总线（服务独占，单例内核真源） |
+| `output` | `ctx.output` | 默认输出端口（无锁/持锁写入，provider 可替换） |
+| `cache` | `ctx.cache` | 通用缓存（可替换 `CachePort`） |
 | `observability` | `ctx.observability` | 可观测性 provider（指标/追踪/遥测，可替换） |
 | `prompt` | `ctx.prompt` | 系统提词、子代理提词、空模式 |
 | `fs` | `ctx.fs` | 文件系统能力接缝（Definition+Provider+Consumer） |
@@ -140,9 +142,11 @@ python chat.py run --profile minimal --dump-config
 | `sessions` | `ctx.sessions` | 会话创建/恢复/保存 |
 | `agent_loop` | `ctx.agent_loop` | Agent 组装与循环 |
 | `commands` | `ctx.commands` | 命令插件注册表 |
-| `mcp` | `ctx.mcp` | 外部 MCP 工具接入 |
+| `mcp` | `ctx.mcp` | 外部 MCP 工具接入（服务独占 `McpManager`） |
+| `clawbot` | `ctx.clawbot` | 微信远程控制模式装配 |
 | `renderer` | `ctx.renderer` | 增量流式 Markdown 渲染 |
-| `ui` | `ctx.ui` | 终端 UI 运行时桥接 |
+| `ui` | `ctx.ui` | 终端 UI 运行时桥接 + TUI 装配入口（独占宽度缓存 / SubAgent 面板控制器） |
+| `app` | `ctx.app` | 应用组合根：可观测性 / 输出消费者 / 信号 / 错误处理器 / 子命令 / 模式 / clawbot 装配 |
 
 组合根 `src/plugins/bootstrap.py::build_kernel()` 解析 Profile、挂载插件、
 等待依赖稳定，并登记为进程级当前内核；`shutdown_kernel()` 逆序卸载。
@@ -421,6 +425,10 @@ registry.close("agent-1")                            # 撤销全部注册
 | `ctx.llm` | `ctx.llm.register_provider(name, factory, prefixes=…, substrings=…, fallback=…)` | 内置 deepseek / anthropic / ollama / openai_compat（各自独立的 provider 插件） |
 | `ctx.renderer` | `ctx.renderer.register_handler(factory)` / `register_filter(factory)` | 内置 TokenHandler 集合 + 三个内置过滤器 |
 | `ctx.observability` | `ctx.observability.set_provider(port)` | `ObservabilityFacade` |
+| `ctx.events` | 服务独占核心 / 显示总线与显示适配器 | `CoreEventBus` / `DisplayEventBus` / `DisplayEventBusAdapter` |
+| `ctx.output` | `ctx.output` 持有的端口 | `DefaultOutputAdapter` |
+| `ctx.cache` | `ctx.cache` 持有的缓存 | `LRUCache` |
+| `ctx.ui` | `ctx.ui.width_cache` / `subagent_panel` / `assemble()` | `TerminalWidthCache` / `SubAgentPanelController` / `TuiAssembly` |
 | `ctx.notifications` | `ctx.notifications.set_provider(provider)` | `src.notifications` 平台实现 |
 | `ctx.persistence` | `ctx.persistence.set_provider(port)` | `JsonFilePersistence` |
 | `ctx.checkpoint` | `ctx.checkpoint.set_provider(port)` | `JsonFileCheckpoint` |
@@ -463,4 +471,35 @@ Patch/Overlay 按 id 禁用或替换。
 内核挂载对应服务后返回其持有的实例（与 `ctx.tools` / `ctx.tool_scheduler` /
 `ctx.llm` / `ctx.skills` / `ctx.commands` 同源），内核缺失或服务尚在构造中时
 回退进程级单例，保证独立调用与单元测试兼容。
+
+## 18. 进程级单例收敛为内核服务
+
+除第 17.1 节的注册表单例外，总线 / 端口 / 观测 / 缓存 / 表现层等进程级单例
+同样**内核优先**——内核挂载对应服务后，单例访问函数返回服务独占实例；内核
+缺失（单元测试、独立调用）时才回退进程级单例。
+
+| 单例访问函数 | 内核服务 | 服务独占实例 |
+|---|---|---|
+| `CoreEventBus.get_default_bus()` | `ctx.events` | `ctx.events.bus` |
+| `DisplayEventBus.get_default()` | `ctx.events` | `ctx.events.display_bus` |
+| `DisplayEventBusAdapter.get_default()` | `ctx.events` | `ctx.events.event_adapter()` |
+| `DefaultOutputAdapter.get_default()` / `get_default_output_port()` | `ctx.output` | `ctx.output.port` |
+| `get_default_cache()` | `ctx.cache` | `ctx.cache.cache` |
+| `get_default_facade()` | `ctx.observability` | `ctx.observability.provider` |
+| `get_default_collector()` / `get_default_tracer()` | `ctx.observability` | `ctx.observability.collector` / `.tracer` |
+| `McpManager.default()` | `ctx.mcp` | `ctx.mcp.manager` |
+| `TerminalWidthCache.get_default()` | `ctx.ui` | `ctx.ui.width_cache` |
+| `SubAgentPanelController.get_default()` | `ctx.ui` | `ctx.ui.subagent_panel` |
+
+因此生产路径不再落入游离的模块级全局状态：替换 / 卸载内核服务即整体改变
+对应链路；`--profile minimal` 等未加载该服务的场景自动回退单例。
+
+### 18.1 应用组合根：`ctx.app`
+
+`main.py` 是最薄入口：解析参数 → `build_kernel()` → `ctx.app.run(args)` →
+`app.shutdown()` → `shutdown_kernel()`。应用生命周期（可观测性启动、trace_id
+初始化、输出消费者、信号处理、ChatUI 错误处理器、version / dump-config /
+plugin / session / config / check-invariants 子命令分发、MCP 初始化、
+clawbot / 交互 / 单次模式装配）由 `ctx.app` 插件承载，可按 Profile/Patch
+禁用或替换；clawbot 装配另经 `ctx.clawbot` 服务提供。
 

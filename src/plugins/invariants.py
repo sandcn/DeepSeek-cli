@@ -139,6 +139,59 @@ def _renderer_extensions_readable(kernel) -> str | None:
     return None
 
 
+def _singletons_kernel_source(kernel) -> str | None:
+    """进程级单例访问函数必须解析到内核服务独占实例（内核服务为唯一真源）。"""
+    if kernel.has_service("events"):
+        from ..core.adapters.events import DisplayEventBusAdapter
+        from ..core.events.display_bus import DisplayEventBus
+        from ..core.events.event_bus import get_default_bus
+
+        events = kernel.resolve_service("events")
+        if get_default_bus() is not events.bus:
+            return "核心事件总线单例未指向 ctx.events 服务"
+        if DisplayEventBus.get_default() is not events.display_bus:
+            return "显示事件总线单例未指向 ctx.events 服务"
+        if DisplayEventBusAdapter.get_default() is not events.event_adapter():
+            return "显示事件适配器单例未指向 ctx.events 服务"
+    if kernel.has_service("output"):
+        from ..core.adapters.output import DefaultOutputAdapter
+
+        if DefaultOutputAdapter.get_default() is not kernel.resolve_service("output").port:
+            return "默认输出端口单例未指向 ctx.output 服务"
+    if kernel.has_service("cache"):
+        from ..core.cache import get_default_cache
+
+        if get_default_cache() is not kernel.resolve_service("cache").cache:
+            return "默认缓存单例未指向 ctx.cache 服务"
+    if kernel.has_service("observability"):
+        from ..core.telemetry.metrics import get_default_collector
+        from ..core.telemetry.tracer import get_default_tracer
+        from ..observability.facade import get_default_facade
+
+        observability = kernel.resolve_service("observability")
+        if get_default_facade() is not observability.provider:
+            return "默认可观测门面单例未指向 ctx.observability 服务"
+        if get_default_collector() is not observability.collector:
+            return "默认指标收集器单例未指向 ctx.observability 服务"
+        if get_default_tracer() is not observability.tracer:
+            return "默认追踪器单例未指向 ctx.observability 服务"
+    if kernel.has_service("mcp"):
+        from ..mcp.manager import McpManager
+
+        if McpManager.default() is not kernel.resolve_service("mcp").manager:
+            return "McpManager 单例未指向 ctx.mcp 服务"
+    if kernel.has_service("ui"):
+        from ..tui._screen import TerminalWidthCache
+        from ..tui._subagent_panel import SubAgentPanelController
+
+        ui = kernel.resolve_service("ui")
+        if TerminalWidthCache.get_default() is not ui.width_cache:
+            return "终端宽度缓存单例未指向 ctx.ui 服务"
+        if SubAgentPanelController.get_default() is not ui.subagent_panel:
+            return "SubAgent 面板控制器单例未指向 ctx.ui 服务"
+    return None
+
+
 _BUILTIN_CHECKS = (
     ("services.keys_valid", _service_keys_valid),
     ("fibers.active_have_deps", _fibers_active_have_deps),
@@ -149,6 +202,7 @@ _BUILTIN_CHECKS = (
     ("services.providers_present", _service_providers_present),
     ("llm.providers_available", _llm_providers_available),
     ("renderer.extensions_readable", _renderer_extensions_readable),
+    ("singletons.kernel_source", _singletons_kernel_source),
 )
 
 

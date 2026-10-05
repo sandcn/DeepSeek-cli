@@ -687,11 +687,24 @@ class TerminalWidthCache:
 
     @classmethod
     def get_default(cls) -> TerminalWidthCache:
-        """获取全局单例（双检锁——方向1 步骤1：并发首次调用不产生多实例）。
+        """获取默认缓存实例。
+
+        内核优先：内核挂载 ``ctx.ui`` 服务后返回其独占的缓存（与 UI 服务
+        同源）；内核缺失或服务尚在构造中时回退进程级单例（双检锁——并发
+        首次调用不产生多实例）。
 
         多实例会各自 TTL 缓存导致宽度不一致（并发首次调用竞态）；双检锁为
         Python 标准模式（GIL 下安全）；实例已存在时无锁路径零开销。
         """
+        try:
+            from ..kernel.runtime import active_service
+
+            service = active_service("ui")
+            cache = getattr(service, "width_cache", None) if service is not None else None
+            if cache is not None:
+                return cache
+        except Exception:
+            pass
         if cls._instance is None:
             with _instance_lock:
                 if cls._instance is None:

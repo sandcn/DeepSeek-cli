@@ -141,6 +141,8 @@ BUNDLES = [
         "plugins": [
             {"id": "config", "plugin": "src.plugins.config"},
             {"id": "events", "plugin": "src.plugins.events"},
+            {"id": "output", "plugin": "src.plugins.output"},
+            {"id": "cache", "plugin": "src.plugins.cache"},
             {"id": "observability", "plugin": "src.plugins.observability"},
             {"id": "prompt", "plugin": "src.plugins.prompt", "config": {"empty_mode": True}},
             {"id": "fs", "plugin": "src.plugins.seams:apply_fs"},
@@ -163,6 +165,7 @@ BUNDLES = [
             {"id": "skills", "plugin": "src.plugins.skills"},
             {"id": "presets", "plugin": "src.plugins.presets"},
             {"id": "invariants", "plugin": "src.plugins.invariants"},
+            {"id": "app", "plugin": "src.plugins.app"},
         ],
     },
     {
@@ -186,6 +189,7 @@ BUNDLES = [
             {"id": "agent_loop", "plugin": "src.plugins.agent_loop"},
             {"id": "commands", "plugin": "src.plugins.commands"},
             {"id": "mcp", "plugin": "src.plugins.mcp"},
+            {"id": "clawbot", "plugin": "src.plugins.clawbot"},
         ],
     },
     {

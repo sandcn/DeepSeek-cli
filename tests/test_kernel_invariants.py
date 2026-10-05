@@ -14,6 +14,7 @@ async def test_invariants_service_registered():
         service = kernel.resolve_service("invariants")
         assert service is not None
         assert "services.keys_valid" in service.names()
+        assert "singletons.kernel_source" in service.names()
         assert service.check() == []
     finally:
         await shutdown_kernel(kernel)

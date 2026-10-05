@@ -237,7 +237,20 @@ _tracer_lock = threading.RLock()
 
 
 def get_default_tracer() -> Tracer:
-    """获取全局默认追踪器（线程安全单例）"""
+    """获取默认追踪器。
+
+    内核优先：内核挂载 ``ctx.observability`` 服务后返回其持有的追踪器
+    （与内核观测服务同源）；内核缺失或服务尚在构造中时回退进程级单例。
+    """
+    try:
+        from ...kernel.runtime import active_service
+
+        service = active_service("observability")
+        tracer = getattr(service, "tracer", None) if service is not None else None
+        if tracer is not None:
+            return tracer
+    except Exception:
+        pass
     global _default_tracer
     if _default_tracer is None:
         with _tracer_lock:

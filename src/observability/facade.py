@@ -186,7 +186,21 @@ _facade_lock = threading.RLock()
 
 
 def get_default_facade() -> ObservabilityFacade:
-    """获取全局默认可观测性门面（线程安全单例）"""
+    """获取默认可观测性门面。
+
+    内核优先：内核挂载 ``ctx.observability`` 服务后返回其 provider（与内核
+    观测服务同源，provider 可被外部插件整体替换）；内核缺失或服务尚在
+    构造中时回退进程级单例。
+    """
+    try:
+        from ..kernel.runtime import active_service
+
+        service = active_service("observability")
+        provider = getattr(service, "provider", None) if service is not None else None
+        if provider is not None:
+            return provider
+    except Exception:
+        pass
     global _default_facade
     if _default_facade is None:
         with _facade_lock:

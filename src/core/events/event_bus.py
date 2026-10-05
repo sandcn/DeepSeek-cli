@@ -473,7 +473,20 @@ _default_bus: CoreEventBus | None = None
 _bus_lock = threading.RLock()
 
 def get_default_bus() -> CoreEventBus:
-    """获取全局默认事件总线（线程安全单例）"""
+    """获取默认核心事件总线。
+
+    内核优先：内核挂载 ``ctx.events`` 服务后返回其独占的总线（与内核事件
+    服务同源）；内核缺失或服务尚在构造中时回退进程级单例。
+    """
+    try:
+        from ...kernel.runtime import active_service
+
+        service = active_service("events")
+        bus = getattr(service, "bus", None) if service is not None else None
+        if bus is not None:
+            return bus
+    except Exception:
+        pass
     global _default_bus
     if _default_bus is None:
         with _bus_lock:

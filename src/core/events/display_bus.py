@@ -29,8 +29,8 @@ EventHandler = Callable[[DisplayEvent], Any]
 class DisplayEventBus(metaclass=SingletonMeta):
     """显示层事件总线 — 同步发布/订阅（直接分发实现）。
 
-    支持直接构造独立实例（测试/多实例隔离）；``get_default()`` 返回
-    进程级默认实例。
+    支持直接构造独立实例（测试/多实例隔离）；``get_default()`` 内核优先返回
+    ``ctx.events`` 服务独占实例，内核缺失时返回进程级默认实例。
     """
 
     def __init__(self):
@@ -39,6 +39,24 @@ class DisplayEventBus(metaclass=SingletonMeta):
         self._handlers: dict[type, list[EventHandler]] = {}
         self._all_handlers: list[EventHandler] = []
         self._lock = threading.RLock()
+
+    @classmethod
+    def get_default(cls) -> "DisplayEventBus":
+        """获取默认显示事件总线。
+
+        内核优先：内核挂载 ``ctx.events`` 服务后返回其独占的总线（与内核
+        事件服务同源）；内核缺失或服务尚在构造中时回退进程级单例。
+        """
+        try:
+            from ...kernel.runtime import active_service
+
+            service = active_service("events")
+            bus = getattr(service, "display_bus", None) if service is not None else None
+            if bus is not None:
+                return bus
+        except Exception:
+            pass
+        return SingletonMeta.get_default(cls)
 
     def subscribe(
         self,
