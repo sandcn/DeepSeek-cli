@@ -64,6 +64,30 @@ class RendererService(Service):
 
         return list(filter_factories())
 
+    def builtin_handlers(self) -> list:
+        """列出当前生效的内置 handler 工厂（清单注册/默认/跳过接管）。"""
+        from ..renderer.extensions import builtin_handler_factories
+
+        return list(builtin_handler_factories())
+
+    def builtin_filters(self) -> list:
+        """列出当前生效的内置 filter 工厂。"""
+        from ..renderer.extensions import builtin_filter_factories
+
+        return list(builtin_filter_factories())
+
+    def builtin_handler_ids(self) -> list:
+        """列出全部内置 handler id（含被接管/禁用的）。"""
+        from ..renderer.extensions import builtin_handler_ids
+
+        return list(builtin_handler_ids())
+
+    def builtin_filter_ids(self) -> list:
+        """列出全部内置 filter id（含被接管/禁用的）。"""
+        from ..renderer.extensions import builtin_filter_ids
+
+        return list(builtin_filter_ids())
+
     def render_diff(self, path: str, old_content: str, new_content: str) -> str:
         if self.ctx.has("ui"):
             return self.ctx.consume("ui").render_diff(path, old_content, new_content)

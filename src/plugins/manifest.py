@@ -121,6 +121,57 @@ COMMAND_PLUGIN_ENTRIES = [
      "config": {"command": "src.core.commands.plugins.skill_plugin.SkillPlugin", "name": "skill"}},
 ]
 
+# ── 渲染扩展条目（每个内置 handler / filter 一个独立插件条目） ──
+#
+# 条目经 ``src.plugins.renderer_entries`` 把 ``config.id`` 指向的内置项注册进
+# ``src.renderer.extensions``；``config.id`` 供组合根收集「清单已接管的渲染项」
+# （注入 ``renderer_builtin``，抑制默认装配，使 overlay disable 单个项真正生效）。
+
+RENDERER_HANDLER_ENTRIES = [
+    {"id": "renderer_handler_inline", "plugin": "src.plugins.renderer_entries:apply_handler",
+     "config": {"id": "inline"}},
+    {"id": "renderer_handler_code", "plugin": "src.plugins.renderer_entries:apply_handler",
+     "config": {"id": "code"}},
+    {"id": "renderer_handler_math", "plugin": "src.plugins.renderer_entries:apply_handler",
+     "config": {"id": "math"}},
+    {"id": "renderer_handler_mermaid", "plugin": "src.plugins.renderer_entries:apply_handler",
+     "config": {"id": "mermaid"}},
+    {"id": "renderer_handler_details", "plugin": "src.plugins.renderer_entries:apply_handler",
+     "config": {"id": "details"}},
+    {"id": "renderer_handler_admonition", "plugin": "src.plugins.renderer_entries:apply_handler",
+     "config": {"id": "admonition"}},
+    {"id": "renderer_handler_html_block", "plugin": "src.plugins.renderer_entries:apply_handler",
+     "config": {"id": "html_block"}},
+    {"id": "renderer_handler_table", "plugin": "src.plugins.renderer_entries:apply_handler",
+     "config": {"id": "table"}},
+    {"id": "renderer_handler_fenced_div", "plugin": "src.plugins.renderer_entries:apply_handler",
+     "config": {"id": "fenced_div"}},
+]
+
+RENDERER_FILTER_ENTRIES = [
+    {"id": "renderer_filter_code_block_batcher", "plugin": "src.plugins.renderer_entries:apply_filter",
+     "config": {"id": "code_block_batcher"}},
+    {"id": "renderer_filter_heading_anchor", "plugin": "src.plugins.renderer_entries:apply_filter",
+     "config": {"id": "heading_anchor"}},
+    {"id": "renderer_filter_stream_optimizer", "plugin": "src.plugins.renderer_entries:apply_filter",
+     "config": {"id": "stream_optimizer"}},
+]
+
+# ── Agent 中间件条目（每个内置中间件一个独立插件条目） ──────
+#
+# 条目经 ``src.plugins.middleware_entries`` 把 ``config.id`` 指向的内置中间件
+# 注册进 ``src.core.middleware.registry``；``config.id`` 供组合根收集
+# 「清单已接管的中间件」（注入 ``agent_middleware``，抑制默认装配）。
+
+MIDDLEWARE_ENTRIES = [
+    {"id": "middleware_interrupt", "plugin": "src.plugins.middleware_entries:apply_middleware",
+     "config": {"id": "interrupt"}},
+    {"id": "middleware_observability", "plugin": "src.plugins.middleware_entries:apply_middleware",
+     "config": {"id": "observability"}},
+    {"id": "middleware_audit", "plugin": "src.plugins.middleware_entries:apply_middleware",
+     "config": {"id": "audit"}},
+]
+
 # ── Bundle 定义 ─────────────────────────────────────────────
 
 BUNDLES = [
@@ -133,6 +184,16 @@ BUNDLES = [
         "id": "commands",
         "description": "内置命令：每个命令一个独立插件条目（可 patch/overlay 禁用/替换）",
         "plugins": list(COMMAND_PLUGIN_ENTRIES),
+    },
+    {
+        "id": "renderer_ext",
+        "description": "渲染扩展：每个内置 handler/filter 一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(RENDERER_HANDLER_ENTRIES) + list(RENDERER_FILTER_ENTRIES),
+    },
+    {
+        "id": "middleware",
+        "description": "Agent 中间件：每个内置中间件一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(MIDDLEWARE_ENTRIES),
     },
     {
         "id": "core",
@@ -182,11 +243,14 @@ BUNDLES = [
     {
         "id": "runtime",
         "description": "运行时：会话、Agent 循环、命令、MCP",
+        "includes": ["middleware"],
         "plugins": [
             {"id": "sessions", "plugin": "src.plugins.sessions"},
             {"id": "tool_scheduler", "plugin": "src.plugins.tool_scheduler"},
             {"id": "agent_middleware", "plugin": "src.plugins.agent_middleware"},
             {"id": "agent_loop", "plugin": "src.plugins.agent_loop"},
+            {"id": "interactive_loop", "plugin": "src.plugins.application:apply_interactive_loop"},
+            {"id": "application", "plugin": "src.plugins.application:apply_application"},
             {"id": "commands", "plugin": "src.plugins.commands"},
             {"id": "mcp", "plugin": "src.plugins.mcp"},
             {"id": "clawbot", "plugin": "src.plugins.clawbot"},
@@ -194,10 +258,12 @@ BUNDLES = [
     },
     {
         "id": "presentation",
-        "description": "表现层：UI、渲染器",
+        "description": "表现层：UI、渲染器、事件消费者",
+        "includes": ["renderer_ext"],
         "plugins": [
             {"id": "renderer", "plugin": "src.plugins.renderer"},
             {"id": "renderer_builtin", "plugin": "src.plugins.renderer_builtin"},
+            {"id": "consumers", "plugin": "src.plugins.consumers"},
             {"id": "ui", "plugin": "src.plugins.ui"},
         ],
     },
@@ -247,5 +313,8 @@ __all__ = [
     "DEFAULT_PROFILE",
     "TOOL_PLUGIN_ENTRIES",
     "COMMAND_PLUGIN_ENTRIES",
+    "RENDERER_HANDLER_ENTRIES",
+    "RENDERER_FILTER_ENTRIES",
+    "MIDDLEWARE_ENTRIES",
     "build_config_tree",
 ]

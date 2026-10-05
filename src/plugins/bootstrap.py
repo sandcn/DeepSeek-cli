@@ -45,12 +45,35 @@ _OVERLAY_NAMES = frozenset({
     "overlay.yml", "overlay.yaml", "overlay.json",
 })
 
-#: 聚合插件的插件名 → 注入的 config 键（收集自清单中同类的单条目声明）
-_AGGREGATE_MANAGED_KEY = {
-    "tools_builtin": "managed_tools",
-    "commands": "managed_commands",
+#: 单条目声明插件名 → 其 config 中作为「名」的键
+_SINGLE_DECL_PLUGINS = {
+    "tool": "name",
+    "command": "name",
+    "renderer_handler": "id",
+    "renderer_filter": "id",
+    "middleware": "id",
 }
-_SINGLE_DECL_PLUGINS = {"tool": "name", "command": "name"}
+
+#: 单条目声明插件名 → 汇入的托管分组
+_MANAGED_GROUP = {
+    "tool": "managed_tools",
+    "command": "managed_commands",
+    "renderer_handler": "managed_handlers",
+    "renderer_filter": "managed_filters",
+    "middleware": "managed_middlewares",
+}
+
+#: 只统计「启用」条目的托管分组（命令沿用旧语义；工具/渲染/中间件把禁用项也
+#: 计入，使聚合插件抑制其默认装配，从而 overlay disable 真正生效）
+_ENABLED_ONLY_GROUPS = frozenset({"managed_commands"})
+
+#: 聚合插件的插件名 → 注入的 config 键（收集自清单中同类的单条目声明）
+_AGGREGATE_MANAGED_KEYS = {
+    "tools_builtin": ("managed_tools",),
+    "commands": ("managed_commands",),
+    "renderer_builtin": ("managed_handlers", "managed_filters"),
+    "agent_middleware": ("managed_middlewares",),
+}
 
 
 # ── 清单合并 ─────────────────────────────────────────────
@@ -176,43 +199,49 @@ def resolve_entries(
 
 
 def collect_managed_names(resolved) -> dict:
-    """从解析后的插件条目收集「清单已接管的工具名 / 命令名」。
+    """从解析后的插件条目收集「清单已接管的工具/命令/渲染/中间件名」。
 
     Args:
         resolved: ``materialize(entries)`` 的结果（``(entry, Plugin)`` 列表）。
 
     Returns:
-        ``{"managed_tools": [..], "managed_commands": [..]}``。
+        形如 ``{"managed_tools": [...], "managed_commands": [...],
+        "managed_handlers": [...], "managed_filters": [...],
+        "managed_middlewares": [...]}``。
 
     语义差异（由各自的聚合插件兜底方式决定）：
 
-    - ``managed_tools`` 含**被禁用**的工具名——``tools_builtin`` 据此跳过兜底
-      自动发现，使 overlay 禁用单个工具真正生效；
+    - ``managed_tools`` / ``managed_handlers`` / ``managed_filters`` /
+      ``managed_middlewares`` 含**被禁用**的项——聚合插件据此抑制默认装配，
+      使 overlay 禁用单项真正生效；
     - ``managed_commands`` 只含**启用**的命令名——``ctx.commands`` 只注册清单
       接管的命令，被禁用的命令不会被兜底注册（命令无自动发现兜底路径）。
     """
-    managed = {"managed_tools": set(), "managed_commands": set()}
+    managed = {group: set() for group in set(_MANAGED_GROUP.values())}
     for entry, plug in resolved:
         name = getattr(plug, "name", "")
-        value = (entry.config or {}).get("name")
+        group = _MANAGED_GROUP.get(name)
+        if group is None:
+            continue
+        value = (entry.config or {}).get(_SINGLE_DECL_PLUGINS[name])
         if not value:
             continue
-        if name == "tool":
-            managed["managed_tools"].add(str(value))
-        elif name == "command" and not entry.disabled:
-            managed["managed_commands"].add(str(value))
+        if group in _ENABLED_ONLY_GROUPS and entry.disabled:
+            continue
+        managed[group].add(str(value))
     return {key: sorted(value) for key, value in managed.items()}
 
 
 def inject_managed_config(resolved) -> None:
-    """把清单接管的工具名/命令名注入聚合插件条目（原地修改 entry.config）。"""
+    """把清单接管的工具/命令/渲染/中间件名注入聚合插件条目（原地修改 entry.config）。"""
     managed = collect_managed_names(resolved)
     for entry, plug in resolved:
-        managed_key = _AGGREGATE_MANAGED_KEY.get(getattr(plug, "name", ""))
-        if managed_key is None:
+        managed_keys = _AGGREGATE_MANAGED_KEYS.get(getattr(plug, "name", ""))
+        if not managed_keys:
             continue
         config = dict(entry.config or {})
-        config[managed_key] = list(managed[managed_key])
+        for key in managed_keys:
+            config[key] = list(managed[key])
         entry.config = config
 
 

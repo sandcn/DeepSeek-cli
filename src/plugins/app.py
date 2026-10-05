@@ -39,16 +39,24 @@ class AppService(Service):
         """注册错误处理器 + 启动可观测性与输出消费者（幂等）。
 
         须在 ``logging.basicConfig()`` 之后调用（错误处理器依赖 root 已配置）。
+
+        「一切皆插件」：错误处理器与输出消费者由内核 ``ctx.consumers`` 提供
+        （可替换/禁用）；内核缺失时回退直接构造。
         """
         if self._bootstrapped:
             return
-        from ..tui.consumer import setup_chat_ui_error_handler
+        consumers = self.ctx.service("consumers") if self.ctx.has("consumers") else None
+        if consumers is not None:
+            consumers.setup_error_handler()
+            self._output_consumer = consumers.create_output_consumer(chat_ui_managed=True)
+        else:
+            from ..tui.consumer import setup_chat_ui_error_handler
 
-        setup_chat_ui_error_handler()
+            setup_chat_ui_error_handler()
+            from ..tui.events import OutputConsumer
+
+            self._output_consumer = OutputConsumer(chat_ui_managed=True)
         self._start_observability()
-        from ..tui.events import OutputConsumer
-
-        self._output_consumer = OutputConsumer(chat_ui_managed=True)
         self._output_consumer.start()
         self._bootstrapped = True
 
@@ -216,6 +224,11 @@ class AppService(Service):
         return data
 
     async def _run_modes(self, args, loaded_data) -> None:
+        service = self.ctx.service("application") if self.ctx.has("application") else None
+        if service is not None:
+            await service.run(args, loaded_data)
+            return
+
         from ..application import Application, AppContext, InteractiveMode, SingleMode
 
         if args.prompt:

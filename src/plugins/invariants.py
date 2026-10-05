@@ -128,7 +128,8 @@ def _renderer_extensions_readable(kernel) -> str | None:
     if not kernel.has_service("renderer"):
         return None
     service = kernel.resolve_service("renderer")
-    for method in ("handlers", "filters"):
+    for method in ("handlers", "filters", "builtin_handlers", "builtin_filters",
+                   "builtin_handler_ids", "builtin_filter_ids"):
         read = getattr(service, method, None)
         if not callable(read):
             continue
@@ -136,6 +137,18 @@ def _renderer_extensions_readable(kernel) -> str | None:
             list(read())
         except Exception as exc:  # noqa: BLE001 - 读取失败即上报
             return f"renderer 扩展 {method} 读取失败: {exc}"
+    return None
+
+
+def _agent_middleware_readable(kernel) -> str | None:
+    """Agent 中间件注册表必须可读（清单接管/禁用自省不抛异常）。"""
+    try:
+        from ..core.middleware.registry import builtin_middleware_factories, builtin_middleware_ids
+
+        list(builtin_middleware_ids())
+        list(builtin_middleware_factories())
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"Agent 中间件注册表读取失败: {exc}"
     return None
 
 
@@ -202,6 +215,7 @@ _BUILTIN_CHECKS = (
     ("services.providers_present", _service_providers_present),
     ("llm.providers_available", _llm_providers_available),
     ("renderer.extensions_readable", _renderer_extensions_readable),
+    ("middleware.registry_readable", _agent_middleware_readable),
     ("singletons.kernel_source", _singletons_kernel_source),
 )
 

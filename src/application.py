@@ -222,9 +222,15 @@ class Application:
 # ═══════════════════════════════════════════════════════════════
 
 class InteractiveMode(AppMode):
-    """交互式对话模式 — 封装 app_loop.run_interactive_mode_async"""
+    """交互式对话模式 — 经内核 ``ctx.interactive_loop``（内核缺失时回退 app_loop）"""
 
     async def run(self) -> None:
+        from .kernel.runtime import active_service
+
+        service = active_service("interactive_loop")
+        if service is not None:
+            await service.run(self._ctx.loaded_data)
+            return
         from .app_loop import run_interactive_mode_async
         await run_interactive_mode_async(self._ctx.loaded_data)
 
@@ -237,13 +243,19 @@ class InteractiveMode(AppMode):
 # ═══════════════════════════════════════════════════════════════
 
 class SingleMode(AppMode):
-    """单次对话模式 — 封装 app_loop.run_single_mode_async"""
+    """单次对话模式 — 经内核 ``ctx.interactive_loop``（内核缺失时回退 app_loop）"""
 
     def __init__(self, ctx: AppContext, prompt_text: str):
         super().__init__(ctx)
         self._prompt_text = prompt_text
 
     async def run(self) -> None:
+        from .kernel.runtime import active_service
+
+        service = active_service("interactive_loop")
+        if service is not None:
+            await service.run_single(self._prompt_text)
+            return
         from .app_loop import run_single_mode_async
         await run_single_mode_async(self._prompt_text)
 

@@ -130,9 +130,9 @@ class Fiber:
         self.state = FiberState.LOADING
         self.error = None
         self.ctx = self.kernel._make_context(self, self._parent_ctx, self.config)
-        from .kernel import _activate_kernel
+        from .current import activate_kernel
 
-        restore_kernel = _activate_kernel(self.kernel)
+        restore_kernel = activate_kernel(self.kernel)
         try:
             result = self.definition.instantiate(self.ctx)
             if inspect.isawaitable(result):
