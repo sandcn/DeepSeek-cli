@@ -44,16 +44,6 @@ BUILTIN_TOOL_METADATA: Dict[str, dict] = {
         "timeout_estimate": 0, "category": "io", "priority": 10,
         "tool_category": "write", "description": "复制文件或目录",
     },
-    "find": {
-        "parallel_safe": True, "requires_network": False, "requires_terminal": False,
-        "timeout_estimate": 0, "category": "code", "priority": 20,
-        "tool_category": "read", "description": "在项目中查找文件和目录",
-    },
-    "ls": {
-        "parallel_safe": True, "requires_network": False, "requires_terminal": False,
-        "timeout_estimate": 0, "category": "code", "priority": 20,
-        "tool_category": "read", "description": "列出目录内容",
-    },
     "mkdir": {
         "parallel_safe": False, "requires_network": False, "requires_terminal": False,
         "timeout_estimate": 0, "category": "io", "priority": 10,
@@ -78,11 +68,6 @@ BUILTIN_TOOL_METADATA: Dict[str, dict] = {
         "parallel_safe": False, "requires_network": False, "requires_terminal": False,
         "timeout_estimate": 0, "category": "io", "priority": 10,
         "tool_category": "write", "description": "删除文件或目录",
-    },
-    "search": {
-        "parallel_safe": True, "requires_network": False, "requires_terminal": False,
-        "timeout_estimate": 0, "category": "code", "priority": 20,
-        "tool_category": "read", "description": "在项目源码中搜索正则模式",
     },
     "skill": {
         "parallel_safe": True, "requires_network": False, "requires_terminal": False,

@@ -218,7 +218,7 @@ class _ToolOutputMixin:
         # 对齐 Claude Code 收敛冗长 bash 输出；修剪后行数 ≤ N+1，不触发增量提交）
         if block.extra.get("tool_name") in ("bash", "execute_command"):
             self._trim_tool_output_tail(block, _bash_output_tail_lines())
-        # find/search/ls/read_file：输出超过阈值行数时只保留前 N 行（head 显示，
+        # read_file：输出超过阈值行数时只保留前 N 行（head 显示，
         # 对齐终端 head 语义——目录列表/文件预览等有序输出看开头即可，防卡片撑爆）
         if block.extra.get("tool_name") in _tool_head_tools():
             self._trim_tool_output_head(block, _tool_head_lines())
@@ -319,7 +319,7 @@ class _ToolOutputMixin:
     def _trim_tool_output_head(self, block, keep: int) -> None:
         """工具块输出修剪为前 keep 行（保留标题行 block.lines[0]）。
 
-        find/search/ls/read_file 头显示：输出超过 keep 行时删除后置输出行
+        read_file 头显示：输出超过 keep 行时删除后置输出行
         （下标 1+keep..末尾），累计省略数记入 ``block.extra["_head_omitted_lines"]``
         （卡片渲染时在主体行后置「… 后 N 行省略」提示）；同步
         ``committed_line_count``（已提交行被删则回退计数，防越界/重复提交）。

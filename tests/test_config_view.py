@@ -975,7 +975,7 @@ class TestConfigViewComponent:
                 "key": "skills", "path": "skills", "type": dict,
                 "value": {
                     "enabled": True,
-                    "auto_load": ["read_file", "search"],
+                    "auto_load": ["read_file", "write_file"],
                     "nested": {"level2": [{"x": 1}]},
                 },
                 "value_text": "{...}", "default_text": "{}",

@@ -84,7 +84,6 @@ _BUILTIN_SPECS: Tuple[PresentationSpec, ...] = (
     _tool("web_fetch", "search", "\U0001f310"),
     _tool("rm", "delete", "\u2715"),
     _tool("grep", "search", "\u2315"),
-    _tool("find", "search", "\u2315"),
     _tool("glob", "search", "\u2315"),
     # ── 类别 → 配色 ──
     _category("shell", 41),

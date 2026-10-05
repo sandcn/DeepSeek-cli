@@ -52,10 +52,6 @@ TOOL_PLUGIN_ENTRIES = [
      "config": {"tool": "src.tools.bash_opt.BashOptFunc", "name": "bash_opt"}},
     {"id": "tool_cp", "plugin": "src.plugins.tool_plugin",
      "config": {"tool": "src.tools.cp.CpFunc", "name": "cp"}},
-    {"id": "tool_find", "plugin": "src.plugins.tool_plugin",
-     "config": {"tool": "src.tools.find.FindFunc", "name": "find"}},
-    {"id": "tool_ls", "plugin": "src.plugins.tool_plugin",
-     "config": {"tool": "src.tools.ls.LsFunc", "name": "ls"}},
     {"id": "tool_mkdir", "plugin": "src.plugins.tool_plugin",
      "config": {"tool": "src.tools.mkdir.MkdirFunc", "name": "mkdir"}},
     {"id": "tool_mv", "plugin": "src.plugins.tool_plugin",
@@ -66,8 +62,6 @@ TOOL_PLUGIN_ENTRIES = [
      "config": {"tool": "src.tools.read_image.ReadImageFunc", "name": "read_image"}},
     {"id": "tool_rm", "plugin": "src.plugins.tool_plugin",
      "config": {"tool": "src.tools.rm.RmFunc", "name": "rm"}},
-    {"id": "tool_search", "plugin": "src.plugins.tool_plugin",
-     "config": {"tool": "src.tools.search.SearchFunc", "name": "search"}},
     {"id": "tool_skill", "plugin": "src.plugins.tool_plugin",
      "config": {"tool": "src.tools.skill_tool.SkillFunc", "name": "skill"}},
     {"id": "tool_subagent", "plugin": "src.plugins.tool_plugin",
@@ -94,8 +88,8 @@ TOOL_PLUGIN_ENTRIES = [
 # overlay 禁用单项真正生效）。
 
 _TOOL_METADATA_NAMES = (
-    "bash", "bash_opt", "cp", "find", "ls", "mkdir", "mv", "read_file",
-    "read_image", "rm", "search", "skill", "subagent", "subagent_opt",
+    "bash", "bash_opt", "cp", "mkdir", "mv", "read_file",
+    "read_image", "rm", "skill", "subagent", "subagent_opt",
     "update_file", "user_select", "web_fetch", "web_search", "write_file",
     "cordis_inspect", "cordis_define", "cordis_run", "cordis_stop", "cordis_undefine",
 )
@@ -115,7 +109,7 @@ TOOL_METADATA_ENTRIES = [
 # 真正生效）。
 
 _TOOL_CONST_NAMES = (
-    "EXCLUDED_DIRS", "EXCLUDED_FILE_PATTERNS", "DANGEROUS_DEVICE_FILES",
+    "DANGEROUS_DEVICE_FILES",
     "SYSTEM_CRITICAL_PATHS", "DOS_DEVICE_NAMES", "WIN_DEVICE_PREFIXES",
     "DEFAULT_ENCODING", "DEFAULT_ERRORS", "MAX_FILE_SIZE_MB",
     "CATCHALL_ENCODINGS", "MAX_DETECT_BYTES", "COMMON_ENCODINGS",
@@ -652,7 +646,7 @@ _TOOL_STYLE_IDS = (
     "tool_bash", "tool_execute_command", "tool_read_file", "tool_write_file",
     "tool_update_file", "tool_str_replace_editor", "tool_file_editor",
     "tool_subagent", "tool_subagent_opt", "tool_user_select",
-    "tool_web_search", "tool_web_fetch", "tool_rm", "tool_grep", "tool_find", "tool_glob",
+    "tool_web_search", "tool_web_fetch", "tool_rm", "tool_grep", "tool_glob",
     "cat_shell", "cat_file_read", "cat_file_write", "cat_search",
     "cat_agent", "cat_interact", "cat_delete",
     "agent_map", "agent_review", "agent_plan", "agent_execute",

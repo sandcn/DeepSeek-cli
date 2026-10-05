@@ -26,7 +26,7 @@ class RmFunc(FileSystemToolBase):
                 "name": "rm",
                 "description": (
                     "删除文件或目录。删除非空目录必须设 recursive=true。"
-                    "删除前必须先 search 全量搜索引用，确认无依赖关系。"
+                    "删除前必须先确认无引用、无依赖关系。"
                     "返回：删除结果；失败以 ( 开头。路径穿越被拒绝；沙盒可撤回。"
                 ),
                 "parameters": {

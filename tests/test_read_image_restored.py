@@ -23,7 +23,7 @@ def test_tool_registry_has_read_image():
     tools = get_tools()
     assert "read_image" in tools
     # 其余核心工具不受影响
-    for name in ("read_file", "write_file", "bash", "search", "subagent"):
+    for name in ("read_file", "write_file", "bash", "rm", "subagent"):
         assert name in tools
 
 

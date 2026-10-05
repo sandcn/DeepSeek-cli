@@ -82,10 +82,10 @@ async def _build_with_disable(ids):
 
 
 async def test_overlay_disable_single_tool():
-    kernel = await _build_with_disable(["tools::tool_ls", "tools::tool_rm"])
+    kernel = await _build_with_disable(["tools::tool_mv", "tools::tool_rm"])
     try:
         names = set(kernel.resolve_service("tools").names())
-        assert "ls" not in names
+        assert "mv" not in names
         assert "rm" not in names
         assert "read_file" in names
     finally:

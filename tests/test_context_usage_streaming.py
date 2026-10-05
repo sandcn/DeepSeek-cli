@@ -337,7 +337,7 @@ class TestToolsTokensCache:
         t1 = cm._tools_tokens()
         fp1 = cm._tools_cache_fp
         cm.tools.append({"type": "function", "function": {
-            "name": "ls", "description": "列出目录内容" + "x" * 500}})
+            "name": "read_file", "description": "读取文件内容" + "x" * 500}})
         t2 = cm._tools_tokens()
         assert cm._tools_cache_fp != fp1      # 指纹变化 → 缓存已失效重算
         assert t2 > t1                        # 新工具计入 → 增长

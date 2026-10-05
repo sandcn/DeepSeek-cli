@@ -231,38 +231,6 @@ class Func(abc.ABC):
         else:
             Func._publish_tool_text(f"  {GREEN}{success_prefix} {result}{RESET}")
 
-    # ── 显示模板方法 ──
-
-    async def _display_result_template(
-        self, header: str, extra_info: str = "",
-        error_prefixes: tuple[str, ...] = ("(",),
-    ) -> str:
-        """display() 通用模板 — ls/find/search 统一使用。
-
-        1. 用 publish_output 输出 header（及可选的 extra_info）
-        2. await self.execute()
-        3. 检查结果首行是否为错误（匹配 error_prefixes）→ 分色打印
-        4. 返回 result
-        """
-        from ..core.constants import GREEN, YELLOW, DIM, RESET
-
-        lines = [f"\n  {DIM}{header}{RESET}"]
-        if extra_info:
-            lines.append(f"  {DIM}  {extra_info}{RESET}")
-        for line in lines:
-            self._publish_tool_text(line)
-
-        result = await self.execute()
-        lines_result = result.split("\n", 1)
-        first = lines_result[0]
-
-        is_error = any(first.startswith(p) for p in error_prefixes)
-        color = YELLOW if is_error else GREEN
-        self._publish_tool_text(f"  {color}{first}{RESET}")
-        if len(lines_result) > 1 and lines_result[1]:
-            self._publish_tool_text(f"  {DIM}{lines_result[1]}{RESET}")
-        return result
-
     # ── 抽象方法 ──
 
     @abc.abstractmethod

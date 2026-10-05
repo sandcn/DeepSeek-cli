@@ -1,14 +1,14 @@
 """工具常量条目插件 — 清单中每个内置常量一条独立条目。
 
-「一切皆插件」：工具运行期常量（排除目录/文件模式、路径安全集合、编码检测
+「一切皆插件」：工具运行期常量（路径安全集合、编码检测
 常量、文件大小阈值、图片扩展名、网页移除标签等）不再硬编码在
 ``src/tools/_constants`` 等模块的字面量里，而是由清单中的独立条目声明::
 
-    - id: tool_const_executed_dirs
+    - id: tool_const_dangerous_device_files
       plugin: src.plugins.tool_const_entries:apply_tool_const
       config:
-        name: EXCLUDED_DIRS                  # 内置常量名（可被 patch/overlay 定位）
-        # value: ["node_modules", ...]        # 可选：整值覆盖
+        name: DANGEROUS_DEVICE_FILES         # 内置常量名（可被 patch/overlay 定位）
+        # value: ["/dev/null", ...]           # 可选：整值覆盖
 
 插件挂载时把该名称的内置常量注册进注册表（``value=None`` 用默认声明）；卸载时
 撤销（可逆副作用）。条目被 Patch/Overlay 禁用即不挂载，对应内置常量随之缺席

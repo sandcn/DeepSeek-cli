@@ -56,7 +56,7 @@ class UpdateFileFunc(FileToolBase):
                     "默认精确字符串匹配，old_string 必须唯一；多次出现需加上下文或用 replace_all=true。"
                     "use_regex=true 时按正则匹配，new_string 支持 \\1 反向引用。"
                     "old_string 为空 = 追加到文件末尾；new_string 为空 = 删除 old_string。"
-                    "删除代码/函数/类前必须先 search 确认无悬空引用。"
+                    "删除代码/函数/类前必须先确认无悬空引用。"
                     "返回：更新结果（成功含行数/字节数）；失败以 ( 开头。匹配失败须重读文件后重试。"
                 ),
                 "parameters": {

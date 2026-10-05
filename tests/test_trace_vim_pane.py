@@ -796,7 +796,7 @@ class TestTraceToolsViewVimPane:
             ("bash",
              {"command": {"type": "string", "description": "命令参数说明"}},
              ["command"], "执行命令 " * 300),
-            ("ls", {"path": {"type": "string"}}, [], "列目录"),
+            ("read_file", {"path": {"type": "string"}}, [], "读取文件"),
         ]
 
     def _setup(self, monkeypatch):

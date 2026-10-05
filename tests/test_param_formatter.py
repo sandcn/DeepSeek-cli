@@ -16,9 +16,9 @@ def test_extract_bash_command():
     assert extract_key_params("bash", {"command": "ls -la"}) == "ls -la"
 
 
-def test_extract_search_query_path():
+def test_extract_removed_search_tool_falls_back_to_kv():
     result = extract_key_params("search", {"query": "foo", "path": "src/"})
-    assert result == "foo src/"
+    assert result == "query=foo path=src/"
 
 
 def test_extract_mv_source_destination():
