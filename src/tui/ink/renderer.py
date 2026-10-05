@@ -945,28 +945,35 @@ class InkRenderer:
         buf_h = self._buf_h
         buf_top = max(0, buf_h - height)  # 可见区首物理行（0-based）
         prev = self._prev
-        # ★ BUG-68：doc 缩短后滚动区有内容变化（首差异行 <= buf_top，滚动区
-        #   不可达不重写 → doc 中部行永久陈旧，如 6→5→4 行序列中 'p3' 丢失）
-        #   时切换底部对齐，让 doc 内容贴可见区底部显示。仅尾部删除（首差异
-        #   行 > buf_top）保持顶部对齐（补全弹窗闪烁修复契约，
-        #   test_renderer_screen 锁定）。
+        # ★ 修复（2026-10-06 用户报障「流式输出时中间删除几行有机率渲染
+        #   错误」）：一律切**底部对齐**（``drift = buf_h - new_h``）。
+        #
+        #   原实现（BUG-68）「首差异行 > buf_top（尾部删除）保持顶部对齐
+        #   drift=0」在 ``_buf_h > new_h``（缩短/漂移等高时必然成立——物理
+        #   缓冲只增不减）时，物理行 q 显示 doc 行 q，文档末尾停在物理行
+        #   ``new_h-1``，而可见区底部是物理行 ``buf_h-1`` —— 文档末尾不贴
+        #   屏幕底部：可见区底部 ``buf_h-new_h`` 行为清空残留空行，屏幕内容
+        #   整体上移、底部留空（状态栏/输入区离开屏幕底部）。流式期间反复
+        #   缩短时漂移累积（``_buf_h`` 不随文档缩短回收）：文档逐步被挤出
+        #   可见区（``new_h <= buf_top`` 时可见区全在文档下方 → 屏幕空白）。
+        #   复现：超屏文档（76 行）+ 中间删除 1 行（parse 进度行清除）→
+        #   屏幕显示 doc[52:75]（首行滚出）+ 底部 1 空行，而非 doc 最后
+        #   24 行。
+        #
+        #   切底部对齐后物理行 q 显示 doc 行 ``q - drift``，可见区映射
+        #   ``[new_h-height, new_h)``（文档最后 height 行，不足时顶部补空行）
+        #   ——文档末尾恒贴物理缓冲末尾（屏幕底部），与「底部区（状态栏/
+        #   输入区）固定屏幕底部」契约一致；重写范围由下方逐物理行内容比较
+        #   决定（删除点之后的行内容与旧布局相同 → 不重写，仅删除点上方
+        #   可见行重写）。``first_diff`` 参数保留（既有调用/测试签名兼容）。
         if self._top_aligned:
             old_drift = 0
-            if new_h > height:
-                if first_diff is not None and first_diff <= buf_top:
-                    self._top_aligned = False
-                    drift = buf_h - new_h
-                else:
-                    drift = 0  # 保持顶部对齐（doc 仍高于屏幕）
-            else:
-                # doc 进入屏幕内 → 切换为底部对齐（完整文档可见契约）
-                self._top_aligned = False
-                drift = buf_h - new_h
+            self._top_aligned = False
         else:
             # ★ 无末尾空行模型（2026-08-15）：drift 公式去掉末尾空行 +1
             #   项（物理行号 = 文档行号，无 doc_h+1 空行）。
             old_drift = buf_h - prev_h
-            drift = buf_h - new_h
+        drift = buf_h - new_h
         # 待重写项：(物理行, 新文档行)；doc_idx==-1 表示清除残留/空行。
         rewrites: list[tuple[int, int]] = []
         for q in range(buf_top, buf_h):
