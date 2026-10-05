@@ -120,7 +120,7 @@ COMMANDS_HELP = (
     f"  {TEAL}Ctrl+G{RESET}        打开 vim 编辑 {TEAL}Ctrl+O{RESET}         编辑会话消息\n"
     f"  {TEAL}Ctrl+N{RESET}        切换模型     {TEAL}Ctrl+T{RESET}         切换主题\n"
     f"  {TEAL}Ctrl+L{RESET}        清屏         {TEAL}Ctrl+D{RESET}         退出(空输入)\n"
-    f"  {TEAL}Ctrl+B{RESET}        主Agent空模式 {TEAL}Esc{RESET}           取消输入/中断"
+    f"  {TEAL}Ctrl+B{RESET}        主Agent模式循环 {TEAL}Esc{RESET}         取消输入/中断"
 )
 
 

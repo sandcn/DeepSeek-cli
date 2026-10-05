@@ -42,12 +42,12 @@ fiber 引用**（use_ref 持有）使 ``_build_lines`` 的快照/换行布局缓
 缓存载体需统一 fiber 归属（改动面大），当前保留分离缓存并如实记录。
 
 模式行（2026-08-14）：时间戳分隔线（下分隔线）下方新增一行——行最右侧
-显示主 Agent 运行模式（Ctrl+B 切换，``src/prompt_builder.builder`` 的
-``is_empty_mode()``）：「空模式」（金色 178 强调——特殊状态醒目）/
-「标准模式」（暗灰 dim——常规状态零打扰）。左侧无分隔线填充（用户反馈
-要求仅最右侧显示）。模式状态同时作为 ``_build_lines`` snap_key 与
-InputArea ``_input_snap_key``（use_memo deps）字段——Ctrl+B 切换后即时
-重建模式行（无需额外同步链路）。
+显示主 Agent 运行模式（Ctrl+B 循环切换，``src/prompt_builder.builder`` 的
+``get_mode()``）：「空模式」（金色 178 强调——特殊状态醒目）/「简单模式」
+（亮青 45——介于空/标准之间）/「标准模式」（暗灰 dim——常规状态零打扰）。
+左侧无分隔线填充（用户反馈要求仅最右侧显示）。模式状态同时作为
+``_build_lines`` snap_key 与 InputArea ``_input_snap_key``（use_memo deps）
+字段——Ctrl+B 切换后即时重建模式行（无需额外同步链路）。
 """
 
 from __future__ import annotations
@@ -122,12 +122,43 @@ _S_CPU = Style(fg=45)
 _S_MEM = Style(fg=214)
 
 # ── 主 Agent 运行模式行（时间戳分隔线下方，2026-08-14） ──────────
-#: 空模式显示文本（Ctrl+B 切换；系统提词替换为 prompts_export_main_empty.md）
+#: 空模式显示文本（Ctrl+B 循环切换；系统提词 prompts_export_main_empty.md）
 _MODE_EMPTY_TEXT = "空模式"
-#: 标准模式显示文本（完整规则集）
+#: 简单模式显示文本（系统提词 prompts_export_main_simple.md）
+_MODE_SIMPLE_TEXT = "简单模式"
+#: 标准模式显示文本（系统提词 prompts_export_main.md，完整规则集）
 _MODE_STANDARD_TEXT = "标准模式"
 #: 空模式文本强调色（金色 178——特殊状态醒目，与解析阶段标签同色系）
 _S_MODE_EMPTY = Style(fg=178)
+#: 简单模式文本强调色（亮青 45——介于空/标准之间，与 accent 同色系）
+_S_MODE_SIMPLE = Style(fg=45)
+#: 模式 → 显示文本（三态：empty / simple / standard）
+_MODE_TEXTS = {
+    "empty": _MODE_EMPTY_TEXT,
+    "simple": _MODE_SIMPLE_TEXT,
+    "standard": _MODE_STANDARD_TEXT,
+}
+#: 模式 → 文本样式（empty 金色 / simple 亮青 / standard 暗灰）
+_MODE_STYLES = {
+    "empty": _S_MODE_EMPTY,
+    "simple": _S_MODE_SIMPLE,
+    "standard": _S_DIM,
+}
+
+
+def _normalize_mode(mode) -> str:
+    """归一化模式参数（兼容 bool 旧调用）：True→空模式，False→标准模式。
+
+    支持字符串 ``"empty"`` / ``"simple"`` / ``"standard"``；未知值回退
+    标准模式（与旧 ``empty_mode=False`` 语义一致，不中断渲染）。
+    """
+    if mode is True:
+        return "empty"
+    if mode is False:
+        return "standard"
+    if isinstance(mode, str) and mode in _MODE_TEXTS:
+        return mode
+    return "standard"
 
 
 def _build_bg_task_prefix(ctx_percent: "float | None",
@@ -167,14 +198,16 @@ def _build_bg_task_prefix(ctx_percent: "float | None",
     return line
 
 
-def _build_mode_line(width: int, empty_mode: bool,
+def _build_mode_line(width: int, mode,
                      ctx_percent: "float | None" = None,
                      bash_count: int = 0, subagent_count: int = 0) -> Line:
     """构建主 Agent 运行模式行（时间戳分隔线下方，行首信息 + 最右模式）。
 
-    Ctrl+B 切换空模式（``src/prompt_builder.builder.is_empty_mode()``）：
-      - 空模式（True）：显示「空模式」（金色 178 强调——特殊状态醒目）；
-      - 标准模式（False）：显示「标准模式」（暗灰 dim——常规状态零打扰）。
+    Ctrl+B 循环切换三态模式（``src/prompt_builder.builder.get_mode()``）：
+      - 空模式（empty）：显示「空模式」（金色 178 强调——特殊状态醒目）；
+      - 简单模式（simple）：显示「简单模式」（亮青 45——介于空/标准之间）；
+      - 标准模式（standard）：显示「标准模式」（暗灰 dim——常规状态零打扰）。
+    ★ 兼容 bool 旧调用：``True`` 等价空模式、``False`` 等价标准模式。
     ★ 行首（2026-08-19 用户需求）：主 Agent 上下文使用百分比 + 后台任务
     信息自状态栏迁至本行行首——``main · 45.3% · bash · 1 · subagent · 1``
     （上下文不可用 / bash / subagent 各自没有就不显示对应段；全部不可用
@@ -188,7 +221,8 @@ def _build_mode_line(width: int, empty_mode: bool,
 
     Args:
         width: 行总宽（终端列宽）。
-        empty_mode: 是否处于主 Agent 空模式（True=空模式）。
+        mode: 主 Agent 运行模式（``"empty"`` / ``"simple"`` / ``"standard"``；
+            兼容 bool：``True``=空模式、``False``=标准模式）。
         ctx_percent: 主 Agent 上下文使用百分比（0-100；None=不可用不显示）。
         bash_count: 后台 bash 任务数（>0 时行首显示 bash · N）。
         subagent_count: 后台 subagent 任务数（>0 时行首显示 subagent · N）。
@@ -196,8 +230,9 @@ def _build_mode_line(width: int, empty_mode: bool,
     Returns:
         模式行（Line，行宽 = width；行首信息 + 右侧模式文本）。
     """
-    text = _MODE_EMPTY_TEXT if empty_mode else _MODE_STANDARD_TEXT
-    style = _S_MODE_EMPTY if empty_mode else _S_DIM
+    mode_key = _normalize_mode(mode)
+    text = _MODE_TEXTS[mode_key]
+    style = _MODE_STYLES[mode_key]
     line = Line()
     # 行首信息前缀（main · N% · bash · N · subagent · N；全部不可用为空）
     prefix = _build_bg_task_prefix(ctx_percent, bash_count, subagent_count)
@@ -340,14 +375,14 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
         )
     else:
         search_snap = (False, "", 0, 0, -1)
-    # ★ 主 Agent 运行模式（Ctrl+B 切换，2026-08-14）：模式状态进快照缓存
+    # ★ 主 Agent 运行模式（Ctrl+B 循环切换，2026-08-14）：模式状态进快照缓存
     #   键——切换后 snap_key 变化 → 模式行重建（无需额外同步链路）。读取
-    #   失败回退标准模式（False，不崩溃）；开销为单次模块布尔读取。
+    #   失败回退标准模式（不崩溃）；开销为单次模块字符串读取。
     try:
-        from src.prompt_builder.builder import is_empty_mode
-        empty_mode = is_empty_mode()
+        from src.prompt_builder.builder import get_mode
+        mode = get_mode()
     except Exception:
-        empty_mode = False
+        mode = "standard"
     snap_key = (
         include_popup,  # ★ 标准组件化：弹窗行存在性须进缓存键（InputArea
         #   用 include_popup=False 时不命中全量缓存；置于首部保持 time_bucket
@@ -362,7 +397,7 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
         _safe_int_prop(props.get("cpu", 0)),
         _safe_int_prop(props.get("mem", 0)),
         status_active,
-        empty_mode,  # ★ 主 Agent 运行模式（Ctrl+B 切换即时刷新模式行）
+        mode,  # ★ 主 Agent 运行模式（Ctrl+B 循环切换即时刷新模式行）
         # ★ 后台任务计数（bash/subagent 分列）——变化时模式行行首即时刷新
         #   （app.py 经 model.status 传入 props）。
         bash_count,
@@ -538,7 +573,7 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
     #   分列，没有就不显示）；计数与上下文百分比已进 snap_key
     #   （bash_count/subagent_count/ctx_percent），任务注册/完成/移除、
     #   上下文缓存同步后模式行行首即时刷新。
-    lines.append(_build_mode_line(width, empty_mode, ctx_percent, bash_count, subagent_count))
+    lines.append(_build_mode_line(width, mode, ctx_percent, bash_count, subagent_count))
 
     # ★ 快照缓存写回（方向4）：未命中重建后更新缓存（同快照下次命中）
     fiber._lines_cache = (snap_key, lines)
@@ -852,14 +887,14 @@ def _input_snap_key(props: dict, width: int, now: float, fading: bool = False):
     max_input = max(1, width - wcswidth_simple(_prompt_of(props)))
     # history_search 一次提取（多处字段共享）
     search = props.get("history_search")
-    # ★ 主 Agent 运行模式（Ctrl+B 切换，2026-08-14）：进 use_memo deps——
+    # ★ 主 Agent 运行模式（Ctrl+B 循环切换，2026-08-14）：进 use_memo deps——
     #   模式切换后 InputArea 重建（_build_lines snap_key 已含模式，双保险
-    #   即时刷新）。单次模块布尔读取，开销可忽略。
+    #   即时刷新）。单次模块字符串读取，开销可忽略。
     try:
-        from src.prompt_builder.builder import is_empty_mode
-        empty_mode_flag = is_empty_mode()
+        from src.prompt_builder.builder import get_mode
+        mode_flag = get_mode()
     except Exception:
-        empty_mode_flag = False
+        mode_flag = "standard"
     # ★ 后台任务计数（2026-08-19 用户需求：模式行行首显示）——进 use_memo
     #   deps：任务注册/完成/移除（app.py 更新 model.status 后 props 变化）
     #   → InputArea 重建 → 模式行行首即时刷新。归一化防御（异常值回退 0）。
@@ -902,7 +937,7 @@ def _input_snap_key(props: dict, width: int, now: float, fading: bool = False):
         _safe_int_prop(props.get("cpu", 0)),
         _safe_int_prop(props.get("mem", 0)),
         status_active,
-        empty_mode_flag,  # ★ 主 Agent 运行模式（Ctrl+B 切换即时刷新）
+        mode_flag,  # ★ 主 Agent 运行模式（Ctrl+B 循环切换即时刷新）
         # ★ 后台任务计数（bash/subagent 分列）——模式行行首显示即时刷新
         bash_count,
         subagent_count,
@@ -931,6 +966,8 @@ __all__ = [
     "_compute_input_layout",
     "_cursor_visual_from_layout",
     "_MODE_EMPTY_TEXT",
+    "_MODE_SIMPLE_TEXT",
     "_MODE_STANDARD_TEXT",
     "_S_MODE_EMPTY",
+    "_S_MODE_SIMPLE",
 ]

@@ -673,7 +673,8 @@ class Input:
 
         action 取值（当前分发）：``vim``（Ctrl+G）/ ``editmsg``（Ctrl+O）/
         ``retry``（Ctrl+R，反向搜索禁用时）/ ``toggle_theme``（Ctrl+T）/
-        ``switch_model``（Ctrl+N）/ ``empty_mode``（Ctrl+B）。
+        ``switch_model``（Ctrl+N）/ ``cycle_mode``（Ctrl+B，主 Agent 运行模式
+        循环切换：空模式 → 简单模式 → 标准模式 → 空模式）。
         """
         self._dispatcher.set_special_key_callback(cb)
 

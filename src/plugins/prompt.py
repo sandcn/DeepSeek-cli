@@ -41,15 +41,50 @@ class PromptService(Service):
 
         return build_environment_info()
 
+    def get_mode(self) -> str:
+        from ..prompt_builder.builder import get_mode
+
+        return get_mode()
+
+    def set_mode(self, mode: str) -> str:
+        from ..prompt_builder.builder import set_mode
+
+        return set_mode(mode)
+
+    def cycle_mode(self) -> str:
+        from ..prompt_builder.builder import cycle_mode
+
+        return cycle_mode()
+
+    def mode_label(self, mode: str | None = None) -> str:
+        from ..prompt_builder.builder import mode_label
+
+        return mode_label(mode)
+
     def is_empty_mode(self) -> bool:
         from ..prompt_builder.builder import is_empty_mode
 
         return is_empty_mode()
 
+    def is_simple_mode(self) -> bool:
+        from ..prompt_builder.builder import is_simple_mode
+
+        return is_simple_mode()
+
+    def is_standard_mode(self) -> bool:
+        from ..prompt_builder.builder import is_standard_mode
+
+        return is_standard_mode()
+
     def set_empty_mode(self, enabled: bool) -> None:
         from ..prompt_builder.builder import set_empty_mode
 
         set_empty_mode(enabled)
+
+    def set_simple_mode(self, enabled: bool = True) -> None:
+        from ..prompt_builder.builder import set_simple_mode
+
+        set_simple_mode(enabled)
 
     def toggle_empty_mode(self) -> bool:
         from ..prompt_builder.builder import toggle_empty_mode

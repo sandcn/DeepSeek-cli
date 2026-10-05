@@ -202,10 +202,10 @@ class Agent(BaseAgent):
         return _build()
 
     def rebuild_system_prompt(self) -> None:
-        """按当前空模式重建系统提示词消息（保留非 system 消息）。
+        """按当前运行模式重建系统提示词消息（保留非 system 消息）。
 
-        供 Ctrl+M 切换主 agent 空模式时调用——替换 system 消息为最新
-        ``build_system_prompt()`` 结果（空/完整），保留用户/助手历史。
+        供 Ctrl+B 循环切换主 agent 运行模式（空/简单/标准）时调用——替换
+        system 消息为最新 ``build_system_prompt()`` 结果，保留用户/助手历史。
         """
         parts = self.build_system_prompt()
         system_msgs = [{"role": "system", "content": part} for part in parts]
@@ -215,7 +215,7 @@ class Agent(BaseAgent):
         #   若重新绑定 self.messages 会与 ContextManager 脱节（百分比统计旧列表）。
         self.messages[:] = system_msgs + non_system
         # ★ 系统提词变化后刷新上下文使用率（TUI 模式行行首动态刷新）。
-        #   force=True：Ctrl+B 空模式切换时 system 消息**条数**可能不变、
+        #   force=True：Ctrl+B 模式切换时 system 消息**条数**可能不变、
         #   仅内容替换——懒同步（len 判断）会命中旧缓存，百分比不更新；
         #   强制 resync 重算（低频，O(n) 可接受）。
         cm = getattr(self, "context_manager", None)

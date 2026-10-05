@@ -300,7 +300,7 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | `Ctrl+T` | 循环切换配色主题（dark/light/high-contrast） |
 | `Ctrl+L` | 清屏 |
 | `Ctrl+D` | 退出程序（输入为空时） |
-| `Ctrl+B` | 主 Agent 空模式切换 |
+| `Ctrl+B` | 主 Agent 运行模式循环切换（空模式 → 简单模式 → 标准模式 → 空模式） |
 | `Ctrl+C`（首次） | 中断当前 AI 回复 |
 | `Ctrl+C`（再次） | 强制退出程序 |
 | `Tab` | 自动补全（命令名、会话 ID 等） |
@@ -609,8 +609,9 @@ ChatUIConsumer
 ```
 ├── chat.py                # 入口脚本（asyncio.run(main())）
 ├── pyproject.toml         # 项目配置与依赖
-├── prompts/               # 系统提示词（6 个文件）
-│   ├── prompts_export_main.md    # 主 Agent 系统提示词
+├── prompts/               # 系统提示词（7 个文件）
+│   ├── prompts_export_main.md    # 主 Agent 系统提示词（标准模式）
+│   ├── prompts_export_main_simple.md  # 主 Agent 系统提示词（简单模式）
 │   ├── prompts_export_main_empty.md  # 主 Agent 系统提示词（精简/空版本）
 │   ├── prompts_export_map.md     # map SubAgent 探底提示词
 │   ├── prompts_export_plan.md    # plan SubAgent 计划提示词

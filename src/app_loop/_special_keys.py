@@ -16,8 +16,9 @@ def make_special_key_callback(loop, session, state, chat_ui, monitor=None):
     - 'vim'：启动 vim 编辑器编辑文本
     - 'editmsg'：返回 '/editmsg' 命令
     - 'switch_model'：循环切换模型
-    - 'empty_mode'：Ctrl+B 切换主 agent 空模式（系统提词替换为
-      prompts_export_main_empty.md，重建 agent 系统消息）
+    - 'cycle_mode'：Ctrl+B 循环切换主 agent 运行模式（空模式 → 简单模式
+      → 标准模式 → 空模式，系统提词对应替换为 prompts_export_main_empty.md /
+      prompts_export_main_simple.md / prompts_export_main.md，重建 agent 系统消息）
 
     monitor: EscapeMonitor 实例，用于 vim 路径中的终端模式切换。
              在单线程模型中，回调在 render 线程执行，不能调用
@@ -126,12 +127,15 @@ def make_special_key_callback(loop, session, state, chat_ui, monitor=None):
                 chat_ui.bottom_bar.set_model_name(next_model)
                 chat_ui.on_notification(f"+ 已切换到 {next_model}")
             return text
-        elif action == 'empty_mode':
-            # Ctrl+B → 切换主 agent 空模式：系统提词替换为
-            # prompts_export_main_empty.md（builder 层标志 + agent 消息重建）
+        elif action in ('cycle_mode', 'empty_mode'):
+            # Ctrl+B → 循环切换主 agent 运行模式（空→简单→标准→空）：
+            # 系统提词按当前模式替换为 prompts_export_main_empty/simple/main.md
+            # （builder 层模式状态 + agent 消息重建）。
+            # 保留 'empty_mode' 旧 action 名作为兼容别名。
             try:
-                from ..prompt_builder.builder import toggle_empty_mode
-                empty = toggle_empty_mode()
+                from ..prompt_builder.builder import cycle_mode, mode_label
+                mode = cycle_mode()
+                label = mode_label(mode)
                 agent = getattr(session, '_agent', None) or getattr(session, 'agent', None)
                 if agent is not None and hasattr(agent, 'rebuild_system_prompt'):
                     try:
@@ -139,11 +143,9 @@ def make_special_key_callback(loop, session, state, chat_ui, monitor=None):
                     except Exception:
                         _logger.debug("rebuild_system_prompt 异常", exc_info=True)
                 if chat_ui is not None:
-                    chat_ui.on_notification(
-                        f"+ 主 Agent 已{'进入' if empty else '退出'}空模式"
-                    )
+                    chat_ui.on_notification(f"+ 主 Agent 已切换到{label}")
             except Exception:
-                _logger.debug("empty_mode 切换异常", exc_info=True)
+                _logger.debug("cycle_mode 切换异常", exc_info=True)
             return text
         return None
 

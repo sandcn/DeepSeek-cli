@@ -31,28 +31,99 @@ from .vcs_info import _build_vcs_info
 # ── Prompts 目录路径 ────────────────────────────────────────
 _PROMPTS_DIR: str | None = None
 
-# ── 主 agent 空模式（Ctrl+B 切换，默认开启） ─────────────────
-# True 时 build_system_prompt 加载 prompts_export_main_empty.md
-# （仅基础安全/通用规范，无完整规则集）。默认 True：启动即进入空模式。
+# ── 主 agent 运行模式（Ctrl+B 循环切换，默认空模式） ─────────
+# 三态（规则量递增）：空模式 → 简单模式 → 标准模式 → 空模式。
+#   empty    : prompts_export_main_empty.md（仅基础安全/通用规范）
+#   simple   : prompts_export_main_simple.md（基础规范 + 少量工具/验证规则）
+#   standard : prompts_export_main.md（完整规则集）
+# 默认 empty：启动即进入空模式。
+_MODE_EMPTY = "empty"
+_MODE_SIMPLE = "simple"
+_MODE_STANDARD = "standard"
+#: Ctrl+B 循环顺序（规则量递增）
+_MODE_CYCLE = (_MODE_EMPTY, _MODE_SIMPLE, _MODE_STANDARD)
+#: 模式 → 系统提词文件（不含 .md 后缀）
+_MODE_EXPORT = {
+    _MODE_EMPTY: "prompts_export_main_empty",
+    _MODE_SIMPLE: "prompts_export_main_simple",
+    _MODE_STANDARD: "prompts_export_main",
+}
+#: 模式 → 显示名（模式行 / 切换通知）
+_MODE_LABELS = {
+    _MODE_EMPTY: "空模式",
+    _MODE_SIMPLE: "简单模式",
+    _MODE_STANDARD: "标准模式",
+}
+#: 当前模式（真源）
+_MODE: str = _MODE_EMPTY
+#: 兼容旧布尔标志：与 _MODE 同步（True=空模式）
 _EMPTY_MODE: bool = True
+
+
+def _apply_mode(mode: str) -> str:
+    """内部：设置模式真源并同步旧布尔标志，返回生效模式。"""
+    global _MODE, _EMPTY_MODE
+    _MODE = mode
+    _EMPTY_MODE = (mode == _MODE_EMPTY)
+    return _MODE
+
+
+def get_mode() -> str:
+    """当前主 agent 运行模式（``empty`` / ``simple`` / ``standard``）。"""
+    return _MODE
+
+
+def set_mode(mode: str) -> str:
+    """设置主 agent 运行模式（非法值回退空模式），返回生效模式。"""
+    if mode not in _MODE_EXPORT:
+        mode = _MODE_EMPTY
+    return _apply_mode(mode)
+
+
+def cycle_mode() -> str:
+    """按 ``_MODE_CYCLE`` 顺序循环切换到下一模式，返回新模式。"""
+    try:
+        idx = _MODE_CYCLE.index(_MODE)
+    except ValueError:
+        idx = -1
+    return _apply_mode(_MODE_CYCLE[(idx + 1) % len(_MODE_CYCLE)])
+
+
+def mode_label(mode: str | None = None) -> str:
+    """模式显示名（默认当前模式）；未知模式回退空模式显示名。"""
+    key = _MODE if mode is None else mode
+    return _MODE_LABELS.get(key, _MODE_LABELS[_MODE_EMPTY])
 
 
 def is_empty_mode() -> bool:
     """是否处于主 agent 空模式。"""
-    return _EMPTY_MODE
+    return _MODE == _MODE_EMPTY
+
+
+def is_simple_mode() -> bool:
+    """是否处于主 agent 简单模式。"""
+    return _MODE == _MODE_SIMPLE
+
+
+def is_standard_mode() -> bool:
+    """是否处于主 agent 标准模式。"""
+    return _MODE == _MODE_STANDARD
 
 
 def toggle_empty_mode() -> bool:
-    """切换主 agent 空模式，返回新状态（True=空模式）。"""
-    global _EMPTY_MODE
-    _EMPTY_MODE = not _EMPTY_MODE
-    return _EMPTY_MODE
+    """空 ↔ 标准 二态切换（兼容旧 API），返回新状态（True=空模式）。"""
+    _apply_mode(_MODE_STANDARD if _MODE == _MODE_EMPTY else _MODE_EMPTY)
+    return is_empty_mode()
 
 
 def set_empty_mode(enabled: bool) -> None:
-    """设置主 agent 空模式（测试用）。"""
-    global _EMPTY_MODE
-    _EMPTY_MODE = bool(enabled)
+    """设置空/标准二态（兼容旧 API）：True=空模式，False=标准模式。"""
+    _apply_mode(_MODE_EMPTY if enabled else _MODE_STANDARD)
+
+
+def set_simple_mode(enabled: bool = True) -> None:
+    """设置简单模式（测试/外部 API）：True=简单模式，False=标准模式。"""
+    _apply_mode(_MODE_SIMPLE if enabled else _MODE_STANDARD)
 
 
 def _get_prompts_dir() -> str:
@@ -329,13 +400,15 @@ def build_system_prompt(
 ) -> list[str]:
     """构建主代理系统提示词。
 
-    从 prompts_export_main.md 加载静态规则，追加运行时动态信息。
-    空模式默认开启（``is_empty_mode()``，Ctrl+B 切换）：默认加载
-    prompts_export_main_empty.md。
+    按当前运行模式（``get_mode()``）加载对应静态规则文件：
+      - ``empty``    → prompts_export_main_empty.md（默认）
+      - ``simple``   → prompts_export_main_simple.md
+      - ``standard`` → prompts_export_main.md
+    Ctrl+B 循环切换（空模式 → 简单模式 → 标准模式 → 空模式）。
     环境信息之后注入技能章节（构建时一次；技能变更后经
     ``rebuild_system_prompt()`` 重建）。
     """
-    export_name = "prompts_export_main_empty" if _EMPTY_MODE else "prompts_export_main"
+    export_name = _MODE_EXPORT.get(_MODE, _MODE_EXPORT[_MODE_EMPTY])
     return _build_prompt("main", export_name, _FALLBACK_MAIN_PROMPT, include_version_control, cwd, include_skills=True)
 
 
@@ -348,7 +421,14 @@ __all__ = [
     "build_plan_agent_system_prompt",
     "build_execute_agent_system_prompt",
     "reset_prompts_cache",
+    "get_mode",
+    "set_mode",
+    "cycle_mode",
+    "mode_label",
     "is_empty_mode",
+    "is_simple_mode",
+    "is_standard_mode",
     "toggle_empty_mode",
     "set_empty_mode",
+    "set_simple_mode",
 ]

@@ -290,8 +290,8 @@ class InputDispatcher:
                 self._sync_reverse_search()
             else:
                 self._buffer_editor._up()
-        elif ch == '\x02':        # Ctrl+B → 主 agent 空模式切换
-            self._handle_special_key('empty_mode')
+        elif ch == '\x02':        # Ctrl+B → 主 agent 运行模式循环切换（空→简单→标准）
+            self._handle_special_key('cycle_mode')
         # else：未知 ctrl_key → no-op
 
     def _handle_clear_screen(self) -> None:
@@ -377,7 +377,7 @@ class InputDispatcher:
                 self._buffer_editor.set_buffer(result)
             else:
                 # P2（2026-08-07）：非 editmsg/retry action（vim/switch_model/
-                # toggle_theme/empty_mode）不清空未消费排队输入——用户 Enter
+                # toggle_theme/cycle_mode）不清空未消费排队输入——用户 Enter
                 # 提交后、编排器消费前触发此类 action，reset 清空
                 # _submitted_text/_input_ready 会丢弃首次提交文本。
                 self.reset(clear_queue=False)

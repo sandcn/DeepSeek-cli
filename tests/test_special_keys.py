@@ -6,7 +6,7 @@
   - switch_model：模型列表来源（config.MODELS / defaults.PROVIDERS）、
     循环切换、provider 同步、无模型/无当前模型兜底
   - toggle_theme：主题循环（CommandUiAdapter mock）
-  - empty_mode：toggle_empty_mode + agent 重建 + 通知
+  - cycle_mode：cycle_mode + agent 重建 + 通知（'empty_mode' 旧名为兼容别名）
 
 注：目标函数内部使用惰性 ``from X import Y``，测试直接 patch 真实
 依赖模块路径（src.config / src.core.commands._model_cmd / ...）。
@@ -292,12 +292,15 @@ def test_toggle_theme_exception_silent(ctx, monkeypatch):
     assert cb("toggle_theme", "text") == "text"  # 异常被吞，返回原文本
 
 
-# ── empty_mode ───────────────────────────────────────────
+# ── cycle_mode ───────────────────────────────────────────
 
-def test_empty_mode_toggles(ctx, monkeypatch):
+def test_cycle_mode_switches(ctx, monkeypatch):
     cb, _, session, chat_ui, _ = ctx
     monkeypatch.setattr(
-        "src.prompt_builder.builder.toggle_empty_mode", lambda: True,
+        "src.prompt_builder.builder.cycle_mode", lambda: "simple",
+    )
+    monkeypatch.setattr(
+        "src.prompt_builder.builder.mode_label", lambda mode=None: "简单模式",
     )
 
     class _FakeAgent:
@@ -309,16 +312,32 @@ def test_empty_mode_toggles(ctx, monkeypatch):
 
     agent = _FakeAgent()
     session._agent = agent
-    result = cb("empty_mode", "t")
+    result = cb("cycle_mode", "t")
     assert result == "t"
     assert agent.rebuilt == 1
-    assert chat_ui.notifications and "进入" in chat_ui.notifications[-1]
+    assert chat_ui.notifications and "简单模式" in chat_ui.notifications[-1]
 
 
-def test_empty_mode_agent_rebuild_exception_silent(ctx, monkeypatch):
+def test_cycle_mode_legacy_empty_action_alias(ctx, monkeypatch):
+    """'empty_mode' 旧 action 名作为兼容别名走同一循环逻辑。"""
     cb, _, session, chat_ui, _ = ctx
     monkeypatch.setattr(
-        "src.prompt_builder.builder.toggle_empty_mode", lambda: False,
+        "src.prompt_builder.builder.cycle_mode", lambda: "empty",
+    )
+    monkeypatch.setattr(
+        "src.prompt_builder.builder.mode_label", lambda mode=None: "空模式",
+    )
+    assert cb("empty_mode", "t") == "t"
+    assert chat_ui.notifications and "空模式" in chat_ui.notifications[-1]
+
+
+def test_cycle_mode_agent_rebuild_exception_silent(ctx, monkeypatch):
+    cb, _, session, chat_ui, _ = ctx
+    monkeypatch.setattr(
+        "src.prompt_builder.builder.cycle_mode", lambda: "standard",
+    )
+    monkeypatch.setattr(
+        "src.prompt_builder.builder.mode_label", lambda mode=None: "标准模式",
     )
 
     class _FakeAgent:
@@ -326,5 +345,5 @@ def test_empty_mode_agent_rebuild_exception_silent(ctx, monkeypatch):
             raise RuntimeError("rebuild failed")
 
     session._agent = _FakeAgent()
-    assert cb("empty_mode", "t") == "t"
-    assert chat_ui.notifications and "退出" in chat_ui.notifications[-1]
+    assert cb("cycle_mode", "t") == "t"
+    assert chat_ui.notifications and "标准模式" in chat_ui.notifications[-1]
