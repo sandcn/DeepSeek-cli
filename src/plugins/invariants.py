@@ -709,10 +709,64 @@ def _escape_monitor_readable(kernel) -> str | None:
     return None
 
 
+def _tool_metadata_readable(kernel) -> str | None:
+    """工具元数据注册表必须可读，且生效项覆盖全部内置工具。"""
+    if not kernel.has_service("tool_metadata"):
+        return None
+    try:
+        from ..tools.metadata_registry import builtin_tool_names
+
+        service = kernel.resolve_service("tool_metadata")
+        names = set(service.active())
+        missing = sorted(set(builtin_tool_names()) - names)
+        if missing:
+            return f"ctx.tool_metadata 缺少内置工具元数据: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"工具元数据注册表读取失败: {exc}"
+    return None
+
+
+def _tool_consts_readable(kernel) -> str | None:
+    """工具常量注册表必须可读，且生效项覆盖全部内置常量。"""
+    if not kernel.has_service("tool_consts"):
+        return None
+    try:
+        from ..tools.const_registry import builtin_constant_names
+
+        service = kernel.resolve_service("tool_consts")
+        names = set(service.active())
+        missing = sorted(set(builtin_constant_names()) - names)
+        if missing:
+            return f"ctx.tool_consts 缺少内置常量: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"工具常量注册表读取失败: {exc}"
+    return None
+
+
+def _event_types_readable(kernel) -> str | None:
+    """事件类型注册表必须可读，且生效项覆盖全部内置事件类型。"""
+    if not kernel.has_service("event_types"):
+        return None
+    try:
+        from ..core.events.type_registry import builtin_composite_ids
+
+        service = kernel.resolve_service("event_types")
+        names = set(service.active())
+        missing = sorted(set(builtin_composite_ids()) - names)
+        if missing:
+            return f"ctx.event_types 缺少内置事件类型: {missing}"
+    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
+        return f"事件类型注册表读取失败: {exc}"
+    return None
+
+
 _BUILTIN_CHECKS = (
     ("services.keys_valid", _service_keys_valid),
     ("fibers.active_have_deps", _fibers_active_have_deps),
     ("tools.registry_consistent", _tools_registry_consistent),
+    ("tool_metadata.readable", _tool_metadata_readable),
+    ("tool_consts.readable", _tool_consts_readable),
+    ("event_types.readable", _event_types_readable),
     ("agent_loop.dependencies", _agent_loop_dependencies),
     ("presets.has_standard", _presets_have_standard),
     ("agents.messages_recorded", _agents_messages_recorded),

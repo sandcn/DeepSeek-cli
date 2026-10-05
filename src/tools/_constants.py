@@ -1,10 +1,17 @@
 """Tools 共享常量 — 集中管理排除目录、安全路径、异常类等跨工具常量
 
 消除 search.py / find.py / file_ops.py 等文件之间的 DRY 违反。
+
+「一切皆插件」：内置常量在本模块以字面量声明，并登记到 ``const_registry``
+（``src.plugins.tool_const_entries`` 的独立条目）；消费方经本模块的访问器
+（``excluded_dirs`` / ``catchall_encodings`` / ``const`` 等）实时查询，可按
+Profile/Patch/Overlay 覆盖或禁用。模块级同名常量保留为向后兼容快照。
 """
 
 import fnmatch
 import re
+
+from .const_registry import const, declare_constants  # noqa: F401  （const 供本模块访问器使用）
 
 # ── 默认排除的非源码目录（用于 search / find 等搜索工具） ──
 # 注意：修改此集合会同时影响 search, find 及所有引用它的工具
@@ -23,30 +30,6 @@ EXCLUDED_DIRS: set[str] = {
     ".coverage", "htmlcov",
 }
 
-# ── 预编译的通配符目录排除模式（供 should_exclude_dir 使用） ──
-_EXCLUDED_DIR_PATTERNS: tuple[str, ...] = tuple(
-    d for d in EXCLUDED_DIRS if any(c in d for c in "*?[]")
-)
-_EXCLUDED_DIR_RES: tuple[re.Pattern, ...] = tuple(
-    re.compile(fnmatch.translate(p)) for p in _EXCLUDED_DIR_PATTERNS
-)
-
-
-def should_exclude_dir(dirname: str) -> bool:
-    """判断目录名是否应被排除
-
-    分两阶段匹配：
-    1. set 精确查找（不含通配符的模式，O(1) 性能）
-    2. 预编译 regex 模式匹配（含通配符的模式，如 *.egg-info）
-    """
-    if dirname in EXCLUDED_DIRS:
-        return True
-    for compiled_re in _EXCLUDED_DIR_RES:
-        if compiled_re.match(dirname):
-            return True
-    return False
-
-
 # ── 默认排除的编译产物/二进制文件扩展名（用于 search 搜索工具） ──
 # 新增排除模式时在此集合添加即可，自动传播到三路引擎（rg/grep/Python）
 # 注意：与 EXCLUDED_DIRS 职责分离——此集合仅管理文件模式，EXCLUDED_DIRS 仅管理目录
@@ -54,20 +37,6 @@ def should_exclude_dir(dirname: str) -> bool:
 EXCLUDED_FILE_PATTERNS: set[str] = {
     "*.o", "*.d", "*.exe", "*.dll", "*.so", "*.a",
 }
-
-# ── 用于 rg 的 --glob !<pattern> 排除模式 ──
-RG_EXCLUDE_GLOBS: tuple[str, ...] = tuple(EXCLUDED_DIRS | EXCLUDED_FILE_PATTERNS)
-
-# ── 用于 grep 的 --exclude-dir 排除（目录名/目录 glob） ──
-# ★ 修复（review 方向）：*.egg-info 等目录 glob 此前被并入
-#   GREP_EXCLUDE_FILES（--exclude 仅匹配文件名）——grep 不会剪枝
-#   .egg-info 目录，反而误排除「名为 x.egg-info 的文件」。GNU/BSD
-#   grep 的 --exclude-dir 支持 glob 目录名（老 grep 字面处理时降级为
-#   无剪枝，无害）；全部目录模式保留在此处。
-GREP_EXCLUDE_DIRS: tuple[str, ...] = tuple(EXCLUDED_DIRS)
-
-# ── 用于 grep 的 --exclude 排除（仅文件通配符模式） ──
-GREP_EXCLUDE_FILES: tuple[str, ...] = tuple(EXCLUDED_FILE_PATTERNS)
 
 # ── 路径安全常量（用于 file_ops / file_base / cp / mv / rm 等） ──
 
@@ -146,11 +115,145 @@ ENCODING_ALIASES: dict[str, str] = {
 
 LARGE_FILE_THRESHOLD = 10 * 1024 * 1024  # 10MB
 
+# ── 内置声明登记（清单条目按名称覆盖/禁用） ──────────────
+
+declare_constants({
+    "EXCLUDED_DIRS": EXCLUDED_DIRS,
+    "EXCLUDED_FILE_PATTERNS": EXCLUDED_FILE_PATTERNS,
+    "DANGEROUS_DEVICE_FILES": DANGEROUS_DEVICE_FILES,
+    "SYSTEM_CRITICAL_PATHS": SYSTEM_CRITICAL_PATHS,
+    "DOS_DEVICE_NAMES": DOS_DEVICE_NAMES,
+    "WIN_DEVICE_PREFIXES": WIN_DEVICE_PREFIXES,
+    "DEFAULT_ENCODING": DEFAULT_ENCODING,
+    "DEFAULT_ERRORS": DEFAULT_ERRORS,
+    "MAX_FILE_SIZE_MB": MAX_FILE_SIZE_MB,
+    "CATCHALL_ENCODINGS": CATCHALL_ENCODINGS,
+    "MAX_DETECT_BYTES": MAX_DETECT_BYTES,
+    "COMMON_ENCODINGS": COMMON_ENCODINGS,
+    "FALLBACK_ENCODINGS": FALLBACK_ENCODINGS,
+    "BOM_MARKERS": BOM_MARKERS,
+    "ENCODING_ALIASES": ENCODING_ALIASES,
+    "LARGE_FILE_THRESHOLD": LARGE_FILE_THRESHOLD,
+})
+
+
+# ── 访问器（实时查询注册表当前生效值） ──────────────────
+
+
+def excluded_dirs() -> set:
+    return set(const("EXCLUDED_DIRS", set()))
+
+
+def excluded_file_patterns() -> set:
+    return set(const("EXCLUDED_FILE_PATTERNS", set()))
+
+
+def rg_exclude_globs() -> tuple:
+    """用于 rg 的 ``--glob !<pattern>`` 排除模式（目录 ∪ 文件模式）。"""
+    return tuple(excluded_dirs() | excluded_file_patterns())
+
+
+def grep_exclude_dirs() -> tuple:
+    """用于 grep 的 ``--exclude-dir`` 排除（目录名/目录 glob 模式）。"""
+    return tuple(excluded_dirs())
+
+
+def grep_exclude_files() -> tuple:
+    """用于 grep 的 ``--exclude`` 排除（仅文件通配符模式）。"""
+    return tuple(excluded_file_patterns())
+
+
+def dangerous_device_files() -> frozenset:
+    return frozenset(const("DANGEROUS_DEVICE_FILES", ()))
+
+
+def system_critical_paths() -> frozenset:
+    return frozenset(const("SYSTEM_CRITICAL_PATHS", ()))
+
+
+def dos_device_names() -> frozenset:
+    return frozenset(const("DOS_DEVICE_NAMES", ()))
+
+
+def win_device_prefixes() -> tuple:
+    return tuple(const("WIN_DEVICE_PREFIXES", ()))
+
+
+def default_encoding() -> str:
+    return str(const("DEFAULT_ENCODING", "utf-8"))
+
+
+def default_errors() -> str:
+    return str(const("DEFAULT_ERRORS", "strict"))
+
+
+def max_file_size_mb() -> int:
+    return int(const("MAX_FILE_SIZE_MB", 100))
+
+
+def large_file_threshold() -> int:
+    return int(const("LARGE_FILE_THRESHOLD", 10 * 1024 * 1024))
+
+
+def catchall_encodings() -> frozenset:
+    return frozenset(const("CATCHALL_ENCODINGS", ()))
+
+
+def common_encodings() -> list:
+    return list(const("COMMON_ENCODINGS", ()))
+
+
+def fallback_encodings() -> list:
+    return list(const("FALLBACK_ENCODINGS", ()))
+
+
+def bom_markers() -> dict:
+    return dict(const("BOM_MARKERS", {}) or {})
+
+
+def encoding_aliases() -> dict:
+    return dict(const("ENCODING_ALIASES", {}) or {})
+
+
+def max_detect_bytes() -> int:
+    return int(const("MAX_DETECT_BYTES", 64 * 1024))
+
+
+# ── 通配符目录排除模式匹配 ────────────────────────────
+
+_pattern_cache: dict = {}
+
+
+def _compiled_dir_patterns() -> tuple:
+    """预编译通配符目录模式的匹配器（按生效集合缓存）。"""
+    patterns = tuple(
+        sorted(p for p in excluded_dirs() if any(c in p for c in "*?[]"))
+    )
+    if _pattern_cache.get("key") != patterns:
+        _pattern_cache["key"] = patterns
+        _pattern_cache["res"] = tuple(re.compile(fnmatch.translate(p)) for p in patterns)
+    return _pattern_cache["res"]
+
+
+def should_exclude_dir(dirname: str) -> bool:
+    """判断目录名是否应被排除
+
+    分两阶段匹配：
+    1. set 精确查找（不含通配符的模式，O(1) 性能）
+    2. 预编译 regex 模式匹配（含通配符的模式，如 *.egg-info）
+    """
+    if dirname in excluded_dirs():
+        return True
+    for compiled_re in _compiled_dir_patterns():
+        if compiled_re.match(dirname):
+            return True
+    return False
+
+
 # ── 工具显示名映射（UI 显示用：一律取工具注册名的 PascalCase） ──
 # 2026-09-18 用户需求：工具卡/子代理面板显示工具**真实注册名**（如
 # ``ReadFile engine/rendering/FrameGraph.cpp``），不再用 Claude Code 风格
 # 缩写（Read/Write/Edit/Task/Grep/RM 等）——UI 名称与模型调用的工具名一一对应。
-# 新增工具时在此补一行；tests/test_tool_display_name_pascal.py 校验
-# 「映射完整 + 值 == 注册名 PascalCase」。
+# 数据表已上移为表现层数据注册表（``presentation_data`` → ``tool_display_name``）。
 
 from ..core.tool_display import TOOL_DISPLAY_NAME  # noqa: E402,F401  （下沉核心层，re-export 兼容）

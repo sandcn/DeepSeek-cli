@@ -49,23 +49,13 @@ import sys
 import time
 
 from src._compat_termios import HAS_TERMIOS
-from .base import Func, tool_metadata
+from .base import Func
 from ..core.constants import GREEN, YELLOW, RED, DIM, RESET
 from ..core.display_target import get_display_target
 
 
 _logger = logging.getLogger(__name__)
 
-@tool_metadata(
-    parallel_safe=True,
-    requires_network=False,
-    requires_terminal=True,
-    timeout_estimate=120,
-    category="interactive",
-    priority=5,
-    tool_category="interactive",
-    description="用户交互选择",
-)
 class UserSelectFunc(Func):
     name = "user_select"
 

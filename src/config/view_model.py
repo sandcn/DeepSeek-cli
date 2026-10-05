@@ -12,82 +12,30 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..presentation_data import LiveMapping
 from .defaults import CONFIG_KEYS, DEFAULTS
 from .loader import get_rc
 
-#: 配置项说明映射（CONFIG_KEYS 键名 → 中文说明；额外键见 _EXTRA_KEYS）
-CONFIG_ENTRY_DESCS: dict[str, str] = {
-    # ── 核心配置 ──
-    "MODEL": "当前模型（环境变量 CHAT_MODEL 可覆盖）",
-    "MODELS": "可用模型列表",
-    "REASONING_EFFORT": "推理等级（low/medium/high/max）",
-    "TEMPERATURE": "大模型温度（0.0~2.0，越高越随机）",
-    "THEME": "UI 配色主题（dark/light/high-contrast）",
-    # ── 数值配置 ──
-    "MAX_CONTEXT_CHARS": "上下文最大字符数",
-    "MAX_OUTPUT_CHARS": "单次输出最大字符数",
-    "MAX_RETRIES": "API 调用最大重试次数",
-    "RETRY_BASE_SEC": "重试基础间隔（秒）",
-    "MAX_SESSION_MESSAGES": "会话消息数上限（0=无限制）",
-    "KEEP_RECENT_MESSAGES": "压缩时保留的最近消息数",
-    "MAX_CONTEXT_TOKENS": "上下文最大 tokens",
-    "MODEL_CONTEXT_TOKENS": "模型上下文窗口（tokens，上下文使用率分母）",
-    "SUMMARY_TOKEN_BUDGET": "摘要 token 预算",
-    "AUTO_FORCE_COMPRESS_THRESHOLD": "自动强制压缩阈值",
-    # ── 布尔配置 ──
-    "ENABLE_NOTIFICATIONS": "启用系统通知",
-    "NOTIFY_ON_CHAT_COMPLETION": "聊天完成时通知",
-    # ── 复合配置 ──
-    "TOKEN_PRICES": "token 价格表（input/output/input_cache_hit，$/M）",
-    "MULTIMODAL_MODELS": "多模态模型列表（小写子串匹配，read_image 据此返回图片）",
-    "IMAGE_UPLOAD_OPTIMIZE": "上传前图片优化（折叠旧图+压缩大图，缓解多图请求卡顿）",
-    "IMAGE_UPLOAD_KEEP_RECENT": "上传时保留的最近图片数（更早的图片替换为文本占位，0=不折叠）",
-    "IMAGE_UPLOAD_MAX_DIMENSION": "上传图片长边上限（像素，超过则降采样后再上传）",
-    "IMAGE_UPLOAD_QUALITY": "上传图片 JPEG 压缩质量（1~100，越高越清晰体积越大）",
-    "MCP_SERVERS": "MCP 外部工具服务器列表（name/transport/command 或 url）",
-    # ── HTTP 性能配置（嵌套路径） ──
-    "HTTP_CONNECT_TIMEOUT": "HTTP 连接超时（秒）",
-    "HTTP_READ_TIMEOUT": "HTTP 读取超时（秒）",
-    "HTTP_WRITE_TIMEOUT": "HTTP 写入超时（秒）",
-    "HTTP_MAX_CONNECTIONS": "HTTP 连接池最大连接数",
-    "HTTP_MAX_CONNECTIONS_PER_HOST": "HTTP 单主机最大连接数",
-    "HTTP_KEEP_ALIVE_TIMEOUT": "HTTP 保持连接超时（秒）",
-    "HTTP_ENABLE_POOL": "启用 HTTP 连接池",
-    "HTTP_ENABLE_HTTP2": "启用 HTTP/2",
-}
+#: 配置项说明映射（写回键名 → 中文说明）。「一切皆插件」：数据已上移为
+#: 表现层数据注册表（``presentation_data`` → ``config_entry_desc`` 表），
+#: 本视图实时委托（可按 Patch/Overlay 覆盖/禁用）。
+CONFIG_ENTRY_DESCS = LiveMapping("config_entry_desc")
 
 #: 额外顶层键（不在 CONFIG_KEYS 元数据中，但属于用户可配置项）：
-#: (rc_key, type, desc, display_path)
+#: (rc_key, type, display_path)；说明文字见 ``config_entry_desc`` 表。
 _EXTRA_KEYS: tuple = (
-    ("provider", str, "服务提供商（deepseek/custom/anthropic/glm/mimo）", "provider"),
-    ("base_url", str, "API 基础地址（留空使用 provider 默认）", "base_url"),
-    ("api_key", str, "API Key（留空使用环境变量 CHAT_API_KEY）", "api_key"),
-    ("skills", dict, "技能子系统配置（enabled/auto_load 等）", "skills"),
+    ("provider", str, "provider"),
+    ("base_url", str, "base_url"),
+    ("api_key", str, "api_key"),
+    ("skills", dict, "skills"),
 )
 
 #: 枚举选择型配置项的候选选项（写回键 → [(值, 说明), ...]）。
 #: 键不在本表中、但类型为 bool 的配置项自动获得 true/false 候选；
 #: MODEL 动态取当前可用模型列表；其余键走文本/JSON 输入界面。
-CONFIG_ENTRY_OPTIONS: dict[str, tuple[tuple[str, str], ...]] = {
-    "PROVIDER": (
-        ("deepseek", "DeepSeek 官方（v4-pro / v4-flash）"),
-        ("custom", "自定义服务（需配置 base_url）"),
-        ("anthropic", "Anthropic（Claude 系列）"),
-        ("glm", "智谱 GLM（open.bigmodel.cn）"),
-        ("mimo", "小米 MiMo（token-plan-cn）"),
-    ),
-    "THEME": (
-        ("dark", "暗色主题"),
-        ("light", "亮色主题"),
-        ("high-contrast", "高对比主题"),
-    ),
-    "REASONING_EFFORT": (
-        ("low", "低——最快响应，思考最少"),
-        ("medium", "中——平衡速度与深度"),
-        ("high", "高——更深入思考"),
-        ("max", "最大——最充分思考"),
-    ),
-}
+#: 「一切皆插件」：数据已上移为表现层数据注册表（``presentation_data`` →
+#: ``config_entry_option`` 表），本视图实时委托（可按 Patch/Overlay 覆盖/禁用）。
+CONFIG_ENTRY_OPTIONS = LiveMapping("config_entry_option")
 
 #: 显示文本截断长度（防超宽行破坏行级 diff 宽度不变量）
 _DEFAULT_TRUNCATE = 48
@@ -229,7 +177,7 @@ def resolve_config_key(user_input: str) -> str | None:
         path = ".".join(meta["rc_path"]).lower()
         if path == norm or path.endswith("." + norm):
             return name
-    for key, _typ, _desc, _path in _EXTRA_KEYS:
+    for key, _typ, _path in _EXTRA_KEYS:
         if key == norm or _path == norm:
             return key
     return None
@@ -313,7 +261,7 @@ def build_config_entries(rc: dict | None = None) -> list[dict]:
             "options": options,
             "edit_kind": _edit_kind_of(options, meta["type"]),
         })
-    for key, typ, desc, path in _EXTRA_KEYS:
+    for key, typ, path in _EXTRA_KEYS:
         value = rc.get(key, DEFAULTS.get(key))
         meta = {"type": typ, "default": DEFAULTS.get(key)}
         options = _entry_options(rc, key, meta)
@@ -326,7 +274,7 @@ def build_config_entries(rc: dict | None = None) -> list[dict]:
                 value, typ, sensitive=(key == "api_key"),
             ),
             "default_text": format_config_value(DEFAULTS.get(key), typ),
-            "desc": desc,
+            "desc": CONFIG_ENTRY_DESCS.get(key, ""),
             "sensitive": key == "api_key",
             "options": options,
             "edit_kind": _edit_kind_of(options, typ),

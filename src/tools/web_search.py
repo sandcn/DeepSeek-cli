@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import httpx
 
-from .base import Func, tool_metadata
+from .base import Func
 from .search_providers import (
     DeepSeekSearchProvider,
     WebSearchError,
@@ -27,16 +27,6 @@ from .search_providers import (
 from ..core.constants import GREEN, YELLOW, DIM, RESET
 
 
-@tool_metadata(
-    parallel_safe=True,
-    requires_network=True,
-    requires_terminal=False,
-    timeout_estimate=30,
-    category="general",
-    priority=40,
-    tool_category="read",
-    description="网页搜索",
-)
 class WebSearchFunc(Func):
     name = "web_search"
 

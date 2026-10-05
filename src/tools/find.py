@@ -15,7 +15,7 @@ import re
 import logging
 from pathlib import Path
 from ._constants import should_exclude_dir as _should_exclude_dir
-from .base import Func, tool_metadata
+from .base import Func
 
 logger = logging.getLogger(__name__)
 
@@ -24,16 +24,6 @@ SMALL_DIR_ENTRY_LIMIT = 200   # 小型目录条目阈值（直接同步遍历）
 SMALL_DIR_DEPTH_LIMIT = 3     # 小型目录深度阈值
 
 
-@tool_metadata(
-    parallel_safe=True,
-    requires_network=False,
-    requires_terminal=False,
-    timeout_estimate=0,
-    category="code",
-    priority=20,
-    tool_category="read",
-    description="在项目中查找文件和目录",
-)
 class FindFunc(Func):
     """文件查找工具 — 在项目中查找文件和目录"""
 

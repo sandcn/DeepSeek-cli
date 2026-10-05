@@ -14,7 +14,7 @@ import os
 from typing import Optional
 
 from ..skills import default_registry, is_model_invocable, render_skill_content
-from .base import Func, tool_metadata
+from .base import Func
 
 _TOOL_DESCRIPTION = (
     "加载可用技能（skill）的完整指令。调用前必须先确认技能名来自会话中的"
@@ -24,16 +24,6 @@ _TOOL_DESCRIPTION = (
 )
 
 
-@tool_metadata(
-    parallel_safe=True,
-    requires_network=False,
-    requires_terminal=False,
-    timeout_estimate=0,
-    category="general",
-    priority=100,
-    tool_category="read",
-    description="加载技能（skill）的完整指令",
-)
 class SkillFunc(Func):
     """加载技能工具。"""
 

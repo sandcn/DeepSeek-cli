@@ -184,3 +184,100 @@ async def test_consumers_live():
         assert ":zap2:" in EMOJI_MAP
     finally:
         await kernel.dispose()
+
+
+# ── 补齐的表现层数据表（工具显示名 / 告示样式 / Spinner / 配置项） ──
+
+
+def test_new_tables_declared():
+    from src.presentation_data import builtin_data_ids
+
+    for table_id in (
+        "tool_display_name", "admonition_style", "spinner_frames",
+        "inline_spinner_frames", "config_entry_desc", "config_entry_option",
+    ):
+        assert table_id in builtin_data_ids()
+    assert {(e.get("config") or {}).get("id") for e in PRESENTATION_DATA_ENTRIES} == set(builtin_data_ids())
+
+
+async def test_new_tables_default_profile():
+    from src.core.tool_display import TOOL_DISPLAY_NAME, get_tool_display_name
+    from src.presentation_data import (
+        admonition_style,
+        config_entry_descs,
+        config_entry_options,
+        inline_spinner_frames,
+        spinner_preset,
+    )
+    from src.renderer.admonition import ADMONITION_STYLES, get_admonition_config
+
+    kernel = await build_kernel("cli")
+    try:
+        assert get_tool_display_name("read_file") == "ReadFile"
+        assert TOOL_DISPLAY_NAME["bash_opt"] == "BashOpt"
+        assert get_admonition_config("warning")["color"] == "yellow"
+        assert "NOTE" in ADMONITION_STYLES
+        assert spinner_preset("dots") == "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        assert inline_spinner_frames().startswith("⠋")
+        assert "MCP_SERVERS" in config_entry_descs()
+        assert config_entry_options()["THEME"][0] == ("dark", "暗色主题")
+    finally:
+        await shutdown_kernel(kernel)
+
+
+async def test_overlay_disable_tool_display_name():
+    from src.core.tool_display import get_tool_display_name
+
+    kernel = await _build_with_disable(
+        ["presentation_data::presentation_data_tool_display_name"]
+    )
+    try:
+        assert get_tool_display_name("read_file") == "read_file"
+    finally:
+        await kernel.dispose()
+
+
+async def test_overlay_disable_admonition_style():
+    from src.renderer.admonition import get_admonition_config
+
+    kernel = await _build_with_disable(
+        ["presentation_data::presentation_data_admonition_style"]
+    )
+    try:
+        assert get_admonition_config("warning") == {}
+    finally:
+        await kernel.dispose()
+
+
+async def test_entry_config_override_new_tables():
+    from src.plugins.config import apply as config_apply
+    from src.plugins.presentation_data_entries import apply_presentation_data
+
+    kernel = Kernel(name="t")
+    kernel.mount(config_apply)
+    kernel.mount(
+        apply_presentation_data,
+        config={"id": "spinner_frames", "data": {"dots": "abcd"}},
+    )
+    kernel.mount(
+        apply_presentation_data,
+        config={"id": "config_entry_desc", "data": {"MCP_SERVERS": "自定义说明"}},
+    )
+    await kernel.settle()
+    try:
+        from src.config.view_model import CONFIG_ENTRY_DESCS
+        from src.presentation_data import spinner_preset
+
+        assert spinner_preset("dots") == "abcd"
+        assert CONFIG_ENTRY_DESCS["MCP_SERVERS"] == "自定义说明"
+    finally:
+        await kernel.dispose()
+
+
+async def test_config_entry_descs_extra_keys():
+    from src.config.view_model import CONFIG_ENTRY_DESCS, build_config_entries
+
+    entries = {e["key"]: e for e in build_config_entries()}
+    assert entries["provider"]["desc"] == CONFIG_ENTRY_DESCS["provider"]
+    assert entries["provider"]["desc"]
+    assert entries["api_key"]["desc"]

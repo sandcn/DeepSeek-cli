@@ -48,12 +48,22 @@ PRIVATE_PREFIXES = (
 )
 
 # 内容提取时排除的标签（导航/脚本/样式等非内容元素）
+# 「一切皆插件」：登记到 ``const_registry``（清单条目 ``tool_const`` 可覆盖/
+# 禁用）；``remove_tags()`` 为实时查询入口，模块名保留向后兼容快照。
 REMOVE_TAGS = {
     "script", "style", "nav", "footer", "header",
     "aside", "noscript", "iframe", "form", "button",
     "svg", "canvas", "video", "audio", "object",
     "embed", "select", "option", "datalist",
 }
+from .const_registry import const as _const, declare_constants as _declare_constants  # noqa: E402
+
+_declare_constants({"REMOVE_TAGS": REMOVE_TAGS})
+
+
+def remove_tags() -> set:
+    """当前生效的内容提取排除标签集合（被禁用时为空）。"""
+    return set(_const("REMOVE_TAGS", set()) or set())
 
 # 内容提取时排除的 class/id 关键词（小写匹配）
 REMOVE_CLASS_KEYWORDS = (
@@ -424,7 +434,7 @@ def _remove_noise(tag: Tag) -> None:
     # 递归处理子元素
     for child in list(tag.children):
         if isinstance(child, Tag):
-            if child.name in REMOVE_TAGS:
+            if child.name in remove_tags():
                 child.decompose()
             elif _is_noise_element(child):
                 child.decompose()

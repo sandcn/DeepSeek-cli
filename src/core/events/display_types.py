@@ -20,6 +20,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from ...declarative import LiveSequence
+from .type_registry import active_events, declare_events
+
 
 # ── 基础事件 ────────────────────────────────────────────
 
@@ -403,18 +406,26 @@ class BackgroundTaskChangedEvent(DisplayEvent):
     subagent_count: int = 0
 
 
-# ── 事件类型注册表 ──────────────────────────────────────
+# ── 事件类型注册表（登记到 type_registry，域 display） ──────
 
-# 所有事件类型的集合，用于 EventBus 按类型过滤订阅
-ALL_EVENT_TYPES: tuple = (
-    SessionStarted, SessionStopped,
-    ToolParsingEvent, ToolStartedEvent, ToolDoneEvent, ToolOutputChunkEvent, ToolBatchStartedEvent, ToolNoticeEvent,
-    AgentAddedEvent, AgentStatusChanged,
-    ModelPhaseEvent, PhaseDoneEvent, UsageUpdatedEvent,
-    ContentChunkEvent, ReasoningChunkEvent,
-    ParseInfoEvent, ParseInfoDoneEvent, MetricsUpdateEvent,
-    OutputEvent, ToolSummaryEvent,
-    SubagentPromptEvent,
-    AgentResultEvent,
-    BackgroundTaskChangedEvent,
-)
+#: 内置显示事件类型声明（类名 → 类）——每项由清单中的独立插件条目注册。
+_DISPLAY_EVENT_TYPES: dict = {
+    cls.__name__: cls for cls in (
+        SessionStarted, SessionStopped,
+        ToolParsingEvent, ToolStartedEvent, ToolDoneEvent, ToolOutputChunkEvent,
+        ToolBatchStartedEvent, ToolNoticeEvent,
+        AgentAddedEvent, AgentStatusChanged,
+        ModelPhaseEvent, PhaseDoneEvent, UsageUpdatedEvent,
+        ContentChunkEvent, ReasoningChunkEvent,
+        ParseInfoEvent, ParseInfoDoneEvent, MetricsUpdateEvent,
+        OutputEvent, ToolSummaryEvent,
+        SubagentPromptEvent,
+        AgentResultEvent,
+        BackgroundTaskChangedEvent,
+    )
+}
+
+declare_events("display", _DISPLAY_EVENT_TYPES)
+
+#: 所有事件类型的集合（实时委托注册表域 display），用于 EventBus 按类型过滤订阅。
+ALL_EVENT_TYPES: LiveSequence = LiveSequence(lambda: list(active_events("display").values()))

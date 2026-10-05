@@ -29,7 +29,7 @@ import logging
 import math
 import os
 
-from .base import Func, tool_metadata
+from .base import Func
 from .bash import kill_process_tree
 from ..core.base_agent import _parse_bash_result_fields
 
@@ -128,16 +128,6 @@ async def _write_pty_all(fd: int, data: bytes) -> None:
         total += written
 
 
-@tool_metadata(
-    parallel_safe=False,
-    requires_network=False,
-    requires_terminal=False,
-    timeout_estimate=0,
-    category="general",
-    priority=30,
-    tool_category="bash",
-    description="操作后台bash任务",
-)
 class BashOptFunc(Func):
     """按 task_id 操作后台 bash 任务（bash background=True 启动）。"""
 

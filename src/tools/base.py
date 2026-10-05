@@ -365,8 +365,43 @@ def tool_metadata(
     return decorator
 
 
+#: ToolMetadata 可声明字段（过滤注册表覆盖 dict 的多余键）。
+_METADATA_FIELDS = (
+    "parallel_safe", "requires_network", "requires_terminal", "timeout_estimate",
+    "category", "priority", "tool_category", "description",
+)
+
+#: 元数据对象缓存（工具名 → (注册表代际, ToolMetadata|None)）——热路径 O(1)。
+_METADATA_CACHE: dict = {}
+
+
+def _metadata_from_declaration(tool_name: str) -> Optional[ToolMetadata]:
+    """按工具名从注册表解析元数据对象（未登记返回 None）。"""
+    try:
+        from . import metadata_registry as registry
+    except Exception:  # pragma: no cover - 导入失败回退类装饰器
+        return None
+    cache_key = str(tool_name)
+    generation = registry.generation()
+    cached = _METADATA_CACHE.get(cache_key)
+    if cached is not None and cached[0] == generation:
+        return cached[1]
+    data = registry.metadata_for(cache_key)
+    result = None
+    if data is not None:
+        kwargs = {key: data[key] for key in _METADATA_FIELDS if key in data}
+        result = ToolMetadata(**kwargs)
+    _METADATA_CACHE[cache_key] = (generation, result)
+    return result
+
+
 def get_tool_metadata(tool_class) -> Optional[ToolMetadata]:
-    """获取工具类的元数据，未设置时返回 None"""
+    """获取工具类的元数据：注册表声明优先，未登记回退类装饰器属性。"""
+    name = getattr(tool_class, "name", None)
+    if name:
+        declared = _metadata_from_declaration(str(name))
+        if declared is not None:
+            return declared
     return getattr(tool_class, _METADATA_ATTR, None)
 
 

@@ -1,7 +1,6 @@
 import re
 
 from .file_base import FileToolBase, FileToolError
-from .base import tool_metadata
 
 
 class StringNotFoundError(FileToolError):
@@ -42,16 +41,6 @@ def _parse_regex_flags(flags: str) -> int:
     return result
 
 
-@tool_metadata(
-    parallel_safe=False,
-    requires_network=False,
-    requires_terminal=False,
-    timeout_estimate=0,
-    category="io",
-    priority=10,
-    tool_category="write",
-    description="更新文件内容",
-)
 class UpdateFileFunc(FileToolBase):
     name = "update_file"
 

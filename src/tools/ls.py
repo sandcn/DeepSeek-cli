@@ -13,7 +13,7 @@ import stat
 import time
 import logging
 from pathlib import Path
-from .base import Func, tool_metadata
+from .base import Func
 from ..core.constants import human_size
 
 logger = logging.getLogger(__name__)
@@ -25,16 +25,6 @@ LARGE_DIR_ENTRY_LIMIT = 500   # 大目录条目阈值（走 executor）
 RECENT_MODIFY_DAYS = 180      # 最近修改天数阈值
 
 
-@tool_metadata(
-    parallel_safe=True,
-    requires_network=False,
-    requires_terminal=False,
-    timeout_estimate=0,
-    category="code",
-    priority=20,
-    tool_category="read",
-    description="列出目录内容",
-)
 class LsFunc(Func):
     """列出目录内容工具 — 类似 Unix ls 命令"""
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 
-from .base import Func, tool_metadata
+from .base import Func
 from ..paths import RUNTIME_PLUGINS_DIR, ensure_runtime_plugins_dir
 
 
@@ -40,13 +40,6 @@ def _plugin_path(name: str) -> str:
     return os.path.join(str(RUNTIME_PLUGINS_DIR), f"{safe}.py")
 
 
-@tool_metadata(
-    parallel_safe=True,
-    category="code",
-    priority=60,
-    tool_category="read",
-    description="自省当前插件内核（服务/插件/生命周期）",
-)
 class CordisInspectFunc(Func):
     """自省当前内核：已提供服务的 key/类型、插件 Fiber 状态与依赖。"""
 
@@ -109,13 +102,6 @@ class CordisInspectFunc(Func):
         return "\n".join(lines) if lines else "(无匹配项)"
 
 
-@tool_metadata(
-    parallel_safe=False,
-    category="code",
-    priority=60,
-    tool_category="write",
-    description="定义（写入）一个运行时插件文件",
-)
 class CordisDefineFunc(Func):
     """把插件源码写入 ``.chat/runtime_plugins/<name>.py``（不自动挂载）。"""
 
@@ -164,13 +150,6 @@ class CordisDefineFunc(Func):
         return f"已定义插件: {path}（用 cordis_run 挂载）"
 
 
-@tool_metadata(
-    parallel_safe=False,
-    category="code",
-    priority=60,
-    tool_category="write",
-    description="挂载一个运行时插件文件到当前内核",
-)
 class CordisRunFunc(Func):
     """把 ``.chat/runtime_plugins/<name>.py`` 挂载到当前内核（热挂载）。"""
 
@@ -219,13 +198,6 @@ class CordisRunFunc(Func):
         return f"已挂载插件: {fiber.name} ({state})"
 
 
-@tool_metadata(
-    parallel_safe=False,
-    category="code",
-    priority=60,
-    tool_category="write",
-    description="停止（卸载）一个运行时插件",
-)
 class CordisStopFunc(Func):
     """卸载指定插件 Fiber（连带撤销其注册的副作用）。"""
 
@@ -265,13 +237,6 @@ class CordisStopFunc(Func):
         return f"已停止插件: {fiber.name}"
 
 
-@tool_metadata(
-    parallel_safe=False,
-    category="code",
-    priority=60,
-    tool_category="write",
-    description="删除一个运行时插件（停止 + 删除文件）",
-)
 class CordisUndefineFunc(Func):
     """卸载插件并删除其 ``.chat/runtime_plugins/`` 文件。"""
 

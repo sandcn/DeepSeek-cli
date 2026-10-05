@@ -19,7 +19,7 @@ from .file_ops import (
 from ..core.constants import GREEN, RED, DIM, RESET
 from ..core.diff_state import diff_active
 from ..core.sandbox_manager import async_record_file_change_from_context
-from ._constants import DEFAULT_ENCODING, DEFAULT_ERRORS as DEFAULT_ERRORS_HANDLING, MAX_FILE_SIZE_MB
+from ._constants import default_encoding, default_errors, max_file_size_mb
 
 class FileToolError(Exception):
     pass
@@ -121,8 +121,8 @@ class FileToolBase(Func):
         self._check_content_size(content_for_size_check)
         super().__init__()
         self.path = path
-        self.encoding = DEFAULT_ENCODING
-        self.errors = DEFAULT_ERRORS_HANDLING
+        self.encoding = default_encoding()
+        self.errors = default_errors()
         self.stats = {"total_time": 0.0, "lines_processed": 0}
 
     # ── 校验 ──
@@ -130,9 +130,10 @@ class FileToolBase(Func):
     @staticmethod
     def _check_content_size(content: str):
         size = len(content.encode('utf-8', errors='ignore'))
-        limit = MAX_FILE_SIZE_MB * 1024 * 1024
+        max_mb = max_file_size_mb()
+        limit = max_mb * 1024 * 1024
         if size > limit:
-            raise FileSizeError(f"内容大小({size // 1024}KB)超过最大限制({MAX_FILE_SIZE_MB}MB)")
+            raise FileSizeError(f"内容大小({size // 1024}KB)超过最大限制({max_mb}MB)")
 
     def _validate_path_and_size(self):
         """在 execute() 中执行的路径安全校验和文件大小检查。
@@ -170,7 +171,7 @@ class FileToolBase(Func):
 
         if os.path.exists(real):
             try:
-                check_file_size(real, MAX_FILE_SIZE_MB)
+                check_file_size(real, max_file_size_mb())
             except ValueError as e:
                 raise FileSizeError(str(e))
 

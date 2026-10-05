@@ -10,7 +10,7 @@ import sys
 import time
 import uuid
 
-from .base import Func, tool_metadata, print_to_terminal
+from .base import Func, print_to_terminal
 from ._bash_support import (
     _has_dangerous_command,
     _INTERRUPT_CHECK_INTERVAL,
@@ -51,16 +51,6 @@ async def _append_read_buffer(rec: dict, text: str) -> None:
         rec["read_buffer"] = rec.get("read_buffer", "") + text
 
 
-@tool_metadata(
-    parallel_safe=False,
-    requires_network=False,
-    requires_terminal=False,
-    timeout_estimate=0,
-    category="general",
-    priority=30,
-    tool_category="bash",
-    description="执行shell命令",
-)
 class BashFunc(Func):
     name = "bash"
     # 前台命令超过该秒数未完成 → 自动转后台执行（不终止进程），

@@ -3,21 +3,10 @@ from __future__ import annotations
 import asyncio
 import os
 
-from .base import tool_metadata
 from .file_base import FileSystemToolBase
 from .file_ops import validate_path_security, async_file_exists
 
 
-@tool_metadata(
-    parallel_safe=False,
-    requires_network=False,
-    requires_terminal=False,
-    timeout_estimate=0,
-    category="io",
-    priority=10,
-    tool_category="write",
-    description="创建目录",
-)
 class MkdirFunc(FileSystemToolBase):
     name = "mkdir"
     _action_verb = "创建"

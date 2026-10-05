@@ -17,36 +17,15 @@ from __future__ import annotations
 
 import time
 
+from ....presentation_data import LiveMapping, spinner_presets
+
 from ..element import TEXT, Element, h
 from ._display_common import _resolve_style
 
-#: 内置动画帧字符集（Braille/几何/emoji，键名对齐 ink-spinner 常用预设）
-SPINNER_FRAMES: dict[str, str] = {
-    "dots": "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏",
-    "dots2": "⣾⣽⣻⢿⡿⣟⣯⣷",
-    "dots3": "⠋⠙⠚⠞⠖⠦⠴⠲⠳⠓",
-    "dots4": "⠄⠆⠇⠋⠙⠸⠰⠠⠰⠸⠙⠋⠇⠆",
-    "dots5": "⠋⠙⠚⠒⠂⠂⠒⠲⠴⠦⠖⠒⠐⠐⠒⠓⠋",
-    "dots6": "⠁⠉⠙⠚⠒⠂⠂⠒⠲⠴⠤⠄⠄⠤⠴⠲⠒⠂⠂⠒⠚⠙⠉⠁",
-    "dots7": "⠈⠉⠋⠓⠒⠐⠐⠒⠖⠦⠤⠠⠠⠤⠦⠖⠒⠐⠐⠒⠓⠋⠉⠈",
-    "dots8": "⠁⠁⠉⠙⠚⠒⠂⠂⠒⠲⠴⠤⠄⠄⠤⠠⠠⠤⠦⠖⠒⠐⠐⠒⠓⠋⠉⠈⠈",
-    "dots9": "⢹⢺⢼⣸⣇⡧⡗⡏",
-    "dots10": "⢄⢂⢁⡁⡈⡐⡠",
-    "dots11": "⠁⠂⠄⡀⢀⠠⠐⠈",
-    "line": "─╼╾╴╶",
-    "line2": "⠂⠒⠐⠈⠁⠉⠐⠒⠂",
-    "pipe": "┤┘┴└├┌┬┐",
-    "simpleDots": "⠂⠄⠆⠇⠋⠙⠸⠰⠠⠰⠸⠙⠋⠇⠆⠄",
-    "simpleDotsScrolling": "⠈⠐⠠⢀⡀⢄⡂⡆⡇⡏⡟⡿⢿⠻⠽⠾⢾⣀⣠⣄⣆⣇⣏⣟⣿",
-    "bar": "▁▃▄▅▆▇█▇▆▅▄▃",
-    "vertical": "▁▂▃▄▅▆▇█▇▆▅▄▃▂",
-    "grow": "▁▂▃▄▅▆▇█",
-    "growHorizontal": "▏▎▍▌▋▊▉█",
-    "arrow": "←↖↑↗→↘↓↙",
-    "moon": "🌑🌒🌓🌔🌕🌖🌗🌘",
-    "dotsClassic": "⠁⠂⠄⡀⢀⠠⠐⠈",
-    "shark": "▐▌▐▌",
-}
+#: 内置动画帧字符集（Braille/几何/emoji，键名对齐 ink-spinner 常用预设）。
+#: 「一切皆插件」：预设表已上移为表现层数据注册表（``presentation_data`` →
+#: ``spinner_frames`` 表），本视图实时委托（可按 Patch/Overlay 覆盖/禁用）。
+SPINNER_FRAMES = LiveMapping("spinner_frames")
 
 
 def Spinner(props: dict) -> Element:
@@ -79,7 +58,9 @@ def Spinner(props: dict) -> Element:
         else:
             frames = list(str(indicator))
     else:
-        frames = list(SPINNER_FRAMES.get(type_, SPINNER_FRAMES["dots"]))
+        presets = spinner_presets()
+        default_frames = presets.get("dots", "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+        frames = list(presets.get(type_, default_frames))
     if not frames:
         frames = [" "]
     try:

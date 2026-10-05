@@ -11,22 +11,12 @@ from __future__ import annotations
 
 import httpx
 
-from .base import Func, tool_metadata
+from .base import Func
 from .fetch_providers import HttpPageFetcher
 from .search_providers import get_shared_client
 from ..core.constants import GREEN, YELLOW, DIM, RESET
 
 
-@tool_metadata(
-    parallel_safe=True,
-    requires_network=True,
-    requires_terminal=False,
-    timeout_estimate=15,
-    category="general",
-    priority=41,
-    tool_category="read",
-    description="网页全文获取",
-)
 class WebFetchFunc(Func):
     name = "web_fetch"
 

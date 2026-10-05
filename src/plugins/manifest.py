@@ -70,6 +70,94 @@ TOOL_PLUGIN_ENTRIES = [
      "config": {"tool": "src.tools.write_file.WriteFileFunc", "name": "write_file"}},
 ]
 
+# ── 工具元数据条目（每个内置工具一条独立元数据条目） ────────
+#
+# 条目经 ``src.plugins.tool_metadata_entries`` 把 ``config.name`` 指向的内置
+# 工具元数据注册进 ``src.tools.metadata_registry``；``config.name`` 供组合根
+# 收集「清单已接管的元数据」（注入 tool_metadata 聚合插件，抑制默认装配，使
+# overlay 禁用单项真正生效）。
+
+_TOOL_METADATA_NAMES = (
+    "bash", "bash_opt", "cp", "find", "ls", "mkdir", "mv", "read_file",
+    "read_image", "rm", "search", "skill", "subagent", "subagent_opt",
+    "update_file", "user_select", "web_fetch", "web_search", "write_file",
+    "cordis_inspect", "cordis_define", "cordis_run", "cordis_stop", "cordis_undefine",
+)
+
+TOOL_METADATA_ENTRIES = [
+    {"id": f"tool_metadata_{name}",
+     "plugin": "src.plugins.tool_metadata_entries:apply_tool_metadata",
+     "config": {"name": name}}
+    for name in _TOOL_METADATA_NAMES
+]
+
+# ── 工具常量条目（每个内置常量一条独立条目） ────────────────
+#
+# 条目经 ``src.plugins.tool_const_entries`` 把 ``config.name`` 指向的内置常量
+# 注册进 ``src.tools.const_registry``；``config.name`` 供组合根收集「清单已
+# 接管的常量」（注入 tool_consts 聚合插件，抑制默认装配，使 overlay 禁用单项
+# 真正生效）。
+
+_TOOL_CONST_NAMES = (
+    "EXCLUDED_DIRS", "EXCLUDED_FILE_PATTERNS", "DANGEROUS_DEVICE_FILES",
+    "SYSTEM_CRITICAL_PATHS", "DOS_DEVICE_NAMES", "WIN_DEVICE_PREFIXES",
+    "DEFAULT_ENCODING", "DEFAULT_ERRORS", "MAX_FILE_SIZE_MB",
+    "CATCHALL_ENCODINGS", "MAX_DETECT_BYTES", "COMMON_ENCODINGS",
+    "FALLBACK_ENCODINGS", "BOM_MARKERS", "ENCODING_ALIASES",
+    "LARGE_FILE_THRESHOLD", "IMAGE_EXTENSIONS", "REMOVE_TAGS",
+)
+
+TOOL_CONST_ENTRIES = [
+    {"id": f"tool_const_{name.lower()}",
+     "plugin": "src.plugins.tool_const_entries:apply_tool_const",
+     "config": {"name": name}}
+    for name in _TOOL_CONST_NAMES
+]
+
+# ── 事件类型条目（每个内置事件类型一条独立条目） ────────────
+#
+# 条目经 ``src.plugins.event_type_entries`` 把 ``config.name``（复合 id
+# ``<domain>::<name>``）指向的内置事件类型注册进
+# ``src.core.events.type_registry``；``config.name`` 供组合根收集「清单已接管
+# 的事件类型」（注入 event_types 聚合插件，抑制默认装配，使 overlay 禁用单项
+# 真正生效）。
+
+_EVENT_TYPE_CORE_NAMES = (
+    "MODEL_CALL_STARTED", "MODEL_CALL_COMPLETED", "MODEL_CALL_FAILED",
+    "MODEL_STREAM_CHUNK",
+    "TOOL_CALL_STARTED", "TOOL_CALL_COMPLETED", "TOOL_CALL_FAILED",
+    "SESSION_STARTED", "SESSION_COMPLETED", "SESSION_INTERRUPTED", "SESSION_SAVED",
+    "CONTEXT_COMPRESSED", "CONTEXT_COMPRESS_FAILED",
+    "CONFIG_CHANGED",
+    "APP_BOOTSTRAP", "APP_SHUTDOWN",
+)
+
+_EVENT_TYPE_DISPLAY_NAMES = (
+    "SessionStarted", "SessionStopped",
+    "ToolParsingEvent", "ToolStartedEvent", "ToolDoneEvent", "ToolOutputChunkEvent",
+    "ToolBatchStartedEvent", "ToolNoticeEvent",
+    "AgentAddedEvent", "AgentStatusChanged",
+    "ModelPhaseEvent", "PhaseDoneEvent", "UsageUpdatedEvent",
+    "ContentChunkEvent", "ReasoningChunkEvent",
+    "ParseInfoEvent", "ParseInfoDoneEvent", "MetricsUpdateEvent",
+    "OutputEvent", "ToolSummaryEvent",
+    "SubagentPromptEvent",
+    "AgentResultEvent",
+    "BackgroundTaskChangedEvent",
+)
+
+EVENT_TYPE_ENTRIES = [
+    {"id": f"event_type_core_{name.lower()}",
+     "plugin": "src.plugins.event_type_entries:apply_event_type",
+     "config": {"name": f"core::{name}"}}
+    for name in _EVENT_TYPE_CORE_NAMES
+] + [
+    {"id": f"event_type_display_{name.lower()}",
+     "plugin": "src.plugins.event_type_entries:apply_event_type",
+     "config": {"name": f"display::{name}"}}
+    for name in _EVENT_TYPE_DISPLAY_NAMES
+]
+
 # ── 全局禁用工具条目（每个禁用项一个独立插件条目） ──────────
 #
 # 条目经 ``src.plugins.tool_policy_entries`` 把 ``config.name`` 指向的内置项注册
@@ -517,6 +605,8 @@ PRESENTATION_DATA_ENTRIES = [
         "emoji", "inline_subscript", "inline_superscript", "circled_digits",
         "html_tag_color", "bullet", "trace_kind", "trace_status",
         "mode_text", "mode_style",
+        "tool_display_name", "admonition_style", "spinner_frames",
+        "inline_spinner_frames", "config_entry_desc", "config_entry_option",
     )
 ]
 
@@ -654,6 +744,27 @@ BUNDLES = [
         "id": "tools",
         "description": "内置工具：每个工具一个独立插件条目（可 patch/overlay 禁用/替换）",
         "plugins": list(TOOL_PLUGIN_ENTRIES),
+    },
+    {
+        "id": "tool_metadata",
+        "description": "工具元数据：每个内置工具一条独立条目（可 patch/overlay 覆盖/禁用/替换）",
+        "plugins": [
+            {"id": "tool_metadata", "plugin": "src.plugins.tool_metadata"},
+        ] + list(TOOL_METADATA_ENTRIES),
+    },
+    {
+        "id": "tool_consts",
+        "description": "工具常量：每个内置常量一条独立条目（可 patch/overlay 覆盖/禁用/替换）",
+        "plugins": [
+            {"id": "tool_consts", "plugin": "src.plugins.tool_consts"},
+        ] + list(TOOL_CONST_ENTRIES),
+    },
+    {
+        "id": "event_types",
+        "description": "事件类型：每个内置事件类型一条独立条目（可 patch/overlay 覆盖/禁用/替换）",
+        "plugins": [
+            {"id": "event_types", "plugin": "src.plugins.event_types"},
+        ] + list(EVENT_TYPE_ENTRIES),
     },
     {
         "id": "tool_policy",
@@ -825,7 +936,7 @@ BUNDLES = [
     {
         "id": "core",
         "description": "基础层：配置、事件、提词、策略、工具、技能、通知后端",
-        "includes": ["tools", "tool_policy", "commands", "notification_backends", "context_strategies", "runtime_data", "presets", "prompts", "subcommands", "web", "skill_sources"],
+        "includes": ["tools", "tool_metadata", "tool_consts", "tool_policy", "event_types", "commands", "notification_backends", "context_strategies", "runtime_data", "presets", "prompts", "subcommands", "web", "skill_sources"],
         "plugins": [
             {"id": "config", "plugin": "src.plugins.config"},
             {"id": "events", "plugin": "src.plugins.events"},
@@ -942,6 +1053,9 @@ __all__ = [
     "PROFILES",
     "DEFAULT_PROFILE",
     "TOOL_PLUGIN_ENTRIES",
+    "TOOL_METADATA_ENTRIES",
+    "TOOL_CONST_ENTRIES",
+    "EVENT_TYPE_ENTRIES",
     "GLOBAL_DISABLED_TOOL_ENTRIES",
     "COMMAND_PLUGIN_ENTRIES",
     "RENDERER_HANDLER_ENTRIES",

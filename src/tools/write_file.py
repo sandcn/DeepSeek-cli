@@ -1,17 +1,6 @@
 from .file_base import FileToolBase
-from .base import tool_metadata
 
 
-@tool_metadata(
-    parallel_safe=False,
-    requires_network=False,
-    requires_terminal=False,
-    timeout_estimate=0,
-    category="io",
-    priority=10,
-    tool_category="write",
-    description="写入文件",
-)
 class WriteFileFunc(FileToolBase):
     name = "write_file"
 

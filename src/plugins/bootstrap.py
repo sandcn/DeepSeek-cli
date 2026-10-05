@@ -48,6 +48,9 @@ _OVERLAY_NAMES = frozenset({
 #: 单条目声明插件名 → 其 config 中作为「名」的键
 _SINGLE_DECL_PLUGINS = {
     "tool": "name",
+    "tool_metadata_entry": "name",
+    "tool_const_entry": "name",
+    "event_type": "name",
     "global_disabled_tool": "name",
     "command": "name",
     "renderer_handler": "id",
@@ -86,6 +89,9 @@ _SINGLE_DECL_PLUGINS = {
 #: 单条目声明插件名 → 汇入的托管分组
 _MANAGED_GROUP = {
     "tool": "managed_tools",
+    "tool_metadata_entry": "managed_tool_metadata",
+    "tool_const_entry": "managed_tool_consts",
+    "event_type": "managed_event_types",
     "global_disabled_tool": "managed_global_disabled_tools",
     "command": "managed_commands",
     "renderer_handler": "managed_handlers",
@@ -128,6 +134,9 @@ _ENABLED_ONLY_GROUPS = frozenset({"managed_commands"})
 #: 聚合插件的插件名 → 注入的 config 键（收集自清单中同类的单条目声明）
 _AGGREGATE_MANAGED_KEYS = {
     "tools_builtin": ("managed_tools",),
+    "tool_metadata": ("managed_tool_metadata",),
+    "tool_consts": ("managed_tool_consts",),
+    "event_types": ("managed_event_types",),
     "policy": ("managed_global_disabled_tools",),
     "commands": ("managed_commands",),
     "renderer_builtin": ("managed_handlers", "managed_filters"),

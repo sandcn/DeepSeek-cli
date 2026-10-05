@@ -4,7 +4,6 @@ import asyncio
 import os
 import shutil
 
-from .base import tool_metadata
 from .file_base import FileSystemToolBase
 from .file_ops import (
     validate_path_security, async_file_exists, async_collect_files,
@@ -13,16 +12,6 @@ from .file_ops import (
 )
 
 
-@tool_metadata(
-    parallel_safe=False,
-    requires_network=False,
-    requires_terminal=False,
-    timeout_estimate=0,
-    category="io",
-    priority=10,
-    tool_category="write",
-    description="删除文件或目录",
-)
 class RmFunc(FileSystemToolBase):
     name = "rm"
     _action_verb = "删除"

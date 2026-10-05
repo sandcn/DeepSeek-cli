@@ -21,23 +21,13 @@ import logging
 import time
 import uuid
 
-from .base import Func, tool_metadata, print_to_terminal
+from .base import Func, print_to_terminal
 from ..core.constants import DIM, RESET
 from ..core.agent_types import uses_low_model
 
 logger = logging.getLogger(__name__)
 
 
-@tool_metadata(
-    parallel_safe=False,
-    requires_network=False,
-    requires_terminal=False,
-    timeout_estimate=0,
-    category="general",
-    priority=50,
-    tool_category="general",
-    description="并行子Agent调度",
-)
 class SubagentFunc(Func):
     name = "subagent"
 

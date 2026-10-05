@@ -9,10 +9,10 @@ import aiofiles
 import aiofiles.os
 from rich.syntax import Syntax
 from rich.console import Console as RichConsole
-from .base import Func, tool_metadata
+from .base import Func
 from .file_ops import validate_path_security, check_file_size
-from .encoding import async_detect_encoding, pick_best_decoding, FALLBACK_ENCODINGS
-from ._constants import LARGE_FILE_THRESHOLD, MAX_FILE_SIZE_MB
+from .encoding import async_detect_encoding, pick_best_decoding
+from ._constants import fallback_encodings, large_file_threshold, max_file_size_mb
 from ..core.constants import RESET, RED
 
 _UNSUPPORTED_EXTENSIONS = frozenset({"txt", "text"})
@@ -37,16 +37,6 @@ def _resolve_lexer_name(ext: str) -> str:
         return "text"
 
 
-@tool_metadata(
-    parallel_safe=True,
-    requires_network=False,
-    requires_terminal=False,
-    timeout_estimate=0,
-    category="io",
-    priority=10,
-    tool_category="read",
-    description="读取文件内容",
-)
 class ReadFileFunc(Func):
     name = "read_file"
 
@@ -321,7 +311,7 @@ class ReadFileFunc(Func):
         # 文件大小上限（与 write_file 一致）：超过 MAX_FILE_SIZE_MB 拒绝，
         # 避免超大文件被全量读入引发内存尖峰（LLM 上下文也无法容纳）。
         try:
-            await asyncio.to_thread(check_file_size, file_path, MAX_FILE_SIZE_MB)
+            await asyncio.to_thread(check_file_size, file_path, max_file_size_mb())
         except ValueError as e:
             self._file_result = {
                 _CONTENT_KEY: None, _LINE_NUMBERS_KEY: None,
@@ -333,7 +323,7 @@ class ReadFileFunc(Func):
         # 大文件感知（不阻断读取）——超出 LARGE_FILE_THRESHOLD 时通过通知提示
         try:
             _size = (await aiofiles.os.stat(file_path)).st_size
-            if _size > LARGE_FILE_THRESHOLD:
+            if _size > large_file_threshold():
                 Func._publish_tool_notice(
                     f"提示：{file_path} 大小 {_size // (1024 * 1024)}MB，读取内容可能较大"
                 )
@@ -346,7 +336,7 @@ class ReadFileFunc(Func):
             # 避免同一文件因读取方式不同而得到不同编码结果（GBK 等中文编码一致）。
             actual_encoding, raw_bytes = await self._determine_encoding(file_path)
             decode_candidates = [actual_encoding]
-            full_candidates = decode_candidates + [e for e in FALLBACK_ENCODINGS if e not in decode_candidates]
+            full_candidates = decode_candidates + [e for e in fallback_encodings() if e not in decode_candidates]
             final_encoding, content = await asyncio.to_thread(
                 pick_best_decoding, raw_bytes, full_candidates,
             )

@@ -26,6 +26,7 @@ import math
 import time
 from functools import lru_cache
 
+from src.presentation_data import inline_spinner_frames
 from src.tui.core.color import lerp_color
 
 
@@ -58,12 +59,10 @@ _default_fx_params = lru_cache(maxsize=1)(_default_fx_params)
 #:   ``TuiConfig.defaults()``（运行期修改配置即时生效），不依赖本快照。
 _DEFAULT_FADE_DURATION, _DEFAULT_SPINNER_HZ = _default_fx_params()
 
-#: spinner 帧序列**唯一真源**（BEAUTY 动效收敛，方向4）——ASCII braille 帧
-#: ``⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏``（10 帧，10Hz 推进时 1s 循环）。修复前
-#: ``_ParseLine``（chat_view.py，原 app.py）、``status_bar``
-#: （``\\u280b...`` 转义串）、``_subagent_render``（字符列表）三处各自内联
-#: 同一组字符（表示形式不同：字符串/转义串/列表）——收敛为本常量，消费方
-#: 统一引用（保留各自模块级别名/列表形态以兼容测试导入路径）。
+#: spinner 帧序列兼容快照（ASCII braille 帧 ``⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏``）。
+#: 「一切皆插件」：默认帧序列已上移为表现层数据注册表（``presentation_data``
+#: → ``inline_spinner_frames`` 表，可按 Patch/Overlay 覆盖/禁用）；运行时经
+#: :func:`spinner_char` 实时查询。本常量保留旧调用面/测试 patch 路径。
 SPINNER_FRAMES = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
 
 
@@ -137,7 +136,8 @@ def spinner_char(tick_hz: float = 0.0) -> str:
     Returns:
         当前 spinner 帧字符（如 ``⠋``）。
     """
-    return SPINNER_FRAMES[spinner_frame(tick_hz, SPINNER_FRAMES)]
+    frames = inline_spinner_frames()
+    return frames[spinner_frame(tick_hz, frames)]
 
 
 __all__ = ["fade_color", "spinner_frame", "spinner_char", "SPINNER_FRAMES"]

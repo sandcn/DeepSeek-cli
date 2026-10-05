@@ -2,7 +2,8 @@
 
 「一切皆插件」：渲染与 TUI 的纯数据表——Emoji 短代码、上下标/圈号 Unicode、
 HTML 块标签配色、无序列表符号、轨迹视图 KIND/STATUS 图标配色、主 Agent 运行
-模式文本样式——不再是散落在各模块里的硬编码字典，而是注册到本模块的数据表；
+模式文本样式、工具显示名、告示块样式、Spinner 帧、配置项说明/选项——不再是
+散落在各模块里的硬编码字典，而是注册到本模块的数据表；
 每张表由清单中的**独立插件条目**（``presentation_data``）显式注册，因而可被
 Profile/Bundle 声明，也可被 Patch/Overlay 按 id 单独禁用、覆盖（整表替换）或
 替换。
@@ -209,6 +210,161 @@ MODE_TEXT: dict[str, str] = {
 
 MODE_STYLE_FG: dict[str, int] = {"empty": 178, "simple": 45, "standard": 242}
 
+# ── 工具显示名映射（工具注册名 → UI 显示名） ──────────────
+# UI 显示一律取工具注册名的 PascalCase；新增工具时在此补一行
+# （tests/test_tool_display_name_pascal.py 校验「映射完整 + 值 == PascalCase」）。
+
+TOOL_DISPLAY_NAME_MAP: dict[str, str] = {
+    "read_file": "ReadFile",
+    "read_image": "ReadImage",
+    "write_file": "WriteFile",
+    "update_file": "UpdateFile",
+    "str_replace_editor": "StrReplaceEditor",
+    "file_editor": "FileEditor",
+    "bash": "Bash",
+    "execute_command": "ExecuteCommand",
+    "bash_opt": "BashOpt",
+    "subagent": "Subagent",
+    "subagent_opt": "SubagentOpt",
+    "find": "Find",
+    "grep": "Grep",
+    "glob": "Glob",
+    "search": "Search",
+    "cp": "Cp",
+    "mv": "Mv",
+    "rm": "Rm",
+    "mkdir": "Mkdir",
+    "user_select": "UserSelect",
+    "web_search": "WebSearch",
+    "web_fetch": "WebFetch",
+    "ls": "Ls",
+    "skill": "Skill",
+    "cordis_inspect": "CordisInspect",
+    "cordis_define": "CordisDefine",
+    "cordis_run": "CordisRun",
+    "cordis_stop": "CordisStop",
+    "cordis_undefine": "CordisUndefine",
+}
+
+# ── 告示块（Admonition）样式表 ────────────────────────────
+
+ADMONITION_STYLE_MAP: dict[str, dict[str, str]] = {
+    "NOTE":      {"color": "blue",       "icon": "ℹ️",  "label": "NOTE"},
+    "TIP":       {"color": "green",      "icon": "💡",  "label": "TIP"},
+    "WARNING":   {"color": "yellow",     "icon": "⚠️",  "label": "WARNING"},
+    "CAUTION":   {"color": "red",        "icon": "⚡",  "label": "CAUTION"},
+    "IMPORTANT": {"color": "magenta",    "icon": "❗",  "label": "IMPORTANT"},
+    "INFO":      {"color": "cyan",       "icon": "ℹ️",  "label": "INFO"},
+    "SUCCESS":   {"color": "green",      "icon": "✅",  "label": "SUCCESS"},
+    "QUESTION":  {"color": "bright_blue","icon": "❓",  "label": "QUESTION"},
+    "BUG":       {"color": "red",        "icon": "🐛",  "label": "BUG"},
+    "DANGER":    {"color": "red",        "icon": "🔥",  "label": "DANGER"},
+    "CITE":      {"color": "bright_black","icon": "📖",  "label": "CITE"},
+}
+
+# ── Spinner 动画预设（预设名 → 帧串） ──────────────────────
+
+SPINNER_PRESET_FRAMES: dict[str, str] = {
+    "dots": "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏",
+    "dots2": "⣾⣽⣻⢿⡿⣟⣯⣷",
+    "dots3": "⠋⠙⠚⠞⠖⠦⠴⠲⠳⠓",
+    "dots4": "⠄⠆⠇⠋⠙⠸⠰⠠⠰⠸⠙⠋⠇⠆",
+    "dots5": "⠋⠙⠚⠒⠂⠂⠒⠲⠴⠦⠖⠒⠐⠐⠒⠓⠋",
+    "dots6": "⠁⠉⠙⠚⠒⠂⠂⠒⠲⠴⠤⠄⠄⠤⠴⠲⠒⠂⠂⠒⠚⠙⠉⠁",
+    "dots7": "⠈⠉⠋⠓⠒⠐⠐⠒⠖⠦⠤⠠⠠⠤⠦⠖⠒⠐⠐⠒⠓⠋⠉⠈",
+    "dots8": "⠁⠁⠉⠙⠚⠒⠂⠂⠒⠲⠴⠤⠄⠄⠤⠠⠠⠤⠦⠖⠒⠐⠐⠒⠓⠋⠉⠈⠈",
+    "dots9": "⢹⢺⢼⣸⣇⡧⡗⡏",
+    "dots10": "⢄⢂⢁⡁⡈⡐⡠",
+    "dots11": "⠁⠂⠄⡀⢀⠠⠐⠈",
+    "line": "─╼╾╴╶",
+    "line2": "⠂⠒⠐⠈⠁⠉⠐⠒⠂",
+    "pipe": "┤┘┴└├┌┬┐",
+    "simpleDots": "⠂⠄⠆⠇⠋⠙⠸⠰⠠⠰⠸⠙⠋⠇⠆⠄",
+    "simpleDotsScrolling": "⠈⠐⠠⢀⡀⢄⡂⡆⡇⡏⡟⡿⢿⠻⠽⠾⢾⣀⣠⣄⣆⣇⣏⣟⣿",
+    "bar": "▁▃▄▅▆▇█▇▆▅▄▃",
+    "vertical": "▁▂▃▄▅▆▇█▇▆▅▄▃▂",
+    "grow": "▁▂▃▄▅▆▇█",
+    "growHorizontal": "▏▎▍▌▋▊▉█",
+    "arrow": "←↖↑↗→↘↓↙",
+    "moon": "🌑🌒🌓🌔🌕🌖🌗🌘",
+    "dotsClassic": "⠁⠂⠄⡀⢀⠠⠐⠈",
+    "shark": "▐▌▐▌",
+}
+
+# ── 行内 Spinner 默认帧序列（braille：10 帧 10Hz 推进 1s 循环） ──
+
+INLINE_SPINNER_FRAMES: str = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
+
+# ── 配置项说明映射（写回键名 → 中文说明） ──────────────────
+
+CONFIG_ENTRY_DESC_MAP: dict[str, str] = {
+    # ── 核心配置 ──
+    "MODEL": "当前模型（环境变量 CHAT_MODEL 可覆盖）",
+    "MODELS": "可用模型列表",
+    "REASONING_EFFORT": "推理等级（low/medium/high/max）",
+    "TEMPERATURE": "大模型温度（0.0~2.0，越高越随机）",
+    "THEME": "UI 配色主题（dark/light/high-contrast）",
+    # ── 数值配置 ──
+    "MAX_CONTEXT_CHARS": "上下文最大字符数",
+    "MAX_OUTPUT_CHARS": "单次输出最大字符数",
+    "MAX_RETRIES": "API 调用最大重试次数",
+    "RETRY_BASE_SEC": "重试基础间隔（秒）",
+    "MAX_SESSION_MESSAGES": "会话消息数上限（0=无限制）",
+    "KEEP_RECENT_MESSAGES": "压缩时保留的最近消息数",
+    "MAX_CONTEXT_TOKENS": "上下文最大 tokens",
+    "MODEL_CONTEXT_TOKENS": "模型上下文窗口（tokens，上下文使用率分母）",
+    "SUMMARY_TOKEN_BUDGET": "摘要 token 预算",
+    "AUTO_FORCE_COMPRESS_THRESHOLD": "自动强制压缩阈值",
+    # ── 布尔配置 ──
+    "ENABLE_NOTIFICATIONS": "启用系统通知",
+    "NOTIFY_ON_CHAT_COMPLETION": "聊天完成时通知",
+    # ── 复合配置 ──
+    "TOKEN_PRICES": "token 价格表（input/output/input_cache_hit，$/M）",
+    "MULTIMODAL_MODELS": "多模态模型列表（小写子串匹配，read_image 据此返回图片）",
+    "IMAGE_UPLOAD_OPTIMIZE": "上传前图片优化（折叠旧图+压缩大图，缓解多图请求卡顿）",
+    "IMAGE_UPLOAD_KEEP_RECENT": "上传时保留的最近图片数（更早的图片替换为文本占位，0=不折叠）",
+    "IMAGE_UPLOAD_MAX_DIMENSION": "上传图片长边上限（像素，超过则降采样后再上传）",
+    "IMAGE_UPLOAD_QUALITY": "上传图片 JPEG 压缩质量（1~100，越高越清晰体积越大）",
+    "MCP_SERVERS": "MCP 外部工具服务器列表（name/transport/command 或 url）",
+    # ── HTTP 性能配置（嵌套路径） ──
+    "HTTP_CONNECT_TIMEOUT": "HTTP 连接超时（秒）",
+    "HTTP_READ_TIMEOUT": "HTTP 读取超时（秒）",
+    "HTTP_WRITE_TIMEOUT": "HTTP 写入超时（秒）",
+    "HTTP_MAX_CONNECTIONS": "HTTP 连接池最大连接数",
+    "HTTP_MAX_CONNECTIONS_PER_HOST": "HTTP 单主机最大连接数",
+    "HTTP_KEEP_ALIVE_TIMEOUT": "HTTP 保持连接超时（秒）",
+    "HTTP_ENABLE_POOL": "启用 HTTP 连接池",
+    "HTTP_ENABLE_HTTP2": "启用 HTTP/2",
+    # ── 额外顶层键 ──
+    "provider": "服务提供商（deepseek/custom/anthropic/glm/mimo）",
+    "base_url": "API 基础地址（留空使用 provider 默认）",
+    "api_key": "API Key（留空使用环境变量 CHAT_API_KEY）",
+    "skills": "技能子系统配置（enabled/auto_load 等）",
+}
+
+# ── 枚举选择型配置项候选（写回键 → [(值, 说明), ...]） ─────
+
+CONFIG_ENTRY_OPTION_MAP: dict[str, tuple[tuple[str, str], ...]] = {
+    "PROVIDER": (
+        ("deepseek", "DeepSeek 官方（v4-pro / v4-flash）"),
+        ("custom", "自定义服务（需配置 base_url）"),
+        ("anthropic", "Anthropic（Claude 系列）"),
+        ("glm", "智谱 GLM（open.bigmodel.cn）"),
+        ("mimo", "小米 MiMo（token-plan-cn）"),
+    ),
+    "THEME": (
+        ("dark", "暗色主题"),
+        ("light", "亮色主题"),
+        ("high-contrast", "高对比主题"),
+    ),
+    "REASONING_EFFORT": (
+        ("low", "低——最快响应，思考最少"),
+        ("medium", "中——平衡速度与深度"),
+        ("high", "高——更深入思考"),
+        ("max", "最大——最充分思考"),
+    ),
+}
+
 #: 内置数据表声明
 _BUILTIN_SPECS: Tuple[DataTable, ...] = (
     DataTable("emoji", "emoji", EMOJI_MAP),
@@ -221,6 +377,12 @@ _BUILTIN_SPECS: Tuple[DataTable, ...] = (
     DataTable("trace_status", "trace_status", TRACE_STATUS),
     DataTable("mode_text", "mode_text", MODE_TEXT),
     DataTable("mode_style", "mode_style", MODE_STYLE_FG),
+    DataTable("tool_display_name", "tool_display_name", TOOL_DISPLAY_NAME_MAP),
+    DataTable("admonition_style", "admonition_style", ADMONITION_STYLE_MAP),
+    DataTable("spinner_frames", "spinner_frames", SPINNER_PRESET_FRAMES),
+    DataTable("inline_spinner_frames", "inline_spinner_frames", INLINE_SPINNER_FRAMES),
+    DataTable("config_entry_desc", "config_entry_desc", CONFIG_ENTRY_DESC_MAP),
+    DataTable("config_entry_option", "config_entry_option", CONFIG_ENTRY_OPTION_MAP),
 )
 
 _builtin_specs: Dict[str, DataTable] = {spec.id: spec for spec in _BUILTIN_SPECS}
@@ -453,6 +615,47 @@ def mode_style_fg(mode: str, default: int = 242) -> int:
     return (data_table("mode_style", {}) or {}).get(mode, default)
 
 
+def tool_display_name_map() -> dict:
+    return data_table("tool_display_name", {}) or {}
+
+
+def tool_display_name(tool_name: str, default: str = "") -> str:
+    return tool_display_name_map().get(tool_name, default or tool_name)
+
+
+def admonition_styles() -> dict:
+    return data_table("admonition_style", {}) or {}
+
+
+def admonition_style(adm_type: str, default: dict | None = None) -> dict:
+    styles = admonition_styles()
+    fallback = styles.get("NOTE", {}) if default is None else default
+    return styles.get(str(adm_type or "").upper(), fallback)
+
+
+def spinner_presets() -> dict:
+    return data_table("spinner_frames", {}) or {}
+
+
+def spinner_preset(name: str, default: str = "") -> str:
+    return spinner_presets().get(name, default)
+
+
+def inline_spinner_frames() -> str:
+    frames = data_table("inline_spinner_frames", "")
+    if isinstance(frames, str) and frames:
+        return frames
+    return INLINE_SPINNER_FRAMES
+
+
+def config_entry_descs() -> dict:
+    return data_table("config_entry_desc", {}) or {}
+
+
+def config_entry_options() -> dict:
+    return data_table("config_entry_option", {}) or {}
+
+
 def clear() -> None:
     with _lock:
         _extension.clear()
@@ -499,6 +702,21 @@ __all__ = [
     "trace_status_fg",
     "mode_text",
     "mode_style_fg",
+    "tool_display_name_map",
+    "tool_display_name",
+    "admonition_styles",
+    "admonition_style",
+    "spinner_presets",
+    "spinner_preset",
+    "inline_spinner_frames",
+    "config_entry_descs",
+    "config_entry_options",
+    "TOOL_DISPLAY_NAME_MAP",
+    "ADMONITION_STYLE_MAP",
+    "SPINNER_PRESET_FRAMES",
+    "INLINE_SPINNER_FRAMES",
+    "CONFIG_ENTRY_DESC_MAP",
+    "CONFIG_ENTRY_OPTION_MAP",
     "clear",
     "reset",
 ]

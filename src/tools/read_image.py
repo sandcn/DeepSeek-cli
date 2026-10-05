@@ -32,7 +32,7 @@ import io
 import logging
 import os
 
-from .base import Func, tool_metadata
+from .base import Func
 from .file_ops import validate_path_security
 from ..core.multimodal import is_multimodal_model, build_image_content_blocks
 
@@ -120,10 +120,20 @@ _FORMAT_MEDIA: dict[str, str] = {
 }
 
 # 扩展名 → 声明媒体类型（由 _EXT_TO_FORMAT + _FORMAT_MEDIA 派生，保持一致）。
+# 「一切皆插件」：登记到 ``const_registry``（清单条目 ``tool_const`` 可覆盖/
+# 禁用）；``image_extensions()`` 为实时查询入口，模块名保留向后兼容快照。
 IMAGE_EXTENSIONS: dict[str, str] = {
     ext: _FORMAT_MEDIA.get(fmt, f"image/{fmt.lower()}")
     for ext, fmt in _EXT_TO_FORMAT.items()
 }
+from .const_registry import const as _const, declare_constants as _declare_constants  # noqa: E402
+
+_declare_constants({"IMAGE_EXTENSIONS": IMAGE_EXTENSIONS})
+
+
+def image_extensions() -> dict:
+    """当前生效的「扩展名 → 声明媒体类型」映射（被禁用时为空）。"""
+    return dict(_const("IMAGE_EXTENSIONS", {}) or {})
 # Pillow 可识别的图像格式名集合（用于 registered_extensions 动态过滤：
 # 仅接受静态表认可的「图像」格式，排除 PDF/视频/数据文件等非图像扩展名）。
 _IMAGE_FORMAT_NAMES: frozenset[str] = frozenset(_EXT_TO_FORMAT.values())
@@ -258,16 +268,6 @@ def _normalize_srgb(img, apply_exif: bool = True):
     return img.convert("RGBA" if has_alpha else "RGB")
 
 
-@tool_metadata(
-    parallel_safe=True,
-    requires_network=False,
-    requires_terminal=False,
-    timeout_estimate=0,
-    category="io",
-    priority=10,
-    tool_category="read",
-    description="读取图像内容",
-)
 class ReadImageFunc(Func):
     name = "read_image"
 

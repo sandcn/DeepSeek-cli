@@ -23,12 +23,12 @@ import os
 import re
 
 from ._constants import (
-    GREP_EXCLUDE_DIRS,
-    GREP_EXCLUDE_FILES,
-    RG_EXCLUDE_GLOBS,
+    grep_exclude_dirs,
+    grep_exclude_files,
+    rg_exclude_globs,
     should_exclude_dir,
 )
-from .base import Func, tool_metadata
+from .base import Func
 
 logger = logging.getLogger(__name__)
 
@@ -73,31 +73,31 @@ def _is_binary(data: bytes) -> bool:
     """检测前 512 字节是否包含 null 字节来判断是否为二进制文件"""
     return b"\0" in data[:8192]
 
+# ── 预编译的排除文件 regex（来自生效的 grep 文件排除模式），按模式集缓存 ——
+# 消除 _matches_any 中每次 fnmatch 内部的 translate+compile 开销；
+# 「一切皆插件」：模式经 _constants 访问器实时查询（可被清单条目覆盖/禁用）。
+_GREP_EXCLUDE_RES_CACHE: dict = {}
+
+
+def _grep_exclude_res() -> list:
+    patterns = tuple(grep_exclude_files())
+    if _GREP_EXCLUDE_RES_CACHE.get("key") != patterns:
+        _GREP_EXCLUDE_RES_CACHE["key"] = patterns
+        _GREP_EXCLUDE_RES_CACHE["res"] = [
+            re.compile(fnmatch.translate(p)) for p in patterns
+        ]
+    return _GREP_EXCLUDE_RES_CACHE["res"]
+
+
 def _matches_any(text: str) -> bool:
-    """text 是否匹配 GREP_EXCLUDE_FILES 中的任意一个模式（使用预编译 regex）"""
-    for compiled_re in _GREP_EXCLUDE_RES:
+    """text 是否匹配生效的 grep 文件排除模式中的任意一个（使用预编译 regex）"""
+    for compiled_re in _grep_exclude_res():
         if compiled_re.match(text):
             return True
     return False
 
-# ── 预编译的排除文件 regex（来自 GREP_EXCLUDE_FILES），
-# 消除 _matches_any 中每次 fnmatch 内部的 translate+compile 开销
-_GREP_EXCLUDE_RES: list[re.Pattern] = [
-    re.compile(fnmatch.translate(p)) for p in GREP_EXCLUDE_FILES
-]
-
 # ── 工具类 ────────────────────────────────────────────
 
-@tool_metadata(
-    parallel_safe=True,
-    requires_network=False,
-    requires_terminal=False,
-    timeout_estimate=0,
-    category="code",
-    priority=20,
-    tool_category="read",
-    description="在项目源码中搜索正则模式",
-)
 class SearchFunc(Func):
     """代码搜索工具 — 在项目源码中搜索正则模式"""
 
@@ -268,7 +268,7 @@ class SearchFunc(Func):
         """使用 ripgrep (rg) 搜索"""
         cmd = ["rg", "--line-number", "--no-heading", "--color", "never", "--with-filename"]
 
-        for d in RG_EXCLUDE_GLOBS:
+        for d in rg_exclude_globs():
             cmd.extend(["--glob", f"!{d}"])
 
         if self.include:
@@ -312,11 +312,12 @@ class SearchFunc(Func):
         """
         cmd = ["grep", "-r", "-n", "-a", "-H", "-E"]
 
-        for d in GREP_EXCLUDE_DIRS:
+        for d in grep_exclude_dirs():
             cmd.extend(["--exclude-dir", d])
 
-        if GREP_EXCLUDE_FILES:
-            for d in GREP_EXCLUDE_FILES:
+        exclude_files = grep_exclude_files()
+        if exclude_files:
+            for d in exclude_files:
                 cmd.extend(["--exclude", d])
 
         if self.include:

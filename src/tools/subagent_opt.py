@@ -23,21 +23,11 @@ import json
 import logging
 import math
 
-from .base import Func, tool_metadata
+from .base import Func
 
 logger = logging.getLogger(__name__)
 
 
-@tool_metadata(
-    parallel_safe=False,
-    requires_network=False,
-    requires_terminal=False,
-    timeout_estimate=0,
-    category="general",
-    priority=50,
-    tool_category="general",
-    description="操作后台subagent任务",
-)
 class SubagentOptFunc(Func):
     """按 task_id 操作后台 subagent 任务（subagent 直接后台启动）。"""
 

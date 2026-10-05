@@ -10,11 +10,11 @@ import asyncio
 import logging
 
 from ._constants import (
-    CATCHALL_ENCODINGS,
-    COMMON_ENCODINGS,
-    ENCODING_ALIASES,
-    FALLBACK_ENCODINGS,
-    MAX_DETECT_BYTES,
+    catchall_encodings,
+    common_encodings,
+    encoding_aliases,
+    fallback_encodings,
+    max_detect_bytes,
 )
 
 _logger = logging.getLogger(__name__)
@@ -28,8 +28,10 @@ except ImportError:
     CHARDET_AVAILABLE = False
 
 
-def _read_bytes(file_path: str, max_bytes: int = MAX_DETECT_BYTES) -> bytes:
-    """从文件读取字节用于编码检测，读取前 max_bytes 字节。"""
+def _read_bytes(file_path: str, max_bytes: int | None = None) -> bytes:
+    """从文件读取字节用于编码检测，读取前 max_bytes 字节（默认取注册表常量）。"""
+    if max_bytes is None:
+        max_bytes = max_detect_bytes()
     with open(file_path, 'rb') as f:
         return f.read(max_bytes)
 
@@ -56,6 +58,7 @@ def pick_best_decoding(
     best_enc = candidate_encodings[0]
     best_content = ""
     best_score = -1  # 越大越好
+    catchall = catchall_encodings()
 
     seen: set[str] = set()
     for enc in candidate_encodings:
@@ -69,7 +72,7 @@ def pick_best_decoding(
             replacement_count = decoded.count('\ufffd')
             if replacement_count == 0:
                 # 通吃编码：能解码任意字节但不一定是真实编码，不立即返回
-                if enc.lower() in CATCHALL_ENCODINGS:
+                if enc.lower() in catchall:
                     score = 60  # 通吃编码降分——解码任意字节是无意义的"成功"
                 else:
                     return enc, decoded  # 完美解码且非通吃编码，直接返回
@@ -109,7 +112,7 @@ def _validate_decoding_quality(raw_bytes: bytes, detected_encoding: str) -> str:
         return detected_encoding
 
     # 通吃编码：strict 解码必然成功，但可能非真实编码
-    if detected_encoding.lower() in CATCHALL_ENCODINGS:
+    if detected_encoding.lower() in catchall_encodings():
         pass  # 不返回，走 fallback 候选择优
     else:
         try:
@@ -121,7 +124,7 @@ def _validate_decoding_quality(raw_bytes: bytes, detected_encoding: str) -> str:
 
     # 从 fallback 候选重选，检测结果排首位供候选
     candidates = [detected_encoding]
-    for enc in FALLBACK_ENCODINGS:
+    for enc in fallback_encodings():
         if enc not in candidates:
             candidates.append(enc)
 
@@ -191,8 +194,9 @@ def detect_encoding(file_path: str = "", raw_bytes: bytes | None = None) -> str:
                 elif confidence > 0.5:
                     chardet_encoding = raw_enc
                     # 别名映射
-                    if chardet_encoding in ENCODING_ALIASES:
-                        chardet_encoding = ENCODING_ALIASES[chardet_encoding]
+                    aliases = encoding_aliases()
+                    if chardet_encoding in aliases:
+                        chardet_encoding = aliases[chardet_encoding]
 
         # 如果 chardet 给出了高置信度结果，返回映射后结果（经解码质量验证）
         if chardet_encoding:
@@ -205,7 +209,7 @@ def detect_encoding(file_path: str = "", raw_bytes: bytes | None = None) -> str:
             return _validate_decoding_quality(sample, chardet_encoding)
 
         # chardet 无结果或低置信度 → 尝试常见编码
-        for enc in COMMON_ENCODINGS:
+        for enc in common_encodings():
             try:
                 sample.decode(enc)
                 return enc

@@ -13,10 +13,10 @@ import logging
 _logger = logging.getLogger(__name__)
 
 from ._constants import (
-    DANGEROUS_DEVICE_FILES,
-    SYSTEM_CRITICAL_PATHS,
-    DOS_DEVICE_NAMES,
-    WIN_DEVICE_PREFIXES,
+    dangerous_device_files,
+    dos_device_names,
+    system_critical_paths,
+    win_device_prefixes,
 )
 
 
@@ -24,22 +24,22 @@ def validate_path_security(path):
     """验证路径安全性，不安全时抛出 ValueError"""
     if path is None:
         raise ValueError("缺少必需参数: path")
-    if any(path.startswith(p) for p in WIN_DEVICE_PREFIXES):
+    if any(path.startswith(p) for p in win_device_prefixes()):
         raise ValueError(f"不允许写入原始设备路径: {path}")
     normalized = os.path.normpath(path)
     resolved = os.path.realpath(normalized)
     check_path = resolved
 
     # ★ 先检测具体危险路径（设备文件、系统关键路径等），给出精确错误信息
-    if check_path in DANGEROUS_DEVICE_FILES:
+    if check_path in dangerous_device_files():
         raise ValueError(f"不允许写入特殊设备文件: {check_path}")
 
-    if any(check_path == c or check_path.startswith(c + "/") for c in SYSTEM_CRITICAL_PATHS):
+    if any(check_path == c or check_path.startswith(c + "/") for c in system_critical_paths()):
         raise ValueError(f"不允许写入系统关键文件: {check_path}")
 
     basename = os.path.basename(check_path)
     stem = basename.split(".")[0].upper() if "." in basename else basename.upper()
-    if stem in DOS_DEVICE_NAMES:
+    if stem in dos_device_names():
         raise ValueError(f"不允许写入 DOS 设备名: {check_path}")
     if ":" in basename and os.name == "nt":
         # Windows 上冒号是 NTFS ADS 流语法（"file:stream"）——整体拒绝；
