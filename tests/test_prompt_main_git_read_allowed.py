@@ -45,7 +45,7 @@ class TestGitReadAllowedRule:
         """其余全局约束不受影响，未被误删。"""
         assert "你是一位乐于助人的软件工程师助手。" in main_prompt_text
         assert "# 全局约束" in main_prompt_text
-        assert "推理跟回答纯中文输出" in main_prompt_text
+        assert "思考跟回答强制简体中文输出" in main_prompt_text
         assert "禁止采信代码的任何注释" in main_prompt_text
         assert "plan execute agent 强制串行" in main_prompt_text
 
