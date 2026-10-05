@@ -37,6 +37,28 @@ DEFAULT_TIMEOUT = 30.0
 MAX_TIMEOUT = 600.0
 
 
+def valid_transports() -> tuple:
+    """当前生效的 MCP 传输名（传输注册表为单一真源；读取失败回退快照）。"""
+    try:
+        from .transport_registry import builtin_mcp_transport_ids
+
+        names = tuple(builtin_mcp_transport_ids())
+        return names or VALID_TRANSPORTS
+    except Exception:  # noqa: BLE001 - 注册表不可用时回退快照
+        return VALID_TRANSPORTS
+
+
+def valid_agent_types() -> tuple:
+    """当前生效的 SubAgent 类型名（Agent 类型注册表为单一真源）。"""
+    try:
+        from ..core.agent_types import agent_type_names
+
+        names = tuple(agent_type_names())
+        return names or VALID_AGENT_TYPES
+    except Exception:  # noqa: BLE001 - 注册表不可用时回退快照
+        return VALID_AGENT_TYPES
+
+
 @dataclass
 class McpServerConfig:
     """单个 MCP server 的解析后配置。"""
@@ -61,7 +83,8 @@ class McpServerConfig:
     @property
     def allowed_agents(self) -> set:
         """允许使用该服务器工具的 SubAgent 类型集合。"""
-        result = {a for a in self.agents if a in VALID_AGENT_TYPES}
+        valid = valid_agent_types()
+        result = {a for a in self.agents if a in valid}
         return result or set(DEFAULT_AGENT_TYPES)
 
     @property
@@ -127,15 +150,16 @@ def parse_server(raw: Any, index: int = 0) -> Optional[McpServerConfig]:
         return None
 
     transport = _as_str(raw.get("transport"), "stdio").lower() or "stdio"
-    if transport not in VALID_TRANSPORTS:
+    transports = valid_transports()
+    if transport not in transports:
         _logger.warning(
             "MCP server '%s' 的 transport='%s' 不受支持（可选 %s），已跳过",
-            name, transport, "/".join(VALID_TRANSPORTS),
+            name, transport, "/".join(transports),
         )
         return None
 
     agents_raw = _as_str_list(raw.get("agents"))
-    agents = [a for a in agents_raw if a in VALID_AGENT_TYPES] or list(DEFAULT_AGENT_TYPES)
+    agents = [a for a in agents_raw if a in valid_agent_types()] or list(DEFAULT_AGENT_TYPES)
 
     cfg = McpServerConfig(
         name=name,
@@ -220,6 +244,8 @@ __all__ = [
     "McpServerConfig",
     "VALID_TRANSPORTS",
     "VALID_AGENT_TYPES",
+    "valid_transports",
+    "valid_agent_types",
     "DEFAULT_AGENT_TYPES",
     "DEFAULT_TIMEOUT",
     "parse_server",

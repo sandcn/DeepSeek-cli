@@ -99,8 +99,30 @@ _KITTY_MODIFIER_BITS = {
     "numLock": 128,
 }
 
-#: kitty 事件类型码 → 名称（reportEventTypes 标志下 CSI-u 的 ``:<event>`` 子参数）。
+#: kitty 事件类型码 → 名称兜底快照（reportEventTypes 标志下 CSI-u 的
+#: ``:<event>`` 子参数）；「一切皆插件」：数据来自表现层数据注册表
+#: （``kitty_protocol`` 表），可按 Patch/Overlay 覆盖或禁用。
 _KITTY_EVENT_TYPES = {1: "press", 2: "repeat", 3: "release"}
+
+
+def _kitty_modifier_bits() -> dict:
+    """kitty 修饰键位定义（数据注册表优先，缺席时回退兜底快照）。"""
+    from src.presentation_data import kitty_protocol
+
+    value = (kitty_protocol() or {}).get("modifier_bits")
+    if isinstance(value, dict) and value:
+        return value
+    return _KITTY_MODIFIER_BITS
+
+
+def _kitty_event_types() -> list:
+    """kitty 事件类型名列表（索引 = 事件码 - 1；数据注册表优先）。"""
+    from src.presentation_data import kitty_protocol
+
+    value = (kitty_protocol() or {}).get("event_types")
+    if isinstance(value, (list, tuple)) and value:
+        return [str(item) for item in value]
+    return [_KITTY_EVENT_TYPES[1], _KITTY_EVENT_TYPES[2], _KITTY_EVENT_TYPES[3]]
 
 
 def decode_kitty_modifiers(bits: int) -> dict:
@@ -109,9 +131,10 @@ def decode_kitty_modifiers(bits: int) -> dict:
         bits = int(bits)
     except (TypeError, ValueError):
         bits = 0
+    mapping = _kitty_modifier_bits()
     if bits <= 0:
-        return {name: False for name in _KITTY_MODIFIER_BITS}
-    return {name: bool(bits & flag) for name, flag in _KITTY_MODIFIER_BITS.items()}
+        return {name: False for name in mapping}
+    return {name: bool(bits & int(flag)) for name, flag in mapping.items()}
 
 
 def _kitty_bits_from_modifier(modifier: int) -> int:
@@ -126,7 +149,10 @@ def _kitty_bits_from_modifier(modifier: int) -> int:
 def _kitty_event_type(groups) -> str:
     """从 CSI-u 子参数分组提取事件类型名（无 → 空串）。"""
     if len(groups) >= 2 and len(groups[1]) >= 2:
-        return _KITTY_EVENT_TYPES.get(groups[1][1], "")
+        code = groups[1][1]
+        types = _kitty_event_types()
+        if isinstance(code, int) and 1 <= code <= len(types):
+            return types[code - 1]
     return ""
 
 

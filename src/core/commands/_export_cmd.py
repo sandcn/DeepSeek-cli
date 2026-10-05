@@ -27,13 +27,21 @@ from ..internal.commands._command_core import CommandContext
 
 _out = get_default_output_port()
 
-# ── 角色中文标签 ──────────────────────────────────────
+# ── 角色中文标签（「一切皆插件」：数据来自表现层数据注册表
+#    ``ui_defaults.role_labels``，可按 Patch/Overlay 覆盖或禁用） ──
 _ROLE_LABELS = {
     "system": "系统提示词",
     "user": "用户",
     "assistant": "助手",
     "tool": "工具结果",
 }
+
+
+def _role_labels() -> dict:
+    from ...presentation_data import ui_default
+
+    value = ui_default("role_labels", _ROLE_LABELS)
+    return value if isinstance(value, dict) and value else _ROLE_LABELS
 
 # 默认导出文件名时间戳
 _TIMESTAMP_FMT = "%Y%m%d_%H%M%S"
@@ -101,7 +109,7 @@ def _tool_calls_to_md(msg: dict) -> list[str]:
 def _render_main_message(msg: dict) -> list[str]:
     """渲染主对话单条消息，返回 markdown 行列表（每块自带尾空行）。"""
     role = msg.get("role", "?")
-    label = _ROLE_LABELS.get(role, role)
+    label = _role_labels().get(role, role)
     lines: list[str] = []
 
     if role == "assistant":
@@ -134,7 +142,7 @@ def _render_main_message(msg: dict) -> list[str]:
 def _render_subagent_message(msg: dict) -> list[str]:
     """渲染 SubAgent 内部对话单条消息（结构更丰富，每块自带尾空行）。"""
     role = msg.get("role", "?")
-    label = _ROLE_LABELS.get(role, role)
+    label = _role_labels().get(role, role)
     lines: list[str] = []
 
     if role == "assistant":

@@ -57,6 +57,38 @@ _WELCOME_DOT_LO = 45
 _WELCOME_DOT_HI = 61
 _WELCOME_DOT_PERIOD = 8.0
 
+
+def _welcome_spec() -> dict:
+    """欢迎屏参数（数据注册表优先，非法时回退兜底快照）。
+
+    「一切皆插件」：品牌名 / 渐变色标 / 引导符号 / ✦ 呼吸参数来自表现层
+    数据注册表（``gradient_stops`` 表），可按 Patch/Overlay 覆盖或禁用。
+    """
+    from src.presentation_data import gradient_params
+
+    data = gradient_params()
+    brand = data.get("welcome_brand", _WELCOME_BRAND)
+    if not isinstance(brand, str) or not brand:
+        brand = _WELCOME_BRAND
+    bullet = data.get("welcome_bullet", _WELCOME_BULLET)
+    if not isinstance(bullet, str) or not bullet:
+        bullet = _WELCOME_BULLET
+    stops = data.get("welcome_stops", _WELCOME_GRADIENT_STOPS)
+    try:
+        stops = tuple(int(item) for item in stops) if stops else _WELCOME_GRADIENT_STOPS
+    except (TypeError, ValueError):
+        stops = _WELCOME_GRADIENT_STOPS
+    dot = data.get("welcome_dot") or {}
+    try:
+        dot_params = (
+            int(dot.get("lo", _WELCOME_DOT_LO)),
+            int(dot.get("hi", _WELCOME_DOT_HI)),
+            float(dot.get("period", _WELCOME_DOT_PERIOD)),
+        )
+    except (AttributeError, TypeError, ValueError):
+        dot_params = (_WELCOME_DOT_LO, _WELCOME_DOT_HI, _WELCOME_DOT_PERIOD)
+    return {"brand": brand, "stops": stops, "bullet": bullet, "dot": dot_params}
+
 #: 欢迎屏静态缓存：``((active, width), rows)``——空闲 (False, w) 快照命中
 #: 返回同一 rows 列表引用（跨帧零重建）；宽度变化/首帧构建新缓存。
 #: ★ P3（review）：缓存为模块级可变对象（跨 AppModel 实例共享）——键含
@@ -96,23 +128,26 @@ def _welcome_rows(active: bool, width: int) -> list:
     from src.tui.ink.helpers import truncate_runs
     from src.tui.ink.widgets.gradient import _gradient_runs
     version = _welcome_version()
+    spec = _welcome_spec()
+    bullet_char = spec["bullet"]
     # 品牌行：✦（活跃呼吸 / 空闲静态强调青）+ 渐变标题 + 版本 dim
     if active:
         from src.tui.app._theme import time_glow
-        dot_fg = time_glow(_WELCOME_DOT_LO, _WELCOME_DOT_HI, _WELCOME_DOT_PERIOD)
+        dot_lo, dot_hi, dot_period = spec["dot"]
+        dot_fg = time_glow(dot_lo, dot_hi, dot_period)
     else:
         dot_fg = 45
     brand_runs: list = [StyledRun("\u2726 ", Style(fg=dot_fg, bold=True))]
-    brand_runs.extend(_gradient_runs(_WELCOME_BRAND, _WELCOME_GRADIENT_STOPS))
+    brand_runs.extend(_gradient_runs(spec["brand"], spec["stops"]))
     if version:
         brand_runs.append(StyledRun(f" \u00b7 {version}", Style(fg=242)))
     # 引导行（› 强调青 + 文本；首行亮白、其余 dim）
     bullet = Style(fg=45)
-    lead = [StyledRun("  ", None), StyledRun(f"{_WELCOME_BULLET} ", bullet),
+    lead = [StyledRun("  ", None), StyledRun(f"{bullet_char} ", bullet),
             StyledRun("直接输入消息开始对话", Style(fg=252))]
-    cmd = [StyledRun("  ", None), StyledRun(f"{_WELCOME_BULLET} ", bullet),
+    cmd = [StyledRun("  ", None), StyledRun(f"{bullet_char} ", bullet),
            StyledRun("/help 查看命令 · /model 选择模型 · /theme 主题", Style(fg=242))]
-    keys = [StyledRun("  ", None), StyledRun(f"{_WELCOME_BULLET} ", bullet),
+    keys = [StyledRun("  ", None), StyledRun(f"{bullet_char} ", bullet),
             StyledRun("Tab 补全 · Ctrl+N 切换模型 · Ctrl+H 轨迹视图", Style(fg=242))]
     rows: list = [brand_runs, [StyledRun(" ", None)], lead, cmd, keys]
     if width and width > 0:

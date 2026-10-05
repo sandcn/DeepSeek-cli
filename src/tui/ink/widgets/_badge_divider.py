@@ -48,24 +48,65 @@ _ANSI_LEVELS = (0, 95, 135, 175, 215, 255)
 _BADGE_BRIGHTNESS_THRESHOLD = 150
 
 
+def _badge_params() -> dict:
+    """Badge 对比色度量（表现层数据注册表优先，非法时回退兜底快照）。
+
+    「一切皆插件」：前景对比色 / 亮度阈值 / 基础 16 色亮度 / 256 色档位表
+    来自 ``presentation_data`` → ``badge_metrics`` 表，可按 Patch/Overlay
+    覆盖或禁用。
+    """
+    from src.presentation_data import badge_metrics
+
+    data = badge_metrics()
+
+    def _as_int(key, default):
+        try:
+            return int(data.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    raw_base = data.get("base_brightness") or {}
+    base: dict = {}
+    for key, value in raw_base.items():
+        try:
+            base[int(key)] = int(value)
+        except (TypeError, ValueError):
+            continue
+    raw_levels = data.get("ansi_levels") or _ANSI_LEVELS
+    try:
+        levels = tuple(int(item) for item in raw_levels)
+    except (TypeError, ValueError):
+        levels = _ANSI_LEVELS
+    return {
+        "fg_on_dark": _as_int("fg_on_dark", _BADGE_FG_ON_DARK),
+        "fg_on_light": _as_int("fg_on_light", _BADGE_FG_ON_LIGHT),
+        "threshold": _as_int("brightness_threshold", _BADGE_BRIGHTNESS_THRESHOLD),
+        "base": base or _BASE_BRIGHTNESS,
+        "levels": levels or _ANSI_LEVELS,
+    }
+
+
 def _ansi256_brightness(color: int) -> float:
     """估算 256 色号近似亮度（0-255 标度，NTSC 加权）。"""
+    params = _badge_params()
     if color < 16:
-        return _BASE_BRIGHTNESS.get(color, 128)
+        return params["base"].get(color, 128)
     if color >= 232:
         return (color - 232) * 10 + 8  # 灰阶 232→8、255→238 线性
+    levels = params["levels"]
     n = color - 16
-    r = _ANSI_LEVELS[n // 36]
-    g = _ANSI_LEVELS[(n // 6) % 6]
-    b = _ANSI_LEVELS[n % 6]
+    r = levels[n // 36]
+    g = levels[(n // 6) % 6]
+    b = levels[n % 6]
     return 0.299 * r + 0.587 * g + 0.114 * b
 
 
 def _badge_fg_for_bg(bg: int) -> int:
     """根据背景色近似亮度返回可读前景色号（亮背景→暗前景，反之亦然）。"""
-    if _ansi256_brightness(bg) > _BADGE_BRIGHTNESS_THRESHOLD:
-        return _BADGE_FG_ON_LIGHT  # 亮背景 → 暗前景
-    return _BADGE_FG_ON_DARK  # 暗背景 → 亮前景
+    params = _badge_params()
+    if _ansi256_brightness(bg) > params["threshold"]:
+        return params["fg_on_light"]  # 亮背景 → 暗前景
+    return params["fg_on_dark"]  # 暗背景 → 亮前景
 
 
 def Badge(props: dict) -> Element:

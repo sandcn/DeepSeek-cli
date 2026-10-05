@@ -29,6 +29,24 @@ __all__ = [
 _PROC_ROOT = "/proc"
 _MAX_ANCESTOR_DEPTH = 8
 
+
+def _detect_table(name: str, default):
+    """取检测表（表现层数据注册表优先，缺席/非法时回退内置默认）。
+
+    「一切皆插件」：Shell/终端检测表（shell_aliases / terminal_env_rules /
+    term_program_map / terminal_process_aliases）登记在表现层数据注册表
+    （``presentation_data`` → ``shell_detect`` 表），可按 Patch/Overlay
+    覆盖或禁用。
+    """
+    try:
+        from ..presentation_data import shell_detect_table
+
+        value = shell_detect_table(name, None)
+    except Exception:
+        value = None
+    return value if value else default
+
+
 _SHELL_ALIASES = {
     "bash": "bash",
     "sh": "sh",
@@ -194,10 +212,11 @@ def _shell_from_name(value: str) -> str:
     base = _basename_lower(value)
     if not base:
         return ""
-    if base in _SHELL_ALIASES:
-        return _SHELL_ALIASES[base]
-    if base.startswith("git-") and base[4:] in _SHELL_ALIASES:
-        return _SHELL_ALIASES[base[4:]]
+    aliases = _detect_table("shell_aliases", _SHELL_ALIASES)
+    if base in aliases:
+        return aliases[base]
+    if base.startswith("git-") and base[4:] in aliases:
+        return aliases[base[4:]]
     return ""
 
 
@@ -234,7 +253,7 @@ def _detect_shell(env: Mapping, ancestors: list) -> str:
 
 def _map_term_program(value: str) -> str:
     text = (value or "").strip()
-    return _TERM_PROGRAM_MAP.get(text.lower(), text)
+    return _detect_table("term_program_map", _TERM_PROGRAM_MAP).get(text.lower(), text)
 
 
 def _map_terminal_emulator(value: str) -> str:
@@ -255,7 +274,8 @@ def _normalize_term(value: str) -> str:
 
 
 def _detect_terminal(env: Mapping, ancestors: list) -> str:
-    for var, label in _TERMINAL_ENV_RULES:
+    for rule in _detect_table("terminal_env_rules", _TERMINAL_ENV_RULES):
+        var, label = rule[0], rule[1]
         value = env.get(var)
         if not value:
             continue
@@ -264,8 +284,9 @@ def _detect_terminal(env: Mapping, ancestors: list) -> str:
         if var == "TERMINAL_EMULATOR":
             return _map_terminal_emulator(value)
         return label
+    aliases = _detect_table("terminal_process_aliases", _TERMINAL_PROCESS_ALIASES)
     for name in ancestors:
-        label = _TERMINAL_PROCESS_ALIASES.get(_basename_lower(name))
+        label = aliases.get(_basename_lower(name))
         if label:
             return label
     term = env.get("TERM")

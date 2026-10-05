@@ -59,19 +59,29 @@ from src.tui._format import format_duration, format_tokens, format_speed, single
 
 from src.tui._subagent_state import _AgentSlot, _ToolRecord
 
-#: 语义色（与 _const._C_* 值一致：RUNNING=214/DONE=40/FAIL=196/ANSWERING=75/
-#: PARSING=178/BATCH=140/DIMMER=240/DIMMEST=238/SUMMARY_DIM=245）
-_S_RUNNING = Style(fg=214)          # 琥珀 — 运行中
-_S_DONE = Style(fg=40)              # 亮绿 — 完成
-_S_FAIL = Style(fg=196)             # 亮红 — 失败
-_S_ANSWERING = Style(fg=75)         # 浅蓝 — 回答中
-_S_PARSING = Style(fg=178)          # 金色 — 解析
-_S_BATCH = Style(fg=140)            # 淡紫 — 批量
-_S_DIMMER = Style(fg=240)           # 暗灰 — 辅助
-_S_DIMMEST = Style(fg=238)          # 深灰 — 分隔线
-_S_SUMMARY_DIM = Style(fg=245)      # 中灰 — 摘要次要
-#: 树形分支线色（历史 _C_BRANCH=239：灰——树形线，无槽位保留字面量）
-_S_BRANCH = Style(fg=239)
+#: 语义色（单一真源：``presentation_data.semantic_color`` 表 → 经
+#: ``src.tui._const._SEMANTIC_COLOR`` 实时映射取色号）。原硬编码色号仅作
+#: 兜底字面量；表可按 Patch/Overlay 覆盖或禁用。
+def _semantic_style(name: str, fallback: int) -> Style:
+    from src.tui._const import _SEMANTIC_COLOR
+    try:
+        fg = int(_SEMANTIC_COLOR.get(name, fallback))
+    except (TypeError, ValueError):
+        fg = fallback
+    return Style(fg=fg)
+
+
+_S_RUNNING = _semantic_style("running", 214)      # 琥珀 — 运行中
+_S_DONE = _semantic_style("done", 40)             # 亮绿 — 完成
+_S_FAIL = _semantic_style("fail", 196)            # 亮红 — 失败
+_S_ANSWERING = _semantic_style("answering", 75)   # 浅蓝 — 回答中
+_S_PARSING = _semantic_style("parsing", 178)      # 金色 — 解析
+_S_BATCH = _semantic_style("batch", 140)          # 淡紫 — 批量
+_S_DIMMER = _semantic_style("dimmer", 240)        # 暗灰 — 辅助
+_S_DIMMEST = _semantic_style("dimmest", 238)      # 深灰 — 分隔线
+_S_SUMMARY_DIM = _semantic_style("summary_dim", 245)  # 中灰 — 摘要次要
+#: 树形分支线色（灰——树形线）
+_S_BRANCH = _semantic_style("branch", 239)
 
 #: 二级子行前缀常量表（P3 review 微优化：10Hz 刷新每帧复用，避免新建
 #: StyledRun）。键 = 一级延续线（"   " 最后 agent / "│  " 非最后）+

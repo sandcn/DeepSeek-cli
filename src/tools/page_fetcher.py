@@ -302,18 +302,21 @@ _STRPTIME_RE_PART = {
     "%z": r"[+-]\d{2}:?\d{2}",
     "%Z": r"[A-Za-z]+",
 }
-def _pattern_to_regex(pattern: str) -> str:
+def _pattern_to_regex(pattern: str, parts: dict | None = None) -> str:
     """strptime 格式串 → 前缀匹配正则（捕获组 1 = 恰好匹配该格式的前缀）。
 
     逐字符扫描：``%X`` 指令替换为对应匹配段，其余字面量转义保留
     （"-"、":"、"T"、"/"、"年" 等分隔符不得丢失）。
+
+    ``parts`` 为指令 → 正则段映射（缺省取当前生效的 ``STRPTIME_RE_PART``）。
     """
+    mapping = parts if parts is not None else strptime_re_parts()
     out: list[str] = []
     i = 0
     while i < len(pattern):
         if pattern[i] == "%" and i + 1 < len(pattern):
             directive = pattern[i:i + 2]
-            part = _STRPTIME_RE_PART.get(directive)
+            part = mapping.get(directive)
             if part is not None:
                 out.append(part)
                 i += 2
@@ -323,10 +326,23 @@ def _pattern_to_regex(pattern: str) -> str:
     return "(" + "".join(out) + ")"
 
 
-_PATTERN_RE = [
-    (pattern, re.compile(_pattern_to_regex(pattern)))
-    for pattern in _DATE_PATTERNS
-]
+#: 预编译模式缓存（键 = 常量注册表版本——表被覆盖/禁用后自动重建）
+_PATTERN_RE_CACHE: dict = {"gen": -1, "data": []}
+
+
+def _pattern_res() -> list:
+    """当前生效的 ``[(格式串, 预编译正则)]``（常量注册表变更后自动重建）。"""
+    from .const_registry import generation
+
+    gen = generation()
+    if _PATTERN_RE_CACHE.get("gen") != gen:
+        parts = strptime_re_parts()
+        _PATTERN_RE_CACHE["data"] = [
+            (pattern, re.compile(_pattern_to_regex(pattern, parts)))
+            for pattern in date_patterns()
+        ]
+        _PATTERN_RE_CACHE["gen"] = gen
+    return _PATTERN_RE_CACHE["data"]
 
 
 def _format_date_str(date_str: str) -> str:
@@ -337,7 +353,7 @@ def _format_date_str(date_str: str) -> str:
     if clean.endswith("Z"):
         clean = clean[:-1] + "+00:00"
 
-    for pattern, pattern_re in _PATTERN_RE:
+    for pattern, pattern_re in _pattern_res():
         m = pattern_re.match(clean)
         if not m:
             continue
@@ -368,7 +384,9 @@ def _is_noise_element(tag: Tag) -> bool:
     return bool(noise_re.search(classes)) if noise_re is not None else False
 
 
-# 策略3 常见内容区 CSS 选择器（模块级常量，避免每次调用重新构建）
+#: 策略3 常见内容区 CSS 选择器兜底快照（「一切皆插件」：数据来自
+#: ``const_registry`` 的 ``CONTENT_SELECTORS`` 常量，可按清单条目覆盖/禁用；
+#: ``content_selectors()`` 为实时查询入口）。
 _CONTENT_SELECTORS = [
     ".content", ".post-content", ".article-content",
     ".entry-content", ".post-body", ".article-body",
@@ -376,6 +394,30 @@ _CONTENT_SELECTORS = [
     "#content", "#main-content", "#article",
     "[itemprop='articleBody']",
 ]
+
+# 「一切皆插件」：日期格式表 / strptime 指令正则段表 / 内容区选择器表登记到
+# ``const_registry``（清单条目 ``tool_const`` 可覆盖/禁用）；各 accessor 为
+# 实时查询入口，模块级名保留向后兼容快照。
+_declare_constants({
+    "DATE_PATTERNS": _DATE_PATTERNS,
+    "STRPTIME_RE_PART": _STRPTIME_RE_PART,
+    "CONTENT_SELECTORS": _CONTENT_SELECTORS,
+})
+
+
+def date_patterns() -> list:
+    """当前生效的日期格式串列表（被禁用时为空）。"""
+    return list(_const("DATE_PATTERNS", []) or [])
+
+
+def strptime_re_parts() -> dict:
+    """当前生效的 strptime 指令 → 正则段映射（被禁用时为空）。"""
+    return dict(_const("STRPTIME_RE_PART", {}) or {})
+
+
+def content_selectors() -> list:
+    """当前生效的内容区 CSS 选择器列表（被禁用时为空）。"""
+    return list(_const("CONTENT_SELECTORS", []) or [])
 
 
 def _extract_main_content(soup: BeautifulSoup) -> str:
@@ -403,7 +445,7 @@ def _extract_main_content(soup: BeautifulSoup) -> str:
             return text
 
     # 策略3: 常见内容 class
-    for selector in _CONTENT_SELECTORS:
+    for selector in content_selectors():
         container = soup.select_one(selector)
         if container:
             text = _extract_text_from_container(container)

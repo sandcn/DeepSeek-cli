@@ -124,6 +124,7 @@ _TOOL_CONST_NAMES = (
     "IMAGE_EXT_FORMAT", "IMAGE_FORMAT_MEDIA", "IMAGE_EXTENSIONS",
     "REMOVE_TAGS", "REMOVE_CLASS_KEYWORDS", "PRIVATE_PREFIXES",
     "DATE_META_PATTERNS",
+    "DATE_PATTERNS", "STRPTIME_RE_PART", "CONTENT_SELECTORS",
 )
 
 TOOL_CONST_ENTRIES = [
@@ -699,6 +700,9 @@ PRESENTATION_DATA_ENTRIES = [
         "trace_kind_order", "trace_block_kind", "message_role_icon",
         "border_chars", "border_object_default",
         "billing_default", "metric_defaults", "ui_defaults",
+        "semantic_color", "gradient_stops", "shell_detect",
+        "http_error_hint", "badge_metrics", "kitty_protocol",
+        "nested_bullet", "diff_style", "trace_style", "model_patterns",
     )
 ]
 

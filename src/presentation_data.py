@@ -180,6 +180,10 @@ HTML_TAG_COLORS: dict[str, str] = {"div": "blue", "pre": "green", "table": "yell
 
 BULLETS: list[str] = ["\u2022", "\u25e6", "\u25aa"]
 
+#: 渲染器嵌套列表符号表（按嵌套深度取符号；与行内 ``bullet`` 表语义不同——
+#: 后者用于行内无序列表前缀，本表用于块级嵌套列表缩进符号）。
+NESTED_BULLET_SYMBOLS: list[str] = ["\u2022", "\u25e6", "\u25aa", "\u25b8", "\u25b9", "\u25c6"]
+
 # ── 轨迹视图 KIND / STATUS 表现 ──────────────────────────
 
 TRACE_KIND: dict[str, dict] = {
@@ -435,6 +439,216 @@ UI_DEFAULTS_DATA: dict = {
     "tool_fallback_fg": 242,
     "tool_fallback_breath": [242, 252],
     "codeblock_border": ["┌", "┐", "└", "┘", "─", "│"],
+    "tool_head_tools": ["find", "search", "ls", "read_file"],
+    "tool_head_lines": 3,
+    "bash_output_tail_lines": 3,
+    "tool_incremental_threshold": 64,
+    "role_labels": {
+        "system": "系统提示词",
+        "user": "用户",
+        "assistant": "助手",
+        "tool": "工具结果",
+    },
+    "internal_prefill_cmds": ["/editmsg", "/deitmsg", "/retry"],
+    "summary_core_max_items": 4,
+    "summary_core_max_len": 50,
+    "summary_tech_max_items": 3,
+    "summary_truncate_length": 300,
+}
+
+# ── 模型名称匹配模式表（推理模型 / V4 系列检测） ──────────────
+
+MODEL_PATTERNS_DATA: dict = {
+    "reasoner_patterns": ["reasoner"],
+    "v4_prefixes": ["deepseek-v4", "deepseek-flash"],
+}
+
+# ── 语义色槽位表（主题/组件配色单一真源） ────────────────────
+#
+# 「一切皆插件」：语义色（accent/dim/sep/time/token/speed/tool_ok/... 以及
+# subagent 面板的 running/done/fail/... 槽位）不再是各模块的自有硬编码
+# 色号，而是本表的条目；`src/tui/_const._SEMANTIC_COLOR` 实时委托本表，
+# 主题/Palette 与子代理面板配色据此派生（可按 Patch/Overlay 覆盖或禁用）。
+
+SEMANTIC_COLOR_DATA: dict = {
+    "accent": 45,
+    "deep_cyan": 32,
+    "dim": 242,
+    "sep": 237,
+    "time": 110,
+    "token": 68,
+    "speed": 214,
+    "tool_ok": 41,
+    "tool_fail": 196,
+    "select_bg": 236,
+    "select_fg": 15,
+    "border": 23,
+    "placeholder": 238,
+    "running": 214,
+    "done": 40,
+    "fail": 196,
+    "answering": 75,
+    "parsing": 178,
+    "batch": 140,
+    "dimmer": 240,
+    "dimmest": 238,
+    "summary_dim": 245,
+    "branch": 239,
+}
+
+# ── 渐变/呼吸动效参数表 ─────────────────────────────────────
+#
+# 顶部标题栏与欢迎屏的渐变停靠点、呼吸色域与周期登记为数据表，
+# 可按 Patch/Overlay 覆盖或禁用（消费方经 ``gradient_param`` 实时查询）。
+
+GRADIENT_STOPS_DATA: dict = {
+    "title_stops": [45, 39, 141, 213],
+    "welcome_stops": [45, 39, 141, 213],
+    "welcome_brand": "DeepSeek CLI",
+    "welcome_bullet": "\u203a",
+    "header_dot": {"lo": 205, "hi": 219, "period": 6.0},
+    "header_version": {"lo": 242, "hi": 252, "period": 8.0},
+    "welcome_dot": {"lo": 45, "hi": 61, "period": 8.0},
+}
+
+# ── Shell / 终端检测表（系统提示词「当前命令行」章节） ────────
+
+SHELL_DETECT_DATA: dict = {
+    "shell_aliases": {
+        "bash": "bash", "sh": "sh", "zsh": "zsh", "fish": "fish", "ksh": "ksh",
+        "mksh": "ksh", "dash": "dash", "ash": "ash", "csh": "csh", "tcsh": "tcsh",
+        "nu": "nushell", "nushell": "nushell", "xonsh": "xonsh", "elvish": "elvish",
+        "pwsh": "powershell", "powershell": "powershell",
+        "powershell_ise": "powershell", "cmd": "cmd", "busybox": "sh",
+    },
+    "terminal_env_rules": [
+        ["WT_SESSION", "Windows Terminal"],
+        ["TERM_PROGRAM", ""],
+        ["TERMINAL_EMULATOR", ""],
+        ["WEZTERM_PANE", "WezTerm"],
+        ["KITTY_WINDOW_ID", "kitty"],
+        ["ALACRITTY_WINDOW_ID", "Alacritty"],
+        ["ALACRITTY_SOCKET", "Alacritty"],
+        ["KONSOLE_VERSION", "Konsole"],
+        ["VTE_VERSION", "VTE"],
+        ["TMUX", "tmux"],
+        ["STY", "screen"],
+        ["TERMUX_VERSION", "Termux"],
+    ],
+    "term_program_map": {
+        "apple_terminal": "Apple Terminal",
+        "iterm.app": "iTerm2",
+        "vscode": "VS Code",
+        "mintty": "mintty",
+        "wezterm": "WezTerm",
+        "hyper": "Hyper",
+        "ghostty": "Ghostty",
+        "tabby": "Tabby",
+        "windows_terminal": "Windows Terminal",
+        "wt": "Windows Terminal",
+    },
+    "terminal_process_aliases": {
+        "mintty": "mintty",
+        "xterm": "xterm",
+        "konsole": "Konsole",
+        "gnome-terminal": "GNOME Terminal",
+        "gnome-terminal-server": "GNOME Terminal",
+        "kgx": "GNOME Console",
+        "kitty": "kitty",
+        "alacritty": "Alacritty",
+        "wezterm": "WezTerm",
+        "wezterm-gui": "WezTerm",
+        "windowsterminal": "Windows Terminal",
+        "wt": "Windows Terminal",
+        "tmux": "tmux",
+        "screen": "screen",
+        "iterm2": "iTerm2",
+        "qterminal": "QTerminal",
+        "terminator": "Terminator",
+        "tilix": "Tilix",
+        "xfce4-terminal": "Xfce Terminal",
+        "lxterminal": "LXTerminal",
+        "mate-terminal": "MATE Terminal",
+        "urxvt": "urxvt",
+        "rxvt": "rxvt",
+        "terminology": "Terminology",
+    },
+}
+
+# ── HTTP 状态码 → 用户可操作提示表（api/errors） ──────────────
+
+HTTP_ERROR_HINT_DATA: dict = {
+    "400": "请求参数不合法",
+    "401": "API 密钥无效或未设置，请检查环境变量 CHAT_API_KEY",
+    "403": "API 密钥无权访问（可能欠费或权限不足）",
+    "404": "接口地址或模型不存在，请检查 BASE_URL 与模型名",
+    "408": "请求超时",
+    "422": "请求参数验证失败（如消息历史中 tool_calls 与 tool 响应不配对）",
+    "425": "请求过早，请稍后重试",
+    "429": "请求频率超限或额度不足",
+    "500": "服务端内部错误",
+    "502": "网关错误（上游服务不可用）",
+    "503": "服务暂时不可用（过载或维护中）",
+    "504": "网关超时",
+}
+
+# ── Badge 对比色度量表（ink Badge 前景自动对比） ──────────────
+
+BADGE_METRICS_DATA: dict = {
+    "fg_on_dark": 231,
+    "fg_on_light": 232,
+    "brightness_threshold": 150,
+    "base_brightness": {
+        "0": 0, "1": 139, "2": 146, "3": 178, "4": 93, "5": 158, "6": 170, "7": 192,
+        "8": 128, "9": 255, "10": 255, "11": 255, "12": 255, "13": 255, "14": 255, "15": 255,
+    },
+    "ansi_levels": [0, 95, 135, 175, 215, 255],
+}
+
+# ── Kitty 键盘协议解析表（CSI u 增强键盘 / 事件类型） ─────────
+KITTY_PROTOCOL_DATA: dict = {
+    "modifier_bits": {
+        "shift": 1, "alt": 2, "ctrl": 4, "super": 8, "hyper": 16, "meta": 32,
+        "capsLock": 64, "numLock": 128,
+    },
+    "event_types": ["press", "repeat", "release"],
+}
+
+# ── Diff 渲染样式表（diff 文件头 / hunk / 行号 / 标记 / 行内背景） ──
+
+DIFF_STYLE_DATA: dict = {
+    "del_bg": 124,
+    "add_bg": 28,
+    "separator_width": 40,
+    "file_old": {"fg": 210, "bold": True},
+    "file_new": {"fg": 114, "bold": True},
+    "hunk_bar": {"fg": 45, "dim": True},
+    "num_del": {"fg": 167},
+    "num_add": {"fg": 41},
+    "mark_del": {"fg": 196, "bold": True},
+    "mark_add": {"fg": 41, "bold": True},
+}
+
+# ── 轨迹视图（Trace）样式表（台账 / 检查器 / 树渲染共用） ─────
+
+TRACE_STYLE_DATA: dict = {
+    "title": {"fg": 45, "bold": True},
+    "hint": {"fg": 242},
+    "sep_row": {"fg": 238},
+    "index": {"fg": 242},
+    "time": {"fg": 110},
+    "text": {"fg": 252},
+    "dim": {"fg": 242},
+    "sel_bg": {"bg": 237},
+    "sel_mark": {"fg": 45, "bold": True},
+    "section": {"fg": 110, "bold": True},
+    "tree_key": {"fg": 75},
+    "tree_val": {"fg": 252},
+    "insp_bg": {"bg": 237},
+    "search_bg": {"bg": 236},
+    "search_cur_bg": {"bg": 25},
+    "search_prompt": {"fg": 45, "bold": True},
+    "search_query_max": 200,
 }
 
 #: 内置数据表声明
@@ -463,6 +677,16 @@ _BUILTIN_SPECS: Tuple[DataTable, ...] = (
     DataTable("billing_default", "billing_default", BILLING_DEFAULT_DATA),
     DataTable("metric_defaults", "metric_defaults", METRIC_DEFAULTS_DATA),
     DataTable("ui_defaults", "ui_defaults", UI_DEFAULTS_DATA),
+    DataTable("semantic_color", "semantic_color", SEMANTIC_COLOR_DATA),
+    DataTable("gradient_stops", "gradient_stops", GRADIENT_STOPS_DATA),
+    DataTable("shell_detect", "shell_detect", SHELL_DETECT_DATA),
+    DataTable("http_error_hint", "http_error_hint", HTTP_ERROR_HINT_DATA),
+    DataTable("badge_metrics", "badge_metrics", BADGE_METRICS_DATA),
+    DataTable("kitty_protocol", "kitty_protocol", KITTY_PROTOCOL_DATA),
+    DataTable("nested_bullet", "nested_bullet", NESTED_BULLET_SYMBOLS),
+    DataTable("diff_style", "diff_style", DIFF_STYLE_DATA),
+    DataTable("trace_style", "trace_style", TRACE_STYLE_DATA),
+    DataTable("model_patterns", "model_patterns", MODEL_PATTERNS_DATA),
 )
 
 _builtin_specs: Dict[str, DataTable] = {spec.id: spec for spec in _BUILTIN_SPECS}
@@ -773,6 +997,76 @@ def ui_default(key: str, default=None):
     return ui_defaults().get(key, default)
 
 
+def semantic_colors() -> dict:
+    return data_table("semantic_color", {}) or {}
+
+
+def semantic_color(name: str, default=None):
+    """按槽位名取语义色 256 色号（缺席返回 ``default``）。"""
+    return semantic_colors().get(name, default)
+
+
+def gradient_params() -> dict:
+    return data_table("gradient_stops", {}) or {}
+
+
+def gradient_param(name: str, default=None):
+    return gradient_params().get(name, default)
+
+
+def shell_detect() -> dict:
+    return data_table("shell_detect", {}) or {}
+
+
+def shell_detect_table(name: str, default=None):
+    return shell_detect().get(name, default)
+
+
+def http_error_hints() -> dict:
+    return data_table("http_error_hint", {}) or {}
+
+
+def http_error_hint(status_code, default=None):
+    """按状态码取用户可操作提示（int/str 键兼容）。"""
+    hints = http_error_hints()
+    return hints.get(str(status_code), hints.get(status_code, default))
+
+
+def badge_metrics() -> dict:
+    return data_table("badge_metrics", {}) or {}
+
+
+def kitty_protocol() -> dict:
+    return data_table("kitty_protocol", {}) or {}
+
+
+def nested_bullets() -> list:
+    """渲染器嵌套列表符号（按深度取；缺席时回退内置快照）。"""
+    value = data_table("nested_bullet", None)
+    if isinstance(value, (list, tuple)) and value:
+        return list(value)
+    return list(NESTED_BULLET_SYMBOLS)
+
+
+def diff_style(key: str, default=None):
+    """按 key 取 diff 渲染样式规格（缺席返回 ``default``）。"""
+    return (data_table("diff_style", {}) or {}).get(key, default)
+
+
+def trace_style(key: str, default=None):
+    """按 key 取轨迹视图样式规格（缺席返回 ``default``）。"""
+    return (data_table("trace_style", {}) or {}).get(key, default)
+
+
+def model_patterns() -> dict:
+    return data_table("model_patterns", {}) or {}
+
+
+def model_pattern(key: str, default=None):
+    """按 key 取模型匹配模式表项（缺席返回 ``default``）。"""
+    return model_patterns().get(key, default)
+
+
 def clear() -> None:
     with _lock:
         _extension.clear()
@@ -837,6 +1131,21 @@ __all__ = [
     "metric_defaults",
     "ui_defaults",
     "ui_default",
+    "semantic_colors",
+    "semantic_color",
+    "gradient_params",
+    "gradient_param",
+    "shell_detect",
+    "shell_detect_table",
+    "http_error_hints",
+    "http_error_hint",
+    "badge_metrics",
+    "kitty_protocol",
+    "nested_bullets",
+    "diff_style",
+    "trace_style",
+    "model_patterns",
+    "model_pattern",
     "TRACE_KIND_ORDER_DATA",
     "TRACE_BLOCK_KIND_MAP",
     "MESSAGE_ROLE_ICON_MAP",

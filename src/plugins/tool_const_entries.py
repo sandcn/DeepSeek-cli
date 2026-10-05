@@ -31,6 +31,9 @@ _CONST_DECLARERS = {
     "REMOVE_CLASS_KEYWORDS": "src.tools.page_fetcher",
     "PRIVATE_PREFIXES": "src.tools.page_fetcher",
     "DATE_META_PATTERNS": "src.tools.page_fetcher",
+    "DATE_PATTERNS": "src.tools.page_fetcher",
+    "STRPTIME_RE_PART": "src.tools.page_fetcher",
+    "CONTENT_SELECTORS": "src.tools.page_fetcher",
 }
 
 

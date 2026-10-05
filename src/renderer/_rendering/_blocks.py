@@ -112,8 +112,16 @@ def render_blockquote_prefix(depth: int) -> Text:
 # 列表项前缀
 # ═══════════════════════════════════════════════════════════
 
+#: 嵌套列表符号兜底快照（「一切皆插件」：数据来自表现层数据注册表
+#: ``presentation_data.nested_bullet``，可按 Patch/Overlay 覆盖/禁用）。
 _BULLET_SYMBOLS = ["•", "◦", "▪", "▸", "▹", "◆"]
 BULLET_SYMBOLS = _BULLET_SYMBOLS
+
+
+def _bullet_symbols() -> list:
+    from src.presentation_data import nested_bullets
+
+    return nested_bullets() or _BULLET_SYMBOLS
 
 
 def get_list_item_prefix(depth: int, is_bullet: bool,
@@ -122,7 +130,8 @@ def get_list_item_prefix(depth: int, is_bullet: bool,
     prefix_spaces = min(depth - 1, 6) * 2 if depth > 1 else 0
     spaces = " " * prefix_spaces
     if is_bullet:
-        bullet = _BULLET_SYMBOLS[min(depth - 1, len(_BULLET_SYMBOLS) - 1)]
+        symbols = _bullet_symbols()
+        bullet = symbols[min(depth - 1, len(symbols) - 1)]
         return f"{spaces}{bullet} "
     else:
         return f"{spaces}{number}. "
@@ -213,7 +222,8 @@ def render_list_item(
             symbol = Text("✅ ", style=Style(color="green", bold=True))
             return Text.assemble(prefix, symbol, content_rich)
 
-    bullet = _BULLET_SYMBOLS[min(depth - 1, len(_BULLET_SYMBOLS) - 1)]
+    _symbols = _bullet_symbols()
+    bullet = _symbols[min(depth - 1, len(_symbols) - 1)]
     if is_bullet:
         symbol_str = f"{bullet} "
     else:

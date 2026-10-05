@@ -19,9 +19,9 @@ from typing import Any, List, Optional
 from .client import McpClient
 from .config import (
     DEFAULT_AGENT_TYPES,
-    VALID_AGENT_TYPES,
     McpServerConfig,
     load_mcp_servers,
+    valid_agent_types,
 )
 from .errors import McpError
 from .tool import build_mcp_tool_class, is_mcp_tool, mcp_tool_name
@@ -46,7 +46,7 @@ def register_tool_policy(tool_names: List[str], allowed_agents: Optional[set] = 
         _logger.debug("导入 TOOL_EXCLUSION_MAP 失败，跳过 MCP 权限策略", exc_info=True)
         return
     for name in tool_names:
-        for agent_type in VALID_AGENT_TYPES:
+        for agent_type in valid_agent_types():
             excluded = TOOL_EXCLUSION_MAP.get(agent_type)
             if not isinstance(excluded, set):
                 continue
@@ -63,7 +63,7 @@ def unregister_tool_policy(tool_names: List[str]) -> None:
     except Exception:
         return
     for name in tool_names:
-        for agent_type in VALID_AGENT_TYPES:
+        for agent_type in valid_agent_types():
             excluded = TOOL_EXCLUSION_MAP.get(agent_type)
             if isinstance(excluded, set):
                 excluded.discard(name)

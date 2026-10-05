@@ -11,6 +11,7 @@ dataclass 且全部被分发使用，**无未引用枚举**。别名保留不删
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import IntEnum
 
@@ -41,7 +42,10 @@ ANSI_EMERGENCY_CURSOR_BOTTOM: str = "\033[9999;1H"
 
 #: 语义色槽位表（语义名 → 256 色号）— 样式/颜色单一真源。
 #: 覆盖 Palette(dark) 与 _COLOR_* 共有的语义色；值与原硬编码完全一致。
-_SEMANTIC_COLOR: dict[str, int] = {
+#: 「一切皆插件」：数据上移为表现层数据注册表（``presentation_data`` →
+#: ``semantic_color`` 表），本表为实时委托（可按 Patch/Overlay 覆盖/禁用；
+#: 禁用/缺席时回退下方内置默认值）。
+_SEMANTIC_COLOR_FALLBACK: dict = {
     "accent": 45,
     "deep_cyan": 32,
     "dim": 242,
@@ -55,7 +59,41 @@ _SEMANTIC_COLOR: dict[str, int] = {
     "select_fg": 15,
     "border": 23,
     "placeholder": 238,
+    "running": 214,
+    "done": 40,
+    "fail": 196,
+    "answering": 75,
+    "parsing": 178,
+    "batch": 140,
+    "dimmer": 240,
+    "dimmest": 238,
+    "summary_dim": 245,
+    "branch": 239,
 }
+
+
+class _SemanticColor(Mapping):
+    """语义色只读映射 — 实时委托 ``presentation_data.semantic_color`` 表。"""
+
+    def _data(self) -> dict:
+        from ..presentation_data import semantic_colors
+
+        return semantic_colors() or _SEMANTIC_COLOR_FALLBACK
+
+    def __getitem__(self, key):
+        try:
+            return self._data()[key]
+        except KeyError:
+            return _SEMANTIC_COLOR_FALLBACK[key]
+
+    def __iter__(self):
+        return iter(_SEMANTIC_COLOR_FALLBACK)
+
+    def __len__(self):
+        return len(_SEMANTIC_COLOR_FALLBACK)
+
+
+_SEMANTIC_COLOR: Mapping = _SemanticColor()
 # ★ 标准 React Ink 组件化（2026-08-05）：原 _COLOR_*（ANSI 前景序列）与 _C_*
 # （ANSI 面板色）常量已删除——生产渲染统一用 core/style.py Style（fg 色号），
 # 色号从 _SEMANTIC_COLOR 槽位表解析（零视觉回归）。ANSI_EMERGENCY_*（紧急

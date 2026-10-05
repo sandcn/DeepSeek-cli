@@ -5,11 +5,33 @@ import logging
 from typing import Optional
 
 # ── 推理模型名称匹配模式 ──────────────────────────────────
+# 「一切皆插件」：模式表来自表现层数据注册表（``presentation_data`` →
+# ``model_patterns`` 表），可按 Patch/Overlay 覆盖或禁用；下行为兜底快照。
 _REASONER_PATTERNS: frozenset[str] = frozenset({"reasoner"})
 
 # ── V4 系列模型检测 ─────────────────────────────────────
 # 含 V4 命名系列（deepseek-v4-*）与 V4.1 新架构命名（deepseek-flash）。
 _V4_PREFIXES: tuple[str, ...] = ("deepseek-v4", "deepseek-flash")
+
+
+def reasoner_patterns() -> frozenset:
+    """当前生效的推理模型名称模式（数据注册表优先，缺席时回退兜底快照）。"""
+    from ...presentation_data import model_pattern
+
+    value = model_pattern("reasoner_patterns", None)
+    if isinstance(value, (list, tuple, set, frozenset)) and value:
+        return frozenset(str(item) for item in value)
+    return _REASONER_PATTERNS
+
+
+def v4_prefixes() -> tuple:
+    """当前生效的 V4 系列模型名前缀（数据注册表优先，缺席时回退兜底快照）。"""
+    from ...presentation_data import model_pattern
+
+    value = model_pattern("v4_prefixes", None)
+    if isinstance(value, (list, tuple)) and value:
+        return tuple(str(item) for item in value)
+    return _V4_PREFIXES
 
 
 def is_deepseek_v4_model(model: str) -> bool:
@@ -20,7 +42,7 @@ def is_deepseek_v4_model(model: str) -> bool:
     旧名 ``deepseek-v4-flash`` / ``deepseek-v4-flash-vision-exp`` 已路由到
     V4.1 Flash，故同属该系列。
     """
-    return model.startswith(_V4_PREFIXES)
+    return model.startswith(v4_prefixes())
 
 
 def ensure_reasoning_content(messages: list, model: Optional[str] = None) -> list:

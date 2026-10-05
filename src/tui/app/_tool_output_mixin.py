@@ -24,6 +24,10 @@ from src.tui.app._model_helpers import (
     _BASH_OUTPUT_TAIL_LINES,
     _TOOL_HEAD_TOOLS,
     _TOOL_HEAD_LINES,
+    _bash_output_tail_lines,
+    _tool_head_lines,
+    _tool_head_tools,
+    _tool_incremental_threshold,
     _single_line_detail,
 )
 # ★ ToolCard React Ink 组件化：工具卡行生成/状态图标收敛到 app/toolcard.py
@@ -213,18 +217,18 @@ class _ToolOutputMixin:
         # bash/execute_command：输出超过阈值行数时只保留最后 N 行（tail 显示，
         # 对齐 Claude Code 收敛冗长 bash 输出；修剪后行数 ≤ N+1，不触发增量提交）
         if block.extra.get("tool_name") in ("bash", "execute_command"):
-            self._trim_tool_output_tail(block, _BASH_OUTPUT_TAIL_LINES)
+            self._trim_tool_output_tail(block, _bash_output_tail_lines())
         # find/search/ls/read_file：输出超过阈值行数时只保留前 N 行（head 显示，
         # 对齐终端 head 语义——目录列表/文件预览等有序输出看开头即可，防卡片撑爆）
-        if block.extra.get("tool_name") in _TOOL_HEAD_TOOLS:
-            self._trim_tool_output_head(block, _TOOL_HEAD_LINES)
+        if block.extra.get("tool_name") in _tool_head_tools():
+            self._trim_tool_output_head(block, _tool_head_lines())
         # ★ 用户需求：trim 删除行后同步清理聊天卡隐藏行登记——被删行对象滞留
         #   会被 id() 复用误判（隐藏错误行）。read_file 走 head trim。
         if hidden_rows is not None:
             self._prune_chat_hidden(block)
         # ★ 方向4：增量提交阈值——长工具输出不每帧全量重渲染（超过阈值即提交
         #   已闭合行到 committed_lines；开放块渲染只取未提交尾）。
-        if len(block.lines) - block.committed_line_count >= _TOOL_INCREMENTAL_THRESHOLD:
+        if len(block.lines) - block.committed_line_count >= _tool_incremental_threshold():
             self.commit_open_block(block)
 
     def _drop_tool_body_cache(self, block, line) -> None:

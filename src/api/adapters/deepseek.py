@@ -18,7 +18,7 @@ import logging
 from typing import Optional
 
 from .base import BaseLLMAdapter
-from ._utils import ensure_reasoning_content, _REASONER_PATTERNS, is_deepseek_v4_model
+from ._utils import ensure_reasoning_content, reasoner_patterns, is_deepseek_v4_model
 
 _logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ class DeepSeekAdapter(BaseLLMAdapter):
 
         推理模型需要特殊的 thinking 参数和 reasoning_content 处理。
         """
-        return any(p in model for p in _REASONER_PATTERNS)
+        return any(p in model for p in reasoner_patterns())
 
     @staticmethod
     def is_v4_model(model: str) -> bool:

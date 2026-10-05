@@ -39,6 +39,40 @@ _TOOL_HEAD_TOOLS = ("find", "search", "ls", "read_file")
 _TOOL_HEAD_LINES = 3
 
 
+def _ui_int(key: str, default: int) -> int:
+    from src.presentation_data import ui_default
+
+    try:
+        return int(ui_default(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _tool_incremental_threshold() -> int:
+    """开放工具块增量提交阈值（数据注册表优先，非法时回退兜底快照）。"""
+    return _ui_int("tool_incremental_threshold", _TOOL_INCREMENTAL_THRESHOLD)
+
+
+def _bash_output_tail_lines() -> int:
+    """bash 输出尾保留行数（数据注册表优先，非法时回退兜底快照）。"""
+    return _ui_int("bash_output_tail_lines", _BASH_OUTPUT_TAIL_LINES)
+
+
+def _tool_head_lines() -> int:
+    """头显示工具保留行数（数据注册表优先，非法时回退兜底快照）。"""
+    return _ui_int("tool_head_lines", _TOOL_HEAD_LINES)
+
+
+def _tool_head_tools() -> tuple:
+    """头显示工具集合（数据注册表优先，非法时回退兜底快照）。"""
+    from src.presentation_data import ui_default
+
+    value = ui_default("tool_head_tools", _TOOL_HEAD_TOOLS)
+    if isinstance(value, (list, tuple)) and value:
+        return tuple(str(item) for item in value)
+    return _TOOL_HEAD_TOOLS
+
+
 def _single_line_detail(detail: str) -> str:
     """工具卡 detail 强制单行：换行/回车转义为字面量（``\\n``/``\\r``）。
 

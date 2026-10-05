@@ -28,7 +28,18 @@ _logger = logging.getLogger(__name__)
 #: ★ P1（review）：prefill 窗口期内由**内部流程**产生的重复提交命令——这些
 #: 是 editmsg/retry 流程自身的回环提交（非用户新输入），按既有语义丢弃；
 #: 其余窗口期提交视为用户真实输入，不丢弃（返回给调用方 + warning）。
+#: 「一切皆插件」：数据来自表现层数据注册表（``ui_defaults.internal_prefill_cmds``），
+#: 可按 Patch/Overlay 覆盖或禁用。
 _KNOWN_INTERNAL_PREFILL_CMDS = ("/editmsg", "/deitmsg", "/retry")
+
+
+def _internal_prefill_cmds() -> tuple:
+    from src.presentation_data import ui_default
+
+    value = ui_default("internal_prefill_cmds", _KNOWN_INTERNAL_PREFILL_CMDS)
+    if isinstance(value, (list, tuple)) and value:
+        return tuple(str(item) for item in value)
+    return _KNOWN_INTERNAL_PREFILL_CMDS
 
 
 class TuiInputOrchestrator:
@@ -88,7 +99,7 @@ class TuiInputOrchestrator:
             #   返回用户提交（prefill 未注入，warning 可观测）。
             if stale:
                 _first_word = stale.strip().split()[0] if stale.strip() else ""
-                if _first_word in _KNOWN_INTERNAL_PREFILL_CMDS:
+                if _first_word in _internal_prefill_cmds():
                     _logger.debug(
                         "wait_for_user_input: 窗口期内部命令提交 %r 丢弃", stale,
                     )

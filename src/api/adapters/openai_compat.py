@@ -6,12 +6,12 @@ from __future__ import annotations
 from typing import Optional
 
 from .base import BaseLLMAdapter
-from ._utils import ensure_reasoning_content, _REASONER_PATTERNS, is_deepseek_v4_model
+from ._utils import ensure_reasoning_content, reasoner_patterns, is_deepseek_v4_model
 
 
 def _is_reasoner_model(model: str) -> bool:
     """判断模型是否需要 thinking 参数"""
-    return any(p in model for p in _REASONER_PATTERNS) or is_deepseek_v4_model(model)
+    return any(p in model for p in reasoner_patterns()) or is_deepseek_v4_model(model)
 
 
 def _get_reasoning_effort() -> str:
@@ -67,7 +67,7 @@ class OpenAICompatAdapter(BaseLLMAdapter):
 
         # 非 reasoner 子串匹配的 V4 模型需要 thinking 参数
         is_reasoner = _is_reasoner_model(model)
-        if is_reasoner and not any(p in model for p in _REASONER_PATTERNS):
+        if is_reasoner and not any(p in model for p in reasoner_patterns()):
             kwargs["thinking"] = {
                 "type": "enabled",
                 "reasoning_effort": _get_reasoning_effort(),

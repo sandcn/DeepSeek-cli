@@ -90,6 +90,9 @@ class ServerError(APIError):
 
 
 # ── 状态码 → 用户可操作的提示 ────────────────────────────────
+#
+# 「一切皆插件」：提示文案上移为表现层数据注册表（``presentation_data`` →
+# ``http_error_hint`` 表），可按 Patch/Overlay 覆盖或禁用；此处为兜底快照。
 
 _STATUS_HINTS = {
     400: "请求参数不合法",
@@ -105,6 +108,13 @@ _STATUS_HINTS = {
     503: "服务暂时不可用（过载或维护中）",
     504: "网关超时",
 }
+
+
+def _status_hints() -> dict:
+    """当前状态码提示表（数据注册表优先，缺席时回退兜底快照）。"""
+    from ..presentation_data import http_error_hints
+
+    return http_error_hints() or _STATUS_HINTS
 
 
 def classify_http_error(status_code: int, message: str, *, retry_after=None) -> APIError:
@@ -214,7 +224,7 @@ def format_user_error(exc: BaseException) -> str:
     匹配兼容（「连接错误」/「API 调用出错」/「请求超时」）。
     """
     status_code = getattr(exc, "status_code", None)
-    hint = _STATUS_HINTS.get(status_code) if isinstance(status_code, int) else None
+    hint = _status_hints().get(str(status_code)) if isinstance(status_code, int) else None
     if isinstance(exc, APIError):
         msg = f"抱歉，API 调用出错: {exc}"
         if isinstance(exc, RateLimitError) and exc.retry_after:

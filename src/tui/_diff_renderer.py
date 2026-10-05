@@ -56,28 +56,110 @@ _BG_OFF = '\033[49m'          # 重置为默认背景色（兼容 re-export）
 #   调用面）。移除计划：在 __all__ 标注 deprecated 后，待确认外部调用方清空
 #   后删除（勿在生产代码新增引用）。
 
-#: 行内删除段背景 Style（暗红 bg=124）
-_bg_del = Style(bg=124)
-#: 行内新增段背景 Style（柔和绿 bg=28）
-_bg_add = Style(bg=28)
+
+def _diff_int(key: str, default: int) -> int:
+    from src.presentation_data import diff_style
+
+    try:
+        return int(diff_style(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _style_from_spec(spec, fallback: Style) -> Style:
+    """把数据表中的样式规格 dict 转为 Style（非法/缺席回退 fallback）。"""
+    if not isinstance(spec, dict):
+        return fallback
+
+    def _color(value, default):
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    return Style(
+        fg=_color(spec.get("fg"), fallback.fg),
+        bg=_color(spec.get("bg"), fallback.bg),
+        bold=bool(spec.get("bold", fallback.bold)),
+        italic=bool(spec.get("italic", fallback.italic)),
+        dim=bool(spec.get("dim", fallback.dim)),
+        underline=bool(spec.get("underline", fallback.underline)),
+        strikethrough=bool(spec.get("strikethrough", fallback.strikethrough)),
+        inverse=bool(spec.get("inverse", fallback.inverse)),
+    )
+
+
+def _diff_spec(key: str, fallback: Style) -> Style:
+    from src.presentation_data import diff_style
+
+    return _style_from_spec(diff_style(key, None), fallback)
+
+
+#: (常量名, 数据表键, 兜底样式)——模块级常量与实时访问器共用同一真源
+_DIFF_STYLE_SPECS = (
+    ("_DIFF_FILE_OLD", "file_old", Style(fg=210, bold=True)),
+    ("_DIFF_FILE_NEW", "file_new", Style(fg=114, bold=True)),
+    ("_DIFF_HUNK_BAR", "hunk_bar", Style(fg=45, dim=True)),
+    ("_DIFF_NUM_DEL", "num_del", Style(fg=167)),
+    ("_DIFF_NUM_ADD", "num_add", Style(fg=41)),
+    ("_DIFF_MARK_DEL", "mark_del", Style(fg=196, bold=True)),
+    ("_DIFF_MARK_ADD", "mark_add", Style(fg=41, bold=True)),
+)
+
+#: 行内删除/新增段背景色与分隔线宽度兜底
+_DEL_BG_FALLBACK = 124
+_ADD_BG_FALLBACK = 28
+_SEPARATOR_WIDTH_FALLBACK = 40
+
+
+def diff_style_map() -> dict:
+    """当前生效的 diff 局部样式（实时从数据表派生；供自省/测试）。"""
+    return {
+        name: _diff_spec(key, fallback)
+        for name, key, fallback in _DIFF_STYLE_SPECS
+    }
+
+
+def delimiter_width() -> int:
+    """diff 分隔线默认宽度（数据表优先，非法时回退兜底）。"""
+    return _diff_int("separator_width", _SEPARATOR_WIDTH_FALLBACK)
+
+
+def inline_bg_styles() -> tuple:
+    """行内差异背景 Style（del, add）（数据表优先，非法时回退兜底）。"""
+    return (
+        Style(bg=_diff_int("del_bg", _DEL_BG_FALLBACK)),
+        Style(bg=_diff_int("add_bg", _ADD_BG_FALLBACK)),
+    )
+
+
+#: 行内删除段背景 Style（暗红 bg；数据表 ``diff_style.del_bg`` 优先）
+_bg_del = Style(bg=_diff_int("del_bg", _DEL_BG_FALLBACK))
+#: 行内新增段背景 Style（柔和绿 bg；数据表 ``diff_style.add_bg`` 优先）
+_bg_add = Style(bg=_diff_int("add_bg", _ADD_BG_FALLBACK))
 
 # 分隔线默认宽度（方向1 P1：diff 摘要/多 hunk 分隔线固定 40 → 提取常量，
 # 窄终端调用方传收缩宽度 min(40, max(10, ...))，默认 40 行为不变）
-_SEPARATOR_WIDTH = 40
+_SEPARATOR_WIDTH = _diff_int("separator_width", _SEPARATOR_WIDTH_FALLBACK)
 
 # 语义色常量引用（从 StyleSheet 获取，兜底硬编码确保任何加载顺序下都有默认值）
 _DIFF_ADD_STYLE: Style = StyleSheet.get("diff_add") or Style(fg=41)
 _DIFF_DEL_STYLE: Style = StyleSheet.get("diff_del") or Style(fg=196)
 _DIFF_CTX_STYLE: Style = StyleSheet.get("diff_ctx") or Style(fg=244)
 
-# ── 美化专用样式常量（diff 渲染局部样式，不注册 StyleSheet 避免影响其他模块） ──
-_DIFF_FILE_OLD: Style = Style(fg=210, bold=True)    # 旧文件头：亮红（旧文件标识）
-_DIFF_FILE_NEW: Style = Style(fg=114, bold=True)    # 新文件头：亮绿（新文件标识）
-_DIFF_HUNK_BAR: Style = Style(fg=45, dim=True)      # hunk 头装饰条：柔青
-_DIFF_NUM_DEL:  Style = Style(fg=167)               # 删除行号列：柔红（避免 196 过刺眼）
-_DIFF_NUM_ADD:  Style = Style(fg=41)                # 新增行号列：绿
-_DIFF_MARK_DEL: Style = Style(fg=196, bold=True)    # `-` 标记：亮红加粗
-_DIFF_MARK_ADD: Style = Style(fg=41, bold=True)     # `+` 标记：亮绿加粗
+# ── 美化专用样式常量（diff 渲染局部样式；「一切皆插件」：来自表现层数据
+#    注册表 ``diff_style`` 表，可按 Patch/Overlay 覆盖或禁用，非法值回退
+#    下列兜底字面量） ──
+_STYLE_MAP = diff_style_map()
+_DIFF_FILE_OLD: Style = _STYLE_MAP["_DIFF_FILE_OLD"]    # 旧文件头
+_DIFF_FILE_NEW: Style = _STYLE_MAP["_DIFF_FILE_NEW"]    # 新文件头
+_DIFF_HUNK_BAR: Style = _STYLE_MAP["_DIFF_HUNK_BAR"]    # hunk 装饰条
+_DIFF_NUM_DEL:  Style = _STYLE_MAP["_DIFF_NUM_DEL"]     # 删除行号列
+_DIFF_NUM_ADD:  Style = _STYLE_MAP["_DIFF_NUM_ADD"]     # 新增行号列
+_DIFF_MARK_DEL: Style = _STYLE_MAP["_DIFF_MARK_DEL"]    # `-` 标记
+_DIFF_MARK_ADD: Style = _STYLE_MAP["_DIFF_MARK_ADD"]    # `+` 标记
 
 # 向后兼容常量（从 StyleSheet.get() 获取语义色，兜底硬编码值）
 # ★ 标准 React Ink 组件化（2026-08-05）：_RESET_STR 已无生产引用
@@ -720,6 +802,9 @@ __all__ = [
     "_write_diff_line",
     "_render_chunk",
     "_render_diff_summary",
+    "diff_style_map",
+    "delimiter_width",
+    "inline_bg_styles",
     "_BG_RED",
     "_BG_GREEN",
     "_BG_OFF",

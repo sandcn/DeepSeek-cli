@@ -14,6 +14,16 @@ _SUMMARY_CORE_MAX_LEN = 50
 _SUMMARY_TECH_MAX_ITEMS = 3
 _SUMMARY_TRUNCATE_LENGTH = 300
 
+
+def _summary_int(key: str, default: int) -> int:
+    """摘要参数（数据注册表 ``ui_defaults`` 优先，非法时回退兜底快照）。"""
+    from ..presentation_data import ui_default
+
+    try:
+        return int(ui_default(key, default))
+    except (TypeError, ValueError):
+        return default
+
 _logger = logging.getLogger(__name__)
 
 
@@ -57,16 +67,18 @@ def generate_concise_summary(full_summary: str) -> str:
             break
 
     core_features = _extract_section_items(lines, ['核心功能', '核心功能与特点'],
-                                           max_items=_SUMMARY_CORE_MAX_ITEMS, max_len=_SUMMARY_CORE_MAX_LEN)
+                                           max_items=_summary_int("summary_core_max_items", _SUMMARY_CORE_MAX_ITEMS),
+                                           max_len=_summary_int("summary_core_max_len", _SUMMARY_CORE_MAX_LEN))
     if core_features:
         concise_parts.append("核心功能：" + "；".join(core_features))
 
-    tech_items = _extract_section_items(lines, ['技术栈', '编程语言'], max_items=_SUMMARY_TECH_MAX_ITEMS)
+    tech_items = _extract_section_items(lines, ['技术栈', '编程语言'],
+                                        max_items=_summary_int("summary_tech_max_items", _SUMMARY_TECH_MAX_ITEMS))
     if tech_items:
         concise_parts.append("技术栈：" + "，".join(tech_items))
 
     if len(concise_parts) < 2:
-        return full_summary[:_SUMMARY_TRUNCATE_LENGTH] + "..."
+        return full_summary[:_summary_int("summary_truncate_length", _SUMMARY_TRUNCATE_LENGTH)] + "..."
 
     result = "项目概述：" + "；".join(concise_parts)
     return result[:600] if len(result) > 600 else result
