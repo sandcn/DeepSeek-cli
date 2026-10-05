@@ -118,6 +118,14 @@ class _SessionFrameMixin:
                 #   丢失、内容错位）。
                 if _get_cmd_id(cmd) == RenderCommand.CLEAR_MSGS:
                     self._resize_pending = True
+                    # ★ 输出历史基线同步（清屏/重放）：committed_lines 被清空，
+                    #   文档行号空间重建——旧基线（已回调内容行数）失效，必须
+                    #   归零，否则清屏后重放/新内容会按旧行号区间错位回调
+                    #   （回调到无关行 / 漏记）。
+                    try:
+                        self._ink_renderer.reset_content_lines()
+                    except Exception:
+                        _logger.debug("reset_content_lines 异常", exc_info=True)
             except Exception:
                 _logger.warning("应用命令 %s 失败", _cmd_name(_get_cmd_id(cmd)), exc_info=True)
 
@@ -140,6 +148,8 @@ class _SessionFrameMixin:
     def _render_frame_impl(self) -> None:
         if self._build_tree is None:
             return
+        # 终端尺寸变化标志（下方内容行基线同步用；模型为空时保持 False）
+        size_changed = False
         # ★ useAnimation 共享动画驱动：每帧推进一次 tick 并通知订阅组件
         #   （多个动画组件合并为一轮渲染，React Ink v7 语义）。
         try:
@@ -200,6 +210,7 @@ class _SessionFrameMixin:
                 # 分支任一置位，下方消费）。
                 self._resize_pending = True
                 height_changed = True
+            size_changed = width_changed or height_changed
             if width_changed or height_changed:
                 # ★ React Ink useWindowSize（方向 E）+ P3-19（review 方向）：
                 #   宽度/高度任一变化都通知订阅组件重渲染——修复前仅在宽度
@@ -221,6 +232,15 @@ class _SessionFrameMixin:
         element = self._build_tree(self._model, width)
         self._reconciler.render(self._root_fiber, element, width, self._width_cache.get_height())
         frame = _components.render_frame(self._root_fiber, width)
+        # ★ 输出历史接线（committed 内容行数）：InkRenderer 只回调 committed
+        #   区的**新增内容行**（修复前用文档末尾行区间推断 → 状态栏/输入区/
+        #   时间线被反复写入输出历史且真正内容行漏记）。committed_lines 为
+        #   卡片行（角色头 + 正文 + 尾空行），自文档第 1 行（TopHeader 之后）
+        #   连续排布；未注入时渲染器不产生任何回调（安全）。
+        self._ink_renderer.set_content_line_count(
+            len(getattr(self._model, "committed_lines", None) or []),
+            resync=size_changed,
+        )
         self._ink_renderer.render(frame)
         # ★ render({onRender})：每帧渲染后回调（官方 RenderMetrics 语义）——
         #   回调异常仅记录日志，不中断渲染循环。

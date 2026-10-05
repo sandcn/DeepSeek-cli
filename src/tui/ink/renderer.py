@@ -76,6 +76,12 @@ _CLEAR_EOL = "\033[K"
 # PERF-4：单帧重写行数上限（防病态大重写冻结 UI）
 _MAX_REWRITE_ROWS = 200
 
+#: committed 内容行在文档中的起始行号（0-based）——App 组件树首元素
+#: ``TopHeader`` 恒占文档第 0 行（单行渐变标题栏），committed 聊天历史
+#: （``AppModel.committed_lines``）自第 1 行起连续排布。输出历史行回调
+#: 只覆盖该区间（不含底部 live 区：状态栏/输入区/解析进度行）。
+_CONTENT_LINE_OFFSET = 1
+
 
 class InkRenderer:
     """非全屏帧差异渲染器。
@@ -127,15 +133,20 @@ class InkRenderer:
         #   首帧/重置后置 True；``_grow_drifted`` 增长时若 doc 仍高于屏幕保持
         #   True、doc 进入屏幕内转 False。
         self._top_aligned: bool = True
-        # ★ 输出历史已回调行数（BUG-65 修复）：``_write_full``（首帧/reset
-        #   (full=True) 全量重写）与增量增长只回调**新增**行——resize 后
-        #   ``reset(full=True)`` 全量重写文档若从 0 行重新回调会把整篇文档
-        #   重复写入输出历史（scrollback 记录翻倍/多倍）。本字段跟踪已回调
-        #   行数：``_write_full`` 经 ``emit_start = min(_history_lines, height)``
-        #   跳过已记录行；``_emit_new_lines`` 更新为 max。软重置
+        # ★ 输出历史基线（committed 内容行数）：line_callback 只回调
+        #   **新增的已提交内容行**（文档自 ``_CONTENT_LINE_OFFSET`` 行起的
+        #   committed 区）——修复前每帧增长都把文档末尾的 live 行（状态栏/
+        #   输入区/解析进度行/边框/时间线）当作新增行回调：输出历史被 UI 行
+        #   污染且反复重复（同一底部行内容随行号增长被反复写入），真正新增的
+        #   内容行反而大多漏记（内容行插入在文档中部，不落在「末尾行区间」）。
+        #   本字段 = 上一次回调时的 committed 行数；软重置
         #   （reset(full=False)/suspend/full_clear）不清零——历史已记录的行
-        #   不因 TUI 内部重绘重复回调。
-        self._history_lines: int = 0
+        #   不因 TUI 内部重绘重复回调；内容区缩短（清屏/重排）时同步跟随
+        #   （新文档行号空间已变，见 ``_emit_content_lines``）。
+        self._content_line_count: int = 0
+        #: 本帧 committed 内容行数（会话每帧经 ``set_content_line_count``
+        #: 注入；未注入时保持 0 → 不回调，安全）。
+        self._frame_content_count: int = 0
         # ★ 光标可见性状态（2026-08-17 用户需求：轨迹 Trace 不显示光标）：
         #   None=未知（终端默认可见；首次 set 显式对齐实际状态）；True/False
         #   = 上次设置值。``set_cursor_visible`` 仅变化时输出 DECTCEM 序列
@@ -348,14 +359,24 @@ class InkRenderer:
             )
 
     def render(self, frame: Frame) -> None:
-        """渲染新帧（最小差异写入）。"""
+        """渲染新帧（最小差异写入）。
+
+        输出历史（``line_callback``）统一在帧写入后由 ``_emit_content_lines``
+        回调——只回调**新增的已提交内容行**（committed 区），与「文档末尾
+        行区间」无关：修复前各渲染分支用 ``[prev_h, new_h)`` 推断新增行，
+        把文档末尾的 live 行（状态栏/输入区/时间线/边框）当作新增内容反复
+        写入输出历史，且真正新增的内容行（插入在文档中部）大量漏记。
+        """
+        try:
+            self._render_frame_impl(frame)
+        finally:
+            self._emit_content_lines(frame)
+
+    def _render_frame_impl(self, frame: Frame) -> None:
+        """渲染实现（组件树 diff 写入终端；输出历史回调由 ``render`` 统一收口）。"""
         self._assert_renderer_invariants()
         if self._prev is None:
-            # ★ BUG-65：首帧（_history_lines==0）全量回调；reset(full=True)
-            #   （resize 后全量重写）只回调**新增**行（跳过已记录历史）——
-            #   修复前 reset 后从 0 行全量回调，整篇文档重复写入输出历史。
-            emit_start = min(self._history_lines, frame.height)
-            self._write_full(frame, emit_start=emit_start)
+            self._write_full(frame)
             self._prev = frame
             self._stream.flush()
             return
@@ -436,7 +457,6 @@ class InkRenderer:
             # ★ 无末尾空行模型（2026-08-15）：物理缓冲 = 文档行数（漂移时
             #   保持 max——物理行不删行）；height=0 无约束同语义。
             self._buf_h = max(self._buf_h, new_h)
-            self._emit_new_lines(frame, prev_h, new_h)
             self._cursor_row = self._bottom_row(new_h)
             self._prev = frame
             self._stream.write(buf.getvalue())
@@ -669,13 +689,13 @@ class InkRenderer:
                             continue
                         buf.write(cursor_down(1))
                         current_row = self._advance_row(current_row)
-            # 增长：回调新增行（输出历史跟踪；重写循环已写出这些行）。
+            # 增长：物理缓冲按新文档行数扩张（输出历史回调统一由
+            #   ``render`` 的 ``_emit_content_lines`` 收口，只记 committed 内容行）。
             # ★ 无末尾空行模型（2026-08-15）：位移区路径无漂移时物理缓冲 =
             #   新文档行数（原公式含末尾空行 +1 语义已去除）；漂移场景由
             #   ``_grow_drifted`` 处理（本路径仅在 ``_buf_h <= prev_h`` 到达）。
             if delta > 0:
                 self._buf_h = max(self._buf_h, new_h)
-                self._emit_new_lines(frame, prev_h, new_h)
 
         # 将光标移回文档底部（保持不变量：render 后光标位于文档底部下方，
         #   供 place_cursor 相对移动；屏幕坐标已钳制）。缩短场景残留行清除后
@@ -841,8 +861,6 @@ class InkRenderer:
         self._cursor_row = bottom_row
         self._buf_h = buf_h1
         self._prev = frame
-        # ★ BUG-65：统一经 _emit_new_lines 回调新增行（维护 _history_lines）
-        self._emit_new_lines(frame, prev_h, new_h)
         self._stream.write(buf.getvalue())
         self._stream.flush()
 
@@ -1011,7 +1029,7 @@ class InkRenderer:
         self._stream.write(buf.getvalue())
         self._stream.flush()
 
-    def _write_full(self, frame: Frame, emit_start: int = 0) -> None:
+    def _write_full(self, frame: Frame) -> None:
         """首帧/重置后：全量写入文档。
 
         raw 终端模式下 \n 不归位列 1，每行前缀 \r（与 OutputAdapter 的
@@ -1020,8 +1038,6 @@ class InkRenderer:
 
         Args:
             frame: 目标帧。
-            emit_start: 新增行回调起始行（仅回调 ``[emit_start, height)``；
-                首帧默认 0=全量回调；降级重建传上一帧高度，避免重复回调已有行）。
         """
         if not frame.lines:
             # 方向1 步骤3（首帧空帧光标）：空帧也更新 _cursor_row（=1）
@@ -1054,39 +1070,82 @@ class InkRenderer:
         # 物理缓冲行数 = 文档行数（无末尾空行）
         self._buf_h = frame.height
         self._top_aligned = True
-        # ★ P3-13 设计说明（review 方向）：行回调（``_emit_new_lines``）在
-        #   终端写入（``stream.write``）**之前**调用——设计取舍：回调先于
-        #   终端写入，保证输出历史（scrollback 落盘）在任何终端输出之前记录
-        #   （写入/刷新异常时历史不缺失）。回调异常已被 ``_emit_new_lines``
-        #   内部吞掉仅记日志，不影响终端写入。保持既有顺序（改动顺序会改变
-        #   回调与终端写入的时序语义，无收益）。
-        self._emit_new_lines(frame, emit_start, frame.height)
         self._cursor_row = self._bottom_row(frame.height)
         self._stream.write(buf.getvalue())
         self._stream.flush()
 
-    def _emit_new_lines(self, frame: Frame, start: int, end: int) -> None:
-        """回调新增行（输出历史跟踪），并更新已回调行数。
+    def set_content_line_count(self, count: int, *, resync: bool = False) -> None:
+        """注入本帧 committed 内容行数（会话每帧渲染前调用）。
 
-        ``_history_lines`` 记录已通过 line_callback 回调的行数（只增不减）——
-        ★ BUG-65：回调起点钳制到 ``max(start, _history_lines)``——软重置
-        （reset(full=False)/suspend/full_clear 后空帧 diff）与 reset(full=True)
-        （resize 后全量重写）重新渲染同一文档时仅回调**新增**行（行号 >=
-        ``_history_lines``）；修复前全量回调导致整篇文档重复写入输出历史
-        （scrollback 记录翻倍）。
+        ``count`` 为 ``AppModel.committed_lines`` 的**卡片行数**（角色头 +
+        正文 + 尾空行）——这些行在文档中自 ``_CONTENT_LINE_OFFSET`` 行起
+        连续排布，是输出历史应当记录的内容；底部 live 区（状态栏/输入区/
+        解析进度行）不在其列。
+
+        Args:
+            resync: True 时把基线**同步**到 ``count``（不回调）——终端
+                resize 触发 ``reflow_committed`` 重排已提交行（wrap 变化使
+                行数变化），行号空间随之重建：若不同步，wrap 新增行会被
+                误判为「新增内容行」重复写入输出历史。
+
+        未注入（默认 0）时不产生任何回调（安全——测试/独立使用不受影响）。
         """
-        start = max(start, self._history_lines)
-        if end <= start:
+        try:
+            value = int(count)
+        except (TypeError, ValueError, OverflowError):
+            value = 0
+        value = max(0, value)
+        self._frame_content_count = value
+        if resync:
+            self._content_line_count = value
+
+    def reset_content_lines(self) -> None:
+        """内容区重建（清屏/重放）——基线归零。
+
+        ``CLEAR_MSGS``（Ctrl+L 清屏 / ``/editmsg`` 重放）清空
+        ``AppModel.committed_lines``：文档行号空间重建，旧基线失效。归零后
+        后续提交内容自 ``_CONTENT_LINE_OFFSET`` 行起重新累计回调（不补记
+        清屏前已记录的行）。
+        """
+        self._content_line_count = 0
+        self._frame_content_count = 0
+
+    def _emit_content_lines(self, frame: Frame) -> None:
+        """回调**新增的已提交内容行**（输出历史跟踪）并推进基线。
+
+        只回调 committed 区（文档 ``[_CONTENT_LINE_OFFSET, _CONTENT_LINE_OFFSET
+        + count)``）中本次新增的行——修复前各渲染分支按 ``[prev_h, new_h)``
+        （文档末尾行区间）回调，把状态栏/输入区/时间线/边框等 live 行当作
+        「新增提交行」反复写入输出历史（同一底部行随行号增长被反复记录，
+        占输出历史六成以上），而真正新增的内容行（插入在文档中部）几乎
+        全部漏记。
+
+        基线语义：``_content_line_count`` = 上次回调时的内容行数。
+        - 增长 → 回调 ``[old, new)`` 对应文档行；
+        - 相等 → 无动作（帧内重绘/动画/状态刷新不产生历史）；
+        - 缩短（清屏/``/editmsg`` 重放/宽度重排）→ 同步基线（文档行号空间
+          已重建，重新累计；不补记旧行、不重复回调）。
+        """
+        current = self._frame_content_count
+        previous = self._content_line_count
+        if current == previous:
             return
-        self._history_lines = max(self._history_lines, end)
+        if current < previous:
+            self._content_line_count = current
+            return
+        self._content_line_count = current
         if self._line_callback is None:
+            return
+        start = _CONTENT_LINE_OFFSET + previous
+        end = min(_CONTENT_LINE_OFFSET + current, len(frame.lines))
+        if end <= start:
             return
         try:
             for idx in range(start, end):
                 self._line_callback(frame.render_line(idx) + "\n")
         except Exception:
-            # ★ P3 修复（review 方向）：裸吞异常补日志（exc_info 保留栈）。
-            _logger.debug("_emit_new_lines 行回调异常", exc_info=True)
+            # 裸吞异常补日志（exc_info 保留栈）。
+            _logger.debug("_emit_content_lines 行回调异常", exc_info=True)
 
     # ── 光标 ─────────────────────────────────────────
 

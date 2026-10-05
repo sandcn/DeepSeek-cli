@@ -116,20 +116,49 @@ def _do_notification(model, cmd) -> None:
     model.append_committed("notification", lines)
 
 
+def _strip_control_text(text: str) -> str:
+    """去终端控制序列后的可见文本（判定「纯控制序列」段落）。
+
+    先剥离 ANSI 转义序列（``strip_ansi``：CSI/OSC/SGR 等），再剔除 C0/C1
+    控制字符（含 ``\\r``/``\\n``/``\\t`` 与 DEL）——剩下空串即「纯控制序列」。
+    仅剔除控制字符（不用 ``str.isprintable``：后者会误伤零宽连接符等
+    组合字符，破坏 emoji/合字序列）。
+    """
+    from src.renderer.ansi.helpers import strip_ansi
+
+    cleaned = strip_ansi(text or "")
+    return "".join(
+        ch for ch in cleaned
+        if not (ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F)
+    )
+
+
 def _do_write_line(model, cmd) -> None:
     # ★ 渲染错误（BUG-75）：WRITE_LINE 文本可能含 ``\n``——修复前
     #   ``ansi_to_line(cmd.text)`` 把换行符当普通字符保留在单条 AnsiLine 中
     #   （frame 行内嵌 \n → 一条 frame 行渲染成多条终端行，行级 diff / 光标
     #   定位错位）。按 \n 拆行，每段独立解析 ANSI；空段保留为空行（结构
     #   保持）。
+    # ★ 裸终端控制序列过滤（BUG-78）：WRITE_LINE 是「原始输出」通道——
+    #   非 TUI 路径用它清行/刷 spinner，典型为 ``"\r\033[K"``（工具解析
+    #   结束时清理进度行，见 ``pipeline_async._cleanup_display``）。该文本
+    #   在 TUI 下会被当作**文档内容行**提交：``ansi_to_line`` 只解析 SGR，
+    #   ``\r`` / ``\x1b[K`` 原样保留 → 渲染写入终端时执行回车 + 清行（清掉
+    #   刚写入的本行内容），且每轮工具调用都往文档中部插一行、把后续行整体
+    #   下移（滚动 + 重写 → 屏幕内容抖动/"刷出"）。TUI 自行管理重绘与进度行
+    #   清理，此处过滤「去控制序列后无可见文本」的段（不产出行）。
     lines = []
     for segment in str(cmd.text).split("\n"):
         if segment:
+            if not _strip_control_text(segment):
+                continue  # 纯终端控制序列：不产出内容行
             line = ansi_to_line(segment)
             if line.runs:
                 lines.append(line)
         else:
             lines.append(AnsiLine())
+    if not lines:
+        return  # 全为纯控制序列：不产出空块（原行为会留下空 write_line 块）
     model.append_committed("write_line", lines)
 
 
