@@ -4,6 +4,8 @@ import time
 
 from ..events import publish_event
 from ..stream_parse import ToolParseTracker
+from ..stats import add_token_size, adjust_token_size
+from ...core.tokens import count_cjk_other, estimate_tokens_from_counts
 
 
 class StreamContext:
@@ -26,11 +28,12 @@ class StreamContext:
         # 内容累积
         self.content_full: str = ""
         self.reasoning_full: str = ""
-        #: 流式输出已生成内容的估算 tokens 总量（只增不清零）——供上下文
-        #:   使用率实时刷新（update_streaming_usage）使用。与 token_estimate
-        #:   不同：token_estimate 在真实 usage 到达时被 _handle_usage 清零
-        #:   （SpeedHandler 增量语义），本字段保持单调累积，避免流式未结束时
-        #:   百分比短暂回落（视觉抖动）。
+        #: 上下文占用口径的流式增量：**只含 content 的整体估算**
+        #:   （``estimate_tokens_from_counts``，与消息追加后
+        #:   ``MessageStatsCache`` 的口径一致）。供
+        #:   ``update_streaming_usage`` 实时刷新模式行 ``main · N%``——
+        #:   reasoning 不随请求回传、工具参数在 ``message_to_text`` 中截断，
+        #:   均不计入，避免流式结束后百分比回落跳变。
         self.streamed_output_tokens: int = 0
 
         # 使用量
@@ -57,6 +60,22 @@ class StreamContext:
         self.last_live_est = 0
         self.token_estimate: int = 0
         self._live_total_dirty = False
+
+        # ── 估算口径状态（字符分类增量 → 整体估算）────────────────────────
+        # 逐 delta 分别调用 estimate_tokens 再求和会因 ``max(1, ...)`` 下限
+        # 系统性高估（英文小分片可达 3 倍以上）。此处改为对每个增量只做
+        # 字符分类计数累加，再用 estimate_tokens_from_counts 还原「累计全文
+        # 整体估算」——数值与直接对全文调用 estimate_tokens 完全一致，且
+        # 每 delta 仅 O(len(delta))。
+        self._reasoning_cjk = 0
+        self._reasoning_other = 0
+        self._content_cjk = 0
+        self._content_other = 0
+        self._args_cjk = 0
+        self._args_other = 0
+        # 本流已通过 add_token_size 累加的估算总量——真实 usage 到达时用
+        # ``真实 output - 本值`` 修正全局总 tok（状态栏）与速度分子。
+        self.stream_added_tokens: int = 0
 
         # 状态标记（显式初始化，消除 getattr 防御式访问）
         self.final_usage_received = False
@@ -98,6 +117,80 @@ class StreamContext:
             self.phase_done_content_sent = True
         publish_event("PhaseDoneEvent", label=self.label or "", phase=phase)
         return True
+
+    # ═══════════════════════════════════════════════════════════
+    # 输出估算（字符分类增量 → 整体估算，单一口径）
+    # ═══════════════════════════════════════════════════════════
+
+    def _sync_estimate(self) -> int:
+        """重算本流输出估算，返回 ``token_estimate`` 增量（>=0）。
+
+        - ``token_estimate``：reasoning + content + 工具参数的整体估算总量
+          （供 SpeedHandler 的会话 output 估算与全局总 tok）；
+        - ``streamed_output_tokens``：**只含 content** 的整体估算——上下文
+          占用口径（reasoning 不随请求回传；工具参数在 ``message_to_text``
+          统计中截断 100 字符），与消息追加后的 ``MessageStatsCache`` 一致，
+          避免流式结束百分比回落跳变；
+        - 增量 >0 时同步 ``add_token_size`` 并累计 ``stream_added_tokens``
+          （供真实 usage 修正）。
+        """
+        old = self.token_estimate
+        total = (
+            estimate_tokens_from_counts(self._reasoning_cjk, self._reasoning_other)
+            + estimate_tokens_from_counts(self._content_cjk, self._content_other)
+            + estimate_tokens_from_counts(self._args_cjk, self._args_other)
+        )
+        self.token_estimate = total
+        self.streamed_output_tokens = estimate_tokens_from_counts(
+            self._content_cjk, self._content_other)
+        delta = total - old
+        if delta > 0:
+            add_token_size(delta)
+            self.stream_added_tokens += delta
+        return delta
+
+    def add_reasoning_delta(self, text: str) -> int:
+        """累积 reasoning 增量并重算估算（返回 token_estimate 增量）。"""
+        if not text:
+            return 0
+        cjk, other = count_cjk_other(text)
+        self._reasoning_cjk += cjk
+        self._reasoning_other += other
+        return self._sync_estimate()
+
+    def add_content_delta(self, text: str) -> int:
+        """累积 content 增量并重算估算（返回 token_estimate 增量）。"""
+        if not text:
+            return 0
+        cjk, other = count_cjk_other(text)
+        self._content_cjk += cjk
+        self._content_other += other
+        return self._sync_estimate()
+
+    def add_args_delta(self, text: str) -> int:
+        """累积工具参数增量并重算估算（返回 token_estimate 增量）。"""
+        if not text:
+            return 0
+        cjk, other = count_cjk_other(text)
+        self._args_cjk += cjk
+        self._args_other += other
+        return self._sync_estimate()
+
+    def apply_real_usage(self, real_output: int) -> None:
+        """真实 usage 到达：把本流估算累加修正为真实 output（可为负修正）。
+
+        流式期间 ``add_token_size`` 累加估算值；此处以
+        ``真实 output - stream_added_tokens`` 修正全局总 tok，使状态栏
+        「总tok」与 /cost 的真实统计一致。
+        """
+        try:
+            real = int(real_output or 0)
+        except (TypeError, ValueError, OverflowError):
+            real = 0
+        correction = real - self.stream_added_tokens
+        if correction:
+            adjust_token_size(correction)
+        self.stream_added_tokens = max(0, real)
 
     # ═══════════════════════════════════════════════════════════
     # 渲染器属性已移除（2026-10 架构清理）：渲染统一由 ChatUIConsumer 管理，

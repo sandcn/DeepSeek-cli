@@ -1,8 +1,6 @@
 """ToolCallsHandler — 处理工具调用增量"""
 from __future__ import annotations
 import logging
-from ...tokens import estimate_tokens
-from ...stats import add_token_size
 from ..context import StreamContext
 
 _logger = logging.getLogger(__name__)
@@ -130,6 +128,7 @@ class ToolCallsHandler:
                     # 实时估算工具调用参数的 token 数，确保 token_estimate
                     # 在流式接收 subagent 等大参数时持续增长，
                     # 驱动 SpeedHandler 发出 update_live_output 更新。
-                    ctx.token_estimate += estimate_tokens(fargs)
-                    add_token_size(estimate_tokens(fargs))
+                    # 字符分类增量 → 整体估算（修复逐 fargs 分片分别估算的
+                    # max(1,...) 系统性高估）。
+                    ctx.add_args_delta(fargs)
                     ctx.speed_chunk_count += 1

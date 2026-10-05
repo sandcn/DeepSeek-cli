@@ -8,7 +8,6 @@
 """
 from __future__ import annotations
 from ...events import publish_event
-from ...tokens import estimate_tokens
 from ..context import StreamContext
 from ._base import StreamChunkHandler
 
@@ -32,8 +31,9 @@ class ReasoningHandler(StreamChunkHandler):
 
         ctx.reasoning_full += rc
 
-        ctx.token_estimate += token_est if token_est is not None else estimate_tokens(rc)
-        ctx.streamed_output_tokens = ctx.token_estimate  # 上下文使用率实时刷新增量
+        # 字符分类增量 → 整体估算（含 reasoning：供会话 output 统计与全局
+        # 总 tok；不影响 streamed_output_tokens——其只含 content）。
+        ctx.add_reasoning_delta(rc)
         ctx._live_total_dirty = True
 
         # 🔥 发布推理 chunk 事件到 EventBus

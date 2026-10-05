@@ -18,6 +18,7 @@ from src._compat import dataclass
 _logger = logging.getLogger(__name__)
 from . import context_selector as selector
 from . import context_summarizer as summarizer
+from .image_tokens import estimate_messages_image_tokens
 from .constants import format_token_k, audit_log as _log
 
 
@@ -105,10 +106,11 @@ class SummarizeStrategy(CompressionStrategy):
         # cache 可能为 None（单元测试直接调用时）或未同步
         if cache is not None and cache.is_valid:
             total_chars_val = cache.total_chars
-            total_tokens_val = cache.total_tokens
+            # 图片视觉 token 计入压缩候选选择的 token 口径。
+            total_tokens_val = cache.total_tokens + estimate_messages_image_tokens(messages)
         else:
             total_chars_val = selector.total_chars(messages)
-            total_tokens_val = 0
+            total_tokens_val = estimate_messages_image_tokens(messages)
 
         to_compress = selector.select_for_compression(
             messages, keep_recent, force, total_chars_val, total_tokens_val,
@@ -307,7 +309,8 @@ class DropStrategy(CompressionStrategy):
     def _drop_excess(messages, indices, on_changed, cache):
         """非强制模式：计算超出量，批量删除直到释放足够空间。"""
         chars_before = cache.total_chars if (cache is not None and cache.is_valid) else selector.total_chars(messages)
-        tokens_before = cache.total_tokens if (cache is not None and cache.is_valid) else 0
+        tokens_before = (cache.total_tokens if (cache is not None and cache.is_valid) else 0) \
+            + estimate_messages_image_tokens(messages)
 
         need = selector.calc_excess_chars_values(chars_before, tokens_before)
         if need <= 0:

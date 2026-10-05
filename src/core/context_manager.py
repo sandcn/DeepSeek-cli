@@ -31,6 +31,7 @@ from .constants import YELLOW, DIM, RESET, audit_log as _log
 from . import context_selector as selector
 from .context_selector import MessageStatsCache
 from .tokens import estimate_tokens
+from .image_tokens import estimate_messages_image_tokens
 from .compression import CompressionResult, CompressionStrategy, SummarizeStrategy, DropStrategy  # noqa: F401 — re-exported for backward compat
 from .ports.config import ConfigPort
 from .ports.output import OutputPort
@@ -64,7 +65,9 @@ _context_usage_percent: Optional[float] = None
 #     并触发活跃 ContextManager.refresh_usage() 重算全局百分比——AI 生成时
 #     行首 ``main · N%`` 随输出增长实时上升；
 #   - 统计口径：refresh_usage() 计算时在（系统提词 + 工具列表 + 全部消息）
-#     基础上叠加流式增量（当前流式输出估算 tokens），占模型上下文窗口比例；
+#     基础上叠加流式增量（当前流式输出的 **content 整体估算**——与消息追加
+#     后 MessageStatsCache 同口径，reasoning 与工具参数不计入），占模型
+#     上下文窗口比例；
 #   - 清零：流式结束（_cleanup_display，幂等）调用 update_streaming_usage(0)
 #     清零——随后 assistant 消息追加由 refresh_usage() 按消息全文重算真实值，
 #     避免「流式增量 + 消息内容」双计；
@@ -168,7 +171,8 @@ def update_streaming_usage(delta_tokens: int, label: Optional[str] = None) -> No
     ContextManager.refresh_usage()（缓存有效时 O(1)，性能好）。
 
     Args:
-        delta_tokens: 当前流式输出估算 tokens（ctx.streamed_output_tokens）。
+        delta_tokens: 当前流式输出的**上下文增量**（ctx.streamed_output_tokens，
+            content 的整体估算；与消息追加后 MessageStatsCache 同口径）。
         label: 流式调用标签；None/主 Agent（"assistant"）计入，SubAgent
             （"agent-N"/"sa-xxx"）跳过。
     """
@@ -256,6 +260,13 @@ class ContextManager:
         self._tools_tokens_cache: Optional[int] = None
         self._tools_cache_fp: tuple = ()
 
+        # 图片（视觉）token 估算缓存——流式输出期间每 ~0.1s 实时刷新上下文
+        # 使用率（update_streaming_usage → refresh_usage）都会调用图片估算；
+        # 指纹（len(messages) + 图片块 id 元组）不变时复用，避免重复解码
+        # base64 / 读图像尺寸。
+        self._image_tokens_cache: Optional[int] = None
+        self._image_tokens_fp: tuple = ()
+
         # 策略链：依次尝试，第一个成功即停止
         self._strategies = strategies or [
             SummarizeStrategy(),
@@ -324,7 +335,8 @@ class ContextManager:
             self._ensure_cache()
 
             total_chars_val = self._cache.total_chars
-            total_tokens_val = self._cache.total_tokens
+            # 图片视觉 token 计入压缩判断的 token 口径（字符口径不含图片）。
+            total_tokens_val = self._cache.total_tokens + self._messages_image_tokens()
 
             force, should = self._should_compress(force, total_chars_val, total_tokens_val)
             if not should:
@@ -472,6 +484,34 @@ class ContextManager:
         self._tools_cache_fp = fp
         return total
 
+    @staticmethod
+    def _image_fp(messages) -> tuple:
+        """图片块指纹：(消息条数, 图片块 id 元组)——不变则估算缓存可复用。"""
+        ids = []
+        for msg in messages:
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") in ("image_url", "image"):
+                        ids.append(id(block))
+        return (len(messages), tuple(ids))
+
+    def _messages_image_tokens(self) -> int:
+        """messages 中图片的视觉 token 估算（含上传瘦身规则），带指纹缓存。
+
+        图片在文本口径里只占 ``[图片]`` 占位，视觉 token 须单独估算并计入
+        上下文占用与压缩判断（详见 ``core.image_tokens``）。指纹不变时复用
+        缓存——流式每 0.1s 刷新路径 O(1)。
+        """
+        messages = self.messages
+        fp = self._image_fp(messages)
+        if self._image_tokens_cache is not None and self._image_tokens_fp == fp:
+            return self._image_tokens_cache
+        total = estimate_messages_image_tokens(messages)
+        self._image_tokens_cache = total
+        self._image_tokens_fp = fp
+        return total
+
     def refresh_usage(self, force: bool = False) -> None:
         """刷新全局上下文使用率（动态刷新入口，2026-08-19 用户需求）。
 
@@ -523,7 +563,8 @@ class ContextManager:
                 if force or not self._cache.is_valid or len(self._cache) != len(self.messages):
                     self._cache.resync(self.messages)
                 self._hint_chars = self._cache.total_chars
-                tokens = self._cache.total_tokens + self._tools_tokens() + _streaming_extra_tokens
+                tokens = (self._cache.total_tokens + self._tools_tokens()
+                          + self._messages_image_tokens() + _streaming_extra_tokens)
             if tokens <= 0:
                 set_context_usage_percent(0.0)
                 return

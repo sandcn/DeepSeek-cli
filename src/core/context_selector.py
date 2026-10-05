@@ -17,15 +17,21 @@ _EXCESS_BUFFER = 1.3  # 30% 超额释放缓冲，避免频繁触发压缩
 # ── 单次遍历计算（避免重复全量遍历）───────────────────────
 
 def compute_message_stats(messages):
-    """单次遍历计算总字符数和总 token 数。"""
+    """单次遍历计算总字符数和总 token 数。
+
+    token 口径含图片视觉 token（``core.image_tokens``，含上传瘦身规则）——
+    含图会话的上下文占用/压缩判断不再低估。字符口径仍只计文本。
+    """
     # import 提升到循环外（避免每条消息重复解析 sys.modules 绑定）
     from .tokens import estimate_tokens
+    from .image_tokens import estimate_messages_image_tokens
     total_chars_val = 0
     total_tokens_val = 0
     for m in messages:
         text = message_to_text(m)
         total_chars_val += len(text)
         total_tokens_val += estimate_tokens(text)
+    total_tokens_val += estimate_messages_image_tokens(messages)
     return total_chars_val, total_tokens_val
 
 

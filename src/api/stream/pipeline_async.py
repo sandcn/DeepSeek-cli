@@ -23,7 +23,6 @@ from ..tokens import estimate_tokens
 from ..interrupt_async import is_interrupted_async
 from ..stats import (
     accumulate_usage, set_stream_speed,
-    add_token_size,
     _notify_stream_started,
     _notify_stream_ended,
     _notify_stream_progress,
@@ -194,13 +193,14 @@ class AsyncStreamPipeline:
                     # 粒度），回调内不假设调用频率，幂等安全。
                     _notify_stream_progress()
                     # ★ 上下文百分比实时刷新（2026-08-19 用户需求）：每 ~0.1s
-                    #   把当前流式输出估算 tokens（ctx.streamed_output_tokens，
-                    #   单调累积不清零——真实 usage 到达不影响）写入全局并
-                    #   触发活跃 ContextManager.refresh_usage() 重算——AI 生成
-                    #   时行首 ``main · N%`` 随输出增长实时上升（缓存有效时
-                    #   O(1)）。延迟导入避免 api→core 模块加载期循环依赖
-                    #   （项目既有模式：core 依赖 api，api 侧延迟引用）；
-                    #   SubAgent（label="agent-N"）由函数内部跳过。
+                    #   把当前流式输出的上下文增量（ctx.streamed_output_tokens，
+                    #   content 的整体估算——与消息追加后 MessageStatsCache
+                    #   同口径）写入全局并触发活跃 ContextManager.refresh_usage()
+                    #   重算——AI 生成时行首 ``main · N%`` 随输出增长实时上升
+                    #   且结束后不回落跳变（缓存有效时 O(1)）。延迟导入避免
+                    #   api→core 模块加载期循环依赖（项目既有模式：core 依赖
+                    #   api，api 侧延迟引用）；SubAgent（label="agent-N"）由
+                    #   函数内部跳过。
                     try:
                         from ._usage_hook import notify_streaming_usage
                         notify_streaming_usage(ctx.streamed_output_tokens, ctx.label)
@@ -225,10 +225,9 @@ class AsyncStreamPipeline:
                 # reasoning_content
                 rc = delta.get("reasoning_content")
                 if rc and ctx.is_reasoning:
-                    rc_tokens = estimate_tokens(rc)
-                    self._reasoning_handler.handle(ctx, rc, rc_tokens)
+                    # handler 内做字符分类增量估算（整体口径，避免逐 delta 高估）
+                    self._reasoning_handler.handle(ctx, rc)
                     self._speed_handler.try_update(ctx)
-                    add_token_size(rc_tokens)
 
                 # content
                 dc = delta.get("content")
@@ -237,10 +236,8 @@ class AsyncStreamPipeline:
                     # 确保最后几 tok 推理内容在 PhaseDoneEvent("reasoning") 之前发出。
                     if ctx.is_reasoning:
                         self._reasoning_handler.flush(ctx.label)
-                    dc_tokens = estimate_tokens(dc)
-                    self._content_handler.handle(ctx, dc, dc_tokens)
+                    self._content_handler.handle(ctx, dc)
                     self._speed_handler.try_update(ctx)
-                    add_token_size(dc_tokens)
 
                 # tool_calls
                 dtc = delta.get("tool_calls")
@@ -332,9 +329,9 @@ class AsyncStreamPipeline:
             # 此前 split 为两次调用导致 calls 多计 1 次（/cost 调用次数虚高）。
             estimated_output = ctx.last_live_est
             correction = real_output - estimated_output
-            # ★ 已用真实值修正，重置 token 估计使后续 final_update 不再产生 delta
-            ctx.token_estimate = 0
-            ctx.last_live_est = 0
+            # ★ 已用真实值修正会话 output；后续若仍有输出，SpeedHandler 以
+            #   last_live_est 为基准只算新增（不再重复累积整段）。
+            ctx.last_live_est = ctx.token_estimate
             # ★ 标记最终 usage 已接收，后续 SpeedHandler 跳过重复累积
             ctx.final_usage_received = True
             accumulate_usage({
@@ -343,6 +340,10 @@ class AsyncStreamPipeline:
                 "input_cache_hit": real_hit,
                 "input_cache_miss": real_miss,
             })
+            # ★ 状态栏「总tok」/速度分子同样以真实 output 修正——修复前流式
+            #   路径只累加逐 delta 估算（高估且不修正），非流式路径累加真实
+            #   output，两路径口径不一致。
+            ctx.apply_real_usage(real_output)
             ctx.usage_accumulated = True
 
     def _build_result(self, ctx: StreamContext) -> tuple:

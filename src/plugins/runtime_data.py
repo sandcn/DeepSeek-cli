@@ -170,6 +170,9 @@ class StatsService(Service):
     def add_token_size(self, size: int) -> None:
         self._mod().add_token_size(size)
 
+    def adjust_token_size(self, size: int) -> None:
+        self._mod().adjust_token_size(size)
+
     def token_stats(self) -> dict:
         return self._mod().get_token_stats()
 

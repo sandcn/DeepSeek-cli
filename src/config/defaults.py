@@ -107,6 +107,13 @@ DEFAULTS = {
     "image_upload_keep_recent": 4,
     "image_upload_max_dimension": 1568,
     "image_upload_quality": 80,
+    # ── 多模态图片视觉 token 估算（上下文占用百分比 / 压缩判断口径）──
+    # 图片视觉 token = ceil(w/patch) * ceil(h/patch)（长边先按
+    # image_upload_max_dimension 降采样，仅计 image_upload_keep_recent 张）；
+    # 无法读尺寸（http URL / 解码失败 / Pillow 缺失）时每图按 default 计。
+    # 计费（/cost 输入）来自 API 真实 usage，与本估算无关。
+    "multimodal_image_token_patch": 28,
+    "multimodal_image_token_default": 800,
     # ── MCP（Model Context Protocol）外部工具服务器 ──
     # 列表元素：{"name","transport"(stdio/http/sse),"command","args","env","cwd",
     #   "url","headers","enabled","agents","timeout","parallel_safe","description"}
@@ -279,6 +286,19 @@ CONFIG_KEYS = {
         "rc_path": ("image_upload_quality",),
         "type": int,
         "default": DEFAULTS["image_upload_quality"],
+        "cacheable": True,
+    },
+    # ---- 多模态图片视觉 token 估算（上下文统计口径） ----
+    "MULTIMODAL_IMAGE_TOKEN_PATCH": {
+        "rc_path": ("multimodal_image_token_patch",),
+        "type": int,
+        "default": DEFAULTS["multimodal_image_token_patch"],
+        "cacheable": True,
+    },
+    "MULTIMODAL_IMAGE_TOKEN_DEFAULT": {
+        "rc_path": ("multimodal_image_token_default",),
+        "type": int,
+        "default": DEFAULTS["multimodal_image_token_default"],
         "cacheable": True,
     },
     # ---- MCP 外部工具服务器 ----

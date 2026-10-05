@@ -211,6 +211,14 @@ class ConfigProxy(ConfigPort):
         return _config.IMAGE_UPLOAD_QUALITY
 
     @property
+    def MULTIMODAL_IMAGE_TOKEN_PATCH(self) -> int:
+        return _config.MULTIMODAL_IMAGE_TOKEN_PATCH
+
+    @property
+    def MULTIMODAL_IMAGE_TOKEN_DEFAULT(self) -> int:
+        return _config.MULTIMODAL_IMAGE_TOKEN_DEFAULT
+
+    @property
     def CONFIG_DIR(self) -> Path:
         return _config.CONFIG_DIR
 

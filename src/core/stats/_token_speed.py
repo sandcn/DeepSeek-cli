@@ -46,6 +46,36 @@ class _TokenSpeedTracker:
                 self._start_time = now
             self._window.append((now, size))
 
+    def adjust_token_size(self, size: int) -> None:
+        """修正总 token 计数（可为负）——用真实 usage 覆盖流式估算偏差。
+
+        流式生成期间 ``add_token_size`` 累加的是**估算值**；真实 usage 到达
+        后用本方法把本流估算累加修正为真实 output（``size = 真实 - 已累加
+        估算``，通常为负）。总计数钳制到 >= 0，绝不为负；修正量同时写入
+        速率窗口（负值可被 ``window_speed`` / ``per_second_speed`` 的钳制消化）。
+
+        Args:
+            size: 修正量（可正可负、可为 0）；非整数/不可解析值忽略。
+        """
+        try:
+            size = int(size)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if size == 0:
+            return
+        with self._lock:
+            new_total = self._total_tokens + size
+            if new_total < 0:
+                size = -self._total_tokens
+                new_total = 0
+            if size == 0:
+                return
+            now = time.time()
+            self._total_tokens = new_total
+            if self._start_time is None and size > 0:
+                self._start_time = now
+            self._window.append((now, size))
+
     def _prune_window(self, now: float | None = None) -> None:
         """清理窗口：移除超出时间范围的旧记录。"""
         if now is None:
@@ -85,7 +115,7 @@ class _TokenSpeedTracker:
             self._prune_window(now)
             if not self._window:
                 return 0.0
-            window_tokens = sum(c for _, c in self._window)
+            window_tokens = max(0, sum(c for _, c in self._window))
             elapsed = now - self._window[0][0]
             if elapsed <= 0:
                 return 0.0
@@ -109,7 +139,7 @@ class _TokenSpeedTracker:
                 idx += 1
             if idx >= len(self._window):
                 return 0.0
-            tokens_1s = sum(c for _, c in list(self._window)[idx:])
+            tokens_1s = max(0, sum(c for _, c in list(self._window)[idx:]))
             elapsed = now - self._window[idx][0]
             if elapsed <= 0:
                 return 0.0
@@ -168,7 +198,9 @@ class _TokenSpeedTracker:
             if elapsed <= 0:
                 return 0.0
             delta = self._total_tokens - old_total
-            return round(delta / elapsed, 2)
+            # ★ 真实 usage 修正（adjust_token_size）可使 delta 为负——速度
+            #   恒非负（负值对用户无意义，且会让状态栏速度段抖动）。
+            return max(0.0, round(delta / elapsed, 2))
 
     def stats_snapshot(self) -> dict:
         """返回当前统计的快照字典（线程安全，一次调用获取全部）。"""
@@ -177,7 +209,7 @@ class _TokenSpeedTracker:
             start = self._start_time
             now = time.time()
             self._prune_window(now)
-            window_tokens = sum(c for _, c in self._window)
+            window_tokens = max(0, sum(c for _, c in self._window))
             window_elapsed = now - self._window[0][0] if self._window else 0.0
             elapsed = now - start if start else 0.0
 
@@ -199,7 +231,10 @@ class _TokenSpeedTracker:
             if len(self._speed_records) >= 2:
                 old_ts, old_total = self._speed_records[0]
                 s_elapsed = now - old_ts
-                per_sec_speed = round((total - old_total) / s_elapsed, 2) if s_elapsed > 0 else 0.0
+                per_sec_speed = (
+                    max(0.0, round((total - old_total) / s_elapsed, 2))
+                    if s_elapsed > 0 else 0.0
+                )
             else:
                 per_sec_speed = 0.0
 
@@ -226,6 +261,19 @@ def add_token_size(size: int) -> None:
         size: 本次收到的 token 数量（>0 时有效）。
     """
     _token_speed.add_token_size(size)
+
+
+def adjust_token_size(size: int) -> None:
+    """修正全局总 token（可为负）——真实 usage 覆盖流式估算偏差。
+
+    流式期间 ``add_token_size`` 累加估算值，真实 usage 到达后用本函数传入
+    ``真实值 - 已累加估算`` 修正（通常为负），使状态栏总 tok 与 /cost 的
+    真实统计口径一致。总计数钳制到 >= 0。
+
+    Args:
+        size: 修正量（可正可负）。
+    """
+    _token_speed.adjust_token_size(size)
 
 
 def get_total_tokens() -> int:

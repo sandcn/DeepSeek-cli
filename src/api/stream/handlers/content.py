@@ -9,7 +9,6 @@
 """
 from __future__ import annotations
 from ...events import publish_event
-from ...tokens import estimate_tokens
 from ..context import StreamContext
 from ._base import StreamChunkHandler
 
@@ -40,8 +39,10 @@ class ContentHandler(StreamChunkHandler):
                               label=ctx.label, phase="answering",
                               info="", source=ctx.label or "")
 
-        ctx.token_estimate += token_est if token_est is not None else estimate_tokens(dc)
-        ctx.streamed_output_tokens = ctx.token_estimate  # 上下文使用率实时刷新增量
+        # 字符分类增量 → 整体估算（与「对累计全文调用 estimate_tokens」一致，
+        # 避免逐 delta 分别估算的 max(1,...) 下限系统性高估）；
+        # streamed_output_tokens 只含 content（上下文占用口径，不含 reasoning）。
+        ctx.add_content_delta(dc)
         ctx.content_full += dc
         ctx.speed_chunk_count += 1
         ctx._live_total_dirty = True

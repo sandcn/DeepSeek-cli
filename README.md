@@ -196,6 +196,13 @@ python chat.py -m deepseek-flash
 > python chat.py config set image_upload_max_dimension 1024    # 上传长边上限
 > python chat.py config set image_upload_quality 80            # JPEG 质量 1~100
 > ```
+>
+> **图片 token 统计**：图片按 token 计费，`/cost` 的输入 token 来自 API 真实
+> usage（已含图片 token）；上下文使用率百分比（模式行 `main · N%`）与压缩
+> 判断另按图像尺寸估算视觉 token（`ceil(w/patch) * ceil(h/patch)`，默认
+> `patch=28`；长边按 `image_upload_max_dimension` 降采样、仅计
+> `image_upload_keep_recent` 张），可用 `multimodal_image_token_patch`
+> （分块边长）与 `multimodal_image_token_default`（无法读尺寸时每图占用）覆盖。
 
 非多模态模型下，用户消息中的图片引用保持纯文本原样传递（模型不可见图片）。
 如有多模态模型未被内置模式识别，可通过配置扩展：

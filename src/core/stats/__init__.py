@@ -27,6 +27,7 @@ from ._stats_core import (
 from ._token_speed import (
     _TokenSpeedTracker,
     add_token_size,
+    adjust_token_size,
     get_total_tokens,
     get_token_speed,
     get_short_window_speed,
@@ -58,6 +59,7 @@ __all__ = [
     "set_tool_parse_elapsed",
     "set_stream_speed",
     "add_token_size",
+    "adjust_token_size",
     "get_total_tokens",
     "get_token_speed",
     "get_short_window_speed",

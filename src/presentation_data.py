@@ -329,6 +329,8 @@ CONFIG_ENTRY_DESC_MAP: dict[str, str] = {
     "IMAGE_UPLOAD_KEEP_RECENT": "上传时保留的最近图片数（更早的图片替换为文本占位，0=不折叠）",
     "IMAGE_UPLOAD_MAX_DIMENSION": "上传图片长边上限（像素，超过则降采样后再上传）",
     "IMAGE_UPLOAD_QUALITY": "上传图片 JPEG 压缩质量（1~100，越高越清晰体积越大）",
+    "MULTIMODAL_IMAGE_TOKEN_PATCH": "图片视觉 token 分块边长（ceil(w/patch)*ceil(h/patch)，默认 28）",
+    "MULTIMODAL_IMAGE_TOKEN_DEFAULT": "无法读取尺寸的图片（URL/解码失败）每图占用 token（默认 800）",
     "MCP_SERVERS": "MCP 外部工具服务器列表（name/transport/command 或 url）",
     # ── HTTP 性能配置（嵌套路径） ──
     "HTTP_CONNECT_TIMEOUT": "HTTP 连接超时（秒）",
