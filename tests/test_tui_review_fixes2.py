@@ -504,7 +504,7 @@ class TestTraceToolsViewDeps:
         schemas = [
             ("bash", {"command": {"type": "string", "description": "命令"}},
              ["command"], "执行命令"),
-            ("read_file", {"path": {"type": "string"}}, [], "读取文件"),
+            ("ls", {"path": {"type": "string"}}, [], "列目录"),
         ]
         monkeypatch.setattr(
             trace_mod, "_tools_schema_cache",
@@ -521,7 +521,7 @@ class TestTraceToolsViewDeps:
         frame = _components.render_frame(root, 80)
         text = "\n".join(line.plain for line in frame.lines)
         assert "bash" in text
-        assert "read_file" in text
+        assert "ls" in text
         assert "命令" in text  # 右栏参数描述（检查器渲染成功）
 
     def test_navigation_updates_inspector(self, monkeypatch):
@@ -531,7 +531,7 @@ class TestTraceToolsViewDeps:
         from src.tui.app.model import AppModel
         schemas = [
             ("bash", {"command": {"type": "string"}}, ["command"], "执行命令"),
-            ("read_file", {"path": {"type": "string"}}, [], "读取文件"),
+            ("ls", {"path": {"type": "string"}}, [], "列目录"),
         ]
         monkeypatch.setattr(
             trace_mod, "_tools_schema_cache",

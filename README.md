@@ -361,7 +361,7 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 
 ## 工具系统（Tool System）
 
-AI 代理在对话中可调用以下工具完成各类操作。共 **16 个内置工具**，涵盖文件操作、网络请求、用户交互等能力。
+AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内置工具**，涵盖文件操作、代码搜索、网络请求、用户交互等能力。
 
 > 除内置工具外，还可通过 **MCP（Model Context Protocol）** 接入外部服务器提供的工具，
 > 注册后与内置工具同构调用（详见下方 [MCP 外部工具接入](#mcp-外部工具接入model-context-protocol)）。
@@ -373,6 +373,9 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **16 个内�
 | `read_file` | rf | IO | ✅ | 读取文件内容，支持指定行号范围、自动编码检测，可显示行号（默认关闭） |
 | `write_file` | wf | IO | ✅ | 覆盖写入文件，自动创建父目录，原子写入 |
 | `update_file` | uf | IO | ❌ | 精确替换文件中的文本（old_string → new_string），支持 use_regex 正则替换 |
+| `search` | sr | 搜索 | ✅ | 在项目源码中搜索正则表达式，自动排除非源码目录 |
+| `find` | fn | 搜索 | ✅ | 按通配符模式查找文件和目录，支持深度控制 |
+| `ls` | ls | IO | ✅ | 列出目录内容，支持详细格式和隐藏文件显示 |
 | `bash` | bs | 执行 | ❌ | 执行 shell 命令（安全沙盒保护，禁止替代专用工具） |
 | `bash_opt` | bo | 执行 | ❌ | 按 task_id 操作后台 bash 任务：read（读取当前已产生的全部输出并清空缓冲，立即返回）/ wait（等待完成取输出）/ kill（杀死进程树）/ stdin（发送文本输入）/ keys（发送光标键盘消息，跨平台 ANSI/VT100） |
 | `cp` | cp | IO | ✅ | 复制文件或目录，保留元数据，支持沙盒撤回 |
@@ -391,7 +394,8 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **16 个内�
 
 | 分类 | 工具 | 说明 |
 |------|------|------|
-| **文件 IO** | read_file, write_file, update_file, cp, mv, rm, mkdir, read_image | 读写文件、目录操作、文件管理、图像读取 |
+| **文件 IO** | read_file, write_file, update_file, ls, cp, mv, rm, mkdir, read_image | 读写文件、目录操作、文件管理、图像读取 |
+| **代码搜索** | search, find | 正则搜索源码、通配符查找文件 |
 | **命令执行** | bash, bash_opt | 安全沙盒中执行 shell 命令；按 task_id 操作后台 bash 任务（bash 后台任务注册在 bash 专用表 `_background_tasks`） |
 | **网络访问** | web_search, web_fetch | 网页搜索（DeepSeek 官方原生搜索）与网页全文获取 |
 | **用户交互** | user_select | 交互式选择弹窗（单选/多选/超时回退；支持并发提问，多问题 tab 一起显示） |
@@ -423,7 +427,7 @@ def can_use(cls, tool_name: str, agent_type: str = "execute", path: str | None =
 
 ## MCP 外部工具接入（Model Context Protocol）
 
-除 16 个内置工具外，本 CLI 还支持接入**外部 MCP 服务器**（[Model Context Protocol](https://modelcontextprotocol.io/) 2025-06-18），
+除 19 个内置工具外，本 CLI 还支持接入**外部 MCP 服务器**（[Model Context Protocol](https://modelcontextprotocol.io/) 2025-06-18），
 把第三方工具（文件系统、数据库、浏览器、自定义服务……）无缝变成模型可调用的工具。
 
 ### 配置
@@ -595,11 +599,11 @@ ChatUIConsumer
 | 类型 | 可用工具 | 用途 |
 |---|---|---|
 | **plan** | 只读分析 + write_file/update_file/mkdir（仅限 `.chat/plan/` 目录） | 任务拆解、依赖分析、生成计划文件到 `.chat/plan/` |
-| **map** | 只读（read_file 等只读工具） | 项目探底、模块地图、调用链追踪、引用关系分析 |
+| **map** | 只读（read_file/search/find/ls 等只读工具） | 项目探底、模块地图、调用链追踪、引用关系分析 |
 | **review** | 只读 + web_search（无 bash/bash_opt 等任何 shell 执行工具） | Code Review、P0-P3 分级审查、跨文件一致性验证 |
 | **execute** | 全工具（不含 user_select/subagent/subagent_opt/web_search） | 读/写/改代码、执行测试、通用任务 |
 
-> **工具排除策略**（与 `src/core/subagent.py` 的 `_TOOL_EXCLUSION_MAP` 一致）：execute 排除 `subagent/subagent_opt/user_select/web_search`；map 排除 `bash/bash_opt/write_file/update_file/rm/mv/cp/mkdir/web_search/subagent/subagent_opt/user_select`；review 排除 `bash/bash_opt/write_file/update_file/rm/mv/cp/mkdir/subagent/subagent_opt/user_select`（纯只读审查：仅 read_file/web_search，无任何 shell 执行能力）；plan 排除 `bash/bash_opt/rm/mv/cp/subagent/subagent_opt/user_select`，write_file/update_file/mkdir 仅限 `.chat/plan/` 目录。`subagent_opt` 与后台 subagent 均仅主 Agent 独有：SubAgent 工具白名单全类型排除 + 工具运行时 `isinstance(agent, SubAgent)` 双保险。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan Agent 路径白名单校验。
+> **工具排除策略**（与 `src/core/subagent.py` 的 `_TOOL_EXCLUSION_MAP` 一致）：execute 排除 `subagent/subagent_opt/user_select/web_search`；map 排除 `bash/bash_opt/write_file/update_file/rm/mv/cp/mkdir/web_search/subagent/subagent_opt/user_select`；review 排除 `bash/bash_opt/write_file/update_file/rm/mv/cp/mkdir/subagent/subagent_opt/user_select`（纯只读审查：仅 read_file/search/find/ls/web_search，无任何 shell 执行能力）；plan 排除 `bash/bash_opt/rm/mv/cp/subagent/subagent_opt/user_select`，write_file/update_file/mkdir 仅限 `.chat/plan/` 目录。`subagent_opt` 与后台 subagent 均仅主 Agent 独有：SubAgent 工具白名单全类型排除 + 工具运行时 `isinstance(agent, SubAgent)` 双保险。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan Agent 路径白名单校验。
 
 ### 并发调度策略
 
@@ -731,11 +735,12 @@ ChatUIConsumer
 │   │   ├── _rendering/        # 内部渲染辅助
 │   │   └── _utils/            # 内部工具函数
 │   │
-│   ├── tools/              # 工具调用系统（16 个内置工具）
+│   ├── tools/              # 工具调用系统（19 个内置工具）
 │   │   ├── base.py            # Func 基类 + 元数据系统（含 can_use 工具可用性检查 / agent_type）
 │   │   ├── file_base.py       # FileToolBase 文件操作基类（含 plan agent 路径白名单）
 │   │   ├── registry.py        # 工具注册表（自动发现 + 调度 + 元数据索引）
 │   │   ├── read_file.py / write_file.py / update_file.py / read_image.py
+│   │   ├── search.py / find.py / ls.py
 │   │   ├── bash.py / cp.py / mv.py / rm.py / mkdir.py / skill_tool.py
 │   │   ├── web_search.py / web_fetch.py / user_select.py / subagent.py / subagent_opt.py
 │   │   ├── file_ops.py        # 文件操作原子工具（原子写入、路径安全校验、沙盒记录）

@@ -42,9 +42,9 @@ def test_tools_all_no_extra_tool_names():
 
 
 def test_tools_exported_count_matches_readme():
-    """README 声明 16 个内置工具；__all__ 工具类数量应一致（不含 Func）。"""
+    """README 声明 19 个内置工具；__all__ 工具类数量应一致（不含 Func）。"""
     tool_names = _imported_tool_names() - {"Func"}
-    assert len(tool_names) == 16
+    assert len(tool_names) == 19
 
 
 # ── loader.update_config 嵌套非 dict 防御 ────────────────

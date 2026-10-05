@@ -452,7 +452,7 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
         #   ``format_tool_record`` 并入该记录行。修复前独立阶段行使工具开始瞬间
         #   面板高度 +2（阶段行 + 记录行）→ ``start_tool`` 清除 model_phase 后
         #   -1（阶段行消失），文档高于屏幕时 InkRenderer 对缩短做**全量
-        #   clear + 重建**——每次 subagent 调用工具 TUI 全量刷新闪烁。
+        #   clear + 重建**——每次 subagent 调用 search 等工具 TUI 全量刷新闪烁。
         elif slot.model_phase == "batch":
             sub_items.append(Line([
                 StyledRun("\u2026batch", _S_BATCH),
@@ -522,7 +522,7 @@ def format_tool_record(rec: _ToolRecord, now: float, cont: str = "",
         #   修复前 build_agent_lines 额外追加 ``…parsing`` 独立行：工具开始
         #   瞬间面板 +2 行，start_tool 清除 model_phase 后 -1 行（缩短）。
         #   文档高于屏幕时 InkRenderer 对缩短做全量 clear + 重建 → 每次
-        #   subagent 调用工具 TUI 全量刷新闪烁。
+        #   subagent 调用 search 等工具 TUI 全量刷新闪烁。
         # P3（review）：parsing 行不追加 ``time_str`` 尾缀——耗时由
         #   parse_info 摘要（"rf 51t 0.74s"）承载，避免重复显示。
         extra_parts = [p for p in (detail, _single_line(parse_info)) if p]

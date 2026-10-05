@@ -33,8 +33,8 @@ class _AgentStub:
 async def test_tools_builtin_registers_all(cli_kernel):
     tools = cli_kernel.resolve_service("tools")
     names = tools.names()
-    assert "read_file" in names and "bash" in names and "rm" in names
-    assert len(names) >= 16
+    assert "read_file" in names and "bash" in names and "ls" in names
+    assert len(names) >= 19
 
 
 async def test_pre_execute_deny_skips_execution(cli_kernel):
@@ -46,13 +46,13 @@ async def test_pre_execute_deny_skips_execution(cli_kernel):
 
     cli_kernel.root.on("tools/pre-execute", deny)
     scheduler = ToolScheduler()
-    tc = {"id": "t1", "name": "read_file", "arguments": {}}
+    tc = {"id": "t1", "name": "ls", "arguments": {}}
     _id, output, success = await scheduler._execute_one_async(
         tc, agent_ref=_AgentStub(), on_before=None, on_after=None, run_method=None
     )
     assert success is False
     assert "被测试策略拒绝" in output
-    assert calls == ["read_file"]
+    assert calls == ["ls"]
 
 
 async def test_pre_execute_allow_runs_tool(cli_kernel):
@@ -64,12 +64,12 @@ async def test_pre_execute_allow_runs_tool(cli_kernel):
 
     cli_kernel.root.on("tools/pre-execute", allow)
     scheduler = ToolScheduler()
-    tc = {"id": "t2", "name": "read_file", "arguments": {"path": "README.md"}}
+    tc = {"id": "t2", "name": "ls", "arguments": {"path": "."}}
     _id, output, success = await scheduler._execute_one_async(
         tc, agent_ref=_AgentStub(), on_before=None, on_after=None, run_method=None
     )
     assert success is True
-    assert seen == ["read_file"]
+    assert seen == ["ls"]
 
 
 async def test_post_execute_rewrites_output(cli_kernel):
@@ -79,7 +79,7 @@ async def test_post_execute_rewrites_output(cli_kernel):
 
     cli_kernel.root.on("tools/post-execute", rewrite)
     scheduler = ToolScheduler()
-    tc = {"id": "t3", "name": "read_file", "arguments": {"path": "README.md"}}
+    tc = {"id": "t3", "name": "ls", "arguments": {"path": "."}}
     _id, output, success = await scheduler._execute_one_async(
         tc, agent_ref=_AgentStub(), on_before=None, on_after=None, run_method=None
     )
@@ -147,10 +147,10 @@ async def test_plugin_define_tool_executes(cli_kernel):
 async def test_tool_plugin_manifest_declaration(cli_kernel):
     from src.plugins.tool_plugin import apply as tool_plugin
 
-    fiber = cli_kernel.plugin(tool_plugin, config={"tool": "src.tools.read_file.ReadFileFunc"})
+    fiber = cli_kernel.plugin(tool_plugin, config={"tool": "src.tools.ls.LsFunc"})
     await cli_kernel.settle()
     assert fiber.state.value == "ACTIVE"
-    assert "read_file" in cli_kernel.root.tools.names()
+    assert "ls" in cli_kernel.root.tools.names()
     await fiber.dispose()
     await cli_kernel.settle()
 

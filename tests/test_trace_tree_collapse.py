@@ -448,7 +448,7 @@ class TestTraceToolsViewSpaceToggle:
     def _schemas():
         return [("bash", {"command": {"type": "string", "description": "d"}},
                  ["command"], "desc"),
-                ("read_file", {"path": {"type": "string"}}, [], "读取文件")]
+                ("ls", {"path": {"type": "string"}}, [], "列目录")]
 
     @pytest.fixture(autouse=True)
     def _pin_schemas(self, monkeypatch):

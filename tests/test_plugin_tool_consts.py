@@ -61,6 +61,11 @@ async def test_default_profile_constants():
 
     kernel = await build_kernel("cli")
     try:
+        assert "node_modules" in C.excluded_dirs()
+        assert C.should_exclude_dir("node_modules") is True
+        assert C.should_exclude_dir("src") is False
+        assert "*.egg-info" in C.rg_exclude_globs()
+        assert C.grep_exclude_files()
         assert C.default_encoding() == "utf-8"
         assert C.max_file_size_mb() == 100
         assert "latin-1" in C.catchall_encodings()
@@ -107,10 +112,11 @@ async def _build_with_disable(ids):
 async def test_overlay_disable_single_constant():
     from src.tools import _constants as C
 
-    kernel = await _build_with_disable(["tool_consts::tool_const_dangerous_device_files"])
+    kernel = await _build_with_disable(["tool_consts::tool_const_excluded_dirs"])
     try:
-        assert C.dangerous_device_files() == frozenset()
-        assert C.default_encoding() == "utf-8"
+        assert C.excluded_dirs() == set()
+        assert C.should_exclude_dir("node_modules") is False
+        assert C.const("EXCLUDED_FILE_PATTERNS")
     finally:
         await kernel.dispose()
 

@@ -71,7 +71,7 @@ def test_register_custom_preset(cli_kernel):
     from src.plugins.presets import Preset
 
     presets = cli_kernel.resolve_service("presets")
-    presets.register(Preset("readonly", "只读", tool_includes=("read_file", "write_file")))
+    presets.register(Preset("readonly", "只读", tool_includes=("read_file", "search")))
     assert presets.allows("readonly", "read_file") is True
     assert presets.allows("readonly", "bash") is False
     assert presets.unregister("readonly") is True

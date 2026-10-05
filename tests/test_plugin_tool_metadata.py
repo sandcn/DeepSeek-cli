@@ -132,16 +132,16 @@ def test_registry_api_roundtrip():
 
     reset()
     try:
-        assert metadata_for("read_file")["tool_category"] == "read"
-        undo = set_managed_builtin_metadata(["read_file"])
-        assert metadata_for("read_file") is None
+        assert metadata_for("ls")["tool_category"] == "read"
+        undo = set_managed_builtin_metadata(["ls"])
+        assert metadata_for("ls") is None
         undo()
-        assert metadata_for("read_file")["tool_category"] == "read"
+        assert metadata_for("ls")["tool_category"] == "read"
 
-        undo2 = disable_builtin_metadata(["read_file"])
-        assert metadata_for("read_file") is None
+        undo2 = disable_builtin_metadata(["ls"])
+        assert metadata_for("ls") is None
         undo2()
-        assert metadata_for("read_file") is not None
+        assert metadata_for("ls") is not None
 
         undo3 = register_metadata("custom_tool", {"tool_category": "read"})
         assert metadata_for("custom_tool")["tool_category"] == "read"

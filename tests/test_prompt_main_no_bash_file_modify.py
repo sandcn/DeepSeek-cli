@@ -46,8 +46,8 @@ class TestMainNoBashFileModifyRule:
         assert "强制用内部工具实现所有（红线 · 一票否决）" in main_prompt_text
 
     def test_prompt_still_bans_bash_alternatives(self, main_prompt_text: str):
-        """仍须禁止 bash 替代内部工具的读写手段（cat/grep/sed/awk/echo）。"""
-        for cmd in ("cat", "grep", "sed", "awk", "echo"):
+        """仍须禁止 bash 替代内部工具的读写手段（cat/grep/sed/awk/echo/find/ls）。"""
+        for cmd in ("cat", "grep", "sed", "awk", "echo", "find", "ls"):
             assert cmd in main_prompt_text, f"应禁止 bash 使用 {cmd} 替代内部工具"
 
     def test_prompt_keeps_bash_exception(self, main_prompt_text: str):

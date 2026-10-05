@@ -69,7 +69,7 @@ class BashFunc(Func):
                     "returncode 是命令的退出码，等价 bash 的 $?：0 成功、非 0 命令失败、被信号杀死为 128+sig、"
                     "-1 工具级错误——错误说明在 stderr 字段）。"
                     "用途：编译构建、git、包管理、进程管理、系统信息查询。"
-                    "禁止替代专用工具：读文件用 read_file、改文件用 update_file、写文件用 write_file、建目录用 mkdir。"
+                    "禁止替代专用工具：读文件用 read_file、改文件用 update_file、写文件用 write_file、搜索用 search、找文件用 find/ls、建目录用 mkdir。"
                     "仅当专用工具功能不足（如正则多行匹配、二进制）时才用 bash，并加注释 `# 例外原因：<原因>`。"
                     f"前台执行超过 {cls._AUTO_BG_TIMEOUT} 秒自动转后台，返回 task_id JSON，用 bash_opt 继续管理。"
                     "禁止交互式命令（vim/top/less）；禁止 git push -f / reset --hard；"

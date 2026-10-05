@@ -194,7 +194,7 @@ _FALLBACK_SUB_PROMPT = f"""# 行为规则
 {_FALLBACK_CORE_RULES}
 ## 工具使用
 - 使用 read_file 读文件，update_file 改文件
-- 读取内容用 read_file，禁止 bash grep
+- 使用 search 搜索代码，禁止 bash grep
 - 修改前 read_file 确认内容
 
 ## 测试
@@ -208,7 +208,7 @@ _FALLBACK_MAIN_PROMPT = f"""# 核心目标
 {_FALLBACK_CORE_RULES}
 ## 工具使用
 - 使用 read_file 读文件，update_file 改文件
-- 读取内容用 read_file，禁止 bash grep
+- 使用 search 搜索代码，禁止 bash grep
 - 修改前 read_file 确认内容
 - 修改后执行语言对应的语法检查（如 Python `python -m py_compile` / Node.js `node --check` / Go `go vet` / Rust `cargo check` / Java `javac -Xlint`），并运行对应测试框架（如 Python pytest / Node.js Jest/Mocha / Go `go test` / Rust `cargo test` / Java JUnit）
 

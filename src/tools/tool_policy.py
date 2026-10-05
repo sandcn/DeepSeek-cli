@@ -6,7 +6,7 @@ core.subagent`` 循环依赖而提取为独立零依赖模块。
 
 策略差异（**仅约束 SubAgent 类型**）：
 - map: 只读分析，排除写入类工具 + web_search
-- review: 纯只读审查（read_file/web_search），无 shell 能力
+- review: 纯只读审查（read_file/search/find/ls/web_search），无 shell 能力
 - plan: 计划生成，保留 write_file/update_file（另有 .chat/plan/ 路径白名单）
 - execute: 默认执行型，保留读写 + bash，排除 web_search + subagent + user_select
 

@@ -500,7 +500,7 @@ def tool_card_lines(block, width, start=0, stop=None):
                     body_lines.append(item[1])
                     continue
                 body_lines.append(item[1])
-        # read_file 头显示：后置省略提示行「… 后 N 行省略」
+        # find/search/ls/read_file 头显示：后置省略提示行「… 后 N 行省略」
         # （head 省略的行在末尾——提示置于内容行之后，对齐终端 head 语义）
         omitted_head = block.extra.get("_head_omitted_lines", 0)
         if omitted_head > 0 and not _body_all_hidden:

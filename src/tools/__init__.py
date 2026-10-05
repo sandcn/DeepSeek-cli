@@ -14,6 +14,9 @@ from .write_file import WriteFileFunc as WriteFile
 from .update_file import UpdateFileFunc as UpdateFile
 from .mv import MvFunc as Mv
 from .user_select import UserSelectFunc as UserSelect
+from .search import SearchFunc as Search
+from .find import FindFunc as Find
+from .ls import LsFunc as Ls
 from .web_search import WebSearchFunc as WebSearch
 from .web_fetch import WebFetchFunc as WebFetch
 from .skill_tool import SkillFunc as Skill
@@ -26,6 +29,6 @@ from .registry import get_tools, register_tool
 # 漏加 __all__ 不影响 registry 自动发现，但影响 ``from src.tools import *``）
 __all__ = [
     'Func',
-    'Bash', 'BashOpt', 'ReadFile', 'ReadImage', 'Rm', 'WriteFile', 'UpdateFile', 'UserSelect', 'Mv', 'Cp', 'Mk', 'WebSearch', 'WebFetch', 'Subagent', 'SubagentOpt', 'Skill',
+    'Bash', 'BashOpt', 'ReadFile', 'ReadImage', 'Rm', 'WriteFile', 'UpdateFile', 'UserSelect', 'Search', 'Find', 'Ls', 'Mv', 'Cp', 'Mk', 'WebSearch', 'WebFetch', 'Subagent', 'SubagentOpt', 'Skill',
     'get_tools', 'register_tool'
 ]

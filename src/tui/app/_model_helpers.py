@@ -33,9 +33,9 @@ _TOOL_INCREMENTAL_THRESHOLD = 64
 #: （对齐终端 ``tail`` 语义；bash 输出常为冗长命令回显/构建日志，防卡片撑爆）。
 _BASH_OUTPUT_TAIL_LINES = 3
 
-#: 头显示工具集合——read_file 输出超过阈值行数时只保留前 N 行
-#: （对齐终端 ``head`` 语义；文件预览等有序输出看开头即可，防卡片撑爆）。
-_TOOL_HEAD_TOOLS = ("read_file",)
+#: 头显示工具集合——find/search/ls/read_file 输出超过阈值行数时只保留前 N 行
+#: （对齐终端 ``head`` 语义；目录列表/文件预览等有序输出看开头即可，防卡片撑爆）。
+_TOOL_HEAD_TOOLS = ("find", "search", "ls", "read_file")
 _TOOL_HEAD_LINES = 3
 
 

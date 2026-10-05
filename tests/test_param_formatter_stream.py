@@ -98,8 +98,8 @@ class TestExtractKeyParamsStream:
         assert extract_key_params_stream("read_file", '{"path": "src/ma') == "src/ma"
 
     def test_truncated_multi_key_known_tool(self):
-        out = extract_key_params_stream("mv", '{"source": "a", "destination": "b')
-        assert out == "a b"
+        out = extract_key_params_stream("search", '{"query": "foo", "path": "src/ma')
+        assert out == "foo src/ma"
 
     def test_truncated_bash_command(self):
         out = extract_key_params_stream("bash", '{"command": "echo hi')

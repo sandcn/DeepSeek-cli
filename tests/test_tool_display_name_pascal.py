@@ -64,10 +64,13 @@ def test_mapping_covers_all_registered_tools():
     ("bash_opt", "BashOpt"),
     ("subagent", "Subagent"),
     ("subagent_opt", "SubagentOpt"),
+    ("find", "Find"),
+    ("search", "Search"),
     ("cp", "Cp"),
     ("mv", "Mv"),
     ("rm", "Rm"),
     ("mkdir", "Mkdir"),
+    ("ls", "Ls"),
     ("user_select", "UserSelect"),
     ("web_search", "WebSearch"),
     ("web_fetch", "WebFetch"),
@@ -134,12 +137,13 @@ def test_subagent_tool_record_shows_read_file():
 
 
 @pytest.mark.parametrize("tool_name,expected", [
+    ("search", "Search"),
     ("rm", "Rm"),
     ("subagent", "Subagent"),
     ("write_file", "WriteFile"),
 ])
 def test_subagent_tool_record_uses_registered_name(tool_name, expected):
-    """rm / subagent / write_file 记录行显示注册名（非 RM/Task/Write）。"""
+    """search / rm / subagent / write_file 记录行显示注册名（非 Grep/RM/Task/Write）。"""
     from src.tui._subagent_state import _ToolRecord
     from src.tui._subagent_render import format_tool_record
 
