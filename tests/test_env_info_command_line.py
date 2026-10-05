@@ -8,6 +8,7 @@
   - 运行环境检测（Cygwin / MSYS2 / WSL / Termux / Windows / macOS / Linux）
   - detect_command_line 单行组装
   - build_environment_info 注入「- 命令行:」行
+  - build_environment_info 不包含 Python 版本信息
 """
 
 from __future__ import annotations
@@ -212,3 +213,10 @@ def test_build_environment_info_line_order(monkeypatch):
     cwd_idx = next(i for i, line in enumerate(lines) if line.startswith("- 工作目录:"))
     cmd_idx = next(i for i, line in enumerate(lines) if line.startswith("- 命令行:"))
     assert cmd_idx == cwd_idx + 1
+
+
+def test_build_environment_info_excludes_python(monkeypatch):
+    monkeypatch.setattr(ei, "detect_command_line", lambda: "bash (mintty, Cygwin)")
+    text = ei.build_environment_info("/tmp/work")
+    assert "- Python:" not in text
+    assert all(not line.startswith("- Python:") for line in text.splitlines())

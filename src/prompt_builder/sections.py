@@ -79,7 +79,7 @@ _BUILTIN_SECTIONS: Dict[str, PromptSection] = {
     "agent_md": _section("agent_md", "Agent 摘要（<agent>.md）", 30, _ref("_section_agent_md"),
                          description="工作目录 <agent>.md 的摘要"),
     "env_info": _section("env_info", "执行环境信息", 40, _ref("_section_env_info"),
-                         description="操作系统 / 主机名 / 日期 / Python / 工作目录 / 命令行"),
+                         description="操作系统 / 主机名 / 日期 / 工作目录 / 命令行"),
     "vcs_info": _section("vcs_info", "版本控制信息", 50, _ref("_section_vcs_info"),
                          attach_to="env_info",
                          description="Git 仓库 / 分支 / 状态（并入环境信息同一段落）"),
