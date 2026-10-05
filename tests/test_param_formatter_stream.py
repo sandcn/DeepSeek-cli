@@ -11,7 +11,7 @@
   3. 末尾孤立反斜杠（转义序列被截断）丢弃后闭合；
   4. 非 JSON 文本回退 ``extract_key_params`` 原串截断路径；
   5. dict 输入直通 ``extract_key_params``；空输入返回空串；
-  6. 超长单值截断 ≤60 字符（与 extract_key_params 已知工具行为一致）。
+  6. 超长单值完整返回（不再固定截断——显示层按终端宽度截断，2026-10-05）。
 """
 
 from __future__ import annotations
@@ -105,30 +105,29 @@ class TestExtractKeyParamsStream:
         out = extract_key_params_stream("bash", '{"command": "echo hi')
         assert out == "echo hi"
 
-    def test_long_value_truncated_60(self):
+    def test_long_value_kept_whole(self):
+        """超长单值完整返回（不再固定截断到 60——显示层按终端宽度截断）。"""
         out = extract_key_params_stream("read_file", '{"path": "' + "x" * 100)
-        assert out == "x" * 57 + "..."
-        assert len(out) == 60
+        assert out == "x" * 100
 
     def test_non_json_falls_back_to_raw(self):
         out = extract_key_params_stream("unknown_tool", "hello world")
         assert out == "hello world"
 
-    def test_non_json_long_truncated_80(self):
+    def test_non_json_long_kept_whole(self):
+        """非 JSON 超长原始串完整返回（不再固定截断到 80）。"""
         out = extract_key_params_stream("unknown_tool", "a" * 200)
-        assert out == "a" * 77 + "..."
-        assert len(out) == 80
+        assert out == "a" * 200
 
     def test_non_json_exactly_80_unchanged(self):
-        """恰好 80 字符不截断（省略号仅在超长时追加）。"""
+        """恰好 80 字符完整返回（不再做字符截断）。"""
         raw = "b" * 80
         assert extract_key_params_stream("unknown_tool", raw) == raw
 
-    def test_non_json_81_truncated_with_ellipsis(self):
-        """81 字符触发截断 → 77 + "..."（与未知工具 k=v 分支口径一致）。"""
+    def test_non_json_81_kept_whole(self):
+        """81 字符不再触发截断 → 完整返回（显示层按宽度截断）。"""
         out = extract_key_params_stream("unknown_tool", "c" * 81)
-        assert out == "c" * 77 + "..."
-        assert len(out) == 80
+        assert out == "c" * 81
 
     def test_empty_input(self):
         assert extract_key_params_stream("read_file", "") == ""

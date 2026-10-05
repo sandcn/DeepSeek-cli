@@ -438,6 +438,9 @@ UI_DEFAULTS_DATA: dict = {
     "summary_max_tokens": 8000,
     "tool_fallback_fg": 242,
     "tool_fallback_breath": [242, 252],
+    # 工具卡满宽背景色（256 色号）——「工具卡整行占满终端宽度」：
+    # 标题行/内容行/省略行右侧以该背景色空格填充至终端宽度（2026-10-05）。
+    "tool_card_bg": 236,
     "codeblock_border": ["┌", "┐", "└", "┘", "─", "│"],
     "tool_head_tools": ["find", "search", "ls", "read_file"],
     "tool_head_lines": 3,

@@ -234,8 +234,9 @@ class _ToolOutputMixin:
     def _drop_tool_body_cache(self, block, line) -> None:
         """从工具卡内容行缓存中移除行键（trim 删除行后同步清理，P1-1）。
 
-        ``_tool_card_body_cache`` 为 dict（键=``(AnsiLine 行对象, width)``
-        元组——toolcard.py ``tool_card_lines`` 写入，值=wrap 结果 runs）——
+        ``_tool_card_body_cache`` 为 dict（键=``(AnsiLine 行对象, width, bg)``
+        元组——toolcard.py ``tool_card_lines`` 写入，值=wrap + 背景填充结果
+        runs）——
         trim 从 ``block.lines`` 删除行后若不同步 pop，被删行对象仍被 cache
         持有直到工具 box 关闭（长输出工具在 box 存活期内内存线性增长）。
         键按 ``k[0] is line`` 身份匹配（同一行对象可能以不同 width 多次入
@@ -243,7 +244,7 @@ class _ToolOutputMixin:
         """
         body_cache = getattr(block, "_tool_card_body_cache", None)
         if body_cache is not None:
-            # ★ 修复（P1）：缓存键为 ``(ansi_line, width)`` 元组（toolcard.py
+            # ★ 修复（P1）：缓存键为 ``(ansi_line, width, bg)`` 元组（toolcard.py
             #   ``tool_card_lines`` 写入）——修复前 ``body_cache.pop(line, None)``
             #   用单个 AnsiLine 作键永不命中，被 trim 删除的行对象仍被缓存持有
             #   （长输出工具内存线性增长）。遍历删除键首元素 is line 的条目。

@@ -49,9 +49,13 @@ def test_extract_show_all_known_tool():
     assert "extra=y" in result
 
 
-def test_extract_truncates_long_value():
+def test_extract_keeps_long_value_whole():
+    """长参数值不再固定截断（2026-10-05 用户需求）：完整返回。
+
+    显示截断由渲染层按终端宽度执行（工具卡标题行 ``truncate_runs``）。
+    """
     result = extract_key_params("read_file", {"path": "a" * 100})
-    assert len(result) <= 60
+    assert result == "a" * 100
 
 
 def test_extract_missing_key_returns_empty():

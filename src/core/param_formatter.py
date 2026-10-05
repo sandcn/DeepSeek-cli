@@ -6,7 +6,10 @@
 
 提供 extract_key_params 函数（对齐 Claude Code 工具卡参数显示，非 JSON）：
 - 已知工具名：关键参数**值**（纯值空格连接，如 read_file → `pyproject.toml`）；
-- 其他工具/show_all：紧凑 ``k=v`` 空格连接（非 JSON 大括号，截断至 80 字符）。
+- 其他工具/show_all：紧凑 ``k=v`` 空格连接（非 JSON 大括号）。
+
+不做固定字符截断——参数值完整返回，显示截断由渲染层按终端宽度执行
+（工具卡标题行 ``truncate_runs``），使参数一直显示到终端宽度再截断。
 """
 
 from __future__ import annotations
@@ -44,19 +47,13 @@ _KEY_PARAMS: dict[str, list[str]] = {
 }
 
 
-def _truncate_raw(raw: str, limit: int = 80) -> str:
-    """非 JSON 原始串回退显示（超长截断并追加省略号）。
+def _raw_display(raw) -> str:
+    """非 JSON / 非 dict 原始串回退显示（完整返回，不截断）。
 
-    ★ 修复（TUI 显示一致性）：修复前该分支直接 ``str(raw)[:80]`` —— 与同函数
-    未知工具分支（``result[:77] + "..."``）口径不一致：超长原始串（流式截断
-    的非 JSON 参数文本）既不显示省略号也不提示被截断，用户误以为参数完整
-    （``test_non_json_long_truncated_80`` 因该不一致长期失败）。现统一
-    「超长才截断到 limit-3 并追加 ``...``」，短串原样返回。
+    显示截断由渲染层按可用宽度承担（工具卡标题行 ``truncate_runs`` 至终端
+    宽度、轨迹视图按栏宽换行）——core 层不臆断可用列宽。
     """
-    s = str(raw)
-    if len(s) > limit:
-        return s[: limit - 3] + "..."
-    return s
+    return str(raw)
 
 
 def extract_key_params(
@@ -67,30 +64,29 @@ def extract_key_params(
     """从工具参数中提取关键参数用于显示（纯参数值，非 JSON）。
 
     - 已知工具名：关键参数值（纯值空格连接，如 `ReadFile pyproject.toml`）；
-    - 未知工具/show_all：紧凑 ``k=v`` 空格连接（不输出 JSON 大括号，防参数字符串
-      膨胀破坏工具卡顶边框宽度约束），截断至 80 字符。
+    - 未知工具/show_all：紧凑 ``k=v`` 空格连接（不输出 JSON 大括号）。
+
+    ★ 2026-10-05（用户需求：工具卡标题行参数达到终端宽度）：本函数**不再做
+    固定字符截断**（原已知工具单值 ≤60、未知工具整体 ≤80）——参数值完整
+    返回，显示截断交由渲染层按终端宽度执行（工具卡标题行 ``truncate_runs``），
+    使标题行参数一直显示到终端宽度再截断。
     """
     if isinstance(arguments, str):
         raw = arguments
         try:
             arguments = json.loads(arguments)
         except (json.JSONDecodeError, TypeError):
-            return _truncate_raw(raw)
-        # ★ 2026-08-22（review P3-1）：合法 JSON 但顶层非 dict（如 "5"/"[1,2]"/
-        #   "null"/"\"str\""）时，json.loads 成功但 arguments 变为非 dict——
-        #   原实现静默返回 ""（丢参数值）；与 JSONDecodeError 分支（返回原串）
-        #   语义不一致。统一回退原始串。
+            return _raw_display(raw)
+        # 合法 JSON 但顶层非 dict（如 "5"/"[1,2]"/"null"/"\"str\""）→ 回退原始串
         if not isinstance(arguments, dict):
-            return _truncate_raw(raw)
+            return _raw_display(raw)
 
     if not arguments:
         return ""
 
-    # ★ P3（review）：非 dict 入参（list/int/其它对象——签名外调用）此前在下方
-    #   ``arguments.get(k)`` 抛 AttributeError；与「合法 JSON 但顶层非 dict」
-    #   分支的兜底口径统一（回退原始串摘要，不抛异常）。
+    # 非 dict 入参（list/int/其它对象——签名外调用）→ 回退原始串摘要
     if not isinstance(arguments, dict):
-        return _truncate_raw(arguments)
+        return _raw_display(arguments)
 
     keys = _KEY_PARAMS.get(tool_name)
     if keys and not show_all:
@@ -99,23 +95,11 @@ def extract_key_params(
         for k in keys:
             v = arguments.get(k)
             if v is not None:
-                s = str(v)
-                if len(s) > 60:
-                    s = s[:57] + "..."
-                parts.append(s)
+                parts.append(str(v))
         return " ".join(parts)
 
     # 未知工具 / show_all：紧凑 `k=v` 空格连接（非 JSON 大括号）
-    parts = []
-    for k, v in arguments.items():
-        s = str(v)
-        if len(s) > 40:
-            s = s[:37] + "..."
-        parts.append(f"{k}={s}")
-    result = " ".join(parts)
-    if len(result) > 80:
-        result = result[:77] + "..."
-    return result
+    return " ".join(f"{k}={v}" for k, v in arguments.items())
 
 
 def _complete_partial_json(s: str):
@@ -174,7 +158,7 @@ def extract_key_params_stream(
     与 ``extract_key_params`` 同一显示格式（关键参数值，非 JSON），供
     流式解析阶段（ToolParsingEvent 参数逐段到达）实时显示：
     - 完整 JSON / 截断 JSON：宽容补全未闭合引号与括号后提取关键参数值；
-    - 非 JSON 文本：回退 ``extract_key_params`` 原串截断路径。
+    - 非 JSON 文本：回退原始串完整路径（不做字符截断，显示层按宽度截断）。
     """
     if isinstance(arguments, dict):
         return extract_key_params(tool_name, arguments, show_all=show_all)

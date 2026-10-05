@@ -30,10 +30,9 @@ _S_ERROR_ICON = Style(fg=196, bold=True)
 _S_PARSE = Style(fg=242)
 _S_SPLASH = Style(fg=45, bold=True)
 
-#: 历史回放工具卡标题 detail 防御性截断上限（字符数）。
-#: 当前 extract_key_params 内部已截断（已知工具单值 ≤60、未知工具整体 ≤80），
-#: 此处纯防御——防止 core 层未来放宽阈值后超长 detail 撑破标题行。
-_TOOL_DETAIL_MAX_LEN = 200
+# 历史回放工具卡标题 detail 不再做固定长度截断（2026-10-05 用户需求：工具卡
+# 标题行参数达到终端宽度）——detail 完整交给 open_tool_box，标题行渲染时按
+# 终端宽度 ``truncate_runs`` 截断（toolcard.tool_card_lines）。
 
 
 def apply_cmd(model, cmd: RenderCmd) -> None:
@@ -506,11 +505,8 @@ def _append_assistant_rich(model, msg, anon_ids: list | None = None) -> None:
         if args is None:
             args = ""
         detail = extract_key_params(name, args)
-        # 防御性长度截断：extract_key_params 内部已截断（已知工具单值 ≤60
-        # 字符、未知工具整体 ≤80 字符），此处保留以防 core 层未来放宽阈值。
-        # 单行化（\n → 字面量 \n）由 open_tool_box 内部统一承担（同源单行）。
-        if len(detail) > _TOOL_DETAIL_MAX_LEN:
-            detail = detail[:_TOOL_DETAIL_MAX_LEN] + "..."
+        # 单行化（\n → 字面量 \n）由 open_tool_box 内部统一承担（同源单行）；
+        # 显示截断（按终端宽度）由 toolcard 标题行 ``truncate_runs`` 承担。
         # ★ P3（review）：无 tool_call_id 时生成稳定合成 id（并登记配对队列）
         #   ——修复前统一空 id 打开（匿名 box 靠 FIFO 关闭），多个无 id 调用
         #   与 tool 结果消息混排时易错配。

@@ -70,8 +70,16 @@ _CATEGORY_BREATH: dict[str, tuple[int, int]] = {
 _CATEGORY_DEFAULT_FG = 242
 _CATEGORY_DEFAULT_BREATH = (242, 252)
 _GUIDE_STYLE = Style(fg=238)                # 内容竖线引导色（深灰，低调）
+#: 工具卡满宽背景色（256 色号；默认深灰 236）。
+#: 「工具卡整行占满终端宽度」（2026-10-05 用户需求）：标题行/内容行/省略行
+#: 右侧以背景色空格填充至终端宽度，视觉上撑满终端（对齐 Claude Code 工具卡
+#: 满宽背景）——即使内容较短也延伸到终端右边缘，终端宽度变化时随新宽度重排。
+#: 「一切皆插件」：默认值来自表现层数据注册表（``ui_defaults`` 表 →
+#: ``tool_card_bg``），可按 Patch/Overlay 覆盖或禁用（禁用后回退本字面量）。
+_CARD_BG_DEFAULT = 236
 
 _fallback_style_cache: dict[int, Style] = {}
+_bg_style_cache: dict[int, Style] = {}
 
 
 def _ui_int(key: str, default: int) -> int:
@@ -105,6 +113,43 @@ def _category_default_breath() -> tuple[int, int]:
         except (TypeError, ValueError):
             pass
     return _CATEGORY_DEFAULT_BREATH
+
+
+def _card_bg_style() -> Style:
+    """工具卡满宽背景 Style（数据注册表优先；按色号缓存复用对象）。"""
+    bg = _ui_int("tool_card_bg", _CARD_BG_DEFAULT)
+    style = _bg_style_cache.get(bg)
+    if style is None:
+        style = Style(bg=bg)
+        _bg_style_cache[bg] = style
+    return style
+
+
+def _apply_line_bg(runs: list, width: int, bg_style: Style) -> list:
+    """给整行应用工具卡背景并填充至 width（「整行占满终端宽度」）。
+
+    2026-10-05 用户需求：工具卡每行（标题/内容/省略行）整行带背景色，内容
+    较短时行尾以背景色空格填充到终端宽度——整行（含背景）延伸到终端右边缘，
+    即使内容较短；已有背景的 run 保持自身背景不被覆盖。
+
+    ``width <= 0``（无宽度上下文）时原样返回（不新建列表，零额外分配）。
+    """
+    if width <= 0:
+        return runs
+    from src.tui.ink import StyledRun
+    out: list = []
+    used = 0
+    for r in runs:
+        st = r.style
+        if st is None:
+            st = bg_style
+        elif st.bg is None:
+            st = st.merge(bg_style)
+        out.append(r if st is r.style else StyledRun(r.text, st))
+        used += r.width
+    if used < width:
+        out.append(StyledRun(" " * (width - used), bg_style))
+    return out
 
 
 def _category_style(tool_name: str) -> Style:
@@ -183,11 +228,12 @@ def _tool_status_index(block):
     return None
 
 
-def _omitted_line(text: str, width: int) -> list:
+def _omitted_line(text: str, width: int, bg_style: Style) -> list:
     """省略提示行（``│ … 前/后 N 行省略``，无边框——BEAUTY-35 带竖线引导）。
 
     窄屏防溢出：提示文本超宽时截断至 width（与标题/内容行一致——
     不截断时窄终端错乱；竖线引导占用 2 列，内容截断至 width-2）。
+    行尾以背景色空格填充至 width（「整行占满终端宽度」，2026-10-05 用户需求）。
     函数内惰性 import（与 tool_card_lines 同模式）。
     """
     from src.tui.ink import StyledRun
@@ -201,8 +247,11 @@ def _omitted_line(text: str, width: int) -> list:
         return []
     if width == 1:
         # 极端窄屏：仅竖线（1 列）
-        return [StyledRun("│", _GUIDE_STYLE)]
-    return guide + truncate_runs([StyledRun(text, Style(fg=242))], width - 2)
+        return _apply_line_bg([StyledRun("│", _GUIDE_STYLE)], width, bg_style)
+    return _apply_line_bg(
+        guide + truncate_runs([StyledRun(text, Style(fg=242))], width - 2),
+        width, bg_style,
+    )
 
 
 def tool_card_lines(block, width, start=0, stop=None):
@@ -231,6 +280,7 @@ def tool_card_lines(block, width, start=0, stop=None):
     from src.renderer.ansi.helpers import wrap_line
     pal = get_active_palette()
     width = width if isinstance(width, int) and width > 0 else 0
+    bg_style = _card_bg_style()
     status_idx = _tool_status_index(block)
     # ★ 帧级缓存：开放工具卡动态色（状态图标呼吸 208↔220）为时间基
     #   （time_glow 0.1s 桶）——同一桶内帧复用**完整输出列表对象**，TEXT
@@ -257,7 +307,7 @@ def tool_card_lines(block, width, start=0, stop=None):
         block.extra.get("_bash_omitted_lines", 0),
         block.extra.get("_head_omitted_lines", 0),
         len(block.extra.get("_chat_hidden_lines") or ()),
-        width,
+        width, bg_style.bg,
     )
     _frame_cache = getattr(block, "_tool_card_frame_cache", None)
     if _frame_cache is not None and _frame_cache[0] == _frame_key:
@@ -298,7 +348,10 @@ def tool_card_lines(block, width, start=0, stop=None):
                 ))
             else:
                 title_runs.append(StyledRun(f" {detail}", pal.dim))
-        out.append(truncate_runs(title_runs, width) if width > 0 else title_runs)
+        out.append(_apply_line_bg(
+            truncate_runs(title_runs, width) if width > 0 else title_runs,
+            width, bg_style,
+        ))
     # 内容行：block.lines[start:stop]，start==0 时跳过标题行（名字已在标题行）；
     # 关闭状态行数据行（_tool_status_index）跳过——状态由标题行状态图标表达
     body_end = len(block.lines) if stop is None else min(stop, len(block.lines))
@@ -330,6 +383,7 @@ def tool_card_lines(block, width, start=0, stop=None):
         block.extra.get("_bash_omitted_lines", 0),
         block.extra.get("_head_omitted_lines", 0),
         len(_hidden_rows) if _hidden_rows else 0,
+        bg_style.bg,
     )
     body_lines_cache = getattr(block, "_tool_card_body_lines_cache", None)
     if body_lines_cache is not None and body_lines_cache[0] == _body_key:
@@ -340,7 +394,7 @@ def tool_card_lines(block, width, start=0, stop=None):
         # 全隐藏（read_file 成功内容）时一并跳过（保持「只显示标题行」）
         omitted = block.extra.get("_bash_omitted_lines", 0)
         if omitted > 0 and not _body_all_hidden:
-            body_lines.append(_omitted_line(f"\u2026 前 {omitted} 行省略", width))
+            body_lines.append(_omitted_line(f"\u2026 前 {omitted} 行省略", width, bg_style))
         # ★ PERF-6（性能）：开放工具卡内容行按 ``(行对象, width)`` 缓存
         #   wrap+截断后的内容 runs——修复前每帧对全部内容行重新 ``wrap_line``
         #   （长 bash 输出 300 行 → 单帧 ~190ms → 10Hz 下 CPU 100%）。行对象
@@ -358,7 +412,7 @@ def tool_card_lines(block, width, start=0, stop=None):
             #   数据仍在 block.lines（Trace 可见），仅聊天卡跳过。
             if _hidden_ids is not None and id(ansi_line) in _hidden_ids:
                 continue
-            key = (ansi_line, width)
+            key = (ansi_line, width, bg_style.bg)
             cached = body_cache.get(key)
             if cached is None:
                 # ★ H2（BUG 修复，2026-08-15）：内容行 wrap 预算与显示预算
@@ -396,8 +450,11 @@ def tool_card_lines(block, width, start=0, stop=None):
                         guide_w = 2 if width >= 2 else 1
                         items.append((
                             "content",
-                            [StyledRun(guide_text, _GUIDE_STYLE)]
-                            + truncate_runs(seg_runs, max(0, width - guide_w)),
+                            _apply_line_bg(
+                                [StyledRun(guide_text, _GUIDE_STYLE)]
+                                + truncate_runs(seg_runs, max(0, width - guide_w)),
+                                width, bg_style,
+                            ),
                         ))
                     cached = items
                 body_cache[key] = cached
@@ -408,7 +465,9 @@ def tool_card_lines(block, width, start=0, stop=None):
                     #   无宽度防御保持空行
                     if width >= 1:
                         guide_text = "│ " if width >= 2 else "│"
-                        body_lines.append([StyledRun(guide_text, _GUIDE_STYLE)])
+                        body_lines.append(_apply_line_bg(
+                            [StyledRun(guide_text, _GUIDE_STYLE)], width, bg_style,
+                        ))
                     else:
                         body_lines.append([StyledRun("", None)])
                     continue
@@ -420,7 +479,7 @@ def tool_card_lines(block, width, start=0, stop=None):
         # （head 省略的行在末尾——提示置于内容行之后，对齐终端 head 语义）
         omitted_head = block.extra.get("_head_omitted_lines", 0)
         if omitted_head > 0 and not _body_all_hidden:
-            body_lines.append(_omitted_line(f"\u2026 后 {omitted_head} 行省略", width))
+            body_lines.append(_omitted_line(f"\u2026 后 {omitted_head} 行省略", width, bg_style))
         block._tool_card_body_lines_cache = (_body_key, body_lines)
     out.extend(body_lines)
     # ★ Claude Code 极简样式（2026-08-06 用户需求）：**无独立状态行**——

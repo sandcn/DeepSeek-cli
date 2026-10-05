@@ -69,9 +69,10 @@ class ChatBlock:
     #: ``_measure`` 的 ``cache[0] is styled`` 身份快路径跨帧命中（大 open 块
     #: 每帧零重建）。行被 block.lines 持有，dict 随 block GC 自然释放。
     _open_styled_cache: dict | None = None
-    #: 工具卡内容行 wrap 结果缓存（dict[(AnsiLine, width), list]，PERF-6）——
-    #: ``tool_card_lines`` 对开放工具卡内容行按 ``(行对象, 宽度)`` 缓存
-    #: wrap+截断后的内容 runs（无边框，2026-08-06 去边框后不含 pad/边框拼接）
+    #: 工具卡内容行 wrap 结果缓存（dict[(AnsiLine, width, bg), list]，PERF-6）——
+    #: ``tool_card_lines`` 对开放工具卡内容行按 ``(行对象, 宽度, 背景色)`` 缓存
+    #: wrap+截断+背景填充后的内容 runs（无边框，2026-08-06 去边框后不含 pad/
+    #: 边框拼接；背景填充为「整行占满终端宽度」，2026-10-05）
     #: ——修复前开放大工具卡（如长 bash 输出）每帧全量 ``wrap_line`` 重建全部
     #: 内容行 → 10Hz 渲染循环下 CPU 100%。行对象被 block.lines 持有，dict 随
     #: block GC 自然释放；关闭块冻结后不再访问。
