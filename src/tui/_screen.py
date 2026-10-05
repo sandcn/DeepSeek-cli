@@ -21,6 +21,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 import signal
 import struct
 import sys
@@ -110,6 +111,98 @@ def _get_terminal_size() -> tuple[int, int]:
 
     # 最终兜底
     return (80, 24)
+
+
+#: DSR（设备状态报告）光标位置响应：``ESC [ row ; col R``
+_CURSOR_REPORT_RE = re.compile(rb"\x1b\[(\d+);(\d+)R")
+
+#: 光标位置查询默认超时（秒）——不支持 CPR 的终端快速回退，不阻塞启动
+_CURSOR_QUERY_TIMEOUT = 0.25
+
+
+def query_cursor_row(
+    timeout: float | None = None, stdin_fd: int | None = None,
+) -> int | None:
+    """查询终端当前光标所在行号（DSR/CPR：``ESC[6n`` → ``ESC[<row>;<col>R``）。
+
+    ★ 2026-10-06（用户需求：启动时按「当前光标行 + 1」锚定文档起始行）：
+    非全屏模型从当前光标位置追加写入，渲染器的底部对齐坐标模型须知道文档
+    起始屏幕行才能与实际落位一致。本函数在**首帧渲染前**发 DSR 查询并解析
+    响应行号，供 ``InkRenderer`` 设置起始行锚点。
+
+    仅在 stdin 与 stdout 均为真实 TTY 时发送查询；非 TTY / 超时 / 解析
+    失败一律返回 None（调用方回退既有「文档底部贴屏幕底部」锚定）。查询
+    期间临时把 stdin 置 raw，结束时无条件恢复原属性。
+
+    Args:
+        timeout: 等待响应超时（秒）；None 用 ``_CURSOR_QUERY_TIMEOUT``。
+        stdin_fd: 覆盖 stdin 文件描述符（测试注入）；None 用 ``sys.stdin``。
+
+    Returns:
+        光标 1-based 行号；不可用 / 超时 / 解析失败返回 None。
+    """
+    import select as _select
+
+    from src._compat_termios import HAS_TERMIOS, termios, tty
+
+    if not HAS_TERMIOS:
+        return None
+    try:
+        fd = sys.stdin.fileno() if stdin_fd is None else int(stdin_fd)
+    except (AttributeError, ValueError, OSError, TypeError):
+        return None
+    try:
+        if not os.isatty(fd):
+            return None
+    except OSError:
+        return None
+    out = sys.__stdout__
+    try:
+        if not os.isatty(out.fileno()):
+            return None
+    except (AttributeError, ValueError, OSError):
+        return None
+    wait = _CURSOR_QUERY_TIMEOUT if timeout is None else max(0.01, float(timeout))
+    try:
+        saved = termios.tcgetattr(fd)
+    except Exception:
+        _logger.debug("query_cursor_row: tcgetattr 失败", exc_info=True)
+        return None
+    try:
+        tty.setraw(fd)
+        out.write("\x1b[6n")
+        out.flush()
+        deadline = time.monotonic() + wait
+        buf = b""
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                ready, _, _ = _select.select([fd], [], [], remaining)
+            except (OSError, ValueError):
+                break
+            if not ready:
+                break
+            try:
+                chunk = os.read(fd, 32)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            match = _CURSOR_REPORT_RE.search(buf)
+            if match:
+                return int(match.group(1))
+    except Exception:
+        _logger.debug("query_cursor_row 异常", exc_info=True)
+        return None
+    finally:
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        except Exception:
+            _logger.debug("query_cursor_row 恢复 termios 失败", exc_info=True)
+    return None
 
 
 # ═══════════════════════════════════════════════════════════

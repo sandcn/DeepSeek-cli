@@ -152,6 +152,83 @@ class InkRenderer:
         #   = 上次设置值。``set_cursor_visible`` 仅变化时输出 DECTCEM 序列
         #   （每帧 _position_cursor 调用——状态跟踪避免每帧重复写转义码）。
         self._cursor_visible: bool | None = None
+        # ★ 2026-10-06（用户需求：启动时按「当前光标行 + 1」锚定）：
+        #   终端光标行查询函数（``() -> int | None``，见
+        #   ``src.tui._screen.query_cursor_row``）——仅在**首个全量帧**
+        #   （会话启动首帧）消费一次；未注入 / 查询失败 / 非 TTY 时回退
+        #   「文档底部贴屏幕底部」锚定（保证渲染正确）。
+        self._cursor_row_provider = None
+        #: 待消费的起始行锚定资格（``set_cursor_row_provider`` 置位，
+        #: 首个 ``_write_full`` 消费后清除——resize 全量重写不得复用）。
+        self._start_anchor_pending: bool = False
+        #: 文档起始屏幕行（1-based）——起始行锚定生效时非 None；文档触及
+        #: 屏幕底部（或 resize 全量重写）后置回 None（转底部锚定，物理
+        #: 缓冲此后不收缩）。
+        self._start_row: int | None = None
+
+    # ── 启动起始行锚定（用户需求：光标行 + 1） ──────────
+
+    def set_cursor_row_provider(self, provider) -> None:
+        """注入终端光标行查询函数（启动锚定「当前光标行 + 1」用）。
+
+        ★ 2026-10-06（用户需求）：provider 签名 ``() -> int | None``——仅在
+        **首个全量帧**（会话启动首帧 ``_write_full``）消费一次：返回有效行号
+        时文档起始行锚定为「光标行 + 1」（文档从光标下方开始追加，超出屏幕时
+        由终端滚动、模型按 ``_buf_h`` 封顶表达贴底）；返回 None / 未注入 /
+        查询异常时回退「文档底部贴屏幕底部」的既有锚定。
+
+        Args:
+            provider: 查询函数（生产传 ``_screen.query_cursor_row``）；
+                None 表示禁用起始行锚定（回退底部锚定）。
+        """
+        self._cursor_row_provider = provider
+        self._start_anchor_pending = provider is not None
+
+    def _resolve_start_row(self, doc_h: int) -> int:
+        """确定全量写入的文档起始屏幕行（1-based）。
+
+        首个全量帧消费光标行查询：有效时起始行 = 光标行 + 1（放大到屏幕外
+        由调用方钳制定位、滚动由终端承担）；否则回退底部锚定
+        ``max(1, height - doc_h + 1)``。
+        """
+        if self._height <= 0:
+            self._start_row = None
+            return 1
+        if self._start_anchor_pending:
+            self._start_anchor_pending = False
+            row = None
+            provider = self._cursor_row_provider
+            if provider is not None:
+                try:
+                    row = provider()
+                except Exception:
+                    _logger.debug("光标行查询异常，回退底部锚定", exc_info=True)
+                    row = None
+            if isinstance(row, int) and not isinstance(row, bool) and row > 0:
+                self._start_row = row + 1
+                return self._start_row
+            self._start_row = None
+        if self._start_row is not None:
+            return self._start_row
+        return max(1, self._height - doc_h + 1)
+
+    def _sync_start_row_anchor(self, doc_h: int) -> None:
+        """起始行锚定校准（每帧写入后收口 ``_buf_h``）。
+
+        ★ 2026-10-06：仅当 ``_start_row`` 非 None（启动按「光标行 + 1」锚定）
+        时生效——文档底部随内容增长下移、随缩短上移（起始行保持），使
+        ``_effective_offset``（= ``doc_h - _buf_h``）恒为 ``1 - _start_row``；
+        一旦文档触及屏幕底部，终端滚动不可逆，置回 None 转底部锚定
+        （``_buf_h`` 此后不收缩）。
+        """
+        if self._start_row is None or self._height <= 0:
+            return
+        bottom = self._start_row + doc_h - 1
+        if bottom < self._height:
+            self._buf_h = bottom
+        else:
+            self._start_row = None
+            self._buf_h = max(self._height, doc_h)
 
     # ── 屏幕坐标（height>0 时文档高于屏幕的滚动偏移处理） ──────────
 
@@ -378,6 +455,7 @@ class InkRenderer:
         try:
             self._render_frame_impl(frame)
         finally:
+            self._sync_start_row_anchor(frame.height)
             self._emit_content_lines(frame)
 
     def _render_frame_impl(self, frame: Frame) -> None:
@@ -792,8 +870,15 @@ class InkRenderer:
             #   ★ 无末尾空行模型（2026-08-15）：drift0/drift1 公式去掉
             #   末尾空行 +1 项（物理行号 = 文档行号，无 doc_h+1 空行）。
             drift0 = 0 if was_top_aligned else (buf_h0 - prev_h)
-            grow_rows = max(0, new_h - buf_h0)
-            buf_h1 = buf_h0 + grow_rows
+            if self._start_row is not None:
+                # ★ 起始行锚定（2026-10-06）：文档底部随增长下移、起始行保持
+                #   ——缓冲目标 = min(起始行 + 新高度 - 1, 屏幕高度)；drift
+                #   恒为 ``起始行 - 1``（未贴底），仅重写新增/变化行。
+                buf_h1 = min(self._start_row + new_h - 1, height)
+                grow_rows = max(0, buf_h1 - buf_h0)
+            else:
+                grow_rows = max(0, new_h - buf_h0)
+                buf_h1 = buf_h0 + grow_rows
             drift1 = buf_h1 - new_h   # 增长后漂移
         prev = self._prev
         rewrites: list[tuple[int, int]] = []
@@ -981,7 +1066,15 @@ class InkRenderer:
             # ★ 无末尾空行模型（2026-08-15）：drift 公式去掉末尾空行 +1
             #   项（物理行号 = 文档行号，无 doc_h+1 空行）。
             old_drift = buf_h - prev_h
-        drift = buf_h - new_h
+        if self._start_row is not None:
+            # ★ 起始行锚定（2026-10-06）：起始行保持、文档底部随缩短上移
+            #   ——drift 目标 = min(起始行 + 新高度 - 1, 屏幕高度) - 新高度
+            #   （未贴底时恒为 ``起始行 - 1``，与 old_drift 相同 → 仅重写
+            #   变化行；文档已触及底部时本分支不可达——``_sync_start_row_anchor``
+            #   已置回 None）。
+            drift = min(self._start_row + new_h - 1, height) - new_h
+        else:
+            drift = buf_h - new_h
         # 待重写项：(物理行, 新文档行)；doc_idx==-1 表示清除残留/空行。
         rewrites: list[tuple[int, int]] = []
         for q in range(buf_top, buf_h):
@@ -1065,15 +1158,14 @@ class InkRenderer:
             return
         buf = io.StringIO()
         n = len(frame.lines)
-        # ★ 2026-10-06（「命令行在底部时启动渲染错乱」修复）：首帧/全量写入
-        #   前把光标**绝对定位**到文档起始行（文档底部贴屏幕底部）——非全屏
-        #   模型从当前光标位置追加，光标可能停在屏幕任意行（常见：shell 提示
-        #   符贴底）；本渲染器底部对齐坐标模型以「文档底部对齐屏幕底部」为
-        #   基准，不定位则首帧实际落位与模型不符，后续相对定位逐帧漂移
-        #   （重复行/内容堆叠/底部输入区错位）。height=0（未知）时保持原
-        #   行为（测试/无约束场景）。
+        # ★ 2026-10-06（用户需求：启动锚定「当前光标行 + 1」）：首个全量帧
+        #   消费注入的光标行查询——有效时起始行 = 光标行 + 1（文档从光标
+        #   下方开始追加，不跳到屏幕底部）；查询失败/未注入时回退「文档
+        #   底部贴屏幕底部」（保证坐标模型与实际落位一致）。定位行钳制到
+        #   屏幕内（起始行 > 屏幕高度时由写入换行触发终端滚动）。
+        start_row = self._resolve_start_row(n)
         if self._height > 0:
-            buf.write(cursor_goto(max(1, self._height - n + 1), 1))
+            buf.write(cursor_goto(min(start_row, self._height), 1))
         for idx, line in enumerate(frame.lines):
             buf.write("\r")
             # ★ P2（review）：全量写行补 ``_CLEAR_EOL``——修复前仅写
@@ -1091,13 +1183,17 @@ class InkRenderer:
             #   下方多一行空行」：doc_h == height 时首行不再被滚动挤出）。
             if idx < n - 1:
                 buf.write("\n")
-        # ★ 无末尾空行模型（2026-08-15 + 2026-10-06 底部锚定）：物理缓冲 =
-        #   文档行数（文档高于屏幕）或屏幕高度（文档矮于屏幕时文档底部贴
-        #   屏幕底部）——「文档底部对齐屏幕底部」契约（顶部锚定会让矮文档
-        #   被误判为「顶部对齐屏幕第 1 行」，后续定位逐帧漂移）。height=0
-        #   时保持原文档坐标行为。
+        # ★ 无末尾空行模型（2026-08-15 + 2026-10-06 锚定）：物理缓冲 =
+        #   起始行锚定时「文档底部所在物理行数」``min(start_row+n-1, height)``
+        #   （未贴底时 ``_effective_offset`` 恒为 ``1-start_row``；触及屏幕
+        #   底部后由 ``_sync_start_row_anchor`` 转底部锚定）；回退底部锚定时
+        #   ``max(height, n)``（文档底部贴屏幕底部）。height=0 时保持原文档
+        #   坐标行为。
         if self._height > 0:
-            self._buf_h = max(self._height, n)
+            if self._start_row is not None:
+                self._buf_h = min(self._start_row + n - 1, self._height)
+            else:
+                self._buf_h = max(self._height, n)
             self._top_aligned = False
         else:
             self._buf_h = n
@@ -1306,6 +1402,10 @@ class InkRenderer:
         # ★ 无末尾空行模型（2026-08-15）：软重置后物理缓冲 = 0（无虚拟空行）。
         self._buf_h = 0
         self._top_aligned = True
+        # ★ 2026-10-06：clear_screen 归位光标到 (1,1)、坐标系重置——起始行
+        #   锚定失效（下一帧文档自屏幕第 1 行重建，既有「顶部对齐 + buf_h=0」
+        #   软重置语义即此）。
+        self._start_row = None
 
     # ── 生命周期 ─────────────────────────────────────
 
@@ -1320,6 +1420,9 @@ class InkRenderer:
         # ★ 无末尾空行模型（2026-08-15）：软重置后物理缓冲 = 0（无虚拟空行）。
         self._buf_h = 0
         self._top_aligned = True
+        # ★ 2026-10-06：suspend 后终端被交互工具独占、坐标基准不可靠——
+        #   起始行锚定失效（恢复走既有软重置/底部锚定语义）。
+        self._start_row = None
         try:
             self._stream.flush()
         except Exception:
@@ -1339,6 +1442,9 @@ class InkRenderer:
             self._cursor_row = 0
             self._buf_h = 0
             self._top_aligned = True
+            # ★ 2026-10-06：起始行锚定仅服务「会话启动首帧」——resize 全量
+            #   重写退回底部锚定（屏幕布局已变，旧起始行不再适用）。
+            self._start_row = None
         else:
             # 空帧 → 增量 diff（与空帧比较 = 所有行都变化 → 逐行写入，不清屏）
             self._prev = Frame([])
@@ -1346,6 +1452,9 @@ class InkRenderer:
             # ★ 无末尾空行模型（2026-08-15）：软重置后物理缓冲 = 0（无虚拟空行）。
             self._buf_h = 0
             self._top_aligned = True
+            # ★ 2026-10-06：软重置（resume/清屏复用）退回既有锚定语义——
+            #   起始行锚定仅在「会话启动首帧 + 未发生复位」期间有效。
+            self._start_row = None
 
     def flush(self) -> None:
         """刷出底层输出。"""

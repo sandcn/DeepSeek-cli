@@ -127,6 +127,17 @@ def create_framework(model, tui_config, line_tracker, input_instance):
     #   （其唯一职责 output_adapter 恒 None 无生产消费方，ChatUIConsumer.
     #   output_adapter 改为直接返回 None）。
     renderer = session.renderer
+    # ★ 2026-10-06（用户需求：启动时锚定「当前光标行 + 1」）：注入终端光标行
+    #   查询——首个全量帧消费一次，把文档起始行锚定到光标下方（不再跳到屏幕
+    #   底部）；非 TTY / 终端不支持 CPR / 超时时查询返回 None，自动回退
+    #   「文档底部贴屏幕底部」的既有锚定（渲染正确性优先）。
+    from src.tui._screen import query_cursor_row
+    _set_provider = getattr(renderer, "set_cursor_row_provider", None)
+    if _set_provider is not None:
+        try:
+            _set_provider(query_cursor_row)
+        except Exception:
+            _logger.debug("注入光标行查询失败", exc_info=True)
     return session, bridge, renderer
 
 
