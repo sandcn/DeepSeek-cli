@@ -17,7 +17,7 @@ from dataclasses import field
 from typing import Iterable
 
 from src.tui.core.style import Style
-from src.tui._width import wcswidth_simple
+from src.tui._width import wcswidth_simple, expand_tabs
 
 
 # ═══════════════════════════════════════════════════════════
@@ -56,7 +56,15 @@ class StyledRun:
     width: int = field(init=False, repr=False, compare=False, default=0)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "width", wcswidth_simple(self.text))
+        # ★ 显示错乱修复（2026-10-05）：文本规范化——展开制表符 / 剔除回车
+        #   （控制字符宽度 0 但终端按 tab 展开/回行首，宽度计算与渲染分裂 →
+        #   含 `\t` 的行触发终端自动换行，后续行错位）。在此（渲染文本最小
+        #   单元）只展开一次，`width` 与实际渲染恒一致（见 ``_width.expand_tabs``）。
+        text = self.text
+        if "\t" in text or "\r" in text:
+            text = expand_tabs(text)
+            object.__setattr__(self, "text", text)
+        object.__setattr__(self, "width", wcswidth_simple(text))
 
     def render(self) -> str:
         """渲染为 ANSI 字符串（无样式时原样返回）。"""
@@ -139,8 +147,11 @@ class Line:
                 self._w += merged.width - last.width
             return
         self.runs.append(StyledRun(text, style))
+        # ★ 显示错乱修复（2026-10-05）：宽度增量以新建 run 的 ``width`` 为准
+        #   ——修复前用 ``_text_width(text)``（`\t`/`\r` 计 0），而 StyledRun
+        #   已把制表符展开为空格（宽度变化），二者分叉会污染 ``Line.width``。
         if self._w is not None:
-            self._w += _text_width(text)
+            self._w += self.runs[-1].width
 
     def append_run(self, run: StyledRun) -> None:
         """追加 StyledRun。"""

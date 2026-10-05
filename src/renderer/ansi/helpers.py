@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from src._compat import dataclass
 
-from src.renderer._utils import cjk_display_width
+from src.renderer._utils import cjk_display_width, expand_tabs
 from .style import Style
 
 
@@ -24,6 +24,14 @@ class Run:
 
     text: str
     style: Style | None = None
+
+    def __post_init__(self) -> None:
+        # ★ 显示错乱修复（2026-10-05）：文本规范化——展开制表符 / 剔除回车
+        #   （控制字符宽度 0 但终端按 tab 展开/回行首，宽度与渲染分裂 →
+        #   含 `\t` 的行触发终端自动换行、后续行错位）。见
+        #   ``renderer._utils.expand_tabs``。
+        if "\t" in self.text or "\r" in self.text:
+            self.text = expand_tabs(self.text)
 
     def render(self) -> str:
         if self.style:

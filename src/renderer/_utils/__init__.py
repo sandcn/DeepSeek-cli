@@ -24,6 +24,7 @@ from ._linkify import (
 from ._display import (
     _ZERO_WIDTH_CHARS,
     cjk_display_width,
+    expand_tabs,
 )
 
 # ── 代码高亮 ──

@@ -396,6 +396,56 @@ def wcswidth_simple(text: str) -> int:
     return width
 
 
+def expand_tabs(text: str, start_col: int = 0, tab_width: int = 8) -> str:
+    """展开制表符为空格并剔除回车（使显示宽度与终端渲染一致）。
+
+    ★ 显示错乱根因修复（2026-10-05）：制表符 ``\\t`` 是控制字符
+    （``wcswidth_simple`` 计宽 0），但真实终端把它当 HT 跳到下一个 tab stop
+    （默认每 8 列补空格）——行内容含 ``\\t`` 时「计算宽度 < 实际渲染宽度」，
+    配合「工具卡整行占满终端宽度」的填充（按计算宽度补空格到终端列宽），
+    实际渲染宽度 = 终端列宽 + tab 展开补偿量 > 终端列宽 → 终端自动换行，
+    后续行光标定位整体错位（如 ``git remote -v`` 输出 ``origin\\thttps://…``
+    使屏幕多出空行、状态栏串行）。本函数在文本进入渲染模型前把 ``\\t`` 只
+    展开一次，之后宽度计算与实际渲染恒一致（都是空格），错乱消除。
+
+    回车 ``\\r`` 一并剔除（重置列）——行渲染模型无「回行首覆盖」语义，
+    残留 ``\\r`` 会让终端覆盖整行内容（同样破坏宽度一致性）。``\\n`` 保留
+    （换行语义），并把列基准重置到 ``start_col``。
+
+    ``start_col`` 为该文本在终端中的起始显示列（默认 0）——制表位按
+    ``col % tab_width`` 对齐；单行渲染模型无法感知前缀（如工具卡引导线）
+    时取 0（对齐位置或有偏移，但宽度恒一致、不再错乱）。
+
+    Args:
+        text: 待规范化文本。
+        start_col: 文本起始显示列（默认 0）。
+        tab_width: 制表宽度（列；<=0 回退 8）。
+
+    Returns:
+        展开后的文本（不含 ``\\t``/``\\r``；无该字符时原样返回）。
+    """
+    if "\t" not in text and "\r" not in text:
+        return text
+    if tab_width <= 0:
+        tab_width = 8
+    out: list[str] = []
+    col = start_col
+    for ch in text:
+        if ch == "\t":
+            n = tab_width - (col % tab_width)
+            out.append(" " * n)
+            col += n
+        elif ch == "\r":
+            col = start_col  # 回车：列回到起点（不保留字符本身）
+        elif ch == "\n":
+            out.append(ch)
+            col = start_col
+        else:
+            out.append(ch)
+            col += wcswidth_simple(ch)
+    return "".join(out)
+
+
 def truncate_width(s: str, max_w: int) -> str:
     """按显示宽度截断字符串（不拆 CJK），返回截断后文本。
 
@@ -438,6 +488,7 @@ def truncate_width(s: str, max_w: int) -> str:
 __all__ = [
     "wcswidth_simple",
     "truncate_width",
+    "expand_tabs",
     "_CJK_RANGES",
     "_ZERO_WIDTH_RANGES",
     "_FULLWIDTH_RANGES",

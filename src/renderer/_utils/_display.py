@@ -164,3 +164,51 @@ def _in_emoji_wide(cp: int) -> bool:
     """
     idx = bisect.bisect_right(_EMOJI_WIDE_FLAT, cp)
     return (idx % 2) == 1
+
+
+def expand_tabs(text: str, start_col: int = 0, tab_width: int = 8) -> str:
+    """展开制表符为空格并剔除回车（使显示宽度与终端渲染一致）。
+
+    ★ 显示错乱根因修复（2026-10-05）：制表符 ``\\t`` 是控制字符
+    （``cjk_display_width`` 计宽 0），但真实终端把它当 HT 跳到下一个 tab
+    stop（默认每 8 列补空格）——含 ``\\t`` 的行「计算宽度 < 实际渲染宽度」，
+    结合「工具卡整行占满终端宽度」的填充（按计算宽度补空格到终端列宽），
+    实际渲染宽度超过终端列宽 → 终端自动换行，后续行整体错位。本函数在文本
+    进入渲染模型前把 ``\\t`` 展开一次，宽度计算与实际渲染恒一致。
+
+    回车 ``\\r`` 一并剔除（重置列）——行渲染模型无「回行首覆盖」语义。
+
+    ★ 与 ``src.tui._width.expand_tabs`` 同源约束（双宽度函数对应双展开
+    函数）：两处语义保持一致，改动须同步。
+
+    Args:
+        text: 待规范化文本。
+        start_col: 文本起始显示列（默认 0）。
+        tab_width: 制表宽度（列；<=0 回退 8）。
+
+    Returns:
+        展开后的文本（不含 ``\\t``/``\\r``；无该字符时原样返回）。
+    """
+    if "\t" not in text and "\r" not in text:
+        return text
+    if tab_width <= 0:
+        tab_width = 8
+    out: list[str] = []
+    col = start_col
+    for ch in text:
+        if ch == "\t":
+            n = tab_width - (col % tab_width)
+            out.append(" " * n)
+            col += n
+        elif ch == "\r":
+            col = start_col
+        elif ch == "\n":
+            out.append(ch)
+            col = start_col
+        elif 0x20 <= ord(ch) <= 0x7E:
+            out.append(ch)
+            col += 1
+        else:
+            out.append(ch)
+            col += cjk_display_width(ch)
+    return "".join(out)
