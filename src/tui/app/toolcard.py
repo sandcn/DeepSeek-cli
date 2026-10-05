@@ -16,6 +16,9 @@
     关闭后静态类别色；工具名加粗（标题强化）；
   - 参数（detail）：运行中暗灰 242→252 呼吸（12s），关闭后静态 pal.dim；
   - 内容行：每内容行前置 ``│ ``（深灰 238），窄屏截断保证总宽 <= width；
+    所有行（标题/内容/省略/空行）经 ``_apply_line_bg`` 统一钳制——总宽超过
+    width 时截断到 width 并追加省略号 ``…``（「显示一行超过终端宽度就截断到
+    最大宽度 + 增加…」，防终端自动换行错位并提示内容被截断）；
   - **无独立状态行**（Claude Code 无 ``✔ 完成 · N 行 · Xs``）——状态由
     标题行状态图标表达（● 运行中 / ✔ 完成 / ✖ 失败）；模型层 close_tool_box
     追加的 ``  ✔``/``  ✖`` 数据行渲染时跳过（``_tool_status_index``）。
@@ -132,11 +135,28 @@ def _apply_line_bg(runs: list, width: int, bg_style: Style) -> list:
     较短时行尾以背景色空格填充到终端宽度——整行（含背景）延伸到终端右边缘，
     即使内容较短；已有背景的 run 保持自身背景不被覆盖。
 
+    ★ 行宽硬上限（2026-10-05 用户需求「显示一行超过终端宽度就截断到最大
+    宽度」+「增加…」）：``runs`` 总宽**超过 width** 时先
+    ``truncate_runs_ellipsis`` 截断到 width 并在末尾追加省略号 ``…``
+    （截断点不拆宽字符），再应用背景/填充——工具卡任何「显示一行」都
+    不超过终端宽度，即使上游漏截断（含制表符等「计算宽度 < 实际渲染宽度」
+    的历史问题）也不会触发终端自动换行、后续行错位；末尾 ``…`` 明确提示
+    「此处内容被截断」。本函数是工具卡所有行（标题/内容/省略/空行）输出的
+    **最后一道行宽钳制**。
+
     ``width <= 0``（无宽度上下文）时原样返回（不新建列表，零额外分配）。
     """
     if width <= 0:
         return runs
     from src.tui.ink import StyledRun
+    # ★ 行宽硬上限：总宽超 width → 先截断并追加省略号（上游已按 width 预算
+    #   截断/换行的行不会触发；仅兜底漏截断路径）。
+    used = 0
+    for r in runs:
+        used += r.width
+    if used > width:
+        from src.tui.ink.helpers import truncate_runs_ellipsis
+        runs = truncate_runs_ellipsis(runs, width)
     out: list = []
     used = 0
     for r in runs:
@@ -231,13 +251,13 @@ def _tool_status_index(block):
 def _omitted_line(text: str, width: int, bg_style: Style) -> list:
     """省略提示行（``│ … 前/后 N 行省略``，无边框——BEAUTY-35 带竖线引导）。
 
-    窄屏防溢出：提示文本超宽时截断至 width（与标题/内容行一致——
-    不截断时窄终端错乱；竖线引导占用 2 列，内容截断至 width-2）。
+    窄屏防溢出：提示文本超宽时截断至 width 并追加省略号 ``…``（与标题/内容行
+    一致——不截断时窄终端错乱；竖线引导占用 2 列，内容截断至 width-2）。
     行尾以背景色空格填充至 width（「整行占满终端宽度」，2026-10-05 用户需求）。
     函数内惰性 import（与 tool_card_lines 同模式）。
     """
     from src.tui.ink import StyledRun
-    from src.tui.ink.helpers import truncate_runs
+    from src.tui.ink.helpers import truncate_runs_ellipsis
     guide = [StyledRun("│ ", _GUIDE_STYLE)]
     if width <= 0:
         # ★ P3（review）：无宽度上下文（width<=0）时仅返回竖线引导——修复前
@@ -249,7 +269,7 @@ def _omitted_line(text: str, width: int, bg_style: Style) -> list:
         # 极端窄屏：仅竖线（1 列）
         return _apply_line_bg([StyledRun("│", _GUIDE_STYLE)], width, bg_style)
     return _apply_line_bg(
-        guide + truncate_runs([StyledRun(text, Style(fg=242))], width - 2),
+        guide + truncate_runs_ellipsis([StyledRun(text, Style(fg=242))], width - 2),
         width, bg_style,
     )
 
@@ -275,7 +295,7 @@ def tool_card_lines(block, width, start=0, stop=None):
     """
     from src.tui.app._theme import get_active_palette
     from src.tui.ink import StyledRun
-    from src.tui.ink.helpers import truncate_runs
+    from src.tui.ink.helpers import truncate_runs_ellipsis
     from src.tools.registry import get_tool_display_name
     from src.renderer.ansi.helpers import wrap_line
     pal = get_active_palette()
@@ -348,8 +368,11 @@ def tool_card_lines(block, width, start=0, stop=None):
                 ))
             else:
                 title_runs.append(StyledRun(f" {detail}", pal.dim))
+        # ★ 标题行超宽截断 + 末尾省略号（2026-10-05 用户需求「截断到最大
+        #   宽度 + 增加…」）：标题行（图标 + 工具名 + 参数）超过 width 时
+        #   截断到 width 并以 ``…`` 收尾（提示参数被截断）。
         out.append(_apply_line_bg(
-            truncate_runs(title_runs, width) if width > 0 else title_runs,
+            truncate_runs_ellipsis(title_runs, width) if width > 0 else title_runs,
             width, bg_style,
         ))
     # 内容行：block.lines[start:stop]，start==0 时跳过标题行（名字已在标题行）；
@@ -418,8 +441,8 @@ def tool_card_lines(block, width, start=0, stop=None):
                 # ★ H2（BUG 修复，2026-08-15）：内容行 wrap 预算与显示预算
                 #   对齐——内容行每段前置 ``│ ``（竖线引导占 guide_w 列），
                 #   修复前按总宽 ``wrap_line(ansi_line, width)`` 换行，但每段
-                #   显示预算仅 ``width-guide_w``（下方 truncate_runs 丢弃
-                #   段末 2 列）→ 长行跨段时每段末尾 2 列内容丢失。修复：wrap
+                #   显示预算仅 ``width-guide_w``（下方 truncate_runs_ellipsis
+                #   丢弃段末 2 列）→ 长行跨段时每段末尾 2 列内容丢失。修复：wrap
                 #   宽度改用 ``content_w = width - guide_w``——每段 + 竖线后
                 #   恰为 width，不再丢内容。width<=1 走既有「仅竖线」分支
                 #   （content_w<=0 无内容）；width<=0 无宽度防御保持裸行。
@@ -452,7 +475,9 @@ def tool_card_lines(block, width, start=0, stop=None):
                             "content",
                             _apply_line_bg(
                                 [StyledRun(guide_text, _GUIDE_STYLE)]
-                                + truncate_runs(seg_runs, max(0, width - guide_w)),
+                                + truncate_runs_ellipsis(
+                                    seg_runs, max(0, width - guide_w),
+                                ),
                                 width, bg_style,
                             ),
                         ))

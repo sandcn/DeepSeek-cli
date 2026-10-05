@@ -7,14 +7,16 @@
   2. 工具卡整行（标题/内容/省略行）右侧以背景色空格填充，延伸到终端右边缘
      （即使内容较短，行显示宽度 == 终端宽度）；
   3. 终端宽度变化（resize）→ 工具卡按新宽度重排（随窗口加宽同步变宽）；
-  4. 内容行按终端宽度换行/截断到终端宽度。
+  4. 内容行按终端宽度换行/截断到终端宽度；
+  5. 显示一行超过终端宽度就截断到最大宽度（``_apply_line_bg`` 硬上限钳制，
+     2026-10-05 用户需求）。
 """
 
 from __future__ import annotations
 
 from src.core.param_formatter import extract_key_params
 from src.tui.app.model import AppModel
-from src.tui.app.toolcard import _card_bg_style, tool_card_lines
+from src.tui.app.toolcard import _apply_line_bg, _card_bg_style, tool_card_lines
 
 
 def _row_width(runs) -> int:
@@ -171,4 +173,179 @@ class TestEndToEndFrameWidth:
         assert all(ln.width <= 90 for ln in frame.lines)
         title = next(ln for ln in frame.lines if "Bash" in ln.plain)
         assert title.width == 90
+
+
+class TestToolCardHardTruncateToMaxWidth:
+    """显示一行超过终端宽度就截断到最大宽度 + 末尾省略号 ``…``。"""
+
+    def _bg(self):
+        return _card_bg_style()
+
+    def test_ascii_overwide_truncated_to_width_with_ellipsis(self):
+        from src.tui.core.style import Style
+        from src.tui.ink import StyledRun
+
+        runs = [StyledRun("x" * 50, Style(fg=1))]
+        out = _apply_line_bg(runs, 20, self._bg())
+        assert _row_width(out) == 20
+        assert "".join(r.text for r in out).startswith("x" * 19 + "\u2026")
+        assert _last_run_bg(out) == self._bg().bg
+
+    def test_cjk_overwide_truncated_without_splitting_wide_char(self):
+        from src.tui.core.style import Style
+        from src.tui.ink import StyledRun
+
+        # 30 个全角字符（宽 60）截断到宽 15 → 保留 7 个宽字符（14）+ ``…``
+        runs = [StyledRun("中" * 30, Style(fg=2))]
+        out = _apply_line_bg(runs, 15, self._bg())
+        assert _row_width(out) == 15
+        assert "".join(r.text for r in out) == "中" * 7 + "\u2026"
+
+    def test_underwidth_runs_unchanged_and_padded_no_ellipsis(self):
+        from src.tui.core.style import Style
+        from src.tui.ink import StyledRun
+
+        runs = [StyledRun("abc", Style(fg=3))]
+        out = _apply_line_bg(runs, 10, self._bg())
+        assert out[0].text == "abc"
+        assert _row_width(out) == 10
+        assert "\u2026" not in "".join(r.text for r in out)
+
+    def test_exact_width_no_extra_fill_no_ellipsis(self):
+        from src.tui.core.style import Style
+        from src.tui.ink import StyledRun
+
+        runs = [StyledRun("z" * 8, Style(fg=4))]
+        out = _apply_line_bg(runs, 8, self._bg())
+        assert _row_width(out) == 8
+        assert len(out) == 1
+        assert "\u2026" not in out[0].text
+
+    def test_nonpositive_width_returns_input_identity(self):
+        from src.tui.core.style import Style
+        from src.tui.ink import StyledRun
+
+        runs = [StyledRun("x" * 50, Style(fg=1))]
+        assert _apply_line_bg(runs, 0, self._bg()) is runs
+
+    def test_mixed_style_truncation_keeps_bg_and_ellipsis(self):
+        from src.tui.core.style import Style
+        from src.tui.ink import StyledRun
+
+        runs = [
+            StyledRun("\u2714 ", Style(fg=41)),
+            StyledRun("name " + "y" * 60, Style(fg=81, bold=True)),
+        ]
+        out = _apply_line_bg(runs, 24, self._bg())
+        assert _row_width(out) == 24
+        assert all(r.style is not None for r in out)
+        assert "".join(r.text for r in out).endswith("\u2026")
+
+    def test_title_line_truncated_with_ellipsis(self):
+        """工具卡标题行超宽 → 截断到 width 且末尾 ``…``。"""
+        m = AppModel()
+        m.width = 40
+        m.open_tool_box("t", "bash", "a" * 300)
+        block = m.tool_boxes["t"]
+        title = "".join(r.text for r in tool_card_lines(block, 40)[0])
+        assert title.endswith("\u2026")
+        assert _row_width(tool_card_lines(block, 40)[0]) == 40
+
+    def test_title_line_short_no_ellipsis(self):
+        m = AppModel()
+        m.width = 80
+        m.open_tool_box("t", "bash", "ls")
+        block = m.tool_boxes["t"]
+        title = "".join(r.text for r in tool_card_lines(block, 80)[0])
+        assert "\u2026" not in title
+
+    def test_fuzz_rows_never_exceed_width(self):
+        """任意内容/宽度下工具卡行宽恒 <= width（硬上限不变量）。"""
+        import random
+
+        random.seed(11)
+        chars = "aA1 \t中文字🙂-_.:/"
+        for _ in range(400):
+            width = random.choice([1, 2, 3, 5, 8, 13, 21, 40, 80])
+            detail = "".join(random.choice(chars) for _ in range(random.randint(0, 60)))
+            m = AppModel()
+            m.width = width
+            m.open_tool_box("t", "bash", detail)
+            m.append_tool_output(
+                "t", "".join(random.choice(chars) for _ in range(random.randint(0, 120))),
+            )
+            block = m.tool_boxes["t"]
+            for row in tool_card_lines(block, width):
+                assert _row_width(row) <= width
+
+
+def _registered_tool_names() -> list:
+    """全部已注册工具名（工具卡渲染路径对每个工具都应生效）。"""
+    from src.tools.registry import ToolRegistry
+
+    try:
+        return list(ToolRegistry.default().get_tools() or [])
+    except Exception:
+        return []
+
+
+class TestAllToolsToolCardTruncate:
+    """所有工具的 toolcard 都走同一渲染路径（超宽截断 + 末尾省略号）。"""
+
+    def test_all_registered_tools_title_truncated_with_ellipsis(self):
+        from src.tools.registry import get_tool_display_name
+
+        names = _registered_tool_names()
+        assert names, "工具注册表为空（自动发现失败）"
+        for name in names:
+            for width in (24, 40, 80):
+                m = AppModel()
+                m.width = width
+                m.open_tool_box("t", name, "z" * 300)
+                block = m.tool_boxes["t"]
+                title_row = tool_card_lines(block, width)[0]
+                assert _row_width(title_row) == width, (name, width)
+                title = "".join(r.text for r in title_row)
+                assert title.endswith("\u2026"), (name, width, title)
+                assert (get_tool_display_name(name) or name) in title
+
+    def test_all_registered_tools_rows_within_width(self):
+        names = _registered_tool_names()
+        assert names, "工具注册表为空（自动发现失败）"
+        for name in names:
+            for width in (13, 40, 100):
+                m = AppModel()
+                m.width = width
+                m.open_tool_box("t", name, "z" * 200)
+                m.append_tool_output("t", "y" * 500 + "\n" + "中" * 100)
+                block = m.tool_boxes["t"]
+                for row in tool_card_lines(block, width):
+                    assert _row_width(row) <= width, (name, width)
+
+    def test_all_registered_tools_frame_within_width(self):
+        """端到端：每个注册工具的真实渲染帧行宽 <= 终端宽度。"""
+        import io
+
+        from src.tui.app.app import App
+        from src.tui.ink import components as _components, h
+        from src.tui.ink.reconciler import Reconciler
+        from src.tui.ink.renderer import InkRenderer
+
+        names = _registered_tool_names()
+        assert names, "工具注册表为空（自动发现失败）"
+        for name in names:
+            for width in (40, 90):
+                m = AppModel()
+                m.width = width
+                m.open_tool_box("t", name, "z" * 300)
+                m.append_tool_output("t", "y" * 400)
+                rec = Reconciler(schedule_callback=None)
+                root = rec.create_root()
+                rec.render(root, h(App, {"model": m, "width": width}), width, 60)
+                frame = _components.render_frame(root, width)
+                InkRenderer(stream=io.StringIO(), height=60).render(frame)
+                assert all(ln.width <= width for ln in frame.lines), (name, width)
+                assert any(ln.plain.endswith("\u2026") for ln in frame.lines), (
+                    name, width,
+                )
 
