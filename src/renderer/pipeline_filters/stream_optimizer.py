@@ -90,9 +90,10 @@ class TokenStreamOptimizer(TokenFilter):
                     result.append(token)
                     self._prev_type = curr
                     continue
-                # 合并到前一个 PARAGRAPH
+                # 合并到前一个 PARAGRAPH（软换行连接——两者之间原本没有空行
+                # Token，用 "\n\n" 连接会凭空引入段落分隔、改变语义）
                 prev_token = result[-1]
-                prev_token.content += "\n\n" + token.content
+                prev_token.content += "\n" + token.content
                 self._prev_type = curr
                 continue
 

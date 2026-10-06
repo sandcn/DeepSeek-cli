@@ -79,12 +79,27 @@ class _StyledOutputAdapter:
     # ── 捕获转发（IncrementalRenderer captured_output 机制） ──
 
     @property
+    def captured_output(self):
+        """捕获缓冲（转发底层适配器公开接口；不支持时返回 None）。
+
+        修复前直接访问私有 ``_captured_output``：自定义适配器（未实现该
+        私有字段）会抛 AttributeError。改为公开接口 + getattr 安全降级。
+        """
+        return getattr(self._output, "captured_output", None)
+
+    @captured_output.setter
+    def captured_output(self, value):
+        if hasattr(type(self._output), "captured_output"):
+            self._output.captured_output = value
+
+    #: 兼容旧调用面（私有名读写统一映射到公开属性）
+    @property
     def _captured_output(self):
-        return self._output._captured_output
+        return self.captured_output
 
     @_captured_output.setter
     def _captured_output(self, value):
-        self._output._captured_output = value
+        self.captured_output = value
 
     # ── 样式应用 ─────────────────────────────────────
 
@@ -161,8 +176,9 @@ class IncrementalRenderer:
             else:
                 self._output = output_adapter
             # 外部注入的 OutputAdapter — 如果 capture 列表已设则直接绑定
+            # （公开 captured_output 接口，非私有字段直达）
             if captured_output is not None:
-                self._output._captured_output = captured_output
+                self._output.captured_output = captured_output
         else:
             console_config = get_safe_console_config()
             if style:

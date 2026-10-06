@@ -30,6 +30,11 @@ _S_ERROR_ICON = Style(fg=196, bold=True)
 _S_PARSE = Style(fg=242)
 _S_SPLASH = Style(fg=45, bold=True)
 
+#: 流式内容块保留的 markdown 源文本上限（仅用于终端 resize 时整块重渲染）。
+#: 超限后停止累积并标记 ``extra["source_truncated"]``——避免超长回答常驻
+#: 内存、且 resize 时退化为 O(全文) 重渲染（重渲染路径见 AppModel）。
+_SOURCE_TEXT_MAX = 1_000_000
+
 # 历史回放工具卡标题 detail 不再做固定长度截断（2026-10-05 用户需求：工具卡
 # 标题行参数达到终端宽度）——detail 完整交给 open_tool_box，标题行渲染时按
 # 终端宽度 ``truncate_runs`` 截断（toolcard.tool_card_lines）。
@@ -268,7 +273,19 @@ def _flush_renderer_to_block(model, channel: str, renderer,
     if 0 <= idx < len(model.blocks):
         block = model.blocks[idx]
         if source_delta:
-            block.source_text = getattr(block, "source_text", "") + source_delta
+            # ★ 源文本上限：``source_text`` 仅用于 resize 时整块重渲染；超长
+            #   回答无上限累积会常驻内存并使重渲染退化为 O(全文)。达到上限后
+            #   停止累积并标记——重渲染路径检测标记后保留现有行（避免用截断
+            #   源渲染出错误内容）。
+            cur = getattr(block, "source_text", "")
+            if len(cur) < _SOURCE_TEXT_MAX:
+                merged = cur + source_delta
+                if len(merged) > _SOURCE_TEXT_MAX:
+                    merged = merged[:_SOURCE_TEXT_MAX]
+                    block.extra["source_truncated"] = True
+                    _logger.debug("内容块源文本超限（%d 字符），停止累积",
+                                  _SOURCE_TEXT_MAX)
+                block.source_text = merged
         if lines:
             block.lines.extend(lines)
             model.commit_open_block(block)

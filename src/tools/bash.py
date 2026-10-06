@@ -608,7 +608,7 @@ class BashFunc(Func):
         - 使用 asyncio.wait 观察执行任务，超时**不取消**任务；
         - 超过 _AUTO_BG_TIMEOUT 秒未完成 → 自动转后台任务：
           命令继续运行，注册到 agent._background_tasks，返回
-          {"task_id": ..., "status": "running", "command": ...} JSON，
+          {"task_id": ..., "status": "running"} JSON，
           大模型可用 bash_opt 工具按 task_id 继续管理（read/wait/kill/stdin/keys）。
 
         ★ 前台统一使用 PIPE 分离模式（stdout/stderr 双流独立收集）：
@@ -713,7 +713,7 @@ class BashFunc(Func):
           - 生成 task_id，把执行中的任务注册到 agent._background_tasks；
           - 任务完成后结果写入任务记录（bash_opt wait / 对话轮次自动
             插入用户消息消费）；
-          - 返回 {"task_id": ..., "status": "running", "command": ...} JSON，
+          - 返回 {"task_id": ..., "status": "running"} JSON，
             大模型可用 bash_opt 工具继续管理。
 
         Args:
@@ -737,7 +737,6 @@ class BashFunc(Func):
 
         rec = {
             "task": exec_task,
-            "command": self.command,
             "cwd": self.cwd,
             "created_at": time.time(),
             "done": False,
@@ -786,7 +785,6 @@ class BashFunc(Func):
         return json.dumps({
             "task_id": task_id,
             "status": "running",
-            "command": self.command,
         }, ensure_ascii=False)
 
     async def _run_interactive_async(self, on_ready=None, publish_line_fn=None):
@@ -847,7 +845,7 @@ class BashFunc(Func):
         """后台执行命令：生成 task_id、注册到 agent 后台任务列表，立即返回 JSON。
 
         需要当前 BashFunc 实例关联了 Agent（registry.dispatch 会自动 set_agent）。
-        返回 JSON 字符串（task_id/status/command），供大模型识别后台任务。
+        返回 JSON 字符串（task_id/status），供大模型识别后台任务。
         """
         # ★ 危险命令检查：display() 路径（主 Agent）进入后台前也需运行时防护
         danger = _has_dangerous_command(self.command)
@@ -875,7 +873,6 @@ class BashFunc(Func):
         #   io_lock 串行化 stdin/keys 写入。
         agent._register_background_task(task_id, {
             "task": task,
-            "command": self.command,
             "cwd": self.cwd,
             "created_at": time.time(),
             "done": False,
@@ -899,7 +896,6 @@ class BashFunc(Func):
         return json.dumps({
             "task_id": task_id,
             "status": "running",
-            "command": self.command,
         }, ensure_ascii=False)
 
     async def _run_background_task(self, bg: "BashFunc", task_id: str) -> None:

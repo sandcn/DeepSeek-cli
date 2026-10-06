@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import heapq
 import itertools
 import logging
@@ -52,6 +53,18 @@ from src.tui.ink._cmd_priority import (
 )
 
 _logger = logging.getLogger(__name__)
+
+#: 可追加合并的流式内容命令（同类型、且为队列**最新条目**时合并文本）：
+#: 高频流式输出下减少队列条目增长，降低「队列满 → 内容命令背压等待/丢弃」
+#: 的概率（丢弃即用户可见内容缺失）。仅追加到队尾同类条目，保证渲染顺序。
+_APPEND_STREAM_CMDS = frozenset({
+    RenderCommand.CONTENT,
+    RenderCommand.REASONING,
+})
+
+#: 流式命令合并后的文本上限（字符）：超过后不再合并，避免单条命令无限膨胀
+#: （渲染线程长期不消费时文本持续累积）；此时退回背压等待路径。
+_STREAM_MERGE_MAX_CHARS = 65536
 
 #: 暂停/恢复保留命令集合（2026-08-15 短内容丢失修复）：
 #: suspend（交互工具独占终端）/ 崩溃恢复 / flush 超时兜底经 ``_drain_queue_safe``
@@ -138,6 +151,47 @@ class _SessionQueueMixin:
                     return True
         return False
 
+    def _append_to_last_stream_cmd(self, cmd_id: int, cmd: RenderCmd) -> bool:
+        """把流式文本追加到队列**最新入队**的同类命令（保序、不新增条目）。
+
+        仅当队列最新条目（``seq`` 最大）即为同类型流式命令时合并：此时新
+        文本在时间上紧跟其后，追加不改变任何命令的相对顺序；尾部一旦是其它
+        命令则放弃（走正常入队），保证渲染顺序与事件顺序一致。合并可显著
+        降低高频流式输出的队列增长，避免队列满触发内容命令背压/丢弃。
+
+        Returns:
+            True — 已合并（调用方无需再入队）；False — 未合并。
+        """
+        if cmd_id not in _APPEND_STREAM_CMDS:
+            return False
+        with self._cmd_queue.mutex:
+            arr = self._cmd_queue.queue
+            if not arr:
+                return False
+            idx = None
+            best_seq = -1
+            for i, item in enumerate(arr):
+                if item[1] > best_seq:
+                    best_seq = item[1]
+                    idx = i
+            if idx is None:
+                return False
+            last = arr[idx]
+            if _get_cmd_id(last[2]) != cmd_id:
+                return False
+            merged = ((getattr(last[2], "text", "") or "")
+                      + (getattr(cmd, "text", "") or ""))
+            if len(merged) > _STREAM_MERGE_MAX_CHARS:
+                # 单条命令文本已达上限：不再合并（退回背压等待/丢弃兜底）
+                return False
+            try:
+                new_cmd = dataclasses.replace(last[2], text=merged)
+            except Exception:
+                return False
+            # 仅替换命令对象、保持原 (priority, seq)——比较键不变，堆序不变
+            arr[idx] = (last[0], last[1], new_cmd)
+        return True
+
     def push_cmd(self, cmd: RenderCmd) -> None:
         """入队渲染命令（阻塞语义与 TuiEngine.push_cmd 一致）。"""
         priority = _get_cmd_priority(cmd)
@@ -223,8 +277,15 @@ class _SessionQueueMixin:
             #   阻塞路径不丢，视觉上「只显示工具调用卡片」。渲染线程存活时
             #   背压等待（模型流式让渲染消费跟上，内容不丢）；渲染线程已终止
             #   （UI 不可用）回退原丢弃语义（不无限卡死调用方/事件循环）。
-            if _get_cmd_id(cmd) in _STREAM_CMDS and self._render_running:
-                if self._put_no_drop(priority, cmd):
+            if _get_cmd_id(cmd) in _STREAM_CMDS:
+                # ★ 内容命令兜底合并（队列满且无 LOW 可腾位）：把文本追加到
+                #   「最新入队的同类流式命令」——不新增条目、相对顺序不变，
+                #   尽最大努力避免用户可见内容丢失（背压/丢弃退为最后兜底）。
+                if self._append_to_last_stream_cmd(cmd_id, cmd):
+                    self._consecutive_full = 0
+                    self._cmd_event.set()
+                    return
+                if self._render_running and self._put_no_drop(priority, cmd):
                     return
             # 方向2（CRITICAL 不静默丢弃）：blocking（CRITICAL）命令腾位失败后
             # 改走 push_cmd_critical 紧急直写语义（_write_emergency 兜底，绝不

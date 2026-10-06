@@ -18,6 +18,9 @@
   # 可选：pipeline.add_filter(HeadingAnchorFilter())
   # 可选：pipeline.add_filter(TokenStreamOptimizer())
   processed = pipeline.process(tokens, ctx)
+
+容错：``TokenPipeline.process`` 对每个过滤器独立 try/except——单个过滤器
+异常不中断整条渲染链路（记录日志后跳过该过滤器，保留其余已处理结果）。
 """
 
 from __future__ import annotations
@@ -44,11 +47,11 @@ class TokenFilter(ABC):
         """处理 Token 流。
 
         Args:
-            tokens: 输入的 Token 列表
-            ctx: 渲染上下文
+            tokens: 输入的 Token 列表。
+            ctx: 渲染上下文。
 
         Returns:
-            处理后的 Token 列表
+            处理后的 Token 列表。
         """
 
 # ═══════════════════════════════════════════════════════════
@@ -58,7 +61,8 @@ class TokenFilter(ABC):
 class TokenPipeline:
     """Token 流过滤器链。
 
-    按注册顺序依次应用过滤器。
+    按注册顺序依次应用过滤器；单个过滤器异常降级为「跳过该过滤器」，
+    避免一处解析/渲染异常导致整条流式输出中断（内容静默丢失）。
     """
 
     def __init__(self):
@@ -77,7 +81,11 @@ class TokenPipeline:
         """
         tokens = self._pre_process(tokens, ctx)
         for f in self._filters:
-            tokens = f.process(tokens, ctx)
+            try:
+                tokens = f.process(tokens, ctx)
+            except Exception:
+                _logger.warning("Token 过滤器 %r 处理异常，本批跳过该过滤器",
+                                type(f).__name__, exc_info=True)
         tokens = self._post_process(tokens, ctx)
         return tokens
 
@@ -103,13 +111,25 @@ class CodeBlockBatcher(TokenFilter):
     - 从每行一次 Pygments 调用 → 整个代码块一次
     - 支持跨行语法分析（多行字符串、注释等）
     - 行号渲染由 Syntax 组件统一处理
+
+    ★ 超长代码块分段（continuation 语义）：
+      缓冲区超过 ``MAX_BUFFER_LINES`` / ``MAX_BUFFER_CHARS`` 时必须刷出
+      （防 OOM），但**逻辑上仍是同一个代码块**——刷出的段标记
+      ``meta["continuation"]``（首段 False、后续段 True）与
+      ``meta["closed"]``（逻辑块是否真正闭合）。渲染层据此只在首段输出
+      打开围栏、只在末段输出关闭围栏：修复前分段后逐行补 fence 对，导致
+      一个代码块被渲染成多个带围栏/语言标签的独立块（视觉破碎、行号与
+      语法上下文丢失）。
     """
 
-    MAX_BUFFER_CHARS = 500_000
-    """缓冲区字符数上限，超过此值时强制刷出当前累积的代码块，防止 OOM。"""
+    MAX_BUFFER_CHARS = 1_000_000
+    """缓冲区字符数上限，超过此值时强制刷出当前累积的代码段，防止 OOM。
+
+    与 ``RegexFreeBlockParser._MAX_BUFFER_SIZE`` 保持一致（同一数据在解析层
+    与过滤层的缓冲上限不应割裂，避免过滤层先于解析层触发分段）。"""
 
     MAX_BUFFER_LINES = 2000
-    """缓冲区行数上限，超过此值时强制刷出当前累积的代码块。"""
+    """缓冲区行数上限，超过此值时强制刷出当前累积的代码段。"""
 
     def __init__(self):
         super().__init__()
@@ -121,223 +141,142 @@ class CodeBlockBatcher(TokenFilter):
         """跨 feed 调用时未闭合代码块的 meta 信息。"""
         self._feed_count = 0
         """当前未闭合代码块经历的连续 feed 调用次数（仅用于诊断）。"""
-        self._flushed_in_feed: bool = False
+        self._block_continuation: bool = False
+        """当前逻辑代码块是否已因缓冲上限被分段刷出（后续段为续段）。"""
         self._had_force_flush_this_call: bool = False
-        #: 强制刷出时保留的语言名——刷出后后续 CODE_LINE 无上下文时补的
-        #: fence 对沿用原语言（问题5：修复前一律补 "text"，丢失高亮）。
-        self._flushed_lang: str = "text"
-        """跨 feed 强制刷出标记：刷出后后续 CODE_LINE 失去上下文，需自动补 fence 对。"""
+
+    # ── 内部辅助 ─────────────────────────────────────
+
+    def _make_block(self, lines: list[str], meta: dict, *, closed: bool) -> Token:
+        """组装 CODE_BLOCK token（含 continuation/closed 语义）。"""
+        attrs = meta.get("attrs", "")
+        return Token(TokenType.CODE_BLOCK, "\n".join(lines), {
+            "lang": meta.get("lang", "text"),
+            "attrs": attrs,
+            "title": meta.get("title", ""),
+            "highlight_lines": parse_highlight_lines(attrs),
+            "continuation": self._block_continuation,
+            "closed": closed,
+        })
+
+    def _flush_segment(self, result: list[Token], lines: list[str],
+                       meta: dict) -> None:
+        """因缓冲上限刷出一段（逻辑块未闭合）——后续行属同一块的续段。"""
+        result.append(self._make_block(lines, meta, closed=False))
+        self._block_continuation = True
+        self._had_force_flush_this_call = True
+
+    def _finish_block(self, result: list[Token], lines: list[str],
+                      meta: dict) -> None:
+        """逻辑代码块结束（闭合 / 被非代码 Token 打断）→ 发射闭合段。"""
+        result.append(self._make_block(lines, meta, closed=True))
+        self._block_continuation = False
+
+    # ── 主处理 ───────────────────────────────────────
 
     def process(self, tokens: list[Token], ctx: RenderContext) -> list[Token]:
         self._had_force_flush_this_call = False
         result: list[Token] = []
 
         try:
-            # 如果有跨 feed 缓冲的未闭合代码块，先恢复状态或强制刷出
+            # 恢复上一次 feed 缓存的未闭合代码块状态
             if self._block_meta is not None:
                 self._feed_count += 1
-                # 缓冲区行数/字符数超过上限时强制刷出
-                if len(self._buffer) >= self.MAX_BUFFER_LINES or \
-                   self._buffer_chars >= self.MAX_BUFFER_CHARS:
-                    _logger.debug(
-                        "CodeBlockBatcher 跨 feed 强制刷出: feed_count=%d, lines=%d, chars=%d",
-                        self._feed_count, len(self._buffer), self._buffer_chars,
-                    )
-                    source = "\n".join(self._buffer)
-                    lang = self._block_meta.get("lang", "text")
-                    attrs = self._block_meta.get("attrs", "")
-                    result.append(Token(TokenType.CODE_BLOCK, source, {
-                        "lang": lang,
-                        "attrs": attrs,
-                        "title": self._block_meta.get("title", ""),
-                        "highlight_lines": parse_highlight_lines(attrs),
-                    }))
-                    self._buffer = []
-                    self._buffer_chars = 0
-                    self._block_meta = None
-                    self._feed_count = 0
-                    self._flushed_in_feed = True  # 标记刷出状态，后续 CODE_LINE 需自动补 fence 对
-                    self._flushed_lang = lang
-                    self._had_force_flush_this_call = True
-                    local_buffer: list[str] = []
-                    local_buffer_chars: int = 0
-                    local_meta: dict | None = None  # 强制刷出后重新初始化局部变量
-                else:
-                    # 恢复前一次缓存的未闭合代码块状态
-                    local_buffer = self._buffer
-                    local_buffer_chars = self._buffer_chars
-                    local_meta = self._block_meta
-                    self._buffer = []
-                    self._buffer_chars = 0
-                    self._block_meta = None
+                local_buffer = self._buffer
+                local_buffer_chars = self._buffer_chars
+                local_meta = self._block_meta
+                self._buffer = []
+                self._buffer_chars = 0
+                self._block_meta = None
             else:
                 local_buffer = []
-                local_buffer_chars: int = 0
+                local_buffer_chars = 0
                 local_meta = None
 
             for token in tokens:
                 if token.type is TokenType.CODE_FENCE_OPEN:
-                    # 开始新块
+                    # 前一块未闭合又开新块（异常 markdown）→ 以闭合块收尾
                     if local_meta is not None:
-                        if local_buffer:
-                            # 前一块未闭合 → 先刷出
-                            result.append(Token(TokenType.CODE_FENCE_OPEN, "", local_meta))
-                            for bl in local_buffer:
-                                result.append(Token(TokenType.CODE_LINE, bl))
-                            # ★ 追加 CODE_FENCE_CLOSE，确保前一块的代码块状态正确闭合
-                            result.append(Token(TokenType.CODE_FENCE_CLOSE, "", {
-                                "lang": local_meta.get("lang", "text"),
-                                "indented": False,
-                            }))
-                        else:
-                            # 空缓冲区 → 也输出 CODE_FENCE_CLOSE 来闭合旧块，避免旧 OPEN 被静默丢弃
-                            result.append(Token(TokenType.CODE_FENCE_CLOSE, "", {
-                                "lang": local_meta.get("lang", "text"),
-                                "indented": False,
-                            }))
-                        # 清空 local_meta，准备新块
-                        local_meta = None
-                        local_buffer = []
-                        self._flushed_in_feed = False
+                        self._finish_block(result, local_buffer, local_meta)
+                        local_buffer, local_buffer_chars, local_meta = [], 0, None
                     # 创建不包含 "indented" 的副本，避免修改原始 token.meta
-                    local_meta = {k: v for k, v in token.meta.items() if k != "indented"}  # block_meta 已排除 indented 键，此时 fence 未闭合转为常规发射
+                    local_meta = {k: v for k, v in token.meta.items()
+                                  if k != "indented"}
                     if token.meta.get("indented"):
                         # 缩进代码块不批处理（保持原有逐行模式）
                         result.append(token)
                         local_meta = None
-                    self._flushed_in_feed = False
-                elif token.type is TokenType.CODE_LINE and (local_meta is not None or self._flushed_in_feed):
-                    if self._flushed_in_feed and local_meta is None:
-                        # 跨 feed 刷出后遇到 CODE_LINE，无上下文 → 自动补上
-                        # CODE_FENCE_OPEN/CODE_FENCE_CLOSE 对（沿用原语言，
-                        # 问题5：修复前一律补 "text" 丢失高亮）。
-                        result.append(Token(TokenType.CODE_FENCE_OPEN, "", {
-                            "lang": self._flushed_lang, "indented": False,
-                        }))
-                        result.append(token)
-                        result.append(Token(TokenType.CODE_FENCE_CLOSE, "", {
-                            "lang": self._flushed_lang,
-                            "indented": False,
-                        }))
-                        self._flushed_in_feed = False
-                        continue
-                    # 累积代码行（增量维护字符计数器，避免 O(n²)）
+                    self._block_continuation = False
+
+                elif token.type is TokenType.CODE_LINE and local_meta is not None:
                     local_buffer.append(token.content)
                     local_buffer_chars += len(token.content)
-                    # 增量检查字符数/行数上限，超限立即刷出，避免单次 feed 累积过多
-                    if local_buffer_chars >= self.MAX_BUFFER_CHARS or len(local_buffer) >= self.MAX_BUFFER_LINES:
+                    # 增量检查上限，超限立即刷出本段（保留 local_meta：
+                    # 逻辑块未结束，后续行继续缓冲为续段）
+                    if (local_buffer_chars >= self.MAX_BUFFER_CHARS
+                            or len(local_buffer) >= self.MAX_BUFFER_LINES):
                         _logger.debug(
-                            "CodeBlockBatcher 内联强制刷出: lines=%d, chars=%d",
-                            len(local_buffer), local_buffer_chars,
+                            "CodeBlockBatcher 分段刷出: feed_count=%d, lines=%d, chars=%d",
+                            self._feed_count, len(local_buffer), local_buffer_chars,
                         )
-                        source = "\n".join(local_buffer)
-                        lang = local_meta.get("lang", "text")
-                        attrs = local_meta.get("attrs", "")
-                        result.append(Token(TokenType.CODE_BLOCK, source, {
-                            "lang": lang,
-                            "attrs": attrs,
-                            "title": local_meta.get("title", ""),
-                            "highlight_lines": parse_highlight_lines(attrs),
-                        }))
+                        self._flush_segment(result, local_buffer, local_meta)
                         local_buffer = []
                         local_buffer_chars = 0
-                        local_meta = None
-                        self._feed_count = 0
-                        self._flushed_in_feed = True
-                        self._had_force_flush_this_call = True
-                        self._flushed_lang = lang
+
                 elif token.type is TokenType.CODE_FENCE_CLOSE and local_meta is not None:
-                    # 块结束 → 发射 CODE_BLOCK
+                    # 块结束 → 发射闭合段
                     _logger.debug(
                         "CodeBlockBatcher 块闭合发射: feed_count=%d, lines=%d, chars=%d",
                         self._feed_count, len(local_buffer), local_buffer_chars,
                     )
-                    source = "\n".join(local_buffer)
-                    lang = local_meta.get("lang", "text")
-                    attrs = local_meta.get("attrs", "")
-                    result.append(Token(TokenType.CODE_BLOCK, source, {
-                        "lang": lang,
-                        "attrs": attrs,
-                        "title": local_meta.get("title", ""),
-                        "highlight_lines": parse_highlight_lines(attrs),
-                    }))
+                    self._finish_block(result, local_buffer, local_meta)
                     local_buffer = []
                     local_buffer_chars = 0
                     local_meta = None
                     self._feed_count = 0
-                    self._flushed_in_feed = False
+
                 else:
-                    # 非代码块 Token → 直接通过
+                    # 非代码块 Token：fence 未闭合（异常 markdown）→ 收尾后透传
                     if local_meta is not None:
-                        # fence_open 之后遇到非 code_line(如 fence 未闭合) → 放弃批处理
-                        result.append(Token(TokenType.CODE_FENCE_OPEN, "", local_meta))
-                        for bl in local_buffer:
-                            result.append(Token(TokenType.CODE_LINE, bl))
-                        # ★ 先追加 CODE_FENCE_CLOSE 确保下游 CodeHandler 状态机正常闭合，
-                        # 防止 engine.code_state.lang/line_num 泄漏到后续渲染中。
-                        # 再追加非代码 Token，避免 CODE_FENCE_CLOSE 插在无关 Token 之后
-                        result.append(Token(TokenType.CODE_FENCE_CLOSE, "", {
-                            "lang": local_meta.get("lang", "text"),
-                            "indented": False,
-                        }))
-                        result.append(token)
+                        self._finish_block(result, local_buffer, local_meta)
                         local_buffer = []
                         local_buffer_chars = 0
                         local_meta = None
-                    else:
-                        result.append(token)
+                    result.append(token)
 
-            # 缓冲区大小保护：超过上限时强制刷出，防止 OOM
-            if local_meta is not None:
-                # 末尾兜底检查（增量检查已在循环内进行）
-                if local_buffer_chars >= self.MAX_BUFFER_CHARS or len(local_buffer) >= self.MAX_BUFFER_LINES:
-                    _logger.debug(
-                        "CodeBlockBatcher 末位强制刷出: lines=%d, chars=%d",
-                        len(local_buffer), local_buffer_chars,
-                    )
-                    # 强制以 CODE_BLOCK 形式刷出当前累积的代码块
-                    source = "\n".join(local_buffer)
-                    lang = local_meta.get("lang", "text")
-                    attrs = local_meta.get("attrs", "")
-                    result.append(Token(TokenType.CODE_BLOCK, source, {
-                        "lang": lang,
-                        "attrs": attrs,
-                        "title": local_meta.get("title", ""),
-                        "highlight_lines": parse_highlight_lines(attrs),
-                    }))
-                    local_buffer = []
-                    local_buffer_chars = 0
-                    local_meta = None
-                    self._feed_count = 0
-                    self._had_force_flush_this_call = True
-                    # ★ 末位强制刷出后 block_meta 已清空，但解析器状态机仍在该代码块内。
-                    # 下一 feed 的 CODE_LINE 需触发自动补 fence 对逻辑，因此置为 True。
-                    self._flushed_in_feed = True
-                    self._flushed_lang = lang
+            # 末尾兜底检查：本次 feed 累积超过上限则刷出（同上，保留 meta）
+            if local_meta is not None and (
+                local_buffer_chars >= self.MAX_BUFFER_CHARS
+                or len(local_buffer) >= self.MAX_BUFFER_LINES
+            ):
+                _logger.debug(
+                    "CodeBlockBatcher 末位分段刷出: lines=%d, chars=%d",
+                    len(local_buffer), local_buffer_chars,
+                )
+                self._flush_segment(result, local_buffer, local_meta)
+                local_buffer = []
+                local_buffer_chars = 0
 
-            # 缓冲区残留（未闭合的代码块）→ 缓存到实例属性，等待下次 process 调用
+            # 未闭合的代码块 → 缓存到实例属性，等待下次 process 调用
             if local_meta is not None:
                 self._buffer = local_buffer
                 self._buffer_chars = local_buffer_chars
                 self._block_meta = local_meta
-                # 不发射任何 token — 等待代码块闭合后再一次性合并
             else:
                 self._buffer = []
                 self._buffer_chars = 0
                 self._block_meta = None
                 self._feed_count = 0
-                if not self._had_force_flush_this_call:
-                    self._flushed_in_feed = False
 
             return result
         except Exception:
-            # 异常恢复：不回滚已发射 Token，仅清理缓冲状态。
-            # 当前 feed 中已发射到 result 的 Token 随异常丢失（不可恢复），
-            # 但不恢复 saved 快照——否则下次调用会重新发射相同内容造成重复。
-            # 仅清理缓冲状态，让下次调用从干净状态开始。
+            # 异常恢复：清理缓冲状态（避免下次重复发射）并**返回已产出结果**
+            # ——修复前 re-raise 使本批已发射 Token 全部丢失（内容静默缺失）。
+            # 异常信息以 error 日志保留（不静默吞掉），上层继续渲染其余 Token。
+            _logger.exception("CodeBlockBatcher 处理异常，返回已产出 Token")
             self._buffer = []
             self._buffer_chars = 0
             self._block_meta = None
             self._feed_count = 0
-            self._flushed_in_feed = False
-            raise
+            self._block_continuation = False
+            return result

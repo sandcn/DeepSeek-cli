@@ -286,7 +286,7 @@ def test_model_content_preview_lines():
 
 
 def test_code_batcher_force_flush_keeps_lang():
-    """CodeBlockBatcher 强制刷出后补的 fence 沿用原语言（不再固定 text）。"""
+    """CodeBlockBatcher 超限分段：语言保留 + 续段标记（不再伪造 fence 对）。"""
     from src.renderer.pipeline import CodeBlockBatcher
     from src.renderer.types import Token, TokenType, RenderContext
     b = CodeBlockBatcher()
@@ -295,9 +295,42 @@ def test_code_batcher_force_flush_keeps_lang():
     toks = [Token(TokenType.CODE_FENCE_OPEN, "", {"lang": "python"})]
     toks += [Token(TokenType.CODE_LINE, f"line{i}") for i in range(4)]
     out = b.process(toks, ctx)
-    opens = [t for t in out if t.type is TokenType.CODE_FENCE_OPEN]
-    assert opens, "未触发强制刷出/补 fence"
-    assert any(t.meta.get("lang") == "python" for t in opens)
+    blocks = [t for t in out if t.type is TokenType.CODE_BLOCK]
+    assert blocks, "未触发分段刷出"
+    assert blocks[0].meta.get("lang") == "python"
+    assert blocks[0].meta.get("continuation") is False
+    assert blocks[0].meta.get("closed") is False
+    # 续段：后续行随闭合一起发射（continuation=True + closed=True，语言保留）
+    out2 = b.process([
+        Token(TokenType.CODE_LINE, "line4"),
+        Token(TokenType.CODE_FENCE_CLOSE, "", {"lang": "python"}),
+    ], ctx)
+    blocks2 = [t for t in out2 if t.type is TokenType.CODE_BLOCK]
+    assert blocks2, "续段未发射"
+    assert blocks2[-1].meta.get("continuation") is True
+    assert blocks2[-1].meta.get("closed") is True
+    assert blocks2[-1].meta.get("lang") == "python"
+
+
+def test_long_code_block_renders_single_fence():
+    """超长代码块分段刷出后仍渲染为一个逻辑代码块（仅一对围栏）。"""
+    from src.renderer.pipeline import CodeBlockBatcher
+    from src.renderer.ansi import AnsiStreamRenderer
+
+    r = AnsiStreamRenderer(width=80)
+    r.write("```python\n")
+    collected = []
+    for i in range(2010):
+        r.write(f"v{i} = {i}\n")
+        collected.extend(r.take_lines())
+    r.close()
+    collected.extend(r.take_lines())
+    plain = [line.plain for line in collected]
+    fences = [i for i, line in enumerate(plain) if line.strip().startswith("```")]
+    assert len(fences) == 2, f"应只有开/闭一对围栏，实际 {fences}"
+    assert plain[fences[0]].startswith("```python")
+    assert len(plain) == 2012
+    assert "v0 = 0" in plain and "v2009 = 2009" in plain
 
 def test_chat_view_block_includes_preview():
     """ChatView 的 open 块渲染包含 preview_lines（UI 层预览可见）。"""

@@ -126,7 +126,6 @@ class _FakeAgent:
 async def test_execute_read_smoke():
     """op=read 正常工作并标记 managed_by_tool（行为不变）。"""
     rec = {
-        "command": "echo hi",
         "read_buffer": "hi",
         "status": "running",
         "done": False,
@@ -137,7 +136,7 @@ async def test_execute_read_smoke():
 
     payload = json.loads(await func.execute())
     assert payload["task_id"] == "bg-1"
-    assert payload["command"] == "echo hi"
+    assert "command" not in payload
     assert payload["status"] == "running"
     assert payload["output"] == "hi"
     assert rec["read_buffer"] == ""      # read 消费后清空

@@ -270,7 +270,7 @@ class BaseAgent:
 
         Args:
             task_id: 后台 bash 任务 ID（如 bg-xxxx）
-            record: 任务记录 dict，至少包含 task/command/done 等键
+            record: 任务记录 dict，至少包含 task/done 等键
         """
         if not hasattr(self, "_background_tasks"):
             self._background_tasks = {}
@@ -457,7 +457,7 @@ class BaseAgent:
     def _collect_done_background_messages(self) -> list[str]:
         """收集所有已完成 **bash** 后台任务的结果为 JSON 用户消息，并从 bash 表移除。
 
-        每条消息格式：{"task_id": "...", "command": "...", "status": "...",
+        每条消息格式：{"task_id": "...", "status": "...",
         "stdout": "...", "stderr": "...", "returncode": N}——命令输出按
         bash 三元 JSON 结构展开（stdout/stderr/returncode 分离）。
         _complete_background_task 已把三字段写入任务记录，这里直接读取；
@@ -486,7 +486,6 @@ class BaseAgent:
                             record.get("result", ""))
                     payload = {
                         "task_id": task_id,
-                        "command": record.get("command", ""),
                         "status": record.get("status", "completed"),
                         "stdout": stdout,
                         "stderr": stderr,
@@ -505,8 +504,8 @@ class BaseAgent:
         """收集所有已完成 **subagent** 后台任务的结果为 JSON 用户消息，并从 subagent 表移除。
 
         每条消息格式：{"task_id": "...", "command": "...", "status": "...", "output": "..."}
-        subagent 记录与 bash 记录共用 command 字段（"subagent(描述)"），
-        插入的用户消息同样为 JSON 格式（含 taskid 与结果）。
+        command 为 subagent 任务描述（"subagent(描述)"；bash 后台记录不含该
+        字段），插入的用户消息同样为 JSON 格式（含 taskid 与结果）。
 
         ★ 被 subagent_opt 工具管理的任务（managed_by_tool=True）只清理、不生成消息：
         其结果已由大模型通过 subagent_opt wait 主动获取，不再重复插入用户消息。
@@ -676,7 +675,6 @@ class BaseAgent:
                             # 三元字段占位，完整结果由 bash_opt wait 获取
                             running_msgs.append(json.dumps({
                                 "task_id": task_id,
-                                "command": rec.get("command", ""),
                                 "status": "running",
                                 "stdout": rec.get("stdout", ""),
                                 "stderr": rec.get("stderr", ""),

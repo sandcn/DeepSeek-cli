@@ -6,6 +6,14 @@
 
 映射：pygments token → Style（仅前景色，经 rgb_to_256 降级到 256 色体系）。
 失败时降级为纯文本（dim）。
+
+结构拆分（供流式预览增量复用）：
+  - ``highlight_code_lines`` — 逐行高亮（无围栏/标题），流式预览按行缓存、
+    仅渲染新增行；
+  - ``render_fence_line`` / ``render_close_fence_line`` / ``render_title_line``
+    — 围栏与标题行构造（整块渲染与预览共用，避免两处实现漂移）；
+  - ``render_code_block`` — 组装整块（围栏 + 行 + 围栏），支持
+    ``continuation``（被强制刷出的续段：不重复打开围栏/标题，仅补关闭围栏）。
 """
 
 from __future__ import annotations
@@ -23,6 +31,7 @@ _STYLE_FENCE = Style(fg=242, dim=True, italic=True)
 _STYLE_DIM = Style(fg=244)
 _STYLE_TITLE = Style(fg=110, bold=True)
 _STYLE_HIGHLIGHT_BG = Style(fg=221)
+_STYLE_OMITTED = Style(fg=238)
 
 _CODE_THEME = "monokai"
 
@@ -73,6 +82,71 @@ def _highlight_line(line: str, lexer, pyg_style) -> AnsiLine:
         return AnsiLine.of(line, _STYLE_DIM)
 
 
+def highlight_code_lines(
+    lines: list[str],
+    lang: str = "",
+    theme: str = _CODE_THEME,
+    highlight_lines: list[int] | None = None,
+    start_index: int = 1,
+) -> list[AnsiLine]:
+    """逐行高亮代码（不含围栏/标题），返回 AnsiLine 列表。
+
+    Args:
+        lines: 源码行列表（不含换行符）。
+        lang: 语言名（空/``text`` 时降级为纯文本 dim）。
+        theme: pygments 主题名。
+        highlight_lines: 需高亮的行号（1-based，相对 ``start_index``）。
+        start_index: 首行对应的逻辑行号（供流式预览增量渲染时续接行号）。
+
+    Returns:
+        与 ``lines`` 等长的 AnsiLine 列表。
+    """
+    from src.renderer._rendering._code import get_lexer
+    from src.renderer._utils import get_code_style
+
+    if not lines:
+        return []
+    lexer = get_lexer(lang) if lang and lang != "text" else None
+    hl = set(highlight_lines or [])
+    pyg_style = get_code_style(theme) if lexer is not None else None
+    out: list[AnsiLine] = []
+    for offset, src_line in enumerate(lines):
+        idx = start_index + offset
+        if lexer is not None:
+            aline = _highlight_line(src_line, lexer, pyg_style)
+        else:
+            aline = AnsiLine.of(src_line, _STYLE_DIM)
+        if idx in hl:
+            aline = _apply_highlight(aline)
+        out.append(aline)
+    return out
+
+
+def render_fence_line(lang: str = "") -> AnsiLine:
+    """代码块打开围栏行（``\u0060\u0060\u0060lang [lang]``）。"""
+    lang_tag = lang if lang and lang != "text" else ""
+    line = AnsiLine.of(f"```{lang_tag}", _STYLE_FENCE)
+    if lang_tag:
+        line.append(f" [{lang}]", Style(fg=45, bold=True))
+    return line
+
+
+def render_close_fence_line() -> AnsiLine:
+    """代码块关闭围栏行。"""
+    return AnsiLine.of("```", _STYLE_FENCE)
+
+
+def render_title_line(title: str) -> AnsiLine:
+    """代码块标题行（``┌─ title``）。"""
+    return AnsiLine.of(f"┌─ {title}", _STYLE_TITLE)
+
+
+def render_omitted_line(omitted: int) -> AnsiLine:
+    """预览截断提示行（超长块只预览最近若干行时的可见说明）。"""
+    return AnsiLine.of(f"\u2026 前 {omitted} 行省略（本块结束后完整显示）",
+                       _STYLE_OMITTED)
+
+
 def render_code_block(
     source: str,
     lang: str = "",
@@ -80,6 +154,7 @@ def render_code_block(
     highlight_lines: list[int] | None = None,
     title: str = "",
     closed: bool = True,
+    continuation: bool = False,
 ) -> list[AnsiLine]:
     """渲染代码块（含标题栏与围栏）为 AnsiLine 列表。
 
@@ -91,48 +166,21 @@ def render_code_block(
         title: 代码块标题（文件名等）。
         closed: 代码块是否已闭合。流式预览未闭合块时传 False——不渲染
             伪造的关闭围栏（```）。
+        continuation: 是否为「被强制刷出的续段」——True 时不重复渲染标题栏
+            与打开围栏（逻辑上仍是同一个代码块，仅因缓冲上限分段输出）。
 
     Returns:
         渲染后的行列表。
     """
     out: list[AnsiLine] = []
-    from src.renderer._rendering._code import get_lexer
-    from src.renderer._utils import get_code_style
-
-    # 标题栏
-    if title:
-        label = f"┌─ {title}"
-        out.append(AnsiLine.of(label, _STYLE_TITLE))
-
-    # 打开围栏
-    lang_tag = lang if lang and lang != "text" else ""
-    fence = f"```{lang_tag}"
-    fence_line = AnsiLine.of(fence, _STYLE_FENCE)
-    if lang_tag:
-        fence_line.append(f" [{lang}]", Style(fg=45, bold=True))
-    out.append(fence_line)
-
-    lexer = get_lexer(lang) if lang and lang != "text" else None
-    hl = set(highlight_lines or [])
-    if lexer is not None:
-        # get_code_style 返回 pygments 样式类；_highlight_line 经 styles dict 取色
-        pyg_style = get_code_style(theme)
-        for idx, src_line in enumerate(source.split("\n") if source else [], start=1):
-            aline = _highlight_line(src_line, lexer, pyg_style)
-            if idx in hl:
-                aline = _apply_highlight(aline)
-            out.append(aline)
-    else:
-        # 无词法分析器：纯文本（dim）
-        for idx, src_line in enumerate(source.split("\n") if source else [], start=1):
-            aline = AnsiLine.of(src_line, _STYLE_DIM)
-            if idx in hl:
-                aline = _apply_highlight(aline)
-            out.append(aline)
-
-    # 关闭围栏（流式预览未闭合代码块时不渲染伪造的关闭围栏）
+    if title and not continuation:
+        out.append(render_title_line(title))
+    if not continuation:
+        out.append(render_fence_line(lang))
+    lines = source.split("\n") if source else []
+    out.extend(highlight_code_lines(lines, lang, theme, highlight_lines))
     if closed:
-        out.append(AnsiLine.of("```", _STYLE_FENCE))
+        out.append(render_close_fence_line())
     return out
 
 
@@ -148,4 +196,12 @@ def render_inline_code(text: str) -> AnsiLine:
     return AnsiLine.of(f" {text} ", Style(fg=46, bold=True))
 
 
-__all__ = ["render_code_block", "render_inline_code"]
+__all__ = [
+    "highlight_code_lines",
+    "render_fence_line",
+    "render_close_fence_line",
+    "render_title_line",
+    "render_omitted_line",
+    "render_code_block",
+    "render_inline_code",
+]

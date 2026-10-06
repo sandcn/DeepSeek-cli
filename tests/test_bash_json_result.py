@@ -223,6 +223,7 @@ async def test_background_wait_returns_three_fields():
     assert payload["returncode"] == 5
     assert "bg-out" in payload["stdout"]
     assert "output" not in payload          # 旧字段移除
+    assert "command" not in payload         # bash 后台返回不含 command
     assert tid not in agent._background_tasks  # wait 后记录移除
 
 
@@ -232,7 +233,7 @@ async def test_background_collect_done_message_three_fields():
     agent = _FakeAgent()
     tid = "bg-test123"
     agent._background_tasks[tid] = {
-        "task": None, "command": "echo x", "done": True,
+        "task": None, "done": True,
         "status": "completed",
         "result": json.dumps({"stdout": "x", "stderr": "", "returncode": 0}),
     }
@@ -243,6 +244,7 @@ async def test_background_collect_done_message_three_fields():
     assert payload["stdout"] == "x"
     assert payload["returncode"] == 0
     assert "output" not in payload
+    assert "command" not in payload
     assert tid not in agent._background_tasks
 
 
@@ -251,7 +253,7 @@ async def test_background_result_legacy_text_fallback():
     from src.core.base_agent import BaseAgent
     agent = _FakeAgent()
     agent._background_tasks["bg-legacy"] = {
-        "task": None, "command": "c", "done": True, "status": "completed",
+        "task": None, "done": True, "status": "completed",
         "result": "旧格式纯文本",
     }
     msgs = BaseAgent._collect_done_background_messages(agent)
@@ -267,7 +269,7 @@ async def test_background_start_returns_task_json():
     f = BashFunc(command="sleep 2", background=True)
     f.set_agent(agent)
     r = _loads(await f.execute())
-    assert set(r.keys()) == {"task_id", "status", "command"}
+    assert set(r.keys()) == {"task_id", "status"}
     assert r["status"] == "running"
     # 清理：kill 后台任务
     opt = BashOptFunc(task_id=r["task_id"], op="kill")

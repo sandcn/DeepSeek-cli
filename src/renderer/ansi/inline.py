@@ -54,6 +54,11 @@ def _render_inline_impl(text: str, base: Style) -> list[Run]:
                 runs.extend(inner)
                 i = end + 2
                 continue
+            # 未闭合：原样输出标记（修复前落到单 `*` 分支吞掉第二个字符，
+            # 流式未完成标记会显示成 `*text` 而非 `**text`）
+            runs.append(Run(opener, base))
+            i += 2
+            continue
         # 删除线 ~~
         if text.startswith(_STRIKE, i):
             end = text.find(_STRIKE, i + 2)
@@ -61,6 +66,10 @@ def _render_inline_impl(text: str, base: Style) -> list[Run]:
                 runs.append(Run(text[i + 2:end], base.merge(Style(dim=True))))
                 i = end + 2
                 continue
+            # 未闭合：原样输出标记（同上）
+            runs.append(Run(_STRIKE, base))
+            i += 2
+            continue
         # 斜体 * / _
         if ch in ("*", "_"):
             # 避免与粗体混淆：`*` 后跟 `*` 的跳过（已在粗体分支处理）

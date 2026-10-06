@@ -66,15 +66,27 @@ def render_hr(token) -> list[AnsiLine]:
 
 
 def render_paragraph(token) -> list[AnsiLine]:
-    # content 中 \\n 为软换行；逐段渲染为独立行
+    """段落渲染：整段行内解析后按软换行拆行。
+
+    ★ 修复：修复前对 ``content.split("\\n")`` 逐行独立调用 ``render_inline``，
+    跨软换行的行内标记（``**加粗\\n跨行**``、`` `code\\ncode` ``）无法配对，
+    标记会原样泄漏到输出（渲染成 `*加粗` / `跨行*`）。整段一次性解析可让
+    行内标记跨软换行配对（CommonMark 段落语义），再按 ``\\n`` 把解析结果
+    拆回多行（保持终端"软换行=换行"的既有呈现）。
+    """
+    if not token.content:
+        return [AnsiLine()]
     lines: list[AnsiLine] = []
     current = AnsiLine()
-    for i, seg in enumerate(token.content.split("\n")):
-        if i > 0:
-            lines.append(current)
-            current = AnsiLine()
-        for run in render_inline(seg):
-            current.append_run(run)
+    for run in render_inline(token.content):
+        segments = (run.text or "").split("\n")
+        for i, seg in enumerate(segments):
+            if i > 0:
+                lines.append(current)
+                current = AnsiLine()
+            if seg:
+                current.append(seg, run.style)
+    # 尾部软换行不额外产出空行（与修复前逐行语义一致）
     if current.runs or not lines:
         lines.append(current)
     return lines

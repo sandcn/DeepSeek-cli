@@ -261,12 +261,22 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
             open_cache[line] = runs
         out.append(runs)
     # 未闭合块预览行（preview_lines 每次整体替换，行对象每次新建）——
-    # 不进 open_cache（避免缓存随预览替换无限累积）。
+    # 不进 open_cache（避免缓存随预览替换无限累积）。与 committed 行同样按
+    # 宽度预 wrap（同一 ``wrap_line`` 真源）：修复前预览行交给 ink 布局换行，
+    # 同一内容在「预览→提交」过渡时换行点可能跳变（表格/框线错位）。
     for line in preview_lines:
-        runs = _to_styled_runs(line)
-        if kind == "reasoning" and runs:
-            runs = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING)) for r in runs]
-        out.append(runs)
+        src_lines = [line]
+        if width and width > 0 and line.width > width:
+            try:
+                from src.renderer.ansi.helpers import wrap_line
+                src_lines = list(wrap_line(line, width))
+            except Exception:
+                src_lines = [line]
+        for wrapped in src_lines:
+            runs = _to_styled_runs(wrapped)
+            if kind == "reasoning" and runs:
+                runs = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING)) for r in runs]
+            out.append(runs)
     return out
 
 

@@ -145,51 +145,53 @@ class CodeHandler(TokenHandler):
     # ── 整块代码（由 CodeBlockBatcher 管道过滤器生成）──
 
     def _handle_code_block(self, token: Token, engine):
-        """渲染整块代码，即时输出。"""
+        """渲染整块代码（支持超长块分段刷出的续段语义）。
+
+        ``meta["continuation"]``（非首段）/``meta["closed"]``（逻辑块是否
+        闭合）来自 ``CodeBlockBatcher``：续段不重复渲染标题栏与打开围栏，
+        未闭合段不渲染关闭围栏——一个逻辑代码块始终呈现为一个围栏块。
+        """
         try:
             source = token.content
             lang = token.meta.get("lang", "text")
             title = token.meta.get("title", "")
+            attrs = token.meta.get("attrs", "")
+            indented = token.meta.get("indented", False)
+            continuation = bool(token.meta.get("continuation", False))
+            closed = bool(token.meta.get("closed", True))
 
-            if title:
+            if title and not continuation:
                 t_title = self._render_code_title_bar(title, lang, engine)
                 engine._output.write(t_title)
 
-            # fence_open 视觉标记（```python 或 📄）
-            attrs = token.meta.get("attrs", "")
-            indented = token.meta.get("indented", False)
-            if indented:
-                t = render_code_fence_open(lang, indented=True)
-            else:
-                t = render_code_fence_open(lang, attrs=attrs)
-            engine._output.write(t)
+            # fence_open 视觉标记（```python 或 📄）——续段不重复输出
+            if not continuation:
+                if indented:
+                    t = render_code_fence_open(lang, indented=True)
+                else:
+                    t = render_code_fence_open(lang, attrs=attrs)
+                engine._output.write(t)
 
-            # ★ 修复（review 方向）：rstrip('\n') 移除尾部换行——修复前
-            #   '\n'.join(source.split('\n')) 恒等于 source（宣称的防御性
-            #   修复是 no-op），且尾部换行使 len(lines) 多计一行（2 行代码
-            #   块显示 // 3 行）。
-            lines = source.rstrip('\n').split('\n')
             engine.ensure_theme()
-
             highlight_lines = token.meta.get("highlight_lines", [])
-
-            if lines:
-                # 即时模式：整块 Syntax 一次性渲染
-                # ★ 使用 split 保留原始空行（与 typing 路径一致的 lines 来源），
-                # 避免 source 含尾随 \n 导致 Syntax 多渲染一个空行（防御性修复）。
+            if source:
+                # ★ 修复（review 方向）：rstrip('\n') 移除尾部换行——修复前
+                #   '\n'.join(source.split('\n')) 恒等于 source（宣称的防御性
+                #   修复是 no-op），且尾部换行使 len(lines) 多计一行（2 行代码
+                #   块显示 // 3 行）。
+                lines = source.rstrip('\n').split('\n')
                 self._render_code_block_instant(
                     '\n'.join(lines), lang, engine,
                     highlight_lines=highlight_lines,
                 )
+            else:
+                lines = []
 
-            # fence 关闭标记（含行数提示）
-
-            indented = token.meta.get("indented", False)
-            t = render_code_fence_close(indented=indented)
-            line_count = len(lines)
-            if line_count >= 0:
-                t.append_text(_make_line_count_text(line_count))
-            engine._output.write(t)
+            # fence 关闭标记（含行数提示）——仅逻辑块闭合时输出
+            if closed:
+                t = render_code_fence_close(indented=indented)
+                t.append_text(_make_line_count_text(len(lines)))
+                engine._output.write(t)
 
             engine.code_state.lang = ""
             engine.code_state.line_num = 0

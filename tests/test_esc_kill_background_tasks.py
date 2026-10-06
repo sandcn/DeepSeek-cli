@@ -71,7 +71,6 @@ def _make_bash_rec(task, pid=None, process=None, managed=False, done=False):
     """构造 bash 后台任务记录（结构与 bash.py _promote_to_background 一致）。"""
     return {
         "task": task,
-        "command": "sleep 100",
         "cwd": None,
         "created_at": 0.0,
         "done": done,

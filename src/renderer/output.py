@@ -98,6 +98,19 @@ class OutputAdapter:
 
     # ── 捕获 ────────────────────────────────────────────
 
+    @property
+    def captured_output(self) -> list[str] | None:
+        """捕获缓冲（外部传入的 list；None 表示未启用捕获）。
+
+        公开访问面：包装型适配器（如 ``_StyledOutputAdapter``）经本属性转发，
+        避免直接访问私有字段导致的耦合与 AttributeError。
+        """
+        return self._captured_output
+
+    @captured_output.setter
+    def captured_output(self, value: list[str] | None) -> None:
+        self._captured_output = value
+
     def _ensure_capture_console(self) -> None:
         """惰性初始化捕获控制台，与真实控制台共享颜色系统和宽度。"""
         if self._capture_console is not None or self._captured_output is None:

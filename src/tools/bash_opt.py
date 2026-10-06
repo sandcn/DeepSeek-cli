@@ -2,11 +2,11 @@
 bash_opt — 按 task_id 操作后台 bash 任务
 
 配合 bash 工具 background=True 模式使用。bash 后台启动后返回
-{"task_id": "bg-xxx", "status": "running", "command": "..."}，
+{"task_id": "bg-xxx", "status": "running"}，
 大模型可据此用 bash_opt 工具按 task_id 操作：
 
 - op=read   读取后台命令**当前已产生**的全部输出并清空缓冲，立即返回（不等待完成）
-- op=wait   等待任务执行完成并获取结果（JSON：task_id/command/status/stdout/stderr/returncode）
+- op=wait   等待任务执行完成并获取结果（JSON：task_id/status/stdout/stderr/returncode）
 - op=kill   杀死后台命令的所有进程树（killpg + /proc 递归补杀后代）
 - op=stdin  向后台命令的 stdin 发送文本输入（text 参数，newline 可选是否追加换行）
 - op=keys   向后台命令发送光标/键盘消息（跨平台 ANSI/VT100 转义序列）
@@ -143,7 +143,7 @@ class BashOptFunc(Func):
                 "description": (
                     "按 task_id 操作后台 bash 任务（由 bash background=true 启动）。"
                     "op：read（读取当前已产生的全部输出并清空缓冲，立即返回不等待完成）、"
-                    "wait（等待完成取结果 JSON：task_id/command/status/stdout/stderr/returncode，"
+                    "wait（等待完成取结果 JSON：task_id/status/stdout/stderr/returncode，"
                     "timeout 秒，默认 300/0 无限）、"
                     "kill（杀进程树）、stdin（发文本，需 text）、keys（发按键，需 key）。"
                     "task_id 必须是当前对话 bash 后台返回的 bg-xxx。返回：操作结果 JSON 或输出；失败以 ( 开头。"
@@ -301,7 +301,7 @@ class BashOptFunc(Func):
         本次读走全部内容并清空；任务继续运行，后续 read 只返回新输出，
         最终完整结果由 op=wait 获取。
 
-        返回 JSON（task_id/command/status/output）：
+        返回 JSON（task_id/status/output）：
           - status: 任务当前状态（running / completed）
           - output: 本次读取到的累积输出（读取后已清空缓冲）
         """
@@ -317,7 +317,6 @@ class BashOptFunc(Func):
         status = rec.get("status") or ("completed" if done else "running")
         payload = {
             "task_id": self.task_id,
-            "command": rec.get("command", ""),
             "status": status,
             "output": output,
         }
@@ -326,7 +325,7 @@ class BashOptFunc(Func):
     # ── op=wait ──────────────────────────────────────────
 
     async def _op_wait(self, agent, rec: dict) -> str:
-        """等待任务完成并返回结果（JSON：task_id/command/status/stdout/stderr/returncode）。
+        """等待任务完成并返回结果（JSON：task_id/status/stdout/stderr/returncode）。
 
         命令输出按 bash 三元 JSON 结构展开（stdout/stderr/returncode 分离）：
         优先读取任务记录中 _complete_background_task 写入的独立字段，
@@ -365,7 +364,6 @@ class BashOptFunc(Func):
         status = rec.get("status", "completed")
         payload = {
             "task_id": self.task_id,
-            "command": rec.get("command", ""),
             "status": status,
             "stdout": stdout,
             "stderr": stderr,

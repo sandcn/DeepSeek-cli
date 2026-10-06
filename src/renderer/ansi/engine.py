@@ -42,7 +42,6 @@ class AnsiRenderEngine:
         self._code_state: list | None = None
         self._math_state: list | None = None
         self._mermaid_state: list | None = None
-        self._bq_lines: list[str] | None = None
         self._admonition: tuple[str, int] | None = None
         # 折叠块 / FencedDiv 流式状态：
         #   _details = (summary, [正文行])；_fenced_div = (type, 头行文本, [正文行])
@@ -113,17 +112,17 @@ class AnsiRenderEngine:
                 self._mermaid_state = None
                 return _mermaid.render_mermaid_block(src)
 
-            if t == TokenType.BLOCKQUOTE_OPEN:
-                self._bq_lines = []
+            # 引用块：行级 Token 立即渲染（前缀由自身嵌套深度决定），
+            # OPEN/CLOSE 仅表达结构、不产出内容行。修复前用单一 ``_bq_lines``
+            # 缓冲 + CLOSE 时渲染：嵌套引用的 OPEN 会清空缓冲（丢失外层内容）、
+            # 跨层 BLOCKQUOTE_LINE 在缓冲为 None 时被丢弃、每层 CLOSE 都重复
+            # 渲染一次（多出空边框行）。与 Rich 路径 ``InlineHandler`` 语义一致。
+            if t in (TokenType.BLOCKQUOTE_OPEN, TokenType.BLOCKQUOTE_CLOSE):
                 return []
             if t == TokenType.BLOCKQUOTE_LINE:
-                if self._bq_lines is not None:
-                    self._bq_lines.append(token.content)
-                return []
-            if t == TokenType.BLOCKQUOTE_CLOSE:
-                lines = self._bq_lines or []
-                self._bq_lines = None
-                return blocks.render_blockquote(_StrToken("\n".join(lines)), depth=0)
+                depth = max(1, int(token.meta.get("depth", 1)))
+                return blocks.render_blockquote(_StrToken(token.content),
+                                                depth=depth - 1)
 
             if t == TokenType.ADMONITION_OPEN:
                 # OPEN content 即正文首行，meta 含 type/depth
@@ -205,10 +204,13 @@ class AnsiRenderEngine:
         lang = token.meta.get("lang", "")
         title = token.meta.get("title", "")
         hl = token.meta.get("highlight_lines") or []
-        # 流式预览 token（meta["closed"]=False）不渲染关闭围栏
+        # 流式预览 token（meta["closed"]=False）不渲染关闭围栏；
+        # continuation（超长块被分段刷出的续段）不重复渲染标题/打开围栏。
         closed = token.meta.get("closed", True)
+        continuation = bool(token.meta.get("continuation", False))
         return _code.render_code_block(
-            source, lang, self._code_theme, hl, title, closed=closed,
+            source, lang, self._code_theme, hl, title,
+            closed=closed, continuation=continuation,
         )
 
     def _flush_code(self) -> list[AnsiLine]:

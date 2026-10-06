@@ -72,11 +72,17 @@ class AnsiStreamRenderer:
                     "扩展 ANSI 渲染过滤器注册失败: %r", _factory, exc_info=True
                 )
         self._engine = AnsiRenderEngine(code_theme=code_theme, width=width)
+        self._code_theme = code_theme
         # ★ 流式预览：未闭合块（段落/代码块/表格/引用等）每次 write 后整块
         #   重渲染为预览行。使用**独立引擎实例**——预览渲染不污染主引擎的
         #   流式缓冲状态（引用/告示/代码等的 OPEN-LINE 缓冲）。
         self._preview_engine = AnsiRenderEngine(code_theme=code_theme, width=width)
         self._preview_lines: list[AnsiLine] = []
+        # ★ 代码块预览增量高亮缓存（键 = (lang, theme)；流式只追加时仅渲染
+        #   新增行，显示侧再按 _PREVIEW_MAX_LINES 截断并给出省略提示）。
+        self._code_preview_key: tuple | None = None
+        self._code_preview_src: list[str] = []
+        self._code_preview_rows: list[AnsiLine] = []
         self._lines: list[AnsiLine] = []
         self._closed = False
         self._width = width
@@ -122,21 +128,86 @@ class AnsiStreamRenderer:
         解析器 ``peek_pending`` 返回当前未闭合状态的自包含 Token 序列；
         独立预览引擎每次 reset 后渲染，产出 ``_preview_lines`` 供 UI 替换
         上一帧预览（块闭合后由 committed 行替换，预览清空）。
+
+        ★ 代码块预览走 ``_render_code_preview``（按行增量高亮缓存）——不整块
+        重新词法高亮，避免长代码块流式期间每帧 O(预览行数) 的重复开销。
         """
         try:
             ptokens = self._parser.peek_pending()
         except Exception:
             self._preview_lines = []
+            self._reset_code_preview_cache()
             return
         if not ptokens:
             self._preview_lines = []
+            self._reset_code_preview_cache()
             return
         eng = self._preview_engine
         eng.reset()
         lines: list[AnsiLine] = []
         for tok in ptokens:
+            if tok.type is TokenType.CODE_BLOCK and tok.meta.get("preview"):
+                lines.extend(self._render_code_preview(tok))
+                continue
             lines.extend(eng.render(tok))
         self._preview_lines = lines
+
+    def _reset_code_preview_cache(self) -> None:
+        """清空代码块预览增量高亮缓存（块闭合/预览清空时调用）。"""
+        self._code_preview_key = None
+        self._code_preview_src = []
+        self._code_preview_rows = []
+
+    def _render_code_preview(self, token) -> list[AnsiLine]:
+        """代码块流式预览：按行增量高亮缓存 + 尾部截断省略提示。
+
+        逐行高亮对「只追加」的流式输入可安全缓存（``highlight_code_lines``
+        本身逐行处理、无跨行状态），仅渲染新增行——修复前每次 write 对整段
+        预览（最多 ``_PREVIEW_MAX_LINES`` 行）重新词法高亮，600 行代码流式
+        输出实测约 27s，渲染线程在 10Hz 下近乎满载，进而造成命令队列背压。
+        """
+        from . import code as _code
+        from .._block_parser import RegexFreeBlockParser
+
+        src = token.content or ""
+        lang = token.meta.get("lang", "")
+        title = token.meta.get("title", "")
+        closed = bool(token.meta.get("closed", True))
+        src_lines = src.split("\n") if src else []
+        key = (lang, self._code_theme)
+        if key != self._code_preview_key:
+            self._code_preview_key = key
+            self._code_preview_src = []
+            self._code_preview_rows = []
+        cached_src = self._code_preview_src
+        # 仅当新内容以「已渲染行」为前缀时复用（流式只追加）；内容变化
+        # （块切换/语言变化/边界粘合修正）时整体重置重渲染。
+        if not (len(cached_src) <= len(src_lines)
+                and src_lines[:len(cached_src)] == cached_src):
+            self._code_preview_src = []
+            self._code_preview_rows = []
+        done = len(self._code_preview_rows)
+        if len(src_lines) > done:
+            self._code_preview_rows.extend(
+                _code.highlight_code_lines(
+                    src_lines[done:], lang, self._code_theme,
+                    start_index=done + 1,
+                )
+            )
+            self._code_preview_src = list(src_lines)
+        rows = self._code_preview_rows
+        limit = RegexFreeBlockParser._PREVIEW_MAX_LINES
+        omitted = max(0, len(rows) - limit)
+        out: list[AnsiLine] = []
+        if title:
+            out.append(_code.render_title_line(title))
+        out.append(_code.render_fence_line(lang))
+        if omitted:
+            out.append(_code.render_omitted_line(omitted))
+        out.extend(rows[-limit:] if omitted else rows)
+        if closed:
+            out.append(_code.render_close_fence_line())
+        return out
 
     def take_preview_lines(self) -> list[AnsiLine]:
         """返回当前未闭合块预览行（全量，不消费——UI 每次整体替换）。
@@ -167,6 +238,7 @@ class AnsiStreamRenderer:
         finally:
             self._engine.reset()
             self._preview_lines = []
+            self._reset_code_preview_cache()
 
     def take_lines(self) -> list[AnsiLine]:
         """取出全部已渲染行（消费缓冲）。

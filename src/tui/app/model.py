@@ -538,6 +538,11 @@ class AppModel(_ToolOutputMixin):
         source = getattr(block, "source_text", "")
         if not source:
             return False
+        if getattr(block, "extra", None) and block.extra.get("source_truncated"):
+            # 源文本已达上限（超长回答）：截断源重渲染会丢内容，保留现有行
+            # （宽度重排降级为「不重排该未关闭块」，不影响已渲染内容正确性）。
+            _logger.debug("未关闭块源文本超限，跳过 resize 重渲染")
+            return False
         try:
             from src.renderer.ansi import AnsiStreamRenderer
             r = AnsiStreamRenderer(width=max(width, 20))
