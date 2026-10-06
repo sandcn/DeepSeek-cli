@@ -30,13 +30,14 @@ class TestGitReadAllowedRule:
         assert "git 的读操作可以不经过用户同意" in main_prompt_text
 
     def test_git_write_ban_retained(self, main_prompt_text: str):
-        """禁止未经用户指定操作 git svn 的主体约束仍保留。"""
-        assert "没用户指定强制禁止操作 git svn" in main_prompt_text
+        """禁止未经用户确认操作 git svn 的主体约束仍保留。"""
+        assert "操作 git svn" in main_prompt_text
+        assert "必须用 user_select 询问用户是否同意" in main_prompt_text
 
     def test_git_read_clause_on_same_line(self, main_prompt_text: str):
         """读操作豁免须挂在 git svn 约束同一行，避免语义脱离。"""
         line = next(
-            (ln for ln in main_prompt_text.splitlines() if "没用户指定强制禁止操作 git svn" in ln),
+            (ln for ln in main_prompt_text.splitlines() if "操作 git svn" in ln),
             "",
         )
         assert "git 的读操作可以不经过用户同意" in line
