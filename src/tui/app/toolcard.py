@@ -15,8 +15,10 @@
     delete 红），运行中在类别色邻域 12s 脉动呼吸（与 detail 呼吸同步），
     关闭后静态类别色；工具名加粗（标题强化）；
   - 参数（detail）：运行中暗灰 242→252 呼吸（12s），关闭后静态 pal.dim；
-  - 内容行：每内容行前置 ``│ ``（深灰 238），窄屏截断保证总宽 <= width；
-    所有行（标题/内容/省略/空行）经 ``_apply_line_bg`` 统一钳制——总宽超过
+  - 内容行：每个数据行在卡片中只占**一个显示行**——前置 ``│ ``（深灰
+    238，引导线）；内容超出可用宽度时**截断到终端宽度并以省略号 ``…`` 收尾**
+    （不 wrap 成多行，2026-10-07 用户需求——超长单行不再撑爆卡片高度）；所有
+    行（标题/内容/省略/空行）经 ``_apply_line_bg`` 统一钳制——总宽超过
     width 时截断到 width 并追加省略号 ``…``（「显示一行超过终端宽度就截断到
     最大宽度 + 增加…」，防终端自动换行错位并提示内容被截断）；
   - **无独立状态行**（Claude Code 无 ``✔ 完成 · N 行 · Xs``）——状态由
@@ -28,7 +30,7 @@ React Ink 组件化（2026-08-05，深度组件化）：原 ``AppModel._tool_car
 逻辑：
 
   - ``tool_card_lines``：纯行生成函数（保留 PERF 缓存语义——开放工具卡按
-    块对象缓存 wrap 结果，大工具卡每帧零重建）。供模型层 committed 路径
+    块对象缓存截断结果，大工具卡每帧零重建）。供模型层 committed 路径
     （``_block_to_ink_lines``）/ ``close_tool_box`` 标题行更新等消费；
   - ``ToolCard``：React Ink 函数组件——ChatView live 路径渲染工具块
     （``h(ToolCard, {"block": ..., "width": ..., "start": ...})``），内部
@@ -294,10 +296,10 @@ def tool_card_lines(block, width, start=0, stop=None):
         list[list[StyledRun]] — 每行 StyledRun 列表（卡片行，无边框字符）。
     """
     from src.tui.app._theme import get_active_palette
+    from src.tui.app._model_helpers import _attach_url_links
     from src.tui.ink import StyledRun
     from src.tui.ink.helpers import truncate_runs_ellipsis
     from src.tools.registry import get_tool_display_name
-    from src.renderer.ansi.helpers import wrap_line
     pal = get_active_palette()
     width = width if isinstance(width, int) and width > 0 else 0
     bg_style = _card_bg_style()
@@ -399,8 +401,8 @@ def tool_card_lines(block, width, start=0, stop=None):
     _body_all_hidden = _body_count > 0 and _hidden_body_count == _body_count
     # ★ PERF-6b：内容行整体缓存——跨帧/跨桶复用列表对象，TEXT
     #   ``_wrap_cache`` 按 styled 引用命中（大工具卡跨桶渲染不再每帧全量
-    #   wrap；frame_cache 同桶快速路径之外的兜底）。key 仅依赖块内容/宽度/
-    #   省略计数/隐藏集合（不含呼吸色）——变化时自动重建。
+    #   重建内容行；frame_cache 同桶快速路径之外的兜底）。key 仅依赖块内容/
+    #   宽度/省略计数/隐藏集合（不含呼吸色）——变化时自动重建。
     _body_key = (
         start, len(block.lines), body_start, body_end, width, status_idx,
         block.extra.get("_bash_omitted_lines", 0),
@@ -419,7 +421,7 @@ def tool_card_lines(block, width, start=0, stop=None):
         if omitted > 0 and not _body_all_hidden:
             body_lines.append(_omitted_line(f"\u2026 前 {omitted} 行省略", width, bg_style))
         # ★ PERF-6（性能）：开放工具卡内容行按 ``(行对象, width)`` 缓存
-        #   wrap+截断后的内容 runs——修复前每帧对全部内容行重新 ``wrap_line``
+        #   截断后的内容 runs——修复前每帧对全部内容行重新重建
         #   （长 bash 输出 300 行 → 单帧 ~190ms → 30Hz 下 CPU 100%）。行对象
         #   创建后不原地修改（``append_tool_output`` 每行新建 AnsiLine），
         #   width 变化时 key miss 自动重算。
@@ -438,53 +440,45 @@ def tool_card_lines(block, width, start=0, stop=None):
             key = (ansi_line, width, bg_style.bg)
             cached = body_cache.get(key)
             if cached is None:
-                # ★ H2（BUG 修复，2026-08-15）：内容行 wrap 预算与显示预算
-                #   对齐——内容行每段前置 ``│ ``（竖线引导占 guide_w 列），
-                #   修复前按总宽 ``wrap_line(ansi_line, width)`` 换行，但每段
-                #   显示预算仅 ``width-guide_w``（下方 truncate_runs_ellipsis
-                #   丢弃段末 2 列）→ 长行跨段时每段末尾 2 列内容丢失。修复：wrap
-                #   宽度改用 ``content_w = width - guide_w``——每段 + 竖线后
-                #   恰为 width，不再丢内容。width<=1 走既有「仅竖线」分支
-                #   （content_w<=0 无内容）；width<=0 无宽度防御保持裸行。
-                guide_w = 2 if width >= 2 else 1
-                content_w = max(0, width - guide_w)
-                wrapped = (
-                    wrap_line(ansi_line, content_w)
-                    if width >= 2
-                    else wrap_line(ansi_line, width)
-                    if width > 0
-                    else ([ansi_line] if ansi_line.runs else [])
+                # ★ 用户需求（超长行截断到终端宽度，2026-10-07）：工具输出
+                #   每个**数据行**在卡片中只占**一个显示行**——内容超出可用
+                #   宽度（``width - guide_w``）时截断至该宽度并以省略号 ``…``
+                #   收尾，**不再 wrap 成多行**。修复前经 ``wrap_line`` 换行：
+                #   超长单行（bash 一次性输出的长 JSON/base64/minified 代码）
+                #   在 80 列终端展开为成百上千行，卡片高度失控、聊天区被
+                #   淹没（行数阈值/尾部修剪按**数据行**计数，管不住 wrap 后的
+                #   显示行）。截断后「一行数据 = 一行显示」，超长行不再撑爆
+                #   卡片；未超宽的行不受影响（``truncate_runs_ellipsis`` 原样
+                #   返回）。全部工具共用本内容行路径（标题/内容/省略行统一
+                #   截断），行为一致。完整原文仍保留在 ``block.lines``（轨迹
+                #   Trace / 详情视图可见），聊天卡仅显示截断后的单行。
+                #   width<=1 走「仅竖线」分支（content_w<=0 无内容）；
+                #   width<=0 无宽度防御保持裸行。
+                seg_runs = _attach_url_links(
+                    [StyledRun(r.text, r.style) for r in ansi_line.runs if r.text]
                 )
-                if not wrapped:
+                if width <= 0:
+                    cached = [("bare", seg_runs)] if seg_runs else [("empty",)]
+                elif not seg_runs:
                     # 空输出行 → 空行（保持行映射）
                     cached = [("empty",)]
                 else:
-                    items: list = []
-                    from src.tui.app._model_helpers import _attach_url_links
-                    for seg in wrapped:
-                        seg_runs = _attach_url_links(
-                            [StyledRun(r.text, r.style) for r in seg.runs if r.text]
-                        )
-                        if width <= 0:
-                            items.append(("bare", seg_runs))
-                            continue
-                        # ★ BEAUTY-35（内容竖线引导）：每行前置 ``│ ``（深灰
-                        #   238），内容截断至 width-2——对齐 Claude Code 内容
-                        #   缩进引导（视觉归组）；窄屏 width<=1 时仅 ``│``
-                        #   （1 列）。无边框——竖线是引导线不是边框字符。
-                        guide_text = "│ " if width >= 2 else "│"
-                        guide_w = 2 if width >= 2 else 1
-                        items.append((
-                            "content",
-                            _apply_line_bg(
-                                [StyledRun(guide_text, _GUIDE_STYLE)]
-                                + truncate_runs_ellipsis(
-                                    seg_runs, max(0, width - guide_w),
-                                ),
-                                width, bg_style,
+                    # ★ BEAUTY-35（内容竖线引导）：每行前置 ``│ ``（深灰
+                    #   238），内容截断至 width-2——对齐 Claude Code 内容
+                    #   缩进引导（视觉归组）；窄屏 width<=1 时仅 ``│``
+                    #   （1 列）。无边框——竖线是引导线不是边框字符。
+                    guide_text = "│ " if width >= 2 else "│"
+                    guide_w = 2 if width >= 2 else 1
+                    cached = [(
+                        "content",
+                        _apply_line_bg(
+                            [StyledRun(guide_text, _GUIDE_STYLE)]
+                            + truncate_runs_ellipsis(
+                                seg_runs, max(0, width - guide_w),
                             ),
-                        ))
-                    cached = items
+                            width, bg_style,
+                        ),
+                    )]
                 body_cache[key] = cached
             for item in cached:
                 kind = item[0]

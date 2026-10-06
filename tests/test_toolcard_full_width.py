@@ -7,7 +7,8 @@
   2. 工具卡整行（标题/内容/省略行）右侧以背景色空格填充，延伸到终端右边缘
      （即使内容较短，行显示宽度 == 终端宽度）；
   3. 终端宽度变化（resize）→ 工具卡按新宽度重排（随窗口加宽同步变宽）；
-  4. 内容行按终端宽度换行/截断到终端宽度；
+  4. 内容行按终端宽度截断到单行（超长输出行不 wrap 成多行，2026-10-07
+     用户需求；超宽时截断 + 末尾省略号 ``…``）；
   5. 显示一行超过终端宽度就截断到最大宽度（``_apply_line_bg`` 硬上限钳制，
      2026-10-05 用户需求）。
 """
@@ -348,4 +349,117 @@ class TestAllToolsToolCardTruncate:
                 assert any(ln.plain.endswith("\u2026") for ln in frame.lines), (
                     name, width,
                 )
+
+
+class TestToolCardLongLineTruncatesToSingleRow:
+    """超长输出行截断到终端宽度（单行显示，不 wrap 成多行，2026-10-07 需求）。
+
+    需求：bash 执行输出一个超长行时，显示必须**截断到当前终端宽度**（单行 +
+    末尾省略号 ``…``），不得 wrap 成成百上千行淹没聊天区；其它工具（read_file /
+    search / find / ls 等）走同一 toolcard 内容行路径，行为一致。
+    """
+
+    def test_single_long_line_renders_exactly_one_body_row(self):
+        m = AppModel()
+        m.width = 80
+        m.open_tool_box("t", "bash", "echo long")
+        m.append_tool_output("t", "X" * 5000 + "\n")
+        block = m.tool_boxes["t"]
+        rows = tool_card_lines(block, 80)
+        assert len(rows) == 2  # 标题行 + 1 内容行（修复前 wrap 成 60+ 行）
+        assert _row_width(rows[1]) == 80
+        assert "".join(r.text for r in rows[1]).endswith("\u2026")
+
+    def test_many_long_lines_one_display_row_each(self):
+        m = AppModel()
+        m.width = 60
+        m.open_tool_box("t", "custom_tool", "detail")
+        m.append_tool_output("t", "\n".join("Z" * 400 for _ in range(5)))
+        block = m.tool_boxes["t"]
+        rows = tool_card_lines(block, 60)
+        assert len(rows) == 6  # 标题 + 5 内容行（每行只占一行）
+        for row in rows[1:]:
+            assert _row_width(row) == 60
+            assert "".join(r.text for r in row).endswith("\u2026")
+
+    def test_short_line_not_truncated(self):
+        m = AppModel()
+        m.width = 80
+        m.open_tool_box("t", "bash", "ls")
+        m.append_tool_output("t", "short line\n")
+        block = m.tool_boxes["t"]
+        rows = tool_card_lines(block, 80)
+        assert len(rows) == 2
+        text = "".join(r.text for r in rows[1])
+        assert "short line" in text
+        assert "\u2026" not in text
+
+    def test_cjk_long_line_truncated_without_splitting_wide_char(self):
+        m = AppModel()
+        m.width = 20
+        m.open_tool_box("t", "bash", "run")
+        m.append_tool_output("t", "中" * 100 + "\n")
+        block = m.tool_boxes["t"]
+        rows = tool_card_lines(block, 20)
+        assert len(rows) == 2
+        assert "".join(r.text for r in rows[1]).rstrip().endswith("\u2026")
+        assert _row_width(rows[1]) == 20  # 宽字符不拆分（宽度不变量）
+
+    def test_display_only_full_text_retained_in_block(self):
+        """截断仅作用于显示：``block.lines`` 保留完整原文（Trace 可见）。"""
+        m = AppModel()
+        m.width = 40
+        m.open_tool_box("t", "bash", "run")
+        m.append_tool_output("t", "Q" * 1000 + "\n")
+        block = m.tool_boxes["t"]
+        assert "Q" * 1000 in block.lines[1].plain
+
+    def test_empty_line_still_guide_only(self):
+        m = AppModel()
+        m.width = 40
+        m.open_tool_box("t", "bash", "run")
+        m.append_tool_output("t", "a\n\nb\n")
+        block = m.tool_boxes["t"]
+        rows = tool_card_lines(block, 40)
+        assert len(rows) == 4  # 标题 + a + 空行 + b
+        empty_row = "".join(r.text for r in rows[2])
+        assert empty_row.startswith("\u2502")
+        assert "\u2026" not in empty_row
+        assert _row_width(rows[2]) == 40
+
+    def test_all_tools_long_line_card_height_bounded(self):
+        """所有工具的 toolcard：超长单行只占一行（卡高 = 标题 + 1）。"""
+        names = _registered_tool_names()
+        assert names, "工具注册表为空（自动发现失败）"
+        for name in names:
+            for width in (20, 80):
+                m = AppModel()
+                m.width = width
+                m.open_tool_box("t", name, "z" * 300)
+                m.append_tool_output("t", "w" * 10000 + "\n")
+                block = m.tool_boxes["t"]
+                rows = tool_card_lines(block, width)
+                assert len(rows) == 2, (name, width, len(rows))
+                assert _row_width(rows[1]) == width, (name, width)
+
+    def test_frame_height_bounded_for_long_line(self):
+        """端到端：超长单行在真实渲染帧中只占一行（不再撑爆帧高）。"""
+        import io
+
+        from src.tui.app.app import App
+        from src.tui.ink import components as _components, h
+        from src.tui.ink.reconciler import Reconciler
+        from src.tui.ink.renderer import InkRenderer
+
+        m = AppModel()
+        m.width = 60
+        m.open_tool_box("t", "bash", "echo")
+        m.append_tool_output("t", "L" * 8000 + "\n")
+        rec = Reconciler(schedule_callback=None)
+        root = rec.create_root()
+        rec.render(root, h(App, {"model": m, "width": 60}), 60, 60)
+        frame = _components.render_frame(root, 60)
+        InkRenderer(stream=io.StringIO(), height=60).render(frame)
+        assert all(ln.width <= 60 for ln in frame.lines)
+        assert sum(1 for ln in frame.lines if "L" * 20 in ln.plain) == 1
 
