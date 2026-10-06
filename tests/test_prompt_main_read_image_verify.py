@@ -43,6 +43,12 @@ class TestMainReadImageVerifyRule:
         assert "图表" in main_prompt_text
         assert "渲染输出" in main_prompt_text
 
+    def test_prompt_mentions_game_render_graphics_examples(self, main_prompt_text: str):
+        """提词须包含游戏显示内容/渲染内容/图形 API 显示内容等新增场景。"""
+        assert "游戏显示内容" in main_prompt_text
+        assert "渲染内容" in main_prompt_text
+        assert "图形 API 显示内容" in main_prompt_text
+
     def test_prompt_uses_force_word(self, main_prompt_text: str):
         """提词须用「必须强制」强调。"""
         assert "必须强制" in main_prompt_text
