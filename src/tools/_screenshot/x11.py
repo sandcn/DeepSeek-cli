@@ -9,6 +9,8 @@
   2. ``xwd -id <id>`` + ``convert``（ImageMagick 转换）
   3. ``gnome-screenshot -w``（Wayland/无窗口 ID 时的活动窗口兜底）
 
+裁剪：``crop`` 指定时对上述命令产出的 PNG 解码裁剪后原子重写。
+
 本后端不主动安装任何工具；工具缺失时抛出带安装提示的错误，由使用方决定。
 """
 
@@ -22,8 +24,9 @@ import sys
 import tempfile
 from dataclasses import dataclass
 
-from . import png, proctree
+from . import png, proctree, transform
 from .result import CaptureResult, NoWindowError, ScreenshotError
+from .transform import CropRegion
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +62,13 @@ class X11Backend:
             and sys.platform != "darwin"
         )
 
-    def capture(self, pid: int, path: str) -> CaptureResult:
+    def capture(self, pid: int, path: str,
+                crop: CropRegion | None = None) -> CaptureResult:
+        """截取 ``pid``（及其子进程）的窗口到 ``path``（PNG）。
+
+        ``crop`` 非空时对截图工具产出的 PNG 做解码裁剪（
+        :func:`transform.apply_crop_to_png_file`）；区域越界抛 ``CropError``。
+        """
         pids = proctree.collect_process_tree(pid)
         if not pids:
             raise ScreenshotError(f"进程号非法，无法截图: {pid}")
@@ -69,6 +78,8 @@ class X11Backend:
         target = max(windows, key=lambda item: (bool(item.title.strip()), item.area))
         self._grab(target.window_id, path)
         width, height = self._read_size(path, target)
+        if crop is not None:
+            width, height = transform.apply_crop_to_png_file(path, crop)
         return CaptureResult(
             path=path,
             width=width,

@@ -10,7 +10,8 @@ bash_opt — 按 task_id 操作后台 bash 任务
 - op=kill   杀死后台命令的所有进程树（killpg + /proc 递归补杀后代）
 - op=stdin  向后台命令的 stdin 发送文本输入（text 参数，newline 可选是否追加换行）
 - op=keys   向后台命令发送光标/键盘消息（跨平台 ANSI/VT100 转义序列）
-- op=screenshot  把后台命令（及其子进程）的窗口截图保存为 PNG（path 参数指定文件路径）
+- op=screenshot  把后台命令（及其子进程）的窗口截图保存为 PNG
+                 （path 参数指定文件路径，可选 crop 参数指定只截取的像素区域）
 
 read 为**增量读取**：后台任务运行期间的每一行输出都会累积到内部缓冲，
 每次 read 取走当前全部累积内容并清空，适合实时观察长时任务（编译/下载/
@@ -19,7 +20,9 @@ read 为**增量读取**：后台任务运行期间的每一行输出都会累�
 截图（screenshot）适用于后台任务运行的是**图形界面程序**（游戏、GUI 应用、
 渲染预览等）的场景：按 task_id 定位该命令产生的进程树，取其可见窗口像素
 写盘（Windows 用 PrintWindow/BitBlt；Linux 用 ImageMagick import/xwd；
-macOS 用 screencapture）。产物为 PNG，可用 read_image 查看画面。
+macOS 用 screencapture）。默认输出整窗原始像素；需要「指定大小」时可传
+crop='x,y,width,height' 只截取窗口内的像素区域（以整窗截图左上角为原点，
+区域越界报错并提示窗口实际尺寸）。产物为 PNG，可用 read_image 查看画面。
 纯命令行进程没有窗口，此时返回可读的错误说明。
 
 键盘消息跨平台说明：VT100/ANSI 转义序列是终端输入的标准语义，被 Linux/
@@ -40,7 +43,13 @@ import time
 from .base import Func
 from .bash import kill_process_tree
 from .file_ops import validate_path_security
-from ._screenshot import NoWindowError, ScreenshotError, capture_process_window
+from ._screenshot import (
+    CropError,
+    CropRegion,
+    NoWindowError,
+    ScreenshotError,
+    capture_process_window,
+)
 from ..core.base_agent import _parse_bash_result_fields
 
 logger = logging.getLogger(__name__)
@@ -163,7 +172,8 @@ class BashOptFunc(Func):
                     "wait（等待完成取结果 JSON：task_id/status/stdout/stderr/returncode，"
                     "timeout 秒，默认 300/0 无限）、"
                     "kill（杀进程树）、stdin（发文本，需 text）、keys（发按键，需 key）、"
-                    "screenshot（把该命令进程树的窗口截图存为 PNG，需 path）。"
+                    "screenshot（把该命令进程树的窗口截图存为 PNG，需 path，"
+                    "可选 crop 指定只截取的像素区域）。"
                     "task_id 必须是当前对话 bash 后台返回的 bg-xxx。返回：操作结果 JSON 或输出；失败以 ( 开头。"
                 ),
                 "parameters": {
@@ -189,7 +199,8 @@ class BashOptFunc(Func):
                                 "\n- stdin：向任务 stdin 发送文本输入（需 text）"
                                 "\n- keys：向任务发送光标/键盘消息（需 key）"
                                 "\n- screenshot：把任务进程树（含其启动的 GUI 子进程）的窗口"
-                                "截图保存为 PNG 文件（需 path），用于查看图形程序运行画面；"
+                                "截图保存为 PNG 文件（需 path；可选 crop 指定只截取的像素区域），"
+                                "用于查看图形程序运行画面；"
                                 "纯命令行进程没有窗口，会返回错误说明"
                             ),
                         },
@@ -233,6 +244,16 @@ class BashOptFunc(Func):
                                 "截图后可用 read_image 读取该文件查看画面。"
                             ),
                         },
+                        "crop": {
+                            "type": "string",
+                            "description": (
+                                "仅 screenshot 操作可选：只截取窗口内的像素区域，"
+                                "格式 'x,y,width,height'（如 '100,50,800,600'），"
+                                "以整窗截图左上角为原点（(0,0) 即窗口左上角）。"
+                                "省略时输出整窗原始像素（不做任何缩放）。"
+                                "区域须完全落在窗口截图内，越界会报错并提示窗口实际尺寸。"
+                            ),
+                        },
                     },
                     "required": ["task_id", "op"],
                 },
@@ -250,6 +271,9 @@ class BashOptFunc(Func):
             extra = str(arguments.get("key", ""))
         elif op == "screenshot":
             extra = str(arguments.get("path", ""))
+            crop = arguments.get("crop")
+            if crop:
+                extra = f"{extra} crop={crop}" if extra else f"crop={crop}"
         display = f"{op} {task_id}"
         if extra:
             display += f" {cls._sanitize_display(extra)}"
@@ -257,7 +281,8 @@ class BashOptFunc(Func):
 
     def __init__(self, task_id: str, op: str, timeout=None,
                  text: str | None = None, newline: bool = True,
-                 key: str | None = None, path: str | None = None):
+                 key: str | None = None, path: str | None = None,
+                 crop: str | None = None):
         super().__init__()
         # task_id 归一化（防御 None/缺失）：模型传 {"task_id": null} 时
         # from_args 把 None 传入（默认值不生效），后续 startswith 崩溃。
@@ -283,6 +308,7 @@ class BashOptFunc(Func):
         self.newline = bool(newline)
         self.key = key
         self.path = path
+        self.crop = crop
 
     # ── execute ──────────────────────────────────────────
 
@@ -483,12 +509,18 @@ class BashOptFunc(Func):
 
         适用于后台命令运行图形程序的场景（游戏 / GUI 应用 / 渲染预览）：
         按 task_id 的进程 PID 定位窗口并抓取像素，产物写入 path 指定的
-        文件；截图完成返回 JSON（path/width/height/window_pid/window_title），
-        大模型随后可用 read_image 查看画面。
+        文件；crop 非空时只写出指定像素区域（「指定大小」能力），省略时
+        输出整窗原始像素。截图完成返回 JSON（path/width/height/
+        window_pid/window_title，裁剪时附 crop），大模型随后可用
+        read_image 查看画面。
         """
         if not self.path or not str(self.path).strip():
             return ("(screenshot 操作需要 path 参数指定截图保存的文件路径，"
                     "如 path='shot.png' 或 path='/tmp/shot.png')")
+        try:
+            crop = self._resolve_crop()
+        except CropError as exc:
+            return f"(截图裁剪参数非法: {exc})"
         pid = rec.get("pid")
         if pid is None:
             return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
@@ -498,31 +530,49 @@ class BashOptFunc(Func):
         except ValueError as exc:
             return f"(截图路径非法: {exc})"
         try:
-            result = await self._capture_with_retry(pid, target_path)
+            result = await self._capture_with_retry(pid, target_path, crop)
         except ScreenshotError as exc:
             return f"(截图失败: {exc})"
-        payload = {"task_id": self.task_id, "op": "screenshot"}
+        payload: dict = {"task_id": self.task_id, "op": "screenshot"}
         payload.update(result.to_dict())
-        payload["hint"] = "截图已保存，可用 read_image 工具读取该文件查看画面"
+        if crop is not None:
+            payload["crop"] = crop.to_dict()
+            payload["hint"] = ("截图已按 crop 裁剪并保存，"
+                               "可用 read_image 工具读取该文件查看画面")
+        else:
+            payload["hint"] = "截图已保存，可用 read_image 工具读取该文件查看画面"
         return json.dumps(payload, ensure_ascii=False)
 
-    async def _capture_with_retry(self, pid: int, path: str):
+    def _resolve_crop(self) -> CropRegion | None:
+        """解析 crop 参数为裁剪区域（省略 / 空白 → None，输出整窗）。
+
+        Raises:
+            CropError: 参数格式非法（非 4 个整数 / 数值非法）。
+        """
+        raw = self.crop
+        if raw is None or not str(raw).strip():
+            return None
+        return CropRegion.parse(str(raw))
+
+    async def _capture_with_retry(self, pid: int, path: str,
+                                  crop: CropRegion | None = None):
         """截图（GUI 程序窗口创建有延迟时轮询重试）。
 
-        仅在「目标暂无可见窗口」时重试（NoWindowError）；其它错误立即返回。
-        每轮截图在线程中执行（GDI 调用阻塞），并受 _SCREENSHOT_TIMEOUT 保护。
+        仅在「目标暂无可见窗口」时重试（NoWindowError）；其它错误（含
+        裁剪参数越界的 CropError）立即返回。每轮截图在线程中执行
+        （GDI 调用阻塞），并受 _SCREENSHOT_TIMEOUT 保护。
 
         Returns:
             CaptureResult（成功后）。
 
         Raises:
-            ScreenshotError: 所有重试均失败，或截图命令超时/异常。
+            ScreenshotError: 所有重试均失败，截图命令超时/异常，或裁剪越界。
         """
         deadline = time.monotonic() + self._SCREENSHOT_WAIT_SECONDS
         while True:
             try:
                 return await asyncio.wait_for(
-                    asyncio.to_thread(capture_process_window, pid, path),
+                    asyncio.to_thread(capture_process_window, pid, path, crop),
                     timeout=self._SCREENSHOT_TIMEOUT,
                 )
             except NoWindowError as exc:

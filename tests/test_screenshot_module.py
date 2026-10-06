@@ -29,6 +29,7 @@ from src.tools._screenshot import (
 from src.tools._screenshot import png as png_mod
 from src.tools._screenshot import proctree, winapi
 from src.tools._screenshot.result import CaptureResult, NoWindowError, ScreenshotError
+from src.tools._screenshot.transform import CropError, CropRegion
 
 
 # ── 工具函数 ─────────────────────────────────────────────
@@ -353,3 +354,61 @@ def test_capture_reports_no_window_for_headless_process(tmp_path):
         assert str(exc)
     else:  # pragma: no cover - 环境差异（如测试宿主自身带窗口）
         assert target.exists()
+
+
+# ── 裁剪：后端契约与入口透传 ─────────────────────────────
+
+def test_builtin_backends_accept_crop_keyword():
+    """内置后端的 capture 均接受 crop 关键字（契约一致性）。"""
+    import inspect
+
+    for backend in available_backends():
+        assert "crop" in inspect.signature(backend.capture).parameters, backend.name
+
+
+def test_capture_process_window_forwards_crop_to_backend(tmp_path):
+    """capture_process_window 把 crop 原样交给后端；省略时传 None。"""
+    seen = []
+
+    class _CropProbeBackend:
+        name = "crop-probe"
+
+        def supports(self) -> bool:
+            return True
+
+        def capture(self, pid, path, crop=None):
+            seen.append(crop)
+            with open(path, "wb") as handle:
+                handle.write(png_mod.encode_png_rgb(2, 2, b"\x00" * 12))
+            return CaptureResult(path=path, width=2, height=2, window_pid=pid,
+                                 window_title="", backend=self.name)
+
+    undo = register_backend(_CropProbeBackend(), prepend=True)
+    try:
+        region = CropRegion(0, 0, 1, 1)
+        capture_process_window(1234, str(tmp_path / "a.png"), region)
+        capture_process_window(1234, str(tmp_path / "b.png"))
+    finally:
+        undo()
+    assert seen == [region, None]
+
+
+def test_capture_process_window_lets_crop_error_through(tmp_path):
+    """后端抛出的 CropError 原样透出（不被包装为通用截图失败）。"""
+    class _CropErrorBackend:
+        name = "crop-error"
+
+        def supports(self) -> bool:
+            return True
+
+        def capture(self, pid, path, crop=None):
+            raise CropError("裁剪区域超出截图范围: 当前窗口截图为 2x2")
+
+    undo = register_backend(_CropErrorBackend(), prepend=True)
+    try:
+        with pytest.raises(CropError) as excinfo:
+            capture_process_window(1234, str(tmp_path / "c.png"),
+                                   CropRegion(0, 0, 5, 5))
+    finally:
+        undo()
+    assert "超出截图范围" in str(excinfo.value)

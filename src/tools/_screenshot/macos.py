@@ -8,6 +8,8 @@
 像素获取：系统自带 ``/usr/sbin/screencapture``——有窗口号用 ``-l <id>``
 精确截窗口；仅有位置尺寸时用 ``-R<x,y,w,h>`` 区域截图。
 
+裁剪：``crop`` 指定时对产出 PNG 解码裁剪后原子重写。
+
 两次截图都需要「屏幕录制」权限（macOS 10.15+），权限缺失时系统返回的图
 为桌面壁纸，本后端无法区分，仅在命令失败时抛出错误。
 """
@@ -20,8 +22,9 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from . import png, proctree
+from . import png, proctree, transform
 from .result import CaptureResult, NoWindowError, ScreenshotError
+from .transform import CropRegion
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +54,13 @@ class MacOSBackend:
     def supports(self) -> bool:
         return sys.platform == "darwin"
 
-    def capture(self, pid: int, path: str) -> CaptureResult:
+    def capture(self, pid: int, path: str,
+                crop: CropRegion | None = None) -> CaptureResult:
+        """截取 ``pid``（及其子进程）的窗口到 ``path``（PNG）。
+
+        ``crop`` 非空时对 ``screencapture`` 产出的 PNG 解码裁剪
+        （:func:`transform.apply_crop_to_png_file`）；区域越界抛 ``CropError``。
+        """
         screencapture = shutil.which("screencapture") or "/usr/sbin/screencapture"
         pids = proctree.collect_process_tree(pid)
         if not pids:
@@ -76,6 +85,8 @@ class MacOSBackend:
                 screencapture, "-x", "-R", f"{x},{y},{width},{height}", path,
             ])
         width, height = _read_size(path, target)
+        if crop is not None:
+            width, height = transform.apply_crop_to_png_file(path, crop)
         return CaptureResult(
             path=path,
             width=width,

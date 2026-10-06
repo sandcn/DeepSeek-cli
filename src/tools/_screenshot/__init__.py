@@ -3,12 +3,14 @@
 职责划分：
   - 本模块：平台后端注册表 + 公共入口 :func:`capture_process_window`；
   - ``win`` / ``x11`` / ``macos``：各平台后端（相同契约：``supports()`` +
-    ``capture(pid, path) -> CaptureResult``）；
+    ``capture(pid, path, crop=None) -> CaptureResult``）；
   - ``proctree``：跨平台进程树收集（目标进程 + 子进程）；
-  - ``png``：零依赖 PNG 编码（截图落盘）。
+  - ``png`` / ``png_decode``：零依赖 PNG 编码 / 解码（截图落盘与裁剪读回）；
+  - ``transform``：像素变换（区域裁剪：:class:`CropRegion`）。
 
 扩展方式：新增平台只需实现上述契约并 :func:`register_backend`（内置后端
-按 Windows → macOS → X11 顺序探测），无需改动工具层与既有后端。
+按 Windows → macOS → X11 顺序探测），无需改动工具层与既有后端；新增变换
+在 ``transform`` 模块扩展，后端按需接入。
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import threading
 from typing import Callable
 
 from .result import CaptureResult, NoWindowError, ScreenshotError
+from .transform import CropError, CropRegion, apply_crop_to_png_file
 
 logger = logging.getLogger(__name__)
 
@@ -67,15 +70,19 @@ def resolve_backend():
     return None
 
 
-def capture_process_window(pid: int, path: str) -> CaptureResult:
+def capture_process_window(pid: int, path: str,
+                           crop: CropRegion | None = None) -> CaptureResult:
     """截取进程窗口并写入 ``path``（PNG），返回截图结果。
 
     Args:
         pid: 目标进程 PID（含其子进程一起参与窗口匹配）。
         path: 输出文件路径（调用方已确保目录可用）。
+        crop: 可选裁剪区域（``CropRegion``，以整窗截图左上角为原点）；
+            省略时输出整窗原始像素。区域越界抛 ``CropError``。
 
     Raises:
         ScreenshotError: 平台不支持、进程号非法、无窗口、抓取或落盘失败。
+        CropError: 裁剪区域越界或产物无法解码用于裁剪。
     """
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         raise ScreenshotError(f"进程号非法，无法截图: {pid!r}")
@@ -86,7 +93,7 @@ def capture_process_window(pid: int, path: str) -> CaptureResult:
             f"macOS / Linux X11）"
         )
     try:
-        result = backend.capture(pid, path)
+        result = backend.capture(pid, path, crop)
     except ScreenshotError:
         raise
     except (OSError, ValueError, RuntimeError) as exc:
@@ -115,8 +122,11 @@ def _ensure_builtins() -> None:
 
 __all__ = [
     "CaptureResult",
+    "CropError",
+    "CropRegion",
     "NoWindowError",
     "ScreenshotError",
+    "apply_crop_to_png_file",
     "available_backends",
     "capture_process_window",
     "register_backend",

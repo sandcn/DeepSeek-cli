@@ -65,6 +65,15 @@ class TestScreenshotViaBashOptRule:
         )
         assert "read_image" in line
 
+    def test_screenshot_clause_documents_crop(self, main_prompt_text: str):
+        """截图条目须说明 crop 参数可指定只截取的像素区域（指定大小）。"""
+        line = next(
+            (ln for ln in main_prompt_text.splitlines() if "截图用 `bash_opt` 实现" in ln),
+            "",
+        )
+        assert "crop" in line
+        assert "x,y,width,height" in line
+
     def test_kept_constraints_untouched(self, main_prompt_text: str):
         """其余全局约束不受影响，未被误删。"""
         assert "你是一位乐于助人的软件工程师助手。" in main_prompt_text

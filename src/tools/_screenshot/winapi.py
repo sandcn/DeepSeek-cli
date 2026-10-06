@@ -16,6 +16,7 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
+import threading
 from ctypes import (
     POINTER,
     Structure,
@@ -57,6 +58,16 @@ DWMWA_CLOAKED = 14
 SW_RESTORE = 9
 MAX_PATH = 260
 
+# ── DPI 感知 ────────────────────────────────────────────
+#: 进程 DPI 感知级别（``GetProcessDpiAwareness`` 返回值）
+PROCESS_DPI_AWARENESS_UNAWARE = 0
+PROCESS_DPI_AWARENESS_SYSTEM_AWARE = 1
+PROCESS_DPI_AWARENESS_PER_MONITOR_AWARE = 2
+#: ``shcore!SetProcessDpiAwareness`` 的每显示器感知级别
+PROCESS_PER_MONITOR_DPI_AWARE = 2
+#: ``user32!SetProcessDpiAwarenessContext`` 的每显示器感知 V2 上下文（(HANDLE)-4）
+DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+
 
 def is_windows_platform() -> bool:
     """当前解释器运行在 Windows 上（原生 Windows / Cygwin / MSYS2）。"""
@@ -75,6 +86,125 @@ def load_library(name: str):
     if hasattr(ctypes, "WinDLL"):
         return ctypes.WinDLL(name)
     return ctypes.CDLL(name)
+
+
+# ── DPI 感知 ────────────────────────────────────────────
+#
+# 为什么截图前必须让进程 DPI 感知：非感知进程在高 DPI（如 150%）显示器上
+# 调用 ``GetWindowRect`` 得到的是被系统虚拟化缩小的坐标（如 2560 物理像素
+# 的屏幕读成 1707），而 ``PrintWindow`` / ``BitBlt`` 输出的始终是物理像素。
+# 按缩小后的尺寸创建内存 DC，只能容纳整窗左上角的一部分，产物右下角被裁掉。
+# 把进程标记为 DPI 感知后，窗口几何与像素 1:1 对应，不再截断。
+
+
+def process_dpi_awareness() -> "int | None":
+    """读取当前进程 DPI 感知级别。
+
+    Returns:
+        ``0`` unaware / ``1`` system / ``2`` per-monitor；无法读取（非
+        Windows 或缺少 ``shcore`` 导出）时返回 ``None``。
+    """
+    if not is_windows_platform():
+        return None
+    try:
+        lib = load_library("shcore.dll")
+    except OSError:
+        return None
+    func = getattr(lib, "GetProcessDpiAwareness", None)
+    if func is None:
+        return None
+    func.argtypes = [HANDLE, POINTER(c_int32)]
+    func.restype = c_int32  # HRESULT
+    value = c_int32(PROCESS_DPI_AWARENESS_UNAWARE)
+    try:
+        if int(func(None, byref(value))) < 0:
+            return None
+    except OSError:
+        return None
+    return int(value.value)
+
+
+def _set_dpi_awareness_context() -> bool:
+    """Win10 1703+：``SetProcessDpiAwarenessContext``（每显示器 V2）。"""
+    if _SET_DPI_AWARENESS_CONTEXT is None:
+        user32()
+    if _SET_DPI_AWARENESS_CONTEXT is None:
+        return False
+    try:
+        return bool(
+            _SET_DPI_AWARENESS_CONTEXT(
+                c_void_p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+            )
+        )
+    except OSError:
+        return False
+
+
+def _set_shcore_dpi_awareness() -> bool:
+    """Win8.1+：``shcore!SetProcessDpiAwareness``（每显示器感知）。"""
+    try:
+        lib = load_library("shcore.dll")
+    except OSError:
+        return False
+    func = getattr(lib, "SetProcessDpiAwareness", None)
+    if func is None:
+        return False
+    func.argtypes = [c_int32]
+    func.restype = c_int32  # HRESULT
+    try:
+        return int(func(PROCESS_PER_MONITOR_DPI_AWARE)) >= 0
+    except OSError:
+        return False
+
+
+def _set_system_dpi_aware() -> bool:
+    """Vista+：``SetProcessDPIAware``（系统级感知，单显示器高 DPI 足够）。"""
+    if _SET_SYSTEM_DPI_AWARE is None:
+        user32()
+    if _SET_SYSTEM_DPI_AWARE is None:
+        return False
+    try:
+        return bool(_SET_SYSTEM_DPI_AWARE())
+    except OSError:
+        return False
+
+
+#: DPI 感知设置尝试顺序：新接口优先（每显示器 > 系统级）
+_DPI_AWARE_SETTERS = (
+    _set_dpi_awareness_context,
+    _set_shcore_dpi_awareness,
+    _set_system_dpi_aware,
+)
+
+
+def _apply_dpi_awareness() -> bool:
+    """真正执行一次 DPI 感知设置，返回最终是否处于感知状态。"""
+    if not is_windows_platform():
+        return False
+    current = process_dpi_awareness()
+    if current is not None and current != PROCESS_DPI_AWARENESS_UNAWARE:
+        return True
+    for setter in _DPI_AWARE_SETTERS:
+        try:
+            if setter():
+                return True
+        except (OSError, AttributeError):  # pragma: no cover - 依赖系统调用
+            continue
+    result = process_dpi_awareness()
+    return bool(result) if result is not None else False
+
+
+def ensure_process_dpi_aware() -> bool:
+    """确保当前进程为 DPI 感知（幂等，线程安全）。
+
+    返回最终是否处于 DPI 感知状态。设置失败（如服务会话、系统限制）时
+    返回 False，调用方仍可继续截图（只是高 DPI 下几何可能被系统虚拟化）。
+    """
+    global _DPI_AWARE
+    with _DPI_LOCK:
+        if _DPI_AWARE is None:
+            _DPI_AWARE = _apply_dpi_awareness()
+        return _DPI_AWARE
 
 
 class RECT(Structure):
@@ -128,6 +258,16 @@ _GET_WINDOW_LONG: Any = None
 #: ``IsHungAppWindow`` 绑定（旧系统无此导出时为 None）
 _IS_HUNG_APP_WINDOW: Any = None
 
+#: ``SetProcessDpiAwarenessContext`` 绑定（Win10 1703+，旧系统为 None）
+_SET_DPI_AWARENESS_CONTEXT: Any = None
+
+#: ``SetProcessDPIAware`` 绑定（Vista+，旧系统为 None）
+_SET_SYSTEM_DPI_AWARE: Any = None
+
+#: DPI 感知设置的进程级缓存与串行锁（设置不可逆，幂等生效）
+_DPI_LOCK = threading.Lock()
+_DPI_AWARE: "bool | None" = None
+
 
 def user32():
     lib = _LIBS.get("user32")
@@ -150,6 +290,18 @@ def user32():
         hung.restype = BOOL
     global _IS_HUNG_APP_WINDOW
     _IS_HUNG_APP_WINDOW = hung
+    # DPI 感知 API：Win10 1703+ 的上下文接口与 Vista+ 的系统级接口
+    context_setter = getattr(lib, "SetProcessDpiAwarenessContext", None)
+    if context_setter is not None:
+        context_setter.argtypes = [c_void_p]
+        context_setter.restype = BOOL
+    global _SET_DPI_AWARENESS_CONTEXT, _SET_SYSTEM_DPI_AWARE
+    _SET_DPI_AWARENESS_CONTEXT = context_setter
+    system_setter = getattr(lib, "SetProcessDPIAware", None)
+    if system_setter is not None:
+        system_setter.argtypes = []
+        system_setter.restype = BOOL
+    _SET_SYSTEM_DPI_AWARE = system_setter
     lib.GetWindowTextLengthW.argtypes = [HWND]
     lib.GetWindowTextLengthW.restype = c_int32
     lib.GetWindowTextW.argtypes = [HWND, c_wchar_p, c_int32]

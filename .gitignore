@@ -25,3 +25,7 @@ Thumbs.db
 
 # 临时调试产物（asar 探针脚本、抓取输出等）
 .dsh-*
+
+# 截图调试产物（临时抓取的窗口截图）
+google_shot*.png
+shots/

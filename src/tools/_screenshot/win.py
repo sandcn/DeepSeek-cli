@@ -8,8 +8,14 @@ POSIX PID 映射为 WINPID，再用 Toolhelp32 进程表补全 Windows 后代）
 内容，即使窗口被遮挡或在后台也能拿到；硬件加速窗口（D3D/OpenGL 游戏）
 常返回全黑占位图，此时回退 ``BitBlt`` 从窗口 DC 拷贝屏幕像素。
 
+DPI：截图前把进程标记为 DPI 感知（``winapi.ensure_process_dpi_aware``），
+使窗口几何与物理像素 1:1；否则高 DPI 显示器上窗口坐标被系统虚拟化缩小，
+产物右下角会被裁掉。
+
 编码：DIB 为 32 位 BGRA（自上而下），取 B/G/R 三通道直接写 PNG
 （不依赖 Pillow）。
+
+裁剪：``crop`` 指定时在内存 BGRA 上裁剪后再编码（不经过 PNG 解码）。
 """
 
 from __future__ import annotations
@@ -19,8 +25,9 @@ import logging
 import time
 from dataclasses import dataclass
 
-from . import png, proctree, winapi
+from . import png, proctree, transform, winapi
 from .result import CaptureResult, NoWindowError, ScreenshotError
+from .transform import CropRegion
 
 logger = logging.getLogger(__name__)
 
@@ -88,8 +95,17 @@ class WindowsBackend:
     def supports(self) -> bool:
         return winapi.is_windows_platform()
 
-    def capture(self, pid: int, path: str) -> CaptureResult:
-        """截取 ``pid``（及其子进程）的窗口到 ``path``（PNG）。"""
+    def capture(self, pid: int, path: str,
+                crop: CropRegion | None = None) -> CaptureResult:
+        """截取 ``pid``（及其子进程）的窗口到 ``path``（PNG）。
+
+        ``crop`` 非空时只写出指定像素区域（在内存 BGRA 上裁剪后再编码，
+        无需解码 PNG）；区域越界抛 ``CropError``。
+        """
+        # 高 DPI 显示器上必须先让进程感知 DPI：否则 GetWindowRect 返回被
+        # 虚拟化缩小的坐标，而 PrintWindow/BitBlt 输出物理像素，按该尺寸
+        # 建的内存 DC 装不下整窗，产物右下角会被裁掉。
+        winapi.ensure_process_dpi_aware()
         window_pids = resolve_window_pids(pid)
         if not window_pids:
             raise NoWindowError(
@@ -105,6 +121,9 @@ class WindowsBackend:
         if target is None:  # pragma: no cover - candidates 非空时不会发生
             raise NoWindowError(f"进程 {pid} 没有可用的截图窗口")
         bgra, width, height = capture_window_pixels(target)
+        if crop is not None:
+            bgra = transform.crop_bgra(bgra, width, height, crop)
+            width, height = crop.width, crop.height
         data = png.encode_png_bgra(width, height, bgra)
         with open(path, "wb") as handle:
             handle.write(data)
