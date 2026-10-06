@@ -130,5 +130,8 @@ class ToolCallsHandler:
                     # 驱动 SpeedHandler 发出 update_live_output 更新。
                     # 字符分类增量 → 整体估算（修复逐 fargs 分片分别估算的
                     # max(1,...) 系统性高估）。
+                    # ★ 该参数增量同时计入 streamed_output_tokens（上下文
+                    #   占用口径含 content + 工具参数）——模型流式生成工具
+                    #   调用参数时模式行 ``main · N%`` 亦实时上升。
                     ctx.add_args_delta(fargs)
                     ctx.speed_chunk_count += 1

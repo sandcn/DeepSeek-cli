@@ -65,9 +65,9 @@ _context_usage_percent: Optional[float] = None
 #     并触发活跃 ContextManager.refresh_usage() 重算全局百分比——AI 生成时
 #     行首 ``main · N%`` 随输出增长实时上升；
 #   - 统计口径：refresh_usage() 计算时在（系统提词 + 工具列表 + 全部消息）
-#     基础上叠加流式增量（当前流式输出的 **content 整体估算**——与消息追加
-#     后 MessageStatsCache 同口径，reasoning 与工具参数不计入），占模型
-#     上下文窗口比例；
+#     基础上叠加流式增量（当前流式输出的 **content + 工具调用参数** 的整体
+#     估算——与消息追加后 MessageStatsCache 同口径，reasoning 不随请求回传
+#     不计入），占模型上下文窗口比例；
 #   - 清零：流式结束（_cleanup_display，幂等）调用 update_streaming_usage(0)
 #     清零——随后 assistant 消息追加由 refresh_usage() 按消息全文重算真实值，
 #     避免「流式增量 + 消息内容」双计；
@@ -172,7 +172,8 @@ def update_streaming_usage(delta_tokens: int, label: Optional[str] = None) -> No
 
     Args:
         delta_tokens: 当前流式输出的**上下文增量**（ctx.streamed_output_tokens，
-            content 的整体估算；与消息追加后 MessageStatsCache 同口径）。
+            content + 工具调用参数的整体估算；与消息追加后 MessageStatsCache
+            同口径）。
         label: 流式调用标签；None/主 Agent（"assistant"）计入，SubAgent
             （"agent-N"/"sa-xxx"）跳过。
     """
@@ -525,8 +526,9 @@ class ContextManager:
             变化才全量 resync，否则复用缓存，性能好）；
           - 流式增量（2026-08-19「上下文百分比要实时刷新」）：模块级全局
             _streaming_extra_tokens——AI 流式生成期间当前已输出的估算
-            tokens，经 update_streaming_usage 每 ~0.1s 写入并触发本方法
-            重算，行首 ``main · N%`` 随输出增长实时上升；
+            tokens（content + 工具调用参数），经 update_streaming_usage
+            每 ~0.1s 写入并触发本方法重算，行首 ``main · N%`` 随输出
+            （含工具参数）实时上升；
           - 分母：get_model_context_tokens()（模型上下文窗口，默认 1M token）。
         计算一次性写入全局快照，TUI 渲染线程每帧 O(1) 无锁读取。
 

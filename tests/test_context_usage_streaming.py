@@ -10,7 +10,8 @@
   - ``StreamContext.streamed_output_tokens`` 单调累积（真实 usage 到达不
     清零——避免流式未结束时百分比短暂回落抖动）；
   - ``refresh_usage`` 统计口径叠加流式增量：百分比 =（系统提词 + 工具列表
-    + 全部消息 + 流式增量）/ model_context_tokens；
+    + 全部消息 + 流式增量）/ model_context_tokens；流式增量 = content +
+    工具调用参数（``message_to_text`` 完整纳入参数，口径一致）；
   - SubAgent（label="agent-N"）流式跳过（其输出占 SubAgent 独立上下文，
     不占主 Agent 上下文）；
   - ``_tools_tokens`` 指纹缓存（_tools_tokens_cache + _tools_cache_fp）——
@@ -23,6 +24,7 @@
   - SubAgent label 跳过（不影响主 Agent 百分比）
   - 流式结束清零（百分比回落基线，不残留）
   - 清零后消息追加 refresh_usage 不双计（集成语义）
+  - 工具调用参数计入流式增量（content + 参数），结束追加口径一致（不跳变）
   - _tools_tokens 缓存复用与失效
   - pipeline_async.process 集成：流式过程中全局 pct 实时上升、结束后清零
 """
@@ -390,6 +392,47 @@ class TestPipelineIntegration:
         assert get_context_usage_percent() == base
         # 内容已累积
         assert ctx.content_full
+
+    async def test_tool_args_rise_during_stream_and_consistent_after_append(self):
+        """工具调用参数计入上下文增量：流式期间百分比上升，结束追加消息后不回落。"""
+        from src.core.context_manager import (
+            ContextManager, get_context_usage_percent, update_streaming_usage,
+        )
+        from src.core.adapters.config import MockConfigAdapter
+        from src.api.stream.context import StreamContext
+
+        msgs = [{"role": "system", "content": "s" * 1000}]
+        cfg = MockConfigAdapter({"model_context_tokens": 10000})
+        cm = ContextManager(msgs, "m", config_port=cfg)
+        base = get_context_usage_percent()
+        ctx = StreamContext("m", None, "assistant", True)
+        args = '{"path": "a.txt", "content": "' + "y" * 2000 + '"}'
+        chunks = [
+            {"choices": [{"delta": {"tool_calls": [{
+                "index": 0, "id": "call_1",
+                "function": {"name": "write_file", "arguments": args[i:i + 200]},
+            }]}}]}
+            for i in range(0, len(args), 200)
+        ]
+        task = await self._run_stream(ctx, chunks)
+        await task
+        # 流式期间最后一次刷新（清零前）
+        update_streaming_usage(ctx.streamed_output_tokens, "assistant")
+        pct_stream = get_context_usage_percent()
+        assert ctx.streamed_output_tokens > 0
+        assert pct_stream > base                # 工具参数使百分比实时上升
+        # 结束清零 + 追加 assistant 消息（含完整参数）
+        update_streaming_usage(0, "assistant")
+        msgs.append({
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": "call_1", "type": "function",
+                            "function": {"name": "write_file", "arguments": args}}],
+        })
+        cm.refresh_usage()
+        pct_after = get_context_usage_percent()
+        # 结束后不低于流式期间（含「[调用工具 write_file(...)]」包装，略高），
+        # 无回落跳变（修复前工具参数不计入 → 结束后反而跳变/流式期间不动）。
+        assert pct_after >= pct_stream
 
     async def test_subagent_stream_does_not_touch_main_percent(self):
         """SubAgent 流式（label="agent-1"）process 不更新主 Agent 全局 pct。"""

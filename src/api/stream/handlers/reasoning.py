@@ -32,7 +32,8 @@ class ReasoningHandler(StreamChunkHandler):
         ctx.reasoning_full += rc
 
         # 字符分类增量 → 整体估算（含 reasoning：供会话 output 统计与全局
-        # 总 tok；不影响 streamed_output_tokens——其只含 content）。
+        # 总 tok；不影响 streamed_output_tokens——其含 content + 工具参数，
+        # 不含 reasoning）。
         ctx.add_reasoning_delta(rc)
         ctx._live_total_dirty = True
 

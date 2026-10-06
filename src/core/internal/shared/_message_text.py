@@ -14,7 +14,13 @@ from functools import lru_cache
 
 @lru_cache(maxsize=256)
 def _parse_tool_args(args_str):
-    """缓存解析工具参数字符串，避免重复 json.loads 开销。"""
+    """缓存解析工具参数字符串（公开兼容 API；供外部/历史调用方复用）。
+
+    注：``message_to_text`` 已改为直接统计工具参数的**原始字符串**（模型收到
+    的即为原始 JSON 串，重新序列化会引入口径偏差），不再调用本函数；本函数
+    作为对外导出（``context_selector`` re-export）保留，供需要解析参数的
+    调用方复用其缓存语义。
+    """
     try:
         return json.loads(args_str)
     except (json.JSONDecodeError, TypeError):
@@ -27,6 +33,11 @@ def message_to_text(msg):
     content 可能为 str 或 list[dict]（多模态 content blocks，如
     image_url）——list 时用 content_to_text 提取文本部分，保证
     compute_message_stats 的 len/estimate_tokens 不因非 str 崩溃。
+
+    工具调用参数**完整纳入**（不截断）——assistant 的 tool_calls 参数随
+    历史每轮请求回传给模型，是真实上下文占用；截断会低估上下文百分比与
+    压缩判断。与流式增量口径（``StreamContext.streamed_output_tokens``
+    含 content + 工具参数）一致，避免流式结束后百分比回落跳变。
     """
     role = msg.get("role", "")
     content = msg.get("content") or ""
@@ -44,14 +55,14 @@ def message_to_text(msg):
             func = tc.get("function") or tc
             name = func.get("name", "")
             args = func.get("arguments", "")
+            # 参数完整计入（不截断）。str 直接用原文——模型收到的即原始
+            # JSON 字符串，重新序列化会引入口径偏差；dict 才序列化。
             if isinstance(args, str):
-                parsed = _parse_tool_args(args)
-                if parsed is not None:
-                    args = parsed
-            if isinstance(args, dict):
-                args_str = json.dumps(args, ensure_ascii=False)[:100]
+                args_str = args
+            elif isinstance(args, dict):
+                args_str = json.dumps(args, ensure_ascii=False)
             else:
-                args_str = str(args)[:100]
+                args_str = str(args)
             parts.append(f"[调用工具 {name}({args_str})]")
         return " ".join(parts)
 

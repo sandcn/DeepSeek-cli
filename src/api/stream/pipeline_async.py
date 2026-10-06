@@ -194,13 +194,13 @@ class AsyncStreamPipeline:
                     _notify_stream_progress()
                     # ★ 上下文百分比实时刷新（2026-08-19 用户需求）：每 ~0.1s
                     #   把当前流式输出的上下文增量（ctx.streamed_output_tokens，
-                    #   content 的整体估算——与消息追加后 MessageStatsCache
-                    #   同口径）写入全局并触发活跃 ContextManager.refresh_usage()
-                    #   重算——AI 生成时行首 ``main · N%`` 随输出增长实时上升
-                    #   且结束后不回落跳变（缓存有效时 O(1)）。延迟导入避免
-                    #   api→core 模块加载期循环依赖（项目既有模式：core 依赖
-                    #   api，api 侧延迟引用）；SubAgent（label="agent-N"）由
-                    #   函数内部跳过。
+                    #   content + 工具调用参数的整体估算——与消息追加后
+                    #   MessageStatsCache 同口径）写入全局并触发活跃
+                    #   ContextManager.refresh_usage() 重算——AI 生成时行首
+                    #   ``main · N%`` 随输出（含工具参数）实时上升且结束后不
+                    #   回落跳变（缓存有效时 O(1)）。延迟导入避免 api→core
+                    #   模块加载期循环依赖（项目既有模式：core 依赖 api，api
+                    #   侧延迟引用）；SubAgent（label="agent-N"）由函数内部跳过。
                     try:
                         from ._usage_hook import notify_streaming_usage
                         notify_streaming_usage(ctx.streamed_output_tokens, ctx.label)

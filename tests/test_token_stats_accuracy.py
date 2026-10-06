@@ -16,7 +16,8 @@
 3. **上下文百分比流式与结束口径不一（跳变）**：流式增量含 reasoning
    （不回传）且用逐块估算，消息追加后 ``MessageStatsCache`` 只按 content +
    截断工具参数的整体估算 → 流式期间虚高、结束后回落。修复为
-   ``streamed_output_tokens`` 只含 content 的整体估算，与消息口径一致。
+   ``streamed_output_tokens`` = **content + 工具调用参数** 的整体估算（不含
+   reasoning），与消息口径（``message_to_text`` 完整纳入参数）一致。
 """
 
 from __future__ import annotations
@@ -128,11 +129,11 @@ class TestStreamContextEstimate:
         text = "content 内容 hello world"
         ctx.add_content_delta(text)
         assert ctx.token_estimate == estimate_tokens(text)
-        # 上下文占用口径：只含 content
+        # 上下文占用口径：含 content（无工具参数时即 content）
         assert ctx.streamed_output_tokens == estimate_tokens(text)
 
-    def test_token_estimate_includes_reasoning_but_streamed_excludes(self):
-        """token_estimate 含 reasoning（供 output 统计）；streamed 只含 content。"""
+    def test_token_estimate_includes_reasoning_streamed_excludes(self):
+        """token_estimate 含 reasoning（供 output 统计）；streamed 不含 reasoning。"""
         ctx = self._ctx()
         r, c = "reasoning 推理内容", "answer 回答内容"
         ctx.add_reasoning_delta(r)
@@ -141,11 +142,26 @@ class TestStreamContextEstimate:
         assert ctx.token_estimate == estimate_tokens(r) + estimate_tokens(c)
         assert ctx.streamed_output_tokens == estimate_tokens(c)
 
-    def test_args_in_token_estimate_only(self):
+    def test_args_included_in_streamed_context(self):
+        """工具调用参数计入上下文增量（与消息口径一致，不截断）。"""
         ctx = self._ctx()
-        ctx.add_args_delta('{"path": "a.txt"}')
-        assert ctx.token_estimate == estimate_tokens('{"path": "a.txt"}')
-        assert ctx.streamed_output_tokens == 0
+        args = '{"path": "a.txt", "content": "' + "x" * 300 + '"}'
+        ctx.add_args_delta(args)
+        assert ctx.token_estimate == estimate_tokens(args)
+        assert ctx.streamed_output_tokens == estimate_tokens(args)
+
+    def test_streamed_equals_content_plus_args(self):
+        """streamed_output_tokens = content + 工具参数（不含 reasoning）。"""
+        ctx = self._ctx()
+        content, args, reason = "回答内容", '{"a": 1}' * 10, "推理过程" * 5
+        ctx.add_reasoning_delta(reason)
+        ctx.add_content_delta(content)
+        ctx.add_args_delta(args)
+        assert ctx.token_estimate == (
+            estimate_tokens(reason) + estimate_tokens(content) + estimate_tokens(args)
+        )
+        # 字符分类累加等价于对拼接文本整体估算
+        assert ctx.streamed_output_tokens == estimate_tokens(content + args)
 
     def test_incremental_chunks_equal_whole(self):
         """分片累加 == 整体估算（内容/推理分开累加后各自独立成立）。"""

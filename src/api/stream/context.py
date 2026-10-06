@@ -28,12 +28,13 @@ class StreamContext:
         # 内容累积
         self.content_full: str = ""
         self.reasoning_full: str = ""
-        #: 上下文占用口径的流式增量：**只含 content 的整体估算**
+        #: 上下文占用口径的流式增量：**content + 工具调用参数**的整体估算
         #:   （``estimate_tokens_from_counts``，与消息追加后
-        #:   ``MessageStatsCache`` 的口径一致）。供
-        #:   ``update_streaming_usage`` 实时刷新模式行 ``main · N%``——
-        #:   reasoning 不随请求回传、工具参数在 ``message_to_text`` 中截断，
-        #:   均不计入，避免流式结束后百分比回落跳变。
+        #:   ``MessageStatsCache`` 口径一致——``message_to_text`` 完整纳入
+        #:   content 与 tool_calls 参数）。供 ``update_streaming_usage`` 实时
+        #:   刷新模式行 ``main · N%``——reasoning 不随请求回传不计入；
+        #:   工具参数随历史回传必须计入（否则模型流式生成工具调用参数时
+        #:   百分比不动、结束后又跳变）。
         self.streamed_output_tokens: int = 0
 
         # 使用量
@@ -127,10 +128,11 @@ class StreamContext:
 
         - ``token_estimate``：reasoning + content + 工具参数的整体估算总量
           （供 SpeedHandler 的会话 output 估算与全局总 tok）；
-        - ``streamed_output_tokens``：**只含 content** 的整体估算——上下文
-          占用口径（reasoning 不随请求回传；工具参数在 ``message_to_text``
-          统计中截断 100 字符），与消息追加后的 ``MessageStatsCache`` 一致，
-          避免流式结束百分比回落跳变；
+        - ``streamed_output_tokens``：**content + 工具调用参数**的整体估算
+          ——上下文占用口径（reasoning 不随请求回传不计入；工具参数随
+          历史请求回传须计入），与消息追加后 ``MessageStatsCache``
+          （``message_to_text`` 完整纳入 content 与参数）一致，避免流式
+          结束后百分比回落跳变；
         - 增量 >0 时同步 ``add_token_size`` 并累计 ``stream_added_tokens``
           （供真实 usage 修正）。
         """
@@ -141,8 +143,11 @@ class StreamContext:
             + estimate_tokens_from_counts(self._args_cjk, self._args_other)
         )
         self.token_estimate = total
+        # 上下文增量 = content + 工具参数（不含 reasoning）。
         self.streamed_output_tokens = estimate_tokens_from_counts(
-            self._content_cjk, self._content_other)
+            self._content_cjk + self._args_cjk,
+            self._content_other + self._args_other,
+        )
         delta = total - old
         if delta > 0:
             add_token_size(delta)

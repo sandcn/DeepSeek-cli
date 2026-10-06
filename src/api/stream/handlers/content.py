@@ -41,7 +41,8 @@ class ContentHandler(StreamChunkHandler):
 
         # 字符分类增量 → 整体估算（与「对累计全文调用 estimate_tokens」一致，
         # 避免逐 delta 分别估算的 max(1,...) 下限系统性高估）；
-        # streamed_output_tokens 只含 content（上下文占用口径，不含 reasoning）。
+        # streamed_output_tokens 含 content + 工具参数（上下文占用口径，
+        # 不含 reasoning）。
         ctx.add_content_delta(dc)
         ctx.content_full += dc
         ctx.speed_chunk_count += 1

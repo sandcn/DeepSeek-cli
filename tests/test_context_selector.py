@@ -37,6 +37,34 @@ def test_message_to_text_assistant_tool_calls():
     text = message_to_text(msg)
     assert "调用工具 read_file" in text
     assert "done" in text
+    assert '{"path": "x"}' in text
+
+
+def test_message_to_text_tool_args_not_truncated():
+    """工具调用参数完整纳入（不截断）——参数随历史回传是真实上下文占用。"""
+    big_args = '{"path": "big.txt", "content": "' + "x" * 500 + '"}'
+    msg = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"function": {"name": "write_file", "arguments": big_args}}],
+    }
+    text = message_to_text(msg)
+    assert big_args in text          # 完整参数（500 字符未被截断到 100）
+    assert "x" * 500 in text
+
+
+def test_message_to_text_tool_args_dict_serialized():
+    """参数为 dict（内部构造）时完整序列化，不截断。"""
+    msg = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"function": {"name": "read_file",
+                                     "arguments": {"path": "a.txt", "n": 1}}}],
+    }
+    text = message_to_text(msg)
+    assert "a.txt" in text
+    import json as _json
+    assert _json.dumps({"path": "a.txt", "n": 1}, ensure_ascii=False) in text
 
 
 def test_message_to_text_tool_role():
