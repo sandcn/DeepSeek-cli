@@ -32,7 +32,11 @@ class TestMainSmallBenefitStillDoRule:
 
     def test_prompt_marks_rule_as_red_line(self, main_prompt_text: str):
         """该规则须为「红线 · 一票否决」级别。"""
-        assert "强制禁止因收益小就不做（红线 · 一票否决）" in main_prompt_text
+        line = next(
+            (ln for ln in main_prompt_text.splitlines() if "强制禁止因收益小就不做" in ln),
+            "",
+        )
+        assert "（红线 · 一票否决）" in line
 
     def test_prompt_requires_small_benefit_still_do(self, main_prompt_text: str):
         """须显式要求「收益小的东西也强制做」。"""

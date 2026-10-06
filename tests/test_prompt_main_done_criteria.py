@@ -80,10 +80,9 @@ class TestMainDoneCriteriaRule:
             assert word in done_criteria_rule, f"应点名「{word}」为未完成"
 
     def test_rule_after_compile_check_rule(self, main_prompt_lines: list):
-        """完成标准须位于既有「编译检查」约束之后，逻辑连贯。"""
-        done_idx = next(i for i, line in enumerate(main_prompt_lines) if line.startswith("- ") and RULE_KEY in line)
-        check_idx = next(i for i, line in enumerate(main_prompt_lines) if COMPILE_CHECK_RULE_KEY in line)
-        assert check_idx < done_idx
+        """完成标准须位于既有「编译检查」约束之后，逻辑连贯（合并后同条目内亦须维持先后）。"""
+        text = "\n".join(main_prompt_lines)
+        assert text.index(COMPILE_CHECK_RULE_KEY) < text.index(RULE_KEY)
 
     def test_keeps_existing_compile_check_rule(self, main_prompt_lines: list):
         """不得破坏既有「强制实现所有代码后编译检查」红线。"""

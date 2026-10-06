@@ -31,7 +31,11 @@ class TestMainNoSimplifyDueToComplexityRule:
 
     def test_prompt_marks_rule_as_red_line(self, main_prompt_text: str):
         """该规则须为「红线 · 一票否决」级别。"""
-        assert "强制禁止因为复杂就选择简单实现（红线 · 一票否决）" in main_prompt_text
+        line = next(
+            (ln for ln in main_prompt_text.splitlines() if "强制禁止因为复杂就选择简单实现" in ln),
+            "",
+        )
+        assert "（红线 · 一票否决）" in line
 
     def test_prompt_requires_implement_all(self, main_prompt_text: str):
         """须要求强制实现所有内容。"""
@@ -50,7 +54,7 @@ class TestMainNoSimplifyDueToComplexityRule:
 
     def test_prompt_keeps_downgrade_ban(self, main_prompt_text: str):
         """不得破坏原有「强势禁止降级实现代码」红线。"""
-        assert "强势禁止降级实现代码（红线 · 一票否决）" in main_prompt_text
+        assert "强势禁止降级实现代码" in main_prompt_text
 
     def test_prompt_keeps_no_hard_task_skip(self, main_prompt_text: str):
         """不得破坏原有「强势禁止因为难就不做」。"""

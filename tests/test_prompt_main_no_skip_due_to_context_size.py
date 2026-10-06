@@ -31,7 +31,11 @@ class TestMainNoSkipDueToContextSizeRule:
 
     def test_prompt_marks_rule_as_red_line(self, main_prompt_text: str):
         """该规则须为「红线 · 一票否决」级别。"""
-        assert "强制禁止因为上下文大小就不执行（红线 · 一票否决）" in main_prompt_text
+        line = next(
+            (ln for ln in main_prompt_text.splitlines() if "强制禁止因为上下文大小就不执行" in ln),
+            "",
+        )
+        assert "（红线 · 一票否决）" in line
 
     def test_prompt_bans_context_size_excuses(self, main_prompt_text: str):
         """须点名禁止以各种「上下文大小」类理由不做。"""
@@ -62,7 +66,7 @@ class TestMainNoSkipDueToContextSizeRule:
 
     def test_prompt_keeps_neighbor_small_benefit_rule(self, main_prompt_text: str):
         """不得破坏相邻原有约束（因收益小就不做的禁令）。"""
-        assert "强制禁止因收益小就不做（红线 · 一票否决）" in main_prompt_text
+        assert "强制禁止因收益小就不做" in main_prompt_text
 
 
 if __name__ == "__main__":

@@ -30,9 +30,9 @@ class TestEmptyPromptFindDirsWhenNoProjectInfo:
 
     def test_new_rule_present(self, main_prompt_lines: list):
         """新增的「无项目信息时强制 find 获取全部目录」约束须存在。"""
-        matched = [line for line in main_prompt_lines if line.startswith("- " + RULE_KEY)]
-        assert matched, f"缺少约束: {RULE_KEY}"
-        rule = matched[0]
+        text = "\n".join(main_prompt_lines)
+        assert RULE_KEY in text, f"缺少约束: {RULE_KEY}"
+        rule = next(line for line in main_prompt_lines if RULE_KEY in line)
         assert "find" in rule
         assert "所有目录" in rule
 
@@ -43,10 +43,9 @@ class TestEmptyPromptFindDirsWhenNoProjectInfo:
         assert "递归" in rule or "完整目录结构" in rule
 
     def test_rule_placed_before_legacy_rule(self, main_prompt_lines: list):
-        """新增约束须位于既有「分析项目前强制得到所有目录」约束之前。"""
-        new_idx = next(i for i, line in enumerate(main_prompt_lines) if RULE_KEY in line)
-        legacy_idx = next(i for i, line in enumerate(main_prompt_lines) if LEGACY_RULE_KEY in line)
-        assert new_idx < legacy_idx
+        """新增约束须位于既有「分析项目前强制得到所有目录」约束之前（合并后同条目内亦须维持先后）。"""
+        text = "\n".join(main_prompt_lines)
+        assert text.index(RULE_KEY) < text.index(LEGACY_RULE_KEY)
 
     def test_other_constraints_untouched(self, main_prompt_lines: list):
         """其余全局约束不受影响，未被误删。"""

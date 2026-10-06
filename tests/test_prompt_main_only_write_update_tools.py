@@ -32,7 +32,11 @@ class TestMainOnlyWriteUpdateToolsRule:
 
     def test_prompt_marks_rule_as_red_line(self, main_prompt_text: str):
         """该规则须为「红线 · 一票否决」级别。"""
-        assert "强制只能用 update_file 和 write_file 修改代码（红线 · 一票否决）" in main_prompt_text
+        line = next(
+            (ln for ln in main_prompt_text.splitlines() if "强制只能用 update_file 和 write_file 修改代码" in ln),
+            "",
+        )
+        assert "（红线 · 一票否决）" in line
 
     def test_prompt_names_both_tools(self, main_prompt_text: str):
         """须点名只允许 update_file 与 write_file 两种工具。"""
