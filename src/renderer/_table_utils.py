@@ -32,6 +32,33 @@ def _is_table_row(stripped: str) -> bool:
     return False
 
 
+def _is_table_data_row(stripped: str, header_cols: int | None = None) -> bool:
+    """表格已建立（TABLE_ACTIVE）时的数据行判定——比 ``_is_table_row`` 宽松。
+
+    表头建立后数据行的歧义已消除：GFM 允许数据行不带前导/尾随 pipe，
+    单个分隔 pipe 即构成两列（如 ``1 | 2``）。而 ``_is_table_row`` 对
+    无前导 pipe 的行要求 ≥2 个 pipe（避免把 ``a|b`` 这类普通文本误判为
+    独立表格）——该保护在表格已建立后不适用，否则表头与数据行判定标准
+    不一致（表头用 ≥1 pipe、数据行用 ≥2 pipe），导致数据行被当作段落。
+
+    Args:
+        stripped: 去除首尾空白（无换行）的行文本。
+        header_cols: 表头列数；给出时要求数据行列数不超过表头（兼容缺列）。
+
+    Returns:
+        是否为当前表格的数据行。
+    """
+    check = stripped.replace('\\|', '')
+    if '|' not in check or _is_table_separator(stripped):
+        return False
+    cells = _parse_table_row(stripped)
+    if not cells:
+        return False
+    if header_cols is not None and len(cells) > header_cols:
+        return False
+    return True
+
+
 def _is_table_separator(stripped: str) -> bool:
     """判断是否为表格分隔行。"""
     if '|' not in stripped:

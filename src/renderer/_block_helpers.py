@@ -116,6 +116,29 @@ def _get_blockquote_text(stripped: str) -> str:
     return s
 
 
+def _split_blockquote(stripped: str) -> tuple[int, str]:
+    """拆解引用块行 → ``(嵌套深度, 内层文本)``（无正则）。
+
+    与 ``RegexFreeBlockParser._parse_blockquote`` 的深度计数/文本提取逻辑
+    保持一致（``>`` 连续序列计数、剥离前缀），供流式预览做无副作用的行分类。
+    """
+    depth = 0
+    in_gt = True
+    gt_text = ''
+    for ch in stripped:
+        if ch == '>':
+            if in_gt:
+                depth += 1
+            else:
+                gt_text += ch
+        elif ch == ' ' and in_gt:
+            continue
+        else:
+            in_gt = False
+            gt_text += ch if ch != ' ' or gt_text else ' '
+    return depth, gt_text.strip()
+
+
 def _is_code_fence_line(stripped: str) -> bool:
     """判断行是否为代码 fence 行（``` 或 ~~~ 开头）。"""
     if not stripped:

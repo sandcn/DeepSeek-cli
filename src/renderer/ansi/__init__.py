@@ -86,6 +86,9 @@ class AnsiStreamRenderer:
         self._lines: list[AnsiLine] = []
         self._closed = False
         self._width = width
+        # 当前未闭合代码块已提交（分段刷出）的代码行数——预览据此跳过，
+        # 避免与 committed 行重复显示（见 ``_note_committed_code``）。
+        self._committed_code_lines = 0
 
     def set_width(self, width: int) -> None:
         """更新终端宽度（TOC 边框 + 表格宽度自适应用）。"""
@@ -103,11 +106,28 @@ class AnsiStreamRenderer:
         tokens = self._parser.feed(text)
         tokens = self._pipeline.process(tokens, self._ctx)
         for token in tokens:
+            self._note_committed_code(token)
             if token.type is TokenType.TOC_MARKER:
                 self._lines.extend(self._render_toc())
                 continue
             self._lines.extend(self._engine.render(token))
         self._refresh_preview()
+
+    def _note_committed_code(self, token) -> None:
+        """跟踪当前未闭合代码块已提交（分段刷出）的代码行数。
+
+        超长代码块超过 ``CodeBlockBatcher`` 缓冲上限时会被分段刷出，已刷出
+        的行进入 committed 行；预览若仍从第 0 行整块重渲，会与 committed 行
+        **重复显示**（同一批代码行出现两次）。记录已提交行数，供
+        ``_render_code_preview`` 跳过——预览只呈现尚未提交的尾部。
+        """
+        if token.type is TokenType.CODE_BLOCK:
+            if token.meta.get("closed", True):
+                self._committed_code_lines = 0
+            else:
+                self._committed_code_lines += token.content.count("\n") + 1
+        else:
+            self._committed_code_lines = 0
 
     def _render_toc(self) -> list[AnsiLine]:
         """渲染 ``[TOC]`` 标记处的目录（当前已收集标题）。
@@ -174,34 +194,52 @@ class AnsiStreamRenderer:
         title = token.meta.get("title", "")
         closed = bool(token.meta.get("closed", True))
         src_lines = src.split("\n") if src else []
-        key = (lang, self._code_theme)
+        # 超长代码块的分段提交：已提交的前 skip 行由 committed 显示，预览只
+        # 呈现尚未提交的尾部（否则同一批行在 committed 与 preview 中重复显示）。
+        skip = min(self._committed_code_lines, len(src_lines))
+        if skip:
+            src_lines = src_lines[skip:]
+        key = (lang, self._code_theme, skip)
         if key != self._code_preview_key:
             self._code_preview_key = key
             self._code_preview_src = []
             self._code_preview_rows = []
         cached_src = self._code_preview_src
-        # 仅当新内容以「已渲染行」为前缀时复用（流式只追加）；内容变化
-        # （块切换/语言变化/边界粘合修正）时整体重置重渲染。
-        if not (len(cached_src) <= len(src_lines)
-                and src_lines[:len(cached_src)] == cached_src):
-            self._code_preview_src = []
-            self._code_preview_rows = []
-        done = len(self._code_preview_rows)
-        if len(src_lines) > done:
-            self._code_preview_rows.extend(
+        rows = self._code_preview_rows
+        # 最长公共前缀复用：流式只追加 → 仅渲染新增行；行内（未换行）字符
+        # 增长 → 仅重渲变化的那一行。修复前按整段 split 结果做「前缀完全
+        # 相等」比较，未换行的活动行每增长一个字符即判为「内容分歧」→ 整段
+        # 重置重渲染（实测 800 行代码 token 级流式渲染 >100s，与按整行喂入
+        # 相差 260 倍）。内容真正分歧（非前缀，如块切换/语言变化/边界修正）
+        # 时仍整体重置。
+        m = min(len(src_lines), len(cached_src))
+        common = 0
+        while common < m and src_lines[common] == cached_src[common]:
+            common += 1
+        if common < len(cached_src) - 1:
+            del rows[:]
+            base = 0
+        else:
+            if common < len(rows):
+                del rows[common:]
+            base = len(rows)
+        if len(src_lines) > base:
+            rows.extend(
                 _code.highlight_code_lines(
-                    src_lines[done:], lang, self._code_theme,
-                    start_index=done + 1,
+                    src_lines[base:], lang, self._code_theme,
+                    start_index=skip + base + 1,
                 )
             )
-            self._code_preview_src = list(src_lines)
-        rows = self._code_preview_rows
+        self._code_preview_src = src_lines
+        dropped = int(token.meta.get("preview_dropped", 0) or 0)
         limit = RegexFreeBlockParser._PREVIEW_MAX_LINES
-        omitted = max(0, len(rows) - limit)
+        omitted = max(0, len(rows) - limit) + dropped
         out: list[AnsiLine] = []
-        if title:
-            out.append(_code.render_title_line(title))
-        out.append(_code.render_fence_line(lang))
+        if not skip:
+            # 打开围栏/标题已随首段提交时不重复
+            if title:
+                out.append(_code.render_title_line(title))
+            out.append(_code.render_fence_line(lang))
         if omitted:
             out.append(_code.render_omitted_line(omitted))
         out.extend(rows[-limit:] if omitted else rows)

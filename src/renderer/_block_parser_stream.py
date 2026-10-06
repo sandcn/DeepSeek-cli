@@ -15,7 +15,7 @@ import logging
 from ._block_parser_state import _State, _MERMAID_KEYWORDS, _SETEXT_HR_CHARS
 from ._utils import _COMMON_LANGUAGES, _get_fence_info
 from .types import Token, TokenType
-from ._table_utils import _is_table_row, _parse_table_row
+from ._table_utils import _is_table_data_row, _parse_table_row
 from ._block_helpers import (
     _is_empty_line, _strip_left, _rstrip_line,
     _is_code_fence_line, _strip_blockquote_prefix,
@@ -126,15 +126,21 @@ class _BlockParserStreamMixin:
 
         elif self._state == _State.TABLE_ACTIVE:
             try:
+                # ★ 修复（表格数据行丢失）：数据行判定改用「表格已建立」的宽松
+                #   规则（``_is_table_data_row``，≥1 pipe 且列数不超过表头）——
+                #   与表头建立时的判定标准一致。``_is_table_row`` 对无前导 pipe
+                #   的行要求 ≥2 pipe（防普通文本误判），导致 ``1 | 2`` 这类
+                #   数据行被判为非表格 → 表格只剩表头、数据行退化成段落。
+                header_cols = len(self._table_rows[0]) if self._table_rows else None
                 check = _strip_blockquote_prefix(stripped)
                 if check != stripped:
-                    if _is_table_row(check):
+                    if _is_table_data_row(check, header_cols):
                         self._table_rows.append(_parse_table_row(check))
                     else:
                         self._emit_table(tokens)
                         self._state = _State.NORMAL
                         self._parse_normal_line(line, tokens)
-                elif _is_table_row(stripped):
+                elif _is_table_data_row(stripped, header_cols):
                     self._table_rows.append(_parse_table_row(stripped))
                 else:
                     self._emit_table(tokens)
@@ -547,6 +553,7 @@ class _BlockParserStreamMixin:
         self._block_title = info.get('title', '')
         self._block_lines = []
         self._preview_code_lines = []
+        self._preview_code_dropped = 0
         self._block_nested_fence = 0
         self._auto_close_streak = 0
         lang = self._block_lang
