@@ -53,8 +53,10 @@ def test_schema_exposes_screenshot_op_and_path():
     params = schema["function"]["parameters"]
     assert "screenshot" in params["properties"]["op"]["enum"]
     # 2026-10-07 新增窗口输入 op（click/move/drag/scroll/key/type）
+    # 与窗口枚举 / 窗口控制 op（windows/window）
     assert set(params["properties"]["op"]["enum"]) == {
         "read", "wait", "kill", "stdin", "keys", "screenshot",
+        "windows", "window",
         "click", "move", "drag", "scroll", "key", "type",
     }
     assert "path" in params["properties"]

@@ -34,11 +34,11 @@ from typing import Callable, Iterator
 from .._screenshot import winapi
 from .._screenshot.win import (
     WindowCandidate,
-    enumerate_candidates,
+    enumerate_window_infos,
     resolve_window_pids,
-    select_window,
     visible_region,
 )
+from .._screenshot.windows import pick_window
 from .action import (
     ClickAction,
     DragAction,
@@ -66,8 +66,21 @@ logger = logging.getLogger(__name__)
 
 # ── 时序常量（秒） ──────────────────────────────────────
 
-#: 窗口置前后等待系统切换焦点的时间
-_ACTIVATE_SETTLE_SECONDS = 0.15
+#: 前台激活的尝试轮数：Windows 前台锁定策略会拒绝后台进程的首次
+#: SetForegroundWindow（尤其是刚启动、被最小化或系统正忙时），多试几轮
+#: 可显著提高成功率。
+_FOREGROUND_ATTEMPTS = 3
+#: 每轮激活后等待系统切换焦点的时间（按轮次递增：越靠后等得越久）。
+#: 兜底：轮次超出元组长度时取最后一项。
+_FOREGROUND_SETTLE_STEPS = (0.05, 0.10, 0.20)
+#: SendInput 完全未投递时（返回 0）的重试次数与间隔——合成输入偶发被
+#: UIPI / 输入桌面忙碌拒绝，短期重试即可成功。
+_SENDINPUT_ATTEMPTS = 3
+_SENDINPUT_RETRY_INTERVAL = 0.02
+#: 键盘 / 文本注入后前台被抢走时的「重新激活并重发」次数
+_KEYBOARD_FOCUS_ATTEMPTS = 2
+#: 连按（repeat）每次之间的间隔，避免目标程序把连续事件合并
+_KEY_REPEAT_INTERVAL = 0.05
 #: 双击两次点击之间的间隔（需小于系统双击时间）
 _DOUBLE_CLICK_INTERVAL = 0.05
 #: 拖动轨迹每步的最小间隔（duration 为 0 时仍留出重绘时间）
@@ -183,11 +196,20 @@ class Win32Driver:
         self._send([winapi.mouse_input(flags, 0, 0, data)])
 
     def key_event(self, vk: int, *, key_up: bool) -> None:
-        """发送键盘按下/抬起事件（虚拟键码）。"""
+        """发送键盘按下/抬起事件（虚拟键码 + 扫描码）。
+
+        一并带上 ``MapVirtualKeyW`` 解析出的扫描码：浏览器、游戏与
+        DirectInput 程序依赖扫描码还原物理键位（如 Web 页面的
+        ``KeyboardEvent.code``），只发虚拟键码时这些程序拿不到键位信息。
+        """
         flags = winapi.KEYEVENTF_KEYUP if key_up else 0
-        if vk in _EXTENDED_VKS:
+        scan = winapi.map_virtual_key(vk)
+        if scan >= 0xE000:
+            scan &= 0xFF
             flags |= winapi.KEYEVENTF_EXTENDEDKEY
-        self._send([winapi.key_input(vk=vk, flags=flags)])
+        elif vk in _EXTENDED_VKS:
+            flags |= winapi.KEYEVENTF_EXTENDEDKEY
+        self._send([winapi.key_input(vk=vk, scan=scan, flags=flags)])
 
     def unicode_event(self, code_unit: int, *, key_up: bool) -> None:
         """发送 Unicode 文本输入事件（不依赖键盘布局）。"""
@@ -205,12 +227,31 @@ class Win32Driver:
 
     @staticmethod
     def _send(items: list) -> None:
-        sent = winapi.send_inputs(items)
-        if sent != len(items):
-            raise InputError(
-                f"SendInput 未能投递全部事件（{sent}/{len(items)}）；"
-                f"系统可能因权限（UIPI）或输入桌面限制拒绝注入"
-            )
+        """投递一批 SendInput 事件（完全未投递时短期重试）。
+
+        ``SendInput`` 返回「已插入输入流的事件数」：等于总数即成功；返回 0
+        表示整批都没进队列（UIPI 拦截 / 输入桌面忙碌等瞬时原因），短期重试
+        通常即可成功；返回部分值意味着已有事件生效，重复投递会产生重复按键
+        或悬空按下，因此不做重试、直接如实报错。
+        """
+        total = len(items)
+        for attempt in range(_SENDINPUT_ATTEMPTS):
+            sent = winapi.send_inputs(items)
+            if sent == total:
+                return
+            if sent > 0:
+                raise InputError(
+                    f"SendInput 仅投递 {sent}/{total} 个事件（部分已生效，为免"
+                    f"重复按键不做重试）；系统可能因权限（UIPI）或输入桌面"
+                    f"限制拒绝注入"
+                )
+            if attempt + 1 < _SENDINPUT_ATTEMPTS:
+                time.sleep(_SENDINPUT_RETRY_INTERVAL)
+        raise InputError(
+            f"SendInput 未能投递任何事件（0/{total}，已重试 "
+            f"{_SENDINPUT_ATTEMPTS} 次）；系统可能因权限（UIPI）或输入桌面"
+            f"限制拒绝注入"
+        )
 
 
 class WindowsInputBackend:
@@ -230,14 +271,24 @@ class WindowsInputBackend:
     def supports(self) -> bool:
         return winapi.is_windows_platform()
 
-    def locate(self, pid: int) -> _TargetWindow | None:
-        """定位 ``pid``（含子进程）的主窗口（无副作用；供路由决策与注入复用）。"""
+    def locate(self, pid: int, window: str | None = None) -> _TargetWindow | None:
+        """定位 ``pid``（含子进程）的目标窗口（无副作用；供路由决策与注入复用）。
+
+        ``window`` 为窗口选择器（``main`` / ``active`` / ``#1`` / ``popup`` 等，
+        见 ``_screenshot.windows``）；缺省取主窗口。选择器无匹配时抛
+        ``SelectorError``；进程树内没有窗口时返回 ``None``。
+        """
         winapi.ensure_process_dpi_aware()
+        if window:
+            return self._locate(pid, window)
         return self._locate(pid)
 
     def send(self, pid: int, action: InputAction) -> InputResult:
-        """向 ``pid`` 的窗口注入 ``action``，返回注入结果。"""
-        target = self.locate(pid)
+        """向 ``pid`` 的目标窗口注入 ``action``，返回注入结果。
+
+        目标窗口取 ``action.window`` 指定的选择器；为空时用主窗口。
+        """
+        target = self.locate(pid, getattr(action, "window", "") or None)
         if target is None:
             raise NoWindowError(
                 f"进程 {pid} 及其子进程没有可接收输入的可见窗口"
@@ -246,12 +297,32 @@ class WindowsInputBackend:
         delivery = self._delivery_for(target, action)
         detail, delivery = self._inject(target, action, delivery)
         detail["delivery"] = delivery
+        warning = self._delivery_warning(action, delivery)
+        if warning:
+            detail.setdefault("warning", warning)
         return InputResult(
             action=action.name,
             backend=self.name,
             window_pid=target.pid,
             window_title=target.title,
             detail=detail,
+        )
+
+    @staticmethod
+    def _delivery_warning(action: InputAction, delivery: str) -> str | None:
+        """PostMessage 回退通道对键盘 / 文本动作的可用性提示。
+
+        键盘消息只有真正处理 ``WM_KEY*`` / ``WM_CHAR`` 的程序（经典 Win32
+        控件、对话框）才会响应；Chrome、Electron、游戏等自绘界面通常忽略
+        该通道。这里给出提示，避免调用方误以为按键一定生效。
+        """
+        if delivery != "message" or not isinstance(action, (KeyAction, TextAction)):
+            return None
+        return (
+            "键盘 / 文本走 PostMessage 回退通道：只有处理 WM_KEY*/WM_CHAR 的"
+            "程序（经典 Win32 控件、对话框）会响应；Chrome、Electron、游戏等"
+            "自绘界面通常忽略该通道。若目标无响应，请让目标窗口取得前台后"
+            "用 method='sendinput' 重试"
         )
 
     def _inject(self, target: _TargetWindow, action: InputAction,
@@ -290,11 +361,21 @@ class WindowsInputBackend:
         return "message"
 
     def _ensure_foreground(self, target: _TargetWindow) -> bool:
+        """确保目标窗口是前台窗口（多轮激活 + 递增等待）。
+
+        Windows 前台锁定策略会拒绝后台进程的首次 ``SetForegroundWindow``
+        （刚启动、被最小化或系统正忙时尤其明显），因此按
+        ``_FOREGROUND_ATTEMPTS`` 轮重复激活，每轮后等待递增的时间再复核，
+        尽量在有限时间内拿到前台。
+        """
         if self._driver.is_foreground(target.handle):
             return True
-        self._driver.activate(target.handle)
-        self._driver.sleep(_ACTIVATE_SETTLE_SECONDS)
-        return self._driver.is_foreground(target.handle)
+        for attempt in range(_FOREGROUND_ATTEMPTS):
+            self._driver.activate(target.handle)
+            self._driver.sleep(_foreground_settle(attempt))
+            if self._driver.is_foreground(target.handle):
+                return True
+        return False
 
     # ── SendInput 路径 ───────────────────────────────────
 
@@ -309,9 +390,11 @@ class WindowsInputBackend:
         if isinstance(action, ScrollAction):
             return self._scroll_sendinput(frame, action)
         if isinstance(action, KeyAction):
-            return self._key_sendinput(action)
+            return self._inject_keyboard(
+                target, lambda: self._key_sendinput(action))
         if isinstance(action, TextAction):
-            return self._type_sendinput(action)
+            return self._inject_keyboard(
+                target, lambda: self._type_sendinput(action))
         raise ActionError(f"Windows 后端不支持的动作: {action.name}")  # pragma: no cover
 
     def _move_sendinput(self, frame: WindowFrame, action: MoveAction) -> dict:
@@ -386,15 +469,60 @@ class WindowsInputBackend:
         detail.update({"direction": action.direction, "amount": action.amount})
         return detail
 
+    def _inject_keyboard(self, target: _TargetWindow,
+                         inject: Callable[[], dict]) -> dict:
+        """键盘 / 文本注入的前后台确保与焦点复核。
+
+        SendInput 的键盘事件只会被**前台**窗口接收：注入前先把目标窗口置
+        前；注入后再复核前台，若焦点已被别的窗口抢走（注入瞬间被切换），
+        说明按键大概率落到了别的窗口，于是重新激活并重发（最多
+        ``_KEYBOARD_FOCUS_ATTEMPTS`` 次），仍失败则附带告警而不静默。
+        """
+        if not self._ensure_foreground(target):
+            raise InputError(
+                f"无法把窗口 {target.title or target.handle} 置于前台，"
+                f"SendInput 的键盘事件只被前台窗口接收，无法定向注入；"
+                f"可改用 method='message' 直接投递窗口消息"
+            )
+        detail = inject()
+        for _attempt in range(_KEYBOARD_FOCUS_ATTEMPTS):
+            if self._driver.is_foreground(target.handle):
+                return detail
+            logger.debug("键盘注入后目标窗口失去前台，重新激活并重发按键")
+            if not self._ensure_foreground(target):
+                break
+            detail = inject()
+        if not self._driver.is_foreground(target.handle):
+            detail["focus_warning"] = (
+                "按键注入后目标窗口未保持前台，按键可能被其它窗口接收；"
+                "可先让目标窗口取得焦点（例如点击其窗口区域）后重试"
+            )
+        return detail
+
     def _key_sendinput(self, action: KeyAction) -> dict:
         vk, implicit = resolve_windows_vk(action.shortcut.key)
         modifiers = self._merged_modifiers(action.shortcut.modifiers, implicit)
         vks = [_MODIFIER_VKS[name] for name in modifiers]
-        if action.phase == "down":
+        repeats = action.effective_repeat
+        for index in range(repeats):
+            if index:
+                self._driver.sleep(_KEY_REPEAT_INTERVAL)
+            self._press_shortcut(vks, vk, action.phase)
+        return {
+            "key": action.shortcut.display(),
+            "vk": vk,
+            "modifiers": list(modifiers),
+            "phase": action.phase,
+            "repeat": repeats,
+        }
+
+    def _press_shortcut(self, vks: list[int], vk: int, phase: str) -> None:
+        """发送一次完整按键（含修饰键的按下与逆序释放）。"""
+        if phase == "down":
             for name_vk in vks:
                 self._driver.key_event(name_vk, key_up=False)
             self._driver.key_event(vk, key_up=False)
-        elif action.phase == "up":
+        elif phase == "up":
             self._driver.key_event(vk, key_up=True)
             for name_vk in reversed(vks):
                 self._driver.key_event(name_vk, key_up=True)
@@ -407,12 +535,6 @@ class WindowsInputBackend:
             finally:
                 for name_vk in reversed(vks):
                     self._driver.key_event(name_vk, key_up=True)
-        return {
-            "key": action.shortcut.display(),
-            "vk": vk,
-            "modifiers": list(modifiers),
-            "phase": action.phase,
-        }
 
     def _type_sendinput(self, action: TextAction) -> dict:
         characters = 0
@@ -618,22 +740,27 @@ class WindowsInputBackend:
         # 加速键等只处理系统消息的程序收不到按下/弹起。
         down_msg, up_msg = _key_message_types(modifiers)
         vks = [_MODIFIER_VKS[name] for name in modifiers]
-        if action.phase in ("press", "down"):
-            for modifier_vk in vks:
-                self._driver.post(handle, down_msg, modifier_vk, 1)
-            self._driver.post(handle, down_msg, vk, 1)
-            for unit in _message_char_units(action.shortcut, modifiers):
-                self._driver.post(handle, winapi.WM_CHAR, unit, 1)
-        if action.phase in ("press", "up"):
-            self._driver.post(handle, up_msg, vk, _KEYUP_LPARAM)
-            for modifier_vk in reversed(vks):
-                self._driver.post(handle, up_msg, modifier_vk, _KEYUP_LPARAM)
+        repeats = action.effective_repeat
+        for index in range(repeats):
+            if index:
+                self._driver.sleep(_KEY_REPEAT_INTERVAL)
+            if action.phase in ("press", "down"):
+                for modifier_vk in vks:
+                    self._driver.post(handle, down_msg, modifier_vk, 1)
+                self._driver.post(handle, down_msg, vk, 1)
+                for unit in _message_char_units(action.shortcut, modifiers):
+                    self._driver.post(handle, winapi.WM_CHAR, unit, 1)
+            if action.phase in ("press", "up"):
+                self._driver.post(handle, up_msg, vk, _KEYUP_LPARAM)
+                for modifier_vk in reversed(vks):
+                    self._driver.post(handle, up_msg, modifier_vk, _KEYUP_LPARAM)
         return {
             "key": action.shortcut.display(),
             "vk": vk,
             "modifiers": list(modifiers),
             "phase": action.phase,
             "target_handle": handle,
+            "repeat": repeats,
         }
 
     def _type_message(self, target: _TargetWindow, action: TextAction) -> dict:
@@ -701,15 +828,25 @@ class WindowsInputBackend:
 
 # ── 窗口定位与坐标换算（模块级，便于复用与单测） ──────────
 
-def locate_window(pid: int) -> _TargetWindow | None:
-    """定位 ``pid``（含子进程）的主窗口，返回句柄与截图坐标系。"""
+def locate_window(pid: int, window: str | None = None) -> _TargetWindow | None:
+    """定位 ``pid``（含子进程）的目标窗口，返回句柄与截图坐标系。
+
+    Args:
+        pid: 目标进程 PID（含子进程一起参与窗口匹配）。
+        window: 窗口选择器（``main`` / ``active`` / ``#1`` / ``handle:0x…`` /
+            ``title:子串`` / ``popup`` / ``dialog``）；``None`` = 主窗口。
+
+    Raises:
+        SelectorError: 选择器非法或没有匹配窗口（进程树内有窗口但选不中）。
+    """
     winapi.ensure_process_dpi_aware()
     window_pids = resolve_window_pids(pid)
     if not window_pids:
         return None
-    candidate = select_window(enumerate_candidates(window_pids))
-    if candidate is None:
+    infos = enumerate_window_infos(window_pids)
+    if not infos:
         return None
+    candidate = pick_window(infos, window)
     return _TargetWindow(
         handle=candidate.handle,
         pid=candidate.pid,
@@ -753,6 +890,12 @@ def resolve_windows_vk(key: str) -> tuple[int, set[str]]:
     if char_vk is None:
         raise InputError(f"Windows 后端不支持按键: {key!r}")
     return char_vk, set()
+
+
+def _foreground_settle(attempt: int) -> float:
+    """第 ``attempt`` 轮前台激活后的等待时长（轮次越靠后等得越久）。"""
+    steps = _FOREGROUND_SETTLE_STEPS
+    return steps[min(max(attempt, 0), len(steps) - 1)]
 
 
 def _make_lparam(x: int, y: int) -> int:

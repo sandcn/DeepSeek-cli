@@ -27,7 +27,8 @@ import sys
 import time
 from dataclasses import dataclass
 
-from .._screenshot.macos import find_process_window
+from .._screenshot.macos import list_windows as list_platform_windows
+from .._screenshot.windows import pick_window
 from .action import (
     ClickAction,
     DragAction,
@@ -114,13 +115,18 @@ class MacOSInputBackend:
     def supports(self) -> bool:
         return sys.platform == "darwin"
 
-    def locate(self, pid: int) -> _MacTarget | None:
-        """定位 ``pid``（含子进程）的主窗口（无副作用；供路由决策与注入复用）。"""
+    def locate(self, pid: int, window: str | None = None) -> _MacTarget | None:
+        """定位 ``pid``（含子进程）的目标窗口（无副作用；供路由决策与注入复用）。
+
+        ``window`` 为窗口选择器（见 ``_screenshot.windows``）；缺省取主窗口。
+        """
+        if window:
+            return self._locate(pid, window)
         return self._locate(pid)
 
     def send(self, pid: int, action: InputAction) -> InputResult:
-        """向 ``pid`` 的窗口注入 ``action``，返回注入结果。"""
-        target = self.locate(pid)
+        """向 ``pid`` 的目标窗口注入 ``action``，返回注入结果。"""
+        target = self.locate(pid, getattr(action, "window", "") or None)
         if target is None:
             raise NoWindowError(
                 f"进程 {pid} 及其子进程没有可接收输入的可见窗口"
@@ -209,11 +215,14 @@ class MacOSInputBackend:
 
     def _key(self, action: KeyAction) -> dict:
         driver = self._keyboard
-        driver.key(action.shortcut, action.phase)
+        repeats = action.effective_repeat
+        for _index in range(repeats):
+            driver.key(action.shortcut, action.phase)
         return {
             "key": action.shortcut.display(),
             "modifiers": list(action.shortcut.modifiers),
             "phase": action.phase,
+            "repeat": repeats,
         }
 
     def _type(self, action: TextAction) -> dict:
@@ -544,16 +553,26 @@ class AppleScriptKeyboardDriver:
 
 # ── 定位与辅助（模块级，便于复用与单测） ────────────────────
 
-def locate_window(pid: int) -> _MacTarget | None:
-    """定位 ``pid``（含子进程）的主窗口。"""
-    window = find_process_window(pid)
-    if window is None:
+def locate_window(pid: int, window: str | None = None) -> _MacTarget | None:
+    """定位 ``pid``（含子进程）的目标窗口。
+
+    Args:
+        pid: 目标进程 PID（含子进程）。
+        window: 窗口选择器（``main`` / ``#1`` / ``title:子串`` 等）；
+            ``None`` = 主窗口。
+
+    Raises:
+        SelectorError: 选择器非法或没有匹配窗口。
+    """
+    infos = list_platform_windows(pid)
+    if not infos:
         return None
+    target = pick_window(infos, window)
     return _MacTarget(
-        number=window.number,
-        pid=window.pid,
-        title=window.title,
-        frame=WindowFrame(window.x, window.y, window.width, window.height),
+        number=(target.handle or None),
+        pid=target.pid,
+        title=target.title,
+        frame=WindowFrame(target.left, target.top, target.width, target.height),
     )
 
 

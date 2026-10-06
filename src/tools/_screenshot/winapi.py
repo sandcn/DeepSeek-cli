@@ -61,8 +61,25 @@ GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080
 DWMWA_CLOAKED = 14
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
+SW_HIDE = 0
+SW_SHOWNORMAL = 1
+SW_SHOWMINIMIZED = 2
+SW_MAXIMIZE = 3
+SW_SHOW = 5
+SW_MINIMIZE = 6
 SW_RESTORE = 9
+SW_SHOWMAXIMIZED = SW_MAXIMIZE
 MAX_PATH = 260
+
+# SetWindowPos 标志（窗口移动 / 缩放）
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
+SWP_SHOWWINDOW = 0x0040
+
+# 窗口消息（窗口控制路径）
+WM_CLOSE = 0x0010
 
 # ── 输入注入（鼠标 / 键盘）常量 ──────────────────────────
 # 供窗口输入后端复用：SendInput 合成真实输入事件作用于前台窗口；
@@ -74,6 +91,10 @@ KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 KEYEVENTF_SCANCODE = 0x0008
+
+# MapVirtualKeyW 的映射类型（补全扫描码，让目标程序拿到正确的 key code）
+MAPVK_VK_TO_VSC = 0
+MAPVK_VK_TO_VSC_EX = 4
 
 MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_LEFTDOWN = 0x0002
@@ -463,6 +484,8 @@ def user32():
     lib.GetClassNameW.restype = c_int32
     lib.ShowWindow.argtypes = [HWND, c_int32]
     lib.ShowWindow.restype = BOOL
+    lib.SetWindowPos.argtypes = [HWND, HWND, c_int32, c_int32, c_int32, c_int32, UINT]
+    lib.SetWindowPos.restype = BOOL
     lib.BringWindowToTop.argtypes = [HWND]
     lib.BringWindowToTop.restype = BOOL
     lib.SetForegroundWindow.argtypes = [HWND]
@@ -497,6 +520,8 @@ def user32():
     lib.WindowFromPoint.restype = HWND
     lib.VkKeyScanW.argtypes = [c_uint16]
     lib.VkKeyScanW.restype = c_int32
+    lib.MapVirtualKeyW.argtypes = [UINT, UINT]
+    lib.MapVirtualKeyW.restype = UINT
     lib.GetAncestor.argtypes = [HWND, UINT]
     lib.GetAncestor.restype = HWND
     lib.AttachThreadInput.argtypes = [DWORD, DWORD, BOOL]
@@ -616,6 +641,81 @@ def raise_window(hwnd) -> bool:
     except OSError:
         return ok
     return ok
+
+
+def show_window(hwnd, command: int) -> bool:
+    """执行 ``ShowWindow`` 命令（还原 / 最小化 / 最大化 / 显示）。
+
+    Args:
+        hwnd: 窗口句柄。
+        command: ``SW_*`` 常量（如 ``SW_RESTORE`` / ``SW_MAXIMIZE``）。
+
+    Returns:
+        调用是否成功（窗口状态是否实际改变由系统决定）。
+    """
+    try:
+        return bool(user32().ShowWindow(hwnd, int(command)))
+    except OSError:
+        return False
+
+
+def set_window_pos(hwnd, x: int, y: int, width: int, height: int,
+                   flags: int = SWP_NOZORDER | SWP_NOACTIVATE) -> bool:
+    """移动 / 缩放窗口（``SetWindowPos``，坐标为屏幕像素）。"""
+    try:
+        return bool(user32().SetWindowPos(
+            hwnd, None, int(x), int(y), int(width), int(height), int(flags)
+        ))
+    except OSError:
+        return False
+
+
+def is_window_visible(hwnd) -> bool:
+    """窗口是否可见（``IsWindowVisible``）。"""
+    try:
+        return bool(user32().IsWindowVisible(hwnd))
+    except OSError:
+        return False
+
+
+def is_window_minimized(hwnd) -> bool:
+    """窗口是否已最小化（``IsIconic``）。"""
+    try:
+        return bool(user32().IsIconic(hwnd))
+    except OSError:
+        return False
+
+
+def is_window(hwnd) -> bool:
+    """句柄是否为仍然存在的窗口（``IsWindow``）。"""
+    try:
+        return bool(user32().IsWindow(hwnd))
+    except OSError:
+        return False
+
+
+def close_window(hwnd) -> bool:
+    """请求窗口关闭（投递 ``WM_CLOSE``，等价于点标题栏关闭按钮）。"""
+    return post_message(hwnd, WM_CLOSE)
+
+
+def map_virtual_key(vk: int, map_type: int = MAPVK_VK_TO_VSC_EX) -> int:
+    """把虚拟键码映射为扫描码（失败返回 0）。
+
+    ``MAPVK_VK_TO_VSC_EX`` 对扩展键返回带 ``0xE000`` 前缀的扫描码，
+    调用方可据此设置 ``KEYEVENTF_EXTENDEDKEY``；合成键盘事件时带上扫描码，
+    目标程序（浏览器、游戏、DirectInput 程序）才能得到正确的物理键信息。
+    """
+    if not vk:
+        return 0
+    user = user32()
+    func = getattr(user, "MapVirtualKeyW", None)
+    if func is None:  # pragma: no cover - 旧系统
+        return 0
+    try:
+        return int(func(int(vk), int(map_type))) & 0xFFFF
+    except OSError:  # pragma: no cover - 依赖系统调用
+        return 0
 
 
 def window_pid(hwnd) -> int:

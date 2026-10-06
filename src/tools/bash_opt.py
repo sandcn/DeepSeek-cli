@@ -12,13 +12,21 @@ bash_opt — 按 task_id 操作后台 bash 任务
 - op=keys   向后台命令发送光标/键盘消息（自动路由：目标进程有 GUI 窗口时
             作为窗口级键盘消息注入该窗口，否则回退写入终端——跨平台
             ANSI/VT100 转义序列；支持 ctrl+c 等修饰键组合、esc/pageup 等
-            别名、单个字符与 f1-f20）
+            别名、单个字符与 f1-f24，repeat 可一次连按多次）
 - op=screenshot  把后台命令（及其子进程）的窗口截图保存为 PNG
-                 （path 参数指定文件路径，可选 crop 参数指定只截取的像素区域）
+                 （path 参数指定文件路径；可选 crop 指定只截取的像素区域，
+                 window 选择目标窗口，grid 叠加等距坐标参考线）
+- op=windows     列出该进程树的全部窗口（句柄 / 标题 / 类名 / 位置尺寸 /
+                 Z 序 / 是否前台 / 是否主窗口），用于挑选目标窗口
+- op=window      控制被选窗口的状态与几何（window_action=activate / maximize /
+                 minimize / restore / close / move / resize / fit），
+                 配合 window 选择器与 x/y/width/height
 - op=move / click / drag / scroll / key / type
                  向后台命令的 **GUI 窗口**注入鼠标 / 键盘 / 文本输入
-                 （鼠标按钮、双击、拖动、滚轮、组合键、任意 Unicode 文本；
-                  按键可分「按下 / 弹起 / 完整」阶段，见 phase 参数）
+                 （window 选择目标窗口、settle 注入后等待、shot 注入后自动截图；
+                  鼠标按钮、双击、拖动、滚轮、组合键、任意 Unicode 文本；
+                  按键可分「按下 / 弹起 / 完整」阶段，见 phase 参数，
+                  并用 repeat 一次连按多次）
 
 read 为**增量读取**：后台任务运行期间的每一行输出都会累积到内部缓冲，
 每次 read 取走当前全部累积内容并清空，适合实时观察长时任务（编译/下载/
@@ -32,15 +40,32 @@ crop='x,y,width,height' 只截取窗口内的像素区域（以整窗截图左�
 区域越界报错并提示窗口实际尺寸）。产物为 PNG，可用 read_image 查看画面。
 纯命令行进程没有窗口，此时返回可读的错误说明。
 
+多窗口选择（window 参数，截图 / 输入 op / 窗口控制通用）：一个 GUI 程序往往
+同时存在多个顶层窗口（主窗口、弹出菜单、下拉浮层、文件对话框），因此
+screenshot / 输入 op 都接受 window 选择器——'main'（缺省主窗口）、'active'
+（前台窗口）、'#N'（Z 序第 N 个，1 = 最靠前）、'handle:0x…'、'title:子串'、
+'class:子串'、'pid:1234'、'popup'（无标题弹层）、'dialog'（对话框）。
+op=windows 先给出窗口清单，再把同一个选择器用于截图或输入，即可精确操作
+这些独立顶层窗口（旧版只能操作面积最大的主窗口）。
+
+截图增强：grid 参数（如 grid=50）在产物上叠加等距参考线，读图后可精确换算
+像素坐标；结果 JSON 附带被截窗口的句柄 / 标题 / 候选窗口总数，便于确认选对
+了窗口。
+
 窗口输入（move/click/drag/scroll/key/type）同样按 task_id 定位该命令进程树
 的可见窗口，坐标以**窗口截图左上角**为原点（与 op=screenshot 产物一致，
 便于「先截图看清界面，再按像素点操作」）：click 支持左/右/中键与双击，
 drag 支持按住左/右/中键拖拽（带轨迹插值），scroll 支持上下左右滚动，
 key 支持 ctrl+shift+s 之类的组合键与「按下 / 弹起 / 完整」阶段（phase：
-press / down / up，各平台分别独立发送 down 与 up 消息），type 逐字符输入
-任意 Unicode 文本（每个字符发送配对的按下与弹起）。
+press / down / up，各平台分别独立发送 down 与 up 消息），repeat 参数可
+一次连按 N 次（如 repeat=8 连按 F12），type 逐字符输入任意 Unicode 文本
+（每个字符发送配对的按下与弹起）。
 Windows 用 SendInput（必要时回退 PostMessage 投递）、Linux 用 xdotool、
 macOS 用 Quartz/cliclick + osascript；平台工具缺失时返回带安装提示的错误。
+Windows 的键盘 / 文本注入会**多次重试取得前台**、注入后复核焦点并在被
+抢走时重新激活重发，SendInput 完全未投递时也会短期重试；若最终仍走
+PostMessage 回退通道（对 Chrome / Electron / 游戏等自绘界面常无效），
+结果里会附带 warning 说明。
 
 键盘消息跨平台说明：``op=keys`` 自动按被操作程序的形态选通道——目标进程
 （含其子进程）**有 GUI 窗口**时，按键作为窗口级键盘消息注入该窗口（与
@@ -72,10 +97,18 @@ from ._screenshot import (
     CropRegion,
     NoWindowError,
     ScreenshotError,
+    SelectorError,
     capture_process_window,
+    control_process_window,
+    describe_windows,
+    list_process_windows,
+    parse_control_request,
+    window_hint,
 )
 from ._window_input import (
+    DEFAULT_KEY_REPEAT,
     INPUT_OPS,
+    MAX_KEY_REPEAT,
     ActionError,
     InputError,
     NoWindowError as InputNoWindowError,
@@ -125,6 +158,8 @@ class BashOptFunc(Func):
 
     name = "bash_opt"
     _DEFAULT_WAIT_TIMEOUT: int = 300
+    #: 窗口目录 / 窗口控制 op（非输入注入，单独分派）
+    _WINDOW_OPS: tuple[str, ...] = ("windows", "window")
     #: 截图「等待窗口出现」的总时长（秒）：GUI 程序启动后窗口创建有延迟，
     #: 首轮未找到窗口时按 _SCREENSHOT_RETRY_INTERVAL 轮询重试。
     _SCREENSHOT_WAIT_SECONDS: float = 5.0
@@ -138,6 +173,14 @@ class BashOptFunc(Func):
     _INPUT_RETRY_INTERVAL: float = 1.0
     #: 单轮输入注入的硬超时（秒）——注入调用阻塞时兜底
     _INPUT_TIMEOUT: float = 30.0
+    #: 注入后自动截图（shot）时的默认等待（秒）——给界面留出刷新时间
+    _DEFAULT_SHOT_SETTLE: float = 0.2
+    #: 注入后等待（settle）的上限（秒）——避免误传超大值长期挂住
+    _MAX_SETTLE_SECONDS: float = 30.0
+    #: shot=true 时自动截图的输出目录（相对当前工作目录）
+    _SHOT_AUTO_DIR: str = "bash_opt_shots"
+    #: 连按（repeat）时终端序列的写入间隔（秒）——避免被程序合并成一次
+    _TERMINAL_KEY_REPEAT_INTERVAL: float = 0.05
 
     @classmethod
     def to_tool_schema(cls):
@@ -153,12 +196,18 @@ class BashOptFunc(Func):
                     "kill（杀进程树）、stdin（发文本到 stdin，需 text）、"
                     "keys（发送按键，需 key：目标进程有 GUI 窗口时自动作为窗口级"
                     "键盘消息注入该窗口，否则写入终端；支持 ctrl+c 等组合键、"
-                    "esc/pageup 等别名与单个字符）、"
+                    "esc/pageup 等别名与单个字符，repeat 可一次连按多次）、"
                     "screenshot（把该命令进程树的窗口截图存为 PNG，需 path，"
-                    "可选 crop 指定只截取的像素区域，格式 'x,y,width,height'）、"
+                    "可选 crop 指定只截取的像素区域，格式 'x,y,width,height'，"
+                    "可选 window 选择目标窗口（'#1'/'title:子串'/'popup' 等）、"
+                    "grid 叠加坐标参考线）、"
+                    "windows（列出该命令进程树的全部窗口及其句柄/标题/几何/Z 序）、"
+                    "window（控制窗口，window_action=activate/maximize/minimize/"
+                    "restore/close/move/resize/fit，用 window 选择目标窗口）、"
                     "move/click/drag/scroll/key/type（向该命令进程树的 GUI 窗口注入"
                     "鼠标移动/点击（左中右键、可双击）/拖动/滚轮/按键/文本，"
                     "key 支持 phase=press/down/up 的按下与弹起分离发送，"
+                    "window 可选目标窗口，shot 可注入后自动截图，"
                     "坐标以窗口截图左上角为原点且可用 screenshot 对照）。"
                     "task_id 必须是当前对话 bash 后台返回的 bg-xxx。返回：操作结果 JSON 或输出；失败以 ( 开头。"
                 ),
@@ -175,7 +224,8 @@ class BashOptFunc(Func):
                         "op": {
                             "type": "string",
                             "enum": ["read", "wait", "kill", "stdin", "keys",
-                                     "screenshot", *INPUT_OPS],
+                                     "screenshot", "windows", "window",
+                                     *INPUT_OPS],
                             "description": (
                                 "要执行的操作："
                                 "\n- read：读取后台命令当前已产生的全部输出并清空缓冲，"
@@ -198,6 +248,13 @@ class BashOptFunc(Func):
                                 "坐标以窗口截图左上角为原点（与 screenshot 产物一致），"
                                 "click/scroll 省略坐标时作用于窗口中心；"
                                 "键输入需 key，文本输入需 text；纯命令行进程没有窗口，会报错"
+                                "\n- windows：列出该后台任务进程树的全部窗口"
+                                "（句柄/标题/类名/位置尺寸/Z 序/是否前台/是否主窗口），"
+                                "用于挑选目标窗口（右键菜单、下拉浮层、对话框等独立顶层"
+                                "窗口都在其中）"
+                                "\n- window：控制窗口状态与几何（需 window_action="
+                                "activate/maximize/minimize/restore/close/move/resize/fit，"
+                                "配合 window 选择器指定目标窗口）"
                             ),
                         },
                         "timeout": {
@@ -240,6 +297,72 @@ class BashOptFunc(Func):
                                 "key（GUI 窗口）用同样的组合键文本，如 'ctrl+shift+s'、"
                                 "'alt+f4'、'enter'、'a'（支持 ctrl/alt/shift/meta "
                                 "修饰键、编辑与导航键、f1-f24、单个字符）。"
+                            ),
+                        },
+                        "window": {
+                            "type": "string",
+                            "description": (
+                                "目标窗口选择器（screenshot / 输入 op / window 通用；"
+                                "省略即主窗口）："
+                                "'main' 主窗口、'active' 当前前台窗口、"
+                                "'#N' 按 Z 序第 N 个（1 = 最靠前，如弹出的右键菜单、"
+                                "下拉浮层、对话框）、'handle:0x1a2b' 按平台窗口句柄、"
+                                "'title:子串' / 'class:子串' / 'pid:1234' 按属性匹配、"
+                                "'popup' 无标题弹层、'dialog' 对话框。"
+                                "先用 op=windows 查看窗口清单，再用同一选择器把截图 / "
+                                "输入投向任意窗口。"
+                            ),
+                        },
+                        "grid": {
+                            "type": "number",
+                            "description": (
+                                "仅 screenshot 可选：在截图上叠加等距坐标参考线，值为"
+                                "线间距像素（0 或缺省 = 按画面尺寸自动选约 10 格，"
+                                "如 grid=50 每 50 像素一条主线、每 25 像素一条次线），"
+                                "便于读图后精确给出 x/y 坐标。"
+                            ),
+                        },
+                        "shot": {
+                            "type": "string",
+                            "description": (
+                                "仅输入 op（click/move/drag/scroll/key/type）可选："
+                                "注入完成后自动截图，省去额外一次 screenshot 调用。"
+                                "取值为截图路径（无扩展名自动补 .png），或 true 表示"
+                                "自动命名到 'bash_opt_shots/' 目录。结果 JSON 的 "
+                                "screenshot 字段给出 path/width/height。"
+                            ),
+                        },
+                        "settle": {
+                            "type": "number",
+                            "description": (
+                                "仅输入 op 可选：注入后等待的秒数再返回（默认 0；"
+                                "指定 shot 时默认 0.2 秒），用于等界面完成刷新，"
+                                "避免截图拍到旧画面。"
+                            ),
+                        },
+                        "window_action": {
+                            "type": "string",
+                            "enum": ["activate", "maximize", "minimize", "restore",
+                                     "close", "move", "resize", "fit"],
+                            "description": (
+                                "仅 window 操作必填：窗口控制动作。activate 置前激活、"
+                                "maximize/minimize/restore 最大化/最小化/还原、"
+                                "close 请求关闭（等价点关闭按钮）、move 按屏幕坐标移动"
+                                "（需 x/y）、resize 调整尺寸（需 width/height）、"
+                                "fit 同时移动并调整尺寸（x/y/width/height 都要）。"
+                                "配合 window 选择器指定目标窗口。"
+                            ),
+                        },
+                        "width": {
+                            "type": "number",
+                            "description": (
+                                "仅 window 操作的 resize / fit：目标窗口宽度（像素）。"
+                            ),
+                        },
+                        "height": {
+                            "type": "number",
+                            "description": (
+                                "仅 window 操作的 resize / fit：目标窗口高度（像素）。"
                             ),
                         },
                         "path": {
@@ -369,6 +492,16 @@ class BashOptFunc(Func):
                                 "key='ctrl' 可单独按下/弹起修饰键本身。"
                             ),
                         },
+                        "repeat": {
+                            "type": "number",
+                            "description": (
+                                "key / keys 操作可选：连按次数（默认 1，最大 100）。"
+                                "一次调用连续发送 N 次完整按键，每次之间留固定间隔；"
+                                "仅在 phase='press'（默认）时生效，down/up 的长按"
+                                "阶段忽略该参数。用于「连按多次」场景（如连按 F12 "
+                                "开关调试工具），减少多次调用与中途失焦导致的漏按。"
+                            ),
+                        },
                     },
                     "required": ["task_id", "op"],
                 },
@@ -389,8 +522,25 @@ class BashOptFunc(Func):
             crop = arguments.get("crop")
             if crop:
                 extra = f"{extra} crop={crop}" if extra else f"crop={crop}"
+            window = arguments.get("window")
+            if window:
+                extra = f"{extra} window={window}" if extra else f"window={window}"
+            grid = arguments.get("grid")
+            if grid:
+                extra = f"{extra} grid={grid}" if extra else f"grid={grid}"
         elif op in INPUT_OPS:
             extra = cls._input_display(op, arguments)
+            window = arguments.get("window")
+            if window:
+                extra = f"{extra} window={window}" if extra else f"window={window}"
+            if arguments.get("shot"):
+                extra = f"{extra} shot" if extra else "shot"
+        elif op == "window":
+            action = str(arguments.get("window_action") or "")
+            window = arguments.get("window")
+            extra = f"{action} window={window}" if window else action
+        elif op == "windows":
+            extra = "窗口清单"
         display = f"{op} {task_id}"
         if extra:
             display += f" {cls._sanitize_display(extra)}"
@@ -435,7 +585,11 @@ class BashOptFunc(Func):
                  button: str | None = None, count=None, modifiers=None,
                  direction: str | None = None, amount=None,
                  duration=None, steps=None, method: str | None = None,
-                 phase: str | None = None):
+                 phase: str | None = None, repeat=None,
+                 window: str | None = None, grid=None,
+                 shot=None, settle=None,
+                 window_action: str | None = None,
+                 width=None, height=None):
         super().__init__()
         # task_id 归一化（防御 None/缺失）：模型传 {"task_id": null} 时
         # from_args 把 None 传入（默认值不生效），后续 startswith 崩溃。
@@ -480,6 +634,18 @@ class BashOptFunc(Func):
         self.method = method
         # 按键阶段（仅 key 生效）：press=按下并弹起（默认）/ down=只按下 / up=只弹起
         self.phase = phase
+        # 按键连按次数（仅 key / keys 生效，phase=press 时）：一次调用连按 N 次
+        self.repeat = repeat
+        # ── 目标窗口选择（screenshot / 输入 op / window 通用）──
+        self.window = window
+        # ── 截图增强 ──
+        self.grid = grid          # 坐标网格步长（0 = 自动；None/0 = 不画）
+        self.shot = shot          # 输入 op 注入后自动截图（路径或 True）
+        self.settle = settle      # 注入后等待秒数（None = 按 op 取默认）
+        # ── 窗口控制（op=window）──
+        self.window_action = window_action
+        self.width = width
+        self.height = height
 
     # ── execute ──────────────────────────────────────────
 
@@ -521,10 +687,14 @@ class BashOptFunc(Func):
             return await self._op_keys(rec)
         if self.op == "screenshot":
             return await self._op_screenshot(rec)
+        if self.op == "windows":
+            return await self._op_windows(rec)
+        if self.op == "window":
+            return await self._op_window(rec)
         if self.op in INPUT_OPS:
             return await self._op_input(rec)
         supported = "/".join(("read", "wait", "kill", "stdin", "keys",
-                              "screenshot", *INPUT_OPS))
+                              "screenshot", "windows", "window", *INPUT_OPS))
         return f"(未知操作: {self.op}。支持: {supported})"
 
     # ── op=read ──────────────────────────────────────────
@@ -684,17 +854,21 @@ class BashOptFunc(Func):
         if self.key is None:
             return "(keys 操作需要 key 参数指定按键，如 key='up' / key='ctrl_c')"
         key_text = str(self.key)
+        try:
+            repeat = self._resolve_key_repeat()
+        except ActionError as exc:
+            return f"(按键参数非法: {exc})"
         pid = rec.get("pid")
         window_pid = (pid if isinstance(pid, int) and not isinstance(pid, bool)
                       and pid > 0 else None)
         window_failure: str | None = None
         if window_pid is not None and probe_window(window_pid) is not None:
             try:
-                return await self._send_keys_to_window(window_pid, key_text)
+                return await self._send_keys_to_window(window_pid, key_text, repeat)
             except (InputNoWindowError, InputError) as exc:
                 # 探测到窗口但注入失败（窗口已关闭 / 无法置前等）：尝试终端回退
                 window_failure = str(exc)
-        ok, message = await self._send_keys_to_terminal(rec, key_text)
+        ok, message = await self._send_keys_to_terminal(rec, key_text, repeat)
         if ok:
             return message
         if window_failure is not None:
@@ -708,19 +882,50 @@ class BashOptFunc(Func):
                 f"若为 GUI 程序请等窗口出现后用 op=key 注入（可用 op=screenshot "
                 f"确认窗口状态）；纯命令行进程请确认已启动（可用 op=wait 查看状态）)")
 
-    async def _send_keys_to_window(self, pid: int, key_text: str) -> str:
+    def _resolve_key_repeat(self) -> int:
+        """解析 key / keys 的连按次数（缺省 1）。
+
+        Raises:
+            ActionError: 不是 1..MAX_KEY_REPEAT 之间的整数。
+        """
+        raw = self.repeat
+        if raw is None:
+            return DEFAULT_KEY_REPEAT
+        if isinstance(raw, bool):
+            raise ActionError(f"repeat 必须是整数，当前: {raw!r}")
+        if isinstance(raw, int):
+            value = raw
+        else:
+            text = str(raw).strip()
+            if not text:
+                return DEFAULT_KEY_REPEAT
+            try:
+                value = int(text)
+            except ValueError:
+                raise ActionError(f"repeat 必须是整数，当前: {raw!r}") from None
+        if not 1 <= value <= MAX_KEY_REPEAT:
+            raise ActionError(f"repeat 需在 1..{MAX_KEY_REPEAT} 之间，当前: {value}")
+        return value
+
+    async def _send_keys_to_window(self, pid: int, key_text: str,
+                                   repeat: int = DEFAULT_KEY_REPEAT) -> str:
         """把按键作为窗口级键盘消息注入目标 GUI 窗口。
 
         与 ``op=key`` 走同一条输入注入通道（Windows SendInput/PostMessage、
         X11 xdotool、macOS Quartz），键名规则亦共用；窗口创建有延迟时按
         :meth:`_send_input_with_retry` 的节奏重试。
 
+        Args:
+            pid: 目标进程 PID。
+            key_text: 按键文本（与 ``op=key`` 同一套键名规则）。
+            repeat: 连按次数（仅 ``phase=press`` 生效）。
+
         Raises:
             ActionError: 键名非法。
             InputNoWindowError: 注入时窗口已消失。
             InputError: 平台不支持或注入失败。
         """
-        action = build_action("key", {"key": key_text})
+        action = build_action("key", {"key": key_text, "repeat": repeat})
         result = await self._send_input_with_retry(pid, action)
         payload = {
             "task_id": self.task_id,
@@ -733,9 +938,15 @@ class BashOptFunc(Func):
         payload.update(result.to_dict())
         return json.dumps(payload, ensure_ascii=False)
 
-    async def _send_keys_to_terminal(self, rec: dict,
-                                     key_text: str) -> tuple[bool, str]:
+    async def _send_keys_to_terminal(self, rec: dict, key_text: str,
+                                     repeat: int = DEFAULT_KEY_REPEAT
+                                     ) -> tuple[bool, str]:
         """回退通道：按键转 ANSI/VT100 序列写入终端（PTY master / stdin）。
+
+        Args:
+            rec: 后台任务记录。
+            key_text: 按键文本（与 ``op=key`` 同一套键名规则）。
+            repeat: 连按次数（序列重复写入，每次之间留固定间隔）。
 
         Returns:
             ``(成功, 消息)``——成功时为提示文本，失败时为错误文本（解析失败
@@ -750,10 +961,16 @@ class BashOptFunc(Func):
                 f"alt+<字符>、shift+tab、单个字符；亦接受 esc/del/pageup/"
                 f"return/ins/pgdn 等别名)"
             )
-        ok, err = await self._write_to_task(rec, sequence.encode("utf-8"))
-        if not ok:
-            return False, err
-        return True, f"(已向后台任务 {self.task_id} 发送终端按键: {key_text})"
+        payload = sequence.encode("utf-8")
+        for index in range(max(int(repeat), 1)):
+            if index:
+                await asyncio.sleep(self._TERMINAL_KEY_REPEAT_INTERVAL)
+            ok, err = await self._write_to_task(rec, payload)
+            if not ok:
+                return False, err
+        suffix = "" if repeat == 1 else f" x{repeat}"
+        return True, (f"(已向后台任务 {self.task_id} 发送终端按键: "
+                      f"{key_text}{suffix})")
 
     @staticmethod
     def _plain(message: str) -> str:
@@ -782,6 +999,10 @@ class BashOptFunc(Func):
             crop = self._resolve_crop()
         except CropError as exc:
             return f"(截图裁剪参数非法: {exc})"
+        try:
+            grid = self._resolve_grid()
+        except CropError as exc:
+            return f"(截图网格参数非法: {exc})"
         pid = rec.get("pid")
         if pid is None:
             return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
@@ -791,17 +1012,23 @@ class BashOptFunc(Func):
         except ValueError as exc:
             return f"(截图路径非法: {exc})"
         try:
-            result = await self._capture_with_retry(pid, target_path, crop)
-        except ScreenshotError as exc:
+            result = await self._capture_with_retry(
+                pid, target_path, crop, window=self.window, grid=grid)
+        except (SelectorError, ScreenshotError) as exc:
             return f"(截图失败: {exc})"
         payload: dict = {"task_id": self.task_id, "op": "screenshot"}
         payload.update(result.to_dict())
+        notes = ["截图已保存"]
         if crop is not None:
             payload["crop"] = crop.to_dict()
-            payload["hint"] = ("截图已按 crop 裁剪并保存，"
-                               "可用 read_image 工具读取该文件查看画面")
-        else:
-            payload["hint"] = "截图已保存，可用 read_image 工具读取该文件查看画面"
+            notes.append("已按 crop 裁剪")
+        if grid is not None:
+            payload["grid"] = grid
+            notes.append("已叠加坐标参考线")
+        if self.window:
+            payload["window"] = str(self.window)
+        payload["hint"] = ("，".join(notes) +
+                           "，可用 read_image 工具读取该文件查看画面")
         return json.dumps(payload, ensure_ascii=False)
 
     def _resolve_crop(self) -> CropRegion | None:
@@ -815,25 +1042,63 @@ class BashOptFunc(Func):
             return None
         return CropRegion.parse(str(raw))
 
+    def _resolve_grid(self) -> int | None:
+        """解析 grid 参数为网格步长（省略 → None 不画；``0`` / true → 自动）。
+
+        Raises:
+            CropError: 取值不是数值。
+        """
+        raw = self.grid
+        if raw is None:
+            return None
+        if isinstance(raw, bool):
+            return 0 if raw else None
+        text = str(raw).strip()
+        if not text:
+            return None
+        try:
+            value = int(float(text))
+        except (TypeError, ValueError):
+            raise CropError(f"grid 需要数值（0 = 自动选择步长），当前: {raw!r}") from None
+        return max(value, 0)
+
     async def _capture_with_retry(self, pid: int, path: str,
-                                  crop: CropRegion | None = None):
+                                  crop: CropRegion | None = None,
+                                  *, window: str | None = None,
+                                  grid: int | None = None):
         """截图（GUI 程序窗口创建有延迟时轮询重试）。
 
         仅在「目标暂无可见窗口」时重试（NoWindowError）；其它错误（含
-        裁剪参数越界的 CropError）立即返回。每轮截图在线程中执行
+        裁剪参数越界、窗口选择器无匹配）立即返回。每轮截图在线程中执行
         （GDI 调用阻塞），并受 _SCREENSHOT_TIMEOUT 保护。
+
+        Args:
+            pid: 目标进程 PID。
+            path: 输出 PNG 路径。
+            crop: 可选裁剪区域。
+            window: 可选窗口选择器（缺省 = 主窗口）。
+            grid: 可选网格步长（``None`` = 不画）。
 
         Returns:
             CaptureResult（成功后）。
 
         Raises:
             ScreenshotError: 所有重试均失败，截图命令超时/异常，或裁剪越界。
+            SelectorError: 窗口选择器无匹配窗口。
         """
+        kwargs: dict = {}
+        if crop is not None:
+            kwargs["crop"] = crop
+        if window:
+            kwargs["window"] = window
+        if grid is not None:
+            kwargs["grid"] = grid
         deadline = time.monotonic() + self._SCREENSHOT_WAIT_SECONDS
         while True:
             try:
                 return await asyncio.wait_for(
-                    asyncio.to_thread(capture_process_window, pid, path, crop),
+                    asyncio.to_thread(
+                        lambda: capture_process_window(pid, path, **kwargs)),
                     timeout=self._SCREENSHOT_TIMEOUT,
                 )
             except NoWindowError as exc:
@@ -874,12 +1139,14 @@ class BashOptFunc(Func):
     # ── op=窗口输入（move/click/drag/scroll/key/type） ────
 
     async def _op_input(self, rec: dict) -> str:
-        """向后台任务的 GUI 窗口注入鼠标 / 键盘 / 文本输入。
+        """向后台任务的目标 GUI 窗口注入鼠标 / 键盘 / 文本输入。
 
         坐标以窗口截图左上角为原点（与 op=screenshot 产物一致），便于
-        「先截图看清界面，再按像素点操作」。结果返回 JSON（task_id/op 与
-        动作细节如按钮、坐标、屏幕坐标、按键序列、投递方式），可用
-        op=screenshot + read_image 核对界面变化。
+        「先截图看清界面，再按像素点操作」。``window`` 可把输入投向指定窗口
+        （右键菜单、下拉浮层、对话框等独立顶层窗口）；``settle`` 在注入后等待
+        指定秒数再返回；``shot`` 在注入后自动截图并把结果放进返回 JSON，省去
+        额外一次 screenshot 调用。结果返回 JSON（task_id/op 与动作细节如按钮、
+        坐标、屏幕坐标、按键序列、投递方式）。
         """
         pid = rec.get("pid")
         if pid is None:
@@ -890,8 +1157,12 @@ class BashOptFunc(Func):
         except ActionError as exc:
             return f"(输入参数非法: {exc})"
         try:
+            settle = self._resolve_settle()
+        except ValueError as exc:
+            return f"(输入参数非法: {exc})"
+        try:
             result = await self._send_input_with_retry(pid, action)
-        except (InputNoWindowError, InputError) as exc:
+        except (InputNoWindowError, InputError, SelectorError) as exc:
             return f"(输入失败: {exc})"
         payload = {
             "task_id": self.task_id,
@@ -900,6 +1171,150 @@ class BashOptFunc(Func):
                      "（坐标原点为窗口截图左上角）"),
         }
         payload.update(result.to_dict())
+        if settle:
+            await asyncio.sleep(settle)
+        shot_error = await self._attach_shot(payload, rec)
+        if shot_error:
+            payload["screenshot_error"] = shot_error
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _resolve_settle(self) -> float:
+        """解析注入后等待时长（秒）：未指定时「带 shot」默认等一小会儿。
+
+        Raises:
+            ValueError: 取值非法（非数值或为负）。
+        """
+        raw = self.settle
+        if raw is None:
+            return self._DEFAULT_SHOT_SETTLE if self.shot else 0.0
+        if isinstance(raw, bool):
+            raise ValueError("settle 需要数值（秒）")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"settle 需要数值（秒），当前: {raw!r}") from None
+        if math.isnan(value) or value < 0:
+            raise ValueError(f"settle 不能为负数，当前: {raw!r}")
+        return min(value, self._MAX_SETTLE_SECONDS)
+
+    def _shot_path(self) -> str:
+        """解析 shot 参数为截图路径（``true`` 等占位值 → 自动命名）。"""
+        raw = self.shot
+        auto = raw is True
+        if not auto and isinstance(raw, str) and raw.strip().lower() in (
+                "true", "auto", "yes", "on"):
+            auto = True
+        if auto:
+            stamp = time.strftime("%H%M%S")
+            return os.path.join(self._SHOT_AUTO_DIR, f"{self.task_id}-{stamp}.png")
+        return str(raw or "").strip()
+
+    async def _attach_shot(self, payload: dict, rec: dict) -> str | None:
+        """输入 op 的 shot 参数：注入后自动截图，结果写入 ``payload["screenshot"]``。
+
+        Returns:
+            失败原因（成功或未启用时返回 None）；截图失败不影响注入结果。
+        """
+        if not self.shot:
+            return None
+        path = self._shot_path()
+        if not path:
+            return "shot 需要截图路径（或 true 自动命名到 bash_opt_shots/）"
+        try:
+            target_path = self._prepare_screenshot_path(path)
+        except ValueError as exc:
+            return f"截图路径非法: {exc}"
+        pid = rec.get("pid")
+        if pid is None:
+            return "任务尚无进程句柄，无法截图"
+        try:
+            grid = self._resolve_grid()
+        except CropError as exc:
+            return f"截图网格参数非法: {exc}"
+        try:
+            result = await self._capture_with_retry(
+                pid, target_path, None, window=self.window, grid=grid)
+        except (SelectorError, ScreenshotError) as exc:
+            return f"截图失败: {exc}"
+        payload["screenshot"] = result.to_dict()
+        payload["hint"] = (f"{payload.get('hint', '')}；已自动截图，"
+                           f"可用 read_image 读取 screenshot.path")
+        return None
+
+    # ── op=windows / op=window ───────────────────────────
+
+    async def _op_windows(self, rec: dict) -> str:
+        """列出后台任务进程树的全部窗口（挑选目标窗口 / 排查窗口问题用）。
+
+        返回 JSON（total + windows 列表）：每个窗口含句柄、标题、类名、位置
+        尺寸、Z 序（``order``，0 = 最靠前）、是否前台 / 最小化 / 主窗口。模型
+        据此把 ``window`` 选择器用于 screenshot / 输入 op / 窗口控制，即可精确
+        操作弹出菜单、下拉浮层、对话框等独立顶层窗口。
+        """
+        pid = rec.get("pid")
+        if pid is None:
+            return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
+                    f"无法枚举窗口。可用 op=wait 查看任务状态)")
+        try:
+            infos = await asyncio.wait_for(
+                asyncio.to_thread(list_process_windows, pid),
+                timeout=self._INPUT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            return (f"(枚举窗口超时（超过 {self._INPUT_TIMEOUT:g} 秒）："
+                    f"系统窗口枚举无响应")
+        payload = {
+            "task_id": self.task_id,
+            "op": "windows",
+            "pid": pid,
+            "total": len(infos),
+            "windows": describe_windows(infos),
+        }
+        if infos:
+            payload["hint"] = ("用 window 参数把 screenshot / 输入 op 投向指定窗口："
+                               "'main'（缺省主窗口）、'#1'（Z 序最靠前，如右键菜单、"
+                               "下拉浮层）、'active'（前台窗口）、'title:子串'、"
+                               "'class:子串'、'handle:0x…'、'popup'、'dialog'")
+            payload["summary"] = window_hint(infos)
+        else:
+            payload["hint"] = ("未找到可见窗口（纯命令行进程没有 GUI 窗口；"
+                               "窗口已最小化或被隐藏时也找不到）")
+        return json.dumps(payload, ensure_ascii=False)
+
+    async def _op_window(self, rec: dict) -> str:
+        """控制被选窗口的状态与几何（激活 / 最大化 / 最小化 / 还原 / 关闭 / 移动 / 缩放）。
+
+        配合 ``window`` 选择器指定目标窗口，``window_action`` 指定动作；
+        ``move`` / ``fit`` 用 ``x`` / ``y``（屏幕坐标），``resize`` / ``fit`` 用
+        ``width`` / ``height``。返回动作前后的窗口状态，便于确认结果。
+        """
+        pid = rec.get("pid")
+        if pid is None:
+            return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
+                    f"无法控制窗口。可用 op=wait 查看任务状态)")
+        try:
+            request = parse_control_request(
+                self.window_action, window=self.window, x=self.x, y=self.y,
+                width=self.width, height=self.height,
+            )
+        except SelectorError as exc:
+            return f"(窗口控制参数非法: {exc})"
+        try:
+            detail = await asyncio.wait_for(
+                asyncio.to_thread(control_process_window, pid, request),
+                timeout=self._INPUT_TIMEOUT,
+            )
+        except (SelectorError, ScreenshotError) as exc:
+            return f"(窗口控制失败: {exc})"
+        except asyncio.TimeoutError:
+            return (f"(窗口控制超时（超过 {self._INPUT_TIMEOUT:g} 秒）：窗口无响应")
+        payload = {
+            "task_id": self.task_id,
+            "op": "window",
+            "hint": ("窗口状态已变更；可用 op=screenshot（可带 window 选择器）"
+                     "截图核对，或继续用输入 op 操作"),
+        }
+        payload.update(detail)
         return json.dumps(payload, ensure_ascii=False)
 
     def _build_input_action(self):
@@ -916,6 +1331,8 @@ class BashOptFunc(Func):
             "direction": self.direction, "amount": self.amount,
             "duration": self.duration, "steps": self.steps,
             "method": self.method, "phase": self.phase,
+            "repeat": self.repeat,
+            "window": self.window,
         }
         return build_action(self.op, params)
 

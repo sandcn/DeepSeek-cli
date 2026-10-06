@@ -30,3 +30,10 @@ Thumbs.db
 google_shot*.png
 step2.png
 shots/
+
+# Chrome 测试临时 profile 与探针脚本（本地验证产物，不入库）
+.chrome-gui-test/
+.chrome-test-profile2/
+.chrome-test-profile3/
+test_chrome/
+tests/_probe_renderer_tmp.py

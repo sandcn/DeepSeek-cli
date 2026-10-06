@@ -28,13 +28,23 @@ from __future__ import annotations
 import ctypes
 import logging
 import time
-from dataclasses import dataclass
 
+from . import grid as grid_module
 from . import png, proctree, transform, winapi
 from .result import CaptureResult, NoWindowError, ScreenshotError
 from .transform import CropError, CropRegion
+from .windows import (
+    WindowControlRequest,
+    WindowInfo,
+    main_window,
+    mark_main,
+    pick_window,
+)
 
 logger = logging.getLogger(__name__)
+
+#: 兼容别名：窗口候选就是通用窗口描述（选择规则在 ``windows`` 模块统一实现）
+WindowCandidate = WindowInfo
 
 #: 系统外壳窗口类（桌面 / 任务栏等）——即使属于目标进程也不作为截图目标
 SHELL_WINDOW_CLASSES = frozenset({
@@ -53,46 +63,18 @@ _MAX_TREE_DEPTH = 32
 #: 前置窗口后等待重绘的时间（秒）——BitBlt 回退前让画面刷新
 _RAISE_SETTLE_SECONDS = 0.25
 
-
-@dataclass
-class WindowCandidate:
-    """候选窗口（可排序选择，纯数据便于单测）。"""
-
-    handle: int
-    pid: int
-    title: str
-    class_name: str
-    width: int
-    height: int
-    tool_window: bool = False
-    minimized: bool = False
-    #: 窗口矩形左上角的屏幕坐标（用于换算 DWM 可见边界的裁边偏移）
-    left: int = 0
-    top: int = 0
-
-    @property
-    def area(self) -> int:
-        return self.width * self.height
+#: 窗口控制（移动 / 缩放 / 最大化等）后等待状态生效的时间（秒）
+_CONTROL_SETTLE_SECONDS = 0.15
 
 
-def select_window(candidates: list[WindowCandidate]) -> WindowCandidate | None:
-    """从候选窗口中选择最可能的「主窗口」。
+def select_window(candidates: list[WindowInfo]) -> WindowInfo | None:
+    """从候选窗口中选择最可能的「主窗口」（保留自早期接口）。
 
     排序优先级：非工具窗口 > 未最小化 > 有标题 > 面积大 > 进程号小
-    （后两项保证结果稳定）。
+    （后两项保证结果稳定）。选择规则现由 ``windows.main_window`` 统一实现，
+    截图与输入注入共用同一套语义。
     """
-    if not candidates:
-        return None
-    return max(
-        candidates,
-        key=lambda item: (
-            not item.tool_window,
-            not item.minimized,
-            bool(item.title.strip()),
-            item.area,
-            -item.pid,
-        ),
-    )
+    return main_window(candidates)
 
 
 class WindowsBackend:
@@ -104,11 +86,26 @@ class WindowsBackend:
         return winapi.is_windows_platform()
 
     def capture(self, pid: int, path: str,
-                crop: CropRegion | None = None) -> CaptureResult:
+                crop: CropRegion | None = None,
+                window: str | None = None,
+                grid: int | None = None) -> CaptureResult:
         """截取 ``pid``（及其子进程）的窗口到 ``path``（PNG）。
 
-        ``crop`` 非空时只写出指定像素区域（在内存 BGRA 上裁剪后再编码，
-        无需解码 PNG）；区域越界抛 ``CropError``。
+        Args:
+            pid: 目标进程 PID（含子进程一起参与窗口匹配）。
+            path: 输出 PNG 路径。
+            crop: 可选裁剪区域（在内存 BGRA 上裁剪后再编码，无需解码 PNG）；
+                区域越界抛 ``CropError``。
+            window: 可选窗口选择器（见 ``windows`` 模块；缺省 = 主窗口）。
+                选择器无匹配时抛 ``SelectorError``。
+            grid: 可选坐标网格步长（像素，``0`` = 自动）；非空时在产物上
+                叠加参考线，便于读图定位坐标。
+
+        Raises:
+            NoWindowError: 进程树内没有可截图的可见窗口。
+            SelectorError: 窗口选择器非法或没有匹配窗口。
+            CropError: 裁剪区域越界。
+            ScreenshotError: 抓取或落盘失败。
         """
         # 高 DPI 显示器上必须先让进程感知 DPI：否则 GetWindowRect 返回被
         # 虚拟化缩小的坐标，而 PrintWindow/BitBlt 输出物理像素，按该尺寸
@@ -125,9 +122,7 @@ class WindowsBackend:
                 f"进程 {pid} 及其子进程没有可截图的可见窗口（纯命令行进程无 GUI 窗口；"
                 f"窗口已最小化/被隐藏时也找不到）"
             )
-        target = select_window(candidates)
-        if target is None:  # pragma: no cover - candidates 非空时不会发生
-            raise NoWindowError(f"进程 {pid} 没有可用的截图窗口")
+        target = pick_window(candidates, window)
         bgra, width, height = capture_window_pixels(target)
         # 去掉 Win10 DWM 为阴影/缩放预留的不可见边框（截图后呈黑边）
         trim = visible_region(target)
@@ -137,6 +132,8 @@ class WindowsBackend:
         if crop is not None:
             bgra = transform.crop_bgra(bgra, width, height, crop)
             width, height = crop.width, crop.height
+        if grid is not None:
+            bgra = grid_module.draw_grid_bgra(bgra, width, height, int(grid))
         data = png.encode_png_bgra(width, height, bgra)
         with open(path, "wb") as handle:
             handle.write(data)
@@ -147,7 +144,17 @@ class WindowsBackend:
             window_pid=target.pid,
             window_title=target.title,
             backend=self.name,
+            window_handle=target.handle,
+            windows_total=len(candidates),
         )
+
+    def list_windows(self, pid: int) -> list[WindowInfo]:
+        """枚举该进程树的全部可操作窗口（``op=windows`` 数据源）。"""
+        return list_windows(pid)
+
+    def control(self, pid: int, request: WindowControlRequest) -> dict:
+        """对被选窗口执行激活 / 最大化 / 最小化 / 还原 / 关闭 / 移动 / 缩放。"""
+        return control_window(pid, request)
 
 
 def resolve_window_pids(pid: int) -> set[int]:
@@ -196,16 +203,19 @@ def _expand_windows_descendants(root_pids: set[int]) -> set[int]:
     return result
 
 
-def enumerate_candidates(window_pids: set[int]) -> list[WindowCandidate]:
-    """枚举属于 ``window_pids`` 的可截图顶层窗口。"""
+def enumerate_window_infos(window_pids: set[int]) -> list[WindowInfo]:
+    """枚举属于 ``window_pids`` 的可操作顶层窗口（按 Z 序，含前台标记）。
+
+    ``EnumWindows`` 的枚举顺序即 Z 序（越靠前 = 越靠上），因此列表下标可直接
+    作为 ``order``；这样 ``#1`` 这类选择器能命中刚弹出的菜单 / 下拉浮层。
+    """
     user = winapi.user32()
-    candidates: list[WindowCandidate] = []
-    for hwnd in winapi.enum_children_windows():
+    infos: list[WindowInfo] = []
+    for order, hwnd in enumerate(winapi.enum_children_windows()):
         window_pid = winapi.window_pid(hwnd)
         if window_pid not in window_pids:
             continue
-        if not user.IsWindowVisible(hwnd):
-            continue
+        visible = bool(user.IsWindowVisible(hwnd))
         left, top, right, bottom = winapi.window_rect(hwnd)
         width, height = right - left, bottom - top
         if width <= 0 or height <= 0:
@@ -218,19 +228,116 @@ def enumerate_candidates(window_pids: set[int]) -> list[WindowCandidate]:
         if winapi.window_is_hung(hwnd):
             logger.debug("跳过无响应窗口 hwnd=%s", hwnd)
             continue
-        candidates.append(WindowCandidate(
+        infos.append(WindowInfo(
             handle=hwnd,
             pid=window_pid,
             title=winapi.window_text(hwnd),
             class_name=class_name,
             width=width,
             height=height,
-            tool_window=winapi.window_is_toolwindow(hwnd),
-            minimized=bool(user.IsIconic(hwnd)),
             left=left,
             top=top,
+            tool_window=winapi.window_is_toolwindow(hwnd),
+            minimized=bool(user.IsIconic(hwnd)),
+            visible=visible,
+            foreground=winapi.is_foreground(hwnd),
+            order=order,
         ))
-    return candidates
+    return mark_main(infos)
+
+
+def enumerate_candidates(window_pids: set[int]) -> list[WindowInfo]:
+    """枚举属于 ``window_pids`` 的可截图顶层窗口（兼容旧接口）。"""
+    return enumerate_window_infos(window_pids)
+
+
+def list_windows(pid: int) -> list[WindowInfo]:
+    """返回 ``pid`` 及其子进程的全部可操作窗口（``op=windows`` 的数据源）。"""
+    winapi.ensure_process_dpi_aware()
+    window_pids = resolve_window_pids(pid)
+    if not window_pids:
+        return []
+    return enumerate_window_infos(window_pids)
+
+
+def control_window(pid: int, request: WindowControlRequest) -> dict:
+    """对 ``pid`` 进程树中被选中的窗口执行状态 / 几何控制。
+
+    支持激活（置前）、最大化、最小化、还原、关闭请求，以及按屏幕坐标移动 /
+    缩放窗口；返回动作前后的窗口状态，便于确认结果（例如调整窗口大小后，
+    输入坐标与截图尺寸都更可预测）。
+
+    Raises:
+        NoWindowError: 进程树内没有可操作窗口。
+        SelectorError: 窗口选择器非法或没有匹配窗口。
+    """
+    winapi.ensure_process_dpi_aware()
+    window_pids = resolve_window_pids(pid)
+    infos = enumerate_window_infos(window_pids) if window_pids else []
+    if not infos:
+        raise NoWindowError(
+            f"进程 {pid} 及其子进程没有可操作窗口（纯命令行进程无 GUI 窗口；"
+            f"窗口已最小化/被隐藏时也找不到）"
+        )
+    target = pick_window(infos, request.selector)
+    action = request.action
+    before = window_state(target.handle)
+    if action == "activate":
+        winapi.set_foreground(target.handle)
+    elif action == "maximize":
+        winapi.show_window(target.handle, winapi.SW_MAXIMIZE)
+    elif action == "minimize":
+        winapi.show_window(target.handle, winapi.SW_MINIMIZE)
+    elif action == "restore":
+        winapi.show_window(target.handle, winapi.SW_RESTORE)
+    elif action == "close":
+        winapi.close_window(target.handle)
+    elif action == "move":
+        winapi.set_window_pos(
+            target.handle, int(request.x), int(request.y), 0, 0,
+            winapi.SWP_NOSIZE | winapi.SWP_NOZORDER | winapi.SWP_NOACTIVATE,
+        )
+    elif action == "resize":
+        winapi.set_window_pos(
+            target.handle, 0, 0, int(request.width), int(request.height),
+            winapi.SWP_NOMOVE | winapi.SWP_NOZORDER | winapi.SWP_NOACTIVATE,
+        )
+    elif action == "fit":  # pragma: no branch - 动作集合由上层校验
+        winapi.set_window_pos(
+            target.handle, int(request.x), int(request.y),
+            int(request.width), int(request.height),
+            winapi.SWP_NOZORDER | winapi.SWP_NOACTIVATE,
+        )
+    time.sleep(_CONTROL_SETTLE_SECONDS)
+    after = window_state(target.handle)
+    detail = {
+        "window_action": action,
+        "handle": target.handle,
+        "handle_hex": target.handle_hex,
+        "window_title": target.title,
+        "before": before,
+        "after": after,
+    }
+    if action == "activate":
+        detail["foreground"] = winapi.is_foreground(target.handle)
+    return detail
+
+
+def window_state(handle) -> dict:
+    """读取窗口当前状态（几何 + 最小化 / 可见 / 前台 / 存在性）。"""
+    if not winapi.is_window(handle):
+        return {"exists": False}
+    left, top, right, bottom = winapi.window_rect(handle)
+    return {
+        "exists": True,
+        "x": left,
+        "y": top,
+        "width": right - left,
+        "height": bottom - top,
+        "minimized": winapi.is_window_minimized(handle),
+        "visible": winapi.is_window_visible(handle),
+        "foreground": winapi.is_foreground(handle),
+    }
 
 
 def visible_region(candidate: WindowCandidate) -> CropRegion | None:
@@ -347,8 +454,12 @@ __all__ = [
     "WindowCandidate",
     "WindowsBackend",
     "capture_window_pixels",
+    "control_window",
     "enumerate_candidates",
+    "enumerate_window_infos",
+    "list_windows",
     "resolve_window_pids",
     "select_window",
     "visible_region",
+    "window_state",
 ]

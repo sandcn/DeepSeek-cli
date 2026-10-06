@@ -23,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Mapping, Union
 
+from .._screenshot.windows import SelectorError, parse_selector
 from .keys import MODIFIER_ORDER, Shortcut, parse_modifiers, parse_shortcut
 from .result import ActionError
 
@@ -55,6 +56,11 @@ INPUT_OPS: tuple[str, ...] = ("click", "move", "drag", "scroll", "key", "type")
 KEY_PHASES: tuple[str, ...] = ("press", "down", "up")
 DEFAULT_KEY_PHASE = "press"
 
+#: ``key`` 动作的重复次数：一次调用连按 N 次，避免「多次调用之间窗口失焦 /
+#: 链路中断」导致漏按。仅对 ``phase='press'``（完整按键）生效。
+DEFAULT_KEY_REPEAT = 1
+MAX_KEY_REPEAT = 100
+
 #: ``phase`` 参数别名 → 规范阶段
 KEY_PHASE_ALIASES: dict[str, str] = {
     "press": "press", "click": "press", "tap": "press", "full": "press",
@@ -83,6 +89,8 @@ class MoveAction:
     y: int
     modifiers: tuple[str, ...] = ()
     method: str = DEFAULT_METHOD
+    #: 目标窗口选择器（空串 = 主窗口；见 ``windows`` 模块）
+    window: str = ""
 
 
 @dataclass(frozen=True)
@@ -96,6 +104,7 @@ class ClickAction:
     y: int | None = None
     modifiers: tuple[str, ...] = ()
     method: str = DEFAULT_METHOD
+    window: str = ""
 
 
 @dataclass(frozen=True)
@@ -112,6 +121,7 @@ class DragAction:
     steps: int = DEFAULT_DRAG_STEPS
     modifiers: tuple[str, ...] = ()
     method: str = DEFAULT_METHOD
+    window: str = ""
 
 
 @dataclass(frozen=True)
@@ -125,16 +135,32 @@ class ScrollAction:
     y: int | None = None
     modifiers: tuple[str, ...] = ()
     method: str = DEFAULT_METHOD
+    window: str = ""
 
 
 @dataclass(frozen=True)
 class KeyAction:
-    """键盘按键（可带修饰键；``phase`` 区分按下 / 弹起 / 完整按键）。"""
+    """键盘按键（可带修饰键；``phase`` 区分按下 / 弹起 / 完整按键）。
+
+    ``repeat`` 为连按次数（``phase='press'`` 时生效），用于一次调用完成
+    「连按 N 次」而不必多次调用。
+    """
 
     name: ClassVar[str] = "key"
     shortcut: Shortcut = field(default_factory=lambda: Shortcut((), "enter"))
     phase: str = DEFAULT_KEY_PHASE
     method: str = DEFAULT_METHOD
+    repeat: int = DEFAULT_KEY_REPEAT
+    window: str = ""
+
+    @property
+    def effective_repeat(self) -> int:
+        """实际重复次数：仅 ``press``（完整按键）阶段支持连按。
+
+        ``down`` / ``up`` 是长按语义的「按下 / 弹起分离」，重复发送同一个
+        阶段没有意义（会产生按键自动重复或悬空弹起），故恒为 1。
+        """
+        return self.repeat if self.phase == "press" else 1
 
 
 @dataclass(frozen=True)
@@ -144,6 +170,7 @@ class TextAction:
     name: ClassVar[str] = "type"
     text: str = ""
     method: str = DEFAULT_METHOD
+    window: str = ""
 
 
 InputAction = Union[MoveAction, ClickAction, DragAction, ScrollAction,
@@ -260,6 +287,29 @@ def _phase_arg(params: Mapping[str, Any]) -> str:
     return phase
 
 
+def _window_arg(params: Mapping[str, Any]) -> str:
+    """取目标窗口选择器（空串 = 主窗口；见 ``_screenshot.windows``）。
+
+    ``window`` 支持 ``main`` / ``active`` / ``#N`` / ``handle:0x…`` /
+    ``title:子串`` / ``class:子串`` / ``popup`` / ``dialog``；格式非法时
+    在构建动作阶段即报错，避免把错误留到注入时才发现。
+
+    Raises:
+        ActionError: 选择器格式非法。
+    """
+    raw = _raw(params, "window", "target_window", "window_selector")
+    if raw is None:
+        return ""
+    text = str(raw).strip()
+    if not text:
+        return ""
+    try:
+        parse_selector(text)
+    except SelectorError as exc:
+        raise ActionError(f"窗口选择器非法: {exc}") from exc
+    return text
+
+
 def _point_args(params: Mapping[str, Any], *, label: str = "坐标") -> Point | None:
     """取可选的 (x, y) 点：都缺省返回 None，只给一个报错。"""
     x = _raw(params, "x")
@@ -310,7 +360,8 @@ def _build_move(params: dict) -> MoveAction:
         raise ActionError("move 需要 x 与 y 参数指定窗口内坐标")
     return MoveAction(x=point.x, y=point.y,
                       modifiers=parse_modifiers(_raw(params, "modifiers")),
-                      method=_method_arg(params))
+                      method=_method_arg(params),
+                      window=_window_arg(params))
 
 
 def _build_click(params: dict) -> ClickAction:
@@ -323,6 +374,7 @@ def _build_click(params: dict) -> ClickAction:
         y=point.y if point else None,
         modifiers=parse_modifiers(_raw(params, "modifiers")),
         method=_method_arg(params),
+        window=_window_arg(params),
     )
 
 
@@ -352,6 +404,7 @@ def _build_drag(params: dict) -> DragAction:
         steps=DEFAULT_DRAG_STEPS if steps is None else steps,
         modifiers=parse_modifiers(_raw(params, "modifiers")),
         method=_method_arg(params),
+        window=_window_arg(params),
     )
 
 
@@ -374,6 +427,7 @@ def _build_scroll(params: dict) -> ScrollAction:
         y=point.y if point else None,
         modifiers=parse_modifiers(_raw(params, "modifiers")),
         method=_method_arg(params),
+        window=_window_arg(params),
     )
 
 
@@ -391,14 +445,19 @@ def _build_key(params: dict) -> KeyAction:
             modifiers=tuple(name for name in MODIFIER_ORDER if name in merged),
             key=shortcut.key,
         )
+    repeat = _int_arg(params, "repeat", "times", minimum=1,
+                      maximum=MAX_KEY_REPEAT, label="repeat")
     return KeyAction(shortcut=shortcut, phase=_phase_arg(params),
-                     method=_method_arg(params))
+                     method=_method_arg(params),
+                     repeat=DEFAULT_KEY_REPEAT if repeat is None else repeat,
+                     window=_window_arg(params))
 
 
 def _build_text(params: dict) -> TextAction:
     return TextAction(
         text=_text_arg(params, "text"),
         method=_method_arg(params),
+        window=_window_arg(params),
     )
 
 
@@ -489,6 +548,10 @@ def describe_action(action: InputAction) -> dict:
         }
         if action.phase != DEFAULT_KEY_PHASE:
             payload["phase"] = action.phase
+        if action.repeat != DEFAULT_KEY_REPEAT:
+            payload["repeat"] = action.repeat
+            if action.effective_repeat != action.repeat:
+                payload["effective_repeat"] = action.effective_repeat
     elif isinstance(action, TextAction):
         payload = {"text": action.text, "length": len(action.text)}
     else:  # pragma: no cover - 动作类型封闭
@@ -500,6 +563,9 @@ def describe_action(action: InputAction) -> dict:
     method = getattr(action, "method", DEFAULT_METHOD)
     if method != DEFAULT_METHOD:
         payload["method"] = method
+    window = getattr(action, "window", "")
+    if window:
+        payload["window"] = window
     return payload
 
 
@@ -511,6 +577,7 @@ __all__ = [
     "DEFAULT_DRAG_DURATION",
     "DEFAULT_DRAG_STEPS",
     "DEFAULT_KEY_PHASE",
+    "DEFAULT_KEY_REPEAT",
     "DEFAULT_METHOD",
     "DEFAULT_SCROLL_AMOUNT",
     "DEFAULT_SCROLL_DIRECTION",
@@ -519,6 +586,7 @@ __all__ = [
     "InputAction",
     "KEY_PHASES",
     "KeyAction",
+    "MAX_KEY_REPEAT",
     "METHODS",
     "MoveAction",
     "Point",

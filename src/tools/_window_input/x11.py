@@ -25,7 +25,8 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from .._screenshot.x11 import find_process_windows
+from .._screenshot.windows import pick_window
+from .._screenshot.x11 import list_windows as list_platform_windows
 from .action import (
     ClickAction,
     DragAction,
@@ -84,14 +85,19 @@ class X11InputBackend:
             and sys.platform != "darwin"
         )
 
-    def locate(self, pid: int) -> _X11Target | None:
-        """定位 ``pid``（含子进程）的主窗口（无副作用；供路由决策与注入复用）。"""
+    def locate(self, pid: int, window: str | None = None) -> _X11Target | None:
+        """定位 ``pid``（含子进程）的目标窗口（无副作用；供路由决策与注入复用）。
+
+        ``window`` 为窗口选择器（见 ``_screenshot.windows``）；缺省取主窗口。
+        """
+        if window:
+            return self._locate(pid, window, runner=self._run)
         return self._locate(pid, runner=self._run)
 
     def send(self, pid: int, action: InputAction) -> InputResult:
-        """向 ``pid`` 的窗口注入 ``action``，返回注入结果。"""
+        """向 ``pid`` 的目标窗口注入 ``action``，返回注入结果。"""
         xdotool = require_xdotool()
-        target = self.locate(pid)
+        target = self.locate(pid, getattr(action, "window", "") or None)
         if target is None:
             raise NoWindowError(
                 f"进程 {pid} 及其子进程没有可接收输入的可见窗口"
@@ -224,15 +230,18 @@ class X11InputBackend:
         combo = _xdotool_combo(action)
         # 分开发送按下与弹起（xdotool key 会把两者合并成一条命令）：
         # phase=down/up 可只发送其中之一，用于长按或单独释放。
-        if action.phase in ("press", "down"):
-            self._checked([xdotool, "keydown", combo], "按键按下")
-        if action.phase in ("press", "up"):
-            self._checked([xdotool, "keyup", combo], "按键弹起")
+        repeats = action.effective_repeat
+        for _index in range(repeats):
+            if action.phase in ("press", "down"):
+                self._checked([xdotool, "keydown", combo], "按键按下")
+            if action.phase in ("press", "up"):
+                self._checked([xdotool, "keyup", combo], "按键弹起")
         return {
             "key": action.shortcut.display(),
             "xdotool_key": combo,
             "modifiers": list(action.shortcut.modifiers),
             "phase": action.phase,
+            "repeat": repeats,
         }
 
     def _type(self, xdotool: str, action: TextAction) -> dict:
@@ -293,17 +302,27 @@ class _ModifierContext:
 
 # ── 定位与工具（模块级，便于复用与单测） ────────────────────
 
-def locate_window(pid: int, *, runner=None) -> _X11Target | None:
-    """定位 ``pid``（含子进程）的主窗口。"""
-    windows = find_process_windows(pid)
-    if not windows:
+def locate_window(pid: int, window: str | None = None, *,
+                  runner=None) -> _X11Target | None:
+    """定位 ``pid``（含子进程）的目标窗口。
+
+    Args:
+        pid: 目标进程 PID（含子进程）。
+        window: 窗口选择器（``main`` / ``active`` / ``#1`` / ``title:子串`` /
+            ``popup`` 等）；``None`` = 主窗口。
+
+    Raises:
+        SelectorError: 选择器非法或没有匹配窗口。
+    """
+    infos = list_platform_windows(pid)
+    if not infos:
         return None
-    target = max(windows, key=lambda item: (bool(item.title.strip()), item.area))
+    target = pick_window(infos, window)
     return _X11Target(
-        window_id=target.window_id,
+        window_id=str(target.handle),
         pid=target.pid,
         title=target.title,
-        frame=WindowFrame(target.x, target.y, target.width, target.height),
+        frame=WindowFrame(target.left, target.top, target.width, target.height),
     )
 
 

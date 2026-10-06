@@ -13,6 +13,11 @@
 坐标语义：以窗口截图左上角为原点（与 ``bash_opt`` 的 ``op=screenshot``
 产物一致），各后端按自己的窗口几何换算为屏幕坐标后再注入。
 
+目标窗口：动作对象上的 ``window`` 字段指定窗口选择器（``main`` / ``active`` /
+``#N`` / ``handle:0x…`` / ``title:子串`` / ``class:子串`` / ``popup`` /
+``dialog``，见 ``_screenshot.windows``），因此同一个 ``click`` 既可以打到主
+窗口，也可以打到刚弹出的右键菜单 / 下拉浮层窗口。
+
 扩展方式：新增平台只需实现上述契约并 :func:`register_backend`（内置后端
 按 Windows → macOS → X11 顺序探测），无需改动工具层与既有后端。
 """
@@ -24,8 +29,11 @@ import sys
 import threading
 from typing import Callable
 
+from .._screenshot.windows import SelectorError
 from .action import (  # noqa: F401  # 对外导出动作模型
+    DEFAULT_KEY_REPEAT,
     INPUT_OPS,
+    MAX_KEY_REPEAT,
     ClickAction,
     DragAction,
     InputAction,
@@ -118,10 +126,11 @@ def send_window_input(pid: int, action: InputAction) -> InputResult:
 
     Args:
         pid: 目标进程 PID（含其子进程一起参与窗口匹配）。
-        action: 由 :func:`build_action` 构建的动作对象。
+        action: 由 :func:`build_action` 构建的动作对象；其 ``window`` 字段指定
+            目标窗口选择器（空 = 主窗口）。
 
     Raises:
-        ActionError: 参数非法（进程号、动作类型）。
+        ActionError: 参数非法（进程号、动作类型、窗口选择器无匹配窗口）。
         NoWindowError: 目标进程没有可接收输入的窗口。
         InputError: 平台不支持、平台工具缺失或注入失败。
     """
@@ -137,6 +146,9 @@ def send_window_input(pid: int, action: InputAction) -> InputResult:
         )
     try:
         return backend.send(pid, action)
+    except SelectorError as exc:
+        # 窗口选择器无匹配：归入动作参数错误，调用方按「参数非法」提示更贴切
+        raise ActionError(str(exc)) from exc
     except InputError:
         raise
     except (OSError, ValueError, RuntimeError) as exc:
@@ -163,15 +175,18 @@ def _ensure_builtins() -> None:
 __all__ = [
     "ActionError",
     "ClickAction",
+    "DEFAULT_KEY_REPEAT",
     "DragAction",
     "INPUT_OPS",
     "InputAction",
     "InputError",
     "InputResult",
     "KeyAction",
+    "MAX_KEY_REPEAT",
     "MoveAction",
     "NoWindowError",
     "ScrollAction",
+    "SelectorError",
     "TextAction",
     "available_backends",
     "build_action",

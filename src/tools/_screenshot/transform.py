@@ -159,11 +159,11 @@ def apply_crop_to_png_file(path: str, region: CropRegion) -> tuple[int, int]:
         return image.width, image.height
     cropped = crop_rgb(image.rgb, image.width, image.height, region)
     data = png.encode_png_rgb(region.width, region.height, cropped)
-    _write_atomic(path, data)
+    write_png_atomic(path, data)
     return region.width, region.height
 
 
-def _write_atomic(path: str, data: bytes) -> None:
+def write_png_atomic(path: str, data: bytes) -> None:
     """同目录临时文件写入后原子替换（失败清理临时文件）。"""
     directory = os.path.dirname(os.path.abspath(path)) or "."
     handle, temp_path = tempfile.mkstemp(suffix=".png", prefix="crop-", dir=directory)
@@ -185,4 +185,5 @@ __all__ = [
     "apply_crop_to_png_file",
     "crop_bgra",
     "crop_rgb",
+    "write_png_atomic",
 ]

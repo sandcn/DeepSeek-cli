@@ -34,6 +34,8 @@ def test_tool_name_is_bash_opt():
         "read", "wait", "kill", "stdin", "keys", "screenshot",
         # 2026-10-07 新增：窗口输入注入（鼠标/键盘/文本/拖动）
         "click", "move", "drag", "scroll", "key", "type",
+        # 2026-10-07 新增：窗口枚举与窗口控制（多窗口 GUI 操作）
+        "windows", "window",
     }
 
 

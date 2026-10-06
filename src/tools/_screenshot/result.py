@@ -30,6 +30,9 @@ class CaptureResult:
         window_pid: 被截窗口所属的**系统窗口 PID**（Windows 下为 WINPID）。
         window_title: 窗口标题（可能为空串）。
         backend: 执行截图的平台后端名（windows / x11 / macos）。
+        window_handle: 被截窗口的平台句柄（0 = 后端未提供）。
+        windows_total: 目标进程树当时的候选窗口总数（便于判断是否选错窗口）。
+        window_selector: 本次使用的窗口选择器文本（缺省 ``main``）。
     """
 
     path: str
@@ -38,6 +41,14 @@ class CaptureResult:
     window_pid: int
     window_title: str
     backend: str
+    window_handle: int = 0
+    windows_total: int = 0
+    window_selector: str = "main"
+
+    @property
+    def window_handle_hex(self) -> str:
+        """被截窗口句柄的十六进制文本（与 ``op=windows`` 的清单一致）。"""
+        return f"0x{self.window_handle:X}" if self.window_handle else "0x0"
 
     def to_dict(self) -> dict:
         return {
@@ -47,6 +58,10 @@ class CaptureResult:
             "window_pid": self.window_pid,
             "window_title": self.window_title,
             "backend": self.backend,
+            "window_handle": self.window_handle,
+            "window_handle_hex": self.window_handle_hex,
+            "windows_total": self.windows_total,
+            "window_selector": self.window_selector,
         }
 
 

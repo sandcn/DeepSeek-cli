@@ -18,15 +18,24 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 
 from . import png, proctree, transform
+from .grid import paint_grid_on_png_file
 from .result import CaptureResult, NoWindowError, ScreenshotError
 from .transform import CropRegion
+from .windows import (
+    WindowControlRequest,
+    WindowInfo,
+    mark_main,
+    pick_window,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +43,8 @@ logger = logging.getLogger(__name__)
 _COMMAND_TIMEOUT = 30.0
 #: 窗口搜索命令超时（秒）
 _SEARCH_TIMEOUT = 15.0
+#: 窗口控制（移动 / 缩放 / 最大化等）后等待状态生效的时间（秒）
+_CONTROL_SETTLE_SECONDS = 0.15
 
 
 @dataclass
@@ -47,10 +58,35 @@ class _X11Window:
     height: int
     x: int = 0
     y: int = 0
+    class_name: str = ""
 
     @property
     def area(self) -> int:
         return self.width * self.height
+
+
+def to_window_info(window: _X11Window, order: int = 0) -> WindowInfo:
+    """X11 窗口条目 → 通用窗口描述（句柄为十进制窗口 ID）。"""
+    return WindowInfo(
+        handle=window_id_int(window.window_id),
+        pid=window.pid,
+        title=window.title,
+        class_name=window.class_name,
+        width=window.width,
+        height=window.height,
+        left=window.x,
+        top=window.y,
+        order=order,
+    )
+
+
+def window_id_int(window_id: str) -> int:
+    """把 xdotool / wmctrl 的窗口 ID 文本解析为整数（十六进制或十进制）。"""
+    text = str(window_id).strip()
+    try:
+        return int(text, 16) if text.lower().startswith("0x") else int(text, 10)
+    except ValueError:
+        return 0
 
 
 class X11Backend:
@@ -65,11 +101,18 @@ class X11Backend:
         )
 
     def capture(self, pid: int, path: str,
-                crop: CropRegion | None = None) -> CaptureResult:
+                crop: CropRegion | None = None,
+                window: str | None = None,
+                grid: int | None = None) -> CaptureResult:
         """截取 ``pid``（及其子进程）的窗口到 ``path``（PNG）。
 
-        ``crop`` 非空时对截图工具产出的 PNG 做解码裁剪（
-        :func:`transform.apply_crop_to_png_file`）；区域越界抛 ``CropError``。
+        Args:
+            pid: 目标进程 PID（含子进程）。
+            path: 输出 PNG 路径。
+            crop: 可选裁剪区域（对截图工具产出的 PNG 解码裁剪）；越界抛
+                ``CropError``。
+            window: 可选窗口选择器（缺省 = 主窗口）；无匹配抛 ``SelectorError``。
+            grid: 可选坐标网格步长（像素，``0`` = 自动）。
         """
         pids = proctree.collect_process_tree(pid)
         if not pids:
@@ -77,11 +120,16 @@ class X11Backend:
         windows = self._find_windows(pids)
         if not windows:
             raise NoWindowError(self._no_window_hint(pid))
-        target = max(windows, key=lambda item: (bool(item.title.strip()), item.area))
+        infos = mark_main([to_window_info(item, index)
+                           for index, item in enumerate(windows)])
+        target_info = pick_window(infos, window)
+        target = _find_by_info(windows, target_info)
         self._grab(target.window_id, path)
         width, height = self._read_size(path, target)
         if crop is not None:
             width, height = transform.apply_crop_to_png_file(path, crop)
+        if grid is not None:
+            width, height, _step = paint_grid_on_png_file(path, int(grid))
         return CaptureResult(
             path=path,
             width=width,
@@ -89,7 +137,23 @@ class X11Backend:
             window_pid=target.pid,
             window_title=target.title,
             backend=self.name,
+            window_handle=target_info.handle,
+            windows_total=len(windows),
+            window_selector=target_info.summary(),
         )
+
+    def list_windows(self, pid: int) -> list[WindowInfo]:
+        """枚举该进程树的全部可操作窗口（``op=windows`` 数据源）。"""
+        pids = proctree.collect_process_tree(pid)
+        if not pids:
+            return []
+        windows = self._find_windows(pids)
+        return mark_main([to_window_info(item, index)
+                          for index, item in enumerate(windows)])
+
+    def control(self, pid: int, request: WindowControlRequest) -> dict:
+        """对被选窗口执行激活 / 最大化 / 最小化 / 还原 / 关闭 / 移动 / 缩放。"""
+        return control_window(pid, request, runner=self._run)
 
     # ── 窗口发现 ─────────────────────────────────────────
 
@@ -172,6 +236,7 @@ def _xdotool_windows(pids: list[int]) -> list[_X11Window]:
                 height=height,
                 x=x,
                 y=y,
+                class_name=_window_class(window_id),
             ))
     return windows
 
@@ -209,6 +274,7 @@ def _wmctrl_windows(pids: list[int]) -> list[_X11Window]:
             height=height,
             x=x,
             y=y,
+            class_name=_window_class(window_id),
         ))
     return windows
 
@@ -266,6 +332,168 @@ def find_process_windows(pid: int) -> list[_X11Window]:
     return _wmctrl_windows(pids)
 
 
+def list_windows(pid: int) -> list[WindowInfo]:
+    """返回 ``pid`` 及其后代进程的可见窗口（通用描述，按 Z 序中的枚举顺序）。
+
+    纯查询、无副作用；xdotool 与 wmctrl 都不可用时返回空表。
+    """
+    windows = find_process_windows(pid)
+    if not windows:
+        return []
+    return mark_main([to_window_info(item, index)
+                      for index, item in enumerate(windows)])
+
+
+def control_window(pid: int, request: WindowControlRequest, *,
+                   runner=None) -> dict:
+    """对 ``pid`` 进程树中被选窗口执行状态 / 几何控制（xdotool / wmctrl）。
+
+    Raises:
+        NoWindowError: 进程树内没有可操作窗口。
+        SelectorError: 窗口选择器非法或没有匹配窗口。
+        ScreenshotError: 窗口控制命令不可用（缺少 xdotool / wmctrl）。
+    """
+    run = runner or _run
+    windows = find_process_windows(pid)
+    if not windows:
+        raise NoWindowError(
+            f"进程 {pid} 及其子进程没有可操作窗口"
+            f"（纯命令行进程没有图形窗口；Wayland 原生窗口无法按 PID 定位）"
+        )
+    infos = mark_main([to_window_info(item, index)
+                       for index, item in enumerate(windows)])
+    target_info = pick_window(infos, request.selector)
+    target = _find_by_info(windows, target_info)
+    window_id = target.window_id
+    action = request.action
+    before = _window_state(window_id, target)
+    _apply_control(run, window_id, action, request)
+    time.sleep(_CONTROL_SETTLE_SECONDS)
+    after = _window_state(window_id, target)
+    return {
+        "window_action": action,
+        "handle": target_info.handle,
+        "handle_hex": target_info.handle_hex,
+        "window_title": target_info.title,
+        "before": before,
+        "after": after,
+    }
+
+
+def _apply_control(run, window_id: str, action: str,
+                   request: WindowControlRequest) -> None:
+    """按动作调用对应的 X11 工具命令（缺工具时给出可执行提示）。"""
+    hex_id = _hex_window_id(window_id)
+    if action == "activate":
+        if not _try(run, ["wmctrl", "-i", "-a", hex_id]):
+            _require(run, ["xdotool", "windowactivate", "--sync", window_id], "激活窗口")
+    elif action == "minimize":
+        _require(run, ["xdotool", "windowminimize", window_id], "最小化窗口")
+    elif action == "maximize":
+        if not _try(run, ["wmctrl", "-i", "-r", hex_id, "-b",
+                          "add,maximized_vert,maximized_horz"]):
+            _require(run, ["xdotool", "windowsize", window_id, "100%", "100%"],
+                     "最大化窗口")
+    elif action == "restore":
+        _try(run, ["wmctrl", "-i", "-r", hex_id, "-b",
+                   "remove,maximized_vert,maximized_horz"])
+        _require(run, ["xdotool", "windowactivate", "--sync", window_id], "还原窗口")
+    elif action == "close":
+        if not _try(run, ["wmctrl", "-i", "-c", hex_id]):
+            _require(run, ["xdotool", "windowclose", window_id], "关闭窗口")
+    elif action == "move":
+        _require(run, ["xdotool", "windowmove", window_id,
+                       str(request.x), str(request.y)], "移动窗口")
+    elif action == "resize":
+        _require(run, ["xdotool", "windowsize", window_id,
+                       str(request.width), str(request.height)], "缩放窗口")
+    elif action == "fit":  # pragma: no branch - 动作集合由上层校验
+        _require(run, ["xdotool", "windowmove", window_id,
+                       str(request.x), str(request.y)], "移动窗口")
+        _require(run, ["xdotool", "windowsize", window_id,
+                       str(request.width), str(request.height)], "缩放窗口")
+
+
+def _try(run, command: list[str]) -> bool:
+    """执行可选命令（工具缺失或失败返回 False，不抛异常）。"""
+    if shutil.which(command[0]) is None:
+        return False
+    completed = run(command)
+    return completed is not None and completed.returncode == 0
+
+
+def _require(run, command: list[str], label: str) -> None:
+    """执行必需命令，工具缺失或失败抛 ScreenshotError。"""
+    if shutil.which(command[0]) is None:
+        raise ScreenshotError(
+            f"{label}失败：缺少工具 {command[0]}（安装 xdotool / wmctrl 后重试）"
+        )
+    completed = run(command)
+    if completed is None or completed.returncode != 0:
+        detail = ""
+        if completed is not None:
+            text = (completed.stderr or completed.stdout or "").strip().splitlines()
+            detail = f": {text[-1]}" if text else f": 退出码 {completed.returncode}"
+        raise ScreenshotError(f"{label}失败{detail}")
+
+
+def _hex_window_id(window_id: str) -> str:
+    """xdotool / wmctrl 的窗口 ID → ``0x`` 十六进制（wmctrl 要求该格式）。"""
+    text = str(window_id).strip()
+    if text.lower().startswith("0x"):
+        return text
+    try:
+        return hex(int(text, 10))
+    except ValueError:
+        return text
+
+
+def _window_state(window_id: str, fallback: _X11Window) -> dict:
+    """读取窗口当前几何（失败时回退枚举到的几何）。"""
+    xdotool = shutil.which("xdotool")
+    x, y, width, height = _window_geometry(xdotool, window_id)
+    if width <= 0 or height <= 0:
+        x, y, width, height = fallback.x, fallback.y, fallback.width, fallback.height
+    return {"x": x, "y": y, "width": width, "height": height}
+
+
+def _find_by_info(windows: list[_X11Window], info: WindowInfo) -> _X11Window:
+    """按通用描述（句柄）回查平台窗口对象。"""
+    return find_platform_window(windows, info)
+
+
+def find_platform_window(windows: list, info: WindowInfo):
+    """按通用描述（句柄）回查平台窗口对象（句柄不匹配时取第一个）。"""
+    for window in windows:
+        if window_id_int(window.window_id) == info.handle:
+            return window
+    return windows[0]  # pragma: no cover - 句柄来自同一份枚举结果
+
+
+def _window_class(window_id: str) -> str:
+    """读取窗口类名（``xprop WM_CLASS`` 优先，xdotool 回退，都不可用返回空串）。"""
+    xprop = shutil.which("xprop")
+    if xprop:
+        completed = _run([xprop, "-id", window_id, "WM_CLASS"], _SEARCH_TIMEOUT)
+        if completed is not None and completed.returncode == 0:
+            parsed = _parse_wm_class(completed.stdout)
+            if parsed:
+                return parsed
+    xdotool = shutil.which("xdotool")
+    if xdotool:
+        completed = _run([xdotool, "getwindowclassname", window_id], _SEARCH_TIMEOUT)
+        if completed is not None and completed.returncode == 0:
+            return completed.stdout.strip()
+    return ""
+
+
+def _parse_wm_class(text: str) -> str:
+    """从 ``xprop`` 输出解析 ``WM_CLASS``（取第一个引号内的实例名）。"""
+    _, _, rest = str(text).partition("=")
+    quoted = re.findall(r'"([^"]*)"', rest)
+    return quoted[0] if quoted else ""
+
+
 def _window_title(xdotool: str, window_id: str) -> str:
     completed = _run([xdotool, "getwindowname", window_id], _SEARCH_TIMEOUT)
     if completed is None or completed.returncode != 0:
@@ -314,4 +542,6 @@ def _safe_int(text: str) -> int:
         return 0
 
 
-__all__ = ["X11Backend", "find_process_windows"]
+__all__ = ["X11Backend", "control_window", "find_platform_window",
+           "find_process_windows", "list_windows", "to_window_info",
+           "window_id_int"]

@@ -456,3 +456,216 @@ def test_resolve_windows_vk_named_and_character(monkeypatch):
 def test_resolve_windows_vk_unknown_named_key():
     with pytest.raises(InputError):
         resolve_windows_vk("page_sideways")
+
+
+# ── 前台激活重试 ────────────────────────────────────────
+
+class _RetryActivateDriver(FakeDriver):
+    """前 ``grant_after - 1`` 次 activate 不授予前台，之后成功（模拟前台锁定）。"""
+
+    def __init__(self, grant_after: int):
+        super().__init__(foreground=False, activate_grants_foreground=False)
+        self._grant_after = grant_after
+        self.activations = 0
+
+    def activate(self, handle):
+        self.activations += 1
+        super().activate(handle)
+        if self.activations >= self._grant_after:
+            self.foreground = True
+        return True
+
+
+def test_foreground_activation_retries_until_success():
+    """首次 SetForegroundWindow 被拒时多轮重试，最终仍走 SendInput。"""
+    driver = _RetryActivateDriver(grant_after=2)
+    result = _backend(driver).send(1234, build_action("click", {}))
+    assert result.detail["delivery"] == "sendinput"
+    assert driver.activations == 2
+    assert len([e for e in driver.events if e[0] == "sleep"]) == 2
+
+
+def test_foreground_activation_exhausts_all_attempts():
+    driver = _RetryActivateDriver(grant_after=99)
+    result = _backend(driver).send(1234, build_action("click", {}))
+    assert result.detail["delivery"] == "message"
+    assert driver.activations == win_module._FOREGROUND_ATTEMPTS
+
+
+def test_explicit_sendinput_reports_unreachable_foreground():
+    driver = _RetryActivateDriver(grant_after=99)
+    with pytest.raises(InputError) as excinfo:
+        _backend(driver).send(1234, build_action("click", {"method": "sendinput"}))
+    assert "置于前台" in str(excinfo.value)
+
+
+# ── SendInput 重试 ──────────────────────────────────────
+
+def test_sendinput_retries_when_nothing_delivered(monkeypatch):
+    """整批未投递（返回 0）时短期重试，恢复后成功。"""
+    calls: list[int] = []
+
+    def fake_send_inputs(items):
+        calls.append(len(items))
+        return 0 if len(calls) < win_module._SENDINPUT_ATTEMPTS else len(items)
+
+    monkeypatch.setattr(win_module.winapi, "send_inputs", fake_send_inputs)
+    monkeypatch.setattr(win_module.time, "sleep", lambda seconds: None)
+    win_module.Win32Driver()._send([1, 2, 3])
+    assert calls == [3] * win_module._SENDINPUT_ATTEMPTS
+
+
+def test_sendinput_partial_delivery_raises_without_retry(monkeypatch):
+    """部分投递意味着已有事件生效，重发会重复按键，因此直接报错。"""
+    calls: list[int] = []
+
+    def fake_send_inputs(items):
+        calls.append(len(items))
+        return 1
+
+    monkeypatch.setattr(win_module.winapi, "send_inputs", fake_send_inputs)
+    monkeypatch.setattr(win_module.time, "sleep", lambda seconds: None)
+    with pytest.raises(InputError) as excinfo:
+        win_module.Win32Driver()._send([1, 2])
+    assert len(calls) == 1
+    assert "部分已生效" in str(excinfo.value)
+
+
+def test_sendinput_all_attempts_fail_reports_attempt_count(monkeypatch):
+    calls: list[int] = []
+
+    def fake_send_inputs(items):
+        calls.append(len(items))
+        return 0
+
+    monkeypatch.setattr(win_module.winapi, "send_inputs", fake_send_inputs)
+    monkeypatch.setattr(win_module.time, "sleep", lambda seconds: None)
+    with pytest.raises(InputError) as excinfo:
+        win_module.Win32Driver()._send([1])
+    assert len(calls) == win_module._SENDINPUT_ATTEMPTS
+    assert "0/1" in str(excinfo.value)
+
+
+# ── 键盘 / 文本注入的焦点复核 ────────────────────────────
+
+class _StealFocusDriver(FakeDriver):
+    """在累计 ``steal_after`` 次键盘事件（按键 / 字符）之后抢走前台一次。"""
+
+    def __init__(self, steal_after: int):
+        super().__init__(foreground=True)
+        self._steal_after = steal_after
+        self._keys_sent = 0
+
+    def _after_event(self) -> None:
+        self._keys_sent += 1
+        if self._keys_sent == self._steal_after:
+            self.foreground = False
+
+    def key_event(self, vk, *, key_up):
+        super().key_event(vk, key_up=key_up)
+        self._after_event()
+
+    def unicode_event(self, code_unit, *, key_up):
+        super().unicode_event(code_unit, key_up=key_up)
+        self._after_event()
+
+
+class _NeverKeepsFocusDriver(FakeDriver):
+    """每次键盘事件后都把前台让出去（模拟始终抢不回焦点）。"""
+
+    def key_event(self, vk, *, key_up):
+        super().key_event(vk, key_up=key_up)
+        self.foreground = False
+
+    def unicode_event(self, code_unit, *, key_up):
+        super().unicode_event(code_unit, key_up=key_up)
+        self.foreground = False
+
+
+def test_keyboard_reinjects_after_focus_stolen(monkeypatch):
+    """注入瞬间前台被抢走时重新激活并重发一次。"""
+    monkeypatch.setattr(win_module.winapi, "key_scan_code", lambda char: (0x41, 0))
+    driver = _StealFocusDriver(steal_after=2)
+    result = _backend(driver).send(1234, build_action("key", {"key": "a"}))
+    assert _keys(driver) == [
+        ("key", 0x41, False), ("key", 0x41, True),
+        ("key", 0x41, False), ("key", 0x41, True),
+    ]
+    assert ("activate", 777) in driver.events
+    assert "focus_warning" not in result.detail
+
+
+def test_keyboard_warns_when_focus_never_kept(monkeypatch):
+    monkeypatch.setattr(win_module.winapi, "key_scan_code", lambda char: (0x41, 0))
+    driver = _NeverKeepsFocusDriver()
+    result = _backend(driver).send(1234, build_action("key", {"key": "a"}))
+    assert "focus_warning" in result.detail
+
+
+def test_type_also_guards_focus(monkeypatch):
+    """op=type 与 op=key 共用同一套前台确保与焦点复核。"""
+    driver = _StealFocusDriver(steal_after=4)
+    result = _backend(driver).send(1234, build_action("type", {"text": "ab"}))
+    unicode_events = [e for e in driver.events if e[0] == "unicode"]
+    assert len(unicode_events) == 8      # 2 字符 × down/up × 重发一次
+    assert "focus_warning" not in result.detail
+
+
+# ── PostMessage 回退告警 ────────────────────────────────
+
+def test_message_fallback_key_reports_warning():
+    driver = FakeDriver(foreground=False, activate_grants_foreground=False)
+    result = _backend(driver).send(1234, build_action("key", {"key": "enter"}))
+    assert result.detail["delivery"] == "message"
+    assert "warning" in result.detail
+    assert "PostMessage" in result.detail["warning"]
+
+
+def test_message_fallback_type_reports_warning():
+    driver = FakeDriver(foreground=False, activate_grants_foreground=False)
+    result = _backend(driver).send(1234, build_action("type", {"text": "hi"}))
+    assert "warning" in result.detail
+
+
+def test_message_fallback_click_has_no_keyboard_warning():
+    driver = FakeDriver(foreground=False, activate_grants_foreground=False)
+    result = _backend(driver).send(1234, build_action("click", {}))
+    assert result.detail["delivery"] == "message"
+    assert "warning" not in result.detail
+
+
+def test_sendinput_key_has_no_warning():
+    driver = FakeDriver(foreground=True)
+    result = _backend(driver).send(1234, build_action("key", {"key": "enter"}))
+    assert result.detail["delivery"] == "sendinput"
+    assert "warning" not in result.detail
+
+
+# ── 连按（repeat） ──────────────────────────────────────
+
+def test_key_repeat_sends_multiple_sequences(monkeypatch):
+    monkeypatch.setattr(win_module.winapi, "key_scan_code", lambda char: (0x41, 0))
+    driver = FakeDriver()
+    result = _backend(driver).send(1234, build_action("key", {"key": "a", "repeat": 3}))
+    assert _keys(driver) == [("key", 0x41, False), ("key", 0x41, True)] * 3
+    assert result.detail["repeat"] == 3
+    assert driver.events.count(("sleep", win_module._KEY_REPEAT_INTERVAL)) == 2
+
+
+def test_key_repeat_ignored_for_down_phase(monkeypatch):
+    """down / up 是长按语义，重复同一阶段没有意义，repeat 被忽略。"""
+    monkeypatch.setattr(win_module.winapi, "key_scan_code", lambda char: (0x41, 0))
+    driver = FakeDriver()
+    result = _backend(driver).send(1234, build_action(
+        "key", {"key": "a", "repeat": 3, "phase": "down"}))
+    assert _keys(driver) == [("key", 0x41, False)]
+    assert result.detail["repeat"] == 1
+
+
+def test_message_key_repeat_sends_each_press(monkeypatch):
+    driver = FakeDriver(foreground=False, activate_grants_foreground=False)
+    _backend(driver).send(1234, build_action(
+        "key", {"key": "a", "repeat": 2, "method": "message"}))
+    messages = [p[2] for p in _posts(driver)]
+    assert messages.count(winapi.WM_KEYDOWN) == 2
+    assert messages.count(winapi.WM_KEYUP) == 2
