@@ -66,8 +66,8 @@ class TestTuiConfigRenderRate:
     """渲染线程帧率改为 30Hz——TuiConfig 默认参数一致性。"""
 
     def test_render_interval_is_1_over_30(self):
-        """render_interval = 1/30s（脏/动画期间的最小帧间隔；空闲是否渲染见
-        ``TuiConfig.idle_render`` 与 ``InkSession._should_render``）。"""
+        """render_interval = 1/30s（渲染线程恒定 30Hz：任何状态均渲染，
+        且帧率不可被配置/参数改变）。"""
         cfg = TuiConfig.defaults()
         assert cfg.render_interval == pytest.approx(_TARGET_INTERVAL)
         assert 1.0 / cfg.render_interval == pytest.approx(_TARGET_HZ)

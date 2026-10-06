@@ -33,13 +33,18 @@ _COMMAND_TIMEOUT = 30.0
 
 @dataclass
 class _MacWindow:
-    """macOS 窗口条目（``number`` 为 CGWindowNumber，无 pyobjc 时为 None）。"""
+    """macOS 窗口条目（``number`` 为 CGWindowNumber，无 pyobjc 时为 None）。
+
+    ``x`` / ``y`` 为窗口左上角的屏幕坐标（CGWindowBounds / System Events 位置）。
+    """
 
     number: int | None
     pid: int
     title: str
     width: int
     height: int
+    x: int = 0
+    y: int = 0
 
     @property
     def area(self) -> int:
@@ -139,6 +144,8 @@ def _quartz_windows(pids: list[int]) -> list[_MacWindow]:
                 title=str(info.get(Quartz.kCGWindowName) or ""),
                 width=width,
                 height=height,
+                x=int(bounds.get("X", 0)),
+                y=int(bounds.get("Y", 0)),
             ))
         except (TypeError, ValueError, KeyError) as exc:
             logger.debug("窗口信息解析失败: %s", exc)
@@ -146,15 +153,32 @@ def _quartz_windows(pids: list[int]) -> list[_MacWindow]:
 
 
 def _osascript_window(pids: list[int]) -> _MacWindow | None:
-    """无 pyobjc 时用 osascript 探测「哪些 PID 有窗口」及其尺寸。"""
+    """无 pyobjc 时用 osascript 探测「哪些 PID 有窗口」及其位置尺寸。"""
     for pid in pids:
         bounds = _osascript_bounds(pid)
         if bounds is None:
             continue
         x, y, width, height = bounds
         if width > 0 and height > 0:
-            return _MacWindow(number=None, pid=pid, title="", width=width, height=height)
+            return _MacWindow(
+                number=None, pid=pid, title="",
+                width=width, height=height, x=x, y=y,
+            )
     return None
+
+
+def find_process_window(pid: int) -> _MacWindow | None:
+    """返回 ``pid`` 及其后代进程的可见窗口（窗口输入 / 截图共用）。
+
+    纯查询、无副作用；pyobjc（Quartz）优先，回退 osascript。无窗口返回 None。
+    """
+    pids = proctree.collect_process_tree(pid)
+    if not pids:
+        return None
+    target = select_macos_window(_quartz_windows(pids))
+    if target is not None:
+        return target
+    return _osascript_window(pids)
 
 
 def _osascript_bounds(pid: int) -> tuple[int, int, int, int] | None:
@@ -221,4 +245,4 @@ def _run_checked(command: list[str]) -> None:
         raise ScreenshotError(f"screencapture 截图失败: {summary}")
 
 
-__all__ = ["MacOSBackend", "select_macos_window"]
+__all__ = ["MacOSBackend", "find_process_window", "select_macos_window"]

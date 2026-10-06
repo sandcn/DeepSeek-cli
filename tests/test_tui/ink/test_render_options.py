@@ -24,15 +24,27 @@ def test_render_returns_full_instance_api():
         ctrl["unmount"]()
 
 
-def test_render_max_fps_sets_interval():
+def test_render_max_fps_does_not_change_fixed_30hz(monkeypatch):
+    """maxFps 参数保留（官方 API 兼容）但不再改变帧率——渲染线程恒定 30Hz。"""
+    from src.tui.ink.session import InkSession
+
+    captured: list = []
+    real_init = InkSession.__init__
+
+    def _spy_init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        captured.append(self)
+
+    monkeypatch.setattr(InkSession, "__init__", _spy_init)
     buf = io.StringIO()
     ctrl = render(h(TEXT, {"children": "x"}), stdout=buf, width=20, maxFps=5)
     try:
         time.sleep(0.05)
     finally:
         ctrl["unmount"]()
-    # 无法直接取 session；改由行为验证：render 成功且写出内容
     assert "x" in buf.getvalue()
+    assert captured
+    assert captured[-1]._config.render_interval == pytest.approx(1.0 / 30)
 
 
 def test_render_kitty_keyboard_enable_and_disable():

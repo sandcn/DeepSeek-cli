@@ -5,8 +5,8 @@ React Ink 生态 ``<Spinner>`` 的行内变体：渲染为**单字符** spinner 
 独立组件占一行，行内场景用 InlineSpinner）。
 
 时间基动画：帧号 = ``int(time.monotonic() * tick_hz) % len(frames)``——纯时间
-推进（非帧计数），空闲不触发重绘由宿主渲染短路（``session._needs_animation``
-语义；本控件仅按时间返回当前帧字符，不请求渲染）。
+推进（非帧计数）；渲染线程恒定 30Hz，本控件仅按时间返回当前帧字符，
+不请求渲染。
 """
 
 from __future__ import annotations

@@ -55,12 +55,9 @@ class _SimpleModel:
     属性，缺省值经 getattr 或类属性兜底）：
       - ``width``：渲染宽度（render() 尺寸覆盖写入，缺省 80）；
       - ``input_text`` / ``input_cursor``：输入区状态（update_input echo 回调）；
-      - ``status``：状态对象（``status_active`` 动画驱动 / 系统监控采集；
-        缺省 None——``_needs_animation`` 判 None 跳过）；
-      - ``tool_boxes``：工具卡片容器（``_needs_animation`` 动画驱动探测；
-        缺省 None 时跳过）；
-      - ``parse_line``：解析进度行（``_needs_animation`` 动画驱动探测；
-        缺省 None 时跳过）；
+      - ``status``：状态对象（系统监控采集；缺省 None 时跳过）；
+      - ``tool_boxes``：工具卡片容器（缺省 None）；
+      - ``parse_line``：解析进度行（缺省 None）；
       - ``reflow_committed``：resize 重排回调（``_render_frame`` 经 getattr
         探测，缺省 None 时跳过——桩模型无需重排）；
       - ``reasoning_renderer`` / ``content_renderer``：开放通道 renderer
@@ -231,7 +228,9 @@ def render(
         patchConsole: 控制台补丁（默认 False；True 时替换 sys.stdout/
             sys.stderr 的 write 为代理——print()/错误输出重定向到 TUI 流；
             unmount/cleanup 时恢复原流）。
-        maxFps: 渲染帧率上限（覆盖 render_interval；None 用默认 30Hz）。
+        maxFps: React Ink 官方「渲染帧率上限」参数——本框架渲染线程恒定
+            30Hz 且不可改变，参数保留以兼容官方 API，但不再生效（传入
+            任意值帧率均为 30Hz）。
         isScreenReaderEnabled: 屏幕阅读器模式（useIsScreenReaderEnabled 返回
             True；供组件输出无障碍文本）。
         kittyKeyboard: kitty 键盘协议配置——None/False 不启用；True 启用；
@@ -286,14 +285,14 @@ def render(
         session._width_cache.set_dimensions(width, height)
 
     # ── React Ink render() 扩展 options ──
-    # maxFps：限制渲染帧率上限（覆盖 render_interval）
+    # maxFps：官方语义为「渲染帧率上限」，本框架渲染线程**恒定 30Hz 且不可
+    #   改变**（用户需求 2026-10-07）——按官方 API 保留参数签名（兼容调用
+    #   方），但不再覆盖 render_interval（``TuiConfig.__post_init__`` 已强制
+    #   render_interval 恒为 1/30，任何路径都无法改变帧率）。
     if maxFps is not None:
-        try:
-            fps = float(maxFps)
-            if fps > 0:
-                session._config = session._config.with_overrides(render_interval=1.0 / fps)
-        except (TypeError, ValueError, OverflowError):
-            _logger.debug("render maxFps 非法，忽略", exc_info=True)
+        _logger.debug(
+            "render maxFps=%r 已忽略：渲染线程恒定 30Hz，帧率不可改变", maxFps,
+        )
     # isScreenReaderEnabled：注入屏幕阅读器开关（useIsScreenReaderEnabled）
     # ★ 多会话隔离（P0 架构修复）：写入**本会话** HookContext（修复前写模块
     #   级全局——两个 render() 会话共用，退出还原亦相互覆盖）。

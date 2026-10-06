@@ -227,8 +227,7 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
     #   调 _build_popup_lines）间隔 >0.1s 时每次按键跨桶 → 弹窗缓存几乎每次
     #   miss → 每键重建 20+ 候选项。0.25s 桶与 _build_lines 空闲桶一致：
     #   打字跨桶概率降 60%，呼吸色仍 4Hz 平滑推进（标题 12s/提示 12s/高亮
-    #   10s 周期，4Hz 步进视觉无感知差异）；弹窗可见时 _needs_animation 持续
-    #   30Hz 渲染，动画不冻结。
+    #   10s 周期，4Hz 步进视觉无感知差异）；渲染线程恒定 30Hz，动画不冻结。
     popup_bucket = int(now / 0.25)
     popup_snap = (
         title,

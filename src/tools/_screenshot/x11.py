@@ -38,13 +38,15 @@ _SEARCH_TIMEOUT = 15.0
 
 @dataclass
 class _X11Window:
-    """X11 窗口条目。"""
+    """X11 窗口条目（``x`` / ``y`` 为窗口左上角的屏幕坐标）。"""
 
     window_id: str
     pid: int
     title: str
     width: int
     height: int
+    x: int = 0
+    y: int = 0
 
     @property
     def area(self) -> int:
@@ -159,7 +161,7 @@ def _xdotool_windows(pids: list[int]) -> list[_X11Window]:
             if not window_id or window_id in seen:
                 continue
             seen.add(window_id)
-            width, height = _window_geometry(xdotool, window_id)
+            x, y, width, height = _window_geometry(xdotool, window_id)
             if width <= 0 or height <= 0:
                 continue
             windows.append(_X11Window(
@@ -168,6 +170,8 @@ def _xdotool_windows(pids: list[int]) -> list[_X11Window]:
                 title=_window_title(xdotool, window_id),
                 width=width,
                 height=height,
+                x=x,
+                y=y,
             ))
     return windows
 
@@ -194,7 +198,7 @@ def _wmctrl_windows(pids: list[int]) -> list[_X11Window]:
         if window_pid not in pids:
             continue
         title = parts[4] if len(parts) > 4 else ""
-        width, height = _window_geometry(xdotool, window_id)
+        x, y, width, height = _window_geometry(xdotool, window_id)
         if width <= 0 or height <= 0:
             continue
         windows.append(_X11Window(
@@ -203,36 +207,63 @@ def _wmctrl_windows(pids: list[int]) -> list[_X11Window]:
             title=title,
             width=width,
             height=height,
+            x=x,
+            y=y,
         ))
     return windows
 
 
-def _window_geometry(xdotool: str | None, window_id: str) -> tuple[int, int]:
-    """读取窗口宽高（xdotool 优先，回退 xwininfo；都不可用返回 (0, 0)）。"""
+def _window_geometry(xdotool: str | None, window_id: str) -> tuple[int, int, int, int]:
+    """读取窗口几何 ``(x, y, width, height)``（屏幕坐标）。
+
+    xdotool 优先，回退 xwininfo；都不可用返回 ``(0, 0, 0, 0)``。
+    """
     if xdotool:
         completed = _run([xdotool, "getwindowgeometry", "--shell", window_id], _SEARCH_TIMEOUT)
         if completed is not None and completed.returncode == 0:
-            width = height = 0
+            x = y = width = height = 0
             for token in completed.stdout.splitlines():
-                if token.startswith("WIDTH="):
+                if token.startswith("X="):
+                    x = _safe_int(token[2:])
+                elif token.startswith("Y="):
+                    y = _safe_int(token[2:])
+                elif token.startswith("WIDTH="):
                     width = _safe_int(token[6:])
                 elif token.startswith("HEIGHT="):
                     height = _safe_int(token[7:])
             if width > 0 and height > 0:
-                return width, height
+                return x, y, width, height
     xwininfo = shutil.which("xwininfo")
     if xwininfo:
         completed = _run([xwininfo, "-id", window_id], _SEARCH_TIMEOUT)
         if completed is not None and completed.returncode == 0:
-            width = height = 0
+            x = y = width = height = 0
             for token in completed.stdout.splitlines():
                 stripped = token.strip()
-                if stripped.startswith("Width:"):
+                if stripped.startswith("Absolute upper-left X:"):
+                    x = _safe_int(stripped.split(":", 1)[1])
+                elif stripped.startswith("Absolute upper-left Y:"):
+                    y = _safe_int(stripped.split(":", 1)[1])
+                elif stripped.startswith("Width:"):
                     width = _safe_int(stripped.split(":", 1)[1])
                 elif stripped.startswith("Height:"):
                     height = _safe_int(stripped.split(":", 1)[1])
-            return width, height
-    return 0, 0
+            return x, y, width, height
+    return 0, 0, 0, 0
+
+
+def find_process_windows(pid: int) -> list[_X11Window]:
+    """返回 ``pid`` 及其后代进程的可见窗口（窗口输入 / 截图共用）。
+
+    纯查询、无副作用；xdotool 与 wmctrl 都不可用时返回空表。
+    """
+    pids = proctree.collect_process_tree(pid)
+    if not pids:
+        return []
+    windows = _xdotool_windows(pids)
+    if windows:
+        return windows
+    return _wmctrl_windows(pids)
 
 
 def _window_title(xdotool: str, window_id: str) -> str:
@@ -283,4 +314,4 @@ def _safe_int(text: str) -> int:
         return 0
 
 
-__all__ = ["X11Backend"]
+__all__ = ["X11Backend", "find_process_windows"]

@@ -53,11 +53,11 @@ def advance_animation(now: float | None = None, ctx: "HookContext | None" = None
     ★ 不触发订阅者重渲染（review 修复）：订阅者回调经 hooks ``_schedule``
     落到 ``session._request_render``（置 ``_bottom_redraw_requested`` = force，
     打破节流）——若每帧 advance 都通知，将形成「渲染→advance→force→立即再
-    渲染」的无节流忙循环。本框架渲染循环在**有脏/有动画需求**时按
-    ``render_interval``（默认 1/30s）持续渲染，动画组件每帧都会被重渲染，
-    ``frame``/``time`` 由挂钟时间推导 → 无需 tick 通知即可平滑推进。
-    ``animation_listeners`` 仅用于 ``has_active_animations()``（渲染循环
-    动画探测——决定空闲时是否继续渲染）。
+    渲染」的无节流忙循环。本框架渲染循环**恒定 30Hz**（``render_interval``
+    = 1/30s，不可改变），动画组件每帧都会被重渲染，``frame``/``time``
+    由挂钟时间推导 → 无需 tick 通知即可平滑推进。
+    ``animation_listeners`` 供 ``has_active_animations()`` 查询（动画订阅
+    探测 API；渲染线程恒定渲染后不再作为渲染决策依据）。
     """
     target = _ctx(ctx)
     target.animation_tick += 1
@@ -82,7 +82,8 @@ def reset_animation_state(ctx: "HookContext | None" = None) -> None:
 
 
 def has_active_animations(ctx: "HookContext | None" = None) -> bool:
-    """是否存在活跃动画订阅（供渲染循环 ``_needs_animation`` 探测）。"""
+    """是否存在活跃动画订阅（动画订阅探测 API；渲染线程恒定 30Hz 渲染，
+    不再依赖此探测决定是否渲染）。"""
     return bool(_ctx(ctx).animation_listeners)
 
 

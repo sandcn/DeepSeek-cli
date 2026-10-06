@@ -134,7 +134,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
     ★ 架构改进方向 A（2026-08-16，上帝类拆分）：命令队列管理（入队/背压/
     排空安全）与渲染帧执行（组件树/调和/渲染/光标/系统监控）已分别拆至
     ``_SessionQueueMixin`` / ``_SessionFrameMixin``；本类保留**会话协调**职责：
-      - 渲染循环调度（_render / _drain_queue / _should_render / _needs_animation）
+      - 渲染循环调度（_render / _drain_queue / _should_render）
       - 线程生命周期（start / stop / suspend / resume / flush）
       - 崩溃自动恢复（_handle_render_crash / _drain_queue_safe 委托队列 mixin）
       - 依赖注入与访问器（set_input / set_line_tracker / request_* 等）
@@ -208,12 +208,12 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._render_lock = threading.RLock()
         self._cmd_queue_dropped: int = 0
         self._render_crashed: threading.Event = threading.Event()
-        self._last_bottom_redraw: float = 0.0
         # ★ 终端尺寸主动轮询时刻（SIGWINCH 兜底，2026-10-05）：渲染帧定期
         #   ``_poll_terminal_size`` 重探尺寸的节流时间戳（monotonic）。
         self._last_size_poll: float = 0.0
-        # ★ 脏标记：模型有变更（命令应用/输入/重绘请求）时置位，
-        #   空闲时跳过渲染（避免 30Hz 全量重建整棵树 → CPU 100%）
+        # ★ 脏标记：模型有变更（命令应用/输入/重绘请求）时置位——
+        #   渲染线程恒定 30Hz 渲染（不因空闲跳过），本标记供等待方
+        #   （waitUntilRenderFlush / flush）判断「待渲染变更是否已消费」。
         self._dirty: bool = False
         # ★ 帧执行标记（2026-08-19，单帧耗时无上界约束）：``_render_frame``
         #   进入置位 / finally 复位——等待方据此区分「正在执行超长单帧」
@@ -486,12 +486,9 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         try:
             self._render_frame()
         except Exception:
-            # ★ P2-1（review 方向）：渲染失败后补置 ``_dirty``——修复前失败被
-            #   吞且不补脏标记：Ctrl+L 清屏后 ``full_clear()`` 已清空屏幕（渲染
-            #   器 prev 软重置为空帧），而重建空文档失败时屏幕保持空白；渲染
-            #   线程下一拍 ``_should_render`` 因无脏标记（无命令/无 force/无
-            #   动画）跳过渲染 → 屏幕空白且空闲时永不重绘。补置 ``_dirty`` 后
-            #   下一 30Hz 拍重试重建（配合 _drain_queue 既有指数退避防刷屏）。
+            # ★ P2-1（review 方向）：渲染失败后补置 ``_dirty``——渲染线程
+            #   恒定 30Hz（下一拍必渲染），补置脏标记保持等待方语义一致
+            #   （配合 _drain_queue 既有指数退避防刷屏）。
             self._dirty = True
             _logger.debug("clear_screen 重建空文档异常", exc_info=True)
 
@@ -622,8 +619,8 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             target = self._frame_seq + 2
             base_seq = self._frame_seq
             self._frame_flush_waiters.append((target, ev))
-        # force 唤醒：设置重绘请求（跳过 30Hz 节流）+ 命令事件（提前退出
-        # 节流等待），渲染线程尽快完成目标帧。
+        # 唤醒渲染线程（置脏 + 命令事件）——恒定 30Hz 节拍下渲染线程按
+        # 下一拍完成目标帧（≤1/30s），不再提前执行。
         self._bottom_redraw_requested.set()
         self._dirty = True
         self._cmd_event.set()
@@ -1053,8 +1050,8 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         next_loop: float = 0.0
         # ★ 多会话隔离（P0 架构修复）：渲染线程整个生命周期激活本会话的
         #   HookContext——INPUT 阶段（_phase_process_input）的输入分发、
-        #   use_input router 回调、key pressed 标志、焦点切换与
-        #   _needs_animation 的动画探测都发生在 reconciler.render 之外，需要
+        #   use_input router 回调、key pressed 标志、焦点切换都发生在
+        #   reconciler.render 之外，需要
         #   「当前上下文」是本会话（否则多会话下串台 / 落到默认上下文）。
         #   stub（``object.__new__(InkSession)`` 借用本方法的测试）无
         #   ``_hook_ctx`` → 跳过激活（走默认上下文，行为同旧）。
@@ -1075,35 +1072,16 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                         self._cmd_event.clear()
                         now = time.monotonic()
                         remaining = next_loop - now
-                        # ★ prefill/交互立即渲染修复（2026-08-15）：底部重绘请求
-                        #   （force，如 /editmsg /deitmsg /retry 的 prefill 注入经
-                        #   update_input → _request_render 置位）**提前退出**节流
-                        #   等待，本拍立即处理渲染——修复前 prefill 注入仅置位
-                        #   标志，渲染线程被节流（next_loop）拦截且 _should_render
-                        #   的 interval 检查可能因 EditmsgPlugin flush 刚渲染过而
-                        #   不满足 → 输入区延迟 0.03~0.17s 才显示 prefill（用户感知
-                        #   「编辑后没立即显示，要再按一次回车才刷新」）。
-                        #   高频命令（ToolCountInc/DecCmd、SUBAGENT_FRAME、
-                        #   ParseInfoCmd 等）不置位 _bottom_redraw_requested，仍走
-                        #   既有 30Hz 批处理（PERF-8 忙循环防护不回归）。
-                        if self._bottom_redraw_requested.is_set():
-                            break
+                        # ★ 恒定 30Hz（2026-10-07 用户需求）：不因重绘请求提前
+                        #   退出节流——任何请求都等到下一 30Hz 拍处理（帧率恒
+                        #   定不超频）；用户可感知更新在 ≤1/30s 内完成。
                 next_loop = max(next_loop, time.monotonic()) + self._config.render_interval
                 try:
                     # 方向5（死代码清理）：返回值未使用——has_content 删除。
                     self._drain_queue()
                     self._cmd_event.clear()
-                    # ★ prefill/交互立即渲染修复（2026-08-15）：force
-                    #   （_bottom_redraw_requested，如 /editmsg /deitmsg /retry
-                    #   prefill 注入经 update_input → _request_render 置位）未
-                    #   消费时**保持 _cmd_event 唤醒**——渲染线程 busy（处理
-                    #   EditmsgPlugin 的 clear/display/write 命令）期间注入的
-                    #   force 请求若在本行被无条件 clear，渲染线程下一轮循环进入
-                    #   节流等待时 ``_cmd_event.wait`` 不会立即返回（事件已 clear），
-                    #   prefill 延迟到下一 30Hz 拍才渲染（输入区 0.03~0.17s 空白）。
-                    #   保持唤醒 → 下一轮循环 force 提前退出节流等待（上方）→
-                    #   _drain_queue → _should_render（force 跳过 interval）→
-                    #   立即渲染 prefill。
+                    # ★ 重绘请求未消费时保持唤醒（下一轮节流等待立即返回后仍
+                    #   等到 ``next_loop``，帧率恒定 30Hz）。
                     if self._bottom_redraw_requested.is_set():
                         self._cmd_event.set()
                     # ★ BUG-39：稳定运行复位崩溃恢复计数——上次恢复后持续运行
@@ -1212,7 +1190,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             elif phase is RenderLoopPhase.RENDER:
                 # 渲染与失败处理（锁外）：渲染失败退避 sleep 不持有输出锁
                 # （修复前 sleep 在锁块内 → render_lock 阻塞其他写入方输出）。
-                if self._should_render(changed):
+                if self._should_render():
                     try:
                         self._render_frame()
                     except Exception:
@@ -1356,97 +1334,27 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             return victim[2]
         return None
 
-    def _needs_animation(self) -> bool:
-        """是否存在活跃动画状态需要持续 30Hz 渲染（时间基动画推进）。
+    def _should_render(self) -> bool:
+        """是否需渲染本帧：**恒定 True**——渲染线程每拍都渲染。
 
-        工具运行（开放工具卡边框/● 呼吸）、流式生成（status_active → 状态栏
-        spinner/模型名呼吸/输入区占位动画）、解析进行中（parse_line spinner）
-        任一活跃时，即使无新命令也置脏渲染——修复「工具执行期间 TUI 其他
-        部分冻结」：bash 等工具无实时输出时无命令驱动渲染循环，时间基动画
-        （工具卡边框呼吸/状态栏呼吸/spinner）停摆。
+        ★ 2026-10-07（用户需求「渲染线程任何时候都是 30hz 渲染，不能改变」）：
+        移除「空闲按需渲染」与「force 提前渲染」——任何状态（空闲/无命令/
+        无动画）都恰按 ``render_interval``（1/30s）节拍渲染一帧，既不跳过
+        也不提前，帧率严格 30Hz 且不可被配置/参数改变（``TuiConfig`` 的
+        ``__post_init__`` 强制 ``render_interval`` 恒为 1/30；
+        ``render(maxFps=...)`` 不再改变帧率）。
 
-        与 ``_subagent_panel._needs_animation``（面板控制器经 SUBAGENT_FRAME
-        命令自行驱动渲染循环）互补：本方法覆盖主 agent 侧动画状态。
-
-        ★ 参与渲染决策（按需渲染）：``_should_render`` 用本方法判断「无脏命令
-        但仍有活跃动画」→ 继续按 ``render_interval`` 渲染（动画平滑推进）；
-        无脏且无动画 → 跳过整帧重建（``TuiConfig.idle_render=False`` 默认；
-        设 True 恢复「全程 30Hz」旧行为）。
-
-        线程安全：仅在 render 线程（``_should_render``）调用；属性读取为 GIL
-        原子操作（status/tool_boxes/parse_line 赋值与读取均原子）。
-        """
-        model = getattr(self, "_model", None)
-        if model is None:
-            return False
-        st = getattr(model, "status", None)
-        if st is not None and getattr(st, "status_active", False):
-            return True
-        if getattr(model, "tool_boxes", None):
-            return True
-        if getattr(model, "parse_line", None) is not None:
-            return True
-        # ★ 补全弹窗（2026-08-05 修复，与 user_select 弹窗同）：不驱动动画
-        #   循环——弹窗已静态化（标题/高亮/说明/提示均为静态色，见
-        #   input_area.py _build_popup_lines），无需 30Hz 渲染推进呼吸。修复前
-        #   补全弹窗激活持续 30Hz 渲染，每帧重写弹窗行（Termux 等终端闪烁）。
-        #   弹窗内容仅随打字（items 变化）/导航（selected 变化）更新，经
-        #   事件驱动渲染。
-        # ★ 反向历史搜索（2026-08-05 修复，与弹窗同）：不驱动动画循环——
-        #   搜索行 query 已静态化（见 input_area.py _build_lines），无需 30Hz
-        #   渲染推进呼吸。修复前搜索激活持续 30Hz 渲染（Termux 等终端闪烁）；
-        #   搜索行内容仅随按键（query/matches 变化）更新，经事件驱动渲染。
-        # ★ useAnimation 共享驱动：存在活跃动画订阅时视为有动画需求（返回
-        #   True → ``_should_render`` 置脏并按 render_interval 继续渲染）。
-        try:
-            if _hooks.has_active_animations(ctx=getattr(self, "_hook_ctx", None)):
-                return True
-        except Exception:
-            _logger.debug("has_active_animations 异常", exc_info=True)
-        return False
-
-    def _should_render(self, changed: bool) -> bool:
-        """是否需渲染本帧：**按需渲染**（脏 / 活跃动画），可配置全程 30Hz。
-
-        事件（命令/重绘请求）标记脏并唤醒循环，但不立即渲染——与下一个
-        30Hz 拍一起渲染（批处理）。
-
-        ★ 按需渲染（CPU 优化，默认 ``TuiConfig.idle_render=False``）：
-        无脏命令且无活跃动画（``_needs_animation``——时间基 spinner/呼吸/
-        动画订阅）时**跳过整帧重建**（组件树 → 调和 → 布局 → 绘制 → diff），
-        等待事件唤醒。修复前（2026-08-16 需求变更）为「全程 30Hz」：空闲也
-        每 1/30s 重建整棵树，CPU 常驻开销（笔记本/IDE 终端尤其明显）；
-        需要旧行为时设 ``idle_render=True``。
-
-        ★ 立即渲染：force（_bottom_redraw_requested，如 /editmsg prefill 注入）
-        时跳过 interval 节流——用户可感知的 UI 更新即时渲染；高频命令
-        （工具状态）不走 force，30Hz 批处理语义不变。
+        节拍由 ``_render`` 循环的 ``next_loop``（``render_interval``）保证，
+        本方法不再重复节流。重绘请求（``_bottom_redraw_requested``）消费为
+        脏标记，供等待方（``waitUntilRenderFlush`` / ``flush``）判断「待渲染
+        变更是否已消费」。
 
         Returns:
-            True — 本拍渲染（render_interval 已到期或 force）。
+            True — 固定渲染本拍。
         """
-        now = time.monotonic()
-        # ★ TOCTOU 说明（review 方向，已知权衡）：force 读-清两步非原子——
-        #   ``is_set()`` 与 ``clear()`` 之间并发 set 的 force 会被本次 clear
-        #   吞掉（该请求降级为下一 30Hz 拍渲染，延迟 ≤ render_interval（1/30s），
-        #   用户不可感知）。原子化需 Condition/锁，热路径成本不值——窗口内
-        #   丢失的 force 语义由后续拍渲染兜底。
-        force = self._bottom_redraw_requested.is_set()
         self._bottom_redraw_requested.clear()
-        if changed or force:
-            self._dirty = True  # 本批命令已应用 / 底部重绘请求 → 标记脏
-        # ★ 活跃动画状态 → 置脏（时间基元素需要连续帧推进）。
-        if not self._dirty and self._needs_animation():
-            self._dirty = True
-        # ★ 空闲跳过（idle_render=False）：无脏且无动画 → 本拍不重建组件树
-        #   （渲染循环仍每 render_interval 醒来消费输入/命令，成本可忽略）。
-        if not self._dirty and not self._config.idle_render:
-            return False
-        if now - self._last_bottom_redraw >= self._config.render_interval or force:
-            self._dirty = False
-            self._last_bottom_redraw = now
-            return True
-        return False
+        self._dirty = False
+        return True
 
     # ── 阶段 ─────────────────────────────────────────
 

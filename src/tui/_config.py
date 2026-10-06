@@ -21,7 +21,15 @@ from dataclasses import dataclass
 from typing import Any, TypeVar
 
 
-__all__: list[str] = ["ConfigBase", "TuiConfig"]
+__all__: list[str] = ["ConfigBase", "TuiConfig", "RENDER_HZ", "RENDER_INTERVAL_SEC"]
+
+#: 渲染线程帧率（Hz）——恒定 30Hz，唯一真源且**不可改变**（用户需求：
+#: 「渲染线程任何时候都是 30hz 渲染，不能改变」）。所有帧率相关参数
+#: （``render_interval`` / ``drain_lock_timeout`` / ``bottom_redraw_interval``
+#: / ``spinner_tick_hz``）均由此推导，禁止各模块另写 ``30`` / ``1/30`` 魔数。
+RENDER_HZ: float = 30.0
+#: 渲染线程帧间隔（秒）= ``1 / RENDER_HZ``。
+RENDER_INTERVAL_SEC: float = 1.0 / RENDER_HZ
 
 # ★ P3（review 2026-08-22）：类级 TypeVar 收窄 defaults()/with_overrides()
 #   返回类型——修复前标注 "ConfigBase"（基类），子类 TuiConfig 实际返回
@@ -58,20 +66,14 @@ class TuiConfig(ConfigBase):
     """
 
     # ── 渲染引擎参数 ──────────────────────────────────
-    render_interval: float = 1.0 / 30       # render 线程刷新间隔（秒）——脏/动画期间的最小帧间隔
-    #: 空闲渲染模式（CPU 优化）：
-    #:  ``False``（默认）= **按需渲染**——无脏命令且无活跃动画（时间基
-    #:    spinner/呼吸/spinner 帧推进）时跳过整帧重建（组件树 → 调和 → 布局
-    #:    → 绘制 → diff 全链路），等待事件唤醒；
-    #:  ``True`` = 全程 30Hz 刷新（旧行为）——空闲也每 ``render_interval``
-    #:    重建整棵树，CPU 常驻开销明显，仅在确需「空闲也平滑推进的时间基
-    #:    元素」时启用。
-    idle_render: bool = False
+    #: 渲染线程帧间隔（秒）——恒定 ``1/30``（30Hz），**不可改变**：任何构造/
+    #: 覆盖路径都会被 ``__post_init__`` 强制回真源值。
+    render_interval: float = RENDER_INTERVAL_SEC
     max_batch_size: int = 50                # 单帧最大批处理命令数，防止 UI 冻结
-    drain_lock_timeout: float = 1.0 / 30    # drain 锁超时（秒），与 render_interval 对齐
+    drain_lock_timeout: float = RENDER_INTERVAL_SEC  # drain 锁超时（秒），与 render_interval 对齐
     cmd_queue_maxsize: int = 10000          # 命令队列最大容量
     consecutive_full_threshold: int = 10    # 连续满队列告警阈值
-    bottom_redraw_interval: float = 1.0 / 30  # 底部栏重绘间隔（秒），对应 30Hz
+    bottom_redraw_interval: float = RENDER_INTERVAL_SEC  # 底部栏重绘间隔（秒），对应 30Hz
 
     # ── 动画参数 ──────────────────────────────────────
     breath_cycle_len: int = 12              # 呼吸周期长度（帧数）
@@ -83,7 +85,7 @@ class TuiConfig(ConfigBase):
     fade_total_frames: int = 6              # FadeIn 渐显帧数（兼容旧配置保留）
     fade_start_color: int = 238             # FadeIn 起始暗色（256 色号）
     fade_duration_sec: float = 0.6          # FadeIn 渐显总时长（秒）——绝对时长，与渲染帧率无关
-    spinner_tick_hz: float = 30.0           # spinner 时间基推进频率（Hz），对齐渲染循环 30Hz
+    spinner_tick_hz: float = RENDER_HZ      # spinner 时间基推进频率（Hz），对齐渲染循环 30Hz
 
     # ── EventBus 参数 ──────────────────────────────────
     eventbus_throttle: float = 0.3          # EventBus 发布频率阈值（秒），对应 300ms
@@ -109,3 +111,14 @@ class TuiConfig(ConfigBase):
     # 默认 False 保持既有 Esc 中断语义（键位语义门控）。
     # 启用后单次 Esc 在「空闲 + 缓冲非空」时清空输入取消编辑；生成中仍中断。
     esc_cancel_input: bool = False
+
+    def __post_init__(self) -> None:
+        """强制渲染帧率恒定 30Hz——帧率不可被任何构造/覆盖路径改变。
+
+        用户需求（2026-10-07）「渲染线程任何时候都是 30hz 渲染，不能改变」：
+        ``render_interval`` 是帧率唯一表现，任何试图改动的构造（直接
+        ``TuiConfig(render_interval=...)`` 或 ``with_overrides``）都被此处
+        强制回真源 ``RENDER_INTERVAL_SEC``，保证帧率恒定。
+        """
+        if self.render_interval != RENDER_INTERVAL_SEC:
+            object.__setattr__(self, "render_interval", RENDER_INTERVAL_SEC)

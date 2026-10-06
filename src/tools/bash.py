@@ -609,7 +609,9 @@ class BashFunc(Func):
         - 超过 _AUTO_BG_TIMEOUT 秒未完成 → 自动转后台任务：
           命令继续运行，注册到 agent._background_tasks，返回
           {"task_id": ..., "status": "running"} JSON，
-          大模型可用 bash_opt 工具按 task_id 继续管理（read/wait/kill/stdin/keys/screenshot）。
+          大模型可用 bash_opt 工具按 task_id 继续管理
+          （read/wait/kill/stdin/keys/screenshot 与窗口输入
+          move/click/drag/scroll/key/type）。
 
         ★ 前台统一使用 PIPE 分离模式（stdout/stderr 双流独立收集）：
         返回给大模型的三元 JSON 中 stdout、stderr 真实分离，returncode
@@ -902,7 +904,9 @@ class BashFunc(Func):
         """后台任务执行体：运行命令并把结果写入 agent 的后台任务记录。
 
         ★ 后台任务无限运行（_run_interactive_async 不设超时、不自动转后台），
-        配合 bash_opt 工具按 task_id 操作（read/wait/kill/stdin/keys/screenshot）。
+        配合 bash_opt 工具按 task_id 操作
+        （read/wait/kill/stdin/keys/screenshot 与窗口输入
+        move/click/drag/scroll/key/type）。
         ★ 交互模式：后台任务启用 stdin（PTY slave / PIPE），子进程创建后
         通过 on_ready 回调把 process/pid/master_fd 写入任务记录，供
         bash_opt 工具按 task_id 发送输入 / 杀死进程树 / 等待完成。

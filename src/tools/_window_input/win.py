@@ -1,0 +1,715 @@
+"""Windows 窗口输入后端（原生 Windows / Cygwin / MSYS2 通用）。
+
+窗口定位与截图后端完全一致（同一套进程树展开 + 顶层窗口筛选规则），因此
+输入坐标与 ``op=screenshot`` 产物像素一一对应。
+
+两条投递路径：
+
+  - **SendInput**（默认）：合成系统级输入事件，作用于**前台窗口**。注入前
+    先把目标窗口置前；若始终无法取得前台（例如系统前台锁定），自动回退
+    PostMessage 投递。兼容性最好，鼠标移动、点击、拖动、滚轮、键盘、Unicode
+    文本（IME 无关）都可用。
+  - **PostMessage**（``method='message'``）：把 ``WM_MOUSEMOVE`` /
+    ``WM_*BUTTON*`` / ``WM_MOUSEWHEEL`` / ``WM_KEY*`` / ``WM_CHAR`` 直接投递
+    给窗口，不移动真实光标、不需要焦点；但目标程序若不处理这些消息则不生效。
+
+坐标：后端按「窗口截图坐标系」接收坐标（原点为截图左上角），SendInput 前
+换算为屏幕物理像素（进程已 DPI 感知），PostMessage 前换算为客户区坐标
+（``WM_MOUSEWHEEL`` 例外，Windows 规定其坐标是屏幕坐标）。
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Callable, Iterator
+
+from .._screenshot import winapi
+from .._screenshot.win import (
+    WindowCandidate,
+    enumerate_candidates,
+    resolve_window_pids,
+    select_window,
+    visible_region,
+)
+from .action import (
+    ClickAction,
+    DragAction,
+    InputAction,
+    KeyAction,
+    MoveAction,
+    Point,
+    ScrollAction,
+    TextAction,
+    interpolate,
+    resolve_point,
+    validate_point,
+)
+from .geometry import WindowFrame
+from .keys import MODIFIER_ORDER, WINDOWS_VK
+from .result import ActionError, InputError, InputResult, NoWindowError
+
+logger = logging.getLogger(__name__)
+
+# ── 时序常量（秒） ──────────────────────────────────────
+
+#: 窗口置前后等待系统切换焦点的时间
+_ACTIVATE_SETTLE_SECONDS = 0.15
+#: 双击两次点击之间的间隔（需小于系统双击时间）
+_DOUBLE_CLICK_INTERVAL = 0.05
+#: 拖动轨迹每步的最小间隔（duration 为 0 时仍留出重绘时间）
+_DRAG_MIN_INTERVAL = 0.005
+
+#: 需要 KEYEVENTF_EXTENDEDKEY 的虚拟键（右侧/小键盘区外的那一批）
+_EXTENDED_VKS = frozenset({
+    winapi.VK_LEFT, winapi.VK_UP, winapi.VK_RIGHT, winapi.VK_DOWN,
+    winapi.VK_INSERT, winapi.VK_DELETE, winapi.VK_HOME, winapi.VK_END,
+    winapi.VK_PRIOR, winapi.VK_NEXT, winapi.VK_LWIN, winapi.VK_RWIN,
+    winapi.VK_APPS, winapi.VK_NUMLOCK, winapi.VK_SNAPSHOT,
+})
+
+#: 鼠标按钮 → SendInput 按下/抬起标志
+_BUTTON_FLAGS: dict[str, tuple[int, int]] = {
+    "left": (winapi.MOUSEEVENTF_LEFTDOWN, winapi.MOUSEEVENTF_LEFTUP),
+    "right": (winapi.MOUSEEVENTF_RIGHTDOWN, winapi.MOUSEEVENTF_RIGHTUP),
+    "middle": (winapi.MOUSEEVENTF_MIDDLEDOWN, winapi.MOUSEEVENTF_MIDDLEUP),
+}
+
+#: 鼠标按钮 → 窗口消息（按下, 抬起, 双击, 按下时的 MK_* 状态位）
+_BUTTON_MESSAGES: dict[str, tuple[int, int, int, int]] = {
+    "left": (winapi.WM_LBUTTONDOWN, winapi.WM_LBUTTONUP,
+             winapi.WM_LBUTTONDBLCLK, winapi.MK_LBUTTON),
+    "right": (winapi.WM_RBUTTONDOWN, winapi.WM_RBUTTONUP,
+              winapi.WM_RBUTTONDBLCLK, winapi.MK_RBUTTON),
+    "middle": (winapi.WM_MBUTTONDOWN, winapi.WM_MBUTTONUP,
+               winapi.WM_MBUTTONDBLCLK, winapi.MK_MBUTTON),
+}
+
+#: 滚动方向 → (滚轮标志, 方向系数)
+_SCROLL_FLAGS: dict[str, tuple[int, int]] = {
+    "up": (winapi.MOUSEEVENTF_WHEEL, 1),
+    "down": (winapi.MOUSEEVENTF_WHEEL, -1),
+    "right": (winapi.MOUSEEVENTF_HWHEEL, 1),
+    "left": (winapi.MOUSEEVENTF_HWHEEL, -1),
+}
+
+#: 修饰键 → Windows 虚拟键码
+_MODIFIER_VKS: dict[str, int] = {
+    "ctrl": winapi.VK_CONTROL,
+    "alt": winapi.VK_MENU,
+    "shift": winapi.VK_SHIFT,
+    "meta": winapi.VK_LWIN,
+}
+
+#: 修饰键 → PostMessage 的 MK_* 状态位
+_MODIFIER_MK: dict[str, int] = {
+    "ctrl": winapi.MK_CONTROL,
+    "shift": winapi.MK_SHIFT,
+}
+
+
+@dataclass
+class _TargetWindow:
+    """定位到的目标窗口（句柄 + 截图坐标系）。"""
+
+    handle: int
+    pid: int
+    title: str
+    frame: WindowFrame
+
+
+@dataclass
+class _MessagePoint:
+    """PostMessage 投递点：实际目标窗口 + 客户区坐标 + 屏幕坐标。"""
+
+    handle: int
+    client_x: int
+    client_y: int
+    screen_x: int
+    screen_y: int
+
+
+# ── Win32 输入驱动（后端唯一直接接触系统 API 之处） ──────
+
+class Win32Driver:
+    """SendInput / PostMessage 原语封装（可被测试替身替换）。"""
+
+    name = "sendinput"
+
+    def is_foreground(self, handle) -> bool:
+        return winapi.is_foreground(handle)
+
+    def activate(self, handle) -> bool:
+        """把窗口激活为前台（AttachThreadInput 技巧 + 常规提升）。"""
+        return winapi.set_foreground(handle)
+
+    def child_at(self, handle, screen_x: int, screen_y: int) -> int:
+        """屏幕点下属于该窗口树的最深窗口（子控件优先，用于消息投递）。"""
+        return winapi.hit_test_window(handle, screen_x, screen_y)
+
+    def move_to(self, screen_x: int, screen_y: int) -> None:
+        """把系统光标移动到屏幕坐标（绝对定位，多显示器安全）。"""
+        nx, ny = winapi.normalize_absolute(screen_x, screen_y)
+        flags = (winapi.MOUSEEVENTF_MOVE | winapi.MOUSEEVENTF_ABSOLUTE
+                 | winapi.MOUSEEVENTF_VIRTUALDESK)
+        self._send([winapi.mouse_input(flags, nx, ny)])
+
+    def mouse_event(self, flags: int, data: int = 0) -> None:
+        """发送鼠标按键/滚轮事件（坐标沿用当前光标位置）。"""
+        self._send([winapi.mouse_input(flags, 0, 0, data)])
+
+    def key_event(self, vk: int, *, key_up: bool) -> None:
+        """发送键盘按下/抬起事件（虚拟键码）。"""
+        flags = winapi.KEYEVENTF_KEYUP if key_up else 0
+        if vk in _EXTENDED_VKS:
+            flags |= winapi.KEYEVENTF_EXTENDEDKEY
+        self._send([winapi.key_input(vk=vk, flags=flags)])
+
+    def unicode_event(self, code_unit: int, *, key_up: bool) -> None:
+        """发送 Unicode 文本输入事件（不依赖键盘布局）。"""
+        self._send([winapi.unicode_key_input(code_unit, key_up=key_up)])
+
+    def post(self, handle, msg: int, wparam: int = 0, lparam: int = 0) -> bool:
+        return winapi.post_message(handle, msg, wparam, lparam)
+
+    def client_origin(self, handle) -> tuple[int, int] | None:
+        return winapi.client_origin(handle)
+
+    def sleep(self, seconds: float) -> None:
+        if seconds > 0:
+            time.sleep(seconds)
+
+    @staticmethod
+    def _send(items: list) -> None:
+        sent = winapi.send_inputs(items)
+        if sent != len(items):
+            raise InputError(
+                f"SendInput 未能投递全部事件（{sent}/{len(items)}）；"
+                f"系统可能因权限（UIPI）或输入桌面限制拒绝注入"
+            )
+
+
+class WindowsInputBackend:
+    """Windows 平台窗口输入后端。"""
+
+    name = "windows"
+
+    def __init__(self, locator: Callable[[int], _TargetWindow | None] | None = None,
+                 driver: Win32Driver | None = None):
+        self._locate = locator or locate_window
+        self._driver = driver or Win32Driver()
+        #: 消息投递路径下「最近一次交互控件」缓存（root 句柄 → 子控件句柄）：
+        #: Edit/Button 等控件只接收发给自身的 WM_CHAR/WM_KEY*，键盘类动作须
+        #: 复用鼠标命中过的控件；跨调用保留由后端实例（注册表单例）承载。
+        self._message_key_targets: dict[int, int] = {}
+
+    def supports(self) -> bool:
+        return winapi.is_windows_platform()
+
+    def send(self, pid: int, action: InputAction) -> InputResult:
+        """向 ``pid`` 的窗口注入 ``action``，返回注入结果。"""
+        winapi.ensure_process_dpi_aware()
+        target = self._locate(pid)
+        if target is None:
+            raise NoWindowError(
+                f"进程 {pid} 及其子进程没有可接收输入的可见窗口"
+                f"（纯命令行进程无 GUI 窗口；窗口已最小化/被隐藏时也找不到）"
+            )
+        delivery = self._delivery_for(target, action)
+        detail, delivery = self._inject(target, action, delivery)
+        detail["delivery"] = delivery
+        return InputResult(
+            action=action.name,
+            backend=self.name,
+            window_pid=target.pid,
+            window_title=target.title,
+            detail=detail,
+        )
+
+    def _inject(self, target: _TargetWindow, action: InputAction,
+                delivery: str) -> tuple[dict, str]:
+        """按投递方式注入，返回 ``(细节, 实际使用的投递方式)``。
+
+        auto 模式下 SendInput 失败（如目标进程权限更高被 UIPI 拒绝）时自动
+        回退 PostMessage 投递，并在结果中如实反映实际投递方式。
+        """
+        if delivery == "message":
+            return self._inject_message(target, action), "message"
+        try:
+            return self._inject_sendinput(target, action), "sendinput"
+        except InputError as exc:
+            if action.method != "auto":
+                raise
+            logger.debug("SendInput 注入失败，回退 PostMessage 投递: %s", exc)
+            return self._inject_message(target, action), "message"
+
+    # ── 投递方式决策 ─────────────────────────────────────
+
+    def _delivery_for(self, target: _TargetWindow, action: InputAction) -> str:
+        if action.method == "message":
+            return "message"
+        foreground = self._ensure_foreground(target)
+        if action.method == "sendinput":
+            if not foreground:
+                raise InputError(
+                    f"无法把窗口 {target.title or target.handle} 置于前台，"
+                    f"SendInput 无法定向注入；可改用 method='message' 直接投递窗口消息"
+                )
+            return "sendinput"
+        if foreground:
+            return "sendinput"
+        logger.debug("窗口未取得前台，回退 PostMessage 投递")
+        return "message"
+
+    def _ensure_foreground(self, target: _TargetWindow) -> bool:
+        if self._driver.is_foreground(target.handle):
+            return True
+        self._driver.activate(target.handle)
+        self._driver.sleep(_ACTIVATE_SETTLE_SECONDS)
+        return self._driver.is_foreground(target.handle)
+
+    # ── SendInput 路径 ───────────────────────────────────
+
+    def _inject_sendinput(self, target: _TargetWindow, action: InputAction) -> dict:
+        frame = target.frame
+        if isinstance(action, ClickAction):
+            return self._click_sendinput(frame, action)
+        if isinstance(action, MoveAction):
+            return self._move_sendinput(frame, action)
+        if isinstance(action, DragAction):
+            return self._drag_sendinput(frame, action)
+        if isinstance(action, ScrollAction):
+            return self._scroll_sendinput(frame, action)
+        if isinstance(action, KeyAction):
+            return self._key_sendinput(action)
+        if isinstance(action, TextAction):
+            return self._type_sendinput(action)
+        raise ActionError(f"Windows 后端不支持的动作: {action.name}")  # pragma: no cover
+
+    def _move_sendinput(self, frame: WindowFrame, action: MoveAction) -> dict:
+        point = resolve_point(action.x, action.y, frame.width, frame.height,
+                              label="移动坐标")
+        screen = frame.to_screen(point)
+        self._driver.move_to(*screen)
+        return self._point_detail(point, screen)
+
+    def _click_sendinput(self, frame: WindowFrame, action: ClickAction) -> dict:
+        point = resolve_point(action.x, action.y, frame.width, frame.height,
+                              label="点击坐标")
+        screen = frame.to_screen(point)
+        down, up = _BUTTON_FLAGS[action.button]
+        self._driver.move_to(*screen)
+        with self._hold_modifiers(action.modifiers):
+            for index in range(action.count):
+                if index:
+                    self._driver.sleep(_DOUBLE_CLICK_INTERVAL)
+                self._driver.mouse_event(down)
+                self._driver.mouse_event(up)
+        detail = self._point_detail(point, screen)
+        detail.update({"button": action.button, "count": action.count})
+        return detail
+
+    def _drag_sendinput(self, frame: WindowFrame, action: DragAction) -> dict:
+        start = resolve_point(action.from_x, action.from_y, frame.width, frame.height,
+                              label="拖动起点")
+        end = validate_point(Point(action.to_x, action.to_y), frame.width, frame.height,
+                             label="拖动终点")
+        start_screen = frame.to_screen(start)
+        end_screen = frame.to_screen(end)
+        down, up = _BUTTON_FLAGS[action.button]
+        self._driver.move_to(*start_screen)
+        interval = self._drag_interval(action)
+        with self._hold_modifiers(action.modifiers):
+            self._driver.mouse_event(down)
+            for point in interpolate(start, end, action.steps):
+                self._driver.move_to(*frame.to_screen(point))
+                if interval:
+                    self._driver.sleep(interval)
+            self._driver.move_to(*end_screen)
+            self._driver.mouse_event(up)
+        detail = self._point_detail(start, start_screen)
+        detail.update({
+            "button": action.button,
+            "duration": action.duration,
+            "steps": action.steps,
+            "to_x": end.x,
+            "to_y": end.y,
+            "to_screen_x": end_screen[0],
+            "to_screen_y": end_screen[1],
+        })
+        return detail
+
+    def _drag_interval(self, action: DragAction) -> float:
+        """拖动轨迹每步间隔：duration 为 0 时退化为最小间隔。"""
+        if action.duration <= 0:
+            return _DRAG_MIN_INTERVAL
+        return max(action.duration / max(action.steps, 1), _DRAG_MIN_INTERVAL)
+
+    def _scroll_sendinput(self, frame: WindowFrame, action: ScrollAction) -> dict:
+        point = resolve_point(action.x, action.y, frame.width, frame.height,
+                              label="滚动坐标")
+        screen = frame.to_screen(point)
+        flags, sign = _SCROLL_FLAGS[action.direction]
+        data = sign * action.amount * winapi.WHEEL_DELTA
+        self._driver.move_to(*screen)
+        with self._hold_modifiers(action.modifiers):
+            self._driver.mouse_event(flags, data)
+        detail = self._point_detail(point, screen)
+        detail.update({"direction": action.direction, "amount": action.amount})
+        return detail
+
+    def _key_sendinput(self, action: KeyAction) -> dict:
+        vk, implicit = resolve_windows_vk(action.shortcut.key)
+        modifiers = self._merged_modifiers(action.shortcut.modifiers, implicit)
+        vks = [_MODIFIER_VKS[name] for name in modifiers]
+        for name_vk in vks:
+            self._driver.key_event(name_vk, key_up=False)
+        try:
+            self._driver.key_event(vk, key_up=False)
+            self._driver.key_event(vk, key_up=True)
+        finally:
+            for name_vk in reversed(vks):
+                self._driver.key_event(name_vk, key_up=True)
+        return {
+            "key": action.shortcut.display(),
+            "vk": vk,
+            "modifiers": list(modifiers),
+        }
+
+    def _type_sendinput(self, action: TextAction) -> dict:
+        characters = 0
+        for char in action.text:
+            if char == "\r":
+                continue
+            if char == "\n":
+                self._press_vk(winapi.VK_RETURN)
+            elif char == "\t":
+                self._press_vk(winapi.VK_TAB)
+            else:
+                for unit in _utf16_units(char):
+                    self._driver.unicode_event(unit, key_up=False)
+                    self._driver.unicode_event(unit, key_up=True)
+            characters += 1
+        return {"text": action.text, "characters": characters}
+
+    def _press_vk(self, vk: int) -> None:
+        self._driver.key_event(vk, key_up=False)
+        self._driver.key_event(vk, key_up=True)
+
+    @contextmanager
+    def _hold_modifiers(self, modifiers: tuple[str, ...]) -> Iterator[None]:
+        """注入期间按住修饰键（结束按逆序释放）。"""
+        vks = [_MODIFIER_VKS[name] for name in modifiers if name in _MODIFIER_VKS]
+        for vk in vks:
+            self._driver.key_event(vk, key_up=False)
+        try:
+            yield
+        finally:
+            for vk in reversed(vks):
+                self._driver.key_event(vk, key_up=True)
+
+    @staticmethod
+    def _merged_modifiers(explicit: tuple[str, ...],
+                          implicit: set[str]) -> tuple[str, ...]:
+        """显式修饰键与字符键隐含的修饰键合并（去重、固定顺序）。"""
+        names = list(explicit) + [name for name in implicit if name not in explicit]
+        return tuple(name for name in MODIFIER_ORDER if name in names)
+
+    @staticmethod
+    def _point_detail(point: Point, screen: tuple[int, int]) -> dict:
+        return {
+            "x": point.x,
+            "y": point.y,
+            "screen_x": screen[0],
+            "screen_y": screen[1],
+        }
+
+    # ── PostMessage 路径 ─────────────────────────────────
+
+    def _inject_message(self, target: _TargetWindow, action: InputAction) -> dict:
+        if isinstance(action, ClickAction):
+            return self._click_message(target, action)
+        if isinstance(action, MoveAction):
+            return self._move_message(target, action)
+        if isinstance(action, DragAction):
+            return self._drag_message(target, action)
+        if isinstance(action, ScrollAction):
+            return self._scroll_message(target, action)
+        if isinstance(action, KeyAction):
+            return self._key_message(target, action)
+        if isinstance(action, TextAction):
+            return self._type_message(target, action)
+        raise ActionError(f"Windows 后端不支持的动作: {action.name}")  # pragma: no cover
+
+    def _message_point(self, target: _TargetWindow, point: Point) -> _MessagePoint:
+        """窗口内坐标 → 命中控件 + 客户区坐标 + 屏幕坐标。
+
+        鼠标消息必须投递给**真正位于该点下的子控件**（Edit / Button 等），
+        否则对话框类程序不会响应，因此这里先做命中测试再换算坐标。
+        """
+        screen = target.frame.to_screen(point)
+        handle = self._driver.child_at(target.handle, screen[0], screen[1])
+        origin = self._driver.client_origin(handle)
+        if origin is None:
+            raise InputError(
+                "无法读取目标窗口客户区原点，PostMessage 投递无法换算坐标"
+            )
+        self._remember_key_target(target, handle)
+        return _MessagePoint(
+            handle=handle,
+            client_x=screen[0] - origin[0],
+            client_y=screen[1] - origin[1],
+            screen_x=screen[0],
+            screen_y=screen[1],
+        )
+
+    def _remember_key_target(self, target: _TargetWindow, handle: int) -> None:
+        """记录消息投递路径下最近交互的控件（键盘类动作用它作目标）。"""
+        self._message_key_targets[winapi.hwnd_value(target.handle)] = handle
+
+    def _keyboard_target(self, target: _TargetWindow) -> int:
+        """消息投递路径下键盘动作的目标窗口：最近交互控件优先，否则顶层窗口。"""
+        return self._message_key_targets.get(
+            winapi.hwnd_value(target.handle), target.handle)
+
+    def _move_message(self, target: _TargetWindow, action: MoveAction) -> dict:
+        point = resolve_point(action.x, action.y, target.frame.width,
+                              target.frame.height, label="移动坐标")
+        hit = self._message_point(target, point)
+        self._post_move(hit, 0)
+        detail = self._point_detail(point, (hit.screen_x, hit.screen_y))
+        detail.update({"client_x": hit.client_x, "client_y": hit.client_y,
+                       "target_handle": hit.handle})
+        return detail
+
+    def _client_coords(self, handle: int, screen_x: int,
+                       screen_y: int) -> tuple[int, int]:
+        """屏幕坐标 → 指定窗口的客户区坐标。"""
+        origin = self._driver.client_origin(handle)
+        if origin is None:
+            raise InputError(
+                "无法读取目标窗口客户区原点，PostMessage 投递无法换算坐标"
+            )
+        return screen_x - origin[0], screen_y - origin[1]
+
+    def _click_message(self, target: _TargetWindow, action: ClickAction) -> dict:
+        point = resolve_point(action.x, action.y, target.frame.width,
+                              target.frame.height, label="点击坐标")
+        hit = self._message_point(target, point)
+        down_msg, up_msg, dbl_msg, button_mask = _BUTTON_MESSAGES[action.button]
+        lparam = _make_lparam(hit.client_x, hit.client_y)
+        self._post_move(hit, 0)
+        self._post_modifier_keys(hit.handle, action.modifiers, key_up=False)
+        try:
+            for index in range(action.count):
+                if index:
+                    self._driver.sleep(_DOUBLE_CLICK_INTERVAL)
+                self._driver.post(hit.handle,
+                                  dbl_msg if index == 1 else down_msg,
+                                  button_mask, lparam)
+                self._driver.post(hit.handle, up_msg, 0, lparam)
+        finally:
+            self._post_modifier_keys(hit.handle, action.modifiers, key_up=True)
+        detail = self._point_detail(point, (hit.screen_x, hit.screen_y))
+        detail.update({"button": action.button, "count": action.count,
+                       "client_x": hit.client_x, "client_y": hit.client_y,
+                       "target_handle": hit.handle})
+        return detail
+
+    def _drag_message(self, target: _TargetWindow, action: DragAction) -> dict:
+        frame = target.frame
+        start = resolve_point(action.from_x, action.from_y, frame.width, frame.height,
+                              label="拖动起点")
+        end = validate_point(Point(action.to_x, action.to_y), frame.width, frame.height,
+                             label="拖动终点")
+        start_hit = self._message_point(target, start)
+        handle = start_hit.handle  # 按下后按钮消息保持同一控件
+        end_x, end_y = self._client_coords(handle, *frame.to_screen(end))
+        down_msg, up_msg, _dbl, button_mask = _BUTTON_MESSAGES[action.button]
+        self._post_move(start_hit, 0)
+        self._post_modifier_keys(handle, action.modifiers, key_up=False)
+        try:
+            self._driver.post(handle, down_msg, button_mask,
+                              _make_lparam(start_hit.client_x, start_hit.client_y))
+            interval = self._drag_interval(action)
+            for point in interpolate(start, end, action.steps):
+                client_x, client_y = self._client_coords(handle, *frame.to_screen(point))
+                self._driver.post(handle, winapi.WM_MOUSEMOVE, button_mask,
+                                  _make_lparam(client_x, client_y))
+                if interval:
+                    self._driver.sleep(interval)
+            self._driver.post(handle, up_msg, 0, _make_lparam(end_x, end_y))
+        finally:
+            self._post_modifier_keys(handle, action.modifiers, key_up=True)
+        detail = self._point_detail(start, (start_hit.screen_x, start_hit.screen_y))
+        detail.update({
+            "button": action.button,
+            "duration": action.duration,
+            "steps": action.steps,
+            "to_x": end.x,
+            "to_y": end.y,
+            "to_client_x": end_x,
+            "to_client_y": end_y,
+            "target_handle": handle,
+        })
+        return detail
+
+    def _scroll_message(self, target: _TargetWindow, action: ScrollAction) -> dict:
+        point = resolve_point(action.x, action.y, target.frame.width,
+                              target.frame.height, label="滚动坐标")
+        hit = self._message_point(target, point)
+        _flags, sign = _SCROLL_FLAGS[action.direction]
+        delta = sign * action.amount * winapi.WHEEL_DELTA
+        # WM_MOUSEWHEEL 的 lParam 按 Windows 规定是**屏幕坐标**
+        message = (winapi.WM_MOUSEWHEEL if action.direction in ("up", "down")
+                   else winapi.WM_MOUSEHWHEEL)
+        wparam = ((delta & 0xFFFF) << 16) | self._modifier_state(action.modifiers)
+        self._post_move(hit, 0)
+        self._driver.post(hit.handle, message, wparam,
+                          _make_lparam(hit.screen_x, hit.screen_y))
+        detail = self._point_detail(point, (hit.screen_x, hit.screen_y))
+        detail.update({"direction": action.direction, "amount": action.amount,
+                       "target_handle": hit.handle})
+        return detail
+
+    def _key_message(self, target: _TargetWindow, action: KeyAction) -> dict:
+        handle = self._keyboard_target(target)
+        vk, implicit = resolve_windows_vk(action.shortcut.key)
+        modifiers = self._merged_modifiers(action.shortcut.modifiers, implicit)
+        vks = [_MODIFIER_VKS[name] for name in modifiers]
+        for modifier_vk in vks:
+            self._driver.post(handle, winapi.WM_KEYDOWN, modifier_vk, 1)
+        try:
+            self._driver.post(handle, winapi.WM_KEYDOWN, vk, 1)
+            if action.shortcut.is_character and not ({"ctrl", "alt"} & set(modifiers)):
+                self._driver.post(handle, winapi.WM_CHAR,
+                                  ord(action.shortcut.key), 1)
+            self._driver.post(handle, winapi.WM_KEYUP, vk, 1 | (1 << 30) | (1 << 31))
+        finally:
+            for modifier_vk in reversed(vks):
+                self._driver.post(handle, winapi.WM_KEYUP, modifier_vk,
+                                  1 | (1 << 30) | (1 << 31))
+        return {
+            "key": action.shortcut.display(),
+            "vk": vk,
+            "modifiers": list(modifiers),
+            "target_handle": handle,
+        }
+
+    def _type_message(self, target: _TargetWindow, action: TextAction) -> dict:
+        handle = self._keyboard_target(target)
+        characters = 0
+        for char in action.text:
+            if char == "\r":
+                continue
+            if char == "\n":
+                self._driver.post(handle, winapi.WM_KEYDOWN, winapi.VK_RETURN, 1)
+                self._driver.post(handle, winapi.WM_CHAR, 0x0D, 1)
+                self._driver.post(handle, winapi.WM_KEYUP, winapi.VK_RETURN,
+                                  1 | (1 << 30) | (1 << 31))
+            else:
+                for unit in _utf16_units(char):
+                    self._driver.post(handle, winapi.WM_CHAR, unit, 1)
+            characters += 1
+        return {"text": action.text, "characters": characters,
+                "target_handle": handle}
+
+    def _post_move(self, hit: _MessagePoint, state: int) -> None:
+        self._driver.post(hit.handle, winapi.WM_MOUSEMOVE, state,
+                          _make_lparam(hit.client_x, hit.client_y))
+
+    def _post_modifier_keys(self, handle: int, modifiers: tuple[str, ...],
+                            *, key_up: bool) -> None:
+        message = winapi.WM_KEYUP if key_up else winapi.WM_KEYDOWN
+        for name in modifiers:
+            vk = _MODIFIER_VKS.get(name)
+            if vk is None:
+                continue
+            lparam = 1 if not key_up else 1 | (1 << 30) | (1 << 31)
+            self._driver.post(handle, message, vk, lparam)
+
+    @staticmethod
+    def _modifier_state(modifiers: tuple[str, ...]) -> int:
+        state = 0
+        for name in modifiers:
+            state |= _MODIFIER_MK.get(name, 0)
+        return state
+
+
+# ── 窗口定位与坐标换算（模块级，便于复用与单测） ──────────
+
+def locate_window(pid: int) -> _TargetWindow | None:
+    """定位 ``pid``（含子进程）的主窗口，返回句柄与截图坐标系。"""
+    winapi.ensure_process_dpi_aware()
+    window_pids = resolve_window_pids(pid)
+    if not window_pids:
+        return None
+    candidate = select_window(enumerate_candidates(window_pids))
+    if candidate is None:
+        return None
+    return _TargetWindow(
+        handle=candidate.handle,
+        pid=candidate.pid,
+        title=candidate.title,
+        frame=frame_of(candidate),
+    )
+
+
+def frame_of(candidate: WindowCandidate) -> WindowFrame:
+    """候选窗口 → 截图坐标系（与 ``op=screenshot`` 去掉 DWM 黑边后的区域一致）。"""
+    trim = visible_region(candidate)
+    if trim is None:
+        return WindowFrame(candidate.left, candidate.top,
+                           candidate.width, candidate.height)
+    return WindowFrame(candidate.left + trim.x, candidate.top + trim.y,
+                       trim.width, trim.height)
+
+
+def resolve_windows_vk(key: str) -> tuple[int, set[str]]:
+    """把规范键名（或单字符）解析为 ``(虚拟键码, 隐含修饰键)``。
+
+    Raises:
+        InputError: 键名在当前键盘布局下无对应虚拟键码。
+    """
+    if len(key) == 1:
+        scanned = winapi.key_scan_code(key)
+        if scanned is None:
+            raise InputError(
+                f"字符 {key!r} 在当前键盘布局下无对应按键；输入文本请用 op=type"
+            )
+        vk, state = scanned
+        implicit: set[str] = set()
+        if state & 1:
+            implicit.add("shift")
+        if state & 2:
+            implicit.add("ctrl")
+        if state & 4:
+            implicit.add("alt")
+        return vk, implicit
+    char_vk = WINDOWS_VK.get(key)
+    if char_vk is None:
+        raise InputError(f"Windows 后端不支持按键: {key!r}")
+    return char_vk, set()
+
+
+def _make_lparam(x: int, y: int) -> int:
+    """把客户区坐标打包为消息 lParam（低 16 位 x、高 16 位 y）。"""
+    return ((int(y) & 0xFFFF) << 16) | (int(x) & 0xFFFF)
+
+
+def _utf16_units(char: str) -> list[int]:
+    """把单个字符（可能是代理对）拆为 UTF-16 码元列表。"""
+    encoded = char.encode("utf-16-le")
+    return [int.from_bytes(encoded[index:index + 2], "little")
+            for index in range(0, len(encoded), 2)]
+
+
+__all__ = [
+    "Win32Driver",
+    "WindowsInputBackend",
+    "frame_of",
+    "locate_window",
+    "resolve_windows_vk",
+]

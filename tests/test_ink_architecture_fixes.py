@@ -12,7 +12,7 @@
   8. ``_set_props`` 浅引用全等快路径；
   9. ``use_input`` 兼容包装缓存以 handler 对象为键（不可哈希安全）；
  10. ``AppModel`` 未声明字段访问告警（拼写错误可观测）；
- 11. 空闲按需渲染（``TuiConfig.idle_render``）；
+ 11. 渲染线程恒定 30Hz（无空闲跳过，``render_interval`` 不可改变）；
  12. ``StaticLines`` 前缀缓存键用 lines 对象身份（非 ``id()``）；
  13. ``_measure`` 的 TEXT 分支提取为 ``_measure_text``（行为不变）。
 """
@@ -383,17 +383,28 @@ def test_appmodel_unknown_public_field_warns(caplog):
 
 
 # ═══════════════════════════════════════════════════════════
-# 11. 空闲按需渲染
+# 11. 渲染线程恒定 30Hz（帧率不可改变）
 # ═══════════════════════════════════════════════════════════
 
-def test_idle_render_config():
-    from src.tui._config import TuiConfig
+def test_render_interval_is_fixed_30hz():
+    from src.tui._config import RENDER_HZ, RENDER_INTERVAL_SEC, TuiConfig
 
-    assert TuiConfig.defaults().idle_render is False
-    assert TuiConfig.defaults().with_overrides(idle_render=True).idle_render is True
+    cfg = TuiConfig.defaults()
+    assert RENDER_HZ == 30.0
+    assert cfg.render_interval == pytest.approx(RENDER_INTERVAL_SEC)
+    # 帧率不可改变：任何覆盖构造都被 __post_init__ 强制回真源值
+    assert cfg.with_overrides(render_interval=0.5).render_interval == pytest.approx(
+        RENDER_INTERVAL_SEC
+    )
+    assert TuiConfig(render_interval=0.1).render_interval == pytest.approx(
+        RENDER_INTERVAL_SEC
+    )
+    # 空闲按需渲染开关已移除（帧率不可被配置改变）
+    assert not hasattr(cfg, "idle_render")
 
 
-def test_should_render_skips_when_idle_and_renders_when_changed():
+def test_should_render_always_renders_each_tick():
+    """渲染线程恒定 30Hz：每拍都渲染（空闲不跳过，节拍由渲染循环保证）。"""
     from src.tui.ink.session import InkSession
     from src.tui._config import TuiConfig
 
@@ -402,14 +413,17 @@ def test_should_render_skips_when_idle_and_renders_when_changed():
     stub._config = TuiConfig.defaults()
     stub._bottom_redraw_requested = threading.Event()
     stub._dirty = False
-    stub._last_bottom_redraw = 0.0
     stub._model = None
     stub._hook_ctx = ctx
 
     H.push_context(ctx)
     try:
-        assert stub._should_render(False) is False  # 空闲：跳过整帧重建
-        assert stub._should_render(True) is True    # 有变更：渲染
+        assert stub._should_render() is True   # 空闲：仍渲染（恒定 30Hz）
+        assert stub._should_render() is True   # 每拍都渲染
+        # 重绘请求消费为脏标记后清空（不提前、不跳过）
+        stub._bottom_redraw_requested.set()
+        assert stub._should_render() is True
+        assert not stub._bottom_redraw_requested.is_set()
     finally:
         H.pop_context()
 

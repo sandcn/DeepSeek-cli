@@ -32,6 +32,8 @@ def test_tool_name_is_bash_opt():
     assert required == ["task_id", "op"]
     assert set(schema["function"]["parameters"]["properties"]["op"]["enum"]) == {
         "read", "wait", "kill", "stdin", "keys", "screenshot",
+        # 2026-10-07 新增：窗口输入注入（鼠标/键盘/文本/拖动）
+        "click", "move", "drag", "scroll", "key", "type",
     }
 
 

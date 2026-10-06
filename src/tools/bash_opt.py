@@ -12,6 +12,9 @@ bash_opt — 按 task_id 操作后台 bash 任务
 - op=keys   向后台命令发送光标/键盘消息（跨平台 ANSI/VT100 转义序列）
 - op=screenshot  把后台命令（及其子进程）的窗口截图保存为 PNG
                  （path 参数指定文件路径，可选 crop 参数指定只截取的像素区域）
+- op=move / click / drag / scroll / key / type
+                 向后台命令的 **GUI 窗口**注入鼠标 / 键盘 / 文本输入
+                 （鼠标按钮、双击、拖动、滚轮、组合键、任意 Unicode 文本）
 
 read 为**增量读取**：后台任务运行期间的每一行输出都会累积到内部缓冲，
 每次 read 取走当前全部累积内容并清空，适合实时观察长时任务（编译/下载/
@@ -25,10 +28,19 @@ crop='x,y,width,height' 只截取窗口内的像素区域（以整窗截图左�
 区域越界报错并提示窗口实际尺寸）。产物为 PNG，可用 read_image 查看画面。
 纯命令行进程没有窗口，此时返回可读的错误说明。
 
+窗口输入（move/click/drag/scroll/key/type）同样按 task_id 定位该命令进程树
+的可见窗口，坐标以**窗口截图左上角**为原点（与 op=screenshot 产物一致，
+便于「先截图看清界面，再按像素点操作」）：click 支持左/右/中键与双击，
+drag 支持按住左/右/中键拖拽（带轨迹插值），scroll 支持上下左右滚动，
+key 支持 ctrl+shift+s 之类的组合键，type 逐字符输入任意 Unicode 文本。
+Windows 用 SendInput（必要时回退 PostMessage 投递）、Linux 用 xdotool、
+macOS 用 Quartz/cliclick + osascript；平台工具缺失时返回带安装提示的错误。
+
 键盘消息跨平台说明：VT100/ANSI 转义序列是终端输入的标准语义，被 Linux/
 macOS/Android(Termux) 的 PTY 与 Windows 的 ConPTY/Windows Terminal 统一
 接受。按键名（如 up/down/ctrl_c）映射为对应字节序列，经 PTY master 或
-stdin 管道写入后台进程，不依赖平台特定 API。
+stdin 管道写入后台进程，不依赖平台特定 API。op=keys 面向**终端程序**，
+op=key 面向**GUI 窗口**（合成窗口级按键事件），二者按被操作程序的形态选用。
 """
 
 from __future__ import annotations
@@ -49,6 +61,14 @@ from ._screenshot import (
     NoWindowError,
     ScreenshotError,
     capture_process_window,
+)
+from ._window_input import (
+    INPUT_OPS,
+    ActionError,
+    InputError,
+    NoWindowError as InputNoWindowError,
+    build_action,
+    send_window_input,
 )
 from ..core.base_agent import _parse_bash_result_fields
 
@@ -147,6 +167,15 @@ async def _write_pty_all(fd: int, data: bytes) -> None:
         total += written
 
 
+def _format_position(arguments: dict, x_key: str = "x", y_key: str = "y") -> str:
+    """把窗口内坐标显示为 ``@x,y``（缺省为 ``@center``，仅用于工具调用展示）。"""
+    x = arguments.get(x_key)
+    y = arguments.get(y_key)
+    if x is None and y is None:
+        return "@center"
+    return f"@{x},{y}"
+
+
 class BashOptFunc(Func):
     """按 task_id 操作后台 bash 任务（bash background=True 启动）。"""
 
@@ -159,6 +188,12 @@ class BashOptFunc(Func):
     _SCREENSHOT_RETRY_INTERVAL: float = 1.0
     #: 单轮截图操作的硬超时（秒）——GDI/外部命令卡死时兜底
     _SCREENSHOT_TIMEOUT: float = 30.0
+    #: 输入注入「等待窗口出现」的总时长（秒）：GUI 程序窗口创建有延迟
+    _INPUT_WAIT_SECONDS: float = 5.0
+    #: 输入注入重试轮询间隔（秒）
+    _INPUT_RETRY_INTERVAL: float = 1.0
+    #: 单轮输入注入的硬超时（秒）——注入调用阻塞时兜底
+    _INPUT_TIMEOUT: float = 30.0
 
     @classmethod
     def to_tool_schema(cls):
@@ -171,9 +206,13 @@ class BashOptFunc(Func):
                     "op：read（读取当前已产生的全部输出并清空缓冲，立即返回不等待完成）、"
                     "wait（等待完成取结果 JSON：task_id/status/stdout/stderr/returncode，"
                     "timeout 秒，默认 300/0 无限）、"
-                    "kill（杀进程树）、stdin（发文本，需 text）、keys（发按键，需 key）、"
+                    "kill（杀进程树）、stdin（发文本到 stdin，需 text）、"
+                    "keys（向终端发按键，需 key，跨平台 ANSI/VT100）、"
                     "screenshot（把该命令进程树的窗口截图存为 PNG，需 path，"
-                    "可选 crop 指定只截取的像素区域）。"
+                    "可选 crop 指定只截取的像素区域，格式 'x,y,width,height'）、"
+                    "move/click/drag/scroll/key/type（向该命令进程树的 GUI 窗口注入"
+                    "鼠标移动/点击（左中右键、可双击）/拖动/滚轮/按键/文本，"
+                    "坐标以窗口截图左上角为原点且可用 screenshot 对照）。"
                     "task_id 必须是当前对话 bash 后台返回的 bg-xxx。返回：操作结果 JSON 或输出；失败以 ( 开头。"
                 ),
                 "parameters": {
@@ -188,7 +227,8 @@ class BashOptFunc(Func):
                         },
                         "op": {
                             "type": "string",
-                            "enum": ["read", "wait", "kill", "stdin", "keys", "screenshot"],
+                            "enum": ["read", "wait", "kill", "stdin", "keys",
+                                     "screenshot", *INPUT_OPS],
                             "description": (
                                 "要执行的操作："
                                 "\n- read：读取后台命令当前已产生的全部输出并清空缓冲，"
@@ -197,11 +237,17 @@ class BashOptFunc(Func):
                                 "\n- wait：等待任务完成并获取命令输出"
                                 "\n- kill：杀死任务所有进程树"
                                 "\n- stdin：向任务 stdin 发送文本输入（需 text）"
-                                "\n- keys：向任务发送光标/键盘消息（需 key）"
+                                "\n- keys：向任务（终端程序）发送光标/键盘消息（需 key）"
                                 "\n- screenshot：把任务进程树（含其启动的 GUI 子进程）的窗口"
                                 "截图保存为 PNG 文件（需 path；可选 crop 指定只截取的像素区域），"
                                 "用于查看图形程序运行画面；"
                                 "纯命令行进程没有窗口，会返回错误说明"
+                                "\n- move/click/drag/scroll/key/type：向任务进程树的 GUI 窗口"
+                                "注入输入（鼠标移动/点击（左中右键、双击即 count=2）/拖动/滚轮、"
+                                "键盘按键、文本）；"
+                                "坐标以窗口截图左上角为原点（与 screenshot 产物一致），"
+                                "click/scroll 省略坐标时作用于窗口中心；"
+                                "键输入需 key，文本输入需 text；纯命令行进程没有窗口，会报错"
                             ),
                         },
                         "timeout": {
@@ -215,25 +261,32 @@ class BashOptFunc(Func):
                         "text": {
                             "type": "string",
                             "description": (
-                                "仅 stdin 操作必填：要发送到后台命令 stdin 的文本内容，"
-                                "按 UTF-8 编码发送（不经过 shell 解释）。"
+                                "stdin / type 操作的文本内容："
+                                "stdin 为发送到后台命令 stdin 的内容（按 UTF-8 编码，"
+                                "不经过 shell 解释）；"
+                                "type 为注入到 GUI 窗口的文本（逐字符输入，支持任意 "
+                                "Unicode，'\\n' 与 '\\t' 转为回车/制表键）。"
                             ),
                         },
                         "newline": {
                             "type": "boolean",
                             "description": (
-                                "仅 stdin 操作：是否在文本末尾追加换行（默认 true，"
-                                "即按「输入一行」语义发送）。传 false 发送原始文本不加换行。"
+                                "是否在 text 末尾追加换行：stdin 默认 true"
+                                "（按「输入一行」语义发送），type 默认 false"
+                                "（原样输入，需要回车时传 true 或在 text 中写 '\\n'）。"
                             ),
-                            "default": True,
                         },
                         "key": {
                             "type": "string",
                             "description": (
-                                "仅 keys 操作必填：要发送的按键名（跨平台 ANSI/VT100 序列）。"
-                                "支持：up/down/left/right、home/end/page_up/page_down/"
+                                "keys / key 操作的按键名："
+                                "keys（终端程序）用跨平台 ANSI/VT100 按键名，支持 "
+                                "up/down/left/right、home/end/page_up/page_down/"
                                 "insert/delete/backspace/tab/enter/escape/space、"
-                                "f1-f12、ctrl_a-ctrl_z（含 ctrl_c/ctrl_d/ctrl_z/ctrl_l 等）。"
+                                "f1-f12、ctrl_a-ctrl_z（含 ctrl_c/ctrl_d/ctrl_z/ctrl_l 等）；"
+                                "key（GUI 窗口）用组合键文本，如 'ctrl+shift+s'、'alt+f4'、"
+                                "'enter'、'a'（支持 ctrl/alt/shift/meta 修饰键、编辑与"
+                                "导航键、f1-f24、单个字符）。"
                             ),
                         },
                         "path": {
@@ -252,6 +305,101 @@ class BashOptFunc(Func):
                                 "以整窗截图左上角为原点（(0,0) 即窗口左上角）。"
                                 "省略时输出整窗原始像素（不做任何缩放）。"
                                 "区域须完全落在窗口截图内，越界会报错并提示窗口实际尺寸。"
+                            ),
+                        },
+                        "x": {
+                            "type": "number",
+                            "description": (
+                                "窗口内坐标 X（像素，原点为窗口截图左上角，与 screenshot "
+                                "产物一致）。move 必填；click / scroll 可选，省略则作用于"
+                                "窗口中心；drag 用 from_x/from_y 指定起点。"
+                            ),
+                        },
+                        "y": {
+                            "type": "number",
+                            "description": (
+                                "窗口内坐标 Y（像素，原点为窗口截图左上角）。"
+                                "与 x 同时提供或同时省略。"
+                            ),
+                        },
+                        "to_x": {
+                            "type": "number",
+                            "description": "仅 drag：拖动终点的窗口内坐标 X（必填）。",
+                        },
+                        "to_y": {
+                            "type": "number",
+                            "description": "仅 drag：拖动终点的窗口内坐标 Y（必填）。",
+                        },
+                        "from_x": {
+                            "type": "number",
+                            "description": (
+                                "仅 drag 可选：拖动起点的窗口内坐标 X；与 from_y 同时"
+                                "省略时从窗口中心按下。"
+                            ),
+                        },
+                        "from_y": {
+                            "type": "number",
+                            "description": "仅 drag 可选：拖动起点的窗口内坐标 Y。",
+                        },
+                        "button": {
+                            "type": "string",
+                            "enum": ["left", "right", "middle"],
+                            "description": (
+                                "仅 click / drag：鼠标按钮（默认 left）。"
+                                "right 即右键（右击），middle 为中键。"
+                            ),
+                        },
+                        "count": {
+                            "type": "number",
+                            "description": (
+                                "仅 click：点击次数（默认 1；2 表示双击，最大 10）。"
+                            ),
+                        },
+                        "modifiers": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "注入期间按住的修饰键，取值 ctrl / alt / shift / meta"
+                                "（可多个）：move/click/drag/scroll 表示按住这些键执行动作"
+                                "（如 ['ctrl'] 表示 Ctrl+点击）；key 动作会与 key 参数"
+                                "里的组合键合并（两种写法等价）。"
+                            ),
+                        },
+                        "direction": {
+                            "type": "string",
+                            "enum": ["up", "down", "left", "right"],
+                            "description": (
+                                "仅 scroll：滚动方向（默认 down，向下滚动查看后续内容）。"
+                            ),
+                        },
+                        "amount": {
+                            "type": "number",
+                            "description": (
+                                "仅 scroll：滚动量（默认 3，即约 3 行/格；最大 100）。"
+                            ),
+                        },
+                        "duration": {
+                            "type": "number",
+                            "description": (
+                                "仅 drag：拖动耗时秒数（默认 0.3，0 表示瞬时；"
+                                "需要目标程序识别连续移动时调大，最大 10）。"
+                            ),
+                        },
+                        "steps": {
+                            "type": "number",
+                            "description": (
+                                "仅 drag：轨迹插值步数（默认 20，范围 2-200）。"
+                            ),
+                        },
+                        "method": {
+                            "type": "string",
+                            "enum": ["auto", "sendinput", "message"],
+                            "description": (
+                                "仅 Windows 输入注入可选（其它平台忽略）："
+                                "auto（默认，优先合成真实输入事件，无法取得前台时回退消息投递）、"
+                                "sendinput（强制合成真实输入事件，需要目标窗口可被置前）、"
+                                "message（直接投递 WM_* 窗口消息，不移动真实光标、不需要焦点，"
+                                "但目标程序必须处理这些消息）。"
                             ),
                         },
                     },
@@ -274,15 +422,48 @@ class BashOptFunc(Func):
             crop = arguments.get("crop")
             if crop:
                 extra = f"{extra} crop={crop}" if extra else f"crop={crop}"
+        elif op in INPUT_OPS:
+            extra = cls._input_display(op, arguments)
         display = f"{op} {task_id}"
         if extra:
             display += f" {cls._sanitize_display(extra)}"
         return f"'{display}'"
 
+    @staticmethod
+    def _input_display(op: str, arguments: dict) -> str:
+        """窗口输入动作的显示摘要（按钮/次数/坐标/按键/文本）。"""
+        if op == "type":
+            return str(arguments.get("text", ""))
+        if op == "key":
+            return str(arguments.get("key", ""))
+        if op == "click":
+            button = str(arguments.get("button") or "left")
+            count = arguments.get("count")
+            label = f"{button}"
+            if count not in (None, 1, "1"):
+                label += f"x{count}"
+            return f"{label} {_format_position(arguments)}"
+        if op == "move":
+            return _format_position(arguments)
+        if op == "scroll":
+            direction = str(arguments.get("direction") or "down")
+            amount = arguments.get("amount") or 3
+            return f"{direction}*{amount} {_format_position(arguments)}"
+        if op == "drag":
+            start = _format_position(arguments, "from_x", "from_y")
+            end = _format_position(arguments, "to_x", "to_y")
+            return f"{arguments.get('button') or 'left'} {start}->{end}"
+        return ""
+
     def __init__(self, task_id: str, op: str, timeout=None,
-                 text: str | None = None, newline: bool = True,
+                 text: str | None = None, newline: bool | None = None,
                  key: str | None = None, path: str | None = None,
-                 crop: str | None = None):
+                 crop: str | None = None,
+                 x=None, y=None, to_x=None, to_y=None,
+                 from_x=None, from_y=None,
+                 button: str | None = None, count=None, modifiers=None,
+                 direction: str | None = None, amount=None,
+                 duration=None, steps=None, method: str | None = None):
         super().__init__()
         # task_id 归一化（防御 None/缺失）：模型传 {"task_id": null} 时
         # from_args 把 None 传入（默认值不生效），后续 startswith 崩溃。
@@ -305,10 +486,26 @@ class BashOptFunc(Func):
             # 的 deadline 计算不可预期，显式映射为「无限」语义更安全
             self.timeout = None if timeout <= 0 or math.isinf(timeout) else timeout
         self.text = text
-        self.newline = bool(newline)
+        # newline 三态：None = 未指定（stdin 默认追加换行、type 默认原样）
+        self.newline = None if newline is None else bool(newline)
         self.key = key
         self.path = path
         self.crop = crop
+        # ── 窗口输入参数（move/click/drag/scroll/key/type） ──
+        self.x = x
+        self.y = y
+        self.to_x = to_x
+        self.to_y = to_y
+        self.from_x = from_x
+        self.from_y = from_y
+        self.button = button
+        self.count = count
+        self.modifiers = modifiers
+        self.direction = direction
+        self.amount = amount
+        self.duration = duration
+        self.steps = steps
+        self.method = method
 
     # ── execute ──────────────────────────────────────────
 
@@ -350,7 +547,11 @@ class BashOptFunc(Func):
             return await self._op_keys(rec)
         if self.op == "screenshot":
             return await self._op_screenshot(rec)
-        return f"(未知操作: {self.op}。支持: read/wait/kill/stdin/keys/screenshot)"
+        if self.op in INPUT_OPS:
+            return await self._op_input(rec)
+        supported = "/".join(("read", "wait", "kill", "stdin", "keys",
+                              "screenshot", *INPUT_OPS))
+        return f"(未知操作: {self.op}。支持: {supported})"
 
     # ── op=read ──────────────────────────────────────────
 
@@ -480,7 +681,9 @@ class BashOptFunc(Func):
         if self.text is None:
             return "(stdin 操作需要 text 参数指定要发送的文本)"
         data = self.text
-        if self.newline:
+        # newline 未指定（None）或 true → 追加换行（保持「输入一行」语义）；
+        # 显式 false 时原样发送
+        if self.newline is not False:
             data += "\n"
         ok, err = await self._write_to_task(rec, data.encode("utf-8"))
         if not ok:
@@ -609,6 +812,81 @@ class BashOptFunc(Func):
         except OSError as exc:
             raise ValueError(f"无法创建父目录 {parent}: {exc}") from exc
         return absolute
+
+    # ── op=窗口输入（move/click/drag/scroll/key/type） ────
+
+    async def _op_input(self, rec: dict) -> str:
+        """向后台任务的 GUI 窗口注入鼠标 / 键盘 / 文本输入。
+
+        坐标以窗口截图左上角为原点（与 op=screenshot 产物一致），便于
+        「先截图看清界面，再按像素点操作」。结果返回 JSON（task_id/op 与
+        动作细节如按钮、坐标、屏幕坐标、按键序列、投递方式），可用
+        op=screenshot + read_image 核对界面变化。
+        """
+        pid = rec.get("pid")
+        if pid is None:
+            return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
+                    f"无法注入输入。可用 op=wait 查看任务状态)")
+        try:
+            action = self._build_input_action()
+        except ActionError as exc:
+            return f"(输入参数非法: {exc})"
+        try:
+            result = await self._send_input_with_retry(pid, action)
+        except (InputNoWindowError, InputError) as exc:
+            return f"(输入失败: {exc})"
+        payload = {
+            "task_id": self.task_id,
+            "op": self.op,
+            "hint": ("输入已注入；可用 op=screenshot 截图后用 read_image 核对界面变化"
+                     "（坐标原点为窗口截图左上角）"),
+        }
+        payload.update(result.to_dict())
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _build_input_action(self):
+        """把工具参数打包为输入动作（type 的 newline 语义在此落地）。"""
+        text = self.text
+        if self.op == "type" and self.newline:
+            text = (text or "") + "\n"
+        params = {
+            "x": self.x, "y": self.y,
+            "to_x": self.to_x, "to_y": self.to_y,
+            "from_x": self.from_x, "from_y": self.from_y,
+            "button": self.button, "count": self.count,
+            "modifiers": self.modifiers, "key": self.key, "text": text,
+            "direction": self.direction, "amount": self.amount,
+            "duration": self.duration, "steps": self.steps,
+            "method": self.method,
+        }
+        return build_action(self.op, params)
+
+    async def _send_input_with_retry(self, pid: int, action):
+        """注入输入（GUI 程序窗口创建有延迟时轮询重试）。
+
+        仅在「暂无窗口」时重试（InputNoWindowError）；参数类错误立即抛出。
+        每轮注入在线程中执行（系统输入合成 / 外部命令调用阻塞），并受
+        _INPUT_TIMEOUT 保护。
+
+        Raises:
+            ActionError / InputError: 参数非法、平台不支持、注入失败或超时。
+        """
+        deadline = time.monotonic() + self._INPUT_WAIT_SECONDS
+        while True:
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(send_window_input, pid, action),
+                    timeout=self._INPUT_TIMEOUT,
+                )
+            except InputNoWindowError as exc:
+                if time.monotonic() >= deadline:
+                    raise
+                logger.debug("输入注入重试（暂无窗口）: %s", exc)
+                await asyncio.sleep(self._INPUT_RETRY_INTERVAL)
+            except asyncio.TimeoutError:
+                raise InputError(
+                    f"输入注入超时（超过 {self._INPUT_TIMEOUT:g} 秒）：注入调用无响应"
+                ) from None
 
     # ── 写入辅助 ─────────────────────────────────────────
 
