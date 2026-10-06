@@ -12,10 +12,15 @@ DPI：截图前把进程标记为 DPI 感知（``winapi.ensure_process_dpi_aware
 使窗口几何与物理像素 1:1；否则高 DPI 显示器上窗口坐标被系统虚拟化缩小，
 产物右下角会被裁掉。
 
+黑边：``GetWindowRect`` 含 Win10 DWM 的不可见边框（阴影/缩放预留），直接
+截图四边会出现黑边；按 ``DWMWA_EXTENDED_FRAME_BOUNDS``（
+:func:`visible_region`）裁掉该边框后再输出。
+
 编码：DIB 为 32 位 BGRA（自上而下），取 B/G/R 三通道直接写 PNG
 （不依赖 Pillow）。
 
-裁剪：``crop`` 指定时在内存 BGRA 上裁剪后再编码（不经过 PNG 解码）。
+裁剪：``visible_region`` 去黑边后，``crop`` 在剩余像素上裁剪再编码
+（不经过 PNG 解码）；``crop`` 坐标以去黑边后的整窗截图为原点。
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ from dataclasses import dataclass
 
 from . import png, proctree, transform, winapi
 from .result import CaptureResult, NoWindowError, ScreenshotError
-from .transform import CropRegion
+from .transform import CropError, CropRegion
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +66,9 @@ class WindowCandidate:
     height: int
     tool_window: bool = False
     minimized: bool = False
+    #: 窗口矩形左上角的屏幕坐标（用于换算 DWM 可见边界的裁边偏移）
+    left: int = 0
+    top: int = 0
 
     @property
     def area(self) -> int:
@@ -121,6 +129,11 @@ class WindowsBackend:
         if target is None:  # pragma: no cover - candidates 非空时不会发生
             raise NoWindowError(f"进程 {pid} 没有可用的截图窗口")
         bgra, width, height = capture_window_pixels(target)
+        # 去掉 Win10 DWM 为阴影/缩放预留的不可见边框（截图后呈黑边）
+        trim = visible_region(target)
+        if trim is not None:
+            bgra = transform.crop_bgra(bgra, width, height, trim)
+            width, height = trim.width, trim.height
         if crop is not None:
             bgra = transform.crop_bgra(bgra, width, height, crop)
             width, height = crop.width, crop.height
@@ -214,8 +227,43 @@ def enumerate_candidates(window_pids: set[int]) -> list[WindowCandidate]:
             height=height,
             tool_window=winapi.window_is_toolwindow(hwnd),
             minimized=bool(user.IsIconic(hwnd)),
+            left=left,
+            top=top,
         ))
     return candidates
+
+
+def visible_region(candidate: WindowCandidate) -> CropRegion | None:
+    """计算窗口截图中「去掉 DWM 不可见边框」后的可见区域。
+
+    Win10 的 ``GetWindowRect`` 包含系统为阴影/调整大小预留的不可见边框，
+    ``PrintWindow`` / ``BitBlt`` 在该区域无内容，截图四边呈黑边；
+    ``DWMWA_EXTENDED_FRAME_BOUNDS`` 给出真实可见边界，与窗口矩形之差即为
+    需要裁掉的偏移。
+
+    Returns:
+        需要裁剪的区域（以整窗截图左上角为原点）；无黑边（区域即整窗）、
+        窗口非 DWM 合成或边界异常时返回 ``None``（保持整窗像素）。
+    """
+    bounds = winapi.extended_frame_bounds(candidate.handle)
+    if bounds is None:
+        return None
+    left, top, right, bottom = bounds
+    width, height = right - left, bottom - top
+    if width <= 0 or height <= 0:
+        return None
+    try:
+        region = CropRegion(left - candidate.left, top - candidate.top, width, height)
+        region.validate_against(candidate.width, candidate.height)
+    except CropError:
+        logger.debug(
+            "DWM 可见边界异常，按整窗截图: bounds=%s window=%sx%s",
+            bounds, candidate.width, candidate.height,
+        )
+        return None
+    if region.is_full(candidate.width, candidate.height):
+        return None
+    return region
 
 
 def capture_window_pixels(candidate: WindowCandidate) -> tuple[bytes, int, int]:
@@ -302,4 +350,5 @@ __all__ = [
     "enumerate_candidates",
     "resolve_window_pids",
     "select_window",
+    "visible_region",
 ]

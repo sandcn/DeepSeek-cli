@@ -55,6 +55,7 @@ TH32CS_SNAPPROCESS = 0x00000002
 GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080
 DWMWA_CLOAKED = 14
+DWMWA_EXTENDED_FRAME_BOUNDS = 9
 SW_RESTORE = 9
 MAX_PATH = 260
 
@@ -469,6 +470,30 @@ def is_window_cloaked(hwnd) -> bool:
         return hr == 0 and value.value != 0
     except OSError:
         return False
+
+
+def extended_frame_bounds(hwnd) -> "tuple[int, int, int, int] | None":
+    """读取窗口的 DWM 可见边界 ``(left, top, right, bottom)``（屏幕像素坐标）。
+
+    ``GetWindowRect`` 在 Win10 上包含系统为阴影/调整大小预留的**不可见边框**
+    （非最大化窗口通常在左、上、右、下各约 7 个逻辑像素），``PrintWindow`` /
+    ``BitBlt`` 对该区域无内容可渲染，截图四边因此出现黑边。DWM 扩展框边界
+    给出真实可见区域，两者之差即需裁掉的偏移。
+
+    Returns:
+        可见边界；窗口非 DWM 合成、调用失败或旧系统无 ``dwmapi`` 时返回
+        ``None``（调用方应回退到窗口矩形）。
+    """
+    try:
+        rect = RECT()
+        hr = dwmapi().DwmGetWindowAttribute(
+            hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, byref(rect), ctypes.sizeof(RECT)
+        )
+    except OSError:
+        return None
+    if hr != 0:
+        return None
+    return (int(rect.left), int(rect.top), int(rect.right), int(rect.bottom))
 
 
 def enum_children_windows() -> list:
