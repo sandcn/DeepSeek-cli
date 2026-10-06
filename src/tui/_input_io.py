@@ -529,7 +529,7 @@ class InputIO:
                     truncated = True
                     break
         except (ValueError, OSError, TypeError, AttributeError):
-            pass
+            _logger.debug("粘贴读取异常（本次已读 %d 字节）", len(extra), exc_info=True)
         if truncated:
             _logger.warning(
                 "粘贴内容超过 256KB 上限已截断（本次读取 %d 字节）",

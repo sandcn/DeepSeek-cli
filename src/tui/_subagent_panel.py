@@ -187,7 +187,7 @@ class SubAgentPanelController:
             if panel is not None:
                 return panel
         except Exception:
-            pass
+            _logger.debug("ui 服务 subagent_panel 探测失败，回退默认单例", exc_info=True)
         if cls._instance is None:
             with cls._class_lock:
                 if cls._instance is None:

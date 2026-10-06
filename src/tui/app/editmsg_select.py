@@ -33,8 +33,10 @@ from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from src.tui.app.input_area import _truncate_width
 from src.tui.ink import TEXT, h, Column
-from src.tui.ink.hooks import use_modal, use_ref, use_state, use_memo
+from src.tui.ink.hooks import use_ref, use_state, use_memo
 from src.tui.ink.widgets.interactive import SelectInput
+
+from ._modal_view import empty_modal_frame, use_modal_scope
 
 _logger = logging.getLogger(__name__)
 
@@ -111,7 +113,7 @@ def EditMsgSelectPopup(props) -> object:
     # ★ 模态底部视图声明（与 UserSelectPopup 同机制）：visible 时独占键盘
     #   输入——未消费按键被 input router 吞掉（不落入输入缓冲；输入区已
     #   不渲染）。visible=False 时 hook 不参与路由（零影响）。
-    use_modal(visible)
+    use_modal_scope(visible, fullscreen=False)
     # ★ P2（review 2026-08-22）：use_memo 无条件调用（移到 early return 前）
     #   ——修复前 use_memo 仅在 visible 分支调用，违反「unconditional hooks」
     #   契约（下方 ``if not visible: return`` 早退后 use_memo 被跳过；若日后
@@ -127,7 +129,7 @@ def EditMsgSelectPopup(props) -> object:
     limit = max(1, min(total, use_memo(lambda: _rows, [total, _rows])))
 
     if not visible:
-        return h(TEXT, {"children": ""})
+        return empty_modal_frame()
 
     # ── 渲染 ──
     # 本帧高亮源：es 实例变化（fresh_es——组件防御，防 fiber 复用残留旧

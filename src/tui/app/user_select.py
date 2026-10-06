@@ -87,8 +87,10 @@ from src.tui._input_layout import _wrap_by_width
 from src.tui.app.input_area import _desc_column_width, _truncate_width
 from src.tui.app._theme import _S_DIM, _S_SEP
 from src.tui.ink import TEXT, h, Column, Row
-from src.tui.ink.hooks import use_effect, use_modal, use_ref, use_state, use_input
+from src.tui.ink.hooks import use_effect, use_ref, use_state, use_input
 from src.tui.ink.widgets.interactive import SelectInput, MultiSelect
+
+from ._modal_view import empty_modal_frame, use_modal_scope
 
 _logger = logging.getLogger(__name__)
 
@@ -331,6 +333,256 @@ def _build_split_row(
     ])
 
 
+# ═══════════════════════════════════════════════════════════
+# 弹窗协议 / tab 路由 / Submit 页（模块级；P1-1 巨型组件拆分）
+# ═══════════════════════════════════════════════════════════
+# 说明：以下逻辑原为 ``UserSelectPopup`` 内部闭包（组件函数 ~510 行）。提取为
+# 模块级函数后按显式参数传递上下文（states / us / model / active_ref /
+# set_active / set_selected），主组件只负责状态读取 + hooks 接线 + 渲染组装。
+
+
+def _fallback_empty_options(states: list) -> None:
+    """options 为空（外部注入/异常状态）时以 default_options 回退置 done。
+
+    静默不可见（visible=False）会让工具协程（无超时 deadline=0）永远轮询
+    ``us.done`` → 交互卡死。修复：自动以 ``default_options`` 回退（置
+    done=True；first-write-wins——done 已由工具超时置位则跳过）。
+    """
+    for s in states:
+        if (
+            s is not None and s.visible and not s.done
+            and not getattr(s, "options", None)
+        ):
+            s.try_set_final("confirmed", list(getattr(s, "default_options", None) or []))
+
+
+def _submit_all(states: list) -> None:
+    """Submit 页 Enter：统一提交全部问题。
+
+    已回答（answered）的问题按其 action/result 写入终态；未回答的问题用
+    default_options（未回答即取默认）——全部经 ``try_set_final``
+    （first-write-wins）置 done → 各工具协程轮询到 done 后返回结果。
+    """
+    try:
+        for s in states:
+            if getattr(s, "done", False):
+                continue
+            if getattr(s, "answered", False):
+                s.try_set_final(
+                    getattr(s, "action", "") or "confirmed",
+                    list(getattr(s, "result", None) or []),
+                )
+            else:
+                s.try_set_final(
+                    "confirmed",
+                    list(getattr(s, "default_options", None) or []),
+                )
+    except Exception:
+        # ★ P3（review）：不静默吞异常——记 debug 日志（提交路径异常会导致
+        #   部分问题未写入终态，须可观测）。
+        _logger.debug("user_select Submit 页提交异常", exc_info=True)
+        return
+
+
+def _back_to_questions(model, active_ref, set_active) -> None:
+    """Submit 页 Esc：返回问题 tab（最后一个未回答；没有则第一个）。"""
+    try:
+        lst = getattr(model, "user_selects", None) or []
+        n = len(lst)
+        if n <= 0:
+            return
+        for i in range(n - 1, -1, -1):
+            if not getattr(lst[i], "answered", False) and not getattr(lst[i], "done", False):
+                active_ref.current = i
+                set_active(i)
+                return
+        active_ref.current = 0
+        set_active(0)
+    except Exception:
+        _logger.debug("user_select 返回问题 tab 异常", exc_info=True)
+        return
+
+
+def _advance_to_next_pending(model, active_ref, set_active) -> None:
+    """回答后自动切换焦点到**下一个未选择**的问题。
+
+    当前问题经 Enter 确认（或 Esc 取消）后其 tab 标记 [×]；焦点自动跳到队列
+    中下一个未回答（answered=False 且 done=False）的问题；全部已回答时切到
+    Submit tab（索引 == len(states)）。单问题（无并发）零操作。
+
+    经 ``model.user_selects`` 实时读取（渲染帧闭包捕获的 states 可能陈旧
+    ——同批按键/新 tab 加入场景），active_ref/set_active 同步更新。
+    """
+    try:
+        lst = getattr(model, "user_selects", None) or []
+        if len(lst) <= 1:
+            return
+        cur = active_ref.current
+        n = len(lst)
+        for step in range(1, n + 1):
+            nxt = (cur + step) % n
+            if (
+                not getattr(lst[nxt], "answered", False)
+                and not getattr(lst[nxt], "done", False)
+            ):
+                active_ref.current = nxt
+                set_active(nxt)
+                return
+        # 全部已回答 → Submit tab（玩家确认是否提交）
+        active_ref.current = n
+        set_active(n)
+    except Exception:
+        _logger.debug("user_select 推进下一问题异常", exc_info=True)
+        return
+
+
+def _handle_tab_event(
+    event, *, visible: bool, is_submit: bool, multi_mode: bool, tab_count: int,
+    active_ref, set_active, states: list, model,
+) -> bool:
+    """顶层 tab 路由：Submit 页 Enter/Esc + Tab/←/→ 切换（模块级）。
+
+    父组件 use_input 先于子控件（SelectInput/MultiSelect）被 router 调用
+    （前序收集）——tab/←/→ 被本 handler 消费，↑↓/jk 等放行给控件。
+    """
+    if not visible:
+        return False
+    # Submit 页：Enter 提交全部 / Esc 返回问题（无需控件）
+    if is_submit:
+        if event.kind == "enter":
+            _submit_all(states)
+            return True
+        if event.kind == "escape":
+            _back_to_questions(model, active_ref, set_active)
+            return True
+    if not multi_mode:
+        return False
+    n = tab_count
+    cur = active_ref.current
+    new = cur
+    if event.kind == "tab":
+        # Tab → 下一个；Shift+Tab（CSI u modifier=2）→ 上一个
+        new = (cur + 1) % n if getattr(event, "modifier", 0) != 2 else (cur - 1) % n
+    elif event.kind == "arrow_right":
+        new = (cur + 1) % n
+    elif event.kind == "arrow_left":
+        new = (cur - 1) % n
+    else:
+        return False
+    if new != cur:
+        active_ref.current = new
+        set_active(new)
+    return True
+
+
+def _make_question_callbacks(
+    us, *, multi_mode: bool, model, active_ref, set_active, set_selected,
+):
+    """问题页协议回调（first-write-wins；绑定当前 tab 的 us）。
+
+    Returns:
+        ``(on_select, on_submit, on_cancel, on_highlight)``。
+    """
+
+    def _commit(result, action: str) -> bool:
+        """提交终态（单问题 Enter：直接提交，first-write-wins）。
+
+        原子终态写入经 ``us.try_set_final``（锁内检查+写入）——消除与工具侧
+        超时分支的竞态覆盖（修复前此处 ``if us.done: return`` + 顺序写三字段
+        存在 TOCTOU 窗口，组件确认可能被工具超时分支覆盖）。
+
+        Returns:
+            True 本次写入生效；False 终态已由其他线程（工具超时）置位。
+        """
+        return us.try_set_final(action, result)
+
+    def _commit_answer(result, action: str) -> None:
+        """标记回答（多问题 Enter/Esc；提交前可重答覆盖）→ 自动推进。
+
+        ★ 2026-08-19（用户需求：已经回答的可以重新答）：经 ``us.mark_answered``
+        写 action/result/answered（不置 done）——提交前切回该 tab 可反复重答
+        覆盖；done 已置位（已提交/超时）则放弃。
+        """
+        if not us.mark_answered(action, result):
+            return
+        _advance_to_next_pending(model, active_ref, set_active)
+
+    def _on_select(item) -> None:
+        # 单选 Enter：单问题直接提交；多问题标记回答 + 自动推进。
+        # ★ P2（review 2026-08-22，对齐 editmsg_select P2-4 修复）：result 直接
+        #   取 item["value"]（权威选中值）——修复前用渲染帧闭包 ``cur`` 判定
+        #   范围 ``0 <= cur < total``，同批多按键无重渲染时 cur 陈旧，可能与
+        #   item 不一致（如列表收缩后误走 default_options）。
+        result = [item["value"]] if item is not None else []
+        if multi_mode:
+            _commit_answer(result, "confirmed")
+        else:
+            _commit(result, "confirmed")
+
+    def _on_submit(sel: list) -> None:
+        # 多选 Enter：返回勾选结果（空勾选返回空列表）。
+        if multi_mode:
+            _commit_answer(list(sel), "confirmed")
+        else:
+            _commit(list(sel), "confirmed")
+
+    def _on_cancel(*_args) -> None:
+        # Esc 取消：单问题直接提交 cancel；多问题标记回答（默认值）+ 推进。
+        if multi_mode:
+            _commit_answer(list(us.default_options or []), "cancel")
+        else:
+            _commit(list(us.default_options or []), "cancel")
+
+    def _on_highlight(idx: int) -> None:
+        # 导航变化：同步 us.selected（组件内部 state 由控件维护）
+        us.selected = int(idx)
+        set_selected(int(idx))
+
+    return _on_select, _on_submit, _on_cancel, _on_highlight
+
+
+def _build_submit_page(states: list, width: int) -> list:
+    """Submit 页行构建（标题 + 每题状态 + 提示）。
+
+    ★ 2026-08-19（用户需求：增加一个 tab 页面给玩家是否提交）。
+    """
+    rows: list = []
+    rows.append(h(TEXT, {
+        "children": " \u258d \u2713 提交全部答案",
+        "style": _S_TITLE,
+        "textWrap": "truncate-end",
+        "key": "us-submit-title",
+    }))
+    for i, s in enumerate(states):
+        answered = getattr(s, "answered", False)
+        done = getattr(s, "done", False)
+        mark = "\u00d7" if (answered or done) else " "
+        title_txt = getattr(s, "title", "") or "选择"
+        if answered or done:
+            result_txt = "、".join(
+                str(x) for x in (getattr(s, "result", None) or [])
+            ) or "（无）"
+            status = f"\u2713 {result_txt}"
+            style = _S_DONE_RESULT
+        else:
+            status = "未回答"
+            style = _S_DESC
+        line = f"  [{mark}] {title_txt} \u2192 {status}"
+        rows.append(h(TEXT, {
+            "children": _truncate_width(line, width),
+            "style": style,
+            "height": 1,
+            "key": f"us-submit-row-{i}",
+        }))
+    rows.append(h(TEXT, {
+        "children": "  Enter 提交全部 · Esc 返回修改 · Tab/\u2190\u2192 切换",
+        "style": _S_DESC,
+        "textWrap": "truncate-end",
+        "key": "us-submit-hint",
+    }))
+    return rows
+
+
 def UserSelectPopup(props) -> object:
     """React Ink 用户选择弹窗组件（多问题 tab，SelectInput/MultiSelect 控件化）。
 
@@ -366,15 +618,7 @@ def UserSelectPopup(props) -> object:
     #   ★ P3（review）：副作用从渲染期移到 effect 提交期——渲染阶段不应修改
     #   跨线程共享终态（工具协程可能并发读取）；本函数每帧提交期执行，
     #   内部 done/visible 判断保证幂等（首写生效后不再触发）。
-    def _fallback_empty_options() -> None:
-        for s in states:
-            if (
-                s is not None and s.visible and not s.done
-                and not getattr(s, "options", None)
-            ):
-                s.try_set_final("confirmed", list(getattr(s, "default_options", None) or []))
-
-    use_effect(_fallback_empty_options, None)
+    use_effect(lambda: _fallback_empty_options(states), None)
     visible = bool(states)
 
     # ── hooks（无条件调用，保持 fiber hook 顺序稳定） ──
@@ -437,90 +681,25 @@ def UserSelectPopup(props) -> object:
     #   字符落入输入缓冲会「看不见地」改变用户输入）。visible=False 时 hook
     #   不参与路由（组件不渲染/已关闭，零影响）。与 use_fullscreen 同节点
     #   类型（模态输入接管语义，见 _hooks_input.use_modal docstring）。
-    use_modal(visible)
+    use_modal_scope(visible, fullscreen=False)
 
     # ── 顶层输入路由（2026-08-19）：Submit 页 Enter/Esc + tab 切换 ──
     # 父组件 use_input 先于子控件（SelectInput/MultiSelect）被 router 调用
     # （前序收集）——tab/←/→ 被本 handler 消费，↑↓/jk 等放行给控件。
-    def _submit_all() -> None:
-        """Submit 页 Enter：统一提交全部问题。
-
-        已回答（answered）的问题按其 action/result 写入终态；未回答的问题
-        用 default_options（未回答即取默认）——全部经 ``try_set_final``
-        （first-write-wins）置 done → 各工具协程轮询到 done 后返回结果。
-        """
-        try:
-            for s in states:
-                if getattr(s, "done", False):
-                    continue
-                if getattr(s, "answered", False):
-                    s.try_set_final(
-                        getattr(s, "action", "") or "confirmed",
-                        list(getattr(s, "result", None) or []),
-                    )
-                else:
-                    s.try_set_final(
-                        "confirmed",
-                        list(getattr(s, "default_options", None) or []),
-                    )
-        except Exception:
-            # ★ P3（review）：不静默吞异常——记 debug 日志（提交路径异常
-            #   会导致部分问题未写入终态，须可观测）。
-            _logger.debug("user_select Submit 页提交异常", exc_info=True)
-            return
-
-    def _back_to_questions() -> None:
-        """Submit 页 Esc：返回问题 tab（最后一个未回答；没有则第一个）。"""
-        try:
-            lst = getattr(model, "user_selects", None) or []
-            n = len(lst)
-            if n <= 0:
-                return
-            for i in range(n - 1, -1, -1):
-                if not getattr(lst[i], "answered", False) and not getattr(lst[i], "done", False):
-                    active_ref.current = i
-                    set_active(i)
-                    return
-            active_ref.current = 0
-            set_active(0)
-        except Exception:
-            _logger.debug("user_select 返回问题 tab 异常", exc_info=True)
-            return
-
-    def _handle_tab(event) -> bool:
-        if not visible:
-            return False
-        # Submit 页：Enter 提交全部 / Esc 返回问题（无需控件）
-        if is_submit:
-            if event.kind == "enter":
-                _submit_all()
-                return True
-            if event.kind == "escape":
-                _back_to_questions()
-                return True
-        if not multi_mode:
-            return False
-        n = tab_count
-        cur = active_ref.current
-        new = cur
-        if event.kind == "tab":
-            # Tab → 下一个；Shift+Tab（CSI u modifier=2）→ 上一个
-            new = (cur + 1) % n if getattr(event, "modifier", 0) != 2 else (cur - 1) % n
-        elif event.kind == "arrow_right":
-            new = (cur + 1) % n
-        elif event.kind == "arrow_left":
-            new = (cur - 1) % n
-        else:
-            return False
-        if new != cur:
-            active_ref.current = new
-            set_active(new)
-        return True
-
-    use_input(_handle_tab, visible)
+    # ★ P1-1（巨型组件拆分）：tab 路由（Submit 页 Enter/Esc + Tab/←/→ 切换）
+    #   收敛到模块级 ``_handle_tab_event``（与 ``_submit_all`` /
+    #   ``_back_to_questions``）。
+    use_input(
+        lambda ev: _handle_tab_event(
+            ev, visible=visible, is_submit=is_submit, multi_mode=multi_mode,
+            tab_count=tab_count, active_ref=active_ref, set_active=set_active,
+            states=states, model=model,
+        ),
+        visible,
+    )
 
     if not visible:
-        return h(TEXT, {"children": ""})
+        return empty_modal_frame()
 
     rows: list = []
 
@@ -531,39 +710,7 @@ def UserSelectPopup(props) -> object:
     # ══════════════ Submit 页（2026-08-19 用户需求：增加一个 tab
     # 页面给玩家是否提交）══════════════════
     if is_submit:
-        rows.append(h(TEXT, {
-            "children": " \u258d \u2713 提交全部答案",
-            "style": _S_TITLE,
-            "textWrap": "truncate-end",
-            "key": "us-submit-title",
-        }))
-        for i, s in enumerate(states):
-            answered = getattr(s, "answered", False)
-            done = getattr(s, "done", False)
-            mark = "\u00d7" if (answered or done) else " "
-            title_txt = getattr(s, "title", "") or "选择"
-            if answered or done:
-                result_txt = "、".join(
-                    str(x) for x in (getattr(s, "result", None) or [])
-                ) or "（无）"
-                status = f"\u2713 {result_txt}"
-                style = _S_DONE_RESULT
-            else:
-                status = "未回答"
-                style = _S_DESC
-            line = f"  [{mark}] {title_txt} \u2192 {status}"
-            rows.append(h(TEXT, {
-                "children": _truncate_width(line, width),
-                "style": style,
-                "height": 1,
-                "key": f"us-submit-row-{i}",
-            }))
-        rows.append(h(TEXT, {
-            "children": "  Enter 提交全部 · Esc 返回修改 · Tab/\u2190\u2192 切换",
-            "style": _S_DESC,
-            "textWrap": "truncate-end",
-            "key": "us-submit-hint",
-        }))
+        rows.extend(_build_submit_page(states, width))
         return h(Column, None, rows)
 
     # ══════════════ 问题页 ══════════════
@@ -626,94 +773,12 @@ def UserSelectPopup(props) -> object:
     }))
 
     # ── 协议回调（first-write-wins；绑定当前 tab 的 us） ──
-    def _commit(result, action: str) -> bool:
-        """提交终态（单问题 Enter：直接提交，first-write-wins）。
-
-        原子终态写入经 ``us.try_set_final``（锁内检查+写入）——消除与
-        工具侧超时分支的竞态覆盖（2026-08-17 修复：修复前此处
-        ``if us.done: return`` + 顺序写三字段存在 TOCTOU 窗口，组件确认
-        可能被工具超时分支覆盖）。
-
-        Returns:
-            True 本次写入生效；False 终态已由其他线程（工具超时）置位。
-        """
-        return us.try_set_final(action, result)
-
-    def _advance_to_next_pending() -> None:
-        """回答后自动切换焦点到**下一个未选择**的问题（2026-08-19 用户
-        需求：回车自动切换下一下没有选择的 user_select）。
-
-        当前问题经 Enter 确认（或 Esc 取消）后其 tab 标记 [×]；焦点自动
-        跳到队列中下一个未回答（answered=False 且 done=False）的问题；全部
-        已回答时切到 **Submit tab**（索引 == len(states)）供玩家确认提交。
-        单问题（无并发）零操作（Enter 直接提交）。
-
-        经 ``model.user_selects`` 实时读取（回调闭包捕获的 states 可能陈旧
-        ——同批按键/新 tab 加入场景），active_ref/set_active 同步更新。
-        """
-        try:
-            lst = getattr(model, "user_selects", None) or []
-            if len(lst) <= 1:
-                return
-            cur = active_ref.current
-            n = len(lst)
-            for step in range(1, n + 1):
-                nxt = (cur + step) % n
-                if (
-                    not getattr(lst[nxt], "answered", False)
-                    and not getattr(lst[nxt], "done", False)
-                ):
-                    active_ref.current = nxt
-                    set_active(nxt)
-                    return
-            # 全部已回答 → Submit tab（玩家确认是否提交）
-            active_ref.current = n
-            set_active(n)
-        except Exception:
-            _logger.debug("user_select 推进下一问题异常", exc_info=True)
-            return
-
-    def _commit_answer(result, action: str) -> None:
-        """标记回答（多问题 Enter/Esc；提交前可重答覆盖）→ 自动推进。
-
-        ★ 2026-08-19（用户需求：已经回答的可以重新答）：经
-        ``us.mark_answered`` 写 action/result/answered（不置 done）——提交
-        前切回该 tab 可反复重答覆盖；done 已置位（已提交/超时）则放弃。
-        """
-        if not us.mark_answered(action, result):
-            return
-        _advance_to_next_pending()
-
-    def _on_select(item) -> None:
-        # 单选 Enter：单问题直接提交；多问题标记回答 + 自动推进。
-        # ★ P2（review 2026-08-22，对齐 editmsg_select P2-4 修复）：result 直接
-        #   取 item["value"]（权威选中值）——修复前用渲染帧闭包 ``cur`` 判定
-        #   范围 ``0 <= cur < total``，同批多按键无重渲染时 cur 陈旧，可能与
-        #   item 不一致（如列表收缩后误走 default_options）。
-        result = [item["value"]] if item is not None else []
-        if multi_mode:
-            _commit_answer(result, "confirmed")
-        else:
-            _commit(result, "confirmed")
-
-    def _on_submit(sel: list) -> None:
-        # 多选 Enter：返回勾选结果（空勾选返回空列表）。
-        if multi_mode:
-            _commit_answer(list(sel), "confirmed")
-        else:
-            _commit(list(sel), "confirmed")
-
-    def _on_cancel(*_args) -> None:
-        # Esc 取消：单问题直接提交 cancel；多问题标记回答（默认值）+ 推进。
-        if multi_mode:
-            _commit_answer(list(us.default_options or []), "cancel")
-        else:
-            _commit(list(us.default_options or []), "cancel")
-
-    def _on_highlight(idx: int) -> None:
-        # 导航变化：同步 us.selected（组件内部 state 由控件维护）
-        us.selected = int(idx)
-        set_selected(int(idx))
+    # ★ P1-1（巨型组件拆分）：协议回调（提交/标记回答/自动推进/导航同步）
+    #   收敛到模块级 ``_make_question_callbacks``。
+    _on_select, _on_submit, _on_cancel, _on_highlight = _make_question_callbacks(
+        us, multi_mode=multi_mode, model=model, active_ref=active_ref,
+        set_active=set_active, set_selected=set_selected,
+    )
 
     # ── 选项控件（SelectInput/MultiSelect 标准控件） ──
     # done（已提交终态）：只读结果行；answered（可重答）与未回答：渲染控件。

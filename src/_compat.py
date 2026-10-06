@@ -12,8 +12,50 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass as _orig_dataclass
+from dataclasses import field as _field
+from typing import Any, Callable, TypeVar, overload
+
+# ★ 类型检查支持（P0-2）：本模块的 ``dataclass`` 是标准库 dataclass 的运行时
+#   包装函数——静态类型检查器无法推断它生成的 ``__init__`` 签名，导致所有
+#   ``@dataclass`` 类（如 ink.output.StyledRun）的构造调用被 mypy 误报
+#   "Too many arguments"（全项目 200+ 条）。``typing.dataclass_transform``
+#   （PEP 681，Python 3.11+；3.9/3.10 经 typing_extensions）告知类型检查器
+#   本装饰器等价于 dataclass，恢复 ``__init__``/``__eq__`` 等生成成员的签名。
+try:  # Python 3.11+
+    from typing import dataclass_transform as _dataclass_transform
+except ImportError:  # pragma: no cover - Python < 3.11
+    try:
+        from typing_extensions import dataclass_transform as _dataclass_transform
+    except ImportError:  # pragma: no cover - 无 typing_extensions 时降级为无操作
+        def _dataclass_transform(**kwargs: Any):
+            def _decorator(obj):
+                return obj
+
+            return _decorator
 
 
+_T = TypeVar("_T")
+
+
+@overload
+def dataclass(cls: type[_T], /, **kwargs: Any) -> type[_T]: ...
+
+
+@overload
+def dataclass(
+    *,
+    init: bool = ...,
+    repr: bool = ...,
+    eq: bool = ...,
+    order: bool = ...,
+    unsafe_hash: bool = ...,
+    frozen: bool = ...,
+    slots: bool = ...,
+    **kwargs: Any,
+) -> Callable[[type[_T]], type[_T]]: ...
+
+
+@_dataclass_transform(field_specifiers=(_field,))
 def dataclass(_cls=None, /, **kwargs):
     """兼容各 Python 版本的 dataclass 装饰器。
 

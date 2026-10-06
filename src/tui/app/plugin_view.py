@@ -26,9 +26,12 @@
 from __future__ import annotations
 
 from src.tui.core.style import Style
-from src.tui.ink import TEXT, Column, Row, StyledRun, h, use_fullscreen, use_input
+from src.tui.ink import TEXT, Column, Row, StyledRun, h, use_input
 from src.tui.ink.helpers import truncate_runs, wrap_runs_by_width
 from src.tui.ink.widgets.listview import ListView
+
+from ._inspector_pane import PaneState, handle_nav, resolve
+from ._modal_view import empty_modal_frame, is_modal_close_key, use_modal_scope
 
 __all__ = ["PluginView"]
 
@@ -180,46 +183,29 @@ def PluginView(props) -> object:
         scroll_raw = int(getattr(pv, "scroll", 0) or 0)
     except (TypeError, ValueError):
         scroll_raw = 0
-    cursor = max(0, min(cursor_raw, total_content - 1)) if total_content else 0
-    if total_content > content_vh:
-        scroll = max(0, min(scroll_raw, total_content - content_vh))
-        if cursor < scroll:
-            scroll = cursor
-        elif cursor >= scroll + content_vh:
-            scroll = cursor - content_vh + 1
-    else:
-        scroll = 0
+    # ★ P0-1：检查器（右栏）光标/滚动归一化统一走 ``_inspector_pane.resolve``
+    #   （越界钳制 + 光标可见跟随）——取代本地复刻（与 trace_view /
+    #   trace_tools_view 三份重复实现中的一份）。
+    cursor, scroll = resolve(cursor_raw, scroll_raw, total_content, content_vh)
     if pv is not None:
         pv.cursor = cursor
         pv.scroll = scroll
 
-    def _scroll_for(cursor: int, scroll: int) -> int:
-        if total_content <= content_vh:
-            return 0
-        scroll = max(0, min(int(scroll), total_content - content_vh))
-        cursor = max(0, min(int(cursor), total_content - 1))
-        if cursor < scroll:
-            return cursor
-        if cursor >= scroll + content_vh:
-            return cursor - content_vh + 1
-        return scroll
-
-    def _move_cursor(new: int) -> None:
-        if pv is None:
-            return
-        new = max(0, min(int(new), total_content - 1)) if total_content else 0
-        pv.cursor = new
-        pv.scroll = _scroll_for(new, getattr(pv, "scroll", 0) or 0)
+    # 检查器面板状态规约（通用滚动/光标逻辑经 getter/setter 注入复用）
+    _pane_state = PaneState(
+        lambda: getattr(pv, "cursor", 0) or 0,
+        lambda v: setattr(pv, "cursor", v),
+        lambda: getattr(pv, "scroll", 0) or 0,
+        lambda v: setattr(pv, "scroll", v),
+    )
 
     # ── 输入处理 ──
     def _handle(event) -> bool:
         if not visible or pv is None:
             return False
         pane_now = getattr(pv, "pane", "list") or "list"
-        if event.kind == "escape":
-            pv.try_set_final("cancel")
-            return True
-        if event.kind == "ctrl_key" and getattr(event, "char", "") == "\x08":
+        # 模态统一关闭键（Esc / Ctrl+H）→ 取消视图
+        if is_modal_close_key(event):
             pv.try_set_final("cancel")
             return True
 
@@ -235,40 +221,19 @@ def PluginView(props) -> object:
         if event.kind == "char" and ch == "h":
             pv.pane = "list"
             return True
-        cur = getattr(pv, "cursor", 0) or 0
-        if event.kind == "arrow_down" or (event.kind == "char" and ch in ("j", "J")):
-            _move_cursor(cur + 1)
-            return True
-        if event.kind == "arrow_up" or (event.kind == "char" and ch in ("k", "K")):
-            _move_cursor(cur - 1)
-            return True
-        if event.kind == "page_down":
-            _move_cursor(cur + content_vh)
-            return True
-        if event.kind == "page_up":
-            _move_cursor(cur - content_vh)
-            return True
-        if event.kind == "home":
-            _move_cursor(0)
-            return True
-        if event.kind == "end":
-            _move_cursor(total_content)
-            return True
-        if event.kind == "char" and ch == "g":
-            _move_cursor(0)
-            return True
-        if event.kind == "char" and ch == "G":
-            _move_cursor(total_content)
+        # ★ P0-1：通用 vim 导航（↑↓/j/k、PgUp/PgDn、Home/End、g/G）收敛到
+        #   ``_inspector_pane.handle_nav``（三视图共享同一实现）。
+        if handle_nav(event, _pane_state, total_content, content_vh):
             return True
         return False
 
     use_input(_handle, visible)
     # ★ 模态全屏视图声明：visible 期间未消费按键被 input router 吞掉（字符/
     #   Enter 不落入输入缓冲）；关闭后（visible=False）hook 不激活零影响。
-    use_fullscreen(visible)
+    use_modal_scope(visible)
 
     if not visible:
-        return h(TEXT, {"children": ""})
+        return empty_modal_frame()
 
     # ── 左栏行渲染 ──
     def _render_left(item, idx, is_sel):

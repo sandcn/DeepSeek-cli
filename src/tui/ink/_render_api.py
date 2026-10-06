@@ -136,14 +136,14 @@ class _ConsoleProxy:
                 self._target.write(s)
                 self._target.flush()
             except (OSError, ValueError):
-                pass
+                _logger.debug("patchConsole 代理写入失败（已忽略）", exc_info=True)
         return len(s) if isinstance(s, str) else 0
 
     def flush(self) -> None:
         try:
             self._target.flush()
         except (OSError, ValueError):
-            pass
+            _logger.debug("patchConsole 代理 flush 失败（已忽略）", exc_info=True)
 
     def isatty(self) -> bool:
         return False

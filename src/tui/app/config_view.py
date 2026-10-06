@@ -56,10 +56,12 @@ import json
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple, truncate_width as _truncate_width
 from src.tui.ink import TEXT, Column, Row, StyledRun, h
-from src.tui.ink.hooks import use_fullscreen, use_input, usePaste
+from src.tui.ink.hooks import use_input, usePaste
 from src.tui.ink.helpers import truncate_runs
 from src.tui.ink.widgets.listview import ListView
 from src.config.view_model import format_config_value, parse_config_value
+
+from ._modal_view import empty_modal_frame, is_modal_close_key, use_modal_scope
 
 __all__ = ["ConfigView"]
 
@@ -235,322 +237,312 @@ def _cancel_edit(cv) -> None:
     cv.reset_edit_state()
 
 
-def ConfigView(props) -> object:
-    """配置中心视图组件（模态全屏视图；App 按 FULLSCREEN_VIEWS 整屏渲染）。
+# ═══════════════════════════════════════════════════════════
+# 编辑提交 / 子 JSON 辅助（模块级；P1-1 巨型组件拆分）
+# ═══════════════════════════════════════════════════════════
+# 说明：以下逻辑原为 ``ConfigView`` 内部闭包（组件函数 ~680 行）。提取为
+# 模块级函数后按显式参数传递上下文（``cv`` / ``entries``）——主组件只负责
+# 「数据准备 + 渲染组装 + 事件接线」，职责分离、可独立测试与复用。
 
-    Props:
-        model: AppModel 实例（读 ``model.config_view`` / ``model.fullscreen``）。
-        width: 终端宽度（布局与截断预算）。
-    """
-    model = props["model"]
-    width = props.get("width", 0) or 0
-    cv = getattr(model, "config_view", None)
-    visible = bool(cv is not None and cv.visible and not cv.done)
-    entries = list(getattr(cv, "entries", None) or []) if cv is not None else []
-    total = len(entries)
-    editing = bool(getattr(cv, "editing", False)) if cv is not None else False
-    edit_mode = getattr(cv, "edit_mode", "input") if cv is not None else "input"
-    pick_mode = editing and edit_mode == "select"
-    json_mode = editing and edit_mode == "json"
-    json_input_mode = editing and edit_mode == "json_input"
 
-    def _persist(entry, value) -> bool:
-        """类型校验 + update_config 持久化 + 刷新显示值；失败写 edit_error。"""
-        parsed, err = parse_config_value(entry.get("type", str), str(value))
-        if err:
-            cv.edit_error = err
-            return False
-        # 敏感项（api_key）空输入确认不得清空已有密钥（数据丢失防御）
-        if entry.get("sensitive") and (parsed is None or parsed == ""):
-            cv.edit_error = "敏感项不能为空，请输入新值（Esc 取消）"
-            return False
-        try:
-            from src.config.loader import update_config
-            update_config(entry["key"], parsed)
-        except Exception as exc:
-            cv.edit_error = f"写入失败: {exc}"
-            return False
-        entry["value"] = parsed
-        entry["value_text"] = format_config_value(
-            parsed, entry.get("type", str),
-            sensitive=bool(entry.get("sensitive")),
-        )
-        return True
+def _persist_value(cv, entry, value) -> bool:
+    """类型校验 + update_config 持久化 + 刷新显示值；失败写 edit_error。"""
+    parsed, err = parse_config_value(entry.get("type", str), str(value))
+    if err:
+        cv.edit_error = err
+        return False
+    # 敏感项（api_key）空输入确认不得清空已有密钥（数据丢失防御）
+    if entry.get("sensitive") and (parsed is None or parsed == ""):
+        cv.edit_error = "敏感项不能为空，请输入新值（Esc 取消）"
+        return False
+    try:
+        from src.config.loader import update_config
+        update_config(entry["key"], parsed)
+    except Exception as exc:
+        cv.edit_error = f"写入失败: {exc}"
+        return False
+    entry["value"] = parsed
+    entry["value_text"] = format_config_value(
+        parsed, entry.get("type", str),
+        sensitive=bool(entry.get("sensitive")),
+    )
+    return True
 
-    def _commit_select() -> None:
-        """选择界面确认：写回当前高亮候选值。"""
-        if cv is None:
-            return
-        entry = _entry_by_key(entries, cv.edit_key)
-        if entry is None:
-            _cancel_edit(cv)
-            return
-        opts = list(cv.edit_options or [])
-        idx = cv.edit_selected
-        if not (0 <= idx < len(opts)):
-            _cancel_edit(cv)
-            return
-        if _persist(entry, opts[idx]):
-            cv.editing = False
-            cv.edit_mode = "input"
-            cv.edit_error = ""
-            cv.message = f"已更新 {entry['path']} = {entry['value_text']}"
 
-    def _commit_input() -> None:
-        """输入界面确认：文本缓冲类型校验 → 持久化 → 刷新显示值。"""
-        if cv is None:
-            return
-        entry = _entry_by_key(entries, cv.edit_key)
-        if entry is None:
-            _cancel_edit(cv)
-            return
-        if _persist(entry, cv.edit_value):
-            cv.editing = False
-            cv.edit_mode = "input"
-            cv.edit_error = ""
-            cv.message = f"已更新 {entry['path']} = {entry['value_text']}"
-
-    # ── 子 JSON 编辑界面辅助（支持递归嵌套层） ────────────
-
-    def _json_container():
-        """按递归路径导航到当前容器（list/dict）；导航失败返回 None。
-
-        ``edit_json_path`` 为空 = 顶层根容器（``edit_json_data``）；
-        非空 = 逐段下钻（dict 用键名段、list 用索引段）。
-        """
-        data = cv.edit_json_data
-        for seg in list(getattr(cv, "edit_json_path", None) or []):
-            if isinstance(data, dict):
-                data = data.get(seg)
-            elif isinstance(data, list):
-                try:
-                    data = data[int(seg)]
-                except (ValueError, IndexError, TypeError):
-                    return None
-            else:
-                return None
-        return data if isinstance(data, (list, dict)) else None
-
-    def _json_entry_value(container, idx: int):
-        """当前容器选中条目的值（dict 键值 / list 元素）；越界返回 None。"""
-        if isinstance(container, dict):
-            keys = list(container.keys())
-            return container.get(keys[idx]) if 0 <= idx < len(keys) else None
-        if isinstance(container, list):
-            return container[idx] if 0 <= idx < len(container) else None
-        return None
-
-    def _json_entry_seg(container, idx: int):
-        """当前容器选中条目的路径段（dict→键名；list→索引字符串）。"""
-        if isinstance(container, dict):
-            keys = list(container.keys())
-            return keys[idx] if 0 <= idx < len(keys) else None
-        return str(idx)
-
-    def _json_path_text() -> str:
-        """当前容器完整路径显示（breadcrumb；空=顶层）。"""
-        segs = list(getattr(cv, "edit_json_path", None) or [])
-        return ".".join(str(s) for s in segs) if segs else ""
-
-    # ★ P2（review 2026-08-22）：``_json_item_text`` 死代码已删除——渲染走
-    #   ``_render_json_item``（见下属列表 renderItem），此方法无任何调用方。
-    def _json_edit_selected() -> None:
-        """json 界面 Enter：嵌套（list/dict 值）→ 递归进入下一层；
-        标量 → 子输入编辑。"""
-        container = _json_container()
-        if container is None:
-            cv.edit_error = "目标容器不可用"
-            return
-        if not container:
-            cv.edit_error = "容器为空，按 a 追加"
-            return
-        idx = cv.edit_json_selected
-        cur = _json_entry_value(container, idx)
-        if cur is None:
-            cv.edit_error = "无选中条目"
-            return
-        if isinstance(cur, (list, dict)):
-            # 递归进入下一层（path 追加段）
-            seg = _json_entry_seg(container, idx)
-            if seg is None:
-                cv.edit_error = "无选中条目"
-                return
-            cv.edit_json_path = list(getattr(cv, "edit_json_path", None) or []) + [seg]
-            cv.edit_json_keys = list(cur.keys()) if isinstance(cur, dict) else []
-            cv.edit_json_selected = 0
-            cv.edit_json_action = "edit"
-            cv.edit_value = ""
-            cv.edit_error = ""
-            cv.message = ""
-            return
-        # 标量 → 子输入编辑
-        cv.edit_mode = "json_input"
-        cv.edit_json_action = "edit"
-        cv.edit_value = _json_text(cur)
-        cv.edit_error = ""
-
-    def _json_append_start() -> None:
-        """json 界面 a：进入子输入（追加新条目到当前容器）。"""
-        cv.edit_mode = "json_input"
-        cv.edit_json_action = "append"
-        cv.edit_value = ""
-        cv.edit_error = ""
-
-    def _json_delete_selected() -> None:
-        """json 界面 d：删除当前容器选中条目。"""
-        container = _json_container()
-        if container is None:
-            cv.edit_error = "目标容器不可用"
-            return
-        idx = cv.edit_json_selected
-        if isinstance(container, list):
-            if 0 <= idx < len(container):
-                container.pop(idx)
-                cv.edit_json_selected = max(0, min(cv.edit_json_selected, len(container) - 1))
-                cv.edit_error = ""
-                cv.message = f"已删除 [{idx}]（Esc 保存）"
-        elif isinstance(container, dict):
-            keys = list(container.keys())
-            if 0 <= idx < len(keys):
-                k = keys[idx]
-                del container[k]
-                cv.edit_json_keys = list(container.keys())
-                cv.edit_json_selected = max(0, min(cv.edit_json_selected, len(cv.edit_json_keys) - 1))
-                cv.edit_error = ""
-                cv.message = f"已删除 {k}（Esc 保存）"
-
-    def _json_commit_input() -> None:
-        """json 子输入确认：按 edit_json_action 更新/追加当前容器后返回 json 界面。"""
-        container = _json_container()
-        if container is None:
-            cv.edit_error = "目标容器不可用"
-            return
-        text = cv.edit_value
-        if cv.edit_json_action == "edit":
-            idx = cv.edit_json_selected
-            if isinstance(container, list):
-                if not (0 <= idx < len(container)):
-                    cv.edit_error = "选中条目已不存在"
-                    return
-                container[idx] = _parse_json_element(text)
-            elif isinstance(container, dict):
-                keys = list(container.keys())
-                if not (0 <= idx < len(keys)):
-                    cv.edit_error = "选中条目已不存在"
-                    return
-                container[keys[idx]] = _parse_json_element(text)
-            else:
-                cv.edit_error = "目标容器不可用"
-                return
-            cv.edit_mode = "json"
-            cv.edit_error = ""
-        else:  # append
-            if isinstance(container, list):
-                container.append(_parse_json_element(text))
-                cv.edit_json_selected = len(container) - 1
-            elif isinstance(container, dict):
-                kv = _parse_key_value(text)
-                if kv is None:
-                    cv.edit_error = "格式: key=value 或 key: value"
-                    return
-                k, v = kv
-                container[k] = v
-                cv.edit_json_keys = list(container.keys())
-                cv.edit_json_selected = max(0, len(cv.edit_json_keys) - 1)
-            else:
-                cv.edit_error = "目标容器不可用"
-                return
-            cv.edit_mode = "json"
-            cv.edit_error = ""
-        cv.message = "子 JSON 已修改（Esc 保存写回）"
-
-    def _commit_json() -> None:
-        """json 界面顶层退出（Esc）：一次性写回 edit_json_data 到配置。"""
-        entry = _entry_by_key(entries, cv.edit_key)
-        if entry is None:
-            _cancel_edit(cv)
-            return
-        try:
-            from src.config.loader import update_config
-            update_config(entry["key"], cv.edit_json_data)
-        except Exception as exc:
-            cv.edit_error = f"写入失败: {exc}"
-            return
-        entry["value"] = cv.edit_json_data
-        entry["value_text"] = format_config_value(
-            cv.edit_json_data, entry.get("type", dict),
-        )
+def _commit_select_edit(cv, entries) -> None:
+    """选择界面确认：写回当前高亮候选值。"""
+    if cv is None:
+        return
+    entry = _entry_by_key(entries, cv.edit_key)
+    if entry is None:
+        _cancel_edit(cv)
+        return
+    opts = list(cv.edit_options or [])
+    idx = cv.edit_selected
+    if not (0 <= idx < len(opts)):
+        _cancel_edit(cv)
+        return
+    if _persist_value(cv, entry, opts[idx]):
         cv.editing = False
         cv.edit_mode = "input"
         cv.edit_error = ""
         cv.message = f"已更新 {entry['path']} = {entry['value_text']}"
 
-    def _handle(event) -> bool:
-        if not visible or cv is None:
-            return False
-        # ── 编辑模式 ──
-        if cv.editing:
-            if cv.edit_mode == "select":
-                # 选择界面：Enter 确认 / Esc 取消；导航键放行候选 ListView
-                if event.kind == "enter":
-                    _commit_select()
-                    return True
-                if event.kind == "escape":
-                    _cancel_edit(cv)
-                    return True
-                return False
-            if cv.edit_mode == "json":
-                # 子 JSON 界面：Enter 编辑（嵌套递归进入）/ a 追加 / d 删除 /
-                # Esc 逐级返回（顶层才保存写回）；导航键放行条目 ListView
-                if event.kind == "enter":
-                    _json_edit_selected()
-                    return True
-                if event.kind == "escape":
-                    if getattr(cv, "edit_json_path", None):
-                        # 递归返回上层容器（修改保留，不写回）
-                        cv.edit_json_path = list(cv.edit_json_path)[:-1]
-                        parent = _json_container()
-                        cv.edit_json_keys = (
-                            list(parent.keys()) if isinstance(parent, dict) else []
-                        )
-                        cv.edit_json_selected = 0
-                        cv.edit_error = ""
-                        return True
-                    _commit_json()
-                    return True
-                if event.kind == "char" and getattr(event, "char", "") in ("a", "A"):
-                    _json_append_start()
-                    return True
-                if event.kind == "char" and getattr(event, "char", "") in ("d", "D"):
-                    _json_delete_selected()
-                    return True
-                if event.kind == "delete":
-                    _json_delete_selected()
-                    return True
-                return False
-            if cv.edit_mode == "json_input":
-                # 子输入界面：字符累积 / 退格 / Enter 确认 / Esc 取消
-                if event.kind == "escape":
-                    cv.edit_mode = "json"
-                    cv.edit_error = ""
-                    return True
-                if event.kind == "char":
-                    ch = getattr(event, "char", "") or ""
-                    if ch and "\n" not in ch and "\r" not in ch:
-                        if len(cv.edit_value) < _EDIT_VALUE_MAX:
-                            cv.edit_value += ch
-                    return True
-                if event.kind == "backspace":
-                    if cv.edit_value:
-                        cv.edit_value = cv.edit_value[:-1]
-                    return True
-                if event.kind == "enter":
-                    _json_commit_input()
-                    return True
+
+def _commit_input_edit(cv, entries) -> None:
+    """输入界面确认：文本缓冲类型校验 → 持久化 → 刷新显示值。"""
+    if cv is None:
+        return
+    entry = _entry_by_key(entries, cv.edit_key)
+    if entry is None:
+        _cancel_edit(cv)
+        return
+    if _persist_value(cv, entry, cv.edit_value):
+        cv.editing = False
+        cv.edit_mode = "input"
+        cv.edit_error = ""
+        cv.message = f"已更新 {entry['path']} = {entry['value_text']}"
+
+
+# ── 子 JSON 编辑界面辅助（支持递归嵌套层） ────────────
+
+
+def _json_container(cv):
+    """按递归路径导航到当前容器（list/dict）；导航失败返回 None。
+
+    ``edit_json_path`` 为空 = 顶层根容器（``edit_json_data``）；
+    非空 = 逐段下钻（dict 用键名段、list 用索引段）。
+    """
+    data = cv.edit_json_data
+    for seg in list(getattr(cv, "edit_json_path", None) or []):
+        if isinstance(data, dict):
+            data = data.get(seg)
+        elif isinstance(data, list):
+            try:
+                data = data[int(seg)]
+            except (ValueError, IndexError, TypeError):
+                return None
+        else:
+            return None
+    return data if isinstance(data, (list, dict)) else None
+
+
+def _json_entry_value(container, idx: int):
+    """当前容器选中条目的值（dict 键值 / list 元素）；越界返回 None。"""
+    if isinstance(container, dict):
+        keys = list(container.keys())
+        return container.get(keys[idx]) if 0 <= idx < len(keys) else None
+    if isinstance(container, list):
+        return container[idx] if 0 <= idx < len(container) else None
+    return None
+
+
+def _json_entry_seg(container, idx: int):
+    """当前容器选中条目的路径段（dict→键名；list→索引字符串）。"""
+    if isinstance(container, dict):
+        keys = list(container.keys())
+        return keys[idx] if 0 <= idx < len(keys) else None
+    return str(idx)
+
+
+def _json_path_text(cv) -> str:
+    """当前容器完整路径显示（breadcrumb；空=顶层）。"""
+    segs = list(getattr(cv, "edit_json_path", None) or [])
+    return ".".join(str(s) for s in segs) if segs else ""
+
+
+def _json_edit_selected(cv) -> None:
+    """json 界面 Enter：嵌套（list/dict 值）→ 递归进入下一层；
+    标量 → 子输入编辑。"""
+    container = _json_container(cv)
+    if container is None:
+        cv.edit_error = "目标容器不可用"
+        return
+    if not container:
+        cv.edit_error = "容器为空，按 a 追加"
+        return
+    idx = cv.edit_json_selected
+    cur = _json_entry_value(container, idx)
+    if cur is None:
+        cv.edit_error = "无选中条目"
+        return
+    if isinstance(cur, (list, dict)):
+        # 递归进入下一层（path 追加段）
+        seg = _json_entry_seg(container, idx)
+        if seg is None:
+            cv.edit_error = "无选中条目"
+            return
+        cv.edit_json_path = list(getattr(cv, "edit_json_path", None) or []) + [seg]
+        cv.edit_json_keys = list(cur.keys()) if isinstance(cur, dict) else []
+        cv.edit_json_selected = 0
+        cv.edit_json_action = "edit"
+        cv.edit_value = ""
+        cv.edit_error = ""
+        cv.message = ""
+        return
+    # 标量 → 子输入编辑
+    cv.edit_mode = "json_input"
+    cv.edit_json_action = "edit"
+    cv.edit_value = _json_text(cur)
+    cv.edit_error = ""
+
+
+def _json_append_start(cv) -> None:
+    """json 界面 a：进入子输入（追加新条目到当前容器）。"""
+    cv.edit_mode = "json_input"
+    cv.edit_json_action = "append"
+    cv.edit_value = ""
+    cv.edit_error = ""
+
+
+def _json_delete_selected(cv) -> None:
+    """json 界面 d：删除当前容器选中条目。"""
+    container = _json_container(cv)
+    if container is None:
+        cv.edit_error = "目标容器不可用"
+        return
+    idx = cv.edit_json_selected
+    if isinstance(container, list):
+        if 0 <= idx < len(container):
+            container.pop(idx)
+            cv.edit_json_selected = max(0, min(cv.edit_json_selected, len(container) - 1))
+            cv.edit_error = ""
+            cv.message = f"已删除 [{idx}]（Esc 保存）"
+    elif isinstance(container, dict):
+        keys = list(container.keys())
+        if 0 <= idx < len(keys):
+            k = keys[idx]
+            del container[k]
+            cv.edit_json_keys = list(container.keys())
+            cv.edit_json_selected = max(0, min(cv.edit_json_selected, len(cv.edit_json_keys) - 1))
+            cv.edit_error = ""
+            cv.message = f"已删除 {k}（Esc 保存）"
+
+
+def _json_commit_input(cv) -> None:
+    """json 子输入确认：按 edit_json_action 更新/追加当前容器后返回 json 界面。"""
+    container = _json_container(cv)
+    if container is None:
+        cv.edit_error = "目标容器不可用"
+        return
+    text = cv.edit_value
+    if cv.edit_json_action == "edit":
+        idx = cv.edit_json_selected
+        if isinstance(container, list):
+            if not (0 <= idx < len(container)):
+                cv.edit_error = "选中条目已不存在"
+                return
+            container[idx] = _parse_json_element(text)
+        elif isinstance(container, dict):
+            keys = list(container.keys())
+            if not (0 <= idx < len(keys)):
+                cv.edit_error = "选中条目已不存在"
+                return
+            container[keys[idx]] = _parse_json_element(text)
+        else:
+            cv.edit_error = "目标容器不可用"
+            return
+        cv.edit_mode = "json"
+        cv.edit_error = ""
+    else:  # append
+        if isinstance(container, list):
+            container.append(_parse_json_element(text))
+            cv.edit_json_selected = len(container) - 1
+        elif isinstance(container, dict):
+            kv = _parse_key_value(text)
+            if kv is None:
+                cv.edit_error = "格式: key=value 或 key: value"
+                return
+            k, v = kv
+            container[k] = v
+            cv.edit_json_keys = list(container.keys())
+            cv.edit_json_selected = max(0, len(cv.edit_json_keys) - 1)
+        else:
+            cv.edit_error = "目标容器不可用"
+            return
+        cv.edit_mode = "json"
+        cv.edit_error = ""
+    cv.message = "子 JSON 已修改（Esc 保存写回）"
+
+
+def _json_escape_up(cv) -> None:
+    """json 界面 Esc 的「递归返回上层容器」分支（修改保留，不写回）。"""
+    cv.edit_json_path = list(cv.edit_json_path)[:-1]
+    parent = _json_container(cv)
+    cv.edit_json_keys = (
+        list(parent.keys()) if isinstance(parent, dict) else []
+    )
+    cv.edit_json_selected = 0
+    cv.edit_error = ""
+
+
+def _commit_json_edit(cv, entries) -> None:
+    """json 界面顶层退出（Esc）：一次性写回 edit_json_data 到配置。"""
+    entry = _entry_by_key(entries, cv.edit_key)
+    if entry is None:
+        _cancel_edit(cv)
+        return
+    try:
+        from src.config.loader import update_config
+        update_config(entry["key"], cv.edit_json_data)
+    except Exception as exc:
+        cv.edit_error = f"写入失败: {exc}"
+        return
+    entry["value"] = cv.edit_json_data
+    entry["value_text"] = format_config_value(
+        cv.edit_json_data, entry.get("type", dict),
+    )
+    cv.editing = False
+    cv.edit_mode = "input"
+    cv.edit_error = ""
+    cv.message = f"已更新 {entry['path']} = {entry['value_text']}"
+
+
+# ── 事件处理（模块级；拆分自组件内闭包） ──────────────
+
+
+def _handle_config_event(cv, entries, event, *, visible: bool, total: int) -> bool:
+    """ConfigView 输入事件处理（浏览 / 选择 / 输入 / 子 JSON / 子输入）。"""
+    if not visible or cv is None:
+        return False
+    # ── 编辑模式 ──
+    if cv.editing:
+        if cv.edit_mode == "select":
+            # 选择界面：Enter 确认 / Esc 取消；导航键放行候选 ListView
+            if event.kind == "enter":
+                _commit_select_edit(cv, entries)
                 return True
-            # 输入界面：字符累积 / 退格 / Enter 确认 / Esc 取消
             if event.kind == "escape":
                 _cancel_edit(cv)
+                return True
+            return False
+        if cv.edit_mode == "json":
+            # 子 JSON 界面：Enter 编辑（嵌套递归进入）/ a 追加 / d 删除 /
+            # Esc 逐级返回（顶层才保存写回）；导航键放行条目 ListView
+            if event.kind == "enter":
+                _json_edit_selected(cv)
+                return True
+            if event.kind == "escape":
+                if getattr(cv, "edit_json_path", None):
+                    _json_escape_up(cv)
+                    return True
+                _commit_json_edit(cv, entries)
+                return True
+            if event.kind == "char" and getattr(event, "char", "") in ("a", "A"):
+                _json_append_start(cv)
+                return True
+            if event.kind == "char" and getattr(event, "char", "") in ("d", "D"):
+                _json_delete_selected(cv)
+                return True
+            if event.kind == "delete":
+                _json_delete_selected(cv)
+                return True
+            return False
+        if cv.edit_mode == "json_input":
+            # 子输入界面：字符累积 / 退格 / Enter 确认 / Esc 取消
+            if event.kind == "escape":
+                cv.edit_mode = "json"
+                cv.edit_error = ""
                 return True
             if event.kind == "char":
                 ch = getattr(event, "char", "") or ""
@@ -563,100 +555,65 @@ def ConfigView(props) -> object:
                     cv.edit_value = cv.edit_value[:-1]
                 return True
             if event.kind == "enter":
-                _commit_input()
+                _json_commit_input(cv)
                 return True
-            # 未识别按键吞掉（模态——不落入输入缓冲）
             return True
-        # ── 浏览模式：Esc / Ctrl+H 关闭视图 ──
+        # 输入界面：字符累积 / 退格 / Enter 确认 / Esc 取消
         if event.kind == "escape":
-            cv.try_set_final("cancel")
+            _cancel_edit(cv)
             return True
-        if event.kind == "ctrl_key" and getattr(event, "char", "") == "\x08":
-            cv.try_set_final("cancel")
+        if event.kind == "char":
+            ch = getattr(event, "char", "") or ""
+            if ch and "\n" not in ch and "\r" not in ch:
+                if len(cv.edit_value) < _EDIT_VALUE_MAX:
+                    cv.edit_value += ch
             return True
-        # ── Enter 编辑选中项（ListView 不传 onSelect → enter 放行到本处） ──
-        if event.kind == "enter" and total > 0:
-            try:
-                idx = max(0, min(int(cv.selected), total - 1))
-            except (TypeError, ValueError):
-                idx = 0
-            _start_edit(cv, entries[idx])
+        if event.kind == "backspace":
+            if cv.edit_value:
+                cv.edit_value = cv.edit_value[:-1]
             return True
-        # 其余按键放行（ListView 导航）
-        return False
-
-    use_input(_handle, visible)
-
-    def _handle_paste(text: str) -> bool:
-        """编辑输入界面粘贴追加（input / json_input；单行化）。"""
-        if not visible or cv is None:
-            return False
-        if not cv.editing or cv.edit_mode not in ("input", "json_input"):
-            return False
-        paste = (text or "").replace("\r", "").replace("\n", "")
-        if not paste:
+        if event.kind == "enter":
+            _commit_input_edit(cv, entries)
             return True
-        remaining = _EDIT_VALUE_MAX - len(cv.edit_value)
-        if remaining > 0:
-            cv.edit_value += paste[:remaining]
+        # 未识别按键吞掉（模态——不落入输入缓冲）
         return True
+    # ── 浏览模式：Esc / Ctrl+H 关闭视图（模态统一关闭键） ──
+    if is_modal_close_key(event):
+        cv.try_set_final("cancel")
+        return True
+    # ── Enter 编辑选中项（ListView 不传 onSelect → enter 放行到本处） ──
+    if event.kind == "enter" and total > 0:
+        try:
+            idx = max(0, min(int(cv.selected), total - 1))
+        except (TypeError, ValueError):
+            idx = 0
+        _start_edit(cv, entries[idx])
+        return True
+    # 其余按键放行（ListView 导航）
+    return False
 
-    usePaste(_handle_paste, {"isActive": bool(visible and cv and cv.editing)})
-    # ★ 模态全屏视图声明（2026-08-17 通用机制）：visible 期间未消费按键被
-    #   input router 吞掉（不落入输入缓冲）——字符/Enter 不误编辑/误提交；
-    #   关闭后（visible=False）hook 不激活零影响，输入区恢复正常输入。
-    # ★ P3（review 2026-08-20）：组件置 done → 命令线程 50ms 轮询清理之间
-    #   存在≤1 帧窗口——use_fullscreen(False) 释放输入接管但 model.fullscreen
-    #   仍为 "config"，App 继续渲染本组件（visible=False 返回空 TEXT），此间
-    #   按键进入 input router 落入输入缓冲。与 user_select/editmsg 同构的
-    #   已知窗口（渲染循环固有），命令线程轮询间隙极短，风险可接受。
-    use_fullscreen(visible)
 
-    if not visible:
-        return h(TEXT, {"children": ""})
+def _handle_config_paste(cv, visible: bool, text: str) -> bool:
+    """编辑输入界面粘贴追加（input / json_input；单行化）。"""
+    if not visible or cv is None:
+        return False
+    if not cv.editing or cv.edit_mode not in ("input", "json_input"):
+        return False
+    paste = (text or "").replace("\r", "").replace("\n", "")
+    if not paste:
+        return True
+    remaining = _EDIT_VALUE_MAX - len(cv.edit_value)
+    if remaining > 0:
+        cv.edit_value += paste[:remaining]
+    return True
 
-    # ── 选中钳制 ──
-    try:
-        selected = max(0, min(int(cv.selected), total - 1)) if total else 0
-    except (TypeError, ValueError):
-        selected = 0
-    if selected != cv.selected:
-        cv.selected = selected
-    # 选择界面高亮钳制
-    pick_total = len(cv.edit_options or [])
-    try:
-        pick_sel = max(0, min(int(cv.edit_selected), pick_total - 1)) if pick_total else 0
-    except (TypeError, ValueError):
-        pick_sel = 0
-    if pick_sel != cv.edit_selected:
-        cv.edit_selected = pick_sel
-    # json 界面条目高亮钳制（基于递归路径导航到的当前容器）
-    json_container = _json_container()
-    json_is_dict = isinstance(json_container, dict)
-    # dict 容器的键列表（提示行显示当前选中键名）
-    json_keys = list(cv.edit_json_keys or []) if json_is_dict else []
-    # ★ P3（review）：条目数直接取容器长度——修复前 dict 分支取
-    #   ``len(cv.edit_json_keys)``（派生显示态），与真实容器不同步时选中
-    #   钳制错误（越界/无法到达末项）。
-    json_item_count = len(json_container) if json_container is not None else 0
-    json_path_text = _json_path_text()
-    try:
-        json_sel = max(0, min(int(cv.edit_json_selected), json_item_count - 1)) if json_item_count else 0
-    except (TypeError, ValueError):
-        json_sel = 0
-    if json_sel != cv.edit_json_selected:
-        cv.edit_json_selected = json_sel
 
-    # ── 栏宽分配（键列 / 值列 / 说明列） ──
-    if width > 0 and total:
-        key_w = min(30, max((wcswidth_simple(str(e["path"])) for e in entries), default=8) + 2)
-        val_w = min(44, max((wcswidth_simple(str(e["value_text"])) for e in entries), default=10) + 2)
-        desc_w = max(8, width - key_w - val_w - 6)
-    else:
-        key_w, val_w, desc_w = 22, 36, 12
-    vh = _viewport_rows()
+# ── 行渲染器工厂（模块级；拆分自组件内闭包） ──────────
 
-    # ── 配置列表行渲染（浏览模式） ──
+
+def _make_config_row_renderer(width: int, key_w: int, val_w: int, desc_w: int):
+    """配置列表行渲染器（ListView renderItem）。"""
+
     def _render_row(entry, i, is_sel):
         prefix = "\u25b6 " if is_sel else "  "
         runs = [StyledRun(prefix, _S_SEL_MARK if is_sel else None)]
@@ -678,11 +635,11 @@ def ConfigView(props) -> object:
             runs = [StyledRun(r.text, (r.style or Style()).merge(_S_SEL_BG)) for r in runs]
         return h(TEXT, {"styled": runs, "height": 1, "key": f"cv-{i}"})
 
-    def _on_navigate(idx: int) -> None:
-        cv.selected = int(idx)
+    return _render_row
 
-    # ── 候选选项行渲染（选择界面） ──
-    pick_descs = list(cv.edit_options_desc or [])
+
+def _make_pick_row_renderer(width: int, val_w: int, pick_descs: list):
+    """候选选项行渲染器（选择界面 ListView renderItem）。"""
 
     def _render_pick(opt, i, is_sel):
         prefix = "\u25b6 " if is_sel else "  "
@@ -703,10 +660,15 @@ def ConfigView(props) -> object:
             runs = [StyledRun(r.text, (r.style or Style()).merge(_S_SEL_BG)) for r in runs]
         return h(TEXT, {"styled": runs, "height": 1, "key": f"cv-pick-{i}"})
 
-    def _on_pick_navigate(idx: int) -> None:
-        cv.edit_selected = int(idx)
+    return _render_pick
 
-    # ── 子 JSON 条目行渲染（json 界面；当前递归容器） ──
+
+def _make_json_row_renderer(
+    width: int, key_w: int, val_w: int,
+    json_is_dict: bool, json_keys: list, json_container,
+):
+    """子 JSON 条目行渲染器（json 界面 ListView renderItem）。"""
+
     def _render_json_item(idx, i, is_sel):
         prefix = "\u25b6 " if is_sel else "  "
         if json_is_dict:
@@ -735,6 +697,108 @@ def ConfigView(props) -> object:
         if is_sel:
             runs = [StyledRun(r.text, (r.style or Style()).merge(_S_SEL_BG)) for r in runs]
         return h(TEXT, {"styled": runs, "height": 1, "key": f"cv-json-{i}"})
+
+    return _render_json_item
+
+
+def ConfigView(props) -> object:
+    """配置中心视图组件（模态全屏视图；App 按 FULLSCREEN_VIEWS 整屏渲染）。
+
+    Props:
+        model: AppModel 实例（读 ``model.config_view`` / ``model.fullscreen``）。
+        width: 终端宽度（布局与截断预算）。
+    """
+    model = props["model"]
+    width = props.get("width", 0) or 0
+    cv = getattr(model, "config_view", None)
+    visible = bool(cv is not None and cv.visible and not cv.done)
+    entries = list(getattr(cv, "entries", None) or []) if cv is not None else []
+    total = len(entries)
+    editing = bool(getattr(cv, "editing", False)) if cv is not None else False
+    edit_mode = getattr(cv, "edit_mode", "input") if cv is not None else "input"
+    pick_mode = editing and edit_mode == "select"
+    json_mode = editing and edit_mode == "json"
+    json_input_mode = editing and edit_mode == "json_input"
+
+    # ★ P1-1（巨型组件拆分）：事件处理（浏览/选择/输入/子 JSON/子输入）
+    #   收敛到模块级 ``_handle_config_event`` / ``_handle_config_paste``——
+    #   组件只接线（hooks 无条件注册，与拆分前一致）。
+    use_input(
+        lambda ev: _handle_config_event(cv, entries, ev, visible=visible, total=total),
+        visible,
+    )
+    usePaste(
+        lambda text: _handle_config_paste(cv, visible, text),
+        {"isActive": bool(visible and cv and cv.editing)},
+    )
+    # ★ 模态全屏视图声明（2026-08-17 通用机制）：visible 期间未消费按键被
+    #   input router 吞掉（不落入输入缓冲）——字符/Enter 不误编辑/误提交；
+    #   关闭后（visible=False）hook 不激活零影响，输入区恢复正常输入。
+    # ★ P3（review 2026-08-20）：组件置 done → 命令线程 50ms 轮询清理之间
+    #   存在≤1 帧窗口——use_fullscreen(False) 释放输入接管但 model.fullscreen
+    #   仍为 "config"，App 继续渲染本组件（visible=False 返回空 TEXT），此间
+    #   按键进入 input router 落入输入缓冲。与 user_select/editmsg 同构的
+    #   已知窗口（渲染循环固有），命令线程轮询间隙极短，风险可接受。
+    use_modal_scope(visible)
+
+    if not visible:
+        return empty_modal_frame()
+
+    # ── 选中钳制 ──
+    try:
+        selected = max(0, min(int(cv.selected), total - 1)) if total else 0
+    except (TypeError, ValueError):
+        selected = 0
+    if selected != cv.selected:
+        cv.selected = selected
+    # 选择界面高亮钳制
+    pick_total = len(cv.edit_options or [])
+    try:
+        pick_sel = max(0, min(int(cv.edit_selected), pick_total - 1)) if pick_total else 0
+    except (TypeError, ValueError):
+        pick_sel = 0
+    if pick_sel != cv.edit_selected:
+        cv.edit_selected = pick_sel
+    # json 界面条目高亮钳制（基于递归路径导航到的当前容器）
+    json_container = _json_container(cv)
+    json_is_dict = isinstance(json_container, dict)
+    # dict 容器的键列表（提示行显示当前选中键名）
+    json_keys = list(cv.edit_json_keys or []) if json_is_dict else []
+    # ★ P3（review）：条目数直接取容器长度——修复前 dict 分支取
+    #   ``len(cv.edit_json_keys)``（派生显示态），与真实容器不同步时选中
+    #   钳制错误（越界/无法到达末项）。
+    json_item_count = len(json_container) if json_container is not None else 0
+    json_path_text = _json_path_text(cv)
+    try:
+        json_sel = max(0, min(int(cv.edit_json_selected), json_item_count - 1)) if json_item_count else 0
+    except (TypeError, ValueError):
+        json_sel = 0
+    if json_sel != cv.edit_json_selected:
+        cv.edit_json_selected = json_sel
+
+    # ── 栏宽分配（键列 / 值列 / 说明列） ──
+    if width > 0 and total:
+        key_w = min(30, max((wcswidth_simple(str(e["path"])) for e in entries), default=8) + 2)
+        val_w = min(44, max((wcswidth_simple(str(e["value_text"])) for e in entries), default=10) + 2)
+        desc_w = max(8, width - key_w - val_w - 6)
+    else:
+        key_w, val_w, desc_w = 22, 36, 12
+    vh = _viewport_rows()
+
+    # ── 行渲染器（模块级工厂；P1-1 拆分自组件内闭包） ──
+    render_row = _make_config_row_renderer(width, key_w, val_w, desc_w)
+    render_pick = _make_pick_row_renderer(
+        width, val_w, list(cv.edit_options_desc or []),
+    )
+    render_json_item = _make_json_row_renderer(
+        width, key_w, val_w, json_is_dict, json_keys, json_container,
+    )
+
+    def _on_navigate(idx: int) -> None:
+        cv.selected = int(idx)
+
+    def _on_pick_navigate(idx: int) -> None:
+        cv.edit_selected = int(idx)
 
     def _json_items():
         """json 界面 ListView items（与当前容器条目索引一一对应）。"""
@@ -787,7 +851,7 @@ def ConfigView(props) -> object:
             "height": list_h,
             "width": width if width > 0 else None,
             "cursor": pick_sel if pick_total else 0,
-            "renderItem": _render_pick,
+            "renderItem": render_pick,
             "onNavigate": _on_pick_navigate,
             "focus": visible and pick_mode,
         })
@@ -797,7 +861,7 @@ def ConfigView(props) -> object:
             "height": list_h,
             "width": width if width > 0 else None,
             "cursor": json_sel if json_item_count else 0,
-            "renderItem": _render_json_item,
+            "renderItem": render_json_item,
             "onNavigate": _on_json_navigate,
             "focus": visible and json_mode,
         })
@@ -807,7 +871,7 @@ def ConfigView(props) -> object:
             "height": list_h,
             "width": width if width > 0 else None,
             "cursor": selected if total else 0,
-            "renderItem": _render_row,
+            "renderItem": render_row,
             "onNavigate": _on_navigate,
             "focus": visible and not editing,
         })

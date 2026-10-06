@@ -1,214 +1,55 @@
 """终端显示宽度计算与 Rich Text 转义标记处理。
 
-★ H1（2026-08-15 双宽度区间对齐）：本模块 ``cjk_display_width`` 与
-``src.tui._width.wcswidth_simple`` 共享同一套区间表语义（注释同源约束——
-改动须同步）。``cjk_display_width`` 区间已完整覆盖（Hangul Jamo
-0x1100-0x11FF、CJK+韩文 0x2E80-0x9FFF、韩文音节 0xAC00-0xD7AF、CJK 兼容
-0xF900-0xFAFF、全角 0xFF01-0xFF60/0xFFE0-0xFFE6、CJK 扩展 0x20000-0x3134F、
-emoji 宽集、零宽集合），H1 补齐的是 ``wcswidth_simple._CJK_RANGES`` 侧缺失
-区间；本模块无代码改动（复核确认无缺失区间），仅注释同步。
+★ P1-2（单一真源）：``cjk_display_width`` 与 ``expand_tabs`` 已委托
+``src._text_width``（Layer 0；被 ``tui._width`` / ``renderer`` /
+``config.view_model`` 共享）——本模块保留 renderer 侧公开 API 与
+``_ZERO_WIDTH_CHARS`` 兼容导出，内部实现不再与其它层重复。
+
+历史背景：此前 ``cjk_display_width`` 与 ``src.tui._width.wcswidth_simple``
+是**两套独立实现**（区间表靠「注释同源约束」手工同步），多次出现漂移
+（H1 双宽度区间对齐 / BUG-25 零宽集合对齐 / P1 CJK 兼容表意补充等修复均
+源于此）。收敛到 ``src._text_width`` 后漂移风险消除。
+
+口径（与 ``src._text_width`` 一致）：
+  - ASCII 可打印 ``0x20-0x7E`` → 1
+  - 控制字符 ``0x00-0x1F`` / ``0x7F-0x9F``（含 ``\\t``）→ 0
+  - ANSI 转义序列（整段）→ 0
+  - CJK / 全角 / emoji 宽符号 → 2
+  - 组合标记 / 零宽字符 → 0
+  - 其他 → 1
+
+依赖约束：本模块属 renderer 层，仅依赖 Layer 0 的 ``src._text_width``
+与标准库，不依赖 tui 层（架构分层保持）。
 """
 
 from __future__ import annotations
 
-import bisect
-
-
-# 组合标记区段（零宽——终端以其上方基准字符渲染，不占列；与
-# ``src.tui._screen._ZERO_WIDTH_RANGES`` 对齐，双宽度函数一致——方向1 修复：
-# 修复前 cjk_display_width 把组合标记计宽 1，与 ink 布局的 wcswidth_simple
-# （计宽 0）不一致，同一文本在两处测量结果不同 → 含组合符的行换行/截断错位）。
-_COMBINING_MARK_RANGES: tuple[tuple[int, int], ...] = (
-    (0x0300, 0x036F),    # Combining Diacritical Marks
-    (0x1AB0, 0x1AFF),    # Combining Diacritical Marks Extended
-    (0x1DC0, 0x1DFF),    # Combining Diacritical Marks Supplement
-    (0x20D0, 0x20FF),    # Combining Diacritical Marks for Symbols
-    (0xFE20, 0xFE2F),    # Combining Half Marks
-    (0xE0100, 0xE01EF),  # Variation Selectors Supplement
+from src._text_width import (
+    expand_tabs,
+    string_width,
+    zero_width_codepoints,
 )
 
-
-def _zero_width_codepoints() -> frozenset:
-    """构建零宽码点集合（显式单点 + 组合标记区段展开）。"""
-    cps = {
-        0x00AD, 0x200B, 0x200C, 0x200D, 0x200E, 0x200F,
-        0x2060, 0x2061, 0x2062, 0x2063, 0x2064,
-        0xFE00, 0xFE01, 0xFE02, 0xFE03, 0xFE04,
-        0xFE05, 0xFE06, 0xFE07, 0xFE08, 0xFE09,
-        0xFE0A, 0xFE0B, 0xFE0C, 0xFE0D, 0xFE0E, 0xFE0F,  # 变体选择符
-        0xFEFF,  # ZERO WIDTH NO-BREAK SPACE / BOM
-    }
-    for lo, hi in _COMBINING_MARK_RANGES:
-        cps.update(range(lo, hi + 1))
-    return frozenset(cps)
-
-
-#: 零宽字符集合（frozenset 预计算，O(1) 查找）
-_ZERO_WIDTH_CHARS = _zero_width_codepoints()
+#: 零宽字符集合（兼容导出；渲染侧历史 API）。由 ``src._text_width`` 的
+#: ``ZERO_WIDTH_RANGES`` 区间表派生——与 tui 侧零宽判定同源（单一真源）。
+_ZERO_WIDTH_CHARS = zero_width_codepoints()
 
 
 def cjk_display_width(s: str) -> int:
-    """计算字符串的终端显示宽度（CJK=2，其他=1）。
+    """计算字符串的终端显示宽度（CJK/全角/emoji 宽 2、零宽 0、其他 1）。
 
-    使用 frozenset 零宽字符查找 + 展开的 if-elif 链，
-    替代 tuple 遍历，CPython 分支预测更友好。
-
-    方向8（性能）：ASCII 快速路径——``0x20-0x7E`` 可打印字符恒宽 1，
-    提前 return 跳过零宽集合查找与 if-elif 链（聊天/工具输出/代码等
-    ASCII 为主的文本是热路径，100k 字符测量基准 ~7x 提速）。控制字符
-    （``0x00-0x1F``/``0x7F-0x9F``）走下方零宽分支（计 0）。
-    """
-    width = 0
-    for ch in s:
-        cp = ord(ch)
-        if 0x20 <= cp <= 0x7E:
-            width += 1
-            continue
-        # 零宽字符：frozenset 哈希查找 O(1)
-        if cp in _ZERO_WIDTH_CHARS:
-            continue
-        # 展开的 if-elif 链：编译器优化更友好
-        if 0x1100 <= cp <= 0x11FF:      # Hangul Jamo
-            width += 2
-        elif 0x2E80 <= cp <= 0x9FFF:    # CJK + 韩文（最大块）
-            width += 2
-        elif 0xAC00 <= cp <= 0xD7AF:    # 韩文音节
-            width += 2
-        elif 0xF900 <= cp <= 0xFAFF:    # CJK 兼容
-            width += 2
-        elif 0x2F800 <= cp <= 0x2FA1F:  # ★ P1（review）：CJK 兼容表意补充
-            # 修复前缺失该分支——此段在 ``src.tui._width.wcswidth_simple``
-            # （``_CJK_RANGES`` 含 0x2F800-0x2FA1F）计 2、此处计 1，双宽度
-            # 函数测量分歧（含该段字符的行 ink 侧宽 2 / renderer 侧宽 1，
-            # 行宽不变量破裂）。
-            width += 2
-        elif 0xFF01 <= cp <= 0xFF60:    # 全角 ASCII
-            width += 2
-        elif 0xFFE0 <= cp <= 0xFFE6:    # 全角符号
-            width += 2
-        elif 0x20000 <= cp <= 0x3134F:  # CJK Extension B/G/H
-            width += 2
-        elif _in_emoji_wide(cp):        # emoji 宽符号（wcwidth emoji-wide 集）
-            width += 2
-        else:
-            width += 1
-    return width
-
-
-# Emoji 宽符号范围（终端以 2 列渲染；与 wcwidth emoji-wide 集对齐）。
-# ⚠ 不含 ✔✎⚙✕ 等文本呈现符号（宽度 1）——误计为 2 会导致表格/布局错位。
-# 方向1（RI 码点）：首项拆为 (0x1F000, 0x1F1E5) + (0x1F200, 0x1FAFF)，排除
-# Regional Indicator（RI，0x1F1E6-0x1F1FF，国旗字母）——与
-# ``src.tui._screen._EMOJI_WIDE_RANGES`` 对齐（单 RI 计宽 1、成对 RI 按
-# 1×2=2 列）。修复前 (0x1F000, 0x1FAFF) 把单 RI 计宽 2，双宽度函数不一致。
-_EMOJI_WIDE: tuple[tuple[int, int], ...] = (
-    (0x1F000, 0x1F1E5),   # 主要 emoji 块（📖📄🔍 等；不含 RI 码点）
-    (0x1F200, 0x1FAFF),   # 主要 emoji 块续（🈁 等；RI 码点 0x1F1E6-0x1F1FF 已排除）
-    (0x231A, 0x231B),
-    (0x23E9, 0x23EC),
-    (0x23F0, 0x23F0),
-    (0x23F3, 0x23F3),
-    (0x25FD, 0x25FE),
-    (0x2614, 0x2615),
-    (0x2648, 0x2653),
-    (0x267F, 0x267F),
-    (0x2693, 0x2693),
-    (0x26A1, 0x26A1),
-    (0x26AA, 0x26AB),
-    (0x26BD, 0x26BE),
-    (0x26C4, 0x26C5),
-    (0x26CE, 0x26CE),
-    (0x26D4, 0x26D4),
-    (0x26EA, 0x26EA),
-    (0x26F2, 0x26F3),
-    (0x26F5, 0x26F5),
-    (0x26FA, 0x26FA),
-    (0x26FD, 0x26FD),
-    (0x2705, 0x2705),
-    (0x270A, 0x270B),
-    (0x2728, 0x2728),
-    (0x274C, 0x274C),
-    (0x274E, 0x274E),
-    (0x2753, 0x2755),
-    (0x2757, 0x2757),
-    (0x2795, 0x2797),
-    (0x27B0, 0x27B0),
-    (0x27BF, 0x27BF),
-    (0x2B1B, 0x2B1C),
-    (0x2B50, 0x2B50),
-    (0x2B55, 0x2B55),
-)
-
-
-def _build_flat(ranges: tuple[tuple[int, int], ...]) -> list[int]:
-    """构建排序扁平边界数组（每个区间起点/终点后一位交替，供 bisect 定位）。"""
-    ordered = sorted(ranges, key=lambda r: r[0])
-    flat: list[int] = []
-    for lo, hi in ordered:
-        flat.append(lo)
-        flat.append(hi + 1)
-    return flat
-
-
-#: emoji 宽符号扁平边界表（``_in_emoji_wide`` 热路径二分用）
-_EMOJI_WIDE_FLAT: list[int] = _build_flat(_EMOJI_WIDE)
-
-
-def _in_emoji_wide(cp: int) -> bool:
-    """检查码点是否在 emoji 宽符号范围内。
-
-    ★ P3（review）：线性扫描改二分——修复前对 34 个区间逐项比较（每字符
-    O(34)），而 ``src.tui._width`` 同语义已用 bisect O(log n)；本函数位于
-    ``cjk_display_width`` 逐字符热路径（行/块/表格宽度测量），性能不对称。
-    区间表有序不重叠，``bisect_right`` 命中奇数索引即落在区间内。
-    """
-    idx = bisect.bisect_right(_EMOJI_WIDE_FLAT, cp)
-    return (idx % 2) == 1
-
-
-def expand_tabs(text: str, start_col: int = 0, tab_width: int = 8) -> str:
-    """展开制表符为空格并剔除回车（使显示宽度与终端渲染一致）。
-
-    ★ 显示错乱根因修复（2026-10-05）：制表符 ``\\t`` 是控制字符
-    （``cjk_display_width`` 计宽 0），但真实终端把它当 HT 跳到下一个 tab
-    stop（默认每 8 列补空格）——含 ``\\t`` 的行「计算宽度 < 实际渲染宽度」，
-    结合「工具卡整行占满终端宽度」的填充（按计算宽度补空格到终端列宽），
-    实际渲染宽度超过终端列宽 → 终端自动换行，后续行整体错位。本函数在文本
-    进入渲染模型前把 ``\\t`` 展开一次，宽度计算与实际渲染恒一致。
-
-    回车 ``\\r`` 一并剔除（重置列）——行渲染模型无「回行首覆盖」语义。
-
-    ★ 与 ``src.tui._width.expand_tabs`` 同源约束（双宽度函数对应双展开
-    函数）：两处语义保持一致，改动须同步。
+    ★ P1-2：委托 ``src._text_width.string_width``（唯一真源）。相较旧本地
+    实现两处口径修正（与 tui 侧完全对齐）：① 控制字符（``\\t``/ESC 等）计 0
+    （旧实现走 ``else`` 分支计 1）；② ANSI 转义序列整段计 0（旧实现对序列
+    正文逐字符计宽）。修正后同文本在 renderer 与 tui 测量结果恒一致。
 
     Args:
-        text: 待规范化文本。
-        start_col: 文本起始显示列（默认 0）。
-        tab_width: 制表宽度（列；<=0 回退 8）。
+        s: 输入字符串（调用方通常已剥离 ANSI；含 ANSI 时本函数亦正确跳过）。
 
     Returns:
-        展开后的文本（不含 ``\\t``/``\\r``；无该字符时原样返回）。
+        显示宽度（整数）。
     """
-    if "\t" not in text and "\r" not in text:
-        return text
-    if tab_width <= 0:
-        tab_width = 8
-    out: list[str] = []
-    col = start_col
-    for ch in text:
-        if ch == "\t":
-            n = tab_width - (col % tab_width)
-            out.append(" " * n)
-            col += n
-        elif ch == "\r":
-            col = start_col
-        elif ch == "\n":
-            out.append(ch)
-            col = start_col
-        elif 0x20 <= ord(ch) <= 0x7E:
-            out.append(ch)
-            col += 1
-        else:
-            out.append(ch)
-            col += cjk_display_width(ch)
-    return "".join(out)
+    return string_width(s)
+
+
+__all__ = ["cjk_display_width", "expand_tabs", "_ZERO_WIDTH_CHARS"]

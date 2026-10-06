@@ -43,10 +43,13 @@ from src.tui.app.trace import (
 from src.tui.app.trace_image import thumbnail_rows as _thumbnail_rows
 from src.tui.core.style import Style
 from src.tui.ink import (
-    TEXT, Column, Row, StyledRun, h, use_effect, use_fullscreen, use_input, use_memo, use_ref,
+    TEXT, Column, Row, StyledRun, h, use_effect, use_input, use_memo, use_ref,
 )
 from src.tui.ink.helpers import truncate_runs, wrap_runs_by_width
 from src.tui.ink.widgets.listview import ListView
+
+from ._inspector_pane import PaneState, handle_nav, resolve, scroll_for_cursor
+from ._modal_view import is_modal_close_key, use_modal_scope
 
 # ── 样式（共享定义位于 trace_styles，此处 re-import） ──────
 from .trace_styles import (  # noqa: E402
@@ -1181,6 +1184,275 @@ def _ledger_renderer(rows: list, left_w: int,
     return render_item
 
 
+# ═══════════════════════════════════════════════════════════
+# vim 搜索辅助 / 输入事件处理（模块级；P1-1 巨型组件拆分）
+# ═══════════════════════════════════════════════════════════
+# 说明：以下逻辑原为 ``TraceView`` 内部闭包（组件函数 ~640 行）。提取为模块级
+# 函数后按显式参数传递上下文（model / records / content_rows / ...），主组件
+# 只负责状态读取 + hooks 接线 + 渲染组装。
+
+
+def _clear_search(model) -> None:
+    """清除搜索状态（无匹配高亮；Esc/关闭视图/切换记录失效时调用）。"""
+    model.trace_search_pattern = ""
+    model.trace_search_side = ""
+    model.trace_search_matches = []
+    model.trace_search_idx = -1
+
+
+def _search_locate(model, side: str, target: int,
+                   total_content: int, approx_content_vh: int) -> None:
+    """定位到匹配：台账 → 选中记录（ListView 自动滚动）；检查器 → 光标行 +
+    视口跟随（渲染期协调）。焦点切到匹配所在面板（vim 定位语义）。"""
+    if side == "ledger":
+        model.trace_selected = target
+        model.trace_pane = "ledger"
+        model.trace_inspector_scroll = 0
+        model.trace_inspector_cursor = 0
+    else:
+        model.trace_pane = "inspector"
+        model.trace_inspector_cursor = target
+        model.trace_inspector_scroll = scroll_for_cursor(
+            target, getattr(model, "trace_inspector_scroll", 0) or 0,
+            total_content, approx_content_vh,
+        )
+
+
+def _search_jump(model, delta: int,
+                 total_content: int, approx_content_vh: int) -> None:
+    """n/N/p 切换当前匹配（环绕）：delta=1 下一个、-1 上一个。"""
+    matches = getattr(model, "trace_search_matches", None) or []
+    if not matches:
+        return
+    idx = getattr(model, "trace_search_idx", -1)
+    n = len(matches)
+    if idx < 0:
+        new_idx = 0 if delta > 0 else n - 1
+    else:
+        new_idx = (idx + delta) % n
+    model.trace_search_idx = new_idx
+    side = getattr(model, "trace_search_side", "") or "ledger"
+    _search_locate(model, side, matches[new_idx], total_content, approx_content_vh)
+
+
+def _exec_search(model, records, content_rows,
+                 total_content: int, approx_content_vh: int) -> None:
+    """回车执行搜索：当前焦点面板（台账搜记录 / 检查器搜内容行）、
+    正则 re.search、所有匹配行高亮；定位到首个匹配。
+
+    ★ 2026-08-20（review P3）：不再 ``strip()``——首尾空格是正则 pattern 的
+    一部分（vim 语义：搜索含首尾空格的 pattern 合法，纯空格 pattern 即搜索
+    空格）；清除搜索 = 空串直接回车（``if not pattern``）。
+    """
+    pattern = getattr(model, "trace_search_query", "") or ""
+    model.trace_search_mode = False
+    if not pattern:
+        _clear_search(model)
+        return
+    side = getattr(model, "trace_pane", "ledger") or "ledger"
+    matches = _trace_search_matches(pattern, side, records, content_rows)
+    model.trace_search_pattern = pattern
+    model.trace_search_side = side
+    model.trace_search_matches = matches
+    if matches:
+        model.trace_search_idx = 0
+        _search_locate(model, side, matches[0], total_content, approx_content_vh)
+    else:
+        model.trace_search_idx = -1
+
+
+def _handle_trace_event(
+    model, records, content_rows, row_keys, sel, *,
+    total: int, total_content: int, approx_content_vh: int,
+    pane_state, event,
+) -> bool:
+    """TraceView 输入事件处理（模块级；P1-1 拆分自组件内闭包 ``_handle``）。"""
+    if not getattr(model, "trace_open", False):
+        return False
+    pane_now = getattr(model, "trace_pane", "ledger") or "ledger"
+    # ★ 2026-08-19（vim 搜索输入模式）："/" 后所有按键进入搜索输入——
+    #   字符累积、退格删除、Esc 取消（退出输入模式，保留已执行搜索）、
+    #   回车执行（底部输入行消失——「回车后不显示」）。导航/折叠等其余
+    #   按键在输入模式不生效（vim 中输入搜索词时同样）。
+    if getattr(model, "trace_search_mode", False):
+        if event.kind == "escape":
+            model.trace_search_mode = False
+            return True
+        if event.kind == "char":
+            ch = getattr(event, "char", "") or ""
+            if ch and "\n" not in ch and "\r" not in ch:
+                # ★ 2026-08-20（review P3）：query 长度上限——超长输入
+                #   截断丢弃（渲染行按栏宽截断，无上限累积只浪费内存）。
+                q = getattr(model, "trace_search_query", "") or ""
+                if len(q) < _SEARCH_QUERY_MAX:
+                    model.trace_search_query = q + ch
+                return True
+            # 含换行 char（多行粘贴）不入 query——吞掉（vim 搜索输入
+            #   模式不接受换行）。
+            return True
+        if event.kind == "backspace":
+            q = getattr(model, "trace_search_query", "") or ""
+            if q:
+                model.trace_search_query = q[:-1]
+            return True
+        if event.kind == "enter":
+            _exec_search(model, records, content_rows, total_content, approx_content_vh)
+            return True
+        # ★ 2026-08-20（review P3）：搜索输入模式未识别事件返回 True
+        #   （模态吞掉）——修复前 return False 放行：台账焦点时 ListView
+        #   仍激活消费方向键/翻页等 → 搜索输入中按 ↑↓ 意外导航台账
+        #   （vim 中搜索输入模式不导航）。
+        return True
+    # 关闭类按键（Esc / Ctrl+H，模态统一关闭键）——subagent 轨迹优先返回
+    #   主轨迹（trace_subagent_label 置 None），主轨迹才关闭整个视图。
+    #   ★ 2026-08-19（vim 面板浏览）：返回主轨迹同时复位焦点面板/滚动/
+    #   光标（残留 pane/scroll/cursor 指向 subagent 轨迹的浏览状态）。
+    if is_modal_close_key(event):
+        if getattr(model, "trace_subagent_label", None):
+            model.trace_subagent_label = None
+            model.trace_selected = -1  # 返回主轨迹：回到尾部跟随
+            model.trace_pane = "ledger"
+            model.trace_inspector_scroll = 0
+            model.trace_inspector_cursor = 0
+        else:
+            model.trace_open = False
+        # ★ 2026-08-19（树控件空格展开/收缩）：退出嵌套/关闭视图同时
+        #   复位树折叠集合（折叠状态是「当前选中记录」的临时浏览状态，
+        #   与 scroll/cursor 同语义——不跨轨迹残留；默认展开所有）。
+        model.trace_tree_collapsed = set()
+        # ★ 2026-08-19（vim 搜索）：退出嵌套/关闭视图同时清除搜索
+        #   （搜索高亮/匹配不跨视图残留）。
+        _clear_search(model)
+        return True
+    # ── 面板切换（vim h/l）与检查器光标（char 单字符） ──
+    # ★ 2026-08-19（用户需求：轨迹 Trace 移动到右边查看东西 + vim 风格）：
+    #   台账焦点：l → 右移检查器（光标浏览详情）、h 已在最左放行；
+    #   检查器焦点：h → 返回台账、l 已在最右放行、j/k/↑↓ 移动光标
+    #   （当前行背景高亮，视口跟随）、g/G 顶部/底部、PgUp/PgDn 翻页、
+    #   Home/End 首末、← 返回台账。
+    ch = getattr(event, "char", "") or ""
+    if event.kind == "char" and len(ch) == 1:
+        # ★ 2026-08-19（vim 搜索）："/" 开始搜索（任何焦点）——预填上次
+        #   pattern 可编辑（vim 语义）；n 下一个 / N、p 上一个（p 为用户
+        #   原话 prev 兼容别名）切换匹配并定位。
+        if ch == "/":
+            model.trace_search_mode = True
+            model.trace_search_query = (
+                getattr(model, "trace_search_pattern", "") or ""
+            )
+            return True
+        if ch in ("n", "N", "p") and getattr(model, "trace_search_pattern", ""):
+            # ★ 语义说明（P3 review）：n/N/p 在**任何焦点**（台账/检查器）
+            #   下均消费——搜索结果导航是跨面板的全局操作（匹配集合来自
+            #   台账 records，定位同时移动台账选中与检查器光标）；仅在
+            #   已有搜索 pattern 时生效，未搜索时字符照常放行。
+            _search_jump(model, 1 if ch == "n" else -1, total_content, approx_content_vh)
+            return True
+        if pane_now == "ledger":
+            if ch == "l":
+                model.trace_pane = "inspector"
+                return True
+            # ch == "h"：已在最左 → 放行（模态吞掉，无副作用）
+        else:
+            if ch == "h":
+                model.trace_pane = "ledger"
+                return True
+            # ch == "l"：已在最右 → 放行（模态吞掉）
+            cur_cursor = getattr(model, "trace_inspector_cursor", 0) or 0
+            # ★ 2026-08-19（用户需求：树控件按空格可以展开和收缩）：
+            #   检查器焦点空格 → 切换光标所在节点的展开/收缩（row_keys
+            #   [cursor] = 节点路径 key；叶子/非树行 None 不消费——放行
+            #   被模态吞掉）。折叠集合写回 model → 下一帧 use_memo deps
+            #   （``_inspector_content_deps`` 含折叠展平）变化 → 内容行
+            #   重建（折叠节点子级行消失/恢复）。
+            if ch == " ":
+                node_key = (
+                    row_keys[cur_cursor]
+                    if 0 <= cur_cursor < len(row_keys) else None
+                )
+                if node_key:
+                    collapsed_now = set(
+                        getattr(model, "trace_tree_collapsed", None) or ()
+                    )
+                    if node_key in collapsed_now:
+                        collapsed_now.discard(node_key)
+                    else:
+                        collapsed_now.add(node_key)
+                    model.trace_tree_collapsed = collapsed_now
+                    # ★ 2026-08-19（vim 搜索）：折叠改变内容行结构——
+                    #   检查器搜索匹配索引失效，清除搜索（台账搜索不受
+                    #   影响）。
+                    if getattr(model, "trace_search_side", "") == "inspector":
+                        _clear_search(model)
+                    return True
+            # ★ P0-1：通用 vim 导航（j/k/g/G）收敛到 ``_inspector_pane``
+            #   （与 trace_tools_view / plugin_view 共享同一实现）。
+            if handle_nav(event, pane_state, total_content, approx_content_vh):
+                return True
+    # ── 检查器焦点：方向键/翻页/首末（ListView focus=False 不消费） ──
+    if pane_now == "inspector":
+        if event.kind == "arrow_left":
+            model.trace_pane = "ledger"
+            return True
+        # ★ P0-1：方向键/翻页/首末导航统一走 ``_inspector_pane``。
+        if handle_nav(event, pane_state, total_content, approx_content_vh):
+            return True
+    # Enter：选中 subagent 记录 → 进入 subagent 轨迹（嵌套 TraceView——
+    #   显示内容与 mainagent 同构）。subagent 轨迹内 Enter 放行（模态：
+    #   由 use_fullscreen 吞掉，不落入输入缓冲）；sub-subagent 下钻不
+    #   阻断（覆盖 label）。台账与检查器焦点一致（选中记录相同）。
+    # ★ 2026-08-17（用户需求：agent 内容合并到 subagent）：合并
+    #   后的 subagent 工具记录携带 subagent_label（kind 仍为 tool）
+    #   ——下钻条件从 kind=="subagent" 放宽为 subagent_label 非空（独立
+    #   subagent 记录与合并 tool 记录均可 Enter 进入 subagent 轨迹）。
+    # ★ 2026-08-17（用户需求：轨迹 Trace 工具列表 Enter 进入新界面）：
+    #   选中 #0 工具列表记录（kind=="tools"）→ 进入工具列表详情视图
+    #   （模态全屏视图 id "trace_tools"——左右布局：左工具名列表上下
+    #   选择 + 右树控件显示需要的参数）。主轨迹与 subagent 轨迹均显示
+    #   工具列表记录——两处 Enter 均可进入；返回时经 fullscreen="trace"
+    #   + trace_subagent_label 保留语义回到原轨迹（subagent 轨迹内进入
+    #   后 Esc 仍回 subagent 轨迹，再 Esc 回主轨迹）。选中索引归零
+    #   （从首个工具开始浏览），trace_selected 保留（返回时选中记录
+    #   不变）。★ 2026-08-19（vim 面板浏览）：进入新轨迹/新视图同时
+    #   复位焦点面板/滚动（从台账开始浏览）。
+    if event.kind == "enter":
+        rec = records[sel] if 0 <= sel < total else None
+        if rec is not None:
+            sub = getattr(rec, "subagent_label", "") or ""
+            if sub:
+                model.trace_subagent_label = sub
+                model.trace_selected = -1  # subagent 轨迹：尾部跟随
+                model.trace_pane = "ledger"
+                model.trace_inspector_scroll = 0
+                model.trace_inspector_cursor = 0
+                # ★ 2026-08-19（树控件空格展开/收缩）：进入 subagent
+                #   轨迹复位树折叠集合（新轨迹树从默认全展开开始）。
+                model.trace_tree_collapsed = set()
+                # ★ 2026-08-19（vim 搜索）：进入 subagent 轨迹清除搜索
+                #   （搜索不跨轨迹残留）。
+                _clear_search(model)
+                return True
+            if getattr(rec, "kind", "") == "tools":
+                model.fullscreen = "trace_tools"
+                model.trace_tools_selected = 0
+                model.trace_tools_pane = "ledger"
+                model.trace_tools_scroll = 0
+                model.trace_tools_cursor = 0
+                model.trace_pane = "ledger"  # 返回主轨迹保持台账
+                model.trace_inspector_scroll = 0
+                model.trace_inspector_cursor = 0
+                # ★ 2026-08-19（树控件空格展开/收缩）：进入工具列表
+                #   视图复位轨迹树折叠集合（浏览状态不跨视图残留）。
+                model.trace_tree_collapsed = set()
+                # ★ 2026-08-19（vim 搜索）：进入工具列表视图清除搜索。
+                _clear_search(model)
+                return True
+    # 其余按键不消费——台账：放行 ListView（j/k/↑↓/PgUp/PgDn/Home/End/
+    # g/G 导航）；检查器：未消费按键被 use_fullscreen 模态吞掉（不落入
+    # 输入缓冲，杜绝看不见的输入；2026-08-17 通用模态全屏视图机制）
+    return False
+
+
 def TraceView(props) -> object:
     """轨迹视图组件（模态全屏视图；App 按 FULLSCREEN_VIEWS 整屏渲染）。
 
@@ -1301,31 +1573,18 @@ def TraceView(props) -> object:
     #   ``vh - fixed``（fixed 随 meta/subagent 变化）不一致 → 光标越出可见
     #   窗口（高亮消失/视口跟随失效）。
     approx_content_vh = _inspector_viewport_rows(rec, vh)
-    # 光标渲染期钳制（写回 model——越界残留收敛；空内容 → 0）
-    if total_content:
-        cursor = max(0, min(cursor_raw, total_content - 1))
-    else:
-        cursor = 0
+    # ★ P0-1：光标/滚动归一化统一走 ``_inspector_pane.resolve``（越界钳制 +
+    #   光标可见跟随）——取代本地复刻（与 trace_tools_view / plugin_view
+    #   三份重复实现中的一份）；渲染期不写 model，写回经 ``_model_writes``
+    #   在提交期统一落盘。
+    cursor, scroll_new = resolve(
+        cursor_raw, scroll_raw, total_content, approx_content_vh,
+    )
     if cursor != cursor_raw:
         _model_writes["trace_inspector_cursor"] = cursor
-        cursor_raw = cursor
-    # scroll 渲染期协调：钳制 + 跟随光标保持可见（vim 视口语义——光标在
-    #   窗口内移动不滚动，到边界才滚动；与 _handle ``_scroll_for_cursor``
-    #   同逻辑）
-    if total_content > approx_content_vh:
-        if scroll_raw < 0:
-            scroll_raw = 0
-        elif scroll_raw > total_content - approx_content_vh:
-            scroll_raw = total_content - approx_content_vh
-        if cursor < scroll_raw:
-            scroll_raw = cursor
-        elif cursor >= scroll_raw + approx_content_vh:
-            scroll_raw = cursor - approx_content_vh + 1
-    else:
-        scroll_raw = 0
-    if scroll_raw != (getattr(model, "trace_inspector_scroll", 0) or 0):
-        _model_writes["trace_inspector_scroll"] = scroll_raw
-    scroll = scroll_raw
+    if scroll_new != (getattr(model, "trace_inspector_scroll", 0) or 0):
+        _model_writes["trace_inspector_scroll"] = scroll_new
+    scroll = scroll_new
     # 检查器光标参数：仅检查器焦点传入（高亮）；台账焦点 -1（不高亮）
     cursor_arg = cursor if pane == "inspector" else -1
     # ★ 2026-08-19（vim 搜索匹配高亮）：搜索状态展平读取——台账匹配记录
@@ -1373,336 +1632,35 @@ def TraceView(props) -> object:
     sel_row = _row_of_record(rows, sel, records) if row_count else 0
 
     # ── 输入（trace_open 期间激活；关闭类按键本组件消费，导航放行 ListView） ──
-    def _scroll_for_cursor(cursor: int, scroll: int) -> int:
-        """检查器视口滚动：钳制 + 跟随光标保持可见（vim 视口语义）。
+    # ★ P0-1：检查器面板状态规约——通用滚动/光标/导航逻辑经 getter/setter
+    #   注入 ``_inspector_pane``（与 trace_tools_view / plugin_view 共享同一
+    #   实现，取代此前的本地复刻 ``_scroll_for_cursor`` / ``_move_cursor``）。
+    _pane_state = PaneState(
+        lambda: getattr(model, "trace_inspector_cursor", 0) or 0,
+        lambda v: setattr(model, "trace_inspector_cursor", v),
+        lambda: getattr(model, "trace_inspector_scroll", 0) or 0,
+        lambda v: setattr(model, "trace_inspector_scroll", v),
+    )
 
-        cursor 在窗口内（``[scroll, scroll+approx_content_vh)``）不滚动；
-        光标越过上/下边界 → 滚动窗口使光标回到边缘可见。内容不足一屏 →
-        0。``_inspector_children`` 内部对 scroll 做精确钳制（本函数为近似
-        视口，差异 ≤ 省略提示行数，渲染兜底）。
-        """
-        if total_content <= approx_content_vh:
-            return 0
-        scroll = max(0, min(int(scroll), total_content - approx_content_vh))
-        cursor = max(0, min(int(cursor), total_content - 1))
-        if cursor < scroll:
-            return cursor
-        if cursor >= scroll + approx_content_vh:
-            return cursor - approx_content_vh + 1
-        return scroll
+    # ★ P1-1（巨型组件拆分）：搜索辅助（清除/定位/切换/执行）收敛到模块级
+    #   ``_clear_search`` / ``_search_locate`` / ``_search_jump`` / ``_exec_search``。
 
-    def _move_cursor(new_cursor: int) -> None:
-        """检查器光标移动：写回 cursor + scroll 跟随（保持光标可见）。"""
-        if total_content:
-            new_cursor = max(0, min(int(new_cursor), total_content - 1))
-        else:
-            new_cursor = 0
-        model.trace_inspector_cursor = new_cursor
-        model.trace_inspector_scroll = _scroll_for_cursor(
-            new_cursor, getattr(model, "trace_inspector_scroll", 0) or 0,
-        )
-
-    # ── vim 风格搜索辅助（2026-08-19 用户需求：/ 搜索、n/N 切换、正则） ──
-    def _clear_search() -> None:
-        """清除搜索状态（无匹配高亮；Esc/关闭视图/切换记录失效时调用）。"""
-        model.trace_search_pattern = ""
-        model.trace_search_side = ""
-        model.trace_search_matches = []
-        model.trace_search_idx = -1
-
-    def _search_locate(side: str, target: int) -> None:
-        """定位到匹配：台账 → 选中记录（ListView 自动滚动）；检查器 → 光标
-        行 + 视口跟随（渲染期协调）。焦点切到匹配所在面板（vim 定位语义）。"""
-        if side == "ledger":
-            model.trace_selected = target
-            model.trace_pane = "ledger"
-            model.trace_inspector_scroll = 0
-            model.trace_inspector_cursor = 0
-        else:
-            model.trace_pane = "inspector"
-            model.trace_inspector_cursor = target
-            model.trace_inspector_scroll = _scroll_for_cursor(
-                target, getattr(model, "trace_inspector_scroll", 0) or 0,
-            )
-
-    def _search_jump(delta: int) -> None:
-        """n/N/p 切换当前匹配（环绕）：delta=1 下一个、-1 上一个。"""
-        matches = getattr(model, "trace_search_matches", None) or []
-        if not matches:
-            return
-        idx = getattr(model, "trace_search_idx", -1)
-        n = len(matches)
-        if idx < 0:
-            new_idx = 0 if delta > 0 else n - 1
-        else:
-            new_idx = (idx + delta) % n
-        model.trace_search_idx = new_idx
-        side = getattr(model, "trace_search_side", "") or "ledger"
-        _search_locate(side, matches[new_idx])
-
-    def _exec_search() -> None:
-        """回车执行搜索：当前焦点面板（台账搜记录 / 检查器搜内容行）、
-        正则 re.search、所有匹配行高亮；定位到首个匹配。
-
-        ★ 2026-08-20（review P3）：不再 ``strip()``——首尾空格是正则
-        pattern 的一部分（vim 语义：搜索含首尾空格的 pattern 合法，纯空格
-        pattern 即搜索空格）；清除搜索 = 空串直接回车（``if not pattern``）。
-        """
-        pattern = getattr(model, "trace_search_query", "") or ""
-        model.trace_search_mode = False
-        if not pattern:
-            _clear_search()
-            return
-        side = getattr(model, "trace_pane", "ledger") or "ledger"
-        matches = _trace_search_matches(pattern, side, records, content_rows)
-        model.trace_search_pattern = pattern
-        model.trace_search_side = side
-        model.trace_search_matches = matches
-        if matches:
-            model.trace_search_idx = 0
-            _search_locate(side, matches[0])
-        else:
-            model.trace_search_idx = -1
-
-    def _handle(event) -> bool:
-        if not getattr(model, "trace_open", False):
-            return False
-        pane_now = getattr(model, "trace_pane", "ledger") or "ledger"
-        # ★ 2026-08-19（vim 搜索输入模式）："/" 后所有按键进入搜索输入——
-        #   字符累积、退格删除、Esc 取消（退出输入模式，保留已执行搜索）、
-        #   回车执行（底部输入行消失——「回车后不显示」）。导航/折叠等其余
-        #   按键在输入模式不生效（vim 中输入搜索词时同样）。
-        if getattr(model, "trace_search_mode", False):
-            if event.kind == "escape":
-                model.trace_search_mode = False
-                return True
-            if event.kind == "char":
-                ch = getattr(event, "char", "") or ""
-                if ch and "\n" not in ch and "\r" not in ch:
-                    # ★ 2026-08-20（review P3）：query 长度上限——超长输入
-                    #   截断丢弃（渲染行按栏宽截断，无上限累积只浪费内存）。
-                    q = getattr(model, "trace_search_query", "") or ""
-                    if len(q) < _SEARCH_QUERY_MAX:
-                        model.trace_search_query = q + ch
-                    return True
-                # 含换行 char（多行粘贴）不入 query——吞掉（vim 搜索输入
-                #   模式不接受换行）。
-                return True
-            if event.kind == "backspace":
-                q = getattr(model, "trace_search_query", "") or ""
-                if q:
-                    model.trace_search_query = q[:-1]
-                return True
-            if event.kind == "enter":
-                _exec_search()
-                return True
-            # ★ 2026-08-20（review P3）：搜索输入模式未识别事件返回 True
-            #   （模态吞掉）——修复前 return False 放行：台账焦点时 ListView
-            #   仍激活消费方向键/翻页等 → 搜索输入中按 ↑↓ 意外导航台账
-            #   （vim 中搜索输入模式不导航）。
-            return True
-        # 关闭类按键（Esc / Ctrl+H）——subagent 轨迹优先返回主轨迹
-        #   （trace_subagent_label 置 None），主轨迹才关闭整个视图。
-        #   关闭统一经 trace_open setter（= fullscreen=""，2026-08-17 review
-        #   方向：与 toggle 工厂/测试写法一致，避免 property 扩展遗漏联动）。
-        #   ★ 2026-08-19（vim 面板浏览）：返回主轨迹同时复位焦点面板/滚动/
-        #   光标（残留 pane/scroll/cursor 指向 subagent 轨迹的浏览状态）。
-        if event.kind == "escape":
-            if getattr(model, "trace_subagent_label", None):
-                model.trace_subagent_label = None
-                model.trace_selected = -1  # 返回主轨迹：回到尾部跟随
-                model.trace_pane = "ledger"
-                model.trace_inspector_scroll = 0
-                model.trace_inspector_cursor = 0
-            else:
-                model.trace_open = False
-            # ★ 2026-08-19（树控件空格展开/收缩）：退出嵌套/关闭视图同时
-            #   复位树折叠集合（折叠状态是「当前选中记录」的临时浏览状态，
-            #   与 scroll/cursor 同语义——不跨轨迹残留；默认展开所有）。
-            model.trace_tree_collapsed = set()
-            # ★ 2026-08-19（vim 搜索）：退出嵌套/关闭视图同时清除搜索
-            #   （搜索高亮/匹配不跨视图残留）。
-            _clear_search()
-            return True
-        if event.kind == "ctrl_key" and getattr(event, "char", "") == "\x08":
-            if getattr(model, "trace_subagent_label", None):
-                model.trace_subagent_label = None
-                model.trace_selected = -1
-                model.trace_pane = "ledger"
-                model.trace_inspector_scroll = 0
-                model.trace_inspector_cursor = 0
-            else:
-                model.trace_open = False
-            model.trace_tree_collapsed = set()
-            _clear_search()
-            return True
-        # ── 面板切换（vim h/l）与检查器光标（char 单字符） ──
-        # ★ 2026-08-19（用户需求：轨迹 Trace 移动到右边查看东西 + vim 风格）：
-        #   台账焦点：l → 右移检查器（光标浏览详情）、h 已在最左放行；
-        #   检查器焦点：h → 返回台账、l 已在最右放行、j/k/↑↓ 移动光标
-        #   （当前行背景高亮，视口跟随）、g/G 顶部/底部、PgUp/PgDn 翻页、
-        #   Home/End 首末、← 返回台账。
-        ch = getattr(event, "char", "") or ""
-        if event.kind == "char" and len(ch) == 1:
-            # ★ 2026-08-19（vim 搜索）："/" 开始搜索（任何焦点）——预填上次
-            #   pattern 可编辑（vim 语义）；n 下一个 / N、p 上一个（p 为用户
-            #   原话 prev 兼容别名）切换匹配并定位。
-            if ch == "/":
-                model.trace_search_mode = True
-                model.trace_search_query = (
-                    getattr(model, "trace_search_pattern", "") or ""
-                )
-                return True
-            if ch in ("n", "N", "p") and getattr(model, "trace_search_pattern", ""):
-                # ★ 语义说明（P3 review）：n/N/p 在**任何焦点**（台账/检查器）
-                #   下均消费——搜索结果导航是跨面板的全局操作（匹配集合来自
-                #   台账 records，定位同时移动台账选中与检查器光标）；仅在
-                #   已有搜索 pattern 时生效，未搜索时字符照常放行。
-                _search_jump(1 if ch == "n" else -1)
-                return True
-            if pane_now == "ledger":
-                if ch == "l":
-                    model.trace_pane = "inspector"
-                    return True
-                # ch == "h"：已在最左 → 放行（模态吞掉，无副作用）
-            else:
-                if ch == "h":
-                    model.trace_pane = "ledger"
-                    return True
-                # ch == "l"：已在最右 → 放行（模态吞掉）
-                cur_cursor = getattr(model, "trace_inspector_cursor", 0) or 0
-                # ★ 2026-08-19（用户需求：树控件按空格可以展开和收缩）：
-                #   检查器焦点空格 → 切换光标所在节点的展开/收缩（row_keys
-                #   [cursor] = 节点路径 key；叶子/非树行 None 不消费——放行
-                #   被模态吞掉）。折叠集合写回 model → 下一帧 use_memo deps
-                #   （``_inspector_content_deps`` 含折叠展平）变化 → 内容行
-                #   重建（折叠节点子级行消失/恢复）。
-                if ch == " ":
-                    node_key = (
-                        row_keys[cur_cursor]
-                        if 0 <= cur_cursor < len(row_keys) else None
-                    )
-                    if node_key:
-                        collapsed_now = set(
-                            getattr(model, "trace_tree_collapsed", None) or ()
-                        )
-                        if node_key in collapsed_now:
-                            collapsed_now.discard(node_key)
-                        else:
-                            collapsed_now.add(node_key)
-                        model.trace_tree_collapsed = collapsed_now
-                        # ★ 2026-08-19（vim 搜索）：折叠改变内容行结构——
-                        #   检查器搜索匹配索引失效，清除搜索（台账搜索不受
-                        #   影响）。
-                        if getattr(model, "trace_search_side", "") == "inspector":
-                            _clear_search()
-                        return True
-                if ch in ("j", "J"):
-                    _move_cursor(cur_cursor + 1)
-                    return True
-                if ch in ("k", "K"):
-                    _move_cursor(cur_cursor - 1)
-                    return True
-                if ch == "g":
-                    _move_cursor(0)
-                    return True
-                if ch == "G":
-                    _move_cursor(total_content)
-                    return True
-        # ── 检查器焦点：方向键/翻页/首末（ListView focus=False 不消费） ──
-        if pane_now == "inspector":
-            cur_cursor = getattr(model, "trace_inspector_cursor", 0) or 0
-            if event.kind == "arrow_down":
-                _move_cursor(cur_cursor + 1)
-                return True
-            if event.kind == "arrow_up":
-                _move_cursor(cur_cursor - 1)
-                return True
-            if event.kind == "page_down":
-                _move_cursor(cur_cursor + max(1, approx_content_vh))
-                return True
-            if event.kind == "page_up":
-                _move_cursor(cur_cursor - max(1, approx_content_vh))
-                return True
-            if event.kind == "home":
-                _move_cursor(0)
-                return True
-            if event.kind == "end":
-                _move_cursor(total_content)
-                return True
-            if event.kind == "arrow_left":
-                model.trace_pane = "ledger"
-                return True
-        # Enter：选中 subagent 记录 → 进入 subagent 轨迹（嵌套 TraceView——
-        #   显示内容与 mainagent 同构）。subagent 轨迹内 Enter 放行（模态：
-        #   由 use_fullscreen 吞掉，不落入输入缓冲）；sub-subagent 下钻不
-        #   阻断（覆盖 label）。台账与检查器焦点一致（选中记录相同）。
-        # ★ 2026-08-17（用户需求：agent 内容合并到 subagent）：合并
-        #   后的 subagent 工具记录携带 subagent_label（kind 仍为 tool）
-        #   ——下钻条件从 kind=="subagent" 放宽为 subagent_label 非空（独立
-        #   subagent 记录与合并 tool 记录均可 Enter 进入 subagent 轨迹）。
-        # ★ 2026-08-17（用户需求：轨迹 Trace 工具列表 Enter 进入新界面）：
-        #   选中 #0 工具列表记录（kind=="tools"）→ 进入工具列表详情视图
-        #   （模态全屏视图 id "trace_tools"——左右布局：左工具名列表上下
-        #   选择 + 右树控件显示需要的参数）。主轨迹与 subagent 轨迹均显示
-        #   工具列表记录——两处 Enter 均可进入；返回时经 fullscreen="trace"
-        #   + trace_subagent_label 保留语义回到原轨迹（subagent 轨迹内进入
-        #   后 Esc 仍回 subagent 轨迹，再 Esc 回主轨迹）。选中索引归零
-        #   （从首个工具开始浏览），trace_selected 保留（返回时选中记录
-        #   不变）。★ 2026-08-19（vim 面板浏览）：进入新轨迹/新视图同时
-        #   复位焦点面板/滚动（从台账开始浏览）。
-        if event.kind == "enter":
-            rec = records[sel] if 0 <= sel < total else None
-            if rec is not None:
-                sub = getattr(rec, "subagent_label", "") or ""
-                if sub:
-                    model.trace_subagent_label = sub
-                    model.trace_selected = -1  # subagent 轨迹：尾部跟随
-                    model.trace_pane = "ledger"
-                    model.trace_inspector_scroll = 0
-                    model.trace_inspector_cursor = 0
-                    # ★ 2026-08-19（树控件空格展开/收缩）：进入 subagent
-                    #   轨迹复位树折叠集合（新轨迹树从默认全展开开始）。
-                    model.trace_tree_collapsed = set()
-                    # ★ 2026-08-19（vim 搜索）：进入 subagent 轨迹清除搜索
-                    #   （搜索不跨轨迹残留）。
-                    _clear_search()
-                    return True
-                if getattr(rec, "kind", "") == "tools":
-                    model.fullscreen = "trace_tools"
-                    model.trace_tools_selected = 0
-                    model.trace_tools_pane = "ledger"
-                    model.trace_tools_scroll = 0
-                    model.trace_tools_cursor = 0
-                    model.trace_pane = "ledger"  # 返回主轨迹保持台账
-                    model.trace_inspector_scroll = 0
-                    model.trace_inspector_cursor = 0
-                    # ★ 2026-08-19（树控件空格展开/收缩）：进入工具列表
-                    #   视图复位轨迹树折叠集合（浏览状态不跨视图残留）。
-                    model.trace_tree_collapsed = set()
-                    # ★ 2026-08-19（vim 搜索）：进入工具列表视图清除搜索。
-                    _clear_search()
-                    return True
-        # 其余按键不消费——台账：放行 ListView（j/k/↑↓/PgUp/PgDn/Home/End/
-        # g/G 导航）；检查器：未消费按键被 use_fullscreen 模态吞掉（不落入
-        # 输入缓冲，杜绝看不见的输入；2026-08-17 通用模态全屏视图机制）
-        return False
-
-    # ★ 渲染期无副作用（架构修复）：把渲染期收集的模型写回（选中项归一化 /
-    #   光标与滚动钳制）在**提交期**统一落盘——渲染期只算不写。
-    #   ``use_effect`` 必须无条件调用（Rules of Hooks）；deps 为展平的
-    #   ``(字段名, 值)`` 序列（str/int 按值比较，稳定命中）。
-    def _flush_model_writes() -> None:
-        for _name, _value in tuple(_model_writes.items()):
-            setattr(model, _name, _value)
-
-    use_effect(_flush_model_writes, tuple(sorted(_model_writes.items())))
-
-    use_input(_handle, bool(getattr(model, "trace_open", False)))
+    # ★ P1-1（巨型组件拆分）：输入事件处理收敛到模块级
+    #   ``_handle_trace_event``（搜索输入 / 关闭键 / 面板切换 / 检查器导航 /
+    #   Enter 下钻）；hooks 无条件注册，与拆分前一致。
+    use_input(
+        lambda ev: _handle_trace_event(
+            model, records, content_rows, row_keys, sel,
+            total=total, total_content=total_content,
+            approx_content_vh=approx_content_vh,
+            pane_state=_pane_state, event=ev,
+        ),
+        bool(getattr(model, "trace_open", False)),
+    )
     # ★ 模态全屏视图声明（2026-08-17 通用机制）：trace_open 期间未消费按键
     #   被 input router 吞掉（不落入输入缓冲）——字符/Enter 不误编辑/误提交；
     #   关闭后（trace_open=False）hook 不激活零影响，输入区恢复正常输入。
-    use_fullscreen(bool(getattr(model, "trace_open", False)))
+    use_modal_scope(bool(getattr(model, "trace_open", False)))
 
     def _on_navigate(row_idx: int) -> None:
         """台账导航回调（ListView 导航后）：写回 model.trace_selected（退出跟随）。
@@ -1730,7 +1688,7 @@ def TraceView(props) -> object:
         # ★ 2026-08-19（vim 搜索）：切换记录 → 检查器内容行变化——检查器
         #   搜索匹配索引失效，清除搜索（台账搜索匹配记录索引不受影响）。
         if getattr(model, "trace_search_side", "") == "inspector":
-            _clear_search()
+            _clear_search(model)
 
     # ── 渲染 ──
     # 头部（静态色——轨迹视图为浏览界面，不呼吸，diff 零输出）

@@ -634,5 +634,5 @@ class _StdoutLineTracker:
                     if tmp_path is not None:
                         tmp_path.unlink(missing_ok=True)
                 except OSError:
-                    pass
+                    _logger.debug("输出历史压缩临时文件清理失败", exc_info=True)
                 return False

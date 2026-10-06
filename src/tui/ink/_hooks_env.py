@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import math
 import time
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from .fiber import SyncStoreHook, PasteHook
 from . import _animation
@@ -31,6 +31,9 @@ from ._hook_context import current_context
 # ★ 会话级状态真源在 ``_hook_context.HookContext``（每渲染会话一个实例）；
 #   本模块经 ``_hooks_module._xxx`` 访问，门面按「当前上下文」路由。
 from src.tui.ink import hooks as _hooks_module
+
+if TYPE_CHECKING:  # 仅类型检查期导入（注解用；避免运行时循环导入）
+    from ._hook_context import HookContext
 
 # ★ logger 名保持 ``src.tui.ink.hooks``（模块拆分后日志命名不变，见
 #   _hooks_core.py 注释）。

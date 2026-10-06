@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .._text_width import char_width, string_width
 from ..presentation_data import LiveMapping
 from .defaults import CONFIG_KEYS, DEFAULTS
 from .loader import get_rc
@@ -74,17 +75,21 @@ def _truncate(text: str, max_len: int) -> str:
     """按**显示宽度**截断文本（CJK 等宽字符按 2 列计；超长加省略号）。
 
     ★ P3（review 2026-08-20）：修复前按 ``len()`` 字符数截断——CJK 字符
-    显示宽度 2，截断后实际显示可能超预算；现按宽字符感知截断（不依赖
-    tui 层宽度工具，view_model 保持纯逻辑分层）。省略号 ``…`` 占 1 列，
-    截断预算为 ``max_len - 1``（保证总显示宽度 ≤ max_len）。max_len<=0
-    不截断防御。
+    显示宽度 2，截断后实际显示可能超预算；现按宽字符感知截断。省略号 ``…``
+    占 1 列，截断预算为 ``max_len - 1``（保证总显示宽度 ≤ max_len）。
+    max_len<=0 不截断防御。
+
+    ★ P1-2（单一真源）：宽度判定委托 ``src._text_width.char_width``（Layer 0
+    公共宽度工具，被 tui/renderer/config 共享）——修复前本函数与
+    ``_display_width`` 各持单阈值 ``ord(ch) > 0x2E7F`` 口径，个别码点（Hangul
+    Jamo / 组合标记）与 tui 侧不一致；现与全局唯一真源完全对齐。
     """
     if max_len <= 0:
         return text
     budget = max_len - 1
     width = 0
     for i, ch in enumerate(text):
-        w = 2 if ord(ch) > 0x2E7F else 1
+        w = char_width(ch)
         if width + w > budget:
             return text[:i] + "\u2026"
         width += w
@@ -92,16 +97,15 @@ def _truncate(text: str, max_len: int) -> str:
 
 
 def _display_width(text: str) -> int:
-    """显示宽度（CJK 等宽字符按 2 列计；与 _truncate 同一宽度口径）。
+    """显示宽度（CJK 等宽字符按 2 列计；与 ``_truncate`` 同一宽度口径）。
 
-    ★ 口径边界（review 2026-08-22）：本函数以 ``ord(ch) > 0x2E7F`` 单阈值判定
-    宽字符（计 2），与 ``src.tui._width.wcswidth_simple``（精确区间表）在个别
-    码点不一致：Hangul Jamo（0x1100-0x11FF）此处计 1、_width 计 2；零宽组合
-    标记（0x0300-0x036F 等）此处计 1、_width 计 0。view_model 为纯逻辑层，
-    刻意不依赖 tui 层宽度工具；配置路径/值多为 CJK 与 ASCII，二者在常见场景
-    一致。如需与 _width 完全对齐可改用其区间表。
+    ★ P1-2（单一真源）：委托 ``src._text_width.string_width``——修复前本函数
+    以 ``ord(ch) > 0x2E7F`` 单阈值判定宽字符（Hangul Jamo 计 1、零宽组合标记
+    计 1，与 ``src.tui._width.wcswidth_simple`` 精确区间表不一致）；现与全局
+    唯一真源完全对齐（CJK/全角/emoji 宽 2、零宽 0、控制字符 0、其他 1，ANSI
+    序列整段 0）。
     """
-    return sum(2 if ord(ch) > 0x2E7F else 1 for ch in text)
+    return string_width(text)
 
 
 def format_config_value(

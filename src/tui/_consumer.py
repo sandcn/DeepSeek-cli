@@ -56,7 +56,7 @@ def _assemble_subsystems() -> TuiAssemblyResult:
         if callable(assemble):
             return assemble()
     except Exception:
-        pass
+        _logger.debug("ui 服务 assemble 探测失败，回退默认装配", exc_info=True)
     return TuiAssembly.assemble()
 
 

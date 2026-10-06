@@ -32,10 +32,13 @@ from src.tui.app.trace import _tools_schema_list, build_tools_params_tree
 from src.tui.app.trace_view import _tree_node_rows, _viewport_rows
 from src.tui.core.style import Style
 from src.tui.ink import (
-    TEXT, Column, Row, StyledRun, h, use_effect, use_fullscreen, use_input, use_memo,
+    TEXT, Column, Row, StyledRun, h, use_effect, use_input, use_memo,
 )
 from src.tui.ink.helpers import truncate_runs
 from src.tui.ink.widgets.listview import ListView
+
+from ._inspector_pane import PaneState, handle_nav, resolve
+from ._modal_view import is_modal_close_key, use_modal_scope
 
 # ── 样式（对齐 trace_view 轨迹视图视觉：亮青标题/暗灰提示/浅蓝小节） ──
 _S_TITLE = Style(fg=45, bold=True)        # 视图标题/检查器标题（亮青加粗）
@@ -360,69 +363,39 @@ def TraceToolsView(props) -> object:
     content_rows, row_keys = content
     total_content = len(content_rows)
     approx_content_vh = _tools_viewport_rows(vh)
-    # 光标渲染期钳制（收集写回——渲染期不写 model，提交期统一落盘）
-    if total_content:
-        cursor = max(0, min(cursor_raw, total_content - 1))
-    else:
-        cursor = 0
+    # ★ P0-1：光标/滚动归一化统一走 ``_inspector_pane.resolve``（越界钳制 +
+    #   光标可见跟随）——取代本地复刻（与 trace_view / plugin_view 三份重复
+    #   实现中的一份）；渲染期不写 model，写回收集到提交期统一落盘。
+    cursor, scroll_new = resolve(
+        cursor_raw, scroll_raw, total_content, approx_content_vh,
+    )
     if cursor != cursor_raw:
         _model_writes["trace_tools_cursor"] = cursor
-        cursor_raw = cursor
-    # scroll 渲染期协调：钳制 + 跟随光标保持可见（vim 视口语义）
-    if total_content > approx_content_vh:
-        if scroll_raw < 0:
-            scroll_raw = 0
-        elif scroll_raw > total_content - approx_content_vh:
-            scroll_raw = total_content - approx_content_vh
-        if cursor < scroll_raw:
-            scroll_raw = cursor
-        elif cursor >= scroll_raw + approx_content_vh:
-            scroll_raw = cursor - approx_content_vh + 1
-    else:
-        scroll_raw = 0
-    if scroll_raw != (getattr(model, "trace_tools_scroll", 0) or 0):
-        _model_writes["trace_tools_scroll"] = scroll_raw
-    scroll = scroll_raw
+    if scroll_new != (getattr(model, "trace_tools_scroll", 0) or 0):
+        _model_writes["trace_tools_scroll"] = scroll_new
+    scroll = scroll_new
     # 光标参数：仅右栏焦点传入（高亮）；左栏焦点 -1（不高亮）
     cursor_arg = cursor if pane == "inspector" else -1
 
+    # 检查器面板状态规约（通用滚动/光标/导航经 getter/setter 注入复用）
+    _pane_state = PaneState(
+        lambda: getattr(model, "trace_tools_cursor", 0) or 0,
+        lambda v: setattr(model, "trace_tools_cursor", v),
+        lambda: getattr(model, "trace_tools_scroll", 0) or 0,
+        lambda v: setattr(model, "trace_tools_scroll", v),
+    )
+
     # ── 输入（激活期间：Esc/Ctrl+H 返回主轨迹；l/h 面板切换 + 光标移动） ──
-    def _scroll_for_cursor(cursor: int, scroll: int) -> int:
-        """右栏视口滚动：钳制 + 跟随光标保持可见（vim 视口语义）。"""
-        if total_content <= approx_content_vh:
-            return 0
-        scroll = max(0, min(int(scroll), total_content - approx_content_vh))
-        cursor = max(0, min(int(cursor), total_content - 1))
-        if cursor < scroll:
-            return cursor
-        if cursor >= scroll + approx_content_vh:
-            return cursor - approx_content_vh + 1
-        return scroll
-
-    def _move_cursor(new_cursor: int) -> None:
-        """右栏光标移动：写回 cursor + scroll 跟随（保持光标可见）。"""
-        if total_content:
-            new_cursor = max(0, min(int(new_cursor), total_content - 1))
-        else:
-            new_cursor = 0
-        model.trace_tools_cursor = new_cursor
-        model.trace_tools_scroll = _scroll_for_cursor(
-            new_cursor, getattr(model, "trace_tools_scroll", 0) or 0,
-        )
-
     def _handle(event) -> bool:
         if not active:
             return False
         pane_now = getattr(model, "trace_tools_pane", "ledger") or "ledger"
         # 返回主轨迹（TraceView 恢复；主轨迹再次 Esc/Ctrl+H 关闭整个视图）
-        if event.kind == "escape":
+        # ——模态统一关闭键判定。
+        if is_modal_close_key(event):
             model.fullscreen = "trace"
             # ★ 2026-08-19（树控件空格展开/收缩）：返回主轨迹同时复位树
             #   折叠集合（浏览状态不跨视图残留；默认展开所有）。
-            model.trace_tools_tree_collapsed = set()
-            return True
-        if event.kind == "ctrl_key" and getattr(event, "char", "") == "\x08":
-            model.fullscreen = "trace"
             model.trace_tools_tree_collapsed = set()
             return True
         # ── 面板切换（vim h/l）与右栏光标（char 单字符） ──
@@ -431,72 +404,47 @@ def TraceToolsView(props) -> object:
         #   （当前行背景高亮，视口跟随）、g/G 顶部/底部、PgUp/PgDn 翻页、
         #   Home/End 首末、← 返回左栏。
         ch = getattr(event, "char", "") or ""
-        if event.kind == "char" and len(ch) == 1:
-            if pane_now == "ledger":
-                if ch == "l":
-                    model.trace_tools_pane = "inspector"
-                    return True
-            else:
-                if ch == "h":
-                    model.trace_tools_pane = "ledger"
-                    return True
-                cur_cursor = getattr(model, "trace_tools_cursor", 0) or 0
-                # ★ 2026-08-19（用户需求：树控件按空格可以展开和收缩）：
-                #   右栏焦点空格 → 切换光标所在节点的展开/收缩（row_keys
-                #   [cursor] = 节点路径 key；叶子/非树行 None 不消费——放行
-                #   被模态吞掉）。折叠集合写回 model → 下一帧 use_memo deps
-                #   （含折叠展平）变化 → 内容行重建。
-                if ch == " ":
-                    node_key = (
-                        row_keys[cur_cursor]
-                        if 0 <= cur_cursor < len(row_keys) else None
+        if event.kind == "char" and len(ch) == 1 and pane_now != "ledger":
+            if ch == "h":
+                model.trace_tools_pane = "ledger"
+                return True
+            cur_cursor = getattr(model, "trace_tools_cursor", 0) or 0
+            # ★ 2026-08-19（用户需求：树控件按空格可以展开和收缩）：
+            #   右栏焦点空格 → 切换光标所在节点的展开/收缩（row_keys
+            #   [cursor] = 节点路径 key；叶子/非树行 None 不消费——放行
+            #   被模态吞掉）。折叠集合写回 model → 下一帧 use_memo deps
+            #   （含折叠展平）变化 → 内容行重建。
+            if ch == " ":
+                node_key = (
+                    row_keys[cur_cursor]
+                    if 0 <= cur_cursor < len(row_keys) else None
+                )
+                if node_key:
+                    collapsed_now = set(
+                        getattr(model, "trace_tools_tree_collapsed", None)
+                        or ()
                     )
-                    if node_key:
-                        collapsed_now = set(
-                            getattr(model, "trace_tools_tree_collapsed", None)
-                            or ()
-                        )
-                        if node_key in collapsed_now:
-                            collapsed_now.discard(node_key)
-                        else:
-                            collapsed_now.add(node_key)
-                        model.trace_tools_tree_collapsed = collapsed_now
-                        return True
-                if ch in ("j", "J"):
-                    _move_cursor(cur_cursor + 1)
+                    if node_key in collapsed_now:
+                        collapsed_now.discard(node_key)
+                    else:
+                        collapsed_now.add(node_key)
+                    model.trace_tools_tree_collapsed = collapsed_now
                     return True
-                if ch in ("k", "K"):
-                    _move_cursor(cur_cursor - 1)
-                    return True
-                if ch == "g":
-                    _move_cursor(0)
-                    return True
-                if ch == "G":
-                    _move_cursor(total_content)
-                    return True
+        if pane_now == "ledger":
+            if event.kind == "char" and ch == "l":
+                model.trace_tools_pane = "inspector"
+                return True
+        elif event.kind == "char" and len(ch) == 1:
+            # ★ P0-1：通用 vim 导航（j/k/g/G）收敛到 ``_inspector_pane``。
+            if handle_nav(event, _pane_state, total_content, approx_content_vh):
+                return True
         # ── 右栏焦点：方向键/翻页/首末（ListView focus=False 不消费） ──
         if pane_now == "inspector":
-            cur_cursor = getattr(model, "trace_tools_cursor", 0) or 0
-            if event.kind == "arrow_down":
-                _move_cursor(cur_cursor + 1)
-                return True
-            if event.kind == "arrow_up":
-                _move_cursor(cur_cursor - 1)
-                return True
-            if event.kind == "page_down":
-                _move_cursor(cur_cursor + max(1, approx_content_vh))
-                return True
-            if event.kind == "page_up":
-                _move_cursor(cur_cursor - max(1, approx_content_vh))
-                return True
-            if event.kind == "home":
-                _move_cursor(0)
-                return True
-            if event.kind == "end":
-                _move_cursor(total_content)
-                return True
             if event.kind == "arrow_left":
                 model.trace_tools_pane = "ledger"
+                return True
+            # ★ P0-1：方向键/翻页/首末导航统一走 ``_inspector_pane``。
+            if handle_nav(event, _pane_state, total_content, approx_content_vh):
                 return True
         # 其余按键不消费——左栏：放行 ListView（j/k/↑↓/PgUp/PgDn/g/G 导航）；
         # 右栏：未消费按键被 use_fullscreen 模态吞掉
@@ -513,7 +461,7 @@ def TraceToolsView(props) -> object:
     use_input(_handle, active)
     # ★ 模态全屏视图声明：未消费按键被 input router 吞掉（字符/Enter 不落入
     #   输入缓冲）；关闭后（fullscreen 变化）hook 不激活零影响。
-    use_fullscreen(active)
+    use_modal_scope(active)
 
     def _on_navigate(idx: int) -> None:
         """工具列表导航回调（ListView 导航后）：写回选中索引（受控光标）；

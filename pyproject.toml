@@ -59,3 +59,10 @@ strict = false
 ignore_missing_imports = true
 warn_unused_ignores = true
 files = ["src/"]
+# ★ 类型检查基线（P0-2）：本框架大量使用动态属性（Fiber/hook 槽位、模型
+#   属性按需挂载）与运行时装饰器（src._compat.dataclass），mypy 无法全部
+#   静态化。当前基线见 tests/test_type_baseline.py（_MYPY_ERROR_BASELINE）。
+#   ``src/_compat.py`` 的 ``dataclass`` 已加 ``@dataclass_transform``（PEP 681），
+#   类型检查器可正确推断其生成的 ``__init__`` 签名——历史 1000+ 条 dataclass
+#   构造误报已消除；剩余错误为动态属性/联合类型收窄等已知模式，新增错误须
+#   修复或将基线下调后再更新基线值（防错误数回升）。

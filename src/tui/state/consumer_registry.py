@@ -7,7 +7,16 @@ Layer 0 — 仅依赖 typing，被 _consumer + 外部调用方引用。
 from __future__ import annotations
 
 import threading
+from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary, ref as _weakref
+
+if TYPE_CHECKING:
+    #: 类型别名（**不** import ``src.tui._consumer``）——两者运行时为双向
+    #: 依赖（``_consumer`` 导入本模块的注册表），模块级 import 会构成循环
+    #: （架构守卫 ``test_architecture_layering`` 的模块级/完整 AST 无环检查
+    #: 均会失败）。此处仅在类型检查期为注解提供名字，mypy 解析为 ``Any``；
+    #: 运行时不执行（``TYPE_CHECKING`` 为 False）。
+    ChatUIConsumer = Any
 
 # ── 活跃实例引用（供交互式工具暂停/恢复，引用计数防竞态） ──
 # 多实例场景下，start() 递增计数并设置引用，stop() 递减计数，

@@ -112,7 +112,7 @@ def _get_terminal_size() -> tuple[int, int]:
         if ts.columns > 0 and ts.lines > 0:
             return (ts.columns, ts.lines)
     except (OSError, ValueError):
-        pass
+        _logger.debug("os.get_terminal_size 失败，回退 (80, 24)", exc_info=True)
 
     # 最终兜底
     return (80, 24)
@@ -490,7 +490,7 @@ def set_window_title(title: str) -> None:
         sys.__stdout__.write(f"\033]0;{title}\007")
         sys.__stdout__.flush()
     except (OSError, ValueError, AttributeError):  # BUG-52：无 TTY 时 stdout 为 None
-        pass
+        _logger.debug("窗口标题写入失败（无 TTY？）: %r", title, exc_info=True)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -543,7 +543,7 @@ def register_sigwinch_callback(
                 signal.signal(signal.SIGWINCH, _handle_sigwinch)
                 _sigwinch_registered = True
             except (OSError, ValueError):
-                pass
+                _logger.debug("SIGWINCH 注册失败（非主线程？）", exc_info=True)
 
 
 def unregister_sigwinch_callback(token: object) -> None:
@@ -834,7 +834,7 @@ class TerminalWidthCache:
             if cache is not None:
                 return cache
         except Exception:
-            pass
+            _logger.debug("ui 服务 width_cache 探测失败，回退默认单例", exc_info=True)
         if cls._instance is None:
             with _instance_lock:
                 if cls._instance is None:

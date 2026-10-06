@@ -1135,26 +1135,81 @@ class InputDispatcher:
     # 回调接口
     # ═══════════════════════════════════════════════════════
 
+    # ═══════════════════════════════════════════════════════
+    # 回调注册表（P2）— 统一注册/读取入口
+    # ═══════════════════════════════════════════════════════
+    #: 回调名 → 实例属性名（单一映射真源）。``register_callback`` /
+    #: ``get_callback`` 按此读写实例属性——新增回调只需在映射中登记（无需
+    #: 新增/修改 set_*/get_* 方法），且注册名错拼立即可见（KeyError，而非
+    #: 静默写入未知属性）。既有 ``set_*_callback`` 方法保留为兼容薄封装。
+    _CALLBACK_ATTRS: dict[str, str] = {
+        "special_key": "_special_key_callback",
+        "completion": "_completion_callback",
+        "dismiss_completion": "_dismiss_completion_callback",
+        "completion_navigate": "_completion_navigate_callback",
+        "auto_completion": "_auto_completion_callback",
+        "interrupt": "_interrupt_callback",
+        "kill_background": "_kill_background_callback",
+        "enter_append_history": "_enter_append_history",
+        "input_hook_router": "_input_hook_router",
+        "key_pressed": "_key_pressed_callback",
+        "reverse_search": "_reverse_search_callback",
+        "active_status": "_active_status_fn",
+        "clear_screen": "_clear_screen_callback",
+        "trace_toggle": "_trace_toggle_callback",
+        "mouse_fallback": "_mouse_fallback_callback",
+    }
+
+    def register_callback(self, name: str, fn) -> None:
+        """统一回调注册入口（P2）：按名注册（``None`` 清除注入）。
+
+        Args:
+            name: 回调名（见 ``_CALLBACK_ATTRS``）。
+            fn: 回调或 None。
+
+        Raises:
+            KeyError: 未知回调名（防错拼静默失效）。
+        """
+        attr = self._CALLBACK_ATTRS.get(name)
+        if attr is None:
+            raise KeyError(
+                f"未知输入回调: {name!r}（可用: {sorted(self._CALLBACK_ATTRS)}）"
+            )
+        setattr(self, attr, fn)
+
+    def get_callback(self, name: str):
+        """按名读取回调（与 ``register_callback`` 对称）。
+
+        Raises:
+            KeyError: 未知回调名。
+        """
+        attr = self._CALLBACK_ATTRS.get(name)
+        if attr is None:
+            raise KeyError(
+                f"未知输入回调: {name!r}（可用: {sorted(self._CALLBACK_ATTRS)}）"
+            )
+        return getattr(self, attr)
+
     def set_special_key_callback(self, cb) -> None:
         """设置特殊按键回调（Ctrl+G/O/N/R）。
 
         cb 签名: (action: str, current_text: str) -> str | None
         """
-        self._special_key_callback = cb
+        self.register_callback("special_key", cb)
 
     def set_completion_callback(self, cb) -> None:
         """设置 Tab 补全回调。
 
         cb 签名: (text: str) -> str | None
         """
-        self._completion_callback = cb
+        self.register_callback("completion", cb)
 
     def set_dismiss_completion_callback(self, cb) -> None:
         """设置补全弹窗关闭回调。
 
         cb 签名: () -> None
         """
-        self._dismiss_completion_callback = cb
+        self.register_callback("dismiss_completion", cb)
 
     def get_dismiss_completion_callback(self):
         """获取补全弹窗关闭回调（公开访问器，收敛私有字段直读）。
@@ -1169,14 +1224,14 @@ class InputDispatcher:
 
         cb 签名: (delta: int, text: str) -> str | None
         """
-        self._completion_navigate_callback = cb
+        self.register_callback("completion_navigate", cb)
 
     def set_auto_completion_callback(self, cb) -> None:
         """设置自动补全回调。
 
         cb 签名: (text: str) -> None
         """
-        self._auto_completion_callback = cb
+        self.register_callback("auto_completion", cb)
 
     def set_interrupt_callback(self, cb) -> None:
         """设置中断回调（方向A 步骤1 注入点）。
@@ -1184,7 +1239,7 @@ class InputDispatcher:
         cb 签名: () -> None
         None 缺省时 ``_do_interrupt`` 记 debug 日志并跳过（测试兼容）。
         """
-        self._interrupt_callback = cb
+        self.register_callback("interrupt", cb)
 
     def set_kill_background_callback(self, cb) -> None:
         """设置纯 Esc 杀后台任务回调（2026-08-21 用户需求注入点）。
@@ -1194,7 +1249,7 @@ class InputDispatcher:
         由 _loop.py / clawbot.runner 注入（request_kill_background +
         跨线程调度杀所有后台 bash/subagent）。None 缺省时跳过（测试兼容）。
         """
-        self._kill_background_callback = cb
+        self.register_callback("kill_background", cb)
 
     def set_enter_append_history(self, cb) -> None:
         """设置 Enter 提交历史追加回调（P2-8）。
@@ -1205,7 +1260,7 @@ class InputDispatcher:
         ``Input._enter`` 的 append_history 注入一致（测试 patch 外观拦截
         路径有效）。
         """
-        self._enter_append_history = cb
+        self.register_callback("enter_append_history", cb)
 
     def set_input_hook_router(self, router) -> None:
         """设置 input hook router（步骤 8：ink useInput 钩子优先分发）。
@@ -1216,7 +1271,7 @@ class InputDispatcher:
         Args:
             router: 路由回调或 None。
         """
-        self._input_hook_router = router
+        self.register_callback("input_hook_router", router)
 
     def set_key_pressed_callback(self, cb) -> None:
         """设置任意键按下回调（ink useStdin().isAnyKeyPressed 置位）。
@@ -1224,7 +1279,7 @@ class InputDispatcher:
         cb 签名: ``() -> None``；None 可清除注入（缺省零开销）。
         回调在每个输入字节分发前调用（幂等置位语义，异常吞掉记 debug）。
         """
-        self._key_pressed_callback = cb
+        self.register_callback("key_pressed", cb)
 
     def set_interrupt_routable(self, routable: bool) -> None:
         """设置 interrupt（Ctrl+C）事件 router 放行标志（React Ink
@@ -1263,7 +1318,7 @@ class InputDispatcher:
         cb 签名: ``(query: str, matches: list[str], index: int, active: bool) -> None``
         None 缺省时搜索功能内部可用，仅 UI 状态不同步。
         """
-        self._reverse_search_callback = cb
+        self.register_callback("reverse_search", cb)
 
     def set_esc_cancel_input(self, enabled: bool) -> None:
         """设置 Esc 取消输入启用标志（方向D 步骤16，默认 False）。
@@ -1278,7 +1333,7 @@ class InputDispatcher:
         fn 签名: ``() -> bool`` —— True=生成中（Esc 不取消输入，走中断）；
         None 缺省时视为空闲（默认 False）。
         """
-        self._active_status_fn = fn
+        self.register_callback("active_status", fn)
 
     def set_clear_screen_callback(self, cb) -> None:
         """设置 Ctrl+L 清屏回调（Claude TUI parity 步骤 3.1，装配注入）。
@@ -1286,7 +1341,7 @@ class InputDispatcher:
         cb 签名: ``() -> None``（session.clear_screen）；None 可清除注入。
         未注入时 Ctrl+L 记 debug 跳过（测试兼容）。
         """
-        self._clear_screen_callback = cb
+        self.register_callback("clear_screen", cb)
 
     def set_trace_toggle_callback(self, cb) -> None:
         """设置 Ctrl+H 轨迹视图开关回调（2026-08-19，装配注入）。
@@ -1298,7 +1353,7 @@ class InputDispatcher:
         Ctrl+H（0x08）被 TraceView 模态 handler 经 router 消费（关闭/返回
         主轨迹），本回调不再被调用（不会重复翻转）。
         """
-        self._trace_toggle_callback = cb
+        self.register_callback("trace_toggle", cb)
 
     def set_suppress_enter(self, suppress: bool) -> None:
         """设置 Enter 抑制标志（用于 editmsg 消息选择期间）。
@@ -1347,7 +1402,7 @@ class InputDispatcher:
         鼠标事件先经 input router 分发给 ``useMouseInput`` 组件；未被任何
         组件消费时调用本回调。None 清除（默认：鼠标事件 no-op）。
         """
-        self._mouse_fallback_callback = cb
+        self.register_callback("mouse_fallback", cb)
 
     # ═══════════════════════════════════════════════════════
     # 窗口期 Enter 提交意图捕获（editmsg「很多上文时按回车不能编辑」修复）

@@ -664,7 +664,7 @@ class MessageEditor:
                     ):
                         break
                 except Exception:
-                    pass
+                    _logger.debug("读取 interrupted 状态异常（按未中断继续）", exc_info=True)
                 # ★ P3-5：es 实例被外部替换（清屏 reset_display 等）→ 取消退出
                 if model.editmsg_select is not es:
                     break
@@ -841,7 +841,7 @@ class MessageEditor:
             try:
                 bb.hide_completions()
             except Exception:
-                pass
+                _logger.debug("隐藏补全弹窗失败", exc_info=True)
 
             # 验证选择
             if last_sel_idx < 0 or last_sel_idx >= sel_count:
@@ -854,7 +854,7 @@ class MessageEditor:
             try:
                 bb.hide_completions()
             except Exception:
-                pass
+                _logger.debug("异常路径隐藏补全弹窗失败", exc_info=True)
             return None
 
 
