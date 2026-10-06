@@ -326,56 +326,29 @@ def _shrink_row_children(
             cx += spacing
 
 
-def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> LayoutBox:
-    """递归测量并赋值 layout_box。返回该 fiber 的 LayoutBox。
+def _measure_text(
+    fiber: Fiber, x: int, y: int, avail_w: int, fill: bool, explicit_w,
+) -> LayoutBox:
+        """TEXT 叶子测量（从 ``_measure`` 提取——巨型函数拆分，行为逐字不变）。
 
-    Args:
-        fiber: host fiber。
-        x, y: 父容器内偏移（文档坐标系）。
-        avail_w: 可用宽度。
-        fill: True=填充可用宽度（column 默认）；False=内容自适应宽度（row）。
-    """
-    ftype = fiber.type
-    # ★ P2-1 修复（review 方向）：**通用** ``_measure_cache`` 提前检查分支已
-    #   删除——原分支要求 ``ftype != "text"`` 但**只有 TEXT 分支写缓存**
-    #   （容器/自定义 host 不缓存，见 TEXT 写回处），``ftype != "text"`` 条件
-    #   恒 miss（死代码，每帧空转 O(1)）。TEXT 缓存命中由 TEXT 分支自身检查
-    #   （含 styled 长度快照校验——styled 列表可能被测试契约原地修改）。
-    explicit_w = fiber.props.get("width")
+        职责：按 props（styled/text/width/min/max/textWrap/align/transform）
+        解析宽度、计算换行（带两层缓存：props 引用级测量缓存 + 换行结果缓存）、
+        推导高度，写回 ``fiber.layout_box`` / ``_wrapped_lines`` / ``_measure_cache``。
 
-    # ── display: none（完善 react ink）──
-    # 隐藏组件：返回零尺寸盒且不布局子节点（display:none 语义——不占布局
-    # 空间、不绘制）。子节点 layout_box 保留上一帧值（布局唯一真源仍是
-    # _measure；display:none 时子节点不参与布局，无正确性风险）。
-    if fiber.props.get("display") == "none":
-        box = LayoutBox(x, y, 0, 0)
-        fiber.layout_box = box
-        return box
+        Args:
+            fiber: TEXT host fiber。
+            x, y: 父容器内偏移（文档坐标系）。
+            avail_w: 可用宽度。
+            fill: True=填充可用宽度（column 默认）；False=内容自适应宽度（row）。
+            explicit_w: 显式 ``props["width"]``（调用方已取，避免重复 dict 查找）。
 
-    # ── 自定义 host（注册表） ──
-    from .registry import get_host
-    host = get_host(ftype)
-    if host is not None:
-        # ★ 性能（PERF-15）：静态行 host（static-lines/committed-chat）
-        #   存在性标记——layout_tree 整树遍历时沿 return_ 链找到 root 并置位，
-        #   供 render_frame 的 _find_committed_chat O(1) 判定（无静态行 host
-        #   的组件树每帧零 DFS）。静态行 host 每帧仅一个，向上 O(树深) 完全
-        #   可接受。
-        if ftype == "static-lines":
-            _f = fiber.return_
-            while _f is not None:
-                if getattr(_f, "tag", None) == "root":
-                    _f._committed_chat_present = True
-                    break
-                _f = _f.return_
-        measure_fn = host[0]
-        w, h = measure_fn(fiber, avail_w)
-        box = LayoutBox(x, y, w, h)
-        fiber.layout_box = box
-        return box
+        Returns:
+            该 fiber 的 LayoutBox。
 
-    # ── 叶子：TEXT ──
-    if ftype == "text":
+        缓存契约：``_measure_cache`` 与 ``_wrap_cache`` 均为引用级缓存，命中要求
+        props 引用稳定（``_set_props`` 内容相等时保持引用）与 styled 列表长度
+        快照一致；styled 列表被**原地修改**的调用方必须先换新引用。
+        """
         # ★ 性能（PERF-14 + props 引用级缓存）：TEXT 内容由 props 完全决定
         #   （styled/text/width/min/max/textWrap/align/transform），props 引用
         #   相同 + avail_w 相同 + fill 相同时 w/h 必然相同——reconciler 经
@@ -387,7 +360,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         #   ``_wrap_cache`` 的 BUG-35 语义一致；长度变化 → miss → 值驱动重算；
         #   同长替换元素（罕见，测试契约外）不检测——与 ``_wrap_cache``
         #   同契约）。缓存结构含 styled_len（mc[4]）与宽高（mc[5], mc[6]）。
-        mc = getattr(fiber, "_measure_cache", None)
+        mc = fiber._measure_cache
         styled_len = 0
         if mc is not None:
             # 快速长度快照比较（styled 引用需先取——props 引用稳定时直接读）
@@ -477,7 +450,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         #   树引用，不额外占用）。P1 热路径优化：styled 静态历史（model 冻结行
         #   引用，如 committed_lines）同引用跨帧复用时直接复用 lines，免每帧
         #   O(chars) join + O(runs) 指纹计算（仅首次 miss 时计算）。
-        cache = getattr(fiber, "_wrap_cache", None)
+        cache = fiber._wrap_cache
         cache_wt = (width, text_wrap, align)
         if (
             styled is not None
@@ -593,6 +566,59 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         box = LayoutBox(x, y, width, h)
         fiber.layout_box = box
         return box
+
+
+def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> LayoutBox:
+    """递归测量并赋值 layout_box。返回该 fiber 的 LayoutBox。
+
+    Args:
+        fiber: host fiber。
+        x, y: 父容器内偏移（文档坐标系）。
+        avail_w: 可用宽度。
+        fill: True=填充可用宽度（column 默认）；False=内容自适应宽度（row）。
+    """
+    ftype = fiber.type
+    # ★ P2-1 修复（review 方向）：**通用** ``_measure_cache`` 提前检查分支已
+    #   删除——原分支要求 ``ftype != "text"`` 但**只有 TEXT 分支写缓存**
+    #   （容器/自定义 host 不缓存，见 TEXT 写回处），``ftype != "text"`` 条件
+    #   恒 miss（死代码，每帧空转 O(1)）。TEXT 缓存命中由 TEXT 分支自身检查
+    #   （含 styled 长度快照校验——styled 列表可能被测试契约原地修改）。
+    explicit_w = fiber.props.get("width")
+
+    # ── display: none（完善 react ink）──
+    # 隐藏组件：返回零尺寸盒且不布局子节点（display:none 语义——不占布局
+    # 空间、不绘制）。子节点 layout_box 保留上一帧值（布局唯一真源仍是
+    # _measure；display:none 时子节点不参与布局，无正确性风险）。
+    if fiber.props.get("display") == "none":
+        box = LayoutBox(x, y, 0, 0)
+        fiber.layout_box = box
+        return box
+
+    # ── 自定义 host（注册表） ──
+    from .registry import get_host
+    host = get_host(ftype)
+    if host is not None:
+        # ★ 性能（PERF-15）：静态行 host（static-lines/committed-chat）
+        #   存在性标记——layout_tree 整树遍历时沿 return_ 链找到 root 并置位，
+        #   供 render_frame 的 _find_committed_chat O(1) 判定（无静态行 host
+        #   的组件树每帧零 DFS）。静态行 host 每帧仅一个，向上 O(树深) 完全
+        #   可接受。
+        if ftype == "static-lines":
+            _f = fiber.return_
+            while _f is not None:
+                if getattr(_f, "tag", None) == "root":
+                    _f._committed_chat_present = True
+                    break
+                _f = _f.return_
+        measure_fn = host[0]
+        w, h = measure_fn(fiber, avail_w)
+        box = LayoutBox(x, y, w, h)
+        fiber.layout_box = box
+        return box
+
+    # ── 叶子：TEXT ──
+    if ftype == "text":
+        return _measure_text(fiber, x, y, avail_w, fill, explicit_w)
 
     # ── 叶子：SPACER ──
     if ftype == "spacer":

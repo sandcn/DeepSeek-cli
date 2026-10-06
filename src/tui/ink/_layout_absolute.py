@@ -87,13 +87,9 @@ def _place_absolute(fiber: Fiber, base: Fiber) -> None:
                 fiber.props = saved
                 # ★ P3（review）：清除测量缓存——``_measure`` 把**临时 props
                 #   引用**写入 ``_measure_cache``（mc[1]），恢复原引用后该条目
-                #   永久 miss（缓存条目持临时 dict，且占内存）。删除条目避免
+                #   永久 miss（缓存条目持临时 dict，且占内存）。置 None 避免
                 #   缓存污染（TEXT 命中路径下一条目即失效，功能正确）。
-                if hasattr(fiber, "_measure_cache"):
-                    try:
-                        del fiber._measure_cache
-                    except AttributeError:
-                        pass
+                fiber._measure_cache = None
         return _measure(fiber, x, y, avail_w, fill)
 
     # ── 尺寸解析 ──

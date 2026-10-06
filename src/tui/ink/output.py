@@ -64,7 +64,11 @@ class StyledRun:
         if "\t" in text or "\r" in text:
             text = expand_tabs(text)
             object.__setattr__(self, "text", text)
-        object.__setattr__(self, "width", wcswidth_simple(text))
+        # ★ 性能：经 ``_text_width``（纯可打印 ASCII 走 ``isascii()`` +
+        #   ``isprintable()`` C 快路径，宽度即字符数）——修复前直接
+        #   ``wcswidth_simple``：ASCII 文本每 run 仍走逐字符区间判定分支
+        #   （渲染热路径每帧创建大量 StyledRun，宽字符行以外全是 ASCII）。
+        object.__setattr__(self, "width", _text_width(text))
 
     def render(self) -> str:
         """渲染为 ANSI 字符串（无样式时原样返回）。"""

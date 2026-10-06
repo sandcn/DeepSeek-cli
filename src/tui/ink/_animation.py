@@ -3,15 +3,19 @@
 官方 ``useAnimation`` 语义：所有动画组件**共用一个定时器**——一次定时器
 推进只触发一轮渲染，多个动画组件合并渲染。本框架渲染循环为 30Hz
 （``TuiConfig.render_interval``），故驱动直接挂在渲染循环上：
-``advance_animation()`` 每帧调用一次（session 注入），递增全局 tick 序号并
-通知全部订阅者（订阅者经 ``useSyncExternalStore`` 的 ``_schedule`` 请求
-重渲染）。
+``advance_animation()`` 每帧调用一次（session 注入），递增 tick 序号。
 
 组件侧 ``useAnimation`` 依据「当前时间 - 起始时间」推导 ``frame``/``time``/
 ``delta``——渲染被节流时 delta 自然增大（官方语义「Accounts for throttled
 renders」）。
 
-依赖：仅标准库（无 ink 内部依赖，避免循环）。
+★ 多会话隔离（P0 架构修复）：驱动状态（tick / 上次时间 / 订阅者集合）挂到
+``HookContext``——此前为模块级全局变量，两个渲染会话共享同一 tick 与订阅者
+集合（``has_active_animations`` 会因其它会话的动画组件返回 True）。
+所有 API 接受可选 ``ctx``：None 时用「当前激活上下文」（渲染期/渲染线程
+调用正确），显式传入用于非渲染期调用方。
+
+依赖：标准库 + ``_hook_context``（无 ink 内部依赖，避免循环）。
 """
 
 from __future__ import annotations
@@ -20,66 +24,66 @@ import logging
 import time
 from typing import Callable
 
+from ._hook_context import HookContext, current_context
+
 _logger = logging.getLogger(__name__)
 
-#: 全局 tick 序号（每次 ``advance_animation`` 递增；useSyncExternalStore 快照）。
-_tick_seq: int = 0
-#: 上次 tick 的单调时钟（供测试/诊断）。
-_last_tick_time: float = 0.0
-#: 动画订阅者（useAnimation → useSyncExternalStore subscribe 注入）。
-_listeners: "set[Callable[[], None]]" = set()
+
+def _ctx(ctx: "HookContext | None") -> HookContext:
+    return ctx if ctx is not None else current_context()
 
 
-def animation_snapshot() -> int:
+def animation_snapshot(ctx: "HookContext | None" = None) -> int:
     """当前 tick 序号（useSyncExternalStore get_snapshot）。"""
-    return _tick_seq
+    return _ctx(ctx).animation_tick
 
 
-def subscribe_animation(listener: Callable[[], None]) -> Callable[[], None]:
+def subscribe_animation(
+    listener: Callable[[], None], ctx: "HookContext | None" = None,
+) -> Callable[[], None]:
     """订阅动画 tick 变更；返回取消订阅函数。"""
-    _listeners.add(listener)
-    return lambda: _listeners.discard(listener)
+    target = _ctx(ctx)
+    target.animation_listeners.add(listener)
+    return lambda: target.animation_listeners.discard(listener)
 
 
-def advance_animation(now: float | None = None) -> None:
+def advance_animation(now: float | None = None, ctx: "HookContext | None" = None) -> None:
     """推进一帧动画：递增 tick 序号并记录时间（session 渲染循环每帧调用）。
 
     ★ 不触发订阅者重渲染（review 修复）：订阅者回调经 hooks ``_schedule``
     落到 ``session._request_render``（置 ``_bottom_redraw_requested`` = force，
-    打破 30Hz 节流）——若每帧 advance 都通知，将形成
-    「渲染→advance→force→立即再渲染」的无节流忙循环。本框架渲染循环为
-    **全程 30Hz**（空闲也持续渲染），动画组件每帧都会被重渲染，
+    打破节流）——若每帧 advance 都通知，将形成「渲染→advance→force→立即再
+    渲染」的无节流忙循环。本框架渲染循环在**有脏/有动画需求**时按
+    ``render_interval``（默认 1/30s）持续渲染，动画组件每帧都会被重渲染，
     ``frame``/``time`` 由挂钟时间推导 → 无需 tick 通知即可平滑推进。
-    ``_listeners`` 仅用于 ``has_active_animations()``（渲染循环动画探测）。
+    ``animation_listeners`` 仅用于 ``has_active_animations()``（渲染循环
+    动画探测——决定空闲时是否继续渲染）。
     """
-    global _tick_seq, _last_tick_time
-    _tick_seq += 1
-    _last_tick_time = now if now is not None else time.monotonic()
+    target = _ctx(ctx)
+    target.animation_tick += 1
+    target.animation_last_time = now if now is not None else time.monotonic()
 
 
-def notify_animation_listeners() -> None:
+def notify_animation_listeners(ctx: "HookContext | None" = None) -> None:
     """显式通知动画订阅者（独立于 advance；供外部驱动/测试使用）。
 
     订阅者回调异常被吞掉并记 debug（单个动画组件异常不阻断其余组件）。
     """
-    for listener in list(_listeners):
+    for listener in list(_ctx(ctx).animation_listeners):
         try:
             listener()
         except Exception:
             _logger.debug("动画订阅回调异常", exc_info=True)
 
 
-def reset_animation_state() -> None:
+def reset_animation_state(ctx: "HookContext | None" = None) -> None:
     """复位驱动状态（测试/会话复用；清空订阅者与计数）。"""
-    global _tick_seq, _last_tick_time
-    _tick_seq = 0
-    _last_tick_time = 0.0
-    _listeners.clear()
+    _ctx(ctx).reset_animation()
 
 
-def has_active_animations() -> bool:
+def has_active_animations(ctx: "HookContext | None" = None) -> bool:
     """是否存在活跃动画订阅（供渲染循环 ``_needs_animation`` 探测）。"""
-    return bool(_listeners)
+    return bool(_ctx(ctx).animation_listeners)
 
 
 __all__ = [

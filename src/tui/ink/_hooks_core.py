@@ -40,11 +40,11 @@ from .fiber import (
     HookNode,
 )
 
-# ★ 模块级可变状态唯一真源在 hooks.py 门面（外部/测试直接读写门面属性——
-#   拆分后须保证 ``hooks._current_fiber_stack`` 等最新值一致）。本模块加载期
-#   获取部分初始化模块引用，运行期经 ``_hooks_module._xxx`` 属性访问（Python
-#   部分初始化模块：加载期不访问属性，运行期已完整——循环 import 安全）。
+# ★ 模块级状态真源在 ``_hook_context.HookContext``（每渲染会话一个实例）；
+#   本模块加载期获取 hooks 门面引用，运行期经 ``_hooks_module._xxx`` 属性
+#   访问（门面以 PEP 562 代理到「当前上下文」——循环 import 安全）。
 from src.tui.ink import hooks as _hooks_module
+from ._hook_context import HookContext, current_context
 
 # ★ logger 名保持 ``src.tui.ink.hooks``（模块拆分后日志命名不变——
 #   外部 caplog/日志过滤按旧名监听，如 test_schedule_callback_exception_logged）。
@@ -60,37 +60,43 @@ class HookStateError(RuntimeError):
     """
 
 
-def set_schedule_callback(cb: Callable[[], None] | None) -> None:
-    """注入状态更新重渲染回调。
+def set_schedule_callback(cb: Callable[[], None] | None, ctx: "HookContext | None" = None) -> None:
+    """注入状态更新重渲染回调（默认写入「当前上下文」）。
 
-    ★ P3（review）：覆盖已有回调时记 warning——hooks 模块级状态为**进程级
-    单例**（单会话假设）：多会话/多渲染根共存时后注入者生效，先注入者的
-    状态更新回调被静默替换（表现为该会话 set_state 不再触发重渲染）。告警
-    使该约束可观测（不改变行为，保持既有单会话语义）。
+    ★ 多会话隔离（P0 架构修复）：状态写入 ``HookContext`` 实例——``ctx``
+    非 None 时写入指定会话上下文（``Reconciler`` / ``InkSession`` 构造期
+    传入自己的上下文，避免覆盖其它会话）；None 时写入当前激活上下文
+    （兼容旧调用契约）。
+
+    ★ P3（review）：覆盖已有回调时记 warning——同**上下文**内覆盖意味着
+    两个渲染根共享一个上下文（异常用法），告警使约束可观测。
     """
-    existing = getattr(_hooks_module, "_schedule_callback", None)
+    target = ctx if ctx is not None else current_context()
+    existing = target.schedule_callback
     if cb is not None and existing is not None and existing is not cb:
-        import logging as _logging
-        _logging.getLogger(__name__).warning(
-            "set_schedule_callback 覆盖已有回调（hooks 状态为进程级单例，"
-            "多会话共存时仅最后注入者生效）"
+        _logger.warning(
+            "set_schedule_callback 覆盖同一上下文的已有回调（同一 HookContext 仅应"
+            "对应一个渲染根）"
         )
-    _hooks_module._schedule_callback = cb
+    target.schedule_callback = cb
 
 
 def set_std_accessors(
     stdin_fn: Callable[[], Any] | None,
     stdout_fn: Callable[[], Any] | None,
     stderr_fn: Callable[[], Any] | None,
+    ctx: "HookContext | None" = None,
 ) -> None:
     """注入 std 流访问器（session 调用；useStdin/useStdout/useStderr 读取）。
 
     访问器为惰性函数（每帧渲染期调用时取最新流对象——stdin 在
-    ``set_input`` 后才注入，stdout 为渲染器流可替换）。
+    ``set_input`` 后才注入，stdout 为渲染器流可替换）。``ctx`` 语义同
+    ``set_schedule_callback``。
     """
-    _hooks_module._stdin_accessor = stdin_fn
-    _hooks_module._stdout_accessor = stdout_fn
-    _hooks_module._stderr_accessor = stderr_fn
+    target = ctx if ctx is not None else current_context()
+    target.stdin_accessor = stdin_fn
+    target.stdout_accessor = stdout_fn
+    target.stderr_accessor = stderr_fn
 
 
 def _push_current(fiber: Fiber) -> None:
@@ -111,13 +117,25 @@ def _current() -> Fiber:
     return _hooks_module._current_fiber_stack[-1]
 
 
-def _schedule() -> None:
-    """请求重渲染。"""
-    if _hooks_module._schedule_callback is not None:
+def _schedule_ctx(ctx: "HookContext") -> None:
+    """请求重渲染（**显式上下文**版本）。
+
+    非渲染期回调（store 订阅 listener / 动画 listener 等）在渲染栈之外执行
+    ——``current_context()`` 此时可能是默认上下文（跨线程）或另一个会话。
+    这类回调在创建时捕获自身 ``HookContext`` 并经本函数调度，保证
+    「哪个会话的组件触发 → 哪个会话重渲染」。
+    """
+    cb = getattr(ctx, "schedule_callback", None)
+    if cb is not None:
         try:
-            _hooks_module._schedule_callback()
+            cb()
         except Exception:
             _logger.debug("schedule 回调异常", exc_info=True)
+
+
+def _schedule() -> None:
+    """请求重渲染（当前激活上下文的渲染回调）。"""
+    _schedule_ctx(current_context())
 
 
 def _next_hook(hook_cls: type, *init_args) -> HookNode:
@@ -425,10 +443,18 @@ def use_memo(factory: Callable[[], Any], deps: list | tuple | None = None) -> An
 
     缓存计算结果跨渲染复用；依赖变化时重新执行 factory。
 
+    ★ deps 语义契约（务必遵守）：逐项按 ``Object.is`` 比较——``int``/``float``/
+    ``bool``/``str`` 按**值**，其余类型按 ``is`` **引用**。容器类型（list/
+    dict/set/tuple 嵌套/Element 等）每帧新建即视为「依赖变化」→ 缓存恒 miss
+    （静默退化为每帧重算，性能问题难定位）。**约定**：deps 一律**展平为原子
+    标量**（长度/计数/标识串/稳定引用对象），例如用
+    ``";".join(sorted(keys))``、``len(x)``、``x``（稳定引用的模型列表）而非
+    ``(tuple(d),)`` 这类每帧新建的嵌套容器。
+
     Args:
         factory: 计算结果工厂函数。
-        deps: 依赖列表；None 表示每次渲染都重新计算（与 useEffect deps=None
-            语义对齐）。
+        deps: 依赖列表（**展平的原子值**）；None 表示每次渲染都重新计算
+            （与 useEffect deps=None 语义对齐）。
 
     Returns:
         缓存值（deps 未变化时返回上次计算结果）。
@@ -490,7 +516,7 @@ def useId() -> str:
         形如 ``:r0:`` 的唯一 ID 字符串。
     """
     fiber = _current()
-    fid = getattr(fiber, "_use_id", None)
+    fid = fiber._use_id
     if fid is None:
         fid = f":r{next(_USE_ID_SEQ)}:"
         fiber._use_id = fid
@@ -573,6 +599,7 @@ __all__ = [
     "_pop_current",
     "_current",
     "_schedule",
+    "_schedule_ctx",
     "_next_hook",
     "_next_state_hook",
     "_make_setter",

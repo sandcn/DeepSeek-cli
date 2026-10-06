@@ -13,6 +13,25 @@ from __future__ import annotations
 from .output import Frame
 
 
+def _skip_interval(prev: Frame, frame: Frame) -> tuple[int, int]:
+    """稳定前缀跳过区间 ``[lo, hi)``（跨帧同一前缀对象时）；无则 ``(0, 0)``。
+
+    ``render_frame`` 的 committed 前缀复用命中时，``_stable_prefix`` 为**同一
+    列表对象**且 offset/len 一致——区间内元素是同一 ``Line`` 对象（跨帧同
+    对象）→ 必然无差异，可整段跳过（与 ``diff.first_diff_line`` 同契约）。
+    """
+    sp = prev._stable_prefix
+    if (
+        sp is not None
+        and sp is frame._stable_prefix
+        and prev._stable_prefix_offset == frame._stable_prefix_offset
+        and prev._stable_prefix_len == frame._stable_prefix_len
+    ):
+        lo = prev._stable_prefix_offset
+        return lo, lo + prev._stable_prefix_len
+    return 0, 0
+
+
 def _diff_runs(
     prev: Frame,
     frame: Frame,
@@ -22,10 +41,15 @@ def _diff_runs(
     """收集两帧前 n 行的差异区间（[start, end) 行号，升序、不重叠）。
 
     与 ``first_diff_line`` 相同比较语义：身份短路（Line 对象相同 → 相等）
-    + runs 值相等。连续差异行合并为一个区间（区间内逐行 ``\r``+重写，
+    + runs 值相等。连续差异行合并为一个区间（区间内逐行 ``\\r``+重写，
     免逐行光标移动）；区间间以光标移动衔接。仅覆盖两帧共有行
     （``min(prev.height, frame.height)``）；高度差（新增/删除行）由调用方
     delta 分支单独处理。
+
+    ★ 稳定前缀跳过（性能，与 ``first_diff_line`` 一致）：``_stable_prefix``
+    跨帧同一对象时其覆盖区间整体跳过（区间内行必然相同）——大文档下头部
+    动画（标题栏呼吸色变化）触发 delta≠0 的 head_runs 扫描时，committed
+    前缀区间零逐行比较（修复前本函数无该跳过，head_runs 每帧扫描整段前缀）。
 
     Args:
         prev: 上一帧。
@@ -42,7 +66,16 @@ def _diff_runs(
     run_start = start
     p_lines = prev.lines
     f_lines = frame.lines
-    for idx in range(start, n):
+    skip_lo, skip_hi = _skip_interval(prev, frame)
+    idx = start
+    while idx < n:
+        if skip_lo <= idx < skip_hi:
+            # 跳过区间：区间内无差异 → 结束当前 run（若正在收集）
+            if in_run:
+                in_run = False
+                runs.append((run_start, idx))
+            idx = skip_hi
+            continue
         p = p_lines[idx]
         f = f_lines[idx]
         differs = p is not f and p.runs != f.runs
@@ -52,6 +85,7 @@ def _diff_runs(
         elif not differs and in_run:
             in_run = False
             runs.append((run_start, idx))
+        idx += 1
     if in_run:
         runs.append((run_start, n))
     return runs
@@ -125,4 +159,4 @@ def _find_tail_anchor(prev: Frame, frame: Frame, delta: int) -> int:
     return j
 
 
-__all__ = ["_diff_runs", "_is_tail_shifted", "_find_tail_anchor"]
+__all__ = ["_diff_runs", "_is_tail_shifted", "_find_tail_anchor", "_skip_interval"]

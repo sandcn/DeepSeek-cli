@@ -265,9 +265,6 @@ def _setup_e2e():
     r, w = os.pipe()
     d, _be = _make_dispatcher(r)
 
-    from src.tui.ink._hooks_input import set_input_router_callback
-    set_input_router_callback(d.set_input_hook_router)
-
     model = AppModel()
     opts = [f"消息{i}" for i in range(1, 6)]  # 5 条用户消息摘要
     model.editmsg_select = EditMsgSelectState(
@@ -276,6 +273,10 @@ def _setup_e2e():
     )
 
     rec = Reconciler(schedule_callback=None)
+    # ★ 多会话隔离：router 发布回调写入**该 reconciler 的会话上下文**
+    #   （``_publish_input_router(router, ctx=rec.hook_context)`` 读取它）。
+    from src.tui.ink._hooks_input import set_input_router_callback
+    set_input_router_callback(d.set_input_hook_router, ctx=rec.hook_context)
     root = rec.create_root()
     rec.render(root, h(EditMsgSelectPopup, {"model": model, "width": 80}), 80, 24)
     return r, w, d, model

@@ -21,6 +21,11 @@ class Harness:
         self.reconciler = Reconciler(schedule_callback=_cb)
         self.root = Reconciler.create_root()
 
+    @property
+    def hook_context(self):
+        """本调试会话的 hooks 上下文（多会话隔离后测试注入/断言用）。"""
+        return self.reconciler.hook_context
+
     def render(self, element, height: int = 0):
         """渲染元素，返回整帧纯文本字符串（去 ANSI）。"""
         self.reconciler.render(self.root, element, self.width, height)

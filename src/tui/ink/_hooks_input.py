@@ -17,24 +17,34 @@ from typing import Any, Callable
 
 from .fiber import InputHook, FullscreenHook
 from ._hooks_core import _next_hook
-# ★ 模块级可变状态唯一真源在 hooks.py 门面（见 _hooks_core.py 注释）。
-from src.tui.ink import hooks as _hooks_module
+from ._hook_context import HookContext, current_context
 
 # ★ logger 名保持 ``src.tui.ink.hooks``（模块拆分后日志命名不变，见
 #   _hooks_core.py 注释）。
 _logger = logging.getLogger("src.tui.ink.hooks")
 
 
-def set_input_router_callback(cb: Callable[[Any], None] | None) -> None:
-    """注入 input router 发布回调（session 注入，消费端接线 InputDispatcher）。"""
-    _hooks_module._input_router_callback = cb
+def set_input_router_callback(cb: Callable[[Any], None] | None, ctx: "HookContext | None" = None) -> None:
+    """注入 input router 发布回调（session 注入，消费端接线 InputDispatcher）。
+
+    ★ 多会话隔离（P0 架构修复）：``ctx`` 非 None 时写入指定会话上下文；
+    None 时写入当前激活上下文（兼容旧调用契约）。
+    """
+    target = ctx if ctx is not None else current_context()
+    target.input_router_callback = cb
 
 
-def _publish_input_router(router) -> None:
-    """发布 composite input router（reconciler 每帧调用）。"""
-    if _hooks_module._input_router_callback is not None:
+def _publish_input_router(router, ctx: "HookContext | None" = None) -> None:
+    """发布 composite input router（reconciler 每帧调用）。
+
+    ``ctx`` 非 None 时使用指定会话上下文的回调（``Reconciler`` 传自己的
+    上下文，多会话互不干扰）；None 时用当前激活上下文（兼容旧调用）。
+    """
+    target = ctx if ctx is not None else current_context()
+    cb = target.input_router_callback
+    if cb is not None:
         try:
-            _hooks_module._input_router_callback(router)
+            cb(router)
         except Exception:
             _logger.debug("input router 发布异常", exc_info=True)
 
@@ -159,21 +169,54 @@ def use_input(
     return None
 
 
-#: use_input 兼容包装缓存（handler→包装；仅普通函数缓存，MagicMock 等动态
-#: 对象回退每次解析——inspect.signature 开销可接受）。
-#: ★ P2-1（review 方向）：**LRU 淘汰**——value 为 ``(handler, wrapped)``
-#:   强引用元组；访问命中 ``move_to_end``、超上限 ``popitem(last=False)``
-#:   淘汰最久未访问项。修复前普通 dict 只增不淘汰：频繁创建临时闭包（如
-#:   列表推导内 lambda）时累积 512 个死闭包，达上限后每帧重新
-#:   inspect.signature（性能退化）。
-#: ★ P3-1（隐式契约固化）：命中判定 ``cached[0] is handler`` 双键校验——
-#:   缓存持有 handler 强引用，保证 handler 存活期间其 id 不复用（id 复用
-#:   安全）；即便某 handler 被淘汰后 id 被新对象复用，新对象经 is 校验
-#:   不命中旧缓存（不会错误返回旧包装）。
-_compat_handler_cache: "OrderedDict[int, tuple[Callable, Callable]]" = OrderedDict()
+#: use_input 兼容包装缓存（**handler 对象** → 包装；仅普通函数缓存，MagicMock
+#: 等动态对象回退每次解析——inspect.signature 开销可接受）。
+#: ★ 键为 handler 对象本身（架构修复）：此前以 ``id(handler)`` 为键——id 在
+#:   handler 被 GC 后可能被新对象复用，若新 handler 恰好命中旧条目则返回**错误
+#:   的包装闭包**（P3-1 靠 ``is`` 二次校验兜底，仍依赖评审纪律）。以对象为键
+#:   后键持有强引用（原 value tuple 本就强引用 handler，行为等价）——id 复用
+#:   风险从根上消失。
+#: ★ P2-1（review 方向）：**LRU 淘汰**——访问命中 ``move_to_end``、超上限
+#:   ``popitem(last=False)`` 淘汰最久未访问项，防临时闭包（列表推导内 lambda）
+#:   无限累积。
+_compat_handler_cache: "OrderedDict[Callable, tuple[Callable, Callable]]" = OrderedDict()
 
 #: 兼容包装缓存上限（P2-1 LRU 淘汰阈值；超限淘汰最久未访问项）
 _COMPAT_CACHE_MAX = 512
+
+
+def _cache_get(handler: Callable):
+    """读取兼容包装缓存（对象作键；不可哈希/不匹配返回 None）。
+
+    ``cached[0] is handler`` 二次校验：handler 若定义了值语义 ``__eq__``，
+    ``dict.get`` 可能命中「相等但非同一对象」的条目——引用不匹配时视作 miss
+    （调用方重新计算并覆盖该键）。
+    """
+    try:
+        cached = _compat_handler_cache.get(handler)
+    except TypeError:
+        return None
+    if cached is None or cached[0] is not handler:
+        return None
+    try:
+        _compat_handler_cache.move_to_end(handler)
+    except KeyError:
+        pass
+    return cached[1]
+
+
+def _cache_put(handler: Callable, wrapped: Callable) -> None:
+    """写入兼容包装缓存（不可哈希对象静默跳过——不缓存不影响正确性）。"""
+    try:
+        hash(handler)
+    except TypeError:
+        return
+    if len(_compat_handler_cache) >= _COMPAT_CACHE_MAX:
+        _compat_handler_cache.popitem(last=False)
+    try:
+        _compat_handler_cache[handler] = (handler, wrapped)
+    except TypeError:
+        pass
 
 
 def clear_compat_handler_cache() -> None:
@@ -213,13 +256,10 @@ def _make_compat_handler(handler: Callable) -> Callable:
     if dynamic and not isinstance(handler, functools.partial):
         return handler
     cacheable = not dynamic
-    hid = id(handler)
     if cacheable:
-        cached = _compat_handler_cache.get(hid)
-        if cached is not None and cached[0] is handler:
-            # LRU 命中：移到末尾（OrderedDict 保持插入序——头部为最久未访问）
-            _compat_handler_cache.move_to_end(hid)
-            return cached[1]
+        cached = _cache_get(handler)
+        if cached is not None:
+            return cached
     try:
         import inspect as _inspect
         sig = _inspect.signature(handler)
@@ -239,21 +279,15 @@ def _make_compat_handler(handler: Callable) -> Callable:
         #   return 不写入，每帧重跑 inspect.signature（与注释「零额外开销」
         #   不符）；写入后后续帧命中缓存零签名探测。
         if cacheable:
-            if len(_compat_handler_cache) >= _COMPAT_CACHE_MAX:
-                _compat_handler_cache.popitem(last=False)
-            _compat_handler_cache[hid] = (handler, handler)
+            _cache_put(handler, handler)
         return handler
 
     def _wrapped(event) -> bool:
         return bool(handler(_event_input(event), _event_key(event)))
 
-    # 仅缓存普通函数（有 __name__）；P2-1 LRU 淘汰：超上限时弹出头部
-    # （popitem(last=False)——最久未访问项）。缓存 key 为 id，同 id 复用
-    # 覆盖（handler 存活期间 id 稳定；hook 持有 handler 引用）。
+    # 仅缓存普通函数（有 __name__）；P2-1 LRU 淘汰（超上限弹出最久未访问项）。
     if cacheable:
-        if len(_compat_handler_cache) >= _COMPAT_CACHE_MAX:
-            _compat_handler_cache.popitem(last=False)
-        _compat_handler_cache[hid] = (handler, _wrapped)
+        _cache_put(handler, _wrapped)
     return _wrapped
 
 

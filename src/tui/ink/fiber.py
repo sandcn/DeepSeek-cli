@@ -93,6 +93,10 @@ class MemoHook:
     deps: Any = None
     value: Any = None
     last_deps: Any = None
+    #: useImperativeHandle 最近一次写入的 ref 对象——卸载清理据此释放句柄
+    #: （父组件换入新 ref 时旧 destroy 须清理最近写入的那个 ref）。
+    #: 显式声明（架构修复）：此前由 ``_hooks_component`` 动态挂载。
+    _last_ref: Any = None
 
 
 @dataclass
@@ -270,6 +274,61 @@ class Fiber:
     #: ``_try_reuse_stable`` / 完整算法每帧对每个 fiber 访问 key）免重复
     #: ``props.get("key")`` + 派生字符串构建。
     _key_cache: str | None = None
+
+    # ── 渲染/布局扩展状态（显式声明——此前为动态挂载的隐式属性，见下） ──
+    # 说明（架构修复）：下列字段原由各渲染/布局模块以 ``fiber._xxx = ...``
+    # 动态挂载、以 ``getattr(fiber, "_xxx", default)`` 读取——无静态检查、
+    # 拼写错误静默降级、无生命周期契约。现统一在 Fiber 声明默认值，全部
+    # 使用点改为直接属性访问（``hasattr``/``del`` 模式一并消除）。
+    #: 组件树中是否存在静态行批量渲染 host（StaticLines）——``layout_tree``
+    #: 每帧复位、``_measure`` 命中时置位；``components._find_committed_chat``
+    #: 据此 O(1) 判定是否需 DFS（无 StaticLines 的树零 DFS）。
+    _committed_chat_present: bool = False
+    #: 组件树中是否存在 ``position="absolute"`` 节点——``layout_tree`` 每帧
+    #: 复位、``_measure`` 容器分支检测到 absolute 子节点时置位；无绝对定位
+    #: 的树跳过第二遍绝对定位遍历。
+    _has_absolute_present: bool = False
+    #: TEXT 测量缓存 ``(props, styled_len, avail_w, fill, result)``——同 props
+    #: 引用 + 同宽度 + 同 styled 长度的帧免重测（``_layout_measure`` 唯一
+    #: 写入点；绝对定位第二遍临时改写 props 后恢复并失效缓存）。
+    _measure_cache: Any = None
+    #: TEXT 布局换行结果（``list[Line]``）——``_measure`` 计算、``_paint``
+    #: 复用（免二次包裹）；行宽/内容变化时由 ``_measure`` 重算覆盖。
+    _wrapped_lines: Any = None
+    #: 输入区换行布局缓存 ``((text, max_input), (rows, wrapped_by_logical))``
+    #: ——``input_area`` / ``_cursor`` 共享（同文本/宽度帧零重复换行计算）。
+    _input_layout_cache: Any = None
+    #: 静态行 host fiber 查找缓存（``components._find_committed_chat``）——
+    #: 指向命中的 StaticLines host fiber；未找到时为 None。
+    _committed_chat_cache: Any = None
+    #: committed 前缀超宽行截断结果缓存 ``(src_prefix, src_len, truncated,
+    #: width)``——``components.render_frame`` 维护（仅超宽前缀路径使用）。
+    _truncated_prefix_cache: Any = None
+    #: 静态行帧前缀缓存 ``(key, prefix, all_ok)``——``widgets.staticlines``
+    #: 维护（命中即跳过画布写入，增量提交仅追加新增行）；
+    #: ``components.render_frame`` 读取（前缀复用 + 行宽守卫；顶部/非顶部
+    #: 统一本字段——此前 ``_static_prefix`` / ``_committed_prefix`` 双别名
+    #: 同值同步，已收敛为单一字段）。
+    _committed_prefix: Any = None
+    #: 非 list 的 lines props 解析缓存 ``(原始对象, 解析后 list)``——
+    #: ``widgets.staticlines._resolve_lines`` 维护（生成器只消费一次）。
+    _resolved_lines: Any = None
+    #: ErrorBoundary fallback 根标记——fallback 组件自身渲染异常时不再被边界
+    #: 捕获（防递归重建 fallback）；由 ``reconciler._begin_work`` 设置。
+    _is_fallback_root: bool = False
+    #: useFocus 分配的焦点 id（显式 id 或自动 ``__focus_<n>__``）——组件卸载时
+    #: ``_clear_focus_active`` 据此清空指向自身的激活焦点（防焦点悬挂）。
+    _focus_id: Any = None
+    #: TEXT 换行结果缓存 ``(ref, cache_wt, style_fp, lines, ref_len)``——
+    #: ``_layout_measure`` 维护（同 props 引用/宽度/样式指纹的帧免重复换行）。
+    _wrap_cache: Any = None
+    #: 输入区占位符渐显状态键 ``(占位符文本, 时间桶)``——``_popup_builder``
+    #: 维护（组件级持久，跨帧渐显进度连续）。
+    _placeholder_fade_key: Any = None
+    #: 父容器传播的可用高度（``height="50%"`` 百分比解析用；``None`` = 高度
+    #: 内容驱动/未知，百分比无效）。由 ``_layout_measure`` 布局子节点前写入
+    #: （子节点复用时会覆盖或清零，防残留旧父高度）。
+    _parent_avail_h: Any = None
 
     # ── 派生属性 ──────────────────────────────────────
 

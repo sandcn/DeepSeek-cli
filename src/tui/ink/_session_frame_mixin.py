@@ -105,6 +105,7 @@ class _SessionFrameMixin:
     _system_monitor: object
     _last_sys_stats_time: float
     _sys_stats_interval: float
+    _hook_ctx: object
 
     # ── 命令应用 ─────────────────────────────────────
 
@@ -146,12 +147,26 @@ class _SessionFrameMixin:
         等待方（flush_input_router / _wait_render_flush / _join_render_thread）
         据此区分「正在执行超长单帧」（单帧耗时无上界，视作有进展续期等待）
         与「渲染线程挂起」（无进展，按软超时/硬上限降级）。
+
+        ★ 渲染互斥（``_render_lock``，可重入）：统一串行化本帧执行——外部
+        线程的**同步渲染**（``request_bottom_redraw`` / ``flush_input_router``
+        主动渲染）与渲染线程的常规帧互斥，消除「双线程并发写 stream」（P3-20
+        输出撕裂）。stub（无 ``_render_lock``）保持既有语义。
         """
-        self._frame_active = True
-        try:
-            self._render_frame_impl()
-        finally:
-            self._frame_active = False
+        lock = getattr(self, "_render_lock", None)
+        if lock is None:
+            self._frame_active = True
+            try:
+                self._render_frame_impl()
+            finally:
+                self._frame_active = False
+            return
+        with lock:
+            self._frame_active = True
+            try:
+                self._render_frame_impl()
+            finally:
+                self._frame_active = False
 
     def _poll_terminal_size(self) -> None:
         """SIGWINCH 兜底：定期主动重探终端尺寸（刷新 ``_width_cache``）。
@@ -181,9 +196,10 @@ class _SessionFrameMixin:
         # 终端尺寸变化标志（下方内容行基线同步用；模型为空时保持 False）
         size_changed = False
         # ★ useAnimation 共享动画驱动：每帧推进一次 tick 并通知订阅组件
-        #   （多个动画组件合并为一轮渲染，React Ink v7 语义）。
+        #   （多个动画组件合并为一轮渲染，React Ink v7 语义）——显式传本会话
+        #   上下文（多会话下各推进各自的驱动）。
         try:
-            advance_animation()
+            advance_animation(ctx=getattr(self, "_hook_ctx", None))
         except Exception:
             _logger.debug("advance_animation 异常", exc_info=True)
         # ★ SIGWINCH 兜底（2026-10-05）：渲染帧主动重探终端尺寸——部分终端/
@@ -255,7 +271,7 @@ class _SessionFrameMixin:
                 #   通知）。宽高同时变化时合并为一次通知（版本只递增一次，
                 #   订阅者单次重渲染，避免双帧重绘）。
                 try:
-                    _hooks._notify_window_size()
+                    _hooks._notify_window_size(ctx=getattr(self, "_hook_ctx", None))
                 except Exception:
                     _logger.debug("notify_window_size 异常", exc_info=True)
         # ★ 方向3（resize 全量刷新消费）：尺寸变化后本帧即全量重建（不等待
@@ -272,8 +288,18 @@ class _SessionFrameMixin:
         #   时间线被反复写入输出历史且真正内容行漏记）。committed_lines 为
         #   卡片行（角色头 + 正文 + 尾空行），自文档第 1 行（TopHeader 之后）
         #   连续排布；未注入时渲染器不产生任何回调（安全）。
+        # ★ 内容区起始行显式注入（架构修复）：修复前渲染器硬编码
+        #   ``_CONTENT_LINE_OFFSET``（假设 App 树第 0 行恒为 TopHeader）——
+        #   此处从 committed host fiber 的 ``layout_box.y`` 读取真实起始行
+        #   （``_find_committed_chat`` 结果已由 ``render_frame`` 缓存于 root，
+        #   O(1)）；App 顶部增删元素后输出历史不再错位。
+        committed_fiber = _components._find_committed_chat(self._root_fiber)
+        content_start = None
+        if committed_fiber is not None and committed_fiber.layout_box is not None:
+            content_start = max(0, committed_fiber.layout_box.y)
         self._ink_renderer.set_content_line_count(
             len(getattr(self._model, "committed_lines", None) or []),
+            start=content_start,
             resync=size_changed,
         )
         self._ink_renderer.render(frame)

@@ -92,7 +92,7 @@
   - D（事件总线实例化）：``events/event_bus.py`` 解除强制单例构造——
     ``DisplayEventBus()`` 创建独立实例（测试/多场景隔离），``get_default()``
     保留进程级默认实例。
-  - E（渲染循环状态机）：``RenderLoopPhase`` 枚举——``_drain_queue`` 六阶段
+  - E（渲染循环状态机）：``RenderLoopPhase`` 枚举——``_drain_queue`` 七阶段
     显式迁移（SIGWINCH→INPUT→PANELS→SYSTEM_STATS→DRAIN_COMMANDS→APPLY→RENDER）。
   - F（架构守卫）：``tests/test_tui/test_arch_guard.py`` AST 依赖方向检查
     （ink 不依赖 app / app 不依赖 consumer / Layer 0 纯净 / import 无环）。

@@ -16,7 +16,7 @@ React Ink 标准组件：渲染静态行列表（``lines: list[Line]``）。对�
 组件树表达 ``h(StaticLines, {"lines": ...})``，对外与 Box/Text/Static 等
 标准组件一致，内部保留批量渲染性能机制。
 
-帧前缀缓存（``fiber._static_prefix``）：
+帧前缀缓存（``fiber._committed_prefix``）：
   - 命中（同 lines 引用/行数/y/w）→ 跳过画布写入（render_frame 复用前缀）；
   - lines 原地 extend（引用不变、长度增长）→ 仅追加新增行（增量提交）；
   - 行宽守卫：缓存重建时 O(n) 检查超宽行（reflow 未执行时截断，保持行宽
@@ -44,7 +44,7 @@ def _resolve_lines(fiber) -> list:
     lines = fiber.props.get("lines") or []
     if isinstance(lines, list):
         return lines
-    cached = getattr(fiber, "_resolved_lines", None)
+    cached = fiber._resolved_lines
     if cached is not None and cached[0] is lines:
         return cached[1]
     try:
@@ -79,20 +79,27 @@ def _paint(fiber, canvas) -> None:
     if box.x == 0:
         # ★ 增量快路径（大历史 O(1)/帧）：静态行跨帧身份复用——前缀缓存挂
         #   在 fiber（fiber 复用即命中，替换/重建自然失效）。
-        #   方向1 步骤4（非顶部前缀缓存）：前缀键 ``(id(lines), n, box.y)``
-        #   覆盖非顶部路径（box.y != 0）——非顶部同样维护 ``_static_prefix``
+        #   方向1 步骤4（非顶部前缀缓存）：前缀键 ``(lines, n, box.y, box.w)``
+        #   覆盖非顶部路径（box.y != 0）——非顶部同样维护 ``_committed_prefix``
         #   （命中即跳过画布重写）；render_frame 消费前缀时校验
         #   ``box.y == 0``——顶部才允许前缀复用，非顶部前缀与画布尾部重建
         #   偏移语义不一致时由 render_frame 回退全量（防御层，成本 O(1)）。
-        key = (id(lines), n, box.y, box.w)
-        cached = getattr(fiber, "_static_prefix", None)
-        if cached is not None and cached[0] == key:
-            return  # 前缀未变：跳过画布重写（render_frame 复用缓存）
+        # ★ 缓存键用 **lines 对象本身**（身份比较）而非 ``id(lines)``——修复前
+        #   以 id 为键：lines 被替换（props 换新列表）且旧列表被 GC 后，新列表
+        #   可能复用同一 id，若行数/位置/宽度恰好相同则缓存**误命中**（渲染
+        #   旧内容）。对象作键使缓存持强引用，其地址不可能被新对象复用（与
+        #   ``components.render_frame`` 的 ``_truncated_prefix_cache`` 同契约）。
+        key = (lines, n, box.y, box.w)
+        cached = fiber._committed_prefix
+        if cached is not None:
+            ck = cached[0]
+            if ck[0] is lines and ck[1] == n and ck[2] == box.y and ck[3] == box.w:
+                return  # 前缀未变：跳过画布重写（render_frame 复用缓存）
         if (
             cached is not None
-            and cached[0][0] == key[0]
-            and cached[0][2] == key[2]
-            and cached[0][3] == key[3]
+            and cached[0][0] is lines
+            and cached[0][2] == box.y
+            and cached[0][3] == box.w
             and n > cached[0][1]
         ):
             # lines 原地 extend（引用不变、长度增长）→ 仅追加新增行
@@ -117,9 +124,6 @@ def _paint(fiber, canvas) -> None:
             all_ok = bool(box.w > 0) and all(
                 ln.width <= box.w for ln in prefix
             )
-        fiber._static_prefix = (key, prefix, all_ok)
-        # 兼容别名：旧字段 ``_committed_prefix``（既有测试/render_frame 兼容
-        # 读取）——与 ``_static_prefix`` 同值同步。
         fiber._committed_prefix = (key, prefix, all_ok)
         return
     # box.x != 0（缩进/padded）：逐行合并（保留已有边框/内容——修复前

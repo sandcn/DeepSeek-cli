@@ -97,7 +97,7 @@ def layout_tree(root_fiber: Fiber, width: int) -> int:
     #   跳过第二遍绝对定位遍历。
     root._has_absolute_present = False
     box = _measure(root, 0, 0, width)
-    if getattr(root, "_has_absolute_present", False):
+    if root._has_absolute_present:
         _layout_absolute_pass(root)
     return box.h
 

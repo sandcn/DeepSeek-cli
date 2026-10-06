@@ -24,8 +24,7 @@ from ._hooks_core import (
     _memo_deps_changed,
     use_ref,
 )
-# ★ 模块级可变状态唯一真源在 hooks.py 门面（见 _hooks_core.py 注释）。
-from src.tui.ink import hooks as _hooks_module
+from ._hook_context import HookContext, current_context
 
 # ★ logger 名保持 ``src.tui.ink.hooks``（模块拆分后日志命名不变，见
 #   _hooks_core.py 注释）。
@@ -48,7 +47,7 @@ def use_error_state() -> Any:
         boundary error（异常对象）；None 表示无错误。
     """
     fiber = _current()
-    return getattr(fiber, "_boundary_error", None)
+    return fiber._boundary_error
 
 
 # ═══════════════════════════════════════════════════════════
@@ -229,27 +228,32 @@ def memo(Component: Callable, are_equal: Callable | None = None) -> Callable:
     return Memoized
 
 
-def set_app_control(control: dict | None) -> None:
+def set_app_control(control: dict | None, ctx: "HookContext | None" = None) -> None:
     """注入 app control（session 注入：``{"exit": fn, "clear": fn}``）。
 
-    对齐既有测试契约：``_hooks._app_control["exit"]`` 可调用。
+    对齐既有测试契约：``hooks._app_control["exit"]`` 可调用。
     ``None`` 清除注入（测试清理路径）。
+    ★ 多会话隔离（P0 架构修复）：``ctx`` 非 None 时写入指定会话上下文；
+    None 时写入当前激活上下文（兼容旧调用契约）。
     """
-    _hooks_module._app_control = control
+    target = ctx if ctx is not None else current_context()
+    target.app_control = control
 
 
 #: 别名（保留 ``set_app_callbacks`` 命名兼容；二者等价）
 set_app_callbacks = set_app_control
 
 
-def set_render_flush_fn(fn: Callable[[], Any] | None) -> None:
-    """注入渲染 flush 等待回调（session 调用）。"""
-    _hooks_module._render_flush_fn = fn
+def set_render_flush_fn(fn: Callable[[], Any] | None, ctx: "HookContext | None" = None) -> None:
+    """注入渲染 flush 等待回调（session 调用；``ctx`` 语义同 ``set_app_control``）。"""
+    target = ctx if ctx is not None else current_context()
+    target.render_flush_fn = fn
 
 
-def set_suspend_terminal_fn(fn: Callable[[Any], Any] | None) -> None:
-    """注入终端挂起回调（session 调用——editor/子进程流程）。"""
-    _hooks_module._suspend_terminal_fn = fn
+def set_suspend_terminal_fn(fn: Callable[[Any], Any] | None, ctx: "HookContext | None" = None) -> None:
+    """注入终端挂起回调（session 调用——editor/子进程流程；``ctx`` 同上）。"""
+    target = ctx if ctx is not None else current_context()
+    target.suspend_terminal_fn = fn
 
 
 def useApp() -> dict:
@@ -271,10 +275,17 @@ def useApp() -> dict:
     async def _already_flushed():
         return None
 
+    # ★ 多会话隔离（P0 架构修复）：闭包捕获**本组件所属会话的上下文**——
+    #   useApp 返回对象的消费方（组件回调/外部持有者）可能在渲染期之外调用
+    #   exit/clear/flush，届时「当前上下文」可能为空或属于别的会话；捕获后
+    #   语义恒为「本会话的应用控制」。
+    ctx = current_context()
+
     def _flush():
-        if _hooks_module._render_flush_fn is not None:
+        fn = ctx.render_flush_fn
+        if fn is not None:
             try:
-                return _hooks_module._render_flush_fn()
+                return fn()
             except Exception:
                 # ★ P3-6（review 方向）：不静默吞异常——记 debug 日志（flush
                 #   回调异常降级为已解决 awaitable，不中断渲染，但须可观测）。
@@ -282,9 +293,10 @@ def useApp() -> dict:
         return _already_flushed()
 
     def _suspend(callback=None):
-        if _hooks_module._suspend_terminal_fn is not None:
+        fn = ctx.suspend_terminal_fn
+        if fn is not None:
             try:
-                return _hooks_module._suspend_terminal_fn(callback)
+                return fn(callback)
             except Exception:
                 # ★ P3-6（review 方向）：不静默吞异常——记 debug 日志（终端
                 #   挂起回调异常降级为直接执行 callback，但须可观测）。
@@ -300,18 +312,18 @@ def useApp() -> dict:
 
     # ★ P3（review）+ 官方 exit(errorOrResult) 语义：缓存返回对象——身份跨渲染
     #   稳定（作为 props 传给 memo 子组件时短路有效）；``exit``/``clear`` 为
-    #   **转发包装**（惰性读取模块级 ``_app_control``，支持延迟注入 + 透传
-    #   ``exit(value)`` 的参数）。
+    #   **转发包装**（惰性读取本会话上下文的 ``app_control``，支持延迟注入 +
+    #   透传 ``exit(value)`` 的参数）。
     cached = use_ref(None)
 
     def _exit(*args, **kwargs):
-        fn = (_hooks_module._app_control or {}).get("exit")
+        fn = (ctx.app_control or {}).get("exit")
         if fn is not None:
             return fn(*args, **kwargs)
         return None
 
     def _clear():
-        fn = (_hooks_module._app_control or {}).get("clear")
+        fn = (ctx.app_control or {}).get("clear")
         if fn is not None:
             return fn()
         return None

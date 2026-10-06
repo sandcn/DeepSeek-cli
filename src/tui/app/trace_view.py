@@ -43,7 +43,7 @@ from src.tui.app.trace import (
 from src.tui.app.trace_image import thumbnail_rows as _thumbnail_rows
 from src.tui.core.style import Style
 from src.tui.ink import (
-    TEXT, Column, Row, StyledRun, h, use_fullscreen, use_input, use_memo, use_ref,
+    TEXT, Column, Row, StyledRun, h, use_effect, use_fullscreen, use_input, use_memo, use_ref,
 )
 from src.tui.ink.helpers import truncate_runs, wrap_runs_by_width
 from src.tui.ink.widgets.listview import ListView
@@ -1211,6 +1211,12 @@ def TraceView(props) -> object:
     #   首个 hook（渲染数据 use_memo 之前）。
     prev_total_ref = use_ref(0)
     prev_total = prev_total_ref.current
+    # ★ 渲染期无副作用（架构修复）：渲染期计算的模型写回（选中项跟随归一化 /
+    #   光标与滚动钳制）先收集在本 dict，组件末尾经 ``use_effect`` 统一提交。
+    #   修复前直接在组件函数体内写 ``model.xxx``——违反「渲染 = 纯函数」契约，
+    #   与 memo 短路 / 未来并发渲染 / 双调用校验冲突，也让状态变更难以定位
+    #   （渲染次数与顺序变化即改变模型）。
+    _model_writes: dict = {}
 
     # ── 数据（use_memo 指纹缓存：消息源/块/subagent 内容变化才重建） ──
     if sub_label:
@@ -1234,7 +1240,7 @@ def TraceView(props) -> object:
     #   非导航路径（历史遗留具体索引 == 末行）与「导航到末行后追加」的
     #   兜底（正常导航到末行经 ``_on_navigate`` 直接写 -1，见下）。
     if prev_total > 0 and sel == prev_total - 1 and total > prev_total:
-        model.trace_selected = -1
+        _model_writes["trace_selected"] = -1
         sel = -1
     if total == 0:
         sel = 0
@@ -1301,7 +1307,7 @@ def TraceView(props) -> object:
     else:
         cursor = 0
     if cursor != cursor_raw:
-        model.trace_inspector_cursor = cursor
+        _model_writes["trace_inspector_cursor"] = cursor
         cursor_raw = cursor
     # scroll 渲染期协调：钳制 + 跟随光标保持可见（vim 视口语义——光标在
     #   窗口内移动不滚动，到边界才滚动；与 _handle ``_scroll_for_cursor``
@@ -1318,7 +1324,7 @@ def TraceView(props) -> object:
     else:
         scroll_raw = 0
     if scroll_raw != (getattr(model, "trace_inspector_scroll", 0) or 0):
-        model.trace_inspector_scroll = scroll_raw
+        _model_writes["trace_inspector_scroll"] = scroll_raw
     scroll = scroll_raw
     # 检查器光标参数：仅检查器焦点传入（高亮）；台账焦点 -1（不高亮）
     cursor_arg = cursor if pane == "inspector" else -1
@@ -1681,6 +1687,16 @@ def TraceView(props) -> object:
         # g/G 导航）；检查器：未消费按键被 use_fullscreen 模态吞掉（不落入
         # 输入缓冲，杜绝看不见的输入；2026-08-17 通用模态全屏视图机制）
         return False
+
+    # ★ 渲染期无副作用（架构修复）：把渲染期收集的模型写回（选中项归一化 /
+    #   光标与滚动钳制）在**提交期**统一落盘——渲染期只算不写。
+    #   ``use_effect`` 必须无条件调用（Rules of Hooks）；deps 为展平的
+    #   ``(字段名, 值)`` 序列（str/int 按值比较，稳定命中）。
+    def _flush_model_writes() -> None:
+        for _name, _value in tuple(_model_writes.items()):
+            setattr(model, _name, _value)
+
+    use_effect(_flush_model_writes, tuple(sorted(_model_writes.items())))
 
     use_input(_handle, bool(getattr(model, "trace_open", False)))
     # ★ 模态全屏视图声明（2026-08-17 通用机制）：trace_open 期间未消费按键

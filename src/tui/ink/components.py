@@ -105,8 +105,9 @@ def _paint(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) -> None
     try:
         _paint_impl(fiber, canvas, clip, inherit_bg)
     except Exception:
-        # 非关键降级：内置 host paint 失败不影响整帧
-        _logger.debug("%s paint 异常", fiber.type, exc_info=True)
+        # ★ 可观测性修复：单节点 paint 失败 = 该节点内容静默缺失（布局/坐标
+        #   异常、样式解析失败等）——原 debug 级别不可见，提升为 warning。
+        _logger.warning("%s paint 异常", fiber.type, exc_info=True)
 
 
 def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) -> None:
@@ -132,7 +133,7 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
         if box.w <= 0 or box.h <= 0:
             return
         # ★ 复用 layout 阶段缓存的换行结果（免二次包裹）
-        wrapped = getattr(fiber, "_wrapped_lines", None)
+        wrapped = fiber._wrapped_lines
         if wrapped is not None:
             lines = wrapped
             # ★ Box 背景继承（完善 react ink v6）——paint 阶段：layout 缓存
@@ -243,8 +244,8 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
         try:
             paint_fn(fiber, canvas)
         except Exception:
-            # 非关键降级：host 绘制失败不影响整帧
-            _logger.debug("custom host %s paint 异常", ftype, exc_info=True)
+            # ★ 可观测性修复：自定义 host 绘制失败 = 内容静默缺失——warning。
+            _logger.warning("custom host %s paint 异常", ftype, exc_info=True)
         return
 
     # 容器：BOX / STATIC / APP
@@ -316,9 +317,9 @@ def _find_committed_chat(root: Fiber):
     # ★ PERF-15：未挂载快速路径——标志由 reconciler._measure 统计（layout_tree
     #   整树遍历时置位；见 layout.py _measure 容器分支注释）。无静态行 host
     #   的组件树每帧零 DFS。
-    if not getattr(root, "_committed_chat_present", False):
+    if not root._committed_chat_present:
         return None
-    cached = getattr(root, "_committed_chat_cache", None)
+    cached = root._committed_chat_cache
     if (
         cached is not None
         and cached.is_host
@@ -343,8 +344,7 @@ def _find_committed_chat(root: Fiber):
         root._committed_chat_cache = found
     else:
         # 未找到 → 清空缓存（静态行 host 已卸载）
-        if hasattr(root, "_committed_chat_cache"):
-            del root._committed_chat_cache
+        root._committed_chat_cache = None
     return found
 
 
@@ -389,9 +389,9 @@ def render_frame(root: Fiber, width: int) -> Frame:
     _paint(root, canvas)
 
     # ★ committed-chat 前缀复用（大历史下渲染 O(live)）：静态提交行跨帧身份
-    #   复用（``chat_view._paint`` 维护 ``_committed_prefix``），不再每帧全量
-    #   遍历全部历史重建 Frame——修复长回答 + 子代理期间渲染线程持续重建
-    #   整帧导致 CPU 100%。前缀未变时画布 committed 行被跳过（None），此处
+    #   复用（``widgets.staticlines._paint`` 维护 ``_committed_prefix``），不再
+    #   每帧全量遍历全部历史重建 Frame——修复长回答 + 子代理期间渲染线程持续
+    #   重建整帧导致 CPU 100%。前缀未变时画布 committed 行被跳过（None），此处
     #   直接经缓存前缀拼接尾部。
     #   方向1 步骤4（非顶部前缀守卫）：仅顶部（committed.layout_box.y == 0）
     #   允许前缀直接拼接尾部——非顶部前缀与画布尾部重建偏移语义不一致时回退
@@ -400,7 +400,7 @@ def render_frame(root: Fiber, width: int) -> Frame:
     #   行不丢失。
     committed = _find_committed_chat(root)
     if committed is not None:
-        prefix_info = getattr(committed, "_committed_prefix", None)
+        prefix_info = committed._committed_prefix
         if prefix_info is not None:
             committed_box = committed.layout_box
             prefix_src = prefix_info[1]
@@ -425,7 +425,7 @@ def render_frame(root: Fiber, width: int) -> Frame:
                 #   命中时**只截断新增行**（每帧新增 N 行 → 只处理 N 行）；
                 #   对象更换/长度回退/宽度变化 → 全量重建。
                 #   缓存的截断列表对象跨帧稳定 → stable_prefix 区间跳过生效。
-                truncated_cache = getattr(committed, "_truncated_prefix_cache", None)
+                truncated_cache = committed._truncated_prefix_cache
                 if (
                     truncated_cache is not None
                     and truncated_cache[0] is prefix_src

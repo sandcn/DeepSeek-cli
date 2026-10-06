@@ -207,7 +207,9 @@ def render(
     """React Ink ``render()`` 等价物（轻量入口）：渲染组件树到终端。
 
     创建独立 InkSession 渲染给定元素（不依赖 App 模型/命令管线）——适用于
-    组件开发/测试/独立 UI 场景。返回控制对象：
+    组件开发/测试/独立 UI 场景。★ 会话隔离：本会话持有独立 ``HookContext``
+    （hooks 状态 / 输入 router / app control / 屏幕阅读器开关互不干扰），
+    同一进程可并存多个 ``render()`` 会话。返回控制对象：
       - ``waitUntilExit()``：awaitable——app 退出（unmount/exit）后 resolve；
       - ``unmount()``：卸载 app（停止渲染线程；patchConsole 时恢复控制台）；
       - ``cleanup()``：同 unmount（React Ink 内部清理语义别名）；
@@ -293,10 +295,11 @@ def render(
         except (TypeError, ValueError, OverflowError):
             _logger.debug("render maxFps 非法，忽略", exc_info=True)
     # isScreenReaderEnabled：注入屏幕阅读器开关（useIsScreenReaderEnabled）
-    from . import hooks as _hooks
-    _saved_screen_reader = getattr(_hooks, "_screen_reader_enabled", False)
+    # ★ 多会话隔离（P0 架构修复）：写入**本会话** HookContext（修复前写模块
+    #   级全局——两个 render() 会话共用，退出还原亦相互覆盖）。
+    _saved_screen_reader = session._hook_ctx.screen_reader_enabled
     if isScreenReaderEnabled:
-        _hooks.set_screen_reader_enabled(True)
+        session._hook_ctx.screen_reader_enabled = True
     # onRender：每帧渲染后回调（React Ink v6）
     if callable(onRender):
         session._on_render_callback = onRender
@@ -344,10 +347,10 @@ def render(
             _logger.debug("render patchConsole 补丁失败", exc_info=True)
 
     def _restore_screen_reader() -> None:
-        """还原屏幕阅读器开关（幂等；render 退出后不泄漏全局状态）。"""
+        """还原屏幕阅读器开关（幂等；render 退出后不泄漏会话状态）。"""
         try:
-            if getattr(_hooks, "_screen_reader_enabled", False) != _saved_screen_reader:
-                _hooks.set_screen_reader_enabled(_saved_screen_reader)
+            if session._hook_ctx.screen_reader_enabled != _saved_screen_reader:
+                session._hook_ctx.screen_reader_enabled = _saved_screen_reader
         except Exception:
             _logger.debug("render 还原屏幕阅读器开关异常", exc_info=True)
 
@@ -452,48 +455,6 @@ def render(
 _RENDER_TO_STRING_MAX_PASSES = 10
 
 
-def _snapshot_isolated_hook_state() -> dict:
-    """保存 hooks 门面的全局可变状态（renderToString 隔离用）。"""
-    from . import hooks as _hooks
-
-    return {
-        "_schedule_callback": _hooks._schedule_callback,
-        "_stdin_accessor": _hooks._stdin_accessor,
-        "_stdout_accessor": _hooks._stdout_accessor,
-        "_stderr_accessor": _hooks._stderr_accessor,
-        "_app_control": _hooks._app_control,
-        "_render_flush_fn": _hooks._render_flush_fn,
-        "_suspend_terminal_fn": _hooks._suspend_terminal_fn,
-        "_cursor_position_fn": _hooks._cursor_position_fn,
-        "_window_size_accessor": _hooks._window_size_accessor,
-        "_input_router_callback": _hooks._input_router_callback,
-        "_screen_reader_enabled": getattr(_hooks, "_screen_reader_enabled", False),
-    }
-
-
-def _restore_isolated_hook_state(saved: dict) -> None:
-    """恢复 hooks 门面的全局可变状态（renderToString 结束/异常路径）。"""
-    from . import hooks as _hooks
-
-    for name, value in saved.items():
-        setattr(_hooks, name, value)
-
-
-def _install_headless_hooks(columns: int) -> None:
-    """安装字符串渲染会话的环境钩子（无终端：流/焦点/光标返回安全默认）。"""
-    from . import hooks as _hooks
-
-    _hooks._stdin_accessor = lambda: None
-    _hooks._stdout_accessor = lambda: None
-    _hooks._stderr_accessor = lambda: None
-    _hooks._app_control = None
-    _hooks._render_flush_fn = None
-    _hooks._suspend_terminal_fn = None
-    _hooks._cursor_position_fn = None
-    _hooks._window_size_accessor = lambda: (columns, 24)
-    _hooks._input_router_callback = None
-
-
 def renderToString(element: Element, options: dict | None = None) -> str:
     """React Ink ``renderToString()`` 等价物：同步渲染组件树为字符串。
 
@@ -520,33 +481,38 @@ def renderToString(element: Element, options: dict | None = None) -> str:
     from . import components as _components
 
     columns = 80
+    screen_reader = False
     if isinstance(options, dict):
         try:
             columns = max(1, int(options.get("columns", 80)))
         except (TypeError, ValueError, OverflowError):
             columns = 80
+        # ★ 多会话隔离（P0 架构修复）：屏幕阅读器开关按**会话**生效——字符串
+        #   渲染的开关经 options 注入本会话上下文（修复前只能写模块级全局，
+        #   与并发会话互相污染；测试/独立使用亦无法隔离）。
+        screen_reader = bool(options.get("isScreenReaderEnabled", False))
 
-    saved = _snapshot_isolated_hook_state()
     dirty = {"n": 0}
 
     def _schedule_cb() -> None:
         dirty["n"] += 1
 
-    try:
-        # 先安装无终端环境钩子，再构造 Reconciler（其 __init__ 会覆盖
-        # schedule 回调为内部统计回调——本会话的「是否有待处理更新」信号）。
-        _install_headless_hooks(columns)
-        reconciler = Reconciler(schedule_callback=_schedule_cb)
-        root = Reconciler.create_root()
-        for _ in range(_RENDER_TO_STRING_MAX_PASSES):
-            dirty["n"] = 0
-            reconciler.render(root, element, columns, 0)
-            if dirty["n"] == 0:
-                break
-        frame = _components.render_frame(root, columns)
-        return "\n".join(line.render() for line in frame.lines)
-    finally:
-        _restore_isolated_hook_state(saved)
+    # ★ 多会话隔离（P0 架构修复）：字符串渲染使用**独立的 HookContext**
+    #   （``Reconciler`` 私有上下文 + headless 环境注入）——此前用「快照/还原
+    #   hooks 模块全局状态」实现隔离，只覆盖 11 个字段（context 注册表 / 焦点
+    #   / 窗口订阅等未覆盖）且非线程安全。现在全程不触碰其它会话的状态。
+    reconciler = Reconciler(schedule_callback=_schedule_cb)
+    reconciler.hook_context.install_headless(columns, 24)
+    if screen_reader:
+        reconciler.hook_context.screen_reader_enabled = True
+    root = Reconciler.create_root()
+    for _ in range(_RENDER_TO_STRING_MAX_PASSES):
+        dirty["n"] = 0
+        reconciler.render(root, element, columns, 0)
+        if dirty["n"] == 0:
+            break
+    frame = _components.render_frame(root, columns)
+    return "\n".join(line.render() for line in frame.lines)
 
 
 __all__ = ["render", "renderToString", "measureElement", "_SimpleModel"]

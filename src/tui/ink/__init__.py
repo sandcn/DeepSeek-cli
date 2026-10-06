@@ -5,7 +5,8 @@
   - element.py    — 不可变元素（Element/h）
   - fiber.py      — 调和器工作单元（Fiber/hook 节点）
   - hooks.py      — hooks 公共门面（use_state/use_effect/use_ref/... +
-                    模块级可变状态唯一真源；实现拆分至 _hooks_* 子模块）
+                    会话级状态代理；实现拆分至 _hooks_* 子模块）
+  - _hook_context.py    — HookContext（每会话 hooks 状态容器，多会话隔离）
   - _hooks_core.py      — hook 基础设施 + 基础 hooks（state/ref/effect/memo/context/id）
   - _hooks_input.py     — 输入 hooks（use_input / router 发布 / 双签名适配）
   - _hooks_component.py — 组件 hooks（useApp/memo/forwardRef/useImperativeHandle/...）

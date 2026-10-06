@@ -168,7 +168,10 @@ class TestStatusBarIcons:
         model.status.model_name = "test-model"
         model.status.tool_total = 5
         model.status.tool_count = 2
-        model._status_snapshot_cache = (
+        # ★ 快照 TTL 缓存已迁至 status_bar 模块（WeakKeyDictionary 键控 model，
+        #   渲染期不再写 model 属性）——测试经模块缓存注入。
+        from src.tui.app import status_bar as _sb
+        _sb._snapshot_cache[model] = (
             time.monotonic(),
             {"total_tokens": 1500, "elapsed_seconds": 65.0, "per_second_speed": 42.0},
         )
@@ -185,7 +188,8 @@ class TestStatusBarIcons:
     def test_idle_icons_present(self):
         model = self._model_with_snapshot(False)
         model.status.tool_total = 0
-        model._status_snapshot_cache = (
+        from src.tui.app import status_bar as _sb
+        _sb._snapshot_cache[model] = (
             time.monotonic(),
             {"total_tokens": 300, "elapsed_seconds": 5.0, "per_second_speed": 10.0},
         )

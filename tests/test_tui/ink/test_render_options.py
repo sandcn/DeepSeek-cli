@@ -124,34 +124,43 @@ async def test_wait_until_exit_rejects_with_error():
 
 
 def test_render_screen_reader_option_restored_on_unmount():
-    """render(isScreenReaderEnabled=True) 退出后不泄漏全局开关（review 修复）。"""
-    buf = io.StringIO()
-    H.set_screen_reader_enabled(False)
-    ctrl = render(h(TEXT, {"children": "x"}), stdout=buf, width=20, isScreenReaderEnabled=True)
+    """render(isScreenReaderEnabled=True) 退出后不跨会话泄漏（P0 多会话隔离）。"""
+
+    def Comp(props):
+        return h(TEXT, {"children": "sr" if useIsScreenReaderEnabled() else "no"})
+
+    buf_on = io.StringIO()
+    ctrl = render(h(Comp, {}), stdout=buf_on, width=20, isScreenReaderEnabled=True)
     time.sleep(0.2)
-    assert H._screen_reader_enabled is True
     ctrl["unmount"]()
-    assert H._screen_reader_enabled is False
+    # 新会话（未开启屏幕阅读器）不得看到上一会话的开关
+    buf_off = io.StringIO()
+    ctrl2 = render(h(Comp, {}), stdout=buf_off, width=20)
+    time.sleep(0.2)
+    ctrl2["unmount"]()
+    assert "sr" in buf_on.getvalue()
+    assert "no" in buf_off.getvalue()
 
 
 def test_use_app_exit_forwards_args():
+    """useApp().exit/clear 转发到**本会话**的 app control（多会话隔离）。"""
     calls = []
-    H.set_app_control({"exit": lambda *a: calls.append(a), "clear": lambda: calls.append("clear")})
+    harness = Harness(20)
+    harness.hook_context.app_control = {
+        "exit": lambda *a: calls.append(a),
+        "clear": lambda: calls.append("clear"),
+    }
     captured = {}
 
     def Comp(props):
-        app = useApp()
-        captured["app"] = app
+        captured["app"] = useApp()
         return h(TEXT, {"children": "x"})
 
-    try:
-        renderToString(h(Comp, {}))
-        captured["app"]["exit"]("v")
-        assert calls == [("v",)]
-        captured["app"]["clear"]()
-        assert calls[-1] == "clear"
-    finally:
-        H.set_app_control(None)
+    harness.render(h(Comp, {}))
+    captured["app"]["exit"]("v")
+    assert calls == [("v",)]
+    captured["app"]["clear"]()
+    assert calls[-1] == "clear"
 
 
 def test_use_app_noop_without_control():

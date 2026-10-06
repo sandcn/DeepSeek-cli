@@ -16,9 +16,10 @@ PERF-4 / 增量细化：
     呼吸色时间桶变化）只改动首行时仅重写首行，不再引发整帧重写——大文档下
     每帧输出从 O(文档) 降为 O(变更行)。
   - 单帧重写行数上限 ``_MAX_REWRITE_ROWS``：实际待重写行数（差异区间行数 +
-    高度差行数）超限时**不再降级为全量 clear + 全量重建**——增量路径本就只写
-    变化行且无 clear_screen（闪烁），超限仅记 warning（阈值保留防静默病态大
-    重写）。满足「除终端 resize 外均增量渲染」。
+    高度差行数）超限时**降级为一次受控全量重写**（``clear_screen`` + 单次
+    全量写入）——行数已与文档同阶时逐区间重写并不更快，且叠加数千次光标
+    移动与多次写入会长时间冻结 UI；降级全程单缓冲单次 write，无逐行 flush
+    闪烁。阈值内的常规帧一律增量（无 clear_screen）。
 
 不切换备用屏幕、不用 DECSTBM——内容自然流入 scrollback。
 
@@ -30,8 +31,8 @@ PERF-4 / 增量细化：
 （``_rewrite_drifted``/``_grow_drifted`` 物理映射）与缩短/增长/等高**进入屏幕内**
 （文档底部对齐可见区底部，负偏移模型 ``_effective_offset`` 供 place_cursor）。
 说明：
-  1. ``_MAX_REWRITE_ROWS`` 超限降级已消除（原 clear + 全量重建 → 现仍增量，
-     超限仅记 warning）；
+  1. ``_MAX_REWRITE_ROWS`` 超限降级为**受控全量重写**（clear + 单次全量写入，
+     防病态大重写冻结 UI；见上）；阈值内帧一律增量；
   2. ``reset(full=False)`` / ``suspend()`` / ``full_clear()`` 使用空帧作为 prev
      （Frame([]), height=0）——与空帧 diff 等价于逐行写入但不触发 clear_screen，
      保持增量路径一致性；
@@ -144,6 +145,12 @@ class InkRenderer:
         #   不因 TUI 内部重绘重复回调；内容区缩短（清屏/重排）时同步跟随
         #   （新文档行号空间已变，见 ``_emit_content_lines``）。
         self._content_line_count: int = 0
+        #: committed 内容区在文档中的起始行号（0-based）——由会话每帧经
+        #: ``set_content_line_count(..., start=...)`` **显式注入**（修复前
+        #: 硬编码 ``_CONTENT_LINE_OFFSET`` 常量：把「App 树第 0 行恒为
+        #: TopHeader」的布局知识写死在渲染器内，App 顶部增删元素即错位）。
+        #: 未注入时保持默认常量（独立使用 InkRenderer 的场景）。
+        self._content_start: int = _CONTENT_LINE_OFFSET
         #: 本帧 committed 内容行数（会话每帧经 ``set_content_line_count``
         #: 注入；未注入时保持 0 → 不回调，安全）。
         self._frame_content_count: int = 0
@@ -418,8 +425,7 @@ class InkRenderer:
     # ── 渲染 ─────────────────────────────────────────
 
     def _assert_renderer_invariants(self) -> None:
-        """调试期不变量断言（P3-14 review 方向）：``_prev/_buf_h/_top_aligned``
-        三元组一致性校验。
+        """调试期不变量断言（P3-14 review 方向）：物理缓冲状态三元组一致性校验。
 
         辅助未来重构校验（``assert`` 在 ``python -O`` 下剥离，常规运行每帧
         O(1) 开销可忽略）。不变量：
@@ -429,7 +435,11 @@ class InkRenderer:
             ``_grow_drifted``/``_rewrite_drifted`` 渲染路径置位，二者均以
             ``_prev = frame`` 收尾；首帧/软重置/全量写入恒置 True）；
           - ``_prev is None`` ⇔ 全量写入待触发（首帧 / reset(full=True)），
-            此时 ``_buf_h == 0`` 且 ``_top_aligned == True``。
+            此时 ``_buf_h == 0`` 且 ``_top_aligned == True``；
+          - 起始行锚定（``_start_row`` 非 None）仅在已知屏幕高度时有效，与
+            顶部对齐互斥（锚定由 ``_write_full`` 的底部对齐路径置位），
+            起始行与缓冲均不越屏幕高度（越界由 ``_sync_start_row_anchor``
+            解除锚定）。
         """
         assert self._buf_h >= 0, f"_buf_h 非负不变量被破坏: {self._buf_h}"
         if not self._top_aligned:
@@ -441,6 +451,16 @@ class InkRenderer:
             assert self._buf_h == 0 and self._top_aligned, (
                 "未渲染状态（_prev is None）应满足 buf_h==0 且 top_aligned: "
                 f"buf_h={self._buf_h} top_aligned={self._top_aligned}"
+            )
+        if self._start_row is not None:
+            assert self._height > 0, "_start_row 锚定仅在已知屏幕高度时有效"
+            assert not self._top_aligned, "_start_row 锚定与顶部对齐互斥"
+            assert 1 <= self._start_row <= self._height, (
+                f"_start_row 越界: {self._start_row}（屏幕高度 {self._height}）"
+            )
+            assert self._buf_h <= self._height, (
+                f"锚定期间物理缓冲不应越过屏幕高度: buf_h={self._buf_h} "
+                f"height={self._height}"
             )
 
     def render(self, frame: Frame) -> None:
@@ -614,13 +634,29 @@ class InkRenderer:
                 + max(0, prev_h - new_h)
             )
         if rewrite_count > _MAX_REWRITE_ROWS:
-            # ★ 非 resize 增量：超限不再降级为全量 clear + 全量重建（闪烁）。
-            #   增量路径本就只写变化行（无 clear_screen），输出量 ≤ 全量重建
-            #   且无闪烁；超限仅记 warning（阈值保留防静默病态大重写）。
+            # ★ 病态大重写保护（恢复）：超限时降级为**一次受控全量重写**
+            #   （clear_screen + 单次全量写入）——差异区间重写此时并不比重写
+            #   更快（行数已与文档同阶），而逐区间还叠加数千次光标移动与
+            #   多次 flush 风险，会长时间冻结 UI。降级全程单缓冲单次 write，
+            #   无逐行 flush 闪烁；clear 保证无残留（等价于窗口 resize 的
+            #   全量路径语义）。
             _logger.warning(
-                "单帧重写行数 %d 超上限 %d，仍按增量路径重写（不清屏重建）",
+                "单帧重写行数 %d 超上限 %d，降级为受控全量重写",
                 rewrite_count, _MAX_REWRITE_ROWS,
             )
+            try:
+                self._stream.write(clear_screen())
+                self._stream.flush()
+            except Exception:
+                _logger.debug("全量重写降级清屏异常", exc_info=True)
+            self._cursor_row = 1
+            self._buf_h = 0
+            self._top_aligned = True
+            self._start_row = None
+            self._prev = None
+            self._write_full(frame)
+            self._prev = frame
+            return
 
         # ★ 渲染策略按高度差分流：
         #   - 等高（delta==0）：逐差异区间重写（增量渲染细化）——头部动画
@@ -666,6 +702,34 @@ class InkRenderer:
             self._prev = frame
             return
 
+        self._apply_frame_writes(
+            frame, prev_h, new_h, delta, runs, head_runs, shift_start,
+        )
+
+    def _apply_frame_writes(
+        self, frame, prev_h, new_h, delta, runs, head_runs, shift_start,
+    ) -> None:
+        """帧写入（从 ``_render_frame_impl`` 提取——巨型方法拆分，行为逐字不变）。
+
+        职责：
+          - ``delta == 0``：逐差异区间重写（增量，头部动画只改首行时仅写首行）；
+          - ``delta != 0``：头部差异区间逐区间重写 + 位移区连续重写 +
+            缩短清残留行 + 增长扩张物理缓冲 ``_buf_h``；
+          - 收尾：光标移回文档底部（供 ``place_cursor`` 相对移动）、提交
+            ``_prev`` 并把整帧缓冲单次写入 + flush。
+
+        重写目标一律按 **prev 帧偏移** 换算——终端缓冲此刻仍是 prev 布局，
+        滚动只由底部写行的换行驱动（增量缩短自底向上重写，不写 ``\n``）。
+
+        Args:
+            frame: 新帧。
+            prev_h: 旧帧高度。
+            new_h: 新帧高度。
+            delta: 高度差（``new_h - prev_h``）。
+            runs: ``delta == 0`` 的差异区间列表（[start, end) 升序不重叠）。
+            head_runs: ``delta != 0`` 的头部差异区间（锚点之前，钳到可见区）。
+            shift_start: 位移区起始行（锚点钳到可见区）。
+        """
         buf = io.StringIO()  # ★ 整帧缓冲（方向1）：多段输出先合并再单次 write+flush
         current_row = self._cursor_row
 
@@ -1202,15 +1266,21 @@ class InkRenderer:
         self._stream.write(buf.getvalue())
         self._stream.flush()
 
-    def set_content_line_count(self, count: int, *, resync: bool = False) -> None:
-        """注入本帧 committed 内容行数（会话每帧渲染前调用）。
+    def set_content_line_count(
+        self, count: int, *, start: int | None = None, resync: bool = False,
+    ) -> None:
+        """注入本帧 committed 内容行数与内容区起始行（会话每帧渲染前调用）。
 
         ``count`` 为 ``AppModel.committed_lines`` 的**卡片行数**（角色头 +
-        正文 + 尾空行）——这些行在文档中自 ``_CONTENT_LINE_OFFSET`` 行起
-        连续排布，是输出历史应当记录的内容；底部 live 区（状态栏/输入区/
-        解析进度行）不在其列。
+        正文 + 尾空行）——这些行在文档中自 ``start`` 行起连续排布，是输出
+        历史应当记录的内容；底部 live 区（状态栏/输入区/解析进度行）不在
+        其列。
 
         Args:
+            count: 本帧 committed 内容行数。
+            start: committed 内容区在文档中的起始行号（0-based）——由会话
+                从 committed host fiber 的 ``layout_box.y`` 读取后注入（不再
+                由渲染器猜 App 树结构）。None 时保持上次值。
             resync: True 时把基线**同步**到 ``count``（不回调）——终端
                 resize 触发 ``reflow_committed`` 重排已提交行（wrap 变化使
                 行数变化），行号空间随之重建：若不同步，wrap 新增行会被
@@ -1218,6 +1288,11 @@ class InkRenderer:
 
         未注入（默认 0）时不产生任何回调（安全——测试/独立使用不受影响）。
         """
+        if start is not None:
+            try:
+                self._content_start = max(0, int(start))
+            except (TypeError, ValueError, OverflowError):
+                _logger.debug("set_content_line_count 起始行非法，保持原值", exc_info=True)
         try:
             value = int(count)
         except (TypeError, ValueError, OverflowError):
@@ -1264,8 +1339,9 @@ class InkRenderer:
         self._content_line_count = current
         if self._line_callback is None:
             return
-        start = _CONTENT_LINE_OFFSET + previous
-        end = min(_CONTENT_LINE_OFFSET + current, len(frame.lines))
+        base = self._content_start
+        start = base + previous
+        end = min(base + current, len(frame.lines))
         if end <= start:
             return
         try:

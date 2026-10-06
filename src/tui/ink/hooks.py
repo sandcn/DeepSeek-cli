@@ -1,8 +1,8 @@
 """hooks 门面 — React Ink hooks 全套（use_state / use_effect / ...）。
 
 模块边界（2026-08-05 架构优化）：原单一 hooks.py（1569 行）按 hooks 家族
-拆分为独立模块，本文件作为公共门面 re-export 全部函数符号 + **持有全部
-模块级可变状态（唯一真源）**：
+拆分为独立模块，本文件作为公共门面 re-export 全部函数符号，并**代理**全部
+会话级可变状态：
 
   - ``_hooks_core.py``       — hook 基础设施（_next_hook 模板方法）+ 基础
                                hooks（use_state/use_reducer/use_ref/
@@ -19,80 +19,98 @@
                                useBoxMetrics/useWindowSize/useCursor/
                                useIsScreenReaderEnabled/useAnimation + 注入）
 
-★ 状态归属设计（PEP 562 权衡后收敛）：模块级可变状态（``_current_fiber_stack``
-等）**全部定义在本门面模块**——子模块（``_hooks_*.py``）加载期
-``from src.tui.ink import hooks`` 获取部分初始化模块引用，运行期经
-``hooks._xxx`` 属性访问最新值。原因：外部/测试契约直接读写门面属性
-（``hooks._current_fiber_stack = [fiber]`` 注入、``hooks._app_control``
-读取）——状态若留在子模块，门面静态 import 复制旧引用/赋值不转发，契约
-失效。门面为状态唯一真源后，读写天然一致。
+★ 状态归属（P0 架构修复，2026-08-16）：会话级可变状态收拢为**可实例化**的
+``_hook_context.HookContext``（每个 ``Reconciler`` 一个）——此前为模块级
+全局变量，同一进程只能存在一个活跃渲染会话（第二个会话构造即覆盖第一个的
+重渲染回调 / router 注入 / app control，多会话串台）。本门面以 PEP 562
+``__getattr__`` + 自定义 module class 的 ``__setattr__`` **代理**到「当前
+上下文」（``_hook_context.current_context()``，渲染期由 ``Reconciler`` /
+``InkSession`` 激活；未激活时回退默认上下文）——``hooks._schedule_callback``
+等既有读写契约（测试/外部注入）语义不变，``_hooks_*.py`` 子模块的
+``_hooks_module._xxx`` 访问自动路由到正确会话。
 
 依赖方向（单向无环）：
+  ``_hook_context`` → 标准库
   ``_hooks_core`` / ``_hooks_input`` / ``_hooks_component`` /
-  ``_hooks_focus`` / ``_hooks_env`` → fiber（结构类型）+ 本门面（状态）
+  ``_hooks_focus`` / ``_hooks_env`` → fiber（结构类型）+ 本门面（状态代理）
   ``hooks``（本模块，公共门面）→ 全部
 
 调用期绑定说明（保留原语义）：渲染函数组件期间（reconciler.begin_work），
-``use_*`` 读取当前 fiber 栈顶（``_current_fiber_stack``）。每个 function
-fiber 在每次渲染前 ``reset_hooks()`` 清零 hook_index，``use_*`` 按下标复用
-上次的 hook 节点（保留状态/引用），从而跨渲染保持状态。
+``use_*`` 读取当前 fiber 栈顶（当前上下文的 ``current_fiber_stack``）。每个
+function fiber 在每次渲染前 ``reset_hooks()`` 清零 hook_index，``use_*``
+按下标复用上次的 hook 节点（保留状态/引用），从而跨渲染保持状态。
 """
 
 from __future__ import annotations
 
-import itertools
+import sys
+import types
 import weakref
-from typing import Any, Callable, List
+from typing import Any
 
-from .fiber import Fiber
+from ._hook_context import (
+    HookContext,
+    current_context,
+    default_context,
+    pop_context,
+    push_context,
+)
 
 # ═══════════════════════════════════════════════════════════
-# 模块级可变状态（唯一真源；子模块经 ``hooks._xxx`` 访问最新值）
+# 会话级状态代理（旧下划线名 → HookContext 字段名）
 # ═══════════════════════════════════════════════════════════
-
-# 渲染期当前 fiber 栈（渲染线程单线程，模块级栈即可）
-_current_fiber_stack: List[Fiber] = []
-# 状态更新后触发重渲染的回调（session 注入）
-_schedule_callback: Callable[[], None] | None = None
-# context 注册表（create_context → reconciler provider host 消费）
-# ★ P3-3（review 方向）：**WeakValueDictionary**——create_context 写入后无
-#   清理路径，普通 dict 只增不回收（无限增长）。弱引用方案：Context 不再被
-#   外部引用（仅注册表持有）时 GC 自动移除条目。**评估注**：Context 被外部
-#   持有（模块级/组件级 ctx 变量）时 WeakValueDictionary 不回收——这是合理
-#   语义（外部持有即调用方负责生命周期），且与 BUG-18「注册表条目与 Provider
-#   挂载解耦（进程生命周期）」设计对齐——挂载/卸载不清理，仅 GC 自然回收。
+#: Context 注册表 — **进程级共享**（``create_context`` 是 Context 的*定义*，
+#: 与会话无关：模块级调用的 ``create_context`` 必须被任意会话的 provider
+#: 渲染找到）。会话级状态只有 ``context_version``（逐 fiber 缓存版本）。
 _context_registry: "weakref.WeakValueDictionary[str, Any]" = weakref.WeakValueDictionary()
-# context 缓存版本号（provider 值变化时递增；use_context 命中校验）
-_context_version: int = 0
-# std 流访问器（session 注入；useStdin/useStdout/useStderr 读取）
-_stdin_accessor: Callable[[], Any] | None = None
-_stdout_accessor: Callable[[], Any] | None = None
-_stderr_accessor: Callable[[], Any] | None = None
-# input router 注入回调（session 注入；reconciler 每帧发布 composite router）
-_input_router_callback: Callable[[Any], None] | None = None
-# app control（session 注入：{"exit": fn, "clear": fn}；useApp 读取）
-_app_control: dict | None = None
-# 渲染 flush 等待回调（session 注入）
-_render_flush_fn: Callable[[], Any] | None = None
-# 终端挂起回调（session 注入）
-_suspend_terminal_fn: Callable[[Any], Any] | None = None
-# 焦点管理状态（useFocus/useFocusManager）
-_focus_enabled: bool = True
-_focus_active: str | None = None
-_focus_ids: list[str] = []
-_focus_id_seq = itertools.count()
-# 窗口尺寸状态（useWindowSize）
-_window_size: tuple[int, int] = (80, 24)
-_window_size_version: int = 0
-_window_size_listeners: set = set()
-_window_size_accessor: Callable[[], tuple[int, int]] | None = None
-# 光标定位回调（session 注入；useCursor）
-_cursor_position_fn: Callable[[Any], None] | None = None
-# 任意键已按下标志（useStdin().isAnyKeyPressed——React Ink 语义：用户曾
-# 按过任意键后恒 True，不复位；session 经 InputDispatcher 注入置位回调）
-_any_key_pressed: bool = False
-# 屏幕阅读器开关（render({isScreenReaderEnabled}) 经 set_screen_reader_enabled 注入）
-_screen_reader_enabled: bool = False
+
+#: 仅状态字段参与代理；函数符号正常落在模块 ``__dict__``（import 绑定）。
+_ALIASES = {
+    "_current_fiber_stack": "current_fiber_stack",
+    "_schedule_callback": "schedule_callback",
+    "_context_version": "context_version",
+    "_stdin_accessor": "stdin_accessor",
+    "_stdout_accessor": "stdout_accessor",
+    "_stderr_accessor": "stderr_accessor",
+    "_input_router_callback": "input_router_callback",
+    "_app_control": "app_control",
+    "_render_flush_fn": "render_flush_fn",
+    "_suspend_terminal_fn": "suspend_terminal_fn",
+    "_cursor_position_fn": "cursor_position_fn",
+    "_window_size_accessor": "window_size_accessor",
+    "_screen_reader_enabled": "screen_reader_enabled",
+    "_focus_enabled": "focus_enabled",
+    "_focus_active": "focus_active",
+    "_focus_ids": "focus_ids",
+    "_focus_id_seq": "focus_id_seq",
+    "_window_size": "window_size",
+    "_window_size_version": "window_size_version",
+    "_window_size_listeners": "window_size_listeners",
+    "_any_key_pressed": "any_key_pressed",
+    "_animation_tick": "animation_tick",
+    "_animation_last_time": "animation_last_time",
+    "_animation_listeners": "animation_listeners",
+}
+
+
+class _HooksModule(types.ModuleType):
+    """hooks 门面模块类：状态属性读写代理到当前 ``HookContext``。"""
+
+    def __getattr__(self, name):
+        target = _ALIASES.get(name)
+        if target is not None:
+            return getattr(current_context(), target)
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    def __setattr__(self, name, value):
+        target = _ALIASES.get(name)
+        if target is not None:
+            setattr(current_context(), target, value)
+            return
+        super().__setattr__(name, value)
+
+
+sys.modules[__name__].__class__ = _HooksModule
 
 
 def mark_any_key_pressed() -> None:
@@ -102,14 +120,13 @@ def mark_any_key_pressed() -> None:
     置位后保持 True（与 React Ink 语义一致——用于检测用户是否已交互，
     spinner 等据此暂停动画）。
     """
-    global _any_key_pressed
-    _any_key_pressed = True
+    current_context().any_key_pressed = True
 
 
 def reset_any_key_pressed() -> None:
     """复位任意键标志（测试/会话复用用）。"""
-    global _any_key_pressed
-    _any_key_pressed = False
+    current_context().any_key_pressed = False
+
 
 # ═══════════════════════════════════════════════════════════
 # 函数 re-export（实现拆分至 _hooks_* 子模块）
@@ -123,6 +140,7 @@ from ._hooks_core import (
     _pop_current,
     _current,
     _schedule,
+    _schedule_ctx,
     _next_hook,
     _next_state_hook,
     _make_setter,
@@ -208,6 +226,7 @@ from ._animation import (
 )
 
 __all__ = [
+    # ── 基础 hooks ──
     "use_state",
     "use_reducer",
     "use_ref",
@@ -218,9 +237,11 @@ __all__ = [
     "use_context",
     "create_context",
     "useId",
+    # ── 输入 / 模态 ──
     "use_input",
     "use_fullscreen",
     "use_modal",
+    # ── 组件 ──
     "use_error_state",
     "memo",
     "forwardRef",
@@ -228,7 +249,10 @@ __all__ = [
     "useMeasure",
     "usePrevious",
     "useApp",
+    # ── 焦点 ──
     "useFocus",
+    "useFocusManager",
+    # ── 环境 ──
     "useStdin",
     "useStdout",
     "useStderr",
@@ -236,10 +260,10 @@ __all__ = [
     "usePaste",
     "useBoxMetrics",
     "useWindowSize",
-    "useFocusManager",
     "useCursor",
     "useIsScreenReaderEnabled",
     "useAnimation",
+    # ── 会话接线（公开注入点） ──
     "set_schedule_callback",
     "set_input_router_callback",
     "set_app_control",
@@ -249,50 +273,22 @@ __all__ = [
     "set_cursor_position_fn",
     "set_render_flush_fn",
     "set_suspend_terminal_fn",
+    "set_screen_reader_enabled",
     "mark_any_key_pressed",
     "reset_any_key_pressed",
     "deps_changed",
     "mark_effect_committed",
-    "_deps_equal",
-    "_reset_focus_ids",
-    "_register_focus_id",
-    "_resolve_focus_id",
-    "_focus_next",
-    "_focus_previous",
-    "_focus_to",
-    "_focus_enable",
-    "_focus_disable",
-    "_notify_window_size",
-    # ── P3-2 补全（review 方向）：内部 re-export 符号补全 __all__——与门面
-    #    import 列表一致（``from src.tui.ink.hooks import *`` 可获取全部符号，
-    #    含内部基础设施）。修复前 __all__ 未列全，通配导入漏掉
-    #    _next_hook/_current/_push_current/_pop_current/_schedule/
-    #    _make_setter 等（外部/测试按名导入虽不受影响，但 * 导入契约不完整）。
-    "_push_current",
-    "_pop_current",
-    "_current",
-    "_schedule",
-    "_next_hook",
-    "_next_state_hook",
-    "_make_setter",
-    "_clear_fiber_state_queues",
-    "_object_is",
-    "_memo_deps_changed",
-    "_bump_context_version",
-    "_publish_input_router",
-    "_make_compat_handler",
     "clear_compat_handler_cache",
-    "_event_input",
-    "_event_key",
-    "_make_imperative_cleanup",
-    "_clear_focus_active",
-    "_refresh_window_size",
-    "_subscribe_window_size",
     "HookStateError",
-    # useAnimation 共享驱动
+    # ── 会话上下文（多会话隔离） ──
+    "HookContext",
+    "current_context",
+    "default_context",
+    "push_context",
+    "pop_context",
+    # ── 动画驱动 ──
     "advance_animation",
     "reset_animation_state",
     "animation_snapshot",
     "has_active_animations",
-    "set_screen_reader_enabled",
 ]

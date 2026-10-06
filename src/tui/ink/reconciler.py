@@ -138,6 +138,23 @@ def _classify_input_hooks(fiber: Fiber, input_out: list, paste_out: list | None)
             paste_out.append(hook)
 
 
+def _props_identical(a: dict, b: dict) -> bool:
+    """props 浅引用全等判定（比 ``dict.__eq__`` 更快的**充分**条件）。
+
+    ``a`` 与 ``b`` 的键集合一致且每个值都是同一对象引用时，内容必然相等
+    （``is`` 蕴含 ``==``）——无变化帧（组件复用缓存元素 / ``_set_props`` 曾
+    保持引用）命中，免 ``dict.__eq__`` 对含大 list/dict 值的逐值深比较。
+    引用不等时返回 False（调用方回退 ``==`` 值比较，语义不变）。
+    """
+    if len(a) != len(b):
+        return False
+    for key, value in a.items():
+        other = b.get(key, _MISSING)
+        if other is _MISSING or value is not other:
+            return False
+    return True
+
+
 class Reconciler:
     """组件树调和器。
 
@@ -147,17 +164,23 @@ class Reconciler:
 
     def __init__(self, schedule_callback: Callable[[], None] | None = None) -> None:
         self._schedule_callback = schedule_callback
+        #: 本渲染根的 hooks 会话上下文（多会话隔离——每个 Reconciler 一个
+        #: 独立 ``HookContext``；渲染期经 ``_hooks.push_context`` 激活，hooks
+        #: 函数读取它，输入事件/router 回调闭包捕获它）。
+        self._hook_ctx = _hooks.HookContext()
         self._pending_destroys: list[tuple[Fiber, EffectHook]] = []
         #: input router 签名缓存（同签名复用上次 router，免每帧重建闭包）：
         #: ``(signature, router, hooks_list, paste_hooks)`` 四元组
         self._input_router_cache: tuple | None = None
-        # ★ P3-17 说明（review 方向）：``_hooks.set_schedule_callback`` 为
-        #   **模块级单例**（hooks 模块全局状态，非实例字段）——**单会话约束**：
-        #   同一进程仅一个活跃 Reconciler/InkSession 会话。多会话并发会相互
-        #   覆盖回调（后者覆盖前者，前一会话状态更新触发后一会话重渲染）。
-        #   当前架构（单 TUI 会话）满足约束；多会话场景须将 hooks 状态与会话
-        #   绑定（hooks 模块状态整体实例化），本注释记录该约束供未来扩展参考。
-        _hooks.set_schedule_callback(schedule_callback)
+        # ★ 多会话隔离（P0 架构修复）：``set_schedule_callback`` 写入本根
+        #   自己的 ``HookContext``（此前为模块级单例——第二个 Reconciler
+        #   构造即覆盖第一个的重渲染回调，前一会话 setState 不再触发渲染）。
+        _hooks.set_schedule_callback(schedule_callback, ctx=self._hook_ctx)
+
+    @property
+    def hook_context(self) -> "_hooks.HookContext":
+        """本渲染根的 hooks 会话上下文（``InkSession`` 注入接线用）。"""
+        return self._hook_ctx
 
     def render(
         self,
@@ -175,39 +198,46 @@ class Reconciler:
             height: 文档高度（预留给未来视口约束；当前内容驱动）。
         """
         self._pending_destroys = []
-        _hooks.set_schedule_callback(self._schedule_callback)
-        # ★ 焦点管理（React Ink v6）：每帧渲染前重置可聚焦 id 收集列表
-        #   （useFocus 渲染期注册）。
-        _hooks._reset_focus_ids()
-        # 调和 root 的子元素
-        self._reconcile_children(root_fiber, [element])
-        # 布局（host 树）
-        _layout.layout_tree(root_fiber, width)
-        # ★ 性能（PERF-25）：合并渲染后置元数据收集——原实现 host ref 填充
-        #   （_attach_host_refs）、effects 提交（_traverse_functions 收集后
-        #   reversed 提交）、input router（_build_input_router →
-        #   _collect_input_hooks）各自独立遍历整棵 fiber 树（每帧 3 次全树
-        #   DFS）。合并为**一次 DFS** 同时收集：带 ref 的 host fiber / function
-        #   fiber 列表 / InputHook+PasteHook（遍历顺序保持前序——ref 填充顺序
-        #   无消费方、effects 后序提交、router 按 hooks_list 前序调用，与各自
-        #   原实现语义一致）。``_run_live_effects`` 独立遍历入口已删除
-        #   （2026-08-05 死代码清理：生产无调用方）。
-        function_fibers, ref_fibers, input_hooks, paste_hooks = (
-            self._collect_render_metadata(root_fiber)
-        )
-        # ★ host ref 填充（方向8）：layout 完成后将 layout_box 写入绑定的
-        #   ref（RefHook.current / 函数 ref 回调）——useMeasure 等据此在
-        #   layout effect 中读取尺寸。
-        self._fill_host_refs(ref_fibers)
-        # 提交 effects：先销毁（删除子树），再创建（依赖变化）
-        for fiber, hook in self._pending_destroys:
-            self._run_destroy(fiber, hook)
-        self._pending_destroys = []
-        self._run_live_effects_collected(function_fibers)
-        # ★ 发布 composite input router（use_input 钩子，INK-1）
-        # 用合并遍历已收集的 hooks 构建（免再次全树收集——PERF-25）
-        router = self._build_input_router_from_hooks(input_hooks, paste_hooks)
-        _hooks._publish_input_router(router)
+        # ★ 多会话隔离（P0 架构修复）：写入本根上下文 + 渲染期激活它——
+        #   hooks 函数（use_*）、状态注入与 router 构建读取「当前上下文」；
+        #   输入事件处理 / 订阅回调另经闭包捕获的 ctx 完成（见各 hooks 模块）。
+        _hooks.set_schedule_callback(self._schedule_callback, ctx=self._hook_ctx)
+        _hooks.push_context(self._hook_ctx)
+        try:
+            # ★ 焦点管理（React Ink v6）：每帧渲染前重置可聚焦 id 收集列表
+            #   （useFocus 渲染期注册）。
+            _hooks._reset_focus_ids()
+            # 调和 root 的子元素
+            self._reconcile_children(root_fiber, [element])
+            # 布局（host 树）
+            _layout.layout_tree(root_fiber, width)
+            # ★ 性能（PERF-25）：合并渲染后置元数据收集——原实现 host ref 填充
+            #   （_attach_host_refs）、effects 提交（_traverse_functions 收集后
+            #   reversed 提交）、input router（_build_input_router →
+            #   _collect_input_hooks）各自独立遍历整棵 fiber 树（每帧 3 次全树
+            #   DFS）。合并为**一次 DFS** 同时收集：带 ref 的 host fiber / function
+            #   fiber 列表 / InputHook+PasteHook（遍历顺序保持前序——ref 填充顺序
+            #   无消费方、effects 后序提交、router 按 hooks_list 前序调用，与各自
+            #   原实现语义一致）。``_run_live_effects`` 独立遍历入口已删除
+            #   （2026-08-05 死代码清理：生产无调用方）。
+            function_fibers, ref_fibers, input_hooks, paste_hooks = (
+                self._collect_render_metadata(root_fiber)
+            )
+            # ★ host ref 填充（方向8）：layout 完成后将 layout_box 写入绑定的
+            #   ref（RefHook.current / 函数 ref 回调）——useMeasure 等据此在
+            #   layout effect 中读取尺寸。
+            self._fill_host_refs(ref_fibers)
+            # 提交 effects：先销毁（删除子树），再创建（依赖变化）
+            for fiber, hook in self._pending_destroys:
+                self._run_destroy(fiber, hook)
+            self._pending_destroys = []
+            self._run_live_effects_collected(function_fibers)
+            # ★ 发布 composite input router（use_input 钩子，INK-1）
+            # 用合并遍历已收集的 hooks 构建（免再次全树收集——PERF-25）
+            router = self._build_input_router_from_hooks(input_hooks, paste_hooks)
+            _hooks._publish_input_router(router, ctx=self._hook_ctx)
+        finally:
+            _hooks.pop_context()
 
     # ── 挂载 ────────────────────────────────────────
 
@@ -251,14 +281,68 @@ class Reconciler:
                 return
         except TypeError:
             pass
+        # ★ 性能快路径：逐 key 引用全等 → 内容必然相等（免 dict 深比较）。
+        if _props_identical(old, props):
+            return
         try:
             if old == props:
                 return  # 内容相等：保持引用稳定（_measure_cache 引用级命中）
         except Exception:
-            pass  # 不可比较（安全侧：更新引用）
+            # ★ 可观测性修复：props 含不可比较对象时静默退化为「不相等」
+            #   （每帧更新引用 → 测量缓存恒 miss，性能退化且难定位）——
+            #   原实现裸 ``pass``，补 warning 使该情况可观测。
+            _logger.warning(
+                "props 相等比较异常，按不相等处理（更新引用） fiber=%s",
+                fiber.type, exc_info=True,
+            )
         fiber.props = props
         # props 变化 → key 缓存失效（PERF-24；内容相等路径已提前 return）
         fiber._key_cache = None
+
+    @classmethod
+    def _revive_reused(cls, fiber: Fiber, return_fiber: Fiber) -> None:
+        """复用被删除的 fiber：复位 ``deleted`` + 清陈旧 state queue + 复活子树。
+
+        ``_mark_deleted`` 会**递归**标记整棵子树 ``deleted=True``（外部缓存
+        失效检测需要，如 ``session._input_fiber`` / ``root._committed_chat_cache``
+        指向子树内 host fiber）。复用路径只复位根 fiber——memo 短路
+        （``_memo_should_skip`` 为真时保留 ``fiber.child``，不重建子树）下
+        子树 fiber 保持 ``deleted=True``，随后 ``_collect_render_metadata`` /
+        ``_collect_input_hooks`` / ``_traverse_functions`` 遇到 deleted 即
+        **跳过整棵子树**：effects 不提交、host refs 不填充（useMeasure 恒 0）、
+        ``use_input`` 不注册（键盘失灵）、焦点丢失。本方法在复用点递归复位，
+        保证「复用 = 复活整棵子树」。
+
+        陈旧 state queue 清理仅在「被删除后恢复复用」时执行——正常帧间复用
+        ``deleted`` 恒 False，queue 中的待应用更新必须保留（无条件清空会丢失
+        本帧排队的状态更新）。
+
+        父链变化（``fiber.return_`` 与本次调和父不同，keyed 重排 / 条件渲染
+        换父）时清空该 fiber 子树的 context 缓存：``use_context`` 的逐 fiber
+        缓存以 ``ctx.tag`` 为键、值取自沿 ``return_`` 链找到的最近 Provider
+        ——父链改变后旧缓存可能指向**旧 Provider** 的值（Provider 值未变则
+        版本号校验不会失效该缓存）。
+        """
+        was_deleted = fiber.deleted
+        fiber.deleted = False
+        if was_deleted:
+            _hooks._clear_fiber_state_queues(fiber)
+            cls._revive_subtree(fiber)
+        if fiber.return_ is not return_fiber:
+            _clear_context_cache_subtree(fiber)
+
+    @staticmethod
+    def _revive_subtree(fiber: Fiber) -> None:
+        """递归复位子树全部 fiber 的 ``deleted`` 标记（``_revive_reused`` 用）。"""
+        stack = [fiber]
+        while stack:
+            f = stack.pop()
+            f.deleted = False
+            c = f.child
+            while c is not None:
+                stack.append(c)
+                c = c.sibling
+
     def _reconcile_children(self, return_fiber: Fiber, elements) -> None:
         """调和 return_fiber 的子元素列表（按 key/type diff 子 sibling 链）。
 
@@ -372,15 +456,7 @@ class Reconciler:
                 #   _measure_cache 引用级命中，0% → 高命中率），内容变化才
                 #   更新（免每帧 O(n) dict 浅拷贝）。
                 self._set_props(fiber, element.props)
-                was_deleted = fiber.deleted
-                fiber.deleted = False
-                if was_deleted:
-                    # ★ P3 修复（review 方向）：仅「被删除后恢复复用」时清空
-                    #   陈旧 state queue——正常帧间复用 deleted 恒 False，
-                    #   queue 中的待应用更新必须保留（无条件清空会丢失本帧
-                    #   排队的状态更新）。见 _hooks_core
-                    #   ``_clear_fiber_state_queues``。
-                    _hooks._clear_fiber_state_queues(fiber)
+                self._revive_reused(fiber, return_fiber)
                 fiber.return_ = return_fiber
                 self._begin_work(fiber, element)
                 consumed.add(id(fiber))
@@ -466,13 +542,7 @@ class Reconciler:
                 # ★ 性能（PERF-7 + props 引用级缓存）：经 ``_set_props``
                 #   值比较复用（内容相等保持旧引用 → _measure_cache 命中）。
                 self._set_props(fiber, el.props)
-                was_deleted = fiber.deleted
-                fiber.deleted = False
-                if was_deleted:
-                    # ★ P3 修复（review 方向）：仅「被删除后恢复复用」时清空
-                    #   陈旧 state queue（见 _hooks_core
-                    #   ``_clear_fiber_state_queues``）。
-                    _hooks._clear_fiber_state_queues(fiber)
+                self._revive_reused(fiber, return_fiber)
                 fiber.return_ = return_fiber
                 fiber.moved = False  # 稳定列表：位置不变
                 self._begin_work(fiber, el)
@@ -498,13 +568,7 @@ class Reconciler:
             # ★ 性能（PERF-7 + props 引用级缓存）：经 ``_set_props`` 值比较
             #   复用（内容相等保持旧引用 → _measure_cache 命中）。
             self._set_props(existing, element.props)
-            was_deleted = existing.deleted
-            existing.deleted = False
-            if was_deleted:
-                # ★ P3 修复（review 方向）：仅「被删除后恢复复用」时清空
-                #   陈旧 state queue（见 _hooks_core
-                #   ``_clear_fiber_state_queues``）。
-                _hooks._clear_fiber_state_queues(existing)
+            self._revive_reused(existing, return_fiber)
             existing.return_ = return_fiber
             existing.sibling = None
             self._begin_work(existing, element)
@@ -598,7 +662,7 @@ class Reconciler:
                 #   渲染（fiber 私有 ``_is_fallback_root`` 标记）；若此处再次被
                 #   boundary 捕获会递归重建 fallback（无限循环）→ 传播保持崩溃
                 #   恢复语义。
-                if getattr(fiber, "_is_fallback_root", False):
+                if fiber._is_fallback_root:
                     raise
                 boundary = self._find_boundary(fiber)
                 if boundary is None:
@@ -682,7 +746,7 @@ class Reconciler:
                     #   逐 fiber context 缓存（低频遍历）。完整「仅重渲染
                     #   context 消费者」剪枝评估结论见本方法 docstring——
                     #   本步仅落地缓存优化 + 清缓存传播，不做消费者级剪枝。
-                    last = getattr(fiber, "_last_provider_value", _MISSING)
+                    last = fiber._last_provider_value
                     if last is _MISSING or not _safe_eq(last, value):
                         fiber._last_provider_value = value
                         _hooks._bump_context_version()
@@ -716,7 +780,7 @@ class Reconciler:
         """
         f = fiber.return_
         while f is not None:
-            if getattr(f, "_is_boundary", False):
+            if f._is_boundary:
                 return f
             f = f.return_
         return None
@@ -735,7 +799,7 @@ class Reconciler:
             try:
                 on_error(error)
             except Exception:
-                _logger.debug("ErrorBoundary onError 回调异常", exc_info=True)
+                _logger.warning("ErrorBoundary onError 回调异常", exc_info=True)
 
     # ── memo 短路（方向B 步骤10） ──────────────────────
 
@@ -754,7 +818,7 @@ class Reconciler:
         """
         if not getattr(fiber.type, "_is_memo", False):
             return False
-        last_props = getattr(fiber, "_last_memo_props", None)
+        last_props = fiber._last_memo_props
         if last_props is None:
             return False
         are_equal = getattr(fiber.type, "_are_equal", None)
@@ -779,7 +843,7 @@ class Reconciler:
         #   值比较（仅新增 O(n) is 探测开销，零行为变化）；引用稳定场景
         #   （组件持有缓存子元素）大子树免每帧深度递归。
         try:
-            last_children = getattr(fiber, "_last_memo_children", ())
+            last_children = fiber._last_memo_children
             if len(element.children) == len(last_children):
                 same = all(
                     a is b for a, b in zip(element.children, last_children)
@@ -798,7 +862,7 @@ class Reconciler:
         #   保持旧值渲染且 props/children 不再变化时**永久陈旧**（React 语义：
         #   context 变更强制重渲染消费者，与 memo 无关）。无关 Provider 变化
         #   不标记本 fiber（``_context_dirty`` 逐 fiber），正常短路保持。
-        if getattr(fiber, "_context_dirty", False):
+        if fiber._context_dirty:
             return False
         # 有未处理的 state 更新 → 不能短路（须重渲染应用更新）
         for hook in fiber.hooks:
@@ -1073,7 +1137,7 @@ class Reconciler:
                     try:
                         ref(f.layout_box)
                     except Exception:
-                        _logger.debug("host ref 回调异常 fiber=%s", f.type, exc_info=True)
+                        _logger.warning("host ref 回调异常 fiber=%s", f.type, exc_info=True)
                 elif hasattr(ref, "current"):
                     ref.current = f.layout_box
 
@@ -1147,7 +1211,9 @@ class Reconciler:
             hook.destroy = None
             hook.last_deps = None
         except Exception:
-            _logger.debug("effect 销毁执行异常 fiber=%s", fiber.type, exc_info=True)
+            # ★ 可观测性修复：effect 销毁异常会泄漏资源（订阅/定时器/子进程），
+            #   原 debug 级别在默认日志配置下不可见——提升为 warning。
+            _logger.warning("effect 销毁执行异常 fiber=%s", fiber.type, exc_info=True)
 
     def _run_live_effects_collected(self, function_fibers: list) -> None:
         """提交依赖变化的 effect（PERF-25：用 ``_collect_render_metadata`` 合并
@@ -1180,7 +1246,9 @@ class Reconciler:
                     hook.destroy = result
                 _hooks.mark_effect_committed(hook)
             except Exception:
-                _logger.debug("effect 执行异常 fiber=%s", fiber.type, exc_info=True)
+                # ★ 可观测性修复：effect 执行异常使副作用缺失（订阅/初始化/
+                #   上报），原 debug 级别不可见——提升为 warning。
+                _logger.warning("effect 执行异常 fiber=%s", fiber.type, exc_info=True)
 
     def _traverse_functions(
         self,

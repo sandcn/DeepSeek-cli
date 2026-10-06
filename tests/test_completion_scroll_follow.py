@@ -130,7 +130,7 @@ class _CtlHarness:
         def _on_router(router):
             self.router = router
 
-        _hooks.set_input_router_callback(_on_router)
+        _hooks.set_input_router_callback(_on_router, ctx=self.rec.hook_context)
         comp = {
             "select": SelectInput, "multi": MultiSelect, "radio": RadioList,
         }[component]
@@ -487,7 +487,7 @@ class _AppHarness:
         def _on_router(router):
             self.router = router
 
-        _hooks.set_input_router_callback(_on_router)
+        _hooks.set_input_router_callback(_on_router, ctx=self.rec.hook_context)
 
     def open(self, n: int):
         c = self.model.completion

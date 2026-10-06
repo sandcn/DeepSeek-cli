@@ -25,9 +25,11 @@ from ._hooks_core import (
     use_ref,
     use_state,
     useLayoutEffect,
-    _schedule,
+    _schedule_ctx,
 )
-# ★ 模块级可变状态唯一真源在 hooks.py 门面（见 _hooks_core.py 注释）。
+from ._hook_context import current_context
+# ★ 会话级状态真源在 ``_hook_context.HookContext``（每渲染会话一个实例）；
+#   本模块经 ``_hooks_module._xxx`` 访问，门面按「当前上下文」路由。
 from src.tui.ink import hooks as _hooks_module
 
 # ★ logger 名保持 ``src.tui.ink.hooks``（模块拆分后日志命名不变，见
@@ -191,6 +193,11 @@ def useSyncExternalStore(
     hook = _next_hook(SyncStoreHook, None)
     hook.subscribe = subscribe
     hook.get_snapshot = get_snapshot
+    # ★ 多会话隔离（P0 架构修复）：listener 可能在渲染期之外、任意线程被
+    #   store 触发——捕获本组件所属会话的上下文，经 ``_schedule_ctx`` 调度
+    #   到**本会话**的重渲染（``_schedule()`` 读「当前上下文」，跨线程/跨
+    #   会话时会调度到错误的会话或默认上下文）。
+    ctx = current_context()
 
     def _commit_subscribe() -> None:
         # ★ P2-3 修复（review 方向）：订阅/重订阅移入提交阶段（layout
@@ -213,7 +220,7 @@ def useSyncExternalStore(
                 hook.cleanup = None
             hook.last_subscribe = subscribe
             try:
-                cleanup = subscribe(lambda: _schedule())
+                cleanup = subscribe(lambda: _schedule_ctx(ctx))
                 hook.cleanup = cleanup if callable(cleanup) else None
             except Exception:
                 # ★ P3 修复（review 方向）：订阅抛异常后复位 last_subscribe
@@ -319,20 +326,27 @@ def useBoxMetrics(ref) -> dict:
 # useWindowSize（React Ink v6 等价物）
 # ═══════════════════════════════════════════════════════════
 # 状态（_window_size/_window_size_version/_window_size_listeners/
-# _window_size_accessor）唯一真源在 hooks.py 门面；本模块经
-# ``_hooks_module._window_size_*`` 访问。
+# _window_size_accessor）为会话级（``HookContext`` 字段）；本模块经
+# ``_hooks_module._window_size_*`` 访问（门面按当前上下文路由）。
 
 
-def set_window_size_accessor(fn: Callable[[], tuple[int, int]] | None) -> None:
-    """注入窗口尺寸访问器（session 调用：``lambda: (columns, rows)``）。"""
-    _hooks_module._window_size_accessor = fn
+def set_window_size_accessor(
+    fn: Callable[[], tuple[int, int]] | None, ctx: "HookContext | None" = None,
+) -> None:
+    """注入窗口尺寸访问器（session 调用：``lambda: (columns, rows)``）。
+
+    ``ctx`` 非 None 时写入指定会话上下文；None 时写当前激活上下文。
+    """
+    target = ctx if ctx is not None else current_context()
+    target.window_size_accessor = fn
 
 
-def _refresh_window_size() -> None:
+def _refresh_window_size(ctx: "HookContext | None" = None) -> None:
     """渲染期刷新窗口尺寸（useWindowSize 调用前）。"""
-    if _hooks_module._window_size_accessor is not None:
+    target = ctx if ctx is not None else current_context()
+    if target.window_size_accessor is not None:
         try:
-            _hooks_module._window_size = _hooks_module._window_size_accessor()
+            target.window_size = target.window_size_accessor()
         except Exception:
             # ★ P3-4（review 方向）：不静默吞异常——记 debug 日志（窗口尺寸
             #   访问器异常为环境级降级，不中断渲染，但须可观测）。
@@ -345,10 +359,15 @@ def _subscribe_window_size(listener: Callable[[], None]) -> Callable[[], None]:
     return lambda: _hooks_module._window_size_listeners.discard(listener)
 
 
-def _notify_window_size() -> None:
-    """通知窗口尺寸变化（session resize 时调用）：触发全部订阅重渲染。"""
-    _hooks_module._window_size_version += 1
-    for fn in list(_hooks_module._window_size_listeners):
+def _notify_window_size(ctx: "HookContext | None" = None) -> None:
+    """通知窗口尺寸变化（session resize 时调用）：触发全部订阅重渲染。
+
+    ``ctx`` 非 None 时作用于指定会话上下文（session 渲染线程传自己的；
+    多会话下各通知各自订阅者）。
+    """
+    target = ctx if ctx is not None else current_context()
+    target.window_size_version += 1
+    for fn in list(target.window_size_listeners):
         try:
             fn()
         except Exception:
@@ -389,12 +408,17 @@ def useWindowSize() -> dict:
 # ═══════════════════════════════════════════════════════════
 # useCursor（React Ink v6 等价物）
 # ═══════════════════════════════════════════════════════════
-# 状态（_cursor_position_fn）唯一真源在 hooks.py 门面。
+# 状态（_cursor_position_fn）为会话级（``HookContext`` 字段，门面按当前
+# 上下文路由）。
 
 
-def set_cursor_position_fn(fn: Callable[[Any], None] | None) -> None:
-    """注入光标定位回调（session 调用——IME 光标定位）。"""
-    _hooks_module._cursor_position_fn = fn
+def set_cursor_position_fn(fn: Callable[[Any], None] | None, ctx: "HookContext | None" = None) -> None:
+    """注入光标定位回调（session 调用——IME 光标定位）。
+
+    ``ctx`` 非 None 时写入指定会话上下文；None 时写当前激活上下文。
+    """
+    target = ctx if ctx is not None else current_context()
+    target.cursor_position_fn = fn
 
 
 def useCursor() -> dict:
@@ -410,11 +434,13 @@ def useCursor() -> dict:
     Returns:
         dict：``{"setCursorPosition": callable}``。
     """
+    ctx = current_context()
 
     def _set_cursor_position(position) -> None:
-        if _hooks_module._cursor_position_fn is not None:
+        fn = ctx.cursor_position_fn
+        if fn is not None:
             try:
-                _hooks_module._cursor_position_fn(position)
+                fn(position)
             except Exception:
                 # ★ P3-4（review 方向）：不静默吞异常——记 debug 日志（光标
                 #   定位回调异常为环境级降级，不中断渲染，但须可观测）。
@@ -441,9 +467,14 @@ def useIsScreenReaderEnabled() -> bool:
     return bool(getattr(_hooks_module, "_screen_reader_enabled", False))
 
 
-def set_screen_reader_enabled(enabled: bool) -> None:
-    """注入屏幕阅读器开关（``render({isScreenReaderEnabled})`` 调用）。"""
-    _hooks_module._screen_reader_enabled = bool(enabled)
+def set_screen_reader_enabled(enabled: bool, ctx: "HookContext | None" = None) -> None:
+    """注入屏幕阅读器开关（``render({isScreenReaderEnabled})`` 调用）。
+
+    ``ctx`` 非 None 时写入指定会话上下文（``render()`` 传本会话上下文，
+    退出时还原——修复前写模块级全局，跨会话泄漏）；None 时写当前上下文。
+    """
+    target = ctx if ctx is not None else current_context()
+    target.screen_reader_enabled = bool(enabled)
 
 
 # ═══════════════════════════════════════════════════════════

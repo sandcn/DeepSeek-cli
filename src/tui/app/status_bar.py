@@ -28,6 +28,7 @@ BEAUTY-1/PERF-3（方向A 步骤1）：模型名点 FadeIn 渐显窗口内按 0.
 from __future__ import annotations
 
 import time
+from weakref import WeakKeyDictionary
 
 from src.tui.core.style import Style
 from src.tui.ink import h, TEXT, Line, StyledRun, use_memo, use_ref, Column
@@ -55,18 +56,26 @@ from src.tui.app._fx import SPINNER_FRAMES as _SPINNER_FRAMES  # noqa: F401
 # 快照与显示节奏不产生错位。
 _SNAPSHOT_TTL = 1.0
 
+#: 快照 TTL 缓存（弱引用键控 model 实例）——不写在 model 属性上：
+#: 渲染必须是纯函数（渲染期写 model 属性即副作用：第二次渲染可能不再调用
+#: ``fn()``，返回值随渲染次数变化，且与 memo 短路/并发渲染/双调用校验冲突）。
+#: 弱引用键控同时保持多实例隔离（各 AppModel 独立 TTL，互不串扰），且 model
+#: 被回收时缓存条目自动消失。
+_snapshot_cache: "WeakKeyDictionary" = WeakKeyDictionary()
+
 
 def _snapshot(model) -> dict:
     """api 快照查询（TTL 缓存 ≤1Hz）。
 
-    ★ P2（review）：缓存挂 model 实例（``model._status_snapshot_cache``）
-    ——修复前为模块级全局 ``_snapshot_cache``：多个 AppModel 实例（测试
-    隔离/多会话）共享同一 TTL 快照，A 实例刷新后 B 实例在 TTL 内读到 A
-    的 token/耗时数据。实例缓存后各模型互不串扰（渲染线程单写，GIL 原子
-    赋值足够）。
+    ★ 多实例隔离 + 渲染纯净：缓存挂模块级 ``WeakKeyDictionary``（键为 model
+    实例）——各 AppModel 互不串扰，且**不写 model 属性**（渲染期无副作用）。
+    渲染线程单写，GIL 原子赋值足够。
     """
     now = time.monotonic()
-    cache = getattr(model, "_status_snapshot_cache", None)
+    try:
+        cache = _snapshot_cache.get(model)
+    except TypeError:
+        cache = None  # 不可弱引用/不可哈希的模型：不缓存（每次都查）
     if cache is not None and now - cache[0] < _SNAPSHOT_TTL:
         return cache[1]
     try:
@@ -75,7 +84,10 @@ def _snapshot(model) -> dict:
         data = fn() if fn is not None else {}
     except Exception:
         data = {}
-    model._status_snapshot_cache = (now, data)
+    try:
+        _snapshot_cache[model] = (now, data)
+    except TypeError:
+        pass
     return data
 
 

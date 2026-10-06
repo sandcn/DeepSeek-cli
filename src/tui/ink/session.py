@@ -102,7 +102,7 @@ _FLUSH_HARD_CEILING = 60.0
 class RenderLoopPhase(Enum):
     """渲染循环单帧阶段（架构改进方向 E，2026-08-16：显式状态迁移）。
 
-    ``_drain_queue`` 按本枚举驱动单帧六阶段处理，阶段迁移显式化：
+    ``_drain_queue`` 按本枚举驱动单帧七阶段处理，阶段迁移显式化：
 
       SIGWINCH → INPUT → PANELS → SYSTEM_STATS → DRAIN_COMMANDS
       → APPLY → RENDER（终态，返回本帧是否有命令变更）
@@ -165,6 +165,10 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._width_cache = width_cache or TerminalWidthCache.get_default()
 
         self._reconciler = Reconciler(schedule_callback=self._schedule_render)
+        #: 本会话的 hooks 上下文（P0 架构修复·多会话隔离）：注入接线写入它，
+        #: 渲染线程整个生命周期激活它（``_render`` push/pop）——同一进程可
+        #: 并存多个 InkSession / render() 会话而互不覆盖状态。
+        self._hook_ctx = self._reconciler.hook_context
         self._root_fiber = self._reconciler.create_root()
         # ★ 增量渲染屏幕坐标（方向1）：渲染器接收终端屏幕高度——文档高于屏幕
         #   时按屏幕坐标跟踪物理光标（防 cursor_up 越出屏幕顶部错位）、可见区
@@ -198,6 +202,10 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._frame_seq: int = 0
         self._frame_seq_lock = threading.Lock()
         self._frame_flush_waiters: list = []
+        # ★ 渲染互斥（可重入）：串行化「渲染线程常规帧」与「外部线程同步渲染」
+        #   （request_bottom_redraw / flush_input_router 主动渲染）——消除并发
+        #   写 stream（输出撕裂）并让调用方可直接执行一帧。
+        self._render_lock = threading.RLock()
         self._cmd_queue_dropped: int = 0
         self._render_crashed: threading.Event = threading.Event()
         self._last_bottom_redraw: float = 0.0
@@ -231,7 +239,11 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   新会话覆盖（最后一次构造者生效），stop() 不注销 hooks（与
         #   SIGWINCH 回调按 token 注销不对称——hooks 全局无多会话注册表，
         #   引入即多会话支持改造，超出单会话约束范围）。
-        _hooks.set_input_router_callback(self._on_input_router)
+        # ★ hooks 接线（多会话隔离）：全部注入写入**本会话的 HookContext**
+        #   （``ctx=self._hook_ctx``）——修复前写入模块级全局，第二个会话构造
+        #   即覆盖第一个（重渲染回调/router/app control 串台）。stop() 不复位
+        #   本会话上下文（会话对象生命周期内保持；重建会话走新 HookContext）。
+        _hooks.set_input_router_callback(self._on_input_router, ctx=self._hook_ctx)
         # ★ useApp 控制（方向B 步骤10）：session 注入 exit/clear 回调
         self._exit_requested = False
         #: useApp().exit(value) 的退出结果（官方语义：waitUntilExit 以该值
@@ -239,7 +251,10 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._exit_result = None
         #: render({onRender}) 每帧渲染后回调（React Ink v6 RenderMetrics）。
         self._on_render_callback: Callable | None = None
-        _hooks.set_app_control({"exit": self.request_exit, "clear": self.request_clear})
+        _hooks.set_app_control(
+            {"exit": self.request_exit, "clear": self.request_clear},
+            ctx=self._hook_ctx,
+        )
         # ★ useStdin/useStdout/useStderr（完善 react ink）：session 注入惰性
         #   访问器——stdin 为 Input 实例（set_input 后可用），stdout 为渲染器
         #   输出流，stderr 为 sys.__stderr__（紧急路径一致）。
@@ -247,16 +262,18 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             lambda: self._input,
             lambda: self._ink_renderer.stream,
             lambda: sys.__stderr__,
+            ctx=self._hook_ctx,
         )
         # ★ React Ink v6 hooks（方向 E）：session 注入 window size accessor /
         #   cursor 定位 / 渲染 flush / 终端挂起 回调——useWindowSize/useCursor/
         #   useApp（waitUntilRenderFlush/suspendTerminal）读取。
         _hooks.set_window_size_accessor(
-            lambda: (self._width_cache.get_width(), self._width_cache.get_height())
+            lambda: (self._width_cache.get_width(), self._width_cache.get_height()),
+            ctx=self._hook_ctx,
         )
-        _hooks.set_cursor_position_fn(self._set_ink_cursor_position)
-        _hooks.set_render_flush_fn(self._wait_render_flush)
-        _hooks.set_suspend_terminal_fn(self._suspend_terminal)
+        _hooks.set_cursor_position_fn(self._set_ink_cursor_position, ctx=self._hook_ctx)
+        _hooks.set_render_flush_fn(self._wait_render_flush, ctx=self._hook_ctx)
+        _hooks.set_suspend_terminal_fn(self._suspend_terminal, ctx=self._hook_ctx)
         # ★ P5：input-area fiber 引用缓存（方向2 P5）——_render_frame 仅在失效时
         #   重建（None/deleted/类型不符），_position_cursor 复用（避免每帧全树
         #   递归查找 input-area）。
@@ -325,6 +342,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             lambda: self._input,
             lambda: self._ink_renderer.stream,
             lambda: self._stderr_stream,
+            ctx=self._hook_ctx,
         )
 
     def set_exit_on_ctrl_c(self, enabled: bool) -> None:
@@ -459,8 +477,8 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   随后 DRAIN/RENDER 阶段再渲染一帧（双帧开销），且嵌套渲染期间
         #   ``_on_input_router`` 会替换 dispatcher 正在使用的 router，且不经
         #   输出锁（``request_bottom_redraw`` 的同步渲染有锁保护，本处没有）。
-        #   改为置脏标记交由本帧 RENDER 阶段统一渲染（全程 30Hz 保证渲染
-        #   发生）；非渲染线程调用保持同步渲染语义（外部 API 期望立即重建）。
+        #   改为置脏标记交由本帧 RENDER 阶段统一渲染（``_should_render`` 见脏
+        #   即渲染）；非渲染线程调用保持同步渲染语义（外部 API 期望立即重建）。
         if threading.current_thread() is self._render_thread:
             self._dirty = True
             self._bottom_redraw_requested.set()
@@ -581,6 +599,24 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             # 同步渲染一帧（router 随 reconciler.render 发布）——无需等待。
             self.request_bottom_redraw()
             return True
+        # ★ 主动同步渲染（消除时序窗口）：拿渲染互斥后由**本线程**渲染一帧
+        #   ——返回时 router 已按最新模型重建，无需「猜帧数」等待（修复前
+        #   依赖渲染线程完成 2 帧，慢渲染下窗口长且只能靠超时兜底）。
+        #   ``_render_lock`` 与渲染线程常规帧互斥（不会并发写 stream）。
+        #   stub（无 ``_render_lock``）走下方回退路径（既有等待语义）。
+        lock = getattr(self, "_render_lock", None)
+        if lock is not None:
+            acquired = lock.acquire(timeout=max(0.1, float(timeout)))
+            if acquired:
+                try:
+                    self._render_frame()
+                    return True
+                except Exception:
+                    _logger.warning("flush_input_router 同步渲染异常", exc_info=True)
+                    return False
+                finally:
+                    lock.release()
+            _logger.warning("flush_input_router 获取渲染锁超时，降级为等待渲染线程")
         ev = threading.Event()
         with self._frame_seq_lock:
             target = self._frame_seq + 2
@@ -1015,6 +1051,16 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   30Hz；用户输入/关键命令仍经 ``_drain_queue`` 每轮处理（延迟
         #   ≤ render_interval，与空闲 30Hz 行为一致）。
         next_loop: float = 0.0
+        # ★ 多会话隔离（P0 架构修复）：渲染线程整个生命周期激活本会话的
+        #   HookContext——INPUT 阶段（_phase_process_input）的输入分发、
+        #   use_input router 回调、key pressed 标志、焦点切换与
+        #   _needs_animation 的动画探测都发生在 reconciler.render 之外，需要
+        #   「当前上下文」是本会话（否则多会话下串台 / 落到默认上下文）。
+        #   stub（``object.__new__(InkSession)`` 借用本方法的测试）无
+        #   ``_hook_ctx`` → 跳过激活（走默认上下文，行为同旧）。
+        _ctx = getattr(self, "_hook_ctx", None)
+        if _ctx is not None:
+            _hooks.push_context(_ctx)
         try:
             while self._render_running:
                 # ── 节流等待（PERF-8）：等待到 next_loop 才处理 ──
@@ -1085,6 +1131,8 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                     else:
                         break
         finally:
+            if _ctx is not None:
+                _hooks.pop_context()
             if self._render_version != entry_version:
                 _logger.debug("render 线程版本已更新（新线程已启动），跳过排空")
             else:
@@ -1103,7 +1151,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                     )
 
     def _drain_queue(self) -> bool:
-        """单帧处理：六阶段显式状态机（架构改进方向 E，2026-08-16）。
+        """单帧处理：七阶段显式状态机（架构改进方向 E，2026-08-16）。
 
         阶段迁移：``SIGWINCH → INPUT → PANELS → SYSTEM_STATS →
         DRAIN_COMMANDS → APPLY → RENDER``（RENDER 为终态，返回本帧是否有
@@ -1320,9 +1368,10 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         与 ``_subagent_panel._needs_animation``（面板控制器经 SUBAGENT_FRAME
         命令自行驱动渲染循环）互补：本方法覆盖主 agent 侧动画状态。
 
-        ★ 2026-08-16 需求变更：渲染循环已改为**全程 30Hz**（空闲也持续渲染，
-        见 ``_should_render``），本方法不再决定是否跳过渲染——保留用于标记
-        活跃动画状态（置脏），以及对时间基动画语义的探测（其他模块注释引用）。
+        ★ 参与渲染决策（按需渲染）：``_should_render`` 用本方法判断「无脏命令
+        但仍有活跃动画」→ 继续按 ``render_interval`` 渲染（动画平滑推进）；
+        无脏且无动画 → 跳过整帧重建（``TuiConfig.idle_render=False`` 默认；
+        设 True 恢复「全程 30Hz」旧行为）。
 
         线程安全：仅在 render 线程（``_should_render``）调用；属性读取为 GIL
         原子操作（status/tool_boxes/parse_line 赋值与读取均原子）。
@@ -1347,25 +1396,27 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   搜索行 query 已静态化（见 input_area.py _build_lines），无需 30Hz
         #   渲染推进呼吸。修复前搜索激活持续 30Hz 渲染（Termux 等终端闪烁）；
         #   搜索行内容仅随按键（query/matches 变化）更新，经事件驱动渲染。
-        # ★ useAnimation 共享驱动：存在活跃动画订阅时视为有动画需求（标记
-        #   脏；渲染循环为全程 30Hz，本方法不决定是否渲染）。
+        # ★ useAnimation 共享驱动：存在活跃动画订阅时视为有动画需求（返回
+        #   True → ``_should_render`` 置脏并按 render_interval 继续渲染）。
         try:
-            if _hooks.has_active_animations():
+            if _hooks.has_active_animations(ctx=getattr(self, "_hook_ctx", None)):
                 return True
         except Exception:
             _logger.debug("has_active_animations 异常", exc_info=True)
         return False
 
     def _should_render(self, changed: bool) -> bool:
-        """是否需渲染本帧：全程 30Hz 拍渲染（空闲也持续刷新）。
+        """是否需渲染本帧：**按需渲染**（脏 / 活跃动画），可配置全程 30Hz。
 
         事件（命令/重绘请求）标记脏并唤醒循环，但不立即渲染——与下一个
         30Hz 拍一起渲染（批处理）。
 
-        ★ 全程 30Hz（2026-08-16 需求变更）：移除原先「空闲（无脏）跳过渲染
-        （CPU ~0）」短路——**没有流式输出（等待用户输入/空闲）期间 TUI 也
-        以每秒 30Hz 刷新**。组件树大量缓存下无变化帧 diff 零输出（仅光标
-        定位），CPU 开销可控；空闲时状态栏/输入区等时间基元素同样平滑推进。
+        ★ 按需渲染（CPU 优化，默认 ``TuiConfig.idle_render=False``）：
+        无脏命令且无活跃动画（``_needs_animation``——时间基 spinner/呼吸/
+        动画订阅）时**跳过整帧重建**（组件树 → 调和 → 布局 → 绘制 → diff），
+        等待事件唤醒。修复前（2026-08-16 需求变更）为「全程 30Hz」：空闲也
+        每 1/30s 重建整棵树，CPU 常驻开销（笔记本/IDE 终端尤其明显）；
+        需要旧行为时设 ``idle_render=True``。
 
         ★ 立即渲染：force（_bottom_redraw_requested，如 /editmsg prefill 注入）
         时跳过 interval 节流——用户可感知的 UI 更新即时渲染；高频命令
@@ -1379,16 +1430,18 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   ``is_set()`` 与 ``clear()`` 之间并发 set 的 force 会被本次 clear
         #   吞掉（该请求降级为下一 30Hz 拍渲染，延迟 ≤ render_interval（1/30s），
         #   用户不可感知）。原子化需 Condition/锁，热路径成本不值——窗口内
-        #   丢失的 force 语义由 30Hz 全程渲染兜底。
+        #   丢失的 force 语义由后续拍渲染兜底。
         force = self._bottom_redraw_requested.is_set()
         self._bottom_redraw_requested.clear()
         if changed or force:
             self._dirty = True  # 本批命令已应用 / 底部重绘请求 → 标记脏
-        # ★ 活跃动画状态 → 置脏（语义保留：有动画需求时标记 dirty；渲染决定
-        #   已不依赖 dirty——全程 30Hz 渲染，见上）。
+        # ★ 活跃动画状态 → 置脏（时间基元素需要连续帧推进）。
         if not self._dirty and self._needs_animation():
             self._dirty = True
-        # ★ 全程 30Hz：空闲也按 render_interval 渲染（移除空闲跳过短路）。
+        # ★ 空闲跳过（idle_render=False）：无脏且无动画 → 本拍不重建组件树
+        #   （渲染循环仍每 render_interval 醒来消费输入/命令，成本可忽略）。
+        if not self._dirty and not self._config.idle_render:
+            return False
         if now - self._last_bottom_redraw >= self._config.render_interval or force:
             self._dirty = False
             self._last_bottom_redraw = now

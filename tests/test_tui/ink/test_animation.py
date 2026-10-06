@@ -50,11 +50,12 @@ def test_use_animation_inactive_returns_zero():
 def test_use_animation_subscribes_driver():
     out = {}
     harness = Harness(20)
-    H.reset_animation_state()
+    ctx = harness.hook_context
+    H.reset_animation_state(ctx=ctx)
     harness.render(h(_animation_component, {"_out": out, "options": {}}))
-    assert H.has_active_animations() is True
-    H.reset_animation_state()
-    assert H.has_active_animations() is False
+    assert H.has_active_animations(ctx=ctx) is True
+    H.reset_animation_state(ctx=ctx)
+    assert H.has_active_animations(ctx=ctx) is False
 
 
 def test_reset_restarts_timing():

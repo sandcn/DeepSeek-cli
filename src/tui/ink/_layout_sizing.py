@@ -128,7 +128,7 @@ def _resolve_height(fiber: Fiber, content_h: int) -> int:
     """
     h = content_h
     height = fiber.props.get("height")
-    parent_h = getattr(fiber, "_parent_avail_h", None)
+    parent_h = fiber._parent_avail_h
     if height is not None:
         if isinstance(height, str) and height.endswith("%"):
             if parent_h is not None:

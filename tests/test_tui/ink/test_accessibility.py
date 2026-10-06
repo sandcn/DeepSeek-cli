@@ -53,23 +53,19 @@ def test_module_alias_same():
 
 
 def test_transform_accessibility_label_in_screen_reader_mode():
+    # ★ 多会话隔离：屏幕阅读器开关经 renderToString options 注入**本会话**，
+    #   不再写模块级全局（见 _render_api / _hooks_env 修复）。
     from src.tui.ink import h, Transform, renderToString
-    from src.tui.ink import hooks as H
 
-    H.set_screen_reader_enabled(True)
-    try:
-        out = renderToString(
-            h(Transform, {"accessibilityLabel": "图片：一只猫", "transform": str.upper}, "cat")
-        )
-        assert out == "图片：一只猫"
-    finally:
-        H.set_screen_reader_enabled(False)
+    out = renderToString(
+        h(Transform, {"accessibilityLabel": "图片：一只猫", "transform": str.upper}, "cat"),
+        {"isScreenReaderEnabled": True},
+    )
+    assert out == "图片：一只猫"
 
 
 def test_transform_normal_mode_uses_children():
     from src.tui.ink import h, Transform, renderToString
-    from src.tui.ink import hooks as H
 
-    H.set_screen_reader_enabled(False)
     out = renderToString(h(Transform, {"accessibilityLabel": "L", "transform": str.upper}, "cat"))
     assert out == "CAT"

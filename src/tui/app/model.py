@@ -89,8 +89,9 @@ class AppModel(_ToolOutputMixin):
         self.content_block_index: int = -1
         # 终端宽度（session 每帧更新；渲染器 TOC 边框用）
         self.width: int = 80
-        # ★ P3（review）：status_bar 快照 TTL 缓存字段显式声明（修复前为动态
-        #   挂载属性，未在模型中声明，与「显式声明防动态属性隐患」约定不符）。
+        # ★ P3（review）：status_bar 快照 TTL 缓存字段（保留声明兼容旧引用）。
+        #   渲染纯净修复后缓存已迁至 ``app.status_bar._snapshot_cache``
+        #   （WeakKeyDictionary 键控 model 实例）——渲染期不再写 model 属性。
         self._status_snapshot_cache = None
         # 每工具 box 跟踪（tool_id → 开放 box）
         self.tool_boxes: dict = {}
@@ -844,6 +845,24 @@ class AppModel(_ToolOutputMixin):
         #   递增保证 key 唯一，清屏后再次打开强制重挂载，不残留旧选中）。
         prev_pv_seq = getattr(self.plugin_view, "seq", 0)
         self.plugin_view = PluginViewState(seq=prev_pv_seq)
+
+    # ── 未声明字段访问告警（可维护性） ──
+    # 组件树大量经 ``getattr(model, "字段", 默认)`` 读取状态——拼写错误会静默
+    # 取默认值（渲染出空内容/错误布局而非报错），极难定位。AppModel 的全部
+    # 状态字段都在 ``__init__`` 显式初始化（跨视图字段见 ``__init__`` 的
+    # trace_* / fullscreen / bottom_view 段），因此「公开属性不存在」等价于
+    # 拼写错误或忘记初始化——本方法使其在日志中可观测。
+    # 语义不变：仍抛 ``AttributeError``（``getattr(..., default)`` 正常回退）。
+    # 私有/协议名（``_`` 开头，如 ``hasattr(model, "_ipython_canary...")`` 探测、
+    # ``copy``/``pickle`` 的 dunder 查询）不告警，避免噪音。
+
+    def __getattr__(self, name: str):
+        """未知属性访问：公开名记 warning 后抛 ``AttributeError``。"""
+        if not name.startswith("_"):
+            _logger.warning(
+                "AppModel 访问未声明字段 %r（拼写错误或未在 __init__ 初始化）", name,
+            )
+        raise AttributeError(name)
 
     # ── trace_open 兼容别名（2026-08-17 通用化：模态全屏视图） ──
     # 轨迹视图打开 = model.fullscreen == "trace"。property 保持旧字段读写

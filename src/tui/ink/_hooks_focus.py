@@ -17,7 +17,8 @@ from ._hooks_core import (
     _schedule,
     HookStateError,
 )
-# ★ 模块级可变状态唯一真源在 hooks.py 门面（见 _hooks_core.py 注释）。
+# ★ 会话级状态真源在 ``_hook_context.HookContext``（每渲染会话一个实例）；
+#   本模块经 ``_hooks_module._xxx`` 访问，门面按「当前上下文」路由。
 from src.tui.ink import hooks as _hooks_module
 
 
@@ -52,7 +53,7 @@ def _register_focus_id(fid: str) -> None:
 
 def _resolve_focus_id(fiber: Fiber) -> str:
     """为未指定 id 的 useFocus 分配稳定自动 id（挂在 fiber 上，复用不重分配）。"""
-    fid = getattr(fiber, "_focus_id", None)
+    fid = fiber._focus_id
     if fid is None:
         fid = f"__focus_{next(_hooks_module._focus_id_seq)}__"
         fiber._focus_id = fid
@@ -68,7 +69,7 @@ def _clear_focus_active(fiber: Fiber) -> None:
     仍指向已不存在的组件：``focusNext``/``focusPrevious`` 找不到该 id、
     ``isFocused`` 悬空判断（焦点悬挂）。
     """
-    fid = getattr(fiber, "_focus_id", None)
+    fid = fiber._focus_id
     if fid is not None and _hooks_module._focus_active == fid:
         _hooks_module._focus_active = None
 
@@ -195,7 +196,7 @@ def useFocus(options: "bool | dict | None" = None) -> dict:
             #   复用旧值（焦点仲裁沿用旧 id，与其他组件冲突/悬挂）。仅当
             #   残留 id 为显式来源时清除（自动 id 以 ``__focus_`` 前缀标记，
             #   保持「复用不重分配」稳定）；清除后重新分配自动 id。
-            existing = getattr(fiber, "_focus_id", None)
+            existing = fiber._focus_id
             if existing is not None and not existing.startswith("__focus_"):
                 fiber._focus_id = None
             fid = _resolve_focus_id(fiber)

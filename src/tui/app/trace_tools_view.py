@@ -32,7 +32,7 @@ from src.tui.app.trace import _tools_schema_list, build_tools_params_tree
 from src.tui.app.trace_view import _tree_node_rows, _viewport_rows
 from src.tui.core.style import Style
 from src.tui.ink import (
-    TEXT, Column, Row, StyledRun, h, use_fullscreen, use_input, use_memo,
+    TEXT, Column, Row, StyledRun, h, use_effect, use_fullscreen, use_input, use_memo,
 )
 from src.tui.ink.helpers import truncate_runs
 from src.tui.ink.widgets.listview import ListView
@@ -305,6 +305,9 @@ def TraceToolsView(props) -> object:
     model = props["model"]
     width = props.get("width", 0) or 0
     active = getattr(model, "fullscreen", "") == "trace_tools"
+    # ★ 渲染期无副作用（架构修复）：渲染期计算的模型写回收集在此，组件末尾经
+    #   ``use_effect`` 统一提交（见 trace_view 同族修复）。
+    _model_writes: dict = {}
 
     # ── 数据（use_memo：schema 列表 TTL 缓存内稳定——工具注册装配期完成） ──
     schemas = use_memo(lambda: _tools_schema_list(), ("tools-schema",))
@@ -357,13 +360,13 @@ def TraceToolsView(props) -> object:
     content_rows, row_keys = content
     total_content = len(content_rows)
     approx_content_vh = _tools_viewport_rows(vh)
-    # 光标渲染期钳制（写回 model——越界残留收敛；空内容 → 0）
+    # 光标渲染期钳制（收集写回——渲染期不写 model，提交期统一落盘）
     if total_content:
         cursor = max(0, min(cursor_raw, total_content - 1))
     else:
         cursor = 0
     if cursor != cursor_raw:
-        model.trace_tools_cursor = cursor
+        _model_writes["trace_tools_cursor"] = cursor
         cursor_raw = cursor
     # scroll 渲染期协调：钳制 + 跟随光标保持可见（vim 视口语义）
     if total_content > approx_content_vh:
@@ -378,7 +381,7 @@ def TraceToolsView(props) -> object:
     else:
         scroll_raw = 0
     if scroll_raw != (getattr(model, "trace_tools_scroll", 0) or 0):
-        model.trace_tools_scroll = scroll_raw
+        _model_writes["trace_tools_scroll"] = scroll_raw
     scroll = scroll_raw
     # 光标参数：仅右栏焦点传入（高亮）；左栏焦点 -1（不高亮）
     cursor_arg = cursor if pane == "inspector" else -1
@@ -498,6 +501,14 @@ def TraceToolsView(props) -> object:
         # 其余按键不消费——左栏：放行 ListView（j/k/↑↓/PgUp/PgDn/g/G 导航）；
         # 右栏：未消费按键被 use_fullscreen 模态吞掉
         return False
+
+    # ★ 渲染期无副作用（架构修复）：渲染期收集的模型写回（光标/滚动钳制）
+    #   在提交期统一落盘——渲染期只算不写（见 trace_view 同族修复）。
+    def _flush_model_writes() -> None:
+        for _name, _value in tuple(_model_writes.items()):
+            setattr(model, _name, _value)
+
+    use_effect(_flush_model_writes, tuple(sorted(_model_writes.items())))
 
     use_input(_handle, active)
     # ★ 模态全屏视图声明：未消费按键被 input router 吞掉（字符/Enter 不落入

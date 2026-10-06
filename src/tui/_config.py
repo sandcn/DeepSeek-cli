@@ -58,7 +58,15 @@ class TuiConfig(ConfigBase):
     """
 
     # ── 渲染引擎参数 ──────────────────────────────────
-    render_interval: float = 1.0 / 30       # render 线程刷新间隔（秒），全程 30Hz（含空闲）
+    render_interval: float = 1.0 / 30       # render 线程刷新间隔（秒）——脏/动画期间的最小帧间隔
+    #: 空闲渲染模式（CPU 优化）：
+    #:  ``False``（默认）= **按需渲染**——无脏命令且无活跃动画（时间基
+    #:    spinner/呼吸/spinner 帧推进）时跳过整帧重建（组件树 → 调和 → 布局
+    #:    → 绘制 → diff 全链路），等待事件唤醒；
+    #:  ``True`` = 全程 30Hz 刷新（旧行为）——空闲也每 ``render_interval``
+    #:    重建整棵树，CPU 常驻开销明显，仅在确需「空闲也平滑推进的时间基
+    #:    元素」时启用。
+    idle_render: bool = False
     max_batch_size: int = 50                # 单帧最大批处理命令数，防止 UI 冻结
     drain_lock_timeout: float = 1.0 / 30    # drain 锁超时（秒），与 render_interval 对齐
     cmd_queue_maxsize: int = 10000          # 命令队列最大容量

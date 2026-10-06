@@ -309,9 +309,10 @@ def test_old_router_swallows_enter_without_flush():
     """修复前行为固化：无 flush 时第二次 Enter 被旧 router 吞（不提交）。"""
     r, w = os.pipe()
     d, be = _make_dispatcher(r)
-    set_input_router_callback(d.set_input_hook_router)
     model = AppModel()
     rec = Reconciler(schedule_callback=None)
+    # ★ 多会话隔离：router 发布回调写入该 reconciler 的会话上下文
+    set_input_router_callback(d.set_input_hook_router, ctx=rec.hook_context)
     root = rec.create_root()
     loop = _RenderLoop(d, rec, root, model)
     loop.start()
@@ -329,9 +330,10 @@ def test_flush_router_restores_enter_after_editmsg():
     """修复后：弹窗清理 flush 新 router → 第二次 Enter 正常提交（不被吞）。"""
     r, w = os.pipe()
     d, be = _make_dispatcher(r)
-    set_input_router_callback(d.set_input_hook_router)
     model = AppModel()
     rec = Reconciler(schedule_callback=None)
+    # ★ 多会话隔离：router 发布回调写入该 reconciler 的会话上下文
+    set_input_router_callback(d.set_input_hook_router, ctx=rec.hook_context)
     root = rec.create_root()
     loop = _RenderLoop(d, rec, root, model)
     loop.start()
