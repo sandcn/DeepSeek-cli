@@ -9,11 +9,10 @@ import os
 import time
 import threading
 import contextlib
-import aiofiles
-import aiofiles.os
 import asyncio
 from typing import Optional
 
+from ._atomic_io import atomic_write_text, remove_path
 from ..core.adapters.output import get_default_output_port
 
 _out = get_default_output_port()
@@ -105,55 +104,37 @@ class FileChangeRecord:
     # ── 核心写入逻辑（同步/异步）─────────────────────────
 
     def _do_apply(self, content: Optional[str]) -> bool:
-        """核心写入逻辑：将文件设置为 content 指定的状态。"""
+        """核心写入逻辑：将文件设置为 content 指定的状态（原子写入）。"""
         with self._cross_lock:
             try:
                 if content is None:
-                    if os.path.exists(self.file_path):
-                        if self.record_type == "directory" or os.path.isdir(self.file_path):
-                            import shutil
-                            shutil.rmtree(self.file_path)
-                        else:
-                            os.remove(self.file_path)
+                    remove_path(self.file_path)
                     return True
                 elif self.record_type == "directory":
                     os.makedirs(self.file_path, exist_ok=True)
                     return True
                 else:
-                    parent = os.path.dirname(self.file_path)
-                    if parent:
-                        os.makedirs(parent, exist_ok=True)
-                    with open(self.file_path, 'w', encoding='utf-8', errors='replace') as f:
-                        f.write(content)
+                    atomic_write_text(self.file_path, content)
                     return True
             except Exception as e:
                 _out.write(f"沙盒恢复失败: {self.file_path} - {e}", level="error", source="sandbox")
                 return False
 
     async def _do_apply_async(self, content: Optional[str]) -> bool:
-        """异步核心写入逻辑：将文件设置为 content 指定的状态。"""
+        """异步核心写入逻辑：将文件设置为 content 指定的状态（原子写入）。"""
         async with self._get_async_lock():
             async with self._cross_lock_async():
                 try:
                     if content is None:
-                        try:
-                            if self.record_type == "directory":
-                                import shutil
-                                await asyncio.to_thread(shutil.rmtree, self.file_path)
-                            else:
-                                await aiofiles.os.remove(self.file_path)
-                        except FileNotFoundError:
-                            pass
+                        await asyncio.to_thread(remove_path, self.file_path)
                         return True
                     elif self.record_type == "directory":
                         await asyncio.to_thread(os.makedirs, self.file_path, exist_ok=True)
                         return True
                     else:
-                        parent = os.path.dirname(self.file_path)
-                        if parent:
-                            await asyncio.to_thread(os.makedirs, parent, exist_ok=True)
-                        async with aiofiles.open(self.file_path, 'w', encoding='utf-8', errors='replace') as f:
-                            await f.write(content)
+                        await asyncio.to_thread(
+                            atomic_write_text, self.file_path, content,
+                        )
                         return True
                 except Exception as e:
                     _out.write(f"沙盒恢复失败: {self.file_path} - {e}", level="error", source="sandbox")

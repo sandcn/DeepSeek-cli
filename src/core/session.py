@@ -391,9 +391,14 @@ class ChatSession:
             loaded_messages: 历史消息列表（不含 system 消息）
         """
         # ★ Bug5 修复：仅在沙盒管理器未创建时才创建，避免
-        #   _force_state_recovery 后重新初始化时覆盖已有沙盒状态
-        if get_sandbox_manager() is None:
-            create_sandbox_manager()
+        #   _force_state_recovery 后重新初始化时覆盖已有沙盒状态。
+        # ★ 多会话隔离：以 ChatSession 实例 id 作为 owner_id——同一会话
+        #   （重复 initialize / _force_state_recovery）复用已有沙盒状态；
+        #   不同 ChatSession 实例则重建，避免共享全局沙盒造成索引串扰。
+        owner_id = id(self)
+        existing_sm = get_sandbox_manager()
+        if existing_sm is None or getattr(existing_sm, "owner_id", None) != owner_id:
+            create_sandbox_manager(owner_id=owner_id)
 
         if model:
             self._model = model

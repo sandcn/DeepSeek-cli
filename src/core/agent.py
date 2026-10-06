@@ -209,11 +209,25 @@ class Agent(BaseAgent):
         """
         parts = self.build_system_prompt()
         system_msgs = [{"role": "system", "content": part} for part in parts]
+        old_system_count = sum(1 for m in self.messages if m.get("role") == "system")
         non_system = [m for m in self.messages if m.get("role") != "system"]
         # ★ 就地更新（``[:]``）保持 messages 列表**引用不变**——ContextManager
         #   持有同一引用（session 初始化时 ``messages=self._agent.messages`` 传入），
         #   若重新绑定 self.messages 会与 ContextManager 脱节（百分比统计旧列表）。
         self.messages[:] = system_msgs + non_system
+        # ★ 沙盒索引同步（修复）：system 消息条数变化会使后续非 system 消息
+        #   整体平移（旧索引 = old_system_count + i，新索引 = new_count + i）。
+        #   沙盒记录索引须同步平移，否则 Ctrl+B 模式切换后回滚定位错位。
+        delta = len(system_msgs) - old_system_count
+        if delta:
+            try:
+                from .sandbox_manager import get_sandbox_manager
+
+                sm = get_sandbox_manager()
+                if sm is not None:
+                    sm.shift_indices_by(old_system_count, delta)
+            except Exception:
+                _logger.debug("系统提词重建后同步沙盒索引失败", exc_info=True)
         # ★ 系统提词变化后刷新上下文使用率（TUI 模式行行首动态刷新）。
         #   force=True：Ctrl+B 模式切换时 system 消息**条数**可能不变、
         #   仅内容替换——懒同步（len 判断）会命中旧缓存，百分比不更新；

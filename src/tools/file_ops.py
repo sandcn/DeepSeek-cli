@@ -307,6 +307,23 @@ def _sync_collect_files(path: str) -> list[str]:
     return files
 
 
+async def async_collect_dirs(path: str) -> list[str]:
+    """异步递归收集目录树下的所有子目录（不含根自身）。"""
+    return await asyncio.to_thread(_sync_collect_dirs, path)
+
+
+def _sync_collect_dirs(path: str) -> list[str]:
+    """同步收集目录树下的所有子目录（不含根自身，不跟随/不包含符号链接目录）。"""
+    dirs = []
+    if os.path.isdir(path) and not os.path.islink(path):
+        for root, subdirs, _filenames in os.walk(path, followlinks=False):
+            for name in subdirs:
+                full = os.path.join(root, name)
+                if not os.path.islink(full):
+                    dirs.append(full)
+    return dirs
+
+
 async def async_record_directory_files(
     source_path: str,
     dest_path: str,
@@ -315,12 +332,14 @@ async def async_record_directory_files(
     dst_existing: dict[str, str | None] | None = None,
     source_deleted: bool = True,
     source_contents: dict[str, str | None] | None = None,
+    dir_changes: list[tuple] | None = None,
 ) -> None:
-    """记录目录移动/复制操作中所有文件的沙盒变更
+    """记录目录移动/复制操作中所有文件 **及目录树** 的沙盒变更
 
     Args:
         source_path: 源目录路径
-        dest_path: 目标目录路径
+        dest_path: 目标目录路径（语义为「源目录树的镜像根」，与 copytree /
+            shutil.move 落点一致）
         source_files: 源目录下的所有文件路径列表
         tool_name: 工具名称（如 "mv", "cp"）
         dst_existing: 目标目录中已存在的文件内容映射（可选）
@@ -330,13 +349,30 @@ async def async_record_directory_files(
                          格式: {文件路径: 内容或None}
                          用于 mv 等工具在 move 之后源文件已不可读的场景。
                          不传时回退到 async_read_file_content(fp)。
+        dir_changes: 预计算的目录树变更（可选）。目标目录「是否新建」依赖
+            **操作前**的存在性判定；调用方若在移动/复制之后才调用本函数，
+            必须在此传入操作前计算的目录变更（见
+            ``build_directory_target_creation_changes``），否则新建目录项会
+            因目标已存在而被漏记。为 None 时本函数按当前状态自行计算。
+
+    ★ 2026-10（目录项修复）：旧实现只记录文件，目录（含空子目录）不记录——
+    cp/mv 目录后回滚会残留空目录、且目录结构无法精确还原。现同时记录
+    目标新建目录项与源目录删除项。
     """
     # 以 source_path 自身为根计算相对路径，确保 dst_fp 与 cp._build_dest_path 一致
     src_root = os.path.normpath(source_path)
+    dst_root = os.path.normpath(dest_path)
+
+    changes: list[tuple] = []
+    if dir_changes is None:
+        dir_changes = build_directory_tree_changes(
+            src_root, dst_root, tool_name, source_deleted,
+        )
+    changes.extend(dir_changes)
 
     for fp in source_files:
         rel_path = os.path.relpath(fp, src_root)
-        dst_fp = os.path.normpath(os.path.join(dest_path, rel_path))
+        dst_fp = os.path.normpath(os.path.join(dst_root, rel_path))
         if source_contents is not None and fp in source_contents:
             content = source_contents[fp]
         else:
@@ -344,11 +380,56 @@ async def async_record_directory_files(
                 content = await async_read_file_content(fp)
             except Exception:
                 content = None
-        await async_record_sandbox(fp, content, None if source_deleted else content, tool_name)
+        changes.append((fp, content, None if source_deleted else content, tool_name, "file"))
         if dst_existing is not None:
-            await async_record_sandbox(dst_fp, dst_existing.get(dst_fp), content, tool_name)
+            changes.append((dst_fp, dst_existing.get(dst_fp), content, tool_name, "file"))
         else:
-            await async_record_sandbox(dst_fp, None, content, tool_name)
+            changes.append((dst_fp, None, content, tool_name, "file"))
+
+    await async_record_sandbox_batch(changes)
+
+
+def build_directory_target_creation_changes(
+    src_root: str, dst_root: str, tool_name: str,
+) -> list[tuple]:
+    """构造「目标目录树中操作前不存在」的目录创建记录。
+
+    必须在实际移动/复制**之前**调用（以操作前的存在性判定「是否新建」）。
+    返回元素格式：``(dir_path, None, "", tool_name, "directory")``。
+    """
+    changes: list[tuple] = []
+    src_dirs = [src_root] + _sync_collect_dirs(src_root)
+    for d in src_dirs:
+        rel = os.path.relpath(d, src_root)
+        dst_d = dst_root if rel == "." else os.path.normpath(
+            os.path.join(dst_root, rel),
+        )
+        if not os.path.exists(dst_d):
+            changes.append((dst_d, None, "", tool_name, "directory"))
+    return changes
+
+
+def build_directory_source_removal_changes(src_root: str, tool_name: str) -> list[tuple]:
+    """构造源目录树（含根目录）的删除记录。
+
+    返回元素格式：``(dir_path, "", None, tool_name, "directory")``。
+    """
+    src_dirs = [src_root] + _sync_collect_dirs(src_root)
+    return [(d, "", None, tool_name, "directory") for d in src_dirs]
+
+
+def build_directory_tree_changes(
+    src_root: str, dst_root: str, tool_name: str, source_deleted: bool,
+) -> list[tuple]:
+    """构造目录树（目录项）的完整沙盒变更列表。
+
+    - 目标目录：操作前不存在则记录 ``(None -> "")``（新建目录）；
+    - 源目录（``source_deleted=True``）：记录 ``("" -> None)``（目录随移动/删除消失）。
+    """
+    changes = build_directory_target_creation_changes(src_root, dst_root, tool_name)
+    if source_deleted:
+        changes.extend(build_directory_source_removal_changes(src_root, tool_name))
+    return changes
 
 
 # ── 公共沙盒记录函数 ──────────────────────────────────────
@@ -380,6 +461,25 @@ async def async_record_sandbox(
         )
     except Exception as e:
         _get_sandbox_logger().warning("沙盒记录失败 %s: %s", file_path, e)
+
+
+async def async_record_sandbox_batch(changes: list[tuple]) -> None:
+    """批量记录文件变更到沙盒（一次 to_thread），捕获并记录异常。
+
+    目录级操作（cp/mv/rm 目录树）逐条调用 ``async_record_sandbox`` 会为每条
+    记录创建线程；批量入口把整批变更合并为一次 ``asyncio.to_thread``。
+
+    Args:
+        changes: ``(file_path, content_before, content_after, tool_name,
+            record_type)`` 五元组列表。
+    """
+    if not changes:
+        return
+    from ..core.sandbox_manager import async_record_file_changes_from_context
+    try:
+        await async_record_file_changes_from_context(changes)
+    except Exception as e:
+        _get_sandbox_logger().warning("沙盒批量记录失败（%d 条）: %s", len(changes), e)
 
 
 async def async_makedirs_and_record(path: str, tool_name: str) -> None:
@@ -415,5 +515,7 @@ async def async_makedirs_and_record(path: str, tool_name: str) -> None:
 
     # 从叶到根记录每个新创建的目录到沙盒
     # content_before=None 表示目录原本不存在，content_after="" 表示目录已创建
-    for d in missing:
-        await async_record_sandbox(d, None, "", tool_name, record_type="directory")
+    changes = [
+        (d, None, "", tool_name, "directory") for d in missing
+    ]
+    await async_record_sandbox_batch(changes)

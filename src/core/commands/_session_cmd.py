@@ -6,7 +6,7 @@ import logging
 
 from ..adapters.output import get_default_output_port
 from ..constants import GREEN, YELLOW, DIM, RESET, CYAN
-from ..sandbox_manager import get_sandbox_manager
+from ..sandbox_manager import get_sandbox_manager, set_current_message_index
 from ..internal.commands._command_core import CommandContext, _pop_assistant_tool_messages
 
 _logger = logging.getLogger(__name__)
@@ -48,6 +48,33 @@ def _refresh_ctx_usage(ctx, force: bool = False) -> None:
         _logger.debug("命令修改消息后刷新上下文使用率失败", exc_info=True)
 
 
+def _remap_sandbox_removed(original_len: int, new_len: int) -> None:
+    """消息尾部删除后重映射沙盒索引（删除区间 ``[new_len, original_len)``）。
+
+    /undo、/retry 等直接 pop 消息的命令必须在删除后同步沙盒记录索引，
+    否则沙盒记录与消息列表错位（后续 /editmsg、回滚定位到错误消息）。
+    """
+    if new_len >= original_len:
+        return
+    sm = get_sandbox_manager()
+    if sm:
+        try:
+            sm.remap_indices(list(range(new_len, original_len)))
+        except Exception:
+            _logger.exception("沙盒索引重映射失败（删除区间 %s-%s）", new_len, original_len)
+
+
+def _sync_sandbox_index_to_end(sm, messages) -> None:
+    """清空沙盒后把当前消息索引对齐到消息列表末尾。
+
+    ``SandboxManager.clear()`` 会把索引重置为 0；若消息列表仍保留 system
+    消息（/clear 语义），后续文件变更会错误关联到索引 0。此处对齐到末尾。
+    """
+    end_index = len(messages) - 1 if messages else 0
+    sm.update_message_index(end_index)
+    set_current_message_index(end_index)
+
+
 def _cmd_clear(ctx):
     """清空对话，保留所有 system 消息。"""
     # 保留所有 system 消息，与 session.clear_messages() 行为一致
@@ -74,6 +101,7 @@ def _cmd_clear(ctx):
     sm = get_sandbox_manager()
     if sm:
         sm.clear()
+        _sync_sandbox_index_to_end(sm, ctx.messages)
     # 清空 SubAgent 记录（属于被清空的对话，避免 /export 导出孤儿记录）
     if ctx.session is not None:
         agent = getattr(ctx.session, "agent", None)
@@ -138,10 +166,15 @@ def _cmd_pin(ctx):
 
 
 def _cmd_undo(ctx):
+    original_len = len(ctx.messages)
     removed = _pop_assistant_tool_messages(ctx.messages)
     if len(ctx.messages) > 1 and ctx.messages[-1]["role"] == "user":
         ctx.messages.pop()
         removed += 1
+    # ★ 同步沙盒索引（修复）：已删除消息对应的文件变更记录失效——修复前
+    #   /undo 只删消息、不重映射沙盒，记录与消息列表错位。
+    if removed > 0:
+        _remap_sandbox_removed(original_len, len(ctx.messages))
     # 撤销后如果最后一条是 user 消息，标记需要重新生成
     if ctx.messages and ctx.messages[-1].get("role") == "user":
         ctx.state["retry"] = True
@@ -155,7 +188,11 @@ def _cmd_undo(ctx):
 
 
 def _cmd_retry(ctx):
+    original_len = len(ctx.messages)
     removed = _pop_assistant_tool_messages(ctx.messages)
+    # ★ 同步沙盒索引（修复）：回答消息对应的文件变更记录失效。
+    if removed > 0:
+        _remap_sandbox_removed(original_len, len(ctx.messages))
     if removed > 0 and len(ctx.messages) > 1 and ctx.messages[-1].get("role") == "user":
         _out.write(f"{GREEN}  + 重新生成中...{RESET}", level="raw", source="cmd")
         ctx.state["retry"] = True
@@ -189,11 +226,21 @@ def _cmd_edit(ctx):
         return True
 
     original_len = len(ctx.messages)
-    ctx.messages[last_user_idx:] = []
-    # ★ 同步沙盒索引：已删除的消息对应的文件修改记录失效
+    # ★ 先 remap 后删（与 editmsg 的 P2-7 修复一致）：删除前仅更新沙盒记录，
+    #   失败时消息未删、无中间态；修复前先删除消息再 remap，remap 异常会导致
+    #   消息已删而沙盒未同步。
     sm = get_sandbox_manager()
     if sm:
-        sm.remap_indices(list(range(last_user_idx, original_len)))
+        try:
+            sm.remap_indices(list(range(last_user_idx, original_len)))
+        except Exception:
+            _logger.exception("remap_indices 失败（/edit，last_user_idx=%s）", last_user_idx)
+            _out.write(
+                f"{YELLOW}  ! 沙盒索引同步失败，已取消本次编辑{RESET}",
+                level="raw", source="cmd",
+            )
+            return True
+    ctx.messages[last_user_idx:] = []
     ctx.messages.append({"role": "user", "content": new_content})
     # ★ 2026-08-19（editmsg 同根因修复：/edit 截断重发后上下文百分比不更新）：
     #   消息列表被截断 + 追加（**条数可能不变**——截断 N 条 + 追加 1 条后

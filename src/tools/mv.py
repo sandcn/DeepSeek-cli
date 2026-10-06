@@ -9,6 +9,8 @@ from .file_ops import (
     async_collect_files, async_is_link,
     async_record_directory_files,
     async_record_sandbox,
+    build_directory_target_creation_changes,
+    build_directory_source_removal_changes,
 )
 
 
@@ -123,6 +125,15 @@ class MvFunc(FileSystemToolBase):
                         for fp in dst_files:
                             dst_existing[fp] = await async_read_file_content(fp)
 
+                # ★ 目录树变更必须在 move 之前计算（「是否新建」依赖操作前的
+                #   目标存在性）——move 后目标已存在会漏记新建目录项。
+                target_creation = build_directory_target_creation_changes(
+                    self.source, effective_dst, self.name,
+                )
+                source_removal = build_directory_source_removal_changes(
+                    self.source, self.name,
+                )
+
                 await asyncio.to_thread(shutil.move, self.source, self.destination)
 
                 # ★ 跨文件系统一致性检查：shutil.move 在跨文件系统时使用 copy+delete 策略，
@@ -133,16 +144,15 @@ class MvFunc(FileSystemToolBase):
                     await async_record_directory_files(
                         self.source, effective_dst, src_files, self.name,
                         dst_existing or None, source_contents=src_contents,
-                        source_deleted=False,
+                        source_deleted=False, dir_changes=target_creation,
                     )
                     return f"(移动部分成功: 跨文件系统复制完成但源目录删除失败: {self.source})"
 
                 await async_record_directory_files(
                     self.source, effective_dst, src_files, self.name,
                     dst_existing or None, source_contents=src_contents,
+                    dir_changes=target_creation + source_removal,
                 )
-                # ★ 源目录自身：content_before="" 表示目录存在，content_after=None 表示被移动后删除
-                await async_record_sandbox(self.source, "", None, self.name, record_type="directory")
                 return f"移动成功: {self.source} -> {effective_dst} ({len(src_files)}个文件)"
 
             else:

@@ -113,10 +113,23 @@ class SessionMessagingManager:
         sm = self._get_sandbox()
         if sm:
             sm.clear()
+            self._sync_sandbox_index_to_end(sm)
 
         self._emit("messages_changed", action="clear", removed=removed)
         self._observability.gauge("session.messages", 0)
         return removed
+
+    def _sync_sandbox_index_to_end(self, sm) -> None:
+        """沙盒清空后把当前索引对齐到消息列表末尾。
+
+        ``SandboxManager.clear()`` 会把索引重置为 0；消息列表仍保留 system
+        消息时，后续文件变更若关联到索引 0 会与消息语义错位。
+        """
+        from ...sandbox_manager import set_current_message_index
+
+        end_index = len(self._messages) - 1 if self._messages else 0
+        sm.update_message_index(end_index)
+        set_current_message_index(end_index)
 
     # ── 消息撤销 ────────────────────────────────────────
 
@@ -127,12 +140,21 @@ class SessionMessagingManager:
             移除的消息数量
         """
         removed = 0
+        original_len = len(self._messages)
         while self._messages and self._messages[-1].get(_ROLE_KEY) in ("assistant", "tool"):
             self._messages.pop()
             removed += 1
         if self._messages and self._messages[-1].get(_ROLE_KEY) == "user":
             self._messages.pop()
             removed += 1
+        # ★ 同步沙盒索引：已删除消息对应的文件变更记录失效并重映射。
+        if removed > 0:
+            sm = self._get_sandbox()
+            if sm:
+                try:
+                    sm.remap_indices(list(range(len(self._messages), original_len)))
+                except Exception:
+                    _logger.exception("undo_last_round 沙盒索引重映射失败")
         self._emit("messages_changed", action="undo", removed=removed)
         self._observability.gauge("session.messages", len(self._messages))
         # ★ 2026-08-19（editmsg 同根因修复：撤销后上下文百分比不更新）：

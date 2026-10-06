@@ -8,7 +8,7 @@ from .file_base import FileSystemToolBase
 from .file_ops import (
     validate_path_security, async_file_exists, async_collect_files,
     async_read_file_content, async_remove_file, async_is_link,
-    async_record_sandbox,
+    async_record_sandbox, async_collect_dirs, async_record_sandbox_batch,
 )
 
 
@@ -82,14 +82,21 @@ class RmFunc(FileSystemToolBase):
                         return f"(目录非空，如需删除目录请设置 recursive=True: {self.path})"
 
                 files = await async_collect_files(self.path)
+                dirs = await async_collect_dirs(self.path)
                 contents = {}
                 for fp in files:
                     contents[fp] = await async_read_file_content(fp)
 
-                for fp in files:
-                    await async_record_sandbox(fp, contents[fp], None, self.name)
-                # 目录自身：content_before="" 表示目录存在，content_after=None 表示被删除
-                await async_record_sandbox(self.path, "", None, self.name, record_type="directory")
+                changes = [
+                    (fp, contents[fp], None, self.name, "file") for fp in files
+                ]
+                # 子目录（含空的、无文件的子目录）+ 目录自身：
+                # content_before="" 表示目录存在，content_after=None 表示被删除
+                changes.extend(
+                    (d, "", None, self.name, "directory") for d in dirs
+                )
+                changes.append((self.path, "", None, self.name, "directory"))
+                await async_record_sandbox_batch(changes)
 
                 await asyncio.to_thread(shutil.rmtree, self.path)
                 return f"删除成功: {self.path} ({len(files)}个文件)"

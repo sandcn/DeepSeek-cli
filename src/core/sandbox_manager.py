@@ -9,7 +9,7 @@ import asyncio
 import contextvars
 import os
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .internal.shared._sandbox_history import _FileHistory
 from .file_change_record import FileChangeRecord  # noqa: F401 — re-exported for backward compat
@@ -28,17 +28,20 @@ class SandboxManager:
     _FileHistory._lock 在最内层，仅在需要直接访问 _fh.file_history 时获取。
     """
 
-    def __init__(self, max_history_per_file: int = 100):
+    def __init__(self, max_history_per_file: int = 100, owner_id: Any = None):
         """
         初始化沙盒管理器
 
         Args:
             max_history_per_file: 每个文件最大历史记录数
+            owner_id: 所属会话标识（ChatSession 实例 id）。用于多会话隔离：
+                同一会话的重复 initialize 复用本实例（保留状态），不同会话
+                则重建，避免串扰。
         """
         # 文件历史记录（委托给 _FileHistory）
         self._fh = _FileHistory(max_history_per_file)
-        # 共享 dict 引用，保持向后兼容（外部通过 @property file_history 只读访问）
-        self._file_history_ref = self._fh.file_history
+        # 所属会话标识（None 表示未绑定）
+        self.owner_id = owner_id
 
         # 按消息索引组织的记录：{message_index: List[FileChangeRecord]}
         self.message_history: Dict[int, List[FileChangeRecord]] = {}
@@ -64,8 +67,9 @@ class SandboxManager:
 
         注意：返回的 dict 值是原始 list 引用，不建议外部直接修改。
         需要修改请通过 SandboxManager 公共方法（record_file_change 等）。
+        浅拷贝在 _FileHistory 内部锁下完成，避免并发结构变更竞争。
         """
-        return dict(self._file_history_ref)
+        return self._fh.snapshot()
 
     # ── 当前消息索引管理 ───────────────────────────────────
 
@@ -77,13 +81,32 @@ class SandboxManager:
         """从 file_history 重建 message_history。
 
         消除 shift_indices/remap_indices 中重复的 message_history 重建逻辑。
-        从 _fh.file_history 遍历所有记录并按 message_index 重新分组。
+        经 _FileHistory 的持锁快照遍历所有记录并按 message_index 重新分组
+        （不直接访问 file_history，避免与并发 record 竞争）。
         """
         new_mh: dict[int, list[FileChangeRecord]] = {}
-        for records in self._fh.file_history.values():
-            for r in records:
-                new_mh.setdefault(r.message_index, []).append(r)
+        for r in self._fh.all_records_snapshot():
+            new_mh.setdefault(r.message_index, []).append(r)
         self.message_history = new_mh
+
+    def _prune_evicted_for_file(self, file_path: str) -> None:
+        """清理 message_history 中已被 _FileHistory 淘汰（超出历史上限）的记录。
+
+        历史上限截断只发生在 _FileHistory 内部；若不同步清理 message_history，
+        两表会不一致（remap 时这些「幽灵记录」会被当作 orphan 重挂）。
+        仅在持有 ``self.lock`` 时调用。
+        """
+        kept_ids = self._fh.kept_record_ids(file_path)
+        for idx in list(self.message_history.keys()):
+            records = self.message_history[idx]
+            filtered = [
+                r for r in records
+                if r.file_path != file_path or id(r) in kept_ids
+            ]
+            if not filtered:
+                del self.message_history[idx]
+            elif len(filtered) != len(records):
+                self.message_history[idx] = filtered
 
     def record_file_change(self, file_path: str, content_before: Optional[str],
                           content_after: Optional[str], message_index: int,
@@ -105,23 +128,57 @@ class SandboxManager:
 
         注意：同一消息索引多次修改同一文件时，每条记录独立追加，不会合并。
         确保回滚时可以精确恢复每个中间状态。
-        """
-        # 委托给 _FileHistory 记录文件历史
-        record = self._fh.record(
-            file_path, content_before, content_after, message_index,
-            tool_name, record_type,
-        )
 
-        # 管理消息索引映射
+        锁顺序：先取 ``self.lock`` 再取 ``_FileHistory._lock``（声明顺序），
+        消除旧实现「先在 _FileHistory 内部持锁、后在 self.lock 写
+        message_history」的锁序歧义。
+        """
         with self.lock:
-            if message_index not in self.message_history:
-                self.message_history[message_index] = []
-            self.message_history[message_index].append(record)
+            record = self._fh.record(
+                file_path, content_before, content_after, message_index,
+                tool_name, record_type,
+            )
+            self.message_history.setdefault(message_index, []).append(record)
+            self._prune_evicted_for_file(file_path)
             self._update_current_index(
                 max(self.current_message_index, message_index),
             )
-
         return record
+
+    def record_file_changes_batch(
+        self,
+        changes: Iterable[Tuple[str, Optional[str], Optional[str], str, str]],
+        message_index: int,
+    ) -> List[FileChangeRecord]:
+        """批量记录文件修改（同一消息索引），返回创建的记录列表。
+
+        用于目录级操作（cp/mv/rm 的目录树）——一次持锁完成全部记录，
+        避免逐条 ``asyncio.to_thread`` 的高频线程切换开销。
+
+        Args:
+            changes: 可迭代的 5 元组
+                ``(file_path, content_before, content_after, tool_name, record_type)``。
+            message_index: 关联的消息索引（本批统一）。
+        """
+        records: List[FileChangeRecord] = []
+        touched_paths: set = set()
+        with self.lock:
+            bucket = self.message_history.setdefault(message_index, [])
+            for file_path, content_before, content_after, tool_name, record_type in changes:
+                record = self._fh.record(
+                    file_path, content_before, content_after, message_index,
+                    tool_name, record_type,
+                )
+                bucket.append(record)
+                records.append(record)
+                touched_paths.add(file_path)
+            for path in touched_paths:
+                self._prune_evicted_for_file(path)
+            if records:
+                self._update_current_index(
+                    max(self.current_message_index, message_index),
+                )
+        return records
 
     async def async_record_file_change(self, file_path: str, content_before: Optional[str],
                                        content_after: Optional[str], message_index: int,
@@ -131,6 +188,16 @@ class SandboxManager:
         return await asyncio.to_thread(
             self.record_file_change, file_path, content_before, content_after,
             message_index, tool_name, record_type,
+        )
+
+    async def async_record_file_changes_batch(
+        self,
+        changes: Iterable[Tuple[str, Optional[str], Optional[str], str, str]],
+        message_index: int,
+    ) -> List[FileChangeRecord]:
+        """异步批量记录文件修改（包装为 to_thread）。"""
+        return await asyncio.to_thread(
+            self.record_file_changes_batch, list(changes), message_index,
         )
 
     def update_message_index(self, new_index: int):
@@ -153,13 +220,17 @@ class SandboxManager:
 
         Returns:
             文件内容，None表示文件不存在
-        """
-        # Phase 1: 查询 _FileHistory（纯内存操作，内部持锁）
-        result = self._fh.get_snapshot(file_path, message_index)
-        if result is not None:
-            return result
 
-        # Phase 2: 无记录时回退到磁盘状态
+        语义修复：旧实现无法区分「无沙盒记录」与「记录显示该索引时文件不存在」
+        （两者均返回 None → 都回退读磁盘，后者会返回操作前的错误内容）。
+        现以 ``has_history`` 判定：有记录则以记录快照为准（含 None=不存在），
+        无记录才回退磁盘。
+        """
+        # Phase 1: 有沙盒记录 → 以记录快照为准（None 表示该索引时不存在）
+        if self._fh.has_history(file_path):
+            return self._fh.get_snapshot(file_path, message_index)
+
+        # Phase 2: 无任何记录时回退到磁盘状态
         if os.path.exists(file_path):
             try:
                 with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
@@ -248,11 +319,7 @@ class SandboxManager:
         """
         count = 0
         with self.lock:
-            for records in self._fh.file_history.values():
-                for r in records:
-                    if predicate(r) and r.message_index != new_index:
-                        r.message_index = new_index
-                        count += 1
+            count = self._fh.reindex_records(predicate, new_index)
             if count:
                 self._rebuild_message_history()
                 self._update_current_index(
@@ -295,14 +362,22 @@ class SandboxManager:
 
     def shift_indices(self, insert_at: int):
         """当在消息列表中插入一条消息后，将 >= insert_at 的索引全部 +1。"""
+        self.shift_indices_by(insert_at, 1)
+
+    def shift_indices_by(self, insert_at: int, delta: int):
+        """将 >= insert_at 的所有记录索引整体平移 delta（delta 可为负）。
+
+        用于消息列表头部结构变化（如系统提词重建导致 system 条数变化）
+        后同步沙盒索引。索引维护委托 _FileHistory（持内部锁）执行。
+        """
+        if delta == 0:
+            return
         with self.lock:
-            for records in self._fh.file_history.values():
-                for r in records:
-                    if r.message_index >= insert_at:
-                        r.message_index += 1
+            self._fh.shift_indices(insert_at, delta)
             self._rebuild_message_history()
             if self.current_message_index >= insert_at:
-                self._update_current_index(self.current_message_index + 1)
+                new_idx = self.current_message_index + delta
+                self._update_current_index(new_idx if new_idx >= 0 else 0)
 
     def remap_indices(self, removed_indices: List[int]):
         """当消息列表删除了某些索引后，重新映射沙盒记录的索引。
@@ -320,34 +395,18 @@ class SandboxManager:
                     return -1
                 return old - sum(1 for r in removed_set if r < old)
 
-            # 通过 file_history 更新所有记录的 message_index
-            with self._fh._lock:
-                for path, records in list(self._fh.file_history.items()):
-                    new_records = []
-                    for r in records:
-                        ni = new_idx(r.message_index)
-                        if ni >= 0:
-                            r.message_index = ni
-                            new_records.append(r)
-                    if new_records:
-                        self._fh.file_history[path] = new_records
-                    else:
-                        del self._fh.file_history[path]
+            # 经 _FileHistory 持锁重映射 file_history，返回保留记录 id 集合
+            kept_ids = self._fh.remap_indices(new_idx)
 
-                # ★ 收集 orphan 记录：仅在 message_history 中存在但在 file_history
-                #   中被移除的记录
-                orphan_records: List[FileChangeRecord] = []
-                for records in list(self.message_history.values()):
-                    for r in records:
-                        ni = new_idx(r.message_index)
-                        if ni >= 0:
-                            if r.file_path in self._fh.file_history:
-                                if r not in self._fh.file_history[r.file_path]:
-                                    r.message_index = ni
-                                    orphan_records.append(r)
-                            else:
-                                r.message_index = ni
-                                orphan_records.append(r)
+            # 收集 orphan 记录：message_history 中存在但已不在 file_history
+            # 保留集合中的记录（new_idx 仍有效时按新索引重挂）
+            orphan_records: List[FileChangeRecord] = []
+            for records in list(self.message_history.values()):
+                for r in records:
+                    ni = new_idx(r.message_index)
+                    if ni >= 0 and id(r) not in kept_ids:
+                        r.message_index = ni
+                        orphan_records.append(r)
 
             # 从 file_history 重建 message_history，再合并 orphan
             self._rebuild_message_history()
@@ -391,9 +450,12 @@ def set_sandbox_manager(manager: SandboxManager):
         _global_sandbox_manager = manager
 
 
-def create_sandbox_manager(max_history_per_file: int = 100) -> SandboxManager:
-    """创建并设置全局沙盒管理器"""
-    manager = SandboxManager(max_history_per_file=max_history_per_file)
+def create_sandbox_manager(max_history_per_file: int = 100,
+                           owner_id: Any = None) -> SandboxManager:
+    """创建并设置全局沙盒管理器（owner_id 用于多会话隔离）。"""
+    manager = SandboxManager(
+        max_history_per_file=max_history_per_file, owner_id=owner_id,
+    )
     set_sandbox_manager(manager)
     return manager
 
@@ -411,23 +473,34 @@ class SandboxContext:
     def __init__(self, message_index: int):
         self.message_index = message_index
         self.previous_index = None
+        self._ctx_token = None
 
     def __enter__(self):
         """进入上下文，设置当前消息索引"""
         self.previous_index = getattr(_thread_local, 'current_message_index', None)
         _thread_local.current_message_index = self.message_index
-        _message_index_contextvar.set(self.message_index)
+        # 保存 token 精确恢复 contextvar（嵌套场景下用值恢复可能被兄弟
+        # context 的写入覆盖——token reset 保证恢复到本上下文进入前的状态）
+        self._ctx_token = _message_index_contextvar.set(self.message_index)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """退出上下文，恢复之前的消息索引"""
         if self.previous_index is not None:
             _thread_local.current_message_index = self.previous_index
-            _message_index_contextvar.set(self.previous_index)
         else:
             if hasattr(_thread_local, 'current_message_index'):
                 delattr(_thread_local, 'current_message_index')
-            _message_index_contextvar.set(None)
+        if self._ctx_token is not None:
+            try:
+                _message_index_contextvar.reset(self._ctx_token)
+            except (ValueError, RuntimeError):
+                # 跨 context 恢复（token 不属当前 context）→ 退回按值恢复
+                _message_index_contextvar.set(self.previous_index)
+            finally:
+                self._ctx_token = None
+        else:
+            _message_index_contextvar.set(self.previous_index)
 
 
 def get_current_message_index() -> Optional[int]:
@@ -489,4 +562,36 @@ async def async_record_file_change_from_context(
     return await asyncio.to_thread(
         record_file_change_from_context, file_path, content_before,
         content_after, tool_name, record_type,
+    )
+
+
+def record_file_changes_from_context(
+    changes: Iterable[Tuple[str, Optional[str], Optional[str], str, str]],
+) -> List[FileChangeRecord]:
+    """从上下文批量记录文件修改（同一消息索引）。
+
+    Args:
+        changes: 可迭代的 5 元组
+            ``(file_path, content_before, content_after, tool_name, record_type)``。
+
+    Returns:
+        创建的 FileChangeRecord 列表；无沙盒管理器 / 无消息索引时为空列表。
+    """
+    sandbox_manager = get_sandbox_manager()
+    if not sandbox_manager:
+        return []
+    message_index = get_current_message_index()
+    if message_index is None:
+        message_index = sandbox_manager.get_current_message_index_safe()
+    if message_index is None:
+        return []
+    return sandbox_manager.record_file_changes_batch(changes, message_index)
+
+
+async def async_record_file_changes_from_context(
+    changes: Iterable[Tuple[str, Optional[str], Optional[str], str, str]],
+) -> List[FileChangeRecord]:
+    """异步版本：从上下文批量记录文件修改（一次 to_thread，避免逐条线程切换）。"""
+    return await asyncio.to_thread(
+        record_file_changes_from_context, list(changes),
     )
