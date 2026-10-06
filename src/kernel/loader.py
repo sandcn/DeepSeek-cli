@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import logging
 import os
@@ -18,19 +19,35 @@ from .refs import resolve
 
 _logger = logging.getLogger(__name__)
 
+#: 文件插件模块名前缀（:func:`load_module` 生成；``kernel.watch`` / ``tools.cordis``
+#: 依赖该格式从 ``fiber.definition.source`` 反推插件文件名）
+MODULE_NAME_PREFIX = "_dsh_plugin_"
+
+
+def module_name_for(path: str) -> str:
+    """返回文件插件的稳定模块名（同一文件恒定，不同文件不冲突）。
+
+    以绝对路径 SHA1 前 8 位 + 文件名 stem 构成：同一文件反复热重载复用同一个
+    ``sys.modules`` 键（不再随 mtime 累积泄漏），不同路径互不覆盖。
+    """
+    abs_path = os.path.abspath(path)
+    digest = hashlib.sha1(abs_path.encode("utf-8")).hexdigest()[:8]
+    stem = os.path.splitext(os.path.basename(path))[0]
+    return f"{MODULE_NAME_PREFIX}{digest}_{stem}"
+
 
 def load_module(path: str):
-    """按文件路径导入模块（每次调用以唯一模块名隔离，便于热重载）。
+    """按文件路径导入模块（模块名稳定，可热重载且不泄漏 ``sys.modules``）。
 
     ★ 从 bytes 源码 ``compile`` + ``exec``（绕过 importlib 的 ``__pycache__``
     字节码缓存）——同一秒内重写文件（mtime 秒级、size 未变）时，仍会执行到
-    最新源码，保证文件热重载确定性生效。
+    最新源码，保证文件热重载确定性生效；模块名与 mtime 无关，故同一文件在
+    进程生命周期内只占一个 ``sys.modules`` 键。
     """
     if not os.path.isfile(path):
         raise PluginError(f"插件文件不存在: {path}")
     abs_path = os.path.abspath(path)
-    stamp = f"{int(os.path.getmtime(path))}"
-    module_name = f"_dsh_plugin_{os.path.splitext(os.path.basename(path))[0]}_{stamp}"
+    module_name = module_name_for(abs_path)
     spec = importlib.util.spec_from_file_location(module_name, abs_path)
     if spec is None or spec.loader is None:
         raise PluginError(f"无法从路径加载插件: {path}")
@@ -38,8 +55,13 @@ def load_module(path: str):
     sys.modules[module_name] = module
     with open(abs_path, "rb") as handle:
         source = handle.read()
-    code = compile(source, abs_path, "exec")
-    exec(code, module.__dict__)
+    try:
+        code = compile(source, abs_path, "exec")
+        exec(code, module.__dict__)
+    except BaseException:
+        # 加载失败不留半成品模块（否则同名后续加载会拿到损坏对象）
+        sys.modules.pop(module_name, None)
+        raise
     return module
 
 
@@ -111,6 +133,8 @@ def entry_points_plugins(group: str = "dsh.plugins") -> List[tuple]:
 
 __all__ = [
     "load_module",
+    "module_name_for",
+    "MODULE_NAME_PREFIX",
     "plugins_from_module",
     "discover_plugins",
     "discover_plugin_entries",

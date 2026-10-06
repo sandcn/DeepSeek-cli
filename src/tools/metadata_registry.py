@@ -124,26 +124,6 @@ BUILTIN_TOOL_METADATA: Dict[str, dict] = {
         "timeout_estimate": 0, "category": "io", "priority": 10,
         "tool_category": "write", "description": "写入文件",
     },
-    "cordis_inspect": {
-        "parallel_safe": True, "category": "code", "priority": 60,
-        "tool_category": "read", "description": "自省当前插件内核（服务/插件/生命周期）",
-    },
-    "cordis_define": {
-        "parallel_safe": False, "category": "code", "priority": 60,
-        "tool_category": "write", "description": "定义（写入）一个运行时插件文件",
-    },
-    "cordis_run": {
-        "parallel_safe": False, "category": "code", "priority": 60,
-        "tool_category": "write", "description": "挂载一个运行时插件文件到当前内核",
-    },
-    "cordis_stop": {
-        "parallel_safe": False, "category": "code", "priority": 60,
-        "tool_category": "write", "description": "停止（卸载）一个运行时插件",
-    },
-    "cordis_undefine": {
-        "parallel_safe": False, "category": "code", "priority": 60,
-        "tool_category": "write", "description": "删除一个运行时插件（停止 + 删除文件）",
-    },
 }
 
 _REGISTRY = DeclarativeRegistry("工具元数据")

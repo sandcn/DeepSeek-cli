@@ -337,3 +337,22 @@ async def test_kernel_mount_file(tmp_path, kernel):
     await kernel.settle()
     assert fiber.state is FiberState.ACTIVE
     assert kernel.resolve_service("from_file") == "ok"
+
+
+async def test_kernel_mount_file_all_multi_plugins(tmp_path, kernel):
+    path = tmp_path / "multi.py"
+    path.write_text(
+        "from src.kernel import plugin\n"
+        "@plugin('m1')\n"
+        "def apply_m1(ctx):\n"
+        "    ctx.provide('m1', 1)\n"
+        "@plugin('m2')\n"
+        "def apply_m2(ctx):\n"
+        "    ctx.provide('m2', 2)\n",
+        encoding="utf-8",
+    )
+    fibers = kernel.mount_file_all(str(path))
+    await kernel.settle()
+    assert len(fibers) == 2
+    assert kernel.resolve_service("m1") == 1
+    assert kernel.resolve_service("m2") == 2

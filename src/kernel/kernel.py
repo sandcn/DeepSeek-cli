@@ -117,16 +117,24 @@ class Kernel:
     def plugin(self, target: Any, config: Optional[dict] = None) -> Fiber:
         return self.mount(target, parent_ctx=self.root, config=config)
 
-    def mount_file(self, path: str, config: Optional[dict] = None) -> Fiber:
-        """从文件加载并挂载插件（热挂载单文件插件）。"""
+    def mount_file_all(self, path: str, config: Optional[dict] = None) -> List[Fiber]:
+        """从文件加载并挂载**全部**插件（热挂载单文件插件）。
+
+        返回所有已挂载 Fiber（按插件在模块中的定义顺序）；文件未定义插件时抛
+        :class:`PluginError`。多插件文件是受支持的（``plugins_from_module``
+        按定义顺序提取），调用方需要完整结果时用本方法。
+        """
         from .loader import load_module, plugins_from_module
 
         module = load_module(path)
         plugins = plugins_from_module(module)
         if not plugins:
             raise PluginError(f"文件未定义插件: {path}")
-        fibers = [self.mount(plug, parent_ctx=self.root, config=config) for plug in plugins]
-        return fibers[0]
+        return [self.mount(plug, parent_ctx=self.root, config=config) for plug in plugins]
+
+    def mount_file(self, path: str, config: Optional[dict] = None) -> Fiber:
+        """从文件加载并挂载插件，返回首个 Fiber（多插件文件见 ``mount_file_all``）。"""
+        return self.mount_file_all(path, config=config)[0]
 
     async def reload(self, name: str) -> Fiber:
         """按名重启插件（完整卸载后重新加载）。"""

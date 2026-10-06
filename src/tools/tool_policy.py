@@ -22,6 +22,7 @@ import threading
 from typing import Callable
 
 from ..core.agent_types import exclusion_map as _exclusion_map
+from ..core.cordis_tools import CORDIS_TOOLS
 
 #: agent_type → 排除工具集合。真源下沉到 ``src.core.agent_types`` 的 Agent 类型
 #: 注册表（每个类型是清单中的独立插件条目，可被 Profile/Patch/Overlay 声明、
@@ -38,13 +39,7 @@ TOOL_EXCLUSION_MAP = _exclusion_map()
 # 生产路径下每个禁用项由清单中的独立插件条目（``global_disabled_tool``，经
 # ``src.plugins.tool_policy_entries``）显式注册进本模块的注册表——条目可被
 # Profile/Patch/Overlay 按 id 禁用、覆盖或新增，从而细粒度调整全局禁用集合。
-GLOBAL_DISABLED_TOOLS = frozenset({
-    "cordis_inspect",
-    "cordis_define",
-    "cordis_run",
-    "cordis_stop",
-    "cordis_undefine",
-})
+GLOBAL_DISABLED_TOOLS = frozenset(CORDIS_TOOLS)
 
 # ── 全局禁用工具注册表（声明 + 清单接管 + 扩展） ──────────────
 
@@ -52,13 +47,8 @@ _lock = threading.RLock()
 _ABSENT = object()
 
 #: 内置全局禁用工具声明（顺序即展示顺序，每项由清单独立条目注册）
-_BUILTIN_GLOBAL_DISABLED_TOOLS: tuple[str, ...] = (
-    "cordis_inspect",
-    "cordis_define",
-    "cordis_run",
-    "cordis_stop",
-    "cordis_undefine",
-)
+#: 名单来自 ``src.core.cordis_tools``（单一真源，与 SubAgent 排除表、清单条目同源）
+_BUILTIN_GLOBAL_DISABLED_TOOLS: tuple[str, ...] = tuple(CORDIS_TOOLS)
 
 _registered_builtin_global: dict[str, bool] = {}
 _managed_builtin_global: set = set()

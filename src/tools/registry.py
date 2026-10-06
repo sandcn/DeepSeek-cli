@@ -57,6 +57,12 @@ class ToolRegistry:
         if tool_name is None:
             raise ValueError(f"工具类 {tool_class.__name__} 未定义 name 属性")
 
+        if is_globally_disabled(tool_name):
+            raise ValueError(
+                f"工具 '{tool_name}' 已被全局禁用，禁止注册"
+                "（全局禁用集合由 src.tools.tool_policy 维护，见 src.core.cordis_tools）"
+            )
+
         if tool_name in self._tools:
             logger.warning(f"工具 '{tool_name}' 已存在，将被覆盖")
 

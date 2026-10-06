@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+from ..core.cordis_tools import CORDIS_TOOLS
 from ..kernel.config_tree import ConfigTree
 from ..kernel.invariant_registry import builtin_invariant_ids
 from ..prompt_builder.sections import builtin_section_ids
@@ -97,7 +98,6 @@ _TOOL_METADATA_NAMES = (
     "bash", "bash_opt", "cp", "find", "ls", "mkdir", "mv", "read_file",
     "read_image", "rm", "search", "skill", "subagent", "subagent_opt",
     "update_file", "user_select", "web_fetch", "web_search", "write_file",
-    "cordis_inspect", "cordis_define", "cordis_run", "cordis_stop", "cordis_undefine",
 )
 
 TOOL_METADATA_ENTRIES = [
@@ -242,16 +242,10 @@ NAMED_STYLE_ENTRIES = [
 # ——被禁用的条目不再注册，对应工具随之解除全局禁用）。
 
 GLOBAL_DISABLED_TOOL_ENTRIES = [
-    {"id": "global_disabled_tool_cordis_inspect", "plugin": "src.plugins.tool_policy_entries:apply_global_disabled_tool",
-     "config": {"name": "cordis_inspect"}},
-    {"id": "global_disabled_tool_cordis_define", "plugin": "src.plugins.tool_policy_entries:apply_global_disabled_tool",
-     "config": {"name": "cordis_define"}},
-    {"id": "global_disabled_tool_cordis_run", "plugin": "src.plugins.tool_policy_entries:apply_global_disabled_tool",
-     "config": {"name": "cordis_run"}},
-    {"id": "global_disabled_tool_cordis_stop", "plugin": "src.plugins.tool_policy_entries:apply_global_disabled_tool",
-     "config": {"name": "cordis_stop"}},
-    {"id": "global_disabled_tool_cordis_undefine", "plugin": "src.plugins.tool_policy_entries:apply_global_disabled_tool",
-     "config": {"name": "cordis_undefine"}},
+    {"id": f"global_disabled_tool_{name}",
+     "plugin": "src.plugins.tool_policy_entries:apply_global_disabled_tool",
+     "config": {"name": name}}
+    for name in CORDIS_TOOLS
 ]
 
 # ── 内置命令条目（每个命令一个独立插件条目，可被 patch/overlay 禁用/替换） ──

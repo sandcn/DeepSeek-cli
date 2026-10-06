@@ -32,6 +32,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .cordis_tools import CORDIS_TOOLS
+
 _lock = threading.RLock()
 _ABSENT = object()
 
@@ -64,7 +66,10 @@ class AgentTypeSpec:
 
 # ── 内置类型声明（排除集合的静态真源） ─────────────────────
 
-_CORDIS_TOOLS = ("cordis_define", "cordis_run", "cordis_stop", "cordis_undefine")
+# cordis 工具族名单来自 ``src.core.cordis_tools``（单一真源）——它们同时是
+# 「全局禁用工具」，此处为纵深防御：即便某条目被 overlay 解除全局禁用，
+# 只读/计划型子代理也不应获得进程内自修改能力。
+_CORDIS_TOOLS = tuple(CORDIS_TOOLS)
 
 _BUILTIN_SPECS: Tuple[AgentTypeSpec, ...] = (
     AgentTypeSpec(

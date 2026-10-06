@@ -113,3 +113,56 @@ def test_entry_points_plugins_returns_list():
     from src.kernel.loader import entry_points_plugins
 
     assert isinstance(entry_points_plugins("nonexistent.group"), list)
+
+
+# ── 模块名稳定化（热重载不泄漏 sys.modules） ──
+
+
+def test_module_name_is_stable_for_same_path(tmp_path):
+    import sys
+
+    from src.kernel.loader import module_name_for
+
+    path = tmp_path / "stable.py"
+    path.write_text("V = 1\n", encoding="utf-8")
+    first = load_module(str(path))
+    second = load_module(str(path))
+    assert first.__name__ == second.__name__
+    assert first.__name__.startswith("_dsh_plugin_")
+    assert first.__name__ in sys.modules
+    assert module_name_for(str(path)) == first.__name__
+
+
+def test_module_name_differs_for_different_paths(tmp_path):
+    from src.kernel.loader import module_name_for
+
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    a.write_text("V = 1\n", encoding="utf-8")
+    b.write_text("V = 1\n", encoding="utf-8")
+    assert module_name_for(str(a)) != module_name_for(str(b))
+
+
+def test_load_module_failure_cleans_sys_modules(tmp_path):
+    import sys
+
+    from src.kernel.loader import module_name_for
+
+    path = tmp_path / "bad.py"
+    path.write_text("def broken(\n", encoding="utf-8")
+    name = module_name_for(str(path))
+    with pytest.raises(SyntaxError):
+        load_module(str(path))
+    assert name not in sys.modules
+
+
+def test_hot_reload_reuses_module_name_without_growth(tmp_path):
+    import sys
+
+    path = tmp_path / "hot.py"
+    path.write_text("V = 1\n", encoding="utf-8")
+    before = set(sys.modules)
+    for _ in range(3):
+        load_module(str(path))
+    added = [name for name in sys.modules if name not in before]
+    assert len(added) == 1
