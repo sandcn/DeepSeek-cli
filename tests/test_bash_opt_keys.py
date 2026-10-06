@@ -1,7 +1,9 @@
-"""``bash_opt`` ``op=keys``（终端键盘输入）工具层测试。
+"""``bash_opt`` ``op=keys``（键盘输入）工具层测试。
 
 覆盖：schema 按键说明、按键缺失/非法/不支持键的错误透出、PTY 与 PIPE
-两种写入方式下实际发出的字节序列，以及键名规则与 GUI ``op=key`` 的统一。
+两种写入方式下实际发出的字节序列（无 GUI 窗口时的终端回退通道），以及
+键名规则与 GUI ``op=key`` 的统一。有 GUI 窗口时的窗口注入路由见
+``test_bash_opt_keys_routing.py``。
 """
 
 from __future__ import annotations
@@ -30,6 +32,12 @@ def _record(mode: str = "pty", status: str = "running") -> dict:
         "master_fd": 9,
         "stdin_writer": None,
     }
+
+
+@pytest.fixture(autouse=True)
+def _no_gui_window(monkeypatch):
+    """默认目标进程无 GUI 窗口（走终端通道），避免真实窗口探测拖慢/抖动。"""
+    monkeypatch.setattr(bash_opt_module, "probe_window", lambda pid: None)
 
 
 async def _run_keys(rec: dict, key):

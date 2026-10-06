@@ -230,10 +230,14 @@ class WindowsInputBackend:
     def supports(self) -> bool:
         return winapi.is_windows_platform()
 
+    def locate(self, pid: int) -> _TargetWindow | None:
+        """定位 ``pid``（含子进程）的主窗口（无副作用；供路由决策与注入复用）。"""
+        winapi.ensure_process_dpi_aware()
+        return self._locate(pid)
+
     def send(self, pid: int, action: InputAction) -> InputResult:
         """向 ``pid`` 的窗口注入 ``action``，返回注入结果。"""
-        winapi.ensure_process_dpi_aware()
-        target = self._locate(pid)
+        target = self.locate(pid)
         if target is None:
             raise NoWindowError(
                 f"进程 {pid} 及其子进程没有可接收输入的可见窗口"

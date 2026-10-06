@@ -114,9 +114,13 @@ class MacOSInputBackend:
     def supports(self) -> bool:
         return sys.platform == "darwin"
 
+    def locate(self, pid: int) -> _MacTarget | None:
+        """定位 ``pid``（含子进程）的主窗口（无副作用；供路由决策与注入复用）。"""
+        return self._locate(pid)
+
     def send(self, pid: int, action: InputAction) -> InputResult:
         """向 ``pid`` 的窗口注入 ``action``，返回注入结果。"""
-        target = self._locate(pid)
+        target = self.locate(pid)
         if target is None:
             raise NoWindowError(
                 f"进程 {pid} 及其子进程没有可接收输入的可见窗口"

@@ -9,8 +9,10 @@ bash_opt — 按 task_id 操作后台 bash 任务
 - op=wait   等待任务执行完成并获取结果（JSON：task_id/status/stdout/stderr/returncode）
 - op=kill   杀死后台命令的所有进程树（killpg + /proc 递归补杀后代）
 - op=stdin  向后台命令的 stdin 发送文本输入（text 参数，newline 可选是否追加换行）
-- op=keys   向后台命令发送光标/键盘消息（跨平台 ANSI/VT100 转义序列；
-            支持 ctrl+c 等修饰键组合、esc/pageup 等别名、单个字符与 f1-f20）
+- op=keys   向后台命令发送光标/键盘消息（自动路由：目标进程有 GUI 窗口时
+            作为窗口级键盘消息注入该窗口，否则回退写入终端——跨平台
+            ANSI/VT100 转义序列；支持 ctrl+c 等修饰键组合、esc/pageup 等
+            别名、单个字符与 f1-f20）
 - op=screenshot  把后台命令（及其子进程）的窗口截图保存为 PNG
                  （path 参数指定文件路径，可选 crop 参数指定只截取的像素区域）
 - op=move / click / drag / scroll / key / type
@@ -40,12 +42,17 @@ press / down / up，各平台分别独立发送 down 与 up 消息），type 逐
 Windows 用 SendInput（必要时回退 PostMessage 投递）、Linux 用 xdotool、
 macOS 用 Quartz/cliclick + osascript；平台工具缺失时返回带安装提示的错误。
 
-键盘消息跨平台说明：VT100/ANSI 转义序列是终端输入的标准语义，被 Linux/
-macOS/Android(Termux) 的 PTY 与 Windows 的 ConPTY/Windows Terminal 统一
-接受。按键名（如 up/down/ctrl_c/ctrl+c/esc/pageup）映射为对应字节序列，经
-PTY master 或 stdin 管道写入后台进程，不依赖平台特定 API；键名规则与
-op=key（GUI）共用同一套（别名与组合键语法一致）。op=keys 面向**终端程序**，
-op=key 面向**GUI 窗口**（合成窗口级按键事件），二者按被操作程序的形态选用。
+键盘消息跨平台说明：``op=keys`` 自动按被操作程序的形态选通道——目标进程
+（含其子进程）**有 GUI 窗口**时，按键作为窗口级键盘消息注入该窗口（与
+``op=key`` 同一套合成事件）；**没有 GUI 窗口**时回退写入终端（ANSI/VT100
+序列）。VT100/ANSI 转义序列是终端输入的标准语义，被 Linux/macOS/
+Android(Termux) 的 PTY 与 Windows 的 ConPTY/Windows Terminal 统一接受；
+按键名（如 up/down/ctrl_c/ctrl+c/esc/pageup）映射为对应字节序列，经 PTY
+master 或 stdin 管道写入后台进程，不依赖平台特定 API。键名规则在两种通道
+下共用同一套（别名与组合键语法一致）；两者都不可用（无 GUI 窗口且无终端
+写入句柄）时返回错误说明。需要**精确控制**通道时：``op=key`` 面向
+**GUI 窗口**（强制要求窗口存在，无窗口报错），终端序列亦可直接用
+``op=stdin`` 写入。
 """
 
 from __future__ import annotations
@@ -73,6 +80,7 @@ from ._window_input import (
     InputError,
     NoWindowError as InputNoWindowError,
     build_action,
+    probe_window,
     send_window_input,
 )
 from ._terminal_keys import SUPPORTED_TERMINAL_KEYS, parse_terminal_key
@@ -143,8 +151,9 @@ class BashOptFunc(Func):
                     "wait（等待完成取结果 JSON：task_id/status/stdout/stderr/returncode，"
                     "timeout 秒，默认 300/0 无限）、"
                     "kill（杀进程树）、stdin（发文本到 stdin，需 text）、"
-                    "keys（向终端发按键，需 key：支持 ctrl+c 等组合键、esc/pageup "
-                    "等别名与单个字符）、"
+                    "keys（发送按键，需 key：目标进程有 GUI 窗口时自动作为窗口级"
+                    "键盘消息注入该窗口，否则写入终端；支持 ctrl+c 等组合键、"
+                    "esc/pageup 等别名与单个字符）、"
                     "screenshot（把该命令进程树的窗口截图存为 PNG，需 path，"
                     "可选 crop 指定只截取的像素区域，格式 'x,y,width,height'）、"
                     "move/click/drag/scroll/key/type（向该命令进程树的 GUI 窗口注入"
@@ -175,7 +184,9 @@ class BashOptFunc(Func):
                                 "\n- wait：等待任务完成并获取命令输出"
                                 "\n- kill：杀死任务所有进程树"
                                 "\n- stdin：向任务 stdin 发送文本输入（需 text）"
-                                "\n- keys：向任务（终端程序）发送光标/键盘消息（需 key；"
+                                "\n- keys：向任务发送光标/键盘消息（需 key；"
+                                "目标进程有 GUI 窗口时自动作为窗口级键盘消息注入该窗口，"
+                                "没有 GUI 窗口则写入终端 PTY/stdin；"
                                 "支持 ctrl+c 等组合键、esc/pageup 等别名与单个字符）"
                                 "\n- screenshot：把任务进程树（含其启动的 GUI 子进程）的窗口"
                                 "截图保存为 PNG 文件（需 path；可选 crop 指定只截取的像素区域），"
@@ -219,7 +230,8 @@ class BashOptFunc(Func):
                             "type": "string",
                             "description": (
                                 "keys / key 操作的按键名（二者共用同一套键名规则）："
-                                "keys（终端程序）支持修饰键组合（ctrl+c / alt+f4 / "
+                                "keys（自动路由：有 GUI 窗口注入窗口、否则发终端）"
+                                "支持修饰键组合（ctrl+c / alt+f4 / "
                                 "shift+tab）、紧凑写法（ctrl_c / ctrl-c）、常用别名"
                                 "（esc / return / del / ins / pageup / pgup / pgdn / "
                                 "next / prior）、光标与编辑键（up/down/left/right/"
@@ -655,13 +667,84 @@ class BashOptFunc(Func):
     # ── op=keys ──────────────────────────────────────────
 
     async def _op_keys(self, rec: dict) -> str:
-        """向后台任务发送光标/键盘消息（跨平台 ANSI/VT100 转义序列）。"""
+        """向后台任务发送光标/键盘消息（按被操作程序形态自动路由）。
+
+        路由规则：
+
+          - 目标进程（含其子进程）有可接收键盘输入的 **GUI 窗口** → 按键
+            作为**窗口级键盘消息**注入该窗口（与 op=key 同一套合成事件，
+            见 :meth:`_send_keys_to_window`）；
+          - 没有 GUI 窗口 → 回退写入**终端**（PTY master / stdin 管道，
+            ANSI/VT100 序列，见 :meth:`_send_keys_to_terminal`）；
+          - 两者都不可用（无 GUI 窗口且无终端写入句柄）→ 返回错误说明。
+
+        这样同一个 ``op=keys`` 既能操作 GUI 程序（游戏 / GUI 应用），
+        也能操作纯命令行程序（编译 / 交互式 shell），无需模型先判断形态。
+        """
         if self.key is None:
             return "(keys 操作需要 key 参数指定按键，如 key='up' / key='ctrl_c')"
+        key_text = str(self.key)
+        pid = rec.get("pid")
+        window_pid = (pid if isinstance(pid, int) and not isinstance(pid, bool)
+                      and pid > 0 else None)
+        window_failure: str | None = None
+        if window_pid is not None and probe_window(window_pid) is not None:
+            try:
+                return await self._send_keys_to_window(window_pid, key_text)
+            except (InputNoWindowError, InputError) as exc:
+                # 探测到窗口但注入失败（窗口已关闭 / 无法置前等）：尝试终端回退
+                window_failure = str(exc)
+        ok, message = await self._send_keys_to_terminal(rec, key_text)
+        if ok:
+            return message
+        if window_failure is not None:
+            return (f"(按键发送失败：目标 GUI 窗口注入失败（{window_failure}）；"
+                    f"终端备选通道也不可用（{self._plain(message)}）")
+        if message.startswith("(按键解析失败"):
+            # 键名在终端不可用（错误提示已含「改用 op=key」），且无 GUI 窗口
+            return f"{message}（目标进程也没有可接收键盘输入的 GUI 窗口）"
+        return (f"(按键发送失败：目标进程既没有可接收键盘输入的 GUI 窗口，"
+                f"也没有可写入的终端句柄 —— {self._plain(message)}。"
+                f"若为 GUI 程序请等窗口出现后用 op=key 注入（可用 op=screenshot "
+                f"确认窗口状态）；纯命令行进程请确认已启动（可用 op=wait 查看状态）)")
+
+    async def _send_keys_to_window(self, pid: int, key_text: str) -> str:
+        """把按键作为窗口级键盘消息注入目标 GUI 窗口。
+
+        与 ``op=key`` 走同一条输入注入通道（Windows SendInput/PostMessage、
+        X11 xdotool、macOS Quartz），键名规则亦共用；窗口创建有延迟时按
+        :meth:`_send_input_with_retry` 的节奏重试。
+
+        Raises:
+            ActionError: 键名非法。
+            InputNoWindowError: 注入时窗口已消失。
+            InputError: 平台不支持或注入失败。
+        """
+        action = build_action("key", {"key": key_text})
+        result = await self._send_input_with_retry(pid, action)
+        payload = {
+            "task_id": self.task_id,
+            "op": "keys",
+            "channel": "gui",
+            "hint": ("检测到目标进程有 GUI 窗口，按键已作为窗口级键盘消息注入该窗口；"
+                     "可用 op=screenshot 截图后 read_image 核对界面变化"
+                     "（纯 GUI 按键可直接用 op=key）"),
+        }
+        payload.update(result.to_dict())
+        return json.dumps(payload, ensure_ascii=False)
+
+    async def _send_keys_to_terminal(self, rec: dict,
+                                     key_text: str) -> tuple[bool, str]:
+        """回退通道：按键转 ANSI/VT100 序列写入终端（PTY master / stdin）。
+
+        Returns:
+            ``(成功, 消息)``——成功时为提示文本，失败时为错误文本（解析失败
+            或通道不可用）。
+        """
         try:
-            sequence = parse_terminal_key(str(self.key))
+            sequence = parse_terminal_key(key_text)
         except ActionError as exc:
-            return (
+            return False, (
                 f"(按键解析失败: {exc}。终端按键支持: "
                 f"{', '.join(SUPPORTED_TERMINAL_KEYS)}、ctrl_a..ctrl_z、"
                 f"alt+<字符>、shift+tab、单个字符；亦接受 esc/del/pageup/"
@@ -669,8 +752,16 @@ class BashOptFunc(Func):
             )
         ok, err = await self._write_to_task(rec, sequence.encode("utf-8"))
         if not ok:
-            return err
-        return f"(已向后台任务 {self.task_id} 发送按键: {self.key})"
+            return False, err
+        return True, f"(已向后台任务 {self.task_id} 发送终端按键: {key_text})"
+
+    @staticmethod
+    def _plain(message: str) -> str:
+        """去掉错误文本最外层括号（嵌入更长的说明时避免括号嵌套）。"""
+        text = str(message).strip()
+        if text.startswith("(") and text.endswith(")"):
+            return text[1:-1]
+        return text
 
     # ── op=screenshot ────────────────────────────────────
 

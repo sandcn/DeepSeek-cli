@@ -2,7 +2,8 @@
 
 职责划分：
 
-  - 本模块：平台后端注册表 + 公共入口 :func:`send_window_input`；
+  - 本模块：平台后端注册表 + 公共入口 :func:`send_window_input`（注入）与
+    :func:`probe_window`（只定位不注入，供路由决策）；
   - ``win`` / ``x11`` / ``macos``：各平台后端（相同契约：``supports()`` +
     ``send(pid, action) -> InputResult``）；
   - ``action``：与平台无关的输入动作模型与参数校验；
@@ -89,6 +90,29 @@ def resolve_backend():
     return None
 
 
+def probe_window(pid: int):
+    """探测 ``pid``（含其子进程）当前是否有可接收输入的可见窗口。
+
+    与 :func:`send_window_input` 复用同一套窗口定位规则，但**只定位不注入**
+    （无副作用）：找到窗口时返回后端相关的目标窗口对象（真值），否则返回
+    ``None``。用于「有 GUI 窗口走窗口注入、无窗口回退终端」这类路由决策。
+
+    Args:
+        pid: 目标进程 PID（含其子进程一起参与窗口匹配）。
+    """
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
+    backend = resolve_backend()
+    locate = getattr(backend, "locate", None)
+    if locate is None:
+        return None
+    try:
+        return locate(pid)
+    except Exception:  # pragma: no cover - 探测失败不应中断调用方
+        logger.debug("窗口探测失败（pid=%s）", pid, exc_info=True)
+        return None
+
+
 def send_window_input(pid: int, action: InputAction) -> InputResult:
     """向 ``pid`` 的窗口注入一个输入动作，返回注入结果。
 
@@ -152,6 +176,7 @@ __all__ = [
     "available_backends",
     "build_action",
     "describe_action",
+    "probe_window",
     "register_backend",
     "resolve_backend",
     "resolve_point",
