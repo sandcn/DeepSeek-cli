@@ -31,7 +31,7 @@ def test_tool_name_is_bash_opt():
     required = schema["function"]["parameters"]["required"]
     assert required == ["task_id", "op"]
     assert set(schema["function"]["parameters"]["properties"]["op"]["enum"]) == {
-        "read", "wait", "kill", "stdin", "keys",
+        "read", "wait", "kill", "stdin", "keys", "screenshot",
     }
 
 
@@ -192,7 +192,7 @@ async def test_execute_rejects_subagent_task_id():
         "read_buffer": "",
     }
 
-    for op in ("read", "wait", "kill", "stdin", "keys"):
+    for op in ("read", "wait", "kill", "stdin", "keys", "screenshot"):
         func = BashOptFunc(task_id=task_id, op=op)
         func.set_agent(agent)
         result = await func.execute()
@@ -229,7 +229,7 @@ async def test_execute_task_id_none_defensive():
     self.task_id = task_id or ""，execute 前缀校验拒绝并提示，零副作用。
     """
     agent = _FakeAgent({})
-    for op in ("read", "wait", "kill", "stdin", "keys"):
+    for op in ("read", "wait", "kill", "stdin", "keys", "screenshot"):
         func = BashOptFunc(task_id=None, op=op)
         func.set_agent(agent)
         result = await func.execute()

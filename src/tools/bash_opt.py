@@ -10,10 +10,17 @@ bash_opt — 按 task_id 操作后台 bash 任务
 - op=kill   杀死后台命令的所有进程树（killpg + /proc 递归补杀后代）
 - op=stdin  向后台命令的 stdin 发送文本输入（text 参数，newline 可选是否追加换行）
 - op=keys   向后台命令发送光标/键盘消息（跨平台 ANSI/VT100 转义序列）
+- op=screenshot  把后台命令（及其子进程）的窗口截图保存为 PNG（path 参数指定文件路径）
 
 read 为**增量读取**：后台任务运行期间的每一行输出都会累积到内部缓冲，
 每次 read 取走当前全部累积内容并清空，适合实时观察长时任务（编译/下载/
 日志流）的进度；任务最终完整结果仍由 op=wait 获取。
+
+截图（screenshot）适用于后台任务运行的是**图形界面程序**（游戏、GUI 应用、
+渲染预览等）的场景：按 task_id 定位该命令产生的进程树，取其可见窗口像素
+写盘（Windows 用 PrintWindow/BitBlt；Linux 用 ImageMagick import/xwd；
+macOS 用 screencapture）。产物为 PNG，可用 read_image 查看画面。
+纯命令行进程没有窗口，此时返回可读的错误说明。
 
 键盘消息跨平台说明：VT100/ANSI 转义序列是终端输入的标准语义，被 Linux/
 macOS/Android(Termux) 的 PTY 与 Windows 的 ConPTY/Windows Terminal 统一
@@ -28,9 +35,12 @@ import json
 import logging
 import math
 import os
+import time
 
 from .base import Func
 from .bash import kill_process_tree
+from .file_ops import validate_path_security
+from ._screenshot import NoWindowError, ScreenshotError, capture_process_window
 from ..core.base_agent import _parse_bash_result_fields
 
 logger = logging.getLogger(__name__)
@@ -133,6 +143,13 @@ class BashOptFunc(Func):
 
     name = "bash_opt"
     _DEFAULT_WAIT_TIMEOUT: int = 300
+    #: 截图「等待窗口出现」的总时长（秒）：GUI 程序启动后窗口创建有延迟，
+    #: 首轮未找到窗口时按 _SCREENSHOT_RETRY_INTERVAL 轮询重试。
+    _SCREENSHOT_WAIT_SECONDS: float = 5.0
+    #: 截图重试轮询间隔（秒）
+    _SCREENSHOT_RETRY_INTERVAL: float = 1.0
+    #: 单轮截图操作的硬超时（秒）——GDI/外部命令卡死时兜底
+    _SCREENSHOT_TIMEOUT: float = 30.0
 
     @classmethod
     def to_tool_schema(cls):
@@ -145,7 +162,8 @@ class BashOptFunc(Func):
                     "op：read（读取当前已产生的全部输出并清空缓冲，立即返回不等待完成）、"
                     "wait（等待完成取结果 JSON：task_id/status/stdout/stderr/returncode，"
                     "timeout 秒，默认 300/0 无限）、"
-                    "kill（杀进程树）、stdin（发文本，需 text）、keys（发按键，需 key）。"
+                    "kill（杀进程树）、stdin（发文本，需 text）、keys（发按键，需 key）、"
+                    "screenshot（把该命令进程树的窗口截图存为 PNG，需 path）。"
                     "task_id 必须是当前对话 bash 后台返回的 bg-xxx。返回：操作结果 JSON 或输出；失败以 ( 开头。"
                 ),
                 "parameters": {
@@ -160,7 +178,7 @@ class BashOptFunc(Func):
                         },
                         "op": {
                             "type": "string",
-                            "enum": ["read", "wait", "kill", "stdin", "keys"],
+                            "enum": ["read", "wait", "kill", "stdin", "keys", "screenshot"],
                             "description": (
                                 "要执行的操作："
                                 "\n- read：读取后台命令当前已产生的全部输出并清空缓冲，"
@@ -170,6 +188,9 @@ class BashOptFunc(Func):
                                 "\n- kill：杀死任务所有进程树"
                                 "\n- stdin：向任务 stdin 发送文本输入（需 text）"
                                 "\n- keys：向任务发送光标/键盘消息（需 key）"
+                                "\n- screenshot：把任务进程树（含其启动的 GUI 子进程）的窗口"
+                                "截图保存为 PNG 文件（需 path），用于查看图形程序运行画面；"
+                                "纯命令行进程没有窗口，会返回错误说明"
                             ),
                         },
                         "timeout": {
@@ -204,6 +225,14 @@ class BashOptFunc(Func):
                                 "f1-f12、ctrl_a-ctrl_z（含 ctrl_c/ctrl_d/ctrl_z/ctrl_l 等）。"
                             ),
                         },
+                        "path": {
+                            "type": "string",
+                            "description": (
+                                "仅 screenshot 操作必填：截图保存的文件路径（PNG）。"
+                                "无扩展名时自动补 .png；父目录不存在会自动创建。"
+                                "截图后可用 read_image 读取该文件查看画面。"
+                            ),
+                        },
                     },
                     "required": ["task_id", "op"],
                 },
@@ -219,6 +248,8 @@ class BashOptFunc(Func):
             extra = str(arguments.get("text", ""))
         elif op == "keys":
             extra = str(arguments.get("key", ""))
+        elif op == "screenshot":
+            extra = str(arguments.get("path", ""))
         display = f"{op} {task_id}"
         if extra:
             display += f" {cls._sanitize_display(extra)}"
@@ -226,7 +257,7 @@ class BashOptFunc(Func):
 
     def __init__(self, task_id: str, op: str, timeout=None,
                  text: str | None = None, newline: bool = True,
-                 key: str | None = None):
+                 key: str | None = None, path: str | None = None):
         super().__init__()
         # task_id 归一化（防御 None/缺失）：模型传 {"task_id": null} 时
         # from_args 把 None 传入（默认值不生效），后续 startswith 崩溃。
@@ -251,6 +282,7 @@ class BashOptFunc(Func):
         self.text = text
         self.newline = bool(newline)
         self.key = key
+        self.path = path
 
     # ── execute ──────────────────────────────────────────
 
@@ -290,7 +322,9 @@ class BashOptFunc(Func):
             return await self._op_stdin(rec)
         if self.op == "keys":
             return await self._op_keys(rec)
-        return f"(未知操作: {self.op}。支持: read/wait/kill/stdin/keys)"
+        if self.op == "screenshot":
+            return await self._op_screenshot(rec)
+        return f"(未知操作: {self.op}。支持: read/wait/kill/stdin/keys/screenshot)"
 
     # ── op=read ──────────────────────────────────────────
 
@@ -441,6 +475,90 @@ class BashOptFunc(Func):
         if not ok:
             return err
         return f"(已向后台任务 {self.task_id} 发送按键: {self.key})"
+
+    # ── op=screenshot ────────────────────────────────────
+
+    async def _op_screenshot(self, rec: dict) -> str:
+        """把后台任务进程树（含其启动的 GUI 子进程）的窗口截图存为 PNG。
+
+        适用于后台命令运行图形程序的场景（游戏 / GUI 应用 / 渲染预览）：
+        按 task_id 的进程 PID 定位窗口并抓取像素，产物写入 path 指定的
+        文件；截图完成返回 JSON（path/width/height/window_pid/window_title），
+        大模型随后可用 read_image 查看画面。
+        """
+        if not self.path or not str(self.path).strip():
+            return ("(screenshot 操作需要 path 参数指定截图保存的文件路径，"
+                    "如 path='shot.png' 或 path='/tmp/shot.png')")
+        pid = rec.get("pid")
+        if pid is None:
+            return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
+                    f"无法截图。可用 op=wait 查看任务状态)")
+        try:
+            target_path = self._prepare_screenshot_path(str(self.path))
+        except ValueError as exc:
+            return f"(截图路径非法: {exc})"
+        try:
+            result = await self._capture_with_retry(pid, target_path)
+        except ScreenshotError as exc:
+            return f"(截图失败: {exc})"
+        payload = {"task_id": self.task_id, "op": "screenshot"}
+        payload.update(result.to_dict())
+        payload["hint"] = "截图已保存，可用 read_image 工具读取该文件查看画面"
+        return json.dumps(payload, ensure_ascii=False)
+
+    async def _capture_with_retry(self, pid: int, path: str):
+        """截图（GUI 程序窗口创建有延迟时轮询重试）。
+
+        仅在「目标暂无可见窗口」时重试（NoWindowError）；其它错误立即返回。
+        每轮截图在线程中执行（GDI 调用阻塞），并受 _SCREENSHOT_TIMEOUT 保护。
+
+        Returns:
+            CaptureResult（成功后）。
+
+        Raises:
+            ScreenshotError: 所有重试均失败，或截图命令超时/异常。
+        """
+        deadline = time.monotonic() + self._SCREENSHOT_WAIT_SECONDS
+        while True:
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(capture_process_window, pid, path),
+                    timeout=self._SCREENSHOT_TIMEOUT,
+                )
+            except NoWindowError as exc:
+                if time.monotonic() >= deadline:
+                    raise
+                logger.debug("截图重试（暂无窗口）: %s", exc)
+                await asyncio.sleep(self._SCREENSHOT_RETRY_INTERVAL)
+            except asyncio.TimeoutError:
+                raise ScreenshotError(
+                    f"截图超时（超过 {self._SCREENSHOT_TIMEOUT:g} 秒）："
+                    f"窗口无响应或截图命令卡死"
+                ) from None
+
+    @staticmethod
+    def _prepare_screenshot_path(path: str) -> str:
+        """规范化截图输出路径：展开 ~、补 .png、建父目录、安全校验。
+
+        Raises:
+            ValueError: 路径为空、指向目录、或未通过安全校验。
+        """
+        expanded = os.path.expanduser(path.strip())
+        if not expanded:
+            raise ValueError("路径为空")
+        absolute = os.path.abspath(expanded)
+        if os.path.isdir(absolute):
+            raise ValueError(f"目标路径是一个目录: {absolute}")
+        if not os.path.splitext(absolute)[1]:
+            absolute += ".png"
+        validate_path_security(absolute)
+        parent = os.path.dirname(absolute)
+        try:
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+        except OSError as exc:
+            raise ValueError(f"无法创建父目录 {parent}: {exc}") from exc
+        return absolute
 
     # ── 写入辅助 ─────────────────────────────────────────
 
