@@ -205,14 +205,25 @@ class _BlockParserStreamMixin:
         if self._block_lang.lower() not in ('text', 'txt', 'plain', ''):
             self._reset_auto_close()
             return False
+        if self._code_content_seen:
+            # ★ 加固（降低误截断）：块内已出现普通内容行（真实代码 / 缩进 /
+            #   非结构文本）→ 视为「含实际内容的代码块」而非「纯 Markdown 块
+            #   漏写闭合围栏」，放弃自动关闭。真实漏闭合块通常整块为 Markdown
+            #   结构行（无普通内容行），故容错保留；而「代码 + 尾部 Markdown
+            #   示例」块不再被误截断。
+            self._reset_auto_close()
+            return False
         if line and (line[0] in ' \t'):
+            self._code_content_seen = True
             self._reset_auto_close()
             return False
         if stripped[0] not in '#-*_|':
+            self._code_content_seen = True
             self._reset_auto_close()
             return False
         kind = self._auto_close_line_kind(stripped)
         if kind is None:
+            self._code_content_seen = True
             self._reset_auto_close()
             return False
         self._auto_close_kinds.add(kind)
@@ -584,6 +595,7 @@ class _BlockParserStreamMixin:
         self._preview_code_dropped = 0
         self._block_nested_fence = 0
         self._reset_auto_close()
+        self._code_content_seen = False
         lang = self._block_lang
         if lang.lower() in ('mermaid',) or lang.lower().startswith('mermaid'):
             self._state = _State.MERMAID_BLOCK

@@ -159,12 +159,18 @@ class AnsiRenderEngine:
                     summary, body = self._details
                     self._details = None
                 else:
-                    summary, body = token.meta.get("summary", ""), []
+                    # ★ 修复（流式预览丢正文）：无引擎缓冲（预览路径）时
+                    #   必须从 token meta 取 body_lines——修复前正文行固定为
+                    #   ``[]``，<details> 预览只显示 summary、正文全部丢失。
+                    summary = token.meta.get("summary", "")
+                    body = list(token.meta.get("body_lines") or [])
                 if token.content:
                     body = body + str(token.content).split("\n")
-                return blocks.render_details(
-                    _StrToken("", {"summary": summary, "body_lines": body})
-                )
+                meta: dict = {"summary": summary, "body_lines": body}
+                dropped = token.meta.get("preview_dropped")
+                if dropped:
+                    meta["preview_dropped"] = dropped
+                return blocks.render_details(_StrToken("", meta))
 
             if t == TokenType.FENCED_DIV_OPEN:
                 # 收集 type + 头行文本 + 正文行（FENCED_DIV_LINE 到来时追加）
@@ -180,10 +186,16 @@ class AnsiRenderEngine:
                     dtype, head_text, body = self._fenced_div
                     self._fenced_div = None
                 else:
-                    dtype, head_text, body = token.meta.get("type", "NOTE"), "", []
-                return blocks.render_fenced_div(
-                    _StrToken(head_text, {"type": dtype, "body_lines": body})
-                )
+                    # ★ 修复（流式预览丢正文）：同 DETAILS_CLOSE——预览路径
+                    #   必须从 token meta 取 body_lines（修复前正文丢失）。
+                    dtype = token.meta.get("type", "NOTE")
+                    head_text = token.content or ""
+                    body = list(token.meta.get("body_lines") or [])
+                meta: dict = {"type": dtype, "body_lines": body}
+                dropped = token.meta.get("preview_dropped")
+                if dropped:
+                    meta["preview_dropped"] = dropped
+                return blocks.render_fenced_div(_StrToken(head_text, meta))
 
             # HTML 块：纯文本透传
             if t in (TokenType.HTML_BLOCK_OPEN, TokenType.HTML_BLOCK_LINE, TokenType.HTML_BLOCK_CLOSE):

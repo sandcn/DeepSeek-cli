@@ -115,6 +115,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # 自动关闭 fence 连续匹配行的结构类型集合（要求结构多样，避免
         # 代码块内连续同类型行——如多行 ``# 注释``——被误判为 Markdown）
         self._auto_close_kinds: set[str] = set()
+        # 当前代码块内是否出现过「普通内容行」（非空、非块级结构、或缩进行）
+        # ——出现过即放弃后续自动关闭（块内含真实代码内容，不再是「纯
+        # Markdown 块漏写闭合围栏」的形态），降低误截断；每个代码块开始时重置。
+        self._code_content_seen: bool = False
 
         # 预扫描位置
         self._prescan_pos: int = 0
@@ -386,18 +390,30 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                              {"source": src, "preview": True}))
             return out
         if st == _State.DETAILS_BLOCK:
-            out.append(Token(TokenType.DETAILS_CLOSE, "", {
+            body_all = self._block_lines + tail_lines
+            body = self._preview_tail(body_all)
+            meta: dict = {
                 "summary": self._details_summary,
-                "body_lines": list(self._block_lines + tail_lines),
+                "body_lines": body,
                 "preview": True,
-            }))
+            }
+            dropped = len(body_all) - len(body)
+            if dropped:
+                meta["preview_dropped"] = dropped
+            out.append(Token(TokenType.DETAILS_CLOSE, "", meta))
             return out
         if st == _State.FENCED_DIV:
-            out.append(Token(TokenType.FENCED_DIV_CLOSE, "", {
+            body_all = self._block_lines + tail_lines
+            body = self._preview_tail(body_all)
+            meta: dict = {
                 "type": self._block_div_type,
-                "body_lines": self._preview_tail(self._block_lines + tail_lines),
+                "body_lines": body,
                 "preview": True,
-            }))
+            }
+            dropped = len(body_all) - len(body)
+            if dropped:
+                meta["preview_dropped"] = dropped
+            out.append(Token(TokenType.FENCED_DIV_CLOSE, "", meta))
             return out
         # HTML_BLOCK：已闭合行即时 emit（引擎直接逐行渲染）；未换行的尾部
         # 活动行同样即时预览，保证实时可见。
@@ -445,9 +461,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             out.append(Token(TokenType.BLOCKQUOTE_OPEN, "",
                              {"depth": depth, "preview": True}))
             if body:
+                tail_body = self._preview_tail(body)
+                meta: dict = {"depth": depth, "preview": True}
+                dropped = len(body) - len(tail_body)
+                if dropped:
+                    meta["preview_dropped"] = dropped
                 out.append(Token(TokenType.BLOCKQUOTE_LINE,
-                                 "\n".join(self._preview_tail(body)),
-                                 {"depth": depth, "preview": True}))
+                                 "\n".join(tail_body), meta))
             out.append(Token(TokenType.BLOCKQUOTE_CLOSE, "",
                              {"depth": depth, "preview": True}))
             if rest:
@@ -455,11 +475,24 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return out
 
         if self._in_admonition:
-            out.append(Token(TokenType.ADMONITION_CLOSE, "", {
+            all_lines = self._block_lines + tail_lines
+            if len(all_lines) > self._PREVIEW_MAX_LINES and all_lines:
+                # ★ 告示首行（``[!TYPE]`` 后的文本）承担 head 渲染，截断时
+                #   必须保留（否则 head 会错位成某条正文行）；其余正文行只取
+                #   尾部 + 省略提示（与代码块/表格预览同策略）。
+                keep = max(1, self._PREVIEW_MAX_LINES - 1)
+                body = [all_lines[0]] + all_lines[-keep:]
+            else:
+                body = list(all_lines)
+            meta: dict = {
                 "type": self._admonition_type,
-                "body_lines": self._preview_tail(self._block_lines + tail_lines),
+                "body_lines": body,
                 "preview": True,
-            }))
+            }
+            dropped = len(all_lines) - len(body)
+            if dropped:
+                meta["preview_dropped"] = dropped
+            out.append(Token(TokenType.ADMONITION_CLOSE, "", meta))
             return out
 
         # 流式表格行缓冲（未遇到分隔行）：同样按「整行才可解析」处理，
@@ -510,16 +543,21 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return [Token(TokenType.HEADING, lines[0],
                           {"level": level, "preview": True})]
         if lines:
-            out.append(Token(TokenType.PARAGRAPH, "\n".join(
-                self._preview_tail(lines)), {"preview": True}))
+            tail_lines = self._preview_tail(lines)
+            meta: dict = {"preview": True}
+            dropped = len(lines) - len(tail_lines)
+            if dropped:
+                meta["preview_dropped"] = dropped
+            out.append(Token(TokenType.PARAGRAPH, "\n".join(tail_lines), meta))
         classified = self._classify_preview_line(tail) if tail else None
         if classified:
             out.extend(classified)
         elif tail:
             if out:
+                # 保留上一预览 Token 的 meta（含 preview_dropped），仅追加活动行
+                prev = out[-1]
                 out[-1] = Token(TokenType.PARAGRAPH,
-                                out[-1].content + "\n" + tail,
-                                {"preview": True})
+                                prev.content + "\n" + tail, prev.meta)
             else:
                 out.append(Token(TokenType.PARAGRAPH, tail,
                                  {"preview": True}))

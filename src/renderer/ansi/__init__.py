@@ -20,7 +20,7 @@ from .helpers import Run, AnsiLine, wrap_line, truncate_line, ansi_to_line
 from .engine import AnsiRenderEngine
 from ._preview_cache import LinePreviewCache
 from .table import TablePreviewCache
-from src.renderer.types import TokenType
+from src.renderer.types import TokenType, Token
 
 #: 预览单行字符上限——活动行（每次 write 变化的未换行行）超过该长度时只渲染
 #: 尾部窗口，把单帧渲染成本封顶（避免超长无换行行逐字符增长导致的累计 O(n²)）。
@@ -244,19 +244,57 @@ class AnsiStreamRenderer:
     def _render_paragraph_preview(self, token) -> list[AnsiLine]:
         from . import blocks as _blocks
         src = self._preview_src_lines(token.content or "")
-        return self._line_cache("paragraph").render(
-            ("paragraph",), src,
-            lambda text: [_blocks.render_paragraph_line(text)],
-        )
+        if self._paragraph_needs_multiline_inline(src):
+            # ★ 一致性修复（跨软换行行内标记）：多行段落在流式预览期按**整段**
+            #   解析行内标记后拆行——逐行渲染无法配对跨行标记（``**粗体\n
+            #   跨行**`` 会泄漏 ``**`` 标记），此路径与提交路径
+            #   （``render_paragraph`` 整段解析）语义一致，消除「预览泄漏 →
+            #   提交配对」的视觉跳变。
+            rows = _blocks.render_paragraph(
+                Token(TokenType.PARAGRAPH, "\n".join(src))
+            )
+        else:
+            rows = self._line_cache("paragraph").render(
+                ("paragraph",), src,
+                lambda text: [_blocks.render_paragraph_line(text)],
+            )
+        dropped = int(token.meta.get("preview_dropped", 0) or 0)
+        if dropped:
+            return [self._omitted_line(dropped)] + rows
+        return rows
+
+    #: 行内标记起始字符——多行段落含任一即整段解析（跨行标记可能配对）
+    _INLINE_MARKER_CHARS = ("*", "_", "`", "~", "[", "<")
+
+    @classmethod
+    def _paragraph_needs_multiline_inline(cls, src_lines: list) -> bool:
+        """多行段落是否含可能跨软换行的行内标记（含则需整段解析）。"""
+        if len(src_lines) < 2:
+            return False
+        text = "\n".join(src_lines)
+        for ch in cls._INLINE_MARKER_CHARS:
+            if ch in text:
+                return True
+        return False
+
+    @staticmethod
+    def _omitted_line(dropped: int) -> AnsiLine:
+        """预览截断提示行（与代码块预览同一真源）。"""
+        from .code import render_omitted_line
+        return render_omitted_line(dropped)
 
     def _render_blockquote_preview(self, token) -> list[AnsiLine]:
         from . import blocks as _blocks
         depth = max(1, int(token.meta.get("depth", 1))) - 1
         src = self._preview_src_lines(token.content or "")
-        return self._line_cache("blockquote").render(
+        rows = self._line_cache("blockquote").render(
             ("blockquote", depth), src,
             lambda text: [_blocks.render_blockquote_line(text, depth)],
         )
+        dropped = int(token.meta.get("preview_dropped", 0) or 0)
+        if dropped:
+            return [self._omitted_line(dropped)] + rows
+        return rows
 
     def _render_admonition_preview(self, token) -> list[AnsiLine]:
         from . import blocks as _blocks
@@ -272,6 +310,9 @@ class AnsiStreamRenderer:
             ("admonition", atype), rest,
             lambda text: [_blocks.render_admonition_body(text)],
         )
+        dropped = int(token.meta.get("preview_dropped", 0) or 0)
+        if dropped:
+            return [head, self._omitted_line(dropped)] + rows
         return [head] + rows
 
     def _render_table_preview(self, token) -> list[AnsiLine]:
@@ -283,7 +324,11 @@ class AnsiStreamRenderer:
         """
         rows = token.meta.get("rows") or []
         aligns = token.meta.get("alignments") or []
-        return self._table_preview_cache.render((), rows, aligns, self._width)
+        # ★ 契约显式化：缓存键用表头元组区分表格实例——修复前恒传 ``()``，
+        #   键实际失效、完全依赖内部 ``_header`` 判断（隐性契约，新增字段/
+        #   复用实例时易误复用）。表头相同即同一表格的连续预览（键稳定）。
+        key = tuple(rows[0]) if rows else ()
+        return self._table_preview_cache.render(key, rows, aligns, self._width)
 
     def _reset_code_preview_cache(self) -> None:
         """清空代码块预览增量缓存（块闭合/预览清空时调用）。"""

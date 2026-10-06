@@ -208,18 +208,34 @@ def render_details(token) -> list[AnsiLine]:
     ★ 修复（流式渲染引擎丢内容）：修复前仅接受 meta["summary"] 且正文行被
     engine 直接丢弃——summary 不显示、正文全部丢失。现支持 meta["summary"]
     （头）与 meta["body_lines"]（正文行列表，缩进渲染）。
+
+    ★ 一致性修复（预览截断提示）：预览正文超限被截断时 ``meta`` 携带
+    ``preview_dropped``——在正文前插入省略提示行（与代码块预览同真源）。
     """
     summary = token.meta.get("summary", "")
     head = AnsiLine.of("\u25b6 ", _STYLE_LIST_BULLET)
     for run in render_inline(str(summary)):
         head.append_run(run)
     lines = [head]
+    lines.extend(_preview_omitted(token.meta))
     for seg in (token.meta.get("body_lines") or []):
         body = AnsiLine.of("  ", _STYLE_BQ)
         for run in render_inline(str(seg)):
             body.append_run(run)
         lines.append(body)
     return lines
+
+
+def _preview_omitted(meta) -> list[AnsiLine]:
+    """预览截断提示行（无截断时返回空列表；与代码块预览同一真源）。"""
+    try:
+        dropped = int(meta.get("preview_dropped", 0) or 0)
+    except (TypeError, ValueError):
+        return []
+    if not dropped:
+        return []
+    from .code import render_omitted_line
+    return [render_omitted_line(dropped)]
 
 
 # ── FencedDiv ────────────────────────────────────────
@@ -238,6 +254,7 @@ def render_fenced_div(token) -> list[AnsiLine]:
         for run in render_inline(str(token.content)):
             head.append_run(run)
     lines = [head]
+    lines.extend(_preview_omitted(token.meta))
     for seg in (token.meta.get("body_lines") or []):
         body = AnsiLine.of("  ", _STYLE_BQ)
         for run in render_inline(str(seg)):

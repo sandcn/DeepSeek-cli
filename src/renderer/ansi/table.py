@@ -188,7 +188,7 @@ class TablePreviewCache:
 
     __slots__ = ("_key", "_ncols", "_aligns", "_header", "_header_width",
                  "_head", "_data_src", "_data_widths", "_data", "_bottom",
-                 "_widths")
+                 "_widths", "_shrink_key", "_shrink_result")
 
     _MAX_SLIDE = 8
     """头部滑窗探测的最大行数（预览截断每次仅移除少量旧行）。"""
@@ -209,6 +209,10 @@ class TablePreviewCache:
         self._data: list[list[AnsiLine]] = []
         self._bottom: list[AnsiLine] = []
         self._widths: list[int] = []
+        # 列宽收缩结果缓存（键 = (未收缩列宽, 终端宽度)）——未变化时跳过
+        # ``_shrink_widths``（超宽表格该函数为 O(超量×列数)）。
+        self._shrink_key: tuple | None = None
+        self._shrink_result: list[int] | None = None
 
     def render(self, key, rows: list[list[str]], aligns: list[str],
                term_width: int = 0) -> list[AnsiLine]:
@@ -257,7 +261,17 @@ class TablePreviewCache:
                 if v > widths[i]:
                     widths[i] = v
         if term_width and term_width > 0:
-            widths = _shrink_widths(widths, term_width, ncols)
+            # ★ 性能：列宽收缩结果缓存——未收缩列宽与终端宽度均未变时跳过
+            #   ``_shrink_widths``（逐步削减为 O(超量 × 列数)，超宽表格每帧
+            #   重算曾是预览热路径开销）。
+            shrink_key = (tuple(widths), term_width)
+            if shrink_key != self._shrink_key:
+                self._shrink_key = shrink_key
+                self._shrink_result = _shrink_widths(widths, term_width, ncols)
+            widths = self._shrink_result
+        else:
+            self._shrink_key = None
+            self._shrink_result = None
 
         aligns_list = list(self._aligns)
         if widths != self._widths or not self._head:
