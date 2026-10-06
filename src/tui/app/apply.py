@@ -13,6 +13,8 @@ import time
 from src.tui._const import (
     RenderCommand,
     RenderCmd,
+    ContentCmd,
+    ReasoningCmd,
     _CLEAR_PARSE_LINE,
 )
 from src.tui.ink._cmd_priority import _cmd_name
@@ -661,6 +663,54 @@ def _do_bg_bash_count(model, cmd) -> None:
     model.status.bg_subagent_count = max(0, sa_count)
 
 
+#: 同帧合并的增量文本命令（纯追加语义，合并后渲染结果等价）
+_COALESCE_TEXT_CIDS: frozenset = frozenset({
+    int(RenderCommand.CONTENT), int(RenderCommand.REASONING),
+})
+
+
+def coalesce_commands(commands: list) -> list:
+    """合并同一渲染帧内的相邻增量文本命令（流式渲染性能）。
+
+    模型高速流式输出时，一帧可能排空多条 ``CONTENT`` / ``REASONING`` 命令；
+    逐条应用会让 markdown 渲染器对同一未闭合块重复做全量预览刷新（超长单行
+    时每次刷新都要重渲染 + 重新换行整个尾部窗口）。这些命令是**纯追加**语义
+    且同帧内无中间渲染，合并后渲染结果完全一致，而刷新次数降到「每帧每通道
+    一次」。
+
+    仅合并**相邻同类**命令——非文本命令（工具卡 / 阶段 / 计数 / 清屏…）作为
+    边界原样保留，跨类型命令顺序不变（等价性由 tests 锁定）。
+    """
+    out: list = []
+    pending_cid: int | None = None
+    pending: list[str] = []
+
+    def _flush() -> None:
+        nonlocal pending_cid
+        if pending_cid is None:
+            return
+        text = "".join(pending)
+        if pending_cid == int(RenderCommand.CONTENT):
+            out.append(ContentCmd(text=text))
+        else:
+            out.append(ReasoningCmd(text=text))
+        pending_cid = None
+        pending.clear()
+
+    for cmd in commands:
+        cid = int(getattr(cmd, "cid", -1))
+        if cid in _COALESCE_TEXT_CIDS and type(cmd) in (ContentCmd, ReasoningCmd):
+            if pending_cid is not None and pending_cid != cid:
+                _flush()
+            pending_cid = cid
+            pending.append(getattr(cmd, "text", "") or "")
+            continue
+        _flush()
+        out.append(cmd)
+    _flush()
+    return out
+
+
 _HANDLERS: dict[int, object] = {
 
     RenderCommand.NOTIFICATION: _do_notification,
@@ -687,4 +737,4 @@ _HANDLERS: dict[int, object] = {
     RenderCommand.BG_BASH_COUNT: _do_bg_bash_count,
 }
 
-__all__ = ["apply_cmd", "build_user_line", "build_assistant_line"]
+__all__ = ["apply_cmd", "coalesce_commands", "build_user_line", "build_assistant_line"]

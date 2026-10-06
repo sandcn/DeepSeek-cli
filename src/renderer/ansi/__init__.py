@@ -234,11 +234,33 @@ class AnsiStreamRenderer:
 
         历史行经 ``LinePreviewCache`` 前缀复用只渲染一次，无需窗口；活动行
         每次 write 变化，窗口化把单帧成本封顶（超长无换行行不再逐字符重解析）。
+
+        ★ 超长内容 O(窗口) 化：修复前对整段 ``content.split("\\n")``——每帧
+        复制整段（超长活动行 200k 字符时单帧 ~0.06ms、且随行增长线性上升）。
+        现在只在**尾部窗口**内定位换行，历史行部分按需切分：单行超长内容
+        直接返回窗口切片（O(窗口)），不再全文复制。
         """
         if not content:
             return []
-        parts = content.split("\n")
-        parts[-1] = self._window_preview_line(parts[-1])
+        limit = _PREVIEW_MAX_LINE_CHARS
+        if limit <= 0 or len(content) <= limit:
+            # 短内容：整体切分（最后一行本来就 <= 窗口上限）
+            return content.split("\n")
+        # 超长内容：窗口内定位最后一个换行，窗口之前的内容按需切分
+        window = content[-limit:]
+        nl = window.rfind("\n")
+        if nl < 0:
+            # 窗口内无换行 → 最后一行长度超过窗口上限，窗口即活动行尾部
+            # （无分配定位更早的换行，确认是否存在历史行）
+            prev_nl = content.rfind("\n", 0, len(content) - limit)
+            if prev_nl < 0:
+                return [window]
+            parts = content[:prev_nl].split("\n")
+            parts.append(window)
+            return parts
+        head = content[:len(content) - limit + nl]
+        parts = head.split("\n")
+        parts.append(window[nl + 1:])
         return parts
 
     def _render_paragraph_preview(self, token) -> list[AnsiLine]:

@@ -10,6 +10,7 @@ import re
 from src._compat import dataclass
 
 from src.renderer._utils import cjk_display_width, expand_tabs
+from src._text_width import char_width
 from .style import Style
 
 
@@ -32,6 +33,9 @@ class Run:
         #   ``renderer._utils.expand_tabs``。
         if "\t" in self.text or "\r" in self.text:
             self.text = expand_tabs(self.text)
+        # 显示宽度缓存（-1 = 未计算）。不可变文本段，惰性计算一次；
+        # ``AnsiLine.append`` 合并文本时新建 Run 对象，缓存自然失效。
+        self._w = -1
 
     def render(self) -> str:
         if self.style:
@@ -40,19 +44,25 @@ class Run:
 
     @property
     def width(self) -> int:
-        return cjk_display_width(self.text)
+        w = self._w
+        if w < 0:
+            w = cjk_display_width(self.text)
+            self._w = w
+        return w
 
 
 class AnsiLine:
     """一行输出（Run 序列）。"""
 
-    __slots__ = ("runs", "_esc_checked")
+    __slots__ = ("runs", "_esc_checked", "_w")
 
     def __init__(self, runs: list[Run] | None = None) -> None:
         self.runs: list[Run] = list(runs) if runs else []
         # ANSI 消毒缓存标记：True 表示已确认本行（当前内容）不含原始转义序列，
         # 消毒路径可直接跳过扫描。内容经 append/append_run 修改时重置。
         self._esc_checked = False
+        # 显示宽度缓存（-1 = 未计算）；``append`` 修改内容时失效。
+        self._w = -1
 
     @classmethod
     def of(cls, text: str, style: Style | None = None) -> "AnsiLine":
@@ -62,6 +72,7 @@ class AnsiLine:
         if not text:
             return
         self._esc_checked = False
+        self._w = -1
         if self.runs and self.runs[-1].style == style:
             self.runs[-1] = Run(self.runs[-1].text + text, style)
             return
@@ -80,7 +91,38 @@ class AnsiLine:
 
     @property
     def width(self) -> int:
-        return sum(r.width for r in self.runs)
+        w = self._w
+        if w < 0:
+            w = sum(r.width for r in self.runs)
+            self._w = w
+        return w
+
+    def exceeds_width(self, limit: int) -> bool:
+        """显示宽度是否超过 ``limit``（可提前退出的轻量判定）。
+
+        ★ 超长单行性能：仅需「是否超宽」的场景（预览行是否需要换行）不必
+        求出整行精确宽度——逐字符累加到达上限即返回，成本 O(limit) 而非
+        O(整行字符数)（超长活动行 4096 字符 → 判 CJK 只需前 ``limit/2`` 个）。
+        已知宽度缓存时直接比较。
+        """
+        w = self._w
+        if w >= 0:
+            return w > limit
+        total = 0
+        for run in self.runs:
+            text = run.text
+            if not text:
+                continue
+            if text.isascii() and text.isprintable():
+                total += len(text)
+                if total > limit:
+                    return True
+                continue
+            for ch in text:
+                total += char_width(ch)
+                if total > limit:
+                    return True
+        return False
 
     def clone(self) -> "AnsiLine":
         return AnsiLine(list(self.runs))
@@ -105,9 +147,67 @@ _ANSI_RE = re.compile(
     r"|\x1b[@-Z\\-_]"
 )
 
+#: 「无前驱样式」哨兵（避免用 None 兼作哨兵——None 是合法的无样式值，
+#: 需要区分「尚无前驱」与「前驱样式为 None」）
+_NO_STYLE = object()
+
 
 def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
+
+
+def _uniform_line(chars: list, styles: list, start: int, end: int) -> AnsiLine:
+    """按样式分段构造一行（``chars``/``styles`` 平行列表的 [start, end) 区间）。
+
+    相邻同样式字符合并为同一 run（与 ``wrap_line`` 通用路径的输出结构一致）。
+    """
+    line = AnsiLine()
+    if end <= start:
+        return line
+    seg_style = styles[start]
+    seg_start = start
+    for k in range(start + 1, end):
+        st = styles[k]
+        if st != seg_style:
+            line.append("".join(chars[seg_start:k]), seg_style)
+            seg_style = st
+            seg_start = k
+    line.append("".join(chars[seg_start:end]), seg_style)
+    return line
+
+
+def _wrap_uniform(chars: list, styles: list, per_line: int,
+                  word_break: bool) -> list[AnsiLine]:
+    """等宽字符行的换行（每字符显示宽度相同，按固定步长切分）。
+
+    调用方（``wrap_line``）保证 ``chars`` 中每个字符显示宽度相同且无强制
+    换行符；``word_break=True``（宽 1 的 ASCII 行）时按「行内最后一个空格」
+    优先断行——语义与通用路径一致（空格不保留在行尾、行首空格不作断点）。
+    """
+    n = len(chars)
+    lines: list[AnsiLine] = []
+    i = 0
+    while i < n:
+        end = i + per_line
+        if end >= n:
+            lines.append(_uniform_line(chars, styles, i, n))
+            break
+        if word_break:
+            # 断点范围含 end 位置本身：通用路径在「下一个字符放不下」时已
+            # 记录该位置的空格（``last_space`` 可为 break 处的 j == end），
+            # 且要求断点严格大于行首（行首空格不作断点）。
+            sp = -1
+            for k in range(end, i, -1):
+                if chars[k] == " ":
+                    sp = k
+                    break
+            if sp > i:
+                lines.append(_uniform_line(chars, styles, i, sp))
+                i = sp + 1
+                continue
+        lines.append(_uniform_line(chars, styles, i, end))
+        i = end
+    return lines
 
 
 def wrap_line(line: AnsiLine, max_width: int) -> list[AnsiLine]:
@@ -126,13 +226,57 @@ def wrap_line(line: AnsiLine, max_width: int) -> list[AnsiLine]:
     """
     if max_width <= 0:
         return [line] if line.runs else []
-    items: list[tuple[str, Style | None]] = []
-    for run in line.runs:
-        for ch in run.text:
-            items.append((ch, run.style))
-    n = len(items)
+    runs = line.runs
+    if not any(r.text for r in runs):
+        return []
+    # ★ 快路径（超长单行性能）：宽度不超 max_width 且无强制换行 → 单行直接
+    #   返回（免逐字符 Python 循环 + items 列表构造）。宽度经 ``Run.width`` /
+    #   ``char_width`` 缓存，热路径命中后为 O(run 数)。
+    #   仅当行结构已「规范化」（无空文本 run、相邻 run 样式不同——通用路径
+    #   会合并相邻同样式 run 并丢弃空 run）时才克隆原行，保证产出 runs 结构
+    #   与通用路径逐字段一致。
+    total = 0
+    has_nl = False
+    for r in runs:
+        total += r.width
+        if not has_nl and "\n" in r.text:
+            has_nl = True
+    if not has_nl and total <= max_width:
+        normalized = True
+        prev_style = _NO_STYLE
+        for r in runs:
+            if not r.text or r.style == prev_style:
+                normalized = False
+                break
+            prev_style = r.style
+        if normalized:
+            return [line.clone()]
+    items_chars: list[str] = []
+    items_styles: list = []
+    # 展开为「字符 + 样式」平行列表：``list.extend(str)`` / ``[style]*n`` 均为
+    #   C 级操作——修复前逐字符构造 ``(ch, style)`` tuple 并 append（超长单行
+    #   4096 次 Python 迭代 + 4096 个 tuple 对象）。
+    for run in runs:
+        text = run.text
+        if not text:
+            continue
+        items_chars.extend(text)
+        items_styles.extend([run.style] * len(text))
+    n = len(items_chars)
     if n == 0:
         return []
+    # ★ 快路径（等宽字符，超长单行主路径）：整行字符显示宽度同为 2
+    #   （CJK / 全角 / emoji）或同为 1（纯 ASCII，无控制字符）→ 按固定步长
+    #   切分，免逐字符宽度查询与贪心扫描。判定严格：
+    #     - ``total == 2n`` ⟺ 每字符宽 2（宽度取值 0/1/2，全部为 2 才成立）
+    #     - ``total == n`` 且纯 ASCII ⟺ 每字符宽 1（含控制字符时 total < n）
+    if total == 2 * n:
+        per_line = max_width // 2
+        if per_line > 0:
+            return _wrap_uniform(items_chars, items_styles, per_line, False)
+    elif total == n and all(r.text.isascii() for r in runs if r.text):
+        return _wrap_uniform(items_chars, items_styles, max_width, True)
+    width_of = char_width
     lines: list[AnsiLine] = []
     i = 0
     while i < n:
@@ -141,7 +285,7 @@ def wrap_line(line: AnsiLine, max_width: int) -> list[AnsiLine]:
         width = 0
         last_space = -1  # 本行内最后一个空格的索引（绝对）
         while j < n:
-            ch, _ = items[j]
+            ch = items_chars[j]
             if ch == "\n":
                 break  # 强制换行
             # ★ 先记录空格断点再判超宽：超宽字符本身是空格时（行恰好填满
@@ -151,14 +295,14 @@ def wrap_line(line: AnsiLine, max_width: int) -> list[AnsiLine]:
             #   "brown" 被拆成 " brow"/"n"）。
             if ch == " ":
                 last_space = j
-            cw = cjk_display_width(ch)
+            cw = width_of(ch)
             if width + cw > max_width and j > i:
                 break
             width += cw
             j += 1
         if j == i:
             # 行首字符即超宽（无法放下）或行首为强制换行
-            if items[i][0] == "\n":
+            if items_chars[i] == "\n":
                 # 行首强制换行：产生空行（Newline 组件渲染语义）
                 lines.append(AnsiLine())
                 i += 1
@@ -167,7 +311,7 @@ def wrap_line(line: AnsiLine, max_width: int) -> list[AnsiLine]:
             # 无法避免，与既有行为一致）。
             end = i + 1
             next_i = i + 1
-        elif j < n and items[j][0] == "\n":
+        elif j < n and items_chars[j] == "\n":
             # 强制换行：本行到 \n 前，下一行从 \n 后开始
             end = j
             next_i = j + 1
@@ -186,15 +330,15 @@ def wrap_line(line: AnsiLine, max_width: int) -> list[AnsiLine]:
         #   O(n²)（100k 字符 wrap 耗 1.5s+）。行宽有界，同 style 段 join
         #   成本 O(行宽)；样式切换处段级拆分（跨 style 不合并）。
         chars: list[str] = []
-        seg_style = items[i][1] if i < end else None
+        seg_style = items_styles[i] if i < end else None
         for k in range(i, end):
-            ch, st = items[k]
+            st = items_styles[k]
             if st != seg_style:
                 if chars:
                     line_out.append("".join(chars), seg_style)
                     chars = []
                 seg_style = st
-            chars.append(ch)
+            chars.append(items_chars[k])
         if chars:
             line_out.append("".join(chars), seg_style)
         if line_out.runs:

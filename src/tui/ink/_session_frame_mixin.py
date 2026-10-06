@@ -110,10 +110,22 @@ class _SessionFrameMixin:
     # ── 命令应用 ─────────────────────────────────────
 
     def _apply_commands(self, commands: list) -> None:
-        """批量应用命令到模型。"""
+        """批量应用命令到模型。
+
+        ★ 性能（流式超长单行）：先经 ``coalesce_commands`` 合并本批内相邻的
+        CONTENT / REASONING 增量命令——同一帧内多条增量只触发一次 markdown
+        预览刷新（超长单行每次刷新都要重渲染 + 重新换行整个尾部窗口）。合并
+        为纯追加语义，渲染结果与逐条应用等价。
+        """
         if self._apply_fn is None:
             return
-        for cmd in commands:
+        try:
+            from src.tui.app.apply import coalesce_commands
+            merged = coalesce_commands(commands)
+        except Exception:
+            _logger.debug("命令合并失败，按原批应用", exc_info=True)
+            merged = commands
+        for cmd in merged:
             try:
                 self._apply_fn(self._model, cmd)
                 # ★ 2026-08-15（/editmsg 后渲染错乱修复）：CLEAR_MSGS

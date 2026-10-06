@@ -14,6 +14,55 @@ from .output import StyledRun, Line
 from ._ansi_utils import _is_plain_ascii_fast
 
 
+def _span_slices(runs: list[StyledRun]):
+    """把 StyledRun 列表展平为「拼接文本 + 片段索引表」（切片快路径共用）。
+
+    Returns:
+        ``(text, (span_start, span_end, span_style, span_link))``——``span_start``
+        为每段在拼接文本中的起始偏移（升序，供 ``bisect`` 二分定位）。
+    """
+    span_start: list[int] = []
+    span_end: list[int] = []
+    span_style: list = []
+    span_link: list = []
+    parts: list[str] = []
+    pos = 0
+    for r in runs:
+        t = r.text
+        span_start.append(pos)
+        span_end.append(pos + len(t))
+        span_style.append(r.style)
+        span_link.append(r.link)
+        parts.append(t)
+        pos += len(t)
+    return "".join(parts), (span_start, span_end, span_style, span_link)
+
+
+def _emit_span_range(line: Line, text: str, spans, start: int, end: int) -> None:
+    """把拼接文本 ``[start, end)`` 按片段边界切分后追加到 ``line``。
+
+    二分定位首个覆盖 start 的片段（避免逐行全量扫描 → O(lines × spans)
+    退化），再沿实际重叠片段追加（样式 / 链接随片段保留）。
+    """
+    from bisect import bisect_right
+
+    span_start, span_end, span_style, span_link = spans
+    n_spans = len(span_start)
+    idx = bisect_right(span_start, start) - 1
+    if idx < 0:
+        idx = 0
+    while idx < n_spans:
+        a = span_start[idx]
+        if a >= end:
+            break
+        b = span_end[idx]
+        lo = a if a > start else start
+        hi = b if b < end else end
+        if lo < hi:
+            line.append(text[lo:hi], span_style[idx], span_link[idx])
+        idx += 1
+
+
 def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False) -> list[Line]:
     """将 StyledRun 序列按显示宽度换行为多行。
 
@@ -85,43 +134,8 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
     #   通用路径的 ``items`` 逐字符 tuple 展开（长文本 / 语法高亮多 run 场景
     #   显著提速）。语义与通用路径等价（字符级硬拆 / 词边界 / 样式分段）。
     if runs and all(r.text and r.text.isascii() and r.text.isprintable() for r in runs):
-        from bisect import bisect_right
-
-        span_start: list[int] = []
-        span_end: list[int] = []
-        span_style: list = []
-        span_link: list = []
-        parts: list[str] = []
-        pos = 0
-        for r in runs:
-            t = r.text
-            span_start.append(pos)
-            span_end.append(pos + len(t))
-            span_style.append(r.style)
-            span_link.append(r.link)
-            parts.append(t)
-            pos += len(t)
-        ascii_text = "".join(parts)
+        ascii_text, spans = _span_slices(runs)
         n_ascii = len(ascii_text)
-        n_spans = len(span_start)
-
-        def _emit(line: Line, start: int, end: int) -> None:
-            # 二分定位首个覆盖 start 的 span（避免逐行全量扫描 spans——
-            # O(lines × spans) 退化；改为 O(lines·log(spans)) + 实际重叠数）。
-            idx = bisect_right(span_start, start) - 1
-            if idx < 0:
-                idx = 0
-            while idx < n_spans:
-                a = span_start[idx]
-                if a >= end:
-                    break
-                b = span_end[idx]
-                lo = a if a > start else start
-                hi = b if b < end else end
-                if lo < hi:
-                    line.append(ascii_text[lo:hi], span_style[idx], span_link[idx])
-                idx += 1
-
         if n_ascii:
             out_lines: list[Line] = []
             i = 0
@@ -129,7 +143,7 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
                 end = i + max_width
                 if end >= n_ascii:
                     ln = Line()
-                    _emit(ln, i, n_ascii)
+                    _emit_span_range(ln, ascii_text, spans, i, n_ascii)
                     if ln.runs:
                         out_lines.append(ln)
                     break
@@ -139,17 +153,47 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
                     sp = ascii_text.rfind(" ", i, end + 1)
                     if sp > i:
                         ln = Line()
-                        _emit(ln, i, sp)
+                        _emit_span_range(ln, ascii_text, spans, i, sp)
                         if ln.runs:
                             out_lines.append(ln)
                         i = sp + 1
                         continue
                 ln = Line()
-                _emit(ln, i, end)
+                _emit_span_range(ln, ascii_text, spans, i, end)
                 if ln.runs:
                     out_lines.append(ln)
                 i = end
             return out_lines
+
+    # ★ 性能（等宽宽字符快路径）：整段字符显示宽度**全为 2**（CJK / 全角 /
+    #   emoji 等宽行——超长中文单行的常见形态）时按固定步长切分，免逐字符
+    #   ``wcswidth_simple`` 与逐字符贪心扫描。判定严格：宽度总和 == 2×字符数
+    #   ⟺ 每个字符宽 2（宽度取值 0/1/2，含零宽或宽 1 字符时时不成立）。
+    #   全宽 2 ⇒ 无空格 / 无 ``\n`` ⇒ 无词边界与强制换行分支，``hard`` 无差异。
+    total_w = 0
+    n_chars = 0
+    for r in runs:
+        t = r.text
+        if not t:
+            continue
+        n_chars += len(t)
+        total_w += r.width
+    if n_chars and total_w == 2 * n_chars:
+        per_line = max_width // 2
+        if per_line > 0:
+            text2, spans2 = _span_slices(runs)
+            out2: list[Line] = []
+            i = 0
+            while i < n_chars:
+                end = i + per_line
+                if end > n_chars:
+                    end = n_chars
+                ln = Line()
+                _emit_span_range(ln, text2, spans2, i, end)
+                if ln.runs:
+                    out2.append(ln)
+                i = end
+            return out2
 
     # 展开为 (ch, style, link) 序列——词边界断行需跨 run 追踪行内空格位置
     items: list[tuple[str, Style | None, str | None]] = []

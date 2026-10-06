@@ -48,6 +48,20 @@ _managed_builtin: set = set()
 _disabled_builtin: set = set()
 #: 扩展 host（tag → (measure, paint)）
 _REGISTRY: Dict[str, Tuple[Callable, Callable]] = {}
+#: ``active_hosts()`` 结果缓存（tag → (measure, paint)）。热路径每帧多次查询，
+#: 修复前每次重建 dict 并对每个内置 host 做 ``importlib.import_module``
+#: （实测每帧 ~200 次模块查找）；注册/禁用/接管状态变化时失效。
+_ACTIVE_HOSTS_CACHE: Optional[Dict[str, Tuple[Callable, Callable]]] = None
+
+
+def _invalidate_hosts_cache() -> None:
+    global _ACTIVE_HOSTS_CACHE
+    _ACTIVE_HOSTS_CACHE = None
+
+
+def _set_active_hosts_cache(value) -> None:
+    global _ACTIVE_HOSTS_CACHE
+    _ACTIVE_HOSTS_CACHE = value
 
 
 def _import_attr(dotted: str):
@@ -80,8 +94,18 @@ def default_host(tag: str) -> Tuple[Callable, Callable]:
 
 
 def active_hosts() -> Dict[str, Tuple[Callable, Callable]]:
-    """当前生效的内置 host（``tag → (measure, paint)``）。"""
+    """当前生效的内置 host（``tag → (measure, paint)``）。
+
+    ★ 性能：结果缓存，注册/禁用/接管状态变化时失效（``_invalidate_hosts_cache``）
+    ——修复前每次调用都重建 dict 并对每个内置 host 做 ``importlib`` 模块解析
+    （渲染热路径每帧调用上百次，实测每帧 ~200 次模块查找）。
+    """
+    cached = _ACTIVE_HOSTS_CACHE
+    if cached is not None:
+        return cached
     with _lock:
+        if _ACTIVE_HOSTS_CACHE is not None:
+            return _ACTIVE_HOSTS_CACHE
         result: Dict[str, Tuple[Callable, Callable]] = {}
         for tag, refs in _builtin_specs.items():
             if tag in _disabled_builtin:
@@ -93,6 +117,7 @@ def active_hosts() -> Dict[str, Tuple[Callable, Callable]]:
             if tag in _managed_builtin:
                 continue
             result[tag] = (_import_attr(refs[0]), _import_attr(refs[1]))
+        _set_active_hosts_cache(result)
         return result
 
 
@@ -103,6 +128,7 @@ def register_builtin_host(tag: str, pair: Optional[Tuple[Callable, Callable]] = 
     with _lock:
         previous = _registered_builtin.get(tag, _ABSENT)
         _registered_builtin[tag] = pair if pair is not None else default_host(tag)
+        _invalidate_hosts_cache()
 
     def _undo() -> None:
         with _lock:
@@ -110,13 +136,17 @@ def register_builtin_host(tag: str, pair: Optional[Tuple[Callable, Callable]] = 
                 _registered_builtin.pop(tag, None)
             else:
                 _registered_builtin[tag] = previous
+            _invalidate_hosts_cache()
 
     return _undo
 
 
 def unregister_builtin_host(tag: str) -> bool:
     with _lock:
-        return _registered_builtin.pop(tag, None) is not None
+        removed = _registered_builtin.pop(tag, None) is not None
+        if removed:
+            _invalidate_hosts_cache()
+        return removed
 
 
 def set_managed_builtin_hosts(ids) -> Callable[[], None]:
@@ -125,11 +155,13 @@ def set_managed_builtin_hosts(ids) -> Callable[[], None]:
     with _lock:
         added = [item for item in selected if item not in _managed_builtin]
         _managed_builtin.update(added)
+        _invalidate_hosts_cache()
 
     def _undo() -> None:
         with _lock:
             for item in added:
                 _managed_builtin.discard(item)
+            _invalidate_hosts_cache()
 
     return _undo
 
@@ -145,11 +177,13 @@ def disable_builtin_hosts(ids) -> Callable[[], None]:
     with _lock:
         added = [item for item in selected if item not in _disabled_builtin]
         _disabled_builtin.update(added)
+        _invalidate_hosts_cache()
 
     def _undo() -> None:
         with _lock:
             for item in added:
                 _disabled_builtin.discard(item)
+            _invalidate_hosts_cache()
 
     return _undo
 
@@ -167,12 +201,14 @@ def register_host(tag: str, measure_fn: Callable, paint_fn: Callable) -> None:
         if existing is not None and existing != (measure_fn, paint_fn):
             _logger.warning("register_host 覆盖已注册 host %s（实现不相同的重注册）", tag)
         _REGISTRY[tag] = (measure_fn, paint_fn)
+        _invalidate_hosts_cache()
 
 
 def unregister_host(tag: str) -> None:
     """注销自定义 host（测试用）。"""
     with _lock:
         _REGISTRY.pop(tag, None)
+        _invalidate_hosts_cache()
 
 
 def get_host(tag: str) -> Optional[Tuple[Callable, Callable]]:
@@ -193,6 +229,7 @@ def clear() -> None:
     with _lock:
         _REGISTRY.clear()
         _registered_builtin.clear()
+        _invalidate_hosts_cache()
 
 
 def reset() -> None:
@@ -202,6 +239,7 @@ def reset() -> None:
         _registered_builtin.clear()
         _managed_builtin.clear()
         _disabled_builtin.clear()
+        _invalidate_hosts_cache()
 
 
 __all__ = [

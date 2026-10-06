@@ -102,6 +102,29 @@ class StyledRun:
             return hyperlink(self.link, text)
         return text
 
+    @classmethod
+    def fast(cls, text: str, style: "Style | None" = None,
+             link: str | None = None, width: int | None = None) -> "StyledRun":
+        """构造已知显示宽度的 run（跳过宽度重算）。
+
+        ★ 超长单行性能：调用方在**同一渲染帧内**已算过该文本宽度（如
+        ``renderer.ansi.helpers.Run.width``，其口径与本类一致）时，重算一次
+        等于对超长活动行的每个字符再走一遍宽度判定（长 CJK 行每帧上千次）。
+        传入 ``width`` 即直接采用，省去重复测量。
+
+        前置条件（由调用方保证）：``text`` 已规范化（不含 ``\\t``/``\\r``，
+        见 ``__post_init__`` 的 ``expand_tabs``）且 ``width`` 与
+        ``_text_width(text)`` 一致；``width=None`` 时回退常规构造。
+        """
+        if width is None:
+            return cls(text, style, link)
+        obj = object.__new__(cls)
+        object.__setattr__(obj, "text", text)
+        object.__setattr__(obj, "style", style)
+        object.__setattr__(obj, "link", link)
+        object.__setattr__(obj, "width", int(width))
+        return obj
+
 
 # ═══════════════════════════════════════════════════════════
 # Line — 一行 StyledRun 序列

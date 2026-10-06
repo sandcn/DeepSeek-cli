@@ -190,12 +190,24 @@ _PREVIEW_STYLED_CACHE_MAX = 1024
 
 
 def _to_styled_runs(line) -> list[StyledRun]:
-    """AnsiLine → ink StyledRun 列表（Run.style 直接复用 + URL 超链接附加）。"""
+    """AnsiLine → ink StyledRun 列表（Run.style 直接复用 + URL 超链接附加）。
+
+    ★ 超长单行性能：AnsiLine 的 ``Run`` 已缓存显示宽度（``Run.width``），
+    经 ``StyledRun.fast`` 直接采用——修复前每个 run 在 StyledRun 构造期重算
+    一次宽度，超长活动行（每帧重渲染尾部窗口）因此每帧多走上千次字符宽度
+    判定。两处宽度口径一致（均为 ``cjk_display_width`` / ``_text_width``）。
+    """
     runs = getattr(line, "runs", None)
     if runs is None:
         # 兼容纯文本行
         return _attach_links([StyledRun(str(line), None)])
-    return _attach_links([StyledRun(r.text, r.style) for r in runs if r.text])
+    out: list[StyledRun] = []
+    for r in runs:
+        text = r.text
+        if not text:
+            continue
+        out.append(StyledRun.fast(text, r.style, None, r.width))
+    return _attach_links(out)
 
 
 #: URL → OSC 8 超链接附加（模块级惰性绑定，避免导入期循环）。
@@ -291,7 +303,7 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
         entry = pcache.get(key)
         if entry is None:
             src_lines = [line]
-            if width and width > 0 and line.width > width:
+            if width and width > 0 and line.exceeds_width(width):
                 try:
                     from src.renderer.ansi.helpers import wrap_line
                     src_lines = list(wrap_line(line, width))

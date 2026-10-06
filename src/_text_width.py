@@ -235,19 +235,37 @@ def codepoint_width(cp: int) -> int:
     return 1
 
 
+#: 单字符宽度缓存（有界）：超长行换行/截断逐字符测宽时，同一字符（CJK/emoji）
+#: 免重复区间二分。ASCII（宽度 1）与控制字符（宽度 0）走算术快路径不经缓存
+#: ——dict 查找对它们反而更慢。超上限整体清空（宽度值确定性，正确性不受影响）。
+CHAR_WIDTH_CACHE_MAX = 4096
+_CHAR_WIDTH_CACHE: dict[str, int] = {}
+
+
 def char_width(ch: str) -> int:
     """单个字符的显示宽度（含控制字符 / 孤立 ESC 的 0 宽判定）。
 
     控制字符（``0x00-0x1F``，含制表符 ``\\t``）与 ``0x7F-0x9F`` 宽度 0
     （制表符展开由调用方经 ``expand_tabs`` 负责）；孤立 ESC（``\\x1b``）
     宽度 0（与 ``skip_ansi_at`` 语义一致）。
+
+    ★ 性能（超长单行）：非 ASCII 字符经有界缓存返回——``wrap_line`` /
+    ``truncate_line`` 对超长行逐字符测宽是流式渲染热路径，修复前每次
+    重建 ``code_point → width`` 区间二分（并触发一次正则 match）。
     """
     cp = ord(ch)
     if 0x20 <= cp <= 0x7E:
         return 1
     if ch == "\x1b" or cp < 0x20 or (0x7F <= cp <= 0x9F):
         return 0
-    return codepoint_width(cp)
+    w = _CHAR_WIDTH_CACHE.get(ch)
+    if w is not None:
+        return w
+    w = codepoint_width(cp)
+    if len(_CHAR_WIDTH_CACHE) >= CHAR_WIDTH_CACHE_MAX:
+        _CHAR_WIDTH_CACHE.clear()
+    _CHAR_WIDTH_CACHE[ch] = w
+    return w
 
 
 def string_width(text: str) -> int:
@@ -269,33 +287,34 @@ def string_width(text: str) -> int:
         # C 实现单趟扫描（比逐字符 Python 循环快数倍）——纯 ASCII 可打印
         # 文本宽度 == 字符数（无 ANSI/控制/零宽/宽字符）。
         return len(text)
+    cache = _CHAR_WIDTH_CACHE
     width = 0
     i = 0
     n = len(text)
     while i < n:
-        m = _ASCII_RUN_RE.match(text, i)
-        if m is not None:
-            width += m.end() - i
-            i = m.end()
-            continue
-        cp = ord(text[i])
-        if text[i] == "\x1b":
+        ch = text[i]
+        cp = ord(ch)
+        if 0x20 <= cp <= 0x7E:
+            # 连续可打印 ASCII 段：正则（C 实现）一次吃掉整段
+            m = _ASCII_RUN_RE.match(text, i)
+            if m is not None:
+                end = m.end()
+                width += end - i
+                i = end
+                continue
+            width += 1
+            i += 1
+        elif ch == "\x1b":
             i = skip_ansi_at(text, i)
         elif cp < 0x20 or (0x7F <= cp <= 0x9F):
             i += 1  # 控制字符（含 \t）宽度 0
-        elif _in_ranges_bisect(cp, CJK_FLAT):
-            width += 2
-            i += 1
-        elif _in_ranges_bisect(cp, FULLWIDTH_FLAT):
-            width += 2
-            i += 1
-        elif _in_ranges_bisect(cp, EMOJI_WIDE_FLAT):
-            width += 2
-            i += 1
-        elif _in_ranges_bisect(cp, ZERO_WIDTH_FLAT):
-            i += 1
         else:
-            width += 1
+            # 非 ASCII：走 char_width 的有界缓存（内联查找省一次函数调用——
+            # 长 CJK 行测宽是换行/截断/布局热路径，每帧对同一批字符反复测宽）。
+            w = cache.get(ch)
+            if w is None:
+                w = char_width(ch)
+            width += w
             i += 1
     return width
 

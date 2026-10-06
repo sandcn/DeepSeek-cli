@@ -37,6 +37,10 @@ from src._text_width import (
     string_width as _string_width_impl,
     skip_ansi_at as _skip_ansi_at,
 )
+from src._text_width import (
+    _CHAR_WIDTH_CACHE as _char_width_cache,
+    CHAR_WIDTH_CACHE_MAX as _CHAR_WIDTH_CACHE_MAX,
+)
 from src._text_width import expand_tabs as _expand_tabs_impl
 
 # ── 旧名称 re-export（下划线前缀；保持既有导入路径兼容） ──
@@ -49,15 +53,13 @@ _FULLWIDTH_FLAT = FULLWIDTH_FLAT
 _EMOJI_WIDE_FLAT = EMOJI_WIDE_FLAT
 _ZERO_WIDTH_FLAT = ZERO_WIDTH_FLAT
 
-#: 单字符显示宽度缓存（``wcswidth_simple`` 热路径——重复 CJK/emoji 字符免
-#: 区间二分）。有界：超过 ``_CHAR_WIDTH_CACHE_MAX`` 时整体清空重建（终端文本
-#: 字符集有界，清空后重新积累；宽度值确定性，正确性不受影响）。
-#: ★ 无锁可接受：模块级共享可变 dict 无锁——GIL 下单条 get/set/clear 均原子；
-#:   缓存为性能优化，最坏情况（并发清空/重建）只是宽度重复计算，不影响正确性。
-#:   不引入锁（避免热路径锁开销）；不改为 ``functools.lru_cache``（测试经
-#:   ``_char_width_cache.clear()`` 访问，lru_cache 无 clear 接口破坏测试 patch 路径）。
-_CHAR_WIDTH_CACHE_MAX = 4096
-_char_width_cache: dict[str, int] = {}
+#: 单字符显示宽度缓存 re-export（``wcswidth_simple`` 热路径——重复 CJK/emoji
+#: 字符免区间二分）。★ 单一真源：缓存本体与上限均在 ``src._text_width``
+#: （``char_width`` 与 renderer 层共用同一份缓存，避免同一字符在两套缓存
+#: 中各算一次）；本模块仅 re-export 旧名称保持既有导入路径兼容。
+#: 有界：超过上限时整体清空重建（终端文本字符集有界，清空后重新积累；
+#: 宽度值确定性，正确性不受影响）。无锁可接受：GIL 下单条 get/set/clear
+#: 均原子，最坏情况只是宽度重复计算。
 
 
 def _wcswidth_single(ch: str) -> int:
@@ -84,9 +86,9 @@ def wcswidth_simple(text: str) -> int:
     - 其他：宽度 1
 
     ★ P1-2（单一真源）：多字符通用路径委托 ``src._text_width.string_width``
-    （区间表 + ASCII 段快路径 + ANSI 跳过统一实现）；本函数额外保留**单字符
-    快速路径 + 有界缓存**（重复 CJK/emoji 字符免区间二分，ASCII 走 O(1)
-    快路径不经缓存——dict 查找对 ASCII 反而更慢）。
+    （区间表 + ASCII 段快路径 + ANSI 跳过统一实现）；单字符路径委托
+    ``src._text_width.char_width``（ASCII/控制字符算术快路径 + 有界缓存
+    ——与 renderer 层共用同一份缓存，同一字符不需两套缓存各算一次）。
 
     Args:
         text: 输入字符串。
@@ -95,20 +97,7 @@ def wcswidth_simple(text: str) -> int:
         显示宽度（整数）。
     """
     if len(text) == 1:
-        ch = text
-        cp = ord(ch)
-        if 0x20 <= cp <= 0x7E:
-            return 1  # ASCII 快路径（不经缓存）
-        if ch == "\x1b" or cp < 0x20 or (0x7F <= cp <= 0x9F):
-            return 0  # 控制/孤立 ESC 快路径
-        w = _char_width_cache.get(ch)
-        if w is not None:
-            return w
-        w = _char_width_impl(ch)
-        if len(_char_width_cache) >= _CHAR_WIDTH_CACHE_MAX:
-            _char_width_cache.clear()
-        _char_width_cache[ch] = w
-        return w
+        return _char_width_impl(text)
     return _string_width_impl(text)
 
 

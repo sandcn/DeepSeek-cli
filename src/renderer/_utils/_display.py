@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 from src._text_width import (
+    char_width,
     expand_tabs,
     string_width,
     zero_width_codepoints,
@@ -38,10 +39,15 @@ _ZERO_WIDTH_CHARS = zero_width_codepoints()
 def cjk_display_width(s: str) -> int:
     """计算字符串的终端显示宽度（CJK/全角/emoji 宽 2、零宽 0、其他 1）。
 
-    ★ P1-2：委托 ``src._text_width.string_width``（唯一真源）。相较旧本地
-    实现两处口径修正（与 tui 侧完全对齐）：① 控制字符（``\\t``/ESC 等）计 0
-    （旧实现走 ``else`` 分支计 1）；② ANSI 转义序列整段计 0（旧实现对序列
-    正文逐字符计宽）。修正后同文本在 renderer 与 tui 测量结果恒一致。
+    ★ P1-2：委托 ``src._text_width``（唯一真源）。相较旧本地实现两处口径
+    修正（与 tui 侧完全对齐）：① 控制字符（``\\t``/ESC 等）计 0（旧实现走
+    ``else`` 分支计 1）；② ANSI 转义序列整段计 0（旧实现对序列正文逐字符
+    计宽）。修正后同文本在 renderer 与 tui 测量结果恒一致。
+
+    ★ 性能（超长单行）：**单字符**输入走 ``char_width``（有界缓存 + ASCII
+    算术快路径）——``wrap_line`` / ``truncate_line`` 逐字符测宽是流式渲染
+    热路径，修复前每次都进 ``string_width`` 的循环（非 ASCII 字符触发一次
+    正则 match + 四次区间二分），超长行换行由 O(n) 次重活变为 dict 命中。
 
     Args:
         s: 输入字符串（调用方通常已剥离 ANSI；含 ANSI 时本函数亦正确跳过）。
@@ -49,6 +55,8 @@ def cjk_display_width(s: str) -> int:
     Returns:
         显示宽度（整数）。
     """
+    if len(s) == 1:
+        return char_width(s)
     return string_width(s)
 
 
