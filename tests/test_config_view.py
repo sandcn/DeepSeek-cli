@@ -160,13 +160,16 @@ def _sample_entries():
 class TestViewModel:
 
     def test_build_config_entries_structure(self, isolated_rc):
+        from src.config.defaults import CONFIG_KEYS
         from src.config.view_model import build_config_entries
         entries = build_config_entries()
-        # CONFIG_KEYS(34) + 额外键(4) = 38
-        assert len(entries) == 38
+        # CONFIG_KEYS 全部条目 + 额外顶层键(4: provider/base_url/api_key/skills)
+        assert len(entries) == len(CONFIG_KEYS) + 4
         keys = [e["key"] for e in entries]
         assert "MODEL" in keys and "HTTP_CONNECT_TIMEOUT" in keys
         assert "provider" in keys and "api_key" in keys
+        # 拖放文件路径规范化（2026-10-07 用户需求）
+        assert "TUI_DROP_PATH_NORMALIZE" in keys
         # 上传前图片优化（多图请求卡顿）配置项
         assert {"IMAGE_UPLOAD_OPTIMIZE", "IMAGE_UPLOAD_KEEP_RECENT",
                 "IMAGE_UPLOAD_MAX_DIMENSION", "IMAGE_UPLOAD_QUALITY"} <= set(keys)

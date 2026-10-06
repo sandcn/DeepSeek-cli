@@ -26,6 +26,8 @@ import os
 import re
 from typing import Any, Optional
 
+from .path_tokens import iter_path_tokens, normalize_token, strip_trailing_punct
+
 _logger = logging.getLogger(__name__)
 
 # ── 已知支持视觉（多模态）的模型名模式（小写子串匹配） ──
@@ -206,10 +208,16 @@ def content_to_text(content: Any) -> str:
 # ── 用户消息图片输入（本地图片 / 图片 URL） ───────────────
 
 def _is_image_file(path: str) -> bool:
-    """判断路径是否为本地图片文件（扩展名匹配且文件存在）。"""
-    if not path or not os.path.isfile(path):
+    """判断路径是否为本地图片文件（扩展名匹配且文件存在）。
+
+    ★ 2026-10-07（拖放路径）：支持 ``~`` 展开——``~/pic.png`` 判为本地图片。
+    """
+    if not path:
         return False
-    return os.path.splitext(path)[1].lower() in _IMAGE_EXTENSIONS
+    expanded = os.path.expanduser(path)
+    if not os.path.isfile(expanded):
+        return False
+    return os.path.splitext(expanded)[1].lower() in _IMAGE_EXTENSIONS
 
 
 def _local_image_data_uri(path: str) -> Optional[str]:
@@ -290,22 +298,28 @@ def extract_image_refs(text: str) -> list[dict]:
             "start": start, "end": end,
         })
 
-    # 3. 本地图片路径：按空白/换行切分 token，匹配存在的图片文件
-    #    （仅检查 Markdown 语法之外的裸路径片段）
-    for m in re.finditer(r"\S+", text):
-        start, end = m.start(), m.end() - 1
+    # 3. 本地图片路径：经拖放路径解析器切分 token（支持单/双引号包裹、
+    #    shell 反斜杠转义、file:// URI、Windows→POSIX 转换），匹配存在的
+    #    图片文件（仅检查 Markdown 语法之外的裸路径片段，保持既有行为）
+    for token in iter_path_tokens(text):
+        start, end = token.start, token.end
         if any(not (end < s or start > e) for s, e in md_spans):
             continue
-        token = m.group(0).rstrip(",;:。，；：、")
-        if not token:
+        raw = strip_trailing_punct(token.text)
+        if not raw:
             continue
-        if token.lower().startswith(("http://", "https://")):
+        if raw.lower().startswith(("http://", "https://")):
             continue  # URL 已由规则 2 处理
-        if _is_image_file(token):
-            refs.append({
-                "kind": "local", "alt": "", "ref": token,
-                "start": start, "end": start + len(token) - 1,
-            })
+        path = os.path.expanduser(normalize_token(raw))
+        if not _is_image_file(path):
+            continue
+        # 引号包裹的引用区间含引号（替换为占位标记时一并去除）；裸 token
+        # 被剥离尾部标点时区间相应缩短（与旧行为一致）。
+        ref_end = end if token.quoted else start + len(raw) - 1
+        refs.append({
+            "kind": "local", "alt": "", "ref": path,
+            "start": start, "end": ref_end,
+        })
 
     # 按出现顺序排序
     refs.sort(key=lambda r: r["start"])

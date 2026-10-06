@@ -120,6 +120,11 @@ DEFAULTS = {
     # 空列表 → 不连接任何外部 server（零开销）；应用启动时 setup_mcp() 读取。
     "mcp_servers": [],
     "theme": "dark",
+    # TUI 拖放文件路径规范化（用户需求 2026-10-07：输入框支持拖动文件输入
+    # 文件路径）。True（默认）= 拖动文件到输入框时把终端注入的路径文本
+    # 规范化（去引号/还原反斜杠转义/file URI 解析/Windows→POSIX，多文件每行
+    # 一个，含空格路径双引号包裹）；False = 粘贴文本一律原样插入。
+    "tui_drop_path_normalize": True,
     # 技能（skill）子系统配置
     "skills": {
         "enabled": True,
@@ -306,6 +311,13 @@ CONFIG_KEYS = {
         "rc_path": ("mcp_servers",),
         "type": list,
         "default": [],
+        "cacheable": True,
+    },
+    # ---- TUI 交互行为 ----
+    "TUI_DROP_PATH_NORMALIZE": {
+        "rc_path": ("tui_drop_path_normalize",),
+        "type": bool,
+        "default": True,
         "cacheable": True,
     },
     # ---- HTTP 性能配置（嵌套路径） ----

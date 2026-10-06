@@ -45,9 +45,26 @@ def create_shared():
     """创建共享依赖：model / config。"""
     from src.tui._config import TuiConfig
     from src.tui.app.model import AppModel
-    tui_config = TuiConfig.defaults()
+    tui_config = TuiConfig.defaults().with_overrides(
+        drop_path_normalize=_rc_drop_path_normalize(),
+    )
     model = AppModel()
     return tui_config, model
+
+
+def _rc_drop_path_normalize() -> bool:
+    """读取 RC 配置 ``tui_drop_path_normalize``（拖放路径规范化开关）。
+
+    配置读取失败（RC 不可用/键缺失）时回退 ``TuiConfig`` 默认值——装配
+    不因配置层异常而中断。
+    """
+    from src.tui._config import TuiConfig
+    try:
+        from src.config import TUI_DROP_PATH_NORMALIZE
+        return bool(TUI_DROP_PATH_NORMALIZE)
+    except Exception:
+        _logger.debug("读取 tui_drop_path_normalize 失败，使用默认值", exc_info=True)
+        return TuiConfig.defaults().drop_path_normalize
 
 
 def create_chat_domain():
@@ -105,6 +122,10 @@ def create_framework(model, tui_config, line_tracker, input_instance):
     # 活跃状态回调（生成中不取消输入，走既有中断）
     input_instance.set_esc_cancel_input(tui_config.esc_cancel_input)
     input_instance.set_active_status_callback(_make_active_status_cb(model))
+    # 拖放文件路径规范化（2026-10-07，用户需求：输入框支持拖动文件输入文件
+    # 路径）——终端拖放注入的路径文本规范化后插入；RC 键
+    # ``tui_drop_path_normalize``（默认开启）经 create_shared 注入 TuiConfig。
+    input_instance.set_drop_path_normalize(tui_config.drop_path_normalize)
     # Claude TUI parity 步骤 3.1：Ctrl+L 清屏（session.clear_screen；
     # 未注入时 dispatcher 记 debug 跳过，测试兼容）
     input_instance.set_clear_screen_callback(session.clear_screen)

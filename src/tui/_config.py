@@ -112,6 +112,15 @@ class TuiConfig(ConfigBase):
     # 启用后单次 Esc 在「空闲 + 缓冲非空」时清空输入取消编辑；生成中仍中断。
     esc_cancel_input: bool = False
 
+    # ── 拖放文件路径规范化（2026-10-07，用户需求） ──────
+    # 拖动文件到输入框时终端以「粘贴」形式注入路径（形态各异：单/双引号
+    # 包裹、反斜杠转义、file:// URI、Windows 原生路径）。默认 True：粘贴
+    # 文本整体判为本地路径列表时规范化为干净路径（去引号 + 还原转义 +
+    # file URI 解析 + Cygwin/MSYS 下 Windows→POSIX），多文件每行一个、含
+    # 空格路径双引号包裹；非路径文本（自然语言/代码）原样插入。
+    # 可通过 TuiConfig 构造覆盖或 RC 键 ``tui_drop_path_normalize`` 关闭。
+    drop_path_normalize: bool = True
+
     def __post_init__(self) -> None:
         """强制渲染帧率恒定 30Hz——帧率不可被任何构造/覆盖路径改变。
 

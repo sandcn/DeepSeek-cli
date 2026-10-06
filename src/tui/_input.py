@@ -770,6 +770,15 @@ class Input:
         """
         self._dispatcher.set_active_status_callback(fn)
 
+    def set_drop_path_normalize(self, enabled: bool) -> None:
+        """设置拖放文件路径规范化开关（委托 InputDispatcher，2026-10-07）。
+
+        由装配注入 ``TuiConfig.drop_path_normalize``（RC 键
+        ``tui_drop_path_normalize``，默认 True）——拖动文件到输入框时把终端
+        注入的路径文本规范化为干净路径；False 时原样插入。
+        """
+        self._dispatcher.set_drop_path_normalize(enabled)
+
     def set_clear_screen_callback(self, cb) -> None:
         """设置 Ctrl+L 清屏回调（委托 InputDispatcher，Claude TUI parity 3.1）。
 

@@ -327,6 +327,7 @@ CONFIG_ENTRY_DESC_MAP: dict[str, str] = {
     "MULTIMODAL_IMAGE_TOKEN_PATCH": "图片视觉 token 分块边长（ceil(w/patch)*ceil(h/patch)，默认 28）",
     "MULTIMODAL_IMAGE_TOKEN_DEFAULT": "无法读取尺寸的图片（URL/解码失败）每图占用 token（默认 800）",
     "MCP_SERVERS": "MCP 外部工具服务器列表（name/transport/command 或 url）",
+    "TUI_DROP_PATH_NORMALIZE": "拖动文件到输入框时规范化路径（去引号/转义/file URI/Windows→POSIX）",
     # ── HTTP 性能配置（嵌套路径） ──
     "HTTP_CONNECT_TIMEOUT": "HTTP 连接超时（秒）",
     "HTTP_READ_TIMEOUT": "HTTP 读取超时（秒）",

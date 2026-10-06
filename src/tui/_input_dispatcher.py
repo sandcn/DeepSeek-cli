@@ -29,6 +29,8 @@ import select
 import threading
 from typing import TYPE_CHECKING
 
+from src.core.path_tokens import normalize_dropped_paths
+
 from ._input_parser import InputParser, KeyEvent
 from ._completion_nav import _CompletionNavHandler
 
@@ -165,6 +167,16 @@ class InputDispatcher:
         # 风格轨迹视图（左台账 + 右检查器）。未注入回调时回退 backspace
         # （0x08 传统 BS 语义——行为与修复前一致，测试/无装配场景兼容）。
         self._trace_toggle_callback = None
+
+        # ── 拖放文件路径规范化（2026-10-07，用户需求：输入框支持拖动文件
+        #    输入文件路径） ──
+        # 终端拖放文件时把路径以「粘贴」形式注入 stdin（不同终端形态不同：
+        # 引号包裹 / 反斜杠转义 / file:// URI / Windows 原生路径）。默认开启：
+        # 粘贴文本若整体是本地路径列表，则规范化（去引号/还原转义/file URI
+        # 解析/Windows→POSIX），多文件每行一个、含空格路径加双引号；非路径
+        # 文本（自然语言/代码）原样插入，零行为变化。装配注入
+        # TuiConfig.drop_path_normalize（RC: tui_drop_path_normalize）。
+        self._drop_path_normalize: bool = True
 
     # ═══════════════════════════════════════════════════════
     # 中断与特殊按键处理（render 线程调用）
@@ -626,8 +638,7 @@ class InputDispatcher:
                         raw=paste_text.encode("utf-8", errors="replace"),
                     )
                     if not self._router_consume(paste_event):
-                        self._buffer_editor.handle_chars(paste_text)
-                        self._trigger_auto_completion()
+                        self._insert_pasted_text(paste_text)
                 else:
                     event = self._parser.feed_byte(first_byte)
                     if event is not None:
@@ -648,8 +659,7 @@ class InputDispatcher:
                         raw=paste_text.encode("utf-8", errors="replace"),
                     )
                     if not self._router_consume(paste_event):
-                        self._buffer_editor.handle_chars(paste_text)
-                        self._trigger_auto_completion()
+                        self._insert_pasted_text(paste_text)
                 else:
                     self._dispatch_key_event(
                         KeyEvent(kind='char', char=ch,
@@ -941,10 +951,35 @@ class InputDispatcher:
                 self._buffer_editor.handle_char(event.char)
                 self._trigger_auto_completion()
 
+    def _insert_pasted_text(self, text: str) -> None:
+        """插入粘贴文本（拖放文件路径规范化 → 输入缓冲 → 自动补全）。
+
+        终端拖放文件时把路径以「粘贴」形式注入 stdin（本项目未启用 bracketed
+        paste，终端注入即整段突发字符，见 ``try_read_paste``）。默认开启
+        （``TuiConfig.drop_path_normalize``）时：粘贴文本整体判为本地路径
+        列表则规范化后插入（去引号/还原反斜杠转义/file URI 解析/Windows→POSIX
+        转换；多文件每行一个；含空格路径双引号包裹）；非路径文本（自然语言、
+        代码、命令）原样插入——判定逻辑在 ``core.path_tokens``，任何异常
+        均回退原样插入，不阻断输入。
+
+        Args:
+            text: 本次粘贴/拖放注入的完整文本。
+        """
+        to_insert = text
+        if self._drop_path_normalize and text:
+            try:
+                normalized = normalize_dropped_paths(text)
+            except Exception:
+                _logger.debug("拖放路径规范化异常，原样插入", exc_info=True)
+                normalized = None
+            if normalized:
+                to_insert = normalized
+        self._buffer_editor.handle_chars(to_insert)
+        self._trigger_auto_completion()
+
     # ═══════════════════════════════════════════════════════
     # 反向历史搜索（方向D 步骤14，Ctrl+R 配置门控）
     # ═══════════════════════════════════════════════════════
-
     def _handle_reverse_search(self) -> None:
         """Ctrl+R 反向历史搜索：首次进入（当前缓冲为查询），再次推进到下一匹配。"""
         be = self._buffer_editor
@@ -1264,6 +1299,19 @@ class InputDispatcher:
         """获取当前 Enter 抑制状态。线程安全。"""
         with self._suppress_enter_lock:
             return self._suppress_enter
+
+    def set_drop_path_normalize(self, enabled: bool) -> None:
+        """设置拖放文件路径规范化开关（2026-10-07，装配注入）。
+
+        由装配注入 ``TuiConfig.drop_path_normalize``（RC 键
+        ``tui_drop_path_normalize``，默认 True）；False 时粘贴文本一律原样
+        插入（拖放路径规范化完全关闭，零行为变化）。
+        """
+        self._drop_path_normalize = bool(enabled)
+
+    def get_drop_path_normalize(self) -> bool:
+        """获取拖放文件路径规范化开关（公开访问器，测试/装配可用）。"""
+        return self._drop_path_normalize
 
     # ═══════════════════════════════════════════════════════
     # 窗口期 Enter 提交意图捕获（editmsg「很多上文时按回车不能编辑」修复）

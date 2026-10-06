@@ -177,6 +177,13 @@ python chat.py -m deepseek-flash
    看下 ![架构图](https://example.com/diagram.png)
    ```
 
+   > **拖动文件输入路径**：把文件从文件管理器拖入终端窗口（输入框），终端会把
+   > 路径文本注入为「粘贴」——CLI 自动识别并规范化为干净路径（去引号、还原
+   > 反斜杠转义、解析 `file://` URI、Cygwin/MSYS 下把 Windows 路径转为 POSIX
+   > 路径），多文件每行一个、含空格路径用双引号包裹；非路径文本（自然语言、
+   > 代码）原样输入不受影响。图片路径因此同样可直接拖入传图。
+   > 关闭：`python chat.py config set tui_drop_path_normalize false`。
+
 2. **read_image 工具**：AI 代理可主动调用 `read_image` 工具读取本地图像
    （支持分块/灰度/旋转/翻转/缩放操作），多模态模型直接看到 base64 图片
    （图片按原始尺寸返回，不做自动缩放）。
