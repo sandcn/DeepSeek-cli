@@ -328,7 +328,7 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
     #   冻结）；结束后回 1s 桶（性能保持，与 status_bar 语义对齐）；
     #   fade_duration<=0（配置异常）回退纯 1s 桶。
     #   BEAUTY-8：status_active 期间恒用 0.1s 桶——流式占位符动画点
-    #   （``AI 生成中.`` 推进）以 10Hz 平滑刷新（流式期间帧率本就 10Hz，
+    #   （``AI 生成中.`` 推进）以 30Hz 平滑刷新（流式期间帧率本就 30Hz，
     #   零额外渲染成本）；空闲回 1s 桶（静态显示，CPU 保持低占用）。
     now = time.monotonic()
     fade_key = getattr(fiber, "_placeholder_fade_key", None)
@@ -496,7 +496,7 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
             match = search.matches[search.index]
         sline = Line.of("(reverse-i-search)`", _S_ACCENT)
         # ★ 静态 query 色（修复同弹窗：搜索行不呼吸，避免每帧重绘——修复前
-        #   query 呼吸色 221↔232 使搜索激活无输入时仍 10Hz 渲染重绘）
+        #   query 呼吸色 221↔232 使搜索激活无输入时仍 30Hz 渲染重绘）
         sline.append(q, Style(fg=221))
         sline.append("`: ", _S_ACCENT)
         # 方向1 步骤4（窄屏防溢出）：match 截断至剩余行宽（不拆 CJK）

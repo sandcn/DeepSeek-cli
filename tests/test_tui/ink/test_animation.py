@@ -71,7 +71,7 @@ def test_reset_restarts_timing():
 
 
 def test_advance_animation_does_not_force_render():
-    """advance 不通知订阅者（避免 force 破坏 10Hz 节流）。"""
+    """advance 不通知订阅者（避免 force 破坏 30Hz 节流）。"""
     calls = []
     from src.tui.ink._animation import subscribe_animation, notify_animation_listeners
 

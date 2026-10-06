@@ -223,12 +223,12 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
     # 弹窗呼吸色依赖时间桶（time_glow 内部 int(t/0.1) 为 0.1s 粒度）——
     # 与 _build_lines 的 time_bucket 不同（后者随 status_active 用 0.1/0.25s）。
     # ★ 性能（PERF-11）：弹窗缓存键用 **0.25s 桶**（4Hz）——修复前用
-    #   ``int(now/0.1)``（10Hz）：打字（input_text 变化触发外层快照 miss →
+    #   ``int(now/0.1)``（0.1s 桶）：打字（input_text 变化触发外层快照 miss →
     #   调 _build_popup_lines）间隔 >0.1s 时每次按键跨桶 → 弹窗缓存几乎每次
     #   miss → 每键重建 20+ 候选项。0.25s 桶与 _build_lines 空闲桶一致：
     #   打字跨桶概率降 60%，呼吸色仍 4Hz 平滑推进（标题 12s/提示 12s/高亮
     #   10s 周期，4Hz 步进视觉无感知差异）；弹窗可见时 _needs_animation 持续
-    #   10Hz 渲染，动画不冻结。
+    #   30Hz 渲染，动画不冻结。
     popup_bucket = int(now / 0.25)
     popup_snap = (
         title,

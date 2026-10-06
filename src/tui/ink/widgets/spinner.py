@@ -31,7 +31,7 @@ def _spinner_frame_index(tick_hz: float, frames) -> int:
     n = len(frames)
     if n <= 0:
         return 0
-    hz = tick_hz if tick_hz and tick_hz > 0 else 10.0
+    hz = tick_hz if tick_hz and tick_hz > 0 else 30.0
     return int(time.monotonic() * max(hz, 1e-6)) % n
 
 
@@ -39,7 +39,7 @@ def InlineSpinner(props: dict) -> Element:
     """行内时间基 spinner 字符控件。
 
     Props:
-        tickHz: 每秒帧切换次数（默认 10.0）。
+        tickHz: 每秒帧切换次数（默认 30.0）。
         frames: 帧序列（str/list/tuple；默认 braille 10 帧）。
         style: 字符样式（Style 对象或 None）。
 

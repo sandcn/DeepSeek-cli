@@ -678,7 +678,7 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
     # 具体定位由 ``_layout_absolute_pass``（layout_tree 第二遍）在整树测量
     # 完成后执行（定位基准 = 最近 position="relative" 祖先的确定尺寸）。
     # ★ P-H3（性能）：绝大多数容器无 absolute 子节点——先短路检测，无 absolute
-    #   时零额外列表分配（修复前无条件 2 次 O(n) 列表推导，10Hz 下大组件树
+    #   时零额外列表分配（修复前无条件 2 次 O(n) 列表推导，30Hz 下大组件树
     #   每容器每帧重复分配）。原实现 ``abs_children`` 列表仅用于「非空判断」
     #   （第二遍 ``_layout_absolute_pass`` 独立遍历定位，不消费该列表），
     #   简化后仅保留判断语义。

@@ -43,7 +43,7 @@ _S_REASONING = Style(fg=242)
 #: 空闲期同 (active, width) 快照命中模块级缓存（同引用跨帧复用，TEXT
 #: ``_wrap_cache`` 引用级命中零重建）。
 #: ★ BEAUTY-25（2026-08-05 体验动效）：**活跃期**（模型已配置 + 流式/工具
-#:   执行中）欢迎卡 ✦ 图标呼吸化——渲染循环已因动画状态持续 10Hz 推进，零
+#:   执行中）欢迎卡 ✦ 图标呼吸化——渲染循环已因动画状态持续 30Hz 推进，零
 #:   额外渲染成本；空闲期（无动画状态）回退静态缓存（CPU ~0）。
 #: ★ BEAUTY-36（2026-08-19 全界面美化）：欢迎屏多行化 + 渐变品牌标题
 #:   （色标与 TopHeader 同源：青 → 蓝 → 紫 → 品红）+ › 引导行分组。
@@ -391,7 +391,7 @@ def OpenBlockLines(props) -> object:
     （同 line 对象同一 runs 列表）——同 deps 时 children 内容确定。
 
     ★ BEAUTY-32（2026-08-05 体验动效）：live content 流式指示——开放
-    content 块（未关闭且有内容）最后一行追加时间基 spinner 帧（10Hz
+    content 块（未关闭且有内容）最后一行追加时间基 spinner 帧（30Hz
     推进）。deps 含 spinner 帧字符（``sp``）——流式推进时每 0.1s 重建
     children（Element 构造开销可忽略）；非 live content 时 ``sp`` 为空串
     （常量）→ 缓存行为与修复前完全一致（PERF-26 契约保持）。
@@ -432,7 +432,7 @@ def _ParseLine(props) -> object:
     方向3（动效）：解析进度行前缀/内容呼吸色（时间基）——解析活跃时进度行
     从暗灰 242 呼吸到 252 亮灰，视觉提示「正在解析」（空闲静态保持原色）。
 
-    方向4（动效）：前缀 ``~`` 替换为时间基 spinner（⠋⠙⠹… 10Hz 推进）——
+    方向4（动效）：前缀 ``~`` 替换为时间基 spinner（⠋⠙⠹… 30Hz 推进）——
     解析进行中更生动（与 subagent 卡片 spinner 共用语义）。
 
     ★ 2026-08-20（用户需求：subagent 界面打开时接收参数进度行在 subagent
@@ -455,7 +455,7 @@ def _ParseLine(props) -> object:
     #   与解析行文本呼吸同步周期）——解析进行中 spinner 更醒目（金色提示
     #   「工具解析中」，与状态栏 parsing 阶段标签 178 同色系）。
     sp_glow = time_glow(178, 190, 8.0)
-    # 时间基 spinner（解析进度行常驻 live，10Hz 渲染时平滑推进）
+    # 时间基 spinner（解析进度行常驻 live，30Hz 渲染时平滑推进）
     # ★ 方向4：帧序列唯一真源 _fx.SPINNER_FRAMES（原内联字符串收敛）
     sp = _fx.spinner_char()
     runs = []

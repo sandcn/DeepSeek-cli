@@ -7,7 +7,7 @@
 
     from src.tui._config import TuiConfig
     cfg = TuiConfig.defaults()
-    print(cfg.render_interval)  # 0.1
+    print(cfg.render_interval)  # 0.0333...（1/30）
 
 配置模板约定（横切步骤17）：本项目配置为 ``TuiConfig`` dataclass，无独立
 .env/.env.example/config.yaml 模板文件——**新增字段即默认值模板**：新增可调
@@ -58,12 +58,12 @@ class TuiConfig(ConfigBase):
     """
 
     # ── 渲染引擎参数 ──────────────────────────────────
-    render_interval: float = 0.1            # render 线程刷新间隔（秒），全程 10Hz（含空闲）
+    render_interval: float = 1.0 / 30       # render 线程刷新间隔（秒），全程 30Hz（含空闲）
     max_batch_size: int = 50                # 单帧最大批处理命令数，防止 UI 冻结
-    drain_lock_timeout: float = 0.1         # drain 锁超时（秒），与 render_interval 对齐
+    drain_lock_timeout: float = 1.0 / 30    # drain 锁超时（秒），与 render_interval 对齐
     cmd_queue_maxsize: int = 10000          # 命令队列最大容量
     consecutive_full_threshold: int = 10    # 连续满队列告警阈值
-    bottom_redraw_interval: float = 0.1     # 底部栏重绘间隔（秒），对应 10Hz
+    bottom_redraw_interval: float = 1.0 / 30  # 底部栏重绘间隔（秒），对应 30Hz
 
     # ── 动画参数 ──────────────────────────────────────
     breath_cycle_len: int = 12              # 呼吸周期长度（帧数）
@@ -74,8 +74,8 @@ class TuiConfig(ConfigBase):
     # ── FadeIn 动效参数 ───────────────────────────────
     fade_total_frames: int = 6              # FadeIn 渐显帧数（兼容旧配置保留）
     fade_start_color: int = 238             # FadeIn 起始暗色（256 色号）
-    fade_duration_sec: float = 0.6          # FadeIn 渐显总时长（秒）= fade_total_frames 6 × render_interval 0.1s
-    spinner_tick_hz: float = 10.0           # spinner 时间基推进频率（Hz），对齐原帧计数 10Hz 观感
+    fade_duration_sec: float = 0.6          # FadeIn 渐显总时长（秒）——绝对时长，与渲染帧率无关
+    spinner_tick_hz: float = 30.0           # spinner 时间基推进频率（Hz），对齐渲染循环 30Hz
 
     # ── EventBus 参数 ──────────────────────────────────
     eventbus_throttle: float = 0.3          # EventBus 发布频率阈值（秒），对应 300ms

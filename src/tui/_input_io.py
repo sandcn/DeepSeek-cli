@@ -450,7 +450,7 @@ class InputIO:
         """
         # 批量读取剩余字节（突发输入）——有则无需等待，直接作为粘贴读全部
         extra = self.drain_pending()
-        # ★ P2（review 2026-08-18）：短突发降级——渲染循环 10Hz 轮询下，
+        # ★ P2（review 2026-08-18）：短突发降级——渲染循环 30Hz 轮询下，
         #   同帧快速连击的 1-2 个 ASCII 可打印字符也会批量进 pending；
         #   原实现 pending 非空即判「粘贴」，快速连击被误判（usePaste 钩子
         #   存在时整段消费致输入丢失；单字符语义 handler 收到 char="ab"）。

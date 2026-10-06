@@ -6,7 +6,7 @@
 模态弹窗（EditMsgSelectPopup）确认后，``message_editor`` 在 finally 中清理
 ``model.editmsg_select`` + ``model.bottom_view``——但 **input router 由渲染
 线程每帧发布**（``reconciler.render → _publish_input_router → dispatcher
-set_input_hook_router``）：清理时刻到渲染线程完成下一帧之间存在窗口（10Hz
+set_input_hook_router``）：清理时刻到渲染线程完成下一帧之间存在窗口（30Hz
 节流 + 帧耗时，大量上文重放时一帧 100ms~1s+），期间 dispatcher 持有的旧
 router 仍含已卸载弹窗的 ``SelectInput`` use_input handler + ``use_modal``
 吞噬：

@@ -1,7 +1,7 @@
 """_animation — useAnimation 共享动画驱动（React Ink v7 等价）。
 
 官方 ``useAnimation`` 语义：所有动画组件**共用一个定时器**——一次定时器
-推进只触发一轮渲染，多个动画组件合并渲染。本框架渲染循环为 10Hz
+推进只触发一轮渲染，多个动画组件合并渲染。本框架渲染循环为 30Hz
 （``TuiConfig.render_interval``），故驱动直接挂在渲染循环上：
 ``advance_animation()`` 每帧调用一次（session 注入），递增全局 tick 序号并
 通知全部订阅者（订阅者经 ``useSyncExternalStore`` 的 ``_schedule`` 请求
@@ -46,9 +46,9 @@ def advance_animation(now: float | None = None) -> None:
 
     ★ 不触发订阅者重渲染（review 修复）：订阅者回调经 hooks ``_schedule``
     落到 ``session._request_render``（置 ``_bottom_redraw_requested`` = force，
-    打破 10Hz 节流）——若每帧 advance 都通知，将形成
+    打破 30Hz 节流）——若每帧 advance 都通知，将形成
     「渲染→advance→force→立即再渲染」的无节流忙循环。本框架渲染循环为
-    **全程 10Hz**（空闲也持续渲染），动画组件每帧都会被重渲染，
+    **全程 30Hz**（空闲也持续渲染），动画组件每帧都会被重渲染，
     ``frame``/``time`` 由挂钟时间推导 → 无需 tick 通知即可平滑推进。
     ``_listeners`` 仅用于 ``has_active_animations()``（渲染循环动画探测）。
     """

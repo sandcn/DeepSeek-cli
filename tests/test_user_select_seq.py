@@ -5,7 +5,7 @@ bug：多次弹出 user_select 并用回车回复后，再次弹出显示错乱�
 (7/16)）。
 
 根因：工具 finally 清理 ``model.user_select = UserSelectState()`` 使 seq 归零
-——连续两次弹出之间若「关闭帧」被渲染节流（10Hz）合并跳过，第二次打开的 seq
+——连续两次弹出之间若「关闭帧」被渲染节流（30Hz）合并跳过，第二次打开的 seq
 与第一次相同 → App 的 key_fn（``us-{seq}``）返回相同 key → 调和器复用旧
 fiber → UserSelectPopup 内部 use_state（selected/checked）残留上一次的值。
 

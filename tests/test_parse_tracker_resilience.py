@@ -100,7 +100,7 @@ class TestTrackerResilience:
         assert display.done == 1
 
     def test_normal_path_unchanged(self):
-        """正常路径行为不变：约 10Hz 推送，最终清除。"""
+        """正常路径行为不变：约 30Hz 推送，最终清除。"""
         display = _run({0: _entry(name="write_file")}, seconds=0.45)
         assert len(display.updates) >= 3
         assert display.updates[0][0] == "WriteFile"

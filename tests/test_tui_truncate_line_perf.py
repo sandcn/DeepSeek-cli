@@ -8,7 +8,7 @@
    → 单行截断退化为 **O(n²)**。实测：400 列 11.9ms/次、800 列 46ms/次。
    ``truncate_line`` 在多处每帧调用（committed 前缀超宽守卫 / 画布行溢出自卫
    ``_to_line`` / 状态栏 / 输入区模式行 / 补全弹窗 / 轨迹视图），单帧多次调用
-   直接击穿 10Hz 帧预算。修复：run 级累积后一次 append（O(n)，产出 runs 与
+   直接击穿 30Hz 帧预算。修复：run 级累积后一次 append（O(n)，产出 runs 与
    逐字符 append 完全一致——Line.append 对同样式相邻段自动合并）。
 
 2. ``ink/components.render_frame`` 的超宽前缀路径（``all_ok=False``）原**每帧**

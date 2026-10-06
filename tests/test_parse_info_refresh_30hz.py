@@ -1,18 +1,18 @@
-"""解析进度行（``⠙ Write 384t 1.01s``）10Hz 刷新回归测试（2026-09-10 用户需求）。
+"""解析进度行（``⠙ Write 384t 1.01s``）30Hz 刷新回归测试（2026-09-10 用户需求）。
 
-需求（用户报障）：工具参数接收进度行 ``⠙ Write 384t 1.01s`` **不会每 10Hz
-刷新信息**——spinner 逐帧推进（时间基 10Hz），但 token 数/耗时两拍才动一次
+需求（用户报障）：工具参数接收进度行 ``⠙ Write 384t 1.01s`` **不会每帧
+刷新信息**——spinner 逐帧推进（时间基 30Hz），但 token 数/耗时两拍才动一次
 （0.2s 跳变），视觉上「信息不刷新」。
 
 根因：``ToolParseTracker._update_loop_async`` 以 ``asyncio.sleep(0.2)`` 推送
 ``update_parse_info``（5Hz），而 TUI 渲染循环（``TuiConfig.render_interval``）
-与进度行 spinner（``TuiConfig.spinner_tick_hz``）均为 **10Hz**——信息刷新频率
-只有渲染频率的一半。
+与进度行 spinner（``TuiConfig.spinner_tick_hz``）均为 **30Hz**——信息刷新频率
+远低于渲染频率。
 
-修复：``ToolParseTracker.REFRESH_INTERVAL``（``0.1`` = 10Hz）——与渲染循环／
+修复：``ToolParseTracker.REFRESH_INTERVAL``（``1/30`` = 30Hz）——与渲染循环／
 spinner 同频，每拍推送一次 ⇒ 每帧消费一次（进度行 token/耗时随 spinner 平滑
 刷新）。本测试覆盖：
-  1. 刷新频率常量 = 10Hz（与 TuiConfig 渲染间隔／spinner 帧率对齐）；
+  1. 刷新频率常量 = 30Hz（与 TuiConfig 渲染间隔／spinner 帧率对齐）；
   2. 更新循环**每拍**推送（不合并多拍），间隔恒为 ``REFRESH_INTERVAL``；
   3. 追踪器 → 事件/命令 → AppModel.parse_line 全链路：每拍进度行文本都变化
      （信息逐拍刷新，而非 0.2s 一次跳变）；
@@ -37,6 +37,10 @@ from src.tui.app.apply import apply_cmd
 from src.tui.app.model import AppModel
 from src.tui.events.event_types import ParseInfoEvent
 
+#: 目标渲染帧率（Hz）——渲染循环／spinner／进度刷新同频真源。
+_TARGET_HZ = 30.0
+_TARGET_INTERVAL = 1.0 / _TARGET_HZ
+
 
 class _StopLoop(Exception):
     """跳出更新循环的哨兵异常（非 CancelledError，直接传播到测试）。"""
@@ -55,19 +59,44 @@ def _args_map():
 
 
 # ═══════════════════════════════════════════════════════════
-# 1. 刷新频率 = 10Hz（与渲染循环/spinner 帧率对齐）
+# 0. TuiConfig 默认渲染帧率 = 30Hz（渲染线程 30Hz 需求）
+# ═══════════════════════════════════════════════════════════
+
+class TestTuiConfigRenderRate:
+    """渲染线程帧率改为 30Hz——TuiConfig 默认参数一致性。"""
+
+    def test_render_interval_is_1_over_30(self):
+        """render_interval = 1/30s（30Hz，全程含空闲）。"""
+        cfg = TuiConfig.defaults()
+        assert cfg.render_interval == pytest.approx(_TARGET_INTERVAL)
+        assert 1.0 / cfg.render_interval == pytest.approx(_TARGET_HZ)
+
+    def test_aligned_params_follow_render_interval(self):
+        """与帧周期对齐的参数同步为 1/30s。"""
+        cfg = TuiConfig.defaults()
+        assert cfg.drain_lock_timeout == pytest.approx(_TARGET_INTERVAL)
+        assert cfg.bottom_redraw_interval == pytest.approx(_TARGET_INTERVAL)
+
+    def test_spinner_tick_hz_is_30(self):
+        """spinner 推进频率 = 30Hz（对齐渲染循环）。"""
+        cfg = TuiConfig.defaults()
+        assert cfg.spinner_tick_hz == pytest.approx(_TARGET_HZ)
+
+
+# ═══════════════════════════════════════════════════════════
+# 1. 刷新频率 = 30Hz（与渲染循环/spinner 帧率对齐）
 # ═══════════════════════════════════════════════════════════
 
 class TestRefreshRate:
     """``REFRESH_INTERVAL`` 语义：解析信息刷新频率。"""
 
-    def test_refresh_interval_is_10hz(self):
-        """刷新间隔 0.1s ⇒ 10Hz（修复前 0.2s＝5Hz）。"""
-        assert ToolParseTracker.REFRESH_INTERVAL == pytest.approx(0.1)
-        assert 1.0 / ToolParseTracker.REFRESH_INTERVAL == pytest.approx(10.0)
+    def test_refresh_interval_is_30hz(self):
+        """刷新间隔 1/30s ⇒ 30Hz（修复前 0.2s＝5Hz）。"""
+        assert ToolParseTracker.REFRESH_INTERVAL == pytest.approx(_TARGET_INTERVAL)
+        assert 1.0 / ToolParseTracker.REFRESH_INTERVAL == pytest.approx(_TARGET_HZ)
 
     def test_aligned_with_render_loop_and_spinner(self):
-        """与 TUI 渲染循环（render_interval）/spinner 帧率同频（10Hz）。"""
+        """与 TUI 渲染循环（render_interval）/spinner 帧率同频（30Hz）。"""
         cfg = TuiConfig.defaults()
         refresh_hz = 1.0 / ToolParseTracker.REFRESH_INTERVAL
         assert refresh_hz == pytest.approx(cfg.spinner_tick_hz)
@@ -80,7 +109,7 @@ class TestRefreshRate:
 
 
 # ═══════════════════════════════════════════════════════════
-# 2. 更新循环：每拍推送 + 间隔恒为 10Hz
+# 2. 更新循环：每拍推送 + 间隔恒为 30Hz
 # ═══════════════════════════════════════════════════════════
 
 def _install_fake_clock_and_sleep(monkeypatch, clock, sleeps, on_tick, stop_after):
@@ -103,8 +132,8 @@ def _install_fake_clock_and_sleep(monkeypatch, clock, sleeps, on_tick, stop_afte
 class TestUpdateLoopRefresh:
     """更新循环：每拍推送 display（信息逐拍刷新）。"""
 
-    async def test_pushes_every_tick_with_10hz_interval(self, monkeypatch):
-        """每拍推送一次 update_parse_info，sleep 间隔恒为 0.1s（10Hz）。"""
+    async def test_pushes_every_tick_with_30hz_interval(self, monkeypatch):
+        """每拍推送一次 update_parse_info，sleep 间隔恒为 1/30s（30Hz）。"""
         reset_interrupt_async()
         calls: list = []
         display = SimpleNamespace(
@@ -126,8 +155,8 @@ class TestUpdateLoopRefresh:
 
         # 3 拍 ⇒ 3 次推送（间隔前先刷新——信息不合并/不丢拍）
         assert len(calls) == 3
-        # 间隔恒为 10Hz（修复前为 0.2）
-        assert sleeps == [pytest.approx(0.1)] * 3
+        # 间隔恒为 30Hz（修复前为 0.2）
+        assert sleeps == [pytest.approx(_TARGET_INTERVAL)] * 3
 
     async def test_elapsed_and_tokens_grow_each_tick(self, monkeypatch):
         """耗时逐拍增长、token 数随参数推送——进度行信息随时间实时刷新。"""
@@ -157,8 +186,12 @@ class TestUpdateLoopRefresh:
         assert names == ["WriteFile"] * 3
         # token 数 > 0（信息随参数累积推送）
         assert all(t > 0 for t in tokens)
-        # 耗时严格递增（0.00 → 0.10 → 0.20）：不是「冻结值」
-        assert elapsed == [pytest.approx(0.0), pytest.approx(0.1), pytest.approx(0.2)]
+        # 耗时严格递增（0 → 1/30 → 2/30）：不是「冻结值」
+        assert elapsed == [
+            pytest.approx(0.0),
+            pytest.approx(_TARGET_INTERVAL),
+            pytest.approx(2 * _TARGET_INTERVAL),
+        ]
         assert elapsed[0] < elapsed[1] < elapsed[2]
 
 
@@ -211,8 +244,8 @@ class TestParseLineRefreshesEveryTick:
         assert len(set(frames)) == 3, frames
         assert "WriteFile" in frames[0]
         assert "0.00s" in frames[0]
-        assert "0.10s" in frames[1]
-        assert "0.20s" in frames[2]
+        assert "0.03s" in frames[1]
+        assert "0.07s" in frames[2]
 
     def test_parse_info_cmd_reaches_parse_line(self):
         """命令 → 模型链路：ParseInfoCmd 立即更新 model.parse_line 文本。"""

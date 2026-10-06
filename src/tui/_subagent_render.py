@@ -83,7 +83,7 @@ _S_SUMMARY_DIM = _semantic_style("summary_dim", 245)  # 中灰 — 摘要次要
 #: 树形分支线色（灰——树形线）
 _S_BRANCH = _semantic_style("branch", 239)
 
-#: 二级子行前缀常量表（P3 review 微优化：10Hz 刷新每帧复用，避免新建
+#: 二级子行前缀常量表（P3 review 微优化：30Hz 刷新每帧复用，避免新建
 #: StyledRun）。键 = 一级延续线（"   " 最后 agent / "│  " 非最后）+
 #: 二级分支（"├─ " 非最后子行 / "└─ " 最后子行）——共 4 种固定组合。
 _SUB_BRANCH_PREFIXES = {
@@ -146,7 +146,7 @@ _CFG = TuiConfig.defaults()
 # 函数内一律经 ``_fx_params()`` 惰性读取 TuiConfig（运行期修改配置即时生效）。
 _FADE_DURATION: float = _CFG.fade_duration_sec       # FadeIn 渐显总时长（0.6s）
 _FADE_START_COLOR: int = _CFG.fade_start_color       # FadeIn 起始暗色（238）
-_SPINNER_HZ: float = _CFG.spinner_tick_hz            # spinner 时间基推进频率（10Hz）
+_SPINNER_HZ: float = _CFG.spinner_tick_hz            # spinner 时间基推进频率（30Hz）
 
 
 def _fx_params() -> tuple[float, int, float]:
@@ -212,7 +212,7 @@ def _terminal_max_lines() -> int:
 
     ★ 性能（方向4）：终端高度经 ``TerminalWidthCache`` 读取（TTL 缓存）——
     修复前每次渲染直接 ``_get_terminal_size()``（fcntl.ioctl），subagent
-    面板 10Hz 刷新时每帧 2 次系统调用。终端尺寸查询失败回退 12（行数保护
+    面板 30Hz 刷新时每帧 2 次系统调用。终端尺寸查询失败回退 12（行数保护
     兜底）。
     """
     try:
@@ -228,7 +228,7 @@ def _terminal_max_width() -> int:
 
     ★ 性能（方向4）：终端宽度经 ``TerminalWidthCache`` 读取（TTL 缓存）——
     修复前每次渲染直接 ``_get_terminal_size()``（fcntl.ioctl），subagent
-    面板 10Hz 刷新时每帧系统调用。终端尺寸查询失败回退 80。
+    面板 30Hz 刷新时每帧系统调用。终端尺寸查询失败回退 80。
     """
     try:
         from src.tui._screen import TerminalWidthCache
@@ -413,7 +413,7 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
         dot = StyledRun(spinner, _S_RUNNING)
         # ★ BEAUTY-23（体验动效）：running 期间输出/speed/耗时统计呼吸——
         #   输出量浅蓝 240→250、速度亮青 45→55、耗时暗灰 240→250（12s 周期，
-        #   与状态栏 token/速度呼吸同步）。active 子代理面板 10Hz 刷新，
+        #   与状态栏 token/速度呼吸同步）。active 子代理面板 30Hz 刷新，
         #   time_glow 0.1s 桶缓存平滑推进；done/fail 折叠为单行保持静态。
         suffix = [
             StyledRun("  ", None),
@@ -479,7 +479,7 @@ def build_agent_lines(slot: _AgentSlot, now: float, is_last: bool,
 
     # 统一编号二级子行：最后子行 └─（闭合），其余 ├─；前缀 = 一级延续线 +
     # 二级分支，整体 _S_BRANCH 暗灰（树形线色）。前缀经模块级常量表复用
-    # （P3 review 微优化：10Hz 刷新避免每帧新建 StyledRun）。
+    # （P3 review 微优化：30Hz 刷新避免每帧新建 StyledRun）。
     sub_n = len(sub_items)
     for i, sub in enumerate(sub_items):
         sub_branch = "\u2514\u2500 " if i == sub_n - 1 else "\u251c\u2500 "
@@ -558,7 +558,7 @@ def format_tool_record(rec: _ToolRecord, now: float, cont: str = "",
 def _running_pulse_style() -> Style:
     """running 状态 ● 呼吸色（方向4 动效：琥珀 208-220 脉动，6s 周期）。
 
-    时间基（``time_glow`` 0.1s 桶缓存），subagent 面板 10Hz 刷新时平滑推进。
+    时间基（``time_glow`` 0.1s 桶缓存），subagent 面板 30Hz 刷新时平滑推进。
     """
     from src.tui.core._theme import time_glow
     return Style(fg=time_glow(208, 220, 6.0))

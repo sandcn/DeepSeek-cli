@@ -420,7 +420,7 @@ def tool_card_lines(block, width, start=0, stop=None):
             body_lines.append(_omitted_line(f"\u2026 前 {omitted} 行省略", width, bg_style))
         # ★ PERF-6（性能）：开放工具卡内容行按 ``(行对象, width)`` 缓存
         #   wrap+截断后的内容 runs——修复前每帧对全部内容行重新 ``wrap_line``
-        #   （长 bash 输出 300 行 → 单帧 ~190ms → 10Hz 下 CPU 100%）。行对象
+        #   （长 bash 输出 300 行 → 单帧 ~190ms → 30Hz 下 CPU 100%）。行对象
         #   创建后不原地修改（``append_tool_output`` 每行新建 AnsiLine），
         #   width 变化时 key miss 自动重算。
         body_cache = getattr(block, "_tool_card_body_cache", None)

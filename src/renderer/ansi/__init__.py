@@ -184,7 +184,7 @@ class AnsiStreamRenderer:
         逐行高亮对「只追加」的流式输入可安全缓存（``highlight_code_lines``
         本身逐行处理、无跨行状态），仅渲染新增行——修复前每次 write 对整段
         预览（最多 ``_PREVIEW_MAX_LINES`` 行）重新词法高亮，600 行代码流式
-        输出实测约 27s，渲染线程在 10Hz 下近乎满载，进而造成命令队列背压。
+        输出实测约 27s，渲染线程在 30Hz 下近乎满载，进而造成命令队列背压。
         """
         from . import code as _code
         from .._block_parser import RegexFreeBlockParser

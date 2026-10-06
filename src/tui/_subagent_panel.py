@@ -98,8 +98,8 @@ class SubAgentPanelController:
 
     _instance: "SubAgentPanelController | None" = None
     _class_lock = threading.Lock()
-    # 帧渲染节流：100ms 间隔（10Hz）
-    _EMIT_INTERVAL: float = 0.1
+    # 帧渲染节流：1/30s 间隔（30Hz）
+    _EMIT_INTERVAL: float = 1.0 / 30
     # 声明式订阅表：事件类型 → 处理器方法名。
     # ensure_active()/stop() 遍历本表订阅/取消订阅，消除硬编码重复代码。
     _SUBSCRIPTIONS: tuple[tuple[type, str], ...] = (
@@ -134,7 +134,7 @@ class SubAgentPanelController:
         #   （_last_emit_time/_dirty/_pending_emit/_last_pushed_frame）不加锁——
         #   GIL 下各字段的读/写/比较均原子；节流设计（PERF-2）允许瞬时轻微
         #   偏差（节流窗口内多渲染/少渲染一帧、脏标记延迟复位）不影响正确性，
-        #   最终一致（下一允许拍补推最新帧）。不引入锁避免 10Hz 渲染热路径
+        #   最终一致（下一允许拍补推最新帧）。不引入锁避免 30Hz 渲染热路径
         #   锁开销。
         self._last_emit_time: float = 0.0
         # PERF-2：面板脏标记（事件处理器更新状态后置位；渲染后复位）
@@ -435,7 +435,7 @@ class SubAgentPanelController:
     def _on_tool_parsing(self, event) -> None:
         """ToolParsingEvent — 流式解析工具参数时创建/更新 parsing 记录。
 
-        ★ BUG-T3：改走 _emit_frame() 节流（10Hz）——流式 parsing 高频事件
+        ★ BUG-T3：改走 _emit_frame() 节流（30Hz）——流式 parsing 高频事件
           不再绕过 _EMIT_INTERVAL 每事件全帧渲染（既有
           TestSubAgentPanelParsingThrottle 已锁定此行为）。
            锁顺序保证（防死锁）：
@@ -535,7 +535,7 @@ class SubAgentPanelController:
         #   直接 return——即使已注入，仍尝试经 get_active_chat_ui() 获取
         #   chat_ui 并注册 _panel_refresh 到 engine（ChatUIConsumer.
         #   set_panel_refresh_callback 委托 engine.set_panel_refresh_callback
-        #   ——session 的 _panel_refresh_cb 每帧驱动动画 10Hz 推进 spinner）。
+        #   ——session 的 _panel_refresh_cb 每帧驱动动画 30Hz 推进 spinner）。
         #   chat_ui 为 None 时记 debug 跳过（非致命——push_cmd 推送路径仍
         #   正常，仅动画回调缺失）。
         from .consumer import get_active_chat_ui
@@ -564,7 +564,7 @@ class SubAgentPanelController:
         """是否存在活跃/动画状态（running agent / running tool）需要重绘推进。
 
         PERF-2：空闲（无事件 + 无动画需求）时 ``_panel_refresh`` 短路跳过
-        全量渲染（保持动画时仍按 10Hz 渲染）。委托 ``StateStore.needs_animation``。
+        全量渲染（保持动画时仍按 30Hz 渲染）。委托 ``StateStore.needs_animation``。
         """
         return self._store.needs_animation()
 
@@ -576,7 +576,7 @@ class SubAgentPanelController:
         if not self._dirty and not self._needs_animation() and not self._pending_emit:
             return
         # ★ PERF-4：面板刷新节流——与 _emit_frame 共用 _last_emit_time/
-        #   _EMIT_INTERVAL（10Hz）。修复前每渲染循环迭代都渲染+推送（流式
+        #   _EMIT_INTERVAL（30Hz）。修复前每渲染循环迭代都渲染+推送（流式
         #   期间命令持续唤醒循环 → 循环高频运转），subagent 活跃时 CPU 满。
         #   节流跳过时置 _pending_emit，下一允许拍补推最新帧（不丢状态）。
         now = time.time()
@@ -602,7 +602,7 @@ class SubAgentPanelController:
             #   ``self._dirty = False`` 在 try 外无条件执行：异常后脏标记被清，
             #   且无动画状态（needs_animation False）时面板不再重试渲染 →
             #   卡在陈旧内容。保留脏标记使下一允许拍重试（_EMIT_INTERVAL 节流
-            #   10Hz，不会无限高频重试）。
+            #   30Hz，不会无限高频重试）。
             _logger.debug("_panel_refresh 异常", exc_info=True)
             return
         self._frame += 1

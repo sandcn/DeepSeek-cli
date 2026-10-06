@@ -174,7 +174,7 @@ def _role_header_runs(block, live: bool = False) -> list:
         # 助手回答角色头（★ 2026-08-16 用户需求：回答与思考同格式显示——
         # ``▍💬 回答``，对齐 ``▍💭 思考`` 推理头；修复前对齐 Claude Code
         # 无头回答，markdown 文本直接流动）。live 路径**与思考头同动效**：
-        # ``💬`` 图标替换为时间基 spinner 帧（10Hz 推进，与推理头/解析行
+        # ``💬`` 图标替换为时间基 spinner 帧（30Hz 推进，与推理头/解析行
         # spinner 共用语义）+ 呼吸色（亮青 45↔61，8s 周期，与欢迎行/模型名
         # 呼吸同步，视觉提示「回答生成中」）；提交/关闭回退静态亮青
         # （pal.accent，冻结缓存内容确定，防历史回答头固定为随机 spinner 帧）。
@@ -189,7 +189,7 @@ def _role_header_runs(block, live: bool = False) -> list:
         # 从暗灰 242 呼吸到亮灰 252（8s 周期，视觉提示「推理进行中」）；
         # 关闭提交后保持静态暗灰（frozen 缓存不再重算）。
         # ★ BEAUTY-27（2026-08-05 体验动效）：**live 渲染路径**（live=True）
-        #   ``💭`` 图标替换为时间基 spinner 帧（10Hz 推进，与解析行 spinner
+        #   ``💭`` 图标替换为时间基 spinner 帧（30Hz 推进，与解析行 spinner
         #   共用语义）——推理进行中更生动；提交/关闭路径（live=False）回退
         #   静态 💭（冻结缓存内容确定，防历史思考头固定为随机 spinner 帧）。
         if not block.closed and live:

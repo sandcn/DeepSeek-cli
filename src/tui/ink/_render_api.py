@@ -229,7 +229,7 @@ def render(
         patchConsole: 控制台补丁（默认 False；True 时替换 sys.stdout/
             sys.stderr 的 write 为代理——print()/错误输出重定向到 TUI 流；
             unmount/cleanup 时恢复原流）。
-        maxFps: 渲染帧率上限（覆盖 render_interval；None 用默认 10Hz）。
+        maxFps: 渲染帧率上限（覆盖 render_interval；None 用默认 30Hz）。
         isScreenReaderEnabled: 屏幕阅读器模式（useIsScreenReaderEnabled 返回
             True；供组件输出无障碍文本）。
         kittyKeyboard: kitty 键盘协议配置——None/False 不启用；True 启用；

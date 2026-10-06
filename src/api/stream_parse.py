@@ -20,15 +20,15 @@ from ..core.tool_display import get_tool_display_name
 _logger = logging.getLogger(__name__)
 
 
-#: 解析进度刷新间隔（秒）——10Hz（每秒 10 拍）。
-#: ★ 2026-09-10 修复（用户需求：``⠙ Write 384t 1.01s`` 不会每 10Hz 刷新信息）：
+#: 解析进度刷新间隔（秒）——30Hz（每秒 30 拍）。
+#: ★ 2026-09-10 修复（用户需求：``⠙ Write 384t 1.01s`` 不会每帧刷新信息）：
 #:   修复前为 0.2s（5Hz）——解析进度行（工具名 + token 数 + 耗时）每 0.2s 才
-#:   推送一次 ``update_parse_info``，而 TUI 渲染循环为 **10Hz**、进度行 spinner
-#:   帧序列（``_fx.spinner_char``）也按 10Hz 逐帧推进：spinner 每帧都在动，
-#:   但 token/耗时两拍才动一次（0.2s 跳变，如 ``1.01s → 1.21s``），视觉上
-#:   「信息不刷新」。现与渲染循环同频（10Hz）——每拍推送一次，渲染循环每帧
+#:   推送一次 ``update_parse_info``，而 TUI 渲染循环为 **30Hz**、进度行 spinner
+#:   帧序列（``_fx.spinner_char``）也按 30Hz 逐帧推进：spinner 每帧都在动，
+#:   但 token/耗时几拍才动一次（0.2s 跳变，如 ``1.01s → 1.21s``），视觉上
+#:   「信息不刷新」。现与渲染循环同频（30Hz）——每拍推送一次，渲染循环每帧
 #:   消费一次，进度行信息随 spinner 平滑刷新。
-_PARSE_INFO_REFRESH_INTERVAL = 0.1
+_PARSE_INFO_REFRESH_INTERVAL = 1.0 / 30
 
 #: 解析进度推送异常告警限频（秒）——单拍异常不终止推送循环（见
 #: ``ToolParseTracker._update_loop_async``），同频率窗口内仅记 1 条 warning
@@ -44,11 +44,11 @@ class ToolParseTracker:
     全异步实现：使用 asyncio.Task 替代 threading.Thread，
     使用 asyncio.Event 替代 threading.Event。
 
-    刷新频率：``REFRESH_INTERVAL``（10Hz）——与 TUI 渲染循环／解析进度行
+    刷新频率：``REFRESH_INTERVAL``（30Hz）——与 TUI 渲染循环／解析进度行
     spinner 帧率对齐（见 ``_PARSE_INFO_REFRESH_INTERVAL`` 注释）。
     """
 
-    #: 解析进度刷新间隔（秒）——10Hz。类属性便于测试注入（惰性读取）。
+    #: 解析进度刷新间隔（秒）——30Hz。类属性便于测试注入（惰性读取）。
     REFRESH_INTERVAL = _PARSE_INFO_REFRESH_INTERVAL
 
     def __init__(self, tool_calls_map, display=None, label=None, silent=False):
@@ -67,11 +67,11 @@ class ToolParseTracker:
         self._task = asyncio.get_running_loop().create_task(self._update_loop_async())
 
     async def _update_loop_async(self):
-        """异步更新循环：每秒刷新 10 次（10Hz），仅更新 display（不打印终端）。
+        """异步更新循环：每秒刷新 30 次（30Hz），仅更新 display（不打印终端）。
 
-        间隔取 ``self.REFRESH_INTERVAL``（10Hz）——与 TUI 渲染循环 10Hz 对齐
-        （修复前 0.2s＝5Hz：spinner 每帧推进而 token/耗时两拍一更，进度行
-        信息「不随 10Hz 刷新」）。
+        间隔取 ``self.REFRESH_INTERVAL``（30Hz）——与 TUI 渲染循环 30Hz 对齐
+        （修复前 0.2s＝5Hz：spinner 每帧推进而 token/耗时几拍一更，进度行
+        信息「不随帧刷新」）。
 
         ★ 2026-09-20（解析进度行卡住修复）：**单拍异常不再终止推送循环**——
         修复前循环体除 CancelledError 外无捕获，任一单拍异常（条目缺 ``name``
@@ -89,7 +89,7 @@ class ToolParseTracker:
                     await self._push_once()
                 except Exception:
                     self._log_push_error()
-                # ★ 10Hz（0.1s）——与渲染循环同帧率；每拍刷新（不累积多拍后
+                # ★ 30Hz（1/30s）——与渲染循环同帧率；每拍刷新（不累积多拍后
                 #   一次推送，否则进度行信息又退化为低频跳变）。
                 await asyncio.sleep(self.REFRESH_INTERVAL)
         except asyncio.CancelledError:

@@ -64,7 +64,7 @@ class TestControlledTailFollowArrowUp:
             "cursor": 4, "onNavigate": nav.append, "focus": True,
         }
         rec, root = _render_root(ListView, dict(props))
-        # 第二帧渲染（模拟生产 10Hz 渲染循环：按键前已渲染多帧）
+        # 第二帧渲染（模拟生产 30Hz 渲染循环：按键前已渲染多帧）
         rec.render(root, h(ListView, dict(props)), 80, 24)
         handler = _find_input_handler(root.child)
         # ★ 修复断言：从末行（4）上移到 3，而非从首行无处可移
@@ -403,7 +403,7 @@ class TestTraceViewTailFollowNavigation:
         model = self._make_model()
         model.fullscreen = "trace"
         rec, root = _render_root(TraceView, {"model": model, "width": 100})
-        # 二次渲染（生产 10Hz 循环：按键前已多帧）
+        # 二次渲染（生产 30Hz 循环：按键前已多帧）
         rec.render(root, h(TraceView, {"model": model, "width": 100}), 100, 24)
         # 经 input router 分发（TraceView 放行 → ListView 消费）
         router = rec._build_input_router(root)

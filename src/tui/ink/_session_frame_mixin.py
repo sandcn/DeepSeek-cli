@@ -53,7 +53,7 @@ _logger = logging.getLogger(__name__)
 #: 窗口 resize **不发送 SIGWINCH**（Cygwin pty 实测 winsize 变化不触发信号），
 #: ``TerminalWidthCache`` 默认 TTL 60s 内宽度陈旧——工具卡/布局宽度不随窗口
 #: 变化。渲染帧每帧经 ``_poll_terminal_size`` 按本间隔主动重探（5 次/秒
-#: ioctl 成本可忽略，渲染帧本就 10Hz）。
+#: ioctl 成本可忽略，渲染帧本就 30Hz）。
 _SIZE_POLL_INTERVAL = 0.2
 
 

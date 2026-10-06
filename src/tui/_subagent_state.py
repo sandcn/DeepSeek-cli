@@ -222,7 +222,7 @@ class StateStore:
             # ★ 修复（review 方向）："error" 同为终态（事件类型明确列出，
             #   渲染层按终态处理）——修复前仅 done/fail 终结：
             #   error 代理 end_time 恒 0（面板时长持续增长）+ running/parsing
-            #   工具记录不闭合 → needs_animation 恒 True（面板 10Hz 空转）。
+            #   工具记录不闭合 → needs_animation 恒 True（面板 30Hz 空转）。
             if status in ("done", "fail", "error"):
                 slot.end_time = time.time()
                 for rec in slot.tool_history:
@@ -386,7 +386,7 @@ class StateStore:
             # ★ P1-1（review 方向）：按 tool_id 精确匹配 running 记录——同名
             #   工具连续调用且事件乱序/交叉时（A start → B start → A done），
             #   A 的 done 精确闭合 A 的记录而非错误闭合 B（修复前仅按
-            #   tool_name 从尾部匹配 → A 记录永久残留 running → 面板 10Hz
+            #   tool_name 从尾部匹配 → A 记录永久残留 running → 面板 30Hz
             #   持续空转渲染）。
             rec = self._find_record(slot, tool_name, tool_id, ("running",))
             # ★ 降级兜底（review 方向）：done 带 tool_id 但精确匹配失败（start
@@ -492,7 +492,7 @@ class StateStore:
         """是否存在活跃/动画状态（running agent / running tool）需要重绘推进。
 
         PERF-2：空闲（无事件 + 无动画需求）时 ``_panel_refresh`` 短路跳过
-        全量渲染（保持动画时仍按 10Hz 渲染）。
+        全量渲染（保持动画时仍按 30Hz 渲染）。
         """
         with self._state_lock:
             for label in self._order:

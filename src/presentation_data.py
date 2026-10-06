@@ -295,7 +295,7 @@ SPINNER_PRESET_FRAMES: dict[str, str] = {
     "shark": "▐▌▐▌",
 }
 
-# ── 行内 Spinner 默认帧序列（braille：10 帧 10Hz 推进 1s 循环） ──
+# ── 行内 Spinner 默认帧序列（braille：10 帧 30Hz 推进 ~0.33s 循环） ──
 
 INLINE_SPINNER_FRAMES: str = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
 

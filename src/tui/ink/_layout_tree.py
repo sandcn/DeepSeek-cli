@@ -29,7 +29,7 @@ def layout_children(fiber: Fiber) -> list[Fiber]:
     经递归自然展开。
 
     ★ P-H2（性能）：直接 host 子节点快速路径——``_skip_function`` 对非
-    function fiber 立即返回自身，但每次调用有函数调用开销（10Hz 大组件树
+    function fiber 立即返回自身，但每次调用有函数调用开销（30Hz 大组件树
     每容器每帧重复调用）。改为：function fiber 才走 ``_skip_function``，
     普通 host 子节点直接处理（行为与 ``_skip_function`` 等价——其对 host
     节点恒返回自身）。

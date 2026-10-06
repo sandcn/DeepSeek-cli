@@ -220,7 +220,7 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
         model: AppModel 实例。
         dot_elapsed: 模型名点 FadeIn 渐显已流逝时间（BEAUTY-1，时间基）；
             >=duration 后返回呼吸色（动画结束）。
-        spinner_char: 活跃状态指示字符（BEAUTY-7：streaming 时 10Hz spinner
+        spinner_char: 活跃状态指示字符（BEAUTY-7：streaming 时 30Hz spinner
             帧；空闲为静态 ``·``）。
         reasoning_effort: 当前推理等级（low/medium/high/max）；None 或空串不显示。
 
@@ -311,11 +311,11 @@ def StatusBar(props) -> object:
     #   修复后 dot_elapsed < fade_duration 期间（含空闲）用 0.1s 桶平滑渐显，
     #   结束后回 1s 桶（与 docstring 声明一致）。
     # BEAUTY-7：status_active 期间恒用 0.1s 桶——streaming spinner + 模型点
-    #   呼吸以 10Hz 平滑推进（流式期间帧率本就 10Hz，零额外渲染成本）；
+    #   呼吸以 30Hz 平滑推进（流式期间帧率本就 30Hz，零额外渲染成本）；
     #   空闲非渐显期回 1s 桶（静态显示，CPU 保持低占用）。
     if st_active:
         time_dep = int(time.monotonic() / 0.1)
-        # BEAUTY-7：streaming spinner 帧（10Hz）——spinner_frame 返回帧索引，
+        # BEAUTY-7：streaming spinner 帧（30Hz）——spinner_frame 返回帧索引，
         # 必须经 _SPINNER_FRAMES 查表取字符（修复前直接格式化索引 → 显示数字
         # 0-9 循环）。
         spinner_char = _fx.spinner_char()

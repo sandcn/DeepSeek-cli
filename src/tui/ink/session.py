@@ -74,7 +74,7 @@ _CONTENT_COMMANDS = CONTENT_COMMANDS
 _RECOVER_STABLE_SECS = 60.0
 
 # ── 渲染线程自适应等待参数（★ 单帧耗时无上界约束） ──────────────
-# 约束（2026-08-19）：渲染线程为 10Hz 循环，**单帧执行没有耗时上限**——
+# 约束（2026-08-19）：渲染线程为 30Hz 循环，**单帧执行没有耗时上限**——
 # 大量上文重放/超长 markdown 渲染一帧可达数秒以上。所有「等待渲染线程」
 # 的逻辑不得把慢帧误判为超时/挂起：
 #   - 帧号推进（``_frame_seq``）或帧执行中（``_frame_active``）= 有进展，
@@ -205,7 +205,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   ``_poll_terminal_size`` 重探尺寸的节流时间戳（monotonic）。
         self._last_size_poll: float = 0.0
         # ★ 脏标记：模型有变更（命令应用/输入/重绘请求）时置位，
-        #   空闲时跳过渲染（避免 10Hz 全量重建整棵树 → CPU 100%）
+        #   空闲时跳过渲染（避免 30Hz 全量重建整棵树 → CPU 100%）
         self._dirty: bool = False
         # ★ 帧执行标记（2026-08-19，单帧耗时无上界约束）：``_render_frame``
         #   进入置位 / finally 复位——等待方据此区分「正在执行超长单帧」
@@ -459,7 +459,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   随后 DRAIN/RENDER 阶段再渲染一帧（双帧开销），且嵌套渲染期间
         #   ``_on_input_router`` 会替换 dispatcher 正在使用的 router，且不经
         #   输出锁（``request_bottom_redraw`` 的同步渲染有锁保护，本处没有）。
-        #   改为置脏标记交由本帧 RENDER 阶段统一渲染（全程 10Hz 保证渲染
+        #   改为置脏标记交由本帧 RENDER 阶段统一渲染（全程 30Hz 保证渲染
         #   发生）；非渲染线程调用保持同步渲染语义（外部 API 期望立即重建）。
         if threading.current_thread() is self._render_thread:
             self._dirty = True
@@ -473,7 +473,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             #   器 prev 软重置为空帧），而重建空文档失败时屏幕保持空白；渲染
             #   线程下一拍 ``_should_render`` 因无脏标记（无命令/无 force/无
             #   动画）跳过渲染 → 屏幕空白且空闲时永不重绘。补置 ``_dirty`` 后
-            #   下一 10Hz 拍重试重建（配合 _drain_queue 既有指数退避防刷屏）。
+            #   下一 30Hz 拍重试重建（配合 _drain_queue 既有指数退避防刷屏）。
             self._dirty = True
             _logger.debug("clear_screen 重建空文档异常", exc_info=True)
 
@@ -543,7 +543,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         ``SelectInput`` use_input handler + ``use_modal`` 吞噬）仍会把用户的
         Enter **消费掉**（router 返回 True → InputDispatcher 跳过 ``_enter()``
         → prefill 不提交 →「按回车没反应，要再按一次」）。窗口时长 =
-        清理时刻 → 渲染线程完成下一帧（10Hz 节流 + 帧耗时——大量上文重放
+        清理时刻 → 渲染线程完成下一帧（30Hz 节流 + 帧耗时——大量上文重放
         时一帧 100ms~1s+）——「很多上文时大概率复现，1 条消息快速连按也
         会命中」。
 
@@ -586,7 +586,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             target = self._frame_seq + 2
             base_seq = self._frame_seq
             self._frame_flush_waiters.append((target, ev))
-        # force 唤醒：设置重绘请求（跳过 10Hz 节流）+ 命令事件（提前退出
+        # force 唤醒：设置重绘请求（跳过 30Hz 节流）+ 命令事件（提前退出
         # 节流等待），渲染线程尽快完成目标帧。
         self._bottom_redraw_requested.set()
         self._dirty = True
@@ -1007,13 +1007,13 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         # ★ PERF-8（防忙循环）：下次允许唤醒的时刻（monotonic）——subagent
         #   执行工具期间高频命令（ToolCountInc/DecCmd、SUBAGENT_FRAME、
         #   ParseInfoCmd 等）持续 ``_cmd_event.set()``：原 ``_cmd_event.wait
-        #   (timeout=0.1)`` 被 set 立即唤醒 → 渲染循环失去 10Hz 节流变成
+        #   (timeout=0.1)`` 被 set 立即唤醒 → 渲染循环失去 30Hz 节流变成
         #   忙循环（每轮循环固定开销 × 高频唤醒 → CPU 100%，实测 5ms 事件
         #   频率下 174Hz/27% CPU）。修复：节流时刻跨循环持久，wait 即使被
         #   唤醒也等到 ``next_loop``——高频命令在队列中批处理（每
         #   render_interval 一轮，堆积 ≤ max_batch_size），渲染循环稳定
-        #   10Hz；用户输入/关键命令仍经 ``_drain_queue`` 每轮处理（延迟
-        #   ≤ render_interval，与空闲 10Hz 行为一致）。
+        #   30Hz；用户输入/关键命令仍经 ``_drain_queue`` 每轮处理（延迟
+        #   ≤ render_interval，与空闲 30Hz 行为一致）。
         next_loop: float = 0.0
         try:
             while self._render_running:
@@ -1035,11 +1035,11 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                         #   等待，本拍立即处理渲染——修复前 prefill 注入仅置位
                         #   标志，渲染线程被节流（next_loop）拦截且 _should_render
                         #   的 interval 检查可能因 EditmsgPlugin flush 刚渲染过而
-                        #   不满足 → 输入区延迟 0.1~0.5s 才显示 prefill（用户感知
+                        #   不满足 → 输入区延迟 0.03~0.17s 才显示 prefill（用户感知
                         #   「编辑后没立即显示，要再按一次回车才刷新」）。
                         #   高频命令（ToolCountInc/DecCmd、SUBAGENT_FRAME、
                         #   ParseInfoCmd 等）不置位 _bottom_redraw_requested，仍走
-                        #   既有 10Hz 批处理（PERF-8 忙循环防护不回归）。
+                        #   既有 30Hz 批处理（PERF-8 忙循环防护不回归）。
                         if self._bottom_redraw_requested.is_set():
                             break
                 next_loop = max(next_loop, time.monotonic()) + self._config.render_interval
@@ -1054,7 +1054,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                     #   EditmsgPlugin 的 clear/display/write 命令）期间注入的
                     #   force 请求若在本行被无条件 clear，渲染线程下一轮循环进入
                     #   节流等待时 ``_cmd_event.wait`` 不会立即返回（事件已 clear），
-                    #   prefill 延迟到下一 10Hz 拍才渲染（输入区 0.1~0.5s 空白）。
+                    #   prefill 延迟到下一 30Hz 拍才渲染（输入区 0.03~0.17s 空白）。
                     #   保持唤醒 → 下一轮循环 force 提前退出节流等待（上方）→
                     #   _drain_queue → _should_render（force 跳过 interval）→
                     #   立即渲染 prefill。
@@ -1170,16 +1170,16 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                     except Exception:
                         # P3-16（设计说明）：无 boundary 异常端到端不触发崩溃
                         # 恢复——reconciler 层对无边界异常 re-raise 保留，但
-                        # session 层在此吞掉仅记 warning：**单帧失败 + 10Hz
+                        # session 层在此吞掉仅记 warning：**单帧失败 + 30Hz
                         # 重试**（render 线程不崩溃不重启）。reconciler.
                         # _handle_render_crash 崩溃恢复仅服务 render 循环级异常
                         # （队列/输入/面板回调等）。
-                        # P7（方向2）：持久性渲染异常从 10Hz 无限重试降为指数
+                        # P7（方向2）：持久性渲染异常从 30Hz 无限重试降为指数
                         # 退避（0.1→0.2→0.4→…→1.0 封顶，≤1Hz），日志刷屏缓解；
-                        # 正常路径无 sleep（渲染帧率 10Hz 不降低）。
+                        # 正常路径无 sleep（渲染帧率 30Hz 不降低）。
                         # 方向1（渲染失败帧不重试修复）：_should_render 已清
                         # _dirty，失败帧若不补置脏标记下一拍不会重试（仅退避
-                        # 等待）——补置 _dirty = True，下一 10Hz 拍重试，配合
+                        # 等待）——补置 _dirty = True，下一 30Hz 拍重试，配合
                         # 既有指数退避防刷屏（退避封顶 1s，不会无限重试）。
                         self._consecutive_render_failures += 1
                         delay = min(0.1 * 2 ** (self._consecutive_render_failures - 1), 1.0)
@@ -1309,7 +1309,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         return None
 
     def _needs_animation(self) -> bool:
-        """是否存在活跃动画状态需要持续 10Hz 渲染（时间基动画推进）。
+        """是否存在活跃动画状态需要持续 30Hz 渲染（时间基动画推进）。
 
         工具运行（开放工具卡边框/● 呼吸）、流式生成（status_active → 状态栏
         spinner/模型名呼吸/输入区占位动画）、解析进行中（parse_line spinner）
@@ -1320,7 +1320,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         与 ``_subagent_panel._needs_animation``（面板控制器经 SUBAGENT_FRAME
         命令自行驱动渲染循环）互补：本方法覆盖主 agent 侧动画状态。
 
-        ★ 2026-08-16 需求变更：渲染循环已改为**全程 10Hz**（空闲也持续渲染，
+        ★ 2026-08-16 需求变更：渲染循环已改为**全程 30Hz**（空闲也持续渲染，
         见 ``_should_render``），本方法不再决定是否跳过渲染——保留用于标记
         活跃动画状态（置脏），以及对时间基动画语义的探测（其他模块注释引用）。
 
@@ -1339,16 +1339,16 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             return True
         # ★ 补全弹窗（2026-08-05 修复，与 user_select 弹窗同）：不驱动动画
         #   循环——弹窗已静态化（标题/高亮/说明/提示均为静态色，见
-        #   input_area.py _build_popup_lines），无需 10Hz 渲染推进呼吸。修复前
-        #   补全弹窗激活持续 10Hz 渲染，每帧重写弹窗行（Termux 等终端闪烁）。
+        #   input_area.py _build_popup_lines），无需 30Hz 渲染推进呼吸。修复前
+        #   补全弹窗激活持续 30Hz 渲染，每帧重写弹窗行（Termux 等终端闪烁）。
         #   弹窗内容仅随打字（items 变化）/导航（selected 变化）更新，经
         #   事件驱动渲染。
         # ★ 反向历史搜索（2026-08-05 修复，与弹窗同）：不驱动动画循环——
-        #   搜索行 query 已静态化（见 input_area.py _build_lines），无需 10Hz
-        #   渲染推进呼吸。修复前搜索激活持续 10Hz 渲染（Termux 等终端闪烁）；
+        #   搜索行 query 已静态化（见 input_area.py _build_lines），无需 30Hz
+        #   渲染推进呼吸。修复前搜索激活持续 30Hz 渲染（Termux 等终端闪烁）；
         #   搜索行内容仅随按键（query/matches 变化）更新，经事件驱动渲染。
         # ★ useAnimation 共享驱动：存在活跃动画订阅时视为有动画需求（标记
-        #   脏；渲染循环为全程 10Hz，本方法不决定是否渲染）。
+        #   脏；渲染循环为全程 30Hz，本方法不决定是否渲染）。
         try:
             if _hooks.has_active_animations():
                 return True
@@ -1357,19 +1357,19 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         return False
 
     def _should_render(self, changed: bool) -> bool:
-        """是否需渲染本帧：全程 10Hz 拍渲染（空闲也持续刷新）。
+        """是否需渲染本帧：全程 30Hz 拍渲染（空闲也持续刷新）。
 
         事件（命令/重绘请求）标记脏并唤醒循环，但不立即渲染——与下一个
-        10Hz 拍一起渲染（批处理）。
+        30Hz 拍一起渲染（批处理）。
 
-        ★ 全程 10Hz（2026-08-16 需求变更）：移除原先「空闲（无脏）跳过渲染
+        ★ 全程 30Hz（2026-08-16 需求变更）：移除原先「空闲（无脏）跳过渲染
         （CPU ~0）」短路——**没有流式输出（等待用户输入/空闲）期间 TUI 也
-        以每秒 10Hz 刷新**。组件树大量缓存下无变化帧 diff 零输出（仅光标
+        以每秒 30Hz 刷新**。组件树大量缓存下无变化帧 diff 零输出（仅光标
         定位），CPU 开销可控；空闲时状态栏/输入区等时间基元素同样平滑推进。
 
         ★ 立即渲染：force（_bottom_redraw_requested，如 /editmsg prefill 注入）
         时跳过 interval 节流——用户可感知的 UI 更新即时渲染；高频命令
-        （工具状态）不走 force，10Hz 批处理语义不变。
+        （工具状态）不走 force，30Hz 批处理语义不变。
 
         Returns:
             True — 本拍渲染（render_interval 已到期或 force）。
@@ -1377,18 +1377,18 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         now = time.monotonic()
         # ★ TOCTOU 说明（review 方向，已知权衡）：force 读-清两步非原子——
         #   ``is_set()`` 与 ``clear()`` 之间并发 set 的 force 会被本次 clear
-        #   吞掉（该请求降级为下一 10Hz 拍渲染，延迟 ≤ render_interval 0.1s，
+        #   吞掉（该请求降级为下一 30Hz 拍渲染，延迟 ≤ render_interval（1/30s），
         #   用户不可感知）。原子化需 Condition/锁，热路径成本不值——窗口内
-        #   丢失的 force 语义由 10Hz 全程渲染兜底。
+        #   丢失的 force 语义由 30Hz 全程渲染兜底。
         force = self._bottom_redraw_requested.is_set()
         self._bottom_redraw_requested.clear()
         if changed or force:
             self._dirty = True  # 本批命令已应用 / 底部重绘请求 → 标记脏
         # ★ 活跃动画状态 → 置脏（语义保留：有动画需求时标记 dirty；渲染决定
-        #   已不依赖 dirty——全程 10Hz 渲染，见上）。
+        #   已不依赖 dirty——全程 30Hz 渲染，见上）。
         if not self._dirty and self._needs_animation():
             self._dirty = True
-        # ★ 全程 10Hz：空闲也按 render_interval 渲染（移除空闲跳过短路）。
+        # ★ 全程 30Hz：空闲也按 render_interval 渲染（移除空闲跳过短路）。
         if now - self._last_bottom_redraw >= self._config.render_interval or force:
             self._dirty = False
             self._last_bottom_redraw = now
