@@ -46,10 +46,13 @@ class Run:
 class AnsiLine:
     """一行输出（Run 序列）。"""
 
-    __slots__ = ("runs",)
+    __slots__ = ("runs", "_esc_checked")
 
     def __init__(self, runs: list[Run] | None = None) -> None:
         self.runs: list[Run] = list(runs) if runs else []
+        # ANSI 消毒缓存标记：True 表示已确认本行（当前内容）不含原始转义序列，
+        # 消毒路径可直接跳过扫描。内容经 append/append_run 修改时重置。
+        self._esc_checked = False
 
     @classmethod
     def of(cls, text: str, style: Style | None = None) -> "AnsiLine":
@@ -58,6 +61,7 @@ class AnsiLine:
     def append(self, text: str, style: Style | None = None) -> None:
         if not text:
             return
+        self._esc_checked = False
         if self.runs and self.runs[-1].style == style:
             self.runs[-1] = Run(self.runs[-1].text + text, style)
             return

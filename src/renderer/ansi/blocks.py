@@ -92,6 +92,18 @@ def render_paragraph(token) -> list[AnsiLine]:
     return lines
 
 
+def render_paragraph_line(text: str) -> AnsiLine:
+    """段落**单行**渲染（行级增量预览复用；调用方保证无 ``\\n``）。
+
+    ``render_paragraph`` 整段解析行内标记后按软换行拆行；单行输入时二者
+    等价——行级渲染便于流式预览按行缓存（见 ``LinePreviewCache``）。
+    """
+    line = AnsiLine()
+    for run in render_inline(text):
+        line.append_run(run)
+    return line
+
+
 # ── 列表 ─────────────────────────────────────────────
 
 
@@ -143,14 +155,17 @@ def render_definition_item(token) -> list[AnsiLine]:
 
 def render_blockquote(token, depth: int = 0) -> list[AnsiLine]:
     content = token.content if hasattr(token, "content") else ""
-    lines: list[AnsiLine] = []
-    for i, seg in enumerate(str(content).split("\n")):
-        prefix = "\u2502 " * max(1, depth + 1)
-        line = AnsiLine.of(prefix, _STYLE_BQ)
-        for run in render_inline(seg):
-            line.append_run(run)
-        lines.append(line)
-    return lines
+    return [render_blockquote_line(seg, depth)
+            for seg in str(content).split("\n")]
+
+
+def render_blockquote_line(text: str, depth: int = 0) -> AnsiLine:
+    """引用**单行**渲染（行级增量预览复用；调用方保证无 ``\\n``）。"""
+    prefix = "\u2502 " * max(1, depth + 1)
+    line = AnsiLine.of(prefix, _STYLE_BQ)
+    for run in render_inline(text):
+        line.append_run(run)
+    return line
 
 
 # ── Admonition ───────────────────────────────────────
@@ -158,20 +173,30 @@ def render_blockquote(token, depth: int = 0) -> list[AnsiLine]:
 
 def render_admonition(token) -> list[AnsiLine]:
     atype = str(token.meta.get("type", "NOTE")).upper()
-    color = _ADMONITION_COLORS.get(atype, _STYLE_LIST_BULLET)
-    lines: list[AnsiLine] = []
     # 首行：标注标签 + 正文首行
     parts = str(token.content).split("\n")
-    head = AnsiLine.of(f"\u25a0 {atype} ", color)
-    for run in render_inline(parts[0]):
-        head.append_run(run)
-    lines.append(head)
+    lines: list[AnsiLine] = [render_admonition_head(atype, parts[0])]
     for seg in parts[1:]:
-        body = AnsiLine.of("    ", _STYLE_BQ)
-        for run in render_inline(seg):
-            body.append_run(run)
-        lines.append(body)
+        lines.append(render_admonition_body(seg))
     return lines
+
+
+def render_admonition_head(atype: str, text: str) -> AnsiLine:
+    """告示首行（``■ TYPE 正文``；行级增量预览复用）。"""
+    atype = str(atype).upper()
+    color = _ADMONITION_COLORS.get(atype, _STYLE_LIST_BULLET)
+    head = AnsiLine.of(f"\u25a0 {atype} ", color)
+    for run in render_inline(text):
+        head.append_run(run)
+    return head
+
+
+def render_admonition_body(text: str) -> AnsiLine:
+    """告示正文行（缩进；行级增量预览复用）。"""
+    body = AnsiLine.of("    ", _STYLE_BQ)
+    for run in render_inline(text):
+        body.append_run(run)
+    return body
 
 
 # ── 折叠块（DETAILS） ────────────────────────────────
@@ -232,10 +257,14 @@ __all__ = [
     "render_heading",
     "render_hr",
     "render_paragraph",
+    "render_paragraph_line",
     "render_list_item",
     "render_definition_item",
     "render_blockquote",
+    "render_blockquote_line",
     "render_admonition",
+    "render_admonition_head",
+    "render_admonition_body",
     "render_details",
     "render_fenced_div",
     "render_empty_line",

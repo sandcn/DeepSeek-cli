@@ -112,6 +112,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
         # 自动关闭 fence 连续匹配计数器（降低误判）
         self._auto_close_streak: int = 0
+        # 自动关闭 fence 连续匹配行的结构类型集合（要求结构多样，避免
+        # 代码块内连续同类型行——如多行 ``# 注释``——被误判为 Markdown）
+        self._auto_close_kinds: set[str] = set()
 
         # 预扫描位置
         self._prescan_pos: int = 0
@@ -139,23 +142,6 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._def_cont_buffer.clear()
         self._list_indents.clear()
 
-    def _reset_for_buffer_trim(self):
-        """缓冲区裁剪后重置所有可能残留的状态。"""
-        self._reset_normal_state()
-        self._preview_code_lines.clear()
-        self._preview_code_dropped = 0
-        self._table_rows.clear()
-        self._table_alignments.clear()
-        self._deferred_fence = None
-        self._bq_active = False
-        self._bq_depth_stack.clear()
-        self._bq_in_recursion = 0
-        self._auto_close_streak = 0
-        self._prescan_pos = 0
-        self._last_token_type = None
-        self._last_list_indent = -1
-        self._last_list_content_col = -1
-
     # ═══════════════════════════════════════════════════════════
     # 公共接口
     # ═══════════════════════════════════════════════════════════
@@ -164,34 +150,6 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         """输入文本片段，返回已解析的 Token。"""
         tokens: list[Token] = []
         self._buffer += text
-
-        # 缓冲区安全裁剪
-        if len(self._buffer) > self._MAX_BUFFER_SIZE:
-            if self._state != _State.NORMAL:
-                self._flush_block(tokens)
-                if self._state != _State.NORMAL:
-                    self._state = _State.NORMAL
-            half = len(self._buffer) // 2
-            cutoff = self._buffer.find('\n', half)
-            if cutoff >= 0:
-                self._buffer = self._buffer[cutoff + 1:]
-            else:
-                cutoff = self._buffer.rfind('\n', 0, half)
-                if cutoff >= 0:
-                    self._buffer = self._buffer[cutoff + 1:]
-                else:
-                    cutoff = self._MAX_BUFFER_SIZE
-                    self._buffer = self._buffer[-cutoff:]
-            if self._bq_active:
-                self._bq_in_recursion = 0
-                self._emit_blockquote_close(tokens)
-            self._flush_paragraph(tokens)
-            if self._deferred_fence is not None:
-                fence = self._deferred_fence
-                self._deferred_fence = None
-                fence['lang'] = 'text'
-                self._start_code_fence(fence, tokens)
-            self._reset_for_buffer_trim()
 
         # 预扫描参考链接和脚注
         self._prescan_refs()
@@ -219,6 +177,28 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     self._handle_paragraph_line(line, tokens)
                 except Exception:
                     _logger.debug("异常行降级段落失败", exc_info=True)
+
+        # ★ 超长无换行尾部安全消化（替代原「裁剪一半 + 重置状态」）：
+        #   逐行循环只消费含 \n 的完整行，循环结束后残留的是模型正在输出的
+        #   未换行尾部；单行超限（> _MAX_BUFFER_SIZE）时按当前状态作为一行
+        #   完整消化——不丢内容。原实现在此处裁剪缓冲一半并
+        #   ``_reset_for_buffer_trim``（丢弃未处理内容 + 清空解析状态），极端
+        #   超长输入下内容丢失/错乱。
+        if len(self._buffer) > self._MAX_BUFFER_SIZE:
+            line = self._buffer + '\n'
+            self._buffer = ''
+            try:
+                if self._state != _State.NORMAL:
+                    self._feed_block_line(line, tokens)
+                else:
+                    self._parse_normal_line(line, tokens)
+            except Exception:
+                _logger.debug("超长尾部消化异常，降级为段落", exc_info=True)
+                self._state = _State.NORMAL
+                try:
+                    self._handle_paragraph_line(line, tokens)
+                except Exception:
+                    _logger.debug("超长尾部降级段落失败", exc_info=True)
 
         # 每次 feed 结束后重置预扫描位置，下次 feed 从头扫描
         self._prescan_pos = 0
@@ -308,6 +288,43 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return list(lines)
         return lines[-limit:]
 
+    def _preview_table_rows(self, rows: list[list[str]]) -> list[list[str]]:
+        """表格预览行（超 ``_PREVIEW_MAX_LINES`` 时保留表头 + 最近行）。
+
+        表格预览每次 write 都整表重渲染（列宽/框线依赖全部行），无上限时
+        成本随行数线性增长、累计 O(n²)（与段落/代码块的 ``_preview_tail``
+        有界化不一致）。截断后成本有界：表头（列定义）始终保留，数据行只取
+        最近 ``limit-1`` 行。返回浅拷贝外层列表——行内容只读，渲染层不修改。
+        """
+        limit = self._PREVIEW_MAX_LINES
+        if len(rows) <= limit:
+            return list(rows)
+        keep = max(1, limit - 1)
+        return [rows[0]] + rows[-keep:]
+
+    @staticmethod
+    def _preview_pending_single_row(row: str) -> list[Token]:
+        """流式表格缓冲的单行**预览** Token。
+
+        仅表头行到达（分隔行未到）时，前导 pipe 且 ≥2 列的 ``| a | b |`` 按
+        **表格形态**预览——避免「字面 pipe → 表格框线」的形态跳变（Markdown
+        中此类单行绝大多数是表格的一部分）。提交路径（``_emit_pending_table``）
+        保持段落语义不变：无分隔行的单行严格按 GFM 不构成表格。
+
+        注意：若该单行最终未成为表格（如表格结束后的列数超出残留行），预览会
+        从表格形态回退为段落——这是流式「信息不足」的固有取舍，仅在罕见路径
+        发生。
+        """
+        if row.lstrip().startswith('|'):
+            cells = _parse_table_row(row)
+            if len(cells) >= 2:
+                return [Token(TokenType.TABLE, "", {
+                    "rows": [cells],
+                    "alignments": ['left'] * len(cells),
+                    "preview": True,
+                })]
+        return [Token(TokenType.PARAGRAPH, row, {"preview": True})]
+
     def _peek_incomplete_tail(self) -> str:
         """返回尚未解析的尾部不完整行文本（无换行残留；无内容时为空串）。
 
@@ -348,20 +365,11 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # 代码块预览行不做截断：渲染层按行增量高亮缓存（只渲染新增行），
         # 显示侧再取尾部若干行并给出省略提示——避免每帧重渲染整段。
         if st == _State.CODE_FENCE:
-            out.append(Token(TokenType.CODE_BLOCK, "\n".join(
-                self._preview_code_lines + self._preview_code_tail_lines(tail)), {
-                "lang": self._block_lang, "attrs": self._block_attrs,
-                "title": self._block_title, "preview": True, "closed": False,
-                "preview_dropped": self._preview_code_dropped,
-            }))
+            out.append(self._make_code_preview_token(
+                self._block_lang, self._block_attrs, self._block_title, tail))
             return out
         if st == _State.INDENTED_CODE:
-            out.append(Token(TokenType.CODE_BLOCK, "\n".join(
-                self._preview_code_lines + self._preview_code_tail_lines(tail)), {
-                "lang": "text", "attrs": "", "title": "",
-                "preview": True, "closed": False,
-                "preview_dropped": self._preview_code_dropped,
-            }))
+            out.append(self._make_code_preview_token("text", "", "", tail))
             return out
         if st == _State.MERMAID_BLOCK:
             # 预览与提交（``_emit_mermaid_block`` 的 ``''.join(...).strip()``）
@@ -405,7 +413,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if st == _State.TABLE_ACTIVE:
             if self._table_rows and self._table_alignments:
                 out.append(Token(TokenType.TABLE, "", {
-                    "rows": [list(r) for r in self._table_rows],
+                    "rows": self._preview_table_rows(self._table_rows),
                     "alignments": list(self._table_alignments),
                     "preview": True,
                 }))
@@ -467,11 +475,11 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     (r + [''] * num_cols)[:num_cols] for r in data_rows
                 ]
                 out.append(Token(TokenType.TABLE, "", {
-                    "rows": rows, "alignments": aligns, "preview": True,
+                    "rows": self._preview_table_rows(rows),
+                    "alignments": aligns, "preview": True,
                 }))
             else:
-                out.append(Token(TokenType.PARAGRAPH, rows_src[0],
-                                 {"preview": True}))
+                out.extend(self._preview_pending_single_row(rows_src[0]))
             return out
 
         if self._pending_lines or tail_lines:
@@ -534,16 +542,29 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
     def _classify_preview_line(self, line: str) -> list[Token] | None:
         """把未换行的活动行按块级语法分类为预览 Token（无副作用）。
 
-        仅覆盖「行首标记即可确定」的语法：列表续行 / 引用 / 分隔线 / 代码
-        围栏 / 标题 / 无序列表 / 有序列表。检测复用主解析路径的辅助函数，
-        保证预览与提交后的格式一致；任何不确定或异常情况返回 ``None``
-        （回退纯文本段落预览），且**绝不修改解析器状态**。
+        仅覆盖「行首标记即可确定」的语法：列表续行 / 引用 / 分隔线 / 缩进
+        代码 / 代码围栏 / 标题 / 无序列表 / 有序列表。检测复用主解析路径的
+        辅助函数，保证预览与提交后的格式一致；任何不确定或异常情况返回
+        ``None``（回退纯文本段落预览），且**绝不修改解析器状态**。
         """
         try:
             stripped = _strip_left(line).rstrip()
             if not stripped:
                 return None
             first = stripped[0]
+
+            # 缩进代码块（4 空格 / tab 开头，且不在列表/告示上下文）——与
+            # ``_parse_normal_line`` 的缩进代码检测条件一致：预览为代码块，
+            # 避免「纯文本预览 → 提交后变带围栏代码块」的形态跳变。
+            if (line[:4] == '    ' or (line and line[0] == '\t')) \
+                    and not self._in_admonition \
+                    and not (self._list_indents
+                             or self._last_token_type is TokenType.LIST_ITEM):
+                content = line[4:] if line[:4] == '    ' else line[1:]
+                return [Token(TokenType.CODE_BLOCK, content.rstrip('\n'), {
+                    "lang": "text", "attrs": "", "title": "",
+                    "preview": True, "closed": False,
+                })]
 
             # 列表续行（上一 Token 为 LIST_ITEM 且缩进匹配）
             if (self._last_token_type is TokenType.LIST_ITEM
@@ -575,8 +596,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                           {"depth": depth, "preview": True}),
                 ]
 
-            # 分隔线（仅由同一字符与空格组成且 ≥3）
-            if first in '-*_':
+            # 分隔线（仅由同一字符与空格组成且 ≥3）——``=`` 亦为分隔线字符
+            # （单独出现时；前一行仅一行时已在上游按 Setext 标题处理）
+            if first in '-*_=':
                 n = 0
                 ok = True
                 for c in stripped:
@@ -671,6 +693,26 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 and flen >= self._block_fence_len):
             return []
         return [tail]
+
+    def _make_code_preview_token(self, lang: str, attrs: str, title: str,
+                                 tail: str) -> Token:
+        """构造代码块预览 Token——携带**行列表**（``meta["lines"]``）。
+
+        修复前以 ``"\\n".join(...)`` 传整段字符串，渲染层再 ``split("\\n")``
+        还原行——每帧对（可能数千行的）内容做一次 O(全文) 的 join + split 往返。
+        改为直接传行列表（尾部活动行为空时零拷贝复用内部缓冲），渲染层按行
+        增量高亮，省去往返。
+        """
+        lines = self._preview_code_lines
+        tail_lines = self._preview_code_tail_lines(tail)
+        if tail_lines:
+            lines = lines + tail_lines
+        return Token(TokenType.CODE_BLOCK, "", {
+            "lang": lang, "attrs": attrs, "title": title,
+            "preview": True, "closed": False,
+            "preview_dropped": self._preview_code_dropped,
+            "lines": lines,
+        })
 
     def _preview_block_tail_lines(self, st, tail: str) -> list[str]:
         """Mermaid/数学块预览的未换行活动行（结束定界符不纳入内容）。"""

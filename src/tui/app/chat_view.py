@@ -183,6 +183,11 @@ def _welcome_elements(model, width: int) -> list:
 #: 提交阈值）。
 _LIVE_TAIL_LINES = 64
 
+#: 未闭合块预览行的 styled 缓存容量上限。预览行随每次 write 整体替换，缓存
+#: 键为 (AnsiLine 对象, width)；渲染层对未变化的历史行复用同一对象故可命中，
+#: 活动行每次新建（键不命中，不计入膨胀）。超上限整体清空，避免键累积。
+_PREVIEW_STYLED_CACHE_MAX = 1024
+
 
 def _to_styled_runs(line) -> list[StyledRun]:
     """AnsiLine → ink StyledRun 列表（Run.style 直接复用）。"""
@@ -260,23 +265,39 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
                 runs = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING)) for r in runs]
             open_cache[line] = runs
         out.append(runs)
-    # 未闭合块预览行（preview_lines 每次整体替换，行对象每次新建）——
-    # 不进 open_cache（避免缓存随预览替换无限累积）。与 committed 行同样按
+    # 未闭合块预览行（preview_lines 每次整体替换）——与 committed 行同样按
     # 宽度预 wrap（同一 ``wrap_line`` 真源）：修复前预览行交给 ink 布局换行，
     # 同一内容在「预览→提交」过渡时换行点可能跳变（表格/框线错位）。
+    # ★ 预览 styled 缓存：键为 (AnsiLine 对象, width)。渲染层 ``LinePreviewCache``
+    #   对未变化的历史行复用**同一 AnsiLine 对象**，故此处按对象身份可命中，
+    #   避免每帧对整段历史预览行重做 wrap + ``_to_styled_runs``（大预览每帧
+    #   O(预览行数×宽度) 的样式重建）。活动行每次为新对象（键不命中）。
+    #   缓存容量有界，超限整体清空，避免预览替换导致键无限累积。
+    pcache = getattr(block, "_preview_styled_cache", None)
+    if pcache is None:
+        pcache = {}
+        block._preview_styled_cache = pcache
+    elif len(pcache) > _PREVIEW_STYLED_CACHE_MAX:
+        pcache.clear()
     for line in preview_lines:
-        src_lines = [line]
-        if width and width > 0 and line.width > width:
-            try:
-                from src.renderer.ansi.helpers import wrap_line
-                src_lines = list(wrap_line(line, width))
-            except Exception:
-                src_lines = [line]
-        for wrapped in src_lines:
-            runs = _to_styled_runs(wrapped)
-            if kind == "reasoning" and runs:
-                runs = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING)) for r in runs]
-            out.append(runs)
+        key = (line, width)
+        entry = pcache.get(key)
+        if entry is None:
+            src_lines = [line]
+            if width and width > 0 and line.width > width:
+                try:
+                    from src.renderer.ansi.helpers import wrap_line
+                    src_lines = list(wrap_line(line, width))
+                except Exception:
+                    src_lines = [line]
+            entry = []
+            for wrapped in src_lines:
+                runs = _to_styled_runs(wrapped)
+                if kind == "reasoning" and runs:
+                    runs = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING)) for r in runs]
+                entry.append(runs)
+            pcache[key] = entry
+        out.extend(entry)
     return out
 
 

@@ -73,7 +73,16 @@ def _color_ansi(color: ColorValue, prefix: str) -> str:
     return f"\033[{prefix};5;{color}m"
 
 def rgb_to_256(r: int, g: int, b: int) -> int:
-    """RGB → 最接近的 xterm-256 色号（自包含实现）。"""
+    """RGB → 最接近的 xterm-256 色号（自包含实现，带结果缓存）。
+
+    代码高亮对每个 token 做一次 RGB→256 转换，线性遍历 256 色板；同一主题
+    的颜色集合有限，缓存后热路径仅一次 dict 查找（流式预览逐行高亮的高频
+    调用点显著受益）。
+    """
+    key = (r, g, b)
+    cached = _256_CACHE.get(key)
+    if cached is not None:
+        return cached
     palette = _XTERM_PALETTE
     best_idx = 0
     best_dist = float("inf")
@@ -85,7 +94,12 @@ def rgb_to_256(r: int, g: int, b: int) -> int:
         if dist < best_dist:
             best_dist = dist
             best_idx = idx
+    _256_CACHE[key] = best_idx
     return best_idx
+
+
+#: RGB → 256 色号缓存（颜色集合有限，避免每次线性搜索色板）
+_256_CACHE: dict = {}
 
 def _build_palette() -> list[tuple[int, int, int]]:
     palette: list[tuple[int, int, int]] = [

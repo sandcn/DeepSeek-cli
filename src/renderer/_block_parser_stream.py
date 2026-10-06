@@ -25,6 +25,14 @@ from ._block_helpers import (
 
 _logger = logging.getLogger(__name__)
 
+# 自动关闭 fence 启发式阈值（text/无语言代码块「围栏漏闭合」容错）
+_AUTO_CLOSE_MIN_STREAK = 6
+"""连续呈现 Markdown 块级结构的行数阈值。"""
+
+_AUTO_CLOSE_MIN_KINDS = 2
+"""连续匹配行所需的**结构类型**种数（标题/分隔线/表格分隔）——要求结构
+多样，避免代码块内连续同类型行（如多行 ``# 注释``）被误判为块外 Markdown。"""
+
 
 class _BlockParserStreamMixin:
     """非 NORMAL 状态行处理 + 块级语法尝试方法群（详见模块 docstring）。"""
@@ -153,20 +161,18 @@ class _BlockParserStreamMixin:
 
     # ── 代码 fence 块内 ──────────────────────────────────
 
-    def _should_auto_close_fence(self, stripped: str, line: str = '') -> bool:
-        if not stripped:
-            self._auto_close_streak = 0
-            return False
-        if self._block_lang.lower() not in ('text', 'txt', 'plain', ''):
-            self._auto_close_streak = 0
-            return False
-        if line and (line[0] in ' \t'):
-            self._auto_close_streak = 0
-            return False
-        if stripped[0] not in '#-*_|':
-            self._auto_close_streak = 0
-            return False
-        matched = False
+    def _reset_auto_close(self) -> None:
+        """重置自动关闭 fence 的连续匹配状态（计数器 + 结构类型集合）。"""
+        self._auto_close_streak = 0
+        self._auto_close_kinds.clear()
+
+    @staticmethod
+    def _auto_close_line_kind(stripped: str) -> str | None:
+        """判断行是否呈现 Markdown 块级结构，返回结构类型名（否则 None）。
+
+        仅服务 ``_should_auto_close_fence`` 的「围栏漏闭合」启发式；类型名
+        用于统计结构多样性。
+        """
         if len(stripped) >= 3 and stripped[0] == '#':
             level = 0
             for ch in stripped:
@@ -175,8 +181,8 @@ class _BlockParserStreamMixin:
                 else:
                     break
             if 2 <= level <= 6 and level < len(stripped) and stripped[level] == ' ':
-                matched = True
-        if not matched and len(stripped) >= 3:
+                return 'heading'
+        if len(stripped) >= 3:
             first = stripped[0]
             if first in _SETEXT_HR_CHARS:
                 only = True
@@ -185,26 +191,48 @@ class _BlockParserStreamMixin:
                         only = False
                         break
                 if only and len(stripped.replace(' ', '')) >= 3:
-                    matched = True
-        if not matched and stripped[0] == '|' and stripped.count('|') >= 2:
+                    return 'hr'
+        if stripped[0] == '|' and stripped.count('|') >= 2:
             # 只有包含分隔行模式（:- 等）才是真正的表格行，避免对含 pipe 的普通内容误触发
             if ':-' in stripped or '-:' in stripped or ':-:' in stripped:
-                matched = True
-        if matched:
-            self._auto_close_streak += 1
-            return self._auto_close_streak >= 5
-        else:
-            self._auto_close_streak = 0
+                return 'table'
+        return None
+
+    def _should_auto_close_fence(self, stripped: str, line: str = '') -> bool:
+        if not stripped:
+            self._reset_auto_close()
             return False
+        if self._block_lang.lower() not in ('text', 'txt', 'plain', ''):
+            self._reset_auto_close()
+            return False
+        if line and (line[0] in ' \t'):
+            self._reset_auto_close()
+            return False
+        if stripped[0] not in '#-*_|':
+            self._reset_auto_close()
+            return False
+        kind = self._auto_close_line_kind(stripped)
+        if kind is None:
+            self._reset_auto_close()
+            return False
+        self._auto_close_kinds.add(kind)
+        self._auto_close_streak += 1
+        # ★ 加固（降低误判）：连续匹配行数达标 **且** 结构类型多样（≥2 种）。
+        #   修复前仅计连续行数——代码块内连续 5 行同类型 Markdown 形态
+        #   （如多行 ``# 注释``、多行 ``---``）即被误判为「围栏漏闭合」，
+        #   合法代码内容被截断为块外 Markdown。多样性门槛使纯注释/纯分隔行
+        #   序列不再触发。
+        return (self._auto_close_streak >= _AUTO_CLOSE_MIN_STREAK
+                and len(self._auto_close_kinds) >= _AUTO_CLOSE_MIN_KINDS)
 
     def _feed_code_fence_line(self, line: str, stripped: str, tokens: list[Token]):
         if stripped and not (stripped[0] in '#-*_|' and len(stripped) >= 3):
-            self._auto_close_streak = 0
+            self._reset_auto_close()
 
         if self._auto_close_streak > 0 and stripped and stripped[0] == '|':
             cells = [c.strip() for c in stripped.strip('|').split('|')]
             if any(c.isalnum() for c in cells if c):
-                self._auto_close_streak = 0
+                self._reset_auto_close()
 
         if self._should_auto_close_fence(stripped, line):
             tokens.append(Token(TokenType.CODE_FENCE_CLOSE, "",
@@ -555,7 +583,7 @@ class _BlockParserStreamMixin:
         self._preview_code_lines = []
         self._preview_code_dropped = 0
         self._block_nested_fence = 0
-        self._auto_close_streak = 0
+        self._reset_auto_close()
         lang = self._block_lang
         if lang.lower() in ('mermaid',) or lang.lower().startswith('mermaid'):
             self._state = _State.MERMAID_BLOCK
