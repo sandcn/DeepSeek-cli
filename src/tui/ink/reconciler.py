@@ -25,6 +25,7 @@ from .fiber import (
     InputHook,
     PasteHook,
     FullscreenHook,
+    MouseHook,
     SyncStoreHook,
     _MISSING,
 )
@@ -109,7 +110,9 @@ def _clear_context_cache_subtree(fiber: Fiber | None) -> None:
         f = f.sibling
 
 
-def _classify_input_hooks(fiber: Fiber, input_out: list, paste_out: list | None) -> None:
+def _classify_input_hooks(
+    fiber: Fiber, input_out: list, paste_out: list | None, mouse_out: list | None = None,
+) -> None:
     """将 fiber 上的输入类 hook 按类型/active 状态分类追加到输出列表。
 
     ★ P3（review）：``_collect_render_metadata`` 与 ``_collect_input_hooks``
@@ -117,12 +120,14 @@ def _classify_input_hooks(fiber: Fiber, input_out: list, paste_out: list | None)
 
     InputHook（active 且有 handler）与 FullscreenHook（active）混入
     ``input_out``（router 构建时分离处理）；PasteHook（active 且有 handler）
-    独立进入 ``paste_out``（usePaste 独立通道）。
+    独立进入 ``paste_out``（usePaste 独立通道）；MouseHook（active 且有
+    handler）独立进入 ``mouse_out``（useMouseInput 独立通道）。
 
     Args:
         fiber: 待分类的 function fiber。
         input_out: InputHook/FullscreenHook 输出列表。
         paste_out: PasteHook 输出列表；None 时忽略 PasteHook。
+        mouse_out: MouseHook 输出列表；None 时忽略 MouseHook。
     """
     for hook in fiber.hooks:
         if isinstance(hook, InputHook) and hook.is_active and hook.handler is not None:
@@ -136,6 +141,13 @@ def _classify_input_hooks(fiber: Fiber, input_out: list, paste_out: list | None)
             and hook.handler is not None
         ):
             paste_out.append(hook)
+        elif (
+            mouse_out is not None
+            and isinstance(hook, MouseHook)
+            and hook.is_active
+            and hook.handler is not None
+        ):
+            mouse_out.append(hook)
 
 
 def _props_identical(a: dict, b: dict) -> bool:
@@ -220,7 +232,7 @@ class Reconciler:
             #   无消费方、effects 后序提交、router 按 hooks_list 前序调用，与各自
             #   原实现语义一致）。``_run_live_effects`` 独立遍历入口已删除
             #   （2026-08-05 死代码清理：生产无调用方）。
-            function_fibers, ref_fibers, input_hooks, paste_hooks = (
+            function_fibers, ref_fibers, input_hooks, paste_hooks, mouse_hooks = (
                 self._collect_render_metadata(root_fiber)
             )
             # ★ host ref 填充（方向8）：layout 完成后将 layout_box 写入绑定的
@@ -234,7 +246,7 @@ class Reconciler:
             self._run_live_effects_collected(function_fibers)
             # ★ 发布 composite input router（use_input 钩子，INK-1）
             # 用合并遍历已收集的 hooks 构建（免再次全树收集——PERF-25）
-            router = self._build_input_router_from_hooks(input_hooks, paste_hooks)
+            router = self._build_input_router_from_hooks(input_hooks, paste_hooks, mouse_hooks)
             _hooks._publish_input_router(router, ctx=self._hook_ctx)
         finally:
             _hooks.pop_context()
@@ -873,7 +885,7 @@ class Reconciler:
     # ── input router 构建（INK-1） ─────────────────────
 
     def _build_input_router(self, root_fiber: Fiber):
-        """前序遍历收集 active InputHook/FullscreenHook/PasteHook，构建 composite router。
+        """前序遍历收集 active InputHook/FullscreenHook/PasteHook/MouseHook，构建 composite router。
 
         兼容入口（测试/外部调用）：收集 + 构建两步。生产渲染经
         ``_collect_render_metadata``（PERF-25 合并遍历）收集后直接调
@@ -881,10 +893,14 @@ class Reconciler:
         """
         hooks_list: list = []
         paste_hooks: list[PasteHook] = []
-        self._collect_input_hooks(root_fiber, hooks_list, paste_hooks)
-        return self._build_input_router_from_hooks(hooks_list, paste_hooks)
+        mouse_hooks: list[MouseHook] = []
+        self._collect_input_hooks(root_fiber, hooks_list, paste_hooks, mouse_hooks)
+        return self._build_input_router_from_hooks(hooks_list, paste_hooks, mouse_hooks)
 
-    def _build_input_router_from_hooks(self, hooks_list: list, paste_hooks: list[PasteHook]):
+    def _build_input_router_from_hooks(
+        self, hooks_list: list, paste_hooks: list[PasteHook],
+        mouse_hooks: list[MouseHook] | None = None,
+    ):
         """由已收集的 hooks 构建 composite router（PERF-25：合并遍历后免重复收集）。
 
         Args:
@@ -893,6 +909,7 @@ class Reconciler:
                 hook 类型会被静默忽略）。收集阶段（``_collect_input_hooks`` /
                 ``_collect_render_metadata``）已按 active 过滤。
             paste_hooks: 粘贴钩子列表（usePaste，React Ink 独立通道）。
+            mouse_hooks: 鼠标钩子列表（useMouseInput，框架扩展独立通道）。
 
         无 active hooks 时返回 None（输入走旧路径，零行为变化）。
         Router 按 hook 顺序调用各 handler；任一返回 True 视为消费（返回 True）；
@@ -930,7 +947,8 @@ class Reconciler:
         #   fullscreen_hooks 仅用于末尾吞掉判定。
         fullscreen_hooks = [h for h in hooks_list if isinstance(h, FullscreenHook)]
         input_hooks = [h for h in hooks_list if isinstance(h, InputHook)]
-        if not input_hooks and not paste_hooks and not fullscreen_hooks:
+        mouse_hooks = list(mouse_hooks or [])
+        if not input_hooks and not paste_hooks and not fullscreen_hooks and not mouse_hooks:
             self._input_router_cache = None
             return None
         # ★ 焦点仲裁：focused 集合非空 → 仅保留 focused；为空 → 回退全部 active
@@ -959,10 +977,14 @@ class Reconciler:
             #   持有已卸载组件的 paste handler 引用（陈旧路由）。签名加入
             #   (seq, is_active, id(handler)) 后挂载/卸载/替换均触发重建。
             (hook.seq, hook.is_active, id(hook.handler)) for hook in paste_hooks
+        ) + tuple(
+            # ★ 鼠标钩子（useMouseInput）同样纳入签名：挂载/卸载/替换 handler
+            #   须触发 router 重建（否则新鼠标 handler 不生效/旧引用残留）。
+            (hook.seq, hook.is_active, id(hook.handler)) for hook in mouse_hooks
         )
         has_focus_ids = bool(getattr(_hooks, "_focus_ids", None)) and bool(getattr(_hooks, "_focus_enabled", True))
         if self._input_router_cache is not None:
-            cached_signature, cached_router, cached_hooks, cached_paste = self._input_router_cache
+            cached_signature, cached_router, cached_hooks, cached_paste, cached_mouse = self._input_router_cache
             if cached_signature == signature and cached_router._ink_has_focus_ids == has_focus_ids:
                 # ★ 方向1 步骤3（router id 复用修复）：id(hook.handler) 在 handler
                 #   被 GC 后 id 可复用 → 签名误判未变 → 复用过期 router 闭包。
@@ -982,6 +1004,11 @@ class Reconciler:
                         a is b and getattr(a, "handler", None) is getattr(b, "handler", None)
                         for a, b in zip(cached_paste, paste_hooks)
                     )
+                    and len(cached_mouse) == len(mouse_hooks)
+                    and all(
+                        a is b and getattr(a, "handler", None) is getattr(b, "handler", None)
+                        for a, b in zip(cached_mouse, mouse_hooks)
+                    )
                 ):
                     return cached_router
 
@@ -992,23 +1019,39 @@ class Reconciler:
             return True
 
         def router(event) -> bool:
+            # ── 鼠标事件（useMouseInput 独立通道，框架扩展）──
+            # 仅在有 active MouseHook 时进入；未声明鼠标交互的组件树零影响
+            # （事件放行给 InputDispatcher 兜底路径——滚轮滚动回调等）。
+            # 模态激活时未消费的鼠标事件同样吞掉（独占输入语义一致）。
+            if getattr(event, "kind", "") == "mouse":
+                for hook in mouse_hooks:
+                    try:
+                        if hook.handler is not None and hook.handler(event):
+                            return True
+                    except Exception:
+                        _logger.debug("useMouseInput handler 异常", exc_info=True)
+                        continue
+                return any(h.is_active for h in fullscreen_hooks)
             # ── 粘贴优先（React Ink usePaste 独立通道）──
             if paste_hooks:
-                if getattr(event, "kind", "") == "char":
-                    text = getattr(event, "char", "") or ""
-                    if len(text) > 1:
-                        # 官方语义：存在 active usePaste 时粘贴内容**不转发**给
-                        # useInput handler（独立通道）——无论 handler 返回值如
-                        # 何，粘贴事件均被消费（handler 官方签名为 `(text) ->
-                        # void`，返回 None 也应阻断 use_input 通道）。
-                        for hook in paste_hooks:
-                            try:
-                                if hook.handler is not None:
-                                    hook.handler(text)
-                            except Exception:
-                                _logger.debug("usePaste handler 异常", exc_info=True)
-                                continue
-                        return True
+                kind_name = getattr(event, "kind", "")
+                text = getattr(event, "char", "") or ""
+                # ★ 括号粘贴（bracketed paste）经终端协商后以 ``kind="paste"``
+                #   单事件到达（内容含换行/控制字符不再被解释为按键）；未启用
+                #   协商的终端仍走「多字符 char」启发式（兼容旧行为）。
+                if kind_name == "paste" or (kind_name == "char" and len(text) > 1):
+                    # 官方语义：存在 active usePaste 时粘贴内容**不转发**给
+                    # useInput handler（独立通道）——无论 handler 返回值
+                    # 如何，粘贴事件均被消费（handler 官方签名为 `(text) ->
+                    # void`，返回 None 也应阻断 use_input 通道）。
+                    for hook in paste_hooks:
+                        try:
+                            if hook.handler is not None:
+                                hook.handler(text)
+                        except Exception:
+                            _logger.debug("usePaste handler 异常", exc_info=True)
+                            continue
+                    return True
             # ── Tab/Shift+Tab 焦点切换（React Ink useFocusManager）──
             if has_focus_ids and _event_key_tab(event):
                 # 非 CSI u 时 modifier=0（普通 Tab）；Shift+Tab 需 CSI u 协议
@@ -1047,16 +1090,17 @@ class Reconciler:
             return False
 
         router._ink_has_focus_ids = has_focus_ids
-        self._input_router_cache = (signature, router, hooks_list, paste_hooks)
+        self._input_router_cache = (signature, router, hooks_list, paste_hooks, mouse_hooks)
         return router
 
-    def _collect_input_hooks(self, fiber: Fiber | None, out: list[InputHook], paste_out: list[PasteHook] | None = None) -> None:
+    def _collect_input_hooks(self, fiber: Fiber | None, out: list[InputHook], paste_out: list[PasteHook] | None = None, mouse_out: list[MouseHook] | None = None) -> None:
         """前序遍历 fiber 树，收集 active 的 InputHook / FullscreenHook（跳过已删除）。
 
         out 混入两种类型：InputHook（active 且有 handler）+ FullscreenHook
         （active——use_fullscreen 模态声明，router 构建时分离处理）。
 
-        paste_out 非 None 时同步收集 active PasteHook（usePaste——React Ink v6）。
+        paste_out 非 None 时同步收集 active PasteHook（usePaste——React Ink v6）；
+        mouse_out 非 None 时同步收集 active MouseHook（useMouseInput——框架扩展）。
 
         ★ P-H9（性能）：原实现每次递归 ``self._collect_input_hooks(...)`` 需
         加载 self + 属性查找 + 调用（每帧每节点重复）。改为局部闭包递归调用
@@ -1076,7 +1120,7 @@ class Reconciler:
                     f = f.sibling
                     continue
                 if f.is_function:
-                    _classify_input_hooks(f, out, paste_out)
+                    _classify_input_hooks(f, out, paste_out, mouse_out)
                 if f.child is not None:
                     stack.append(f.sibling)
                     f = f.child
@@ -1092,8 +1136,9 @@ class Reconciler:
 
           - ``function_fibers``：function fiber 前序列表（effects 后序提交用）；
           - ``ref_fibers``：带 ``_host_ref`` 的 fiber（layout_box 填充用）；
-          - ``input_hooks`` / ``paste_hooks``：active 的输入钩子（InputHook /
-            FullscreenHook 混入 input_hooks，composite router 用）。
+          - ``input_hooks`` / ``paste_hooks`` / ``mouse_hooks``：active 的输入
+            钩子（InputHook / FullscreenHook 混入 input_hooks；PasteHook 走
+            粘贴独立通道；MouseHook 走鼠标独立通道）。
 
         遍历保持前序（与各自原实现一致：ref 填充顺序无消费方、effects 后序
         reversed 提交、router 按 hooks_list 顺序调用）；跳过已删除 fiber。
@@ -1106,6 +1151,7 @@ class Reconciler:
         ref_fibers: list[Fiber] = []
         input_hooks: list[InputHook] = []
         paste_hooks: list[PasteHook] = []
+        mouse_hooks: list[MouseHook] = []
         stack = [root_fiber]
         while stack:
             f = stack.pop()
@@ -1115,7 +1161,7 @@ class Reconciler:
                     continue
                 if f.is_function:
                     function_fibers.append(f)
-                    _classify_input_hooks(f, input_hooks, paste_hooks)
+                    _classify_input_hooks(f, input_hooks, paste_hooks, mouse_hooks)
                 else:
                     ref = f._host_ref
                     if ref is not None:
@@ -1125,7 +1171,7 @@ class Reconciler:
                     f = f.child
                 else:
                     f = f.sibling
-        return function_fibers, ref_fibers, input_hooks, paste_hooks
+        return function_fibers, ref_fibers, input_hooks, paste_hooks, mouse_hooks
 
     def _fill_host_refs(self, ref_fibers) -> None:
         """将 layout_box 写入绑定的 ref（PERF-25：``_collect_render_metadata``

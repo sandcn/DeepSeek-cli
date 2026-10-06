@@ -59,7 +59,7 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
                     lines_flat.append(cur)
                     cur = Line()
                 if seg:
-                    cur.append(seg, run.style)
+                    cur.append(seg, run.style, run.link)
         if cur.runs:
             lines_flat.append(cur)
         return lines_flat
@@ -76,7 +76,7 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
             style = _run.style
             mw = max_width
             return [
-                Line([StyledRun(_text[i:i + mw], style)])
+                Line([StyledRun(_text[i:i + mw], style, _run.link)])
                 for i in range(0, len(_text), mw)
             ]
     # ★ 性能（多 run 纯 ASCII 快路径）：所有 run 均为非空可打印 ASCII 时——
@@ -90,6 +90,7 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
         span_start: list[int] = []
         span_end: list[int] = []
         span_style: list = []
+        span_link: list = []
         parts: list[str] = []
         pos = 0
         for r in runs:
@@ -97,6 +98,7 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
             span_start.append(pos)
             span_end.append(pos + len(t))
             span_style.append(r.style)
+            span_link.append(r.link)
             parts.append(t)
             pos += len(t)
         ascii_text = "".join(parts)
@@ -117,7 +119,7 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
                 lo = a if a > start else start
                 hi = b if b < end else end
                 if lo < hi:
-                    line.append(ascii_text[lo:hi], span_style[idx])
+                    line.append(ascii_text[lo:hi], span_style[idx], span_link[idx])
                 idx += 1
 
         if n_ascii:
@@ -149,11 +151,11 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
                 i = end
             return out_lines
 
-    # 展开为 (ch, style) 序列——词边界断行需跨 run 追踪行内空格位置
-    items: list[tuple[str, Style | None]] = []
+    # 展开为 (ch, style, link) 序列——词边界断行需跨 run 追踪行内空格位置
+    items: list[tuple[str, Style | None, str | None]] = []
     for run in runs:
         for ch in run.text:
-            items.append((ch, run.style))
+            items.append((ch, run.style, run.link))
     n = len(items)
     if n == 0:
         return []
@@ -165,7 +167,7 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
         width = 0
         last_space = -1  # 本行内最后一个空格的索引（绝对）
         while j < n:
-            ch, _ = items[j]
+            ch = items[j][0]
             if ch == "\n":
                 break  # 强制换行
             # ★ 先记录空格断点再判超宽：超宽字符本身是空格时（行恰好填满
@@ -221,16 +223,18 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
         #   成本 O(行宽)；样式切换处段级拆分（跨 style 不合并）。
         chars: list[str] = []
         seg_style = items[i][1] if i < end else None
+        seg_link = items[i][2] if i < end else None
         for k in range(i, end):
-            ch, st = items[k]
-            if st != seg_style:
+            ch, st, lk = items[k]
+            if st != seg_style or lk != seg_link:
                 if chars:
-                    line.append("".join(chars), seg_style)
+                    line.append("".join(chars), seg_style, seg_link)
                     chars = []
                 seg_style = st
+                seg_link = lk
             chars.append(ch)
         if chars:
-            line.append("".join(chars), seg_style)
+            line.append("".join(chars), seg_style, seg_link)
         if line.runs:
             lines.append(line)
         i = next_i
@@ -263,7 +267,7 @@ def _first_logical_line_runs(runs: list[StyledRun]) -> list[StyledRun]:
             out.append(run)
             continue
         if idx > 0:
-            out.append(StyledRun(run.text[:idx], run.style))
+            out.append(StyledRun(run.text[:idx], run.style, run.link))
         break  # 首个 \n 后的内容全部丢弃（单行截断语义）
     return out
 
@@ -295,7 +299,7 @@ def truncate_runs(runs: list[StyledRun], max_width: int) -> list[StyledRun]:
             buf += ch
             width += cw
         if buf:
-            out.append(StyledRun(buf, run.style))
+            out.append(StyledRun(buf, run.style, run.link))
     return out
 
 
@@ -342,7 +346,7 @@ def truncate_runs_ellipsis(runs: list[StyledRun], max_width: int) -> list[Styled
             buf += ch
             width += cw
         if buf:
-            out.append(StyledRun(buf, run.style))
+            out.append(StyledRun(buf, run.style, run.link))
             ellipsis_style = run.style
     if width < max_width:
         out.append(StyledRun("…", ellipsis_style))
@@ -372,7 +376,7 @@ def _keep_head(runs: list[StyledRun], budget: int) -> list[StyledRun]:
             buf += ch
             width += cw
         if buf:
-            out.append(StyledRun(buf, run.style))
+            out.append(StyledRun(buf, run.style, run.link))
     return out
 
 
@@ -399,7 +403,7 @@ def _keep_tail(runs: list[StyledRun], budget: int) -> list[StyledRun]:
             width += cw
         if chars:
             buf = "".join(reversed(chars))  # 反转恢复字符原序
-            kept.append(StyledRun(buf, run.style))
+            kept.append(StyledRun(buf, run.style, run.link))
     kept.reverse()
     return kept
 

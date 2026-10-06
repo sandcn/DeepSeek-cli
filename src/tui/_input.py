@@ -779,6 +779,14 @@ class Input:
         """
         self._dispatcher.set_drop_path_normalize(enabled)
 
+    def set_mouse_fallback_callback(self, cb) -> None:
+        """设置鼠标事件兜底回调（委托 InputDispatcher，鼠标支持）。
+
+        cb 签名: ``(event: KeyEvent) -> None``——鼠标事件未被 ``useMouseInput``
+        组件消费时调用（宿主可接滚轮滚动等全局行为）；None 可清除。
+        """
+        self._dispatcher.set_mouse_fallback_callback(cb)
+
     def set_clear_screen_callback(self, cb) -> None:
         """设置 Ctrl+L 清屏回调（委托 InputDispatcher，Claude TUI parity 3.1）。
 

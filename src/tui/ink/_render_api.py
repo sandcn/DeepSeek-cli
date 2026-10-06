@@ -29,10 +29,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
+from typing import Any
 
 from src.tui._screen import TerminalWidthCache
 from .element import Element
+from .terminal import cursor_shape_sequence, window_title_sequence
 
 _logger = logging.getLogger(__name__)
 
@@ -184,6 +187,49 @@ class _ConsolePatcher:
             self._saved = None
 
 
+def _resolve_stdin_fd(stdin: Any) -> int | None:
+    """尽力解析 stdin 的文件描述符（Input 外观 / 原始流 / None 均兼容）。"""
+    if stdin is None:
+        stdin = sys.stdin
+    for attr in ("fileno", "fd"):
+        value = getattr(stdin, attr, None)
+        if value is None:
+            continue
+        try:
+            fd = int(value() if callable(value) else value)
+        except Exception:
+            continue
+        if fd >= 0:
+            return fd
+    return None
+
+
+def _is_tty_fd(fd: int | None) -> bool:
+    """fd 是否为终端（不可用/异常一律 False）。"""
+    if fd is None:
+        return False
+    try:
+        return bool(os.isatty(fd))
+    except (OSError, ValueError):
+        return False
+
+
+def detect_interactive(stdin: Any, out_stream: Any) -> bool:
+    """自动探测交互模式（React Ink v7 ``interactive`` 缺省语义）。
+
+    stdin 与 stdout 均为 TTY 时视为交互（可安全进入 raw 模式并协商终端
+    能力）；管道/重定向/测试 StringIO 一律非交互。
+    """
+    stdin_fd = _resolve_stdin_fd(stdin)
+    out_fd = None
+    try:
+        fileno = getattr(out_stream, "fileno", None)
+        out_fd = int(fileno()) if callable(fileno) else None
+    except Exception:
+        out_fd = None
+    return _is_tty_fd(stdin_fd) and _is_tty_fd(out_fd)
+
+
 def render(
     element: Element,
     stream=None,
@@ -200,6 +246,11 @@ def render(
     isScreenReaderEnabled: bool = False,
     kittyKeyboard=None,
     onRender=None,
+    alternateScreen: bool = False,
+    interactive: bool | None = None,
+    mouse: bool = False,
+    windowTitle: str | None = None,
+    cursorShape: Any = None,
 ) -> dict:
     """React Ink ``render()`` 等价物（轻量入口）：渲染组件树到终端。
 
@@ -239,6 +290,17 @@ def render(
             unmount/cleanup 时写禁用序列（``CSI < u``）。
         onRender: 每帧渲染后回调 ``(metrics: dict) -> None``（``width``/
             ``height``）。
+        alternateScreen: 启用终端备用屏缓冲（React Ink v7 API）——渲染在
+            独立屏幕进行，unmount 时还原调用前屏幕内容（类 vim/less）。
+        interactive: 交互模式覆盖（React Ink v7 API）——None=自动探测
+            （stdin/stdout 均为 TTY 时交互）；True/False 强制。非交互时不
+            进入 raw 模式（管道/重定向场景安全降级）。
+        mouse: 启用鼠标上报（SGR 扩展坐标；框架扩展）——滚轮/点击/拖拽事件
+            经 ``useMouseInput`` 到达组件。
+        windowTitle: 启动时设置终端窗口标题（退出不还原——官方无此 API，
+            标题属用户可见状态）。
+        cursorShape: 启动时设置光标形状（``block``/``bar``/``underline`` 等，
+            见 ``ink.terminal.CURSOR_SHAPES``）；unmount 还原 default。
 
     Returns:
         dict：控制对象（waitUntilExit/unmount/cleanup/rerender/clear/
@@ -284,6 +346,23 @@ def render(
     if width is not None or height is not None:
         session._width_cache.set_dimensions(width, height)
 
+    # ── 终端能力（React Ink v7 对齐：alternateScreen / interactive + 扩展）──
+    # interactive：None=自动探测（stdin+stdout 均 TTY）；显式 True/False 覆盖。
+    interactive_on = (
+        detect_interactive(stdin, out_stream) if interactive is None else bool(interactive)
+    )
+    session.set_interactive(interactive_on, _resolve_stdin_fd(stdin))
+    session.set_terminal_modes(
+        alternate_screen=bool(alternateScreen),
+        mouse=bool(mouse),
+        bracketed_paste=interactive_on,
+    )
+    if windowTitle is not None:
+        session.write_terminal_sequence(window_title_sequence(windowTitle))
+    cursor_shape_applied = cursorShape is not None
+    if cursor_shape_applied:
+        session.write_terminal_sequence(cursor_shape_sequence(cursorShape))
+
     # ── React Ink render() 扩展 options ──
     # maxFps：官方语义为「渲染帧率上限」，本框架渲染线程**恒定 30Hz 且不可
     #   改变**（用户需求 2026-10-07）——按官方 API 保留参数签名（兼容调用
@@ -303,8 +382,16 @@ def render(
     if callable(onRender):
         session._on_render_callback = onRender
     # kittyKeyboard：启用 kitty 键盘协议（render 内写终端序列；unmount 时禁用）
+    # ★ React Ink v7 对齐：``mode="auto"`` 改为**实际查询终端**（``CSI ? u``，
+    #   应答给出支持标志掩码）——不再依赖硬编码白名单；非 TTY/无应答则不启用。
+    from .kitty import query_kitty_support as _query_kitty
     from .kitty import resolve_kitty_options as _resolve_kitty
-    kitty_flags = _resolve_kitty(kittyKeyboard)
+    kitty_querier = None
+    if isinstance(kittyKeyboard, dict) and kittyKeyboard.get("mode") == "auto":
+        _kitty_fd = _resolve_stdin_fd(stdin)
+        _kitty_out = out_stream if out_stream is not None else sys.stdout
+        kitty_querier = lambda: _query_kitty(_kitty_fd, _kitty_out)
+    kitty_flags = _resolve_kitty(kittyKeyboard, kitty_querier)
 
     # ── React Ink render() options（官方 API 补齐） ──
     # stderr / debug / exitOnCtrlC / patchConsole / stdin
@@ -363,6 +450,22 @@ def render(
         except Exception:
             _logger.debug("render 还原 stdin interrupt 配置异常", exc_info=True)
 
+    def _restore_terminal() -> None:
+        """还原终端能力（raw 模式 + 模式序列 + 光标形状，幂等）。"""
+        try:
+            session.set_raw_mode(False)
+        except Exception:
+            _logger.debug("render 还原 raw 模式异常", exc_info=True)
+        try:
+            session.exit_terminal_modes()
+        except Exception:
+            _logger.debug("render 还原终端模式异常", exc_info=True)
+        if cursor_shape_applied:
+            try:
+                session.write_terminal_sequence(cursor_shape_sequence("default"))
+            except Exception:
+                _logger.debug("render 还原光标形状异常", exc_info=True)
+
     try:
         session.start()
     except Exception:
@@ -380,6 +483,7 @@ def render(
                 _logger.debug("render start 失败后恢复控制台异常", exc_info=True)
         _restore_stdin()
         _restore_screen_reader()
+        _restore_terminal()
         raise
 
     # kitty 键盘协议：启动后写启用序列（官方 render({kittyKeyboard}) 语义）
@@ -419,6 +523,10 @@ def render(
             session.request_exit()
         except Exception:
             _logger.debug("render unmount 异常", exc_info=True)
+        # ★ 终端能力还原：raw 模式 + 备用屏/括号粘贴/鼠标上报 + 光标形状
+        #   （幂等；未启用时无操作）——render() 独立会话不经过 session.stop()
+        #   （仅 request_exit），因此在此显式还原终端状态。
+        _restore_terminal()
         # ★ P2（review）：unmount 同时恢复控制台补丁与 stdin 配置（与文档
         #   「unmount()：停止渲染线程；patchConsole 时恢复控制台」一致）——
         #   修复前仅 cleanup() 恢复，调用方只调 unmount() 时 sys.stdout/

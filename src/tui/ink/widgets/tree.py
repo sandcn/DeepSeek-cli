@@ -31,7 +31,7 @@ from ..hooks import use_state, use_input, use_effect, use_ref
 from ..widgets.layout import Column
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_clamp_index 原本地定义——收敛
 #   至 _widget_common 单一真源。
-from ._widget_common import _clamp_index
+from ._widget_common import _clamp_index, use_wheel_scroll
 
 _logger = logging.getLogger(__name__)
 
@@ -286,6 +286,20 @@ def Tree(props: dict) -> Element:
         return False
 
     use_input(_handle, focus)
+    # ★ 鼠标滚轮（2026-10-07 鼠标支持）：滚轮上/下 = 光标上/下移一个可见节点。
+    def _wheel(delta: int) -> bool:
+        vis = _collect_visible(items, open_ref.current)
+        if not vis:
+            return False
+        cur = _clamp_index(cursor_ref.current, len(vis))
+        new_cur = cur + delta
+        if not (0 <= new_cur < len(vis)):
+            return False
+        cursor_ref.current = new_cur
+        set_cursor(new_cur)
+        return True
+
+    use_wheel_scroll(_wheel, bool(focus))
 
     # 渲染期重建可见节点（响应 open_set 变化）+ 钳制光标
     visible_now = _collect_visible(items, open_set)

@@ -12,10 +12,11 @@
 
 from __future__ import annotations
 
-from src._compat import dataclass
+import re
 from dataclasses import field
 from typing import Iterable
 
+from src._compat import dataclass
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple, expand_tabs
 
@@ -38,6 +39,21 @@ def _text_width(text: str) -> int:
     return wcswidth_simple(text)
 
 
+def hyperlink(url: str, text: str) -> str:
+    """把 ``text`` 包裹为指向 ``url`` 的 OSC 8 超链接（终端可点击）。
+
+    格式：``ESC]8;;<url>ESC\\<text>ESC]8;;ESC\\``。URL 中的控制字符被剥离，
+    防止序列注入；空 URL 直接返回原文。
+
+    ★ 定义于输出模型模块（``output``）：``StyledRun.render()`` 直接调用，
+    避免 ``output → terminal`` 反向依赖（``terminal`` 单向依赖 ``output``）。
+    """
+    safe_url = re.sub(r"[\x00-\x1f\x7f]", "", str(url))
+    if not safe_url:
+        return str(text)
+    return f"\x1b]8;;{safe_url}\x1b\\{text}\x1b]8;;\x1b\\"
+
+
 @dataclass(frozen=True)
 class StyledRun:
     """一段带样式的文本。
@@ -45,10 +61,14 @@ class StyledRun:
     Attributes:
         text: 文本内容。
         style: 样式（None 表示无样式）。
+        link: 超链接 URL（OSC 8，None 表示普通文本）——渲染时包裹为终端可
+            点击链接；宽度计算不计入（OSC 8 为零宽控制序列），截断/换行由
+            ``_runs_utils`` 保留该字段（URL 随可见片段一起保留）。
     """
 
     text: str
     style: Style | None = None
+    link: str | None = None
     #: 显示宽度缓存（PERF：frozen 不可变 → ``__post_init__`` 一次性计算；
     #: 热路径（Line.width/diff/truncate/measure）免重复 ``wcswidth_simple``）。
     #: ``compare=False``（eq/hash 不参与——text 相同则宽度必相同，语义不变）
@@ -71,10 +91,16 @@ class StyledRun:
         object.__setattr__(self, "width", _text_width(text))
 
     def render(self) -> str:
-        """渲染为 ANSI 字符串（无样式时原样返回）。"""
-        if self.style:
-            return self.style.apply(self.text)
-        return self.text
+        """渲染为 ANSI 字符串（无样式时原样返回）。
+
+        ``link`` 非空时以 OSC 8 序列包裹（``ESC]8;;url ESC\\ text ESC]8;; ESC\\``）
+        ——终端据此呈现可点击链接；宽度计算不含该序列（``width`` 字段只按
+        可见文本计算）。
+        """
+        text = self.style.apply(self.text) if self.style else self.text
+        if self.link:
+            return hyperlink(self.link, text)
+        return text
 
 
 # ═══════════════════════════════════════════════════════════
@@ -132,25 +158,25 @@ class Line:
         """从纯文本创建单 run 行。"""
         return cls([StyledRun(text, style)])
 
-    def append(self, text: str, style: Style | None = None) -> None:
-        """追加一段文本（自动合并相邻同 style 的 run）。"""
+    def append(self, text: str, style: Style | None = None, link: str | None = None) -> None:
+        """追加一段文本（自动合并相邻同 style/link 的 run）。"""
         if not text:
             return
         # 修改 runs → ANSI 渲染缓存失效（PERF-24）
         self._r = None
-        if self.runs and self.runs[-1].style == style:
+        if self.runs and self.runs[-1].style == style and self.runs[-1].link == link:
             last = self.runs[-1]
             # ★ P3（review）：宽度以 run 整串宽度差更新——修复前
             #   ``self._w += _text_width(text)``（逐段测宽）与
             #   ``StyledRun.width``（整串测宽）在 ANSI 序列被两次 append 切分
             #   时口径不一致（如先 "\\x1b[3" 再 "1m"）→ ``Line.width`` 与
             #   ``sum(run.width)`` 分叉，破坏行级 diff 宽度不变量。
-            merged = StyledRun(last.text + text, style)
+            merged = StyledRun(last.text + text, style, link)
             self.runs[-1] = merged
             if self._w is not None:
                 self._w += merged.width - last.width
             return
-        self.runs.append(StyledRun(text, style))
+        self.runs.append(StyledRun(text, style, link))
         # ★ 显示错乱修复（2026-10-05）：宽度增量以新建 run 的 ``width`` 为准
         #   ——修复前用 ``_text_width(text)``（`\t`/`\r` 计 0），而 StyledRun
         #   已把制表符展开为空格（宽度变化），二者分叉会污染 ``Line.width``。
@@ -158,10 +184,10 @@ class Line:
             self._w += self.runs[-1].width
 
     def append_run(self, run: StyledRun) -> None:
-        """追加 StyledRun。"""
+        """追加 StyledRun（保留其 ``link`` 超链接语义）。"""
         if not run or not run.text:
             return
-        self.append(run.text, run.style)
+        self.append(run.text, run.style, run.link)
 
     def render(self) -> str:
         """合并为 ANSI 字符串（渲染结果缓存——同 Line 对象跨帧零重建）。"""

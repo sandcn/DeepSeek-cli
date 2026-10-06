@@ -106,6 +106,9 @@ class _LifecycleStub(_JoinStub):
     suspend = InkSession.suspend
     flush = InkSession.flush
     _join_render_thread = InkSession._join_render_thread
+    # ★ 终端能力还原（2026-10-07 终端能力管理）——stop/suspend 经本方法
+    #   还原括号粘贴/备用屏/鼠标模式；桩按真实方法借用（无终端模式时 no-op）。
+    exit_terminal_modes = InkSession.exit_terminal_modes
 
     def __init__(self):
         super().__init__()

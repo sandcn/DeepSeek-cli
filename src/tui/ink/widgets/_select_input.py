@@ -25,6 +25,7 @@ from ._interactive_common import (
     _visible_window,
     _clamp_index,
 )
+from ._widget_common import use_wheel_scroll
 
 _logger = logging.getLogger(__name__)
 
@@ -268,6 +269,22 @@ def SelectInput(props: dict) -> Element:
         return False
 
     use_input(_handle, focus)
+    # ★ 鼠标滚轮（2026-10-07 鼠标支持）：滚轮上/下 = 选择光标上/下移一项
+    #   （同步 ref/state/onHighlight + 跟随滚动，与键盘 ↑↓ 同语义）。
+    def _wheel(delta: int) -> None:
+        if not items:
+            return
+        cur = _clamp_index(selected_ref.current, len(items))
+        new = _clamp_index(cur + delta, len(items))
+        if new == cur:
+            return
+        selected_ref.current = new
+        set_selected(new)
+        if on_highlight is not None:
+            _call(on_highlight, new)
+        _scroll_follow(new)
+
+    use_wheel_scroll(_wheel, bool(focus))
 
     # ★ P2（review）：渲染期同样钳制——items 收缩后到下一次按键前的帧内
     #   selected state 仍越界，若不钳制则 `idx == selected` 恒 False、无行

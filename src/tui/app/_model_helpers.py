@@ -23,7 +23,19 @@ __all__ = [
     "_user_marker_styled_lines",
     "_role_header_runs",
     "_role_header_line",
+    "_attach_url_links",
 ]
+
+
+def _attach_url_links(runs):
+    """为 StyledRun 列表附加 OSC 8 超链接（URL 可点击）。
+
+    无 URL 时 ``attach_links`` 直接返回原列表引用（零对象分配、零样式重建，
+    渲染热路径与行级身份缓存不受影响）。惰性 import 避免模块导入期依赖。
+    """
+    from src.tui.ink.terminal import attach_links
+
+    return attach_links(runs)
 
 #: 开放工具块增量提交阈值（方向4）——输出行超出该阈值时经 commit_open_block
 #: 增量提交已闭合行到 committed_lines（长工具输出每帧不再全量重渲染）。
@@ -131,7 +143,9 @@ def _user_marker_styled_lines(block, start, stop, width):
             out.append(Line([StyledRun("> ", icon)]))
             continue
         for seg in wrapped:
-            seg_runs = [StyledRun(r.text, r.style) for r in seg.runs if r.text]
+            seg_runs = _attach_url_links(
+                [StyledRun(r.text, r.style) for r in seg.runs if r.text]
+            )
             line = Line([StyledRun("> ", icon)] + seg_runs)
             # ★ 方向8（窄屏防溢出）：``> `` 前缀（2 列）+ 宽字符段可能超
             #   width（width<4 时 CJK 内容段宽 2，总宽 4 > width）——截断至

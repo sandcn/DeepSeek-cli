@@ -35,7 +35,7 @@ from .._paint_border import _BORDER_CHARS, _FALLBACK_BORDER
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_color 原本地定义（与
 #   _interactive_common/_display_common 逻辑一致，仅默认值 23 vs 6）——收敛
 #   至 _widget_common（调用处显式传 default=23，行为不变）。
-from ._widget_common import _color
+from ._widget_common import _call, _color
 
 # ★ P3（review）：删除未使用的 ``_logger``（本模块无日志调用）。
 
@@ -285,10 +285,9 @@ def CollapsibleCodeBlock(props: dict) -> Element:
             set_expanded(new_value)
             cb = props.get("onToggle")
             if cb is not None:
-                try:
-                    cb(new_value)
-                except Exception:
-                    pass
+                # 回调统一走 ``_call``（异常记 warning，不静默吞——修复前
+                # ``except Exception: pass`` 使 onToggle 异常完全不可观测）。
+                _call(cb, new_value)
             return True
         return False
 

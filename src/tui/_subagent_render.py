@@ -204,7 +204,31 @@ def render_frame(store, max_history: int = 3,
             rows.append((slot.status, lines[0], lines[1:]))
         if not rows:
             return []
-        return _build_group_card(rows, max_lines)
+        return _with_url_links(_build_group_card(rows, max_lines))
+
+
+def _with_url_links(lines: List[Line]) -> List[Line]:
+    """为面板行附加 OSC 8 超链接（含 URL 的行才重建，无 URL 行保持原对象）。
+
+    行级身份缓存（``use_memo`` 引用比较）依赖 Line 对象稳定——无 URL 的行
+    直接复用原对象，仅含 URL 的行重建（运行日志/返回内容中的链接可点击）。
+    """
+    from src.tui.ink.terminal import attach_links
+
+    out: List[Line] = []
+    for line in lines:
+        runs = line.runs
+        if not any(
+            ("http" in r.text or "www." in r.text or "ftp" in r.text) for r in runs
+        ):
+            out.append(line)
+            continue
+        new_runs = attach_links(list(runs))
+        if not any(getattr(r, "link", None) for r in new_runs):
+            out.append(line)
+            continue
+        out.append(Line(new_runs))
+    return out
 
 
 def _terminal_max_lines() -> int:

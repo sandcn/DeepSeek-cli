@@ -79,81 +79,134 @@ def useMeasure() -> dict:
 # ═══════════════════════════════════════════════════════════
 
 
+def set_raw_mode_accessor(
+    supported_fn: Callable[[], bool] | None,
+    set_fn: Callable[[bool], Any] | None,
+    ctx: "HookContext | None" = None,
+) -> None:
+    """注入 raw 模式能力（session 调用）。
+
+    Args:
+        supported_fn: ``() -> bool`` 查询是否支持 raw 模式切换。
+        set_fn: ``(enabled: bool) -> bool`` 切换 raw 模式。
+        ctx: 目标会话上下文；None 用当前激活上下文。
+    """
+    target = ctx if ctx is not None else current_context()
+    target.raw_mode_supported = supported_fn
+    target.raw_mode_callback = set_fn
+
+
 def useStdin() -> dict:
     """React useStdin 等价物：返回 stdin 访问。
 
     Returns:
-        dict：``{"stdin": file|None, "isRawModeSupported": bool,
-        "setRawMode": callable, "internal_exitOnCtrlC": bool}``——stdin 为
-        session 注入的 Input 实例（惰性读取；未注入时 None）；setRawMode 为
-        no-op（当前框架无 raw 模式切换，文档注明差异）；isRawModeSupported
-        恒 False（与 setRawMode no-op 一致）；internal_exitOnCtrlC 恒 True。
+        dict：``{"stdin", "isRawModeSupported", "setRawMode",
+        "internal_exitOnCtrlC", "isAnyKeyPressed"}``——stdin 为 session 注入的
+        Input 实例（惰性读取；未注入时 None）；setRawMode 转发到 session 注入
+        的 raw 模式回调（未注入时 no-op）；isRawModeSupported 反映真实能力
+        （session ``set_interactive`` 解析结果）；internal_exitOnCtrlC 恒 True。
+
+    ★ P3-5（review 方向，已修复）：返回对象**身份跨渲染稳定**（``use_ref``
+    缓存，字段原地刷新）——官方 React Ink 语义中 useStdin 返回值应稳定
+    （``use_memo(deps=[stdin])`` 等按身份比较的消费方才不会每帧 miss）。
+    此前每帧新建 dict + 闭包，文件级注释记录为「文档化差异」，现按官方
+    语义收敛。
     """
-
-    def _noop(*args, **kwargs):
-        return None
-
-    # ★ P3-5（review 方向，文档化行为）：本函数每帧渲染新建 ``_noop`` 闭包
-    #   与返回 dict——**返回对象身份每帧变化**。React Ink 语义中 useStdin
-    #   返回值应在渲染间稳定（memo 依赖消费）——本实现为惰性读取（stdin 在
-    #   set_input 后才注入），每帧重建返回 dict 使 ``use_memo(deps=[stdin])``
-    #   等依赖身份比较的消费方每帧 miss（重算）；这是文档化行为（惰性读取
-    #   优先于身份稳定），消费方须按字段值而非对象身份使用。
-
+    cached = use_ref(None)
     stdin = _hooks_module._stdin_accessor() if _hooks_module._stdin_accessor is not None else None
-    return {
-        "stdin": stdin,
-        "isRawModeSupported": False,
-        "setRawMode": _noop,
-        "internal_exitOnCtrlC": True,
-        # ★ React Ink useStdin().isAnyKeyPressed（官方 API 补齐）：用户是否已
-        #   按过任意键（置位后恒 True，不复位——官方语义，spinner 等据此
-        #   检测用户交互）。经 session.set_input 注入 InputDispatcher 按键
-        #   回调置位（hooks.mark_any_key_pressed）；未注入 Input 的会话恒
-        #   False（无 stdin，合理）。
-        "isAnyKeyPressed": bool(getattr(_hooks_module, "_any_key_pressed", False)),
-    }
+    supported_fn = getattr(_hooks_module, "_raw_mode_supported", None)
+    try:
+        supported = bool(supported_fn()) if supported_fn is not None else False
+    except Exception:
+        _logger.debug("isRawModeSupported 查询异常", exc_info=True)
+        supported = False
+    value = cached.current
+    if value is None:
+        def _set_raw_mode(enabled: bool = True):
+            set_fn = getattr(_hooks_module, "_raw_mode_callback", None)
+            if set_fn is None:
+                return None
+            try:
+                return set_fn(bool(enabled))
+            except Exception:
+                _logger.debug("setRawMode 回调异常", exc_info=True)
+                return None
+
+        value = {
+            "stdin": stdin,
+            "isRawModeSupported": supported,
+            "setRawMode": _set_raw_mode,
+            "internal_exitOnCtrlC": True,
+            "isAnyKeyPressed": bool(getattr(_hooks_module, "_any_key_pressed", False)),
+        }
+        cached.current = value
+        return value
+    value["stdin"] = stdin
+    value["isRawModeSupported"] = supported
+    value["isAnyKeyPressed"] = bool(getattr(_hooks_module, "_any_key_pressed", False))
+    return value
 
 
 def useStdout() -> dict:
     """React useStdout 等价物：返回 stdout 访问。
 
     Returns:
-        dict：``{"stdout": file|None, "write": callable}``——stdout 为 session
-        注入的渲染器输出流（惰性读取）；write 为 ``(data: str) -> None``
-        （直接写流，经输出锁保护由 session 注入方决定；未注入时 no-op）。
+        dict：``{"stdout", "write"}``——stdout 为 session 注入的渲染器输出流
+        （惰性读取）；write 直接写流（未注入时 no-op）。
+
+    ★ 返回对象身份跨渲染稳定（``use_ref`` 缓存，字段原地刷新）。
     """
-
-    def _noop(*args, **kwargs):
-        return None
-
-    # ★ P3-5（review 方向，文档化行为）：同上——本函数每帧新建 ``_noop``
-    #   闭包与返回 dict，**返回对象身份每帧变化**（惰性读取 stdout 最新流
-    #   对象）；memo 消费方按身份比较依赖会每帧 miss，须按字段值使用。
-
+    cached = use_ref(None)
     stdout = _hooks_module._stdout_accessor() if _hooks_module._stdout_accessor is not None else None
-    write = getattr(stdout, "write", _noop)
-    return {"stdout": stdout, "write": write}
+    value = cached.current
+    if value is None:
+        def _write(data: str = "") -> None:
+            target = _hooks_module._stdout_accessor() if _hooks_module._stdout_accessor is not None else None
+            write = getattr(target, "write", None)
+            if write is None:
+                return None
+            try:
+                write(data)
+            except Exception:
+                _logger.debug("useStdout().write 异常", exc_info=True)
+            return None
+
+        value = {"stdout": stdout, "write": _write}
+        cached.current = value
+        return value
+    value["stdout"] = stdout
+    return value
 
 
 def useStderr() -> dict:
     """React useStderr 等价物：返回 stderr 访问。
 
     Returns:
-        dict：``{"stderr": file|None, "write": callable}``——stderr 为 session
-        注入的 ``sys.__stderr__``（惰性读取）；write 为 ``(data: str) -> None``。
+        dict：``{"stderr", "write"}``——stderr 为 session 注入的
+        ``sys.__stderr__``（惰性读取）；write 直接写流。
+
+    ★ 返回对象身份跨渲染稳定（``use_ref`` 缓存，字段原地刷新）。
     """
-
-    def _noop(*args, **kwargs):
-        return None
-
-    # ★ P3-5（review 方向，文档化行为）：同上——本函数每帧新建 ``_noop``
-    #   闭包与返回 dict，**返回对象身份每帧变化**（惰性读取 stderr 最新流
-    #   对象）；memo 消费方按身份比较依赖会每帧 miss，须按字段值使用。
-
+    cached = use_ref(None)
     stderr = _hooks_module._stderr_accessor() if _hooks_module._stderr_accessor is not None else None
-    write = getattr(stderr, "write", _noop)
-    return {"stderr": stderr, "write": write}
+    value = cached.current
+    if value is None:
+        def _write(data: str = "") -> None:
+            target = _hooks_module._stderr_accessor() if _hooks_module._stderr_accessor is not None else None
+            write = getattr(target, "write", None)
+            if write is None:
+                return None
+            try:
+                write(data)
+            except Exception:
+                _logger.debug("useStderr().write 异常", exc_info=True)
+            return None
+
+        value = {"stderr": stderr, "write": _write}
+        cached.current = value
+        return value
+    value["stderr"] = stderr
+    return value
 
 
 # ═══════════════════════════════════════════════════════════
@@ -255,8 +308,11 @@ def usePaste(handler: Callable[[str], Any], options: "dict | None" = None) -> No
     消费判定，官方签名为 ``(text) -> void``）。``options["isActive"]`` 控制
     是否参与粘贴路由（默认 True）。
 
-    与 React Ink 差异：本框架的粘贴检测基于「单次输入事件字符数 > 1」
-    （终端粘贴为整段到达，普通打字逐字符）——未启用 bracketed paste 协议。
+    与 React Ink 差异：本框架同时支持两条粘贴通道——(1) 终端启用括号粘贴
+    模式（``render({interactive})`` / TuiConfig ``bracketed_paste``）时粘贴
+    内容以 ``kind="paste"`` 单事件到达（内容含换行/控制字符不被解释为按键）；
+    (2) 未协商时回退「单次输入事件字符数 > 1」启发式（终端粘贴为整段到达，
+    普通打字逐字符）。
 
     Args:
         handler: 粘贴处理回调 ``(text: str) -> Any``（返回值忽略）。

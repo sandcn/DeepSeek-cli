@@ -283,9 +283,9 @@ def _paint_border(fiber: Fiber, canvas: list[dict], border: int, clip=None) -> N
         if row is None:
             continue
         if show_left and (clip_x0 is None or (x0 >= clip_x0 and x0 < clip_x1)):
-            row[x0] = (vline_l, left_style)
+            row[x0] = (vline_l, left_style, None)
         if show_right and (clip_x1 is None or (x1 >= clip_x0 and x1 < clip_x1)):
-            row[x1] = (vline_r, right_style)
+            row[x1] = (vline_r, right_style, None)
 
 
 def _paint_box_background(box, canvas: list[dict], style: Style, clip=None) -> None:
@@ -334,7 +334,7 @@ def _paint_box_background(box, canvas: list[dict], style: Style, clip=None) -> N
             # 只填充空格位（已有内容不覆盖——本函数在子节点绘制前调用，
             # 但兄弟节点/边框可能已写；空格字符保证无文本时背景可见）
             if c not in row:
-                row[c] = (" ", style)
+                row[c] = (" ", style, None)
 
 
 def _merge_inherit_bg(style: Style | None, inherit_bg: Style | None) -> Style | None:

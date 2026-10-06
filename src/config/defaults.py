@@ -125,6 +125,13 @@ DEFAULTS = {
     # 规范化（去引号/还原反斜杠转义/file URI 解析/Windows→POSIX，多文件每行
     # 一个，含空格路径双引号包裹）；False = 粘贴文本一律原样插入。
     "tui_drop_path_normalize": True,
+    # 括号粘贴（bracketed paste，用户需求 2026-10-07：TUI React Ink 改进）。
+    # True（默认，对齐官方 React Ink v7）= TUI 启动时启用终端括号粘贴模式
+    # （``CSI ?2004h``，退出还原）：粘贴内容以 ``ESC[200~ … ESC[201~`` 整段
+    # 到达，不会被拆成逐字符按键（多行粘贴不再误触发 Enter 提交，拖放的
+    # 文件路径仍走同一插入/规范化路径）；False = 不协商，回退「单次输入
+    # 多字符」启发式识别粘贴。
+    "tui_bracketed_paste": True,
     # 技能（skill）子系统配置
     "skills": {
         "enabled": True,
@@ -316,6 +323,12 @@ CONFIG_KEYS = {
     # ---- TUI 交互行为 ----
     "TUI_DROP_PATH_NORMALIZE": {
         "rc_path": ("tui_drop_path_normalize",),
+        "type": bool,
+        "default": True,
+        "cacheable": True,
+    },
+    "TUI_BRACKETED_PASTE": {
+        "rc_path": ("tui_bracketed_paste",),
         "type": bool,
         "default": True,
         "cacheable": True,

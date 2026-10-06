@@ -56,6 +56,7 @@ from src.tui.app._model_helpers import (
     _TOOL_HEAD_LINES,
     _single_line_detail,
     _user_marker_styled_lines,
+    _attach_url_links,
     _role_header_runs,
     _role_header_line,
 )
@@ -433,7 +434,7 @@ class AppModel(_ToolOutputMixin):
                     if reasoning_style is not None:
                         st = reasoning_style if st is None else st.merge(reasoning_style)
                     runs.append(StyledRun(r.text, st))
-                out.append(Line(runs))
+                out.append(Line(_attach_url_links(runs)))
         return out
 
     def _card_lines(self, block, start: int = 0):

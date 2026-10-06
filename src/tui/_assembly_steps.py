@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 
 _logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ def create_shared():
     from src.tui.app.model import AppModel
     tui_config = TuiConfig.defaults().with_overrides(
         drop_path_normalize=_rc_drop_path_normalize(),
+        bracketed_paste=_rc_bracketed_paste(),
     )
     model = AppModel()
     return tui_config, model
@@ -65,6 +67,20 @@ def _rc_drop_path_normalize() -> bool:
     except Exception:
         _logger.debug("读取 tui_drop_path_normalize 失败，使用默认值", exc_info=True)
         return TuiConfig.defaults().drop_path_normalize
+
+
+def _rc_bracketed_paste() -> bool:
+    """读取 RC 配置 ``tui_bracketed_paste``（括号粘贴模式开关）。
+
+    配置读取失败（RC 不可用/键缺失）时回退 ``TuiConfig`` 默认值。
+    """
+    from src.tui._config import TuiConfig
+    try:
+        from src.config import TUI_BRACKETED_PASTE
+        return bool(TUI_BRACKETED_PASTE)
+    except Exception:
+        _logger.debug("读取 tui_bracketed_paste 失败，使用默认值", exc_info=True)
+        return TuiConfig.defaults().bracketed_paste
 
 
 def create_chat_domain():
@@ -86,6 +102,65 @@ def create_chat_domain():
         history_file=INPUT_HISTORY_FILE,
     )
     return input_instance
+
+
+def _placeholder_fading(session) -> bool:
+    """输入区占位符是否处于渐显期（时间驱动内容，须逐帧渲染）。
+
+    占位符渐显状态记录在输入区 fiber 的 ``_placeholder_fade_key``
+    （``(占位符文本, 起始 monotonic)``，见 ``app/_popup_builder``）——渐显期
+    （elapsed < fade_duration）内每帧颜色推进，不可复用上一帧。
+    """
+    fiber = getattr(session, "_input_fiber", None)
+    key = getattr(fiber, "_placeholder_fade_key", None)
+    if not key:
+        return False
+    try:
+        from src.tui.app import _fx
+        duration = _fx._default_fx_params()[0]
+        return duration > 0 and (time.monotonic() - key[1]) < duration
+    except Exception:
+        _logger.debug("占位符渐显判定异常（按活跃处理）", exc_info=True)
+        return True
+
+
+def _make_idle_frame_predicate(model, session):
+    """构造「空闲帧复用」预测函数（保守判定，2026-10-07 性能优化）。
+
+    仅在**所有**时间驱动显示源都不活跃时返回 True（无流式状态/工具运行/
+    解析进度/补全弹窗/模态视图/子代理卡片/占位符渐显）；任一活跃或判定
+    异常时返回 False → 本拍正常重建渲染（零视觉回归——无法确认静态时
+    宁可多渲染一帧）。帧率不受影响：会话对外仍恒定 30Hz，仅跳过静态帧的
+    组件树重建开销。
+    """
+    def _is_static() -> bool:
+        try:
+            status = getattr(model, "status", None)
+            if status is not None and getattr(status, "status_active", False):
+                return False
+            if getattr(model, "parse_line", None) is not None:
+                return False
+            if getattr(model, "fullscreen", "") or getattr(model, "bottom_view", ""):
+                return False
+            if getattr(model, "history_search", None) is not None:
+                return False
+            if getattr(model, "user_selects", None):
+                return False
+            if getattr(model, "tool_boxes", None):
+                return False
+            if getattr(model, "subagent_lines", None):
+                return False
+            completion = getattr(model, "completion", None)
+            if completion is not None and getattr(completion, "visible", False):
+                return False
+            if _placeholder_fading(session):
+                return False
+            return True
+        except Exception:
+            _logger.debug("空闲帧预测异常（本帧不复用）", exc_info=True)
+            return False
+
+    return _is_static
 
 
 def create_framework(model, tui_config, line_tracker, input_instance):
@@ -126,6 +201,15 @@ def create_framework(model, tui_config, line_tracker, input_instance):
     # 路径）——终端拖放注入的路径文本规范化后插入；RC 键
     # ``tui_drop_path_normalize``（默认开启）经 create_shared 注入 TuiConfig。
     input_instance.set_drop_path_normalize(tui_config.drop_path_normalize)
+    # 括号粘贴（2026-10-07，TUI React Ink 改进：对齐官方 Ink v7）——启动时
+    # 启用终端括号粘贴模式，粘贴内容以 ESC[200~ … ESC[201~ 整段到达
+    # （不被拆成逐字符按键；多行粘贴不误触发 Enter）；suspend/stop 时还原、
+    # resume 时重新启用（TerminalModeManager 幂等管理）。RC 键
+    # ``tui_bracketed_paste``（默认开启）经 create_shared 注入 TuiConfig。
+    session.set_terminal_modes(bracketed_paste=tui_config.bracketed_paste)
+    # ★ 空闲帧复用（2026-10-07 性能优化）：注入「静态状态」预测——宿主静态
+    #   时本拍复用上一帧（帧号照常推进，恒定 30Hz 节拍不变），省空转 CPU。
+    session.set_idle_frame_predicate(_make_idle_frame_predicate(model, session))
     # Claude TUI parity 步骤 3.1：Ctrl+L 清屏（session.clear_screen；
     # 未注入时 dispatcher 记 debug 跳过，测试兼容）
     input_instance.set_clear_screen_callback(session.clear_screen)

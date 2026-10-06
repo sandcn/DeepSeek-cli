@@ -30,7 +30,7 @@ from ..hooks import use_state, use_input, use_ref
 from ..widgets.layout import Column
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_clamp_index 原本地定义——收敛
 #   至 _widget_common 单一真源。
-from ._widget_common import _clamp_index, _call
+from ._widget_common import _clamp_index, _call, use_wheel_scroll
 
 _logger = logging.getLogger(__name__)
 
@@ -316,16 +316,27 @@ def ListView(props: dict) -> Element:
         if not moved:
             return False
         # 光标移出视口 → 滚动 offset（保持光标可见）
-        new_cur = cursor_ref.current
-        if new_cur < cur_offset:
-            cur_offset = new_cur
-        elif new_cur >= cur_offset + viewport_h:
-            cur_offset = new_cur - viewport_h + 1
-        offset_ref.current = cur_offset
-        set_offset(cur_offset)
+        _sync_after_move()
         return True
 
+    def _sync_after_move() -> None:
+        """移动后同步视口偏移（保持光标可见）——键盘与滚轮共用。"""
+        new_cur = cursor_ref.current
+        cur_off = offset_ref.current
+        if new_cur < cur_off:
+            cur_off = new_cur
+        elif new_cur >= cur_off + viewport_h:
+            cur_off = new_cur - viewport_h + 1
+        offset_ref.current = cur_off
+        set_offset(cur_off)
+
     use_input(_handle, focus)
+    # ★ 鼠标滚轮（2026-10-07 鼠标支持）：滚轮上/下 = 光标上/下移一项
+    #   （选中态跟随滚动，与键盘 ↑↓ 语义一致）。
+    use_wheel_scroll(
+        lambda delta: _step(delta, base=cursor_ref.current) and _sync_after_move(),
+        bool(focus),
+    )
 
     # 渲染期钳制（items 收缩后光标/offset 越界防护；受控模式用 cursor_prop）
     if controlled:

@@ -121,6 +121,13 @@ class TuiConfig(ConfigBase):
     # 可通过 TuiConfig 构造覆盖或 RC 键 ``tui_drop_path_normalize`` 关闭。
     drop_path_normalize: bool = True
 
+    # ── 括号粘贴（2026-10-07，TUI React Ink 改进：对齐官方 Ink v7） ──────
+    # True（默认）：TUI 启动时启用终端括号粘贴模式（``CSI ?2004h``，退出
+    # 还原）——粘贴内容以 ``ESC[200~ … ESC[201~`` 整段到达，不再被拆成逐
+    # 字符按键（多行粘贴不误触发 Enter 提交）。False：不协商，回退「单次
+    # 输入多字符」启发式识别粘贴。可通过 RC 键 ``tui_bracketed_paste`` 关闭。
+    bracketed_paste: bool = True
+
     def __post_init__(self) -> None:
         """强制渲染帧率恒定 30Hz——帧率不可被任何构造/覆盖路径改变。
 

@@ -460,8 +460,11 @@ def tool_card_lines(block, width, start=0, stop=None):
                     cached = [("empty",)]
                 else:
                     items: list = []
+                    from src.tui.app._model_helpers import _attach_url_links
                     for seg in wrapped:
-                        seg_runs = [StyledRun(r.text, r.style) for r in seg.runs if r.text]
+                        seg_runs = _attach_url_links(
+                            [StyledRun(r.text, r.style) for r in seg.runs if r.text]
+                        )
                         if width <= 0:
                             items.append(("bare", seg_runs))
                             continue

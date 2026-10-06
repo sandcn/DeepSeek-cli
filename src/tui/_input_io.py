@@ -435,6 +435,36 @@ class InputIO:
         except (ValueError, OSError, TypeError):
             return None
 
+    def read_bulk(self, fd: int, max_bytes: int, timeout: float) -> bytes | None:
+        """一次读取最多 ``max_bytes`` 字节（括号粘贴等大块输入用）。
+
+        与 ``read_with_timeout`` 的差异：单次 syscall 批量读取（而非逐字节），
+        大段粘贴（KB~MB 级）从 O(n) 次 syscall 降为 O(n/批大小) 次。pending
+        有数据时优先消费（零 syscall），超出 ``max_bytes`` 的部分回写 pending
+        （后续解析正常消费）。
+
+        Returns:
+            读取到的字节（可能短读）；None — 超时/EOF/异常（无数据）。
+        """
+        if self.has_pending():
+            data = self.drain_pending()
+            if len(data) > max_bytes:
+                self.prepend_pending(data[max_bytes:])
+                data = data[:max_bytes]
+            return data
+        target_fd = self._fd if fd is None else fd
+        try:
+            ready, _, _ = select.select([target_fd], [], [], timeout)
+        except (ValueError, OSError, TypeError, AttributeError):
+            return None
+        if not ready:
+            return None
+        try:
+            raw = os.read(target_fd, max_bytes)
+            return raw if raw else None
+        except (ValueError, OSError, TypeError):
+            return None
+
     def try_read_paste(self, fd: int, first_chars: str) -> str:
         """检测并读取粘贴内容（pending 感知 + 短窗口确认，无退避延迟）。
 

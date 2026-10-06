@@ -14,7 +14,7 @@ from src.tui._width import wcswidth_simple
 from .output import Line
 
 
-def _put_char(d: dict, col: int, ch: str, st) -> int:
+def _put_char(d: dict, col: int, ch: str, st, link: str | None = None) -> int:
     """将字符写入列键字典，返回下一个列键（零宽字符合并到前一键）。
 
     ★ P1-1 修复（review 方向）：零宽字符（组合标记 U+0300-036F、ZWJ
@@ -29,11 +29,15 @@ def _put_char(d: dict, col: int, ch: str, st) -> int:
     当前键（无基字符可依附，视觉上不渲染——保留既有行为）。CJK 宽字符
     （宽度 2）走常规路径，行为不变。
 
+    ★ 超链接（OSC 8）：条目为 3 元组 ``(ch, style, link)``——link 随字符
+    传播到帧输出（``_canvas_row_to_line`` 还原为 ``Line.append(link=)``）。
+
     Args:
-        d: 列键字典（``{col: (ch, style)}``）。
+        d: 列键字典（``{col: (ch, style, link)}``）。
         col: 当前列键。
         ch: 待写入字符。
         st: 字符样式。
+        link: 字符超链接 URL（None 表示无）。
 
     Returns:
         下一个列键（零宽字符合并后不递增）。
@@ -46,27 +50,43 @@ def _put_char(d: dict, col: int, ch: str, st) -> int:
         while prev_col >= 0 and prev_col not in d:
             prev_col -= 1
         if prev_col >= 0:
-            prev_ch, prev_st = d[prev_col]
+            prev_ch, prev_st, prev_link = _entry3(d[prev_col])
             # 样式合并：保留基字符样式；基字符无样式时用零宽字符自身样式
-            d[prev_col] = (prev_ch + ch, prev_st if prev_st is not None else st)
+            d[prev_col] = (
+                prev_ch + ch,
+                prev_st if prev_st is not None else st,
+                prev_link if prev_link is not None else link,
+            )
             return col
         # ★ P3（review）：行首零宽字符（无前键可依附）——修复前直接
         #   ``d[col] = (ch, st)`` 且 col 不递增，下一字符以同键覆盖 → 行首
         #   组合标记/ZWJ 丢失。现暂存于当前键，由下一非零宽字符合并（见下）。
         ex = d.get(col)
         if ex is not None and wcswidth_simple(ex[0]) == 0:
-            d[col] = (ex[0] + ch, ex[1] if ex[1] is not None else st)
+            d[col] = (ex[0] + ch, ex[1] if ex[1] is not None else st, link)
         else:
-            d[col] = (ch, st)
+            d[col] = (ch, st, link)
         return col
     # ★ P3（review）：当前键已有「零宽累积」（行首零宽暂存）时与基字符合并
     #   ——零宽字符不占列，与基字符同键（宽度以基字符计）。
     ex = d.get(col)
     if ex is not None and ex[0] and wcswidth_simple(ex[0]) == 0:
-        d[col] = (ex[0] + ch, st)
+        d[col] = (ex[0] + ch, st, link)
         return col + w
-    d[col] = (ch, st)
+    d[col] = (ch, st, link)
     return col + w
+
+
+def _entry3(entry) -> tuple:
+    """把画布条目归一化为 ``(ch, style, link)`` 三元组。
+
+    历史/第三方 host 可能写入 2 元组 ``(ch, style)``（``registry.paint_fn``
+    契约文档为 ``{col: (char, style)}``）——统一在此补齐 ``link=None``，
+    避免各处 unpack 分叉。
+    """
+    if len(entry) >= 3:
+        return entry[0], entry[1], entry[2]
+    return entry[0], entry[1], None
 
 
 def _line_as_dict(line: Line) -> dict:
@@ -87,14 +107,16 @@ def _line_as_dict(line: Line) -> dict:
         t = run.text
         if t.isascii() and t.isprintable():
             st = run.style
+            lk = run.link
             for ch in t:
-                d[col] = (ch, st)
+                d[col] = (ch, st, lk)
                 col += 1
         else:
             st = run.style
+            lk = run.link
             for ch in t:
                 # ★ P1-1 修复：零宽字符合并到前键（见 _put_char）
-                col = _put_char(d, col, ch, st)
+                col = _put_char(d, col, ch, st, lk)
     return d
 
 
@@ -184,7 +206,7 @@ def _merge_line(row, x: int, line: Line) -> dict:
     """
     if not line.runs:
         return _ensure_row_dict(row)
-    slice_: dict[int, tuple[str, Style | None]] = {}
+    slice_: dict[int, tuple[str, Style | None, str | None]] = {}
     col = x
     # ★ 性能（2026-08-05）：纯可打印 ASCII run 走批量快路径（宽度 == 字符数），
     #   免逐字符 ``wcswidth_simple`` 调用——画布合并热路径（TEXT 行合并、
@@ -192,14 +214,15 @@ def _merge_line(row, x: int, line: Line) -> dict:
     for run in line.runs:
         t = run.text
         st = run.style
+        lk = run.link
         if t.isascii() and t.isprintable():
             for ch in t:
-                slice_[col] = (ch, st)
+                slice_[col] = (ch, st, lk)
                 col += 1
         else:
             for ch in t:
                 # ★ P1-1 修复：零宽字符合并到前键（见 _put_char）
-                col = _put_char(slice_, col, ch, st)
+                col = _put_char(slice_, col, ch, st, lk)
     row = _ensure_row_dict(row)
     # ★ P2（review）：空行（row={}）场景跳过宽字符扫描（常见合并热路径
     #   零额外开销）；非空行还需检测「新宽字符覆盖既有第二列键」
@@ -380,7 +403,7 @@ def _canvas_row_to_line(row) -> Line:
         if col < prev:
             i += 1
             continue
-        ch, style = row[col]
+        ch, style, link = _entry3(row[col])
         if col > prev:
             line.append(" " * (col - prev))
             prev = col  # 空格段宽 = 空格数
@@ -403,8 +426,8 @@ def _canvas_row_to_line(row) -> Line:
                 continue
             if c2 != prev:
                 break
-            ch2, st2 = row[c2]
-            if st2 != style:
+            ch2, st2, lk2 = _entry3(row[c2])
+            if st2 != style or lk2 != link:
                 break
             buf += ch2
             if j + 1 < n and keys[j + 1] == c2 + 1:
@@ -414,7 +437,7 @@ def _canvas_row_to_line(row) -> Line:
             prev = c2 + cw
             j += 1
         if buf:
-            line.append(buf, style)
+            line.append(buf, style, link)
         i = j
     return line
 

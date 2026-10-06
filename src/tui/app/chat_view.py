@@ -190,12 +190,19 @@ _PREVIEW_STYLED_CACHE_MAX = 1024
 
 
 def _to_styled_runs(line) -> list[StyledRun]:
-    """AnsiLine → ink StyledRun 列表（Run.style 直接复用）。"""
+    """AnsiLine → ink StyledRun 列表（Run.style 直接复用 + URL 超链接附加）。"""
     runs = getattr(line, "runs", None)
     if runs is None:
         # 兼容纯文本行
-        return [StyledRun(str(line), None)]
-    return [StyledRun(r.text, r.style) for r in runs if r.text]
+        return _attach_links([StyledRun(str(line), None)])
+    return _attach_links([StyledRun(r.text, r.style) for r in runs if r.text])
+
+
+#: URL → OSC 8 超链接附加（模块级惰性绑定，避免导入期循环）。
+def _attach_links(runs: list[StyledRun]) -> list[StyledRun]:
+    """为 runs 中的 URL 附加终端可点击超链接（无 URL 时零开销返回原对象）。"""
+    from src.tui.ink.terminal import attach_links
+    return attach_links(runs)
 
 
 def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[StyledRun]]:
@@ -262,7 +269,7 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
             runs = _to_styled_runs(line)
             if kind == "reasoning" and runs:
                 # 推理行叠加 dim 基础样式（不斜体）
-                runs = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING)) for r in runs]
+                runs = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING), r.link) for r in runs]
             open_cache[line] = runs
         out.append(runs)
     # 未闭合块预览行（preview_lines 每次整体替换）——与 committed 行同样按
@@ -294,7 +301,7 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
             for wrapped in src_lines:
                 runs = _to_styled_runs(wrapped)
                 if kind == "reasoning" and runs:
-                    runs = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING)) for r in runs]
+                    runs = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING), r.link) for r in runs]
                 entry.append(runs)
             pcache[key] = entry
         out.extend(entry)

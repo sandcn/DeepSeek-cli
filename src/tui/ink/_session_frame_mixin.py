@@ -45,7 +45,7 @@ from src.tui.ink._cmd_priority import _get_cmd_id, _cmd_name
 from src.tui.ink import components as _components
 from src.tui.ink import hooks as _hooks
 from src.tui.ink import _cursor
-from src.tui.ink._animation import advance_animation
+from src.tui.ink._animation import advance_animation, has_active_animations
 
 _logger = logging.getLogger(__name__)
 
@@ -190,6 +190,49 @@ class _SessionFrameMixin:
         except Exception:
             _logger.debug("终端尺寸轮询异常", exc_info=True)
 
+    def _should_reuse_idle_frame(self) -> bool:
+        """本拍是否复用上一帧（空闲帧复用——30Hz 节拍不变，省空转重建开销）。
+
+        全部条件满足才复用（任一不满足 → 正常重建，零行为变化）：
+          1. 宿主注入空闲预测函数（``set_idle_frame_predicate``）且返回 True
+             ——组件树内容在无输入/无命令时是否保持静态由宿主判定（框架无法
+             推断宿主的时间驱动动画）；
+          2. 已有上一帧（``_last_frame``）；
+          3. 无待处理命令（``_cmd_queue`` 为空——命令应用会改模型且置脏）；
+          4. 非脏（``_dirty``，输入/命令/系统统计等变更标记）；
+          5. 无 resize 挂起、无底部重绘请求；
+          6. 无激活的 ``useAnimation`` 动画（动画需逐帧推进）。
+        """
+        if getattr(self, "_last_frame", None) is None:
+            return False
+        predicate = getattr(self, "_idle_frame_predicate", None)
+        if predicate is None:
+            return False
+        # 本拍有变更（输入/命令/请求重绘，由 ``_should_render`` 落位）→ 重建
+        if not getattr(self, "_idle_ok", False):
+            return False
+        if getattr(self, "_dirty", False) or getattr(self, "_resize_pending", False):
+            return False
+        try:
+            if self._cmd_queue is not None and not self._cmd_queue.empty():
+                return False
+        except Exception:
+            return False
+        redraw = getattr(self, "_bottom_redraw_requested", None)
+        if redraw is not None and redraw.is_set():
+            return False
+        try:
+            if has_active_animations(ctx=getattr(self, "_hook_ctx", None)):
+                return False
+        except Exception:
+            _logger.debug("has_active_animations 探测异常", exc_info=True)
+            return False
+        try:
+            return bool(predicate())
+        except Exception:
+            _logger.debug("空闲预测函数异常（本帧不复用）", exc_info=True)
+            return False
+
     def _render_frame_impl(self) -> None:
         if self._build_tree is None:
             return
@@ -280,9 +323,20 @@ class _SessionFrameMixin:
         if getattr(self, "_resize_pending", False):
             self._resize_pending = False
             self._ink_renderer.reset(full=True)
-        element = self._build_tree(self._model, width)
-        self._reconciler.render(self._root_fiber, element, width, self._width_cache.get_height())
-        frame = _components.render_frame(self._root_fiber, width)
+        # ★ 空闲帧复用（2026-10-07 性能优化，用户需求）：宿主声明的「静态
+        #   状态」（``set_idle_frame_predicate``）下跳过组件树重建/调和/布局/
+        #   绘制，直接复用上一帧——**帧号照常推进（对外仍恒定 30Hz）**，仅省
+        #   空转 CPU（无变化帧的重建开销 ≈ 1ms/帧）。判定条件全部满足才复用：
+        #   预测函数返回 True + 无待处理命令 + 非脏 + 无 resize + 无重绘请求 +
+        #   无激活动画（``useAnimation``）。未注入预测函数时恒不复用（默认
+        #   行为与既有 30Hz 全量渲染完全一致）。
+        if self._should_reuse_idle_frame():
+            frame = self._last_frame
+        else:
+            element = self._build_tree(self._model, width)
+            self._reconciler.render(self._root_fiber, element, width, self._width_cache.get_height())
+            frame = _components.render_frame(self._root_fiber, width)
+            self._last_frame = frame
         # ★ 输出历史接线（committed 内容行数）：InkRenderer 只回调 committed
         #   区的**新增内容行**（修复前用文档末尾行区间推断 → 状态栏/输入区/
         #   时间线被反复写入输出历史且真正内容行漏记）。committed_lines 为

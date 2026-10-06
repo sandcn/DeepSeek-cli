@@ -34,7 +34,7 @@ _logger = logging.getLogger(__name__)
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_clamp_index 原本地定义（与
 #   _interactive_common/tabs/search_input/tree/listview 逐字重复）——收敛至
 #   _widget_common 单一真源。
-from ._widget_common import _clamp_index
+from ._widget_common import _clamp_index, use_wheel_scroll
 
 __all__ = ["Menu"]
 
@@ -240,6 +240,16 @@ def Menu(props: dict) -> Element:
         return False
 
     use_input(_handle, focus)
+
+    def _wheel(delta: int) -> None:
+        """鼠标滚轮：按可选顺序移动菜单光标（跳过禁用/分组标题）。"""
+        cur = _clamp_index(cursor_ref.current, len(items))
+        new = _next_selectable(items, cur, delta)
+        if new != cur:
+            cursor_ref.current = new
+            set_cursor(new)
+
+    use_wheel_scroll(_wheel, bool(focus))
 
     # ★ 健壮性（渲染错误防御）：items 为空时渲染空 TEXT（h=0 不占行）——
     #   修复前渲染期钳制 ``_clamp_index(cursor, 0)`` 返回 0 后

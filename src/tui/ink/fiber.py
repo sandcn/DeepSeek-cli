@@ -167,6 +167,27 @@ class PasteHook:
 
 
 @dataclass
+class MouseHook:
+    """useMouseInput hook 节点（鼠标事件独立通道，框架扩展）。
+
+    鼠标事件（SGR 1006：滚轮/点击/拖拽/移动）与键盘事件走同一 router，
+    但仅在存在 active MouseHook 时会被消费（未声明鼠标交互的组件树零影响，
+    事件放行给 InputDispatcher 的兜底路径）。
+
+    Attributes:
+        handler: 鼠标处理回调 ``(event) -> bool``（True=消费）。
+        is_active: 是否参与鼠标路由（False 时 hook 不参与）。
+        focused: 焦点仲裁标志（与 InputHook 一致——焦点组件优先收鼠标事件）。
+        seq: 稳定递增序号（同 InputHook）。
+    """
+
+    handler: Callable[[Any], bool] | None = None
+    is_active: bool = True
+    focused: bool = True
+    seq: int = field(default_factory=lambda: next(_HOOK_SEQ))
+
+
+@dataclass
 class Context:
     """create_context 创建的 context 对象。
 
@@ -203,7 +224,7 @@ class SyncStoreHook:
 
 
 #: hook 节点联合类型（Python 3.9 兼容：不用 `X | Y` 运行时求值）。
-HookNode = Union[StateHook, RefHook, EffectHook, MemoHook, InputHook, SyncStoreHook, PasteHook, FullscreenHook]
+HookNode = Union[StateHook, RefHook, EffectHook, MemoHook, InputHook, SyncStoreHook, PasteHook, FullscreenHook, MouseHook]
 
 
 @dataclass
@@ -295,6 +316,10 @@ class Fiber:
     #: TEXT 布局换行结果（``list[Line]``）——``_measure`` 计算、``_paint``
     #: 复用（免二次包裹）；行宽/内容变化时由 ``_measure`` 重算覆盖。
     _wrapped_lines: Any = None
+    #: 容器几何解析缓存 ``(props, 原始值快照, 结果)``——``_layout_measure``
+    #: 维护（无变化帧跳过 padding/border/margin/gap 重复解析；props 引用或
+    #: 原始值变化即失效，见 ``_container_geometry``）。
+    _geom_cache: Any = None
     #: 输入区换行布局缓存 ``((text, max_input), (rows, wrapped_by_logical))``
     #: ——``input_area`` / ``_cursor`` 共享（同文本/宽度帧零重复换行计算）。
     _input_layout_cache: Any = None
@@ -391,6 +416,7 @@ __all__ = [
     "InputHook",
     "PasteHook",
     "FullscreenHook",
+    "MouseHook",
     "SyncStoreHook",
     "Context",
     "HookNode",

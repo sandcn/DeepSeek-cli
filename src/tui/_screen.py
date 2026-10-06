@@ -6,9 +6,14 @@ SIGWINCH 信号处理等基础设施。所有函数为纯字符串返回或
 
 设计模式: 外观（Facade）— 作为所有终端 I/O 的统一入口。
 
-遗留标注（2026-07-31 方向F）：鼠标输入不支持 / bracketed paste 无协议——
-功能增强项，不在本次架构改进范围，**标记 P2 遗留**（后续如需鼠标支持须引入
-终端能力协商与协议解析，评估后再实施）。
+遗留标注（2026-07-31 方向F；**2026-10-07 已实现，标注更新**）：鼠标输入与
+bracketed paste 协议原标记为 P2 遗留（本模块不提供）。现已落地：
+  - 括号粘贴：``src.tui.ink.terminal``（``CSI ?2004h/l``）+ TuiConfig
+    ``bracketed_paste``（默认开启，装配时经 InkSession 协商）；本模块
+    ``_screen`` 仍只负责基础终端 I/O，协议序列集中在 ink.terminal 单一真源。
+  - 鼠标：``ink.terminal``（SGR 1006 上报序列）+ ``_input_parser``
+    （``decode_sgr_mouse``）+ ``ink.useMouseInput``（组件消费）+ 宿主兜底
+    回调（``Input.set_mouse_fallback_callback``）。
 
 模块边界（2026-08-05 架构优化）：字符显示宽度计算（CJK/Emoji/零宽/ANSI 跳过/
 单字符缓存）已拆分至 ``_width.py``（纯计算职责，Layer 0 零依赖）；本模块聚焦

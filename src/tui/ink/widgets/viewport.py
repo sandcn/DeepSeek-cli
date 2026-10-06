@@ -27,12 +27,14 @@ from ..hooks import use_input, use_state
 from src.tui.core.style import Style
 from ..helpers import visual_width
 from ._display_common import _truncate_to_width
-from ._widget_common import _border_count, _call, _outer_height
+from ._widget_common import _border_count, _call, _outer_height, use_wheel_scroll
 
 __all__ = ["Viewport"]
 
 _TRACK_CHAR = "│"
 _THUMB_CHAR = "█"
+#: 单个滚轮步进的滚动行数（终端滚轮一格 3 行，与多数分页器一致）。
+_WHEEL_LINES = 3
 
 #: Viewport 自有 props（不透传给 BOX）。
 _VIEWPORT_ONLY_KEYS = frozenset({
@@ -161,6 +163,9 @@ def Viewport(props: dict) -> Element:
         return False
 
     use_input(_handle, {"isActive": bool(active)})
+    # ★ 鼠标滚轮（2026-10-07 鼠标支持）：滚轮上下各滚动 _WHEEL_LINES 行
+    #   （视口控件是纯滚动语义——不改内容，只改偏移）。
+    use_wheel_scroll(lambda delta: _apply(offset + delta * _WHEEL_LINES), bool(active))
 
     line_style = props.get("lineStyle")
     bar_style = props.get("scrollbarStyle") or Style(fg=240)

@@ -15,13 +15,53 @@ import logging
 from collections import OrderedDict
 from typing import Any, Callable
 
-from .fiber import InputHook, FullscreenHook
+from .fiber import InputHook, FullscreenHook, MouseHook
 from ._hooks_core import _next_hook
 from ._hook_context import HookContext, current_context
 
 # ★ logger 名保持 ``src.tui.ink.hooks``（模块拆分后日志命名不变，见
 #   _hooks_core.py 注释）。
 _logger = logging.getLogger("src.tui.ink.hooks")
+
+
+def useMouseInput(
+    handler: Callable[[Any], bool],
+    options: "bool | dict | None" = None,
+) -> None:
+    """声明鼠标事件处理（框架扩展，React Ink 生态无对应物）。
+
+    鼠标事件经 SGR 1006 协议解析为 ``KeyEvent``（``kind="mouse"``，含
+    ``mouse_button``/``mouse_action``/``mouse_wheel``/``mouse_x``/``mouse_y``/
+    ``mouse_modifiers``）。仅当组件树存在 active MouseHook 时鼠标事件被路由
+    到 handler；否则放行给 InputDispatcher 兜底路径（滚轮滚动等）。
+
+    使用前提：终端需开启鼠标上报（``render({mouse: True})`` 或宿主应用
+    自行写入 SGR 序列）——未开启时不会有鼠标事件到达。
+
+    调用形态（与 use_input 一致）：
+      - ``useMouseInput(handler)``——默认激活；
+      - ``useMouseInput(handler, is_active)``——bool 第二参；
+      - ``useMouseInput(handler, {"isActive": bool})``。
+
+    Args:
+        handler: 鼠标处理回调 ``(event) -> bool``（True=消费事件）。
+        options: bool 或 ``{"isActive": bool}``。
+
+    Returns:
+        None。
+    """
+    if isinstance(options, dict):
+        is_active = bool(options.get("isActive", True))
+    else:
+        is_active = True if options is None else bool(options)
+    hook = _next_hook(MouseHook, handler, is_active)
+    hook.handler = handler
+    hook.is_active = is_active
+    return None
+
+
+#: 别名（snake_case，与 use_input 命名风格一致）
+use_mouse_input = useMouseInput
 
 
 def set_input_router_callback(cb: Callable[[Any], None] | None, ctx: "HookContext | None" = None) -> None:
@@ -301,10 +341,12 @@ def _event_input(event) -> str:
 def _event_key(event) -> dict:
     """React Ink (input, key) 的第二参：按键信息字典（完整字段）。
 
-    React Ink v6 key 字段：leftArrow/rightArrow/upArrow/downArrow/return/
+    React Ink v6/v7 key 字段：leftArrow/rightArrow/upArrow/downArrow/return/
     escape/ctrl/shift/tab/backspace/delete/pageDown/pageUp/home/end/meta/
-    super/hyper/capsLock/numLock/eventType。super/hyper/capsLock/numLock 需
-    kitty keyboard 协议（本框架未实现——恒 False）；eventType 恒 None。
+    super/hyper/capsLock/numLock/eventType。super/hyper/capsLock/numLock 与
+    eventType 需 kitty 键盘协议（本框架已支持——``render({kittyKeyboard})``
+    启用后经 ``KeyEvent.kitty_bits``/``event_type`` 读取；非 kitty 事件保持
+    False/None）。
     """
     kind = getattr(event, "kind", "")
     modifier = getattr(event, "modifier", 0) or 0
@@ -371,6 +413,8 @@ __all__ = [
     "set_input_router_callback",
     "_publish_input_router",
     "use_input",
+    "useMouseInput",
+    "use_mouse_input",
     "use_fullscreen",
     "use_modal",
     "_compat_handler_cache",

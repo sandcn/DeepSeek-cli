@@ -178,6 +178,13 @@ class InputDispatcher:
         # TuiConfig.drop_path_normalize（RC: tui_drop_path_normalize）。
         self._drop_path_normalize: bool = True
 
+        # ── 鼠标事件兜底回调（2026-10-07 框架扩展：鼠标支持） ──
+        # 鼠标事件（SGR 1006：滚轮/点击/拖拽）经 input router 优先分发到
+        # ``useMouseInput`` 组件；未被任何组件消费时落到此处注入的兜底回调
+        # （宿主可接滚轮滚动等全局行为）。None 缺省时鼠标事件 no-op（不写
+        # 输入缓冲——鼠标不是文本输入）。
+        self._mouse_fallback_callback = None
+
     # ═══════════════════════════════════════════════════════
     # 中断与特殊按键处理（render 线程调用）
     # ═══════════════════════════════════════════════════════
@@ -599,6 +606,11 @@ class InputDispatcher:
                         #   （``_dispatch_key_event`` 已有 enter/page_up/page_down
                         #   分支，仅 ESC 路径入口元组遗漏。）
                         "enter", "page_up", "page_down",
+                        # ★ 2026-10-07（括号粘贴 / 鼠标支持）：粘贴事件
+                        #   （``ESC[200~…ESC[201~``）与 SGR 鼠标事件
+                        #   （``ESC[<b;x;yM/m``）经 ESC 路径到达——修复前不在
+                        #   分发元组内被静默忽略（粘贴内容丢失/鼠标完全无响应）。
+                        "paste", "mouse",
                     ):
                         self._dispatch_key_event(event)
                     # unknown 静默忽略；csi_u 进分发 debug no-op（router 可消费）
@@ -878,6 +890,21 @@ class InputDispatcher:
             # 方向A 步骤1：功能键已先行询问 input router；未消费 no-op
             # （不再静默丢弃——router 可经 useInput 钩子消费）。
             _logger.debug("%s 功能键未被 input router 消费", kind)
+        elif kind == "paste":
+            # 括号粘贴（bracketed paste）内容未被 usePaste 组件消费 → 走既有
+            # 粘贴插入路径（拖放路径规范化 + 输入缓冲 + 自动补全），与未启用
+            # 括号粘贴时的「多字符 char」启发式行为一致。
+            if event.char:
+                self._insert_pasted_text(event.char)
+        elif kind == "mouse":
+            # 鼠标事件未被 useMouseInput 组件消费 → 兜底回调（宿主注入的
+            # 滚轮滚动等全局行为）；未注入时 no-op（鼠标不写输入缓冲）。
+            cb = self._mouse_fallback_callback
+            if cb is not None:
+                try:
+                    cb(event)
+                except Exception:
+                    _logger.debug("鼠标兜底回调异常", exc_info=True)
         elif kind == "backspace":
             # P1-1：modifier==1 表示「词删除」（Ctrl+W / ESC DEL / CSI u 显式
             # Alt+Backspace \x1b[8;3u 传统路径）；modifier==0 表示普通退格
@@ -954,8 +981,9 @@ class InputDispatcher:
     def _insert_pasted_text(self, text: str) -> None:
         """插入粘贴文本（拖放文件路径规范化 → 输入缓冲 → 自动补全）。
 
-        终端拖放文件时把路径以「粘贴」形式注入 stdin（本项目未启用 bracketed
-        paste，终端注入即整段突发字符，见 ``try_read_paste``）。默认开启
+        终端拖放文件时把路径以「粘贴」形式注入 stdin（括号粘贴模式启用时为
+        ``kind="paste"`` 事件，未启用时为整段突发字符——两者均汇入本方法）。
+        默认开启
         （``TuiConfig.drop_path_normalize``）时：粘贴文本整体判为本地路径
         列表则规范化后插入（去引号/还原反斜杠转义/file URI 解析/Windows→POSIX
         转换；多文件每行一个；含空格路径双引号包裹）；非路径文本（自然语言、
@@ -1312,6 +1340,14 @@ class InputDispatcher:
     def get_drop_path_normalize(self) -> bool:
         """获取拖放文件路径规范化开关（公开访问器，测试/装配可用）。"""
         return self._drop_path_normalize
+
+    def set_mouse_fallback_callback(self, cb) -> None:
+        """注入鼠标事件兜底回调（宿主接线：滚轮滚动等全局行为）。
+
+        鼠标事件先经 input router 分发给 ``useMouseInput`` 组件；未被任何
+        组件消费时调用本回调。None 清除（默认：鼠标事件 no-op）。
+        """
+        self._mouse_fallback_callback = cb
 
     # ═══════════════════════════════════════════════════════
     # 窗口期 Enter 提交意图捕获（editmsg「很多上文时按回车不能编辑」修复）

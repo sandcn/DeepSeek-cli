@@ -38,6 +38,7 @@ from src.tui._screen import (
 )
 from .reconciler import Reconciler
 from .renderer import InkRenderer
+from .terminal import RawModeController, TerminalModeManager
 from . import hooks as _hooks
 # ★ 命令优先级策略（方向B 拆分，2026-08-05）：优先级常量与映射函数自
 #   ._cmd_priority 导入（模块级 re-export——旧导入路径
@@ -251,29 +252,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._exit_result = None
         #: render({onRender}) 每帧渲染后回调（React Ink v6 RenderMetrics）。
         self._on_render_callback: Callable | None = None
-        _hooks.set_app_control(
-            {"exit": self.request_exit, "clear": self.request_clear},
-            ctx=self._hook_ctx,
-        )
-        # ★ useStdin/useStdout/useStderr（完善 react ink）：session 注入惰性
-        #   访问器——stdin 为 Input 实例（set_input 后可用），stdout 为渲染器
-        #   输出流，stderr 为 sys.__stderr__（紧急路径一致）。
-        _hooks.set_std_accessors(
-            lambda: self._input,
-            lambda: self._ink_renderer.stream,
-            lambda: sys.__stderr__,
-            ctx=self._hook_ctx,
-        )
-        # ★ React Ink v6 hooks（方向 E）：session 注入 window size accessor /
-        #   cursor 定位 / 渲染 flush / 终端挂起 回调——useWindowSize/useCursor/
-        #   useApp（waitUntilRenderFlush/suspendTerminal）读取。
-        _hooks.set_window_size_accessor(
-            lambda: (self._width_cache.get_width(), self._width_cache.get_height()),
-            ctx=self._hook_ctx,
-        )
-        _hooks.set_cursor_position_fn(self._set_ink_cursor_position, ctx=self._hook_ctx)
-        _hooks.set_render_flush_fn(self._wait_render_flush, ctx=self._hook_ctx)
-        _hooks.set_suspend_terminal_fn(self._suspend_terminal, ctx=self._hook_ctx)
+        self._wire_hooks()
         # ★ P5：input-area fiber 引用缓存（方向2 P5）——_render_frame 仅在失效时
         #   重建（None/deleted/类型不符），_position_cursor 复用（避免每帧全树
         #   递归查找 input-area）。
@@ -303,8 +282,62 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._last_frame_lines: int = 0
         #: stderr 流（render() stderr 选项；useStderr().stderr 与 debug 帧统计共用）
         self._stderr_stream = sys.__stderr__
+        # ── 终端能力（React Ink v7 对齐 + 框架扩展） ──
+        # 备用屏/括号粘贴/鼠标模式经 TerminalModeManager 统一开关（写序列 +
+        # 幂等还原）；raw 模式经 RawModeController（termios，不可用时降级）。
+        # 由 render() 选项（alternateScreen / interactive / mouse）配置，
+        # useStdin()/usePaste()/useMouseInput() 在组件侧读取能力状态。
+        self._terminal_modes = TerminalModeManager(self._ink_renderer.stream)
+        self._raw_mode = None
+        self._interactive: bool = False
+        self._raw_mode_supported: bool = False
+        self._bracketed_paste_active: bool = False
+        #: 鼠标上报是否启用（render() mouse 选项；mouse 事件路由据此放行）
+        self._mouse_enabled: bool = False
+        #: 已请求的终端模式（resume 时重新启用；exit_terminal_modes 只关不删）
+        self._requested_modes: dict[str, bool] = {}
+        # ── 空闲帧复用（2026-10-07 性能优化） ──
+        #: 最近一帧（复用路径直接重放；None = 尚未渲染过任何帧）
+        self._last_frame = None
+        #: 宿主注入的「静态状态」预测函数（None = 恒不复用，默认行为与既有
+        #: 恒定 30Hz 全量渲染完全一致）
+        self._idle_frame_predicate = None
+        #: 本拍「无变更」标记（``_should_render`` 写入；空闲帧复用的前置条件）
+        self._idle_ok: bool = False
 
     # ── 注入 ─────────────────────────────────────────
+
+    def _wire_hooks(self) -> None:
+        """hooks 接线（会话级注入，``__init__`` 拆分）。
+
+        统一把会话能力注入**本会话的 HookContext**（多会话隔离——修复前写
+        模块级全局，第二个会话构造即覆盖第一个）：
+
+          - ``useApp``：exit/clear 回调；
+          - ``useStdin/useStdout/useStderr``：惰性流访问器（stdin 为 Input
+            实例、stdout 为渲染器输出流、stderr 为 ``sys.__stderr__``）；
+          - ``useWindowSize``：终端尺寸访问器；
+          - ``useCursor``：光标定位函数；
+          - ``useApp().waitUntilRenderFlush`` / ``suspendTerminal``：渲染 flush
+            等待与终端挂起回调。
+        """
+        _hooks.set_app_control(
+            {"exit": self.request_exit, "clear": self.request_clear},
+            ctx=self._hook_ctx,
+        )
+        _hooks.set_std_accessors(
+            lambda: self._input,
+            lambda: self._ink_renderer.stream,
+            lambda: sys.__stderr__,
+            ctx=self._hook_ctx,
+        )
+        _hooks.set_window_size_accessor(
+            lambda: (self._width_cache.get_width(), self._width_cache.get_height()),
+            ctx=self._hook_ctx,
+        )
+        _hooks.set_cursor_position_fn(self._set_ink_cursor_position, ctx=self._hook_ctx)
+        _hooks.set_render_flush_fn(self._wait_render_flush, ctx=self._hook_ctx)
+        _hooks.set_suspend_terminal_fn(self._suspend_terminal, ctx=self._hook_ctx)
 
     def set_input(self, input_instance) -> None:
         """注入 Input 实例（render 循环输入分发）。
@@ -354,6 +387,112 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         """
         self._exit_on_ctrl_c = bool(enabled)
 
+    # ── 终端能力（React Ink v7 对齐：alternateScreen/interactive + 扩展） ──
+
+    def set_terminal_modes(self, *, alternate_screen: bool = False, mouse: bool = False,
+                           bracketed_paste: bool | None = None) -> None:
+        """配置并启用终端模式（render() 选项）。
+
+        Args:
+            alternate_screen: 启用备用屏缓冲（退出时还原）。
+            mouse: 启用鼠标上报（SGR 扩展坐标）。
+            bracketed_paste: 括号粘贴（None=按 interactive 自动决定）。
+        """
+        if bracketed_paste is None:
+            bracketed_paste = self._interactive
+        self._requested_modes = {
+            "alternateScreen": bool(alternate_screen),
+            "mouse": bool(mouse),
+            "bracketedPaste": bool(bracketed_paste),
+        }
+        self._apply_requested_modes()
+
+    def _apply_requested_modes(self) -> None:
+        """按已记录请求启用终端模式（set_terminal_modes / resume 共用）。
+
+        ★ 防御：``_LifecycleStub``（``object.__new__(InkSession)`` 借用生命周期
+        方法的测试桩）无本字段——缺失时跳过（与 ``_hook_ctx`` 同模式）。
+        """
+        modes = getattr(self, "_terminal_modes", None)
+        requested = getattr(self, "_requested_modes", None) or {}
+        if modes is None:
+            return
+        for name, wanted in requested.items():
+            if wanted:
+                modes.enable(name)
+        self._mouse_enabled = bool(requested.get("mouse"))
+        self._bracketed_paste_active = bool(
+            requested.get("bracketedPaste")
+        ) and modes.is_enabled("bracketedPaste")
+
+    def exit_terminal_modes(self) -> None:
+        """还原全部终端模式（stop/suspend/unmount 路径，幂等）。"""
+        modes = getattr(self, "_terminal_modes", None)
+        if modes is not None:
+            modes.disable_all()
+        self._bracketed_paste_active = False
+
+    def write_terminal_sequence(self, data: str) -> None:
+        """写入一次性终端序列（窗口标题/光标形状等）。"""
+        self._terminal_modes.write_raw(data)
+
+    def set_interactive(self, enabled: bool, stdin_fd: int | None = None) -> None:
+        """声明本会话是否交互模式（render() ``interactive`` 选项解析结果）。
+
+        interactive=True 时：进入 raw 模式（termios cbreak，stdin 为 TTY 时）
+        并把 ``useStdin().isRawModeSupported`` 置 True；False 时不触碰终端
+        （非交互环境/管道输入安全降级）。
+        """
+        self._interactive = bool(enabled)
+        if stdin_fd is None and self._input is not None:
+            stdin_fd = self._input_fd()
+        self._raw_mode = RawModeController(stdin_fd) if (enabled and stdin_fd is not None) else None
+        self._raw_mode_supported = bool(self._raw_mode is not None and self._raw_mode.supported)
+        _hooks.set_raw_mode_accessor(
+            lambda: self._raw_mode_supported,
+            self.set_raw_mode,
+            ctx=self._hook_ctx,
+        )
+
+    def _input_fd(self) -> int | None:
+        """尽力取得 stdin 文件描述符（Input 外观 / 原始流均可）。"""
+        for attr in ("fileno", "fd"):
+            value = getattr(self._input, attr, None)
+            if callable(value):
+                try:
+                    return int(value())
+                except Exception:
+                    continue
+            elif isinstance(value, int):
+                return value
+        return None
+
+    @property
+    def raw_mode_supported(self) -> bool:
+        """本会话是否支持 raw 模式切换（useStdin().isRawModeSupported）。"""
+        return self._raw_mode_supported
+
+    def set_raw_mode(self, enabled: bool) -> bool:
+        """切换 raw 模式（useStdin().setRawMode / session 生命周期内部调用）。
+
+        未配置 raw 支持（非交互/无 fd）时返回 False（不抛异常，官方
+        ``isRawModeSupported`` 语义的降级路径）。用户显式关闭 raw
+        （``setRawMode(False)``）后渲染线程不再自动重开；``resume()`` 重新
+        进入交互时按 ``_interactive`` 恢复。
+        """
+        raw_mode = getattr(self, "_raw_mode", None)
+        if raw_mode is None:
+            return False
+        if enabled:
+            return raw_mode.enable()
+        return raw_mode.disable()
+
+    @property
+    def interactive(self) -> bool:
+        """交互模式标志（render() interactive 解析结果，None 表示自动）。"""
+        return self._interactive
+
+
     def _on_input_router(self, router) -> None:
         """use_input composite router 发布回调（reconciler 每帧调用）。
 
@@ -370,6 +509,19 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
     def set_model(self, model) -> None:
         """替换模型（测试用）。"""
         self._model = model
+
+    def set_idle_frame_predicate(self, predicate: Callable[[], bool] | None) -> None:
+        """注入「空闲帧复用」预测函数（宿主接线，2026-10-07 性能优化）。
+
+        ``predicate() -> bool``：True 表示**当前宿主处于静态状态**——组件树
+        在无输入/无命令时不会因时间推进而改变（无呼吸动画/spinner/流式占位
+        等时间驱动内容）。会话据此在本拍跳过组件树重建/调和/布局/绘制并复用
+        上一帧（帧号照常推进，对外仍恒定 30Hz），降低空闲空转 CPU。
+
+        None（默认）表示不复用——行为与既有「恒定 30Hz 全量渲染」完全一致
+        （宿主未声明静态性时框架不擅自跳过渲染）。
+        """
+        self._idle_frame_predicate = predicate
 
     def set_build_tree(self, fn: Callable | None) -> None:
         self._build_tree = fn
@@ -484,6 +636,8 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             self._bottom_redraw_requested.set()
             return
         try:
+            # 清屏后立即重建（显式渲染请求）→ 禁用空闲帧复用
+            self._idle_ok = False
             self._render_frame()
         except Exception:
             # ★ P2-1（review 方向）：渲染失败后补置 ``_dirty``——渲染线程
@@ -545,6 +699,8 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                     _logger.debug("request_bottom_redraw 同步渲染跳过（输出锁不可用）")
                     return
                 try:
+                    # 同步渲染为显式请求（重绘请求）→ 禁用空闲帧复用
+                    self._idle_ok = False
                     self._render_frame()
                 except Exception:
                     _logger.debug("request_bottom_redraw 同步渲染异常", exc_info=True)
@@ -606,6 +762,8 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             acquired = lock.acquire(timeout=max(0.1, float(timeout)))
             if acquired:
                 try:
+                    # 同步渲染为显式请求 → 禁用空闲帧复用（须重建以发布新 router）
+                    self._idle_ok = False
                     self._render_frame()
                     return True
                 except Exception:
@@ -852,6 +1010,11 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   自行终止（状态不一致）。
         self._exit_requested = False
         self._render_running = True
+        # ★ 交互模式：进入 raw 模式（render() interactive=True 且 stdin 为 TTY
+        #   时；termios 不可用/非 TTY 自动降级，不影响渲染循环）。
+        raw_mode = getattr(self, "_raw_mode", None)
+        if getattr(self, "_interactive", False) and raw_mode is not None:
+            raw_mode.enable()
         # 请求首帧渲染：resume 后立即重绘（prev 已重置 → 全量写入）
         self._bottom_redraw_requested.set()
         self._dirty = True
@@ -895,6 +1058,12 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             unregister_sigwinch_callback(self)
         except Exception:
             _logger.debug("stop 注销 SIGWINCH 回调异常", exc_info=True)
+        # ★ 终端能力还原：退出 raw 模式 + 关闭备用屏/括号粘贴/鼠标上报
+        #   （幂等；未启用时无操作）——终端交还调用方时状态干净。
+        raw_mode = getattr(self, "_raw_mode", None)
+        if raw_mode is not None:
+            raw_mode.disable()
+        self.exit_terminal_modes()
 
     def flush(self, timeout: float | None = 5.0) -> None:
         """等待队列处理完成。
@@ -978,6 +1147,12 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 self._render_version,
             )
         self._ink_renderer.suspend()
+        # ★ 终端交还：交互工具/子进程独占终端前还原 raw 模式与终端模式
+        #   （备用屏/括号粘贴/鼠标）——子进程继承干净终端；resume() 重新进入。
+        raw_mode = getattr(self, "_raw_mode", None)
+        if raw_mode is not None:
+            raw_mode.disable()
+        self.exit_terminal_modes()
         # ★ 2026-08-15（短内容丢失修复）：suspend 清空队列时**保留内容命令**
         #   （思考/回答/工具卡等）——模型在交互工具挂起期间输出的短内容命令
         #   不丢弃，resume 后渲染线程处理显示（修复前无条件丢弃 → 偶发丢失）。
@@ -1021,8 +1196,15 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         #   exit 后 resume 重启会话时首帧即退出。
         self._exit_requested = False
         self._ink_renderer.reset()
+        # ★ 终端能力恢复（suspend 已还原）：raw 模式 + 备用屏/括号粘贴/鼠标
+        raw_mode = getattr(self, "_raw_mode", None)
+        if getattr(self, "_interactive", False) and raw_mode is not None:
+            raw_mode.enable()
+        self._apply_requested_modes()
         # 立即渲染一帧（从当前位置重绘文档）
         try:
+            # 恢复渲染为显式请求 → 禁用空闲帧复用（模型可能在挂起期间变更）
+            self._idle_ok = False
             self._render_frame()
         except Exception:
             _logger.debug("resume 立即渲染异常", exc_info=True)
@@ -1352,7 +1534,12 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         Returns:
             True — 固定渲染本拍。
         """
+        redraw_requested = self._bottom_redraw_requested.is_set()
         self._bottom_redraw_requested.clear()
+        # ★ 空闲帧复用（2026-10-07）：捕获「本拍是否有变更」——``_dirty`` 在此
+        #   清除（供等待方判断变更已消费），空闲复用判定在 ``_render_frame_impl``
+        #   内需读取清除前的语义，故显式落位 ``_idle_ok``。
+        self._idle_ok = not self._dirty and not redraw_requested
         self._dirty = False
         return True
 

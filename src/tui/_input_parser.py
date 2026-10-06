@@ -27,6 +27,7 @@ KeyEvent 数据类随解析逻辑搬移至本模块（Input 层 re-export，公�
 from __future__ import annotations
 
 import os
+import re
 import select
 
 from src._compat import dataclass
@@ -80,6 +81,18 @@ class KeyEvent:
     kitty_bits: int = -1
     #: kitty 事件类型（``press``/``repeat``/``release``；空串表示未知/非 kitty）。
     event_type: str = ""
+    #: 鼠标事件（kind="mouse"，SGR 扩展坐标模式）：
+    #:   ``mouse_button``：left/middle/right/none（none=释放/移动无按键）
+    #:   ``mouse_action``：press/release/move/wheel
+    #:   ``mouse_wheel``：0 无 / -1 上滚 / +1 下滚
+    #:   ``mouse_x``/``mouse_y``：1-based 终端坐标（与 xterm 一致）
+    #:   ``mouse_modifiers``：位掩码 4=Shift / 8=Alt / 16=Ctrl
+    mouse_button: str = ""
+    mouse_action: str = ""
+    mouse_wheel: int = 0
+    mouse_x: int = 0
+    mouse_y: int = 0
+    mouse_modifiers: int = 0
 
 
 # ═══════════════════════════════════════════════════════════
@@ -103,6 +116,72 @@ _KITTY_MODIFIER_BITS = {
 #: ``:<event>`` 子参数）；「一切皆插件」：数据来自表现层数据注册表
 #: （``kitty_protocol`` 表），可按 Patch/Overlay 覆盖或禁用。
 _KITTY_EVENT_TYPES = {1: "press", 2: "repeat", 3: "release"}
+
+#: 括号粘贴（bracketed paste）起止标记：``ESC[200~`` … ``ESC[201~``。
+_PASTE_START_MARK = b"\x1b[200~"
+_PASTE_END_MARK = b"\x1b[201~"
+#: 粘贴内容读取超时（秒）——终端在同一次写入中送出整段粘贴，短窗口足够。
+_PASTE_READ_TIMEOUT = 0.05
+#: 单次粘贴最大字节数（4 MiB）——防无界缓冲/畸形输入流。
+_PASTE_MAX_BYTES = 4 * 1024 * 1024
+
+#: SGR 鼠标序列（``ESC[<b;x;yM`` 按下/移动、``ESC[<b;x;ym`` 释放）。
+_SGR_MOUSE_RE = re.compile(rb"\x1b\[<(\d+);(\d+);(\d+)([Mm])")
+#: SGR 鼠标按键码 → 名称（低 2 位）。
+_MOUSE_BUTTONS = {0: "left", 1: "middle", 2: "right", 3: "none"}
+#: SGR 鼠标修饰位（xterm 约定）。
+_MOUSE_MOD_SHIFT = 4
+_MOUSE_MOD_ALT = 8
+_MOUSE_MOD_CTRL = 16
+_MOUSE_WHEEL_BIT = 64
+_MOUSE_MOTION_BIT = 32
+
+
+def decode_sgr_mouse(raw: bytes) -> KeyEvent | None:
+    """解析 SGR 鼠标序列为 ``kind="mouse"`` KeyEvent（不匹配返回 None）。
+
+    按键码 ``b`` 编码（xterm SGR 1006）：
+      - 低 2 位：0=左键 / 1=中键 / 2=右键 / 3=释放（1000 模式）
+      - ``+64``：滚轮（64=上滚、65=下滚）
+      - ``+32``：移动（拖拽/悬停，配合 1002/1003 上报）
+      - ``+4/+8/+16``：Shift/Alt/Ctrl 修饰
+    终结符 ``M``=按下/移动、``m``=释放。
+    """
+    match = _SGR_MOUSE_RE.search(raw)
+    if match is None:
+        return None
+    try:
+        code = int(match.group(1))
+        x = int(match.group(2))
+        y = int(match.group(3))
+    except (TypeError, ValueError):
+        return None
+    final = match.group(4)
+    base = code & 0x03
+    wheel = 0
+    if code & _MOUSE_WHEEL_BIT:
+        action = "wheel"
+        wheel = -1 if base == 0 else 1
+        button = "none"
+    elif code & _MOUSE_MOTION_BIT:
+        action = "move"
+        button = _MOUSE_BUTTONS.get(base, "none")
+    elif final == b"m":
+        action = "release"
+        button = _MOUSE_BUTTONS.get(base, "none")
+    else:
+        action = "press"
+        button = _MOUSE_BUTTONS.get(base, "none")
+    return KeyEvent(
+        kind="mouse",
+        mouse_button=button,
+        mouse_action=action,
+        mouse_wheel=wheel,
+        mouse_x=x,
+        mouse_y=y,
+        mouse_modifiers=code & (_MOUSE_MOD_SHIFT | _MOUSE_MOD_ALT | _MOUSE_MOD_CTRL),
+        raw=bytes(raw),
+    )
 
 
 def _kitty_modifier_bits() -> dict:
@@ -481,6 +560,21 @@ class InputParser:
             # 方向1 B6：超时 → unknown raw 保留已读参数（原返回 b"\x1b[" 丢失）
             return KeyEvent(kind="unknown", raw=raw_acc)
 
+        # ── 括号粘贴（bracketed paste）：ESC[200~ … ESC[201~ ──
+        # 整段内容（含换行/控制字符）作为单个 pasted-text 事件到达，不再被
+        # 误判为逐字符按键（React Ink v7 自动启用括号粘贴后的官方语义）。
+        if raw_acc.startswith(_PASTE_START_MARK) or (
+            terminator == "~" and params and params[0] == 200
+        ):
+            text = self._read_bracketed_paste(fd)
+            return KeyEvent(kind="paste", char=text, raw=raw_acc)
+
+        # ── SGR 鼠标（xterm 1006）：ESC[<b;x;yM/m ──
+        if terminator in ("M", "m") and raw_acc.startswith(b"\x1b[<"):
+            mouse_event = decode_sgr_mouse(raw_acc)
+            if mouse_event is not None:
+                return mouse_event
+
         event = self._dispatch_csi(params, terminator, groups)
         if terminator == 'u':
             # ★ kitty 键盘协议元信息落位（统一在解析出口写入，避免在
@@ -494,6 +588,45 @@ class InputParser:
             event.kitty_bits = _kitty_bits_from_modifier(kitty_modifier)
             event.event_type = _kitty_event_type(groups)
         return event
+
+    def _read_bracketed_paste(self, fd: int) -> str:
+        """读取括号粘贴内容（``ESC[201~`` 结束标记前）并解码为文本。
+
+        终端在括号粘贴模式下把整段粘贴内容包在 ``ESC[200~`` … ``ESC[201~``
+        之间一次送出——内容可含换行/控制字符而不会被解释为按键。读取到结束
+        标记后，标记**之后**同批到达的字节回写 pending（后续解析正常消费）；
+        超时/超限（``_PASTE_MAX_BYTES``）时返回已读内容（不丢用户输入）。
+
+        Returns:
+            粘贴文本（UTF-8 解码，非法字节以 U+FFFD 兜底）。
+        """
+        buf = b""
+        while True:
+            idx = buf.find(_PASTE_END_MARK)
+            if idx >= 0:
+                content = buf[:idx]
+                trailing = buf[idx + len(_PASTE_END_MARK):]
+                if trailing:
+                    self._restore_byte(trailing)
+                return content.decode("utf-8", errors="replace")
+            if len(buf) >= _PASTE_MAX_BYTES:
+                break
+            chunk = self._read_paste_chunk(fd)
+            if chunk is None:
+                break
+            buf += chunk
+        # 未见结束标记（截断/超限）：丢弃标记前缀后返回已读内容
+        if buf.startswith(_PASTE_START_MARK):
+            buf = buf[len(_PASTE_START_MARK):]
+        return buf.decode("utf-8", errors="replace")
+
+    def _read_paste_chunk(self, fd: int) -> bytes | None:
+        """读取一段粘贴内容（io 注入时批量读，否则回退逐字节）。"""
+        if self._io is not None:
+            reader = getattr(self._io, "read_bulk", None)
+            if reader is not None:
+                return reader(fd, 65536, _PASTE_READ_TIMEOUT)
+        return self._read_with_timeout(fd, _PASTE_READ_TIMEOUT)
 
     def _read_ss3_sequence(self, fd: int) -> KeyEvent:
         """读取 SS3 序列（ESC O + 字符，通常为 F1-F4）。

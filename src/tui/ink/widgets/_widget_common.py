@@ -125,4 +125,49 @@ def _outer_height(props: dict, content_h: int, default_border: int = 1) -> int:
     return max(0, int(content_h)) + 2 * _border_count(props, default_border) + top + bottom
 
 
-__all__ = ["_clamp_index", "_children", "_color", "_call", "_border_count", "_vertical_padding", "_outer_height"]
+def wheel_delta(event) -> int:
+    """鼠标滚轮事件的滚动步数（上滚 ``-1`` / 下滚 ``+1`` / 非滚轮 ``0``）。
+
+    终端 SGR 鼠标上报的滚轮事件（``CSI <64;x;yM`` 上滚 / ``65`` 下滚）由
+    ``_input_parser.decode_sgr_mouse`` 解析为 ``KeyEvent(kind="mouse")``。
+    """
+    if getattr(event, "kind", "") != "mouse":
+        return 0
+    if getattr(event, "mouse_action", "") != "wheel":
+        return 0
+    try:
+        return int(getattr(event, "mouse_wheel", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def use_wheel_scroll(on_delta, is_active: bool = True) -> None:
+    """注册鼠标滚轮处理（``on_delta(steps)``；非滚轮鼠标事件放行）。
+
+    仅消费滚轮事件——点击/拖拽等未被本控件处理的鼠标事件返回 False，
+    继续走其他 ``useMouseInput`` 组件或宿主兜底回调（不阻断）。
+    """
+    from ..hooks import useMouseInput
+
+    def _handle(event) -> bool:
+        delta = wheel_delta(event)
+        if not delta:
+            return False
+        # 回调返回 False 表示「未实际移动」（如已在列表边界）→ 事件放行，
+        # 继续交给其他鼠标组件或宿主兜底回调；返回 None（无返回值）视为已处理。
+        return on_delta(delta) is not False
+
+    useMouseInput(_handle, {"isActive": bool(is_active)})
+
+
+__all__ = [
+    "_clamp_index",
+    "_children",
+    "_color",
+    "_call",
+    "_border_count",
+    "_vertical_padding",
+    "_outer_height",
+    "wheel_delta",
+    "use_wheel_scroll",
+]

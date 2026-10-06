@@ -36,6 +36,9 @@ _SLOTS = (
     "stdin_accessor",
     "stdout_accessor",
     "stderr_accessor",
+    # ── 终端能力（useStdin().setRawMode / isRawModeSupported） ──
+    "raw_mode_supported",
+    "raw_mode_callback",
     # ── 会话注入 ──
     "input_router_callback",
     "app_control",
@@ -79,6 +82,8 @@ class HookContext:
         self.stdin_accessor = None
         self.stdout_accessor = None
         self.stderr_accessor = None
+        self.raw_mode_supported = False
+        self.raw_mode_callback = None
         self.input_router_callback = None
         self.app_control = None
         self.render_flush_fn = None

@@ -102,6 +102,18 @@ from .error_boundary import ErrorBoundary, create_error_boundary
 from .extra import Transform, Static, Newline, Fragment, STATIC_TEXT
 from ._render_api import render, renderToString, measureElement
 from .kitty import kittyFlags, kittyModifiers, resolveFlags
+from .terminal import (
+    CURSOR_SHAPES,
+    TerminalModeManager,
+    RawModeController,
+    attach_links,
+    cursor_shape_sequence,
+    hyperlink,
+    linkify_runs,
+    linkify_text,
+    strip_sequences,
+    window_title_sequence,
+)
 from .accessibility import get_accessibility, screen_reader_text, ARIA_ROLES, ARIA_STATE_KEYS
 from .widgets import (
     SelectInput,
@@ -158,6 +170,8 @@ from .hooks import (
     create_context,
     useId,
     use_input,
+    useMouseInput,
+    use_mouse_input,
     use_fullscreen,
     use_modal,
     use_error_state,
@@ -231,6 +245,17 @@ __all__ = [
     "kittyFlags",
     "kittyModifiers",
     "resolveFlags",
+    # terminal capabilities（React Ink v7 对齐 + 框架扩展）
+    "CURSOR_SHAPES",
+    "TerminalModeManager",
+    "RawModeController",
+    "attach_links",
+    "cursor_shape_sequence",
+    "hyperlink",
+    "linkify_runs",
+    "linkify_text",
+    "strip_sequences",
+    "window_title_sequence",
     # accessibility（aria-*）
     "get_accessibility",
     "screen_reader_text",
@@ -298,6 +323,8 @@ __all__ = [
     "create_context",
     "useId",
     "use_input",
+    "useMouseInput",
+    "use_mouse_input",
     "use_fullscreen",
     "use_modal",
     "use_error_state",

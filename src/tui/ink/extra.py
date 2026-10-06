@@ -17,10 +17,13 @@ React Ink 完整语义补充（方向4 / 方向 G）：
 
 from __future__ import annotations
 
+import logging
 from typing import Callable
 
 from .element import Element, TEXT, STATIC, h, _as_element
 from .hooks import use_memo, use_ref, useIsScreenReaderEnabled
+
+_logger = logging.getLogger(__name__)
 
 __all__ = ["Transform", "Static", "Newline", "Fragment", "STATIC_TEXT"]
 
@@ -63,7 +66,9 @@ def _transform_arity(fn: Callable) -> int:
     try:
         fn._ink_transform_arity = n
     except Exception:
-        pass
+        # 内置函数等不可设置属性的对象——跳过属性缓存（仍有模块级 (id, fn)
+        # 双键缓存兜底）；记 debug 便于排查（修复前静默 pass）。
+        _logger.debug("transform 参数数属性缓存失败", exc_info=True)
     if len(_transform_arity_cache) >= _TRANSFORM_ARITY_CACHE_MAX:
         _transform_arity_cache.clear()
     _transform_arity_cache[fid] = (fn, n)
