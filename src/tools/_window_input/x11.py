@@ -25,7 +25,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from .._screenshot.windows import pick_window
+from .._screenshot.windows import DEFAULT_SELECTOR, pick_window
 from .._screenshot.x11 import list_windows as list_platform_windows
 from .action import (
     ClickAction,
@@ -112,6 +112,8 @@ class X11InputBackend:
             window_pid=target.pid,
             window_title=target.title,
             detail=detail,
+            window_selector=getattr(action, "window", "") or DEFAULT_SELECTOR,
+            window_handle=str(target.window_id),
         )
 
     # ── 命令执行 ─────────────────────────────────────────

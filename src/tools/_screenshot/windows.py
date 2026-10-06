@@ -118,9 +118,22 @@ class WindowInfo:
     def handle_hex(self) -> str:
         return f"0x{self.handle:X}" if self.handle else "0x0"
 
-    def summary(self) -> str:
-        """一行摘要（用于错误提示与 ``op=windows`` 输出）。"""
-        parts = [f"#{self.order + 1}", self.handle_hex]
+    def summary(self, z_index: int | None = None) -> str:
+        """一行摘要（用于错误提示与 ``op=windows`` 输出）。
+
+        Args:
+            z_index: 该窗口在**可操作窗口**（可见且未最小化）中的 Z 序序号
+                （1 = 最靠前），与 ``#N`` 选择器一致；``NO_SELECTABLE_INDEX``（0）
+                表示该窗口当前不可被选中（隐藏 / 最小化），显示 ``#-``；
+                ``None`` 表示调用方没有上下文，退回按枚举序显示。
+        """
+        if z_index is None:
+            label = f"#{self.order + 1}"
+        elif z_index <= NO_SELECTABLE_INDEX:
+            label = "#-"
+        else:
+            label = f"#{z_index}"
+        parts = [label, self.handle_hex]
         parts.append(f"「{self.title}」" if self.title else "「无标题」")
         if self.class_name:
             parts.append(f"class={self.class_name}")
@@ -141,7 +154,13 @@ class WindowInfo:
             parts.append("[" + ",".join(flags) + "]")
         return " ".join(parts)
 
-    def to_dict(self) -> dict:
+    def to_dict(self, z_index: int | None = None) -> dict:
+        """可序列化描述（``z_index`` 见 :meth:`summary`）。
+
+        ``z_index`` 为 ``None`` 或 :data:`NO_SELECTABLE_INDEX` 时，输出字段
+        ``z_index`` 记为 ``None``（该窗口当前不能通过 ``#N`` 选中）。
+        """
+        selectable = is_selectable(self)
         return {
             "handle": self.handle,
             "handle_hex": self.handle_hex,
@@ -155,12 +174,14 @@ class WindowInfo:
             "area": self.area,
             "order": self.order,
             "index": self.order + 1,
+            "z_index": z_index if z_index else None,
+            "selectable": selectable,
             "tool_window": self.tool_window,
             "minimized": self.minimized,
             "visible": self.visible,
             "foreground": self.foreground,
             "main": self.main,
-            "summary": self.summary(),
+            "summary": self.summary(z_index),
         }
 
 
@@ -253,10 +274,44 @@ def _try_int(text: str) -> int | None:
         return None
 
 
+# ── 可操作窗口（可见且未最小化） ────────────────────────
+
+def is_selectable(info: WindowInfo) -> bool:
+    """窗口当前是否可作为选择 / 注入目标（可见且未最小化）。
+
+    隐藏窗口（``IsWindowVisible`` 为假，如 Chrome 的 ``Chrome_WidgetWin_0``
+    辅助窗口）与最小化窗口既截不到有效像素（产物全黑），也收不到鼠标 /
+    键盘输入；选择时优先在可操作窗口集合中匹配，避免把这类「幽灵窗口」当
+    成右键菜单 / 下拉浮层。
+    """
+    return bool(info.visible) and not info.minimized
+
+
+def selectable_windows(windows: Sequence[WindowInfo]) -> list[WindowInfo]:
+    """过滤出可操作窗口（可见且未最小化，保持原顺序）。"""
+    return [item for item in windows if is_selectable(item)]
+
+
+#: 「该窗口当前不可被选中」在清单里的序号占位（隐藏 / 最小化窗口）
+NO_SELECTABLE_INDEX = 0
+
+
+def selectable_index(windows: Sequence[WindowInfo]) -> dict[int, int]:
+    """可操作窗口的 Z 序序号映射 ``{窗口句柄: 序号}``（1 = 最靠前）。
+
+    与 ``#N`` 选择器语义一致（``#N`` = 第 N 个**可操作**窗口），供
+    ``op=windows`` 清单与错误提示展示，使模型给出的 ``#N`` 与实际选中的
+    窗口对得上。不可选窗口不出现在映射里，调用方用
+    :data:`NO_SELECTABLE_INDEX` 占位。
+    """
+    ordered = sort_by_z(selectable_windows(windows))
+    return {item.handle: index for index, item in enumerate(ordered, start=1)}
+
+
 # ── 主窗口与标注 ────────────────────────────────────────
 
 def main_window(windows: Sequence[WindowInfo]) -> WindowInfo | None:
-    """按「非工具窗口 > 未最小化 > 有标题 > 面积大 > PID 小」选出主窗口。
+    """按「可见 > 非工具窗口 > 未最小化 > 有标题 > 面积大 > PID 小」选出主窗口。
 
     纯函数，无副作用；空列表返回 ``None``。
     """
@@ -266,10 +321,14 @@ def main_window(windows: Sequence[WindowInfo]) -> WindowInfo | None:
 
 
 def main_rank(info: WindowInfo) -> tuple:
-    """主窗口排序键（越大越优先）。"""
+    """主窗口排序键（越大越优先）。
+
+    可见性排在首位：隐藏 / 最小化的「幽灵窗口」即使面积更大、标题更全，
+    也不应被当作主窗口（截图为全黑、输入打不进去）。
+    """
     return (
+        bool(info.visible) and not info.minimized,
         not info.tool_window,
-        not info.minimized,
         bool(info.title.strip()),
         info.area,
         -info.pid,
@@ -292,12 +351,28 @@ def sort_by_z(windows: Iterable[WindowInfo]) -> list[WindowInfo]:
 
 # ── 匹配 ────────────────────────────────────────────────
 
+#: 只在可操作窗口（可见且未最小化）中匹配的选择器类型——无匹配即报错，
+#: 不退回隐藏 / 最小化窗口：这类窗口截图为全黑、输入也打不进去，
+#: 退回只会让模型误以为「选中了弹层」
+_SELECTABLE_ONLY_KINDS: frozenset[str] = frozenset({"popup", "dialog"})
+
+
 def filter_windows(windows: Sequence[WindowInfo],
                    selector: WindowSelector) -> list[WindowInfo]:
     """返回与选择器匹配的窗口（按 Z 序）。
 
-    ``main`` / ``popup`` / ``dialog`` / ``active`` 等「单一目标」语义在无匹配时
-    返回空列表，由 :func:`pick_window` 统一报错。
+    匹配策略：
+
+      - ``main`` / ``active`` / ``handle`` / ``pid``：按各自语义匹配（``main``
+        已把可见性纳入排序，优先选中可见窗口）；
+      - ``index``（``#N``）：在**可操作窗口**（可见且未最小化）中按 Z 序取第 N 个
+        —— 与 ``op=windows`` 清单中标注的 ``#N`` 一致；
+      - ``title`` / ``class``：优先在可操作窗口中匹配，无命中再回退全部窗口
+        （按标题查隐藏窗口是合理需求，如排查辅助窗口）；
+      - ``popup`` / ``dialog``：只在可操作窗口中匹配，无命中返回空列表由
+        :func:`pick_window` 报错——避免把隐藏辅助窗口当成弹出的菜单 / 浮层。
+
+    无匹配时返回空列表，由 :func:`pick_window` 统一报错（附窗口清单）。
     """
     if selector.kind == "all":
         return sort_by_z(windows)
@@ -306,44 +381,58 @@ def filter_windows(windows: Sequence[WindowInfo],
         return [target] if target is not None else []
     if selector.kind == "active":
         return [item for item in sort_by_z(windows) if item.foreground]
-    if selector.kind == "index":
-        ordered = sort_by_z(windows)
-        index = int(selector.value)
-        return [ordered[index - 1]] if 1 <= index <= len(ordered) else []
     if selector.kind == "handle":
         handle = int(selector.value)
         return [item for item in windows if item.handle == handle]
     if selector.kind == "pid":
         pid = int(selector.value)
         return [item for item in windows if item.pid == pid]
-    if selector.kind == "title":
-        needle = str(selector.value).strip().lower()
-        matched = [item for item in sort_by_z(windows) if needle in item.title.lower()]
-        if matched:
+    if selector.kind in _SELECTABLE_ONLY_KINDS:
+        pool = selectable_windows(windows)
+        if selector.kind == "popup":
+            return _match_popup(pool)
+        return _match_dialog(pool)
+    if selector.kind == "index":
+        ordered = sort_by_z(selectable_windows(windows))
+        index = int(selector.value)
+        return [ordered[index - 1]] if 1 <= index <= len(ordered) else []
+    if selector.kind in ("title", "class"):
+        pool = selectable_windows(windows)
+        matched = _match_needle(pool or windows, selector)
+        if matched or not pool:
             return matched
-        # 标题匹配不到时按类名兜底（模型常把窗口类名当标题用）
-        return [item for item in sort_by_z(windows)
-                if needle in item.class_name.lower()]
-    if selector.kind == "class":
-        needle = str(selector.value).strip().lower()
-        return [item for item in sort_by_z(windows)
-                if needle in item.class_name.lower()]
-    if selector.kind == "popup":
-        return _match_popup(windows)
-    if selector.kind == "dialog":
-        return _match_dialog(windows)
+        # 可操作窗口中没有命中：按标题 / 类名回退到全部窗口
+        return _match_needle(windows, selector)
     return []  # pragma: no cover - SELECTOR_KINDS 已封闭
 
 
+def _match_needle(windows: Sequence[WindowInfo],
+                  selector: WindowSelector) -> list[WindowInfo]:
+    """按标题（``title``）或类名（``class``）子串匹配；标题未命中时用类名兜底。"""
+    needle = str(selector.value).strip().lower()
+    if selector.kind == "class":
+        return [item for item in sort_by_z(windows)
+                if needle in item.class_name.lower()]
+    matched = [item for item in sort_by_z(windows) if needle in item.title.lower()]
+    if matched:
+        return matched
+    # 标题匹配不到时按类名兜底（模型常把窗口类名当标题用）
+    return [item for item in sort_by_z(windows)
+            if needle in item.class_name.lower()]
+
+
 def _match_popup(windows: Sequence[WindowInfo]) -> list[WindowInfo]:
-    """匹配浮层 / 菜单类窗口：无标题且非主窗口，按 Z 序最靠前者优先。"""
+    """匹配浮层 / 菜单类窗口：无标题窗口优先，且非主窗口优先，按 Z 序最靠前者优先。
+
+    调用方传入的已是**可操作窗口**（可见且未最小化），因此不会命中隐藏的
+    辅助窗口（那类窗口截图为全黑、输入也无效）。
+    """
     ordered = sort_by_z(windows)
-    untitled = [item for item in ordered
-                if not item.title.strip() and not item.minimized and not item.main]
-    if untitled:
-        return untitled
-    return [item for item in ordered
-            if not item.title.strip() and not item.minimized]
+    untitled = [item for item in ordered if not item.title.strip()]
+    if not untitled:
+        return []
+    non_main = [item for item in untitled if not item.main]
+    return non_main or untitled
 
 
 def _match_dialog(windows: Sequence[WindowInfo]) -> list[WindowInfo]:
@@ -390,11 +479,19 @@ def pick_window(windows: Sequence[WindowInfo], selector: Any = None) -> WindowIn
 
 
 def window_hint(windows: Sequence[WindowInfo], limit: int = 8) -> str:
-    """把窗口清单压缩为一行提示文本（错误信息与结果附注用）。"""
+    """把窗口清单压缩为一行提示文本（错误信息与结果附注用）。
+
+    条目中的 ``#N`` 是**可操作窗口**（可见且未最小化）的 Z 序序号，与
+    ``#N`` 选择器一致；隐藏 / 最小化窗口显示 ``#-``（不会被 ``#N`` 选中）。
+    """
     items = sort_by_z(windows)
     if not items:
         return "（无）"
-    shown = "; ".join(item.summary() for item in items[:limit])
+    indices = selectable_index(items)
+    shown = "; ".join(
+        item.summary(indices.get(item.handle, NO_SELECTABLE_INDEX))
+        for item in items[:limit]
+    )
     if len(items) > limit:
         shown += f"; …（共 {len(items)} 个窗口）"
     return shown
@@ -402,8 +499,15 @@ def window_hint(windows: Sequence[WindowInfo], limit: int = 8) -> str:
 
 def describe_windows(windows: Sequence[WindowInfo],
                     limit: int = DEFAULT_LIST_LIMIT) -> list[dict]:
-    """把窗口清单转为可序列化列表（按 Z 序，``limit`` 截断）。"""
-    return [item.to_dict() for item in sort_by_z(windows)[:max(int(limit), 0)]]
+    """把窗口清单转为可序列化列表（按 Z 序，``limit`` 截断）。
+
+    每个条目的 ``z_index`` 是它在可操作窗口中的 Z 序序号（``#N`` 选择器用的
+    就是这个序号），``selectable`` 标记该窗口当前能否被选中 / 注入。
+    """
+    items = sort_by_z(windows)
+    indices = selectable_index(items)
+    return [item.to_dict(indices.get(item.handle, NO_SELECTABLE_INDEX))
+            for item in items[:max(int(limit), 0)]]
 
 
 # ── 窗口控制（激活 / 最大化 / 移动 / 缩放 / 关闭） ───────
@@ -524,6 +628,7 @@ def _optional_int(value: Any, label: str) -> int | None:
 __all__ = [
     "DEFAULT_LIST_LIMIT",
     "DEFAULT_SELECTOR",
+    "NO_SELECTABLE_INDEX",
     "SELECTOR_KINDS",
     "WINDOW_CONTROL_ACTIONS",
     "SelectorError",
@@ -532,12 +637,15 @@ __all__ = [
     "WindowSelector",
     "describe_windows",
     "filter_windows",
+    "is_selectable",
     "main_rank",
     "main_window",
     "mark_main",
     "parse_control_request",
     "parse_selector",
     "pick_window",
+    "selectable_index",
+    "selectable_windows",
     "sort_by_z",
     "window_hint",
 ]

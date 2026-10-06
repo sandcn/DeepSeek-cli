@@ -34,6 +34,7 @@ from . import png, proctree, transform, winapi
 from .result import CaptureResult, NoWindowError, ScreenshotError
 from .transform import CropError, CropRegion
 from .windows import (
+    DEFAULT_SELECTOR,
     WindowControlRequest,
     WindowInfo,
     main_window,
@@ -146,6 +147,8 @@ class WindowsBackend:
             backend=self.name,
             window_handle=target.handle,
             windows_total=len(candidates),
+            window_selector=window or DEFAULT_SELECTOR,
+            window_summary=target.summary(),
         )
 
     def list_windows(self, pid: int) -> list[WindowInfo]:
@@ -319,7 +322,16 @@ def control_window(pid: int, request: WindowControlRequest) -> dict:
         "after": after,
     }
     if action == "activate":
-        detail["foreground"] = winapi.is_foreground(target.handle)
+        activated = winapi.is_foreground(target.handle)
+        detail["foreground"] = activated
+        if not activated:
+            detail["warning"] = (
+                f"窗口未能取得前台（当前前台: {winapi.foreground_description()}）。"
+                f"Windows 前台锁定策略会拒绝后台进程的置前请求：若目标窗口已最小化，"
+                f"先试 window_action=restore 再 activate；若其它程序（如全屏游戏）"
+                f"持续抢占前台，需先处理该程序，或改用 SendInput 之外的 "
+                f"method='message' 投递通道"
+            )
     return detail
 
 

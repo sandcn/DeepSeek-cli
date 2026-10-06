@@ -28,7 +28,7 @@ import time
 from dataclasses import dataclass
 
 from .._screenshot.macos import list_windows as list_platform_windows
-from .._screenshot.windows import pick_window
+from .._screenshot.windows import DEFAULT_SELECTOR, pick_window
 from .action import (
     ClickAction,
     DragAction,
@@ -140,6 +140,8 @@ class MacOSInputBackend:
             window_pid=target.pid,
             window_title=target.title,
             detail=detail,
+            window_selector=getattr(action, "window", "") or DEFAULT_SELECTOR,
+            window_handle=str(target.number) if target.number else "",
         )
 
     # ── 动作分发 ─────────────────────────────────────────

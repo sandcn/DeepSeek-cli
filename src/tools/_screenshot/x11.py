@@ -31,6 +31,7 @@ from .grid import paint_grid_on_png_file
 from .result import CaptureResult, NoWindowError, ScreenshotError
 from .transform import CropRegion
 from .windows import (
+    DEFAULT_SELECTOR,
     WindowControlRequest,
     WindowInfo,
     mark_main,
@@ -139,7 +140,8 @@ class X11Backend:
             backend=self.name,
             window_handle=target_info.handle,
             windows_total=len(windows),
-            window_selector=target_info.summary(),
+            window_selector=window or DEFAULT_SELECTOR,
+            window_summary=target_info.summary(),
         )
 
     def list_windows(self, pid: int) -> list[WindowInfo]:

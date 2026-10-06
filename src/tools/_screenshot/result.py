@@ -33,6 +33,8 @@ class CaptureResult:
         window_handle: 被截窗口的平台句柄（0 = 后端未提供）。
         windows_total: 目标进程树当时的候选窗口总数（便于判断是否选错窗口）。
         window_selector: 本次使用的窗口选择器文本（缺省 ``main``）。
+        window_summary: 被截窗口的一行摘要（句柄 / 标题 / 几何 / 标记），
+            便于确认选择器实际命中的是哪个窗口。
     """
 
     path: str
@@ -44,6 +46,7 @@ class CaptureResult:
     window_handle: int = 0
     windows_total: int = 0
     window_selector: str = "main"
+    window_summary: str = ""
 
     @property
     def window_handle_hex(self) -> str:
@@ -62,6 +65,7 @@ class CaptureResult:
             "window_handle_hex": self.window_handle_hex,
             "windows_total": self.windows_total,
             "window_selector": self.window_selector,
+            "window_summary": self.window_summary,
         }
 
 

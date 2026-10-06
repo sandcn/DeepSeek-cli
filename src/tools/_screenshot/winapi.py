@@ -918,6 +918,28 @@ def is_foreground(hwnd) -> bool:
     return current == target
 
 
+def foreground_description() -> str:
+    """当前前台窗口的一行描述（读取失败时返回「未知」）。
+
+    「无法把目标窗口置于前台」这类错误需要告诉调用方**是谁占着前台**：
+    Windows 的前台锁定策略会拒绝后台进程的 ``SetForegroundWindow``，
+    只有知道抢占者（如全屏游戏）才能决定是关掉它、还是改用消息投递通道。
+    """
+    try:
+        handle = foreground_window()
+    except OSError:  # pragma: no cover - 依赖系统调用
+        return "未知"
+    value = hwnd_value(handle)
+    if not value:
+        return "未知（无前台窗口）"
+    try:
+        title = window_text(handle)
+        class_name = window_class(handle)
+    except OSError:  # pragma: no cover - 依赖系统调用
+        return f"handle=0x{value:X}"
+    return f"{title or '无标题'}（class={class_name}, handle=0x{value:X}）"
+
+
 def post_message(hwnd, msg: int, wparam: int = 0, lparam: int = 0) -> bool:
     """把窗口消息投递给 ``hwnd``（不等待处理，返回是否入队成功）。"""
     return bool(user32().PostMessageW(hwnd, int(msg), int(wparam), int(lparam)))

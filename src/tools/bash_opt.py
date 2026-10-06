@@ -42,11 +42,15 @@ crop='x,y,width,height' 只截取窗口内的像素区域（以整窗截图左�
 
 多窗口选择（window 参数，截图 / 输入 op / 窗口控制通用）：一个 GUI 程序往往
 同时存在多个顶层窗口（主窗口、弹出菜单、下拉浮层、文件对话框），因此
-screenshot / 输入 op 都接受 window 选择器——'main'（缺省主窗口）、'active'
-（前台窗口）、'#N'（Z 序第 N 个，1 = 最靠前）、'handle:0x…'、'title:子串'、
-'class:子串'、'pid:1234'、'popup'（无标题弹层）、'dialog'（对话框）。
-op=windows 先给出窗口清单，再把同一个选择器用于截图或输入，即可精确操作
-这些独立顶层窗口（旧版只能操作面积最大的主窗口）。
+screenshot / 输入 op 都接受 window 选择器——'main'（缺省主窗口，可见性优先）、
+'active'（前台窗口）、'#N'（**可操作窗口**按 Z 序第 N 个，1 = 最靠前）、
+'handle:0x…'、'title:子串'、'class:子串'、'pid:1234'、'popup'（无标题弹层）、
+'dialog'（对话框）。op=windows 先给出窗口清单（含 selectable / z_index），再把
+同一个选择器用于截图或输入，即可精确操作这些独立顶层窗口（旧版只能操作面积
+最大的主窗口）。不可见（visible=false）或已最小化的窗口不会被 'main' / '#N' /
+'popup' / 'dialog' 选中：它们既截不到有效像素（产物全黑），也收不到鼠标键盘
+输入（Chrome 的 Chrome_WidgetWin_0 这类隐藏辅助窗口尤其容易与真实弹层混淆）；
+确实需要操作这类窗口时用 'handle:0x…' 显式指定。
 
 截图增强：grid 参数（如 grid=50）在产物上叠加等距参考线，读图后可精确换算
 像素坐标；结果 JSON 附带被截窗口的句柄 / 标题 / 候选窗口总数，便于确认选对
@@ -304,13 +308,19 @@ class BashOptFunc(Func):
                             "description": (
                                 "目标窗口选择器（screenshot / 输入 op / window 通用；"
                                 "省略即主窗口）："
-                                "'main' 主窗口、'active' 当前前台窗口、"
-                                "'#N' 按 Z 序第 N 个（1 = 最靠前，如弹出的右键菜单、"
-                                "下拉浮层、对话框）、'handle:0x1a2b' 按平台窗口句柄、"
+                                "'main' 主窗口（可见性优先）、'active' 当前前台窗口、"
+                                "'#N' 可操作窗口（可见且未最小化）按 Z 序第 N 个"
+                                "（1 = 最靠前，如弹出的右键菜单、下拉浮层、对话框；"
+                                "N 与 op=windows 清单里的 z_index 一致）、"
+                                "'handle:0x1a2b' 按平台窗口句柄、"
                                 "'title:子串' / 'class:子串' / 'pid:1234' 按属性匹配、"
                                 "'popup' 无标题弹层、'dialog' 对话框。"
-                                "先用 op=windows 查看窗口清单，再用同一选择器把截图 / "
-                                "输入投向任意窗口。"
+                                "不可见（visible=false）或已最小化的窗口不会被 "
+                                "'main' / '#N' / 'popup' / 'dialog' 选中——它们截出来"
+                                "是全黑图、输入也打不进去；需要这类窗口时用 "
+                                "'handle:0x…' 显式指定。"
+                                "先用 op=windows 查看窗口清单（selectable / z_index "
+                                "字段），再用同一选择器把截图 / 输入投向任意窗口。"
                             ),
                         },
                         "grid": {
@@ -1015,7 +1025,8 @@ class BashOptFunc(Func):
             result = await self._capture_with_retry(
                 pid, target_path, crop, window=self.window, grid=grid)
         except (SelectorError, ScreenshotError) as exc:
-            return f"(截图失败: {exc})"
+            scope = f"（window 选择器 {self.window!r}）" if self.window else ""
+            return f"(截图失败{scope}: {exc})"
         payload: dict = {"task_id": self.task_id, "op": "screenshot"}
         payload.update(result.to_dict())
         notes = ["截图已保存"]
@@ -1162,14 +1173,23 @@ class BashOptFunc(Func):
             return f"(输入参数非法: {exc})"
         try:
             result = await self._send_input_with_retry(pid, action)
-        except (InputNoWindowError, InputError, SelectorError) as exc:
-            return f"(输入失败: {exc})"
+        except (InputNoWindowError, InputError) as exc:
+            message = str(exc)
+            if "窗口选择器" in message:
+                return (f"(输入失败: {message}。弹出菜单 / 下拉浮层这类窗口在失焦"
+                        f"或截图 / 窗口提权后可能已关闭，可先用 op=windows 复核"
+                        f"当前窗口，再用同一选择器重试)")
+            return f"(输入失败: {message})"
         payload = {
             "task_id": self.task_id,
             "op": self.op,
             "hint": ("输入已注入；可用 op=screenshot 截图后用 read_image 核对界面变化"
-                     "（坐标原点为窗口截图左上角）"),
+                     "（坐标原点为窗口截图左上角；window 选择器可用 'main' / "
+                     "'#N'（当前可操作窗口的 Z 序，见 op=windows 的 z_index）/ "
+                     "'popup' / 'title:子串' / 'handle:0x…'）"),
         }
+        if self.window:
+            payload["window"] = str(self.window)
         payload.update(result.to_dict())
         if settle:
             await asyncio.sleep(settle)
@@ -1235,7 +1255,8 @@ class BashOptFunc(Func):
             result = await self._capture_with_retry(
                 pid, target_path, None, window=self.window, grid=grid)
         except (SelectorError, ScreenshotError) as exc:
-            return f"截图失败: {exc}"
+            scope = f"（window 选择器 {self.window!r}）" if self.window else ""
+            return f"截图失败{scope}: {exc}"
         payload["screenshot"] = result.to_dict()
         payload["hint"] = (f"{payload.get('hint', '')}；已自动截图，"
                            f"可用 read_image 读取 screenshot.path")
@@ -1272,9 +1293,13 @@ class BashOptFunc(Func):
         }
         if infos:
             payload["hint"] = ("用 window 参数把 screenshot / 输入 op 投向指定窗口："
-                               "'main'（缺省主窗口）、'#1'（Z 序最靠前，如右键菜单、"
-                               "下拉浮层）、'active'（前台窗口）、'title:子串'、"
-                               "'class:子串'、'handle:0x…'、'popup'、'dialog'")
+                               "'main'（缺省主窗口）、'#N'（可操作窗口的 Z 序第 N 个，"
+                               "取 windows[].z_index；如弹出的右键菜单 / 下拉浮层）、"
+                               "'active'（前台窗口）、'title:子串'、'class:子串'、"
+                               "'handle:0x…'、'popup'、'dialog'。"
+                               "selectable=false 的窗口（visible=false 或已最小化）"
+                               "不会被 'main' / '#N' / 'popup' / 'dialog' 选中，"
+                               "需要时用 handle:0x… 显式指定")
             payload["summary"] = window_hint(infos)
         else:
             payload["hint"] = ("未找到可见窗口（纯命令行进程没有 GUI 窗口；"

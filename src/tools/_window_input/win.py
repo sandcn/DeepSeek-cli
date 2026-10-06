@@ -38,7 +38,7 @@ from .._screenshot.win import (
     resolve_window_pids,
     visible_region,
 )
-from .._screenshot.windows import pick_window
+from .._screenshot.windows import DEFAULT_SELECTOR, pick_window
 from .action import (
     ClickAction,
     DragAction,
@@ -306,6 +306,8 @@ class WindowsInputBackend:
             window_pid=target.pid,
             window_title=target.title,
             detail=detail,
+            window_selector=getattr(action, "window", "") or DEFAULT_SELECTOR,
+            window_handle=_window_handle_text(target.handle),
         )
 
     @staticmethod
@@ -351,8 +353,12 @@ class WindowsInputBackend:
         if action.method == "sendinput":
             if not foreground:
                 raise InputError(
-                    f"无法把窗口 {target.title or target.handle} 置于前台，"
-                    f"SendInput 无法定向注入；可改用 method='message' 直接投递窗口消息"
+                    f"无法把窗口 {target.title or target.handle} 置于前台"
+                    f"（当前前台窗口: {_foreground_description()}）。"
+                    f"SendInput 合成的是系统级输入事件，只作用于前台窗口；"
+                    f"可改用 method='message' 直接投递窗口消息（鼠标类动作通常"
+                    f"仍有效），或先让目标窗口获得焦点（点击其窗口区域、或关闭 / "
+                    f"最小化持续抢占前台的其它程序）后重试"
                 )
             return "sendinput"
         if foreground:
@@ -480,9 +486,12 @@ class WindowsInputBackend:
         """
         if not self._ensure_foreground(target):
             raise InputError(
-                f"无法把窗口 {target.title or target.handle} 置于前台，"
+                f"无法把窗口 {target.title or target.handle} 置于前台"
+                f"（当前前台窗口: {_foreground_description()}）。"
                 f"SendInput 的键盘事件只被前台窗口接收，无法定向注入；"
-                f"可改用 method='message' 直接投递窗口消息"
+                f"可改用 method='message' 直接投递窗口消息（Chrome / Electron / "
+                f"游戏等自绘界面通常忽略该通道），或先让目标窗口获得焦点"
+                f"（点击其窗口区域、或关闭 / 最小化持续抢占前台的其它程序）后重试"
             )
         detail = inject()
         for _attempt in range(_KEYBOARD_FOCUS_ATTEMPTS):
@@ -890,6 +899,21 @@ def resolve_windows_vk(key: str) -> tuple[int, set[str]]:
     if char_vk is None:
         raise InputError(f"Windows 后端不支持按键: {key!r}")
     return char_vk, set()
+
+
+def _window_handle_text(handle) -> str:
+    """窗口句柄的十六进制文本（无法取值时返回空串）。"""
+    value = winapi.hwnd_value(handle)
+    return f"0x{value:X}" if value else ""
+
+
+def _foreground_description() -> str:
+    """当前前台窗口的一行描述（读取失败时返回「未知」）。
+
+    用于「无法把目标窗口置于前台」的错误提示：直接告诉调用方是哪个程序
+    占着前台，避免在「窗口永远拿不到焦点」时无从下手。
+    """
+    return winapi.foreground_description()
 
 
 def _foreground_settle(attempt: int) -> float:
