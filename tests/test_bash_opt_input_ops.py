@@ -66,12 +66,13 @@ def test_schema_exposes_input_ops_and_parameters():
         assert op in enum
     for name in ("x", "y", "to_x", "to_y", "from_x", "from_y", "button",
                  "count", "modifiers", "direction", "amount", "duration",
-                 "steps", "method"):
+                 "steps", "method", "phase"):
         assert name in params["properties"], name
     assert params["required"] == ["task_id", "op"]
     assert params["properties"]["button"]["enum"] == ["left", "right", "middle"]
     assert params["properties"]["direction"]["enum"] == ["up", "down", "left", "right"]
     assert params["properties"]["method"]["enum"] == ["auto", "sendinput", "message"]
+    assert params["properties"]["phase"]["enum"] == ["press", "down", "up"]
 
 
 def test_schema_descriptions_mention_input_capabilities():
@@ -189,6 +190,22 @@ async def test_key_action_built(monkeypatch):
     func.set_agent(_FakeAgent({"bg-1": _record()}))
     await func.execute()
     assert recorder["action"].shortcut.display() == "ctrl+shift+s"
+
+
+async def test_key_action_phase_built(monkeypatch):
+    """key 的 phase 参数透传到动作（down = 只按下，用于长按）。"""
+    recorder = {}
+    _fake_send(monkeypatch, recorder)
+    func = BashOptFunc(task_id="bg-1", op="key", key="ctrl+a", phase="down")
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+    await func.execute()
+    assert recorder["action"].phase == "down"
+
+
+def test_display_params_marks_key_phase():
+    assert BashOptFunc.display_params(
+        {"task_id": "bg-1", "op": "key", "key": "ctrl", "phase": "down"}
+    ) == "'key bg-1 ctrl down'"
 
 
 async def test_type_default_does_not_append_newline(monkeypatch):

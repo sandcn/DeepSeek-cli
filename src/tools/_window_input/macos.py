@@ -8,8 +8,10 @@
   - 鼠标（move / click / drag / scroll）：pyobjc ``Quartz.CGEventPost``
     精确合成鼠标事件（推荐）；无 pyobjc 时回退 ``cliclick``（需
     ``brew install cliclick``，其不支持滚轮 → 滚动改用翻页键近似）。
-  - 键盘 / 文本（key / type）：``osascript`` 驱动 System Events
-    （``keystroke`` / ``key code``），需要「辅助功能」权限。
+  - 键盘 / 文本（key / type）：pyobjc ``Quartz``（``CGEventCreateKeyboardEvent``）
+    精确分离按下 / 弹起（推荐，``phase`` 才可用）；无 pyobjc 时回退
+    ``osascript``（System Events 的 ``keystroke`` / ``key code``，仅能
+    对修饰键 ``key down``/``key up``）。两条路径都需要「辅助功能」权限。
 
 macOS 对合成输入有限制：无论哪条路径都必须在「系统设置 → 隐私与安全性 →
 辅助功能」中为运行本程序的终端授予权限，否则事件会被系统丢弃。
@@ -17,6 +19,7 @@ macOS 对合成输入有限制：无论哪条路径都必须在「系统设置 �
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import shutil
 import subprocess
@@ -39,7 +42,12 @@ from .action import (
     validate_point,
 )
 from .geometry import WindowFrame
-from .keys import MACOS_KEYCODE, MACOS_MODIFIER_NAMES
+from .keys import (
+    MACOS_KEYCODE,
+    MACOS_MODIFIER_NAMES,
+    macos_keycode,
+    utf16_units,
+)
 from .result import ActionError, InputError, InputResult, NoWindowError
 
 logger = logging.getLogger(__name__)
@@ -70,6 +78,16 @@ _QUARTZ_FLAGS: dict[str, int] = {
     "meta": 0x00100000,
 }
 
+#: 修饰键 → macOS 虚拟键码（分离按下/弹起时定位物理修饰键）
+MACOS_MODIFIER_KEYCODES: dict[str, int] = {
+    "ctrl": 59, "shift": 56, "alt": 58, "meta": 55,
+}
+
+#: 修饰键 → AppleScript（System Events）名称
+MACOS_MODIFIER_APPLESCRIPT: dict[str, str] = {
+    "ctrl": "control", "alt": "option", "shift": "shift", "meta": "command",
+}
+
 
 @dataclass
 class _MacTarget:
@@ -90,7 +108,8 @@ class MacOSInputBackend:
         self._locate = locator or locate_window
         self._run = runner or run_command
         self._mouse = mouse
-        self._keyboard = keyboard or AppleScriptKeyboardDriver(self._run)
+        # 键盘驱动：Quartz（pyobjc）可分离按下/弹起，缺省回退 osascript
+        self._keyboard = keyboard or resolve_keyboard_driver(self._run)
 
     def supports(self) -> bool:
         return sys.platform == "darwin"
@@ -186,10 +205,11 @@ class MacOSInputBackend:
 
     def _key(self, action: KeyAction) -> dict:
         driver = self._keyboard
-        driver.key(action.shortcut)
+        driver.key(action.shortcut, action.phase)
         return {
             "key": action.shortcut.display(),
             "modifiers": list(action.shortcut.modifiers),
+            "phase": action.phase,
         }
 
     def _type(self, action: TextAction) -> dict:
@@ -313,9 +333,7 @@ class QuartzMouseDriver:
     @staticmethod
     def _flag_event(quartz, event, modifiers: tuple[str, ...]):
         """给事件附加修饰键标志（Ctrl+点击 / Shift+拖动等）。"""
-        flags = 0
-        for name in modifiers:
-            flags |= _QUARTZ_FLAGS.get(name, 0)
+        flags = _quartz_flags(modifiers)
         if flags and event is not None:
             try:
                 quartz.CGEventSetFlags(event, flags)
@@ -430,13 +448,24 @@ class AppleScriptKeyboardDriver:
     def __init__(self, run):
         self._run = run
 
-    def key(self, shortcut) -> None:
+    def key(self, shortcut, phase: str) -> None:
+        if phase != "press":
+            statement = self._phase_statement(shortcut, phase)
+            if statement is None:
+                raise InputError(
+                    "osascript（System Events）只能对修饰键分离按下/弹起；"
+                    "普通键请安装 pyobjc（pip install pyobjc）后使用 down/up 阶段"
+                )
+            self._run_script(statement,
+                             "按键按下" if phase == "down" else "按键弹起")
+            return
         modifiers = _applescript_modifiers(shortcut.modifiers)
         if shortcut.is_character:
             statement = (f'keystroke "{_escape_applescript(shortcut.key)}"'
                          + modifiers)
         else:
-            key_code = MACOS_KEYCODE.get(shortcut.key)
+            key_code = (MACOS_KEYCODE.get(shortcut.key)
+                        or MACOS_MODIFIER_KEYCODES.get(shortcut.key))
             if key_code is None:
                 raise InputError(
                     f"macOS 后端不支持按键: {shortcut.key!r}"
@@ -444,6 +473,25 @@ class AppleScriptKeyboardDriver:
                 )
             statement = f"key code {key_code}" + modifiers
         self._run_script(statement, "键盘按键")
+
+    def _phase_statement(self, shortcut, phase: str) -> str | None:
+        """修饰键的按下/弹起 AppleScript 语句（主键必须是修饰键）。
+
+        主键不是修饰键时返回 None——System Events 无法对普通键单独
+        按下/弹起（只能用 ``key code`` 完成一次完整按键）。
+        """
+        labels: list[str] = []
+        for name in shortcut.modifiers:
+            label = MACOS_MODIFIER_APPLESCRIPT.get(name)
+            if label is None:
+                return None
+            labels.append(label)
+        key_label = MACOS_MODIFIER_APPLESCRIPT.get(shortcut.key)
+        if key_label is None:
+            return None
+        labels.append(key_label)
+        direction = "key down" if phase == "down" else "key up"
+        return "\n".join(f"{direction} {label}" for label in labels)
 
     def text(self, text: str) -> None:
         line = ""
@@ -474,7 +522,10 @@ class AppleScriptKeyboardDriver:
                 f"{label} 失败：osascript 不可用（macOS 系统自带，"
                 f"请检查 PATH 与系统完整性）"
             )
-        script = f'tell application "System Events" to {statement}'
+        if "\n" in statement:
+            script = 'tell application "System Events"\n' + statement + "\nend tell"
+        else:
+            script = f'tell application "System Events" to {statement}'
         completed = self._run([osascript, "-e", script])
         if completed is None:
             raise InputError(f"{label} 失败：osascript 执行超时或不可用")
@@ -510,6 +561,137 @@ def run_command(command: list[str]):
     except (OSError, subprocess.SubprocessError) as exc:
         logger.debug("命令执行失败 %s: %s", command[0], exc)
         return None
+
+
+class QuartzKeyboardDriver:
+    """基于 pyobjc Quartz 的键盘注入（分离按下/弹起，按物理键位发送）。
+
+    与 osascript 不同，Quartz 可对任意键分别发送按下 / 弹起事件
+    （``CGEventCreateKeyboardEvent``），因此 ``phase='down'/'up'`` 与长按
+    在 macOS 上同样可用；字符键按 US 布局的物理键位发送，无法定位的字符
+    （如中文）退化为 Unicode 事件（等价于 Windows 的 Unicode 注入）。
+    """
+
+    name = "quartz"
+
+    def __init__(self):
+        self._quartz = None
+        self._loaded = False
+
+    def _module(self):
+        if not self._loaded:
+            self._loaded = True
+            try:
+                import Quartz
+            except ImportError:
+                self._quartz = None
+            else:
+                self._quartz = Quartz
+        return self._quartz
+
+    def available(self) -> bool:
+        return self._module() is not None
+
+    def key(self, shortcut, phase: str) -> None:
+        quartz = self._require()
+        resolved = macos_keycode(shortcut.key)
+        if resolved is None:
+            raise InputError(
+                f"macOS 后端不支持按键: {shortcut.key!r}（无对应虚拟键码）"
+            )
+        code, implicit_shift = resolved
+        flags = _quartz_flags(shortcut.modifiers)
+        if implicit_shift:
+            flags |= _QUARTZ_FLAGS["shift"]
+        if phase in ("press", "down"):
+            for name in shortcut.modifiers:
+                modifier_code = MACOS_MODIFIER_KEYCODES.get(name)
+                if modifier_code is not None:
+                    self._post(quartz, modifier_code, 0, True)
+            self._post(quartz, code, flags, True)
+        if phase in ("press", "up"):
+            self._post(quartz, code, flags, False)
+            for name in reversed(shortcut.modifiers):
+                modifier_code = MACOS_MODIFIER_KEYCODES.get(name)
+                if modifier_code is not None:
+                    self._post(quartz, modifier_code, 0, False)
+
+    def text(self, text: str) -> None:
+        quartz = self._require()
+        for char in text:
+            if char == "\r":
+                continue
+            if char == "\n":
+                self._press(quartz, MACOS_KEYCODE["enter"], 0)
+            elif char == "\t":
+                self._press(quartz, MACOS_KEYCODE["tab"], 0)
+            else:
+                self._character(quartz, char)
+
+    def _press(self, quartz, code: int, flags: int) -> None:
+        self._post(quartz, code, flags, True)
+        self._post(quartz, code, flags, False)
+
+    def _character(self, quartz, char: str) -> None:
+        resolved = macos_keycode(char)
+        if resolved is not None:
+            code, needs_shift = resolved
+            self._press(quartz, code, _QUARTZ_FLAGS["shift"] if needs_shift else 0)
+            return
+        for unit in utf16_units(char):
+            self._post_unicode(quartz, unit)
+
+    def _post(self, quartz, code: int, flags: int, key_down: bool) -> None:
+        event = quartz.CGEventCreateKeyboardEvent(None, int(code), bool(key_down))
+        if event is None:
+            raise InputError("Quartz 键盘事件创建失败（可能是辅助功能权限被拒绝）")
+        try:
+            if flags:
+                quartz.CGEventSetFlags(event, int(flags))
+            quartz.CGEventPost(quartz.kCGHIDEventTap, event)
+        finally:
+            self._release(quartz, event)
+
+    def _post_unicode(self, quartz, unit: int) -> None:
+        for key_down in (True, False):
+            event = quartz.CGEventCreateKeyboardEvent(None, 0, key_down)
+            if event is None:
+                raise InputError("Quartz 键盘事件创建失败（可能是辅助功能权限被拒绝）")
+            try:
+                buffer = (ctypes.c_uint16 * 1)(int(unit))
+                quartz.CGEventKeyboardSetUnicodeString(event, 1, buffer)
+                quartz.CGEventPost(quartz.kCGHIDEventTap, event)
+            finally:
+                self._release(quartz, event)
+
+    @staticmethod
+    def _release(quartz, event) -> None:
+        try:
+            quartz.CFRelease(event)
+        except Exception:  # pragma: no cover - 释放失败不影响注入
+            logger.debug("CFRelease 失败", exc_info=True)
+
+    def _require(self):
+        quartz = self._module()
+        if quartz is None:  # pragma: no cover - available() 已检查
+            raise InputError("pyobjc（Quartz）不可用")
+        return quartz
+
+
+def resolve_keyboard_driver(run):
+    """选择可用的键盘驱动：Quartz（pyobjc，可分离按下/弹起）优先，osascript 回退。"""
+    quartz = QuartzKeyboardDriver()
+    if quartz.available():
+        return quartz
+    return AppleScriptKeyboardDriver(run)
+
+
+def _quartz_flags(modifiers: tuple[str, ...]) -> int:
+    """修饰键 → Quartz 事件标志位（可叠加）。"""
+    flags = 0
+    for name in modifiers:
+        flags |= _QUARTZ_FLAGS.get(name, 0)
+    return flags
 
 
 def _applescript_modifiers(modifiers: tuple[str, ...]) -> str:
@@ -550,8 +732,10 @@ __all__ = [
     "AppleScriptKeyboardDriver",
     "CliclickMouseDriver",
     "MacOSInputBackend",
+    "QuartzKeyboardDriver",
     "QuartzMouseDriver",
     "locate_window",
+    "resolve_keyboard_driver",
     "resolve_mouse_driver",
     "run_command",
 ]

@@ -80,6 +80,37 @@ for _name in FUNCTION_KEYS:  # noqa: B007 - 仅填充别名表
 #: 全部可识别的规范键名（修饰键除外）
 KNOWN_KEYS: frozenset[str] = frozenset(KEY_ALIASES.values())
 
+#: 未按 Shift 的字符键 → 按住 Shift 后产生的字符（US 布局）。
+#: 合成键盘输入时用它把「Shift + 键」还原为实际字符（Windows 消息投递
+#: 需要真正的字符，终端解析需要确定 Alt/Ctrl 组合的基字符）。
+SHIFT_CHARACTER_MAP: dict[str, str] = {
+    "1": "!", "2": "@", "3": "#", "4": "$", "5": "%",
+    "6": "^", "7": "&", "8": "*", "9": "(", "0": ")",
+    "-": "_", "=": "+", "[": "{", "]": "}", "\\": "|",
+    ";": ":", "'": "\"", ",": "<", ".": ">", "/": "?", "`": "~",
+    " ": " ",
+}
+
+
+def shift_character(char: str) -> str:
+    """返回按住 Shift 时该字符键产生的字符（US 布局；无法确定时原样返回）。"""
+    if len(char) != 1:
+        return char
+    if "a" <= char <= "z":
+        return char.upper()
+    return SHIFT_CHARACTER_MAP.get(char, char)
+
+
+def utf16_units(char: str) -> list[int]:
+    """把单个字符（可能是代理对）拆为 UTF-16 码元列表。
+
+    合成键盘输入时用于把字符发送为系统可接受的 16 位码元序列
+    （Windows SendInput / PostMessage、macOS CGEvent 共用）。
+    """
+    encoded = char.encode("utf-16-le")
+    return [int.from_bytes(encoded[index:index + 2], "little")
+            for index in range(0, len(encoded), 2)]
+
 
 @dataclass(frozen=True)
 class Shortcut:
@@ -140,11 +171,17 @@ def _split_compact(token: str) -> list[str]:
     return [token]
 
 
-def parse_shortcut(text: str) -> Shortcut:
+def parse_shortcut(text: str, *, allow_modifier_key: bool = False) -> Shortcut:
     """解析组合键文本为 :class:`Shortcut`。
 
     支持 ``ctrl+shift+s`` / ``alt+f4`` / ``enter`` / ``a``，以及
     ``ctrl_c`` / ``ctrl-c`` 紧凑写法。
+
+    Args:
+        text: 组合键文本。
+        allow_modifier_key: 允许把单个修饰键当作主键（``key='ctrl'`` 表示
+            按下/弹起 Ctrl 键本身，用于长按等场景）。默认关闭——普通组合键
+            的最后一位必须是主键。
 
     Raises:
         ActionError: 文本为空、含空段、修饰键后缺少主键、或主键未知。
@@ -171,6 +208,9 @@ def parse_shortcut(text: str) -> Shortcut:
                 modifiers.append(value)
             continue
         if kind == "modifier":
+            if allow_modifier_key:
+                key = value
+                break
             raise ActionError(f"组合键缺少主键（最后一位不能是修饰键）: {text!r}")
         key = value
     if key is None:  # pragma: no cover - tokens 非空时不会发生
@@ -315,7 +355,50 @@ MACOS_KEYCODE: dict[str, int] = {
     "f10": 109,
     "f11": 103,
     "f12": 111,
+    "f13": 105,
+    "f14": 107,
+    "f15": 113,
+    "f16": 106,
+    "f17": 64,
+    "f18": 79,
+    "f19": 80,
+    "f20": 90,
 }
+
+#: 字符 → macOS 虚拟键码（US ANSI 布局的物理键位）。
+#: 用于 Quartz 分离按下/弹起时定位物理键；非 US 布局的字符可能无对应键位。
+MACOS_CHAR_KEYCODE: dict[str, int] = {
+    "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7,
+    "c": 8, "v": 9, "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16,
+    "t": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "=": 24,
+    "9": 25, "7": 26, "-": 27, "8": 28, "0": 29, "]": 30, "o": 31, "u": 32,
+    "[": 33, "i": 34, "p": 35, "l": 37, "j": 38, "'": 39, "k": 40, ";": 41,
+    "\\": 42, ",": 43, "/": 44, "n": 45, "m": 46, ".": 47, "`": 50, " ": 49,
+}
+
+#: Shift 后的字符 → 其未加 Shift 的物理键字符（``SHIFT_CHARACTER_MAP`` 的逆向）
+_UNSHIFTED_CHARACTER: dict[str, str] = {
+    shifted: plain for plain, shifted in SHIFT_CHARACTER_MAP.items()
+    if plain != shifted
+}
+
+
+def macos_keycode(key: str) -> tuple[int, bool] | None:
+    """把规范键名或字符解析为 ``(macOS 虚拟键码, 是否需要 Shift)``。
+
+    无法在当前键位表中定位（如非 US 布局字符、macOS 无对应键）时返回 None。
+    """
+    if len(key) == 1:
+        if "A" <= key <= "Z":
+            base, needs_shift = key.lower(), True
+        elif key in _UNSHIFTED_CHARACTER:
+            base, needs_shift = _UNSHIFTED_CHARACTER[key], True
+        else:
+            base, needs_shift = key, False
+        code = MACOS_CHAR_KEYCODE.get(base.lower())
+        return None if code is None else (code, needs_shift)
+    code = MACOS_KEYCODE.get(key)
+    return None if code is None else (code, False)
 
 #: 修饰键 → macOS AppleScript 修饰符名
 MACOS_MODIFIER_NAMES: dict[str, str] = {
@@ -330,14 +413,19 @@ __all__ = [
     "FUNCTION_KEYS",
     "KEY_ALIASES",
     "KNOWN_KEYS",
+    "MACOS_CHAR_KEYCODE",
     "MACOS_KEYCODE",
     "MACOS_MODIFIER_NAMES",
     "MODIFIER_ALIASES",
     "MODIFIER_ORDER",
+    "SHIFT_CHARACTER_MAP",
     "Shortcut",
     "WINDOWS_VK",
     "X11_KEYSYM",
     "classify_token",
+    "macos_keycode",
     "parse_modifiers",
     "parse_shortcut",
+    "shift_character",
+    "utf16_units",
 ]

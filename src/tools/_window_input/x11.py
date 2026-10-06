@@ -7,7 +7,8 @@
 
   - move / click / drag / scroll → ``xdotool mousemove`` / ``click`` /
     ``mousedown`` / ``mouseup``（滚轮 = 按钮 4/5，水平滚轮 = 6/7）
-  - key → ``xdotool key <combo>``（``ctrl+shift+s`` 语法）
+  - key → ``xdotool keydown`` + ``xdotool keyup``（``ctrl+shift+s`` 语法；
+    按下与弹起分开发送，``phase`` 可只发其中之一）
   - type → ``xdotool type --delay``（换行与制表符转成 ``key Return`` / ``key Tab``）
   - modifiers → ``xdotool keydown`` / ``keyup``
 
@@ -217,11 +218,17 @@ class X11InputBackend:
 
     def _key(self, xdotool: str, action: KeyAction) -> dict:
         combo = _xdotool_combo(action)
-        self._checked([xdotool, "key", combo], "键盘按键")
+        # 分开发送按下与弹起（xdotool key 会把两者合并成一条命令）：
+        # phase=down/up 可只发送其中之一，用于长按或单独释放。
+        if action.phase in ("press", "down"):
+            self._checked([xdotool, "keydown", combo], "按键按下")
+        if action.phase in ("press", "up"):
+            self._checked([xdotool, "keyup", combo], "按键弹起")
         return {
             "key": action.shortcut.display(),
             "xdotool_key": combo,
             "modifiers": list(action.shortcut.modifiers),
+            "phase": action.phase,
         }
 
     def _type(self, xdotool: str, action: TextAction) -> dict:

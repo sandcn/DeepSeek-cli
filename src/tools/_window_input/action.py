@@ -48,6 +48,20 @@ MAX_DRAG_STEPS = 200
 #: 全部输入动作名（bash_opt 的 op 取值集合）
 INPUT_OPS: tuple[str, ...] = ("click", "move", "drag", "scroll", "key", "type")
 
+#: ``key`` 动作的按键阶段：
+#:   ``press`` 按下后立即弹起（完整一次按键，默认）
+#:   ``down``  只发送按下消息（配合后续 ``up`` 实现长按）
+#:   ``up``    只发送弹起消息
+KEY_PHASES: tuple[str, ...] = ("press", "down", "up")
+DEFAULT_KEY_PHASE = "press"
+
+#: ``phase`` 参数别名 → 规范阶段
+KEY_PHASE_ALIASES: dict[str, str] = {
+    "press": "press", "click": "press", "tap": "press", "full": "press",
+    "down": "down", "keydown": "down", "key_down": "down", "hold": "down",
+    "up": "up", "release": "up", "keyup": "up", "key_up": "up",
+}
+
 
 @dataclass(frozen=True)
 class Point:
@@ -115,10 +129,11 @@ class ScrollAction:
 
 @dataclass(frozen=True)
 class KeyAction:
-    """键盘按键（可带修饰键）。"""
+    """键盘按键（可带修饰键；``phase`` 区分按下 / 弹起 / 完整按键）。"""
 
     name: ClassVar[str] = "key"
     shortcut: Shortcut = field(default_factory=lambda: Shortcut((), "enter"))
+    phase: str = DEFAULT_KEY_PHASE
     method: str = DEFAULT_METHOD
 
 
@@ -225,6 +240,24 @@ def _method_arg(params: Mapping[str, Any]) -> str:
             f"（sendinput = 合成真实输入事件；message = 直接投递窗口消息）"
         )
     return method
+
+
+def _phase_arg(params: Mapping[str, Any]) -> str:
+    """取按键阶段参数（``press`` / ``down`` / ``up``，接受常见别名）。
+
+    ``down`` 只发送按下消息、``up`` 只发送弹起消息（长按场景可先 down 后 up，
+    无需在两次调用间保持系统状态）；缺省 ``press`` 表示按下后立即弹起。
+    """
+    raw = _raw(params, "phase", "key_phase", "state")
+    if raw is None:
+        return DEFAULT_KEY_PHASE
+    phase = KEY_PHASE_ALIASES.get(str(raw).strip().lower())
+    if phase is None:
+        raise ActionError(
+            f"按键阶段非法: {raw!r}。支持: press（按下并弹起）、"
+            f"down（只按下）、up（只弹起）"
+        )
+    return phase
 
 
 def _point_args(params: Mapping[str, Any], *, label: str = "坐标") -> Point | None:
@@ -348,7 +381,8 @@ def _build_key(params: dict) -> KeyAction:
     raw = _raw(params, "key", "combo", "shortcut")
     if raw is None:
         raise ActionError("key 操作需要 key 参数指定按键，如 key='ctrl+s' / key='enter'")
-    shortcut = parse_shortcut(str(raw))
+    # 允许单个修饰键作为主键（key='ctrl' 长按 / 弹起 Ctrl 键本身）
+    shortcut = parse_shortcut(str(raw), allow_modifier_key=True)
     # modifiers 参数可与组合键语法叠加（模型两种写法都支持，避免静默忽略）
     extra = parse_modifiers(_raw(params, "modifiers"))
     if extra:
@@ -357,7 +391,8 @@ def _build_key(params: dict) -> KeyAction:
             modifiers=tuple(name for name in MODIFIER_ORDER if name in merged),
             key=shortcut.key,
         )
-    return KeyAction(shortcut=shortcut, method=_method_arg(params))
+    return KeyAction(shortcut=shortcut, phase=_phase_arg(params),
+                     method=_method_arg(params))
 
 
 def _build_text(params: dict) -> TextAction:
@@ -452,6 +487,8 @@ def describe_action(action: InputAction) -> dict:
             "modifiers": list(action.shortcut.modifiers),
             "main_key": action.shortcut.key,
         }
+        if action.phase != DEFAULT_KEY_PHASE:
+            payload["phase"] = action.phase
     elif isinstance(action, TextAction):
         payload = {"text": action.text, "length": len(action.text)}
     else:  # pragma: no cover - 动作类型封闭
@@ -473,12 +510,14 @@ __all__ = [
     "DEFAULT_CLICK_COUNT",
     "DEFAULT_DRAG_DURATION",
     "DEFAULT_DRAG_STEPS",
+    "DEFAULT_KEY_PHASE",
     "DEFAULT_METHOD",
     "DEFAULT_SCROLL_AMOUNT",
     "DEFAULT_SCROLL_DIRECTION",
     "DragAction",
     "INPUT_OPS",
     "InputAction",
+    "KEY_PHASES",
     "KeyAction",
     "METHODS",
     "MoveAction",

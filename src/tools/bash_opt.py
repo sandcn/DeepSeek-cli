@@ -9,12 +9,14 @@ bash_opt — 按 task_id 操作后台 bash 任务
 - op=wait   等待任务执行完成并获取结果（JSON：task_id/status/stdout/stderr/returncode）
 - op=kill   杀死后台命令的所有进程树（killpg + /proc 递归补杀后代）
 - op=stdin  向后台命令的 stdin 发送文本输入（text 参数，newline 可选是否追加换行）
-- op=keys   向后台命令发送光标/键盘消息（跨平台 ANSI/VT100 转义序列）
+- op=keys   向后台命令发送光标/键盘消息（跨平台 ANSI/VT100 转义序列；
+            支持 ctrl+c 等修饰键组合、esc/pageup 等别名、单个字符与 f1-f20）
 - op=screenshot  把后台命令（及其子进程）的窗口截图保存为 PNG
                  （path 参数指定文件路径，可选 crop 参数指定只截取的像素区域）
 - op=move / click / drag / scroll / key / type
                  向后台命令的 **GUI 窗口**注入鼠标 / 键盘 / 文本输入
-                 （鼠标按钮、双击、拖动、滚轮、组合键、任意 Unicode 文本）
+                 （鼠标按钮、双击、拖动、滚轮、组合键、任意 Unicode 文本；
+                  按键可分「按下 / 弹起 / 完整」阶段，见 phase 参数）
 
 read 为**增量读取**：后台任务运行期间的每一行输出都会累积到内部缓冲，
 每次 read 取走当前全部累积内容并清空，适合实时观察长时任务（编译/下载/
@@ -32,14 +34,17 @@ crop='x,y,width,height' 只截取窗口内的像素区域（以整窗截图左�
 的可见窗口，坐标以**窗口截图左上角**为原点（与 op=screenshot 产物一致，
 便于「先截图看清界面，再按像素点操作」）：click 支持左/右/中键与双击，
 drag 支持按住左/右/中键拖拽（带轨迹插值），scroll 支持上下左右滚动，
-key 支持 ctrl+shift+s 之类的组合键，type 逐字符输入任意 Unicode 文本。
+key 支持 ctrl+shift+s 之类的组合键与「按下 / 弹起 / 完整」阶段（phase：
+press / down / up，各平台分别独立发送 down 与 up 消息），type 逐字符输入
+任意 Unicode 文本（每个字符发送配对的按下与弹起）。
 Windows 用 SendInput（必要时回退 PostMessage 投递）、Linux 用 xdotool、
 macOS 用 Quartz/cliclick + osascript；平台工具缺失时返回带安装提示的错误。
 
 键盘消息跨平台说明：VT100/ANSI 转义序列是终端输入的标准语义，被 Linux/
 macOS/Android(Termux) 的 PTY 与 Windows 的 ConPTY/Windows Terminal 统一
-接受。按键名（如 up/down/ctrl_c）映射为对应字节序列，经 PTY master 或
-stdin 管道写入后台进程，不依赖平台特定 API。op=keys 面向**终端程序**，
+接受。按键名（如 up/down/ctrl_c/ctrl+c/esc/pageup）映射为对应字节序列，经
+PTY master 或 stdin 管道写入后台进程，不依赖平台特定 API；键名规则与
+op=key（GUI）共用同一套（别名与组合键语法一致）。op=keys 面向**终端程序**，
 op=key 面向**GUI 窗口**（合成窗口级按键事件），二者按被操作程序的形态选用。
 """
 
@@ -70,83 +75,14 @@ from ._window_input import (
     build_action,
     send_window_input,
 )
+from ._terminal_keys import SUPPORTED_TERMINAL_KEYS, parse_terminal_key
 from ..core.base_agent import _parse_bash_result_fields
 
 logger = logging.getLogger(__name__)
 
-# ── 键盘消息映射表（跨平台 ANSI/VT100） ───────────────────
-# VT100/ANSI 转义序列是终端输入的标准语义（ECMA-48 / xterm），
-# 在 Linux/macOS/Android(Termux) 的 PTY 和 Windows 的 ConPTY/
-# Windows Terminal 中都被统一接受，不依赖平台特定 API。
-_KEY_SEQUENCES: dict[str, str] = {
-    # 光标键
-    "up": "\x1b[A",
-    "down": "\x1b[B",
-    "right": "\x1b[C",
-    "left": "\x1b[D",
-    # 编辑键
-    "home": "\x1b[H",
-    "end": "\x1b[F",
-    "page_up": "\x1b[5~",
-    "page_down": "\x1b[6~",
-    "insert": "\x1b[2~",
-    "delete": "\x1b[3~",
-    "backspace": "\x7f",   # DEL（多数终端 Backspace 发送 DEL）
-    "tab": "\t",
-    "enter": "\r",
-    "escape": "\x1b",
-    "space": " ",
-    # 功能键（F1-F4 用 SS3 前缀，F5-F12 用 CSI 前缀）
-    "f1": "\x1bOP",
-    "f2": "\x1bOQ",
-    "f3": "\x1bOR",
-    "f4": "\x1bOS",
-    "f5": "\x1b[15~",
-    "f6": "\x1b[17~",
-    "f7": "\x1b[18~",
-    "f8": "\x1b[19~",
-    "f9": "\x1b[20~",
-    "f10": "\x1b[21~",
-    "f11": "\x1b[23~",
-    "f12": "\x1b[24~",
-}
-
-# 常用控制组合（ctrl_a..ctrl_z = 0x01..0x1A，其余程序化生成）
-_CTRL_KEYS: dict[str, str] = {
-    "ctrl_c": "\x03",   # 中断（SIGINT）
-    "ctrl_d": "\x04",   # EOF（退出输入）
-    "ctrl_z": "\x1a",   # 挂起（SIGTSTP）
-    "ctrl_l": "\x0c",   # 清屏（clear）
-    "ctrl_r": "\x12",   # 反向搜索历史
-    "ctrl_u": "\x15",   # 删除光标到行首
-    "ctrl_w": "\x17",   # 删除前一个词
-}
-
-
-def _resolve_key(key: str) -> str | None:
-    """将按键名解析为终端输入字节序列（ANSI/VT100，跨平台）。
-
-    支持：
-      - 光标键：up / down / left / right
-      - 编辑键：home / end / page_up / page_down / insert / delete /
-        backspace / tab / enter / escape / space
-      - 功能键：f1 - f12
-      - 控制组合：ctrl_a .. ctrl_z、ctrl_c / ctrl_d / ctrl_z 等
-
-    按键名不区分大小写，下划线与连字符等价（ctrl_c == ctrl-c）。
-    未知按键返回 None。
-    """
-    normalized = key.strip().lower().replace("-", "_")
-    if normalized in _KEY_SEQUENCES:
-        return _KEY_SEQUENCES[normalized]
-    if normalized in _CTRL_KEYS:
-        return _CTRL_KEYS[normalized]
-    # 程序化生成 ctrl_<letter>（0x01..0x1A）
-    if normalized.startswith("ctrl_"):
-        letter = normalized[len("ctrl_"):]
-        if len(letter) == 1 and "a" <= letter <= "z":
-            return chr(ord(letter) - ord("a") + 1)
-    return None
+# 终端按键名 → ANSI/VT100 序列的解析见 ``_terminal_keys`` 模块：它复用
+# ``_window_input.keys`` 的键名别名与组合键语法（与 op=key 完全一致），
+# 支持 esc/del/pageup/ctrl+c 等别名、修饰键组合、单个字符与 f1-f20。
 
 
 async def _write_pty_all(fd: int, data: bytes) -> None:
@@ -207,11 +143,13 @@ class BashOptFunc(Func):
                     "wait（等待完成取结果 JSON：task_id/status/stdout/stderr/returncode，"
                     "timeout 秒，默认 300/0 无限）、"
                     "kill（杀进程树）、stdin（发文本到 stdin，需 text）、"
-                    "keys（向终端发按键，需 key，跨平台 ANSI/VT100）、"
+                    "keys（向终端发按键，需 key：支持 ctrl+c 等组合键、esc/pageup "
+                    "等别名与单个字符）、"
                     "screenshot（把该命令进程树的窗口截图存为 PNG，需 path，"
                     "可选 crop 指定只截取的像素区域，格式 'x,y,width,height'）、"
                     "move/click/drag/scroll/key/type（向该命令进程树的 GUI 窗口注入"
                     "鼠标移动/点击（左中右键、可双击）/拖动/滚轮/按键/文本，"
+                    "key 支持 phase=press/down/up 的按下与弹起分离发送，"
                     "坐标以窗口截图左上角为原点且可用 screenshot 对照）。"
                     "task_id 必须是当前对话 bash 后台返回的 bg-xxx。返回：操作结果 JSON 或输出；失败以 ( 开头。"
                 ),
@@ -237,14 +175,15 @@ class BashOptFunc(Func):
                                 "\n- wait：等待任务完成并获取命令输出"
                                 "\n- kill：杀死任务所有进程树"
                                 "\n- stdin：向任务 stdin 发送文本输入（需 text）"
-                                "\n- keys：向任务（终端程序）发送光标/键盘消息（需 key）"
+                                "\n- keys：向任务（终端程序）发送光标/键盘消息（需 key；"
+                                "支持 ctrl+c 等组合键、esc/pageup 等别名与单个字符）"
                                 "\n- screenshot：把任务进程树（含其启动的 GUI 子进程）的窗口"
                                 "截图保存为 PNG 文件（需 path；可选 crop 指定只截取的像素区域），"
                                 "用于查看图形程序运行画面；"
                                 "纯命令行进程没有窗口，会返回错误说明"
                                 "\n- move/click/drag/scroll/key/type：向任务进程树的 GUI 窗口"
                                 "注入输入（鼠标移动/点击（左中右键、双击即 count=2）/拖动/滚轮、"
-                                "键盘按键、文本）；"
+                                "键盘按键（phase=press/down/up 分按下与弹起）、文本）；"
                                 "坐标以窗口截图左上角为原点（与 screenshot 产物一致），"
                                 "click/scroll 省略坐标时作用于窗口中心；"
                                 "键输入需 key，文本输入需 text；纯命令行进程没有窗口，会报错"
@@ -279,14 +218,16 @@ class BashOptFunc(Func):
                         "key": {
                             "type": "string",
                             "description": (
-                                "keys / key 操作的按键名："
-                                "keys（终端程序）用跨平台 ANSI/VT100 按键名，支持 "
-                                "up/down/left/right、home/end/page_up/page_down/"
-                                "insert/delete/backspace/tab/enter/escape/space、"
-                                "f1-f12、ctrl_a-ctrl_z（含 ctrl_c/ctrl_d/ctrl_z/ctrl_l 等）；"
-                                "key（GUI 窗口）用组合键文本，如 'ctrl+shift+s'、'alt+f4'、"
-                                "'enter'、'a'（支持 ctrl/alt/shift/meta 修饰键、编辑与"
-                                "导航键、f1-f24、单个字符）。"
+                                "keys / key 操作的按键名（二者共用同一套键名规则）："
+                                "keys（终端程序）支持修饰键组合（ctrl+c / alt+f4 / "
+                                "shift+tab）、紧凑写法（ctrl_c / ctrl-c）、常用别名"
+                                "（esc / return / del / ins / pageup / pgup / pgdn / "
+                                "next / prior）、光标与编辑键（up/down/left/right/"
+                                "home/end/page_up/page_down/insert/delete/backspace/"
+                                "tab/enter/escape/space）、f1-f20 与单个字符；"
+                                "key（GUI 窗口）用同样的组合键文本，如 'ctrl+shift+s'、"
+                                "'alt+f4'、'enter'、'a'（支持 ctrl/alt/shift/meta "
+                                "修饰键、编辑与导航键、f1-f24、单个字符）。"
                             ),
                         },
                         "path": {
@@ -402,6 +343,20 @@ class BashOptFunc(Func):
                                 "但目标程序必须处理这些消息）。"
                             ),
                         },
+                        "phase": {
+                            "type": "string",
+                            "enum": ["press", "down", "up"],
+                            "description": (
+                                "仅 key 操作可选：按键阶段。"
+                                "press（默认，按下并弹起，一次完整按键）、"
+                                "down（只发送「按下」消息，可用于长按）、"
+                                "up（只发送「弹起」消息）。"
+                                "按下与弹起在各平台分别独立发送（Linux 用 xdotool "
+                                "keydown/keyup、Windows 用 WM_KEYDOWN/WM_KEYUP 或 "
+                                "WM_SYSKEY*/SendInput、macOS 用 Quartz 按键事件）；"
+                                "key='ctrl' 可单独按下/弹起修饰键本身。"
+                            ),
+                        },
                     },
                     "required": ["task_id", "op"],
                 },
@@ -435,7 +390,11 @@ class BashOptFunc(Func):
         if op == "type":
             return str(arguments.get("text", ""))
         if op == "key":
-            return str(arguments.get("key", ""))
+            label = str(arguments.get("key", ""))
+            phase = str(arguments.get("phase") or "press").strip().lower()
+            if phase in ("down", "up"):
+                label = f"{label} {phase}"
+            return label
         if op == "click":
             button = str(arguments.get("button") or "left")
             count = arguments.get("count")
@@ -463,7 +422,8 @@ class BashOptFunc(Func):
                  from_x=None, from_y=None,
                  button: str | None = None, count=None, modifiers=None,
                  direction: str | None = None, amount=None,
-                 duration=None, steps=None, method: str | None = None):
+                 duration=None, steps=None, method: str | None = None,
+                 phase: str | None = None):
         super().__init__()
         # task_id 归一化（防御 None/缺失）：模型传 {"task_id": null} 时
         # from_args 把 None 传入（默认值不生效），后续 startswith 崩溃。
@@ -506,6 +466,8 @@ class BashOptFunc(Func):
         self.duration = duration
         self.steps = steps
         self.method = method
+        # 按键阶段（仅 key 生效）：press=按下并弹起（默认）/ down=只按下 / up=只弹起
+        self.phase = phase
 
     # ── execute ──────────────────────────────────────────
 
@@ -696,11 +658,16 @@ class BashOptFunc(Func):
         """向后台任务发送光标/键盘消息（跨平台 ANSI/VT100 转义序列）。"""
         if self.key is None:
             return "(keys 操作需要 key 参数指定按键，如 key='up' / key='ctrl_c')"
-        seq = _resolve_key(self.key)
-        if seq is None:
-            supported = sorted(_KEY_SEQUENCES.keys()) + ["ctrl_a..ctrl_z"]
-            return (f"(未知按键: {self.key}。支持: {', '.join(supported)})")
-        ok, err = await self._write_to_task(rec, seq.encode("utf-8"))
+        try:
+            sequence = parse_terminal_key(str(self.key))
+        except ActionError as exc:
+            return (
+                f"(按键解析失败: {exc}。终端按键支持: "
+                f"{', '.join(SUPPORTED_TERMINAL_KEYS)}、ctrl_a..ctrl_z、"
+                f"alt+<字符>、shift+tab、单个字符；亦接受 esc/del/pageup/"
+                f"return/ins/pgdn 等别名)"
+            )
+        ok, err = await self._write_to_task(rec, sequence.encode("utf-8"))
         if not ok:
             return err
         return f"(已向后台任务 {self.task_id} 发送按键: {self.key})"
@@ -857,7 +824,7 @@ class BashOptFunc(Func):
             "modifiers": self.modifiers, "key": self.key, "text": text,
             "direction": self.direction, "amount": self.amount,
             "duration": self.duration, "steps": self.steps,
-            "method": self.method,
+            "method": self.method, "phase": self.phase,
         }
         return build_action(self.op, params)
 

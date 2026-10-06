@@ -13,6 +13,11 @@
     ``WM_*BUTTON*`` / ``WM_MOUSEWHEEL`` / ``WM_KEY*`` / ``WM_CHAR`` 直接投递
     给窗口，不移动真实光标、不需要焦点；但目标程序若不处理这些消息则不生效。
 
+键盘按键的**按下与弹起分别独立发送**（``phase='down'`` 只按下、``'up'``
+只弹起、``'press'`` 按下后弹起）；Alt 组合键走系统按键消息
+（``WM_SYSKEYDOWN``/``WM_SYSKEYUP``，SendInput 路径由系统派生），
+``op=type`` 的每个字符发送配对的按下 → 字符 → 弹起。
+
 坐标：后端按「窗口截图坐标系」接收坐标（原点为截图左上角），SendInput 前
 换算为屏幕物理像素（进程已 DPI 感知），PostMessage 前换算为客户区坐标
 （``WM_MOUSEWHEEL`` 例外，Windows 规定其坐标是屏幕坐标）。
@@ -48,7 +53,13 @@ from .action import (
     validate_point,
 )
 from .geometry import WindowFrame
-from .keys import MODIFIER_ORDER, WINDOWS_VK
+from .keys import (
+    MODIFIER_ORDER,
+    WINDOWS_VK,
+    Shortcut,
+    shift_character,
+    utf16_units,
+)
 from .result import ActionError, InputError, InputResult, NoWindowError
 
 logger = logging.getLogger(__name__)
@@ -108,6 +119,17 @@ _MODIFIER_MK: dict[str, int] = {
     "ctrl": winapi.MK_CONTROL,
     "shift": winapi.MK_SHIFT,
 }
+
+#: 消息投递路径下需补发 WM_CHAR 的非字符键 → 其产生的字符。
+#: 编辑框等控件靠 WM_CHAR 插入文本：Space 只发 WM_KEYDOWN 不会插入空格；
+#: Enter / Backspace 由控件在 WM_KEY* 中处理，补发 WM_CHAR 反而会重复生效。
+_MESSAGE_CHAR_KEYS: dict[str, str] = {
+    "space": " ",
+    "tab": "\t",
+}
+
+#: WM_KEYUP / WM_SYSKEYUP 的 lParam：重复次数 1 + previous / transition 位置位
+_KEYUP_LPARAM = 1 | (1 << 30) | (1 << 31)
 
 
 @dataclass
@@ -364,18 +386,28 @@ class WindowsInputBackend:
         vk, implicit = resolve_windows_vk(action.shortcut.key)
         modifiers = self._merged_modifiers(action.shortcut.modifiers, implicit)
         vks = [_MODIFIER_VKS[name] for name in modifiers]
-        for name_vk in vks:
-            self._driver.key_event(name_vk, key_up=False)
-        try:
+        if action.phase == "down":
+            for name_vk in vks:
+                self._driver.key_event(name_vk, key_up=False)
             self._driver.key_event(vk, key_up=False)
+        elif action.phase == "up":
             self._driver.key_event(vk, key_up=True)
-        finally:
             for name_vk in reversed(vks):
                 self._driver.key_event(name_vk, key_up=True)
+        else:  # press：按住修饰键 → 主键按下/弹起 → 逆序释放修饰键
+            for name_vk in vks:
+                self._driver.key_event(name_vk, key_up=False)
+            try:
+                self._driver.key_event(vk, key_up=False)
+                self._driver.key_event(vk, key_up=True)
+            finally:
+                for name_vk in reversed(vks):
+                    self._driver.key_event(name_vk, key_up=True)
         return {
             "key": action.shortcut.display(),
             "vk": vk,
             "modifiers": list(modifiers),
+            "phase": action.phase,
         }
 
     def _type_sendinput(self, action: TextAction) -> dict:
@@ -388,7 +420,7 @@ class WindowsInputBackend:
             elif char == "\t":
                 self._press_vk(winapi.VK_TAB)
             else:
-                for unit in _utf16_units(char):
+                for unit in utf16_units(char):
                     self._driver.unicode_event(unit, key_up=False)
                     self._driver.unicode_event(unit, key_up=True)
             characters += 1
@@ -578,23 +610,25 @@ class WindowsInputBackend:
         handle = self._keyboard_target(target)
         vk, implicit = resolve_windows_vk(action.shortcut.key)
         modifiers = self._merged_modifiers(action.shortcut.modifiers, implicit)
+        # Alt 组合键走系统按键消息（WM_SYSKEYDOWN/WM_SYSKEYUP），否则菜单
+        # 加速键等只处理系统消息的程序收不到按下/弹起。
+        down_msg, up_msg = _key_message_types(modifiers)
         vks = [_MODIFIER_VKS[name] for name in modifiers]
-        for modifier_vk in vks:
-            self._driver.post(handle, winapi.WM_KEYDOWN, modifier_vk, 1)
-        try:
-            self._driver.post(handle, winapi.WM_KEYDOWN, vk, 1)
-            if action.shortcut.is_character and not ({"ctrl", "alt"} & set(modifiers)):
-                self._driver.post(handle, winapi.WM_CHAR,
-                                  ord(action.shortcut.key), 1)
-            self._driver.post(handle, winapi.WM_KEYUP, vk, 1 | (1 << 30) | (1 << 31))
-        finally:
+        if action.phase in ("press", "down"):
+            for modifier_vk in vks:
+                self._driver.post(handle, down_msg, modifier_vk, 1)
+            self._driver.post(handle, down_msg, vk, 1)
+            for unit in _message_char_units(action.shortcut, modifiers):
+                self._driver.post(handle, winapi.WM_CHAR, unit, 1)
+        if action.phase in ("press", "up"):
+            self._driver.post(handle, up_msg, vk, _KEYUP_LPARAM)
             for modifier_vk in reversed(vks):
-                self._driver.post(handle, winapi.WM_KEYUP, modifier_vk,
-                                  1 | (1 << 30) | (1 << 31))
+                self._driver.post(handle, up_msg, modifier_vk, _KEYUP_LPARAM)
         return {
             "key": action.shortcut.display(),
             "vk": vk,
             "modifiers": list(modifiers),
+            "phase": action.phase,
             "target_handle": handle,
         }
 
@@ -605,16 +639,39 @@ class WindowsInputBackend:
             if char == "\r":
                 continue
             if char == "\n":
-                self._driver.post(handle, winapi.WM_KEYDOWN, winapi.VK_RETURN, 1)
-                self._driver.post(handle, winapi.WM_CHAR, 0x0D, 1)
-                self._driver.post(handle, winapi.WM_KEYUP, winapi.VK_RETURN,
-                                  1 | (1 << 30) | (1 << 31))
+                self._press_key_message(handle, winapi.VK_RETURN, 0x0D)
+            elif char == "\t":
+                self._press_key_message(handle, winapi.VK_TAB, 0x09)
             else:
-                for unit in _utf16_units(char):
-                    self._driver.post(handle, winapi.WM_CHAR, unit, 1)
+                self._type_char_message(handle, char)
             characters += 1
         return {"text": action.text, "characters": characters,
                 "target_handle": handle}
+
+    def _type_char_message(self, handle: int, char: str) -> None:
+        """消息投递路径输入一个字符：按下 → 字符（可多个码元）→ 弹起。
+
+        能映射到虚拟键的字符同时发送配对的按下/弹起按键消息（部分程序只
+        监听按键消息、不处理 WM_CHAR）；无法映射（如中文）时只发 WM_CHAR，
+        与 SendInput 路径的 Unicode 码元事件等价。
+        """
+        units = utf16_units(char)
+        scanned = winapi.key_scan_code(char) if len(char) == 1 else None
+        if scanned is None:
+            for unit in units:
+                self._driver.post(handle, winapi.WM_CHAR, unit, 1)
+            return
+        vk = scanned[0]
+        self._driver.post(handle, winapi.WM_KEYDOWN, vk, 1)
+        for unit in units:
+            self._driver.post(handle, winapi.WM_CHAR, unit, 1)
+        self._driver.post(handle, winapi.WM_KEYUP, vk, _KEYUP_LPARAM)
+
+    def _press_key_message(self, handle: int, vk: int, char: int) -> None:
+        """消息投递路径按一次功能键：按下 → 字符 → 弹起（成对通知程序）。"""
+        self._driver.post(handle, winapi.WM_KEYDOWN, vk, 1)
+        self._driver.post(handle, winapi.WM_CHAR, char, 1)
+        self._driver.post(handle, winapi.WM_KEYUP, vk, _KEYUP_LPARAM)
 
     def _post_move(self, hit: _MessagePoint, state: int) -> None:
         self._driver.post(hit.handle, winapi.WM_MOUSEMOVE, state,
@@ -627,7 +684,7 @@ class WindowsInputBackend:
             vk = _MODIFIER_VKS.get(name)
             if vk is None:
                 continue
-            lparam = 1 if not key_up else 1 | (1 << 30) | (1 << 31)
+            lparam = 1 if not key_up else _KEYUP_LPARAM
             self._driver.post(handle, message, vk, lparam)
 
     @staticmethod
@@ -699,11 +756,37 @@ def _make_lparam(x: int, y: int) -> int:
     return ((int(y) & 0xFFFF) << 16) | (int(x) & 0xFFFF)
 
 
-def _utf16_units(char: str) -> list[int]:
-    """把单个字符（可能是代理对）拆为 UTF-16 码元列表。"""
-    encoded = char.encode("utf-16-le")
-    return [int.from_bytes(encoded[index:index + 2], "little")
-            for index in range(0, len(encoded), 2)]
+def _key_message_types(modifiers: tuple[str, ...]) -> tuple[int, int]:
+    """键盘消息类型：Alt 组合走系统消息（WM_SYSKEYDOWN/WM_SYSKEYUP）。
+
+    Windows 规定 Alt 参与的按键以系统按键消息投递；只处理系统消息的
+    程序（菜单加速键等）在普通 WM_KEY* 下收不到按键。
+    """
+    if "alt" in modifiers:
+        return winapi.WM_SYSKEYDOWN, winapi.WM_SYSKEYUP
+    return winapi.WM_KEYDOWN, winapi.WM_KEYUP
+
+
+def _message_char_units(shortcut: Shortcut,
+                        modifiers: tuple[str, ...]) -> list[int]:
+    """PostMessage 路径下主键应补发的 WM_CHAR 码元。
+
+    Ctrl / Alt / Meta 组合键由程序自行解释，不产生字符；Shift 会改变字符键
+    的输出（``a`` → ``A``、``1`` → ``!``），须按 Shift 后的字符发送；
+    Space / Tab 等键名本身不携带字符，但编辑框依赖 WM_CHAR 插入，需要补发。
+    """
+    mod_set = set(modifiers)
+    if mod_set & {"ctrl", "alt", "meta"}:
+        return []
+    if shortcut.is_character:
+        char = shift_character(shortcut.key) if "shift" in mod_set else shortcut.key
+        return utf16_units(char)
+    char = _MESSAGE_CHAR_KEYS.get(shortcut.key)
+    if char is None:
+        return []
+    if "shift" in mod_set:
+        char = shift_character(char)
+    return utf16_units(char)
 
 
 __all__ = [

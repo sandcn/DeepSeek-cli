@@ -138,15 +138,19 @@ def test_x11_click_with_modifiers_presses_and_releases():
 def test_x11_key_combo():
     runner = FakeRunner()
     result = _x11_backend(runner).send(999, build_action("key", {"key": "ctrl+shift+s"}))
-    command = _last_command(runner, "key")
-    assert command[-1] == "ctrl+shift+s"
+    down = _last_command(runner, "keydown")
+    up = _last_command(runner, "keyup")
+    assert down[-1] == "ctrl+shift+s"
+    assert up[-1] == "ctrl+shift+s"
+    assert runner.commands.index(down) < runner.commands.index(up)
     assert result.detail["xdotool_key"] == "ctrl+shift+s"
 
 
 def test_x11_key_named_uses_keysym():
     runner = FakeRunner()
     _x11_backend(runner).send(999, build_action("key", {"key": "page_down"}))
-    assert _last_command(runner, "key")[-1] == "Next"
+    assert _last_command(runner, "keydown")[-1] == "Next"
+    assert _last_command(runner, "keyup")[-1] == "Next"
 
 
 def test_x11_type_splits_lines():
@@ -214,8 +218,8 @@ class FakeKeyboardDriver:
     def __init__(self):
         self.calls = []
 
-    def key(self, shortcut):
-        self.calls.append(("key", shortcut.display()))
+    def key(self, shortcut, phase):
+        self.calls.append(("key", shortcut.display(), phase))
 
     def text(self, text):
         self.calls.append(("text", text))
@@ -259,7 +263,7 @@ def test_macos_drag_scroll_key_type_dispatch():
     assert mouse.calls[-1] == ("scroll", 410, 320, "down", 2)
 
     backend.send(555, build_action("key", {"key": "cmd+s"}))
-    assert keyboard.calls[-1] == ("key", "meta+s")
+    assert keyboard.calls[-1] == ("key", "meta+s", "press")
 
     backend.send(555, build_action("type", {"text": "hi"}))
     assert keyboard.calls[-1] == ("text", "hi")
@@ -280,9 +284,9 @@ def test_applescript_key_and_text_commands(monkeypatch):
                         lambda name: "/usr/bin/osascript")
     runner = FakeRunner()
     driver = AppleScriptKeyboardDriver(runner)
-    driver.key(parse_shortcut("ctrl+shift+s"))
+    driver.key(parse_shortcut("ctrl+shift+s"), "press")
     driver.text("a\nb")
-    driver.key(parse_shortcut("enter"))
+    driver.key(parse_shortcut("enter"), "press")
 
     scripts = [cmd[-1] for cmd in runner.commands]
     assert 'tell application "System Events" to keystroke "s" using ' \
@@ -305,7 +309,8 @@ def test_applescript_unsupported_key_raises(monkeypatch):
     monkeypatch.setattr(macos_module.shutil, "which",
                         lambda name: "/usr/bin/osascript")
     with pytest.raises(InputError):
-        AppleScriptKeyboardDriver(FakeRunner()).key(parse_shortcut("print_screen"))
+        AppleScriptKeyboardDriver(FakeRunner()).key(
+            parse_shortcut("print_screen"), "press")
 
 
 def test_applescript_failure_reports_permission(monkeypatch):
@@ -313,7 +318,7 @@ def test_applescript_failure_reports_permission(monkeypatch):
                         lambda name: "/usr/bin/osascript")
     driver = AppleScriptKeyboardDriver(FakeRunner(returncode=1))
     with pytest.raises(InputError) as excinfo:
-        driver.key(parse_shortcut("enter"))
+        driver.key(parse_shortcut("enter"), "press")
     assert "辅助功能" in str(excinfo.value)
 
 
