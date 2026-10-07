@@ -38,9 +38,11 @@ from .windows import (
     WindowInfo,
     WindowSelector,
     describe_windows,
+    indexed_summary,
     parse_control_request,
     parse_selector,
     pick_window,
+    window_geometry,
     window_hint,
 )
 
@@ -215,6 +217,7 @@ __all__ = [
     "control_process_window",
     "describe_windows",
     "draw_grid_bgra",
+    "indexed_summary",
     "list_process_windows",
     "paint_grid_on_png_file",
     "parse_control_request",
@@ -223,5 +226,6 @@ __all__ = [
     "register_backend",
     "resolve_backend",
     "resolve_step",
+    "window_geometry",
     "window_hint",
 ]

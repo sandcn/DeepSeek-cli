@@ -308,6 +308,7 @@ class WindowsInputBackend:
             detail=detail,
             window_selector=getattr(action, "window", "") or DEFAULT_SELECTOR,
             window_handle=_window_handle_text(target.handle),
+            window_frame=target.frame.to_dict(),
         )
 
     @staticmethod

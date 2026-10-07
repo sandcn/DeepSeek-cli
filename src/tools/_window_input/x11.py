@@ -114,6 +114,7 @@ class X11InputBackend:
             detail=detail,
             window_selector=getattr(action, "window", "") or DEFAULT_SELECTOR,
             window_handle=str(target.window_id),
+            window_frame=target.frame.to_dict(),
         )
 
     # ── 命令执行 ─────────────────────────────────────────

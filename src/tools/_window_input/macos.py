@@ -142,6 +142,7 @@ class MacOSInputBackend:
             detail=detail,
             window_selector=getattr(action, "window", "") or DEFAULT_SELECTOR,
             window_handle=str(target.number) if target.number else "",
+            window_frame=target.frame.to_dict(),
         )
 
     # ── 动作分发 ─────────────────────────────────────────

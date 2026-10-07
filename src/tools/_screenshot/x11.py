@@ -34,8 +34,10 @@ from .windows import (
     DEFAULT_SELECTOR,
     WindowControlRequest,
     WindowInfo,
+    indexed_summary,
     mark_main,
     pick_window,
+    window_geometry,
 )
 
 logger = logging.getLogger(__name__)
@@ -127,8 +129,13 @@ class X11Backend:
         target = _find_by_info(windows, target_info)
         self._grab(target.window_id, path)
         width, height = self._read_size(path, target)
+        # 产物图左上角对应的屏幕坐标（X11 无 DWM 黑边；crop 后叠加偏移），
+        # 便于把截图像素换算为屏幕坐标（screen = window_x + px）
+        origin_x, origin_y = target_info.left, target_info.top
         if crop is not None:
             width, height = transform.apply_crop_to_png_file(path, crop)
+            origin_x += crop.x
+            origin_y += crop.y
         if grid is not None:
             width, height, _step = paint_grid_on_png_file(path, int(grid))
         return CaptureResult(
@@ -141,7 +148,10 @@ class X11Backend:
             window_handle=target_info.handle,
             windows_total=len(windows),
             window_selector=window or DEFAULT_SELECTOR,
-            window_summary=target_info.summary(),
+            window_summary=indexed_summary(infos, target_info),
+            window_x=origin_x,
+            window_y=origin_y,
+            window_rect=window_geometry(infos, target_info)["rect"],
         )
 
     def list_windows(self, pid: int) -> list[WindowInfo]:

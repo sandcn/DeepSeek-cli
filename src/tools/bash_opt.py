@@ -38,6 +38,10 @@ read 为**增量读取**：后台任务运行期间的每一行输出都会累�
 macOS 用 screencapture）。默认输出整窗原始像素；需要「指定大小」时可传
 crop='x,y,width,height' 只截取窗口内的像素区域（以整窗截图左上角为原点，
 区域越界报错并提示窗口实际尺寸）。产物为 PNG，可用 read_image 查看画面。
+结果同时给出 ``window_summary``（命中的窗口一行摘要，``#N`` 编号与选择器
+一致）、``window_x`` / ``window_y``（产物左上角对应的屏幕坐标）与
+``window_rect``（窗口外框屏幕矩形），便于把截图像素换算成屏幕坐标 / 输入
+坐标，或直接喂给 ``op=window`` 的 move / fit。
 纯命令行进程没有窗口，此时返回可读的错误说明。
 
 多窗口选择（window 参数，截图 / 输入 op / 窗口控制通用）：一个 GUI 程序往往
@@ -245,6 +249,8 @@ class BashOptFunc(Func):
                                 "\n- screenshot：把任务进程树（含其启动的 GUI 子进程）的窗口"
                                 "截图保存为 PNG 文件（需 path；可选 crop 指定只截取的像素区域），"
                                 "用于查看图形程序运行画面；"
+                                "结果附带 window_x/window_y（截图像素左上角对应的屏幕坐标）"
+                                "与 window_rect（窗口外框），便于截图像素与屏幕坐标换算；"
                                 "纯命令行进程没有窗口，会返回错误说明"
                                 "\n- move/click/drag/scroll/key/type：向任务进程树的 GUI 窗口"
                                 "注入输入（鼠标移动/点击（左中右键、双击即 count=2）/拖动/滚轮、"
@@ -254,6 +260,8 @@ class BashOptFunc(Func):
                                 "键输入需 key，文本输入需 text；纯命令行进程没有窗口，会报错"
                                 "\n- windows：列出该后台任务进程树的全部窗口"
                                 "（句柄/标题/类名/位置尺寸/Z 序/是否前台/是否主窗口），"
+                                "z_index 与 '#N' 选择器编号一致、selectable_total 为可操作"
+                                "窗口数，"
                                 "用于挑选目标窗口（右键菜单、下拉浮层、对话框等独立顶层"
                                 "窗口都在其中）"
                                 "\n- window：控制窗口状态与几何（需 window_action="
@@ -339,7 +347,9 @@ class BashOptFunc(Func):
                                 "注入完成后自动截图，省去额外一次 screenshot 调用。"
                                 "取值为截图路径（无扩展名自动补 .png），或 true 表示"
                                 "自动命名到 'bash_opt_shots/' 目录。结果 JSON 的 "
-                                "screenshot 字段给出 path/width/height。"
+                                "screenshot 字段给出 path/width/height，以及 "
+                                "window_x/window_y（截图像素左上角的屏幕坐标）与 "
+                                "window_rect（窗口外框）。"
                             ),
                         },
                         "settle": {
@@ -1038,6 +1048,17 @@ class BashOptFunc(Func):
             notes.append("已叠加坐标参考线")
         if self.window:
             payload["window"] = str(self.window)
+        notes.append(
+            f"截图像素左上角对应屏幕坐标 ({result.window_x},{result.window_y})"
+            f"（screen = 原点 + 截图像素；输入 op 的坐标即以本产物左上角为原点）"
+        )
+        if result.window_rect:
+            rect = result.window_rect
+            notes.append(
+                f"窗口外框 {rect['width']}x{rect['height']}"
+                f"@({rect['x']},{rect['y']})（产物 {result.width}x{result.height} "
+                f"与它的差值来自窗口装饰 / DWM 黑边 / crop，二者不必相等）"
+            )
         payload["hint"] = ("，".join(notes) +
                            "，可用 read_image 工具读取该文件查看画面")
         return json.dumps(payload, ensure_ascii=False)
@@ -1184,9 +1205,12 @@ class BashOptFunc(Func):
             "task_id": self.task_id,
             "op": self.op,
             "hint": ("输入已注入；可用 op=screenshot 截图后用 read_image 核对界面变化"
-                     "（坐标原点为窗口截图左上角；window 选择器可用 'main' / "
+                     "（坐标原点为窗口截图左上角，与 op=screenshot 产物一致；"
+                     "window 选择器可用 'main' / "
                      "'#N'（当前可操作窗口的 Z 序，见 op=windows 的 z_index）/ "
-                     "'popup' / 'title:子串' / 'handle:0x…'）"),
+                     "'popup' / 'title:子串' / 'handle:0x…'；"
+                     "结果里的 window_frame 给出命中窗口的截图坐标系 "
+                     "screen_x/screen_y/width/height，可据此把输入坐标与截图坐标对齐）"),
         }
         if self.window:
             payload["window"] = str(self.window)
@@ -1284,12 +1308,15 @@ class BashOptFunc(Func):
         except asyncio.TimeoutError:
             return (f"(枚举窗口超时（超过 {self._INPUT_TIMEOUT:g} 秒）："
                     f"系统窗口枚举无响应")
+        described = describe_windows(infos)
         payload = {
             "task_id": self.task_id,
             "op": "windows",
             "pid": pid,
             "total": len(infos),
-            "windows": describe_windows(infos),
+            "windows_total": len(infos),
+            "selectable_total": sum(1 for item in described if item.get("selectable")),
+            "windows": described,
         }
         if infos:
             payload["hint"] = ("用 window 参数把 screenshot / 输入 op 投向指定窗口："
@@ -1299,7 +1326,11 @@ class BashOptFunc(Func):
                                "'handle:0x…'、'popup'、'dialog'。"
                                "selectable=false 的窗口（visible=false 或已最小化）"
                                "不会被 'main' / '#N' / 'popup' / 'dialog' 选中，"
-                               "需要时用 handle:0x… 显式指定")
+                               "需要时用 handle:0x… 显式指定；"
+                               "计数看 selectable_total（可操作窗口数）与 "
+                               "windows_total（含隐藏 / 最小化的全部窗口数）。"
+                               "'#N' 的编号与截图结果里的 window_summary 编号同源"
+                               "（都按可操作窗口的 Z 序），可直接互相参照")
             payload["summary"] = window_hint(infos)
         else:
             payload["hint"] = ("未找到可见窗口（纯命令行进程没有 GUI 窗口；"

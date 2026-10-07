@@ -37,9 +37,11 @@ from .windows import (
     DEFAULT_SELECTOR,
     WindowControlRequest,
     WindowInfo,
+    indexed_summary,
     main_window,
     mark_main,
     pick_window,
+    window_geometry,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,14 +127,22 @@ class WindowsBackend:
             )
         target = pick_window(candidates, window)
         bgra, width, height = capture_window_pixels(target)
+        # 产物图左上角对应的屏幕坐标：先取窗口外框，再依次叠加 DWM 黑边裁剪
+        # 与 crop 的偏移。模型据此把截图像素换算成屏幕 / 窗口坐标
+        # （screen = window_x + px），解决「截图尺寸与窗口外框尺寸不一致」的困惑。
+        origin_x, origin_y = target.left, target.top
         # 去掉 Win10 DWM 为阴影/缩放预留的不可见边框（截图后呈黑边）
         trim = visible_region(target)
         if trim is not None:
             bgra = transform.crop_bgra(bgra, width, height, trim)
             width, height = trim.width, trim.height
+            origin_x += trim.x
+            origin_y += trim.y
         if crop is not None:
             bgra = transform.crop_bgra(bgra, width, height, crop)
             width, height = crop.width, crop.height
+            origin_x += crop.x
+            origin_y += crop.y
         if grid is not None:
             bgra = grid_module.draw_grid_bgra(bgra, width, height, int(grid))
         data = png.encode_png_bgra(width, height, bgra)
@@ -148,7 +158,10 @@ class WindowsBackend:
             window_handle=target.handle,
             windows_total=len(candidates),
             window_selector=window or DEFAULT_SELECTOR,
-            window_summary=target.summary(),
+            window_summary=indexed_summary(candidates, target),
+            window_x=origin_x,
+            window_y=origin_y,
+            window_rect=window_geometry(candidates, target)["rect"],
         )
 
     def list_windows(self, pid: int) -> list[WindowInfo]:

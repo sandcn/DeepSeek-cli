@@ -38,6 +38,11 @@ class InputResult:
             X11 为窗口 id，macOS 为窗口号；空 = 后端未提供）。回传它便于调用方
             核对「选择器实际打到了哪个窗口」——例如 ``#N`` 在弹层关闭后会落到
             另一个窗口，只有句柄 / 标题才能暴露这种漂移。
+        window_frame: 实际命中窗口的**截图坐标系**（``{screen_x, screen_y,
+            width, height}``，与 ``op=screenshot`` 产物一致）：``screen_x`` /
+            ``screen_y`` 是该坐标系左上角的屏幕坐标，``width`` / ``height``
+            是可用坐标范围。据此可把输入坐标与截图坐标对齐，并校验点是否
+            落在窗口内；``None`` = 后端未提供。
     """
 
     action: str
@@ -47,6 +52,7 @@ class InputResult:
     detail: dict = field(default_factory=dict)
     window_selector: str = ""
     window_handle: str = ""
+    window_frame: dict | None = None
 
     def to_dict(self) -> dict:
         payload = {
@@ -58,6 +64,8 @@ class InputResult:
             "window_handle": self.window_handle,
         }
         payload.update(self.detail)
+        if self.window_frame is not None:
+            payload["window_frame"] = dict(self.window_frame)
         return payload
 
 

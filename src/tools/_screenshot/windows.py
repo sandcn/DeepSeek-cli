@@ -19,6 +19,12 @@ xdotool/wmctrl、macOS 走 Quartz），本模块负责**跨平台一致的选择
 
 平台后端只需产出一致的 :class:`WindowInfo` 列表，选择与排序逻辑全部在此，
 新增平台无需改动既有选择规则。
+
+展示与编号：``#N`` 选择器按**可操作窗口**（可见且未最小化）的 Z 序编号；
+:func:`describe_windows` / :func:`window_hint` / :func:`indexed_summary` /
+:func:`window_geometry` 都使用同一编号，保证窗口清单、错误提示与截图结果
+三者互相对得上（模型可放心照抄清单里的 ``#N``）；几何换算（截图坐标系原点
+与窗口外框）也由 :func:`window_geometry` 统一产出，避免各后端各自拼装。
 """
 
 from __future__ import annotations
@@ -497,6 +503,58 @@ def window_hint(windows: Sequence[WindowInfo], limit: int = 8) -> str:
     return shown
 
 
+def indexed_summary(windows: Sequence[WindowInfo],
+                    target: WindowInfo) -> str:
+    """按 ``#N`` 选择器语义生成某个窗口的一行摘要（截图结果回填用）。
+
+    窗口摘要的 ``#N`` 必须与 ``#N`` 选择器语义一致，否则模型照抄摘要里的
+    编号会选不中窗口：
+
+      - ``WindowInfo.summary()`` 在拿不到上下文时按**枚举序**编号
+        （``order + 1``，即清单里的 ``index``）；
+      - ``#N`` 选择器按**可操作窗口**（可见且未最小化）的 Z 序编号
+        （即清单里的 ``z_index``）。
+
+    两者在存在隐藏 / 最小化窗口时并不相同（例如枚举序 ``#33`` 的可操作序号
+    其实是 ``#1``）。本函数是「截图结果回填 ``window_summary``」的统一入口，
+    保证摘要编号与选择器一致；同时供 ``op=windows`` 之外的调用方复用。
+    """
+    indices = selectable_index(windows)
+    return target.summary(indices.get(target.handle, NO_SELECTABLE_INDEX))
+
+
+def window_geometry(windows: Sequence[WindowInfo],
+                    target: WindowInfo) -> dict:
+    """描述某个窗口的几何（截图坐标系换算用）。
+
+    返回字段：
+
+      - ``z_index``：目标窗口在可操作窗口中的 Z 序序号（``#N`` 选择器语义，
+        不可选时为 ``None``）；
+      - ``handle`` / ``handle_hex``：窗口句柄；
+      - ``rect``：窗口外框的屏幕矩形 ``{x, y, width, height}``（与
+        ``op=windows`` 条目里的 ``x`` / ``y`` / ``width`` / ``height`` 同源，
+        可直接喂给 ``window_action`` 的 ``move`` / ``fit``）；
+      - ``selectable``：该窗口当前能否被 ``#N`` / ``popup`` / ``dialog`` 选中。
+
+    各平台截图后端据此回填截图结果里的窗口几何，使模型能把截图坐标与
+    屏幕坐标对齐（``screen = rect.x + 截图像素``）。
+    """
+    indices = selectable_index(windows)
+    return {
+        "z_index": indices.get(target.handle) or None,
+        "handle": target.handle,
+        "handle_hex": target.handle_hex,
+        "selectable": is_selectable(target),
+        "rect": {
+            "x": target.left,
+            "y": target.top,
+            "width": target.width,
+            "height": target.height,
+        },
+    }
+
+
 def describe_windows(windows: Sequence[WindowInfo],
                     limit: int = DEFAULT_LIST_LIMIT) -> list[dict]:
     """把窗口清单转为可序列化列表（按 Z 序，``limit`` 截断）。
@@ -637,6 +695,7 @@ __all__ = [
     "WindowSelector",
     "describe_windows",
     "filter_windows",
+    "indexed_summary",
     "is_selectable",
     "main_rank",
     "main_window",
@@ -647,5 +706,6 @@ __all__ = [
     "selectable_index",
     "selectable_windows",
     "sort_by_z",
+    "window_geometry",
     "window_hint",
 ]
