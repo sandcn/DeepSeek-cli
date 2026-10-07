@@ -130,14 +130,16 @@ _SUB_SCRIPT_MAP = LiveMapping("inline_subscript")
 _SUPER_SCRIPT_MAP = LiveMapping("inline_superscript")
 
 
-def _append(out: list[Run], text: str, style: Style | None) -> None:
-    """追加 Run 并合并相邻同样式段（输出紧凑 + 宽度缓存友好）。"""
+def _append(out: list[Run], text: str, style: Style | None,
+            link: str | None = None) -> None:
+    """追加 Run 并合并相邻同样式（且同链接）段（输出紧凑 + 宽度缓存友好）。"""
     if not text:
         return
-    if out and out[-1].style == style:
-        out[-1] = Run(out[-1].text + text, style)
+    if (out and out[-1].style == style
+            and getattr(out[-1], "link", None) == link):
+        out[-1] = Run(out[-1].text + text, style, link)
         return
-    out.append(Run(text, style))
+    out.append(Run(text, style, link))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -275,7 +277,16 @@ def _emit_link(node, base, ctx, out, depth):
         _emit_children(node, _merge(base, _STYLE_ABBR), ctx, out, depth)
         _append(out, f"[?{ref_id}]", _merge(base, _STYLE_COMMENT))
         return
-    _emit_children(node, _merge(base, _STYLE_LINK), ctx, out, depth)
+    # ★ 增强（OSC 8 可点击链接）：链接文本 run 携带 url —— TUI 输出层（ink）
+    #   据此包裹 OSC 8 序列，现代终端中可直接点击打开（宽度计算不计入）。
+    #   先渲染到临时列表再统一附加，避免 ``_append`` 的相邻合并把链接文本
+    #   并进前一个同样式的非链接 run。
+    if url:
+        sub: list[Run] = []
+        _emit_children(node, _merge(base, _STYLE_LINK), ctx, sub, depth)
+        out.extend(Run(r.text, r.style, url) for r in sub)
+    else:
+        _emit_children(node, _merge(base, _STYLE_LINK), ctx, out, depth)
     title = getattr(node, "title", "")
     if title:
         _append(out, f' "{title}"', _merge(base, _STYLE_COMMENT))
@@ -347,12 +358,42 @@ def _emit_footnote(node, base, ctx, out, depth):
         _append(out, f"[^{ref_id}]", _merge(base, _STYLE_FOOTNOTE))
 
 
+def _emit_inline_footnote(node, base, ctx, out, depth):
+    """行内脚注 ``^[文本]``：正文显示序号 ``[n]``，内容进文末脚注列表。
+
+    幂等注册（流式预览与提交会对同一段落渲染多次）：以「归一化内容」为
+    脚注键——内容相同的行内脚注合并为同一编号与同一条目，重复渲染不会
+    重复追加（``fn_map[ref_id] = content`` 覆盖同值、``fn_order`` 去重）。
+    """
+    content = (node.content or "").strip()
+    if not content:
+        return
+    if ctx is None:
+        # 无渲染上下文（纯测量/独立调用）：保留原语法文本，不臆造编号
+        _append(out, f"[^{content}]", _merge(base, _STYLE_FOOTNOTE))
+        return
+    ref_id = "inline:" + content
+    fn_map = getattr(ctx, "fn_map", None)
+    if fn_map is not None:
+        fn_map[ref_id] = content
+    num = 0
+    fn_order = getattr(ctx, "fn_order", None)
+    if fn_order is not None:
+        if ref_id not in fn_order:
+            fn_order.append(ref_id)
+        num = fn_order.index(ref_id) + 1
+    _append(out, f"[{num}]", _merge(base, _STYLE_FOOTNOTE))
+
+
 def _emit_autolink(node, base, ctx, out, depth):
-    _append(out, node.content or "", _merge(base, _STYLE_LINK))
+    url = node.content or ""
+    _append(out, url, _merge(base, _STYLE_LINK), link=url or None)
 
 
 def _emit_autolink_email(node, base, ctx, out, depth):
-    _append(out, node.content or "", _merge(base, _STYLE_EMAIL))
+    addr = node.content or ""
+    _append(out, addr, _merge(base, _STYLE_EMAIL),
+            link=f"mailto:{addr}" if addr else None)
 
 
 def _emit_line_break(node, base, ctx, out, depth):
@@ -467,6 +508,7 @@ def _build_dispatch() -> dict:
         N.ImageNode: _emit_image,
         N.InlineMathNode: _emit_math,
         N.FootnoteRefNode: _emit_footnote,
+        N.InlineFootnoteNode: _emit_inline_footnote,
         N.AutoLinkNode: _emit_autolink,
         N.AutoLinkEmailNode: _emit_autolink_email,
         N.LineBreakNode: _emit_line_break,

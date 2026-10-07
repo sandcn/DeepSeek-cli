@@ -177,7 +177,14 @@ def _styled_text(text: str) -> _Box:
 
 
 def _hjoin(boxes: list[_Box]) -> _Box:
-    """水平拼接（按基线对齐，数学排版语义）。"""
+    """水平拼接（按基线对齐，数学排版语义）。
+
+    ★ 修复（多行元素列错位）：每个 box 的每一行按其**自身列宽**补齐——修复前
+    空行/短行不补宽，后续 box 直接从当前已写列继续，导致多行元素（分数、根式、
+    矩阵）与单行元素拼接时其非基线行（分子/分母）左移错位，如
+    ``E = mc^2 + \\frac{a}{b}`` 的 ``a`` 出现在公式左端而非分数线中央上方。
+    仅非末位 box 补齐（行尾不留无意义空格）。
+    """
     boxes = [b for b in boxes if b is not None]
     if not boxes:
         return _empty_box()
@@ -186,6 +193,7 @@ def _hjoin(boxes: list[_Box]) -> _Box:
     max_above = max(b.baseline for b in boxes)
     max_below = max(b.height - 1 - b.baseline for b in boxes)
     total = max_above + max_below + 1
+    widths = [b.width for b in boxes]
     padded: list[list[AnsiLine]] = []
     for b in boxes:
         pad_top = max_above - b.baseline
@@ -195,11 +203,17 @@ def _hjoin(boxes: list[_Box]) -> _Box:
             + [AnsiLine() for _ in range(pad_bottom)]
         )
     out: list[AnsiLine] = []
+    last = len(padded) - 1
     for r in range(total):
         line = AnsiLine()
-        for pl in padded:
-            for run in pl[r].runs:
+        for bi, pl in enumerate(padded):
+            ln = pl[r]
+            for run in ln.runs:
                 line.append_run(run)
+            if bi < last:
+                pad = widths[bi] - ln.width
+                if pad > 0:
+                    line.append(" " * pad)
         out.append(line)
     return _Box(out, baseline=max_above)
 

@@ -18,6 +18,7 @@ from .inline_nodes import (
     CriticSubstitutionNode, CriticCommentNode,
     SmallTextNode, ColorTextNode,
     WikiLinkNode, InlineCommentNode,
+    InlineFootnoteNode,
     render_inline_to_text,
 )
 
@@ -36,6 +37,7 @@ class InlineFormattingMixin:
       _try_highlight()
       _try_subscript()
       _try_superscript()
+      _try_inline_footnote()
     """
 
     # ── 粗斜体 *** / ___ ──────────────────────────────────
@@ -263,6 +265,49 @@ class InlineFormattingMixin:
             return None
         except Exception:
             _logger.debug("_try_superscript 异常，降级处理", exc_info=True)
+            return None
+
+    def _try_inline_footnote(self) -> InlineNode | None:
+        """解析行内脚注 ``^[脚注文本]``（Pandoc inline footnote）。
+
+        与上标 ``^x^`` 共享触发字符 ``^``——``^`` 后紧跟 ``[`` 时按行内脚注
+        解析（方括号配对，支持嵌套 ``[]`` 与反斜杠转义），否则返回 ``None``
+        交回上标处理器。配对失败/跨行未闭合时不消费（由文本兜底，流式下
+        不会吞掉后续行内容）。
+        """
+        try:
+            if self._text[self._pos] != '^':
+                return None
+            if self._pos + 1 >= self._n or self._text[self._pos + 1] != '[':
+                return None
+            saved = self._pos
+            i = self._pos + 2
+            n = self._n
+            depth = 0
+            buf: list[str] = []
+            while i < n:
+                ch = self._text[i]
+                if ch == '\\' and i + 1 < n:
+                    buf.append(self._text[i:i + 2])
+                    i += 2
+                    continue
+                if ch == '[':
+                    depth += 1
+                elif ch == ']':
+                    if depth == 0:
+                        self._pos = i + 1
+                        return InlineFootnoteNode(
+                            content=''.join(buf).strip())
+                    depth -= 1
+                elif ch == '\n':
+                    # 行内脚注不跨行（流式语义：未闭合时不吞并后续行）
+                    break
+                buf.append(ch)
+                i += 1
+            self._pos = saved
+            return None
+        except Exception:
+            _logger.debug("_try_inline_footnote 异常，降级处理", exc_info=True)
             return None
 
     # ── 词内下划线保护 ─────────────────────────────────

@@ -332,7 +332,7 @@ _InlineParser._FORMAT_DISPATCH = {
     '<':  (('_try_line_break', False), ('_try_angle_autolink', False), ('_try_html_tag', True), ('_try_html_comment', False)),
     '!':  (('_try_image', True),),
     '&':  (('_try_html_entity', False),),
-    '^':  (('_try_superscript', True),),
+    '^':  (('_try_inline_footnote', False), ('_try_superscript', True)),
     '@':  (('_try_bare_email', False),),
     '+':  (('_try_underline', True),),
     '|':  (('_try_spoiler', True),),

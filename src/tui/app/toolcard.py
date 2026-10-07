@@ -169,7 +169,8 @@ def _apply_line_bg(runs: list, width: int, bg_style: Style) -> list:
             st = bg_style
         elif st.bg is None:
             st = st.merge(bg_style)
-        out.append(r if st is r.style else StyledRun(r.text, st))
+        out.append(r if st is r.style
+                   else StyledRun(r.text, st, getattr(r, "link", None)))
         used += r.width
     if used < width:
         out.append(StyledRun(" " * (width - used), bg_style))
@@ -531,7 +532,8 @@ def tool_card_lines(block, width, start=0, stop=None):
                 #   width<=1 走「仅竖线」分支（content_w<=0 无内容）；
                 #   width<=0 无宽度防御保持裸行。
                 seg_runs = _attach_url_links(
-                    [StyledRun(r.text, r.style) for r in ansi_line.runs if r.text]
+                    [StyledRun(r.text, r.style, getattr(r, "link", None))
+                     for r in ansi_line.runs if r.text]
                 )
                 if width <= 0:
                     cached = [("bare", seg_runs)] if seg_runs else [("empty",)]

@@ -102,6 +102,16 @@ class FootnoteRefNode(InlineNode):
 
 
 @dataclass
+class InlineFootnoteNode(InlineNode):
+    """行内脚注节点 ``^[脚注文本]``（Pandoc inline footnote）。
+
+    正文位置渲染为脚注序号 ``[n]``，脚注文本在文末脚注列表中输出
+    （与定义式脚注 ``[^id]: ...`` 共用同一编号序列）。
+    """
+    children: list[InlineNode] | None = None  # 叶子节点
+
+
+@dataclass
 class AutoLinkNode(InlineNode):
     children: list[InlineNode] | None = None  # 叶子节点
     url: str = ""
@@ -265,6 +275,8 @@ def render_inline_to_text(nodes: list[InlineNode]) -> str:
             result.append('\n')
         elif isinstance(node, FootnoteRefNode):
             result.append(f'[^{node.ref_id}]')
+        elif isinstance(node, InlineFootnoteNode):
+            result.append('[n]')  # 行内脚注：正文占位（实际渲染为 ``[n]`` 序号）
         elif isinstance(node, SpoilerNode):
             result.append(node.content)
         elif isinstance(node, InlineMathNode):

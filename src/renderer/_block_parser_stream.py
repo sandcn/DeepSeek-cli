@@ -35,6 +35,55 @@ _AUTO_CLOSE_MIN_KINDS = 2
 """连续匹配行所需的**结构类型**种数（标题/分隔线/表格分隔）——要求结构
 多样，避免代码块内连续同类型行（如多行 ``# 注释``）被误判为块外 Markdown。"""
 
+#: 代码围栏 info 中「裸属性」关键字（无 ``key=`` 时也认作属性，不当作代码首行）
+_FENCE_ATTR_KEYS: frozenset = frozenset({
+    "hl_lines", "hl-lines", "hllines", "linenos", "numberlines",
+    "line-numbers", "line_numbers", "linenostart", "linestart",
+    "first-line", "firstline", "linenostep", "linestep",
+    "emphasize-lines", "emphasize_lines",
+})
+
+
+def _extract_title_from_attr_text(text: str) -> str:
+    """从属性文本提取 ``title="..."`` / ``title=xxx``（无则空串）。"""
+    if not text:
+        return ""
+    ti = text.lower().find("title=")
+    if ti < 0:
+        return ""
+    after = text[ti + 6:]
+    if not after:
+        return ""
+    if after[0] in '"\'':
+        q = after[0]
+        end = after.find(q, 1)
+        return after[1:end] if end > 0 else ""
+    sp = after.find(" ")
+    return after[:sp] if sp > 0 else after
+
+
+def _looks_like_fence_attrs(text: str) -> bool:
+    """剩余 info 文本是否为「裸属性序列」（``hl_lines="1,3" linenos``）。
+
+    每个空白分隔的片段须为 ``name=value``（``name`` 仅字母/数字/``-``/``_``）
+    或已知属性关键字（``linenos`` 等）。全部片段满足才认定为属性——避免把
+    ```python print(1) 之类的代码首行误当属性吞掉（那会静默丢失代码内容）。
+    """
+    parts = text.split()
+    if not parts:
+        return False
+    for part in parts:
+        low = part.lower()
+        if "=" in part:
+            name = part.split("=", 1)[0].strip()
+            if not name or not all(c.isalnum() or c in "-_" for c in name):
+                return False
+            continue
+        if low in _FENCE_ATTR_KEYS:
+            continue
+        return False
+    return True
+
 
 def _html_tag_delta(line: str, tag: str) -> int:
     """行内某 HTML 标签的开合净变化数（``<tag`` 数 - ``</tag>`` 数）。
@@ -631,31 +680,27 @@ class _BlockParserStreamMixin:
                 #   开头（`` ```python {1,3-5} ``）——修复前未 strip 即检查
                 #   ``remaining[0] == '{'``，大括号属性（行高亮 / 行号）整段
                 #   被当成 extra 落入代码内容（``{1,3-5}`` 显示为第一行）。
+                # ★ 扩展（多属性组）：``{1,3}{linenos}{title="x"}`` 连续大括号
+                #   组全部并入 attrs——修复前只取首组，后续组（``{linenos}``）
+                #   落入代码内容成为首行。
                 remaining = remaining.strip()
-                if remaining.startswith('{'):
+                while remaining.startswith('{'):
                     brace_end = remaining.find('}')
-                    if brace_end >= 0:
-                        attrs = remaining[:brace_end + 1]
-                        # Extract title= from within {} attrs if not already set
-                        if not title:
-                            inner = remaining[1:brace_end]
-                            ti = inner.find('title=')
-                            if ti >= 0:
-                                after_eq = inner[ti + 6:]
-                                if after_eq and after_eq[0] in '"\'':
-                                    q = after_eq[0]
-                                    end = after_eq.find(q, 1)
-                                    if end > 0:
-                                        title = after_eq[1:end]
-                                elif after_eq:
-                                    # Unquoted title: take up to next space or end
-                                    end_space = after_eq.find(' ')
-                                    if end_space > 0:
-                                        title = after_eq[:end_space]
-                                    else:
-                                        title = after_eq
-                        remaining = remaining[brace_end + 1:]
-                remaining = remaining.strip()
+                    if brace_end < 0:
+                        break
+                    inner_attrs = remaining[1:brace_end]
+                    attrs += remaining[:brace_end + 1]
+                    if not title:
+                        title = _extract_title_from_attr_text(inner_attrs)
+                    remaining = remaining[brace_end + 1:].strip()
+                # 裸属性（``hl_lines="1,3" linenos``）：整段由属性片段构成时
+                # 并入 attrs；否则保留为代码首行 extra（兼容
+                # ```python print(1) 式写法——不得吞掉真实代码文本）。
+                if remaining and _looks_like_fence_attrs(remaining):
+                    if not title:
+                        title = _extract_title_from_attr_text(remaining)
+                    attrs += (' ' if attrs else '') + remaining
+                    remaining = ''
                 if remaining.startswith('title='):
                     after = remaining[6:]
                     if after and after[0] in '"\'':

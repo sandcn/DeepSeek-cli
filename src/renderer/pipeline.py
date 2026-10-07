@@ -29,7 +29,7 @@ import logging
 from abc import ABC, abstractmethod
 
 from .types import Token, TokenType, RenderContext
-from ._utils import parse_highlight_lines, parse_linenos
+from ._utils import parse_highlight_lines, parse_linenos, parse_lineno_options
 _logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════
@@ -150,12 +150,15 @@ class CodeBlockBatcher(TokenFilter):
     def _make_block(self, lines: list[str], meta: dict, *, closed: bool) -> Token:
         """组装 CODE_BLOCK token（含 continuation/closed 语义）。"""
         attrs = meta.get("attrs", "")
+        _linenos, _lineno_start, _lineno_step = parse_lineno_options(attrs)
         out_meta = {
             "lang": meta.get("lang", "text"),
             "attrs": attrs,
             "title": meta.get("title", ""),
             "highlight_lines": parse_highlight_lines(attrs),
             "linenos": parse_linenos(attrs),
+            "lineno_start": _lineno_start,
+            "lineno_step": _lineno_step,
             "continuation": self._block_continuation,
             "closed": closed,
         }

@@ -664,9 +664,11 @@ class AnsiStreamRenderer:
         self._code_preview_full_src = []
 
     @staticmethod
-    def _code_num_width(total: int) -> int:
+    def _code_num_width(total: int, linenostart: int = 1,
+                        linenostep: int = 1) -> int:
         """行号列宽（与 ``ansi.code.highlight_code_lines`` 同一规则）。"""
-        return max(2, len(str(max(int(total), 1))))
+        from .code import code_line_number_width
+        return code_line_number_width(total, linenostart, linenostep)
 
     def _code_lines_from_content(self, src: str) -> tuple[list[str], bool]:
         """兼容路径：从 ``content`` 字符串增量 split 出完整行列表。
@@ -734,14 +736,18 @@ class AnsiStreamRenderer:
         src_lines = full_lines[skip:] if skip else full_lines
         hl = token.meta.get("highlight_lines") or ()
         linenos = bool(token.meta.get("linenos", False))
+        lineno_start = int(token.meta.get("lineno_start", 1) or 1)
+        lineno_step = int(token.meta.get("lineno_step", 1) or 1)
         # 行号列宽随总行数位数变化（2→3 位时历史行需重建以保持对齐）——
         # 纳入缓存键，宽度变化时整体重渲染一次（跨越 99/999 行的罕见时刻）。
-        num_width = self._code_num_width(skip + len(full_lines)) if linenos else 0
+        num_width = (self._code_num_width(skip + len(full_lines),
+                                          lineno_start, lineno_step)
+                     if linenos else 0)
         # 首行纳入缓存键：内容「滑窗」（列表项内块级预览截断为尾部窗口）时
         # 前缀不再稳定，必须重置增量缓存，否则沿用旧行导致内容错位。
         first_line = full_lines[0] if full_lines else ""
         key = (lang, self._code_theme, skip, dropped, tuple(hl), num_width,
-               first_line)
+               first_line, lineno_start, lineno_step)
         if reset_rows or key != self._code_preview_key:
             self._code_preview_key = key
             self._code_preview_rows = []
@@ -759,6 +765,8 @@ class AnsiStreamRenderer:
                     start_index=skip + len(rows) + 1,
                     linenos=linenos,
                     total_lines=skip + len(src_lines),
+                    linenostart=lineno_start,
+                    linenostep=lineno_step,
                 )
             )
         limit = RegexFreeBlockParser._PREVIEW_MAX_LINES
@@ -926,12 +934,13 @@ class AnsiStreamRenderer:
             for r in line.runs:
                 text = r.text or ""
                 if "\x1b" not in text and "\x07" not in text:
-                    new_line.append(text, r.style)
+                    new_line.append(text, r.style, getattr(r, "link", None))
                     continue
                 for sub in ansi_to_runs(text, r.style):
                     clean = strip_ansi(sub.text).replace("\x1b", "").replace("\x07", "")
                     if clean:
-                        new_line.append(clean, sub.style)
+                        new_line.append(clean, sub.style,
+                                        getattr(r, "link", None))
             new_line._esc_checked = True
             out.append(new_line)
         return out

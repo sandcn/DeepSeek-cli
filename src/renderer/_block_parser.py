@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 _logger = logging.getLogger(__name__)
 
-from ._utils import _get_fence_info, parse_highlight_lines, parse_linenos
+from ._utils import _get_fence_info, parse_highlight_lines, parse_linenos, parse_lineno_options
 from .types import Token, TokenType, RenderContext
 from ._table_utils import (
     _is_table_row, _is_table_data_row, _is_table_separator,
@@ -893,6 +893,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             "lines": lines,
             "highlight_lines": parse_highlight_lines(attrs),
             "linenos": parse_linenos(attrs),
+            "lineno_start": parse_lineno_options(attrs)[1],
+            "lineno_step": parse_lineno_options(attrs)[2],
         })
 
     def _preview_block_tail_lines(self, st, tail: str) -> list[str]:
@@ -1728,6 +1730,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
     def _start_table(self, sep_line: str, tokens: list[Token]):
         self._table_alignments = _parse_table_alignments(sep_line)
         self._table_pending_bq = False
+        # ★ 顺序修复：表格 header 候选行之前若仍有未完成段落（``_pending_lines``
+        #   尚未发射），先刷出该段落——否则表格会先于更早的段落行上屏
+        #   （内容顺序错乱）。GFM 语义上表格不中断段落，此处保守拆分为
+        #   「段落 + 表格」，保证内容完整且顺序正确。
+        if self._pending_lines:
+            self._flush_paragraph(tokens)
         num_cols = len(self._table_alignments)
         if self._table_pending_rows:
             header_cells = _parse_table_row(self._table_pending_rows[0])
@@ -1756,34 +1764,49 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._state = _State.NORMAL
 
     def _emit_pending_table(self, tokens: list[Token]):
-        """将流式缓冲的连续表格行自动发射为 TABLE（≥2行）或 PARAGRAPH（1行）。
+        """将流式缓冲的连续表格行自动发射为 TABLE（≥2行）或 PARAGRAPH/段落续行。
 
         ★ 引用块严格模式（``_table_pending_bq``）：引用块内的行缓冲必须出现
         分隔行才构成表格；未出现分隔行的多行含 pipe 文本降级为段落（避免
         ``> a | b`` 之类的引用正文被误判为表格）。
+
+        ★ 顺序修复（内容错乱）：降级为段落时**必须与既有段落缓冲
+        （``_pending_lines``）保持先后顺序**——修复前直接 ``append``
+        PARAGRAPH Token，而更早的段落行仍挂在 ``_pending_lines`` 中，导致
+        「含 ``|`` 的行先上屏、其前面的段落行后上屏」（如「A 行\\n"
+        "a || b\\nc 行」渲染为 "a || b" 在前、"A 行" 在后）。现将降级行
+        按序并入 ``_pending_lines``（无段落缓冲时才直接发射单个 PARAGRAPH，
+        多行以内嵌换行保持同一段落语义）。
+
+        同样地，多行候选（≥2）在已有未完成段落时也不再建表——GFM 表格不能
+        中断段落，段落内连续多行含 ``|`` 属普通文本。
         """
         strict = self._table_pending_bq
         self._table_pending_bq = False
-        if strict:
-            for row in self._table_pending_rows:
-                tokens.append(Token(TokenType.PARAGRAPH, row))
-            self._table_pending_rows.clear()
+        rows = self._table_pending_rows
+        self._table_pending_rows = []
+        if not rows:
             return
-        if len(self._table_pending_rows) >= 2:
-            header = _parse_table_row(self._table_pending_rows[0])
+        if not strict and len(rows) >= 2 and not self._pending_lines:
+            header = _parse_table_row(rows[0])
             num_cols = len(header)
             aligns = ['left'] * num_cols
-            data_rows = [_parse_table_row(r) for r in self._table_pending_rows[1:]]
-            rows = [header] + [
+            data_rows = [_parse_table_row(r) for r in rows[1:]]
+            table_rows = [header] + [
                 (r + [''] * num_cols)[:num_cols] for r in data_rows
             ]
             tokens.append(Token(TokenType.TABLE, "", {
-                "rows": rows,
+                "rows": table_rows,
                 "alignments": aligns,
             }))
-        elif len(self._table_pending_rows) == 1:
-            tokens.append(Token(TokenType.PARAGRAPH, self._table_pending_rows[0]))
-        self._table_pending_rows.clear()
+            return
+        if self._pending_lines:
+            # 既有段落缓冲：按顺序并入（由后续 flush 统一发射，顺序不变）
+            self._pending_lines.extend(rows)
+            return
+        # 无段落缓冲：单行原样、多行以内嵌换行保持「同一段落」语义
+        tokens.append(Token(TokenType.PARAGRAPH,
+                            rows[0] if len(rows) == 1 else '\n'.join(rows)))
 
     # ── Fenced 告示（`!!!` / `???`） ───────────────────
 

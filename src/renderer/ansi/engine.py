@@ -80,7 +80,7 @@ class AnsiRenderEngine:
             if t == TokenType.HEADING:
                 return blocks.render_heading(token)
             if t == TokenType.HR:
-                return blocks.render_hr(token)
+                return blocks.render_hr(token, self._width)
             if t == TokenType.LIST_ITEM:
                 return blocks.render_list_item(token)
             if t == TokenType.DEFINITION_ITEM:
@@ -291,9 +291,12 @@ class AnsiRenderEngine:
         closed = token.meta.get("closed", True)
         continuation = bool(token.meta.get("continuation", False))
         linenos = bool(token.meta.get("linenos", False))
+        lineno_start = int(token.meta.get("lineno_start", 1) or 1)
+        lineno_step = int(token.meta.get("lineno_step", 1) or 1)
         return _code.render_code_block(
             source, lang, self._code_theme, hl, title,
             closed=closed, continuation=continuation, linenos=linenos,
+            linenostart=lineno_start, linenostep=lineno_step,
         )
 
     def _flush_code(self) -> list[AnsiLine]:
@@ -304,11 +307,13 @@ class AnsiRenderEngine:
         source = "\n".join(lines)
         if not source and not lang and not title:
             return []
-        from src.renderer._utils import parse_highlight_lines, parse_linenos
+        from src.renderer._utils import parse_highlight_lines, parse_lineno_options
+        linenos, lineno_start, lineno_step = parse_lineno_options(attrs)
         return _code.render_code_block(
             source, lang, self._code_theme,
             parse_highlight_lines(attrs), title,
-            linenos=parse_linenos(attrs),
+            linenos=linenos,
+            linenostart=lineno_start, linenostep=lineno_step,
         )
 
     # ── 嵌套块渲染（details 正文等） ────────────────────
@@ -418,9 +423,10 @@ def _apply_bq_prefix(lines: list[AnsiLine], depth: int) -> list[AnsiLine]:
     """
     prefix = "\u2502 " * max(1, depth)
     out: list[AnsiLine] = []
+    pstyle = blocks.bq_prefix_style(depth)
     for ln in lines:
         if ln.runs:
-            out.append(AnsiLine([Run(prefix, blocks._STYLE_BQ)] + list(ln.runs)))
+            out.append(AnsiLine([Run(prefix, pstyle)] + list(ln.runs)))
         else:
             out.append(ln)
     return out

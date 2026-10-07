@@ -498,7 +498,7 @@ class AppModel(_ToolOutputMixin):
                     st = r.style
                     if reasoning_style is not None:
                         st = reasoning_style if st is None else st.merge(reasoning_style)
-                    runs.append(StyledRun(r.text, st))
+                    runs.append(StyledRun(r.text, st, getattr(r, "link", None)))
                 out.append(Line(_attach_url_links(runs)))
         return out
 

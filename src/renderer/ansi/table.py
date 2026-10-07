@@ -49,7 +49,7 @@ def _split_runs_newlines(runs: list[Run]) -> list[list[Run]]:
             if i > 0:
                 parts.append([])
             if seg:
-                parts[-1].append(Run(seg, run.style))
+                parts[-1].append(Run(seg, run.style, getattr(run, "link", None)))
     # 去掉尾部空段（内容以换行结尾时不留多余空行），至少保留一段
     while len(parts) > 1 and not parts[-1]:
         parts.pop()
@@ -125,13 +125,14 @@ def _wrap_runs(runs: list[Run], maxw: int) -> list[list[Run]]:
     cur: list[Run] = []
     cur_w = 0
     for run in runs:
+        link = getattr(run, "link", None)
         buf = ""
         buf_w = 0
         for ch in run.text:
             cw = wcswidth_simple(ch)
             if cur_w + buf_w + cw > maxw and (cur or buf):
                 if buf:
-                    cur.append(Run(buf, run.style))
+                    cur.append(Run(buf, run.style, link))
                     buf = ""
                     buf_w = 0
                 lines.append(cur)
@@ -140,7 +141,7 @@ def _wrap_runs(runs: list[Run], maxw: int) -> list[list[Run]]:
             buf += ch
             buf_w += cw
         if buf:
-            cur.append(Run(buf, run.style))
+            cur.append(Run(buf, run.style, link))
             cur_w += buf_w
     if cur:
         lines.append(cur)

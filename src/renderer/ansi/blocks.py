@@ -23,9 +23,37 @@ _HEADING_STYLES: list[Style] = [
     Style(fg=242),              # 6
 ]
 
-_STYLE_HR = Style(fg=239)
+_STYLE_HR = Style(fg=240)
+_STYLE_HR_FADE = Style(fg=237)
 _STYLE_BQ = Style(fg=242)
 _STYLE_LIST_BULLET = Style(fg=214)
+
+#: 引用块前缀按嵌套深度的颜色分级（外层亮 → 内层暗，视觉层次更清晰）
+_BQ_PREFIX_STYLES: tuple = (
+    Style(fg=246), Style(fg=243), Style(fg=240), Style(fg=238),
+)
+#: 无序列表符号按嵌套深度的颜色分级
+_BULLET_STYLES: tuple = (
+    Style(fg=214), Style(fg=208), Style(fg=203),
+)
+
+
+def bq_prefix_style(depth: int) -> Style:
+    """引用块前缀样式（按嵌套深度分级；``depth`` 为 1-based）。"""
+    try:
+        d = int(depth)
+    except (TypeError, ValueError):
+        d = 1
+    return _BQ_PREFIX_STYLES[max(0, min(d - 1, len(_BQ_PREFIX_STYLES) - 1))]
+
+
+def bullet_style(depth: int) -> Style:
+    """无序列表项目符号样式（按嵌套深度分级；``depth`` 为 1-based）。"""
+    try:
+        d = int(depth)
+    except (TypeError, ValueError):
+        d = 1
+    return _BULLET_STYLES[max(0, min(d - 1, len(_BULLET_STYLES) - 1))]
 _STYLE_LIST_NUMBER = Style(fg=68)
 _STYLE_TODO_UNCHECKED = Style(fg=242)
 _STYLE_TODO_CHECKED = Style(fg=41)
@@ -69,8 +97,22 @@ def render_heading(token) -> list[AnsiLine]:
     return [line]
 
 
-def render_hr(token) -> list[AnsiLine]:
-    return [AnsiLine.of("\u2500" * 40, _STYLE_HR)]
+def render_hr(token, width: int = 0) -> list[AnsiLine]:
+    """分隔线：按终端宽度整宽渲染（两端渐隐，中部主色）。
+
+    ★ 美化：「──────」固定 40 列改为**整宽自适应**，两端各留一段更暗的
+    渐隐段，视觉上更接近现代终端分隔线（``width<=0`` 时回退 40 列，
+    不依赖终端宽度，保证无宽度上下文也能渲染）。
+    """
+    total = width if isinstance(width, int) and width > 0 else 40
+    fade = min(8, max(0, total // 6))
+    line = AnsiLine()
+    if fade:
+        line.append("\u2500" * fade, _STYLE_HR_FADE)
+    line.append("\u2500" * max(0, total - 2 * fade), _STYLE_HR)
+    if fade:
+        line.append("\u2500" * fade, _STYLE_HR_FADE)
+    return [line]
 
 
 # ── 段落 ─────────────────────────────────────────────
@@ -103,6 +145,7 @@ def _inline_lines(text: str, base=None) -> list[AnsiLine]:
     out: list[AnsiLine] = []
     cur = AnsiLine()
     for run in render_inline(text, base):
+        link = getattr(run, "link", None)
         segs = (run.text or "").split("\n")
         for i, seg in enumerate(segs):
             if i > 0:
@@ -110,7 +153,7 @@ def _inline_lines(text: str, base=None) -> list[AnsiLine]:
                     out.append(cur)
                 cur = AnsiLine()
             if seg:
-                cur.append(seg, run.style)
+                cur.append(seg, run.style, link)
     if cur.runs or not out:
         out.append(cur)
     return out
@@ -168,7 +211,7 @@ def render_list_item(token) -> list[AnsiLine]:
     if meta.get("bullet"):
         bullet = _BULLETS[min(max(depth - 1, 0), len(_BULLETS) - 1)]
         head = f"{prefix}{bullet} "
-        head_style = _STYLE_LIST_BULLET
+        head_style = bullet_style(depth)
     else:
         number = meta.get("number", 1)
         head = f"{prefix}{number}. "
@@ -291,9 +334,12 @@ def render_blockquote(token, depth: int = 0) -> list[AnsiLine]:
 
 
 def render_blockquote_line(text: str, depth: int = 0) -> AnsiLine:
-    """引用**单行**渲染（行级增量预览复用；调用方保证无 ``\\n``）。"""
+    """引用**单行**渲染（行级增量预览复用；调用方保证无 ``\\n``）。
+
+    前缀 ``│`` 按嵌套深度分级着色（外层亮 → 内层暗）。
+    """
     prefix = "\u2502 " * max(1, depth + 1)
-    line = AnsiLine.of(prefix, _STYLE_BQ)
+    line = AnsiLine.of(prefix, bq_prefix_style(depth + 1))
     for run in render_inline(text):
         line.append_run(run)
     return line
@@ -544,6 +590,8 @@ def render_empty_line(token) -> list[AnsiLine]:
 __all__ = [
     "render_heading",
     "render_hr",
+    "bq_prefix_style",
+    "bullet_style",
     "render_paragraph",
     "render_paragraph_line",
     "render_list_item",

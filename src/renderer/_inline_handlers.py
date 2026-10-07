@@ -42,6 +42,35 @@ def _footnote_ref_handler(self, node, ctx, _depth):
     )
 
 
+def _inline_footnote_handler(self, node, ctx, _depth):
+    """InlineFootnoteNode 调度器（行内脚注 ``^[文本]``）。
+
+    正文渲染为序号 ``[n]``；脚注内容以「归一化内容」为键注册进
+    ``ctx.fn_map``（幂等：内容相同的行内脚注合并编号与条目，重复渲染不重复
+    追加），供文末脚注列表输出。
+    """
+    content = (node.content or "").strip()
+    if not content:
+        return Text("")
+    if ctx is None:
+        # 无渲染上下文：保留原语法文本，不臆造编号
+        return Text(f"[^{content}]", style=Style(dim=True))
+    ref_id = "inline:" + content
+    fn_map = getattr(ctx, "fn_map", None)
+    if fn_map is not None:
+        fn_map[ref_id] = content
+    num = 0
+    fn_order = getattr(ctx, "fn_order", None)
+    if fn_order is not None:
+        if ref_id not in fn_order:
+            fn_order.append(ref_id)
+        num = fn_order.index(ref_id) + 1
+    return Text(
+        f"[{num}]",
+        style=Style(color="bright_cyan", italic=True, bold=True),
+    )
+
+
 def _inline_code_handler(self, n, ctx, d):
     """内联代码处理器：绿色文字 + 暗灰背景 + 粗体 + 底部边框效果。"""
     return Text(
@@ -173,6 +202,7 @@ try:
         SuperscriptNode as _SuperscriptNode,
         InlineMathNode as _InlineMathNode,
         FootnoteRefNode as _FootnoteRefNode,
+        InlineFootnoteNode as _InlineFootnoteNode,
         AutoLinkNode as _AutoLinkNode,
         AutoLinkEmailNode as _AutoLinkEmailNode,
         SpoilerNode as _SpoilerNode,
@@ -404,6 +434,7 @@ def _build_dispatch_table():
     d[_LineBreakNode] = lambda self, n, ctx, d: Text("\n")
     d[_InlineMathNode] = _inline_math_handler
     d[_FootnoteRefNode] = _footnote_ref_handler
+    d[_InlineFootnoteNode] = _inline_footnote_handler
 
     d[_BoldNode] = lambda self, n, ctx, d: _style_children(self, n, ctx, d + 1, Style(bold=True))
     d[_ItalicNode] = lambda self, n, ctx, d: _style_children(self, n, ctx, d + 1, Style(italic=True))

@@ -87,6 +87,8 @@ def _convert_ansi_row(aline, right_w: int, kind: str) -> list:
                 st = _to_tui_style(r.style, kind)
             except Exception:
                 st = None
-            runs.append(StyledRun(r.text, st))
+            runs.append(StyledRun(
+                r.text, st, getattr(r, "link", None)
+            ))
         out.append(runs if runs else [StyledRun(" ", _to_tui_style(None, kind))])
     return out

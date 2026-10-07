@@ -25,6 +25,9 @@ from .style import Style
 class Run:
     """一段带样式的文本。
 
+    ``link`` 非空时表示该段文本是超链接（终端 OSC 8 可点击）——宽度计算
+    不计入（由渲染层包裹控制序列），换行/截断时随可见文本一起保留。
+
     ★ 内存（长会话）：``slots=True`` —— 无实例 ``__dict__``（CPython 3.9 下
     每个空实例字典约 104B）。提交历史每行至少一个 Run，长会话下省出的常驻
     内存可观。显示宽度缓存 ``_w`` 原为 ``__post_init__`` 动态设置的实例属性，
@@ -34,6 +37,8 @@ class Run:
 
     text: str
     style: Style | None = None
+    #: 超链接 URL（OSC 8；None = 普通文本）
+    link: str | None = None
     #: 显示宽度缓存（-1 = 未计算）
     _w: int = field(init=False, compare=False, repr=False, default=-1)
 
@@ -79,19 +84,21 @@ class AnsiLine:
     def of(cls, text: str, style: Style | None = None) -> "AnsiLine":
         return cls([Run(text, style)])
 
-    def append(self, text: str, style: Style | None = None) -> None:
+    def append(self, text: str, style: Style | None = None,
+               link: str | None = None) -> None:
         if not text:
             return
         self._esc_checked = False
         self._w = -1
-        if self.runs and self.runs[-1].style == style:
-            self.runs[-1] = Run(self.runs[-1].text + text, style)
+        if (self.runs and self.runs[-1].style == style
+                and self.runs[-1].link == link):
+            self.runs[-1] = Run(self.runs[-1].text + text, style, link)
             return
-        self.runs.append(Run(text, style))
+        self.runs.append(Run(text, style, link))
 
     def append_run(self, run: Run) -> None:
         if run and run.text:
-            self.append(run.text, run.style)
+            self.append(run.text, run.style, getattr(run, "link", None))
 
     def render(self) -> str:
         return "".join(r.render() for r in self.runs)
@@ -167,28 +174,33 @@ def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
-def _uniform_line(chars: list, styles: list, start: int, end: int) -> AnsiLine:
+def _uniform_line(chars: list, styles: list, start: int, end: int,
+                  links: list | None = None) -> AnsiLine:
     """按样式分段构造一行（``chars``/``styles`` 平行列表的 [start, end) 区间）。
 
-    相邻同样式字符合并为同一 run（与 ``wrap_line`` 通用路径的输出结构一致）。
+    相邻同样式字符合并为同一 run（与 ``wrap_line`` 通用路径的输出结构一致）；
+    传入 ``links``（超链接平行列表）时把链接差异也视为分段边界。
     """
     line = AnsiLine()
     if end <= start:
         return line
     seg_style = styles[start]
+    seg_link = links[start] if links is not None else None
     seg_start = start
     for k in range(start + 1, end):
         st = styles[k]
-        if st != seg_style:
-            line.append("".join(chars[seg_start:k]), seg_style)
+        lk = links[k] if links is not None else None
+        if st != seg_style or lk != seg_link:
+            line.append("".join(chars[seg_start:k]), seg_style, seg_link)
             seg_style = st
+            seg_link = lk
             seg_start = k
-    line.append("".join(chars[seg_start:end]), seg_style)
+    line.append("".join(chars[seg_start:end]), seg_style, seg_link)
     return line
 
 
 def _wrap_uniform(chars: list, styles: list, per_line: int,
-                  word_break: bool) -> list[AnsiLine]:
+                  word_break: bool, links: list | None = None) -> list[AnsiLine]:
     """等宽字符行的换行（每字符显示宽度相同，按固定步长切分）。
 
     调用方（``wrap_line``）保证 ``chars`` 中每个字符显示宽度相同且无强制
@@ -201,7 +213,7 @@ def _wrap_uniform(chars: list, styles: list, per_line: int,
     while i < n:
         end = i + per_line
         if end >= n:
-            lines.append(_uniform_line(chars, styles, i, n))
+            lines.append(_uniform_line(chars, styles, i, n, links))
             break
         if word_break:
             # 断点范围含 end 位置本身：通用路径在「下一个字符放不下」时已
@@ -213,10 +225,10 @@ def _wrap_uniform(chars: list, styles: list, per_line: int,
                     sp = k
                     break
             if sp > i:
-                lines.append(_uniform_line(chars, styles, i, sp))
+                lines.append(_uniform_line(chars, styles, i, sp, links))
                 i = sp + 1
                 continue
-        lines.append(_uniform_line(chars, styles, i, end))
+        lines.append(_uniform_line(chars, styles, i, end, links))
         i = end
     return lines
 
@@ -248,31 +260,37 @@ def wrap_line(line: AnsiLine, max_width: int) -> list[AnsiLine]:
     #   与通用路径逐字段一致。
     total = 0
     has_nl = False
+    has_link = False
     for r in runs:
         total += r.width
         if not has_nl and "\n" in r.text:
             has_nl = True
+        if not has_link and getattr(r, "link", None):
+            has_link = True
     if not has_nl and total <= max_width:
         normalized = True
         prev_style = _NO_STYLE
+        prev_link = None
         for r in runs:
-            if not r.text or r.style == prev_style:
+            link = getattr(r, "link", None)
+            if not r.text or (r.style == prev_style and link == prev_link):
                 normalized = False
                 break
             prev_style = r.style
+            prev_link = link
         if normalized:
             return [line.clone()]
     items_chars: list[str] = []
     items_styles: list = []
-    # 展开为「字符 + 样式」平行列表：``list.extend(str)`` / ``[style]*n`` 均为
-    #   C 级操作——修复前逐字符构造 ``(ch, style)`` tuple 并 append（超长单行
-    #   4096 次 Python 迭代 + 4096 个 tuple 对象）。
+    items_links: list | None = [] if has_link else None
     for run in runs:
         text = run.text
         if not text:
             continue
         items_chars.extend(text)
         items_styles.extend([run.style] * len(text))
+        if items_links is not None:
+            items_links.extend([getattr(run, "link", None)] * len(text))
     n = len(items_chars)
     if n == 0:
         return []
@@ -284,9 +302,11 @@ def wrap_line(line: AnsiLine, max_width: int) -> list[AnsiLine]:
     if total == 2 * n:
         per_line = max_width // 2
         if per_line > 0:
-            return _wrap_uniform(items_chars, items_styles, per_line, False)
+            return _wrap_uniform(items_chars, items_styles, per_line, False,
+                                 items_links)
     elif total == n and all(r.text.isascii() for r in runs if r.text):
-        return _wrap_uniform(items_chars, items_styles, max_width, True)
+        return _wrap_uniform(items_chars, items_styles, max_width, True,
+                             items_links)
     width_of = char_width
     lines: list[AnsiLine] = []
     i = 0
@@ -342,16 +362,20 @@ def wrap_line(line: AnsiLine, max_width: int) -> list[AnsiLine]:
         #   成本 O(行宽)；样式切换处段级拆分（跨 style 不合并）。
         chars: list[str] = []
         seg_style = items_styles[i] if i < end else None
+        seg_link = (items_links[i] if (items_links is not None and i < end)
+                    else None)
         for k in range(i, end):
             st = items_styles[k]
-            if st != seg_style:
+            lk = items_links[k] if items_links is not None else None
+            if st != seg_style or lk != seg_link:
                 if chars:
-                    line_out.append("".join(chars), seg_style)
+                    line_out.append("".join(chars), seg_style, seg_link)
                     chars = []
                 seg_style = st
+                seg_link = lk
             chars.append(items_chars[k])
         if chars:
-            line_out.append("".join(chars), seg_style)
+            line_out.append("".join(chars), seg_style, seg_link)
         if line_out.runs:
             lines.append(line_out)
         i = next_i
@@ -367,11 +391,12 @@ def truncate_line(line: AnsiLine, max_width: int) -> AnsiLine:
     out = AnsiLine()
     width = 0
     for run in line.runs:
+        link = getattr(run, "link", None)
         for ch in run.text:
             cw = cjk_display_width(ch)
             if width + cw > max_width:
                 return out
-            out.append(ch, run.style)
+            out.append(ch, run.style, link)
             width += cw
     return out
 

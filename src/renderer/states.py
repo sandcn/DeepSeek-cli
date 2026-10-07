@@ -22,6 +22,13 @@ class _CodeBlockState:
     indented: bool = False
     highlight_lines: list[int] = field(default_factory=list)
     linenos: bool = False
+    #: 行号起始值与步长（``linenostart=3`` / ``linenostep=2``）
+    lineno_start: int = 1
+    lineno_step: int = 1
+
+    def display_line_number(self) -> int:
+        """当前行的**显示行号**（起始值 + (n-1)*步长）。"""
+        return self.lineno_start + max(0, self.line_num - 1) * self.lineno_step
 
 
 @dataclass(slots=True)

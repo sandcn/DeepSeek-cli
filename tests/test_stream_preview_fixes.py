@@ -142,7 +142,8 @@ def test_preview_heading():
 
 
 def test_preview_hr():
-    assert _preview(["---"]) == ["\u2500" * 40]
+    # HR 现按终端宽度整宽渲染（width=80 → 80 列分隔线）
+    assert _preview(["---"]) == ["\u2500" * 80]
 
 
 def test_preview_blockquote_line():

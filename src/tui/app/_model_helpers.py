@@ -128,7 +128,8 @@ def _user_marker_styled_lines(block, start, stop, width):
         if runs and runs[0].text.startswith("> "):
             first = runs[0]
             if len(first.text) > 2:
-                content_runs = [Run(first.text[2:], first.style)] + runs[1:]
+                content_runs = [Run(first.text[2:], first.style,
+                                    getattr(first, "link", None))] + runs[1:]
             else:
                 content_runs = runs[1:]
         else:
@@ -144,7 +145,8 @@ def _user_marker_styled_lines(block, start, stop, width):
             continue
         for seg in wrapped:
             seg_runs = _attach_url_links(
-                [StyledRun(r.text, r.style) for r in seg.runs if r.text]
+                [StyledRun(r.text, r.style, getattr(r, "link", None))
+                 for r in seg.runs if r.text]
             )
             line = Line([StyledRun("> ", icon)] + seg_runs)
             # ★ 方向8（窄屏防溢出）：``> `` 前缀（2 列）+ 宽字符段可能超

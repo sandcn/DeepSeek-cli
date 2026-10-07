@@ -182,8 +182,8 @@ def test_auto_close_disabled_after_plain_content():
     joined = "\n".join(lines)
     assert "print('hello')" in joined
     assert "## H0" in joined
-    # 未触发自动关闭 → 不产出块外 HR（40 连字符）
-    assert not any(l == "\u2500" * 40 for l in lines)
+    # 未触发自动关闭 → 不产出块外 HR（整行 ─ 组成的分隔线）
+    assert not any(l and set(l) == {"\u2500"} for l in lines)
 
 
 def test_auto_close_still_triggers_for_pure_structure():
@@ -193,7 +193,7 @@ def test_auto_close_still_triggers_for_pure_structure():
         + ["## H0\n", "---\n", "## H1\n", "---\n", "## H2\n", "---\n"]
         + ["正文\n"]
     )
-    assert any(l == "\u2500" * 40 for l in lines)
+    assert any(l and set(l) == {"\u2500"} for l in lines)
 
 
 def test_auto_close_reset_between_blocks():
@@ -204,7 +204,7 @@ def test_auto_close_reset_between_blocks():
         "## H0\n", "---\n", "## H1\n", "---\n", "## H2\n", "---\n",
         "正文\n",
     ])
-    assert any(l == "\u2500" * 40 for l in lines)
+    assert any(l and set(l) == {"\u2500"} for l in lines)
 
 
 # ═══════════════════════════════════════════════════════════

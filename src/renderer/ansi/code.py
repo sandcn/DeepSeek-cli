@@ -34,6 +34,39 @@ _STYLE_HIGHLIGHT_BG = Style(fg=221)
 _STYLE_OMITTED = Style(fg=238)
 _STYLE_LINENO = Style(fg=240, dim=True)
 
+#: Diff/patch 差异行样式（+ 绿 / - 红 / @@ 青 / 文件头 灰）
+_STYLE_DIFF_ADD = Style(fg=84, bg=22)
+_STYLE_DIFF_DEL = Style(fg=203, bg=52)
+_STYLE_DIFF_HUNK = Style(fg=45, bold=True)
+_STYLE_DIFF_META = Style(fg=245, bold=True)
+_STYLE_DIFF_CTX = Style(fg=246)
+
+#: 按行首语义着色的差异语言（pygments 通用 lexer 不做差异语义着色）
+_DIFF_LANGS: frozenset = frozenset({"diff", "patch"})
+
+
+def _diff_line(line: str) -> AnsiLine:
+    """Diff/patch 行 → 语义着色行（与 Rich 路径 ``render_diff_line`` 同源语义）。
+
+    - ``@@ ... @@`` hunk 头 → 青色粗体
+    - ``+++`` / ``---`` 文件头 → 灰粗体
+    - ``+`` 新增行 → 亮绿（深绿底）
+    - ``-`` 删除行 → 亮红（深红底）
+    - 其余上下文行 → 中性灰
+    """
+    if not line:
+        return AnsiLine()
+    if line.startswith("@@"):
+        return AnsiLine.of(line, _STYLE_DIFF_HUNK)
+    if line.startswith("+++") or line.startswith("---"):
+        return AnsiLine.of(line, _STYLE_DIFF_META)
+    first = line[0]
+    if first == "+":
+        return AnsiLine.of(line, _STYLE_DIFF_ADD)
+    if first == "-":
+        return AnsiLine.of(line, _STYLE_DIFF_DEL)
+    return AnsiLine.of(line, _STYLE_DIFF_CTX)
+
 _CODE_THEME = "monokai"
 
 #: hex 颜色 → 256 色号缓存（主题颜色集合有限，避免重复解析 hex + 搜色板）
@@ -108,6 +141,18 @@ def _highlight_line(line: str, lexer, pyg_style) -> AnsiLine:
         return AnsiLine.of(line, _STYLE_DIM)
 
 
+def code_line_number_width(total_lines: int, linenostart: int = 1,
+                           linenostep: int = 1) -> int:
+    """行号列宽（按最大**显示**行号位数；与 ``highlight_code_lines`` 同一规则）。
+
+    ``total_lines`` 为逻辑总行数（1-based）；显示行号 = linenostart +
+    (idx-1)*linenostep，故最大显示值取最后一行。
+    """
+    total = max(int(total_lines), 1)
+    last_display = linenostart + (total - 1) * linenostep
+    return max(2, len(str(max(last_display, 1))))
+
+
 def highlight_code_lines(
     lines: list[str],
     lang: str = "",
@@ -116,6 +161,8 @@ def highlight_code_lines(
     start_index: int = 1,
     linenos: bool = False,
     total_lines: int | None = None,
+    linenostart: int = 1,
+    linenostep: int = 1,
 ) -> list[AnsiLine]:
     """逐行高亮代码（不含围栏/标题），返回 AnsiLine 列表。
 
@@ -127,6 +174,8 @@ def highlight_code_lines(
         start_index: 首行对应的逻辑行号（供流式预览增量渲染时续接行号）。
         linenos: 是否输出行号前缀（``{.numberLines}`` / ``{linenos}``）。
         total_lines: 逻辑总行数（决定行号列宽；None 时按 ``lines`` 推断）。
+        linenostart: 行号起始值（``linenostart=3``）。
+        linenostep: 行号步长（``linenostep=2``）。
 
     Returns:
         与 ``lines`` 等长的 AnsiLine 列表。
@@ -136,18 +185,25 @@ def highlight_code_lines(
 
     if not lines:
         return []
-    lexer = get_lexer(lang) if lang and lang != "text" else None
+    is_diff = (lang or "").lower() in _DIFF_LANGS
+    # Diff/patch 走语义着色，不需要（且 patch 无）pygments lexer
+    lexer = (None if is_diff
+             else (get_lexer(lang) if lang and lang != "text" else None))
     hl = set(highlight_lines or [])
     pyg_style = get_code_style(theme) if lexer is not None else None
     if linenos:
         total = total_lines if total_lines else start_index + len(lines) - 1
-        num_width = max(2, len(str(max(total, 1))))
+        num_width = code_line_number_width(total, linenostart, linenostep)
     else:
         num_width = 0
     out: list[AnsiLine] = []
     for offset, src_line in enumerate(lines):
         idx = start_index + offset
-        if lexer is not None:
+        if is_diff:
+            # Diff/patch：行首语义着色（+ 绿 / - 红 / @@ 青），与 Rich 路径
+            # ``render_diff_line`` 语义一致（TUI 路径此前无差异高亮）。
+            aline = _diff_line(src_line)
+        elif lexer is not None:
             cache_key = (lang, theme, src_line)
             aline = _LINE_HIGHLIGHT_CACHE.get(cache_key)
             if aline is None:
@@ -160,7 +216,8 @@ def highlight_code_lines(
         if idx in hl:
             aline = _apply_highlight(aline)
         if num_width:
-            aline = _prepend_line_number(aline, idx, num_width)
+            display = linenostart + (idx - 1) * linenostep
+            aline = _prepend_line_number(aline, display, num_width)
         out.append(aline)
     return out
 
@@ -207,6 +264,8 @@ def render_code_block(
     closed: bool = True,
     continuation: bool = False,
     linenos: bool = False,
+    linenostart: int = 1,
+    linenostep: int = 1,
 ) -> list[AnsiLine]:
     """渲染代码块（含标题栏与围栏）为 AnsiLine 列表。
 
@@ -221,6 +280,8 @@ def render_code_block(
         continuation: 是否为「被强制刷出的续段」——True 时不重复渲染标题栏
             与打开围栏（逻辑上仍是同一个代码块，仅因缓冲上限分段输出）。
         linenos: 是否输出行号前缀（``{.numberLines}`` / ``{linenos}``）。
+        linenostart: 行号起始值。
+        linenostep: 行号步长。
 
     Returns:
         渲染后的行列表。
@@ -233,17 +294,33 @@ def render_code_block(
     lines = source.split("\n") if source else []
     out.extend(highlight_code_lines(
         lines, lang, theme, highlight_lines, linenos=linenos,
-        total_lines=len(lines),
+        total_lines=len(lines), linenostart=linenostart, linenostep=linenostep,
     ))
     if closed:
         out.append(render_close_fence_line())
     return out
 
 
+#: 高亮行背景（琥珀）——单独使用或与行内前景色合并
+_STYLE_HL_BG_ONLY = Style(bg=58)
+_STYLE_HL_BG_CODE = 58
+
+
+def _with_highlight_bg(style: "Style | None") -> "Style":
+    """为行内样式叠加高亮行背景（保留前景/粗斜体等，仅替换背景）。"""
+    if style is None:
+        return _STYLE_HL_BG_ONLY
+    return Style(fg=style.fg, bg=_STYLE_HL_BG_CODE, bold=style.bold,
+                 italic=style.italic, dim=style.dim,
+                 underline=style.underline)
+
+
 def _apply_highlight(line: AnsiLine) -> AnsiLine:
-    """高亮行：叠加金色前缀标记。"""
+    """高亮行：整行叠加琥珀背景 + ``▸`` 前缀标记（更醒目）。"""
     from .helpers import Run
-    runs = [Run("\u25b8 ", _STYLE_HIGHLIGHT_BG)] + list(line.runs)
+    runs = [Run("\u25b8 ", _STYLE_HIGHLIGHT_BG)]
+    for run in line.runs:
+        runs.append(Run(run.text, _with_highlight_bg(run.style)))
     return AnsiLine(runs)
 
 
@@ -254,6 +331,7 @@ def render_inline_code(text: str) -> AnsiLine:
 
 __all__ = [
     "highlight_code_lines",
+    "code_line_number_width",
     "render_fence_line",
     "render_close_fence_line",
     "render_title_line",

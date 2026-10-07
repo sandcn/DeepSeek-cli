@@ -156,8 +156,11 @@ def get_lexer(lang: str) -> object:
                 try:
                     _LEXER_CACHE[lang] = get_lexer_by_name(lang, stripnl=False)
                 except Exception:
-                    _logger.warning("词法分析器获取失败: lang=%s", lang, exc_info=True)
-                    return None
+                    # ★ 失败结果一并缓存（None）——修复前每次调用都重试并
+                    #   打印 warning（未知语言如 ``patch`` 在流式预览下每帧
+                    #   重试，日志与异常处理开销累积）。
+                    _LEXER_CACHE[lang] = None
+                    _logger.debug("词法分析器获取失败: lang=%s", lang, exc_info=True)
     return _LEXER_CACHE[lang]
 
 

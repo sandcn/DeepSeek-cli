@@ -56,6 +56,68 @@ def parse_linenos(attrs: str) -> bool:
     )
 
 
+#: 行号起始值属性名（按优先级探测；值形如 ``=3`` / ``="3"``）
+_LINENO_START_KEYS: tuple[str, ...] = (
+    'linenostart', 'line-start', 'linestart', 'startfrom', 'start-from',
+    'first-line', 'first_line', 'firstline', 'start',
+)
+#: 行号步长属性名（按优先级探测）
+_LINENO_STEP_KEYS: tuple[str, ...] = (
+    'linenostep', 'line-step', 'linestep', 'step',
+)
+
+
+def _to_positive_int(value: str) -> int | None:
+    """属性值 → 正整数（失败/非正数返回 ``None``）。"""
+    if not value:
+        return None
+    text = value.strip().strip('"\'')
+    try:
+        n = int(text)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def parse_lineno_options(attrs: str) -> tuple[bool, int, int]:
+    """解析代码块行号选项：``(是否显示, 起始行号, 步长)``。
+
+    在 ``parse_linenos`` 的开关语义之上，支持起始值/步长：
+
+      - 起始：``linenostart=3`` / ``startFrom=3`` / ``first-line=3`` /
+        ``start=3`` / ``linenos=3``（开关带起始值）
+      - 步长：``linenostep=2`` / ``line-step=2`` / ``step=2``
+
+    非法/缺失值回退 ``(enabled, 1, 1)``。``attrs`` 为空时为 ``(False, 1, 1)``。
+    """
+    if not attrs:
+        return (False, 1, 1)
+    low = attrs.lower()
+    enabled = (
+        'numberlines' in low
+        or 'linenos' in low
+        or 'line-numbers' in low
+        or 'line_numbers' in low
+    )
+    start = 1
+    step = 1
+    for key in _LINENO_START_KEYS:
+        value = _extract_attr_value(attrs, key)
+        n = _to_positive_int(value) if value is not None else None
+        if n is not None:
+            start = n
+            break
+    for key in _LINENO_STEP_KEYS:
+        value = _extract_attr_value(attrs, key)
+        n = _to_positive_int(value) if value is not None else None
+        if n is not None:
+            step = n
+            break
+    if start != 1 or step != 1:
+        enabled = True
+    return (enabled, start, step)
+
+
 def _extract_attr_value(attrs: str, name: str) -> str | None:
     """提取 ``name="value"`` / ``name='value'`` / ``name=value`` 的属性值。
 
