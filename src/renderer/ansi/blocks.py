@@ -83,8 +83,38 @@ _ADMONITION_COLORS: dict[str, Style] = {
     "DANGER": Style(fg=196, bold=True),
 }
 
-# 无序列表项目符号（按深度；真源 == 表现层数据注册表 bullet 表）
-_BULLETS = LiveMapping("bullet")
+#: 无序列表项目符号（按嵌套深度；真源 == 表现层数据注册表 ``nested_bullet``
+#: 表——与 Rich 路径 ``_rendering/_blocks.py`` 同一真源）。修复前误用
+#: ``bullet`` 表（仅 3 个符号）→ 第 4 层起符号与第 3 层重复（``▪`` 连续出现），
+#: 与 Rich 路径（``▸ ▹ ◆``）不一致。
+_NESTED_BULLETS = LiveMapping("nested_bullet")
+
+#: 注册表 ``nested_bullet`` 缺席（被禁用/未注册）时的内置兜底快照。
+_FALLBACK_BULLETS: tuple = ("\u2022", "\u25e6", "\u25aa", "\u25b8", "\u25b9", "\u25c6")
+
+
+def bullet_symbol(depth: int) -> str:
+    """块级无序列表项目符号（按嵌套深度；越界层取最后一项）。
+
+    ``nested_bullet`` 注册表可按 Patch/Overlay 覆盖/禁用；缺席或为非序列时
+    回退内置快照，保证渲染不崩（与 Rich 路径 ``_bullet_symbols`` 同语义）。
+    """
+    try:
+        symbols = _NESTED_BULLETS
+        n = len(symbols)
+    except Exception:
+        n = 0
+    if n <= 0:
+        symbols = _FALLBACK_BULLETS
+        n = len(symbols)
+    try:
+        idx = min(max(int(depth) - 1, 0), n - 1)
+    except (TypeError, ValueError):
+        idx = 0
+    try:
+        return str(symbols[idx])
+    except Exception:
+        return _FALLBACK_BULLETS[0]
 
 # ── 标题 ─────────────────────────────────────────────
 
@@ -209,7 +239,7 @@ def render_list_item(token) -> list[AnsiLine]:
     # 缩进按 indent；项目符号按嵌套深度（depth 为 1-based）
     prefix = "  " * max(0, indent)
     if meta.get("bullet"):
-        bullet = _BULLETS[min(max(depth - 1, 0), len(_BULLETS) - 1)]
+        bullet = bullet_symbol(depth)
         head = f"{prefix}{bullet} "
         head_style = bullet_style(depth)
     else:
@@ -478,25 +508,36 @@ def render_admonition(token) -> list[AnsiLine]:
 
 def render_admonition_head(atype: str, text: str, title: str = "",
                            collapsible: bool = False) -> AnsiLine:
-    """告示首行（``■ TYPE [title] 正文``；可折叠时为 ``▸``）。"""
+    """告示首行（``■ TYPE [title] 正文``；可折叠时为 ``▸``）。
+
+    标题 / 同行文本非空时才追加分隔空格——修复前恒拼 ``"■ TYPE "``（无标题
+    时行尾多一个空格：宽度测量含之，右侧对齐/换行预算偏移）。
+    """
     atype = str(atype).upper()
     color = _ADMONITION_COLORS.get(atype, _STYLE_LIST_BULLET)
     glyph = "\u25b8" if collapsible else "\u25a0"
-    head = AnsiLine.of(f"{glyph} {atype} ", color)
+    head = AnsiLine.of(f"{glyph} {atype}", color)
     if title:
-        head.append(str(title), _STYLE_ADM_TITLE)
+        head.append(" " + str(title), _STYLE_ADM_TITLE)
         return head
-    for run in render_inline(text):
-        head.append_run(run)
+    if text:
+        head.append(" ")
+        for run in render_inline(text):
+            head.append_run(run)
     return head
+
+
+def render_container_body(text: str, indent: str = "  ") -> AnsiLine:
+    """容器块正文行（前缀缩进 + 行内格式解析；预览行级缓存复用）。"""
+    body = AnsiLine.of(indent, _STYLE_BQ)
+    for run in render_inline(text):
+        body.append_run(run)
+    return body
 
 
 def render_admonition_body(text: str) -> AnsiLine:
     """告示正文行（缩进；行级增量预览复用）。"""
-    body = AnsiLine.of("    ", _STYLE_BQ)
-    for run in render_inline(text):
-        body.append_run(run)
-    return body
+    return render_container_body(text, "    ")
 
 
 # ── 折叠块（DETAILS） ────────────────────────────────
@@ -508,6 +549,11 @@ def render_details_head(summary) -> AnsiLine:
     for run in render_inline(str(summary)):
         head.append_run(run)
     return head
+
+
+def render_details_body(text: str) -> AnsiLine:
+    """折叠块正文行（2 空格缩进；流式预览行级缓存复用）。"""
+    return render_container_body(text, "  ")
 
 
 def render_details(token) -> list[AnsiLine]:
@@ -526,13 +572,20 @@ def render_details(token) -> list[AnsiLine]:
     summary = token.meta.get("summary", "")
     lines = [render_details_head(summary)]
     lines.extend(_preview_omitted(token.meta))
-    for seg in (token.meta.get("body_lines") or []):
-        for sub in _inline_lines(str(seg)):
-            body = AnsiLine.of("  ", _STYLE_BQ)
-            for run in sub.runs:
-                body.append_run(run)
-            lines.append(body)
+    lines.extend(_container_body_lines(token.meta.get("body_lines")))
     return lines
+
+
+def _container_body_lines(body_lines) -> list[AnsiLine]:
+    """容器正文行逐行渲染（2 空格缩进 + 行内格式；``<details>``/fenced div 共用）。"""
+    out: list[AnsiLine] = []
+    for seg in (body_lines or []):
+        for sub in _inline_lines(str(seg)):
+            line = AnsiLine.of("  ", _STYLE_BQ)
+            for run in sub.runs:
+                line.append_run(run)
+            out.append(line)
+    return out
 
 
 def _preview_omitted(meta) -> list[AnsiLine]:
@@ -551,14 +604,23 @@ def _preview_omitted(meta) -> list[AnsiLine]:
 
 
 def render_fenced_div_head(dtype: str, text: str = "") -> AnsiLine:
-    """Fenced Div 头行（``▪ TYPE 文本``；供容器正文嵌套渲染使用）。"""
+    """Fenced Div 头行（``▪ TYPE 文本``；供容器正文嵌套渲染使用）。
+
+    文本非空时才追加分隔空格（修复前恒拼 ``"▪ TYPE "``，无文本时行尾多空格）。
+    """
     dtype = str(dtype).upper()
     color = _ADMONITION_COLORS.get(dtype, _STYLE_LIST_BULLET)
-    head = AnsiLine.of(f"\u25aa {dtype} ", color)
+    head = AnsiLine.of(f"\u25aa {dtype}", color)
     if text:
+        head.append(" ")
         for run in render_inline(str(text)):
             head.append_run(run)
     return head
+
+
+def render_fenced_div_body(text: str) -> AnsiLine:
+    """Fenced Div 正文行（2 空格缩进；流式预览行级缓存复用）。"""
+    return render_container_body(text, "  ")
 
 
 def render_fenced_div(token) -> list[AnsiLine]:
@@ -571,12 +633,7 @@ def render_fenced_div(token) -> list[AnsiLine]:
     head = render_fenced_div_head(dtype, token.content or "")
     lines = [head]
     lines.extend(_preview_omitted(token.meta))
-    for seg in (token.meta.get("body_lines") or []):
-        for sub in _inline_lines(str(seg)):
-            body = AnsiLine.of("  ", _STYLE_BQ)
-            for run in sub.runs:
-                body.append_run(run)
-            lines.append(body)
+    lines.extend(_container_body_lines(token.meta.get("body_lines")))
     return lines
 
 
@@ -603,10 +660,14 @@ __all__ = [
     "render_admonition",
     "render_admonition_head",
     "render_admonition_body",
+    "render_container_body",
     "render_details",
     "render_details_head",
+    "render_details_body",
     "render_fenced_div",
     "render_fenced_div_head",
+    "render_fenced_div_body",
+    "bullet_symbol",
     "render_front_matter",
     "render_table_caption",
     "render_empty_line",

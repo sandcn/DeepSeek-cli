@@ -34,6 +34,7 @@ user/write_line/splash/parse_info；工具块为渲染期卡片
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 # ★ 状态类型与渲染辅助已拆分至同级模块（模块边界优化，2026-08-05）；
@@ -69,6 +70,20 @@ from src.tui.app._tool_output_mixin import _ToolOutputMixin
 from src.tui.app.toolcard import tool_card_lines
 
 _logger = logging.getLogger(__name__)
+
+#: 「前向引用」结构特征（块源文本 → 关闭时需按完整源整块重渲染）。
+#: 这些结构的内容取决于标记**之后**的文本，流式增量渲染只能看到标记处
+#: 已解析的部分（目录不完整 / 参考式链接未解析）：
+#:   - ``[TOC]`` 行标记（与解析器识别口径一致：整行 ``[TOC]``）；
+#:   - 参考式链接定义 ``[id]: url``（排除脚注 ``[^id]`` 与注释 ``[//]``）。
+#: 注：脚注 ``[^id]`` **不**在此列——编号按首次出现顺序（定义经预扫描先入
+#: 序）在流式期间即正确，文末附录在 ``close()`` 由 ``fn_map`` 生成；纳入只会
+#: 让代码块里的正则字符组 ``[^...]`` 触发无谓的整块重渲染。
+_FORWARD_REF_RE = re.compile(
+    r"(?m)"
+    r"^[ \t]*\[TOC\][ \t]*$"                          # [TOC] 目录标记
+    r"|^[ \t]{0,3}\[(?!\^|//)[^\]]*\]:[ \t]*\S"       # 参考式链接定义
+)
 
 
 class AppModel(_ToolOutputMixin):
@@ -623,6 +638,108 @@ class AppModel(_ToolOutputMixin):
         block._cached_ink_lines = None
         return True
 
+    # ── 前向引用结构的关闭重渲染 ──────────────────────
+
+    def _needs_final_rerender(self, block) -> bool:
+        """块源文本是否含「只能在文档末尾才渲染正确」的前向引用结构。
+
+        流式增量渲染在**标记出现时**就已产出该处行（并随增量提交进入
+        ``committed_lines``），而这些结构的内容取决于其**之后**的文本：
+
+          - ``[TOC]`` 目录标记：目录内容 = 其之后的全部标题（流式时尚未解析，
+            目录恒为空/不完整）；
+          - 参考式链接定义 ``[id]: url``：定义通常位于引用之后（引用渲染为
+            ``[?id]`` / ``[ref:id]`` 占位）。
+
+        命中时由 ``_rerender_block_from_source`` 用完整源文本整块重渲染，
+        使最终渲染与一次性渲染一致（预览/流式期间的中间态不追改）。
+
+        脚注 ``[^id]`` 不需要此机制：编号按首次出现顺序（定义经预扫描先入序）
+        在流式期间即正确，文末附录在 ``close()`` 由 ``fn_map`` 生成。
+
+        ``source_truncated``（源文本超上限）时无法重渲染——返回 False 保留
+        现状（重渲染会用截断源产出错误内容）。
+        """
+        source = getattr(block, "source_text", "")
+        if not source or block.extra.get("source_truncated"):
+            return False
+        return bool(_FORWARD_REF_RE.search(source))
+
+    def _rerender_block_from_source(self, block) -> bool:
+        """用块的完整源文本整块重渲染并回填（前向引用结构的一致性修复）。
+
+        重渲染产出新行列表 → 回退该块及其后所有块的提交状态
+        （``committed_lines`` 从该块偏移截断、各块 ``committed_line_count``
+        归零）——调用方随后经 ``commit_block(len(blocks)-1)`` 统一重建，
+        保证 ``committed_lines`` 与各块计数一致（新列表对象亦使静态行前缀
+        缓存失效，终端重绘该块）。
+
+        Returns:
+            是否成功重渲染并回填（失败保留原状，调用方走常规路径）。
+        """
+        source = getattr(block, "source_text", "")
+        if not source:
+            return False
+        try:
+            from src.renderer.ansi import AnsiStreamRenderer
+            r = AnsiStreamRenderer(width=max(self.width, 20))
+            r.write(source)
+            r.close()
+            new_lines = list(r.take_lines())
+        except Exception:
+            _logger.debug("关闭块整块重渲染异常", exc_info=True)
+            return False
+        if not new_lines:
+            return False
+        idx = None
+        for i, b in enumerate(self.blocks):
+            if b is block:
+                idx = i
+                break
+        if idx is None:
+            return False
+        offset = block.extra.get("_first_committed_offset")
+        if isinstance(offset, int) and 0 <= offset <= len(self.committed_lines):
+            # 该块已（增量）提交过：从块首偏移截断，其后所有块的提交状态一并
+            # 归零重建（否则其 committed_line_count 与实际已提交行不一致 →
+            # commit_block 跳过 → 内容丢失）。
+            del self.committed_lines[offset:]
+            for later in self.blocks[idx:]:
+                later.committed_line_count = 0
+                later._cached_ink_lines = None
+                later._open_styled_cache = None
+                later._tool_card_body_cache = None
+                later._tool_card_frame_cache = None
+                later._tool_card_body_lines_cache = None
+                later.extra.pop("_first_committed_offset", None)
+                later.extra.pop("_trailer_appended", None)
+            self.committed_count = idx
+        block.lines = new_lines
+        block.committed_line_count = 0
+        block._cached_ink_lines = None
+        block._open_styled_cache = None
+        return True
+
+    def _rerender_if_needed(self, block) -> bool:
+        """命中前向引用结构时用完整源文本整块重渲染（返回是否已重渲染）。"""
+        if not self._needs_final_rerender(block):
+            return False
+        return self._rerender_block_from_source(block)
+
+    def _finalize_closed_stream_block(self, block) -> None:
+        """流式块关闭后的统一收尾：前向引用重渲染 + 未提交尾冻结。
+
+        常规路径仅冻结未提交尾（BUG-21：避免与 committed_lines 各存一份全量
+        行）。命中前向引用结构时改为整块重渲染（此时 ``committed_line_count``
+        归零，未提交尾 = 全块 → 不预先冻结，由 ``commit_block`` 在提交完成后
+        冻结空尾，内存不翻倍）。
+        """
+        if not self._rerender_if_needed(block):
+            block._cached_ink_lines = self._block_to_ink_lines(
+                block, block.committed_line_count,
+            )
+        block._open_styled_cache = None
+
     # ── 推理/内容通道 ───────────────────────────────
 
     def ensure_reasoning(self):
@@ -683,7 +800,10 @@ class AppModel(_ToolOutputMixin):
             block = self.blocks[self.reasoning_block_index]
             block.closed = True
             block.preview_lines = []  # 闭合：预览由确定行替换，清空
-            # ★ BUG-21（review 方向）：仅冻结**未提交尾**
+            # ★ 前向引用结构（[TOC] / 参考式链接 / 脚注）：流式增量渲染在标记
+            #   出现时即产出且已增量提交，内容取决于其后的文本 → 关闭时用完整
+            #   源文本整块重渲染回填（见 ``_finalize_closed_stream_block``）。
+            # ★ BUG-21（review 方向）：常规路径仅冻结**未提交尾**
             #   （``committed_line_count`` 起）——修复前全量冻结
             #   ``_block_to_ink_lines(block, 0)``：已增量提交过的行（已在
             #   committed_lines）被重复存为 ink Line → 大响应关闭后内存约
@@ -694,10 +814,10 @@ class AppModel(_ToolOutputMixin):
             #   ``_block_styled_lines`` 显式排除 reasoning（冻结 dim 样式与
             #   即时渲染 fg=242 语义不同）→ 创建即死内存；仅释放 open 缓存。
             if block.kind != "reasoning":
-                block._cached_ink_lines = self._block_to_ink_lines(
-                    block, block.committed_line_count,
-                )
-            block._open_styled_cache = None  # 冻结后开放缓存不再需要
+                self._finalize_closed_stream_block(block)
+            else:
+                self._rerender_if_needed(block)
+                block._open_styled_cache = None  # 冻结后开放缓存不再需要
             # ★ BUG-77（commit 范围）：提交到**块列表末尾**（而非仅本块索引）
             #   ——reasoning 关闭时其后可能存在**已关闭但未提交**的块（如
             #   上一轮遗留的工具卡 / content 流式期间先关闭的工具卡）。修复前
@@ -744,10 +864,9 @@ class AppModel(_ToolOutputMixin):
             block.preview_lines = []  # 闭合：预览由确定行替换，清空
             # ★ BUG-21（review 方向）：仅冻结未提交尾（同 close_reasoning）——
             #   已增量提交的行不重复存 ink Line（大响应内存不翻倍）。
-            block._cached_ink_lines = self._block_to_ink_lines(
-                block, block.committed_line_count,
-            )
-            block._open_styled_cache = None  # 冻结后开放缓存不再需要
+            # ★ 前向引用结构（[TOC] / 参考式链接 / 脚注）：关闭时用完整源文本
+            #   整块重渲染回填（流式增量渲染只见标记处已解析的部分）。
+            self._finalize_closed_stream_block(block)
             # ★ BUG-77（commit 范围，同 close_reasoning）：提交到**块列表末尾**
             #   ——content 关闭时其后可能存在**已关闭但未提交**的块（content
             #   流式期间打开并关闭的工具卡——``close_tool_box`` 的

@@ -409,6 +409,10 @@ class AnsiStreamRenderer:
                 return self._render_blockquote_preview(tok)
             if t is TokenType.ADMONITION_CLOSE:
                 return self._render_admonition_preview(tok)
+            if t is TokenType.DETAILS_CLOSE:
+                return self._render_details_preview(tok)
+            if t is TokenType.FENCED_DIV_CLOSE:
+                return self._render_fenced_div_preview(tok)
         return eng.render(tok)
 
     def _clear_preview(self) -> None:
@@ -594,6 +598,28 @@ class AnsiStreamRenderer:
             return [self._omitted_line(dropped)] + rows
         return rows
 
+    def _render_container_preview(self, head: AnsiLine, body: list,
+                                  dropped: int, kind: str, cache_key,
+                                  render_line, indent: str) -> list[AnsiLine]:
+        """容器块（告示 / <details> / fenced div）预览的统一渲染。
+
+        正文含块级标记（列表 / 围栏代码 / 引用 / 表格…）→ 子解析后按完整
+        Markdown 渲染（与提交路径 ``_render_nested_blocks`` 一致，消除
+        「预览纯文本 → 提交变列表」跳变）；否则逐行走行级增量缓存。
+        """
+        if body and _has_block_markers(body):
+            body_tokens = self._preview_sub_parse(body)
+            if body_tokens:
+                return self._preview_engine._render_nested_blocks(
+                    head, body_tokens, dropped, indent=indent)
+        rest = [self._window_preview_line(seg) for seg in body]
+        rows = self._line_cache(kind).render(
+            cache_key, rest, lambda text: [render_line(text)],
+        )
+        if dropped:
+            return [head, self._omitted_line(dropped)] + rows
+        return [head] + rows
+
     def _render_admonition_preview(self, token) -> list[AnsiLine]:
         from . import blocks as _blocks
         atype = str(token.meta.get("type", "NOTE")).upper()
@@ -606,21 +632,40 @@ class AnsiStreamRenderer:
         head = _blocks.render_admonition_head(atype, head_text, title=title,
                                               collapsible=collapsible)
         dropped = int(token.meta.get("preview_dropped", 0) or 0)
-        # 正文含块级标记（列表 / 围栏代码 / 引用 / 表格…）→ 子解析后按完整
-        # Markdown 渲染（与提交路径一致，消除「预览纯文本 → 提交变列表」跳变）。
-        if body and _has_block_markers(body):
-            body_tokens = self._preview_sub_parse(body)
-            if body_tokens:
-                return self._preview_engine._render_nested_blocks(
-                    head, body_tokens, dropped, indent="    ")
-        rest = [self._window_preview_line(seg) for seg in body]
-        rows = self._line_cache("admonition").render(
-            ("admonition", atype, title, collapsible, head_text), rest,
-            lambda text: [_blocks.render_admonition_body(text)],
+        return self._render_container_preview(
+            head, body, dropped, "admonition",
+            ("admonition", atype, title, collapsible, head_text),
+            _blocks.render_admonition_body, indent="    ",
         )
-        if dropped:
-            return [head, self._omitted_line(dropped)] + rows
-        return [head] + rows
+
+    def _render_details_preview(self, token) -> list[AnsiLine]:
+        """``<details>`` 折叠块预览（头 + 正文，与提交路径同语义）。"""
+        from . import blocks as _blocks
+        summary = str(token.meta.get("summary", "") or "")
+        body = list(token.meta.get("body_lines") or [])
+        if token.content:
+            body = str(token.content).split("\n") + body
+        head = _blocks.render_details_head(summary)
+        dropped = int(token.meta.get("preview_dropped", 0) or 0)
+        return self._render_container_preview(
+            head, body, dropped, "details", ("details", summary),
+            _blocks.render_details_body, indent="  ",
+        )
+
+    def _render_fenced_div_preview(self, token) -> list[AnsiLine]:
+        """Fenced Div（``:::type``）预览（头 + 正文，与提交路径同语义）。"""
+        from . import blocks as _blocks
+        dtype = str(token.meta.get("type", "NOTE") or "NOTE")
+        head_text = str(token.meta.get("head_text", "") or "")
+        body = list(token.meta.get("body_lines") or [])
+        if token.content:
+            body = str(token.content).split("\n") + body
+        head = _blocks.render_fenced_div_head(dtype, head_text)
+        dropped = int(token.meta.get("preview_dropped", 0) or 0)
+        return self._render_container_preview(
+            head, body, dropped, "fenced_div", ("fenced_div", dtype),
+            _blocks.render_fenced_div_body, indent="  ",
+        )
 
     def _preview_sub_parse(self, lines: list[str]) -> list:
         """预览用子解析（带小容量缓存：同一内容重复帧零成本）。

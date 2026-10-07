@@ -341,12 +341,17 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # ── 第3步：关闭引用块（先于段落刷出，确保引用内容以 BLOCKQUOTE_LINE 发出） ──
         self._emit_blockquote_close(tokens)
 
-        # ── 第4步：刷出段落缓冲 ──
-        self._flush_paragraph(tokens)
-
-        # ── 第5步：关闭 admonition ──
+        # ── 第4步：关闭 admonition（引用风格 ``> [!TYPE]``）──
+        #   ★ 顺序修复：必须**先于段落刷出**——告示块结束于「首个未引用行」，
+        #     该行已进入 ``_pending_lines``；修复前先刷段落再发 ADMONITION_CLOSE
+        #     （第5步），紧随告示之后（无空行分隔）的正文会排到告示**之前**
+        #     （内容顺序颠倒）。段落缓冲只含告示之后的内容（告示正文经
+        #     ``_feed_admonition_line`` 进 ``_block_lines``），交换安全。
         if self._in_admonition:
             self._emit_admonition_close_ref(tokens)
+
+        # ── 第5步：刷出段落缓冲 ──
+        self._flush_paragraph(tokens)
 
         # ── 第6步：再次刷出段落 ──
         self._flush_paragraph(tokens)
@@ -432,6 +437,57 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return ""
         return self._buffer.rstrip()
 
+    #: 容器未闭合预览的正文行归一化模式（与 ``feed`` 的正文行处理一一对应）
+    _CONTAINER_INDENT4 = "indent4"     # fenced 告示：剥离固定 4 空格 / 制表符
+    _CONTAINER_QUOTE = "quote"         # 引用风格告示：剥离 ``>`` 前缀
+    _CONTAINER_DETAILS = "details"     # <details>：剥离左空白（结束符 </details>）
+    _CONTAINER_DIV = "div"             # fenced div：剥离左空白（结束符 :::）
+
+    def _normalized_container_body(self, mode: str) -> tuple[list[str], str]:
+        """容器块未闭合预览的正文行（含未换行活动行）+ 容器外的残留行。
+
+        未换行活动行必须与 ``feed`` 对完整行的处理**同一归一化**——修复前
+        原样并入预览，导致：
+
+          - fenced 告示正文行保留 4 空格缩进 → 子解析按「缩进代码块」处理，
+            预览冒出 ``` 围栏（提交后消失的跳变）；
+          - 引用风格告示正文行保留 ``>`` → 预览渲染成 ``│ body``；
+          - <details> / fenced div 正文行保留缩进 → 预览多出缩进。
+
+        Returns:
+            ``(body_lines, rest)``。``rest`` 非空表示活动行不属于本容器
+            （容器在其之前已结束），调用方应交给 NORMAL 预览渲染。
+        """
+        body = list(self._block_lines)
+        tail = self._peek_incomplete_tail()
+        if not tail:
+            return body, ""
+        if mode == self._CONTAINER_INDENT4:
+            if tail[:4] == '    ':
+                body.append(tail[4:])
+            elif tail[0] == '\t':
+                body.append(tail[1:])
+            else:
+                return body, tail  # 非缩进行 → 容器结束，属新内容
+            return body, ""
+        if mode == self._CONTAINER_QUOTE:
+            if tail.lstrip().startswith('>'):
+                body.append(_get_blockquote_text(tail.strip()))
+            else:
+                return body, tail
+            return body, ""
+        # <details> / fenced div：剥离左空白（与 feed 的正文行归一化一致），
+        # 结束定界行归入容器外（由 NORMAL 预览渲染）。
+        stripped_tail = _strip_left(tail)
+        if mode == self._CONTAINER_DETAILS:
+            if stripped_tail.startswith('</details'):
+                return body, tail
+        elif mode == self._CONTAINER_DIV:
+            if stripped_tail.strip() == ':::':
+                return body, tail
+        body.append(stripped_tail)
+        return body, ""
+
     def peek_pending(self) -> list[Token]:
         """返回当前未闭合状态的可渲染预览 Token（只读，不改解析器状态）。
 
@@ -509,7 +565,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             out.append(Token(TokenType.MATH_BLOCK_CLOSE, src, meta))
             return out
         if st == _State.DETAILS_BLOCK:
-            body_all = self._block_lines + tail_lines
+            body_all, rest = self._normalized_container_body(
+                self._CONTAINER_DETAILS)
             body = self._preview_tail(body_all)
             meta: dict = {
                 "summary": self._details_summary,
@@ -520,9 +577,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             if dropped:
                 meta["preview_dropped"] = dropped
             out.append(Token(TokenType.DETAILS_CLOSE, "", meta))
+            if rest:
+                out.extend(self._preview_tokens_for_normal([], rest))
             return out
         if st == _State.FENCED_DIV:
-            body_all = self._block_lines + tail_lines
+            body_all, rest = self._normalized_container_body(
+                self._CONTAINER_DIV)
             body = self._preview_tail(body_all)
             meta: dict = {
                 "type": self._block_div_type,
@@ -533,6 +593,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             if dropped:
                 meta["preview_dropped"] = dropped
             out.append(Token(TokenType.FENCED_DIV_CLOSE, "", meta))
+            if rest:
+                out.extend(self._preview_tokens_for_normal([], rest))
             return out
         # HTML_BLOCK：已闭合行即时 emit（引擎直接逐行渲染）；未换行的尾部
         # 活动行同样即时预览，保证实时可见。
@@ -600,7 +662,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return out
 
         if self._in_admonition:
-            all_lines = self._block_lines + tail_lines
+            all_lines, rest = self._normalized_container_body(
+                self._CONTAINER_QUOTE)
             body = self._preview_tail(all_lines)
             meta: dict = {
                 "type": self._admonition_type,
@@ -612,29 +675,32 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             if dropped:
                 meta["preview_dropped"] = dropped
             out.append(Token(TokenType.ADMONITION_CLOSE, "", meta))
+            if rest:
+                out.extend(self._preview_tokens_for_normal([], rest))
             return out
 
         if st == _State.ADMONITION_BLOCK:
-            all_lines = self._block_lines + tail_lines
+            # fenced 风格：head_text 恒空（标题仅在 ``!!! type Title`` 同行文本
+            # 经 meta["title"] 表达）——与提交路径 ``_emit_admonition_block_close``
+            # 语义一致，不再把正文首行当头部。
+            all_lines, rest = self._normalized_container_body(
+                self._CONTAINER_INDENT4)
             body = self._preview_tail(all_lines)
-            head_text = ''
-            if not self._adm_title and body:
-                # fenced 风格无标题：正文首行作 head（与提交语义一致）
-                head_text = body[0]
-                body = body[1:]
             meta: dict = {
                 "type": self._admonition_type,
                 "title": self._adm_title,
                 "collapsible": self._adm_collapsible,
-                "head_text": head_text,
+                "head_text": "",
                 "body_lines": body,
                 "preview": True,
                 "fenced": True,
             }
-            dropped = len(all_lines) - len(body) - (1 if head_text else 0)
+            dropped = len(all_lines) - len(body)
             if dropped:
                 meta["preview_dropped"] = dropped
             out.append(Token(TokenType.ADMONITION_CLOSE, "", meta))
+            if rest:
+                out.extend(self._preview_tokens_for_normal([], rest))
             return out
 
         # ── 流式表格行缓冲（未遇到分隔行）：同样按「整行才可解析」处理，
@@ -1539,6 +1605,26 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     _logger.warning("数学块解析异常，降级为段落", exc_info=True)
                     if count > 5:
                         raise
+            # 单行显示数学 ``$$ ... $$``：同一行给出开闭定界符 → 直接产出闭合块
+            # （源为中间内容）。修复前落入段落 → 行内 ``$`` 解析把首尾定界符当
+            # 行内数学，多出字面 ``$``（``$$x=1$$`` → ``$x=1$``），与多行
+            # ``$$`` 块的渲染（数学框）不一致。
+            if (len(stripped) > 4 and stripped[:2] == '$$'
+                    and stripped.endswith('$$')):
+                source = stripped[2:-2].strip()
+                if source:
+                    try:
+                        self._flush_paragraph(tokens)
+                        self._emit_blockquote_close(tokens)
+                        tokens.append(Token(TokenType.MATH_BLOCK_CLOSE, source,
+                                            {"source": source}))
+                        return True
+                    except Exception:
+                        count = self._silent_downgrade_count.get('math_block', 0) + 1
+                        self._silent_downgrade_count['math_block'] = count
+                        _logger.warning("单行数学块解析异常，降级为段落", exc_info=True)
+                        if count > 5:
+                            raise
             return False
 
         def _handle_table() -> bool:
@@ -1824,18 +1910,20 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         }))
 
     def _emit_admonition_block_close(self, tokens: list[Token]):
-        """关闭 ``!!!`` 告示块（正文行已由 ADMONITION_LINE 输出/缓冲）。"""
+        """关闭 ``!!!`` 告示块（正文行已由 ADMONITION_LINE 输出/缓冲）。
+
+        ``head_text`` 恒为空：fenced 风格（``!!! type`` / ``??? type``）的头部
+        标题只来自**同行文本**（``!!! type Title`` → ``meta["title"]``）。修复前
+        无同行标题时把**正文首行**提升为 head_text——ANSI 路径首行既作头部又
+        作正文（单行正文重复显示；多行正文首行被吞成标题且原始 markdown 泄漏：
+        ``- a`` / ``## h`` / ` ```py `），与 Rich 路径（不使用 head_text）不一致。
+        """
         body_lines = list(self._block_lines)
         title = self._adm_title
-        head_text = ''
-        if not title and body_lines:
-            # fenced 风格无标题时：正文首行作为头部标题（与既有渲染语义一致）
-            head_text = body_lines[0]
-            body_lines = body_lines[1:]
         meta: dict = {
             "type": self._admonition_type, "title": title,
             "collapsible": self._adm_collapsible, "depth": 1, "fenced": True,
-            "head_text": head_text,
+            "head_text": "",
         }
         # 正文以完整 Markdown 语义子解析（列表/代码/引用…），渲染层整体
         # 缩进渲染（与 ``<details>`` 正文同一机制）。

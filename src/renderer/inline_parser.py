@@ -249,22 +249,46 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
     # ── $行内数学$ ─────────────────────────────────────
 
     def _try_inline_math(self) -> InlineNode | None:
+        """``$...$`` 行内数学 / ``$$...$$`` 行内显示数学。
+
+        定界规则（保守，避免把金额当公式）：
+
+          - 起始 ``$`` 后不得为空白（``$ x $`` 不成公式）；
+          - 结束 ``$`` 前不得为空白（``$5 and $6`` 不成公式，美元符号保留）；
+          - ``$$`` 须成对；未成对时按普通文本处理（不误吞）。
+
+        修复前无上述约束：``price $5 and $6`` 的美元符号被当定界符吞掉；
+        ``$$x$$`` 被拆成「字面 ``$`` + 行内数学 + 字面 ``$``」（多出 ``$``）。
+        """
         try:
-            saved = self._pos
-            if self._text[self._pos] == '$':
-                if self._pos + 1 < self._n and self._text[self._pos + 1] == '$':
-                    return None
-                self._pos += 1
-                content_start = self._pos
-                while self._pos < self._n:
-                    if self._text[self._pos] == '$' and not (self._pos + 1 < self._n
-                                                              and self._text[self._pos + 1] == '$'):
-                        content = self._text[content_start:self._pos]
-                        self._pos += 1
-                        return InlineMathNode(content=content)
-                    self._pos += 1
-                self._pos = saved
+            if self._pos >= self._n or self._text[self._pos] != '$':
                 return None
+            text, n = self._text, self._n
+            if self._pos + 1 < n and text[self._pos + 1] == '$':
+                # ``$$...$$``：成对时整体作为行内显示数学
+                end = text.find('$$', self._pos + 2)
+                if end > self._pos + 2:
+                    content = text[self._pos + 2:end]
+                    self._pos = end + 2
+                    return InlineMathNode(content=content)
+                return None
+            nxt = text[self._pos + 1] if self._pos + 1 < n else ''
+            if not nxt or nxt.isspace():
+                return None
+            saved = self._pos
+            self._pos += 1
+            content_start = self._pos
+            while self._pos < n:
+                if (text[self._pos] == '$'
+                        and self._pos > content_start
+                        and not text[self._pos - 1].isspace()
+                        and not (self._pos + 1 < n
+                                 and text[self._pos + 1] == '$')):
+                    content = text[content_start:self._pos]
+                    self._pos += 1
+                    return InlineMathNode(content=content)
+                self._pos += 1
+            self._pos = saved
             return None
         except Exception:
             _logger.debug("_try_inline_math 异常，降级处理", exc_info=True)
