@@ -80,18 +80,25 @@ DEFAULTS = {
     "model": "deepseek-v4-flash",
     "reasoning_effort": "max",
     "temperature": 0.2,
-    "max_context_chars": 60000,
+    # ── 上下文窗口阈值（2026-10-07 用户需求：60k → 1M tokens 窗口）──
+    # max_context_tokens：压缩触发的 token 口径上限（1M）；
+    # max_context_chars：同一窗口的字符口径上限，取 1M tokens 对应的字符
+    #   上界（ASCII ≈ 0.3 token/字符 → 1M tokens ≈ 3.33M 字符；取 3M 可
+    #   覆盖纯 ASCII 会话约 90 万 tokens），避免字符阈值先于 token 阈值
+    #   触发而把 1M 窗口提前截断；
+    # auto_force_compress_threshold：与字符阈值同口径（超过即强制全量压缩）。
+    "max_context_chars": 3000000,
     "max_output_chars": 3000,
     "max_retries": 10,
     "retry_base_sec": 30.0,
     "max_session_messages": 0,
     "keep_recent_messages": 0,
-    "max_context_tokens": 60000,
+    "max_context_tokens": 1000000,
     # 模型上下文窗口（tokens）——TUI 模式行行首上下文使用率百分比的分母。
     # 默认 1M（用户环境 deepseek 1M 上下文；不同模型可配置覆盖）。
     "model_context_tokens": 1000000,
     "summary_token_budget": 2000,
-    "auto_force_compress_threshold": 60000,
+    "auto_force_compress_threshold": 3000000,
     "enable_notifications": True,
     "notify_on_chat_completion": True,
     "models": [],
@@ -189,7 +196,9 @@ CONFIG_KEYS = {
     "MAX_CONTEXT_CHARS": {
         "rc_path": ("max_context_chars",),
         "type": int,
-        "default": 60000,
+        # 引用 DEFAULTS 保持单一事实源（与 MAX_RETRIES 同一约定，
+        # 避免 rc 键缺失兜底与 DEFAULTS 双源漂移）
+        "default": DEFAULTS["max_context_chars"],
         "cacheable": True,
     },
     "MAX_OUTPUT_CHARS": {
@@ -228,13 +237,13 @@ CONFIG_KEYS = {
     "MAX_CONTEXT_TOKENS": {
         "rc_path": ("max_context_tokens",),
         "type": int,
-        "default": 60000,
+        "default": DEFAULTS["max_context_tokens"],
         "cacheable": True,
     },
     "MODEL_CONTEXT_TOKENS": {
         "rc_path": ("model_context_tokens",),
         "type": int,
-        "default": 1000000,
+        "default": DEFAULTS["model_context_tokens"],
         "cacheable": True,
     },
     "SUMMARY_TOKEN_BUDGET": {
@@ -246,7 +255,7 @@ CONFIG_KEYS = {
     "AUTO_FORCE_COMPRESS_THRESHOLD": {
         "rc_path": ("auto_force_compress_threshold",),
         "type": int,
-        "default": 60000,
+        "default": DEFAULTS["auto_force_compress_threshold"],
         "cacheable": True,
     },
     # ---- 布尔配置 ----

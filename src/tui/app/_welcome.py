@@ -170,7 +170,7 @@ def _git_branch() -> str:
 
 
 def _context_capacity() -> str:
-    """上下文窗口容量显示文本（如 ``60k``；不可用时返回空串）。"""
+    """上下文窗口容量显示文本（如 ``1M`` / ``60k``；不可用时返回空串）。"""
     try:
         from src.config.proxy import config
 
@@ -179,6 +179,9 @@ def _context_capacity() -> str:
         return ""
     if tokens <= 0:
         return ""
+    if tokens >= 1_000_000:
+        # 千进位到 M：1_000_000 → "1M"、1_500_000 → "1.5M"（:g 去掉 ".0"）
+        return f"{tokens / 1_000_000:g}M tokens"
     if tokens >= 1000:
         return f"{tokens // 1000}k tokens"
     return f"{tokens} tokens"
