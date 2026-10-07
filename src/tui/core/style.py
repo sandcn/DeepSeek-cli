@@ -13,7 +13,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+# ★ 内存（2026-10-07）：改用 ``src._compat.dataclass`` 以支持 ``slots=True``
+# （标准库 ``dataclasses.dataclass`` 在 <3.10 不支持 slots 参数；``_compat``
+# 对低版本提供等价实现）。非 slots 调用与标准库行为一致。
+from src._compat import dataclass
 from functools import lru_cache
 from typing import ClassVar
 # TrueColor 用于 dataclass 字段类型注解（from __future__ import annotations
@@ -56,9 +59,13 @@ __all__: list[str] = [
 # ═══════════════════════════════════════════════════════════
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Style:
     """不可变样式描述器，封装文本样式属性并构建 ANSI 转义序列。
+
+    ★ 内存（2026-10-07）：``slots=True`` —— 无实例 ``__dict__``。样式对象在
+    长会话渲染路径（每行 run 的样式、角色头/状态栏/工具卡样式）被大量构造与
+    引用，省下的每实例字典开销可观。
 
     所有样式属性有明确的默认值（None/False），
     合并操作时 non-None/True 字段覆盖当前值。

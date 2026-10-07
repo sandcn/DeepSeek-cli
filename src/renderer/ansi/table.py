@@ -68,9 +68,23 @@ def _shrink_widths(widths: list[int], max_total: int, ncols: int) -> list[int]:
 
 
 def _wrap_runs(runs: list[Run], maxw: int) -> list[list[Run]]:
-    """Run 序列按显示宽度换行（保持样式，不拆宽字符）。"""
+    """Run 序列按显示宽度换行（保持样式，不拆宽字符）。
+
+    ★ 性能（表格预览热路径）：先累加缓存宽度做**整段快路径**——总宽不超过
+    ``maxw`` 时（表格单元格的绝大多数形态：内容短于列宽）直接返回单行，
+    免逐字符 ``wcswidth_simple`` 展开。修复前无论是否换行都对每个单元格
+    逐字符测宽，列宽变化重建整表时（新数据行改变列宽）开销随总字符数线性
+    累积。快路径产出的 runs 与慢路径一致（同样过滤空文本 run：慢路径的空
+    run 不产生 buf，故不进入结果行）。
+    """
     if maxw <= 0:
         return [list(runs)] if runs else [[]]
+    total = 0
+    for run in runs:
+        total += run.width
+    if total <= maxw:
+        trimmed = [run for run in runs if run.text]
+        return [trimmed] if trimmed else [[]]
     lines: list[list[Run]] = []
     cur: list[Run] = []
     cur_w = 0
@@ -302,9 +316,21 @@ class TablePreviewCache:
         return out
 
     def _reuse_data(self, data: list[list[str]]) -> None:
-        """数据区复用：前缀相同 + 头部滑窗；使 ``_data_src`` 成为 ``data`` 前缀。"""
+        """数据区复用：前缀相同 + 头部滑窗；使 ``_data_src`` 成为 ``data`` 前缀。
+
+        ★ 性能（表格预览热路径）：先走**纯追加 C 级快路径**——流式表格预览
+        的常见形态是「已渲染数据行不变、尾部追加新行」（``data`` 以
+        ``_data_src`` 为前缀）。修复前逐行 Python 级 ``data[common] ==
+        cached[common]`` 循环比较（长表格每帧 O(行数) 次解释器级比较）；
+        改用切片等值比较（``data[:n] == cached`` 由 C 级 ``list.__eq__``
+        完成）后同一判定一次完成，长表格每帧比较成本显著下降。
+        """
         cached = self._data_src
-        md = min(len(data), len(cached))
+        n = len(cached)
+        # 纯追加快路径（含等长无变化）：data 以 cached 为前缀 → 无需改动
+        if len(data) >= n and data[:n] == cached:
+            return
+        md = min(len(data), n)
         common = 0
         while common < md and data[common] == cached[common]:
             common += 1

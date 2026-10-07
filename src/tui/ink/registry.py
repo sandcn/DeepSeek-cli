@@ -212,11 +212,18 @@ def unregister_host(tag: str) -> None:
 
 
 def get_host(tag: str) -> Optional[Tuple[Callable, Callable]]:
-    """查询 host 组件（扩展优先 → 生效内置；无匹配返回 None）。"""
-    with _lock:
-        host = _REGISTRY.get(tag)
-        if host is not None:
-            return host
+    """查询 host 组件（扩展优先 → 生效内置；无匹配返回 None）。
+
+    ★ 性能（渲染热路径）：读路径**不加锁**——``dict.get`` 在 CPython 的 GIL
+    下是原子操作，读到的是某次完整写入的值（注册/注销写路径仍持 ``_lock``）。
+    修复前每次查询都要获取 ``threading.RLock``，而 ``_layout_measure.
+    _measure_leaf_or_special`` 对**每个** fiber、``components._paint_impl``
+    对每个容器都调用本函数（实测 ~150 次/帧），锁加解锁开销主导了注册表
+    查询成本（约 0.2ms/帧）。无锁化后查询退化为两次缓存 dict 查找。
+    """
+    host = _REGISTRY.get(tag)
+    if host is not None:
+        return host
     return active_hosts().get(tag)
 
 

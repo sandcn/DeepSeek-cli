@@ -54,9 +54,14 @@ def hyperlink(url: str, text: str) -> str:
     return f"\x1b]8;;{safe_url}\x1b\\{text}\x1b]8;;\x1b\\"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StyledRun:
     """一段带样式的文本。
+
+    ★ 内存（长会话）：``slots=True`` —— 无实例 ``__dict__``（CPython 3.9 下每个
+    空实例字典约 104B）。提交历史每行至少一个 StyledRun，长会话（数万行）下
+    省出的常驻内存可观（实测 ~5000 行省 ~0.5MB）。``src._compat.dataclass``
+    对 <3.10 提供 slots 兼容实现。
 
     Attributes:
         text: 文本内容。

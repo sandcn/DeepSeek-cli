@@ -41,6 +41,10 @@ from ._paint_border import (
     _merge_inherit_bg,
     _apply_bg_to_line,
 )
+# ★ 性能（渲染热路径）：host 注册表查询提升为模块级导入——修复前
+#   ``_paint_impl`` 在函数体内 ``from .registry import get_host``，容器绘制
+#   每帧执行上百次模块查找。``registry`` 仅依赖标准库（无循环导入）。
+from .registry import get_host
 
 _logger = logging.getLogger(__name__)
 
@@ -237,7 +241,6 @@ def _paint_impl(fiber: Fiber, canvas: list[dict], clip=None, inherit_bg=None) ->
         return
 
     # ── 自定义 host（注册表） ──
-    from .registry import get_host
     host = get_host(ftype)
     if host is not None:
         paint_fn = host[1]

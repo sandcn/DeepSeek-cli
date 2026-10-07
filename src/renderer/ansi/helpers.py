@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import re
+from dataclasses import field
+
 from src._compat import dataclass
 
 from src.renderer._utils import cjk_display_width, expand_tabs
@@ -19,12 +21,21 @@ from .style import Style
 # ═══════════════════════════════════════════════════════════
 
 
-@dataclass
+@dataclass(slots=True)
 class Run:
-    """一段带样式的文本。"""
+    """一段带样式的文本。
+
+    ★ 内存（长会话）：``slots=True`` —— 无实例 ``__dict__``（CPython 3.9 下
+    每个空实例字典约 104B）。提交历史每行至少一个 Run，长会话下省出的常驻
+    内存可观。显示宽度缓存 ``_w`` 原为 ``__post_init__`` 动态设置的实例属性，
+    现为显式字段（``init=False``/``compare=False``/``repr=False``——不参与
+    构造签名、相等性与 repr，与原行为一致）。
+    """
 
     text: str
     style: Style | None = None
+    #: 显示宽度缓存（-1 = 未计算）
+    _w: int = field(init=False, compare=False, repr=False, default=-1)
 
     def __post_init__(self) -> None:
         # ★ 显示错乱修复（2026-10-05）：文本规范化——展开制表符 / 剔除回车

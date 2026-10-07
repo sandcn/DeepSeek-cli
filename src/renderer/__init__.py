@@ -1,338 +1,72 @@
 """renderer 包 — 精简版增量流式 Markdown 渲染器。
 
-所有渲染走统一路径：Parser → TokenPipeline → RenderEngine → OutputAdapter
-
-架构（精简后）：
-  IncrementalRenderer（直接使用 Token 管道）
-    ├── RecursiveDescentParser  — 增量 Markdown 分词器
-    ├── TokenPipeline           — 过滤器链（代码块批处理/标题锚点/流优化）
-    ├── RenderEngine            — Token 消费者，输出 Rich renderable
-    └── OutputAdapter           — 统一 Rich Console 输出接口
+渲染路径：
+  - **TUI 内容路径**：``src.renderer.ansi.AnsiStreamRenderer``（自绘 ANSI，
+    零 Rich 依赖）；
+  - **Rich 路径**：``IncrementalRenderer``（Parser → TokenPipeline →
+    RenderEngine → OutputAdapter，见 ``_incremental.py``）。
 
 ★ 锁设计：无实例级锁。
   IncrementalRenderer 本身不持有任何线程锁，原因：
   - 每个渲染器实例由单一线程/任务专用，不存在并发竞争
   - OutputAdapter 内部使用全局 output_lock 保护所有 I/O 操作
   - 移除实例锁消除了「实例锁 → output_lock」的 ABBA 死锁风险
-  （该死锁曾出现在 spinner/parallel display 与流式渲染并发时）
+
+★ 启动性能（2026-10-07，PEP 562 惰性导出）：本 ``__init__`` 原先在导入期
+eager 导入 ``rich``（console/style/text）以及 output/indicator/engine/pipeline
+等 Rich 渲染链——**任何** ``import src.renderer.<submodule>``（TUI 的
+``src.renderer.ansi`` / ``src.renderer.locks`` 等）都被迫加载整条 Rich 链
+（实测 ~60-100ms）。现改为模块级 ``__getattr__`` 惰性解析：只有真正访问
+``IncrementalRenderer`` 等 Rich 侧符号的调用方才付出该代价。
 
 使用方式：
   renderer = IncrementalRenderer()
   renderer.write("Hello **world**")
   renderer.close()
-
-快速集成：
-  from .renderer import IncrementalRenderer
 """
 
 from __future__ import annotations
 
-import logging
-import time
+from importlib import import_module
 
-_logger = logging.getLogger(__name__)
+#: 惰性导出表：公开名 → (模块名, 模块内属性名)。
+#: 模块名以 ``.`` 开头为包内相对模块，否则为绝对模块（rich / src.terminal）。
+_LAZY_EXPORTS = {
+    # Rich 渲染器（``_incremental.py``）
+    "IncrementalRenderer": ("._incremental", "IncrementalRenderer"),
+    "_StyledOutputAdapter": ("._incremental", "_StyledOutputAdapter"),
+    # 渲染链子模块公开符号（历史 re-export 面保持不变）
+    "OutputAdapter": (".output", "OutputAdapter"),
+    "StreamingIndicator": (".indicator", "StreamingIndicator"),
+    "RecursiveDescentParser": (".recursive_parser", "RecursiveDescentParser"),
+    "RenderContext": (".types", "RenderContext"),
+    "TokenType": (".types", "TokenType"),
+    "RenderEngine": (".engine", "RenderEngine"),
+    "TokenPipeline": (".pipeline", "TokenPipeline"),
+    "render_toc": ("._rendering", "render_toc"),
+    "render_render_summary": ("._rendering", "render_render_summary"),
+    # Rich 类型与终端辅助（原 ``__init__`` re-export）
+    "Console": ("rich.console", "Console"),
+    "Style": ("rich.style", "Style"),
+    "Text": ("rich.text", "Text"),
+    "get_safe_console_config": ("..terminal", "get_safe_console_config"),
+}
 
-from rich.console import Console
-from rich.style import Style
-from rich.text import Text
-
-from .output import OutputAdapter
-from .indicator import StreamingIndicator
-from .recursive_parser import RecursiveDescentParser
-from .types import RenderContext, TokenType
-from .engine import RenderEngine
-from .pipeline import TokenPipeline
-
-from ..terminal import get_safe_console_config
-from ._rendering import render_toc, render_render_summary
-
-
-class _StyledOutputAdapter:
-    """包装 OutputAdapter，为共享 adapter 添加独立样式（装饰器模式）。
-
-    用于 ``IncrementalRenderer(output_adapter=..., style=...)`` 场景：
-    共享底层 OutputAdapter（单一输出管线），同时保留调用方独立样式
-    （如推理渲染器的 dim）。完整转发 OutputAdapter 调用面，
-    仅 write()/batch_write()/write_inline() 对 renderable 应用样式。
-
-    样式兼容：
-      - ``style="dim"``（字符串）→ ``Style.parse("dim")``
-      - ``style=Style(dim=True)``（rich Style 对象）→ 直接使用
-
-    复用考量：不复制渲染逻辑，仅叠加样式层；captured_output 机制
-    通过 ``_captured_output`` property 转发到底层 OutputAdapter。
-    """
-
-    def __init__(self, output_adapter, style):
-        self._output = output_adapter
-        self._style = style if isinstance(style, Style) else Style.parse(style)
-
-    # ── 宽度 ─────────────────────────────────────────
-
-    @property
-    def width(self) -> int:
-        return self._output.width
-
-    def force_refresh_width(self) -> None:
-        self._output.force_refresh_width()
-
-    # ── 捕获转发（IncrementalRenderer captured_output 机制） ──
-
-    @property
-    def captured_output(self):
-        """捕获缓冲（转发底层适配器公开接口；不支持时返回 None）。
-
-        修复前直接访问私有 ``_captured_output``：自定义适配器（未实现该
-        私有字段）会抛 AttributeError。改为公开接口 + getattr 安全降级。
-        """
-        return getattr(self._output, "captured_output", None)
-
-    @captured_output.setter
-    def captured_output(self, value):
-        if hasattr(type(self._output), "captured_output"):
-            self._output.captured_output = value
-
-    #: 兼容旧调用面（私有名读写统一映射到公开属性）
-    @property
-    def _captured_output(self):
-        return self.captured_output
-
-    @_captured_output.setter
-    def _captured_output(self, value):
-        self.captured_output = value
-
-    # ── 样式应用 ─────────────────────────────────────
-
-    def _styled(self, renderable):
-        """对 str/Text renderable 应用样式，其他类型原样委托。
-
-        rich ``Text.stylize`` 就地修改并返回 None，故须先 copy 再 stylize。
-        """
-        if isinstance(renderable, str):
-            text = Text.from_ansi(renderable)
-            text.stylize(self._style)
-            return text
-        if isinstance(renderable, Text):
-            # copy 避免就地修改调用方复用的 Text 对象
-            text = renderable.copy()
-            text.stylize(self._style)
-            return text
-        return renderable
-
-    # ── 输出调用面（样式化后委托底层） ────────────────
-
-    def write(self, renderable) -> None:
-        self._output.write(self._styled(renderable))
-
-    def batch_write(self, renderables: list) -> None:
-        self._output.batch_write([self._styled(r) for r in renderables])
-
-    def write_raw(self, text: str) -> None:
-        self._output.write_raw(text)
-
-    def write_line(self, text: str = "") -> None:
-        self._output.write_line(text)
-
-    def write_inline(self, text) -> None:
-        self._output.write_inline(self._styled(text))
-
-    def print(self, *args, **kwargs) -> None:
-        self._output.print(*args, **kwargs)
-
-    def clear_line(self) -> None:
-        self._output.clear_line()
-
-    def flush(self) -> None:
-        self._output.flush()
+#: ``from src.renderer import *`` 的导出面（与原模块级公开名一致——不含
+#: 下划线前缀的内部符号；``_StyledOutputAdapter`` 仍可按名显式导入）。
+__all__ = sorted(n for n in _LAZY_EXPORTS if not n.startswith("_"))
 
 
-class IncrementalRenderer:
-    """增量流式 Markdown 渲染器 — 直接使用 Token 管道渲染路径。
+def __getattr__(name: str):
+    """PEP 562 模块级惰性属性解析（首次访问后缓存到模块命名空间）。"""
+    target = _LAZY_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(target[0], __name__)
+    value = getattr(module, target[1])
+    globals()[name] = value
+    return value
 
-    简化架构，移除多策略模式间接层。
-    所有渲染走统一路径：Parser → TokenPipeline → RenderEngine → OutputAdapter
-    """
 
-    def __init__(self, code_theme: str = "monokai", style: str = "",
-                 show_indicator: bool = True,
-                 show_summary: bool = False, _file=None, width: int | None = None,
-                 output_adapter: OutputAdapter | None = None,
-                 captured_output: list[str] | None = None):
-        self._closed = False
-        self._ctx = RenderContext()
-        # 标题自动编号（默认关闭，开启后会在标题前显示如 "1.2.3  " 编号）
-        self._ctx.heading_numbering = False
-        self._show_summary = show_summary
-        self._captured_output_external = captured_output
-
-        # ★ 支持外部注入 OutputAdapter（共享模式），消除双 Console 实例竞争
-        if output_adapter is not None:
-            if style:
-                # 共享 adapter + 样式：用 _StyledOutputAdapter 包装，
-                # 保留独立样式（如推理 dim）而不创建独立 Console
-                self._output = _StyledOutputAdapter(
-                    output_adapter, style=style,
-                )
-            else:
-                self._output = output_adapter
-            # 外部注入的 OutputAdapter — 如果 capture 列表已设则直接绑定
-            # （公开 captured_output 接口，非私有字段直达）
-            if captured_output is not None:
-                self._output.captured_output = captured_output
-        else:
-            console_config = get_safe_console_config()
-            if style:
-                console_config["style"] = style
-            if _file is not None:
-                console_config["file"] = _file
-            if width is not None:
-                console_config["width"] = width
-            console = Console(**console_config)
-            self._output = OutputAdapter(console, captured_output=captured_output)
-
-        self._parser = RecursiveDescentParser(ctx=self._ctx)
-        self._indicator = StreamingIndicator(self._output)
-
-        # 过滤器链：内置（渲染扩展注册表提供，可被禁用/替换）→ 扩展（插件注册）
-        self._pipeline = TokenPipeline()
-        from .extensions import builtin_filter_factories, filter_factories
-
-        for factory in builtin_filter_factories():
-            try:
-                self._pipeline.add_filter(factory())
-            except Exception:
-                _logger.warning("内置渲染过滤器装配失败: %r", factory, exc_info=True)
-
-        for factory in filter_factories():
-            try:
-                self._pipeline.add_filter(factory())
-            except Exception:
-                _logger.warning("扩展渲染过滤器注册失败: %r", factory, exc_info=True)
-
-        # 渲染引擎
-        self._engine = RenderEngine(
-            self._output, ctx=self._ctx,
-            code_theme=code_theme,
-        )
-
-        self._has_content = False
-        self._indicator_started = False
-        self._show_indicator = show_indicator
-        # 记录渲染开始时间（用于统计摘要）
-        self._ctx.start_time = time.monotonic()
-
-    def write(self, text: str):
-        if not text or self._closed:
-            return
-        if not self._indicator_started:
-            stripped = text.strip()
-            if stripped:
-                if self._show_indicator:
-                    self._indicator.start()
-                self._indicator_started = True
-
-        tokens = self._parser.feed(text)
-        tokens = self._pipeline.process(tokens, self._ctx)
-        for token in tokens:
-            if not self._has_content and token.type is not TokenType.EMPTY_LINE:
-                self._indicator.on_first_content()
-                self._has_content = True
-            self._engine.render(token)
-
-    # ── 捕获输出读取 ─────────────────────────────────
-
-    def get_captured_output(self) -> str:
-        """返回捕获的渲染后 ANSI 文本（累积所有 write/close 的渲染输出）。
-
-        Returns:
-            累积的 ANSI 字符串。未启用捕获时返回空字符串。
-        """
-        if self._captured_output_external is None:
-            return ""
-        return "".join(self._captured_output_external)
-
-    def clear_captured_output(self) -> None:
-        """清空捕获缓冲区。"""
-        if self._captured_output_external is not None:
-            self._captured_output_external.clear()
-
-    # ── 宽度刷新 ─────────────────────────────────────
-
-    def force_refresh_width(self) -> None:
-        """强制刷新内部 OutputAdapter 的终端宽度缓存。
-
-        供 resize 检测路径调用——终端大小变化后，渲染器内部的
-        OutputAdapter 宽度缓存需要立即失效，否则后续 Markdown
-        渲染（表格/标题/代码块等）将基于过时的宽度进行布局计算。
-        """
-        self._output.force_refresh_width()
-
-    def close(self):
-        if self._closed:
-            return
-        self._closed = True
-
-        # ★ 先停止指示器动画，再输出任何 flush 内容，
-        #   防止指示器光标（\r\033[K）在 flush 内容输出期间交叠覆盖。
-        self._indicator.stop()
-
-        # 刷出解析器缓冲区
-        tokens = self._parser.flush()
-        tokens = self._pipeline.process(tokens, self._ctx)
-
-        # ★ 关闭时 flush 的内容是完整的段落/代码块，即时渲染所有 flush token，
-        #   确保最后几个 token 在 close() 返回前已完全写入输出缓冲区。
-        for token in tokens:
-            # ★ close 阶段指示器已 stop，无需再检查 _indicator.on_first_content()
-            self._engine.render(token)
-
-        # ★ 确保 flush token 已物理写入 stdout（阶段结束时强制刷出）
-        self._output.flush()
-
-        # ★ 最终刷出 Todo 进度条（防止 flush 最后 token 是 LIST_ITEM 时进度条丢失）
-        self._engine.emit_todo_progress()
-
-        # 脚注
-        footnotes = self._engine.render_footnotes()
-        if footnotes:
-            for fn_text in footnotes:
-                self._output.write(fn_text)
-
-        # 引用链接列表
-        ref_map = getattr(self._ctx, 'ref_map', None)
-        if ref_map and len(ref_map) > 0:
-            try:
-                from rich.text import Text
-                from rich.style import Style
-                ref_text = Text("\n", style=Style(dim=True))
-                ref_text.append("🔗 引用链接\n", style=Style(bold=True, color="bright_cyan"))
-                ref_text.append(f"{'─' * self._output.width}\n", style=Style(dim=True))
-                for ref_id, (url, title) in sorted(ref_map.items()):
-                    line = f"  [{ref_id}] {url}"
-                    ref_text.append(line, style=Style(color="cyan", underline=True))
-                    if title:
-                        ref_text.append(f" \"{title}\"", style=Style(dim=True, italic=True))
-                    ref_text.append("\n")
-                self._output.write(ref_text)
-            except Exception:
-                _logger.debug("引用链接列表渲染异常", exc_info=True)
-
-        # ★ 问题7（位置修复）：目录仅由文档中的 [TOC] 标记触发（RenderEngine
-        #   已处理 TOC_MARKER），不再于 close() 时无条件追加到内容末尾——
-        #   与 AnsiStreamRenderer（TUI 路径）行为一致，避免每条消息末尾
-        #   突兀追加目录框。
-
-        # 渲染统计摘要（新特性）
-        if self._show_summary and self._ctx.token_count > 0:
-            try:
-                elapsed = time.monotonic() - self._ctx.start_time
-                summary = render_render_summary(
-                    self._ctx.metrics, self._ctx.token_count,
-                    elapsed, self._output.width,
-                )
-                if summary and summary.plain.strip():
-                    self._output.write(summary)
-            except Exception:
-                _logger.debug("渲染统计摘要异常", exc_info=True)
-
-        self._output.flush()
+def __dir__() -> list:
+    return sorted(set(globals()) | set(_LAZY_EXPORTS))

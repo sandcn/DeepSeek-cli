@@ -45,6 +45,12 @@ from ._layout_flex import (
     _compute_weight_shares,
     _reflow_row_justify,
 )
+# ★ 性能（渲染热路径）：host 注册表查询提升为模块级导入——修复前
+#   ``_measure_leaf_or_special``（每个 fiber 一次）在函数体内
+#   ``from .registry import get_host``，每次渲染帧执行上百次模块查找
+#   （``sys.modules`` 查询 + 属性绑定），成为布局阶段的可观测开销。
+#   ``registry`` 模块只依赖标准库（无循环导入风险）。
+from .registry import get_host
 
 _logger = logging.getLogger(__name__)
 
@@ -592,7 +598,6 @@ def _measure_leaf_or_special(
         return box
 
     # ── 自定义 host（注册表） ──
-    from .registry import get_host
     host = get_host(ftype)
     if host is not None:
         # ★ 性能（PERF-15）：静态行 host（static-lines/committed-chat）

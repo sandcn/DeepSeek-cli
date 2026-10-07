@@ -151,28 +151,31 @@ class TestCompletionShrinkCursor:
 
         修复前：补白 TEXT 实际 0 行 → 弹窗矮 1 行 → 光标偏下 1 行
         （「光标不会定位在输入框里，差一行」）。
+
+        ★ 2026-10-07（环境无关化）：帧绝对高度含**欢迎卡行数**（信息项「模型」
+        行仅在已配置模型时显示，空模型环境少 1 行）——原先硬编码 40 会在无
+        配置环境下误报。改为以放大态（20 项）帧高为基准断言「锁定高度 ⇒ 帧
+        等高」契约，语义更强且与环境无关。
         """
         t = _CompletionShrinkHarness()
         t.set_items(20)
-        t.render()
+        full = t.render()
         t.set_items(19)
         frame = t.render()
         # 高度锁定语义：补白 ≤ _LOCKED_PAD_LIMIT(3) 时弹窗高度保持 → 帧等高
-        # ★ 2026-10-07（欢迎屏卡片化）：欢迎卡 8 行 → 12 行（边框 2 + 信息卡 6 +
-        #   空行 1 + 引导 3），空状态帧高度快照 36 → 40。
         assert t.model.completion.locked_height == 22
-        assert frame.height == 40, "锁定高度下帧高度应保持（底部补白占行）"
+        assert frame.height == full.height, "锁定高度下帧高度应保持（底部补白占行）"
         assert t.cursor_vs_input_row() == 0, "光标应恰好在输入行（修复前差 1 行）"
 
     def test_shrink_three_items_cursor_on_input_row(self):
         """20 → 17 项（补白 3 行，锁定上限）：帧等高 + 光标在输入行。"""
         t = _CompletionShrinkHarness()
         t.set_items(20)
-        t.render()
+        full = t.render()
         t.set_items(17)
         frame = t.render()
         assert t.model.completion.locked_height == 22
-        assert frame.height == 40  # 2026-10-07：欢迎卡 12 行（29+11）
+        assert frame.height == full.height
         assert t.cursor_vs_input_row() == 0, "修复前差 3 行"
 
     def test_grow_then_shrink_sequence(self):
@@ -193,11 +196,12 @@ class TestCompletionShrinkCursor:
         """大幅缩小（20→2，补白 18 > 上限 3）：高度允许缩小到 need。"""
         t = _CompletionShrinkHarness()
         t.set_items(20)
-        t.render()
+        full = t.render()
         t.set_items(2)
         frame = t.render()
         assert t.model.completion.locked_height == 4  # 缩到 2+2
-        assert frame.height == 22  # 2026-10-07：欢迎卡 12 行（11+11）
+        # 弹窗高度 22 → 4（帧高按差值收缩，绝对高度含环境相关欢迎卡行数）
+        assert frame.height == full.height - 18
         assert t.cursor_vs_input_row() == 0
 
     def test_navigate_after_shrink_cursor_still_on_input(self):

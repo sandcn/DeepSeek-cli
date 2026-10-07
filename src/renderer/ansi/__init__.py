@@ -30,6 +30,49 @@ from src.renderer.types import TokenType, Token
 #: 历史行经 ``LinePreviewCache`` 前缀复用只渲染一次，不受此影响。
 _PREVIEW_MAX_LINE_CHARS = 4096
 
+#: 行内格式触发字符集合缓存（与 ``render_inline`` 的快路径判否同源——
+#: ``_InlineParser._FORMAT_CHARS``）。惰性初始化避免模块导入顺序耦合。
+_FORMAT_CHARS_CACHE: frozenset | None = None
+
+#: 空样式单例（纯文本段落行复用；``Style()`` 为不可变值对象，等价）。
+_EMPTY_STYLE = Style()
+
+
+def _format_chars() -> frozenset:
+    """行内格式触发字符集合（唯一真源 ``_InlineParser._FORMAT_CHARS``）。"""
+    global _FORMAT_CHARS_CACHE
+    if _FORMAT_CHARS_CACHE is None:
+        from src.renderer.inline_parser import _InlineParser
+
+        _FORMAT_CHARS_CACHE = frozenset(_InlineParser._FORMAT_CHARS)
+    return _FORMAT_CHARS_CACHE
+
+
+def _last_format_char_pos(text: str) -> int:
+    """``text`` 中最后一个行内格式触发字符的下标（无则 -1）。
+
+    实现对每个触发字符（24 个）做一次 C 级 ``str.rfind``——对短增量文本
+    （30Hz 下每次 write 的 delta）远快于逐字符 Python 循环。
+    """
+    pos = -1
+    for ch in _format_chars():
+        idx = text.rfind(ch)
+        if idx > pos:
+            pos = idx
+    return pos
+
+
+def _plain_paragraph_line(text: str) -> "AnsiLine":
+    """无行内触发字符的段落行（与 ``blocks.render_paragraph_line`` 快路径产出等价）。
+
+    ``render_inline`` 对不含触发字符的文本直接返回单 Run（``Run(text, Style())``），
+    故此处等价构造，省去每帧 O(窗口长度) 的 ``frozenset.isdisjoint`` 扫描。
+    仅在调用方**已验证**文本无触发字符时使用；空文本与常规路径一致返回空行。
+    """
+    if not text:
+        return AnsiLine()
+    return AnsiLine([Run(text, _EMPTY_STYLE)])
+
 __all__ = [
     "AnsiStreamRenderer",
     "AnsiRenderEngine",
@@ -112,6 +155,15 @@ class AnsiStreamRenderer:
         # 当前未闭合代码块已提交（分段刷出）的代码行数——预览据此跳过，
         # 避免与 committed 行重复显示（见 ``_note_committed_code``）。
         self._committed_code_lines = 0
+        # ★ 性能（超长活动行）：段落预览「窗口无行内触发字符」的增量判定状态。
+        #   ``_para_scan_text`` 为上次判定的未闭合段落文本（增量前缀比对基准），
+        #   ``_para_last_trigger`` 为其**最后一个行内触发字符的下标**（-1=无）。
+        #   由 ``_note_paragraph_format_chars`` 按 ``startswith`` 增量维护，
+        #   使「活动行窗口是否纯文本」判定 O(delta) 且只在 write 后更新一次，
+        #   替代原先每帧对 4096 字符窗口重复 ``frozenset.isdisjoint`` 的 O(窗口)
+        #   扫描（超长纯文本段落流式预览的主要开销）。
+        self._para_scan_text = ""
+        self._para_last_trigger = -1
 
     def set_width(self, width: int) -> None:
         """更新终端宽度（TOC 边框 + 表格宽度自适应用）。"""
@@ -222,6 +274,10 @@ class AnsiStreamRenderer:
         self._reset_code_preview_cache()
         self._table_preview_cache.reset()
         self._para_boundary.reset()
+        # 段落切换：重置活动行触发字符增量状态（下次全量重扫；不重置亦正确，
+        # 但可省一次长字符串前缀比较）。
+        self._para_scan_text = ""
+        self._para_last_trigger = -1
         for cache in self._line_preview_caches.values():
             cache.reset()
 
@@ -286,13 +342,26 @@ class AnsiStreamRenderer:
         ★ 性能：修复前多行段落只要含任一「行内标记起始字符」就整段解析，
         长段落流式每帧 O(整段) 重解析（累计 O(n²)）。现常见段落（行内标记均
         行内闭合）只增量渲染新增行。
+
+        ★ 性能（超长单行活动行，2026-10-07）：单行段落（无 ``\\n``）走
+        ``_render_paragraph_lines`` → ``render_paragraph_line`` → ``render_inline``，
+        后者即使对**纯文本**也要对整段窗口做一次 ``frozenset.isdisjoint`` 扫描
+        （4096 字符窗口 ≈ 0.11ms/帧，累计可观）。现经
+        ``_note_paragraph_format_chars`` 增量维护「段落中最后一个行内触发字符
+        位置」，窗口内无触发字符时直接等价构造单 Run 行（``_plain_paragraph_line``），
+        判定 O(增量 delta) 且只在 write 后更新一次，与 ``render_inline`` 的
+        快路径产出完全一致（同一触发字符集合、同一 base 样式）。
         """
         from . import blocks as _blocks
         content = token.content or ""
+        self._note_paragraph_format_chars(content)
         src = self._preview_src_lines(content)
         if len(src) <= 1:
             # 单行段落无跨行配对 → 直接行级渲染
-            rows = self._render_paragraph_lines(src)
+            if src and self._plain_active_window(content):
+                rows = [_plain_paragraph_line(src[0])]
+            else:
+                rows = self._render_paragraph_lines(src)
         else:
             cut = min(self._para_boundary.stable_line_count(content),
                       len(src) - 1)
@@ -326,6 +395,40 @@ class AnsiStreamRenderer:
             ("paragraph",), src,
             lambda text: [_blocks.render_paragraph_line(text)],
         )
+
+    def _note_paragraph_format_chars(self, content: str) -> None:
+        """增量维护「未闭合段落文本中最后一个行内触发字符的位置」。
+
+        流式只追加：``content`` 通常以上次文本为前缀，仅需扫描新增 ``delta``；
+        前缀关系不成立（解析器重建缓冲 / 段落切换）时全量重扫。状态供
+        ``_plain_active_window`` O(1) 判定「活动行窗口是否纯文本」。
+        """
+        prev = self._para_scan_text
+        if content is prev:
+            return
+        if prev and content.startswith(prev):
+            delta = content[len(prev):]
+            if delta:
+                idx = _last_format_char_pos(delta)
+                if idx >= 0:
+                    self._para_last_trigger = len(prev) + idx
+        else:
+            self._para_last_trigger = _last_format_char_pos(content)
+        self._para_scan_text = content
+
+    def _plain_active_window(self, content: str) -> bool:
+        """活动行渲染窗口是否不含任何行内格式触发字符（O(1) 判定）。
+
+        窗口与 ``_preview_src_lines`` 的口径一致：整段（``len <= 上限``）或
+        尾部 ``_PREVIEW_MAX_LINE_CHARS`` 字符。判定依赖
+        ``_note_paragraph_format_chars`` 维护的「最后一个触发字符位置」——
+        与 ``render_inline`` 的快路径判否使用**同一**字符集合，故判定为真时
+        单 Run 快路径必然命中，产出与常规渲染完全一致。
+        """
+        n = len(content)
+        if n <= _PREVIEW_MAX_LINE_CHARS:
+            return self._para_last_trigger < 0
+        return self._para_last_trigger < n - _PREVIEW_MAX_LINE_CHARS
 
     @staticmethod
     def _omitted_line(dropped: int) -> AnsiLine:

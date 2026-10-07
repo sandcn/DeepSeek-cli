@@ -15,9 +15,13 @@ from typing import Union
 # 颜色值：256 色号（int）或 (r,g,b) 24-bit 三元组
 ColorValue = Union[int, tuple[int, int, int]]
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Style:
-    """不可变样式描述器。"""
+    """不可变样式描述器。
+
+    ★ 内存：``slots=True``（无实例 ``__dict__``）——样式对象在长会话的每行
+    run 上被大量引用/构造，省下的每实例字典开销可观测。
+    """
 
     fg: ColorValue | None = None
     bg: ColorValue | None = None
