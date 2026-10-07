@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 from .helpers import Run, AnsiLine, wrap_line, truncate_line, ansi_to_line
+from .style import Style
+from .inline import render_inline, use_render_context
 from .engine import AnsiRenderEngine
 from ._preview_cache import LinePreviewCache
 from .table import TablePreviewCache
@@ -78,12 +80,12 @@ class AnsiStreamRenderer:
                 _logging.getLogger(__name__).warning(
                     "扩展 ANSI 渲染过滤器注册失败: %r", _factory, exc_info=True
                 )
-        self._engine = AnsiRenderEngine(code_theme=code_theme, width=width)
+        self._engine = AnsiRenderEngine(code_theme=code_theme, width=width, ctx=self._ctx)
         self._code_theme = code_theme
         # ★ 流式预览：未闭合块（段落/代码块/表格/引用等）每次 write 后整块
         #   重渲染为预览行。使用**独立引擎实例**——预览渲染不污染主引擎的
         #   流式缓冲状态（引用/告示/代码等的 OPEN-LINE 缓冲）。
-        self._preview_engine = AnsiRenderEngine(code_theme=code_theme, width=width)
+        self._preview_engine = AnsiRenderEngine(code_theme=code_theme, width=width, ctx=self._ctx)
         self._preview_lines: list[AnsiLine] = []
         # ★ 代码块预览增量高亮缓存（键 = (lang, theme/skip)；流式只追加时仅
         #   渲染新增行，显示侧再按 _PREVIEW_MAX_LINES 截断并给出省略提示）。
@@ -157,7 +159,8 @@ class AnsiStreamRenderer:
         if not toc:
             return []
         from .toc import render_toc
-        return list(render_toc(toc, self._width))
+        with use_render_context(self._ctx):
+            return list(render_toc(toc, self._width))
 
     def _refresh_preview(self) -> None:
         """刷新未闭合块预览行（独立引擎，互不污染）。
@@ -170,6 +173,10 @@ class AnsiStreamRenderer:
         消除长块流式期间每帧 O(预览行数) 的重复开销。其余 token 由独立预览
         引擎渲染（引擎状态隔离，不污染主引擎）。
         """
+        with use_render_context(self._ctx):
+            self._refresh_preview_impl()
+
+    def _refresh_preview_impl(self) -> None:
         try:
             ptokens = self._parser.peek_pending()
         except Exception:
@@ -286,7 +293,10 @@ class AnsiStreamRenderer:
         return rows
 
     #: 行内标记起始字符——多行段落含任一即整段解析（跨行标记可能配对）
-    _INLINE_MARKER_CHARS = ("*", "_", "`", "~", "[", "<")
+    #: 行内标记起始字符——多行段落含任一即整段解析（跨行标记可能配对）。
+    #: 覆盖全部可跨软换行配对的定界符（含新增语法：高亮/上下标/下划线/
+    #: 剧透/数学/着色容器/行内注释）；不含 emoji/URL/邮箱等不会跨行的触发符。
+    _INLINE_MARKER_CHARS = ("*", "_", "`", "~", "[", "<", "=", "^", "+", "|", "$", "{", "%")
 
     @classmethod
     def _paragraph_needs_multiline_inline(cls, src_lines: list) -> bool:
@@ -485,9 +495,58 @@ class AnsiStreamRenderer:
                     self._lines.extend(self._render_toc())
                     continue
                 self._lines.extend(self._engine.render(token))
+            # ★ 文档尾附录：脚注定义列表 + 参考式链接列表（与 Rich 路径同源语义）。
+            #   仅当文档实际定义过脚注 / 参考链接时才输出（无定义零额外行）。
+            self._lines.extend(self._render_footnotes())
+            self._lines.extend(self._render_ref_links())
         finally:
             self._engine.reset()
             self._clear_preview()
+
+    # ── 文末附录（脚注 / 参考链接） ───────────────────
+
+    def _render_footnotes(self) -> list[AnsiLine]:
+        """渲染脚注定义列表（按引用顺序，未引用者按字母序排末尾）。"""
+        fn_map = getattr(self._ctx, "fn_map", None)
+        if not fn_map:
+            return []
+        fn_order = list(getattr(self._ctx, "fn_order", ()) or ())
+        ordered = [r for r in fn_order if r in fn_map]
+        ordered.extend(sorted(set(fn_map.keys()) - set(ordered)))
+        lines: list[AnsiLine] = [
+            AnsiLine.of("\u2500" * max(1, self._width), Style(fg=240)),
+        ]
+        for i, ref_id in enumerate(ordered, 1):
+            content = fn_map.get(ref_id)
+            if content is None:
+                continue
+            line = AnsiLine.of(f"  [{i}] ", Style(fg=45))
+            for run in render_inline(content, ctx=self._ctx):
+                line.append_run(run)
+            line.append(" \u21a9", Style(fg=45, dim=True))
+            lines.append(line)
+        return lines
+
+    def _render_ref_links(self) -> list[AnsiLine]:
+        """渲染参考式链接定义列表（``[id]: url "title"``）。"""
+        ref_map = getattr(self._ctx, "ref_map", None)
+        if not ref_map:
+            return []
+        lines: list[AnsiLine] = [
+            AnsiLine.of(""),
+            AnsiLine.of("\U0001f517 \u5f15\u7528\u94fe\u63a5", Style(fg=45, bold=True)),
+            AnsiLine.of("\u2500" * max(1, self._width), Style(fg=240)),
+        ]
+        for ref_id, pair in sorted(ref_map.items()):
+            try:
+                url, title = pair
+            except (TypeError, ValueError):
+                url, title = pair, ""
+            line = AnsiLine.of(f"  [{ref_id}] {url}", Style(fg=45, underline=True))
+            if title:
+                line.append(f' "{title}"', Style(fg=240, italic=True))
+            lines.append(line)
+        return lines
 
     def take_lines(self) -> list[AnsiLine]:
         """取出全部已渲染行（消费缓冲）。

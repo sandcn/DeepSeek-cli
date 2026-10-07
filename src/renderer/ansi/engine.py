@@ -16,6 +16,7 @@ from . import code as _code
 from . import math as _math
 from . import mermaid as _mermaid
 from .helpers import AnsiLine
+from .inline import use_render_context
 
 _logger = logging.getLogger(__name__)
 
@@ -28,9 +29,11 @@ class AnsiRenderEngine:
         width: 终端宽度（表格宽度自适应；可由 set_width 更新）。
     """
 
-    def __init__(self, code_theme: str = "monokai", width: int = 80):
+    def __init__(self, code_theme: str = "monokai", width: int = 80, ctx=None):
         self._code_theme = code_theme
         self._width = width
+        #: 渲染上下文（脚注编号 / 参考式链接 / 缩写替换；None 时按无上下文渲染）
+        self._ctx = ctx
         self._reset_state()
 
     def set_width(self, width: int) -> None:
@@ -57,6 +60,11 @@ class AnsiRenderEngine:
     # ── 主入口 ──────────────────────────────────────
 
     def render(self, token: Token) -> list[AnsiLine]:
+        """渲染单个 token（在渲染上下文中，供脚注/参考链接/缩写解析）。"""
+        with use_render_context(self._ctx):
+            return self._render_impl(token)
+
+    def _render_impl(self, token: Token) -> list[AnsiLine]:
         """渲染单个 token 为 AnsiLine 列表（含流式缓冲副作用）。"""
         t = token.type
         try:

@@ -1,42 +1,100 @@
-"""行内格式 — 粗体/斜体/行内码/链接 → Run 序列。
+"""行内格式 — 复用递归下降内联解析器（``_InlineParser``）→ Run 序列。
 
-轻量行内 Markdown 解析器（Rich-free），支持：
-  **bold** / __bold__
-  *italic* / _italic_
-  `code`
-  ~~strike~~
-  [text](url)
-  <https://link>（简单链接化）
+统一真源：与 Rich 路径共用 ``src.renderer.inline_parser._InlineParser``
+（字符级递归下降、无正则），解析结果（InlineNode 树）经本模块的节点渲染
+调度表转换为 ANSI ``Run`` 列表。新增内联语法只需扩展解析器 + 本节点表，
+两条渲染路径自动同步（开闭原则）。
 
-解析失败时原样返回纯文本（兜底不丢内容）。
+支持的内联语法（与 Rich 路径同源）：
+  粗体 ``**x**`` / ``__x__``、斜体 ``*x*`` / ``_x_``、粗斜体 ``***x***``、
+  行内码 ``` `x` ```、删除线 ``~~x~~``、高亮 ``==x==``、上标 ``^x^``、
+  下标 ``~x~``、下划线 ``++x++``、剧透 ``||x||``、链接 ``[t](url)``、
+  参考式链接 ``[t][ref]``、图片 ``![alt](url)``、自动链接 ``<url>``、
+  邮箱 ``<a@b.com>`` / 裸邮箱、脚注引用 ``[^id]``、行内数学 ``$x$`` /
+  ``\\(x\\)``、Emoji ``:name:``、反斜杠转义、``<br>`` 硬换行、
+  维基链接 ``[[page]]``、CriticMarkup ``{-- --}{++ ++}{~~ ~> ~~}{>> <<}``、
+  小字 ``{-x-}``、着色 ``{color:red}x{color}``、行内注释 ``%%x%%``、
+  HTML 标签/注释/实体、缩写定义 ``*[ABBR]: ...`` 自动替换。
 
-性能契约（超长单行）：普通文本段落用 ``str.find``（C 级）一次定位下一个
-行内标记起点后整体切片，不逐字符累积——修复前 ``buf += c`` 逐字符拼接使
-**单行**解析退化为 O(n²)（流式预览对活动行逐帧重解析，超长行每帧数十毫秒）。
+性能契约（超长单行）：纯文本（不含任何格式触发字符）经 C 级
+``frozenset.isdisjoint`` 直接返回单 Run，不进入解析器；解析器自身对普通
+文本段用位置缓存 + ``str.find`` 批量跳转（非逐字符累积）。
 """
 
 from __future__ import annotations
 
+from contextvars import ContextVar
+
 from .style import Style
 from .helpers import Run
+from src.presentation_data import LiveMapping
 
 
-# ── 行内语法标记 ──────────────────────────────────────────
-_BOLD = ("**", "__")
-_ITALIC = ("*", "_")
-_CODE = "`"
-_STRIKE = "~~"
+# ═══════════════════════════════════════════════════════════
+# 渲染上下文（脚注编号 / 参考式链接 / 缩写替换）
+# ═══════════════════════════════════════════════════════════
+#
+# 内联渲染深嵌在块级调用链中（engine → blocks → inline），逐层透传 ``ctx``
+# 会污染所有中间函数签名并破坏既有调用契约。改用 ``ContextVar`` 承载当前
+# 渲染上下文：渲染入口（``AnsiRenderEngine.render`` / 预览刷新）设置一次，
+# 内部所有 ``render_inline`` 调用自动取用；显式传入的 ``ctx`` 参数优先。
+_RENDER_CTX: ContextVar = ContextVar("ansi_render_ctx", default=None)
 
-#: 会中断普通文本累积的标记首字符。``~`` 不单列——只有连续 ``~~`` 构成
-#: 删除线，故按子串定位（单 ``~`` 属普通文本）。
-_PLAIN_STOP_CHARS = ("*", "_", "`", "[", "<")
 
-# ── 行内样式常量（避免每个 run 重建 frozen dataclass） ──
+class _RenderContextScope:
+    """``use_render_context`` 的上下文管理器（栈式 set/reset）。"""
+
+    __slots__ = ("_token",)
+
+    def __init__(self, ctx) -> None:
+        self._token = _RENDER_CTX.set(ctx)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        _RENDER_CTX.reset(self._token)
+        return False
+
+
+def use_render_context(ctx) -> "_RenderContextScope":
+    """在 ``with`` 块内设置当前渲染上下文（返回栈式作用域）。"""
+    return _RenderContextScope(ctx)
+
+
+def current_render_context():
+    """当前渲染上下文（未设置时为 None）。"""
+    return _RENDER_CTX.get()
+
+
+# ═══════════════════════════════════════════════════════════
+# 行内样式常量（避免每个 run 重建 frozen dataclass）
+# ═══════════════════════════════════════════════════════════
 _STYLE_CODE = Style(fg=46, bold=True)
 _STYLE_BOLD = Style(bold=True)
 _STYLE_ITALIC = Style(italic=True)
-_STRIKE_STYLE = Style(dim=True)
+_STYLE_BOLD_ITALIC = Style(bold=True, italic=True)
+_STYLE_UNDERLINE = Style(underline=True)
+_STYLE_STRIKE = Style(dim=True)
+_STYLE_HIGHLIGHT = Style(bg=11, fg=0, bold=True)
+_STYLE_SPOILER = Style(fg=240, dim=True)
+_STYLE_SUB = Style(dim=True, italic=True)
+_STYLE_SUP = Style(fg=45, italic=True)
+_STYLE_MATH = Style(fg=213, italic=True)
 _STYLE_LINK = Style(fg=45, underline=True)
+_STYLE_EMAIL = Style(fg=45, underline=True, italic=True)
+_STYLE_FOOTNOTE = Style(fg=45, bold=True, italic=True)
+_STYLE_KBD = Style(fg=231, bg=240, bold=True)
+_STYLE_ABBR = Style(fg=220, underline=True, italic=True)
+_STYLE_CRIT_ADD = Style(fg=40, bg=22, bold=True)
+_STYLE_CRIT_DEL = Style(fg=203, dim=True)
+_STYLE_SMALL = Style(dim=True, italic=True)
+_STYLE_WIKI = Style(fg=201, underline=True)
+_STYLE_COMMENT = Style(fg=240, dim=True, italic=True)
+_STYLE_IMAGE = Style(fg=201, dim=True)
+
+#: 最大递归深度（与解析器同量级，防异常嵌套 RecursionError）
+_MAX_DEPTH = 32
 
 #: ``base.merge(style)`` 结果缓存：``base`` 取值集合有限（默认样式 / 标题 /
 #: 表格单元格等），缓存后同一基础样式的合并结果跨帧复用（免每次构造 frozen
@@ -57,137 +115,351 @@ def _merge(base: Style, style: Style) -> Style:
     return merged
 
 
-#: 行内标记字符（用于「子串是否需要递归解析」的快速判否）
-_MARKER_CHARS = ("*", "_", "`", "[", "<")
+#: 颜色名 → 256 色号（``{color:NAME}`` 着色语法；与解析器白名单一致）
+_COLOR_TO_256: dict[str, int] = {
+    "red": 196, "green": 40, "blue": 33, "yellow": 220,
+    "cyan": 44, "magenta": 201, "white": 231, "black": 0,
+    "grey30": 240, "grey50": 244,
+    "bright_red": 203, "bright_green": 84, "bright_blue": 75,
+    "bright_yellow": 227, "bright_cyan": 87, "bright_magenta": 213,
+    "bright_white": 231, "orange1": 214, "purple": 93, "pink1": 213,
+}
+
+#: Unicode 上下标映射（真源 == 表现层数据注册表；缺失时回退样式文本）
+_SUB_SCRIPT_MAP = LiveMapping("inline_subscript")
+_SUPER_SCRIPT_MAP = LiveMapping("inline_superscript")
 
 
-def _has_inline_marker(text: str) -> bool:
-    """文本是否可能含行内标记（快速判否，C 级子串搜索）。"""
-    if "~~" in text:
-        return True
-    for ch in _MARKER_CHARS:
-        if ch in text:
-            return True
-    return False
+def _append(out: list[Run], text: str, style: Style | None) -> None:
+    """追加 Run 并合并相邻同样式段（输出紧凑 + 宽度缓存友好）。"""
+    if not text:
+        return
+    if out and out[-1].style == style:
+        out[-1] = Run(out[-1].text + text, style)
+        return
+    out.append(Run(text, style))
 
 
-#: 参与「下一个特殊标记」定位的搜索项（顺序与位置缓存下标对应）。
-_SCAN_TERMS = _PLAIN_STOP_CHARS + (_STRIKE,)
+# ═══════════════════════════════════════════════════════════
+# 节点 → Run 渲染
+# ═══════════════════════════════════════════════════════════
 
 
-def _render_inline_impl(text: str, base: Style) -> list[Run]:
-    """递归解析行内语法为 Run 序列。
+def _emit_nodes(nodes, base: Style, ctx, out: list[Run], depth: int) -> None:
+    """渲染 InlineNode 列表为 Run（按顺序追加）。"""
+    for node in nodes or ():
+        _emit_node(node, base, ctx, out, depth)
 
-    普通文本段用**单调前进的位置缓存 + C 级 ``str.find``** 定位下一个特殊
-    标记，再整体切片追加 run——修复前逐字符 ``buf += c`` 使单行解析退化为
-    O(n²)；仅「每个标记各 find 一次」后走缓存，超长纯文本段落成本 O(n) 且
-    常数极小。
-    """
-    runs: list[Run] = []
-    i = 0
+
+def _node_children(node):
+    """取可嵌套节点的子节点列表（叶子节点返回 None）。"""
+    children = getattr(node, "children", None)
+    return children if children else None
+
+
+def _emit_children(node, base: Style, ctx, out: list[Run], depth: int) -> None:
+    children = _node_children(node)
+    if children:
+        _emit_nodes(children, base, ctx, out, depth + 1)
+    elif getattr(node, "content", ""):
+        _append(out, node.content, base)
+
+
+def _emit_text(node, base, ctx, out, depth):
+    text = node.content or ""
+    abbr_map = getattr(ctx, "abbr_map", None) if ctx is not None else None
+    if text and abbr_map:
+        _emit_text_with_abbr(text, base, abbr_map, out)
+    else:
+        _append(out, text, base)
+
+
+def _emit_text_with_abbr(text: str, base: Style, abbr_map: dict, out: list[Run]) -> None:
+    """纯文本按缩写定义拆分（命中词加高亮样式，其余保持 base）。"""
     n = len(text)
-    # 每个搜索项「下一次出现位置」缓存：扫描位置单调前进，同一标记在整段
-    # 文本中只做一次 find（缺失的标记 -1 永久缓存，避免反复全段扫描）。
-    scan_pos: list[int] = [-2] * len(_SCAN_TERMS)
+    i = 0
     while i < n:
-        # 普通文本批量跳转：一次定位 + 切片（不再逐字符累积）
-        best = n
-        for t_idx, term in enumerate(_SCAN_TERMS):
-            k = scan_pos[t_idx]
-            if k == -2 or (k >= 0 and k < i):
-                k = text.find(term, i)
-                scan_pos[t_idx] = k
-            if 0 <= k < best:
-                best = k
-        j = best
-        if j > i:
-            runs.append(Run(text[i:j], base))
-            i = j
-            if i >= n:
-                break
         ch = text[i]
-        # 行内代码 `code`
-        if ch == _CODE:
-            end = text.find(_CODE, i + 1)
-            if end != -1:
-                runs.append(Run(text[i + 1:end], _merge(base, _STYLE_CODE)))
-                i = end + 1
-                continue
-        # 粗体 ** / __（仅当首字符为 * 或 _ 时才可能成立）
-        elif ch == "*" or ch == "_":
-            if text.startswith(ch + ch, i):
-                end = text.find(ch + ch, i + 2)
-                if end != -1:
-                    inner = text[i + 2:end]
-                    merged = _merge(base, _STYLE_BOLD)
-                    # 快路径：内容不含行内标记 → 直接产出单 run（免一次递归）
-                    if _has_inline_marker(inner):
-                        runs.extend(_render_inline_impl(inner, merged))
-                    else:
-                        runs.append(Run(inner, merged))
-                    i = end + 2
-                    continue
-                # 未闭合：原样输出标记（修复前落到单 `*` 分支吞掉第二个字符，
-                # 流式未完成标记会显示成 `*text` 而非 `**text`）
-                runs.append(Run(ch + ch, base))
-                i += 2
-                continue
-            # 避免与粗体混淆：`*` 后跟 `*` 的跳过（已在粗体分支处理）
-            if i + 1 < n and text[i + 1] == ch:
-                i += 1
-                continue
-            # 斜体 * / _
-            end = text.find(ch, i + 1)
-            if end != -1:
-                inner = text[i + 1:end]
-                merged = _merge(base, _STYLE_ITALIC)
-                if _has_inline_marker(inner):
-                    runs.extend(_render_inline_impl(inner, merged))
-                else:
-                    runs.append(Run(inner, merged))
-                i = end + 1
-                continue
-        # 删除线 ~~
-        elif ch == "~":
-            end = text.find(_STRIKE, i + 2)
-            if end != -1:
-                runs.append(Run(text[i + 2:end], _merge(base, _STRIKE_STYLE)))
-                i = end + 2
-                continue
-            # 未闭合：原样输出标记（同上）
-            runs.append(Run(_STRIKE, base))
-            i += 2
+        if not ch.isalnum():
+            _append(out, ch, base)
+            i += 1
             continue
-        # 链接 [text](url)
-        elif ch == "[":
-            close_bracket = text.find("]", i + 1)
-            if close_bracket != -1 and close_bracket + 1 < n and text[close_bracket + 1] == "(":
-                close_paren = text.find(")", close_bracket + 2)
-                if close_paren != -1:
-                    runs.append(Run(
-                        text[i + 1:close_bracket],
-                        _merge(base, _STYLE_LINK),
-                    ))
-                    i = close_paren + 1
-                    continue
-        # 裸链接 <url>
-        elif ch == "<":
-            end = text.find(">", i + 1)
-            if end != -1 and ("://" in text[i + 1:end] or text[i + 1:end].startswith("mailto:")):
-                runs.append(Run(text[i + 1:end], _merge(base, _STYLE_LINK)))
-                i = end + 1
-                continue
-        runs.append(Run(ch, base))
-        i += 1
-    return runs
+        start = i
+        while i < n and text[i].isalnum():
+            i += 1
+        word = text[start:i]
+        if word.upper() in abbr_map:
+            _append(out, word, _merge(base, _STYLE_ABBR))
+        else:
+            _append(out, word, base)
 
 
-def render_inline(text: str, base_style: Style | None = None) -> list[Run]:
+def _emit_bold(node, base, ctx, out, depth):
+    _emit_children(node, _merge(base, _STYLE_BOLD), ctx, out, depth)
+
+
+def _emit_italic(node, base, ctx, out, depth):
+    _emit_children(node, _merge(base, _STYLE_ITALIC), ctx, out, depth)
+
+
+def _emit_bold_italic(node, base, ctx, out, depth):
+    _emit_children(node, _merge(base, _STYLE_BOLD_ITALIC), ctx, out, depth)
+
+
+def _emit_underline(node, base, ctx, out, depth):
+    _emit_children(node, _merge(base, _STYLE_UNDERLINE), ctx, out, depth)
+
+
+def _emit_strike(node, base, ctx, out, depth):
+    _emit_children(node, _merge(base, _STYLE_STRIKE), ctx, out, depth)
+
+
+def _emit_highlight(node, base, ctx, out, depth):
+    _emit_children(node, _merge(base, _STYLE_HIGHLIGHT), ctx, out, depth)
+
+
+def _emit_spoiler(node, base, ctx, out, depth):
+    """剧透：用 █ 掩码替换可见字符（空白保留），不显示真实内容。"""
+    from src.renderer.inline_nodes import render_inline_to_text
+    children = _node_children(node)
+    text = render_inline_to_text(children) if children else (node.content or "")
+    masked = "".join("█" if not c.isspace() else c for c in text)
+    _append(out, masked, _merge(base, _STYLE_SPOILER))
+
+
+def _emit_code(node, base, ctx, out, depth):
+    _append(out, node.content or "", _merge(base, _STYLE_CODE))
+
+
+def _emit_kbd(node, base, ctx, out, depth):
+    _append(out, f"⌨{node.content or ''}", _merge(base, _STYLE_KBD))
+
+
+def _emit_abbr(node, base, ctx, out, depth):
+    _append(out, node.content or "", _merge(base, _STYLE_ABBR))
+    title = getattr(node, "title", "")
+    if title:
+        _append(out, f" ({title})", _merge(base, _STYLE_COMMENT))
+
+
+def _emit_link(node, base, ctx, out, depth):
+    url = getattr(node, "url", "") or ""
+    children = _node_children(node)
+    if url.startswith("[ref:") and ctx is not None:
+        ref_id = url[5:-1]
+        ref_map = getattr(ctx, "ref_map", None) or {}
+        resolved = ref_map.get(ref_id)
+        if resolved:
+            actual_url, title = resolved
+            _emit_children(node, _merge(base, _STYLE_LINK), ctx, out, depth)
+            keys = list(ref_map.keys())
+            idx = keys.index(ref_id) + 1
+            digits = circled_digits()
+            circled = digits[idx - 1] if idx <= len(digits) else f"[{idx}]"
+            _append(out, f" {circled}", _merge(base, _STYLE_COMMENT))
+            _append(out, f" ({actual_url})", _merge(base, _STYLE_COMMENT))
+            if title:
+                _append(out, f' "{title}"', _merge(base, _STYLE_COMMENT))
+            return
+        _emit_children(node, _merge(base, _STYLE_ABBR), ctx, out, depth)
+        _append(out, f"[?{ref_id}]", _merge(base, _STYLE_COMMENT))
+        return
+    _emit_children(node, _merge(base, _STYLE_LINK), ctx, out, depth)
+    title = getattr(node, "title", "")
+    if title:
+        _append(out, f' "{title}"', _merge(base, _STYLE_COMMENT))
+
+
+def _emit_image(node, base, ctx, out, depth):
+    url = getattr(node, "url", "") or ""
+    shown = url[:50] + "..." if len(url) > 50 else url
+    dim = ""
+    w = node.meta.get("width", 0)
+    h = node.meta.get("height", 0)
+    if w and h:
+        dim = f" ={w}x{h}"
+    alt = node.content or "image"
+    title = getattr(node, "title", "")
+    title_text = f' "{title}"' if title else ""
+    _append(out, f"🖼️ {alt} ({shown}{dim}){title_text}", _merge(base, _STYLE_IMAGE))
+
+
+def _emit_math(node, base, ctx, out, depth):
+    _append(out, node.content or "", _merge(base, _STYLE_MATH))
+
+
+def _emit_footnote(node, base, ctx, out, depth):
+    ref_id = getattr(node, "ref_id", "")
+    if ctx is not None:
+        fn_order = getattr(ctx, "fn_order", None)
+        if fn_order is not None:
+            if ref_id not in fn_order:
+                fn_order.append(ref_id)
+            num = fn_order.index(ref_id) + 1
+        else:
+            num = 0
+        _append(out, f"[{num}]", _merge(base, _STYLE_FOOTNOTE))
+    else:
+        _append(out, f"[^{ref_id}]", _merge(base, _STYLE_FOOTNOTE))
+
+
+def _emit_autolink(node, base, ctx, out, depth):
+    _append(out, node.content or "", _merge(base, _STYLE_LINK))
+
+
+def _emit_autolink_email(node, base, ctx, out, depth):
+    _append(out, node.content or "", _merge(base, _STYLE_EMAIL))
+
+
+def _emit_line_break(node, base, ctx, out, depth):
+    _append(out, "\n", base)
+
+
+def _emit_wikilink(node, base, ctx, out, depth):
+    _append(out, node.display or node.target or "", _merge(base, _STYLE_WIKI))
+
+
+def _emit_inline_comment(node, base, ctx, out, depth):
+    _append(out, node.content or "", _merge(base, _STYLE_COMMENT))
+
+
+def _emit_critic_addition(node, base, ctx, out, depth):
+    _emit_children(node, _merge(base, _STYLE_CRIT_ADD), ctx, out, depth)
+
+
+def _emit_critic_deletion(node, base, ctx, out, depth):
+    _emit_children(node, _merge(base, _STYLE_CRIT_DEL), ctx, out, depth)
+
+
+def _emit_critic_comment(node, base, ctx, out, depth):
+    _append(out, "┌[批注]", _merge(base, _STYLE_ABBR))
+    _emit_children(node, _merge(base, _STYLE_COMMENT), ctx, out, depth)
+    _append(out, "┘", _merge(base, _STYLE_ABBR))
+
+
+def _emit_critic_substitution(node, base, ctx, out, depth):
+    _emit_children(node, _merge(base, _STYLE_CRIT_DEL), ctx, out, depth)
+    _append(out, " → ", _merge(base, _STYLE_BOLD))
+    new_children = node.meta.get("new_children") if node.meta else None
+    if new_children:
+        _emit_nodes(new_children, _merge(base, _STYLE_CRIT_ADD), ctx, out, depth + 1)
+
+
+def _emit_small(node, base, ctx, out, depth):
+    _emit_children(node, _merge(base, _STYLE_SMALL), ctx, out, depth)
+
+
+def _emit_color(node, base, ctx, out, depth):
+    color = _COLOR_TO_256.get((getattr(node, "color", "") or "").lower(), 231)
+    _emit_children(node, _merge(base, Style(fg=color, bold=True)), ctx, out, depth)
+
+
+def _emit_subscript(node, base, ctx, out, depth):
+    _emit_script(node, base, ctx, out, depth, _SUB_SCRIPT_MAP, _STYLE_SUB)
+
+
+def _emit_superscript(node, base, ctx, out, depth):
+    _emit_script(node, base, ctx, out, depth, _SUPER_SCRIPT_MAP, _STYLE_SUP)
+
+
+def _emit_script(node, base, ctx, out, depth, unicode_map, fallback_style):
+    """上下标：全部字符可 Unicode 转换时用 Unicode，否则回退样式文本。"""
+    from src.renderer.inline_nodes import render_inline_to_text
+    children = _node_children(node)
+    if children:
+        plain = render_inline_to_text(children)
+    else:
+        plain = node.content or ""
+    if plain and all(ch in unicode_map or ch.isspace() for ch in plain):
+        converted = "".join(unicode_map.get(ch, ch) for ch in plain)
+        _append(out, converted, _merge(base, fallback_style))
+        return
+    if children:
+        _emit_children(node, _merge(base, fallback_style), ctx, out, depth)
+    else:
+        _append(out, plain, _merge(base, fallback_style))
+
+
+# ── 节点类型 → 渲染函数调度表（模块加载时一次性构建） ──
+_DISPATCH: dict = {}
+
+
+def _build_dispatch() -> dict:
+    from src.renderer import inline_nodes as N
+
+    d = {
+        N.TextNode: _emit_text,
+        N.BoldNode: _emit_bold,
+        N.ItalicNode: _emit_italic,
+        N.BoldItalicNode: _emit_bold_italic,
+        N.UnderlineNode: _emit_underline,
+        N.StrikethroughNode: _emit_strike,
+        N.HighlightNode: _emit_highlight,
+        N.SpoilerNode: _emit_spoiler,
+        N.InlineCodeNode: _emit_code,
+        N.KbdNode: _emit_kbd,
+        N.AbbrNode: _emit_abbr,
+        N.LinkNode: _emit_link,
+        N.ImageNode: _emit_image,
+        N.InlineMathNode: _emit_math,
+        N.FootnoteRefNode: _emit_footnote,
+        N.AutoLinkNode: _emit_autolink,
+        N.AutoLinkEmailNode: _emit_autolink_email,
+        N.LineBreakNode: _emit_line_break,
+        N.WikiLinkNode: _emit_wikilink,
+        N.InlineCommentNode: _emit_inline_comment,
+        N.CriticAdditionNode: _emit_critic_addition,
+        N.CriticDeletionNode: _emit_critic_deletion,
+        N.CriticCommentNode: _emit_critic_comment,
+        N.CriticSubstitutionNode: _emit_critic_substitution,
+        N.SmallTextNode: _emit_small,
+        N.ColorTextNode: _emit_color,
+        N.SubscriptNode: _emit_subscript,
+        N.SuperscriptNode: _emit_superscript,
+    }
+    # 兜底：未知节点 → 纯文本（不吞内容）
+    d[N.InlineNode] = lambda node, base, ctx, out, depth: _append(
+        out, node.content or "", base
+    )
+    return d
+
+
+def _emit_node(node, base: Style, ctx, out: list[Run], depth: int) -> None:
+    if depth > _MAX_DEPTH:
+        _append(out, getattr(node, "content", "") or "", base)
+        return
+    handler = _DISPATCH.get(type(node)) or _DISPATCH.get(_INLINE_BASE)
+    if handler is None:
+        _append(out, getattr(node, "content", "") or "", base)
+        return
+    handler(node, base, ctx, out, depth)
+
+
+_INLINE_BASE = None
+try:
+    from src.renderer.inline_nodes import InlineNode as _INLINE_BASE
+except Exception:  # pragma: no cover - 导入失败时兜底为 None
+    _INLINE_BASE = None
+
+
+def circled_digits() -> list:
+    """圈数字符号表（参考式链接编号用；真源 == 表现层数据注册表）。"""
+    from src.presentation_data import circled_digits as _digits
+    return _digits()
+
+
+# ═══════════════════════════════════════════════════════════
+# 公共入口
+# ═══════════════════════════════════════════════════════════
+
+
+def render_inline(text: str, base_style: Style | None = None, ctx=None) -> list[Run]:
     """解析行内 Markdown 为 Run 序列。
 
     Args:
         text: 行内文本。
         base_style: 基础样式。
+        ctx: 可选的 ``RenderContext``（脚注编号 / 参考式链接 / 缩写替换）。
 
     Returns:
         Run 列表（解析失败时单 run 纯文本）。
@@ -195,10 +467,34 @@ def render_inline(text: str, base_style: Style | None = None) -> list[Run]:
     if not text:
         return []
     base = base_style if base_style is not None else Style()
+    if ctx is None:
+        ctx = _RENDER_CTX.get()
     try:
-        return _render_inline_impl(text, base)
+        from src.renderer.inline_parser import _InlineParser
+        # 快速判否：不含任何格式/URL 触发字符 → 单 Run（免进解析器）
+        if _FAST_ISDISJOINT(text):
+            return [Run(text, base)]
+        nodes = _InlineParser(text).parse()
+        out: list[Run] = []
+        _emit_nodes(nodes, base, ctx, out, 0)
+        return out
     except Exception:
         return [Run(text, base)]
 
 
-__all__ = ["render_inline"]
+def _make_fast_isdisjoint():
+    """构造「文本不含任何触发字符」的 C 级判定函数。"""
+    from src.renderer.inline_parser import _InlineParser
+    chars = frozenset(_InlineParser._FORMAT_CHARS)
+
+    def _check(text: str) -> bool:
+        return chars.isdisjoint(text)
+
+    return _check
+
+
+_FAST_ISDISJOINT = _make_fast_isdisjoint()
+_DISPATCH.update(_build_dispatch())
+
+
+__all__ = ["render_inline", "use_render_context", "current_render_context"]
