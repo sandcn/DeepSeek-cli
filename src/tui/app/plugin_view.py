@@ -38,8 +38,14 @@ from src.tui.ink.widgets.listview import ListView
 from ._inspector_pane import PaneState, handle_nav, resolve
 from ._keymap_pane import keymap_panel_rows
 from ._modal_view import empty_modal_frame, is_modal_close_key, use_modal_scope
+from .plugin_export import write_export as write_plugin_export
+from .plugin_relation import relation_rows
 
-__all__ = ["PluginView", "_plugin_search_matches", "_build_display", "_cycle_filter"]
+__all__ = [
+    "PluginView", "_plugin_search_matches", "_build_display", "_cycle_filter",
+    "_filter_allowed", "_state_options", "_kind_options",
+    "_cycle_state_filter", "_cycle_kind_filter", "_do_export",
+]
 
 # ── 样式（静态色——浏览界面，不呼吸，diff 零输出） ──
 _S_TITLE = Style(fg=45, bold=True)        # 视图标题/详情标题（亮青加粗）
@@ -211,6 +217,101 @@ def _cycle_filter(pv, entries) -> None:
     )
 
 
+# ═══════════════════════════════════════════════════════════
+# 状态 / 分类过滤 + 依赖关系 + 导出（2026-10-07 第三批）
+# ═══════════════════════════════════════════════════════════
+
+#: 循环选项最小值（0 表示「全部」）
+def _state_options(entries: list) -> list:
+    """状态过滤循环选项（``""``（全部）+ 去重排序的条目状态）。"""
+    states = sorted({
+        str(e.get("subtitle", "") or "").strip()
+        for e in (entries or []) if isinstance(e, dict)
+        and str(e.get("subtitle", "") or "").strip()
+    })
+    return [""] + states
+
+
+def _kind_options(entries: list) -> list:
+    """分类过滤循环选项（``""``（全部）+ 去重排序的条目分类）。"""
+    kinds = sorted({
+        str(e.get("kind", "kernel") or "kernel")
+        for e in (entries or []) if isinstance(e, dict)
+    })
+    return [""] + kinds
+
+
+def _cycle_state_filter(pv, entries) -> str:
+    """``S``：循环按状态过滤（全部 → 各状态 → 全部）。"""
+    opts = _state_options(entries)
+    cur = getattr(pv, "filter_state", "") or ""
+    try:
+        idx = opts.index(cur)
+    except ValueError:
+        idx = 0
+    new = opts[(idx + 1) % len(opts)]
+    pv.filter_state = new
+    pv.status_message = f"状态过滤：{new or '全部'}"
+    return new
+
+
+def _cycle_kind_filter(pv, entries) -> str:
+    """``K``：循环按分类过滤（全部 → 各分类 → 全部）。"""
+    opts = _kind_options(entries)
+    cur = getattr(pv, "filter_kind", "") or ""
+    try:
+        idx = opts.index(cur)
+    except ValueError:
+        idx = 0
+    new = opts[(idx + 1) % len(opts)]
+    pv.filter_kind = new
+    pv.status_message = f"分类过滤：{new or '全部'}"
+    return new
+
+
+def _filter_allowed(entries: list, pattern: str, matches: list,
+                    filter_on: bool, filter_state: str,
+                    filter_kind: str) -> set | None:
+    """组合过滤：搜索匹配 ∩ 状态 ∩ 分类 → 保留条目索引集合。
+
+    ``None`` = 无任何过滤（显示全部；零成本快路径）。
+    """
+    active = bool(filter_on and pattern and matches)
+    state = filter_state or ""
+    kind = filter_kind or ""
+    if not active and not state and not kind:
+        return None
+    allowed = set(range(len(entries or [])))
+    if active:
+        allowed &= {i for i in matches if 0 <= i < len(entries or [])}
+    if state:
+        allowed = {
+            i for i in allowed
+            if str(entries[i].get("subtitle", "") or "").strip() == state
+        }
+    if kind:
+        allowed = {
+            i for i in allowed
+            if str(entries[i].get("kind", "kernel") or "kernel") == kind
+        }
+    return allowed
+
+
+def _do_export(pv, entries, fmt: str) -> None:
+    """``w``/``W``：导出插件清单为 Markdown / JSON 文件。"""
+    items = [e for e in (entries or []) if isinstance(e, dict)]
+    if not items:
+        pv.status_message = "无可导出的插件"
+        return
+    try:
+        path = write_plugin_export(items, fmt)
+    except Exception as exc:  # 写盘失败（权限/磁盘）→ 状态提示，不崩溃
+        pv.status_message = f"导出失败：{exc}"
+        return
+    label = "Markdown" if fmt == "md" else "JSON"
+    pv.status_message = f"已导出 {len(items)} 个插件（{label}）→ {path}"
+
+
 def _copy_entry(pv, entry) -> None:
     """``y``：复制选中插件信息到剪贴板（OSC52）。"""
     from src.plugins.view_model import format_plugin_entry_text
@@ -256,9 +357,16 @@ def PluginView(props) -> object:
     )
     stats_text = format_plugin_stats(stats)
 
-    # ── 过滤视图（``f``：列表只显示匹配插件） ──
+    # ── 过滤视图（``f`` 搜索过滤 ∩ ``S`` 状态 ∩ ``K`` 分类） ──
+    #   ★ 2026-10-07 第三批：组合过滤（搜索匹配 ∧ 状态 ∧ 分类）——allowed
+    #   为保留条目索引集合（None = 无过滤）。
+    filter_state = (getattr(pv, "filter_state", "") or "") if pv is not None else ""
+    filter_kind = (getattr(pv, "filter_kind", "") or "") if pv is not None else ""
+    relation_open = bool(getattr(pv, "relation_open", False)) if pv is not None else False
+    allowed = _filter_allowed(
+        entries, pattern, matches, filter_on, filter_state, filter_kind,
+    )
     filter_active = bool(filter_on and pattern and matches)
-    allowed = set(matches) if filter_active else None
     display_items, specs = _build_display(entries, allowed)
     total = len(display_items)
     # 条目索引 → 显示行下标（匹配定位用）
@@ -290,7 +398,8 @@ def PluginView(props) -> object:
     pane = getattr(pv, "pane", "list") if pv is not None else "list"
     if pane not in ("list", "detail"):
         pane = "list"
-    if help_open:
+    if help_open or relation_open:
+        # 帮助 / 关系面板覆盖右栏 → 焦点视为详情（滚动导航走通用逻辑）
         pane = "detail"
 
     # ── 栏宽分配 ──
@@ -306,9 +415,19 @@ def PluginView(props) -> object:
     extra_rows = (1 if search_mode else 0) + (1 if status_message else 0)
     vh = max(4, _viewport_rows() - extra_rows)
 
-    # ── 右栏内容 + 光标/滚动协调 ──
+    # ── 右栏内容（帮助 / 关系 / 详情）+ 光标/滚动协调 ──
+    # ★ 2026-10-07 第三批（依赖关系视图）：``r`` 切换 → 右栏显示选中插件的
+    #   依赖/被依赖/提供服务关系（``relation_rows``），Enter 跳转到相关插件。
+    by_name = {str(e.get("name", "")): e for e in entries if isinstance(e, dict)}
+    name_to_idx = {
+        str(e.get("name", "")): i for i, e in enumerate(entries)
+        if isinstance(e, dict)
+    }
+    rel_targets: list = []
     if help_open:
         content_rows = _help_rows(right_w)
+    elif relation_open:
+        content_rows, rel_targets = relation_rows(entry, by_name, right_w)
     else:
         content_rows = _detail_rows(entry, right_w)
     total_content = len(content_rows)
@@ -404,10 +523,17 @@ def PluginView(props) -> object:
                 _run_search()
                 return True
             return True
-        # 模态统一关闭键（Esc / Ctrl+H）→ 帮助面板/搜索态优先关闭
+        # 模态统一关闭键（Esc / Ctrl+H）→ 帮助/关系面板/搜索态优先关闭
         if is_modal_close_key(event):
             if getattr(pv, "help_open", False):
                 pv.help_open = False
+                pv.pane = "list"
+                pv.cursor = 0
+                pv.scroll = 0
+                pv.status_message = ""
+                return True
+            if getattr(pv, "relation_open", False):
+                pv.relation_open = False
                 pv.pane = "list"
                 pv.cursor = 0
                 pv.scroll = 0
@@ -439,6 +565,29 @@ def PluginView(props) -> object:
             if ch == "y":
                 _copy_entry(pv, entry)
                 return True
+            # ★ 2026-10-07 第三批：依赖关系视图 / 状态分类过滤 / 清单导出。
+            if ch == "r":
+                pv.relation_open = not bool(getattr(pv, "relation_open", False))
+                pv.pane = "detail" if pv.relation_open else "list"
+                pv.cursor = 0
+                pv.scroll = 0
+                pv.status_message = ""
+                return True
+            if ch == "S":
+                _cycle_state_filter(pv, entries)
+                pv.selected = 0
+                pv.cursor = 0
+                pv.scroll = 0
+                return True
+            if ch == "K":
+                _cycle_kind_filter(pv, entries)
+                pv.selected = 0
+                pv.cursor = 0
+                pv.scroll = 0
+                return True
+            if ch in ("w", "W"):
+                _do_export(pv, entries, "md" if ch == "w" else "json")
+                return True
 
         if pane_now == "list":
             # l / Enter → 进入右栏详情；其余放行（ListView 消费导航键）
@@ -453,7 +602,28 @@ def PluginView(props) -> object:
             if getattr(pv, "help_open", False):
                 pv.help_open = False
                 return True
+            if getattr(pv, "relation_open", False):
+                pv.relation_open = False
+                return True
             pv.pane = "list"
+            return True
+        # ★ 2026-10-07 第三批（依赖关系视图）：右栏 Enter → 跳转到当前光标
+        #   行的关系目标插件（若已加载）；跳转后关闭关系面板、选中该插件。
+        if event.kind == "enter" and getattr(pv, "relation_open", False):
+            cur = getattr(pv, "cursor", 0) or 0
+            tgt = rel_targets[cur] if 0 <= cur < len(rel_targets) else None
+            if tgt:
+                idx = name_to_idx.get(str(tgt))
+                row = entry_to_row.get(idx) if idx is not None else None
+                if row is not None:
+                    pv.selected = row
+                    pv.relation_open = False
+                    pv.pane = "list"
+                    pv.cursor = 0
+                    pv.scroll = 0
+                    pv.status_message = f"\u2192 {tgt}"
+                    return True
+            pv.status_message = "该关系项无法跳转"
             return True
         # ★ P0-1：通用 vim 导航（↑↓/j/k、PgUp/PgDn、Home/End、g/G）收敛到
         #   ``_inspector_pane.handle_nav``（三视图共享同一实现）。
@@ -553,10 +723,12 @@ def PluginView(props) -> object:
         header_hint = "  \u8f93\u5165\u641c\u7d22\u8bcd \u00b7 Enter \u6267\u884c \u00b7 Esc \u53d6\u6d88"
     elif help_open:
         header_hint = "  \u5e2e\u52a9\u9762\u677f \u00b7 ? / q / Esc \u5173\u95ed"
+    elif relation_open:
+        header_hint = "  jk \u6eda\u52a8 \u00b7 Enter \u8df3\u8f6c \u00b7 r / Esc \u5173\u95ed"
     elif pane == "detail":
-        header_hint = "  jk \u6eda\u52a8 \u00b7 h \u5217\u8868 \u00b7 / \u641c\u7d22 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u5173\u95ed"
+        header_hint = "  jk \u6eda\u52a8 \u00b7 h \u5217\u8868 \u00b7 r \u5173\u7cfb \u00b7 / \u641c\u7d22 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u5173\u95ed"
     else:
-        header_hint = "  \u2191\u2193/jk \u9009\u62e9 \u00b7 l/\u21b5 \u8be6\u60c5 \u00b7 / \u641c\u7d22 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u5173\u95ed"
+        header_hint = "  \u2191\u2193/jk \u9009\u62e9 \u00b7 l/\u21b5 \u8be6\u60c5 \u00b7 r \u5173\u7cfb \u00b7 / \u641c\u7d22 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u5173\u95ed"
     count_text = f" \u00b7 {stats_text}"
     if filter_active:
         count_text += f" \u00b7 \u8fc7\u6ee4 {len(set(matches))}/{stats.get('total', 0)}"
@@ -592,6 +764,11 @@ def PluginView(props) -> object:
         if filter_active:
             seg += " [\u8fc7\u6ee4]"
         status_parts.append(seg)
+    # ★ 2026-10-07 第三批（状态 / 分类过滤）：过滤条件标注
+    if filter_state:
+        status_parts.append(f"\u72b6\u6001 {filter_state}")
+    if filter_kind:
+        status_parts.append(f"\u5206\u7c7b {filter_kind}")
     if status_message:
         status_parts.append(status_message)
     if status_parts:

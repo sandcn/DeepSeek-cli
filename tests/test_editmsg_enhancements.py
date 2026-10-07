@@ -140,7 +140,7 @@ class TestMsgPreview:
         )
         _fiber, el = _render_popup(model)
         texts = "\n".join(_texts(el))
-        assert "预览" in texts
+        assert "\u2500 \u9884\u89c8" in texts
         assert "full-B" in texts
         assert "line2" in texts
 
@@ -151,7 +151,7 @@ class TestMsgPreview:
         )
         _fiber, el = _render_popup(model)
         texts = "\n".join(_texts(el))
-        assert "预览" not in texts
+        assert "\u2500 \u9884\u89c8" not in texts
 
 
 # ═══════════════════════════════════════════════════════════

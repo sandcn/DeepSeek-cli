@@ -670,6 +670,13 @@ TRACE_STYLE_DATA: dict = {
     "line_number": {"fg": 240},
     "expanded": {"fg": 245},
     "expand_prefix": {"fg": 110},
+    # ── 增强（2026-10-07 第三批）：耗时条形图 / 记录对比 / 轮次折叠 ──
+    "time_bar": {"fg": 45},
+    "time_bar_bg": {"fg": 238},
+    "compare_label": {"fg": 214, "bold": True},
+    "compare_same": {"fg": 242},
+    "compare_diff": {"fg": 214},
+    "turn_collapsed": {"fg": 108, "bold": True},
 }
 
 # ── 轨迹视图快捷键速查表（帮助面板内容，「一切皆插件」） ──────
@@ -688,6 +695,7 @@ TRACE_KEYMAP_DATA: list = [
     {"group": "标记", "keys": "'{a-z}", "desc": "跳转到该标记所在记录"},
     {"group": "记录定位", "keys": "] / [", "desc": "下一个 / 上一个工具调用"},
     {"group": "记录定位", "keys": "e / E", "desc": "下一个 / 上一个失败记录"},
+    {"group": "记录定位", "keys": "{ / }", "desc": "上一个 / 下一个轮次首条记录"},
     {"group": "记录定位", "keys": "t", "desc": "按记录种类过滤（循环切换，空=全部）"},
     {"group": "记录定位", "keys": "Enter", "desc": "进入子代理轨迹 / 工具列表"},
     {"group": "详情与树", "keys": "\u7a7a\u683c", "desc": "展开 / 收起光标所在树节点"},
@@ -695,14 +703,18 @@ TRACE_KEYMAP_DATA: list = [
     {"group": "详情与树", "keys": "o", "desc": "就地展开 / 折叠选中记录详情（不切面板）"},
     {"group": "详情与树", "keys": "#", "desc": "检查器行号显示开关"},
     {"group": "详情与树", "keys": "T", "desc": "时间列模式（关 / 绝对 / 相对）"},
+    {"group": "轮次折叠", "keys": "za / zc / zo", "desc": "切换 / 折叠 / 展开当前轮次"},
+    {"group": "轮次折叠", "keys": "zC / zO", "desc": "折叠 / 展开全部轮次"},
     {"group": "搜索", "keys": "/", "desc": "进入搜索输入（\u2191\u2193 回溯历史，回车执行）"},
     {"group": "搜索", "keys": "n / N / p", "desc": "下一个 / 上一个匹配"},
     {"group": "搜索", "keys": "v", "desc": "切换大小写敏感"},
     {"group": "搜索", "keys": "f", "desc": "切换过滤模式（台账只显示匹配记录）"},
     {"group": "面板", "keys": "i", "desc": "统计概览面板（token/耗时/成功率）"},
+    {"group": "面板", "keys": "C", "desc": "记录对比（选两条记录并排对照）"},
     {"group": "面板", "keys": "?", "desc": "本帮助面板（? / Esc / q 关闭）"},
     {"group": "操作", "keys": "y", "desc": "复制内容（台账=整条记录 / 检查器=当前行）"},
-    {"group": "操作", "keys": "w / W", "desc": "导出轨迹为 Markdown / JSON 文件"},
+    {"group": "操作", "keys": "x", "desc": "切换导出范围（全部/视图/失败/工具）"},
+    {"group": "操作", "keys": "w / W", "desc": "按当前范围导出 Markdown / JSON"},
     {"group": "操作", "keys": "Esc / Ctrl+H", "desc": "返回主轨迹 / 关闭轨迹视图"},
 ]
 
@@ -718,8 +730,12 @@ PLUGIN_KEYMAP_DATA: list = [
     {"group": "搜索", "keys": "/", "desc": "搜索插件（回车执行，Esc 取消）"},
     {"group": "搜索", "keys": "n / N / p", "desc": "下一个 / 上一个匹配"},
     {"group": "搜索", "keys": "f", "desc": "过滤模式（只显示匹配插件）"},
+    {"group": "搜索", "keys": "S", "desc": "按状态过滤（循环切换，空=全部）"},
+    {"group": "搜索", "keys": "K", "desc": "按分类过滤（循环切换，空=全部）"},
+    {"group": "面板", "keys": "r", "desc": "依赖关系视图（依赖/被依赖，Enter 跳转）"},
     {"group": "面板", "keys": "?", "desc": "本帮助面板（? / q / Esc 关闭）"},
     {"group": "操作", "keys": "y", "desc": "复制选中插件信息到剪贴板（OSC52）"},
+    {"group": "操作", "keys": "w / W", "desc": "导出插件清单为 Markdown / JSON 文件"},
     {"group": "操作", "keys": "Esc / Ctrl+H", "desc": "关闭插件视图"},
 ]
 
@@ -728,14 +744,20 @@ CONFIG_KEYMAP_DATA: list = [
     {"group": "导航", "keys": "\u2191\u2193 / j k", "desc": "移动选择 · 候选/条目导航"},
     {"group": "导航", "keys": "PgUp / PgDn", "desc": "整页翻页"},
     {"group": "导航", "keys": "Home/End \u00b7 g/G", "desc": "首末"},
+    {"group": "导航", "keys": "[ / ]", "desc": "上一个 / 下一个配置分组"},
     {"group": "编辑", "keys": "Enter", "desc": "编辑选中项（选择 / 输入 / 子 JSON）"},
     {"group": "编辑", "keys": "r", "desc": "恢复选中项默认值"},
     {"group": "编辑", "keys": "u", "desc": "撤销上次编辑"},
+    {"group": "编辑", "keys": "U", "desc": "撤销历史面板（回退到某历史点）"},
+    {"group": "分组", "keys": "za / zc / zo", "desc": "切换 / 折叠 / 展开当前分组"},
+    {"group": "分组", "keys": "zC / zO", "desc": "折叠 / 展开全部分组"},
     {"group": "搜索", "keys": "/", "desc": "搜索配置项（回车执行，Esc 取消）"},
     {"group": "搜索", "keys": "n / N / p", "desc": "下一个 / 上一个匹配"},
     {"group": "搜索", "keys": "f", "desc": "过滤模式（只显示匹配配置项）"},
     {"group": "面板", "keys": "?", "desc": "本帮助面板（? / q / Esc 关闭）"},
     {"group": "操作", "keys": "y", "desc": "复制选中项 key=value 到剪贴板（OSC52）"},
+    {"group": "操作", "keys": "e", "desc": "导出当前配置为 JSON 文件"},
+    {"group": "操作", "keys": "i", "desc": "从 JSON 文件导入配置（校验 + 确认）"},
     {"group": "操作", "keys": "Esc / Ctrl+H", "desc": "关闭配置中心"},
 ]
 

@@ -673,10 +673,10 @@ class TestKeyPrefixEdges:
         model, handler = _setup_view(monkeypatch, [_rec(1, "a")])
         handler(_ev("char", "z"))
         assert model.trace_pending_prefix == "z"
-        handler(_ev("char", "x"))  # 非 R/M → 前缀清除，按键继续处理
+        handler(_ev("char", "q"))  # 非 R/M/a/c/o/C/O → 前缀清除，按键继续处理
         assert model.trace_pending_prefix == ""
-        # "x" 无绑定 → 放行（handler 返回 False 由模态吞掉）
-        assert handler(_ev("char", "x")) is False
+        # "q" 无绑定（非帮助面板）→ 放行（handler 返回 False 由模态吞掉）
+        assert handler(_ev("char", "q")) is False
 
     def test_help_panel_scroll(self, monkeypatch):
         long_rec = _rec(1, "x", kind="content",

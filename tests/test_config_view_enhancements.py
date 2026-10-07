@@ -371,4 +371,10 @@ class TestConfigViewRender:
             for child in getattr(node, "children", None) or []:
                 stack.append(child)
         assert found is not None
-        assert len(found.props["items"]) == 1
+        # ★ 2026-10-07 第三批（分组头）：items 含分组头（不可选）——条目数为 1。
+        from src.tui.app.config_view import _ConfigGroupRow
+        data_items = [
+            it for it in found.props["items"]
+            if not isinstance(it, _ConfigGroupRow)
+        ]
+        assert len(data_items) == 1

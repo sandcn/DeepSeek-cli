@@ -91,6 +91,12 @@ _S_SOURCE = Style(fg=108)                  # 配置来源路径（头部）
 _S_HELP_KEY = Style(fg=214)                # 帮助面板键位（黄）
 _S_HELP_GROUP = Style(fg=110, bold=True)   # 帮助面板分组标题
 _S_HELP_DESC = Style(fg=252)               # 帮助面板说明
+# 增强（2026-10-07 第三批）：分组头 / diff 预览 / 导入输入 / 撤销面板
+_S_GROUP_HEAD = Style(fg=110, bold=True)   # 配置分组头（浅蓝加粗）
+_S_GROUP_FOLD = Style(fg=108, bold=True)   # 折叠分组头
+_S_DIFF = Style(fg=214, bold=True)         # diff 新值（黄加粗）
+_S_IMPORT = Style(fg=45, bold=True)        # 导入路径输入行（亮青加粗）
+_S_UNDO = Style(fg=221)                    # 撤销面板项（浅黄）
 
 #: 编辑输入长度上限（渲染行按宽度截断，无上限累积只浪费内存）
 _EDIT_VALUE_MAX = 400
@@ -668,6 +674,297 @@ def _copy_entry(cv, entry) -> None:
         cv.message = "复制失败：无可用终端输出"
 
 
+# ═══════════════════════════════════════════════════════════
+# 增强辅助（2026-10-07 第三批：分组折叠 / diff 预览 / 导出导入 / 撤销面板）
+# ═══════════════════════════════════════════════════════════
+
+#: 无前缀分组的显示名（顶层配置项）
+_TOP_GROUP = "\uff08\u9876\u5c42\uff09"  # （顶层）
+
+
+class _ConfigGroupRow:
+    """配置分组头行（不可选——ListView isSelectable 排除）。
+
+    ``group`` 分组名、``count`` 组内条目数、``collapsed`` 是否折叠。
+    """
+
+    __slots__ = ("group", "count", "collapsed")
+
+    def __init__(self, group: str, count: int = 0, collapsed: bool = False) -> None:
+        self.group = str(group)
+        self.count = int(count)
+        self.collapsed = bool(collapsed)
+
+
+def _group_of(entry) -> str:
+    """配置项所属分组（``path`` 首段；无 ``.`` → 顶层）。"""
+    if not isinstance(entry, dict):
+        return _TOP_GROUP
+    path = str(entry.get("path") or entry.get("key") or "")
+    head = path.split(".", 1)[0]
+    return head if head else _TOP_GROUP
+
+
+def _config_rows(view_entries: list, collapsed_groups) -> tuple:
+    """过滤视图条目 → (display_items, row_to_entry, entry_to_row)。
+
+    ``display_items`` 为分组头（``_ConfigGroupRow``）+ 未折叠分组内的条目
+    （分组标题不可选）；``row_to_entry`` 行下标 → 视图条目索引（分组头 -1）；
+    ``entry_to_row`` 视图条目索引 → 行下标（折叠分组内条目不在表中）。
+    """
+    collapsed = set(collapsed_groups or ())
+    groups: list = []
+    by_group: dict = {}
+    for i, e in enumerate(view_entries or []):
+        g = _group_of(e)
+        if g not in by_group:
+            groups.append(g)
+            by_group[g] = []
+        by_group[g].append(i)
+    display_items: list = []
+    row_to_entry: list = []
+    entry_to_row: dict = {}
+    for g in groups:
+        members = by_group[g]
+        display_items.append(_ConfigGroupRow(g, len(members), g in collapsed))
+        row_to_entry.append(-1)
+        if g in collapsed:
+            continue
+        for i in members:
+            display_items.append(view_entries[i])
+            row_to_entry.append(i)
+            entry_to_row[i] = len(display_items) - 1
+    return display_items, row_to_entry, entry_to_row
+
+
+def _is_config_selectable(item) -> bool:
+    """配置列表可选性：分组头（``_ConfigGroupRow``）不可选（导航跳过）。"""
+    return not isinstance(item, _ConfigGroupRow)
+
+
+def _group_header_runs(row: "_ConfigGroupRow", width: int) -> list:
+    """分组头行 runs（``▼ 分组 (N)`` / ``▶ 分组 (N, 已折叠)``）。"""
+    if row.collapsed:
+        runs = [
+            StyledRun("\u25b6 ", _S_GROUP_FOLD),
+            StyledRun(str(row.group), _S_GROUP_FOLD),
+            StyledRun(f" ({row.count}, \u5df2\u6298\u53e0)", _S_HINT),
+        ]
+    else:
+        runs = [
+            StyledRun("\u25bc ", _S_GROUP_HEAD),
+            StyledRun(str(row.group), _S_GROUP_HEAD),
+            StyledRun(f" ({row.count})", _S_HINT),
+        ]
+    if width > 0:
+        runs = truncate_runs(runs, width)
+    return runs
+
+
+def _toggle_group_collapse(cv, view_entries: list, sel_idx: int,
+                           mode: str = "toggle") -> None:
+    """``za``/``zc``/``zo``：折叠 / 展开选中项所在分组。"""
+    if not (0 <= sel_idx < len(view_entries or [])):
+        cv.message = "无可折叠的分组"
+        return
+    g = _group_of(view_entries[sel_idx])
+    collapsed = set(getattr(cv, "collapsed_groups", None) or ())
+    if mode == "close":
+        new_state = True
+    elif mode == "open":
+        new_state = False
+    else:
+        new_state = g not in collapsed
+    if not new_state:
+        collapsed.discard(g)
+        cv.collapsed_groups = collapsed
+        cv.message = f"已展开分组 {g}"
+        return
+    collapsed.add(g)
+    cv.collapsed_groups = collapsed
+    # 选中条目随折叠隐藏 → 移到最近的其他分组条目
+    new_sel = None
+    for i in range(sel_idx - 1, -1, -1):
+        if _group_of(view_entries[i]) != g:
+            new_sel = i
+            break
+    if new_sel is None:
+        for i in range(sel_idx + 1, len(view_entries)):
+            if _group_of(view_entries[i]) != g:
+                new_sel = i
+                break
+    if new_sel is not None:
+        cv.selected = new_sel
+        cv.cursor = 0
+        cv.scroll = 0
+    cv.message = f"已折叠分组 {g}（zo 展开）"
+
+
+def _collapse_all_groups(cv, view_entries: list, fold: bool) -> None:
+    """``zC``/``zO``：折叠 / 展开全部分组。"""
+    if not fold:
+        cv.collapsed_groups = set()
+        cv.message = "已展开全部分组"
+        return
+    groups = {_group_of(e) for e in (view_entries or [])}
+    if not groups:
+        cv.message = "无可折叠的分组"
+        return
+    cv.collapsed_groups = groups
+    cv.message = f"已折叠全部分组（{len(groups)} 个，zO 展开）"
+
+
+def _jump_group(cv, view_entries: list, sel_idx: int, delta: int) -> None:
+    """``[``/``]``：跳到上 / 下一个分组首条。"""
+    n = len(view_entries or [])
+    if n == 0:
+        cv.message = "无分组可跳转"
+        return
+    cur_g = _group_of(view_entries[sel_idx]) if 0 <= sel_idx < n else ""
+    target_g = None
+    if delta > 0:
+        for i in range(sel_idx + 1, n):
+            if _group_of(view_entries[i]) != cur_g:
+                target_g = _group_of(view_entries[i])
+                break
+    else:
+        for i in range(sel_idx - 1, -1, -1):
+            if _group_of(view_entries[i]) != cur_g:
+                target_g = _group_of(view_entries[i])
+                break
+    if target_g is None:
+        cv.message = "无下一个分组" if delta > 0 else "无上一个分组"
+        return
+    for i in range(n):
+        if _group_of(view_entries[i]) == target_g:
+            cv.selected = i
+            cv.cursor = 0
+            cv.scroll = 0
+            cv.message = f"\u2192 分组 {target_g}"
+            return
+
+
+def _diff_runs(old_text, new_text) -> list:
+    """编辑 diff 预览 runs（``旧: O → 新: N``；不同值高亮）。"""
+    old_s = str(old_text if old_text is not None else "")
+    new_s = str(new_text if new_text is not None else "")
+    same = old_s == new_s
+    return [
+        StyledRun("  \u65e7: ", _S_HINT),
+        StyledRun(old_s or "(\u7a7a)", _S_HINT),
+        StyledRun("  \u2192  ", _S_HINT),
+        StyledRun("\u65b0: ", _S_HINT),
+        StyledRun(new_s or "(\u7a7a)", _S_HINT if same else _S_DIFF),
+    ]
+
+
+def _undo_entries(cv) -> list:
+    """撤销栈 → 显示行（最新在前；``[(path, old_text, old_value, key)]``）。"""
+    stack = list(getattr(cv, "undo_stack", None) or [])
+    out: list = []
+    for key, old_value, old_text, path in reversed(stack):
+        out.append({
+            "key": key, "path": path, "old_text": old_text, "old_value": old_value,
+        })
+    return out
+
+
+def _undo_to(cv, entries, display_idx: int) -> None:
+    """撤销历史面板 Enter：回退到该历史点（撤销该条及其后所有）。"""
+    stack = list(getattr(cv, "undo_stack", None) or [])
+    if not stack:
+        cv.message = "无可撤销的编辑"
+        return
+    try:
+        idx = int(display_idx)
+    except (TypeError, ValueError):
+        idx = 0
+    target = len(stack) - 1 - idx  # 显示倒序 → 栈内下标
+    if not (0 <= target < len(stack)):
+        cv.message = "无可撤销的编辑"
+        return
+    from src.config.loader import update_config
+    done = 0
+    for key, old_value, old_text, _path in reversed(stack[target:]):
+        try:
+            update_config(key, old_value)
+        except Exception as exc:
+            cv.edit_error = f"撤销失败: {exc}"
+            return
+        entry = _entry_by_key(entries, key)
+        if entry is not None:
+            entry["value"] = old_value
+            entry["value_text"] = old_text
+        done += 1
+    cv.undo_stack = stack[:target]
+    cv.editing = False
+    cv.edit_mode = "input"
+    cv.edit_error = ""
+    cv.message = f"已回退 {done} 步"
+
+
+def _do_export(cv, entries) -> None:
+    """``e``：导出当前配置为 JSON 文件。"""
+    from .config_export import write_export
+    items = [e for e in (entries or []) if isinstance(e, dict)]
+    if not items:
+        cv.message = "无可导出的配置项"
+        return
+    try:
+        path = write_export(items)
+    except Exception as exc:
+        cv.edit_error = f"导出失败: {exc}"
+        return
+    cv.edit_error = ""
+    cv.message = f"已导出 {len(items)} 项配置 → {path}"
+
+
+def _start_import(cv) -> None:
+    """``i``：进入导入路径输入模式。"""
+    cv.editing = True
+    cv.edit_mode = "import"
+    cv.edit_key = ""
+    cv.edit_value = ""
+    cv.edit_error = ""
+    cv.message = ""
+
+
+def _commit_import(cv, entries) -> None:
+    """导入输入确认：读取 JSON → 解析 → 逐项写回。"""
+    path = (cv.edit_value or "").strip()
+    if not path:
+        cv.edit_error = "请输入 JSON 文件路径"
+        return
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except Exception as exc:
+        cv.edit_error = f"读取失败: {exc}"
+        return
+    from .config_export import apply_import, parse_import
+    mapping, err = parse_import(text)
+    if err:
+        cv.edit_error = err
+        return
+    if not mapping:
+        cv.edit_error = "配置为空"
+        return
+    applied, errors = apply_import(mapping)
+    cv.editing = False
+    cv.edit_mode = "input"
+    # 刷新条目显示值（重建 entries）
+    if applied:
+        try:
+            from src.config.view_model import build_config_entries
+            cv.entries = build_config_entries()
+        except Exception:
+            pass
+    cv.message = f"已导入 {applied} 项" + (
+        f"（{len(errors)} 项失败）" if errors else ""
+    )
+    cv.edit_error = "; ".join(errors[:3]) if errors else ""
+
+
 def _config_status_text(cv, filter_active: bool, match_count: int) -> str:
     """底部状态行文本（搜索匹配计数 + 操作反馈；空串不渲染）。
 
@@ -869,6 +1166,35 @@ def _handle_config_event(
                 _json_commit_input(cv)
                 return True
             return True
+        # ★ 2026-10-07 第三批（导入路径输入）：字符累积 / 退格 / Enter 导入 / Esc 取消
+        if cv.edit_mode == "import":
+            if event.kind == "escape":
+                _cancel_edit(cv)
+                return True
+            if event.kind == "char":
+                ch = getattr(event, "char", "") or ""
+                if ch and "\n" not in ch and "\r" not in ch:
+                    if len(cv.edit_value) < _EDIT_VALUE_MAX:
+                        cv.edit_value += ch
+                return True
+            if event.kind == "backspace":
+                if cv.edit_value:
+                    cv.edit_value = cv.edit_value[:-1]
+                return True
+            if event.kind == "enter":
+                _commit_import(cv, entries)
+                return True
+            return True
+        # ★ 2026-10-07 第三批（撤销历史面板）：Enter 回退到该历史点、Esc 关闭；
+        #   导航键放行列表控件（onNavigate 写 undo_cursor）。
+        if cv.edit_mode == "undo":
+            if event.kind == "escape":
+                _cancel_edit(cv)
+                return True
+            if event.kind == "enter":
+                _undo_to(cv, entries, getattr(cv, "undo_cursor", 0) or 0)
+                return True
+            return False
         # 输入界面：字符累积 / 退格 / Enter 确认 / Esc 取消
         if event.kind == "escape":
             _cancel_edit(cv)
@@ -891,6 +1217,57 @@ def _handle_config_event(
     # ── 增强键（2026-10-07：搜索 / 帮助 / 过滤 / 恢复默认 / 撤销 / 复制） ──
     if event.kind == "char":
         ch = getattr(event, "char", "") or ""
+        # ★ 2026-10-07 第三批（分组折叠前缀）：z + a/c/o/C/O。
+        prefix = getattr(cv, "pending_prefix", "") or ""
+        if prefix == "z":
+            cv.pending_prefix = ""
+            if ch == "a":
+                _toggle_group_collapse(
+                    cv, entries, _sel_index(cv, total), "toggle",
+                )
+                return True
+            if ch == "c":
+                _toggle_group_collapse(
+                    cv, entries, _sel_index(cv, total), "close",
+                )
+                return True
+            if ch == "o":
+                _toggle_group_collapse(
+                    cv, entries, _sel_index(cv, total), "open",
+                )
+                return True
+            if ch == "C":
+                _collapse_all_groups(cv, entries, True)
+                return True
+            if ch == "O":
+                _collapse_all_groups(cv, entries, False)
+                return True
+        elif ch == "z":
+            cv.pending_prefix = "z"
+            cv.message = "z\u2026\uff08a \u5207\u6362 / c \u6298\u53e0 / o \u5c55\u5f00 / C \u5168\u6298\u53e0 / O \u5168\u5c55\u5f00\uff09"
+            return True
+        # ★ 2026-10-07 第三批：分组跳转 / 导出 / 导入 / 撤销历史面板。
+        if ch in ("[", "]"):
+            _jump_group(
+                cv, entries, _sel_index(cv, total), 1 if ch == "]" else -1,
+            )
+            return True
+        if ch == "e":
+            _do_export(cv, all_entries if all_entries is not None else entries)
+            return True
+        if ch == "i":
+            _start_import(cv)
+            return True
+        if ch == "U":
+            if not (getattr(cv, "undo_stack", None) or []):
+                cv.message = "无可撤销的编辑"
+                return True
+            cv.editing = True
+            cv.edit_mode = "undo"
+            cv.undo_cursor = 0
+            cv.message = ""
+            cv.edit_error = ""
+            return True
         if ch == "?":
             cv.help_open = True
             cv.help_scroll = 0
@@ -963,6 +1340,12 @@ def _make_config_row_renderer(width: int, key_w: int, val_w: int, desc_w: int,
     """
 
     def _render_row(entry, i, is_sel):
+        # ★ 2026-10-07 第三批（分组头）：不可选分组分隔行（渲染分组名+计数）。
+        if isinstance(entry, _ConfigGroupRow):
+            return h(TEXT, {
+                "styled": _group_header_runs(entry, width),
+                "height": 1, "key": f"cv-grp-{i}",
+            })
         prefix = "\u25b6 " if is_sel else "  "
         runs = [StyledRun(prefix, _S_SEL_MARK if is_sel else None)]
         key = _truncate_width(str(entry["path"]), key_w)
@@ -1092,6 +1475,9 @@ def ConfigView(props) -> object:
     pick_mode = editing and edit_mode == "select"
     json_mode = editing and edit_mode == "json"
     json_input_mode = editing and edit_mode == "json_input"
+    # ★ 2026-10-07 第三批：导入路径输入 / 撤销历史面板
+    import_mode = editing and edit_mode == "import"
+    undo_mode = editing and edit_mode == "undo"
 
     # 帮助面板内容行（主区覆盖渲染；use_memo 按栏宽缓存）
     help_rows = use_memo(
@@ -1173,6 +1559,10 @@ def ConfigView(props) -> object:
         "" if editing else _config_status_text(cv, filter_active, len(matches))
     )
     extra_rows = (1 if search_mode else 0) + (1 if status_text else 0)
+    # ★ 2026-10-07 第三批（编辑 diff 预览）：编辑态底部占 3 行（编辑行 + diff
+    #   + 错误/提示）——从视口额外扣除 2 行（list_h 已扣 1 行）。
+    if editing:
+        extra_rows += 2
     vh = max(4, _viewport_rows() - extra_rows)
 
     # ── 行渲染器（模块级工厂；P1-1 拆分自组件内闭包） ──
@@ -1196,10 +1586,53 @@ def ConfigView(props) -> object:
         width, key_w, val_w, json_is_dict, json_keys, json_container,
     )
 
-    def _on_navigate(idx: int) -> None:
-        cv.selected = int(idx)
+    # ★ 2026-10-07 第三批（分组折叠）：过滤视图条目 → 分组头 + 条目行，
+    #   并维护「行 ↔ 视图条目索引」双向映射（导航/光标定位）。
+    collapsed_groups = set(getattr(cv, "collapsed_groups", None) or ())
+    display_items, row_to_entry, entry_to_row = _config_rows(
+        view_entries, collapsed_groups,
+    )
+    sel_row = entry_to_row.get(selected, 0) if display_items else 0
+    # 撤销历史面板数据（``U``）
+    undo_items = _undo_entries(cv) if undo_mode else []
+
+    def _on_navigate(row_idx: int) -> None:
+        """列表导航（行下标）→ 视图条目索引（分组头 -1 忽略）。"""
+        try:
+            row_idx = int(row_idx)
+        except (TypeError, ValueError):
+            return
+        idx = row_to_entry[row_idx] if 0 <= row_idx < len(row_to_entry) else -1
+        if idx < 0:
+            return
+        cv.selected = idx
         # ★ 2026-10-07（config 增强）：切换选中清除陈旧操作反馈。
         cv.message = ""
+
+    def _on_undo_navigate(idx: int) -> None:
+        cv.undo_cursor = int(idx)
+
+    def _render_undo_item(item, i, is_sel):
+        """撤销历史项渲染（``path = 旧值``）。"""
+        prefix = "\u25b6 " if is_sel else "  "
+        label = str(item.get("path") or item.get("key") or "")
+        old = str(item.get("old_text") or "")
+        runs = [
+            StyledRun(prefix, _S_SEL_MARK if is_sel else None),
+            StyledRun(label, _S_KEY),
+            StyledRun(" = ", _S_HINT),
+            StyledRun(old, _S_UNDO),
+        ]
+        if width > 0:
+            runs = truncate_runs(runs, width)
+        if is_sel:
+            runs = [
+                StyledRun(r.text, (r.style or Style()).merge(_S_SEL_BG))
+                for r in runs
+            ]
+        return h(TEXT, {
+            "styled": runs, "height": 1, "key": f"cv-undo-{i}",
+        })
 
     def _on_pick_navigate(idx: int) -> None:
         cv.edit_selected = int(idx)
@@ -1233,7 +1666,7 @@ def ConfigView(props) -> object:
     elif editing:
         header_hint = "编辑"
     else:
-        header_hint = "\u2191\u2193/jk 选择 \u00b7 Enter 编辑 \u00b7 r \u9ed8\u8ba4 \u00b7 u \u64a4\u9500 \u00b7 / \u641c\u7d22 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u5173\u95ed"
+        header_hint = "\u2191\u2193/jk \u9009\u62e9 \u00b7 Enter \u7f16\u8f91 \u00b7 e/i \u5bfc\u51fa/\u5bfc\u5165 \u00b7 U \u64a4\u9500\u5386\u53f2 \u00b7 z \u5206\u7ec4 \u00b7 ? \u5e2e\u52a9"
     count_seg = f" \u00b7 {total} \u9879"
     if filter_active:
         count_seg += f"/{len(entries)}"
@@ -1280,14 +1713,33 @@ def ConfigView(props) -> object:
             "onNavigate": _on_json_navigate,
             "focus": visible and json_mode,
         })
-    else:
+    elif undo_mode:
+        try:
+            undo_sel = int(getattr(cv, "undo_cursor", 0) or 0)
+        except (TypeError, ValueError):
+            undo_sel = 0
+        if undo_items:
+            undo_sel = max(0, min(undo_sel, len(undo_items) - 1))
+        else:
+            undo_sel = 0
         ledger = h(ListView, {
-            "items": view_entries,
+            "items": undo_items,
             "height": list_h,
             "width": width if width > 0 else None,
-            "cursor": selected if total else 0,
+            "cursor": undo_sel,
+            "renderItem": _render_undo_item,
+            "onNavigate": _on_undo_navigate,
+            "focus": visible and undo_mode,
+        })
+    else:
+        ledger = h(ListView, {
+            "items": display_items,
+            "height": list_h,
+            "width": width if width > 0 else None,
+            "cursor": sel_row if display_items else 0,
             "renderItem": render_row,
             "onNavigate": _on_navigate,
+            "isSelectable": _is_config_selectable,
             "focus": visible and not editing and not help_open,
         })
 
@@ -1309,7 +1761,47 @@ def ConfigView(props) -> object:
 
     # ── 底部行 ──
     bottom_rows: list = []
-    if pick_mode:
+    if undo_mode:
+        # ★ 2026-10-07 第三批（撤销历史面板）：列表即历史（主区），底部仅提示。
+        bottom_rows.append(h(TEXT, {
+            "children": (
+                "  \u2191\u2193/jk \u9009\u62e9\u5386\u53f2 \u00b7 "
+                "Enter \u56de\u9000\u5230\u8be5\u70b9 \u00b7 Esc \u5173\u95ed"
+            ),
+            "style": _S_HINT, "textWrap": "truncate-end", "height": 1,
+            "key": "cv-undo-hint",
+        }))
+        if cv.message:
+            msg_disp = f"  \u2713 {cv.message}"
+            if width > 0:
+                msg_disp = _truncate_width(msg_disp, width)
+            bottom_rows.append(h(TEXT, {
+                "children": msg_disp, "style": _S_OK,
+                "textWrap": "truncate-end", "height": 1, "key": "cv-undo-msg",
+            }))
+    elif import_mode:
+        # ★ 2026-10-07 第三批（从 JSON 导入配置）：路径输入行 + 错误/提示。
+        disp = f"  \u258d \u21e5 \u5bfc\u5165\u6587\u4ef6: {cv.edit_value}\u258f"
+        if width > 0:
+            disp = _truncate_width(disp, width)
+        bottom_rows.append(h(TEXT, {
+            "children": disp, "style": _S_IMPORT,
+            "textWrap": "truncate-end", "height": 1, "key": "cv-import",
+        }))
+        if cv.edit_error:
+            err_disp = f"  \u2716 {cv.edit_error}"
+            if width > 0:
+                err_disp = _truncate_width(err_disp, width)
+            bottom_rows.append(h(TEXT, {
+                "children": err_disp, "style": _S_ERR,
+                "textWrap": "truncate-end", "height": 1, "key": "cv-import-err",
+            }))
+        else:
+            bottom_rows.append(h(TEXT, {
+                "children": "  Enter \u5bfc\u5165 \u00b7 Esc \u53d6\u6d88",
+                "style": _S_HINT, "height": 1, "key": "cv-import-hint",
+            }))
+    elif pick_mode:
         bottom_rows.append(h(TEXT, {
             "children": "  \u2191\u2193/jk 选择 \u00b7 g/G 首末 \u00b7 PgUp/PgDn 翻页 \u00b7 Enter 确认 \u00b7 Esc 取消",
             "style": _S_HINT,
@@ -1355,6 +1847,16 @@ def ConfigView(props) -> object:
             "children": prompt, "style": _S_EDIT,
             "textWrap": "truncate-end", "height": 1, "key": "cv-json-edit",
         }))
+        # ★ 2026-10-07 第三批（编辑 diff 预览）：旧值 → 新值对照
+        old_val = ""
+        if cv.edit_json_action == "edit":
+            cur_v = _json_entry_value(json_container, cv.edit_json_selected)
+            old_val = _json_text(cur_v) if cur_v is not None else ""
+        diff_runs = _diff_runs(old_val, cv.edit_value)
+        bottom_rows.append(h(TEXT, {
+            "styled": truncate_runs(diff_runs, width) if width > 0 else diff_runs,
+            "height": 1, "key": "cv-json-diff",
+        }))
         if cv.edit_error:
             err_disp = f"  \u2716 {cv.edit_error}"
             if width > 0:
@@ -1377,6 +1879,13 @@ def ConfigView(props) -> object:
         bottom_rows.append(h(TEXT, {
             "children": edit_disp, "style": _S_EDIT,
             "textWrap": "truncate-end", "height": 1, "key": "cv-edit",
+        }))
+        # ★ 2026-10-07 第三批（编辑 diff 预览）：旧值 → 新值对照
+        old_text = entry.get("value_text") if entry else ""
+        diff_runs = _diff_runs(old_text, cv.edit_value)
+        bottom_rows.append(h(TEXT, {
+            "styled": truncate_runs(diff_runs, width) if width > 0 else diff_runs,
+            "height": 1, "key": "cv-diff",
         }))
         if cv.edit_error:
             err_disp = f"  \u2716 {cv.edit_error}"

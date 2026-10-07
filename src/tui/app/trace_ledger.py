@@ -30,6 +30,8 @@ from .trace_styles import (
     _S_TEXT,
     _S_TIME,
     _S_TIME_ABS,
+    _S_TIME_BAR,
+    _S_TIME_BAR_BG,
 )
 
 from src.presentation_data import (
@@ -182,6 +184,51 @@ def _format_relative(seconds: float) -> str:
     return f"{h // 24}d"
 
 
+#: 台账耗时条形图列数（2026-10-07 第三批；0=不显示）
+TIME_BAR_WIDTH = 6
+
+
+def _time_bar_fill(sec, max_sec, width: int = TIME_BAR_WIDTH) -> tuple:
+    """耗时条填充预算：``(fill, width)``（按全表最大耗时归一化）。
+
+    空耗时（None/非法/<=0）→ fill=0（条全为背景 ``░``，仍占位保持对齐）；
+    max_sec<=0 → fill=0。有耗时但占比极小时至少填充 1 格（可见）；width<=0
+    → ``(0, 0)``（不渲染）。纯函数，便于单测与跨行复用。
+    """
+    if width <= 0:
+        return (0, 0)
+    try:
+        s = float(sec)
+    except (TypeError, ValueError):
+        return (0, width)
+    try:
+        m = float(max_sec)
+    except (TypeError, ValueError):
+        m = 0.0
+    if s <= 0 or m <= 0:
+        return (0, width)
+    fill = int(round(s / m * width))
+    return (max(1, min(fill, width)), width)
+
+
+def _time_bar_max(records) -> float:
+    """记录列表的最大耗时（秒；耗时条归一化真源；无 → 0.0）。"""
+    best = 0.0
+    for rec in records or []:
+        if rec is None:
+            continue
+        sec = _rec_time_seconds(rec)
+        if sec is None:
+            continue
+        try:
+            v = float(sec)
+        except (TypeError, ValueError):
+            continue
+        if v > best:
+            best = v
+    return best
+
+
 def _rec_time_text(rec, mode: str) -> str:
     """记录时间戳文本（``abs``=HH:MM:SS / ``rel``=相对距今；无 epoch 时间戳 → ``""``）。
 
@@ -208,7 +255,8 @@ def _rec_time_text(rec, mode: str) -> str:
 def _ledger_row_runs(rec, sel: bool, left_w: int,
                      matched: bool = False, cur_match: bool = False,
                      turn: int = 0, mark: str = "",
-                     time_mode: str = "off") -> list:
+                     time_mode: str = "off",
+                     time_bar: tuple | None = None) -> list:
     """台账行 runs（选中高亮 + ▶ 标记；耗时右对齐；宽截断；指纹缓存）。
 
     ★ 2026-10-07（轨迹 Trace 台账行增强）：
@@ -224,10 +272,17 @@ def _ledger_row_runs(rec, sel: bool, left_w: int,
       - ``time_mode``（``abs``/``rel``）→ 行尾在耗时左侧显示记录时间戳
         （``HH:MM:SS`` / 相对距今；无 epoch 时间戳的记录不显示）。
     两者同样进入缓存键。
+
+    ★ 2026-10-07 第三批（耗时条形图）：
+      - ``time_bar``（``(fill, width)``）→ 行尾耗时左侧显示迷你占比条
+        （``█``*fill + ``░``*(width-fill)）——直观对比各记录耗时长短
+        （fill 由渲染器按全表最大耗时归一化预算，见 ``_time_bar_fill``）。
+    进入缓存键。
     """
     t_raw = _rec_time_seconds(rec)
     t_key = int(t_raw) if t_raw is not None else None
     t_text = _rec_time_text(rec, time_mode)
+    bar_key = (int(time_bar[0]), int(time_bar[1])) if time_bar else None
     key = (
         getattr(rec, "index", 0),
         getattr(rec, "kind", ""),
@@ -244,6 +299,7 @@ def _ledger_row_runs(rec, sel: bool, left_w: int,
         str(mark or ""),
         str(time_mode or "off"),
         t_text,
+        bar_key,
     )
     cached = _LEDGER_RUNS_CACHE.get(key)
     if cached is not None:
@@ -286,25 +342,34 @@ def _ledger_row_runs(rec, sel: bool, left_w: int,
         if prev_runs:
             runs.append(StyledRun(" \u00b7 ", _S_HINT))
             runs.extend(prev_runs)
-    # ── 行尾右对齐区（时间列 + 耗时） ──
-    right_parts: list = []
+    # ── 行尾右对齐区（耗时条 + 时间列 + 耗时） ──
+    right_groups: list = []
+    if time_bar and bar_key and bar_key[1] > 0:
+        bw = bar_key[1]
+        bf = max(0, min(bar_key[0], bw))
+        right_groups.append([
+            StyledRun("\u2588" * bf, _S_TIME_BAR),
+            StyledRun("\u2591" * (bw - bf), _S_TIME_BAR_BG),
+        ])
     if t_text:
-        right_parts.append((t_text, _S_TIME_ABS))
+        right_groups.append([StyledRun(t_text, _S_TIME_ABS)])
     t = ""
     if t_raw is not None:
         t = format_duration(t_raw)
     if t:
-        right_parts.append((t, _S_TIME))
-    if right_parts and left_w > 0:
+        right_groups.append([StyledRun(t, _S_TIME)])
+    if right_groups and left_w > 0:
         used = sum(getattr(r, "width", 1) for r in runs)
-        right_w = sum(len(txt) for txt, _st in right_parts) + (len(right_parts) - 1)
+        right_w = sum(
+            sum(getattr(rr, "width", 1) for rr in g) for g in right_groups
+        ) + (len(right_groups) - 1)
         pad = left_w - used - right_w - 1
         if pad > 0:
             runs.append(StyledRun(" " * pad, None))
-        for i, (txt, st) in enumerate(right_parts):
+        for i, g in enumerate(right_groups):
             if i:
                 runs.append(StyledRun(" ", _S_HINT))
-            runs.append(StyledRun(txt, st))
+            runs.extend(g)
     if cur_match:
         bg = _S_SEARCH_CUR_BG
     elif matched:
@@ -343,7 +408,7 @@ def _row_turn_map(rows: list) -> dict:
     mapping: dict = {}
     turn = 0
     for i, r in enumerate(rows):
-        if r is None:
+        if r is None or getattr(r, "_trace_turn_header", False):
             turn += 1
             mapping[i] = 0
         elif isinstance(r, TraceRecord):
@@ -375,4 +440,5 @@ __all__ = [
     "_rec_time_seconds", "_record_search_text", "_row_search_text",
     "_trace_search_matches", "_ledger_row_runs", "_row_turn_map",
     "_sep_row_runs", "_rec_time_text", "_format_relative",
+    "TIME_BAR_WIDTH", "_time_bar_fill", "_time_bar_max",
 ]

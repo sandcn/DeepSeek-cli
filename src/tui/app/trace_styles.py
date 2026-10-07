@@ -75,6 +75,13 @@ _STYLE_SPECS = (
     ("_S_LINE_NO", "line_number", Style(fg=240)),
     ("_S_EXPANDED", "expanded", Style(fg=245)),
     ("_S_EXPAND_PREFIX", "expand_prefix", Style(fg=110)),
+    # 增强（2026-10-07 第三批）：耗时条形图 / 记录对比 / 轮次折叠
+    ("_S_TIME_BAR", "time_bar", Style(fg=45)),
+    ("_S_TIME_BAR_BG", "time_bar_bg", Style(fg=238)),
+    ("_S_COMPARE_LABEL", "compare_label", Style(fg=214, bold=True)),
+    ("_S_COMPARE_SAME", "compare_same", Style(fg=242)),
+    ("_S_COMPARE_DIFF", "compare_diff", Style(fg=214)),
+    ("_S_TURN_COLLAPSED", "turn_collapsed", Style(fg=108, bold=True)),
 )
 
 #: 搜索 query 长度上限兜底
@@ -133,6 +140,12 @@ _S_TIME_ABS = _MAP["_S_TIME_ABS"]
 _S_LINE_NO = _MAP["_S_LINE_NO"]
 _S_EXPANDED = _MAP["_S_EXPANDED"]
 _S_EXPAND_PREFIX = _MAP["_S_EXPAND_PREFIX"]
+_S_TIME_BAR = _MAP["_S_TIME_BAR"]
+_S_TIME_BAR_BG = _MAP["_S_TIME_BAR_BG"]
+_S_COMPARE_LABEL = _MAP["_S_COMPARE_LABEL"]
+_S_COMPARE_SAME = _MAP["_S_COMPARE_SAME"]
+_S_COMPARE_DIFF = _MAP["_S_COMPARE_DIFF"]
+_S_TURN_COLLAPSED = _MAP["_S_TURN_COLLAPSED"]
 _SEARCH_QUERY_MAX = search_query_max()
 
 __all__ = [
@@ -144,5 +157,7 @@ __all__ = [
     "_S_HELP_KEY", "_S_HELP_GROUP", "_S_HELP_DESC",
     "_S_STATS_LABEL", "_S_STATS_VALUE", "_S_STATS_BAR",
     "_S_MARK", "_S_TIME_ABS", "_S_LINE_NO", "_S_EXPANDED", "_S_EXPAND_PREFIX",
+    "_S_TIME_BAR", "_S_TIME_BAR_BG", "_S_COMPARE_LABEL", "_S_COMPARE_SAME",
+    "_S_COMPARE_DIFF", "_S_TURN_COLLAPSED",
     "trace_style_map", "search_query_max",
 ]

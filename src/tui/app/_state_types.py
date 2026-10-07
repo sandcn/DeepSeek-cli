@@ -164,6 +164,7 @@ class EditMsgSelectState:
         options: 消息单行摘要列表（每条消息一行）。
         previews: 每条消息的**全文预览**文本（与 options 对齐；弹窗下方
             预览区显示当前选中消息完整内容——2026-10-07 增强）。
+        preview_scroll: 预览区滚动偏移（``[``/``]`` 滚动长消息全文）。
         filter: 弹窗内搜索过滤文本（``/`` 进入搜索输入；空串=不过滤）。
         search_mode: 是否处于弹窗内搜索输入模式（True 时组件独占按键输入，
             列表控件不参与导航）——2026-10-07 增强。
@@ -185,6 +186,10 @@ class EditMsgSelectState:
     filter: str = ""
     search_mode: bool = False
     selected: int = 0
+    # ── 2026-10-07 第三批（editmsg 预览滚动） ──
+    # preview_scroll: 预览区滚动偏移（``[``/``]`` 滚动长消息全文预览；
+    #   切换选中消息复位 0）。
+    preview_scroll: int = 0
     deadline: float = 0.0
     done: bool = False
     action: str = ""
@@ -312,6 +317,14 @@ class ConfigViewState:
     undo_stack: list = field(default_factory=list)
     # rc_file: 配置文件路径（头部「来源」显示；命令线程注入）。
     rc_file: str = ""
+    # ── 2026-10-07 第三批（分组折叠 / 撤销面板 / 导出导入） ──
+    # collapsed_groups: 折叠的配置分组集合（按 path 首段分组；``za``/``zc``/
+    #   ``zo`` 切换当前组、``zC``/``zO`` 全部；组内条目从列表隐藏）。
+    collapsed_groups: set = field(default_factory=set)
+    # pending_prefix: 待定多键前缀（``z``——``za``/``zc``/``zo``/``zC``/``zO``）。
+    pending_prefix: str = ""
+    # undo_cursor: 撤销历史面板（``edit_mode="undo"``）当前选中索引。
+    undo_cursor: int = 0
     deadline: float = 0.0
     done: bool = False
     action: str = ""
@@ -411,6 +424,17 @@ class PluginViewState:
     help_open: bool = False
     # status_message: 底部状态提示（复制/无匹配等操作反馈；空串不渲染）。
     status_message: str = ""
+    # ── 2026-10-07 第三批（依赖关系视图 / 状态分类过滤） ──
+    # relation_open: 依赖关系面板开关（``r`` 切换——右栏显示依赖/被依赖/
+    #   提供服务关系，Enter 跳转到相关插件）。
+    relation_open: bool = False
+    # relation_cursor / relation_scroll: 关系面板光标行与滚动偏移。
+    relation_cursor: int = 0
+    relation_scroll: int = 0
+    # filter_state: 按状态过滤（""=全部；非空=只显示该状态插件）。
+    filter_state: str = ""
+    # filter_kind: 按分类过滤（""=全部；非空=只显示该分类插件）。
+    filter_kind: str = ""
     deadline: float = 0.0
     done: bool = False
     action: str = ""

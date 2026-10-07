@@ -76,6 +76,7 @@ from .trace_styles import (  # noqa: E402
     _S_TITLE,
     _S_TREE_KEY,
     _S_TREE_VAL,
+    _S_TURN_COLLAPSED,
 )
 
 # ── 统计 / 帮助 / 导出（2026-10-07：轨迹 Trace 显示信息 / 操作 / 更多功能） ──
@@ -127,9 +128,15 @@ from .trace_ledger import (  # noqa: E402
     _sep_row_runs,
     _status_fg,
     _status_icon,
+    _time_bar_fill,
+    _time_bar_max,
     _trace_search_matches,
     _viewport_rows,
+    TIME_BAR_WIDTH,
 )
+
+# ── 记录对比面板（2026-10-07 第三批：``C`` 键并排对照） ─────
+from .trace_compare import compare_panel_rows  # noqa: E402
 
 #: 检查器内容行预算下限（标题 + 元信息 + 省略提示占用后至少保留的行数）
 _INSPECTOR_MIN_CONTENT = 4
@@ -271,85 +278,14 @@ def _detail_deps(rec) -> tuple:
     return (None, img_fp)
 
 
-def _clamp_color(v):
-    """renderer 色号钳制（review 修复：bool / 越界 int / 非 int 非 tuple
-    色号会让 tui Style 构造抛 ValueError 或生成非法 ANSI——一律回退 None，
-    丢色不崩溃）。
-
-    注意 bool 是 int 子类且 True∈[0,255]——但 ``Style.__post_init__`` 对
-    bool 显式抛 ValueError（bool 色号语义错误），故 bool 必须回退 None
-    （修复前原样放行 → Style 构造异常传播中断检查器渲染）。
-    """
-    if isinstance(v, bool) or not isinstance(v, int):
-        return None
-    return v if 0 <= v <= 255 else None
-
-
-def _to_tui_style(rs, kind: str):
-    """renderer.ansi.Style → tui.core.Style（检查器 markdown 行用）。
-
-    RGB 三元组 fg/bg → ``TrueColor``（tui 样式类型）；reasoning 叠加暗灰
-    弱化样式（对齐 chat_view 推理块弱化语义：基础样式 fg 覆盖渲染色、
-    布尔属性 OR 保留——与 ``_block_styled_lines`` 的
-    ``(r.style or Style()).merge(_S_REASONING)`` 同语义，_S_REASONING 与
-    _S_DIM 同为 fg=242 暗灰）。非法色号（越界 int / 越界 RGB）钳制回退
-    None（防御：异常数据不中断检查器渲染）。
-    """
-    if rs is None:
-        st = None
-    else:
-        fg = rs.fg
-        if isinstance(fg, tuple):
-            from src.tui.core.color import TrueColor
-            try:
-                fg = TrueColor(*fg)
-            except Exception:
-                fg = None
-        else:
-            fg = _clamp_color(fg)
-        bg = rs.bg
-        if isinstance(bg, tuple):
-            from src.tui.core.color import TrueColor
-            try:
-                bg = TrueColor(*bg)
-            except Exception:
-                bg = None
-        else:
-            bg = _clamp_color(bg)
-        st = Style(fg=fg, bg=bg, bold=rs.bold, italic=rs.italic,
-                   dim=rs.dim, underline=rs.underline)
-    if kind == "reasoning":
-        st = _S_DIM if st is None else st.merge(_S_DIM)
-    return st
-
-
-def _convert_ansi_row(aline, right_w: int, kind: str) -> list:
-    """单条 AnsiLine → StyledRun 行列表（超宽按 right_w 样式安全换行）。
-
-    空行（无 runs / 纯文本为空——段落/结构分隔）→ 单个空格占位行
-    ``[StyledRun(" ", 样式)]``（review 修复：TEXT styled=[] 渲染 0 行 h=0
-    不绘制——空行必须有占位才能保留段落/表格结构；占位行带 kind 基础
-    样式——reasoning 空行与其他行同暗灰，视觉一致）。
-
-    防御（review 修复 P3）：单 run 样式转换异常（非法色号等）→ 该 run
-    回退默认样式（不中断整行/检查器渲染）。
-    """
-    if not getattr(aline, "runs", None) or not getattr(aline, "plain", ""):
-        return [[StyledRun(" ", _to_tui_style(None, kind))]]
-    from src.renderer.ansi.helpers import wrap_line
-    out: list = []
-    for wl in wrap_line(aline, right_w):
-        runs: list = []
-        for r in wl.runs:
-            if not r.text:
-                continue
-            try:
-                st = _to_tui_style(r.style, kind)
-            except Exception:
-                st = None
-            runs.append(StyledRun(r.text, st))
-        out.append(runs if runs else [StyledRun(" ", _to_tui_style(None, kind))])
-    return out
+# ★ 2026-10-07 第三批（editmsg 预览复用）：AnsiLine → StyledRun 转换提取为
+#   共享模块 ``_ansi_convert``（trace_view 检查器与 editmsg 预览区单一真源）
+#   ——此处 re-import 保持既有调用方（本模块与测试）名字可访问。
+from ._ansi_convert import (  # noqa: E402
+    _clamp_color,
+    _convert_ansi_row,
+    _to_tui_style,
+)
 
 
 def _block_styled_rows(block, right_w: int, kind: str) -> list:
@@ -1303,6 +1239,93 @@ class _TraceExpandRow:
         self.last = bool(last)
 
 
+class _TraceTurnCollapsedRow:
+    """台账轮次折叠头行（轮次 ``turn`` 已折叠，含 ``count`` 条记录；不可选）。
+
+    2026-10-07 第三批（用户需求：轨迹 Trace 轮次折叠）：折叠轮次内的记录行
+    被本行替换——渲染为 ``── 轮次 N · 折叠 K 条（zo 展开）──``。与
+    ``TraceRecord`` 同为 rows 元素；``_rows_index`` / ``_row_turn_map`` 仅把
+    ``TraceRecord`` 视为记录行（本行经 ``_trace_turn_header`` 标记参与轮次
+    计数，但不参与选择/导航）。
+    """
+
+    __slots__ = ("turn", "count")
+
+    #: 类级标记（trace_ledger._row_turn_map 鸭子类型识别——避免跨模块循环导入）
+    _trace_turn_header = True
+
+    def __init__(self, turn: int, count: int) -> None:
+        self.turn = int(turn)
+        self.count = int(count)
+
+
+def _collapse_turns(rows: list, collapsed) -> list:
+    """按轮次折叠 rows（折叠轮次的记录行替换为单个折叠头行）。
+
+    ``collapsed`` 为轮次号集合（空 → **原样返回 rows**，零成本快路径——引用
+    不变，``_rows_index`` / ``_row_turn_map`` 缓存继续命中）。轮次号与
+    ``_row_turn_map`` 同口径（每遇 ``None`` 分隔行轮次 +1）；轮次 0（首条
+    用户消息之前的系统提词/工具列表记录）不参与折叠（无前置分隔行）。
+    过滤视图（无分隔行）下轮次恒为 0，折叠自然不生效（语义一致）。
+    """
+    if not collapsed:
+        return rows
+    try:
+        keys = set(int(x) for x in collapsed)
+    except (TypeError, ValueError):
+        keys = set()
+    if not keys:
+        return rows
+    out: list = []
+    turn = 0
+    i = 0
+    n = len(rows)
+    while i < n:
+        r = rows[i]
+        if r is None:
+            turn += 1
+            if turn in keys:
+                j = i + 1
+                cnt = 0
+                while j < n and rows[j] is not None:
+                    if isinstance(rows[j], TraceRecord):
+                        cnt += 1
+                    j += 1
+                out.append(_TraceTurnCollapsedRow(turn, cnt))
+                i = j
+                continue
+            out.append(r)
+            i += 1
+            continue
+        out.append(r)
+        i += 1
+    return out
+
+
+def _collapse_turns_deps(rows, collapsed) -> tuple:
+    """轮次折叠行构造 use_memo 依赖（行列表身份 + 折叠集合指纹）。"""
+    try:
+        keys = sorted(int(x) for x in (collapsed or ()))
+    except (TypeError, ValueError):
+        keys = []
+    return (id(rows), len(rows), ";".join(str(k) for k in keys))
+
+
+def _turn_collapsed_runs(row: "_TraceTurnCollapsedRow", left_w: int) -> list:
+    """轮次折叠头行 runs（``── 轮次 N · 折叠 K 条（zo 展开）──``）。"""
+    runs = [
+        StyledRun(f"\u2500\u2500 \u8f6e\u6b21 {row.turn} ", _S_TURN_COLLAPSED),
+        StyledRun(
+            f"\u00b7 \u6298\u53e0 {row.count} \u6761",
+            _S_HINT,
+        ),
+        StyledRun(" \u2500\u2500", _S_SEP_ROW),
+    ]
+    if left_w > 0:
+        runs = truncate_runs(runs, left_w)
+    return runs
+
+
 def _expand_preview_texts(rec, limit: int = _EXPAND_PREVIEW_MAX) -> list:
     """记录详情预览行（纯文本，最多 ``limit`` 行；空详情 → 占位提示）。
 
@@ -1463,16 +1486,20 @@ def _ledger_renderer(rows: list, left_w: int,
                      matched_ids: set | None = None,
                      cur_rec_id: int | None = None,
                      mark_map: dict | None = None,
-                     time_mode: str = "off"):
+                     time_mode: str = "off",
+                     time_bar_width: int = 0,
+                     max_time: float = 0.0):
     """台账行渲染函数（ListView renderItem 三参签名）。
 
     ★ P3（review 2026-08-18）：删除未使用的 ``records``/``model`` 死参数
       ——渲染仅消费 rows/left_w（分隔行编号经 ``_rows_index`` 查表），
       死参数误导后续维护（调用点同步收紧签名）。
 
-    items 为 ``rows``（TraceRecord / None 分隔行 / ``_TraceExpandRow``
-    内联展开行）：
+    items 为 ``rows``（TraceRecord / None 分隔行 / ``_TraceTurnCollapsedRow``
+    轮次折叠头行 / ``_TraceExpandRow`` 内联展开行）：
       - 分隔行（None）→ 轮次分隔行 TEXT（``── 轮次 N ──``）；
+      - 轮次折叠头行 → ``── 轮次 N · 折叠 K 条 ──``（不可选，ListView
+        isSelectable 排除）；
       - 内联展开行 → ``↳ 详情预览``（不可选，ListView isSelectable 排除）；
       - 记录行 → ``_ledger_row_runs``（选中整行背景高亮 + ▶ 标记），
         isSelected 由 ListView 注入（受控 cursor 行）。
@@ -1484,6 +1511,10 @@ def _ledger_renderer(rows: list, left_w: int,
 
     ★ 2026-10-07 第二批：``mark_map``（记录号 → 标记字符）与 ``time_mode``
     传入台账行渲染（标记显示 / 时间列）。
+
+    ★ 2026-10-07 第三批（耗时条形图）：``time_bar_width``（>0 = 显示耗时条，
+    列数）+ ``max_time``（全表最大耗时，归一化基准）——每行按自身耗时预算
+    填充格数（见 ``_time_bar_fill``）。
 
     ★ 性能（O(N²) 优化）：分隔行编号经 ``_rows_index`` 预计算 O(1) 查表
     （``sep_nums``）——修复前 ``sum(1 for r in rows[:idx] if r is None)``
@@ -1503,6 +1534,12 @@ def _ledger_renderer(rows: list, left_w: int,
                 "styled": _sep_row_runs(n, left_w),
                 "height": 1,
             })
+        if isinstance(item, _TraceTurnCollapsedRow):
+            return h(TEXT, {
+                "key": f"tturn-{idx}",
+                "styled": _turn_collapsed_runs(item, left_w),
+                "height": 1,
+            })
         if isinstance(item, _TraceExpandRow):
             return h(TEXT, {
                 "key": f"texp-{idx}",
@@ -1511,12 +1548,17 @@ def _ledger_renderer(rows: list, left_w: int,
             })
         matched = matched_ids is not None and id(item) in matched_ids
         cur_match = cur_rec_id is not None and id(item) == cur_rec_id
+        bar = None
+        if time_bar_width > 0:
+            bar = _time_bar_fill(
+                _rec_time_seconds(item), max_time, time_bar_width,
+            )
         return h(TEXT, {
             "key": f"trow-{idx}",
             "styled": _ledger_row_runs(
                 item, bool(is_sel), left_w, matched, cur_match,
                 turn_map.get(idx, 0), marks.get(getattr(item, "index", -1), ""),
-                time_mode,
+                time_mode, bar,
             ),
             "height": 1,
         })
@@ -1605,6 +1647,8 @@ def _status_line_text(model, filtered: bool = False) -> str:
         parts.append("帮助面板：? / q / Esc 关闭")
     elif getattr(model, "trace_stats_open", False):
         parts.append("统计面板：i 关闭")
+    elif len(getattr(model, "trace_compare", None) or ()) == 2:
+        parts.append("对比面板：C 重选 / Esc 清除")
     pattern = getattr(model, "trace_search_pattern", "") or ""
     if pattern:
         matches = getattr(model, "trace_search_matches", None) or []
@@ -1630,6 +1674,13 @@ def _status_line_text(model, filtered: bool = False) -> str:
     marks = getattr(model, "trace_marks", None) or {}
     if marks:
         parts.append(f"标记 {len(marks)}")
+    # ★ 2026-10-07 第三批（导出范围 / 记录对比）
+    scope = getattr(model, "trace_export_scope", "all") or "all"
+    if scope != "all":
+        parts.append(f"导出 {_EXPORT_SCOPE_LABELS.get(scope, scope)}")
+    compare = list(getattr(model, "trace_compare", None) or ())
+    if compare:
+        parts.append("对比 " + " \u21d4 ".join(f"#{n}" for n in compare))
     message = getattr(model, "trace_status_message", "") or ""
     if message:
         parts.append(message)
@@ -1783,6 +1834,215 @@ def _toggle_line_numbers(model) -> None:
     _set_status(model, f"检查器行号：{'开' if new else '关'}")
 
 
+# ═══════════════════════════════════════════════════════════
+# 增强辅助（2026-10-07 第三批：轮次折叠 / 记录对比 / 导出范围）
+# ═══════════════════════════════════════════════════════════
+
+
+def _record_by_number(records, number: int):
+    """按记录号 ``#N`` 查找记录（找不到 → None）。"""
+    for rec in records or []:
+        if rec is not None and getattr(rec, "index", -1) == number:
+            return rec
+    return None
+
+
+def _turn_of_record(rows, records, pos: int) -> int:
+    """记录视图位置 ``pos`` 的轮次号（经 rows 的轮次映射；越界 → 0）。"""
+    if not (0 <= pos < len(records or [])):
+        return 0
+    row_idx = _row_of_record(rows, pos, records)
+    return _row_turn_map(rows).get(row_idx, 0)
+
+
+def _nearest_turn(rows, records, pos: int) -> int:
+    """选中记录「最近」的轮次号（自身轮次 > 相邻轮次；无 → 0）。
+
+    自身不属任何轮次（轮次 0，如系统提词/工具列表，或被折叠轮次前移出的
+    记录）时向前、再向后找相邻轮次——保证 ``za``/``zc``/``zo`` 在折叠后
+    定位到可操作的轮次（否则折叠轮次后无法再展开）。
+    """
+    t = _turn_of_record(rows, records, pos)
+    if t > 0:
+        return t
+    n = len(records or [])
+    for p in range(int(pos) + 1, n):
+        t2 = _turn_of_record(rows, records, p)
+        if t2 > 0:
+            return t2
+    for p in range(int(pos) - 1, -1, -1):
+        t2 = _turn_of_record(rows, records, p)
+        if t2 > 0:
+            return t2
+    return 0
+
+
+def _toggle_turn_collapse(model, records, rows, sel_pos: int,
+                          mode: str = "toggle") -> None:
+    """``za``/``zc``/``zo``：折叠 / 展开选中记录相邻的轮次。
+
+    ``mode``：``"toggle"``（za 切换）/``"close"``（zc 强制折叠）/``"open"``
+    （zo 强制展开）。轮次经 ``_nearest_turn`` 解析（自身轮次优先，无则相邻
+    轮次——折叠后选中前移到轮次外时仍可展开）。折叠后若选中记录被隐藏
+    （落在折叠轮次内），选中自动移到该轮次之前的最近可见记录（避免光标
+    回跳首行）。
+    """
+    if not (0 <= sel_pos < len(records or [])):
+        _set_status(model, "无可折叠的记录")
+        return
+    turn = _nearest_turn(rows, records, sel_pos)
+    if turn <= 0:
+        _set_status(model, "该记录不属于任何轮次")
+        return
+    collapsed = set(getattr(model, "trace_collapsed_turns", None) or ())
+    if mode == "close":
+        new_state = True
+    elif mode == "open":
+        new_state = False
+    else:
+        new_state = turn not in collapsed
+    if not new_state:
+        collapsed.discard(turn)
+        model.trace_collapsed_turns = collapsed
+        _set_status(model, f"已展开轮次 {turn}")
+        return
+    collapsed.add(turn)
+    model.trace_collapsed_turns = collapsed
+    # 当前记录随折叠被隐藏 → 移到该轮次之前的最近可见记录
+    row_idx = _row_of_record(rows, sel_pos, records)
+    start = row_idx
+    while start >= 0 and rows[start] is not None and not getattr(
+        rows[start], "_trace_turn_header", False,
+    ):
+        start -= 1
+    prev = start - 1
+    new_pos = -1
+    while prev >= 0:
+        if isinstance(rows[prev], TraceRecord):
+            ri = _records_index_of_row(rows, prev)
+            if ri >= 0:
+                new_pos = ri
+                break
+        prev -= 1
+    if new_pos >= 0:
+        _select_record(model, new_pos)
+    _set_status(model, f"已折叠轮次 {turn}（zo 展开）")
+
+
+def _collapse_all_turns(model, rows, fold: bool) -> None:
+    """``zC``/``zO``：折叠（fold=True）/ 展开（fold=False）全部轮次。"""
+    if not fold:
+        model.trace_collapsed_turns = set()
+        _set_status(model, "已展开全部轮次")
+        return
+    turn_map = _row_turn_map(rows)
+    turns = {t for t in turn_map.values() if t > 0}
+    if not turns:
+        _set_status(model, "无可折叠的轮次")
+        return
+    model.trace_collapsed_turns = turns
+    _set_status(model, f"已折叠全部轮次（{len(turns)} 个，zO 展开）")
+
+
+def _jump_turn(model, records, rows, sel_pos: int, delta: int) -> None:
+    """``{``/``}``：跳到上 / 下一个轮次的首条记录。"""
+    n = len(records or [])
+    if n == 0:
+        _set_status(model, "无轮次可跳转")
+        return
+    cur_turn = _turn_of_record(rows, records, sel_pos) if 0 <= sel_pos < n else 0
+    target = -1
+    if delta > 0:
+        for pos in range(sel_pos + 1, n):
+            if _turn_of_record(rows, records, pos) > cur_turn:
+                target = pos
+                break
+    else:
+        if cur_turn <= 0:
+            _set_status(model, "无上一个轮次")
+            return
+        best_turn = -1
+        for pos in range(n):
+            t = _turn_of_record(rows, records, pos)
+            if 0 < t < cur_turn and t > best_turn:
+                best_turn = t
+        if best_turn > 0:
+            for pos in range(n):
+                if _turn_of_record(rows, records, pos) == best_turn:
+                    target = pos
+                    break
+    if target >= 0:
+        _select_record(model, target)
+        _set_status(
+            model,
+            f"\u2192 轮次 {_turn_of_record(rows, records, target)} \u00b7 "
+            f"#{getattr(records[target], 'index', 0)}",
+        )
+    else:
+        _set_status(model, "无下一个轮次" if delta > 0 else "无上一个轮次")
+
+
+def _toggle_compare(model, records, sel_pos: int) -> None:
+    """``C``：把选中记录加入对比集（最多 2 条；已满时重置为新的一条）。"""
+    if not (0 <= sel_pos < len(records or [])):
+        _set_status(model, "无可对比的记录")
+        return
+    number = int(getattr(records[sel_pos], "index", 0))
+    current = list(getattr(model, "trace_compare", None) or [])
+    if len(current) >= 2:
+        model.trace_compare = [number]
+        _set_status(model, f"已选对比 A=#{number}（再按 C 选第二条）")
+        return
+    if number in current:
+        current.remove(number)
+        model.trace_compare = current
+        _set_status(model, f"已移出对比 #{number}")
+        return
+    current.append(number)
+    model.trace_compare = current
+    if len(current) == 2:
+        _set_status(model, f"对比 #{current[0]} \u21d4 #{current[1]}（Esc 清除）")
+    else:
+        _set_status(model, f"已选对比 A=#{number}（再按 C 选第二条）")
+
+
+def _clear_compare(model) -> None:
+    """清除记录对比集（Esc / 关闭视图）。"""
+    model.trace_compare = []
+
+
+#: 导出范围循环顺序（``x`` 键）
+_EXPORT_SCOPES = ("all", "view", "errors", "tools")
+#: 导出范围显示名（状态行提示）
+_EXPORT_SCOPE_LABELS = {
+    "all": "全部", "view": "当前视图", "errors": "仅失败", "tools": "仅工具",
+}
+
+
+def _cycle_export_scope(model) -> str:
+    """``x``：循环导出范围（全部 → 当前视图 → 仅失败 → 仅工具）。"""
+    cur = getattr(model, "trace_export_scope", "all") or "all"
+    new = _EXPORT_SCOPES[(_mode_index(_EXPORT_SCOPES, cur) + 1) % len(_EXPORT_SCOPES)]
+    model.trace_export_scope = new
+    _set_status(model, f"导出范围：{_EXPORT_SCOPE_LABELS.get(new, new)}")
+    return new
+
+
+def _export_records_for_scope(scope: str, raw_records, view_records) -> list:
+    """按导出范围筛选记录（``all``/``view``/``errors``/``tools``）。
+
+    ``all`` → 全量（未过滤）记录；``view`` → 当前视图（过滤/种类过滤后）；
+    ``errors`` → 仅失败记录；``tools`` → 仅工具记录。
+    """
+    scope = scope or "all"
+    base = list(view_records or []) if scope == "view" else list(raw_records or [])
+    if scope == "errors":
+        return [r for r in base if r is not None and _is_error_record(r)]
+    if scope == "tools":
+        return [r for r in base if r is not None and _is_tool_record(r)]
+    return base
+
+
 def _copy_text(model, text: str, label: str) -> None:
     """复制文本到剪贴板（OSC52）+ 状态行反馈（空文本提示）。"""
     if not text:
@@ -1928,16 +2188,27 @@ def _toggle_search_case(model, records, content_rows, total_content: int,
     _set_status(model, f"搜索大小写{label}：{len(matches)} 处匹配")
 
 
-def _do_export(model, records, fmt: str, source: str) -> None:
-    """``w``/``W``：导出当前轨迹为 Markdown / JSON 文件。"""
+def _do_export(model, records, fmt: str, source: str,
+               scope_label: str = "") -> None:
+    """``w``/``W``：按当前导出范围把轨迹写为 Markdown / JSON 文件。
+
+    ★ 2026-10-07 第三批（导出范围）：``records`` 为已按 ``trace_export_scope``
+    筛选后的记录（见 ``_export_records_for_scope``）；``scope_label`` 为范围
+    显示名（状态行标注）。空范围 → 提示且不落盘（避免生成空文件）。
+    """
+    records = [r for r in (records or []) if r is not None]
+    if not records:
+        _set_status(model, "导出范围为空，无记录可导出")
+        return
     try:
         path = write_export(records, fmt, source)
     except Exception as exc:  # 写盘失败（权限/磁盘）→ 状态提示，不崩溃
         _set_status(model, f"导出失败：{exc}")
         return
-    count = sum(1 for rec in (records or []) if rec is not None)
+    count = len(records)
     label = "Markdown" if fmt == "md" else "JSON"
-    _set_status(model, f"已导出 {count} 条记录（{label}）→ {path}")
+    scope = f"{scope_label} \u00b7 " if scope_label else ""
+    _set_status(model, f"已导出 {scope}{count} 条记录（{label}）→ {path}")
 
 
 def _clear_search(model) -> None:
@@ -2036,7 +2307,8 @@ def _handle_trace_event(
     total: int, total_content: int, approx_content_vh: int,
     pane_state, event,
     raw_records=None, view_map=None, source: str = "",
-    pane_total: int = 0, pane_vh: int = 0,
+    pane_total: int = 0, pane_vh: int = 0, display_rows=None,
+    base_rows=None,
 ) -> bool:
     """TraceView 输入事件处理（模块级；P1-1 拆分自组件内闭包 ``_handle``）。
 
@@ -2048,7 +2320,14 @@ def _handle_trace_event(
       - ``source``：轨迹来源标签（导出元信息；主轨迹 "" / 子代理 label）；
       - ``pane_total`` / ``pane_vh``：帮助 / 统计面板行数与视口（>0 表示
         右栏当前显示面板——滚动导航以面板行数为准，搜索输入被禁用）。
+    ★ 2026-10-07 第三批：``display_rows`` 为台账渲染行（含轮次折叠头/内联
+      展开行）；``base_rows`` 为**未折叠未展开**的行（轮次归属真源——被
+      折叠隐藏的记录仍能正确计算轮次号）。
     """
+    if display_rows is None:
+        display_rows = records
+    if base_rows is None:
+        base_rows = display_rows
     if not getattr(model, "trace_open", False):
         return False
     pane_now = getattr(model, "trace_pane", "ledger") or "ledger"
@@ -2163,6 +2442,10 @@ def _handle_trace_event(
         model.trace_expanded = set()
         model.trace_kind_filter = ""
         model.trace_search_hist_idx = -1
+        # ★ 2026-10-07 第三批：退出/关闭同时复位轮次折叠与记录对比集
+        #   （浏览临时态不跨视图残留）。
+        model.trace_collapsed_turns = set()
+        model.trace_compare = []
         # ★ 2026-08-19（vim 搜索）：退出嵌套/关闭视图同时清除搜索
         #   （搜索高亮/匹配不跨视图残留）。
         _clear_search(model)
@@ -2220,15 +2503,41 @@ def _handle_trace_event(
             model.trace_pending_prefix = ""
             if ch == "R":
                 _collapse_all(model, row_keys, False)
-                _set_status(model, "已全部展开")
+                _set_status(model, "已全部展开树")
                 return True
             if ch == "M":
                 _collapse_all(model, row_keys, True)
-                _set_status(model, "已全部折叠")
+                _set_status(model, "已全部折叠树")
+                return True
+            # ★ 2026-10-07 第三批（轮次折叠）：za/zc/zo 当前轮次、zC/zO 全部。
+            if ch == "a":
+                _toggle_turn_collapse(
+                    model, records, base_rows, sel_pos, "toggle",
+                )
+                return True
+            if ch == "c":
+                _toggle_turn_collapse(
+                    model, records, base_rows, sel_pos, "close",
+                )
+                return True
+            if ch == "o":
+                _toggle_turn_collapse(
+                    model, records, base_rows, sel_pos, "open",
+                )
+                return True
+            if ch == "C":
+                _collapse_all_turns(model, base_rows, True)
+                return True
+            if ch == "O":
+                _collapse_all_turns(model, base_rows, False)
                 return True
         elif ch == "z":
             model.trace_pending_prefix = "z"
-            _set_status(model, "z…（R 全展开 / M 全折叠）")
+            _set_status(
+                model,
+                "z…（a 轮次 / c 折叠 / o 展开 / C 全折叠 / O 全展开 / "
+                "R 树全展开 / M 树全折叠）",
+            )
             return True
         elif ch == "m":
             model.trace_pending_prefix = "m"
@@ -2278,6 +2587,19 @@ def _handle_trace_event(
             # 内联展开在过滤视图下按「视图内位置」定位（records 为当前视图）
             _toggle_expand(model, records, sel_pos)
             return True
+        # ★ 2026-10-07 第三批：轮次跳转 / 记录对比 / 导出范围循环。
+        if ch in ("{", "}"):
+            _jump_turn(
+                model, records, base_rows, sel_pos,
+                1 if ch == "}" else -1,
+            )
+            return True
+        if ch == "C":
+            _toggle_compare(model, records, sel_pos)
+            return True
+        if ch == "x":
+            _cycle_export_scope(model)
+            return True
         if ch == "y":
             # ★ 2026-10-07 第二批：检查器焦点复制**当前内容行**；台账焦点
             #   （或面板打开）复制整条记录。
@@ -2295,8 +2617,13 @@ def _handle_trace_event(
                 _do_copy(model, rec_now)
             return True
         if ch in ("w", "W"):
+            scope = getattr(model, "trace_export_scope", "all") or "all"
+            export_records = _export_records_for_scope(
+                scope, search_records, records,
+            )
             _do_export(
-                model, search_records, "md" if ch == "w" else "json", source,
+                model, export_records, "md" if ch == "w" else "json", source,
+                _EXPORT_SCOPE_LABELS.get(scope, scope),
             )
             return True
         if ch == "f":
@@ -2552,14 +2879,32 @@ def TraceView(props) -> object:
     if filtered[0] is not None:
         records, rows, view_map = filtered
 
+    # ── 轮次折叠（2026-10-07 第三批：``za``/``zc``/``zo`` 折叠当前轮次） ──
+    #   折叠集合为轮次号集合；空集合 → 原样返回 rows（零成本快路径，缓存
+    #   继续命中）。折叠轮次的记录行替换为单个折叠头行（不可选）。
+    collapsed_turns = set(getattr(model, "trace_collapsed_turns", None) or ())
+    turn_rows = use_memo(
+        lambda: _collapse_turns(rows, collapsed_turns),
+        _collapse_turns_deps(rows, collapsed_turns),
+    )
+
     # ── 内联展开（2026-10-07 第二批：``o`` 就地展开记录详情） ──
     #   展开集合为记录号（#N）集合；无展开时原样返回 rows（零成本快路径，
     #   _rows_index 缓存继续命中）。展开行（``_TraceExpandRow``）不可选——
     #   ListView isSelectable 排除。
     expanded_records = set(getattr(model, "trace_expanded", None) or ())
     display_rows = use_memo(
-        lambda: _expand_ledger_rows(rows, expanded_records),
-        _expand_rows_deps(rows, expanded_records),
+        lambda: _expand_ledger_rows(turn_rows, expanded_records),
+        _expand_rows_deps(turn_rows, expanded_records),
+    )
+
+    # ── 耗时条形图基准（2026-10-07 第三批） ──
+    #   全表最大耗时（归一化基准）；记录集变化才重算（耗时逐秒变化的近似
+    #   取整——不每帧重算）。
+    show_time_bar = bool(getattr(model, "trace_show_time_bar", True))
+    max_time = use_memo(
+        lambda: _time_bar_max(records),
+        (id(records), len(records)),
     )
 
     # ── 面板开关与统计（2026-10-07：``?`` 帮助 / ``i`` 统计概览） ──
@@ -2646,6 +2991,16 @@ def TraceView(props) -> object:
     )
     content_rows, row_keys = content
     total_content = len(content_rows)
+    # ★ 2026-10-07 第三批（记录对比）：对比集判定（``C`` 选满两条记录）——
+    #   提前到滚动协调之前（``compare_open`` 参与 resolve 分支）。
+    compare_numbers = list(getattr(model, "trace_compare", None) or [])
+    compare_open = len(compare_numbers) == 2
+    compare_rec_a = (
+        _record_by_number(raw_records, compare_numbers[0]) if compare_open else None
+    )
+    compare_rec_b = (
+        _record_by_number(raw_records, compare_numbers[1]) if compare_open else None
+    )
     # ★ P1（review）：滚动协调用与 ``_inspector_children`` 相同的视口预算
     #   （单一真源）——修复前为固定 ``vh - 3`` 近似，与内容生成的
     #   ``vh - fixed``（fixed 随 meta/subagent 变化）不一致 → 光标越出可见
@@ -2655,10 +3010,10 @@ def TraceView(props) -> object:
     #   光标可见跟随）——取代本地复刻（与 trace_tools_view / plugin_view
     #   三份重复实现中的一份）；渲染期不写 model，写回经 ``_model_writes``
     #   在提交期统一落盘。
-    if help_open or stats_open:
-        # ★ 2026-10-07（帮助 / 统计面板）：面板内容行数与检查器不同——
-        #   不复用检查器预算钳制（``_pane_window_children`` 按面板自身行数
-        #   钳制光标/滚动，避免以检查器行数误判越界）。
+    if help_open or stats_open or compare_open:
+        # ★ 2026-10-07（帮助 / 统计 / 对比面板）：面板内容行数与检查器不同
+        #   ——不复用检查器预算钳制（``_pane_window_children`` 按面板自身
+        #   行数钳制光标/滚动，避免以检查器行数误判越界）。
         cursor, scroll = cursor_raw, scroll_raw
     else:
         cursor, scroll_new = resolve(
@@ -2747,7 +3102,35 @@ def TraceView(props) -> object:
             scroll, cursor_arg,
         ),
     )
-    # 右栏内容三态：帮助面板 > 统计面板 > 检查器（面板互斥覆盖右栏）。
+    # ★ 2026-10-07 第三批（记录对比）：``C`` 选满两条记录 → 右栏显示并排
+    #   对比面板（与帮助/统计面板同一滚动语义）。基础判定提前到滚动协调
+    #   之前（``compare_open`` 参与 ``resolve`` 分支选择）。
+    compare_panel = use_memo(
+        lambda: (
+            compare_panel_rows(compare_rec_a, compare_rec_b, right_w)
+            if compare_open else []
+        ),
+        (
+            1 if compare_open else 0,
+            compare_numbers[0] if compare_open else -1,
+            compare_numbers[1] if compare_open else -1,
+            right_w,
+        ),
+    )
+    compare_rows = use_memo(
+        lambda: (
+            _pane_window_children(
+                compare_panel, right_w, vh, scroll, cursor_arg, "tcmp",
+                "(无可对比内容)",
+            )
+            if compare_open else []
+        ),
+        (
+            1 if compare_open else 0, id(compare_panel), len(compare_panel),
+            right_w, vh, scroll, cursor_arg,
+        ),
+    )
+    # 右栏内容四态：帮助面板 > 统计面板 > 对比面板 > 检查器（互斥覆盖右栏）。
     # pane_total / pane_vh：面板行数与视口（供事件处理以面板行数滚动）。
     pane_total = 0
     pane_vh = 0
@@ -2757,6 +3140,9 @@ def TraceView(props) -> object:
     elif stats_open:
         pane_rows = stats_rows
         pane_total = len(stats_panel_rows(records, right_w))
+    elif compare_open:
+        pane_rows = compare_rows
+        pane_total = len(compare_panel)
     else:
         pane_rows = right_rows
     if pane_total:
@@ -2796,6 +3182,7 @@ def TraceView(props) -> object:
             #   经 view_map 映射（过滤模式）——source 供导出元信息标注来源。
             raw_records=raw_records, view_map=view_map, source=source_label,
             pane_total=pane_total, pane_vh=pane_vh,
+            display_rows=display_rows, base_rows=rows,
         ),
         bool(getattr(model, "trace_open", False)),
     )
@@ -2893,6 +3280,7 @@ def TraceView(props) -> object:
         "renderItem": _ledger_renderer(
             display_rows, left_w, ledger_matched_ids, ledger_cur_id,
             _mark_map(model), getattr(model, "trace_time_mode", "off") or "off",
+            TIME_BAR_WIDTH if show_time_bar else 0, max_time,
         ),
         "onNavigate": _on_navigate,
         "isSelectable": _is_ledger_selectable,
@@ -2962,6 +3350,7 @@ __all__ = [
     "_convert_ansi_row",
     "_lines_fp",
     "_to_tui_style",
+    "_clamp_color",
     "_value_to_tree",
     "_args_to_tree",
     "_parse_tree_text",
@@ -3017,4 +3406,22 @@ __all__ = [
     "_search_history_move",
     "_TIME_MODES",
     "_SEARCH_HISTORY_MAX",
+    # 2026-10-07 第三批（耗时条 / 轮次折叠 / 记录对比 / 导出范围）
+    "_TraceTurnCollapsedRow",
+    "_collapse_turns",
+    "_collapse_turns_deps",
+    "_turn_collapsed_runs",
+    "_toggle_turn_collapse",
+    "_collapse_all_turns",
+    "_jump_turn",
+    "_record_by_number",
+    "_turn_of_record",
+    "_nearest_turn",
+    "_toggle_compare",
+    "_clear_compare",
+    "_cycle_export_scope",
+    "_export_records_for_scope",
+    "_EXPORT_SCOPES",
+    "_EXPORT_SCOPE_LABELS",
+    "_ledger_renderer",
 ]

@@ -706,8 +706,12 @@ class TestConfigViewComponent:
         # 根结构：Column[ header, Row[ledger], bottom ]
         row = el.children[1]
         ledger = row.children[0]
-        ledger.props["onNavigate"](2)
-        assert model.config_view.selected == 2
+        # ★ 2026-10-07 第三批（分组头）：onNavigate 接收**行下标**，需映射回
+        #   条目索引（首行为分组头 → 忽略；行 1 = 第一个条目）。
+        from src.tui.app.config_view import _config_rows
+        _items, row_to_entry, _ = _config_rows(model.config_view.entries, set())
+        ledger.props["onNavigate"](1)
+        assert model.config_view.selected == row_to_entry[1] == 0
 
     def test_reset_display_preserves_seq(self):
         from src.tui.app.model import AppModel, ConfigViewState

@@ -283,6 +283,22 @@ class AppModel(_ToolOutputMixin):
         # trace_expanded: 台账内联展开的记录号集合（``o`` 键切换——展开的
         #   记录在其台账行下方追加详情预览行；默认全部折叠）。
         self.trace_expanded: set = set()
+        # ── 轨迹 Trace 增强（2026-10-07 第三批：耗时条 / 轮次折叠 / 对比 /
+        #    导出范围） ──
+        # trace_show_time_bar: 台账耗时条形图开关（默认开——行尾显示迷你
+        #   占比条直观对比各记录耗时；关则不占列宽）。
+        self.trace_show_time_bar: bool = True
+        # trace_collapsed_turns: 折叠的轮次号集合（``za``/``zc``/``zo`` 切换
+        #   当前轮次、``zC``/``zO`` 全部——折叠轮次内记录行隐藏，只留折叠头
+        #   分隔行；空集合 = 全部展开，默认）。
+        self.trace_collapsed_turns: set = set()
+        # trace_compare: 记录对比集（``C`` 键追加记录号 ``#N``；最多 2 条，
+        #   满 2 条时右栏显示并排对比面板；``C`` 已满时重置、``Esc`` 关闭清除）。
+        self.trace_compare: list = []
+        # trace_export_scope: 导出范围（``x`` 键循环：``"all"`` 全部 /
+        #   ``"view"`` 当前视图 / ``"errors"`` 仅失败 / ``"tools"`` 仅工具；
+        #   ``w``/``W`` 按当前范围导出）。
+        self.trace_export_scope: str = "all"
         # 顶部工具调用状态（Claude TUI parity 步骤 2.2：active_tool 为模型
         # 数据——原 ToolStatusHeader 渲染消费，组件已移除（工具状态改由工具
         # 卡片顶边框 ● 展示，双份冗余）；字段保留供测试/未来消费，None=无
@@ -870,6 +886,12 @@ class AppModel(_ToolOutputMixin):
         self.trace_time_mode = "off"
         self.trace_show_line_numbers = False
         self.trace_expanded = set()
+        # ★ 2026-10-07（轨迹 Trace 增强第三批）：清屏同时复位耗时条开关/
+        #   轮次折叠/记录对比/导出范围（与浏览临时态同生命周期）。
+        self.trace_show_time_bar = True
+        self.trace_collapsed_turns = set()
+        self.trace_compare = []
+        self.trace_export_scope = "all"
         # ★ 2026-08-17（review 方向 P2）：清屏同时退出模态全屏视图——残留
         #   fullscreen 会让 App 整屏渲染全屏视图组件（如 TraceView），而
         #   blocks 已清空 → 残留渲染空数据全屏界面。与 trace_subagent_label

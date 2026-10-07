@@ -42,10 +42,12 @@ import logging
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from src.tui.app.input_area import _truncate_width
-from src.tui.ink import TEXT, h, Column, use_input
+from src.tui.ink import TEXT, h, Column, StyledRun, use_input
+from src.tui.ink.helpers import truncate_runs
 from src.tui.ink.hooks import use_ref, use_state, use_memo
 from src.tui.ink.widgets.interactive import SelectInput
 
+from ._ansi_convert import _convert_ansi_row
 from ._modal_view import empty_modal_frame, use_modal_scope
 
 _logger = logging.getLogger(__name__)
@@ -64,11 +66,80 @@ _S_PREVIEW = Style(fg=245)
 _S_PREVIEW_TITLE = Style(fg=110)
 #: 搜索输入行样式（亮青加粗）
 _S_SEARCH = Style(fg=45, bold=True)
+#: 列表项默认文本样式（亮白；★ 2026-10-07 第三批：命中高亮改造为 styled 渲染）
+_S_ITEM = Style(fg=252)
+#: 搜索命中子串高亮（亮黄加粗 + 暗底——精确到子串而非整行）
+_S_HIT = Style(fg=214, bold=True, bg=238)
 
 #: 预览区最大行数（超出滚动/截断——弹窗空间有限）。
 _PREVIEW_MAX_ROWS = 6
 #: 过滤文本长度上限（渲染行按宽度截断，无上限累积只浪费内存）。
 _FILTER_MAX = 100
+#: 预览滚动步长（``[``/``]`` 每次滚动的行数）。
+_PREVIEW_SCROLL_STEP = 3
+#: 预览渲染缓存上限（markdown 渲染结果按内容哈希缓存——切回同一消息零重渲染）。
+_PREVIEW_CACHE_MAX = 16
+_preview_rows_cache: dict = {}
+
+
+def _highlight_runs(text: str, query: str, base_style=None, hl_style=None) -> list:
+    """文本 → StyledRun 列表（命中的 ``query`` 子串加高亮样式，忽略大小写）。
+
+    ★ 2026-10-07 第三批（editmsg 搜索命中高亮）：弹窗内搜索时列表命中的
+    子串以高亮样式（``_S_HIT``）显示（非整行背景，更精确）。空 query →
+    单 run（零成本）。
+    """
+    text = str(text or "")
+    if not query:
+        return [StyledRun(text, base_style)]
+    low = str(query).lower()
+    if not low:
+        return [StyledRun(text, base_style)]
+    tlow = text.lower()
+    runs: list = []
+    i = 0
+    n = len(text)
+    while i < n:
+        j = tlow.find(low, i)
+        if j < 0:
+            runs.append(StyledRun(text[i:], base_style))
+            break
+        if j > i:
+            runs.append(StyledRun(text[i:j], base_style))
+        runs.append(StyledRun(text[j:j + len(low)], hl_style))
+        i = j + len(low)
+    return runs or [StyledRun(text, base_style)]
+
+
+def _preview_rows(text: str, width: int) -> list:
+    """预览文本 → StyledRun 行列表（markdown/代码高亮渲染；失败回退纯文本）。
+
+    ★ 2026-10-07 第三批（editmsg 预览区增强）：复用聊天区 markdown 渲染管线
+    （``apply._render_markdown_lines``）——预览长消息时标题/粗体/代码块等
+    格式化显示（与消息区渲染一致）。结果按 ``(内容哈希, 宽度)`` 缓存，
+    切回同一消息零重渲染。
+    """
+    width = max(1, int(width))
+    text = str(text or "")
+    key = (hash(text), len(text), width)
+    cached = _preview_rows_cache.get(key)
+    if cached is not None:
+        return cached
+    from src.tui.app.apply import _render_markdown_lines
+    try:
+        ansi_lines = _render_markdown_lines(text, max(width, 20))
+    except Exception:
+        ansi_lines = []
+    rows: list = []
+    for aline in ansi_lines:
+        rows.extend(_convert_ansi_row(aline, width, "content"))
+    if not rows:
+        for ln in (text.splitlines() or [""]):
+            rows.append([StyledRun(ln, _S_PREVIEW)])
+    if len(_preview_rows_cache) >= _PREVIEW_CACHE_MAX:
+        _preview_rows_cache.clear()
+    _preview_rows_cache[key] = rows
+    return rows
 
 
 def _editmsg_item_rows() -> int:
@@ -283,6 +354,8 @@ def EditMsgSelectPopup(props) -> object:
             return
         es.selected = keep[idx]
         set_selected(keep[idx])
+        # ★ 2026-10-07 第三批：切换选中消息 → 预览区滚动复位（从顶部查看新消息）
+        es.preview_scroll = 0
 
     # ── 选项控件（SelectInput 标准控件，单选；受控 index=过滤视图位置） ──
     items = [{"label": options[i], "value": i} for i in keep]
@@ -293,16 +366,24 @@ def EditMsgSelectPopup(props) -> object:
     #   调用（见上方 hooks 顺序修复），此处仅保留渲染说明。
 
     def _render_item(item, idx, is_sel):
-        """单行渲染：▶ 高亮前缀 + 消息单行摘要（超宽截断不拆 CJK）。"""
+        """单行渲染：▶ 前缀 + 摘要（★ 2026-10-07 第三批：命中子串高亮）。
+
+        ``query``（弹窗内搜索文本）非空时，摘要中命中的子串以 ``_S_HIT``
+        高亮（精确到子串，非整行背景）；超宽截断不拆 CJK（``truncate_runs``）。
+        """
         prefix = " \u25b6  " if is_sel else "    "
-        label = _truncate_width(
-            str(item["label"]), max(1, (width - 4) if width and width > 0 else 40),
-        )
+        body_w = (width - 4) if width and width > 0 else 40
+        runs = [StyledRun(prefix, _S_TITLE if is_sel else None)]
+        runs.extend(_highlight_runs(str(item["label"]), query, _S_ITEM, _S_HIT))
+        runs = truncate_runs(runs, max(1, body_w + 4))
+        if is_sel:
+            runs = [
+                StyledRun(r.text, (r.style or Style()).merge(_S_SEL_BG))
+                for r in runs
+            ]
         return h(TEXT, {
-            "children": f"{prefix}{label}",
-            "style": _S_SEL_BG if is_sel else None,
-            "height": 1,
-            "key": f"em-item-{idx}",
+            "children": "".join(r.text for r in runs) if runs else " ",
+            "styled": runs, "height": 1, "key": f"em-item-{idx}",
         })
 
     # ── 弹窗级按键（搜索输入 / 翻页 / 首末） ──
@@ -324,6 +405,29 @@ def EditMsgSelectPopup(props) -> object:
             return False
         es.selected = keep[new_pos]
         set_selected(keep[new_pos])
+        # ★ 2026-10-07 第三批：切换选中消息 → 预览区滚动复位
+        es.preview_scroll = 0
+        return True
+
+    def _scroll_preview(delta: int) -> bool:
+        """``[``/``]``：滚动当前消息全文预览（± ``_PREVIEW_SCROLL_STEP`` 行）。
+
+        无预览数据 / 预览不足一屏 / 已在边界 → 返回 False（放行，不消费）。
+        """
+        if not (previews and 0 <= cur_orig < len(previews) and preview_h):
+            return False
+        pw = max(1, width if width and width > 0 else 40)
+        total_prev = len(_preview_rows(str(previews[cur_orig] or ""), pw))
+        if total_prev <= preview_h:
+            return False
+        try:
+            cur = int(getattr(es, "preview_scroll", 0) or 0)
+        except (TypeError, ValueError):
+            cur = 0
+        new = max(0, min(cur + delta * _PREVIEW_SCROLL_STEP, total_prev - preview_h))
+        if new == cur:
+            return False
+        es.preview_scroll = new
         return True
 
     def _handle_extra(event) -> bool:
@@ -352,10 +456,14 @@ def EditMsgSelectPopup(props) -> object:
                 return True
             return True
         kind = event.kind
-        if kind == "char" and (getattr(event, "char", "") or "") == "/":
+        ch = getattr(event, "char", "") or ""
+        if kind == "char" and ch == "/":
             es.search_mode = True
             es.filter = ""
             return True
+        # ★ 2026-10-07 第三批（预览区滚动）：[ / ] 滚动当前消息全文预览。
+        if kind == "char" and ch in ("[", "]"):
+            return _scroll_preview(1 if ch == "]" else -1)
         if kind == "page_up":
             return _move_view_pos(_current_view_pos() - max(1, list_limit))
         if kind == "page_down":
@@ -382,29 +490,53 @@ def EditMsgSelectPopup(props) -> object:
         "focus": bool(visible and not search_mode),
     }))
 
-    # ── 预览区（当前选中消息全文；行数按预算截断） ──
+    # ── 预览区（当前选中消息全文；markdown 渲染 + 滚动） ──
+    #   ★ 2026-10-07 第三批（editmsg 预览区增强）：预览文本经 markdown 渲染
+    #   （标题/粗体/代码高亮，与消息区同管线）；``[``/``]`` 滚动查看全文
+    #   （``es.preview_scroll``），标题显示当前窗口位置 ``(起-止/总行)``。
     if preview_h and 0 <= cur_orig < len(previews):
         preview = str(previews[cur_orig] or "")
-        preview_lines = preview.splitlines() or [""]
+        pw = max(1, width if width and width > 0 else 40)
+        prows = _preview_rows(preview, pw)
+        total_prev = len(prows)
         limit = preview_h
+        try:
+            pscroll = int(getattr(es, "preview_scroll", 0) or 0)
+        except (TypeError, ValueError):
+            pscroll = 0
+        pscroll = max(0, min(pscroll, max(0, total_prev - limit)))
+        if es is not None and pscroll != getattr(es, "preview_scroll", None):
+            es.preview_scroll = pscroll
+        title_txt = "\u2500 \u9884\u89c8 "
+        if total_prev > limit:
+            title_txt += (
+                f"({pscroll + 1}-{min(pscroll + limit, total_prev)}/{total_prev}) "
+            )
+        title_txt += "\u2500" * max(0, pw - wcswidth_simple(title_txt))
         rows.append(h(TEXT, {
-            "children": "\u2500 \u9884\u89c8 " + ("\u2500" * max(0, width - 6)),
-            "style": _S_PREVIEW_TITLE,
+            "children": title_txt, "style": _S_PREVIEW_TITLE,
             "textWrap": "truncate-end", "height": 1, "key": "em-preview-title",
         }))
-        for i, ln in enumerate(preview_lines[:limit]):
-            disp = _truncate_width(
-                "  " + ln, max(1, width if width and width > 0 else 40),
+        window = prows[pscroll:pscroll + limit]
+        for i, rline in enumerate(window):
+            runs = (
+                list(rline) if isinstance(rline, list)
+                else [StyledRun(str(rline), _S_PREVIEW)]
             )
+            runs = truncate_runs(runs, pw)
+            if not runs:
+                runs = [StyledRun(" ", None)]
             rows.append(h(TEXT, {
-                "children": disp, "style": _S_PREVIEW,
-                "textWrap": "truncate-end", "height": 1,
+                "children": "".join(r.text for r in runs) if runs else " ",
+                "styled": runs, "height": 1,
                 "key": f"em-preview-{i}",
             }))
-        if len(preview_lines) > limit:
+        if total_prev > limit:
             rows.append(h(TEXT, {
-                "children": f"  \u2026 \u5171 {len(preview_lines)} \u884c"
-                          f"\uff08\u4ec5\u9884\u89c8\u524d {limit} \u884c\uff09",
+                "children": (
+                    f"  \u2026 {pscroll + len(window)}/{total_prev} \u884c"
+                    " \u00b7 [ / ] \u6eda\u52a8\u9884\u89c8"
+                ),
                 "style": _S_DESC, "textWrap": "truncate-end", "height": 1,
                 "key": "em-preview-more",
             }))
@@ -430,7 +562,8 @@ def EditMsgSelectPopup(props) -> object:
     else:
         hint = (
             "  \u2191\u2193/jk \u9009\u62e9 \u00b7 PgUp/PgDn \u7ffb\u9875 \u00b7 g/G \u9996\u672b"
-            " \u00b7 Enter \u7f16\u8f91 \u00b7 / \u641c\u7d22 \u00b7 Esc \u53d6\u6d88"
+            " \u00b7 [ ] \u9884\u89c8 \u00b7 Enter \u7f16\u8f91 \u00b7 / \u641c\u7d22"
+            " \u00b7 Esc \u53d6\u6d88"
         )
     rows.append(h(TEXT, {
         "children": hint,

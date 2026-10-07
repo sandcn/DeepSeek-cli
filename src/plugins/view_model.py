@@ -62,7 +62,9 @@ def _json_text(value: Any) -> str:
         return _text(value)
 
 
-def _make_entry(name: str, kind: str, subtitle: str, fields: list) -> dict:
+def _make_entry(name: str, kind: str, subtitle: str, fields: list,
+                depends: list | None = None,
+                provides: list | None = None) -> dict:
     fields = list(fields)
     return {
         "name": _text(name, 200),
@@ -72,6 +74,12 @@ def _make_entry(name: str, kind: str, subtitle: str, fields: list) -> dict:
         "fields": fields,
         "field_levels": _field_levels(fields),
         "alerts": _entry_alerts(fields),
+        # ★ 2026-10-07 第三批（依赖关系视图 / 服务交叉引用）：结构化依赖
+        #   数据（fields 里的文本之外，供关系面板与跳转消费）。
+        "depends": list(depends or []),
+        "provides": list(provides or []),
+        # dependents 由 build_plugin_entries 全局计算（谁依赖本插件/服务）
+        "dependents": [],
     }
 
 
@@ -248,7 +256,10 @@ def _kernel_entries(kernel) -> list[dict]:
                 ("配置", _json_text(config)),
                 ("错误", repr(error) if error else "(无)"),
             ]
-            out.append(_make_entry(str(getattr(fiber, "name", "?")), "kernel", state, fields))
+            out.append(_make_entry(
+                str(getattr(fiber, "name", "?")), "kernel", state, fields,
+                depends=inject, provides=provide,
+            ))
         except Exception:
             _logger.debug("构建内核插件条目失败", exc_info=True)
     return out
@@ -260,6 +271,10 @@ def _kernel_entries(kernel) -> list[dict]:
 def build_plugin_entries(kernel=None) -> list[dict]:
     """构建已加载插件条目列表（内核运行时 Fiber，排除 DISPOSED）。
 
+    ★ 2026-10-07 第三批（依赖关系视图 / 服务交叉引用）：构建后全局填充
+    ``dependents``（谁依赖本插件——按 ``depends`` 名字匹配本插件 ``name``
+    或 ``provides`` 服务名），供关系面板与「被依赖」交叉引用。
+
     Args:
         kernel: 插件内核（None 时读进程级当前内核）。
 
@@ -270,7 +285,38 @@ def build_plugin_entries(kernel=None) -> list[dict]:
     from ..kernel import get_current_kernel
 
     kernel = kernel if kernel is not None else get_current_kernel()
-    return _kernel_entries(kernel)
+    entries = _kernel_entries(kernel)
+    _compute_dependents(entries)
+    return entries
+
+
+def _compute_dependents(entries: list) -> None:
+    """填充条目 ``dependents``（就地修改；谁依赖本插件/服务）。
+
+    匹配规则：条目 A 的某个 ``depends`` 名等于条目 B 的 ``name`` 或出现在
+    B 的 ``provides`` 中 → B.dependents 追加 A.name（去重、保持顺序）。
+    """
+    if not entries:
+        return
+    # 依赖名 → 提供方条目（name 与 provides 都作为键）
+    providers: dict = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        providers.setdefault(str(entry.get("name", "")), entry)
+        for svc in entry.get("provides") or []:
+            providers.setdefault(str(svc), entry)
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for dep in entry.get("depends") or []:
+            target = providers.get(str(dep))
+            if target is None or target is entry:
+                continue
+            deps = target.setdefault("dependents", [])
+            name = str(entry.get("name", ""))
+            if name and name not in deps:
+                deps.append(name)
 
 
 def format_plugin_text(entries: list[dict] | None = None) -> str:
