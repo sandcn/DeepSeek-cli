@@ -616,6 +616,10 @@ KEYBINDING_ENTRIES = [
      "config": {"id": "ctrl_b"}},
     {"id": "keybinding_ctrl_slash", "plugin": "src.plugins.keybinding_entries:apply_keybinding",
      "config": {"id": "ctrl_slash"}},
+    {"id": "keybinding_ctrl_z", "plugin": "src.plugins.keybinding_entries:apply_keybinding",
+     "config": {"id": "ctrl_z"}},
+    {"id": "keybinding_ctrl_y", "plugin": "src.plugins.keybinding_entries:apply_keybinding",
+     "config": {"id": "ctrl_y"}},
 ]
 
 # ── 特殊键处理器条目（每个内置 action 一个独立插件条目） ──────
@@ -739,8 +743,12 @@ COMPLETION_PROVIDER_ENTRIES = [
 STATUS_SEGMENT_ENTRIES = [
     {"id": "status_segment_model", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
      "config": {"id": "model"}},
+    {"id": "status_segment_provider", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
+     "config": {"id": "provider"}},
     {"id": "status_segment_theme", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
      "config": {"id": "theme"}},
+    {"id": "status_segment_context", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
+     "config": {"id": "context"}},
     {"id": "status_segment_tools", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
      "config": {"id": "tools"}},
     {"id": "status_segment_elapsed", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
@@ -796,6 +804,12 @@ THEME_ENTRIES = [
      "config": {"name": "light"}},
     {"id": "theme_high_contrast", "plugin": "src.plugins.theme_entries:apply_theme",
      "config": {"name": "high-contrast"}},
+    {"id": "theme_nord", "plugin": "src.plugins.theme_entries:apply_theme",
+     "config": {"name": "nord"}},
+    {"id": "theme_dracula", "plugin": "src.plugins.theme_entries:apply_theme",
+     "config": {"name": "dracula"}},
+    {"id": "theme_gruvbox", "plugin": "src.plugins.theme_entries:apply_theme",
+     "config": {"name": "gruvbox"}},
 ]
 
 # ── 技能来源条目（每个内置来源一个独立插件条目） ────────────

@@ -358,6 +358,9 @@ CONFIG_ENTRY_OPTION_MAP: dict[str, tuple[tuple[str, str], ...]] = {
         ("dark", "暗色主题"),
         ("light", "亮色主题"),
         ("high-contrast", "高对比主题"),
+        ("nord", "Nord 主题（冷色调）"),
+        ("dracula", "Dracula 主题（糖果色）"),
+        ("gruvbox", "Gruvbox 主题（暖色复古）"),
     ),
     "REASONING_EFFORT": (
         ("low", "低——最快响应，思考最少"),

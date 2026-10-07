@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -51,6 +52,12 @@ from src.tui._history_disk import (
 )
 
 _logger = logging.getLogger(__name__)
+
+#: 输入缓冲撤销栈上限（超出丢弃最旧撤销点）。
+_UNDO_LIMIT = 200
+#: 同类连续编辑合并窗口（秒）——窗口内的连续输入/删除合并为一个撤销单元，
+#: 避免「每敲一个字符一个撤销点」。
+_UNDO_COALESCE_SECONDS = 0.8
 
 
 # ═══════════════════════════════════════════════════════════
@@ -103,6 +110,14 @@ class InputBufferEditor:
         self._search_active: bool = False
         self._search_saved_buffer: str = ""
 
+        # ── 撤销 / 重做栈（2026-10-07 操作优化：Ctrl+Z / Ctrl+Y） ──
+        # 元素为 ``(buffer, cursor_pos)`` 快照；连续同类编辑按
+        # ``_UNDO_COALESCE_SECONDS`` 窗口合并为一个撤销单元。
+        self._undo_stack: list = []
+        self._redo_stack: list = []
+        self._undo_coalesce_key = None
+        self._undo_last_ts: float = 0.0
+
     # ═══════════════════════════════════════════════════════
     # 回调
     # ═══════════════════════════════════════════════════════
@@ -115,6 +130,67 @@ class InputBufferEditor:
         self._echo_callback = cb
 
     # ═══════════════════════════════════════════════════════
+    # 撤销 / 重做（2026-10-07 操作优化：Ctrl+Z / Ctrl+Y）
+    # ═══════════════════════════════════════════════════════
+
+    def _push_undo(self, coalesce_key=None) -> None:
+        """编辑前记录撤销点（调用方须持 ``self._lock``）。
+
+        同类连续编辑（``coalesce_key`` 相同且间隔 < ``_UNDO_COALESCE_SECONDS``）
+        合并为一个撤销单元——避免逐字符撤销点（输入一行文字撤销一次即整行
+        消失）；``coalesce_key=None`` 表示每次独立撤销点（结构性编辑：kill /
+        粘贴 / 历史导航等）。
+        """
+        now = time.monotonic()
+        if (
+            coalesce_key is not None
+            and self._undo_coalesce_key == coalesce_key
+            and now - self._undo_last_ts < _UNDO_COALESCE_SECONDS
+        ):
+            self._undo_last_ts = now
+            return
+        self._undo_stack.append((self._buffer, self._cursor_pos))
+        if len(self._undo_stack) > _UNDO_LIMIT:
+            del self._undo_stack[0]
+        self._redo_stack.clear()
+        self._undo_coalesce_key = coalesce_key
+        self._undo_last_ts = now
+
+    def _undo(self) -> None:
+        """撤销最近一次编辑（Ctrl+Z）；无撤销点时 no-op。"""
+        with self._lock:
+            if not self._undo_stack:
+                return
+            self._redo_stack.append((self._buffer, self._cursor_pos))
+            buf, pos = self._undo_stack.pop()
+            self._buffer = buf
+            self._cursor_pos = max(0, min(int(pos), len(buf)))
+            self._undo_coalesce_key = None
+            text = self._buffer
+        self._echo(text)
+
+    def _redo(self) -> None:
+        """重做被撤销的编辑（Ctrl+Y）；无重做点时 no-op。"""
+        with self._lock:
+            if not self._redo_stack:
+                return
+            self._undo_stack.append((self._buffer, self._cursor_pos))
+            buf, pos = self._redo_stack.pop()
+            self._buffer = buf
+            self._cursor_pos = max(0, min(int(pos), len(buf)))
+            self._undo_coalesce_key = None
+            text = self._buffer
+        self._echo(text)
+
+    def clear_undo(self) -> None:
+        """清空撤销/重做栈（提交 / 重置 / 清空缓冲时调用）。"""
+        with self._lock:
+            self._undo_stack.clear()
+            self._redo_stack.clear()
+            self._undo_coalesce_key = None
+            self._undo_last_ts = 0.0
+
+    # ═══════════════════════════════════════════════════════
     # 缓冲操作（原 InputBuffer → 内联为实例方法）
     # ═══════════════════════════════════════════════════════
 
@@ -123,6 +199,7 @@ class InputBufferEditor:
         if not (ch.isprintable() or ch in (' ', '\t', '\n')):
             return
         with self._lock:
+            self._push_undo(("char",))
             if self._history_idx >= 0:
                 self._history_idx = -1
             self._buffer = (
@@ -232,6 +309,7 @@ class InputBufferEditor:
         """
         text = text.replace("\r", "")
         with self._lock:
+            self._push_undo(("paste",))
             if self._history_idx >= 0:
                 self._history_idx = -1
             parts = [
@@ -292,6 +370,9 @@ class InputBufferEditor:
             self._search_idx = -1
             self._search_active = False
             self._search_saved_buffer = ""
+            self._undo_stack.clear()
+            self._redo_stack.clear()
+            self._undo_coalesce_key = None
 
     def drain_all(self) -> tuple[str | None, str]:
         """排出所有流式输入状态：返回 (submitted_text, buffer_text)。
@@ -312,12 +393,16 @@ class InputBufferEditor:
             self._search_idx = -1
             self._search_active = False
             self._search_saved_buffer = ""
+            self._undo_stack.clear()
+            self._redo_stack.clear()
+            self._undo_coalesce_key = None
             self._input_ready.clear()
         return submitted, buffer_text
 
     def set_buffer(self, text: str) -> None:
         """设置缓冲区文本（用于预填），光标移到末尾。"""
         with self._lock:
+            self._push_undo(None)
             self._buffer = text
             self._cursor_pos = len(text)
             self._history_idx = -1
@@ -458,6 +543,7 @@ class InputBufferEditor:
         等边界处理一致）。
         """
         with self._lock:
+            self._push_undo(("del",))
             if self._history_idx >= 0:
                 self._history_idx = -1
             if self._cursor_pos > 0:
@@ -546,6 +632,10 @@ class InputBufferEditor:
                 self._input_ready.set()
                 if self._history_idx >= 0:
                     self._history_idx = -1
+                # 提交后新输入从空开始：清空撤销/重做栈
+                self._undo_stack.clear()
+                self._redo_stack.clear()
+                self._undo_coalesce_key = None
         # P2（2026-08-07）：历史追加移出锁——``_append_history_locked`` 内部
         # ``_HISTORY_DISK_WRITER.submit`` 获取 ``_submit_lock``；flush 并发
         # 持 ``_submit_lock`` 做同步文件 I/O 时，锁内 submit 阻塞 render 线程
@@ -704,6 +794,7 @@ class InputBufferEditor:
         with self._lock:
             if not self._history:
                 return
+            self._push_undo(("history",))
             if self._history_idx < 0:
                 self._saved_input_before_history = self._buffer
                 self._history_idx = 0
@@ -805,6 +896,7 @@ class InputBufferEditor:
         2026-08-14：词边界扫描提取至 ``_next_word_end``（语义逐行等价）。
         """
         with self._lock:
+            self._push_undo(("word",))
             if self._history_idx >= 0:
                 self._history_idx = -1
             if self._cursor_pos >= len(self._buffer):
@@ -847,11 +939,10 @@ class InputBufferEditor:
 
         # ── 阶段2：尾行或单行 → 历史浏览 ──
         with self._lock:
-            if not self._history:
+            if not self._history or self._history_idx < 0:
                 return
-            if self._history_idx < 0:
-                return
-            elif self._history_idx > 0:
+            self._push_undo(("history",))
+            if self._history_idx > 0:
                 self._history_idx -= 1
                 self._buffer = self._history[self._history_idx]
             else:
@@ -871,6 +962,7 @@ class InputBufferEditor:
         处理一致）。
         """
         with self._lock:
+            self._push_undo(("del",))
             if self._history_idx >= 0:
                 self._history_idx = -1
             n = len(self._buffer)
@@ -909,6 +1001,7 @@ class InputBufferEditor:
         2026-08-14：词边界扫描提取至 ``_prev_word_start``（语义逐行等价）。
         """
         with self._lock:
+            self._push_undo(("word",))
             if self._history_idx >= 0:
                 self._history_idx = -1
             if self._cursor_pos <= 0:
@@ -928,6 +1021,7 @@ class InputBufferEditor:
     def _kill_to_bol(self) -> None:
         """Ctrl+U：删除光标到当前逻辑行首。"""
         with self._lock:
+            self._push_undo(None)
             if self._history_idx >= 0:
                 self._history_idx = -1
             if self._cursor_pos <= 0:
@@ -947,6 +1041,7 @@ class InputBufferEditor:
     def _kill_to_eol(self) -> None:
         """Ctrl+K：删除光标到当前逻辑行尾。"""
         with self._lock:
+            self._push_undo(None)
             if self._history_idx >= 0:
                 self._history_idx = -1
             n = len(self._buffer)

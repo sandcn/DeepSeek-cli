@@ -316,6 +316,12 @@ class InputDispatcher:
                 self._sync_reverse_search()
             else:
                 self._buffer_editor._up()
+        elif action == "undo":
+            # Ctrl+Z → 撤销输入编辑（缓冲级撤销栈，连续同类编辑合并为一步）。
+            self._buffer_editor._undo()
+        elif action == "redo":
+            # Ctrl+Y → 重做输入编辑（撤销的反向操作）。
+            self._buffer_editor._redo()
         else:
             # vim / editmsg / toggle_theme / switch_model / cycle_mode
             self._handle_special_key(action)

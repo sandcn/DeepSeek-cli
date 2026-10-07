@@ -71,7 +71,7 @@ class TestModeLineBgPrefix:
         text = self._text(line)
         assert "bash" not in text and "subagent" not in text
         assert "标准模式" in text
-        assert text.strip() == "标准模式"
+        assert text.strip() == "\u25a3 标准模式"
 
     def test_line_width_constant(self):
         """行宽恒 = width（行级 diff 行宽不变量）。"""

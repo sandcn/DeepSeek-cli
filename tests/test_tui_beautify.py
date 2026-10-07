@@ -41,19 +41,22 @@ class TestWelcomeScreen:
         return m
 
     def test_rows_structure_info_and_guides(self):
-        """欢迎卡结构：信息行（◆）+ 空行 + 3 行引导；不再重复品牌行。"""
+        """欢迎卡结构：卡片边框 + 信息行（◆）+ 空行 + 3 行引导；不重复品牌行。"""
         rows = _welcome_rows(self._model(), False, 80)
         texts = ["".join(r.text for r in row) for row in rows]
         # 不重复品牌（标题栏已展示品牌/版本）
         assert not any("DeepSeek CLI" in t for t in texts)
+        # 卡片边框（上/下边框行）
+        assert texts[0].strip().startswith("\u256d"), "首行应为卡片顶边框"
+        assert texts[-1].strip().startswith("\u2570"), "末行应为卡片底边框"
         # 信息行 ◆ 前缀 + 含模型名
-        assert any(t.strip().startswith("\u25c6") for t in texts)
+        assert any("\u25c6" in t for t in texts)
         assert any("deepseek-chat" in t for t in texts)
         # 3 行引导 › 前缀
         guides = [t for t in texts if "\u203a" in t]
         assert len(guides) == 3
-        # 空行分隔信息区与引导区
-        assert any(t.strip() == "" for t in texts)
+        # 卡内空行分隔信息区与引导区
+        assert any(t.strip().strip("\u2502").strip() == "" for t in texts)
         assert len(rows) == len(texts)
 
     def test_info_line_labels(self):

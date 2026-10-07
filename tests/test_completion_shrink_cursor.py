@@ -158,10 +158,10 @@ class TestCompletionShrinkCursor:
         t.set_items(19)
         frame = t.render()
         # 高度锁定语义：补白 ≤ _LOCKED_PAD_LIMIT(3) 时弹窗高度保持 → 帧等高
-        # ★ 2026-10-07（空状态重构）：欢迎卡 5 行 → 8 行（信息卡 4 + 空行 1 +
-        #   引导 3），空状态帧高度快照 33 → 36。
+        # ★ 2026-10-07（欢迎屏卡片化）：欢迎卡 8 行 → 12 行（边框 2 + 信息卡 6 +
+        #   空行 1 + 引导 3），空状态帧高度快照 36 → 40。
         assert t.model.completion.locked_height == 22
-        assert frame.height == 36, "锁定高度下帧高度应保持（底部补白占行）"
+        assert frame.height == 40, "锁定高度下帧高度应保持（底部补白占行）"
         assert t.cursor_vs_input_row() == 0, "光标应恰好在输入行（修复前差 1 行）"
 
     def test_shrink_three_items_cursor_on_input_row(self):
@@ -172,7 +172,7 @@ class TestCompletionShrinkCursor:
         t.set_items(17)
         frame = t.render()
         assert t.model.completion.locked_height == 22
-        assert frame.height == 36  # 2026-10-07：欢迎卡 8 行（29+7）
+        assert frame.height == 40  # 2026-10-07：欢迎卡 12 行（29+11）
         assert t.cursor_vs_input_row() == 0, "修复前差 3 行"
 
     def test_grow_then_shrink_sequence(self):
@@ -197,7 +197,7 @@ class TestCompletionShrinkCursor:
         t.set_items(2)
         frame = t.render()
         assert t.model.completion.locked_height == 4  # 缩到 2+2
-        assert frame.height == 18  # 2026-10-07：欢迎卡 8 行（11+7）
+        assert frame.height == 22  # 2026-10-07：欢迎卡 12 行（11+11）
         assert t.cursor_vs_input_row() == 0
 
     def test_navigate_after_shrink_cursor_still_on_input(self):

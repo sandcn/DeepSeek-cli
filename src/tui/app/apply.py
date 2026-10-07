@@ -196,10 +196,17 @@ def _do_splash(model, cmd) -> None:
     """
     from src.tui.app._welcome import welcome_card_rows
 
-    # width=0：不做构建期截断——行宽由渲染期文档宽度防线统一钳制
-    # （splash 推送时机在会话装配后，此时 model.width 可能仍为默认值）。
+    # ★ 2026-10-07（欢迎屏卡片化）：splash 卡片宽度取会话当前宽度（未设置时
+    #   回退 80）——与聊天区空态欢迎卡**同一卡片视觉**（同源构建）；终端
+    #   resize 后由 committed reflow 按新宽度重排（与其它已提交内容一致）。
+    try:
+        _width = int(getattr(model, "width", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        _width = 0
+    if _width <= 0:
+        _width = 80
     lines = []
-    for row in welcome_card_rows(model, 0):
+    for row in welcome_card_rows(model, _width):
         line = AnsiLine()
         for text, style in row:
             line.append(text, style)

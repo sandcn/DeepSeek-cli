@@ -311,9 +311,11 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | `Ctrl+P` / `↑` | 浏览输入历史（上一条） |
 | `↓` | 浏览输入历史（下一条） |
 | `Ctrl+R` | 反向历史搜索（配置门控；默认重试上一轮） |
-| `Ctrl+T` | 循环切换配色主题（dark/light/high-contrast） |
+| `Ctrl+T` | 循环切换配色主题（dark/light/high-contrast/nord/dracula/gruvbox） |
 | `Ctrl+L` | 清屏 |
 | `Ctrl+D` | 退出程序（输入为空时） |
+| `Ctrl+Z` | 撤销输入编辑（连续同类编辑合并为一步） |
+| `Ctrl+Y` | 重做输入编辑 |
 | `Ctrl+B` | 主 Agent 运行模式循环切换（空模式 → 简单模式 → 标准模式 → 空模式） |
 | `Ctrl+C`（首次） | 中断当前 AI 回复 |
 | `Ctrl+C`（再次） | 强制退出程序 |
@@ -355,7 +357,7 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | `/load <ID>` | — | 加载保存的对话 |
 | `/sessions` | — | 列出所有保存的对话 |
 | `/export [路径]` | — | 导出当前对话为 Markdown（含 SubAgent 聊天信息） |
-| `/theme <名称>` | — | 切换配色主题（dark / light / high-contrast） |
+| `/theme <名称>` | — | 切换配色主题（dark / light / high-contrast / nord / dracula / gruvbox） |
 | `/changes` | — | 显示文件沙盒中被修改文件的差异（可加文件名过滤） |
 | `exit` | — | 退出程序 |
 
@@ -949,7 +951,7 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 - **富交互组件** ✅ — 在终端中嵌入可交互元素（选择列表、确认弹窗、进度条、开关、树、虚拟列表、焦点组），减少纯文本输出的信息密度（`src/tui/ink/widgets/` 已实现）
 - **语法高亮增强** — 支持更多编程语言的代码块高亮，优化长代码段的折叠/展开机制
 - **多面板布局** — 对话区/工具调用日志/系统状态分屏显示，便于调试与观察 Agent 行为
-- **主题系统扩展** ✅ — 支持自定义配色方案，适配亮色/暗色终端环境（已内置 dark/light/high-contrast 三种主题）
+- **主题系统扩展** ✅ — 支持自定义配色方案，适配亮色/暗色终端环境（已内置 dark/light/high-contrast 三种基础主题 + nord/dracula/gruvbox 三种扩展主题；内置主题清单化、可按 Patch 禁用/覆盖）
 - **动效与呼吸效果** ✅ — 标题栏✦/工具卡边框/状态栏分隔线/模型名/解析行 spinner/推理头/错误标记/补全弹窗/流式占位符/工具计数箭头/失败警示等 10+ 处时间基动效（time_glow 0.1s 桶缓存）；2026-08-05 新增 BEAUTY-18~24：user_select 弹窗标题/选中高亮/提示行/说明列呼吸（**已于 2026-08-05 静态化**——弹窗呼吸使弹窗行每帧随 time_glow 重写，Termux 等终端每帧刷新/错乱；现改静态色且不驱动动画循环，仅交互按键时重绘）、状态栏耗时/token/速度/CPU/MEM 呼吸、补全弹窗说明列/命令描述呼吸、工具 detail 呼吸、subagent 卡统计呼吸；2026-08-05 第二轮 BEAUTY-25~34：空状态欢迎行 ✦ 活跃期呼吸（空闲静态单例零重建）、工具卡标题图标运行中呼吸、思考块角色头 live spinner 化（💭→⠋⠙⠹…，关闭回退静态）、状态栏 thinking 阶段标签弱呼吸（…思考）、user_select 弹窗标题模式图标（单选 ▶ / 多选 ☑）、解析进度行 spinner 金色呼吸（178↔190）、标题栏版本号活跃期呼吸、live content 流式末尾指示 spinner、通知/子代理角色头 live 呼吸、subagent 组卡省略提示呼吸- **React Ink 对齐补齐（v6/v7 API 收官）** ✅ — 2026-10-01 对照官方 React Ink v6.8 / v7.1 API 全量审计并补齐缺口：**`renderToString(node, {columns})`**（同步渲染为字符串，不写 stdout/不建终端监听；终端相关 hooks 返回安全默认，layout/passive effect 触发的 state 更新经有界重渲染反映到输出）；**`measureElement`** 返回值补 `x`/`y`（对齐官方 `{x,y,width,height}`）；**`kittyFlags`/`kittyModifiers`/`resolveFlags`**（`src/tui/ink/kitty.py`，附 `encode_modifiers`/`resolve_kitty_options`/`enable_sequence`/`disable_sequence`）；**`render()` options 补齐** `maxFps`（覆盖 render_interval）/`isScreenReaderEnabled`（`useIsScreenReaderEnabled` 返回注入值）/`kittyKeyboard`（启用时写 `CSI > flags u`、unmount 写 `CSI < u`）/`onRender`（每帧回调 metrics）；**`Instance.waitUntilRenderFlush`**；**`useApp().exit(errorOrResult)`** 官方语义（`exit()` 无值 / `exit(value)` 令 `waitUntilExit()` 以该值 resolve / `exit(error)` reject；返回值对象身份跨渲染稳定 + 参数转发）；**`aria-*` 属性支持**（`src/tui/ink/accessibility.py`：`get_accessibility`/`screen_reader_text`，提取 `aria-label`/`aria-hidden`/`aria-role`/`aria-state`）
 - **kitty 键盘协议（CSI-u 增强）** ✅ — 2026-10-01：`KeyEvent` 新增 `kitty_bits`/`event_type` 字段；`_read_csi_sequence` 按 `':'` 子参数分组解析（`groups`，兼容 `\x1b[<code>:<shifted>:<base>;<mod>:<event>u` 完整形式；标准形式与旧行为逐字节等价）；解析出口统一写入 kitty 元信息（**取自分组原始修饰值而非事件 `modifier`**——映射分支会重写 modifier，如 Ctrl+A→home modifier=0，用事件字段会丢超键/锁定键位）；`useInput` 的 `key` 补齐 `super`/`hyper`/`capsLock`/`numLock`（kitty 位掩码）与 `eventType`（press/repeat/release），`meta` 兼容 kitty meta 位（32）
 - **`useAnimation` 官方语义 + 共享动画驱动** ✅ — 2026-10-01：由「简化版 `{frame,timestamp}`」重写为官方 `{frame, time, delta, reset}` + `{interval(ms,默认100), isActive}`；`src/tui/ink/_animation.py` 提供**共享驱动**（session `_render_frame` 每帧 `advance_animation()` 递增 tick 并通知订阅者 → 多个动画组件合并为一轮渲染，React Ink v7 语义）；`isActive=False` 归零返回，重新激活归零重启
@@ -959,6 +961,7 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 - **性能优化（wrap 多 run ASCII 快路径 / props 比较快路径）** ✅ — 2026-10-01：`wrap_runs_by_width` 新增**多 run 纯 ASCII 快路径**（所有 run 均非空可打印 ASCII：每字符宽 1、空格断点经 `str.rfind`、按 span + `bisect` 二分定位切片产出，免通用路径逐字符 tuple 展开；10 万字符 / 2500 run 实测 **~55ms → ~6ms（~9x）**）；`Reconciler._set_props` 新增**长度不等快路径**（props 长度不同直接判不等，免大 props 深比较）；含与通用算法逐例等价性回归测试（200 随机用例）
 - **React Ink 框架独立测试套件** ✅ — 2026-10-01：新增 `tests/test_tui/ink/`（68+ 例）——`renderToString`（隔离/layout effect/不写 stdout）、kitty（常量/解析/key 映射）、`useAnimation`（语义/驱动/重置）、`measureElement`（x/y/畸形防御/组件内）、`accessibility`、`Viewport`（窗口/偏移/滚动条/键盘）、`MultiPanel`（分屏/高亮/Tab）、`CodeBlock`（折叠/高亮）、`render()` options（maxFps/kitty/screen reader/onRender/exit 值语义）、wrap 快路径等价性
 - **review 修复（一次性审查发现的缺陷）** ✅ — 2026-10-01：`memo(Comp)` 对常规单参组件必抛 `TypeError`（包装函数恒双参调用）→ 按 ref 是否存在单参/双参调用；`render({isScreenReaderEnabled})` 全局开关退出后不还原（跨会话泄漏）→ 保存/还原（unmount/cleanup/启动失败路径）；`useAnimation` tick 通知经 `_schedule` 落 force 通道会打破 30Hz 节流（无节流忙循环）→ advance 不再通知订阅者（全程 30Hz 已保证动画推进），新增独立 `notify_animation_listeners`；`Viewport`/`MultiPanel` 的 `height` 与 BOX 边框语义冲突（内容越框/底框被覆盖）→ `height` 明确为「可见内容行数/面板内容行数」，经 `_outer_height` 换算 BOX 总高（+边框+内边距），内容列预算扣除边框；`_event_key` 的 `ctrl`/`shift` 补 kitty 位掩码（CSI-u Ctrl+字母映射后 modifier 被置 0 丢标志）；掩码事件 `_MaskedCharEvent` 透传 `kitty_bits`/`event_type`；`_syntax` 去掉死变量 + 未知语言不再回退 `#` 注释；`Transform` 的 `accessibilityLabel` 判定移出条件式 hook 调用；CodeBlock 边框变体收敛到 `_paint_border._BORDER_CHARS`（补 dashed/singleDouble/doubleSingle）；控件回调统一走 `_widget_common._call`（带日志）；清理死代码（`_traverse_functions.include_self` 分支、session 未用字段、`hooks.__all__` 中的可变状态变量）；补 `element.__all__` 的 `FRAGMENT`；`_pop_starved_state_cmd` 弹出后 `not_full.notify_all()`
+- **TUI 体验增强（2026-10-07）** ✅ — 欢迎屏卡片化（圆角边框 + 分支/上下文等环境信息，窄屏自动回退无边框；splash 与空态同卡）、状态栏信息增强（新增 `provider`/`context` 段 + **段级分隔**——工具计数改为 `⚙ n/m` / `✔ m` / `✔ n/m ✖ f`，并修复段内多 run 被 ` · ` 拆开的既有缺陷）、工具卡标题元信息（完成后显示 `· 耗时 · N 行`，失败追加红色 `· 失败`；运行中保持极简）、输入区体验（模式行图标 ◇/▸/▣、占位提示轮播扩充至 6 条）、操作优化（`Ctrl+Z` 撤销 / `Ctrl+Y` 重做输入编辑，连续同类编辑按 0.8s 窗口合并为一个撤销单元）、帮助视图增强（`/` 搜索 + `n`/`N` 跳转 + 匹配高亮、Enter/空格 折叠/展开分组、头部搜索态提示）、新增 nord / dracula / gruvbox 三套配色主题（内置主题清单化、可按 Patch 禁用/覆盖）
 
 ---
 

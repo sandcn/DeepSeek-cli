@@ -143,6 +143,51 @@ def _high_contrast_palette() -> Palette:
     )
 
 
+def _nord_palette() -> Palette:
+    """Nord 主题（冷色调，蓝灰基底——Nord 官方色板 256 色近似）。"""
+    return Palette(
+        accent=Style(fg=110), accent_bold=Style(fg=110, bold=True),
+        dim=Style(fg=244), sep=Style(fg=238), time=Style(fg=66),
+        user_icon=Style(fg=74, bold=True), user_text=Style(fg=253),
+        notice=Style(fg=244), text=Style(fg=253),
+        token=Style(fg=109), speed=Style(fg=222),
+        tool_ok=Style(fg=150), tool_fail=Style(fg=174), tool_running=Style(fg=222),
+        border=Style(fg=240), code_bg=Style(bg=236),
+        selection_bg=Style(bg=60), selection_fg=Style(fg=15),
+        placeholder=Style(fg=244),
+    )
+
+
+def _dracula_palette() -> Palette:
+    """Dracula 主题（暗紫底 + 高饱和糖果色——Dracula 官方色板 256 色近似）。"""
+    return Palette(
+        accent=Style(fg=141), accent_bold=Style(fg=141, bold=True),
+        dim=Style(fg=103), sep=Style(fg=60), time=Style(fg=117),
+        user_icon=Style(fg=212, bold=True), user_text=Style(fg=255),
+        notice=Style(fg=103), text=Style(fg=255),
+        token=Style(fg=141), speed=Style(fg=215),
+        tool_ok=Style(fg=84), tool_fail=Style(fg=203), tool_running=Style(fg=215),
+        border=Style(fg=61), code_bg=Style(bg=236),
+        selection_bg=Style(bg=60), selection_fg=Style(fg=15),
+        placeholder=Style(fg=103),
+    )
+
+
+def _gruvbox_palette() -> Palette:
+    """Gruvbox 主题（暖色复古——Gruvbox dark 官方色板 256 色近似）。"""
+    return Palette(
+        accent=Style(fg=108), accent_bold=Style(fg=108, bold=True),
+        dim=Style(fg=245), sep=Style(fg=237), time=Style(fg=66),
+        user_icon=Style(fg=109, bold=True), user_text=Style(fg=223),
+        notice=Style(fg=245), text=Style(fg=223),
+        token=Style(fg=108), speed=Style(fg=214),
+        tool_ok=Style(fg=106), tool_fail=Style(fg=167), tool_running=Style(fg=214),
+        border=Style(fg=240), code_bg=Style(bg=235),
+        selection_bg=Style(bg=58), selection_fg=Style(fg=15),
+        placeholder=Style(fg=245),
+    )
+
+
 class ThemeRegistry:
     """主题注册表（按名解析 Palette，不可变）。
 
@@ -176,6 +221,9 @@ _BUILTIN_THEME_SPECS: dict[str, Callable[[], Palette]] = {
     "dark": lambda: Palette(),
     "light": _light_palette,
     "high-contrast": _high_contrast_palette,
+    "nord": _nord_palette,
+    "dracula": _dracula_palette,
+    "gruvbox": _gruvbox_palette,
 }
 
 _theme_lock = threading.RLock()

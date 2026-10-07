@@ -119,6 +119,8 @@ _PLACEHOLDER_ROTATION = (
     "输入消息 · /help 查看命令 · Ctrl+H 轨迹视图 · F1 帮助速查",
     "输入消息 · Tab 补全 · Ctrl+N 切换模型 · Ctrl+B 切换模式",
     "输入消息 · 拖动文件到窗口插入路径 · Ctrl+O 编辑消息 · Ctrl+L 清屏",
+    "输入消息 · /cost 查看用量 · /theme 切换主题 · Ctrl+T 快捷切换",
+    "输入消息 · Esc 双击清空 · Ctrl+G 外部编辑 · Ctrl+D 退出",
 )
 #: 占位提示轮播周期（秒）
 _PLACEHOLDER_ROTATE_SECONDS = 6.0
@@ -154,6 +156,12 @@ _S_MODE_EMPTY = Style(fg=178)
 _S_MODE_SIMPLE = Style(fg=45)
 #: 模式 → 显示文本（实时视图；真源 == 表现层数据注册表 mode_text 表）
 _MODE_TEXTS: dict = LiveMapping("mode_text")
+#: 模式 → 图标（模式行右侧视觉标识；与 mode_text 表同键集）。
+_MODE_ICONS: dict = {
+    "empty": "\u25c7",      # ◇ 空模式（轻量/无约束）
+    "simple": "\u25b8",     # ▸ 简单模式
+    "standard": "\u25a3",   # ▣ 标准模式（完整规则集）
+}
 #: 模式 → 文本样式（empty 金色 / simple 亮青 / standard 暗灰；实时取注册表）
 
 
@@ -304,17 +312,20 @@ def _build_mode_line(width: int, mode,
     prefix_w = prefix.width
     for run in prefix.runs:
         line.append_run(run)
+    # ★ 2026-10-07（输入区体验）：模式文本前置图标（细分模式视觉标识）。
+    icon = _MODE_ICONS.get(mode_key, "")
+    mode_label = f" {icon} {text}" if icon else f" {text}"
     # 右侧模式文本预算（前缀占位后剩余宽度）
     mode_budget = max(0, width - prefix_w)
     # 预算按显示宽度计（CJK 字符显示宽 2 列——len() 为字符数不准确）
-    mode_w = wcswidth_simple(f" {text}")
+    mode_w = wcswidth_simple(mode_label)
     pad = max(0, mode_budget - mode_w)
     if pad > 0:
         line.append(" " * pad, None)
     # 预算传整行 width（line 已含前缀 + pad 填充）——remaining 基于
     # 当前行宽计算，保证模式文本完整显示或按剩余空间截断（修复前误传
     # mode_budget：pad 填满后 remaining 为负 → 模式文本被整体丢弃）。
-    _append_truncated(line, f" {text}", style, max(0, width))
+    _append_truncated(line, mode_label, style, max(0, width))
     # 窄屏（width < 前缀+模式文本）内容截断后可能不足 width——补空格保持
     # 行宽不变量（行级 diff 行宽恒 = width，与分隔线行语义一致）。
     if width > 0 and line.width < width:

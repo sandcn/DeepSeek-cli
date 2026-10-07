@@ -198,7 +198,7 @@ class TestViewModel:
             "deepseek", "custom", "anthropic", "glm", "mimo",
         ]
         assert [o[0] for o in entries["THEME"]["options"]] == [
-            "dark", "light", "high-contrast",
+            "dark", "light", "high-contrast", "nord", "dracula", "gruvbox",
         ]
         assert [o[0] for o in entries["REASONING_EFFORT"]["options"]] == [
             "low", "medium", "high", "max",

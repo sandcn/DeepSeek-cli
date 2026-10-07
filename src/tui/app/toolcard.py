@@ -47,6 +47,8 @@ React Ink 组件化（2026-08-05，深度组件化）：原 ``AppModel._tool_car
 
 from __future__ import annotations
 
+import math
+
 # core.style 为 Layer 0 底层（无 app 依赖），模块级 import 无循环风险；
 # 用于模块级样式常量（_GUIDE_STYLE / _CATEGORY_DEFAULT_STYLE）。
 from src.tui.core.style import Style
@@ -250,6 +252,73 @@ def _tool_status_index(block):
     return None
 
 
+def _tool_result_line_count(block) -> int:
+    """工具结果行数（body 数据行 + 已省略行；不含标题行/状态行）。
+
+    用于标题行尾部元信息（``· 120 行``）——让用户不展开也能感知输出规模。
+    """
+    total = len(block.lines)
+    if total <= 1:
+        return 0
+    count = total - 1
+    if _tool_status_index(block) is not None:
+        count -= 1
+    try:
+        omitted = int(block.extra.get("_bash_omitted_lines", 0) or 0)
+    except (TypeError, ValueError):
+        omitted = 0
+    try:
+        omitted += int(block.extra.get("_head_omitted_lines", 0) or 0)
+    except (TypeError, ValueError):
+        omitted = 0
+    return max(0, count) + max(0, omitted)
+
+
+def _tool_meta_runs(block, running: bool) -> list:
+    """工具卡标题行尾部元信息 runs（耗时 · 结果行数 · 失败标记）。
+
+    关闭（``running=False``）后显示：
+      - 耗时（``close_tool_box`` 记录的 ``_tool_duration``，<0.05s 不显示）；
+      - 结果行数（>1 行时显示，``· 120 行``）；
+      - 失败标记（``· 失败`` 红色加粗——比单独 ✖ 图标更醒目）。
+
+    运行中返回空列表（标题行保持极简，与旧版逐字节一致）。
+
+    Args:
+        block: 工具块（ChatBlock.kind == "tool"）。
+        running: 是否仍在运行（未关闭且状态为 running）。
+
+    Returns:
+        StyledRun 列表（可为空）。
+    """
+    from src.tui.ink import StyledRun
+
+    if running:
+        return []
+    from src.tui.app._theme import get_active_palette
+    from src.tui._format import format_duration
+
+    pal = get_active_palette()
+    parts: list[str] = []
+    duration = block.extra.get("_tool_duration")
+    if (
+        isinstance(duration, (int, float))
+        and not isinstance(duration, bool)
+        and math.isfinite(float(duration))
+        and float(duration) >= 0.05
+    ):
+        parts.append(format_duration(float(duration)))
+    line_count = _tool_result_line_count(block)
+    if line_count > 1:
+        parts.append(f"{line_count} 行")
+    runs: list = []
+    if parts:
+        runs.append(StyledRun(" \u00b7 " + " \u00b7 ".join(parts), pal.dim))
+    if block.extra.get("tool_status") == "fail":
+        runs.append(StyledRun(" \u00b7 \u5931\u8d25", Style(fg=196, bold=True)))
+    return runs
+
+
 def _omitted_line(text: str, width: int, bg_style: Style) -> list:
     """省略提示行（``│ … 前/后 N 行省略``，无边框——BEAUTY-35 带竖线引导）。
 
@@ -326,6 +395,10 @@ def tool_card_lines(block, width, start=0, stop=None):
         _icon_fg, _cat_fg,
         block.extra.get("tool_name", ""),
         block.extra.get("tool_detail", ""),
+        # ★ 2026-10-07（工具卡显示增强）：标题行元信息（耗时）参与键——
+        #   close_tool_box 记录 _tool_duration 后帧缓存必须重建（修复前缺失
+        #   时同帧缓存命中旧标题）。
+        block.extra.get("_tool_duration"),
         block.extra.get("_bash_omitted_lines", 0),
         block.extra.get("_head_omitted_lines", 0),
         len(block.extra.get("_chat_hidden_lines") or ()),
@@ -370,6 +443,9 @@ def tool_card_lines(block, width, start=0, stop=None):
                 ))
             else:
                 title_runs.append(StyledRun(f" {detail}", pal.dim))
+        # ★ 2026-10-07（工具卡显示增强）：关闭后标题行尾部追加元信息
+        #   （耗时 · 结果行数 · 失败标记）——无需展开即可感知工具执行结果。
+        title_runs.extend(_tool_meta_runs(block, running))
         # ★ 标题行超宽截断 + 末尾省略号（2026-10-05 用户需求「截断到最大
         #   宽度 + 增加…」）：标题行（图标 + 工具名 + 参数）超过 width 时
         #   截断到 width 并以 ``…`` 收尾（提示参数被截断）。

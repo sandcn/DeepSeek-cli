@@ -146,7 +146,7 @@ def _model_segment(ctx: StatusContext) -> list:
 
 
 def _tools_segment(ctx: StatusContext) -> list:
-    """工具计数段（活跃期；完成/失败配色 + 箭头呼吸）。"""
+    """工具计数段（活跃期；运行中 ⚙ n/m，完成 ✔ m / ✔ n/m ✖ f）。"""
     if not ctx.status_active:
         return []
     st = ctx.status
@@ -158,26 +158,24 @@ def _tools_segment(ctx: StatusContext) -> list:
     if tool_total <= 0:
         return []
     parts: list[StyledRun] = []
+    # ★ BEAUTY-16（动效）：工具失败计数警示呼吸。
+    fail_style = Style(fg=time_glow(196, 208, 8.0))
     if tool_count > 0:
-        # ★ BEAUTY-16（动效）：工具失败计数警示呼吸。
-        if tool_fail > 0:
-            count_style = Style(fg=time_glow(196, 208, 8.0))
-        else:
-            count_style = _S_TOOL_OK
-        # ★ BEAUTY-15（动效）：工具计数箭头呼吸。
-        arrow_style = Style(fg=time_glow(45, 55, 8.0)) if ctx.status_active else _S_ACCENT
-        parts.append(StyledRun(f"{tool_count}\u2192", arrow_style))
-        parts.append(StyledRun(f"{tool_total}", count_style))
+        # 运行中：⚙ 运行数/总数（箭头色呼吸——与旧 ``n→m`` 同语义，格式更清晰）
+        arrow_style = Style(fg=time_glow(45, 55, 8.0))
+        parts.append(StyledRun("\u2699 ", arrow_style))
+        parts.append(StyledRun(f"{tool_count}/{tool_total}", _S_TOOL_OK))
     else:
+        # 全部结束：✔ 总数（无失败）或 ✔ 成功数/总数 ✖ 失败数
         # ★ P2-9：计数源不一致时钳制到 0，避免显示负数完成数。
         done = max(0, tool_total - tool_count - tool_fail)
-        parts.append(StyledRun(f"{done}", _S_TOOL_OK))
-        parts.append(StyledRun("/", _S_DIM))
         if tool_fail > 0:
-            parts.append(StyledRun(
-                f"{tool_total}", Style(fg=time_glow(196, 208, 8.0)),
-            ))
+            parts.append(StyledRun("\u2714 ", _S_TOOL_OK))
+            parts.append(StyledRun(f"{done}/{tool_total}", _S_TOOL_OK))
+            parts.append(StyledRun(" \u2716 ", fail_style))
+            parts.append(StyledRun(f"{tool_fail}", fail_style))
         else:
+            parts.append(StyledRun("\u2714 ", _S_TOOL_OK))
             parts.append(StyledRun(f"{tool_total}", _S_TOOL_OK))
     return parts
 
@@ -236,6 +234,60 @@ def _theme_segment(ctx: StatusContext) -> list:
     return [StyledRun(f"\u25d0 {theme}", Style(fg=110))]
 
 
+def _provider_segment(ctx: StatusContext) -> list:
+    """模型提供方段（空闲/活跃均显示；读取失败/未配置时为空）。"""
+    try:
+        from src.config.proxy import config
+
+        provider = str(config.get("provider", "") or "")
+    except Exception:
+        provider = ""
+    if not provider:
+        return []
+    return [StyledRun(f"\u2b21 {provider}", Style(fg=110))]
+
+
+def _context_segment(ctx: StatusContext) -> list:
+    """上下文用量段（会话建立后空闲/活跃均显示）。
+
+    显示 ``▣ 45%``，上下文窗口可读时附绝对用量 ``27.0k/60.0k``——比输入区
+    模式行的迷你进度条提供更精确的绝对数值（两者互补，非重复）。上下文
+    百分比经 ``get_context_usage_percent`` O(1) 无锁读（渲染线程零计算）。
+    """
+    try:
+        from src.core.context_manager import get_context_usage_percent
+
+        pct = get_context_usage_percent()
+    except Exception:
+        return []
+    if pct is None:
+        return []
+    try:
+        pct = max(0.0, min(float(pct), 100.0))
+    except (TypeError, ValueError):
+        return []
+    capacity = 0
+    try:
+        from src.config.proxy import config
+
+        capacity = int(config.get("max_context_tokens", 0) or 0)
+    except Exception:
+        capacity = 0
+    suffix = ""
+    if capacity > 0:
+        used = int(capacity * pct / 100.0)
+        suffix = f" {_fmt_tokens(used)}/{_fmt_tokens(capacity)}"
+    style = Style(fg=time_glow(110, 120, 12.0)) if ctx.status_active else _S_TIME
+    return [StyledRun(f"\u25a3 {pct:.0f}%{suffix}", style)]
+
+
+def _fmt_tokens(count: int) -> str:
+    """token 数紧凑显示（>=1000 用 ``x.yk``，否则原值）。"""
+    if count >= 1000:
+        return f"{count / 1000:.1f}k"
+    return str(count)
+
+
 def _messages_segment(ctx: StatusContext) -> list:
     """会话消息数段（空闲/活跃均显示；消息源未注入时为空）。"""
     count = 0
@@ -283,7 +335,7 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
     )
 
     model_part: list[StyledRun] = []
-    parts: list[StyledRun] = []
+    segment_runs: list[list[StyledRun]] = []
     for spec_id in active_segment_ids():
         fn = resolve_segment(spec_id)
         if fn is None:
@@ -294,21 +346,25 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
         if spec_id == "model":
             model_part = list(runs)
         else:
-            parts.extend(runs)
+            # ★ 段级分隔（2026-10-07）：一个段的多个 run 视为**整体**——段与段
+            #   之间才插入 `` · `` 分隔符（修复前逐 run 插入：``_tools_segment``
+            #   的 ``⚙`` 与计数、图标与数值之间被分隔符拆开，显示成
+            #   ``⚙ · 1/1``）。
+            segment_runs.append(list(runs))
 
     # ★ 后台任务数量已迁至模式行行首（input_area._build_mode_line）——状态栏
     #   不再显示。
     # ★ 2026-10-07（状态栏信息增强）：不再在非活跃状态提前返回——各段实现
     #   自行门控（tools/elapsed/tokens/speed 非活跃返回 []），而新增的
-    #   theme/messages 段**空闲也显示**（信息常驻）。
-    if not parts:
+    #   theme/messages/provider/context 段**空闲也显示**（信息常驻）。
+    if not segment_runs:
         return model_part
     sep = StyledRun(" \u00b7 ", _S_DIM)
     joined: list[StyledRun] = []
-    for i, p in enumerate(parts):
+    for i, runs in enumerate(segment_runs):
         if i > 0:
             joined.append(sep)
-        joined.append(p)
+        joined.extend(runs)
     if model_part:
         return model_part + [StyledRun("  ", None)] + joined
     return joined
