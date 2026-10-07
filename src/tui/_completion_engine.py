@@ -119,6 +119,17 @@ def _default_commands_source() -> list[str]:
     return get_registered_command_names()
 
 
+def _current_config_value(key: str) -> str:
+    """读取当前配置值（补全弹窗「当前」标注用；失败回退空串）。"""
+    try:
+        from ..config.proxy import config
+
+        value = config.get(key)
+        return str(value) if value else ""
+    except Exception:
+        return ""
+
+
 def _ranked(items: list[str], prefix: str) -> list[str]:
     """候选语义排序（方向D 步骤13）：精确匹配 > 前缀匹配（长度升序）> 子串包含（长度升序）。
 
@@ -462,22 +473,28 @@ class CompletionEngine:
 
         if cmd_name == "/model":
             models = self._models_cache.get()
+            current = _current_config_value("model")
             # 方向D 步骤13：语义排序（精确 > 前缀 > 子串，长度升序）
             return [
                 CompletionItem(
                     f"{cmd_name} {m}" if replace_full else m,
                     start_pos=start, item_type="param",
+                    # ★ 2026-10-07（补全弹窗增强）：当前值标注（弹窗描述列显示）
+                    desc="当前" if m == current else "",
                 )
                 for m in _ranked(models, param_last)
             ]
 
         elif cmd_name == "/theme":
             themes = self._theme_cache.get()
+            current = _current_config_value("theme")
             ranked = _ranked([name for name, _desc in themes], param_last)
             return [
                 CompletionItem(
                     f"{cmd_name} {name}" if replace_full else name,
                     start_pos=start, item_type="param",
+                    # ★ 2026-10-07（补全弹窗增强）：当前值标注
+                    desc="当前" if name == current else "",
                 )
                 for name in ranked
             ]

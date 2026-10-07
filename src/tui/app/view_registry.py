@@ -1,8 +1,8 @@
 """TUI 视图注册表 — 模态全屏视图 / 模态底部视图的单一来源（一切皆插件）。
 
-「一切皆插件」：TUI 视图（``trace`` / ``trace_tools`` / ``config`` / ``plugin``
-全屏视图，``user_select`` / ``editmsg`` 底部视图）不再硬编码在 ``app.py`` 的
-字典字面量里，而是注册到本注册表；每一项都由清单中的**独立插件条目**
+「一切皆插件」：TUI 视图（``trace`` / ``trace_tools`` / ``config`` / ``plugin`` /
+``help`` 全屏视图，``user_select`` / ``editmsg`` 底部视图）不再硬编码在 ``app.py``
+的字典字面量里，而是注册到本注册表；每一项都由清单中的**独立插件条目**
 （``ui_view``）显式声明，可被 Profile/Bundle 声明，也可被 Patch/Overlay 按 id
 单独禁用、覆盖或替换。
 
@@ -80,6 +80,8 @@ _BUILTIN_SPECS: tuple = (
              description="配置中心视图"),
     ViewSpec("plugin", "fullscreen", "src.tui.app.plugin_view.PluginView",
              description="已加载插件视图"),
+    ViewSpec("help", "fullscreen", "src.tui.app.help_view.HelpView",
+             description="帮助速查视图（分组命令 + 快捷键，F1 / Ctrl+/ 开关）"),
     ViewSpec("user_select", "bottom", "src.tui.app.user_select.UserSelectPopup",
              key_mode="user_select_seq", description="user_select 弹窗（底部模态视图）"),
     ViewSpec("editmsg", "bottom", "src.tui.app.editmsg_select.EditMsgSelectPopup",

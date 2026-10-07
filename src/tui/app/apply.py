@@ -30,7 +30,6 @@ _logger = logging.getLogger(__name__)
 _S_ERROR = Style(fg=196)
 _S_ERROR_ICON = Style(fg=196, bold=True)
 _S_PARSE = Style(fg=242)
-_S_SPLASH = Style(fg=45, bold=True)
 
 #: 流式内容块保留的 markdown 源文本上限（仅用于终端 resize 时整块重渲染）。
 #: 超限后停止累积并标记 ``extra["source_truncated"]``——避免超长回答常驻
@@ -184,31 +183,29 @@ def _do_error(model, cmd) -> None:
 
 
 def _do_splash(model, cmd) -> None:
-    """启动品牌屏：✦ 品牌符号 + 模型名 + 版本。
+    """启动欢迎卡（提交块；内容与空状态欢迎卡**同源**）。
 
-    ★ BEAUTY-36（2026-08-19 美化）：品牌符号 ``✦``（强调青加粗）+ 模型名
-    （亮青加粗）+ ``· 版本``（dim 弱化）三层视觉分层；无模型名时回退显示
-    版本号（``v2.x.x``）避免空屏。
-    ★ P3（review 2026-08-19）：VERSION 导入 try/except 防御（与
-    chat_view._welcome_version 一致——加载循环/未来重构失败时回退空版本
-    段，仍渲染 ✦ + 模型名，不丢整块启动屏）。
+    ★ 2026-10-07（空状态/启动界面重构）：旧实现仅输出 ``✦ 模型名 · 版本``
+    一行（模型名未知时退化为 ``✦ v2.2.0``），既与顶部标题栏品牌/版本重复、
+    信息单薄。现改为提交与聊天区空态同源的**欢迎卡**（``_welcome`` 单一
+    真源）：运行环境信息（模型/模式/主题/目录）+ 操作引导——不再重复
+    标题栏品牌行，信息量显著提升。
+
+    提交块 kind 保持 ``"splash"``（轨迹视图跳过、模型助手按无头块处理等
+    既有语义不变）。
     """
-    try:
-        from src.app_init._args import VERSION
-        version = str(VERSION)
-    except Exception:
-        version = ""
-    line = AnsiLine.of("  ", None)
-    line.append("\u2726 ", Style(fg=45, bold=True))
-    if model.status.model_name:
-        line.append(model.status.model_name, _S_SPLASH)
-        if version:
-            # VERSION 已含 ``v`` 前缀（"v2.2.0"）——直接拼接
-            # （修复前 ``v{VERSION}`` 产生 ``vv2.2.0``）。
-            line.append(f" \u00b7 {version}", Style(fg=242))
-    else:
-        line.append(version or "\u2726", _S_SPLASH)
-    model.append_committed("splash", [line, AnsiLine.of("")])
+    from src.tui.app._welcome import welcome_card_rows
+
+    # width=0：不做构建期截断——行宽由渲染期文档宽度防线统一钳制
+    # （splash 推送时机在会话装配后，此时 model.width 可能仍为默认值）。
+    lines = []
+    for row in welcome_card_rows(model, 0):
+        line = AnsiLine()
+        for text, style in row:
+            line.append(text, style)
+        lines.append(line)
+    lines.append(AnsiLine.of("", None))
+    model.append_committed("splash", lines)
 
 
 def _do_subagent_frame(model, cmd) -> None:

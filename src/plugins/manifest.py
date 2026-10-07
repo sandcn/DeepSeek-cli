@@ -473,6 +473,8 @@ UI_VIEW_ENTRIES = [
      "config": {"id": "config"}},
     {"id": "ui_view_plugin", "plugin": "src.plugins.ui_views:apply_ui_view",
      "config": {"id": "plugin"}},
+    {"id": "ui_view_help", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "help"}},
     {"id": "ui_view_user_select", "plugin": "src.plugins.ui_views:apply_ui_view",
      "config": {"id": "user_select"}},
     {"id": "ui_view_editmsg", "plugin": "src.plugins.ui_views:apply_ui_view",
@@ -612,6 +614,8 @@ KEYBINDING_ENTRIES = [
      "config": {"id": "ctrl_p"}},
     {"id": "keybinding_ctrl_b", "plugin": "src.plugins.keybinding_entries:apply_keybinding",
      "config": {"id": "ctrl_b"}},
+    {"id": "keybinding_ctrl_slash", "plugin": "src.plugins.keybinding_entries:apply_keybinding",
+     "config": {"id": "ctrl_slash"}},
 ]
 
 # ── 特殊键处理器条目（每个内置 action 一个独立插件条目） ──────
@@ -735,12 +739,16 @@ COMPLETION_PROVIDER_ENTRIES = [
 STATUS_SEGMENT_ENTRIES = [
     {"id": "status_segment_model", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
      "config": {"id": "model"}},
+    {"id": "status_segment_theme", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
+     "config": {"id": "theme"}},
     {"id": "status_segment_tools", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
      "config": {"id": "tools"}},
     {"id": "status_segment_elapsed", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
      "config": {"id": "elapsed"}},
     {"id": "status_segment_tokens", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
      "config": {"id": "tokens"}},
+    {"id": "status_segment_messages", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
+     "config": {"id": "messages"}},
     {"id": "status_segment_speed", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
      "config": {"id": "speed"}},
 ]

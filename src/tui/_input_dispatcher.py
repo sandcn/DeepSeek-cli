@@ -168,6 +168,12 @@ class InputDispatcher:
         # （0x08 传统 BS 语义——行为与修复前一致，测试/无装配场景兼容）。
         self._trace_toggle_callback = None
 
+        # ── F1 / Ctrl+/ 帮助速查视图开关回调（2026-10-07，装配注入） ──
+        # F1 功能键或 Ctrl+/（0x1f / CSI u）→ 打开/关闭模态全屏「帮助速查」
+        # 视图（分组命令列表 + 快捷键速查）。未注入回调时 F1/Ctrl+/ 为
+        # no-op（测试/无装配场景兼容）。
+        self._help_toggle_callback = None
+
         # ── 拖放文件路径规范化（2026-10-07，用户需求：输入框支持拖动文件
         #    输入文件路径） ──
         # 终端拖放文件时把路径以「粘贴」形式注入 stdin（不同终端形态不同：
@@ -293,6 +299,9 @@ class InputDispatcher:
             # Ctrl+H → 轨迹视图开关（2026-08-19）。未注入轨迹回调时
             # ``_handle_trace_toggle`` 回退 backspace（0x08 传统 BS 语义）。
             self._handle_trace_toggle()
+        elif action == "help_toggle":
+            # Ctrl+/ → 帮助速查视图开关（2026-10-07）。未注入回调时 no-op。
+            self._handle_help_toggle()
         elif action == "clear_screen":
             # Ctrl+L → 清屏（流式保护：生成中忽略）
             if not self._is_active_status():
@@ -338,6 +347,16 @@ class InputDispatcher:
             cb()
         except Exception:
             _logger.debug("Ctrl+H trace 回调异常", exc_info=True)
+
+    def _handle_help_toggle(self) -> None:
+        """Ctrl+/ 帮助速查视图开关：调用注入的回调（未注入时 no-op）。"""
+        cb = self._help_toggle_callback
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception:
+            _logger.debug("Ctrl+/ help 回调异常", exc_info=True)
 
     def _handle_ctrl_d(self) -> None:
         """Ctrl+D EOF：空缓冲 → 提交 exit；非空 no-op（防误退）。
@@ -887,9 +906,13 @@ class InputDispatcher:
                 event.keycode, event.modifier,
             )
         elif kind in ("f1", "f2", "f3", "f4"):
-            # 方向A 步骤1：功能键已先行询问 input router；未消费 no-op
+            # 方向A 步骤1：功能键已先行询问 input router；未消费时 F1 触发
+            # 帮助速查视图开关（Ctrl+/ 之外的等价入口），其余功能键 no-op
             # （不再静默丢弃——router 可经 useInput 钩子消费）。
-            _logger.debug("%s 功能键未被 input router 消费", kind)
+            if kind == "f1":
+                self._handle_help_toggle()
+            else:
+                _logger.debug("%s 功能键未被 input router 消费", kind)
         elif kind == "paste":
             # 括号粘贴（bracketed paste）内容未被 usePaste 组件消费 → 走既有
             # 粘贴插入路径（拖放路径规范化 + 输入缓冲 + 自动补全），与未启用
@@ -1157,6 +1180,7 @@ class InputDispatcher:
         "active_status": "_active_status_fn",
         "clear_screen": "_clear_screen_callback",
         "trace_toggle": "_trace_toggle_callback",
+        "help_toggle": "_help_toggle_callback",
         "mouse_fallback": "_mouse_fallback_callback",
     }
 
@@ -1354,6 +1378,17 @@ class InputDispatcher:
         主轨迹），本回调不再被调用（不会重复翻转）。
         """
         self.register_callback("trace_toggle", cb)
+
+    def set_help_toggle_callback(self, cb) -> None:
+        """设置 F1 / Ctrl+/ 帮助速查视图开关回调（2026-10-07，装配注入）。
+
+        cb 签名: ``() -> None``（翻转 model.fullscreen "help" ↔ "" + 请求
+        重绘——见 ``_make_fullscreen_toggle_cb`` 通用工厂）；None 可清除注入。
+        未注入时 F1 / Ctrl+/ 为 no-op（测试/无装配场景兼容）。
+        ★ 帮助视图打开期间 F1/Ctrl+/ 被 HelpView 模态 handler 经 router 消费
+        （关闭），本回调不再被调用（不会重复翻转）。
+        """
+        self.register_callback("help_toggle", cb)
 
     def set_suppress_enter(self, suppress: bool) -> None:
         """设置 Enter 抑制标志（用于 editmsg 消息选择期间）。

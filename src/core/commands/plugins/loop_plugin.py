@@ -29,6 +29,7 @@ class LoopPlugin(InteractiveCommandPlugin):
         self.meta = CommandMeta(
             name="loop",
             description="循环执行 N 次指定提词（每轮第1次用用户提词，第2次用固定提词）",
+            group="session",
         )
 
     async def async_execute(self, ctx: Any) -> bool:

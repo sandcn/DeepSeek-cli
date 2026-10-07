@@ -367,7 +367,7 @@ from .base import CommandPlugin, CommandMeta, declare_command_plugin
 class ClearCommand(CommandPlugin):
     """清空当前对话"""
     def __init__(self):
-        self.meta = CommandMeta(name="clear", description="清空对话")
+        self.meta = CommandMeta(name="clear", description="清空对话", group="session")
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_clear(ctx)
@@ -376,7 +376,7 @@ class ClearCommand(CommandPlugin):
 class PinCommand(CommandPlugin):
     """固定/取消固定消息"""
     def __init__(self):
-        self.meta = CommandMeta(name="pin", description="标记重要消息")
+        self.meta = CommandMeta(name="pin", description="标记重要消息", group="session")
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_pin(ctx)
@@ -385,7 +385,7 @@ class PinCommand(CommandPlugin):
 class UndoCommand(CommandPlugin):
     """撤销上一条助手消息"""
     def __init__(self):
-        self.meta = CommandMeta(name="undo", description="撤销上一轮对话")
+        self.meta = CommandMeta(name="undo", description="撤销上一轮对话", group="session")
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_undo(ctx)
@@ -394,7 +394,7 @@ class UndoCommand(CommandPlugin):
 class RetryCommand(CommandPlugin):
     """重试上一轮"""
     def __init__(self):
-        self.meta = CommandMeta(name="retry", description="重新生成上一条回答")
+        self.meta = CommandMeta(name="retry", description="重新生成上一条回答", group="session")
 
     def execute(self, ctx: CommandContext) -> bool:
         ctx.state["retry"] = True
@@ -404,7 +404,7 @@ class RetryCommand(CommandPlugin):
 class EditCommand(CommandPlugin):
     """编辑上一条用户消息"""
     def __init__(self):
-        self.meta = CommandMeta(name="edit", description="编辑并重新发送上一条输入")
+        self.meta = CommandMeta(name="edit", description="编辑并重新发送上一条输入", group="session")
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_edit(ctx)
@@ -413,7 +413,7 @@ class EditCommand(CommandPlugin):
 class ChangesCommand(CommandPlugin):
     """显示变更记录"""
     def __init__(self):
-        self.meta = CommandMeta(name="changes", description="显示文件沙盒中被改变文件的 diff")
+        self.meta = CommandMeta(name="changes", description="显示文件沙盒中被改变文件的 diff", group="files")
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_changes(ctx)

@@ -43,6 +43,7 @@ class ModelPlugin(InteractiveCommandPlugin):
         self.meta = CommandMeta(
             name="model",
             description="切换模型",
+            group="model",
         )
 
     async def async_execute(self, ctx: Any) -> bool:

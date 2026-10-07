@@ -223,6 +223,33 @@ def _speed_segment(ctx: StatusContext) -> list:
     return [StyledRun(f"\u00bb {_format_speed(speed)}", speed_style)]
 
 
+def _theme_segment(ctx: StatusContext) -> list:
+    """配色主题段（空闲/活跃均显示；读取失败时为空）。"""
+    try:
+        from src.tui.core._theme import _read_theme
+
+        theme = str(_read_theme() or "")
+    except Exception:
+        theme = ""
+    if not theme:
+        return []
+    return [StyledRun(f"\u25d0 {theme}", Style(fg=110))]
+
+
+def _messages_segment(ctx: StatusContext) -> list:
+    """会话消息数段（空闲/活跃均显示；消息源未注入时为空）。"""
+    count = 0
+    try:
+        source = getattr(ctx.model, "message_source", None)
+        if callable(source):
+            count = len(source() or [])
+    except Exception:
+        count = 0
+    if count <= 0:
+        return []
+    return [StyledRun(f"\u2709 {count}", Style(fg=110))]
+
+
 def _build_status_runs(model, dot_elapsed: float = 0.0,
                        spinner_char: str = "\u00b7",
                        reasoning_effort: str | None = None) -> list[StyledRun]:
@@ -237,8 +264,10 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
         reasoning_effort: 当前推理等级（low/medium/high/max）；None 或空串不显示。
 
     段由 ``src.tui.app._status_segments`` 注册表提供（每个段一个清单条目）：
-    ``model`` 段为模型名部分（不与其它段用分隔符连接），其余段（tools/elapsed/
-    tokens/speed）按声明顺序用 `` · `` 连接；非活跃状态仅渲染 model 段。
+    ``model`` 段为模型名部分（不与其它段用分隔符连接），其余段（theme/tools/
+    elapsed/messages/tokens/speed）按声明顺序用 `` · `` 连接。各段自行门控
+    活跃性：tools/elapsed/tokens/speed 仅活跃期渲染；theme/messages 为常驻段
+    （空闲也显示——2026-10-07 状态栏信息增强）。
     """
     from ._status_segments import active_segment_ids, resolve_segment
 
@@ -269,9 +298,9 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
 
     # ★ 后台任务数量已迁至模式行行首（input_area._build_mode_line）——状态栏
     #   不再显示。
-    if not status_active:
-        return model_part
-
+    # ★ 2026-10-07（状态栏信息增强）：不再在非活跃状态提前返回——各段实现
+    #   自行门控（tools/elapsed/tokens/speed 非活跃返回 []），而新增的
+    #   theme/messages 段**空闲也显示**（信息常驻）。
     if not parts:
         return model_part
     sep = StyledRun(" \u00b7 ", _S_DIM)

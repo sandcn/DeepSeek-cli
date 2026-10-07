@@ -139,6 +139,7 @@ class PluginCommand(CommandPlugin):
         self.meta = CommandMeta(
             name="plugin",
             description="查看当前已加载的插件（独立界面）",
+            group="ui",
         )
 
     def execute(self, ctx: CommandContext) -> bool:

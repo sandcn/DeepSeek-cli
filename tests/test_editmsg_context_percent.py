@@ -206,14 +206,15 @@ def test_edit_then_mode_line_shows_updated_percent():
         layout_box=SimpleNamespace(w=80, x=0, y=0),
     )
     before = "".join(r.text for r in _build_lines(fiber)[-1].runs)
-    assert "main \u00b7 36.0%" in before
+    assert "36.0%" in before
+    assert "main " in before
 
     # 编辑（截断）→ 全局快照下降 → 同一 fiber 重渲染模式行即时更新
     EditCommand(agent, 2).execute({})
     assert _pct() == 18.0
     after = "".join(r.text for r in _build_lines(fiber)[-1].runs)
-    assert "main \u00b7 18.0%" in after
-    assert "main \u00b7 36.0%" not in after
+    assert "18.0%" in after
+    assert "36.0%" not in after
 
 
 # ── /undo /retry /edit /clear 命令路径（同根因修复） ──────

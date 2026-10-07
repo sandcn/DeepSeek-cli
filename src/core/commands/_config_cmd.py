@@ -411,7 +411,7 @@ from .base import CommandPlugin, CommandMeta, declare_command_plugin
 class CostCommand(CommandPlugin):
     """显示费用统计"""
     def __init__(self):
-        self.meta = CommandMeta(name="cost", description="查看 token 用量和费用")
+        self.meta = CommandMeta(name="cost", description="查看 token 用量和费用", group="model")
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_cost(ctx)
@@ -420,7 +420,7 @@ class CostCommand(CommandPlugin):
 class ThemeCommand(CommandPlugin):
     """切换主题"""
     def __init__(self):
-        self.meta = CommandMeta(name="theme", description="切换配色主题")
+        self.meta = CommandMeta(name="theme", description="切换配色主题", group="ui")
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_theme(ctx)
@@ -429,7 +429,7 @@ class ThemeCommand(CommandPlugin):
 class ReasoningCommand(CommandPlugin):
     """调整推理等级"""
     def __init__(self):
-        self.meta = CommandMeta(name="reasoning", description="调整推理等级 (low/medium/high/max)")
+        self.meta = CommandMeta(name="reasoning", description="调整推理等级 (low/medium/high/max)", group="model")
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_reasoning(ctx)
@@ -438,7 +438,7 @@ class ReasoningCommand(CommandPlugin):
 class TemperatureCommand(CommandPlugin):
     """调整大模型温度"""
     def __init__(self):
-        self.meta = CommandMeta(name="temperature", description="调整大模型温度 (0.0~2.0)")
+        self.meta = CommandMeta(name="temperature", description="调整大模型温度 (0.0~2.0)", group="model")
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_temperature(ctx)
@@ -447,7 +447,7 @@ class TemperatureCommand(CommandPlugin):
 class ConfigCommand(CommandPlugin):
     """显示/编辑程序配置（独立界面）"""
     def __init__(self):
-        self.meta = CommandMeta(name="config", description="显示/编辑程序配置（/config 打开独立界面）")
+        self.meta = CommandMeta(name="config", description="显示/编辑程序配置（/config 打开独立界面）", group="ui")
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_config(ctx)

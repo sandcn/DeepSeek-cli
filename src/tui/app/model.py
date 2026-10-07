@@ -134,11 +134,11 @@ class AppModel(_ToolOutputMixin):
         self.history_search: "HistorySearchState | None" = None
         # ── 模态全屏视图（2026-08-17 通用机制） ──
         # fullscreen: 当前模态全屏视图 id（""=正常界面；"trace"=轨迹视图；
-        #   未来可扩展其他全屏视图）。fullscreen 非空时 App 按视图注册表
-        #   （``app.FULLSCREEN_VIEWS``）**整屏渲染**对应组件，组件经
-        #   ``use_fullscreen(True)`` 声明模态——独占键盘输入（未消费按键不
-        #   落入输入缓冲，杜绝看不见的输入）。新增全屏视图两步：注册表加
-        #   条目 + 设置 model.fullscreen（整屏渲染/输入接管/光标隐藏全部
+        #   "config"/"plugin"/"help" 等其它全屏视图同理）。fullscreen 非空时
+        #   App 按视图注册表（``app.FULLSCREEN_VIEWS``）**整屏渲染**对应组件，
+        #   组件经 ``use_fullscreen(True)`` 声明模态——独占键盘输入（未消费
+        #   按键不落入输入缓冲，杜绝看不见的输入）。新增全屏视图两步：注册表
+        #   加条目 + 设置 model.fullscreen（整屏渲染/输入接管/光标隐藏全部
         #   自动生效）。
         # trace_open: fullscreen=="trace" 的兼容别名（property，见类底部）。
         self.fullscreen: str = ""

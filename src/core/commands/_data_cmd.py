@@ -148,7 +148,7 @@ from .base import CommandPlugin, CommandMeta, declare_command_plugin
 class LoadCommand(CommandPlugin):
     """加载历史对话"""
     def __init__(self):
-        self.meta = CommandMeta(name="load", description="加载保存的对话")
+        self.meta = CommandMeta(name="load", description="加载保存的对话", group="data")
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_load(ctx)
@@ -157,7 +157,7 @@ class LoadCommand(CommandPlugin):
 class SessionsCommand(CommandPlugin):
     """列出所有对话"""
     def __init__(self):
-        self.meta = CommandMeta(name="sessions", description="列出所有保存的对话")
+        self.meta = CommandMeta(name="sessions", description="列出所有保存的对话", group="data")
 
     def execute(self, ctx: CommandContext) -> bool:
         return _cmd_sessions(ctx)
@@ -166,7 +166,7 @@ class SessionsCommand(CommandPlugin):
 class HelpCommand(CommandPlugin):
     """显示帮助"""
     def __init__(self):
-        self.meta = CommandMeta(name="help", description="显示帮助")
+        self.meta = CommandMeta(name="help", description="显示帮助", group="ui")
 
     def execute(self, ctx: CommandContext) -> bool:
         from ..internal.commands._command_core import _cmd_help

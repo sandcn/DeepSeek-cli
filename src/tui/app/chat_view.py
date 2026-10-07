@@ -33,142 +33,86 @@ from src.tui.app._theme import time_glow
 
 _S_REASONING = Style(fg=242)
 
-#: 空状态欢迎屏（2026-08-19 美化升级）：单行 → 多行欢迎卡——
-#:   行1  ``✦ `` 呼吸 + 渐变品牌标题 "DeepSeek CLI" + `` · 版本``（dim）
-#:   行2  空行（呼吸）
-#:   行3  ``  › 直接输入消息开始对话``（› 强调青 + 文本亮白）
-#:   行4  ``  › /help 查看命令 · /model 选择模型 · /theme 主题``（dim）
-#:   行5  ``  › Tab 补全 · Ctrl+N 切换模型 · Ctrl+H 轨迹视图``（dim）
+#: 空状态欢迎卡（2026-10-07 空状态/启动界面重构）：内容由 ``_welcome`` 模块
+#: **单一真源**构建（运行环境信息卡 + 操作引导）。
+#: ★ 去重：顶部标题栏已展示品牌与版本——欢迎卡不再重复品牌行（旧版 splash
+#:   的 ``✦ v2.2.0`` 行 + 欢迎屏渐变品牌行与 TopHeader 三处视觉冗余）。
 #: 静态样式（无时间基呼吸——空状态渲染循环空闲跳过，避免每帧重建）；
-#: 空闲期同 (active, width) 快照命中模块级缓存（同引用跨帧复用，TEXT
-#: ``_wrap_cache`` 引用级命中零重建）。
-#: ★ BEAUTY-25（2026-08-05 体验动效）：**活跃期**（模型已配置 + 流式/工具
-#:   执行中）欢迎卡 ✦ 图标呼吸化——渲染循环已因动画状态持续 30Hz 推进，零
-#:   额外渲染成本；空闲期（无动画状态）回退静态缓存（CPU ~0）。
-#: ★ BEAUTY-36（2026-08-19 全界面美化）：欢迎屏多行化 + 渐变品牌标题
-#:   （色标与 TopHeader 同源：青 → 蓝 → 紫 → 品红）+ › 引导行分组。
-_WELCOME_BRAND = "DeepSeek CLI"
-_WELCOME_GRADIENT_STOPS = (45, 39, 141, 213)
-#: 引导行前缀符号（› 单宽几何符号，强调青）
-_WELCOME_BULLET = "\u203a"
-
-#: 欢迎行 ✦ 呼吸色域（亮青 45 邻域脉动，8s 周期——与工具卡标题/模型名呼吸同步）
+#: 快照命中模块级缓存（同引用跨帧复用，TEXT ``_wrap_cache`` 引用级命中零
+#: 重建）。
+#: ★ BEAUTY-25（保留）：**活跃期**（模型已配置 + 流式/工具执行中）欢迎卡
+#:   引导符号呼吸化——渲染循环已因动画状态持续 30Hz 推进，零额外渲染成本；
+#:   空闲期（无动画状态）回退静态缓存（CPU ~0）。
 _WELCOME_DOT_LO = 45
 _WELCOME_DOT_HI = 61
 _WELCOME_DOT_PERIOD = 8.0
 
-
-def _welcome_spec() -> dict:
-    """欢迎屏参数（数据注册表优先，非法时回退兜底快照）。
-
-    「一切皆插件」：品牌名 / 渐变色标 / 引导符号 / ✦ 呼吸参数来自表现层
-    数据注册表（``gradient_stops`` 表），可按 Patch/Overlay 覆盖或禁用。
-    """
-    from src.presentation_data import gradient_params
-
-    data = gradient_params()
-    brand = data.get("welcome_brand", _WELCOME_BRAND)
-    if not isinstance(brand, str) or not brand:
-        brand = _WELCOME_BRAND
-    bullet = data.get("welcome_bullet", _WELCOME_BULLET)
-    if not isinstance(bullet, str) or not bullet:
-        bullet = _WELCOME_BULLET
-    stops = data.get("welcome_stops", _WELCOME_GRADIENT_STOPS)
-    try:
-        stops = tuple(int(item) for item in stops) if stops else _WELCOME_GRADIENT_STOPS
-    except (TypeError, ValueError):
-        stops = _WELCOME_GRADIENT_STOPS
-    dot = data.get("welcome_dot") or {}
-    try:
-        dot_params = (
-            int(dot.get("lo", _WELCOME_DOT_LO)),
-            int(dot.get("hi", _WELCOME_DOT_HI)),
-            float(dot.get("period", _WELCOME_DOT_PERIOD)),
-        )
-    except (AttributeError, TypeError, ValueError):
-        dot_params = (_WELCOME_DOT_LO, _WELCOME_DOT_HI, _WELCOME_DOT_PERIOD)
-    return {"brand": brand, "stops": stops, "bullet": bullet, "dot": dot_params}
-
-#: 欢迎屏静态缓存：``((active, width), rows)``——空闲 (False, w) 快照命中
-#: 返回同一 rows 列表引用（跨帧零重建）；宽度变化/首帧构建新缓存。
-#: ★ P3（review）：缓存为模块级可变对象（跨 AppModel 实例共享）——键含
-#: ``(active, width)`` 故串扰风险低；读写以 ``_WELCOME_CACHE_LOCK`` 保护
-#: （渲染线程写 / 多实例读场景下避免读到半更新状态）。
+#: 欢迎卡缓存：``(active, width, info_key) → rows``——同快照命中模块级缓存
+#: （同引用跨帧复用）；宽度 / 环境信息（模型/模式/主题/目录）/ 活跃态变化时
+#: 重建新缓存。
+#: ★ P3（review）：缓存为模块级可变对象（跨 AppModel 实例共享）——键含全部
+#: 输入故串扰风险低；读写以 ``_WELCOME_CACHE_LOCK`` 保护（渲染线程写 /
+#: 多实例读场景下避免读到半更新状态）。
 _WELCOME_STATIC_CACHE: list = [None, None]
 _WELCOME_CACHE_LOCK = threading.Lock()
 
 
-def _welcome_version() -> str:
-    """版本号（惰性导入——app_init._args 存在模块加载循环，见 header.py）。"""
+def _welcome_info_key(model) -> tuple:
+    """欢迎卡环境信息指纹（模型/模式/主题/目录——变化时缓存失效重建）。"""
+    from src.tui.app._welcome import environment_info
+
     try:
-        from src.app_init._args import VERSION
-        return str(VERSION)
+        return tuple(environment_info(model))
     except Exception:
-        return ""
+        return ()
 
 
-def _welcome_rows(active: bool, width: int) -> list:
-    """空状态欢迎屏行 runs 列表（活跃期 ✦ 呼吸，空闲静态缓存）。
+def _welcome_rows(model, active: bool, width: int) -> list:
+    """空状态欢迎卡行 runs 列表（内容单一真源 ``_welcome``；含静态缓存）。
 
-    ★ BEAUTY-36：多行欢迎卡（品牌行 + 空行 + 3 行引导）；每行按 width
-    截断（不拆 CJK，行级 diff 宽度不变量）。空闲 (False, width) 快照命中
-    模块级缓存（同引用跨帧复用——单一真源：本函数读写缓存，
-    ``_welcome_elements`` 直接委托）；active=True（每帧呼吸色变化）不缓存。
+    行结构：环境信息卡（``◆ 标签  值``，值缺省的行跳过）+ 空行 + 3 行引导。
+    每行按 width 截断（不拆 CJK，行级 diff 宽度不变量）——截断由
+    ``_welcome.welcome_card_rows`` 完成。快照键 ``(active, width, info_key)``
+    命中时返回同一 rows 引用（跨帧零重建）；活跃态（呼吸色变化）亦参与键，
+    但同帧内色值一致时复用（渲染循环每帧推进时间桶时色值变化 → 自动 miss）。
 
     Returns:
-        list[list[StyledRun]]——欢迎屏每行 runs。
+        list[list[StyledRun]]——欢迎卡每行 runs。
     """
-    # 空闲态缓存命中（同 (False, width) 快照返回同一 rows 引用）
-    if not active:
-        with _WELCOME_CACHE_LOCK:
-            cached = _WELCOME_STATIC_CACHE
-            if cached[0] == (False, width) and cached[1] is not None:
-                return cached[1]
-    from src.tui.core.style import Style
-    from src.tui.ink.helpers import truncate_runs
-    from src.tui.ink.widgets.gradient import _gradient_runs
-    version = _welcome_version()
-    spec = _welcome_spec()
-    bullet_char = spec["bullet"]
-    # 品牌行：✦（活跃呼吸 / 空闲静态强调青）+ 渐变标题 + 版本 dim
+    from src.tui.app._welcome import welcome_card_rows
+
+    info_key = _welcome_info_key(model)
+    key = (bool(active), int(width or 0), info_key)
+    with _WELCOME_CACHE_LOCK:
+        cached = _WELCOME_STATIC_CACHE
+        if cached[0] == key and cached[1] is not None:
+            return cached[1]
+    dot_fg = 45
     if active:
-        from src.tui.app._theme import time_glow
-        dot_lo, dot_hi, dot_period = spec["dot"]
-        dot_fg = time_glow(dot_lo, dot_hi, dot_period)
-    else:
-        dot_fg = 45
-    brand_runs: list = [StyledRun("\u2726 ", Style(fg=dot_fg, bold=True))]
-    brand_runs.extend(_gradient_runs(spec["brand"], spec["stops"]))
-    if version:
-        brand_runs.append(StyledRun(f" \u00b7 {version}", Style(fg=242)))
-    # 引导行（› 强调青 + 文本；首行亮白、其余 dim）
-    bullet = Style(fg=45)
-    lead = [StyledRun("  ", None), StyledRun(f"{bullet_char} ", bullet),
-            StyledRun("直接输入消息开始对话", Style(fg=252))]
-    cmd = [StyledRun("  ", None), StyledRun(f"{bullet_char} ", bullet),
-           StyledRun("/help 查看命令 · /model 选择模型 · /theme 主题", Style(fg=242))]
-    keys = [StyledRun("  ", None), StyledRun(f"{bullet_char} ", bullet),
-            StyledRun("Tab 补全 · Ctrl+N 切换模型 · Ctrl+H 轨迹视图", Style(fg=242))]
-    rows: list = [brand_runs, [StyledRun(" ", None)], lead, cmd, keys]
-    if width and width > 0:
-        rows = [truncate_runs(r, width) if r else r for r in rows]
-    if not active:
-        with _WELCOME_CACHE_LOCK:
-            _WELCOME_STATIC_CACHE[0] = (False, width)
-            _WELCOME_STATIC_CACHE[1] = rows
+        dot_fg = time_glow(_WELCOME_DOT_LO, _WELCOME_DOT_HI, _WELCOME_DOT_PERIOD)
+    active_dot = Style(fg=dot_fg, bold=True)
+    rows = [
+        [
+            StyledRun(text, active_dot if style is not None and style.bold else style)
+            for text, style in row
+        ]
+        for row in welcome_card_rows(model, width)
+    ]
+    with _WELCOME_CACHE_LOCK:
+        _WELCOME_STATIC_CACHE[0] = key
+        _WELCOME_STATIC_CACHE[1] = rows
     return rows
 
 
 def _welcome_elements(model, width: int) -> list:
-    """空状态欢迎屏 TEXT 元素列表（活跃期 ✦ 呼吸，空闲静态缓存）。
+    """空状态欢迎卡 TEXT 元素列表（活跃期引导符号呼吸，缓存见 ``_welcome_rows``）。
 
-    ★ BEAUTY-36：返回元素**列表**（多行欢迎卡）——ChatView 直接
-    ``children.extend(...)``。每行 TEXT 带索引 key（``welcome-{i}``）。
-    缓存语义由 ``_welcome_rows`` 单一真源承担（空闲命中静态缓存）。
+    返回元素**列表**（多行欢迎卡）——ChatView 直接 ``children.extend(...)``。
+    每行 TEXT 带索引 key（``welcome-{i}``）。
     """
     st = getattr(model, "status", None)
     active = bool(st is not None and getattr(st, "status_active", False))
-    rows = _welcome_rows(active, width)
+    rows = _welcome_rows(model, active, width)
     return [
         h(TEXT, {"key": f"welcome-{i}", "styled": r, "height": 1})
         for i, r in enumerate(rows)

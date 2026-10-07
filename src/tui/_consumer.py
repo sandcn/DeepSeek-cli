@@ -363,3 +363,14 @@ class ChatUIConsumer:
 
     def push_cmd(self, cmd: RenderCmd) -> None:
         self._engine.push_cmd(cmd)
+
+    def push_splash(self) -> None:
+        """推送启动欢迎卡（提交块）——在模型名已知后调用。
+
+        ★ 2026-10-07（空状态/启动界面重构）：启动欢迎卡从 ``_lifecycle.start()``
+        时（模型名尚未设置）延后到会话装配完成后推送，使欢迎卡能展示真实
+        模型/模式信息（旧实现仅能显示 ``✦ v2.2.0`` 版本回退）。
+        """
+        from src.tui._const import SplashCmd
+
+        self._engine.push_cmd(SplashCmd())

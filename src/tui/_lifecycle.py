@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from src.tui.app.model import AppModel
     from src.tui.events.event_bus import DisplayEventBus
 
-from src.tui._const import SplashCmd
 from src.tui._history_disk import flush_history_disk
 from src.renderer.locks import render_lock
 
@@ -75,7 +74,9 @@ class TuiLifecycle:
     def start(self) -> None:
         """启动生命周期。
 
-        订阅 DisplayEvent，启动 render 引擎，展示品牌屏。
+        订阅 DisplayEvent 并启动 render 引擎。启动欢迎卡（splash）不在此时
+        推送——延后到会话装配完成、模型名已知后由 ``ChatUIConsumer.push_splash``
+        推送（使欢迎卡展示真实模型/模式信息）。
         """
         with self._state_lock:
             if self._started:
@@ -141,21 +142,6 @@ class TuiLifecycle:
                             "start 回滚取消订阅异常", exc_info=True,
                         )
                 self._handlers_bound = False
-                raise
-            try:
-                self._engine.push_cmd(SplashCmd())
-            except Exception:
-                # 半启动不一致修复：engine.start() 成功（render 线程已运行）但
-                # push_cmd(SplashCmd()) 抛异常时，回滚 engine.stop()（幂等）并
-                # re-raise——避免 _started 未置位但线程仍在运行的半启动状态。
-                # 回滚后 _started 保持 False，下次 start 走完整订阅+启动路径
-                # （_handlers_bound=True 时先 unsubscribe 再重新 subscribe，幂等）。
-                try:
-                    self._engine.stop()
-                except Exception:
-                    _logger.debug(
-                        "start 回滚 engine.stop 异常", exc_info=True,
-                    )
                 raise
             self._started = True
 

@@ -222,6 +222,11 @@ def create_framework(model, tui_config, line_tracker, input_instance):
     input_instance.set_trace_toggle_callback(
         _make_trace_toggle_cb(model, session)
     )
+    # ★ 2026-10-07：F1 / Ctrl+/ 帮助速查视图开关（模态全屏视图，通用工厂
+    #   view_id="help"）——分组命令列表 + 快捷键速查；打开期间模态独占输入。
+    input_instance.set_help_toggle_callback(
+        _make_fullscreen_toggle_cb(model, session, "help")
+    )
     # SIGWINCH → 刷新宽度 + 重绘（架构改进方向 C：实例方法 + token 去重注册，
     # 替代旧模块级 ``_active_session`` 全局引用——多 TUI 实例各持自身回调，
     # stop 时由 session 注销，消除全局可变引用与陈旧会话刷新错乱）

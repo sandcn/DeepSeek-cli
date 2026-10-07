@@ -40,8 +40,10 @@ class StatusSegment:
 #: 内置段声明（order 决定显示顺序）
 _BUILTIN_SPECS: Tuple[StatusSegment, ...] = (
     StatusSegment("model", 0, "src.tui.app.status_bar:_model_segment"),
+    StatusSegment("theme", 5, "src.tui.app.status_bar:_theme_segment"),
     StatusSegment("tools", 10, "src.tui.app.status_bar:_tools_segment"),
     StatusSegment("elapsed", 20, "src.tui.app.status_bar:_elapsed_segment"),
+    StatusSegment("messages", 25, "src.tui.app.status_bar:_messages_segment"),
     StatusSegment("tokens", 30, "src.tui.app.status_bar:_tokens_segment"),
     StatusSegment("speed", 40, "src.tui.app.status_bar:_speed_segment"),
 )

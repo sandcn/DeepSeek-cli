@@ -803,6 +803,14 @@ class Input:
         """
         self._dispatcher.set_trace_toggle_callback(cb)
 
+    def set_help_toggle_callback(self, cb) -> None:
+        """设置 F1 / Ctrl+/ 帮助速查视图开关回调（委托 InputDispatcher）。
+
+        cb 签名: ``() -> None``（翻转 model.fullscreen "help" ↔ "" + 请求
+        重绘——见 ``_make_fullscreen_toggle_cb`` 通用工厂）；None 清除注入。
+        """
+        self._dispatcher.set_help_toggle_callback(cb)
+
     def set_interrupt_callback(self, cb) -> None:
         """设置中断回调（方向A 步骤1 注入点）。
 

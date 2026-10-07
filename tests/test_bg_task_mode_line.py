@@ -105,18 +105,21 @@ class TestModeLineBgPrefix:
     # ── mainagent 上下文使用百分比（用户需求 2026-08-19） ──
 
     def test_ctx_percent_leading(self):
-        """ctx 有值：行首最前 ``main · 45.0%``（1 位小数）。"""
+        """ctx 有值：行首 ``main ██…░░ 45.3%``（进度条 + 1 位小数）。"""
         line = _build_mode_line(80, True, 45.3, bash_count=1, subagent_count=1)
         text = self._text(line)
-        assert text.startswith("main \u00b7 45.3%")
-        assert "main \u00b7 45.3% \u00b7 bash \u00b7 1 \u00b7 subagent \u00b7 1" in text
+        assert text.startswith("main ")
+        assert "\u2588" in text and "\u2591" in text   # 进度条填充/空格
+        assert "45.3%" in text
+        assert "45.3% \u00b7 bash \u00b7 1 \u00b7 subagent \u00b7 1" in text
         assert "空模式" in text
 
     def test_ctx_percent_only(self):
-        """仅 ctx（无后台任务）：``main · 45.0%`` + 右侧模式文本。"""
+        """仅 ctx（无后台任务）：``main ██…░░ 45.0%`` + 右侧模式文本。"""
         line = _build_mode_line(80, False, 45.0, 0, 0)
         text = self._text(line)
-        assert text.strip().startswith("main \u00b7 45.0%")
+        assert text.strip().startswith("main ")
+        assert "45.0%" in text
         assert "bash" not in text and "subagent" not in text
         assert text.rstrip().endswith("标准模式")
 
@@ -128,10 +131,21 @@ class TestModeLineBgPrefix:
         assert "bash \u00b7 2" in text
 
     def test_ctx_zero_shown(self):
-        """ctx=0（空会话刚初始化）：显示 ``main · 0.0%``（有值即显示）。"""
+        """ctx=0（空会话刚初始化）：显示 ``main ░░… 0.0%``（有值即显示）。"""
         line = _build_mode_line(80, False, 0.0, 0, 0)
         text = self._text(line)
-        assert "main \u00b7 0.0%" in text
+        assert "main " in text and "0.0%" in text
+        # 0% → 全空格进度条
+        assert "\u2588" not in text
+
+    def test_ctx_bar_fill_ratio(self):
+        """进度条填充格数与百分比成比例（10 格制）。"""
+        from src.tui.app.input_area import _CTX_BAR_CELLS
+
+        line = _build_mode_line(80, False, 100.0, 0, 0)
+        assert "\u2588" * _CTX_BAR_CELLS in line.plain
+        line0 = _build_mode_line(80, False, 0.0, 0, 0)
+        assert "\u2591" * _CTX_BAR_CELLS in line0.plain
 
     def test_ctx_one_decimal_always(self):
         """百分比恒 1 位小数（整数百分比也补 .0）。"""
@@ -139,6 +153,13 @@ class TestModeLineBgPrefix:
         assert "45.0%" in self._text(line)
         line2 = _build_mode_line(80, False, 6.26, 0, 0)
         assert "6.3%" in self._text(line2)  # 1 位小数
+
+    def test_multiline_input_indicator(self):
+        """多行输入：行首追加 ``↵ N 行`` 指示（单行为不显示）。"""
+        line = _build_mode_line(80, False, 10.0, 0, 0, input_rows=3)
+        assert "\u21b5 3 \u884c" in line.plain
+        single = _build_mode_line(80, False, 10.0, 0, 0, input_rows=1)
+        assert "\u21b5" not in single.plain
 
 
 # ── 2. _build_lines 集成（props 计数 → 模式行行首） ───────
@@ -209,15 +230,15 @@ class TestBuildLinesBgCount:
         assert "标准模式" in text
 
     def test_ctx_percent_from_global_snapshot(self):
-        """全局快照有值时模式行行首显示 ``main · 45.0%``（bash 之前）。"""
+        """全局快照有值时模式行行首显示 ``main █… 45.0%``（bash 之前）。"""
         from src.core.context_manager import set_context_usage_percent
         set_context_usage_percent(45.0)
         try:
             fiber = self._fiber(80, bash=1, subagent=0)
             lines = _build_lines(fiber)
             text = "".join(r.text for r in lines[-1].runs)
-            assert text.startswith("main \u00b7 45.0%")
-            assert "main \u00b7 45.0% \u00b7 bash \u00b7 1" in text
+            assert text.startswith("main ")
+            assert "45.0% \u00b7 bash \u00b7 1" in text
         finally:
             set_context_usage_percent(None)
 
@@ -244,7 +265,7 @@ class TestBuildLinesBgCount:
             assert "main" not in "".join(r.text for r in lines1[-1].runs)
             set_context_usage_percent(60.0)
             lines2 = _build_lines(fiber)
-            assert "main \u00b7 60.0%" in "".join(r.text for r in lines2[-1].runs)
+            assert "60.0%" in "".join(r.text for r in lines2[-1].runs)
         finally:
             set_context_usage_percent(None)
 

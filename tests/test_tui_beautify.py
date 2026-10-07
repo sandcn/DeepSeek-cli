@@ -33,102 +33,127 @@ from src.tui.app.input_area import _build_lines
 # ═══════════════════════════════════════════════════════════
 
 class TestWelcomeScreen:
-    """空状态欢迎屏（多行欢迎卡）。"""
+    """空状态欢迎卡（环境信息卡 + 操作引导；2026-10-07 重构）。"""
 
-    def test_rows_structure_five_lines(self):
-        """欢迎屏为 5 行：品牌行 + 空行 + 3 行引导。"""
-        rows = _welcome_rows(False, 80)
-        assert len(rows) == 5
+    def _model(self):
+        m = AppModel()
+        m.status.model_name = "deepseek-chat"
+        return m
 
-    def test_brand_line_contains_dot_and_gradient_title(self):
-        """品牌行：✦ 前缀 + 渐变逐字符 "DeepSeek CLI" + 版本 dim。"""
-        rows = _welcome_rows(False, 80)
-        brand = rows[0]
-        assert brand[0].text == "\u2726 "   # ✦
-        full = "".join(r.text for r in brand)
-        assert "DeepSeek CLI" in full       # 渐变标题（逐字符 runs）
-        assert brand[0].style is not None and brand[0].style.bold
-        # 渐变逐字符：标题部分每字符一个 run（fg 在色标区间内单调渐变）
-        title_runs = [r for r in brand[1:] if r.text and set(r.text) != {"\u00b7", " "}]
-        assert len(title_runs) > 4, "渐变标题应逐字符成 run"
-        fgs = [r.style.fg for r in title_runs if r.style is not None]
-        assert len(set(fgs)) > 1, "渐变应产生多个不同色号"
+    def test_rows_structure_info_and_guides(self):
+        """欢迎卡结构：信息行（◆）+ 空行 + 3 行引导；不再重复品牌行。"""
+        rows = _welcome_rows(self._model(), False, 80)
+        texts = ["".join(r.text for r in row) for row in rows]
+        # 不重复品牌（标题栏已展示品牌/版本）
+        assert not any("DeepSeek CLI" in t for t in texts)
+        # 信息行 ◆ 前缀 + 含模型名
+        assert any(t.strip().startswith("\u25c6") for t in texts)
+        assert any("deepseek-chat" in t for t in texts)
+        # 3 行引导 › 前缀
+        guides = [t for t in texts if "\u203a" in t]
+        assert len(guides) == 3
+        # 空行分隔信息区与引导区
+        assert any(t.strip() == "" for t in texts)
+        assert len(rows) == len(texts)
+
+    def test_info_line_labels(self):
+        """信息行含标签（模型/模式/主题/目录）且值为亮白。"""
+        rows = _welcome_rows(self._model(), False, 80)
+        label_texts = "".join(
+            r.text for row in rows for r in row if r.style is not None and r.style.fg == 242
+        )
+        assert "模型" in label_texts or "主题" in label_texts
+
+    def test_bullet_style_accent(self):
+        """◆ / › 引导符号为亮青加粗（活跃期呼吸）。"""
+        rows = _welcome_rows(self._model(), False, 80)
+        for row in rows:
+            for r in row:
+                if r.text.strip() in ("\u25c6", "\u203a"):
+                    assert r.style is not None and r.style.fg == 45 and r.style.bold
 
     def test_guide_lines_bullet_prefix(self):
         """3 行引导行以 › 前缀开头（› 强调青）。"""
-        rows = _welcome_rows(False, 80)
-        for row in rows[2:]:
+        rows = _welcome_rows(self._model(), False, 80)
+        guides = [row for row in rows if any("\u203a" in r.text for r in row)]
+        assert len(guides) == 3
+        for row in guides:
             texts = "".join(r.text for r in row)
             assert "\u203a" in texts, "引导行应含 › 前缀"
 
     def test_static_cache_reference_stable(self):
-        """空闲态同 (False, width) 快照命中缓存——同引用跨帧复用。"""
-        # 重置缓存后连续两次调用返回同一列表对象
+        """同 (active, width, info) 快照命中缓存——同引用跨帧复用。"""
+        model = self._model()
         chat_view._WELCOME_STATIC_CACHE[0] = None
         chat_view._WELCOME_STATIC_CACHE[1] = None
-        a = _welcome_rows(False, 80)
-        b = _welcome_rows(False, 80)
+        a = _welcome_rows(model, False, 80)
+        b = _welcome_rows(model, False, 80)
         assert a is b
-        assert chat_view._WELCOME_STATIC_CACHE[0] == (False, 80)
+        assert chat_view._WELCOME_STATIC_CACHE[0][0] is False
+        assert chat_view._WELCOME_STATIC_CACHE[0][1] == 80
 
     def test_active_dot_glow_range(self):
-        """活跃期 ✦ 呼吸色号落在 [45, 61] 区间。"""
-        rows = _welcome_rows(True, 80)
-        fg = rows[0][0].style.fg
-        assert 45 <= fg <= 61
-        # 活跃期不写静态缓存（每帧呼吸色变化）
-        assert chat_view._WELCOME_STATIC_CACHE[0] != (True, 80)
+        """活跃期 ◆/› 呼吸色号落在 [45, 61] 区间。"""
+        rows = _welcome_rows(self._model(), True, 80)
+        fgs = [
+            r.style.fg for row in rows for r in row
+            if r.style is not None and r.text.strip() in ("\u25c6", "\u203a")
+        ]
+        assert fgs and all(45 <= fg <= 61 for fg in fgs)
 
     def test_narrow_width_truncated(self):
         """窄屏（width=10）每行显示宽度 <= width（行级 diff 宽度不变量）。"""
-        rows = _welcome_rows(False, 10)
+        from src.tui.app._welcome import display_width
+
+        rows = _welcome_rows(self._model(), False, 10)
         for i, row in enumerate(rows):
-            w = sum(getattr(r, "width", len(r.text)) for r in row)
+            w = sum(display_width(r.text) for r in row)
             assert w <= 10, f"行 {i} 宽 {w} 超出 width=10"
 
     def test_elements_keys(self):
         """_welcome_elements 返回带索引 key 的 TEXT 元素列表。"""
-        model = AppModel()
+        model = self._model()
         els = _welcome_elements(model, 80)
-        assert len(els) == 5
+        assert len(els) >= 5
         for i, el in enumerate(els):
             assert el.props.get("key") == f"welcome-{i}"
 
     def test_active_model_detection(self):
-        """status_active=True 时走活跃呼吸路径（✦ fg 动态计算）。"""
+        """status_active=True 时走活跃呼吸路径（◆/› fg 动态计算）。"""
         model = AppModel()
         model.status.status_active = True
         els = _welcome_elements(model, 80)
-        assert len(els) == 5
+        assert len(els) >= 5
 
 
 # ═══════════════════════════════════════════════════════════
-# 2. Splash 启动屏品牌化
+# 2. Splash 启动欢迎卡（与空态欢迎卡同源）
 # ═══════════════════════════════════════════════════════════
 
 class TestSplashBrand:
-    """启动品牌屏（✦ + 模型名 + · 版本）。"""
+    """启动欢迎卡（提交块，内容与空态欢迎卡同源）。"""
 
-    def test_splash_with_model_name(self):
+    def test_splash_renders_welcome_card(self):
+        """splash 提交欢迎卡：含 ◆ 信息行 + › 引导行，不再重复品牌行。"""
         model = AppModel()
         model.status.model_name = "deepseek-chat"
         apply_cmd(model, SplashCmd())
         assert len(model.blocks) == 1
         block = model.blocks[0]
         assert block.kind == "splash"
-        plain = block.lines[0].plain
-        assert "\u2726" in plain          # ✦ 品牌符号
-        assert "deepseek-chat" in plain   # 模型名
-        assert "\u00b7" in plain          # · 分隔
-        assert "v" in plain               # 版本号（v2.x.x）
+        plain = "\n".join(line.plain for line in block.lines)
+        assert "\u25c6" in plain           # ◆ 信息行
+        assert "deepseek-chat" in plain    # 模型名
+        assert "\u203a" in plain           # › 引导行
+        assert "DeepSeek CLI" not in plain  # 不重复标题栏品牌
 
-    def test_splash_without_model_falls_back_version(self):
+    def test_splash_without_model_still_has_guides(self):
+        """无模型名时仍渲染引导行（不空屏、不重复版本行）。"""
         model = AppModel()
         apply_cmd(model, SplashCmd())
-        plain = model.blocks[0].lines[0].plain
-        assert "\u2726" in plain
-        # 无模型名：仅 ✦ + 版本（仍非空屏）
-        assert plain.strip().startswith("\u2726")
+        plain = "\n".join(line.plain for line in model.blocks[0].lines)
+        assert "\u203a" in plain
+        assert "v2.2.0" not in plain
 
 
 # ═══════════════════════════════════════════════════════════
@@ -519,14 +544,14 @@ class TestApplyDefensiveFixes:
     """P3 修复：splash 版本防御 / bg_bash_count Overflow / tool_summary 状态。"""
 
     def test_splash_version_import_failure_fallback(self, monkeypatch):
-        """VERSION 导入失败（模块缺属性）→ 仍渲染 ✦ + 模型名（不丢启动屏）。"""
+        """VERSION 导入失败不影响启动欢迎卡（新实现不依赖 VERSION）。"""
         import sys as _sys
         monkeypatch.setitem(_sys.modules, "src.app_init._args", SimpleNamespace())
         model = AppModel()
         model.status.model_name = "m1"
         apply_cmd(model, SplashCmd())
-        plain = model.blocks[0].lines[0].plain
-        assert "\u2726" in plain and "m1" in plain
+        plain = "\n".join(line.plain for line in model.blocks[0].lines)
+        assert "m1" in plain and "\u203a" in plain
 
     def test_bg_bash_count_overflow_no_crash(self):
         """count=inf → OverflowError 捕获回退 0（不更新异常值）。"""

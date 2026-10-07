@@ -28,7 +28,7 @@ from src.tui._input_metrics import (
     _completion_height,
 )
 from src.tui.core.style import Style
-from src.tui.ink import Line
+from src.tui.ink import Line, StyledRun
 from src.tui.app import _fx
 from src.tui.app._theme import time_glow, _S_DIM, _S_SEP
 # ★ P3（review，单一真源）：``_truncate_width`` 改为真源 re-export——
@@ -163,6 +163,25 @@ def _completion_scroll_offset(sel: int, total: int, n_rows: int, current: int = 
     if sel >= offset + n_rows:
         return max(0, min(sel - n_rows + 1, total - n_rows))
     return offset
+
+
+def _highlight_line(line: Line, width: int, sel_bg: int) -> Line:
+    """整行背景高亮（选中补全项；补白至满宽）。
+
+    ★ 2026-10-07（补全弹窗增强）：选中项由「仅 ▶ 前缀带背景」升级为
+    **整行背景高亮**（vim cursorline 语义，与 user_select/listview 选中行
+    一致）；行尾补白至 width，高亮不因内容长短而参差。
+    """
+    bg = Style(bg=sel_bg)
+    runs = [
+        StyledRun(r.text, (r.style or Style()).merge(bg))
+        for r in line.runs if r.text
+    ]
+    if width > 0:
+        used = sum(r.width for r in runs)
+        if used < width:
+            runs.append(StyledRun(" " * (width - used), bg))
+    return Line(runs)
 
 
 def _build_popup_lines(completion, width: int, now: float) -> list:
@@ -334,9 +353,16 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
             if width > 0 and line.width > width:
                 from src.tui.ink.helpers import truncate_line
                 line = truncate_line(line, width)
+            # ★ 2026-10-07（补全弹窗增强）：选中项整行背景高亮（补白至满宽）。
+            if i == sel:
+                line = _highlight_line(line, width, sel_bg)
             lines.append(line)
     else:
         cell_w = max(1, min(max((_vwidth(i) for i in items), default=10) + 4, width - 2) - 3)
+        # ★ 2026-10-07（补全弹窗增强）：命令/参数描述列对齐——前缀 3 列 +
+        #   名称列（候选显示宽度上限，钳制到 cell_w）+ 2 列间距后接描述，
+        #   多行描述左边界对齐（表格化可读性）。
+        name_col = max(1, min(cell_w, max((_vwidth(i) for i in items), default=0)))
         # 方向4（超屏防护）：大量选项时截断渲染行数（与 _completion_height
         # 一致——超出终端的选项不渲染，弹窗不超屏）。
         # ★ 高度锁定（补全弹窗闪烁修复）：渲染行数取 ``_completion_height-2``
@@ -366,9 +392,16 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
                 line.append("   ")
             for run in _styled_completion(item, types_disp[i], match_prefix, cell_w).runs:
                 line.append_run(run)
-            # Claude TUI parity 步骤 3.7：斜杠命令描述灰显（command 且描述非空）
-            if types_disp[i] == "command" and i < len(descs) and descs[i]:
-                line.append("  ", _S_DIM)
+            # ★ 2026-10-07（补全弹窗增强）：命令/参数描述列对齐——描述起点
+            #   固定在「前缀 3 列 + 名称列 name_col + 2 列间距」处（名称短于
+            #   名称列时用空格补足，多行描述左边界对齐）。
+            has_desc = (
+                types_disp[i] in ("command", "param")
+                and i < len(descs) and bool(descs[i])
+            )
+            if has_desc:
+                pad = max(2, 3 + name_col + 2 - line.width)
+                line.append(" " * pad, _S_DIM)
                 # ★ 静态描述色（修复同标题：弹窗不呼吸，避免每帧重绘）
                 desc_budget = max(1, width - line.width)
                 line.append(
@@ -380,6 +413,9 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
             if width > 0 and line.width > width:
                 from src.tui.ink.helpers import truncate_line
                 line = truncate_line(line, width)
+            # ★ 2026-10-07（补全弹窗增强）：选中项整行背景高亮（补白至满宽）。
+            if i == sel:
+                line = _highlight_line(line, width, sel_bg)
             lines.append(line)
     # 底部提示（★ 静态提示色——修复同标题：弹窗不呼吸，避免每帧重绘）
     hint_color = 110  # 浅蓝（静态，原呼吸 110→126 的基色）

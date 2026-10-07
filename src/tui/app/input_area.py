@@ -91,6 +91,7 @@ from src.tui.app._popup_builder import (
     _glow_color,
     _placeholder_fade_color,
     _build_popup_lines,
+    _highlight_line,
     _vwidth,
     _styled_completion_cached,
     _styled_completion,
@@ -109,6 +110,24 @@ _PLACEHOLDER_TEXT = "输入消息 · /help 查看命令 · Ctrl+N 切换模型 �
 _PLACEHOLDER_COMPACT = "/help · Ctrl+N · Tab"
 #: 流式占位符动画基文本（无尾点；BEAUTY-8 动态追加 0-3 个点循环）
 _PLACEHOLDER_STREAMING_BASE = "AI 生成中"
+
+# ★ 2026-10-07（输入区体验）：空闲占位提示**轮播**——按时间桶循环展示不同
+#   功能提示，帮助用户发现快捷键（周期 6s；仅在输入为空、无补全弹窗、非
+#   流式时启用）。文本进入快照键（time_bucket 已隐式进键），桶边界自动刷新。
+_PLACEHOLDER_ROTATION = (
+    _PLACEHOLDER_TEXT,
+    "输入消息 · /help 查看命令 · Ctrl+H 轨迹视图 · F1 帮助速查",
+    "输入消息 · Tab 补全 · Ctrl+N 切换模型 · Ctrl+B 切换模式",
+    "输入消息 · 拖动文件到窗口插入路径 · Ctrl+O 编辑消息 · Ctrl+L 清屏",
+)
+#: 占位提示轮播周期（秒）
+_PLACEHOLDER_ROTATE_SECONDS = 6.0
+
+
+def _placeholder_rotate(now: float) -> str:
+    """空闲占位提示轮播（按 ``_PLACEHOLDER_ROTATE_SECONDS`` 时间桶切换）。"""
+    idx = int(now / _PLACEHOLDER_ROTATE_SECONDS) % len(_PLACEHOLDER_ROTATION)
+    return _PLACEHOLDER_ROTATION[idx]
 
 _PROMPT = _DEFAULT_PROMPT  # 兼容别名（真源 src.tui._input_layout._DEFAULT_PROMPT）
 
@@ -175,13 +194,20 @@ def _mode_text(mode_key: str) -> str:
     return _MODE_TEXTS.get(mode_key, _MODE_STANDARD_TEXT)
 
 
+#: 上下文占用迷你进度条格数（模式行行首 main 段）
+_CTX_BAR_CELLS = 10
+#: 进度条空格样式（未填充格，深灰——比填充色暗，视觉上"空"）
+_S_CTX_EMPTY = Style(fg=238)
+
+
 def _build_bg_task_prefix(ctx_percent: "float | None",
                           bash_count: int, subagent_count: int) -> "Line":
-    """构建模式行行首的信息前缀（main · 45.3% · bash · N · subagent · N）。
+    """构建模式行行首的信息前缀（main 进度条 · bash · N · subagent · N）。
 
-    显示格式（用户需求 2026-08-19）：
-      - main 段：``main · 45.3%``——主 Agent 上下文使用百分比（1 位小数；
-        ctx_percent 为 None 时不显示）；
+    显示格式（2026-08-19 用户需求 + 2026-10-07 进度条增强）：
+      - main 段：``main ███████░░░ 45.3%``——主 Agent 上下文使用百分比
+        （1 位小数）+ **迷你进度条**（``_CTX_BAR_CELLS`` 格，占用格亮青、
+        空格深灰；ctx_percent 为 None 时不显示）；
       - bash/subagent 段：``bash · 1 · subagent · 1``——后台任务计数，
         对应计数 <=0 的项不显示；
       - 全部不可用时返回空行（调用方不显示前缀）。
@@ -200,7 +226,20 @@ def _build_bg_task_prefix(ctx_percent: "float | None",
     line = Line()
     first = True
     if ctx_percent is not None:
-        line.append(f"main \u00b7 {ctx_percent:.1f}%", _S_ACCENT)
+        try:
+            pct = max(0.0, min(float(ctx_percent), 100.0))
+        except (TypeError, ValueError):
+            pct = 0.0
+        filled = int(round(pct / 100.0 * _CTX_BAR_CELLS))
+        filled = max(0, min(filled, _CTX_BAR_CELLS))
+        line.append("main ", _S_ACCENT)
+        line.append("[", _S_CTX_EMPTY)
+        if filled > 0:
+            line.append("\u2588" * filled, _S_ACCENT)
+        if _CTX_BAR_CELLS - filled > 0:
+            line.append("\u2591" * (_CTX_BAR_CELLS - filled), _S_CTX_EMPTY)
+        line.append("]", _S_CTX_EMPTY)
+        line.append(f" {pct:.1f}%", _S_ACCENT)
         first = False
     for label, count in (("bash", bash_count), ("subagent", subagent_count)):
         if count <= 0:
@@ -214,7 +253,8 @@ def _build_bg_task_prefix(ctx_percent: "float | None",
 
 def _build_mode_line(width: int, mode,
                      ctx_percent: "float | None" = None,
-                     bash_count: int = 0, subagent_count: int = 0) -> Line:
+                     bash_count: int = 0, subagent_count: int = 0,
+                     input_rows: int = 0) -> Line:
     """构建主 Agent 运行模式行（时间戳分隔线下方，行首信息 + 最右模式）。
 
     Ctrl+B 循环切换三态模式（``src/prompt_builder.builder.get_mode()``）：
@@ -248,8 +288,14 @@ def _build_mode_line(width: int, mode,
     text = _mode_text(mode_key)
     style = _mode_style(mode_key)
     line = Line()
-    # 行首信息前缀（main · N% · bash · N · subagent · N；全部不可用为空）
+    # 行首信息前缀（main 进度条 + N% · bash · N · subagent · N；全部不可用为空）
     prefix = _build_bg_task_prefix(ctx_percent, bash_count, subagent_count)
+    # ★ 2026-10-07（输入区体验）：多行输入指示（输入含显式换行 / 多行粘贴时
+    #   在行首追加 ``↵ N 行``，便于用户感知当前编辑的是多行内容）。
+    if input_rows and input_rows > 1:
+        if prefix.width > 0:
+            prefix.append(" \u00b7 ", _S_ACCENT)
+        prefix.append(f"\u21b5 {input_rows} \u884c", _S_ACCENT)
     # 极窄屏防御：前缀超宽时截断至 width（保持行级 diff 行宽不变量；
     #   truncate_line 不拆 CJK——前缀为 ASCII+·，截断安全）。
     if width > 0 and prefix.width > width:
@@ -532,7 +578,11 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
                     n_dots = int(now * 4) % 4
                     ph = base_ph + "." * n_dots
                 else:
-                    base_ph = _PLACEHOLDER_COMPACT if (completion is not None and completion.visible) else _PLACEHOLDER_TEXT
+                    if completion is not None and completion.visible:
+                        base_ph = _PLACEHOLDER_COMPACT
+                    else:
+                        # ★ 2026-10-07：空闲占位提示轮播（时间桶切换）
+                        base_ph = _placeholder_rotate(now)
                     ph = base_ph
                 # 方向1 步骤4（窄屏防溢出）：占位符截断至剩余输入区宽度
                 # （提示符后；_truncate_width 不拆 CJK）——width < 占位符长度
@@ -587,7 +637,10 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
     #   分列，没有就不显示）；计数与上下文百分比已进 snap_key
     #   （bash_count/subagent_count/ctx_percent），任务注册/完成/移除、
     #   上下文缓存同步后模式行行首即时刷新。
-    lines.append(_build_mode_line(width, mode, ctx_percent, bash_count, subagent_count))
+    lines.append(_build_mode_line(
+        width, mode, ctx_percent, bash_count, subagent_count,
+        input_rows=text.count("\n") + 1 if text else 0,
+    ))
 
     # ★ 快照缓存写回（方向4）：未命中重建后更新缓存（同快照下次命中）
     fiber._lines_cache = (snap_key, lines)
@@ -692,13 +745,20 @@ def CompletionPopup(props: dict) -> object:
     cell_w = max(
         1, min(max((_vwidth(i) for i in items), default=10) + 4, width - 2) - 3,
     )
+    # ★ 2026-10-07（补全弹窗增强）：命令/参数描述列对齐——描述起点固定在
+    #   「前缀 3 列 + 名称列 name_col + 2 列间距」处（多行描述左边界对齐）。
+    name_col = max(1, min(cell_w, max((_vwidth(i) for i in items), default=0)))
 
     def _render_item(item, idx, is_sel):
-        """候选项行渲染（▶ 高亮 + match 前缀高亮 + 描述灰显）。
+        """候选项行渲染（▶ 高亮 + match 前缀高亮 + 描述列对齐灰显）。
 
         SelectInput 调用 renderItem 时 item 为规范化 dict
         （``{"label", "value"}``）——取 label 渲染；选中态经第三参
         ``is_sel``（控件内部 state——导航后自动更新，非闭包 selected）。
+
+        ★ 2026-10-07（增强）：描述列对齐；command/param 描述均渲染
+        （param 描述承载 /model、/theme 的「当前」标注）；选中项**整行
+        背景高亮**（补白至满宽）。
         """
         label = item["label"] if isinstance(item, dict) else str(item)
         line = Line()
@@ -708,14 +768,22 @@ def CompletionPopup(props: dict) -> object:
             line.append("   ")
         for run in _styled_completion(label, types_disp[idx], match_prefix, cell_w).runs:
             line.append_run(run)
-        # 斜杠命令描述灰显（command 且描述非空）
-        if types_disp[idx] == "command" and idx < len(descs) and descs[idx]:
-            line.append("  ", _S_DIM)
+        # 描述列（斜杠命令说明 / 参数当前值标注）
+        has_desc = (
+            types_disp[idx] in ("command", "param")
+            and idx < len(descs) and bool(descs[idx])
+        )
+        if has_desc:
+            pad = max(2, 3 + name_col + 2 - line.width)
+            line.append(" " * pad, _S_DIM)
             desc_budget = max(1, width - line.width)
             line.append(_truncate_width(descs[idx], desc_budget), Style(fg=110))
         if width > 0 and line.width > width:
             from src.tui.ink.helpers import truncate_line
             line = truncate_line(line, width)
+        # 整行背景高亮（选中项；补白至满宽）
+        if is_sel:
+            line = _highlight_line(line, width, sel_bg)
         return h(TEXT, {"styled": line.runs, "height": 1})
 
     select_items = [{"label": item, "value": item} for item in items]

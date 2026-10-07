@@ -584,6 +584,16 @@ class InteractiveLoop:
         session, state = _setup_session(loaded_data, self._chat_ui)
         self._chat_ui.bottom_bar.set_model_name(state.model)
         self._chat_ui.setup_bottom_bar()
+        # ★ 2026-10-07（空状态/启动界面重构）：启动欢迎卡在模型名已知后推送
+        #   （旧实现在 engine.start() 时推送——模型名未设置，只能回退显示
+        #   版本号 ``✦ v2.2.0``，与顶部标题栏重复且信息单薄）。卡片内容与
+        #   聊天区空态同源（模型/模式/主题/目录 + 操作引导）。
+        push_splash = getattr(self._chat_ui, "push_splash", None)
+        if callable(push_splash):
+            try:
+                push_splash()
+            except Exception:
+                _logger.debug("推送启动欢迎卡失败", exc_info=True)
         _register_session_handlers(session, self._monitor, self._loop_state, self._chat_ui)
         return session, state
 

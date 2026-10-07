@@ -47,7 +47,7 @@ class SkillPlugin(InteractiveCommandPlugin):
             name="skill",
             description="技能管理：list / install <owner/repo> / update / remove / info / refresh",
             usage="[list|install <仓库>|update <目标>|remove <目标>|info <技能名>|refresh]",
-            group="general",
+            group="ui",
         )
 
     # ── 输出辅助 ─────────────────────────────────────────

@@ -43,6 +43,7 @@ class EditmsgPlugin(InteractiveCommandPlugin):
         self.meta = CommandMeta(
             name="editmsg",
             description="编辑当前会话消息 (Ctrl+O)",
+            group="session",
         )
 
     async def async_execute(self, ctx: Any) -> bool:

@@ -157,8 +157,8 @@ def test_dispatcher_uses_registry(monkeypatch):
     try:
         InputDispatcher._handle_ctrl_key(d, "\x07")
         assert d.calls == ["vim"]
-        # 未知组合键 no-op
-        InputDispatcher._handle_ctrl_key(d, "\x1f")
+        # 未知组合键 no-op（\x19 Ctrl+Y 未绑定）
+        InputDispatcher._handle_ctrl_key(d, "\x19")
         assert d.calls == ["vim"]
     finally:
         reg.reset()

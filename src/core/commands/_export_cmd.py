@@ -347,6 +347,7 @@ class ExportCommand(CommandPlugin):
         self.meta = CommandMeta(
             name="export",
             description="导出当前对话为 markdown（含 SubAgent 聊天信息）: /export [文件路径]",
+            group="data",
         )
 
     def execute(self, ctx: CommandContext) -> bool:

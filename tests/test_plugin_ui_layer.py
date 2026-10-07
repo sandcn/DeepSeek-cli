@@ -71,7 +71,7 @@ def test_tree_bundles():
 async def test_default_profile_registers_all(cli_kernel):
     assert set(cli_kernel.resolve_service("consumers").consumers()) == {"output", "chat_ui", "error_handler"}
     assert set(cli_kernel.resolve_service("ui").views()) == {
-        "trace", "trace_tools", "config", "plugin", "user_select", "editmsg",
+        "trace", "trace_tools", "config", "plugin", "help", "user_select", "editmsg",
     }
 
 

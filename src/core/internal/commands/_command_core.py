@@ -301,15 +301,152 @@ def get_command_help(name: str) -> str:
     return str(info.get("help", ""))
 
 
+#: 命令分组 → 展示标题（顺序即展示顺序；未列出的分组按字母序排在末尾）。
+GROUP_LABELS: dict = {
+    "session": "会话",
+    "model": "模型与推理",
+    "ui": "界面与配置",
+    "data": "会话存档",
+    "files": "文件与沙盒",
+    "general": "其他",
+}
+
+#: 分组展示顺序（含标签未覆盖分组时按字母序补在末尾）。
+GROUP_ORDER: tuple = ("session", "model", "ui", "data", "files", "general")
+
+#: 快捷键速查（每行两项：``((按键, 说明), (按键, 说明))``）——/help 与
+#: 全屏「帮助速查」视图共用同一数据源（单一真源，避免两处漂移）。
+SHORTCUT_ROWS: tuple = (
+    (("Ctrl+A/Home", "光标到行首"), ("Ctrl+E/End", "光标到行尾")),
+    (("Ctrl+F/\u2192", "右移一字符"), ("Ctrl+B/\u2190", "左移一字符")),
+    (("Ctrl+\u2190/\u2192", "词跳转"), ("Alt+B/F", "词跳转")),
+    (("Ctrl+W", "删前一词"), ("Alt+D", "删后一词")),
+    (("Ctrl+U", "删至行首"), ("Ctrl+K", "删至行尾")),
+    (("Ctrl+P/\u2191", "历史上一条"), ("Ctrl+R", "反向搜索/重试")),
+    (("Tab/Shift+Tab", "补全循环"), ("PgUp/PgDn", "补全翻页")),
+    (("Ctrl+G", "打开 vim 编辑"), ("Ctrl+O", "编辑会话消息")),
+    (("Ctrl+N", "切换模型"), ("Ctrl+T", "切换主题")),
+    (("Ctrl+L", "清屏"), ("Ctrl+D", "退出(空输入)")),
+    (("Ctrl+B", "主Agent模式循环"), ("Ctrl+H", "轨迹视图")),
+    (("F1 / Ctrl+/", "帮助速查"), ("Esc", "取消输入/中断")),
+)
+
+#: 命令名称列最小/最大宽度（列对齐；超出最大宽度的名称后仍留 1 空格分隔）。
+_CMD_COL_MIN = 8
+_CMD_COL_MAX = 20
+#: 命令缩进（分组内命令比分组标题多缩进 2 列）。
+_CMD_INDENT = "    "
+
+
+def _iter_help_commands():
+    """产出帮助条目 ``(group, name, description, aliases)``。
+
+    数据源优先**命令插件注册表**（``src.core.commands.base``，带分组/别名/
+    隐藏等元数据）；注册表不可用或为空（未挂载内核、独立调用）时回退旧命令
+    注册表 ``_commands``（无分组信息，统一归入 ``general``）。
+    """
+    try:
+        import importlib
+
+        base = importlib.import_module("src.core.commands.base")
+        plugins = base.get_plugin_registry().list()
+    except Exception:
+        plugins = []
+    entries = []
+    seen = set()
+    for plugin in plugins:
+        meta = getattr(plugin, "meta", None)
+        if meta is None or getattr(meta, "hidden", False):
+            continue
+        name = getattr(meta, "name", "") or ""
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        group = getattr(meta, "group", "general") or "general"
+        aliases = tuple(a for a in (getattr(meta, "aliases", None) or ()) if a)
+        entries.append((group, name, getattr(meta, "description", "") or "", aliases))
+    if entries:
+        return entries
+    # 回退：旧注册表（键带前导 "/"；别名条目 help 形如 "别名: /model"）
+    for key, info in _commands.items():
+        name = str(key).lstrip("/")
+        if not name:
+            continue
+        entries.append(("general", name, str(info.get("help", "") or ""), ()))
+    return entries
+
+
+def _disp_width(text: str) -> int:
+    """文本显示宽度（东亚宽/全角字符按 2 列计）——快捷键两列对齐用。"""
+    import unicodedata
+
+    width = 0
+    for ch in text:
+        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return width
+
+
+def _build_shortcut_section(dim: str, teal: str, reset: str) -> list[str]:
+    """构建快捷键小节文本行（两列按显示宽度对齐；/help 与全屏速查视图共用）。"""
+    key_w = max((len(k) for row in SHORTCUT_ROWS for k, _ in row), default=0)
+    # 第一列（键 + 说明）的最大显示宽度——第二列据此对齐。
+    left_w = 0
+    for row in SHORTCUT_ROWS:
+        key, desc = row[0]
+        left_w = max(left_w, key_w + 3 + _disp_width(desc))
+    lines = [f"{dim}  \u2500 快捷键{reset}"]
+    for row in SHORTCUT_ROWS:
+        buf = "  "
+        for idx, (key, desc) in enumerate(row):
+            pad = " " * (key_w - len(key) + 3)
+            if idx == 0:
+                gap = left_w - (key_w + 3 + _disp_width(desc)) + 2
+                buf += f"{teal}{key}{reset}{pad}{desc}" + " " * max(2, gap)
+            else:
+                buf += f"{teal}{key}{reset}{pad}{desc}"
+        lines.append(buf)
+    return lines
+
+
 def get_dynamic_help_text() -> str:
-    """从命令注册表实时构建帮助文本"""
+    """从命令注册表实时构建帮助文本（分组 + 列对齐 + 快捷键小节）。
+
+    命令按 ``CommandMeta.group`` 分组展示（分组标题 dim、命令行 teal、
+    描述原色、别名 dim 括注），命令名称列全局对齐；末尾附快捷键速查小节
+    （单一真源 ``SHORTCUT_ROWS``，与全屏帮助速查视图共用）。
+    """
     from ...constants import DIM, RESET, TEAL
-    lines = [f"{DIM}  ─ 可用命令{RESET}"]
-    for name, info in sorted(_commands.items(), key=lambda x: (x[0] != "/help", x[0])):
-        help_text = info.get("help", "")
-        sep = "  " if help_text else ""
-        lines.append(f"  {TEAL}{name}{RESET}{sep}{help_text}")
-    lines.append(f"  {DIM}  exit 退出{RESET}")
+
+    entries = _iter_help_commands()
+    groups: dict = {}
+    for group, name, desc, aliases in entries:
+        groups.setdefault(group, []).append((name, desc, aliases))
+    if not groups:
+        return f"{DIM}  \u2500 可用命令{RESET}\n  {DIM}(暂无可用命令){RESET}"
+
+    # 分组顺序：已知分组按 GROUP_ORDER，未知分组按字母序追加。
+    order = [g for g in GROUP_ORDER if g in groups]
+    order += [g for g in sorted(groups) if g not in GROUP_ORDER]
+
+    # 命令名称列宽：全局统一（跨分组对齐，钳制到 [MIN, MAX]）。
+    cmd_w = max(len("/" + n) for items in groups.values() for n, _, _ in items)
+    cmd_w = max(_CMD_COL_MIN, min(cmd_w, _CMD_COL_MAX))
+
+    lines = [f"{DIM}  \u2500 可用命令{RESET}"]
+    for group in order:
+        label = GROUP_LABELS.get(group, group)
+        lines.append(f"  {DIM}{label}{RESET}")
+        for name, desc, aliases in sorted(groups[group], key=lambda t: t[0]):
+            cmd = "/" + name
+            pad = " " * (cmd_w - len(cmd) + 2)
+            alias_txt = ""
+            if aliases:
+                alias_txt = f"{DIM} ({'/'.join('/' + a for a in aliases)}){RESET}"
+            lines.append(f"{_CMD_INDENT}{TEAL}{cmd}{RESET}{pad}{desc}{alias_txt}")
+    # 内置退出项（非插件命令）
+    pad_exit = " " * (cmd_w - len("exit") + 2)
+    lines.append(f"{_CMD_INDENT}{TEAL}exit{RESET}{pad_exit}退出")
+    lines.extend(_build_shortcut_section(DIM, TEAL, RESET))
     return "\n".join(lines)
 
 

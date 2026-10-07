@@ -55,6 +55,7 @@ _BUILTIN_SPECS: Tuple[KeyBinding, ...] = (
     KeyBinding("ctrl_n", "\x0e", "switch_model", "Ctrl+N 切换模型"),
     KeyBinding("ctrl_p", "\x10", "history_prev", "Ctrl+P 历史上一条"),
     KeyBinding("ctrl_b", "\x02", "cycle_mode", "Ctrl+B 主 Agent 运行模式循环"),
+    KeyBinding("ctrl_slash", "\x1f", "help_toggle", "Ctrl+/ 帮助速查视图开关"),
 )
 
 _builtin_specs: Dict[str, KeyBinding] = {spec.id: spec for spec in _BUILTIN_SPECS}
