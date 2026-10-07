@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from .style import Style
 from .helpers import AnsiLine
-from .inline import render_inline, inline_lines
+from .inline import render_inline, inline_lines, inline_lines_with_baseline
 from src.presentation_data import LiveMapping
 from .._front_matter import parse_front_matter_items
 
@@ -171,11 +171,24 @@ def render_paragraph_line(text: str) -> AnsiLine:
 
     ``render_paragraph`` 整段解析行内标记后按软换行拆行；单行输入时二者
     等价——行级渲染便于流式预览按行缓存（见 ``LinePreviewCache``）。
+    含行内多行块（二维公式）时取首行（预览增量路径请用
+    ``render_paragraph_lines``，避免丢失公式的其余行）。
     """
     line = AnsiLine()
     for run in render_inline(text):
         line.append_run(run)
     return line
+
+
+def render_paragraph_lines(text: str, base=None) -> list[AnsiLine]:
+    """段落文本 → 渲染行（支持行内多行块：二维公式与周围文本按基线拼接）。
+
+    与 ``render_paragraph`` 的差异：输入为**单行源文本**（不含软换行），
+    供流式预览的行级增量渲染使用（``render_line`` 可返回多行）。
+    """
+    if not text:
+        return [AnsiLine()]
+    return inline_lines(text, base)
 
 
 # ── 列表 ─────────────────────────────────────────────
@@ -245,25 +258,26 @@ def render_list_item(token) -> list[AnsiLine]:
     heading = _parse_list_heading(content)
     if heading is not None:
         level, body = heading
-        sub_lines = _inline_lines(body, _HEADING_STYLES[min(level, 6) - 1])
+        sub_lines, base_idx = inline_lines_with_baseline(
+            body, _HEADING_STYLES[min(level, 6) - 1])
     else:
-        sub_lines = _inline_lines(content)
-    first = sub_lines[0] if sub_lines else AnsiLine()
-    for run in first.runs:
-        line.append_run(run)
-    out_lines: list[AnsiLine] = [line]
-    for extra in sub_lines[1:]:
-        el = AnsiLine.of(prefix + "  ", _STYLE_BQ)
-        for run in extra.runs:
-            el.append_run(run)
-        out_lines.append(el)
+        sub_lines, base_idx = inline_lines_with_baseline(content)
+    # 项目符号落在**基线行**：行内多行块（二维公式）的非基线行缩进对齐，
+    # 保证 ``- $\frac{a}{b}$`` 的符号与分数线同行而非公式顶行。
+    out_lines: list[AnsiLine] = []
+    for idx, sub in enumerate(sub_lines):
+        target = line if idx == base_idx else AnsiLine.of(prefix + "  ", _STYLE_BQ)
+        for run in sub.runs:
+            target.append_run(run)
+        out_lines.append(target)
+    if not out_lines:
+        out_lines = [line]
     return out_lines
 
 
 def render_definition_item(token) -> list[AnsiLine]:
     term = token.meta.get("term", "")
-    sub_lines = _inline_lines(token.content)
-    first = sub_lines[0] if sub_lines else AnsiLine()
+    sub_lines, base_idx = inline_lines_with_baseline(token.content)
     if term:
         line = AnsiLine.of(f"{term}: ", _STYLE_DEF_TERM)
     elif token.meta.get("continuation"):
@@ -272,14 +286,14 @@ def render_definition_item(token) -> list[AnsiLine]:
     else:
         # 同一术语的后续定义（无 term）→ 缩进续行，不再重复 ``term:``
         line = AnsiLine.of("  ", _STYLE_BQ)
-    for run in first.runs:
-        line.append_run(run)
-    out: list[AnsiLine] = [line]
-    for extra in sub_lines[1:]:
-        el = AnsiLine.of("    ", _STYLE_BQ)
-        for run in extra.runs:
-            el.append_run(run)
-        out.append(el)
+    out: list[AnsiLine] = []
+    for idx, sub in enumerate(sub_lines):
+        target = line if idx == base_idx else AnsiLine.of("    ", _STYLE_BQ)
+        for run in sub.runs:
+            target.append_run(run)
+        out.append(target)
+    if not out:
+        out = [line]
     return out
 
 
@@ -336,20 +350,34 @@ def render_table_caption(token) -> list[AnsiLine]:
 
 def render_blockquote(token, depth: int = 0) -> list[AnsiLine]:
     content = token.content if hasattr(token, "content") else ""
-    return [render_blockquote_line(seg, depth)
-            for seg in str(content).split("\n")]
+    out: list[AnsiLine] = []
+    for seg in str(content).split("\n"):
+        out.extend(render_blockquote_lines(seg, depth))
+    return out
+
+
+def render_blockquote_lines(text: str, depth: int = 0) -> list[AnsiLine]:
+    """引用单行源文本 → 渲染行（支持行内多行块：公式非基线行同样带前缀）。
+
+    前缀 ``│`` 按嵌套深度分级着色（外层亮 → 内层暗）。
+    """
+    prefix = "\u2502 " * max(1, depth + 1)
+    style = bq_prefix_style(depth + 1)
+    out: list[AnsiLine] = []
+    for sub in inline_lines(text):
+        line = AnsiLine.of(prefix, style)
+        for run in sub.runs:
+            line.append_run(run)
+        out.append(line)
+    return out or [AnsiLine.of(prefix, style)]
 
 
 def render_blockquote_line(text: str, depth: int = 0) -> AnsiLine:
     """引用**单行**渲染（行级增量预览复用；调用方保证无 ``\\n``）。
 
-    前缀 ``│`` 按嵌套深度分级着色（外层亮 → 内层暗）。
+    含行内多行块时取首行；预览增量路径请用 ``render_blockquote_lines``。
     """
-    prefix = "\u2502 " * max(1, depth + 1)
-    line = AnsiLine.of(prefix, bq_prefix_style(depth + 1))
-    for run in render_inline(text):
-        line.append_run(run)
-    return line
+    return render_blockquote_lines(text, depth)[0]
 
 
 # ── HTML 块 ──────────────────────────────────────────
@@ -418,16 +446,32 @@ def render_admonition_head(atype: str, text: str, title: str = "",
 
 
 def render_container_body(text: str, indent: str = "  ") -> AnsiLine:
-    """容器块正文行（前缀缩进 + 行内格式解析；预览行级缓存复用）。"""
-    body = AnsiLine.of(indent, _STYLE_BQ)
-    for run in render_inline(text):
-        body.append_run(run)
-    return body
+    """容器块正文行（前缀缩进 + 行内格式解析；预览行级缓存复用）。
+
+    含行内多行块时取首行；多行场景请用 ``render_container_body_lines``。
+    """
+    return render_container_body_lines(text, indent)[0]
+
+
+def render_container_body_lines(text: str, indent: str = "  ") -> list[AnsiLine]:
+    """容器块正文 → 渲染行（支持行内多行块：公式各行均带缩进前缀）。"""
+    out: list[AnsiLine] = []
+    for sub in inline_lines(text):
+        line = AnsiLine.of(indent, _STYLE_BQ)
+        for run in sub.runs:
+            line.append_run(run)
+        out.append(line)
+    return out or [AnsiLine.of(indent, _STYLE_BQ)]
 
 
 def render_admonition_body(text: str) -> AnsiLine:
     """告示正文行（缩进；行级增量预览复用）。"""
     return render_container_body(text, "    ")
+
+
+def render_admonition_body_lines(text: str) -> list[AnsiLine]:
+    """告示正文 → 渲染行（支持行内多行块；预览增量路径使用）。"""
+    return render_container_body_lines(text, "    ")
 
 
 # ── 折叠块（DETAILS） ────────────────────────────────
@@ -444,6 +488,11 @@ def render_details_head(summary, is_open: bool = False) -> AnsiLine:
 def render_details_body(text: str) -> AnsiLine:
     """折叠块正文行（2 空格缩进；流式预览行级缓存复用）。"""
     return render_container_body(text, "  ")
+
+
+def render_details_body_lines(text: str) -> list[AnsiLine]:
+    """折叠块正文 → 渲染行（支持行内多行块；预览增量路径使用）。"""
+    return render_container_body_lines(text, "  ")
 
 
 def render_details(token) -> list[AnsiLine]:
@@ -513,6 +562,11 @@ def render_fenced_div_body(text: str) -> AnsiLine:
     return render_container_body(text, "  ")
 
 
+def render_fenced_div_body_lines(text: str) -> list[AnsiLine]:
+    """Fenced Div 正文 → 渲染行（支持行内多行块；预览增量路径使用）。"""
+    return render_container_body_lines(text, "  ")
+
+
 def render_fenced_div(token) -> list[AnsiLine]:
     """Fenced Div（``:::type``）：``▪ TYPE`` 头 + 逐行缩进正文。
 
@@ -541,20 +595,26 @@ __all__ = [
     "bullet_style",
     "render_paragraph",
     "render_paragraph_line",
+    "render_paragraph_lines",
     "render_list_item",
     "render_definition_item",
     "render_blockquote",
     "render_blockquote_line",
+    "render_blockquote_lines",
     "render_admonition",
     "render_admonition_head",
     "render_admonition_body",
+    "render_admonition_body_lines",
     "render_container_body",
+    "render_container_body_lines",
     "render_details",
     "render_details_head",
     "render_details_body",
+    "render_details_body_lines",
     "render_fenced_div",
     "render_fenced_div_head",
     "render_fenced_div_body",
+    "render_fenced_div_body_lines",
     "bullet_symbol",
     "render_front_matter",
     "render_table_caption",

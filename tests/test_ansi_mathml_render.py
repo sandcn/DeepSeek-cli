@@ -197,6 +197,16 @@ def test_inline_math_renders_compact():
     assert _inline("值 <math><msup><mi>x</mi><mn>2</mn></msup></math> 结束") == "值 x² 结束"
 
 
+def test_inline_mathml_fraction_expands_to_multiline():
+    from src.renderer.ansi.inline import inline_lines
+
+    rows = inline_lines("值 <math><mfrac><mi>a</mi><mi>b</mi></mfrac></math> 结束")
+    assert len(rows) == 3
+    assert "值" in rows[1].plain and "结束" in rows[1].plain
+    assert rows[0].plain.strip() == "a"
+    assert rows[2].plain.strip() == "b"
+
+
 def test_inline_math_invalid_keeps_content():
     out = _inline("<math>raw</math>")
     assert "raw" in out

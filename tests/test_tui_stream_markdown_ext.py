@@ -37,7 +37,10 @@ def test_tui_math_enhancements_render():
     assert "\u2211" in joined            # ∑
     assert "\u2500" in joined            # 分数线 / 表格线
     assert "\U0001D54D" in joined or "\u211d" in joined   # ℝ
-    assert "\u1d48\u1d49\u1da0" in joined                 # ᵈᵉᶠ（行内 overset 上标）
+    # 行内公式同样二维渲染：``\overset{def}{=}`` 的标注 ``def`` 位于主体上方
+    # （不再压缩为 Unicode 上标 ``ᵈᵉᶠ``——这是「行内公式多行渲染」的预期行为）
+    assert "def" in joined
+    assert "=" in joined
 
 
 def test_tui_html_enhancements_render():

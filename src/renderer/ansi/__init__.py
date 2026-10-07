@@ -530,7 +530,7 @@ class AnsiStreamRenderer:
                 head_rows = self._render_paragraph_lines(src[:cut])
                 tail = src[cut:]
                 if len(tail) == 1:
-                    tail_rows = [_blocks.render_paragraph_line(tail[0])]
+                    tail_rows = _blocks.render_paragraph_lines(tail[0])
                 else:
                     tail_rows = _blocks.render_paragraph(
                         Token(TokenType.PARAGRAPH, "\n".join(tail))
@@ -542,11 +542,14 @@ class AnsiStreamRenderer:
         return rows
 
     def _render_paragraph_lines(self, src: list[str]) -> list[AnsiLine]:
-        """逐行渲染段落源行（行级增量缓存，跨帧复用未变化行）。"""
+        """逐行渲染段落源行（行级增量缓存，跨帧复用未变化行）。
+
+        单行源文本可产出多行（行内二维公式），缓存按源行记录产出行数。
+        """
         from . import blocks as _blocks
         return self._line_cache("paragraph").render(
             ("paragraph",), src,
-            lambda text: [_blocks.render_paragraph_line(text)],
+            lambda text: _blocks.render_paragraph_lines(text),
         )
 
     def _note_paragraph_format_chars(self, content: str) -> None:
@@ -595,7 +598,7 @@ class AnsiStreamRenderer:
         src = self._preview_src_lines(token.content or "")
         rows = self._line_cache("blockquote").render(
             ("blockquote", depth), src,
-            lambda text: [_blocks.render_blockquote_line(text, depth)],
+            lambda text: _blocks.render_blockquote_lines(text, depth),
         )
         dropped = int(token.meta.get("preview_dropped", 0) or 0)
         if dropped:
@@ -610,6 +613,8 @@ class AnsiStreamRenderer:
         正文含块级标记（列表 / 围栏代码 / 引用 / 表格…）→ 子解析后按完整
         Markdown 渲染（与提交路径 ``_render_nested_blocks`` 一致，消除
         「预览纯文本 → 提交变列表」跳变）；否则逐行走行级增量缓存。
+
+        ``render_line(text) -> list[AnsiLine]`` 允许多行产出（行内二维公式）。
         """
         if body and _has_block_markers(body):
             body_tokens = self._preview_sub_parse(body)
@@ -617,9 +622,7 @@ class AnsiStreamRenderer:
                 return self._preview_engine._render_nested_blocks(
                     head, body_tokens, dropped, indent=indent)
         rest = [self._window_preview_line(seg) for seg in body]
-        rows = self._line_cache(kind).render(
-            cache_key, rest, lambda text: [render_line(text)],
-        )
+        rows = self._line_cache(kind).render(cache_key, rest, render_line)
         if dropped:
             return [head, self._omitted_line(dropped)] + rows
         return [head] + rows
@@ -639,7 +642,7 @@ class AnsiStreamRenderer:
         return self._render_container_preview(
             head, body, dropped, "admonition",
             ("admonition", atype, title, collapsible, head_text),
-            _blocks.render_admonition_body, indent="    ",
+            _blocks.render_admonition_body_lines, indent="    ",
         )
 
     def _render_details_preview(self, token) -> list[AnsiLine]:
@@ -654,7 +657,7 @@ class AnsiStreamRenderer:
         dropped = int(token.meta.get("preview_dropped", 0) or 0)
         return self._render_container_preview(
             head, body, dropped, "details", ("details", summary),
-            _blocks.render_details_body, indent="  ",
+            _blocks.render_details_body_lines, indent="  ",
         )
 
     def _render_fenced_div_preview(self, token) -> list[AnsiLine]:
@@ -669,7 +672,7 @@ class AnsiStreamRenderer:
         dropped = int(token.meta.get("preview_dropped", 0) or 0)
         return self._render_container_preview(
             head, body, dropped, "fenced_div", ("fenced_div", dtype),
-            _blocks.render_fenced_div_body, indent="  ",
+            _blocks.render_fenced_div_body_lines, indent="  ",
         )
 
     def _preview_sub_parse(self, lines: list[str]) -> list:

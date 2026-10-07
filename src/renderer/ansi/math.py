@@ -108,9 +108,40 @@ def render_math_inline(source: str) -> AnsiLine:
     return _cached(source or "", True)
 
 
+def render_math_inline_block(source: str) -> tuple[list[AnsiLine], int]:
+    """渲染行内数学公式为**二维多行块**，返回 ``(行列表, 基线行号)``。
+
+    行内公式使用与块级相同的二维排版（分数堆叠 / 根式 / 大算符上下限 /
+    矩阵 / 上下标注），供 ``inline.inline_lines`` 与周围文本按基线水平拼接
+    ——修复前行内公式一律展平为单行（``a⁄b`` / ``∑ⁿᵢ₌₁``），复杂公式在行内
+    完全失去二维结构。
+
+    单行内容（如 ``x^2``）返回单行块，调用方可直接当普通文本处理。
+    """
+    key = (source or "", "inline_block", "", 0)
+    hit = _CACHE.get(key)
+    if hit is not None:
+        return hit
+    box = render_math_box(source or "", inline=False)
+    lines: list[AnsiLine] = []
+    for ln in box.lines:
+        nl = AnsiLine()
+        for run in ln.runs:
+            nl.append_run(run)
+        lines.append(nl)
+    value = (lines, box.baseline)
+    if len(_CACHE) >= _CACHE_MAX:
+        _CACHE.clear()
+    _CACHE[key] = value
+    return value
+
+
 def clear_math_cache() -> None:
     """清空数学渲染缓存（测试/主题切换用）。"""
     _CACHE.clear()
 
 
-__all__ = ["render_math_block", "render_math_inline", "clear_math_cache"]
+__all__ = [
+    "render_math_block", "render_math_inline", "render_math_inline_block",
+    "clear_math_cache",
+]

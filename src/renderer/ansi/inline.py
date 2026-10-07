@@ -28,7 +28,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 
 from .style import Style
-from .helpers import Run
+from .helpers import Run, AnsiLine
 from src.presentation_data import LiveMapping
 
 
@@ -107,6 +107,22 @@ _PROGRESS_WIDTH = 24
 #: 最大递归深度（与解析器同量级，防异常嵌套 RecursionError）
 _MAX_DEPTH = 32
 
+
+class InlineBlock:
+    """行内多行块（二维公式等）：行列表 + 基线行号。
+
+    由行内公式节点（``_emit_math``）产出；``inline_lines`` 识别后与同一
+    行组的其它文本按**基线**水平拼接（公式两侧文本落在公式基线上，公式
+    的其它行单独占行）。不认识 block 的消费者使用 ``Run.text``（展平降级
+    文本），内容不丢。
+    """
+
+    __slots__ = ("lines", "baseline")
+
+    def __init__(self, lines: list[AnsiLine], baseline: int = 0) -> None:
+        self.lines = lines or []
+        self.baseline = max(0, int(baseline))
+
 #: ``base.merge(style)`` 结果缓存：``base`` 取值集合有限（默认样式 / 标题 /
 #: 表格单元格等），缓存后同一基础样式的合并结果跨帧复用（免每次构造 frozen
 #: dataclass）。有界，超限清空。
@@ -143,11 +159,16 @@ _SUPER_SCRIPT_MAP = LiveMapping("inline_superscript")
 
 def _append(out: list[Run], text: str, style: Style | None,
             link: str | None = None) -> None:
-    """追加 Run 并合并相邻同样式（且同链接）段（输出紧凑 + 宽度缓存友好）。"""
+    """追加 Run 并合并相邻同样式（且同链接）段（输出紧凑 + 宽度缓存友好）。
+
+    带 ``block`` 的 Run（行内多行块）**不参与合并**：它承载结构信息，一旦
+    与普通文本合并会丢失多行布局。
+    """
     if not text:
         return
     if (out and out[-1].style == style
-            and getattr(out[-1], "link", None) == link):
+            and getattr(out[-1], "link", None) == link
+            and getattr(out[-1], "block", None) is None):
         out[-1] = Run(out[-1].text + text, style, link)
         return
     out.append(Run(text, style, link))
@@ -341,39 +362,65 @@ def _emit_image(node, base, ctx, out, depth):
 
 
 def _emit_math(node, base, ctx, out, depth):
-    """行内数学：走 LaTeX→Unicode 终端渲染（``_math_latex``），保留公式自带样式。"""
+    """行内数学：二维终端排版（多行块交由 ``inline_lines`` 按基线拼接）。
+
+    复杂公式（分数 / 根式 / 大算符上下限 / 矩阵 / 上下标注）在行内同样
+    使用二维排版；单行内容直接作为文本 run 追加。
+    """
     content = node.content or ""
     if not content:
         return
+    lines: list[AnsiLine] = []
+    baseline = 0
     try:
-        from .math import render_math_inline
-        line = render_math_inline(content)
-        for run in line.runs:
-            _append(out, run.text, run.style if run.style is not None else base)
+        from .math import render_math_inline_block
+        lines, baseline = render_math_inline_block(content)
     except Exception:
         _append(out, content, _merge(base, _STYLE_MATH))
+        return
+    if not lines:
+        return
+    if len(lines) == 1:
+        for run in lines[0].runs:
+            _append(out, run.text, run.style if run.style is not None else base)
+        return
+    # 多行布局：以展平文本作为降级文本，block 供 inline_lines 按基线拼接
+    flat = " ".join(ln.plain for ln in lines)
+    out.append(Run(flat, base, None, InlineBlock(lines, baseline)))
 
 
 def _emit_mathml(node, base, ctx, out, depth):
-    """行内 MathML：转 LaTeX 后按紧凑公式渲染（多行布局展平为空格连接）。"""
+    """行内 MathML：转 LaTeX 后二维排版（多行块交由 ``inline_lines`` 拼接）。
+
+    与 ``_emit_math`` 同一渲染语义——复杂 MathML（分式 / 根式 / 矩阵）在
+    行内同样展开为多行并按基线对齐；转换失败时保留原文，内容不丢。
+    """
     src = node.content or ""
     if not src:
         return
-    box = None
+    lines: list[AnsiLine] = []
+    baseline = 0
     try:
-        from ._mathml import render_mathml
-        box = render_mathml(src, inline=True)
+        from ._mathml import mathml_to_latex
+        latex = mathml_to_latex(src)
     except Exception:
-        box = None
-    if box is None or not box.lines:
+        latex = None
+    if latex:
+        try:
+            from .math import render_math_inline_block
+            lines, baseline = render_math_inline_block(latex)
+        except Exception:
+            lines, baseline = [], 0
+    if not lines:
         # 无法解析为 MathML：保留原文（不丢内容）
         _append(out, src, _merge(base, _STYLE_MATH))
         return
-    for idx, ln in enumerate(box.lines):
-        if idx:
-            _append(out, " ", base)
-        for run in ln.runs:
+    if len(lines) == 1:
+        for run in lines[0].runs:
             _append(out, run.text, run.style if run.style is not None else base)
+        return
+    flat = " ".join(ln.plain for ln in lines)
+    out.append(Run(flat, base, None, InlineBlock(lines, baseline)))
 
 
 def _progress_ratio(meta: dict) -> float:
@@ -689,6 +736,102 @@ _FAST_ISDISJOINT = _make_fast_isdisjoint()
 _DISPATCH.update(_build_dispatch())
 
 
+def _hjoin_lines(parts: list) -> list["AnsiLine"]:
+    """按基线水平拼接多行块（各元素每行按自身宽度补齐）。
+
+    ``parts`` 为 ``(lines, baseline)`` 序列；拼接规则与 ``_math_box._hjoin``
+    一致（数学排版语义）：每个元素按**自身列宽**逐行补齐，保证非基线行
+    （公式的分子/分母）不与后续元素错位。
+    """
+    max_above = max(b for _, b in parts)
+    max_below = max((len(lines) - 1 - b) for lines, b in parts)
+    total = max_above + max_below + 1
+    widths = [max((ln.width for ln in lines), default=0) for lines, _ in parts]
+    out: list[AnsiLine] = []
+    last = len(parts) - 1
+    for r in range(total):
+        line = AnsiLine()
+        for i, (lines, base_idx) in enumerate(parts):
+            row = r - (max_above - base_idx)
+            src = lines[row] if 0 <= row < len(lines) else None
+            if src is not None:
+                for run in src.runs:
+                    line.append_run(run)
+            if i < last:
+                used = src.width if src is not None else 0
+                pad = widths[i] - used
+                if pad > 0:
+                    line.append(" " * pad)
+        out.append(line)
+    return out
+
+
+def _join_inline_group(elements: list) -> tuple[list["AnsiLine"], int]:
+    """行内元素组 → ``(渲染行, 基线行号)``。
+
+    ``elements`` 为 ``(text, block, style, link)`` 序列：``block`` 非空表示
+    多行块（二维公式）；无多行块时结果为单行（基线 0）。
+    """
+    if not any(el[1] is not None for el in elements):
+        line = AnsiLine()
+        for text, _block, style, link in elements:
+            line.append(text, style, link)
+        return [line], 0
+    parts: list = []
+    for text, block, style, link in elements:
+        if block is not None:
+            parts.append((block.lines, block.baseline))
+        else:
+            line = AnsiLine()
+            line.append(text, style, link)
+            parts.append(([line], 0))
+    return _hjoin_lines(parts), max(b for _, b in parts)
+
+
+def _inline_lines_impl(text: str, base: Style | None) -> list:
+    """``inline_lines`` 主体：按软换行切分行组，逐组渲染（含基线信息）。"""
+    runs = render_inline(text, base)
+    groups: list[list] = []
+    group: list = []
+    for run in runs:
+        link = getattr(run, "link", None)
+        block = getattr(run, "block", None)
+        if block is not None:
+            group.append(("", block, None, None))
+            continue
+        segs = (run.text or "").split("\n")
+        for i, seg in enumerate(segs):
+            if i > 0:
+                groups.append(group)
+                group = []
+            if seg:
+                group.append((seg, None, run.style, link))
+    groups.append(group)
+    return groups
+
+
+def inline_lines_with_baseline(text: str,
+                              base: Style | None = None) -> tuple[list["AnsiLine"], int]:
+    """行内文本 → ``(多行 AnsiLine, 基线行号)``。
+
+    单个行组（无软换行）时基线准确可用（列表项 / 定义项据此把项目符号放在
+    公式基线行）；多个行组时返回基线 0（整体拼接语义由调用方决定）。
+    """
+    groups = _inline_lines_impl(text, base)
+    if len(groups) <= 1:
+        rows, baseline = _join_inline_group(groups[0] if groups else [])
+        return rows or [AnsiLine()], baseline
+    out: list[AnsiLine] = []
+    for grp in groups:
+        if not grp:
+            if not out:
+                out.append(AnsiLine())
+            continue
+        rows, _ = _join_inline_group(grp)
+        out.extend(rows)
+    return out or [AnsiLine()], 0
+
+
 def inline_lines(text: str, base: Style | None = None) -> list["AnsiLine"]:
     """行内文本 → 多行 ``AnsiLine``（按 ``\\n`` 拆行；连续换行合并）。
 
@@ -697,27 +840,23 @@ def inline_lines(text: str, base: Style | None = None) -> list["AnsiLine"]:
     的软换行叠加会产生多余空行。此处把连续换行合并为一次换行（段落内不存在
     有意义的空行，段落在空行处已断开）。
 
+    **行内多行块**（二维公式）：同一行组内与周围文本按基线水平拼接，公式的
+    非基线行单独成行。
+
     ``base`` 为基础样式（无行内格式的文本以此着色；None 用默认样式）。
     """
-    from .helpers import AnsiLine
     out: list[AnsiLine] = []
-    cur = AnsiLine()
-    for run in render_inline(text, base):
-        link = getattr(run, "link", None)
-        segs = (run.text or "").split("\n")
-        for i, seg in enumerate(segs):
-            if i > 0:
-                if cur.runs or not out:
-                    out.append(cur)
-                cur = AnsiLine()
-            if seg:
-                cur.append(seg, run.style, link)
-    if cur.runs or not out:
-        out.append(cur)
-    return out
+    for grp in _inline_lines_impl(text, base):
+        if not grp:
+            if not out:
+                out.append(AnsiLine())
+            continue
+        rows, _ = _join_inline_group(grp)
+        out.extend(rows)
+    return out or [AnsiLine()]
 
 
 __all__ = [
     "render_inline", "use_render_context", "current_render_context",
-    "inline_lines",
+    "inline_lines", "inline_lines_with_baseline", "InlineBlock",
 ]

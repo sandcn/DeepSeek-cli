@@ -39,6 +39,10 @@ class Run:
     style: Style | None = None
     #: 超链接 URL（OSC 8；None = 普通文本）
     link: str | None = None
+    #: 行内多行块（二维公式等）：非 None 时 ``text`` 为**展平降级文本**
+    #: （不认识 block 的消费者仍能显示内容），``inline_lines`` 识别后按基线
+    #: 水平拼接其多行布局。
+    block: object = field(default=None, compare=False)
     #: 显示宽度缓存（-1 = 未计算）
     _w: int = field(init=False, compare=False, repr=False, default=-1)
 

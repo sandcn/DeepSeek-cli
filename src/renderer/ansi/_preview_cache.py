@@ -29,23 +29,27 @@ class LinePreviewCache:
         cache = LinePreviewCache()
         rows = cache.render(("para",), src_lines, render_line)
 
-    其中 ``render_line(text) -> list[AnsiLine]`` 负责把单行源文本渲染为行
-    （约定返回恰好 1 行；返回多行时降级为整块重渲染，保证结果正确）。
+    其中 ``render_line(text) -> list[AnsiLine]`` 把单行源文本渲染为若干行
+    （**允许返回多行**——行内多行块如二维公式会让一行源文本展开为多行；
+    缓存按源行记录其产出行数，前缀复用/滑窗复用时同步裁剪，不触发整块重渲染）。
 
     线程/生命周期：单实例由渲染器持有，随渲染器 GC。
     """
 
-    __slots__ = ("_key", "_src", "_rows")
+    __slots__ = ("_key", "_src", "_spans", "_rows")
 
     def __init__(self) -> None:
         self._key = None
         self._src: list[str] = []
+        #: 每个源行产出的渲染行数（``sum(_spans) == len(_rows)``）
+        self._spans: list[int] = []
         self._rows: list[AnsiLine] = []
 
     def reset(self) -> None:
         """清空缓存（块闭合 / 预览清空 / 类型切换时调用）。"""
         self._key = None
         self._src = []
+        self._spans = []
         self._rows = []
 
     def render(self, key, src_lines: list[str], render_line) -> list[AnsiLine]:
@@ -54,45 +58,37 @@ class LinePreviewCache:
         Args:
             key: 缓存键（区分块类型/样式参数；变化时整体重置）。
             src_lines: 源行列表（流式只追加时前缀稳定 → 复用）。
-            render_line: 单行渲染回调，返回 ``list[AnsiLine]``（约定 1 行）。
+            render_line: 单行渲染回调，返回 ``list[AnsiLine]``（可多行）。
 
         Returns:
-            与 ``src_lines`` 对应的渲染行列表。
+            与 ``src_lines`` 对应的渲染行列表（行数 = 各源行产出之和）。
         """
         if key != self._key:
             self.reset()
             self._key = key
         cached_src = self._src
+        spans = self._spans
         rows = self._rows
         common = common_prefix_len(cached_src, src_lines)
-        if common == 0 and len(cached_src) >= 2 and len(rows) == len(cached_src):
+        if common == 0 and len(cached_src) >= 2 and len(spans) == len(cached_src):
             # 首行即分歧 → 尝试「头部滑窗复用」（预览有界化的行丢弃）。
             # 忽略尾行（活动行每帧变化，不参与重叠判定）。
             drop = sliding_drop(cached_src, src_lines, ignore_tail=True)
             if drop:
+                del rows[:sum(spans[:drop])]
+                del spans[:drop]
                 del cached_src[:drop]
-                del rows[:drop]
                 common = common_prefix_len(cached_src, src_lines)
         if common < len(cached_src):
-            del rows[common:]
+            del rows[sum(spans[:common]):]
+            del spans[common:]
             del cached_src[common:]
-        base = len(rows)
-        for line in src_lines[base:]:
+        for line in src_lines[len(cached_src):]:
             produced = render_line(line)
-            if len(produced) != 1:
-                # 单行产出非 1 行（异常/特殊内容）→ 放弃增量，整块重渲染
-                return self._render_all(src_lines, render_line)
-            rows.append(produced[0])
+            rows.extend(produced)
+            spans.append(len(produced))
         self._src = list(src_lines)
         return rows
-
-    def _render_all(self, src_lines: list[str], render_line) -> list[AnsiLine]:
-        self._src = list(src_lines)
-        out: list[AnsiLine] = []
-        for line in src_lines:
-            out.extend(render_line(line))
-        self._rows = out
-        return out
 
 
 __all__ = ["LinePreviewCache"]
