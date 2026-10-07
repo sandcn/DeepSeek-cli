@@ -40,7 +40,9 @@ def sliding_drop(a: list, b: list, ignore_tail: bool = False) -> int:
     if ignore_tail:
         m -= 1
         n -= 1
-    if m < 2 or n == 0:
+    # ``n <= 0`` 而非 ``n == 0``：``ignore_tail`` 会让空 ``b`` 的 ``n`` 变为
+    # ``-1``——修复前绕过判空后 ``b[0]`` 抛 IndexError（空活动行序列触发）。
+    if m < 2 or n <= 0:
         return 0
     first = b[0]
     idx = 1

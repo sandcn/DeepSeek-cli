@@ -468,7 +468,9 @@ def _do_subagent_markdown(model, cmd) -> None:
     lines = renderer.take_lines()
     if not lines:
         return
-    model.append_committed("subagent", lines)
+    # 保留源文本：终端 resize 时按新宽度整块重渲染（与流式块/历史回放块
+    # 一致，表格/代码块随宽度重排）。
+    model.append_committed("subagent", lines).source_text = cmd.text
 
 
 def _render_markdown_lines(text: str, width: int) -> list:
@@ -513,11 +515,14 @@ def _append_assistant_rich(model, msg, anon_ids: list | None = None) -> None:
     if reasoning:
         lines = _render_markdown_lines(reasoning, width)
         if lines:
-            model.append_committed("reasoning", lines)
+            # 保留源文本：终端 resize 时按新宽度整块重渲染（表格/代码块等
+            # 定宽结构随宽度重排，与流式块一致——修复前历史回放块 resize 后
+            # 表格框线被逐行 wrap 拆断）。
+            model.append_committed("reasoning", lines).source_text = reasoning
     if content:
         lines = _render_markdown_lines(content, width)
         if lines:
-            model.append_committed("content", lines)
+            model.append_committed("content", lines).source_text = content
     # 与正常执行路径（tool_executor_async._execute_one_async 经
     # extract_key_params）一致：工具卡标题 detail 用关键参数**值**
     # （如 Bash → `pwd`、read_file → `src/main.py`），而非原始 JSON

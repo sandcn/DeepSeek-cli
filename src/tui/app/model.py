@@ -79,10 +79,15 @@ _logger = logging.getLogger(__name__)
 #: 注：脚注 ``[^id]`` **不**在此列——编号按首次出现顺序（定义经预扫描先入
 #: 序）在流式期间即正确，文末附录在 ``close()`` 由 ``fn_map`` 生成；纳入只会
 #: 让代码块里的正则字符组 ``[^...]`` 触发无谓的整块重渲染。
+#: 容器前缀（引用块 ``>`` 序列）：前向引用结构可能出现在引用块内
+#: （``> > [TOC]``、``> [1]: url``）——修复前正则只认行首，引用块内的定义
+#: 不触发关闭重渲染，流式预览里的 ``[ref][1]`` 永久停留为 ``[?1]`` 占位
+#: （与一次性渲染不一致）。
+_CONTAINER_PREFIX = r"(?:[ \t]*>[ \t]*)*"
 _FORWARD_REF_RE = re.compile(
     r"(?m)"
-    r"^[ \t]*\[TOC\][ \t]*$"                          # [TOC] 目录标记
-    r"|^[ \t]{0,3}\[(?!\^|//)[^\]]*\]:[ \t]*\S"       # 参考式链接定义
+    rf"^{_CONTAINER_PREFIX}[ \t]*\[TOC\][ \t]*$"                # [TOC] 目录标记
+    rf"|^{_CONTAINER_PREFIX}[ \t]{{0,3}}\[(?!\^|//)[^\]]*\]:[ \t]*\S"  # 参考式链接定义
 )
 
 
@@ -595,6 +600,12 @@ class AppModel(_ToolOutputMixin):
                 if self._rerender_open_block(block, width):
                     block.committed_line_count = 0
                     continue
+            # ★ 已关闭块（content/reasoning）：同样按源文本整块重渲染——修复前
+            #   关闭块只按新宽度 wrap 旧行，表格框线被拦腰拆断/单元格跨行，
+            #   终端 resize 变窄后历史回答里的表格彻底错乱（走下方常规 wrap
+            #   路径时无法重画框线）。重渲染后整块行按新宽度产出并全量提交。
+            elif block.closed and getattr(block, "source_text", ""):
+                self._rerender_closed_block(block, width)
             count = block.committed_line_count
             if count <= 0:
                 continue
@@ -610,6 +621,39 @@ class AppModel(_ToolOutputMixin):
                 block._cached_ink_lines = self._block_to_ink_lines(block, count)
         self.committed_lines = committed
 
+    @staticmethod
+    def _block_source_for_reflow(block):
+        """块用于 resize 重渲染的源文本（无源 / 已截断 → None）。"""
+        source = getattr(block, "source_text", "")
+        if not source:
+            return None
+        # 源文本达上限（超长回答）：截断源重渲染会丢内容，保留现有行走
+        # ``wrap`` 重排（不重排该块，但已渲染内容不丢）。
+        if getattr(block, "extra", None) and block.extra.get("source_truncated"):
+            _logger.debug("块源文本超限，跳过 resize 重渲染")
+            return None
+        return source
+
+    @staticmethod
+    def _render_source_at_width(source: str, width: int, closed: bool):
+        """用源文本按宽度渲染 → ``(lines, preview)``；异常返回 None。
+
+        与流式渲染同一管线（``AnsiStreamRenderer``）。``closed`` 决定是否
+        ``close()``（关闭块完整渲染含文末附录与 ``[TOC]``/参考链接等前向
+        引用；未关闭块只产出已确定行 + 预览行）。
+        """
+        try:
+            from src.renderer.ansi import AnsiStreamRenderer
+            r = AnsiStreamRenderer(width=max(width, 20))
+            r.write(source)
+            if closed:
+                r.close()
+                return list(r.take_lines()), []
+            return list(r.take_lines()), list(r.take_preview_lines())
+        except Exception:
+            _logger.debug("块 resize 重渲染异常", exc_info=True)
+            return None
+
     def _rerender_open_block(self, block, width: int) -> bool:
         """按新宽度整块重渲染未关闭块（源文本重渲染，重排表格/代码块）。
 
@@ -617,23 +661,41 @@ class AppModel(_ToolOutputMixin):
         定宽）——重渲染用块源文本按新宽度重建 ``block.lines`` + 预览行。
         返回是否成功（失败时调用方保留原状）。
         """
-        source = getattr(block, "source_text", "")
-        if not source:
+        source = self._block_source_for_reflow(block)
+        if source is None:
             return False
-        if getattr(block, "extra", None) and block.extra.get("source_truncated"):
-            # 源文本已达上限（超长回答）：截断源重渲染会丢内容，保留现有行
-            # （宽度重排降级为「不重排该未关闭块」，不影响已渲染内容正确性）。
-            _logger.debug("未关闭块源文本超限，跳过 resize 重渲染")
+        rendered = self._render_source_at_width(source, width, closed=False)
+        if rendered is None:
             return False
-        try:
-            from src.renderer.ansi import AnsiStreamRenderer
-            r = AnsiStreamRenderer(width=max(width, 20))
-            r.write(source)
-            block.lines = list(r.take_lines())
-            block.preview_lines = list(r.take_preview_lines())
-        except Exception:
-            _logger.debug("未关闭块 resize 重渲染异常", exc_info=True)
+        block.lines, block.preview_lines = rendered
+        block._open_styled_cache = None
+        block._cached_ink_lines = None
+        return True
+
+    def _rerender_closed_block(self, block, width: int) -> bool:
+        """按新宽度用块源文本整块重渲染**已关闭**块（重排表格/代码块）。
+
+        与 ``_rerender_open_block``（未关闭块：不 close、保留预览行）对称：
+        关闭块用 ``close()`` 完整渲染（含文末脚注/引用链接与 ``[TOC]`` 等
+        前向引用），并把 ``committed_line_count`` 同步为全量行数（整块已
+        提交，无未提交尾）。
+
+        修复背景：终端 resize 时关闭块只按新宽度 ``wrap`` 旧行——表格框线
+        被逐行拆断、单元格跨行（定宽结构无法靠 wrap 重画），历史回答中的
+        表格在新宽度下完全错乱。保留源文本的关闭块改用源重渲染，表格/代码
+        块随宽度正确重排。
+
+        返回是否成功（源缺失/超限/重渲染异常时 False，调用方保留原状走常规
+        ``wrap`` 重排路径）。
+        """
+        source = self._block_source_for_reflow(block)
+        if source is None:
             return False
+        rendered = self._render_source_at_width(source, width, closed=True)
+        if rendered is None:
+            return False
+        block.lines, block.preview_lines = rendered
+        block.committed_line_count = len(block.lines)
         block._open_styled_cache = None
         block._cached_ink_lines = None
         return True
