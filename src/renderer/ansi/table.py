@@ -6,9 +6,14 @@
   - 按终端宽度收缩列宽（表总宽含边框 ≤ width），超宽列经 ``_shrink_widths``
     收缩至内容预算；
   - 单元格内容按列宽换行（``_wrap_runs``，保持样式、不拆宽字符）；
-  - 单元格先经 ``render_inline`` 解析行内 markdown（剥离语法）再测量/对齐——
-    修复内联格式（``**加粗**``/``code``）下原始文本宽度与渲染后宽度不一致
-    导致的边框错位。
+  - 单元格先经 ``inline_lines_with_baseline`` 解析行内 markdown（剥离语法）
+    再测量/对齐——修复内联格式（``**加粗**``/``code``）下原始文本宽度与
+    渲染后宽度不一致导致的边框错位。
+
+**单元格内的行内二维公式**（``$\\frac{a}{b}$`` / ``$\\sum_{i=1}^{n}$``…）与
+段落一致地展开为多行：单元格按基线垂直对齐（公式主体与同行其它单元格的
+文本同行，分子/分母单独占行），行高取该行各单元格的最大跨度；列宽按单元格
+内容的**最大行宽**计算。
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ from __future__ import annotations
 from src.renderer._utils import cjk_display_width as wcswidth_simple
 from .style import Style
 from .helpers import AnsiLine, Run
-from .inline import render_inline
+from .inline import render_inline, inline_lines_with_baseline
 
 _STYLE_HEADER = Style(fg=45, bold=True)
 _STYLE_BORDER = Style(fg=237)
@@ -24,44 +29,44 @@ _STYLE_CELL = Style(fg=252)
 
 
 def _cell_runs(text: str, style) -> list[Run]:
-    """单元格文本 → Run 序列（render_inline 解析行内 markdown，剥离语法）。"""
+    """单元格文本 → Run 序列（render_inline 解析行内 markdown，剥离语法）。
+
+    行内二维公式在此退化为**展平降级文本**（``Run.text``），供只关心单行
+    文本的调用方使用；表格排版路径请用 ``_cell_lines``。
+    """
     return render_inline(text, style)
 
 
-def _split_runs_newlines(runs: list[Run]) -> list[list[Run]]:
-    """把 Run 序列按换行符拆成多段（每段不含 ``\\n``）。
+def _cell_lines(text: str, style, maxw: int = 0) -> tuple[list[AnsiLine], int]:
+    """单元格文本 → ``(多行内容, 基线行号)``。
 
-    ``<br>``（``LineBreakNode``）在单元格内渲染为 ``"\\n"`` run；若原样交给
-    ``_wrap_runs``，换行符会被当作宽度 0 的普通字符写进同一行，``AnsiLine``
-    输出含裸换行 → 表格框线被撕裂（单元格内容溢出到下一物理行）。此处先按
-    换行切分，每段独立测宽/wrap，再由 ``_render_row_runs`` 合并为多行单元格。
+    按行内语义解析：``<br>`` 拆行、行内格式、**行内二维公式多行块**；
+    ``maxw > 0`` 时对超宽行按列宽换行（逐行 wrap，基线随之前移）。
     """
-    parts: list[list[Run]] = [[]]
-    for run in runs:
-        text = run.text or ""
-        if not text:
-            continue
-        if "\n" not in text:
-            parts[-1].append(run)
-            continue
-        segs = text.split("\n")
-        for i, seg in enumerate(segs):
-            if i > 0:
-                parts.append([])
-            if seg:
-                parts[-1].append(Run(seg, run.style, getattr(run, "link", None)))
-    # 去掉尾部空段（内容以换行结尾时不留多余空行），至少保留一段
-    while len(parts) > 1 and not parts[-1]:
-        parts.pop()
-    return parts
+    rows, baseline = inline_lines_with_baseline(text or "", style)
+    if maxw and maxw > 0:
+        rows, baseline = _wrap_cell_lines(rows, baseline, maxw)
+    return rows, baseline
 
 
-def _cell_runs_width(runs: list[Run]) -> int:
-    """单元格 runs 的显示宽度（含换行时取各段最大宽度）。"""
-    parts = _split_runs_newlines(runs)
-    if len(parts) == 1:
-        return sum(r.width for r in parts[0])
-    return max((sum(r.width for r in seg) for seg in parts), default=0)
+def _wrap_cell_lines(lines: list[AnsiLine], baseline: int,
+                     maxw: int) -> tuple[list[AnsiLine], int]:
+    """按列宽对单元格的每一行换行（基线行取 wrap 后首行）。"""
+    out: list[AnsiLine] = []
+    new_baseline = 0
+    for idx, ln in enumerate(lines):
+        parts = _wrap_runs(ln.runs, maxw)
+        if idx == baseline:
+            new_baseline = len(out)
+        for part in parts:
+            out.append(AnsiLine(part))
+    return (out or [AnsiLine()]), new_baseline
+
+
+def _cell_lines_width(text: str, style) -> int:
+    """单元格渲染宽度（多行内容取各行最大宽度——含行内二维公式的实宽）。"""
+    rows, _ = inline_lines_with_baseline(text or "", style)
+    return max((ln.width for ln in rows), default=0)
 
 
 def _cell_widths_runs(rows, style) -> list[int]:
@@ -70,7 +75,7 @@ def _cell_widths_runs(rows, style) -> list[int]:
     widths = [0] * ncols
     for row in rows:
         for i in range(min(ncols, len(row))):
-            w = _cell_runs_width(_cell_runs(row[i], style))
+            w = _cell_lines_width(row[i], style)
             if w > widths[i]:
                 widths[i] = w
     return widths
@@ -78,7 +83,7 @@ def _cell_widths_runs(rows, style) -> list[int]:
 
 def _row_cell_widths(row, style) -> list[int]:
     """单行的各单元格显示宽度（增量列宽计算用，避免每帧重算历史行）。"""
-    return [_cell_runs_width(_cell_runs(cell, style)) for cell in row]
+    return [_cell_lines_width(cell, style) for cell in row]
 
 
 def _shrink_widths(widths: list[int], max_total: int, ncols: int) -> list[int]:
@@ -163,27 +168,28 @@ def _pad_runs(runs: list[Run], width: int, align: str, style) -> list[Run]:
 
 
 def _render_row_runs(cells, widths, aligns, style) -> list[AnsiLine]:
-    """渲染数据行：单元格 runs 按列宽 wrap → 多行（每行带 ``│`` 边框）。
+    """渲染数据行：单元格内容按列宽排版并绘制 ``│`` 边框。
 
-    单元格内 ``<br>``（换行）先按段拆分再逐段 wrap，段与段之间保留为独立的
-    单元格行——单元格内容不会带裸换行溢出框线之外。
+    单元格内容可多行（``<br>``、换行、**行内二维公式**）——按**基线**垂直
+    对齐（与段落一致）：单行文本与公式主体同行，公式的分子/分母行单独占行；
+    行高 = 该行各单元格内容的最大跨度（基线以上/以下分别取最大）。
     """
     ncols = len(widths)
-    wrapped: list[list[list[Run]]] = []
+    cols: list[tuple[list[AnsiLine], int]] = []
     for i in range(ncols):
-        runs = _cell_runs(cells[i] if i < len(cells) else "", style)
-        col_lines: list[list[Run]] = []
-        for seg in _split_runs_newlines(runs):
-            col_lines.extend(_wrap_runs(seg, widths[i]))
-        if not col_lines:
-            col_lines = [[]]
-        wrapped.append(col_lines)
-    max_lines = max(map(len, wrapped), default=1)
+        cols.append(_cell_lines(cells[i] if i < len(cells) else "",
+                                style, widths[i]))
+    max_above = max((b for _, b in cols), default=0)
+    max_below = max((len(ls) - 1 - b for ls, b in cols), default=0)
+    height = max(1, max_above + max_below + 1)
     out: list[AnsiLine] = []
-    for li in range(max_lines):
+    for r in range(height):
         line = AnsiLine.of("\u2502", _STYLE_BORDER)
         for i in range(ncols):
-            runs = wrapped[i][li] if li < len(wrapped[i]) else []
+            lines, baseline = cols[i]
+            row = r - (max_above - baseline)
+            src = lines[row] if 0 <= row < len(lines) else None
+            runs = list(src.runs) if src is not None else []
             align = aligns[i] if i < len(aligns) else "left"
             padded = _pad_runs(runs, widths[i], align, style)
             line.append(" ", None)

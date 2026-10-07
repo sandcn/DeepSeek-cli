@@ -129,6 +129,61 @@ def test_table_cell_uses_flattened_fallback():
     assert "│" in joined
 
 
+def test_table_cell_fraction_expands_to_multiline_row():
+    out = _render("| 公式 | 说明 |\n| --- | --- |\n| $\\frac{a}{b}$ | 分式 |\n")
+    # 上边框 + 表头 + 中边框 + 3 行（分子/线/分母）+ 下边框
+    assert len(out) == 7
+    assert out[0].startswith("┌") and out[-1].startswith("└")
+    # 说明文本与公式**基线行**（分数线）同行
+    assert any("─" in p and "分式" in p for p in out)
+    assert any("a" in p and "│" in p for p in out)
+
+
+def test_table_cell_big_operator_multiline():
+    out = _render("| 公式 | 说明 |\n| --- | --- |\n| $\\sum_{i=1}^{n}$ | 求和 |\n")
+    joined = "\n".join(out)
+    assert "∑" in joined and "i=1" in joined
+    assert any("求和" in p and "∑" in p for p in out)
+
+
+def test_table_column_width_uses_max_line_width():
+    out = _render("| x |\n| --- |\n| $\\frac{abc}{de}$ |\n")
+    # 分数线宽 = max(3,2)+2 = 5 → 边框段 5+2 = 7 个 ─
+    assert "\u2500" * 7 in out[0]
+
+
+def test_table_cell_br_still_multiline():
+    out = _render("| h |\n| --- |\n| a<br>b |\n")
+    plains = [p for p in out]
+    # 上下边框 + 表头(1) + 中边框 + 数据行(2) = 6 行
+    assert len(plains) == 6
+    assert any("a" in p for p in plains)
+    assert any("b" in p for p in plains)
+
+
+def test_table_preview_cache_multiline_cells():
+    from src.renderer.ansi.table import TablePreviewCache
+
+    cache = TablePreviewCache()
+    rows = [["公式"], ["$\\frac{a}{b}$"]]
+    out = cache.render(("公式",), rows, ["left"], 80)
+    plains = [ln.plain for ln in out]
+    assert len(plains) >= 6
+    assert any("a" in p for p in plains) and any("b" in p for p in plains)
+    # 追加一行后仍复用历史渲染行（列宽不变时对象复用）
+    out2 = cache.render(("公式",), rows + [["$\\frac{c}{d}$"]], ["left"], 80)
+    assert out2[0] is out[0]
+    assert len(out2) > len(out)
+
+
+def test_table_cell_shrink_and_wrap_with_formula():
+    out = _render("| 列 |\n| --- |\n| $\\frac{a}{b}$ " + "很长的说明" * 3 + " |\n",
+                  width=30)
+    assert out[0].startswith("┌")
+    assert out[-1].startswith("└")
+    assert any("│" in p for p in out)
+
+
 def test_render_paragraph_line_keeps_content():
     line = render_paragraph_line(r"$\frac{a}{b}$")
     assert "a" in line.plain and "b" in line.plain
