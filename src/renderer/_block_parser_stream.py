@@ -490,12 +490,20 @@ class _BlockParserStreamMixin:
 
     def _feed_indented_code_line(self, line: str, stripped: str, tokens: list[Token]):
         if _is_empty_line(stripped):
-            self._emit_code_line("", tokens)
+            # ★ 尾随空行不计入代码块（CommonMark）：空行先暂存，仅当后续
+            #   仍有缩进内容时才作为块内空行补发；块以空行结束时丢弃——
+            #   修复前空行立即发射，文档 ``    代码\n\n正文`` 的代码块渲染
+            #   出多余的空行（``\n\n`` 尾随空白行）。
+            self._indented_code_pending_blanks += 1
             return
         if line[:4] == '    ' or (line and line[0] == '\t'):
+            while self._indented_code_pending_blanks > 0:
+                self._emit_code_line("", tokens)
+                self._indented_code_pending_blanks -= 1
             content = line[4:] if line[:4] == '    ' else line[1:]
             self._emit_code_line(content.rstrip('\n'), tokens)
             return
+        self._indented_code_pending_blanks = 0
         tokens.append(Token(TokenType.CODE_FENCE_CLOSE, "", {
             "lang": "text", "indented": True,
         }))

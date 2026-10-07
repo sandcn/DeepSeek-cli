@@ -328,6 +328,8 @@ def _emit_image(node, base, ctx, out, depth):
     url = getattr(node, "url", "") or ""
     title = getattr(node, "title", "")
     ref_placeholder = ""
+    shortcut = bool(getattr(node, "meta", None) and node.meta.get("shortcut"))
+    collapsed = bool(getattr(node, "meta", None) and node.meta.get("collapsed"))
     # 参考式图片 ``![alt][ref]``：url 为 ``[ref:id]`` 占位 → 查定义表展开
     if url.startswith("[ref:"):
         ref_id = url[5:-1]
@@ -339,6 +341,15 @@ def _emit_image(node, base, ctx, out, depth):
                 title = title or ref_title
             except (TypeError, ValueError):
                 url = ""
+        elif shortcut:
+            # ★ 快捷/折叠引用式图片未命中定义 → 回退原文（``![alt]`` /
+            #   ``![alt][]``），与快捷引用式链接未命中保留方括号文本一致
+            #   （完整引用式 ``![alt][ref]`` 未命中仍保留 ``[ref:id]`` 占位，
+            #   不丢失引用信息）。
+            raw = (f"![{node.content}][]" if collapsed
+                   else f"![{node.content}]")
+            _append(out, raw, base)
+            return
         else:
             # 未解析（如流式前置引用）：保留占位提示，不丢失引用信息
             ref_placeholder = f"[ref:{ref_id}]"

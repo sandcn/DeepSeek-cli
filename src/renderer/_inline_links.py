@@ -154,8 +154,34 @@ class InlineLinksMixin:
                         return None
                     ref_id = self._text[ref_start:self._pos]
                     self._pos += 1
-                    return ImageNode(content=alt, url=f'[ref:{ref_id}]')
+                    # ★ 折叠引用式图片 ``![alt][]``（CommonMark collapsed
+                    #   reference image）：ref_id 为空时以 alt 文本为标签
+                    #   ——与折叠引用式链接 ``[text][]`` 同一规则。修复前
+                    #   ref_id 恒为空 → url 占位 ``[ref:]``，即便文档中定义了
+                    #   ``[alt]: url`` 也渲染为 ``🖼️ alt ([ref:])``（永不展开）。
+                    collapsed = False
+                    if not ref_id:
+                        ref_id = alt.strip()
+                        collapsed = True
+                        if not ref_id or '\n' in ref_id:
+                            self._pos = saved
+                            return None
+                    node = ImageNode(content=alt, url=f'[ref:{ref_id}]')
+                    if collapsed:
+                        node.meta = {'shortcut': True, 'collapsed': True}
+                    return node
                 else:
+                    # ★ 快捷引用式图片 ``![alt]``（CommonMark shortcut reference
+                    #   image）：``![alt]`` 后不跟 ``(`` / ``[`` → 以 alt 为标签
+                    #   查引用定义表。修复前直接返回 None（按普通文本渲染），
+                    #   与已支持的快捷引用式链接 ``[ref]`` 不对称——文档定义
+                    #   ``[alt]: url`` 时图片不展开。未命中定义时由渲染层回退
+                    #   原文 ``![alt]``（与链接未命中保留方括号文本一致）。
+                    ref_id = alt.strip()
+                    if ref_id and len(ref_id) <= 256 and '\n' not in ref_id:
+                        node = ImageNode(content=alt, url=f'[ref:{ref_id}]')
+                        node.meta = {'shortcut': True}
+                        return node
                     self._pos = saved
                     return None
             return None
@@ -231,10 +257,13 @@ class InlineLinksMixin:
                 return None
             link_text = self._text[text_start:self._pos]
             self._pos += 1
-            if self._pos >= self._n:
-                self._pos = saved
-                return None
-            if self._text[self._pos] == '(':
+            # ★ 修复（行尾快捷引用式链接）：``]`` 是文本最后一个字符时
+            #   （``原文 [docs]``）此处原先直接返回 None，导致行尾的
+            #   ``[ref]`` 不被解析为快捷引用式链接（文档中定义了
+            #   ``[docs]: url`` 也不展开），而同一语法在行中/行首位置正常
+            #   展开——同一语法两种结果。现不再提前返回：后续 ``(`` / ``[``
+            #   判断带边界检查，均不匹配时落入 else 的快捷引用分支。
+            if self._pos < self._n and self._text[self._pos] == '(':
                 self._pos += 1
                 url, title = self._parse_link_url()
                 if url is None:
@@ -244,7 +273,7 @@ class InlineLinksMixin:
                 children = inner_parser.parse()
                 link_content = render_inline_to_text(children)
                 return LinkNode(url=url, content=link_content, children=children, title=title)
-            elif self._text[self._pos] == '[':
+            elif self._pos < self._n and self._text[self._pos] == '[':
                 self._pos += 1
                 ref_start = self._pos
                 while self._pos < self._n and self._text[self._pos] != ']':

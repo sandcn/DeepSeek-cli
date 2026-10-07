@@ -450,6 +450,9 @@ def _build_dispatch_table():
         url = n.url or ""
         title = getattr(n, 'title', '')
         ref_placeholder = ""
+        # ★ 快捷 / 折叠引用式图片未命中定义 → 回退原文（与 ANSI 路径一致）
+        shortcut = bool(n.meta.get("shortcut"))
+        collapsed = bool(n.meta.get("collapsed"))
         # 参考式图片 ``![alt][ref]``：url 为 ``[ref:id]`` 占位 → 查定义表展开
         if url.startswith('[ref:') and ctx:
             ref_id = url[5:-1]
@@ -460,10 +463,16 @@ def _build_dispatch_table():
                     title = title or ref_title
                 except (TypeError, ValueError):
                     url = ""
+            elif shortcut:
+                return Text(f"![{n.content}][]" if collapsed
+                            else f"![{n.content}]")
             else:
                 ref_placeholder = f"[ref:{ref_id}]"
                 url = ""
         elif url.startswith('[ref:'):
+            if shortcut:
+                return Text(f"![{n.content}][]" if collapsed
+                            else f"![{n.content}]")
             ref_placeholder = url
             url = ""
         url_text = url[:50] + '...' if len(url) > 50 else url

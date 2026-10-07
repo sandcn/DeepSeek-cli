@@ -44,14 +44,22 @@ class InlineFormattingMixin:
 
     def _try_bold_italic(self, depth: int) -> InlineNode | None:
         try:
+            saved = self._pos
             triple = self._text[self._pos:self._pos + 3]
             if not (self._pos + 3 < self._n and triple in ('***', '___')):
                 return None
-            # ★ Bug B3 fix: ___ 在词内（如 ___init___）不应触发粗斜体
-            if triple == '___' and (self._is_word_boundary_underscore(3)
-                                     or self._is_dunder_pattern_triple()):
-                return None
-            saved = self._pos
+            # ★ Bug B3 fix: ___ 在词内（如 ___init___）不应触发粗斜体。
+            # ★ 修复（下划线标识符字符丢失）：dunder 形态（___init___ 等）
+            #   整体原样输出为文本——既保持 dunder 保护，也避免其尾部
+            #   ``___`` 与后续下划线跨越配对（``___init___ 与 ___x___``
+            #   修复前两端各丢下划线、内容错位）。
+            if triple == '___':
+                end = self._dunder_span_end(3)
+                if end > 0:
+                    self._pos = end
+                    return TextNode(content=self._text[saved:end])
+                if self._is_word_boundary_underscore(3):
+                    return None
             self._pos += 3
             children, found = self._parse_until(triple, depth + 1)
             if found:
@@ -81,15 +89,23 @@ class InlineFormattingMixin:
             if (self._pos + 2 < self._n
                     and self._text[self._pos:self._pos + 2] == '__'
                     and not (self._pos + 3 < self._n
-                             and self._text[self._pos + 2] == '_')
-                    and not self._is_word_boundary_underscore(2)
-                    and not self._is_dunder_pattern()):
-                self._pos += 2
-                children, found = self._parse_until('__', depth + 1)
-                if found:
+                             and self._text[self._pos + 2] == '_')):
+                # ★ 修复（下划线标识符字符丢失）：dunder 形态
+                #   （``__init__`` / ``__my_var__`` …）整体原样输出为文本，
+                #   不渲染粗体。修复前仅开头 ``__`` 被 dunder 判定跳过，其
+                #   尾部 ``__`` 仍会被后续 ``__`` 跨越配对
+                #   （``__init__ 与 __my_var__`` → ``__init 与 my_var__``）。
+                end = self._dunder_span_end(2)
+                if end > 0:
+                    self._pos = end
+                    return TextNode(content=self._text[saved:end])
+                if not self._is_word_boundary_underscore(2):
                     self._pos += 2
-                    return self._make_nestable(BoldNode, children)
-                self._pos = saved
+                    children, found = self._parse_until('__', depth + 1)
+                    if found:
+                        self._pos += 2
+                        return self._make_nestable(BoldNode, children)
+                    self._pos = saved
             return None
         except Exception:
             _logger.debug("_try_bold 异常，降级处理", exc_info=True)
@@ -112,6 +128,14 @@ class InlineFormattingMixin:
             if (self._text[self._pos] == '_'
                     and not (self._pos + 1 < self._n
                              and self._text[self._pos + 1] == '_')
+                    # ★ 修复（下划线标识符字符丢失）：当前 ``_`` 的前一个字符
+                    #   也是 ``_``（即处于 ``__`` 的**第二个**下划线）时，不再
+                    #   单独开启斜体——``__`` 已由粗体 / dunder 判定整体处理，
+                    #   判定为非格式时应整体原样输出。修复前 ``__my_var__``
+                    #   （dunder 保护不渲染粗体）的第二个 ``_`` 被当作斜体起点、
+                    #   与 ``my`` 后的 ``_`` 配对，渲染为 ``_myvar__``（丢失
+                    #   一个下划线且内容错位）。
+                    and not (self._pos > 0 and self._text[self._pos - 1] == '_')
                     and not self._is_word_boundary_underscore()):
                 self._pos += 1
                 children, found = self._parse_italic_content('_', depth + 1)
@@ -229,6 +253,11 @@ class InlineFormattingMixin:
                 if self._pos < self._n and self._text[self._pos] in ' \t\n\r':
                     self._pos = saved
                     return None
+                # ★ 修复 Bug: 下标内容不得含空白（与上标同规则）——
+                #   ``a~b c~d`` 不再把 ``b c`` 当作下标。
+                if not self._span_has_no_space('~'):
+                    self._pos = saved
+                    return None
                 children, found = self._parse_until('~', depth + 1)
                 if found:
                     # ★ 修复 Bug: 若闭合 ~ 后紧跟另一个 ~（~~strikethrough），
@@ -247,6 +276,27 @@ class InlineFormattingMixin:
 
     # ── 上标 ^ ──────────────────────────────────────────
 
+    def _span_has_no_space(self, delim: str) -> bool:
+        """当前位置到下一个未转义 ``delim`` 之间是否无空白（含闭合符）。
+
+        CommonMark 的上下标类扩展（markdown-it-sub / -sup）要求定界符之间的
+        内容不含空白——否则 ``x^2 + y^2`` 会把 ``2 + y`` 整段当作上标、
+        ``a~b c~d`` 把 ``b c`` 当作下标。返回 False 表示「含空白」或
+        「无闭合定界符」，调用方据此回退（与 ``_parse_until`` found=False 同语义）。
+        """
+        i = self._pos
+        while i < self._n:
+            ch = self._text[i]
+            if ch == '\\' and i + 1 < self._n:
+                i += 2
+                continue
+            if ch == delim:
+                return True
+            if ch in ' \t\n\r':
+                return False
+            i += 1
+        return False
+
     def _try_superscript(self, depth: int) -> InlineNode | None:
         try:
             if self._text[self._pos] == '^':
@@ -254,6 +304,11 @@ class InlineFormattingMixin:
                 self._pos += 1
                 # ★ 修复 Bug: 空格后不应触发上标（^ text^ 不是合法上标）
                 if self._pos < self._n and self._text[self._pos] in ' \t\n\r':
+                    self._pos = saved
+                    return None
+                # ★ 修复 Bug: 上标内容不得含空白——``x^2 + y^2`` 修复前把
+                #   ``2 + y`` 当上标（渲染为 ``x² ⁺ ʸ2``），现原样输出。
+                if not self._span_has_no_space('^'):
                     self._pos = saved
                     return None
                 children, found = self._parse_until('^', depth + 1)
@@ -312,13 +367,27 @@ class InlineFormattingMixin:
 
     # ── 词内下划线保护 ─────────────────────────────────
 
+    @staticmethod
+    def _is_ascii_identifier(middle: str) -> bool:
+        """内容是否全为 ASCII 字母/数字/下划线（Python 标识符字符）。
+
+        dunder 保护的分级依据：仅**纯 ASCII 标识符**（``__init__``）按 dunder
+        保护、不触发粗体；含非 ASCII 字符（如 ``__粗体__``）按普通粗体标记
+        渲染——``str.isalnum()`` 对 CJK 字符同样返回 True，不区分会让中文
+        粗体永远无法渲染（行首 ``__粗体__`` 被误判为 ``__init__`` 类标识符）。
+        """
+        return bool(middle) and all(
+            (ch.isalnum() and ch.isascii()) or ch == '_' for ch in middle)
+
     def _is_word_boundary_underscore(self, count: int = 1) -> bool:
         """如果当前位置的 `_`×count 被字母数字包围，则不视为格式标记。
 
         Args:
             count: 下划线数量（1=斜体, 2=粗体, 3=粗斜体）
 
-        对 count>=2 的特殊规则：行首的 __ 后紧跟字母数字 → __init__ 类 dunder 名，不触发格式。
+        对 count>=2 的特殊规则：行首的 __ 后紧跟 ASCII 字母数字且闭合内容为
+        纯 ASCII 标识符（``__init__``）→ dunder 名，不触发格式；含非 ASCII
+        （``__粗体__``）按粗体标记渲染。
         """
         try:
             if self._pos + count >= self._n:
@@ -330,67 +399,66 @@ class InlineFormattingMixin:
             else:
                 # 行首位置：
                 #   count=1 (_xxx_)：无前邻字符，不视为词内（斜体正常触发）
-                #   count>=2 (__xxx__)：后紧跟字母数字 → __init__ 类 dunder 前缀
+                #   count>=2 (__xxx__)：后紧跟 ASCII 字母数字且中间内容为纯
+                #   ASCII 标识符 → __init__ 类 dunder 前缀（含 CJK 等非 ASCII
+                #   时按粗体渲染，见 ``_is_ascii_identifier``）。
                 if count >= 2:
-                    return next_ch.isalnum()
+                    if not (next_ch.isalnum() and next_ch.isascii()):
+                        return False
+                    delim = '_' * count
+                    end = self._text.find(delim, self._pos + count)
+                    if end < 0:
+                        return False
+                    return self._is_ascii_identifier(
+                        self._text[self._pos + count:end])
                 return False
         except Exception:
             _logger.debug("_is_word_boundary_underscore 异常，降级处理", exc_info=True)
             return False
 
-    def _is_dunder_pattern(self) -> bool:
-        """检测 `__` 后是否紧跟 Python dunder 模式（如 __init__）。
+    def _dunder_span_end(self, count: int = 2) -> int:
+        """当前位置 ``_``×count 是否为 dunder 标识符；是则返回闭合后位置。
 
-        若 `__` 后紧跟字母数字或下划线（兼容 ___xxx 的 triple underscore），
-        且向前扫描 ~30 字符内能找到闭合 `__`
-        且中间内容全为字母数字/下划线 → dunder 名称，不视为粗体标记。
+        判定（与旧 ``_is_dunder_pattern`` 同源，统一为单一真源）：
+          - ``_``×count 后紧跟字母数字或下划线；
+          - ~32 字符内找到闭合 ``_``×count；
+          - 闭合后不是字母数字（排除 ``__xxx__yyy`` 嵌套模式）；
+          - 中间内容为**纯 ASCII** 标识符字符（含 CJK 等非 ASCII 时按普通
+            粗体 / 粗斜体标记渲染，见 ``_is_ascii_identifier``）。
+
+        Returns:
+            闭合定界符之后的位置；``0`` 表示不是 dunder 形态。
         """
         try:
-            pos_after = self._pos + 2
+            delim = '_' * count
+            pos_after = self._pos + count
             if pos_after >= self._n:
-                return False
+                return 0
             ch_after = self._text[pos_after]
             if not (ch_after.isalnum() or ch_after == '_'):
-                return False
-            # 向前扫描最多 32 字符寻找闭合 __
+                return 0
+            # 向前扫描最多 32 字符寻找闭合定界符
             limit = min(pos_after + 32, self._n)
-            close_pos = self._text.find('__', pos_after, limit)
+            close_pos = self._text.find(delim, pos_after, limit)
             if close_pos < 0:
-                return False
-            # 检查闭合 __ 后是否是非字母数字（排除 dunder 嵌套 __xxx__yyy 模式）
-            after_close = close_pos + 2
+                return 0
+            after_close = close_pos + count
             if after_close < self._n and self._text[after_close].isalnum():
-                return False
-            # 检查中间内容是否全为字母数字或下划线
-            middle = self._text[pos_after:close_pos]
-            return bool(middle) and all(ch.isalnum() or ch == '_' for ch in middle)
+                return 0
+            if not self._is_ascii_identifier(self._text[pos_after:close_pos]):
+                return 0
+            return after_close
         except Exception:
-            _logger.debug("_is_dunder_pattern 异常，降级处理", exc_info=True)
-            return False
+            _logger.debug("_dunder_span_end 异常，降级处理", exc_info=True)
+            return 0
+
+    def _is_dunder_pattern(self) -> bool:
+        """检测 ``__`` 后是否紧跟 Python dunder 模式（如 ``__init__``）。"""
+        return self._dunder_span_end(2) > 0
 
     def _is_dunder_pattern_triple(self) -> bool:
-        """检测 `___` 后是否紧跟 triple-dunder 模式（如 ___init___）。
-
-        与 _is_dunder_pattern 类似，但扫描 `___` 闭合。
-        """
-        try:
-            pos_after = self._pos + 3
-            if pos_after >= self._n:
-                return False
-            if not self._text[pos_after].isalnum():
-                return False
-            limit = min(pos_after + 32, self._n)
-            close_pos = self._text.find('___', pos_after, limit)
-            if close_pos < 0:
-                return False
-            after_close = close_pos + 3
-            if after_close < self._n and self._text[after_close].isalnum():
-                return False
-            middle = self._text[pos_after:close_pos]
-            return all(ch.isalnum() or ch == '_' for ch in middle)
-        except Exception:
-            _logger.debug("_is_dunder_pattern_triple 异常，降级处理", exc_info=True)
-            return False
+        """检测 ``___`` 后是否紧跟 triple-dunder 模式（如 ``___init___``）。"""
+        return self._dunder_span_end(3) > 0
 
     # ── 下划线 ++ ──────────────────────────────────────
 

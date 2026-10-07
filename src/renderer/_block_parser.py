@@ -107,6 +107,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._preview_code_lines: list[str] = []
         # 预览缓冲因上限被丢弃的行数（省略提示需计入，见 _emit_code_line）
         self._preview_code_dropped: int = 0
+        # 缩进代码块内「暂存的空行数」：空行仅在后续仍有缩进内容时才作为
+        # 块内空行补发，块结束（尾随空行）时丢弃（CommonMark：尾随空行不计入）。
+        self._indented_code_pending_blanks: int = 0
         self._block_html_tag: str = ''
         # KaTeX auto-render 显示环境的结束标记（``\end{align}`` 等）；
         # ``None`` 表示当前数学块由 ``$$`` / ``\[`` 定界（见 _DISPLAY_MATH_ENVS）
@@ -1649,6 +1652,28 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     _logger.warning("显示数学块解析异常，降级为段落", exc_info=True)
                     if count > 5:
                         raise
+            # ★ 单行显示数学 ``\[ ... \]``：同一行给出开闭定界符 → 直接产出闭合
+            #   块（源为中间内容）。修复前只有「独占一行的 ``\[``」才开启显示
+            #   数学块，单行形态落入段落 → 定界符被转义成字面 ``[ ... ]``
+            #   （``\[ x^2 \]`` → ``[ x² ]``），与多行 ``\[`` 块（数学框渲染）
+            #   不一致、也与单行 ``$$ ... $$`` 的处理不对称。
+            if (len(stripped) > 4 and stripped.startswith(r'\[')
+                    and stripped.endswith(r'\]')):
+                source = stripped[2:-2].strip()
+                if source:
+                    try:
+                        self._flush_paragraph(tokens)
+                        self._emit_blockquote_close(tokens)
+                        tokens.append(Token(TokenType.MATH_BLOCK_CLOSE, source,
+                                            {"source": source}))
+                        return True
+                    except Exception:
+                        count = self._silent_downgrade_count.get('display_math', 0) + 1
+                        self._silent_downgrade_count['display_math'] = count
+                        _logger.warning("单行显示数学块解析异常，降级为段落",
+                                        exc_info=True)
+                        if count > 5:
+                            raise
             return False
 
         def _handle_math_block() -> bool:
@@ -2980,6 +3005,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._state = _State.INDENTED_CODE
         self._preview_code_lines = []
         self._preview_code_dropped = 0
+        self._indented_code_pending_blanks = 0
         tokens.append(Token(TokenType.CODE_FENCE_OPEN, "", {
             "lang": "text", "indented": True, "attrs": "",
         }))
