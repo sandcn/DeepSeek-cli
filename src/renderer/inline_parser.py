@@ -278,12 +278,24 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
             saved = self._pos
             self._pos += 1
             content_start = self._pos
+            depth = 0
             while self._pos < n:
-                if (text[self._pos] == '$'
+                ch = text[self._pos]
+                if ch == "\\" and self._pos + 1 < n:
+                    # 转义字符（``\{`` / ``\}`` / ``\$``）不计入花括号深度
+                    self._pos += 2
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth = max(0, depth - 1)
+                elif (ch == "$" and depth == 0
                         and self._pos > content_start
                         and not text[self._pos - 1].isspace()
                         and not (self._pos + 1 < n
-                                 and text[self._pos + 1] == '$')):
+                                 and text[self._pos + 1] == "$")):
+                    # 花括号内的 ``$`` 属于内容（``\text{a $x$ b}`` 的内联
+                    # 数学切换），只有顶层 ``$`` 才结束行内数学
                     content = text[content_start:self._pos]
                     self._pos += 1
                     return InlineMathNode(content=content)

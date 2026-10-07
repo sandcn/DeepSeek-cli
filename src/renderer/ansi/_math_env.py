@@ -62,6 +62,7 @@ WIDTH_COLSPEC_ENVS: frozenset = frozenset({
 #: 等式对齐环境（& 分列：奇数列右对齐、偶数列左对齐）
 ALIGN_ENVS: frozenset = frozenset({
     "aligned", "align", "align*", "alignedat", "alignedat*",
+    "alignat", "alignat*",
     "split", "eqnarray", "eqnarray*", "flalign", "flalign*",
     "IEEEeqnarray", "IEEEeqnarray*",
 })
@@ -78,12 +79,89 @@ CENTER_ENVS: frozenset = frozenset({
 #: 首行左 / 末行右 的多行环境
 MULTLINE_ENVS: frozenset = frozenset({"multline", "multline*", "multlined"})
 
+#: 交换图环境（``\begin{CD} A @>a>> B \\ @VbVV @AAcA \\ C @= D \end{CD}``）
+CD_ENVS: frozenset = frozenset({"CD", "cd"})
+
 #: 认识的全部环境（未列出者按内容渲染，保持兼容）
 KNOWN_ENVS: frozenset = frozenset(
     set(MATRIX_ENVS) | set(CASES_ENVS) | set(COLSPEC_ENVS)
     | set(WIDTH_COLSPEC_ENVS)
     | set(ALIGN_ENVS) | set(CENTER_ENVS) | set(MULTLINE_ENVS)
+    | set(CD_ENVS)
 )
+
+def _cd_arrow_text(kind: str, label: str) -> str:
+    """交换图箭头记号 → 终端可读文本。"""
+    if kind == ">":
+        return "──" + label + "─▶"
+    if kind == "<":
+        return "◀─" + label + "──"
+    if kind == "V":
+        return "│" + label + "│↓"
+    if kind == "A":
+        return "↑│" + label + "│"
+    if kind == "=":
+        return "═" + label + "═"
+    if kind == "|":
+        return "│"
+    return ""
+
+
+def _cd_line_to_cells(line: str) -> list[str]:
+    """交换图一行 → 单元格序列（``@`` 箭头记号转箭头文本，其余按空白分格）。
+
+    箭头语法（amscd）：``@>label>>`` / ``@<label<<`` / ``@VlabelVV`` /
+    ``@AlabelA`` / ``@=label=`` / ``@|`` / ``@.``——标签读到终止字符为止。
+    """
+    cells: list[str] = []
+    buf: list[str] = []
+    i = 0
+    n = len(line)
+
+    def _flush() -> None:
+        text = "".join(buf).strip()
+        if text:
+            cells.extend(text.split())
+        buf.clear()
+
+    while i < n:
+        ch = line[i]
+        if ch == "@" and i + 1 < n:
+            kind = line[i + 1]
+            i += 2
+            if kind in "<>VA=":
+                label: list[str] = []
+                if kind == "=":
+                    while i < n and line[i] != "=":
+                        label.append(line[i])
+                        i += 1
+                    i += 1
+                else:
+                    endc = kind
+                    while i < n and line[i] != endc:
+                        label.append(line[i])
+                        i += 1
+                    if i < n:
+                        i += 1
+                    if kind != "A":
+                        while i < n and line[i] == endc:
+                            i += 1
+                _flush()
+                cells.append(_cd_arrow_text(kind, "".join(label).strip()))
+                continue
+            if kind == "|":
+                _flush()
+                cells.append(_cd_arrow_text("|", ""))
+                continue
+            if kind == ".":
+                continue
+            buf.append("@")
+            buf.append(kind)
+            continue
+        buf.append(ch)
+        i += 1
+    _flush()
+    return cells
 
 
 def parse_colspec(spec: str) -> tuple[list[str], list[bool]]:
@@ -121,6 +199,9 @@ def parse_colspec(spec: str) -> tuple[list[str], list[bool]]:
             continue
         if ch in "|:":
             if ch == "|":
+                pending_bar = True
+            else:
+                # ``:`` 为虚线分隔（KaTeX/array 语义）——终端以实线竖线近似
                 pending_bar = True
             i += 1
             continue
@@ -198,6 +279,9 @@ class _MathEnvMixin:
 
     def _cmd_begin(self) -> _Box:
         env = self._read_group_raw().strip()
+        custom = getattr(self.macro_state, "custom_envs", {}).get(env)
+        if custom is not None:
+            return self._render_custom_env(env, custom)
         # 环境位置参数（``\begin{array}[t]{cc}`` / ``\begin{matrix*}[r]``）：
         # 终端无垂直定位概念，统一忽略，避免其被当作列格式内容。
         self._read_optional_raw()
@@ -211,6 +295,21 @@ class _MathEnvMixin:
             self._read_group_raw()   # 对齐点数量（& 分列已足够）
         body = self._read_env_body(env)
         return self._render_environment(env, body, colspec)
+
+    def _render_custom_env(self, env: str,
+                           spec: tuple[int, str, str]) -> _Box:
+        """``\\newenvironment`` 登记的自定义环境：begin/end 代码包裹正文。
+
+        参数（``[n]``）以 ``#1``… 形式替换进 begin/end 代码；正文按完整
+        LaTeX 递归渲染（内容不丢）。
+        """
+        nargs, begin_body, end_body = spec
+        args = [self._read_group_raw() for _ in range(max(0, nargs))]
+        body = self._read_env_body(env)
+        src = begin_body + body + end_body
+        for idx, value in enumerate(args, 1):
+            src = src.replace("#" + str(idx), value)
+        return self._render_sub(src)
 
     def _read_env_body(self, env: str) -> str:
         start = self.i
@@ -262,6 +361,9 @@ class _MathEnvMixin:
             # 未登记环境：内容原样呈现（``&`` 转空格，避免序列解析截断内容）
             return self._render_sub(body.replace("&", " "))
 
+        if env in CD_ENVS:
+            return self._render_cd(body)
+
         items = self._env_items(body)
         rows = [cells for kind, cells in items if kind == "row"]
         if not rows:
@@ -291,6 +393,23 @@ class _MathEnvMixin:
         delims = MATRIX_ENVS.get(env) or CASES_ENVS.get(env)
         if delims and (delims[0] or delims[1]):
             return _wrap_delims(_Box(lines), delims[0], delims[1])
+        return _Box(lines)
+
+    def _render_cd(self, body: str) -> _Box:
+        """交换图环境（``CD``）：``@`` 箭头记号转文本 + 按行/列网格对齐。"""
+        rows = [r for r in (_cd_line_to_cells(line) for line in _split_rows(body))
+                if r]
+        if not rows:
+            return _empty_box()
+        ncols = max(len(r) for r in rows)
+        for r in rows:
+            while len(r) < ncols:
+                r.append("")
+        aligns = ["c"] * ncols
+        bars = [False] * (ncols + 1)
+        cell_boxes = [[self._env_cell(c) for c in row] for row in rows]
+        lines = self._layout_rows(cell_boxes, aligns, bars,
+                                  [("row", r) for r in rows], None)
         return _Box(lines)
 
     def _env_items(self, body: str) -> list[tuple[str, list[str]]]:

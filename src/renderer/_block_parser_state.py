@@ -27,6 +27,16 @@ _HTML_HEADING_LEVELS: dict[str, int] = {
     'h1': 1, 'h2': 2, 'h3': 3, 'h4': 4, 'h5': 5, 'h6': 6,
 }
 
+#: KaTeX auto-render 支持的「显示模式环境」——不需要 ``$$`` 定界符即可
+#: 直接作为公式块渲染（``\begin{align}…\end{align}`` 等）。
+_DISPLAY_MATH_ENVS: frozenset[str] = frozenset({
+    "equation", "equation*", "displaymath", "math", "dmath",
+    "align", "align*", "alignat", "alignat*",
+    "gather", "gather*", "multline", "multline*",
+    "flalign", "flalign*", "eqnarray", "eqnarray*",
+    "dgroup", "mathdisplay", "CD",
+})
+
 
 class _State(IntEnum):
     """解析器状态枚举。"""
@@ -55,4 +65,4 @@ _ADMONITION_TYPES: frozenset[str] = frozenset({
 
 
 __all__ = ["_State", "_MERMAID_KEYWORDS", "_SETEXT_HR_CHARS", "_ADMONITION_TYPES",
-           "_HTML_HEADING_LEVELS"]
+           "_HTML_HEADING_LEVELS", "_DISPLAY_MATH_ENVS"]

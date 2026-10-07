@@ -34,7 +34,11 @@ from ._math_box import (
     _has_operator, _split_rows, _wrap_delims, frac_box, strike_through,
 )
 from ._math_cmds import COMMAND_HANDLERS, _MathCommandMixin, _restyle_box
+from ._math_cmds import _operatorname_text
 from ._math_env import _MathEnvMixin
+from ._math_tex import _MathTexMixin, _split_at_primitive
+from ._math_macros import _MathMacroMixin, MacroState
+from ._math_html import _MathHtmlMixin
 
 from src.renderer.math_symbols.greek import _GREEK_LETTERS
 from src.renderer.math_symbols.relations import _RELATION_SYMBOLS
@@ -78,19 +82,34 @@ _OPEN_PAREN_OPS = frozenset("+-−=<>&|")
 #: 解析器特殊字符（触发按命令/分组/脚本处理）
 _SPECIAL_CHARS = frozenset("\\{}^_&~$")
 
+#: 文本模式重音字符（``\'{a}`` / ``\^{a}`` …）；对应 ``\`` 后的非字母字符
+_TEXT_ACCENT_CHARS = frozenset("'`^\"~=.")
+
 #: 解析/布局最大递归深度（防异常输入）
 _MAX_DEPTH = 24
 
 
-class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
+class _LatexRenderer(_MathCommandMixin, _MathEnvMixin, _MathTexMixin,
+                     _MathMacroMixin, _MathHtmlMixin):
     """LaTeX 子集 → ``_Box``（块级二维 / 行内紧凑）。"""
 
-    def __init__(self, src: str, inline: bool = False) -> None:
+    def __init__(self, src: str, inline: bool = False,
+                 macro_state: MacroState | None = None,
+                 preprocess: bool = True) -> None:
         self.s = src or ""
         self.n = len(self.s)
         self.i = 0
         self.inline = inline
         self.depth = 0
+        #: 宏系统跨公式共享状态（``\gdef`` 持久；``None`` 时新建局部状态）
+        self.macro_state = macro_state if macro_state is not None else MacroState()
+        self.macro_table = None
+        #: 是否在 ``render()`` 入口做宏预处理（子渲染器已在展开后的文本上工作）
+        self._preprocess_src = preprocess
+        #: ``\displaystyle`` 生效中——行内公式下大算符也按上下限堆叠
+        self.displaystyle = False
+        #: ``\limits`` / ``\nolimits`` 强制上下限位置（``None`` = 按模式默认）
+        self.limits_mode: bool | None = None
 
     # ── 入口 ──────────────────────────────────────────
 
@@ -99,6 +118,12 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
             return _txt(self.s[self.i:])
         self.depth += 1
         try:
+            if self._preprocess_src:
+                self.s = self.preprocess(self.s)
+                self.n = len(self.s)
+            if self.i == 0 and "\\" in self.s:
+                if _split_at_primitive(self.s) is not None:
+                    return self._render_group_raw(self.s)
             return self._parse_seq()
         finally:
             self.depth -= 1
@@ -120,6 +145,17 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
             if c == "\\":
                 if self._peek_is_end():
                     break
+                if (not self.inline and self.i + 1 < self.n
+                        and self.s[self.i + 1] == "\\"):
+                    # 块级公式中的硬换行 ``\\``（KaTeX 在 display math 允许）：
+                    # 拆成多行垂直堆叠；行内公式忽略（与 KaTeX 一致）。
+                    self.i += 2
+                    if self.i < self.n and self.s[self.i] == "[":
+                        end = self.s.find("]", self.i)
+                        if end > 0:
+                            self.i = end + 1
+                    parts.append(_Box([AnsiLine()], kind="newline"))
+                    continue
                 parts.append(self._parse_command())
                 continue
             if c in "^_":
@@ -144,6 +180,22 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
                 parts.append(_txt(" "))
                 continue
             parts.append(self._parse_text_run())
+        return self._join_seq_parts(parts)
+
+    @staticmethod
+    def _join_seq_parts(parts: list[_Box]) -> _Box:
+        """拼接序列块；含块级硬换行标记时按行垂直堆叠。"""
+        if any(p.kind == "newline" for p in parts):
+            rows: list[_Box] = []
+            cur: list[_Box] = []
+            for p in parts:
+                if p.kind == "newline":
+                    rows.append(_hjoin(cur))
+                    cur = []
+                else:
+                    cur.append(p)
+            rows.append(_hjoin(cur))
+            return _vstack(rows, align="center")
         return _hjoin(parts)
 
     def _parse_text_run(self) -> _Box:
@@ -201,11 +253,11 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
         return _styled_text(c)
 
     def _parse_group(self) -> _Box:
-        self.i += 1  # 跳过 '{'
-        box = self._parse_seq(frozenset({"}"}))
-        if self.i < self.n and self.s[self.i] == "}":
-            self.i += 1
-        return box
+        """``{...}`` 组：读取原文后交给 ``_render_group_raw``。
+
+        组内可能含 TeX 分数原语（``{a \\over b}``）——必须先检测再递归解析。
+        """
+        return self._render_group_raw(self._read_group_raw())
 
     def _read_group_raw(self) -> str:
         """读取 ``{...}`` 原始内容（消费花括号；无花括号时取单个原子原文）。"""
@@ -237,7 +289,9 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
         return ch
 
     def _render_sub(self, text: str) -> _Box:
-        return _LatexRenderer(text, inline=self.inline).render()
+        return _LatexRenderer(text, inline=self.inline,
+                              macro_state=self.macro_state,
+                              preprocess=False).render()
 
     # ── 脚本（^ / _） ─────────────────────────────────
 
@@ -304,12 +358,15 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
         return _Box(lines)
 
     def _attach_bigop(self, base: _Box, sup: _Box | None, sub: _Box | None) -> _Box:
-        """大算符脚本：块级上下限堆叠（∑ 上下），行内紧凑 ``_{}^{}``。
+        r"""大算符脚本：块级上下限堆叠（∑ 上下），行内紧凑 ``_{}^{}``。
 
         上下限按完整布局块堆叠（多行内容如分数上下限整体呈现），并以对应
-        脚本配色重着色（上标亮青、下标灰）。
+        脚本配色重着色（上标亮青、下标灰）。``\displaystyle`` 生效时行内
+        公式同样堆叠（与 LaTeX 语义一致）；``\limits`` / ``\nolimits``
+        强制上下限位置。
         """
-        if not self.inline and base.height == 1:
+        stack_limits = self._should_stack_limits()
+        if stack_limits and base.height == 1:
             has_sup = sup is not None and _plain_of(sup).strip() != ""
             has_sub = sub is not None and _plain_of(sub).strip() != ""
             if has_sup or has_sub:
@@ -330,6 +387,12 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
             line.append("^{" + _plain_of(sup).strip() + "}", _M_SUP)
         return _Box([line])
 
+    def _should_stack_limits(self) -> bool:
+        """大算符/极限函数的上下限是否堆叠（``\\limits`` / ``\\nolimits`` 优先）。"""
+        if self.limits_mode is not None:
+            return self.limits_mode
+        return not self.inline or self.displaystyle
+
     def _attach_limit(self, base: _Box, sup: _Box | None, sub: _Box | None) -> _Box:
         """极限函数脚本：块级下标置于下方，行内紧凑 ``(x → 0)``。"""
         inner = ""
@@ -338,8 +401,8 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
         if sup is not None:
             s = _plain_of(sup).strip()
             inner = f"{inner} → {s}" if inner else s
-        if not self.inline and base.height == 1 and sub is not None \
-                and _plain_of(sub).strip() != "":
+        if self._should_stack_limits() and base.height == 1 \
+                and sub is not None and _plain_of(sub).strip() != "":
             label = _plain_of(sub).strip()
             if sup is not None and _plain_of(sup).strip():
                 label = f"{label} → {_plain_of(sup).strip()}"
@@ -378,6 +441,11 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
             self.i += 1
             if c in _SPACE_MAP:
                 return _txt(_SPACE_MAP[c])
+            if c in _TEXT_ACCENT_CHARS:
+                return self._cmd_text_accent_char(c)
+            if c == "\\":
+                # 硬换行（``\\``）：环境内由 ``_split_rows`` 处理，块外显示换行符
+                return _txt("⏎", _M_NOTICE)
             return _txt(c)
 
         start = self.i
@@ -419,6 +487,10 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
         if cmd in ("lvert", "rvert", "lVert", "rVert", "langle", "rangle",
                    "lfloor", "rfloor", "lceil", "rceil"):
             return _txt(_DELIMITER_MAP.get(cmd, cmd), _M_SYM)
+        # KaTeX 定界符别名（\vert / \Vert / \lparen / \lbrack / \lBrace /
+        # \llbracket / \lang / \arrowvert …）——不在符号表时按定界符字符渲染
+        if cmd in _DELIMITER_MAP and cmd not in _CMD_MAP:
+            return _txt(_DELIMITER_MAP[cmd], _M_SYM)
         if cmd == "cancelto":
             return self._cmd_cancel(cmd)
         if cmd in ("bcancel", "xcancel", "sout", "cancel"):
@@ -437,8 +509,19 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
             return self._cmd_mod(cmd)
         if cmd == "tag":
             return self._cmd_tag()
-        if cmd in ("displaystyle", "textstyle", "scriptstyle",
-                   "scriptscriptstyle", "limits", "nolimits"):
+        if cmd == "displaystyle":
+            self.displaystyle = True
+            return _empty_box()
+        if cmd == "textstyle":
+            self.displaystyle = False
+            return _empty_box()
+        if cmd in ("scriptstyle", "scriptscriptstyle"):
+            return _empty_box()
+        if cmd == "limits":
+            self.limits_mode = True
+            return _empty_box()
+        if cmd == "nolimits":
+            self.limits_mode = False
             return _empty_box()
         if cmd == "not":
             return self._cmd_not()
@@ -563,11 +646,21 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
 
         实现在解析主体（``_LatexRenderer``）内，``_math_env`` 仅调用——
         避免 ``_math_env`` → ``_math_latex`` 的反向导入（模块依赖环）。
+        ``\\multicolumn{n}{fmt}{content}`` 取内容渲染（终端不合并列宽）。
         """
         text = (src or "").strip()
+        if text.startswith("\\multicolumn"):
+            from ._math_macros import _read_arg
+            pos = len("\\multicolumn")
+            for idx in range(3):
+                arg, pos = _read_arg(text, pos)
+                if idx == 2:
+                    text = arg.strip()
         if not text:
             return _empty_box()
-        return _LatexRenderer(text, inline=self.inline).render()
+        return _LatexRenderer(text, inline=self.inline,
+                              macro_state=self.macro_state,
+                              preprocess=False).render()
 
     # ── 具体命令实现 ──────────────────────────────────
 
@@ -693,8 +786,10 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
         return _Box(lines, baseline=1 + content.baseline)
 
     def _cmd_operatorname(self, starred: bool) -> _Box:
+        """``\\operatorname{arg\\,max}``：内容按文本语义处理（间距/转义/嵌套）。"""
         raw = self._read_group_raw()
-        return _txt(raw, _M_FN, kind="limit" if starred else None)
+        return _txt(_operatorname_text(raw), _M_FN,
+                    kind="limit" if starred else None)
 
     def _cmd_substack(self) -> _Box:
         raw = self._read_group_raw()
@@ -724,12 +819,20 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
         return _txt("  (" + raw + ")", _M_TAG)
 
 
-def render_math_box(source: str, inline: bool = False) -> _Box:
-    """LaTeX 源码 → 布局 ``_Box``（行内紧凑 / 块级二维）。"""
+def render_math_box(source: str, inline: bool = False,
+                    macro_state: MacroState | None = None) -> _Box:
+    """LaTeX 源码 → 布局 ``_Box``（行内紧凑 / 块级二维）。
+
+    Args:
+        source: LaTeX 源码。
+        inline: 行内紧凑排版 / 块级二维排版。
+        macro_state: 跨公式共享的宏状态（``\\gdef`` 持久；``None`` 时新建）。
+    """
     try:
-        return _LatexRenderer(source or "", inline=inline).render()
+        return _LatexRenderer(source or "", inline=inline,
+                              macro_state=macro_state).render()
     except Exception:
         return _txt(source or "", _M_SYM)
 
 
-__all__ = ["_Box", "render_math_box"]
+__all__ = ["_Box", "render_math_box", "_LatexRenderer"]

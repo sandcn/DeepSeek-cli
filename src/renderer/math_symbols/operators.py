@@ -59,12 +59,25 @@ _OPERATOR_SYMBOLS: Dict[str, str] = {
     "unrhd": "⊵",
     "lhd": "⊲",
     "rhd": "⊳",
+    # === 第三批补充（KaTeX 全量二元运算符别名与缺项）===
+    "And": "&",
+    "plusmn": "±",
+    "sdot": "⋅",
+    "bull": "•",
+    "minuso": "∸",
+    "bigominus": "⨸",
+    "bigoslash": "⦸",
+    "dblcolon": "∷",
+    "coloncolon": "∷",
+    "smallint": "∫",
 }
 
 _BIG_OPERATORS: Dict[str, str] = {
     "sum": "∑", "prod": "∏", "int": "∫", "oint": "∮",
-    "iint": "∬", "iiint": "∭",
+    "iint": "∬", "iiint": "∭", "iiiint": "⨌",
     "oiint": "∯", "oiiint": "∰",
+    "idotsint": "∫⋯∫",
+    "intop": "∫",
     "coprod": "∐",
     "bigcup": "⋃", "bigcap": "⋂",
     "bigvee": "⋁", "bigwedge": "⋀",
@@ -75,14 +88,18 @@ _BIG_OPERATORS: Dict[str, str] = {
     "bigast": "✱",
     "bigodot": "⊙",
     "bigcirc": "○",
+    "bigominus": "⨸",
+    "bigoslash": "⦸",
 }
 
 _BIG_OPERATOR_COMMANDS: Set[str] = {
     "sum", "prod", "coprod",
-    "int", "oint", "iint", "iiint", "oiint", "oiiint",
+    "int", "oint", "iint", "iiint", "oiint", "oiiint", "iiiint",
+    "idotsint", "intop",
     "bigcup", "bigcap", "bigvee", "bigwedge",
     "bigoplus", "bigotimes", "bigsqcup", "biguplus",
     "bigsqcap", "bigtriangleup", "bigtriangledown",
+    "bigominus", "bigoslash",
     # ★ 修复（review 方向）：四个大运算符缺失（_BIG_OPERATORS 中存在）——
     #   修复前 \bigtimes/\bigast/\bigodot/\bigcirc 不走大运算符极限路径，
     #   _{...}^{...} 落入通用上下标处理。

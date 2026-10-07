@@ -23,4 +23,12 @@ _GREEK_LETTERS: Dict[str, str] = {
     "Phi": "Φ", "Chi": "Χ", "Psi": "Ψ", "Omega": "Ω",
     "varGamma": "Γ", "varDelta": "Δ", "varTheta": "Θ", "varLambda": "Λ",
     "varXi": "Ξ", "varPi": "Π", "varSigma": "Σ", "varPhi": "Φ", "varPsi": "Ψ", "varOmega": "Ω",
+    # === 第三批补充（KaTeX 大写变体与符号别名）===
+    "varUpsilon": "ϒ",
+    "thetasym": "ϑ",
+    "Coppa": "Ϙ", "coppa": "ϙ", "varcoppa": "ϙ",
+    "Koppa": "Ϟ", "koppa": "ϟ",
+    "Stigma": "Ϛ", "stigma": "ϛ", "varstigma": "ϛ",
+    "Sampi": "Ϡ", "sampi": "ϡ",
+    "Digamma": "Ϝ",
 }

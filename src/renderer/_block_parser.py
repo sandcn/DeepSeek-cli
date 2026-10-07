@@ -28,10 +28,27 @@ from ._block_helpers import (
     _front_matter_delim, _front_matter_format, _is_front_matter_close,
 )
 from ._block_parser_state import (
-    _State, _ADMONITION_TYPES, _HTML_HEADING_LEVELS,
+    _State, _ADMONITION_TYPES, _HTML_HEADING_LEVELS, _DISPLAY_MATH_ENVS,
 )
 from ._block_parser_stream import _BlockParserStreamMixin
 from ._html_attrs import parse_open_tag, parse_attrs, language_of, align_of
+
+
+def _match_display_env(stripped: str) -> tuple[str, str] | None:
+    """行首是否为 KaTeX auto-render 显示环境（``\\begin{align}`` 等）。
+
+    Returns:
+        ``(环境名, 结束标记)``；非显示环境返回 ``None``。
+    """
+    if not stripped.startswith("\\begin{"):
+        return None
+    close = stripped.find("}", 8)
+    if close < 0:
+        return None
+    env = stripped[7:close]
+    if env not in _DISPLAY_MATH_ENVS:
+        return None
+    return env, "\\end{" + env + "}"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -91,6 +108,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # 预览缓冲因上限被丢弃的行数（省略提示需计入，见 _emit_code_line）
         self._preview_code_dropped: int = 0
         self._block_html_tag: str = ''
+        # KaTeX auto-render 显示环境的结束标记（``\end{align}`` 等）；
+        # ``None`` 表示当前数学块由 ``$$`` / ``\[`` 定界（见 _DISPLAY_MATH_ENVS）
+        self._math_env_end: str | None = None
         # ``<pre>`` 块语言（``class="language-x"`` 推断；进入块时重置）
         self._html_pre_lang: str = ''
         # 当前 HTML 块的开标签属性（``<ol start="3">`` 等结构化收集阶段使用）
@@ -1589,6 +1609,29 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return _handle_setext_or_hr()
 
         def _handle_display_math() -> bool:
+            env_info = _match_display_env(stripped)
+            if env_info is not None:
+                try:
+                    env, end_marker = env_info
+                    pos = stripped.find(end_marker)
+                    self._flush_paragraph(tokens)
+                    self._emit_blockquote_close(tokens)
+                    if pos >= 0:
+                        # 单行闭合环境（``\begin{align}…\end{align}`` 同行）
+                        source = stripped[:pos + len(end_marker)]
+                        tokens.append(Token(TokenType.MATH_BLOCK_CLOSE, source,
+                                            {"source": source}))
+                    else:
+                        self._start_math_env(env, stripped, tokens)
+                    return True
+                except Exception:
+                    count = self._silent_downgrade_count.get('display_env', 0) + 1
+                    self._silent_downgrade_count['display_env'] = count
+                    _logger.warning("显示环境数学块解析异常，降级为段落", exc_info=True)
+                    self._state = _State.NORMAL
+                    self._math_env_end = None
+                    if count > 5:
+                        raise
             if len(stripped) == 2 and stripped == r'\[':
                 try:
                     self._flush_paragraph(tokens)
@@ -2375,17 +2418,31 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
     def _start_display_math(self, tokens: list[Token]):
         self._state = _State.DISPLAY_MATH_BLOCK
         self._block_lines = []
+        self._math_env_end = None
         tokens.append(Token(TokenType.MATH_BLOCK_OPEN))
 
     def _start_math_block(self, tokens: list[Token]):
         self._state = _State.MATH_BLOCK
         self._block_lines = []
+        self._math_env_end = None
+        tokens.append(Token(TokenType.MATH_BLOCK_OPEN))
+
+    def _start_math_env(self, env: str, begin_line: str, tokens: list[Token]):
+        """KaTeX auto-render 显示环境（``\\begin{align}`` 无 ``$$`` 定界符）。
+
+        进入 MATH_BLOCK 状态并以 ``\\end{env}`` 作为结束标记；源码保留
+        ``\\begin`` / ``\\end`` 行（公式渲染器按环境语义排版）。
+        """
+        self._state = _State.MATH_BLOCK
+        self._block_lines = [begin_line]
+        self._math_env_end = "\\end{" + env + "}"
         tokens.append(Token(TokenType.MATH_BLOCK_OPEN))
 
     def _emit_math_block(self, tokens: list[Token]):
         source = '\n'.join(self._block_lines)
         tokens.append(Token(TokenType.MATH_BLOCK_CLOSE, source,
                             {"source": source}))
+        self._math_env_end = None
         self._state = _State.NORMAL
 
     # ── Mermaid ──────────────────────────────────────────

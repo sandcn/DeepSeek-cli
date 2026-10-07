@@ -46,6 +46,9 @@ _SANS_LOWER = "𝖺𝖻𝖼𝖽𝖾𝖿𝗀𝗁𝗂𝗃𝗄𝗅𝗆𝗇𝗈𝗉�
 _SANS_BOLD_UPPER = "𝗔𝗕𝗖𝗗𝗘𝗙𝗚𝗛𝗜𝗝𝗞𝗟𝗠𝗡𝗢𝗣𝗤𝗥𝗦𝗧𝗨𝗩𝗪𝗫𝗬𝗭"
 _SANS_BOLD_LOWER = "𝗮𝗯𝗰𝗱𝗲𝗳𝗴𝗵𝗶𝗷𝗸𝗹𝗺𝗻𝗼𝗽𝗾𝗿𝘀𝘁𝘂𝘃𝘄𝘅𝘆𝘇"
 
+_SANS_ITALIC_UPPER = "𝘈𝘉𝘊𝘋𝘌𝘍𝘎𝘏𝘐𝘑𝘒𝘓𝘔𝘕𝘖𝘗𝘘𝘙𝘚𝘛𝘜𝘝𝘞𝘟𝘠𝘡"
+_SANS_ITALIC_LOWER = "𝘢𝘣𝘤𝘥𝘦𝘧𝘨𝘩𝘪𝘫𝘬𝘭𝘮𝘯𝘰𝘱𝘲𝘳𝘴𝘵𝘶𝘷𝘸𝘹𝘺𝘻"
+
 _MONO_UPPER = "𝙰𝙱𝙲𝙳𝙴𝙵𝙶𝙷𝙸𝙹𝙺𝙻𝙼𝙽𝙾𝙿𝚀𝚁𝚂𝚃𝚄𝚅𝚆𝚇𝚈𝚉"
 _MONO_LOWER = "𝚊𝚋𝚌𝚍𝚎𝚏𝚐𝚑𝚒𝚓𝚔𝚕𝚖𝚗𝚘𝚙𝚚𝚛𝚜𝚝𝚞𝚟𝚠𝚡𝚢𝚣"
 
@@ -101,6 +104,9 @@ ALPHABET_TABLES: dict[str, dict[str, str]] = {
     "mathit": _table(_ITALIC_UPPER, _ITALIC_LOWER),
     "mathnormal": _table(_ITALIC_UPPER, _ITALIC_LOWER),
     "mathcalbold": _table(_BOLD_SCRIPT_UPPER, _BOLD_SCRIPT_LOWER),
+    # === 第三批补充（KaTeX 字体变体）===
+    "mathbold": _table(_BOLD_UPPER, _BOLD_LOWER, _DIGITS_BOLD),
+    "mathsfit": _table(_SANS_ITALIC_UPPER, _SANS_ITALIC_LOWER),
 }
 
 

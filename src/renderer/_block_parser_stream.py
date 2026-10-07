@@ -148,7 +148,13 @@ class _BlockParserStreamMixin:
 
         elif self._state == _State.MATH_BLOCK:
             try:
-                if stripped == '$$':
+                if self._math_env_end is not None:
+                    # KaTeX auto-render 显示环境：以 ``\end{env}`` 结束；
+                    # 源码整段保留（含 ``\begin`` / ``\end`` 行）
+                    self._block_lines.append(line.rstrip('\n'))
+                    if stripped.startswith(self._math_env_end):
+                        self._emit_math_block(tokens)
+                elif stripped == '$$':
                     self._emit_math_block(tokens)
                 elif stripped.endswith('$$') and len(stripped) > 2:
                     content_line = stripped[:-2].rstrip()

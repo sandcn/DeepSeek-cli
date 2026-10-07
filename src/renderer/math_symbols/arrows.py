@@ -99,6 +99,16 @@ _ARROW_SYMBOLS: Dict[str, str] = {
     "Updownarrow": "⇕",
     "Uparrow": "⇑",
     "Downarrow": "⇓",
+    # === 第三批补充（KaTeX 箭头短别名）===
+    "larr": "←", "rarr": "→", "harr": "↔", "darr": "↓", "uarr": "↑",
+    "Larr": "⇐", "Rarr": "⇒", "Harr": "⇔", "Darr": "⇓", "Uarr": "⇑",
+    "lArr": "⇐", "rArr": "⇒", "hArr": "⇔", "dArr": "⇓", "uArr": "⇑",
+    "Lrarr": "⇔", "lrArr": "⇔", "lrarr": "↔",
+    "LeftArrow": "⇐",
+    "longrightsquigarrow": "⟿",
+    "mapsfrom": "↤", "longmapsfrom": "⟻",
+    "Mapsto": "⤇",
+    "downharpoons": "⇣", "upharpoons": "⇡",
 }
 
 # 逻辑箭头（渲染时自动加空格）

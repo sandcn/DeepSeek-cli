@@ -19,8 +19,7 @@ from ._math_style import (
 )
 from ._math_box import (
     _Box, _txt, _empty_box, _plain_of, _vstack, _hjoin, _wrap_delims,
-    frac_box, accent_over, accent_under, repeat_line, strike_through,
-    bracket_over, bracket_under, pad_to_height, join_right,
+    frac_box, accent_over, accent_under, repeat_line, join_right,
 )
 from ._math_letters import to_math_alphabet
 from src.renderer.math_symbols.scripts import _SUPERSCRIPT_MAP, _SUBSCRIPT_MAP
@@ -36,6 +35,7 @@ UNICODE_ALPHABET_CMDS: frozenset = frozenset({
     "mathbf", "boldsymbol", "bm", "mathbfit",
     "mathboldsf", "mathsf", "mathtt",
     "mathit", "mathnormal",
+    "mathbold", "mathsfit",
 })
 
 #: 文本语义命令（内容按原文呈现，不解析内部数学命令）
@@ -48,11 +48,14 @@ TEXT_SEMANTIC_CMDS: frozenset = frozenset({
 #: 直立（罗马）字体命令
 ROMAN_CMDS: frozenset = frozenset({
     "mathrm", "textrm", "rm", "textnormal", "normalfont", "textup", "textmd",
+    "mathup",
 })
 #: 斜体字体命令
 ITALIC_CMDS: frozenset = frozenset({"mathit", "textit", "it", "textsl", "emph"})
 #: 粗直立体
-BOLD_UPRIGHT_CMDS: frozenset = frozenset({"mathbf", "textbf", "bf"})
+BOLD_UPRIGHT_CMDS: frozenset = frozenset({
+    "mathbf", "textbf", "bf", "pmb", "bold",
+})
 #: 粗斜体
 BOLD_ITALIC_CMDS: frozenset = frozenset({"boldsymbol", "bm", "mathbfit", "mathboldsf"})
 #: 无衬线
@@ -72,6 +75,10 @@ XARROW_SYMBOLS: dict[str, str] = {
     "xrightleftharpoons": "⇌", "xleftrightharpoons": "⇋",
     "xrightharpoonup": "⇀", "xrightharpoondown": "⇁",
     "xleftharpoonup": "↼", "xleftharpoondown": "↽",
+    "xrightleftarrows": "⇄", "xrightequilibrium": "⇌",
+    "xleftequilibrium": "⇋",
+    "xtwoheadleftarrow": "↞", "xtwoheadrightarrow": "↠",
+    "xtofrom": "⇄",
 }
 
 #: ``\overrightarrow`` 系列 → (方向标记, 是否在内容下方)
@@ -84,6 +91,7 @@ VECTOR_MARKS: dict[str, tuple[str, bool]] = {
     "underleftrightarrow": ("↔", True),
     "overrightharpoon": ("⇀", False),
     "overleftharpoon": ("↼", False),
+    "Overrightarrow": ("⇒", False),
 }
 
 #: 环境内水平线命令 → 线型字符（``_math_env`` 共用）
@@ -115,6 +123,9 @@ _MARK_COMMANDS: dict[str, tuple[str, str]] = {
     "utilde": ("\u02dc", "under"),
     "undertilde": ("\u02dc", "under"),
     "underbar": ("\u2581", "under"),
+    "wideparen": ("\u23dc", "over"),
+    "overlinesegment": ("\u203e", "over"),
+    "underlinesegment": ("\u2581", "under"),
 }
 
 #: 环境外水平线的默认宽度（字符数）
@@ -230,12 +241,184 @@ def _strip_text_commands(seg: str) -> str:
 def _text_content_lines(raw: str) -> list[str]:
     """``\\text`` 原文 → 行列表。
 
-    ``\\\\``（LaTeX 换行）拆行；嵌套文本命令剥离（保留内容）；``~`` 还原为
-    空格；转义字符还原；行首尾空白去除（LaTeX 在 ``\\text`` 中忽略行首尾空白，
-    保留中间空格）。
+    ``\\\\``（LaTeX 换行）拆行；嵌套文本命令剥离（保留内容）；文本重音命令
+    合成（``\\'a`` → ``á``）；``~`` 还原为空格；转义字符还原；行首尾空白去除
+    （LaTeX 在 ``\\text`` 中忽略行首尾空白，保留中间空格）。
     """
-    text = _strip_text_commands(raw or "").replace("\\\\", "\n")
+    text = _apply_text_accents(_strip_text_commands(raw or ""))
+    text = text.replace("\\\\", "\n")
     return [_unescape_text(seg).replace("~", " ").strip() for seg in text.split("\n")]
+
+
+#: 文本模式重音命令 → 组合字符（U+03xx 组合记号）
+_COMBINING_ACCENTS: dict[str, str] = {
+    "'": "\u0301", "`": "\u0300", "^": "\u0302", '"': "\u0308",
+    "~": "\u0303", "=": "\u0304", ".": "\u0307",
+    "u": "\u0306", "v": "\u030c", "H": "\u030b", "r": "\u030a",
+    "c": "\u0327", "k": "\u0328", "b": "\u0331", "d": "\u0323",
+}
+
+#: 可作重音命令的字符（``\`` 后的非字母字符 + 字母命令）
+_TEXT_ACCENT_COMMANDS: frozenset = frozenset(
+    set(_COMBINING_ACCENTS) | {"t"}
+)
+
+
+def _apply_text_accents(text: str) -> str:
+    """把文本模式重音命令合成为组合字符（``\\'{a}`` → ``á``）。
+
+    ``\\t{oo}``（双字符连接符）在两字符之间插入 U+0361。
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text or "")
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt in _COMBINING_ACCENTS or nxt == "t":
+                j = i + 2
+                # 跳过 ``\' {a}`` 之间的空白
+                k = j
+                while k < n and text[k] == " ":
+                    k += 1
+                if k < n and text[k] == "{":
+                    depth = 0
+                    m = k
+                    while m < n:
+                        if text[m] == "{":
+                            depth += 1
+                        elif text[m] == "}":
+                            depth -= 1
+                            if depth == 0:
+                                break
+                        m += 1
+                    inner = text[k + 1:m] if m < n else text[k + 1:]
+                    i = m + 1
+                elif k < n:
+                    inner = text[k]
+                    i = k + 1
+                else:
+                    out.append(ch)
+                    i += 1
+                    continue
+                out.append(_accent_text(inner, nxt))
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _accent_text(inner: str, accent: str) -> str:
+    """给 ``inner`` 叠加重音组合字符（``t`` 为双字符连接符）。"""
+    inner = _resolve_text_letter_cmds(inner)
+    if accent == "t":
+        if len(inner) >= 2:
+            return inner[0] + "\u0361" + inner[1:]
+        return inner
+    mark = _COMBINING_ACCENTS.get(accent, "")
+    if not mark:
+        return inner
+    return "".join((ch + mark) if not ch.isspace() else ch for ch in inner)
+
+
+#: 重音命令内部的文本字母命令 → 对应字符（r``\'\i`` → ``í``）
+_TEXT_LETTER_CMDS: dict[str, str] = {
+    "i": "i", "j": "j", "l": "ł", "L": "Ł",
+    "o": "ø", "O": "Ø", "aa": "å", "AA": "Å",
+    "ae": "æ", "AE": "Æ", "oe": "œ", "OE": "Œ", "ss": "ß",
+}
+
+
+def _resolve_text_letter_cmds(text: str) -> str:
+    """把文本模式字母命令（``\\i`` / ``\\o`` …）替换为对应字符。"""
+    if "\\" not in text:
+        return text
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] == "\\" and i + 1 < n and text[i + 1].isalpha():
+            j = i + 1
+            while j < n and text[j].isalpha():
+                j += 1
+            name = text[i + 1:j]
+            mapped = _TEXT_LETTER_CMDS.get(name)
+            if mapped is not None:
+                out.append(mapped)
+                i = j
+                continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+def _operatorname_text(raw: str) -> str:
+    """``\\operatorname`` 内容 → 纯文本（间距命令转空格、转义还原、嵌套剥离）。
+
+    ``\\operatorname{arg\\,max}`` → ``arg max``；``\\operatorname{lim sup}``
+    保留空格；未知命令保留原文（内容不丢）。
+    """
+    from src.renderer.math_symbols.delimiters import _SPACE_MAP
+    text = _apply_text_accents(_strip_text_commands(raw or ""))
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = text[i + 1]
+            if not nxt.isalpha():
+                if nxt in _SPACE_MAP:
+                    out.append(_SPACE_MAP[nxt])
+                else:
+                    out.append(nxt)
+                i += 2
+                continue
+            j = i + 1
+            while j < n and text[j].isalpha():
+                j += 1
+            name = text[i + 1:j]
+            if name in _SPACE_MAP:
+                out.append(_SPACE_MAP[name])
+            elif name in ("text", "mathrm", "operatorname", "textrm", "textit"):
+                k = j
+                while k < n and text[k] == " ":
+                    k += 1
+                if k < n and text[k] == "{":
+                    depth = 0
+                    m = k
+                    while m < n:
+                        if text[m] == "{":
+                            depth += 1
+                        elif text[m] == "}":
+                            depth -= 1
+                            if depth == 0:
+                                break
+                        m += 1
+                    out.append(text[k + 1:m] if m < n else text[k + 1:])
+                    i = m + 1
+                    continue
+            else:
+                out.append("\\" + name)
+            i = j
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _text_segment_box(text: str, style, smallcaps: bool = False) -> _Box:
+    """文本语义命令的**分段**内容 → 布局块（保留段内空格、处理换行与重音）。"""
+    t = _apply_text_accents(_strip_text_commands(text))
+    t = _unescape_text(t).replace("~", " ")
+    t = t.replace("\\\\", "\n")
+    lines = t.split("\n")
+    if smallcaps:
+        lines = [x.upper() for x in lines]
+    if len(lines) == 1:
+        return _txt(lines[0], style)
+    return _Box([AnsiLine.of(x, style) for x in lines])
 
 
 def _script_pair(raw: str) -> tuple[str, str]:
@@ -508,10 +691,13 @@ class _MathCommandMixin:
             if converted is not None:
                 return _txt(converted, _alphabet_style(cmd))
         if cmd in TEXT_SEMANTIC_CMDS:
+            style = _font_style(cmd)
+            if "$" in raw:
+                return self._render_text_with_math(
+                    raw, style, smallcaps=cmd in SMALLCAPS_CMDS)
             lines_text = _text_content_lines(raw)
             if cmd in SMALLCAPS_CMDS:
                 lines_text = [t.upper() for t in lines_text]
-            style = _font_style(cmd)
             if len(lines_text) == 1:
                 return _txt(lines_text[0], style)
             return _Box([AnsiLine.of(t, style) for t in lines_text])
@@ -734,13 +920,65 @@ class _MathCommandMixin:
         if not mark:
             return content
         if content.height != 1:
-            wide = {"vec": "→", "widehat": "^", "bar": "‾", "tilde": "~"}.get(cmd, mark)
+            wide = {
+                "vec": "→", "widehat": "^", "bar": "‾", "tilde": "~",
+                "dddot": "⋯", "ddddot": "⋯",
+            }.get(cmd, mark)
             return accent_over(content, wide, _M_ACCENT)
         line = AnsiLine()
         for run in content.lines[0].runs:
             line.append_run(run)
         line.append(mark, _M_ACCENT)
         return _Box([line])
+
+    # ── 文本模式重音（\'{a} / \u{a} / \c{c} …） ──────────
+
+    def _cmd_text_accent_char(self, ch: str) -> _Box:
+        """``\\'{a}`` / ``\\^{a}`` 等（``\\`` + 非字母重音字符）。"""
+        inner = self._read_group_raw()
+        return _txt(_accent_text(inner, ch), _M_TEXT)
+
+    def _cmd_text_accent(self, cmd: str) -> _Box:
+        """``\\u{a}`` / ``\\c{c}`` / ``\\H{o}`` 等文本重音字母命令。"""
+        inner = self._read_group_raw()
+        return _txt(_accent_text(inner, cmd), _M_TEXT)
+
+    # ── 文本内容中的内联数学（``\text{...$x^2$...}``） ──
+
+    def _render_text_with_math(self, raw: str, style, smallcaps: bool = False) -> _Box:
+        """文本语义命令内容：``$…$`` 片段按数学渲染，其余按文本样式呈现。"""
+        parts: list[_Box] = []
+        seg: list[str] = []
+        raw = (raw or "").strip()
+        i = 0
+        n = len(raw)
+        while i < n:
+            ch = raw[i]
+            if ch == "$":
+                delim = "$$" if raw.startswith("$$", i) else "$"
+                end = raw.find(delim, i + len(delim))
+                if delim == "$" and end < 0:
+                    seg.append(ch)
+                    i += 1
+                    continue
+                if end > i:
+                    if seg:
+                        parts.append(_text_segment_box("".join(seg), style,
+                                                       smallcaps))
+                        seg = []
+                    math_src = raw[i + len(delim):end]
+                    if delim == "$$":
+                        parts.append(_txt(" ", style))
+                    parts.append(self._render_sub(math_src))
+                    if delim == "$$":
+                        parts.append(_txt(" ", style))
+                    i = end + len(delim)
+                    continue
+            seg.append(ch)
+            i += 1
+        if seg or not parts:
+            parts.append(_text_segment_box("".join(seg), style, smallcaps))
+        return _hjoin(parts)
 
 
 def _needs_paren(text: str) -> bool:
@@ -834,6 +1072,10 @@ def _register_commands() -> dict[str, str]:
         table[cmd] = "_cmd_brackets"
     for cmd in ("nicefrac", "sfrac"):
         table[cmd] = "_cmd_nicefrac"
+    # ── 文本模式重音（\u{a} / \v{a} / \c{c} / \H{o} / \r{a} / \k{a} /
+    #    \b{a} / \d{a} / \t{oo}）──
+    for cmd in ("u", "v", "H", "r", "c", "k", "b", "d", "t"):
+        table[cmd] = "_cmd_text_accent"
     return table
 
 

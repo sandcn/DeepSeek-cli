@@ -212,6 +212,12 @@ def _split_rows(content: str) -> list[str]:
                 if e > 0:
                     i = e + 1
             continue
+        elif depth == 0 and content.startswith("\\cr", i) \
+                and not (i + 3 < n and content[i + 3].isalpha()):
+            rows.append("".join(cur).strip())
+            cur = []
+            i += 3
+            continue
         cur.append(ch)
         i += 1
     if cur:
@@ -223,16 +229,27 @@ def _split_cols(row: str) -> list[str]:
     cols: list[str] = []
     cur: list[str] = []
     depth = 0
-    for ch in row:
+    i = 0
+    n = len(row)
+    while i < n:
+        ch = row[i]
         if ch == "{":
             depth += 1
         elif ch == "}":
             depth = max(0, depth - 1)
-        elif ch == "&" and depth == 0:
+        elif depth == 0 and ch == "&":
             cols.append("".join(cur).strip())
             cur = []
+            i += 1
+            continue
+        elif depth == 0 and row.startswith("\\and", i) \
+                and not (i + 4 < n and row[i + 4].isalpha()):
+            cols.append("".join(cur).strip())
+            cur = []
+            i += 4
             continue
         cur.append(ch)
+        i += 1
     cols.append("".join(cur).strip())
     return cols
 

@@ -20,11 +20,24 @@ _FUNCTION_NAMES: Dict[str, str] = {
     "liminf": "liminf", "limsup": "limsup",
     "Pr": "Pr",
     "mod": "mod", "bmod": "mod",
+    # === 第三批补充（KaTeX 全量数学算子）===
+    "arctg": "arctg", "arcctg": "arcctg",
+    "cotg": "cotg", "ctg": "ctg", "tg": "tg",
+    "sh": "sh", "ch": "ch", "th": "th", "cth": "cth",
+    "cosec": "cosec",
+    "argmax": "arg max", "argmin": "arg min",
+    "plim": "plim",
+    "injlim": "inj lim", "projlim": "proj lim",
+    "varinjlim": "lim", "varprojlim": "lim",
+    "varlimsup": "lim", "varliminf": "lim",
 }
 
 # 支持极限下标（\lim_{x \to 0}）的命令集合
 _LIMIT_FUNCTIONS: Set[str] = {
     "lim", "liminf", "limsup",
     "sup", "inf", "max", "min",
-    "det", "Pr",
+    "det", "Pr", "gcd",
+    "argmax", "argmin", "plim",
+    "injlim", "projlim", "varinjlim", "varprojlim",
+    "varlimsup", "varliminf",
 }

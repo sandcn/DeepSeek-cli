@@ -1,4 +1,4 @@
-"""ansi — 自绘 ANSI 内容引擎（零 Rich，复用解析层）。
+r"""ansi — 自绘 ANSI 内容引擎（零 Rich，复用解析层）。
 
 ``AnsiStreamRenderer`` 是 TUI 内容路径的入口（替代 IncrementalRenderer 角色）：
   write(chunk) → RecursiveDescentParser.feed → TokenPipeline（CodeBlockBatcher/
@@ -14,6 +14,9 @@
   mermaid.py / math.py — 图表/公式终端渲染（_mermaid_render / _math_latex）
   _math_box.py / _math_style.py / _math_letters.py / _math_cmds.py /
   _math_env.py — 公式排版的布局原语 / 样式 / Unicode 字母族 / 命令 / 环境
+  _math_tex.py — TeX 原语与旧式结构（\over/\atop/\choose/\matrix/\cases/CD…）
+  _math_macros.py — 宏定义与展开（\def/\newcommand/\let/条件/工具命令）
+  _math_html.py — HTML/链接/盒子类命令的终端映射（\href/\url/\html*…）
   _mathml.py — MathML → LaTeX → 二维排版（HTML ``<math>`` 块与行内公式）
   helpers.py — Run/AnsiLine 模型 + 换行/截断/ANSI→Style
 """

@@ -27,6 +27,18 @@ _DELIMITER_MAP: Dict[str, str] = {
     "lmoustache": "⎰", "rmoustache": "⎱",
     "ulcorner": "⌜", "urcorner": "⌝",
     "llcorner": "⌞", "lrcorner": "⌟",
+    # === 第三批补充（KaTeX 定界符别名）===
+    "lparen": "(", "rparen": ")",
+    "lbrack": "[", "rbrack": "]",
+    "lbrace": "{", "rbrace": "}",
+    "lBrace": "⦃", "rBrace": "⦄",
+    "llbracket": "⟦", "rrbracket": "⟧",
+    "lang": "⟨", "rang": "⟩",
+    "lt": "<", "gt": ">",
+    "vert": "|", "Vert": "‖",
+    "arrowvert": "↕", "Arrowvert": "⇕",
+    "bracevert": "⎪",
+    "vline": "│",
 }
 
 # 空格映射

@@ -17,25 +17,35 @@ from __future__ import annotations
 from .style import Style
 from .helpers import AnsiLine
 from ._math_latex import render_math_box
+from ._math_macros import MacroState
 
 _STYLE_LABEL = Style(fg=45, bold=True)
 _STYLE_BORDER = Style(fg=238)
 _STYLE_OMITTED = Style(fg=238)
 
+#: 跨公式共享的宏状态（``\gdef`` 等全局定义持久到后续公式，与 KaTeX 一致）。
+_MACRO_STATE = MacroState()
+
 #: 数学渲染结果缓存：key → 渲染结果。块级缓存 list[AnsiLine]，行内缓存
 #: 单个 AnsiLine。数学块/行内公式数量有限、源码重复率高（流式预览逐帧
 #: 重渲），有界缓存使源码未变时零布局成本。超限整体清空（简单、无淘汰开销）。
+#: 缓存键含宏状态版本号——全局宏变化会让展开结果变化，必须失效。
 _CACHE: dict = {}
 _CACHE_MAX = 512
 
 
+def _cache_key(source: str, inline: bool, label: str = "",
+               dropped: int = 0):
+    return (source, inline, label, dropped, _MACRO_STATE.version)
+
+
 def _cached(source: str, inline: bool, label: str = "数学公式", dropped: int = 0):
-    key = (source, inline, label, dropped)
+    key = _cache_key(source, inline, label, dropped)
     hit = _CACHE.get(key)
     if hit is not None:
         return hit
     if inline:
-        box = render_math_box(source, inline=True)
+        box = render_math_box(source, inline=True, macro_state=_MACRO_STATE)
         value: object = AnsiLine()
         for idx, ln in enumerate(box.lines):
             if idx:
@@ -52,7 +62,7 @@ def _cached(source: str, inline: bool, label: str = "数学公式", dropped: int
 
 def _build_block_lines(source: str, label: str = "数学公式",
                        dropped: int = 0) -> list[AnsiLine]:
-    box = render_math_box(source or "", inline=False)
+    box = render_math_box(source or "", inline=False, macro_state=_MACRO_STATE)
     body = box.lines
     inner_w = max((ln.width for ln in body), default=0)
     omitted = int(dropped or 0)
@@ -118,11 +128,11 @@ def render_math_inline_block(source: str) -> tuple[list[AnsiLine], int]:
 
     单行内容（如 ``x^2``）返回单行块，调用方可直接当普通文本处理。
     """
-    key = (source or "", "inline_block", "", 0)
+    key = ("inline_block", source or "", _MACRO_STATE.version)
     hit = _CACHE.get(key)
     if hit is not None:
         return hit
-    box = render_math_box(source or "", inline=False)
+    box = render_math_box(source or "", inline=False, macro_state=_MACRO_STATE)
     lines: list[AnsiLine] = []
     for ln in box.lines:
         nl = AnsiLine()
@@ -137,8 +147,10 @@ def render_math_inline_block(source: str) -> tuple[list[AnsiLine], int]:
 
 
 def clear_math_cache() -> None:
-    """清空数学渲染缓存（测试/主题切换用）。"""
+    """清空数学渲染缓存与宏状态（测试 / 主题切换 / 会话重置用）。"""
+    global _MACRO_STATE
     _CACHE.clear()
+    _MACRO_STATE = MacroState()
 
 
 __all__ = [
