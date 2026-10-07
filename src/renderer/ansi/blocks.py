@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from .style import Style
 from .helpers import AnsiLine
-from .inline import render_inline
+from .inline import render_inline, inline_lines
 from src.presentation_data import LiveMapping
 from .._front_matter import parse_front_matter_items
 
@@ -59,7 +59,6 @@ _STYLE_TODO_UNCHECKED = Style(fg=242)
 _STYLE_TODO_CHECKED = Style(fg=41)
 _STYLE_TODO_CANCELLED = Style(fg=203, dim=True)
 _STYLE_DEF_TERM = Style(fg=45, bold=True)
-_STYLE_HTML_TAG = Style(fg=240, dim=True)
 _STYLE_ADM_TITLE = Style(fg=252)
 
 # ── Front Matter / 表注 ─────────────────────────────────
@@ -163,30 +162,8 @@ def render_paragraph(token) -> list[AnsiLine]:
 
 
 def _inline_lines(text: str, base=None) -> list[AnsiLine]:
-    """行内文本 → 多行 ``AnsiLine``（按 ``\\n`` 拆行；连续换行合并）。
-
-    段落 / 告示 / 折叠块 / HTML 块的正文都可能含 ``<br>``（硬换行）或软换行
-    ——``render_inline`` 产出的 ``LineBreakNode`` 渲染为 ``"\\n"``，与段落自身
-    的软换行叠加会产生多余空行。此处把连续换行合并为一次换行（段落内不存在
-    有意义的空行，段落在空行处已断开）。
-
-    ``base`` 为基础样式（无行内格式的文本以此着色；None 用默认样式）。
-    """
-    out: list[AnsiLine] = []
-    cur = AnsiLine()
-    for run in render_inline(text, base):
-        link = getattr(run, "link", None)
-        segs = (run.text or "").split("\n")
-        for i, seg in enumerate(segs):
-            if i > 0:
-                if cur.runs or not out:
-                    out.append(cur)
-                cur = AnsiLine()
-            if seg:
-                cur.append(seg, run.style, link)
-    if cur.runs or not out:
-        out.append(cur)
-    return out
+    """行内文本 → 多行 ``AnsiLine``（真源：``inline.inline_lines``）。"""
+    return inline_lines(text, base)
 
 
 def render_paragraph_line(text: str) -> AnsiLine:
@@ -376,97 +353,10 @@ def render_blockquote_line(text: str, depth: int = 0) -> AnsiLine:
 
 
 # ── HTML 块 ──────────────────────────────────────────
-
-#: 结构化 HTML 块标签 → 打开行说明（``▸ <tag>``）
-_HTML_OPEN_LABELS: dict[str, str] = {
-    "figure": "figure 插图",
-    "figcaption": "figcaption 图注",
-    "dl": "dl 定义列表",
-    "dt": "dt 术语",
-    "dd": "dd 定义",
-    "ul": "ul 列表",
-    "ol": "ol 有序列表",
-    "li": "li 列表项",
-    "video": "video 视频",
-    "audio": "audio 音频",
-    "iframe": "iframe 内嵌",
-    "picture": "picture 图片",
-    "source": "source 媒体源",
-    "track": "track 字幕",
-    "caption": "caption 表注",
-    "progress": "progress 进度",
-    "meter": "meter 度量",
-}
-
-
-def render_html_block_open(tag: str) -> list[AnsiLine]:
-    """HTML 块起始标记（dim 标签行；结构化标签附语义说明）。"""
-    label = _HTML_OPEN_LABELS.get(tag, tag)
-    return [AnsiLine.of(f"\u25b8 <{label}>", _STYLE_HTML_TAG)]
-
-
-def render_html_block_line(text: str, tag: str = "") -> list[AnsiLine]:
-    """HTML 块内容行：按标签语义化渲染 + 行内 Markdown（实体解码/注释隐藏）。
-
-    ``tag`` 为块级标签；若整行为单层行内标签（``<li>x</li>`` /
-    ``<figcaption>x</figcaption>`` / ``<dt>x</dt>`` / ``<dd>x</dd>``）则按该
-    子标签语义渲染（列表符号 / 图注 / 术语 / 定义缩进）。
-    """
-    effective_tag = tag
-    content_text = text
-    split = split_inline_html_tag(text)
-    if split is not None and split[0] in _HTML_INLINE_SEMANTIC_TAGS:
-        effective_tag, content_text = split
-    if effective_tag == "li":
-        prefix, base = "  \u2022 ", _STYLE_LIST_BULLET
-    elif effective_tag == "dt":
-        prefix, base = "  ", _STYLE_DEF_TERM
-    elif effective_tag == "dd":
-        prefix, base = "      ", _STYLE_BQ
-    elif effective_tag in ("figcaption", "caption"):
-        prefix, base = "  ", _STYLE_CAPTION
-    elif effective_tag in ("source", "track"):
-        prefix, base = "    ", _STYLE_HTML_TAG
-    elif effective_tag in ("video", "audio", "iframe", "picture"):
-        prefix, base = "  ", _STYLE_HTML_TAG
-    else:
-        prefix, base = "  ", _STYLE_BQ
-    out: list[AnsiLine] = []
-    for sub in _inline_lines(content_text, base):
-        line = AnsiLine.of(prefix, base)
-        for run in sub.runs:
-            line.append_run(run)
-        out.append(line)
-    return out or [AnsiLine.of(prefix, base)]
-
-
-#: 行内单层标签中具备语义样式的标签集合
-_HTML_INLINE_SEMANTIC_TAGS: frozenset = frozenset({
-    "li", "dt", "dd", "figcaption", "caption", "source", "track",
-    "video", "audio", "iframe", "picture",
-})
-
-
-def split_inline_html_tag(text: str) -> tuple[str, str] | None:
-    """整行形如 ``<tag ...>内容</tag>`` 时返回 ``(tag, 内容)``，否则 None。"""
-    s = text.strip()
-    n = len(s)
-    if n < 4 or s[0] != '<' or s[1] == '/':
-        return None
-    j = 1
-    while j < n and (s[j].isalnum() or s[j] in '-:'):
-        j += 1
-    tag = s[1:j].lower()
-    if not tag:
-        return None
-    gt = s.find('>', j)
-    if gt < 0:
-        return None
-    close = f'</{tag}>'
-    low = s.lower()
-    if not low.endswith(close):
-        return None
-    return tag, s[gt + 1:n - len(close)]
+#
+# HTML 块渲染（标签说明表 / 内容行 / 空元素 / 控件 / 居中）全部位于
+# ``ansi._html_block``（单一真源）——本模块只负责 Markdown 块级元素，
+# 不再提供 HTML 兼容入口（避免两模块互相导入形成依赖环）。
 
 
 # ── Admonition ───────────────────────────────────────
@@ -655,8 +545,6 @@ __all__ = [
     "render_definition_item",
     "render_blockquote",
     "render_blockquote_line",
-    "render_html_block_open",
-    "render_html_block_line",
     "render_admonition",
     "render_admonition_head",
     "render_admonition_body",

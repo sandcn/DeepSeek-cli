@@ -46,6 +46,10 @@ def _extract_style_color(attr_text: str) -> str:
 # HTML void 元素（自闭合标签）集合（统一定义于 _block_helpers.py）
 from ._block_helpers import _VOID_HTML_TAGS
 
+# 原始内容标签（``<script>``/``<style>``/``<template>``/``<noscript>`` 等：
+# 行内出现时内容隐藏，避免脚本/样式源码混入正文）
+from ._html_attrs import RAW_TEXT_TAGS as _HTML_RAW_TEXT_TAGS
+
 
 class InlineHTMLMixin:
     """_InlineParser HTML 标签解析 Mixin。
@@ -171,6 +175,17 @@ class InlineHTMLMixin:
                 return None
             return TextNode(content=render_ruby_text(content))
 
+        # ── 原始内容标签：内容隐藏（``<script>``/``<style>`` 等不应显示）──
+        if not is_close and tag_name in _HTML_RAW_TEXT_TAGS:
+            self._skip_html_attrs()
+            if self._pos < self._n and self._text[self._pos] == '>':
+                self._pos += 1
+            content = self._parse_html_content(tag_name, depth)
+            if content is None:
+                self._pos = saved
+                return None
+            return TextNode(content='')
+
         # 非 void 标签：必须在 _HTML_TAG_MAP 中注册
         if tag_name not in _HTML_TAG_MAP:
             self._pos = saved
@@ -182,8 +197,10 @@ class InlineHTMLMixin:
 
         attr_start = self._pos
         self._skip_html_attrs()
+        # 属性区文本（``title`` / ``style`` / ``color`` 等属性提取共用）
+        attr_text = self._text[attr_start:self._pos].strip()
         # 提取 title 属性（用于 <abbr title="...">）
-        title = self._extract_attr(self._text[attr_start:self._pos].strip(), 'title')
+        title = self._extract_attr(attr_text, 'title')
 
         if self._pos >= self._n:
             self._pos = saved
@@ -205,14 +222,16 @@ class InlineHTMLMixin:
         node_cls, nestable = _HTML_TAG_MAP.get(tag_name, (None, False))
 
         if node_cls is None and nestable:
-            # 可嵌套但无节点类的标签（如 span）：递归解析内部格式标记
+            # 可嵌套但无节点类的标签（如 span/font/center）：递归解析内部格式标记
             children = self._parse_html_content_nested(tag_name, depth)
             if children is not None:
                 text = render_inline_to_text(children)
-                if tag_name == 'span':
-                    # ``<span style="color:red">`` → 彩色文本节点（颜色名/hex）
-                    color = _extract_style_color(
-                        self._text[attr_start:self._pos])
+                if tag_name in ('span', 'font'):
+                    # ``<span style="color:red">`` / ``<font color="red">``
+                    # → 彩色文本节点（颜色名 / #rrggbb；无颜色则透明）
+                    color = _extract_style_color(attr_text)
+                    if tag_name == 'font':
+                        color = self._extract_attr(attr_text, 'color') or color
                     if color:
                         return ColorTextNode(content=text, children=children,
                                              color=color)
@@ -231,7 +250,7 @@ class InlineHTMLMixin:
         else:
             content = self._parse_html_content(tag_name, depth)
             if content is not None:
-                if tag_name == 'abbr':
+                if tag_name in ('abbr', 'acronym'):
                     return AbbrNode(content=content, title=title)
                 return node_cls(content=content)
 

@@ -9,7 +9,10 @@ from __future__ import annotations
 import logging
 _logger = logging.getLogger(__name__)
 
-from ._utils import _get_fence_info, parse_highlight_lines, parse_linenos, parse_lineno_options
+from ._utils import (
+    _get_fence_info, parse_highlight_lines, parse_linenos, parse_lineno_options,
+    decode_html_entities,
+)
 from .types import Token, TokenType, RenderContext
 from ._table_utils import (
     _is_table_row, _is_table_data_row, _is_table_separator,
@@ -18,7 +21,7 @@ from ._table_utils import (
 from ._block_helpers import (
     _is_empty_line, _strip_left, _rstrip_line,
     _is_only_chars,
-    _BLOCK_HTML_TAGS,
+    _BLOCK_HTML_TAGS, _VOID_HTML_TAGS,
     _is_blockquote_line, _get_blockquote_text, _split_blockquote,
     _is_code_fence_line,
     _rstrip_trailing_hashes,
@@ -28,6 +31,7 @@ from ._block_parser_state import (
     _State, _ADMONITION_TYPES, _HTML_HEADING_LEVELS,
 )
 from ._block_parser_stream import _BlockParserStreamMixin
+from ._html_attrs import parse_open_tag, parse_attrs, language_of, align_of
 
 
 # ═══════════════════════════════════════════════════════════
@@ -87,6 +91,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # 预览缓冲因上限被丢弃的行数（省略提示需计入，见 _emit_code_line）
         self._preview_code_dropped: int = 0
         self._block_html_tag: str = ''
+        # ``<pre>`` 块语言（``class="language-x"`` 推断；进入块时重置）
+        self._html_pre_lang: str = ''
+        # 当前 HTML 块的开标签属性（``<ol start="3">`` 等结构化收集阶段使用）
+        self._html_block_attrs: dict = {}
         self._block_nested_fence: int = 0
         self._block_div_type: str = ''
 
@@ -2438,7 +2446,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         while i < len(lower) and (lower[i].isalnum() or lower[i] in '-:'):
             i += 1
         tag = lower[tag_start:i]
-        if tag and tag in _BLOCK_HTML_TAGS:
+        if tag and (tag in _BLOCK_HTML_TAGS or tag in _VOID_HTML_TAGS):
             return tag
         return None
 
@@ -2452,7 +2460,23 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._block_html_tag = tag
         self._html_lines = []
         self._html_depth = 1
+        # 开标签属性（``align`` / ``class`` / ``value``…）：渲染层据此做
+        # 居中 / 语言推断 / 进度条等语义化呈现（``_html_attrs`` 单一真源）。
+        _open_tag, html_attrs = parse_open_tag(line_content)
+        # 结构化收集阶段（``<ol start>`` 等）也要用到开标签属性
+        self._html_block_attrs = html_attrs
         heading_level = _HTML_HEADING_LEVELS.get(tag)
+        if tag in _VOID_HTML_TAGS and tag not in ('hr',):
+            # 空元素单行（``<img>`` / ``<input>`` / ``<source>`` / ``<track>``…）：
+            # 立即 OPEN+CLOSE（不进入 HTML_BLOCK 状态——空元素没有结束标签，
+            # 否则会把后续文档全部吞进本块）。标签后的剩余文本作为段落 Token
+            # 发射，保证内容不丢（``<img …> 说明``）。
+            tokens.append(Token(TokenType.HTML_BLOCK_OPEN, "",
+                                {"tag": tag, "attrs": html_attrs,
+                                 "tail": _after_open_tag_text(line_content)}))
+            tokens.append(Token(TokenType.HTML_BLOCK_CLOSE, "", {"tag": tag}))
+            self._state = _State.NORMAL
+            return
         if heading_level is not None:
             # ``<h1>``~``<h6>``：内容按 Markdown 标题语义渲染（不显示标签行）
             self._start_html_heading(tokens, line_content, heading_level)
@@ -2470,7 +2494,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             self._start_html_blockquote(tokens, line_content)
             return
         tokens.append(Token(TokenType.HTML_BLOCK_OPEN, "",
-                            {"tag": tag}))
+                            {"tag": tag, "attrs": html_attrs}))
         if not line_content:
             return
         line_text = line_content.rstrip('\n')
@@ -2511,8 +2535,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     self._state = _State.NORMAL
 
     #: 需要收集原始行整体解析的 HTML 块标签（``<table>`` → 框线表格；
-    #: ``<ul>``/``<ol>`` → 嵌套列表项）
-    _HTML_COLLECT_TAGS: frozenset = frozenset({'table', 'ul', 'ol'})
+    #: ``<ul>``/``<ol>`` → 嵌套列表项；``<dl>`` → 定义列表）
+    _HTML_COLLECT_TAGS: frozenset = frozenset({'table', 'ul', 'ol', 'dl'})
 
     def _feed_html_paragraph_line(self, stripped: str,
                                   tokens: list[Token]) -> None:
@@ -2570,12 +2594,15 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
     def _start_html_pre(self, tokens: list[Token],
                         line_content: str) -> None:
-        """``<pre>`` HTML 预格式化块 → 代码块（``lang=text``）。"""
+        """``<pre>`` HTML 预格式化块 → 代码块（语言由 ``class`` 推断）。"""
         text = (line_content or "").strip()
         if not text:
             return
         low = text.lower()
         if low.startswith('<pre'):
+            # 语言推断：``<pre class="language-python">`` 或内层
+            # ``<code class="language-python">``（无则回退 ``text``）。
+            self._html_pre_lang = _html_pre_language(text)
             gt = text.find('>')
             inner = text[gt + 1:] if gt >= 0 else ''
             close = inner.lower().find('</pre>')
@@ -2587,24 +2614,31 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return
         self._html_lines.append(text)
 
-    def _feed_html_pre_line(self, stripped: str, tokens: list[Token]) -> None:
-        """``<pre>`` 块内行 → 代码行缓冲（闭合时整块输出）。"""
+    def _feed_html_pre_line(self, raw_line: str, tokens: list[Token]) -> None:
+        """``<pre>`` 块内行 → 代码行缓冲（保留原始缩进；闭合时整块输出）。"""
+        line = raw_line.rstrip('\n')
         if self._html_depth <= 0:
             self._state = _State.NORMAL
-            close = stripped.lower().find('</pre>')
+            close = line.lower().find('</pre>')
             if close > 0:
-                self._html_lines.append(stripped[:close])
+                self._html_lines.append(line[:close])
             self._emit_html_pre_lines(self._html_lines, tokens)
             self._html_lines = []
             return
-        self._html_lines.append(stripped)
+        self._html_lines.append(line)
 
-    @staticmethod
-    def _emit_html_pre_lines(lines: list[str], tokens: list[Token]) -> None:
+    def _emit_html_pre_lines(self, lines: list[str], tokens: list[Token]) -> None:
         content = "\n".join(lines).strip('\n')
-        if content.strip():
-            tokens.append(Token(TokenType.CODE_BLOCK, content,
-                                {"lang": "text", "closed": True}))
+        if not content.strip():
+            return
+        lang = getattr(self, "_html_pre_lang", "") or _html_pre_language(content)
+        # ``<pre><code class="...">…</code></pre>``：剥离内层 ``<code>`` 标签
+        # （语言已从 class 提取），避免标签字面混入代码内容。
+        content = _strip_inline_code_tags(content)
+        # HTML 语义：``<pre>`` 内容中的实体解码（``&lt;`` → ``<``）
+        content = decode_html_entities(content)
+        tokens.append(Token(TokenType.CODE_BLOCK, content,
+                            {"lang": lang or "text", "closed": True}))
 
     def _start_html_blockquote(self, tokens: list[Token],
                                line_content: str) -> None:
@@ -2687,18 +2721,64 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         return True
 
     def _emit_html_structured(self, tokens: list[Token]) -> bool:
-        """结构化 HTML 块（表格 / 列表）→ 结构化 Token（成功返回 True）。"""
+        """结构化 HTML 块（表格 / 列表 / 定义列表）→ 结构化 Token（成功返回 True）。"""
         if self._block_html_tag == 'table':
             return self._emit_html_table(tokens)
         if self._block_html_tag in ('ul', 'ol'):
             return self._emit_html_list(tokens)
+        if self._block_html_tag == 'dl':
+            return self._emit_html_dl(tokens)
         return False
 
-    def _emit_html_list(self, tokens: list[Token]) -> bool:
-        """把收集的 ``<ul>`` / ``<ol>`` 行解析为带嵌套深度的 LIST_ITEM Token。"""
+    def _emit_html_dl(self, tokens: list[Token]) -> bool:
+        """把收集的 ``<dl>`` 行解析为 DEFINITION_ITEM Token（术语 + 定义）。
+
+        同一术语的多个 ``<dd>`` 共享术语（首个定义携带 ``term``，其余按续行
+        缩进渲染，与 Markdown 定义列表语义一致）。
+        """
         lines = self._html_lines
         self._html_lines = []
-        items = _parse_html_list_items("\n".join(lines), self._block_html_tag)
+        items = _parse_html_dl_items("\n".join(lines))
+        emitted = False
+        current_term = ""
+        for kind, text in items:
+            if kind == 'dt':
+                if current_term:
+                    # 上一个术语没有任何定义 → 单独输出术语行（不丢内容）
+                    tokens.append(Token(TokenType.DEFINITION_ITEM, "",
+                                        {"term": current_term}))
+                    emitted = True
+                current_term = text
+                continue
+            if not text:
+                continue
+            tokens.append(Token(TokenType.DEFINITION_ITEM, text,
+                                {"term": current_term}))
+            current_term = ""
+            emitted = True
+        if current_term:
+            tokens.append(Token(TokenType.DEFINITION_ITEM, "",
+                                {"term": current_term}))
+            emitted = True
+        return emitted
+
+    def _emit_html_list(self, tokens: list[Token]) -> bool:
+        """把收集的 ``<ul>`` / ``<ol>`` 行解析为带嵌套深度的 LIST_ITEM Token。
+
+        ``<ol start="3">`` 与 ``<li value="5">`` 的显式编号生效（无则从 1 开始）。
+        """
+        lines = self._html_lines
+        self._html_lines = []
+        start = None
+        if self._block_html_tag == 'ol':
+            raw_start = (getattr(self, "_html_block_attrs", None) or {}).get("start")
+            if raw_start:
+                try:
+                    start = int(str(raw_start).strip())
+                except ValueError:
+                    start = None
+        items = _parse_html_list_items("\n".join(lines), self._block_html_tag,
+                                       start=start)
         emitted = False
         for depth, ordered, number, text in items:
             if not text:
@@ -2713,12 +2793,17 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         return emitted
 
     def _emit_html_table(self, tokens: list[Token]) -> bool:
-        """把收集的 ``<table>`` HTML 行解析为 TABLE token（成功返回 True）。"""
+        """把收集的 ``<table>`` HTML 行解析为 TABLE token（成功返回 True）。
+
+        列对齐由 ``<td align=...>`` / ``style="text-align:..."`` 推断（显式对齐
+        优先，缺省左对齐）；``<caption>`` 转为表注 Token。
+        """
         if self._block_html_tag not in self._HTML_COLLECT_TAGS:
             return False
         lines = self._html_lines
         self._html_lines = []
         rows: list[list[str]] = []
+        row_aligns: list[list[str]] = []
         caption: str | None = None
         for raw in lines:
             cap = _extract_html_tag_text(raw, 'caption')
@@ -2729,6 +2814,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 cells = _extract_html_cells(tr)
                 if cells:
                     rows.append(cells)
+                    row_aligns.append(_extract_html_cell_aligns(tr))
         if not rows:
             return False
         ncols = len(rows[0])
@@ -2741,8 +2827,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             norm.append((r + [''] * ncols)[:ncols])
         if not norm:
             return False
+        alignments = ['left'] * ncols
+        for aligns in row_aligns:
+            for i, align in enumerate(aligns[:ncols]):
+                if align and alignments[i] == 'left':
+                    alignments[i] = align
         tokens.append(Token(TokenType.TABLE, "", {
-            "rows": norm, "alignments": ['left'] * ncols,
+            "rows": norm, "alignments": alignments,
         }))
         if caption:
             tokens.append(Token(TokenType.TABLE_CAPTION, caption))
@@ -3108,9 +3199,12 @@ def _iter_html_tag_blocks(text: str, tag: str):
         i = e + len(close_pat)
 
 
-def _extract_html_cells(tr_text: str) -> list[str]:
-    """提取 ``<tr>`` 内部的 ``<th>``/``<td>`` 单元格文本（保持文档顺序）。"""
-    cells: list[str] = []
+def _iter_html_cells(tr_text: str):
+    """逐个产出 ``<tr>`` 内的 ``(单元格文本, 属性文本)``（保持文档顺序）。
+
+    单元格文本为 ``<td>``/``<th>`` 的内部内容（未剥离行内标签，交由行内解析
+    器处理）；属性文本为该单元格开标签的属性区（供列对齐等语义使用）。
+    """
     low = tr_text.lower()
     i = 0
     n = len(tr_text)
@@ -3129,13 +3223,159 @@ def _extract_html_cells(tr_text: str) -> list[str]:
         gt = tr_text.find('>', s)
         if gt < 0:
             break
+        attrs = tr_text[s:gt + 1]
         close = low.find('</' + tag + '>', gt)
         if close < 0:
-            cells.append(tr_text[gt + 1:].strip())
+            yield tr_text[gt + 1:].strip(), attrs
             break
-        cells.append(tr_text[gt + 1:close].strip())
+        yield tr_text[gt + 1:close].strip(), attrs
         i = close + len(tag) + 3
-    return cells
+
+
+def _extract_html_cells(tr_text: str) -> list[str]:
+    """提取 ``<tr>`` 内部的 ``<th>``/``<td>`` 单元格文本（保持文档顺序）。"""
+    return [text for text, _attrs in _iter_html_cells(tr_text)]
+
+
+def _extract_html_cell_aligns(tr_text: str) -> list[str]:
+    """提取 ``<tr>`` 内每个单元格的列对齐（``align`` / ``style=text-align``）。
+
+    返回与 ``_extract_html_cells`` 等长的列表，未知对齐为空串（渲染层按左对齐）。
+    """
+    aligns: list[str] = []
+    for _text, attrs in _iter_html_cells(tr_text):
+        try:
+            aligns.append(align_of(parse_attrs(attrs)))
+        except Exception:
+            aligns.append("")
+    return aligns
+
+
+def _html_pre_language(text: str) -> str:
+    """从 ``<pre>`` / 内层 ``<code>`` 标签提取代码语言（无则空串）。
+
+    支持 ``<pre class="language-python">``、``<code class="lang-py">``、
+    ``<pre lang="js">`` 等写法（``_html_attrs.language_of`` 单一真源）。
+    """
+    low = text.lower()
+    for tag in ('code', 'pre'):
+        s = low.find('<' + tag)
+        while s >= 0:
+            after = s + 1 + len(tag)
+            if after >= len(low) or not (low[after].isalnum()
+                                         or low[after] in '-:'):
+                gt = text.find('>', s)
+                if gt < 0:
+                    break
+                try:
+                    _t, attrs = parse_open_tag(text[s:gt + 1])
+                except Exception:
+                    attrs = {}
+                lang = language_of(attrs)
+                if lang:
+                    return lang
+            s = low.find('<' + tag, after)
+    return ""
+
+
+def _after_open_tag_text(line: str) -> str:
+    """开标签后的剩余文本（``<img …> 说明`` → ``说明``；无则空串）。
+
+    属性值中的 ``>``（罕见）按首个 ``>`` 截断——与解析器其它 HTML 扫描口径
+    一致；空元素单行识别只关心标签后是否有可见文本。
+    """
+    s = (line or "").strip()
+    if not s.startswith("<"):
+        return ""
+    gt = s.find(">")
+    if gt < 0:
+        return ""
+    return s[gt + 1:].strip()
+
+
+def _strip_inline_code_tags(text: str) -> str:
+    """剥离 ``<pre>`` 内容中的行内 ``<code ...>`` / ``</code>`` 标签。
+
+    仅删除 **code** 标签本身（语言由 class 提前提取），其余行内标签原样保留
+    （由行内解析器处理），保证代码内容不被标签字面污染。
+    """
+    out: list[str] = []
+    low = text.lower()
+    i = 0
+    n = len(text)
+    while i < n:
+        s = low.find("<code", i)
+        c = low.find("</code>", i)
+        cands = [x for x in (s, c) if x >= 0]
+        if not cands:
+            out.append(text[i:])
+            break
+        x = min(cands)
+        out.append(text[i:x])
+        if x == c:
+            i = x + len("</code>")
+            continue
+        after = x + 5
+        if after < n and (low[after].isalnum() or low[after] in "-:_"):
+            out.append(text[x:after])
+            i = after
+            continue
+        gt = text.find(">", x)
+        if gt < 0:
+            out.append(text[x:])
+            break
+        i = gt + 1
+    return "".join(out)
+
+
+def _html_int_attr(raw_tag_text: str, name: str) -> int | None:
+    """从标签内文本提取整数属性（``<ol start="3">`` / ``<li value="5">``）。
+
+    属性不存在或非整数时返回 ``None``（调用方保持默认编号）。
+    """
+    if not raw_tag_text or name not in raw_tag_text.lower():
+        return None
+    try:
+        attrs = parse_attrs("<" + raw_tag_text + ">")
+        value = attrs.get(name)
+        if value is None or value == "":
+            return None
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_html_dl_items(text: str) -> list[tuple[str, str]]:
+    """解析 ``<dl>`` 内容 → ``[(kind, text)]``（``kind`` 为 ``dt`` / ``dd``）。
+
+    保持文档顺序；未闭合标签取其后的全部文本（内容不丢）。
+    """
+    items: list[tuple[str, str]] = []
+    low = text.lower()
+    i = 0
+    n = len(text)
+    while i < n:
+        s_dt = low.find('<dt', i)
+        s_dd = low.find('<dd', i)
+        cands = [x for x in (s_dt, s_dd) if x >= 0]
+        if not cands:
+            break
+        s = min(cands)
+        kind = 'dt' if s == s_dt else 'dd'
+        after = s + 3
+        if after < n and (low[after].isalnum() or low[after] in '-:'):
+            i = after
+            continue
+        gt = text.find('>', s)
+        if gt < 0:
+            break
+        close = low.find('</' + kind + '>', gt)
+        if close < 0:
+            items.append((kind, text[gt + 1:].strip()))
+            break
+        items.append((kind, text[gt + 1:close].strip()))
+        i = close + len(kind) + 3
+    return items
 
 
 def _extract_html_tag_text(text: str, tag: str) -> str | None:
@@ -3149,13 +3389,18 @@ def _extract_html_tag_text(text: str, tag: str) -> str | None:
 _HTML_LIST_STRUCT_TAGS: frozenset = frozenset({'ul', 'ol', 'li', 'dl', 'dt', 'dd'})
 
 
-def _parse_html_list_items(text: str, root_kind: str = 'ul'):
+def _parse_html_list_items(text: str, root_kind: str = 'ul', start: int | None = None):
     """把 HTML 列表块（``<ul>`` / ``<ol>``）解析为列表项序列。
 
     维护标签栈跟踪嵌套层级（``<ul>``/``<ol>`` 入栈 → 决定该层项目符号类型
     与深度），``<li>`` 开启列表项（其文本收集到下一个结构标签之前）。
     行内标签（``<b>``/``<a href>``/``<br>`` 等）与实体原样保留在文本中，
     由行内解析器处理——不丢失行内格式。
+
+    Args:
+        text: 收集到的 HTML 行（含标签）。
+        root_kind: 根列表类型（``ul`` / ``ol``）。
+        start: ``<ol start="n">`` 的起始编号（``None`` 为 1）。
 
     Returns:
         ``(depth, ordered, number, text)`` 元组序列（``depth`` 1-based）。
@@ -3220,7 +3465,9 @@ def _parse_html_list_items(text: str, root_kind: str = 'ul'):
         if name in ('ul', 'ol'):
             _flush()
             stack.append(name)
-            counters.append(0)
+            counters.append(
+                (start - 1) if (start is not None and name == root_kind
+                                and len(stack) == 1) else 0)
             cur_depth = len(stack)
             cur_ordered = name == 'ol'
         elif name == 'li':
@@ -3233,6 +3480,9 @@ def _parse_html_list_items(text: str, root_kind: str = 'ul'):
             in_item = True
             cur_depth = max(1, len(stack))
             cur_ordered = bool(stack) and stack[-1] == 'ol'
+            value = _html_int_attr(raw, 'value')
+            if value is not None and counters:
+                counters[-1] = value - 1
             if counters and cur_ordered:
                 counters[-1] += 1
         elif name == 'dt':

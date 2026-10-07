@@ -89,6 +89,8 @@ _STYLE_ABBR = Style(fg=220, underline=True, italic=True)
 _STYLE_CRIT_ADD = Style(fg=40, bg=22, bold=True)
 _STYLE_CRIT_DEL = Style(fg=203, dim=True)
 _STYLE_SMALL = Style(dim=True, italic=True)
+_STYLE_BIG = Style(bold=True)
+_STYLE_QUOTE = Style(fg=252, italic=True)
 _STYLE_WIKI = Style(fg=201, underline=True)
 _STYLE_COMMENT = Style(fg=240, dim=True, italic=True)
 _STYLE_IMAGE = Style(fg=201, dim=True)
@@ -434,6 +436,18 @@ def _emit_small(node, base, ctx, out, depth):
     _emit_children(node, _merge(base, _STYLE_SMALL), ctx, out, depth)
 
 
+def _emit_big(node, base, ctx, out, depth):
+    """``<big>`` 放大文本（终端无字号，用加粗近似）。"""
+    _emit_children(node, _merge(base, _STYLE_BIG), ctx, out, depth)
+
+
+def _emit_quoted(node, base, ctx, out, depth):
+    """``<q>`` 短引用：中文引号包裹内容（保留内部行内格式）。"""
+    _append(out, "\u300c", _merge(base, _STYLE_COMMENT))
+    _emit_children(node, _merge(base, _STYLE_QUOTE), ctx, out, depth)
+    _append(out, "\u300d", _merge(base, _STYLE_COMMENT))
+
+
 def _emit_color(node, base, ctx, out, depth):
     """着色文本：颜色名或 ``#rrggbb``（未知值回退白色）。"""
     name = (getattr(node, "color", "") or "").lower()
@@ -519,6 +533,8 @@ def _build_dispatch() -> dict:
         N.CriticCommentNode: _emit_critic_comment,
         N.CriticSubstitutionNode: _emit_critic_substitution,
         N.SmallTextNode: _emit_small,
+        N.BigTextNode: _emit_big,
+        N.QuotedNode: _emit_quoted,
         N.ColorTextNode: _emit_color,
         N.SubscriptNode: _emit_subscript,
         N.SuperscriptNode: _emit_superscript,
@@ -603,4 +619,35 @@ _FAST_ISDISJOINT = _make_fast_isdisjoint()
 _DISPATCH.update(_build_dispatch())
 
 
-__all__ = ["render_inline", "use_render_context", "current_render_context"]
+def inline_lines(text: str, base: Style | None = None) -> list["AnsiLine"]:
+    """行内文本 → 多行 ``AnsiLine``（按 ``\\n`` 拆行；连续换行合并）。
+
+    段落 / 告示 / 折叠块 / HTML 块的正文都可能含 ``<br>``（硬换行）或软换行
+    ——``render_inline`` 产出的 ``LineBreakNode`` 渲染为 ``"\\n"``，与段落自身
+    的软换行叠加会产生多余空行。此处把连续换行合并为一次换行（段落内不存在
+    有意义的空行，段落在空行处已断开）。
+
+    ``base`` 为基础样式（无行内格式的文本以此着色；None 用默认样式）。
+    """
+    from .helpers import AnsiLine
+    out: list[AnsiLine] = []
+    cur = AnsiLine()
+    for run in render_inline(text, base):
+        link = getattr(run, "link", None)
+        segs = (run.text or "").split("\n")
+        for i, seg in enumerate(segs):
+            if i > 0:
+                if cur.runs or not out:
+                    out.append(cur)
+                cur = AnsiLine()
+            if seg:
+                cur.append(seg, run.style, link)
+    if cur.runs or not out:
+        out.append(cur)
+    return out
+
+
+__all__ = [
+    "render_inline", "use_render_context", "current_render_context",
+    "inline_lines",
+]

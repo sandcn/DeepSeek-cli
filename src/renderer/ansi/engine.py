@@ -15,6 +15,7 @@ from . import table as _table
 from . import code as _code
 from . import math as _math
 from . import mermaid as _mermaid
+from . import _html_block
 from .helpers import AnsiLine, Run
 from .inline import use_render_context
 
@@ -52,6 +53,8 @@ class AnsiRenderEngine:
         #   FENCED_DIV_LINE）被直接丢弃，块内内容全部丢失、summary 也不显示。
         self._details: tuple | None = None
         self._fenced_div: tuple | None = None
+        # HTML 块渲染状态（``_html_block.HtmlBlockState``；CLOSE 时清理）
+        self._html_state = None
 
     def reset(self) -> None:
         """重置所有流式状态（close() 后调用）。"""
@@ -262,16 +265,28 @@ class AnsiRenderEngine:
                     meta["preview_dropped"] = dropped
                 return blocks.render_fenced_div(_StrToken(head_text, meta))
 
-            # HTML 块：弱化标签 + 内容行内渲染（保留行内格式 / 实体解码 / 注释隐藏）
+            # HTML 块：语义化标签行 + 内容行（控件/媒体/居中/原始内容隐藏）
             if t == TokenType.HTML_BLOCK_OPEN:
-                return blocks.render_html_block_open(token.meta.get("tag", "div"))
+                lines, self._html_state = _html_block.open_html_block(
+                    token.meta.get("tag", "div"),
+                    token.meta.get("attrs") or {}, self._width,
+                    token.meta.get("tail") or "")
+                return lines
             if t == TokenType.HTML_BLOCK_LINE:
-                if token.content:
-                    return blocks.render_html_block_line(
-                        token.content, token.meta.get("tag", ""))
-                return []
+                if not token.content:
+                    return []
+                state = self._html_state
+                if state is None:
+                    # 无 OPEN 的异常序列（如手工构造 Token）：按无状态语义渲染
+                    state = _html_block.HtmlBlockState(
+                        token.meta.get("tag", ""),
+                        token.meta.get("attrs") or {})
+                return _html_block.render_html_line(
+                    token.content, state, self._width)
             if t == TokenType.HTML_BLOCK_CLOSE:
-                return [AnsiLine.of("")]
+                lines = _html_block.close_html_block(self._html_state)
+                self._html_state = None
+                return lines
 
             _logger.debug("未处理 token 类型: %s", t)
             return []

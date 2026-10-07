@@ -157,6 +157,18 @@ class SmallTextNode(InlineNode):
 
 
 @dataclass
+class BigTextNode(InlineNode):
+    """放大文本节点 ``<big>text</big>``（终端以加粗近似）"""
+    pass
+
+
+@dataclass
+class QuotedNode(InlineNode):
+    """短引用节点 ``<q>text</q>``（渲染为中文引号包裹）"""
+    pass
+
+
+@dataclass
 class ColorTextNode(InlineNode):
     """彩色文本节点 {color:red}text{color}（可嵌套内联格式）"""
     color: str = ""  # 颜色名（如 red, green, blue, yellow, cyan, magenta）
@@ -207,7 +219,7 @@ _NESTABLE_TYPES = frozenset({
     BoldNode, ItalicNode, BoldItalicNode, UnderlineNode,
     StrikethroughNode, HighlightNode, SpoilerNode,
     CriticAdditionNode, CriticDeletionNode, CriticSubstitutionNode,
-    CriticCommentNode, SmallTextNode, ColorTextNode,
+    CriticCommentNode, SmallTextNode, BigTextNode, QuotedNode, ColorTextNode,
 })
 
 _HTML_TAG_MAP: dict[str, tuple[type[InlineNode], bool]] = {
@@ -238,13 +250,61 @@ _HTML_TAG_MAP: dict[str, tuple[type[InlineNode], bool]] = {
     'tt':     (InlineCodeNode, False),  # 电传打字 → 代码样式
     # 缩写（title 属性在解析器中提取）
     'abbr':   (AbbrNode, False),
-    'small':  (TextNode, False),    # 小号文本
-    'q':      (TextNode, False),    # 行内引用（提取文本，无引号）
+    'acronym': (AbbrNode, False),   # 旧式缩写标签，语义同 abbr
+    # 文本样式
+    'small':  (SmallTextNode, True),   # 小号文本（dim）
+    'big':    (BigTextNode, True),     # 放大文本（终端加粗近似）
+    'q':      (QuotedNode, True),      # 短引用（加引号）
     'time':   (TextNode, False),
     'data':   (TextNode, False),
     'bdo':    (TextNode, False),
-    # 特殊处理（span 在代码中单独处理）
-    'span':   (None, True),
+    # 透明容器（内容照常显示，仅结构含义）
+    'span':     (None, True),
+    'label':    (None, True),
+    'output':   (None, True),
+    'legend':   (None, True),
+    'bdi':      (None, True),
+    'nobr':     (None, True),
+    'blink':    (None, True),
+    'marquee':  (None, True),
+    'center':   (None, True),
+    'div':      (None, True),
+    'section':  (None, True),
+    'article':  (None, True),
+    'header':   (None, True),
+    'footer':   (None, True),
+    'main':     (None, True),
+    'aside':    (None, True),
+    'nav':      (None, True),
+    'address':  (None, True),
+    'figure':   (None, True),
+    'figcaption': (None, True),
+    'dialog':   (None, True),
+    'menu':     (None, True),
+    'form':     (None, True),
+    'fieldset': (None, True),
+    'option':   (None, True),
+    'optgroup': (None, True),
+    'textarea': (None, True),
+    'canvas':   (None, True),
+    'picture':  (None, True),
+    'iframe':   (None, True),
+    'video':    (None, True),
+    'audio':    (None, True),
+    'progress': (None, True),
+    'meter':    (None, True),
+    'summary':  (None, True),
+    'template': (None, True),
+    'noscript': (None, True),
+    'colgroup': (None, True),
+    'thead':    (None, True),
+    'tbody':    (None, True),
+    'tfoot':    (None, True),
+    'tr':       (None, True),
+    'td':       (None, True),
+    'th':       (None, True),
+    'caption':  (None, True),
+    'font':     (None, True),   # 颜色属性在解析器中提取（无颜色 → 透明）
 }
 
 

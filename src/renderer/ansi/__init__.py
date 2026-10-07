@@ -8,9 +8,12 @@
   engine.py  — AnsiRenderEngine（token → AnsiLine）
   inline.py  — 行内格式（粗体/斜体/行内码/链接）
   blocks.py  — 标题/列表/引用/告示/折叠块
+  _html_block.py — HTML 块语义化（原始内容隐藏 / 控件 / 居中 / 媒体行）
   code.py    — 代码块（pygments → 256 色）
   table.py   — 表格（wcswidth 对齐 + 框线）
   mermaid.py / math.py — 图表/公式终端渲染（_mermaid_render / _math_latex）
+  _math_box.py / _math_style.py / _math_letters.py / _math_cmds.py /
+  _math_env.py — 公式排版的布局原语 / 样式 / Unicode 字母族 / 命令 / 环境
   helpers.py — Run/AnsiLine 模型 + 换行/截断/ANSI→Style
 """
 

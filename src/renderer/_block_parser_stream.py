@@ -242,7 +242,8 @@ class _BlockParserStreamMixin:
                 self._feed_html_heading_line(stripped, tokens, heading_level)
                 return
             if self._block_html_tag == 'pre':
-                self._feed_html_pre_line(stripped, tokens)
+                # 代码块保留原始行（缩进有意义，不能传 stripped）
+                self._feed_html_pre_line(line, tokens)
                 return
             if self._block_html_tag == 'blockquote':
                 self._feed_html_blockquote_line(stripped, tokens)

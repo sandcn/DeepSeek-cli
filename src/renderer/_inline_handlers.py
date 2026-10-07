@@ -211,6 +211,8 @@ try:
         CriticSubstitutionNode as _CriticSubstitutionNode,
         CriticCommentNode as _CriticCommentNode,
         SmallTextNode as _SmallTextNode,
+        BigTextNode as _BigTextNode,
+        QuotedNode as _QuotedNode,
         ColorTextNode as _ColorTextNode,
         LineBreakNode as _LineBreakNode,
         WikiLinkNode as _WikiLinkNode,
@@ -351,6 +353,12 @@ def _render_color_text_node(self, n, ctx, d):
     return _style_children(self, n, ctx, d + 1, Style(color=color, bold=True))
 
 
+def _render_quoted_node(self, n, ctx, d):
+    """``<q>`` 短引用：内容两侧加中文引号（保留内部行内样式）。"""
+    inner = _style_children(self, n, ctx, d + 1, Style(color="bright_white", italic=True))
+    return Text("\u300c") + inner + Text("\u300d")
+
+
 def _render_wikilink_node(self, n, ctx, d):
     """WikiLinkNode 处理器：渲染为紫色虚线链接样式。
 
@@ -452,6 +460,10 @@ def _build_dispatch_table():
     d[_SmallTextNode] = lambda self, n, ctx, d: _style_children(
         self, n, ctx, d + 1, Style(dim=True, italic=True)
     )  # 小号文本：dim + 斜体
+    d[_BigTextNode] = lambda self, n, ctx, d: _style_children(
+        self, n, ctx, d + 1, Style(bold=True)
+    )  # ``<big>`` 放大文本：终端以粗体近似
+    d[_QuotedNode] = _render_quoted_node  # ``<q>`` 短引用：中文引号包裹
     d[_ColorTextNode] = _render_color_text_node  # 彩色文本：直接使用颜色名
     d[_CriticSubstitutionNode] = _render_critic_substitution_node
     d[_CriticCommentNode] = _render_critic_comment_node

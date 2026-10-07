@@ -86,7 +86,7 @@ _BLOCK_HTML_TAGS: frozenset[str] = frozenset({
     'details', 'summary', 'dialog',
     'template', 'canvas', 'noscript', 'script', 'style', 'address',
     'center', 'hr', 'video', 'audio', 'picture', 'iframe',
-    'progress', 'meter', 'menu',
+    'progress', 'meter', 'menu', 'svg', 'math',
 })
 
 # HTML 自闭合空标签（void elements）
