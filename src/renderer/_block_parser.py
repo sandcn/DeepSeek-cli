@@ -1055,9 +1055,14 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                             ref_id = ref_id[1:]
                             content = stripped[colon_pos + 2:].strip()
                             if ref_id and content:
+                                # ★ 只登记内容，**不**在预扫描阶段预入 fn_order——
+                                #   编号顺序的唯一真源是「引用出现顺序」（与流式增量
+                                #   渲染一致）。预扫描会在解析前就看到文档后部的定义，
+                                #   使一次性渲染 / 历史回放的编号退化为「定义顺序」，
+                                #   与流式生成时（引用先出现）的编号互换（同一文档
+                                #   两种渲染路径不一致）。未引用定义由
+                                #   ``_render_footnotes`` 末尾按字母序补列。
                                 self._ctx.fn_map[ref_id] = content
-                                if ref_id not in self._ctx.fn_order:
-                                    self._ctx.fn_order.append(ref_id)
             self._prescan_pos = pos
         except Exception:
             _logger.debug("_prescan_refs预扫描异常", exc_info=True)
@@ -3126,9 +3131,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
     def _handle_fn_def(self, fn_info: dict, tokens: list[Token]):
         ref_id = fn_info['ref_id']
         content = fn_info['content']
+        # ★ 只登记内容，不在定义处对 fn_order 定序——脚注编号顺序的唯一真源
+        #   是「引用出现顺序」（见 ``_prescan_refs`` 同名修复）。定义行在解析
+        #   时先于正文引用的**渲染**被处理，若在此处定序，一次性渲染 / 历史
+        #   回放的编号会退化为「定义顺序」，与流式增量渲染（引用先入序）编号
+        #   互换 → 同一文档两条路径不一致。未引用定义由文末列表按字母序补列。
         self._ctx.fn_map[ref_id] = content
-        if ref_id not in self._ctx.fn_order:
-            self._ctx.fn_order.append(ref_id)
         self._pending_fn_def = ref_id
 
     # ── 参考链接 ───────────────────────────────────────

@@ -269,7 +269,7 @@ class AnsiStreamRenderer:
             return list(render_toc(toc, self._width))
 
     def _refresh_preview(self) -> None:
-        """刷新未闭合块预览行（独立引擎，互不污染）。
+        """刷新未闭合块预览行（独立引擎 + 渲染状态回滚，互不污染）。
 
         解析器 ``peek_pending`` 返回当前未闭合状态的自包含 Token 序列；渲染为
         ``_preview_lines`` 供 UI 整体替换（块闭合后由 committed 行替换，预览清空）。
@@ -278,9 +278,27 @@ class AnsiStreamRenderer:
         引用/告示走 ``LinePreviewCache``（按行前缀 + 头部滑窗复用）——均不整块
         重渲染，消除长块流式期间每帧 O(预览行数) 的重复开销。其余 token 由
         独立预览引擎渲染（引擎状态隔离，不污染主引擎）。
+
+        ★ 渲染注册表回滚：预览与提交渲染共用 ``_ctx``，而预览会把**未完成行
+        片段**当正文渲染——例如脚注定义行 ``[^a]: ...`` 尚未收尾时，其头部
+        ``[^a]`` 被当作脚注引用渲染（``_emit_footnote`` 写 ``fn_order``），
+        导致提交渲染的脚注编号顺序被临时状态污染（流式编号与一次性渲染
+        不一致）。预览前后保存/恢复 ``fn_order``/``fn_map``，副作用不外泄。
         """
-        with use_render_context(self._ctx):
-            self._refresh_preview_impl()
+        ctx = self._ctx
+        fn_order = getattr(ctx, "fn_order", None)
+        fn_map = getattr(ctx, "fn_map", None)
+        saved_order = list(fn_order) if fn_order is not None else None
+        saved_map = dict(fn_map) if fn_map is not None else None
+        try:
+            with use_render_context(ctx):
+                self._refresh_preview_impl()
+        finally:
+            if fn_order is not None and saved_order is not None:
+                fn_order[:] = saved_order
+            if fn_map is not None and saved_map is not None:
+                fn_map.clear()
+                fn_map.update(saved_map)
 
     def _refresh_preview_impl(self) -> None:
         try:
@@ -299,14 +317,26 @@ class AnsiStreamRenderer:
             return
         eng = self._preview_engine
         eng.reset()
-        # 常见路径：单一预览 token → 直接采用其输出列表（免一次 O(行数) 复制）
-        if len(ptokens) == 1:
-            self._preview_lines = self._render_preview_token(ptokens[0], eng)
-            return
-        lines: list[AnsiLine] = []
-        for tok in ptokens:
-            lines.extend(self._render_preview_token(tok, eng))
-        self._preview_lines = lines
+        # ★ 预览渲染异常隔离：未闭合块预览是「额外显示」，其渲染失败**不得**
+        #   中断 ``write``（committed 行已产出并进入缓冲，异常向上传播会被
+        #   TUI 命令层捕获吞掉 → 本 chunk 的已渲染内容整段丢失）。异常时清空
+        #   预览（未闭合块本期不显示），下一帧重新尝试。
+        try:
+            # 常见路径：单一预览 token → 直接采用其输出列表（免一次 O(行数) 复制）
+            if len(ptokens) == 1:
+                self._preview_lines = self._render_preview_token(ptokens[0], eng)
+                return
+            lines: list[AnsiLine] = []
+            for tok in ptokens:
+                lines.extend(self._render_preview_token(tok, eng))
+            self._preview_lines = lines
+        except Exception:
+            import logging as _logging
+
+            _logging.getLogger(__name__).debug(
+                "预览渲染异常（清空预览，不影响 committed 行）", exc_info=True
+            )
+            self._clear_preview()
 
     def _list_block_preview(self) -> list[AnsiLine]:
         """列表项内块级容器（收集中的缩进块）的流式预览行。
