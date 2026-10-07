@@ -80,11 +80,16 @@ async def _save_loop_snapshot(session, chat_ui=None) -> None:
 
 
 def _exit_save_and_stop(session, chat_ui=None) -> None:
-    """退出前保存会话 + 停止 EscapeMonitor"""
+    """退出前保存会话并上屏恢复命令行 + 停止 EscapeMonitor。
+
+    ★ 空会话（仅有 system 消息/全新对话）也必须输出告别信息——修复前此处
+    以 ``if non_system:`` 守卫，无对话内容时什么都不打印（``_save_and_show_recover``
+    内部的「再见」分支因此永远不可达），用户执行 ``exit`` 后屏幕上看不到
+    任何退出提示。保存/恢复命令行由 ``_save_and_show_recover`` 内部判空处理
+    （无内容时不调用 ``session.save()``），此处无条件调用即可。
+    """
     try:
-        non_system = _non_system_messages(session)
-        if non_system:
-            _save_and_show_recover(session, chat_ui)
+        _save_and_show_recover(session, chat_ui)
     except Exception:
         _logger.debug("退出前保存会话失败（非关键）")
     from ..api.escape_monitor import stop_active_monitor

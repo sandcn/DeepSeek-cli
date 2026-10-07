@@ -151,8 +151,13 @@ class SessionPersistenceManager:
             except Exception:
                 _logger.debug("会话日志恢复失败，回退消息列表", exc_info=True)
 
+        # ★ 消息视图（log 恢复路径经 _set_log → _rebind_log 原地重绑同一列表对象，
+        #   故此处统一取一次引用即对两种恢复路径均有效）——修复前该赋值仅存在于
+        #   「非 log 恢复」分支，log 恢复（restored=True，当前会话文件的常规路径）
+        #   时下方 gauge 引用未绑定变量 → UnboundLocalError，导致 --load 启动
+        #   直接崩溃、退出时无法打印恢复命令行。
+        messages = self._get_messages()
         if not restored:
-            messages = self._get_messages()
             system_msgs = [m for m in messages if m.get(_ROLE_KEY) == _SYSTEM_ROLE]
             messages[:] = system_msgs
             for msg in loaded_msgs:

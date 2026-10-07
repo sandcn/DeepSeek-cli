@@ -1368,6 +1368,14 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                         except Exception:
                             _logger.debug("应用命令前刷新 model.width 异常", exc_info=True)
                     self._apply_commands(commands)
+                    # ★ BUG（2026-10-07 空闲帧复用引入）：命令即模型变更，必须
+                    #   置脏——``_should_render`` 据此落位 ``_idle_ok=False``，
+                    #   禁止本拍复用上一帧。修复前命令在 DRAIN_COMMANDS 阶段已
+                    #   出队（``_should_reuse_idle_frame`` 的「队列非空」判据随之
+                    #   失效）、``_dirty`` 又未被置位 → 静态状态下应用的单条命令
+                    #   被陈旧帧吞掉（退出提示「再见 恢复: …」、通知等永不显示；
+                    #   其余场景靠输入回显/系统统计的偶发置脏才延迟补渲）。
+                    self._dirty = True
                 phase = RenderLoopPhase.RENDER
             elif phase is RenderLoopPhase.RENDER:
                 # 渲染与失败处理（锁外）：渲染失败退避 sleep 不持有输出锁

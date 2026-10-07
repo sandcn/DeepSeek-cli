@@ -139,6 +139,75 @@ def test_app_predicate_static_and_active_states():
     assert predicate() is False
 
 
+def _make_command_session(build_calls: list) -> InkSession:
+    """构造带命令应用回调的会话（模型支持 append_committed）。"""
+    from src.tui.app.apply import apply_cmd
+
+    class _Model(_SimpleModel):
+        def __init__(self):
+            self.committed_lines: list = []
+
+        def append_committed(self, kind, lines):
+            self.committed_lines.extend(lines)
+            return None
+
+    model = _Model()
+
+    def _build_tree(m, w):
+        build_calls.append(1)
+        return h(TEXT, {"children": "x"})
+
+    return InkSession(
+        model=model,
+        apply_cmd=apply_cmd,
+        build_tree=_build_tree,
+        stream=io.StringIO(),
+        width_cache=TerminalWidthCache(),
+        config=TuiConfig.defaults(),
+    )
+
+
+def test_applied_command_forces_rebuild_instead_of_stale_reuse():
+    """命令应用拍必须重建组件树（不得复用陈旧帧）。
+
+    回归场景：``--load`` 启动后输入 ``exit``，退出提示「再见 恢复: …」经
+    ``write_line``（WRITE_LINE 命令）投递——修复前命令在 DRAIN_COMMANDS
+    阶段已出队（空闲帧复用的「队列非空」判据失效），``_dirty`` 又未置位 →
+    本拍复用上一帧，提示行永不渲染（进程随即退出）。
+    """
+    from src.tui._const import WriteLineCmd
+
+    calls: list = []
+    session = _make_command_session(calls)
+    session.set_idle_frame_predicate(lambda: True)
+
+    session._drain_queue()            # 首帧：无上一帧 → 重建
+    first = len(calls)
+    assert first == 1
+
+    session._drain_queue()            # 空闲拍：复用上一帧（不重建）
+    assert len(calls) == first, "空闲拍不应重建组件树"
+
+    session.push_cmd(WriteLineCmd(text="hello-command"))
+    session._drain_queue()            # 命令应用拍：模型变更 → 必须重建
+
+    assert len(calls) > first, "命令应用后复用了陈旧帧（提示行不会渲染）"
+    assert session._model.committed_lines, "命令未应用到模型"
+
+
+def test_stale_frame_reuse_regression_guard_without_command():
+    """无命令的空闲拍仍复用（确认重建只由模型变更触发，不误伤性能优化）。"""
+    calls: list = []
+    session = _make_command_session(calls)
+    session.set_idle_frame_predicate(lambda: True)
+
+    session._drain_queue()
+    session._drain_queue()
+    session._drain_queue()
+
+    assert len(calls) == 1
+
+
 def test_placeholder_fading_detection():
     from src.tui._assembly_steps import _placeholder_fading
 
