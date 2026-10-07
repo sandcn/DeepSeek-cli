@@ -32,6 +32,7 @@ _STYLE_DIM = Style(fg=244)
 _STYLE_TITLE = Style(fg=110, bold=True)
 _STYLE_HIGHLIGHT_BG = Style(fg=221)
 _STYLE_OMITTED = Style(fg=238)
+_STYLE_LINENO = Style(fg=240, dim=True)
 
 _CODE_THEME = "monokai"
 
@@ -113,6 +114,8 @@ def highlight_code_lines(
     theme: str = _CODE_THEME,
     highlight_lines: list[int] | None = None,
     start_index: int = 1,
+    linenos: bool = False,
+    total_lines: int | None = None,
 ) -> list[AnsiLine]:
     """逐行高亮代码（不含围栏/标题），返回 AnsiLine 列表。
 
@@ -122,6 +125,8 @@ def highlight_code_lines(
         theme: pygments 主题名。
         highlight_lines: 需高亮的行号（1-based，相对 ``start_index``）。
         start_index: 首行对应的逻辑行号（供流式预览增量渲染时续接行号）。
+        linenos: 是否输出行号前缀（``{.numberLines}`` / ``{linenos}``）。
+        total_lines: 逻辑总行数（决定行号列宽；None 时按 ``lines`` 推断）。
 
     Returns:
         与 ``lines`` 等长的 AnsiLine 列表。
@@ -134,6 +139,11 @@ def highlight_code_lines(
     lexer = get_lexer(lang) if lang and lang != "text" else None
     hl = set(highlight_lines or [])
     pyg_style = get_code_style(theme) if lexer is not None else None
+    if linenos:
+        total = total_lines if total_lines else start_index + len(lines) - 1
+        num_width = max(2, len(str(max(total, 1))))
+    else:
+        num_width = 0
     out: list[AnsiLine] = []
     for offset, src_line in enumerate(lines):
         idx = start_index + offset
@@ -149,8 +159,18 @@ def highlight_code_lines(
             aline = AnsiLine.of(src_line, _STYLE_DIM)
         if idx in hl:
             aline = _apply_highlight(aline)
+        if num_width:
+            aline = _prepend_line_number(aline, idx, num_width)
         out.append(aline)
     return out
+
+
+def _prepend_line_number(line: AnsiLine, idx: int, width: int) -> AnsiLine:
+    """在行首插入右对齐行号前缀（dim 样式，宽字符行号列固定宽度）。"""
+    aline = AnsiLine.of(f"{idx:>{width}} ", _STYLE_LINENO)
+    for run in line.runs:
+        aline.append_run(run)
+    return aline
 
 
 def render_fence_line(lang: str = "") -> AnsiLine:
@@ -186,6 +206,7 @@ def render_code_block(
     title: str = "",
     closed: bool = True,
     continuation: bool = False,
+    linenos: bool = False,
 ) -> list[AnsiLine]:
     """渲染代码块（含标题栏与围栏）为 AnsiLine 列表。
 
@@ -199,6 +220,7 @@ def render_code_block(
             伪造的关闭围栏（```）。
         continuation: 是否为「被强制刷出的续段」——True 时不重复渲染标题栏
             与打开围栏（逻辑上仍是同一个代码块，仅因缓冲上限分段输出）。
+        linenos: 是否输出行号前缀（``{.numberLines}`` / ``{linenos}``）。
 
     Returns:
         渲染后的行列表。
@@ -209,7 +231,10 @@ def render_code_block(
     if not continuation:
         out.append(render_fence_line(lang))
     lines = source.split("\n") if source else []
-    out.extend(highlight_code_lines(lines, lang, theme, highlight_lines))
+    out.extend(highlight_code_lines(
+        lines, lang, theme, highlight_lines, linenos=linenos,
+        total_lines=len(lines),
+    ))
     if closed:
         out.append(render_close_fence_line())
     return out

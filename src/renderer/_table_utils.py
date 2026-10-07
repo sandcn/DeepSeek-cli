@@ -8,11 +8,6 @@ from __future__ import annotations
 from ._block_helpers import _has_only_chars
 
 
-# ── 安全性常量 ──────────────────────────────────────────
-
-_SAFE_SENTINEL = '\uffffPIPE\uffff'
-
-
 # ── 表格检测函数 ───────────────────────────────────────
 
 def _is_table_row(stripped: str) -> bool:
@@ -82,16 +77,58 @@ def _is_table_separator(stripped: str) -> bool:
     return True
 
 
+def _split_table_cells(s: str) -> list[str]:
+    """按分隔 pipe 切分表格行单元格（跳过转义与行内代码 span 内的 ``|``）。
+
+    GFM 允许单元格内容通过反斜杠转义 ``\\|`` 或行内代码 ``` `a|b` ``` 携带
+    字面管道；朴素 ``split('|')`` 会把它们当作列分隔，导致列数错乱、表格
+    结构被撕裂（如 ``| `x|y` | 2 |`` 被切成 3 列）。此处按字符扫描：转义
+    管道直接并入缓冲；进入/退出反引号代码 span（按反引号连续个数配对，
+    与 ``_InlineParser._try_inline_code`` 同一规则）期间管道不作为分隔符。
+    """
+    cells: list[str] = []
+    buf: list[str] = []
+    i = 0
+    n = len(s)
+    code_delim = 0
+    while i < n:
+        ch = s[i]
+        if ch == '\\' and i + 1 < n and s[i + 1] == '|':
+            buf.append('|')
+            i += 2
+            continue
+        if ch == '`':
+            j = i
+            while j < n and s[j] == '`':
+                j += 1
+            run = j - i
+            if code_delim == 0:
+                code_delim = run
+            elif run == code_delim:
+                code_delim = 0
+            buf.append(s[i:j])
+            i = j
+            continue
+        if ch == '|' and code_delim == 0:
+            cells.append(''.join(buf).strip())
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    cells.append(''.join(buf).strip())
+    return cells
+
+
 def _parse_table_row(row_str: str) -> list[str]:
-    """解析表格行为单元格列表。"""
+    """解析表格行为单元格列表（转义/行内代码内的 ``|`` 不参与切分）。"""
     s = row_str.strip()
-    if s.startswith('|'):
-        s = s[1:]
-    if s.endswith('|'):
-        s = s[:-1]
-    s = s.replace('\\|', _SAFE_SENTINEL)
-    cells = [c.strip() for c in s.split('|')]
-    cells = [c.replace(_SAFE_SENTINEL, '|') for c in cells]
+    cells = _split_table_cells(s)
+    # 去掉行首/行尾边框产生的空段（``|`` 作为行首/行尾）
+    if cells and cells[0] == '':
+        cells.pop(0)
+    if cells and cells[-1] == '':
+        cells.pop()
     return cells
 
 

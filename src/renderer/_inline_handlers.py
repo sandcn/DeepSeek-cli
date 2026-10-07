@@ -353,7 +353,7 @@ def _build_dispatch_table():
     d = {}
     d[_TextNode] = _text_node_handler
     d[_KbdNode] = lambda self, n, ctx, d: Text(
-        f" ⌨{n.content} ",
+        f" {n.content} ",
         style=Style(color="bright_white", bgcolor="grey30", bold=True),
     )
     d[_InlineCodeNode] = _inline_code_handler

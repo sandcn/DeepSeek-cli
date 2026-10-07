@@ -7,11 +7,40 @@ from __future__ import annotations
 
 from .inline_nodes import (
     InlineNode, TextNode, LineBreakNode, ImageNode,
-    AbbrNode, LinkNode,
+    AbbrNode, ColorTextNode, LinkNode,
     _HTML_TAG_MAP,
     render_inline_to_text,
 )
 from ._utils import decode_html_entities
+
+
+def _extract_style_color(attr_text: str) -> str:
+    """从 HTML ``style="..."`` 属性提取 ``color`` 值（小写；无则空串）。
+
+    仅识别独立的 ``color`` 声明（``background-color`` / ``-color`` 等前缀不
+    算）；值支持颜色名（``red``）与 ``#rrggbb``（渲染层转换为 256 色）。
+    """
+    if not attr_text:
+        return ''
+    low = attr_text.lower()
+    i = low.find('color')
+    while i >= 0:
+        prev_ok = i == 0 or not (low[i - 1].isalnum() or low[i - 1] in '-_')
+        j = i + 5
+        while j < len(low) and low[j].isspace():
+            j += 1
+        if prev_ok and j < len(low) and low[j] == ':':
+            j += 1
+            while j < len(low) and low[j].isspace():
+                j += 1
+            k = j
+            while k < len(low) and (low[k].isalnum() or low[k] in '#(),%.-'):
+                k += 1
+            value = low[j:k].strip()
+            if value:
+                return value
+        i = low.find('color', i + 5)
+    return ''
 
 
 # HTML void 元素（自闭合标签）集合（统一定义于 _block_helpers.py）
@@ -180,6 +209,13 @@ class InlineHTMLMixin:
             children = self._parse_html_content_nested(tag_name, depth)
             if children is not None:
                 text = render_inline_to_text(children)
+                if tag_name == 'span':
+                    # ``<span style="color:red">`` → 彩色文本节点（颜色名/hex）
+                    color = _extract_style_color(
+                        self._text[attr_start:self._pos])
+                    if color:
+                        return ColorTextNode(content=text, children=children,
+                                             color=color)
                 return TextNode(content=text)
             self._pos = saved
             return None

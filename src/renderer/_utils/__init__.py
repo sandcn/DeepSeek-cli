@@ -31,6 +31,7 @@ from ._display import (
 from ._highlight import (
     _code_style_cache,
     parse_highlight_lines,
+    parse_linenos,
     get_code_style,
 )
 

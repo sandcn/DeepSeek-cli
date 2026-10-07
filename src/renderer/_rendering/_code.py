@@ -64,14 +64,15 @@ def render_code_fence_close(indented: bool = False) -> Text:
 
 
 def render_code_block_syntax(source: str, lang: str, code_theme: str,
-                              highlight_lines: list[int] | None = None) -> Text | Syntax:
+                              highlight_lines: list[int] | None = None,
+                              linenos: bool = False) -> Text | Syntax:
     """使用 Rich Syntax 整块高亮代码。失败时降级为纯文本。"""
     try:
         return Syntax(
             source,
             lang,
             theme=get_code_style(code_theme),
-            line_numbers=False,
+            line_numbers=linenos,
             highlight_lines=set(highlight_lines or []),
             word_wrap=False,
             background_color="default",

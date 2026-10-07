@@ -131,6 +131,24 @@ def render_paragraph_line(text: str) -> AnsiLine:
 # ── 列表 ─────────────────────────────────────────────
 
 
+def _parse_list_heading(text: str) -> tuple[int, str] | None:
+    """列表项内容形如 ATX 标题（``# 标题``）→ ``(level, 文本)``，否则 None。"""
+    s = text.lstrip()
+    if not s.startswith('#'):
+        return None
+    level = 0
+    i = 0
+    while i < len(s) and s[i] == '#':
+        level += 1
+        i += 1
+    if not (1 <= level <= 6) or i >= len(s) or s[i] != ' ':
+        return None
+    body = s[i + 1:].strip()
+    while body.endswith('#'):
+        body = body[:-1].rstrip()
+    return level, body
+
+
 def render_list_item(token) -> list[AnsiLine]:
     meta = token.meta
     depth = int(meta.get("depth", 1))
@@ -173,7 +191,13 @@ def render_list_item(token) -> list[AnsiLine]:
             cstyle = _STYLE_TODO_UNCHECKED
         line.append(checkbox + " ", cstyle)
         content = stripped[4:].lstrip() if len(stripped) > 4 else ""
-    sub_lines = _inline_lines(content)
+    # 列表项内的 ATX 标题（``- # 标题``）：内容按标题样式渲染，去掉 ``#``
+    heading = _parse_list_heading(content)
+    if heading is not None:
+        level, body = heading
+        sub_lines = _inline_lines(body, _HEADING_STYLES[min(level, 6) - 1])
+    else:
+        sub_lines = _inline_lines(content)
     first = sub_lines[0] if sub_lines else AnsiLine()
     for run in first.runs:
         line.append_run(run)
@@ -192,6 +216,9 @@ def render_definition_item(token) -> list[AnsiLine]:
     first = sub_lines[0] if sub_lines else AnsiLine()
     if term:
         line = AnsiLine.of(f"{term}: ", _STYLE_DEF_TERM)
+    elif token.meta.get("continuation"):
+        # 定义续段（空行后的缩进段落）→ 对齐定义内容列
+        line = AnsiLine.of("    ", _STYLE_BQ)
     else:
         # 同一术语的后续定义（无 term）→ 缩进续行，不再重复 ``term:``
         line = AnsiLine.of("  ", _STYLE_BQ)
@@ -373,22 +400,25 @@ def render_admonition(token) -> list[AnsiLine]:
     """告示块渲染：``■ TYPE [title]`` 头 + 缩进正文。
 
     支持 src parser 两种来源：
-      - 引用风格 ``> [!NOTE]``：content 首行为正文首行；
+      - 引用风格 ``> [!NOTE]``：``meta["head_text"]`` 为 ``[!TYPE]`` 同行
+        文本（头部标题），``content`` 为正文行；
       - Fenced 风格 ``!!! note "标题"``（meta ``title`` / ``collapsible``）：
-        content 为全部正文行，标题在 meta 中（有标题时正文不再抢占头行）。
+        ``content`` 为全部正文行，标题在 meta 中。
+
+    未提供 ``head_text``（旧契约）时回退「首行作头部标题」语义。
     """
     atype = str(token.meta.get("type", "NOTE")).upper()
     title = str(token.meta.get("title", "") or "")
     collapsible = bool(token.meta.get("collapsible", False))
-    parts = str(token.content).split("\n")
-    if not parts:
-        parts = [""]
-    if title:
-        head = render_admonition_head(atype, "", title=title, collapsible=collapsible)
-        body_lines = parts
-    else:
-        head = render_admonition_head(atype, parts[0], collapsible=collapsible)
+    parts = str(token.content).split("\n") if token.content else []
+    head_text = token.meta.get("head_text", None)
+    if head_text is None:
+        head_text = parts[0] if parts else ""
         body_lines = parts[1:]
+    else:
+        body_lines = parts
+    head = render_admonition_head(atype, str(head_text or ""),
+                                  title=title, collapsible=collapsible)
     lines: list[AnsiLine] = [head]
     lines.extend(_preview_omitted(token.meta))
     for seg in body_lines:
@@ -474,6 +504,17 @@ def _preview_omitted(meta) -> list[AnsiLine]:
 # ── FencedDiv ────────────────────────────────────────
 
 
+def render_fenced_div_head(dtype: str, text: str = "") -> AnsiLine:
+    """Fenced Div 头行（``▪ TYPE 文本``；供容器正文嵌套渲染使用）。"""
+    dtype = str(dtype).upper()
+    color = _ADMONITION_COLORS.get(dtype, _STYLE_LIST_BULLET)
+    head = AnsiLine.of(f"\u25aa {dtype} ", color)
+    if text:
+        for run in render_inline(str(text)):
+            head.append_run(run)
+    return head
+
+
 def render_fenced_div(token) -> list[AnsiLine]:
     """Fenced Div（``:::type``）：``▪ TYPE`` 头 + 逐行缩进正文。
 
@@ -481,11 +522,7 @@ def render_fenced_div(token) -> list[AnsiLine]:
     丢弃——仅显示容器头。现支持 meta["body_lines"]（正文行列表，缩进渲染）。
     """
     dtype = str(token.meta.get("type", "NOTE")).upper()
-    color = _ADMONITION_COLORS.get(dtype, _STYLE_LIST_BULLET)
-    head = AnsiLine.of(f"\u25aa {dtype} ", color)
-    if token.content:
-        for run in render_inline(str(token.content)):
-            head.append_run(run)
+    head = render_fenced_div_head(dtype, token.content or "")
     lines = [head]
     lines.extend(_preview_omitted(token.meta))
     for seg in (token.meta.get("body_lines") or []):
@@ -521,6 +558,7 @@ __all__ = [
     "render_details",
     "render_details_head",
     "render_fenced_div",
+    "render_fenced_div_head",
     "render_front_matter",
     "render_table_caption",
     "render_empty_line",

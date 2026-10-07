@@ -29,7 +29,7 @@ import logging
 from abc import ABC, abstractmethod
 
 from .types import Token, TokenType, RenderContext
-from ._utils import parse_highlight_lines
+from ._utils import parse_highlight_lines, parse_linenos
 _logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════
@@ -155,13 +155,17 @@ class CodeBlockBatcher(TokenFilter):
             "attrs": attrs,
             "title": meta.get("title", ""),
             "highlight_lines": parse_highlight_lines(attrs),
+            "linenos": parse_linenos(attrs),
             "continuation": self._block_continuation,
             "closed": closed,
         }
-        # 保留引用块深度（引用内的代码块需带 ``│`` 前缀渲染）
+        # 保留引用块深度（引用内的代码块需带 ``│`` 前缀渲染）与列表项缩进
+        # （列表项内代码块需对齐列表内容列；0 为合法值，须按存在性判断）
         bq_depth = meta.get("bq_depth", 0)
         if bq_depth:
             out_meta["bq_depth"] = bq_depth
+        if "list_indent" in meta:
+            out_meta["list_indent"] = meta.get("list_indent", 0)
         return Token(TokenType.CODE_BLOCK, "\n".join(lines), out_meta)
 
     def _flush_segment(self, result: list[Token], lines: list[str],

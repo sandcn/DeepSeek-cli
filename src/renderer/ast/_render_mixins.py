@@ -42,7 +42,7 @@ from .._rendering import (
     split_by_br, render_code_title_bar,
     render_html_block_open, render_html_block_close,
 )
-from .._utils import cjk_display_width, parse_highlight_lines
+from .._utils import cjk_display_width, parse_highlight_lines, parse_linenos
 
 from .types import ASTNode, NodeType
 
@@ -205,6 +205,7 @@ class _BlockRenderingMixin:
         title = node.meta.get("title", "")
         attrs = node.meta.get("attrs", "")
         highlight_lines = parse_highlight_lines(attrs)
+        linenos = parse_linenos(attrs)
         indented = node.meta.get("indented", False)
 
         if title:
@@ -214,7 +215,9 @@ class _BlockRenderingMixin:
 
         self._output.write(render_code_fence_open(lang, indented, attrs))
 
-        syntax = render_code_block_syntax(source, lang, self._code_theme, highlight_lines)
+        syntax = render_code_block_syntax(
+            source, lang, self._code_theme, highlight_lines, linenos=linenos,
+        )
         self._output.write(syntax)
         if isinstance(syntax, Syntax):
             self._output.write_line()

@@ -28,13 +28,49 @@ def _cell_runs(text: str, style) -> list[Run]:
     return render_inline(text, style)
 
 
+def _split_runs_newlines(runs: list[Run]) -> list[list[Run]]:
+    """把 Run 序列按换行符拆成多段（每段不含 ``\\n``）。
+
+    ``<br>``（``LineBreakNode``）在单元格内渲染为 ``"\\n"`` run；若原样交给
+    ``_wrap_runs``，换行符会被当作宽度 0 的普通字符写进同一行，``AnsiLine``
+    输出含裸换行 → 表格框线被撕裂（单元格内容溢出到下一物理行）。此处先按
+    换行切分，每段独立测宽/wrap，再由 ``_render_row_runs`` 合并为多行单元格。
+    """
+    parts: list[list[Run]] = [[]]
+    for run in runs:
+        text = run.text or ""
+        if not text:
+            continue
+        if "\n" not in text:
+            parts[-1].append(run)
+            continue
+        segs = text.split("\n")
+        for i, seg in enumerate(segs):
+            if i > 0:
+                parts.append([])
+            if seg:
+                parts[-1].append(Run(seg, run.style))
+    # 去掉尾部空段（内容以换行结尾时不留多余空行），至少保留一段
+    while len(parts) > 1 and not parts[-1]:
+        parts.pop()
+    return parts
+
+
+def _cell_runs_width(runs: list[Run]) -> int:
+    """单元格 runs 的显示宽度（含换行时取各段最大宽度）。"""
+    parts = _split_runs_newlines(runs)
+    if len(parts) == 1:
+        return sum(r.width for r in parts[0])
+    return max((sum(r.width for r in seg) for seg in parts), default=0)
+
+
 def _cell_widths_runs(rows, style) -> list[int]:
     """计算每列显示宽度（按渲染后文本宽度，样式不影响宽度）。"""
     ncols = max(map(len, rows), default=1)
     widths = [0] * ncols
     for row in rows:
         for i in range(min(ncols, len(row))):
-            w = sum(r.width for r in _cell_runs(row[i], style))
+            w = _cell_runs_width(_cell_runs(row[i], style))
             if w > widths[i]:
                 widths[i] = w
     return widths
@@ -42,7 +78,7 @@ def _cell_widths_runs(rows, style) -> list[int]:
 
 def _row_cell_widths(row, style) -> list[int]:
     """单行的各单元格显示宽度（增量列宽计算用，避免每帧重算历史行）。"""
-    return [sum(r.width for r in _cell_runs(cell, style)) for cell in row]
+    return [_cell_runs_width(_cell_runs(cell, style)) for cell in row]
 
 
 def _shrink_widths(widths: list[int], max_total: int, ncols: int) -> list[int]:
@@ -126,12 +162,21 @@ def _pad_runs(runs: list[Run], width: int, align: str, style) -> list[Run]:
 
 
 def _render_row_runs(cells, widths, aligns, style) -> list[AnsiLine]:
-    """渲染数据行：单元格 runs 按列宽 wrap → 多行（每行带 ``│`` 边框）。"""
+    """渲染数据行：单元格 runs 按列宽 wrap → 多行（每行带 ``│`` 边框）。
+
+    单元格内 ``<br>``（换行）先按段拆分再逐段 wrap，段与段之间保留为独立的
+    单元格行——单元格内容不会带裸换行溢出框线之外。
+    """
     ncols = len(widths)
-    wrapped = [
-        _wrap_runs(_cell_runs(cells[i] if i < len(cells) else "", style), widths[i])
-        for i in range(ncols)
-    ]
+    wrapped: list[list[list[Run]]] = []
+    for i in range(ncols):
+        runs = _cell_runs(cells[i] if i < len(cells) else "", style)
+        col_lines: list[list[Run]] = []
+        for seg in _split_runs_newlines(runs):
+            col_lines.extend(_wrap_runs(seg, widths[i]))
+        if not col_lines:
+            col_lines = [[]]
+        wrapped.append(col_lines)
     max_lines = max(map(len, wrapped), default=1)
     out: list[AnsiLine] = []
     for li in range(max_lines):

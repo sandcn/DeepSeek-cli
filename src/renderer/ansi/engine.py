@@ -63,9 +63,12 @@ class AnsiRenderEngine:
         """渲染单个 token（在渲染上下文中，供脚注/参考链接/缩写解析）。"""
         with use_render_context(self._ctx):
             lines = self._render_impl(token)
+        list_indent = _token_list_indent(token)
+        if list_indent is not None and lines:
+            lines = _apply_list_prefix(lines, list_indent)
         depth = _token_bq_depth(token)
         if depth > 0 and lines:
-            _apply_bq_prefix(lines, depth)
+            lines = _apply_bq_prefix(lines, depth)
         return lines
 
     def _render_impl(self, token: Token) -> list[AnsiLine]:
@@ -151,16 +154,19 @@ class AnsiRenderEngine:
                                                 depth=depth - 1)
 
             if t == TokenType.ADMONITION_OPEN:
-                # OPEN content 即正文首行（引用风格），meta 含 type/depth/title
+                # OPEN content 为 ``[!TYPE]`` 同行文本（head 标题）——正文行
+                # 由 ADMONITION_LINE 追加（head 不再混入正文缓冲）。
                 ameta = dict(token.meta)
-                lines0 = [token.content] if token.content else []
-                self._admonition = (ameta.get("type", "NOTE"), lines0, ameta)
+                if token.content:
+                    ameta.setdefault("head_text", token.content)
+                self._admonition = (ameta.get("type", "NOTE"), [], ameta)
                 return []
             if t == TokenType.ADMONITION_LINE:
                 if self._admonition is not None and token.content:
                     self._admonition[1].append(token.content)
                 return []
             if t == TokenType.ADMONITION_CLOSE:
+                body_tokens = token.meta.get("body_tokens")
                 if self._admonition is not None:
                     atype, lines, ameta = self._admonition
                     self._admonition = None
@@ -169,12 +175,26 @@ class AnsiRenderEngine:
                     ameta = dict(token.meta)
                     atype = ameta.get("type", "NOTE")
                     lines = list(ameta.get("body_lines") or [])
-                if token.content:
-                    lines = [token.content] + lines
+                title = str(ameta.get("title", "")
+                            or token.meta.get("title", "") or "")
+                collapsible = bool(ameta.get("collapsible", False))
+                head_text = str(ameta.get("head_text",
+                                          token.meta.get("head_text", "")) or "")
+                dropped = int(token.meta.get("preview_dropped", 0) or 0)
+                if body_tokens is not None:
+                    # 正文以完整 Markdown 语义递归渲染（列表/代码块/引用/嵌套
+                    # 告示…），整体缩进显示（与纯文本路径同为 4 空格缩进）。
+                    head = blocks.render_admonition_head(
+                        atype, head_text, title=title, collapsible=collapsible)
+                    return self._render_nested_blocks(
+                        head, body_tokens, dropped, indent="    ")
                 meta = dict(ameta)
                 meta["type"] = atype
-                if token.meta.get("preview_dropped"):
-                    meta["preview_dropped"] = token.meta["preview_dropped"]
+                meta["head_text"] = head_text
+                if title:
+                    meta["title"] = title
+                if dropped:
+                    meta["preview_dropped"] = dropped
                 return blocks.render_admonition(
                     _StrToken("\n".join(lines), meta)
                 )
@@ -201,7 +221,8 @@ class AnsiRenderEngine:
                 if body_tokens is not None:
                     # 正文以完整 Markdown 语义递归渲染（列表/代码/引用…），
                     # 整体缩进显示（详见 ``_render_nested_blocks``）。
-                    return self._render_nested_blocks(summary, body_tokens, dropped)
+                    return self._render_nested_blocks(
+                        blocks.render_details_head(summary), body_tokens, dropped)
                 body = list(token.meta.get("body_lines") or [])
                 if token.content:
                     body = body + str(token.content).split("\n")
@@ -220,6 +241,7 @@ class AnsiRenderEngine:
                     self._fenced_div[2].append(token.content)
                 return []
             if t == TokenType.FENCED_DIV_CLOSE:
+                body_tokens = token.meta.get("body_tokens")
                 if self._fenced_div is not None:
                     dtype, head_text, body = self._fenced_div
                     self._fenced_div = None
@@ -229,8 +251,13 @@ class AnsiRenderEngine:
                     dtype = token.meta.get("type", "NOTE")
                     head_text = token.content or ""
                     body = list(token.meta.get("body_lines") or [])
+                dropped = int(token.meta.get("preview_dropped", 0) or 0)
+                if body_tokens is not None:
+                    # 正文以完整 Markdown 语义递归渲染（列表/代码/引用…），
+                    # 整体缩进显示（与 <details>/告示同一机制）。
+                    head = blocks.render_fenced_div_head(dtype, head_text)
+                    return self._render_nested_blocks(head, body_tokens, dropped)
                 meta: dict = {"type": dtype, "body_lines": body}
-                dropped = token.meta.get("preview_dropped")
                 if dropped:
                     meta["preview_dropped"] = dropped
                 return blocks.render_fenced_div(_StrToken(head_text, meta))
@@ -263,9 +290,10 @@ class AnsiRenderEngine:
         # continuation（超长块被分段刷出的续段）不重复渲染标题/打开围栏。
         closed = token.meta.get("closed", True)
         continuation = bool(token.meta.get("continuation", False))
+        linenos = bool(token.meta.get("linenos", False))
         return _code.render_code_block(
             source, lang, self._code_theme, hl, title,
-            closed=closed, continuation=continuation,
+            closed=closed, continuation=continuation, linenos=linenos,
         )
 
     def _flush_code(self) -> list[AnsiLine]:
@@ -276,18 +304,30 @@ class AnsiRenderEngine:
         source = "\n".join(lines)
         if not source and not lang and not title:
             return []
-        return _code.render_code_block(source, lang, self._code_theme, [], title)
+        from src.renderer._utils import parse_highlight_lines, parse_linenos
+        return _code.render_code_block(
+            source, lang, self._code_theme,
+            parse_highlight_lines(attrs), title,
+            linenos=parse_linenos(attrs),
+        )
 
     # ── 嵌套块渲染（details 正文等） ────────────────────
 
-    def _render_nested_blocks(self, summary: str,
-                              tokens: list, dropped: int = 0) -> list[AnsiLine]:
+    def _render_nested_blocks(self, head: AnsiLine,
+                              tokens: list, dropped: int = 0,
+                              indent: str = "  ") -> list[AnsiLine]:
         """渲染容器块正文（子 Token 序列）并整体缩进。
 
+        Args:
+            head: 容器头行（``▶ summary`` / ``■ TYPE title``）。
+            tokens: 正文子 Token 序列。
+            dropped: 预览截断行数（>0 时插入省略提示行）。
+            indent: 正文行前缀（details 用 2 空格、admonition 用 4 空格）。
+
         用独立的子引擎渲染（不污染主引擎的流式缓冲状态），共享渲染上下文
-        （脚注/参考式链接/缩写跨块生效），每行加两空格缩进前缀。
+        （脚注/参考式链接/缩写跨块生效），每行加缩进前缀。
         """
-        out: list[AnsiLine] = [blocks.render_details_head(summary)]
+        out: list[AnsiLine] = [head]
         if dropped:
             from .code import render_omitted_line
             out.append(render_omitted_line(dropped))
@@ -297,8 +337,12 @@ class AnsiRenderEngine:
         for tok in tokens:
             for ln in sub.render(tok):
                 if ln.runs:
-                    ln.runs.insert(0, Run("  ", prefix_style))
-                out.append(ln)
+                    # 不就地修改：子引擎行可能来自跨帧高亮缓存
+                    # （``_LINE_HIGHLIGHT_CACHE``），就地插入缩进会在复用中叠加。
+                    out.append(AnsiLine(
+                        [Run(indent, prefix_style)] + list(ln.runs)))
+                else:
+                    out.append(ln)
         return out
 
 
@@ -329,15 +373,57 @@ def _token_bq_depth(token: Token) -> int:
         return 0
 
 
-def _apply_bq_prefix(lines: list[AnsiLine], depth: int) -> None:
-    """给渲染行首插入 ``│ `` 引用前缀（引用块内的块级元素）。
+def _token_list_indent(token: Token) -> int | None:
+    """Token 所属列表项的缩进层级；``None`` 表示不在列表项内。
 
-    空行（无 Run）不插前缀，避免引用内空行变成残留边框。
+    与引用深度不同，顶层列表项的缩进层为 0——必须用「meta 是否携带该键」
+    区分「不在列表内」与「顶层列表项内」，否则默认 0 会让所有 Token 都被
+    误加列表前缀。
     """
-    prefix = "\u2502 " * max(1, depth)
+    meta = getattr(token, "meta", None)
+    if not meta or "list_indent" not in meta:
+        return None
+    try:
+        return max(0, int(meta.get("list_indent") or 0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _apply_list_prefix(lines: list[AnsiLine], indent: int) -> list[AnsiLine]:
+    """给列表项内的块级元素行补内容缩进前缀（与列表续行对齐）。
+
+    前缀 ``"  " * indent + "  "`` 与 ``render_list_item`` 的续行缩进一致
+    （``indent`` 为列表项 0-based 缩进层，额外两空格对齐内容起始列）。
+    与引用前缀同样**不就地修改**输入行——行对象可能来自跨帧缓存。
+    """
+    prefix = "  " * max(0, indent) + "  "
+    out: list[AnsiLine] = []
     for ln in lines:
         if ln.runs:
-            ln.runs.insert(0, Run(prefix, blocks._STYLE_BQ))
+            out.append(AnsiLine([Run(prefix, blocks._STYLE_BQ)] + list(ln.runs)))
+        else:
+            out.append(ln)
+    return out
+
+
+def _apply_bq_prefix(lines: list[AnsiLine], depth: int) -> list[AnsiLine]:
+    """给渲染行首插入 ``│ `` 引用前缀（引用块内的块级元素），返回新行列表。
+
+    空行（无 Run）不插前缀，避免引用内空行变成残留边框。
+
+    ★ 不就地修改输入行：行对象可能来自跨帧缓存（``_LINE_HIGHLIGHT_CACHE``
+    的代码高亮行、预览行级缓存）——就地 ``runs.insert`` 会在同一行的下次
+    复用中重复叠加前缀（流式下「引用内代码块行」出现两个 ``│ ``，一次性
+    渲染因缓存尚未污染只出现一个）。此处构造新 ``AnsiLine`` 保证幂等。
+    """
+    prefix = "\u2502 " * max(1, depth)
+    out: list[AnsiLine] = []
+    for ln in lines:
+        if ln.runs:
+            out.append(AnsiLine([Run(prefix, blocks._STYLE_BQ)] + list(ln.runs)))
+        else:
+            out.append(ln)
+    return out
 
 
 __all__ = ["AnsiRenderEngine"]

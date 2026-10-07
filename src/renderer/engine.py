@@ -407,11 +407,18 @@ class RenderEngine:
                 content = self._ctx.fn_map.get(ref_id)
                 if content is None:
                     continue
-                result.append(f"  [{i}] ", style=Style(color="bright_cyan"))
-                result.append_text(self._render_inline(content))
-                # ── 功能6：脚注返回链接 ───────────────────────
-                result.append(" ↩", style=Style(color="bright_cyan", dim=True))
-                result.append("\n")
+                # 多段落脚注：逐段渲染（续段缩进对齐），段间空行略过
+                segs = [s for s in str(content).split("\n") if s.strip()] or [""]
+                for si, seg in enumerate(segs):
+                    if si == 0:
+                        result.append(f"  [{i}] ", style=Style(color="bright_cyan"))
+                    else:
+                        result.append("      ", style=Style(color="bright_cyan"))
+                    result.append_text(self._render_inline(seg))
+                    if si == len(segs) - 1:
+                        # ── 功能6：脚注返回链接 ───────────────────────
+                        result.append(" ↩", style=Style(color="bright_cyan", dim=True))
+                    result.append("\n")
             return [result]
         except Exception:
             logger.debug("脚注渲染异常", exc_info=True)

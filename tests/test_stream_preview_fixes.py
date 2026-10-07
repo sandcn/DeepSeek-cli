@@ -41,9 +41,10 @@ def test_code_preview_incremental_on_partial_line(monkeypatch):
     total = {"lines": 0}
     orig = _code.highlight_code_lines
 
-    def spy(lines, lang="", theme="monokai", highlight_lines=None, start_index=1):
+    def spy(lines, lang="", theme="monokai", highlight_lines=None,
+            start_index=1, **kwargs):
         total["lines"] += len(lines)
-        return orig(lines, lang, theme, highlight_lines, start_index)
+        return orig(lines, lang, theme, highlight_lines, start_index, **kwargs)
 
     monkeypatch.setattr(_code, "highlight_code_lines", spy)
 

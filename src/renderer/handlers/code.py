@@ -14,7 +14,7 @@ from .._rendering import (
     highlight_line,
     render_diff_line,
 )
-from .._utils import parse_highlight_lines
+from .._utils import parse_highlight_lines, parse_linenos
 
 from .base import TokenHandler
 
@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 
 # 行数千分位格式化的阈值（≥ 1000 行时使用千分位逗号）
 _LARGE_LINE_THRESHOLD = 1000
+
+
+def _line_number_prefix(idx: int, width: int = 2) -> str:
+    """代码行号前缀（右对齐，宽度固定 2——逐行渲染时总行数未知）。"""
+    return f"{idx:>{width}} "
 
 
 def _make_line_count_text(line_count: int) -> Text:
@@ -75,6 +80,7 @@ class CodeHandler(TokenHandler):
             attrs = token.meta.get("attrs", "")
             title = token.meta.get("title", "")
             engine.code_state.highlight_lines = parse_highlight_lines(attrs)
+            engine.code_state.linenos = parse_linenos(attrs)
 
             if title:
                 t_title = self._render_code_title_bar(title, engine.code_state.lang, engine)
@@ -93,14 +99,19 @@ class CodeHandler(TokenHandler):
     # ── 代码行 ──────────────────────────────────────────
 
     def _handle_code_line(self, token: Token, engine):
-        """输出代码行（语法高亮）。"""
+        """输出代码行（语法高亮 + 可选行号）。"""
         try:
             line = token.content
             engine.code_state.line_num += 1
             engine.ensure_theme()
 
             if not line:
-                engine.write_line()
+                if engine.code_state.linenos:
+                    engine.write_line(
+                        _line_number_prefix(engine.code_state.line_num)
+                    )
+                else:
+                    engine.write_line()
                 return
 
             lang = engine.code_state.lang or "text"
@@ -116,6 +127,14 @@ class CodeHandler(TokenHandler):
                     code_text = Text(line)
                 else:
                     code_text = self._highlight_line(line, lexer, engine)
+
+            if engine.code_state.linenos:
+                prefix = Text(
+                    _line_number_prefix(engine.code_state.line_num),
+                    style=Style(dim=True, color="bright_black"),
+                )
+                prefix.append_text(code_text)
+                code_text = prefix
 
             engine._output.write(code_text)
         except Exception:
@@ -139,6 +158,7 @@ class CodeHandler(TokenHandler):
             engine.code_state.indented = False
             engine.code_state.line_num = 0
             engine.code_state.highlight_lines = []
+            engine.code_state.linenos = False
         except Exception:
             logger.debug("代码块关闭渲染异常，跳过", exc_info=True)
 
@@ -174,6 +194,7 @@ class CodeHandler(TokenHandler):
 
             engine.ensure_theme()
             highlight_lines = token.meta.get("highlight_lines", [])
+            linenos = bool(token.meta.get("linenos", False))
             if source:
                 # ★ 修复（review 方向）：rstrip('\n') 移除尾部换行——修复前
                 #   '\n'.join(source.split('\n')) 恒等于 source（宣称的防御性
@@ -183,6 +204,7 @@ class CodeHandler(TokenHandler):
                 self._render_code_block_instant(
                     '\n'.join(lines), lang, engine,
                     highlight_lines=highlight_lines,
+                    linenos=linenos,
                 )
             else:
                 lines = []
@@ -196,18 +218,27 @@ class CodeHandler(TokenHandler):
             engine.code_state.lang = ""
             engine.code_state.line_num = 0
             engine.code_state.highlight_lines = []
+            engine.code_state.linenos = False
         except Exception:
             logger.debug("整块代码渲染异常，跳过", exc_info=True)
 
     def _render_code_block_instant(self, source: str, lang: str, engine,
-                                    highlight_lines: list[int] | None = None):
+                                    highlight_lines: list[int] | None = None,
+                                    linenos: bool = False):
         """即时模式：整块 Syntax 一次性渲染（diff 语言逐行处理）。"""
         try:
             # Diff 语言绕过 Syntax 高亮，逐行用 render_diff_line 处理
             if lang == "diff":
                 lines = source.split('\n')
-                for line in lines:
+                for i, line in enumerate(lines, 1):
                     code_text = render_diff_line(line)
+                    if linenos:
+                        prefix = Text(
+                            _line_number_prefix(i),
+                            style=Style(dim=True, color="bright_black"),
+                        )
+                        prefix.append_text(code_text)
+                        code_text = prefix
                     engine.write(code_text)
                     engine.write_line()
                 return
@@ -215,6 +246,7 @@ class CodeHandler(TokenHandler):
             syntax = render_code_block_syntax(
                 source, lang, engine.code_theme,
                 highlight_lines=highlight_lines,
+                linenos=linenos,
             )
 
             # write(syntax) 经 console.print() 输出，已自动追加换行。

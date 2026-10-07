@@ -21,6 +21,7 @@ class _CodeBlockState:
     line_num: int = 0
     indented: bool = False
     highlight_lines: list[int] = field(default_factory=list)
+    linenos: bool = False
 
 
 @dataclass(slots=True)

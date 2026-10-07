@@ -19,7 +19,7 @@ from __future__ import annotations
 from .helpers import Run, AnsiLine, wrap_line, truncate_line, ansi_to_line
 from .style import Style
 from .inline import render_inline, use_render_context
-from .engine import AnsiRenderEngine
+from .engine import AnsiRenderEngine, _apply_list_prefix, _apply_bq_prefix
 from ._preview_cache import LinePreviewCache
 from ._line_delims import ParagraphBoundaryScanner
 from .table import TablePreviewCache
@@ -36,6 +36,41 @@ _FORMAT_CHARS_CACHE: frozenset | None = None
 
 #: 空样式单例（纯文本段落行复用；``Style()`` 为不可变值对象，等价）。
 _EMPTY_STYLE = Style()
+
+#: 预览子解析缓存容量（告示等容器正文的块级预览：内容未变化的帧复用结果）。
+_PREVIEW_SUB_CACHE_MAX = 32
+
+
+def _has_block_markers(lines) -> bool:
+    """正文行列表是否含块级 Markdown 标记（列表/围栏/引用/表格/标题…）。
+
+    供容器块（告示）流式预览判定：含块级标记时走子解析 + 完整 Markdown
+    渲染，否则走逐行增量缓存（纯文本行的常见路径零额外开销）。
+    """
+    for raw in lines:
+        s = (raw or "").strip()
+        if not s:
+            continue
+        first = s[0]
+        if first in '>|#`~':
+            return True
+        if first in '-*+' and len(s) > 1 and s[1] == ' ':
+            return True
+        if first == '<' and len(s) > 1 and (s[1].isalpha() or s[1] == '/'):
+            return True
+        if s.startswith(':::') or s.startswith('!!!') or s.startswith('???'):
+            return True
+        if s.startswith('$$') or s == r'\[':
+            return True
+        if first.isdigit():
+            j = 1
+            while j < len(s) and s[j].isdigit():
+                j += 1
+            if j + 1 < len(s) and s[j] in '.):' and s[j + 1] == ' ':
+                return True
+        if len(s) >= 3 and first in '-=_*' and all(c in (first, ' ') for c in s):
+            return True
+    return False
 
 
 def _format_chars() -> frozenset:
@@ -164,12 +199,20 @@ class AnsiStreamRenderer:
         #   扫描（超长纯文本段落流式预览的主要开销）。
         self._para_scan_text = ""
         self._para_last_trigger = -1
+        # 容器块（告示）预览的子解析结果缓存（见 ``_preview_sub_parse``）。
+        self._preview_sub_cache: dict = {}
+        # 列表项内块级容器预览（内容行元组 → 渲染行 + 缓存键）。
+        self._list_block_preview_key: tuple | None = None
+        self._list_block_preview_rows: list[AnsiLine] = []
 
     def set_width(self, width: int) -> None:
         """更新终端宽度（TOC 边框 + 表格宽度自适应用）。"""
         self._width = width
         self._engine.set_width(width)
         self._preview_engine.set_width(width)
+        # 列表项内块级容器预览缓存含宽度相关渲染（表格框线/代码换行），
+        # 宽度变化时失效重算。
+        self._list_block_preview_key = None
 
     def write(self, text: str) -> None:
         """流式写入内容块（解析 + 渲染 + 追加）。
@@ -234,6 +277,12 @@ class AnsiStreamRenderer:
 
     def _refresh_preview_impl(self) -> None:
         try:
+            # 列表项内的块级容器（收集中的缩进块）优先走专用预览：解析器
+            # 状态机在收集期间不产出 pending token，若不做处理则「列表内
+            # 代码块/引用/表格」在流式期间完全不可见（整块突发上屏）。
+            if self._parser.list_block_active:
+                self._preview_lines = self._list_block_preview()
+                return
             ptokens = self._parser.peek_pending()
         except Exception:
             self._clear_preview()
@@ -251,6 +300,100 @@ class AnsiStreamRenderer:
         for tok in ptokens:
             lines.extend(self._render_preview_token(tok, eng))
         self._preview_lines = lines
+
+    def _list_block_preview(self) -> list[AnsiLine]:
+        """列表项内块级容器（收集中的缩进块）的流式预览行。
+
+        解析器在收集列表项内块级容器期间处于 NORMAL 状态且无 pending Token
+        ——若不做处理，列表内的代码块/引用/表格在整块结束前不可见。此处把
+        已收集行（+ 未换行活动行）交给临时子解析器，取其「未闭合预览 Token」
+        （或完整 token），经独立管线合并（``CodeBlockBatcher`` 等）后渲染。
+
+        性能：以「已收集行元组」为缓存键——内容未变化的帧（30Hz 空转）零开销；
+        追加行时重算一次（与告示正文块级预览同一策略）。
+        """
+        p = self._parser
+        body = list(p._list_block_lines)
+        tail = p._peek_incomplete_tail()
+        if tail:
+            body.append(tail)
+        while body and not body[-1].strip():
+            body.pop()
+        if not body:
+            return []
+        # 预览行数上限（与解析器 ``_PREVIEW_MAX_LINES`` 同量级）：超长列表内
+        # 代码块只预览「首个非空行 + 尾部」——每帧子解析成本有界（提交仍完整）。
+        limit = 200
+        dropped = 0
+        if len(body) > limit:
+            head = next((ln for ln in body if ln.strip()), "")
+            keep = max(1, limit - 1)
+            body = ([head] if head else []) + body[-keep:]
+            dropped = max(0, len(p._list_block_lines) + (1 if tail else 0)
+                          - len(body))
+        key = tuple(body)
+        if key == self._list_block_preview_key:
+            return self._list_block_preview_rows
+        tokens = self._parse_list_block_preview(body)
+        rows: list[AnsiLine] = []
+        eng = self._preview_engine
+        eng.reset()
+        with use_render_context(self._ctx):
+            for tok in tokens:
+                # 外层统一补列表/引用前缀（token 特化预览路径如代码块增量
+                # 渲染不经 ``engine.render``，不会自带前缀）。
+                tok.meta.pop("list_indent", None)
+                tok.meta.setdefault("preview", True)
+                rows.extend(self._render_preview_token(tok, eng))
+        rows = _apply_list_prefix(rows, self._list_block_indent_level())
+        bq = self._list_block_bq_depth()
+        if bq > 0:
+            rows = _apply_bq_prefix(rows, bq)
+        if dropped and rows:
+            # 截断提示行（与代码块/表格预览同一真源）：插在首行之后
+            from .code import render_omitted_line
+            rows.insert(1, render_omitted_line(dropped))
+        self._list_block_preview_key = key
+        self._list_block_preview_rows = rows
+        return rows
+
+    def _list_block_indent_level(self) -> int:
+        """当前列表项缩进层（0 = 顶层列表项）。"""
+        return max(0, self._parser._last_list_indent)
+
+    def _list_block_bq_depth(self) -> int:
+        """当前引用块嵌套深度（0 = 不在引用内；列表项块预览补前缀用）。"""
+        return self._parser.bq_depth
+
+    def _parse_list_block_preview(self, body: list[str]):
+        """子解析列表项内块级内容 → 预览 Token 序列（独立管线合并）。"""
+        from src.renderer.recursive_parser import RecursiveDescentParser
+        from src.renderer.pipeline import TokenPipeline
+        from src.renderer.extensions import (
+            builtin_filter_factories, filter_factories,
+        )
+
+        sub = RecursiveDescentParser(ctx=self._ctx)
+        committed = sub.feed("\n".join(body) + "\n")
+        pending = sub.peek_pending()
+        if pending:
+            tokens = pending
+        else:
+            tokens = committed or sub.flush()
+        if not tokens:
+            return []
+        pipeline = TokenPipeline()
+        for factory in builtin_filter_factories():
+            try:
+                pipeline.add_filter(factory())
+            except Exception:
+                continue
+        for factory in filter_factories():
+            try:
+                pipeline.add_filter(factory())
+            except Exception:
+                continue
+        return pipeline.process(tokens, self._ctx)
 
     def _render_preview_token(self, tok, eng) -> list[AnsiLine]:
         """渲染单个预览 token（增量分派；非增量类型走预览引擎）。"""
@@ -274,6 +417,8 @@ class AnsiStreamRenderer:
         self._reset_code_preview_cache()
         self._table_preview_cache.reset()
         self._para_boundary.reset()
+        self._list_block_preview_key = None
+        self._list_block_preview_rows = []
         # 段落切换：重置活动行触发字符增量状态（下次全量重扫；不重置亦正确，
         # 但可省一次长字符串前缀比较）。
         self._para_scan_text = ""
@@ -454,28 +599,47 @@ class AnsiStreamRenderer:
         atype = str(token.meta.get("type", "NOTE")).upper()
         title = str(token.meta.get("title", "") or "")
         collapsible = bool(token.meta.get("collapsible", False))
+        head_text = str(token.meta.get("head_text", "") or "")
         body = list(token.meta.get("body_lines") or [])
         if token.content:
             body = str(token.content).split("\n") + body
-        if title:
-            head = _blocks.render_admonition_head(
-                atype, "", title=title, collapsible=collapsible)
-            rest_src = body
-        else:
-            if not body:
-                return []
-            head = _blocks.render_admonition_head(atype, body[0],
-                                                  collapsible=collapsible)
-            rest_src = body[1:]
-        rest = [self._window_preview_line(seg) for seg in rest_src]
+        head = _blocks.render_admonition_head(atype, head_text, title=title,
+                                              collapsible=collapsible)
+        dropped = int(token.meta.get("preview_dropped", 0) or 0)
+        # 正文含块级标记（列表 / 围栏代码 / 引用 / 表格…）→ 子解析后按完整
+        # Markdown 渲染（与提交路径一致，消除「预览纯文本 → 提交变列表」跳变）。
+        if body and _has_block_markers(body):
+            body_tokens = self._preview_sub_parse(body)
+            if body_tokens:
+                return self._preview_engine._render_nested_blocks(
+                    head, body_tokens, dropped, indent="    ")
+        rest = [self._window_preview_line(seg) for seg in body]
         rows = self._line_cache("admonition").render(
-            ("admonition", atype, title, collapsible), rest,
+            ("admonition", atype, title, collapsible, head_text), rest,
             lambda text: [_blocks.render_admonition_body(text)],
         )
-        dropped = int(token.meta.get("preview_dropped", 0) or 0)
         if dropped:
             return [head, self._omitted_line(dropped)] + rows
         return [head] + rows
+
+    def _preview_sub_parse(self, lines: list[str]) -> list:
+        """预览用子解析（带小容量缓存：同一内容重复帧零成本）。
+
+        `正文含块级标记的告示在流式期间每帧重渲染，缓存键为内容行元组——
+        内容未变化的帧（如 30Hz 空转）直接复用解析结果。
+        """
+        key = tuple(lines)
+        cached = self._preview_sub_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            tokens = self._parser._parse_sub_blocks(list(lines))
+        except Exception:
+            tokens = []
+        if len(self._preview_sub_cache) >= _PREVIEW_SUB_CACHE_MAX:
+            self._preview_sub_cache.clear()
+        self._preview_sub_cache[key] = tokens
+        return tokens
 
     def _render_table_preview(self, token) -> list[AnsiLine]:
         """表格预览：列宽与行渲染的行级增量（``TablePreviewCache``）。
@@ -498,6 +662,11 @@ class AnsiStreamRenderer:
         self._code_preview_rows = []
         self._code_preview_content = ""
         self._code_preview_full_src = []
+
+    @staticmethod
+    def _code_num_width(total: int) -> int:
+        """行号列宽（与 ``ansi.code.highlight_code_lines`` 同一规则）。"""
+        return max(2, len(str(max(int(total), 1))))
 
     def _code_lines_from_content(self, src: str) -> tuple[list[str], bool]:
         """兼容路径：从 ``content`` 字符串增量 split 出完整行列表。
@@ -563,7 +732,16 @@ class AnsiStreamRenderer:
         # 呈现尚未提交的尾部（否则同一批行在 committed 与 preview 中重复显示）。
         skip = min(self._committed_code_lines, len(full_lines))
         src_lines = full_lines[skip:] if skip else full_lines
-        key = (lang, self._code_theme, skip, dropped)
+        hl = token.meta.get("highlight_lines") or ()
+        linenos = bool(token.meta.get("linenos", False))
+        # 行号列宽随总行数位数变化（2→3 位时历史行需重建以保持对齐）——
+        # 纳入缓存键，宽度变化时整体重渲染一次（跨越 99/999 行的罕见时刻）。
+        num_width = self._code_num_width(skip + len(full_lines)) if linenos else 0
+        # 首行纳入缓存键：内容「滑窗」（列表项内块级预览截断为尾部窗口）时
+        # 前缀不再稳定，必须重置增量缓存，否则沿用旧行导致内容错位。
+        first_line = full_lines[0] if full_lines else ""
+        key = (lang, self._code_theme, skip, dropped, tuple(hl), num_width,
+               first_line)
         if reset_rows or key != self._code_preview_key:
             self._code_preview_key = key
             self._code_preview_rows = []
@@ -577,7 +755,10 @@ class AnsiStreamRenderer:
             rows.extend(
                 _code.highlight_code_lines(
                     src_lines[len(rows):], lang, self._code_theme,
+                    highlight_lines=hl,
                     start_index=skip + len(rows) + 1,
+                    linenos=linenos,
+                    total_lines=skip + len(src_lines),
                 )
             )
         limit = RegexFreeBlockParser._PREVIEW_MAX_LINES
@@ -650,11 +831,17 @@ class AnsiStreamRenderer:
             content = fn_map.get(ref_id)
             if content is None:
                 continue
-            line = AnsiLine.of(f"  [{i}] ", Style(fg=45))
-            for run in render_inline(content, ctx=self._ctx):
-                line.append_run(run)
-            line.append(" \u21a9", Style(fg=45, dim=True))
-            lines.append(line)
+            # 多段落脚注（正文含 ``\n``）→ 逐段渲染为多行，续行缩进对齐；
+            # 段间空行不输出（避免脚注列表被空行割裂）。
+            segs = [s for s in str(content).split("\n") if s.strip()] or [""]
+            for si, seg in enumerate(segs):
+                line = AnsiLine.of(
+                    f"  [{i}] " if si == 0 else "      ", Style(fg=45))
+                for run in render_inline(seg, ctx=self._ctx):
+                    line.append_run(run)
+                if si == len(segs) - 1:
+                    line.append(" \u21a9", Style(fg=45, dim=True))
+                lines.append(line)
         return lines
 
     def _render_ref_links(self) -> list[AnsiLine]:

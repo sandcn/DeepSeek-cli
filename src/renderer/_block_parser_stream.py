@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import logging
 
-from ._block_parser_state import _State, _MERMAID_KEYWORDS, _SETEXT_HR_CHARS
+from ._block_parser_state import (
+    _State, _MERMAID_KEYWORDS, _SETEXT_HR_CHARS, _HTML_HEADING_LEVELS,
+)
 from ._utils import _COMMON_LANGUAGES, _get_fence_info
 from .types import Token, TokenType
 from ._table_utils import _is_table_data_row, _parse_table_row
 from ._block_helpers import (
-    _is_empty_line, _strip_left, _rstrip_line,
+    _is_empty_line, _strip_left,
     _is_code_fence_line, _strip_blockquote_prefix,
     _get_fence_lang, _rstrip_trailing_hashes,
     _LANG_BLACKLIST,
@@ -32,6 +34,37 @@ _AUTO_CLOSE_MIN_STREAK = 6
 _AUTO_CLOSE_MIN_KINDS = 2
 """连续匹配行所需的**结构类型**种数（标题/分隔线/表格分隔）——要求结构
 多样，避免代码块内连续同类型行（如多行 ``# 注释``）被误判为块外 Markdown。"""
+
+
+def _html_tag_delta(line: str, tag: str) -> int:
+    """行内某 HTML 标签的开合净变化数（``<tag`` 数 - ``</tag>`` 数）。
+
+    闭合标签按前缀识别（``</ul>``）；开标签要求标签名边界（``<ulx`` 不计入）。
+    用于 HTML 块内**嵌套同名标签**的深度跟踪——``<ul><li>…<ul>…</ul></li></ul>``
+    内层 ``</ul>`` 不再误结束整个块。
+    """
+    low = line.lower()
+    opens = 0
+    closes = 0
+    i = 0
+    n = len(low)
+    while True:
+        j = low.find('<', i)
+        if j < 0:
+            break
+        i = j + 1
+        if low.startswith('/' + tag, i):
+            after = i + 1 + len(tag)
+            if after >= n or not (low[after].isalnum() or low[after] in '-:'):
+                closes += 1
+            i = after
+            continue
+        if low.startswith(tag, i):
+            after = i + len(tag)
+            if after >= n or not (low[after].isalnum() or low[after] in '-:'):
+                opens += 1
+            i = after
+    return opens - closes
 
 
 class _BlockParserStreamMixin:
@@ -98,7 +131,7 @@ class _BlockParserStreamMixin:
 
         elif self._state == _State.MERMAID_BLOCK:
             try:
-                if _is_code_fence_line(stripped):
+                if _is_code_fence_line(_strip_left(stripped)):
                     self._emit_mermaid_block(tokens)
                 else:
                     self._block_lines.append(line)
@@ -149,8 +182,25 @@ class _BlockParserStreamMixin:
             self._parse_normal_line(line, tokens)
 
         elif self._state == _State.HTML_BLOCK:
-            if self._is_html_close(stripped, self._block_html_tag):
-                if not self._emit_html_table(tokens):
+            # 嵌套同名标签深度跟踪：内层 ``</ul>``（``<ul><li>…<ul>…</ul>``）
+            # 不再误判为整个 HTML 块的结束。
+            self._html_depth += _html_tag_delta(stripped, self._block_html_tag)
+            if self._block_html_tag == 'p':
+                self._feed_html_paragraph_line(stripped, tokens)
+                return
+            heading_level = _HTML_HEADING_LEVELS.get(self._block_html_tag)
+            if heading_level is not None:
+                self._feed_html_heading_line(stripped, tokens, heading_level)
+                return
+            if self._block_html_tag == 'pre':
+                self._feed_html_pre_line(stripped, tokens)
+                return
+            if self._block_html_tag == 'blockquote':
+                self._feed_html_blockquote_line(stripped, tokens)
+                return
+            if self._html_depth <= 0:
+                self._collect_html_line(line)
+                if not self._emit_html_structured(tokens):
                     for raw in self._html_lines:
                         tokens.append(Token(TokenType.HTML_BLOCK_LINE, raw,
                                             {"tag": self._block_html_tag}))
@@ -270,21 +320,25 @@ class _BlockParserStreamMixin:
                 and len(self._auto_close_kinds) >= _AUTO_CLOSE_MIN_KINDS)
 
     def _feed_code_fence_line(self, line: str, stripped: str, tokens: list[Token]):
-        if stripped and not (stripped[0] in '#-*_|' and len(stripped) >= 3):
+        # 关闭围栏允许最多 3 空格缩进（CommonMark）——引用剥离（``>   ``` ``）
+        # 或列表缩进后可能残留前导空格，判定前先剥离行首空白；内容行按原样
+        # （保留相对缩进）写入。
+        check = _strip_left(stripped)
+        if check and not (check[0] in '#-*_|' and len(check) >= 3):
             self._reset_auto_close()
 
-        if self._auto_close_streak > 0 and stripped and stripped[0] == '|':
-            cells = [c.strip() for c in stripped.strip('|').split('|')]
+        if self._auto_close_streak > 0 and check and check[0] == '|':
+            cells = [c.strip() for c in check.strip('|').split('|')]
             if any(c.isalnum() for c in cells if c):
                 self._reset_auto_close()
 
-        if self._should_auto_close_fence(stripped, line):
+        if self._should_auto_close_fence(check, line):
             tokens.append(Token(TokenType.CODE_FENCE_CLOSE, "",
                                 {"lang": self._block_lang, "indented": False}))
             self._state = _State.NORMAL
             self._parse_normal_line(line, tokens)
             return
-        fchar, flen, _ = _get_fence_info(stripped)
+        fchar, flen, _ = _get_fence_info(check)
         if not fchar:
             self._emit_code_line(line.rstrip('\n'), tokens)
             return
@@ -294,7 +348,7 @@ class _BlockParserStreamMixin:
         if flen < self._block_fence_len:
             self._emit_code_line(line.rstrip('\n'), tokens)
             return
-        close_lang = _get_fence_lang(stripped[flen:].strip())
+        close_lang = _get_fence_lang(check[flen:].strip())
         is_markdown = self._block_lang.lower() in ('markdown', 'md')
         if close_lang and is_markdown:
             self._block_nested_fence += 1
@@ -573,7 +627,12 @@ class _BlockParserStreamMixin:
                         lang, remaining = self._detect_streaming_fence_merge(
                             potential, remaining, lang_end,
                         )
-                if remaining and remaining[0] == '{':
+                # ★ 修复（info 属性丢失）：lang 名后的剩余文本可能以前导空格
+                #   开头（`` ```python {1,3-5} ``）——修复前未 strip 即检查
+                #   ``remaining[0] == '{'``，大括号属性（行高亮 / 行号）整段
+                #   被当成 extra 落入代码内容（``{1,3-5}`` 显示为第一行）。
+                remaining = remaining.strip()
+                if remaining.startswith('{'):
                     brace_end = remaining.find('}')
                     if brace_end >= 0:
                         attrs = remaining[:brace_end + 1]

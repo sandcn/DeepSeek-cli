@@ -385,9 +385,10 @@ def test_code_preview_incremental_split(monkeypatch):
     total = {"n": 0}
     orig = _code.highlight_code_lines
 
-    def spy(lines, lang="", theme="monokai", highlight_lines=None, start_index=1):
+    def spy(lines, lang="", theme="monokai", highlight_lines=None,
+            start_index=1, **kwargs):
         total["n"] += len(lines)
-        return orig(lines, lang, theme, highlight_lines, start_index)
+        return orig(lines, lang, theme, highlight_lines, start_index, **kwargs)
 
     monkeypatch.setattr(_code, "highlight_code_lines", spy)
     r = AnsiStreamRenderer(width=80)

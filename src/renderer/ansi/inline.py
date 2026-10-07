@@ -232,7 +232,13 @@ def _emit_code(node, base, ctx, out, depth):
 
 
 def _emit_kbd(node, base, ctx, out, depth):
-    _append(out, f"⌨{node.content or ''}", _merge(base, _STYLE_KBD))
+    """``<kbd>`` 键盘按键：键帽样式（前后空格着色形成键帽块）。
+
+    修复前每个 ``<kbd>`` 前置 ``⌨`` 图标——``<kbd>Ctrl</kbd>+<kbd>C</kbd>``
+    渲染为 ``⌨Ctrl+⌨C``（图标重复且与按键文本粘连）；键帽背景色已足以
+    表达按键语义，图标冗余。
+    """
+    _append(out, f" {node.content or ''} ", _merge(base, _STYLE_KBD))
 
 
 def _emit_abbr(node, base, ctx, out, depth):
@@ -388,8 +394,28 @@ def _emit_small(node, base, ctx, out, depth):
 
 
 def _emit_color(node, base, ctx, out, depth):
-    color = _COLOR_TO_256.get((getattr(node, "color", "") or "").lower(), 231)
-    _emit_children(node, _merge(base, Style(fg=color, bold=True)), ctx, out, depth)
+    """着色文本：颜色名或 ``#rrggbb``（未知值回退白色）。"""
+    name = (getattr(node, "color", "") or "").lower()
+    fg = _COLOR_TO_256.get(name)
+    if fg is None:
+        fg = _hex_to_256(name)
+    if fg is None:
+        fg = 231
+    _emit_children(node, _merge(base, Style(fg=fg, bold=True)), ctx, out, depth)
+
+
+def _hex_to_256(value: str) -> int | None:
+    """``#rrggbb`` → 256 色号（非该格式或解析失败返回 ``None``）。"""
+    if not value.startswith('#') or len(value) != 7:
+        return None
+    try:
+        r = int(value[1:3], 16)
+        g = int(value[3:5], 16)
+        b = int(value[5:7], 16)
+    except ValueError:
+        return None
+    from .style import rgb_to_256
+    return rgb_to_256(r, g, b)
 
 
 def _emit_subscript(node, base, ctx, out, depth):

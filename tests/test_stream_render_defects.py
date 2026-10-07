@@ -126,9 +126,10 @@ def test_code_preview_highlights_incrementally(monkeypatch):
     total = {"lines": 0}
     orig = _code.highlight_code_lines
 
-    def spy(lines, lang="", theme="monokai", highlight_lines=None, start_index=1):
+    def spy(lines, lang="", theme="monokai", highlight_lines=None,
+            start_index=1, **kwargs):
         total["lines"] += len(lines)
-        return orig(lines, lang, theme, highlight_lines, start_index)
+        return orig(lines, lang, theme, highlight_lines, start_index, **kwargs)
 
     monkeypatch.setattr(_code, "highlight_code_lines", spy)
     r = AnsiStreamRenderer(width=80)
@@ -148,9 +149,10 @@ def test_code_preview_cache_reset_on_content_divergence(monkeypatch):
     total = {"lines": 0}
     orig = _code.highlight_code_lines
 
-    def spy(lines, lang="", theme="monokai", highlight_lines=None, start_index=1):
+    def spy(lines, lang="", theme="monokai", highlight_lines=None,
+            start_index=1, **kwargs):
         total["lines"] += len(lines)
-        return orig(lines, lang, theme, highlight_lines, start_index)
+        return orig(lines, lang, theme, highlight_lines, start_index, **kwargs)
 
     monkeypatch.setattr(_code, "highlight_code_lines", spy)
     r = AnsiStreamRenderer(width=80)

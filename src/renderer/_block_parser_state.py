@@ -22,6 +22,11 @@ _MERMAID_KEYWORDS: frozenset[str] = frozenset({
 # Setext 标题/HR 标记字符（避免每次调用创建元组）
 _SETEXT_HR_CHARS: frozenset[str] = frozenset({'-', '=', '*', '_'})
 
+#: HTML 标题标签 → 标题级别（块级 HTML 按 Markdown 标题语义渲染）
+_HTML_HEADING_LEVELS: dict[str, int] = {
+    'h1': 1, 'h2': 2, 'h3': 3, 'h4': 4, 'h5': 5, 'h6': 6,
+}
+
 
 class _State(IntEnum):
     """解析器状态枚举。"""
@@ -49,4 +54,5 @@ _ADMONITION_TYPES: frozenset[str] = frozenset({
 })
 
 
-__all__ = ["_State", "_MERMAID_KEYWORDS", "_SETEXT_HR_CHARS", "_ADMONITION_TYPES"]
+__all__ = ["_State", "_MERMAID_KEYWORDS", "_SETEXT_HR_CHARS", "_ADMONITION_TYPES",
+           "_HTML_HEADING_LEVELS"]

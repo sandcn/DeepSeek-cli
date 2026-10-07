@@ -14,51 +14,129 @@ _cache_lock = threading.Lock()
 
 
 def parse_highlight_lines(attrs: str) -> list[int]:
-    """从 attrs 中提取高亮行号，如 {.numberLines hl_lines='1,3-5'}
+    """从代码块 info 属性中提取高亮行号。
 
-    字符级扫描，无正则表达式：在 attrs 中逐字符搜索 hl_lines="..."，
-    提取引号内的值，解析逗号分隔的行号和范围。
+    支持多种书写形式（字符级扫描，无正则表达式）：
+      - ``{.numberLines hl_lines="1,3-5"}``（引号属性，逗号或空格分隔）
+      - ``{hl_lines='1 3-5'}``（单引号）
+      - ``{1,3-5}`` / ``{1 3-5}`` / ``{1,3,7-9}``（Pandoc / kramdown 大括号）
+      - ``hl_lines="1,3-5"``（无大括号裸属性）
 
     Args:
-        attrs: 代码块属性字符串，如 '{.numberLines hl_lines="1,3-5"}'
+        attrs: 代码块属性字符串。
 
     Returns:
-        高亮行号列表，如 [1, 3, 4, 5]
+        高亮行号列表（升序去重），如 ``[1, 3, 4, 5]``。
     """
     if not attrs:
         return []
-    # ★ 优化：用 str.find 替代逐字符 while 循环（C 级 memchr 实现）
-    marker = 'hl_lines="'
-    quote = '"'
-    start = attrs.find(marker)
-    if start == -1:
-        marker = "hl_lines='"
-        quote = "'"
-        start = attrs.find(marker)
-        if start == -1:
-            return []
-    i = start + len(marker)
-    # ★ 修复（review 方向）：闭合引号须与开启引号一致——修复前无论单双
-    #   引号一律找 '"'，hl_lines='1,3-5'（单引号）恒解析失败返回空列表。
-    value_end = attrs.find(quote, i)
-    if value_end == -1:
+    value = _extract_attr_value(attrs, 'hl_lines')
+    if value is None:
+        value = _extract_brace_line_spec(attrs)
+    if value is None:
         return []
-    value = attrs[i:value_end]
-    lines = []
-    for part in value.split(','):
-        part = part.strip()
-        if '-' in part:
+    return _parse_line_spec(value)
+
+
+def parse_linenos(attrs: str) -> bool:
+    """代码块是否要求显示行号（``{.numberLines}`` / ``{linenos}`` / ``{line-numbers}``）。
+
+    识别 ``linenos`` / ``numberLines`` / ``line-numbers`` 令牌（大小写不敏感，
+    kramdown / Pandoc / Highlight 三种书写法的并集）。返回布尔值供渲染层
+    决定是否输出行号前缀。
+    """
+    if not attrs:
+        return False
+    low = attrs.lower()
+    return (
+        'numberlines' in low
+        or 'linenos' in low
+        or 'line-numbers' in low
+        or 'line_numbers' in low
+    )
+
+
+def _extract_attr_value(attrs: str, name: str) -> str | None:
+    """提取 ``name="value"`` / ``name='value'`` / ``name=value`` 的属性值。
+
+    属性名前必须是独立边界（前一字符非字母数字/连字符），避免 ``data-hl_lines``
+    之类的子串误匹配。找不到返回 ``None``。
+    """
+    low = attrs.lower()
+    key = name.lower()
+    idx = low.find(key + '=')
+    while idx > 0:
+        prev = attrs[idx - 1]
+        if not (prev.isalnum() or prev in '-_'):
+            break
+        idx = low.find(key + '=', idx + 1)
+    if idx < 0:
+        return None
+    i = idx + len(key) + 1
+    if i >= len(attrs):
+        return None
+    quote = attrs[i]
+    if quote in ('"', "'"):
+        end = attrs.find(quote, i + 1)
+        return attrs[i + 1:end] if end > i else None
+    end = i
+    n = len(attrs)
+    while end < n and not attrs[end].isspace() and attrs[end] not in '}':
+        end += 1
+    return attrs[i:end]
+
+
+def _extract_brace_line_spec(attrs: str) -> str | None:
+    """提取 ``{1,3-5}`` / ``{1 3-5}`` 大括号内的行号规格。
+
+    仅当大括号内容完全由数字 / ``-`` / ``,`` / ``;`` / 空格组成时返回
+    （否则视为普通属性集合，如 ``{python .numberLines}``），避免把语言名或
+    类名误当行号。
+    """
+    s = attrs.strip()
+    if not s.startswith('{'):
+        return None
+    end = s.find('}')
+    inner = s[1:end] if end >= 0 else s[1:]
+    inner = inner.strip()
+    if not inner:
+        return None
+    for ch in inner:
+        if not (ch.isdigit() or ch in '- ,;'):
+            return None
+    return inner
+
+
+def _parse_line_spec(spec: str) -> list[int]:
+    """解析行号规格（``1,3-5`` / ``1 3-5`` / ``1;3-5``）为升序去重列表。"""
+    out: list[int] = []
+    seen: set[int] = set()
+    for raw in spec.replace(';', ',').replace(',', ' ').split():
+        part = raw.strip()
+        if not part:
+            continue
+        if '-' in part[1:]:
+            a, _, b = part.partition('-')
             try:
-                a, b = part.split('-', 1)
-                lines.extend(range(int(a), int(b) + 1))
+                lo, hi = int(a), int(b)
             except ValueError:
-                pass
+                continue
+            if lo > hi:
+                lo, hi = hi, lo
+            for n in range(lo, hi + 1):
+                if n not in seen:
+                    seen.add(n)
+                    out.append(n)
         else:
             try:
-                lines.append(int(part))
+                n = int(part)
             except ValueError:
-                pass
-    return lines
+                continue
+            if n not in seen:
+                seen.add(n)
+                out.append(n)
+    out.sort()
+    return out
 
 
 def get_code_style(theme_name: str = "monokai") -> Type[PygmentsStyle]:
