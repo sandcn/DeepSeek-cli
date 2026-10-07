@@ -18,6 +18,7 @@ from src.tui.ink.helpers import truncate_runs
 
 from .trace_styles import (
     _S_DIM,
+    _S_ERROR,
     _S_HINT,
     _S_INDEX,
     _S_SEARCH_BG,
@@ -129,12 +130,18 @@ def _row_search_text(row) -> str:
 
 
 def _trace_search_matches(pattern: str, side: str, records: list,
-                          content_rows: list | None = None) -> list:
-    """正则搜索 → 匹配索引列表（side: ledger/inspector；非法正则 → 空）。"""
+                          content_rows: list | None = None,
+                          case_sensitive: bool = False) -> list:
+    """正则搜索 → 匹配索引列表（side: ledger/inspector；非法正则 → 空）。
+
+    ★ 2026-10-07（轨迹 Trace 搜索增强）：``case_sensitive`` 控制大小写——
+    默认 False（忽略大小写，``re.IGNORECASE``）；True 时区分大小写（``v``
+    键在轨迹视图内切换，切换后重跑当前搜索）。
+    """
     if not pattern or side not in ("ledger", "inspector"):
         return []
     try:
-        rx = re.compile(pattern)
+        rx = re.compile(pattern, 0 if case_sensitive else re.IGNORECASE)
     except Exception:
         return []
     matches: list = []
@@ -158,8 +165,17 @@ def _trace_search_matches(pattern: str, side: str, records: list,
 
 
 def _ledger_row_runs(rec, sel: bool, left_w: int,
-                     matched: bool = False, cur_match: bool = False) -> list:
-    """台账行 runs（选中高亮 + ▶ 标记；耗时右对齐；宽截断；指纹缓存）。"""
+                     matched: bool = False, cur_match: bool = False,
+                     turn: int = 0) -> list:
+    """台账行 runs（选中高亮 + ▶ 标记；耗时右对齐；宽截断；指纹缓存）。
+
+    ★ 2026-10-07（轨迹 Trace 台账行增强）：
+      - ``turn``（>0）→ ``#N`` 后显示轮次标记 ``tN``（提示记录所属轮次）；
+      - ``subagent_label`` 非空 → 摘要前显示 ``↳`` 子代理标记（与合并的
+        工具记录区分——Enter 可下钻）；
+      - 失败记录（status ∈ fail/error）摘要以 ``_S_ERROR`` 红色高亮。
+    三者均进入缓存键（不同轮次/子代理/状态不串缓存）。
+    """
     t_raw = _rec_time_seconds(rec)
     t_key = int(t_raw) if t_raw is not None else None
     key = (
@@ -173,6 +189,8 @@ def _ledger_row_runs(rec, sel: bool, left_w: int,
         left_w,
         bool(matched),
         bool(cur_match),
+        int(turn or 0),
+        bool(getattr(rec, "subagent_label", "")),
     )
     cached = _LEDGER_RUNS_CACHE.get(key)
     if cached is not None:
@@ -183,6 +201,14 @@ def _ledger_row_runs(rec, sel: bool, left_w: int,
     else:
         runs.append(StyledRun("  ", None))
     runs.append(StyledRun(f"#{rec.index:>2} ", _S_INDEX))
+    try:
+        turn_no = int(turn or 0)
+    except (TypeError, ValueError):
+        turn_no = 0
+    if turn_no > 0:
+        runs.append(StyledRun(f"t{turn_no} ", _S_HINT))
+    if getattr(rec, "subagent_label", ""):
+        runs.append(StyledRun("\u21b3 ", _S_HINT))
     kind = getattr(rec, "kind", "context")
     icon = _kind_icon(kind)
     runs.append(StyledRun(f"{icon} ", Style(fg=_kind_fg(kind))))
@@ -191,7 +217,13 @@ def _ledger_row_runs(rec, sel: bool, left_w: int,
         sicon = _status_icon(status)
         runs.append(StyledRun(f"{sicon} ", Style(fg=_status_fg(status))))
     summary = getattr(rec, "summary", "") or "(空)"
-    runs.append(StyledRun(summary, _S_DIM if kind == "reasoning" else _S_TEXT))
+    if status in ("fail", "error"):
+        summary_style = _S_ERROR
+    elif kind == "reasoning":
+        summary_style = _S_DIM
+    else:
+        summary_style = _S_TEXT
+    runs.append(StyledRun(summary, summary_style))
     result = getattr(rec, "result", "") or ""
     if result and left_w > 0:
         budget = max(8, left_w // 3)
@@ -225,6 +257,35 @@ def _ledger_row_runs(rec, sel: bool, left_w: int,
     return runs
 
 
+#: 记录行下标 → 轮次号映射缓存（与 ``_LEDGER_RUNS_CACHE`` 同模式：
+#: rows 引用稳定（use_memo 命中）→ 跨帧 O(1) 查表）。
+_ROW_TURN_CACHE: dict = {}
+
+
+def _row_turn_map(rows: list) -> dict:
+    """记录行下标 → 轮次号（1-based；首个轮次分隔行之前的记录为 0）。
+
+    台账行渲染经此 O(1) 查表显示轮次标记（``#N t2 ⚡ …``）——一次 O(N)
+    预计算，rows 引用稳定时跨帧命中零重建。
+    """
+    key = id(rows)
+    entry = _ROW_TURN_CACHE.get(key)
+    if entry is not None and entry[0] is rows:
+        return entry[1]
+    mapping: dict = {}
+    turn = 0
+    for i, r in enumerate(rows):
+        if r is None:
+            turn += 1
+            mapping[i] = 0
+        else:
+            mapping[i] = turn
+    if len(_ROW_TURN_CACHE) >= _LEDGER_RUNS_CACHE_MAX:
+        _ROW_TURN_CACHE.clear()
+    _ROW_TURN_CACHE[key] = (rows, mapping)
+    return mapping
+
+
 def _sep_row_runs(n: int, left_w: int) -> list:
     """轮次分隔行 runs（``── 轮次 N ──``，深灰；纯函数缓存）。"""
     key = (n, left_w)
@@ -241,8 +302,9 @@ def _sep_row_runs(n: int, left_w: int) -> list:
 
 __all__ = [
     "_LEDGER_RUNS_CACHE", "_LEDGER_RUNS_CACHE_MAX", "_SEP_RUNS_CACHE",
-    "_VIEWPORT_RESERVED", "_viewport_rows", "_kind_fg", "_status_fg",
-    "_kind_icon", "_kind_name", "_status_icon",
+    "_ROW_TURN_CACHE", "_VIEWPORT_RESERVED", "_viewport_rows", "_kind_fg",
+    "_status_fg", "_kind_icon", "_kind_name", "_status_icon",
     "_rec_time_seconds", "_record_search_text", "_row_search_text",
-    "_trace_search_matches", "_ledger_row_runs", "_sep_row_runs",
+    "_trace_search_matches", "_ledger_row_runs", "_row_turn_map",
+    "_sep_row_runs",
 ]

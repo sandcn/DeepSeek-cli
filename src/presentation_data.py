@@ -653,7 +653,46 @@ TRACE_STYLE_DATA: dict = {
     "search_cur_bg": {"bg": 25},
     "search_prompt": {"fg": 45, "bold": True},
     "search_query_max": 200,
+    # ── 增强（2026-10-07）：失败高亮 / 状态提示 / 计数 / 帮助与统计面板 ──
+    "error": {"fg": 196, "bold": True},
+    "warn": {"fg": 214, "bold": True},
+    "status": {"fg": 221},
+    "count": {"fg": 214},
+    "help_key": {"fg": 214},
+    "help_group": {"fg": 110, "bold": True},
+    "help_desc": {"fg": 252},
+    "stats_label": {"fg": 110},
+    "stats_value": {"fg": 252},
+    "stats_bar": {"fg": 45},
 }
+
+# ── 轨迹视图快捷键速查表（帮助面板内容，「一切皆插件」） ──────
+# 每项：group=分组标题；keys=键位文本；desc=说明。渲染由
+# ``src.tui.app.trace_help`` 负责（键列对齐 + 分色），可被 Patch/Overlay
+# 整表替换或禁用（缺席时帮助面板回退空态提示）。
+
+TRACE_KEYMAP_DATA: list = [
+    {"group": "导航", "keys": "\u2191\u2193 / j k", "desc": "移动选择（检查器焦点移动光标行）"},
+    {"group": "导航", "keys": "PgUp / PgDn", "desc": "整页翻页"},
+    {"group": "导航", "keys": "Ctrl+D / Ctrl+U", "desc": "半页下翻 / 上翻"},
+    {"group": "导航", "keys": "Home/End \u00b7 g/G", "desc": "首条 / 末条"},
+    {"group": "导航", "keys": "N g \u00b7 N G", "desc": "跳到记录号 #N（数字 + g/G）"},
+    {"group": "导航", "keys": "l / h \u00b7 \u2192 / \u2190", "desc": "焦点切到检查器 / 返回台账"},
+    {"group": "记录定位", "keys": "] / [", "desc": "下一个 / 上一个工具调用"},
+    {"group": "记录定位", "keys": "e / E", "desc": "下一个 / 上一个失败记录"},
+    {"group": "记录定位", "keys": "Enter", "desc": "进入子代理轨迹 / 工具列表"},
+    {"group": "详情与树", "keys": "空格", "desc": "展开 / 收起光标所在树节点"},
+    {"group": "详情与树", "keys": "zR / zM", "desc": "全部展开 / 全部折叠树"},
+    {"group": "搜索", "keys": "/", "desc": "进入搜索输入（回车执行，Esc 取消）"},
+    {"group": "搜索", "keys": "n / N / p", "desc": "下一个 / 上一个匹配"},
+    {"group": "搜索", "keys": "v", "desc": "切换大小写敏感"},
+    {"group": "搜索", "keys": "f", "desc": "切换过滤模式（台账只显示匹配记录）"},
+    {"group": "面板", "keys": "i", "desc": "统计概览面板（token/耗时/成功率）"},
+    {"group": "面板", "keys": "?", "desc": "本帮助面板（? / Esc / q 关闭）"},
+    {"group": "操作", "keys": "y", "desc": "复制当前记录内容到剪贴板（OSC52）"},
+    {"group": "操作", "keys": "w / W", "desc": "导出轨迹为 Markdown / JSON 文件"},
+    {"group": "操作", "keys": "Esc / Ctrl+H", "desc": "返回主轨迹 / 关闭轨迹视图"},
+]
 
 #: 内置数据表声明
 _BUILTIN_SPECS: Tuple[DataTable, ...] = (
@@ -690,6 +729,7 @@ _BUILTIN_SPECS: Tuple[DataTable, ...] = (
     DataTable("nested_bullet", "nested_bullet", NESTED_BULLET_SYMBOLS),
     DataTable("diff_style", "diff_style", DIFF_STYLE_DATA),
     DataTable("trace_style", "trace_style", TRACE_STYLE_DATA),
+    DataTable("trace_keymap", "trace_keymap", TRACE_KEYMAP_DATA),
     DataTable("model_patterns", "model_patterns", MODEL_PATTERNS_DATA),
 )
 
@@ -1062,6 +1102,11 @@ def trace_style(key: str, default=None):
     return (data_table("trace_style", {}) or {}).get(key, default)
 
 
+def trace_keymap() -> list:
+    """轨迹视图快捷键速查表（帮助面板内容；缺席回退空列表）。"""
+    return list(data_table("trace_keymap", []) or [])
+
+
 def model_patterns() -> dict:
     return data_table("model_patterns", {}) or {}
 
@@ -1148,10 +1193,12 @@ __all__ = [
     "nested_bullets",
     "diff_style",
     "trace_style",
+    "trace_keymap",
     "model_patterns",
     "model_pattern",
     "TRACE_KIND_ORDER_DATA",
     "TRACE_BLOCK_KIND_MAP",
+    "TRACE_KEYMAP_DATA",
     "MESSAGE_ROLE_ICON_MAP",
     "BORDER_CHARS_MAP",
     "BORDER_OBJECT_DEFAULT",

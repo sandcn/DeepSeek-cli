@@ -493,6 +493,46 @@ def set_window_title(title: str) -> None:
         _logger.debug("窗口标题写入失败（无 TTY？）: %r", title, exc_info=True)
 
 
+#: 剪贴板写入上限（原始字节）——base64 膨胀约 4/3，控制在 100 000 字节
+#: 序列以内（多数终端 OSC 52 长度上限）。
+_CLIPBOARD_MAX_BYTES = 74_000
+
+
+def set_clipboard(text: str) -> bool:
+    """写入系统剪贴板（OSC 52）。
+
+    经 OSC 52 序列 ``\\033]52;c;<base64>\\007`` 直接写 ``sys.__stdout__``
+    （与 ``set_window_title`` 同路径——OSC 为零宽控制序列，不影响 TUI 画面
+    与光标定位）。内容按 UTF-8 → base64；超长内容按 ``_CLIPBOARD_MAX_BYTES``
+    截断（防终端序列长度限制/内存放大）。
+
+    注意：OSC 52 需终端支持（xterm/iTerm2/kitty/Windows Terminal 等大多
+    支持；部分终端默认禁用——此时静默无效果，但返回 True 表示序列已发出）。
+
+    Args:
+        text: 要复制的内容（``None`` 视为空串）。
+
+    Returns:
+        True = 序列已写出；False = 无可用 stdout（无 TTY）或写入失败。
+    """
+    try:
+        import base64
+
+        raw = (text or "").encode("utf-8")
+        if len(raw) > _CLIPBOARD_MAX_BYTES:
+            raw = raw[:_CLIPBOARD_MAX_BYTES]
+        payload = base64.b64encode(raw).decode("ascii")
+        out = sys.__stdout__
+        if out is None:
+            return False
+        out.write(f"\033]52;c;{payload}\007")
+        out.flush()
+        return True
+    except (OSError, ValueError, AttributeError):  # BUG-52：无 TTY 时 stdout 为 None
+        _logger.debug("剪贴板写入失败（无 TTY？）", exc_info=True)
+        return False
+
+
 # ═══════════════════════════════════════════════════════════
 # SIGWINCH 信号处理
 # ═══════════════════════════════════════════════════════════

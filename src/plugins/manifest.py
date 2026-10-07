@@ -704,7 +704,8 @@ PRESENTATION_DATA_ENTRIES = [
         "billing_default", "metric_defaults", "ui_defaults",
         "semantic_color", "gradient_stops", "shell_detect",
         "http_error_hint", "badge_metrics", "kitty_protocol",
-        "nested_bullet", "diff_style", "trace_style", "model_patterns",
+        "nested_bullet", "diff_style", "trace_style", "trace_keymap",
+        "model_patterns",
     )
 ]
 

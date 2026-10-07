@@ -38,6 +38,8 @@ class TraceRecord:
         source_block: 来源 ChatBlock（块记录惰性提取详情用；否则 None）。
         subagent_label: 关联 subagent label（Enter 进入其轨迹用）。
         tool_call_id: 工具调用唯一 ID。
+        tool_name: 工具注册名（tool 记录专用；空=未知——检查器元信息与
+            统计概览按名称聚合）。
         tool_args: 工具调用原始参数（str JSON 或 dict；None=无）。
         tool_result: 工具返回原始文本。
         images: 多模态图片元信息列表（缩略图渲染用）。
@@ -56,6 +58,7 @@ class TraceRecord:
     source_block: object | None = None
     subagent_label: str = ""
     tool_call_id: str = ""
+    tool_name: str = ""
     tool_args: object = None
     tool_result: str = ""
     images: list = field(default_factory=list)

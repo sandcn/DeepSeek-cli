@@ -58,6 +58,17 @@ _STYLE_SPECS = (
     ("_S_SEARCH_BG", "search_bg", Style(bg=236)),
     ("_S_SEARCH_CUR_BG", "search_cur_bg", Style(bg=25)),
     ("_S_SEARCH_PROMPT", "search_prompt", Style(fg=45, bold=True)),
+    # 增强（2026-10-07）：失败高亮 / 状态提示 / 匹配计数 / 帮助与统计面板
+    ("_S_ERROR", "error", Style(fg=196, bold=True)),
+    ("_S_WARN", "warn", Style(fg=214, bold=True)),
+    ("_S_STATUS", "status", Style(fg=221)),
+    ("_S_COUNT", "count", Style(fg=214)),
+    ("_S_HELP_KEY", "help_key", Style(fg=214)),
+    ("_S_HELP_GROUP", "help_group", Style(fg=110, bold=True)),
+    ("_S_HELP_DESC", "help_desc", Style(fg=252)),
+    ("_S_STATS_LABEL", "stats_label", Style(fg=110)),
+    ("_S_STATS_VALUE", "stats_value", Style(fg=252)),
+    ("_S_STATS_BAR", "stats_bar", Style(fg=45)),
 )
 
 #: 搜索 query 长度上限兜底
@@ -101,6 +112,16 @@ _S_INSP_BG = _MAP["_S_INSP_BG"]
 _S_SEARCH_BG = _MAP["_S_SEARCH_BG"]
 _S_SEARCH_CUR_BG = _MAP["_S_SEARCH_CUR_BG"]
 _S_SEARCH_PROMPT = _MAP["_S_SEARCH_PROMPT"]
+_S_ERROR = _MAP["_S_ERROR"]
+_S_WARN = _MAP["_S_WARN"]
+_S_STATUS = _MAP["_S_STATUS"]
+_S_COUNT = _MAP["_S_COUNT"]
+_S_HELP_KEY = _MAP["_S_HELP_KEY"]
+_S_HELP_GROUP = _MAP["_S_HELP_GROUP"]
+_S_HELP_DESC = _MAP["_S_HELP_DESC"]
+_S_STATS_LABEL = _MAP["_S_STATS_LABEL"]
+_S_STATS_VALUE = _MAP["_S_STATS_VALUE"]
+_S_STATS_BAR = _MAP["_S_STATS_BAR"]
 _SEARCH_QUERY_MAX = search_query_max()
 
 __all__ = [
@@ -108,5 +129,8 @@ __all__ = [
     "_S_DIM", "_S_SEL_BG", "_S_SEL_MARK", "_S_SECTION", "_S_TREE_KEY",
     "_S_TREE_VAL", "_S_INSP_BG", "_S_SEARCH_BG", "_S_SEARCH_CUR_BG",
     "_S_SEARCH_PROMPT", "_SEARCH_QUERY_MAX",
+    "_S_ERROR", "_S_WARN", "_S_STATUS", "_S_COUNT",
+    "_S_HELP_KEY", "_S_HELP_GROUP", "_S_HELP_DESC",
+    "_S_STATS_LABEL", "_S_STATS_VALUE", "_S_STATS_BAR",
     "trace_style_map", "search_query_max",
 ]

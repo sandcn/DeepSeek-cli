@@ -65,11 +65,21 @@ from .trace_styles import (  # noqa: E402
     _S_SEL_BG,
     _S_SEL_MARK,
     _S_SEP_ROW,
+    _S_STATUS,
     _S_TEXT,
     _S_TIME,
     _S_TITLE,
     _S_TREE_KEY,
     _S_TREE_VAL,
+)
+
+# ── 统计 / 帮助 / 导出（2026-10-07：轨迹 Trace 显示信息 / 操作 / 更多功能） ──
+from .trace_export import record_to_text, write_export  # noqa: E402
+from .trace_help import help_panel_rows  # noqa: E402
+from .trace_stats import (  # noqa: E402
+    collect_trace_stats,
+    format_summary,
+    stats_panel_rows,
 )
 
 # ── 树渲染（实现位于 trace_tree，此处 re-import） ──────────
@@ -108,6 +118,7 @@ from .trace_ledger import (  # noqa: E402
     _rec_time_seconds,
     _record_search_text,
     _row_search_text,
+    _row_turn_map,
     _sep_row_runs,
     _status_fg,
     _status_icon,
@@ -660,20 +671,118 @@ def _inspector_content_deps(rec, right_w: int, collapsed: set | None = None) -> 
     return tuple(_detail_deps(rec)) + (right_w, ";".join(sorted(collapsed or ())))
 
 
+def _truncate_text(text: str, width: int) -> str:
+    """按显示宽度截断文本（超宽尾部追加 ``…``；异常回退原样）。
+
+    用于检查器 meta 行（TEXT 单行，必须自行截断保证行宽不变量）。
+    """
+    if width <= 0:
+        return text
+    try:
+        from src.tui._screen import wcswidth_simple
+
+        if wcswidth_simple(text) <= width:
+            return text
+        out: list = []
+        used = 0
+        budget = max(0, width - 1)
+        for ch in text:
+            w = wcswidth_simple(ch)
+            if used + w > budget:
+                break
+            out.append(ch)
+            used += w
+        return "".join(out) + "\u2026"
+    except Exception:
+        return text
+
+
+def _line_count(text: str) -> int:
+    """文本行数（非空时 ``\\n`` 数 + 1；空串 0）。"""
+    if not text:
+        return 0
+    return text.count("\n") + 1
+
+
+def _format_clock(ts) -> str:
+    """epoch 时间戳 → ``HH:MM:SS``（本地时区；非法值回退空串）。"""
+    try:
+        return _time.strftime("%H:%M:%S", _time.localtime(float(ts)))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+
+
+def _meta_parts(rec, content_total: int = 0) -> list:
+    """检查器 meta 行分段（信息存在才输出；单行由调用方 join + 截断）。
+
+    ★ 2026-10-07（轨迹 Trace 元信息增强）：在原「耗时 · 输入 · 输出」基础上
+    补充——状态、工具名、调用 ID、起始时间（epoch 基准才显示）、token 明细
+    （缓存/实时输出）、参数与返回行数、内容行数。``content_total`` 仅在已有
+    信息时作为附加项（不作为 meta 存在的唯一条件——保持 ``_inspector_fixed_rows``
+    预算口径与渲染一致）。
+    """
+    parts: list = []
+    if rec is None:
+        return parts
+    ts = _rec_time_seconds(rec)
+    if ts is not None:
+        parts.append(f"耗时 {format_duration(ts)}")
+    tokens = getattr(rec, "tokens", None) or {}
+    if isinstance(tokens, dict) and tokens:
+        seg = (
+            f"输入 {format_tokens(_safe_int(tokens.get('input', 0) or 0))} "
+            f"输出 {format_tokens(_safe_int(tokens.get('output', 0) or 0))}"
+        )
+        cache = _safe_int(tokens.get("cache", 0) or 0)
+        if cache:
+            seg += f" 缓存 {format_tokens(cache)}"
+        live_out = _safe_int(tokens.get("live_output", 0) or 0)
+        if live_out:
+            seg += f" 实时\u2193{format_tokens(live_out)}"
+        parts.append(seg)
+    name = (getattr(rec, "tool_name", "") or "").strip()
+    if name:
+        parts.append(f"工具 {name}")
+    cid = (getattr(rec, "tool_call_id", "") or "").strip()
+    if cid:
+        parts.append(f"ID {cid[:20]}")
+    started = getattr(rec, "time_started", None)
+    if started is not None and not getattr(rec, "time_started_monotonic", True):
+        stamp = _format_clock(started)
+        if stamp:
+            parts.append(f"开始 {stamp}")
+    status = (getattr(rec, "status", "") or "").strip()
+    if status:
+        parts.append(f"状态 {status}")
+    if (getattr(rec, "kind", "") or "") == "tool":
+        args = getattr(rec, "tool_args", None)
+        if args is not None and str(args) != "":
+            parts.append(f"参数 {_line_count(str(args))} 行")
+        result = getattr(rec, "tool_result", "") or ""
+        if result:
+            parts.append(f"返回 {_line_count(result)} 行")
+    if parts and content_total:
+        parts.append(f"内容 {content_total} 行")
+    return parts
+
+
 def _inspector_fixed_rows(rec) -> int:
     """检查器非内容区固定占用行数（★ P1 review：单一真源）。
 
-    标题 2 行（标题 + 分隔/提示占位）+ meta 行（耗时/token 存在时 1 行）
+    标题 2 行（标题 + 分隔/提示占位）+ meta 行（``_meta_parts`` 非空时 1 行）
     + subagent 提示行（``subagent_label`` 非空时 1 行）。
 
     ``_inspector_children``（窗口预算）与 TraceView（滚动协调）共用本函数，
     消除此前「精确 ``content_vh = vh - fixed``」与「近似
     ``approx_content_vh = vh - 3``」两套预算不一致（fixed=4 时光标可落到
     窗口外，光标行高亮消失、j/k 视口跟随在边界失效）。
+
+    ★ 2026-10-07（元信息增强）：meta 触发条件与 ``_meta_parts(rec, 0)``
+    单一真源（工具名/调用 ID 等新字段同样计入）——预算与渲染恒一致。
     """
     fixed = 2
     if rec is not None:
-        if _rec_time_seconds(rec) is not None or (getattr(rec, "tokens", None) or {}):
+        if _meta_parts(rec, 0):
             fixed += 1
         if getattr(rec, "subagent_label", ""):
             fixed += 1
@@ -683,6 +792,88 @@ def _inspector_fixed_rows(rec) -> int:
 def _inspector_viewport_rows(rec, vh: int) -> int:
     """检查器内容区可用行数（单一真源，见 ``_inspector_fixed_rows``）。"""
     return max(_INSPECTOR_MIN_CONTENT, vh - _inspector_fixed_rows(rec))
+
+
+def _pane_window_children(
+    pane_rows, right_w: int, vh: int, scroll: int = 0, cursor: int = -1,
+    key_prefix: str = "tpane", empty_text: str = "(无内容)",
+) -> list:
+    """通用滚动面板内容元素（帮助 / 统计面板；与检查器同一滚动语义）。
+
+    ★ 2026-10-07（轨迹 Trace 显示信息 / 更多功能）：帮助面板与统计面板
+    全量内容行经本函数切窗口渲染——scroll 偏移、光标行背景高亮
+    （``_S_INSP_BG``，vim cursorline 语义）、顶/底省略提示、空态提示。
+    每行 TEXT 带唯一 key（``{key_prefix}-*``）防 fiber 共享环。
+
+    Args:
+        pane_rows: 全量内容行（``list[list[StyledRun]]``）。
+        right_w: 右栏宽（截断预算；<=0 防御）。
+        vh: 视口行数预算。
+        scroll: 滚动偏移（越界钳制）。
+        cursor: 光标行（-1 = 不高亮）。
+        key_prefix: 元素 key 前缀（帮助/统计各一，防跨面板 key 冲突）。
+        empty_text: 空内容提示文本。
+    """
+    rows = list(pane_rows or [])
+    total = len(rows)
+    # 内容区预算（顶部/底部提示占位 2 行——与检查器同口径）
+    content_vh = max(_INSPECTOR_MIN_CONTENT, int(vh) - 2)
+    try:
+        scroll = int(scroll or 0)
+    except (TypeError, ValueError, OverflowError):
+        scroll = 0
+    try:
+        cursor = int(cursor) if cursor is not None else -1
+    except (TypeError, ValueError, OverflowError):
+        cursor = -1
+    if total > 0:
+        cursor = max(0, min(cursor, total - 1))
+    else:
+        cursor = -1
+    if total > content_vh:
+        scroll = max(0, min(scroll, total - content_vh))
+    else:
+        scroll = 0
+    children: list = []
+    if scroll > 0:
+        children.append(h(TEXT, {
+            "children": f"\u2026 前 {scroll} 行省略", "style": _S_HINT,
+            "height": 1, "key": f"{key_prefix}-top",
+        }))
+    window = rows[scroll:scroll + content_vh]
+    if scroll + len(window) < total:
+        if cursor >= 0 and cursor == scroll + len(window) - 1:
+            bottom_omitted = total - scroll - len(window)
+        else:
+            window = window[:max(0, len(window) - 1)]
+            bottom_omitted = total - scroll - len(window)
+    else:
+        bottom_omitted = 0
+    for i, seg in enumerate(window):
+        abs_idx = scroll + i
+        runs = seg if isinstance(seg, list) else [StyledRun(str(seg), _S_TEXT)]
+        if cursor >= 0 and abs_idx == cursor:
+            runs = [
+                StyledRun(r.text, (r.style or Style()).merge(_S_INSP_BG))
+                for r in runs
+            ]
+        children.append(h(TEXT, {
+            "children": ("".join(r.text for r in runs) if runs else "") or " ",
+            "styled": runs if runs else [StyledRun(" ", None)],
+            "height": 1,
+            "key": f"{key_prefix}-{len(children)}",
+        }))
+    if bottom_omitted:
+        children.append(h(TEXT, {
+            "children": f"\u2026 后 {bottom_omitted} 行省略", "style": _S_HINT,
+            "height": 1, "key": f"{key_prefix}-omitted",
+        }))
+    if total == 0:
+        children.append(h(TEXT, {
+            "children": empty_text, "style": _S_HINT, "height": 1,
+            "key": f"{key_prefix}-empty",
+        }))
+    return children
 
 
 def _inspector_children(
@@ -749,27 +940,26 @@ def _inspector_children(
     children.append(h(TEXT, {
         "children": title, "style": _S_TITLE, "height": 1, "key": "tinsp-title",
     }))
-    # 元信息（耗时 / token）
-    # ★ 2026-08-19（用户需求：轨迹 Trace 正运行的工具耗时没有刷新）：耗时
-    #   经 ``_rec_time_seconds`` 实时计算（运行中记录按起始时间戳走动——
-    #   工具无输出/records 不重建期间 meta 行每秒刷新）。
-    meta: list = []
-    ts = _rec_time_seconds(rec)
-    if ts is not None:
-        meta.append(f"耗时 {format_duration(ts)}")
-    tokens = getattr(rec, "tokens", None) or {}
-    if tokens:
-        meta.append(f"输入 {format_tokens(_safe_int(tokens.get('input', 0) or 0))}")
-        meta.append(f"输出 {format_tokens(_safe_int(tokens.get('output', 0) or 0))}")
-    if meta:
-        children.append(h(TEXT, {
-            "children": " · ".join(meta), "style": _S_DIM, "height": 1,
-            "key": "tinsp-meta",
-        }))
     # ── 内容行（全量生成 → 滚动窗口切片；光标行高亮；省略提示两侧） ──
+    # ★ 2026-10-07（元信息增强）：内容行提前解析——meta 行需要内容行数
+    #   （「内容 N 行」）；解析结果供下方滚动窗口复用（无重复生成）。
     if content_rows is None:
         content_rows, row_keys = _inspector_content_rows(rec, right_w, collapsed)
     total = len(content_rows)
+    # 元信息（耗时 / 状态 / 工具 / 调用 ID / 起始时间 / token 明细 /
+    #   参数与返回行数 / 内容行数）
+    # ★ 2026-08-19（用户需求：轨迹 Trace 正运行的工具耗时没有刷新）：耗时
+    #   经 ``_rec_time_seconds`` 实时计算（运行中记录按起始时间戳走动——
+    #   工具无输出/records 不重建期间 meta 行每秒刷新）。
+    # ★ 2026-10-07（轨迹 Trace 元信息增强）：单行信息密度提升（工具名/调用
+    #   ID/起始时间/token 明细/参数与返回行数/内容行数），按栏宽截断。
+    meta = _meta_parts(rec, total)
+    if meta:
+        meta_text = _truncate_text(" \u00b7 ".join(meta), right_w)
+        children.append(h(TEXT, {
+            "children": meta_text, "style": _S_DIM, "height": 1,
+            "key": "tinsp-meta",
+        }))
     try:
         scroll = int(scroll) or 0
     except (TypeError, ValueError, OverflowError):
@@ -1163,6 +1353,8 @@ def _ledger_renderer(rows: list, left_w: int,
     大台账（多轮次）下每帧 O(N×视口) ≈ O(N²)。
     """
     sep_nums, _, _ = _rows_index(rows)
+    # ★ 2026-10-07（台账行增强）：记录行 → 轮次号映射（O(1) 查表显示 tN）。
+    turn_map = _row_turn_map(rows)
 
     def render_item(item, idx, is_sel):
         if item is None:
@@ -1178,6 +1370,7 @@ def _ledger_renderer(rows: list, left_w: int,
             "key": f"trow-{idx}",
             "styled": _ledger_row_runs(
                 item, bool(is_sel), left_w, matched, cur_match,
+                turn_map.get(idx, 0),
             ),
             "height": 1,
         })
@@ -1192,6 +1385,207 @@ def _ledger_renderer(rows: list, left_w: int,
 # 只负责状态读取 + hooks 接线 + 渲染组装。
 
 
+# ═══════════════════════════════════════════════════════════
+# 过滤视图 / 记录定位 / 面板动作（2026-10-07 轨迹 Trace 增强）
+# ═══════════════════════════════════════════════════════════
+
+
+def _filter_view(records: list, matches: list) -> tuple:
+    """过滤视图：台账只保留搜索匹配的记录（无轮次分隔行）。
+
+    ★ 2026-10-07（轨迹 Trace 搜索增强——过滤模式 ``f``）：``matches`` 为
+    台账搜索匹配的记录索引（原始列表）——构造子集 records/rows 与
+    「原始索引 → 视图索引」映射（``view_map``），供选择定位/下钻/统计
+    统一基于子集。
+
+    Returns:
+        (view_records, view_rows, view_map)。
+    """
+    keep = [i for i in matches if 0 <= i < len(records)]
+    view_records = [records[i] for i in keep]
+    view_map = {orig: pos for pos, orig in enumerate(keep)}
+    return view_records, list(view_records), view_map
+
+
+def _record_pos_by_number(records: list, number: int) -> int:
+    """记录号 ``#N`` → 视图位置（找不到 -1）。"""
+    for i, rec in enumerate(records or []):
+        if rec is not None and getattr(rec, "index", -1) == number:
+            return i
+    return -1
+
+
+def _find_record_pos(records: list, start: int, delta: int, predicate) -> int:
+    """从 ``start`` 起按 ``delta`` 方向找首个满足 ``predicate`` 的记录位置。
+
+    不环绕（到边界即失败返回 -1）——符合「下一个错误/下一个工具」的
+    单向推进直觉（``e``/``]`` 到底后提示「无更多」而非跳回开头）。
+    """
+    n = len(records or [])
+    i = int(start) + int(delta)
+    while 0 <= i < n:
+        rec = records[i]
+        if rec is not None and predicate(rec):
+            return i
+        i += int(delta)
+    return -1
+
+
+def _is_error_record(rec) -> bool:
+    """记录是否失败（status ∈ fail/error）。"""
+    return (getattr(rec, "status", "") or "").lower() in ("fail", "error")
+
+
+def _is_tool_record(rec) -> bool:
+    """记录是否工具调用。"""
+    return (getattr(rec, "kind", "") or "") == "tool"
+
+
+def _set_status(model, message: str) -> None:
+    """写轨迹视图底部状态提示（空串清除）。"""
+    model.trace_status_message = message or ""
+
+
+def _status_line_text(model, filtered: bool = False) -> str:
+    """底部状态行文本（搜索匹配计数 + 操作反馈 + 面板提示）。
+
+    ★ 2026-10-07（轨迹 Trace 搜索/操作增强）：有搜索时显示
+    ``/pattern  n/m [Aa] [过滤]``（匹配计数——用户要求「底部显示匹配 n/m
+    计数」）；操作反馈（导出/复制/无匹配等）经 ``trace_status_message``
+    追加；帮助/统计面板打开时提示关闭方式。
+    """
+    parts: list = []
+    if getattr(model, "trace_help_open", False):
+        parts.append("帮助面板：? / q / Esc 关闭")
+    elif getattr(model, "trace_stats_open", False):
+        parts.append("统计面板：i 关闭")
+    pattern = getattr(model, "trace_search_pattern", "") or ""
+    if pattern:
+        matches = getattr(model, "trace_search_matches", None) or []
+        n = len(matches)
+        idx = getattr(model, "trace_search_idx", -1)
+        cur = (idx + 1) if 0 <= idx < n else 0
+        seg = f"/{pattern}  {cur}/{n}"
+        if getattr(model, "trace_search_case", False):
+            seg += " Aa"
+        if filtered:
+            seg += " [过滤]"
+        parts.append(seg)
+    message = getattr(model, "trace_status_message", "") or ""
+    if message:
+        parts.append(message)
+    return "  \u00b7  ".join(parts)
+
+
+def _reset_browse_state(model) -> None:
+    """切换选中记录后复位浏览态（检查器滚动/光标/树折叠）。"""
+    model.trace_inspector_scroll = 0
+    model.trace_inspector_cursor = 0
+    model.trace_tree_collapsed = set()
+
+
+def _select_record(model, pos: int) -> None:
+    """选中视图位置 ``pos``（-1 = 尾部跟随）并复位浏览态。"""
+    model.trace_selected = pos
+    _reset_browse_state(model)
+
+
+def _collapse_all(model, row_keys, fold: bool) -> None:
+    """``zR``/``zM``：全部展开（fold=False）/ 全部折叠（fold=True）。
+
+    折叠集合元素 = 当前内容行的可折叠节点路径 key（``row_keys`` 非 None 项
+    ——树节点的真源）；检查器搜索在内容结构变化后失效（与空格折叠同语义）。
+    """
+    if fold:
+        keys = {k for k in (row_keys or []) if k}
+        model.trace_tree_collapsed = keys
+        if not keys:
+            _set_status(model, "当前记录无可折叠节点")
+            return
+    else:
+        model.trace_tree_collapsed = set()
+    if getattr(model, "trace_search_side", "") == "inspector":
+        _clear_search(model)
+
+
+def _do_copy(model, rec) -> None:
+    """``y``：复制当前记录内容到剪贴板（OSC52）。"""
+    if rec is None:
+        _set_status(model, "无可复制的记录")
+        return
+    from src.tui._screen import set_clipboard
+
+    text = record_to_text(rec)
+    ok = set_clipboard(text)
+    if ok:
+        _set_status(
+            model,
+            f"已复制 #{getattr(rec, 'index', 0)} 记录（{len(text)} 字符）到剪贴板",
+        )
+    else:
+        _set_status(model, "复制失败：无可用终端输出")
+
+
+def _toggle_filter(model, records) -> None:
+    """``f``：切换过滤模式（台账只显示搜索匹配记录）。
+
+    仅在「台账搜索 + 有匹配」时开启（否则提示并保持关闭——避免空台账
+    无从导航）；关闭时回到全量显示（尾部跟随）。
+    """
+    new_value = not bool(getattr(model, "trace_search_filter", False))
+    side = getattr(model, "trace_search_side", "") or ""
+    pattern = getattr(model, "trace_search_pattern", "") or ""
+    matches = list(getattr(model, "trace_search_matches", None) or [])
+    if new_value and not (side == "ledger" and pattern and matches):
+        model.trace_search_filter = False
+        _set_status(model, "过滤需先进行台账搜索且有匹配（/ 搜索）")
+        return
+    model.trace_search_filter = new_value
+    if new_value:
+        _select_record(model, 0)
+        _set_status(model, f"过滤开启：仅显示 {len(matches)} 条匹配")
+    else:
+        _select_record(model, -1)
+        _set_status(model, "过滤关闭：显示全部记录")
+
+
+def _toggle_search_case(model, records, content_rows, total_content: int,
+                        approx_content_vh: int, view_map) -> None:
+    """``v``：切换搜索大小写敏感并重跑当前搜索（无搜索时仅切换开关）。"""
+    model.trace_search_case = not bool(getattr(model, "trace_search_case", False))
+    pattern = getattr(model, "trace_search_pattern", "") or ""
+    label = "敏感" if model.trace_search_case else "不敏感"
+    if not pattern:
+        _set_status(model, f"搜索大小写：{label}")
+        return
+    side = getattr(model, "trace_search_side", "") or "ledger"
+    matches = _trace_search_matches(
+        pattern, side, records, content_rows,
+        case_sensitive=model.trace_search_case,
+    )
+    model.trace_search_matches = matches
+    if matches:
+        model.trace_search_idx = 0
+        _search_locate(
+            model, side, matches[0], total_content, approx_content_vh, view_map,
+        )
+    else:
+        model.trace_search_idx = -1
+    _set_status(model, f"搜索大小写{label}：{len(matches)} 处匹配")
+
+
+def _do_export(model, records, fmt: str, source: str) -> None:
+    """``w``/``W``：导出当前轨迹为 Markdown / JSON 文件。"""
+    try:
+        path = write_export(records, fmt, source)
+    except Exception as exc:  # 写盘失败（权限/磁盘）→ 状态提示，不崩溃
+        _set_status(model, f"导出失败：{exc}")
+        return
+    count = sum(1 for rec in (records or []) if rec is not None)
+    label = "Markdown" if fmt == "md" else "JSON"
+    _set_status(model, f"已导出 {count} 条记录（{label}）→ {path}")
+
+
 def _clear_search(model) -> None:
     """清除搜索状态（无匹配高亮；Esc/关闭视图/切换记录失效时调用）。"""
     model.trace_search_pattern = ""
@@ -1201,14 +1595,23 @@ def _clear_search(model) -> None:
 
 
 def _search_locate(model, side: str, target: int,
-                   total_content: int, approx_content_vh: int) -> None:
+                   total_content: int, approx_content_vh: int,
+                   view_map: dict | None = None) -> None:
     """定位到匹配：台账 → 选中记录（ListView 自动滚动）；检查器 → 光标行 +
-    视口跟随（渲染期协调）。焦点切到匹配所在面板（vim 定位语义）。"""
+    视口跟随（渲染期协调）。焦点切到匹配所在面板（vim 定位语义）。
+
+    ★ 2026-10-07（过滤模式）：``view_map`` 为「原始记录索引 → 过滤视图索引」
+    映射（未过滤时 None）——台账定位把匹配的原始索引转换为视图索引后写回
+    ``trace_selected``（过滤视图下选择基于子集）。
+    """
     if side == "ledger":
-        model.trace_selected = target
+        model.trace_selected = (
+            view_map.get(target, target) if view_map else target
+        )
         model.trace_pane = "ledger"
         model.trace_inspector_scroll = 0
         model.trace_inspector_cursor = 0
+        model.trace_tree_collapsed = set()
     else:
         model.trace_pane = "inspector"
         model.trace_inspector_cursor = target
@@ -1219,7 +1622,8 @@ def _search_locate(model, side: str, target: int,
 
 
 def _search_jump(model, delta: int,
-                 total_content: int, approx_content_vh: int) -> None:
+                 total_content: int, approx_content_vh: int,
+                 view_map: dict | None = None) -> None:
     """n/N/p 切换当前匹配（环绕）：delta=1 下一个、-1 上一个。"""
     matches = getattr(model, "trace_search_matches", None) or []
     if not matches:
@@ -1232,11 +1636,14 @@ def _search_jump(model, delta: int,
         new_idx = (idx + delta) % n
     model.trace_search_idx = new_idx
     side = getattr(model, "trace_search_side", "") or "ledger"
-    _search_locate(model, side, matches[new_idx], total_content, approx_content_vh)
+    _search_locate(
+        model, side, matches[new_idx], total_content, approx_content_vh, view_map,
+    )
 
 
 def _exec_search(model, records, content_rows,
-                 total_content: int, approx_content_vh: int) -> None:
+                 total_content: int, approx_content_vh: int,
+                 view_map: dict | None = None) -> None:
     """回车执行搜索：当前焦点面板（台账搜记录 / 检查器搜内容行）、
     正则 re.search、所有匹配行高亮；定位到首个匹配。
 
@@ -1250,26 +1657,62 @@ def _exec_search(model, records, content_rows,
         _clear_search(model)
         return
     side = getattr(model, "trace_pane", "ledger") or "ledger"
-    matches = _trace_search_matches(pattern, side, records, content_rows)
+    matches = _trace_search_matches(
+        pattern, side, records, content_rows,
+        case_sensitive=bool(getattr(model, "trace_search_case", False)),
+    )
     model.trace_search_pattern = pattern
     model.trace_search_side = side
     model.trace_search_matches = matches
     if matches:
         model.trace_search_idx = 0
-        _search_locate(model, side, matches[0], total_content, approx_content_vh)
+        _search_locate(
+            model, side, matches[0], total_content, approx_content_vh, view_map,
+        )
     else:
         model.trace_search_idx = -1
+        if pattern:
+            _set_status(model, f"无匹配：{pattern}")
 
 
 def _handle_trace_event(
     model, records, content_rows, row_keys, sel, *,
     total: int, total_content: int, approx_content_vh: int,
     pane_state, event,
+    raw_records=None, view_map=None, source: str = "",
+    pane_total: int = 0, pane_vh: int = 0,
 ) -> bool:
-    """TraceView 输入事件处理（模块级；P1-1 拆分自组件内闭包 ``_handle``）。"""
+    """TraceView 输入事件处理（模块级；P1-1 拆分自组件内闭包 ``_handle``）。
+
+    ★ 2026-10-07（轨迹 Trace 增强）新增参数：
+      - ``raw_records``：未过滤的完整记录列表（搜索/导出用；None → 同
+        ``records``）——过滤模式下 ``records`` 只是匹配子集，重新搜索仍
+        基于全量；
+      - ``view_map``：原始记录索引 → 过滤视图索引映射（未过滤 None）；
+      - ``source``：轨迹来源标签（导出元信息；主轨迹 "" / 子代理 label）；
+      - ``pane_total`` / ``pane_vh``：帮助 / 统计面板行数与视口（>0 表示
+        右栏当前显示面板——滚动导航以面板行数为准，搜索输入被禁用）。
+    """
     if not getattr(model, "trace_open", False):
         return False
     pane_now = getattr(model, "trace_pane", "ledger") or "ledger"
+    search_records = raw_records if raw_records is not None else records
+    # ★ 2026-10-07（轨迹 Trace 操作增强）：选中位置以 ``model.trace_selected``
+    #   实时解析（handler 闭包捕获的 ``sel`` 是渲染期快照——同一帧内连续
+    #   按键时陈旧，e/E、]/[、y、Enter 均须基于实时选中）。
+    raw_sel = getattr(model, "trace_selected", -1)
+    if total <= 0:
+        sel_pos = -1
+    elif raw_sel == -1 or raw_sel >= total:
+        sel_pos = total - 1
+    else:
+        sel_pos = raw_sel
+    # ★ 2026-10-07（帮助 / 统计面板）：右栏内容切换为面板时，滚动/光标
+    #   以面板行数为准（面板与检查器行数不同——沿用检查器行数会误判越界）。
+    if pane_total > 0:
+        total_content = int(pane_total)
+        if pane_vh > 0:
+            approx_content_vh = int(pane_vh)
     # ★ 2026-08-19（vim 搜索输入模式）："/" 后所有按键进入搜索输入——
     #   字符累积、退格删除、Esc 取消（退出输入模式，保留已执行搜索）、
     #   回车执行（底部输入行消失——「回车后不显示」）。导航/折叠等其余
@@ -1296,12 +1739,33 @@ def _handle_trace_event(
                 model.trace_search_query = q[:-1]
             return True
         if event.kind == "enter":
-            _exec_search(model, records, content_rows, total_content, approx_content_vh)
+            _exec_search(
+                model, search_records, content_rows, total_content,
+                approx_content_vh, view_map,
+            )
             return True
         # ★ 2026-08-20（review P3）：搜索输入模式未识别事件返回 True
         #   （模态吞掉）——修复前 return False 放行：台账焦点时 ListView
         #   仍激活消费方向键/翻页等 → 搜索输入中按 ↑↓ 意外导航台账
         #   （vim 中搜索输入模式不导航）。
+        return True
+    # ★ 2026-10-07（视图内帮助面板）：打开期间模态——``?``/``q``/``Esc``
+    #   关闭，其余按键吞掉（不落入台账导航/搜索，避免误操作）。
+    if getattr(model, "trace_help_open", False):
+        ch_help = getattr(event, "char", "") or ""
+        if event.kind == "escape" or (
+            event.kind == "char" and ch_help in ("?", "q")
+        ):
+            model.trace_help_open = False
+            _set_status(model, "")
+            return True
+        # 帮助内容可超一屏：交给通用导航（j/k/↑↓/PgUp/PgDn/g/G）滚动；
+        # 面板打开时禁用搜索输入（索引语义属于台账/检查器内容）。
+        if event.kind == "char" and ch_help == "/":
+            _set_status(model, "帮助面板打开时不支持搜索（? 关闭后可用）")
+            return True
+        if handle_nav(event, pane_state, total_content, approx_content_vh):
+            return True
         return True
     # 关闭类按键（Esc / Ctrl+H，模态统一关闭键）——subagent 轨迹优先返回
     #   主轨迹（trace_subagent_label 置 None），主轨迹才关闭整个视图。
@@ -1320,10 +1784,37 @@ def _handle_trace_event(
         #   复位树折叠集合（折叠状态是「当前选中记录」的临时浏览状态，
         #   与 scroll/cursor 同语义——不跨轨迹残留；默认展开所有）。
         model.trace_tree_collapsed = set()
+        # ★ 2026-10-07（轨迹 Trace 增强）：退出/关闭同时复位增强浏览态
+        #   （帮助/统计面板、多键前缀、过滤模式、底部状态提示——与
+        #   scroll/cursor 同语义，不跨视图残留）。
+        model.trace_help_open = False
+        model.trace_stats_open = False
+        model.trace_count_buffer = ""
+        model.trace_pending_prefix = ""
+        model.trace_search_filter = False
+        model.trace_status_message = ""
         # ★ 2026-08-19（vim 搜索）：退出嵌套/关闭视图同时清除搜索
         #   （搜索高亮/匹配不跨视图残留）。
         _clear_search(model)
         return True
+    # ★ 2026-10-07（轨迹 Trace 操作增强）：``Ctrl+D`` / ``Ctrl+U`` 半屏翻页
+    #   ——检查器焦点移动内容光标、台账焦点移动选中记录（步长 = 半屏）。
+    #   轨迹视图内 router 优先消费（不被 InputDispatcher 的 Ctrl+D=EOF
+    #   旧路径截走）。
+    if event.kind == "ctrl_key":
+        ctrl_ch = getattr(event, "char", "") or ""
+        if ctrl_ch in ("\x04", "\x15"):
+            half = max(1, int(approx_content_vh) // 2)
+            delta = half if ctrl_ch == "\x04" else -half
+            if pane_now == "inspector":
+                pane_state.move_cursor(
+                    pane_state.cursor() + delta, total_content, approx_content_vh,
+                )
+            elif total > 0:
+                base = sel if 0 <= sel < total else 0
+                _select_record(model, max(0, min(total - 1, base + delta)))
+            _set_status(model, "")
+            return True
     # ── 面板切换（vim h/l）与检查器光标（char 单字符） ──
     # ★ 2026-08-19（用户需求：轨迹 Trace 移动到右边查看东西 + vim 风格）：
     #   台账焦点：l → 右移检查器（光标浏览详情）、h 已在最左放行；
@@ -1332,10 +1823,104 @@ def _handle_trace_event(
     #   Home/End 首末、← 返回台账。
     ch = getattr(event, "char", "") or ""
     if event.kind == "char" and len(ch) == 1:
+        # ── vim 多键前缀（数字计数 Ngg/NG · zR/zM 树全展开/全折叠） ──
+        #   ★ 2026-10-07（轨迹 Trace 操作增强）：数字键累积到
+        #   ``trace_count_buffer``（最多 9 位），``g``/``G`` 消费为「跳到
+        #   记录号 #N」；``z`` 为待定前缀，下一键 R/M 触发全展开/全折叠
+        #   （非预期键则清除前缀并按普通键继续处理）。
+        prefix = getattr(model, "trace_pending_prefix", "") or ""
+        count_buf = getattr(model, "trace_count_buffer", "") or ""
+        if ch.isdigit():
+            model.trace_count_buffer = (count_buf + ch)[:9]
+            _set_status(model, f"计数 {model.trace_count_buffer}（g/G 跳转记录号）")
+            return True
+        if prefix == "z":
+            model.trace_pending_prefix = ""
+            if ch == "R":
+                _collapse_all(model, row_keys, False)
+                _set_status(model, "已全部展开")
+                return True
+            if ch == "M":
+                _collapse_all(model, row_keys, True)
+                _set_status(model, "已全部折叠")
+                return True
+        elif ch == "z":
+            model.trace_pending_prefix = "z"
+            _set_status(model, "z…（R 全展开 / M 全折叠）")
+            return True
+        if count_buf:
+            model.trace_count_buffer = ""
+            if ch in ("g", "G"):
+                try:
+                    number = int(count_buf)
+                except (TypeError, ValueError):
+                    number = -1
+                pos = _record_pos_by_number(records, number)
+                if pos >= 0:
+                    _select_record(model, pos)
+                    _set_status(model, f"\u2192 记录 #{number}")
+                else:
+                    _set_status(model, f"无记录 #{number}")
+                return True
+        # ── 视图内面板 / 记录定位 / 剪贴板 / 导出（2026-10-07 增强） ──
+        if ch == "?":
+            model.trace_help_open = not bool(getattr(model, "trace_help_open", False))
+            _set_status(model, "")
+            return True
+        if ch == "i":
+            model.trace_stats_open = not bool(getattr(model, "trace_stats_open", False))
+            _reset_browse_state(model)
+            _set_status(model, "")
+            return True
+        if ch == "y":
+            rec_now = records[sel_pos] if 0 <= sel_pos < len(records) else None
+            _do_copy(model, rec_now)
+            return True
+        if ch in ("w", "W"):
+            _do_export(
+                model, search_records, "md" if ch == "w" else "json", source,
+            )
+            return True
+        if ch == "f":
+            _toggle_filter(model, records)
+            return True
+        if ch == "v":
+            _toggle_search_case(
+                model, search_records, content_rows, total_content,
+                approx_content_vh, view_map,
+            )
+            return True
+        if ch in ("e", "E"):
+            pos = _find_record_pos(
+                records, sel_pos, 1 if ch == "e" else -1, _is_error_record,
+            )
+            if pos >= 0:
+                _select_record(model, pos)
+                _set_status(
+                    model, f"\u2192 #{getattr(records[pos], 'index', 0)} 失败记录",
+                )
+            else:
+                _set_status(model, "无更多失败记录")
+            return True
+        if ch in ("]", "["):
+            pos = _find_record_pos(
+                records, sel_pos, 1 if ch == "]" else -1, _is_tool_record,
+            )
+            if pos >= 0:
+                _select_record(model, pos)
+                _set_status(
+                    model, f"\u2192 #{getattr(records[pos], 'index', 0)} 工具调用",
+                )
+            else:
+                _set_status(model, "无更多工具调用")
+            return True
         # ★ 2026-08-19（vim 搜索）："/" 开始搜索（任何焦点）——预填上次
         #   pattern 可编辑（vim 语义）；n 下一个 / N、p 上一个（p 为用户
         #   原话 prev 兼容别名）切换匹配并定位。
         if ch == "/":
+            # ★ 2026-10-07（统计面板）：搜索需查看检查器内容——自动关闭面板
+            #   （下一帧右栏恢复检查器，滚动预算回归检查器行数）。
+            model.trace_stats_open = False
             model.trace_search_mode = True
             model.trace_search_query = (
                 getattr(model, "trace_search_pattern", "") or ""
@@ -1346,7 +1931,10 @@ def _handle_trace_event(
             #   下均消费——搜索结果导航是跨面板的全局操作（匹配集合来自
             #   台账 records，定位同时移动台账选中与检查器光标）；仅在
             #   已有搜索 pattern 时生效，未搜索时字符照常放行。
-            _search_jump(model, 1 if ch == "n" else -1, total_content, approx_content_vh)
+            _search_jump(
+                model, 1 if ch == "n" else -1, total_content, approx_content_vh,
+                view_map,
+            )
             return True
         if pane_now == "ledger":
             if ch == "l":
@@ -1416,7 +2004,7 @@ def _handle_trace_event(
     #   不变）。★ 2026-08-19（vim 面板浏览）：进入新轨迹/新视图同时
     #   复位焦点面板/滚动（从台账开始浏览）。
     if event.kind == "enter":
-        rec = records[sel] if 0 <= sel < total else None
+        rec = records[sel_pos] if 0 <= sel_pos < total else None
         if rec is not None:
             sub = getattr(rec, "subagent_label", "") or ""
             if sub:
@@ -1501,6 +2089,45 @@ def TraceView(props) -> object:
             lambda: build_trace_records(model),
             _records_deps(model),
         )
+    # ── 过滤视图（2026-10-07 搜索增强：``f`` 只显示匹配记录） ──
+    #   hooks 无条件调用（顺序稳定）：关闭/无匹配时返回 (None, None, None)
+    #   占位，实际列表保持原始；打开且有台账匹配 → 用匹配子集替换
+    #   records/rows 并保留「原始索引 → 视图索引」映射（``view_map``）。
+    raw_records = records
+    view_map = None
+    filter_on = bool(getattr(model, "trace_search_filter", False))
+    filter_matches = list(getattr(model, "trace_search_matches", None) or [])
+    filter_active = bool(
+        filter_on
+        and (getattr(model, "trace_search_side", "") or "") == "ledger"
+        and (getattr(model, "trace_search_pattern", "") or "")
+        and filter_matches
+    )
+    filtered = use_memo(
+        lambda: (
+            _filter_view(raw_records, filter_matches)
+            if filter_active else (None, None, None)
+        ),
+        (
+            id(raw_records),
+            1 if filter_active else 0,
+            ";".join(str(i) for i in filter_matches),
+        ),
+    )
+    if filtered[0] is not None:
+        records, rows, view_map = filtered
+
+    # ── 面板开关与统计（2026-10-07：``?`` 帮助 / ``i`` 统计概览） ──
+    help_open = bool(getattr(model, "trace_help_open", False))
+    stats_open = bool(getattr(model, "trace_stats_open", False))
+    # 头部统计（use_memo：记录集变化才重算——避免每帧全量遍历；统计口径
+    # 始终基于未过滤全量记录，过滤层数另在头部标注）
+    trace_stats = use_memo(
+        lambda: collect_trace_stats(raw_records),
+        (id(raw_records), len(raw_records)),
+    )
+    source_label = f"子代理 {sub_label}" if sub_label else ""
+
     total = len(records)
     prev_total_ref.current = total
 
@@ -1522,8 +2149,14 @@ def TraceView(props) -> object:
     # ── 视口 / 栏宽 ──
     # ★ 2026-08-19（vim 搜索）：搜索输入模式时底部显示 ``/${query}`` 行，
     #   台账/检查器可见高度减 1（输入行占一行）。
+    # ★ 2026-10-07（底部状态行）：匹配计数/操作反馈占一行时同样从可见高度
+    #   扣除（行级 diff 高度不变量——内容不超屏）。
     search_mode = bool(getattr(model, "trace_search_mode", False))
-    vh = _viewport_rows() - (1 if search_mode else 0)
+    status_text = _status_line_text(
+        model, filtered=bool(filter_on and view_map is not None),
+    )
+    extra_rows = (1 if search_mode else 0) + (1 if status_text else 0)
+    vh = max(4, _viewport_rows() - extra_rows)
     if width > 0:
         left_w = max(24, int(width * 0.45))
         if width - left_w - 1 < 20:
@@ -1577,14 +2210,20 @@ def TraceView(props) -> object:
     #   光标可见跟随）——取代本地复刻（与 trace_tools_view / plugin_view
     #   三份重复实现中的一份）；渲染期不写 model，写回经 ``_model_writes``
     #   在提交期统一落盘。
-    cursor, scroll_new = resolve(
-        cursor_raw, scroll_raw, total_content, approx_content_vh,
-    )
-    if cursor != cursor_raw:
-        _model_writes["trace_inspector_cursor"] = cursor
-    if scroll_new != (getattr(model, "trace_inspector_scroll", 0) or 0):
-        _model_writes["trace_inspector_scroll"] = scroll_new
-    scroll = scroll_new
+    if help_open or stats_open:
+        # ★ 2026-10-07（帮助 / 统计面板）：面板内容行数与检查器不同——
+        #   不复用检查器预算钳制（``_pane_window_children`` 按面板自身行数
+        #   钳制光标/滚动，避免以检查器行数误判越界）。
+        cursor, scroll = cursor_raw, scroll_raw
+    else:
+        cursor, scroll_new = resolve(
+            cursor_raw, scroll_raw, total_content, approx_content_vh,
+        )
+        if cursor != cursor_raw:
+            _model_writes["trace_inspector_cursor"] = cursor
+        if scroll_new != (getattr(model, "trace_inspector_scroll", 0) or 0):
+            _model_writes["trace_inspector_scroll"] = scroll_new
+        scroll = scroll_new
     # 检查器光标参数：仅检查器焦点传入（高亮）；台账焦点 -1（不高亮）
     cursor_arg = cursor if pane == "inspector" else -1
     # ★ 2026-08-19（vim 搜索匹配高亮）：搜索状态展平读取——台账匹配记录
@@ -1597,13 +2236,22 @@ def TraceView(props) -> object:
     ledger_matched_ids: set | None = None
     ledger_cur_id: int | None = None
     if search_side == "ledger" and search_pattern and search_matches:
-        ledger_matched_ids = {
-            id(records[i]) for i in search_matches if 0 <= i < len(records)
-        }
-        if 0 <= search_idx < len(search_matches):
-            mi = search_matches[search_idx]
-            if 0 <= mi < len(records):
-                ledger_cur_id = id(records[mi])
+        if view_map is not None:
+            # ★ 2026-10-07（过滤模式）：视图内全部记录即匹配集合——全部
+            #   标记为匹配；当前匹配经「原始索引 → 视图索引」映射定位。
+            ledger_matched_ids = {id(r) for r in records}
+            if 0 <= search_idx < len(search_matches):
+                pos = view_map.get(search_matches[search_idx])
+                if pos is not None and 0 <= pos < len(records):
+                    ledger_cur_id = id(records[pos])
+        else:
+            ledger_matched_ids = {
+                id(records[i]) for i in search_matches if 0 <= i < len(records)
+            }
+            if 0 <= search_idx < len(search_matches):
+                mi = search_matches[search_idx]
+                if 0 <= mi < len(records):
+                    ledger_cur_id = id(records[mi])
     insp_matches = (
         search_matches if (search_side == "inspector" and search_pattern) else None
     )
@@ -1626,6 +2274,46 @@ def TraceView(props) -> object:
         _inspector_deps(rec, right_w, vh, scroll, cursor_arg)
         + (total_content,) + search_fp,
     )
+    # ★ 2026-10-07（帮助 / 统计面板）：与检查器同一滚动语义的通用面板内容
+    #   （use_memo 包装——面板关闭时返回空列表；deps 含开关状态与内容指纹，
+    #   打开/内容变化才重建）。
+    help_rows = use_memo(
+        lambda: (
+            _pane_window_children(
+                help_panel_rows(right_w), right_w, vh, scroll, cursor_arg,
+                "thelp", "(无帮助内容)",
+            )
+            if help_open else []
+        ),
+        (1 if help_open else 0, right_w, vh, scroll, cursor_arg),
+    )
+    stats_rows = use_memo(
+        lambda: (
+            _pane_window_children(
+                stats_panel_rows(records, right_w), right_w, vh, scroll,
+                cursor_arg, "tstats", "(无统计数据)",
+            )
+            if stats_open else []
+        ),
+        (
+            1 if stats_open else 0, id(records), len(records), right_w, vh,
+            scroll, cursor_arg,
+        ),
+    )
+    # 右栏内容三态：帮助面板 > 统计面板 > 检查器（面板互斥覆盖右栏）。
+    # pane_total / pane_vh：面板行数与视口（供事件处理以面板行数滚动）。
+    pane_total = 0
+    pane_vh = 0
+    if help_open:
+        pane_rows = help_rows
+        pane_total = len(help_panel_rows(right_w))
+    elif stats_open:
+        pane_rows = stats_rows
+        pane_total = len(stats_panel_rows(records, right_w))
+    else:
+        pane_rows = right_rows
+    if pane_total:
+        pane_vh = max(_INSPECTOR_MIN_CONTENT, vh - 2)
 
     # ── 台账可见窗口（选中记录在 rows 中的下标——ListView 受控光标） ──
     row_count = len(rows)
@@ -1654,6 +2342,10 @@ def TraceView(props) -> object:
             total=total, total_content=total_content,
             approx_content_vh=approx_content_vh,
             pane_state=_pane_state, event=ev,
+            # ★ 2026-10-07（增强）：搜索/导出基于未过滤全量记录，选择定位
+            #   经 view_map 映射（过滤模式）——source 供导出元信息标注来源。
+            raw_records=raw_records, view_map=view_map, source=source_label,
+            pane_total=pane_total, pane_vh=pane_vh,
         ),
         bool(getattr(model, "trace_open", False)),
     )
@@ -1681,6 +2373,8 @@ def TraceView(props) -> object:
             model.trace_selected = rec_idx
         model.trace_inspector_scroll = 0
         model.trace_inspector_cursor = 0
+        # ★ 2026-10-07（增强）：切换记录清除底部状态提示（陈旧反馈不残留）。
+        model.trace_status_message = ""
         # ★ 2026-08-19（树控件空格展开/收缩）：切换记录同时复位树折叠
         #   集合（折叠状态是「当前选中记录」的临时浏览状态——不同记录树
         #   不同，从默认全展开开始）。
@@ -1692,32 +2386,36 @@ def TraceView(props) -> object:
 
     # ── 渲染 ──
     # 头部（静态色——轨迹视图为浏览界面，不呼吸，diff 零输出）
-    # ★ 性能（O(N²) 优化）：轮次数 = 分隔行编号表长度（``_rows_index``
-    #   预计算 O(1)）——修复前 ``sum(1 for r in rows if r is None)`` 每帧
-    #   O(N) 全量扫描（大台账下随渲染帧数累积）。
-    sep_nums, _, _ = _rows_index(rows)
-    turn_count = len(sep_nums)
-    # ★ 2026-08-19（vim 搜索）：头部提示 "/ 搜索 · n/N 下个/上个"——
-    #   g/G 为 vim 隐含语义精简掉，保留 Enter 子代理发现性提示。
+    # ★ 2026-10-07（头部统计条）：统计摘要（条数/轮次/工具/失败/耗时/token/
+    #   位置 n/total）经 ``format_summary`` 单一真源生成，随栏宽截断；
+    #   过滤模式额外标注「过滤 x/y 条」，帮助/统计面板打开时标注面板名。
+    # 提示精简（宽度预算）：完整键位速查见 ``?`` 帮助面板（trace_keymap 表）。
     if sub_label:
         header_title = f"\u258d子代理轨迹 {sub_label}"
         if pane == "inspector":
-            header_hint = ("  jk/\u2191\u2193 \u6eda\u52a8 \u00b7 / \u641c\u7d22 \u00b7 h \u53f0\u8d26 \u00b7 "
-                           "Esc \u8fd4\u56de")
+            header_hint = "  jk \u6eda\u52a8 \u00b7 / \u641c\u7d22 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u8fd4\u56de"
         else:
-            header_hint = ("  \u2191\u2193/jk \u9009\u62e9 \u00b7 / \u641c\u7d22 \u00b7 l \u8be6\u60c5 \u00b7 "
-                           "Esc \u8fd4\u56de")
+            header_hint = "  \u2191\u2193 \u9009\u62e9 \u00b7 / \u641c\u7d22 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u8fd4\u56de"
     else:
         header_title = "\u258d轨迹 Trace"
         if pane == "inspector":
-            header_hint = ("  jk/\u2191\u2193 \u6eda\u52a8 \u00b7 / \u641c\u7d22 \u00b7 h \u53f0\u8d26 \u00b7 "
-                           "Enter \u5b50\u4ee3\u7406 \u00b7 Esc \u5173\u95ed")
+            header_hint = "  jk \u6eda\u52a8 \u00b7 / \u641c\u7d22 \u00b7 h \u53f0\u8d26 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u5173\u95ed"
         else:
-            header_hint = ("  \u2191\u2193/jk \u9009\u62e9 \u00b7 / \u641c\u7d22 \u00b7 l \u8be6\u60c5 \u00b7 "
-                           "Enter \u5b50\u4ee3\u7406 \u00b7 Esc \u5173\u95ed")
+            header_hint = "  \u2191\u2193 \u9009\u62e9 \u00b7 / \u641c\u7d22 \u00b7 Enter \u8be6\u60c5 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u5173\u95ed"
+    sel_pos = (sel + 1) if (0 <= sel < total) else 0
+    stats_text = format_summary(trace_stats, sel_pos, total)
+    if view_map is not None:
+        stats_text = (
+            f"过滤 {total}/{_safe_int(trace_stats.get('total'))} 条 \u00b7 "
+            + stats_text
+        )
+    if help_open:
+        stats_text = "帮助 \u00b7 " + stats_text
+    elif stats_open:
+        stats_text = "统计 \u00b7 " + stats_text
     header_runs = [
         StyledRun(header_title, _S_TITLE),
-        StyledRun(f" · {total} 条 · {turn_count} 轮", _S_HINT),
+        StyledRun(f" \u00b7 {stats_text}", _S_HINT),
         StyledRun(header_hint, _S_HINT),
     ]
     if width > 0:
@@ -1748,7 +2446,19 @@ def TraceView(props) -> object:
         "onNavigate": _on_navigate,
         "focus": bool(getattr(model, "trace_open", False)) and pane == "ledger",
     })
-    # 右栏（检查器——use_memo 包装见上文 `right_rows` 定义处）
+    # 右栏（帮助 / 统计 / 检查器三态——pane_rows 见上；均 use_memo 包装）
+
+    # ── 底部状态行（搜索匹配计数 + 操作反馈；有内容才占一行） ──
+    status_line = None
+    if status_text:
+        status_line = h(TEXT, {
+            "children": (
+                _truncate_text(status_text, width) if width > 0 else status_text
+            ),
+            "style": _S_STATUS,
+            "height": 1,
+            "key": "tstatus-line",
+        })
 
     # ── 底部搜索输入行（vim 风格 ``/${query}`` + 光标；回车后不显示） ──
     # ★ 2026-08-19（用户需求：轨迹 Trace vim 搜索——"这里要显示光标回车后
@@ -1775,9 +2485,11 @@ def TraceView(props) -> object:
         h(Row, None, [
             ledger,
             h(TEXT, {"children": "\u2502", "style": _S_SEP_ROW, "height": 1}),
-            h(Column, {"width": right_w}, right_rows),
+            h(Column, {"width": right_w}, pane_rows),
         ]),
     ]
+    if status_line is not None:
+        children.append(status_line)
     if search_line is not None:
         children.append(search_line)
     return h(Column, None, children)
@@ -1810,4 +2522,21 @@ __all__ = [
     "_row_search_text",
     "_S_SEARCH_BG",
     "_S_SEARCH_CUR_BG",
+    # 2026-10-07（轨迹 Trace 增强）：统计/帮助/过滤/定位/复制/导出辅助
+    "_meta_parts",
+    "_pane_window_children",
+    "_status_line_text",
+    "_filter_view",
+    "_record_pos_by_number",
+    "_find_record_pos",
+    "_is_error_record",
+    "_is_tool_record",
+    "_set_status",
+    "_reset_browse_state",
+    "_select_record",
+    "_collapse_all",
+    "_do_copy",
+    "_do_export",
+    "_toggle_filter",
+    "_toggle_search_case",
 ]

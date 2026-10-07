@@ -531,6 +531,7 @@ def _record_from_block(block, index: int) -> TraceRecord | None:
         #   join O(行数)，长工具输出累计 O(N²)。
         preview, result_text = _tool_block_text(block)
         rec.result = preview
+        rec.tool_name = tool_name
         rec.status = extra.get("tool_status", "running")
         # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树控件
         #   显示）：块回退路径填充树显示数据源——参数 = 工具卡标题 detail
@@ -809,6 +810,8 @@ def _live_records(model, index_holder: list, out_records: list, rows: list,
             #   树重渲染）。
             tool_args=detail,
             tool_result=result_text,
+            # ★ 2026-10-07（轨迹 Trace 增强）：工具名真源（统计/元信息）。
+            tool_name=tool_name,
         )
         out_records.append(rec)
         rows.append(rec)
@@ -1042,6 +1045,10 @@ def _records_from_messages(messages) -> tuple:
                     #   subagent 槽位（dispatch_label = tool_call_id）匹配合并
                     #   （同轮并行多次 dispatch 时精确关联各自 agent）。
                     tool_call_id=cid,
+                    # ★ 2026-10-07（轨迹 Trace 增强）：保存工具注册名——
+                    #   检查器元信息（工具名）与统计概览（按工具聚合耗时/
+                    #   成功率）的真源。
+                    tool_name=name,
                     # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值
                     #   用树控件显示）：保存**原始 arguments**（str JSON 或
                     #   dict）——检查器据此用树控件显示参数（JSON 树形展开）。

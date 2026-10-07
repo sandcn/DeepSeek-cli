@@ -234,6 +234,31 @@ class AppModel(_ToolOutputMixin):
         # trace_search_idx: 当前匹配在 matches 中的位置（-1 = 无匹配/未定位；
         #   n/N/p 环绕切换）。
         self.trace_search_idx: int = -1
+        # ── 轨迹 Trace 增强（2026-10-07：显示信息 / 操作 / 更多功能） ──
+        # trace_count_buffer: 数字前缀缓冲（vim ``Ngg``/``NG`` 语义——数字键
+        #   1-9/0 累积，``G``/``g`` 消费后跳转到记录号 `#N` 与缓冲清空；非数字
+        #   导航键到达时缓冲清空，避免残留污染后续操作）。
+        self.trace_count_buffer: str = ""
+        # trace_pending_prefix: 待定多键前缀（vim 风格；目前仅 ``z``——``zR``
+        #   全部展开树、``zM`` 全部折叠树。下一键非预期前缀目标时清除并按键
+        #   本身处理）。
+        self.trace_pending_prefix: str = ""
+        # trace_help_open: 视图内帮助面板开关（``?`` 切换——快捷键速查；
+        #   打开时 TraceView 整屏渲染帮助内容，``?``/``Esc``/``q`` 关闭）。
+        self.trace_help_open: bool = False
+        # trace_stats_open: 统计概览面板开关（``i`` 切换——右栏显示 token 汇总/
+        #   工具耗时排行/成功率；左栏台账保留可继续浏览记录）。
+        self.trace_stats_open: bool = False
+        # trace_status_message: 轨迹视图底部状态提示（导出/复制/搜索无匹配/
+        #   无更多错误等操作反馈；空串不渲染）。
+        self.trace_status_message: str = ""
+        # trace_search_case: 搜索大小写敏感开关（False=忽略大小写，默认；
+        #   True=区分大小写）。``v`` 键切换并重跑当前搜索。
+        self.trace_search_case: bool = False
+        # trace_search_filter: 过滤模式开关（True=台账只显示搜索匹配的记录，
+        #   ``f`` 键切换；仅在台账搜索（side=ledger）有匹配时生效——无匹配/
+        #   检查器搜索时保持全量显示）。
+        self.trace_search_filter: bool = False
         # 顶部工具调用状态（Claude TUI parity 步骤 2.2：active_tool 为模型
         # 数据——原 ToolStatusHeader 渲染消费，组件已移除（工具状态改由工具
         # 卡片顶边框 ● 展示，双份冗余）；字段保留供测试/未来消费，None=无
@@ -801,6 +826,16 @@ class AppModel(_ToolOutputMixin):
         self.trace_search_side = ""
         self.trace_search_matches = []
         self.trace_search_idx = -1
+        # ★ 2026-10-07（轨迹 Trace 增强）：清屏同时复位增强状态——数字前缀
+        #   缓冲/待定前缀（浏览临时态）、帮助/统计面板（视图内浮层）、底部
+        #   状态提示、搜索大小写与过滤模式（与搜索状态同生命周期）。
+        self.trace_count_buffer = ""
+        self.trace_pending_prefix = ""
+        self.trace_help_open = False
+        self.trace_stats_open = False
+        self.trace_status_message = ""
+        self.trace_search_case = False
+        self.trace_search_filter = False
         # ★ 2026-08-17（review 方向 P2）：清屏同时退出模态全屏视图——残留
         #   fullscreen 会让 App 整屏渲染全屏视图组件（如 TraceView），而
         #   blocks 已清空 → 残留渲染空数据全屏界面。与 trace_subagent_label
