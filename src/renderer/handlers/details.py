@@ -59,8 +59,14 @@ class DetailsHandler(TokenHandler):
             _logger.debug("Details行渲染异常，跳过", exc_info=True)
 
     def _handle_details_close(self, token: Token, engine):
-        """Details 块关闭。"""
+        """Details 块关闭：先输出正文行（逐行行内渲染），再输出关闭框线。"""
         try:
+            body = token.meta.get("body_lines") or []
+            if body and engine.details_state.depth > 0:
+                indent = "  " * engine.details_state.depth
+                for line_text in body:
+                    content = engine.render_inline(str(line_text))
+                    engine.output_assembled(Text.assemble(indent, content))
             engine.details_state.depth -= 1
             if engine.details_state.depth < 0:
                 engine.details_state.depth = 0

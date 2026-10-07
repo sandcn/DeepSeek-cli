@@ -324,6 +324,10 @@ RENDERER_HANDLER_ENTRIES = [
      "config": {"id": "table"}},
     {"id": "renderer_handler_fenced_div", "plugin": "src.plugins.renderer_entries:apply_handler",
      "config": {"id": "fenced_div"}},
+    {"id": "renderer_handler_front_matter", "plugin": "src.plugins.renderer_entries:apply_handler",
+     "config": {"id": "front_matter"}},
+    {"id": "renderer_handler_table_caption", "plugin": "src.plugins.renderer_entries:apply_handler",
+     "config": {"id": "table_caption"}},
 ]
 
 RENDERER_FILTER_ENTRIES = [

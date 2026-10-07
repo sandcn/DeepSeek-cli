@@ -51,6 +51,8 @@ _BUILTIN_HANDLER_SPECS: Tuple[Tuple[str, str, str], ...] = (
     ("html_block", "src.renderer.handlers", "HtmlBlockHandler"),
     ("table", "src.renderer.handlers", "TableHandler"),
     ("fenced_div", "src.renderer.handlers", "FencedDivHandler"),
+    ("front_matter", "src.renderer.handlers", "FrontMatterHandler"),
+    ("table_caption", "src.renderer.handlers", "TableCaptionHandler"),
 )
 
 _BUILTIN_FILTER_SPECS: Tuple[Tuple[str, str, str, dict], ...] = (

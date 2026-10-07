@@ -82,7 +82,7 @@ def test_tree_declares_renderer_ext_bundle():
 
 
 async def test_default_profile_registers_all_builtin(cli_kernel):
-    assert len(ext.builtin_handler_factories()) == 9
+    assert len(ext.builtin_handler_factories()) == 11
     assert len(ext.builtin_filter_factories()) == 3
 
     from src.renderer.engine import RenderEngine
@@ -95,7 +95,7 @@ async def test_default_profile_registers_all_builtin(cli_kernel):
 
 async def test_renderer_service_introspection(cli_kernel):
     renderer = cli_kernel.resolve_service("renderer")
-    assert len(renderer.builtin_handlers()) == 9
+    assert len(renderer.builtin_handlers()) == 11
     assert len(renderer.builtin_filters()) == 3
     assert renderer.builtin_handler_ids() == ext.builtin_handler_ids()
     assert renderer.builtin_filter_ids() == ext.builtin_filter_ids()
@@ -122,7 +122,7 @@ async def test_overlay_disable_single_renderer_items():
         "renderer_ext::renderer_filter_stream_optimizer",
     ])
     try:
-        assert len(ext.builtin_handler_factories()) == 8
+        assert len(ext.builtin_handler_factories()) == 10
         assert len(ext.builtin_filter_factories()) == 2
         names = [type(f()).__name__ for f in ext.builtin_handler_factories()]
         assert "CodeHandler" not in names
@@ -205,16 +205,16 @@ def test_register_builtin_handler_api_and_unknown():
 def test_set_managed_and_register_roundtrip():
     undo_manage = ext.set_managed_builtin_handlers(["code"])
     try:
-        assert len(ext.builtin_handler_factories()) == 8
+        assert len(ext.builtin_handler_factories()) == 10
         undo_reg = ext.register_builtin_handler("code")
         try:
-            assert len(ext.builtin_handler_factories()) == 9
+            assert len(ext.builtin_handler_factories()) == 11
         finally:
             undo_reg()
-        assert len(ext.builtin_handler_factories()) == 8
+        assert len(ext.builtin_handler_factories()) == 10
     finally:
         undo_manage()
-    assert len(ext.builtin_handler_factories()) == 9
+    assert len(ext.builtin_handler_factories()) == 11
     with pytest.raises(KeyError):
         ext.set_managed_builtin_handlers(["nope"])
 

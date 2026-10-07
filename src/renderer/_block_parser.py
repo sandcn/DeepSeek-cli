@@ -24,6 +24,7 @@ from ._block_helpers import (
     _is_blockquote_line, _get_blockquote_text, _split_blockquote,
     _is_code_fence_line, _strip_blockquote_prefix,
     _get_fence_lang, _rstrip_trailing_hashes,
+    _front_matter_delim, _front_matter_format, _is_front_matter_close,
 )
 from ._block_parser_state import _State, _MERMAID_KEYWORDS, _SETEXT_HR_CHARS, _ADMONITION_TYPES
 from ._block_parser_stream import _BlockParserStreamMixin
@@ -65,6 +66,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._table_rows: list[list[str]] = []
         self._table_alignments: list[str] = []
         self._table_pending_rows: list[str] = []
+        # 流式表格缓冲是否来自引用块（引用块内要求分隔行才成表格）
+        self._table_pending_bq: bool = False
         # 定义列表续行缓冲
         self._def_cont_buffer: list[str] = []
         self._reset_normal_state()
@@ -139,10 +142,30 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # 标题 ID 去重字典
         self._used_heading_ids: dict[str, int] = {}
 
+        # ── Front Matter（文档头元信息块）──
+        #   _doc_started：文档是否已开始（首个非空行后置 True）——Front Matter
+        #   仅在文档最开头识别；
+        #   _pending_fm：待定启始定界符（首行 ``---``/``+++``/``{`` 先暂存，
+        #   下一行非空才确认为 Front Matter，空行则回退为分隔线/段落）。
+        self._doc_started: bool = False
+        self._pending_fm: str | None = None
+        self._fm_delim: str = ''
+        self._fm_lines: list[str] = []
+
+        # 上一个实际发射的 Token 类型（跨 feed 保留）——表格表注判定用。
+        self._prev_emitted_type: TokenType | None = None
+
+        # HTML 块原始行缓冲（``<table>`` 等结构化标签的整体解析用）。
+        self._html_lines: list[str] = []
+
+        # 子解析递归深度（details/fenced div 正文的嵌套块解析）。
+        self._sub_parse_depth: int = 0
+
     def _reset_normal_state(self):
         """重置 NORMAL 状态变量。"""
         self._pending_lines = []
         self._table_pending_rows.clear()
+        self._table_pending_bq = False
         self._in_admonition = False
         self._admonition_type = ''
         self._pending_fn_def = None
@@ -169,6 +192,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             line = self._buffer[:idx + 1]
             self._buffer = self._buffer[idx + 1:]
 
+            _pre_bq_depth = (self._bq_depth_stack[-1]
+                             if (self._bq_active and self._bq_depth_stack) else 0)
+            _before = len(tokens)
             try:
                 if self._state != _State.NORMAL:
                     self._feed_block_line(line, tokens)
@@ -184,6 +210,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     self._handle_paragraph_line(line, tokens)
                 except Exception:
                     _logger.debug("异常行降级段落失败", exc_info=True)
+            if tokens:
+                self._prev_emitted_type = tokens[-1].type
+            # 引用块内的块级元素（代码/数学/表格/列表…）统一标记引用深度，
+            # 渲染层据此补 ``│`` 前缀。用**处理前**的引用深度——引用内块在
+            # 触发引用关闭的行（如空行）收尾时 emit，处理后的深度已归零。
+            if _pre_bq_depth > 0:
+                self._mark_bq_depth(tokens, _before, _pre_bq_depth)
 
         # ★ 超长无换行尾部安全消化（替代原「裁剪一半 + 重置状态」）：
         #   逐行循环只消费含 \n 的完整行，循环结束后残留的是模型正在输出的
@@ -215,6 +248,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
     def flush(self) -> list[Token]:
         """刷出所有剩余内容。"""
         tokens: list[Token] = []
+        _flush_bq = (self._bq_depth_stack[-1]
+                     if (self._bq_active and self._bq_depth_stack) else 0)
 
         # ── 第1步：处理残留缓冲区 ──
         remaining = self._buffer.strip()
@@ -225,6 +260,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 self._feed_block_line(line, tokens)
             else:
                 self._parse_normal_line(line, tokens)
+
+        # ── 第1.2步：未决的 Front Matter 起始定界符（该行单独出现且文档结束）──
+        if self._pending_fm is not None:
+            delim = self._pending_fm
+            self._pending_fm = None
+            self._doc_started = True
+            self._parse_normal_line(delim + '\n', tokens)
 
         # ── 第1.5步：处理未解析的延迟 fence ──
         if self._deferred_fence is not None:
@@ -254,11 +296,17 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             elif self._state == _State.FENCED_DIV:
                 tokens.append(Token(TokenType.FENCED_DIV_CLOSE, "", {"type": self._block_div_type}))
                 self._state = _State.NORMAL
+            elif self._state == _State.FRONT_MATTER:
+                self._flush_front_matter(tokens)
             elif self._state == _State.ADMONITION_BLOCK:
                 self._emit_admonition_block_close(tokens)
             else:
                 self._flush_block(tokens)
             self._state = _State.NORMAL
+
+        # ── 第2.5步：标记引用块内的块级 token（flush 阶段不经过 feed 主循环）──
+        if _flush_bq:
+            self._mark_bq_depth(tokens, 0, _flush_bq)
 
         # ── 第3步：关闭引用块（先于段落刷出，确保引用内容以 BLOCKQUOTE_LINE 发出） ──
         self._emit_blockquote_close(tokens)
@@ -278,7 +326,11 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
         # ── 第7步：刷出残留的流式表格缓冲 ──
         if self._table_pending_rows:
+            _pending_bq = self._table_pending_bq
+            _mark7 = len(tokens)
             self._emit_pending_table(tokens)
+            if _pending_bq and _flush_bq:
+                self._mark_bq_depth(tokens, _mark7, _flush_bq)
 
         return tokens
 
@@ -376,6 +428,21 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         tail = self._peek_incomplete_tail()
         tail_lines = [tail] if tail else []
 
+        # ── Front Matter（未闭合预览：元信息卡片）──
+        if st == _State.FRONT_MATTER:
+            fm_lines = list(self._fm_lines)
+            if tail and not _is_front_matter_close(tail, self._fm_delim):
+                fm_lines.append(tail)
+            saved = self._fm_lines
+            self._fm_lines = fm_lines
+            content = self._front_matter_content()
+            self._fm_lines = saved
+            out.append(Token(TokenType.FRONT_MATTER, content, {
+                "format": _front_matter_format(self._fm_delim),
+                "preview": True,
+            }))
+            return out
+
         # ── 代码类块（fenced / 缩进 / Mermaid / 数学）──
         # 代码块预览行不做截断：渲染层按行增量高亮缓存（只渲染新增行），
         # 显示侧再取尾部若干行并给出省略提示——避免每帧重渲染整段。
@@ -445,7 +512,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if st == _State.HTML_BLOCK:
             if tail:
                 out.append(Token(TokenType.HTML_BLOCK_LINE, tail,
-                                 {"preview": True}))
+                                 {"preview": True,
+                                  "tag": self._block_html_tag}))
             return out
 
         # ── 表格活动状态 ──
@@ -461,6 +529,11 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return out
 
         # ── NORMAL 状态 ──
+        # 待定 Front Matter 起始定界符（单独一行、下一行未到）：按分隔线预览
+        if (self._pending_fm is not None and not self._pending_lines
+                and not self._table_pending_rows):
+            out.append(Token(TokenType.HR, "", {"preview": True}))
+            return out
         if self._deferred_fence is not None:
             fence = self._deferred_fence
             out.append(Token(TokenType.CODE_BLOCK, "\n".join(tail_lines), {
@@ -638,8 +711,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             # 避免「纯文本预览 → 提交后变带围栏代码块」的形态跳变。
             if (line[:4] == '    ' or (line and line[0] == '\t')) \
                     and not self._in_admonition \
-                    and not (self._list_indents
-                             or self._last_token_type is TokenType.LIST_ITEM):
+                    and not self._list_indents:
                 content = line[4:] if line[:4] == '    ' else line[1:]
                 return [Token(TokenType.CODE_BLOCK, content.rstrip('\n'), {
                     "lang": "text", "attrs": "", "title": "",
@@ -892,6 +964,15 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         """NORMAL 状态：按首字符调度表分派语法检测。"""
         stripped = _strip_left(line).rstrip('\n')
 
+        # ── Front Matter（文档头元信息块）──
+        # 仅文档最开头（尚无任何内容行）且非引用块递归内识别；首行定界符
+        # 先暂存，下一行非空才确认（空行时回退为分隔线/段落，避免把文档
+        # 开头的 ``---`` 分隔线误判为 Front Matter）。
+        if (not self._doc_started and self._bq_in_recursion == 0
+                and self._deferred_fence is None):
+            if self._try_front_matter_line(line, stripped, tokens):
+                return
+
         # ── 延迟 fence 处理 ──
         if self._deferred_fence is not None:
             self._handle_deferred_fence(stripped, tokens)
@@ -919,6 +1000,21 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 pass
             else:
                 self._pending_fn_def = None
+
+        # ── 缩进代码块（CommonMark：4 空格 / Tab 缩进）──
+        # 必须在字母快速通道之前检查——否则以字母/数字开头的缩进行会被
+        # 段落通道吞掉，缩进代码块语法完全失效。按 CommonMark 语义：不中断
+        # 进行中的段落、不在列表/告示上下文内、不抢占脚注/定义续行。
+        if ((line[:4] == '    ' or (line and line[0] == '\t'))
+                and not self._in_admonition
+                and not self._pending_lines
+                and not self._table_pending_rows
+                and self._pending_fn_def is None
+                and not self._list_indents):
+            self._flush_paragraph(tokens)
+            self._emit_blockquote_close(tokens)
+            self._start_indented_code(line, tokens)
+            return
 
         # ── GFM 无前导 pipe 表格行检测（在字母快速通道前拦截） ──
         # 如 "Name|Age" 或 "a|b|c" 样式的行，避免被段落吞噬
@@ -998,17 +1094,6 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             else:
                 self._pending_fn_def = None
 
-        # 缩进代码块（但在列表上下文中优先作为列表内容/子列表项）
-        if not self._in_admonition and (line[:4] == '    ' or (line and line[0] == '\t')):
-            # 如果在活跃的列表上下文中，缩进行应通过 dispatch 处理为列表项/续行
-            if self._list_indents or self._last_token_type is TokenType.LIST_ITEM:
-                pass  # 让 dispatch 表处理，不拦截
-            else:
-                self._flush_paragraph(tokens)
-                self._emit_blockquote_close(tokens)
-                self._start_indented_code(line, tokens)
-                return
-
         # 表格活动状态（与 ``_feed_block_line`` 同规则：已建立表格后用宽松
         # 数据行判定，兼容无前导 pipe 的数据行）
         if self._state == _State.TABLE_ACTIVE:
@@ -1020,15 +1105,22 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
         # 流式表格行缓冲
         if self._table_pending_rows:
-            if _is_table_separator(stripped):
+            if _is_blockquote_line(stripped):
+                if not self._table_pending_bq:
+                    # 缓冲来自引用块外、当前行是引用行 → 先刷出缓冲
+                    self._emit_pending_table(tokens)
+                # 引用内表格（_table_pending_bq）：交由引用递归剥离前缀后
+                # 继续判断（本分支不处理，避免 ````> | a | b |```` 被当作行）
+            elif _is_table_separator(stripped):
                 self._start_table(stripped, tokens)
                 return
-            if _is_table_row(stripped):
+            elif _is_table_row(stripped):
                 if len(self._table_pending_rows) >= 100:
                     self._emit_pending_table(tokens)
                 self._table_pending_rows.append(stripped)
                 return
-            self._emit_pending_table(tokens)
+            else:
+                self._emit_pending_table(tokens)
 
         # Admonition 续行（或新的 [!TYPE] 切换）
         if self._in_admonition and first == '>':
@@ -1055,6 +1147,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                                 {"depth": 1, "type": self._admonition_type}))
             return
 
+        # ── 表格表注（表格下方紧跟的说明行）──
+        if self._prev_emitted_type is TokenType.TABLE:
+            caption = self._try_table_caption(stripped)
+            if caption is not None:
+                tokens.append(Token(TokenType.TABLE_CAPTION, caption))
+                return
+
         # ═══════════════════════════════════════════════════════════
         # 首字符调度表
         # ═══════════════════════════════════════════════════════════
@@ -1063,6 +1162,113 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
         # 段落（fallback）
         self._handle_paragraph_line(line, tokens)
+
+    # ── Front Matter（文档头元信息块） ───────────────────
+
+    def _try_front_matter_line(self, line: str, stripped: str,
+                               tokens: list[Token]) -> bool:
+        """文档开头 Front Matter 起始/确认逻辑（返回 True 表示行已处理）。
+
+        - 已暂存待定定界符：本行非空 → 确认 Front Matter 并收集；本行空 →
+          回退：定界符按普通 Markdown（分隔线）解析，空行照常发射。
+        - 本行是定界符且尚未开始文档 → 暂存待定，不产出（等下一行确认）。
+        """
+        if self._pending_fm is not None:
+            delim = self._pending_fm
+            self._pending_fm = None
+            if not stripped:
+                self._doc_started = True
+                self._parse_normal_line(delim + '\n', tokens)
+                self._handle_empty_line(tokens)
+                return True
+            self._start_front_matter(delim)
+            self._feed_front_matter_line(line, stripped, tokens)
+            return True
+        delim = _front_matter_delim(stripped)
+        if delim is not None:
+            self._pending_fm = delim
+            return True
+        if stripped:
+            self._doc_started = True
+        return False
+
+    def _start_front_matter(self, delim: str) -> None:
+        self._state = _State.FRONT_MATTER
+        self._fm_delim = delim
+        self._fm_lines = []
+
+    def _feed_front_matter_line(self, line: str, stripped: str,
+                                tokens: list[Token]) -> None:
+        if _is_front_matter_close(stripped, self._fm_delim):
+            self._emit_front_matter(tokens)
+        else:
+            self._fm_lines.append(line.rstrip('\n'))
+
+    def _emit_front_matter(self, tokens: list[Token]) -> None:
+        content = self._front_matter_content()
+        tokens.append(Token(TokenType.FRONT_MATTER, content,
+                            {"format": _front_matter_format(self._fm_delim)}))
+        self._state = _State.NORMAL
+        self._doc_started = True
+        self._fm_lines = []
+        self._fm_delim = ''
+
+    def _front_matter_content(self) -> str:
+        """Front Matter 内容文本（JSON 补回 ``{``/``}`` 定界符以构成合法 JSON）。"""
+        body = '\n'.join(self._fm_lines)
+        if self._fm_delim == '{':
+            return '{\n' + body + '\n}' if body else '{}'
+        return body
+
+    def _flush_front_matter(self, tokens: list[Token]) -> None:
+        """未闭合的 Front Matter → 回退为普通 Markdown 重新解析（不丢内容）。"""
+        delim = self._fm_delim or '---'
+        lines = [delim] + list(self._fm_lines)
+        self._state = _State.NORMAL
+        self._doc_started = True
+        self._fm_lines = []
+        self._fm_delim = ''
+        for ln in lines:
+            self._parse_normal_line(ln + '\n', tokens)
+
+    # ── 子块递归解析（details / fenced div 正文） ────────
+
+    _MAX_SUB_PARSE_DEPTH = 8
+
+    def _parse_sub_blocks(self, lines: list[str]) -> list[Token]:
+        """把块内原始行递归解析为子 Token（块级语法完整支持）。
+
+        供 ``<details>`` 等容器块的正文使用：正文行以普通 Markdown 语义
+        （列表 / 代码块 / 引用 / 强调 …）解析，而非仅逐行行内渲染。
+        共享同一 ``RenderContext``（脚注 / 参考式链接 / 缩写跨块生效）。
+        """
+        if not lines or self._sub_parse_depth >= self._MAX_SUB_PARSE_DEPTH:
+            return []
+        text = "\n".join(lines)
+        if not text.strip():
+            return []
+        sub = RegexFreeBlockParser(ctx=self._ctx)
+        sub._sub_parse_depth = self._sub_parse_depth + 1
+        out = sub.feed(text + "\n")
+        out.extend(sub.flush())
+        return out
+
+    # ── 表格表注 ────────────────────────────────────────
+
+    @staticmethod
+    def _try_table_caption(stripped: str) -> str | None:
+        """识别表格表注行（``: 说明`` / ``Table: 说明`` / ``表: 说明``）。"""
+        if not stripped:
+            return None
+        if stripped[0] == ':' and len(stripped) > 1 and stripped[1] in ' \t':
+            text = stripped[1:].strip()
+            return text or None
+        lower = stripped.lower()
+        for prefix in ('table caption:', 'table:', 'caption:', '表注:', '表:'):
+            if lower.startswith(prefix):
+                text = stripped[len(prefix):].strip()
+                return text or None
+        return None
 
     def _dispatch_normal_line(self, first: str, stripped: str, line: str,
                                tokens: list[Token]) -> bool:
@@ -1278,11 +1484,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return False
 
         def _handle_table() -> bool:
-            # ★ 引用块内部不检测表格（让 > 前缀的表格行降级为段落）
-            if self._bq_in_recursion > 0:
-                return False
+            # ★ 引用块内同样支持表格（引用内块级元素语义）；无分隔行的多行
+            #   含 pipe 文本由 ``_emit_pending_table`` 的严格模式降级为段落
+            #   （见 ``_table_pending_bq``）。
             try:
                 if _is_table_row(stripped):
+                    if self._bq_in_recursion > 0:
+                        self._table_pending_bq = True
                     if len(self._table_pending_rows) >= 100:
                         self._emit_pending_table(tokens)
                     self._table_pending_rows.append(stripped)
@@ -1463,6 +1671,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
     def _start_table(self, sep_line: str, tokens: list[Token]):
         self._table_alignments = _parse_table_alignments(sep_line)
+        self._table_pending_bq = False
         num_cols = len(self._table_alignments)
         if self._table_pending_rows:
             header_cells = _parse_table_row(self._table_pending_rows[0])
@@ -1487,10 +1696,23 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._table_rows = []
         self._table_alignments = []
         self._table_pending_rows.clear()
+        self._table_pending_bq = False
         self._state = _State.NORMAL
 
     def _emit_pending_table(self, tokens: list[Token]):
-        """将流式缓冲的连续表格行自动发射为 TABLE（≥2行）或 PARAGRAPH（1行）。"""
+        """将流式缓冲的连续表格行自动发射为 TABLE（≥2行）或 PARAGRAPH（1行）。
+
+        ★ 引用块严格模式（``_table_pending_bq``）：引用块内的行缓冲必须出现
+        分隔行才构成表格；未出现分隔行的多行含 pipe 文本降级为段落（避免
+        ``> a | b`` 之类的引用正文被误判为表格）。
+        """
+        strict = self._table_pending_bq
+        self._table_pending_bq = False
+        if strict:
+            for row in self._table_pending_rows:
+                tokens.append(Token(TokenType.PARAGRAPH, row))
+            self._table_pending_rows.clear()
+            return
         if len(self._table_pending_rows) >= 2:
             header = _parse_table_row(self._table_pending_rows[0])
             num_cols = len(header)
@@ -1625,11 +1847,39 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                                 {"depth": new_depth}))
             self._bq_depth_stack.append(new_depth)
         self._bq_in_recursion += 1
+        _mark = len(tokens)
         try:
             inner_line = gt_text + '\n'
             self._parse_normal_line(inner_line, tokens)
         finally:
             self._bq_in_recursion -= 1
+            self._mark_bq_depth(tokens, _mark, depth)
+
+    #: 自带引用前缀的 Token 类型（不额外叠加 bq_depth 前缀）
+    _BQ_NO_PREFIX_TYPES: frozenset = frozenset({
+        TokenType.BLOCKQUOTE_OPEN,
+        TokenType.BLOCKQUOTE_LINE,
+        TokenType.BLOCKQUOTE_CLOSE,
+    })
+
+    def _mark_bq_depth(self, tokens: list[Token], mark: int,
+                       depth: int) -> None:
+        """给引用块内新产出的 Token 标记 ``bq_depth``（渲染时补 ``│`` 前缀）。
+
+        引用块内的块级元素（列表 / 代码块 / 表格 / 标题 …）此前无引用前缀，
+        与引用正文视觉断裂。标记深度后由渲染层统一补齐前缀（``setdefault``
+        保证内层递归的更深深度不被外层覆盖）。
+        """
+        if depth <= 0:
+            return
+        for tok in tokens[mark:]:
+            if tok.type in self._BQ_NO_PREFIX_TYPES:
+                continue
+            meta = tok.meta
+            if meta is None:
+                continue
+            if 'bq_depth' not in meta:
+                meta['bq_depth'] = depth
 
     def _emit_blockquote_close(self, tokens: list[Token]):
         if not self._bq_active:
@@ -1836,12 +2086,27 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                            line_content: str = ""):
         self._state = _State.HTML_BLOCK
         self._block_html_tag = tag
+        self._html_lines = []
         tokens.append(Token(TokenType.HTML_BLOCK_OPEN, "",
                             {"tag": tag}))
         if line_content:
             close_tag = f'</{tag}>'
             lower_line = line_content.lower()
             if close_tag in lower_line:
+                if tag in self._HTML_COLLECT_TAGS:
+                    # 结构化标签（``<table>``）：整块收集后尝试解析
+                    self._collect_html_line(line_content)
+                    if self._emit_html_table(tokens):
+                        self._state = _State.NORMAL
+                        return
+                    for raw in self._html_lines:
+                        tokens.append(Token(TokenType.HTML_BLOCK_LINE, raw,
+                                            {"tag": tag}))
+                    self._html_lines = []
+                    tokens.append(Token(TokenType.HTML_BLOCK_CLOSE, "",
+                                        {"tag": tag}))
+                    self._state = _State.NORMAL
+                    return
                 tag_end = -1
                 search_start = lower_line.find(tag)
                 if search_start >= 0:
@@ -1853,10 +2118,56 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                         content = inner[:close_pos].strip()
                         if content:
                             tokens.append(Token(TokenType.HTML_BLOCK_LINE,
-                                                content))
+                                                content, {"tag": tag}))
                         tokens.append(Token(TokenType.HTML_BLOCK_CLOSE, "",
                                             {"tag": tag}))
                         self._state = _State.NORMAL
+
+    #: 需要收集原始行整体解析的 HTML 块标签（``<table>`` → 框线表格）
+    _HTML_COLLECT_TAGS: frozenset = frozenset({'table'})
+
+    def _collect_html_line(self, line: str) -> bool:
+        """结构化 HTML 块（``<table>``）的行收集（返回 True 表示已收集）。"""
+        if self._block_html_tag not in self._HTML_COLLECT_TAGS:
+            return False
+        self._html_lines.append(line.rstrip('\n'))
+        return True
+
+    def _emit_html_table(self, tokens: list[Token]) -> bool:
+        """把收集的 ``<table>`` HTML 行解析为 TABLE token（成功返回 True）。"""
+        if self._block_html_tag not in self._HTML_COLLECT_TAGS:
+            return False
+        lines = self._html_lines
+        self._html_lines = []
+        rows: list[list[str]] = []
+        caption: str | None = None
+        for raw in lines:
+            cap = _extract_html_tag_text(raw, 'caption')
+            if cap is not None:
+                caption = cap
+                continue
+            for tr in _iter_html_tag_blocks(raw, 'tr'):
+                cells = _extract_html_cells(tr)
+                if cells:
+                    rows.append(cells)
+        if not rows:
+            return False
+        ncols = len(rows[0])
+        if ncols == 0:
+            return False
+        norm = []
+        for r in rows:
+            if not r or len(r) > ncols:
+                continue
+            norm.append((r + [''] * ncols)[:ncols])
+        if not norm:
+            return False
+        tokens.append(Token(TokenType.TABLE, "", {
+            "rows": norm, "alignments": ['left'] * ncols,
+        }))
+        if caption:
+            tokens.append(Token(TokenType.TABLE_CAPTION, caption))
+        return True
 
     # ── Fenced Div ───────────────────────────────────────
 
@@ -2109,6 +2420,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         _State.FENCED_DIV: '_flush_fenced_div',
         _State.HTML_BLOCK: '_flush_html_block',
         _State.TABLE_ACTIVE: '_flush_table',
+        _State.FRONT_MATTER: '_flush_front_matter',
     }
 
     def _flush_code_fence(self, tokens: list[Token]):
@@ -2139,6 +2451,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         tokens.append(Token(TokenType.FENCED_DIV_CLOSE, "", {"type": self._block_div_type}))
 
     def _flush_html_block(self, tokens: list[Token]):
+        if self._emit_html_table(tokens):
+            return
+        for raw in self._html_lines:
+            tokens.append(Token(TokenType.HTML_BLOCK_LINE, raw,
+                                {"tag": self._block_html_tag}))
+        self._html_lines = []
         tokens.append(Token(TokenType.HTML_BLOCK_CLOSE, "",
                             {"tag": self._block_html_tag}))
 
@@ -2155,3 +2473,81 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             handler = getattr(self, handler_name)
             handler(tokens)
         self._state = _State.NORMAL
+
+
+# ═══════════════════════════════════════════════════════════
+# HTML 块级结构解析辅助（``<table>`` → 表格 Token）
+# ═══════════════════════════════════════════════════════════
+
+def _iter_html_tag_blocks(text: str, tag: str):
+    """逐个产出 ``text`` 中 ``<tag ...>...</tag>`` 的内部文本（字符级扫描）。
+
+    标签名按边界匹配（``<tr`` 不匹配 ``<track``）；自闭合写法产出空串；
+    未闭合（无结束标签）时取其后的全部文本。
+    """
+    low = text.lower()
+    open_pat = '<' + tag
+    close_pat = '</' + tag + '>'
+    i = 0
+    n = len(text)
+    while i < n:
+        s = low.find(open_pat, i)
+        if s < 0:
+            return
+        after = s + len(open_pat)
+        if after < n and (low[after].isalnum() or low[after] in '-:'):
+            i = after
+            continue
+        gt = text.find('>', s)
+        if gt < 0:
+            return
+        if text[gt - 1:gt] == '/':  # 自闭合
+            i = gt + 1
+            yield ''
+            continue
+        e = low.find(close_pat, gt)
+        if e < 0:
+            yield text[gt + 1:]
+            return
+        yield text[gt + 1:e]
+        i = e + len(close_pat)
+
+
+def _extract_html_cells(tr_text: str) -> list[str]:
+    """提取 ``<tr>`` 内部的 ``<th>``/``<td>`` 单元格文本（保持文档顺序）。"""
+    cells: list[str] = []
+    low = tr_text.lower()
+    i = 0
+    n = len(tr_text)
+    while i < n:
+        s_td = low.find('<td', i)
+        s_th = low.find('<th', i)
+        cands = [x for x in (s_td, s_th) if x >= 0]
+        if not cands:
+            break
+        s = min(cands)
+        tag = 'td' if s == s_td else 'th'
+        after = s + 3
+        if after < n and (low[after].isalnum() or low[after] in '-:'):
+            i = after
+            continue
+        gt = tr_text.find('>', s)
+        if gt < 0:
+            break
+        close = low.find('</' + tag + '>', gt)
+        if close < 0:
+            cells.append(tr_text[gt + 1:].strip())
+            break
+        cells.append(tr_text[gt + 1:close].strip())
+        i = close + len(tag) + 3
+    return cells
+
+
+def _extract_html_tag_text(text: str, tag: str) -> str | None:
+    """提取 ``text`` 中 ``<tag>...</tag>`` 的文本（无则 None）。"""
+    for block in _iter_html_tag_blocks(text, tag):
+        return block.strip()
+    return None
+
+
+__all__ = ["RegexFreeBlockParser"]

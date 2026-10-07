@@ -10,6 +10,7 @@ from .admonition import AdmonitionHandler
 from .html_block import HtmlBlockHandler
 from .fenced_div import FencedDivHandler
 from .table import TableHandler
+from .front_matter import FrontMatterHandler, TableCaptionHandler
 
 __all__ = [
     "HandlerRegistry",
@@ -18,4 +19,5 @@ __all__ = [
     "InlineHandler", "CodeHandler", "MathHandler",
     "MermaidHandler", "DetailsHandler", "AdmonitionHandler",
     "HtmlBlockHandler", "FencedDivHandler", "TableHandler",
+    "FrontMatterHandler", "TableCaptionHandler",
 ]

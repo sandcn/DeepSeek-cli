@@ -30,6 +30,7 @@ def test_builtin_ids_and_order():
     assert builtin_handler_ids() == [
         "inline", "code", "math", "mermaid", "details",
         "admonition", "html_block", "table", "fenced_div",
+        "front_matter", "table_caption",
     ]
     assert builtin_filter_ids() == [
         "code_block_batcher", "heading_anchor", "stream_optimizer",
@@ -78,10 +79,10 @@ def test_disable_builtin_filter_api():
 def test_disable_builtin_handler_api_and_unknown():
     undo = disable_builtin_handlers(["code"])
     try:
-        assert len(builtin_handler_factories()) == 8
+        assert len(builtin_handler_factories()) == 10
     finally:
         undo()
-    assert len(builtin_handler_factories()) == 9
+    assert len(builtin_handler_factories()) == 11
     with pytest.raises(KeyError):
         disable_builtin_handlers(["nope"])
 
@@ -95,9 +96,9 @@ async def test_renderer_builtin_plugin_disable(tmp_path):
     path.write_text(json.dumps(patch), encoding="utf-8")
     kernel = await build_kernel("cli", patch_paths=[str(path)])
     try:
-        assert len(builtin_handler_factories()) == 8
+        assert len(builtin_handler_factories()) == 10
         assert len(builtin_filter_factories()) == 2
     finally:
         await shutdown_kernel(kernel)
-    assert len(builtin_handler_factories()) == 9
+    assert len(builtin_handler_factories()) == 11
     assert len(builtin_filter_factories()) == 3

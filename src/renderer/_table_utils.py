@@ -60,15 +60,24 @@ def _is_table_data_row(stripped: str, header_cols: int | None = None) -> bool:
 
 
 def _is_table_separator(stripped: str) -> bool:
-    """判断是否为表格分隔行。"""
+    """判断是否为表格分隔行（支持单列表格 ``|---|`` 与 GFM 无边框 ``--- | ---``）。
+
+    分隔行由若干 ``-``/``:`` 单元构成，单元之间以 ``|`` 分隔；首尾允许省略
+    边框（``|`` 前后为空段）。单元格本身不得为空（``| --- | |`` 含空列）。
+    """
     if '|' not in stripped:
         return False
-    parts = [p.strip() for p in stripped.split('|') if p.strip()]
-    if len(parts) < 2:
+    parts = [p.strip() for p in stripped.split('|')]
+    # 去掉前导/尾随边框产生的空段（``|`` 作为行首/行尾）
+    if parts and parts[0] == '':
+        parts = parts[1:]
+    if parts and parts[-1] == '':
+        parts = parts[:-1]
+    if not parts:
         return False
     for p in parts:
-        stripped_p = p.replace(':', '')
-        if not stripped_p or not _has_only_chars(stripped_p, '-'):
+        core = p.replace(':', '')
+        if not core or not _has_only_chars(core, '-'):
             return False
     return True
 

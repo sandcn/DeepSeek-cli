@@ -1,7 +1,8 @@
-"""块级渲染 — 标题/列表/引用/告示/折叠块 → AnsiLine。
+"""块级渲染 — 标题/列表/引用/告示/折叠块/Front Matter/表注 → AnsiLine。
 
 处理 TokenType：PARAGRAPH / HEADING / HR / BLOCKQUOTE / LIST_ITEM /
-DEFINITION_ITEM / ADMONITION / DETAILS / EMPTY_LINE / FENCED_DIV。
+DEFINITION_ITEM / ADMONITION / DETAILS / EMPTY_LINE / FENCED_DIV /
+FRONT_MATTER / TABLE_CAPTION。
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from .style import Style
 from .helpers import AnsiLine
 from .inline import render_inline
 from src.presentation_data import LiveMapping
+from .._front_matter import parse_front_matter_items
 
 # ── 块级样式常量 ──────────────────────────────────────────
 _HEADING_STYLES: list[Style] = [
@@ -31,6 +33,12 @@ _STYLE_TODO_CANCELLED = Style(fg=203, dim=True)
 _STYLE_DEF_TERM = Style(fg=45, bold=True)
 _STYLE_HTML_TAG = Style(fg=240, dim=True)
 _STYLE_ADM_TITLE = Style(fg=252)
+
+# ── Front Matter / 表注 ─────────────────────────────────
+_STYLE_FM_HEAD = Style(fg=110, bold=True)
+_STYLE_FM_KEY = Style(fg=45, bold=True)
+_STYLE_FM_VAL = Style(fg=252)
+_STYLE_CAPTION = Style(fg=245, italic=True)
 
 # Admonition 类型 → 颜色
 _ADMONITION_COLORS: dict[str, Style] = {
@@ -82,17 +90,19 @@ def render_paragraph(token) -> list[AnsiLine]:
     return _inline_lines(token.content)
 
 
-def _inline_lines(text: str) -> list[AnsiLine]:
+def _inline_lines(text: str, base=None) -> list[AnsiLine]:
     """行内文本 → 多行 ``AnsiLine``（按 ``\\n`` 拆行；连续换行合并）。
 
     段落 / 告示 / 折叠块 / HTML 块的正文都可能含 ``<br>``（硬换行）或软换行
     ——``render_inline`` 产出的 ``LineBreakNode`` 渲染为 ``"\\n"``，与段落自身
     的软换行叠加会产生多余空行。此处把连续换行合并为一次换行（段落内不存在
     有意义的空行，段落在空行处已断开）。
+
+    ``base`` 为基础样式（无行内格式的文本以此着色；None 用默认样式）。
     """
     out: list[AnsiLine] = []
     cur = AnsiLine()
-    for run in render_inline(text):
+    for run in render_inline(text, base):
         segs = (run.text or "").split("\n")
         for i, seg in enumerate(segs):
             if i > 0:
@@ -180,7 +190,11 @@ def render_definition_item(token) -> list[AnsiLine]:
     term = token.meta.get("term", "")
     sub_lines = _inline_lines(token.content)
     first = sub_lines[0] if sub_lines else AnsiLine()
-    line = AnsiLine.of(f"{term}: ", _STYLE_DEF_TERM)
+    if term:
+        line = AnsiLine.of(f"{term}: ", _STYLE_DEF_TERM)
+    else:
+        # 同一术语的后续定义（无 term）→ 缩进续行，不再重复 ``term:``
+        line = AnsiLine.of("  ", _STYLE_BQ)
     for run in first.runs:
         line.append_run(run)
     out: list[AnsiLine] = [line]
@@ -190,6 +204,54 @@ def render_definition_item(token) -> list[AnsiLine]:
             el.append_run(run)
         out.append(el)
     return out
+
+
+# ── Front Matter（文档头元信息块） ────────────────────
+
+
+def render_front_matter(token) -> list[AnsiLine]:
+    """Front Matter 元信息块渲染（键值卡片）。
+
+    ``▍ 元信息 (YAML)`` 头 + 对齐键值行；解析失败时原样缩进显示内容。
+    """
+    text = token.content or ""
+    fmt = str(token.meta.get("format", "yaml")).lower()
+    items = parse_front_matter_items(text, fmt)
+    out: list[AnsiLine] = [
+        AnsiLine.of(f"\u258d 元信息 ({fmt.upper()})", _STYLE_FM_HEAD),
+    ]
+    if not items:
+        if text.strip():
+            for seg in _inline_lines(text):
+                body = AnsiLine.of("  ", _STYLE_BQ)
+                for run in seg.runs:
+                    body.append_run(run)
+                out.append(body)
+        return out
+    kw = max((len(k) for k, _ in items), default=0)
+    pad = " " * (kw + 3)
+    for key, value in items:
+        value_lines = (value or "").split("\n")
+        for li, vline in enumerate(value_lines):
+            line = AnsiLine.of("  ", _STYLE_BQ)
+            if li == 0 and key:
+                line.append(f"{key:<{kw}}", _STYLE_FM_KEY)
+                line.append(" : ", _STYLE_BQ)
+            elif li > 0:
+                line.append(pad, _STYLE_BQ)
+            for run in render_inline(vline, _STYLE_FM_VAL):
+                line.append_run(run)
+            out.append(line)
+    return out
+
+
+def render_table_caption(token) -> list[AnsiLine]:
+    """表格表注（``: 说明`` / ``Table: 说明``）渲染为缩进斜体说明行。"""
+    text = token.content or ""
+    line = AnsiLine.of("  ", _STYLE_BQ)
+    for run in render_inline(text, _STYLE_CAPTION):
+        line.append_run(run)
+    return [line]
 
 
 # ── 引用 ─────────────────────────────────────────────
@@ -212,21 +274,96 @@ def render_blockquote_line(text: str, depth: int = 0) -> AnsiLine:
 
 # ── HTML 块 ──────────────────────────────────────────
 
+#: 结构化 HTML 块标签 → 打开行说明（``▸ <tag>``）
+_HTML_OPEN_LABELS: dict[str, str] = {
+    "figure": "figure 插图",
+    "figcaption": "figcaption 图注",
+    "dl": "dl 定义列表",
+    "dt": "dt 术语",
+    "dd": "dd 定义",
+    "ul": "ul 列表",
+    "ol": "ol 有序列表",
+    "li": "li 列表项",
+    "video": "video 视频",
+    "audio": "audio 音频",
+    "iframe": "iframe 内嵌",
+    "picture": "picture 图片",
+    "source": "source 媒体源",
+    "track": "track 字幕",
+    "caption": "caption 表注",
+    "progress": "progress 进度",
+    "meter": "meter 度量",
+}
+
 
 def render_html_block_open(tag: str) -> list[AnsiLine]:
-    """HTML 块起始标记（dim 标签行；块级标签本身弱化显示）。"""
-    return [AnsiLine.of(f"\u25b8 <{tag}>", _STYLE_HTML_TAG)]
+    """HTML 块起始标记（dim 标签行；结构化标签附语义说明）。"""
+    label = _HTML_OPEN_LABELS.get(tag, tag)
+    return [AnsiLine.of(f"\u25b8 <{label}>", _STYLE_HTML_TAG)]
 
 
-def render_html_block_line(text: str) -> list[AnsiLine]:
-    """HTML 块内容行：内联渲染（保留行内格式 / 解码实体 / 隐藏注释）。"""
+def render_html_block_line(text: str, tag: str = "") -> list[AnsiLine]:
+    """HTML 块内容行：按标签语义化渲染 + 行内 Markdown（实体解码/注释隐藏）。
+
+    ``tag`` 为块级标签；若整行为单层行内标签（``<li>x</li>`` /
+    ``<figcaption>x</figcaption>`` / ``<dt>x</dt>`` / ``<dd>x</dd>``）则按该
+    子标签语义渲染（列表符号 / 图注 / 术语 / 定义缩进）。
+    """
+    effective_tag = tag
+    content_text = text
+    split = split_inline_html_tag(text)
+    if split is not None and split[0] in _HTML_INLINE_SEMANTIC_TAGS:
+        effective_tag, content_text = split
+    if effective_tag == "li":
+        prefix, base = "  \u2022 ", _STYLE_LIST_BULLET
+    elif effective_tag == "dt":
+        prefix, base = "  ", _STYLE_DEF_TERM
+    elif effective_tag == "dd":
+        prefix, base = "      ", _STYLE_BQ
+    elif effective_tag in ("figcaption", "caption"):
+        prefix, base = "  ", _STYLE_CAPTION
+    elif effective_tag in ("source", "track"):
+        prefix, base = "    ", _STYLE_HTML_TAG
+    elif effective_tag in ("video", "audio", "iframe", "picture"):
+        prefix, base = "  ", _STYLE_HTML_TAG
+    else:
+        prefix, base = "  ", _STYLE_BQ
     out: list[AnsiLine] = []
-    for sub in _inline_lines(text):
-        line = AnsiLine.of("  ", _STYLE_BQ)
+    for sub in _inline_lines(content_text, base):
+        line = AnsiLine.of(prefix, base)
         for run in sub.runs:
             line.append_run(run)
         out.append(line)
-    return out or [AnsiLine.of("  ", _STYLE_BQ)]
+    return out or [AnsiLine.of(prefix, base)]
+
+
+#: 行内单层标签中具备语义样式的标签集合
+_HTML_INLINE_SEMANTIC_TAGS: frozenset = frozenset({
+    "li", "dt", "dd", "figcaption", "caption", "source", "track",
+    "video", "audio", "iframe", "picture",
+})
+
+
+def split_inline_html_tag(text: str) -> tuple[str, str] | None:
+    """整行形如 ``<tag ...>内容</tag>`` 时返回 ``(tag, 内容)``，否则 None。"""
+    s = text.strip()
+    n = len(s)
+    if n < 4 or s[0] != '<' or s[1] == '/':
+        return None
+    j = 1
+    while j < n and (s[j].isalnum() or s[j] in '-:'):
+        j += 1
+    tag = s[1:j].lower()
+    if not tag:
+        return None
+    gt = s.find('>', j)
+    if gt < 0:
+        return None
+    close = f'</{tag}>'
+    low = s.lower()
+    if not low.endswith(close):
+        return None
+    return tag, s[gt + 1:n - len(close)]
 
 
 # ── Admonition ───────────────────────────────────────
@@ -289,6 +426,14 @@ def render_admonition_body(text: str) -> AnsiLine:
 # ── 折叠块（DETAILS） ────────────────────────────────
 
 
+def render_details_head(summary) -> AnsiLine:
+    """折叠块头行（``▶ summary``）。"""
+    head = AnsiLine.of("\u25b6 ", _STYLE_LIST_BULLET)
+    for run in render_inline(str(summary)):
+        head.append_run(run)
+    return head
+
+
 def render_details(token) -> list[AnsiLine]:
     """折叠块（<details>）：``▶ summary`` 头 + 逐行缩进正文。
 
@@ -298,12 +443,12 @@ def render_details(token) -> list[AnsiLine]:
 
     ★ 一致性修复（预览截断提示）：预览正文超限被截断时 ``meta`` 携带
     ``preview_dropped``——在正文前插入省略提示行（与代码块预览同真源）。
+
+    注：提交路径的正文由引擎经 ``_render_nested_blocks`` 以完整 Markdown
+    语义递归渲染（``meta["body_tokens"]``），本函数服务流式预览与旧接口。
     """
     summary = token.meta.get("summary", "")
-    head = AnsiLine.of("\u25b6 ", _STYLE_LIST_BULLET)
-    for run in render_inline(str(summary)):
-        head.append_run(run)
-    lines = [head]
+    lines = [render_details_head(summary)]
     lines.extend(_preview_omitted(token.meta))
     for seg in (token.meta.get("body_lines") or []):
         for sub in _inline_lines(str(seg)):
@@ -374,6 +519,9 @@ __all__ = [
     "render_admonition_head",
     "render_admonition_body",
     "render_details",
+    "render_details_head",
     "render_fenced_div",
+    "render_front_matter",
+    "render_table_caption",
     "render_empty_line",
 ]

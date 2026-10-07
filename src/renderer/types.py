@@ -72,6 +72,12 @@ class TokenType(Enum):
     FENCED_DIV_LINE = auto()
     FENCED_DIV_CLOSE = auto()
 
+    # Front Matter（文档头元信息块：YAML --- / TOML +++ / JSON {}）
+    FRONT_MATTER = auto()
+
+    # 表格表注（表格下方的 `: 说明` / `Table: 说明`）
+    TABLE_CAPTION = auto()
+
     # [TOC] 占位符
     TOC_MARKER = auto()
 

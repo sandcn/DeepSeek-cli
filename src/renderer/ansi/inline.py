@@ -244,9 +244,11 @@ def _emit_abbr(node, base, ctx, out, depth):
 
 def _emit_link(node, base, ctx, out, depth):
     url = getattr(node, "url", "") or ""
-    if url.startswith("[ref:") and ctx is not None:
+    shortcut = bool(getattr(node, "meta", None)
+                    and node.meta.get("shortcut"))
+    if url.startswith("[ref:"):
         ref_id = url[5:-1]
-        ref_map = getattr(ctx, "ref_map", None) or {}
+        ref_map = (getattr(ctx, "ref_map", None) or {}) if ctx is not None else {}
         resolved = ref_map.get(ref_id)
         if resolved:
             actual_url, title = resolved
@@ -260,6 +262,10 @@ def _emit_link(node, base, ctx, out, depth):
             if title:
                 _append(out, f' "{title}"', _merge(base, _STYLE_COMMENT))
             return
+        if shortcut:
+            # 快捷引用式链接未命中定义 → 原样输出 ``[ref]``（不误改普通方括号文本）
+            _append(out, f"[{ref_id}]", base)
+            return
         _emit_children(node, _merge(base, _STYLE_ABBR), ctx, out, depth)
         _append(out, f"[?{ref_id}]", _merge(base, _STYLE_COMMENT))
         return
@@ -271,6 +277,23 @@ def _emit_link(node, base, ctx, out, depth):
 
 def _emit_image(node, base, ctx, out, depth):
     url = getattr(node, "url", "") or ""
+    title = getattr(node, "title", "")
+    ref_placeholder = ""
+    # 参考式图片 ``![alt][ref]``：url 为 ``[ref:id]`` 占位 → 查定义表展开
+    if url.startswith("[ref:"):
+        ref_id = url[5:-1]
+        ref_map = (getattr(ctx, "ref_map", None) or {}) if ctx is not None else {}
+        resolved = ref_map.get(ref_id)
+        if resolved:
+            try:
+                url, ref_title = resolved
+                title = title or ref_title
+            except (TypeError, ValueError):
+                url = ""
+        else:
+            # 未解析（如流式前置引用）：保留占位提示，不丢失引用信息
+            ref_placeholder = f"[ref:{ref_id}]"
+            url = ""
     shown = url[:50] + "..." if len(url) > 50 else url
     dim = ""
     w = node.meta.get("width", 0)
@@ -278,9 +301,15 @@ def _emit_image(node, base, ctx, out, depth):
     if w and h:
         dim = f" ={w}x{h}"
     alt = node.content or "image"
-    title = getattr(node, "title", "")
-    title_text = f' "{title}"' if title else ""
-    _append(out, f"🖼️ {alt} ({shown}{dim}){title_text}", _merge(base, _STYLE_IMAGE))
+    style = _merge(base, _STYLE_IMAGE)
+    if url:
+        _append(out, f"\U0001f5bc\ufe0f {alt} ({shown}{dim})", style)
+    elif ref_placeholder:
+        _append(out, f"\U0001f5bc\ufe0f {alt} ({ref_placeholder})", style)
+    else:
+        _append(out, f"\U0001f5bc\ufe0f {alt}", style)
+    if title:
+        _append(out, f' "{title}"', _merge(base, _STYLE_COMMENT))
 
 
 def _emit_math(node, base, ctx, out, depth):

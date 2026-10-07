@@ -48,7 +48,15 @@ class _BlockParserStreamMixin:
             line = s + '\n'
             stripped = s
 
-        if self._state == _State.CODE_FENCE:
+        if self._state == _State.FRONT_MATTER:
+            try:
+                self._feed_front_matter_line(line, stripped, tokens)
+            except Exception:
+                _logger.debug("Front Matter块内行处理异常，降级为段落", exc_info=True)
+                self._state = _State.NORMAL
+                self._handle_paragraph_line(line, tokens)
+
+        elif self._state == _State.CODE_FENCE:
             try:
                 self._feed_code_fence_line(line, stripped, tokens)
             except Exception:
@@ -142,12 +150,20 @@ class _BlockParserStreamMixin:
 
         elif self._state == _State.HTML_BLOCK:
             if self._is_html_close(stripped, self._block_html_tag):
-                tokens.append(Token(TokenType.HTML_BLOCK_CLOSE, "",
-                                    {"tag": self._block_html_tag}))
+                if not self._emit_html_table(tokens):
+                    for raw in self._html_lines:
+                        tokens.append(Token(TokenType.HTML_BLOCK_LINE, raw,
+                                            {"tag": self._block_html_tag}))
+                    self._html_lines = []
+                    tokens.append(Token(TokenType.HTML_BLOCK_CLOSE, "",
+                                        {"tag": self._block_html_tag}))
                 self._state = _State.NORMAL
+            elif self._collect_html_line(line):
+                pass
             else:
                 tokens.append(Token(TokenType.HTML_BLOCK_LINE,
-                                    line.rstrip('\n')))
+                                    line.rstrip('\n'),
+                                    {"tag": self._block_html_tag}))
 
         elif self._state == _State.TABLE_ACTIVE:
             try:
@@ -320,11 +336,16 @@ class _BlockParserStreamMixin:
             tokens.append(Token(TokenType.DETAILS_OPEN, "",
                                 {"summary": self._details_summary}))
             self._details_open_emitted = True
-        if self._block_lines:
-            for l in self._block_lines:
-                tokens.append(Token(TokenType.DETAILS_LINE, l))
-            self._block_lines = []
-        tokens.append(Token(TokenType.DETAILS_CLOSE))
+        # 正文以完整 Markdown 语义递归解析（列表/代码块/引用/强调…），
+        # 结果挂在 CLOSE 的 meta["body_tokens"]（渲染层整体渲染并缩进）；
+        # 同时保留原始行 body_lines（Rich 路径与流式预览逐行渲染用）。
+        body_lines = list(self._block_lines)
+        body_tokens = self._parse_sub_blocks(body_lines)
+        self._block_lines = []
+        tokens.append(Token(TokenType.DETAILS_CLOSE, "", {
+            "body_tokens": body_tokens,
+            "body_lines": body_lines,
+        }))
         self._state = _State.NORMAL
 
     def _feed_details_line(self, line: str, stripped: str, tokens: list[Token]):
@@ -654,7 +675,11 @@ class _BlockParserStreamMixin:
                 self._feed_code_fence_line(stripped + '\n', stripped, tokens)
                 return
         lang = _get_fence_lang(stripped)
-        if lang and lang in _COMMON_LANGUAGES:
+        # ★ 修复（内容丢失）：仅当整行就是语言标识（无附加内容）时才把该行
+        #   当作语言名——修复前 ``_get_fence_lang`` 只取前缀（``plain text``
+        #   → ``plain``），整行被当语言行吞掉，首行代码内容丢失。
+        is_pure_lang = bool(lang) and lang == stripped
+        if is_pure_lang and lang in _COMMON_LANGUAGES:
             fence['lang'] = lang
             self._start_code_fence(fence, tokens)
             if fence.get('extra'):
@@ -663,7 +688,7 @@ class _BlockParserStreamMixin:
                 else:
                     self._emit_code_line(fence['extra'], tokens)
             return
-        if lang and lang in _MERMAID_KEYWORDS:
+        if is_pure_lang and lang in _MERMAID_KEYWORDS:
             fence['lang'] = 'mermaid'
             self._start_code_fence(fence, tokens)
             if fence.get('extra'):

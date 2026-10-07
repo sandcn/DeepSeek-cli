@@ -241,6 +241,9 @@ def _link_node_handler(self, n, ctx, depth):
             result.append(f" ({actual_url})", style=Style(dim=True, color="bright_black"))
             return result
         else:
+            # 快捷引用式链接 ``[ref]`` 未命中定义 → 原样输出（不误改方括号文本）
+            if getattr(n, "meta", None) and n.meta.get("shortcut"):
+                return Text(f"[{ref_id}]")
             # 未解析的参考链接：黄色高亮 + 显示 ref_id
             result.stylize(Style(color="yellow", italic=True))
             result.append(f"[?{ref_id}]", style=Style(dim=True, color="bright_black"))
@@ -362,10 +365,35 @@ def _build_dispatch_table():
         h = n.meta.get("height", 0)
         if w and h:
             dim = f" ={w}x{h}"
-        url_text = n.url[:50] + '...' if len(n.url) > 50 else n.url
-        title_text = f" \"{n.title}\"" if getattr(n, 'title', '') else ""
+        url = n.url or ""
+        title = getattr(n, 'title', '')
+        ref_placeholder = ""
+        # 参考式图片 ``![alt][ref]``：url 为 ``[ref:id]`` 占位 → 查定义表展开
+        if url.startswith('[ref:') and ctx:
+            ref_id = url[5:-1]
+            resolved = ctx.ref_map.get(ref_id) if hasattr(ctx, 'ref_map') else None
+            if resolved:
+                try:
+                    url, ref_title = resolved
+                    title = title or ref_title
+                except (TypeError, ValueError):
+                    url = ""
+            else:
+                ref_placeholder = f"[ref:{ref_id}]"
+                url = ""
+        elif url.startswith('[ref:'):
+            ref_placeholder = url
+            url = ""
+        url_text = url[:50] + '...' if len(url) > 50 else url
+        title_text = f" \"{title}\"" if title else ""
+        if url_text:
+            shown = f" ({url_text}{dim})"
+        elif ref_placeholder:
+            shown = f" ({ref_placeholder})"
+        else:
+            shown = ""
         return Text(
-            f"🖼️ {n.content or 'image'} ({url_text}{dim}){title_text}",
+            f"🖼️ {n.content or 'image'}{shown}{title_text}",
             style=Style(color="magenta", dim=True))
 
     d[_ImageNode] = _image_node_handler

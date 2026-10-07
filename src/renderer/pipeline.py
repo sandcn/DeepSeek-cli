@@ -150,14 +150,19 @@ class CodeBlockBatcher(TokenFilter):
     def _make_block(self, lines: list[str], meta: dict, *, closed: bool) -> Token:
         """组装 CODE_BLOCK token（含 continuation/closed 语义）。"""
         attrs = meta.get("attrs", "")
-        return Token(TokenType.CODE_BLOCK, "\n".join(lines), {
+        out_meta = {
             "lang": meta.get("lang", "text"),
             "attrs": attrs,
             "title": meta.get("title", ""),
             "highlight_lines": parse_highlight_lines(attrs),
             "continuation": self._block_continuation,
             "closed": closed,
-        })
+        }
+        # 保留引用块深度（引用内的代码块需带 ``│`` 前缀渲染）
+        bq_depth = meta.get("bq_depth", 0)
+        if bq_depth:
+            out_meta["bq_depth"] = bq_depth
+        return Token(TokenType.CODE_BLOCK, "\n".join(lines), out_meta)
 
     def _flush_segment(self, result: list[Token], lines: list[str],
                        meta: dict) -> None:

@@ -5,6 +5,14 @@
 
 from __future__ import annotations
 
+# Front Matter（文档头元信息块）判定逻辑集中在 ``_front_matter``（两渲染路径
+# 共享的纯逻辑模块），此处 re-export 供块级解析器使用。
+from ._front_matter import (  # noqa: E402
+    front_matter_delim as _front_matter_delim,
+    front_matter_format as _front_matter_format,
+    is_front_matter_close as _is_front_matter_close,
+)
+
 
 # ═══════════════════════════════════════════════════════════
 # 字符级辅助函数（无正则）
@@ -182,3 +190,6 @@ def _rstrip_trailing_hashes(text: str) -> str:
     while result and result[-1] == '#':
         result = result[:-1].rstrip()
     return result
+
+
+# ── Front Matter 判定（见文件顶部 re-export） ────────────

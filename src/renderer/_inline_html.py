@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .inline_nodes import (
     InlineNode, TextNode, LineBreakNode, ImageNode,
-    AbbrNode,
+    AbbrNode, LinkNode,
     _HTML_TAG_MAP,
     render_inline_to_text,
 )
@@ -116,6 +116,31 @@ class InlineHTMLMixin:
                 attr_text = self._text[attr_start:end_before_gt].strip()
                 return self._make_img_node(attr_text)
             return TextNode(content='')
+
+        # ── 特殊标签：<a> 行内链接 / <ruby> 注音 ──
+        if not is_close and tag_name in ('a', 'ruby'):
+            attr_start = self._pos
+            self._skip_html_attrs()
+            if self._pos >= self._n or self._text[self._pos] != '>':
+                self._pos = saved
+                return None
+            attr_text = self._text[attr_start:self._pos]
+            self._pos += 1
+            if tag_name == 'a':
+                href = self._extract_attr(attr_text.strip(), 'href')
+                children = self._parse_html_content_nested('a', depth)
+                if children is None:
+                    self._pos = saved
+                    return None
+                text = render_inline_to_text(children)
+                if href:
+                    return LinkNode(url=href, content=text or href, children=children)
+                return TextNode(content=text)
+            content = self._parse_html_content('ruby', depth)
+            if content is None:
+                self._pos = saved
+                return None
+            return TextNode(content=render_ruby_text(content))
 
         # 非 void 标签：必须在 _HTML_TAG_MAP 中注册
         if tag_name not in _HTML_TAG_MAP:
@@ -275,3 +300,33 @@ class InlineHTMLMixin:
         while end < len(text) and not text[end].isspace() and text[end] not in '>':
             end += 1
         return text[idx:end]
+
+
+def render_ruby_text(text: str) -> str:
+    """``<ruby>`` 内容 → 终端注音文本（``漢<rt>かん</rt>`` → ``漢(かん)``）。
+
+    ``<rt>`` 内容以半角括号跟随基字；``<rp>``（注音括号回退）整段隐藏。
+    """
+    out: list[str] = []
+    lower = text.lower()
+    i = 0
+    n = len(text)
+    while i < n:
+        if lower.startswith('<rt', i):
+            end = text.find('>', i)
+            if end < 0:
+                break
+            close = lower.find('</rt>', end)
+            rt = text[end + 1:close] if close >= 0 else text[end + 1:]
+            if rt:
+                out.append(f'({rt.strip()})')
+            i = close + 5 if close >= 0 else n
+            continue
+        if lower.startswith('<rp', i):
+            end = text.find('>', i)
+            close = lower.find('</rp>', end) if end >= 0 else -1
+            i = close + 5 if close >= 0 else (end + 1 if end >= 0 else i + 1)
+            continue
+        out.append(text[i])
+        i += 1
+    return ''.join(out)

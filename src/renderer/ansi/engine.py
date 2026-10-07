@@ -15,7 +15,7 @@ from . import table as _table
 from . import code as _code
 from . import math as _math
 from . import mermaid as _mermaid
-from .helpers import AnsiLine
+from .helpers import AnsiLine, Run
 from .inline import use_render_context
 
 _logger = logging.getLogger(__name__)
@@ -62,7 +62,11 @@ class AnsiRenderEngine:
     def render(self, token: Token) -> list[AnsiLine]:
         """渲染单个 token（在渲染上下文中，供脚注/参考链接/缩写解析）。"""
         with use_render_context(self._ctx):
-            return self._render_impl(token)
+            lines = self._render_impl(token)
+        depth = _token_bq_depth(token)
+        if depth > 0 and lines:
+            _apply_bq_prefix(lines, depth)
+        return lines
 
     def _render_impl(self, token: Token) -> list[AnsiLine]:
         """渲染单个 token 为 AnsiLine 列表（含流式缓冲副作用）。"""
@@ -80,6 +84,10 @@ class AnsiRenderEngine:
                 return blocks.render_definition_item(token)
             if t == TokenType.EMPTY_LINE:
                 return blocks.render_empty_line(token)
+            if t == TokenType.FRONT_MATTER:
+                return blocks.render_front_matter(token)
+            if t == TokenType.TABLE_CAPTION:
+                return blocks.render_table_caption(token)
             if t == TokenType.LINE_BREAK:
                 # 硬换行（`<br>` 独立 Token）→ 空行（与 Rich 路径 InlineHandler 一致）
                 return [AnsiLine()]
@@ -180,19 +188,24 @@ class AnsiRenderEngine:
                     self._details[1].append(token.content)
                 return []
             if t == TokenType.DETAILS_CLOSE:
+                body_tokens = token.meta.get("body_tokens")
                 if self._details is not None:
-                    summary, body = self._details
+                    summary, _body = self._details
                     self._details = None
                 else:
                     # ★ 修复（流式预览丢正文）：无引擎缓冲（预览路径）时
                     #   必须从 token meta 取 body_lines——修复前正文行固定为
                     #   ``[]``，<details> 预览只显示 summary、正文全部丢失。
                     summary = token.meta.get("summary", "")
-                    body = list(token.meta.get("body_lines") or [])
+                dropped = int(token.meta.get("preview_dropped", 0) or 0)
+                if body_tokens is not None:
+                    # 正文以完整 Markdown 语义递归渲染（列表/代码/引用…），
+                    # 整体缩进显示（详见 ``_render_nested_blocks``）。
+                    return self._render_nested_blocks(summary, body_tokens, dropped)
+                body = list(token.meta.get("body_lines") or [])
                 if token.content:
                     body = body + str(token.content).split("\n")
                 meta: dict = {"summary": summary, "body_lines": body}
-                dropped = token.meta.get("preview_dropped")
                 if dropped:
                     meta["preview_dropped"] = dropped
                 return blocks.render_details(_StrToken("", meta))
@@ -227,7 +240,8 @@ class AnsiRenderEngine:
                 return blocks.render_html_block_open(token.meta.get("tag", "div"))
             if t == TokenType.HTML_BLOCK_LINE:
                 if token.content:
-                    return blocks.render_html_block_line(token.content)
+                    return blocks.render_html_block_line(
+                        token.content, token.meta.get("tag", ""))
                 return []
             if t == TokenType.HTML_BLOCK_CLOSE:
                 return [AnsiLine.of("")]
@@ -264,6 +278,29 @@ class AnsiRenderEngine:
             return []
         return _code.render_code_block(source, lang, self._code_theme, [], title)
 
+    # ── 嵌套块渲染（details 正文等） ────────────────────
+
+    def _render_nested_blocks(self, summary: str,
+                              tokens: list, dropped: int = 0) -> list[AnsiLine]:
+        """渲染容器块正文（子 Token 序列）并整体缩进。
+
+        用独立的子引擎渲染（不污染主引擎的流式缓冲状态），共享渲染上下文
+        （脚注/参考式链接/缩写跨块生效），每行加两空格缩进前缀。
+        """
+        out: list[AnsiLine] = [blocks.render_details_head(summary)]
+        if dropped:
+            from .code import render_omitted_line
+            out.append(render_omitted_line(dropped))
+        sub = AnsiRenderEngine(code_theme=self._code_theme,
+                               width=self._width, ctx=self._ctx)
+        prefix_style = blocks._STYLE_BQ
+        for tok in tokens:
+            for ln in sub.render(tok):
+                if ln.runs:
+                    ln.runs.insert(0, Run("  ", prefix_style))
+                out.append(ln)
+        return out
+
 
 # ── 轻量 Token 桩（组装 content/meta） ────────────────────
 
@@ -276,6 +313,31 @@ class _StrToken:
     def __init__(self, content, meta=None):
         self.content = content
         self.meta = meta or {}
+
+
+# ── 引用块内元素前缀（bq_depth） ──────────────────────────
+
+
+def _token_bq_depth(token: Token) -> int:
+    """Token 的引用块嵌套深度（0 = 不在引用块内）。"""
+    meta = getattr(token, "meta", None)
+    if not meta:
+        return 0
+    try:
+        return int(meta.get("bq_depth", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _apply_bq_prefix(lines: list[AnsiLine], depth: int) -> None:
+    """给渲染行首插入 ``│ `` 引用前缀（引用块内的块级元素）。
+
+    空行（无 Run）不插前缀，避免引用内空行变成残留边框。
+    """
+    prefix = "\u2502 " * max(1, depth)
+    for ln in lines:
+        if ln.runs:
+            ln.runs.insert(0, Run(prefix, blocks._STYLE_BQ))
 
 
 __all__ = ["AnsiRenderEngine"]

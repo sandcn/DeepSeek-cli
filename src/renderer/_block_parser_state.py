@@ -36,6 +36,7 @@ class _State(IntEnum):
     FENCED_DIV = 8
     TABLE_ACTIVE = 10
     ADMONITION_BLOCK = 11
+    FRONT_MATTER = 12
 
 
 #: 支持的告示类型（``> [!TYPE]`` 引用风格 与 ``!!! type`` fenced 风格共用）——

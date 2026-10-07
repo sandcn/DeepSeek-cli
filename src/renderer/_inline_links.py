@@ -254,12 +254,35 @@ class InlineLinksMixin:
                     return None
                 ref_id = self._text[ref_start:self._pos]
                 self._pos += 1
+                collapsed = False
+                # ★ 折叠引用式链接 ``[text][]``：ref_id 为空时用链接文字作 ref_id
+                if not ref_id:
+                    ref_id = link_text.strip()
+                    collapsed = True
+                    if not ref_id:
+                        self._pos = saved
+                        return None
                 # ★ 修复：为参考式链接解析 children，确保渲染时能看到链接文字
                 inner_parser = self.__class__(link_text)
                 children = inner_parser.parse()
                 link_content = render_inline_to_text(children)
-                return LinkNode(url=f'[ref:{ref_id}]', content=link_content, children=children)
+                node = LinkNode(url=f'[ref:{ref_id}]', content=link_content,
+                                children=children)
+                if collapsed:
+                    node.meta = {'shortcut': True, 'collapsed': True}
+                return node
             else:
+                # ── 快捷引用式链接 ``[ref]``（引用定义在文档其他位置）──
+                # 解析为带 ``[ref:...]`` 的 LinkNode；渲染层查 ref_map 命中则
+                # 展开为链接 + URL，未命中回退显示原文 ``[ref]``。
+                ref_id = link_text.strip()
+                if ref_id and len(ref_id) <= 256 and '\n' not in ref_id:
+                    inner_parser = self.__class__(link_text)
+                    children = inner_parser.parse()
+                    node = LinkNode(url=f'[ref:{ref_id}]', content=link_text,
+                                    children=children)
+                    node.meta = {'shortcut': True}
+                    return node
                 self._pos = saved
                 return None
         except Exception:
