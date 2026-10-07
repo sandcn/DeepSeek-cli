@@ -21,6 +21,7 @@ from .style import Style
 from .inline import render_inline, use_render_context
 from .engine import AnsiRenderEngine
 from ._preview_cache import LinePreviewCache
+from ._line_delims import ParagraphBoundaryScanner
 from .table import TablePreviewCache
 from src.renderer.types import TokenType, Token
 
@@ -102,6 +103,9 @@ class AnsiStreamRenderer:
         #   分实例（同一帧预览可能同时含段落与引用 token，共用实例会互相
         #   重置缓存）。
         self._line_preview_caches: dict = {}
+        # ★ 段落行边界「未闭合行内定界符」增量跟踪器（见 _line_delims）：
+        #   判定段落哪些完整行可安全逐行渲染，避免长段落每帧整段重解析。
+        self._para_boundary = ParagraphBoundaryScanner()
         self._lines: list[AnsiLine] = []
         self._closed = False
         self._width = width
@@ -169,9 +173,9 @@ class AnsiStreamRenderer:
         ``_preview_lines`` 供 UI 整体替换（块闭合后由 committed 行替换，预览清空）。
 
         ★ 增量渲染：代码块走 ``_render_code_preview``（按行高亮缓存）；段落/
-        引用/告示走 ``LinePreviewCache``（按行前缀复用）——均不整块重渲染，
-        消除长块流式期间每帧 O(预览行数) 的重复开销。其余 token 由独立预览
-        引擎渲染（引擎状态隔离，不污染主引擎）。
+        引用/告示走 ``LinePreviewCache``（按行前缀 + 头部滑窗复用）——均不整块
+        重渲染，消除长块流式期间每帧 O(预览行数) 的重复开销。其余 token 由
+        独立预览引擎渲染（引擎状态隔离，不污染主引擎）。
         """
         with use_render_context(self._ctx):
             self._refresh_preview_impl()
@@ -217,6 +221,7 @@ class AnsiStreamRenderer:
         self._preview_lines = []
         self._reset_code_preview_cache()
         self._table_preview_cache.reset()
+        self._para_boundary.reset()
         for cache in self._line_preview_caches.values():
             cache.reset()
 
@@ -271,43 +276,56 @@ class AnsiStreamRenderer:
         return parts
 
     def _render_paragraph_preview(self, token) -> list[AnsiLine]:
+        """段落预览：稳定前缀逐行增量渲染，仅未闭合尾部整段解析。
+
+        ``ParagraphBoundaryScanner`` 增量判定「行边界处无未闭合行内定界符」
+        的完整行数 ``cut``：前 ``cut`` 行逐行解析与整段解析等价 → 走行级增量
+        缓存；第 ``cut`` 行起（存在跨软换行标记）整段解析，与提交路径
+        （``render_paragraph``）语义一致，消除「预览泄漏 → 提交配对」跳变。
+
+        ★ 性能：修复前多行段落只要含任一「行内标记起始字符」就整段解析，
+        长段落流式每帧 O(整段) 重解析（累计 O(n²)）。现常见段落（行内标记均
+        行内闭合）只增量渲染新增行。
+        """
         from . import blocks as _blocks
-        src = self._preview_src_lines(token.content or "")
-        if self._paragraph_needs_multiline_inline(src):
-            # ★ 一致性修复（跨软换行行内标记）：多行段落在流式预览期按**整段**
-            #   解析行内标记后拆行——逐行渲染无法配对跨行标记（``**粗体\n
-            #   跨行**`` 会泄漏 ``**`` 标记），此路径与提交路径
-            #   （``render_paragraph`` 整段解析）语义一致，消除「预览泄漏 →
-            #   提交配对」的视觉跳变。
-            rows = _blocks.render_paragraph(
-                Token(TokenType.PARAGRAPH, "\n".join(src))
-            )
+        content = token.content or ""
+        src = self._preview_src_lines(content)
+        if len(src) <= 1:
+            # 单行段落无跨行配对 → 直接行级渲染
+            rows = self._render_paragraph_lines(src)
         else:
-            rows = self._line_cache("paragraph").render(
-                ("paragraph",), src,
-                lambda text: [_blocks.render_paragraph_line(text)],
-            )
+            cut = min(self._para_boundary.stable_line_count(content),
+                      len(src) - 1)
+            if cut <= 0:
+                # 首行即存在未闭合标记 → 整段解析
+                rows = _blocks.render_paragraph(
+                    Token(TokenType.PARAGRAPH, "\n".join(src))
+                )
+            elif cut >= len(src) - 1:
+                # 仅最后一行（活动行）尚未确定：逐行渲染即整段语义
+                rows = self._render_paragraph_lines(src)
+            else:
+                head_rows = self._render_paragraph_lines(src[:cut])
+                tail = src[cut:]
+                if len(tail) == 1:
+                    tail_rows = [_blocks.render_paragraph_line(tail[0])]
+                else:
+                    tail_rows = _blocks.render_paragraph(
+                        Token(TokenType.PARAGRAPH, "\n".join(tail))
+                    )
+                rows = head_rows + tail_rows
         dropped = int(token.meta.get("preview_dropped", 0) or 0)
         if dropped:
             return [self._omitted_line(dropped)] + rows
         return rows
 
-    #: 行内标记起始字符——多行段落含任一即整段解析（跨行标记可能配对）
-    #: 行内标记起始字符——多行段落含任一即整段解析（跨行标记可能配对）。
-    #: 覆盖全部可跨软换行配对的定界符（含新增语法：高亮/上下标/下划线/
-    #: 剧透/数学/着色容器/行内注释）；不含 emoji/URL/邮箱等不会跨行的触发符。
-    _INLINE_MARKER_CHARS = ("*", "_", "`", "~", "[", "<", "=", "^", "+", "|", "$", "{", "%")
-
-    @classmethod
-    def _paragraph_needs_multiline_inline(cls, src_lines: list) -> bool:
-        """多行段落是否含可能跨软换行的行内标记（含则需整段解析）。"""
-        if len(src_lines) < 2:
-            return False
-        text = "\n".join(src_lines)
-        for ch in cls._INLINE_MARKER_CHARS:
-            if ch in text:
-                return True
-        return False
+    def _render_paragraph_lines(self, src: list[str]) -> list[AnsiLine]:
+        """逐行渲染段落源行（行级增量缓存，跨帧复用未变化行）。"""
+        from . import blocks as _blocks
+        return self._line_cache("paragraph").render(
+            ("paragraph",), src,
+            lambda text: [_blocks.render_paragraph_line(text)],
+        )
 
     @staticmethod
     def _omitted_line(dropped: int) -> AnsiLine:

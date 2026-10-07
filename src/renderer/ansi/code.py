@@ -39,6 +39,10 @@ _CODE_THEME = "monokai"
 _HEX_256_CACHE: dict = {}
 #: fg 色号 → Style 对象缓存（同色 Style 共享，避免每 token 重建 frozen dataclass）
 _FG_STYLE_CACHE: dict = {}
+#: 单行「语言 + 主题 + 源码」→ 高亮行缓存。代码块内重复行（空行、``}``、
+#: ``else:`` 等）命中后免词法高亮；有界，超限整体清空（简单、无淘汰开销）。
+_LINE_HIGHLIGHT_CACHE: dict = {}
+_LINE_HIGHLIGHT_CACHE_MAX = 4096
 
 
 def _hex_to_256(hex_color: str) -> int | None:
@@ -134,7 +138,13 @@ def highlight_code_lines(
     for offset, src_line in enumerate(lines):
         idx = start_index + offset
         if lexer is not None:
-            aline = _highlight_line(src_line, lexer, pyg_style)
+            cache_key = (lang, theme, src_line)
+            aline = _LINE_HIGHLIGHT_CACHE.get(cache_key)
+            if aline is None:
+                aline = _highlight_line(src_line, lexer, pyg_style)
+                if len(_LINE_HIGHLIGHT_CACHE) >= _LINE_HIGHLIGHT_CACHE_MAX:
+                    _LINE_HIGHLIGHT_CACHE.clear()
+                _LINE_HIGHLIGHT_CACHE[cache_key] = aline
         else:
             aline = AnsiLine.of(src_line, _STYLE_DIM)
         if idx in hl:

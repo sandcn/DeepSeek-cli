@@ -5,6 +5,12 @@
 ``LinePreviewCache``：按源行列表做**最长公共前缀复用**，只渲染新增/变化的行，
 与代码块预览策略一致。
 
+预览有界化（解析器 ``_preview_tail`` 把超长段落截为最近 ``_PREVIEW_MAX_LINES``
+行）会让源行列表**头部滑窗**——每帧丢弃最旧行、追加最新行，前缀复用完全失效
+（整块重渲染，长段落流式累计 O(n²)）。故向前缀复用之外补一条「滑窗复用」：
+检测 ``cached_src[d:] == src_lines[:len-d]`` 的重叠（``d`` 为丢弃行数），复用
+重叠区间的渲染行，只渲染尾部新增行。
+
 行级渲染对跨软换行的行内标记是无状态的（与代码块逐行高亮同理）：预览阶段
 未闭合标记可能短暂原样显示，块闭合提交后按整段解析正确配对，提交路径不受影响。
 """
@@ -12,6 +18,7 @@
 from __future__ import annotations
 
 from .helpers import AnsiLine
+from ._line_match import common_prefix_len, sliding_drop
 
 
 class LinePreviewCache:
@@ -57,12 +64,18 @@ class LinePreviewCache:
             self._key = key
         cached_src = self._src
         rows = self._rows
-        n = min(len(src_lines), len(cached_src))
-        common = 0
-        while common < n and src_lines[common] == cached_src[common]:
-            common += 1
+        common = common_prefix_len(cached_src, src_lines)
+        if common == 0 and len(cached_src) >= 2 and len(rows) == len(cached_src):
+            # 首行即分歧 → 尝试「头部滑窗复用」（预览有界化的行丢弃）。
+            # 忽略尾行（活动行每帧变化，不参与重叠判定）。
+            drop = sliding_drop(cached_src, src_lines, ignore_tail=True)
+            if drop:
+                del cached_src[:drop]
+                del rows[:drop]
+                common = common_prefix_len(cached_src, src_lines)
         if common < len(cached_src):
             del rows[common:]
+            del cached_src[common:]
         base = len(rows)
         for line in src_lines[base:]:
             produced = render_line(line)
