@@ -27,11 +27,11 @@ from .style import Style
 
 from ._math_style import (
     _M_SYM, _M_OP, _M_BIGOP, _M_SUP, _M_SUB, _M_NOTICE, _M_FN, _M_TEXT,
-    _M_SQRT, _M_CANCEL, _M_TAG, _M_BOX, color_style,
+    _M_SQRT, _M_CANCEL, _M_TAG, _M_BOX, _M_ARROW, color_style,
 )
 from ._math_box import (
     _Box, _empty_box, _txt, _styled_text, _hjoin, _vstack, _plain_of,
-    _has_operator, _split_rows, _wrap_delims, frac_box,
+    _has_operator, _split_rows, _wrap_delims, frac_box, strike_through,
 )
 from ._math_cmds import COMMAND_HANDLERS, _MathCommandMixin, _restyle_box
 from ._math_env import _MathEnvMixin
@@ -48,6 +48,7 @@ from src.renderer.math_symbols.misc import (
 )
 from src.renderer.math_symbols.delimiters import _DELIMITER_MAP, _SPACE_MAP
 from src.renderer.math_symbols.scripts import _SUPERSCRIPT_MAP, _SUBSCRIPT_MAP
+from src.renderer.math_symbols.negations import negate_symbol
 
 #: 全命令映射（字符 + 样式类别）——一次构建，程序期不变。
 _CMD_MAP: dict[str, tuple[str, Style]] = {}
@@ -123,6 +124,11 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
                 continue
             if c in "^_":
                 base = parts.pop() if parts else None
+                # LaTeX 语义：命令与脚本之间的空白不影响绑定（``\sum _{i}``
+                # 等价 ``\sum_{i}``）——弹出末尾的纯空白块，避免脚本错误地
+                # 绑定到空白而非前一个原子。
+                if base is not None and not _plain_of(base).strip():
+                    base = parts.pop() if parts else None
                 parts.append(self._parse_scripts(base))
                 continue
             if c == "&":
@@ -172,6 +178,28 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
             return self._parse_scripts(None)
         return self._parse_text_run()
 
+    def _parse_script_atom(self) -> _Box:
+        """脚本（``^`` / ``_``）参数原子：``{...}`` 组 / 命令 / 单个字符。
+
+        TeX 语义：``x^2,`` 的 ``^`` 只取紧随的**单个** token（``2``），``,``
+        属于普通文本；``x^ab`` 同理只取 ``a``。修复前按普通文本段读取
+        （``2,`` / ``ab`` 整体成为上标），导致 ``cases`` 等场景出现
+        ``x^{2,}`` 这类错误排版。
+        """
+        if self.i >= self.n:
+            return _empty_box()
+        c = self.s[self.i]
+        if c == "{":
+            return self._parse_group()
+        if c == "\\":
+            return self._parse_command()
+        if c.isspace():
+            while self.i < self.n and self.s[self.i].isspace():
+                self.i += 1
+            return _txt(" ")
+        self.i += 1
+        return _styled_text(c)
+
     def _parse_group(self) -> _Box:
         self.i += 1  # 跳过 '{'
         box = self._parse_seq(frozenset({"}"}))
@@ -219,7 +247,7 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
         while self.i < self.n and self.s[self.i] in "^_":
             is_sup = self.s[self.i] == "^"
             self.i += 1
-            arg = self._parse_atom()
+            arg = self._parse_script_atom()
             if is_sup:
                 sup = arg
             else:
@@ -412,8 +440,8 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
         if cmd in ("displaystyle", "textstyle", "scriptstyle",
                    "scriptscriptstyle", "limits", "nolimits"):
             return _empty_box()
-        if cmd in ("not",):
-            return _txt("¬", _M_OP)
+        if cmd == "not":
+            return self._cmd_not()
         if cmd in ("mathbin", "mathrel", "mathord", "mathop", "mathinner"):
             return self._render_sub(self._read_group_raw())
         if cmd in _SILENT_COMMANDS:
@@ -455,13 +483,23 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
     # ── 定界符（left / right / middle / big） ───────────
 
     def _read_delimiter_char(self) -> str:
-        """读取一个定界符（``(`` / ``\\{`` / ``\\langle`` / ``.``）→ 显示字符。"""
+        """读取一个定界符（``(`` / ``\\{`` / ``\\langle`` / ``.``）→ 显示字符。
+
+        ★ 修复（review 方向）：``\\{`` / ``\\}`` / ``\\|`` / ``\\.`` / ``\\\\``
+        等「反斜杠 + 非字母」定界符此前被当作普通 ``\\`` 处理（``\\left\\{``
+        渲染成字面反斜杠）。现按 ``_DELIMITER_MAP`` 的 ``"\\" + 字符`` 键解析，
+        未登记时回退该字符本身（如 ``\\{`` → ``{``）。
+        """
         while self.i < self.n and self.s[self.i] == " ":
             self.i += 1
         if self.i >= self.n:
             return ""
         c = self.s[self.i]
         if c == "\\":
+            if self.i + 1 < self.n and not self.s[self.i + 1].isalpha():
+                nxt = self.s[self.i + 1]
+                self.i += 2
+                return _DELIMITER_MAP.get("\\" + nxt, nxt)
             name = self._peek_cmd(self.i)
             if name:
                 self.i += 1 + len(name)
@@ -570,23 +608,57 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
             lines.append(nl)
         return _Box(lines, baseline=1 + content.baseline)
 
-    def _cmd_binom(self) -> _Box:
-        top = _plain_of(self._render_sub(self._read_group_raw()))
-        bot = _plain_of(self._render_sub(self._read_group_raw()))
-        return _txt(f"({top}¦{bot})", _M_SYM)
+    def _cmd_binom(self, cmd: str = "binom") -> _Box:
+        """二项式系数：块级真二维堆叠（大括号），行内紧凑 ``(n¦k)``。
+
+        ``\\dbinom`` / ``\\tbinom`` 与 ``\\binom`` 共用（终端无字号，
+        ``d``/``t`` 前缀仅在行内是否展平上无差别）。
+        """
+        num = self._render_sub(self._read_group_raw())
+        den = self._render_sub(self._read_group_raw())
+        if self.inline:
+            top = _plain_of(num).strip()
+            bot = _plain_of(den).strip()
+            return _txt(f"({top}¦{bot})", _M_SYM)
+        return _wrap_delims(_vstack([num, den], align="center"), "(", ")")
+
+    def _cmd_not(self) -> _Box:
+        """``\\not`` 否定前缀（``\\not=`` → ``≠``、``\\not\\in`` → ``∉``）。
+
+        优先查 ``_NEGATED_SYMBOLS`` 预组合字符表；未登记的关系符回退叠加
+        组合长斜线（U+0338），保证任意关系符都能表达「否定」语义。
+        """
+        while self.i < self.n and self.s[self.i] == " ":
+            self.i += 1
+        if self.i >= self.n:
+            return _txt("\u0338", _M_OP)
+        c = self.s[self.i]
+        if c == "\\":
+            atom = self._parse_command()
+            plain = _plain_of(atom).strip()
+            return _txt(negate_symbol(plain), _M_OP)
+        self.i += 1
+        return _txt(negate_symbol(c), _M_OP)
 
     def _cmd_cancel(self, cmd: str) -> _Box:
-        content = self._render_sub(self._read_group_raw())
+        """划除（``\\cancel`` / ``\\bcancel`` / ``\\xcancel`` / ``\\sout``
+        / ``\\cancelto``）。
+
+        单行/多行内容统一叠加**真正的删除线**（组合长斜线 U+0336 + 取消配色）
+        ——修复前只把内容变暗（视觉上无法区分「划除」与「弱化」）。
+        ``\\cancelto{目标}{内容}`` 额外以 ``⤳目标`` 尾随显示目标值。
+        """
         if cmd == "cancelto":
-            self._read_group_raw()  # 目标值
-        lines: list[AnsiLine] = []
-        for ln in content.lines:
-            nl = AnsiLine()
-            for run in ln.runs:
-                st = run.style
-                nl.append_run(Run(run.text, _M_CANCEL if st is None else st))
-            lines.append(nl)
-        return _Box(lines)
+            # ``\cancelto{目标}{内容}``：先目标、后内容（LaTeX 参数顺序）
+            target_src = self._read_group_raw()
+            content = self._render_sub(self._read_group_raw())
+            out = strike_through(content, _M_CANCEL)
+            target = _plain_of(self._render_sub(target_src)).strip()
+            if target:
+                return _hjoin([out, _txt("⤳" + target, _M_ARROW)])
+            return out
+        content = self._render_sub(self._read_group_raw())
+        return strike_through(content, _M_CANCEL)
 
     def _cmd_color(self, cmd: str) -> _Box:
         name = self._read_group_raw().strip()
@@ -600,7 +672,7 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin):
             lines.append(nl)
         return _Box(lines)
 
-    def _cmd_boxed(self) -> _Box:
+    def _cmd_boxed(self, cmd: str = "boxed") -> _Box:
         content = self._render_sub(self._read_group_raw())
         if self.inline:
             return _txt("[" + _plain_of(content) + "]", _M_BOX)

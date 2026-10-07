@@ -42,6 +42,23 @@ _OPERATOR_SYMBOLS: Dict[str, str] = {
     "sqcup": "⊔",             # 方杯
     "sqdoublecap": "⩎",       # 双线方帽
     "sqdoublecup": "⩏",       # 双线方杯
+    # === 第二批补充（常用二元运算符）===
+    "dagger": "†",
+    "ddagger": "‡",
+    "bullet": "•",
+    "diamond": "⋄",
+    "bigcirc": "○",
+    "circledast": "⊛",
+    "circledcirc": "⊚",
+    "circleddash": "⊝",
+    "bigtriangleup": "△",
+    "bigtriangledown": "▽",
+    "triangleleft": "◁",
+    "triangleright": "▷",
+    "unlhd": "⊴",
+    "unrhd": "⊵",
+    "lhd": "⊲",
+    "rhd": "⊳",
 }
 
 _BIG_OPERATORS: Dict[str, str] = {

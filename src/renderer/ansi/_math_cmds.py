@@ -14,13 +14,16 @@ from .helpers import AnsiLine
 
 from ._math_style import (
     _M_SYM, _M_TEXT, _M_TEXT_ROMAN, _M_TEXT_BOLD, _M_MATH_BOLD, _M_CODE,
-    _M_NOTICE, _M_BRACE, _M_ARROW, _M_HLINE, _M_ACCENT, color_bg, color_style,
+    _M_NOTICE, _M_BRACE, _M_ARROW, _M_HLINE, _M_ACCENT, _M_SUP, _M_SUB,
+    color_bg, color_style,
 )
 from ._math_box import (
-    _Box, _txt, _empty_box, _plain_of, _vstack, _wrap_delims,
-    frac_box, accent_over, accent_under, repeat_line,
+    _Box, _txt, _empty_box, _plain_of, _vstack, _hjoin, _wrap_delims,
+    frac_box, accent_over, accent_under, repeat_line, strike_through,
+    bracket_over, bracket_under, pad_to_height, join_right,
 )
 from ._math_letters import to_math_alphabet
+from src.renderer.math_symbols.scripts import _SUPERSCRIPT_MAP, _SUBSCRIPT_MAP
 
 # ── 命令分组常量 ───────────────────────────────────────────
 
@@ -39,12 +42,15 @@ UNICODE_ALPHABET_CMDS: frozenset = frozenset({
 TEXT_SEMANTIC_CMDS: frozenset = frozenset({
     "text", "textrm", "textit", "textbf", "textsf", "texttt",
     "textnormal", "normalfont", "textsc",
+    "hbox", "mbox", "textup", "textsl", "textmd", "emph",
 })
 
 #: 直立（罗马）字体命令
-ROMAN_CMDS: frozenset = frozenset({"mathrm", "textrm", "rm", "textnormal", "normalfont"})
+ROMAN_CMDS: frozenset = frozenset({
+    "mathrm", "textrm", "rm", "textnormal", "normalfont", "textup", "textmd",
+})
 #: 斜体字体命令
-ITALIC_CMDS: frozenset = frozenset({"mathit", "textit", "it"})
+ITALIC_CMDS: frozenset = frozenset({"mathit", "textit", "it", "textsl", "emph"})
 #: 粗直立体
 BOLD_UPRIGHT_CMDS: frozenset = frozenset({"mathbf", "textbf", "bf"})
 #: 粗斜体
@@ -87,6 +93,30 @@ HLINE_CHARS: dict[str, str] = {
     "cline": "─", "hrule": "─",
 }
 
+#: 上下标注命令 → (标注符号, 附着方向)。方向用于 ``_attach_brace`` 决定
+#: 标注填入首行（over）还是末行（under）。
+_BRACE_MARKS: dict[str, tuple[str, str]] = {
+    "overbrace": ("\u23de", "overbrace"),
+    "underbrace": ("\u23df", "underbrace"),
+    "overbracket": ("\u23b4", "overbrace"),
+    "underbracket": ("\u23b5", "underbrace"),
+    "overparen": ("\u23dc", "overbrace"),
+    "underparen": ("\u23dd", "underbrace"),
+    "overgroup": ("\u23e0", "overbrace"),
+    "undergroup": ("\u23e1", "underbrace"),
+}
+
+#: 上下标记命令 → (标记字符, 方向)：方向 ``over`` 叠加在内容上方、
+#: ``under`` 叠加在内容下方。终端无「宽重音」概念，一律整宽铺标记字符。
+_MARK_COMMANDS: dict[str, tuple[str, str]] = {
+    "widecheck": ("\u02c7", "over"),
+    "widebar": ("\u203e", "over"),
+    "widetilde": ("\u02dc", "over"),
+    "utilde": ("\u02dc", "under"),
+    "undertilde": ("\u02dc", "under"),
+    "underbar": ("\u2581", "under"),
+}
+
 #: 环境外水平线的默认宽度（字符数）
 _BARE_HLINE_WIDTH = 20
 
@@ -124,6 +154,131 @@ def _centered_line(text: str, width: int, style) -> AnsiLine:
         return AnsiLine()
     left = max(0, (width - len(text)) // 2)
     return AnsiLine.of(" " * left + text, style)
+
+
+#: ``\text`` 系列内容中可还原的转义字符（``\{`` → ``{`` 等）
+_TEXT_ESCAPE_CHARS: frozenset = frozenset("\\{}$%&#_ ")
+
+
+def _unescape_text(seg: str) -> str:
+    r"""还原 ``\text`` 内容中的转义字符（``\{``→``{``、``\%``→``%``…）。"""
+    out: list[str] = []
+    i = 0
+    n = len(seg)
+    while i < n:
+        ch = seg[i]
+        if ch == "\\" and i + 1 < n and seg[i + 1] in _TEXT_ESCAPE_CHARS:
+            out.append(seg[i + 1])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+#: ``\text`` 系列内容中可剥离的嵌套文本样式命令（保留其内容文本）
+_TEXT_NESTED_CMDS: frozenset = frozenset({
+    "text", "textrm", "textit", "textbf", "textsf", "texttt", "textnormal",
+    "textsc", "textup", "textsl", "textmd", "emph", "mbox", "hbox",
+    "mathrm", "mathbf", "mathit", "mathsf", "mathtt", "operatorname",
+})
+
+
+def _strip_text_commands(seg: str) -> str:
+    """剥离 ``\\text`` 内容中的嵌套文本命令，保留其花括号内文本。
+
+    ``\\text{其中 \\textbf{重点}}`` → ``其中 重点``：修复前嵌套命令原样显示
+    （含反斜杠与花括号噪音），也不符合 ``\\text``「按原文呈现内容」的语义。
+    未登记的转义（``\\{`` 等）与 ``\\\\`` 原样保留，交给后续还原步骤。
+    """
+    out: list[str] = []
+    i = 0
+    n = len(seg)
+    while i < n:
+        ch = seg[i]
+        if ch == "\\" and i + 1 < n and seg[i + 1].isalpha():
+            j = i + 1
+            while j < n and seg[j].isalpha():
+                j += 1
+            name = seg[i + 1:j]
+            if name in _TEXT_NESTED_CMDS:
+                k = j
+                while k < n and seg[k] == " ":
+                    k += 1
+                if k < n and seg[k] == "{":
+                    depth = 0
+                    m = k
+                    while m < n:
+                        if seg[m] == "{":
+                            depth += 1
+                        elif seg[m] == "}":
+                            depth -= 1
+                            if depth == 0:
+                                break
+                        m += 1
+                    inner = seg[k + 1:m] if m < n else seg[k + 1:]
+                    out.append(_strip_text_commands(inner))
+                    i = m + 1
+                    continue
+                i = j
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _text_content_lines(raw: str) -> list[str]:
+    """``\\text`` 原文 → 行列表。
+
+    ``\\\\``（LaTeX 换行）拆行；嵌套文本命令剥离（保留内容）；``~`` 还原为
+    空格；转义字符还原；行首尾空白去除（LaTeX 在 ``\\text`` 中忽略行首尾空白，
+    保留中间空格）。
+    """
+    text = _strip_text_commands(raw or "").replace("\\\\", "\n")
+    return [_unescape_text(seg).replace("~", " ").strip() for seg in text.split("\n")]
+
+
+def _script_pair(raw: str) -> tuple[str, str]:
+    """``_a^b`` / ``^{b}_{a}`` 原文 → ``(上标原文, 下标原文)``。
+
+    供 ``\\sideset`` 的四角标解析：只识别顶层 ``^`` / ``_``，脚本参数为
+    ``{...}``（花括号配对）或单个字符；其余字符忽略。
+    """
+    sup = sub = ""
+    i = 0
+    n = len(raw or "")
+    while i < n:
+        ch = raw[i]
+        if ch not in "^_":
+            i += 1
+            continue
+        i += 1
+        while i < n and raw[i] == " ":
+            i += 1
+        if i >= n:
+            break
+        if raw[i] == "{":
+            depth = 0
+            start = i + 1
+            j = start
+            while j < n:
+                if raw[j] == "{":
+                    depth += 1
+                elif raw[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            arg = raw[start:j]
+            i = j + 1
+        else:
+            arg = raw[i]
+            i += 1
+        if ch == "^":
+            sup = arg
+        else:
+            sub = arg
+    return sup, sub
 
 
 def _restyle_box(box: _Box, style: Style,
@@ -195,14 +350,14 @@ class _MathCommandMixin:
     # ── 上下花括号（overbrace / underbrace） ─────────────
 
     def _cmd_brace(self, cmd: str) -> _Box:
-        """``\\overbrace{x+y}^{n}`` / ``\\underbrace{x+y}_{n}``。
+        """上下标注符号（``\\overbrace`` / ``\\underbrace`` / ``\\overbracket``
+        / ``\\underbracket`` / ``\\overparen`` / ``\\underparen``）。
 
-        块级输出花括号行 + 标注行（标注由随后的 ``^{}`` / ``_{}`` 填入——
-        见 ``_attach_brace``）；行内紧凑为「内容 + 花括号符号」。
+        块级输出标注符号行 + 内容行（``^{}`` / ``_{}`` 随后填入标注——
+        见 ``_attach_brace``）；行内紧凑为「内容 + 标注符号」。
         """
         content = self._render_sub(self._read_group_raw())
-        kind = "overbrace" if cmd == "overbrace" else "underbrace"
-        mark = "⏞" if kind == "overbrace" else "⏟"
+        mark, kind = _BRACE_MARKS.get(cmd, ("\u23de", "overbrace"))
         if self.inline:
             line = AnsiLine()
             for run in content.lines[0].runs:
@@ -211,27 +366,47 @@ class _MathCommandMixin:
             return _Box([line])
         w = max(1, content.width)
         brace = repeat_line(mark, w, _M_BRACE)
-        blank = AnsiLine()
         if kind == "overbrace":
-            lines = [blank, brace] + list(content.lines)
-            return _Box(lines, kind=kind, baseline=2 + content.baseline)
-        lines = list(content.lines) + [brace, blank]
+            # 标注行按需插入（``_attach_brace``）——无标注时不预留空行
+            lines = [brace] + list(content.lines)
+            return _Box(lines, kind=kind, baseline=1 + content.baseline)
+        lines = list(content.lines) + [brace]
         return _Box(lines, kind=kind, baseline=content.baseline)
 
     def _attach_brace(self, base: _Box, sup: _Box | None,
                       sub: _Box | None) -> _Box:
-        """把 ``\\overbrace{}^{标注}`` / ``\\underbrace{}_{标注}`` 的标注填入。"""
+        """把 ``\\overbrace{}^{标注}`` / ``\\underbrace{}_{标注}`` 的标注填入。
+
+        方向匹配的脚本插入/追加标注行（居中）；方向不匹配的脚本（如
+        ``\\underbrace{x}^{n}``）以紧凑脚本形式附在内容行尾——修复前直接
+        丢弃，内容静默丢失。无标注时不产生任何额外行。
+        """
         lines = list(base.lines)
         width = base.width
-        if base.kind == "overbrace" and sup is not None:
-            label = _plain_of(sup).strip()
-            if label:
-                lines[0] = _centered_line(label, width, _M_NOTICE)
-        elif base.kind == "underbrace" and sub is not None:
-            label = _plain_of(sub).strip()
-            if label:
-                lines[-1] = _centered_line(label, width, _M_NOTICE)
-        return _Box(lines, kind=base.kind, baseline=base.baseline)
+        over = base.kind in ("overbrace", "overbracket")
+        if over:
+            content_idx = len(lines) - 1
+            primary, secondary = sup, sub
+        else:
+            content_idx = max(0, len(lines) - 2)
+            primary, secondary = sub, sup
+        label = _plain_of(primary).strip() if primary is not None else ""
+        other = _plain_of(secondary).strip() if secondary is not None else ""
+        extra = 0
+        if label:
+            row = _centered_line(label, width, _M_NOTICE)
+            if over:
+                lines.insert(0, row)
+                extra = 1
+            else:
+                lines.append(row)
+        if other:
+            delim = "_{" if over else "^{"
+            style = _M_SUB if over else _M_SUP
+            lines[content_idx + extra] = join_right(
+                lines[content_idx + extra], delim + other + "}", style)
+        baseline = base.baseline + (1 if (over and label) else 0)
+        return _Box(lines, kind=base.kind, baseline=baseline)
 
     # ── 着色盒（colorbox / fcolorbox） ───────────────────
 
@@ -333,10 +508,13 @@ class _MathCommandMixin:
             if converted is not None:
                 return _txt(converted, _alphabet_style(cmd))
         if cmd in TEXT_SEMANTIC_CMDS:
-            text = raw
+            lines_text = _text_content_lines(raw)
             if cmd in SMALLCAPS_CMDS:
-                text = text.upper()
-            return _txt(text, _font_style(cmd))
+                lines_text = [t.upper() for t in lines_text]
+            style = _font_style(cmd)
+            if len(lines_text) == 1:
+                return _txt(lines_text[0], style)
+            return _Box([AnsiLine.of(t, style) for t in lines_text])
         content = self._render_sub(raw)
         return _restyle_box(content, _font_style(cmd))
 
@@ -387,13 +565,164 @@ class _MathCommandMixin:
             parts.append(_txt(below, _M_NOTICE))
         return _vstack(parts, align="center", baseline=baseline)
 
+    # ── 前置上下标（\prescript） ─────────────────────────
+
+    def _cmd_prescript(self, cmd: str = "prescript") -> _Box:
+        """``\\prescript{上标}{下标}{主体}`` 前置上下标。
+
+        块级：主体左侧堆叠上下标（同位素记法 ``¹⁴₆C`` 的二维形式）；行内：
+        紧凑 ``^{...}_{...}`` 前缀。
+        """
+        sup_src = self._read_group_raw()
+        sub_src = self._read_group_raw()
+        base = self._render_sub(self._read_group_raw())
+        sup = _plain_of(self._render_sub(sup_src)).strip()
+        sub = _plain_of(self._render_sub(sub_src)).strip()
+        if self.inline:
+            line = AnsiLine()
+            if sup:
+                line.append("^{" + sup + "}", _M_SUP)
+            if sub:
+                line.append("_{" + sub + "}", _M_SUB)
+            for run in base.lines[0].runs:
+                line.append_run(run)
+            return _Box([line])
+        if not sup and not sub:
+            return base
+        pre = _vstack([
+            _txt(sup, _M_SUP) if sup else _empty_box(),
+            _empty_box(),
+            _txt(sub, _M_SUB) if sub else _empty_box(),
+        ], align="right", baseline=1)
+        return _hjoin([pre, base])
+
+    # ── 四角标（\sideset） ───────────────────────────────
+
+    def _cmd_sideset(self, cmd: str = "sideset") -> _Box:
+        """``\\sideset{_a^b}{_c^d}\\sum`` 大算符四角标。
+
+        左侧组内容（``_a^b``）渲染在算子左上下、右侧组渲染在右上下；块级为
+        真二维（算子垂直居中），行内紧凑为脚本序列。
+        """
+        left_raw = self._read_group_raw()
+        right_raw = self._read_group_raw()
+        op = self._parse_atom()
+        ls_raw, lb_raw = _script_pair(left_raw)
+        rs_raw, rb_raw = _script_pair(right_raw)
+        ls = _plain_of(self._render_sub(ls_raw)).strip() if ls_raw else ""
+        lb = _plain_of(self._render_sub(lb_raw)).strip() if lb_raw else ""
+        rs = _plain_of(self._render_sub(rs_raw)).strip() if rs_raw else ""
+        rb = _plain_of(self._render_sub(rb_raw)).strip() if rb_raw else ""
+        if self.inline:
+            line = AnsiLine()
+            if ls:
+                line.append("^{" + ls + "}", _M_SUP)
+            if lb:
+                line.append("_{" + lb + "}", _M_SUB)
+            for run in op.lines[0].runs:
+                line.append_run(run)
+            if rs:
+                line.append("^{" + rs + "}", _M_SUP)
+            if rb:
+                line.append("_{" + rb + "}", _M_SUB)
+            return _Box([line])
+        if not (ls or lb or rs or rb):
+            return op
+        left = _vstack([
+            _txt(ls, _M_SUP) if ls else _empty_box(),
+            _empty_box(),
+            _txt(lb, _M_SUB) if lb else _empty_box(),
+        ], align="right", baseline=1)
+        right = _vstack([
+            _txt(rs, _M_SUP) if rs else _empty_box(),
+            _empty_box(),
+            _txt(rb, _M_SUB) if rb else _empty_box(),
+        ], align="left", baseline=1)
+        return _hjoin([left, op, right])
+
+    # ── 宽标记（widecheck / widebar / utilde / underbar） ─
+
+    def _cmd_mark(self, cmd: str) -> _Box:
+        """整宽上下标记（终端无「宽重音」概念，按内容宽度铺标记字符）。"""
+        content = self._render_sub(self._read_group_raw())
+        mark, direction = _MARK_COMMANDS.get(cmd, ("\u203e", "over"))
+        if direction == "over":
+            return accent_over(content, mark, _M_ACCENT)
+        return accent_under(content, mark, _M_ACCENT)
+
+    # ── 文本上下标（\textsuperscript / \textsubscript） ──
+
+    def _cmd_textscript(self, cmd: str) -> _Box:
+        """文本上下标：内容可 Unicode 化时直接转换，否则紧凑脚本形式。"""
+        raw = self._read_group_raw()
+        is_sup = cmd == "textsuperscript"
+        mapping = _SUPERSCRIPT_MAP if is_sup else _SUBSCRIPT_MAP
+        style = _M_SUP if is_sup else _M_SUB
+        if raw and all(ch in mapping or ch.isspace() for ch in raw):
+            return _txt("".join(mapping.get(ch, ch) for ch in raw), style)
+        return _txt(("^{" if is_sup else "_{") + raw + "}", style)
+
+    # ── 原文命令（\verb） ────────────────────────────────
+
+    def _cmd_verb(self, cmd: str = "verb") -> _Box:
+        """``\\verb|原文|`` / ``\\verb*|原文|``：按代码样式原样呈现。"""
+        if self.i < self.n and self.s[self.i] == "*":
+            self.i += 1
+        if self.i >= self.n:
+            return _empty_box()
+        delim = self.s[self.i]
+        self.i += 1
+        end = self.s.find(delim, self.i)
+        if end < 0:
+            text = self.s[self.i:]
+            self.i = self.n
+        else:
+            text = self.s[self.i:end]
+            self.i = end + 1
+        return _txt(text, _M_CODE)
+
+    # ── 透明包裹命令（内容照常渲染） ─────────────────────
+
+    def _cmd_wrap(self, cmd: str) -> _Box:
+        """忽略排版语义、只保留内容的命令（``\\smash`` / ``\\mathclap``…）。
+
+        终端无「盒子重叠/裁剪」概念，直接渲染内容（内容不丢）。
+        """
+        return self._render_sub(self._read_group_raw())
+
+    # ── 取整定界（\ceil / \floor） ──────────────────────
+
+    def _cmd_brackets(self, cmd: str) -> _Box:
+        """``\\ceil{x}`` → ``⌈x⌉``；``\\floor{x}`` → ``⌊x⌋``（多维感知）。"""
+        content = self._render_sub(self._read_group_raw())
+        if cmd == "ceil":
+            return _wrap_delims(content, "⌈", "⌉")
+        return _wrap_delims(content, "⌊", "⌋")
+
+    # ── 小分数（\nicefrac / \sfrac） ────────────────────
+
+    def _cmd_nicefrac(self, cmd: str = "nicefrac") -> _Box:
+        """``\\nicefrac{a}{b}``：行内紧凑 ``a⁄b``，块级与 ``\\frac`` 相同。"""
+        num = self._render_sub(self._read_group_raw())
+        den = self._render_sub(self._read_group_raw())
+        if self.inline:
+            ns = _plain_of(num).strip()
+            ds = _plain_of(den).strip()
+            if _needs_paren(ns):
+                ns = "(" + ns + ")"
+            if _needs_paren(ds):
+                ds = "(" + ds + ")"
+            return _txt(ns + "⁄" + ds, _M_SYM)
+        return frac_box(num, den)
+
     # ── 上下划线（overline / underline，支持多行内容） ──
 
     def _cmd_overline(self, cmd: str) -> _Box:
+        """上划线 / 下划线（下划线使用 ``▁`` 实心下横，比 ``_`` 更醒目）。"""
         content = self._render_sub(self._read_group_raw())
         if cmd == "overline":
-            return accent_over(content, "‾", _M_ACCENT)
-        return accent_under(content, "_", _M_ACCENT)
+            return accent_over(content, "\u203e", _M_ACCENT)
+        return accent_under(content, "\u2581", _M_ACCENT)
 
     # ── 重音（hat / tilde / vec / dot …） ────────────────
 
@@ -468,7 +797,7 @@ def _register_commands() -> dict[str, str]:
     table: dict[str, str] = {}
     for cmd in ("overset", "underset", "stackrel"):
         table[cmd] = "_cmd_stacked"
-    for cmd in ("overbrace", "underbrace"):
+    for cmd in _BRACE_MARKS:
         table[cmd] = "_cmd_brace"
     for cmd in ("colorbox", "fcolorbox"):
         table[cmd] = "_cmd_colorbox"
@@ -488,6 +817,23 @@ def _register_commands() -> dict[str, str]:
         table[cmd] = "_cmd_xarrow"
     table["overline"] = "_cmd_overline"
     table["underline"] = "_cmd_overline"
+    # ── 第二批扩展（前后上下标 / 四角标 / 宽标记 / 文本脚本 / 原文） ──
+    table["prescript"] = "_cmd_prescript"
+    table["sideset"] = "_cmd_sideset"
+    for cmd in _MARK_COMMANDS:
+        table[cmd] = "_cmd_mark"
+    for cmd in ("textsuperscript", "textsubscript"):
+        table[cmd] = "_cmd_textscript"
+    table["verb"] = "_cmd_verb"
+    for cmd in ("dbinom", "tbinom"):
+        table[cmd] = "_cmd_binom"
+    for cmd in ("smash", "mathclap", "mathllap", "mathrlap", "clap", "llap",
+                "rlap", "vcenter", "mathmakebox"):
+        table[cmd] = "_cmd_wrap"
+    for cmd in ("ceil", "floor"):
+        table[cmd] = "_cmd_brackets"
+    for cmd in ("nicefrac", "sfrac"):
+        table[cmd] = "_cmd_nicefrac"
     return table
 
 
@@ -504,4 +850,5 @@ __all__ = [
     "COMMAND_HANDLERS", "register_math_command", "HLINE_CHARS",
     "XARROW_SYMBOLS", "VECTOR_MARKS", "UNICODE_ALPHABET_CMDS",
     "TEXT_SEMANTIC_CMDS", "_MathCommandMixin", "_length_to_chars",
+    "_BRACE_MARKS", "_MARK_COMMANDS",
 ]

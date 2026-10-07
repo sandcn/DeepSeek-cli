@@ -38,7 +38,9 @@ class DetailsHandler(TokenHandler):
             summary = token.meta.get("summary", "")
             indent = "  " * (engine.details_state.depth - 1)
 
-            arrow = Text(f"{indent}▶ ", style=Style(bold=True, color="bright_yellow"))
+            arrow_glyph = "▼" if token.meta.get("open") else "▶"
+            arrow = Text(f"{indent}{arrow_glyph} ",
+                         style=Style(bold=True, color="bright_yellow"))
             if summary:
                 summary_text = engine.render_inline(summary)
             else:

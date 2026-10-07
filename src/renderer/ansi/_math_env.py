@@ -47,7 +47,17 @@ CASES_ENVS: dict[str, tuple[str, str]] = {
 }
 
 #: 需要读取列格式 ``{lcr|}`` 的数组环境
-COLSPEC_ENVS: frozenset = frozenset({"array", "darray", "subarray"})
+COLSPEC_ENVS: frozenset = frozenset({
+    "array", "darray", "subarray",
+    # ★ 第二批扩展：``tabular`` 族（含 ``&`` 分列，此前落到未知名环境分支
+    #   会因 ``&`` 截断内容）
+    "tabular", "longtable", "supertabular", "tabu",
+})
+
+#: 需先跳过「宽度参数」再读列格式的环境（``tabular*{宽}{列格式}``）
+WIDTH_COLSPEC_ENVS: frozenset = frozenset({
+    "tabular*", "tabularx", "tabulary",
+})
 
 #: 等式对齐环境（& 分列：奇数列右对齐、偶数列左对齐）
 ALIGN_ENVS: frozenset = frozenset({
@@ -59,6 +69,10 @@ ALIGN_ENVS: frozenset = frozenset({
 #: 单列居中环境
 CENTER_ENVS: frozenset = frozenset({
     "gather", "gather*", "gathered", "lgathered", "rgathered",
+    # ★ 扩展：单列公式环境（``$$`` 内嵌套 ``\begin{equation}`` 时按居中块渲染，
+    #   修复前落到「未知名环境」分支——内容保留但结构/对齐丢失）
+    "equation", "equation*", "displaymath", "math", "dmath",
+    "dgroup", "mathdisplay",
 })
 
 #: 首行左 / 末行右 的多行环境
@@ -67,6 +81,7 @@ MULTLINE_ENVS: frozenset = frozenset({"multline", "multline*", "multlined"})
 #: 认识的全部环境（未列出者按内容渲染，保持兼容）
 KNOWN_ENVS: frozenset = frozenset(
     set(MATRIX_ENVS) | set(CASES_ENVS) | set(COLSPEC_ENVS)
+    | set(WIDTH_COLSPEC_ENVS)
     | set(ALIGN_ENVS) | set(CENTER_ENVS) | set(MULTLINE_ENVS)
 )
 
@@ -183,13 +198,17 @@ class _MathEnvMixin:
 
     def _cmd_begin(self) -> _Box:
         env = self._read_group_raw().strip()
+        # 环境位置参数（``\begin{array}[t]{cc}`` / ``\begin{matrix*}[r]``）：
+        # 终端无垂直定位概念，统一忽略，避免其被当作列格式内容。
+        self._read_optional_raw()
         colspec = ""
         if env in COLSPEC_ENVS:
             colspec = self._read_group_raw()
+        elif env in WIDTH_COLSPEC_ENVS:
+            self._read_group_raw()      # 宽度参数（终端按内容宽度自适应）
+            colspec = self._read_group_raw()
         elif env in ("alignedat", "alignedat*"):
             self._read_group_raw()   # 对齐点数量（& 分列已足够）
-        elif env.endswith("*") and env[:-1] in MATRIX_ENVS:
-            self._read_optional_raw()  # matrix* 的 [c] 列对齐（终端取默认）
         body = self._read_env_body(env)
         return self._render_environment(env, body, colspec)
 
@@ -233,12 +252,15 @@ class _MathEnvMixin:
         try:
             return self._render_environment_impl(env, body, colspec)
         except Exception:
-            return self._render_sub(body)
+            # 渲染异常兜底：``&`` 会被序列解析当作列分隔而截断内容——替换为
+            # 空格后重渲染，保证异常环境下内容不丢。
+            return self._render_sub(body.replace("&", " "))
 
     def _render_environment_impl(self, env: str, body: str,
                                  colspec: str) -> _Box:
         if env not in KNOWN_ENVS:
-            return self._render_sub(body)
+            # 未登记环境：内容原样呈现（``&`` 转空格，避免序列解析截断内容）
+            return self._render_sub(body.replace("&", " "))
 
         items = self._env_items(body)
         rows = [cells for kind, cells in items if kind == "row"]
@@ -249,7 +271,7 @@ class _MathEnvMixin:
             while len(r) < ncols:
                 r.append("")
 
-        if env in COLSPEC_ENVS:
+        if env in COLSPEC_ENVS or env in WIDTH_COLSPEC_ENVS:
             aligns, bars = parse_colspec(colspec)
             while len(aligns) < ncols:
                 aligns.append("l")

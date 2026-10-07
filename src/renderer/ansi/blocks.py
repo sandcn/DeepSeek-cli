@@ -433,9 +433,9 @@ def render_admonition_body(text: str) -> AnsiLine:
 # ── 折叠块（DETAILS） ────────────────────────────────
 
 
-def render_details_head(summary) -> AnsiLine:
-    """折叠块头行（``▶ summary``）。"""
-    head = AnsiLine.of("\u25b6 ", _STYLE_LIST_BULLET)
+def render_details_head(summary, is_open: bool = False) -> AnsiLine:
+    """折叠块头行（展开 ``▼ summary`` / 折叠 ``▶ summary``）。"""
+    head = AnsiLine.of("\u25bc " if is_open else "\u25b6 ", _STYLE_LIST_BULLET)
     for run in render_inline(str(summary)):
         head.append_run(run)
     return head
@@ -460,7 +460,7 @@ def render_details(token) -> list[AnsiLine]:
     语义递归渲染（``meta["body_tokens"]``），本函数服务流式预览与旧接口。
     """
     summary = token.meta.get("summary", "")
-    lines = [render_details_head(summary)]
+    lines = [render_details_head(summary, bool(token.meta.get("open", False)))]
     lines.extend(_preview_omitted(token.meta))
     lines.extend(_container_body_lines(token.meta.get("body_lines")))
     return lines

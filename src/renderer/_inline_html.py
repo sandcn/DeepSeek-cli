@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .inline_nodes import (
     InlineNode, TextNode, LineBreakNode, ImageNode,
-    AbbrNode, ColorTextNode, LinkNode,
+    AbbrNode, ColorTextNode, LinkNode, MathMLNode,
     _HTML_TAG_MAP,
     render_inline_to_text,
 )
@@ -49,6 +49,7 @@ from ._block_helpers import _VOID_HTML_TAGS
 # 原始内容标签（``<script>``/``<style>``/``<template>``/``<noscript>`` 等：
 # 行内出现时内容隐藏，避免脚本/样式源码混入正文）
 from ._html_attrs import RAW_TEXT_TAGS as _HTML_RAW_TEXT_TAGS
+from ._html_attrs import parse_attrs as _parse_attrs
 
 
 class InlineHTMLMixin:
@@ -175,6 +176,17 @@ class InlineHTMLMixin:
                 return None
             return TextNode(content=render_ruby_text(content))
 
+        # ── 行内 MathML：``<math>…</math>`` → MathMLNode（渲染层转公式排版）──
+        if not is_close and tag_name == 'math':
+            self._skip_html_attrs()
+            if self._pos < self._n and self._text[self._pos] == '>':
+                self._pos += 1
+                content = self._parse_html_content('math', depth)
+                if content is not None:
+                    return MathMLNode(content=content)
+            self._pos = saved
+            return None
+
         # ── 原始内容标签：内容隐藏（``<script>``/``<style>`` 等不应显示）──
         if not is_close and tag_name in _HTML_RAW_TEXT_TAGS:
             self._skip_html_attrs()
@@ -252,7 +264,11 @@ class InlineHTMLMixin:
             if content is not None:
                 if tag_name in ('abbr', 'acronym'):
                     return AbbrNode(content=content, title=title)
-                return node_cls(content=content)
+                node = node_cls(content=content)
+                if tag_name in ('progress', 'meter'):
+                    # 进度/度量控件：属性（value/max/min）供渲染层绘制进度条
+                    node.meta = _parse_attrs(attr_text)
+                return node
 
         self._pos = saved
         return None

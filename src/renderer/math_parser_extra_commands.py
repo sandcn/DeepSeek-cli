@@ -21,6 +21,7 @@ from .math_parser_helpers import (
 )
 from .math_symbols import (
     _COMMAND_MAP, _RELATION_SYMBOLS,
+    negate_symbol,
 )
 
 
@@ -126,13 +127,14 @@ class MathParserExtraCommandsMixin:
     def _parse_not(self, s: str, i: int, n: int) -> Tuple[Text, int]:
         """解析 \\not 否定前缀。\\not= → ≠，\\not< → ≮ 等。
 
-        策略：先尝试匹配组合符号（如 \\not= 已在关系表中），
-        否则在原符号前加否定斜线。
+        策略：先匹配组合命令（``\\notin`` 等在命令表中），其次查底层否定
+        符号表（``math_symbols.negations._NEGATED_SYMBOLS``，与 ANSI 路径同源），
+        最后回退叠加组合长斜线 U+0338。
         """
         # 跳过空白
         i = _skip_spaces(s, i, n)
         if i >= n:
-            return Text("̸"), i  # 单独否定斜线
+            return Text("\u0338"), i  # 单独否定斜线
 
         c = s[i]
 
@@ -154,17 +156,13 @@ class MathParserExtraCommandsMixin:
             if combined in _RELATION_SYMBOLS:
                 return Text(_RELATION_SYMBOLS[combined]), i
 
-            # 单独否定斜线 + 原命令
+            # 单独否定斜线 + 原命令（查否定符号表合成 ≠ / ∉ 等）
             cmd_char, _ = _COMMAND_MAP.get(next_cmd, (f"\\{next_cmd}", _STYLE_DEFAULT))
-            result = Text("̸", style=_STYLE_OPERATOR)
-            result.append(cmd_char)
-            return result, i
+            return Text(negate_symbol(cmd_char), style=_STYLE_OPERATOR), i
         else:
-            # 单字符关系符前加否定斜线
+            # 单字符关系符：查否定符号表合成（``\not=`` → ``≠``）
             i += 1
-            result = Text("̸", style=_STYLE_OPERATOR)
-            result.append(c)
-            return result, i
+            return Text(negate_symbol(c), style=_STYLE_OPERATOR), i
 
     # ── 标签 \tag{...} ─────────────────────────────────
 

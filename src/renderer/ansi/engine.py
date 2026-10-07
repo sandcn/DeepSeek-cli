@@ -225,11 +225,14 @@ class AnsiRenderEngine:
                     # 正文以完整 Markdown 语义递归渲染（列表/代码/引用…），
                     # 整体缩进显示（详见 ``_render_nested_blocks``）。
                     return self._render_nested_blocks(
-                        blocks.render_details_head(summary), body_tokens, dropped)
+                        blocks.render_details_head(
+                            summary, bool(token.meta.get("open", False))),
+                        body_tokens, dropped)
                 body = list(token.meta.get("body_lines") or [])
                 if token.content:
                     body = body + str(token.content).split("\n")
-                meta: dict = {"summary": summary, "body_lines": body}
+                meta: dict = {"summary": summary, "body_lines": body,
+                              "open": bool(token.meta.get("open", False))}
                 if dropped:
                     meta["preview_dropped"] = dropped
                 return blocks.render_details(_StrToken("", meta))

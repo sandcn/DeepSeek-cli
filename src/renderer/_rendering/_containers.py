@@ -12,10 +12,12 @@ from .._utils import cjk_display_width
 # Details 折叠块
 # ═══════════════════════════════════════════════════════════
 
-def render_details_header(depth: int, summary: str, render_inline_fn) -> Text:
-    """渲染折叠块标题行（▶ summary）。"""
+def render_details_header(depth: int, summary: str, render_inline_fn,
+                          is_open: bool = False) -> Text:
+    """渲染折叠块标题行（展开 ``▼ summary`` / 折叠 ``▶ summary``）。"""
     indent = "  " * depth
-    arrow = Text(f"{indent}▶ ", style=Style(bold=True, color="bright_yellow"))
+    arrow = Text(f"{indent}{'▼' if is_open else '▶'} ",
+                 style=Style(bold=True, color="bright_yellow"))
     if summary:
         summary_text = render_inline_fn(summary) if render_inline_fn else Text(summary)
     else:

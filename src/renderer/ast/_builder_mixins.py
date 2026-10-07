@@ -288,6 +288,8 @@ class _BlockBuildingMixin:
         node = self._open_block(token, NodeType.DETAILS, closed)
         node.meta["summary"] = token.meta.get("summary", "")
         node.meta["attrs"] = token.meta.get("attrs", "")
+        # ``<details open>``：默认展开（渲染层选 ▼/▶ 图标）
+        node.meta["open"] = bool(token.meta.get("open", False))
         return closed
 
     def _handle_details_line(self, token: Token) -> list[ASTNode]:

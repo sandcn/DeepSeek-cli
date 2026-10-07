@@ -11,7 +11,9 @@
   下标 ``~x~``、下划线 ``++x++``、剧透 ``||x||``、链接 ``[t](url)``、
   参考式链接 ``[t][ref]``、图片 ``![alt](url)``、自动链接 ``<url>``、
   邮箱 ``<a@b.com>`` / 裸邮箱、脚注引用 ``[^id]``、行内数学 ``$x$`` /
-  ``\\(x\\)``、Emoji ``:name:``、反斜杠转义、``<br>`` 硬换行、
+  ``\\(x\\)``、HTML `<math>`（MathML，转 LaTeX 后紧凑排版）、
+  HTML `<progress>` / `<meter>`（终端进度条）、Emoji ``:name:``、
+  反斜杠转义、``<br>`` 硬换行、
   维基链接 ``[[page]]``、CriticMarkup ``{-- --}{++ ++}{~~ ~> ~~}{>> <<}``、
   小字 ``{-x-}``、着色 ``{color:red}x{color}``、行内注释 ``%%x%%``、
   HTML 标签/注释/实体、缩写定义 ``*[ABBR]: ...`` 自动替换。
@@ -94,6 +96,13 @@ _STYLE_QUOTE = Style(fg=252, italic=True)
 _STYLE_WIKI = Style(fg=201, underline=True)
 _STYLE_COMMENT = Style(fg=240, dim=True, italic=True)
 _STYLE_IMAGE = Style(fg=201, dim=True)
+#: 行内进度条（``<progress>`` / ``<meter>``）配色与宽度
+_STYLE_PROGRESS_FILL = Style(fg=41, bold=True)
+_STYLE_PROGRESS_MID = Style(fg=220, bold=True)
+_STYLE_PROGRESS_LOW = Style(fg=203, bold=True)
+_STYLE_PROGRESS_EMPTY = Style(fg=238)
+_STYLE_PROGRESS_TEXT = Style(fg=252)
+_PROGRESS_WIDTH = 24
 
 #: 最大递归深度（与解析器同量级，防异常嵌套 RecursionError）
 _MAX_DEPTH = 32
@@ -345,6 +354,65 @@ def _emit_math(node, base, ctx, out, depth):
         _append(out, content, _merge(base, _STYLE_MATH))
 
 
+def _emit_mathml(node, base, ctx, out, depth):
+    """行内 MathML：转 LaTeX 后按紧凑公式渲染（多行布局展平为空格连接）。"""
+    src = node.content or ""
+    if not src:
+        return
+    box = None
+    try:
+        from ._mathml import render_mathml
+        box = render_mathml(src, inline=True)
+    except Exception:
+        box = None
+    if box is None or not box.lines:
+        # 无法解析为 MathML：保留原文（不丢内容）
+        _append(out, src, _merge(base, _STYLE_MATH))
+        return
+    for idx, ln in enumerate(box.lines):
+        if idx:
+            _append(out, " ", base)
+        for run in ln.runs:
+            _append(out, run.text, run.style if run.style is not None else base)
+
+
+def _progress_ratio(meta: dict) -> float:
+    """``<progress>`` / ``<meter>`` 属性表 → 0..1 比例（非法/缺失按 0）。"""
+    def _num(key: str, default: float) -> float:
+        raw = str((meta or {}).get(key, "") or "").strip().rstrip("%")
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return default
+
+    value = _num("value", 0.0)
+    maxv = _num("max", 1.0)
+    if maxv <= 0:
+        maxv = 1.0
+    return max(0.0, min(1.0, value / maxv))
+
+
+def _emit_progress(node, base, ctx, out, depth):
+    """行内 ``<progress>`` / ``<meter>``：终端进度条。
+
+    自绘（不依赖 HTML 块渲染模块）——避免 ``inline → _html_block → blocks →
+    inline`` 的模块依赖环。
+    """
+    meta = node.meta or {}
+    ratio = _progress_ratio(meta)
+    filled = int(round(ratio * _PROGRESS_WIDTH))
+    if ratio < 0.34:
+        fill_style = _STYLE_PROGRESS_LOW
+    elif ratio < 0.67:
+        fill_style = _STYLE_PROGRESS_MID
+    else:
+        fill_style = _STYLE_PROGRESS_FILL
+    _append(out, "  ", base)
+    _append(out, "\u2588" * filled, fill_style)
+    _append(out, "\u2591" * (_PROGRESS_WIDTH - filled), _STYLE_PROGRESS_EMPTY)
+    _append(out, f" {ratio * 100:.0f}%", _STYLE_PROGRESS_TEXT)
+
+
 def _emit_footnote(node, base, ctx, out, depth):
     ref_id = getattr(node, "ref_id", "")
     if ctx is not None:
@@ -521,6 +589,8 @@ def _build_dispatch() -> dict:
         N.LinkNode: _emit_link,
         N.ImageNode: _emit_image,
         N.InlineMathNode: _emit_math,
+        N.MathMLNode: _emit_mathml,
+        N.ProgressNode: _emit_progress,
         N.FootnoteRefNode: _emit_footnote,
         N.InlineFootnoteNode: _emit_inline_footnote,
         N.AutoLinkNode: _emit_autolink,

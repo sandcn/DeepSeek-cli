@@ -129,6 +129,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._details_depth: int = 0
         self._details_summary: str = ''
         self._details_open_emitted: bool = False
+        # ``<details open>``：默认展开（渲染层据此选 ▼/▶ 图标）
+        self._details_open: bool = False
 
         # 自动关闭 fence 连续匹配计数器（降低误判）
         self._auto_close_streak: int = 0
@@ -580,6 +582,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 "summary": self._details_summary,
                 "body_lines": body,
                 "preview": True,
+                "open": self._details_open,
             }
             dropped = len(body_all) - len(body)
             if dropped:
@@ -2411,6 +2414,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._details_depth = 1
         self._details_summary = ''
         self._details_open_emitted = False
+        # ``<details open>``：HTML 布尔属性（存在即为真）——渲染层显示展开图标
+        try:
+            _tag, attrs = parse_open_tag(stripped)
+            self._details_open = "open" in attrs
+        except Exception:
+            self._details_open = False
         self._block_lines = []
         lower = stripped.lower()
         # 同行 ``</details>``（单行折叠块）：截断标签后的内容，避免正文

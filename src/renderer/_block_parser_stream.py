@@ -430,7 +430,8 @@ class _BlockParserStreamMixin:
         self._details_summary = summary
         if not self._details_open_emitted:
             tokens.append(Token(TokenType.DETAILS_OPEN, "",
-                                {"summary": summary}))
+                                {"summary": summary,
+                                 "open": self._details_open}))
             self._details_open_emitted = True
         if rest:
             self._block_lines.append(rest)
@@ -438,7 +439,8 @@ class _BlockParserStreamMixin:
     def _emit_details_close(self, tokens: list[Token]):
         if not self._details_open_emitted:
             tokens.append(Token(TokenType.DETAILS_OPEN, "",
-                                {"summary": self._details_summary}))
+                                {"summary": self._details_summary,
+                                 "open": self._details_open}))
             self._details_open_emitted = True
         # 正文以完整 Markdown 语义递归解析（列表/代码块/引用/强调…），
         # 结果挂在 CLOSE 的 meta["body_tokens"]（渲染层整体渲染并缩进）；
@@ -449,6 +451,7 @@ class _BlockParserStreamMixin:
         tokens.append(Token(TokenType.DETAILS_CLOSE, "", {
             "body_tokens": body_tokens,
             "body_lines": body_lines,
+            "open": self._details_open,
         }))
         self._state = _State.NORMAL
 

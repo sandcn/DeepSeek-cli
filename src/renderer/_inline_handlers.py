@@ -21,6 +21,48 @@ def _inline_math_handler(self, node, ctx, _depth):
     return MathRenderer().render_inline(node.content)
 
 
+def _mathml_node_handler(self, node, ctx, _depth):
+    """MathMLNode 调度器：MathML → LaTeX（延迟导入 ANSI 转换器）→ 公式渲染。
+
+    转换不可用（内容非 MathML）时回退原文样式文本，内容不丢。
+    """
+    source = node.content or ""
+    latex = None
+    try:
+        from .ansi._mathml import mathml_to_latex
+        latex = mathml_to_latex(source)
+    except Exception:
+        latex = None
+    if not latex:
+        return Text(source, style=Style(color="bright_magenta", italic=True))
+    from .math_renderer import MathRenderer
+    return MathRenderer().render_inline(latex)
+
+
+def _progress_node_handler(self, node, ctx, _depth):
+    """``<progress>`` / ``<meter>`` → 文本进度条（``[████░░░░] 70%``）。"""
+    meta = node.meta or {}
+    try:
+        value = float(str(meta.get("value", "")).strip().rstrip("%") or 0.0)
+    except (TypeError, ValueError):
+        value = 0.0
+    try:
+        maxv = float(str(meta.get("max", "")).strip() or 1.0)
+    except (TypeError, ValueError):
+        maxv = 1.0
+    if maxv <= 0:
+        maxv = 1.0
+    ratio = max(0.0, min(1.0, value / maxv))
+    width = 16
+    filled = int(round(ratio * width))
+    color = "green" if ratio >= 0.67 else ("yellow" if ratio >= 0.34 else "red")
+    bar = Text("[")
+    bar.append("█" * filled, style=Style(color=color))
+    bar.append("░" * (width - filled), style=Style(color="grey37"))
+    bar.append(f"] {ratio * 100:.0f}%")
+    return bar
+
+
 def _footnote_ref_handler(self, node, ctx, _depth):
     """FootnoteRefNode 调度器：按引用先后编号并渲染。
 
@@ -201,6 +243,8 @@ try:
         SubscriptNode as _SubscriptNode,
         SuperscriptNode as _SuperscriptNode,
         InlineMathNode as _InlineMathNode,
+        MathMLNode as _MathMLNode,
+        ProgressNode as _ProgressNode,
         FootnoteRefNode as _FootnoteRefNode,
         InlineFootnoteNode as _InlineFootnoteNode,
         AutoLinkNode as _AutoLinkNode,
@@ -441,6 +485,8 @@ def _build_dispatch_table():
     d[_AutoLinkEmailNode] = lambda self, n, ctx, d: Text(n.email, style=Style(color="cyan", underline=True, italic=True))
     d[_LineBreakNode] = lambda self, n, ctx, d: Text("\n")
     d[_InlineMathNode] = _inline_math_handler
+    d[_MathMLNode] = _mathml_node_handler
+    d[_ProgressNode] = _progress_node_handler
     d[_FootnoteRefNode] = _footnote_ref_handler
     d[_InlineFootnoteNode] = _inline_footnote_handler
 

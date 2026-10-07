@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from .helpers import AnsiLine
+from .style import Style
 from ._math_style import _M_SYM, _M_NUM, _M_OP, _M_FRAC, _M_ACCENT
 
 from src.renderer.math_symbols.misc import _OPERATOR_CHARS
@@ -242,7 +243,11 @@ def _split_cols(row: str) -> list[str]:
 _TALL_LEFT = {"(": ("⎛", "⎜", "⎝"), "[": ("⎡", "⎢", "⎣"), "{": ("⎧", "⎪", "⎩"),
               "⟨": ("⎛", "⎜", "⎝"), "⌊": ("⎢", "⎢", "⎣"), "⌈": ("⎡", "⎢", "⎢")}
 _TALL_RIGHT = {")": ("⎞", "⎟", "⎠"), "]": ("⎤", "⎥", "⎦"), "}": ("⎫", "⎪", "⎭"),
-               "⟩": ("⎞", "⎟", "⎠"), "⌋": ("⎢", "⎢", "⎦"), "⌉": ("⎡", "⎢", "⎥")}
+               "⟩": ("⎞", "⎟", "⎠"), "⌋": ("⎢", "⎢", "⎦"), "⌉": ("⎤", "⎥", "⎥")}
+
+#: 花括号的「中段拐点」字符（``⎨`` / ``⎬``）——三段以上时中点行使用，
+#: 使 ``cases`` 等多行内容呈现 ``⎧⎨⎩`` 完整分段（终端排版更接近印刷）。
+_TALL_MID = {"{": "⎨", "}": "⎬"}
 
 
 def _tall_delim(ch: str, idx: int, height: int) -> str:
@@ -252,10 +257,16 @@ def _tall_delim(ch: str, idx: int, height: int) -> str:
     pieces = table.get(ch)
     if not pieces or height <= 1:
         return ch
+    if height == 2:
+        return pieces[0] if idx == 0 else pieces[2]
     if idx == 0:
         return pieces[0]
     if idx == height - 1:
         return pieces[2]
+    if idx == height // 2:
+        mid = _TALL_MID.get(ch)
+        if mid:
+            return mid
     return pieces[1]
 
 
@@ -296,6 +307,42 @@ def accent_under(content: _Box, mark: str, style=None) -> _Box:
                    baseline=content.baseline)
 
 
+#: 组合长删除线（U+0336）——``\cancel`` 逐字符叠加，不改变字符数（宽度稳定）
+_COMBINING_STRIKE = "\u0336"
+
+
+def strike_through(content: _Box, style=None) -> _Box:
+    """给内容叠加删除线（``\\cancel`` / ``\\sout`` / ``\\bcancel``）。
+
+    逐字符追加组合长删除线；空白字符保留不加线（避免行尾出现孤立斜线）。
+    样式在原样式上合并 ``style``（渲染层传入「已取消」配色）；无 ``style``
+    时保留原样式。
+    """
+    lines: list[AnsiLine] = []
+    for ln in content.lines:
+        nl = AnsiLine()
+        for run in ln.runs:
+            base = run.style if run.style is not None else Style()
+            merged = base.merge(style) if style is not None else base
+            text = "".join(
+                " " if ch.isspace() else ch + _COMBINING_STRIKE
+                for ch in run.text
+            )
+            nl.append(text, merged)
+        lines.append(nl)
+    return _Box(lines, kind=content.kind, baseline=content.baseline)
+
+
+def bracket_over(content: _Box, mark: str = "\u23b4", style=None) -> _Box:
+    """方括号上标注（``\\overbracket``；``\\overparen`` 传 ``⏜``）。"""
+    return accent_over(content, mark, style)
+
+
+def bracket_under(content: _Box, mark: str = "\u23b5", style=None) -> _Box:
+    """方括号下标注（``\\underbracket``；``\\underparen`` 传 ``⏝``）。"""
+    return accent_under(content, mark, style)
+
+
 def join_right(line: AnsiLine, text: str, style=None) -> AnsiLine:
     """在行尾追加文本（复制行对象，避免就地修改缓存行）。"""
     nl = AnsiLine()
@@ -318,4 +365,5 @@ __all__ = [
     "_hjoin", "_vstack", "pad_to_height", "repeat_line", "_split_rows",
     "_split_cols", "_tall_delim", "_wrap_delims", "frac_box", "accent_over",
     "accent_under", "join_right", "prepend", "_blank_line",
+    "strike_through", "bracket_over", "bracket_under",
 ]

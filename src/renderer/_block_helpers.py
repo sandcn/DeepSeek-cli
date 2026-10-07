@@ -87,6 +87,9 @@ _BLOCK_HTML_TAGS: frozenset[str] = frozenset({
     'template', 'canvas', 'noscript', 'script', 'style', 'address',
     'center', 'hr', 'video', 'audio', 'picture', 'iframe',
     'progress', 'meter', 'menu', 'svg', 'math',
+    # ★ 第二批扩展：控件与嵌入对象（单独成行时按其语义渲染，
+    #   而非作为普通段落文本）
+    'button', 'select', 'textarea', 'object',
 })
 
 # HTML 自闭合空标签（void elements）

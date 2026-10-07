@@ -96,6 +96,26 @@ class InlineMathNode(InlineNode):
 
 
 @dataclass
+class MathMLNode(InlineNode):
+    """行内 MathML 节点 ``<math>…</math>``（内容的 Presentation MathML 原文）。
+
+    渲染层把 MathML 转为 LaTeX 后复用二维/紧凑公式排版（ANSI 路径），
+    Rich 路径转为 LaTeX 后交给 ``MathRenderer``。
+    """
+    children: list[InlineNode] | None = None  # 叶子节点
+
+
+@dataclass
+class ProgressNode(InlineNode):
+    """``<progress>`` / ``<meter>`` 行内进度节点（``meta`` 携带属性表）。
+
+    属性（``value`` / ``max`` / ``min`` / ``optimum``）在解析时写入 ``meta``，
+    渲染层据此绘制终端进度条。
+    """
+    children: list[InlineNode] | None = None  # 叶子节点
+
+
+@dataclass
 class FootnoteRefNode(InlineNode):
     children: list[InlineNode] | None = None  # 叶子节点
     ref_id: str = ""
@@ -291,8 +311,8 @@ _HTML_TAG_MAP: dict[str, tuple[type[InlineNode], bool]] = {
     'iframe':   (None, True),
     'video':    (None, True),
     'audio':    (None, True),
-    'progress': (None, True),
-    'meter':    (None, True),
+    'progress': (ProgressNode, False),
+    'meter':    (ProgressNode, False),
     'summary':  (None, True),
     'template': (None, True),
     'noscript': (None, True),
@@ -315,6 +335,36 @@ class InlineRecursionError(RuntimeError):
 # ═══════════════════════════════════════════════════════════
 # 内联节点渲染（转纯文本）
 # ═══════════════════════════════════════════════════════════
+
+def _mathml_text(source: str) -> str:
+    """MathML 原文 → 纯文本（转 LaTeX 后交公式渲染器；失败回退原文）。
+
+    ``inline_nodes`` 无 ANSI 依赖，故延迟导入转换器——不可用时保留原文。
+    """
+    try:
+        from .ansi._mathml import mathml_to_latex
+        latex = mathml_to_latex(source)
+    except Exception:
+        latex = None
+    return latex if latex else (source or "")
+
+
+def _progress_text(meta: dict) -> str:
+    """``<progress>`` / ``<meter>`` 属性 → 纯文本百分比（用于纯文本渲染）。"""
+    meta = meta or {}
+    try:
+        value = float(str(meta.get("value", "")).strip().rstrip("%") or 0.0)
+    except (TypeError, ValueError):
+        value = 0.0
+    try:
+        maxv = float(str(meta.get("max", "")).strip() or 1.0)
+    except (TypeError, ValueError):
+        maxv = 1.0
+    if maxv <= 0:
+        maxv = 1.0
+    ratio = max(0.0, min(1.0, value / maxv))
+    return f"{ratio * 100:.0f}%"
+
 
 def render_inline_to_text(nodes: list[InlineNode]) -> str:
     """将内联节点列表渲染为纯文本。"""
@@ -341,6 +391,10 @@ def render_inline_to_text(nodes: list[InlineNode]) -> str:
             result.append(node.content)
         elif isinstance(node, InlineMathNode):
             result.append(node.content)
+        elif isinstance(node, MathMLNode):
+            result.append(_mathml_text(node.content))
+        elif isinstance(node, ProgressNode):
+            result.append(_progress_text(node.meta))
         elif isinstance(node, SubscriptNode):
             result.append(node.content)
         elif isinstance(node, SuperscriptNode):

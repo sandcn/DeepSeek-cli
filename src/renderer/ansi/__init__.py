@@ -14,6 +14,7 @@
   mermaid.py / math.py — 图表/公式终端渲染（_mermaid_render / _math_latex）
   _math_box.py / _math_style.py / _math_letters.py / _math_cmds.py /
   _math_env.py — 公式排版的布局原语 / 样式 / Unicode 字母族 / 命令 / 环境
+  _mathml.py — MathML → LaTeX → 二维排版（HTML ``<math>`` 块与行内公式）
   helpers.py — Run/AnsiLine 模型 + 换行/截断/ANSI→Style
 """
 
@@ -648,7 +649,8 @@ class AnsiStreamRenderer:
         body = list(token.meta.get("body_lines") or [])
         if token.content:
             body = str(token.content).split("\n") + body
-        head = _blocks.render_details_head(summary)
+        head = _blocks.render_details_head(
+            summary, bool(token.meta.get("open", False)))
         dropped = int(token.meta.get("preview_dropped", 0) or 0)
         return self._render_container_preview(
             head, body, dropped, "details", ("details", summary),

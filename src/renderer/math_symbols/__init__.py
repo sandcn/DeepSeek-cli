@@ -54,6 +54,8 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "_SPACE_MAP": (".delimiters", "_SPACE_MAP"),
     "_SUPERSCRIPT_MAP": (".scripts", "_SUPERSCRIPT_MAP"),
     "_SUBSCRIPT_MAP": (".scripts", "_SUBSCRIPT_MAP"),
+    "_NEGATED_SYMBOLS": (".negations", "_NEGATED_SYMBOLS"),
+    "negate_symbol": (".negations", "negate_symbol"),
     # ── 合并命令映射（builder.py —— 依赖 styles） ──
     "_build_command_map": (".builder", "_build_command_map"),
     "_COMMAND_MAP": (".builder", "_COMMAND_MAP"),
@@ -76,6 +78,8 @@ __all__ = [
     "_SILENT_COMMANDS", "_DELIMITER_MAP", "_SPACE_MAP",
     # 上下标
     "_SUPERSCRIPT_MAP", "_SUBSCRIPT_MAP",
+    # 否定关系合成
+    "_NEGATED_SYMBOLS", "negate_symbol",
     # 构建函数及合并映射
     "_build_command_map", "_COMMAND_MAP",
 ]

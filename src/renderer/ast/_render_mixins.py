@@ -329,7 +329,9 @@ class _BlockRenderingMixin:
         """折叠块（<details><summary>...）。"""
         depth = node.meta.get("depth", 0)
         summary = node.meta.get("summary", "")
-        assembled = _render_details_header_shared(depth, summary, self._render_inline)
+        is_open = bool(node.meta.get("open", False))
+        assembled = _render_details_header_shared(
+            depth, summary, self._render_inline, is_open)
         self._output_assembled(assembled)
 
         for child in node.children:
