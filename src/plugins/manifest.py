@@ -743,12 +743,6 @@ COMPLETION_PROVIDER_ENTRIES = [
 STATUS_SEGMENT_ENTRIES = [
     {"id": "status_segment_model", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
      "config": {"id": "model"}},
-    {"id": "status_segment_provider", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
-     "config": {"id": "provider"}},
-    {"id": "status_segment_theme", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
-     "config": {"id": "theme"}},
-    {"id": "status_segment_context", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
-     "config": {"id": "context"}},
     {"id": "status_segment_tools", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
      "config": {"id": "tools"}},
     {"id": "status_segment_elapsed", "plugin": "src.plugins.status_segment_entries:apply_status_segment",

@@ -194,12 +194,13 @@ def _ctx(model, active=False):
     )
 
 
-def test_theme_segment_renders():
-    from src.tui.app.status_bar import _theme_segment
+def test_removed_theme_segment_gone():
+    """theme 段已删除（2026-10-07 用户需求）。"""
+    import src.tui.app.status_bar as sb
+    from src.tui.app._status_segments import builtin_segment_ids
 
-    m = AppModel()
-    runs = _theme_segment(_ctx(m))
-    assert runs and "dark" in runs[0].text or runs == []
+    assert "theme" not in builtin_segment_ids()
+    assert not hasattr(sb, "_theme_segment")
 
 
 def test_messages_segment_counts_source():
@@ -212,8 +213,8 @@ def test_messages_segment_counts_source():
     assert runs and "3" in runs[0].text
 
 
-def test_idle_status_shows_theme_segment():
-    """空闲状态栏也包含 theme 段（新增段不受 status_active 门控）。"""
+def test_idle_status_shows_model_name():
+    """空闲状态栏显示模型名（theme/provider/context 段已删除）。"""
     from src.tui.app.status_bar import _build_status_runs
 
     m = AppModel()
@@ -222,6 +223,9 @@ def test_idle_status_shows_theme_segment():
     runs = _build_status_runs(m)
     text = "".join(r.text for r in runs)
     assert "m1" in text
+    assert "\u25d0" not in text    # ◐ theme
+    assert "\u2b21" not in text    # ⬡ provider
+    assert "\u25a3" not in text    # ▣ context
 
 
 # ═══════════════════════════════════════════════════════════

@@ -1,10 +1,9 @@
 """状态栏信息增强单元测试（2026-10-07）。
 
 覆盖：
-  - 新增 provider / context 段（数据源注入）；
   - 工具计数段新格式（运行中 ``⚙ n/m`` / 完成 ``✔ m`` / 含失败 ``✔ n/m ✖ f``）；
   - ``_build_status_runs`` 按**段级**插入分隔符（段内多 run 不被拆开）；
-  - ``_fmt_tokens`` 紧凑显示。
+  - ``provider`` / ``theme`` / ``context`` 段已从内置段删除（2026-10-07 用户需求）。
 """
 
 from __future__ import annotations
@@ -15,9 +14,6 @@ from src.tui.app.model import AppModel
 from src.tui.app.status_bar import (
     StatusContext,
     _build_status_runs,
-    _context_segment,
-    _fmt_tokens,
-    _provider_segment,
     _tools_segment,
 )
 
@@ -76,57 +72,25 @@ def test_tools_segment_idle_empty():
     assert _tools_segment(_ctx(m, False)) == []
 
 
-# ── provider / context 段 ──────────────────────────────────
+# ── 已删除的段（provider / theme / context）───────────────
 
 
-def test_provider_segment_reads_config(monkeypatch):
-    monkeypatch.setattr(
-        "src.config.proxy.config",
-        SimpleNamespace(get=lambda key, default=None: "deepseek" if key == "provider" else default),
-    )
-    text = _text(_provider_segment(_ctx(AppModel())))
-    assert "deepseek" in text
+def test_removed_segments_absent_from_builtin():
+    from src.tui.app._status_segments import builtin_segment_ids
+
+    ids = set(builtin_segment_ids())
+    assert "provider" not in ids
+    assert "theme" not in ids
+    assert "context" not in ids
 
 
-def test_provider_segment_empty_when_missing(monkeypatch):
-    monkeypatch.setattr(
-        "src.config.proxy.config",
-        SimpleNamespace(get=lambda key, default=None: default),
-    )
-    assert _provider_segment(_ctx(AppModel())) == []
+def test_removed_segment_handlers_gone():
+    import src.tui.app.status_bar as sb
 
-
-def test_context_segment_percent(monkeypatch):
-    monkeypatch.setattr(
-        "src.core.context_manager.get_context_usage_percent", lambda: 45.3,
-    )
-    monkeypatch.setattr(
-        "src.config.proxy.config",
-        SimpleNamespace(get=lambda key, default=None: 60000 if key == "max_context_tokens" else default),
-    )
-    text = _text(_context_segment(_ctx(AppModel())))
-    assert "45%" in text
-    assert "27.2k/60.0k" in text
-
-
-def test_context_segment_none_hidden(monkeypatch):
-    monkeypatch.setattr(
-        "src.core.context_manager.get_context_usage_percent", lambda: None,
-    )
-    assert _context_segment(_ctx(AppModel())) == []
-
-
-def test_context_segment_malformed_hidden(monkeypatch):
-    monkeypatch.setattr(
-        "src.core.context_manager.get_context_usage_percent", lambda: "bad",
-    )
-    assert _context_segment(_ctx(AppModel())) == []
-
-
-def test_fmt_tokens():
-    assert _fmt_tokens(500) == "500"
-    assert _fmt_tokens(1500) == "1.5k"
-    assert _fmt_tokens(60000) == "60.0k"
+    assert not hasattr(sb, "_provider_segment")
+    assert not hasattr(sb, "_theme_segment")
+    assert not hasattr(sb, "_context_segment")
+    assert not hasattr(sb, "_fmt_tokens")
 
 
 # ── 段级分隔 ────────────────────────────────────────────────
@@ -144,7 +108,8 @@ def test_build_status_runs_segment_level_separator():
     assert "\u2699 \u00b7" not in text
 
 
-def test_build_status_runs_idle_includes_provider(monkeypatch):
+def test_build_status_runs_excludes_removed_segments(monkeypatch):
+    """空闲状态栏不再包含 provider/theme/context 段。"""
     monkeypatch.setattr(
         "src.config.proxy.config",
         SimpleNamespace(get=lambda key, default=None: "glm" if key == "provider" else default),
@@ -153,4 +118,6 @@ def test_build_status_runs_idle_includes_provider(monkeypatch):
     m.status.model_name = "glm-4"
     text = _text(_build_status_runs(m, 0.0, "\u00b7", ""))
     assert "glm-4" in text
-    assert "glm" in text
+    assert "\u2b21" not in text   # ⬡ provider
+    assert "\u25d0" not in text   # ◐ theme
+    assert "\u25a3" not in text   # ▣ context
