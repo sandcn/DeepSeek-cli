@@ -258,6 +258,7 @@ def enumerate_window_infos(window_pids: set[int]) -> list[WindowInfo]:
             visible=visible,
             foreground=winapi.is_foreground(hwnd),
             order=order,
+            client_area=winapi.window_client_area(hwnd),
         ))
     return mark_main(infos)
 
@@ -299,7 +300,7 @@ def control_window(pid: int, request: WindowControlRequest) -> dict:
     action = request.action
     before = window_state(target.handle)
     if action == "activate":
-        winapi.set_foreground(target.handle)
+        _activate_window(target)
     elif action == "maximize":
         winapi.show_window(target.handle, winapi.SW_MAXIMIZE)
     elif action == "minimize":
@@ -335,8 +336,11 @@ def control_window(pid: int, request: WindowControlRequest) -> dict:
         "after": after,
     }
     if action == "activate":
-        activated = winapi.is_foreground(target.handle)
+        activated = _application_foreground(target)
         detail["foreground"] = activated
+        owner = winapi.window_owner(target.handle)
+        if owner and owner != target.handle:
+            detail["owner_handle"] = f"0x{owner:X}"
         if not activated:
             detail["warning"] = (
                 f"窗口未能取得前台（当前前台: {winapi.foreground_description()}）。"
@@ -346,6 +350,28 @@ def control_window(pid: int, request: WindowControlRequest) -> dict:
                 f"method='message' 投递通道"
             )
     return detail
+
+
+def _activate_window(target: WindowInfo) -> bool:
+    """把窗口置于前台；工具窗口（弹层 / 菜单）优先激活其属主窗口。
+
+    ``SetForegroundWindow`` 对 ``WS_EX_TOOLWINDOW`` 窗口无效——这类窗口
+    （右键菜单、下拉浮层、Chrome/Electron 弹出层）不参与前台切换，直接激活
+    只会一直失败；它们的属主才是该应用的主窗口，激活属主即可让整个应用
+    取得焦点（浮层也随之可交互）。属主激活失败时再退回尝试窗口自身。
+    """
+    owner = winapi.window_owner(target.handle) if target.tool_window else 0
+    if owner and winapi.set_foreground(owner):
+        return True
+    return winapi.set_foreground(target.handle)
+
+
+def _application_foreground(target: WindowInfo) -> bool:
+    """该窗口（或其属主）当前是否持有前台（工具窗口自身几乎不会是前台）。"""
+    if winapi.is_foreground(target.handle):
+        return True
+    owner = winapi.window_owner(target.handle)
+    return bool(owner) and winapi.is_foreground(owner)
 
 
 def window_state(handle) -> dict:

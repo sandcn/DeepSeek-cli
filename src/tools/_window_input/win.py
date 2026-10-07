@@ -13,6 +13,15 @@
     ``WM_*BUTTON*`` / ``WM_MOUSEWHEEL`` / ``WM_KEY*`` / ``WM_CHAR`` 直接投递
     给窗口，不移动真实光标、不需要焦点；但目标程序若不处理这些消息则不生效。
 
+弹层类窗口（右键菜单 / 下拉浮层 / ``WS_EX_TOOLWINDOW`` 弹出窗口）**不参与
+前台切换**，``SetForegroundWindow`` 对它们无效。这类窗口按「**应用**是否在
+前台」判定可用性：目标窗口自身、其属主窗口、或同进程树内的任一窗口是前台，
+即认为该应用持有输入焦点，可用 SendInput 投递——鼠标事件按屏幕坐标命中
+光标下的真实窗口（弹层浮在最上层，正是它的常规操作方式），键盘事件发给
+前台窗口（同一应用的渲染进程）。只有整个应用都不在前台时，才退回
+PostMessage；若该窗口恰好没有可换算的客户区（``op=windows`` 里的
+``client_area=false``），会给出可操作的错误提示，而不是晦涩的坐标换算失败。
+
 键盘按键的**按下与弹起分别独立发送**（``phase='down'`` 只按下、``'up'``
 只弹起、``'press'`` 按下后弹起）；Alt 组合键走系统按键消息
 （``WM_SYSKEYDOWN``/``WM_SYSKEYUP``，SendInput 路径由系统派生），
@@ -153,6 +162,11 @@ class _TargetWindow:
     pid: int
     title: str
     frame: WindowFrame
+    #: 属主窗口句柄（弹层通常是它所属的主窗口；无属主 = 0）。工具窗口不会
+    #: 成为前台窗口，判断「所属应用是否持有焦点」需要沿属主上溯。
+    owner_handle: int = 0
+    #: 是否为工具窗口（右键菜单 / 下拉浮层：不参与前台切换）
+    tool_window: bool = False
 
 
 @dataclass
@@ -220,6 +234,32 @@ class Win32Driver:
 
     def client_origin(self, handle) -> tuple[int, int] | None:
         return winapi.client_origin(handle)
+
+    def topmost_at(self, screen_x: int, screen_y: int) -> int:
+        """屏幕点下最顶层的窗口句柄（判断真实光标会落到哪个窗口）。
+
+        用于「目标窗口不是前台、但光标位置最上层就是它」的场景：此时合成
+        鼠标事件仍能命中它，无需退回消息投递。
+        """
+        return winapi.window_from_point(screen_x, screen_y)
+
+    def foreground_in_tree(self, pid: int) -> int:
+        """同进程树内当前的前台窗口句柄（无则 0）。
+
+        弹层窗口（tool window）自身不会成为前台，但它的应用往往有别的窗口
+        （主窗口）正持有焦点——据此仍可用合成输入投递。探测失败按「没有」
+        处理（调用方会退回消息投递，不会因此报错）。
+        """
+        try:
+            window_pids = resolve_window_pids(pid)
+            if not window_pids:
+                return 0
+            for info in enumerate_window_infos(window_pids):
+                if info.foreground:
+                    return winapi.hwnd_value(info.handle)
+        except (OSError, ValueError, RuntimeError) as exc:  # pragma: no cover - 依赖系统调用
+            logger.debug("同进程树前台窗口探测失败: %s", exc)
+        return 0
 
     def sleep(self, seconds: float) -> None:
         if seconds > 0:
@@ -297,6 +337,7 @@ class WindowsInputBackend:
         delivery = self._delivery_for(target, action)
         detail, delivery = self._inject(target, action, delivery)
         detail["delivery"] = delivery
+        self._annotate_delivery_target(detail, target, delivery)
         warning = self._delivery_warning(action, delivery)
         if warning:
             detail.setdefault("warning", warning)
@@ -310,6 +351,19 @@ class WindowsInputBackend:
             window_handle=_window_handle_text(target.handle),
             window_frame=target.frame.to_dict(),
         )
+
+    def _annotate_delivery_target(self, detail: dict, target: _TargetWindow,
+                                  delivery: str) -> None:
+        """补充「实际接收输入的窗口」信息。
+
+        弹层 / 工具窗口不会被激活成前台，合成输入实际由同一应用的前台窗口
+        接收；把该窗口一并回报，调用方才能解释「为什么目标不是前台却仍成功」。
+        """
+        if delivery != "sendinput":
+            return
+        foreground = self._application_foreground_handle(target)
+        if foreground and foreground != winapi.hwnd_value(target.handle):
+            detail["foreground_window"] = f"0x{foreground:X}"
 
     @staticmethod
     def _delivery_warning(action: InputAction, delivery: str) -> str | None:
@@ -347,42 +401,125 @@ class WindowsInputBackend:
 
     # ── 投递方式决策 ─────────────────────────────────────
 
+    #: 可用「真实光标」投递的动作：鼠标事件按屏幕坐标命中光标下的窗口，
+    #: 不要求目标窗口是前台（光标处最顶层的窗口就会收到事件）。
+    _POINTER_ACTIONS = (ClickAction, MoveAction, DragAction, ScrollAction)
+
     def _delivery_for(self, target: _TargetWindow, action: InputAction) -> str:
         if action.method == "message":
             return "message"
-        foreground = self._ensure_foreground(target)
+        if (self._application_foreground_handle(target)
+                or self._ensure_foreground(target)):
+            return "sendinput"
         if action.method == "sendinput":
-            if not foreground:
-                raise InputError(
-                    f"无法把窗口 {target.title or target.handle} 置于前台"
-                    f"（当前前台窗口: {_foreground_description()}）。"
-                    f"SendInput 合成的是系统级输入事件，只作用于前台窗口；"
-                    f"可改用 method='message' 直接投递窗口消息（鼠标类动作通常"
-                    f"仍有效），或先让目标窗口获得焦点（点击其窗口区域、或关闭 / "
-                    f"最小化持续抢占前台的其它程序）后重试"
-                )
+            raise InputError(self._foreground_error(
+                target, "SendInput 合成的是系统级输入事件，只作用于前台窗口"))
+        # auto：整个应用都不在前台 —— 若真实光标在该坐标命中的就是目标窗口
+        # （弹层浮在最上层），合成鼠标事件仍能投递；否则退回消息投递。
+        if self._pointer_reachable(target, action):
+            logger.debug("应用不在前台，但光标位置命中目标窗口，仍用 SendInput 投递")
             return "sendinput"
-        if foreground:
-            return "sendinput"
-        logger.debug("窗口未取得前台，回退 PostMessage 投递")
+        logger.debug("窗口未取得前台且光标不可达，回退 PostMessage 投递")
         return "message"
 
+    def _foreground_error(self, target: _TargetWindow, purpose: str) -> str:
+        """「拿不到前台」的统一错误文案（含抢占者与下一步建议）。
+
+        ``purpose`` 说明当前动作为什么需要前台（鼠标类 = 系统级事件只作用于
+        前台窗口；键盘类 = 键盘事件只被前台窗口接收）。
+        """
+        return (
+            f"无法把窗口 {target.title or target.handle} 置于前台"
+            f"（当前前台窗口: {_foreground_description()}）。"
+            f"{purpose}；可改用 method='message' 直接投递窗口消息"
+            f"（Chrome / Electron / 游戏等自绘界面通常忽略该通道），"
+            f"或先让目标窗口获得焦点（点击其窗口区域、或关闭 / 最小化持续"
+            f"抢占前台的其它程序）后重试"
+        )
+
+    def _application_foreground_handle(self, target: _TargetWindow) -> int:
+        """目标窗口**所属应用**当前的前台窗口句柄（0 = 整个应用都不在前台）。
+
+        弹层（tool window / 右键菜单 / 下拉浮层）不会成为前台窗口，直接判断
+        ``IsForegroundWindow(target)`` 永远为假；这里按应用维度判定：目标窗口
+        自身 → 其属主窗口 → 同进程树内任一前台窗口，依次尝试。任一命中即说明
+        该应用持有输入焦点，合成输入可以投递。
+        """
+        if self._driver.is_foreground(target.handle):
+            return winapi.hwnd_value(target.handle)
+        owner = winapi.hwnd_value(target.owner_handle)
+        if owner and self._driver.is_foreground(owner):
+            return owner
+        finder = getattr(self._driver, "foreground_in_tree", None)
+        if finder is not None:
+            found = finder(target.pid)
+            if found:
+                return winapi.hwnd_value(found)
+        return 0
+
     def _ensure_foreground(self, target: _TargetWindow) -> bool:
-        """确保目标窗口是前台窗口（多轮激活 + 递增等待）。
+        """确保目标窗口（或其所属应用）持有前台（多轮激活 + 递增等待）。
 
         Windows 前台锁定策略会拒绝后台进程的首次 ``SetForegroundWindow``
         （刚启动、被最小化或系统正忙时尤其明显），因此按
         ``_FOREGROUND_ATTEMPTS`` 轮重复激活，每轮后等待递增的时间再复核，
         尽量在有限时间内拿到前台。
+
+        工具窗口无法成为前台，激活时按其属主（主窗口）尝试；只要应用取得
+        焦点（属主 / 同进程树窗口是前台）即视为成功。
         """
-        if self._driver.is_foreground(target.handle):
+        if self._application_foreground_handle(target):
             return True
         for attempt in range(_FOREGROUND_ATTEMPTS):
-            self._driver.activate(target.handle)
+            self._activate_target(target)
             self._driver.sleep(_foreground_settle(attempt))
-            if self._driver.is_foreground(target.handle):
+            if self._application_foreground_handle(target):
                 return True
         return False
+
+    def _activate_target(self, target: _TargetWindow) -> None:
+        """激活目标窗口；工具窗口（弹层）优先激活其属主（不参与前台切换）。
+
+        弹层调用 ``SetForegroundWindow`` 必定失败，先激活其属主（该应用的主
+        窗口）才有意义；随后仍尝试激活目标窗口自身，作为非工具窗口与属主
+        缺失场景的兜底（重复激活同一窗口是幂等的）。
+        """
+        owner = winapi.hwnd_value(target.owner_handle)
+        if target.tool_window and owner:
+            self._driver.activate(owner)
+        self._driver.activate(target.handle)
+
+    def _pointer_reachable(self, target: _TargetWindow, action: InputAction) -> bool:
+        """真实光标是否正好落在目标窗口上（是则鼠标事件无需前台也能命中）。
+
+        仅当屏幕点下最顶层的窗口就是目标窗口（或其子窗口）时才成立；否则
+        点击会被遮挡窗口吃掉，必须老实用消息投递。
+        """
+        if not isinstance(action, self._POINTER_ACTIONS):
+            return False
+        topmost = getattr(self._driver, "topmost_at", None)
+        if topmost is None:
+            return False
+        point = self._pointer_point(target.frame, action)
+        if point is None:
+            return False
+        screen_x, screen_y = target.frame.to_screen(point)
+        hit = winapi.hwnd_value(topmost(screen_x, screen_y))
+        if not hit:
+            return False
+        expected = winapi.hwnd_value(target.handle)
+        return hit == expected or winapi.window_root(hit) == expected
+
+    def _pointer_point(self, frame: WindowFrame,
+                       action: InputAction) -> Point | None:
+        """取动作的「落点」窗口内坐标（拖动取起点，其余取点击 / 移动点）。"""
+        if isinstance(action, DragAction):
+            return resolve_point(action.from_x, action.from_y,
+                                 frame.width, frame.height, label="拖动起点")
+        if isinstance(action, (ClickAction, MoveAction, ScrollAction)):
+            return resolve_point(action.x, action.y,
+                                 frame.width, frame.height, label="鼠标坐标")
+        return None
 
     # ── SendInput 路径 ───────────────────────────────────
 
@@ -480,32 +617,46 @@ class WindowsInputBackend:
                          inject: Callable[[], dict]) -> dict:
         """键盘 / 文本注入的前后台确保与焦点复核。
 
-        SendInput 的键盘事件只会被**前台**窗口接收：注入前先把目标窗口置
-        前；注入后再复核前台，若焦点已被别的窗口抢走（注入瞬间被切换），
-        说明按键大概率落到了别的窗口，于是重新激活并重发（最多
+        SendInput 的键盘事件只会被**前台**窗口接收：注入前先把目标窗口（或
+        其所属应用）置前；注入后再复核前台，若焦点已被别的窗口抢走（注入
+        瞬间被切换），说明按键大概率落到了别处，于是重新激活并重发（最多
         ``_KEYBOARD_FOCUS_ATTEMPTS`` 次），仍失败则附带告警而不静默。
+
+        弹层（右键菜单 / 下拉浮层）自身不会成为前台，此时按键由**同一应用的
+        前台窗口**接收（浏览器的渲染进程会正常处理），结果里用
+        ``keyboard_window`` 如实标注实际接收窗口。
         """
-        if not self._ensure_foreground(target):
-            raise InputError(
-                f"无法把窗口 {target.title or target.handle} 置于前台"
-                f"（当前前台窗口: {_foreground_description()}）。"
-                f"SendInput 的键盘事件只被前台窗口接收，无法定向注入；"
-                f"可改用 method='message' 直接投递窗口消息（Chrome / Electron / "
-                f"游戏等自绘界面通常忽略该通道），或先让目标窗口获得焦点"
-                f"（点击其窗口区域、或关闭 / 最小化持续抢占前台的其它程序）后重试"
-            )
+        if not (self._application_foreground_handle(target)
+                or self._ensure_foreground(target)):
+            raise InputError(self._foreground_error(
+                target, "SendInput 的键盘事件只被前台窗口接收，无法定向注入"))
         detail = inject()
         for _attempt in range(_KEYBOARD_FOCUS_ATTEMPTS):
-            if self._driver.is_foreground(target.handle):
-                return detail
+            handle = self._application_foreground_handle(target)
+            if handle:
+                return self._annotate_keyboard_window(detail, target, handle)
             logger.debug("键盘注入后目标窗口失去前台，重新激活并重发按键")
             if not self._ensure_foreground(target):
                 break
             detail = inject()
-        if not self._driver.is_foreground(target.handle):
-            detail["focus_warning"] = (
-                "按键注入后目标窗口未保持前台，按键可能被其它窗口接收；"
-                "可先让目标窗口取得焦点（例如点击其窗口区域）后重试"
+        handle = self._application_foreground_handle(target)
+        if handle:
+            return self._annotate_keyboard_window(detail, target, handle)
+        detail["focus_warning"] = (
+            "按键注入后目标窗口未保持前台，按键可能被其它窗口接收；"
+            "可先让目标窗口取得焦点（例如点击其窗口区域）后重试"
+        )
+        return detail
+
+    @staticmethod
+    def _annotate_keyboard_window(detail: dict, target: _TargetWindow,
+                                  handle: int) -> dict:
+        """记录键盘事件实际投递到的前台窗口（弹层场景下与目标窗口不同）。"""
+        if handle and handle != winapi.hwnd_value(target.handle):
+            detail["keyboard_window"] = f"0x{handle:X}"
+            detail["keyboard_via"] = (
+                "目标窗口是弹层 / 工具窗口，不参与前台切换；按键发送给同一应用的"
+                "前台窗口（该应用的渲染进程通常会处理，如浏览器关闭下拉浮层）"
             )
         return detail
 
@@ -621,9 +772,7 @@ class WindowsInputBackend:
         handle = self._driver.child_at(target.handle, screen[0], screen[1])
         origin = self._driver.client_origin(handle)
         if origin is None:
-            raise InputError(
-                "无法读取目标窗口客户区原点，PostMessage 投递无法换算坐标"
-            )
+            raise _no_client_area_error(handle)
         self._remember_key_target(target, handle)
         return _MessagePoint(
             handle=handle,
@@ -657,9 +806,7 @@ class WindowsInputBackend:
         """屏幕坐标 → 指定窗口的客户区坐标。"""
         origin = self._driver.client_origin(handle)
         if origin is None:
-            raise InputError(
-                "无法读取目标窗口客户区原点，PostMessage 投递无法换算坐标"
-            )
+            raise _no_client_area_error(handle)
         return screen_x - origin[0], screen_y - origin[1]
 
     def _click_message(self, target: _TargetWindow, action: ClickAction) -> dict:
@@ -862,6 +1009,8 @@ def locate_window(pid: int, window: str | None = None) -> _TargetWindow | None:
         pid=candidate.pid,
         title=candidate.title,
         frame=frame_of(candidate),
+        owner_handle=winapi.window_owner(candidate.handle),
+        tool_window=bool(candidate.tool_window),
     )
 
 
@@ -921,6 +1070,25 @@ def _foreground_settle(attempt: int) -> float:
     """第 ``attempt`` 轮前台激活后的等待时长（轮次越靠后等得越久）。"""
     steps = _FOREGROUND_SETTLE_STEPS
     return steps[min(max(attempt, 0), len(steps) - 1)]
+
+
+def _no_client_area_error(handle) -> InputError:
+    """窗口没有可换算客户区时的错误（面向大模型的下一步指引）。
+
+    PostMessage 投递鼠标消息必须把屏幕坐标换算成客户区坐标；Chrome /
+    Electron 的弹出层与部分自绘窗口没有标准客户区（``op=windows`` 里
+    ``client_area=false``），此时消息投递不可行，应改走合成输入——真实光标
+    按屏幕坐标命中窗口，不需要客户区坐标。
+    """
+    value = winapi.hwnd_value(handle)
+    return InputError(
+        f"窗口 0x{value:X} 没有可换算的客户区（ClientToScreen / GetClientRect "
+        f"都不可用），无法用 PostMessage 换算鼠标坐标。这类窗口（Chrome / "
+        f"Electron 弹出层、tool window、部分自绘界面）请改用合成输入：去掉 "
+        f"method='message'（默认 method='auto' 会走 SendInput，按屏幕坐标命中"
+        f"光标下的真实窗口），或直接用 op=windows 里的 client_area=true 的窗口"
+        f"作为操作目标"
+    )
 
 
 def _make_lparam(x: int, y: int) -> int:

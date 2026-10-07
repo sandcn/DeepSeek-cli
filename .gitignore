@@ -35,5 +35,16 @@ shots/
 .chrome-gui-test/
 .chrome-test-profile2/
 .chrome-test-profile3/
-test_chrome/
+.chrome-ops-profile/
+.chrome-ops-verify/
+.chrome-ops-verify2/
 tests/_probe_renderer_tmp.py
+
+# test_chrome：只保留可复现的测试素材与验证脚本（被 tests/ 引用），
+# 其余截图 / 一次性探针一律忽略
+test_chrome/*
+!test_chrome/ops_lab.html
+!test_chrome/test_page.html
+!test_chrome/second_page.html
+!test_chrome/verify_bash_opt_ops.py
+!test_chrome/verify_popup_click.py

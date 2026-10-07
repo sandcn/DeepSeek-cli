@@ -59,6 +59,8 @@ DIB_RGB_COLORS = 0
 TH32CS_SNAPPROCESS = 0x00000002
 GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080
+#: ``GetWindow`` 的 ``uCmd``：窗口的属主窗口（弹出层通常由它所属的主窗口拥有）
+GW_OWNER = 4
 DWMWA_CLOAKED = 14
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
 SW_HIDE = 0
@@ -731,6 +733,41 @@ def window_rect(hwnd) -> tuple[int, int, int, int]:
     if not user32().GetWindowRect(hwnd, byref(rect)):
         return (0, 0, 0, 0)
     return (int(rect.left), int(rect.top), int(rect.right), int(rect.bottom))
+
+
+def window_owner(hwnd) -> int:
+    """读取窗口的属主（owner）句柄（无属主 / 调用失败返回 0）。
+
+    弹出层（右键菜单、下拉浮层、tool window）通常由某个主窗口拥有。这类
+    窗口往往**不参与前台切换**（``SetForegroundWindow`` 对 tool window 无
+    效果），因此判断「该弹层所属的应用是否正持有输入焦点」只能沿属主上溯：
+    属主窗口是前台时，应用就在前台，合成输入（SendInput）可正常投递。
+    """
+    try:
+        return hwnd_value(user32().GetWindow(hwnd, GW_OWNER))
+    except (OSError, TypeError):
+        return 0
+
+
+def window_client_area(hwnd) -> "bool | None":
+    """窗口是否有可换算的客户区（``ClientToScreen`` 与 ``GetClientRect`` 都可用）。
+
+    PostMessage 投递鼠标消息必须把屏幕坐标换算成**客户区坐标**；Chrome /
+    Electron 的弹出层与部分自绘窗口没有标准客户区，换算无从进行。调用方
+    据此提前判断（见 ``op=windows`` 输出里的 ``client_area`` 字段），改走
+    SendInput 合成真实输入——真实光标按屏幕坐标命中窗口，不需要客户区坐标。
+
+    Returns:
+        ``True`` 有客户区、``False`` 明确没有（换算失败或尺寸为 0）、
+        ``None`` 探测不可用（系统调用缺失等，调用方按「未知」展示）。
+    """
+    try:
+        if client_origin(hwnd) is None:
+            return False
+        width, height = client_size(hwnd)
+    except (OSError, AttributeError, TypeError):  # pragma: no cover - 依赖系统调用
+        return None
+    return width > 0 and height > 0
 
 
 def is_window_cloaked(hwnd) -> bool:

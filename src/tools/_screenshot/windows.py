@@ -93,12 +93,18 @@ class WindowInfo:
         top: 窗口左上角屏幕坐标 Y。
         width: 窗口宽度（像素）。
         height: 窗口高度（像素）。
-        tool_window: 是否为工具窗口（通常不出现在任务栏）。
+        tool_window: 是否为工具窗口（通常不出现在任务栏）。这类窗口（右键
+            菜单、下拉浮层、Chrome/Electron 的弹出层）**不会成为前台窗口**，
+            但仍可通过合成输入（真实光标 / 系统级按键）操作。
         minimized: 是否已最小化。
         visible: 是否可见。
         foreground: 是否为当前前台窗口。
         order: 枚举顺序（0 = 最靠前的窗口，近似 Z 序）。
         main: 是否为该进程树的主窗口（由 :func:`mark_main` 标注）。
+        client_area: 是否有可换算的客户区（``ClientToScreen`` +
+            ``GetClientRect`` 均可用）。``False`` 表示 PostMessage 投递
+            无法换算坐标（Chrome / Electron 弹层、部分自绘窗口），需改用
+            合成输入；``None`` = 平台未提供该信息。
     """
 
     handle: int
@@ -115,6 +121,7 @@ class WindowInfo:
     foreground: bool = False
     order: int = 0
     main: bool = False
+    client_area: bool | None = None
 
     @property
     def area(self) -> int:
@@ -154,6 +161,8 @@ class WindowInfo:
             flags.append("minimized")
         if self.tool_window:
             flags.append("tool")
+        if self.client_area is False:
+            flags.append("no-client")
         if not self.visible:
             flags.append("hidden")
         if flags:
@@ -183,6 +192,7 @@ class WindowInfo:
             "z_index": z_index if z_index else None,
             "selectable": selectable,
             "tool_window": self.tool_window,
+            "client_area": self.client_area,
             "minimized": self.minimized,
             "visible": self.visible,
             "foreground": self.foreground,

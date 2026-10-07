@@ -56,6 +56,16 @@ screenshot / 输入 op 都接受 window 选择器——'main'（缺省主窗口�
 输入（Chrome 的 Chrome_WidgetWin_0 这类隐藏辅助窗口尤其容易与真实弹层混淆）；
 确实需要操作这类窗口时用 'handle:0x…' 显式指定。
 
+弹层（右键菜单 / 下拉浮层 / ``WS_EX_TOOLWINDOW`` 弹出窗口）**不参与前台
+切换**，``SetForegroundWindow`` 对它们无效；输入 op 因此按「该窗口**所属
+应用**是否在前台」判定可用通道——目标窗口自身、其属主窗口、或同进程树内的
+任一窗口是前台，就用合成输入投递：鼠标事件按屏幕坐标命中光标下的真实窗口
+（弹层浮在最上层，这正是它被操作的方式），键盘事件交给同一应用的前台窗口
+（浏览器的渲染进程会正常处理，如关闭下拉浮层），结果里的 ``foreground_window``
+标注实际接收窗口。``op=windows`` 清单里的 ``tool_window`` / ``client_area``
+两个字段可直接预判：``client_area=false`` 的窗口没有可换算的客户区，不能用
+``method='message'`` 投递鼠标坐标，去掉 method（默认 auto）走合成输入即可。
+
 截图增强：grid 参数（如 grid=50）在产物上叠加等距参考线，读图后可精确换算
 像素坐标；结果 JSON 附带被截窗口的句柄 / 标题 / 候选窗口总数，便于确认选对
 了窗口。
@@ -259,11 +269,17 @@ class BashOptFunc(Func):
                                 "click/scroll 省略坐标时作用于窗口中心；"
                                 "键输入需 key，文本输入需 text；纯命令行进程没有窗口，会报错"
                                 "\n- windows：列出该后台任务进程树的全部窗口"
-                                "（句柄/标题/类名/位置尺寸/Z 序/是否前台/是否主窗口），"
+                                "（句柄/标题/类名/位置尺寸/Z 序/是否前台/是否主窗口/"
+                                "tool_window/client_area），"
                                 "z_index 与 '#N' 选择器编号一致、selectable_total 为可操作"
                                 "窗口数，"
                                 "用于挑选目标窗口（右键菜单、下拉浮层、对话框等独立顶层"
-                                "窗口都在其中）"
+                                "窗口都在其中）；"
+                                "tool_window=true 的弹层不参与前台切换，输入 op 会按"
+                                "「同应用是否在前台」选通道，鼠标按屏幕坐标命中光标下的"
+                                "窗口、键盘交给同一应用的前台窗口；"
+                                "client_area=false 表示该窗口没有可换算的客户区"
+                                "（不能用 method='message' 投递鼠标坐标）"
                                 "\n- window：控制窗口状态与几何（需 window_action="
                                 "activate/maximize/minimize/restore/close/move/resize/fit，"
                                 "配合 window 选择器指定目标窗口）"
@@ -329,6 +345,12 @@ class BashOptFunc(Func):
                                 "'handle:0x…' 显式指定。"
                                 "先用 op=windows 查看窗口清单（selectable / z_index "
                                 "字段），再用同一选择器把截图 / 输入投向任意窗口。"
+                                "弹层（清单里 tool_window=true 的右键菜单 / 下拉"
+                                "浮层）不参与前台切换，直接把 window 指向它即可用"
+                                "合成输入操作（鼠标按屏幕坐标命中光标下的窗口、"
+                                "键盘交给同一应用的前台窗口）；"
+                                "client_area=false 的窗口不能配合 "
+                                "method='message' 使用。"
                             ),
                         },
                         "grid": {
@@ -1200,6 +1222,11 @@ class BashOptFunc(Func):
                 return (f"(输入失败: {message}。弹出菜单 / 下拉浮层这类窗口在失焦"
                         f"或截图 / 窗口提权后可能已关闭，可先用 op=windows 复核"
                         f"当前窗口，再用同一选择器重试)")
+            if "客户区" in message:
+                return (f"(输入失败: {message}。该窗口没有可换算的客户区，无法用 "
+                        f"method='message' 投递鼠标坐标——默认的 method='auto' "
+                        f"会改用合成输入（真实光标命中光标下的窗口）；若显式传了 "
+                        f"method='message'，去掉它后重试)")
             return f"(输入失败: {message})"
         payload = {
             "task_id": self.task_id,
@@ -1330,7 +1357,15 @@ class BashOptFunc(Func):
                                "计数看 selectable_total（可操作窗口数）与 "
                                "windows_total（含隐藏 / 最小化的全部窗口数）。"
                                "'#N' 的编号与截图结果里的 window_summary 编号同源"
-                               "（都按可操作窗口的 Z 序），可直接互相参照")
+                               "（都按可操作窗口的 Z 序），可直接互相参照。"
+                               "tool_window=true 的弹层（右键菜单 / 下拉浮层 / 弹出"
+                               "窗口）不参与前台切换，直接点击即可：输入 op 会按"
+                               "「该窗口所属应用是否在前台」判定，鼠标事件按屏幕"
+                               "坐标命中光标下的真实窗口、键盘事件交给同一应用的"
+                               "前台窗口（结果里的 foreground_window 标注了实际"
+                               "接收窗口）。client_area=false 表示该窗口没有可换算"
+                               "的客户区，此时不能用 method='message' 投递鼠标坐标"
+                               "（去掉 method 用默认的合成输入即可）")
             payload["summary"] = window_hint(infos)
         else:
             payload["hint"] = ("未找到可见窗口（纯命令行进程没有 GUI 窗口；"
