@@ -7,7 +7,9 @@ bash_opt — 按 task_id 操作后台 bash 任务
 
 - op=read   读取后台命令**当前已产生**的全部输出并清空缓冲，立即返回（不等待完成）
 - op=wait   等待任务执行完成并获取结果（JSON：task_id/status/stdout/stderr/returncode）
-- op=kill   杀死后台命令的所有进程树（killpg + /proc 递归补杀后代）
+- op=kill   杀死后台命令的所有进程树（进程组 + 全部递归后代），杀完后
+            **校验**进程是否真正退出（僵尸视为已终止）；仍有存活则**自动
+            补杀**（最多 3 轮尝试），返回信息报告校验结论与残留 PID
 - op=stdin  向后台命令的 stdin 发送文本输入（text 参数，newline 可选是否追加换行）
 - op=keys   向后台命令发送光标/键盘消息（自动路由：目标进程有 GUI 窗口时
             作为窗口级键盘消息注入该窗口，否则回退写入终端——跨平台
@@ -211,7 +213,9 @@ class BashOptFunc(Func):
                     "op：read（读取当前已产生的全部输出并清空缓冲，立即返回不等待完成）、"
                     "wait（等待完成取结果 JSON：task_id/status/stdout/stderr/returncode，"
                     "timeout 秒，默认 300/0 无限）、"
-                    "kill（杀进程树）、stdin（发文本到 stdin，需 text）、"
+                    "kill（杀整个进程树：进程组 + 全部递归后代，杀后校验是否"
+                    "真正退出、未死自动补杀，最多 3 轮尝试，残留进程在结果中"
+                    "报告）、stdin（发文本到 stdin，需 text）、"
                     "keys（发送按键，需 key：目标进程有 GUI 窗口时自动作为窗口级"
                     "键盘消息注入该窗口，否则写入终端；支持 ctrl+c 等组合键、"
                     "esc/pageup 等别名与单个字符，repeat 可一次连按多次）、"
@@ -250,7 +254,10 @@ class BashOptFunc(Func):
                                 "立即返回（不等待任务完成）；后续 read 只返回新产生的输出，"
                                 "最终完整结果由 wait 获取"
                                 "\n- wait：等待任务完成并获取命令输出"
-                                "\n- kill：杀死任务所有进程树"
+                                "\n- kill：杀死任务所有进程树（进程组 + 全部递归"
+                                "后代）；杀完后校验进程是否真正退出（僵尸视为"
+                                "已终止），仍有存活则自动补杀（最多 3 轮尝试）；"
+                                "校验时仍存活的残留 PID 会在结果中列出"
                                 "\n- stdin：向任务 stdin 发送文本输入（需 text）"
                                 "\n- keys：向任务发送光标/键盘消息（需 key；"
                                 "目标进程有 GUI 窗口时自动作为窗口级键盘消息注入该窗口，"
@@ -826,18 +833,29 @@ class BashOptFunc(Func):
     # ── op=kill ──────────────────────────────────────────
 
     async def _op_kill(self, agent, rec: dict) -> str:
-        """杀死后台任务的所有进程树并取消后台任务，从 tasklist 移除。"""
+        """杀死后台任务的所有进程树并取消后台任务，从 tasklist 移除。
+
+        ★ 杀死后**校验**：进程树杀（进程组 + 全部递归后代）在线程中执行，
+        内部轮询确认进程是否真正退出（僵尸视为已终止），仍有存活则自动
+        补杀（最多 3 轮尝试）。返回信息报告校验结论；确有残留（权限不足 /
+        不可中断状态）时列出残留 PID，可再次 op=kill 重试补杀。
+        """
         pid = rec.get("pid")
         process = rec.get("process")
         task = rec.get("task")
 
-        # 1. 杀死进程树（killpg 进程组 + /proc 递归补杀后代）
-        if pid is not None:
+        # 1. 杀死进程树（进程组 + 递归后代；杀后校验、未死补杀）
+        result = None
+        target_pid = pid
+        if target_pid is None and process is not None:
+            target_pid = getattr(process, "pid", None)
+        if target_pid is not None:
             try:
-                kill_process_tree(pid)
+                # 同步重试 / 校验会短暂阻塞，移出事件循环线程执行
+                result = await asyncio.to_thread(kill_process_tree, target_pid)
             except Exception as e:
                 logger.debug("kill 进程树异常: %s", e)
-        elif process is not None:
+        if result is None and process is not None:
             try:
                 process.kill()
             except ProcessLookupError:
@@ -858,7 +876,29 @@ class BashOptFunc(Func):
             agent._remove_background_task(self.task_id)
         else:
             agent._background_tasks.pop(self.task_id, None)
-        return f"(已杀死后台任务 {self.task_id} 及其所有进程树)"
+        return self._kill_report(result)
+
+    def _kill_report(self, result) -> str:
+        """组装 op=kill 的结果说明（含杀后校验结论与残留进程）。
+
+        Args:
+            result: ``kill_process_tree`` 返回的 ``KillResult``（缺省 None——
+                无进程句柄、或旧实现 / 测试替身未返回校验结果时）。
+        """
+        if result is None:
+            return f"(已杀死后台任务 {self.task_id} 及其所有进程树)"
+        remaining = tuple(getattr(result, "remaining_pids", ()) or ())
+        attempts = int(getattr(result, "attempts", 0) or 0)
+        if not getattr(result, "verified", False):
+            return (f"(已杀死后台任务 {self.task_id} 及其所有进程树"
+                    f"（{attempts} 轮尝试，未做杀后校验）)")
+        if not remaining:
+            return (f"(已杀死后台任务 {self.task_id} 及其所有进程树"
+                    f"（{attempts} 轮尝试后校验：无残留进程）)")
+        residual = ", ".join(str(p) for p in remaining)
+        return (f"(已尝试杀死后台任务 {self.task_id} 的进程树（{attempts} 轮），"
+                f"但校验时以下进程仍存活: {residual} —— 可能权限不足或处于"
+                f"不可中断状态，可稍后重试 op=kill 补杀)")
 
     # ── op=stdin ─────────────────────────────────────────
 

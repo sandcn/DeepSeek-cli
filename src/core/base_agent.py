@@ -921,8 +921,10 @@ async def _cancel_tasks_and_kill_pids(tasks_to_cancel: list, pids_to_kill: list)
     共用，统一 pid 存活判定（``_should_kill_process``）与取消等待语义，防止
     两处逻辑漂移（尤其 pid 复用安全红线判定）。
 
-    - kill_process_tree 内部同步遍历 /proc（进程多时可达数百 ms），移出事件
-      循环线程执行（asyncio.to_thread），避免中断瞬间阻塞事件循环；
+    - kill_process_tree 内部同步遍历进程表（/proc 或 ps）、并在杀后做
+      校验与未死补杀（最多 3 轮尝试，每轮校验轮询上限 50ms），可能阻塞
+      数百 ms——移出事件循环线程执行（asyncio.to_thread），避免中断瞬间
+      阻塞事件循环；
     - 取消等待带超时（5s）：被取消的后台 bash 任务可能卡在 process.wait()
       （子进程不可杀），无界等待会阻塞中断路径；进程树已杀，超时后放弃，
       残余 task 由取消流程最终完成（wait_for 超时不撤销 cancel 请求）。
@@ -941,19 +943,33 @@ async def _cancel_tasks_and_kill_pids(tasks_to_cancel: list, pids_to_kill: list)
             pids_to_kill.clear()
             kill_process_tree = None
 
-        def _kill_pids() -> None:
+        def _kill_pids() -> list[int]:
+            # kill_process_tree 内部会「杀后校验、未死补杀」，返回 KillResult；
+            # 收集校验时仍存活的残留 PID 统一 warning，便于排查（如权限不足）。
+            residual: list[int] = []
             for pid in pids_to_kill:
                 try:
-                    kill_process_tree(pid)
+                    result = kill_process_tree(pid)
                 except Exception:
                     _logger.debug(
                         "杀后台任务进程树失败: %s", pid, exc_info=True,
                     )
+                    continue
+                leftovers = tuple(getattr(result, "remaining_pids", ()) or ())
+                if leftovers:
+                    residual.extend(leftovers)
+            return residual
 
         try:
-            await asyncio.to_thread(_kill_pids)
+            residual = await asyncio.to_thread(_kill_pids)
         except Exception:
             _logger.debug("杀后台任务进程树批量执行异常", exc_info=True)
+            residual = []
+        if residual:
+            _logger.warning(
+                "ESC 杀后台任务后仍有进程存活（可能权限不足或不可中断状态）: %s",
+                sorted(set(residual)),
+            )
 
     for t in tasks_to_cancel:
         t.cancel()

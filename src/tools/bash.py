@@ -420,7 +420,7 @@ class BashFunc(Func):
         stdout_lines = []
         stderr_lines = []
 
-        # 使用闭包确保 kill 只执行一次（双流并发时避免冗余 /proc 扫描）
+        # 使用闭包确保 kill 只执行一次（双流并发时避免冗余进程表扫描）
         _kill_once = False
 
         def _kill_tree_once():

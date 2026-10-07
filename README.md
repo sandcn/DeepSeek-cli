@@ -386,7 +386,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 | `find` | fn | 搜索 | ✅ | 按通配符模式查找文件和目录，支持深度控制 |
 | `ls` | ls | IO | ✅ | 列出目录内容，支持详细格式和隐藏文件显示 |
 | `bash` | bs | 执行 | ❌ | 执行 shell 命令（安全沙盒保护，禁止替代专用工具） |
-| `bash_opt` | bo | 执行 | ❌ | 按 task_id 操作后台 bash 任务：read（读取当前已产生的全部输出并清空缓冲，立即返回）/ wait（等待完成取输出）/ kill（杀死进程树）/ stdin（发送文本输入）/ keys（发送光标键盘消息，自动路由：目标进程有 GUI 窗口时作为窗口级键盘消息注入该窗口，否则写入终端 PTY/stdin，跨平台 ANSI/VT100；支持 `ctrl+c` 等修饰键组合、`ctrl_c`/`ctrl-c` 紧凑写法、`esc`/`del`/`pageup`/`return` 等别名、单个字符与 f1-f20）/ screenshot（把该命令进程树的窗口截图存为 PNG，需 path；可选 crop 只截取窗口内的像素区域，格式 `x,y,width,height`）/ move / click（左中右键、双击，需 button/count）/ drag（拖动，需 to_x/to_y，可选 from_x/from_y/duration/steps）/ scroll（滚轮，direction+amount）/ key（窗口级按键，如 `ctrl+s`，与 keys 共用键名规则；`phase` 可选 press/down/up 分别发送按下与弹起）/ type（向窗口逐字符输入文本，每字符发送配对的按下与弹起）；坐标以窗口截图左上角为原点（与 screenshot 产物一致），`method` 可选 auto/sendinput/message（仅 Windows 生效） |
+| `bash_opt` | bo | 执行 | ❌ | 按 task_id 操作后台 bash 任务：read（读取当前已产生的全部输出并清空缓冲，立即返回）/ wait（等待完成取输出）/ kill（杀死整个进程树：进程组 + 全部递归后代；杀完后校验进程是否真正退出、未死自动补杀，最多 3 轮尝试，残留进程在结果中报告）/ stdin（发送文本输入）/ keys（发送光标键盘消息，自动路由：目标进程有 GUI 窗口时作为窗口级键盘消息注入该窗口，否则写入终端 PTY/stdin，跨平台 ANSI/VT100；支持 `ctrl+c` 等修饰键组合、`ctrl_c`/`ctrl-c` 紧凑写法、`esc`/`del`/`pageup`/`return` 等别名、单个字符与 f1-f20）/ screenshot（把该命令进程树的窗口截图存为 PNG，需 path；可选 crop 只截取窗口内的像素区域，格式 `x,y,width,height`）/ move / click（左中右键、双击，需 button/count）/ drag（拖动，需 to_x/to_y，可选 from_x/from_y/duration/steps）/ scroll（滚轮，direction+amount）/ key（窗口级按键，如 `ctrl+s`，与 keys 共用键名规则；`phase` 可选 press/down/up 分别发送按下与弹起）/ type（向窗口逐字符输入文本，每字符发送配对的按下与弹起）；坐标以窗口截图左上角为原点（与 screenshot 产物一致），`method` 可选 auto/sendinput/message（仅 Windows 生效） |
 | `cp` | cp | IO | ✅ | 复制文件或目录，保留元数据，支持沙盒撤回 |
 | `mv` | mv | IO | ✅ | 移动文件或目录，支持跨文件系统 |
 | `rm` | rm | IO | ❌ | 删除文件或目录（删除前自动备份到沙盒） |
