@@ -105,6 +105,9 @@ def ListView(props: dict) -> Element:
             None 时忽略）。
         onSelect: ``(item, index) -> None``——Enter 选择回调（不可选项不
             触发）。
+        isSelectable: ``(item) -> bool``——可选性判定（默认 ``item is not
+            None``，即 None 为不可选分隔行）。扩展点：调用方可声明更多
+            不可选行类型（如 TraceView 台账内联展开的详情预览行）。
         highlightStyle: 光标行样式（默认 ``Style(fg=6)`` cyan）。
 
     行为（与常见 React 列表选择控件对齐）：
@@ -166,6 +169,18 @@ def ListView(props: dict) -> Element:
 
     cursor, set_cursor = use_state(_clamp_index(initial_index, total))
     offset, set_offset = use_state(0)
+    # ★ 可选性判定扩展点（2026-10-07）：默认 None 为不可选分隔行；调用方
+    #   经 isSelectable 声明更多不可选行（TraceView 内联展开行）。判定异常
+    #   回退默认语义（不崩溃）。
+    _is_selectable_prop = props.get("isSelectable")
+
+    def _selectable(item) -> bool:
+        if _is_selectable_prop is None:
+            return _is_selectable(item)
+        try:
+            return bool(_is_selectable_prop(item))
+        except Exception:
+            return _is_selectable(item)
     # ★ ref 镜像（同批连续按键修复）：handler 读 ref 而非闭包 state。
     cursor_ref = use_ref(cursor)
     offset_ref = use_ref(offset)
@@ -216,14 +231,14 @@ def ListView(props: dict) -> Element:
         if delta > 0:
             step = max(1, page * viewport_h)
             i = cur + step
-            while i < total and not _is_selectable(items[i]):
+            while i < total and not _selectable(items[i]):
                 i += 1
             if i >= total:
                 if not page:
                     return False
                 # 翻页越界 → 钳制到最后一个可选项（仍不可达=已在边缘 → False）
                 i = total - 1
-                while i >= 0 and not _is_selectable(items[i]):
+                while i >= 0 and not _selectable(items[i]):
                     i -= 1
                 if i < 0 or i <= cur:
                     return False
@@ -232,14 +247,14 @@ def ListView(props: dict) -> Element:
         else:
             step = max(1, page * viewport_h)
             i = cur - step
-            while i >= 0 and not _is_selectable(items[i]):
+            while i >= 0 and not _selectable(items[i]):
                 i -= 1
             if i < 0:
                 if not page:
                     return False
                 # 翻页越界 → 钳制到第一个可选项
                 i = 0
-                while i < total and not _is_selectable(items[i]):
+                while i < total and not _selectable(items[i]):
                     i += 1
                 if i >= total or i >= cur:
                     return False
@@ -251,13 +266,13 @@ def ListView(props: dict) -> Element:
             return False
         if not to_end:
             i = 0
-            while i < total and not _is_selectable(items[i]):
+            while i < total and not _selectable(items[i]):
                 i += 1
             if i >= total:
                 return False
             return _move(i, base if base is not None else cursor_ref.current)
         i = total - 1
-        while i >= 0 and not _is_selectable(items[i]):
+        while i >= 0 and not _selectable(items[i]):
             i -= 1
         if i < 0:
             return False
@@ -305,7 +320,7 @@ def ListView(props: dict) -> Element:
             #   修复前「onSelect 已提供且当前为分隔行」落入末尾 ``return True``
             #   （消费事件但无动作，阻断父级）；现与 SelectInput 的
             #   「无效项放行」语义对齐。
-            if _is_selectable(items[cur]) and on_select is not None:
+            if _selectable(items[cur]) and on_select is not None:
                 # ★ P3（review 2026-08-19）：回调经 ``_call`` 统一（与
                 #   on_navigate 同一异常处理路径），warning 级日志可观测。
                 _call(on_select, items[cur], cur)

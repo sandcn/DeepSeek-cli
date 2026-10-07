@@ -162,7 +162,13 @@ class EditMsgSelectState:
             不残留旧选中）。
         title: 弹窗标题。
         options: 消息单行摘要列表（每条消息一行）。
-        selected: 当前高亮索引（组件维护）。
+        previews: 每条消息的**全文预览**文本（与 options 对齐；弹窗下方
+            预览区显示当前选中消息完整内容——2026-10-07 增强）。
+        filter: 弹窗内搜索过滤文本（``/`` 进入搜索输入；空串=不过滤）。
+        search_mode: 是否处于弹窗内搜索输入模式（True 时组件独占按键输入，
+            列表控件不参与导航）——2026-10-07 增强。
+        selected: 当前高亮索引（组件维护；**原始消息索引**——过滤视图下
+            组件负责视图位置 ↔ 原始索引换算）。
         deadline: 超时截止（time.monotonic()）；0 表示无限等待。
         done: 交互是否已结束（组件写入）。
         action: 结束方式（confirmed/cancel/timeout）。
@@ -175,6 +181,9 @@ class EditMsgSelectState:
     seq: int = 0
     title: str = ""
     options: list = field(default_factory=list)
+    previews: list = field(default_factory=list)
+    filter: str = ""
+    search_mode: bool = False
     selected: int = 0
     deadline: float = 0.0
     done: bool = False
@@ -282,6 +291,27 @@ class ConfigViewState:
     edit_json_action: str = "edit"
     edit_error: str = ""
     message: str = ""
+    # ── 2026-10-07（config 增强：搜索 / 帮助 / 恢复默认 / 复制 / 撤销 / 来源） ──
+    # search_mode: 搜索输入模式（``/`` 进入；True 时组件独占按键输入）。
+    search_mode: bool = False
+    # search_query: 搜索输入缓冲。
+    search_query: str = ""
+    # search_pattern: 已执行的搜索文本（"" = 无搜索）。
+    search_pattern: str = ""
+    # search_matches: 匹配配置项索引列表。
+    search_matches: list = field(default_factory=list)
+    # search_idx: 当前匹配在 matches 中的位置（-1 = 未定位）。
+    search_idx: int = -1
+    # search_filter: 过滤模式（True = 列表只显示匹配配置项）。
+    search_filter: bool = False
+    # help_open: 帮助面板开关（``?`` 切换——右栏/主区显示键位速查）。
+    help_open: bool = False
+    # help_scroll: 帮助面板滚动偏移（主区覆盖渲染时内容滚动）。
+    help_scroll: int = 0
+    # undo_stack: 撤销栈（[(key, 旧值, 旧显示文本, path), ...]——``u`` 逐条撤回）。
+    undo_stack: list = field(default_factory=list)
+    # rc_file: 配置文件路径（头部「来源」显示；命令线程注入）。
+    rc_file: str = ""
     deadline: float = 0.0
     done: bool = False
     action: str = ""
@@ -364,6 +394,23 @@ class PluginViewState:
     scroll: int = 0
     cursor: int = 0
     pane: str = "list"
+    # ── 2026-10-07（plugin 增强：搜索 / 帮助 / 复制 / 统计） ──
+    # search_mode: 搜索输入模式（``/`` 进入；True 时组件独占按键输入）。
+    search_mode: bool = False
+    # search_query: 搜索输入缓冲。
+    search_query: str = ""
+    # search_pattern: 已执行的搜索文本（"" = 无搜索）。
+    search_pattern: str = ""
+    # search_matches: 匹配插件条目索引列表（按列表项顺序）。
+    search_matches: list = field(default_factory=list)
+    # search_idx: 当前匹配在 matches 中的位置（-1 = 未定位）。
+    search_idx: int = -1
+    # search_filter: 过滤模式（True = 列表只显示匹配插件）。
+    search_filter: bool = False
+    # help_open: 帮助面板开关（``?`` 切换——右栏显示键位速查）。
+    help_open: bool = False
+    # status_message: 底部状态提示（复制/无匹配等操作反馈；空串不渲染）。
+    status_message: str = ""
     deadline: float = 0.0
     done: bool = False
     action: str = ""

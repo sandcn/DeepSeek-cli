@@ -47,27 +47,109 @@ _SELECT_DEADLINE = 120.0
 # 工具函数
 # ═══════════════════════════════════════════════════════════
 
+def _msg_time_text(msg: dict) -> str:
+    """消息可选时间戳文本（``HH:MM:SS``；无（常见）→ 空串）。
+
+    会话消息 dict 通常不含时间字段——存在 ``timestamp``/``time``/
+    ``created_at``（数值 epoch 或字符串）时显示（2026-10-07 增强：
+    消息行元信息含时间）。
+    """
+    if not isinstance(msg, dict):
+        return ""
+    for key in ("timestamp", "time", "created_at", "ts"):
+        val = msg.get(key)
+        if val is None:
+            continue
+        if isinstance(val, bool):
+            continue
+        if isinstance(val, (int, float)):
+            try:
+                return time.strftime("%H:%M:%S", time.localtime(float(val)))
+            except (ValueError, OSError, OverflowError):
+                continue
+        if isinstance(val, str) and val.strip():
+            return val.strip()[:8]
+    return ""
+
+
+#: 消息全文预览最大字符数（超长截断——弹窗预览区只显示有限内容）。
+_PREVIEW_MAX_CHARS = 4000
+
+
+def _msg_preview_text(msg: dict) -> str:
+    """消息全文预览文本（弹窗预览区数据源，2026-10-07 增强）。
+
+    纯文本（``_content_str`` 消毒 ANSI）；空消息占位 ``(空消息)``；超长
+    截断到 ``_PREVIEW_MAX_CHARS`` 并追加省略提示。
+    """
+    content = _content_str(msg.get("content", ""))
+    text = content.strip()
+    if not text:
+        return "(空消息)"
+    if len(text) > _PREVIEW_MAX_CHARS:
+        text = text[:_PREVIEW_MAX_CHARS] + (
+            f"\n\u2026\uff08\u5185\u5bb9\u8fc7\u957f\uff0c\u4ec5\u9884\u89c8"
+            f"\u524d {_PREVIEW_MAX_CHARS} \u5b57\u7b26\uff09"
+        )
+    return text
+
+
 def _user_msg_summary(msg: dict, idx: int, max_w: int = 60) -> str:
     """生成用户消息的简短摘要（用于消息选择弹窗显示，**每条一行**）。
 
-    格式: N. ● │ 消息内容摘要...（N 为 1 基显示编号——与 user_select
-    弹窗视觉一致，用户可直接对应第几条）
+    格式: ``N. tN ● │ 消息内容摘要... [时间 字符数/行数]``
 
     ★ 2026-08-18（用户需求：editmsg 每条信息只显示一行）：消息选择弹窗
     不再使用 TUI 多行渲染（option_lines），改为单行摘要——多行消息内容
     经 ``_truncate`` 折叠为单行（换行 → 空格），超宽截断加 "..."。
 
+    ★ 2026-10-07（editmsg 增强：消息行元信息）：新增元信息——
+      - ``tN``：轮次号（第 N 条用户消息 = 第 N 轮）；
+      - ``[字符数/行数]``：消息规模（换行数统计基于原文）；
+      - 时间（消息 dict 含 timestamp/time 时显示 ``HH:MM:SS``）。
+
     Args:
         msg: 消息字典。
         idx: 显示编号（0 基；内部 +1 转为 1 基显示）。
-        max_w: 最大宽度。
+        max_w: 摘要主体最大宽度（不含元信息后缀）。
 
     Returns:
         纯文本单行摘要字符串（不含 ANSI 颜色）。
     """
     content = _content_str(msg.get("content", ""))
     text = content.strip()
-    return f"{idx + 1}. \u25cf \u2502 {_truncate(text, max_w)}"
+    chars = len(text)
+    line_count = (content.count("\n") + 1) if text else 0
+    meta_parts: list = []
+    t_text = _msg_time_text(msg)
+    if t_text:
+        meta_parts.append(t_text)
+    meta_parts.append(f"{chars}\u5b57/{line_count}\u884c")
+    meta = " [" + " ".join(meta_parts) + "]"
+    head = f"{idx + 1}. t{idx + 1} \u25cf \u2502 "
+    body = _truncate(text, max_w)
+    return f"{head}{body}{meta}"
+
+
+def _build_selection_items(user_msgs: list) -> tuple:
+    """用户消息列表 → (单行摘要列表, 全文预览列表)。
+
+    ★ 2026-10-07（editmsg 增强）：选择弹窗数据源构建单一实现——摘要
+    （``_user_msg_summary``，每条一行）+ 全文预览（``_msg_preview_text``，
+    弹窗预览区）；供 ``edit_current_messages`` 与测试直接使用。
+
+    Args:
+        user_msgs: [(原始索引, 消息字典), ...]。
+
+    Returns:
+        (display_items, preview_items)——与 user_msgs 等长对齐。
+    """
+    display_items: list = []
+    preview_items: list = []
+    for display_idx, (_orig_idx, msg) in enumerate(user_msgs):
+        display_items.append(_user_msg_summary(msg, display_idx))
+        preview_items.append(_msg_preview_text(msg))
+    return display_items, preview_items
 
 
 def _restore_feedback(restore_text: str) -> tuple[str, bool]:
@@ -465,9 +547,10 @@ class MessageEditor:
 
         # 构建显示项（★ 2026-08-18 用户需求：每条消息只显示一行——单行摘要，
         # 供 EditMsgSelectState.options 与 legacy 补全弹窗路径消费）。
-        display_items = []
-        for display_idx, (orig_idx, msg) in enumerate(user_msgs):
-            display_items.append(_user_msg_summary(msg, display_idx))
+        # ★ 2026-10-07（editmsg 增强）：同时构建全文预览（previews）——弹窗
+        # 预览区显示当前选中消息完整内容（避免选错消息）。构建单一实现
+        # 收敛到 ``_build_selection_items``。
+        display_items, preview_items = _build_selection_items(user_msgs)
 
         # ★ 设置 Enter 抑制 + 替换补全关闭回调
         #   在交互选择期间，Enter 键不经过 _enter() 提交，
@@ -508,7 +591,9 @@ class MessageEditor:
             input_.set_suppress_enter(True)
             input_.set_dismiss_completion_callback(self._editmsg_dismiss_cb)
 
-            real_idx = self._interactive_message_select(user_msgs, display_items)
+            real_idx = self._interactive_message_select(
+                user_msgs, display_items, preview_items,
+            )
         finally:
             # ★ 修复（P2-6）：恢复原始回调——orig_dismiss_cb 为 None 时也
             #   显式 ``set_dismiss_completion_callback(None)`` 恢复原状（修复前
@@ -565,6 +650,7 @@ class MessageEditor:
         self,
         user_msgs: list[tuple[int, dict]],
         display_items: list[str],
+        preview_items: list[str] | None = None,
     ) -> int | None:
         """选择要编辑的消息（独立 React Ink EditMsgSelectPopup 协议）。
 
@@ -586,6 +672,8 @@ class MessageEditor:
             user_msgs: [(原始索引, 消息字典), ...]。
             display_items: 每个消息的单行显示文本（EditMsgSelectState
                 options）。
+            preview_items: 每个消息的全文预览文本（EditMsgSelectState
+                previews；None/缺省 → 空列表，弹窗不显示预览区）。
 
         Returns:
             选中的原始消息索引，None 表示取消/超时。
@@ -608,6 +696,7 @@ class MessageEditor:
             seq=prev_seq + 1,
             title="\u9009\u62e9\u8981\u7f16\u8f91\u7684\u6d88\u606f",  # 选择要编辑的消息
             options=list(display_items),
+            previews=list(preview_items or []),
             selected=sel_count - 1,  # 默认选中最后一条
             deadline=time.monotonic() + _SELECT_DEADLINE,  # 2 分钟超时
         )

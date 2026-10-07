@@ -404,7 +404,7 @@ async def test_editmsg_prefill_injected_before_replay(monkeypatch):
     editor_obj = MessageEditor(bottom_bar=None, input_=inp)
     monkeypatch.setattr(
         MessageEditor, "_interactive_message_select",
-        lambda self, um, di: um[1][0],  # 选第 2 条用户消息（原始 idx=2）
+        lambda self, um, di, *a: um[1][0],  # 选第 2 条用户消息（原始 idx=2）
     )
 
     plugin = EditmsgPlugin()
@@ -445,7 +445,7 @@ async def test_editmsg_deferred_enter_auto_submits_prefill(monkeypatch):
 
     # 弹窗交互桩：模拟真实流程——确认后开启 capture（message_editor finally
     # 行为）+ 用户窗口期按 Enter（suppress 吞 → deferred）
-    def _fake_select(self, um, di):
+    def _fake_select(self, um, di, previews=None):
         inp.set_enter_capture(True)   # 弹窗终态后 capture 开启
         inp.set_suppress_enter(True)  # （edit_current_messages 外层 finally 才恢复）
         inp.mark_deferred_enter()     # 用户 Enter 被 suppress 吞 → deferred
@@ -485,7 +485,7 @@ async def test_editmsg_deferred_not_consumed_when_live_submission(monkeypatch):
 
     monkeypatch.setattr(me, "_get_sandbox_manager", lambda: _OkSandbox())
 
-    def _fake_select(self, um, di):
+    def _fake_select(self, um, di, previews=None):
         return um[0][0]
 
     monkeypatch.setattr(MessageEditor, "_interactive_message_select", _fake_select)
@@ -525,7 +525,7 @@ async def test_editmsg_cancel_closes_capture_and_clears_deferred(monkeypatch):
     inp = _CapInput()
     chat_ui = _FakeChatUI(inp)
 
-    def _fake_select(self, um, di):
+    def _fake_select(self, um, di, previews=None):
         inp.set_enter_capture(True)   # 弹窗终态（取消）后 capture 已开启
         inp.mark_deferred_enter()     # 取消后窗口期用户按了 Enter（残留）
         return None                   # 取消
@@ -574,7 +574,7 @@ async def test_editmsg_queued_submission_converted_to_deferred(monkeypatch):
     inp = _LockableInput()
     chat_ui = _FakeChatUI(inp)
 
-    def _fake_select(self, um, di):
+    def _fake_select(self, um, di, previews=None):
         # 窗口期用户按 Enter → 空提交（缓冲空）存活于队列
         inp.queued = ""
         inp.has_queued = True

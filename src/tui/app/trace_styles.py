@@ -69,6 +69,12 @@ _STYLE_SPECS = (
     ("_S_STATS_LABEL", "stats_label", Style(fg=110)),
     ("_S_STATS_VALUE", "stats_value", Style(fg=252)),
     ("_S_STATS_BAR", "stats_bar", Style(fg=45)),
+    # 增强（2026-10-07 第二批）：标记 / 时间列 / 行号 / 内联展开
+    ("_S_MARK", "mark", Style(fg=214, bold=True)),
+    ("_S_TIME_ABS", "time_abs", Style(fg=108)),
+    ("_S_LINE_NO", "line_number", Style(fg=240)),
+    ("_S_EXPANDED", "expanded", Style(fg=245)),
+    ("_S_EXPAND_PREFIX", "expand_prefix", Style(fg=110)),
 )
 
 #: 搜索 query 长度上限兜底
@@ -122,6 +128,11 @@ _S_HELP_DESC = _MAP["_S_HELP_DESC"]
 _S_STATS_LABEL = _MAP["_S_STATS_LABEL"]
 _S_STATS_VALUE = _MAP["_S_STATS_VALUE"]
 _S_STATS_BAR = _MAP["_S_STATS_BAR"]
+_S_MARK = _MAP["_S_MARK"]
+_S_TIME_ABS = _MAP["_S_TIME_ABS"]
+_S_LINE_NO = _MAP["_S_LINE_NO"]
+_S_EXPANDED = _MAP["_S_EXPANDED"]
+_S_EXPAND_PREFIX = _MAP["_S_EXPAND_PREFIX"]
 _SEARCH_QUERY_MAX = search_query_max()
 
 __all__ = [
@@ -132,5 +143,6 @@ __all__ = [
     "_S_ERROR", "_S_WARN", "_S_STATUS", "_S_COUNT",
     "_S_HELP_KEY", "_S_HELP_GROUP", "_S_HELP_DESC",
     "_S_STATS_LABEL", "_S_STATS_VALUE", "_S_STATS_BAR",
+    "_S_MARK", "_S_TIME_ABS", "_S_LINE_NO", "_S_EXPANDED", "_S_EXPAND_PREFIX",
     "trace_style_map", "search_query_max",
 ]

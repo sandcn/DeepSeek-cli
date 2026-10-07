@@ -539,7 +539,7 @@ async def test_editmsg_plugin_renders_warning_on_restore_failure(monkeypatch):
     # 预填选择路径：绕过交互（直接返回 0——patch _interactive_message_select）
     editor_obj = MessageEditor(bottom_bar=None, input_=inp)
 
-    def _fake_select(self, user_msgs, display_items):
+    def _fake_select(self, user_msgs, display_items, preview_items=None):
         return user_msgs[0][0]
 
     monkeypatch.setattr(
@@ -638,8 +638,12 @@ def test_editmsg_item_rows_short_terminal_min_one(monkeypatch):
 # ── P3-2 摘要编号 1 基 ───────────────────────────────────
 
 def test_user_msg_summary_one_based():
-    assert _user_msg_summary({"role": "user", "content": "hi"}, 0) == "1. ● │ hi"
-    assert _user_msg_summary({"role": "user", "content": "yo"}, 2) == "3. ● │ yo"
+    # ★ 2026-10-07（editmsg 元信息增强）：摘要含序号 + 轮次（tN）+ 字符/行数
+    line = _user_msg_summary({"role": "user", "content": "hi"}, 0)
+    assert line.startswith("1. t1 \u25cf \u2502 hi")
+    assert "2\u5b57/1\u884c" in line
+    line2 = _user_msg_summary({"role": "user", "content": "yo"}, 2)
+    assert line2.startswith("3. t3 \u25cf \u2502 yo")
 
 
 # ── P3-3 多模态编辑警告 ──────────────────────────────────

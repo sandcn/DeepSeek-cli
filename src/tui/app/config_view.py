@@ -56,11 +56,12 @@ import json
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple, truncate_width as _truncate_width
 from src.tui.ink import TEXT, Column, Row, StyledRun, h
-from src.tui.ink.hooks import use_input, usePaste
+from src.tui.ink.hooks import use_input, usePaste, use_memo
 from src.tui.ink.helpers import truncate_runs
 from src.tui.ink.widgets.listview import ListView
 from src.config.view_model import format_config_value, parse_config_value
 
+from ._keymap_pane import keymap_panel_rows
 from ._modal_view import empty_modal_frame, is_modal_close_key, use_modal_scope
 
 __all__ = ["ConfigView"]
@@ -82,9 +83,21 @@ _S_SEL_MARK = Style(fg=45, bold=True)      # 选中 ▶ 标记（亮青加粗）
 _S_OK = Style(fg=40, bold=True)            # 成功消息（绿）
 _S_ERR = Style(fg=196, bold=True)          # 错误消息（红）
 _S_EDIT = Style(fg=45, bold=True)          # 编辑输入行（亮青加粗）
+# 增强（2026-10-07）：搜索高亮 / 状态行 / 帮助面板 / 来源提示
+_S_SEARCH_BG = Style(bg=236)               # 搜索匹配行背景
+_S_SEARCH_CUR_BG = Style(bg=25)            # 当前匹配行背景（亮蓝）
+_S_STATUS = Style(fg=221)                  # 底部状态行
+_S_SOURCE = Style(fg=108)                  # 配置来源路径（头部）
+_S_HELP_KEY = Style(fg=214)                # 帮助面板键位（黄）
+_S_HELP_GROUP = Style(fg=110, bold=True)   # 帮助面板分组标题
+_S_HELP_DESC = Style(fg=252)               # 帮助面板说明
 
 #: 编辑输入长度上限（渲染行按宽度截断，无上限累积只浪费内存）
 _EDIT_VALUE_MAX = 400
+#: 搜索输入长度上限
+_SEARCH_QUERY_MAX = 200
+#: 撤销栈深度上限
+_UNDO_MAX = 20
 
 
 def _viewport_rows() -> int:
@@ -245,6 +258,28 @@ def _cancel_edit(cv) -> None:
 # 「数据准备 + 渲染组装 + 事件接线」，职责分离、可独立测试与复用。
 
 
+def _push_undo(cv, entry, old_value) -> None:
+    """记录一次编辑前的值（``u`` 撤销数据源；有界栈）。
+
+    写入 ``cv.undo_stack``（``[(key, 旧值, 旧显示文本, path)]``，最多
+    ``_UNDO_MAX`` 条——超限丢弃最旧）。
+    """
+    try:
+        stack = list(getattr(cv, "undo_stack", None) or [])
+    except Exception:
+        stack = []
+    stack.append((
+        entry.get("key", ""),
+        copy.deepcopy(old_value),
+        format_config_value(
+            old_value, entry.get("type", str),
+            sensitive=bool(entry.get("sensitive")),
+        ),
+        entry.get("path", entry.get("key", "")),
+    ))
+    cv.undo_stack = stack[-_UNDO_MAX:]
+
+
 def _persist_value(cv, entry, value) -> bool:
     """类型校验 + update_config 持久化 + 刷新显示值；失败写 edit_error。"""
     parsed, err = parse_config_value(entry.get("type", str), str(value))
@@ -255,6 +290,7 @@ def _persist_value(cv, entry, value) -> bool:
     if entry.get("sensitive") and (parsed is None or parsed == ""):
         cv.edit_error = "敏感项不能为空，请输入新值（Esc 取消）"
         return False
+    old_value = copy.deepcopy(entry.get("value"))
     try:
         from src.config.loader import update_config
         update_config(entry["key"], parsed)
@@ -266,6 +302,8 @@ def _persist_value(cv, entry, value) -> bool:
         parsed, entry.get("type", str),
         sensitive=bool(entry.get("sensitive")),
     )
+    # ★ 2026-10-07（config 增强：撤销）：记录编辑前的值（``u`` 撤回）。
+    _push_undo(cv, entry, old_value)
     return True
 
 
@@ -482,6 +520,7 @@ def _commit_json_edit(cv, entries) -> None:
     if entry is None:
         _cancel_edit(cv)
         return
+    old_value = copy.deepcopy(entry.get("value"))
     try:
         from src.config.loader import update_config
         update_config(entry["key"], cv.edit_json_data)
@@ -492,19 +531,291 @@ def _commit_json_edit(cv, entries) -> None:
     entry["value_text"] = format_config_value(
         cv.edit_json_data, entry.get("type", dict),
     )
+    # ★ 2026-10-07（config 增强：撤销）：记录编辑前的值（``u`` 撤回）。
+    _push_undo(cv, entry, old_value)
     cv.editing = False
     cv.edit_mode = "input"
     cv.edit_error = ""
     cv.message = f"已更新 {entry['path']} = {entry['value_text']}"
 
 
+# ── 增强辅助（2026-10-07：搜索 / 帮助 / 恢复默认 / 撤销 / 复制） ──────
+# 说明：以下逻辑与 ``_handle_config_event`` / ConfigView 组件共享（模块级
+# 纯辅助——便于单测与复用）。
+
+
+def _config_entry_search_text(entry) -> str:
+    """配置项搜索文本（路径 / 键名 / 说明 / 显示值 / 默认值）。"""
+    if not isinstance(entry, dict):
+        return ""
+    parts = [
+        str(entry.get("path", "") or ""),
+        str(entry.get("key", "") or ""),
+        str(entry.get("desc", "") or ""),
+        str(entry.get("value_text", "") or ""),
+        str(entry.get("default_text", "") or ""),
+    ]
+    return "\n".join(parts)
+
+
+def _config_search_matches(entries: list, pattern: str) -> list:
+    """搜索匹配的配置项索引列表（子串匹配，忽略大小写；空模式 → 空列表）。"""
+    if not pattern:
+        return []
+    low = str(pattern).lower()
+    out: list = []
+    for i, entry in enumerate(entries or []):
+        if low in _config_entry_search_text(entry).lower():
+            out.append(i)
+    return out
+
+
+def _help_rows(right_w: int) -> list:
+    """帮助面板内容行（配置中心键位速查）。"""
+    from src.presentation_data import config_keymap
+
+    return keymap_panel_rows(
+        config_keymap(), right_w,
+        key_style=_S_HELP_KEY, group_style=_S_HELP_GROUP,
+        desc_style=_S_HELP_DESC, sep_style=_S_SEP_ROW,
+        empty_text="(\u5feb\u6377\u952e\u901f\u67e5\u8868\u672a\u6ce8\u518c)",
+    )
+
+
+def _cycle_config_filter(cv) -> None:
+    """``f``：切换过滤模式（列表只显示搜索匹配配置项）。"""
+    new_value = not bool(getattr(cv, "search_filter", False))
+    pattern = getattr(cv, "search_pattern", "") or ""
+    matches = list(getattr(cv, "search_matches", None) or [])
+    if new_value and not (pattern and matches):
+        cv.search_filter = False
+        cv.message = "过滤需先搜索且有匹配（/ 搜索）"
+        return
+    cv.search_filter = new_value
+    cv.message = (
+        f"过滤开启：仅显示 {len(matches)} 项匹配"
+        if new_value else "过滤关闭：显示全部配置项"
+    )
+
+
+def _undo_last(cv, entries) -> None:
+    """``u``：撤销最近一次编辑（写回旧值）。"""
+    stack = list(getattr(cv, "undo_stack", None) or [])
+    if not stack:
+        cv.edit_error = ""
+        cv.message = "无可撤销的编辑"
+        return
+    key, old_value, old_text, path = stack.pop()
+    cv.undo_stack = stack
+    entry = _entry_by_key(entries, key)
+    if entry is None:
+        cv.message = "无可撤销的编辑"
+        return
+    try:
+        from src.config.loader import update_config
+        update_config(key, old_value)
+    except Exception as exc:
+        cv.edit_error = f"撤销写入失败: {exc}"
+        return
+    entry["value"] = old_value
+    entry["value_text"] = old_text
+    cv.edit_error = ""
+    cv.message = f"已撤销 {path} = {old_text}"
+
+
+def _reset_entry_default(cv, entries, idx: int) -> None:
+    """``r``：把选中配置项恢复为默认值（持久化 + 可撤销）。"""
+    if not (0 <= int(idx) < len(entries)):
+        cv.message = "无可恢复的配置项"
+        return
+    entry = entries[int(idx)]
+    from src.config.defaults import CONFIG_KEYS, DEFAULTS
+
+    key = entry.get("key", "")
+    if key in CONFIG_KEYS:
+        default = CONFIG_KEYS[key]["default"]
+        typ = CONFIG_KEYS[key]["type"]
+    else:
+        default = DEFAULTS.get(key)
+        typ = entry.get("type", str)
+    old_value = copy.deepcopy(entry.get("value"))
+    try:
+        from src.config.loader import update_config
+        update_config(key, default)
+    except Exception as exc:
+        cv.edit_error = f"写入失败: {exc}"
+        return
+    _push_undo(cv, entry, old_value)
+    entry["value"] = default
+    entry["value_text"] = format_config_value(
+        default, typ, sensitive=bool(entry.get("sensitive")),
+    )
+    cv.edit_error = ""
+    cv.message = f"已恢复默认 {entry.get('path', key)} = {entry['value_text']}"
+
+
+def _copy_entry(cv, entry) -> None:
+    """``y``：复制选中配置项 ``path = value`` 到剪贴板（OSC52）。"""
+    if entry is None:
+        cv.message = "无可复制的配置项"
+        return
+    text = f"{entry.get('path', entry.get('key', ''))} = {entry.get('value_text', '')}"
+    from src.tui._screen import set_clipboard
+    if set_clipboard(text):
+        cv.message = f"已复制 {text}（{len(text)} 字符）"
+    else:
+        cv.edit_error = ""
+        cv.message = "复制失败：无可用终端输出"
+
+
+def _config_status_text(cv, filter_active: bool, match_count: int) -> str:
+    """底部状态行文本（搜索匹配计数 + 操作反馈；空串不渲染）。
+
+    Args:
+        cv: ConfigViewState。
+        filter_active: 是否处于过滤模式（追加 ``[过滤]`` 标注）。
+        match_count: 当前匹配总数。
+    """
+    if cv is None:
+        return ""
+    parts: list = []
+    pattern = getattr(cv, "search_pattern", "") or ""
+    if pattern:
+        n = int(match_count or 0)
+        idx = getattr(cv, "search_idx", -1)
+        cur = (idx + 1) if 0 <= idx < n else 0
+        seg = f"/{pattern}  {cur}/{n}"
+        if filter_active:
+            seg += " [\u8fc7\u6ee4]"
+        parts.append(seg)
+    err = getattr(cv, "edit_error", "") or ""
+    msg = getattr(cv, "message", "") or ""
+    if err:
+        parts.append(f"\u2716 {err}")
+    elif msg:
+        parts.append(f"\u2713 {msg}")
+    return "  \u00b7  ".join(parts)
+
+
+def _sel_index(cv, total: int) -> int:
+    """当前选中索引（钳制到 ``[0, total-1]``；total<=0 → -1）。"""
+    if total <= 0:
+        return -1
+    try:
+        return max(0, min(int(getattr(cv, "selected", 0) or 0), total - 1))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _exec_config_search(cv, entries) -> None:
+    """回车执行配置项搜索（匹配基于全量列表；定位到首项）。"""
+    q = getattr(cv, "search_query", "") or ""
+    cv.search_mode = False
+    cv.search_pattern = q
+    matches = _config_search_matches(entries, q)
+    cv.search_matches = matches
+    if matches:
+        cv.search_idx = 0
+        cv.selected = 0
+        cv.message = f"{len(matches)} \u9879\u5339\u914d"
+    else:
+        cv.search_idx = -1
+        cv.message = f"\u65e0\u5339\u914d\uff1a{q}" if q else ""
+
+
+def _jump_config_match(cv, delta: int, view_map: dict | None = None) -> None:
+    """``n``/``N``/``p``：在匹配项间环绕跳转（过滤模式下换算视图索引）。"""
+    matches = list(getattr(cv, "search_matches", None) or [])
+    if not matches:
+        return
+    idx = getattr(cv, "search_idx", -1)
+    n = len(matches)
+    if 0 <= idx < n:
+        new_idx = (idx + delta) % n
+    else:
+        new_idx = 0 if delta > 0 else n - 1
+    cv.search_idx = new_idx
+    target = matches[new_idx]
+    cv.selected = view_map.get(target, target) if view_map else target
+
+
 # ── 事件处理（模块级；拆分自组件内闭包） ──────────────
 
 
-def _handle_config_event(cv, entries, event, *, visible: bool, total: int) -> bool:
-    """ConfigView 输入事件处理（浏览 / 选择 / 输入 / 子 JSON / 子输入）。"""
+def _handle_config_event(
+    cv, entries, event, *, visible: bool, total: int,
+    all_entries: list | None = None, view_map: dict | None = None,
+    pane_vh: int = 0,
+) -> bool:
+    """ConfigView 输入事件处理（浏览 / 选择 / 输入 / 子 JSON / 子输入）。
+
+    ★ 2026-10-07（config 增强）：新增参数——
+      - ``all_entries``：未过滤的全量配置项（搜索/撤销等基于全量；None →
+        同 ``entries``）；
+      - ``view_map``：全量索引 → 过滤视图索引映射（过滤模式下匹配定位用）；
+      - ``pane_vh``：主区可见行数（帮助面板翻页步长）。
+    新增键位：``/`` 搜索、``n``/``N``/``p`` 匹配导航、``f`` 过滤、``?`` 帮助、
+    ``r`` 恢复默认、``u`` 撤销、``y`` 复制。
+    """
     if not visible or cv is None:
         return False
+    search_source = all_entries if all_entries is not None else entries
+    # ── 搜索输入模式（字符累积 / 退格 / 回车执行 / Esc 取消） ──
+    if getattr(cv, "search_mode", False):
+        if event.kind == "escape":
+            cv.search_mode = False
+            cv.search_query = ""
+            return True
+        if event.kind == "char":
+            ch = getattr(event, "char", "") or ""
+            if ch and "\n" not in ch and "\r" not in ch:
+                q = getattr(cv, "search_query", "") or ""
+                if len(q) < _SEARCH_QUERY_MAX:
+                    cv.search_query = q + ch
+            return True
+        if event.kind == "backspace":
+            q = getattr(cv, "search_query", "") or ""
+            if q:
+                cv.search_query = q[:-1]
+            return True
+        if event.kind == "enter":
+            _exec_config_search(cv, search_source)
+            return True
+        return True
+    # ── 帮助面板（``?`` 开关；覆盖主区，可滚动） ──
+    if getattr(cv, "help_open", False):
+        ch_help = getattr(event, "char", "") or ""
+        if event.kind == "escape" or (
+            event.kind == "char" and ch_help in ("?", "q")
+        ):
+            cv.help_open = False
+            cv.help_scroll = 0
+            return True
+        cur_scroll = int(getattr(cv, "help_scroll", 0) or 0)
+        step = max(1, int(pane_vh))
+        if event.kind == "arrow_down" or (
+            event.kind == "char" and ch_help in ("j", "J")
+        ):
+            cv.help_scroll = cur_scroll + 1
+            return True
+        if event.kind == "arrow_up" or (
+            event.kind == "char" and ch_help in ("k", "K")
+        ):
+            cv.help_scroll = max(0, cur_scroll - 1)
+            return True
+        if event.kind == "page_down":
+            cv.help_scroll = cur_scroll + step
+            return True
+        if event.kind == "page_up":
+            cv.help_scroll = max(0, cur_scroll - step)
+            return True
+        if event.kind == "home" or (event.kind == "char" and ch_help == "g"):
+            cv.help_scroll = 0
+            return True
+        if event.kind == "end" or (event.kind == "char" and ch_help == "G"):
+            cv.help_scroll = 10 ** 9
+            return True
+        return True
     # ── 编辑模式 ──
     if cv.editing:
         if cv.edit_mode == "select":
@@ -577,6 +888,35 @@ def _handle_config_event(cv, entries, event, *, visible: bool, total: int) -> bo
             return True
         # 未识别按键吞掉（模态——不落入输入缓冲）
         return True
+    # ── 增强键（2026-10-07：搜索 / 帮助 / 过滤 / 恢复默认 / 撤销 / 复制） ──
+    if event.kind == "char":
+        ch = getattr(event, "char", "") or ""
+        if ch == "?":
+            cv.help_open = True
+            cv.help_scroll = 0
+            cv.message = ""
+            cv.edit_error = ""
+            return True
+        if ch == "/":
+            cv.search_mode = True
+            cv.search_query = getattr(cv, "search_pattern", "") or ""
+            return True
+        if ch in ("n", "N", "p") and (getattr(cv, "search_pattern", "") or ""):
+            _jump_config_match(cv, 1 if ch == "n" else -1, view_map)
+            return True
+        if ch == "f":
+            _cycle_config_filter(cv)
+            return True
+        if ch == "r":
+            _reset_entry_default(cv, entries, _sel_index(cv, total))
+            return True
+        if ch == "u":
+            _undo_last(cv, search_source)
+            return True
+        if ch == "y":
+            sel_i = _sel_index(cv, total)
+            _copy_entry(cv, entries[sel_i] if sel_i >= 0 else None)
+            return True
     # ── 浏览模式：Esc / Ctrl+H 关闭视图（模态统一关闭键） ──
     if is_modal_close_key(event):
         cv.try_set_final("cancel")
@@ -611,8 +951,16 @@ def _handle_config_paste(cv, visible: bool, text: str) -> bool:
 # ── 行渲染器工厂（模块级；拆分自组件内闭包） ──────────
 
 
-def _make_config_row_renderer(width: int, key_w: int, val_w: int, desc_w: int):
-    """配置列表行渲染器（ListView renderItem）。"""
+def _make_config_row_renderer(width: int, key_w: int, val_w: int, desc_w: int,
+                              matched_ids: set | None = None,
+                              cur_id: int | None = None):
+    """配置列表行渲染器（ListView renderItem）。
+
+    ★ 2026-10-07（config 搜索高亮）：``matched_ids`` 为搜索匹配项
+    ``id(entry)`` 集合、``cur_id`` 为当前匹配项 id——匹配行背景
+    ``_S_SEARCH_BG``、当前匹配行 ``_S_SEARCH_CUR_BG``（vim hlsearch 风格；
+    优先级高于选中背景）。None = 无搜索（零成本快路径）。
+    """
 
     def _render_row(entry, i, is_sel):
         prefix = "\u25b6 " if is_sel else "  "
@@ -631,8 +979,17 @@ def _make_config_row_renderer(width: int, key_w: int, val_w: int, desc_w: int):
         runs.append(StyledRun(desc, _S_DESC))
         if width > 0:
             runs = truncate_runs(runs, width)
-        if is_sel:
-            runs = [StyledRun(r.text, (r.style or Style()).merge(_S_SEL_BG)) for r in runs]
+        eid = id(entry)
+        if cur_id is not None and eid == cur_id:
+            bg = _S_SEARCH_CUR_BG
+        elif matched_ids is not None and eid in matched_ids:
+            bg = _S_SEARCH_BG
+        elif is_sel:
+            bg = _S_SEL_BG
+        else:
+            bg = None
+        if bg is not None:
+            runs = [StyledRun(r.text, (r.style or Style()).merge(bg)) for r in runs]
         return h(TEXT, {"styled": runs, "height": 1, "key": f"cv-{i}"})
 
     return _render_row
@@ -713,18 +1070,46 @@ def ConfigView(props) -> object:
     cv = getattr(model, "config_view", None)
     visible = bool(cv is not None and cv.visible and not cv.done)
     entries = list(getattr(cv, "entries", None) or []) if cv is not None else []
-    total = len(entries)
+    help_open = bool(getattr(cv, "help_open", False)) if cv is not None else False
+    search_mode = bool(getattr(cv, "search_mode", False)) if cv is not None else False
+    pattern = (getattr(cv, "search_pattern", "") or "") if cv is not None else ""
+    filter_on = bool(getattr(cv, "search_filter", False)) if cv is not None else False
+    matches = list(getattr(cv, "search_matches", None) or []) if cv is not None else []
+    rc_file = (getattr(cv, "rc_file", "") or "") if cv is not None else ""
+
+    # ── 过滤视图（``f``：列表只显示匹配配置项；编辑作用于同一 dict 对象） ──
+    filter_active = bool(filter_on and pattern and matches)
+    if filter_active:
+        view_entries = [entries[i] for i in matches if 0 <= i < len(entries)]
+        view_map = {orig: pos for pos, orig in enumerate(matches)}
+    else:
+        view_entries = entries
+        view_map = None
+    total = len(view_entries)
+
     editing = bool(getattr(cv, "editing", False)) if cv is not None else False
     edit_mode = getattr(cv, "edit_mode", "input") if cv is not None else "input"
     pick_mode = editing and edit_mode == "select"
     json_mode = editing and edit_mode == "json"
     json_input_mode = editing and edit_mode == "json_input"
 
+    # 帮助面板内容行（主区覆盖渲染；use_memo 按栏宽缓存）
+    help_rows = use_memo(
+        lambda: _help_rows(width if width > 0 else 80),
+        (1 if help_open else 0, width),
+    )
+
     # ★ P1-1（巨型组件拆分）：事件处理（浏览/选择/输入/子 JSON/子输入）
     #   收敛到模块级 ``_handle_config_event`` / ``_handle_config_paste``——
     #   组件只接线（hooks 无条件注册，与拆分前一致）。
+    # ★ 2026-10-07（config 增强）：搜索/撤销基于全量（all_entries），列表与
+    #   编辑基于过滤视图（entries=view_entries + view_map 换算）。
     use_input(
-        lambda ev: _handle_config_event(cv, entries, ev, visible=visible, total=total),
+        lambda ev: _handle_config_event(
+            cv, view_entries, ev, visible=visible, total=total,
+            all_entries=entries, view_map=view_map,
+            pane_vh=max(1, _viewport_rows() - 1),
+        ),
         visible,
     )
     usePaste(
@@ -778,15 +1163,32 @@ def ConfigView(props) -> object:
 
     # ── 栏宽分配（键列 / 值列 / 说明列） ──
     if width > 0 and total:
-        key_w = min(30, max((wcswidth_simple(str(e["path"])) for e in entries), default=8) + 2)
-        val_w = min(44, max((wcswidth_simple(str(e["value_text"])) for e in entries), default=10) + 2)
+        key_w = min(30, max((wcswidth_simple(str(e["path"])) for e in view_entries), default=8) + 2)
+        val_w = min(44, max((wcswidth_simple(str(e["value_text"])) for e in view_entries), default=10) + 2)
         desc_w = max(8, width - key_w - val_w - 6)
     else:
         key_w, val_w, desc_w = 22, 36, 12
-    vh = _viewport_rows()
+    # 底部行预算（状态行 / 搜索输入行各占一行；编辑模式下由编辑行承担提示）
+    status_text = (
+        "" if editing else _config_status_text(cv, filter_active, len(matches))
+    )
+    extra_rows = (1 if search_mode else 0) + (1 if status_text else 0)
+    vh = max(4, _viewport_rows() - extra_rows)
 
     # ── 行渲染器（模块级工厂；P1-1 拆分自组件内闭包） ──
-    render_row = _make_config_row_renderer(width, key_w, val_w, desc_w)
+    # ★ 2026-10-07（config 搜索高亮）：匹配项 id 集合 + 当前匹配项 id。
+    _matched_ids = None
+    _cur_entry_id = None
+    if pattern and matches:
+        _matched_ids = {id(entries[i]) for i in matches if 0 <= i < len(entries)}
+        _idx_m = getattr(cv, "search_idx", -1)
+        if 0 <= _idx_m < len(matches):
+            _mi = matches[_idx_m]
+            if 0 <= _mi < len(entries):
+                _cur_entry_id = id(entries[_mi])
+    render_row = _make_config_row_renderer(
+        width, key_w, val_w, desc_w, _matched_ids, _cur_entry_id,
+    )
     render_pick = _make_pick_row_renderer(
         width, val_w, list(cv.edit_options_desc or []),
     )
@@ -796,6 +1198,8 @@ def ConfigView(props) -> object:
 
     def _on_navigate(idx: int) -> None:
         cv.selected = int(idx)
+        # ★ 2026-10-07（config 增强）：切换选中清除陈旧操作反馈。
+        cv.message = ""
 
     def _on_pick_navigate(idx: int) -> None:
         cv.edit_selected = int(idx)
@@ -809,13 +1213,17 @@ def ConfigView(props) -> object:
     def _on_json_navigate(idx: int) -> None:
         cv.edit_json_selected = int(idx)
 
-    # ── 头部（标题 + 统计 + 提示；行尾 ─ 分隔线填充至满宽） ──
-    if pick_mode:
-        entry = _entry_by_key(entries, cv.edit_key)
+    # ── 头部（标题 + 统计 + 来源 + 提示；行尾 ─ 分隔线填充至满宽） ──
+    if search_mode:
+        header_hint = "  \u8f93\u5165\u641c\u7d22\u8bcd \u00b7 Enter \u6267\u884c \u00b7 Esc \u53d6\u6d88"
+    elif help_open:
+        header_hint = "  \u5e2e\u52a9\u9762\u677f \u00b7 ? / q / Esc \u5173\u95ed"
+    elif pick_mode:
+        entry = _entry_by_key(view_entries, cv.edit_key)
         pick_path = entry["path"] if entry else cv.edit_key
         header_hint = f"选择 {pick_path}（\u2191\u2193/jk 选择 \u00b7 Enter 确认 \u00b7 Esc 取消）"
     elif json_mode:
-        entry = _entry_by_key(entries, cv.edit_key)
+        entry = _entry_by_key(view_entries, cv.edit_key)
         json_path = entry["path"] if entry else cv.edit_key
         if json_path_text:
             json_path = f"{json_path}.{json_path_text}"
@@ -825,12 +1233,19 @@ def ConfigView(props) -> object:
     elif editing:
         header_hint = "编辑"
     else:
-        header_hint = "\u2191\u2193/jk 选择 \u00b7 Enter 编辑 \u00b7 Esc 关闭"
+        header_hint = "\u2191\u2193/jk 选择 \u00b7 Enter 编辑 \u00b7 r \u9ed8\u8ba4 \u00b7 u \u64a4\u9500 \u00b7 / \u641c\u7d22 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u5173\u95ed"
+    count_seg = f" \u00b7 {total} \u9879"
+    if filter_active:
+        count_seg += f"/{len(entries)}"
+    if pattern:
+        count_seg += f" \u00b7 \u5339\u914d {len(matches)}"
     header_runs = [
-        StyledRun("\u258d\u2699 配置中心", _S_TITLE),
-        StyledRun(f" \u00b7 {total} 项", _S_HINT),
-        StyledRun(f"  {header_hint}", _S_HINT),
+        StyledRun("\u258d\u2699 \u914d\u7f6e\u4e2d\u5fc3", _S_TITLE),
+        StyledRun(count_seg, _S_HINT),
     ]
+    if rc_file:
+        header_runs.append(StyledRun(f" \u00b7 \u6765\u6e90 {rc_file}", _S_SOURCE))
+    header_runs.append(StyledRun(f"  {header_hint}", _S_HINT))
     if width > 0:
         header_runs = truncate_runs(header_runs, width)
         used = sum(getattr(r, "width", 1) for r in header_runs)
@@ -867,14 +1282,30 @@ def ConfigView(props) -> object:
         })
     else:
         ledger = h(ListView, {
-            "items": entries,
+            "items": view_entries,
             "height": list_h,
             "width": width if width > 0 else None,
             "cursor": selected if total else 0,
             "renderItem": render_row,
             "onNavigate": _on_navigate,
-            "focus": visible and not editing,
+            "focus": visible and not editing and not help_open,
         })
+
+    # ── 帮助面板（``?`` 开关；覆盖主区，可滚动） ──
+    if help_open:
+        scroll_h = max(0, int(getattr(cv, "help_scroll", 0) or 0))
+        total_help = len(help_rows)
+        panel_vh = max(1, list_h)
+        max_scroll = max(0, total_help - panel_vh)
+        scroll_h = min(scroll_h, max_scroll)
+        if cv is not None and scroll_h != getattr(cv, "help_scroll", 0):
+            cv.help_scroll = scroll_h
+        help_children: list = []
+        for i, runs in enumerate(help_rows[scroll_h:scroll_h + panel_vh]):
+            help_children.append(h(TEXT, {
+                "styled": runs, "height": 1, "key": f"cv-help-{i}",
+            }))
+        ledger = h(Column, None, help_children)
 
     # ── 底部行 ──
     bottom_rows: list = []
@@ -960,6 +1391,15 @@ def ConfigView(props) -> object:
                 "children": "  Enter 保存 \u00b7 Esc 取消",
                 "style": _S_HINT, "height": 1, "key": "cv-edit-hint",
             }))
+    elif status_text:
+        # ★ 2026-10-07（config 增强）：搜索计数 / 操作反馈状态行。
+        disp = "  " + status_text
+        if width > 0:
+            disp = _truncate_width(disp, width)
+        bottom_rows.append(h(TEXT, {
+            "children": disp, "style": _S_STATUS,
+            "textWrap": "truncate-end", "height": 1, "key": "cv-status",
+        }))
     elif cv.message:
         msg_disp = f"  \u2713 {cv.message}"
         if width > 0:
@@ -970,9 +1410,18 @@ def ConfigView(props) -> object:
         }))
     else:
         bottom_rows.append(h(TEXT, {
-            "children": "  \u2191\u2193/jk 选择 \u00b7 g/G 首末 \u00b7 PgUp/PgDn 翻页 \u00b7 Enter 编辑 \u00b7 Esc 关闭",
+            "children": "  \u2191\u2193/jk 选择 \u00b7 Enter 编辑 \u00b7 r 默认 \u00b7 u 撤销 \u00b7 / 搜索 \u00b7 ? 帮助 \u00b7 Esc 关闭",
             "style": _S_HINT,
             "textWrap": "truncate-end", "height": 1, "key": "cv-hint",
+        }))
+    # ── 底部搜索输入行（``/`` 输入模式） ──
+    if search_mode:
+        q = getattr(cv, "search_query", "") or ""
+        if width > 0:
+            q = q[: max(0, width - 2)]
+        bottom_rows.append(h(TEXT, {
+            "children": f"/{q}\u258f", "style": _S_EDIT,
+            "textWrap": "truncate-end", "height": 1, "key": "cv-search",
         }))
 
     return h(Column, None, [

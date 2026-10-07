@@ -705,6 +705,7 @@ PRESENTATION_DATA_ENTRIES = [
         "semantic_color", "gradient_stops", "shell_detect",
         "http_error_hint", "badge_metrics", "kitty_protocol",
         "nested_bullet", "diff_style", "trace_style", "trace_keymap",
+        "plugin_keymap", "config_keymap",
         "model_patterns",
     )
 ]

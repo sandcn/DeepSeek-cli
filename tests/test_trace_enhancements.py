@@ -624,7 +624,13 @@ class TestTraceViewRendering:
         _rec_obj, root = _render_root(TraceView, {"model": model, "width": 120})
         text = _frame_text(_render_frame(root, 120))
         assert "帮助面板" in text
-        assert "zR" in text
+        # 帮助内容为可滚动全量行——窗口只显示前 N 行（内容长度随键位表增长），
+        # 键位速查「数据源」应包含全部键位（含 zR）。
+        from src.tui.app.trace_view import help_panel_rows
+        content = "\n".join(
+            "".join(r.text for r in row) for row in help_panel_rows(120)
+        )
+        assert "zR" in content
 
     def test_filter_mode_renders_subset(self, monkeypatch):
         from src.tui.app import trace_view as tv

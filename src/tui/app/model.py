@@ -259,6 +259,30 @@ class AppModel(_ToolOutputMixin):
         #   ``f`` 键切换；仅在台账搜索（side=ledger）有匹配时生效——无匹配/
         #   检查器搜索时保持全量显示）。
         self.trace_search_filter: bool = False
+        # ── 轨迹 Trace 增强（2026-10-07 第二批：标记 / 搜索历史 / 时间列 /
+        #    种类过滤 / 行号 / 内联展开） ──
+        # trace_marks: 记录标记（vim ``m{a-z}`` 语义）——{标记字符: 记录号 #N}。
+        #   台账行显示标记字符（``'a``），``'{a-z}`` 跳转到该记录；标记随
+        #   关闭视图/清屏清除（浏览临时态）。
+        self.trace_marks: dict = {}
+        # trace_search_history: 搜索历史（最近执行的 pattern 列表，新值在后；
+        #   上限 _SEARCH_HISTORY_MAX）。``/`` 输入模式内 ↑↓ 回溯。
+        self.trace_search_history: list = []
+        # trace_search_hist_idx: 搜索历史浏览位置（len(history)=未浏览；
+        #   -1=不在浏览态——↑↓ 首次进入时从末尾开始）。
+        self.trace_search_hist_idx: int = -1
+        # trace_kind_filter: 记录种类过滤（""=不过滤；非空=只显示该 kind 的
+        #   记录）。``t`` 键按种类顺序循环切换。
+        self.trace_kind_filter: str = ""
+        # trace_time_mode: 台账时间显示模式（"off"=不显示时间列；"abs"=显示
+        #   绝对时间 HH:MM:SS；"rel"=显示相对时间如 2m）。``T`` 键循环。
+        self.trace_time_mode: str = "off"
+        # trace_show_line_numbers: 检查器内容行号显示开关（``#`` 键切换，
+        #   默认关闭——行号占用栏宽）。
+        self.trace_show_line_numbers: bool = False
+        # trace_expanded: 台账内联展开的记录号集合（``o`` 键切换——展开的
+        #   记录在其台账行下方追加详情预览行；默认全部折叠）。
+        self.trace_expanded: set = set()
         # 顶部工具调用状态（Claude TUI parity 步骤 2.2：active_tool 为模型
         # 数据——原 ToolStatusHeader 渲染消费，组件已移除（工具状态改由工具
         # 卡片顶边框 ● 展示，双份冗余）；字段保留供测试/未来消费，None=无
@@ -836,6 +860,16 @@ class AppModel(_ToolOutputMixin):
         self.trace_status_message = ""
         self.trace_search_case = False
         self.trace_search_filter = False
+        # ★ 2026-10-07（轨迹 Trace 增强第二批）：清屏同时复位标记/搜索历史/
+        #   种类过滤/时间模式/行号/内联展开（与搜索状态同生命周期——浏览
+        #   临时态不跨清屏保留）。
+        self.trace_marks = {}
+        self.trace_search_history = []
+        self.trace_search_hist_idx = -1
+        self.trace_kind_filter = ""
+        self.trace_time_mode = "off"
+        self.trace_show_line_numbers = False
+        self.trace_expanded = set()
         # ★ 2026-08-17（review 方向 P2）：清屏同时退出模态全屏视图——残留
         #   fullscreen 会让 App 整屏渲染全屏视图组件（如 TraceView），而
         #   blocks 已清空 → 残留渲染空数据全屏界面。与 trace_subagent_label

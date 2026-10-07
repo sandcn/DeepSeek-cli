@@ -178,6 +178,15 @@ def _cmd_temperature(ctx):
 
 # ── /config 命令 ───────────────────────────────────────
 
+def _rc_file_display() -> str:
+    """配置文件路径显示文本（头部「来源」；异常 → 空串）。"""
+    try:
+        from ...config.defaults import RC_FILE
+        return str(RC_FILE)
+    except Exception:
+        return ""
+
+
 def _open_config_ui(ctx) -> bool:
     """打开全屏配置界面（ConfigView 模态全屏视图）。
 
@@ -212,6 +221,8 @@ def _open_config_ui(ctx) -> bool:
         visible=True,
         seq=prev_seq + 1,
         entries=entries,
+        # ★ 2026-10-07（config 增强）：配置文件路径（头部「来源」显示）。
+        rc_file=_rc_file_display(),
         # 超时兜底（默认 600s=10 分钟）：用户长时间无操作自动关闭，
         # 命令线程不永久阻塞（与 run_bottom_bar_selection 的 60s 语义同源）
         deadline=_time.monotonic() + 600,

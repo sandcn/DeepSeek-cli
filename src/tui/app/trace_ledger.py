@@ -21,6 +21,7 @@ from .trace_styles import (
     _S_ERROR,
     _S_HINT,
     _S_INDEX,
+    _S_MARK,
     _S_SEARCH_BG,
     _S_SEARCH_CUR_BG,
     _S_SEL_BG,
@@ -28,6 +29,7 @@ from .trace_styles import (
     _S_SEP_ROW,
     _S_TEXT,
     _S_TIME,
+    _S_TIME_ABS,
 )
 
 from src.presentation_data import (
@@ -37,6 +39,8 @@ from src.presentation_data import (
     trace_status_fg as _trace_status_fg,
     trace_status_icon as _trace_status_icon,
 )
+
+from .trace_types import TraceRecord
 
 #: 台账可见行数预留（全屏模式仅轨迹头 1 行）
 _VIEWPORT_RESERVED = 1
@@ -164,9 +168,47 @@ def _trace_search_matches(pattern: str, side: str, records: list,
     return matches
 
 
+def _format_relative(seconds: float) -> str:
+    """秒数 → 紧凑相对时间文本（``12s`` / ``3m`` / ``2h`` / ``1d``）。"""
+    s = max(0, int(seconds))
+    if s < 60:
+        return f"{s}s"
+    m = s // 60
+    if m < 60:
+        return f"{m}m"
+    h = m // 60
+    if h < 24:
+        return f"{h}h"
+    return f"{h // 24}d"
+
+
+def _rec_time_text(rec, mode: str) -> str:
+    """记录时间戳文本（``abs``=HH:MM:SS / ``rel``=相对距今；无 epoch 时间戳 → ``""``）。
+
+    仅使用**墙上时钟**时间戳（``time_started`` 且 ``time_started_monotonic``
+    为 False）——单调时钟值无绝对时间语义，不显示。
+    """
+    if mode not in ("abs", "rel"):
+        return ""
+    started = getattr(rec, "time_started", None)
+    if started is None or getattr(rec, "time_started_monotonic", True):
+        return ""
+    try:
+        ts = float(started)
+    except (TypeError, ValueError):
+        return ""
+    if mode == "rel":
+        return _format_relative(max(0.0, _time.time() - ts))
+    try:
+        return _time.strftime("%H:%M:%S", _time.localtime(ts))
+    except (ValueError, OSError, OverflowError):
+        return ""
+
+
 def _ledger_row_runs(rec, sel: bool, left_w: int,
                      matched: bool = False, cur_match: bool = False,
-                     turn: int = 0) -> list:
+                     turn: int = 0, mark: str = "",
+                     time_mode: str = "off") -> list:
     """台账行 runs（选中高亮 + ▶ 标记；耗时右对齐；宽截断；指纹缓存）。
 
     ★ 2026-10-07（轨迹 Trace 台账行增强）：
@@ -175,9 +217,17 @@ def _ledger_row_runs(rec, sel: bool, left_w: int,
         工具记录区分——Enter 可下钻）；
       - 失败记录（status ∈ fail/error）摘要以 ``_S_ERROR`` 红色高亮。
     三者均进入缓存键（不同轮次/子代理/状态不串缓存）。
+
+    ★ 2026-10-07 第二批（标记 / 时间列）：
+      - ``mark``（非空）→ ``#N`` 后显示标记字符 ``'a``（``_S_MARK`` 亮黄
+        加粗，vim 书签语义）；
+      - ``time_mode``（``abs``/``rel``）→ 行尾在耗时左侧显示记录时间戳
+        （``HH:MM:SS`` / 相对距今；无 epoch 时间戳的记录不显示）。
+    两者同样进入缓存键。
     """
     t_raw = _rec_time_seconds(rec)
     t_key = int(t_raw) if t_raw is not None else None
+    t_text = _rec_time_text(rec, time_mode)
     key = (
         getattr(rec, "index", 0),
         getattr(rec, "kind", ""),
@@ -191,6 +241,9 @@ def _ledger_row_runs(rec, sel: bool, left_w: int,
         bool(cur_match),
         int(turn or 0),
         bool(getattr(rec, "subagent_label", "")),
+        str(mark or ""),
+        str(time_mode or "off"),
+        t_text,
     )
     cached = _LEDGER_RUNS_CACHE.get(key)
     if cached is not None:
@@ -207,6 +260,8 @@ def _ledger_row_runs(rec, sel: bool, left_w: int,
         turn_no = 0
     if turn_no > 0:
         runs.append(StyledRun(f"t{turn_no} ", _S_HINT))
+    if mark:
+        runs.append(StyledRun(f"'{mark} ", _S_MARK))
     if getattr(rec, "subagent_label", ""):
         runs.append(StyledRun("\u21b3 ", _S_HINT))
     kind = getattr(rec, "kind", "context")
@@ -231,15 +286,25 @@ def _ledger_row_runs(rec, sel: bool, left_w: int,
         if prev_runs:
             runs.append(StyledRun(" \u00b7 ", _S_HINT))
             runs.extend(prev_runs)
+    # ── 行尾右对齐区（时间列 + 耗时） ──
+    right_parts: list = []
+    if t_text:
+        right_parts.append((t_text, _S_TIME_ABS))
     t = ""
     if t_raw is not None:
         t = format_duration(t_raw)
-    if t and left_w > 0:
+    if t:
+        right_parts.append((t, _S_TIME))
+    if right_parts and left_w > 0:
         used = sum(getattr(r, "width", 1) for r in runs)
-        pad = left_w - used - len(t) - 1
+        right_w = sum(len(txt) for txt, _st in right_parts) + (len(right_parts) - 1)
+        pad = left_w - used - right_w - 1
         if pad > 0:
             runs.append(StyledRun(" " * pad, None))
-        runs.append(StyledRun(t, _S_TIME))
+        for i, (txt, st) in enumerate(right_parts):
+            if i:
+                runs.append(StyledRun(" ", _S_HINT))
+            runs.append(StyledRun(txt, st))
     if cur_match:
         bg = _S_SEARCH_CUR_BG
     elif matched:
@@ -267,6 +332,9 @@ def _row_turn_map(rows: list) -> dict:
 
     台账行渲染经此 O(1) 查表显示轮次标记（``#N t2 ⚡ …``）——一次 O(N)
     预计算，rows 引用稳定时跨帧命中零重建。
+
+    ★ 2026-10-07 第二批（内联展开）：``_TraceExpandRow`` 等非记录行不入
+    映射（只有 ``TraceRecord`` 记录行参与轮次统计）。
     """
     key = id(rows)
     entry = _ROW_TURN_CACHE.get(key)
@@ -278,7 +346,7 @@ def _row_turn_map(rows: list) -> dict:
         if r is None:
             turn += 1
             mapping[i] = 0
-        else:
+        elif isinstance(r, TraceRecord):
             mapping[i] = turn
     if len(_ROW_TURN_CACHE) >= _LEDGER_RUNS_CACHE_MAX:
         _ROW_TURN_CACHE.clear()
@@ -306,5 +374,5 @@ __all__ = [
     "_status_fg", "_kind_icon", "_kind_name", "_status_icon",
     "_rec_time_seconds", "_record_search_text", "_row_search_text",
     "_trace_search_matches", "_ledger_row_runs", "_row_turn_map",
-    "_sep_row_runs",
+    "_sep_row_runs", "_rec_time_text", "_format_relative",
 ]

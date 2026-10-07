@@ -63,13 +63,146 @@ def _json_text(value: Any) -> str:
 
 
 def _make_entry(name: str, kind: str, subtitle: str, fields: list) -> dict:
+    fields = list(fields)
     return {
         "name": _text(name, 200),
         "kind": kind,
         "kind_label": KIND_LABELS.get(kind, kind),
         "subtitle": _text(subtitle, 120),
-        "fields": list(fields),
+        "fields": fields,
+        "field_levels": _field_levels(fields),
+        "alerts": _entry_alerts(fields),
     }
+
+
+#: 状态值 → 警示级别（PENDING 等中间态 warn；FAILED/ERROR 等失败态 error）。
+_STATE_LEVELS: dict[str, str] = {
+    "PENDING": "warn",
+    "STARTING": "warn",
+    "LOADING": "warn",
+    "FAILED": "error",
+    "ERROR": "error",
+    "DISPOSED": "error",
+}
+
+#: 字段「无内容」占位（视为正常，不警示）。
+_EMPTY_VALUES = ("", "(无)", "None", "null")
+
+
+def _field_levels(fields: list) -> dict:
+    """字段标签 → 警示级别（``"warn"``/``"error"``；正常字段不入表）。
+
+    规则（2026-10-07 插件详情渲染增强）：
+      - ``缺失依赖`` 非空 → warn（依赖未满足）；
+      - ``错误`` 非空 → error；
+      - ``状态`` 命中失败/中间态表 → 对应级别。
+    """
+    levels: dict = {}
+    for item in fields or []:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        label, value = item[0], item[1]
+        text = str(value).strip() if value is not None else ""
+        if label == "缺失依赖" and text not in _EMPTY_VALUES:
+            levels[label] = "warn"
+        elif label == "错误" and text not in _EMPTY_VALUES:
+            levels[label] = "error"
+        elif label == "状态":
+            lvl = _STATE_LEVELS.get(text)
+            if lvl:
+                levels[label] = lvl
+    return levels
+
+
+def _entry_alerts(fields: list) -> list:
+    """条目警示标签列表（左栏行尾/统计条提示；正常条目为空）。"""
+    levels = _field_levels(fields)
+    alerts: list = []
+    if levels.get("错误"):
+        alerts.append("错误")
+    if levels.get("缺失依赖"):
+        alerts.append("缺依赖")
+    return alerts
+
+
+def collect_plugin_stats(entries: list | None = None) -> dict:
+    """插件条目统计（头部统计条数据源，纯函数）。
+
+    Returns:
+        dict：
+          - ``total``：插件总数；
+          - ``by_state``：{状态: 数量}（按数量降序展示）；
+          - ``kinds``：{分类: 数量}；
+          - ``errors``：含错误条目的数量；
+          - ``missing``：缺失依赖的条目数量；
+          - ``warnings``：含状态警示（PENDING 等）的条目数量。
+    """
+    stats = {
+        "total": 0, "by_state": {}, "kinds": {}, "errors": 0,
+        "missing": 0, "warnings": 0,
+    }
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        stats["total"] += 1
+        state = str(entry.get("subtitle", "") or "").strip()
+        if state:
+            stats["by_state"][state] = stats["by_state"].get(state, 0) + 1
+        kind = str(entry.get("kind", "kernel") or "kernel")
+        stats["kinds"][kind] = stats["kinds"].get(kind, 0) + 1
+        levels = entry.get("field_levels") or _field_levels(entry.get("fields") or [])
+        if levels.get("错误"):
+            stats["errors"] += 1
+        if levels.get("缺失依赖"):
+            stats["missing"] += 1
+        if levels.get("状态") == "warn":
+            stats["warnings"] += 1
+    return stats
+
+
+def format_plugin_stats(stats: dict) -> str:
+    """统计条单行文本（``·`` 分隔；调用方按栏宽截断）。"""
+    total = int(stats.get("total") or 0)
+    parts = [f"共 {total} 个"]
+    by_state = stats.get("by_state") or {}
+    for state, n in sorted(by_state.items(), key=lambda kv: (-kv[1], kv[0])):
+        if state:
+            parts.append(f"{state} {n}")
+    if stats.get("errors"):
+        parts.append(f"错误 {stats['errors']}")
+    if stats.get("missing"):
+        parts.append(f"缺依赖 {stats['missing']}")
+    return " \u00b7 ".join(parts)
+
+
+def plugin_search_text(entry: dict) -> str:
+    """插件条目搜索文本（名称 / 分类 / 状态 / 全部字段值）。"""
+    if not isinstance(entry, dict):
+        return ""
+    parts = [
+        str(entry.get("name", "") or ""),
+        str(entry.get("kind_label", "") or ""),
+        str(entry.get("subtitle", "") or ""),
+    ]
+    for item in entry.get("fields") or []:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            parts.append(f"{item[0]}: {item[1]}")
+    return "\n".join(parts)
+
+
+def format_plugin_entry_text(entry: dict) -> str:
+    """插件条目 → 纯文本（``y`` 复制到剪贴板的内容）。"""
+    if not isinstance(entry, dict):
+        return ""
+    lines = [
+        str(entry.get("name", "") or ""),
+        f"\u5206\u7c7b: {entry.get('kind_label', '') or ''}",
+        f"\u72b6\u6001: {entry.get('subtitle', '') or ''}",
+    ]
+    for item in entry.get("fields") or []:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            lines.append(f"{item[0]}: {item[1]}")
+    return "\n".join(lines)
 
 
 # ── 内核运行时插件（Fiber） ──────────────────────────────
@@ -171,4 +304,8 @@ __all__ = [
     "KIND_ORDER",
     "build_plugin_entries",
     "format_plugin_text",
+    "collect_plugin_stats",
+    "format_plugin_stats",
+    "plugin_search_text",
+    "format_plugin_entry_text",
 ]

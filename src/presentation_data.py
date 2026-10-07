@@ -664,6 +664,12 @@ TRACE_STYLE_DATA: dict = {
     "stats_label": {"fg": 110},
     "stats_value": {"fg": 252},
     "stats_bar": {"fg": 45},
+    # ── 增强（2026-10-07 第二批）：记录标记 / 时间列 / 行号 / 内联展开 ──
+    "mark": {"fg": 214, "bold": True},
+    "time_abs": {"fg": 108},
+    "line_number": {"fg": 240},
+    "expanded": {"fg": 245},
+    "expand_prefix": {"fg": 110},
 }
 
 # ── 轨迹视图快捷键速查表（帮助面板内容，「一切皆插件」） ──────
@@ -678,20 +684,59 @@ TRACE_KEYMAP_DATA: list = [
     {"group": "导航", "keys": "Home/End \u00b7 g/G", "desc": "首条 / 末条"},
     {"group": "导航", "keys": "N g \u00b7 N G", "desc": "跳到记录号 #N（数字 + g/G）"},
     {"group": "导航", "keys": "l / h \u00b7 \u2192 / \u2190", "desc": "焦点切到检查器 / 返回台账"},
+    {"group": "标记", "keys": "m{a-z}", "desc": "在选中记录设置标记（a-z）"},
+    {"group": "标记", "keys": "'{a-z}", "desc": "跳转到该标记所在记录"},
     {"group": "记录定位", "keys": "] / [", "desc": "下一个 / 上一个工具调用"},
     {"group": "记录定位", "keys": "e / E", "desc": "下一个 / 上一个失败记录"},
+    {"group": "记录定位", "keys": "t", "desc": "按记录种类过滤（循环切换，空=全部）"},
     {"group": "记录定位", "keys": "Enter", "desc": "进入子代理轨迹 / 工具列表"},
-    {"group": "详情与树", "keys": "空格", "desc": "展开 / 收起光标所在树节点"},
+    {"group": "详情与树", "keys": "\u7a7a\u683c", "desc": "展开 / 收起光标所在树节点"},
     {"group": "详情与树", "keys": "zR / zM", "desc": "全部展开 / 全部折叠树"},
-    {"group": "搜索", "keys": "/", "desc": "进入搜索输入（回车执行，Esc 取消）"},
+    {"group": "详情与树", "keys": "o", "desc": "就地展开 / 折叠选中记录详情（不切面板）"},
+    {"group": "详情与树", "keys": "#", "desc": "检查器行号显示开关"},
+    {"group": "详情与树", "keys": "T", "desc": "时间列模式（关 / 绝对 / 相对）"},
+    {"group": "搜索", "keys": "/", "desc": "进入搜索输入（\u2191\u2193 回溯历史，回车执行）"},
     {"group": "搜索", "keys": "n / N / p", "desc": "下一个 / 上一个匹配"},
     {"group": "搜索", "keys": "v", "desc": "切换大小写敏感"},
     {"group": "搜索", "keys": "f", "desc": "切换过滤模式（台账只显示匹配记录）"},
     {"group": "面板", "keys": "i", "desc": "统计概览面板（token/耗时/成功率）"},
     {"group": "面板", "keys": "?", "desc": "本帮助面板（? / Esc / q 关闭）"},
-    {"group": "操作", "keys": "y", "desc": "复制当前记录内容到剪贴板（OSC52）"},
+    {"group": "操作", "keys": "y", "desc": "复制内容（台账=整条记录 / 检查器=当前行）"},
     {"group": "操作", "keys": "w / W", "desc": "导出轨迹为 Markdown / JSON 文件"},
     {"group": "操作", "keys": "Esc / Ctrl+H", "desc": "返回主轨迹 / 关闭轨迹视图"},
+]
+
+# ── 插件视图快捷键速查表（``?`` 帮助面板内容，「一切皆插件」） ──
+# 每项：group=分组标题；keys=键位文本；desc=说明。渲染由
+# ``src.tui.app.plugin_view`` 负责，可被 Patch/Overlay 整表替换或禁用。
+
+PLUGIN_KEYMAP_DATA: list = [
+    {"group": "导航", "keys": "\u2191\u2193 / j k", "desc": "移动选择 / 详情滚动"},
+    {"group": "导航", "keys": "PgUp / PgDn", "desc": "整页翻页"},
+    {"group": "导航", "keys": "Home/End \u00b7 g/G", "desc": "首末"},
+    {"group": "导航", "keys": "l / Enter \u00b7 h / \u2190", "desc": "进入详情 / 返回列表"},
+    {"group": "搜索", "keys": "/", "desc": "搜索插件（回车执行，Esc 取消）"},
+    {"group": "搜索", "keys": "n / N / p", "desc": "下一个 / 上一个匹配"},
+    {"group": "搜索", "keys": "f", "desc": "过滤模式（只显示匹配插件）"},
+    {"group": "面板", "keys": "?", "desc": "本帮助面板（? / q / Esc 关闭）"},
+    {"group": "操作", "keys": "y", "desc": "复制选中插件信息到剪贴板（OSC52）"},
+    {"group": "操作", "keys": "Esc / Ctrl+H", "desc": "关闭插件视图"},
+]
+
+# ── 配置中心快捷键速查表（``?`` 帮助面板内容，「一切皆插件」） ──
+CONFIG_KEYMAP_DATA: list = [
+    {"group": "导航", "keys": "\u2191\u2193 / j k", "desc": "移动选择 · 候选/条目导航"},
+    {"group": "导航", "keys": "PgUp / PgDn", "desc": "整页翻页"},
+    {"group": "导航", "keys": "Home/End \u00b7 g/G", "desc": "首末"},
+    {"group": "编辑", "keys": "Enter", "desc": "编辑选中项（选择 / 输入 / 子 JSON）"},
+    {"group": "编辑", "keys": "r", "desc": "恢复选中项默认值"},
+    {"group": "编辑", "keys": "u", "desc": "撤销上次编辑"},
+    {"group": "搜索", "keys": "/", "desc": "搜索配置项（回车执行，Esc 取消）"},
+    {"group": "搜索", "keys": "n / N / p", "desc": "下一个 / 上一个匹配"},
+    {"group": "搜索", "keys": "f", "desc": "过滤模式（只显示匹配配置项）"},
+    {"group": "面板", "keys": "?", "desc": "本帮助面板（? / q / Esc 关闭）"},
+    {"group": "操作", "keys": "y", "desc": "复制选中项 key=value 到剪贴板（OSC52）"},
+    {"group": "操作", "keys": "Esc / Ctrl+H", "desc": "关闭配置中心"},
 ]
 
 #: 内置数据表声明
@@ -730,6 +775,8 @@ _BUILTIN_SPECS: Tuple[DataTable, ...] = (
     DataTable("diff_style", "diff_style", DIFF_STYLE_DATA),
     DataTable("trace_style", "trace_style", TRACE_STYLE_DATA),
     DataTable("trace_keymap", "trace_keymap", TRACE_KEYMAP_DATA),
+    DataTable("plugin_keymap", "plugin_keymap", PLUGIN_KEYMAP_DATA),
+    DataTable("config_keymap", "config_keymap", CONFIG_KEYMAP_DATA),
     DataTable("model_patterns", "model_patterns", MODEL_PATTERNS_DATA),
 )
 
@@ -1107,6 +1154,16 @@ def trace_keymap() -> list:
     return list(data_table("trace_keymap", []) or [])
 
 
+def plugin_keymap() -> list:
+    """插件视图快捷键速查表（``?`` 帮助面板内容；缺席回退空列表）。"""
+    return list(data_table("plugin_keymap", []) or [])
+
+
+def config_keymap() -> list:
+    """配置中心快捷键速查表（``?`` 帮助面板内容；缺席回退空列表）。"""
+    return list(data_table("config_keymap", []) or [])
+
+
 def model_patterns() -> dict:
     return data_table("model_patterns", {}) or {}
 
@@ -1194,6 +1251,8 @@ __all__ = [
     "diff_style",
     "trace_style",
     "trace_keymap",
+    "plugin_keymap",
+    "config_keymap",
     "model_patterns",
     "model_pattern",
     "TRACE_KIND_ORDER_DATA",
