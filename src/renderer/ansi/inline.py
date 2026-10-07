@@ -244,7 +244,6 @@ def _emit_abbr(node, base, ctx, out, depth):
 
 def _emit_link(node, base, ctx, out, depth):
     url = getattr(node, "url", "") or ""
-    children = _node_children(node)
     if url.startswith("[ref:") and ctx is not None:
         ref_id = url[5:-1]
         ref_map = getattr(ctx, "ref_map", None) or {}
@@ -285,7 +284,17 @@ def _emit_image(node, base, ctx, out, depth):
 
 
 def _emit_math(node, base, ctx, out, depth):
-    _append(out, node.content or "", _merge(base, _STYLE_MATH))
+    """行内数学：走 LaTeX→Unicode 终端渲染（``_math_latex``），保留公式自带样式。"""
+    content = node.content or ""
+    if not content:
+        return
+    try:
+        from .math import render_math_inline
+        line = render_math_inline(content)
+        for run in line.runs:
+            _append(out, run.text, run.style if run.style is not None else base)
+    except Exception:
+        _append(out, content, _merge(base, _STYLE_MATH))
 
 
 def _emit_footnote(node, base, ctx, out, depth):

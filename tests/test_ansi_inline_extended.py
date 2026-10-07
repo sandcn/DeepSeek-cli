@@ -70,11 +70,10 @@ def test_spoiler_masked():
 
 
 def test_inline_math():
-    for src in ("$x^2$", r"\(y\)"):
-        runs = render_inline(src)
-        plain = _plain(runs)
-        assert "$" not in plain and "\\(" not in plain
-        assert runs[0].style.italic
+    """行内数学渲染为 Unicode（LaTeX 命令转换、上下标、去定界符）。"""
+    assert _plain(render_inline("$x^2$")) == "x\u00b2"
+    assert _plain(render_inline(r"\(y\)")) == "y"
+    assert _plain(render_inline(r"$\alpha + \beta$")) == "\u03b1 + \u03b2"
 
 
 def test_image_placeholder():

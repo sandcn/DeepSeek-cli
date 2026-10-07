@@ -25,7 +25,7 @@ from ._block_helpers import (
     _is_code_fence_line, _strip_blockquote_prefix,
     _get_fence_lang, _rstrip_trailing_hashes,
 )
-from ._block_parser_state import _State, _MERMAID_KEYWORDS, _SETEXT_HR_CHARS
+from ._block_parser_state import _State, _MERMAID_KEYWORDS, _SETEXT_HR_CHARS, _ADMONITION_TYPES
 from ._block_parser_stream import _BlockParserStreamMixin
 
 
@@ -98,6 +98,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # Admonition
         self._in_admonition: bool = False
         self._admonition_type: str = ''
+        # Fenced 告示（``!!! type "title"`` / ``??? type``）
+        self._adm_title: str = ''
+        self._adm_collapsible: bool = False
 
         # 脚注定义
         self._pending_fn_def: str | None = None
@@ -251,6 +254,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             elif self._state == _State.FENCED_DIV:
                 tokens.append(Token(TokenType.FENCED_DIV_CLOSE, "", {"type": self._block_div_type}))
                 self._state = _State.NORMAL
+            elif self._state == _State.ADMONITION_BLOCK:
+                self._emit_admonition_block_close(tokens)
             else:
                 self._flush_block(tokens)
             self._state = _State.NORMAL
@@ -284,6 +289,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
     #: 预览尾部行数上限——未闭合块预览每次 write 都整块重渲染，超长块
     #: （如大代码块）限制只预览最近 N 行，避免每帧 O(n²) 重渲染。
     _PREVIEW_MAX_LINES = 200
+
+    #: 数学块预览行数上限（LaTeX 逐行重解析成本高于纯文本行，取更小上限）。
+    _PREVIEW_MATH_LINES = 60
+
+    #: Mermaid 图预览行数上限（保留首行类型声明 + 最近行）。
+    _PREVIEW_MERMAID_LINES = 120
 
     def _preview_tail(self, lines: list, max_lines: int | None = None) -> list:
         """取预览尾部行（超限时只保留最近行）。"""
@@ -378,16 +389,30 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if st == _State.MERMAID_BLOCK:
             # 预览与提交（``_emit_mermaid_block`` 的 ``''.join(...).strip()``）
             # 一致：去除块内行尾换行/首尾空行，避免多出 ``│ `` 空边框行。
-            src = "".join(self._preview_tail(
-                self._block_lines + self._preview_block_tail_lines(st, tail))).strip()
-            out.append(Token(TokenType.MERMAID_BLOCK_CLOSE, src,
-                             {"source": src, "preview": True}))
+            # 超长图保留首行（图表类型声明，决定分派） + 最近行，超出部分
+            # 计入 ``preview_dropped``（渲染层给出省略提示）。
+            all_lines = self._block_lines + self._preview_block_tail_lines(st, tail)
+            body = all_lines
+            dropped = 0
+            if len(all_lines) > self._PREVIEW_MERMAID_LINES:
+                keep = max(1, self._PREVIEW_MERMAID_LINES - 1)
+                body = [all_lines[0]] + all_lines[-keep:]
+                dropped = len(all_lines) - len(body)
+            src = "".join(body).strip()
+            meta = {"source": src, "preview": True}
+            if dropped:
+                meta["preview_dropped"] = dropped
+            out.append(Token(TokenType.MERMAID_BLOCK_CLOSE, src, meta))
             return out
         if st in (_State.MATH_BLOCK, _State.DISPLAY_MATH_BLOCK):
-            src = "\n".join(self._preview_tail(
-                self._block_lines + self._preview_block_tail_lines(st, tail)))
-            out.append(Token(TokenType.MATH_BLOCK_CLOSE, src,
-                             {"source": src, "preview": True}))
+            all_lines = self._block_lines + self._preview_block_tail_lines(st, tail)
+            body = self._preview_tail(all_lines, self._PREVIEW_MATH_LINES)
+            src = "\n".join(body)
+            meta = {"source": src, "preview": True}
+            dropped = len(all_lines) - len(body)
+            if dropped:
+                meta["preview_dropped"] = dropped
+            out.append(Token(TokenType.MATH_BLOCK_CLOSE, src, meta))
             return out
         if st == _State.DETAILS_BLOCK:
             body_all = self._block_lines + tail_lines
@@ -495,7 +520,24 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             out.append(Token(TokenType.ADMONITION_CLOSE, "", meta))
             return out
 
-        # 流式表格行缓冲（未遇到分隔行）：同样按「整行才可解析」处理，
+        if st == _State.ADMONITION_BLOCK:
+            all_lines = self._block_lines + tail_lines
+            body = self._preview_tail(all_lines)
+            meta: dict = {
+                "type": self._admonition_type,
+                "title": self._adm_title,
+                "collapsible": self._adm_collapsible,
+                "body_lines": body,
+                "preview": True,
+                "fenced": True,
+            }
+            dropped = len(all_lines) - len(body)
+            if dropped:
+                meta["preview_dropped"] = dropped
+            out.append(Token(TokenType.ADMONITION_CLOSE, "", meta))
+            return out
+
+        # ── 流式表格行缓冲（未遇到分隔行）：同样按「整行才可解析」处理，
         # 未换行尾部不并入（半行会改变列数推断）。
         if self._table_pending_rows:
             rows_src = self._table_pending_rows
@@ -1327,6 +1369,29 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     raise
             return False
 
+        def _handle_fenced_admonition() -> bool:
+            """``!!! type "title"`` / ``??? type``（MkDocs 风格）告示块。"""
+            if first not in ('!', '?'):
+                return False
+            if stripped[:3] != first * 3:
+                return False
+            rest = stripped[3:].strip()
+            if not rest:
+                return False
+            parts = rest.split(None, 1)
+            atype = parts[0].upper()
+            if atype not in _ADMONITION_TYPES:
+                return False
+            title = ''
+            if len(parts) > 1:
+                title = parts[1].strip()
+                if len(title) >= 2 and title[0] in '"\'' and title[-1] == title[0]:
+                    title = title[1:-1]
+            self._flush_paragraph(tokens)
+            self._emit_blockquote_close(tokens)
+            self._start_admonition_block(atype, title, first == '?', tokens)
+            return True
+
         _DISPATCH: dict[str, callable] = {
             '#': _handle_heading,
             '`': _handle_fence,
@@ -1343,6 +1408,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             '|': _handle_table,
             '>': _handle_blockquote,
             '+': _handle_plus,
+            '!': _handle_fenced_admonition,
+            '?': _handle_fenced_admonition,
         }
 
         if first.isdigit():
@@ -1439,6 +1506,32 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         elif len(self._table_pending_rows) == 1:
             tokens.append(Token(TokenType.PARAGRAPH, self._table_pending_rows[0]))
         self._table_pending_rows.clear()
+
+    # ── Fenced 告示（`!!!` / `???`） ───────────────────
+
+    def _start_admonition_block(self, atype: str, title: str,
+                                collapsible: bool, tokens: list[Token]):
+        """开启 ``!!! type "title"``（或 ``??? type`` 可折叠）告示块。"""
+        self._state = _State.ADMONITION_BLOCK
+        self._admonition_type = atype
+        self._adm_title = title
+        self._adm_collapsible = collapsible
+        self._block_lines = []
+        tokens.append(Token(TokenType.ADMONITION_OPEN, "", {
+            "type": atype, "title": title, "collapsible": collapsible,
+            "depth": 1, "fenced": True,
+        }))
+
+    def _emit_admonition_block_close(self, tokens: list[Token]):
+        """关闭 ``!!!`` 告示块（正文行已由 ADMONITION_LINE 输出/缓冲）。"""
+        tokens.append(Token(TokenType.ADMONITION_CLOSE, "", {
+            "type": self._admonition_type, "title": self._adm_title,
+            "collapsible": self._adm_collapsible, "depth": 1, "fenced": True,
+        }))
+        self._state = _State.NORMAL
+        self._adm_title = ''
+        self._adm_collapsible = False
+        self._block_lines = []
 
     # ── 引用块 ──────────────────────────────────────────
 
@@ -1698,13 +1791,22 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._details_open_emitted = False
         self._block_lines = []
         lower = stripped.lower()
+        # 同行 ``</details>``（单行折叠块）：截断标签后的内容，避免正文
+        # 夹带字面 ``</details>``（修复前只对含 <summary> 的行做了部分处理，
+        # 且 ``find(..., sm_start)`` 在无 summary 时从末尾搜索 → 找不到闭合，
+        # 状态残留把后续行全部吞进折叠块）。
+        close_pos = lower.find('</details>')
+        text = stripped[:close_pos] if close_pos >= 0 else stripped
         sm_start = lower.find('<summary')
         if sm_start >= 0:
-            self._handle_details_summary_line(stripped, tokens)
-            lower_rest = stripped.lower()
-            close_pos = lower_rest.find('</details>', sm_start)
-            if close_pos >= 0:
-                self._emit_details_close(tokens)
+            self._handle_details_summary_line(text, tokens)
+        else:
+            tag_end = text.find('>')
+            body = text[tag_end + 1:].strip() if tag_end >= 0 else ''
+            if body:
+                self._block_lines.append(body)
+        if close_pos >= 0:
+            self._emit_details_close(tokens)
 
     # ── HTML 块 ──────────────────────────────────────────
 

@@ -8,7 +8,7 @@ from ..types import Token, TokenType
 from ..admonition import get_admonition_config
 from .base import TokenHandler
 from ._box_base import BaseBoxMixin
-from .._rendering import render_box_close
+from .._rendering import render_box_open, render_box_close
 
 _logger = logging.getLogger(__name__)
 
@@ -36,6 +36,25 @@ class AdmonitionHandler(TokenHandler, BaseBoxMixin):
     def _get_prefix(self, box_type: str) -> str:
         config = get_admonition_config(box_type)
         return f"{config['icon']} {config['label']}"
+
+    def _handle_box_open(self, token: Token, engine):
+        """告示打开：前缀注入标题 / 可折叠标记（``!!!`` / ``???`` 语法）。"""
+        if self._get_box_type(token) == "CITE":
+            self._handle_cite_open(token, engine)
+            return
+        try:
+            box_type = self._get_box_type(token)
+            color = self._get_color(box_type)
+            prefix = self._get_prefix(box_type)
+            title = token.meta.get("title", "")
+            if title:
+                prefix = f"{prefix} {title}"
+            if token.meta.get("collapsible"):
+                prefix = "▸ " + prefix
+            t = render_box_open(prefix, token.content, color, engine.output_width)
+            engine.write(t)
+        except Exception:
+            _logger.debug("告示框打开渲染异常，跳过", exc_info=True)
 
     def _handle_admonition_open(self, token: Token, engine):
         box_type = self._get_box_type(token)

@@ -35,6 +35,17 @@ class _State(IntEnum):
     HTML_BLOCK = 7
     FENCED_DIV = 8
     TABLE_ACTIVE = 10
+    ADMONITION_BLOCK = 11
 
 
-__all__ = ["_State", "_MERMAID_KEYWORDS", "_SETEXT_HR_CHARS"]
+#: 支持的告示类型（``> [!TYPE]`` 引用风格 与 ``!!! type`` fenced 风格共用）——
+#: 类型白名单避免把 ``!!! 等等`` 之类的普通文本误判为告示。
+_ADMONITION_TYPES: frozenset[str] = frozenset({
+    "NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION", "CITE",
+    "INFO", "SUCCESS", "QUESTION", "BUG", "DANGER", "EXAMPLE",
+    "QUOTE", "ABSTRACT", "SUMMARY", "HINT", "ATTENTION", "FAILURE",
+    "ERROR", "MISSING", "TODO",
+})
+
+
+__all__ = ["_State", "_MERMAID_KEYWORDS", "_SETEXT_HR_CHARS", "_ADMONITION_TYPES"]

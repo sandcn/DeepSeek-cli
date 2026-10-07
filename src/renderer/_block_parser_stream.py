@@ -123,6 +123,23 @@ class _BlockParserStreamMixin:
                 self._state = _State.NORMAL
                 self._handle_paragraph_line(line, tokens)
 
+        elif self._state == _State.ADMONITION_BLOCK:
+            if _is_empty_line(stripped):
+                self._emit_admonition_block_close(tokens)
+                tokens.append(Token(TokenType.EMPTY_LINE))
+                return
+            if line[:4] == '    ' or (line and line[0] == '\t'):
+                content = line[4:] if line[:4] == '    ' else line[1:]
+                content = content.rstrip('\n')
+                self._block_lines.append(content)
+                tokens.append(Token(TokenType.ADMONITION_LINE, content, {
+                    "depth": 1, "type": self._admonition_type,
+                }))
+                return
+            # 非缩进行 → 告示块结束，当前行按 NORMAL 重新解析
+            self._emit_admonition_block_close(tokens)
+            self._parse_normal_line(line, tokens)
+
         elif self._state == _State.HTML_BLOCK:
             if self._is_html_close(stripped, self._block_html_tag):
                 tokens.append(Token(TokenType.HTML_BLOCK_CLOSE, "",

@@ -45,7 +45,7 @@ class AnsiRenderEngine:
         self._code_state: list | None = None
         self._math_state: list | None = None
         self._mermaid_state: list | None = None
-        self._admonition: tuple[str, int] | None = None
+        self._admonition: tuple | None = None
         # 折叠块 / FencedDiv 流式状态：
         #   _details = (summary, [正文行])；_fenced_div = (type, 头行文本, [正文行])
         # ★ 修复：原为 str（仅 summary/type）——正文行（DETAILS_LINE /
@@ -80,6 +80,14 @@ class AnsiRenderEngine:
                 return blocks.render_definition_item(token)
             if t == TokenType.EMPTY_LINE:
                 return blocks.render_empty_line(token)
+            if t == TokenType.LINE_BREAK:
+                # 硬换行（`<br>` 独立 Token）→ 空行（与 Rich 路径 InlineHandler 一致）
+                return [AnsiLine()]
+            if t == TokenType.BLOCKQUOTE:
+                # 旧式单 Token 引用块（兼容解析器旧契约）
+                depth = max(1, int(token.meta.get("depth", 1)))
+                return blocks.render_blockquote(_StrToken(token.content),
+                                                depth=depth - 1)
             if t == TokenType.TABLE:
                 return _table.render_table(token, self._width)
 
@@ -106,7 +114,8 @@ class AnsiRenderEngine:
             if t == TokenType.MATH_BLOCK_CLOSE:
                 src = token.meta.get("source") or "\n".join(self._math_state or [])
                 self._math_state = None
-                return _math.render_math_block(src)
+                return _math.render_math_block(
+                    src, dropped=int(token.meta.get("preview_dropped", 0) or 0))
 
             if t == TokenType.MERMAID_BLOCK_OPEN:
                 self._mermaid_state = []
@@ -118,7 +127,8 @@ class AnsiRenderEngine:
             if t == TokenType.MERMAID_BLOCK_CLOSE:
                 src = token.meta.get("source") or "\n".join(self._mermaid_state or [])
                 self._mermaid_state = None
-                return _mermaid.render_mermaid_block(src)
+                return _mermaid.render_mermaid_block(
+                    src, dropped=int(token.meta.get("preview_dropped", 0) or 0))
 
             # 引用块：行级 Token 立即渲染（前缀由自身嵌套深度决定），
             # OPEN/CLOSE 仅表达结构、不产出内容行。修复前用单一 ``_bq_lines``
@@ -133,25 +143,32 @@ class AnsiRenderEngine:
                                                 depth=depth - 1)
 
             if t == TokenType.ADMONITION_OPEN:
-                # OPEN content 即正文首行，meta 含 type/depth
-                self._admonition = (token.meta.get("type", "NOTE"), [token.content])
+                # OPEN content 即正文首行（引用风格），meta 含 type/depth/title
+                ameta = dict(token.meta)
+                lines0 = [token.content] if token.content else []
+                self._admonition = (ameta.get("type", "NOTE"), lines0, ameta)
                 return []
             if t == TokenType.ADMONITION_LINE:
-                if self._admonition is not None:
+                if self._admonition is not None and token.content:
                     self._admonition[1].append(token.content)
                 return []
             if t == TokenType.ADMONITION_CLOSE:
                 if self._admonition is not None:
-                    atype, lines = self._admonition
+                    atype, lines, ameta = self._admonition
                     self._admonition = None
                 else:
-                    # 流式预览：无引擎缓冲时从 token meta 渲染（body_lines）
-                    atype = token.meta.get("type", "NOTE")
-                    lines = list(token.meta.get("body_lines") or [])
+                    # 流式预览：无引擎缓冲时从 token meta 渲染
+                    ameta = dict(token.meta)
+                    atype = ameta.get("type", "NOTE")
+                    lines = list(ameta.get("body_lines") or [])
                 if token.content:
                     lines = [token.content] + lines
+                meta = dict(ameta)
+                meta["type"] = atype
+                if token.meta.get("preview_dropped"):
+                    meta["preview_dropped"] = token.meta["preview_dropped"]
                 return blocks.render_admonition(
-                    _StrToken("\n".join(lines), {"type": atype, "depth": 0})
+                    _StrToken("\n".join(lines), meta)
                 )
 
             if t == TokenType.DETAILS_OPEN:
@@ -205,11 +222,15 @@ class AnsiRenderEngine:
                     meta["preview_dropped"] = dropped
                 return blocks.render_fenced_div(_StrToken(head_text, meta))
 
-            # HTML 块：纯文本透传
-            if t in (TokenType.HTML_BLOCK_OPEN, TokenType.HTML_BLOCK_LINE, TokenType.HTML_BLOCK_CLOSE):
-                if t == TokenType.HTML_BLOCK_LINE and token.content:
-                    return [AnsiLine.of(token.content)]
+            # HTML 块：弱化标签 + 内容行内渲染（保留行内格式 / 实体解码 / 注释隐藏）
+            if t == TokenType.HTML_BLOCK_OPEN:
+                return blocks.render_html_block_open(token.meta.get("tag", "div"))
+            if t == TokenType.HTML_BLOCK_LINE:
+                if token.content:
+                    return blocks.render_html_block_line(token.content)
                 return []
+            if t == TokenType.HTML_BLOCK_CLOSE:
+                return [AnsiLine.of("")]
 
             _logger.debug("未处理 token 类型: %s", t)
             return []

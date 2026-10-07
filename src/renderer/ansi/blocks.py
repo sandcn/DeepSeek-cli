@@ -27,7 +27,10 @@ _STYLE_LIST_BULLET = Style(fg=214)
 _STYLE_LIST_NUMBER = Style(fg=68)
 _STYLE_TODO_UNCHECKED = Style(fg=242)
 _STYLE_TODO_CHECKED = Style(fg=41)
+_STYLE_TODO_CANCELLED = Style(fg=203, dim=True)
 _STYLE_DEF_TERM = Style(fg=45, bold=True)
+_STYLE_HTML_TAG = Style(fg=240, dim=True)
+_STYLE_ADM_TITLE = Style(fg=252)
 
 # Admonition 类型 → 颜色
 _ADMONITION_COLORS: dict[str, Style] = {
@@ -76,20 +79,31 @@ def render_paragraph(token) -> list[AnsiLine]:
     """
     if not token.content:
         return [AnsiLine()]
-    lines: list[AnsiLine] = []
-    current = AnsiLine()
-    for run in render_inline(token.content):
-        segments = (run.text or "").split("\n")
-        for i, seg in enumerate(segments):
+    return _inline_lines(token.content)
+
+
+def _inline_lines(text: str) -> list[AnsiLine]:
+    """行内文本 → 多行 ``AnsiLine``（按 ``\\n`` 拆行；连续换行合并）。
+
+    段落 / 告示 / 折叠块 / HTML 块的正文都可能含 ``<br>``（硬换行）或软换行
+    ——``render_inline`` 产出的 ``LineBreakNode`` 渲染为 ``"\\n"``，与段落自身
+    的软换行叠加会产生多余空行。此处把连续换行合并为一次换行（段落内不存在
+    有意义的空行，段落在空行处已断开）。
+    """
+    out: list[AnsiLine] = []
+    cur = AnsiLine()
+    for run in render_inline(text):
+        segs = (run.text or "").split("\n")
+        for i, seg in enumerate(segs):
             if i > 0:
-                lines.append(current)
-                current = AnsiLine()
+                if cur.runs or not out:
+                    out.append(cur)
+                cur = AnsiLine()
             if seg:
-                current.append(seg, run.style)
-    # 尾部软换行不额外产出空行（与修复前逐行语义一致）
-    if current.runs or not lines:
-        lines.append(current)
-    return lines
+                cur.append(seg, run.style)
+    if cur.runs or not out:
+        out.append(cur)
+    return out
 
 
 def render_paragraph_line(text: str) -> AnsiLine:
@@ -114,10 +128,13 @@ def render_list_item(token) -> list[AnsiLine]:
     # 列表续行（continuation）：对齐列表内容的缩进行（无项目符号）
     if meta.get("continuation"):
         prefix = "  " * max(0, indent) + "  "
-        line = AnsiLine.of(prefix, _STYLE_BQ)
-        for run in render_inline(token.content.lstrip()):
-            line.append_run(run)
-        return [line]
+        out: list[AnsiLine] = []
+        for sub in _inline_lines(token.content.lstrip()):
+            line = AnsiLine.of(prefix, _STYLE_BQ)
+            for run in sub.runs:
+                line.append_run(run)
+            out.append(line)
+        return out or [AnsiLine.of(prefix, _STYLE_BQ)]
     # 缩进按 indent；项目符号按嵌套深度（depth 为 1-based）
     prefix = "  " * max(0, indent)
     if meta.get("bullet"):
@@ -134,20 +151,45 @@ def render_list_item(token) -> list[AnsiLine]:
     stripped = content.lstrip()
     if meta.get("todo"):
         checked = meta.get("checked", False)
-        checkbox = "[x]" if checked else "[ ]"
-        line.append(checkbox + " ", _STYLE_TODO_CHECKED if checked else _STYLE_TODO_UNCHECKED)
+        cancelled = meta.get("cancelled", False)
+        if cancelled:
+            checkbox = "[~]"
+            cstyle = _STYLE_TODO_CANCELLED
+        elif checked:
+            checkbox = "[x]"
+            cstyle = _STYLE_TODO_CHECKED
+        else:
+            checkbox = "[ ]"
+            cstyle = _STYLE_TODO_UNCHECKED
+        line.append(checkbox + " ", cstyle)
         content = stripped[4:].lstrip() if len(stripped) > 4 else ""
-    for run in render_inline(content):
+    sub_lines = _inline_lines(content)
+    first = sub_lines[0] if sub_lines else AnsiLine()
+    for run in first.runs:
         line.append_run(run)
-    return [line]
+    out_lines: list[AnsiLine] = [line]
+    for extra in sub_lines[1:]:
+        el = AnsiLine.of(prefix + "  ", _STYLE_BQ)
+        for run in extra.runs:
+            el.append_run(run)
+        out_lines.append(el)
+    return out_lines
 
 
 def render_definition_item(token) -> list[AnsiLine]:
     term = token.meta.get("term", "")
+    sub_lines = _inline_lines(token.content)
+    first = sub_lines[0] if sub_lines else AnsiLine()
     line = AnsiLine.of(f"{term}: ", _STYLE_DEF_TERM)
-    for run in render_inline(token.content):
+    for run in first.runs:
         line.append_run(run)
-    return [line]
+    out: list[AnsiLine] = [line]
+    for extra in sub_lines[1:]:
+        el = AnsiLine.of("    ", _STYLE_BQ)
+        for run in extra.runs:
+            el.append_run(run)
+        out.append(el)
+    return out
 
 
 # ── 引用 ─────────────────────────────────────────────
@@ -168,24 +210,69 @@ def render_blockquote_line(text: str, depth: int = 0) -> AnsiLine:
     return line
 
 
+# ── HTML 块 ──────────────────────────────────────────
+
+
+def render_html_block_open(tag: str) -> list[AnsiLine]:
+    """HTML 块起始标记（dim 标签行；块级标签本身弱化显示）。"""
+    return [AnsiLine.of(f"\u25b8 <{tag}>", _STYLE_HTML_TAG)]
+
+
+def render_html_block_line(text: str) -> list[AnsiLine]:
+    """HTML 块内容行：内联渲染（保留行内格式 / 解码实体 / 隐藏注释）。"""
+    out: list[AnsiLine] = []
+    for sub in _inline_lines(text):
+        line = AnsiLine.of("  ", _STYLE_BQ)
+        for run in sub.runs:
+            line.append_run(run)
+        out.append(line)
+    return out or [AnsiLine.of("  ", _STYLE_BQ)]
+
+
 # ── Admonition ───────────────────────────────────────
 
 
 def render_admonition(token) -> list[AnsiLine]:
+    """告示块渲染：``■ TYPE [title]`` 头 + 缩进正文。
+
+    支持 src parser 两种来源：
+      - 引用风格 ``> [!NOTE]``：content 首行为正文首行；
+      - Fenced 风格 ``!!! note "标题"``（meta ``title`` / ``collapsible``）：
+        content 为全部正文行，标题在 meta 中（有标题时正文不再抢占头行）。
+    """
     atype = str(token.meta.get("type", "NOTE")).upper()
-    # 首行：标注标签 + 正文首行
+    title = str(token.meta.get("title", "") or "")
+    collapsible = bool(token.meta.get("collapsible", False))
     parts = str(token.content).split("\n")
-    lines: list[AnsiLine] = [render_admonition_head(atype, parts[0])]
-    for seg in parts[1:]:
-        lines.append(render_admonition_body(seg))
+    if not parts:
+        parts = [""]
+    if title:
+        head = render_admonition_head(atype, "", title=title, collapsible=collapsible)
+        body_lines = parts
+    else:
+        head = render_admonition_head(atype, parts[0], collapsible=collapsible)
+        body_lines = parts[1:]
+    lines: list[AnsiLine] = [head]
+    lines.extend(_preview_omitted(token.meta))
+    for seg in body_lines:
+        for sub in _inline_lines(str(seg)):
+            body = AnsiLine.of("    ", _STYLE_BQ)
+            for run in sub.runs:
+                body.append_run(run)
+            lines.append(body)
     return lines
 
 
-def render_admonition_head(atype: str, text: str) -> AnsiLine:
-    """告示首行（``■ TYPE 正文``；行级增量预览复用）。"""
+def render_admonition_head(atype: str, text: str, title: str = "",
+                           collapsible: bool = False) -> AnsiLine:
+    """告示首行（``■ TYPE [title] 正文``；可折叠时为 ``▸``）。"""
     atype = str(atype).upper()
     color = _ADMONITION_COLORS.get(atype, _STYLE_LIST_BULLET)
-    head = AnsiLine.of(f"\u25a0 {atype} ", color)
+    glyph = "\u25b8" if collapsible else "\u25a0"
+    head = AnsiLine.of(f"{glyph} {atype} ", color)
+    if title:
+        head.append(str(title), _STYLE_ADM_TITLE)
+        return head
     for run in render_inline(text):
         head.append_run(run)
     return head
@@ -219,10 +306,11 @@ def render_details(token) -> list[AnsiLine]:
     lines = [head]
     lines.extend(_preview_omitted(token.meta))
     for seg in (token.meta.get("body_lines") or []):
-        body = AnsiLine.of("  ", _STYLE_BQ)
-        for run in render_inline(str(seg)):
-            body.append_run(run)
-        lines.append(body)
+        for sub in _inline_lines(str(seg)):
+            body = AnsiLine.of("  ", _STYLE_BQ)
+            for run in sub.runs:
+                body.append_run(run)
+            lines.append(body)
     return lines
 
 
@@ -256,10 +344,11 @@ def render_fenced_div(token) -> list[AnsiLine]:
     lines = [head]
     lines.extend(_preview_omitted(token.meta))
     for seg in (token.meta.get("body_lines") or []):
-        body = AnsiLine.of("  ", _STYLE_BQ)
-        for run in render_inline(str(seg)):
-            body.append_run(run)
-        lines.append(body)
+        for sub in _inline_lines(str(seg)):
+            body = AnsiLine.of("  ", _STYLE_BQ)
+            for run in sub.runs:
+                body.append_run(run)
+            lines.append(body)
     return lines
 
 
@@ -279,6 +368,8 @@ __all__ = [
     "render_definition_item",
     "render_blockquote",
     "render_blockquote_line",
+    "render_html_block_open",
+    "render_html_block_line",
     "render_admonition",
     "render_admonition_head",
     "render_admonition_body",

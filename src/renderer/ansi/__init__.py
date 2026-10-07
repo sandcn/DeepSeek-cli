@@ -10,7 +10,7 @@
   blocks.py  — 标题/列表/引用/告示/折叠块
   code.py    — 代码块（pygments → 256 色）
   table.py   — 表格（wcswidth 对齐 + 框线）
-  mermaid.py / math.py — 首版纯文本退化（标注限制）
+  mermaid.py / math.py — 图表/公式终端渲染（_mermaid_render / _math_latex）
   helpers.py — Run/AnsiLine 模型 + 换行/截断/ANSI→Style
 """
 
@@ -452,15 +452,24 @@ class AnsiStreamRenderer:
     def _render_admonition_preview(self, token) -> list[AnsiLine]:
         from . import blocks as _blocks
         atype = str(token.meta.get("type", "NOTE")).upper()
+        title = str(token.meta.get("title", "") or "")
+        collapsible = bool(token.meta.get("collapsible", False))
         body = list(token.meta.get("body_lines") or [])
         if token.content:
             body = str(token.content).split("\n") + body
-        if not body:
-            return []
-        head = _blocks.render_admonition_head(atype, body[0])
-        rest = [self._window_preview_line(seg) for seg in body[1:]]
+        if title:
+            head = _blocks.render_admonition_head(
+                atype, "", title=title, collapsible=collapsible)
+            rest_src = body
+        else:
+            if not body:
+                return []
+            head = _blocks.render_admonition_head(atype, body[0],
+                                                  collapsible=collapsible)
+            rest_src = body[1:]
+        rest = [self._window_preview_line(seg) for seg in rest_src]
         rows = self._line_cache("admonition").render(
-            ("admonition", atype), rest,
+            ("admonition", atype, title, collapsible), rest,
             lambda text: [_blocks.render_admonition_body(text)],
         )
         dropped = int(token.meta.get("preview_dropped", 0) or 0)

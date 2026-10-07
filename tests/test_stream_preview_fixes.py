@@ -188,17 +188,20 @@ def test_code_preview_excludes_closing_fence():
 
 
 def test_mermaid_preview_excludes_closing_fence():
-    """Mermaid 块未换行的结束围栏不进入预览内容。"""
-    assert _preview(["```mermaid\ngraph TD; A-->B\n```"]) == [
-        "╭─ Mermaid 图（纯文本视图） ─╮", "│ graph TD; A-->B", "╰─────────────╯",
-    ]
+    """Mermaid 块未换行的结束围栏不进入预览内容（渲染为流程图图形）。"""
+    preview = _preview(["```mermaid\ngraph TD; A-->B\n```"])
+    joined = "\n".join(preview)
+    assert "```" not in joined
+    assert "A" in joined and "B" in joined
+    assert "\u25bc" in joined  # ▼ 箭头
 
 
 def test_math_preview_excludes_closing_delimiter():
-    """数学块未换行的 ``$$`` 结束定界符不进入预览内容。"""
-    assert _preview(["$$\nE=mc^2\n$$"]) == [
-        "╭─ Math（纯文本视图） ─╮", "│ E=mc^2", "╰─────────────╯",
-    ]
+    """数学块未换行的 ``$$`` 结束定界符不进入预览内容（渲染为公式）。"""
+    preview = _preview(["$$\nE=mc^2\n$$"])
+    joined = "\n".join(preview)
+    assert "$$" not in joined
+    assert "E=mc\u00b2" in joined
 
 
 # ═══════════════════════════════════════════════════════════
@@ -242,13 +245,16 @@ def test_preview_code_buffer_reset_on_new_block():
 
 
 def test_mermaid_commit_keeps_source():
-    """Mermaid 块提交后保留源码（``meta["source"]`` 缺失曾导致只剩空框）。"""
+    """Mermaid 块提交后渲染为图形（``meta["source"]`` 缺失曾导致只剩空框）。"""
     lines = _render(["```mermaid\ngraph TD; A-->B\n```\n"])
-    assert lines == ["╭─ Mermaid 图（纯文本视图） ─╮", "│ graph TD; A-->B", "╰─────────────╯"]
+    text = "\n".join(lines)
+    assert "A" in text and "B" in text
+    assert "\u25bc" in text
+    assert "```" not in text
 
 
 def test_mermaid_commit_multiline_source():
     lines = _render(["```mermaid\ngraph TD\nA-->B\n```\n"])
-    assert lines == [
-        "╭─ Mermaid 图（纯文本视图） ─╮", "│ graph TD", "│ A-->B", "╰─────────────╯",
-    ]
+    text = "\n".join(lines)
+    assert "A" in text and "B" in text
+    assert "\u25bc" in text

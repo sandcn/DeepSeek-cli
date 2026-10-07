@@ -112,4 +112,12 @@ _RELATION_SYMBOLS: Dict[str, str] = {
     "nleqq": "≰",
     "ngeqslant": "⪈",
     "nleqslant": "⪇",
+    # === LaTeX 常用短别名（\le/\ge/\ne/\lt/\gt）===
+    "le": "≤",
+    "ge": "≥",
+    "ne": "≠",
+    "lt": "<",
+    "gt": ">",
+    "lnot": "¬",
+    "owns": "∋",
 }
