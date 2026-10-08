@@ -9,6 +9,8 @@
   - ``format_duration``：<60s 用 ``x.xs``；≥60s 用 ``m:ss``；≥1h 用 ``h:mm:ss``。
     以 status_bar 规范为准；_subagent_panel 旧 ``m}s{:.0f}s``（如 ``15m30s``）
     统一为 ``15:30``，记录为有意的观感变更。
+  - ``format_elapsed``：同 ``format_duration`` 的档位，但 <60s 去掉 ``s``
+    后缀（纯数字 ``x.x``）——工具卡运行中前缀（``0.1 UserSelect``）。
   - ``format_tokens``：≥1M ``x.xM``；≥1k ``x.xk``；否则原样数字。
   - ``format_speed``：≤0 返回 ``-``；≥1M ``x.xMt/s``；≥1k ``x.xkt/s``；
     ≥100 ``xt/s``；≥1 ``x.xt/s``；否则 ``x.xxt/s``（统一 tok/s 显示）。
@@ -41,6 +43,37 @@ def format_duration(seconds: float) -> str:
         return f"{seconds:.1f}s"
     mins = int(seconds // 60)
     secs = int(seconds % 60)
+    if mins < 60:
+        return f"{mins}:{secs:02d}"
+    return f"{mins // 60}:{mins % 60:02d}:{secs:02d}"
+
+
+def format_elapsed(seconds: float) -> str:
+    """格式化运行耗时（无单位后缀，供工具卡运行中前缀消费）。
+
+    2026-10-09 用户需求：运行中的工具卡标题行以**实时运行时间**替代 ``●``
+    图标（如 ``0.1 UserSelect``），且所有工具一致、实时刷新。时间格式与
+    ``format_duration`` 同规范（≥60s ``m:ss``；≥1h ``h:mm:ss``），仅 <60s
+    段**去掉 ``s`` 后缀**（纯数字，用户指定格式）。
+
+    Args:
+        seconds: 时长（秒），可为浮点。
+
+    Returns:
+        <60s → ``x.x``（0.1 精度，先量化再判档——``59.96`` 归入 ``1:00``，
+        避免出现 ``60.0``）；≥60s → ``m:ss``；≥1h → ``h:mm:ss``。
+        非有限值（inf/NaN）返回 ``-``（与 ``format_duration`` /
+        ``format_speed`` 一致）；负值按 0 处理。
+    """
+    if not math.isfinite(seconds):
+        return "-"
+    if seconds < 0:
+        seconds = 0.0
+    rounded = round(seconds, 1)
+    if rounded < 60:
+        return f"{rounded:.1f}"
+    mins = int(rounded // 60)
+    secs = int(rounded % 60)
     if mins < 60:
         return f"{mins}:{secs:02d}"
     return f"{mins // 60}:{mins % 60:02d}:{secs:02d}"
@@ -111,4 +144,7 @@ def single_line(text: str) -> str:
     return text.replace("\r", "\\r").replace("\n", "\\n")
 
 
-__all__ = ["format_duration", "format_tokens", "format_speed", "single_line"]
+__all__ = [
+    "format_duration", "format_elapsed", "format_tokens", "format_speed",
+    "single_line",
+]

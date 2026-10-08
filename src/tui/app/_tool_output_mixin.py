@@ -30,9 +30,12 @@ from src.tui.app._model_helpers import (
     _tool_incremental_threshold,
     _single_line_detail,
 )
-# ★ ToolCard React Ink 组件化：工具卡行生成/状态图标收敛到 app/toolcard.py
+# ★ ToolCard React Ink 组件化：工具卡行生成/状态前缀收敛到 app/toolcard.py
 #   （模块级零依赖，函数内惰性 import——无循环风险）。
-from src.tui.app.toolcard import _tool_icon_runs, tool_card_lines
+from src.tui.app.toolcard import (
+    _tool_running_prefix_text,
+    tool_card_lines,
+)
 # core.style 为 Layer 0 底层（无 app 依赖），模块级 import 无循环风险；
 # 用于模块级样式常量（_S_TOOL_OUT 工具输出前缀色）。
 from src.tui.core.style import Style
@@ -406,7 +409,7 @@ class _ToolOutputMixin:
         started = block.extra.get("_tool_started_at")
         if started is not None:
             block.extra["_tool_duration"] = max(0.0, time.monotonic() - started)
-        # 记录状态行下标（卡片渲染跳过该主体行——状态由标题行状态图标表达；
+        # 记录状态行下标（卡片渲染跳过该主体行——状态由标题行状态前缀表达；
         # 模型层不变式 block.lines[-1].plain.strip()=="✔" 保留）
         block.extra["_status_line_index"] = len(block.lines)
         block.lines.append(AnsiLine.of(f"  {status}", Style(fg=41 if success else 196)))
@@ -417,55 +420,37 @@ class _ToolOutputMixin:
 
         # ★ 1.6 修复 + BUG-30（review 方向）修复：长工具输出（>
         #   _TOOL_INCREMENTAL_THRESHOLD 触发增量提交后标题行已在 committed_lines）
-        #   关闭时更新 committed_lines 中标题行状态图标。
+        #   关闭时更新 committed_lines 中标题行（前缀保留最终运行时间 + 元信息
+        #   去掉耗时）。
         #   **BUG-30（渲染陈旧）**：修复前原地修改 ``top_line.runs``（保留 Line
         #   对象引用）——committed-chat 前缀缓存（``chat_view._paint`` 键
         #   ``(id(lines), n, box.y)``）与 diff 身份短路（``p is f`` → 相等跳过）
-        #   都按「Line 对象身份 = 内容不变」优化：内存中 Line 虽改为 ✔，但
+        #   都按「Line 对象身份 = 内容不变」优化：内存中 Line 虽更新，但
         #   prev 帧与 new 帧引用同一 Line 对象 → 渲染器认为无差异 → **终端标题行
-        #   恒显示 ●，与关闭状态矛盾**（必现，长工具输出触发增量提交后关闭必现）。
+        #   恒显示旧内容**（必现，长工具输出触发增量提交后关闭必现）。
         #   修复：**新建 Line 对象替换**（不复用旧对象）+ ``_replace_committed_line``
         #   令 committed_lines 列表身份变化（浅拷贝）→ 前缀缓存键中 ``id(lines)``
         #   失效 → 下一帧重建前缀 → diff 对新 Line 对象做 runs 值比较 → 标题行
         #   被重写。短工具（未增量提交，offset 不存在）关闭时经 commit_block
-        #   提交的标题行已带 done/fail 图标，无需更新。
-        #   卡片结构：``_first_committed_offset`` 指向卡片**首行（标题行）**，
-        #   状态图标为标题行 runs[0]（无边框——2026-08-06 去边框后不再有
-        #   ``┌─ `` 边框前缀）。
+        #   提交的标题行已按关闭态生成，无需更新。
+        #   卡片结构：``_first_committed_offset`` 指向卡片**首行（标题行）**。
         offset = block.extra.get("_first_committed_offset")
         if offset is not None and 0 <= offset < len(self.committed_lines):
-            icon = _tool_icon_runs(block)
-            if icon:
-                top_line = self.committed_lines[offset]
-                runs = list(top_line.runs)
-                # 标题行结构：[0]=状态图标, [1:]=标题内容
-                idx = 0
-                scan_failed = False
-                if not (runs and runs[0].text.strip() in ("\u25cf", "\u2714", "\u2716")):
-                    # 防御：超窄宽度下标题被截断时按图标字符扫描定位
-                    for i, r in enumerate(runs):
-                        if r.text and r.text.strip() in ("\u25cf", "\u2714", "\u2716"):
-                            idx = i
-                            break
-                    else:
-                        scan_failed = True
-                # ★ P1（review 2026-08-18）：扫描失败分支**不得 return**——
-                #   修复前此处 ``return`` 跳过后续 ``block.closed = True``、
-                #   冻结/缓存释放与 ``commit_block``：该块永不闭合 → 连续
-                #   提交窗口守卫（committed_count 卡在未闭合块）被永久卡住 →
-                #   其后所有块永不进 committed_lines（全部走 live 渲染受 64 行
-                #   截断），且缓存永不释放。改为 ``scan_failed`` 标志分支，
-                #   仅跳过图标替换方式，关闭主流程照常继续。
+            # ★ 2026-10-09（用户需求）：完成后标题行前缀保留最终运行时间
+            #   （不再换成 ✔/✖），且尾部元信息去掉耗时——标题行内容整体变化
+            #   （前缀文本 + 元信息），故按当前状态**整行重建**（真源 =
+            #   block.extra 的 tool_name/tool_detail + 模型状态），替代旧的
+            #   「原位替换状态图标 run」（无法增删元信息、且时间/图标宽度不同
+            #   需另行钳制宽度）。重建行自带宽度钳制与满宽背景
+            #   （``tool_card_lines`` 内 ``_apply_line_bg``）。
+            #   ★ BUG-30：``_replace_committed_line`` 新建 Line 对象 + 令
+            #   committed_lines 列表身份变化 → 前缀缓存失效 → 下一帧重写标题
+            #   行；不变量：``_first_committed_offset`` 为卡片首行（tool 块无
+            #   角色头 → 即标题行）。
+            head = tool_card_lines(block, getattr(self, "width", 0), 0, 1)
+            if head:
                 from src.tui.ink import Line
-                if scan_failed:
-                    # ★ P2-5（review 修复）：扫描失败（标题被截断致图标
-                    #   字符丢失/结构异常）时**头部插入** icon 而非替换——
-                    #   替换 ``icon + runs[1:]`` 会丢弃标题首 run（内容
-                    #   丢失）；``icon + runs`` 保留全部内容（仅补状态）。
-                    self._replace_committed_line(offset, Line(icon + runs))
-                else:
-                    # ★ BUG-30：新建 Line 对象（不复用旧对象）+ 列表身份变化
-                    self._replace_committed_line(offset, Line(runs[:idx] + icon + runs[idx + 1:]))
+                self._replace_committed_line(offset, Line(head[0]))
 
         block.closed = True
         # ★ 方向4（增量提交协同）：冻结仅**未提交部分**（已提交行在
@@ -503,6 +488,52 @@ class _ToolOutputMixin:
         new_list = list(self.committed_lines)
         new_list[offset] = new_line
         self.committed_lines = new_list
+
+    def refresh_running_tool_titles(self) -> None:
+        """运行中工具卡已提交标题行的运行时间实时刷新（2026-10-09 用户需求）。
+
+        需求：运行中的工具以**实时运行时间**替代 ``●`` 图标（如 ``0.1
+        UserSelect``），所有工具一致、实时刷新。
+
+        未增量提交的工具卡标题行由 ``ToolCard`` 组件每帧渲染（运行时间随帧
+        重算），无需本方法；**已增量提交**（输出超过阈值后标题行进入
+        ``committed_lines``）的工具卡标题行是静态 Line，须由渲染帧主动刷新
+        ——否则长时间运行的工具卡时间会冻结在提交时刻。
+
+        实现：遍历开放工具 box，对「运行中 + 已提交标题行」的块按
+        ``format_elapsed`` 量化文本比较（0.1s 粒度），变化时经
+        ``tool_card_lines(block, width, 0, 1)`` 重建标题行（只取标题行）并
+        ``_replace_committed_line`` 替换（新建 Line + 列表身份变化，committed
+        前缀缓存失效 → 下一帧重绘）。时间文本未变（同 0.1s 桶）时零开销
+        返回；非运行中/未提交/无时间戳的块跳过。
+
+        幂等；每帧由渲染循环调用（宿主钩子，异常由调用方兜底）。
+        """
+        boxes = getattr(self, "tool_boxes", None)
+        if not boxes:
+            return
+        from src.tui.ink import Line
+        width = getattr(self, "width", 0)
+        for block in list(boxes.values()):
+            if block.closed or block.extra.get("tool_status") != "running":
+                continue
+            # 标题行尚未提交（live 渲染每帧重算运行时间）→ 无需刷新。
+            if block.committed_line_count <= 0:
+                continue
+            offset = block.extra.get("_first_committed_offset")
+            if offset is None or not (0 <= offset < len(self.committed_lines)):
+                continue
+            text = _tool_running_prefix_text(block)
+            if text is None:
+                continue
+            # ★ 0.1s 粒度去重：同桶（时间文本相同）不重复替换（免每帧拷贝
+            #   committed_lines + 前缀缓存失效）。
+            if text == block.extra.get("_committed_running_prefix"):
+                continue
+            block.extra["_committed_running_prefix"] = text
+            head = tool_card_lines(block, width, 0, 1)
+            if head:
+                self._replace_committed_line(offset, Line(head[0]))
 
     def close_empty_tool_boxes(self) -> int:
         """自动闭合开放但无主体内容的空工具 box，返回闭合数量。

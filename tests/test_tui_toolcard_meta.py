@@ -50,18 +50,22 @@ def test_meta_runs_running_is_empty():
     assert _tool_meta_runs(block, True) == []
 
 
-def test_meta_runs_done_shows_duration_and_lines():
+def test_meta_runs_done_shows_lines_without_duration():
+    """2026-10-09 用户需求：完成后元信息不再显示耗时（``· 13.4s``）。
+
+    最终运行时间已由标题前缀保留（``_tool_finished_prefix_text``）。
+    """
     block = _closed_tool(success=True, lines=5, duration=1.25)
     text = _text(_tool_meta_runs(block, False))
-    assert "1.2s" in text
+    assert "1.2s" not in text
+    assert "1.2" not in text
     assert "5 \u884c" in text
 
 
-def test_meta_runs_hides_tiny_duration():
-    block = _closed_tool(success=True, lines=5, duration=0.01)
-    text = _text(_tool_meta_runs(block, False))
-    assert "s" not in text.replace("\u884c", "")  # 无耗时段
-    assert "5 \u884c" in text
+def test_meta_runs_single_line_has_no_meta():
+    """单行结果无行数元信息 + 无耗时元信息 → 元信息为空。"""
+    block = _closed_tool(success=True, lines=1, duration=0.01)
+    assert _text(_tool_meta_runs(block, False)) == ""
 
 
 def test_meta_runs_fail_marker():
@@ -74,8 +78,10 @@ def test_tool_card_title_contains_meta_after_close():
     block = _closed_tool(success=True, lines=5, duration=2.5)
     lines = tool_card_lines(block, 80)
     title = _text(lines[0])
-    assert title.startswith("\u2714")   # ✔
-    assert "2.5s" in title
+    # ★ 2026-10-09 用户需求：完成后 = ``✔ <最终运行时间> …``（前面的时间保留）
+    assert title.startswith("\u2714 2.5")
+    assert "2.5s" not in title          # 尾部不再重复耗时元信息
+    assert "5 \u884c" in title
     assert "ls -la" in title
 
 
@@ -85,5 +91,7 @@ def test_tool_card_title_minimal_while_running():
     m.append_tool_output("t1", "out")
     block = m.blocks[-1]
     title = _text(tool_card_lines(block, 80)[0])
-    assert title.startswith("\u25cf")   # ●
+    # ★ 2026-10-09 用户需求：运行中前缀 = 实时运行时间（替代 ● 图标）
+    assert "\u25cf" not in title
+    assert title.split(" ")[0].replace(".", "").isdigit()  # 如 ``0.0``
     assert "s" not in title.split("ls -la")[-1]  # 运行中无元信息

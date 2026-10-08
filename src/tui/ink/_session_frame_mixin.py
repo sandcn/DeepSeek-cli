@@ -275,6 +275,19 @@ class _SessionFrameMixin:
                 except Exception:
                     _logger.debug("reflow_committed 异常", exc_info=True)
             self._model.width = width  # 渲染器 TOC 边框宽度
+            # ★ 2026-10-09（用户需求：运行中的工具实时刷新运行时间）：运行中
+            #   工具卡的标题行 = 实时运行时间（替代 ●）。未增量提交的卡由
+            #   ``ToolCard`` 组件每帧渲染自动刷新；**已增量提交**（标题行进入
+            #   committed_lines）的卡由宿主主动刷新该静态行——否则时间冻结在
+            #   提交时刻。宿主无此方法（桩模型）时跳过。
+            refresh_titles = getattr(
+                self._model, "refresh_running_tool_titles", None,
+            )
+            if refresh_titles is not None:
+                try:
+                    refresh_titles()
+                except Exception:
+                    _logger.debug("refresh_running_tool_titles 异常", exc_info=True)
             # ★ 方向6（resize 后流式渲染宽度陈旧）：宽度变化时向开放通道
             #   renderer（AnsiStreamRenderer.set_width 已实现）传播新宽度——
             #   TOC 边框/表格宽度在 resize 后刷新；已关闭通道 renderer 为

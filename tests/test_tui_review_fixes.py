@@ -44,8 +44,14 @@ from src.tui.ink.reconciler import Reconciler
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class TestCloseToolBoxScanFallback:
-    """close_tool_box：已增量提交的 box 标题行图标扫描失败时仍须完成关闭。"""
+class TestCloseToolBoxCommittedTitleRebuild:
+    """close_tool_box：已增量提交的 box 标题行关闭时整行重建。
+
+    2026-10-09 起：完成/失败后标题行前缀**保留最终运行时间**（不再显示
+    ✔/✖），且尾部元信息去掉耗时——标题行内容不再只是「翻转图标 run」，
+    故关闭时按当前块状态整行重建（真源 = block.extra 的 tool_name/detail）。
+    本类回归：闭合主流程不受标题行异常影响 + 篡改行被正确重建。
+    """
 
     def _make_incremental_tool_box(self) -> tuple[AppModel, object]:
         """构造已触发增量提交的工具 box（标题行已在 committed_lines）。"""
@@ -62,13 +68,12 @@ class TestCloseToolBoxScanFallback:
         assert block.extra.get("_first_committed_offset") == 0
         return m, block
 
-    def test_scan_failure_still_closes_block(self):
-        """图标扫描失败（标题行无图标字符）时块仍须 closed + 提交。"""
+    def test_tampered_title_still_closes_block(self):
+        """标题行异常（无前缀字符）时块仍须 closed + 提交 + 缓存释放。"""
         m, block = self._make_incremental_tool_box()
-        # 篡改已提交标题行：runs 无图标字符（模拟超窄截断致图标丢失）
         m.committed_lines[0] = Line([StyledRun("truncated-no-icon", None)])
         m.close_tool_box("t1", True)
-        # 修复前：扫描失败分支 return → closed 恒 False、committed_count 恒 0
+        # 修复前（历史）：扫描失败分支 return → closed 恒 False、committed_count 恒 0
         assert block.closed is True
         assert m.committed_count == 1
         # 关闭后缓存释放
@@ -76,39 +81,38 @@ class TestCloseToolBoxScanFallback:
         assert block._tool_card_frame_cache is None
         assert block._tool_card_body_lines_cache is None
 
-    def test_scan_failure_head_inserts_icon_keeps_content(self):
-        """扫描失败分支头部插入图标（保留全部原标题内容，不丢首 run）。"""
+    def test_tampered_title_rebuilt_from_block_state(self):
+        """标题行被篡改 → 整行重建为正确标题行（不残留篡改内容）。"""
         m, block = self._make_incremental_tool_box()
         m.committed_lines[0] = Line([StyledRun("truncated-no-icon", None)])
         m.close_tool_box("t1", True)
-        new_line = m.committed_lines[0]
-        # 头部插入 ✔ 图标 run，原标题内容保留
-        assert new_line.runs[0].text.startswith("\u2714")
-        assert new_line.plain.endswith("truncated-no-icon")
+        plain = m.committed_lines[0].plain
+        assert "truncated-no-icon" not in plain
+        assert "custom_tool" in plain or "CustomTool" in plain
 
-    def test_normal_icon_flip_still_works(self):
-        """回归：标题行含图标（正常结构）时原位翻转 ✔ 不受重构影响。"""
+    def test_close_keeps_check_and_final_time_prefix(self):
+        """回归：关闭后标题前缀为 ``✔ <最终运行时间>``。"""
+        import time as _time
+
         m, block = self._make_incremental_tool_box()
-        # committed_lines[0] 为 tool_card_lines 产出（runs[0] = ● 图标）
+        block.extra["_tool_started_at"] = _time.monotonic() - 3.0
         m.close_tool_box("t1", True)
         assert block.closed is True
-        assert m.committed_lines[0].runs[0].text.strip() == "\u2714"
+        assert m.committed_lines[0].plain.lstrip().startswith("\u2714 3.")
         assert m.committed_count == 1
 
-    def test_mid_scan_icon_replaced_in_place(self):
-        """回归：图标不在首位但在行中（扫描命中）时原位替换。"""
+    def test_close_drops_duration_meta_keeps_lines(self):
+        """关闭后尾部元信息去掉耗时（``· x.xs``），行数保留。"""
+        import time as _time
+
         m, block = self._make_incremental_tool_box()
-        m.committed_lines[0] = Line([
-            StyledRun("  ", None),
-            StyledRun("\u25cf ", Style(fg=214)),
-            StyledRun("title", None),
-        ])
+        block.extra["_tool_started_at"] = _time.monotonic() - 2.0
+        m.refresh_running_tool_titles()
         m.close_tool_box("t1", True)
-        assert block.closed is True
-        runs = m.committed_lines[0].runs
-        assert runs[0].text == "  "
-        assert runs[1].text.startswith("\u2714")
-        assert runs[2].text == "title"
+        title = m.committed_lines[0].plain
+        assert title.lstrip().startswith("\u2714 2.")
+        assert "2.0s" not in title
+        assert "\u884c" in title  # ``· 70 行`` 保留
 
 
 # ── 2. P3 — open_tool_box 复用路径重置兜底空 box 时间戳 ──

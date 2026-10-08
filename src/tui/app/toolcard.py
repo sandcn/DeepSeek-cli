@@ -6,10 +6,17 @@
 边框字符；``│`` 为**内容竖线引导线**（Claude Code 风格视觉归组，非边框）。
 
 对齐 Claude Code 的极简样式（方案 A，2026-08-06）：
-  - 标题行：``状态图标 + 工具名 + 参数``（如 ``● Bash ls -la``）——去掉
+  - 标题行：``状态前缀 + 工具名 + 参数``（如 ``0.1 UserSelect foo``）——去掉
     ▎ 引导线、去掉 emoji 工具图标、detail 用空格分隔（Claude Code
-    ``ReadFile src/main.py`` 语义，非 ``·``）；状态图标恒为 runs[0]
-    （close_tool_box 原位翻转图标与 ``startswith(●/✔/✖)`` 测试不变式依赖）；
+    ``ReadFile src/main.py`` 语义，非 ``·``）；状态前缀恒为 runs[0]
+    （close_tool_box 原位翻转前缀与 ``startswith`` 测试不变式依赖）；
+    ★ 2026-10-09 用户需求：工具卡标题前缀 = **运行时间**——运行中为实时
+    运行时间（``format_elapsed``：<60s 纯数字 ``0.1``；≥60s ``1:05``）替代
+    原 ``●`` 图标，所有工具一致、实时刷新（0.1s 粒度——未提交卡由组件每帧
+    重算，已增量提交的卡由 ``AppModel.refresh_running_tool_titles`` 刷新静态
+    标题行）；**完成后为状态图标 + 最终运行时间**（``✔ 13.4 UserSelect …`` /
+    ``✖ 2.5 …``，「前面的时间保留」），尾部元信息不再重复耗时。无开始时间戳
+    （运行中）/ ``_tool_duration``（完成后）时回退 ``●`` / ✔ / ✖ 图标；
   - 工具名类别配色：唯一真源 ``_tool_icons.TOOL_CATEGORY_STYLES``（shell 绿 /
     file_read 浅蓝 / file_write 粉 / search 金 / agent 蓝 / interact 青 /
     delete 红），运行中在类别色邻域 12s 脉动呼吸（与 detail 呼吸同步），
@@ -22,8 +29,9 @@
     width 时截断到 width 并追加省略号 ``…``（「显示一行超过终端宽度就截断到
     最大宽度 + 增加…」，防终端自动换行错位并提示内容被截断）；
   - **无独立状态行**（Claude Code 无 ``✔ 完成 · N 行 · Xs``）——状态由
-    标题行状态图标表达（● 运行中 / ✔ 完成 / ✖ 失败）；模型层 close_tool_box
-    追加的 ``  ✔``/``  ✖`` 数据行渲染时跳过（``_tool_status_index``）。
+    标题行状态前缀表达（运行中实时时间 / 完成后 ``✔ 13.4`` 形态，颜色区分
+    成功/失败）；模型层 close_tool_box 追加的 ``  ✔``/``  ✖`` 数据行渲染时
+    跳过（``_tool_status_index``）。
 
 React Ink 组件化（2026-08-05，深度组件化）：原 ``AppModel._tool_card_styled_lines``
 （模型层纯函数生成 StyledRun 行）迁移为独立组件模块，模型层不再持有行生成
@@ -48,12 +56,16 @@ React Ink 组件化（2026-08-05，深度组件化）：原 ``AppModel._tool_car
 from __future__ import annotations
 
 import math
+import time
 
 # core.style 为 Layer 0 底层（无 app 依赖），模块级 import 无循环风险；
 # 用于模块级样式常量（_GUIDE_STYLE / _CATEGORY_DEFAULT_STYLE）。
 from src.tui.core.style import Style
 
-__all__ = ["ToolCard", "tool_card_lines", "_tool_icon_runs", "_tool_status_index"]
+__all__ = [
+    "ToolCard", "tool_card_lines", "_tool_icon_runs", "_tool_status_index",
+    "_tool_running_prefix_text", "_tool_finished_prefix_text",
+]
 
 # ── 工具类别配色（BEAUTY-35，2026-08-06 美化） ─────────────────────
 # 标题工具名按工具类别着色（Claude Code 极简样式后不再有 ▎引导线/emoji
@@ -206,32 +218,104 @@ def _category_breath_fg(tool_name: str) -> int:
     return time_glow(lo, hi, 12.0)
 
 
-def _tool_icon_runs(block) -> list:
-    """工具块标题前置状态图标 runs（渲染装饰）。
+def _tool_running_prefix_text(block) -> str | None:
+    """运行中工具卡标题行前缀文本（实时运行时间 + 尾随空格）。
+
+    2026-10-09 用户需求：运行中的工具以**实时运行时间**替代 ``●`` 图标
+    （如 ``0.1 UserSelect``），所有工具一致、实时刷新。时间自
+    ``block.extra["_tool_started_at"]``（``open_tool_box`` 记录的 monotonic
+    时间戳）起算，经 ``format_elapsed``（<60s 纯数字 ``x.x``；≥60s ``m:ss``；
+    ≥1h ``h:mm:ss``）格式化。
+
+    Args:
+        block: 工具块（ChatBlock.kind == "tool"）。
+
+    Returns:
+        ``"0.1 "`` 形态前缀文本；无有效开始时间戳（旧块/外部构造）或耗时
+        非有限时返回 None（调用方回退 ``●`` 图标，保持兼容观感）。
+    """
+    started = block.extra.get("_tool_started_at")
+    if not isinstance(started, (int, float)) or isinstance(started, bool):
+        return None
+    elapsed = time.monotonic() - float(started)
+    if not math.isfinite(elapsed):
+        return None
+    from src.tui._format import format_elapsed
+    return f"{format_elapsed(elapsed)} "
+
+
+def _tool_finished_prefix_text(block) -> str | None:
+    """已完成工具卡标题行前缀文本（最终运行时间 + 尾随空格）。
+
+    2026-10-09 用户需求：工具完成后**保留最终运行时间**（如 ``13.4
+    UserSelect …``），不再换成 ✔/✖ 图标；耗时不再作为尾部元信息重复显示
+    （``· 13.4s`` 去掉）。时长取 ``close_tool_box`` 记录的 ``_tool_duration``
+    （关闭时差），经 ``format_elapsed`` 格式化——与运行中前缀同格式（0.1
+    精度），关闭瞬间视觉连续（不跳变）。
+
+    Args:
+        block: 工具块（ChatBlock.kind == "tool"）。
+
+    Returns:
+        ``"13.4 "`` 形态前缀文本；无有效 ``_tool_duration``（旧块/外部构造）
+        或时长非有限时返回 None（调用方回退 ✔/✖ 图标，保持兼容观感）。
+    """
+    duration = block.extra.get("_tool_duration")
+    if not isinstance(duration, (int, float)) or isinstance(duration, bool):
+        return None
+    if not math.isfinite(float(duration)):
+        return None
+    from src.tui._format import format_elapsed
+    return f"{format_elapsed(float(duration))} "
+
+
+def _tool_icon_runs(block, prefix_text: str | None = None) -> list:
+    """工具块标题前置状态前缀 runs（渲染装饰）。
 
     不改动 ``block.lines`` 原文（模型层保持原始标题行，测试断言
     ``block.lines[0].plain.startswith("  · ")`` 依赖此不变式）。
     样式取 ``StyleSheet.resolve`` 语义色（success/error/warn），
     兜底硬编码确保任何加载顺序下都有默认值。
 
+    ★ 2026-10-09（用户需求）：前缀 = **运行时间**——运行中为实时时间（如
+    ``0.1 ``，所有工具一致、实时刷新）；完成后为**状态图标 + 最终运行时间**
+    （如 ``✔ 13.4 `` / ``✖ 2.5 ``，用户需求「前面的时间保留」）。图标与时间
+    同用状态语义色（成功绿 / 失败红）；无有效时间戳/时长时回退原 ``●``
+    （运行中）/ ``✔``/``✖``（完成后）图标（兼容旧块/外部构造）。
+
     Args:
         block: 工具块（ChatBlock.kind == "tool"）。
+        prefix_text: 运行中前缀文本（可选，调用方已计算时传入——避免同一
+            渲染帧内两次取时间跨 0.1s 桶导致帧缓存 key 与实际内容不一致）。
 
     Returns:
-        StyledRun 列表（图标 + 空格），running ● / done ✔ / fail ✖。
+        StyledRun 列表（前缀 + 空格），running 时间/``●``，done ✔ / fail ✖。
     """
     from src.tui.ink import StyledRun
     from src.tui.core.style import Style, StyleSheet
     status = block.extra.get("tool_status", "running")
-    if status == "done":
-        return [StyledRun("\u2714 ", StyleSheet.resolve("success", Style(fg=41)))]
-    if status == "fail":
-        return [StyledRun("\u2716 ", StyleSheet.resolve("error", Style(fg=196, bold=True)))]
-    # 方向3（动效）：running ● 用橙色邻域呼吸色（208-220 脉动，6s 周期）——
-    # 正在执行的工具图标持续呼吸，视觉提示活跃状态（替代静态 fg=214）。
+    if status in ("done", "fail"):
+        # ★ 2026-10-09（用户需求）：完成/失败后前缀 = **状态图标 + 最终运行
+        #   时间**（如 ``✔ 13.4 `` / ``✖ 2.5 ``）——「前面的时间保留」；尾部
+        #   元信息不再重复耗时（``_tool_meta_runs``）。图标 + 时间同用状态语义
+        #   色（成功绿 / 失败红）；无 ``_tool_duration``（旧块/外部构造）时
+        #   回退仅图标。
+        finished = _tool_finished_prefix_text(block)
+        if status == "fail":
+            style = StyleSheet.resolve("error", Style(fg=196, bold=True))
+            glyph = "\u2716 "
+        else:
+            style = StyleSheet.resolve("success", Style(fg=41))
+            glyph = "\u2714 "
+        if finished is not None:
+            return [StyledRun(glyph, style), StyledRun(finished, style)]
+        return [StyledRun(glyph, style)]
+    # 方向3（动效）：运行中前缀用橙色邻域呼吸色（208-220 脉动，6s 周期）——
+    # 正在执行的工具前缀持续呼吸，视觉提示活跃状态。
     from src.tui.app._theme import time_glow
     c = time_glow(208, 220, 6.0)
-    return [StyledRun("\u25cf ", Style(fg=c))]
+    text = prefix_text or _tool_running_prefix_text(block) or "\u25cf "
+    return [StyledRun(text, Style(fg=c))]
 
 
 def _tool_status_index(block):
@@ -239,7 +323,8 @@ def _tool_status_index(block):
 
     关闭工具块时 ``close_tool_box`` 追加状态行到 block.lines 末尾（模型层
     不变式 ``block.lines[-1].plain.strip()=="✔"``）。Claude Code 极简样式下
-    状态由标题行状态图标表达（●/✔/✖），渲染内容行时跳过该数据行。
+    状态由标题行状态前缀表达（运行时间 / 完成后保留的最终运行时间），渲染
+    内容行时跳过该数据行。
     ``_status_line_index`` 由 close_tool_box 记录（歧义安全）；回退按末行
     plain 匹配（覆盖 reflow/旧块等未记录场景）。
     """
@@ -276,14 +361,16 @@ def _tool_result_line_count(block) -> int:
 
 
 def _tool_meta_runs(block, running: bool) -> list:
-    """工具卡标题行尾部元信息 runs（耗时 · 结果行数 · 失败标记）。
+    """工具卡标题行尾部元信息 runs（结果行数 · 失败标记）。
 
     关闭（``running=False``）后显示：
-      - 耗时（``close_tool_box`` 记录的 ``_tool_duration``，<0.05s 不显示）；
       - 结果行数（>1 行时显示，``· 120 行``）；
       - 失败标记（``· 失败`` 红色加粗——比单独 ✖ 图标更醒目）。
 
-    运行中返回空列表（标题行保持极简，与旧版逐字节一致）。
+    ★ 2026-10-09（用户需求）：**耗时不显示**（``· 13.4s`` 去掉）——最终运行
+    时间已由标题前缀保留（``_tool_finished_prefix_text``），尾部不重复。
+
+    运行中返回空列表（标题行保持极简）。
 
     Args:
         block: 工具块（ChatBlock.kind == "tool"）。
@@ -297,18 +384,9 @@ def _tool_meta_runs(block, running: bool) -> list:
     if running:
         return []
     from src.tui.app._theme import get_active_palette
-    from src.tui._format import format_duration
 
     pal = get_active_palette()
     parts: list[str] = []
-    duration = block.extra.get("_tool_duration")
-    if (
-        isinstance(duration, (int, float))
-        and not isinstance(duration, bool)
-        and math.isfinite(float(duration))
-        and float(duration) >= 0.05
-    ):
-        parts.append(format_duration(float(duration)))
     line_count = _tool_result_line_count(block)
     if line_count > 1:
         parts.append(f"{line_count} 行")
@@ -353,7 +431,7 @@ def tool_card_lines(block, width, start=0, stop=None):
     渲染期变换，不改动 ``block.lines`` 原文（model 测试不变式
     ``block.lines[0].plain.startswith("  · ")`` / ``strip()=="✔"`` 依赖此）。
     标题行仅 ``start==0``（块首次提交）。关闭状态行 ``  ✔``（模型层保留）
-    **不渲染为内容行**——状态移入标题行状态图标（``_tool_status_index``
+    **不渲染为内容行**——状态移入标题行状态前缀（``_tool_status_index``
     跳过该数据行）。
 
     Args:
@@ -385,15 +463,20 @@ def tool_card_lines(block, width, start=0, stop=None):
         # BEAUTY-35：类别呼吸色（▎/图标/名称 12s 脉动）——与 _icon_fg 同桶
         # 固定（跨桶变化触发重建）；仅运行中且 start==0 时计算，其余 -1。
         _cat_fg = _category_breath_fg(block.extra.get("tool_name", ""))
+        # ★ 2026-10-09（用户需求：运行时间实时刷新）：运行中标题前缀 = 实时
+        #   运行时间（``0.1 ``）——量化文本参与帧缓存 key，时间推进（0.1s
+        #   粒度）触发重建 → 标题行运行时间实时刷新；无时间戳时回退 ● 前缀。
+        _run_prefix = _tool_running_prefix_text(block) or "\u25cf "
     else:
         _icon_fg = -1
         _cat_fg = -1
+        _run_prefix = ""
     # ★ BUG-71（review 方向，缓存键完整性）：_frame_key 补充标题字段
     #   （tool_name/tool_detail）——修复前缺标题：open_tool_box 复用 box 更新
     #   标题后，同帧帧缓存（同 start/stop/status/len/呼吸色桶）命中旧标题。
     _frame_key = (
         start, stop, block.closed, _status, len(block.lines),
-        _icon_fg, _cat_fg,
+        _icon_fg, _cat_fg, _run_prefix,
         block.extra.get("tool_name", ""),
         block.extra.get("tool_detail", ""),
         # ★ 2026-10-07（工具卡显示增强）：标题行元信息（耗时）参与键——
@@ -416,7 +499,7 @@ def tool_card_lines(block, width, start=0, stop=None):
         tool_name = block.extra.get("tool_name") or "工具"
         display = get_tool_display_name(tool_name) or tool_name or "工具"
         detail = block.extra.get("tool_detail", "")
-        title_runs = list(_tool_icon_runs(block))
+        title_runs = list(_tool_icon_runs(block, _run_prefix or None))
         running = _status == "running" and not block.closed
         # ★ Claude Code 极简样式（2026-08-06 用户需求）：标题行 = 状态图标 +
         #   工具名（类别色，加粗）+ 参数（空格分隔，dim）——去掉 ▎ 引导线、
