@@ -99,6 +99,25 @@ class CompactionEngine:
             pass
         return max(0, int(tokens))
 
+    def _max_context_chars(self) -> int:
+        """字符口径上限（``max_context_chars``）；0/负值表示不设字符阈值。"""
+        try:
+            return int(self._config_port.get_max_context_chars() or 0)
+        except Exception:
+            _logger.debug("读取 max_context_chars 失败，按不设字符阈值处理", exc_info=True)
+            return 0
+
+    def _pressure_exceeded(self, spec: ResolvedCompactSpec, max_context_chars: int) -> bool:
+        """常规压力判定：token 达阈值，或字符达 ``max_context_chars`` 上限。
+
+        token 口径（``threshold_tokens``）是主判据；字符口径让纯 ASCII 会话
+        在 token 估算偏低时也能及时触发压缩，避免字符已贴近窗口而上限未达。
+        """
+        chars, tokens = self._measure()
+        if tokens >= spec.threshold_tokens:
+            return True
+        return max_context_chars > 0 and chars > max_context_chars
+
     def _current_target(self) -> tuple[str, str]:
         provider = ""
         try:
@@ -181,17 +200,15 @@ class CompactionEngine:
             else:
                 raise
 
-        if not force and not overflow:
-            _chars, tokens = self._measure()
-            if tokens < spec.threshold_tokens:
-                return None
+        max_context_chars = self._max_context_chars()
+        if not force and not overflow and not self._pressure_exceeded(spec, max_context_chars):
+            return None
 
         # 剪枝先于摘要：无模型的确定性缩减可能完全省去一次模型调用。
         if config.prune_enabled:
             pruned_count, pruned_chars = self.prune(config)
             if pruned_count:
-                _chars, tokens = self._measure()
-                if not force and not overflow and tokens < spec.threshold_tokens:
+                if not force and not overflow and not self._pressure_exceeded(spec, max_context_chars):
                     self._notify(
                         f"+ 工具结果剪枝 {pruned_count} 条，释放 {pruned_chars} 字符"
                     )
@@ -224,8 +241,7 @@ class CompactionEngine:
                 return result
             if overflow or force:
                 return result
-            _chars, tokens = self._measure()
-            if tokens < spec.threshold_tokens:
+            if not self._pressure_exceeded(spec, max_context_chars):
                 return result
         return result
 

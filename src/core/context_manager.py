@@ -473,7 +473,14 @@ class ContextManager:
                 try:
                     from .compaction import CompactionTrigger
 
-                    engine.compact_if_needed(trigger=CompactionTrigger.PRESSURE, force=force)
+                    # ★ 自动全量压缩阈值（auto_force_compress_threshold）在引擎
+                    #   路径同样生效：命中即以 force=True 调引擎（不保留近期
+                    #   尾部＝全量压缩）。否则引擎只认 token 压力阈值，该配置
+                    #   会被绕过（引擎启用时回退策略链不执行）。
+                    engine_force = force or self._auto_force_triggered()
+                    engine.compact_if_needed(
+                        trigger=CompactionTrigger.PRESSURE, force=engine_force,
+                    )
                     return
                 except Exception:
                     _logger.debug("压缩引擎执行失败，回退策略链", exc_info=True)
@@ -615,6 +622,20 @@ class ContextManager:
             if isinstance(content, str) and content.startswith("[对话摘要]"):
                 non_system_count += 1
         return non_system_count > 2
+
+    def _auto_force_triggered(self) -> bool:
+        """自动全量压缩阈值判定（字符 / token 双口径，与回退链同源）。
+
+        ``auto_force_compress_threshold`` 为「超过即强制全量压缩」阈值；
+        引擎路径的常规压力阈值只认 token 口径，本判定保证该配置在引擎
+        启用时同样生效（命中 → 调用方以 ``force=True`` 调引擎）。
+        """
+        total_chars_val, total_tokens_val = self.measure_context()
+        return selector.should_auto_force_values(
+            total_chars_val, total_tokens_val,
+            auto_force_threshold=self._config_port.get_auto_force_compress_threshold(),
+            max_context_tokens=self._config_port.get_max_context_tokens(),
+        )
 
     def _should_compress(self, force, total_chars_val, total_tokens_val):
         """判断是否应该执行压缩，返回 (force, 是否压缩)。"""
