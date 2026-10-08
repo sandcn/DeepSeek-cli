@@ -137,7 +137,10 @@ def query_cursor_row(
 
     仅在 stdin 与 stdout 均为真实 TTY 时发送查询；非 TTY / 超时 / 解析
     失败一律返回 None（调用方回退既有「文档底部贴屏幕底部」锚定）。查询
-    期间临时把 stdin 置 raw，结束时无条件恢复原属性。
+    期间经 ``termios_noncanonical`` 临时确保 stdin 为非规范模式（已处于
+    cbreak/raw 时零副作用），并在 ``TERMIOS_LOCK`` 内恢复原属性——避免
+    与 EscapeMonitor 的 cbreak 设置交错时用陈旧快照覆盖（详见
+    ``src._compat_termios`` 模块 docstring）。
 
     Args:
         timeout: 等待响应超时（秒）；None 用 ``_CURSOR_QUERY_TIMEOUT``。
@@ -148,7 +151,7 @@ def query_cursor_row(
     """
     import select as _select
 
-    from src._compat_termios import HAS_TERMIOS, termios, tty
+    from src._compat_termios import HAS_TERMIOS, termios_noncanonical
 
     if not HAS_TERMIOS:
         return None
@@ -168,45 +171,41 @@ def query_cursor_row(
     except (AttributeError, ValueError, OSError):
         return None
     wait = _CURSOR_QUERY_TIMEOUT if timeout is None else max(0.01, float(timeout))
+    # ★ 终端属性经 ``termios_noncanonical`` 串行化（TERMIOS_LOCK）：进入前
+    #   仅关闭 ICANON/ECHO（已处于 cbreak/raw 时零副作用），退出时在锁内
+    #   恢复——修复前用 ``tty.setraw`` + 无条件整体恢复：查询窗口（最长
+    #   0.25s）与 EscapeMonitor 的 cbreak 设置交错时，查询结束用陈旧（规范
+    #   模式）快照把 cbreak 覆盖回规范模式 → 字符级输入失效（输入不逐键
+    #   回显、Tab 补全不弹出）且按键被内核回显污染界面。
     try:
-        saved = termios.tcgetattr(fd)
-    except Exception:
-        _logger.debug("query_cursor_row: tcgetattr 失败", exc_info=True)
-        return None
-    try:
-        tty.setraw(fd)
-        out.write("\x1b[6n")
-        out.flush()
-        deadline = time.monotonic() + wait
-        buf = b""
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            try:
-                ready, _, _ = _select.select([fd], [], [], remaining)
-            except (OSError, ValueError):
-                break
-            if not ready:
-                break
-            try:
-                chunk = os.read(fd, 32)
-            except OSError:
-                break
-            if not chunk:
-                break
-            buf += chunk
-            match = _CURSOR_REPORT_RE.search(buf)
-            if match:
-                return int(match.group(1))
+        with termios_noncanonical(fd):
+            out.write("\x1b[6n")
+            out.flush()
+            deadline = time.monotonic() + wait
+            buf = b""
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    ready, _, _ = _select.select([fd], [], [], remaining)
+                except (OSError, ValueError):
+                    break
+                if not ready:
+                    break
+                try:
+                    chunk = os.read(fd, 32)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                match = _CURSOR_REPORT_RE.search(buf)
+                if match:
+                    return int(match.group(1))
     except Exception:
         _logger.debug("query_cursor_row 异常", exc_info=True)
         return None
-    finally:
-        try:
-            termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-        except Exception:
-            _logger.debug("query_cursor_row 恢复 termios 失败", exc_info=True)
     return None
 
 

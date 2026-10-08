@@ -1170,8 +1170,13 @@ class InkRenderer(_RendererContentMixin):
             ):
                 rewrites.append((q, doc_idx))
         if not rewrites:
-            # 可见区无变化：仅更新光标（物理缓冲末行）与 prev。
-            self._cursor_row = max(1, min(buf_h, height))
+            # 可见区无变化：不写终端（实际光标未移动）——**不得**改写
+            # ``_cursor_row``。修复前误设为物理缓冲末行
+            # ``max(1, min(buf_h, height))``：记账与实际终端光标脱节（如
+            # 实际停在输入行 22、记账变成 24），下一帧 ``place_cursor`` 按
+            # 脱节值相对移动 → 光标落到 20，随后等高帧的增量写入整体下移
+            # 2 行 → 补全弹窗缩小后提示行/候选项错位、旧输入行残留。
+            # 保持原值（= 上一次渲染后的实际光标行）即与实际一致。
             self._prev = frame
             self._stream.flush()
             return

@@ -9,11 +9,8 @@
 
 from __future__ import annotations
 
-import logging
 import re
 from typing import Any, Iterable
-
-_logger = logging.getLogger(__name__)
 
 #: 协议增强标志（``render({kittyKeyboard: {flags: [...]}})`` 可用名）。
 kittyFlags = {
@@ -128,8 +125,11 @@ def query_kitty_support(
 ) -> int | None:
     """查询终端 kitty 键盘协议支持（``CSI ? u`` → ``CSI ? <flags> u``）。
 
-    仅在 stdin/stdout 均为 TTY 时发送查询（否则直接返回 None——管道/重定向
-    环境不应写入控制序列）。查询期间 stdin 临时置 raw，结束无条件恢复。
+   仅在 stdin/stdout 均为 TTY 时发送查询（否则直接返回 None——管道/重定向
+    环境不应写入控制序列）。查询期间经 ``termios_noncanonical`` 临时确保
+    stdin 为非规范模式（已处于 cbreak/raw 时零副作用），并在
+    ``TERMIOS_LOCK`` 内恢复原属性（避免与 EscapeMonitor 的 cbreak 设置交错
+    时用陈旧快照覆盖）。
 
     Returns:
         终端报告的支持标志掩码；非 TTY/超时/无应答返回 None。
@@ -139,7 +139,7 @@ def query_kitty_support(
     import sys as _sys
     import time as _time
 
-    from src._compat_termios import HAS_TERMIOS, termios, tty
+    from src._compat_termios import HAS_TERMIOS, termios_noncanonical
 
     if not HAS_TERMIOS:
         return None
@@ -155,42 +155,33 @@ def query_kitty_support(
         return None
     wait = _QUERY_TIMEOUT if timeout is None else max(0.01, float(timeout))
     try:
-        saved = termios.tcgetattr(fd)
+        with termios_noncanonical(fd):
+            stream.write(_QUERY_SEQUENCE)
+            stream.flush()
+            deadline = _time.monotonic() + wait
+            buf = b""
+            while True:
+                remaining = deadline - _time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    ready, _, _ = _select.select([fd], [], [], remaining)
+                except (OSError, ValueError):
+                    break
+                if not ready:
+                    break
+                try:
+                    chunk = _os.read(fd, 64)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                value = decode_query_reply(buf)
+                if value is not None:
+                    return value
     except Exception:
         return None
-    try:
-        tty.setraw(fd)
-        stream.write(_QUERY_SEQUENCE)
-        stream.flush()
-        deadline = _time.monotonic() + wait
-        buf = b""
-        while True:
-            remaining = deadline - _time.monotonic()
-            if remaining <= 0:
-                break
-            try:
-                ready, _, _ = _select.select([fd], [], [], remaining)
-            except (OSError, ValueError):
-                break
-            if not ready:
-                break
-            try:
-                chunk = _os.read(fd, 64)
-            except OSError:
-                break
-            if not chunk:
-                break
-            buf += chunk
-            value = decode_query_reply(buf)
-            if value is not None:
-                return value
-    except Exception:
-        return None
-    finally:
-        try:
-            termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-        except Exception:
-            _logger.debug("kitty 查询后恢复 termios 失败", exc_info=True)
     return None
 
 

@@ -337,11 +337,15 @@ class RawModeController:
         if not self.supported:
             return False
         try:
-            from src._compat_termios import tty, termios
+            from src._compat_termios import termios, termios_lock, tty
 
             fd = int(self._fd)
-            saved = termios.tcgetattr(fd)
-            tty.setcbreak(fd)
+            # ★ termios 读-改-写序列互斥（见 src/_compat_termios 模块
+            #   docstring）：与 EscapeMonitor 的 cbreak 设置 / 首帧 CPR 光标行
+            #   查询 / kitty 能力查询串行化，避免交错恢复用陈旧快照覆盖。
+            with termios_lock():
+                saved = termios.tcgetattr(fd)
+                tty.setcbreak(fd)
         except Exception:
             _logger.debug("进入 raw 模式失败", exc_info=True)
             return False
@@ -353,9 +357,11 @@ class RawModeController:
         if self._saved is None:
             return False
         try:
-            from src._compat_termios import termios
+            from src._compat_termios import termios, termios_lock
 
-            termios.tcsetattr(int(self._fd), termios.TCSADRAIN, self._saved)
+            # ★ 同 enable：恢复序列持 TERMIOS_LOCK（防交错覆盖）。
+            with termios_lock():
+                termios.tcsetattr(int(self._fd), termios.TCSADRAIN, self._saved)
         except Exception:
             _logger.debug("还原 raw 模式失败", exc_info=True)
         finally:
