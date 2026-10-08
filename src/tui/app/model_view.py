@@ -14,14 +14,28 @@ Esc/Ctrl+H 关闭后恢复完整聊天界面。
   - **增加**：``a`` 打开表单（名称 / 模型名 / 接口地址 / API 密钥 /
     Provider 五字段），``s`` 保存为新的模型档案。
   - **编辑**：``e`` 编辑选中档案（同上表单，``s`` 保存）。
+  - **复制**：``c`` 以选中档案为模板新建（预填副本字段，改名后 ``s``
+    保存）——基于已有模型快速派生变体。
   - **删除**：``d`` → 确认后删除选中档案。
+  - **刷新**：``r`` 重新加载档案列表（外部改动 /config 后同步）。
+
+美化与体验（2026-10-09 用户需求「美化，优化用户体验和操作 /models」）：
+
+  - 列表行**同时显示模型名与接口主机**（修复此前「有 base_url 时模型名
+    被地址覆盖」的缺陷），列对齐 + 状态徽标（``◆key`` / ``●当前``）；
+  - 列表上方新增**选中详情行**：完整展示选中档案的模型名 · 提供商 ·
+    接口地址 · 脱敏密钥，随选中实时更新；
+  - 字段输入升级为**光标编辑**（←/→ 移动 · Home/End 首末 · Delete 删除 ·
+    Ctrl+A/Ctrl+E 首末 · Ctrl+U 清空 · 退格，支持中间插入）；
+  - 空态引导卡片化（图标 + 三步流程）。
 
 交互（use_input 路由 + 模态全屏声明）：
   - 浏览模式：↑↓/jk 选择 · g/G 首末 · PgUp/PgDn 翻页 · Enter 应用 ·
-    a 新增 · e 编辑 · d 删除 · / 搜索 · n/N/p 匹配 · f 过滤 · ? 帮助 ·
-    y 复制 · Esc/Ctrl+H 关闭；
+    a 新增 · c 复制 · e 编辑 · d 删除 · r 刷新 · / 搜索 · n/N/p 匹配 ·
+    f 过滤 · ? 帮助 · y 复制信息 · Esc/Ctrl+H 关闭；
   - 表单模式：↑↓/jk 选择字段 · Enter 编辑字段 · s 保存 · Esc 取消；
-  - 字段输入：可打印字符累积 · 退格删除 · Ctrl+U 清空 · Enter 确认 ·
+  - 字段输入：可打印字符（光标处插入）· ←/→/Home/End 移动光标 ·
+    Delete/退格删除 · Ctrl+A/Ctrl+E 首末 · Ctrl+U 清空 · Enter 确认 ·
     Esc 取消。
 
 数据协议（跨线程安全，与 config/plugin 同构）：
@@ -90,6 +104,13 @@ _S_HELP_GROUP = Style(fg=110, bold=True)
 _S_HELP_DESC = Style(fg=252)
 _S_FORM_LABEL = Style(fg=75)
 _S_FORM_VALUE = Style(fg=252)
+# ── 美化增强（选中详情行 / 空态 / 光标） ──
+_S_DETAIL_LABEL = Style(fg=110)           # 详情行字段标签（浅蓝）
+_S_DETAIL_VALUE = Style(fg=252)           # 详情行字段值（亮白）
+_S_DETAIL_SEP = Style(fg=238)             # 详情行分隔符（深灰）
+_S_EMPTY_TITLE = Style(fg=45, bold=True)  # 空态标题（亮青加粗）
+_S_REQUIRED = Style(fg=214)               # 必填星标（黄）
+_S_CURSOR = Style(fg=16, bg=45, bold=True)  # 字段输入光标（反色块）
 
 #: 字段输入长度上限（渲染行按宽度截断）。
 _EDIT_VALUE_MAX = 400
@@ -112,6 +133,36 @@ def _disp_width(text: str) -> int:
         return wcswidth_simple(text)
     except Exception:
         return len(text)
+
+
+def _url_host(url: str) -> str:
+    """接口地址 → 主机简写（``scheme://host[:port]``，去掉路径）。
+
+    列表行空间有限，展示主机名即可区分不同服务；完整地址在选中详情行
+    展示。解析失败回退原串（不抛异常）。
+    """
+    s = str(url or "").strip()
+    if not s:
+        return ""
+    try:
+        from urllib.parse import urlsplit
+        parts = urlsplit(s if "://" in s else "//" + s)
+        host = parts.netloc or parts.path.split("/")[0]
+        return host or s
+    except Exception:
+        return s
+
+
+def _profile_entry_values(entry) -> dict:
+    """从模型条目提取档案字段值（仅 ``FIELD_KEYS``，缺失补空串）。"""
+    out = {k: "" for k in FIELD_KEYS}
+    if isinstance(entry, dict):
+        for key in FIELD_KEYS:
+            value = entry.get(key)
+            if value is None and key == "base_url":
+                value = entry.get("effective_base_url")
+            out[key] = "" if value is None else str(value)
+    return out
 
 
 # ═══════════════════════════════════════════════════════════
@@ -216,6 +267,24 @@ def _start_form(mv, entry=None) -> None:
     mv.form_values = values
 
 
+def _duplicate_selected(mv, entry) -> None:
+    """``c``：以选中档案为模板新建（预填副本字段，改名后 ``s`` 保存）。
+
+    复制而非直接新增——基于已有模型快速派生变体（如同一提供商下切换
+    模型名）；副本显示名追加「 副本」避免与源档案重名校验冲突。
+    """
+    if not isinstance(entry, dict) or entry.get("kind") != "profile":
+        mv.reset_edit_state()
+        mv.message = "仅模型档案可复制"
+        return
+    values = _profile_entry_values(entry)
+    base_name = (values.get("name") or values.get("model") or "").strip()
+    values["name"] = f"{base_name} 副本" if base_name else "副本"
+    _start_form(mv, None)
+    mv.form_values = values
+    mv.message = f"已复制档案「{base_name}」，编辑后按 s 保存"
+
+
 def _start_select(mv, key: str) -> None:
     """进入某字段的选择界面（当前仅「提供商」字段）。"""
     choices = provider_choices()
@@ -273,6 +342,7 @@ def _commit_field(mv) -> None:
         mv.form_values = values
     mv.edit_mode = "form"
     mv.form_edit_value = ""
+    mv.form_edit_cursor = 0
     mv.edit_error = ""
 
 
@@ -305,7 +375,8 @@ def _commit_form(mv) -> None:
         # 首次配置（启动引导）保存后立即可用
         set_active_profile(len(profiles) - 1)
     _refresh_entries(mv)
-    mv.selected = 0
+    # 保存后定位到该档案（新增/编辑/复制均回到刚保存的条目）
+    mv.selected = _locate_entry(mv.entries, profile.get("name") or profile.get("model") or "")
     mv.reset_edit_state()
     mv.message = msg
 
@@ -330,9 +401,21 @@ def _delete_selected(mv, entry) -> None:
         mv.edit_error = f"删除失败: {exc}"
         return
     _refresh_entries(mv)
-    mv.selected = 0
+    # 删除后选中被删位置的下一项（钳制到列表范围），保持浏览连续性
+    total_new = len(getattr(mv, "entries", None) or [])
+    mv.selected = max(0, min(int(index), total_new - 1)) if total_new else 0
     mv.reset_edit_state()
     mv.message = f"已删除模型档案 {name}"
+
+
+def _locate_entry(entries, name: str) -> int:
+    """按显示名定位条目索引（找不到回退 0——用于保存后定位）。"""
+    target = str(name or "")
+    if target:
+        for i, e in enumerate(entries or []):
+            if isinstance(e, dict) and str(e.get("name") or "") == target:
+                return i
+    return 0
 
 
 def _refresh_entries(mv) -> None:
@@ -430,6 +513,38 @@ def _status_text(mv, filter_active: bool) -> str:
     return "  \u00b7  ".join(parts)
 
 
+def _detail_runs(entry, width: int) -> list:
+    """选中模型详情行（完整信息，随选中实时更新）。
+
+    展示：模型名 · 提供商（显示说明） · 完整接口地址 · 脱敏密钥。
+    条目为空 / 非法时返回空列表（调用方不渲染该行）。
+    """
+    if not isinstance(entry, dict):
+        return []
+    sep = "  \u00b7  "
+    runs: list = [
+        StyledRun("  \u21b3 ", _S_DETAIL_SEP),
+        StyledRun(str(entry.get("model") or ""), _S_DETAIL_VALUE),
+    ]
+    provider = str(entry.get("provider") or "")
+    if provider:
+        hint = str(entry.get("hint") or provider)
+        label = provider if hint == provider else f"{provider}\u00b7{hint}"
+        runs.append(StyledRun(sep, _S_DETAIL_SEP))
+        runs.append(StyledRun(label, _S_DETAIL_LABEL))
+    url = str(entry.get("effective_base_url") or entry.get("base_url") or "")
+    if url:
+        runs.append(StyledRun(sep, _S_DETAIL_SEP))
+        runs.append(StyledRun(url, _S_DETAIL_VALUE))
+    key = entry.get("api_key")
+    if key:
+        runs.append(StyledRun(sep, _S_DETAIL_SEP))
+        runs.append(StyledRun(f"key={mask_key(str(key))}", _S_KEY))
+    if width > 0:
+        runs = truncate_runs(runs, width)
+    return runs
+
+
 # ═══════════════════════════════════════════════════════════
 # 事件处理（模块级；拆分自组件内闭包，便于单测）
 # ═══════════════════════════════════════════════════════════
@@ -501,23 +616,55 @@ def _handle_model_event(
     if getattr(mv, "editing", False):
         mode = getattr(mv, "edit_mode", "form")
         if mode == "field":
-            # 字段输入：字符累积 / 退格 / Ctrl+U 清空 / Enter 确认 / Esc 取消
+            # 字段输入（光标编辑）：字符在光标处插入 · ←/→ 移动 · Home/End
+            # 首末 · Delete 删除 · 退格 · Ctrl+A/Ctrl+E 首末 · Ctrl+U 清空 ·
+            # Enter 确认 · Esc 取消
             if kind == "escape":
                 mv.edit_mode = "form"
                 mv.form_edit_value = ""
+                mv.form_edit_cursor = 0
                 mv.edit_error = ""
                 return True
-            if kind == "ctrl_key" and ch == "\x15":  # Ctrl+U
-                mv.form_edit_value = ""
+            value = mv.form_edit_value
+            try:
+                cur = int(getattr(mv, "form_edit_cursor", 0) or 0)
+            except (TypeError, ValueError):
+                cur = 0
+            cur = max(0, min(cur, len(value)))
+            if kind == "ctrl_key":
+                if ch == "\x15":  # Ctrl+U
+                    mv.form_edit_value = ""
+                    mv.form_edit_cursor = 0
+                elif ch == "\x01":  # Ctrl+A
+                    mv.form_edit_cursor = 0
+                elif ch == "\x05":  # Ctrl+E
+                    mv.form_edit_cursor = len(value)
                 return True
             if kind == "char":
-                if ch and "\n" not in ch and "\r" not in ch:
-                    if len(mv.form_edit_value) < _EDIT_VALUE_MAX:
-                        mv.form_edit_value += ch
+                if ch and "\n" not in ch and "\r" not in ch and len(value) < _EDIT_VALUE_MAX:
+                    mv.form_edit_value = value[:cur] + ch + value[cur:]
+                    mv.form_edit_cursor = cur + 1
                 return True
             if kind == "backspace":
-                if mv.form_edit_value:
-                    mv.form_edit_value = mv.form_edit_value[:-1]
+                if cur > 0:
+                    mv.form_edit_value = value[:cur - 1] + value[cur:]
+                    mv.form_edit_cursor = cur - 1
+                return True
+            if kind == "delete":
+                if cur < len(value):
+                    mv.form_edit_value = value[:cur] + value[cur + 1:]
+                return True
+            if kind == "arrow_left":
+                mv.form_edit_cursor = max(0, cur - 1)
+                return True
+            if kind == "arrow_right":
+                mv.form_edit_cursor = min(len(value), cur + 1)
+                return True
+            if kind == "home":
+                mv.form_edit_cursor = 0
+                return True
+            if kind == "end":
+                mv.form_edit_cursor = len(value)
                 return True
             if kind == "enter":
                 _commit_field(mv)
@@ -553,7 +700,13 @@ def _handle_model_event(
             else:
                 mv.edit_mode = "field"
                 mv.form_edit_value = str((mv.form_values or {}).get(keys[idx], "") or "")
+                mv.form_edit_cursor = len(mv.form_edit_value)
                 mv.edit_error = ""
+            return True
+        if kind == "char" and ch == "?":
+            # 表单内查快捷键（帮助面板覆盖表单；关闭后回到表单）
+            mv.help_open = True
+            mv.help_scroll = 0
             return True
         if kind == "char" and ch in ("s", "S"):
             _commit_form(mv)
@@ -587,6 +740,24 @@ def _handle_model_event(
             return True
         if ch == "a":
             _start_form(mv, None)
+            return True
+        if ch == "c":
+            sel = _sel_index(mv, total)
+            entry = entries[sel] if sel >= 0 else None
+            if not isinstance(entry, dict) or entry.get("kind") != "profile":
+                mv.message = "仅模型档案可复制（按 a 新增）"
+                return True
+            _duplicate_selected(mv, entry)
+            return True
+        if ch == "r":
+            _refresh_entries(mv)
+            total_new = len(getattr(mv, "entries", None) or [])
+            try:
+                cur_sel = int(getattr(mv, "selected", 0) or 0)
+            except (TypeError, ValueError):
+                cur_sel = 0
+            mv.selected = max(0, min(cur_sel, total_new - 1)) if total_new else 0
+            mv.message = "已刷新模型列表"
             return True
         if ch == "e":
             sel = _sel_index(mv, total)
@@ -634,9 +805,17 @@ def _handle_model_paste(mv, visible: bool, text: str) -> bool:
     if not paste:
         return True
     if getattr(mv, "editing", False) and getattr(mv, "edit_mode", "") == "field":
-        remaining = _EDIT_VALUE_MAX - len(mv.form_edit_value)
+        value = mv.form_edit_value
+        remaining = _EDIT_VALUE_MAX - len(value)
         if remaining > 0:
-            mv.form_edit_value += paste[:remaining]
+            try:
+                cur = int(getattr(mv, "form_edit_cursor", 0) or 0)
+            except (TypeError, ValueError):
+                cur = len(value)
+            cur = max(0, min(cur, len(value)))
+            insert = paste[:remaining]
+            mv.form_edit_value = value[:cur] + insert + value[cur:]
+            mv.form_edit_cursor = cur + len(insert)
         return True
     if getattr(mv, "search_mode", False):
         remaining = _SEARCH_QUERY_MAX - len(getattr(mv, "search_query", "") or "")
@@ -651,30 +830,49 @@ def _handle_model_paste(mv, visible: bool, text: str) -> bool:
 # ═══════════════════════════════════════════════════════════
 
 
-def _make_entry_renderer(width: int, name_w: int, prov_w: int,
+def _make_entry_renderer(width: int, name_w: int, prov_w: int, model_w: int,
                          matched_ids: set | None = None,
                          cur_id: int | None = None):
-    """模型列表行渲染器（ListView renderItem）。"""
+    """模型列表行渲染器（ListView renderItem）。
+
+    行结构：``▶ 名称  [provider]  模型名  接口主机  ◆key  ●当前``——模型名
+    与接口地址同时展示（修复此前有 base_url 时模型名被地址覆盖的缺陷）；
+    ``名称 == 模型名``（显示名留空回退模型名）时模型列留空去重。
+    """
 
     def _render_entry(entry, i, is_sel):
         if not isinstance(entry, dict):
             return h(TEXT, {"children": "", "height": 1, "key": f"mv-{i}"})
         prefix = "\u25b6 " if is_sel else "  "
         runs = [StyledRun(prefix, _S_SEL_MARK if is_sel else None)]
-        name = _truncate_width(str(entry.get("name", "")), name_w)
-        runs.append(StyledRun(name, _S_NAME))
-        pad = max(0, name_w - _disp_width(name) + 1)
+        # ── 名称列 ──
+        name = str(entry.get("name", "") or "")
+        name_txt = _truncate_width(name, name_w)
+        runs.append(StyledRun(name_txt, _S_NAME))
+        pad = max(0, name_w - _disp_width(name_txt) + 1)
         if pad:
             runs.append(StyledRun(" " * pad, None))
-        prov = _truncate_width(str(entry.get("provider", "")), prov_w)
-        runs.append(StyledRun(f"[{prov}]", _S_PROFILE))
-        pad2 = max(0, prov_w - _disp_width(prov) + 1)
+        # ── 提供商列 ──
+        prov = str(entry.get("provider", "") or "")
+        prov_txt = _truncate_width(prov, prov_w)
+        runs.append(StyledRun(f"[{prov_txt}]", _S_PROFILE))
+        pad2 = max(0, prov_w - _disp_width(prov_txt) + 1)
         if pad2:
             runs.append(StyledRun(" " * pad2, None))
+        # ── 模型名列（与名称重复时留空去重） ──
         target = str(entry.get("model", "") or "")
+        model_txt = "" if target == name else _truncate_width(target, model_w)
+        runs.append(StyledRun(model_txt, _S_MODEL))
+        pad3 = max(0, model_w - _disp_width(model_txt) + 1)
+        if pad3:
+            runs.append(StyledRun(" " * pad3, None))
+        # ── 接口主机列（次信息，灰色） ──
         url = str(entry.get("effective_base_url", entry.get("base_url", "")) or "")
-        label = url if url and url != target else target
-        runs.append(StyledRun(_truncate_width(label, max(10, width - name_w - prov_w - 12)), _S_MODEL))
+        host = _url_host(url)
+        if host:
+            host_w = max(8, width - name_w - prov_w - model_w - 16) if width > 0 else 24
+            runs.append(StyledRun(_truncate_width(host, host_w), _S_URL))
+        # ── 徽标 ──
         if entry.get("api_key"):
             runs.append(StyledRun("  \u25c6key", _S_KEY))
         if entry.get("current"):
@@ -716,7 +914,7 @@ def _make_field_renderer(width: int, label_w: int, mv):
         runs.append(StyledRun(_truncate_width(value, max(8, width - label_w - 8)),
                               _S_KEY if field.get("sensitive") else _S_FORM_VALUE))
         if field.get("required"):
-            runs.append(StyledRun(" *", _S_HINT))
+            runs.append(StyledRun(" *", _S_REQUIRED))
         if width > 0:
             runs = truncate_runs(runs, width)
         if is_sel:
@@ -812,16 +1010,20 @@ def ModelView(props) -> object:
 
     # ── 栏宽分配 ──
     if width > 0 and total:
-        name_w = min(30, max((_disp_width(str(e.get("name", ""))) for e in view_entries), default=10) + 2)
+        name_w = min(24, max((_disp_width(str(e.get("name", ""))) for e in view_entries), default=10) + 2)
         prov_w = min(12, max((_disp_width(str(e.get("provider", ""))) for e in view_entries), default=6) + 2)
+        model_w = min(26, max((_disp_width(str(e.get("model", ""))) for e in view_entries), default=10) + 2)
     else:
-        name_w, prov_w = 22, 8
+        name_w, prov_w, model_w = 20, 8, 18
     label_w = max((_disp_width(str(f.get("label", ""))) for f in PROFILE_FIELDS), default=8)
 
-    # ── 状态行 / 视口 ──
+    # ── 状态行 / 详情行 / 视口 ──
     status_text = "" if (editing or search_mode) else _status_text(mv, filter_active)
+    show_detail = bool(total > 0 and not editing and not help_open and not search_mode)
     extra_rows = (1 if search_mode else 0) + (1 if status_text else 0)
     if editing:
+        extra_rows += 2 if edit_mode == "field" else 1
+    if show_detail:
         extra_rows += 1
     vh = max(4, _viewport_rows() - extra_rows)
     list_h = max(1, vh - 1)
@@ -836,7 +1038,7 @@ def ModelView(props) -> object:
             _mi = matches[_idx_m]
             if 0 <= _mi < len(entries):
                 _cur_entry_id = id(entries[_mi])
-    render_entry = _make_entry_renderer(width, name_w, prov_w, _matched_ids, _cur_entry_id)
+    render_entry = _make_entry_renderer(width, name_w, prov_w, model_w, _matched_ids, _cur_entry_id)
     render_field = _make_field_renderer(width, label_w, mv)
 
     def _on_navigate(idx: int) -> None:
@@ -897,11 +1099,20 @@ def ModelView(props) -> object:
             "key": "mv-confirm",
         })
     elif total == 0:
-        ledger = h(TEXT, {
-            "children": "  暂无模型档案（未配置 model_profiles）· 按 a 新增（① 选提供商 ② 填模型名 ③ 填 API 密钥）",
-            "style": _S_HINT, "textWrap": "truncate-end", "height": 1,
-            "key": "mv-empty",
-        })
+        ledger = h(Column, None, [
+            h(TEXT, {
+                "styled": [
+                    StyledRun("  \u25c7 \u6682\u65e0\u6a21\u578b\u6863\u6848", _S_EMPTY_TITLE),
+                    StyledRun("   \uff08\u672a\u914d\u7f6e model_profiles\uff09", _S_HINT),
+                ],
+                "height": 1, "key": "mv-empty",
+            }),
+            h(TEXT, {
+                "children": "    \u6309 a \u65b0\u589e\uff1a\u2460 \u9009\u63d0\u4f9b\u5546 \u2192 \u2461 \u586b\u6a21\u578b\u540d \u2192 \u2462 \u586b API \u5bc6\u94a5\uff08\u63a5\u53e3\u5730\u5740\u81ea\u52a8\u586b\u597d\uff09",
+                "style": _S_HINT, "textWrap": "truncate-end", "height": 1,
+                "key": "mv-empty-hint",
+            }),
+        ])
     else:
         ledger = h(ListView, {
             "items": view_entries,
@@ -919,7 +1130,7 @@ def ModelView(props) -> object:
     elif help_open:
         header_hint = "  帮助面板 \u00b7 ? / q / Esc \u5173\u95ed"
     elif editing and edit_mode == "field":
-        header_hint = "  字段输入 \u00b7 Enter \u786e\u8ba4 \u00b7 Esc \u53d6\u6d88 \u00b7 Ctrl+U \u6e05\u7a7a"
+        header_hint = "  字段输入 \u00b7 \u2190\u2192 \u5149\u6807 \u00b7 Home/End \u9996\u672b \u00b7 Ctrl+U \u6e05\u7a7a \u00b7 Enter \u786e\u8ba4 \u00b7 Esc \u53d6\u6d88"
     elif editing and edit_mode == "select":
         header_hint = "  选择提供商（接口地址将自动填好）\u00b7 \u2191\u2193/jk \u9009\u62e9 \u00b7 Enter \u786e\u8ba4 \u00b7 Esc \u53d6\u6d88"
     elif editing and edit_mode == "confirm":
@@ -948,19 +1159,36 @@ def ModelView(props) -> object:
 
     # ── 底部行 ──
     bottom_rows: list = []
-    if editing and edit_mode == "field":
+    if help_open:
+        bottom_rows.append(h(TEXT, {
+            "children": "  \u2191\u2193/jk \u6eda\u52a8 \u00b7 ? / q / Esc \u5173\u95ed\u5e2e\u52a9",
+            "style": _S_HINT, "height": 1, "key": "mv-help-hint",
+        }))
+    elif editing and edit_mode == "field":
         keys = list(FIELD_KEYS)
         idx = max(0, min(int(getattr(mv, "form_selected", 0) or 0), len(keys) - 1))
         field = field_by_key(keys[idx]) or {}
-        disp = str(mv.form_edit_value or "")
-        if field.get("sensitive"):
-            disp = "*" * len(disp)
-        prompt = f"  \u258d \u270e {field.get('label', keys[idx])}: {disp}\u258f"
+        raw = str(mv.form_edit_value or "")
+        try:
+            cur = int(getattr(mv, "form_edit_cursor", len(raw)) or 0)
+        except (TypeError, ValueError):
+            cur = len(raw)
+        cur = max(0, min(cur, len(raw)))
+        text = "*" * len(raw) if field.get("sensitive") else raw
+        label = field.get("label", keys[idx])
+        before, after = text[:cur], text[cur:]
+        cur_ch = after[0] if after else " "
+        field_runs = [
+            StyledRun(f"  \u258d \u270e {label}: ", _S_EDIT),
+            StyledRun(before, _S_FORM_VALUE),
+            StyledRun(cur_ch, _S_CURSOR),
+            StyledRun(after[1:], _S_FORM_VALUE),
+        ]
         if width > 0:
-            prompt = _truncate_width(prompt, width)
+            field_runs = truncate_runs(field_runs, width)
         bottom_rows.append(h(TEXT, {
-            "children": prompt, "style": _S_EDIT,
-            "textWrap": "truncate-end", "height": 1, "key": "mv-field",
+            "styled": field_runs,
+            "height": 1, "key": "mv-field",
         }))
         hint = field.get("hint", "") or "Enter 确认 \u00b7 Esc 取消"
         bottom_rows.append(h(TEXT, {
@@ -991,8 +1219,12 @@ def ModelView(props) -> object:
                 "textWrap": "truncate-end", "height": 1, "key": "mv-form-err",
             }))
         else:
+            keys = list(FIELD_KEYS)
+            fidx = max(0, min(int(getattr(mv, "form_selected", 0) or 0), len(keys) - 1))
+            hint = str((field_by_key(keys[fidx]) or {}).get("hint", "") or "")
+            text = f"  {hint}  \u00b7  s 保存  \u00b7  Esc 取消" if hint else "  Enter 编辑字段 \u00b7 s 保存 \u00b7 Esc 取消"
             bottom_rows.append(h(TEXT, {
-                "children": "  Enter 编辑字段 \u00b7 s 保存 \u00b7 Esc 取消",
+                "children": text,
                 "style": _S_HINT, "height": 1, "key": "mv-form-hint",
             }))
     elif status_text:
@@ -1005,7 +1237,7 @@ def ModelView(props) -> object:
         }))
     else:
         bottom_rows.append(h(TEXT, {
-            "children": "  \u2191\u2193/jk \u9009\u62e9 \u00b7 Enter \u5e94\u7528 \u00b7 a \u65b0\u589e \u00b7 e \u7f16\u8f91 \u00b7 d \u5220\u9664 \u00b7 y \u590d\u5236 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u5173\u95ed",
+            "children": "  \u2191\u2193/jk \u9009\u62e9 \u00b7 Enter \u5e94\u7528 \u00b7 a \u65b0\u589e \u00b7 c \u590d\u5236 \u00b7 e \u7f16\u8f91 \u00b7 d \u5220\u9664 \u00b7 r \u5237\u65b0 \u00b7 y \u590d\u5236\u4fe1\u606f \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u5173\u95ed",
             "style": _S_HINT,
             "textWrap": "truncate-end", "height": 1, "key": "mv-hint",
         }))
@@ -1018,8 +1250,12 @@ def ModelView(props) -> object:
             "textWrap": "truncate-end", "height": 1, "key": "mv-search",
         }))
 
-    return h(Column, None, [
-        h(TEXT, {"styled": header_runs, "height": 1, "key": "mv-header"}),
-        h(Row, None, [ledger]),
-        h(Column, None, bottom_rows),
-    ])
+    body = [h(TEXT, {"styled": header_runs, "height": 1, "key": "mv-header"})]
+    if show_detail:
+        sel_entry = view_entries[selected] if 0 <= selected < total else None
+        detail_runs = _detail_runs(sel_entry, width)
+        if detail_runs:
+            body.append(h(TEXT, {"styled": detail_runs, "height": 1, "key": "mv-detail"}))
+    body.append(h(Row, None, [ledger]))
+    body.append(h(Column, None, bottom_rows))
+    return h(Column, None, body)

@@ -499,6 +499,8 @@ class ModelViewState:
         form_values: 表单字段值（``config.model_profiles.FIELD_KEYS`` 为键）。
         form_selected: 表单当前选中字段索引。
         form_edit_value: 字段输入缓冲（字符累积/退格删除）。
+        form_edit_cursor: 字段输入光标位置（0..len；支持 ←/→/Home/End
+            移动与中间插入/删除）。
         form_is_new: 是否新增（决定保存时 append 还是替换）。
         search_mode/search_query/search_pattern/search_matches/search_idx/
             search_filter: 搜索输入 / 已执行模式 / 匹配列表 / 当前匹配 / 过滤。
@@ -525,6 +527,7 @@ class ModelViewState:
     form_values: dict = field(default_factory=dict)
     form_selected: int = 0
     form_edit_value: str = ""
+    form_edit_cursor: int = 0
     form_is_new: bool = False
     # 「提供商」字段的选择界面（edit_mode == "select"）
     form_select_options: list = field(default_factory=list)
@@ -559,6 +562,7 @@ class ModelViewState:
         self.form_values = {}
         self.form_selected = 0
         self.form_edit_value = ""
+        self.form_edit_cursor = 0
         self.form_is_new = False
         self.form_select_options = []
         self.form_select_desc = []

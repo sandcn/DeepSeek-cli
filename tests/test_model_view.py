@@ -668,3 +668,262 @@ class TestCompletion:
         )
         # 完全相等 = 未混入任何内置 provider 模型
         assert CompletionEngine._fetch_models() == ["my-custom-model"]
+
+
+# ═══════════════════════════════════════════════════════════
+# 8. 美化与体验增强（2026-10-09 用户需求「美化，优化用户体验和操作 /models」）
+# ═══════════════════════════════════════════════════════════
+
+class TestUrlHost:
+    """接口地址 → 主机简写（列表行展示用）。"""
+
+    def test_extract_host_with_scheme(self):
+        from src.tui.app.model_view import _url_host
+        assert _url_host("https://api.deepseek.com/v1") == "api.deepseek.com"
+        assert _url_host("http://localhost:11434/v1") == "localhost:11434"
+
+    def test_extract_host_without_scheme(self):
+        from src.tui.app.model_view import _url_host
+        assert _url_host("api.example.com") == "api.example.com"
+        assert _url_host("api.example.com/v1") == "api.example.com"
+
+    def test_empty_url(self):
+        from src.tui.app.model_view import _url_host
+        assert _url_host("") == ""
+        assert _url_host(None) == ""
+
+
+class TestDetailLine:
+    """选中模型详情行（完整信息，随选中更新）。"""
+
+    def test_detail_runs_contain_all_fields(self):
+        from src.tui.app.model_view import _detail_runs
+        runs = _detail_runs(_profile_entry(), 160)
+        text = "".join(r.text for r in runs)
+        assert "qwen2.5" in text           # 模型名
+        assert "custom" in text            # 提供商
+        assert "http://localhost:11434/v1" in text  # 完整接口地址
+        assert "sk-...3456" in text        # 脱敏密钥
+
+    def test_detail_runs_empty_entry(self):
+        from src.tui.app.model_view import _detail_runs
+        assert _detail_runs(None, 80) == []
+        assert _detail_runs("not-a-dict", 80) == []
+
+    def test_detail_runs_truncated_to_width(self):
+        from src.tui.app.model_view import _detail_runs, _disp_width
+        runs = _detail_runs(_profile_entry(), 20)
+        assert 0 < _disp_width("".join(r.text for r in runs)) <= 20
+
+
+class TestProfileEntryValues:
+
+    def test_base_url_falls_back_to_effective(self):
+        from src.tui.app.model_view import _profile_entry_values
+        entry = {"model": "m", "provider": "custom"}  # 无 base_url
+        entry["effective_base_url"] = "http://x/v1"
+        values = _profile_entry_values(entry)
+        assert values["base_url"] == "http://x/v1"
+        assert values["model"] == "m"
+
+    def test_missing_keys_default_empty(self):
+        from src.tui.app.model_view import _profile_entry_values
+        values = _profile_entry_values({"model": "m"})
+        assert values["api_key"] == "" and values["name"] == ""
+
+
+class TestDuplicateAndRefresh:
+
+    def test_c_duplicates_profile_into_form(self, isolated_rc):
+        mv = _state([_profile_entry(
+            index=0, name="源档案", model="m-src", key="k", provider="deepseek",
+        )])
+        mv.selected = 0
+        assert _dispatch(mv, mv.entries, _ev("char", "c")) is True
+        assert mv.editing and mv.form_is_new
+        assert mv.form_values["model"] == "m-src"
+        assert mv.form_values["name"] == "源档案 副本"
+        assert "已复制" in mv.message
+
+    def test_c_on_non_profile_shows_hint(self):
+        mv = _state(entries=[_foreign_entry()])
+        mv.selected = 0
+        assert _dispatch(mv, mv.entries, _ev("char", "c")) is True
+        assert not mv.editing and "仅模型档案可复制" in mv.message
+
+    def test_r_refreshes_entries(self, isolated_rc):
+        mp.save_profiles([mp.normalize_profile({"model": "m1"})])
+        mv = _state()
+        mp.save_profiles([
+            mp.normalize_profile({"model": "m1"}),
+            mp.normalize_profile({"model": "m2"}),
+        ])
+        assert _dispatch(mv, mv.entries, _ev("char", "r")) is True
+        assert len(mv.entries) == 2
+        assert "已刷新" in mv.message
+
+
+class TestFieldCursorEditing:
+    """字段输入光标编辑（←/→/Home/End/Delete/Ctrl+A/E · 中间插入）。"""
+
+    def _edit_model_field(self, mv):
+        mv.selected = 0
+        _dispatch(mv, mv.entries, _ev("char", "e"))
+        mv.form_selected = 1  # 模型名
+        _dispatch(mv, mv.entries, _ev("enter"))
+        return mv
+
+    def test_cursor_starts_at_end(self):
+        mv = self._edit_model_field(_state())
+        assert mv.edit_mode == "field"
+        assert mv.form_edit_value == "qwen2.5"
+        assert mv.form_edit_cursor == len("qwen2.5")
+
+    def test_insert_at_cursor(self):
+        mv = self._edit_model_field(_state())
+        _dispatch(mv, mv.entries, _ev("arrow_left"))
+        _dispatch(mv, mv.entries, _ev("arrow_left"))
+        assert mv.form_edit_cursor == len("qwen2.5") - 2
+        _dispatch(mv, mv.entries, _ev("char", "X"))
+        assert mv.form_edit_value == "qwen2X.5"
+        assert mv.form_edit_cursor == len("qwen2.5") - 2 + 1
+
+    def test_home_end_and_ctrl_variants(self):
+        mv = self._edit_model_field(_state())
+        _dispatch(mv, mv.entries, _ev("home"))
+        assert mv.form_edit_cursor == 0
+        _dispatch(mv, mv.entries, _ev("char", "Z"))
+        assert mv.form_edit_value.startswith("Z")
+        _dispatch(mv, mv.entries, _ev("end"))
+        assert mv.form_edit_cursor == len(mv.form_edit_value)
+        _dispatch(mv, mv.entries, _ev("ctrl_key", "\x01"))  # Ctrl+A
+        assert mv.form_edit_cursor == 0
+        _dispatch(mv, mv.entries, _ev("ctrl_key", "\x05"))  # Ctrl+E
+        assert mv.form_edit_cursor == len(mv.form_edit_value)
+
+    def test_delete_at_cursor(self):
+        mv = self._edit_model_field(_state())
+        _dispatch(mv, mv.entries, _ev("home"))
+        _dispatch(mv, mv.entries, _ev("delete"))
+        assert mv.form_edit_value == "wen2.5"
+
+    def test_backspace_at_cursor_middle(self):
+        mv = self._edit_model_field(_state())
+        _dispatch(mv, mv.entries, _ev("home"))
+        _dispatch(mv, mv.entries, _ev("arrow_right"))
+        _dispatch(mv, mv.entries, _ev("backspace"))
+        assert mv.form_edit_value == "wen2.5"
+
+    def test_ctrl_u_clears_and_resets_cursor(self):
+        mv = self._edit_model_field(_state())
+        _dispatch(mv, mv.entries, _ev("ctrl_key", "\x15"))  # Ctrl+U
+        assert mv.form_edit_value == "" and mv.form_edit_cursor == 0
+
+    def test_commit_resets_cursor(self):
+        mv = self._edit_model_field(_state())
+        _dispatch(mv, mv.entries, _ev("enter"))
+        assert mv.edit_mode == "form"
+        assert mv.form_edit_cursor == 0
+
+    def test_paste_inserts_at_cursor(self):
+        mv = self._edit_model_field(_state())
+        _dispatch(mv, mv.entries, _ev("home"))
+        assert _handle_model_paste(mv, True, "AB") is True
+        assert mv.form_edit_value.startswith("AB")
+        assert mv.form_edit_cursor == 2
+
+
+class TestRenderEnhancements(TestRender):
+    """渲染层美化（列表双列 / 详情行 / 空态 / 帮助页脚优先级）。"""
+
+    def test_list_row_shows_model_and_host(self):
+        mv = _state([_profile_entry(
+            name="显示名", model="my-model", base="http://myhost.example/v1",
+        )])
+        out = self._render(mv)
+        assert "my-model" in out          # 模型名不再被地址覆盖
+        assert "myhost.example" in out    # 主机简写
+        assert "http://myhost.example/v1" in out  # 详情行完整地址
+
+    def test_detail_line_tracks_selection(self):
+        mv = _state([
+            _profile_entry(0, name="甲", model="model-a", base="http://a.example/v1"),
+            _profile_entry(1, name="乙", model="model-b", base="http://b.example/v1"),
+        ])
+        mv.selected = 1
+        out = self._render(mv)
+        assert "http://b.example/v1" in out
+        assert "\u21b3" in out  # ↳ 详情行标记
+
+    def test_empty_state_two_line_card(self):
+        mv = _state(entries=[])
+        out = self._render(mv)
+        assert "暂无模型档案" in out
+        assert "按 a 新增" in out
+
+    def test_help_footer_priority_over_form(self):
+        mv = _state()
+        _dispatch(mv, mv.entries, _ev("char", "a"))  # 进入表单
+        mv.help_open = True
+        out = self._render(mv)
+        assert "关闭帮助" in out
+        assert "s 保存  \u00b7  Esc 取消" not in out  # 表单页脚被帮助页脚抑制
+
+    def test_no_detail_line_in_form_mode(self):
+        mv = _state()
+        _dispatch(mv, mv.entries, _ev("char", "a"))
+        out = self._render(mv)
+        assert "\u21b3" not in out
+
+
+class TestKeymapData:
+
+    def test_new_keys_documented(self):
+        from src.presentation_data import MODEL_KEYMAP_DATA
+        keys = {item["keys"] for item in MODEL_KEYMAP_DATA}
+        assert "c" in keys and "r" in keys
+        groups = {item["group"] for item in MODEL_KEYMAP_DATA}
+        assert "输入" in groups  # 字段输入（光标编辑）分组
+
+
+class TestStateCursorField:
+
+    def test_default_and_reset(self):
+        st = ModelViewState()
+        assert st.form_edit_cursor == 0
+        st.form_edit_cursor = 5
+        st.reset_edit_state()
+        assert st.form_edit_cursor == 0
+
+
+class TestSelectionContinuity:
+    """保存 / 删除后选中定位（浏览连续性）。"""
+
+    def test_save_locates_saved_entry(self, isolated_rc):
+        mp.save_profiles([mp.normalize_profile({"model": "m1"})])
+        mv = ModelViewState(visible=True, entries=mp.build_model_entries())
+        _dispatch(mv, mv.entries, _ev("char", "a"))
+        mv.form_values = mp.normalize_profile({"provider": "deepseek", "model": "m2"})
+        _dispatch(mv, mv.entries, _ev("char", "s"))
+        assert len(mv.entries) == 2
+        assert mv.selected == 1  # 定位到刚保存的新条目
+
+    def test_delete_keeps_selection_nearby(self, isolated_rc):
+        mp.save_profiles([{"model": "m1"}, {"model": "m2"}, {"model": "m3"}])
+        mv = ModelViewState(visible=True, entries=mp.build_model_entries())
+        mv.selected = 0
+        _dispatch(mv, mv.entries, _ev("char", "d"))
+        _dispatch(mv, mv.entries, _ev("enter"))
+        assert len(mp.load_profiles()) == 2
+        assert mv.selected == 0  # 原位置由后续条目顶上
+
+
+class TestFormHelp:
+
+    def test_question_in_form_opens_help(self):
+        mv = _state()
+        _dispatch(mv, mv.entries, _ev("char", "a"))
+        assert _dispatch(mv, mv.entries, _ev("char", "?")) is True
+        assert mv.help_open is True and mv.editing is True
+        _dispatch(mv, mv.entries, _ev("char", "q"))
+        assert mv.help_open is False and mv.editing is True  # 关闭后回到表单
