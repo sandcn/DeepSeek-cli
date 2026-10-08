@@ -2,7 +2,7 @@
 
 覆盖：
   - DEFAULTS 上下文阈值为 1M token 窗口（token / 字符 / 强压阈值 / 窗口分母）；
-  - auto_force_compress_threshold 为 token 口径且默认 400k tokens（2026-10-09
+  - auto_force_compress_threshold 为 token 口径且默认 600k tokens（2026-10-09
     用户需求：单位由字符改为 token）；
   - CONFIG_KEYS 的 default 引用 DEFAULTS（单一事实源，无 60000 双源漂移）；
   - MockConfigAdapter 缺省回退与 DEFAULTS 一致、DefaultConfigAdapter 与配置同源；
@@ -30,9 +30,9 @@ class TestContextWindowDefaults:
     def test_char_threshold_is_three_million(self):
         assert DEFAULTS["max_context_chars"] == 3_000_000
 
-    def test_auto_force_threshold_is_token_based_400k(self):
-        """auto_force_compress_threshold 为 token 口径，默认 400k tokens。"""
-        assert DEFAULTS["auto_force_compress_threshold"] == 400_000
+    def test_auto_force_threshold_is_token_based_600k(self):
+        """auto_force_compress_threshold 为 token 口径，默认 600k tokens。"""
+        assert DEFAULTS["auto_force_compress_threshold"] == 600_000
         # 与 max_context_tokens 同口径且更严格（先于窗口上限触发全量压缩）
         assert DEFAULTS["auto_force_compress_threshold"] < DEFAULTS["max_context_tokens"]
 
@@ -108,13 +108,13 @@ class TestSchemaValidation:
         assert rc["max_context_chars"] == DEFAULTS["max_context_chars"]
 
     def test_negative_auto_force_threshold_falls_back_to_default(self):
-        """token 口径强压阈值为负 → 回退默认 400k。"""
+        """token 口径强压阈值为负 → 回退默认 600k。"""
         from src.config.schema import _validate_rc
 
         rc = _validate_rc({"auto_force_compress_threshold": -1})
         assert (
             rc["auto_force_compress_threshold"]
-            == DEFAULTS["auto_force_compress_threshold"] == 400_000
+            == DEFAULTS["auto_force_compress_threshold"] == 600_000
         )
 
 

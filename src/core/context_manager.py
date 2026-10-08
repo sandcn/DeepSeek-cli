@@ -667,7 +667,7 @@ class ContextManager:
         """自动全量压缩阈值判定（``auto_force_compress_threshold``，token 口径）。
 
         ``auto_force_compress_threshold`` 为「当前上下文 tokens 超过即强制
-        全量压缩」的阈值（单位 token，默认 400k）。
+        全量压缩」的阈值（单位 token，默认 600k）。
 
         ★ 口径与 TUI 模式行 ``main · N%`` 显示**同源**（``measure_context``
         → ``_current_tokens_locked``：真实基线优先 → 全量估算），因此

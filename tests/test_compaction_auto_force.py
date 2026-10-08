@@ -7,7 +7,7 @@
 
 本文件固化修复后的语义：
 - ``auto_force_compress_threshold`` 为 **token 口径**（2026-10-09 用户需求：
-  单位由字符改为 token，默认 400k）；
+  单位由字符改为 token，默认 600k）；
 - 引擎路径同样尊重 ``auto_force_compress_threshold``（命中 → force 全量压缩）；
 - ``max_context_chars`` 字符口径参与引擎的常规压力触发判定；
 - 回退策略链行为不回归。

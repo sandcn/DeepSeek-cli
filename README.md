@@ -78,7 +78,7 @@ pip install ".[dev]"
     "theme": "dark",
     "max_context_tokens": 1000000,
     "summary_token_budget": 2000,
-    "auto_force_compress_threshold": 400000,
+    "auto_force_compress_threshold": 600000,
     "enable_notifications": true,
     "notify_on_chat_completion": true,
     "image_upload_optimize": true,

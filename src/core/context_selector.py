@@ -56,7 +56,7 @@ def should_auto_force_values(total_chars_val, total_tokens_val,
     """使用预计算的值检查是否应自动全量压缩。
 
     ``auto_force_threshold`` 为 **token 口径**阈值（2026-10-09 用户需求：
-    单位由字符改为 token，默认 400k）——当前上下文估算 tokens 超过该阈值
+    单位由字符改为 token，默认 600k）——当前上下文估算 tokens 超过该阈值
     即强制全量压缩；<=0 表示不启用该规则。
 
     形参 ``total_chars_val`` / ``max_context_tokens`` 保留以兼容既有调用方

@@ -103,7 +103,7 @@ class ConfigPort(ABC):
 
     @abstractmethod
     def get_auto_force_compress_threshold(self) -> int:
-        """获取 auto_force_compress_threshold 配置值（token 口径，默认 400k）。
+        """获取 auto_force_compress_threshold 配置值（token 口径，默认 600k）。
 
         当前上下文估算 tokens 超过该值即强制全量压缩；<=0 表示不启用。
         """

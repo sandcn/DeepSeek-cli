@@ -115,7 +115,7 @@ class MockConfigAdapter(ConfigPort):
         return int(self._data.get("keep_recent_messages", 0))
 
     def get_auto_force_compress_threshold(self) -> int:
-        """自动全量压缩阈值（token 口径，默认 400k）。"""
+        """自动全量压缩阈值（token 口径，默认 600k）。"""
         return int(self._data.get(
             "auto_force_compress_threshold", DEFAULTS["auto_force_compress_threshold"],
         ))
