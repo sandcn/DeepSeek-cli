@@ -36,6 +36,19 @@ def _cmd_load(ctx):
         _out.write(f"{YELLOW}  ! 用法: /load <会话ID>{RESET}", level="raw", source="cmd")
         _out.write(f"  {DIM}  输入 /sessions 查看所有保存的对话{RESET}", level="raw", source="cmd")
         return True
+    _load_session_by_id(ctx, arg)
+    return True
+
+
+def _load_session_by_id(ctx, session_id: str) -> bool:
+    """按 ID 加载会话到当前上下文（自动保存当前会话 + 清空沙盒）。
+
+    供 ``/load`` 命令与「会话浏览器视图」（SessionsView 加载回传）共用；
+    返回是否成功加载（会话不存在/无消息返回 False）。
+    """
+    arg = str(session_id or "").strip()
+    if not arg:
+        return False
 
     # ── 第1步：自动保存当前会话（如有非 system 消息） ──────────
     non_system_current = filter_non_system(ctx.messages)
@@ -65,12 +78,12 @@ def _cmd_load(ctx):
     data = _p.load_session(arg)
     if data is None:
         _out.write(f"{YELLOW}  ! 未找到会话 '{arg}'{RESET}", level="raw", source="cmd")
-        return True
+        return False
 
     loaded_msgs = data.get("messages", [])
     if not loaded_msgs:
         _out.write(f"{YELLOW}  ! 该会话没有消息{RESET}", level="raw", source="cmd")
-        return True
+        return False
 
     # 替换当前消息（保留 system 消息）
     system_msgs = filter_system(ctx.messages)
@@ -117,8 +130,127 @@ def _cmd_load(ctx):
     return True
 
 
+#: 会话预览最大加载会话数（避免超大历史目录一次性读全量文件）。
+_SESSION_PREVIEW_LIMIT = 200
+#: 单个会话预览最大消息行数。
+_SESSION_PREVIEW_LINES = 40
+
+
+def _msg_text(content) -> str:
+    """消息 content → 纯文本（兼容 str 与多模态 content blocks）。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text" or "text" in block:
+                    parts.append(str(block.get("text", "")))
+            elif isinstance(block, str):
+                parts.append(block)
+        return " ".join(parts)
+    return "" if content is None else str(content)
+
+
+#: 角色标签（会话预览显示）。
+_ROLE_LABELS = {"user": "用户", "assistant": "助手", "tool": "工具", "system": "系统"}
+
+
+def _session_preview(data, max_lines: int = _SESSION_PREVIEW_LINES) -> list:
+    """会话数据 → 预览行 ``[(角色, 单行文本), ...]``。"""
+    if not isinstance(data, dict):
+        return []
+    lines: list = []
+    for msg in (data.get("messages") or []):
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "?"))
+        text = " ".join(_msg_text(msg.get("content")).split())
+        if role == "tool" and not text:
+            text = str(msg.get("name", "")) or "(工具返回)"
+        label = _ROLE_LABELS.get(role, role)
+        lines.append((label, text[:120] if text else "(空)"))
+        if len(lines) >= int(max_lines):
+            break
+    return lines
+
+
+def _build_session_entries(persistence, *, limit: int = _SESSION_PREVIEW_LIMIT) -> list:
+    """构建会话浏览器条目（摘要 + 预览行）。"""
+    try:
+        sessions = list(persistence.list_sessions() or [])
+    except Exception:
+        sessions = []
+    out: list = []
+    for s in sessions[: int(limit)]:
+        if not isinstance(s, dict):
+            continue
+        entry = dict(s)
+        try:
+            data = persistence.load_session(s.get("id"))
+        except Exception:
+            data = None
+        entry["preview_lines"] = _session_preview(data)
+        out.append(entry)
+    return out
+
+
+def _open_sessions_ui(ctx) -> bool:
+    """打开全屏会话浏览器视图（有 ChatUI 时）。返回是否已打开处理。"""
+    from ..adapters.ui_runtime import get_sessions_view_state_cls
+    from ._view_opener import open_fullscreen_view
+
+    _p = _resolve_persistence(ctx)
+    applied_seq = {"v": 0}
+
+    def setup(model, state):
+        state.entries = _build_session_entries(_p)
+
+    def tick(state) -> bool:
+        if state.applied_seq > applied_seq["v"]:
+            applied_seq["v"] = state.applied_seq
+            report = state.applied or {}
+            action = report.get("action")
+            sid = str(report.get("id", "") or "")
+            if action == "load":
+                if _load_session_by_id(ctx, sid):
+                    state.status_message = "已加载会话"
+                    return True
+                state.status_message = f"加载失败：{sid}"
+            elif action == "rename":
+                try:
+                    ok = bool(_p.rename_session(sid, str(report.get("title", "") or "")))
+                except Exception:
+                    ok = False
+                state.status_message = "已重命名" if ok else "重命名失败"
+                state.entries = _build_session_entries(_p)
+            elif action == "delete":
+                try:
+                    ok = bool(_p.delete_session(sid))
+                except Exception:
+                    ok = False
+                state.status_message = "已删除" if ok else "删除失败"
+                state.entries = _build_session_entries(_p)
+                state.selected = 0
+                state.delete_confirm = ""
+        return False
+
+    return open_fullscreen_view(
+        ctx, view_id="sessions", state_attr="sessions_view",
+        state_cls=get_sessions_view_state_cls(), setup=setup, on_tick=tick,
+        close_hint="会话浏览器已关闭", timeout_hint="会话浏览器超时关闭",
+    )
+
+
 def _cmd_sessions(ctx):
-    """列出所有保存的对话"""
+    """列出所有保存的对话（有 ChatUI 时打开会话浏览器视图）。"""
+    if _open_sessions_ui(ctx):
+        return True
+    return _sessions_text(ctx)
+
+
+def _sessions_text(ctx):
+    """文本列出所有保存的对话（无 ChatUI / 单次模式回退）。"""
     _p = _resolve_persistence(ctx)
     sessions = _p.list_sessions()
     if not sessions:

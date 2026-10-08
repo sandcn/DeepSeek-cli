@@ -50,6 +50,17 @@ from src.tui.app._state_types import (
     StatusState,
     HistorySearchState,
     ReasoningState,
+    SessionsViewState,
+    ChangesViewState,
+    ThemeViewState,
+    SkillViewState,
+    McpViewState,
+    UsageViewState,
+    SearchViewState,
+    OutlineViewState,
+    KeymapViewState,
+    NotifyViewState,
+    ExportViewState,
 )
 from src.tui.app._model_helpers import (
     _TOOL_INCREMENTAL_THRESHOLD,
@@ -152,6 +163,21 @@ class AppModel(_ToolOutputMixin):
         # provider）；命令线程轮询 done 清理。状态类型见 _state_types.py
         # ModelViewState，组件见 app/model_view.py。）
         self.model_view: ModelViewState = ModelViewState()
+        # ── 2026-10 新增全屏视图状态（sessions/changes/theme/skill/mcp/
+        #    usage/search/outline/keymap/notify/export）——各视图状态类型见
+        #    _state_types.py，组件见 app/<name>_view.py，命令线程经通用
+        #    opener（core/commands/_view_opener.py）打开并轮询 done 清理。 ──
+        self.sessions_view: SessionsViewState = SessionsViewState()
+        self.changes_view: ChangesViewState = ChangesViewState()
+        self.theme_view: ThemeViewState = ThemeViewState()
+        self.skill_view: SkillViewState = SkillViewState()
+        self.mcp_view: McpViewState = McpViewState()
+        self.usage_view: UsageViewState = UsageViewState()
+        self.search_view: SearchViewState = SearchViewState()
+        self.outline_view: OutlineViewState = OutlineViewState()
+        self.keymap_view: KeymapViewState = KeymapViewState()
+        self.notify_view: NotifyViewState = NotifyViewState()
+        self.export_view: ExportViewState = ExportViewState()
         # 实时解析进度行（同位置刷新；ParseInfoDone 后提交并清空）
         self.parse_line: Any = None
         # subagent 面板行（控制器推送）
@@ -1130,6 +1156,25 @@ class AppModel(_ToolOutputMixin):
         #   保证 key 唯一，清屏后再次打开强制重挂载，不残留旧选中/旧表单态）。
         prev_mv_seq = getattr(self.model_view, "seq", 0)
         self.model_view = ModelViewState(seq=prev_mv_seq)
+        # ★ 2026-10（新增全屏视图批次）：清屏同时重置各视图状态（与
+        #   config_view 同语义——残留视图状态让命令轮询 done 期间视图消失，
+        #   轮询等待空转到超时）。**保留 seq**（seq 单调递增保证 App key 唯一，
+        #   清屏后再次打开强制重挂载，不残留旧选中/旧输入态）。
+        for _attr, _cls in (
+            ("sessions_view", SessionsViewState),
+            ("changes_view", ChangesViewState),
+            ("theme_view", ThemeViewState),
+            ("skill_view", SkillViewState),
+            ("mcp_view", McpViewState),
+            ("usage_view", UsageViewState),
+            ("search_view", SearchViewState),
+            ("outline_view", OutlineViewState),
+            ("keymap_view", KeymapViewState),
+            ("notify_view", NotifyViewState),
+            ("export_view", ExportViewState),
+        ):
+            _prev = getattr(self, _attr, None)
+            setattr(self, _attr, _cls(seq=getattr(_prev, "seq", 0)))
 
     # ── 未声明字段访问告警（可维护性） ──
     # 组件树大量经 ``getattr(model, "字段", 默认)`` 读取状态——拼写错误会静默

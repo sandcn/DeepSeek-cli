@@ -286,7 +286,14 @@ def _cmd_editmsg(ctx):
 # ── /changes 沙盒命令 ───────────────────────────────────
 
 def _cmd_changes(ctx):
-    """显示文件沙盒中被改变文件的 diff"""
+    """显示文件沙盒中被改变文件的 diff（有 ChatUI 时打开变更审查器视图）。"""
+    if _open_changes_ui(ctx):
+        return True
+    return _changes_text(ctx)
+
+
+def _changes_text(ctx):
+    """文本显示变更记录（无 ChatUI / 单次模式回退）。"""
     sandbox = get_sandbox_manager()
     if not sandbox:
         _out.write(f"{YELLOW}  ! 文件沙盒未初始化{RESET}", level="raw", source="cmd")
@@ -355,6 +362,104 @@ def _cmd_changes(ctx):
 
     _out.write("", level="raw", source="cmd")
     return True
+
+
+# ── 文件变更审查器视图（/changes 有 ChatUI 时） ──────────────
+
+def _build_change_entries(sandbox) -> list:
+    """文件沙盒变更 → 审查器条目列表（按文件分组聚合首末内容）。"""
+    try:
+        records = sandbox.get_all_file_changes() or []
+    except Exception:
+        records = []
+    groups: dict = {}
+    for r in records:
+        groups.setdefault(r.file_path, []).append(r)
+    entries: list = []
+    for path, recs in sorted(groups.items()):
+        if not recs:
+            continue
+        first, last = recs[0], recs[-1]
+        before, after = first.content_before, last.content_after
+        if before is None and after is not None:
+            label = "新建"
+        elif before is not None and after is None:
+            label = "删除"
+        elif before == after:
+            label = "无变化"
+        else:
+            label = "修改"
+        entries.append({
+            "path": path,
+            "change_label": label,
+            "before": before,
+            "after": after,
+            "records": len(recs),
+            "message_index": f"{first.message_index}-{last.message_index}",
+        })
+    return entries
+
+
+def _revert_change(sandbox, entry) -> bool:
+    """回滚单个文件到其首次变更前内容，并记录回滚动作保持沙盒一致。"""
+    path = str(entry.get("path", "")) if entry else ""
+    if not path:
+        return False
+    before = entry.get("before")
+    after = entry.get("after")
+    try:
+        from .._atomic_io import atomic_write_text, remove_path
+
+        if before is None:
+            remove_path(path)
+            restored = None
+        else:
+            atomic_write_text(path, before)
+            restored = before
+    except Exception:
+        _logger.debug("回滚文件失败: %s", path, exc_info=True)
+        return False
+    try:
+        idx = sandbox.get_current_message_index_safe()
+        sandbox.record_file_change(path, after, restored, idx, tool_name="revert")
+    except Exception:
+        _logger.debug("记录回滚动作失败: %s", path, exc_info=True)
+    return True
+
+
+def _open_changes_ui(ctx) -> bool:
+    """打开全屏文件变更审查器视图（有 ChatUI 时）。返回是否已打开处理。"""
+    from ..adapters.ui_runtime import get_changes_view_state_cls
+    from ._view_opener import open_fullscreen_view
+
+    sandbox = get_sandbox_manager()
+    if not sandbox:
+        return False
+    applied_seq = {"v": 0}
+
+    def setup(model, state):
+        state.entries = _build_change_entries(sandbox)
+
+    def tick(state) -> bool:
+        if state.applied_seq > applied_seq["v"]:
+            applied_seq["v"] = state.applied_seq
+            report = state.applied or {}
+            if report.get("action") == "revert":
+                path = str(report.get("path", "") or "")
+                target = next(
+                    (e for e in state.entries if e.get("path") == path), None,
+                )
+                ok = _revert_change(sandbox, target) if target is not None else False
+                state.status_message = f"已回滚：{path}" if ok else f"回滚失败：{path}"
+                state.entries = _build_change_entries(sandbox)
+                state.revert_confirm = ""
+        return False
+
+    return open_fullscreen_view(
+        ctx, view_id="changes", state_attr="changes_view",
+        state_cls=get_changes_view_state_cls(), setup=setup, on_tick=tick,
+        close_hint="变更审查器已关闭", timeout_hint="变更审查器超时关闭",
+    )
 
 
 # ── CommandPlugin 子类 ──────────────────────────────

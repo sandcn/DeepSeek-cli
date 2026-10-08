@@ -73,6 +73,9 @@ async def test_default_profile_registers_all(cli_kernel):
     assert set(cli_kernel.resolve_service("ui").views()) == {
         "trace", "trace_tools", "config", "plugin", "help", "model",
         "user_select", "editmsg",
+        # 2026-10 新增全屏视图批次
+        "sessions", "changes", "theme", "skill", "mcp", "usage",
+        "search", "outline", "keymap", "notify", "export",
     }
 
 

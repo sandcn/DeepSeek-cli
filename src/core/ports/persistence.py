@@ -44,6 +44,13 @@ class PersistencePort(ABC):
     def delete_session(self, session_id: str) -> bool:
         """删除指定会话，成功返回 True，不存在 / 失败返回 False。"""
 
+    def rename_session(self, session_id: str, new_title: str) -> bool:
+        """重命名指定会话的标题（可选能力，默认不支持返回 False）。
+
+        实现方可覆盖；调用方（如会话浏览器视图）在返回 False 时提示不支持。
+        """
+        return False
+
     @abstractmethod
     def get_recover_cmd(self, session_id: str) -> str:
         """获取恢复指定会话的命令行提示字符串。"""

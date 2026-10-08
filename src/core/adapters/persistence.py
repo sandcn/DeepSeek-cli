@@ -33,6 +33,10 @@ class JsonFilePersistence(PersistencePort):
         from ...chat_msgs import delete_session as _delete
         return _delete(session_id)
 
+    def rename_session(self, session_id: str, new_title: str) -> bool:
+        from ...chat_msgs import rename_session as _rename
+        return _rename(session_id, new_title)
+
     def get_recover_cmd(self, session_id: str) -> str:
         from ...chat_msgs import get_recover_cmd as _cmd
         return _cmd(session_id)

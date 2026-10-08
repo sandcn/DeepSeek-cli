@@ -69,6 +69,124 @@ def get_model_view_state_cls():
     return _cls
 
 
+def _state_cls(name: str):
+    """按名返回 ``_state_types`` 中的状态数据类（新增全屏视图批次共用）。"""
+    from ...tui.app import _state_types as _mod
+    return getattr(_mod, name)
+
+
+def get_sessions_view_state_cls():
+    """返回 SessionsViewState 数据类（会话浏览器）。"""
+    return _state_cls("SessionsViewState")
+
+
+def get_changes_view_state_cls():
+    """返回 ChangesViewState 数据类（文件变更审查器）。"""
+    return _state_cls("ChangesViewState")
+
+
+def get_theme_view_state_cls():
+    """返回 ThemeViewState 数据类（主题选择器）。"""
+    return _state_cls("ThemeViewState")
+
+
+def get_skill_view_state_cls():
+    """返回 SkillViewState 数据类（技能浏览器）。"""
+    return _state_cls("SkillViewState")
+
+
+def get_mcp_view_state_cls():
+    """返回 McpViewState 数据类（MCP 服务器管理）。"""
+    return _state_cls("McpViewState")
+
+
+def get_usage_view_state_cls():
+    """返回 UsageViewState 数据类（用量仪表盘）。"""
+    return _state_cls("UsageViewState")
+
+
+def get_search_view_state_cls():
+    """返回 SearchViewState 数据类（对话内全文搜索）。"""
+    return _state_cls("SearchViewState")
+
+
+def get_outline_view_state_cls():
+    """返回 OutlineViewState 数据类（消息大纲导航）。"""
+    return _state_cls("OutlineViewState")
+
+
+def get_keymap_view_state_cls():
+    """返回 KeymapViewState 数据类（键位自定义编辑器）。"""
+    return _state_cls("KeymapViewState")
+
+
+def get_notify_view_state_cls():
+    """返回 NotifyViewState 数据类（通知 / 事件日志）。"""
+    return _state_cls("NotifyViewState")
+
+
+def get_export_view_state_cls():
+    """返回 ExportViewState 数据类（导出向导）。"""
+    return _state_cls("ExportViewState")
+
+
+def list_keybindings() -> list:
+    """返回当前生效的键位绑定（供键位编辑器展示；core 层不直连 tui）。"""
+    try:
+        from ...tui._keybindings import (
+            active_keybindings,
+            default_keybinding,
+            key_to_combo,
+        )
+    except Exception:
+        return []
+    out: list = []
+    for spec_id, spec in active_keybindings().items():
+        try:
+            default_combo = key_to_combo(default_keybinding(spec_id).key)
+        except Exception:
+            default_combo = ""
+        out.append({
+            "id": spec_id,
+            "key": spec.key,
+            "combo": key_to_combo(spec.key),
+            "default_combo": default_combo,
+            "action": spec.action,
+            "description": spec.description,
+        })
+    return out
+
+
+def register_keybinding_override(spec_id: str, combo: str) -> bool:
+    """注册一个键位覆盖（运行时生效；不持久化）。
+
+    组合键文本非法 / 未知绑定 id → 返回 False。
+    """
+    try:
+        from ...tui._keybindings import (
+            KeyBinding,
+            combo_to_key,
+            default_keybinding,
+            register_builtin_keybinding,
+        )
+    except Exception:
+        return False
+    key = combo_to_key(combo)
+    if key is None:
+        return False
+    try:
+        base = default_keybinding(spec_id)
+    except Exception:
+        return False
+    try:
+        register_builtin_keybinding(
+            spec_id, KeyBinding(spec_id, key, base.action, base.description),
+        )
+    except Exception:
+        return False
+    return True
+
+
 def get_theme_registry():
     """返回 ThemeRegistry（主题集单一真源）。"""
     from ...tui.core._theme import ThemeRegistry as _cls
@@ -141,6 +259,19 @@ __all__ = [
     "get_config_view_state_cls",
     "get_plugin_view_state_cls",
     "get_model_view_state_cls",
+    "get_sessions_view_state_cls",
+    "get_changes_view_state_cls",
+    "get_theme_view_state_cls",
+    "get_skill_view_state_cls",
+    "get_mcp_view_state_cls",
+    "get_usage_view_state_cls",
+    "get_search_view_state_cls",
+    "get_outline_view_state_cls",
+    "get_keymap_view_state_cls",
+    "get_notify_view_state_cls",
+    "get_export_view_state_cls",
+    "list_keybindings",
+    "register_keybinding_override",
     "get_theme_registry",
     "invalidate_palette_cache",
     "render_diff_to_ansi",

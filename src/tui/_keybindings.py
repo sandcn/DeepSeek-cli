@@ -214,6 +214,70 @@ def resolve_binding(key: str) -> Optional[str]:
     return None
 
 
+# ── 组合键文本 ↔ 控制字符（键位编辑器 / 配置持久化） ──────────
+
+#: 非字母符号的 Ctrl 组合键映射（符号 → 控制字符码点）。
+_CTRL_SYMBOLS: Dict[str, int] = {
+    "space": 0x00,
+    "[": 0x1B,
+    "\\": 0x1C,
+    "]": 0x1D,
+    "^": 0x1E,
+    "/": 0x1F,
+    "_": 0x1F,
+    "?": 0x7F,
+}
+#: 控制字符码点 → 组合键符号（key_to_combo 用）。
+_SYMBOL_BY_CODE: Dict[int, str] = {
+    0x00: "space",
+    0x1B: "[",
+    0x1C: "\\",
+    0x1D: "]",
+    0x1E: "^",
+    0x1F: "/",
+    0x7F: "?",
+}
+
+
+def combo_to_key(text: str) -> Optional[str]:
+    """组合键文本 → 控制字符（如 ``ctrl+g`` / ``^g`` → ``"\\x07"``）。
+
+    接受前缀 ``ctrl+`` / ``c-`` / ``^``；字母（a-z，大小写均可）与少量符号
+    （space / [ / \\ / ] / ^ / / / ?）。无法解析返回 None。
+    """
+    t = str(text or "").strip()
+    if not t:
+        return None
+    low = t.lower()
+    for pre in ("ctrl+", "c-", "^"):
+        if low.startswith(pre):
+            t = t[len(pre):]
+            break
+    else:
+        return None
+    if not t:
+        return None
+    token = t.lower()
+    if token in _CTRL_SYMBOLS:
+        return chr(_CTRL_SYMBOLS[token])
+    if len(t) == 1 and t.isalpha():
+        return chr(ord(t.upper()) - 64)
+    return None
+
+
+def key_to_combo(key: str) -> str:
+    """控制字符 → 组合键文本（如 ``"\\x07"`` → ``ctrl+g``）。"""
+    if not key or len(key) != 1:
+        return ""
+    code = ord(key)
+    if 1 <= code <= 26:
+        return "ctrl+" + chr(code + 64).lower()
+    symbol = _SYMBOL_BY_CODE.get(code)
+    if symbol is not None:
+        return "ctrl+" + symbol
+    return ""
+
+
 def clear() -> None:
     """清空扩展项与清单注册（测试用；不影响内置默认与禁用状态）。"""
     with _lock:
@@ -244,6 +308,8 @@ __all__ = [
     "unregister_keybinding",
     "extension_keybindings",
     "resolve_binding",
+    "combo_to_key",
+    "key_to_combo",
     "clear",
     "reset",
 ]

@@ -304,6 +304,19 @@ COMMAND_PLUGIN_ENTRIES = [
      "config": {"command": "src.core.commands.plugins.compact_plugin.CompactPlugin", "name": "compact"}},
     {"id": "cmd_context", "plugin": "src.plugins.command_plugin",
      "config": {"command": "src.core.commands.plugins.context_plugin.ContextPlugin", "name": "context"}},
+    # ── 2026-10 新增视图命令 ──
+    {"id": "cmd_keymap", "plugin": "src.plugins.command_plugin",
+     "config": {"command": "src.core.commands._keymap_cmd.KeymapCommand", "name": "keymap"}},
+    {"id": "cmd_mcp", "plugin": "src.plugins.command_plugin",
+     "config": {"command": "src.core.commands._mcp_cmd.McpCommand", "name": "mcp"}},
+    {"id": "cmd_usage", "plugin": "src.plugins.command_plugin",
+     "config": {"command": "src.core.commands._usage_cmd.UsageCommand", "name": "usage"}},
+    {"id": "cmd_search", "plugin": "src.plugins.command_plugin",
+     "config": {"command": "src.core.commands._search_cmd.SearchCommand", "name": "search"}},
+    {"id": "cmd_outline", "plugin": "src.plugins.command_plugin",
+     "config": {"command": "src.core.commands._outline_cmd.OutlineCommand", "name": "outline"}},
+    {"id": "cmd_notify", "plugin": "src.plugins.command_plugin",
+     "config": {"command": "src.core.commands._notify_cmd.NotifyCommand", "name": "notify"}},
 ]
 
 # ── 渲染扩展条目（每个内置 handler / filter 一个独立插件条目） ──
@@ -492,6 +505,30 @@ UI_VIEW_ENTRIES = [
      "config": {"id": "user_select"}},
     {"id": "ui_view_editmsg", "plugin": "src.plugins.ui_views:apply_ui_view",
      "config": {"id": "editmsg"}},
+    # ── 2026-10 新增全屏视图批次（每视图一个独立插件条目，可被
+    #    Profile/Bundle 声明、Patch/Overlay 按 id 禁用/覆盖） ──
+    {"id": "ui_view_sessions", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "sessions"}},
+    {"id": "ui_view_changes", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "changes"}},
+    {"id": "ui_view_theme", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "theme"}},
+    {"id": "ui_view_skill", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "skill"}},
+    {"id": "ui_view_mcp", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "mcp"}},
+    {"id": "ui_view_usage", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "usage"}},
+    {"id": "ui_view_search", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "search"}},
+    {"id": "ui_view_outline", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "outline"}},
+    {"id": "ui_view_keymap", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "keymap"}},
+    {"id": "ui_view_notify", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "notify"}},
+    {"id": "ui_view_export", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "export"}},
 ]
 
 # ── Preset 条目（每个内置 preset 一个独立插件条目） ─────────

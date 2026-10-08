@@ -14,6 +14,7 @@ TUI 下 install/update 走异步路径（不阻塞事件循环）。
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, List
 
@@ -192,6 +193,12 @@ class SkillPlugin(InteractiveCommandPlugin):
         """异步执行（TUI 路径）。"""
         arg = (ctx.arg or "").strip()
         if not arg or arg == "list":
+            # 有 ChatUI 时打开全屏技能浏览器（阻塞轮询在线程内，不冻结事件循环）
+            from .._skill_cmd import open_skill_ui_safe
+
+            opened = await asyncio.to_thread(open_skill_ui_safe, ctx)
+            if opened:
+                return True
             self._cmd_list()
             return True
         parts = arg.split(maxsplit=1)
@@ -223,6 +230,10 @@ class SkillPlugin(InteractiveCommandPlugin):
         """同步版本（旧命令系统路径）。"""
         arg = (ctx.arg or "").strip()
         if not arg or arg == "list":
+            from .._skill_cmd import open_skill_ui_safe
+
+            if open_skill_ui_safe(ctx):
+                return True
             self._cmd_list()
             return True
         parts = arg.split(maxsplit=1)

@@ -17,9 +17,13 @@ SubAgent 完整对话由 SubAgent.run() 结束时经 ``_record_to_parent()``
 
 from __future__ import annotations
 
+import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
+
+_logger = logging.getLogger(__name__)
 
 from ...core.constants import GREEN, RESET, YELLOW
 from ..adapters.output import get_default_output_port
@@ -309,8 +313,98 @@ def _collect_subagent_records(ctx: CommandContext) -> list[dict]:
     return list(getattr(agent, "_subagent_records", None) or [])
 
 
+def _resolve_export_path(arg: str, ext: str = "md") -> tuple:
+    """解析导出路径（不写盘）→ ``(Path | None, error_text)``。"""
+    cwd = Path.cwd()
+    if (arg or "").strip():
+        p = Path(arg.strip())
+        resolved = p if p.is_absolute() else (cwd / p)
+        resolved = resolved.resolve()
+        try:
+            resolved.relative_to(cwd)
+        except ValueError:
+            return None, f"导出路径必须在当前目录下: {resolved}"
+        if resolved.exists():
+            return None, f"文件已存在: {resolved}（避免覆盖）"
+        return resolved, ""
+    ts = datetime.now().strftime(_TIMESTAMP_FMT)
+    candidate = cwd / f"chat_export_{ts}.{ext}"
+    n = 1
+    while candidate.exists():
+        candidate = cwd / f"chat_export_{ts}_{n}.{ext}"
+        n += 1
+    return candidate, ""
+
+
+def _do_export(ctx: CommandContext, fmt: str, scope: str, path_arg: str) -> tuple:
+    """执行一次导出（视图向导用）→ ``(ok, message)``。"""
+    messages = list(ctx.messages or [])
+    if scope == "user":
+        messages = [m for m in messages if m.get("role") == "user"]
+    elif scope == "assistant":
+        messages = [m for m in messages if m.get("role") == "assistant"]
+    ext = "json" if fmt == "json" else "md"
+    out_path, err = _resolve_export_path(path_arg, ext)
+    if out_path is None:
+        return False, err
+    model = ctx.state.get("model", "") if getattr(ctx, "state", None) else ""
+    records = _collect_subagent_records(ctx)
+    if fmt == "json":
+        text = json.dumps(
+            {"model": model, "messages": messages, "subagents": records},
+            ensure_ascii=False, indent=2,
+        )
+    else:
+        text = build_markdown(messages, records, model)
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        return False, f"导出失败: {exc}"
+    count = len([m for m in messages if m.get("role") != "system"])
+    return True, f"已导出 {count} 条消息（{fmt}）到 {out_path}"
+
+
+def _open_export_ui(ctx: CommandContext) -> bool:
+    """打开全屏导出向导视图（有 ChatUI 时）。"""
+    from ..adapters.ui_runtime import get_export_view_state_cls
+    from ._view_opener import open_fullscreen_view
+
+    applied_seq = {"v": 0}
+
+    def tick(state) -> bool:
+        if state.applied_seq > applied_seq["v"]:
+            applied_seq["v"] = state.applied_seq
+            report = state.applied or {}
+            if report.get("action") == "export":
+                ok, msg = _do_export(
+                    ctx, str(report.get("format", "md")),
+                    str(report.get("scope", "all")), str(report.get("path", "")),
+                )
+                if ok:
+                    state.message = msg
+                    state.error = ""
+                else:
+                    state.error = msg
+                    state.message = ""
+        return False
+
+    return open_fullscreen_view(
+        ctx, view_id="export", state_attr="export_view",
+        state_cls=get_export_view_state_cls(), on_tick=tick,
+        close_hint="导出向导已关闭", timeout_hint="导出向导超时关闭",
+    )
+
+
 def _cmd_export(ctx: CommandContext) -> bool:
-    """将当前对话导出为 markdown（含 SubAgent 聊天信息）。"""
+    """将当前对话导出为 markdown（含 SubAgent 聊天信息）。
+
+    无参数且有活跃 ChatUI 时打开导出向导视图；带路径参数 / 无 ChatUI 走
+    直接导出（保持既有命令行语义）。
+    """
+    if not (getattr(ctx, "arg", "") or "").strip():
+        if _open_export_ui(ctx):
+            return True
     out_path = _resolve_output_path(ctx.arg)
     if out_path is None:
         return True

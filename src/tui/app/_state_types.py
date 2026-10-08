@@ -26,6 +26,19 @@ __all__ = [
     "ModelViewState",
     "StatusState",
     "HistorySearchState",
+    # ── 2026-10 新增全屏视图状态（ListViewState 基类 + 各视图子类） ──
+    "ListViewState",
+    "SessionsViewState",
+    "ChangesViewState",
+    "ThemeViewState",
+    "SkillViewState",
+    "McpViewState",
+    "UsageViewState",
+    "SearchViewState",
+    "OutlineViewState",
+    "KeymapViewState",
+    "NotifyViewState",
+    "ExportViewState",
 ]
 
 
@@ -625,3 +638,287 @@ class HistorySearchState:
     matches: list = field(default_factory=list)
     index: int = -1
     active: bool = False
+
+
+# ═══════════════════════════════════════════════════════════
+# 2026-10 新增全屏视图状态（通用基类 + 各视图子类）
+# ═══════════════════════════════════════════════════════════
+#
+# 新增的一批全屏视图（sessions/changes/theme/skill/mcp/usage/search/outline/
+# keymap/notify/export）共享同一套「列表 + 详情 + 搜索 + 帮助 + 终态」交互
+# 骨架，其**与具体数据无关**的字段（导航/搜索/帮助/终态）收敛到
+# ``ListViewState`` 基类（通用渲染与输入逻辑只读写基类字段）；各视图子类只
+# 追加自身特有的数据与操作字段。基类保持 Layer 0（仅 dataclass/threading），
+# 通用渲染工具（依赖 ink）在 ``tui/app/_view_common.py``。
+
+
+@dataclass
+class ListViewState:
+    """通用视图状态基类（导航 / 搜索 / 帮助 / 过滤 / 终态）。
+
+    Attributes:
+        visible: 视图是否显示（命令打开/清理）。
+        seq: 视图会话序号（每次打开递增）——App 组件用 key 强制重挂载。
+        selected: 主列表当前选中索引。
+        scroll: 详情/内容滚动偏移。
+        cursor: 详情/内容光标行（vim cursorline 语义）。
+        pane: 当前焦点面板（"list" / "detail"）。
+        search_mode: 是否处于搜索输入模式。
+        search_query: 搜索输入缓冲。
+        search_pattern: 已执行的搜索文本（"" = 无搜索）。
+        search_matches: 匹配索引列表。
+        search_idx: 当前匹配在 matches 中的位置（-1 = 未定位）。
+        search_filter: 过滤模式（主列表只显示匹配项）。
+        help_open: 帮助面板开关。
+        help_scroll: 帮助面板滚动偏移。
+        status_message: 底部状态提示（空串不渲染）。
+        deadline: 超时截止（time.monotonic()）；0 表示无限等待。
+        done: 交互是否已结束。
+        action: 结束方式（cancel/done/timeout）。
+        _final_lock: 终态写入锁（first-write-wins 跨线程安全）。
+    """
+
+    visible: bool = False
+    seq: int = 0
+    selected: int = 0
+    scroll: int = 0
+    cursor: int = 0
+    pane: str = "list"
+    search_mode: bool = False
+    search_query: str = ""
+    search_pattern: str = ""
+    search_matches: list = field(default_factory=list)
+    search_idx: int = -1
+    search_filter: bool = False
+    help_open: bool = False
+    help_scroll: int = 0
+    status_message: str = ""
+    deadline: float = 0.0
+    done: bool = False
+    action: str = ""
+    _final_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False,
+    )
+
+    def try_set_final(self, action: str = "cancel") -> bool:
+        """原子写入终态（first-write-wins，跨线程安全）。"""
+        with self._final_lock:
+            if self.done:
+                return False
+            self.action = action
+            self.done = True
+            return True
+
+    def reset_search(self) -> None:
+        """清空搜索态（查询/模式/匹配）。"""
+        self.search_mode = False
+        self.search_query = ""
+        self.search_pattern = ""
+        self.search_matches = []
+        self.search_idx = -1
+        self.search_filter = False
+
+    def reset_panels(self) -> None:
+        """关闭帮助面板并复位详情光标/滚动。"""
+        self.help_open = False
+        self.help_scroll = 0
+        self.cursor = 0
+        self.scroll = 0
+
+
+@dataclass
+class SessionsViewState(ListViewState):
+    """会话浏览器视图状态（/sessions 打开，SessionsView 消费）。
+
+    Attributes:
+        entries: 会话摘要列表（id/title/model/saved_at/message_count）。
+        applied_seq: 应用（加载）计数（组件递增，命令线程比对）。
+        applied: 待加载会话条目（组件写，命令线程读取）。
+        rename_mode: 是否处于重命名输入模式。
+        rename_value: 重命名输入缓冲。
+        rename_cursor: 重命名输入光标（0..len）。
+        delete_confirm: 待删除会话 id（"" = 无待确认删除）。
+    """
+
+    entries: list = field(default_factory=list)
+    applied_seq: int = 0
+    applied: Any = None
+    rename_mode: bool = False
+    rename_value: str = ""
+    rename_cursor: int = 0
+    delete_confirm: str = ""
+
+
+@dataclass
+class ChangesViewState(ListViewState):
+    """文件变更审查器视图状态（/changes 打开，ChangesView 消费）。
+
+    Attributes:
+        entries: 文件变更条目列表（path/change_label/before/after/records）。
+        applied_seq: 应用（回滚）计数（组件递增，命令线程比对）。
+        applied: 待回滚条目（组件写，命令线程读取）。
+        revert_confirm: 待确认回滚的文件路径（"" = 无待确认）。
+    """
+
+    entries: list = field(default_factory=list)
+    applied_seq: int = 0
+    applied: Any = None
+    revert_confirm: str = ""
+
+
+@dataclass
+class ThemeViewState(ListViewState):
+    """主题选择器视图状态（/theme 打开，ThemeView 消费）。
+
+    Attributes:
+        entries: 主题名列表。
+        original: 打开时的主题名（Esc 取消时恢复）。
+        applied_seq: 预览应用计数（组件递增，命令线程比对）。
+        applied: 待应用主题名（组件写，命令线程读取并写 RC）。
+    """
+
+    entries: list = field(default_factory=list)
+    original: str = ""
+    applied_seq: int = 0
+    applied: Any = None
+
+
+@dataclass
+class SkillViewState(ListViewState):
+    """技能浏览器视图状态（/skill 打开，SkillView 消费）。
+
+    Attributes:
+        entries: 技能条目列表（name/description/source/...）。
+        applied_seq: 操作计数（组件递增，命令线程比对）。
+        applied: 待执行操作（组件写：{"action", "target"}）。
+        input_mode: 输入模式（""=无；"install"/"update"/"remove"/"info"）。
+        input_value: 输入缓冲（仓库 / 技能名）。
+        input_cursor: 输入光标（0..len）。
+        busy: 是否有操作正在进行（命令线程置位；运行中拒绝新操作）。
+        refresh_seq: 刷新计数（组件递增，命令线程据此重读技能列表）。
+    """
+
+    entries: list = field(default_factory=list)
+    applied_seq: int = 0
+    applied: Any = None
+    input_mode: str = ""
+    input_value: str = ""
+    input_cursor: int = 0
+    busy: bool = False
+    refresh_seq: int = 0
+
+
+@dataclass
+class McpViewState(ListViewState):
+    """MCP 服务器管理视图状态（/mcp 打开，McpView 消费）。
+
+    Attributes:
+        entries: MCP 服务器条目列表（name/transport/status/enabled/tools）。
+        applied_seq: 操作计数（组件递增，命令线程比对）。
+        applied: 待执行操作（组件写：{"action", "target"}）。
+        refresh_seq: 刷新计数（组件递增，命令线程据此重读状态）。
+        confirm_reconnect: 待确认重连的服务器名（"" = 无待确认）。
+    """
+
+    entries: list = field(default_factory=list)
+    applied_seq: int = 0
+    applied: Any = None
+    refresh_seq: int = 0
+    confirm_reconnect: str = ""
+
+
+@dataclass
+class UsageViewState(ListViewState):
+    """用量仪表盘视图状态（/usage 打开，UsageView 消费）。
+
+    Attributes:
+        sections: 统计区块列表（title/rows；由命令线程构建）。
+        refresh_seq: 刷新计数（组件递增，命令线程据此重读统计）。
+    """
+
+    sections: list = field(default_factory=list)
+    refresh_seq: int = 0
+
+
+@dataclass
+class SearchViewState(ListViewState):
+    """对话内全文搜索视图状态（/search 打开，SearchView 消费）。
+
+    Attributes:
+        messages: 注入的会话消息列表（命令线程读取；组件搜索数据源）。
+        results: 搜索结果列表（组件按搜索文本计算；每项含消息索引/片段）。
+        jump_seq: 跳转计数（组件递增，命令线程比对）。
+        jump_target: 待跳转的消息索引（组件写，命令线程读取）。
+    """
+
+    messages: list = field(default_factory=list)
+    results: list = field(default_factory=list)
+    jump_seq: int = 0
+    jump_target: Any = None
+
+
+@dataclass
+class OutlineViewState(ListViewState):
+    """消息大纲/导航视图状态（/outline 打开，OutlineView 消费）。
+
+    Attributes:
+        entries: 大纲节点列表（kind/index/role/summary/tools）。
+        jump_seq: 跳转计数（组件递增，命令线程比对）。
+        jump_target: 待跳转的消息索引（组件写，命令线程读取）。
+    """
+
+    entries: list = field(default_factory=list)
+    jump_seq: int = 0
+    jump_target: Any = None
+
+
+@dataclass
+class KeymapViewState(ListViewState):
+    """键位自定义编辑器视图状态（/keymap 打开，KeymapView 消费）。
+
+    Attributes:
+        entries: 键位绑定条目列表（id/key/action/description）。
+        applied_seq: 改键计数（组件递增，命令线程比对）。
+        applied: 待应用绑定（组件写：{"id", "key"}）。
+        edit_mode: 是否处于改键输入模式。
+        edit_value: 改键输入缓冲（组合键文本）。
+    """
+
+    entries: list = field(default_factory=list)
+    applied_seq: int = 0
+    applied: Any = None
+    edit_mode: bool = False
+    edit_value: str = ""
+
+
+@dataclass
+class NotifyViewState(ListViewState):
+    """通知/事件日志视图状态（/notify 打开，NotifyView 消费）。
+
+    Attributes:
+        entries: 日志条目列表（kind/time/title/body/level）。
+        refresh_seq: 刷新计数（组件递增，命令线程据此重读日志缓冲）。
+    """
+
+    entries: list = field(default_factory=list)
+    refresh_seq: int = 0
+
+
+@dataclass
+class ExportViewState(ListViewState):
+    """导出向导视图状态（/export 打开，ExportView 消费）。
+
+    Attributes:
+        format: 导出格式（"md"/"json"）。
+        scope: 导出范围（"all"/"user"/"assistant"）。
+        path: 输出路径（空 = 默认时间戳命名）。
+        message: 操作反馈消息。
+        error: 错误提示。
+    """
+
+    format: str = "md"
+    scope: str = "all"
+    path: str = ""
+    message: str = ""
+    error: str = ""
+    editing: bool = False

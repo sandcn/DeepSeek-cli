@@ -21,13 +21,20 @@ _out = get_default_output_port()
 
 
 def _cmd_cost(ctx):
+    """显示 token 用量和费用（有 ChatUI 时打开用量仪表盘视图）。"""
+    from ._usage_cmd import _open_usage_ui
+
+    if _open_usage_ui(ctx):
+        return True
     show_cost(ctx)
     return True
 
 
 def _cmd_theme(ctx):
-    """切换 UI 配色主题"""
+    """切换 UI 配色主题（无参数且有 ChatUI 时打开主题选择器视图）"""
     arg = ctx.arg.strip()
+    if not arg and _open_theme_ui(ctx):
+        return True
 
     if ctx.ui_adapter is not None:
         themes = ctx.ui_adapter.get_theme_names_with_desc()
@@ -59,6 +66,41 @@ def _cmd_theme(ctx):
     _out.write(f"  {DIM}\u2514{'─' * 24}{RESET}", level="raw", source="cmd")
     _out.write(f"  {DIM} 使用: /theme <名称> 切换{RESET}", level="raw", source="cmd")
     return True
+
+
+def _open_theme_ui(ctx) -> bool:
+    """打开全屏主题选择器视图（有 ChatUI 时）。返回是否已打开处理。"""
+    from ..adapters.ui_runtime import get_theme_view_state_cls
+    from ._view_opener import open_fullscreen_view
+
+    adapter = getattr(ctx, "ui_adapter", None)
+
+    def setup(model, state):
+        names: list = []
+        current = ""
+        if adapter is not None:
+            try:
+                names = list(adapter.get_theme_names_with_desc())
+            except Exception:
+                names = []
+            try:
+                current = str(adapter.get_active_theme() or "")
+            except Exception:
+                current = ""
+        state.original = current
+        state.entries = [
+            {"name": n, "desc": d, "active": n == current} for n, d in names
+        ]
+        for i, e in enumerate(state.entries):
+            if e["name"] == current:
+                state.selected = i
+                break
+
+    return open_fullscreen_view(
+        ctx, view_id="theme", state_attr="theme_view",
+        state_cls=get_theme_view_state_cls(), setup=setup,
+        close_hint="主题选择器已关闭", timeout_hint="主题选择器超时关闭",
+    )
 
 
 # ── /reasoning 命令 ───────────────────────────────────────

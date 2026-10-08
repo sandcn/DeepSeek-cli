@@ -119,6 +119,12 @@ def _do_notification(model, cmd) -> None:
             line.append(segment)
         lines.append(line)
     model.append_committed("notification", lines)
+    try:
+        from src.notifications.history import record as _record
+
+        _record("notice", "通知", str(cmd.text), level="info")
+    except Exception:
+        pass
 
 
 def _strip_control_text(text: str) -> str:
@@ -180,6 +186,12 @@ def _do_error(model, cmd) -> None:
             line.append(segment, _S_ERROR)
         lines.append(line)
     model.append_committed("error", lines)
+    try:
+        from src.notifications.history import record as _record
+
+        _record("error", "错误", str(cmd.message), level="error")
+    except Exception:
+        pass
 
 
 def _do_splash(model, cmd) -> None:

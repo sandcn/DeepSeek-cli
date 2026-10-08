@@ -50,6 +50,14 @@ class ContextPlugin(CommandPlugin):
         arg = (getattr(ctx, "arg", "") or "").strip()
         if arg:
             return self._set_window(ctx, arg)
+        # 无参数：有 ChatUI 时打开用量仪表盘（上下文可视化），否则文本显示。
+        try:
+            from .._usage_cmd import _open_usage_ui
+
+            if _open_usage_ui(ctx):
+                return True
+        except Exception:
+            _logger.debug("/context 打开用量视图失败（回退文本）", exc_info=True)
         self._show(ctx)
         return True
 

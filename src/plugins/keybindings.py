@@ -39,6 +39,34 @@ class KeybindingsService(Service):
         if disabled:
             undo_disabled = disable_builtin_keybindings(disabled)
             ctx.effect(lambda: undo_disabled)
+        # ── 用户改键（键位编辑器持久化；config ``keybindings_overrides``：
+        #    {绑定 id: 组合键文本}，启动时应用为内置覆盖，重启后仍生效）。 ──
+        overrides = cfg.get("keybindings_overrides") or {}
+        self._overrides = dict(overrides) if isinstance(overrides, dict) else {}
+        if self._overrides:
+            from ..tui._keybindings import (
+                KeyBinding,
+                combo_to_key,
+                default_keybinding,
+                register_builtin_keybinding,
+            )
+
+            for spec_id, combo in self._overrides.items():
+                try:
+                    key = combo_to_key(combo)
+                    if key is None:
+                        continue
+                    base = default_keybinding(spec_id)
+                except Exception:
+                    continue
+                undo_override = register_builtin_keybinding(
+                    spec_id, KeyBinding(spec_id, key, base.action, base.description),
+                )
+                ctx.effect(lambda u=undo_override: u)
+
+    def overrides(self) -> dict:
+        """当前生效的用户改键覆盖（``id → 组合键文本``）。"""
+        return dict(getattr(self, "_overrides", {}) or {})
 
     # ── 自省 ─────────────────────────────────────────────
 

@@ -80,11 +80,17 @@ def notify_chat_completed(messages: list[dict], elapsed: float | None = None) ->
 
     from .registry import active_notification_backends
 
+    sent = False
     for backend in active_notification_backends():
         try:
             backend.send(preview, title)
+            sent = True
         except Exception:
             _logger.debug("通知后端发送失败: %s", type(backend).__name__, exc_info=True)
+    if sent:
+        from .history import record as _record
+
+        _record("notify", title, preview, level="info")
 
 
 async def async_notify_chat_completed(messages: list[dict], elapsed: float | None = None) -> None:
@@ -114,6 +120,9 @@ async def async_notify_chat_completed(messages: list[dict], elapsed: float | Non
             _logger.debug("通知后端异步发送失败: %s", type(backend).__name__, exc_info=True)
 
     await asyncio.gather(*(_send(backend) for backend in backends), return_exceptions=True)
+    from .history import record as _record
+
+    _record("notify", title, preview, level="info")
 
 
 __all__ = [
