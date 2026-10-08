@@ -115,6 +115,15 @@ _MATH_PREVIEW_REFRESH_STEP = 24
 #: 几十字符不刷新」的明显滞后。
 _PREVIEW_THROTTLE_FULL_LIMIT = 48
 
+#: 容器块（告示 / <details> / fenced div）预览「逐帧刷新」的正文行数上限：
+#: 正文行数短于该值时逐帧实时刷新（渲染成本可忽略）；超过后按 ``行数//8``
+#: 节流，活动行增长按字符节流（见 ``_throttle_container_preview``）。
+_CONTAINER_PREVIEW_FULL_LINES = 48
+
+#: 列表项内块级容器预览的节流槽键（唯一实例；解析器同一时刻只收集一个
+#: 列表项内块级容器）。
+_LIST_BLOCK_THROTTLE_KEY = ("list_block",)
+
 #: 数学块预览的源码长度上限：超过后预览降级为提示框（二维排版成本随长度
 #: 线性增长，超长公式即便节流也仍随长度增长；提交路径不受影响）。真实
 #: LaTeX 公式远小于该值，超过基本为模型异常输出。
@@ -153,6 +162,41 @@ def _has_block_markers(lines) -> bool:
                 return True
         if len(s) >= 3 and first in '-=_*' and all(c in (first, ' ') for c in s):
             return True
+    return False
+
+
+def _container_body_continuation(prev_body: list, body: list, delta: int) -> bool:
+    """容器正文是否为「上一帧正文的继续」（追加 / 截断滑窗推进）。
+
+    容器预览正文按 ``_PREVIEW_MAX_LINES`` 截断为**尾部窗口**：未达上限时
+    逐行**追加**（窗口起点不动）；达到上限后窗口整体**右移**（每来一行，
+    首行滑出）。``delta = total - prev_total`` 为新增行数。
+
+    ★ 末行是「活动行」（渲染时尚未换行）——上一帧渲染时它可能只有部分内容，
+    之后才补全，故**不纳入比较**（去掉 ``prev_body`` 末行再比对稳定行）。
+    稳定行在追加时以上一帧为前缀（窗口起点 shift=0）；截断滑窗时窗口起点
+    右移 ``delta`` 行（与上一帧稳定行的 ``delta`` 偏移对齐）——两种形态都
+    判为继续。
+
+    ``delta < 0``（新容器 / 行数回退）判定为**非继续**——强制重渲染，避免
+    跨容器复用陈旧行（两个同类容器在同一帧内先后出现时，节流槽被前者占据）。
+    """
+    if delta < 0:
+        return False
+    if delta == 0:
+        return list(body) == prev_body
+    prev_stable = prev_body[:-1] if prev_body else []
+    n = len(prev_stable)
+    if n == 0 or delta >= n:
+        return True  # 无稳定行可比 / 旧稳定行已全部滑出窗口
+    # 追加：窗口起点不动，新正文以上一帧稳定行为前缀
+    m = min(len(body), n)
+    if m > 0 and list(body[:m]) == prev_stable[:m]:
+        return True
+    # 截断滑窗：窗口起点右移 delta 行，与上一帧稳定行的 delta 偏移对齐
+    m2 = min(len(body), n - delta)
+    if m2 > 0 and list(body[:m2]) == prev_stable[delta:delta + m2]:
+        return True
     return False
 
 
@@ -262,10 +306,14 @@ class AnsiStreamRenderer:
         #   ``_para_scan_text`` 为上次判定的未闭合段落文本（增量前缀比对基准）；
         #   ``_para_last_core`` / ``_para_last_url`` 分别是该文本中**最后一个
         #   核心格式触发字符 / 裸 URL 前缀起点**的下标（-1=无），由
-        #   ``_note_paragraph_triggers`` 按 ``startswith`` 增量维护。
+        #   ``_note_paragraph_triggers`` 按 ``startswith`` 增量维护；
+        #   ``_para_last_nl`` 为最后一个换行符下标（-1=无换行）——供
+        #   ``_preview_src_lines`` 判定「窗口前是否还有历史行」时免 O(全文)
+        #   反向扫描（超长单行段落的主要成本）。
         self._para_scan_text = ""
         self._para_last_core = -1
         self._para_last_url = -1
+        self._para_last_nl = -1
         # 容器块（告示）预览的子解析结果缓存（见 ``_preview_sub_parse``）。
         self._preview_sub_cache: dict = {}
         # 列表项内块级容器预览（内容行元组 → 渲染行 + 缓存键）。
@@ -420,14 +468,21 @@ class AnsiStreamRenderer:
             return []
         # 预览行数上限（与解析器 ``_PREVIEW_MAX_LINES`` 同量级）：超长列表内
         # 代码块只预览「首个非空行 + 尾部」——每帧子解析成本有界（提交仍完整）。
+        total = len(p._list_block_lines) + (1 if tail else 0)
         limit = 200
         dropped = 0
         if len(body) > limit:
             head = next((ln for ln in body if ln.strip()), "")
             keep = max(1, limit - 1)
             body = ([head] if head else []) + body[-keep:]
-            dropped = max(0, len(p._list_block_lines) + (1 if tail else 0)
-                          - len(body))
+            dropped = max(0, total - len(body))
+        # ★ 节流（见 ``_render_container_preview``）：列表项内块级容器预览每帧
+        #   重子解析 + 渲染整段正文，成本随行数增长 → 累计 O(n²)（800 行列表内
+        #   代码块实测 1.3s）。按「已收集行数（单调递增）」节流：短块逐帧实时；
+        #   长块按 ``行数//8`` 推进（刷新次数 ~O(log n)，总成本与长度线性）。
+        cached = self._list_block_throttle_lookup(body, total)
+        if cached is not None:
+            return cached
         key = tuple(body)
         if key == self._list_block_preview_key:
             return self._list_block_preview_rows
@@ -452,7 +507,37 @@ class AnsiStreamRenderer:
             rows.insert(1, render_omitted_line(dropped))
         self._list_block_preview_key = key
         self._list_block_preview_rows = rows
+        self._preview_throttle[_LIST_BLOCK_THROTTLE_KEY] = (
+            list(body), total, rows, len(body[-1]) if body else 0)
         return rows
+
+    def _list_block_throttle_lookup(self, body: list, total: int) -> list | None:
+        """列表项内块级容器预览的节流命中查询（见 ``_list_block_preview``）。
+
+        与 ``_throttle_container_preview`` 同族：``total``（已收集行数）单调
+        递增；短块（< ``_CONTAINER_PREVIEW_FULL_LINES``）逐帧实时（``delta==0``
+        要求正文完全一致）；长块 ``delta==0``（仅活动行增长）按活动行字符
+        增长节流，增量达 ``total//8`` 行且首行未变时复用。返回命中行；否则
+        返回 ``None``（调用方重渲染）。
+        """
+        state = self._preview_throttle.get(_LIST_BLOCK_THROTTLE_KEY)
+        if state is None or len(state) != 4:
+            return None
+        prev_body, prev_total, rows, prev_tail_len = state
+        delta = total - prev_total
+        if delta < 0:
+            return None
+        tail_len = len(body[-1]) if body else 0
+        if delta == 0:
+            if prev_total >= _CONTAINER_PREVIEW_FULL_LINES:
+                step = max(1, prev_total // 8)
+                return rows if tail_len - prev_tail_len < step else None
+            return rows if list(body) == prev_body else None
+        step = (1 if prev_total < _CONTAINER_PREVIEW_FULL_LINES
+                else max(1, prev_total // 8))
+        if delta < step and body and prev_body and body[0] == prev_body[0]:
+            return rows
+        return None
 
     def _list_block_indent_level(self) -> int:
         """当前列表项缩进层（0 = 顶层列表项）。"""
@@ -548,6 +633,7 @@ class AnsiStreamRenderer:
         self._para_scan_text = ""
         self._para_last_core = -1
         self._para_last_url = -1
+        self._para_last_nl = -1
         for cache in self._line_preview_caches.values():
             cache.reset()
 
@@ -567,7 +653,7 @@ class AnsiStreamRenderer:
             return line[-limit:]
         return line
 
-    def _preview_src_lines(self, content: str) -> list[str]:
+    def _preview_src_lines(self, content: str, last_nl: int | None = None) -> list[str]:
         """预览源行：仅对**活动行**（最后一行）做尾部窗口化。
 
         历史行经 ``LinePreviewCache`` 前缀复用只渲染一次，无需窗口；活动行
@@ -577,6 +663,11 @@ class AnsiStreamRenderer:
         复制整段（超长活动行 200k 字符时单帧 ~0.06ms、且随行增长线性上升）。
         现在只在**尾部窗口**内定位换行，历史行部分按需切分：单行超长内容
         直接返回窗口切片（O(窗口)），不再全文复制。
+
+        ``last_nl``：已知的「全文最后一个换行符下标」（-1=无换行），由
+        ``_note_paragraph_triggers`` 增量维护。提供时用它替代
+        ``content.rfind("\\n", 0, len-limit)`` 的 O(全文) 反向扫描（超长单行
+        段落的每帧主要成本）；``None`` 时回退反向扫描（通用调用方）。
         """
         if not content:
             return []
@@ -589,8 +680,11 @@ class AnsiStreamRenderer:
         nl = window.rfind("\n")
         if nl < 0:
             # 窗口内无换行 → 最后一行长度超过窗口上限，窗口即活动行尾部
-            # （无分配定位更早的换行，确认是否存在历史行）
-            prev_nl = content.rfind("\n", 0, len(content) - limit)
+            # （历史行仅在窗口前存在换行时才有）
+            if last_nl is not None:
+                prev_nl = last_nl if last_nl < len(content) - limit else -1
+            else:
+                prev_nl = content.rfind("\n", 0, len(content) - limit)
             if prev_nl < 0:
                 return [window]
             parts = content[:prev_nl].split("\n")
@@ -623,7 +717,7 @@ class AnsiStreamRenderer:
         from . import blocks as _blocks
         content = token.content or ""
         self._note_paragraph_triggers(content)
-        src = self._preview_src_lines(content)
+        src = self._preview_src_lines(content, last_nl=self._para_last_nl)
         if len(src) <= 1:
             # 单行段落无跨行配对 → 直接行级渲染
             if src and self._plain_active_window(content):
@@ -676,28 +770,48 @@ class AnsiStreamRenderer:
         重建缓冲 / 段落切换）时全量重扫。状态供 ``_plain_active_window`` O(1)
         判定「活动行窗口是否纯文本」——口径与 ``render_inline`` 的快路径判否
         （``inline_parser.text_has_inline_markup``）一致。
+
+        ★ 性能（超长活动行）：判定「是否追加」只用**窗口相邻区域**（≤ 窗口
+        长度 ``_PREVIEW_MAX_LINE_CHARS``）比对，而非整段前缀
+        ``content.startswith(prev)``——后者在超长单行段落（200k~800k 字符）
+        下每帧 O(len(prev))，流式累计 O(n²)（400k 单行实测 4.2s、800k 22s）。
+        窗口内触发位置由本方法增量维护，窗口区域一致即保证
+        ``_plain_active_window`` 判定正确（提交路径不受影响）。
         """
         prev = self._para_scan_text
         if content is prev:
             return
-        if prev and content.startswith(prev):
-            if len(content) == len(prev):
+        prev_len = len(prev)
+        if prev_len and len(content) >= prev_len:
+            check = _PREVIEW_MAX_LINE_CHARS
+            if check > prev_len:
+                check = prev_len
+            if content[prev_len - check:prev_len] == prev[prev_len - check:]:
+                if len(content) == prev_len:
+                    return
+                delta = content[prev_len:]
+                idx = _last_core_trigger_pos(delta)
+                if idx >= 0:
+                    self._para_last_core = prev_len + idx
+                # 最后一个换行（供 ``_preview_src_lines`` 免全量反向扫描）：仅当
+                # 增量含换行时更新（``rfind`` 只扫增量）。
+                nl = delta.rfind("\n")
+                if nl >= 0:
+                    self._para_last_nl = prev_len + nl
+                # 裸 URL 前缀：回看窗口可能让「起点在旧文本、后缀在新文本」的
+                # 前缀被识别（回看长度 >= 最长前缀长度）。
+                back = _TRIGGER_LOOKBACK if prev_len > _TRIGGER_LOOKBACK else prev_len
+                start = prev_len - back
+                probe = content[start:]
+                idx = _last_url_prefix_pos(probe)
+                if idx >= 0:
+                    self._para_last_url = start + idx
+                self._para_scan_text = content
                 return
-            delta = content[len(prev):]
-            idx = _last_core_trigger_pos(delta)
-            if idx >= 0:
-                self._para_last_core = len(prev) + idx
-            # 裸 URL 前缀：回看窗口可能让「起点在旧文本、后缀在新文本」的
-            # 前缀被识别（回看长度 >= 最长前缀长度）。
-            back = _TRIGGER_LOOKBACK if len(prev) > _TRIGGER_LOOKBACK else len(prev)
-            start = len(prev) - back
-            probe = content[start:]
-            idx = _last_url_prefix_pos(probe)
-            if idx >= 0:
-                self._para_last_url = start + idx
-        else:
-            self._para_last_core = _last_core_trigger_pos(content)
-            self._para_last_url = _last_url_prefix_pos(content)
+        # 全量重扫（前缀关系不成立：解析器重建缓冲 / 段落切换）
+        self._para_last_core = _last_core_trigger_pos(content)
+        self._para_last_url = _last_url_prefix_pos(content)
+        self._para_last_nl = content.rfind("\n")
         self._para_scan_text = content
 
     def _plain_active_window(self, content: str) -> bool:
@@ -753,17 +867,73 @@ class AnsiStreamRenderer:
         「预览纯文本 → 提交变列表」跳变）；否则逐行走行级增量缓存。
 
         ``render_line(text) -> list[AnsiLine]`` 允许多行产出（行内二维公式）。
+
+        ★ 性能（长容器流式 O(n²)）：正文含块级标记时每帧重渲染整段正文
+        （子解析 + 完整 Markdown），成本与正文行数成正比 → 累计 O(n²)
+        （200 行列表实测 5.4ms/帧、8k 字符 8s）。现按「正文总行数（含截断
+        丢弃数，单调递增）」节流刷新（``_throttle_container_preview``）：
+        短正文（< ``_PREVIEW_THROTTLE_FULL_LIMIT`` 行）逐帧实时；长正文按
+        ``total//8`` 递增刷新（刷新次数 ~O(log n)，总成本与长度线性）。纯
+        文本正文虽走行级增量缓存，但块级标记判定 ``_has_block_markers`` 为
+        O(正文) 全扫——一并纳入节流（只渲染新增行的收益得以保持）。
         """
-        if body and _has_block_markers(body):
-            body_tokens = self._preview_sub_parse(body)
-            if body_tokens:
-                return self._preview_engine._render_nested_blocks(
-                    head, body_tokens, dropped, indent=indent)
-        rest = [self._window_preview_line(seg) for seg in body]
-        rows = self._line_cache(kind).render(cache_key, rest, render_line)
-        if dropped:
-            return [head, self._omitted_line(dropped)] + rows
-        return [head] + rows
+        total = len(body) + max(0, int(dropped or 0))
+        key = ("container", kind, cache_key)
+
+        def _render() -> list[AnsiLine]:
+            if body and _has_block_markers(body):
+                body_tokens = self._preview_sub_parse(body)
+                if body_tokens:
+                    return self._preview_engine._render_nested_blocks(
+                        head, body_tokens, dropped, indent=indent)
+            rest = [self._window_preview_line(seg) for seg in body]
+            rows = self._line_cache(kind).render(cache_key, rest, render_line)
+            if dropped:
+                return [head, self._omitted_line(dropped)] + rows
+            return [head] + rows
+
+        return self._throttle_container_preview(key, body, total, _render)
+
+    def _throttle_container_preview(self, key, body: list, total: int,
+                                    render) -> list[AnsiLine]:
+        """容器块预览的行数节流（见 ``_render_container_preview``）。
+
+        与 ``_throttle_preview``（按源码字符数节流二维排版）同族，但容器正文
+        会被解析器截断为**尾部滑窗**——不能用「源码前缀关系」判定继续，改用
+        「正文总行数（含丢弃数）单调递增 + 重叠行一致」（``_container_body_continuation``）。
+        复用 ``self._preview_throttle`` 槽（键 ``("container", kind, cache_key)``
+        与其它节流键不冲突；``_clear_preview`` 统一清空）。
+
+        ★ 活动行（未换行的最后一行）内容逐字符增长时行数不变（``delta == 0``）
+        ——短正文逐帧刷新（实时）；长正文额外按活动行字符增长节流，避免
+        「短行 × 小 chunk」下逐行完成即重渲染（实测 chunk=8 时刷新次数仍与
+        行数同阶）。
+
+        Args:
+            key: 节流槽（区分容器类型 / 头参数）。
+            body: 当前正文行（可能已截断为尾部窗口）。
+            total: 正文总行数（``len(body) + dropped``，单调递增）。
+            render: 无参渲染回调，返回 ``list[AnsiLine]``。
+        """
+        tail_len = len(body[-1]) if body else 0
+        state = self._preview_throttle.get(key)
+        if state is not None and len(state) == 4:
+            prev_body, prev_total, rows, prev_tail_len = state
+            delta = total - prev_total
+            if delta >= 0:
+                step = (1 if prev_total < _CONTAINER_PREVIEW_FULL_LINES
+                        else max(1, prev_total // 8))
+                if (delta == 0
+                        and prev_total >= _CONTAINER_PREVIEW_FULL_LINES):
+                    # 行数不变（仅活动行增长）：长容器按活动行字符增长节流
+                    if tail_len - prev_tail_len < step:
+                        return rows
+                elif (delta < step
+                      and _container_body_continuation(prev_body, body, delta)):
+                    return rows
+        rows = render()
+        self._preview_throttle[key] = (list(body), total, rows, tail_len)
+        return rows
 
     def _render_admonition_preview(self, token) -> list[AnsiLine]:
         from . import blocks as _blocks
@@ -878,6 +1048,40 @@ class AnsiStreamRenderer:
         self._preview_throttle[key] = (src, rows)
         return rows
 
+    def _throttle_preview_sliding(self, key, total: int, first_line: str,
+                                  render) -> list[AnsiLine]:
+        """**尾部滑窗**类块（Mermaid）预览的节流渲染（见 ``_throttle_preview``）。
+
+        与 ``_throttle_preview`` 的区别：这类块的源码被解析器截断为
+        「首行 + 尾部窗口」（``_PREVIEW_MERMAID_LINES``）——源码不再是增长
+        序列而是**滑窗**，``src.startswith(prev)`` 恒不成立 → 前缀节流失效、
+        每帧重排（800 边图实测 2s）。改用单调递增的**行数**（``total``）节流，
+        并以首行（块类型声明）区分块实例（切换块 → 首行变化 → 立即重排，
+        避免复用上一块的陈旧图形）。
+
+        Args:
+            key: 节流槽（区分块类型）。
+            total: 源码行数 + 截断丢弃行数（单调递增）。
+            first_line: 源码首行（块身份锚点）。
+            render: 无参渲染回调。
+        """
+        state = self._preview_throttle.get(key)
+        if state is not None and len(state) == 3:
+            prev_total, prev_first, rows = state
+            delta = total - prev_total
+            if delta >= 0 and first_line == prev_first:
+                step = (1 if prev_total < _PREVIEW_THROTTLE_FULL_LIMIT
+                        else max(1, prev_total // 8))
+                if delta == 0:
+                    # 行数不变（仅活动行增长）：短源码逐帧实时，长源码节流
+                    if prev_total >= _PREVIEW_THROTTLE_FULL_LIMIT:
+                        return rows
+                elif delta < step:
+                    return rows
+        rows = render()
+        self._preview_throttle[key] = (total, first_line, rows)
+        return rows
+
     def _render_math_preview(self, token) -> list[AnsiLine]:
         """数学块流式预览：节流二维排版 + 超长降级为提示框。
 
@@ -905,17 +1109,20 @@ class AnsiStreamRenderer:
         return rows
 
     def _render_mermaid_preview(self, token) -> list[AnsiLine]:
-        """Mermaid 块流式预览：节流图形布局（见 ``_throttle_preview``）。
+        """Mermaid 块流式预览：节流图形布局（见 ``_throttle_preview_sliding``）。
 
         图形布局成本随节点/边数量（即源码长度）增长，逐帧重排同样退化为
         O(n²)；节流后与长度线性。源码行数已由解析器按 ``_PREVIEW_MERMAID_LINES``
-        截断（超出部分带省略提示），此处只处理帧间重复排版。
+        截断为「首行 + 尾部窗口」（超出部分带省略提示）——源码是**滑窗**而非
+        增长序列，故用 ``_throttle_preview_sliding``（按行数节流 + 首行锚定）。
         """
         src = token.meta.get("source") or ""
         dropped = int(token.meta.get("preview_dropped", 0) or 0)
         from . import mermaid as _mermaid
-        return self._throttle_preview(
-            ("mermaid",), src,
+        first_line = src.split("\n", 1)[0] if src else ""
+        total = (src.count("\n") + 1 if src else 0) + dropped
+        return self._throttle_preview_sliding(
+            ("mermaid",), total, first_line,
             lambda: _mermaid.render_mermaid_block(src, dropped=dropped))
 
     def _render_front_matter_preview(self, token) -> list[AnsiLine]:

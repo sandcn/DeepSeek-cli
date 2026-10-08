@@ -76,8 +76,12 @@ def test_admonition_preview_truncation_notice_keeps_head():
     total = limit + 12
     r = AnsiStreamRenderer(width=80)
     r.write("> [!NOTE] 概要\n")
-    for i in range(total):
-        r.write(f"> body{i}\n")
+    # ★ 长容器预览按行数节流（见 ``_throttle_container_preview``）——最后一批
+    #   追加需 >= 刷新步长才会刷新到最新尾行（逐行写入时尾部最多滞后一个
+    #   步长，见 test_stream_markdown_render_fixes_v7）。
+    half = total // 2
+    r.write("".join(f"> body{i}\n" for i in range(half)))
+    r.write("".join(f"> body{i}\n" for i in range(half, total)))
     prev = [l.plain for l in r.take_preview_lines()]
     assert prev[0] == "\u25a0 NOTE 概要"
     assert any("省略" in p for p in prev)

@@ -165,9 +165,6 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # Markdown 块漏写闭合围栏」的形态），降低误截断；每个代码块开始时重置。
         self._code_content_seen: bool = False
 
-        # 预扫描位置
-        self._prescan_pos: int = 0
-
         # 每个 handler 独立的降级计数器，避免跨 handler 污染
         self._silent_downgrade_count: dict[str, int] = {}
 
@@ -239,18 +236,26 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
     def feed(self, text: str) -> list[Token]:
         """输入文本片段，返回已解析的 Token。"""
         tokens: list[Token] = []
+        # 追加前的缓冲长度（下次找换行的起点；feed 开始时缓冲**不含换行**——
+        # 上一次 feed 的逐行循环已消费全部完整行，见循环退出条件）。
+        prev_len = len(self._buffer)
         self._buffer += text
 
-        # 预扫描参考链接和脚注
-        self._prescan_refs()
+        # 预扫描参考链接和脚注（仅新增区域的完整行；见 ``_prescan_refs``）
+        self._prescan_refs(prev_len)
 
-        # 逐行处理
+        # 逐行处理（从 ``prev_len`` 起找换行——缓冲前段无换行，避免超长未换行
+        # 活动行下每帧 O(缓冲长) 的全缓冲扫描，累计 O(n²)）
+        search_from = prev_len
         while True:
-            idx = self._buffer.find('\n')
+            idx = self._buffer.find('\n', search_from)
             if idx == -1:
                 break
             line = self._buffer[:idx + 1]
             self._buffer = self._buffer[idx + 1:]
+            # 切片后新缓冲的已扫描前缀（不含已消费行）仍需找后续换行 →
+            # 从 0 起（后续 find 各自只扫到下一个换行，总体 O(新增文本)）
+            search_from = 0
 
             _pre_bq_depth = (self._bq_depth_stack[-1]
                              if (self._bq_active and self._bq_depth_stack) else 0)
@@ -300,8 +305,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 except Exception:
                     _logger.debug("超长尾部降级段落失败", exc_info=True)
 
-        # 每次 feed 结束后重置预扫描位置，下次 feed 从头扫描
-        self._prescan_pos = 0
+        # 降级计数每个 feed 重置（避免跨 chunk 累计掩盖后续真实降级）
         self._silent_downgrade_count.clear()
         return tokens
 
@@ -1036,19 +1040,28 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
     # 预扫描
     # ═══════════════════════════════════════════════════════════
 
-    def _prescan_refs(self):
-        """预扫描参考链接 [id]: url 和脚注定义 [^id]: content（增量）。"""
+    def _prescan_refs(self, start: int = 0):
+        """预扫描参考链接 [id]: url 和脚注定义 [^id]: content。
+
+        ``start``：本次 feed 新增文本在缓冲中的起始下标。feed 开始时缓冲
+        **不含换行**（上一次 feed 已消费全部完整行），故首个换行只可能出现在
+        ``start`` 之后——从 ``start`` 起找首个换行（而非从 0 起全缓冲扫描），
+        避免超长未换行活动行下每帧 O(缓冲长) 的扫描累计 O(n²)。首行仍取
+        **完整行**（``buf[:nl+1]``，含此前累积的部分行内容），后续行正常推进。
+        """
         try:
-            if self._prescan_pos >= len(self._buffer):
-                return
             buf = self._buffer
+            if start >= len(buf):
+                return
             n = len(buf)
-            pos = self._prescan_pos
+            pos = start
+            first = True
             while pos < n:
                 nl = buf.find('\n', pos)
                 if nl == -1:
                     break
-                line = buf[pos:nl + 1]
+                line = buf[:nl + 1] if (first and start) else buf[pos:nl + 1]
+                first = False
                 pos = nl + 1
                 stripped = _strip_left(line)
                 if not stripped:
@@ -1088,7 +1101,6 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                                 #   两种渲染路径不一致）。未引用定义由
                                 #   ``_render_footnotes`` 末尾按字母序补列。
                                 self._ctx.fn_map[ref_id] = content
-            self._prescan_pos = pos
         except Exception:
             _logger.debug("_prescan_refs预扫描异常", exc_info=True)
 
