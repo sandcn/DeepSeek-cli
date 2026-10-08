@@ -330,6 +330,12 @@ def truncate_runs(runs: list[StyledRun], max_width: int) -> list[StyledRun]:
     if max_width <= 0:
         return []
     runs = _first_logical_line_runs(runs)
+    # ★ 性能（TUI 流式英文渲染）：总宽不超过上限时直接返回副本——免逐字符
+    #   ``wcswidth_simple`` 判定与 ``buf += ch`` 拼接。修复前对每个 live 行
+    #   （绝大多数不超宽）也走逐字符循环（行宽 ~100 → 每帧上百次宽度查询 ×
+    #   每次流式 write 的最后一行）。
+    if sum(r.width for r in runs) <= max_width:
+        return list(runs)
     out: list[StyledRun] = []
     width = 0
     for run in runs:

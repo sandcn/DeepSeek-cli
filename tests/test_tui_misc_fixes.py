@@ -108,6 +108,24 @@ class TestTruncateRunsBoundary:
         out = truncate_runs([StyledRun("abcd", None)], 2)
         assert "".join(r.text for r in out) == "ab"
 
+    def test_fits_exactly_returns_copy_without_char_loop(self):
+        """总宽不超过上限时直接返回副本（快路径），内容与逐字符路径一致。"""
+        runs = [StyledRun("hello ", None), StyledRun("world", None)]
+        out = truncate_runs(runs, 11)
+        assert out == runs
+        assert out is not runs
+        # 恰好填满第 1 段 → 第 2 段整体放不下
+        assert truncate_runs(runs, 6) == runs[:1]
+        # 部分截断第 2 段（快路径未触发，逐字符路径）
+        assert "".join(r.text for r in truncate_runs(runs, 9)) == "hello wor"
+        # 快路径与逐字符路径在「恰好等宽」边界产出等价
+        assert truncate_runs([StyledRun("abc", None)], 3) == [StyledRun("abc", None)]
+
+    def test_wide_char_fits_returns_same_text(self):
+        runs = [StyledRun("中文ab", None)]
+        assert truncate_runs(runs, 6) == runs
+        assert truncate_runs(runs, 4) == [StyledRun("中文", None)]
+
 
 # ── 4. 切片偏移（宽字符跨左裁剪边界） ───────────────────
 

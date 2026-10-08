@@ -330,7 +330,8 @@ class InlineHTMLMixin:
                 _emit_plain()
                 self._pos += len(close_tag)
                 return nodes
-            node = self._try_format(depth + 1)
+            node = (self._try_format(depth + 1)
+                    if self._is_interest(self._pos) else None)
             if node is not None:
                 _emit_plain()
                 nodes.append(node)

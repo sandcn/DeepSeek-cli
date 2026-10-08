@@ -163,6 +163,7 @@ def highlight_code_lines(
     total_lines: int | None = None,
     linenostart: int = 1,
     linenostep: int = 1,
+    use_cache: bool = True,
 ) -> list[AnsiLine]:
     """逐行高亮代码（不含围栏/标题），返回 AnsiLine 列表。
 
@@ -176,6 +177,9 @@ def highlight_code_lines(
         total_lines: 逻辑总行数（决定行号列宽；None 时按 ``lines`` 推断）。
         linenostart: 行号起始值（``linenostart=3``）。
         linenostep: 行号步长（``linenostep=2``）。
+        use_cache: 是否使用/写入逐行高亮缓存（``_LINE_HIGHLIGHT_CACHE``）。
+            **流式预览的「活动行」应传 False**——活动行内容每帧变化，写入缓存
+            只会持续膨胀（并可能触发整体清空，连带丢弃已确定行的缓存条目）。
 
     Returns:
         与 ``lines`` 等长的 AnsiLine 列表。
@@ -204,13 +208,16 @@ def highlight_code_lines(
             # ``render_diff_line`` 语义一致（TUI 路径此前无差异高亮）。
             aline = _diff_line(src_line)
         elif lexer is not None:
-            cache_key = (lang, theme, src_line)
-            aline = _LINE_HIGHLIGHT_CACHE.get(cache_key)
-            if aline is None:
+            if not use_cache:
                 aline = _highlight_line(src_line, lexer, pyg_style)
-                if len(_LINE_HIGHLIGHT_CACHE) >= _LINE_HIGHLIGHT_CACHE_MAX:
-                    _LINE_HIGHLIGHT_CACHE.clear()
-                _LINE_HIGHLIGHT_CACHE[cache_key] = aline
+            else:
+                cache_key = (lang, theme, src_line)
+                aline = _LINE_HIGHLIGHT_CACHE.get(cache_key)
+                if aline is None:
+                    aline = _highlight_line(src_line, lexer, pyg_style)
+                    if len(_LINE_HIGHLIGHT_CACHE) >= _LINE_HIGHLIGHT_CACHE_MAX:
+                        _LINE_HIGHLIGHT_CACHE.clear()
+                    _LINE_HIGHLIGHT_CACHE[cache_key] = aline
         else:
             aline = AnsiLine.of(src_line, _STYLE_DIM)
         if idx in hl:

@@ -120,15 +120,23 @@ def test_blockquote_token_stream_uses_line_tokens():
 
 
 def test_code_preview_highlights_incrementally(monkeypatch):
-    """每写一行只高亮该行（累计高亮行数 = 总行数，非每帧整段重渲染）。"""
+    """逐行流式：每次 write 只渲染 O(1) 行（升格行 + 活动行），非整块重渲染。
+
+    ★ 语义更新（活动行实时渲染修复）：未换行的**活动行**内容逐帧变化，现每帧
+    重渲（原实现只在行数增加时渲染——活动行内容被忽略、显示陈旧文本）；
+    完整行升格时以其最终内容渲染一次并写入逐行高亮缓存（闭合提交时命中，
+    免整块重新词法高亮）。故单次渲染行数 <= 2、累计与总行数线性（非二次）。
+    """
     from src.renderer.ansi import code as _code
 
-    total = {"lines": 0}
+    total = {"lines": 0, "max": 0}
     orig = _code.highlight_code_lines
 
     def spy(lines, lang="", theme="monokai", highlight_lines=None,
             start_index=1, **kwargs):
         total["lines"] += len(lines)
+        if len(lines) > total["max"]:
+            total["max"] = len(lines)
         return orig(lines, lang, theme, highlight_lines, start_index, **kwargs)
 
     monkeypatch.setattr(_code, "highlight_code_lines", spy)
@@ -138,7 +146,10 @@ def test_code_preview_highlights_incrementally(monkeypatch):
         r.write(f"v{i} = {i}\n")
         r.take_lines()
         r.take_preview_lines()
-    assert total["lines"] == 300
+    # 单次渲染不超过 2 行（升格行 + 活动行）
+    assert total["max"] <= 2
+    # 累计线性（<= 2 × 行数 + 常数），远低于每帧整段重渲染的 O(n²)
+    assert total["lines"] <= 2 * 301 + 4, total["lines"]
 
 
 def test_code_preview_cache_reset_on_content_divergence(monkeypatch):
@@ -161,18 +172,19 @@ def test_code_preview_cache_reset_on_content_divergence(monkeypatch):
         return Token(TokenType.CODE_BLOCK, content,
                      {"lang": "python", "preview": True, "closed": False})
 
+    # 初始：'a'（已确定行）+ 'b'（活动行）
     r._render_code_preview(tok("a\nb"))
     assert total["lines"] == 2
-    # 前缀命中（只追加）→ 仅渲染新增 1 行
+    # 前缀命中（只追加）→ 渲染升格行 'b'（最终内容）+ 新活动行 'c'
     r._render_code_preview(tok("a\nb\nc"))
-    assert total["lines"] == 3
+    assert total["lines"] == 4
     # 内容分歧（不以缓存为前缀）→ 整体重渲染 3 行
     r._render_code_preview(tok("a\nX\nc"))
-    assert total["lines"] == 6
+    assert total["lines"] == 7
     # 语言变化 → 缓存键失效 → 整体重渲染
     r._render_code_preview(Token(TokenType.CODE_BLOCK, "x\ny",
                                  {"lang": "js", "preview": True, "closed": False}))
-    assert total["lines"] == 8
+    assert total["lines"] == 9
 
 
 # ═══════════════════════════════════════════════════════════
@@ -524,3 +536,72 @@ def test_blockquote_preview_has_depth_prefix(chunks, expected):
         r.write(c)
     preview = [l.plain for l in r.take_preview_lines()]
     assert preview == expected
+
+
+# ═══════════════════════════════════════════════════════════
+# 代码块预览：活动行实时刷新 + 高亮缓存不被活动行污染
+# ═══════════════════════════════════════════════════════════
+
+
+def test_code_preview_active_line_refreshed_each_frame():
+    """未换行的活动行内容逐帧刷新（原实现按行数增量→显示陈旧文本）。"""
+    r = AnsiStreamRenderer(width=80)
+    r.write("```python\nv")
+    shown = "\n".join(ln.plain for ln in r.take_preview_lines())
+    assert "v" in shown
+    r.write("alue")
+    shown = "\n".join(ln.plain for ln in r.take_preview_lines())
+    assert "value" in shown
+
+
+def test_code_preview_rows_align_with_source_lines():
+    """预览行与源行一一对应（不重复、不残留陈旧槽位）。"""
+    r = AnsiStreamRenderer(width=80)
+    body = ["a = 1", "b = 2", "c = 3"]
+    for i, line in enumerate(body):
+        r.write(line + ("\n" if i < len(body) - 1 else ""))
+        r.take_preview_lines()
+    rows = [ln.plain for ln in r.take_preview_lines()]
+    assert rows[0].startswith("a = 1")
+    assert rows[1].startswith("b = 2")
+    assert rows[2].startswith("c = 3")
+    assert len(rows) == 3
+
+
+def test_code_preview_active_line_not_cached():
+    """活动行不写共享高亮缓存（避免逐帧前缀污染）；升格行以最终内容进缓存。"""
+    from src.renderer.ansi import code as _code
+
+    _code._LINE_HIGHLIGHT_CACHE.clear()
+    r = AnsiStreamRenderer(width=80)
+    r.write("```python\nfoo = 1")
+    r.take_preview_lines()
+    assert not any(k[2] == "foo = 1" for k in _code._LINE_HIGHLIGHT_CACHE)
+    # 行升格（换行）→ 以最终内容渲染并进缓存
+    r.write("\nbar = 2")
+    r.take_preview_lines()
+    assert any(k[2] == "foo = 1" for k in _code._LINE_HIGHLIGHT_CACHE)
+
+
+def test_code_block_close_reuses_preview_highlight_cache(monkeypatch):
+    """代码块闭合时复用预览阶段的行高亮缓存（免整块重新词法高亮）。"""
+    from src.renderer.ansi import code as _code
+
+    _code._LINE_HIGHLIGHT_CACHE.clear()
+    misses = {"n": 0}
+    orig = _code._highlight_line
+
+    def spy(line, lexer, style):
+        misses["n"] += 1
+        return orig(line, lexer, style)
+
+    monkeypatch.setattr(_code, "_highlight_line", spy)
+    r = AnsiStreamRenderer(width=80)
+    body = "\n".join(f"x{i} = {i}" for i in range(50))
+    r.write("```python\n" + body + "\n")
+    r.take_preview_lines()
+    misses["n"] = 0
+    r.write("```\n\n")  # 闭合围栏
+    r.close()
+    # 闭合时仅需渲染尚未进缓存的行（活动行/空行），远小于 50 行
+    assert misses["n"] <= 3, misses["n"]

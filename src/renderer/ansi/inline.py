@@ -18,9 +18,12 @@
   小字 ``{-x-}``、着色 ``{color:red}x{color}``、行内注释 ``%%x%%``、
   HTML 标签/注释/实体、缩写定义 ``*[ABBR]: ...`` 自动替换。
 
-性能契约（超长单行）：纯文本（不含任何格式触发字符）经 C 级
-``frozenset.isdisjoint`` 直接返回单 Run，不进入解析器；解析器自身对普通
-文本段用位置缓存 + ``str.find`` 批量跳转（非逐字符累积）。
+性能契约（超长单行 / 英文文本）：纯文本（不产生任何行内格式节点）经
+``text_has_inline_markup`` 快速判否后直接返回单 Run，不进入解析器；解析器
+自身按「兴趣位置表」二分跳过整段普通文本（非逐字符扫描，且普通字母
+``h/f/w`` 不再逐个尝试裸 URL 判定）——英文文本中 ``h/f/w`` 出现频率约 10%，
+修复前几乎每 10 个字符就产生一次无效的格式尝试。判否口径与兴趣位置表完全
+一致，故判定为「无标记」时产出与解析器路径等价。
 """
 
 from __future__ import annotations
@@ -720,10 +723,15 @@ def render_inline(text: str, base_style: Style | None = None, ctx=None) -> list[
     if ctx is None:
         ctx = _RENDER_CTX.get()
     try:
-        from src.renderer.inline_parser import _InlineParser
-        # 快速判否：不含任何格式/URL 触发字符 → 单 Run（免进解析器）
-        if _FAST_ISDISJOINT(text):
+        # 快速判否：不产生任何行内格式节点（无核心格式字符、无裸 URL 前缀）
+        # → 单 Run（免进解析器）。
+        # ★ 例外：上下文含缩写定义表（``abbr_map``）时短语可能被缩写替换为
+        #   高亮样式，纯文本也需进入解析器（与 Rich 路径
+        #   ``inline_renderer`` 的 abbr 分支同口径）。
+        if _FAST_ISDISJOINT(text) and not (
+                ctx is not None and getattr(ctx, "abbr_map", None)):
             return [Run(text, base)]
+        from src.renderer.inline_parser import _InlineParser
         nodes = _InlineParser(text).parse()
         out: list[Run] = []
         _emit_nodes(nodes, base, ctx, out, 0)
@@ -733,12 +741,20 @@ def render_inline(text: str, base_style: Style | None = None, ctx=None) -> list[
 
 
 def _make_fast_isdisjoint():
-    """构造「文本不含任何触发字符」的 C 级判定函数。"""
-    from src.renderer.inline_parser import _InlineParser
-    chars = frozenset(_InlineParser._FORMAT_CHARS)
+    """构造「文本不产生任何行内格式节点」的 C 级判定函数。
+
+    ★ 英文流式渲染性能：判定口径与解析器「兴趣位置」表
+    （``inline_parser._build_interest_positions``）一致——核心格式触发字符
+    出现，或含裸 URL 前缀（``http:`` / ``https:`` / ``ftp:`` / ``ftps:`` /
+    ``www.``，大小写不敏感）才需进入解析器。修复前把裸 URL 首字母
+    （``h/f/w``，英文文本中出现频率约 10%）也当作「触发字符」判否，导致几乎
+    所有英文句子都进入解析器逐字符扫描。判定为「无标记」时解析结果必为单一
+    纯文本 Run，产出与解析器路径完全一致。
+    """
+    from src.renderer.inline_parser import text_has_inline_markup
 
     def _check(text: str) -> bool:
-        return chars.isdisjoint(text)
+        return not text_has_inline_markup(text)
 
     return _check
 

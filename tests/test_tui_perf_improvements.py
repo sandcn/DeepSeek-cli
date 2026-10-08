@@ -745,23 +745,33 @@ class TestFrameRenderBudget:
 
 
 class TestPlainActiveWindow:
-    def test_last_format_char_pos(self):
-        from src.renderer.ansi import _last_format_char_pos
-        from src.renderer.inline_parser import _InlineParser
+    def test_trigger_position_helpers(self):
+        from src.renderer.ansi import (
+            _last_core_trigger_pos, _last_url_prefix_pos,
+        )
+        from src.renderer.inline_parser import _CORE_FORMAT_CHARS
 
-        # 无触发字符：纯 CJK + 空格 + 数字（避开 w/h/f/F/H/W/@/&/:/+ 等）
-        assert _last_format_char_pos("中文文本内容及数字123 空格") == -1
-        assert _last_format_char_pos("") == -1
-        assert _last_format_char_pos("a*b") == 1
-        assert _last_format_char_pos("abc*") == 3
-        assert _last_format_char_pos("*abc") == 0
-        # 与 render_inline 的快路径判否同源：任一触发字符存在即 >= 0
-        for ch in _InlineParser._FORMAT_CHARS:
-            assert _last_format_char_pos(f"x{ch}y") == 1, ch
-        # 注意：触发字符集合含 w/h/f/@/&/:/+ 等（wikilink / HTML / 缩写 / 锚点
-        # 语法），故普通英文单词也可能命中——此处锁定该语义（与 isdisjoint 一致）
-        assert _last_format_char_pos("with") == 3  # 'h'
-        assert _last_format_char_pos("http://x") == len("http:") - 1
+        # 核心格式字符：命中位置（与 render_inline 快路径判否同源）
+        assert _last_core_trigger_pos("") == -1
+        assert _last_core_trigger_pos("中文文本内容及数字123 空格") == -1
+        assert _last_core_trigger_pos("a*b") == 1
+        assert _last_core_trigger_pos("abc*") == 3
+        assert _last_core_trigger_pos("*abc") == 0
+        for ch in _CORE_FORMAT_CHARS:
+            assert _last_core_trigger_pos(f"x{ch}y") == 1, ch
+        # ★ 语义变化（英文性能优化）：裸 URL 首字母（h/f/w）不再算核心触发字符
+        #   ——普通英文单词不再触发整段行内解析
+        assert _last_core_trigger_pos("with") == -1
+        assert _last_core_trigger_pos("http://x") == 4  # ':' 是核心字符
+
+        # 裸 URL 前缀：大小写不敏感，位置为前缀起点
+        assert _last_url_prefix_pos("") == -1
+        assert _last_url_prefix_pos("with the flow") == -1
+        assert _last_url_prefix_pos("see http://x") == 4
+        assert _last_url_prefix_pos("see HTTPS://x") == 4
+        assert _last_url_prefix_pos("go to WWW.example.com") == 6
+        assert _last_url_prefix_pos("FTP://h") == 0
+        assert _last_url_prefix_pos("no url here, just words") == -1
 
     def test_plain_paragraph_line_matches_render_paragraph_line(self):
         from src.renderer.ansi import _plain_paragraph_line
@@ -774,26 +784,33 @@ class TestPlainActiveWindow:
                 (r.text, r.style) for r in exp.runs
             ], text
 
-    def test_note_updates_last_trigger_incrementally(self):
+    def test_note_updates_triggers_incrementally(self):
         from src.renderer.ansi import AnsiStreamRenderer
 
         r = AnsiStreamRenderer(width=80)
-        r._note_paragraph_format_chars("纯文本内容")
-        assert r._para_last_trigger == -1
+        r._note_paragraph_triggers("纯文本内容")
+        assert r._para_last_core == -1
+        assert r._para_last_url == -1
         marked = "纯文本内容再加 **标记**"
-        r._note_paragraph_format_chars(marked)
-        assert r._para_last_trigger == marked.rfind("*")
+        r._note_paragraph_triggers(marked)
+        assert r._para_last_core == marked.rfind("*")
         # 追加无触发字符的尾部 → 最后一个触发字符位置不变（增量命中）
         extended = marked + " 后续内容"
-        r._note_paragraph_format_chars(extended)
-        assert r._para_last_trigger == marked.rfind("*")
+        r._note_paragraph_triggers(extended)
+        assert r._para_last_core == marked.rfind("*")
         # 追加含触发字符的尾部 → 位置前移
         extended2 = extended + " ~尾"
-        r._note_paragraph_format_chars(extended2)
-        assert r._para_last_trigger == extended2.rfind("~")
+        r._note_paragraph_triggers(extended2)
+        assert r._para_last_core == extended2.rfind("~")
+        # 裸 URL 前缀跨增量边界（回看窗口命中：'ht' + 'tp://…'）
+        r._note_paragraph_triggers("see ht")
+        assert r._para_last_url == -1
+        r._note_paragraph_triggers("see http://a")
+        assert r._para_last_url == 4
         # 前缀关系不成立时全量重扫
-        r._note_paragraph_format_chars("全新段落无标记内容")
-        assert r._para_last_trigger == -1
+        r._note_paragraph_triggers("全新段落无标记内容")
+        assert r._para_last_core == -1
+        assert r._para_last_url == -1
 
     def test_plain_active_window_boundaries(self):
         from src.renderer.ansi import AnsiStreamRenderer, _PREVIEW_MAX_LINE_CHARS
@@ -801,16 +818,25 @@ class TestPlainActiveWindow:
         r = AnsiStreamRenderer(width=80)
         limit = _PREVIEW_MAX_LINE_CHARS
         # 短内容：整体窗口
-        r._note_paragraph_format_chars("无标记")
+        r._note_paragraph_triggers("无标记")
         assert r._plain_active_window("无标记")
-        # 超长内容：触发字符落在窗口之外 → 纯文本窗口
+        # ★ 英文纯文本（含 h/f/w 字母，无标记、无 URL）→ 纯文本窗口
+        en = "the quick brown fox jumps over the lazy dog"
+        r._note_paragraph_triggers(en)
+        assert r._plain_active_window(en)
+        # 超长内容：触发位置落在窗口之外 → 纯文本窗口
         long_plain = "文" * (limit + 100)
-        r._note_paragraph_format_chars("a**b" + long_plain)
-        assert r._plain_active_window("a**b" + long_plain)
-        # 触发字符落在窗口之内 → 非纯文本
-        content = long_plain + "**尾标记"
-        r._note_paragraph_format_chars(content)
-        assert not r._plain_active_window(content)
+        content = "a**b" + long_plain
+        r._note_paragraph_triggers(content)
+        assert r._plain_active_window(content)
+        # 触发位置落在窗口之内 → 非纯文本
+        content2 = long_plain + "**尾标记"
+        r._note_paragraph_triggers(content2)
+        assert not r._plain_active_window(content2)
+        # 窗口内的裸 URL 前缀 → 非纯文本
+        content3 = "x" * (limit + 10) + " see http://e.com"
+        r._note_paragraph_triggers(content3)
+        assert not r._plain_active_window(content3)
 
     def test_streaming_preview_equivalent_with_and_without_fast_path(self):
         """端到端：长段落流式预览，快路径开/关产出完全一致。"""

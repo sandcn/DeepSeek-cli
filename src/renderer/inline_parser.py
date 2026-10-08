@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+from bisect import bisect_left
 
 _logger = logging.getLogger(__name__)
 
@@ -44,6 +45,16 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
         self._text = text
         self._pos = 0
         self._n = len(text)
+        # ★ 性能（英文流式渲染）：行内「兴趣位置」表——只有这些位置才可能产生
+        #   非纯文本节点（核心格式触发字符，或裸 URL 前缀起点）。``_parse_until``
+        #   据此二分查找一次跳过整段普通文本；英文文本中频次极高的 h/f/w 字母
+        #   不再逐个尝试格式解析（构建口径见 ``_build_interest_positions``，
+        #   与 ``text_has_inline_markup`` 的快速判否口径完全一致）。
+        #   位置数超限（病态输入）时表为 ``None`` → 回退逐字符扫描（与优化前
+        #   行为一致，见 ``_is_interest`` / ``_find_next_format_char``）。
+        positions = _build_interest_positions(text)
+        self._interest_positions = positions
+        self._interest_set = frozenset(positions) if positions is not None else None
 
     @staticmethod
     def _make_nestable(cls: type, children: list[InlineNode]) -> InlineNode:
@@ -54,12 +65,46 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
         nodes, _ = self._parse_until('', 0)
         return nodes
 
+    def _is_interest(self, pos: int) -> bool:
+        """位置 ``pos`` 是否为「兴趣位置」（需要尝试格式解析的点）。
+
+        兴趣表被禁用（位置数超限）时按 ``_FORMAT_CHARS`` 逐字符判定——与优化
+        前行为完全一致。
+        """
+        interest = self._interest_set
+        if interest is None:
+            return self._text[pos] in self._FORMAT_CHARS
+        return pos in interest
+
     def _find_next_format_char(self, start: int, end: int) -> int:
-        """找到下一个格式字符的位置（O(n) 单遍扫描）。"""
+        """找到 ``[start, end)`` 内下一个「兴趣位置」（无则返回 ``end``）。
+
+        兴趣位置 = 核心格式触发字符（``_CORE_FORMAT_CHARS``）出现处，或裸 URL
+        前缀起点（``h/H/f/F/w/W`` 且其后为 ``http:`` / ``https:`` / ``ftp:`` /
+        ``ftps:`` / ``www.``，大小写不敏感）。表在 ``__init__`` 一次性构建
+        （``_build_interest_positions``），此处二分查找 O(log k)；表被禁用时
+        回退逐字符扫描（``_scan_next_format_char``，与优化前一致）。
+
+        原实现逐字符 Python 扫描并按 ``_FORMAT_CHARS``（含 h/f/w 字母）判定，
+        英文文本下每 4096 字符窗口触发约 200 次扫描与无效格式尝试——本方法
+        改为一次跳过整段普通文本（普通字母不再进入 ``_try_format``）。
+        """
+        positions = self._interest_positions
+        if positions is None:
+            return self._scan_next_format_char(start, end)
+        i = bisect_left(positions, start)
+        if i < len(positions):
+            p = positions[i]
+            if p < end:
+                return p
+        return end
+
+    def _scan_next_format_char(self, start: int, end: int) -> int:
+        """逐字符扫描下一个 ``_FORMAT_CHARS`` 成员（兴趣表禁用时的回退路径）。"""
+        text = self._text
         pos = start
         while pos < end:
-            ch = self._text[pos]
-            if ch in self._FORMAT_CHARS:
+            if text[pos] in self._FORMAT_CHARS:
                 return pos
             pos += 1
         return end
@@ -72,6 +117,9 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
         nodes: list[InlineNode] = []
         plain_buf: list[str] = []
         close_len = len(close_delim)
+        # 兴趣表引用循环外取值（表在解析期不变；``None`` 表示病态输入的
+        # 回退模式——逐字符判定）
+        interest_set = self._interest_set
 
         def _emit_plain():
             if plain_buf:
@@ -83,8 +131,18 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
                 _emit_plain()
                 return nodes, True
 
-            ch = self._text[self._pos]
-            if ch not in self._FORMAT_CHARS:
+            if interest_set is None:
+                # 兴趣表禁用（病态输入）：按 _FORMAT_CHARS 逐字符判定（原语义）
+                is_interest = self._text[self._pos] in self._FORMAT_CHARS
+            else:
+                is_interest = self._pos in interest_set
+            if not is_interest:
+                # ★ 性能（英文流式渲染）：普通文本段一次跳过——二分查找下一个
+                #   兴趣位置后整段切片追加（C 级），不再逐字符 Python 循环、
+                #   也不再对普通字母（英文文本中 h/f/w 出现频率约 10%）逐个
+                #   尝试格式解析。产出与逐字符路径完全一致（plain_buf 拼接的
+                #   连续文本；TextNode 分段粒度变化不影响最终 runs——相邻同样式
+                #   run 在 ``_append`` 处合并）。
                 search_end = self._n
                 if close_delim:
                     close_pos = self._text.find(close_delim, self._pos)
@@ -385,6 +443,109 @@ for ch, entries in _InlineParser._FORMAT_DISPATCH.items():
     for method_name, needs_depth in entries:
         resolved.append((getattr(_InlineParser, method_name), needs_depth))
     _InlineParser._METHOD_CACHE[ch] = resolved
+
+
+# ═══════════════════════════════════════════════════════════
+# 兴趣位置表（英文流式渲染性能）
+# ═══════════════════════════════════════════════════════════
+#
+# ``_FORMAT_CHARS`` 中的 ``h/H/f/F/w/W`` 并非格式标记本身，而是**裸 URL
+# 前缀**（``http:`` / ``https:`` / ``ftp:`` / ``ftps:`` / ``www.``）的首字母。
+# 英文文本中这几个字母出现频率约 10%，若在解析主循环里逐字符对其尝试格式
+# 解析，会产生大量无效调用（h/f/w 字母处 + 紧随其后的普通文本段扫描），
+# 实测长段落流式预览每帧 ~0.9ms（4096 字符窗口）。
+#
+# 优化：解析前一次性构建「兴趣位置」表——核心格式触发字符出现处 + 裸 URL
+# 前缀起点；主循环据此二分查找，一次跳过整段普通文本。表口径与
+# ``text_has_inline_markup``（快速判否）完全一致：判定为「无行内标记」的文本
+# 解析结果必为单一纯文本 Run。
+
+#: 裸 URL 前缀首字母（大小写全覆盖）
+_URL_LETTERS: frozenset[str] = frozenset('hHfFwW')
+
+#: 核心格式触发字符（不含裸 URL 首字母——它们由前缀匹配精确驱动）
+_CORE_FORMAT_CHARS: frozenset[str] = _InlineParser._FORMAT_CHARS - _URL_LETTERS
+
+#: 裸 URL 前缀（小写比较；与 ``_try_format`` / ``_try_bare_url`` 的候选判定
+#: 同一口径，覆盖大小写混合写法）
+_URL_PREFIXES: tuple[str, ...] = ('http:', 'https:', 'ftp:', 'ftps:', 'www.')
+
+#: 兴趣位置表规模上限。超过则**禁用表**（解析器回退为逐字符扫描，与优化前
+#: 行为完全一致）——病态输入（如超长分隔线/下划线行）下避免表本身占用过多
+#: 内存与构建时间；此时几乎每个字符都是触发字符，逐字符扫描并无性能损失。
+_INTEREST_POSITIONS_MAX = 65536
+
+
+def _build_interest_positions(text: str) -> "list[int] | None":
+    """构建「需要尝试内联格式解析」的字符位置表（升序，无重复）。
+
+    Args:
+        text: 待解析文本。
+
+    Returns:
+        升序位置列表；位置数超过 ``_INTEREST_POSITIONS_MAX`` 时返回 ``None``
+        （调用方回退逐字符扫描）。两类位置：
+          1. 核心格式触发字符（``_CORE_FORMAT_CHARS``）出现处；
+          2. 裸 URL 前缀起点（``h/H/f/F/w/W`` 且其后紧接 ``http:`` /
+             ``https:`` / ``ftp:`` / ``ftps:`` / ``www.``，大小写不敏感）。
+
+    实现用 C 级 ``str.find`` 逐个核心字符收集（每字符一次 memchr 扫描），
+    URL 前缀经一次 ``str.lower`` 副本匹配全部大小写组合——总成本 O(|核心字符|·n)
+    的 C 级扫描，对每帧 4096 字符窗口约数十微秒，远低于原逐字符 Python 扫描
+    （每窗口 ~200 次格式尝试）。
+    """
+    if not text:
+        return []
+    max_positions = _INTEREST_POSITIONS_MAX
+    positions: list[int] = []
+    append = positions.append
+    for ch in _CORE_FORMAT_CHARS:
+        i = text.find(ch)
+        while i >= 0:
+            append(i)
+            if len(positions) > max_positions:
+                return None
+            i = text.find(ch, i + 1)
+    for ch in _URL_LETTERS:
+        if ch in text:
+            low = text.lower()
+            for prefix in _URL_PREFIXES:
+                i = low.find(prefix)
+                while i >= 0:
+                    append(i)
+                    if len(positions) > max_positions:
+                        return None
+                    i = low.find(prefix, i + 1)
+            break
+    positions.sort()
+    return positions
+
+
+def text_has_inline_markup(text: str) -> bool:
+    """文本是否**可能**产生非纯文本行内节点（快速判否）。
+
+    返回 ``False`` 时，``_InlineParser(text).parse()`` 的结果必为单一纯文本
+    （无任何格式节点），可直接走单 Run 快路径；返回 ``True`` 时需进入解析器。
+
+    判定口径与 ``_build_interest_positions`` 完全一致：核心格式触发字符出现，
+    或文本含裸 URL 前缀（大小写不敏感）。实现用少量 C 级 ``in`` / ``find``
+    扫描（核心字符短路返回），比 ``frozenset.isdisjoint`` 逐字符查找更快
+    （长文本下尤其明显）。
+    """
+    for ch in _CORE_FORMAT_CHARS:
+        if ch in text:
+            return True
+    for ch in _URL_LETTERS:
+        if ch in text:
+            low = text.lower()
+            for prefix in _URL_PREFIXES:
+                if prefix in low:
+                    return True
+            return False
+    return False
+
+
+__all__ = ["_InlineParser", "text_has_inline_markup"]
 
 
 

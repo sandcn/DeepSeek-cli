@@ -679,8 +679,9 @@ class InlineFormattingMixin:
             if self._pos + delim_len <= self._n and self._text[self._pos:self._pos + delim_len] == delim:
                 _emit_plain()
                 return nodes, True
-            # 尝试内联格式
-            node = self._try_format(depth)
+            # 尝试内联格式（★ 性能：仅兴趣位置进入——英文文本中的普通字母
+            #   不再逐个尝试格式解析，见 ``_build_interest_positions``）
+            node = self._try_format(depth) if self._is_interest(self._pos) else None
             if node is not None:
                 _emit_plain()
                 nodes.append(node)
