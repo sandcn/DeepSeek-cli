@@ -5,7 +5,8 @@
 1. **代码独立**：/model 命令逻辑从 ``_config_cmd.py`` 独立到
    ``_model_cmd.py``——导出兼容（``commands.__init__`` / ``_config_cmd``
    re-export / ``model_plugin`` 导入路径）、序号/名称快速切换、
-   PROVIDERS 聚合回退、provider 同步、无参数弹窗路径
+   模型列表唯一来源 = 模型档案（``model_profiles``；RC 顶层 ``models``
+   字段已移除）、provider 同步、无参数弹窗路径
    （``run_bottom_bar_selection`` 协议）。
 2. **上下键无效果修复**：``ModelPlugin`` 无参数分支不再执行
    ``chat_ui.suspend()`` / ``monitor.stop()``——根因：键盘事件分发由
@@ -157,6 +158,12 @@ class _FakeLoop:
 _MODELS = ["deepseek-v4", "deepseek-v4-pro", "test-model"]
 
 
+@pytest.fixture(autouse=True)
+def _no_model_profiles(monkeypatch):
+    """隔离模型档案（/model 只从「配置的列表」选择——单测按需覆盖）。"""
+    monkeypatch.setattr("src.config.model_profiles.load_profiles", lambda rc=None: [])
+
+
 def _make_plugin(chat_ui, monitor):
     plugin = ModelPlugin()
     plugin.bind_loop(_FakeLoop(chat_ui, monitor))
@@ -186,7 +193,7 @@ def test_model_cmd_module_exports():
     assert callable(_model_cmd._cmd_model)
     assert callable(_model_cmd._infer_model_provider)
     assert callable(_model_cmd._collect_models)
-    assert callable(_model_cmd._sync_provider)
+    assert callable(_model_cmd._select_model_profile)
 
 
 def test_config_cmd_reexport_compatibility():
@@ -244,47 +251,45 @@ def test_cmd_model_ambiguous_name():
     assert state["model"] == _MODELS[0]
 
 
-def test_cmd_model_syncs_provider_via_rc(monkeypatch):
-    """无 config_port 回退路径：provider 不一致时 update_config 写 RC。"""
+def test_cmd_model_selects_profile_via_rc(monkeypatch):
+    """无 config_port 回退路径：按名选中档案 → 写 active_model_profile。"""
     writes = _flush_model_provider_writes(monkeypatch)
-    monkeypatch.setattr("src.config.MODELS", _MODELS)
-    monkeypatch.setattr("src.config.MODEL", _MODELS[0])
     from src.config.defaults import PROVIDERS
     first_provider = next(iter(PROVIDERS))
     first_model = PROVIDERS[first_provider].get("models", [""])[0]
-    state = {"model": first_model}
-    _model_cmd._cmd_model(_Ctx(state, arg=first_model))
-    assert ("provider", first_provider) in writes
-
-
-def test_collect_models_providers_fallback(monkeypatch):
-    """MODELS 为空时从 PROVIDERS 聚合回退（去重保序）。"""
-    monkeypatch.setattr("src.config.MODELS", [])
-    port = _FakeConfigPort([], _MODELS[0])
-    models = _model_cmd._collect_models(_Ctx({}, config_port=port))
-    assert models, "PROVIDERS 聚合回退应返回非空模型列表"
-    assert len(models) == len(set(models)), "聚合应去重"
-
-
-def test_collect_models_merges_provider_models():
-    """RC models 与 PROVIDERS 合并：新模型（vision）自动出现在列表。"""
-    port = _FakeConfigPort(["deepseek-v4-pro", "deepseek-v4-flash"], "deepseek-v4-flash")
-    models = _model_cmd._collect_models(_Ctx({}, config_port=port))
-    # RC 模型保持原序在前
-    assert models[:2] == ["deepseek-v4-pro", "deepseek-v4-flash"]
-    # provider 内置新模型被合并追加
-    assert "deepseek-v4-flash-vision-exp" in models
-    assert len(models) == len(set(models))
-
-
-def test_merge_provider_models_dedup_and_order():
-    """_merge_provider_models：去重保序 + 自定义模型保留。"""
-    merged = _model_cmd._merge_provider_models(
-        ["custom-model", "deepseek-v4-pro", "deepseek-v4-pro"],
+    # 模型列表唯一来源 = 模型档案
+    monkeypatch.setattr(
+        "src.config.model_profiles.load_profiles",
+        lambda rc=None: [{"model": first_model, "provider": first_provider}],
     )
-    assert merged.count("deepseek-v4-pro") == 1
-    assert merged[0] == "custom-model"
-    assert "deepseek-v4-flash-vision-exp" in merged
+    state = {"model": first_model}
+    assert _model_cmd._cmd_model(_Ctx(state, arg=first_model)) is True
+    assert ("ACTIVE_MODEL_PROFILE", 0) in writes
+    # 不再写入 RC 旧键（provider/model/base_url/api_key）
+    assert not any(k in ("provider", "model", "base_url", "api_key") for k, _ in writes)
+
+
+def test_collect_models_empty_without_config():
+    """未配置任何模型档案 → 空列表（**不回退内置模型**）。"""
+    port = _FakeConfigPort([], "")
+    assert _model_cmd._collect_models(_Ctx({}, config_port=port)) == []
+
+
+def test_collect_models_from_profiles(monkeypatch):
+    """模型列表唯一来源 = 档案模型名（去重保序；RC ``models`` 已移除）。"""
+    monkeypatch.setattr(
+        "src.config.model_profiles.load_profiles",
+        lambda rc=None: [{"model": "p-model"}, {"model": "p2"}, {"model": "p-model"}],
+    )
+    port = _FakeConfigPort(["legacy-rc-model"], "")
+    models = _model_cmd._collect_models(_Ctx({}, config_port=port))
+    assert models == ["p-model", "p2"]
+
+
+def test_collect_models_falls_back_to_config_port():
+    """档案为空时回退配置端口（真实实现与档案同源）。"""
+    port = _FakeConfigPort(["m-a", "m-b"], "m-a")
+    assert _model_cmd._collect_models(_Ctx({}, config_port=port)) == ["m-a", "m-b"]
 
 
 # ── 3. /model 无参数：弹窗交互选择协议 ───────────────────
@@ -296,9 +301,9 @@ def test_cmd_model_popup_confirmed_switch():
     state = {"model": _MODELS[0]}
     assert _model_cmd._cmd_model(_Ctx(state, config_port=port, ui_adapter=adapter)) is True
     call = adapter.calls[0]
-    # RC 模型列表保持原序在前，PROVIDERS 内置模型追加在后
+    # 弹窗候选 = 配置的模型列表（不再合并 PROVIDERS 内置模型）
     assert call["items"][:len(_MODELS)] == _MODELS
-    assert len(call["items"]) > len(_MODELS)
+    assert len(call["items"]) == len(_MODELS)
     assert call["title"] == "模型选择"
     assert call["initial_idx"] == 0
     assert "<-当前" in call["display_items"][0]

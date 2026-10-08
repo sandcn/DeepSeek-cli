@@ -46,8 +46,8 @@ _logger = logging.getLogger(__name__)
 _ACCEPT_STREAM = "application/json, text/event-stream"
 
 # ── stdio 子进程环境变量白名单 ────────────────────────────
-# 第三方 MCP server 子进程默认不继承完整 os.environ（避免 CHAT_API_KEY 等
-# 凭据外泄给外部包）；仅透传进程运行必需的基础变量，其余需在 server 配置的
+# 第三方 MCP server 子进程默认不继承完整 os.environ（避免凭据类环境变量
+# 外泄给外部包）；仅透传进程运行必需的基础变量，其余需在 server 配置的
 # ``env`` 显式声明，或设 ``inherit_env: true`` 恢复继承全部环境变量。
 _ENV_WHITELIST: tuple[str, ...] = (
     "PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC",

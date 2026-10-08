@@ -319,6 +319,8 @@ async def test_config_entry_descs_extra_keys():
     from src.config.view_model import CONFIG_ENTRY_DESCS, build_config_entries
 
     entries = {e["key"]: e for e in build_config_entries()}
-    assert entries["provider"]["desc"] == CONFIG_ENTRY_DESCS["provider"]
-    assert entries["provider"]["desc"]
-    assert entries["api_key"]["desc"]
+    assert entries["skills"]["desc"] == CONFIG_ENTRY_DESCS["skills"]
+    assert entries["skills"]["desc"]
+    # 旧 LLM 访问键已移除（唯一来源 = 模型档案）
+    assert "provider" not in entries and "api_key" not in entries
+    assert "model" not in entries

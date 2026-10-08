@@ -23,6 +23,7 @@ __all__ = [
     "EditMsgSelectState",
     "ConfigViewState",
     "PluginViewState",
+    "ModelViewState",
     "StatusState",
     "HistorySearchState",
 ]
@@ -455,6 +456,121 @@ class PluginViewState:
 
         Returns:
             True 本次写入生效；False 终态已由其他线程置位。
+        """
+        with self._final_lock:
+            if self.done:
+                return False
+            self.action = action
+            self.done = True
+            return True
+
+
+@dataclass
+class ModelViewState:
+    """模型选择器视图状态（/models 命令注入，ModelView 组件消费）。
+
+    /models（或 /model 无参数）打开全屏模型选择器（``model.fullscreen ==
+    "model"``）——ModelView 组件整屏渲染（模型列表 + 增删改选表单）。与
+    config/plugin 同构的**跨线程协议**：
+
+      - 命令线程（``_cmd_models``）：构建 entries
+        （``config.model_profiles.build_model_entries``）→ 设置本状态
+        （visible=True, seq+1, entries）→ ``model.fullscreen="model"`` →
+        request_bottom_redraw → 轮询 ``done``（带 deadline 超时），期间检测
+        ``applied_seq`` 变化即把选中条目应用到当前会话（写 RC + 同步
+        session.model / 状态栏）→ finally 清理；
+      - 组件（ModelView）：浏览/表单/字段输入三态；选择条目写
+        ``applied_seq``+``applied``（命令线程应用）；档案增删改经
+        ``config.model_profiles.save_profiles`` 直接持久化（loader 有锁 +
+        原子写，线程安全）；Esc 关闭经 ``try_set_final("cancel")`` 原子终态
+        写入（first-write-wins）。
+
+    Attributes:
+        visible: 视图是否显示（命令打开/清理）。
+        seq: 视图会话序号（每次打开递增）——App key 强制重挂载，重置内部
+            use_state（连续打开不残留选中/表单态）。
+        entries: 模型条目列表（``build_model_entries`` 产出；组件只读）。
+        selected: 当前选中条目索引（组件导航维护）。
+        message: 操作反馈消息（如「已保存」「已删除」）。
+        edit_error: 表单校验 / 写入失败提示（空串=无错误）。
+        editing: 是否处于表单模式（新增/编辑档案）。
+        edit_mode: 表单子模式（"form"=字段列表；"field"=当前字段输入）。
+        form_index: 正在编辑的档案下标（None = 新增）。
+        form_values: 表单字段值（``config.model_profiles.FIELD_KEYS`` 为键）。
+        form_selected: 表单当前选中字段索引。
+        form_edit_value: 字段输入缓冲（字符累积/退格删除）。
+        form_is_new: 是否新增（决定保存时 append 还是替换）。
+        search_mode/search_query/search_pattern/search_matches/search_idx/
+            search_filter: 搜索输入 / 已执行模式 / 匹配列表 / 当前匹配 / 过滤。
+        help_open/help_scroll: 帮助面板开关与滚动偏移。
+        applied_seq: 应用（选择）计数（组件递增，命令线程比对检测新选择）。
+        applied: 待应用条目（组件写，命令线程读取并应用到会话）。
+        deadline: 超时截止（time.monotonic()）；0 表示无限等待。
+        done: 交互是否已结束（Esc 关闭或命令超时置位）。
+        action: 结束方式（cancel/timeout）。
+        _final_lock: 终态写入锁（done/action 原子写，first-write-wins
+            跨线程安全——组件 Esc 关闭 vs 命令超时竞态）。
+    """
+
+    visible: bool = False
+    seq: int = 0
+    entries: list = field(default_factory=list)
+    selected: int = 0
+    message: str = ""
+    edit_error: str = ""
+    # ── 表单（新增 / 编辑档案） ──
+    editing: bool = False
+    edit_mode: str = "form"
+    form_index: Any = None
+    form_values: dict = field(default_factory=dict)
+    form_selected: int = 0
+    form_edit_value: str = ""
+    form_is_new: bool = False
+    # 「提供商」字段的选择界面（edit_mode == "select"）
+    form_select_options: list = field(default_factory=list)
+    form_select_desc: list = field(default_factory=list)
+    form_select_index: int = 0
+    # ── 搜索 ──
+    search_mode: bool = False
+    search_query: str = ""
+    search_pattern: str = ""
+    search_matches: list = field(default_factory=list)
+    search_idx: int = -1
+    search_filter: bool = False
+    # ── 帮助面板 ──
+    help_open: bool = False
+    help_scroll: int = 0
+    # ── 应用（选择）结果回传：组件递增 applied_seq，命令线程检测后应用 ──
+    applied_seq: int = 0
+    applied: Any = None
+    deadline: float = 0.0
+    done: bool = False
+    action: str = ""
+    #: 终态写入锁（repr/比较忽略——纯同步原语，非状态数据）
+    _final_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False,
+    )
+
+    def reset_edit_state(self) -> None:
+        """复位表单/提示态字段（集中重置入口，进入/退出表单共用）。"""
+        self.editing = False
+        self.edit_mode = "form"
+        self.form_index = None
+        self.form_values = {}
+        self.form_selected = 0
+        self.form_edit_value = ""
+        self.form_is_new = False
+        self.form_select_options = []
+        self.form_select_desc = []
+        self.form_select_index = 0
+        self.edit_error = ""
+        self.message = ""
+
+    def try_set_final(self, action: str) -> bool:
+        """原子写入终态（first-write-wins，跨线程安全）。
+
+        与 ConfigViewState / PluginViewState 的 try_set_final 同语义——
+        独立实现，不共用代码。
         """
         with self._final_lock:
             if self.done:

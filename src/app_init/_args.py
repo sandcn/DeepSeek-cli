@@ -108,14 +108,14 @@ def _parse_args() -> argparse.Namespace:
     p_config_sub.add_parser('show', help='列出全部配置（同 list）')
 
     p_get = p_config_sub.add_parser('get', help='查询单个配置')
-    p_get.add_argument('key', type=str, help='配置键名（如 MODEL / model）')
+    p_get.add_argument('key', type=str, help='配置键名（如 MODEL_PROFILES / model_profiles）')
 
     p_set = p_config_sub.add_parser('set', help='设置配置并持久化')
-    p_set.add_argument('key', type=str, help='配置键名（如 MODEL / model）')
+    p_set.add_argument('key', type=str, help='配置键名（如 MODEL_PROFILES / model_profiles）')
     p_set.add_argument('value', type=str, help='配置值（bool 接受 true/false；list/dict 接受 JSON）')
 
     p_reset = p_config_sub.add_parser('reset', help='重置为默认值')
-    p_reset.add_argument('key', type=str, help='配置键名（如 MODEL / model）')
+    p_reset.add_argument('key', type=str, help='配置键名（如 MODEL_PROFILES / model_profiles）')
 
     # version
     subparsers.add_parser('version', help='显示版本信息并退出')

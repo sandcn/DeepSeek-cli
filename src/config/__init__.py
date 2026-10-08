@@ -8,7 +8,7 @@ from .defaults import CONFIG_DIR, LOG_FILE, RC_FILE, INPUT_HISTORY_FILE, PROVIDE
 
 from .loader import (
     _ensure_config_dir, _load_rc, get_rc, update_config,
-    get_base_url, get_audit_logger, _get_config,
+    get_base_url, get_audit_logger,
 )
 
 # ============================================================
@@ -26,14 +26,69 @@ from .loader import (
 
 
 
-# ---- 动态键：每次访问都重新计算（环境变量、运行时状态等） ----
+# ---- 动态键：每次访问都重新计算（模型档案 / 运行时状态） ----
+def _configured_models() -> list:
+    """配置的模型列表（模型档案 ``model_profiles`` 的模型名，去重保序）。
+
+    RC 顶层 ``models`` 字段已移除——模型列表**唯一来源**是模型档案；
+    任何异常回退空列表（导入期/异常配置下调用方按空处理）。
+    """
+    try:
+        from .model_profiles import configured_models
+
+        return configured_models()
+    except Exception:
+        return []
+
+
+def _current_llm_field(field: str) -> str:
+    """当前生效档案的 LLM 连接字段（api_key / base_url / model / provider）。
+
+    **LLM 访问的唯一入口**：环境变量 CHAT_API_KEY/CHAT_MODEL/CHAT_BASE_URL
+    与 RC 旧键 ``api_key``/``base_url``/``model``/``provider`` 均已移除，
+    取值只来自模型档案（``model_profiles`` + ``active_model_profile``）；
+    未配置档案时返回空串（调用方给出「请先 /models 新增」提示）。
+    """
+    try:
+        from . import model_profiles as mp
+
+        return str(getattr(mp, field)() or "")
+    except Exception:
+        return ""
+
+
+def _token_prices() -> dict:
+    """token 价格表：RC 配置优先，缺省回退**当前生效档案 provider** 的内置价表。
+
+    LLM 访问参数唯一来源 = 模型档案，因此缺省价表按当前档案的 provider 取
+    （provider 来自档案，不再有 RC ``provider`` 旧键）。
+    """
+    try:
+        rc = get_rc()
+        prices = rc.get("token_prices") if isinstance(rc, dict) else None
+        if isinstance(prices, dict) and prices:
+            return dict(prices)
+        from .defaults import PROVIDERS
+        from .model_profiles import current_provider
+
+        provider = current_provider(rc)
+        return dict((PROVIDERS.get(provider, {}) or {}).get("token_prices", {}) or {})
+    except Exception:
+        return {}
+
+
 _lazy_map = {
-    "API_KEY": lambda: _get_config("CHAT_API_KEY", ""),  # 仅读环境变量，不读 RC（RC 中 api_key 为小写字段）
-    "BASE_URL": lambda: get_base_url(),
+    # LLM 连接参数（唯一来源：当前模型档案）
+    "API_KEY": lambda: _current_llm_field("current_api_key"),
+    "BASE_URL": lambda: _current_llm_field("current_base_url"),
+    "MODEL": lambda: _current_llm_field("current_model"),
+    # 模型列表唯一来源：模型档案（``model_profiles``）的模型名
+    "MODELS": lambda: _configured_models(),
+    # token 价格表（RC 配置优先，缺省回退当前档案 provider 内置价表）
+    "TOKEN_PRICES": lambda: _token_prices(),
     "audit_logger": lambda: get_audit_logger(),
     "STAGGER_MIN_DELAY": lambda: float(os.getenv("CHAT_STAGGER_MIN_DELAY", "0.1")),
     "STAGGER_MAX_DELAY": lambda: float(os.getenv("CHAT_STAGGER_MAX_DELAY", "0.5")),
-    "LOW_MODEL": lambda: os.getenv("CHAT_LOW_MODEL", ""),
 }
 
 # ---- 缓存容器 ----
@@ -72,11 +127,6 @@ def _resolve_rc_key(name: str, rc: dict) -> Any:
     # 空路径 → 返回完整 rc 字典
     if not path:
         return rc
-    # MODEL 优先从环境变量读取
-    if name == "MODEL":
-        env_model = os.getenv("CHAT_MODEL")
-        if env_model:
-            return env_model
     # 通用嵌套字典遍历
     value = rc
     for part in path:

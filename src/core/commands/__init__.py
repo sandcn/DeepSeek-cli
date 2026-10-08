@@ -34,7 +34,7 @@ from ._session_cmd import (
     ChangesCommand,
 )
 
-from ._model_cmd import _cmd_model
+from ._model_cmd import _cmd_model, _cmd_models, _open_model_view
 
 from ._plugin_cmd import (
     _cmd_plugin,

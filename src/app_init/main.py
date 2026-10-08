@@ -13,13 +13,42 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 
 from ._args import _parse_args
 
 _logger = logging.getLogger(__name__)
 
 _DEFAULT_PROFILE = "cli"
+
+
+def _select_model_profile(name: str) -> bool:
+    """``-m/--model``：按模型名/显示名匹配模型档案并设为当前生效。
+
+    LLM 访问参数（api_key / base_url / model / provider）唯一来源 = 模型档案；
+    因此 CLI 只能**选择已有档案**，不能直接指定任意模型名。未匹配时打印可用
+    档案清单并返回 False（调用方终止启动）。
+    """
+    from ..config.model_profiles import build_model_entries, set_active_profile
+
+    target = str(name or "").strip()
+    entries = build_model_entries()
+    matched = [
+        e for e in entries
+        if target and target in (str(e.get("model") or ""), str(e.get("name") or ""))
+    ]
+    if not matched:
+        available = ", ".join(str(e.get("model") or "") for e in entries) or "（无）"
+        print(
+            f"\n  ! 未找到模型档案: {target}\n"
+            f"    可用档案: {available}\n"
+            f"    请先运行 `python chat.py` 并用 /models 新增模型档案。",
+        )
+        return False
+    ok = set_active_profile(matched[0].get("index"))
+    if not ok:
+        print(f"\n  ! 写入模型选择失败: {target}")
+        return False
+    return True
 
 
 async def main():
@@ -33,9 +62,10 @@ async def main():
     elif args.verbose >= 1:
         logging.basicConfig(level=logging.INFO)
 
-    # ── 覆盖模型配置（须在内核构建之前——配置读取在构建期发生） ──
-    if args.model:
-        os.environ["CHAT_MODEL"] = args.model
+    # ── CLI 模型选择（须在内核构建之前——配置读取在构建期发生）：按模型名
+    #    匹配已有模型档案并设为当前生效（模型参数唯一来源 = 模型档案） ──
+    if args.model and not _select_model_profile(args.model):
+        return
 
     profile = getattr(args, "profile", "") or _DEFAULT_PROFILE
     patch_paths = list(getattr(args, "patch", None) or [])

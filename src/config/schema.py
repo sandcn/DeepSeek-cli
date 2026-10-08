@@ -1,26 +1,6 @@
 """配置包 — 配置校验逻辑"""
 
-import os
-from typing import Optional
-
-from .defaults import CONFIG_KEYS, DEFAULTS, PROVIDERS
-
-
-def _detect_provider_from_api_key(api_key: str) -> tuple[Optional[str], Optional[str]]:
-    """从 API Key 前缀推断 provider 和默认模型。
-
-    Returns:
-        (provider_name, default_model) 或 (None, None) 表示无法推断。
-    """
-    if not api_key:
-        return None, None
-    # Anthropic: sk-ant-api03-...
-    if api_key.startswith("sk-ant-"):
-        return "anthropic", "claude-sonnet-4-6"
-    # 注：deepseek/glm/mimo 的 API Key 无稳定可识别前缀，不做前缀探测——
-    # 这些 provider 由用户显式配置 provider/base_url 生效（_validate_rc 的
-    # "修正 base_url" 分支兜底）；如需扩展需确认各服务商 Key 格式。
-    return None, None
+from .defaults import CONFIG_KEYS, DEFAULTS
 
 
 def _derive_rc_fields(key_type):
@@ -87,14 +67,13 @@ def _validate_rc(rc):
             else:
                 rc[field] = DEFAULTS.get(field, True)
 
-    if "provider" in rc:
-        if not isinstance(rc["provider"], str) or rc["provider"] not in PROVIDERS:
-            rc["provider"] = DEFAULTS["provider"]
-
-    if "base_url" in rc and not isinstance(rc["base_url"], str):
-        rc["base_url"] = DEFAULTS["base_url"]
-    if "api_key" in rc and not isinstance(rc["api_key"], str):
-        rc["api_key"] = DEFAULTS["api_key"]
+    # ── 旧 LLM 访问配置清理（环境变量 CHAT_API_KEY/CHAT_MODEL/CHAT_BASE_URL
+    #    /CHAT_LOW_MODEL 与 RC 旧键 api_key/base_url/model/provider/low_model
+    #    均已移除）——LLM 访问参数唯一来源 = 模型档案（``model_profiles`` +
+    #    ``active_model_profile``）。历史配置文件中的遗留键在此清理，避免
+    #    出现两套来源造成的语义分叉。
+    for legacy_key in ("models", "api_key", "base_url", "model", "provider", "low_model"):
+        rc.pop(legacy_key, None)
 
     # reasoning_effort 值域校验：非 str 或不在允许集合时回退默认值
     # （_REASONING_EFFORT_LEVELS 为模块级常量，见上方定义）
@@ -117,11 +96,8 @@ def _validate_rc(rc):
             else:
                 rc["temperature"] = temp
 
-    if "models" in rc:
-        if not isinstance(rc["models"], (list, tuple)):
-            rc["models"] = DEFAULTS["models"]
-        else:
-            rc["models"] = [str(m) for m in rc["models"]]
+    # ── 旧配置清理（见上方说明）：历史遗留的顶层 models 字段 ──
+    rc.pop("models", None)
 
     if "multimodal_models" in rc:
         if not isinstance(rc["multimodal_models"], (list, tuple)):
@@ -171,58 +147,7 @@ def _validate_rc(rc):
     if rc.get("auto_force_compress_threshold", 1) < 0:
         rc["auto_force_compress_threshold"] = DEFAULTS["auto_force_compress_threshold"]
 
-    provider = rc.get("provider", DEFAULTS["provider"])
-    if provider in PROVIDERS:
-        provider_config = PROVIDERS[provider]
-        if not rc.get("base_url"):
-            rc["base_url"] = provider_config.get("base_url", "")
-        if not rc.get("models"):
-            rc["models"] = list(provider_config.get("models", []))
-        if not rc.get("token_prices"):
-            rc["token_prices"] = provider_config.get("token_prices", {})
-
-    current_model = rc.get("model")
-    if current_model and current_model not in rc.get("models", []):
-        rc.setdefault("models", []).append(current_model)
-
-    # ── API Key 自动探测 provider ─────────────────
-    # 当 CHAT_API_KEY 已设置且 CHAT_MODEL / CHAT_BASE_URL 未被用户显式覆盖时：
-    #   1. 尝试从 Key 前缀推断 provider，若与当前不同则完整切换
-    #   2. 若无法推断但 RC 中存在残留的异 provider 配置（如 base_url 不匹配），
-    #      则同步当前 provider 的内置 base_url/models/token_prices
-    _api_key = os.getenv("CHAT_API_KEY", "")
-    _env_model = os.getenv("CHAT_MODEL", "")
-    _env_base_url = os.getenv("CHAT_BASE_URL", "")
-    if _api_key and not _env_model:
-        detected_provider, detected_model = _detect_provider_from_api_key(_api_key)
-        current_provider = rc.get("provider", DEFAULTS["provider"])
-        # 用户是否显式配置了 provider（RC provider 非默认，或 base_url 非默认）？
-        # 显式配置时不自动切换——否则 CHAT_API_KEY 前缀探测会覆盖用户的
-        # 显式 provider/model 选择（review P3）
-        rc_base_url = rc.get("base_url", "") or ""
-        _default_base_url = PROVIDERS.get(DEFAULTS["provider"], {}).get("base_url", "")
-        explicit_provider = (
-            current_provider != DEFAULTS["provider"]
-            or (rc_base_url and rc_base_url != _default_base_url)
-        )
-        if detected_provider and detected_provider != current_provider and not explicit_provider:
-            # 检测到不同 provider 且用户未显式配置 → 完整切换
-            provider_config = PROVIDERS.get(detected_provider, {})
-            rc["provider"] = detected_provider
-            rc["model"] = detected_model
-            rc["base_url"] = provider_config.get("base_url", "")
-            rc["models"] = list(provider_config.get("models", []))
-            rc["token_prices"] = provider_config.get("token_prices", {})
-        elif not _env_base_url and current_provider in PROVIDERS:
-            # 无法从 Key 推断不同 provider，但确保 RC 中的 provider 配置一致
-            # 修复残留的异 provider 配置（如 base_url 指向其他服务）
-            provider_config = PROVIDERS[current_provider]
-            provider_base_url = provider_config.get("base_url", "")
-            if provider_base_url and rc.get("base_url") != provider_base_url:
-                rc["base_url"] = provider_base_url
-                if not rc.get("models"):
-                    rc["models"] = list(provider_config.get("models", []))
-                if not rc.get("token_prices"):
-                    rc["token_prices"] = provider_config.get("token_prices", {})
-
+    # token_prices 缺省回退（按当前生效档案的 provider 取内置价表）由
+    # ``src/config/__init__.py`` 的 TOKEN_PRICES 惰性键负责——schema 保持零
+    # 依赖（不引用 model_profiles，避免 config 包内循环导入）。
     return rc

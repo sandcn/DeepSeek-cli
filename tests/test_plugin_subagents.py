@@ -188,23 +188,43 @@ def test_build_prompt_parts_uses_registry():
     assert calls == ["map", "sub"]
 
 
-def test_low_model_policy_from_registry():
+def test_low_model_policy_from_registry(monkeypatch):
+    """低优先级模型取自模型档案（当前模型之外的首个档案）。"""
     from src.tools.subagent import SubagentFunc
 
-    class _ConfigPort:
-        def get_low_model(self):
-            return "low-model"
+    monkeypatch.setattr(
+        "src.config.model_profiles.configured_models",
+        lambda rc=None: ["parent-model", "low-model"],
+    )
+    monkeypatch.setattr(
+        "src.config.model_profiles.current_model", lambda rc=None: "parent-model",
+    )
 
     class _Agent:
         model = "parent-model"
-
-        def get_config_port(self):
-            return _ConfigPort()
 
     assert at.uses_low_model("map") is True
     assert at.uses_low_model("review") is False
     assert SubagentFunc._resolve_model(_Agent(), "map") == "low-model"
     assert SubagentFunc._resolve_model(_Agent(), "review") == "parent-model"
+
+
+def test_low_model_policy_without_other_profile(monkeypatch):
+    """仅有一个档案（= 当前模型）时回退父模型。"""
+    from src.tools.subagent import SubagentFunc
+
+    monkeypatch.setattr(
+        "src.config.model_profiles.configured_models",
+        lambda rc=None: ["only-model"],
+    )
+    monkeypatch.setattr(
+        "src.config.model_profiles.current_model", lambda rc=None: "only-model",
+    )
+
+    class _Agent:
+        model = "only-model"
+
+    assert SubagentFunc._resolve_model(_Agent(), "map") == "only-model"
 
 
 def test_register_and_reset_direct_api():

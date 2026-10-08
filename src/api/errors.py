@@ -96,7 +96,7 @@ class ServerError(APIError):
 
 _STATUS_HINTS = {
     400: "请求参数不合法",
-    401: "API 密钥无效或未设置，请检查环境变量 CHAT_API_KEY",
+    401: "API 密钥无效或未设置，请在 /models 模型档案中检查 API 密钥",
     403: "API 密钥无权访问（可能欠费或权限不足）",
     404: "接口地址或模型不存在，请检查 BASE_URL 与模型名",
     408: "请求超时",

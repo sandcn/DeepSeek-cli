@@ -44,24 +44,26 @@ class ConfigService(Service):
         update_config(key, value)
 
     def base_url(self, provider=None) -> str:
-        from ..config.loader import get_base_url
+        """接口地址：当前生效档案地址；``provider`` 给定时用其内置默认地址。"""
+        if provider:
+            from ..config.loader import get_base_url
 
-        return get_base_url(provider)
+            return get_base_url(provider)
+        from ..config import BASE_URL
+
+        return BASE_URL
 
     def model(self) -> str:
-        from ..config import MODEL
+        """当前模型名（唯一来源：模型档案 ``model_profiles``）。"""
+        from ..config.model_profiles import current_model
 
-        return MODEL
-
-    def low_model(self) -> str:
-        from ..config import LOW_MODEL
-
-        return LOW_MODEL
+        return current_model()
 
     def models(self) -> list[str]:
-        from ..config import MODELS
+        """配置的模型列表（模型档案 ``model_profiles`` 的模型名）。"""
+        from ..config.model_profiles import configured_models
 
-        return list(MODELS or [])
+        return configured_models()
 
     def token_prices(self) -> dict:
         from ..config import TOKEN_PRICES

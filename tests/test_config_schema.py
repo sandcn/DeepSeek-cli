@@ -1,35 +1,28 @@
 """配置 schema 测试 — 覆盖 src/config/schema.py。
 
-验证 API Key provider 探测与配置校验。
+验证旧 LLM 访问配置清理与其余配置校验（LLM 访问参数唯一来源 = 模型档案：
+环境变量 CHAT_API_KEY/CHAT_MODEL/CHAT_BASE_URL/CHAT_LOW_MODEL 与 RC 旧键
+api_key/base_url/model/provider/low_model 均已移除）。
 """
 
 import pytest
 
-from src.config.schema import _detect_provider_from_api_key, _validate_rc
+from src.config.schema import _validate_rc
 
 
-# ── _detect_provider_from_api_key ─────────────────────────
+# ── 旧 LLM 访问配置清理 ───────────────────────────────────
 
-def test_detect_anthropic_key():
-    assert _detect_provider_from_api_key("sk-ant-api03-xyz") == \
-        ("anthropic", "claude-sonnet-4-6")
-
-
-def test_detect_empty_key():
-    assert _detect_provider_from_api_key("") == (None, None)
-
-
-def test_detect_unknown_key():
-    assert _detect_provider_from_api_key("sk-other-key") == (None, None)
+@pytest.mark.parametrize("legacy_key", [
+    "models", "api_key", "base_url", "model", "provider", "low_model",
+])
+def test_validate_rc_removes_legacy_llm_keys(legacy_key):
+    rc = {legacy_key: "legacy-value", "theme": "dark"}
+    _validate_rc(rc)
+    assert legacy_key not in rc
+    assert rc.get("theme") == "dark"
 
 
 # ── _validate_rc 类型校验 ─────────────────────────────────
-
-def test_validate_rc_provider_invalid_fallback():
-    rc = {"provider": "not_a_provider"}
-    _validate_rc(rc)
-    assert rc["provider"] != "not_a_provider"
-
 
 def test_validate_rc_bool_string_conversion():
     rc = {"enable_notifications": "true"}
@@ -59,3 +52,23 @@ def test_validate_rc_no_crash_empty():
     rc = {}
     result = _validate_rc(rc)
     assert isinstance(result, dict)
+
+
+def test_token_prices_fallback_to_active_profile_provider(monkeypatch):
+    """token_prices 缺省时按当前生效档案的 provider 回退内置价表。"""
+    import src.config as cfg
+
+    rc = {
+        "model_profiles": [{"model": "deepseek-v4-pro", "provider": "deepseek"}],
+        "active_model_profile": 0,
+        "token_prices": {},
+    }
+    monkeypatch.setattr(cfg, "get_rc", lambda: rc)
+    assert cfg.TOKEN_PRICES
+
+    monkeypatch.setattr(cfg, "get_rc", lambda: {
+        "model_profiles": [{"model": "m", "provider": "deepseek"}],
+        "active_model_profile": 0,
+        "token_prices": {"m": {"input": 1.0, "output": 2.0}},
+    })
+    assert cfg.TOKEN_PRICES == {"m": {"input": 1.0, "output": 2.0}}

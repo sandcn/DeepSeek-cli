@@ -3,8 +3,9 @@
 覆盖：
   - editmsg / retry / 未知 action
   - vim：monitor 终端模式切换 + 底部栏拆装 + edit_in_vim_sync 委托
-  - switch_model：模型列表来源（config.MODELS / defaults.PROVIDERS）、
-    循环切换、provider 同步、无模型/无当前模型兜底
+  - switch_model：模型列表来源（model_profiles.build_model_entries =
+    模型档案 + RC ``models``，**不列内置 provider 模型**）、循环切换、
+    provider 同步、未配置提示
   - toggle_theme：主题循环（CommandUiAdapter mock）
   - cycle_mode：cycle_mode + agent 重建 + 通知（'empty_mode' 旧名为兼容别名）
 
@@ -140,20 +141,36 @@ def test_vim_action_teardown_even_on_error(ctx, monkeypatch):
     assert monitor.apply_calls == 1
 
 
-# ── switch_model ─────────────────────────────────────────
+# ── switch_model（Ctrl+N：只在**配置的模型列表**中选择）────────
 
 @pytest.fixture
-def patch_model_source(monkeypatch):
-    """把模型来源固定在 config.MODELS，并禁用 provider 同步副作用。"""
-    import src.config as config_mod
-    import src.core.commands._model_cmd as model_cmd_mod
+def patch_rc(monkeypatch):
+    """隔离 RC 配置（get_rc / update_config），返回 (rc, updates)。
 
-    monkeypatch.setattr(config_mod, "MODELS", ["m1", "m2", "m3"])
-    monkeypatch.setattr(model_cmd_mod, "_infer_model_provider", lambda m: None)
-    return config_mod.MODELS
+    模型列表唯一来源 = ``model_profiles``（RC 顶层 ``models`` 已移除）。
+    """
+    import src.config.loader as loader_mod
+
+    rc = {
+        "model": "m1",
+        "provider": "p-a",
+        "model_profiles": [{"model": "m1"}, {"model": "m2"}, {"model": "m3"}],
+    }
+    updates: list = []
+
+    def _get_rc():
+        return rc
+
+    def _update(key, value):
+        updates.append((key, value))
+        rc[key] = value
+
+    monkeypatch.setattr(loader_mod, "get_rc", _get_rc)
+    monkeypatch.setattr(loader_mod, "update_config", _update)
+    return rc, updates
 
 
-def test_switch_model_cycles_models(ctx, monkeypatch, patch_model_source):
+def test_switch_model_cycles_models(ctx, patch_rc):
     cb, state, session, chat_ui, _ = ctx
     result = cb("switch_model", "input-text")
     assert result == "input-text"
@@ -163,73 +180,72 @@ def test_switch_model_cycles_models(ctx, monkeypatch, patch_model_source):
     assert chat_ui.notifications and "m2" in chat_ui.notifications[-1]
 
 
-def test_switch_model_wraps_around(ctx, monkeypatch, patch_model_source):
-    """合并 PROVIDERS 为空时（仅 m1/m2/m3）循环回绕到首个模型。"""
-    import src.config.defaults as defaults_mod
-    monkeypatch.setattr(defaults_mod, "PROVIDERS", {})
-    cb, state, session, _, _ = ctx
+def test_switch_model_wraps_around(ctx, patch_rc):
+    """列表末尾回绕到首个配置模型。"""
+    cb, state, _, _, _ = ctx
     state.model = "m3"
     cb("switch_model", "t")
     assert state.model == "m1"  # 回绕
 
 
-def test_switch_model_merges_provider_models(ctx, monkeypatch):
-    """RC models 未包含的 provider 新模型自动进入切换列表（Ctrl+N 可达）。"""
-    import src.config as config_mod
-    import src.core.commands._model_cmd as model_cmd_mod
-
-    monkeypatch.setattr(config_mod, "MODELS", ["deepseek-v4-pro", "deepseek-v4-flash"])
-    monkeypatch.setattr(model_cmd_mod, "_infer_model_provider", lambda m: "deepseek")
+def test_switch_model_uses_profiles_first(ctx, patch_rc):
+    """在档案序列中循环切换（写 active_model_profile 指针）。"""
+    rc, updates = patch_rc
+    rc["model_profiles"] = [{
+        "model": "profile-1", "provider": "custom",
+        "base_url": "http://h/v1", "api_key": "sk-k",
+    }, {"model": "m1"}, {"model": "m2"}, {"model": "m3"}]
     cb, state, session, _, _ = ctx
-    state.model = "deepseek-v4-flash"
+    state.model = "m3"
     cb("switch_model", "t")
-    # 下一个即 PROVIDERS 聚合追加的 deepseek-flash（V4.1 Flash 多模态）
-    assert state.model == "deepseek-flash"
-    assert session.model == "deepseek-flash"
+    # 列表 = profile-1, m1, m2, m3 → 从末项回绕到首个档案（索引 0）
+    assert state.model == "profile-1" and session.model == "profile-1"
+    assert ("ACTIVE_MODEL_PROFILE", 0) in updates
+    # 不再写入任何 RC 旧键（LLM 参数来自档案）
+    assert not any(k in ("MODEL", "model", "provider", "base_url", "api_key")
+                   for k, _ in updates)
 
 
-def test_switch_model_current_not_in_list(ctx, monkeypatch, patch_model_source):
-    cb, state, session, _, _ = ctx
+def test_switch_model_syncs_provider(ctx, patch_rc):
+    """切到不同 provider 的档案时只切换生效指针（provider 从档案解析）。"""
+    rc, updates = patch_rc
+    rc["model_profiles"] = [
+        {"model": "deepseek-v4-pro", "provider": "deepseek"},
+        {"model": "deepseek-v4-flash", "provider": "deepseek"},
+    ]
+    cb, state, _, _, _ = ctx
+    state.model = "deepseek-v4-pro"
+    cb("switch_model", "t")
+    assert state.model == "deepseek-v4-flash"
+    assert ("ACTIVE_MODEL_PROFILE", 1) in updates
+
+
+def test_switch_model_empty_config_notifies(ctx, patch_rc):
+    """未配置任何模型档案 → 提示且不改变状态。"""
+    rc, _ = patch_rc
+    rc["model_profiles"] = []
+    cb, state, _, chat_ui, _ = ctx
+    assert cb("switch_model", "t") == "t"
+    assert state.model == "m1"  # 未改变
+    assert chat_ui.notifications and "未配置模型" in chat_ui.notifications[-1]
+
+
+def test_switch_model_current_not_in_list_starts_at_first(ctx, patch_rc):
+    cb, state, _, _, _ = ctx
     state.model = "unknown-model"
     cb("switch_model", "t")
     assert state.model == "m1"
 
 
-def test_switch_model_updates_provider(ctx, monkeypatch):
-    """provider 变化时调用 update_config 同步。"""
-    import src.config as config_mod
-    import src.core.commands._model_cmd as model_cmd_mod
-    import src.config.loader as loader_mod
+def test_switch_model_apply_failure_notifies(ctx, patch_rc, monkeypatch):
+    """apply_entry 失败时提示错误、不改变状态。"""
+    import src.config.model_profiles as mp_mod
 
-    monkeypatch.setattr(config_mod, "MODELS", ["m1", "m2"])
-    monkeypatch.setattr(model_cmd_mod, "_infer_model_provider", lambda m: "provider-b")
-    monkeypatch.setattr(loader_mod, "get_rc", lambda: {"provider": "provider-a"})
-    updates = []
-    monkeypatch.setattr(loader_mod, "update_config", lambda key, val: updates.append((key, val)))
-
-    cb, state, session, _, _ = ctx
-    cb("switch_model", "t")
-    assert updates == [("provider", "provider-b")]
-
-
-def test_switch_model_empty_models_returns_none(ctx, monkeypatch):
-    cb, state, session, _, _ = ctx
-    import src.config as config_mod
-    import src.config.defaults as defaults_mod
-
-    monkeypatch.setattr(config_mod, "MODELS", [])
-    monkeypatch.setattr(defaults_mod, "PROVIDERS", {})
-    assert cb("switch_model", "t") is None
-    assert state.model == "m1"  # 未改变
-
-
-def test_switch_model_no_current_model(ctx, monkeypatch):
-    cb, state, session, _, _ = ctx
-    import src.config as config_mod
-
-    monkeypatch.setattr(config_mod, "MODELS", ["a", "b"])
-    state.model = ""
-    assert cb("switch_model", "t") is None
+    monkeypatch.setattr(mp_mod, "apply_entry", lambda entry: (False, "写入配置失败"))
+    cb, state, session, chat_ui, _ = ctx
+    assert cb("switch_model", "t") == "t"
+    assert state.model == "m1" and session.model == ""
+    assert chat_ui.notifications and "写入配置失败" in chat_ui.notifications[-1]
 
 
 # ── toggle_theme ─────────────────────────────────────────

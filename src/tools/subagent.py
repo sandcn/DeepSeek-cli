@@ -87,23 +87,38 @@ class SubagentFunc(Func):
             target_agent_type=args.get("type", "execute"),
         )
 
+    @staticmethod
+    def _low_priority_model() -> str:
+        """低优先级模型：模型档案中**当前模型之外的首个档案**模型名（无 → 空串）。
+
+        环境变量 ``CHAT_LOW_MODEL`` 与 RC 旧键 ``low_model`` 均已移除——低
+        优先级模型同样只能来自模型档案（``model_profiles`` + 当前生效档案）。
+        """
+        try:
+            from ..config.model_profiles import configured_models, current_model
+
+            cur = current_model()
+            for name in configured_models():
+                if name and name != cur:
+                    return name
+        except Exception:
+            return ""
+        return ""
+
     @classmethod
     def _resolve_model(cls, agent, agent_type: str):
         """解析子 Agent 使用的模型：指定类型优先使用低优先级模型（后台执行路径同样生效）。
 
         是否使用低优先级模型来自 Agent 类型注册表
-        （``src.core.agent_types.uses_low_model``，类型是清单中的独立插件条目）。
-        返回 None 时由 SubAgent 构造回退到父 Agent 模型（model or parent_agent.model）。
+        （``src.core.agent_types.uses_low_model``，类型是清单中的独立插件条目）；
+        低优先级模型取自模型档案（当前模型之外的首个档案）。返回 None 时由
+        SubAgent 构造回退到父 Agent 模型（model or parent_agent.model）。
         """
         model = getattr(agent, 'model', None)
         if uses_low_model(agent_type):
-            try:
-                config_port = agent.get_config_port()
-                low_model = config_port.get_low_model()
-                if low_model:  # 非空字符串表示已设置
-                    model = low_model
-            except Exception:
-                pass  # 安全降级：继续使用父模型
+            low_model = cls._low_priority_model()
+            if low_model:
+                model = low_model
         return model
 
     async def execute(self) -> str:

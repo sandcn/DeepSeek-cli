@@ -46,6 +46,7 @@ from src.tui.app._state_types import (
     EditMsgSelectState,
     ConfigViewState,
     PluginViewState,
+    ModelViewState,
     StatusState,
     HistorySearchState,
     ReasoningState,
@@ -146,6 +147,11 @@ class AppModel(_ToolOutputMixin):
         # 左插件列表 + 右详细信息；命令线程轮询 done 清理。状态类型见
         # _state_types.py PluginViewState，组件见 app/plugin_view.py。）
         self.plugin_view: PluginViewState = PluginViewState()
+        # 模型选择器视图状态（/models 命令或 /model 无参数打开——全屏模型
+        # 选择器：选择/新增/编辑模型档案（name/model/base_url/api_key/
+        # provider）；命令线程轮询 done 清理。状态类型见 _state_types.py
+        # ModelViewState，组件见 app/model_view.py。）
+        self.model_view: ModelViewState = ModelViewState()
         # 实时解析进度行（同位置刷新；ParseInfoDone 后提交并清空）
         self.parse_line: Any = None
         # subagent 面板行（控制器推送）
@@ -1118,6 +1124,12 @@ class AppModel(_ToolOutputMixin):
         #   递增保证 key 唯一，清屏后再次打开强制重挂载，不残留旧选中）。
         prev_pv_seq = getattr(self.plugin_view, "seq", 0)
         self.plugin_view = PluginViewState(seq=prev_pv_seq)
+        # ★ 模型选择器视图（/models）：清屏同时重置模型视图状态（与
+        #   config_view 同语义——残留 model_view 让 /models 命令轮询 done
+        #   期间视图消失，轮询等待空转到超时）。**保留 seq**（seq 单调递增
+        #   保证 key 唯一，清屏后再次打开强制重挂载，不残留旧选中/旧表单态）。
+        prev_mv_seq = getattr(self.model_view, "seq", 0)
+        self.model_view = ModelViewState(seq=prev_mv_seq)
 
     # ── 未声明字段访问告警（可维护性） ──
     # 组件树大量经 ``getattr(model, "字段", 默认)`` 读取状态——拼写错误会静默

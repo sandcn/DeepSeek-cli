@@ -598,6 +598,68 @@ class InteractiveLoop:
         _register_session_handlers(session, self._monitor, self._loop_state, self._chat_ui)
         return session, state
 
+    def _maybe_prompt_model_setup(self, session, state) -> None:
+        """首次启动未配置任何模型档案 → 显示配置引导并打开模型选择器。
+
+        模型列表的唯一来源是模型档案（``model_profiles``）；未配置时聊天仍可
+        用 RC ``model`` 兜底，但 ``Ctrl+N`` / ``/model`` 无候选可选——因此在
+        启动时醒目提示「三步配置」并直接打开模型选择器，让用户当场配置；
+        ``Esc`` 可稍后配置，随时 ``/models`` 重开。
+        """
+        try:
+            from ..config.model_profiles import build_model_entries
+
+            if build_model_entries():
+                return
+        except Exception:
+            _logger.debug("启动模型配置检查失败", exc_info=True)
+            return
+
+        guide = (
+            f"{YELLOW}  ! 尚未配置模型 —— 在模型选择器中按 a 新增："
+            f"① 选提供商 ② 填模型名 ③ 填 API 密钥"
+            f"（Esc 可稍后配置，随时 /models 重开）{RESET}"
+        )
+        for method in ("write_line", "on_notification"):
+            push = getattr(self._chat_ui, method, None)
+            if callable(push):
+                try:
+                    push(guide)
+                    break
+                except Exception:
+                    _logger.debug("模型配置引导提示失败: %s", method, exc_info=True)
+
+        from ..core.commands import CommandUiAdapter
+        from ..core.commands._model_cmd import _open_model_view
+
+        input_ = getattr(self._chat_ui, "input", None)
+        state_dict = {"model": state.model, "retry": False, "prefill": ""}
+        ctx = CommandContext(
+            messages=session.messages, state=state_dict, arg="",
+            build_system_prompt=session.agent.build_system_prompt,
+            get_user_input=lambda prompt="": self._chat_ui.wait_for_user_input(
+                self._monitor, prefill=prompt, input_=input_),
+            context_manager=session.context_manager,
+            session=session,
+            config_port=getattr(session, "_config_port", None),
+            ui_adapter=CommandUiAdapter(),
+        )
+        try:
+            _open_model_view(ctx)
+        except Exception:
+            _logger.debug("启动模型配置引导失败", exc_info=True)
+            return
+
+        # 选择器内已应用档案 → 同步会话状态（与 ``/model`` 命令路径一致）
+        applied = str(state_dict.get("model") or "")
+        if applied and applied != state.model:
+            try:
+                state.model = applied
+                session.model = applied
+                self._chat_ui.bottom_bar.set_model_name(applied)
+            except Exception:
+                _logger.debug("同步模型配置结果失败", exc_info=True)
+
     async def run(self) -> None:
         """执行交互模式主循环"""
         self._force_exit.clear()
@@ -620,6 +682,9 @@ class InteractiveLoop:
 
         # ── 初始化 EscapeMonitor 回调并启动 ──
         self._setup_monitor(session, state)
+
+        # ── 启动检查：未配置任何模型档案 → 显示配置引导并打开模型选择器 ──
+        self._maybe_prompt_model_setup(session, state)
 
         # ── 创建 MessageQueue + 消费者 ──
         queue = _create_message_queue()

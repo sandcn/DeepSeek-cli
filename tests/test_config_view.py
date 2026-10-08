@@ -119,16 +119,16 @@ def _ev(kind: str, char: str = ""):
 
 
 def _sample_entries():
-    """构造最小配置项列表（选择界面：MODEL/bool；输入界面：api_key/temperature）。
+    """构造最小配置项列表（选择界面：THEME/bool；输入界面：temperature）。
 
     字段与 ``view_model.build_config_entries`` 产出结构一致（含 edit_kind）。
     """
     return [
         {
-            "key": "MODEL", "path": "model", "type": str,
-            "value": "deepseek-v4-flash", "value_text": "deepseek-v4-flash",
-            "default_text": "deepseek-v4-flash", "desc": "当前模型", "sensitive": False,
-            "options": [("deepseek-v4-pro", ""), ("deepseek-v4-flash", "")],
+            "key": "THEME", "path": "theme", "type": str,
+            "value": "dark", "value_text": "dark",
+            "default_text": "dark", "desc": "UI 配色主题", "sensitive": False,
+            "options": [("dark", ""), ("light", "")],
             "edit_kind": "select",
         },
         {
@@ -163,11 +163,13 @@ class TestViewModel:
         from src.config.defaults import CONFIG_KEYS
         from src.config.view_model import build_config_entries
         entries = build_config_entries()
-        # CONFIG_KEYS 全部条目 + 额外顶层键(4: provider/base_url/api_key/skills)
-        assert len(entries) == len(CONFIG_KEYS) + 4
+        # CONFIG_KEYS 全部条目 + 额外顶层键(1: skills)
+        assert len(entries) == len(CONFIG_KEYS) + 1
         keys = [e["key"] for e in entries]
-        assert "MODEL" in keys and "HTTP_CONNECT_TIMEOUT" in keys
-        assert "provider" in keys and "api_key" in keys
+        assert "HTTP_CONNECT_TIMEOUT" in keys
+        assert "MODEL_PROFILES" in keys
+        # 旧 LLM 访问键已移除（唯一来源 = 模型档案）
+        assert "MODEL" not in keys and "provider" not in keys and "api_key" not in keys
         # 拖放文件路径规范化（2026-10-07 用户需求）
         assert "TUI_DROP_PATH_NORMALIZE" in keys
         # 上传前图片优化（多图请求卡顿）配置项
@@ -182,21 +184,15 @@ class TestViewModel:
         for e in entries:
             assert {"key", "path", "type", "value", "value_text",
                     "default_text", "desc", "sensitive", "options"} <= set(e.keys())
-        # api_key 敏感
-        api = next(e for e in entries if e["key"] == "api_key")
-        assert api["sensitive"] is True
         # 嵌套路径显示
         http = next(e for e in entries if e["key"] == "HTTP_CONNECT_TIMEOUT")
         assert http["path"] == "performance.http_client.connect_timeout"
 
     def test_build_config_entries_options(self, isolated_rc):
-        """按类型提供编辑候选选项：枚举/布尔/模型有选择界面，数值/文本无。"""
+        """按类型提供编辑候选选项：枚举/布尔有选择界面，数值/文本无。"""
         from src.config.view_model import build_config_entries
         entries = {e["key"]: e for e in build_config_entries()}
-        # 枚举（provider/theme/reasoning_effort）→ 选择界面
-        assert [o[0] for o in entries["provider"]["options"]] == [
-            "deepseek", "custom", "anthropic", "glm", "mimo",
-        ]
+        # 枚举（theme/reasoning_effort）→ 选择界面
         assert [o[0] for o in entries["THEME"]["options"]] == [
             "dark", "light", "high-contrast", "nord", "dracula", "gruvbox",
         ]
@@ -206,34 +202,34 @@ class TestViewModel:
         # bool → true/false 选择界面
         assert [o[0] for o in entries["ENABLE_NOTIFICATIONS"]["options"]] == ["true", "false"]
         assert [o[0] for o in entries["HTTP_ENABLE_POOL"]["options"]] == ["true", "false"]
-        # MODEL → 当前可用模型列表（选择界面）
-        model_opts = [o[0] for o in entries["MODEL"]["options"] or []]
-        assert "deepseek-v4-flash" in model_opts
-        assert "deepseek-v4-pro" in model_opts
+        # 旧 LLM 访问键（MODEL/provider/api_key）已移除
+        assert "MODEL" not in entries and "provider" not in entries
+        assert "api_key" not in entries
         # 数值/字符串 → 输入界面（options None）
         assert entries["TEMPERATURE"]["options"] is None
-        assert entries["api_key"]["options"] is None
+        assert entries["MODEL_CONTEXT_TOKENS"]["options"] is None
 
     def test_build_config_entries_edit_kind(self, isolated_rc):
-        """编辑界面类型：select=枚举/布尔/模型；json=有子 JSON 的 list/dict；
+        """编辑界面类型：select=枚举/布尔；json=有子 JSON 的 list/dict；
         input=数值/字符串。"""
         from src.config.view_model import build_config_entries
         entries = {e["key"]: e for e in build_config_entries()}
-        # select：枚举/布尔/模型
-        assert entries["provider"]["edit_kind"] == "select"
+        # select：枚举/布尔
         assert entries["THEME"]["edit_kind"] == "select"
         assert entries["REASONING_EFFORT"]["edit_kind"] == "select"
-        assert entries["MODEL"]["edit_kind"] == "select"
         assert entries["ENABLE_NOTIFICATIONS"]["edit_kind"] == "select"
         # json：list/dict 有子结构的配置项
-        assert entries["MODELS"]["edit_kind"] == "json"
-        assert entries["TOKEN_PRICES"]["edit_kind"] == "json"
         assert entries["MULTIMODAL_MODELS"]["edit_kind"] == "json"
+        assert entries["TOKEN_PRICES"]["edit_kind"] == "json"
         assert entries["skills"]["edit_kind"] == "json"
+        # MODEL_PROFILES：模型档案列表（json 子结构编辑）
+        assert entries["MODEL_PROFILES"]["edit_kind"] == "json"
+        # 已移除的旧字段不再出现在配置界面
+        assert "MODELS" not in entries and "MODEL" not in entries
+        assert "api_key" not in entries and "provider" not in entries
         # input：数值/字符串
         assert entries["TEMPERATURE"]["edit_kind"] == "input"
         assert entries["MAX_RETRIES"]["edit_kind"] == "input"
-        assert entries["api_key"]["edit_kind"] == "input"
 
     def test_format_config_value_bool(self):
         from src.config.view_model import format_config_value
@@ -284,12 +280,15 @@ class TestViewModel:
 
     def test_resolve_config_key(self):
         from src.config.view_model import resolve_config_key
-        assert resolve_config_key("MODEL") == "MODEL"
-        assert resolve_config_key("model") == "MODEL"
+        assert resolve_config_key("MODEL_PROFILES") == "MODEL_PROFILES"
+        assert resolve_config_key("model_profiles") == "MODEL_PROFILES"
         assert resolve_config_key("connect_timeout") == "HTTP_CONNECT_TIMEOUT"
         assert resolve_config_key("performance.http_client.connect_timeout") == "HTTP_CONNECT_TIMEOUT"
-        assert resolve_config_key("api_key") == "api_key"
-        assert resolve_config_key("API_KEY") == "api_key"
+        assert resolve_config_key("skills") == "skills"
+        # 旧 LLM 访问键已移除（唯一来源 = 模型档案）
+        assert resolve_config_key("model") is None
+        assert resolve_config_key("provider") is None
+        assert resolve_config_key("api_key") is None
         assert resolve_config_key("nope") is None
         assert resolve_config_key("") is None
 
@@ -297,8 +296,7 @@ class TestViewModel:
         from src.config.view_model import format_config_text, build_config_entries
         text = format_config_text(build_config_entries())
         assert "配置中心" in text
-        assert "model" in text
-        assert "api_key" in text  # 敏感项仍显示键名（值脱敏）
+        assert "model_profiles" in text
 
 
 # ═══════════════════════════════════════════════════════════
@@ -349,9 +347,13 @@ class TestCmdConfig:
         from src.core.commands import _config_cmd as cc
         rec = _Recorder()
         monkeypatch.setattr(cc, "_out", rec)
-        assert cc._cmd_config(_make_ctx("get model")) is True
+        assert cc._cmd_config(_make_ctx("get model_profiles")) is True
         joined = "\n".join(rec.calls)
-        assert "model" in joined and "deepseek-v4-flash" in joined
+        assert "model_profiles" in joined
+        # 旧 LLM 访问键已移除（唯一来源 = 模型档案）
+        rec.calls.clear()
+        assert cc._cmd_config(_make_ctx("get model")) is True
+        assert "未找到配置键" in "\n".join(rec.calls)
 
     def test_get_unknown_key(self, monkeypatch, isolated_rc):
         from src.core.commands import _config_cmd as cc
@@ -589,10 +591,10 @@ class TestConfigViewComponent:
         assert cv.message == ""
         assert cv.edit_error == ""
 
-    # ── 选择界面（有候选选项：枚举/布尔/模型） ──────────────
+    # ── 选择界面（有候选选项：枚举/布尔） ──────────────
 
-    def test_select_mode_model_enter_confirm(self, monkeypatch, isolated_rc):
-        """MODEL Enter → 选择界面：候选列表、当前值定位、确认写回。"""
+    def test_select_mode_theme_enter_confirm(self, monkeypatch, isolated_rc):
+        """THEME Enter → 选择界面：候选列表、当前值定位、确认写回。"""
         from src.tui.app.model import AppModel, ConfigViewState
         from src.config.loader import get_rc
         model = AppModel()
@@ -601,30 +603,30 @@ class TestConfigViewComponent:
         )
         fiber, el = self._render(model)
         handler = _find_input_handler(fiber)
-        # 选中第 0 项 MODEL → Enter 进入选择界面
+        # 选中第 0 项 THEME → Enter 进入选择界面
         assert handler(_ev("enter")) is True
         cv = self._active_cv(model)
         assert cv.editing is True
         assert cv.edit_mode == "select"
-        assert cv.edit_key == "MODEL"
-        assert cv.edit_options == ["deepseek-v4-pro", "deepseek-v4-flash"]
-        # 当前值 deepseek-v4-flash 定位到索引 1
-        assert cv.edit_selected == 1
+        assert cv.edit_key == "THEME"
+        assert cv.edit_options == ["dark", "light"]
+        # 当前值 dark 定位到索引 0
+        assert cv.edit_selected == 0
 
         # 重新渲染（select 模式）→ 主区为候选 ListView——导航回调写 edit_selected
         fiber, el = self._render(model, fiber=fiber)
         pick_ledger = el.children[1].children[0]
-        pick_ledger.props["onNavigate"](0)
-        assert cv.edit_selected == 0
+        pick_ledger.props["onNavigate"](1)
+        assert cv.edit_selected == 1
 
-        # Enter 确认（写回选中的 deepseek-v4-pro）
+        # Enter 确认（写回选中的 light）
         assert handler(_ev("enter")) is True
         cv = self._active_cv(model)
         assert cv.editing is False
         assert cv.edit_error == ""
         assert "已更新" in cv.message
-        assert get_rc()["model"] == "deepseek-v4-pro"
-        assert cv.entries[0]["value_text"] == "deepseek-v4-pro"
+        assert get_rc()["theme"] == "light"
+        assert cv.entries[0]["value_text"] == "light"
 
     def test_select_mode_bool_confirm(self, monkeypatch, isolated_rc):
         """bool 配置项走选择界面：导航到 false → Enter 确认写回。"""
@@ -742,13 +744,13 @@ class TestConfigViewComponent:
     # ── 子 JSON 结构化编辑界面（list/dict 配置项） ──────────
 
     def _json_entries(self):
-        """含 list（MODELS）与 dict（TOKEN_PRICES）子 JSON 配置项。"""
+        """含 list（MULTIMODAL_MODELS）与 dict（TOKEN_PRICES）子 JSON 配置项。"""
         return [
             {
-                "key": "MODELS", "path": "models", "type": list,
+                "key": "MULTIMODAL_MODELS", "path": "multimodal_models", "type": list,
                 "value": ["deepseek-v4-pro", "deepseek-v4-flash"],
                 "value_text": '["deepseek-v4-pro", "deepseek-v4-flash"]',
-                "default_text": "[]", "desc": "可用模型列表", "sensitive": False,
+                "default_text": "[]", "desc": "多模态模型列表", "sensitive": False,
                 "options": None, "edit_kind": "json",
             },
             {
@@ -770,7 +772,7 @@ class TestConfigViewComponent:
         )
         fiber, _el = self._render(model)
         handler = _find_input_handler(fiber)
-        # 选中 MODELS（第 0 项）→ Enter 进入 json 界面
+        # 选中 MULTIMODAL_MODELS（第 0 项）→ Enter 进入 json 界面
         assert handler(_ev("enter")) is True
         cv = self._active_cv(model)
         assert cv.editing is True
@@ -816,7 +818,7 @@ class TestConfigViewComponent:
         cv = self._active_cv(model)
         assert cv.editing is False
         assert cv.message.startswith("已更新")
-        assert get_rc()["models"] == ["deepseek-v4-max", "deepseek-v4-flash"]
+        assert get_rc()["multimodal_models"] == ["deepseek-v4-max", "deepseek-v4-flash"]
         assert "deepseek-v4-max" in cv.entries[0]["value_text"]
 
     def test_json_mode_dict_recursive_edit_append_delete(self, monkeypatch, isolated_rc):
@@ -1139,8 +1141,10 @@ class TestConfigCompletion:
     def test_config_get_completes_keys(self, isolated_rc):
         items = self._complete("/config get ")
         texts = [i.text for i in items]
-        assert any("model" in t for t in texts)
-        assert any("api_key" in t for t in texts)
+        assert any("model_profiles" in t for t in texts)
+        assert any("active_model_profile" in t for t in texts)
+        # 旧 LLM 访问键不再出现在补全候选
+        assert not any(t.rstrip().endswith("api_key") for t in texts)
 
     def test_config_set_prefix_completes_keys(self, isolated_rc):
         items = self._complete("/config set temp")
@@ -1150,16 +1154,16 @@ class TestConfigCompletion:
     def test_config_set_no_arg_preserves_subcommand(self, isolated_rc):
         """P1（review 2026-08-20）：``/config set`` + Tab（无尾随空格）——
         候选 ``set <键>`` + 替换子命令词，词边界拼接后保留 ``/config set``
-        前缀（应用结果 ``/config set model``）。修复前按「最后一个词」替换
+        前缀（应用结果 ``/config set temperature``）。修复前按「最后一个词」替换
         把 ``set`` 整体替换为键名 → ``/config model``。"""
         from src.tui._completion import _apply_completion
         items = self._complete("/config set")
         # 候选为 ``set {key}`` + start_pos=-len("set")
         assert items and all(i.start_pos == -3 for i in items)
-        repl = next(i for i in items if "model" in i.text)
+        repl = next(i for i in items if "temperature" in i.text)
         # 真实弹窗确认路径：orig_prefix=last_word("set")
         applied = _apply_completion("/config set", repl.text, repl.start_pos, "set")
-        assert applied == "/config set model"
+        assert applied == "/config set temperature"
 
     def test_config_set_with_prefix_replaces_last_word(self, isolated_rc):
         """``/config set temp`` + Tab——替换最后词，应用后 ``/config set temperature``。"""

@@ -24,16 +24,16 @@ CONFIG_ENTRY_DESCS = LiveMapping("config_entry_desc")
 
 #: 额外顶层键（不在 CONFIG_KEYS 元数据中，但属于用户可配置项）：
 #: (rc_key, type, display_path)；说明文字见 ``config_entry_desc`` 表。
+#: 注：``provider``/``base_url``/``api_key`` 已移除（LLM 访问参数唯一来源 =
+#: 模型档案，见 ``config.model_profiles``）。
 _EXTRA_KEYS: tuple = (
-    ("provider", str, "provider"),
-    ("base_url", str, "base_url"),
-    ("api_key", str, "api_key"),
     ("skills", dict, "skills"),
 )
 
 #: 枚举选择型配置项的候选选项（写回键 → [(值, 说明), ...]）。
 #: 键不在本表中、但类型为 bool 的配置项自动获得 true/false 候选；
-#: MODEL 动态取当前可用模型列表；其余键走文本/JSON 输入界面。
+#: MODEL 动态取模型档案（``model_profiles``）的模型名；其余键走文本/JSON
+#: 输入界面。
 #: 「一切皆插件」：数据已上移为表现层数据注册表（``presentation_data`` →
 #: ``config_entry_option`` 表），本视图实时委托（可按 Patch/Overlay 覆盖/禁用）。
 CONFIG_ENTRY_OPTIONS = LiveMapping("config_entry_option")
@@ -185,10 +185,12 @@ def resolve_config_key(user_input: str) -> str | None:
     """用户输入的键名 → 写回键（``update_config`` 接受的大写键名或直接键名）。
 
     支持三种形态：
-      - 大写键名：``MODEL`` / ``HTTP_CONNECT_TIMEOUT``；
-      - rc_path 键：``model`` / ``connect_timeout`` / ``performance.http_client.connect_timeout``；
-      - 额外顶层键：``provider`` / ``base_url`` / ``api_key`` / ``skills``。
-    未匹配返回 None。
+      - 大写键名：``MODEL_PROFILES`` / ``HTTP_CONNECT_TIMEOUT``；
+      - rc_path 键：``model_profiles`` / ``connect_timeout`` /
+        ``performance.http_client.connect_timeout``；
+      - 额外顶层键：``skills``。
+    未匹配返回 None（旧 LLM 访问键 ``model``/``provider``/``base_url``/
+    ``api_key`` 已移除——唯一来源 = 模型档案）。
     """
     text = (user_input or "").strip()
     if not text:
@@ -221,7 +223,7 @@ def _entry_options(rc: dict, name: str, meta: dict) -> list[tuple[str, str]] | N
     优先级：
       1. ``CONFIG_ENTRY_OPTIONS`` 静态枚举（provider/theme/reasoning_effort）；
       2. bool 类型自动生成 true/false；
-      3. MODEL 动态取当前可用模型列表（MODELS 配置值 + PROVIDERS 聚合回退）；
+      3. MODEL 动态取当前可用模型列表（**模型档案的模型名**）；
       4. 其余返回 None（文本/JSON 输入界面）。
     """
     static = CONFIG_ENTRY_OPTIONS.get(name) or CONFIG_ENTRY_OPTIONS.get(name.upper())
@@ -231,21 +233,13 @@ def _entry_options(rc: dict, name: str, meta: dict) -> list[tuple[str, str]] | N
     if typ is bool:
         return [("true", "开启"), ("false", "关闭")]
     if name == "MODEL":
-        models: list = []
+        # 模型列表唯一来源 = 模型档案（model_profiles）的模型名
         try:
-            models_path = CONFIG_KEYS["MODELS"]["rc_path"]
-            models = _rc_get(rc, models_path, [])
+            from .model_profiles import configured_models
+
+            models = list(configured_models(rc))
         except Exception:
             models = []
-        if not models:
-            # 聚合全部 PROVIDERS 的模型（去重）
-            from .defaults import PROVIDERS as _PROVIDERS
-            _seen: set[str] = set()
-            for _p in _PROVIDERS.values():
-                for _m in _p.get("models", []):
-                    if _m not in _seen:
-                        _seen.add(_m)
-                        models.append(_m)
         return [(str(m), "") for m in models]
     return None
 
@@ -307,8 +301,12 @@ def build_config_entries(rc: dict | None = None) -> list[dict]:
 
 
 def _edit_kind_of(options, typ: type) -> str:
-    """编辑界面类型判定：有候选 → select；list/dict 有子 JSON → json；其余 input。"""
-    if options:
+    """编辑界面类型判定：有选择界面 → select；list/dict 有子 JSON → json；其余 input。
+
+    ``options is None`` 表示该键**没有**选择界面（走文本/JSON 输入）；空列表
+    是合法候选集（如未配置模型档案时的 MODEL），仍走选择界面。
+    """
+    if options is not None:
         return "select"
     if typ in (list, dict):
         return "json"

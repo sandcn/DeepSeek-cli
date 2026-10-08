@@ -47,18 +47,28 @@ pip install ".[dev]"
 
 ### 2. 配置
 
-#### 方式一：配置文件（推荐）
+#### 方式一：配置文件 + 模型选择器（推荐）
+
+**LLM 访问参数（API 密钥 / 接口地址 / 模型名 / 提供商）的唯一来源是模型档案**
+（`model_profiles`）——首次运行未配置档案时会自动打开模型选择器引导配置
+（`/models` 可随时打开；新增只需三步：① 选提供商 → ② 填模型名 → ③ 填 API 密钥）。
 
 创建配置文件 `~/.chat_config/chatrc.json`：
 
 ```json
 {
-    "provider": "deepseek",
-    "api_key": "sk-你的API密钥",
-    "model": "deepseek-v4-flash",
+    "model_profiles": [
+        {
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "api_key": "sk-你的API密钥",
+            "base_url": "https://api.deepseek.com/v1/chat/completions",
+            "name": "DeepSeek Flash"
+        }
+    ],
+    "active_model_profile": 0,
     "reasoning_effort": "max",
     "temperature": 0.2,
-    "base_url": "https://api.deepseek.com/v1/chat/completions",
     "max_context_chars": 3000000,
     "max_output_chars": 3000,
     "max_retries": 10,
@@ -91,21 +101,25 @@ pip install ".[dev]"
 }
 ```
 
+- `model_profiles`：模型档案列表（每个档案含 `provider` / `model` / `api_key` /
+  `base_url` / `name`；`base_url` 留空则用提供商默认地址）。
+- `active_model_profile`：当前生效档案下标（由模型选择器写入，`-1` = 未选择）。
+
 配置文件位于 `~/.chat_config/chatrc.json`，首次运行时自动创建（使用默认值）。
 
 #### 方式二：环境变量
 
-部分配置项支持通过环境变量覆盖：
+仅流式输出节奏类参数支持环境变量覆盖（**LLM 访问参数已不再支持环境变量**——
+API 密钥 / 接口地址 / 模型名 / 提供商只能通过模型档案配置）：
 
 | 环境变量 | 说明 | 示例 |
 |---|---|---|
-| `CHAT_API_KEY` | API 密钥 | `export CHAT_API_KEY="sk-xxx"` |
-| `CHAT_BASE_URL` | API 基础地址 | `export CHAT_BASE_URL="https://api.deepseek.com/v1/chat/completions"` |
-| `CHAT_MODEL` | 模型名称 | `export CHAT_MODEL="deepseek-v4-flash"` |
 | `CHAT_STAGGER_MIN_DELAY` | 流式输出最小延迟 | `export CHAT_STAGGER_MIN_DELAY="0.1"` |
 | `CHAT_STAGGER_MAX_DELAY` | 流式输出最大延迟 | `export CHAT_STAGGER_MAX_DELAY="0.5"` |
 
-环境变量优先级高于配置文件。
+> 已移除：`CHAT_API_KEY` / `CHAT_BASE_URL` / `CHAT_MODEL` / `CHAT_LOW_MODEL`
+> 以及 RC 旧键 `api_key` / `base_url` / `model` / `provider` / `low_model` /
+> `models`（加载配置时自动清理）。
 
 #### 支持的多模型 Provider
 
@@ -149,11 +163,13 @@ python chat.py --load <会话ID>
 #### 指定模型
 
 ```bash
-python chat.py -m deepseek-v4-pro
+python chat.py -m deepseek-v4-pro      # 按模型名匹配已有「模型档案」并设为当前
 python chat.py --model deepseek-v4-pro
 ```
 
-通过 `-m` / `--model` 临时覆盖配置文件中的模型，不影响配置文件。
+LLM 访问参数唯一来源 = 模型档案，因此 `-m` / `--model` 只能**选择已有档案**
+（按档案的 `model` 或 `name` 匹配）——档案不存在时会列出可用档案并提示先运行
+`/models` 新增。
 
 #### 多模态视觉（deepseek-flash）
 
@@ -163,6 +179,8 @@ python chat.py --model deepseek-v4-pro
 单价计费，同样具备视觉能力）。接入方式：
 
 ```bash
+# 先确保模型档案中有该模型（/models 界面新增，或 config set model_profiles），
+# 再按名选择：
 python chat.py -m deepseek-flash
 ```
 
@@ -248,7 +266,7 @@ python chat.py version
 | `python chat.py` | 交互式对话（默认） |
 | `python chat.py -p "你好"` | 单次问答模式 |
 | `python chat.py --load abc123` | 从会话恢复 |
-| `python chat.py -m deepseek-v4-pro` | 指定模型 |
+| `python chat.py -m deepseek-v4-pro` | 选择模型（按名匹配已有模型档案） |
 | `python chat.py -v` | INFO 级别日志 |
 | `python chat.py -vv` | DEBUG 级别日志 |
 | `python chat.py session list` | 列出所有会话 |
@@ -307,7 +325,7 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | `Esc`（双击） | 清空当前输入框内容 |
 | `Ctrl+G` | 使用 vim 编辑器编辑当前输入内容（支持 $EDITOR 环境变量） |
 | `Ctrl+O` | 编辑当前会话中的已有消息（触发 `/editmsg` 命令） |
-| `Ctrl+N` | 循环切换对话模型（RC 模型列表与内置 provider 模型合并，新增模型如 deepseek-flash 自动可切换） |
+| `Ctrl+N` | 循环切换对话模型（**只在模型档案中选择**：`/models` 新增的模型档案；未配置时提示先用 `/models` 新增） |
 | `Ctrl+P` / `↑` | 浏览输入历史（上一条） |
 | `↓` | 浏览输入历史（下一条） |
 | `Ctrl+R` | 反向历史搜索（配置门控；默认重试上一轮） |
@@ -351,7 +369,8 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | `/undo` | — | 撤销上一轮对话 |
 | `/retry` | `/r` | 重新生成上一条回答 |
 | `/edit` | — | 编辑并重新发送上一条输入 |
-| `/model` | — | 切换模型（无参数时交互选择，支持序号/名称） |
+| `/model` | — | 切换模型（无参数时打开**模型选择器**，**只在模型档案中选择**——RC 顶层 `models` 字段已移除，不列内置 provider 模型；亦支持序号/名称直接切换） |
+| `/models` | — | **模型选择器**（全屏界面：↑↓/jk 选择 · Enter 应用 · `a` 新增 · `e` 编辑 · `d` 删除模型档案）。**新增只需三步**：① 选提供商（接口地址自动填好）→ ② 填模型名 → ③ 填 API 密钥（显示名留空则用模型名）；`/` 搜索 · `?` 帮助 · `y` 复制 · Esc 关闭 |
 | `/reasoning [等级]` | — | 调整推理等级（low / medium / high / max，无参数时显示当前值） |
 | `/temperature [数值]` | — | 调整大模型温度（0.0 ~ 2.0，无参数时显示当前值，保存到配置） |
 | `/cost` | — | 查看 token 用量和费用 |
@@ -488,7 +507,7 @@ python chat.py config set mcp_servers '[{"name":"fs","transport":"stdio","comman
 | `agents` | 可选 | `["execute"]` | 允许使用该服务器工具的 SubAgent 类型（`map`/`review`/`plan`/`execute`） |
 | `timeout` | 可选 | `30` | 单次请求超时（秒，上限 600） |
 | `parallel_safe` | 可选 | `false` | 是否声明并行安全（影响工具 DAG 调度） |
-| `inherit_env` | stdio 可选 | `false` | 是否把当前进程**全部**环境变量继承给子进程；默认只透传基础变量白名单（PATH/HOME/temp/LANG 等）+ `env`，避免 `CHAT_API_KEY` 等凭据外泄给第三方 server |
+| `inherit_env` | stdio 可选 | `false` | 是否把当前进程**全部**环境变量继承给子进程；默认只透传基础变量白名单（PATH/HOME/temp/LANG 等）+ `env`，避免凭据类环境变量外泄给第三方 server |
 | `description` | 可选 | `""` | 人类可读说明（仅展示） |
 
 ### 行为
@@ -982,6 +1001,8 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 - **性能优化（wrap 多 run ASCII 快路径 / props 比较快路径）** ✅ — 2026-10-01：`wrap_runs_by_width` 新增**多 run 纯 ASCII 快路径**（所有 run 均非空可打印 ASCII：每字符宽 1、空格断点经 `str.rfind`、按 span + `bisect` 二分定位切片产出，免通用路径逐字符 tuple 展开；10 万字符 / 2500 run 实测 **~55ms → ~6ms（~9x）**）；`Reconciler._set_props` 新增**长度不等快路径**（props 长度不同直接判不等，免大 props 深比较）；含与通用算法逐例等价性回归测试（200 随机用例）
 - **React Ink 框架独立测试套件** ✅ — 2026-10-01：新增 `tests/test_tui/ink/`（68+ 例）——`renderToString`（隔离/layout effect/不写 stdout）、kitty（常量/解析/key 映射）、`useAnimation`（语义/驱动/重置）、`measureElement`（x/y/畸形防御/组件内）、`accessibility`、`Viewport`（窗口/偏移/滚动条/键盘）、`MultiPanel`（分屏/高亮/Tab）、`CodeBlock`（折叠/高亮）、`render()` options（maxFps/kitty/screen reader/onRender/exit 值语义）、wrap 快路径等价性
 - **review 修复（一次性审查发现的缺陷）** ✅ — 2026-10-01：`memo(Comp)` 对常规单参组件必抛 `TypeError`（包装函数恒双参调用）→ 按 ref 是否存在单参/双参调用；`render({isScreenReaderEnabled})` 全局开关退出后不还原（跨会话泄漏）→ 保存/还原（unmount/cleanup/启动失败路径）；`useAnimation` tick 通知经 `_schedule` 落 force 通道会打破 30Hz 节流（无节流忙循环）→ advance 不再通知订阅者（全程 30Hz 已保证动画推进），新增独立 `notify_animation_listeners`；`Viewport`/`MultiPanel` 的 `height` 与 BOX 边框语义冲突（内容越框/底框被覆盖）→ `height` 明确为「可见内容行数/面板内容行数」，经 `_outer_height` 换算 BOX 总高（+边框+内边距），内容列预算扣除边框；`_event_key` 的 `ctrl`/`shift` 补 kitty 位掩码（CSI-u Ctrl+字母映射后 modifier 被置 0 丢标志）；掩码事件 `_MaskedCharEvent` 透传 `kitty_bits`/`event_type`；`_syntax` 去掉死变量 + 未知语言不再回退 `#` 注释；`Transform` 的 `accessibilityLabel` 判定移出条件式 hook 调用；CodeBlock 边框变体收敛到 `_paint_border._BORDER_CHARS`（补 dashed/singleDouble/doubleSingle）；控件回调统一走 `_widget_common._call`（带日志）；清理死代码（`_traverse_functions.include_self` 分支、session 未用字段、`hooks.__all__` 中的可变状态变量）；补 `element.__all__` 的 `FRAGMENT`；`_pop_starved_state_cmd` 弹出后 `not_full.notify_all()`
+- **模型选择器（2026-10-09）** ✅ — 用户需求「增加模型选择器，可以增加、选择、编辑模型（url/key/name 等）」+「没有内部模型，新增时先让用户选提供商、填模型名，url 自动给定，用户只要给 key」：新增全屏视图 `ModelView`（`src/tui/app/model_view.py`，`model.fullscreen == "model"`，`/models` 命令或 `/model` 无参数打开，经清单独立条目 `ui_view_model` 注册、`ui_view` 插件装配）——列表 = **模型档案**（`model_profiles`，**模型列表唯一来源**；RC 顶层 `models` 字段已随之移除，内置 provider 模型只作元数据不进入列表，空态提示「暂无模型档案（未配置 model_profiles）· 按 a 新增」）；**选择**（↑↓/jk + Enter 应用——写 `active_model_profile` 切换当前生效档案，LLM 参数全部从档案解析）、**新增**（`a`：① 选**提供商**（选择界面，deepseek/anthropic/glm/mimo/custom）→ ② 填**模型名** → ③ 填 **API 密钥**，**接口地址按提供商自动填好**，显示名留空则用模型名）、**编辑**（`e`）、**删除**（`d` 确认）；`/` 搜索 + `n`/`N`/`p` + `f` 过滤、`?` 帮助面板（数据表 `model_keymap`）、`y` 复制（OSC52）、字段输入（字符 / 退格 / Ctrl+U / Enter / Esc）。数据源为 RC 顶层新键 `model_profiles` + `active_model_profile`（`CONFIG_KEYS.MODEL_PROFILES` / `ACTIVE_MODEL_PROFILE`；纯逻辑模块 `src/config/model_profiles.py` 负责字段元数据 / 校验 / 持久化 / 应用 / 提供商候选）；`/model <Tab>` 补全并入档案模型名、`/config` 界面可编辑 `model_profiles`；**模型列表唯一来源 = 模型档案**（`configured_models` 返回档案模型名，去重保序；RC 顶层 `models` 字段已删除，加载时自动清理历史遗留键）——`Ctrl+N`、`/model`（无参数选择器 / 序号 / 名称）与 `/model <Tab>` 补全**只在模型档案中选择**（不再列出内置 provider 模型；未配置时提示「请先 /models 新增」）；`/config` 的 MODEL 候选、`config_port.get_models()` 与 `plugins/config.models()` 同步收敛到档案；测试 `tests/test_model_view.py`（65 例）固化
+- **LLM 访问入口收敛（2026-10-09）** ✅ — 用户需求「删除 CHAT_API_KEY 等环境变量和老配置，只能通过新加的东西访问 llm」+「如果第一次没有配置 models 就要显示让用户配置」：**LLM 访问参数（API 密钥 / 接口地址 / 模型名 / 提供商）唯一来源 = 模型档案**（`model_profiles` + `active_model_profile`）——删除环境变量 `CHAT_API_KEY` / `CHAT_MODEL` / `CHAT_BASE_URL` / `CHAT_LOW_MODEL` 与 RC 旧键 `api_key` / `base_url` / `model` / `provider` / `low_model` / `models`（加载配置时自动清理并落盘；`config.API_KEY` / `BASE_URL` / `MODEL` 改为经 `src/config/model_profiles.py` 的 `current_api_key` / `current_base_url` / `current_model` 从当前档案解析，`TOKEN_PRICES` 缺省回退当前档案 provider 的内置价表）；`CONFIG_KEYS` 移除 `MODEL`（`/config` 不再出现 model/provider/base_url/api_key 条目）、新增 `ACTIVE_MODEL_PROFILE`；`ConfigPort.get_low_model()` / `plugins.config.low_model()` 移除，子 Agent 的「低优先级模型」改为取模型档案中当前模型之外的首个档案（`src/tools/subagent.py`）；`-m/--model` 改为按模型名/显示名**匹配已有档案并设为当前**（未匹配列出可用档案并提示 `/models` 新增）；`web_search` 的密钥同样取自当前档案；**首次启动未配置任何档案时自动显示配置引导并打开模型选择器**（`InteractiveLoop._maybe_prompt_model_setup`——聊天区醒目提示「① 选提供商 ② 填模型名 ③ 填 API 密钥」+ 打开选择器，Esc 可稍后配置；单次模式 `-p` 则提示并退出），新增档案保存后自动设为当前生效；`config.loader ↔ config.model_profiles ↔ config.schema` 保持零循环依赖（架构测试校验）；测试 `tests/test_model_onboarding.py`（8 例）+ `tests/test_config_schema.py` / `tests/test_model_view.py` / `tests/test_special_keys.py` 等同步更新
 - **TUI 体验增强（2026-10-07）** ✅ — 欢迎屏卡片化（圆角边框 + 分支/上下文等环境信息，窄屏自动回退无边框；splash 与空态同卡）、状态栏信息增强（**段级分隔**——工具计数改为 `⚙ n/m` / `✔ m` / `✔ n/m ✖ f`，并修复段内多 run 被 ` · ` 拆开的既有缺陷；同日新增的 `provider`/`theme`/`context` 段已按用户需求删除，状态栏仅保留模型名/工具计数/耗时/消息数/token/速度）、工具卡标题元信息（完成后显示 `· 耗时 · N 行`，失败追加红色 `· 失败`；运行中保持极简）、输入区体验（模式行图标 ◇/▸/▣、占位提示轮播扩充至 6 条）、操作优化（`Ctrl+Z` 撤销 / `Ctrl+Y` 重做输入编辑，连续同类编辑按 0.8s 窗口合并为一个撤销单元）、帮助视图增强（`/` 搜索 + `n`/`N` 跳转 + 匹配高亮、Enter/空格 折叠/展开分组、头部搜索态提示）、新增 nord / dracula / gruvbox 三套配色主题（内置主题清单化、可按 Patch 禁用/覆盖）
 - **TUI 性能专项（2026-10-07）** ✅ — 五个方向实测优化：
   - **启动/初始化**：`src.core` / `src.core.internal` / `src.api.escape_monitor` / `src.renderer` 四个包 `__init__` 改 **PEP 562 惰性导出**——导入轻量子模块不再连锁加载 agent/tools/commands/Rich 渲染链（`import src.renderer.ansi` 不再拉入 `rich`）；冷启动导入实测 **~930ms → ~424ms（-54%）**。同时消除「`base_agent` → `sandbox_manager` → `internal.shared` → `internal.agent` → `subagent` → `base_agent`」的隐性导入顺序契约（原靠 `agent_builder` 先加载侥幸避开循环导入，任意入口导入现均安全）。

@@ -71,13 +71,15 @@ PROVIDERS = {
 }
 
 DEFAULTS = {
-    "provider": "deepseek",
-    "base_url": "",
-    "api_key": "",
-    # 全局默认模型（用户未显式选择 provider/模型时使用快速版）；
-    # PROVIDERS[provider]["default_model"] 是**显式切换**到该 provider 时的
-    # 模型（deepseek=pro 旗舰）——两者用途不同，非笔误。
-    "model": "deepseek-v4-flash",
+    # ── 模型档案（模型选择器：每个档案含 name/model/base_url/api_key/provider）──
+    # **LLM 访问的唯一入口**：模型列表、API 密钥、接口地址、提供商与当前生效
+    # 模型全部来自模型档案（``model_profiles`` + ``active_model_profile``）；
+    # 环境变量 CHAT_API_KEY/CHAT_MODEL/CHAT_BASE_URL/CHAT_LOW_MODEL 与 RC 旧
+    # 键 api_key/base_url/model/provider/low_model 均已移除。内置 provider
+    # 元数据（PROVIDERS）仅用于默认接口地址与 token 价格。
+    "model_profiles": [],
+    # 当前生效档案下标（-1 = 未选择；由模型选择器写入）
+    "active_model_profile": -1,
     "reasoning_effort": "max",
     "temperature": 0.2,
     # ── 上下文窗口阈值（2026-10-07 用户需求：60k → 1M tokens 窗口）──
@@ -106,7 +108,6 @@ DEFAULTS = {
     "auto_force_compress_threshold": 400000,
     "enable_notifications": True,
     "notify_on_chat_completion": True,
-    "models": [],
     "token_prices": {},
     # 显式声明为多模态（视觉输入）的模型名列表（小写子串匹配，覆盖
     # src/api/multimodal.py 内置模式未覆盖的模型；read_image 等图像工具
@@ -194,16 +195,21 @@ DEFAULTS = {
 # ============================================================
 CONFIG_KEYS = {
     # ---- 核心配置 ----
-    "MODEL": {
-        "rc_path": ("model",),
-        "type": str,
-        "default": "deepseek-v4-flash",
-        "cacheable": True,
-    },
-    "MODELS": {
-        "rc_path": ("models",),
+    # 模型列表（模型选择器：name/model/base_url/api_key/provider 结构由
+    # config.model_profiles 维护；本键使其在 /config 界面可编辑。**LLM 访问
+    # 的唯一入口**——环境变量 CHAT_API_KEY/CHAT_MODEL/CHAT_BASE_URL 与 RC
+    # 旧键 api_key/base_url/model/provider/low_model 均已移除）
+    "MODEL_PROFILES": {
+        "rc_path": ("model_profiles",),
         "type": list,
         "default": [],
+        "cacheable": True,
+    },
+    # 当前生效档案下标（-1 = 未选择；由模型选择器写入）
+    "ACTIVE_MODEL_PROFILE": {
+        "rc_path": ("active_model_profile",),
+        "type": int,
+        "default": -1,
         "cacheable": True,
     },
     "REASONING_EFFORT": {

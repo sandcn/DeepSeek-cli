@@ -27,20 +27,12 @@ class ConfigPort(ABC):
 
     @abstractmethod
     def get_model(self) -> str:
-        """获取当前模型名称"""
-        ...
-
-    @abstractmethod
-    def get_low_model(self) -> str:
-        """获取低优先级模型名称（由 CHAT_LOW_MODEL 环境变量设置）
-
-        返回空字符串表示未设置低模型，此时应使用 get_model() 的返回值。
-        """
+        """获取当前模型名称（唯一来源：模型档案 ``model_profiles``）"""
         ...
 
     @abstractmethod
     def get_base_url(self) -> str:
-        """获取 API base URL"""
+        """获取 API base URL（唯一来源：当前模型档案）"""
         ...
 
     @abstractmethod
@@ -50,7 +42,7 @@ class ConfigPort(ABC):
 
     @abstractmethod
     def get_models(self) -> list[str]:
-        """获取可用模型列表"""
+        """获取配置的模型列表（模型档案 ``model_profiles`` 的模型名）"""
         ...
 
     @abstractmethod

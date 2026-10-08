@@ -232,7 +232,7 @@ def test_format_user_error_api_keeps_keyword():
 
 def test_format_user_error_auth_hint_actionable():
     msg = format_user_error(classify_http_error(401, "bad key"))
-    assert "CHAT_API_KEY" in msg
+    assert "/models" in msg
 
 
 def test_format_user_error_rate_limit_includes_retry_after():

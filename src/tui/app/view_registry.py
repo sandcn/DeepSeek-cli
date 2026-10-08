@@ -82,6 +82,8 @@ _BUILTIN_SPECS: tuple = (
              description="已加载插件视图"),
     ViewSpec("help", "fullscreen", "src.tui.app.help_view.HelpView",
              description="帮助速查视图（分组命令 + 快捷键，F1 / Ctrl+/ 开关）"),
+    ViewSpec("model", "fullscreen", "src.tui.app.model_view.ModelView",
+             description="模型选择器（选择 / 新增 / 编辑模型档案：name/model/url/key/provider）"),
     ViewSpec("user_select", "bottom", "src.tui.app.user_select.UserSelectPopup",
              key_mode="user_select_seq", description="user_select 弹窗（底部模态视图）"),
     ViewSpec("editmsg", "bottom", "src.tui.app.editmsg_select.EditMsgSelectPopup",

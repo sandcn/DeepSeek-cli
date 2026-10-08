@@ -43,25 +43,39 @@ class MockConfigAdapter(ConfigPort):
         self.last_set_value = value
 
     def get_model(self) -> str:
-        return str(self._data.get("model", ""))
+        """当前模型名（唯一来源：模型档案 ``model_profiles``）。"""
+        from ...config.model_profiles import current_model
 
-    def get_low_model(self) -> str:
-        """获取低优先级模型名称（由 CHAT_LOW_MODEL 环境变量设置）
-
-        返回空字符串表示未设置低模型，此时应使用 get_model() 的返回值。
-        """
-        return str(self._data.get("low_model", ""))
+        try:
+            return current_model(self._data)
+        except Exception:
+            return ""
 
     def get_base_url(self) -> str:
-        return str(self._data.get("base_url", ""))
+        """当前接口地址（唯一来源：当前模型档案 / 其提供商默认地址）。"""
+        from ...config.model_profiles import current_base_url
+
+        try:
+            return current_base_url(self._data)
+        except Exception:
+            return ""
 
     def get_token_prices(self) -> dict:
         result = self._data.get("token_prices", {})
         return dict(result) if isinstance(result, dict) else {}
 
     def get_models(self) -> list[str]:
-        result = self._data.get("models", [])
-        return list(result) if isinstance(result, (list, tuple)) else []
+        """配置的模型列表（模型档案 ``model_profiles`` 的模型名）。
+
+        RC 顶层 ``models`` 字段已移除——本方法语义 = 模型档案模型名，
+        与 ``config.model_profiles.configured_models`` 一致。
+        """
+        from ...config.model_profiles import configured_models
+
+        try:
+            return configured_models(rc=self._data)
+        except Exception:
+            return []
 
     def get_reasoning_effort(self) -> str:
         return str(self._data.get("reasoning_effort", "max"))

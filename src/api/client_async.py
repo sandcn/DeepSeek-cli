@@ -143,7 +143,7 @@ def _headers() -> dict[str, str]:
         with _api_key_warned_lock:
             if not _api_key_warned:
                 _api_key_warned = True
-                _logger.warning("未设置 API 密钥。请设置环境变量 CHAT_API_KEY（参考 .env.example）。")
+                _logger.warning("未设置 API 密钥。请在 /models 模型档案中填写 API 密钥。")
     return {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json",
@@ -157,7 +157,7 @@ def _headers_anthropic() -> dict[str, str]:
         with _api_key_warned_lock:
             if not _api_key_warned:
                 _api_key_warned = True
-                _logger.warning("未设置 API 密钥。请设置环境变量 CHAT_API_KEY（参考 .env.example）。")
+                _logger.warning("未设置 API 密钥。请在 /models 模型档案中填写 API 密钥。")
     return {
         "x-api-key": API_KEY,
         "anthropic-version": "2023-06-01",

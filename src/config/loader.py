@@ -2,11 +2,10 @@
 
 import json
 import logging
-import os
 import sys
 import threading
 
-from .defaults import CONFIG_DIR, LOG_FILE, RC_FILE, DEFAULTS, PROVIDERS, CONFIG_KEYS
+from .defaults import CONFIG_DIR, LOG_FILE, RC_FILE, DEFAULTS, CONFIG_KEYS
 from .schema import _validate_rc
 
 
@@ -43,12 +42,34 @@ def _safe_merge(defaults: dict, overrides: dict) -> dict:
     return result
 
 
+def _write_rc_file(rc: dict) -> bool:
+    """把 RC 字典原子写入配置文件（写失败仅告警，返回是否成功）。"""
+    _ensure_config_dir()
+    try:
+        RC_FILE.write_text(
+            json.dumps(rc, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        sys.__stderr__.write(f"警告: 无法写入配置文件 {RC_FILE}: {e}\n")
+        return False
+    return True
+
+
 def _load_rc():
     _ensure_config_dir()
     if RC_FILE.exists():
         try:
-            raw = _safe_merge(DEFAULTS, json.loads(RC_FILE.read_text(encoding="utf-8")))
-            return _validate_rc(raw)
+            raw_config = json.loads(RC_FILE.read_text(encoding="utf-8"))
+            raw = _safe_merge(DEFAULTS, raw_config)
+            rc = _validate_rc(raw)
+            # 遗留字段清理落盘：RC 顶层 ``models`` 已废弃（模型列表唯一来源 =
+            # 模型档案 ``model_profiles``）——``_validate_rc`` 已在内存中移除，
+            # 这里把它从磁盘文件一并清掉。仅在文件确实含该键时写一次，避免
+            # 每次启动都写文件。
+            if isinstance(raw_config, dict) and "models" in raw_config:
+                _write_rc_file(rc)
+            return rc
         except json.JSONDecodeError as e:
             logging.warning("配置文件 %s 解析失败: %s，使用默认配置", RC_FILE, e)
         except (PermissionError, OSError) as e:
@@ -95,15 +116,7 @@ def update_config(key: str, value) -> None:
                 rc[key] = value
         else:
             rc[key] = value
-        _ensure_config_dir()
-        try:
-            RC_FILE.write_text(
-                json.dumps(rc, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except OSError as e:
-            sys.__stderr__.write(f"警告: 无法写入配置文件 {RC_FILE}: {e}\n")
-        else:
+        if _write_rc_file(rc):
             from . import _clear_value_cache
             _clear_value_cache()
             # multimodal 模型判定缓存联动失效：RC 配置 multimodal_models 变更后
@@ -116,23 +129,22 @@ def update_config(key: str, value) -> None:
 
 
 def get_base_url(provider=None):
-    rc = get_rc()
+    """接口地址：给定 ``provider`` 时用其内置默认地址（PROVIDERS 元数据）。
+
+    当前生效地址（**唯一来源 = 当前模型档案**）见 ``src.config.BASE_URL``——
+    本函数不做任何模型档案解析，保持 ``config.loader ↔ config.model_profiles``
+    零相互依赖（避免 config 包内循环导入）。
+    """
     if provider is None:
-        provider = rc.get("provider", DEFAULTS["provider"])
-    env_url = os.getenv("CHAT_BASE_URL")
-    if env_url:
-        return env_url
-    rc_url = rc.get("base_url", "")
-    if rc_url:
-        return rc_url
-    if provider in PROVIDERS:
-        provider_config = PROVIDERS[provider]
-        provider_url = provider_config.get("base_url", "")
-        if not provider_url and provider != "custom":
-            sys.__stderr__.write(f"警告: provider '{provider}' 的 API 格式与 OpenAI 不兼容，当前客户端不支持，请使用支持的 provider。\n")
-        if provider_url:
-            return provider_url
-    return "https://api.deepseek.com/v1/chat/completions"
+        return ""
+    cfg = PROVIDERS.get(provider, {})
+    url = str(cfg.get("base_url", "") or "")
+    if not url and provider != "custom":
+        sys.__stderr__.write(
+            f"警告: provider '{provider}' 的 API 格式与 OpenAI 不兼容，"
+            f"当前客户端不支持，请使用支持的 provider。\n",
+        )
+    return url
 
 
 def get_audit_logger():
@@ -150,11 +162,3 @@ def _get_performance_config() -> dict:
     """获取性能配置，从 RC 文件中读取 performance 节点。"""
     rc = get_rc()
     return rc.get("performance", {})
-
-
-def _get_config(env_var, default):
-    """从环境变量读取配置，未设置时返回默认值。"""
-    val = os.getenv(env_var)
-    if val is not None:
-        return val
-    return default

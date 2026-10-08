@@ -12,10 +12,30 @@ from ._session_setup import _register_session_handlers
 from ._session_factory import create_session
 from ._ui_factory import create_chat_ui
 from ._agent_factory import _make_event_agent  # noqa: F401 — 兼容 re-export
-from ..core.constants import CYAN, DIM, RESET
+from ..core.constants import CYAN, DIM, RESET, YELLOW
 from ..api.escape_monitor import EscapeMonitor, stop_active_monitor
 
 _logger = logging.getLogger(__name__)
+
+
+def _missing_model_profile_notice() -> str | None:
+    """未配置任何模型档案时返回提示文案（已配置 → None）。
+
+    LLM 访问参数（api_key / base_url / model / provider）唯一来源 = 模型档案，
+    单次模式（``-p``）无法交互配置，因此在启动时直接提示并退出。
+    """
+    try:
+        from ..config.model_profiles import build_model_entries
+
+        if build_model_entries():
+            return None
+    except Exception:
+        _logger.debug("单次模式模型档案检查失败", exc_info=True)
+        return None
+    return (
+        "未配置模型档案 —— 请先运行 `python chat.py` 并用 /models 新增："
+        "① 选提供商 ② 填模型名 ③ 填 API 密钥"
+    )
 
 
 async def run_single_mode_async(prompt_text):
@@ -26,6 +46,13 @@ async def run_single_mode_async(prompt_text):
     _sep_w = narrow_sep_width(30)
     chat_ui.write_line(f"{CYAN}  > Chat{RESET} {DIM}· 单次模式{RESET}")
     chat_ui.write_line(f"{DIM}  {'─' * _sep_w}{RESET}")
+
+    notice = _missing_model_profile_notice()
+    if notice:
+        chat_ui.write_line(f"{YELLOW}  ! {notice}{RESET}")
+        chat_ui.stop()
+        stop_active_monitor()
+        return
 
     session = create_session(event_agent=True)
 

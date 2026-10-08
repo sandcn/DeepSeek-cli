@@ -109,70 +109,44 @@ def make_toggle_theme_handler(env: SpecialKeyEnv):
 
 
 def make_switch_model_handler(env: SpecialKeyEnv):
-    """switch_model 处理器：循环切换模型并同步 provider。"""
+    """switch_model 处理器：在**配置的模型列表**中循环切换（Ctrl+N）。
+
+    候选集合 = ``config.model_profiles.build_model_entries``（用户档案 +
+    RC ``models`` 条目，即 :func:`configured_models`），**不列内置 provider
+    模型**；未配置任何模型时提示先用 ``/models`` 新增。切换按条目**完整
+    应用**（provider / base_url / api_key / model，与 ModelView 的 Enter
+    应用完全一致）。
+    """
     session = env.session
     state = env.state
     chat_ui = env.chat_ui
 
     def _handler(text: str) -> Optional[str]:
-        _models: list[str] = []
         try:
-            from ..config import MODELS as _MODELS
-
-            _models = _MODELS
+            from ..config.model_profiles import apply_entry, build_model_entries
         except Exception:
-            pass
-        # 合并 PROVIDERS 内置模型（去重保序）：RC 旧 models 未包含的
-        # 新模型（如 deepseek-flash）也能通过 Ctrl+N 切换
-        try:
-            from ..core.commands._model_cmd import _merge_provider_models
-
-            _models = _merge_provider_models(list(_models or []))
-        except Exception:
-            pass
-        if not _models:
-            try:
-                from ..config.defaults import PROVIDERS as _PROVIDERS
-
-                _seen: set[str] = set()
-                for _p in _PROVIDERS.values():
-                    for _m in _p.get("models", []):
-                        if _m not in _seen:
-                            _seen.add(_m)
-                            _models.append(_m)
-            except Exception:
-                _models = []
-        if not _models:
             return None
+        entries = build_model_entries()
+        if not entries:
+            if chat_ui is not None:
+                chat_ui.on_notification("! 未配置模型（用 /models 新增）")
+            return text
         current = state.model
-        if not current:
-            return None
-        if current not in _models:
-            next_model = _models[0]
-        else:
-            try:
-                idx = _models.index(current)
-                next_model = _models[(idx + 1) % len(_models)]
-            except (ValueError, IndexError):
-                return None
-        session.model = next_model
-        state.model = next_model
-        # ── 同步 provider（与 /model 命令逻辑一致） ─────
-        try:
-            from ..core.commands._model_cmd import _infer_model_provider
-            from ..config.loader import get_rc, update_config
-
-            _inferred = _infer_model_provider(next_model)
-            if _inferred is not None:
-                _current_provider = get_rc().get("provider", "")
-                if _inferred != _current_provider:
-                    update_config("provider", _inferred)
-        except (ImportError, KeyError):
-            pass
-        # ────────────────────────────────────────────────
-        if chat_ui is not None:
-            chat_ui.bottom_bar.set_model_name(next_model)
-            chat_ui.on_notification(f"+ 已切换到 {next_model}")
+        idx = -1
+        for i, e in enumerate(entries):
+            if e.get("model") == current:
+                idx = i
+                break
+        nxt = entries[(idx + 1) % len(entries)]
+        ok, msg = apply_entry(nxt)
+        if ok:
+            session.model = nxt["model"]
+            state.model = nxt["model"]
+            if chat_ui is not None:
+                chat_ui.bottom_bar.set_model_name(nxt["model"])
+                chat_ui.on_notification(f"+ {msg}")
+        elif chat_ui is not None:
+            chat_ui.on_notification(f"! {msg}")
         return text
 
     return _handler

@@ -150,13 +150,13 @@ def _search_options() -> tuple[str, str]:
 
 
 def _resolve_api_key() -> str:
-    """读取当前 API 密钥（CHAT_API_KEY 环境变量，与聊天共用）。"""
+    """读取当前 API 密钥（唯一来源：当前模型档案 ``model_profiles``）。"""
     from ..config import API_KEY
 
     key = (API_KEY or "").strip()
     if not key:
         raise WebSearchError(
-            "web_search 未配置 API 密钥（CHAT_API_KEY 环境变量），"
+            "web_search 未配置 API 密钥（请在 /models 模型档案中填写 API 密钥），"
             "DeepSeek 官方搜索需要该密钥",
             "WEB_PROVIDER_CREDENTIAL_MISSING",
         )

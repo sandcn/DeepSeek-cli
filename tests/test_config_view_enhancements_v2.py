@@ -385,8 +385,15 @@ class TestExportImport:
     def test_apply_import_known(self, isolated_rc):
         from src.tui.app.config_export import apply_import
         from src.config.view_model import build_config_entries
-        applied, errors = apply_import({"model": "deepseek-v4-flash"})
+        applied, errors = apply_import({"theme": "light"})
         assert applied == 1 and not errors
         # 写回生效
         entries = {e["path"]: e for e in build_config_entries()}
-        assert entries["model"]["value"] == "deepseek-v4-flash"
+        assert entries["theme"]["value"] == "light"
+
+    def test_apply_import_legacy_llm_key_rejected(self, isolated_rc):
+        """旧 LLM 访问键（model/api_key/provider/base_url）不再可导入。"""
+        from src.tui.app.config_export import apply_import
+        for legacy in ("model", "api_key", "provider", "base_url", "low_model", "models"):
+            applied, errors = apply_import({legacy: "x"})
+            assert applied == 0 and errors

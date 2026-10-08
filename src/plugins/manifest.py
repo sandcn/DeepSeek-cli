@@ -296,6 +296,8 @@ COMMAND_PLUGIN_ENTRIES = [
      "config": {"command": "src.core.commands.plugins.loop_plugin.LoopPlugin", "name": "loop"}},
     {"id": "cmd_model", "plugin": "src.plugins.command_plugin",
      "config": {"command": "src.core.commands.plugins.model_plugin.ModelPlugin", "name": "model"}},
+    {"id": "cmd_models", "plugin": "src.plugins.command_plugin",
+     "config": {"command": "src.core.commands.plugins.models_plugin.ModelsPlugin", "name": "models"}},
     {"id": "cmd_skill", "plugin": "src.plugins.command_plugin",
      "config": {"command": "src.core.commands.plugins.skill_plugin.SkillPlugin", "name": "skill"}},
     {"id": "cmd_compact", "plugin": "src.plugins.command_plugin",
@@ -484,6 +486,8 @@ UI_VIEW_ENTRIES = [
      "config": {"id": "plugin"}},
     {"id": "ui_view_help", "plugin": "src.plugins.ui_views:apply_ui_view",
      "config": {"id": "help"}},
+    {"id": "ui_view_model", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "model"}},
     {"id": "ui_view_user_select", "plugin": "src.plugins.ui_views:apply_ui_view",
      "config": {"id": "user_select"}},
     {"id": "ui_view_editmsg", "plugin": "src.plugins.ui_views:apply_ui_view",
@@ -714,7 +718,7 @@ PRESENTATION_DATA_ENTRIES = [
         "semantic_color", "gradient_stops", "shell_detect",
         "http_error_hint", "badge_metrics", "kitty_protocol",
         "nested_bullet", "diff_style", "trace_style", "trace_keymap",
-        "plugin_keymap", "config_keymap",
+        "plugin_keymap", "config_keymap", "model_keymap",
         "model_patterns",
     )
 ]

@@ -283,20 +283,14 @@ class CompletionEngine:
 
     @staticmethod
     def _fetch_models() -> list[str]:
+        """配置的模型列表（模型档案 + RC 顶层 ``models``；不列内置模型）。
+
+        ``/model <Tab>`` 参数补全与 Ctrl+N/``/model`` 的选择范围一致——只列
+        用户配置的模型。
+        """
         try:
-            from ..config import MODELS
-            if MODELS:
-                return list(MODELS)
-            # MODELS 为空时从所有 PROVIDERS 聚合模型（去重）
-            from ..config.defaults import PROVIDERS
-            _seen: set[str] = set()
-            result: list[str] = []
-            for _p in PROVIDERS.values():
-                for _m in _p.get("models", []):
-                    if _m not in _seen:
-                        _seen.add(_m)
-                        result.append(_m)
-            return result
+            from ..config.model_profiles import configured_models
+            return configured_models()
         except Exception:
             return []
 
@@ -369,8 +363,12 @@ class CompletionEngine:
             # ── 命令补全（行首命令 + / 开头的词） ──
             items = self._call_provider("command", ctx)
             if items:
-                # 精确匹配已完成命令 → 跳过命令补全，尝试参数补全
-                if len(items) == 1 and items[0].text == last_word and "param" in active:
+                # 精确匹配已完成命令 → 跳过命令补全，尝试参数补全。
+                # ★ 候选含**精确匹配**即视为「用户已输入完整命令名」——不再要求
+                #   候选唯一（修复 /model 与 /models 共存时输入 /model 被当作
+                #   命令前缀列举、参数补全失效）：输入 /model 仍进入模型参数
+                #   补全；输入 /mod 候选无精确项则照常列举命令。
+                if "param" in active and any(it.text == last_word for it in items):
                     param_items = self._call_provider("param", ctx)
                     if param_items:
                         return param_items

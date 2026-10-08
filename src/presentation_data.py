@@ -353,8 +353,7 @@ INLINE_SPINNER_FRAMES: str = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u
 
 CONFIG_ENTRY_DESC_MAP: dict[str, str] = {
     # ── 核心配置 ──
-    "MODEL": "当前模型（环境变量 CHAT_MODEL 可覆盖）",
-    "MODELS": "可用模型列表",
+    "MODEL_PROFILES": "模型档案列表（name/model/base_url/api_key/provider；**模型列表唯一来源**，/models 界面增删改选）",
     "REASONING_EFFORT": "推理等级（low/medium/high/max）",
     "TEMPERATURE": "大模型温度（0.0~2.0，越高越随机）",
     "THEME": "UI 配色主题（dark/light/high-contrast）",
@@ -393,22 +392,12 @@ CONFIG_ENTRY_DESC_MAP: dict[str, str] = {
     "HTTP_ENABLE_POOL": "启用 HTTP 连接池",
     "HTTP_ENABLE_HTTP2": "启用 HTTP/2",
     # ── 额外顶层键 ──
-    "provider": "服务提供商（deepseek/custom/anthropic/glm/mimo）",
-    "base_url": "API 基础地址（留空使用 provider 默认）",
-    "api_key": "API Key（留空使用环境变量 CHAT_API_KEY）",
     "skills": "技能子系统配置（enabled/auto_load 等）",
 }
 
 # ── 枚举选择型配置项候选（写回键 → [(值, 说明), ...]） ─────
 
 CONFIG_ENTRY_OPTION_MAP: dict[str, tuple[tuple[str, str], ...]] = {
-    "PROVIDER": (
-        ("deepseek", "DeepSeek 官方（v4-pro / v4-flash）"),
-        ("custom", "自定义服务（需配置 base_url）"),
-        ("anthropic", "Anthropic（Claude 系列）"),
-        ("glm", "智谱 GLM（open.bigmodel.cn）"),
-        ("mimo", "小米 MiMo（token-plan-cn）"),
-    ),
     "THEME": (
         ("dark", "暗色主题"),
         ("light", "亮色主题"),
@@ -638,7 +627,7 @@ SHELL_DETECT_DATA: dict = {
 
 HTTP_ERROR_HINT_DATA: dict = {
     "400": "请求参数不合法",
-    "401": "API 密钥无效或未设置，请检查环境变量 CHAT_API_KEY",
+    "401": "API 密钥无效或未设置，请在 /models 模型档案中检查 API 密钥",
     "403": "API 密钥无权访问（可能欠费或权限不足）",
     "404": "接口地址或模型不存在，请检查 BASE_URL 与模型名",
     "408": "请求超时",
@@ -816,6 +805,24 @@ CONFIG_KEYMAP_DATA: list = [
     {"group": "操作", "keys": "Esc / Ctrl+H", "desc": "关闭配置中心"},
 ]
 
+# ── 模型选择器快捷键速查表（``?`` 帮助面板内容，「一切皆插件」） ──
+MODEL_KEYMAP_DATA: list = [
+    {"group": "选择", "keys": "\u2191\u2193 / j k", "desc": "移动选择（表单中移动字段）"},
+    {"group": "选择", "keys": "PgUp / PgDn", "desc": "整页翻页"},
+    {"group": "选择", "keys": "Home/End \u00b7 g/G", "desc": "首末"},
+    {"group": "选择", "keys": "Enter", "desc": "应用选中模型（表单中编辑字段）"},
+    {"group": "管理", "keys": "a", "desc": "新增模型档案（name/model/url/key/provider）"},
+    {"group": "管理", "keys": "e", "desc": "编辑选中模型档案"},
+    {"group": "管理", "keys": "d", "desc": "删除选中模型档案"},
+    {"group": "管理", "keys": "s", "desc": "表单保存（新增/编辑）"},
+    {"group": "搜索", "keys": "/", "desc": "搜索模型（回车执行，Esc 取消）"},
+    {"group": "搜索", "keys": "n / N / p", "desc": "下一个 / 上一个匹配"},
+    {"group": "搜索", "keys": "f", "desc": "过滤模式（只显示匹配模型）"},
+    {"group": "面板", "keys": "?", "desc": "本帮助面板（? / q / Esc 关闭）"},
+    {"group": "操作", "keys": "y", "desc": "复制选中模型信息到剪贴板（OSC52）"},
+    {"group": "操作", "keys": "Esc / Ctrl+H", "desc": "关闭模型选择器"},
+]
+
 #: 内置数据表声明
 _BUILTIN_SPECS: Tuple[DataTable, ...] = (
     DataTable("emoji", "emoji", EMOJI_MAP),
@@ -854,6 +861,7 @@ _BUILTIN_SPECS: Tuple[DataTable, ...] = (
     DataTable("trace_keymap", "trace_keymap", TRACE_KEYMAP_DATA),
     DataTable("plugin_keymap", "plugin_keymap", PLUGIN_KEYMAP_DATA),
     DataTable("config_keymap", "config_keymap", CONFIG_KEYMAP_DATA),
+    DataTable("model_keymap", "model_keymap", MODEL_KEYMAP_DATA),
     DataTable("model_patterns", "model_patterns", MODEL_PATTERNS_DATA),
 )
 
@@ -1241,6 +1249,11 @@ def config_keymap() -> list:
     return list(data_table("config_keymap", []) or [])
 
 
+def model_keymap() -> list:
+    """模型选择器快捷键速查表（``?`` 帮助面板内容；缺席回退空列表）。"""
+    return list(data_table("model_keymap", []) or [])
+
+
 def model_patterns() -> dict:
     return data_table("model_patterns", {}) or {}
 
@@ -1330,11 +1343,13 @@ __all__ = [
     "trace_keymap",
     "plugin_keymap",
     "config_keymap",
+    "model_keymap",
     "model_patterns",
     "model_pattern",
     "TRACE_KIND_ORDER_DATA",
     "TRACE_BLOCK_KIND_MAP",
     "TRACE_KEYMAP_DATA",
+    "MODEL_KEYMAP_DATA",
     "MESSAGE_ROLE_ICON_MAP",
     "BORDER_CHARS_MAP",
     "BORDER_OBJECT_DEFAULT",
