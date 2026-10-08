@@ -2,18 +2,35 @@
 
 from __future__ import annotations
 
+import math
 import time
 import threading
 from collections import deque
 
 
+#: 「已知耗时的批量生成」速率保鲜期（秒）。
+#:
+#: 非流式调用（上下文压缩摘要等）在**调用结束**时才拿到真实 usage，其 token
+#: 一次性进入统计——窗口差值法会把整批算进最后一个采样间隔（虚高几十倍），
+#: 且 1 秒采样窗口滑走后速率直接归零（用户看不到这次生成的 tok/s）。
+#: ``add_token_size_batch`` 记录该批次的**真实平均速率**（size / elapsed），
+#: 在窗口差值法失真/归零时回退到它；超过本保鲜期回退失效（速率自然归零，
+#: 不会长期显示陈旧速率）。
+_BATCH_RATE_TTL = 5.0
+
+
 class _TokenSpeedTracker:
     """全局 token 速率统计器（模块级单例）。
 
-    线程安全，可从任意协程/线程调用 add_token_size()。
+    线程安全，可从任意协程/线程调用 ``add_token_size()``。
     提供两种速度指标：
       - 平均速度（avg_speed）：从第一次 add 至今的整体速率
       - 窗口速度（window_speed）：最近 N 秒内的实时速率
+
+    另一路每秒实时速度（``per_second_speed``，状态栏 tok/s）按总 tok 差值法
+    计算；非流式调用的批量生成（``add_token_size_batch``，如上下文压缩摘要）
+    以已知耗时记账，使该次生成的 tok/s 显示为真实平均速率 ``size / elapsed``
+    而不是一次性突刺或瞬间归零（见 ``_BATCH_RATE_TTL``）。
     """
 
     def __init__(self, window_seconds: float = 5.0):
@@ -35,6 +52,12 @@ class _TokenSpeedTracker:
         self._last_snapshot_total: int = -1   # 上次快照时的 _total_tokens
         self._last_snapshot_time: float = 0.0 # 上次快照时间戳
 
+        # ── 最近一次「已知耗时的批量生成」─────────────────────
+        # (结束时间戳, token 数, 生成耗时秒, 该批结束后的总 tok)。
+        # 供 per_second_speed / stats_snapshot 在窗口差值法失真或归零时回退到
+        # 真实平均速率（见 _BATCH_RATE_TTL 与 add_token_size_batch）。
+        self._last_batch: tuple[float, int, float, int] | None = None
+
     def add_token_size(self, size: int) -> None:
         """添加一批 token，自动更新总计数和速率窗口。"""
         if size <= 0:
@@ -45,6 +68,46 @@ class _TokenSpeedTracker:
             if self._start_time is None:
                 self._start_time = now
             self._window.append((now, size))
+
+    def add_token_size_batch(self, size: int, elapsed: float) -> None:
+        """计入一次「已知耗时」的批量生成（非流式调用，如上下文压缩摘要）。
+
+        与 ``add_token_size`` 的差异：本方法知道这批 token 的真实生成耗时，
+        因此把该批次记为「批量生成事件」——总 tok 仍一次性累加（历史累计语义
+        不变），而 ``per_second_speed`` / ``stats_snapshot().per_second_speed``
+        在窗口差值法失真（整批算进最后一个采样间隔 → 虚高几十倍）或短窗口
+        滑走后归零时，回退到本批次的**真实平均速率** ``size / elapsed``，
+        使状态栏「tok/s」反映这次生成的真实速度（见 ``_BATCH_RATE_TTL``）。
+
+        实时速率窗口（``window_speed`` / ``short_window_speed``）按普通批次
+        累加（条目时间取当前时刻，保持窗口单调有序）。
+
+        Args:
+            size: 本批生成 token 数（<=0 / 不可解析时忽略）。
+            elapsed: 本批 token 的真实生成耗时（秒）。<=0 / 非有限值时按 0
+                处理——退化为一次性计入（与 ``add_token_size`` 等价，无速率
+                回退）。
+        """
+        try:
+            size = int(size)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if size <= 0:
+            return
+        try:
+            seconds = float(elapsed)
+        except (TypeError, ValueError, OverflowError):
+            seconds = 0.0
+        if not math.isfinite(seconds) or seconds < 0:
+            seconds = 0.0
+        with self._lock:
+            now = time.time()
+            self._total_tokens += size
+            if self._start_time is None:
+                # 首批即为批量生成：起始时间回填到生成起点，平均速率不失真。
+                self._start_time = now - seconds
+            self._window.append((now, size))
+            self._last_batch = (now, size, seconds, self._total_tokens)
 
     def adjust_token_size(self, size: int) -> None:
         """修正总 token 计数（可为负）——用真实 usage 覆盖流式估算偏差。
@@ -161,6 +224,7 @@ class _TokenSpeedTracker:
             self._speed_records.clear()
             self._last_snapshot_total = -1
             self._last_snapshot_time = 0.0
+            self._last_batch = None
 
     @property
     def per_second_speed(self) -> float:
@@ -169,38 +233,70 @@ class _TokenSpeedTracker:
         记录总 tok 的时间序列快照，在 1 秒窗口内取差值：
         tok/s = (当前总tok - 窗口起点总tok) / 经过秒数
 
-        窗口内数据不足 2 个采样点时返回 0.0。
+        窗口内数据不足 2 个采样点时返回 0.0；最近一次「已知耗时的批量生成」
+        （``add_token_size_batch``，如上下文压缩摘要的非流式调用）仍在保鲜期内
+        且其后无新 token 时，返回该批次的真实平均速率——否则整批会被算进最后
+        一个采样间隔（虚高）或随窗口滑走（归零），状态栏「tok/s」看不到这次
+        生成的速率。
         """
         now = time.time()
         with self._lock:
-            # ★ 去重守卫（与 stats_snapshot() 共用去重状态，避免高频调用
-            #    产生冗余 _speed_records 快照，导致速度计算窗口缩窄/虚高）
-            _total = self._total_tokens
-            _total_changed = _total != self._last_snapshot_total
-            _time_elapsed = now - self._last_snapshot_time >= 0.1
-            if _total_changed or _time_elapsed:
-                self._speed_records.append((now, _total))
-                self._last_snapshot_total = _total
-                self._last_snapshot_time = now
+            return self._per_second_speed_locked(now)
 
-            # 清理超出 1 秒的旧记录（保留 ≥2 条——最新 + 参考；修复前 `> 1`
-            # 在 1s 边界把参考记录剪掉（now-1.0 浮点略大于旧记录时间）→ 只剩
-            # 最新一条 → 恒 0.0。保留参考后按窗口内 delta 计算实时速度。）
-            cutoff = now - 1.0
-            while len(self._speed_records) > 2 and self._speed_records[0][0] < cutoff:
-                self._speed_records.popleft()
+    def _per_second_speed_locked(self, now: float) -> float:
+        """每秒实时速度计算（调用方须持有 ``self._lock``）。
 
-            if len(self._speed_records) < 2:
-                return 0.0
+        ★ 去重守卫（与 ``stats_snapshot()`` 共用去重状态，避免高频调用产生冗余
+        ``_speed_records`` 快照，导致速度计算窗口缩窄/虚高）；1 秒窗口剪枝保留
+        ≥2 条（最新 + 参考——修复前 ``> 1`` 在 1s 边界把参考记录剪掉，只剩最新
+        一条 → 恒 0.0）。
+        """
+        _total = self._total_tokens
+        _total_changed = _total != self._last_snapshot_total
+        _time_elapsed = now - self._last_snapshot_time >= 0.1
+        if _total_changed or _time_elapsed:
+            self._speed_records.append((now, _total))
+            self._last_snapshot_total = _total
+            self._last_snapshot_time = now
 
-            old_ts, old_total = self._speed_records[0]
-            elapsed = now - old_ts
-            if elapsed <= 0:
-                return 0.0
-            delta = self._total_tokens - old_total
-            # ★ 真实 usage 修正（adjust_token_size）可使 delta 为负——速度
-            #   恒非负（负值对用户无意义，且会让状态栏速度段抖动）。
-            return max(0.0, round(delta / elapsed, 2))
+        cutoff = now - 1.0
+        while len(self._speed_records) > 2 and self._speed_records[0][0] < cutoff:
+            self._speed_records.popleft()
+
+        # 最近一次「已知耗时的批量生成」优先：该批次一次性计入，窗口差值法会
+        # 把整批算进最后一个采样间隔（虚高）或随后滑走（归零）——两种情形都
+        # 应以批次真实平均速率呈现（其后有新 token 时 _batch_rate_locked 返回 0，
+        # 自动交回窗口差值法）。
+        batch_rate = self._batch_rate_locked(now)
+        if batch_rate > 0:
+            return batch_rate
+
+        if len(self._speed_records) < 2:
+            return 0.0
+        old_ts, old_total = self._speed_records[0]
+        elapsed = now - old_ts
+        if elapsed <= 0:
+            return 0.0
+        # ★ 真实 usage 修正（adjust_token_size）可使 delta 为负——速度恒非负
+        #   （负值对用户无意义，且会让状态栏速度段抖动）。
+        return max(0.0, round((_total - old_total) / elapsed, 2))
+
+    def _batch_rate_locked(self, now: float) -> float:
+        """最近一次批量生成的真实平均速率（tok/s）；不可用返回 0.0。
+
+        仅在「批次仍在 ``_BATCH_RATE_TTL`` 保鲜期内」且「此后没有新增 token」
+        （说明该批次仍是最近一次生成活动）时有效——否则返回 0.0，交由窗口差值
+        法计算。调用方须持有 ``self._lock``。
+        """
+        batch = self._last_batch
+        if batch is None:
+            return 0.0
+        end_ts, size, seconds, total_after = batch
+        if seconds <= 0 or now - end_ts > _BATCH_RATE_TTL:
+            return 0.0
+        if self._total_tokens != total_after:
+            return 0.0
+        return max(0.0, round(size / seconds, 2))
 
     def stats_snapshot(self) -> dict:
         """返回当前统计的快照字典（线程安全，一次调用获取全部）。"""
@@ -213,30 +309,11 @@ class _TokenSpeedTracker:
             window_elapsed = now - self._window[0][0] if self._window else 0.0
             elapsed = now - start if start else 0.0
 
-            # 计算每秒速度（总 tok 差值法）
+            # 计算每秒速度（总 tok 差值法；含「已知耗时批量生成」速率回退）
             # ★ 去重：仅当 total 变化或距上次快照 ≥100ms 时才追加记录，
             #   避免高频 force_redraw() → _format_status() → stats_snapshot()
             #   在 5ms 间隔下产生 ~200 条/秒的冗余快照。
-            _total_changed = total != self._last_snapshot_total
-            _time_elapsed = now - self._last_snapshot_time >= 0.1
-            if _total_changed or _time_elapsed:
-                self._speed_records.append((now, total))
-                self._last_snapshot_total = total
-                self._last_snapshot_time = now
-            cutoff = now - 1.0
-            # 保留 ≥2 条参考记录（与 per_second_speed() 一致修复——1s 边界
-            # 剪枝误删参考导致恒 0）
-            while len(self._speed_records) > 2 and self._speed_records[0][0] < cutoff:
-                self._speed_records.popleft()
-            if len(self._speed_records) >= 2:
-                old_ts, old_total = self._speed_records[0]
-                s_elapsed = now - old_ts
-                per_sec_speed = (
-                    max(0.0, round((total - old_total) / s_elapsed, 2))
-                    if s_elapsed > 0 else 0.0
-                )
-            else:
-                per_sec_speed = 0.0
+            per_sec_speed = self._per_second_speed_locked(now)
 
             return {
                 "total_tokens": total,
@@ -261,6 +338,23 @@ def add_token_size(size: int) -> None:
         size: 本次收到的 token 数量（>0 时有效）。
     """
     _token_speed.add_token_size(size)
+
+
+def add_token_size_batch(size: int, elapsed: float) -> None:
+    """计入一次「已知耗时」的批量生成（非流式调用，如上下文压缩摘要）。
+
+    典型用法：非流式模型调用结束后拿到真实 usage 时调用——
+    ``add_token_size_batch(usage["output"], api_duration)``。总 tok 一次性
+    累加（历史累计语义不变），并让 ``per_second_speed`` 在该批次之后回退到
+    真实平均速率 ``size / elapsed``（避免整批算进最后一个采样间隔而虚高、
+    或随短窗口滑走而瞬间归零）。
+
+    Args:
+        size: 本批生成 token 数（<=0 时忽略）。
+        elapsed: 本批 token 的真实生成耗时（秒）；<=0 / 非有限值按 0 处理
+            （退化为一次性计入，无速率回退）。
+    """
+    _token_speed.add_token_size_batch(size, elapsed)
 
 
 def adjust_token_size(size: int) -> None:
@@ -306,7 +400,9 @@ def get_per_second_speed() -> float:
     """获取基于总 tok 差值的每秒实时速度 (tok/s)。
 
     记录总 tok 的时间序列快照，在 1 秒窗口内取差值，
-    不受 reset 影响（总 tok 是历史累计值）。
+    不受 reset 影响（总 tok 是历史累计值）。最近一次「已知耗时的批量生成」
+    （``add_token_size_batch``）仍在保鲜期内且其后无新 token 时返回该批次的
+    真实平均速率（压缩摘要等非流式调用的 tok/s 因此可见）。
     """
     return _token_speed.per_second_speed
 
@@ -320,7 +416,8 @@ def get_token_speed_snapshot() -> dict:
             "avg_speed": float,         # 平均速度 tokens/sec
             "window_speed": float,      # 实时窗口速度 tokens/sec
             "elapsed_seconds": float,   # 已统计秒数
-            "per_second_speed": float,  # 每秒实时速度 tok/s（总 tok 差值法）
+            "per_second_speed": float,  # 每秒实时速度 tok/s（总 tok 差值法；
+                                        # 批量生成保鲜期内为批次真实平均速率）
         }
     """
     return _token_speed.stats_snapshot()

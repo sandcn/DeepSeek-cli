@@ -56,7 +56,9 @@ def patch_model_async_deps(monkeypatch):
     monkeypatch.setattr(ma, "accumulate_usage", lambda usage: None)
     monkeypatch.setattr(ma, "set_tool_parse_elapsed", lambda e: None)
     monkeypatch.setattr(ma, "set_stream_speed", lambda s: None)
-    monkeypatch.setattr(ma, "add_token_size", lambda n: None)
+    # 非流式调用以「已知耗时批量生成」记账（压缩摘要等走此路径）——统一替换
+    # 为 no-op，避免真实全局统计污染。
+    monkeypatch.setattr(ma, "add_token_size_batch", lambda n, elapsed: None)
     monkeypatch.setattr(ma, "estimate_tokens", lambda s: 5)
     monkeypatch.setattr(ma, "chat_completions_async", _fake_chat_completions)
     monkeypatch.setattr(ma, "chat_completions_async_anthropic", _fake_chat_completions_anthropic)

@@ -19,7 +19,7 @@ from .interrupt_async import is_interrupted_async
 from .stream.pipeline_async import stream_call_async
 from ..core.stats import (
     accumulate_usage, set_tool_parse_elapsed, set_stream_speed,
-    add_token_size,
+    add_token_size_batch,
 )
 from ..config import MODEL
 from ._retry import retry_api_call_async, retry_on_parse_failure_async
@@ -160,7 +160,12 @@ async def _call_sync_async(
         _logger.debug("真实 prompt token 校准上下文使用率失败", exc_info=True)
 
     accumulate_usage(usage)
-    add_token_size(usage.get("output", 0))
+    # ★ 非流式调用（压缩摘要等）的生成 token 计入状态栏「总tok / tok/s」：
+    #   本调用结束时才拿到真实 usage，故以「已知耗时的批量生成」形式计入——
+    #   总 tok 一次性累加（历史累计语义不变），tok/s 回退到真实平均速率
+    #   （output / api_duration），避免整批算进最后一个采样间隔而虚高、
+    #   或随 1 秒窗口滑走而瞬间归零（用户看不到这次生成的速率）。
+    add_token_size_batch(usage.get("output", 0), api_duration)
 
     if api_duration > 0 and usage["output"] > 0:
         speed = usage["output"] / api_duration

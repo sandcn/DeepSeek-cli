@@ -368,6 +368,10 @@ class CompactionEngine:
             )
             self._emit(
                 "finished", count=result.shadowed_count, tokens=result.saved_tokens,
+                # ★ 2026-10：``saved_tokens`` 是事件里 TUI 通知读取的字段
+                #   （dispatcher 的 ``压缩 N 条消息，节省 ~Xt``）——修复前只传
+                #   ``tokens``，通知恒显示 ``节省 ~0t``（与实际节省不符）。
+                saved_tokens=result.saved_tokens,
                 detail=f"节省 ~{result.saved_tokens}t",
             )
             self._notify(

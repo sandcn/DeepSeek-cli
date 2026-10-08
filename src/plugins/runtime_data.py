@@ -170,6 +170,9 @@ class StatsService(Service):
     def add_token_size(self, size: int) -> None:
         self._mod().add_token_size(size)
 
+    def add_token_size_batch(self, size: int, elapsed: float) -> None:
+        self._mod().add_token_size_batch(size, elapsed)
+
     def adjust_token_size(self, size: int) -> None:
         self._mod().adjust_token_size(size)
 

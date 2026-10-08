@@ -677,12 +677,21 @@ def _do_compaction(model, cmd) -> None:
 
     由 CompactionChangedEvent → CompactionCmd 驱动，更新当前正在压缩的
     Agent 数量（主 Agent + 全部 SubAgent 聚合）。
+
+    ★ 2026-10（用户需求：压缩消耗的 token 要能在状态栏看到）：压缩结束
+    （active 从 >0 归 0）时记录结束时刻——状态栏在空闲期按该时刻短暂
+    展示「总tok / tok/s」（压缩摘要是**非流式**调用，其输出 token 在空闲期
+    产生，只按活跃期门控会永远看不到；见 ``status_bar._tokens_visible``）。
     """
     try:
         active = int(getattr(cmd, "active", 0) or 0)
     except (TypeError, ValueError, OverflowError):
         active = 0
-    model.status.compaction_active = max(0, active)
+    active = max(0, active)
+    status = model.status
+    if active == 0 and getattr(status, "compaction_active", 0):
+        status.compaction_last_end_ts = time.monotonic()
+    status.compaction_active = active
 
 
 #: 同帧合并的增量文本命令（纯追加语义，合并后渲染结果等价）

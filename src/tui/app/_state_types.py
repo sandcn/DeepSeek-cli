@@ -484,6 +484,10 @@ class StatusState:
     bg_subagent_count: int = 0
     #: 正在压缩上下文的 Agent 总数（主 agent + 全部 subagent 聚合）
     compaction_active: int = 0
+    #: 最近一次压缩结束的单调时钟时间戳（0 = 本会话尚未压缩）——压缩在空闲期
+    #: 结束后，状态栏在宽限期内短暂展示「总tok / tok/s」，让压缩消耗的 token
+    #: 可见（压缩摘要是非流式调用，其输出 token 在空闲期产生）。
+    compaction_last_end_ts: float = 0.0
 
 
 @dataclass

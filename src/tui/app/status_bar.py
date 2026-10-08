@@ -56,6 +56,14 @@ from src.tui.app._fx import SPINNER_FRAMES as _SPINNER_FRAMES  # noqa: F401
 # 快照与显示节奏不产生错位。
 _SNAPSHOT_TTL = 1.0
 
+#: 压缩驱动的 token/速度展示期使用的快照 TTL（秒）。
+#:
+#: 压缩摘要调用结束的瞬间 token 才进入全局统计——若沿用 1s TTL，压缩期
+#: （``compaction_active > 0``）缓存下来的旧快照（总 tok 仍为 0）会再存活
+#: 最多 1s，叠加状态栏 1s 时间桶后，用户最坏要 ~2s 才看到这次压缩的 token。
+#: 压缩驱动展示期（非活跃期）改用短 TTL，保证「压缩刚结束」即可看到。
+_COMPACTION_SNAPSHOT_TTL = 0.2
+
 #: 快照 TTL 缓存（弱引用键控 model 实例）——不写在 model 属性上：
 #: 渲染必须是纯函数（渲染期写 model 属性即副作用：第二次渲染可能不再调用
 #: ``fn()``，返回值随渲染次数变化，且与 memo 短路/并发渲染/双调用校验冲突）。
@@ -63,20 +71,62 @@ _SNAPSHOT_TTL = 1.0
 #: 被回收时缓存条目自动消失。
 _snapshot_cache: "WeakKeyDictionary" = WeakKeyDictionary()
 
+#: 压缩结束后「总tok / tok/s」在状态栏继续展示的宽限期（秒）。
+#:
+#: 压缩摘要是**非流式**调用：真实 usage 在调用结束时才到达，token 一次性进入
+#: 全局统计（见 core.stats 的批量生成记账），随后压缩立即结束（``compact · N``
+#: 归零）。若只在「压缩进行中」展示，用户几乎看不到这次压缩产生的 token——
+#: 故压缩结束后仍展示本宽限期长度，之后回到活跃期门控（不长期占用状态栏）。
+_COMPACTION_TOKEN_GRACE_SEC = 5.0
 
-def _snapshot(model) -> dict:
-    """api 快照查询（TTL 缓存 ≤1Hz）。
+
+def _tokens_visible(status_active: bool, status, now: float) -> bool:
+    """「总tok / tok/s」段是否可见。
+
+    可见条件（任一）：
+      - 活跃期（``status_active``，原有语义）；
+      - 正在压缩（``compaction_active > 0``）——空闲期手动 ``/compact`` 也可见；
+      - 压缩结束后的 ``_COMPACTION_TOKEN_GRACE_SEC`` 宽限期内——压缩摘要的
+        输出 token 在调用结束时才计入，宽限期让用户看得到「总tok」增量与
+        该次压缩的「tok/s」（批次真实平均速率）。
+
+    Args:
+        status_active: 状态栏是否处于活跃期（轮次进行中）。
+        status: AppModel.status 状态对象（缺字段按未压缩处理）。
+        now: 当前单调时钟时间戳（与 ``compaction_last_end_ts`` 同源）。
+
+    Returns:
+        True 表示 tokens / speed 段应渲染。
+    """
+    if status_active:
+        return True
+    if int(getattr(status, "compaction_active", 0) or 0) > 0:
+        return True
+    end_ts = float(getattr(status, "compaction_last_end_ts", 0.0) or 0.0)
+    if end_ts <= 0:
+        return False
+    return (now - end_ts) < _COMPACTION_TOKEN_GRACE_SEC
+
+
+def _snapshot(model, ttl: float = _SNAPSHOT_TTL) -> dict:
+    """api 快照查询（TTL 缓存，默认 ≤1Hz）。
 
     ★ 多实例隔离 + 渲染纯净：缓存挂模块级 ``WeakKeyDictionary``（键为 model
     实例）——各 AppModel 互不串扰，且**不写 model 属性**（渲染期无副作用）。
     渲染线程单写，GIL 原子赋值足够。
+
+    Args:
+        model: AppModel 实例（弱引用键）。
+        ttl: 缓存有效期（秒）。活跃期用 ``_SNAPSHOT_TTL``（1s，与状态栏时间桶
+            对齐）；压缩驱动的展示期用 ``_COMPACTION_SNAPSHOT_TTL``（短 TTL，
+            让「压缩刚结束」的 token 增量立即可见）。
     """
     now = time.monotonic()
     try:
         cache = _snapshot_cache.get(model)
     except TypeError:
         cache = None  # 不可弱引用/不可哈希的模型：不缓存（每次都查）
-    if cache is not None and now - cache[0] < _SNAPSHOT_TTL:
+    if cache is not None and now - cache[0] < ttl:
         return cache[1]
     try:
         from src.tui._snapshot import _get_snapshot
@@ -95,15 +145,20 @@ class StatusContext:
     """状态栏段构建上下文（段实现读取的运行时快照）。"""
 
     __slots__ = (
-        "model", "status", "status_active", "dot_elapsed",
+        "model", "status", "status_active", "tokens_visible", "dot_elapsed",
         "spinner_char", "reasoning_effort", "snapshot",
     )
 
     def __init__(self, model, status, status_active, dot_elapsed,
-                 spinner_char, reasoning_effort, snapshot):
+                 spinner_char, reasoning_effort, snapshot, tokens_visible=None):
         self.model = model
         self.status = status
         self.status_active = status_active
+        #: 总 tok / tok/s 段是否可见（活跃期，或压缩中/压缩刚结束的宽限期——
+        #: 压缩摘要是非流式调用，空闲期（手动 ``/compact``）产生的 token 只有
+        #: 放开活跃期门控才看得到）。未显式传入时跟随 ``status_active``
+        #: （向后兼容既有构造调用）。
+        self.tokens_visible = bool(status_active) if tokens_visible is None else bool(tokens_visible)
         self.dot_elapsed = dot_elapsed
         self.spinner_char = spinner_char
         self.reasoning_effort = reasoning_effort
@@ -194,8 +249,8 @@ def _elapsed_segment(ctx: StatusContext) -> list:
 
 
 def _tokens_segment(ctx: StatusContext) -> list:
-    """token 段（活跃期；◆ 图标 + 呼吸色）。"""
-    if not ctx.status_active:
+    """token 段（活跃期或压缩期/压缩宽限期；◆ 图标 + 呼吸色）。"""
+    if not ctx.tokens_visible:
         return []
     total = ctx.get("total_tokens", 0)
     if total <= 0:
@@ -208,8 +263,8 @@ def _tokens_segment(ctx: StatusContext) -> list:
 
 
 def _speed_segment(ctx: StatusContext) -> list:
-    """速度段（活跃期；» 图标 + 呼吸色）。"""
-    if not ctx.status_active:
+    """速度段（活跃期或压缩期/压缩宽限期；» 图标 + 呼吸色）。"""
+    if not ctx.tokens_visible:
         return []
     speed = ctx.get("per_second_speed", 0.0)
     if speed <= 0:
@@ -251,8 +306,10 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
     段由 ``src.tui.app._status_segments`` 注册表提供（每个段一个清单条目）：
     ``model`` 段为模型名部分（不与其它段用分隔符连接），其余段（tools/
     elapsed/messages/tokens/speed）按声明顺序用 `` · `` 连接。各段自行门控
-    活跃性：tools/elapsed/tokens/speed 仅活跃期渲染；messages 为常驻段
-    （空闲也显示——2026-10-07 状态栏信息增强）。
+    可见性：tools/elapsed 仅活跃期渲染；tokens/speed 在活跃期或压缩中/压缩
+    结束宽限期内渲染（``_tokens_visible``，压缩摘要为非流式调用，空闲期
+    ``/compact`` 产生的 token 也要看得到）；messages 为常驻段（空闲也显示
+    ——2026-10-07 状态栏信息增强）。
     """
     from ._status_segments import active_segment_ids, resolve_segment
 
@@ -260,11 +317,20 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
     # ★ P3（review）：与同函数其它字段（tool_total/tool_count 等）防御风格
     #   统一——测试桩模型缺字段时回退默认值而非 AttributeError。
     status_active = bool(getattr(st, "status_active", False))
-    snap = _snapshot(model) if status_active else {}
+    # ★ 2026-10（用户需求）：压缩消耗的 token 要能在状态栏看到——tokens/speed
+    #   段除活跃期外，压缩中与压缩结束宽限期内也可见（空闲期手动 /compact
+    #   也能看到本次压缩的 总tok / tok/s）。快照仅在需要展示时查询（空闲且
+    #   无压缩时不查，保持零开销）。
+    tokens_visible = _tokens_visible(status_active, st, time.monotonic())
+    # 压缩驱动的展示期（非活跃期）用短快照 TTL——压缩摘要结束后 token 才入账，
+    # 长 TTL 会让压缩期缓存的旧快照（总 tok=0）拖慢显示。
+    snap_ttl = _SNAPSHOT_TTL if status_active else _COMPACTION_SNAPSHOT_TTL
+    snap = _snapshot(model, snap_ttl) if tokens_visible else {}
     ctx = StatusContext(
         model=model, status=st, status_active=status_active,
         dot_elapsed=dot_elapsed, spinner_char=spinner_char,
         reasoning_effort=reasoning_effort, snapshot=snap,
+        tokens_visible=tokens_visible,
     )
 
     model_part: list[StyledRun] = []
@@ -387,6 +453,12 @@ def StatusBar(props) -> object:
             # ★ 推理等级（2026-08-14）：切换（/reasoning）后 deps 变化 →
             #   重建状态行（模型名后 [level] 即时刷新）。
             reasoning_effort,
+            # ★ 2026-10（用户需求：压缩消耗的 token 要能在状态栏看到）：
+            #   压缩状态变化（开始/结束）立即重建状态行——空闲期压缩中与
+            #   压缩结束宽限期内 tokens/speed 段的出现/消失即时生效
+            #   （仅 compaction_active 需入 deps；宽限期的到期由 time_dep
+            #   的 1 秒桶驱动，最迟 1 秒内收起）。
+            getattr(st, "compaction_active", 0),
         ),
     )
     # 分割线（上面）
