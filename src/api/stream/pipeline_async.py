@@ -321,6 +321,18 @@ class AsyncStreamPipeline:
             ctx.usage["input_cache_hit"] = real_hit
             ctx.usage["input_cache_miss"] = real_miss
 
+            # ★ 真实输入 token 校准上下文使用率（2026-10「main 上下文百分比
+            #   统计不准」修复）：把服务端 prompt_tokens（含系统提词 + 工具
+            #   列表 + 本次请求全部消息 + 模板开销）交给 core 作为权威基线——
+            #   模式行 ``main · N%`` 不再依赖纯估算，偏差显著收敛。经钩子
+            #   回调（延迟导入避免 api→core 循环依赖）；SubAgent label 由
+            #   core 侧跳过（其输入占用 SubAgent 独立上下文）。
+            try:
+                from ._usage_hook import notify_prompt_usage
+                notify_prompt_usage(real_input, ctx.label)
+            except Exception:
+                _logger.debug("真实 prompt token 校准上下文使用率失败", exc_info=True)
+
             # SpeedHandler.try_update() 已在流式过程中累积了估计的
             # output token。此处以真实值直接覆盖，确保统计准确。
             # 修正值 = 真实值 - 估计值；合并为单次 accumulate_usage：

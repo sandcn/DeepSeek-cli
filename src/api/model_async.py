@@ -151,6 +151,14 @@ async def _call_sync_async(
     usage = parsed.get("usage", {"input": 0, "output": 0})
     tool_calls = parsed.get("tool_calls", [])
 
+    # ★ 真实输入 token 校准上下文使用率（2026-10「main 上下文百分比统计
+    #   不准」修复）——非流式路径同样把 usage.input 交给 core 作权威基线。
+    try:
+        from .stream._usage_hook import notify_prompt_usage
+        notify_prompt_usage(usage.get("input", 0), label)
+    except Exception:
+        _logger.debug("真实 prompt token 校准上下文使用率失败", exc_info=True)
+
     accumulate_usage(usage)
     add_token_size(usage.get("output", 0))
 

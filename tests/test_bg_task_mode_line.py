@@ -779,8 +779,12 @@ class TestContextUsagePercent:
         finally:
             set_context_usage_percent(None)
 
-    def test_refresh_usage_force_recompute(self):
-        """force=True：system 条数相同内容变化（Ctrl+B 场景）时强制重算。"""
+    def test_refresh_usage_detects_message_replacement(self):
+        """同长度、消息对象被整体替换 → 对象身份校验自动发现并重算。
+
+        ★ 2026-10 修复（main 上下文百分比统计不准）：修复前只比对长度，
+        ``msgs[0] = new_dict`` 时判定「已同步」、百分比滞留旧值。
+        """
         from src.core.context_manager import (
             set_context_usage_percent, get_context_usage_percent,
         )
@@ -789,8 +793,24 @@ class TestContextUsagePercent:
             msgs = [{"role": "system", "content": "x" * 3000}]  # 900 tok → 9.0%
             cm = self._cm(msgs, ctx_tokens=10000)
             assert get_context_usage_percent() == 9.0
-            # 条数相同、内容变小（空模式切换）
             msgs[0] = {"role": "system", "content": "y" * 1000}  # 300 tok → 3.0%
+            cm.refresh_usage()              # 对象替换 → 自动 resync
+            assert get_context_usage_percent() == 3.0
+        finally:
+            set_context_usage_percent(None)
+
+    def test_refresh_usage_force_recompute(self):
+        """force=True：同一对象被**原地**改写（对象身份不变）时强制重算。"""
+        from src.core.context_manager import (
+            set_context_usage_percent, get_context_usage_percent,
+        )
+        set_context_usage_percent(None)
+        try:
+            msgs = [{"role": "system", "content": "x" * 3000}]  # 900 tok → 9.0%
+            cm = self._cm(msgs, ctx_tokens=10000)
+            assert get_context_usage_percent() == 9.0
+            # 原地改写同一 dict（对象身份不变，懒同步无法发现）
+            msgs[0]["content"] = "y" * 1000  # 300 tok → 3.0%
             cm.refresh_usage()              # 懒同步命中旧缓存（bug 场景）
             assert get_context_usage_percent() == 9.0
             cm.refresh_usage(force=True)    # 强制重算

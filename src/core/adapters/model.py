@@ -125,11 +125,16 @@ class SyncModelBridge:
         reasoning, content, usage, tool_calls = bridge.summarize(messages, model=model)
     """
 
-    def summarize(self, messages, model=None, tools=None, display=None, label=None):
+    def summarize(self, messages, model=None, tools=None, display=None,
+                  label="summarize"):
         """同步模型调用，返回 (reasoning, content, usage, tool_calls)。
 
         内部延迟导入 api.model_async.call_model_sync，避免模块加载时
         产生跨层依赖。调用方无需感知 api 层的存在。
+
+        ★ label 默认 ``"summarize"``（压缩摘要等内部工具调用）——**非主 Agent
+        对话轮次**：core 侧的真实 prompt token 基线仅接受主 Agent 轮次标签
+        （None/"assistant"），内部调用不得污染 ``main · N%`` 上下文使用率。
         """
         from ...api.model_async import call_model_sync
         return call_model_sync(messages, model, tools, display, label)

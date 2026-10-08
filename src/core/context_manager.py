@@ -52,6 +52,12 @@ from .adapters.config import DefaultConfigAdapter
 #     与是否活跃无关；仅配置禁用（model_context_tokens<=0）时写 None 不显示。
 #   - 精度（2026-08-19 用户反馈「百分比有 1 位小数」）：快照存 round 到
 #     1 位小数的 float 百分比，TUI 显示 ``main · 45.3%``。
+#   - 真实校准（2026-10 用户反馈「main 上下文百分比统计不准」）：
+#     服务端 usage.prompt_tokens（真实输入 token）经 api 管线
+#     notify_prompt_usage → update_real_prompt_usage → ContextManager.
+#     set_prompt_baseline 写入基线；refresh_usage 在基线有效时以真实值为底
+#     叠加新增消息估算（基线失效自动回退纯估算），并使用官方 token 系数
+#     （见 core.tokens）修正估算偏差。
 # ═══════════════════════════════════════════════════════════════
 _context_usage_percent: Optional[float] = None
 
@@ -149,6 +155,36 @@ def _is_subagent_stream_label(label: Optional[str]) -> bool:
         True 表示该流式属于 SubAgent（应跳过主 Agent 上下文统计）。
     """
     return bool(label and (label.startswith("agent-") or label.startswith("sa-")))
+
+
+def update_real_prompt_usage(prompt_tokens: int, label: Optional[str] = None) -> None:
+    """真实 usage 到达时以 ``prompt_tokens`` 校准上下文使用率（api 管线调用）。
+
+    ★ 2026-10（用户反馈「main 上下文百分比统计不准」）：纯启发式估算与
+    服务端真实 token 存在偏差（DeepSeek 官方中文字符 ≈ 0.6 token/字符，
+    估算系数修正后仍无法覆盖模板/工具 JSON 结构等开销）。真实
+    ``prompt_tokens`` 是权威值，作为**基线**写入活跃 ContextManager——
+    后续新增消息只叠加估算增量，百分比显著贴近真实。
+
+    ★ 仅**主 Agent 对话轮次**计入：label 必须为 ``None``（非 TUI/缺省路径）
+    或 ``"assistant"``（pipeline.py 约定）。SubAgent（"agent-N"/"sa-xxx"，
+    其输入占用独立上下文）与内部工具调用（压缩摘要 ``"summarize"`` 等，
+    其输入不是主对话）一律跳过，避免污染 ``main · N%``。
+
+    Args:
+        prompt_tokens: 服务端返回的真实输入 token（含系统提词 + 工具列表 +
+            本次请求全部消息 + 模板开销）。
+        label: 调用标签；仅 None/"assistant" 计入。
+    """
+    if label is not None and label != "assistant":
+        return
+    cm = _active_context_manager
+    if cm is None:
+        return
+    try:
+        cm.set_prompt_baseline(prompt_tokens)
+    except Exception:
+        _logger.debug("写入真实 prompt token 基线失败", exc_info=True)
 
 
 def set_active_context_manager(cm: Optional["ContextManager"]) -> None:
@@ -268,6 +304,15 @@ class ContextManager:
         self._image_tokens_cache: Optional[int] = None
         self._image_tokens_fp: tuple = ()
 
+        # 真实 prompt token 基线（2026-10「main 上下文百分比统计不准」修复）：
+        # (prompt_tokens, base_len, 前 base_len 条消息 id 元组)。由
+        # update_real_prompt_usage → set_prompt_baseline 在收到服务端真实
+        # usage 时写入：prompt_tokens 已含系统提词 + 工具列表 + 当时全部
+        # 消息，故基线生效时不再重复叠加 tools/消息估算，只叠加此后新增的
+        # 消息估算与流式增量。消息被移除/替换/工具或模型变化时自动失效，
+        # 回退纯估算口径（见 _baseline_tail_locked）。
+        self._prompt_baseline: Optional[tuple] = None
+
         # 策略链：依次尝试，第一个成功即停止
         self._strategies = strategies or [
             SummarizeStrategy(),
@@ -283,21 +328,88 @@ class ContextManager:
         self.refresh_usage()
 
     def update_model(self, model):
-        """更新模型名称。"""
+        """更新模型名称（模型变化 → 真实 prompt 基线失效，回退估算口径）。"""
         self.model = model
+        self._prompt_baseline = None
+        self.refresh_usage()
 
     def set_tools(self, tools: Optional[list]) -> None:
         """更新工具 schemas 并刷新上下文使用率（工具列表变化后调用）。"""
         self.tools = list(tools or [])
         self._tools_tokens_cache = None  # 工具列表变化 → 估算缓存失效
         self._tools_cache_fp = ()
+        # 工具列表变化 → 旧真实 prompt 基线（含旧工具 schemas）失效
+        self._prompt_baseline = None
         self.refresh_usage()
+
+    def set_prompt_baseline(self, prompt_tokens: int) -> None:
+        """写入真实 prompt token 基线（服务端 usage.prompt_tokens）。
+
+        语义：``prompt_tokens`` 对应「此刻 messages 列表的全部内容 + 系统提词
+        + 工具列表」的真实输入占用。基线生效期间百分比 = prompt_tokens +
+        此后新增消息估算 + 流式增量，显著优于纯估算。
+
+        线程安全：写入与快照（消息 id 元组）在锁内完成，避免与并发追加
+        消息竞争产生错位基线；随后触发 refresh_usage 刷新全局快照。
+
+        Args:
+            prompt_tokens: 服务端真实输入 token（<=0 / 非法值忽略，保留旧基线）。
+        """
+        try:
+            tokens = int(prompt_tokens or 0)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if tokens <= 0:
+            return
+        with self._lock:
+            msgs = self.messages
+            self._prompt_baseline = (tokens, len(msgs), tuple(id(m) for m in msgs))
+        self.refresh_usage()
+
+    def _baseline_tail_locked(self):
+        """校验并返回真实基线 (base_tokens, tail_messages)；失效返回 None。
+
+        失效条件（任一命中即清除基线并回退估算口径）：
+          - 消息数少于基线长度（删除了基线期间的消息）；
+          - 基线前缀消息对象身份变化（移除/替换/系统提词重建/压缩）。
+
+        调用方须持有 ``self._lock``。
+        """
+        base = self._prompt_baseline
+        if base is None:
+            return None
+        base_tokens, base_len, base_ids = base
+        msgs = self.messages
+        if base_len > len(msgs):
+            self._prompt_baseline = None
+            return None
+        if base_len:
+            for idx in range(base_len):
+                if id(msgs[idx]) != base_ids[idx]:
+                    self._prompt_baseline = None
+                    return None
+        return base_tokens, msgs[base_len:]
+
+    @staticmethod
+    def _estimate_messages_tokens(messages) -> int:
+        """估算一批消息的上下文 token（文本 + 图片视觉），或 0。"""
+        if not messages:
+            return 0
+        from .internal.shared._message_text import message_to_text
+        total = 0
+        for msg in messages:
+            try:
+                total += estimate_tokens(message_to_text(msg))
+            except Exception:
+                continue
+        total += estimate_messages_image_tokens(messages)
+        return total
 
     # ── 缓存管理 ──────────────────────────────────────────
 
     def _ensure_cache(self):
         """确保缓存已与 messages 列表同步（惰性初始化 + 自动同步）。"""
-        if not self._cache.is_valid or len(self._cache) != len(self.messages):
+        if not self._cache.is_synced(self.messages):
             self._cache.resync(self.messages)
 
         # 同步提示缓存
@@ -516,14 +628,14 @@ class ContextManager:
     def refresh_usage(self, force: bool = False) -> None:
         """刷新全局上下文使用率（动态刷新入口，2026-08-19 用户需求）。
 
-        统计口径：**系统提词 + 工具列表 + 全部消息**占**模型上下文窗口**
-        （model_context_tokens，默认 1M tokens）的百分比——
-          - 系统提词：messages 中 role=system 的消息全文（MessageStatsCache
-            resync 全量统计 token，含于 total_tokens）；
-          - 工具列表：self.tools schemas 序列化估算 token（_tools_tokens，
-            结果缓存，工具不变 O(1)）；
-          - 消息：MessageStatsCache.total_tokens（含 system，懒同步——长度
-            变化才全量 resync，否则复用缓存，性能好）；
+        统计口径（两级，优先真实基线）：**系统提词 + 工具列表 + 全部消息**
+        占**模型上下文窗口**（model_context_tokens，默认 1M tokens）的百分比——
+          - 真实基线（2026-10 修复「统计不准」）：若最近一次请求已回传真实
+            ``prompt_tokens``（``set_prompt_baseline``），则以该权威值为底，
+            只叠加此后**新增消息**的估算（``_baseline_tail_locked`` 校验
+            前缀消息未变）——彻底消除估算口径与服务端真实 token 的偏差；
+          - 估算回退：无基线/基线失效时按 系统提词 + 工具列表 + 全部消息
+            （MessageStatsCache，含 system）+ 图片视觉 token 估算；
           - 流式增量（2026-08-19「上下文百分比要实时刷新」）：模块级全局
             _streaming_extra_tokens——AI 流式生成期间当前已输出的估算
             tokens（content + 工具调用参数），经 update_streaming_usage
@@ -537,6 +649,8 @@ class ContextManager:
                 但消息条数不变时（如 Ctrl+B 空模式切换 rebuild_system_prompt
                 ——system 消息数相同、内容替换）懒同步会命中旧缓存 → 百分比
                 不更新；此类场景须传 force=True 强制重算（低频，O(n) 可接受）。
+                消息对象被替换（同长度内容变更）由 ``MessageStatsCache.
+                is_synced`` 的对象身份校验自动发现，无需调用方传 force。
 
         动态刷新调用点：会话启动（__init__）、消息追加（BaseAgent 消息
         方法）、系统提词重建（rebuild_system_prompt 传 force=True）、工具
@@ -560,13 +674,22 @@ class ContextManager:
                 set_context_usage_percent(None)
                 return
             with self._lock:
-                # 懒同步缓存（长度变化才全量 resync；复用避免每帧重算）；
+                # 懒同步缓存（长度 + 对象身份双重校验；复用避免每帧重算）；
                 # force=True（Ctrl+B 空模式切换等 system 内容变化场景）强制重算。
-                if force or not self._cache.is_valid or len(self._cache) != len(self.messages):
+                if force or not self._cache.is_synced(self.messages):
                     self._cache.resync(self.messages)
                 self._hint_chars = self._cache.total_chars
-                tokens = (self._cache.total_tokens + self._tools_tokens()
-                          + self._messages_image_tokens() + _streaming_extra_tokens)
+                baseline = self._baseline_tail_locked()
+                if baseline is not None:
+                    # 真实基线口径：prompt_tokens 已含系统提词 + 工具列表 +
+                    # 基线消息，只叠加新增消息估算（不重复计 tools/图片）。
+                    base_tokens, tail = baseline
+                    tokens = (base_tokens
+                              + self._estimate_messages_tokens(tail)
+                              + _streaming_extra_tokens)
+                else:
+                    tokens = (self._cache.total_tokens + self._tools_tokens()
+                              + self._messages_image_tokens() + _streaming_extra_tokens)
             if tokens <= 0:
                 set_context_usage_percent(0.0)
                 return
@@ -634,11 +757,16 @@ class ContextManager:
         global _active_context_manager
         if _active_context_manager is self:
             _active_context_manager = None
+        self._prompt_baseline = None
 
 
-# ── 流式用量刷新钩子注册（api 流式管线经钩子回调，避免 api→core 循环依赖）──
+# ── 用量刷新钩子注册（api 管线经钩子回调，避免 api→core 循环依赖）──
 try:
-    from ..api.stream._usage_hook import register_usage_hook as _register_usage_hook
+    from ..api.stream._usage_hook import (
+        register_usage_hook as _register_usage_hook,
+        register_prompt_usage_hook as _register_prompt_usage_hook,
+    )
     _register_usage_hook(update_streaming_usage)
-except Exception:  # pragma: no cover — 导入失败时静默（实时刷新降级）
+    _register_prompt_usage_hook(update_real_prompt_usage)
+except Exception:  # pragma: no cover — 导入失败时静默（实时刷新/真实校准降级）
     pass

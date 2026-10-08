@@ -323,10 +323,10 @@ def test_cmd_edit_refreshes_context_percent():
     )
     _cmd_edit(ctx)
     # system + user(a) + assistant(b) + user(新内容×100)
-    # = 900*3 + 750（300 个中文字符 × 2.5）= 3450 tok → 34.5%
+    # = 900*3 + 180（300 个中文字符 × 0.6，DeepSeek 官方比例）= 2880 tok → 28.8%
     assert len(messages) == 4
     assert messages[-1]["content"] == "新内容" * 100
-    assert _pct() == 34.5
+    assert _pct() == 28.8
 
 
 def test_cmd_clear_refreshes_context_percent():

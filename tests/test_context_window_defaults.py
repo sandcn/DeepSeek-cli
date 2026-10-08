@@ -5,7 +5,8 @@
   - CONFIG_KEYS 的 default 引用 DEFAULTS（单一事实源，无 60000 双源漂移）；
   - MockConfigAdapter 缺省回退与 DEFAULTS 一致、DefaultConfigAdapter 与配置同源；
   - 阈值口径：字符阈值覆盖纯 ASCII 会话 ≥80% 的 1M 窗口（不被提前截断），
-    且对中文（≈2.5 token/字符）远大于窗口、不会先于 token 阈值触发；
+    且对中文（≈0.6 token/字符，DeepSeek 官方比例）字符阈值对应 token 数
+    仍超过窗口、不会先于 token 阈值触发；
   - schema 校验：负数字符阈值回退到新默认值；
   - 欢迎页上下文容量显示（1M / 1.5M / 60k / 500 / 0）。
 """
@@ -45,10 +46,24 @@ class TestContextWindowDefaults:
         assert tokens_at_char_limit >= DEFAULTS["max_context_tokens"] * 0.8
 
     def test_char_threshold_never_limits_cjk(self):
-        """中文（≈2.5 token/字符）下字符阈值对应 token 数远超窗口，不会提前触发。"""
+        """中文（≈0.6 token/字符）下字符阈值对应 token 数仍超窗口、不会提前触发。
+
+        token 阈值（1M）在约 1.67M 中文字符处先命中，字符阈值（3M）对应
+        1.8M token > 1M，故压缩点由 token 阈值决定、不被字符阈值提前截断。
+        """
         cjk_ratio = estimate_tokens("中" * 1000) / 1000
-        assert cjk_ratio > 2.0
-        assert cjk_ratio * DEFAULTS["max_context_chars"] > DEFAULTS["max_context_tokens"] * 5
+        assert 0.5 <= cjk_ratio <= 0.7
+        assert cjk_ratio * DEFAULTS["max_context_chars"] > DEFAULTS["max_context_tokens"]
+
+    def test_cjk_ratio_matches_deepseek_official(self):
+        """中文系数对齐 DeepSeek 官方（≈0.6 token/字符）——修复虚高。"""
+        from src.core.tokens import CJK_TOKENS_PER_CHAR, OTHER_TOKENS_PER_CHAR
+        assert CJK_TOKENS_PER_CHAR == 0.6
+        assert OTHER_TOKENS_PER_CHAR == 0.3
+        # 纯中文：1000 字 → 600 token
+        assert estimate_tokens("中" * 1000) == 600
+        # 纯英文：1000 字符 → 300 token
+        assert estimate_tokens("a" * 1000) == 300
 
 
 class TestAdapterFallbacks:
