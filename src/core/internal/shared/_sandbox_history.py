@@ -18,13 +18,54 @@ import os
 import re
 import shutil
 import threading
+from bisect import bisect_left
 from src._compat import dataclass
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 
 from ...file_change_record import FileChangeRecord
 from ..._atomic_io import atomic_write_text
 
 _logger = logging.getLogger(__name__)
+
+
+def normalize_removed_indices(removed_indices: Iterable[int]) -> List[int]:
+    """规范化被移除的消息索引：去重 + 升序（供折叠重映射使用）。"""
+    cleaned = {int(i) for i in removed_indices if int(i) >= 0}
+    return sorted(cleaned)
+
+
+def fold_index(
+    old_index: int,
+    removed_sorted: List[int],
+    removed_set: Set[int],
+    anchor: int,
+    inserted: int,
+) -> int:
+    """上下文折叠 / 隐藏后，单个消息索引的新位置（保留记录，不丢弃）。
+
+    语义：``removed_sorted`` 中的消息被折叠进 ``anchor`` 位置的一条新消息
+    （``inserted`` = 1，摘要压缩）或直接消失（``inserted`` = 0，降级删除）。
+    与「删除即失效」（``remap_indices``）不同，本映射把被移除区间内的记录
+    重挂到折叠锚点——文件变更已在磁盘生效，压缩只折叠上下文，记录必须保留
+    （否则 ``/changes`` 与回滚丢失历史，无法正常还原）。
+
+    Args:
+        old_index: 记录的原消息索引。
+        removed_sorted: 被移除消息索引的升序列表。
+        removed_set: 同上，集合形式（O(1) 归属判定）。
+        anchor: 折叠锚点（删除前坐标）——被移除区间的记录重挂于此。
+        inserted: 锚点处新增消息条数（摘要折叠 1，纯删除 0）。
+
+    Returns:
+        新消息索引（>= 0）。
+    """
+    removed_before_anchor = bisect_left(removed_sorted, anchor)
+    if old_index in removed_set:
+        return anchor - removed_before_anchor
+    removed_before = bisect_left(removed_sorted, old_index)
+    if old_index < anchor:
+        return old_index - removed_before
+    return old_index - removed_before + inserted
 
 
 def _path_depth(path: str) -> int:
@@ -248,6 +289,39 @@ class _FileHistory:
                 else:
                     del self.file_history[path]
         return kept_ids
+
+    def fold_indices(
+        self,
+        removed_indices: Iterable[int],
+        insert_index: Optional[int] = None,
+    ) -> None:
+        """上下文折叠后的索引重映射（保留全部记录，不丢弃）。
+
+        用于上下文压缩：``removed_indices`` 对应的消息被折叠为一条位于
+        ``insert_index`` 的摘要（``insert_index`` 为 None 表示纯删除、无新增
+        消息）。与 ``remap_indices``（删除即失效）不同，本方法把被移除区间内
+        的记录重挂到折叠锚点（``insert_index`` 或最小被移除索引），其余记录
+        按「删除 N 条 + 新增 M 条」平移——文件变更已在磁盘生效，不能因压缩
+        丢失沙盒历史。
+
+        持内部锁执行（与并发 record 的结构变更串行）。
+        """
+        removed_sorted = normalize_removed_indices(removed_indices)
+        if not removed_sorted:
+            return
+        removed_set = set(removed_sorted)
+        if insert_index is None:
+            anchor = removed_sorted[0]
+            inserted = 0
+        else:
+            anchor = max(0, int(insert_index))
+            inserted = 1
+        with self._lock:
+            for records in self.file_history.values():
+                for r in records:
+                    r.message_index = fold_index(
+                        r.message_index, removed_sorted, removed_set, anchor, inserted,
+                    )
 
     # ── 恢复 ────────────────────────────────────────────
 

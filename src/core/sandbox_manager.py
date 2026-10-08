@@ -11,7 +11,11 @@ import os
 import threading
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from .internal.shared._sandbox_history import _FileHistory
+from .internal.shared._sandbox_history import (
+    _FileHistory,
+    fold_index,
+    normalize_removed_indices,
+)
 from .file_change_record import FileChangeRecord  # noqa: F401 — re-exported for backward compat
 
 
@@ -416,6 +420,45 @@ class SandboxManager:
             # 更新 current_message_index
             new_val = new_idx(self.current_message_index)
             self._update_current_index(new_val if new_val >= 0 else 0)
+
+    def fold_indices(self, removed_indices: List[int], insert_index: Optional[int] = None):
+        """上下文压缩后的索引折叠重映射（保留记录，不丢弃）。
+
+        与 ``remap_indices``（消息删除即失效，用于 /undo、/editmsg 等会回滚
+        文件的路径）不同：上下文压缩只把历史消息折叠为一条摘要，磁盘上的
+        文件变更仍然有效，因此**不得丢弃**被折叠区间内的沙盒记录，否则
+        ``/changes`` 与后续回滚都丢失这些文件的历史。
+
+        映射规则（``removed_indices`` 为删除前的原始索引）：
+          - 被折叠区间内的记录 → 重挂到折叠锚点（``insert_index``，为 None 时
+            取最小被移除索引）；
+          - 锚点之前的记录 → 索引不变；
+          - 其余记录 → 按「删除 N 条 + 新增 M 条」平移。
+
+        Args:
+            removed_indices: 被折叠（移除）的消息索引列表（删除前原始索引）。
+            insert_index: 折叠后新增摘要消息的插入位置（删除前坐标）；
+                None 表示纯删除、无新增消息（降级删除策略）。
+        """
+        removed_sorted = normalize_removed_indices(removed_indices)
+        if not removed_sorted:
+            return
+        removed_set = set(removed_sorted)
+        if insert_index is None:
+            anchor = removed_sorted[0]
+            inserted = 0
+        else:
+            anchor = max(0, int(insert_index))
+            inserted = 1
+        with self.lock:
+            self._fh.fold_indices(removed_sorted, insert_index)
+            self._rebuild_message_history()
+            self._update_current_index(
+                fold_index(
+                    self.current_message_index,
+                    removed_sorted, removed_set, anchor, inserted,
+                ),
+            )
 
     def clear(self):
         """清空所有沙盒记录"""

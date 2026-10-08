@@ -246,7 +246,8 @@ class ContextManager:
     ⚠️ 锁层次（必须遵守，防止死锁）:
         ContextManager._lock → SandboxManager.lock
     解释：ContextManager 持有 _lock 期间可能通过 on_messages_changed 回调
-    调用 SandboxManager.shift_indices()/remap_indices()（获取 SandboxManager.lock）。
+    调用 SandboxManager.shift_indices()/remap_indices()/fold_indices()
+    （获取 SandboxManager.lock）。
     任何新的代码路径不得以相反顺序获取这两个锁。
 
     Args:
@@ -256,6 +257,11 @@ class ContextManager:
         on_messages_changed: 消息变更回调，接收事件字典：
             {"type": "insert", "index": int}
             {"type": "remove", "indices": list[int]}
+            {"type": "fold", "indices": list[int], "insert_index": int | None}
+            —— 消息被「折叠」（上下文压缩：折叠为一条摘要，``insert_index``
+            为摘要位置；降级删除时为 None）而非删除失效：文件变更仍有效，
+            沙盒须保留记录并把被折叠区间重挂到锚点（见 SandboxManager.
+            fold_indices），不得按 remove 丢弃。
         strategies: 压缩策略列表（按优先级排序），
                     默认 [SummarizeStrategy, DropStrategy]
         config_port: 配置端口（max_context_chars 等读取）
@@ -544,7 +550,12 @@ class ContextManager:
     def apply_replacement(self, start: int, end: int, message: dict) -> None:
         """把 ``[start, end]`` 的连续消息替换为单条消息（压缩落地）。
 
-        同步更新增量缓存、通知沙盒索引平移并刷新上下文使用率快照。
+        同步更新增量缓存、通知沙盒索引折叠并刷新上下文使用率快照。
+
+        ★ 沙盒一致性：压缩只折叠上下文（文件变更仍在磁盘生效），因此通知
+        沙盒用 ``fold``（保留记录、被折叠区间重挂到摘要位置）而非
+        ``remove``（删除即失效）——否则 ``/changes`` 与回滚丢失被压缩期间的
+        文件历史，压缩后无法正常还原。
         """
         with self._lock:
             messages = self.messages
@@ -560,8 +571,9 @@ class ContextManager:
                 self._hint_chars = self._cache.total_chars
             else:
                 self._hint_chars = 0
-            self._notify_changed({"type": "remove", "indices": removed})
-            self._notify_changed({"type": "insert", "index": insert_at})
+            self._notify_changed({
+                "type": "fold", "indices": removed, "insert_index": insert_at,
+            })
             self.refresh_usage()
 
     def compact_now(self):
@@ -721,7 +733,12 @@ class ContextManager:
                 # 同步全局上下文使用率快照（TUI 模式行行首显示）
                 self.refresh_usage()
 
-            self._notify_changed({"type": "remove", "indices": unpinned_indices})
+            # ★ 沙盒一致性：会话消息数上限只丢上下文，磁盘文件变更仍有效——
+            #   用 ``fold``（保留被删区间的记录并重挂到删除锚点）而非
+            #   ``remove``（删除即失效），避免 /changes 与回滚丢失历史。
+            self._notify_changed({
+                "type": "fold", "indices": to_delete, "insert_index": None,
+            })
 
             _log("SESSION_LIMIT", f"删除 {removed} 条消息以保持限制 ({max_session_messages})")
             if self._output_port:

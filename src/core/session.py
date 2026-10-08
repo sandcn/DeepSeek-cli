@@ -409,10 +409,16 @@ class ChatSession:
             sm = get_sandbox_manager()
             if not sm:
                 return
-            if event["type"] == "insert":
+            event_type = event.get("type")
+            if event_type == "insert":
                 sm.shift_indices(event["index"])
-            elif event["type"] == "remove":
+            elif event_type == "remove":
                 sm.remap_indices(event["indices"])
+            elif event_type == "fold":
+                # ★ 上下文压缩：消息被折叠为摘要（文件变更仍有效）——必须
+                #   保留沙盒记录并重映射（被折叠区间重挂到摘要位置），不能
+                #   走 remove 丢弃，否则压缩后 /changes 与回滚丢失文件历史。
+                sm.fold_indices(event["indices"], event.get("insert_index"))
 
         # 创建 ContextManager（内核 ctx.context 服务优先，回退直接构造）
         _cm_factory = None

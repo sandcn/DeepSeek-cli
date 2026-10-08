@@ -110,9 +110,11 @@ def test_summarize_success_path(monkeypatch):
     # 消息被替换为摘要（2 条删除 + 1 条插入 → 原 6 条变 5 条）
     assert len(messages) == 5
     assert any("[对话摘要]" in m.get("content", "") for m in messages)
-    # 回调顺序：remove → insert
-    assert events[0]["type"] == "remove"
-    assert events[1]["type"] == "insert"
+    # 回调：单条 fold 事件（被压缩区间折叠为摘要，保留沙盒记录不丢弃）
+    assert len(events) == 1
+    assert events[0]["type"] == "fold"
+    assert events[0]["indices"] == [3, 4]
+    assert events[0]["insert_index"] == 1
     # 缓存更新
     assert sorted(cache.removed) == [3, 4]
     assert cache.inserted[0][1]["content"].startswith("[对话摘要]")
@@ -247,7 +249,10 @@ def test_drop_all_force(monkeypatch):
     # 剩余：系统提示词 + pinned 消息 + 摘要消息被删
     remaining_roles = [m["role"] for m in msgs]
     assert remaining_roles == ["system", "user"]
-    assert events and events[0]["type"] == "remove"
+    # 回调：fold（insert_index=None —— 纯删除但保留沙盒记录，压缩后可还原）
+    assert events and events[0]["type"] == "fold"
+    assert events[0]["indices"] == [1, 2, 4]
+    assert events[0]["insert_index"] is None
 
 
 def test_drop_no_unpinned():

@@ -190,6 +190,10 @@ class SummarizeStrategy(CompressionStrategy):
 
         摘要插入在所有非摘要 system 消息之后（而非硬编码 index=1），
         以兼容多 parts 系统提示词结构。
+
+        ★ 沙盒一致性：通知事件用 ``fold``（折叠：保留被压缩区间的文件变更
+        记录并重挂到摘要位置）而非 ``remove``（删除即失效）——上下文压缩
+        只折叠消息，磁盘文件变更仍有效，否则压缩后沙盒历史丢失、无法还原。
         """
         # 删除前计算摘要插入位置：跳过所有非摘要 system 消息
         system_end = 0
@@ -214,9 +218,12 @@ class SummarizeStrategy(CompressionStrategy):
         if cache is not None and cache.is_valid:
             cache.on_insert(system_end, summary_msg)
 
-        # 通知回调（先 remove 后 insert）
-        SummarizeStrategy._safe_notify(on_changed, {"type": "remove", "indices": to_compress})
-        SummarizeStrategy._safe_notify(on_changed, {"type": "insert", "index": system_end})
+        # 通知回调（折叠：被压缩区间重挂到摘要位置，记录不丢弃）
+        SummarizeStrategy._safe_notify(on_changed, {
+            "type": "fold",
+            "indices": sorted(to_compress),
+            "insert_index": system_end,
+        })
 
     @staticmethod
     def _report_success(to_compress, chars_before, cache, usage, elapsed, messages, on_info=None):
@@ -293,7 +300,12 @@ class DropStrategy(CompressionStrategy):
         if cache is not None and cache.is_valid:
             cache.on_remove(indices)
 
-        DropStrategy._safe_notify(on_changed, {"type": "remove", "indices": sorted(indices)})
+        # ★ 沙盒一致性：降级删除只丢上下文，磁盘文件变更仍有效——用
+        #   ``fold``（insert_index=None：保留被删区间的记录并重挂到删除锚点）
+        #   而非 ``remove``（删除即失效），避免 /changes 与回滚丢失历史。
+        DropStrategy._safe_notify(on_changed, {
+            "type": "fold", "indices": sorted(indices), "insert_index": None,
+        })
 
         saved = chars_before - (cache.total_chars if (cache is not None and cache.is_valid)
                                 else selector.total_chars(messages))
@@ -337,7 +349,11 @@ class DropStrategy(CompressionStrategy):
             cache.on_remove(to_remove)
 
         if to_remove:
-            DropStrategy._safe_notify(on_changed, {"type": "remove", "indices": sorted(to_remove)})
+            # ★ 沙盒一致性：降级删除保留文件变更记录（重挂到删除锚点），
+            #   压缩后沙盒仍可正常还原（见 _drop_all 说明）。
+            DropStrategy._safe_notify(on_changed, {
+                "type": "fold", "indices": sorted(to_remove), "insert_index": None,
+            })
             _log("CONTEXT_TRIM", f"降级删除 {len(to_remove)} 条旧消息，释放 {freed} 字符")
 
         return CompressionResult(
