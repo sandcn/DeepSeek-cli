@@ -424,6 +424,10 @@ def _apply_control(run, window_id: str, action: str,
                        str(request.x), str(request.y)], "移动窗口")
         _require(run, ["xdotool", "windowsize", window_id,
                        str(request.width), str(request.height)], "缩放窗口")
+    elif action == "always_on_top":
+        _require(run, ["wmctrl", "-i", "-r", hex_id, "-b", "add,above"], "窗口置顶")
+    elif action == "not_on_top":
+        _require(run, ["wmctrl", "-i", "-r", hex_id, "-b", "remove,above"], "取消置顶")
 
 
 def _try(run, command: list[str]) -> bool:

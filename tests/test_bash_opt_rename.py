@@ -36,6 +36,8 @@ def test_tool_name_is_bash_opt():
         "click", "move", "drag", "scroll", "key", "type",
         # 2026-10-07 新增：窗口枚举与窗口控制（多窗口 GUI 操作）
         "windows", "window",
+        # 2026-10-08 新增：控件清单 / 等待窗口 / 剪贴板 / 动作序列
+        "elements", "wait_window", "clipboard", "sequence",
     }
 
 

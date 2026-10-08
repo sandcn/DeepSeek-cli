@@ -87,6 +87,8 @@ def test_schema_exposes_window_ops_and_parameters():
     assert params["properties"]["window_action"]["enum"] == [
         "activate", "maximize", "minimize", "restore", "close",
         "move", "resize", "fit",
+        "always_on_top", "not_on_top",
+        "get_geometry", "save_geometry", "restore_geometry",
     ]
     assert params["required"] == ["task_id", "op"]
 

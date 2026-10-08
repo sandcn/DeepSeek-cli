@@ -583,6 +583,7 @@ def describe_windows(windows: Sequence[WindowInfo],
 #: 窗口控制动作：改变窗口状态或几何，便于把坐标与布局固定下来后再操作
 WINDOW_CONTROL_ACTIONS: tuple[str, ...] = (
     "activate", "maximize", "minimize", "restore", "close", "move", "resize", "fit",
+    "always_on_top", "not_on_top",
 )
 
 #: 控制动作别名 → 规范动作
@@ -599,12 +600,45 @@ _CONTROL_ALIASES: dict[str, str] = {
     "resize": "resize", "size": "resize",
     "fit": "fit", "move_resize": "fit", "moveresize": "fit", "geometry": "fit",
     "set_bounds": "fit", "bounds": "fit",
+    # 置顶 / 取消置顶：让被操作窗口保持在其他窗口之上（不被遮挡）
+    "always_on_top": "always_on_top", "ontop": "always_on_top",
+    "on_top": "always_on_top", "topmost": "always_on_top",
+    "pin": "always_on_top", "keep_on_top": "always_on_top",
+    "not_on_top": "not_on_top", "no_topmost": "not_on_top",
+    "untop": "not_on_top", "unpin": "not_on_top",
+    "normal_level": "not_on_top", "remove_topmost": "not_on_top",
+    # 工具层扩展动作（几何记忆；见 WINDOW_MEMORY_ACTIONS）
+    "get_geometry": "get_geometry", "geometry_info": "get_geometry",
+    "current_geometry": "get_geometry",
+    "save_geometry": "save_geometry", "remember_geometry": "save_geometry",
+    "store_geometry": "save_geometry", "save_bounds": "save_geometry",
+    "restore_geometry": "restore_geometry", "reset_geometry": "restore_geometry",
+    "restore_bounds": "restore_geometry",
 }
 
 #: 需要 ``x`` / ``y`` 的动作
 _NEED_POSITION: frozenset[str] = frozenset({"move", "fit"})
 #: 需要 ``width`` / ``height`` 的动作
 _NEED_SIZE: frozenset[str] = frozenset({"resize", "fit"})
+
+#: 工具层扩展的窗口动作（不属平台后端契约，由 ``bash_opt`` 工具层用
+#: 「读取几何 + fit」组合实现）：读取当前几何 / 记住几何 / 恢复几何。
+#: 抽成独立常量便于工具层与测试共用，新增同类动作只需在此登记。
+WINDOW_MEMORY_ACTIONS: tuple[str, ...] = (
+    "get_geometry", "save_geometry", "restore_geometry",
+)
+
+
+def normalize_control_action(action: Any) -> str | None:
+    """把窗口动作文本规范化为标准动作名（未知返回 ``None``）。
+
+    大小写不敏感，接受别名（``topmost`` → ``always_on_top``、``pin`` →
+    ``always_on_top``、``remember_geometry`` → ``save_geometry`` 等）。
+    """
+    text = str(action or "").strip().lower().replace("-", "_")
+    if not text:
+        return None
+    return _CONTROL_ALIASES.get(text)
 
 
 @dataclass(frozen=True)
@@ -699,6 +733,7 @@ __all__ = [
     "NO_SELECTABLE_INDEX",
     "SELECTOR_KINDS",
     "WINDOW_CONTROL_ACTIONS",
+    "WINDOW_MEMORY_ACTIONS",
     "SelectorError",
     "WindowControlRequest",
     "WindowInfo",
@@ -710,6 +745,7 @@ __all__ = [
     "main_rank",
     "main_window",
     "mark_main",
+    "normalize_control_action",
     "parse_control_request",
     "parse_selector",
     "pick_window",

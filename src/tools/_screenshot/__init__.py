@@ -30,6 +30,23 @@ import threading
 from typing import Callable
 
 from .grid import draw_grid_bgra, paint_grid_on_png_file, resolve_step
+from .diff import (
+    DEFAULT_TOLERANCE,
+    DiffResult,
+    compare_images,
+    compare_png_files,
+    images_equal,
+)
+from .elements import (
+    DEFAULT_ELEMENT_LIMIT,
+    ElementError,
+    ElementInfo,
+    classify_control,
+    describe_elements,
+    filter_elements,
+    list_process_elements,
+    match_element,
+)
 from .result import CaptureResult, NoWindowError, ScreenshotError
 from .transform import CropError, CropRegion, apply_crop_to_png_file
 from .windows import (
@@ -205,6 +222,11 @@ __all__ = [
     "CaptureResult",
     "CropError",
     "CropRegion",
+    "DEFAULT_ELEMENT_LIMIT",
+    "DEFAULT_TOLERANCE",
+    "DiffResult",
+    "ElementError",
+    "ElementInfo",
     "NoWindowError",
     "ScreenshotError",
     "SelectorError",
@@ -214,11 +236,19 @@ __all__ = [
     "apply_crop_to_png_file",
     "available_backends",
     "capture_process_window",
+    "classify_control",
+    "compare_images",
+    "compare_png_files",
     "control_process_window",
+    "describe_elements",
     "describe_windows",
     "draw_grid_bgra",
+    "filter_elements",
+    "images_equal",
     "indexed_summary",
+    "list_process_elements",
     "list_process_windows",
+    "match_element",
     "paint_grid_on_png_file",
     "parse_control_request",
     "parse_selector",

@@ -80,6 +80,13 @@ SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 SWP_SHOWWINDOW = 0x0040
 
+# SetWindowPos 的 hWndInsertAfter 特殊值（置顶 / 取消置顶）
+HWND_TOPMOST = -1
+HWND_NOTOPMOST = -2
+
+# 扩展样式：窗口置顶（WS_EX_TOPMOST）
+WS_EX_TOPMOST = 0x00000008
+
 # 窗口消息（窗口控制路径）
 WM_CLOSE = 0x0010
 
@@ -446,6 +453,12 @@ def user32():
     lib.GetWindowThreadProcessId.restype = DWORD
     lib.EnumWindows.argtypes = [CALLBACK(BOOL, HWND, c_void_p), c_void_p]
     lib.EnumWindows.restype = BOOL
+    lib.EnumChildWindows.argtypes = [HWND, CALLBACK(BOOL, HWND, c_void_p), c_void_p]
+    lib.EnumChildWindows.restype = BOOL
+    lib.IsWindowEnabled.argtypes = [HWND]
+    lib.IsWindowEnabled.restype = BOOL
+    lib.GetParent.argtypes = [HWND]
+    lib.GetParent.restype = HWND
     lib.IsWindowVisible.argtypes = [HWND]
     lib.IsWindowVisible.restype = BOOL
     lib.IsIconic.argtypes = [HWND]
@@ -818,6 +831,85 @@ def enum_children_windows() -> list:
     ref = callback_type(_cb)  # 保持引用，防止回调被 GC
     user32().EnumWindows(ref, None)
     return handles
+
+
+def enum_child_windows(parent) -> list:
+    """枚举 ``parent`` 窗口的全部后代窗口句柄（深度优先，含各级子控件）。
+
+    ``EnumChildWindows`` 会递归枚举整棵控件树，因此一次调用即可拿到按钮、
+    编辑框、列表项等全部子控件——``op=elements`` 据此把界面元素列出来，
+    让模型按控件名而不是盲点像素去操作。
+    """
+    handles: list = []
+    callback_type = CALLBACK(BOOL, HWND, c_void_p)
+
+    def _cb(hwnd, _lparam):
+        handles.append(hwnd)
+        return 1
+
+    ref = callback_type(_cb)  # 保持引用，防止回调被 GC
+    user32().EnumChildWindows(parent, ref, None)
+    return handles
+
+
+def is_window_enabled(hwnd) -> bool:
+    """窗口 / 控件是否可用（``IsWindowEnabled``，灰置控件不可点击）。"""
+    try:
+        return bool(user32().IsWindowEnabled(hwnd))
+    except OSError:  # pragma: no cover - 依赖系统调用
+        return False
+
+
+def window_parent(hwnd) -> int:
+    """返回窗口的父窗口句柄（无父窗口 / 失败返回 0）。"""
+    try:
+        return hwnd_value(user32().GetParent(hwnd))
+    except (OSError, TypeError):  # pragma: no cover - 依赖系统调用
+        return 0
+
+
+def window_depth(hwnd, root, *, limit: int = 16) -> int:
+    """计算 ``hwnd`` 相对 ``root`` 的层级（``root`` 自身为 0，取不到时返回 0）。"""
+    root_value = hwnd_value(root)
+    current = hwnd_value(hwnd)
+    if not current or current == root_value:
+        return 0
+    for depth in range(1, max(int(limit), 1) + 1):
+        parent = window_parent(current)
+        if not parent:
+            return 0
+        if parent == root_value:
+            return depth
+        current = parent
+    return 0
+
+
+def set_window_topmost(hwnd, *, topmost: bool = True) -> bool:
+    """把窗口设为置顶 / 取消置顶（``SetWindowPos`` + ``HWND_TOPMOST``）。
+
+    置顶窗口会始终浮在其他窗口之上，操作 GUI 应用时可避免被别的程序遮挡
+    （尤其是「截图 → 定位 → 点击」之间被抢到前台的情况）。
+    """
+    try:
+        return bool(user32().SetWindowPos(
+            hwnd,
+            c_void_p(HWND_TOPMOST if topmost else HWND_NOTOPMOST),
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        ))
+    except OSError:  # pragma: no cover - 依赖系统调用
+        return False
+
+
+def window_is_topmost(hwnd) -> bool:
+    """窗口是否处于置顶状态（读取 ``WS_EX_TOPMOST`` 扩展样式）。"""
+    if _GET_WINDOW_LONG is None:
+        user32()
+    try:
+        style = int(_GET_WINDOW_LONG(hwnd, GWL_EXSTYLE))
+    except (OSError, TypeError):
+        return False
+    return bool(style & WS_EX_TOPMOST)
 
 
 def list_processes() -> list[tuple[int, int, str]]:

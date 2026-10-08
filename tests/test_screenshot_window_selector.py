@@ -277,6 +277,8 @@ def test_control_actions_cover_documented_set():
     assert set(WINDOW_CONTROL_ACTIONS) == {
         "activate", "maximize", "minimize", "restore", "close",
         "move", "resize", "fit",
+        # 2026-10-08 新增：置顶 / 取消置顶（操作期间防遮挡）
+        "always_on_top", "not_on_top",
     }
     with pytest.raises(SelectorError):
         parse_control_request("maximize", window="#0")

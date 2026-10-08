@@ -15,11 +15,23 @@
 坐标语义：以**窗口截图左上角**为原点（与 ``op=screenshot`` 产物一致），
 单位像素；``click`` / ``scroll`` 省略坐标时默认窗口中心；越界坐标报错。
 
+坐标取值除像素整数外，还支持**语义值**（无需读图算像素）：
+
+  - 关键字 ``center`` / ``middle`` / ``center``：该轴中点；``left`` / ``top``：0；
+    ``right`` / ``bottom``：该轴最大像素（尺寸 - 1）；
+  - 百分比 ``50%`` / ``25%``：按该轴尺寸比例取值（自动夹到有效范围）；
+  - 相对中心的偏移 ``+20`` / ``-20``：中心 ± 偏移量。
+
+语义值在**注入时**按目标窗口实际尺寸解析（``resolve_point`` /
+``validate_point``），因此同一个动作既可以用于不同尺寸的窗口，也不受
+``op=windows`` 与输入之间窗口缩放的影响；像素整数保持原语义不变。
+
 动作是冻结（frozen）数据类，可安全共享与单测。
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Mapping, Union
 
@@ -68,13 +80,86 @@ KEY_PHASE_ALIASES: dict[str, str] = {
     "up": "up", "release": "up", "keyup": "up", "key_up": "up",
 }
 
+# ── 坐标语义值（免读图算像素） ───────────────────────────
+
+#: 语义坐标关键字 → 轴比例：0.0 = 轴起点，1.0 = 轴终点（尺寸 - 1）
+COORD_KEYWORDS: dict[str, float] = {
+    "left": 0.0, "top": 0.0,
+    "center": 0.5, "middle": 0.5, "centre": 0.5,
+    "right": 1.0, "bottom": 1.0,
+}
+
+#: 百分比坐标（``50%`` / ``12.5 %``）
+_PERCENT_RE = re.compile(r"^\s*([+-]?\d+(?:\.\d+)?)\s*%\s*$")
+
+#: 相对中心偏移（``center+20`` / ``center-12.5`` / ``middle+3``）
+_OFFSET_RE = re.compile(r"^(?:center|middle|centre)\s*([+-]\s*\d+(?:\.\d+)?)$")
+
+#: 坐标语义值的说明文本（错误提示与 schema 共用）
+COORD_HELP = (
+    "像素整数（>= 0）、'center'、'left'/'right'/'top'/'bottom'、百分比 '50%'，"
+    "或相对中心的偏移 'center+20'/'center-20'"
+)
+
+
+def parse_coordinate(value: Any, size: int, *, label: str = "坐标") -> int:
+    """把坐标值解析为该轴上的像素位置。
+
+    支持像素整数（或数字字符串）、语义关键字 / 百分比 / 相对中心偏移
+    （见 :data:`COORD_KEYWORDS`）。关键字与百分比按 ``size`` 换算并夹到
+    ``[0, size - 1]``；像素整数原样返回（是否越界由调用方校验）。
+
+    Args:
+        value: 坐标值（int / 数字字符串 / 语义关键字）。
+        size: 该轴尺寸（像素，需 > 0）。
+        label: 错误提示用的名称。
+
+    Raises:
+        ActionError: 取值无法识别，或轴尺寸非法。
+    """
+    if size <= 0:
+        raise ActionError(f"窗口尺寸非法，无法解析{label}: {size}")
+    if isinstance(value, bool):
+        raise ActionError(f"{label} 取值非法: {value!r}。支持 {COORD_HELP}")
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if not text:
+        raise ActionError(f"{label} 不能为空（支持 {COORD_HELP}）")
+    try:
+        return int(text, 10)
+    except ValueError:
+        pass
+    lowered = text.lower()
+    ratio = COORD_KEYWORDS.get(lowered)
+    if ratio is not None:
+        return _axis_pixels(size * ratio, size)
+    percent = _PERCENT_RE.match(text)
+    if percent is not None:
+        return _axis_pixels(size * float(percent.group(1)) / 100.0, size)
+    offset = _OFFSET_RE.match(lowered)
+    if offset is not None:
+        return _axis_pixels(size // 2 + float(offset.group(1)), size)
+    raise ActionError(
+        f"{label} 取值无法识别: {value!r}。支持 {COORD_HELP}"
+    )
+
+
+def _axis_pixels(position: float, size: int) -> int:
+    """把浮点位置夹到该轴的有效像素范围（``0..size-1``）。"""
+    return max(0, min(int(round(position)), size - 1))
+
 
 @dataclass(frozen=True)
 class Point:
-    """窗口内像素坐标（原点为窗口截图左上角）。"""
+    """窗口内像素坐标（原点为窗口截图左上角）。
 
-    x: int
-    y: int
+    ``x`` / ``y`` 也接受语义坐标值（``'center'`` / ``'50%'`` / ``'center+20'``）：
+    构建动作时原样保留，注入时由 :func:`resolve_point` 按窗口实际尺寸解析。
+    """
+
+    x: int | str
+    y: int | str
 
     def to_dict(self) -> dict:
         return {"x": self.x, "y": self.y}
@@ -85,8 +170,8 @@ class MoveAction:
     """鼠标移动到窗口内某点。"""
 
     name: ClassVar[str] = "move"
-    x: int
-    y: int
+    x: int | str
+    y: int | str
     modifiers: tuple[str, ...] = ()
     method: str = DEFAULT_METHOD
     #: 目标窗口选择器（空串 = 主窗口；见 ``windows`` 模块）
@@ -100,8 +185,8 @@ class ClickAction:
     name: ClassVar[str] = "click"
     button: str = DEFAULT_BUTTON
     count: int = DEFAULT_CLICK_COUNT
-    x: int | None = None
-    y: int | None = None
+    x: int | str | None = None
+    y: int | str | None = None
     modifiers: tuple[str, ...] = ()
     method: str = DEFAULT_METHOD
     window: str = ""
@@ -112,10 +197,10 @@ class DragAction:
     """按住鼠标从起点拖到终点（``steps`` 控制轨迹插值粒度）。"""
 
     name: ClassVar[str] = "drag"
-    to_x: int = 0
-    to_y: int = 0
-    from_x: int | None = None
-    from_y: int | None = None
+    to_x: int | str = 0
+    to_y: int | str = 0
+    from_x: int | str | None = None
+    from_y: int | str | None = None
     button: str = DEFAULT_BUTTON
     duration: float = DEFAULT_DRAG_DURATION
     steps: int = DEFAULT_DRAG_STEPS
@@ -131,8 +216,8 @@ class ScrollAction:
     name: ClassVar[str] = "scroll"
     direction: str = DEFAULT_SCROLL_DIRECTION
     amount: int = DEFAULT_SCROLL_AMOUNT
-    x: int | None = None
-    y: int | None = None
+    x: int | str | None = None
+    y: int | str | None = None
     modifiers: tuple[str, ...] = ()
     method: str = DEFAULT_METHOD
     window: str = ""
@@ -311,18 +396,56 @@ def _window_arg(params: Mapping[str, Any]) -> str:
 
 
 def _point_args(params: Mapping[str, Any], *, label: str = "坐标") -> Point | None:
-    """取可选的 (x, y) 点：都缺省返回 None，只给一个报错。"""
+    """取可选的 (x, y) 点：都缺省返回 None，只给一个报错。
+
+    坐标接受像素整数与语义值（``'center'`` / ``'50%'`` / ``'center+20'``，见
+    :func:`parse_coordinate`）：构建阶段只做格式校验，实际解析在注入时按
+    窗口尺寸完成（窗口可能被缩放，提前算好的像素会失准）。
+    """
     x = _raw(params, "x")
     y = _raw(params, "y")
     if x is None and y is None:
         return None
     if x is None or y is None:
         raise ActionError(f"{label}必须同时提供 x 与 y（当前 x={x!r}, y={y!r}）")
-    x_value = _int_arg(params, "x", minimum=0, label="x")
-    y_value = _int_arg(params, "y", minimum=0, label="y")
-    if x_value is None or y_value is None:  # pragma: no cover - 上面的 None 检查已保证
-        raise ActionError(f"{label}必须同时提供 x 与 y")
-    return Point(x=x_value, y=y_value)
+    return Point(x=_coord_arg(params, "x", label="x"),
+                 y=_coord_arg(params, "y", label="y"))
+
+
+def _coord_arg(params: Mapping[str, Any], name: str, *,
+               label: str | None = None) -> int | str | None:
+    """取坐标参数：数字（含数字字符串）转为整数并校验非负，语义值原样保留。
+
+    Raises:
+        ActionError: 取值为负数、类型非法，或语义值无法识别。
+    """
+    raw = _raw(params, name)
+    if raw is None:
+        return None
+    name = label or name
+    if isinstance(raw, bool):
+        raise ActionError(f"{name} 取值非法: {raw!r}。支持 {COORD_HELP}")
+    if isinstance(raw, int):
+        if raw < 0:
+            raise ActionError(
+                f"{name} 不能为负数（{raw}）。像素坐标需 >= 0；相对中心偏移请用 "
+                f"'center+20' / 'center-20'"
+            )
+        return raw
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        value = int(text, 10)
+    except ValueError:
+        parse_coordinate(text, 1000, label=name)  # 仅格式校验（尺寸在注入时确定）
+        return text
+    if value < 0:
+        raise ActionError(
+            f"{name} 不能为负数（{value}）。像素坐标需 >= 0；相对中心偏移请用 "
+            f"'center+20' / 'center-20'"
+        )
+    return value
 
 
 # ── 动作构建 ────────────────────────────────────────────
@@ -379,12 +502,12 @@ def _build_click(params: dict) -> ClickAction:
 
 
 def _build_drag(params: dict) -> DragAction:
-    to_x = _int_arg(params, "to_x", minimum=0, label="to_x")
-    to_y = _int_arg(params, "to_y", minimum=0, label="to_y")
+    to_x = _coord_arg(params, "to_x")
+    to_y = _coord_arg(params, "to_y")
     if to_x is None or to_y is None:
         raise ActionError("drag 需要 to_x 与 to_y 参数指定拖动终点（窗口内坐标）")
-    from_x = _int_arg(params, "from_x", minimum=0, label="from_x")
-    from_y = _int_arg(params, "from_y", minimum=0, label="from_y")
+    from_x = _coord_arg(params, "from_x")
+    from_y = _coord_arg(params, "from_y")
     if (from_x is None) != (from_y is None):
         raise ActionError(
             f"drag 起点必须同时提供 from_x 与 from_y（当前 from_x={from_x!r}, "
@@ -463,12 +586,15 @@ def _build_text(params: dict) -> TextAction:
 
 # ── 坐标解析（后端共用） ────────────────────────────────
 
-def resolve_point(x: int | None, y: int | None, width: int, height: int,
-                  *, label: str = "坐标") -> Point:
+def resolve_point(x: int | str | None, y: int | str | None,
+                  width: int, height: int, *, label: str = "坐标") -> Point:
     """把可选坐标解析为窗口内的绝对点（缺省取窗口中心），并做越界校验。
 
+    坐标支持像素整数与语义值（``'center'`` / ``'50%'`` / ``'center+20'``），
+    语义值按 ``width`` / ``height`` 换算后夹到有效范围。
+
     Raises:
-        ActionError: 窗口尺寸非法、只给一个坐标、或坐标越界。
+        ActionError: 窗口尺寸非法、只给一个坐标、坐标取值无法识别或越界。
     """
     if width <= 0 or height <= 0:
         raise ActionError(f"窗口尺寸非法，无法定位{label}: {width}x{height}")
@@ -476,22 +602,29 @@ def resolve_point(x: int | None, y: int | None, width: int, height: int,
         return Point(width // 2, height // 2)
     if x is None or y is None:
         raise ActionError(f"{label}必须同时提供 x 与 y（当前 x={x!r}, y={y!r}）")
-    resolved = Point(int(x), int(y))
+    resolved = Point(
+        parse_coordinate(x, width, label=f"{label} x"),
+        parse_coordinate(y, height, label=f"{label} y"),
+    )
     _validate_point(resolved, width, height, label=label)
     return resolved
 
 
 def validate_point(point: Point, width: int, height: int,
                    *, label: str = "坐标") -> Point:
-    """校验点落在窗口内，返回该点。
+    """校验点落在窗口内，返回解析后的点（语义坐标按窗口尺寸换算）。
 
     Raises:
-        ActionError: 窗口尺寸非法或点越界。
+        ActionError: 窗口尺寸非法、坐标取值无法识别或点越界。
     """
     if width <= 0 or height <= 0:
         raise ActionError(f"窗口尺寸非法，无法定位{label}: {width}x{height}")
-    _validate_point(point, width, height, label=label)
-    return point
+    resolved = Point(
+        parse_coordinate(point.x, width, label=f"{label} x"),
+        parse_coordinate(point.y, height, label=f"{label} y"),
+    )
+    _validate_point(resolved, width, height, label=label)
+    return resolved
 
 
 def _validate_point(point: Point, width: int, height: int, *, label: str) -> None:
@@ -571,6 +704,8 @@ def describe_action(action: InputAction) -> dict:
 
 __all__ = [
     "BUTTONS",
+    "COORD_HELP",
+    "COORD_KEYWORDS",
     "ClickAction",
     "DEFAULT_BUTTON",
     "DEFAULT_CLICK_COUNT",
@@ -596,6 +731,7 @@ __all__ = [
     "build_action",
     "describe_action",
     "interpolate",
+    "parse_coordinate",
     "resolve_point",
     "validate_point",
 ]

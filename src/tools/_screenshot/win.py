@@ -31,6 +31,7 @@ import time
 
 from . import grid as grid_module
 from . import png, proctree, transform, winapi
+from .elements import ElementInfo
 from .result import CaptureResult, NoWindowError, ScreenshotError
 from .transform import CropError, CropRegion
 from .windows import (
@@ -168,6 +169,10 @@ class WindowsBackend:
         """枚举该进程树的全部可操作窗口（``op=windows`` 数据源）。"""
         return list_windows(pid)
 
+    def list_elements(self, pid: int, window: str | None = None) -> list[ElementInfo]:
+        """枚举被选窗口内的控件（``op=elements`` 数据源）。"""
+        return list_elements(pid, window)
+
     def control(self, pid: int, request: WindowControlRequest) -> dict:
         """对被选窗口执行激活 / 最大化 / 最小化 / 还原 / 关闭 / 移动 / 缩放。"""
         return control_window(pid, request)
@@ -277,6 +282,57 @@ def list_windows(pid: int) -> list[WindowInfo]:
     return enumerate_window_infos(window_pids)
 
 
+def list_elements(pid: int, window: str | None = None) -> list[ElementInfo]:
+    """返回被选窗口内的全部控件（``op=elements`` 的数据源）。
+
+    控件来自 ``EnumChildWindows``（递归枚举整棵子窗口树），按「从上到下、
+    从左到右」排序，便于与截图 / 清单顺序对照。经典 Win32 控件（按钮、
+    编辑框、列表）都能枚举到；Chrome / Electron / 游戏等自绘界面内部没有
+    标准子窗口，结果会很少或为空（此时改用截图 + 像素坐标操作）。
+
+    Raises:
+        SelectorError: 窗口选择器非法或没有匹配窗口。
+    """
+    winapi.ensure_process_dpi_aware()
+    window_pids = resolve_window_pids(pid)
+    if not window_pids:
+        return []
+    infos = enumerate_window_infos(window_pids)
+    if not infos:
+        return []
+    target = pick_window(infos, window)
+    return list_child_elements(target)
+
+
+def list_child_elements(target: WindowInfo) -> list[ElementInfo]:
+    """枚举 ``target`` 窗口内的控件并转为统一描述（按位置排序）。
+
+    坐标为**屏幕像素**；工具层再用输入后端的窗口 frame 换算成窗口内坐标，
+    保证与 ``op=screenshot`` 产物、输入坐标一一对应。
+    """
+    elements: list[ElementInfo] = []
+    for hwnd in winapi.enum_child_windows(target.handle):
+        left, top, right, bottom = winapi.window_rect(hwnd)
+        width, height = right - left, bottom - top
+        if width <= 0 or height <= 0:
+            continue
+        elements.append(ElementInfo(
+            handle=winapi.hwnd_value(hwnd),
+            pid=winapi.window_pid(hwnd),
+            class_name=winapi.window_class(hwnd),
+            text=winapi.window_text(hwnd),
+            left=left,
+            top=top,
+            width=width,
+            height=height,
+            enabled=winapi.is_window_enabled(hwnd),
+            visible=winapi.is_window_visible(hwnd),
+            depth=winapi.window_depth(hwnd, target.handle),
+        ))
+    elements.sort(key=lambda item: (item.top, item.left))
+    return elements
+
+
 def control_window(pid: int, request: WindowControlRequest) -> dict:
     """对 ``pid`` 进程树中被选中的窗口执行状态 / 几何控制。
 
@@ -325,6 +381,10 @@ def control_window(pid: int, request: WindowControlRequest) -> dict:
             int(request.width), int(request.height),
             winapi.SWP_NOZORDER | winapi.SWP_NOACTIVATE,
         )
+    elif action == "always_on_top":
+        winapi.set_window_topmost(target.handle, topmost=True)
+    elif action == "not_on_top":
+        winapi.set_window_topmost(target.handle, topmost=False)
     time.sleep(_CONTROL_SETTLE_SECONDS)
     after = window_state(target.handle)
     detail = {
@@ -375,7 +435,7 @@ def _application_foreground(target: WindowInfo) -> bool:
 
 
 def window_state(handle) -> dict:
-    """读取窗口当前状态（几何 + 最小化 / 可见 / 前台 / 存在性）。"""
+    """读取窗口当前状态（几何 + 最小化 / 可见 / 前台 / 置顶 / 存在性）。"""
     if not winapi.is_window(handle):
         return {"exists": False}
     left, top, right, bottom = winapi.window_rect(handle)
@@ -388,6 +448,7 @@ def window_state(handle) -> dict:
         "minimized": winapi.is_window_minimized(handle),
         "visible": winapi.is_window_visible(handle),
         "foreground": winapi.is_foreground(handle),
+        "topmost": winapi.window_is_topmost(handle),
     }
 
 
@@ -508,6 +569,8 @@ __all__ = [
     "control_window",
     "enumerate_candidates",
     "enumerate_window_infos",
+    "list_child_elements",
+    "list_elements",
     "list_windows",
     "resolve_window_pids",
     "select_window",

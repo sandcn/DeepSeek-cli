@@ -46,6 +46,14 @@ from .action import (  # noqa: F401  # 对外导出动作模型
     resolve_point,
 )
 from .result import ActionError, InputError, InputResult, NoWindowError
+from .sequence import (  # noqa: F401  # 对外导出序列模型
+    MAX_SEQUENCE_STEPS,
+    SEQUENCE_KINDS,
+    SequenceError,
+    SequenceStep,
+    parse_sequence,
+    wait_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -183,17 +191,23 @@ __all__ = [
     "InputResult",
     "KeyAction",
     "MAX_KEY_REPEAT",
+    "MAX_SEQUENCE_STEPS",
     "MoveAction",
     "NoWindowError",
+    "SEQUENCE_KINDS",
     "ScrollAction",
     "SelectorError",
+    "SequenceError",
+    "SequenceStep",
     "TextAction",
     "available_backends",
     "build_action",
     "describe_action",
+    "parse_sequence",
     "probe_window",
     "register_backend",
     "resolve_backend",
     "resolve_point",
     "send_window_input",
+    "wait_seconds",
 ]

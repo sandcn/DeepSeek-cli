@@ -31,6 +31,9 @@ google_shot*.png
 step2.png
 shots/
 
+# bash_opt shot=true 自动命名的截图目录（输入 op 注入后自动截图）
+bash_opt_shots/
+
 # Chrome 测试临时 profile 与探针脚本（本地验证产物，不入库）
 .chrome-gui-test/
 .chrome-test-profile2/

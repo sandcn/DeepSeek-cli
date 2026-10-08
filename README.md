@@ -386,7 +386,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 | `find` | fn | 搜索 | ✅ | 按通配符模式查找文件和目录，支持深度控制 |
 | `ls` | ls | IO | ✅ | 列出目录内容，支持详细格式和隐藏文件显示 |
 | `bash` | bs | 执行 | ❌ | 执行 shell 命令（安全沙盒保护，禁止替代专用工具） |
-| `bash_opt` | bo | 执行 | ❌ | 按 task_id 操作后台 bash 任务：read（读取当前已产生的全部输出并清空缓冲，立即返回）/ wait（等待完成取输出）/ kill（杀死整个进程树：进程组 + 全部递归后代；杀完后校验进程是否真正退出、未死自动补杀，最多 3 轮尝试，残留进程在结果中报告）/ stdin（发送文本输入）/ keys（发送光标键盘消息，自动路由：目标进程有 GUI 窗口时作为窗口级键盘消息注入该窗口，否则写入终端 PTY/stdin，跨平台 ANSI/VT100；支持 `ctrl+c` 等修饰键组合、`ctrl_c`/`ctrl-c` 紧凑写法、`esc`/`del`/`pageup`/`return` 等别名、单个字符与 f1-f20）/ screenshot（把该命令进程树的窗口截图存为 PNG，需 path；可选 crop 只截取窗口内的像素区域，格式 `x,y,width,height`）/ move / click（左中右键、双击，需 button/count）/ drag（拖动，需 to_x/to_y，可选 from_x/from_y/duration/steps）/ scroll（滚轮，direction+amount）/ key（窗口级按键，如 `ctrl+s`，与 keys 共用键名规则；`phase` 可选 press/down/up 分别发送按下与弹起）/ type（向窗口逐字符输入文本，每字符发送配对的按下与弹起）；坐标以窗口截图左上角为原点（与 screenshot 产物一致），`method` 可选 auto/sendinput/message（仅 Windows 生效） |
+| `bash_opt` | bo | 执行 | ❌ | 按 task_id 操作后台 bash 任务：read（读取当前已产生的全部输出并清空缓冲，立即返回）/ wait（等待完成取输出）/ kill（杀死整个进程树：进程组 + 全部递归后代；杀完后校验进程是否真正退出、未死自动补杀，最多 3 轮尝试，残留进程在结果中报告）/ stdin（发送文本输入）/ keys（发送光标键盘消息，自动路由：目标进程有 GUI 窗口时作为窗口级键盘消息注入该窗口，否则写入终端 PTY/stdin，跨平台 ANSI/VT100；支持 `ctrl+c` 等修饰键组合、`ctrl_c`/`ctrl-c` 紧凑写法、`esc`/`del`/`pageup`/`return` 等别名、单个字符与 f1-f20）/ screenshot（把该命令进程树的窗口截图存为 PNG，需 path；可选 crop 只截取窗口内的像素区域，格式 `x,y,width,height`；可选 window 选择目标窗口、grid 叠加坐标参考线）/ windows（列出该进程树的全部窗口及句柄/标题/几何/Z 序）/ window（控制窗口：activate/maximize/minimize/restore/close/move/resize/fit/always_on_top/not_on_top/get_geometry/save_geometry/restore_geometry）/ elements（列出窗口内控件：名称/类型/类名/矩形/可用状态，含窗口内坐标，可直接用于 click；element 可作过滤子串）/ wait_window（等待窗口出现，按 window 选择器 + timeout 秒）/ clipboard（读写系统剪贴板：`clipboard_action=set/get/clear/append`）/ sequence（一次调用按序执行多个动作：`actions` 数组，步骤可为输入动作或 wait/screenshot/window，`on_error` 决定遇错停止或继续）/ move / click（左中右键、双击，需 button/count）/ drag（拖动，需 to_x/to_y，可选 from_x/from_y/duration/steps）/ scroll（滚轮，direction+amount）/ key（窗口级按键，如 `ctrl+s`，与 keys 共用键名规则；`phase` 可选 press/down/up 分别发送按下与弹起）/ type（向窗口逐字符输入文本，或用 `via='clipboard'` 走剪贴板粘贴；坐标/文本均可按控件名定位——输入 op 传 `element='确定'` 即用控件中心，type/key 会先点击该控件聚焦）；坐标以窗口截图左上角为原点（与 screenshot 产物一致），除像素整数外也支持 `'center'`/`'50%'`/`'center+20'` 等语义坐标；`method` 可选 auto/sendinput/message（仅 Windows 生效）；`wait_for='change'/'stable'` 可等界面变化或稳定，`diff=true` 回传注入前后截图差异 |
 | `cp` | cp | IO | ✅ | 复制文件或目录，保留元数据，支持沙盒撤回 |
 | `mv` | mv | IO | ✅ | 移动文件或目录，支持跨文件系统 |
 | `rm` | rm | IO | ❌ | 删除文件或目录（删除前自动备份到沙盒） |
@@ -405,7 +405,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 |------|------|------|
 | **文件 IO** | read_file, write_file, update_file, ls, cp, mv, rm, mkdir, read_image | 读写文件、目录操作、文件管理、图像读取 |
 | **代码搜索** | search, find | 正则搜索源码、通配符查找文件 |
-| **命令执行** | bash, bash_opt | 安全沙盒中执行 shell 命令；按 task_id 操作后台 bash 任务（bash 后台任务注册在 bash 专用表 `_background_tasks`），含读取/等待/终止/终端输入、窗口截图（screenshot）与 GUI 窗口输入注入（move/click/drag/scroll/key/type） |
+| **命令执行** | bash, bash_opt | 安全沙盒中执行 shell 命令；按 task_id 操作后台 bash 任务（bash 后台任务注册在 bash 专用表 `_background_tasks`），含读取/等待/终止/终端输入、窗口截图（screenshot / windows / window，含置顶与几何记忆）、控件清单（elements）、等待窗口（wait_window）、剪贴板（clipboard）、动作序列（sequence）与 GUI 窗口输入注入（move/click/drag/scroll/key/type，支持按控件名定位、语义坐标、界面变化等待与前后截图比对） |
 | **网络访问** | web_search, web_fetch | 网页搜索（DeepSeek 官方原生搜索）与网页全文获取 |
 | **用户交互** | user_select | 交互式选择弹窗（单选/多选/超时回退；支持并发提问，多问题 tab 一起显示） |
 | **Agent 调度** | subagent, subagent_opt | 并发派发原子 Agent 执行独立任务；按 task_id 操作后台 subagent 任务（subagent 后台任务注册在独立表 `_subagent_tasks`，与 bash 后台任务分表隔离） |

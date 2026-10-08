@@ -301,6 +301,13 @@ def control_window(pid: int, request: WindowControlRequest, *,
     infos = mark_main([to_window_info(item, index)
                        for index, item in enumerate(windows)])
     target_info = pick_window(infos, request.selector)
+    if request.action in ("always_on_top", "not_on_top"):
+        raise ScreenshotError(
+            "macOS 不支持对其它进程的窗口置顶 / 取消置顶（System Events 与 "
+            "Accessibility API 都没有该能力）；如需避免窗口被遮挡，可先 "
+            "window_action=activate 把目标应用置前，或用 window_action=fit "
+            "把窗口移到固定位置后立即操作"
+        )
     index = next((position for position, item in enumerate(windows)
                   if to_window_info(item).handle == target_info.handle), 0)
     window_expr = f"window {index + 1}"
