@@ -165,8 +165,18 @@ class BaseAgent:
     def maybe_compact(self) -> bool:
         """自动压缩检查（dsh ``agent/pre-step`` 等价物）。
 
-        仅当压缩已启用且 ``auto`` 打开时执行；未达阈值 / 配置禁用时静默返回。
-        主 Agent 与 SubAgent 共用本方法，SubAgent 在每次模型调用前调用。
+        自动执行条件：
+          - ``compaction.enabled`` 为真且 ``auto`` 为真 → 走 dsh 同款引擎；
+          - ``compaction.enabled`` 为假（引擎禁用）→ 仍调用
+            ``check_and_compress``，由其回退到内置策略链（该链同样尊重
+            自动全量压缩阈值 ``auto_force_compress_threshold`` 与窗口上限）
+            ——与手动 ``/compact`` 语义一致，避免「引擎禁用时自动压缩完全
+            失效、手动却能压」的矛盾；
+          - ``compaction.enabled`` 为真但 ``auto`` 为假 → 不自动压缩
+            （用户显式关闭自动压缩）。
+
+        未达阈值 / 配置关闭时静默返回。主 Agent 与 SubAgent 共用本方法，
+        SubAgent 在每次模型调用前调用。
 
         Returns:
             True 表示执行了一次压缩检查（不代表一定发生压缩）。
@@ -177,7 +187,9 @@ class BaseAgent:
         engine = cm._get_engine() if hasattr(cm, "_get_engine") else None
         if engine is not None:
             try:
-                if not engine.is_enabled() or not engine.is_auto():
+                # ★ 仅「引擎启用且自动关闭」时跳过；引擎禁用交给
+                #   check_and_compress 回退策略链（仍尊重 auto_force 阈值）。
+                if engine.is_enabled() and not engine.is_auto():
                     return False
             except Exception:
                 _logger.debug("读取压缩开关失败", exc_info=True)

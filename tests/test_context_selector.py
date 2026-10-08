@@ -196,10 +196,21 @@ def test_exceeds_limit_tokens():
 
 
 def test_should_auto_force_values():
-    assert should_auto_force_values(1000, 0, auto_force_threshold=500,
-                                    max_context_tokens=0) is True
-    assert should_auto_force_values(100, 0, auto_force_threshold=500,
-                                    max_context_tokens=0) is False
+    # token 口径（2026-10-09：单位由字符改为 token）：token 超阈值 → True
+    assert should_auto_force_values(0, 1000, auto_force_threshold=500) is True
+    # 字符量再大也不触发（字符不参与该判定）
+    assert should_auto_force_values(10_000_000, 400, auto_force_threshold=500) is False
+    assert should_auto_force_values(100, 500, auto_force_threshold=500) is False
+    # 阈值 <= 0 → 不启用该规则
+    assert should_auto_force_values(0, 10_000, auto_force_threshold=0) is False
+
+def test_should_auto_force_values_default_threshold_from_config(monkeypatch):
+    """未显式传阈值 → 回退配置值（token 口径，超过即触发）。"""
+    import src.config as config_pkg
+
+    monkeypatch.setattr(config_pkg, "AUTO_FORCE_COMPRESS_THRESHOLD", 400_000)
+    assert should_auto_force_values(0, 400_001) is True
+    assert should_auto_force_values(0, 400_000) is False
 
 
 def test_calc_excess_chars_values():

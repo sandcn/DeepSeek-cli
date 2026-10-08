@@ -427,6 +427,29 @@ class ContextManager:
         total += estimate_messages_image_tokens(messages)
         return total
 
+    def _current_tokens_locked(self) -> int:
+        """当前上下文 tokens（单一真源：真实基线优先 → 回退全量估算）。
+
+        与上下文使用率显示（``refresh_usage`` / TUI 模式行 ``main · N%``）
+        同源，保证「显示达到阈值」与「自动压缩判定触发」永不脱节：
+
+          - 真实基线有效（``_baseline_tail_locked()``）：以服务端权威
+            ``prompt_tokens`` 为底，叠加基线之后新增消息的估算（基线已含
+            系统提词 + 工具列表 + 图片视觉，不重复叠加）；
+          - 无基线 / 基线失效：全量估算 = 全部消息 + 工具列表 + 图片视觉。
+
+        ★ 调用方须持有 ``self._lock``（``_baseline_tail_locked`` 与
+        ``_cache`` 均在锁内访问）。不含流式瞬态增量
+        （``_streaming_extra_tokens``）——该增量尚未落地为消息，由显示侧
+        单独叠加，压缩判定只看已落地的上下文占用。
+        """
+        baseline = self._baseline_tail_locked()
+        if baseline is not None:
+            base_tokens, tail = baseline
+            return base_tokens + self._estimate_messages_tokens(tail)
+        return (self._cache.total_tokens + self._messages_image_tokens()
+                + self._tools_tokens())
+
     # ── 缓存管理 ──────────────────────────────────────────
 
     def _ensure_cache(self):
@@ -479,10 +502,11 @@ class ContextManager:
                 try:
                     from .compaction import CompactionTrigger
 
-                    # ★ 自动全量压缩阈值（auto_force_compress_threshold）在引擎
-                    #   路径同样生效：命中即以 force=True 调引擎（不保留近期
-                    #   尾部＝全量压缩）。否则引擎只认 token 压力阈值，该配置
-                    #   会被绕过（引擎启用时回退策略链不执行）。
+                    # ★ 自动全量压缩阈值（auto_force_compress_threshold，token
+                    #   口径）在引擎路径同样生效：命中即以 force=True 调引擎
+                    #   （不保留近期尾部＝全量压缩）。否则引擎只按 compaction
+                    #   比例算出的压力阈值触发，该配置会被绕过（引擎启用时
+                    #   回退策略链不执行）。
                     engine_force = force or self._auto_force_triggered()
                     engine.compact_if_needed(
                         trigger=CompactionTrigger.PRESSURE, force=engine_force,
@@ -532,13 +556,17 @@ class ContextManager:
     def measure_context(self) -> tuple[int, int]:
         """返回当前上下文的 (总字符, 总 token)。
 
-        token 口径含图片视觉 token 与工具列表（与上下文使用率统计一致）。
+        token 口径与上下文使用率显示（TUI 模式行 ``main · N%``）**完全一致**
+        ——真实基线优先（服务端 ``prompt_tokens`` + 新增消息估算），无基线时
+        回退全量估算（全部消息 + 工具列表 + 图片视觉）。该口径同时驱动
+        自动全量压缩（``auto_force_compress_threshold``）与引擎压力判定，
+        确保「用户看到已达阈值 → 实际必定触发压缩」，不再出现显示口径
+        （真实）与判定口径（纯估算）脱节导致的「达阈值不压缩」。
         """
         with self._lock:
             self._ensure_cache()
             chars = self._cache.total_chars
-            tokens = (self._cache.total_tokens + self._messages_image_tokens()
-                      + self._tools_tokens())
+            tokens = self._current_tokens_locked()
             return chars, tokens
 
     def message_token(self, index: int) -> tuple[int, int]:
@@ -636,11 +664,19 @@ class ContextManager:
         return non_system_count > 2
 
     def _auto_force_triggered(self) -> bool:
-        """自动全量压缩阈值判定（字符 / token 双口径，与回退链同源）。
+        """自动全量压缩阈值判定（``auto_force_compress_threshold``，token 口径）。
 
-        ``auto_force_compress_threshold`` 为「超过即强制全量压缩」阈值；
-        引擎路径的常规压力阈值只认 token 口径，本判定保证该配置在引擎
-        启用时同样生效（命中 → 调用方以 ``force=True`` 调引擎）。
+        ``auto_force_compress_threshold`` 为「当前上下文 tokens 超过即强制
+        全量压缩」的阈值（单位 token，默认 400k）。
+
+        ★ 口径与 TUI 模式行 ``main · N%`` 显示**同源**（``measure_context``
+        → ``_current_tokens_locked``：真实基线优先 → 全量估算），因此
+        「用户看到已达阈值」与「判定触发压缩」不会脱节——修复前判定用纯
+        估算（系统性低于服务端真实 prompt_tokens），出现过「显示已达阈值
+        却未自动全量压缩」。
+
+        引擎路径的常规压力阈值由 ``compaction`` 比例算出，本判定保证该配置
+        在引擎启用时同样生效（命中 → 调用方以 ``force=True`` 调引擎）。
         """
         total_chars_val, total_tokens_val = self.measure_context()
         return selector.should_auto_force_values(
@@ -866,17 +902,10 @@ class ContextManager:
                 if force or not self._cache.is_synced(self.messages):
                     self._cache.resync(self.messages)
                 self._hint_chars = self._cache.total_chars
-                baseline = self._baseline_tail_locked()
-                if baseline is not None:
-                    # 真实基线口径：prompt_tokens 已含系统提词 + 工具列表 +
-                    # 基线消息，只叠加新增消息估算（不重复计 tools/图片）。
-                    base_tokens, tail = baseline
-                    tokens = (base_tokens
-                              + self._estimate_messages_tokens(tail)
-                              + _streaming_extra_tokens)
-                else:
-                    tokens = (self._cache.total_tokens + self._tools_tokens()
-                              + self._messages_image_tokens() + _streaming_extra_tokens)
+                # 单一真源（_current_tokens_locked：真实基线优先 → 全量估算），
+                # 显示侧额外叠加流式瞬态增量（AI 生成中已输出但尚未落地的
+                # tokens）——压缩判定（measure_context）不含该瞬态量。
+                tokens = self._current_tokens_locked() + _streaming_extra_tokens
             if tokens <= 0:
                 set_context_usage_percent(0.0)
                 return

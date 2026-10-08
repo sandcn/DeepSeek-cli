@@ -167,6 +167,9 @@ def _validate_rc(rc):
         rc["max_retries"] = DEFAULTS["max_retries"]
     if rc.get("max_context_chars", 1) < 0:
         rc["max_context_chars"] = DEFAULTS["max_context_chars"]
+    # auto_force_compress_threshold 为 token 口径阈值：负值无意义，回退默认
+    if rc.get("auto_force_compress_threshold", 1) < 0:
+        rc["auto_force_compress_threshold"] = DEFAULTS["auto_force_compress_threshold"]
 
     provider = rc.get("provider", DEFAULTS["provider"])
     if provider in PROVIDERS:

@@ -86,7 +86,12 @@ DEFAULTS = {
     #   上界（ASCII ≈ 0.3 token/字符 → 1M tokens ≈ 3.33M 字符；取 3M 可
     #   覆盖纯 ASCII 会话约 90 万 tokens），避免字符阈值先于 token 阈值
     #   触发而把 1M 窗口提前截断；
-    # auto_force_compress_threshold：与字符阈值同口径（超过即强制全量压缩）。
+    # auto_force_compress_threshold：**token 口径**（2026-10-09 用户需求：
+    #   单位由字符改为 token）——当前上下文 tokens 超过该值即强制全量压缩
+    #   （默认 400k tokens，与 max_context_tokens 同口径便于直接比较）。
+    #   判定口径与 TUI 模式行 ``main · N%`` 使用率显示同源（真实基线优先：
+    #   服务端 prompt_tokens + 新增消息估算；无基线时回退全量估算），确保
+    #   「显示达到阈值」与「自动压缩触发」永不脱节。
     "max_context_chars": 3000000,
     "max_output_chars": 3000,
     "max_retries": 10,
@@ -98,7 +103,7 @@ DEFAULTS = {
     # 默认 1M（用户环境 deepseek 1M 上下文；不同模型可配置覆盖）。
     "model_context_tokens": 1000000,
     "summary_token_budget": 2000,
-    "auto_force_compress_threshold": 3000000,
+    "auto_force_compress_threshold": 400000,
     "enable_notifications": True,
     "notify_on_chat_completion": True,
     "models": [],
@@ -279,6 +284,7 @@ CONFIG_KEYS = {
         "default": 2000,
         "cacheable": True,
     },
+    # token 口径（2026-10-09 用户需求：单位由字符改为 token，默认 400k）
     "AUTO_FORCE_COMPRESS_THRESHOLD": {
         "rc_path": ("auto_force_compress_threshold",),
         "type": int,

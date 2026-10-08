@@ -232,6 +232,11 @@ class CompactionEngine:
                 self._tokens_of,
             )
             if selected is None:
+                # 无可安全压缩范围（全为系统提词 / 首条即 pinned / 工具组
+                # 无法平衡切割）：本次不压缩——记录以便诊断「达阈值未压缩」。
+                _logger.debug(
+                    "压缩跳过（%s, force=%s）：无可安全压缩范围", trigger_value, force,
+                )
                 return result
             result = self.compact_region(
                 selected[0], selected[1], trigger_value,

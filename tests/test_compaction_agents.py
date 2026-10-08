@@ -56,6 +56,35 @@ def test_maybe_compact_respects_auto_off():
     assert agent.maybe_compact() is False
 
 
+def test_maybe_compact_engine_disabled_still_checks_fallback():
+    """compaction.enabled=false（引擎禁用）→ 自动路径仍执行检查（回退策略链）。
+
+    自动全量压缩阈值（``auto_force_compress_threshold``）在引擎禁用时同样
+    生效：修复前 ``maybe_compact`` 因 ``not engine.is_enabled()`` 提前返回，
+    自动压缩完全失效（而手动 ``/compact`` 走 ``check_and_compress`` 仍能压，
+    语义矛盾）；修复后引擎禁用交由 ``check_and_compress`` 回退策略链处理。
+    """
+    messages = _messages()
+    cm = ContextManager(
+        messages, "m",
+        summarize_fn=lambda msgs, model=None: ("", "## condensed summary", {}, []),
+        config_port=MockConfigAdapter({
+            "model_context_tokens": 1_000_000,
+            "provider": "deepseek",
+            "max_context_chars": 3_000_000,
+            "auto_force_compress_threshold": 100,
+            "compaction": {"enabled": False, "threshold_ratio": 0.5,
+                           "headroom_tokens": 100, "retain_ratio": 0.1},
+        }),
+    )
+    agent = BaseAgent()
+    agent.context_manager = cm
+    before = len(messages)
+
+    assert agent.maybe_compact() is True
+    assert len(messages) < before, "引擎禁用时自动全量压缩仍应触发（回退链）"
+
+
 def test_compact_context_manual():
     agent = BaseAgent()
     messages = _messages()

@@ -91,6 +91,7 @@ class ConfigProxy(ConfigPort):
         return _config.KEEP_RECENT_MESSAGES
 
     def get_auto_force_compress_threshold(self) -> int:
+        """自动全量压缩阈值（token 口径，默认 400k）。"""
         return _config.AUTO_FORCE_COMPRESS_THRESHOLD
 
     def get_summary_token_budget(self) -> int:

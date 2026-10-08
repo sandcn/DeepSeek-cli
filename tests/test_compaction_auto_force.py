@@ -6,6 +6,8 @@
 配置下完全失效，「自动全量压缩没有作用」。
 
 本文件固化修复后的语义：
+- ``auto_force_compress_threshold`` 为 **token 口径**（2026-10-09 用户需求：
+  单位由字符改为 token，默认 400k）；
 - 引擎路径同样尊重 ``auto_force_compress_threshold``（命中 → force 全量压缩）；
 - ``max_context_chars`` 字符口径参与引擎的常规压力触发判定；
 - 回退策略链行为不回归。
@@ -191,7 +193,7 @@ def test_fallback_chain_still_honors_auto_force():
 # ── 补充：token 口径与读取失败分支 ──────────────────────
 
 def _cjk_messages(per=300, n=30):
-    """构造纯中文消息（字符口径不命中、token 口径命中的判定边界）。"""
+    """构造纯中文消息（1 中文字符 ≈ 0.6 token，token 口径判定用）。"""
     messages = [{"role": "system", "content": "系统提示"}]
     for i in range(n):
         role = "user" if i % 2 == 0 else "assistant"
@@ -199,14 +201,40 @@ def _cjk_messages(per=300, n=30):
     return messages
 
 
-def test_auto_force_triggered_token_branch():
-    """字符口径未达阈值、token 口径（阈值//2）已达 → 仍触发。"""
+def test_auto_force_triggered_token_threshold():
+    """token 口径命中 auto_force 阈值 → 触发。"""
     cm = _make_cm(
-        _config(auto_force_compress_threshold=10_000, max_context_tokens=1_000),
+        _config(auto_force_compress_threshold=5_000),
         messages=_cjk_messages(),
     )
+    _chars, tokens = cm.measure_context()
+    assert tokens > 5_000
+    assert cm._auto_force_triggered() is True
+
+
+def test_auto_force_threshold_is_token_based_not_chars():
+    """字符数已超阈值但 token 未超 → 不触发（口径为 token，不是字符）。"""
+    cm = _make_cm(
+        _config(auto_force_compress_threshold=5_000),
+        messages=_messages(n=10, content_len=600),
+    )
     chars, tokens = cm.measure_context()
-    assert chars < 10_000
+    assert chars > 5_000
+    assert tokens < 5_000
+    assert cm._auto_force_triggered() is False
+
+
+def test_auto_force_triggered_includes_tools_tokens():
+    """token 口径含工具列表开销：消息很短但工具 schema 大 → 触发。"""
+    cm = _make_cm(
+        _config(auto_force_compress_threshold=5_000),
+        messages=_messages(n=2, content_len=10),
+    )
+    cm.set_tools([{
+        "type": "function",
+        "function": {"name": "t", "description": "x" * 20_000},
+    }])
+    _chars, tokens = cm.measure_context()
     assert tokens > 5_000
     assert cm._auto_force_triggered() is True
 
@@ -214,7 +242,7 @@ def test_auto_force_triggered_token_branch():
 def test_engine_path_token_branch_compacts_everything_compactable():
     """引擎路径 token 口径命中 auto_force → 全量压缩（不保留近期尾部）。"""
     cm = _make_cm(
-        _config(auto_force_compress_threshold=10_000, max_context_tokens=1_000),
+        _config(auto_force_compress_threshold=5_000),
         messages=_cjk_messages(),
     )
     before = len(cm.messages)
@@ -249,3 +277,67 @@ def test_engine_pressure_exceeded_ignores_char_when_disabled():
     )
 
     assert engine._pressure_exceeded(spec, 0) is False
+
+
+# ── 显示口径与压缩判定同源（真实基线优先） ────────────────
+
+def test_measure_context_uses_real_baseline():
+    """measure_context（压缩判定口径）采用真实基线（与 TUI 显示同源）。"""
+    cm = _make_cm(_config())
+    cm.set_prompt_baseline(200_000)
+
+    _chars, tokens = cm.measure_context()
+
+    assert tokens == 200_000
+
+
+def test_measure_context_adds_tail_after_baseline():
+    """真实基线生效时，measure_context 只叠加基线之后新增消息的估算。"""
+    from src.core.internal.shared._message_text import message_to_text
+    from src.core.tokens import estimate_tokens
+
+    cm = _make_cm(_config())
+    cm.set_prompt_baseline(100_000)
+    new_msg = {"role": "user", "content": "中" * 1000}
+    cm.messages.append(new_msg)
+
+    _chars, tokens = cm.measure_context()
+
+    assert tokens == 100_000 + estimate_tokens(message_to_text(new_msg))
+
+
+def test_auto_force_triggers_on_display_baseline_though_estimate_below():
+    """显示口径（真实基线）达阈值而纯估算未达 → 自动全量压缩仍触发。
+
+    复现用户报告：「main agent 上下文达到了 auto_force_compress_threshold
+    指定值没有自动全量压缩」——TUI ``main · N%`` 按真实基线显示达阈值，
+    修复前判定用纯估算（偏低）未达 → 静默不压缩。修复后判定与显示同源。
+    """
+    cm = _make_cm(_config(auto_force_compress_threshold=400_000))
+    _chars, estimate = cm.measure_context()
+    assert estimate < 400_000
+
+    cm.set_prompt_baseline(500_000)
+
+    _chars, tokens = cm.measure_context()
+    assert tokens >= 400_000
+    assert cm._auto_force_triggered() is True
+
+    before = len(cm.messages)
+    cm.check_and_compress(force=False)
+
+    assert cm._summarize_calls, "显示口径达阈值必须触发全量压缩"
+    assert len(cm.messages) < before
+    assert _has_checkpoint(cm)
+
+
+def test_measure_context_falls_back_to_estimate_after_baseline_invalid():
+    """基线因前缀消息被替换失效后，measure_context 回退全量估算。"""
+    cm = _make_cm(_config(auto_force_compress_threshold=10_000_000))
+    cm.set_prompt_baseline(500_000)
+    cm.messages[0] = {"role": "system", "content": "sys prompt changed"}
+
+    _chars, tokens = cm.measure_context()
+
+    assert tokens < 500_000
+    assert cm._prompt_baseline is None

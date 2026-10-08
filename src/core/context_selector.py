@@ -53,21 +53,20 @@ def exceeds_limit_values(total_chars_val, total_tokens_val,
 
 def should_auto_force_values(total_chars_val, total_tokens_val,
                               auto_force_threshold=None, max_context_tokens=None):
-    """使用预计算的值检查是否应自动全量压缩。"""
+    """使用预计算的值检查是否应自动全量压缩。
+
+    ``auto_force_threshold`` 为 **token 口径**阈值（2026-10-09 用户需求：
+    单位由字符改为 token，默认 400k）——当前上下文估算 tokens 超过该阈值
+    即强制全量压缩；<=0 表示不启用该规则。
+
+    形参 ``total_chars_val`` / ``max_context_tokens`` 保留以兼容既有调用方
+    （ContextManager、runtime_data 服务按位置/关键字传入），不参与本判定：
+    字符量与该规则无关，窗口上限由 :func:`exceeds_limit_values` 负责。
+    """
     if auto_force_threshold is None:
         from ..config import AUTO_FORCE_COMPRESS_THRESHOLD  # 兼容回退
         auto_force_threshold = AUTO_FORCE_COMPRESS_THRESHOLD
-    if max_context_tokens is None:
-        from ..config import MAX_CONTEXT_TOKENS  # 兼容回退
-        max_context_tokens = MAX_CONTEXT_TOKENS
-    if auto_force_threshold > 0:
-        if total_chars_val > auto_force_threshold:
-            return True
-        # token 使用独立阈值估算（按 1 token ≈ 2 字符折算）
-        TOKEN_FORCE_THRESHOLD = auto_force_threshold // 2
-        if max_context_tokens > 0 and total_tokens_val > TOKEN_FORCE_THRESHOLD:
-            return True
-    return False
+    return auto_force_threshold > 0 and total_tokens_val > auto_force_threshold
 
 
 def calc_excess_chars_values(total_chars_val, total_tokens_val,

@@ -368,7 +368,7 @@ CONFIG_ENTRY_DESC_MAP: dict[str, str] = {
     "MAX_CONTEXT_TOKENS": "上下文最大 tokens",
     "MODEL_CONTEXT_TOKENS": "模型上下文窗口（tokens，上下文使用率分母）",
     "SUMMARY_TOKEN_BUDGET": "摘要 token 预算",
-    "AUTO_FORCE_COMPRESS_THRESHOLD": "自动强制压缩阈值",
+    "AUTO_FORCE_COMPRESS_THRESHOLD": "自动强制压缩阈值（tokens，超过即全量压缩）",
     # ── 布尔配置 ──
     "ENABLE_NOTIFICATIONS": "启用系统通知",
     "NOTIFY_ON_CHAT_COMPLETION": "聊天完成时通知",
