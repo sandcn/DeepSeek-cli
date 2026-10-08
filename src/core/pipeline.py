@@ -24,10 +24,14 @@ from src._compat import dataclass
 from typing import Any
 
 from .internal.agent import _event_facets
+from .compaction.errors import is_context_overflow_error
 
 _logger = logging.getLogger(__name__)
 
 _INTERRUPTED_MSG = "(已中断)"
+
+#: 上下文溢出恢复的重试上限（与 dsh compaction-basic 默认一致）。
+_MAX_OVERFLOW_RETRIES = 1
 
 # ═══════════════════════════════════════════════════════════════
 # PipelineContext
@@ -187,6 +191,15 @@ class Pipeline:
         # ── turn/start：轮次打开（领取首条输入之前） ──
         await _event_facets.turn_start(agent, session_id=session_id)
 
+        # ── agent/pre-step 前的自动上下文压缩 ──────────────
+        # dsh compaction-basic 在 agent/pre-step 挂载压力压缩；本实现在同一
+        # 时点驱动「所有 Agent 通用」的自动压缩检查（主 Agent 走 Pipeline，
+        # SubAgent 在自己的模型调用前调用同一方法）。
+        try:
+            await asyncio.to_thread(agent.maybe_compact)
+        except Exception:
+            _logger.debug("pre-step 自动压缩检查失败", exc_info=True)
+
         # ── agent/pre-step（waterfall）：决定接纳的输入 ──
         try:
             decision = await _event_facets.pre_step(agent, agent.messages)
@@ -207,6 +220,13 @@ class Pipeline:
         while not ctx.round_complete and not ctx.interrupted:
             step_index += 1
             await _event_facets.step_start(agent, step_index, messages=agent.messages)
+            # ── 每一步请求前的自动上下文压缩 ────────────────
+            # dsh compaction-basic 在每次请求派生前检查压力（而非仅每轮一次），
+            # 长工具循环中上下文随步骤增长，逐步检查可更早释放空间。
+            try:
+                await asyncio.to_thread(agent.maybe_compact)
+            except Exception:
+                _logger.debug("步骤前自动压缩检查失败", exc_info=True)
             try:
                 # ── before_model_call ──────────────────────────
                 await self._fire_hooks_async('before_model_call', ctx)
@@ -384,19 +404,43 @@ class Pipeline:
         }
         call = await _event_facets.request(agent, call)
 
-        async def _invoke_model():
-            return await call_model_async(
-                call.get("messages", agent.messages),
-                model=call.get("model", agent.model),
-                tools=call.get("tools", tools),
-                display=call.get("display", agent.display),
-                label=call.get("label", "assistant"),
-            )
+        def _make_invoke(current_call):
+            async def _invoke_model():
+                return await call_model_async(
+                    current_call.get("messages", agent.messages),
+                    model=current_call.get("model", agent.model),
+                    tools=current_call.get("tools", tools),
+                    display=current_call.get("display", agent.display),
+                    label=current_call.get("label", "assistant"),
+                )
+            return _invoke_model
 
         # ── llm/stream（waterfall）：环绕流式模型调用 ──
-        reasoning, content, usage, tool_calls = await _event_facets.llm_stream(
-            agent, call, _invoke_model
-        )
+        # 上下文窗口溢出（提供方确认）时压缩历史后重试该请求
+        # （dsh compaction-basic 的 agent/request-error 恢复语义）。
+        overflow_attempt = 0
+        while True:
+            try:
+                reasoning, content, usage, tool_calls = await _event_facets.llm_stream(
+                    agent, call, _make_invoke(call)
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if (overflow_attempt < _MAX_OVERFLOW_RETRIES
+                        and is_context_overflow_error(None, exc)
+                        and await self._recover_context_overflow(agent)):
+                    overflow_attempt += 1
+                    call = await self._reload_request_call(agent, call)
+                    continue
+                raise
+            if (overflow_attempt < _MAX_OVERFLOW_RETRIES and not tool_calls
+                    and is_context_overflow_error(content)
+                    and await self._recover_context_overflow(agent)):
+                overflow_attempt += 1
+                call = await self._reload_request_call(agent, call)
+                continue
+            break
 
         ctx.model_calls += 1
         ctx.reasoning = reasoning
@@ -415,6 +459,25 @@ class Pipeline:
         # 注意：仅当 content 非空时才追加，避免空 content 消息导致 API 兼容性问题
         if not tool_calls and content:
             agent._append_assistant_msg(content, reasoning)
+
+    @staticmethod
+    async def _recover_context_overflow(agent: Any) -> bool:
+        """上下文溢出恢复：强制压缩历史，返回是否发生了缩减。"""
+        recover = getattr(agent, "recover_context_overflow", None)
+        if not callable(recover):
+            return False
+        try:
+            return await asyncio.to_thread(recover)
+        except Exception:
+            _logger.debug("上下文溢出恢复失败", exc_info=True)
+            return False
+
+    @staticmethod
+    async def _reload_request_call(agent: Any, call: dict) -> dict:
+        """压缩后按最新消息重建请求（保留原路由/工具/展示）。"""
+        reloaded = dict(call)
+        reloaded["messages"] = agent.messages
+        return await _event_facets.request(agent, reloaded)
 
     async def _fire_on_exception_async(self, ctx: PipelineContext, exc: Exception) -> None:
         """触发所有异步中间件的 on_exception 钩子

@@ -413,6 +413,32 @@ class BackgroundTaskChangedEvent(DisplayEvent):
     subagent_count: int = 0
 
 
+# ── 上下文压缩（compaction）状态 ────────────────────────
+
+@dataclass(frozen=True)
+class CompactionChangedEvent(DisplayEvent):
+    """上下文压缩状态变更 — 压缩开始 / 完成 / 失败时发布。
+
+    主 Agent（label="main"）与每个 SubAgent（label="agent-*" / "sa-*"）都
+    发布自己的压缩状态；TUI 聚合全部 label 后在模式行行首显示压缩中的
+    数量（``compact · N``），并在完成/失败时输出一条通知。
+
+    Attributes:
+        label: Agent 标识（主 Agent 为 "main"，SubAgent 为自身 label）。
+        phase: 阶段（"started" / "finished" / "failed"）。
+        count: 本次压缩遮蔽的历史条数。
+        tokens: 本次压缩释放的估算 token。
+        saved_tokens: 摘要替代后净释放 token。
+        detail: 失败原因或补充说明（如范围）。
+    """
+    label: str = ""
+    phase: str = ""
+    count: int = 0
+    tokens: int = 0
+    saved_tokens: int = 0
+    detail: str = ""
+
+
 # ── 事件类型注册表（登记到 type_registry，域 display） ──────
 
 #: 内置显示事件类型声明（类名 → 类）——每项由清单中的独立插件条目注册。
@@ -429,6 +455,7 @@ _DISPLAY_EVENT_TYPES: dict = {
         SubagentPromptEvent,
         AgentResultEvent,
         BackgroundTaskChangedEvent,
+        CompactionChangedEvent,
     )
 }
 

@@ -156,6 +156,11 @@ def _normal_bottom_area(model, width: int) -> list:
             #   use_memo deps 变化 → 模式行行首即时刷新。
             "bg_bash_count": model.status.bg_bash_count,
             "bg_subagent_count": model.status.bg_subagent_count,
+            # ★ 上下文压缩状态（2026-10 用户需求：压缩时有 TUI 显示）——
+            #   正在压缩的 Agent 数（主 + subagent 聚合），>0 时模式行行首
+            #   显示 compact · N；由 CompactionChangedEvent → CompactionCmd
+            #   更新 model.status，props 变化驱动 InputArea 重渲染。
+            "compaction_active": model.status.compaction_active,
             # 方向D 步骤14：Ctrl+R 反向历史搜索状态（input-area 渲染覆盖行）
             "history_search": model.history_search,
             # ★ 标准 React Ink 组件化（2026-08-05）：InputArea 标准组件接收

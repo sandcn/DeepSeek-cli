@@ -672,6 +672,19 @@ def _do_bg_bash_count(model, cmd) -> None:
     model.status.bg_subagent_count = max(0, sa_count)
 
 
+def _do_compaction(model, cmd) -> None:
+    """上下文压缩状态更新（模式行行首 ``compact · N``）。
+
+    由 CompactionChangedEvent → CompactionCmd 驱动，更新当前正在压缩的
+    Agent 数量（主 Agent + 全部 SubAgent 聚合）。
+    """
+    try:
+        active = int(getattr(cmd, "active", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        active = 0
+    model.status.compaction_active = max(0, active)
+
+
 #: 同帧合并的增量文本命令（纯追加语义，合并后渲染结果等价）
 _COALESCE_TEXT_CIDS: frozenset = frozenset({
     int(RenderCommand.CONTENT), int(RenderCommand.REASONING),
@@ -744,6 +757,7 @@ _HANDLERS: dict[int, object] = {
     RenderCommand.SUBAGENT_MARKDOWN: _do_subagent_markdown,
     RenderCommand.CLEAR_MSGS: _do_clear_msgs,
     RenderCommand.BG_BASH_COUNT: _do_bg_bash_count,
+    RenderCommand.COMPACTION: _do_compaction,
 }
 
 __all__ = ["apply_cmd", "coalesce_commands", "build_user_line", "build_assistant_line"]

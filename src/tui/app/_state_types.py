@@ -482,6 +482,8 @@ class StatusState:
     bg_bash_count: int = 0
     #: 后台 subagent 任务总数（主 agent 派发，运行中未完成）
     bg_subagent_count: int = 0
+    #: 正在压缩上下文的 Agent 总数（主 agent + 全部 subagent 聚合）
+    compaction_active: int = 0
 
 
 @dataclass

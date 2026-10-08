@@ -139,6 +139,33 @@ DEFAULTS = {
     # 文件路径仍走同一插入/规范化路径）；False = 不协商，回退「单次输入
     # 多字符」启发式识别粘贴。
     "tui_bracketed_paste": True,
+    # ── 上下文压缩（compaction，dsh 同款语义） ──
+    # 设上下文窗口为 W、请求输出预留为 O、额外压力余量 B：
+    #   触发阈值 thresholdTokens = floor(min(W * threshold_ratio, W - O - B))
+    #   逐字保留尾部 retainTokens = floor((W - O) * retain_ratio)
+    # 逐 provider/model 精确覆盖走 model_policies（每项形如
+    # {"provider":..,"model":..,"threshold_ratio":..}）。
+    # prune_* 为无模型的工具结果头/中/尾剪枝预算。
+    "compaction": {
+        "enabled": True,
+        "auto": True,
+        "threshold_ratio": 0.8,
+        "headroom_tokens": 65536,
+        # 逐字保留的近期对话：默认用 retain_ratio；显式改配 retain_tokens
+        # 时二者互斥（不要再提供 retain_ratio）——见 core.compaction.config。
+        "retain_ratio": 0.16,
+        "max_tokens": 65536,
+        "compaction_retries": 1,
+        "max_overflow_retries": 1,
+        "reserved_tokens": 0,
+        "summarization_provider": "",
+        "summarization_model": "",
+        "model_policies": [],
+        "prune_enabled": True,
+        "prune_threshold_chars": 8192,
+        "prune_head_chars": 4096,
+        "prune_tail_chars": 1024,
+    },
     # 技能（skill）子系统配置
     "skills": {
         "enabled": True,
@@ -256,6 +283,13 @@ CONFIG_KEYS = {
         "rc_path": ("auto_force_compress_threshold",),
         "type": int,
         "default": DEFAULTS["auto_force_compress_threshold"],
+        "cacheable": True,
+    },
+    # ---- 上下文压缩（dsh 同款 compaction 策略） ----
+    "COMPACTION": {
+        "rc_path": ("compaction",),
+        "type": dict,
+        "default": DEFAULTS["compaction"],
         "cacheable": True,
     },
     # ---- 布尔配置 ----

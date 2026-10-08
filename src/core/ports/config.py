@@ -119,6 +119,17 @@ class ConfigPort(ABC):
         """获取 summary_token_budget 配置值"""
         ...
 
+    def get_compaction_config(self) -> dict:
+        """获取上下文压缩（compaction）配置字典。
+
+        默认返回内置默认值；实现可覆盖为读取用户配置。字段见
+        ``src.config.defaults.DEFAULTS["compaction"]``，由
+        ``src.core.compaction.resolve_config`` 校验。
+        """
+        from ...config.defaults import DEFAULTS
+
+        return dict(DEFAULTS.get("compaction", {}))
+
     # ── 并行执行配置 ──────────────────────────────────
 
     @abstractmethod

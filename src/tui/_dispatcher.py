@@ -19,6 +19,7 @@ from src.tui._const import (
     MainPhaseCmd,
     SubagentMarkdownCmd,
     BgBashCountCmd,
+    CompactionCmd,
     NotificationCmd,
     _CLEAR_PARSE_LINE,
     is_agent_source,
@@ -103,6 +104,9 @@ class EventDispatcher:
         #   事件分发热路径锁开销）。
         self._bg_bash_counts: dict[str, int] = {}
         self._bg_subagent_counts: dict[str, int] = {}
+        # 压缩中 Agent 集合（label → True）：主 Agent 与全部 SubAgent 的压缩
+        # 状态聚合后在模式行行首显示 ``compact · N``。
+        self._compaction_active: dict[str, bool] = {}
 
     @staticmethod
     def _default_filter_fn(source: str | None) -> bool:
@@ -179,6 +183,7 @@ class EventDispatcher:
             _ET.AgentResultEvent: self._on_agent_result,
             _ET.BackgroundTaskChangedEvent: self._on_bg_bash_changed,
             _ET.ToolNoticeEvent: self._on_tool_notice,
+            _ET.CompactionChangedEvent: self._on_compaction,
         }
         for group in self._handler_groups.values():
             result.update(group)
@@ -374,6 +379,39 @@ class EventDispatcher:
             count=sum(self._bg_bash_counts.values()),
             subagent_count=sum(self._bg_subagent_counts.values()),
         ))
+
+    def _on_compaction(self, event) -> None:
+        """上下文压缩状态变更：聚合压缩中的 Agent 数并显示结果通知。
+
+        所有 Agent（主 Agent "main" + 全部 SubAgent）的压缩状态都进入
+        模式行行首 ``compact · N``；完成/失败时输出一条通知块。
+        """
+        label = event.label or "main"
+        phase = str(getattr(event, "phase", "") or "")
+        if phase == "started":
+            self._compaction_active[label] = True
+        else:
+            self._compaction_active.pop(label, None)
+        self._push_cmd(CompactionCmd(active=len(self._compaction_active)))
+
+        if phase == "finished":
+            try:
+                count = max(0, int(getattr(event, "count", 0) or 0))
+            except (TypeError, ValueError, OverflowError):
+                count = 0
+            try:
+                saved = max(0, int(getattr(event, "saved_tokens", 0) or 0))
+            except (TypeError, ValueError, OverflowError):
+                saved = 0
+            prefix = "" if label == "main" else f"[{label}] "
+            self._push_cmd(NotificationCmd(
+                text=f"{prefix}压缩 {count} 条消息，节省 ~{saved}t",
+            ))
+        elif phase == "failed":
+            detail = str(getattr(event, "detail", "") or "")
+            prefix = "" if label == "main" else f"[{label}] "
+            text = f"{prefix}压缩失败: {detail}" if detail else f"{prefix}压缩失败"
+            self._push_cmd(NotificationCmd(text=text))
 
 
 __all__ = ["EventDispatcher"]

@@ -345,6 +345,8 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | `/clear` | — | 清空对话（保留系统提词） |
 | `/loop <N> <提词>` | — | 循环执行 N 次指定提词（每轮第1次用用户提词，第2次用固定提词"继续完成所有"） |
 | `/pin` | — | 标记重要消息（压缩时保留） |
+| `/compact` | — | 压缩上下文历史：把最旧的平衡范围替换为一条结构化检查点（保留近期尾部），报告压缩条数与节省 token；压缩过程在模式行显示 `compact · N` |
+| `/context [256k\|1m\|tokens]` | — | 显示当前上下文窗口、使用率与压缩预算（阈值/保留尾部/剪枝）；带参数写入模型上下文窗口，后续请求与自动压缩按新容量实时计算 |
 | `/editmsg` | — | 编辑当前会话消息（同 Ctrl+O） |
 | `/undo` | — | 撤销上一轮对话 |
 | `/retry` | `/r` | 重新生成上一条回答 |
@@ -683,7 +685,8 @@ ChatUIConsumer
 │   │   ├── state_machine.py   # 会话状态机（INIT→IDLE→RUNNING→COMPLETED/INTERRUPTED）
 │   │   ├── subagent.py        # SubAgent 子代理（含 _TOOL_EXCLUSION_MAP 工具权限策略）
 │   │   ├── pipeline.py        # Pipeline 中间件管道（Model-Execute 循环编排）
-│   │   ├── compression.py     # 上下文压缩（策略模式）
+│   │   ├── compaction/        # dsh 同款上下文压缩（config/region/checkpoint/pruner/summarizer/engine）
+│   │   ├── compression.py     # 上下文压缩（策略模式，回退链）
 │   │   ├── context_manager.py # 上下文管理器 + 消息上限控制
 │   │   ├── context_selector.py / context_summarizer.py
 │   │   ├── message_queue.py   # MessageQueue 异步消息队列
@@ -865,7 +868,7 @@ CLI 顶层子命令、TUI 键位绑定与特殊键处理器、工具表现（类
 
 ### UI 事件总线（`src/tui/events/`）
 
-显示层事件系统，定义 **24 种 `DisplayEvent`** 类型（生命周期/工具调用/Agent 状态/模型阶段/流式内容/附加状态/通用输出/用户交互），基于 `CoreEventBus` 底层发布机制实现。`DisplayEventBus` 对 `DisplayEvent` 子类提供类型安全包装，与核心事件（字符串类型）并行独立运作，确保终端共享相同的事件语义。
+显示层事件系统，定义 **25 种 `DisplayEvent`** 类型（生命周期/工具调用/Agent 状态/模型阶段/流式内容/附加状态/通用输出/用户交互/上下文压缩），基于 `CoreEventBus` 底层发布机制实现。其中 `CompactionChangedEvent` 承载压缩开始/完成/失败状态——TUI 聚合主 Agent 与全部 SubAgent 后在模式行行首显示 `compact · N`，并在完成/失败时输出通知。`DisplayEventBus` 对 `DisplayEvent` 子类提供类型安全包装，与核心事件（字符串类型）并行独立运作，确保终端共享相同的事件语义。
 
 ---
 

@@ -426,6 +426,7 @@ class InteractiveLoop:
                     self._monitor, prefill=prompt, input_=input_),
                 context_manager=session.context_manager,
                 session=session,
+                config_port=getattr(session, "_config_port", None),
                 ui_adapter=_ui_adapter,
             )
             # 优先 async_execute（InteractiveCommandPlugin 子类有），

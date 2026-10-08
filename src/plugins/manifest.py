@@ -164,6 +164,7 @@ _EVENT_TYPE_DISPLAY_NAMES = (
     "SubagentPromptEvent",
     "AgentResultEvent",
     "BackgroundTaskChangedEvent",
+    "CompactionChangedEvent",
 )
 
 _EVENT_TYPE_SESSION_NAMES = (
@@ -297,6 +298,10 @@ COMMAND_PLUGIN_ENTRIES = [
      "config": {"command": "src.core.commands.plugins.model_plugin.ModelPlugin", "name": "model"}},
     {"id": "cmd_skill", "plugin": "src.plugins.command_plugin",
      "config": {"command": "src.core.commands.plugins.skill_plugin.SkillPlugin", "name": "skill"}},
+    {"id": "cmd_compact", "plugin": "src.plugins.command_plugin",
+     "config": {"command": "src.core.commands.plugins.compact_plugin.CompactPlugin", "name": "compact"}},
+    {"id": "cmd_context", "plugin": "src.plugins.command_plugin",
+     "config": {"command": "src.core.commands.plugins.context_plugin.ContextPlugin", "name": "context"}},
 ]
 
 # ── 渲染扩展条目（每个内置 handler / filter 一个独立插件条目） ──

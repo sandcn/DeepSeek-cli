@@ -269,7 +269,10 @@ class ContextManager:
                  strategies: Optional[list[CompressionStrategy]] = None,
                  config_port: Optional[ConfigPort] = None,
                  output_port: Optional[OutputPort] = None,
-                 tools: Optional[list] = None):
+                 tools: Optional[list] = None,
+                 event_port=None,
+                 label: str = "main",
+                 activate_global: bool = True):
         self.messages = messages
         self.model = model
         self._on_changed = on_messages_changed
@@ -280,9 +283,19 @@ class ContextManager:
         self._lock = threading.RLock()
         self._config_port = config_port or DefaultConfigAdapter()
         self._output_port = output_port
+        # ★ 压缩显示事件端口（TUI 模式行/通知显示压缩状态）与 Agent label。
+        self._event_port = event_port
+        self.label = label or "main"
+        # ★ 是否参与全局上下文使用率快照（主 Agent True；SubAgent False——
+        #   子代理拥有独立上下文，写入全局会覆盖主 Agent 的百分比与流式
+        #   增量目标实例）。
+        self._publish_usage = bool(activate_global)
 
         # 增量统计缓存（惰性同步）
         self._cache = MessageStatsCache()
+
+        # dsh 同款压缩引擎（惰性创建；配置禁用/不可解析时回退旧策略链）
+        self._engine = None
 
         # 提示缓存（无锁读取，用于 get_compress_hint）
         self._hint_chars = 0
@@ -324,7 +337,10 @@ class ContextManager:
         #   常驻显示 ``main · N%``（含系统提词 + 工具列表基础上下文，不再
         #   因「程序没跑」隐藏或归零；上一会话残留值一并覆盖）。
         # 注册为活跃实例（流式管线实时刷新经 update_streaming_usage 访问）。
-        set_active_context_manager(self)
+        # SubAgent（activate_global=False）不注册——避免覆盖主 Agent 的
+        # 全局百分比快照与流式增量目标。
+        if self._publish_usage:
+            set_active_context_manager(self)
         self.refresh_usage()
 
     def update_model(self, model):
@@ -434,6 +450,10 @@ class ContextManager:
     def check_and_compress(self, force=False):
         """检查并执行上下文压缩。
 
+        优先走 dsh 同款压缩引擎（阈值 = ``min(W × thresholdRatio, W − O − B)``，
+        保留尾部 = ``(W − O) × retainRatio``，结构化检查点摘要 + 工具结果剪枝）；
+        引擎不可用（未配置 / 配置禁用 / 解析失败）时回退内置策略链。
+
         Args:
             force: 是否强制全量压缩
         """
@@ -447,6 +467,18 @@ class ContextManager:
             # 确保缓存已同步
             self._ensure_cache()
 
+            # ── dsh 同款压缩引擎优先 ──────────────────────────
+            engine = self._get_engine()
+            if engine is not None and engine.is_enabled():
+                try:
+                    from .compaction import CompactionTrigger
+
+                    engine.compact_if_needed(trigger=CompactionTrigger.PRESSURE, force=force)
+                    return
+                except Exception:
+                    _logger.debug("压缩引擎执行失败，回退策略链", exc_info=True)
+
+            # ── 回退：内置策略链 ──────────────────────────────
             total_chars_val = self._cache.total_chars
             # 图片视觉 token 计入压缩判断的 token 口径（字符口径不含图片）。
             total_tokens_val = self._cache.total_tokens + self._messages_image_tokens()
@@ -456,6 +488,118 @@ class ContextManager:
                 return
 
             self._do_compress(force)
+
+    # ── dsh 同款压缩引擎：构造与上下文测量/落地 ──────────────
+
+    def _get_engine(self):
+        """惰性构造压缩引擎（失败返回 None → 回退策略链）。"""
+        if self._engine is not None:
+            return self._engine
+        try:
+            from .compaction import CompactionEngine
+
+            self._engine = CompactionEngine(
+                self,
+                self._summarize_fn,
+                self._config_port,
+                event_port=self._event_port,
+                output_port=self._output_port,
+                label=getattr(self, "label", "main"),
+            )
+        except Exception:
+            _logger.debug("构造压缩引擎失败", exc_info=True)
+            return None
+        return self._engine
+
+    def ensure_cache(self) -> None:
+        """公开的缓存同步入口（供压缩引擎读取 token 口径）。"""
+        with self._lock:
+            self._ensure_cache()
+
+    def measure_context(self) -> tuple[int, int]:
+        """返回当前上下文的 (总字符, 总 token)。
+
+        token 口径含图片视觉 token 与工具列表（与上下文使用率统计一致）。
+        """
+        with self._lock:
+            self._ensure_cache()
+            chars = self._cache.total_chars
+            tokens = (self._cache.total_tokens + self._messages_image_tokens()
+                      + self._tools_tokens())
+            return chars, tokens
+
+    def message_token(self, index: int) -> tuple[int, int]:
+        """返回单条消息的 (字符, 文本 token)（不含图片视觉 token）。"""
+        with self._lock:
+            self._ensure_cache()
+            return self._cache.get_per_msg(index)
+
+    def apply_replacement(self, start: int, end: int, message: dict) -> None:
+        """把 ``[start, end]`` 的连续消息替换为单条消息（压缩落地）。
+
+        同步更新增量缓存、通知沙盒索引平移并刷新上下文使用率快照。
+        """
+        with self._lock:
+            messages = self.messages
+            removed = list(range(start, end + 1))
+            for idx in sorted(removed, reverse=True):
+                if 0 <= idx < len(messages):
+                    messages.pop(idx)
+            insert_at = min(max(0, start), len(messages))
+            messages.insert(insert_at, message)
+            if self._cache.is_valid:
+                self._cache.on_remove(removed)
+                self._cache.on_insert(insert_at, message)
+                self._hint_chars = self._cache.total_chars
+            else:
+                self._hint_chars = 0
+            self._notify_changed({"type": "remove", "indices": removed})
+            self._notify_changed({"type": "insert", "index": insert_at})
+            self.refresh_usage()
+
+    def compact_now(self):
+        """显式压缩当前上下文一次（``/compact``）。
+
+        Returns:
+            CompactionResult，无可安全压缩范围时返回 None。
+
+        Raises:
+            CompactionError: 引擎未启用或摘要失败（见 ``.compaction``）。
+        """
+        from .compaction import ManualCompactionError
+
+        engine = self._get_engine()
+        if engine is None or not engine.is_enabled():
+            raise ManualCompactionError("busy", "压缩功能不可用")
+        with self._lock:
+            if not self._has_compressible_messages(self.messages):
+                return None
+            self._ensure_cache()
+            return engine.compact_now()
+
+    def compact_for_overflow(self):
+        """上下文溢出恢复：强制压缩并返回结果（供模型调用重试路径使用）。
+
+        Returns:
+            CompactionResult 或 None（未启用 / 无可压缩范围）。
+        """
+        engine = self._get_engine()
+        if engine is None or not engine.is_enabled() or not engine.is_auto():
+            return None
+        from .compaction import CompactionTrigger
+
+        with self._lock:
+            if not self._has_compressible_messages(self.messages):
+                return None
+            try:
+                return engine.compact_if_needed(
+                    trigger=CompactionTrigger.CONTEXT_OVERFLOW, force=True,
+                )
+            except Exception:
+                _logger.debug("溢出恢复压缩失败", exc_info=True)
+                return None
+
+
 
     @staticmethod
     def _has_compressible_messages(messages) -> bool:
@@ -667,7 +811,12 @@ class ContextManager:
         check_and_compress 持锁路径（_ensure_cache）串行化，避免流式线程
         （update_streaming_usage）与压缩线程并发重建 _cache；RLock 可重入，
         持锁调用方（_ensure_cache 等）嵌套进入安全。
+
+        注：SubAgent（``activate_global=False``）不参与全局快照，本方法直接
+        返回（子代理上下文独立，不覆盖主 Agent 的显示）。
         """
+        if not getattr(self, "_publish_usage", True):
+            return
         try:
             ctx_tokens = self._config_port.get_model_context_tokens()
             if ctx_tokens <= 0:

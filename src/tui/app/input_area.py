@@ -209,7 +209,8 @@ _S_CTX_EMPTY = Style(fg=238)
 
 
 def _build_bg_task_prefix(ctx_percent: "float | None",
-                          bash_count: int, subagent_count: int) -> "Line":
+                          bash_count: int, subagent_count: int,
+                          compaction_active: int = 0) -> "Line":
     """构建模式行行首的信息前缀（main 进度条 · bash · N · subagent · N）。
 
     显示格式（2026-08-19 用户需求 + 2026-10-07 进度条增强）：
@@ -218,6 +219,8 @@ def _build_bg_task_prefix(ctx_percent: "float | None",
         空格深灰；ctx_percent 为 None 时不显示）；
       - bash/subagent 段：``bash · 1 · subagent · 1``——后台任务计数，
         对应计数 <=0 的项不显示；
+      - compact 段：``compact · 1``——正在压缩上下文的 Agent 数（主 Agent +
+        全部 SubAgent 聚合），0 时不显示；
       - 全部不可用时返回空行（调用方不显示前缀）。
     格式中 ``·`` 为行内分隔符（U+00B7，与模式行/状态栏分隔符同字符），
     前缀整体亮青强调（_S_ACCENT——上下文占用与后台任务均为运行中活跃
@@ -249,7 +252,8 @@ def _build_bg_task_prefix(ctx_percent: "float | None",
         line.append("]", _S_CTX_EMPTY)
         line.append(f" {pct:.1f}%", _S_ACCENT)
         first = False
-    for label, count in (("bash", bash_count), ("subagent", subagent_count)):
+    for label, count in (("bash", bash_count), ("subagent", subagent_count),
+                         ("compact", compaction_active)):
         if count <= 0:
             continue
         if not first:
@@ -262,7 +266,7 @@ def _build_bg_task_prefix(ctx_percent: "float | None",
 def _build_mode_line(width: int, mode,
                      ctx_percent: "float | None" = None,
                      bash_count: int = 0, subagent_count: int = 0,
-                     input_rows: int = 0) -> Line:
+                     input_rows: int = 0, compaction_active: int = 0) -> Line:
     """构建主 Agent 运行模式行（时间戳分隔线下方，行首信息 + 最右模式）。
 
     Ctrl+B 循环切换三态模式（``src/prompt_builder.builder.get_mode()``）：
@@ -296,8 +300,10 @@ def _build_mode_line(width: int, mode,
     text = _mode_text(mode_key)
     style = _mode_style(mode_key)
     line = Line()
-    # 行首信息前缀（main 进度条 + N% · bash · N · subagent · N；全部不可用为空）
-    prefix = _build_bg_task_prefix(ctx_percent, bash_count, subagent_count)
+    # 行首信息前缀（main 进度条 + N% · bash · N · subagent · N · compact · N；
+    # 全部不可用为空）
+    prefix = _build_bg_task_prefix(ctx_percent, bash_count, subagent_count,
+                                   compaction_active)
     # ★ 2026-10-07（输入区体验）：多行输入指示（输入含显式换行 / 多行粘贴时
     #   在行首追加 ``↵ N 行``，便于用户感知当前编辑的是多行内容）。
     if input_rows and input_rows > 1:
@@ -364,6 +370,12 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
         subagent_count = int(props.get("bg_subagent_count", 0) or 0)
     except (TypeError, ValueError, OverflowError):
         subagent_count = 0
+    # ★ 上下文压缩状态（2026-10 用户需求：压缩时有 TUI 显示）——正在压缩的
+    #   Agent 数（主 + subagent 聚合），>0 时模式行行首显示 compact · N。
+    try:
+        compaction_active = int(props.get("compaction_active", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        compaction_active = 0
     # ★ 主 Agent 上下文使用百分比（2026-08-19 用户需求：模式行行首 main 段）。
     #   经全局快照 O(1) 无锁读取（context_manager 缓存同步点写入）——性能好：
     #   渲染线程每帧零计算（无除法/无扫描）；异常回退 None（不显示）。
@@ -473,6 +485,8 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
         #   （app.py 经 model.status 传入 props）。
         bash_count,
         subagent_count,
+        # ★ 上下文压缩中的 Agent 数（模式行行首 compact · N 即时刷新）
+        compaction_active,
         # ★ 主 Agent 上下文使用百分比——全局快照变化（ContextManager 缓存
         #   同步点写入）时模式行行首 main 段即时刷新。None 归一化为 -1
         #   （int 值比较，避免 None/str 混入 key 类型不一致）。
@@ -651,6 +665,7 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
     lines.append(_build_mode_line(
         width, mode, ctx_percent, bash_count, subagent_count,
         input_rows=text.count("\n") + 1 if text else 0,
+        compaction_active=compaction_active,
     ))
 
     # ★ 快照缓存写回（方向4）：未命中重建后更新缓存（同快照下次命中）
@@ -999,6 +1014,10 @@ def _input_snap_key(props: dict, width: int, now: float, fading: bool = False):
         subagent_count = int(props.get("bg_subagent_count", 0) or 0)
     except (TypeError, ValueError, OverflowError):
         subagent_count = 0
+    try:
+        compaction_active = int(props.get("compaction_active", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        compaction_active = 0
     # ★ 主 Agent 上下文使用百分比（2026-08-19 用户需求）——进 use_memo deps：
     #   ContextManager 缓存同步点更新全局快照后 InputArea 重建（模式行行首
     #   main 段即时刷新）。O(1) 无锁读（性能好）；异常回退 None → -1。
@@ -1034,6 +1053,8 @@ def _input_snap_key(props: dict, width: int, now: float, fading: bool = False):
         # ★ 后台任务计数（bash/subagent 分列）——模式行行首显示即时刷新
         bash_count,
         subagent_count,
+        # ★ 上下文压缩中的 Agent 数（模式行行首 compact · N 即时刷新）
+        compaction_active,
         # ★ 主 Agent 上下文使用百分比——模式行行首 main 段即时刷新
         ctx_percent_key,
         # history_search 指纹（局部变量提取——一次 props.get）

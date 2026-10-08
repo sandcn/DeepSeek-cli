@@ -108,6 +108,10 @@ class MockConfigAdapter(ConfigPort):
     def get_summary_token_budget(self) -> int:
         return int(self._data.get("summary_token_budget", 2000))
 
+    def get_compaction_config(self) -> dict:
+        raw = self._data.get("compaction")
+        return dict(raw) if isinstance(raw, dict) else {}
+
     # ── 并行执行配置 ──────────────────────────────────
 
     def get_stagger_min_delay(self) -> float:

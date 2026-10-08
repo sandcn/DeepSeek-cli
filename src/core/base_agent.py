@@ -156,6 +156,69 @@ class BaseAgent:
 
     # ── 消息管理 ──────────────────────────────────────
 
+    # ── 上下文压缩（dsh 同款，所有 Agent 通用） ──────────
+
+    def _context_manager(self):
+        """返回本 Agent 的 ContextManager（不存在时为 None）。"""
+        return getattr(self, "context_manager", None)
+
+    def maybe_compact(self) -> bool:
+        """自动压缩检查（dsh ``agent/pre-step`` 等价物）。
+
+        仅当压缩已启用且 ``auto`` 打开时执行；未达阈值 / 配置禁用时静默返回。
+        主 Agent 与 SubAgent 共用本方法，SubAgent 在每次模型调用前调用。
+
+        Returns:
+            True 表示执行了一次压缩检查（不代表一定发生压缩）。
+        """
+        cm = self._context_manager()
+        if cm is None:
+            return False
+        engine = cm._get_engine() if hasattr(cm, "_get_engine") else None
+        if engine is not None:
+            try:
+                if not engine.is_enabled() or not engine.is_auto():
+                    return False
+            except Exception:
+                _logger.debug("读取压缩开关失败", exc_info=True)
+                return False
+        try:
+            cm.check_and_compress(force=False)
+            return True
+        except Exception:
+            _logger.debug("自动压缩检查失败", exc_info=True)
+            return False
+
+    def compact_context(self, force: bool = True):
+        """手动执行一次上下文压缩（``/compact`` 使用）。
+
+        Args:
+            force: 是否强制压缩（跳过阈值判定）。
+
+        Returns:
+            ContextManager.check_and_compress 的返回值；无上下文管理器时 None。
+        """
+        cm = self._context_manager()
+        if cm is None:
+            return None
+        return cm.check_and_compress(force=force)
+
+    def recover_context_overflow(self) -> bool:
+        """上下文窗口溢出恢复：强制压缩并返回是否发生了缩减。
+
+        供模型调用失败（提供方确认溢出）后的重试路径调用；未启用压缩 /
+        无可安全范围时返回 False。
+        """
+        cm = self._context_manager()
+        if cm is None or not hasattr(cm, "compact_for_overflow"):
+            return False
+        try:
+            result = cm.compact_for_overflow()
+        except Exception:
+            _logger.debug("上下文溢出恢复失败", exc_info=True)
+            return False
+        return bool(result is not None and getattr(result, "success", False))
+
     def _refresh_context_usage(self) -> None:
         """消息变更后刷新上下文使用率全局快照（TUI 模式行行首动态刷新）。
 

@@ -431,6 +431,9 @@ class ChatSession:
             # ★ 工具列表 schemas（上下文使用率统计的一部分——工具随系统提词
             #   一起发送给模型，须计入上下文占用）
             tools=getattr(self._agent, "tools", None),
+            # ★ 压缩显示事件端口 + Agent label（TUI 压缩状态显示）
+            event_port=getattr(self._agent, "_event_port", None),
+            label=getattr(self._agent, "label", None) or "main",
         )
         if _cm_factory is not None:
             self._ctx_mgr = _cm_factory(**_cm_kwargs)

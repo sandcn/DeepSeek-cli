@@ -15,6 +15,7 @@ from typing import List, Dict, Any, Optional, Tuple, Callable
 
 from .base_agent import BaseAgent
 from .tool_executor_async import ToolScheduler
+from .compaction.errors import is_context_overflow_error
 from .exceptions import is_network_error
 from ..tools.tool_policy import TOOL_EXCLUSION_MAP, get_excluded_tools
 # 旧私有名 re-export 兼容（既有测试/外部引用沿用）
@@ -26,6 +27,10 @@ _logger = logging.getLogger(__name__)
 # ── 网络错误重试上限 ────────────────────────────────────
 # SubAgent.run() 中每次独立模型调用最多重试 3 次（含首次）
 _NETWORK_RETRY_MAX = 3
+
+# ── 上下文溢出恢复次数上限（与 dsh compaction-basic 默认一致） ──
+# 提供方确认上下文窗口超限时，压缩历史后重试该请求的次数。
+_MAX_OVERFLOW_RETRIES = 1
 
 class SubAgent(BaseAgent):
     """独立子代理，在独立线程中运行"""
@@ -86,6 +91,27 @@ class SubAgent(BaseAgent):
         # 在 asyncio 单线程中通过 thread local 互相覆盖 parent_idx，
         # 同时防止 SubAgent 自身消息索引污染 SandboxManager 全局索引。
         self._skip_sandbox_update = True
+
+        # ── 上下文压缩（dsh 同款）：SubAgent 拥有独立 ContextManager ──
+        # 与主 Agent 共用同一套压缩引擎（阈值/保留尾部/结构化检查点/剪枝），
+        # SubAgent 因此也能在长任务中自动压缩，不再受上下文窗口限制。
+        try:
+            from .context_manager import ContextManager
+
+            self.context_manager = ContextManager(
+                messages=self.messages,
+                model=self.model,
+                config_port=self.get_config_port(),
+                tools=self.tools,
+                event_port=self._event_port,
+                label=self.label,
+                # 子代理上下文独立：不写入全局上下文使用率快照（避免覆盖
+                # 主 Agent 的模式行百分比与流式增量目标实例）。
+                activate_global=False,
+            )
+        except Exception:
+            self.context_manager = None
+            _logger.debug("SubAgent 创建 ContextManager 失败", exc_info=True)
 
         self.display = None
         self._display_port = None
@@ -225,8 +251,12 @@ class SubAgent(BaseAgent):
         content = ""
 
         while True:
-            # ── 模型调用（含网络错误重试） ──────────────
+            # ── 自动压缩（dsh agent/pre-step 等价物）：模型调用前检查 ──
+            await self._compact_if_needed()
+
+            # ── 模型调用（含网络错误重试 + 上下文溢出恢复） ──
             retry_count = 0
+            overflow_retries = 0
             while retry_count < _NETWORK_RETRY_MAX:
                 try:
                     reasoning, content, usage, tool_calls = await self._call_model_impl(
@@ -240,6 +270,16 @@ class SubAgent(BaseAgent):
                 except asyncio.CancelledError:
                     raise  # 透传取消信号到外层统一处理
                 except Exception as e:
+                    # 上下文窗口溢出：压缩历史后重试（不计入网络重试预算）
+                    if (overflow_retries < _MAX_OVERFLOW_RETRIES
+                            and is_context_overflow_error(None, e)
+                            and await self._recover_context_overflow()):
+                        overflow_retries += 1
+                        _logger.warning(
+                            "SubAgent %s 上下文溢出，压缩后重试 (第%d次)",
+                            self.label, overflow_retries,
+                        )
+                        continue  # 重新调用模型
                     if retry_count < _NETWORK_RETRY_MAX - 1 and is_network_error("", e):
                         retry_count += 1
                         _logger.warning(
@@ -252,6 +292,17 @@ class SubAgent(BaseAgent):
                         })
                         continue  # 重新调用模型
                     return self._handle_model_error(e)
+
+                # ── 模型返回错误文本（不抛异常）时的溢出恢复 ──
+                if (not tool_calls and overflow_retries < _MAX_OVERFLOW_RETRIES
+                        and is_context_overflow_error(content)
+                        and await self._recover_context_overflow()):
+                    overflow_retries += 1
+                    _logger.warning(
+                        "SubAgent %s 上下文溢出（错误文本），压缩后重试 (第%d次)",
+                        self.label, overflow_retries,
+                    )
+                    continue  # 重新调用模型
 
                 # ── 模型调用成功，检查返回内容是否含网络错误 ──
                 # API 层重试用尽后返回错误字符串（不抛异常），需在此检测
@@ -301,6 +352,25 @@ class SubAgent(BaseAgent):
                 return f"工具调用处理失败: {e}"
 
     # =================== 内部方法 ===================
+
+    async def _compact_if_needed(self) -> None:
+        """模型调用前的自动压缩检查（dsh ``agent/pre-step`` 等价物）。"""
+        if getattr(self, "context_manager", None) is None:
+            return
+        try:
+            await asyncio.to_thread(self.maybe_compact)
+        except Exception:
+            _logger.debug("SubAgent 自动压缩检查异常", exc_info=True)
+
+    async def _recover_context_overflow(self) -> bool:
+        """上下文窗口溢出恢复：压缩历史并返回是否发生了缩减。"""
+        if getattr(self, "context_manager", None) is None:
+            return False
+        try:
+            return await asyncio.to_thread(self.recover_context_overflow)
+        except Exception:
+            _logger.debug("SubAgent 上下文溢出恢复异常", exc_info=True)
+            return False
 
     def _handle_model_error(self, error: BaseException) -> str:
         """模型调用异常处理"""

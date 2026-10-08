@@ -96,6 +96,17 @@ class ConfigProxy(ConfigPort):
     def get_summary_token_budget(self) -> int:
         return _config.SUMMARY_TOKEN_BUDGET
 
+    def get_compaction_config(self) -> dict:
+        """获取上下文压缩（compaction）配置。
+
+        ``_config.COMPACTION`` 在用户未配置时回退内置默认值；用户配置时
+        返回其**整体**配置（浅合并语义）——因此不在本方法内再叠加默认值，
+        避免 ``retain_ratio`` 与 ``retain_tokens`` 两道保留形式被同时注入。
+        缺失字段由 ``core.compaction.config`` 补默认。
+        """
+        raw = getattr(_config, "COMPACTION", None)
+        return dict(raw) if isinstance(raw, dict) else {}
+
     # ── 并行执行配置 ──────────────────────────────────
 
     def get_stagger_min_delay(self) -> float:
@@ -181,6 +192,10 @@ class ConfigProxy(ConfigPort):
     @property
     def AUTO_FORCE_COMPRESS_THRESHOLD(self) -> int:
         return _config.AUTO_FORCE_COMPRESS_THRESHOLD
+
+    @property
+    def COMPACTION(self) -> dict:
+        return _config.COMPACTION
 
     @property
     def ENABLE_NOTIFICATIONS(self) -> bool:

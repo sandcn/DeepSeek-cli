@@ -128,6 +128,7 @@ class RenderCommand(IntEnum):
     SUBAGENT_MARKDOWN = 23  # (23, text: str) — subagent 提词/返回 markdown 消息区块
     CLEAR_MSGS = 24      # (24,) — 清空消息区显示（编辑/加载会话重渲染前使用）
     BG_BASH_COUNT = 25   # (25, count: int) — 后台 bash 任务总数（主 agent + subagent 聚合）
+    COMPACTION = 26      # (26, active: int) — 上下文压缩中的 Agent 数量（主 agent + subagent 聚合）
 
 
 # ═══════════════════════════════════════════════════════════
@@ -261,6 +262,17 @@ class BgBashCountCmd(RenderCmd):
     cid: int = RenderCommand.BG_BASH_COUNT
     count: int = 0
     subagent_count: int = 0
+
+
+@dataclass(frozen=True)
+class CompactionCmd(RenderCmd):
+    """上下文压缩状态更新（模式行行首显示压缩中的 Agent 数量）。
+
+    Attributes:
+        active: 当前正在压缩的 Agent 总数（主 agent + 全部 subagent）。
+    """
+    cid: int = RenderCommand.COMPACTION
+    active: int = 0
 
 
 # ═══════════════════════════════════════════════════════════
