@@ -142,3 +142,19 @@ def test_list_process_elements_rejects_bad_pid():
     assert list_process_elements(0) == []
     assert list_process_elements(-1) == []
     assert list_process_elements("99") == []
+
+
+# ── 按序号过滤（#N） ────────────────────────────────────
+
+def test_filter_elements_by_index():
+    items = [_element(handle=1, top=0), _element(handle=2, top=20),
+             _element(handle=3, top=40)]
+    assert [item.handle for item in filter_elements(items, "#2")] == [2]
+    assert [item.handle for item in filter_elements(items, " #3 ")] == [3]
+
+
+def test_filter_elements_by_index_out_of_range_returns_empty():
+    items = [_element(handle=1), _element(handle=2, top=20)]
+    assert filter_elements(items, "#9") == []
+    assert filter_elements(items, "#0") == []
+    assert filter_elements(items, "#abc") == []

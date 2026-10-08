@@ -173,3 +173,25 @@ async def test_element_reports_no_match(monkeypatch):
     func.set_agent(_FakeAgent({"bg-1": _record()}))
     result = await func.execute()
     assert "没有匹配" in result
+
+
+# ── op=elements 按序号过滤（#N） ─────────────────────────
+
+async def test_elements_filters_by_index(monkeypatch):
+    _patch_elements(monkeypatch)
+    monkeypatch.setattr(BashOptFunc, "_window_frame_for", _fake_frame)
+    func = BashOptFunc(task_id="bg-1", op="elements", element="#2")
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+    payload = json.loads(await func.execute())
+    assert payload["matched"] == 1
+    assert payload["elements"][0]["class"] == "Edit"
+
+
+async def test_elements_reports_empty_filter_result(monkeypatch):
+    _patch_elements(monkeypatch)
+    monkeypatch.setattr(BashOptFunc, "_window_frame_for", _fake_frame)
+    func = BashOptFunc(task_id="bg-1", op="elements", element="#9")
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+    payload = json.loads(await func.execute())
+    assert payload["matched"] == 0 and payload["filter_empty"] is True
+    assert "#N" in payload["hint"] and payload["total"] == 2

@@ -219,3 +219,53 @@ async def test_sequence_without_pid_fails_action_step(monkeypatch):
     payload = json.loads(await func.execute())
     assert payload["failed"] == 1
     assert "尚无进程句柄" in payload["steps"][0]["error"]
+
+
+# ── 步骤级剪贴板 / 换行参数（与单独调用 type 同义） ────────
+
+class _Clipboard:
+    """内存剪贴板替身（记录写入内容）。"""
+
+    def __init__(self, content="原剪贴板"):
+        self.content = content
+        self.writes: list[str] = []
+
+    def install(self, monkeypatch):
+        def _read():
+            return self.content
+
+        def _write(text):
+            self.writes.append(text)
+            self.content = text
+
+        monkeypatch.setattr(bash_opt_module, "read_clipboard_text", _read)
+        monkeypatch.setattr(bash_opt_module, "write_clipboard_text", _write)
+
+
+async def test_sequence_type_step_supports_clipboard_options(monkeypatch):
+    clip = _Clipboard()
+    clip.install(monkeypatch)
+    sent: list = []
+    _patch_send(monkeypatch, sent)
+    func = _agent(BashOptFunc(task_id="bg-1", op="sequence", actions=[
+        {"op": "type", "text": "粘贴文本", "via": "clipboard",
+         "paste_key": "shift+insert", "restore_clipboard": False},
+    ]))
+    payload = json.loads(await func.execute())
+    step = payload["steps"][0]
+    assert step["ok"] is True
+    assert [action.name for action in sent] == ["key"]
+    assert sent[0].shortcut.display() == "shift+insert"
+    assert clip.writes == ["粘贴文本"]      # restore_clipboard=False → 不恢复
+    assert step["result"]["clipboard_restored"] is False
+
+
+async def test_sequence_type_step_appends_newline(monkeypatch):
+    sent: list = []
+    _patch_send(monkeypatch, sent)
+    func = _agent(BashOptFunc(task_id="bg-1", op="sequence", actions=[
+        {"op": "type", "text": "hello", "newline": True},
+    ]))
+    payload = json.loads(await func.execute())
+    assert payload["steps"][0]["ok"] is True
+    assert sent[0].text == "hello\n"

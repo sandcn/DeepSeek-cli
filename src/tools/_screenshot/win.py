@@ -21,6 +21,10 @@ DPI：截图前把进程标记为 DPI 感知（``winapi.ensure_process_dpi_aware
 
 裁剪：``visible_region`` 去黑边后，``crop`` 在剩余像素上裁剪再编码
 （不经过 PNG 解码）；``crop`` 坐标以去黑边后的整窗截图为原点。
+
+可截图性校验：选定目标窗口后先经 :func:`~._screenshot.windows.require_capturable`
+检查（最小化 / 隐藏窗口没有可渲染的客户区，截出来是与界面无关的占位小图），
+命中时给出「先 restore 再截图」的可执行提示，而不是产出误导性的图片。
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ from .windows import (
     main_window,
     mark_main,
     pick_window,
+    require_capturable,
     window_geometry,
 )
 
@@ -127,6 +132,7 @@ class WindowsBackend:
                 f"窗口已最小化/被隐藏时也找不到）"
             )
         target = pick_window(candidates, window)
+        require_capturable(target, window)
         bgra, width, height = capture_window_pixels(target)
         # 产物图左上角对应的屏幕坐标：先取窗口外框，再依次叠加 DWM 黑边裁剪
         # 与 crop 的偏移。模型据此把截图像素换算成屏幕 / 窗口坐标

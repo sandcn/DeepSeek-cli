@@ -157,3 +157,67 @@ async def test_semantic_coordinates_flow_into_action(monkeypatch):
     recorder.clear()
     await _func(op="drag", to_x="right", to_y="bottom").execute()
     assert recorder[0].to_x == "right" and recorder[0].to_y == "bottom"
+
+
+# ── wait_for='stable' 容忍光标闪烁级别的微小噪声 ─────────
+
+def _noisy_temps(tmp_path, size=40):
+    """第 1 帧纯色、之后每帧只改 1 个像素（模拟输入光标闪烁）。"""
+    base = bytearray(size * size * 4)
+    noisy = bytearray(base)
+    noisy[0:4] = bytes((0, 0, 255, 255))
+    frames = [bytes(base), bytes(noisy)]
+    state = {"n": 0}
+
+    async def _impl(self, pid, window):
+        index = min(state["n"], len(frames) - 1)
+        state["n"] += 1
+        path = tmp_path / f"noise-{state['n']}.png"
+        path.write_bytes(png.encode_png_bgra(size, size, frames[index]))
+        return str(path)
+
+    return _impl
+
+
+def _busy_temps(tmp_path, size=40):
+    """每帧大面积变化（模拟动画），用于验证不会被误判为稳定。"""
+    state = {"n": 0}
+
+    async def _impl(self, pid, window):
+        state["n"] += 1
+        data = bytearray(size * size * 4)
+        if state["n"] % 2:
+            for offset in range(0, len(data), 8):
+                data[offset:offset + 4] = bytes((0, 0, 255, 255))
+        path = tmp_path / f"busy-{state['n']}.png"
+        path.write_bytes(png.encode_png_bgra(size, size, bytes(data)))
+        return str(path)
+
+    return _impl
+
+
+async def test_wait_for_stable_ignores_tiny_noise(monkeypatch, tmp_path):
+    """光标闪烁只造成个别像素变化，不应让「等界面稳定」永远失败。"""
+    _fast_wait(monkeypatch)
+    monkeypatch.setattr(BashOptFunc, "_temp_screenshot", _noisy_temps(tmp_path))
+    recorder: list = []
+    _patch_send(monkeypatch, recorder)
+    payload = json.loads(await _func(
+        op="key", key="enter", wait_for="stable").execute())
+    wait = payload["wait_for"]
+    assert wait["satisfied"] is True
+    assert "微小变化" in wait["ignored_change"]
+
+
+async def test_wait_for_stable_still_waits_on_real_changes(monkeypatch, tmp_path):
+    """大面积变化（动画）不能被微小噪声容忍规则误判为稳定。"""
+    _fast_wait(monkeypatch)
+    monkeypatch.setattr(BashOptFunc, "_temp_screenshot", _busy_temps(tmp_path))
+    recorder: list = []
+    _patch_send(monkeypatch, recorder)
+    payload = json.loads(await _func(
+        op="key", key="enter", wait_for="stable",
+        wait_timeout=0.05).execute())
+    wait = payload["wait_for"]
+    assert wait["satisfied"] is False
+    assert "没有稳定" in wait["reason"]

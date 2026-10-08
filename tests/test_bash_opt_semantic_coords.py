@@ -120,3 +120,31 @@ def test_drag_endpoint_uses_resolve_point_on_backend():
     action = build_action("drag", {"from_x": "left", "from_y": "top",
                                    "to_x": "right", "to_y": "bottom"})
     assert action.from_x == "left" and action.to_y == "bottom"
+
+
+# ── 基准偏移（left+20 / right-10 / bottom-30） ──────────
+
+def test_parse_coordinate_anchor_offsets():
+    assert parse_coordinate("left+20", 100) == 20
+    assert parse_coordinate("top+5", 100) == 5
+    assert parse_coordinate("right-10", 100) == 89
+    assert parse_coordinate("bottom-30", 100) == 69
+    assert parse_coordinate("LEFT+20", 100) == 20
+    # 结果自动夹到有效像素范围
+    assert parse_coordinate("left-50", 100) == 0
+    assert parse_coordinate("right+50", 100) == 99
+    # 与既有中心偏移写法共存
+    assert parse_coordinate("center+10", 100) == 60
+
+
+def test_parse_coordinate_anchor_offsets_reject_unknown_anchor():
+    with pytest.raises(ActionError):
+        parse_coordinate("middleish+10", 100)
+    with pytest.raises(ActionError):
+        parse_coordinate("left+", 100)
+
+
+def test_build_action_accepts_anchor_offsets():
+    action = build_action("click", {"x": "left+15", "y": "bottom-20"})
+    assert action.x == "left+15" and action.y == "bottom-20"
+    assert resolve_point(action.x, action.y, 200, 100) == Point(15, 79)

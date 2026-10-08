@@ -33,7 +33,7 @@ import logging
 from dataclasses import dataclass, replace
 from typing import Any, Iterable, Sequence
 
-from .result import ScreenshotError
+from .result import NoWindowError, ScreenshotError
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +306,40 @@ def is_selectable(info: WindowInfo) -> bool:
 def selectable_windows(windows: Sequence[WindowInfo]) -> list[WindowInfo]:
     """过滤出可操作窗口（可见且未最小化，保持原顺序）。"""
     return [item for item in windows if is_selectable(item)]
+
+
+def require_capturable(info: WindowInfo, selector: Any = None) -> None:
+    """校验窗口当前可作为**截图**目标（未最小化且可见），否则抛错。
+
+    最小化窗口没有可渲染的客户区：Windows 会把它的窗口矩形写成
+    ``(-32000, -32000, 237, 39)`` 这类占位值，截图得到的是一张与真实界面
+    毫无关系的小图（既不黑也不像界面），比直接报错更具误导性。隐藏窗口同理。
+
+    选择器 ``'main'`` / ``'#N'`` 通常会避开这类窗口，但**显式**给
+    ``handle:0x…`` / ``title:子串`` / ``main``（当进程树内只剩最小化窗口）
+    时仍可能命中，因此在截图前统一校验。
+
+    Args:
+        info: 已选中的目标窗口。
+        selector: 本次使用的窗口选择器（仅用于错误提示）。
+
+    Raises:
+        NoWindowError: 窗口已最小化或不可见。
+    """
+    if info.minimized:
+        raise NoWindowError(
+            f"窗口「{info.title or '<无标题>'}」（{info.handle_hex}）当前已最小化，"
+            f"截图得不到有效画面（最小化窗口没有可渲染的客户区）。"
+            f"请先 op=window, window_action='restore' 还原窗口后再截图，"
+            f"或改用 op=windows 里其它可操作窗口（本次选择器 "
+            f"{selector or DEFAULT_SELECTOR!r}）"
+        )
+    if not info.visible:
+        raise NoWindowError(
+            f"窗口「{info.title or '<无标题>'}」（{info.handle_hex}）当前不可见，"
+            f"截图得不到有效画面。可用 op=windows 查看可操作窗口清单，"
+            f"或先用 op=window, window_action='restore' / 'activate' 让它显示出来"
+        )
 
 
 #: 「该窗口当前不可被选中」在清单里的序号占位（隐藏 / 最小化窗口）
@@ -749,6 +783,7 @@ __all__ = [
     "parse_control_request",
     "parse_selector",
     "pick_window",
+    "require_capturable",
     "selectable_index",
     "selectable_windows",
     "sort_by_z",

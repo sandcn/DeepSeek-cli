@@ -186,16 +186,19 @@ def list_process_elements(pid: int, window: str | None = None) -> list[ElementIn
 
 def filter_elements(elements: Sequence[ElementInfo],
                     needle: str | None = None) -> list[ElementInfo]:
-    """按控件名 / 类名 / 类型过滤（``needle`` 为空时原样返回）。
+    """按控件名 / 类名 / 类型 / 序号过滤（``needle`` 为空时原样返回）。
 
-    匹配顺序：控件文本 → 类名 → 控件类型（中英文皆可，如 ``edit`` / ``编辑框``、
-    ``button`` / ``按钮``）——与窗口选择器 ``title:`` / ``class:`` 的兜底策略
-    一致，模型可以直接用清单里看到的 ``label`` / ``type`` 去筛选。
+    匹配顺序：``#N``（清单第 N 个控件）→ 控件文本 → 类名 → 控件类型（中英文
+    皆可，如 ``edit`` / ``编辑框``、``button`` / ``按钮``）——与窗口选择器
+    ``title:`` / ``class:`` 的兜底策略一致，模型可以直接用清单里看到的
+    ``label`` / ``type`` / 序号去筛选。
     """
     items = list(elements)
     text = str(needle or "").strip()
     if not text:
         return items
+    if text.startswith("#"):
+        return _filter_by_index(items, text[1:])
     lowered = text.lower()
     matched = [item for item in items if lowered in item.text.lower()]
     if matched:
@@ -216,6 +219,21 @@ def _by_type(elements: Sequence[ElementInfo], needle: str) -> list[ElementInfo]:
         if lowered in kind or (label and lowered in label):
             matched.append(item)
     return matched
+
+
+def _filter_by_index(elements: Sequence[ElementInfo],
+                     raw: str) -> list[ElementInfo]:
+    """按 ``#N`` 取第 N 个控件（清单顺序，从 1 开始；越界返回空列表）。
+
+    与 :func:`match_element` 的 ``#N`` 语义一致，使 ``op=elements`` 的
+    ``element`` 过滤与输入 op 的 ``element`` 定位可以用同一种写法。
+    """
+    try:
+        index = int(str(raw).strip(), 10)
+    except ValueError:
+        return []
+    items = list(elements)
+    return [items[index - 1]] if 1 <= index <= len(items) else []
 
 
 def match_element(elements: Sequence[ElementInfo], query: str) -> ElementInfo:

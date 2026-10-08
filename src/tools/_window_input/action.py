@@ -17,10 +17,11 @@
 
 坐标取值除像素整数外，还支持**语义值**（无需读图算像素）：
 
-  - 关键字 ``center`` / ``middle`` / ``center``：该轴中点；``left`` / ``top``：0；
+  - 关键字 ``center`` / ``middle``：该轴中点；``left`` / ``top``：0；
     ``right`` / ``bottom``：该轴最大像素（尺寸 - 1）；
   - 百分比 ``50%`` / ``25%``：按该轴尺寸比例取值（自动夹到有效范围）；
-  - 相对中心的偏移 ``+20`` / ``-20``：中心 ± 偏移量。
+  - 基准偏移 ``center+20`` / ``left+20`` / ``right-10`` / ``bottom-30``：
+    以中点 / 起点 / 终点为基准再加减像素（结果自动夹到有效范围）。
 
 语义值在**注入时**按目标窗口实际尺寸解析（``resolve_point`` /
 ``validate_point``），因此同一个动作既可以用于不同尺寸的窗口，也不受
@@ -92,13 +93,18 @@ COORD_KEYWORDS: dict[str, float] = {
 #: 百分比坐标（``50%`` / ``12.5 %``）
 _PERCENT_RE = re.compile(r"^\s*([+-]?\d+(?:\.\d+)?)\s*%\s*$")
 
-#: 相对中心偏移（``center+20`` / ``center-12.5`` / ``middle+3``）
-_OFFSET_RE = re.compile(r"^(?:center|middle|centre)\s*([+-]\s*\d+(?:\.\d+)?)$")
+#: 基准 + 像素偏移（``center+20`` / ``left+20`` / ``right-10`` / ``bottom-30``）：
+#: 基准可以是中点（center/middle/centre）、起点（left/top）或终点（right/bottom）。
+_ANCHOR_OFFSET_RE = re.compile(
+    r"^(?P<anchor>center|middle|centre|left|right|top|bottom)"
+    r"\s*(?P<offset>[+-]\s*\d+(?:\.\d+)?)$"
+)
 
 #: 坐标语义值的说明文本（错误提示与 schema 共用）
 COORD_HELP = (
-    "像素整数（>= 0）、'center'、'left'/'right'/'top'/'bottom'、百分比 '50%'，"
-    "或相对中心的偏移 'center+20'/'center-20'"
+    "像素整数（>= 0）、'center'、'left'/'right'/'top'/'bottom'、百分比 '50%'、"
+    "中心偏移 'center+20'/'center-20'，或基准偏移 'left+20'/'right-10'/"
+    "'top+5'/'bottom-30'"
 )
 
 
@@ -131,18 +137,29 @@ def parse_coordinate(value: Any, size: int, *, label: str = "坐标") -> int:
     except ValueError:
         pass
     lowered = text.lower()
-    ratio = COORD_KEYWORDS.get(lowered)
-    if ratio is not None:
-        return _axis_pixels(size * ratio, size)
+    anchor = COORD_KEYWORDS.get(lowered)
+    if anchor is not None:
+        return _axis_pixels(_anchor_position(lowered, size), size)
     percent = _PERCENT_RE.match(text)
     if percent is not None:
         return _axis_pixels(size * float(percent.group(1)) / 100.0, size)
-    offset = _OFFSET_RE.match(lowered)
+    offset = _ANCHOR_OFFSET_RE.match(lowered)
     if offset is not None:
-        return _axis_pixels(size // 2 + float(offset.group(1)), size)
+        base = _anchor_position(offset.group("anchor"), size)
+        return _axis_pixels(base + float(offset.group("offset")), size)
     raise ActionError(
         f"{label} 取值无法识别: {value!r}。支持 {COORD_HELP}"
     )
+
+
+def _anchor_position(keyword: str, size: int) -> float:
+    """语义基准在轴上的像素位置：起点 ``0``、终点 ``size - 1``、中点 ``size // 2``。"""
+    ratio = COORD_KEYWORDS[keyword]
+    if ratio <= 0.0:
+        return 0.0
+    if ratio >= 1.0:
+        return float(size - 1)
+    return float(size // 2)
 
 
 def _axis_pixels(position: float, size: int) -> int:

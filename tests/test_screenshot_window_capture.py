@@ -258,3 +258,43 @@ def test_windows_control_window_reports_selector_error(monkeypatch, fake_windows
     with pytest.raises(SelectorError):
         win_mod.control_window(1234, WindowControlRequest(
             action="activate", selector="title:不存在"))
+
+
+# ── 可截图性校验（最小化 / 隐藏窗口） ─────────────────────
+
+def test_require_capturable_rejects_minimized_and_hidden():
+    from src.tools._screenshot.windows import require_capturable
+
+    minimized = WindowInfo(handle=0x10, pid=1, title="小窗", class_name="C",
+                           width=200, height=100, minimized=True)
+    with pytest.raises(NoWindowError) as error:
+        require_capturable(minimized)
+    assert "最小化" in str(error.value) and "restore" in str(error.value)
+
+    hidden = WindowInfo(handle=0x11, pid=1, title="", class_name="C",
+                        width=200, height=100, visible=False)
+    with pytest.raises(NoWindowError) as error:
+        require_capturable(hidden)
+    assert "不可见" in str(error.value)
+
+    visible = WindowInfo(handle=0x12, pid=1, title="正常", class_name="C",
+                         width=200, height=100)
+    require_capturable(visible)
+
+
+def test_windows_capture_rejects_minimized_target(monkeypatch, tmp_path):
+    """最小化窗口没有可渲染客户区：报错并提示 restore，而不是产出占位小图。"""
+    minimized = WindowInfo(handle=0x101, pid=99, title="主窗口",
+                           class_name="Chrome_WidgetWin_1", width=237,
+                           height=39, minimized=True, main=True)
+    monkeypatch.setattr(win_mod.winapi, "ensure_process_dpi_aware", lambda: None)
+    monkeypatch.setattr(win_mod, "resolve_window_pids", lambda pid: {99})
+    monkeypatch.setattr(win_mod, "enumerate_candidates", lambda pids: [minimized])
+
+    def _no_pixels(candidate):  # pragma: no cover - 不应被调用
+        raise AssertionError("最小化窗口不应抓取像素")
+
+    monkeypatch.setattr(win_mod, "capture_window_pixels", _no_pixels)
+    with pytest.raises(NoWindowError) as error:
+        win_mod.WindowsBackend().capture(1234, str(tmp_path / "shot.png"))
+    assert "最小化" in str(error.value)

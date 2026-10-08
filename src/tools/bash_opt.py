@@ -36,7 +36,8 @@ bash_opt — 按 task_id 操作后台 bash 任务
 - op=clipboard   读写系统剪贴板（clipboard_action=set / get / clear / append）；
                  配合 type 的 via='clipboard'，把长文本 / 特殊字符（中文、
                  emoji、多行）以「粘贴」方式可靠输入（游戏、Electron、
-                 远程桌面都接受）
+                 远程桌面都接受）；粘贴后恢复原剪贴板内容前会留出片刻，
+                 避免目标程序（浏览器 / Electron）异步读剪贴板时拿到旧内容
 - op=wait_window 等待窗口出现（按 window 选择器，timeout 秒）；GUI 程序
                  启动慢时先等窗口就绪再操作，避免「窗口还没出现」空转
 - op=elements    列出窗口内的控件（名称 / 类型 / 类名 / 矩形 / 可用状态）；
@@ -48,13 +49,15 @@ bash_opt — 按 task_id 操作后台 bash 任务
 
   - sequence + actions：点输入框 → 输入 → 回车 → 截图，一条调用完成；
   - element + type：按控件名输入（先聚焦再输入，内部自动换算坐标）；
-  - type 的 via='clipboard'：长文本粘贴（比逐字符输入快且不掉字）；
+  - type 的 via='clipboard'：长文本粘贴（比逐字符输入快且不掉字；目标程序
+    读取剪贴板较慢时配 restore_clipboard=false 更稳）；
   - wait_for='change' / diff：操作后等界面真的变了再返回，确认生效。
 
 坐标语义（输入 op 与 sequence 通用）：x / y 除像素整数外，还支持语义值
 ——'center' / 'middle'、'left' / 'right' / 'top' / 'bottom'、百分比 '50%'、
-相对中心的偏移 'center+20' / 'center-20'；语义值在注入时按窗口实际尺寸换算，窗口被
-缩放也不失准。
+偏移写法 'center+20' / 'center-20' / 'left+20' / 'right-10' / 'top+5' /
+'bottom-30'（基准 + 像素偏移，自动夹到窗口内）；语义值在注入时按窗口实际
+尺寸换算，窗口被缩放也不失准。
 
 read 为**增量读取**：后台任务运行期间的每一行输出都会累积到内部缓冲，
 每次 read 取走当前全部累积内容并清空，适合实时观察长时任务（编译/下载/
@@ -82,7 +85,8 @@ screenshot / 输入 op 都接受 window 选择器——'main'（缺省主窗口�
 最大的主窗口）。不可见（visible=false）或已最小化的窗口不会被 'main' / '#N' /
 'popup' / 'dialog' 选中：它们既截不到有效像素（产物全黑），也收不到鼠标键盘
 输入（Chrome 的 Chrome_WidgetWin_0 这类隐藏辅助窗口尤其容易与真实弹层混淆）；
-确实需要操作这类窗口时用 'handle:0x…' 显式指定。
+确实需要操作这类窗口时用 'handle:0x…' 显式指定——截图会对「已最小化 / 不可见」
+的目标直接报错并提示先 restore，不会产出与界面无关的占位小图。
 
 弹层（右键菜单 / 下拉浮层 / ``WS_EX_TOOLWINDOW`` 弹出窗口）**不参与前台
 切换**，``SetForegroundWindow`` 对它们无效；输入 op 因此按「该窗口**所属
@@ -95,8 +99,10 @@ screenshot / 输入 op 都接受 window 选择器——'main'（缺省主窗口�
 ``method='message'`` 投递鼠标坐标，去掉 method（默认 auto）走合成输入即可。
 
 截图增强：grid 参数（如 grid=50）在产物上叠加等距参考线，读图后可精确换算
-像素坐标；结果 JSON 附带被截窗口的句柄 / 标题 / 候选窗口总数，便于确认选对
-了窗口。
+像素坐标（省略 = 不叠加；网格步长传 0 表示按画面尺寸自动选择）；结果 JSON
+附带被截窗口的句柄 / 标题 / 候选窗口总数，便于确认选对了窗口。命中的窗口若
+已最小化或不可见，截图会直接报错并提示先 restore（最小化窗口没有可渲染的
+客户区，硬截只会得到与界面无关的占位小图）。
 
 窗口输入（move/click/drag/scroll/key/type）同样按 task_id 定位该命令进程树
 的可见窗口，坐标以**窗口截图左上角**为原点（与 op=screenshot 产物一致，
@@ -274,6 +280,11 @@ class BashOptFunc(Func):
     }
     #: 剪贴板粘贴组合键的兜底（平台无法判定时）
     _DEFAULT_PASTE_KEY: str = "ctrl+v"
+    #: 剪贴板粘贴后、恢复原剪贴板内容前的等待（秒）。
+    #: 浏览器 / Electron / 远程桌面等目标的「粘贴」是异步消息处理（收到
+    #: 粘贴键后才去读剪贴板），恢复太快会让它们读到**旧内容**（表现为
+    #: 「粘出来的还是上一次的剪贴板文本」）；这里留出读取窗口再恢复。
+    _CLIPBOARD_RESTORE_DELAY: float = 0.35
     #: clipboard_action 取值（缺省按是否提供 text 推断）
     _CLIPBOARD_ACTIONS: tuple[str, ...] = ("set", "get", "clear", "append")
     #: clipboard 读取返回的字符数上限（防御超大剪贴板内容撑爆上下文）
@@ -286,6 +297,10 @@ class BashOptFunc(Func):
     _WAIT_FOR_TIMEOUT: float = 5.0
     #: wait_for 轮询间隔（秒）
     _WAIT_FOR_INTERVAL: float = 0.25
+    #: wait_for='stable' 允许忽略的微小变化比例（变化像素占比不超过该值时
+    #: 仍判为「画面已稳定」）：带输入光标的界面会因光标闪烁永远等不到
+    #: 「逐像素一致」，这类噪声（光标 / 时钟秒数）不应让稳定判定失败。
+    _STABLE_CHANGE_RATIO: float = 0.001
     #: 界面比较的默认颜色容差（每通道）
     _DIFF_TOLERANCE: int = DEFAULT_TOLERANCE
     #: 输入动作后等待界面变化的判定模式
@@ -463,6 +478,10 @@ class BashOptFunc(Func):
                                 "key（GUI 窗口）用同样的组合键文本，如 'ctrl+shift+s'、"
                                 "'alt+f4'、'enter'、'a'（支持 ctrl/alt/shift/meta "
                                 "修饰键、编辑与导航键、f1-f24、单个字符）。"
+                                "字母 / 数字键走系统虚拟键码，会经过系统输入法（IME）："
+                                "中文输入法激活时，连按（repeat）字母键可能被输入法"
+                                "吞并或变成候选上屏；需要稳定连按请先切到英文输入法，"
+                                "或改用 type（Unicode 注入，不受输入法影响）。"
                             ),
                         },
                         "window": {
@@ -495,9 +514,9 @@ class BashOptFunc(Func):
                             "type": "number",
                             "description": (
                                 "仅 screenshot 可选：在截图上叠加等距坐标参考线，值为"
-                                "线间距像素（0 或缺省 = 按画面尺寸自动选约 10 格，"
-                                "如 grid=50 每 50 像素一条主线、每 25 像素一条次线），"
-                                "便于读图后精确给出 x/y 坐标。"
+                                "线间距像素（省略 = 不叠加参考线；0 或 true = 按画面"
+                                "尺寸自动选步长约 10 格；如 grid=50 每 50 像素一条主线、"
+                                "每 25 像素一条次线），便于读图后精确给出 x/y 坐标。"
                             ),
                         },
                         "shot": {
@@ -576,7 +595,8 @@ class BashOptFunc(Func):
                             "description": (
                                 "窗口内坐标 X（原点为窗口截图左上角，与 screenshot "
                                 "产物一致）。支持像素整数或语义值：'center'/'middle'、"
-                                "'left'/'right'、百分比 '50%'、相对中心偏移 'center+20'/'center-20'"
+                                "'left'/'right'、百分比 '50%'、偏移写法"
+                                "'center+20'/'center-20'/'left+20'/'right-10'"
                                 "（语义值按窗口实际尺寸在注入时换算，窗口缩放也不失准）。"
                                 "move 必填；click / scroll 可选，省略则作用于窗口中心；"
                                 "drag 用 from_x/from_y 指定起点；也可用 element 按控件名定位。"
@@ -586,7 +606,7 @@ class BashOptFunc(Func):
                             "type": ["number", "string"],
                             "description": (
                                 "窗口内坐标 Y（语义值同 x：'center'、'bottom'、'50%'、"
-                                "'center-20' 等）。与 x 同时提供或同时省略。"
+                                "'center-20'、'bottom-30' 等）。与 x 同时提供或同时省略。"
                             ),
                         },
                         "to_x": {
@@ -714,8 +734,9 @@ class BashOptFunc(Func):
                                 "仅 sequence 必填：步骤数组（最多 50 步），每项是一个"
                                 "对象，用 op 指定类型："
                                 "\n- 输入动作：click / move / drag / scroll / key / type"
-                                "（参数与单独调用时相同，另可带 element / via / settle /"
-                                " shot / window / wait_for / diff / tolerance）；"
+                                "（参数与单独调用时相同，另可带 element / via / paste_key /"
+                                " restore_clipboard / newline / settle / shot / window /"
+                                " wait_for / diff / tolerance）；"
                                 "\n- wait：{\"op\": \"wait\", \"seconds\": 0.5} 等待指定秒数；"
                                 "\n- screenshot：{\"op\": \"screenshot\", \"path\": \"a.png\"}"
                                 " 截图存盘（可选 crop / grid）；"
@@ -756,7 +777,8 @@ class BashOptFunc(Func):
                                 "\n- op=elements：作为过滤子串，只返回匹配的控件。"
                                 "取值形式：'确定'（按控件文本子串，找不到再按类名、"
                                 "再按控件类型）、'text:子串'、'class:子串'、"
-                                "'type:edit'、'#3'（清单第 3 个控件）；"
+                                "'type:edit'、'#3'（清单第 3 个控件；op=elements 的"
+                                "过滤同样接受 '#N' 写法，与输入 op 的定位一致）；"
                                 "类型匹配同时接受英文类型名与中文标签"
                                 "（'edit' / '编辑框'、'button' / '按钮'、'list' / '列表'）。"
                             ),
@@ -766,11 +788,14 @@ class BashOptFunc(Func):
                             "enum": ["typing", "clipboard"],
                             "description": (
                                 "仅 type 可选：输入方式（默认 typing）。"
-                                "typing = 逐字符合成按键；"
+                                "typing = 逐字符合成按键（走 Unicode 注入，不受"
+                                "输入法影响）；"
                                 "clipboard = 把文本写入系统剪贴板后发送粘贴键"
                                 "（默认 ctrl+v，macOS 为 command+v），"
                                 "长文本 / 中文 / emoji / 多行文本不会掉字，"
-                                "也不会被目标程序误当成快捷键。"
+                                "也不会被目标程序误当成快捷键；"
+                                "粘贴后默认恢复原剪贴板内容（会先留出片刻让目标程序"
+                                "读取剪贴板，避免浏览器 / Electron 粘出旧内容）。"
                             ),
                         },
                         "paste_key": {
@@ -785,7 +810,11 @@ class BashOptFunc(Func):
                             "type": "boolean",
                             "description": (
                                 "仅 type via='clipboard' 可选：粘贴后是否恢复原剪贴板"
-                                "内容（默认 true，避免破坏用户剪贴板）。"
+                                "内容（默认 true，避免破坏用户剪贴板）。恢复前会等待"
+                                "片刻，给目标程序读取剪贴板的时间——浏览器 / Electron / "
+                                "远程桌面的粘贴是异步处理，恢复太快会把**旧内容**粘进去"
+                                "（表现为「粘出来的还是上一次的剪贴板文本」）；不需要"
+                                "保留原剪贴板时传 false 更稳，也少一次剪贴板读写。"
                             ),
                         },
                         "wait_for": {
@@ -794,7 +823,9 @@ class BashOptFunc(Func):
                                 "仅输入 op 可选：注入后等待界面满足条件再返回。"
                                 "'change' 等待画面发生变化（点击后等界面刷新，"
                                 "变化区域会一并回报）；"
-                                "'stable' 等待画面稳定（动画 / 加载结束）；"
+                                "'stable' 等待画面稳定（动画 / 加载结束；连续两次"
+                                "采样一致即算稳定，光标闪烁 / 时钟这类微小噪声会被"
+                                "忽略，并在结果的 ignored_change 里说明）；"
                                 "也可传秒数（如 '0.5'，等价于增强版 settle）。"
                                 "超时由 wait_timeout 控制（默认 5 秒）；"
                                 "无法判定时 satisfied 为 null 并附 reason。"
@@ -1622,6 +1653,9 @@ class BashOptFunc(Func):
             diff_enabled = self._resolve_diff_flag()
             tolerance = self._resolve_tolerance()
             via = self._resolve_type_via()
+            # 提前校验剪贴板恢复开关（非法取值在此给出可读提示，而不是把
+            # 异常留到注入阶段变成内部错误）
+            restore_clipboard = self._resolve_restore_clipboard()
         except ValueError as exc:
             return f"(输入参数非法: {exc})"
         # ── 控件定位（element）：换算中心坐标 / 作为聚焦点击 ──
@@ -1654,7 +1688,8 @@ class BashOptFunc(Func):
         try:
             if focus_click is not None:
                 await self._send_input_with_retry(pid, focus_click)
-            detail = await self._inject_input_action(pid, action, via)
+            detail = await self._inject_input_action(
+                pid, action, via, restore_clipboard=restore_clipboard)
         except (InputNoWindowError, InputError) as exc:
             self._cleanup_temps(temporaries)
             message = str(exc)
@@ -1788,24 +1823,51 @@ class BashOptFunc(Func):
             return None
         return getattr(target, "frame", None)
 
-    async def _inject_input_action(self, pid: int, action, via: str) -> dict:
-        """执行一次输入注入（type 且 via='clipboard' 时改走剪贴板粘贴）。"""
+    async def _inject_input_action(self, pid: int, action, via: str, *,
+                                   paste_key=_UNSET,
+                                   restore_clipboard=_UNSET) -> dict:
+        """执行一次输入注入（type 且 via='clipboard' 时改走剪贴板粘贴）。
+
+        Args:
+            pid: 目标进程 PID。
+            action: 输入动作。
+            via: ``typing`` 逐字符注入 / ``clipboard`` 剪贴板粘贴。
+            paste_key: 仅剪贴板粘贴用（``_UNSET`` = 取实例参数）；供
+                ``op=sequence`` 的步骤级参数透传。
+            restore_clipboard: 仅剪贴板粘贴用（``_UNSET`` = 取实例参数）。
+        """
         if via == "clipboard" and action.name == "type":
-            return await self._paste_text(pid, action)
+            return await self._paste_text(pid, action, paste_key=paste_key,
+                                          restore_clipboard=restore_clipboard)
         result = await self._send_input_with_retry(pid, action)
         return result.to_dict()
 
-    async def _paste_text(self, pid: int, action) -> dict:
+    async def _paste_text(self, pid: int, action, *, paste_key=_UNSET,
+                          restore_clipboard=_UNSET) -> dict:
         """把文本放入系统剪贴板后发送粘贴键（type via='clipboard'）。
 
         逐字符合成按键对长文本 / 中文 / emoji 既慢又容易被目标程序丢字或
         误判为快捷键；剪贴板粘贴是 GUI 应用最可靠的文本输入方式。
 
+        恢复原剪贴板之前会等待 :data:`_CLIPBOARD_RESTORE_DELAY` 秒：浏览器 /
+        Electron / 远程桌面等目标的「粘贴」是异步消息处理（收到粘贴键后才去
+        读剪贴板），恢复太快会让它们读到**旧内容**（表现为「粘出来的还是
+        上一次的剪贴板文本」）。确实不需要恢复时传 ``restore_clipboard=False``
+        （既避免时序问题，也少一次剪贴板读写）。
+
+        Args:
+            pid: 目标进程 PID。
+            action: ``type`` 动作（``action.text`` 为待粘贴文本）。
+            paste_key: 粘贴组合键（``_UNSET`` = 取本工具实例的 ``paste_key``，
+                再缺省按平台取 ctrl+v / command+v）。
+            restore_clipboard: 粘贴后是否恢复原剪贴板（``_UNSET`` = 取实例参数，
+                缺省 True）。
+
         Raises:
             InputError: 剪贴板不可用或粘贴键注入失败。
         """
-        paste_key = self._resolve_paste_key()
-        restore = self.restore_clipboard is not False
+        key_text = self._resolve_paste_key(paste_key)
+        restore = self._resolve_restore_clipboard(restore_clipboard)
         original = None
         if restore:
             try:
@@ -1818,9 +1880,12 @@ class BashOptFunc(Func):
             raise InputError(f"剪贴板写入失败（无法粘贴输入）: {exc}") from exc
         try:
             key_action = build_action("key", {
-                "key": paste_key, "window": getattr(action, "window", "") or "",
+                "key": key_text, "window": getattr(action, "window", "") or "",
             })
             result = await self._send_input_with_retry(pid, key_action)
+            if restore and original is not None:
+                # 目标程序此刻才去读剪贴板：留出读取窗口再恢复原内容
+                await asyncio.sleep(self._CLIPBOARD_RESTORE_DELAY)
         finally:
             if restore and original is not None:
                 try:
@@ -1828,22 +1893,39 @@ class BashOptFunc(Func):
                 except ClipboardError:
                     logger.debug("恢复剪贴板内容失败", exc_info=True)
         detail = dict(result.to_dict())
+        restored = bool(restore and original is not None)
         detail.update({
             "via": "clipboard",
-            "paste_key": paste_key,
+            "paste_key": key_text,
             "pasted_characters": len(action.text),
-            "clipboard_restored": bool(restore and original is not None),
+            "clipboard_restored": restored,
         })
+        if restored:
+            detail["clipboard_restore_delay"] = self._CLIPBOARD_RESTORE_DELAY
         return detail
 
-    def _resolve_paste_key(self) -> str:
-        """粘贴组合键：paste_key 参数优先，缺省按平台取 ctrl+v / command+v。"""
-        raw = self.paste_key
-        if raw is not None and str(raw).strip():
-            return str(raw).strip()
+    def _resolve_paste_key(self, raw=_UNSET) -> str:
+        """粘贴组合键：显式参数优先，其次 paste_key 参数，缺省按平台取。
+
+        Args:
+            raw: 显式取值（``op=sequence`` 的步骤复用）；``_UNSET`` 时取本工具
+                实例的 ``paste_key`` 参数。
+        """
+        value = self.paste_key if raw is _UNSET else raw
+        if value is not None and str(value).strip():
+            return str(value).strip()
         backend = resolve_input_backend()
         name = str(getattr(backend, "name", "") or "")
         return self._PASTE_KEYS.get(name, self._DEFAULT_PASTE_KEY)
+
+    def _resolve_restore_clipboard(self, raw=_UNSET) -> bool:
+        """是否在粘贴后恢复原剪贴板内容（缺省 True；``_UNSET`` = 取实例参数）。
+
+        Raises:
+            ValueError: 取值无法识别为布尔。
+        """
+        value = self.restore_clipboard if raw is _UNSET else raw
+        return self._parse_bool(value, default=True, label="restore_clipboard")
 
     async def _temp_screenshot(self, pid: int, window: str | None) -> str | None:
         """截一张临时图（变化判定 / 差异比较用），失败返回 None。"""
@@ -1878,7 +1960,10 @@ class BashOptFunc(Func):
         """等待界面变化（``change``）或稳定（``stable``）。
 
         ``change``：把每一轮采样与注入前的基准图比较，出现差异即满足；
-        ``stable``：连续两次采样一致即满足（动画 / 加载结束）。
+        ``stable``：连续两次采样一致即满足（动画 / 加载结束）；变化像素占比
+        不超过 :data:`_STABLE_CHANGE_RATIO` 的**微小噪声**（输入光标闪烁、
+        时钟秒数）同样视为稳定，并在结果的 ``ignored_change`` 里说明忽略了
+        多少像素——否则带光标的界面永远等不到「逐像素一致」。
 
         Returns:
             ``{mode, satisfied, waited, samples}``；无法判定时 ``satisfied``
@@ -1919,8 +2004,11 @@ class BashOptFunc(Func):
                             return self._wait_result(
                                 mode, True, started, samples, None,
                                 diff.to_dict())
-                    elif not diff.changed:
-                        return self._wait_result(mode, True, started, samples)
+                    elif self._is_stable(diff):
+                        # 连续两次采样一致（或只剩光标闪烁级别的噪声）→ 稳定
+                        return self._wait_result(
+                            mode, True, started, samples,
+                            ignored=self._stability_note(diff))
                     else:
                         previous = current
                         keep = True
@@ -1936,9 +2024,30 @@ class BashOptFunc(Func):
                     f"超时：界面在 {timeout:g} 秒内没有{verb}")
             await asyncio.sleep(self._WAIT_FOR_INTERVAL)
 
+    def _is_stable(self, diff) -> bool:
+        """画面是否可判为「已稳定」（允许光标闪烁 / 时钟之类的微小噪声）。
+
+        Args:
+            diff: 本轮与上一轮的差异（:class:`~._screenshot.diff.DiffResult`）。
+        """
+        if not diff.changed:
+            return True
+        if diff.size_changed:
+            return False
+        return diff.changed_ratio <= self._STABLE_CHANGE_RATIO
+
+    @classmethod
+    def _stability_note(cls, diff) -> str | None:
+        """稳定判定的补充说明（忽略微小变化时给出，便于解释 satisfied=True）。"""
+        if not diff.changed:
+            return None
+        return (f"忽略了 {diff.changed_pixels} 像素（{diff.changed_ratio * 100:.3f}%）"
+                f"的微小变化（光标闪烁 / 时钟等噪声），区域 {diff.region}")
+
     @staticmethod
     def _wait_result(mode: str, satisfied, started: float, samples: int,
-                     reason: str | None = None, change: dict | None = None) -> dict:
+                     reason: str | None = None, change: dict | None = None,
+                     ignored: str | None = None) -> dict:
         """组装 ``wait_for`` 的结果字典。"""
         payload = {
             "mode": mode,
@@ -1948,6 +2057,8 @@ class BashOptFunc(Func):
         }
         if change is not None:
             payload["change"] = change
+        if ignored:
+            payload["ignored_change"] = ignored
         if reason:
             payload["reason"] = reason
         return payload
@@ -2064,6 +2175,29 @@ class BashOptFunc(Func):
         if text in ("true", "1", "yes", "on", "auto"):
             return True
         raise ValueError(f"diff 需要布尔值（true/false），当前: {raw!r}")
+
+    @staticmethod
+    def _parse_bool(raw, *, default: bool, label: str) -> bool:
+        """解析通用布尔参数（缺省 / 空值 → ``default``）。
+
+        与 ``_parse_diff`` 同源但错误文案按参数名生成，供 ``restore_clipboard``
+        / ``newline`` 这类需要「显式区分未传与 false」的开关使用。
+
+        Raises:
+            ValueError: 取值无法识别为布尔。
+        """
+        if raw is None:
+            return default
+        if isinstance(raw, bool):
+            return raw
+        text = str(raw).strip().lower()
+        if text in ("", "default", "auto"):
+            return default
+        if text in ("true", "1", "yes", "on"):
+            return True
+        if text in ("false", "0", "no", "off"):
+            return False
+        raise ValueError(f"{label} 需要布尔值（true/false），当前: {raw!r}")
 
     def _resolve_tolerance(self) -> int:
         """解析 ``tolerance``（截图比较的颜色容差，每通道 0..255）。"""
@@ -2468,7 +2602,9 @@ class BashOptFunc(Func):
         （``x`` / ``y`` / ``center_x`` / ``center_y``）与**窗口内坐标**
         （``window_center_x`` / ``window_center_y``，与 ``op=screenshot`` 产物同源）；
         后者可直接交给 ``click`` 的 ``x`` / ``y``，也可直接给输入 op 传
-        ``element='控件名'`` 由工具内部换算。
+        ``element='控件名'`` 由工具内部换算。``element`` 过滤与输入 op 的定位
+        共用同一套写法：``'#N'``（清单第 N 个）、``'text:子串'``、
+        ``'class:子串'``、``'type:edit'`` 与中文标签（``'编辑框'`` / ``'按钮'``）。
 
         经典 Win32 控件（按钮、编辑框、列表）能完整枚举；Chrome / Electron /
         Qt / 游戏等自绘界面没有标准子窗口，结果会很少或为空（如实提示）。
@@ -2531,6 +2667,14 @@ class BashOptFunc(Func):
         }
         if self.element:
             payload["element"] = str(self.element)
+            if not filtered:
+                payload["filter_empty"] = True
+                payload["hint"] = (
+                    f"element={self.element!r} 没有匹配的控件（本次共枚举到 "
+                    f"{len(elements)} 个）。过滤支持 '#N'（清单第 N 个，从 1 开始）、"
+                    f"'text:子串'、'class:子串'、'type:edit' 与中文标签"
+                    f"（'编辑框' / '按钮' / '列表'）；也可不传 element 先看完整清单"
+                )
         return json.dumps(payload, ensure_ascii=False)
 
     @staticmethod
@@ -2823,8 +2967,10 @@ class BashOptFunc(Func):
         """执行序列中的输入动作步骤。
 
         支持与本工具实例同名的全部增强参数（写在步骤对象里即可）：
-        ``element``（按控件名定位）、``via``（type 走剪贴板）、``settle``、
-        ``shot``、``wait_for`` / ``wait_timeout``、``diff`` / ``tolerance``。
+        ``element``（按控件名定位）、``via``（type 走剪贴板）、
+        ``paste_key`` / ``restore_clipboard`` / ``newline``（剪贴板粘贴与
+        末尾换行，与单独调用 ``type`` 同义）、``settle``、``shot``、
+        ``wait_for`` / ``wait_timeout``、``diff`` / ``tolerance``。
         """
         pid = rec.get("pid")
         if pid is None:
@@ -2843,8 +2989,19 @@ class BashOptFunc(Func):
             tolerance = self._parse_tolerance(params.pop("tolerance", None))
             via = (self._resolve_type_via(params.pop("via", _UNSET))
                    if step.kind == "type" else "typing")
+            # 步骤级「剪贴板输入」参数：与单独调用 type 时同名同义
+            paste_key = (params.pop("paste_key", _UNSET)
+                         if step.kind == "type" else _UNSET)
+            restore_clipboard = (params.pop("restore_clipboard", _UNSET)
+                                 if step.kind == "type" else _UNSET)
+            newline = self._parse_bool(
+                params.pop("newline", None) if step.kind == "type" else None,
+                default=False, label="newline")
         except ValueError as exc:
             raise ActionError(str(exc)) from exc
+        if step.kind == "type" and newline:
+            # 与单独调用 type 的 newline 语义一致：文本末尾追加换行（Enter）
+            params["text"] = str(params.get("text") or "") + "\n"
         element = params.pop("element", None)
         point = None
         element_desc = None
@@ -2869,7 +3026,9 @@ class BashOptFunc(Func):
                     temporaries.append(before_path)
             if focus_click is not None:
                 await self._send_input_with_retry(pid, focus_click)
-            payload["result"] = await self._inject_input_action(pid, action, via)
+            payload["result"] = await self._inject_input_action(
+                pid, action, via, paste_key=paste_key,
+                restore_clipboard=restore_clipboard)
             if element_desc is not None:
                 payload["element"] = element_desc
             settle = step.settle or extra_wait

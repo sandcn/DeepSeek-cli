@@ -182,3 +182,62 @@ async def test_type_via_rejects_unknown_value(monkeypatch):
     clip.install(monkeypatch)
     result = await _func(op="type", text="x", via="magic").execute()
     assert "via 取值非法" in result
+
+
+# ── 恢复时序：粘贴 → 等目标程序读剪贴板 → 恢复原内容 ──────
+
+async def test_type_via_clipboard_restores_after_target_reads(monkeypatch):
+    """顺序必须是「写新内容 → 发粘贴键 → 等待 → 恢复」，否则浏览器粘出旧内容。"""
+    clip = _Clipboard("原剪贴板")
+    events: list = []
+
+    def _write(text):
+        events.append(("write", text))
+        clip.content = text
+
+    monkeypatch.setattr(bash_opt_module, "read_clipboard_text", clip.read)
+    monkeypatch.setattr(bash_opt_module, "write_clipboard_text", _write)
+
+    async def _spy_sleep(seconds):
+        events.append(("sleep", seconds))
+
+    monkeypatch.setattr(bash_opt_module.asyncio, "sleep", _spy_sleep)
+
+    def _send(pid, action):
+        events.append(("send", action.name))
+        return InputResult(action=action.name, backend="windows", window_pid=pid,
+                           window_title="App", detail={"delivery": "sendinput"})
+
+    monkeypatch.setattr(bash_opt_module, "send_window_input", _send)
+    payload = json.loads(await _func(op="type", text="新文本",
+                                     via="clipboard").execute())
+    delay = BashOptFunc._CLIPBOARD_RESTORE_DELAY
+    assert delay > 0
+    assert events == [("write", "新文本"), ("send", "key"),
+                      ("sleep", delay), ("write", "原剪贴板")]
+    assert payload["clipboard_restore_delay"] == delay
+
+
+async def test_type_via_clipboard_without_restore_does_not_wait(monkeypatch):
+    clip = _Clipboard("原剪贴板")
+    events: list = []
+
+    def _write(text):
+        events.append(("write", text))
+        clip.content = text
+
+    monkeypatch.setattr(bash_opt_module, "read_clipboard_text", clip.read)
+    monkeypatch.setattr(bash_opt_module, "write_clipboard_text", _write)
+
+    async def _spy_sleep(seconds):
+        events.append(("sleep", seconds))
+
+    monkeypatch.setattr(bash_opt_module.asyncio, "sleep", _spy_sleep)
+    recorder: list = []
+    _patch_send(monkeypatch, recorder)
+    payload = json.loads(await _func(
+        op="type", text="abc", via="clipboard",
+        restore_clipboard=False).execute())
+    assert [kind for kind, _value in events] == ["write"]
+    assert "clipboard_restore_delay" not in payload
+    assert payload["clipboard_restored"] is False
