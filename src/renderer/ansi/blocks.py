@@ -304,6 +304,7 @@ def render_front_matter(token) -> list[AnsiLine]:
     """Front Matter 元信息块渲染（键值卡片）。
 
     ``▍ 元信息 (YAML)`` 头 + 对齐键值行；解析失败时原样缩进显示内容。
+    预览超限（``preview_dropped``）时在头部后插入省略提示行（与其它块同源）。
     """
     text = token.content or ""
     fmt = str(token.meta.get("format", "yaml")).lower()
@@ -311,6 +312,7 @@ def render_front_matter(token) -> list[AnsiLine]:
     out: list[AnsiLine] = [
         AnsiLine.of(f"\u258d 元信息 ({fmt.upper()})", _STYLE_FM_HEAD),
     ]
+    out.extend(_preview_omitted(token.meta))
     if not items:
         if text.strip():
             for seg in _inline_lines(text):

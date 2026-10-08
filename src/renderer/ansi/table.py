@@ -254,7 +254,8 @@ class TablePreviewCache:
 
     __slots__ = ("_key", "_ncols", "_aligns", "_header", "_header_width",
                  "_head", "_data_src", "_data_widths", "_data", "_bottom",
-                 "_widths", "_shrink_key", "_shrink_result")
+                 "_widths", "_shrink_key", "_shrink_result",
+                 "_col_max", "_out", "_out_ver", "_ver")
 
     _MAX_SLIDE = 8
     """头部滑窗探测的最大行数（预览截断每次仅移除少量旧行）。"""
@@ -279,6 +280,61 @@ class TablePreviewCache:
         # ``_shrink_widths``（超宽表格该函数为 O(超量×列数)）。
         self._shrink_key: tuple | None = None
         self._shrink_result: list[int] | None = None
+        # 各列最大内容宽度（增量维护：追加行时只比较新行；删除行时按需重算）
+        # ——修复前每帧对全部数据行重算 max（O(行数×列数)），500 行表格预览
+        # 单帧约 3000 次解释器级比较。
+        self._col_max: list[int] = []
+        # 结果行列表缓存（结构未变时复用，避免每帧重建 O(行数) 列表）。
+        self._out: list[AnsiLine] | None = None
+        self._out_ver = -1
+        self._ver = 0
+
+    def _bump(self) -> None:
+        """结构版本号递增（``_head`` / ``_data`` / ``_bottom`` 变化时调用）。"""
+        self._ver += 1
+
+    def _update_col_max(self, row_widths: list[int]) -> None:
+        """追加一行时增量更新各列最大宽度。"""
+        col_max = self._col_max
+        if len(col_max) < len(row_widths):
+            col_max.extend([0] * (len(row_widths) - len(col_max)))
+        for i, v in enumerate(row_widths):
+            if v > col_max[i]:
+                col_max[i] = v
+
+    def _recompute_col_max(self) -> None:
+        """重算各列最大宽度（删除行后调用，O(行数×列数)）。"""
+        col_max = list(self._header_width)
+        if len(col_max) < self._ncols:
+            col_max.extend([0] * (self._ncols - len(col_max)))
+        for rw in self._data_widths:
+            for i, v in enumerate(rw):
+                if v > col_max[i]:
+                    col_max[i] = v
+        self._col_max = col_max[:self._ncols]
+
+    def _drop_rows(self, start: int, stop: int | None = None) -> None:
+        """删除数据行区间并同步宽度缓存（必要时重算列最大宽度）。"""
+        if stop is None:
+            removed = self._data_widths[start:]
+            del self._data_src[start:]
+            del self._data_widths[start:]
+            del self._data[start:]
+        else:
+            removed = self._data_widths[start:stop]
+            del self._data_src[start:stop]
+            del self._data_widths[start:stop]
+            del self._data[start:stop]
+        if not removed:
+            return
+        col_max = self._col_max
+        for rw in removed:
+            for i, v in enumerate(rw):
+                if i < len(col_max) and v == col_max[i]:
+                    self._recompute_col_max()
+                    self._bump()
+                    return
+        self._bump()
 
     def render(self, key, rows: list[list[str]], aligns: list[str],
                term_width: int = 0) -> list[AnsiLine]:
@@ -310,22 +366,29 @@ class TablePreviewCache:
             self._data_src = []
             self._data_widths = []
             self._data = []
+            self._col_max = list(self._header_width)
+            if len(self._col_max) < ncols:
+                self._col_max.extend([0] * (ncols - len(self._col_max)))
+            self._col_max = self._col_max[:ncols]
+            self._out = None
+            self._bump()
         else:
             self._reuse_data(data)
 
-        # 追加新增数据行（源 + 单元格宽度）
-        for row in data[len(self._data_src):]:
-            self._data_src.append(row)
-            self._data_widths.append(_row_cell_widths(row, _STYLE_CELL))
+        # 追加新增数据行（源 + 单元格宽度 + 各列最大宽度增量更新）
+        if len(data) > len(self._data_src):
+            for row in data[len(self._data_src):]:
+                self._data_src.append(row)
+                rw = _row_cell_widths(row, _STYLE_CELL)
+                self._data_widths.append(rw)
+                self._update_col_max(rw)
+            self._bump()
 
-        # 列宽 = max(表头, 各数据行) → 终端宽度收缩（行宽 ≤ ncols，直接 enumerate）
-        widths = [0] * ncols
-        for i, v in enumerate(self._header_width):
-            widths[i] = v
-        for rw in self._data_widths:
-            for i, v in enumerate(rw):
-                if v > widths[i]:
-                    widths[i] = v
+        # 列宽 = max(表头, 各数据行)（``_col_max`` 已增量维护）→ 终端宽度收缩
+        widths = list(self._col_max)
+        if len(widths) < ncols:
+            widths.extend([0] * (ncols - len(widths)))
+        widths = widths[:ncols]
         if term_width and term_width > 0:
             # ★ 性能：列宽收缩结果缓存——未收缩列宽与终端宽度均未变时跳过
             #   ``_shrink_widths``（逐步削减为 O(超量 × 列数)，超宽表格每帧
@@ -355,16 +418,24 @@ class TablePreviewCache:
             for row in self._data_src:
                 self._data.append(_render_row_runs(
                     row, widths, aligns_list, _STYLE_CELL))
+            self._bump()
         else:
             # 列宽稳定 → 仅补齐新增数据行
-            for row in self._data_src[len(self._data):]:
-                self._data.append(_render_row_runs(
-                    row, widths, aligns_list, _STYLE_CELL))
+            if len(self._data) < len(self._data_src):
+                for row in self._data_src[len(self._data):]:
+                    self._data.append(_render_row_runs(
+                        row, widths, aligns_list, _STYLE_CELL))
+                self._bump()
 
+        # ★ 性能：结构未变的帧直接复用结果行列表（避免每帧重建 O(行数) 列表）。
+        if self._out is not None and self._out_ver == self._ver:
+            return self._out
         out: list[AnsiLine] = list(self._head)
         for data_lines in self._data:
             out.extend(data_lines)
         out.extend(self._bottom)
+        self._out = out
+        self._out_ver = self._ver
         return out
 
     def _reuse_data(self, data: list[list[str]]) -> None:
@@ -393,14 +464,10 @@ class TablePreviewCache:
         for k in range(1, limit + 1):
             if (len(data) >= len(cached) - k
                     and data[:len(cached) - k] == cached[k:]):
-                del self._data_src[:k]
-                del self._data_widths[:k]
-                del self._data[:k]
+                self._drop_rows(0, k)
                 return
         # 前缀分歧：保留公共前缀，丢弃其余（含对应渲染行）
-        del self._data_src[common:]
-        del self._data_widths[common:]
-        del self._data[common:]
+        self._drop_rows(common)
 
 
 __all__ = ["render_table", "TablePreviewCache"]

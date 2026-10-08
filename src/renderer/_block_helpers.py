@@ -132,22 +132,26 @@ def _split_blockquote(stripped: str) -> tuple[int, str]:
 
     与 ``RegexFreeBlockParser._parse_blockquote`` 的深度计数/文本提取逻辑
     保持一致（``>`` 连续序列计数、剥离前缀），供流式预览做无副作用的行分类。
+
+    ★ 性能（流式预览热路径）：只扫描行首的 ``>`` / 空格前缀并切片返回剩余
+    文本（O(前缀)），不再逐字符累积整行副本。修复前对整行做 Python 级循环
+    （引用行的内容可达上万字符），流式期间每帧分类一次活动行 → 单帧成本
+    O(行长)、累计 O(n²)：40k 字符单行引用流式渲染实测 22s。
+
+    前缀规则与原实现等价：``>`` 连续计数为嵌套深度（其间空格忽略），首个
+    非 ``>`` 非空格字符起的剩余文本即内层内容（含其中的 ``>``）。
     """
+    n = len(stripped)
+    i = 0
     depth = 0
-    in_gt = True
-    gt_text = ''
-    for ch in stripped:
+    while i < n:
+        ch = stripped[i]
         if ch == '>':
-            if in_gt:
-                depth += 1
-            else:
-                gt_text += ch
-        elif ch == ' ' and in_gt:
-            continue
-        else:
-            in_gt = False
-            gt_text += ch if ch != ' ' or gt_text else ' '
-    return depth, gt_text.strip()
+            depth += 1
+        elif ch != ' ':
+            break
+        i += 1
+    return depth, stripped[i:].strip()
 
 
 def _is_code_fence_line(stripped: str) -> bool:

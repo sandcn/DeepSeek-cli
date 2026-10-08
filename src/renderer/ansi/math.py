@@ -113,6 +113,27 @@ def render_math_block(source: str, label: str = "数学公式",
     return _cached(source or "", False, label, dropped)
 
 
+def render_math_omitted(chars: int, label: str = "数学公式") -> list[AnsiLine]:
+    """超长公式的流式预览占位框（完整内容在本块结束后渲染）。
+
+    二维排版成本与公式长度成正比；超长公式（> ``_MATH_PREVIEW_MAX_SRC``）
+    流式期间每帧重排会把渲染线程占满，故预览降级为提示框——与代码块/表格
+    预览的「省略提示」同一语义（预览有界、提交完整）。
+    """
+    msg = f"… 公式过长（{chars} 字符），本块结束后完整渲染"
+    om = AnsiLine.of("│ ", _STYLE_BORDER)
+    om.append(msg, _STYLE_OMITTED)
+    inner_w = max(0, om.width - 2)
+    om.append(" │", _STYLE_BORDER)
+    head = AnsiLine.of(f"╭─ {label} ", _STYLE_LABEL)
+    head_fill = inner_w + 2 - head.width
+    if head_fill > 0:
+        head.append("─" * head_fill, _STYLE_BORDER)
+    head.append("╮", _STYLE_BORDER)
+    bottom = AnsiLine.of("╰" + "─" * (inner_w + 2) + "╯", _STYLE_BORDER)
+    return [head, om, bottom]
+
+
 def render_math_inline(source: str) -> AnsiLine:
     """渲染行内数学公式为单行（多行布局展平为空格连接）。"""
     return _cached(source or "", True)
@@ -155,5 +176,5 @@ def clear_math_cache() -> None:
 
 __all__ = [
     "render_math_block", "render_math_inline", "render_math_inline_block",
-    "clear_math_cache",
+    "render_math_omitted", "clear_math_cache",
 ]

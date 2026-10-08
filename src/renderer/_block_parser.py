@@ -546,17 +546,35 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
         # ── Front Matter（未闭合预览：元信息卡片）──
         if st == _State.FRONT_MATTER:
-            fm_lines = list(self._fm_lines)
-            if tail and not _is_front_matter_close(tail, self._fm_delim):
-                fm_lines.append(tail)
+            # ★ 预览行数上限：Front Matter 流式期间每帧都会重建预览内容
+            #   （``_front_matter_content`` 全文 join + 渲染层 YAML 解析），
+            #   无上限时单帧成本 O(全文)、累计 O(n²)（20k 字符元信息块实测
+            #   7.4s）。超限只保留头部（键值结构前部信息量高）并给出省略
+            #   提示；提交路径不受影响（``_emit_front_matter`` 仍完整）。
+            limit = self._PREVIEW_MAX_LINES
+            fm = self._fm_lines
+            has_tail = (bool(tail)
+                        and not _is_front_matter_close(tail, self._fm_delim))
+            total = len(fm) + (1 if has_tail else 0)
+            dropped = 0
+            if total > limit:
+                dropped = total - limit
+                fm_lines = list(fm[:limit])
+            else:
+                fm_lines = list(fm)
+                if has_tail:
+                    fm_lines.append(tail)
             saved = self._fm_lines
             self._fm_lines = fm_lines
             content = self._front_matter_content()
             self._fm_lines = saved
-            out.append(Token(TokenType.FRONT_MATTER, content, {
+            meta: dict = {
                 "format": _front_matter_format(self._fm_delim),
                 "preview": True,
-            }))
+            }
+            if dropped:
+                meta["preview_dropped"] = dropped
+            out.append(Token(TokenType.FRONT_MATTER, content, meta))
             return out
 
         # ── 代码类块（fenced / 缩进 / Mermaid / 数学）──
@@ -652,10 +670,14 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return out
 
         # ── NORMAL 状态 ──
-        # 待定 Front Matter 起始定界符（单独一行、下一行未到）：按分隔线预览
+        # 待定 Front Matter 起始定界符（单独一行、下一行未到）：按分隔线预览。
+        # 未换行的活动行（下一行内容）一并作为后续内容预览——修复前只预览
+        # 分隔线，正在输入的下一行内容完全不可见（整行「突发」上屏）。
         if (self._pending_fm is not None and not self._pending_lines
                 and not self._table_pending_rows):
             out.append(Token(TokenType.HR, "", {"preview": True}))
+            if tail:
+                out.extend(self._preview_tokens_for_normal([], tail))
             return out
         if self._deferred_fence is not None:
             fence = self._deferred_fence

@@ -106,6 +106,20 @@ def _last_url_prefix_pos(text: str) -> int:
 #: 空样式单例（纯文本段落行复用；``Style()`` 为不可变值对象，等价）。
 _EMPTY_STYLE = Style()
 
+#: 数学块预览的源码增长阈值（长源码的节流基数，见 ``_throttle_preview``）。
+_MATH_PREVIEW_REFRESH_STEP = 24
+
+#: 节流预览「逐帧刷新」的源码长度上限：源码短于该值时排版成本可忽略（<1ms），
+#: 保持逐帧实时刷新；超过后按 ``len//8`` 节流（刷新次数 ~O(log n)，总成本与
+#: 长度线性）。若一律按固定步长节流，短块（常见的小公式/小图）会出现「最后
+#: 几十字符不刷新」的明显滞后。
+_PREVIEW_THROTTLE_FULL_LIMIT = 48
+
+#: 数学块预览的源码长度上限：超过后预览降级为提示框（二维排版成本随长度
+#: 线性增长，超长公式即便节流也仍随长度增长；提交路径不受影响）。真实
+#: LaTeX 公式远小于该值，超过基本为模型异常输出。
+_MATH_PREVIEW_MAX_SRC = 1024
+
 #: 预览子解析缓存容量（告示等容器正文的块级预览：内容未变化的帧复用结果）。
 _PREVIEW_SUB_CACHE_MAX = 32
 
@@ -226,6 +240,10 @@ class AnsiStreamRenderer:
         self._code_preview_full_src: list[str] = []
         # ★ 表格预览的行级增量缓存（列宽 + 行渲染复用）。
         self._table_preview_cache = TablePreviewCache()
+        # ★ 二维布局块（数学 / Mermaid 等）预览的节流缓存：键 → (上次源码, 渲染行)。
+        #   排版成本随源码长度线性增长，逐帧重排会累计 O(n²)（见
+        #   ``_throttle_preview``）。
+        self._preview_throttle: dict = {}
         # ★ 段落/引用/告示预览的行级增量缓存（对齐代码块按行缓存策略）：
         #   未变化的历史行渲染结果跨帧复用，仅渲染新增/变化的行。按块类型
         #   分实例（同一帧预览可能同时含段落与引用 token，共用实例会互相
@@ -482,6 +500,12 @@ class AnsiStreamRenderer:
                 return self._render_code_preview(tok)
             if t is TokenType.TABLE:
                 return self._render_table_preview(tok)
+            if t is TokenType.MATH_BLOCK_CLOSE:
+                return self._render_math_preview(tok)
+            if t is TokenType.MERMAID_BLOCK_CLOSE:
+                return self._render_mermaid_preview(tok)
+            if t is TokenType.FRONT_MATTER:
+                return self._render_front_matter_preview(tok)
             if t is TokenType.PARAGRAPH:
                 return self._render_paragraph_preview(tok)
             if t is TokenType.BLOCKQUOTE_LINE:
@@ -492,7 +516,23 @@ class AnsiStreamRenderer:
                 return self._render_details_preview(tok)
             if t is TokenType.FENCED_DIV_CLOSE:
                 return self._render_fenced_div_preview(tok)
+            if t is TokenType.HTML_BLOCK_LINE:
+                tok = self._window_html_line_token(tok)
         return eng.render(tok)
+
+    @staticmethod
+    def _window_html_line_token(tok):
+        """HTML 块活动行预览的窗口化（超长时只保留尾部）。
+
+        HTML 行的行内解析成本与行长成正比，流式期间活动行每帧解析 → 累计
+        O(n²)（40k 字符单行 HTML 块实测 ~1s；长 base64/长文本行更明显）。
+        与段落活动行同一口径取尾部窗口（提交路径不受影响，仍渲染完整行）。
+        """
+        text = tok.content or ""
+        limit = _PREVIEW_MAX_LINE_CHARS
+        if limit <= 0 or len(text) <= limit:
+            return tok
+        return Token(tok.type, text[-limit:], dict(tok.meta))
 
     def _clear_preview(self) -> None:
         """清空预览行与所有增量缓存（块闭合/预览为空时）。"""
@@ -502,6 +542,7 @@ class AnsiStreamRenderer:
         self._para_boundary.reset()
         self._list_block_preview_key = None
         self._list_block_preview_rows = []
+        self._preview_throttle.clear()
         # 段落切换：重置活动行触发位置增量状态（下次全量重扫；不重置亦正确，
         # 但可省一次长字符串前缀比较）。
         self._para_scan_text = ""
@@ -806,6 +847,90 @@ class AnsiStreamRenderer:
         key = tuple(rows[0]) if rows else ()
         return self._table_preview_cache.render(key, rows, aligns, self._width)
 
+    def _throttle_preview(self, key, src: str, render) -> list[AnsiLine]:
+        """二维布局块（数学 / Mermaid 等）预览的节流渲染。
+
+        这类块的排版成本与源码长度成正比，而流式期间每帧都会重排未闭合块
+        → 累计 O(n²)。节流口径：``src`` 以上次源码为前缀且增长量小于步长时
+        复用上次结果。步长按上次源码长度自适应——短源码（< ``_PREVIEW_THROTTLE_FULL_LIMIT``）
+        逐帧刷新（排版成本可忽略，保证实时），长源码按 ``len//8`` 递增
+        （刷新次数约 O(log n)，总排版成本与长度线性）。前缀关系破裂（解析器
+        重建 / 块切换）时立即重排，保证内容不错位。
+
+        Args:
+            key: 节流槽（区分块类型/样式参数）。**不得包含随帧变化的元数据**
+                （如截断行数）——否则每帧都会成为新槽位、节流失效（且槽位
+                无限累积）。
+            src: 当前源码（增长序列）。
+            render: 无参渲染回调，返回 ``list[AnsiLine]``。
+
+        Returns:
+            本次应显示的预览行（可能复用上次结果）。
+        """
+        state = self._preview_throttle.get(key)
+        if state is not None and state[0] and src.startswith(state[0]):
+            prev_len = len(state[0])
+            step = (1 if prev_len < _PREVIEW_THROTTLE_FULL_LIMIT
+                    else max(1, prev_len // 8))
+            if len(src) - prev_len < step:
+                return state[1]
+        rows = render()
+        self._preview_throttle[key] = (src, rows)
+        return rows
+
+    def _render_math_preview(self, token) -> list[AnsiLine]:
+        """数学块流式预览：节流二维排版 + 超长降级为提示框。
+
+        数学排版（分数/根式/大算符/矩阵/上下标的二维布局）成本与公式长度
+        成正比，流式期间每帧重排整段公式 → 累计 O(n²)（8k 字符单行公式逐
+        8 字符写入实测 ~8s，渲染线程被占满）。节流见 ``_throttle_preview``；
+        超过 ``_MATH_PREVIEW_MAX_SRC`` 的超长公式降级为提示框（提交路径仍
+        完整排版）。
+        """
+        src = token.meta.get("source") or ""
+        dropped = int(token.meta.get("preview_dropped", 0) or 0)
+        from . import math as _math
+        if len(src) > _MATH_PREVIEW_MAX_SRC:
+            over_key = "math_overflow"
+            state = self._preview_throttle.get(over_key)
+            if state is None or state[0] != len(src):
+                rows = _math.render_math_omitted(len(src))
+                self._preview_throttle[over_key] = (len(src), rows)
+            return self._preview_throttle[over_key][1]
+        key = ("math",)
+        rows = self._throttle_preview(
+            key, src, lambda: _math.render_math_block(src, dropped=dropped))
+        # 提示框槽与正文槽互斥：本次为正文预览时清理残留的 overflow 槽
+        self._preview_throttle.pop("math_overflow", None)
+        return rows
+
+    def _render_mermaid_preview(self, token) -> list[AnsiLine]:
+        """Mermaid 块流式预览：节流图形布局（见 ``_throttle_preview``）。
+
+        图形布局成本随节点/边数量（即源码长度）增长，逐帧重排同样退化为
+        O(n²)；节流后与长度线性。源码行数已由解析器按 ``_PREVIEW_MERMAID_LINES``
+        截断（超出部分带省略提示），此处只处理帧间重复排版。
+        """
+        src = token.meta.get("source") or ""
+        dropped = int(token.meta.get("preview_dropped", 0) or 0)
+        from . import mermaid as _mermaid
+        return self._throttle_preview(
+            ("mermaid",), src,
+            lambda: _mermaid.render_mermaid_block(src, dropped=dropped))
+
+    def _render_front_matter_preview(self, token) -> list[AnsiLine]:
+        """Front Matter 流式预览：节流键值卡片渲染（见 ``_throttle_preview``）。
+
+        卡片渲染对每行键值做行内解析 + 对齐拼装，成本与行数成正比；流式期间
+        每帧重建整张卡片（解析器已按 ``_PREVIEW_MAX_LINES`` 截断行数）仍会
+        累计 O(n²)。节流后刷新次数约 O(log n)。
+        """
+        src = token.content or ""
+        from . import blocks as _blocks
+        return self._throttle_preview(
+            ("front_matter",), src,
+            lambda: _blocks.render_front_matter(token))
+
     def _reset_code_preview_cache(self) -> None:
         """清空代码块预览增量缓存（块闭合/预览清空时调用）。"""
         self._code_preview_key = None
@@ -854,6 +979,32 @@ class AnsiStreamRenderer:
         self._code_preview_content = src
         self._code_preview_full_src = full_lines
         return full_lines, True
+
+    @staticmethod
+    def _code_active_window(src_lines: list[str], start: int, n: int) -> list[str]:
+        """代码块预览「活动行」（未换行尾行）的渲染源，超长时取尾部窗口。
+
+        pygments 词法高亮的成本与行长度成正比；流式期间活动行每帧重渲，超长
+        单行（minified JSON / base64 / 长 URL）会退化为 O(n²)。仅对**活动行**
+        取 ``_PREVIEW_MAX_LINE_CHARS`` 字符的尾部窗口（与段落活动行同一口径），
+        已确定的历史行不受影响（它们由逐行高亮缓存复用）。提交路径仍渲染完整行，
+        预览窗口只影响流式中间态的可见长度。
+
+        调用契约：``start``、``n`` 为活动行区间（通常恰为最后一行
+        ``n-1..n``）；返回新列表（不修改调用方/解析器持有的行列表）。
+        """
+        if n <= start:
+            return []
+        limit = _PREVIEW_MAX_LINE_CHARS
+        out: list[str] = []
+        last = n - 1
+        for idx in range(start, n):
+            line = src_lines[idx]
+            if limit > 0 and idx == last and len(line) > limit:
+                out.append(line[-limit:])
+            else:
+                out.append(line)
+        return out
 
     def _render_code_preview(self, token) -> list[AnsiLine]:
         """代码块流式预览：按行增量高亮缓存 + 尾部截断省略提示。
@@ -951,9 +1102,15 @@ class AnsiStreamRenderer:
             # 活动行（最后一行，内容逐帧变化）：每帧重渲以保证预览实时，
             # 但不写入共享缓存（否则活动行的每个中间前缀都会成为缓存条目，
             # 持续膨胀并可能触发整体清空）。
+            # ★ 性能（超长单行）：活动行超过 ``_PREVIEW_MAX_LINE_CHARS`` 时
+            #   只词法高亮**尾部窗口**——pygments 高亮成本与行长度成正比，
+            #   无窗口时 minified JSON / base64 等超长单行（可达数十万字符）
+            #   每帧重解析整行，累计 O(n²)（80k 字符单行代码流式实测 5.8s）。
+            #   窗口化与段落活动行同口径，提交时仍完整渲染。
             rows.extend(
                 _code.highlight_code_lines(
-                    src_lines[stable_new:n], lang, self._code_theme,
+                    self._code_active_window(src_lines, stable_new, n),
+                    lang, self._code_theme,
                     highlight_lines=hl,
                     start_index=skip + stable_new + 1,
                     linenos=linenos,
