@@ -621,17 +621,26 @@ def _extract_title(soup: BeautifulSoup) -> str:
 # ── 格式化输出 ─────────────────────────────────────────
 
 def format_fetch_result(data: dict) -> str:
-    """将提取的网页内容格式化为可读文本"""
-    lines = []
-    lines.append(f"标题: {data['title']}")
-    lines.append(f"来源: {data['url']}")
+    """将提取的网页内容格式化为规范 **markdown** 文本。
+
+    结构（TUI 流式 markdown 渲染 → 工具卡正文）：
+      - ``# 标题``（一级标题）；
+      - 元信息列表（``- 来源: [url](url)`` / ``- 域名: …`` / ``- 发布时间: …``，
+        缺失项跳过）；
+      - ``---`` 分隔线；
+      - 正文（原样，已由正文提取去除导航/广告/页脚噪音）。
+    """
+    lines = [f"# {data['title']}", ""]
+    # 来源链接：URL 作为可点击 markdown 链接（TUI 渲染为 OSC 8 超链接）
+    url = data['url']
+    lines.append(f"- 来源: [{url}]({url})")
     if data['domain']:
-        lines.append(f"域名: {data['domain']}")
+        lines.append(f"- 域名: {data['domain']}")
     if data['date']:
-        lines.append(f"发布时间: {data['date']}")
+        lines.append(f"- 发布时间: {data['date']}")
 
     lines.append("")
-    lines.append("─" * 50)
+    lines.append("---")
     lines.append("")
 
     if data['body']:

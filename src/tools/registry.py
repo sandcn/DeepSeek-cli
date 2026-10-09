@@ -292,6 +292,26 @@ def get_tools() -> Dict[str, Type[Func]]:
     return ToolRegistry.default().get_tools()
 
 
+def tool_output_is_markdown(tool_name: str) -> bool:
+    """工具输出是否为 markdown（默认 False；工具类可覆盖 ``markdown_output``）。
+
+    供展示/回放链路（历史消息重渲染等）判定：工具输出应经流式 markdown
+    渲染（工具卡正文）还是纯文本行输出。查询默认注册表中该工具类的
+    ``markdown_output`` 类属性（web_search / web_fetch 声明为 True）。
+
+    注册表不可用/工具未注册时返回 False（回退纯文本，安全默认）。
+    """
+    try:
+        cls = get_tools().get(str(tool_name or ""))
+        if cls is not None:
+            return bool(getattr(cls, "markdown_output", False))
+    except Exception:
+        logger.debug(
+            "tool_output_is_markdown 解析失败: %s", tool_name, exc_info=True,
+        )
+    return False
+
+
 def get_tool_schemas() -> List[Dict[str, Any]]:
     """
     获取默认注册表中所有工具的函数调用模式

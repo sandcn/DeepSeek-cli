@@ -14,11 +14,13 @@ import httpx
 from .base import Func
 from .fetch_providers import HttpPageFetcher
 from .search_providers import get_shared_client
-from ..core.constants import GREEN, YELLOW, DIM, RESET
 
 
 class WebFetchFunc(Func):
     name = "web_fetch"
+    #: 输出为规范 markdown（``# 标题`` + 元信息列表 + 正文）——TUI 经流式
+    #: markdown 渲染为工具卡正文（见 ``display``）。
+    markdown_output = True
 
     # 默认抓取提供者（无内核/无清单条目时的回退）
     PROVIDER = HttpPageFetcher
@@ -87,12 +89,13 @@ class WebFetchFunc(Func):
         return provider.format(result)
 
     async def display(self) -> str:
-        Func._publish_tool_text(f"\n  {GREEN}📄 获取网页: {self.url}{RESET}")
+        """执行抓取并把结果以 **markdown** 发布到工具卡（TUI 流式 markdown 渲染）。
+
+        结果由抓取提供者 ``format`` 产出为规范 markdown（``# 标题`` +
+        ``- 来源: [url](url)`` 等元信息 + ``---`` 分隔 + 正文），经
+        ``_publish_tool_markdown`` 交给 TUI 的流式 markdown 渲染管线
+        （``AnsiStreamRenderer``）渲染为工具卡正文（标题/链接/分隔线等格式化）。
+        """
         result = await self.execute()
-
-        if result.startswith("("):
-            Func._publish_tool_text(f"  {YELLOW}{result}{RESET}")
-        else:
-            Func._publish_tool_text(f"  {DIM}{result}{RESET}")
-
+        Func._publish_tool_markdown(result)
         return result

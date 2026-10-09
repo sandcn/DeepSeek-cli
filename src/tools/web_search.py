@@ -24,11 +24,13 @@ from .search_providers import (
     WebSearchError,
     shutdown_clients,
 )
-from ..core.constants import GREEN, YELLOW, DIM, RESET
 
 
 class WebSearchFunc(Func):
     name = "web_search"
+    #: 输出为 markdown（来源列表 ``- [标题](url) — 摘要``）——TUI 经流式
+    #: markdown 渲染为工具卡正文（见 ``display``）。
+    markdown_output = True
 
     # 默认返回来源数上限（对齐 DSH WEB_SEARCH_MAX_RESULTS）
     MAX_RESULTS = 8
@@ -177,12 +179,13 @@ class WebSearchFunc(Func):
     # ── 显示 ──
 
     async def display(self) -> str:
-        Func._publish_tool_text(f"\n  {GREEN}🔍 网页搜索: {self.query}{RESET}")
+        """执行搜索并把结果以 **markdown** 发布到工具卡（TUI 流式 markdown 渲染）。
+
+        结果字符串（``来源 (N 条)`` + ``- [标题](url) — 摘要 (日期)`` 列表）
+        本就为 markdown 结构——经 ``_publish_tool_markdown`` 交给 TUI 的流式
+        markdown 渲染管线（``AnsiStreamRenderer``）渲染为工具卡正文（链接可
+        点击、列表缩进格式化），不再原样输出纯文本行。
+        """
         result = await self.execute()
-
-        if result.startswith("("):
-            Func._publish_tool_text(f"  {YELLOW}{result}{RESET}")
-        else:
-            Func._publish_tool_text(f"  {DIM}{result}{RESET}")
-
+        Func._publish_tool_markdown(result)
         return result

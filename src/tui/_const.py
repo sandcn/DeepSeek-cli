@@ -5,7 +5,7 @@ Layer 0 — 无内部依赖，被所有 TUI 模块引用。
 
 保留确认（2026-07-31 方向F）：``FrameworkCommand``/``ChatCommand`` 为
 ``RenderCommand`` 别名，被 ``src/tui/__init__.py`` 与 ``src/tui/consumer/__init__.py``
-re-export（公共 API 约束）；``RenderCommand`` 22 个枚举值均有对应 ``RenderCmd``
+re-export（公共 API 约束）；``RenderCommand`` 24 个枚举值均有对应 ``RenderCmd``
 dataclass 且全部被分发使用，**无未引用枚举**。别名保留不删。
 """
 
@@ -101,11 +101,11 @@ _SEMANTIC_COLOR: Mapping = _SemanticColor()
 
 
 # ═══════════════════════════════════════════════════════════
-# RenderCommand — 渲染命令枚举（向后兼容，含全部 22 个值）
+# RenderCommand — 渲染命令枚举（向后兼容，含全部 24 个值）
 # ═══════════════════════════════════════════════════════════
 
 class RenderCommand(IntEnum):
-    """渲染命令类型，替代魔数整数。合并 FrameworkCommand（框架命令）与 ChatCommand（聊天命令），值完全不变（22 个枚举值）。"""
+    """渲染命令类型，替代魔数整数。合并 FrameworkCommand（框架命令）与 ChatCommand（聊天命令），值完全不变（24 个枚举值）。"""
     REASONING = 0       # (0, text: str)
     CONTENT = 1         # (1, text: str)
     PHASE_DONE = 2      # (2, phase: str)
@@ -129,6 +129,7 @@ class RenderCommand(IntEnum):
     CLEAR_MSGS = 24      # (24,) — 清空消息区显示（编辑/加载会话重渲染前使用）
     BG_BASH_COUNT = 25   # (25, count: int) — 后台 bash 任务总数（主 agent + subagent 聚合）
     COMPACTION = 26      # (26, active: int) — 上下文压缩中的 Agent 数量（主 agent + subagent 聚合）
+    TOOL_MARKDOWN = 27   # (27, text: str, tool_id: str) — 工具卡内 markdown 输出（流式 markdown 渲染）
 
 
 # ═══════════════════════════════════════════════════════════
@@ -161,6 +162,17 @@ class ToolOutputCmd(RenderCmd):
     text: str = ""
     tool_id: str = ""
     chat_hidden: bool = False
+
+@dataclass(frozen=True)
+class ToolMarkdownCmd(RenderCmd):
+    """工具卡内 markdown 输出（TUI 流式 markdown 渲染）。
+
+    与 ``ToolOutputCmd``（纯文本行）并列：文本经 ``AnsiStreamRenderer``
+    渲染为工具卡正文（链接/列表/标题/代码块等格式化）。
+    """
+    cid: int = RenderCommand.TOOL_MARKDOWN
+    text: str = ""
+    tool_id: str = ""
 
 @dataclass(frozen=True)
 class ToolSummaryCmd(RenderCmd):
@@ -302,6 +314,7 @@ CONTENT_COMMANDS: frozenset[RenderCommand] = frozenset({
     RenderCommand.NOTIFICATION,
     RenderCommand.DISPLAY_MSGS,
     RenderCommand.SPLASH,
+    RenderCommand.TOOL_MARKDOWN,
 })
 
 

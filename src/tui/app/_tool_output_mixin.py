@@ -34,6 +34,7 @@ from src.tui.app._model_helpers import (
 #   （模块级零依赖，函数内惰性 import——无循环风险）。
 from src.tui.app.toolcard import (
     _tool_running_prefix_text,
+    _tool_md_content_width,
     tool_card_lines,
 )
 # core.style 为 Layer 0 底层（无 app 依赖），模块级 import 无循环风险；
@@ -176,21 +177,16 @@ class _ToolOutputMixin:
         tool_id 为空 → 丢弃并 debug 日志（无归属输出不静默错路由）。
         """
         from src.renderer.ansi.helpers import AnsiLine, ansi_to_line
-        # ★ 空工具卡防御（模型层双保险）：tool_id 为 "assistant" 时说明该输出
-        #   来自工具上下文之外的 print_to_terminal 回退（如后台任务完成提示），
-        #   不归属任何工具 box——兜底创建空「工具」卡会永不闭合（● ⚙ 工具）。
-        #   直接丢弃（上层 _on_tool_output 已过滤，此为防御冗余）。
-        if tool_id == "assistant":
-            _logger.debug("append_tool_output: 无归属输出（assistant），丢弃: %.80s", text)
-            return
-        block = self.tool_boxes.get(tool_id)
+        # ★ 输出归属解析（空工具卡防御 + 未知 tool_id 兜底建 box；与
+        #   ``append_tool_markdown`` 共用 ``_output_target_block``）：
+        #   - tool_id 为 "assistant"：工具上下文之外的 print_to_terminal 回退
+        #     （如后台任务完成提示），不归属任何工具 box——兜底创建空「工具」
+        #     卡会永不闭合；直接丢弃（上层 _on_tool_output 已过滤，防御冗余）；
+        #   - tool_id 为空：无归属输出丢弃；
+        #   - tool_id 未知：创建匿名兜底 box（输出不丢失）。
+        block = self._output_target_block(tool_id, text, "append_tool_output")
         if block is None:
-            if not tool_id:
-                _logger.debug(
-                    "append_tool_output: 收到空 tool_id，输出丢弃: %.80s", text,
-                )
-                return
-            block = self.open_tool_box(tool_id, "")
+            return
         # ★ 用户需求（read_file 聊天卡隐藏内容）：chat_hidden 输出行登记到
         #   ``_chat_hidden_lines``（行对象引用）——聊天卡渲染跳过（数据保留，
         #   Trace 可见）。非 hidden 调用零开销（hidden_rows 保持 None）。
@@ -233,6 +229,122 @@ class _ToolOutputMixin:
         #   已闭合行到 committed_lines；开放块渲染只取未提交尾）。
         if len(block.lines) - block.committed_line_count >= _tool_incremental_threshold():
             self.commit_open_block(block)
+
+    def _output_target_block(self, tool_id: str, text: str, caller: str):
+        """解析工具输出归属块（``append_tool_output`` / ``append_tool_markdown`` 共用）。
+
+        归属策略（空工具卡防御 + 未知 id 兜底，单一真源）：
+
+          - ``tool_id == "assistant"``：工具上下文之外的 ``print_to_terminal``
+            回退（如后台任务完成提示），不归属任何工具 box——返回 None
+            （上层调用方丢弃；兜底创建空「工具」卡会永不闭合）；
+          - ``tool_id`` 为空：无归属输出，返回 None（debug 日志）；
+          - ``tool_id`` 未知（box 不存在）：创建匿名兜底 box（输出不丢失，
+            后续真实 ToolStartedEvent 到达时经 open_tool_box 复用补全标题）。
+
+        Args:
+            tool_id: 工具调用 ID。
+            text: 输出文本（仅用于 debug 日志截断展示）。
+            caller: 调用方名（日志前缀）。
+
+        Returns:
+            归属的 ChatBlock；应丢弃时返回 None。
+        """
+        if tool_id == "assistant":
+            _logger.debug("%s: 无归属输出（assistant），丢弃: %.80s", caller, text)
+            return None
+        block = self.tool_boxes.get(tool_id)
+        if block is None:
+            if not tool_id:
+                _logger.debug("%s: 收到空 tool_id，输出丢弃: %.80s", caller, text)
+                return None
+            block = self.open_tool_box(tool_id, "")
+        return block
+
+    def append_tool_markdown(self, tool_id: str, text: str) -> None:
+        """追加工具卡内 **markdown** 输出（流式 markdown 渲染为卡片正文）。
+
+        与 ``append_tool_output``（纯文本行，逐行写入 ``block.lines``）并列：
+        markdown 源文本经 ``AnsiStreamRenderer`` 增量渲染为 ``AnsiLine``，累积到
+        ``block.extra["_tool_md_lines"]``（渲染行缓冲）+ ``_tool_md_preview``
+        （未闭合尾预览）——**不写入** ``block.lines``（保持其为纯文本数据源，
+        避免与行截断/隐藏行/增量提交逻辑纠缠）。``toolcard.tool_card_lines``
+        渲染卡片正文时优先取该缓冲（``│ `` 引导线 + 单行截断 + 满宽背景，
+        与既有卡片视觉一致）。
+
+        渲染器实例 / 源文本 / 渲染宽度随块保存（``_tool_md_renderer`` /
+        ``_tool_md_source`` / ``_tool_md_render_width``）：终端 resize（宽度
+        变化）时下一次追加经 ``_tool_md_content_width`` 检测并重放源文本，
+        ``toolcard`` 侧亦会按新宽度整块重渲染（见 ``_tool_md_body_lines``）。
+
+        关闭时由 ``close_tool_box`` 收尾（``_finalize_tool_md``：``close()``
+        刷出未闭合段落/代码块残差）。可多次调用（逐块流式发布）。
+
+        Args:
+            tool_id: 工具调用 ID（归属解析同 ``append_tool_output``）。
+            text: markdown 源文本块。
+        """
+        if not text:
+            return
+        block = self._output_target_block(tool_id, text, "append_tool_markdown")
+        if block is None:
+            return
+        from src.renderer.ansi import AnsiStreamRenderer
+        width = _tool_md_content_width(getattr(self, "width", 0))
+        source_so_far = block.extra.get("_tool_md_source", "")
+        renderer = block.extra.get("_tool_md_renderer")
+        if renderer is None or block.extra.get("_tool_md_render_width") != width:
+            # 首块 / 宽度变化：新建渲染器并把已累积源文本重放（流式状态连续；
+            # 宽度变化时历史行按新宽度重排）。重放会重建**全部**已渲染行，
+            # 故先清空行缓冲——避免与旧缓冲重复（宽度变化场景旧行已入缓冲）。
+            renderer = AnsiStreamRenderer(width=width)
+            block.extra["_tool_md_lines"] = []
+            block.extra["_tool_md_preview"] = []
+            if source_so_far:
+                renderer.write(source_so_far)
+            block.extra["_tool_md_renderer"] = renderer
+            block.extra["_tool_md_render_width"] = width
+        renderer.write(text)
+        block.extra["_tool_md_source"] = source_so_far + text
+        self._sync_tool_md_lines(block)
+
+    def _sync_tool_md_lines(self, block) -> None:
+        """从 markdown 渲染器取出新行并入缓冲（``_tool_md_lines`` / 预览）。
+
+        渲染器缓冲语义与主内容通道一致（``take_lines`` 消费已确定行、
+        ``take_preview_lines`` 返回未闭合块预览快照）——合并进块缓冲并递增
+        ``_tool_md_version``（toolcard 帧/正文缓存据此失效重建）。
+        """
+        renderer = block.extra.get("_tool_md_renderer")
+        if renderer is None:
+            return
+        lines = block.extra.get("_tool_md_lines")
+        if lines is None:
+            lines = []
+        lines.extend(renderer.take_lines())
+        block.extra["_tool_md_lines"] = lines
+        take_preview = getattr(renderer, "take_preview_lines", None)
+        block.extra["_tool_md_preview"] = (
+            list(take_preview()) if callable(take_preview) else []
+        )
+        block.extra["_tool_md_version"] = block.extra.get("_tool_md_version", 0) + 1
+
+    def _finalize_tool_md(self, block) -> None:
+        """工具关闭时收尾 markdown 渲染器（``close()`` 刷出残差后释放实例）。
+
+        主内容通道关闭同语义：``close()`` 让解析器 flush 残差（未闭合段落/
+        代码块尾部）并渲染为行，随后追加进 ``_tool_md_lines``。无 markdown
+        输出（未走 ``append_tool_markdown``）时零成本跳过。
+        """
+        renderer = block.extra.get("_tool_md_renderer")
+        if renderer is None:
+            return
+        try:
+            renderer.close()
+        except Exception:
+            _logger.debug("工具卡 markdown 渲染器关闭异常", exc_info=True)
+        self._sync_tool_md_lines(block)
+        block.extra.pop("_tool_md_renderer", None)
 
     def _drop_tool_body_cache(self, block, line) -> None:
         """从工具卡内容行缓存中移除行键（trim 删除行后同步清理，P1-1）。
@@ -402,6 +514,9 @@ class _ToolOutputMixin:
                 "close_tool_box: 未找到 tool_id=%r 的工具 box，静默丢弃", tool_id,
             )
             return
+        # ★ markdown 工具卡收尾：关闭渲染器刷出未闭合段落/代码块残差（在冻结/
+        #   提交前完成，保证卡片正文完整——见 ``_finalize_tool_md``）。
+        self._finalize_tool_md(block)
         status = "\u2714" if success else "\u2716"
         # ★ BEAUTY-35（状态行元信息）：计算工具耗时（open 记录的开始时间戳 →
         # 关闭时差）。Claude Code 极简样式后渲染层不显示独立状态行（耗时字段

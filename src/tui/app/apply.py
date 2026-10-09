@@ -390,6 +390,18 @@ def _do_tool_output(model, cmd) -> None:
     )
 
 
+def _do_tool_markdown(model, cmd) -> None:
+    """工具卡内 markdown 输出：经流式 markdown 渲染管线渲染为卡片正文。
+
+    与 ``_do_tool_output``（纯文本行）并列——``cmd.text`` 为 markdown 源文本，
+    由 ``AppModel.append_tool_markdown`` 用 ``AnsiStreamRenderer`` 增量渲染并
+    累积为工具块卡片的正文行（链接/列表/标题/代码块等格式化，见 toolcard）。
+    """
+    if not cmd.text:
+        return
+    model.append_tool_markdown(cmd.tool_id, cmd.text)
+
+
 def _do_tool_close(model, cmd) -> None:
     """工具结束：关闭对应 box 并追加状态底行。"""
     model.close_tool_box(cmd.tool_id, cmd.success)
@@ -591,15 +603,25 @@ def _append_tool_rich(model, msg, anon_ids: list | None = None) -> None:
     #   （轨迹 Trace / 详情视图照常可见）。读取失败/空文件等提示不隐藏。
     chat_hidden = False
     _box = getattr(model, "tool_boxes", {}).get(tool_call_id)
+    _tool_name = ""
     if _box is not None:
         _extra = getattr(_box, "extra", None) or {}
+        _tool_name = _extra.get("tool_name") or ""
         if (
             _extra.get("tool_name") == "read_file"
             and content.lstrip().startswith("文件: ")
         ):
             chat_hidden = True
     if content.strip():
-        model.append_tool_output(tool_call_id, content, chat_hidden=chat_hidden)
+        # ★ markdown 输出工具（web_search / web_fetch）：历史回放同样经流式
+        #   markdown 渲染为工具卡正文（与实时执行路径一致——工具类声明
+        #   ``markdown_output``，见 ``tool_output_is_markdown``）。
+        from src.tools.registry import tool_output_is_markdown
+
+        if _tool_name and tool_output_is_markdown(_tool_name):
+            model.append_tool_markdown(tool_call_id, content)
+        else:
+            model.append_tool_output(tool_call_id, content, chat_hidden=chat_hidden)
     # 历史回放中的工具调用均已执行完成；失败信息按消息字段还原
     _is_err = bool(msg.get("is_error")) or str(msg.get("status", "")).lower() in (
         "error", "failed", "fail",
@@ -769,6 +791,7 @@ _HANDLERS: dict[int, object] = {
     RenderCommand.TOOL_FAIL_INC: _do_tool_fail_inc,
     RenderCommand.MAIN_PHASE: _do_main_phase,
     RenderCommand.TOOL_OUTPUT: _do_tool_output,
+    RenderCommand.TOOL_MARKDOWN: _do_tool_markdown,
     RenderCommand.TOOL_SUMMARY: _do_tool_summary,
     RenderCommand.TOOL_OPEN: _do_tool_open,
     RenderCommand.TOOL_CLOSE: _do_tool_close,

@@ -65,6 +65,7 @@ from src.tui.core.style import Style
 __all__ = [
     "ToolCard", "tool_card_lines", "_tool_icon_runs", "_tool_status_index",
     "_tool_running_prefix_text", "_tool_finished_prefix_text",
+    "_tool_md_content_width",
 ]
 
 # ── 工具类别配色（BEAUTY-35，2026-08-06 美化） ─────────────────────
@@ -89,6 +90,15 @@ _CATEGORY_BREATH: dict[str, tuple[int, int]] = {
 _CATEGORY_DEFAULT_FG = 242
 _CATEGORY_DEFAULT_BREATH = (242, 252)
 _GUIDE_STYLE = Style(fg=238)                # 内容竖线引导色（深灰，低调）
+#: 工具卡正文引导线宽度（``│ `` 两列）——markdown 正文按「卡片宽度 - 本值」
+#: 渲染，保证 ``│ `` + 渲染行不超终端宽度（单一真源，供 toolcard 与
+#: ``_tool_output_mixin.append_tool_markdown`` 共用）。
+_GUIDE_WIDTH = 2
+#: 工具卡 markdown 正文渲染最小宽度（窄屏防御：卡片宽度过小时仍给渲染器
+#: 一个可用宽度，超出部分由内容行截断兜底）。
+_TOOL_MD_MIN_WIDTH = 20
+#: 未知终端宽度时的默认卡片宽度（``model.width`` 未就绪时回退）。
+_TOOL_MD_DEFAULT_WIDTH = 80
 #: 工具卡满宽背景色（256 色号；默认深灰 236）。
 #: 「工具卡整行占满终端宽度」（2026-10-05 用户需求）：标题行/内容行/省略行
 #: 右侧以背景色空格填充至终端宽度，视觉上撑满终端（对齐 Claude Code 工具卡
@@ -342,7 +352,12 @@ def _tool_result_line_count(block) -> int:
     """工具结果行数（body 数据行 + 已省略行；不含标题行/状态行）。
 
     用于标题行尾部元信息（``· 120 行``）——让用户不展开也能感知输出规模。
+    markdown 工具卡（``_tool_md_lines`` 非 None）按**渲染后的正文行数**
+    （含未闭合尾预览）计。
     """
+    md_lines = block.extra.get("_tool_md_lines")
+    if md_lines is not None:
+        return len(md_lines) + len(block.extra.get("_tool_md_preview") or [])
     total = len(block.lines)
     if total <= 1:
         return 0
@@ -419,9 +434,80 @@ def _omitted_line(text: str, width: int, bg_style: Style) -> list:
         # 极端窄屏：仅竖线（1 列）
         return _apply_line_bg([StyledRun("│", _GUIDE_STYLE)], width, bg_style)
     return _apply_line_bg(
-        guide + truncate_runs_ellipsis([StyledRun(text, Style(fg=242))], width - 2),
+        guide + truncate_runs_ellipsis([StyledRun(text, Style(fg=242))], width - _GUIDE_WIDTH),
         width, bg_style,
     )
+
+
+def _tool_md_content_width(width) -> int:
+    """工具卡 markdown 正文渲染宽度（卡片宽度扣除 ``│ `` 引导线）。
+
+    卡片正文每行前置 ``│ ``（``_GUIDE_WIDTH`` 列），因此 markdown 按
+    「卡片宽度 - 引导线宽度」渲染即可保证渲染行 + 引导线不超终端宽度
+    （否则会被内容行截断逻辑截断并追加 ``…``）。宽度非法/未知时回退默认
+    卡片宽度；过小（窄屏）时钳到 ``_TOOL_MD_MIN_WIDTH``（超出部分由内容行
+    截断兜底）。
+
+    单一真源：``_tool_output_mixin.append_tool_markdown``（渲染器宽度）与
+    本模块 ``_tool_md_body_lines``（resize 重渲染宽度）共用。
+    """
+    try:
+        w = int(width)
+    except (TypeError, ValueError):
+        w = 0
+    if w <= 0:
+        w = _TOOL_MD_DEFAULT_WIDTH
+    return max(_TOOL_MD_MIN_WIDTH, w - _GUIDE_WIDTH)
+
+
+def _tool_md_body_lines(block, width) -> list:
+    """markdown 工具卡正文行（流式渲染缓冲；宽度变化时按源文本整块重渲染）。
+
+    markdown 工具卡（web_search / web_fetch 等，经
+    ``AppModel.append_tool_markdown`` 累积）正文不来自 ``block.lines``（纯文本
+    数据源），而是 ``block.extra["_tool_md_lines"]``（已渲染行）+ ``_tool_md_preview``
+    （未闭合尾预览）。宽度与上次渲染宽度一致时直接复用（含预览，产出新列表）。
+
+    终端 resize（宽度变化）时按保存的 markdown 源文本（``_tool_md_source``）用
+    新宽度整块重渲染并回填缓冲（表格/代码块/列表随宽度重排）；渲染实例由
+    ``append_tool_markdown`` 持有（下次追加 chunk 时按新宽度重放源，流式状态
+    连续）。渲染异常时回退上次缓冲（不中断卡片渲染）。
+
+    Args:
+        block: 工具块（ChatBlock.kind == "tool"）。
+        width: 卡片总宽度（终端列宽）。
+
+    Returns:
+        list[AnsiLine] — 正文行（已渲染 markdown 行 + 预览尾）。
+    """
+    source = block.extra.get("_tool_md_source")
+    if source is None:
+        return []
+    content_w = _tool_md_content_width(width)
+    lines = block.extra.get("_tool_md_lines")
+    if lines is not None and block.extra.get("_tool_md_render_width") == content_w:
+        return list(lines) + list(block.extra.get("_tool_md_preview") or [])
+    try:
+        from src.renderer.ansi import AnsiStreamRenderer
+        renderer = AnsiStreamRenderer(width=content_w)
+        renderer.write(source)
+        if block.closed:
+            renderer.close()
+            new_lines = list(renderer.take_lines())
+            preview: list = []
+        else:
+            new_lines = list(renderer.take_lines())
+            preview = list(renderer.take_preview_lines())
+    except Exception:
+        # 重渲染异常：回退上次缓冲（不中断卡片渲染）
+        if lines is None:
+            return []
+        return list(lines) + list(block.extra.get("_tool_md_preview") or [])
+    block.extra["_tool_md_lines"] = new_lines
+    block.extra["_tool_md_preview"] = preview
+    block.extra["_tool_md_render_width"] = content_w
+    block.extra["_tool_md_version"] = block.extra.get("_tool_md_version", 0) + 1
+    return new_lines + preview
 
 
 def tool_card_lines(block, width, start=0, stop=None):
@@ -486,6 +572,9 @@ def tool_card_lines(block, width, start=0, stop=None):
         block.extra.get("_bash_omitted_lines", 0),
         block.extra.get("_head_omitted_lines", 0),
         len(block.extra.get("_chat_hidden_lines") or ()),
+        # ★ markdown 工具卡：渲染版本参与帧键（新 chunk / resize 重渲染后重建；
+        #   未变化帧命中缓存——流式追加时零额外重建）。
+        block.extra.get("_tool_md_version", -1),
         width, bg_style.bg,
     )
     _frame_cache = getattr(block, "_tool_card_frame_cache", None)
@@ -541,6 +630,15 @@ def tool_card_lines(block, width, start=0, stop=None):
     # 关闭状态行数据行（_tool_status_index）跳过——状态由标题行状态图标表达
     body_end = len(block.lines) if stop is None else min(stop, len(block.lines))
     body_start = start if start > 0 else 1
+    # ★ markdown 工具卡（web_search / web_fetch 等）：正文来自流式 markdown
+    #   渲染缓冲（``_tool_md_lines`` + ``_tool_md_preview``），与 ``block.lines``
+    #   的纯文本行数据源互斥（卡片正文只取其一）。仅 ``start == 0``（卡片首行
+    #   提交，与标题行同批）发射——增量提交/冻结尾（start>0）不重复；终端
+    #   resize 时由 ``_tool_md_body_lines`` 按源文本新宽度重渲染（表格/代码块
+    #   随宽度重排）。
+    _md_lines = None
+    if start == 0 and block.extra.get("_tool_md_source") is not None:
+        _md_lines = _tool_md_body_lines(block, width)
     # ★ 用户需求（read_file 聊天卡只显示标题行）：聊天卡隐藏行集合
     #   （``block.extra["_chat_hidden_lines"]`` 行对象引用，由
     #   ``append_tool_output(chat_hidden=True)`` 登记）——按 id() 判定跳过；
@@ -569,17 +667,37 @@ def tool_card_lines(block, width, start=0, stop=None):
         block.extra.get("_head_omitted_lines", 0),
         len(_hidden_rows) if _hidden_rows else 0,
         bg_style.bg,
+        # ★ markdown 工具卡：渲染版本 / 正文行数参与键（新 chunk 或 resize
+        #   重渲染后版本变化 → 重建；未变化帧命中缓存）。
+        block.extra.get("_tool_md_version", -1),
+        len(_md_lines) if _md_lines is not None else -1,
     )
     body_lines_cache = getattr(block, "_tool_card_body_lines_cache", None)
     if body_lines_cache is not None and body_lines_cache[0] == _body_key:
         body_lines = body_lines_cache[1]
     else:
         body_lines: list[list[StyledRun]] = []
-        # bash 尾显示：前置省略提示行「… 前 N 行省略」（仅首次提交 start==0）；
-        # 全隐藏（read_file 成功内容）时一并跳过（保持「只显示标题行」）
-        omitted = block.extra.get("_bash_omitted_lines", 0)
-        if omitted > 0 and not _body_all_hidden:
-            body_lines.append(_omitted_line(f"\u2026 前 {omitted} 行省略", width, bg_style))
+        # 内容行来源：markdown 工具卡取渲染缓冲（``_md_lines``，已在上面
+        # 解析）；其余取 ``block.lines[body_start:body_end]``（状态行/隐藏行
+        # 过滤 + 省略提示行逻辑仅适用于后者）。
+        if _md_lines is not None:
+            _body_ansi = list(_md_lines)
+        else:
+            # bash 尾显示：前置省略提示行「… 前 N 行省略」（仅首次提交 start==0）；
+            # 全隐藏（read_file 成功内容）时一并跳过（保持「只显示标题行」）
+            omitted = block.extra.get("_bash_omitted_lines", 0)
+            if omitted > 0 and not _body_all_hidden:
+                body_lines.append(_omitted_line(f"\u2026 前 {omitted} 行省略", width, bg_style))
+            _body_ansi = []
+            for abs_idx in range(body_start, body_end):
+                if status_idx is not None and abs_idx == status_idx:
+                    continue
+                _ansi_line = block.lines[abs_idx]
+                # ★ 用户需求（read_file 聊天卡只显示标题行）：隐藏行不渲染——
+                #   数据仍在 block.lines（Trace 可见），仅聊天卡跳过。
+                if _hidden_ids is not None and id(_ansi_line) in _hidden_ids:
+                    continue
+                _body_ansi.append(_ansi_line)
         # ★ PERF-6（性能）：开放工具卡内容行按 ``(行对象, width)`` 缓存
         #   截断后的内容 runs——修复前每帧对全部内容行重新重建
         #   （长 bash 输出 300 行 → 单帧 ~190ms → 30Hz 下 CPU 100%）。行对象
@@ -589,14 +707,7 @@ def tool_card_lines(block, width, start=0, stop=None):
         if body_cache is None:
             body_cache = {}
             block._tool_card_body_cache = body_cache
-        for abs_idx in range(body_start, body_end):
-            if status_idx is not None and abs_idx == status_idx:
-                continue
-            ansi_line = block.lines[abs_idx]
-            # ★ 用户需求（read_file 聊天卡只显示标题行）：隐藏行不渲染——
-            #   数据仍在 block.lines（Trace 可见），仅聊天卡跳过。
-            if _hidden_ids is not None and id(ansi_line) in _hidden_ids:
-                continue
+        for ansi_line in _body_ansi:
             key = (ansi_line, width, bg_style.bg)
             cached = body_cache.get(key)
             if cached is None:
@@ -659,10 +770,12 @@ def tool_card_lines(block, width, start=0, stop=None):
                     continue
                 body_lines.append(item[1])
         # find/search/ls/read_file 头显示：后置省略提示行「… 后 N 行省略」
-        # （head 省略的行在末尾——提示置于内容行之后，对齐终端 head 语义）
-        omitted_head = block.extra.get("_head_omitted_lines", 0)
-        if omitted_head > 0 and not _body_all_hidden:
-            body_lines.append(_omitted_line(f"\u2026 后 {omitted_head} 行省略", width, bg_style))
+        # （head 省略的行在末尾——提示置于内容行之后，对齐终端 head 语义）；
+        # markdown 工具卡不走该路径（正文来自渲染缓冲，无 head 省略语义）。
+        if _md_lines is None:
+            omitted_head = block.extra.get("_head_omitted_lines", 0)
+            if omitted_head > 0 and not _body_all_hidden:
+                body_lines.append(_omitted_line(f"\u2026 后 {omitted_head} 行省略", width, bg_style))
         block._tool_card_body_lines_cache = (_body_key, body_lines)
     out.extend(body_lines)
     # ★ Claude Code 极简样式（2026-08-06 用户需求）：**无独立状态行**——

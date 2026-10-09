@@ -13,6 +13,7 @@ from src.tui._const import (
     RenderCmd,
     ReasoningCmd, ContentCmd, PhaseDoneCmd,
     ToolOutputCmd, ToolSummaryCmd, ToolOpenCmd, ToolCloseCmd,
+    ToolMarkdownCmd,
     ParseInfoCmd,
     WriteLineCmd,
     ToolCountIncCmd, ToolFailIncCmd, ErrorCmd, ToolCountDecCmd,
@@ -257,6 +258,13 @@ class EventDispatcher:
         text = event.text.rstrip("\n")
         if text:
             tool_id = event.tool_id or event.label
+            # ★ 工具卡内 markdown 输出：事件带 ``markdown=True``（工具经
+            #   ``Func._publish_tool_markdown`` 发布）时走流式 markdown 渲染
+            #   通道（ToolMarkdownCmd → AnsiStreamRenderer → 工具卡正文），
+            #   而非纯文本行（ToolOutputCmd）。
+            if bool(getattr(event, "markdown", False)):
+                self._push_cmd(ToolMarkdownCmd(text=text, tool_id=tool_id))
+                return
             self._push_cmd(ToolOutputCmd(
                 text=text, tool_id=tool_id,
                 chat_hidden=bool(getattr(event, "chat_hidden", False)),

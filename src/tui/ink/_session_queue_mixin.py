@@ -60,6 +60,8 @@ _logger = logging.getLogger(__name__)
 _APPEND_STREAM_CMDS = frozenset({
     RenderCommand.CONTENT,
     RenderCommand.REASONING,
+    # 工具卡内 markdown 输出（拼接语义等价——渲染器按序写入同一源文本）。
+    RenderCommand.TOOL_MARKDOWN,
 })
 
 #: 流式命令合并后的文本上限（字符）：超过后不再合并，避免单条命令无限膨胀
@@ -81,6 +83,9 @@ _KEEP_CONTENT_CMDS = frozenset({
     RenderCommand.CONTENT,
     RenderCommand.PHASE_DONE,
     RenderCommand.TOOL_OUTPUT,
+    # 工具卡内 markdown 输出（与 TOOL_OUTPUT 同为用户可见内容——暂停/恢复
+    # 期间不丢弃，resume 后渲染线程处理）。
+    RenderCommand.TOOL_MARKDOWN,
     RenderCommand.TOOL_SUMMARY,
     RenderCommand.TOOL_OPEN,
     RenderCommand.TOOL_CLOSE,

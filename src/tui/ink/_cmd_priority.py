@@ -35,6 +35,9 @@ _STREAM_CMDS = frozenset({
     # 工具输出与 Open/Close（prio0）同序——否则 Close 先于 Output 出队，
     # 输出落到无名新 box（每工具 box 增量刷新依赖此顺序）。
     RenderCommand.TOOL_OUTPUT,
+    # 工具卡内 markdown 输出（流式 markdown 渲染）——与 TOOL_OUTPUT 同序
+    # （须在对应 TOOL_CLOSE 之前出队，否则关闭后到达的 markdown 落到新 box）。
+    RenderCommand.TOOL_MARKDOWN,
 })
 _HIGH_CMDS = frozenset({
     RenderCommand.SUBAGENT_FRAME,

@@ -127,11 +127,17 @@ class ToolOutputChunkEvent(DisplayEvent):
             成功读取的整文件语法高亮内容置 True——聊天区工具卡只显示标题行，
             内容行仍留在工具块数据中（轨迹 Trace / 详情视图照常可见）。
             读取失败/空文件等错误提示仍为 False（照常显示）。
+        markdown: 文本是否为 markdown（默认 False）。为 True 时前端将该文本
+            经 TUI 流式 markdown 渲染管线（``AnsiStreamRenderer``）渲染为
+            工具卡正文（链接/列表/标题/代码块等格式化），而非纯文本行。
+            web_search / web_fetch 等工具经 ``Func._publish_tool_markdown``
+            发布此类事件。
     """
     label: str = ""
     text: str = ""
     tool_id: str = ""
     chat_hidden: bool = False
+    markdown: bool = False
 
 
 @dataclass(frozen=True)

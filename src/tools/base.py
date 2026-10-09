@@ -41,6 +41,10 @@ async def print_to_terminal(text: str, tool_id: str = "") -> None:
 # 基类
 class Func(abc.ABC):
     name: str | None = None  # 工具名称（类属性，子类覆盖）
+    #: 工具输出是否为 markdown（类属性，子类覆盖）。为 True 时 TUI 将
+    #: ``display()`` 发布的结果经流式 markdown 渲染管线渲染为工具卡正文
+    #: （工具经 ``_publish_tool_markdown`` 发布；历史回放亦按此渲染）。
+    markdown_output: bool = False
 
     def __init__(self):
         self.agent = None  # 调用工具的Agent实例
@@ -183,6 +187,37 @@ class Func(abc.ABC):
             # 事件发布失败 → warning（用户侧工具输出静默丢失需可感知）
             _logger = logging.getLogger(__name__)
             _logger.warning("_publish_tool_text 失败", exc_info=True)
+
+    @staticmethod
+    def _publish_tool_markdown(text: str, tool_id: str = "") -> None:
+        """将工具 **markdown** 输出发布到 EventBus（工具卡内流式 markdown 渲染）。
+
+        与 ``_publish_tool_text``（纯文本行）并列的输出通道：事件携带
+        ``markdown=True``，TUI 侧经 ``ToolMarkdownCmd`` → ``AppModel`` 用
+        流式 markdown 渲染管线（``AnsiStreamRenderer``）渲染为工具卡正文
+        ——链接/列表/标题/代码块等格式化，而非原样纯文本。
+
+        可多次调用（逐块流式发布，渲染器增量累积）。
+
+        Args:
+            text: markdown 文本块。
+            tool_id: 可选工具调用 ID。为空时从 contextvar（当前工具上下文）
+                解析归属；仍为空回退 "assistant"（无归属，dispatcher 过滤）。
+        """
+        if not text:
+            return
+        from ..core.events.display_types import ToolOutputChunkEvent
+        from ..core.events.publish import emit
+        from ..core.internal.agent._tool_context import get_current_tool_id
+        try:
+            resolved = tool_id or get_current_tool_id() or "assistant"
+            emit(ToolOutputChunkEvent(
+                label=resolved, tool_id=resolved, text=text, source="agent",
+                markdown=True,
+            ))
+        except Exception:
+            _logger = logging.getLogger(__name__)
+            _logger.warning("_publish_tool_markdown 失败", exc_info=True)
 
     @staticmethod
     def _publish_tool_notice(text: str, tool_id: str = "") -> None:
