@@ -145,3 +145,235 @@ def _parse_table_alignments(sep_str: str) -> list[str]:
         else:
             aligns.append('left')
     return aligns
+
+
+# ── Pandoc 表格扩展（grid / multiline / simple） ────────────
+#
+# 除 GFM 管道表格外，Pandoc 还定义了三类「字符对齐」表格：**grid table**
+# （``+---+`` 显式边框，单元格可多行）、**multiline table**（``---  ---`` 顶/
+# 底边框 + 列段分隔）与 **simple table**（仅一条列段分隔行）。三者共用「按
+# 列位置切分」的核心（列边界由边框/分隔行的 ``-`` 段或 ``+`` 位置给出）。
+
+
+def _is_grid_table_border(stripped: str) -> bool:
+    """网格表格边界行 ``+---+---+``（Pandoc grid table）。
+
+    要求：以 ``+`` 起止、至少两个 ``+``、仅由 ``+-=:``（与空白）构成，
+    且含 ``-`` 或 ``=`` 字符（``===`` 为表头分隔）。
+    """
+    s = stripped.strip()
+    if len(s) < 3 or s[0] != '+' or s[-1] != '+':
+        return False
+    if s.count('+') < 2:
+        return False
+    for ch in s:
+        if ch not in '+-=: ':
+            return False
+    return ('-' in s) or ('=' in s)
+
+
+def _is_grid_table_row(stripped: str) -> bool:
+    """网格表格数据行 ``| a | b |``（以 ``|`` 起止）。"""
+    s = stripped.strip()
+    return len(s) >= 2 and s.startswith('|') and s.endswith('|')
+
+
+def _dash_spans(stripped: str) -> list[tuple[int, int]]:
+    """列段分隔行 ``-----  ------`` 中各 ``-`` 段的字符区间（Pandoc simple/multiline）。"""
+    s = stripped.strip()
+    spans: list[tuple[int, int]] = []
+    i = 0
+    n = len(s)
+    while i < n:
+        if s[i] == '-':
+            j = i
+            while j < n and s[j] == '-':
+                j += 1
+            spans.append((i, j))
+            i = j
+        else:
+            i += 1
+    return spans
+
+
+def _is_dashed_separator(stripped: str) -> bool:
+    """Pandoc simple / multiline table 的列段分隔行 ``-----  ------``。
+
+    要求：整行只含 ``-`` 与空格、至少两个 ``-`` 段、相邻段之间至少 2 个空格
+    （单段 ``---`` 是分隔线、段间仅 1 空格的行不是分隔行）。
+    """
+    s = stripped.strip()
+    if not s or '-' not in s:
+        return False
+    for ch in s:
+        if ch != '-' and ch != ' ':
+            return False
+    spans = _dash_spans(s)
+    if len(spans) < 2:
+        return False
+    for k in range(1, len(spans)):
+        if spans[k][0] - spans[k - 1][1] < 2:
+            return False
+    return True
+
+
+def parse_dashed_table(header_lines: list[str], sep_line: str,
+                       body_lines: list[str]) -> tuple[list[list[str]], list[str]] | None:
+    """Pandoc simple table → ``(rows, alignments)``（无效返回 ``None``）。
+
+    列边界由分隔行的 ``-`` 段区间给出；表头行取 ``header_lines`` 的最后一行
+    （simple table 表头为分隔行上方紧邻行），数据行取 ``body_lines``（连续
+    非空行；空行由调用方截断）。
+    """
+    spans = _dash_spans(sep_line)
+    if len(spans) < 2:
+        return None
+    header = [ln for ln in header_lines if ln.strip()]
+    if not header:
+        return None
+
+    def _cells(row: str) -> list[str]:
+        out: list[str] = []
+        for a, b in spans:
+            seg = row[a:b] if a < len(row) else ''
+            out.append(seg.rstrip())
+        return out
+
+    header_cells = _cells(header[-1])
+    data_rows = [ln for ln in body_lines if ln.strip()]
+    rows = [header_cells] + [_cells(ln.rstrip()) for ln in data_rows]
+    ncols = len(spans)
+    norm: list[list[str]] = []
+    for r in rows:
+        norm.append((r + [''] * ncols)[:ncols])
+    return norm, ['left'] * ncols
+
+
+def _grid_border_positions(stripped: str) -> list[int]:
+    """边界行中 ``+`` 的下标列表（列边界位置）。"""
+    s = stripped.strip()
+    return [i for i, ch in enumerate(s) if ch == '+']
+
+
+def _grid_cells(row: str, positions: list[int]) -> list[str]:
+    """按列边界位置从数据行切出单元格（两端 ``|`` 内内容 strip）。"""
+    s = row.rstrip('\n').strip()
+    if len(s) < positions[-1] + 1:
+        s = s.ljust(positions[-1] + 1)
+    cells: list[str] = []
+    for i in range(len(positions) - 1):
+        a = positions[i]
+        b = positions[i + 1]
+        seg = s[a + 1:b]
+        cells.append(seg.strip())
+    return cells
+
+
+def _grid_alignments(lines: list[str], positions: list[int]) -> list[str]:
+    """从边界行的 ``:`` 位置推断列对齐（Pandoc grid table）。
+
+    列区间 ``[pos[i]+1, pos[i+1])`` 内：首字符 ``:`` → 左对齐标记、
+    末字符 ``:`` → 右对齐标记；仅左/仅右/两者决定 ``left`` / ``right`` /
+    ``center``（缺省 ``left``）。
+    """
+    aligns: list[str] = []
+    for i in range(len(positions) - 1):
+        left_colon = right_colon = False
+        for raw in lines:
+            if not _is_grid_table_border(raw):
+                continue
+            s = raw.strip()
+            a = positions[i] + 1
+            b = positions[i + 1]
+            if b > len(s):
+                b = len(s)
+            seg = s[a:b].strip()
+            if not seg:
+                continue
+            if seg.startswith(':'):
+                left_colon = True
+            if seg.endswith(':'):
+                right_colon = True
+        if left_colon and right_colon:
+            aligns.append('center')
+        elif right_colon:
+            aligns.append('right')
+        else:
+            aligns.append('left')
+    return aligns
+
+
+def parse_grid_table(lines: list[str]) -> tuple[list[list[str]], list[str]] | None:
+    """Pandoc grid table 行序列 → ``(rows, alignments)``（无效返回 ``None``）。
+
+    ``rows[0]`` 为表头、其余为数据行；单元格可含多行（同一行块内多个 ``|``
+    行以 ``\\n`` 连接）。列边界取最宽的 ``+`` 位置集合（``+===+`` 表头分隔
+    行之后为数据区）。
+    """
+    if not lines:
+        return None
+    border_positions = [
+        _grid_border_positions(ln) for ln in lines if _is_grid_table_border(ln)
+    ]
+    if len(border_positions) < 2:
+        return None
+    positions = max(border_positions, key=len)
+    ncols = len(positions) - 1
+    if ncols < 1:
+        return None
+
+    # 按边界行把 ``| ... |`` 行划分成「行块」（每块 = 一个逻辑行，多行为多行单元格）
+    blocks: list[tuple[str, list[str]]] = []
+    section = 'header'
+    cur: list[str] = []
+    seen_border = False
+    for ln in lines:
+        if _is_grid_table_border(ln):
+            if cur:
+                blocks.append((section, cur))
+                cur = []
+            if not seen_border:
+                seen_border = True
+                section = 'header'
+            elif '=' in ln:
+                section = 'body'
+            continue
+        if _is_grid_table_row(ln):
+            cur.append(ln)
+    if cur:
+        blocks.append((section, cur))
+    if not blocks:
+        return None
+
+    def _block_cells(block_lines: list[str]) -> list[str]:
+        cells: list[str] | None = None
+        for ln in block_lines:
+            row = _grid_cells(ln, positions)
+            if cells is None:
+                cells = row
+                continue
+            for i in range(min(len(cells), len(row))):
+                if row[i]:
+                    cells[i] = (cells[i] + '\n' + row[i]) if cells[i] else row[i]
+        return cells or [''] * ncols
+
+    header_blocks = [b for s, b in blocks if s == 'header']
+    body_blocks = [b for s, b in blocks if s == 'body']
+    if not header_blocks and not body_blocks:
+        return None
+    if not body_blocks:
+        # 无 ``+===+`` 表头分隔：首块作表头，其余作数据（与管道表格一致）
+        body_blocks = header_blocks[1:]
+        header_blocks = header_blocks[:1]
+    if not header_blocks:
+        return None
+    rows = [_block_cells(header_blocks[0])]
+    rows.extend(_block_cells(b) for b in header_blocks[1:])
+    rows.extend(_block_cells(b) for b in body_blocks)
+    norm: list[list[str]] = []
+    for r in rows:
+        norm.append((r + [''] * ncols)[:ncols])
+    if not norm:
+        return None
+    aligns = _grid_alignments(lines, positions)
+    return norm, (aligns + ['left'] * ncols)[:ncols]

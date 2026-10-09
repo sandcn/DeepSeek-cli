@@ -110,8 +110,10 @@ def test_fenced_admonition_stream_preview_matches_commit():
     assert frames[0][1] == ["■ NOTE 标题"]
     assert frames[1][1] == ["■ NOTE 标题", "    第一行"]
     assert frames[2][1] == ["■ NOTE 标题", "    第一行", "    第二行"]
-    assert frames[3][1] == []
-    assert frames[3][0] == ["■ NOTE 标题", "    第一行", "    第二行"]
+    # 空行属正文（fenced 告示正文可含空行分隔的多段）→ 块仍开放：
+    # committed 仍空、预览含全部正文（尾部空行不进入预览）。
+    assert frames[3][0] == []
+    assert frames[3][1] == ["■ NOTE 标题", "    第一行", "    第二行"]
 
 
 def test_fenced_admonition_ends_at_dedent():
@@ -246,7 +248,8 @@ def test_tui_content_block_renders_new_syntax():
     _do_content(m, ContentCmd(text="$$\nE = mc^2\n$$\n"))
     _do_content(m, ContentCmd(text="```mermaid\ngraph TD; A-->B\n```\n"))
     _do_content(m, ContentCmd(text="!!! note \"提示\"\n    正文\n"))
-    _do_content(m, ContentCmd(text="\n"))
+    # 非缩进行结束 fenced 告示（空行属正文，不再终止告示）→ 内容提交
+    _do_content(m, ContentCmd(text="\n结束\n"))
     blk = m.blocks[m.content_block_index]
     text = "\n".join(line.plain for line in blk.lines)
     assert "E = mc\u00b2" in text

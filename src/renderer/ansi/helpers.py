@@ -86,6 +86,14 @@ class AnsiLine:
 
     @classmethod
     def of(cls, text: str, style: Style | None = None) -> "AnsiLine":
+        """单 run 行。
+
+        ``text`` 为空时返回**真正的空行**（无 runs）——避免空 run 让下游的
+        前缀注入（列表 / 引用 / 容器缩进）把空行当作有内容行、渲染出带缩进的
+        「伪空行」（行尾残留空白）。
+        """
+        if not text:
+            return cls()
         return cls([Run(text, style)])
 
     def append(self, text: str, style: Style | None = None,

@@ -99,6 +99,31 @@ _STYLE_QUOTE = Style(fg=252, italic=True)
 _STYLE_WIKI = Style(fg=201, underline=True)
 _STYLE_COMMENT = Style(fg=240, dim=True, italic=True)
 _STYLE_IMAGE = Style(fg=201, dim=True)
+#: 引用 citation ``[@key]``（Pandoc）：琥珀斜体标记
+_STYLE_CITATION = Style(fg=180, italic=True)
+
+#: 行内属性 span 的类名 → 样式映射（``[文本]{.red}``）。
+#: 仅覆盖有明确终端语义的类名；未知类名忽略（内容照常渲染，不丢文本）。
+_SPAN_CLASS_STYLES: dict = {
+    "red": Style(fg=196), "green": Style(fg=40), "blue": Style(fg=33),
+    "yellow": Style(fg=220), "cyan": Style(fg=44), "magenta": Style(fg=201),
+    "white": Style(fg=231), "black": Style(fg=0), "orange": Style(fg=214),
+    "purple": Style(fg=93), "pink": Style(fg=213),
+    "gray": Style(fg=244), "grey": Style(fg=244),
+    "bold": _STYLE_BOLD, "strong": _STYLE_BOLD,
+    "italic": _STYLE_ITALIC, "em": _STYLE_ITALIC,
+    "underline": _STYLE_UNDERLINE, "ins": _STYLE_UNDERLINE,
+    "strike": _STYLE_STRIKE, "strikethrough": _STYLE_STRIKE,
+    "del": _STYLE_STRIKE,
+    "highlight": _STYLE_HIGHLIGHT, "mark": _STYLE_HIGHLIGHT,
+    "code": _STYLE_CODE, "mono": _STYLE_CODE, "monospace": _STYLE_CODE,
+    "small": _STYLE_SMALL, "big": _STYLE_BIG, "large": _STYLE_BIG,
+    "dim": Style(dim=True), "muted": Style(dim=True),
+    "kbd": _STYLE_KBD, "spoiler": _STYLE_SPOILER,
+    "error": Style(fg=196, bold=True), "danger": Style(fg=196, bold=True),
+    "warning": Style(fg=220), "warn": Style(fg=220),
+    "success": Style(fg=40), "ok": Style(fg=40), "info": Style(fg=45),
+}
 #: 行内进度条（``<progress>`` / ``<meter>``）配色与宽度
 _STYLE_PROGRESS_FILL = Style(fg=41, bold=True)
 _STYLE_PROGRESS_MID = Style(fg=220, bold=True)
@@ -602,6 +627,31 @@ def _hex_to_256(value: str) -> int | None:
     return rgb_to_256(r, g, b)
 
 
+def _emit_span(node, base, ctx, out, depth):
+    """行内属性 span ``[文本]{.class}``：按类名映射叠加样式后渲染内容。
+
+    未知类名 / ``#id`` / 其它键值对不影响内容渲染（终端无对应语义），
+    内容仍按行内 Markdown 递归渲染（嵌套粗体/代码等保留）。
+    """
+    classes = (node.meta or {}).get("classes") or []
+    style = None
+    for cls in classes:
+        extra = _SPAN_CLASS_STYLES.get(str(cls).lower())
+        if extra is None:
+            continue
+        style = extra if style is None else style.merge(extra)
+    _emit_children(node, _merge(base, style) if style else base, ctx, out, depth)
+
+
+def _emit_citation(node, base, ctx, out, depth):
+    """引用 citation ``[@key]``：渲染为 ``[key]`` / ``[-key]`` 标记（多条 ``; `` 连接）。"""
+    keys = (node.meta or {}).get("keys") or []
+    if not keys:
+        _append(out, node.content or "", base)
+        return
+    _append(out, "[" + "; ".join(keys) + "]", _merge(base, _STYLE_CITATION))
+
+
 def _emit_subscript(node, base, ctx, out, depth):
     _emit_script(node, base, ctx, out, depth, _SUB_SCRIPT_MAP, _STYLE_SUB)
 
@@ -669,6 +719,8 @@ def _build_dispatch() -> dict:
         N.ColorTextNode: _emit_color,
         N.SubscriptNode: _emit_subscript,
         N.SuperscriptNode: _emit_superscript,
+        N.SpanNode: _emit_span,
+        N.CitationNode: _emit_citation,
     }
     # 兜底：未知节点 → 纯文本（不吞内容）
     d[N.InlineNode] = lambda node, base, ctx, out, depth: _append(

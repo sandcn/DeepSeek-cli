@@ -359,12 +359,14 @@ class AnsiRenderEngine:
         prefix_style = blocks._STYLE_BQ
         for tok in tokens:
             for ln in sub.render(tok):
-                if ln.runs:
+                if ln.runs and _runs_visible(ln.runs):
                     # 不就地修改：子引擎行可能来自跨帧高亮缓存
                     # （``_LINE_HIGHLIGHT_CACHE``），就地插入缩进会在复用中叠加。
                     out.append(AnsiLine(
                         [Run(indent, prefix_style)] + list(ln.runs)))
                 else:
+                    # 空行（含仅空 run 的伪空行）不加缩进前缀——否则容器正文
+                    # 的空行渲染为「带尾随空格的缩进行」。
                     out.append(ln)
         return out
 
@@ -412,6 +414,19 @@ def _token_list_indent(token: Token) -> int | None:
         return None
 
 
+def _runs_visible(runs) -> bool:
+    """行 runs 是否含可见文本（存在非空白 run）。
+
+    ``t.isspace()`` 遇到首个非空白字符即返回（O(1)，且不分配字符串），
+    比拼接整行 ``plain`` 再 ``strip()`` 更适合前缀注入热路径。
+    """
+    for r in runs:
+        t = r.text
+        if t and not t.isspace():
+            return True
+    return False
+
+
 def _apply_list_prefix(lines: list[AnsiLine], indent: int) -> list[AnsiLine]:
     """给列表项内的块级元素行补内容缩进前缀（与列表续行对齐）。
 
@@ -422,7 +437,7 @@ def _apply_list_prefix(lines: list[AnsiLine], indent: int) -> list[AnsiLine]:
     prefix = "  " * max(0, indent) + "  "
     out: list[AnsiLine] = []
     for ln in lines:
-        if ln.runs:
+        if ln.runs and _runs_visible(ln.runs):
             out.append(AnsiLine([Run(prefix, blocks._STYLE_BQ)] + list(ln.runs)))
         else:
             out.append(ln)
@@ -443,7 +458,7 @@ def _apply_bq_prefix(lines: list[AnsiLine], depth: int) -> list[AnsiLine]:
     out: list[AnsiLine] = []
     pstyle = blocks.bq_prefix_style(depth)
     for ln in lines:
-        if ln.runs:
+        if ln.runs and _runs_visible(ln.runs):
             out.append(AnsiLine([Run(prefix, pstyle)] + list(ln.runs)))
         else:
             out.append(ln)

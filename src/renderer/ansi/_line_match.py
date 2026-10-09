@@ -16,8 +16,20 @@ SLIDING_SEARCH_MAX = 64
 
 
 def common_prefix_len(a: list, b: list) -> int:
-    """返回两列表的最长公共前缀长度。"""
-    n = len(a) if len(a) < len(b) else len(b)
+    """返回两列表的最长公共前缀长度。
+
+    ★ 性能（流式追加热路径）：先做一次 **C 级整段比较** ``a[:n] == b[:n]``
+    ——流式预览中 ``a`` 绝大多数场景是新行列表的前缀（只追加），此时一次
+    C 级列表比较即得结果（免逐元素 Python 循环）；仅当确实存在分歧才回退
+    逐元素扫描定位首个分歧位置。
+    """
+    la = len(a)
+    lb = len(b)
+    n = la if la < lb else lb
+    if n == 0:
+        return 0
+    if a[:n] == b[:n]:
+        return n
     i = 0
     while i < n and a[i] == b[i]:
         i += 1

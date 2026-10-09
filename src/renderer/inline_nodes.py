@@ -231,6 +231,29 @@ class InlineCommentNode(InlineNode):
     """行内注释节点 %% comment %%（非 HTML 语法，渲染为隐藏/dim 文本）"""
     pass
 
+
+@dataclass
+class SpanNode(InlineNode):
+    """行内属性 span ``[文本]{.class #id key=value}``（Pandoc bracketed span）。
+
+    属性（``meta``）：
+      - ``classes``: 类名列表（``.red`` / ``.highlight``…），渲染层按类名映射样式；
+      - ``id``: 锚点 id（``#anchor``，终端渲染忽略，仅保留语义）；
+      - ``attrs``: 其它键值对（``lang=python`` / ``title=...``…）。
+    """
+    pass
+
+
+@dataclass
+class CitationNode(InlineNode):
+    """引用节点 ``[@key]`` / ``[-@key]`` / ``[@a; @b]``（Pandoc citation）。
+
+    无文献数据库（终端渲染无法解析条目），按引用标记显示：正文渲染为
+    ``[key]`` 样式文本，多条引用以 ``; `` 连接（``suppress_author`` 的
+    ``-@`` 前缀渲染为 ``[-key]``）。
+    """
+    pass
+
 # ═══════════════════════════════════════════════════════════
 # 内联解析器常量
 # ═══════════════════════════════════════════════════════════
@@ -415,6 +438,9 @@ def render_inline_to_text(nodes: list[InlineNode]) -> str:
             result.append(node.display or node.target)
         elif isinstance(node, InlineCommentNode):
             result.append('')  # 注释不产生可见文本
+        elif isinstance(node, CitationNode):
+            keys = (node.meta or {}).get("keys") or []
+            result.append('[' + '; '.join(keys) + ']' if keys else node.content)
         elif node.children:
             result.append(render_inline_to_text(node.children))
         else:

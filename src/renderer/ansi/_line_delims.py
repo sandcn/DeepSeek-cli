@@ -200,7 +200,7 @@ class ParagraphBoundaryScanner:
     仅扫描尾部新增行——避免每帧重扫整段（长段落预览热路径）。
     """
 
-    __slots__ = ("_lines", "_states", "_first_unstable")
+    __slots__ = ("_lines", "_states", "_first_unstable", "_last_nl", "_last_len")
 
     def __init__(self) -> None:
         self.reset()
@@ -211,6 +211,9 @@ class ParagraphBoundaryScanner:
         self._states: list[tuple] = []
         # 第一个「行末仍存在未闭合开定界符」的行索引（-1 = 尚无）
         self._first_unstable = -1
+        # 快速路径缓存：上次文本的「最后一个换行下标」与文本长度（-2/-1 表示无）
+        self._last_nl = -2
+        self._last_len = -1
 
     def stable_line_count(self, text: str) -> int:
         """返回可安全逐行渲染的完整行数（增量）。"""
@@ -219,6 +222,13 @@ class ParagraphBoundaryScanner:
             return 0
         nl = text.rfind("\n")
         if nl < 0:
+            return self._stable_count()
+        # ★ 性能（流式追加热路径）：最后换行位置未变且文本只增长 → 完整行
+        #   集合未变（新增内容全在活动行内），直接复用——免每帧 O(段落长度)
+        #   的 ``text[:nl].split("\\n")`` 与 O(行数) 的前缀比较（长段落流式预览
+        #   的主要成本）。段落切换伴随预览清空（``reset``）→ 缓存同步失效，
+        #   不会跨段落误用。
+        if nl == self._last_nl and len(text) >= self._last_len:
             return self._stable_count()
         complete = text[:nl].split("\n")
         lines = self._lines
@@ -244,6 +254,8 @@ class ParagraphBoundaryScanner:
             states.append(tuple(state.items()))
             if self._first_unstable < 0 and not _state_empty(state):
                 self._first_unstable = idx
+        self._last_nl = nl
+        self._last_len = len(text)
         return self._stable_count()
 
     def _stable_count(self) -> int:

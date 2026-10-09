@@ -129,6 +129,55 @@ def _abbr_node_handler(self, n, ctx, d):
     return result
 
 
+#: 行内属性 span 类名 → Rich 样式（与 ANSI 路径 ``inline._SPAN_CLASS_STYLES``
+#: 语义对齐：仅覆盖有明确终端语义的类名，未知类名忽略）。
+_SPAN_CLASS_RICH = {
+    "red": Style(color="red"), "green": Style(color="green"),
+    "blue": Style(color="blue"), "yellow": Style(color="yellow"),
+    "cyan": Style(color="cyan"), "magenta": Style(color="magenta"),
+    "white": Style(color="white"), "black": Style(color="black"),
+    "gray": Style(color="grey50"), "grey": Style(color="grey50"),
+    "bold": Style(bold=True), "strong": Style(bold=True),
+    "italic": Style(italic=True), "em": Style(italic=True),
+    "underline": Style(underline=True), "ins": Style(underline=True),
+    "strike": Style(strike=True), "strikethrough": Style(strike=True),
+    "del": Style(strike=True), "highlight": Style(reverse=True),
+    "mark": Style(reverse=True), "code": Style(color="bright_green"),
+    "mono": Style(color="bright_green"), "monospace": Style(color="bright_green"),
+    "small": Style(dim=True), "big": Style(bold=True), "large": Style(bold=True),
+    "dim": Style(dim=True), "muted": Style(dim=True),
+    "error": Style(color="red", bold=True), "danger": Style(color="red", bold=True),
+    "warning": Style(color="yellow"), "warn": Style(color="yellow"),
+    "success": Style(color="green"), "ok": Style(color="green"),
+    "info": Style(color="cyan"),
+}
+
+
+def _span_node_handler(self, n, ctx, d):
+    """SpanNode 处理器：按 ``.class`` 映射叠加样式（未知类名忽略）。"""
+    style = None
+    for cls in (n.meta or {}).get("classes") or ():
+        extra = _SPAN_CLASS_RICH.get(str(cls).lower())
+        if extra is None:
+            continue
+        style = extra if style is None else Style.combine([style, extra])
+    if n.children:
+        result = self._nodes_to_rich(n.children, ctx, d)
+    else:
+        result = Text(n.content or "")
+    if style:
+        result.stylize(style)
+    return result
+
+
+def _citation_node_handler(self, n, ctx, d):
+    """CitationNode 处理器：``[@key]`` → ``[key]`` 标记（琥珀斜体）。"""
+    keys = (n.meta or {}).get("keys") or []
+    if not keys:
+        return Text(n.content or "")
+    return Text("[" + "; ".join(keys) + "]", style=Style(color="yellow", italic=True))
+
+
 # ── 上下标 Unicode 渲染辅助函数 ──────────────────────────
 
 _SUB_SCRIPT_MAP = LiveMapping("inline_subscript")
@@ -261,6 +310,8 @@ try:
         LineBreakNode as _LineBreakNode,
         WikiLinkNode as _WikiLinkNode,
         InlineCommentNode as _InlineCommentNode,
+        SpanNode as _SpanNode,
+        CitationNode as _CitationNode,
         render_inline_to_text,
     )
     _LAZY_IMPORT_OK = True
@@ -524,6 +575,8 @@ def _build_dispatch_table():
     d[_CriticCommentNode] = _render_critic_comment_node
     d[_WikiLinkNode] = _render_wikilink_node  # Wiki 链接：紫色虚线样式
     d[_InlineCommentNode] = _render_inline_comment_node  # 行内注释：极淡隐藏文本
+    d[_SpanNode] = _span_node_handler  # 行内属性 span：按 .class 映射样式
+    d[_CitationNode] = _citation_node_handler  # 引用 citation：[@key] → [key]
     # 默认 fallback：对未知节点类型降级为纯文本输出
     # 注意：inline_renderer._node_to_rich 中已有 isinstance(node, InlineNode) fallback，
     # 此处注册 InlineNode 基类处理器作为额外安全网。

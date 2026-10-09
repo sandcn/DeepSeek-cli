@@ -221,8 +221,15 @@ class _BlockParserStreamMixin:
 
         elif self._state == _State.ADMONITION_BLOCK:
             if _is_empty_line(stripped):
-                self._emit_admonition_block_close(tokens)
-                tokens.append(Token(TokenType.EMPTY_LINE))
+                # ★ 空行保留为正文空行（不关闭）：fenced 告示（``!!! type`` /
+                #   ``??? type``）正文可持续到**首个非缩进行**，空行分隔的多段
+                #   正文属同一告示（与 ``:::`` fenced div 同语义）。修复前空行
+                #   即关闭告示，紧随的缩进行被解析为「缩进代码块」——多段正文
+                #   的后续段落泄漏成代码块（内容仍在但渲染形态错误）。
+                self._block_lines.append("")
+                tokens.append(Token(TokenType.ADMONITION_LINE, "", {
+                    "depth": 1, "type": self._admonition_type,
+                }))
                 return
             if line[:4] == '    ' or (line and line[0] == '\t'):
                 content = line[4:] if line[:4] == '    ' else line[1:]
@@ -452,6 +459,9 @@ class _BlockParserStreamMixin:
         # 结果挂在 CLOSE 的 meta["body_tokens"]（渲染层整体渲染并缩进）；
         # 同时保留原始行 body_lines（Rich 路径与流式预览逐行渲染用）。
         body_lines = list(self._block_lines)
+        # 去尾部空行（空行分隔的多段正文保留；尾部空行是块结束的产物）
+        while body_lines and not body_lines[-1].strip():
+            body_lines.pop()
         body_tokens = self._parse_sub_blocks(body_lines)
         self._block_lines = []
         tokens.append(Token(TokenType.DETAILS_CLOSE, "", {

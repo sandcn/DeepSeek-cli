@@ -10,10 +10,92 @@ import logging
 from .inline_nodes import (
     InlineNode, LinkNode, ImageNode,
     AutoLinkNode, AutoLinkEmailNode, FootnoteRefNode,
+    SpanNode, CitationNode,
     render_inline_to_text,
 )
 
 _logger = logging.getLogger(__name__)
+
+
+def _split_attr_tokens(body: str) -> list[str]:
+    """属性块内按空白分隔 token（引号内的空白不作为分隔符）。
+
+    供 ``{.class #id key="a b"}`` 解析使用：``title="a b"`` 保持为单个 token。
+    """
+    tokens: list[str] = []
+    buf: list[str] = []
+    quote = ''
+    for ch in body:
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = ''
+            continue
+        if ch in '"\'':
+            quote = ch
+            buf.append(ch)
+            continue
+        if ch.isspace():
+            if buf:
+                tokens.append(''.join(buf))
+                buf = []
+            continue
+        buf.append(ch)
+    if buf:
+        tokens.append(''.join(buf))
+    return tokens
+
+
+def _apply_media_attrs(attrs: dict, meta: dict) -> None:
+    """把行内属性块写入媒体 ``meta``（``width`` / ``height`` / ``title``）。
+
+    尺寸值支持 ``100`` / ``100px`` / ``50%``（百分比解析为整数 50 忽略 ``%``，
+    终端按字符宽度近似）；非法值忽略（不写入，不丢其它属性）。
+    """
+    kv = attrs.get("attrs") or {}
+    for key in ("width", "height"):
+        if key not in kv:
+            continue
+        raw = str(kv[key]).strip()
+        raw = raw.removesuffix("px").removesuffix("%").strip()
+        try:
+            meta[key] = int(float(raw))
+        except (TypeError, ValueError):
+            continue
+    if "title" in kv:
+        meta["title"] = kv["title"]
+
+
+#: 引用 key 允许出现的字符（字母数字 + 常见分隔符：作者-年份 / DOI）
+_CITATION_KEY_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.:/+#"
+)
+
+
+def _parse_citation_keys(link_text: str) -> list[str]:
+    """``@key`` / ``[-@key]`` / ``[@a; @b, p. 3]`` → key 列表（``-`` 前缀保留）。
+
+    逐个 ``@`` 起点向后收集 key 字符，直到遇到空白/逗号/分号/``]``。
+    无有效 key（``@`` 后无字符）时返回空列表（调用方回退普通链接路径）。
+    """
+    keys: list[str] = []
+    i = 0
+    n = len(link_text)
+    while i < n:
+        if link_text[i] != '@':
+            i += 1
+            continue
+        suppress = i > 0 and link_text[i - 1] == '-'
+        j = i + 1
+        while j < n and link_text[j] in _CITATION_KEY_CHARS:
+            j += 1
+        key = link_text[i + 1:j]
+        if not key:
+            i += 1
+            continue
+        keys.append(('-' if suppress else '') + key)
+        i = j
+    return keys
 
 
 class InlineLinksMixin:
@@ -65,27 +147,88 @@ class InlineLinksMixin:
         return self._text[url_start:self._pos]
 
     def _scan_title(self) -> str:
-        """扫描可选的 title="..." 属性，跳过前导/尾随空白。
+        """扫描可选的链接标题，跳过前导/尾随空白。
 
-        从 self._pos 开始扫描，返回 title 字符串（可为空）。
-        完成后 self._pos 指向 title 末尾空白之后。
+        支持 CommonMark 三种定界：双引号 ``"..."``、单引号 ``'...'`` 与
+        圆括号 ``(...)``（修复前仅支持前两种，``[t](url (title))`` 因 URL
+        扫描后被 ``(`` 卡住而整体解析失败、原样泄漏）。
+
+        从 self._pos 开始扫描，返回标题字符串（可为空；无标题/未闭合时
+        位置不变）。完成后 self._pos 指向标题末尾空白之后。
         """
         while self._pos < self._n and self._text[self._pos] in ' \t':
             self._pos += 1
-        if self._pos >= self._n or self._text[self._pos] not in '"\'':
+        if self._pos >= self._n:
             return ''
-        quote = self._text[self._pos]
+        opener = self._text[self._pos]
+        if opener in '"\'':
+            closer = opener
+        elif opener == '(':
+            # 圆括号标题（CommonMark）：内部不允许未转义的 ``(``
+            closer = ')'
+        else:
+            return ''
+        title_start = self._pos
         self._pos += 1
         t_start = self._pos
-        while self._pos < self._n and self._text[self._pos] != quote:
+        while self._pos < self._n and self._text[self._pos] != closer:
+            if closer == ')' and self._text[self._pos] == '(':
+                self._pos = title_start
+                return ''
             self._pos += 1
-        title = self._text[t_start:self._pos] if self._pos < self._n else ''
-        if self._pos < self._n:
-            self._pos += 1
+        if self._pos >= self._n:
+            # 未闭合：回退到标题之前（后续按普通文本处理，不吞字符）
+            self._pos = title_start
+            return ''
+        title = self._text[t_start:self._pos]
+        self._pos += 1
         # 跳过尾随空白
         while self._pos < self._n and self._text[self._pos] in ' \t':
             self._pos += 1
         return title
+
+    def _parse_inline_attrs(self) -> dict | None:
+        """解析 ``{.class #id key=value}`` 行内属性块（Pandoc 属性语法）。
+
+        仅在 ``self._pos`` 处为 ``{`` 且内容构成**至少一个**有效属性时成功，
+        前进位置并返回 ``{"classes": [...], "id": str, "attrs": {...}}``；否则
+        位置不变、返回 ``None``（不吞掉普通 ``{`` 文本，与 ``{color:red}``
+        等既有花括号语法不冲突——本语法要求属性形如 ``.cls`` / ``#id`` /
+        ``key=value``，含 ``:`` 的 ``{color:red}`` 不满足）。
+        """
+        if self._pos >= self._n or self._text[self._pos] != '{':
+            return None
+        end = self._text.find('}', self._pos + 1)
+        if end < 0 or end - self._pos > 512:
+            return None
+        body = self._text[self._pos + 1:end]
+        if not body.strip():
+            return None
+        classes: list[str] = []
+        ident = ''
+        attrs: dict = {}
+        for token in _split_attr_tokens(body):
+            if not token:
+                continue
+            if token.startswith('.'):
+                cls = token[1:]
+                if cls and cls not in classes:
+                    classes.append(cls)
+            elif token.startswith('#'):
+                ident = token[1:]
+            elif '=' in token:
+                key, _, value = token.partition('=')
+                key = key.strip().lower()
+                value = value.strip().strip('"\'')
+                if key:
+                    attrs[key] = value
+            else:
+                # 非属性 token（如 ``color:red``）→ 非本语法
+                return None
+        if not (classes or ident or attrs):
+            return None
+        self._pos = end + 1
+        return {"classes": classes, "id": ident, "attrs": attrs}
 
     def _try_image(self, depth: int) -> InlineNode | None:
         try:
@@ -140,9 +283,21 @@ class InlineLinksMixin:
                         return None
                     self._pos += 1
 
+                    # 5) 可选的行内属性块 ``{width=.. height=.. title=..}``
+                    #    （Pandoc image attributes）——修复前直接泄漏为正文。
+                    attrs = self._parse_inline_attrs()
+                    meta: dict = {}
+                    if attrs:
+                        _apply_media_attrs(attrs, meta)
+                        title = meta.pop("title", title)
+                        width = meta.pop("width", width)
+                        height = meta.pop("height", height)
                     node = ImageNode(content=alt, url=url, title=title)
-                    if width and height:
-                        node.meta = {"width": width, "height": height}
+                    if width or height:
+                        meta["width"] = width
+                        meta["height"] = height
+                    if meta:
+                        node.meta = meta
                     return node
                 elif self._pos < self._n and self._text[self._pos] == '[':
                     self._pos += 1
@@ -257,6 +412,31 @@ class InlineLinksMixin:
                 return None
             link_text = self._text[text_start:self._pos]
             self._pos += 1
+            # ── 行内属性 span ``[文本]{.class #id key=val}``（Pandoc span）──
+            #    ``]`` 后紧跟属性块时，解析为带样式的 SpanNode（内容仍按行内
+            #    Markdown 解析）；属性块无效（如 ``{color:red}`` / ``{b}``）
+            #    时位置不变，继续走链接/快捷引用判定（不误吞普通花括号文本）。
+            if self._pos < self._n and self._text[self._pos] == '{':
+                attrs = self._parse_inline_attrs()
+                if attrs is not None:
+                    inner_parser = self.__class__(link_text)
+                    children = inner_parser.parse()
+                    return SpanNode(
+                        content=render_inline_to_text(children),
+                        children=children, meta=attrs,
+                    )
+            # ── 引用 citation ``[@key]`` / ``[-@key]`` / ``[@a; @b]`` ──
+            #    （Pandoc citation）：无文献数据库，渲染为引用标记；
+            #    修复前落入快捷引用式链接分支、未命中定义即原样回退。
+            #    后随 ``(`` / ``[`` 时是普通链接（``[@k](url)`` /
+            #    ``[@k][ref]``），不按引用解析。
+            if ((link_text.startswith('@') or link_text.startswith('-@'))
+                    and (self._pos >= self._n
+                         or self._text[self._pos] not in '([')):
+                keys = _parse_citation_keys(link_text)
+                if keys:
+                    return CitationNode(content=link_text,
+                                        meta={"keys": keys})
             # ★ 修复（行尾快捷引用式链接）：``]`` 是文本最后一个字符时
             #   （``原文 [docs]``）此处原先直接返回 None，导致行尾的
             #   ``[ref]`` 不被解析为快捷引用式链接（文档中定义了

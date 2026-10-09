@@ -17,6 +17,8 @@ from .types import Token, TokenType, RenderContext
 from ._table_utils import (
     _is_table_row, _is_table_data_row, _is_table_separator,
     _parse_table_row, _parse_table_alignments,
+    _is_grid_table_border, _is_grid_table_row, parse_grid_table,
+    _is_dashed_separator, parse_dashed_table,
 )
 from ._block_helpers import (
     _is_empty_line, _strip_left, _rstrip_line,
@@ -90,6 +92,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._table_pending_rows: list[str] = []
         # 流式表格缓冲是否来自引用块（引用块内要求分隔行才成表格）
         self._table_pending_bq: bool = False
+        # Grid table（Pandoc ``+---+``）收集缓冲（None = 未在收集）
+        self._grid_lines: list[str] | None = None
+        #: Grid table 收集时所在的引用块深度（>0 时提交的 TABLE token 补引用前缀）
+        self._grid_bq_depth: int = 0
+        # Pandoc simple table 收集状态 (header_lines, sep_line, rows)（None = 未收集）
+        self._dashed: tuple | None = None
         # 定义列表续行缓冲
         self._def_cont_buffer: list[str] = []
         self._reset_normal_state()
@@ -211,6 +219,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._pending_lines = []
         self._table_pending_rows.clear()
         self._table_pending_bq = False
+        self._grid_lines = None
+        self._grid_bq_depth = 0
+        self._dashed = None
         self._in_admonition = False
         self._admonition_type = ''
         self._pending_fn_def = None
@@ -400,6 +411,14 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             self._emit_pending_table(tokens)
             if _pending_bq and _flush_bq:
                 self._mark_bq_depth(tokens, _mark7, _flush_bq)
+
+        # ── 第8步：刷出残留的 grid table 缓冲 ──
+        if self._grid_lines is not None:
+            self._emit_grid_table(tokens)
+
+        # ── 第9步：刷出残留的 simple table 缓冲 ──
+        if self._dashed is not None:
+            self._emit_dashed_table(tokens)
 
         return tokens
 
@@ -622,6 +641,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if st == _State.DETAILS_BLOCK:
             body_all, rest = self._normalized_container_body(
                 self._CONTAINER_DETAILS)
+            while body_all and not body_all[-1].strip():
+                body_all.pop()
             body = self._preview_tail(body_all)
             meta: dict = {
                 "summary": self._details_summary,
@@ -639,6 +660,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if st == _State.FENCED_DIV:
             body_all, rest = self._normalized_container_body(
                 self._CONTAINER_DIV)
+            while body_all and not body_all[-1].strip():
+                body_all.pop()
             body = self._preview_tail(body_all)
             meta: dict = {
                 "type": self._block_div_type,
@@ -745,6 +768,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             # 语义一致，不再把正文首行当头部。
             all_lines, rest = self._normalized_container_body(
                 self._CONTAINER_INDENT4)
+            # 去尾部空行：块未闭合时尾部空行不进入预览（提交路径同样丢弃），
+            # 中间空行保留（多段正文分隔）。
+            while all_lines and not all_lines[-1].strip():
+                all_lines.pop()
             body = self._preview_tail(all_lines)
             meta: dict = {
                 "type": self._admonition_type,
@@ -781,6 +808,46 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 }))
             else:
                 out.extend(self._preview_pending_single_row(rows_src[0]))
+            return out
+
+        # ── Grid table（Pandoc ``+---+``）收集中的预览 ──
+        if self._grid_lines is not None:
+            lines = list(self._grid_lines)
+            if tail and (_is_grid_table_border(tail)
+                         or _is_grid_table_row(tail)):
+                lines.append(tail)
+            parsed = parse_grid_table(lines)
+            if parsed is not None:
+                rows, aligns = parsed
+                meta: dict = {
+                    "rows": self._preview_table_rows(rows),
+                    "alignments": aligns, "preview": True,
+                }
+                if self._grid_bq_depth > 0:
+                    meta["bq_depth"] = self._grid_bq_depth
+                out.append(Token(TokenType.TABLE, "", meta))
+            else:
+                out.append(Token(TokenType.PARAGRAPH, "\n".join(lines),
+                                 {"preview": True}))
+            return out
+
+        # ── Pandoc simple table 收集中的预览 ──
+        if self._dashed is not None:
+            header, sep, rows = self._dashed
+            rows2 = list(rows)
+            if tail and not _is_dashed_separator(tail):
+                rows2.append(tail)
+            parsed = parse_dashed_table(header, sep, rows2)
+            if parsed is not None:
+                data, aligns = parsed
+                out.append(Token(TokenType.TABLE, "", {
+                    "rows": self._preview_table_rows(data),
+                    "alignments": aligns, "preview": True,
+                }))
+            else:
+                out.append(Token(TokenType.PARAGRAPH,
+                                 "\n".join(list(header) + [sep] + rows2),
+                                 {"preview": True}))
             return out
 
         if self._pending_lines or tail_lines:
@@ -1134,6 +1201,26 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         """NORMAL 状态：按首字符调度表分派语法检测。"""
         stripped = _strip_left(line).rstrip('\n')
 
+        # ── 收集中的 Pandoc grid / simple table 续行 ──
+        # 收集期间的行只做「并入 / 结束」判定（缩进语义不参与，数据行可含
+        # 前导空格）；起始判定在列表项内的块级容器收集之后（见下）。
+        # ★ 引用行（``>`` 前缀）不在此判定：外层行带前缀会误判「不是表格
+        #   续行」而提前提交；引用内的表格由 ``_parse_blockquote`` 剥离前缀
+        #   后递归进入本方法处理。
+        _bq_line = _is_blockquote_line(stripped)
+        if self._dashed is not None and not _bq_line:
+            if stripped and not _is_dashed_separator(stripped):
+                # 收集**原始行**（保留前导空格）——simple table 的列位置由字符
+                # 偏移决定，去左空白会破坏列切分
+                self._dashed[2].append(line.rstrip('\n'))
+                return
+            self._emit_dashed_table(tokens)
+        if self._grid_lines is not None and not _bq_line:
+            if _is_grid_table_border(stripped) or _is_grid_table_row(stripped):
+                self._grid_lines.append(stripped)
+                return
+            self._emit_grid_table(tokens)
+
         # ── Front Matter（文档头元信息块）──
         # 仅文档最开头（尚无任何内容行）且非引用块递归内识别；首行定界符
         # 先暂存，下一行非空才确认（空行时回退为分隔线/段落，避免把文档
@@ -1159,6 +1246,23 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
         # ── 列表项内的块级容器（缩进 ≥ 列表内容列 → 收集/子解析）──
         if self._handle_list_block_line(line, stripped, tokens):
+            return
+
+        # ── Pandoc simple / grid table 起始（列表项外；列表项内的缩进块已由
+        #    上方 ``_handle_list_block_line`` 收集后子解析，保留缩进语义）──
+        if _is_dashed_separator(stripped) and self._pending_lines:
+            header = list(self._pending_lines)
+            self._pending_lines = []
+            self._dashed = (header, stripped, [])
+            return
+        if _is_grid_table_border(stripped):
+            self._flush_paragraph(tokens)
+            self._emit_blockquote_close(tokens)
+            if self._table_pending_rows:
+                self._emit_pending_table(tokens)
+            self._grid_lines = [stripped]
+            self._grid_bq_depth = (self._bq_depth_stack[-1]
+                                   if self._bq_depth_stack else 0)
             return
 
         first = stripped[0] if stripped else ''
@@ -1931,6 +2035,44 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
     # ── 表格 ─────────────────────────────────────────────
 
+    def _emit_dashed_table(self, tokens: list[Token]) -> None:
+        """提交已收集的 Pandoc simple table → TABLE token（失败按段落回退）。"""
+        state = self._dashed
+        self._dashed = None
+        if state is None:
+            return
+        header, sep, rows = state
+        parsed = parse_dashed_table(header, sep, rows)
+        if parsed is None:
+            all_lines = list(header) + [sep] + list(rows)
+            tokens.append(Token(TokenType.PARAGRAPH, "\n".join(all_lines)))
+            return
+        data, aligns = parsed
+        tokens.append(Token(TokenType.TABLE, "", {
+            "rows": data, "alignments": aligns,
+        }))
+
+    def _emit_grid_table(self, tokens: list[Token]) -> None:
+        """提交已收集的 Grid table 行 → TABLE token（解析失败按段落，不丢内容）。"""
+        lines = self._grid_lines
+        bq_depth = self._grid_bq_depth
+        self._grid_lines = None
+        self._grid_bq_depth = 0
+        if not lines:
+            return
+        parsed = parse_grid_table(lines)
+        if parsed is None:
+            tok = Token(TokenType.PARAGRAPH, "\n".join(lines))
+            if bq_depth > 0:
+                tok.meta["bq_depth"] = bq_depth
+            tokens.append(tok)
+            return
+        rows, aligns = parsed
+        meta: dict = {"rows": rows, "alignments": aligns}
+        if bq_depth > 0:
+            meta["bq_depth"] = bq_depth
+        tokens.append(Token(TokenType.TABLE, "", meta))
+
     def _start_table(self, sep_line: str, tokens: list[Token]):
         self._table_alignments = _parse_table_alignments(sep_line)
         self._table_pending_bq = False
@@ -2037,6 +2179,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         ``- a`` / ``## h`` / ` ```py `），与 Rich 路径（不使用 head_text）不一致。
         """
         body_lines = list(self._block_lines)
+        # 去掉尾部空行（正文空行保留用于分隔多段；尾部空行是块结束/文档结束
+        # 的产物，渲染出来会多一个无意义空行）
+        while body_lines and not body_lines[-1].strip():
+            body_lines.pop()
         title = self._adm_title
         meta: dict = {
             "type": self._admonition_type, "title": title,
@@ -2273,6 +2419,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if first == '>' and _is_blockquote_line(stripped):
             return True
         if first == '|':
+            return True
+        if first == '+' and _is_grid_table_border(stripped):
+            # Pandoc grid table 边界（列表项内也作为块级容器整体收集）
             return True
         if first == '$' and stripped.startswith('$$'):
             return True
@@ -2939,7 +3088,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             cap = _extract_html_tag_text(raw, 'caption')
             if cap is not None:
                 caption = cap
-                continue
+                # ★ 不在取到 caption 后 continue：单行 ``<table><caption>…</caption>
+                #   <tr>…</tr></table>`` 的 caption 与行数据在同一行，跳过会
+                #   导致该行所有 ``<tr>`` 丢失（表格内容全空，只剩标签头行）。
             for tr in _iter_html_tag_blocks(raw, 'tr'):
                 cells = _extract_html_cells(tr)
                 if cells:
@@ -3008,6 +3159,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         嵌套容器，渲染层整体缩进显示；``body_lines`` 保留原始行供流式预览。
         """
         body_lines = list(self._block_lines)
+        # 去尾部空行（与 details / fenced 告示一致）
+        while body_lines and not body_lines[-1].strip():
+            body_lines.pop()
         self._block_lines = []
         meta: dict = {"type": self._block_div_type}
         if body_lines:
