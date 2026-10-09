@@ -128,6 +128,34 @@ def test_describe_elements_respects_limit():
     assert DEFAULT_ELEMENT_LIMIT >= 5
 
 
+# ── 自动化 ID（automation_id） ──────────────────────────
+
+def _automation(handle, automation_id, text="", top=0):
+    return ElementInfo(handle=handle, pid=1, class_name="TextBox", text=text,
+                       left=0, top=top, width=10, height=10,
+                       automation_id=automation_id, control_type_hint="edit")
+
+
+def test_match_element_by_automation_id():
+    items = [_automation(1, "InputBox"), _automation(2, "SubmitButton", top=20)]
+    assert match_element(items, "id:InputBox").handle == 1
+    assert match_element(items, "automation_id:submit").handle == 2
+    # 裸子串也能命中自动化 ID
+    assert match_element(items, "InputBox").handle == 1
+
+
+def test_filter_elements_by_automation_id():
+    items = [_automation(1, "InputBox"), _automation(2, "SubmitButton", top=20)]
+    assert [item.handle for item in filter_elements(items, "id:submit")] == [2]
+    assert [item.handle for item in filter_elements(items, "Input")] == [1]
+
+
+def test_item_to_dict_and_summary_include_automation_id():
+    item = _automation(1, "InputBox")
+    assert item_to_dict(item)["automation_id"] == "InputBox"
+    assert "id=InputBox" in item.summary()
+
+
 # ── 平台后端缺失 ────────────────────────────────────────
 
 def test_list_process_elements_without_backend_support(monkeypatch):

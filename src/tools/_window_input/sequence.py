@@ -6,8 +6,8 @@
 
 支持的步骤（每项一个 dict，``op`` 指定类型）：
 
-  - 输入动作：``click`` / ``move`` / ``drag`` / ``scroll`` / ``key`` / ``type``
-    （参数与单独调用时一致，键名相同）；
+  - 输入动作：``click`` / ``move`` / ``hover`` / ``drag`` / ``scroll`` /
+    ``key`` / ``type``（参数与单独调用时一致，键名相同）；
   - ``wait``：等待一段时间（``seconds`` / ``settle``，秒，可为小数）；
   - ``screenshot``：把当前窗口截图存盘（``path`` 必填，可选 ``crop`` / ``grid``）；
   - ``window``：控制窗口（``window_action`` + 可选 ``x``/``y``/``width``/``height``）。

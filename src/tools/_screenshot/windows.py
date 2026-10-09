@@ -8,7 +8,13 @@ xdotool/wmctrl、macOS 走 Quartz），本模块负责**跨平台一致的选择
   - ``active``：当前前台 / 聚焦窗口
   - ``#N``：按 Z 序第 N 个（1 = 最靠前——弹出菜单、下拉浮层、对话框常用）
   - ``handle:0x1a2b`` / ``id:1234``：按平台窗口句柄精确指定
-  - ``title:子串`` / ``class:子串`` / ``pid:1234``：按属性匹配（忽略大小写）
+  - ``title:子串`` / ``class:子串`` / ``pid:1234``：按属性子串匹配（忽略大小写）
+  - ``title~:正则`` / ``class~:正则`` / ``re:正则``：按**正则**匹配标题 /
+    类名（``re:`` 匹配标题或类名；大小写不敏感）
+  - ``process:名字``（``proc:`` / ``exe:`` 亦可）：按**进程名**匹配
+    （Windows 为 exe 名，含 ``.exe`` 与否都可；忽略大小写）
+  - ``fuzzy:关键词``（``like:`` 亦可）：**模糊匹配**——先按子串匹配标题 /
+    类名 / 进程名，未命中再按相似度（>= :data:`FUZZY_THRESHOLD`）排序返回
   - ``popup``：无标题的非主窗口（右键菜单、下拉浮层等自绘弹层）
   - ``dialog``：对话框类窗口（类名含 dialog / Win32 ``#32770``）
   - ``all`` / ``*``：全部窗口（仅列举用）
@@ -29,7 +35,9 @@ xdotool/wmctrl、macOS 走 Quartz），本模块负责**跨平台一致的选择
 
 from __future__ import annotations
 
+import difflib
 import logging
+import re
 from dataclasses import dataclass, replace
 from typing import Any, Iterable, Sequence
 
@@ -43,7 +51,8 @@ DEFAULT_SELECTOR = "main"
 #: 选择器类型（:class:`WindowSelector.kind`）
 SELECTOR_KINDS: tuple[str, ...] = (
     "main", "active", "index", "handle", "title", "class", "pid",
-    "popup", "dialog", "all",
+    "popup", "dialog", "all", "title_re", "class_re", "regex", "process",
+    "fuzzy",
 )
 
 #: ``前缀:值`` 形式的选择器 → 类型
@@ -51,7 +60,16 @@ _PREFIX_KINDS: dict[str, str] = {
     "handle": "handle", "hwnd": "handle", "id": "handle", "window": "handle",
     "title": "title", "name": "title", "caption": "title", "text": "title",
     "class": "class", "classname": "class", "class_name": "class",
-    "pid": "pid", "process": "pid", "processid": "pid",
+    "pid": "pid", "processid": "pid",
+    # 正则匹配：``title~:正则`` / ``class~:正则`` / ``re:正则``（标题或类名）
+    "title~": "title_re", "title_re": "title_re", "titlere": "title_re",
+    "class~": "class_re", "class_re": "class_re", "classre": "class_re",
+    "re": "regex", "regex": "regex", "pattern": "regex",
+    # 按进程名匹配（Windows 为 exe 名；含 .exe 与否都可）
+    "process": "process", "proc": "process", "exe": "process",
+    "process_name": "process", "processname": "process", "procname": "process",
+    # 模糊匹配（子串未命中时按相似度）
+    "fuzzy": "fuzzy", "like": "fuzzy", "approx": "fuzzy",
 }
 
 #: 关键字选择器（整体匹配）→ 类型
@@ -122,6 +140,9 @@ class WindowInfo:
     order: int = 0
     main: bool = False
     client_area: bool | None = None
+    #: 所属进程的可执行名（Windows 为 exe 名，如 ``chrome.exe``；其它平台可能
+    #: 为空或为应用名），供 ``process:`` 选择器与展示使用。
+    process_name: str = ""
 
     @property
     def area(self) -> int:
@@ -150,6 +171,8 @@ class WindowInfo:
         parts.append(f"「{self.title}」" if self.title else "「无标题」")
         if self.class_name:
             parts.append(f"class={self.class_name}")
+        if self.process_name:
+            parts.append(f"proc={self.process_name}")
         parts.append(f"{self.width}x{self.height}")
         parts.append(f"@({self.left},{self.top})")
         flags = []
@@ -180,6 +203,7 @@ class WindowInfo:
             "handle": self.handle,
             "handle_hex": self.handle_hex,
             "pid": self.pid,
+            "process_name": self.process_name,
             "title": self.title,
             "class": self.class_name,
             "x": self.left,
@@ -259,6 +283,8 @@ def parse_selector(value: Any) -> WindowSelector:
                 return WindowSelector("handle", _parse_int(payload, label="窗口句柄"), text)
             if kind == "pid":
                 return WindowSelector("pid", _parse_int(payload, label="进程号"), text)
+            if kind in ("title_re", "class_re", "regex"):
+                _compile_pattern(payload, label=kind)
             return WindowSelector(kind, payload, text)
     keyword = _KEYWORD_KINDS.get(lowered)
     if keyword is not None:
@@ -268,6 +294,14 @@ def parse_selector(value: Any) -> WindowSelector:
         return WindowSelector("handle", number, text)
     # 裸字符串：按标题子串匹配（最常用），匹配不到时再按类名子串兜底
     return WindowSelector("title", text, text)
+
+
+def _compile_pattern(pattern: str, *, label: str = "正则"):
+    """编译选择器正则（大小写不敏感），非法时抛 :class:`SelectorError`。"""
+    try:
+        return re.compile(pattern, re.IGNORECASE)
+    except re.error as exc:
+        raise SelectorError(f"窗口选择器{label}正则非法: {pattern!r}（{exc}）") from None
 
 
 def _parse_int(text: str, *, label: str) -> int:
@@ -453,7 +487,72 @@ def filter_windows(windows: Sequence[WindowInfo],
             return matched
         # 可操作窗口中没有命中：按标题 / 类名回退到全部窗口
         return _match_needle(windows, selector)
+    if selector.kind in ("title_re", "class_re", "regex", "process", "fuzzy"):
+        return _match_extended(windows, selector)
     return []  # pragma: no cover - SELECTOR_KINDS 已封闭
+
+
+def _match_extended(windows: Sequence[WindowInfo],
+                    selector: WindowSelector) -> list[WindowInfo]:
+    """正则 / 进程名 / 模糊匹配（优先可操作窗口，无命中回退全部窗口）。"""
+    pool = selectable_windows(windows)
+    matched = _extended_filter(pool or windows, selector)
+    if matched or not pool:
+        return matched
+    return _extended_filter(windows, selector)
+
+
+def _extended_filter(windows: Sequence[WindowInfo],
+                     selector: WindowSelector) -> list[WindowInfo]:
+    ordered = sort_by_z(windows)
+    if selector.kind == "process":
+        needle = _normalize_process_name(str(selector.value))
+        return [item for item in ordered
+                if _normalize_process_name(item.process_name) == needle
+                or needle in _normalize_process_name(item.process_name)]
+    if selector.kind == "fuzzy":
+        return _fuzzy_filter(ordered, str(selector.value))
+    pattern = _compile_pattern(str(selector.value))
+    if selector.kind == "title_re":
+        return [item for item in ordered if pattern.search(item.title)]
+    if selector.kind == "class_re":
+        return [item for item in ordered if pattern.search(item.class_name)]
+    return [item for item in ordered
+            if pattern.search(item.title) or pattern.search(item.class_name)]
+
+
+#: 模糊匹配的最低相似度（0..1）；低于该值不算命中
+FUZZY_THRESHOLD = 0.6
+
+
+def _fuzzy_filter(windows: Sequence[WindowInfo], needle: str) -> list[WindowInfo]:
+    """先按子串匹配标题 / 类名 / 进程名，未命中再按相似度（``FUZZY_THRESHOLD``）。"""
+    text = needle.strip().lower()
+    exact = [item for item in windows
+             if text in item.title.lower() or text in item.class_name.lower()
+             or text in item.process_name.lower()]
+    if exact:
+        return exact
+    scored: list[tuple[float, WindowInfo]] = []
+    for item in windows:
+        best = max(
+            difflib.SequenceMatcher(None, text, item.title.lower()).ratio(),
+            difflib.SequenceMatcher(None, text, item.class_name.lower()).ratio(),
+            difflib.SequenceMatcher(None, text, item.process_name.lower()).ratio(),
+        )
+        if best >= FUZZY_THRESHOLD:
+            scored.append((best, item))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _score, item in scored]
+
+
+def _normalize_process_name(name: str) -> str:
+    """归一化进程名：小写、去掉路径与 ``.exe`` 后缀。"""
+    text = str(name or "").strip().lower().replace("\\", "/")
+    text = text.rsplit("/", 1)[-1]
+    if text.endswith(".exe"):
+        text = text[:-4]
+    return text
 
 
 def _match_needle(windows: Sequence[WindowInfo],
@@ -764,6 +863,7 @@ def _optional_int(value: Any, label: str) -> int | None:
 __all__ = [
     "DEFAULT_LIST_LIMIT",
     "DEFAULT_SELECTOR",
+    "FUZZY_THRESHOLD",
     "NO_SELECTABLE_INDEX",
     "SELECTOR_KINDS",
     "WINDOW_CONTROL_ACTIONS",

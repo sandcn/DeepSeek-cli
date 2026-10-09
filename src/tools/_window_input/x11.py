@@ -5,8 +5,11 @@
 
 能力映射：
 
-  - move / click / drag / scroll → ``xdotool mousemove`` / ``click`` /
-    ``mousedown`` / ``mouseup``（滚轮 = 按钮 4/5，水平滚轮 = 6/7）
+  - move / hover / click / drag / scroll → ``xdotool mousemove`` /
+    ``mousemove_relative``（相对移动）/ ``click`` / ``mousedown`` /
+    ``mouseup``（滚轮 = 按钮 4/5，水平滚轮 = 6/7）；``hover`` 用 ``sleep``
+    停留，``click`` 的 ``hold`` 用 ``mousedown`` + ``sleep`` + ``mouseup``
+    实现长按
   - key → ``xdotool keydown`` + ``xdotool keyup``（``ctrl+shift+s`` 语法；
     按下与弹起分开发送，``phase`` 可只发其中之一）
   - type → ``xdotool type --delay``（换行与制表符转成 ``key Return`` / ``key Tab``）
@@ -28,8 +31,10 @@ from dataclasses import dataclass
 from .._screenshot.windows import DEFAULT_SELECTOR, pick_window
 from .._screenshot.x11 import list_windows as list_platform_windows
 from .action import (
+    DEFAULT_CLICK_INTERVAL,
     ClickAction,
     DragAction,
+    HoverAction,
     InputAction,
     KeyAction,
     MoveAction,
@@ -141,6 +146,8 @@ class X11InputBackend:
                   action: InputAction) -> dict:
         if isinstance(action, MoveAction):
             return self._move(xdotool, target, action)
+        if isinstance(action, HoverAction):
+            return self._hover(xdotool, target, action)
         if isinstance(action, ClickAction):
             return self._click(xdotool, target, action)
         if isinstance(action, DragAction):
@@ -154,6 +161,13 @@ class X11InputBackend:
         raise ActionError(f"X11 后端不支持的动作: {action.name}")  # pragma: no cover
 
     def _move(self, xdotool: str, target: _X11Target, action: MoveAction) -> dict:
+        if action.is_relative:
+            command = [xdotool, "mousemove_relative", "--sync",
+                       str(int(action.dx or 0)), str(int(action.dy or 0))]
+            with self._hold_modifiers(xdotool, action.modifiers):
+                self._checked(command, "鼠标相对移动")
+            return {"relative": True, "dx": int(action.dx or 0),
+                    "dy": int(action.dy or 0)}
         point = resolve_point(action.x, action.y, target.frame.width,
                               target.frame.height, label="移动坐标")
         screen = target.frame.to_screen(point)
@@ -161,6 +175,20 @@ class X11InputBackend:
         with self._hold_modifiers(xdotool, action.modifiers):
             self._checked(command, "鼠标移动")
         detail = _point_detail(point, screen)
+        return detail
+
+    def _hover(self, xdotool: str, target: _X11Target, action: HoverAction) -> dict:
+        """悬停：``mousemove`` 后 ``sleep dwell``（单条 xdotool 命令链完成）。"""
+        point = resolve_point(action.x, action.y, target.frame.width,
+                              target.frame.height, label="悬停坐标")
+        screen = target.frame.to_screen(point)
+        command = [xdotool, "mousemove", "--sync", str(screen[0]), str(screen[1])]
+        if action.dwell > 0:
+            command += ["sleep", f"{action.dwell:.3f}"]
+        with self._hold_modifiers(xdotool, action.modifiers):
+            self._checked(command, "鼠标悬停")
+        detail = _point_detail(point, screen)
+        detail.update({"hover": True, "dwell": action.dwell})
         return detail
 
     def _click(self, xdotool: str, target: _X11Target, action: ClickAction) -> dict:
@@ -172,15 +200,30 @@ class X11InputBackend:
             [xdotool, "mousemove", "--sync", str(screen[0]), str(screen[1])],
             "鼠标移动",
         )
-        command = [xdotool, "click"]
-        if action.count > 1:
-            command += ["--repeat", str(action.count),
-                        "--delay", str(_DOUBLE_CLICK_DELAY_MS)]
-        command.append(str(number))
+        delay_ms = (int(round(action.interval * 1000))
+                    or _DOUBLE_CLICK_DELAY_MS)
+        if action.hold > 0:
+            # 长按：mousedown → sleep hold → mouseup（每次点击重复）
+            command = [xdotool]
+            for index in range(action.count):
+                if index:
+                    command += ["sleep", f"{action.interval:.3f}"]
+                command += ["mousedown", str(number),
+                            "sleep", f"{action.hold:.3f}",
+                            "mouseup", str(number)]
+        else:
+            command = [xdotool, "click"]
+            if action.count > 1:
+                command += ["--repeat", str(action.count), "--delay", str(delay_ms)]
+            command.append(str(number))
         with self._hold_modifiers(xdotool, action.modifiers):
             self._checked(command, "鼠标点击")
         detail = _point_detail(point, screen)
         detail.update({"button": action.button, "count": action.count})
+        if action.hold > 0:
+            detail["hold"] = action.hold
+        if action.interval != DEFAULT_CLICK_INTERVAL:
+            detail["interval"] = action.interval
         return detail
 
     def _drag(self, xdotool: str, target: _X11Target, action: DragAction) -> dict:

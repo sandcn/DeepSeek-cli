@@ -47,6 +47,7 @@ from .elements import (
     list_process_elements,
     match_element,
 )
+from .monitors import Monitor, MonitorError, resolve as resolve_monitor
 from .result import CaptureResult, NoWindowError, ScreenshotError
 from .transform import CropError, CropRegion, apply_crop_to_png_file
 from .windows import (
@@ -158,6 +159,61 @@ def capture_process_window(pid: int, path: str,
     return result
 
 
+def list_monitors() -> list[Monitor]:
+    """枚举当前平台的显示器（多显示器 / 全屏截取用）。
+
+    后端不支持时返回空列表（调用方据此提示「全屏截取不可用」）。
+    """
+    backend = resolve_backend()
+    enumerate_fn = getattr(backend, "list_monitors", None)
+    if enumerate_fn is None:
+        return []
+    try:
+        return list(enumerate_fn())
+    except (OSError, ValueError, RuntimeError) as exc:  # pragma: no cover - 依赖系统调用
+        logger.debug("显示器枚举失败（后端 %s）: %s",
+                     getattr(backend, "name", "?"), exc)
+        return []
+
+
+def capture_screen(monitor: Monitor, path: str,
+                   crop: CropRegion | None = None,
+                   grid: int | None = None) -> CaptureResult:
+    """截取整个显示器区域到 ``path``（多显示器 / 全屏）。
+
+    Args:
+        monitor: 目标显示器区域（由 :func:`list_monitors` + ``resolve_monitor``
+            选出）。
+        path: 输出 PNG 路径。
+        crop: 可选裁剪区域（以显示器区域左上角为原点）。
+        grid: 可选坐标网格步长。
+
+    Raises:
+        ScreenshotError: 平台后端不支持全屏截取或抓取失败。
+    """
+    backend = resolve_backend()
+    capture_fn = getattr(backend, "capture_screen", None)
+    if capture_fn is None:
+        raise ScreenshotError(
+            f"当前平台后端（{getattr(backend, 'name', '?')}）暂不支持全屏 / "
+            f"多显示器截取"
+        )
+    kwargs: dict = {}
+    if crop is not None:
+        kwargs["crop"] = crop
+    if grid is not None:
+        kwargs["grid"] = grid
+    try:
+        result = capture_fn(monitor, path, **kwargs)
+    except (ScreenshotError, CropError):
+        raise
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise ScreenshotError(f"全屏截图失败: {exc}") from exc
+    if not os.path.exists(result.path):
+        raise ScreenshotError(f"全屏截图命令已执行但未生成文件: {result.path}")
+    return result
+
+
 def list_process_windows(pid: int) -> list[WindowInfo]:
     """返回 ``pid`` 及其子进程当前全部可操作窗口（按 Z 序）。
 
@@ -171,9 +227,12 @@ def list_process_windows(pid: int) -> list[WindowInfo]:
         return []
     try:
         return list(enumerate_fn(pid))
-    except Exception:  # pragma: no cover - 枚举失败不应中断调用方
-        logger.debug("窗口枚举失败（后端 %s，进程 %s）",
-                     getattr(backend, "name", "?"), pid, exc_info=True)
+    except (OSError, ValueError, RuntimeError, ScreenshotError, SelectorError) as exc:
+        # 仅吞掉「系统调用 / 参数 / 后端能力」类可预期失败（调用方在轮询中
+        # 以空列表表示「暂时没有窗口」）；编程错误（如 TypeError）继续抛出，
+        # 避免把「代码缺陷」伪装成「没有窗口」而难以发现。
+        logger.debug("窗口枚举失败（后端 %s，进程 %s）: %s",
+                     getattr(backend, "name", "?"), pid, exc)
         return []
 
 
@@ -227,6 +286,8 @@ __all__ = [
     "DiffResult",
     "ElementError",
     "ElementInfo",
+    "Monitor",
+    "MonitorError",
     "NoWindowError",
     "ScreenshotError",
     "SelectorError",
@@ -236,6 +297,9 @@ __all__ = [
     "apply_crop_to_png_file",
     "available_backends",
     "capture_process_window",
+    "capture_screen",
+    "list_monitors",
+    "resolve_monitor",
     "classify_control",
     "compare_images",
     "compare_png_files",

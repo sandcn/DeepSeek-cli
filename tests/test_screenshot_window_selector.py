@@ -236,7 +236,8 @@ def test_window_hint_mentions_total_when_truncated(sample_windows):
 def test_selector_kinds_cover_documented_forms():
     assert set(SELECTOR_KINDS) == {
         "main", "active", "index", "handle", "title", "class", "pid",
-        "popup", "dialog", "all",
+        "popup", "dialog", "all", "title_re", "class_re", "regex", "process",
+        "fuzzy",
     }
 
 

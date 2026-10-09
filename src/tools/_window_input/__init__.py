@@ -36,6 +36,7 @@ from .action import (  # noqa: F401  # 对外导出动作模型
     MAX_KEY_REPEAT,
     ClickAction,
     DragAction,
+    HoverAction,
     InputAction,
     KeyAction,
     MoveAction,
@@ -62,7 +63,7 @@ _LOCK = threading.RLock()
 _BUILTINS_LOADED = False
 
 #: 动作类型联合（运行时校验用）
-_ACTION_TYPES = (MoveAction, ClickAction, DragAction, ScrollAction,
+_ACTION_TYPES = (MoveAction, HoverAction, ClickAction, DragAction, ScrollAction,
                  KeyAction, TextAction)
 
 
@@ -185,6 +186,7 @@ __all__ = [
     "ClickAction",
     "DEFAULT_KEY_REPEAT",
     "DragAction",
+    "HoverAction",
     "INPUT_OPS",
     "InputAction",
     "InputError",

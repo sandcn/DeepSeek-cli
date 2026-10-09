@@ -5,8 +5,10 @@
 
 支持的动作（``INPUT_OPS``）：
 
-  - ``move``    鼠标移动到窗口内某点
-  - ``click``   鼠标点击（左/右/中键，可双击、可带修饰键）
+  - ``move``    鼠标移动（绝对坐标 x/y，或相对当前光标的 dx/dy 像素偏移）
+  - ``hover``   鼠标悬停（移动到目标点后保持 dwell 秒不动，触发 tooltip 等）
+  - ``click``   鼠标点击（左/右/中键，可双击、可带修饰键；hold 长按、
+                interval 控制多次点击间隔）
   - ``drag``    按住鼠标从一点拖到另一点（带轨迹插值）
   - ``scroll``  滚轮滚动（上下左右）
   - ``key``     键盘按键（支持 ``ctrl+shift+s`` 组合、功能键）
@@ -59,8 +61,27 @@ DEFAULT_DRAG_STEPS = 20
 MIN_DRAG_STEPS = 2
 MAX_DRAG_STEPS = 200
 
+#: ``hover``（悬停）默认停留时长与上限（秒）：移动到目标点后保持不动，
+#: 等待 tooltip / 悬浮菜单 / 延迟加载出现。
+DEFAULT_HOVER_DWELL = 0.6
+MAX_HOVER_DWELL = 30.0
+
+#: ``click`` 长按时长（秒）：>0 时按下后保持指定时间再弹起（长按 / 拖选的
+#: 「点住不放」场景；配合 ``count=1`` 使用）。
+DEFAULT_CLICK_HOLD = 0.0
+MAX_CLICK_HOLD = 30.0
+
+#: ``click`` 多次点击（双击 / 三击）之间的间隔（秒）默认与上限。
+#: 默认值需小于系统双击时间（约 0.5s），才能被目标程序识别为双击。
+DEFAULT_CLICK_INTERVAL = 0.05
+MAX_CLICK_INTERVAL = 10.0
+
+#: 鼠标相对移动（``move`` 的 ``dx`` / ``dy``）单次偏移的像素绝对值上限，
+#: 防御误传超大值把光标甩到屏幕外。
+MAX_MOVE_OFFSET = 100000
+
 #: 全部输入动作名（bash_opt 的 op 取值集合）
-INPUT_OPS: tuple[str, ...] = ("click", "move", "drag", "scroll", "key", "type")
+INPUT_OPS: tuple[str, ...] = ("click", "move", "hover", "drag", "scroll", "key", "type")
 
 #: ``key`` 动作的按键阶段：
 #:   ``press`` 按下后立即弹起（完整一次按键，默认）
@@ -184,26 +205,66 @@ class Point:
 
 @dataclass(frozen=True)
 class MoveAction:
-    """鼠标移动到窗口内某点。"""
+    """鼠标移动。
+
+    两种模式（互斥）：
+
+      - **绝对**：给 ``x`` / ``y``（窗口内坐标，支持语义值），移动到该点；
+      - **相对**：给 ``dx`` / ``dy``（相对**当前光标屏幕位置**的像素偏移，
+        可为负），在当前光标基础上平移，便于「微调一小段距离」而不必先知道
+        绝对位置。
+
+    ``dx`` / ``dy`` 与 ``x`` / ``y`` 不能同时提供。
+    """
 
     name: ClassVar[str] = "move"
-    x: int | str
-    y: int | str
+    x: int | str | None = None
+    y: int | str | None = None
+    dx: int | None = None
+    dy: int | None = None
     modifiers: tuple[str, ...] = ()
     method: str = DEFAULT_METHOD
     #: 目标窗口选择器（空串 = 主窗口；见 ``windows`` 模块）
     window: str = ""
 
+    @property
+    def is_relative(self) -> bool:
+        """是否为相对移动（给了 ``dx`` / ``dy``）。"""
+        return self.dx is not None or self.dy is not None
+
+
+@dataclass(frozen=True)
+class HoverAction:
+    """鼠标悬停：移动到目标点后保持 ``dwell`` 秒不动。
+
+    用于触发鼠标悬停才出现的界面（tooltip、悬浮菜单、延迟加载的子项）；
+    本身不点击，只是「移过去并停留」。
+    """
+
+    name: ClassVar[str] = "hover"
+    x: int | str = 0
+    y: int | str = 0
+    dwell: float = DEFAULT_HOVER_DWELL
+    modifiers: tuple[str, ...] = ()
+    method: str = DEFAULT_METHOD
+    window: str = ""
+
 
 @dataclass(frozen=True)
 class ClickAction:
-    """鼠标点击（``count=2`` 即双击）。``x``/``y`` 省略时点击窗口中心。"""
+    """鼠标点击（``count=2`` 即双击）。``x``/``y`` 省略时点击窗口中心。
+
+    ``hold`` > 0 表示「长按」：按下后保持指定秒数再弹起；
+    ``interval`` 控制多次点击（双击 / 三击）之间的间隔。
+    """
 
     name: ClassVar[str] = "click"
     button: str = DEFAULT_BUTTON
     count: int = DEFAULT_CLICK_COUNT
     x: int | str | None = None
     y: int | str | None = None
+    hold: float = DEFAULT_CLICK_HOLD
+    interval: float = DEFAULT_CLICK_INTERVAL
     modifiers: tuple[str, ...] = ()
     method: str = DEFAULT_METHOD
     window: str = ""
@@ -429,6 +490,34 @@ def _point_args(params: Mapping[str, Any], *, label: str = "坐标") -> Point | 
                  y=_coord_arg(params, "y", label="y"))
 
 
+def _offset_arg(params: Mapping[str, Any], name: str, *,
+                label: str | None = None) -> int | None:
+    """取相对偏移参数（``dx`` / ``dy``）：整数、允许为负、绝对值有上限。
+
+    Raises:
+        ActionError: 类型非法、超出 ``MAX_MOVE_OFFSET`` 或不是整数。
+    """
+    raw = _raw(params, name)
+    if raw is None:
+        return None
+    name = label or name
+    if isinstance(raw, bool):
+        raise ActionError(f"{name} 取值非法: {raw!r}（相对偏移需为整数像素）")
+    if isinstance(raw, int):
+        value = raw
+    else:
+        text = str(raw).strip()
+        try:
+            value = int(text, 10)
+        except ValueError:
+            raise ActionError(f"{name} 必须是整数像素，当前: {raw!r}") from None
+    if abs(value) > MAX_MOVE_OFFSET:
+        raise ActionError(
+            f"{name} 超出上限（绝对值 <= {MAX_MOVE_OFFSET} 像素），当前: {value}"
+        )
+    return value
+
+
 def _coord_arg(params: Mapping[str, Any], name: str, *,
                label: str | None = None) -> int | str | None:
     """取坐标参数：数字（含数字字符串）转为整数并校验非负，语义值原样保留。
@@ -480,6 +569,7 @@ def build_action(op: str, params: Mapping[str, Any]) -> InputAction:
     name = str(op or "").strip().lower()
     builders: dict = {
         "move": _build_move,
+        "hover": _build_hover,
         "click": _build_click,
         "drag": _build_drag,
         "scroll": _build_scroll,
@@ -495,23 +585,63 @@ def build_action(op: str, params: Mapping[str, Any]) -> InputAction:
 
 
 def _build_move(params: dict) -> MoveAction:
+    """构建 ``move``：绝对坐标（x/y）与相对偏移（dx/dy）互斥。"""
+    has_offset = _raw(params, "dx") is not None or _raw(params, "dy") is not None
+    if has_offset:
+        if _raw(params, "x") is not None or _raw(params, "y") is not None:
+            raise ActionError(
+                "move 的绝对坐标（x/y）与相对偏移（dx/dy）不能同时提供："
+                "要移动到窗口内某点给 x/y，要在当前光标基础上平移给 dx/dy"
+            )
+        dx = _offset_arg(params, "dx")
+        dy = _offset_arg(params, "dy")
+        if dx is None or dy is None:
+            raise ActionError(
+                f"move 相对移动需要同时提供 dx 与 dy（当前 dx={dx!r}, dy={dy!r}）；"
+                f"不移动的轴请显式给 0"
+            )
+        return MoveAction(dx=dx, dy=dy,
+                          modifiers=parse_modifiers(_raw(params, "modifiers")),
+                          method=_method_arg(params),
+                          window=_window_arg(params))
     point = _point_args(params)
     if point is None:
-        raise ActionError("move 需要 x 与 y 参数指定窗口内坐标")
+        raise ActionError(
+            "move 需要 x 与 y 参数指定窗口内坐标（或 dx/dy 相对当前光标偏移）"
+        )
     return MoveAction(x=point.x, y=point.y,
                       modifiers=parse_modifiers(_raw(params, "modifiers")),
                       method=_method_arg(params),
                       window=_window_arg(params))
 
 
+def _build_hover(params: dict) -> HoverAction:
+    """构建 ``hover``（移动到目标点并停留）。"""
+    point = _point_args(params)
+    if point is None:
+        raise ActionError("hover 需要 x 与 y 参数指定窗口内坐标")
+    dwell = _float_arg(params, "dwell", "duration", minimum=0.0,
+                       maximum=MAX_HOVER_DWELL)
+    return HoverAction(x=point.x, y=point.y,
+                       dwell=DEFAULT_HOVER_DWELL if dwell is None else dwell,
+                       modifiers=parse_modifiers(_raw(params, "modifiers")),
+                       method=_method_arg(params),
+                       window=_window_arg(params))
+
+
 def _build_click(params: dict) -> ClickAction:
     point = _point_args(params)
     count = _int_arg(params, "count", minimum=1, maximum=MAX_CLICK_COUNT)
+    hold = _float_arg(params, "hold", minimum=0.0, maximum=MAX_CLICK_HOLD)
+    interval = _float_arg(params, "interval", minimum=0.0,
+                          maximum=MAX_CLICK_INTERVAL)
     return ClickAction(
         button=_button_arg(params),
         count=DEFAULT_CLICK_COUNT if count is None else count,
         x=point.x if point else None,
         y=point.y if point else None,
+        hold=DEFAULT_CLICK_HOLD if hold is None else hold,
+        interval=DEFAULT_CLICK_INTERVAL if interval is None else interval,
         modifiers=parse_modifiers(_raw(params, "modifiers")),
         method=_method_arg(params),
         window=_window_arg(params),
@@ -673,8 +803,20 @@ def describe_action(action: InputAction) -> dict:
             "count": action.count,
             "position": "center" if action.x is None else {"x": action.x, "y": action.y},
         }
+        if action.hold != DEFAULT_CLICK_HOLD:
+            payload["hold"] = action.hold
+        if action.interval != DEFAULT_CLICK_INTERVAL:
+            payload["interval"] = action.interval
     elif isinstance(action, MoveAction):
-        payload = {"position": {"x": action.x, "y": action.y}}
+        if action.is_relative:
+            payload = {"relative": {"dx": action.dx, "dy": action.dy}}
+        else:
+            payload = {"position": {"x": action.x, "y": action.y}}
+    elif isinstance(action, HoverAction):
+        payload = {
+            "position": {"x": action.x, "y": action.y},
+            "dwell": action.dwell,
+        }
     elif isinstance(action, DragAction):
         payload = {
             "button": action.button,
@@ -726,19 +868,27 @@ __all__ = [
     "ClickAction",
     "DEFAULT_BUTTON",
     "DEFAULT_CLICK_COUNT",
+    "DEFAULT_CLICK_HOLD",
+    "DEFAULT_CLICK_INTERVAL",
     "DEFAULT_DRAG_DURATION",
     "DEFAULT_DRAG_STEPS",
+    "DEFAULT_HOVER_DWELL",
     "DEFAULT_KEY_PHASE",
     "DEFAULT_KEY_REPEAT",
     "DEFAULT_METHOD",
     "DEFAULT_SCROLL_AMOUNT",
     "DEFAULT_SCROLL_DIRECTION",
     "DragAction",
+    "HoverAction",
     "INPUT_OPS",
     "InputAction",
     "KEY_PHASES",
     "KeyAction",
+    "MAX_CLICK_HOLD",
+    "MAX_CLICK_INTERVAL",
+    "MAX_HOVER_DWELL",
     "MAX_KEY_REPEAT",
+    "MAX_MOVE_OFFSET",
     "METHODS",
     "MoveAction",
     "Point",

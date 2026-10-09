@@ -15,20 +15,24 @@ bash_opt — 按 task_id 操作后台 bash 任务
             作为窗口级键盘消息注入该窗口，否则回退写入终端——跨平台
             ANSI/VT100 转义序列；支持 ctrl+c 等修饰键组合、esc/pageup 等
             别名、单个字符与 f1-f24，repeat 可一次连按多次）
-- op=screenshot  把后台命令（及其子进程）的窗口截图保存为 PNG
+- op=screenshot  把后台命令（及其子进程）的窗口，或整个屏幕，截图保存为 PNG
                  （path 参数指定文件路径；可选 crop 指定只截取的像素区域，
-                 window 选择目标窗口，grid 叠加等距坐标参考线）
+                 window 选择目标窗口，grid 叠加等距坐标参考线；
+                 screen=true/'primary'/序号 做整屏 / 多显示器截取（不需要进程
+                 句柄），element+margin 只截某个控件的区域）
 - op=windows     列出该进程树的全部窗口（句柄 / 标题 / 类名 / 位置尺寸 /
                  Z 序 / 是否前台 / 是否主窗口），用于挑选目标窗口
 - op=window      控制被选窗口的状态与几何（window_action=activate / maximize /
                  minimize / restore / close / move / resize / fit），
                  配合 window 选择器与 x/y/width/height
-- op=move / click / drag / scroll / key / type
+- op=move / hover / click / drag / scroll / key / type
                  向后台命令的 **GUI 窗口**注入鼠标 / 键盘 / 文本输入
                  （window 选择目标窗口、settle 注入后等待、shot 注入后自动截图；
                   鼠标按钮、双击、拖动、滚轮、组合键、任意 Unicode 文本；
                   按键可分「按下 / 弹起 / 完整」阶段，见 phase 参数，
-                  并用 repeat 一次连按多次）
+                  并用 repeat 一次连按多次；hover 移动到目标点停留触发挥发性
+                  界面，move 另支持 dx/dy 相对当前光标偏移，click 另支持 hold
+                  长按与 interval 多击间隔）
 - op=sequence    一次调用按顺序执行多个动作（click / move / drag / scroll /
                  key / type 与 wait / screenshot / window 步骤混排），
                  减少往返、避免两次调用之间被抢焦点；on_error 决定遇错
@@ -42,8 +46,12 @@ bash_opt — 按 task_id 操作后台 bash 任务
                  启动慢时先等窗口就绪再操作，避免「窗口还没出现」空转
 - op=elements    列出窗口内的控件（名称 / 类型 / 类名 / 矩形 / 可用状态）；
                  可用 element 参数（如 element='确定'）直接按控件名点击或
-                 输入，不必读图算像素（经典 Win32 控件有效；Chrome /
-                 Electron / 游戏等自绘界面没有标准子控件，会如实返回空）
+                 输入，不必读图算像素（Windows 优先走 UI Automation，
+                 Chrome / Electron / Qt / WPF 等自绘界面也能枚举到无障碍
+                 节点；极少暴露元素时再回退截图 + 像素坐标，见 op=locate）
+- op=locate      在窗口截图里定位「局部图标」（template 模板匹配）或
+                 「文字」（query OCR），返回与输入 op 同源的坐标，可直接点击；
+                 适合没有可枚举控件的界面（游戏 / canvas / 图片按钮）
 
 ★ 「一次调用把一组操作做完」的推荐组合：
 
@@ -148,19 +156,23 @@ from .file_ops import validate_path_security
 from ._screenshot import (
     CropError,
     CropRegion,
+    MonitorError,
     NoWindowError,
     ScreenshotError,
     SelectorError,
     capture_process_window,
+    capture_screen,
     control_process_window,
     describe_elements,
     describe_windows,
     filter_elements,
     indexed_summary,
+    list_monitors,
     list_process_elements,
     list_process_windows,
     parse_control_request,
     pick_window,
+    resolve_monitor,
     window_geometry,
     window_hint,
 )
@@ -168,6 +180,19 @@ from ._screenshot.diff import (
     DEFAULT_TOLERANCE,
     compare_png_files,
 )
+from ._screenshot.imagematch import (
+    DEFAULT_MATCH_TOLERANCE,
+    DEFAULT_MAX_RESULTS,
+    ImageMatchError,
+    match_template,
+)
+from ._screenshot.ocr import (
+    OcrError,
+    find_text as find_ocr_text,
+    recognize as recognize_text,
+)
+from ._screenshot.png_decode import DecodedImage, decode_png_file
+from ._screenshot.transform import crop_rgb
 from ._screenshot.elements import (
     DEFAULT_ELEMENT_LIMIT,
     ElementError,
@@ -240,6 +265,12 @@ def _format_position(arguments: dict, x_key: str = "x", y_key: str = "y") -> str
     return f"@{x},{y}"
 
 
+def _box_in_crop(box, crop) -> bool:
+    """文本框是否与裁剪区域相交（OCR 结果按 crop 过滤时用）。"""
+    return not (box.left + box.width <= crop.x or box.left >= crop.x + crop.width
+                or box.top + box.height <= crop.y or box.top >= crop.y + crop.height)
+
+
 class BashOptFunc(Func):
     """按 task_id 操作后台 bash 任务（bash background=True 启动）。"""
 
@@ -309,6 +340,12 @@ class BashOptFunc(Func):
     _DEFAULT_ELEMENT_LIMIT: int = DEFAULT_ELEMENT_LIMIT
     #: elements 单次枚举的最大条数（防止极端界面输出过长）
     _MAX_ELEMENT_LIMIT: int = 2000
+    #: op=locate 图像匹配的默认容差（每像素平均通道差）
+    _LOCATE_TOLERANCE: int = DEFAULT_MATCH_TOLERANCE
+    #: op=locate 返回结果条数上限
+    _MAX_LOCATE_RESULTS: int = 50
+    #: op=locate 模板多尺度搜索的步数上限
+    _MAX_LOCATE_SCALE_STEPS: int = 21
 
     @classmethod
     def to_tool_schema(cls):
@@ -334,8 +371,9 @@ class BashOptFunc(Func):
                     "windows（列出该命令进程树的全部窗口及其句柄/标题/几何/Z 序）、"
                     "window（控制窗口，window_action=activate/maximize/minimize/"
                     "restore/close/move/resize/fit，用 window 选择目标窗口）、"
-                    "move/click/drag/scroll/key/type（向该命令进程树的 GUI 窗口注入"
-                    "鼠标移动/点击（左中右键、可双击）/拖动/滚轮/按键/文本，"
+                    "move/hover/click/drag/scroll/key/type（向该命令进程树的 GUI 窗口注入"
+                    "鼠标移动（绝对 x/y 或相对 dx/dy）/悬停/点击（左中右键、"
+                    "可双击、可 hold 长按）/拖动/滚轮/按键/文本，"
                     "key 支持 phase=press/down/up 的按下与弹起分离发送，"
                     "window 可选目标窗口，shot 可注入后自动截图，"
                     "坐标以窗口截图左上角为原点且可用 screenshot 对照；"
@@ -369,7 +407,7 @@ class BashOptFunc(Func):
                             "enum": ["read", "wait", "kill", "stdin", "keys",
                                      "screenshot", "windows", "window",
                                      "elements", "wait_window", "clipboard",
-                                     "sequence",
+                                     "locate", "sequence",
                                      *INPUT_OPS],
                             "description": (
                                 "要执行的操作："
@@ -387,13 +425,16 @@ class BashOptFunc(Func):
                                 "没有 GUI 窗口则写入终端 PTY/stdin；"
                                 "支持 ctrl+c 等组合键、esc/pageup 等别名与单个字符）"
                                 "\n- screenshot：把任务进程树（含其启动的 GUI 子进程）的窗口"
-                                "截图保存为 PNG 文件（需 path；可选 crop 指定只截取的像素区域），"
+                                "或整个屏幕截图保存为 PNG 文件（需 path；可选 crop 指定只截取的像素区域，"
+                                "screen=true/'primary'/序号 整屏 / 多显示器截取（不再需要进程句柄），"
+                                "element+margin 只截某控件区域），"
                                 "用于查看图形程序运行画面；"
                                 "结果附带 window_x/window_y（截图像素左上角对应的屏幕坐标）"
                                 "与 window_rect（窗口外框），便于截图像素与屏幕坐标换算；"
                                 "纯命令行进程没有窗口，会返回错误说明"
-                                "\n- move/click/drag/scroll/key/type：向任务进程树的 GUI 窗口"
-                                "注入输入（鼠标移动/点击（左中右键、双击即 count=2）/拖动/滚轮、"
+                                "\n- move/hover/click/drag/scroll/key/type：向任务进程树的 GUI 窗口"
+                                "注入输入（鼠标移动（x/y 绝对或 dx/dy 相对）/悬停/点击（左中右键、"
+                                "双击即 count=2、hold 长按）/拖动/滚轮、"
                                 "键盘按键（phase=press/down/up 分按下与弹起）、文本）；"
                                 "坐标以窗口截图左上角为原点（与 screenshot 产物一致），"
                                 "click/scroll 省略坐标时作用于窗口中心；"
@@ -420,8 +461,9 @@ class BashOptFunc(Func):
                                 "可用状态），含屏幕坐标与窗口内坐标（window_center_x/"
                                 "window_center_y，可直接用于 click）；"
                                 "element 可作为过滤子串，max_elements 限制条数。"
-                                "经典 Win32 控件可枚举；自绘界面（Chrome/Electron/"
-                                "游戏）通常没有子控件，会返回空清单"
+                                "Windows 优先走 UI Automation：Chrome/Electron/"
+                                "Qt/WPF/UWP 等自绘界面也能枚举到无障碍节点；"
+                                "UIA 不可用时回退经典 Win32 子窗口枚举"
                                 "\n- wait_window：等待窗口出现（按 window 选择器，"
                                 "timeout 秒，默认 15 秒）；GUI 程序启动慢时先等"
                                 "窗口就绪再操作"
@@ -430,6 +472,13 @@ class BashOptFunc(Func):
                                 "set/append 需 text；缺省按是否提供 text 推断）；"
                                 "配合 key='ctrl+v' 或 type 的 via='clipboard' 粘贴"
                                 "长文本/中文/emoji"
+                                "\n- locate：在窗口截图里定位「局部图标」或"
+                                "「文字」，返回坐标（与输入 op 同源，可直接点击）。"
+                                "给 template=模板图片路径 做模板匹配；给 query="
+                                "要查找的文字 做 OCR 文字识别（Windows 用系统自带 "
+                                "OCR，其它平台用 tesseract）。适合没有可枚举控件的"
+                                "界面（游戏 / canvas / 图片按钮）；crop 可限定"
+                                "搜索区域"
                                 "\n- sequence：一次调用按序执行多个动作"
                                 "（actions 数组，每项形如 {\"op\": \"click\", \"x\": 10}；"
                                 "步骤可为输入动作或 wait（seconds）/screenshot（path）/"
@@ -495,6 +544,9 @@ class BashOptFunc(Func):
                                 "N 与 op=windows 清单里的 z_index 一致）、"
                                 "'handle:0x1a2b' 按平台窗口句柄、"
                                 "'title:子串' / 'class:子串' / 'pid:1234' 按属性匹配、"
+                                "'title~:正则' / 'class~:正则' / 're:正则' 按正则匹配"
+                                "标题 / 类名、'process:进程名'（如 process:chrome）"
+                                "按进程（exe）名匹配、'fuzzy:关键词' 模糊匹配、"
                                 "'popup' 无标题弹层、'dialog' 对话框。"
                                 "不可见（visible=false）或已最小化的窗口不会被 "
                                 "'main' / '#N' / 'popup' / 'dialog' 选中——它们截出来"
@@ -517,6 +569,25 @@ class BashOptFunc(Func):
                                 "线间距像素（省略 = 不叠加参考线；0 或 true = 按画面"
                                 "尺寸自动选步长约 10 格；如 grid=50 每 50 像素一条主线、"
                                 "每 25 像素一条次线），便于读图后精确给出 x/y 坐标。"
+                            ),
+                        },
+                        "screen": {
+                            "type": ["boolean", "string", "number"],
+                            "description": (
+                                "仅 screenshot / sequence 的 screenshot 步骤可选："
+                                "整屏 / 多显示器截取（不限于目标进程的窗口）。"
+                                "true / 'all' / '0' = 整个虚拟桌面（所有显示器）；"
+                                "'primary' = 主显示器；序号（1 / '2'）= 第 N 个"
+                                "显示器。省略 / false = 截目标窗口。"
+                            ),
+                        },
+                        "margin": {
+                            "type": "number",
+                            "description": (
+                                "仅 screenshot / sequence 的 screenshot 步骤可选："
+                                "与 element 配合，把控件区域向四周外扩的像素数"
+                                "（默认 0，可为负表示收缩），用于截控件及其周边一点"
+                                "范围。"
                             ),
                         },
                         "shot": {
@@ -643,6 +714,45 @@ class BashOptFunc(Func):
                             "type": "number",
                             "description": (
                                 "仅 click：点击次数（默认 1；2 表示双击，最大 10）。"
+                            ),
+                        },
+                        "hold": {
+                            "type": "number",
+                            "description": (
+                                "仅 click：长按时长（秒，默认 0 = 立即弹起）。>0 时"
+                                "按下后保持指定时间再弹起（点住不放 / 长按），"
+                                "上限 30 秒；配合 count=1 使用。"
+                            ),
+                        },
+                        "interval": {
+                            "type": "number",
+                            "description": (
+                                "仅 click：多次点击（双击 / 三击）之间的间隔（秒，"
+                                "默认 0.05，上限 10）。需小于系统双击时间才会被"
+                                "识别为双击，一般不必改。"
+                            ),
+                        },
+                        "dwell": {
+                            "type": "number",
+                            "description": (
+                                "仅 hover：移动到目标点后的停留时长（秒，默认 0.6，"
+                                "上限 30）。用于触发鼠标悬停才出现的 tooltip / 悬浮"
+                                "菜单 / 延迟加载。"
+                            ),
+                        },
+                        "dx": {
+                            "type": "number",
+                            "description": (
+                                "仅 move：相对当前光标屏幕位置的水平像素偏移"
+                                "（可为负）。与 x/y 互斥——相对移动给 dx/dy，绝对"
+                                "移动给 x/y。"
+                            ),
+                        },
+                        "dy": {
+                            "type": "number",
+                            "description": (
+                                "仅 move：相对当前光标屏幕位置的垂直像素偏移"
+                                "（可为负）。需与 dx 同时提供（不移动的轴给 0）。"
                             ),
                         },
                         "modifiers": {
@@ -775,10 +885,12 @@ class BashOptFunc(Func):
                                 "作为起点；type/key 先点击该控件聚焦再输入。"
                                 "与显式 x/y（drag 的 from_x/from_y）互斥；"
                                 "\n- op=elements：作为过滤子串，只返回匹配的控件。"
-                                "取值形式：'确定'（按控件文本子串，找不到再按类名、"
-                                "再按控件类型）、'text:子串'、'class:子串'、"
-                                "'type:edit'、'#3'（清单第 3 个控件；op=elements 的"
-                                "过滤同样接受 '#N' 写法，与输入 op 的定位一致）；"
+                                "取值形式：'确定'（按控件文本子串，找不到再按自动化 "
+                                "ID、类名、控件类型）、'text:子串'、'class:子串'、"
+                                "'id:子串'（自动化 ID / 控件名，如 WinForms 的 "
+                                "TextBox.Name）、'type:edit'、'#3'（清单第 3 个控件；"
+                                "op=elements 的过滤同样接受 '#N' 写法，与输入 op "
+                                "的定位一致）；"
                                 "类型匹配同时接受英文类型名与中文标签"
                                 "（'edit' / '编辑框'、'button' / '按钮'、'list' / '列表'）。"
                             ),
@@ -852,9 +964,11 @@ class BashOptFunc(Func):
                         "tolerance": {
                             "type": "number",
                             "description": (
-                                "仅输入 op 的 diff 可选：截图比较的颜色容差"
-                                "（每通道 0..255，默认 8）。0 表示要求像素完全一致；"
-                                "界面有轻微抗锯齿 / 淡入淡出动画时可适当调大。"
+                                "输入 op 的 diff / op=locate 可选：像素比较的"
+                                "颜色容差（每通道 0..255）。diff 默认 8（0 表示"
+                                "要求像素完全一致，界面有抗锯齿 / 淡入淡出动画时"
+                                "可调大）；locate 模板匹配默认 25（模板与截图"
+                                "比例一致时可用较小值）。"
                             ),
                         },
                         "max_elements": {
@@ -863,6 +977,49 @@ class BashOptFunc(Func):
                                 "仅 elements 可选：控件清单最多返回多少条"
                                 "（默认 200，上限 2000）。控件很多时按需缩小以"
                                 "保持输出简洁。"
+                            ),
+                        },
+                        "template": {
+                            "type": "string",
+                            "description": (
+                                "仅 locate：模板图片路径（PNG）。在窗口截图里"
+                                "搜索该小图（图标 / 按钮局部），返回其位置与"
+                                "置信度；与 query 二选一。"
+                            ),
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": (
+                                "仅 locate：要在画面里查找的文字（OCR）。"
+                                "返回匹配文字的包围盒坐标（支持跨词短语）；"
+                                "与 template 二选一。也可用 text 传该查询。"
+                            ),
+                        },
+                        "max_results": {
+                            "type": "number",
+                            "description": (
+                                "仅 locate：最多返回多少条匹配（默认 10，上限 50）。"
+                            ),
+                        },
+                        "min_scale": {
+                            "type": "number",
+                            "description": (
+                                "仅 locate 模板匹配：模板最小缩放比例（默认 1.0）。"
+                                "模板与截图像素比例不一致时可设 0.5~2.0 搜索。"
+                            ),
+                        },
+                        "max_scale": {
+                            "type": "number",
+                            "description": (
+                                "仅 locate 模板匹配：模板最大缩放比例（默认 1.0，"
+                                "需 >= min_scale）。"
+                            ),
+                        },
+                        "scale_steps": {
+                            "type": "number",
+                            "description": (
+                                "仅 locate 模板匹配：在 min_scale..max_scale 之间"
+                                "取多少个缩放档（默认 1，上限 21）。"
                             ),
                         },
                         "seconds": {
@@ -898,6 +1055,12 @@ class BashOptFunc(Func):
             grid = arguments.get("grid")
             if grid:
                 extra = f"{extra} grid={grid}" if extra else f"grid={grid}"
+            screen = arguments.get("screen")
+            if screen:
+                extra = f"{extra} screen={screen}" if extra else f"screen={screen}"
+            element = arguments.get("element")
+            if element:
+                extra = f"{extra} element={element}" if extra else f"element={element}"
         elif op in INPUT_OPS:
             extra = cls._input_display(op, arguments)
             element = arguments.get("element")
@@ -923,6 +1086,14 @@ class BashOptFunc(Func):
         elif op == "wait_window":
             window = arguments.get("window")
             extra = f"等待窗口 {window}" if window else "等待窗口 main"
+        elif op == "locate":
+            if arguments.get("template"):
+                extra = f"图像 {arguments.get('template')}"
+            else:
+                extra = f"文字 {arguments.get('query') or arguments.get('text') or ''}"
+            window = arguments.get("window")
+            if window:
+                extra = f"{extra} window={window}"
         elif op == "clipboard":
             action = str(arguments.get("clipboard_action") or "")
             if not action:
@@ -957,8 +1128,17 @@ class BashOptFunc(Func):
             label = f"{button}"
             if count not in (None, 1, "1"):
                 label += f"x{count}"
+            hold = arguments.get("hold")
+            if hold not in (None, 0, "0", 0.0, ""):
+                label += f" hold={hold}s"
             return f"{label} {_format_position(arguments)}"
+        if op == "hover":
+            dwell = arguments.get("dwell")
+            suffix = f" dwell={dwell}s" if dwell not in (None, "") else ""
+            return f"{_format_position(arguments)}{suffix}"
         if op == "move":
+            if arguments.get("dx") is not None or arguments.get("dy") is not None:
+                return f"rel dx={arguments.get('dx') or 0} dy={arguments.get('dy') or 0}"
             return _format_position(arguments)
         if op == "scroll":
             direction = str(arguments.get("direction") or "down")
@@ -976,6 +1156,7 @@ class BashOptFunc(Func):
                  crop: str | None = None,
                  x=None, y=None, to_x=None, to_y=None,
                  from_x=None, from_y=None,
+                 dx=None, dy=None, dwell=None, hold=None, interval=None,
                  button: str | None = None, count=None, modifiers=None,
                  direction: str | None = None, amount=None,
                  duration=None, steps=None, method: str | None = None,
@@ -990,7 +1171,11 @@ class BashOptFunc(Func):
                  actions=None, on_error: str | None = None,
                  clipboard_action: str | None = None,
                  via: str | None = None, paste_key: str | None = None,
-                 restore_clipboard=None, max_elements=None):
+                 restore_clipboard=None, max_elements=None,
+                 template: str | None = None, query: str | None = None,
+                 max_results=None, min_scale=None, max_scale=None,
+                 scale_steps=None,
+                 screen=None, margin=None):
         super().__init__()
         # task_id 归一化（防御 None/缺失）：模型传 {"task_id": null} 时
         # from_args 把 None 传入（默认值不生效），后续 startswith 崩溃。
@@ -1026,6 +1211,14 @@ class BashOptFunc(Func):
         self.to_y = to_y
         self.from_x = from_x
         self.from_y = from_y
+        # 鼠标相对移动偏移（仅 move）：相对当前光标屏幕位置平移
+        self.dx = dx
+        self.dy = dy
+        # 悬停停留时长（仅 hover）
+        self.dwell = dwell
+        # 长按时长 / 多次点击间隔（仅 click）
+        self.hold = hold
+        self.interval = interval
         self.button = button
         self.count = count
         self.modifiers = modifiers
@@ -1066,6 +1259,16 @@ class BashOptFunc(Func):
                                   else bool(restore_clipboard))
         # ── 控件枚举（op=elements）──
         self.max_elements = max_elements
+        # ── 图像 / 文字定位（op=locate）──
+        self.template = template      # 模板图片路径（图像匹配）
+        self.query = query            # OCR 查找文本
+        self.max_results = max_results
+        self.min_scale = min_scale    # 模板缩放搜索范围
+        self.max_scale = max_scale
+        self.scale_steps = scale_steps
+        # ── 截图增强（op=screenshot / sequence 步骤）──
+        self.screen = screen          # 全屏 / 多显示器截取（true / 'primary' / 序号）
+        self.margin = margin          # 按控件区域截图时的外扩像素
 
     # ── execute ──────────────────────────────────────────
 
@@ -1117,6 +1320,8 @@ class BashOptFunc(Func):
             return await self._op_wait_window(rec)
         if self.op == "clipboard":
             return await self._op_clipboard(rec)
+        if self.op == "locate":
+            return await self._op_locate(rec)
         if self.op == "sequence":
             return await self._op_sequence(rec)
         if self.op in INPUT_OPS:
@@ -1124,7 +1329,7 @@ class BashOptFunc(Func):
         supported = "/".join(("read", "wait", "kill", "stdin", "keys",
                               "screenshot", "windows", "window",
                               "elements", "wait_window", "clipboard",
-                              "sequence", *INPUT_OPS))
+                              "locate", "sequence", *INPUT_OPS))
         return f"(未知操作: {self.op}。支持: {supported})"
 
     # ── op=read ──────────────────────────────────────────
@@ -1466,26 +1671,37 @@ class BashOptFunc(Func):
             grid = self._resolve_grid()
         except CropError as exc:
             return f"(截图网格参数非法: {exc})"
-        pid = rec.get("pid")
-        if pid is None:
-            return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
-                    f"无法截图。可用 op=wait 查看任务状态)")
         try:
             target_path = self._prepare_screenshot_path(str(self.path))
         except ValueError as exc:
             return f"(截图路径非法: {exc})"
         try:
-            result = await self._capture_with_retry(
-                pid, target_path, crop, window=self.window, grid=grid)
-        except (SelectorError, ScreenshotError) as exc:
+            info = await self._screenshot_target(
+                rec, target_path=target_path, crop=crop, grid=grid,
+                window=self.window, screen=self.screen, element=self.element,
+                margin=self.margin)
+        except MonitorError as exc:
+            return f"(截图失败: {exc})"
+        except ElementError as exc:
+            return f"(截图失败: 控件区域不可用: {exc})"
+        except (SelectorError, ScreenshotError, CropError, ValueError) as exc:
             scope = f"（window 选择器 {self.window!r}）" if self.window else ""
             return f"(截图失败{scope}: {exc})"
+        result = info["result"]
+        region = info["region"]
+        element_desc = info["element"]
         payload: dict = {"task_id": self.task_id, "op": "screenshot"}
+        for key in ("screen", "monitor", "monitor_index", "monitors_total"):
+            if info.get(key) is not None:
+                payload[key] = info[key]
         payload.update(result.to_dict())
         notes = ["截图已保存"]
-        if crop is not None:
-            payload["crop"] = crop.to_dict()
+        if region is not None:
+            payload["crop"] = region.to_dict()
             notes.append("已按 crop 裁剪")
+        if element_desc is not None:
+            payload["element"] = element_desc
+            notes.append("截取范围为该控件区域")
         if grid is not None:
             payload["grid"] = grid
             notes.append("已叠加坐标参考线")
@@ -1497,8 +1713,9 @@ class BashOptFunc(Func):
         )
         if result.window_rect:
             rect = result.window_rect
+            box_label = "显示器区域" if self._screen_requested() else "窗口外框"
             notes.append(
-                f"窗口外框 {rect['width']}x{rect['height']}"
+                f"{box_label} {rect['width']}x{rect['height']}"
                 f"@({rect['x']},{rect['y']})（产物 {result.width}x{result.height} "
                 f"与它的差值来自窗口装饰 / DWM 黑边 / crop，二者不必相等）"
             )
@@ -1591,6 +1808,148 @@ class BashOptFunc(Func):
                     f"截图超时（超过 {self._SCREENSHOT_TIMEOUT:g} 秒）："
                     f"窗口无响应或截图命令卡死"
                 ) from None
+
+    @staticmethod
+    def _screen_spec_requested(raw) -> bool:
+        """``screen`` 取值是否表示「整屏 / 多显示器」截取。
+
+        ``true`` / ``'all'`` / ``'virtual'`` / ``0`` / ``'primary'`` / 序号都
+        表示启用；``None`` / ``false`` / ``off`` / 空串表示关闭（窗口截图）。
+        """
+        if raw is None:
+            return False
+        if isinstance(raw, bool):
+            return raw
+        text = str(raw).strip().lower()
+        return text not in ("", "false", "no", "off")
+
+    def _screen_requested(self) -> bool:
+        """本工具实例是否要求整屏 / 多显示器截图。"""
+        return self._screen_spec_requested(self.screen)
+
+    async def _resolve_monitor(self, spec=None):
+        """按 ``spec``（缺省取实例 ``screen``）挑出显示器，返回
+        ``(Monitor, 序号, 总数)``。
+
+        Raises:
+            MonitorError: 平台枚举不到显示器或选择越界。
+        """
+        monitors = await asyncio.wait_for(
+            asyncio.to_thread(list_monitors), timeout=self._INPUT_TIMEOUT)
+        value = self.screen if spec is None else spec
+        monitor = resolve_monitor(
+            monitors, value if not isinstance(value, bool) else None)
+        index = 0
+        for position, item in enumerate(monitors, start=1):
+            if item == monitor:
+                index = position
+                break
+        return monitor, index, len(monitors)
+
+    async def _capture_screen_with_retry(self, monitor, path: str, crop,
+                                         grid: int | None):
+        """整屏 / 多显示器截图（在线程中执行并受超时保护）。"""
+        kwargs: dict = {}
+        if crop is not None:
+            kwargs["crop"] = crop
+        if grid is not None:
+            kwargs["grid"] = grid
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    lambda: capture_screen(monitor, path, **kwargs)),
+                timeout=self._SCREENSHOT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise ScreenshotError(
+                f"全屏截图超时（超过 {self._SCREENSHOT_TIMEOUT:g} 秒）"
+            ) from None
+
+    async def _element_capture_region(self, pid: int, element: str, window,
+                                      margin_raw, crop):
+        """按控件名算出截图区域（可选 margin 外扩、crop 相对该控件再裁剪）。
+
+        Returns:
+            ``(CropRegion, 控件摘要)``。
+
+        Raises:
+            ElementError: 控件不可用或无法确定坐标系。
+            CropError: 最终区域越界。
+        """
+        elements = await asyncio.wait_for(
+            asyncio.to_thread(list_process_elements, pid, window),
+            timeout=self._INPUT_TIMEOUT,
+        )
+        if not elements:
+            raise ElementError("窗口内没有可枚举的控件（无法按控件区域截图）")
+        matched = match_window_element(elements, element)
+        frame = await self._window_frame_for(pid, window)
+        if frame is None:
+            raise ElementError("无法确定窗口坐标系（窗口可能已关闭）")
+        margin = self._resolve_margin(margin_raw)
+        x = matched.left - frame.screen_x - margin
+        y = matched.top - frame.screen_y - margin
+        width = matched.width + margin * 2
+        height = matched.height + margin * 2
+        x = max(0, x)
+        y = max(0, y)
+        width = min(width, frame.width - x)
+        height = min(height, frame.height - y)
+        if width <= 0 or height <= 0:
+            raise ElementError("控件区域落在窗口外或尺寸非法，无法截图")
+        if crop is not None:
+            x += crop.x
+            y += crop.y
+            width, height = crop.width, crop.height
+        region = CropRegion(x, y, width, height)
+        region.validate_against(frame.width, frame.height)
+        return region, self._element_summary(matched)
+
+    def _resolve_margin(self, raw=_UNSET) -> int:
+        """解析控件区域截图的外扩像素（可为负表示收缩，缺省 0）。"""
+        value = self.margin if raw is _UNSET else raw
+        if value is None:
+            return 0
+        if isinstance(value, bool):
+            raise ValueError("margin 需要整数（像素）")
+        try:
+            return int(float(str(value).strip()))
+        except (TypeError, ValueError):
+            raise ValueError(f"margin 需要整数（像素），当前: {value!r}") from None
+
+    async def _screenshot_target(self, rec: dict, *, target_path: str, crop,
+                                 grid, window, screen, element, margin):
+        """执行一次截图（窗口 / 控件区域 / 整屏），返回结果与元信息。
+
+        Returns:
+            ``{result, region, element, screen?, monitor?, ...}``。
+
+        Raises:
+            ScreenshotError / SelectorError / ElementError / CropError: 截图失败。
+        """
+        if self._screen_spec_requested(screen):
+            monitor, index, total = await self._resolve_monitor(screen)
+            result = await self._capture_screen_with_retry(
+                monitor, target_path, crop, grid)
+            return {
+                "result": result, "region": crop, "element": None,
+                "screen": screen, "monitor": monitor.to_dict(),
+                "monitor_index": index, "monitors_total": total,
+            }
+        pid = rec.get("pid")
+        if pid is None:
+            raise ScreenshotError(
+                f"后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
+                f"无法截图；需要整屏截图可传 screen=true"
+            )
+        region = crop
+        element_desc = None
+        if element is not None and str(element).strip():
+            region, element_desc = await self._element_capture_region(
+                pid, element, window, margin, crop)
+        result = await self._capture_with_retry(
+            pid, target_path, region, window=window, grid=grid)
+        return {"result": result, "region": region, "element": element_desc}
 
     @staticmethod
     def _prepare_screenshot_path(path: str) -> str:
@@ -1740,8 +2099,9 @@ class BashOptFunc(Func):
 
     def _has_explicit_point(self) -> bool:
         """输入动作是否显式给了坐标（与 element 互斥）。"""
-        if self.op in ("click", "move", "scroll"):
-            return self.x is not None or self.y is not None
+        if self.op in ("click", "move", "hover", "scroll"):
+            return (self.x is not None or self.y is not None
+                    or self.dx is not None or self.dy is not None)
         if self.op == "drag":
             return self.from_x is not None or self.from_y is not None
         return False
@@ -1752,7 +2112,7 @@ class BashOptFunc(Func):
             return {}
         if self.op == "drag":
             return {"from_x": point[0], "from_y": point[1]}
-        if self.op in ("click", "move", "scroll"):
+        if self.op in ("click", "move", "hover", "scroll"):
             return {"x": point[0], "y": point[1]}
         return {}
 
@@ -1778,9 +2138,11 @@ class BashOptFunc(Func):
         )
         if not elements:
             raise ElementError(
-                "窗口内没有可枚举的控件（经典 Win32 控件可枚举；Chrome / "
-                "Electron / Qt / 游戏等自绘界面不暴露内部控件）——请改用 "
-                "op=screenshot 截图 + read_image 读图后用像素坐标操作"
+                "窗口内没有可枚举的控件（Windows 优先用 UI Automation 枚举，"
+                "Chrome / Electron / Qt / WPF / UWP 等自绘界面通常也能枚举到；"
+                "游戏 / 纯 OpenGL / 自绘 canvas 等仍可能不暴露内部元素）——"
+                "请改用 op=screenshot 截图 + read_image 读图后用像素坐标操作，"
+                "或用 op=locate 做图像 / 文字定位"
             )
         matched = match_window_element(elements, element)
         frame = await self._window_frame_for(pid, window)
@@ -1799,6 +2161,7 @@ class BashOptFunc(Func):
             "class": item.class_name,
             "text": item.text,
             "label": item.label,
+            "automation_id": item.automation_id,
             "type": item.control_type,
             "enabled": item.enabled,
             "visible": item.visible,
@@ -2361,6 +2724,8 @@ class BashOptFunc(Func):
                                "'main'（缺省主窗口）、'#N'（可操作窗口的 Z 序第 N 个，"
                                "取 windows[].z_index；如弹出的右键菜单 / 下拉浮层）、"
                                "'active'（前台窗口）、'title:子串'、'class:子串'、"
+                               "'title~:正则'、'class~:正则'、're:正则'、"
+                               "'process:进程名'、'fuzzy:关键词'、"
                                "'handle:0x…'、'popup'、'dialog'。"
                                "selectable=false 的窗口（visible=false 或已最小化）"
                                "不会被 'main' / '#N' / 'popup' / 'dialog' 选中，"
@@ -2580,6 +2945,8 @@ class BashOptFunc(Func):
             "x": self.x, "y": self.y,
             "to_x": self.to_x, "to_y": self.to_y,
             "from_x": self.from_x, "from_y": self.from_y,
+            "dx": self.dx, "dy": self.dy,
+            "dwell": self.dwell, "hold": self.hold, "interval": self.interval,
             "button": self.button, "count": self.count,
             "modifiers": self.modifiers, "key": self.key, "text": text,
             "direction": self.direction, "amount": self.amount,
@@ -2606,8 +2973,10 @@ class BashOptFunc(Func):
         共用同一套写法：``'#N'``（清单第 N 个）、``'text:子串'``、
         ``'class:子串'``、``'type:edit'`` 与中文标签（``'编辑框'`` / ``'按钮'``）。
 
-        经典 Win32 控件（按钮、编辑框、列表）能完整枚举；Chrome / Electron /
-        Qt / 游戏等自绘界面没有标准子窗口，结果会很少或为空（如实提示）。
+        Windows 优先走 **UI Automation**：Chrome / Electron / Qt / WPF / UWP
+        等自绘界面通常也能枚举到无障碍节点；UIA 不可用时回退经典 Win32 子窗口
+        枚举。仍枚举不到时（游戏 / 纯 OpenGL / 自绘 canvas）可改用 ``op=locate``
+        做图像 / 文字定位。
         """
         pid = rec.get("pid")
         if pid is None:
@@ -2636,10 +3005,11 @@ class BashOptFunc(Func):
                 "total": 0,
                 "matched": 0,
                 "elements": [],
-                "hint": ("未枚举到控件：该窗口可能没有标准子控件（Chrome / Electron / "
-                         "Qt / 游戏等自绘界面不暴露内部控件），或窗口尚未就绪。"
-                         "此时请回到「op=screenshot 截图 + read_image 读图 + 像素坐标"
-                         "操作」的方式，也可用 op=windows 确认窗口是否存在"),
+                "hint": ("未枚举到控件：该窗口可能不暴露无障碍 / 子控件节点"
+                         "（游戏 / 纯 OpenGL / 自绘界面 canvas），或窗口尚未就绪。"
+                         "此时可用 op=locate 做图像 / 文字定位，或回到"
+                         "「op=screenshot 截图 + read_image 读图 + 像素坐标操作」"
+                         "的方式；也可用 op=windows 确认窗口是否存在"),
             }
             return json.dumps(payload, ensure_ascii=False)
         filtered = (filter_elements(elements, self.element)
@@ -2672,7 +3042,8 @@ class BashOptFunc(Func):
                 payload["hint"] = (
                     f"element={self.element!r} 没有匹配的控件（本次共枚举到 "
                     f"{len(elements)} 个）。过滤支持 '#N'（清单第 N 个，从 1 开始）、"
-                    f"'text:子串'、'class:子串'、'type:edit' 与中文标签"
+                    f"'text:子串'、'id:子串'（自动化 ID）、'class:子串'、"
+                    f"'type:edit' 与中文标签"
                     f"（'编辑框' / '按钮' / '列表'）；也可不传 element 先看完整清单"
                 )
         return json.dumps(payload, ensure_ascii=False)
@@ -2701,6 +3072,216 @@ class BashOptFunc(Func):
         if value < 1:
             raise ValueError(f"max_elements 必须为正整数，当前: {value}")
         return min(value, self._MAX_ELEMENT_LIMIT)
+
+    # ── op=locate（图像 / 文字定位） ─────────────────────
+
+    async def _op_locate(self, rec: dict) -> str:
+        """在窗口截图里定位「局部图标」（模板匹配）或「文字」（OCR）。
+
+        适合没有可枚举控件的界面（游戏、canvas、图片按钮）：截一张当前窗口
+        画面，在其上查找：
+          - ``template``：模板图片路径 → 模板匹配，返回图标位置与置信度；
+          - ``query``（或 ``text``）：文字 → OCR 识别后查找，返回文字位置；
+        返回的 ``x`` / ``y`` / ``center_x`` / ``center_y`` 与输入 op 的坐标
+        同源（窗口截图坐标系），可直接交给 ``click`` / ``move``。
+
+        ``crop`` 可把搜索范围限制在窗口内某区域（减少误匹配 / 提速）；
+        ``tolerance``（模板匹配容差）、``max_results``、``min_scale`` /
+        ``max_scale`` / ``scale_steps``（模板多尺度搜索）可微调。
+        """
+        pid = rec.get("pid")
+        if pid is None:
+            return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
+                    f"无法做图像 / 文字定位。可用 op=wait 查看任务状态)")
+        template_raw = str(self.template).strip() if self.template is not None else ""
+        query = self.query if self.query is not None else self.text
+        query_provided = query is not None
+        query_raw = str(query).strip() if query_provided else ""
+        if not template_raw and not query_provided:
+            return ("(locate 需要 template（模板图片路径）或 query（要查找的文字）："
+                    "template='icon.png' 做图像匹配；query='保存' 做 OCR 文字定位。"
+                    "可先用 op=screenshot 截图确认画面)")
+        try:
+            tolerance = self._resolve_locate_tolerance()
+            max_results = self._resolve_max_results()
+            min_scale, max_scale, scale_steps = self._resolve_scale()
+            crop = self._resolve_crop()
+        except (ValueError, ImageMatchError, CropError) as exc:
+            return f"(locate 参数非法: {exc})"
+        path = await self._temp_screenshot(pid, self.window)
+        if path is None:
+            return ("(locate 失败: 无法截取窗口画面（窗口可能尚未就绪或已关闭）——"
+                    "可用 op=windows 确认窗口状态，或先 op=wait_window 等窗口出现)")
+        try:
+            if template_raw:
+                payload = await self._locate_template(
+                    template_raw, path, crop, tolerance, max_results,
+                    min_scale, max_scale, scale_steps)
+            else:
+                payload = await self._locate_text(
+                    query_raw, path, crop, max_results)
+        except (ImageMatchError, OcrError, ScreenshotError, OSError,
+                ValueError) as exc:
+            return f"(locate 失败: {exc})"
+        finally:
+            self._remove_temp(path)
+        frame = await self._window_frame_for(pid, self.window)
+        if frame is not None:
+            for item in payload["matches"]:
+                item["screen_x"] = item["x"] + frame.screen_x
+                item["screen_y"] = item["y"] + frame.screen_y
+                item["screen_center_x"] = item["center_x"] + frame.screen_x
+                item["screen_center_y"] = item["center_y"] + frame.screen_y
+            payload["frame"] = frame.to_dict()
+        payload.update({
+            "task_id": self.task_id,
+            "op": "locate",
+            "hint": ("matches 里的 x/y/center_x/center_y 与输入 op 坐标同源"
+                     "（窗口截图左上角为原点），可直接交给 click / move 的 x / y；"
+                     "screen_* 是换算后的屏幕坐标。找到多个时可用 score 或 text "
+                     "挑选；不确认时可 first 用 op=screenshot 复核"),
+        })
+        if self.window:
+            payload["window"] = str(self.window)
+        if crop is not None:
+            payload["crop"] = crop.to_dict()
+        return json.dumps(payload, ensure_ascii=False)
+
+    async def _locate_template(self, template_path: str, shot_path: str, crop,
+                               tolerance: int, max_results: int,
+                               min_scale: float, max_scale: float,
+                               scale_steps: int) -> dict:
+        """模板匹配：解码截图与模板，返回窗口坐标下的匹配列表。"""
+        expanded = os.path.expanduser(template_path)
+        if not os.path.isfile(expanded):
+            raise ImageMatchError(f"模板图片不存在: {template_path}")
+        image = await asyncio.to_thread(decode_png_file, shot_path)
+        template = await asyncio.to_thread(decode_png_file, expanded)
+        offset_x = offset_y = 0
+        if crop is not None:
+            image = self._crop_decoded(image, crop)
+            offset_x, offset_y = crop.x, crop.y
+        matches = await asyncio.to_thread(
+            lambda: match_template(
+                image, template, tolerance=tolerance, max_results=max_results,
+                min_scale=min_scale, max_scale=max_scale, scale_steps=scale_steps))
+        items = [self._locate_item(match.to_dict(), offset_x, offset_y)
+                 for match in matches]
+        return {
+            "mode": "template",
+            "template": template_path,
+            "template_size": {"width": template.width, "height": template.height},
+            "total": len(items),
+            "returned": len(items),
+            "matches": items,
+        }
+
+    async def _locate_text(self, query: str, shot_path: str, crop,
+                           max_results: int) -> dict:
+        """OCR 文字定位：识别截图文字并按查询过滤（支持跨词短语）。"""
+        boxes = await asyncio.to_thread(recognize_text, shot_path)
+        if crop is not None:
+            boxes = [box for box in boxes if _box_in_crop(box, crop)]
+        if query:
+            matched = await asyncio.to_thread(find_ocr_text, boxes, query)
+        else:
+            matched = list(boxes)
+        offset_x = crop.x if crop is not None else 0
+        offset_y = crop.y if crop is not None else 0
+        items = []
+        for box in matched[:max_results]:
+            payload = box.to_dict()
+            payload["x"] += offset_x
+            payload["y"] += offset_y
+            payload["center_x"] += offset_x
+            payload["center_y"] += offset_y
+            items.append(payload)
+        return {
+            "mode": "text",
+            "query": query,
+            "recognized": len(boxes),
+            "total": len(matched),
+            "returned": len(items),
+            "matches": items,
+        }
+
+    @staticmethod
+    def _locate_item(raw: dict, offset_x: int, offset_y: int) -> dict:
+        """把匹配结果平移到窗口坐标（叠加 crop 偏移）。"""
+        item = dict(raw)
+        for key in ("x", "center_x"):
+            item[key] = item[key] + offset_x
+        for key in ("y", "center_y"):
+            item[key] = item[key] + offset_y
+        return item
+
+    @staticmethod
+    def _crop_decoded(image: DecodedImage, crop) -> DecodedImage:
+        """按 crop 区域裁剪解码图像（越界抛 CropError）。"""
+        cropped = crop_rgb(image.rgb, image.width, image.height, crop)
+        return DecodedImage(crop.width, crop.height, cropped)
+
+    def _resolve_locate_tolerance(self) -> int:
+        """解析 locate 的模板匹配容差（缺省用图像匹配默认容差）。"""
+        if self.tolerance is None:
+            return self._LOCATE_TOLERANCE
+        return self._parse_tolerance(self.tolerance)
+
+    def _resolve_max_results(self) -> int:
+        """解析 locate 的返回条数上限。
+
+        Raises:
+            ValueError: 取值非法。
+        """
+        raw = self.max_results
+        if raw is None:
+            return DEFAULT_MAX_RESULTS
+        if isinstance(raw, bool):
+            raise ValueError("max_results 需要正整数")
+        try:
+            value = int(float(str(raw).strip()))
+        except (TypeError, ValueError):
+            raise ValueError(f"max_results 需要正整数，当前: {raw!r}") from None
+        if value < 1:
+            raise ValueError(f"max_results 必须为正整数，当前: {value}")
+        return min(value, self._MAX_LOCATE_RESULTS)
+
+    def _resolve_scale(self) -> tuple[float, float, int]:
+        """解析模板多尺度搜索参数（min_scale / max_scale / scale_steps）。"""
+        minimum = self._number_or(self.min_scale, 1.0, "min_scale")
+        maximum = self._number_or(self.max_scale, 1.0, "max_scale")
+        steps = self._int_or(self.scale_steps, 1, "scale_steps")
+        if minimum <= 0 or maximum <= 0:
+            raise ImageMatchError("min_scale / max_scale 必须为正数")
+        if minimum > maximum:
+            raise ImageMatchError(
+                f"min_scale（{minimum}）不能大于 max_scale（{maximum}）"
+            )
+        if steps < 1:
+            raise ImageMatchError("scale_steps 必须 >= 1")
+        return minimum, maximum, min(steps, self._MAX_LOCATE_SCALE_STEPS)
+
+    @staticmethod
+    def _number_or(raw, default: float, label: str) -> float:
+        if raw is None:
+            return default
+        if isinstance(raw, bool):
+            raise ImageMatchError(f"{label} 需要数值")
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            raise ImageMatchError(f"{label} 需要数值，当前: {raw!r}") from None
+
+    @classmethod
+    def _int_or(cls, raw, default: int, label: str) -> int:
+        if raw is None:
+            return default
+        if isinstance(raw, bool):
+            raise ImageMatchError(f"{label} 需要整数")
+        try:
+            return int(float(str(raw).strip()))
+        except (TypeError, ValueError):
+            raise ImageMatchError(f"{label} 需要整数，当前: {raw!r}") from None
 
     # ── op=wait_window（等待窗口出现） ───────────────────
 
@@ -3057,11 +3638,11 @@ class BashOptFunc(Func):
         return payload
 
     async def _sequence_screenshot(self, rec: dict, step: SequenceStep) -> dict:
-        """执行序列中的 screenshot 步骤（截图存盘）。"""
-        pid = rec.get("pid")
-        if pid is None:
-            raise ScreenshotError(
-                f"后台任务 {self.task_id} 尚无进程句柄，无法截图")
+        """执行序列中的 screenshot 步骤（截图存盘）。
+
+        支持与 ``op=screenshot`` 同名的增强参数：``screen``（整屏 / 多显示器）、
+        ``element`` / ``margin``（按控件区域截图）、``crop`` / ``grid``。
+        """
         path = str(step.params.get("path") or "").strip()
         try:
             target_path = self._prepare_screenshot_path(path)
@@ -3078,10 +3659,18 @@ class BashOptFunc(Func):
             grid = self._resolve_grid(step.params.get("grid"))
         except CropError as exc:
             raise ScreenshotError(f"截图网格参数非法: {exc}") from exc
-        result = await self._capture_with_retry(
-            pid, target_path, crop,
-            window=step.window or self.window, grid=grid)
-        return {"screenshot": result.to_dict()}
+        info = await self._screenshot_target(
+            rec, target_path=target_path, crop=crop, grid=grid,
+            window=step.window or self.window,
+            screen=step.params.get("screen"),
+            element=step.params.get("element"),
+            margin=step.params.get("margin"))
+        payload = {"screenshot": info["result"].to_dict()}
+        if info.get("element") is not None:
+            payload["element"] = info["element"]
+        if info.get("monitor") is not None:
+            payload["monitor"] = info["monitor"]
+        return payload
 
     def _resolve_on_error(self) -> str:
         """解析 ``on_error``（``stop`` 遇错停止 / ``continue`` 继续后续步骤）。"""

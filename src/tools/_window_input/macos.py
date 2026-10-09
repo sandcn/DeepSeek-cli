@@ -30,8 +30,10 @@ from dataclasses import dataclass
 from .._screenshot.macos import list_windows as list_platform_windows
 from .._screenshot.windows import DEFAULT_SELECTOR, pick_window
 from .action import (
+    DEFAULT_CLICK_INTERVAL,
     ClickAction,
     DragAction,
+    HoverAction,
     InputAction,
     KeyAction,
     MoveAction,
@@ -150,6 +152,8 @@ class MacOSInputBackend:
     def _dispatch(self, mouse, target: _MacTarget, action: InputAction) -> dict:
         if isinstance(action, MoveAction):
             return self._move(mouse, target, action)
+        if isinstance(action, HoverAction):
+            return self._hover(mouse, target, action)
         if isinstance(action, ClickAction):
             return self._click(mouse, target, action)
         if isinstance(action, DragAction):
@@ -163,20 +167,61 @@ class MacOSInputBackend:
         raise ActionError(f"macOS 后端不支持的动作: {action.name}")  # pragma: no cover
 
     def _move(self, mouse, target: _MacTarget, action: MoveAction) -> dict:
+        if action.is_relative:
+            reader = getattr(mouse, "cursor_position", None)
+            current = reader() if reader is not None else None
+            if current is None:
+                raise InputError(
+                    "当前 macOS 鼠标驱动无法读取光标位置，不能执行相对移动"
+                    "（move 的 dx/dy）；请改用绝对坐标 x/y"
+                )
+            screen = (current[0] + int(action.dx or 0),
+                      current[1] + int(action.dy or 0))
+            mouse.move(*screen)
+            return {"relative": True, "dx": int(action.dx or 0),
+                    "dy": int(action.dy or 0),
+                    "screen_x": screen[0], "screen_y": screen[1]}
         point = resolve_point(action.x, action.y, target.frame.width,
                               target.frame.height, label="移动坐标")
         screen = target.frame.to_screen(point)
         mouse.move(*screen)
         return _point_detail(point, screen)
 
+    def _hover(self, mouse, target: _MacTarget, action: HoverAction) -> dict:
+        """悬停：移动到目标点后在当前位置停留 ``dwell`` 秒。"""
+        point = resolve_point(action.x, action.y, target.frame.width,
+                              target.frame.height, label="悬停坐标")
+        screen = target.frame.to_screen(point)
+        mouse.move(*screen)
+        if action.dwell > 0:
+            time.sleep(action.dwell)
+        detail = _point_detail(point, screen)
+        detail.update({"hover": True, "dwell": action.dwell})
+        return detail
+
     def _click(self, mouse, target: _MacTarget, action: ClickAction) -> dict:
         point = resolve_point(action.x, action.y, target.frame.width,
                               target.frame.height, label="点击坐标")
         screen = target.frame.to_screen(point)
-        mouse.click(screen[0], screen[1], action.button, action.count,
-                    action.modifiers)
+        if action.hold > 0 or action.interval != DEFAULT_CLICK_INTERVAL:
+            clicker = getattr(mouse, "click_ex", None)
+            if clicker is None:
+                raise InputError(
+                    "当前 macOS 鼠标驱动不支持长按（hold）或自定义点击间隔"
+                    "（interval）；请安装 pyobjc（pip install pyobjc）或去掉"
+                    "这两个参数"
+                )
+            clicker(screen[0], screen[1], action.button, action.count,
+                    action.hold, action.interval, action.modifiers)
+        else:
+            mouse.click(screen[0], screen[1], action.button, action.count,
+                        action.modifiers)
         detail = _point_detail(point, screen)
         detail.update({"button": action.button, "count": action.count})
+        if action.hold > 0:
+            detail["hold"] = action.hold
+        if action.interval != DEFAULT_CLICK_INTERVAL:
+            detail["interval"] = action.interval
         return detail
 
     def _drag(self, mouse, target: _MacTarget, action: DragAction) -> dict:
@@ -298,6 +343,44 @@ class QuartzMouseDriver:
                 quartz, quartz.CGEventCreateMouseEvent(None, up, (x, y), mouse_button),
                 modifiers))
 
+    def click_ex(self, x: int, y: int, button: str, count: int, hold: float,
+                 interval: float, modifiers: tuple[str, ...]) -> None:
+        """带长按（hold）与自定义间隔（interval）的点击。"""
+        quartz = self._require()
+        down, up, _dragged, mouse_button = _QUARTZ_BUTTONS[button]
+        self._move(quartz, x, y, mouse_button)
+        for index in range(count):
+            if index and interval > 0:
+                time.sleep(interval)
+            self._post(quartz, self._flag_event(
+                quartz, quartz.CGEventCreateMouseEvent(None, down, (x, y), mouse_button),
+                modifiers))
+            if hold > 0:
+                time.sleep(hold)
+            self._post(quartz, self._flag_event(
+                quartz, quartz.CGEventCreateMouseEvent(None, up, (x, y), mouse_button),
+                modifiers))
+
+    def cursor_position(self) -> tuple[int, int] | None:
+        """读取当前鼠标位置（屏幕坐标；失败返回 None）。"""
+        quartz = self._module()
+        if quartz is None:
+            return None
+        event = None
+        try:
+            event = quartz.CGEventCreate(None)
+            point = quartz.CGEventGetLocation(event)
+        except Exception:  # pragma: no cover - 依赖 pyobjc
+            logger.debug("读取鼠标位置失败", exc_info=True)
+            return None
+        finally:
+            if event is not None:
+                try:
+                    quartz.CFRelease(event)
+                except Exception:  # pragma: no cover
+                    pass
+        return int(point.x), int(point.y)
+
     def drag(self, start: tuple[int, int], end: tuple[int, int],
              waypoints: list[tuple[int, int]], button: str, interval: float,
              modifiers: tuple[str, ...]) -> None:
@@ -401,6 +484,39 @@ class CliclickMouseDriver:
         actions += [f"{_CLICLICK_CLICK[button]}:{x},{y}"] * max(count, 1)
         actions += _cliclick_modifiers(modifiers, pressed=False)
         self._call(actions, "鼠标点击")
+
+    def click_ex(self, x: int, y: int, button: str, count: int, hold: float,
+                 interval: float, modifiers: tuple[str, ...]) -> None:
+        """带长按 / 自定义间隔的点击（cliclick 用 dd/du 组合实现长按）。"""
+        if button != "left":
+            raise InputError(
+                "cliclick 仅支持左键长按（hold）；请安装 pyobjc"
+                "（pip install pyobjc）以使用右键/中键长按"
+            )
+        actions = _cliclick_modifiers(modifiers, pressed=True)
+        for index in range(max(count, 1)):
+            if index and interval > 0:
+                actions.append(f"w:{int(interval * 1000)}")
+            actions.append(f"dd:{x},{y}")
+            if hold > 0:
+                actions.append(f"w:{int(hold * 1000)}")
+            actions.append(f"du:{x},{y}")
+        actions += _cliclick_modifiers(modifiers, pressed=False)
+        self._call(actions, "鼠标点击")
+
+    def cursor_position(self) -> tuple[int, int] | None:
+        """读取当前鼠标位置（``cliclick p`` 输出 ``x,y``；失败返回 None）。"""
+        completed = self._run([self._path, "p"])
+        if completed is None or completed.returncode != 0:
+            return None
+        text = (completed.stdout or "").strip().replace(" ", "")
+        parts = text.split(",")
+        if len(parts) != 2:
+            return None
+        try:
+            return int(parts[0]), int(parts[1])
+        except ValueError:
+            return None
 
     def drag(self, start: tuple[int, int], end: tuple[int, int],
              waypoints: list[tuple[int, int]], button: str, interval: float,

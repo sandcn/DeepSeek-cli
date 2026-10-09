@@ -28,8 +28,9 @@ from dataclasses import dataclass
 
 from . import png, proctree, transform
 from .grid import paint_grid_on_png_file
+from .monitors import Monitor
 from .result import CaptureResult, NoWindowError, ScreenshotError
-from .transform import CropRegion
+from .transform import CropError, CropRegion
 from .windows import (
     DEFAULT_SELECTOR,
     WindowControlRequest,
@@ -80,7 +81,19 @@ def to_window_info(window: _X11Window, order: int = 0) -> WindowInfo:
         left=window.x,
         top=window.y,
         order=order,
+        process_name=_process_name(window.pid),
     )
+
+
+def _process_name(pid: int) -> str:
+    """读取 Linux 进程名（``/proc/<pid>/comm``；不可用返回空串）。"""
+    if not isinstance(pid, int) or pid <= 0:
+        return ""
+    try:
+        with open(f"/proc/{pid}/comm", encoding="utf-8", errors="replace") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
 
 
 def window_id_int(window_id: str) -> int:
@@ -162,6 +175,67 @@ class X11Backend:
         windows = self._find_windows(pids)
         return mark_main([to_window_info(item, index)
                           for index, item in enumerate(windows)])
+
+    def list_monitors(self) -> list[Monitor]:
+        """用 xrandr 枚举显示器（不可用返回空列表）。"""
+        return list_monitors()
+
+    def capture_screen(self, monitor: Monitor, path: str,
+                       crop: CropRegion | None = None,
+                       grid: int | None = None) -> CaptureResult:
+        """截取整个屏幕（root）再按显示器区域裁剪。"""
+        self._grab_root(path)
+        try:
+            full_width, full_height = png.read_png_size(path)
+        except (OSError, ValueError):
+            full_width = full_height = 0
+        region = CropRegion(max(monitor.left, 0), max(monitor.top, 0),
+                            monitor.width, monitor.height)
+        if full_width and full_height and not region.is_full(full_width, full_height):
+            try:
+                transform.apply_crop_to_png_file(path, region)
+            except CropError as exc:
+                raise ScreenshotError(f"全屏截图裁剪失败: {exc}") from exc
+        width, height = png.read_png_size_or(path, (monitor.width, monitor.height))
+        origin_x, origin_y = monitor.left, monitor.top
+        if crop is not None:
+            width, height = transform.apply_crop_to_png_file(path, crop)
+            origin_x += crop.x
+            origin_y += crop.y
+        if grid is not None:
+            width, height, _step = paint_grid_on_png_file(path, int(grid))
+        return CaptureResult(
+            path=path, width=width, height=height, window_pid=0, window_title="",
+            backend=self.name, window_handle=0, windows_total=0,
+            window_selector="screen",
+            window_summary=(f"显示器 {monitor.width}x{monitor.height}"
+                            f"@({monitor.left},{monitor.top})"
+                            + ("[primary]" if monitor.primary else "")),
+            window_x=origin_x, window_y=origin_y,
+            window_rect={"x": monitor.left, "y": monitor.top,
+                         "width": monitor.width, "height": monitor.height},
+        )
+
+    @staticmethod
+    def _grab_root(path: str) -> None:
+        """抓取整个 root 窗口（虚拟桌面）。"""
+        import_bin = shutil.which("import")
+        if import_bin:
+            _run_checked([import_bin, "-window", "root", path], "ImageMagick import")
+            return
+        magick_bin = shutil.which("magick")
+        if magick_bin:
+            _run_checked([magick_bin, "import", "-window", "root", path],
+                         "ImageMagick magick import")
+            return
+        gnome = shutil.which("gnome-screenshot")
+        if gnome:
+            _run_checked([gnome, "-f", path], "gnome-screenshot")
+            return
+        raise ScreenshotError(
+            "当前会话无可用全屏截图工具：请安装 ImageMagick（import）或 "
+            "gnome-screenshot"
+        )
 
     def control(self, pid: int, request: WindowControlRequest) -> dict:
         """对被选窗口执行激活 / 最大化 / 最小化 / 还原 / 关闭 / 移动 / 缩放。"""
@@ -289,6 +363,31 @@ def _wmctrl_windows(pids: list[int]) -> list[_X11Window]:
             class_name=_window_class(window_id),
         ))
     return windows
+
+
+#: ``xrandr --listmonitors`` 每行的几何：``1920/344x1080/193+0+0``
+_MONITOR_GEOMETRY_RE = re.compile(
+    r"(\d+)/\d+x(\d+)/\d+\+(-?\d+)\+(-?\d+)")
+
+
+def list_monitors() -> list[Monitor]:
+    """用 ``xrandr --listmonitors`` 枚举显示器（不可用返回空列表）。"""
+    xrandr = shutil.which("xrandr")
+    if not xrandr:
+        return []
+    completed = _run([xrandr, "--listmonitors"], _SEARCH_TIMEOUT)
+    if completed is None or completed.returncode != 0:
+        return []
+    monitors: list[Monitor] = []
+    for line in completed.stdout.splitlines():
+        match = _MONITOR_GEOMETRY_RE.search(line)
+        if not match:
+            continue
+        width, height, x, y = (int(match.group(1)), int(match.group(2)),
+                               int(match.group(3)), int(match.group(4)))
+        monitors.append(Monitor(x, y, width, height,
+                                primary="*" in line.split(":", 1)[-1][:8]))
+    return monitors
 
 
 def _window_geometry(xdotool: str | None, window_id: str) -> tuple[int, int, int, int]:

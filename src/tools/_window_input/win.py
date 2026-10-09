@@ -49,8 +49,10 @@ from .._screenshot.win import (
 )
 from .._screenshot.windows import DEFAULT_SELECTOR, pick_window
 from .action import (
+    DEFAULT_CLICK_INTERVAL,
     ClickAction,
     DragAction,
+    HoverAction,
     InputAction,
     KeyAction,
     MoveAction,
@@ -235,6 +237,10 @@ class Win32Driver:
     def client_origin(self, handle) -> tuple[int, int] | None:
         return winapi.client_origin(handle)
 
+    def cursor_pos(self) -> tuple[int, int] | None:
+        """读取系统光标的屏幕坐标（供鼠标相对移动使用；失败返回 None）。"""
+        return winapi.cursor_pos()
+
     def topmost_at(self, screen_x: int, screen_y: int) -> int:
         """屏幕点下最顶层的窗口句柄（判断真实光标会落到哪个窗口）。
 
@@ -403,7 +409,8 @@ class WindowsInputBackend:
 
     #: 可用「真实光标」投递的动作：鼠标事件按屏幕坐标命中光标下的窗口，
     #: 不要求目标窗口是前台（光标处最顶层的窗口就会收到事件）。
-    _POINTER_ACTIONS = (ClickAction, MoveAction, DragAction, ScrollAction)
+    _POINTER_ACTIONS = (ClickAction, HoverAction, MoveAction, DragAction,
+                        ScrollAction)
 
     def _delivery_for(self, target: _TargetWindow, action: InputAction) -> str:
         if action.method == "message":
@@ -512,11 +519,21 @@ class WindowsInputBackend:
 
     def _pointer_point(self, frame: WindowFrame,
                        action: InputAction) -> Point | None:
-        """取动作的「落点」窗口内坐标（拖动取起点，其余取点击 / 移动点）。"""
+        """取动作的「落点」窗口内坐标（拖动取起点，其余取点击 / 移动点）。
+
+        相对移动（``move`` 的 dx/dy）没有窗口内坐标，改为按当前光标位置换算：
+        光标不在目标窗口内时返回 ``None``（此时不能靠真实光标命中目标）。
+        """
         if isinstance(action, DragAction):
             return resolve_point(action.from_x, action.from_y,
                                  frame.width, frame.height, label="拖动起点")
-        if isinstance(action, (ClickAction, MoveAction, ScrollAction)):
+        if isinstance(action, MoveAction) and action.is_relative:
+            reader = getattr(self._driver, "cursor_pos", None)
+            current = reader() if reader is not None else None
+            if current is None:
+                return None
+            return frame.to_local(current[0], current[1])
+        if isinstance(action, (ClickAction, HoverAction, MoveAction, ScrollAction)):
             return resolve_point(action.x, action.y,
                                  frame.width, frame.height, label="鼠标坐标")
         return None
@@ -527,6 +544,8 @@ class WindowsInputBackend:
         frame = target.frame
         if isinstance(action, ClickAction):
             return self._click_sendinput(frame, action)
+        if isinstance(action, HoverAction):
+            return self._hover_sendinput(frame, action)
         if isinstance(action, MoveAction):
             return self._move_sendinput(frame, action)
         if isinstance(action, DragAction):
@@ -542,11 +561,58 @@ class WindowsInputBackend:
         raise ActionError(f"Windows 后端不支持的动作: {action.name}")  # pragma: no cover
 
     def _move_sendinput(self, frame: WindowFrame, action: MoveAction) -> dict:
+        if action.is_relative:
+            screen = self._relative_screen_point(action)
+            with self._hold_modifiers(action.modifiers):
+                self._driver.move_to(*screen)
+            detail = self._relative_detail(action, screen)
+            return detail
         point = resolve_point(action.x, action.y, frame.width, frame.height,
                               label="移动坐标")
         screen = frame.to_screen(point)
-        self._driver.move_to(*screen)
+        with self._hold_modifiers(action.modifiers):
+            self._driver.move_to(*screen)
         return self._point_detail(point, screen)
+
+    def _hover_sendinput(self, frame: WindowFrame, action: HoverAction) -> dict:
+        """悬停：移动到目标点后保持 ``dwell`` 秒（期间按住 modifiers）。"""
+        point = resolve_point(action.x, action.y, frame.width, frame.height,
+                              label="悬停坐标")
+        screen = frame.to_screen(point)
+        with self._hold_modifiers(action.modifiers):
+            self._driver.move_to(*screen)
+            if action.dwell > 0:
+                self._driver.sleep(action.dwell)
+        detail = self._point_detail(point, screen)
+        detail.update({"hover": True, "dwell": action.dwell})
+        return detail
+
+    def _relative_screen_point(self, action: MoveAction) -> tuple[int, int]:
+        """相对移动的目标屏幕坐标 = 当前光标 + (dx, dy)。
+
+        Raises:
+            InputError: 无法读取当前光标位置（缺少 cursor_pos 或系统调用失败）。
+        """
+        current = None
+        reader = getattr(self._driver, "cursor_pos", None)
+        if reader is not None:
+            current = reader()
+        if current is None:
+            raise InputError(
+                "无法读取当前光标位置，不能执行相对移动（move 的 dx/dy）；"
+                "请改用绝对坐标 x/y（窗口内坐标，与 op=screenshot 产物一致）"
+            )
+        return current[0] + int(action.dx or 0), current[1] + int(action.dy or 0)
+
+    @staticmethod
+    def _relative_detail(action: MoveAction, screen: tuple[int, int]) -> dict:
+        return {
+            "relative": True,
+            "dx": int(action.dx or 0),
+            "dy": int(action.dy or 0),
+            "screen_x": screen[0],
+            "screen_y": screen[1],
+        }
 
     def _click_sendinput(self, frame: WindowFrame, action: ClickAction) -> dict:
         point = resolve_point(action.x, action.y, frame.width, frame.height,
@@ -556,12 +622,18 @@ class WindowsInputBackend:
         self._driver.move_to(*screen)
         with self._hold_modifiers(action.modifiers):
             for index in range(action.count):
-                if index:
-                    self._driver.sleep(_DOUBLE_CLICK_INTERVAL)
+                if index and action.interval > 0:
+                    self._driver.sleep(action.interval)
                 self._driver.mouse_event(down)
+                if action.hold > 0:
+                    self._driver.sleep(action.hold)
                 self._driver.mouse_event(up)
         detail = self._point_detail(point, screen)
         detail.update({"button": action.button, "count": action.count})
+        if action.hold > 0:
+            detail["hold"] = action.hold
+        if action.interval != DEFAULT_CLICK_INTERVAL:
+            detail["interval"] = action.interval
         return detail
 
     def _drag_sendinput(self, frame: WindowFrame, action: DragAction) -> dict:
@@ -750,6 +822,8 @@ class WindowsInputBackend:
     def _inject_message(self, target: _TargetWindow, action: InputAction) -> dict:
         if isinstance(action, ClickAction):
             return self._click_message(target, action)
+        if isinstance(action, HoverAction):
+            return self._hover_message(target, action)
         if isinstance(action, MoveAction):
             return self._move_message(target, action)
         if isinstance(action, DragAction):
@@ -792,6 +866,11 @@ class WindowsInputBackend:
             winapi.hwnd_value(target.handle), target.handle)
 
     def _move_message(self, target: _TargetWindow, action: MoveAction) -> dict:
+        if action.is_relative:
+            raise ActionError(
+                "method='message' 通道不支持相对移动（没有真实光标可参照）；"
+                "去掉 method 走合成输入（真实光标可用），或改用绝对坐标 x/y"
+            )
         point = resolve_point(action.x, action.y, target.frame.width,
                               target.frame.height, label="移动坐标")
         hit = self._message_point(target, point)
@@ -799,6 +878,24 @@ class WindowsInputBackend:
         detail = self._point_detail(point, (hit.screen_x, hit.screen_y))
         detail.update({"client_x": hit.client_x, "client_y": hit.client_y,
                        "target_handle": hit.handle})
+        return detail
+
+    def _hover_message(self, target: _TargetWindow, action: HoverAction) -> dict:
+        """消息投递路径的悬停：投递 WM_MOUSEMOVE 后等待 ``dwell`` 秒。
+
+        注意：PostMessage 不会产生真实的悬停停留（tooltip 依赖真实光标），
+        这里投递移动消息并等待，仅对处理 WM_MOUSEMOVE 的程序有效。
+        """
+        point = resolve_point(action.x, action.y, target.frame.width,
+                              target.frame.height, label="悬停坐标")
+        hit = self._message_point(target, point)
+        self._post_move(hit, 0)
+        if action.dwell > 0:
+            self._driver.sleep(action.dwell)
+        detail = self._point_detail(point, (hit.screen_x, hit.screen_y))
+        detail.update({"client_x": hit.client_x, "client_y": hit.client_y,
+                       "target_handle": hit.handle,
+                       "hover": True, "dwell": action.dwell})
         return detail
 
     def _client_coords(self, handle: int, screen_x: int,
@@ -819,11 +916,13 @@ class WindowsInputBackend:
         self._post_modifier_keys(hit.handle, action.modifiers, key_up=False)
         try:
             for index in range(action.count):
-                if index:
-                    self._driver.sleep(_DOUBLE_CLICK_INTERVAL)
+                if index and action.interval > 0:
+                    self._driver.sleep(action.interval)
                 self._driver.post(hit.handle,
                                   dbl_msg if index == 1 else down_msg,
                                   button_mask, lparam)
+                if action.hold > 0:
+                    self._driver.sleep(action.hold)
                 self._driver.post(hit.handle, up_msg, 0, lparam)
         finally:
             self._post_modifier_keys(hit.handle, action.modifiers, key_up=True)
@@ -831,6 +930,10 @@ class WindowsInputBackend:
         detail.update({"button": action.button, "count": action.count,
                        "client_x": hit.client_x, "client_y": hit.client_y,
                        "target_handle": hit.handle})
+        if action.hold > 0:
+            detail["hold"] = action.hold
+        if action.interval != DEFAULT_CLICK_INTERVAL:
+            detail["interval"] = action.interval
         return detail
 
     def _drag_message(self, target: _TargetWindow, action: DragAction) -> dict:

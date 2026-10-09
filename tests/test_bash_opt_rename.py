@@ -32,12 +32,12 @@ def test_tool_name_is_bash_opt():
     assert required == ["task_id", "op"]
     assert set(schema["function"]["parameters"]["properties"]["op"]["enum"]) == {
         "read", "wait", "kill", "stdin", "keys", "screenshot",
-        # 2026-10-07 新增：窗口输入注入（鼠标/键盘/文本/拖动）
-        "click", "move", "drag", "scroll", "key", "type",
-        # 2026-10-07 新增：窗口枚举与窗口控制（多窗口 GUI 操作）
+        # 窗口输入注入（鼠标/键盘/文本/拖动/悬停）
+        "click", "move", "hover", "drag", "scroll", "key", "type",
+        # 窗口枚举与窗口控制（多窗口 GUI 操作）
         "windows", "window",
-        # 2026-10-08 新增：控件清单 / 等待窗口 / 剪贴板 / 动作序列
-        "elements", "wait_window", "clipboard", "sequence",
+        # 控件清单 / 等待窗口 / 剪贴板 / 图像文字定位 / 动作序列
+        "elements", "wait_window", "clipboard", "locate", "sequence",
     }
 
 

@@ -29,8 +29,8 @@ from src.tools._window_input.result import ActionError
 
 # ── op 集合 ─────────────────────────────────────────────
 
-def test_input_ops_are_the_six_expected_actions():
-    assert set(INPUT_OPS) == {"click", "move", "drag", "scroll", "key", "type"}
+def test_input_ops_are_the_expected_actions():
+    assert set(INPUT_OPS) == {"click", "move", "hover", "drag", "scroll", "key", "type"}
 
 
 # ── click ───────────────────────────────────────────────

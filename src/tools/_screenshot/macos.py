@@ -25,6 +25,7 @@ from dataclasses import dataclass
 
 from . import png, proctree, transform
 from .grid import paint_grid_on_png_file
+from .monitors import Monitor
 from .result import CaptureResult, NoWindowError, ScreenshotError
 from .transform import CropRegion
 from .windows import (
@@ -81,6 +82,8 @@ def to_window_info(window: _MacWindow, order: int = 0) -> WindowInfo:
         visible=window.visible,
         foreground=window.foreground,
         order=order,
+        # macOS 没有 exe 名，用应用名（owner name，即 class_name）充当进程名
+        process_name=window.class_name,
     )
 
 
@@ -174,12 +177,70 @@ class MacOSBackend:
         """对被选窗口执行激活 / 最大化 / 最小化 / 还原 / 关闭 / 移动 / 缩放。"""
         return control_window(pid, request, runner=self._run)
 
+    def list_monitors(self) -> list[Monitor]:
+        """经 Quartz 枚举显示器（需 pyobjc；不可用返回空列表）。"""
+        return list_monitors()
+
+    def capture_screen(self, monitor: Monitor, path: str,
+                       crop: CropRegion | None = None,
+                       grid: int | None = None) -> CaptureResult:
+        """截取显示器区域（``screencapture -R``）。"""
+        screencapture = shutil.which("screencapture") or "/usr/sbin/screencapture"
+        _run_checked([
+            screencapture, "-x", "-R",
+            f"{monitor.left},{monitor.top},{monitor.width},{monitor.height}", path,
+        ])
+        width, height = png.read_png_size_or(path, (monitor.width, monitor.height))
+        origin_x, origin_y = monitor.left, monitor.top
+        if crop is not None:
+            width, height = transform.apply_crop_to_png_file(path, crop)
+            origin_x += crop.x
+            origin_y += crop.y
+        if grid is not None:
+            width, height, _step = paint_grid_on_png_file(path, int(grid))
+        return CaptureResult(
+            path=path, width=width, height=height, window_pid=0, window_title="",
+            backend=self.name, window_handle=0, windows_total=0,
+            window_selector="screen",
+            window_summary=(f"显示器 {monitor.width}x{monitor.height}"
+                            f"@({monitor.left},{monitor.top})"
+                            + ("[primary]" if monitor.primary else "")),
+            window_x=origin_x, window_y=origin_y,
+            window_rect={"x": monitor.left, "y": monitor.top,
+                         "width": monitor.width, "height": monitor.height},
+        )
+
 
 def select_macos_window(windows: list[_MacWindow]) -> _MacWindow | None:
     """选择最可能的窗口：有标题 > 面积大（纯函数，便于单测）。"""
     if not windows:
         return None
     return max(windows, key=lambda item: (bool(item.title.strip()), item.area))
+
+
+def list_monitors() -> list[Monitor]:
+    """经 Quartz 枚举活动显示器（需 pyobjc；不可用返回空列表）。"""
+    try:
+        import Quartz
+    except ImportError:
+        return []
+    try:
+        error, displays, count = Quartz.CGGetActiveDisplayList(32, None, None)
+    except Exception:  # pragma: no cover - 依赖 pyobjc
+        logger.debug("CGGetActiveDisplayList 失败", exc_info=True)
+        return []
+    if error:
+        return []
+    monitors: list[Monitor] = []
+    for index in range(int(count)):
+        display = displays[index]
+        rect = Quartz.CGDisplayBounds(display)
+        origin, size = rect.origin, rect.size
+        monitors.append(Monitor(
+            int(origin.x), int(origin.y), int(size.width), int(size.height),
+            bool(Quartz.CGDisplayIsMain(display)),
+        ))
+    return monitors
 
 
 def _quartz_windows(pids: list[int],

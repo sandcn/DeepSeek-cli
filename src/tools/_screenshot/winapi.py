@@ -128,6 +128,11 @@ SM_YVIRTUALSCREEN = 77
 SM_CXVIRTUALSCREEN = 78
 SM_CYVIRTUALSCREEN = 79
 
+#: 显示器标志：主显示器（``MONITORINFO.dwFlags``）
+MONITORINFOF_PRIMARY = 0x00000001
+#: ``GetSystemMetrics(SM_CMONITORS)``：显示器数量
+SM_CMONITORS = 80
+
 # 窗口消息（PostMessage 投递路径）
 WM_MOUSEMOVE = 0x0200
 WM_LBUTTONDOWN = 0x0201
@@ -379,6 +384,17 @@ class POINT(Structure):
     _fields_ = [("x", LONG), ("y", LONG)]
 
 
+class MONITORINFO(Structure):
+    """``MONITORINFO``（``GetMonitorInfoW`` 输出）。"""
+
+    _fields_ = [
+        ("cbSize", DWORD),
+        ("rcMonitor", RECT),
+        ("rcWork", RECT),
+        ("dwFlags", DWORD),
+    ]
+
+
 class MOUSEINPUT(Structure):
     _fields_ = [
         ("dx", LONG),
@@ -491,6 +507,8 @@ def user32():
     lib.GetWindowRect.restype = BOOL
     lib.GetWindowDC.argtypes = [HWND]
     lib.GetWindowDC.restype = HDC
+    lib.GetDC.argtypes = [HWND]
+    lib.GetDC.restype = HDC
     lib.ReleaseDC.argtypes = [HWND, HDC]
     lib.ReleaseDC.restype = c_int32
     lib.PrintWindow.argtypes = [HWND, HDC, UINT]
@@ -531,6 +549,16 @@ def user32():
     lib.GetClientRect.restype = BOOL
     lib.GetSystemMetrics.argtypes = [c_int32]
     lib.GetSystemMetrics.restype = c_int32
+    lib.GetCursorPos.argtypes = [POINTER(POINT)]
+    lib.GetCursorPos.restype = BOOL
+    # 显示器枚举（多显示器 / 全屏截取）
+    lib.EnumDisplayMonitors.argtypes = [
+        HDC, POINTER(RECT), CALLBACK(BOOL, HANDLE, HDC, POINTER(RECT), c_void_p),
+        c_void_p,
+    ]
+    lib.EnumDisplayMonitors.restype = BOOL
+    lib.GetMonitorInfoW.argtypes = [HANDLE, POINTER(MONITORINFO)]
+    lib.GetMonitorInfoW.restype = BOOL
     lib.WindowFromPoint.argtypes = [POINT]
     lib.WindowFromPoint.restype = HWND
     lib.VkKeyScanW.argtypes = [c_uint16]
@@ -993,6 +1021,55 @@ def virtual_screen_rect() -> tuple[int, int, int, int]:
     return left, top, width, height
 
 
+def list_monitors() -> list[dict]:
+    """枚举显示器（按系统顺序），每项 ``{left, top, width, height, primary}``。
+
+    供「多显示器 / 全屏截取」选取目标显示器；枚举失败返回空列表。
+    """
+    if not is_windows_platform():  # pragma: no cover - 平台守卫
+        return []
+    user = user32()
+    collectors: list[dict] = []
+    callback_type = CALLBACK(BOOL, HANDLE, HDC, POINTER(RECT), c_void_p)
+
+    def _cb(hmonitor, _hdc, _rect, _data):
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if user.GetMonitorInfoW(hmonitor, byref(info)):
+            region = info.rcMonitor
+            collectors.append({
+                "left": int(region.left),
+                "top": int(region.top),
+                "width": int(region.right - region.left),
+                "height": int(region.bottom - region.top),
+                "primary": bool(info.dwFlags & MONITORINFOF_PRIMARY),
+            })
+        return 1
+
+    ref = callback_type(_cb)  # 保持引用，防止回调被 GC
+    try:
+        user.EnumDisplayMonitors(None, None, ref, None)
+    except OSError:  # pragma: no cover - 依赖系统调用
+        return []
+    return collectors
+
+
+def screen_dc() -> int:
+    """获取整个屏幕的设备上下文（``GetDC(NULL)``；失败返回 0）。"""
+    try:
+        return int(user32().GetDC(None) or 0)
+    except OSError:  # pragma: no cover - 依赖系统调用
+        return 0
+
+
+def release_dc(dc) -> None:
+    """释放 ``GetDC`` 取得的设备上下文（``ReleaseDC(NULL, dc)``）。"""
+    try:
+        user32().ReleaseDC(None, dc)
+    except OSError:  # pragma: no cover - 依赖系统调用
+        pass
+
+
 def normalize_absolute(x: int, y: int) -> tuple[int, int]:
     """把屏幕像素坐标换算为 ``MOUSEEVENTF_ABSOLUTE`` 要求的 0..65535 归一化值。"""
     left, top, width, height = virtual_screen_rect()
@@ -1002,6 +1079,21 @@ def normalize_absolute(x: int, y: int) -> tuple[int, int]:
     ny = round((int(y) - top) * 65535 / (height - 1))
     clamp = lambda value: min(65535, max(0, value))  # noqa: E731
     return clamp(nx), clamp(ny)
+
+
+def cursor_pos() -> tuple[int, int] | None:
+    """读取系统光标的屏幕坐标（失败返回 None）。
+
+    供鼠标**相对移动**（``move`` 的 ``dx`` / ``dy``）以当前光标位置为基准
+    平移；读取失败时调用方应回退为「不支持相对移动」的可读错误。
+    """
+    try:
+        point = POINT()
+        if not user32().GetCursorPos(byref(point)):
+            return None
+    except OSError:  # pragma: no cover - 依赖系统调用
+        return None
+    return int(point.x), int(point.y)
 
 
 def client_origin(hwnd) -> tuple[int, int] | None:

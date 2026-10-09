@@ -58,8 +58,8 @@ def test_schema_exposes_screenshot_op_and_path():
     assert set(params["properties"]["op"]["enum"]) == {
         "read", "wait", "kill", "stdin", "keys", "screenshot",
         "windows", "window",
-        "elements", "wait_window", "clipboard", "sequence",
-        "click", "move", "drag", "scroll", "key", "type",
+        "elements", "wait_window", "clipboard", "locate", "sequence",
+        "click", "move", "hover", "drag", "scroll", "key", "type",
     }
     assert "path" in params["properties"]
     assert "PNG" in params["properties"]["path"]["description"]

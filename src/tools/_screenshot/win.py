@@ -36,6 +36,7 @@ import time
 from . import grid as grid_module
 from . import png, proctree, transform, winapi
 from .elements import ElementInfo
+from .monitors import Monitor
 from .result import CaptureResult, NoWindowError, ScreenshotError
 from .transform import CropError, CropRegion
 from .windows import (
@@ -175,6 +176,46 @@ class WindowsBackend:
         """枚举该进程树的全部可操作窗口（``op=windows`` 数据源）。"""
         return list_windows(pid)
 
+    def list_monitors(self) -> list[Monitor]:
+        """枚举显示器（多显示器 / 全屏截取用）。"""
+        return [Monitor(**item) for item in winapi.list_monitors()]
+
+    def capture_screen(self, monitor: Monitor, path: str,
+                       crop: CropRegion | None = None,
+                       grid: int | None = None) -> CaptureResult:
+        """截取整个显示器区域（多显示器 / 全屏）到 ``path``。"""
+        winapi.ensure_process_dpi_aware()
+        bgra, width, height = capture_screen_pixels(monitor)
+        origin_x, origin_y = monitor.left, monitor.top
+        if crop is not None:
+            bgra = transform.crop_bgra(bgra, width, height, crop)
+            width, height = crop.width, crop.height
+            origin_x += crop.x
+            origin_y += crop.y
+        if grid is not None:
+            bgra = grid_module.draw_grid_bgra(bgra, width, height, int(grid))
+        data = png.encode_png_bgra(width, height, bgra)
+        with open(path, "wb") as handle:
+            handle.write(data)
+        return CaptureResult(
+            path=path,
+            width=width,
+            height=height,
+            window_pid=0,
+            window_title="",
+            backend=self.name,
+            window_handle=0,
+            windows_total=0,
+            window_selector="screen",
+            window_summary=(f"显示器 {monitor.width}x{monitor.height}"
+                            f"@({monitor.left},{monitor.top})"
+                            + ("[primary]" if monitor.primary else "")),
+            window_x=origin_x,
+            window_y=origin_y,
+            window_rect={"x": monitor.left, "y": monitor.top,
+                         "width": monitor.width, "height": monitor.height},
+        )
+
     def list_elements(self, pid: int, window: str | None = None) -> list[ElementInfo]:
         """枚举被选窗口内的控件（``op=elements`` 数据源）。"""
         return list_elements(pid, window)
@@ -237,6 +278,7 @@ def enumerate_window_infos(window_pids: set[int]) -> list[WindowInfo]:
     作为 ``order``；这样 ``#1`` 这类选择器能命中刚弹出的菜单 / 下拉浮层。
     """
     user = winapi.user32()
+    process_names = _process_name_map()
     infos: list[WindowInfo] = []
     for order, hwnd in enumerate(winapi.enum_children_windows()):
         window_pid = winapi.window_pid(hwnd)
@@ -270,8 +312,19 @@ def enumerate_window_infos(window_pids: set[int]) -> list[WindowInfo]:
             foreground=winapi.is_foreground(hwnd),
             order=order,
             client_area=winapi.window_client_area(hwnd),
+            process_name=process_names.get(window_pid, ""),
         ))
     return mark_main(infos)
+
+
+def _process_name_map() -> dict[int, str]:
+    """读取 ``{pid: exe 名}`` 映射（供 ``process:`` 选择器与展示；失败返回空表）。"""
+    try:
+        processes = winapi.list_processes()
+    except OSError as exc:  # pragma: no cover - 依赖系统调用
+        logger.debug("读取进程名失败: %s", exc)
+        return {}
+    return {pid: name for pid, _ppid, name in processes}
 
 
 def enumerate_candidates(window_pids: set[int]) -> list[WindowInfo]:
@@ -313,9 +366,38 @@ def list_elements(pid: int, window: str | None = None) -> list[ElementInfo]:
 def list_child_elements(target: WindowInfo) -> list[ElementInfo]:
     """枚举 ``target`` 窗口内的控件并转为统一描述（按位置排序）。
 
+    优先走 **UI Automation**（``_screenshot/uia.py``）：UIA 能看到 Chrome /
+    Electron / Qt / WPF / UWP 等自绘界面暴露的无障碍节点，远胜「只认标准
+    子窗口」的 ``EnumChildWindows``。UIA 不可用（非 Windows、COM 创建失败）
+    或未枚举到任何元素时，回退 ``EnumChildWindows``（经典 Win32 控件稳）。
+
     坐标为**屏幕像素**；工具层再用输入后端的窗口 frame 换算成窗口内坐标，
     保证与 ``op=screenshot`` 产物、输入坐标一一对应。
     """
+    elements = _list_elements_via_uia(target.handle)
+    if elements:
+        elements.sort(key=lambda item: (item.top, item.left))
+        return elements
+    return _list_elements_via_win32(target)
+
+
+def _list_elements_via_uia(hwnd: int) -> list[ElementInfo]:
+    """用 UI Automation 枚举控件（不可用 / 失败返回空列表）。"""
+    try:
+        from . import uia
+    except ImportError:  # pragma: no cover - 模块随包发布
+        return []
+    if not uia.available():
+        return []
+    try:
+        return list(uia.enumerate_elements(winapi.hwnd_value(hwnd)))
+    except Exception as exc:  # noqa: BLE001 - 任何失败都回退经典枚举
+        logger.debug("UIA 枚举失败，回退 EnumChildWindows: %s", exc)
+        return []
+
+
+def _list_elements_via_win32(target: WindowInfo) -> list[ElementInfo]:
+    """经典 Win32 子窗口枚举（UIA 不可用时的回退）。"""
     elements: list[ElementInfo] = []
     for hwnd in winapi.enum_child_windows(target.handle):
         left, top, right, bottom = winapi.window_rect(hwnd)
@@ -334,6 +416,7 @@ def list_child_elements(target: WindowInfo) -> list[ElementInfo]:
             enabled=winapi.is_window_enabled(hwnd),
             visible=winapi.is_window_visible(hwnd),
             depth=winapi.window_depth(hwnd, target.handle),
+            source="win32",
         ))
     elements.sort(key=lambda item: (item.top, item.left))
     return elements
@@ -517,6 +600,62 @@ def capture_window_pixels(candidate: WindowCandidate) -> tuple[bytes, int, int]:
     )
 
 
+def capture_screen_pixels(monitor: Monitor) -> tuple[bytes, int, int]:
+    """从屏幕 DC 拷贝显示器区域像素，返回 ``(BGRA 字节, 宽, 高)``。
+
+    多显示器下虚拟桌面坐标可为负；``BitBlt`` 源坐标直接用屏幕坐标
+    （``monitor.left`` / ``monitor.top``），因此负坐标同样正确。
+
+    Raises:
+        ScreenshotError: 显示器尺寸非法、取屏幕 DC 失败或 BitBlt 失败。
+    """
+    width, height = int(monitor.width), int(monitor.height)
+    if width <= 0 or height <= 0:
+        raise ScreenshotError(f"显示器尺寸非法: {width}x{height}")
+    gdi = winapi.gdi32()
+    source_dc = winapi.screen_dc()
+    if not source_dc:
+        raise ScreenshotError("获取屏幕设备上下文失败（无法全屏截取）")
+    memory_dc = None
+    bitmap = None
+    previous = None
+    try:
+        memory_dc = gdi.CreateCompatibleDC(source_dc)
+        if not memory_dc:
+            raise ScreenshotError("创建内存 DC 失败（无法全屏截取）")
+        info = winapi.BITMAPINFO()
+        header = info.bmiHeader
+        header.biSize = ctypes.sizeof(winapi.BITMAPINFOHEADER)
+        header.biWidth = width
+        header.biHeight = -height
+        header.biPlanes = 1
+        header.biBitCount = 32
+        header.biCompression = 0  # BI_RGB
+        bits = ctypes.c_void_p()
+        bitmap = gdi.CreateDIBSection(
+            source_dc, ctypes.byref(info), winapi.DIB_RGB_COLORS,
+            ctypes.byref(bits), None, 0,
+        )
+        if not bitmap or not bits:
+            raise ScreenshotError("创建位图失败（无法全屏截取）")
+        previous = gdi.SelectObject(memory_dc, bitmap)
+        ok = gdi.BitBlt(memory_dc, 0, 0, width, height, source_dc,
+                        int(monitor.left), int(monitor.top), winapi.SRCCOPY)
+        if not ok:
+            raise ScreenshotError(
+                f"屏幕像素拷贝失败（区域 {width}x{height}@({monitor.left},{monitor.top})）"
+            )
+        return ctypes.string_at(bits, width * height * 4), width, height
+    finally:
+        if memory_dc and previous:
+            gdi.SelectObject(memory_dc, previous)
+        if bitmap:
+            gdi.DeleteObject(bitmap)
+        if memory_dc:
+            gdi.DeleteDC(memory_dc)
+        winapi.release_dc(source_dc)
+
+
 def _capture_window(hwnd: int, width: int, height: int, *, mode: str) -> bytes | None:
     """按指定方式把窗口渲染进内存 DIB 并返回 BGRA 数据（失败返回 None）。"""
     user = winapi.user32()
@@ -571,6 +710,7 @@ __all__ = [
     "SHELL_WINDOW_CLASSES",
     "WindowCandidate",
     "WindowsBackend",
+    "capture_screen_pixels",
     "capture_window_pixels",
     "control_window",
     "enumerate_candidates",
