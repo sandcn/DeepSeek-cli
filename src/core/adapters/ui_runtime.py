@@ -110,11 +110,6 @@ def get_search_view_state_cls():
     return _state_cls("SearchViewState")
 
 
-def get_outline_view_state_cls():
-    """返回 OutlineViewState 数据类（消息大纲导航）。"""
-    return _state_cls("OutlineViewState")
-
-
 def get_keymap_view_state_cls():
     """返回 KeymapViewState 数据类（键位自定义编辑器）。"""
     return _state_cls("KeymapViewState")
@@ -271,7 +266,6 @@ __all__ = [
     "get_mcp_view_state_cls",
     "get_usage_view_state_cls",
     "get_search_view_state_cls",
-    "get_outline_view_state_cls",
     "get_keymap_view_state_cls",
     "get_notify_view_state_cls",
     "get_export_view_state_cls",

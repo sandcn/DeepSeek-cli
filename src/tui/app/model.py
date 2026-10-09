@@ -57,7 +57,6 @@ from src.tui.app._state_types import (
     McpViewState,
     UsageViewState,
     SearchViewState,
-    OutlineViewState,
     KeymapViewState,
     NotifyViewState,
     ExportViewState,
@@ -165,7 +164,7 @@ class AppModel(_ToolOutputMixin):
         # ModelViewState，组件见 app/model_view.py。）
         self.model_view: ModelViewState = ModelViewState()
         # ── 2026-10 新增全屏视图状态（sessions/changes/theme/skill/mcp/
-        #    usage/search/outline/keymap/notify/export）——各视图状态类型见
+        #    usage/search/keymap/notify/export）——各视图状态类型见
         #    _state_types.py，组件见 app/<name>_view.py，命令线程经通用
         #    opener（core/commands/_view_opener.py）打开并轮询 done 清理。 ──
         self.sessions_view: SessionsViewState = SessionsViewState()
@@ -175,7 +174,6 @@ class AppModel(_ToolOutputMixin):
         self.mcp_view: McpViewState = McpViewState()
         self.usage_view: UsageViewState = UsageViewState()
         self.search_view: SearchViewState = SearchViewState()
-        self.outline_view: OutlineViewState = OutlineViewState()
         self.keymap_view: KeymapViewState = KeymapViewState()
         self.notify_view: NotifyViewState = NotifyViewState()
         self.export_view: ExportViewState = ExportViewState()
@@ -1185,7 +1183,6 @@ class AppModel(_ToolOutputMixin):
             ("mcp_view", McpViewState),
             ("usage_view", UsageViewState),
             ("search_view", SearchViewState),
-            ("outline_view", OutlineViewState),
             ("keymap_view", KeymapViewState),
             ("notify_view", NotifyViewState),
             ("export_view", ExportViewState),

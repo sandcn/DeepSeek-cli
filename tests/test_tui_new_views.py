@@ -1,4 +1,4 @@
-"""新增全屏视图批次（sessions/changes/theme/skill/mcp/usage/search/outline/
+"""新增全屏视图批次（sessions/changes/theme/skill/mcp/usage/search/
 keymap/notify/export）单元测试。
 
 覆盖视图注册、状态基类语义、纯函数逻辑与命令辅助（不依赖真实 ChatUI）。
@@ -28,7 +28,7 @@ def test_new_views_registered():
     ids = active_view_ids()
     for view_id in (
         "sessions", "changes", "theme", "skill", "mcp", "usage",
-        "search", "outline", "keymap", "notify", "export",
+        "search", "keymap", "notify", "export",
     ):
         assert view_id in ids
         assert view_id in fullscreen_views(), view_id
@@ -39,7 +39,7 @@ def test_manifest_declares_new_ui_views():
 
     ids = {e["config"]["id"] for e in UI_VIEW_ENTRIES}
     for view_id in ("sessions", "changes", "theme", "skill", "mcp",
-                    "usage", "search", "outline", "keymap", "notify", "export"):
+                    "usage", "search", "keymap", "notify", "export"):
         assert view_id in ids
 
 
@@ -59,13 +59,13 @@ def test_list_view_state_final_first_write_wins():
 def test_view_states_inherit_base():
     from src.tui.app._state_types import (
         ChangesViewState, ExportViewState, KeymapViewState, ListViewState,
-        McpViewState, NotifyViewState, OutlineViewState, SearchViewState,
+        McpViewState, NotifyViewState, SearchViewState,
         SessionsViewState, SkillViewState, ThemeViewState, UsageViewState,
     )
 
     for cls in (
         SessionsViewState, ChangesViewState, ThemeViewState, SkillViewState,
-        McpViewState, UsageViewState, SearchViewState, OutlineViewState,
+        McpViewState, UsageViewState, SearchViewState,
         KeymapViewState, NotifyViewState, ExportViewState,
     ):
         assert issubclass(cls, ListViewState)
@@ -78,7 +78,7 @@ def test_model_has_new_view_states():
     model = AppModel()
     for attr in (
         "sessions_view", "changes_view", "theme_view", "skill_view",
-        "mcp_view", "usage_view", "search_view", "outline_view",
+        "mcp_view", "usage_view", "search_view",
         "keymap_view", "notify_view", "export_view",
     ):
         assert isinstance(getattr(model, attr), ListViewState), attr
@@ -240,22 +240,6 @@ def test_search_messages():
     assert search_messages(messages, "") == []
 
 
-# ── outline ───────────────────────────────────────────
-
-def test_build_outline_entries():
-    from src.core.commands._outline_cmd import _build_outline_entries
-
-    ctx = types.SimpleNamespace(messages=[
-        {"role": "system", "content": "sys"},
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "ok",
-         "tool_calls": [{"function": {"name": "bash", "arguments": "{}"}}]},
-    ])
-    entries = _build_outline_entries(ctx)
-    assert [e["role"] for e in entries] == ["user", "assistant"]
-    assert entries[1]["tools"] == ["bash"]
-
-
 # ── export ────────────────────────────────────────────
 
 def test_export_resolve_path(tmp_path, monkeypatch):
@@ -334,9 +318,6 @@ def _case_state():
             search_pattern="hello", results=[
                 {"msg_index": 0, "role": "user", "snippet": "hello"}],
         ), "search_view", "对话内搜索", "hello"),
-        ("outline_view", st.OutlineViewState(visible=True, seq=1, entries=[
-            {"index": 0, "role": "user", "summary": "hi", "text": "hi", "tools": []},
-        ]), "outline_view", "消息大纲", "hi"),
         ("keymap_view", st.KeymapViewState(visible=True, seq=1, entries=[
             {"id": "ctrl_g", "key": "\x07", "combo": "ctrl+g", "default_combo": "ctrl+g",
              "action": "vim", "description": "打开 vim"},
@@ -356,7 +337,6 @@ def test_all_new_views_render_visible():
     from src.tui.app.mcp_view import McpView
     from src.tui.app.model import AppModel
     from src.tui.app.notify_view import NotifyView
-    from src.tui.app.outline_view import OutlineView
     from src.tui.app.search_view import SearchView
     from src.tui.app.sessions_view import SessionsView
     from src.tui.app.skill_view import SkillView
@@ -367,7 +347,7 @@ def test_all_new_views_render_visible():
         "sessions_view": SessionsView, "changes_view": ChangesView,
         "theme_view": ThemeView, "skill_view": SkillView, "mcp_view": McpView,
         "usage_view": UsageView, "search_view": SearchView,
-        "outline_view": OutlineView, "keymap_view": KeymapView,
+        "keymap_view": KeymapView,
         "notify_view": NotifyView, "export_view": ExportView,
     }
     for attr, state, _a, need_title, need_content in _case_state():
@@ -385,3 +365,26 @@ def test_all_new_views_invisible_render_empty():
     model = AppModel()  # sessions_view 默认不可见
     out = _render_view(SessionsView, model)
     assert "会话浏览器" not in out
+
+
+# ── /outline 移除回归 ─────────────────────────────────
+
+def test_outline_feature_removed():
+    """/outline 功能已彻底移除（命令 / 视图 / 状态 / 桥接 / 清单条目）。"""
+    import importlib.util
+
+    import src.tui.app._state_types as st
+    from src.core.adapters import ui_runtime
+    from src.plugins.manifest import COMMAND_PLUGIN_ENTRIES, UI_VIEW_ENTRIES
+    from src.tui.app.model import AppModel
+    from src.tui.app.view_registry import active_view_ids, fullscreen_views
+
+    assert "outline" not in active_view_ids()
+    assert "outline" not in fullscreen_views()
+    assert not hasattr(st, "OutlineViewState")
+    assert not hasattr(AppModel(), "outline_view")
+    assert not hasattr(ui_runtime, "get_outline_view_state_cls")
+    assert "outline" not in {e["config"]["id"] for e in UI_VIEW_ENTRIES}
+    assert "outline" not in {e["config"]["name"] for e in COMMAND_PLUGIN_ENTRIES}
+    assert importlib.util.find_spec("src.core.commands._outline_cmd") is None
+    assert importlib.util.find_spec("src.tui.app.outline_view") is None

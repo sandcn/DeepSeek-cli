@@ -3,7 +3,7 @@
 背景：``/config``、``/plugin``、``/models`` 三个命令此前各自复刻「构建视图状态
 → 设置 ``model.<state>`` → ``model.fullscreen = <id>`` → ``request_bottom_redraw``
 → 轮询 ``state.done`` → finally 清理」模板（逐行等价、字段名不同）。新增多个
-全屏视图（sessions / changes / theme / skill / mcp / usage / search / outline /
+全屏视图（sessions / changes / theme / skill / mcp / usage / search /
 keymap / notify / export）后集中收敛为本模块，避免多份模板漂移。
 
 协议（与既有 `_open_config_ui` / `_open_plugin_ui` / `_open_model_view` 同构）：

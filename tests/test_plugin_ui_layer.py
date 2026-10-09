@@ -75,7 +75,7 @@ async def test_default_profile_registers_all(cli_kernel):
         "user_select", "editmsg",
         # 2026-10 新增全屏视图批次
         "sessions", "changes", "theme", "skill", "mcp", "usage",
-        "search", "outline", "keymap", "notify", "export",
+        "search", "keymap", "notify", "export",
         # 2026-10 会话日志 / 投影浏览器
         "logs",
     }

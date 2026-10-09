@@ -103,8 +103,6 @@ _BUILTIN_SPECS: tuple = (
              description="用量仪表盘（token / 上下文 / 费用统计）"),
     ViewSpec("search", "fullscreen", "src.tui.app.search_view.SearchView",
              description="对话内全文搜索（命中跳转）"),
-    ViewSpec("outline", "fullscreen", "src.tui.app.outline_view.OutlineView",
-             description="消息大纲导航（节点跳转）"),
     ViewSpec("keymap", "fullscreen", "src.tui.app.keymap_view.KeymapView",
              description="键位自定义编辑器（查看 / 改键）"),
     ViewSpec("notify", "fullscreen", "src.tui.app.notify_view.NotifyView",

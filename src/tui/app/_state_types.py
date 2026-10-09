@@ -35,7 +35,6 @@ __all__ = [
     "McpViewState",
     "UsageViewState",
     "SearchViewState",
-    "OutlineViewState",
     "KeymapViewState",
     "NotifyViewState",
     "ExportViewState",
@@ -645,7 +644,7 @@ class HistorySearchState:
 # 2026-10 新增全屏视图状态（通用基类 + 各视图子类）
 # ═══════════════════════════════════════════════════════════
 #
-# 新增的一批全屏视图（sessions/changes/theme/skill/mcp/usage/search/outline/
+# 新增的一批全屏视图（sessions/changes/theme/skill/mcp/usage/search/
 # keymap/notify/export）共享同一套「列表 + 详情 + 搜索 + 帮助 + 终态」交互
 # 骨架，其**与具体数据无关**的字段（导航/搜索/帮助/终态）收敛到
 # ``ListViewState`` 基类（通用渲染与输入逻辑只读写基类字段）；各视图子类只
@@ -854,21 +853,6 @@ class SearchViewState(ListViewState):
 
     messages: list = field(default_factory=list)
     results: list = field(default_factory=list)
-    jump_seq: int = 0
-    jump_target: Any = None
-
-
-@dataclass
-class OutlineViewState(ListViewState):
-    """消息大纲/导航视图状态（/outline 打开，OutlineView 消费）。
-
-    Attributes:
-        entries: 大纲节点列表（kind/index/role/summary/tools）。
-        jump_seq: 跳转计数（组件递增，命令线程比对）。
-        jump_target: 待跳转的消息索引（组件写，命令线程读取）。
-    """
-
-    entries: list = field(default_factory=list)
     jump_seq: int = 0
     jump_target: Any = None
 

@@ -50,7 +50,7 @@ def test_pane_divider_min_one_row_and_bad_input():
     assert renderToString(pane_divider("bad", None), {"columns": 10}).split("\n") == ["\u2502"]
 
 
-_TWO_PANE_VIEWS = "sessions changes theme skill mcp search outline keymap notify".split()
+_TWO_PANE_VIEWS = "sessions changes theme skill mcp search keymap notify".split()
 
 
 def _view_classes():
@@ -58,7 +58,6 @@ def _view_classes():
     from src.tui.app.keymap_view import KeymapView
     from src.tui.app.mcp_view import McpView
     from src.tui.app.notify_view import NotifyView
-    from src.tui.app.outline_view import OutlineView
     from src.tui.app.search_view import SearchView
     from src.tui.app.sessions_view import SessionsView
     from src.tui.app.skill_view import SkillView
@@ -67,7 +66,7 @@ def _view_classes():
     return {
         "sessions": SessionsView, "changes": ChangesView, "theme": ThemeView,
         "skill": SkillView, "mcp": McpView, "search": SearchView,
-        "outline": OutlineView, "keymap": KeymapView, "notify": NotifyView,
+        "keymap": KeymapView, "notify": NotifyView,
     }
 
 

@@ -1,7 +1,7 @@
 """_view_common — 新增全屏视图共享的状态基类与纯函数工具。
 
 本模块为 2026-10 新增的一批全屏视图（sessions / changes / theme / skill /
-mcp / usage / search / outline / keymap / notify / export）提供**与具体数据
+mcp / usage / search / keymap / notify / export）提供**与具体数据
 无关**的通用骨架：
 
   - :class:`ListViewState`：通用视图状态基类（Layer 0，定义于
