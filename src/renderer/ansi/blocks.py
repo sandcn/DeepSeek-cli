@@ -256,7 +256,10 @@ def render_list_item(token) -> list[AnsiLine]:
             checkbox = "[ ]"
             cstyle = _STYLE_TODO_UNCHECKED
         line.append(checkbox + " ", cstyle)
-        content = stripped[4:].lstrip() if len(stripped) > 4 else ""
+        # ★ GFM：``[x]`` 后须为空白/行尾（``_parse_list_item_checkbox`` 已保证），
+        #   故安全跳过 3 字符标记 + 其后空白——修复前固定跳过 4 个字符，
+        #   ``- [x]done`` 会吞掉正文首字符。
+        content = stripped[3:].lstrip()
     # 列表项内的 ATX 标题（``- # 标题``）：内容按标题样式渲染，去掉 ``#``
     heading = _parse_list_heading(content)
     if heading is not None:

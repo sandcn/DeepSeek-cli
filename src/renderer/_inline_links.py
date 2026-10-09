@@ -14,40 +14,12 @@ from .inline_nodes import (
     SpanNode, CitationNode,
     render_inline_to_text,
 )
+from ._pandoc_attrs import parse_pandoc_attrs as _parse_pandoc_attrs
 
 _logger = logging.getLogger(__name__)
 
 #: 链接/图片标题中可「反斜杠转义」的字符（CommonMark：任意 ASCII 标点）。
 _TITLE_ESCAPABLE: frozenset[str] = frozenset(string.punctuation)
-
-
-def _split_attr_tokens(body: str) -> list[str]:
-    """属性块内按空白分隔 token（引号内的空白不作为分隔符）。
-
-    供 ``{.class #id key="a b"}`` 解析使用：``title="a b"`` 保持为单个 token。
-    """
-    tokens: list[str] = []
-    buf: list[str] = []
-    quote = ''
-    for ch in body:
-        if quote:
-            buf.append(ch)
-            if ch == quote:
-                quote = ''
-            continue
-        if ch in '"\'':
-            quote = ch
-            buf.append(ch)
-            continue
-        if ch.isspace():
-            if buf:
-                tokens.append(''.join(buf))
-                buf = []
-            continue
-        buf.append(ch)
-    if buf:
-        tokens.append(''.join(buf))
-    return tokens
 
 
 def _apply_media_attrs(attrs: dict, meta: dict) -> None:
@@ -215,40 +187,20 @@ class InlineLinksMixin:
         位置不变、返回 ``None``（不吞掉普通 ``{`` 文本，与 ``{color:red}``
         等既有花括号语法不冲突——本语法要求属性形如 ``.cls`` / ``#id`` /
         ``key=value``，含 ``:`` 的 ``{color:red}`` 不满足）。
+
+        属性体解析复用共享真源 ``_pandoc_attrs.parse_pandoc_attrs``（与块级
+        fenced div ``::: {.warning}`` 同一实现，行为不漂移）。
         """
         if self._pos >= self._n or self._text[self._pos] != '{':
             return None
         end = self._text.find('}', self._pos + 1)
         if end < 0 or end - self._pos > 512:
             return None
-        body = self._text[self._pos + 1:end]
-        if not body.strip():
-            return None
-        classes: list[str] = []
-        ident = ''
-        attrs: dict = {}
-        for token in _split_attr_tokens(body):
-            if not token:
-                continue
-            if token.startswith('.'):
-                cls = token[1:]
-                if cls and cls not in classes:
-                    classes.append(cls)
-            elif token.startswith('#'):
-                ident = token[1:]
-            elif '=' in token:
-                key, _, value = token.partition('=')
-                key = key.strip().lower()
-                value = value.strip().strip('"\'')
-                if key:
-                    attrs[key] = value
-            else:
-                # 非属性 token（如 ``color:red``）→ 非本语法
-                return None
-        if not (classes or ident or attrs):
+        attrs = _parse_pandoc_attrs(self._text[self._pos + 1:end])
+        if attrs is None:
             return None
         self._pos = end + 1
-        return {"classes": classes, "id": ident, "attrs": attrs}
+        return attrs
 
     def _try_image(self, depth: int) -> InlineNode | None:
         try:
@@ -256,7 +208,22 @@ class InlineLinksMixin:
                 saved = self._pos
                 self._pos += 2
                 alt_start = self._pos
-                while self._pos < self._n and self._text[self._pos] != ']':
+                # ★ alt 文本支持嵌套方括号（CommonMark：``![a [b]](u)`` 的 alt
+                #   为 ``a [b]``）与反斜杠转义（``![a \] b](u)``）。修复前遇到
+                #   首个 ``]`` 即截断 → alt 被切碎、后续 ``(url)`` 无法匹配，
+                #   整张图片按普通文本原样输出。
+                depth = 0
+                while self._pos < self._n:
+                    ch = self._text[self._pos]
+                    if ch == '\\' and self._pos + 1 < self._n:
+                        self._pos += 2
+                        continue
+                    if ch == '[':
+                        depth += 1
+                    elif ch == ']':
+                        if depth == 0:
+                            break
+                        depth -= 1
                     self._pos += 1
                 if self._pos >= self._n:
                     self._pos = saved

@@ -133,6 +133,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._html_block_attrs: dict = {}
         self._block_nested_fence: int = 0
         self._block_div_type: str = ''
+        #: fenced div 的属性块（``::: {.warning #id}`` → ``{"classes": [...],
+        #: "id": ..., "attrs": {...}}``；无属性为空 dict）。渲染层可据此扩展。
+        self._block_div_attrs: dict = {}
+        #: fenced div 嵌套深度（1 = 最外层；``:::`` 关闭行使深度递减、归零即
+        #: 关闭外层容器；``::: type`` 开启行使深度递增，内层容器作为正文交给
+        #: 子解析器递归处理）。
+        self._block_div_depth: int = 0
 
         # 列表状态
         # _list_indents 已在 _reset_normal_state 之前初始化
@@ -1742,7 +1749,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     _logger.warning("脚注/参考链接解析异常，降级为段落", exc_info=True)
                     if count > 5:
                         raise
-            if stripped == '[TOC]' or stripped.rstrip() == '[TOC]':
+            # ★ TOC 标记变体：大小写不敏感 + ``[[TOC]]`` 双括号（MediaWiki /
+            #   markdown-it-toc 常见写法）。修复前仅精确匹配大写 ``[TOC]``，
+            #   ``[toc]`` 原样输出、``[[TOC]]`` 被当 wikilink 显示为 ``TOC``。
+            if stripped.strip().upper() in ('[TOC]', '[[TOC]]'):
                 self._flush_paragraph(tokens)
                 self._emit_blockquote_close(tokens)
                 tokens.append(Token(TokenType.TOC_MARKER, ""))
@@ -3246,6 +3256,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         lines = self._html_lines
         self._html_lines = []
         rows: list[list[str]] = []
+        row_attr_list: list[list[str]] = []
         row_aligns: list[list[str]] = []
         caption: str | None = None
         for raw in lines:
@@ -3256,21 +3267,18 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 #   <tr>…</tr></table>`` 的 caption 与行数据在同一行，跳过会
                 #   导致该行所有 ``<tr>`` 丢失（表格内容全空，只剩标签头行）。
             for tr in _iter_html_tag_blocks(raw, 'tr'):
-                cells = _extract_html_cells(tr)
-                if cells:
-                    rows.append(cells)
+                cells_attrs = list(_iter_html_cells(tr))
+                if cells_attrs:
+                    rows.append([text for text, _attrs in cells_attrs])
+                    row_attr_list.append([attrs for _text, attrs in cells_attrs])
                     row_aligns.append(_extract_html_cell_aligns(tr))
         if not rows:
             return False
-        ncols = len(rows[0])
-        if ncols == 0:
-            return False
-        norm = []
-        for r in rows:
-            if not r or len(r) > ncols:
-                continue
-            norm.append((r + [''] * ncols)[:ncols])
-        if not norm:
+        # ★ 列数按 colspan 展开后的最大行宽自适应，且**不丢弃**任何数据行——
+        #   修复前以第一行单元格数为列数、``len(r) > ncols`` 的行被整行丢弃
+        #   （``<th colspan="2">`` 表头 + 两列数据行的常见形态数据全丢）。
+        norm, ncols = _layout_html_table_rows(rows, row_attr_list)
+        if not norm or ncols == 0:
             return False
         alignments = ['left'] * ncols
         for aligns in row_aligns:
@@ -3290,16 +3298,35 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         rest = stripped[3:].lstrip()
         div_type = ''
         text = ''
+        div_attrs: dict = {}
         if rest:
-            space = rest.find(' ')
-            if space > 0:
-                div_type = rest[:space]
-                text = rest[space + 1:].strip()
-            else:
-                div_type = rest
+            handled = False
+            if rest.startswith('{'):
+                # ★ Pandoc 属性语法 ``::: {.warning #id key=val}``：首个类名作为
+                #   容器类型（与 ``::: warning`` 同语义）；属性块之后若有文本
+                #   则作为标题。修复前整个 ``{.warning}`` 被当作类型名，渲染为
+                #   ``▪ {.WARNING}``。属性块**有效**时不再把属性原文当类型
+                #   （无类名 → 回落默认类型）；无效（如 ``{color:red}``）时回退
+                #   既有行为（整串作为类型），不吞内容。
+                from ._pandoc_attrs import parse_braced_attrs, pandoc_type_from_attrs
+                attrs, used = parse_braced_attrs(rest)
+                if attrs is not None:
+                    div_attrs = attrs
+                    div_type = pandoc_type_from_attrs(attrs)
+                    text = rest[used:].strip()
+                    handled = True
+            if not handled:
+                space = rest.find(' ')
+                if space > 0:
+                    div_type = rest[:space]
+                    text = rest[space + 1:].strip()
+                else:
+                    div_type = rest
         if not div_type:
             div_type = 'NOTE'
         self._block_div_type = div_type.upper()
+        self._block_div_attrs = div_attrs
+        self._block_div_depth = 1
         self._block_lines = []
         tokens.append(Token(TokenType.FENCED_DIV_OPEN, text, {"type": self._block_div_type}))
         self._state = _State.FENCED_DIV
@@ -3311,8 +3338,18 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             self._block_lines.append("")  # 供流式预览
             return
         if stripped.strip() == ':::':
+            if self._block_div_depth > 1:
+                # 嵌套容器的内层闭合：深度递减，闭合行作为正文交给子解析器
+                # （``_emit_fenced_div_close`` 递归渲染），外层不关闭。
+                self._block_div_depth -= 1
+                tokens.append(Token(TokenType.FENCED_DIV_LINE, stripped, {"type": self._block_div_type}))
+                self._block_lines.append(stripped)
+                return
             self._emit_fenced_div_close(tokens)
             return
+        if stripped.startswith(':::'):
+            # 嵌套容器的开启行：深度递增，交由正文子解析器递归处理
+            self._block_div_depth += 1
         tokens.append(Token(TokenType.FENCED_DIV_LINE, stripped, {"type": self._block_div_type}))
         self._block_lines.append(stripped)  # 供流式预览
 
@@ -3327,7 +3364,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         while body_lines and not body_lines[-1].strip():
             body_lines.pop()
         self._block_lines = []
+        self._block_div_depth = 0
         meta: dict = {"type": self._block_div_type}
+        if self._block_div_attrs:
+            # 属性块透传给渲染层（终端渲染忽略 id；类名已作为 type）
+            meta["attrs"] = self._block_div_attrs
+            self._block_div_attrs = {}
         if body_lines:
             body_tokens = self._parse_sub_blocks(body_lines)
             if body_tokens:
@@ -3390,12 +3432,19 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         is_todo() 在下游渲染层通过扫描文本开头的 [ ]/[x]/[-] 来渲染勾选框，
         因此必须保留 checkbox 标记在 content 中。
 
+        ★ GFM 规范：任务列表标记 ``[ ]`` / ``[x]`` / ``[-]`` 后**必须**跟至少
+        一个空白字符或行尾，否则不是任务项（``- [x]done`` 是普通列表项，文本
+        原样保留）。修复前只检查 ``[x]`` 本身、不检查其后字符，导致
+        ``- [x]done`` 被误判为任务项、渲染层跳过 4 个字符而**吞掉正文首字符**
+        （``done`` → ``one``）。
+
         Returns:
             (text, is_todo, is_checked, is_cancelled)
             — text 保留 '[x] ' / '[ ] ' / '[-] ' 前缀
         """
         t = text.strip()
-        if len(t) >= 4 and t[0] == '[' and t[2] == ']':
+        if (len(t) >= 3 and t[0] == '[' and t[2] == ']'
+                and (len(t) == 3 or t[3] in ' \t')):
             if t[1] in ' xX':
                 return text, True, t[1] in 'xX', False
             if t[1] == '-':
@@ -3802,6 +3851,70 @@ def _extract_html_cell_aligns(tr_text: str) -> list[str]:
         except Exception:
             aligns.append("")
     return aligns
+
+
+def _html_span_attr(attrs_text: str, name: str) -> int:
+    """从单元格开标签文本取跨列/跨行数（``colspan`` / ``rowspan``）。
+
+    缺失/非法时返回 ``1``；值钳制到 ``[1, 50]``（防御异常大值导致布局膨胀）。
+    """
+    try:
+        raw = parse_attrs(attrs_text).get(name)
+    except Exception:
+        return 1
+    if not raw:
+        return 1
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(50, value))
+
+
+def _layout_html_table_rows(rows: list[list[str]],
+                            row_attrs: list[list[str]]) -> tuple[list[list[str]], int]:
+    """HTML 表格单元格布局（``colspan`` / ``rowspan`` 展开为规则矩形）。
+
+    返回 ``(grid, ncols)``：``grid`` 每行长度恒为 ``ncols``——跨列单元格内容
+    落在其首列、其余列为空串；被上方 ``rowspan`` 覆盖的位置填空串；行宽不足的
+    行右侧补空。修复前以第一行单元格数为列数并**丢弃**列数不符的行（
+    ``<th colspan="2">`` + 两列数据行时数据行整行消失）。
+    """
+    if not rows:
+        return [], 0
+    ncols = 0
+    for attrs_list in row_attrs:
+        total = sum(_html_span_attr(a, 'colspan') for a in attrs_list)
+        if total > ncols:
+            ncols = total
+    if ncols <= 0:
+        ncols = max((len(r) for r in rows), default=0)
+    if ncols <= 0:
+        return [], 0
+    nrows = len(rows)
+    grid = [[''] * ncols for _ in range(nrows)]
+    occupied = [[False] * ncols for _ in range(nrows)]
+    for r, cells in enumerate(rows):
+        attrs_list = row_attrs[r] if r < len(row_attrs) else []
+        col = 0
+        for idx, cell in enumerate(cells):
+            while col < ncols and occupied[r][col]:
+                col += 1
+            if col >= ncols:
+                break
+            attrs_text = attrs_list[idx] if idx < len(attrs_list) else ''
+            colspan = _html_span_attr(attrs_text, 'colspan')
+            rowspan = _html_span_attr(attrs_text, 'rowspan')
+            grid[r][col] = cell
+            for k in range(colspan):
+                c2 = col + k
+                if c2 >= ncols:
+                    break
+                occupied[r][c2] = True
+                for rr in range(r + 1, min(r + rowspan, nrows)):
+                    occupied[rr][c2] = True
+            col += colspan
+    return grid, ncols
 
 
 def _html_pre_language(text: str) -> str:

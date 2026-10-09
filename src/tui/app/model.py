@@ -99,7 +99,7 @@ _logger = logging.getLogger(__name__)
 _CONTAINER_PREFIX = r"(?:[ \t]*>[ \t]*)*"
 _FORWARD_REF_RE = re.compile(
     r"(?m)"
-    rf"^{_CONTAINER_PREFIX}[ \t]*\[TOC\][ \t]*$"                # [TOC] 目录标记
+    rf"^{_CONTAINER_PREFIX}[ \t]*\[\[?[Tt][Oo][Cc]\]\]?[ \t]*$"  # [TOC] / [[TOC]]（大小写不敏感）
     rf"|^{_CONTAINER_PREFIX}[ \t]{{0,3}}\[(?!\^|//)[^\]]*\]:[ \t]*\S"  # 参考式链接定义
 )
 

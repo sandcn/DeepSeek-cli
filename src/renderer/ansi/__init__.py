@@ -39,6 +39,17 @@ from src.renderer.types import TokenType, Token
 #: 历史行经 ``LinePreviewCache`` 前缀复用只渲染一次，不受此影响。
 _PREVIEW_MAX_LINE_CHARS = 4096
 
+#: **含行内格式**的活动行预览窗口上限：行内解析成本与行长成正比（纯文本走
+#: 单 Run 快路径不受此限），而格式密集行每帧重解析整行会累计 O(n²)（22500
+#: 字符格式密集段落实测 30s）。取比 ``_PREVIEW_MAX_LINE_CHARS`` 更小的独立
+#: 窗口，把单帧解析成本降到可忽略量级。
+_FORMAT_ACTIVE_MAX_CHARS = 2048
+
+#: 格式活动行「逐帧实时刷新」的长度上限：短于此值渲染成本可忽略（<1ms），
+#: 保持逐帧实时（流式观感）；超过后按 ``长度//8`` 节流刷新（刷新次数 ~O(log n)，
+#: 总成本与长度线性），避免超长单行每帧全量重解析。
+_FORMAT_ACTIVE_FULL_LIMIT = 512
+
 #: 行内「触发位置」元数据缓存（唯一真源 ``inline_parser``）：核心格式触发
 #: 字符（不含裸 URL 首字母）/ 裸 URL 首字母 / 裸 URL 前缀。惰性初始化避免
 #: 模块导入顺序耦合。
@@ -327,6 +338,10 @@ class AnsiStreamRenderer:
         # 智能排版（typographer）触发位置：最后一个可能被 ``_preprocess_text``
         # 改写的起点下标（增量维护，供 ``_plain_active_window`` O(1) 判否）。
         self._para_last_typo = -1
+        #: 上一次 ``_note_paragraph_triggers`` 是否判定为「同一段落的追加」
+        #: （True）——供格式活动行预览的节流做跨段落安全判定（跨段落/解析器
+        #: 重建缓冲时为 False，禁用节流，避免复用旧段落渲染行）。
+        self._para_is_append = False
         # 容器块（告示）预览的子解析结果缓存（见 ``_preview_sub_parse``）。
         self._preview_sub_cache: dict = {}
         # 列表项内块级容器预览（内容行元组 → 渲染行 + 缓存键）。
@@ -648,6 +663,7 @@ class AnsiStreamRenderer:
         self._para_last_url = -1
         self._para_last_nl = -1
         self._para_last_typo = -1
+        self._para_is_append = False
         for cache in self._line_preview_caches.values():
             cache.reset()
 
@@ -736,6 +752,13 @@ class AnsiStreamRenderer:
             # 单行段落无跨行配对 → 直接行级渲染
             if src and self._plain_active_window(content):
                 rows = [_plain_paragraph_line(src[0])]
+            elif src and self._window_has_core_markup(content):
+                # 窗口内确有行内标记 → 格式活动行（尾部窗口 + 帧成本节流）
+                rows = self._render_format_active_line(src[0])
+            elif src:
+                # 无行内标记（仅智能排版触发，或纯文本快路径被外部关闭）→
+                # 原生逐行渲染（保持「快路径开/关预览等价」契约）
+                rows = self._render_paragraph_lines([src[0]])
             else:
                 rows = self._render_paragraph_lines(src)
         else:
@@ -775,6 +798,41 @@ class AnsiStreamRenderer:
             lambda text: _blocks.render_paragraph_lines(text),
         )
 
+    def _render_format_active_line(self, line: str) -> list[AnsiLine]:
+        """含行内格式的单行活动行预览（尾部窗口 + 帧成本节流）。
+
+        仅由 ``_render_paragraph_preview`` 在「窗口内确有行内标记」
+        （``_window_has_core_markup``）时调用；纯文本走单 Run 快路径或原生逐行
+        渲染，不进入本方法。
+
+        行内解析成本与行长成正比，活动行每次 ``write`` 都变化——每帧重解析
+        整行累计 O(n²)（22500 字符格式密集段落实测 30s）。策略：
+
+        - 长度 ≤ ``_FORMAT_ACTIVE_FULL_LIMIT``：整行渲染并**逐帧实时刷新**
+          （成本可忽略，保证常见段落的流式观感）；
+        - 更长：只渲染尾部 ``_FORMAT_ACTIVE_MAX_CHARS`` 窗口，并按
+          ``max(64, 上次长度 // 8)`` 节流刷新（刷新次数 ~O(log n)）。
+
+        节流仅在 ``_note_paragraph_triggers`` 判定为「同一段落追加」
+        （``_para_is_append``）时生效——跨段落 / 解析器重建缓冲时禁用，避免
+        复用上一段落的渲染行。提交路径不受影响（块闭合走完整渲染）。
+        """
+        n = len(line)
+        limit = _FORMAT_ACTIVE_MAX_CHARS
+        window = line[-limit:] if limit > 0 and n > limit else line
+        key = ("paragraph-format",)
+        state = self._preview_throttle.get(key) if self._para_is_append else None
+        if state is not None:
+            prev_len, rows = state
+            if n >= prev_len:
+                step = (1 if prev_len < _FORMAT_ACTIVE_FULL_LIMIT
+                        else max(64, prev_len // 8))
+                if n - prev_len < step:
+                    return rows
+        rows = self._render_paragraph_lines([window])
+        self._preview_throttle[key] = (n, rows)
+        return rows
+
     def _note_paragraph_triggers(self, content: str) -> None:
         """增量维护「未闭合段落文本中最后一个行内触发位置」（核心字符 / URL 前缀）。
 
@@ -794,6 +852,7 @@ class AnsiStreamRenderer:
         """
         prev = self._para_scan_text
         if content is prev:
+            self._para_is_append = True
             return
         prev_len = len(prev)
         if prev_len and len(content) >= prev_len:
@@ -831,8 +890,10 @@ class AnsiStreamRenderer:
                 if tidx >= 0 and tstart + tidx > self._para_last_typo:
                     self._para_last_typo = tstart + tidx
                 self._para_scan_text = content
+                self._para_is_append = True
                 return
         # 全量重扫（前缀关系不成立：解析器重建缓冲 / 段落切换）
+        self._para_is_append = False
         self._para_last_core = _last_core_trigger_pos(content)
         self._para_last_url = _last_url_prefix_pos(content)
         self._para_last_nl = content.rfind("\n")
@@ -868,6 +929,19 @@ class AnsiStreamRenderer:
         # 触发位置由 ``_note_paragraph_triggers`` 增量维护 → 此处 O(1)，不再
         # 每帧对 4096 字符窗口切片重扫。
         return self._para_last_typo < start
+
+    def _window_has_core_markup(self, content: str) -> bool:
+        """活动行窗口内是否存在行内标记起点（核心格式字符 / 裸 URL 前缀）。
+
+        O(1)：复用 ``_note_paragraph_triggers`` 增量维护的两个触发位置（与
+        ``inline_parser.text_has_inline_markup`` 同口径；不含智能排版触发）。
+        供单行活动行在「纯文本快路径」与「格式活动行（窗口 + 节流）」之间选择
+        ——纯文本（即使快路径被外部关闭）走原生逐行渲染，保持预览等价契约。
+        """
+        start = len(content) - _PREVIEW_MAX_LINE_CHARS
+        if start < 0:
+            start = 0
+        return self._para_last_core >= start or self._para_last_url >= start
 
     @staticmethod
     def _omitted_line(dropped: int) -> AnsiLine:

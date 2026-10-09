@@ -19,11 +19,17 @@ from .._utils import cjk_display_width
 def is_todo(text: str) -> tuple[str | None, str]:
     """字符级检测 [ ] / [x] / [-] 任务列表项。
 
+    ★ GFM 规范：任务列表标记后**必须**跟至少一个空白字符或行尾，否则不是
+    任务项（``[x]done`` 是普通文本）。修复前只检查标记本身，导致
+    ``- [x]done`` 被误判、``text[3:]`` 切片吞掉正文首字符。
+
     Returns:
         (marker, content): marker=' ' 未勾选, marker in 'xX' 已勾选,
         marker='-' 已取消, marker=None 非任务项
     """
-    if len(text) >= 4 and text[0] == '[' and text[2] == ']' and text[1] in ' xX-':
+    if (len(text) >= 3 and text[0] == '[' and text[2] == ']'
+            and text[1] in ' xX-'
+            and (len(text) == 3 or text[3] in ' \t')):
         return text[1], text[3:].strip()
     return None, text
 
