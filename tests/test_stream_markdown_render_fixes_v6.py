@@ -65,6 +65,44 @@ def _elapsed(src: str, chunk: int = 4, width: int = 100) -> float:
     return dt
 
 
+#: 计时断言的采样轮数：并行测试（pytest-xdist 多 worker）下单次测量会被 CPU
+#: 竞争拉长（同一段渲染实测 0.21s~0.51s）——取多轮**最小值**剔除调度抖动，
+#: 保留真实渲染成本量级（与机器快慢无关地反映「是否退化为 O(n²)」）。
+_TIMING_ROUNDS = 3
+
+
+def _min_elapsed(src: str, chunk: int = 4, width: int = 100,
+                 rounds: int = _TIMING_ROUNDS) -> float:
+    """流式渲染耗时的鲁棒测量：预热一轮 + 多轮取最小值。"""
+    _elapsed(src, chunk=chunk, width=width)
+    return min(_elapsed(src, chunk=chunk, width=width) for _ in range(rounds))
+
+
+def _frame_worst_costs(src: str, chunk: int = 8, width: int = 100
+                       ) -> tuple[float, float]:
+    """流式**单帧**最差成本（前 1/4 段, 后 1/4 段）——复杂度判定用。
+
+    绝对耗时受并行 CPU 竞争影响，而「后段单帧 / 前段单帧」的比值反映的是
+    复杂度（单帧成本是否随源码长度增长），对机器速度与负载不敏感。
+    """
+    r = AnsiStreamRenderer(width=width)
+    n = len(src)
+    early = 0.0
+    late = 0.0
+    for i in range(0, n, chunk):
+        t0 = time.perf_counter()
+        r.write(src[i:i + chunk])
+        r.take_preview_lines()
+        dt = time.perf_counter() - t0
+        if i < n // 4:
+            early = max(early, dt)
+        elif i > n * 3 // 4:
+            late = max(late, dt)
+    r.close()
+    r.take_lines()
+    return early, late
+
+
 # ══════════════════════════════════════════════════════════
 # 引用块：_split_blockquote 语义等价（只扫前缀）
 # ══════════════════════════════════════════════════════════
@@ -128,8 +166,7 @@ def test_split_blockquote_scans_prefix_only():
 def test_long_blockquote_stream_budget():
     """40k 字符单行引用流式渲染耗时有界（修复前 ~22s）。"""
     src = "> " + "字" * 40000 + "\n\n"
-    _elapsed(src, chunk=64)          # 预热
-    elapsed = _elapsed(src, chunk=4)
+    elapsed = _min_elapsed(src, chunk=4)
     assert elapsed < 3.0, f"长引用流式耗时 {elapsed:.3f}s"
 
 
@@ -170,18 +207,26 @@ def test_long_code_line_stream_budget():
 def test_long_math_block_stream_budget():
     """超长公式流式渲染耗时有界（修复前 8k 字符 ~8s）。"""
     src = "$$\n" + "x + " * 1000 + "1\n$$\n\n"
-    _elapsed(src, chunk=32)
-    elapsed = _elapsed(src, chunk=8)
+    elapsed = _min_elapsed(src, chunk=8)
     assert elapsed < 2.0, f"长公式流式耗时 {elapsed:.3f}s"
 
 
 def test_mermaid_stream_budget():
-    """多节点 Mermaid 流式渲染耗时有界（修复前 60 节点 ~0.32s）。"""
+    """多节点 Mermaid 流式渲染：耗时与单帧复杂度均有界（修复前 60 节点 ~0.32s/帧）。
+
+    绝对耗时受并行测试 CPU 竞争影响（同一段渲染实测 0.21s~0.51s），故：
+      - 总耗时取多轮最小值（``_min_elapsed``）并留出充足余量；
+      - 另以「后段单帧最差成本 vs 前段单帧最差成本」判定复杂度——节流生效时
+        后段单帧只重排少数增量，成本与源码长度无关；修复前每帧全量布局，
+        后段单帧成本随节点数线性上升。
+    """
     body = "".join(f"  A{i}[节点{i}]-->B{i}[节点{i}]\n" for i in range(60))
     src = "```mermaid\ngraph TD\n" + body + "```\n\n"
-    _elapsed(src, chunk=32)
-    elapsed = _elapsed(src, chunk=8)
-    assert elapsed < 0.5, f"mermaid 流式耗时 {elapsed:.3f}s"
+    elapsed = _min_elapsed(src, chunk=8)
+    assert elapsed < 1.0, f"mermaid 流式耗时 {elapsed:.3f}s"
+    early, late = _frame_worst_costs(src, chunk=8)
+    limit = max(early * 20, 0.05)
+    assert late < limit, f"后段单帧 {late * 1e3:.1f}ms vs 前段 {early * 1e3:.1f}ms"
 
 
 def test_wide_table_stream_budget():
@@ -193,16 +238,14 @@ def test_wide_table_stream_budget():
         for r in range(500)
     )
     src = "\n".join([head, sep, body]) + "\n\n"
-    _elapsed(src, chunk=64)
-    elapsed = _elapsed(src, chunk=4)
+    elapsed = _min_elapsed(src, chunk=4)
     assert elapsed < 3.0, f"宽表格流式耗时 {elapsed:.3f}s"
 
 
 def test_long_front_matter_stream_budget():
     """超长 Front Matter 流式渲染耗时有界（预览行数上限 + 节流）。"""
     src = "---\n" + "".join(f"key{i}: 值{i}\n" for i in range(3000))   # ~60k
-    _elapsed(src, chunk=64)
-    elapsed = _elapsed(src, chunk=8)
+    elapsed = _min_elapsed(src, chunk=8)
     assert elapsed < 3.0, f"长元信息块流式耗时 {elapsed:.3f}s"
 
 
@@ -223,8 +266,7 @@ def test_long_front_matter_preview_limited_and_commit_complete():
 def test_long_html_block_line_stream_budget():
     """超长 HTML 块活动行流式渲染耗时有界（活动行窗口化）。"""
     src = "<div>\n" + "字" * 40000 + "\n</div>\n\n"
-    _elapsed(src, chunk=64)
-    elapsed = _elapsed(src, chunk=8)
+    elapsed = _min_elapsed(src, chunk=8)
     assert elapsed < 3.0, f"长 HTML 块流式耗时 {elapsed:.3f}s"
 
 
