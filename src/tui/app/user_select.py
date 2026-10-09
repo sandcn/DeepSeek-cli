@@ -718,7 +718,6 @@ def UserSelectPopup(props) -> object:
     total = len(options)
     multi = bool(us.multi_select)
     done = bool(getattr(us, "done", False))
-    answered = bool(getattr(us, "answered", False))
 
     # ── 渲染 ──
     # 本帧高亮源：us 实例变化（fresh_us——组件防御，防 fiber 复用残留旧

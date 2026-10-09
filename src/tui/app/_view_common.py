@@ -24,8 +24,9 @@ from __future__ import annotations
 
 from typing import Callable, Iterable, Optional
 
-from src.tui.ink import StyledRun
-from src.tui.ink.helpers import truncate_runs
+from src.tui._width import truncate_width, wcswidth_simple
+from src.tui.ink import TEXT, StyledRun, h
+from src.tui.ink.helpers import truncate_runs, truncate_runs_ellipsis
 
 # ListViewState 是 Layer 0 纯状态容器（_state_types.py）；本模块 re-export 供
 # 各视图统一从 _view_common 引入（渲染工具与状态基类同源）。
@@ -45,6 +46,8 @@ __all__ = [
     "char_of",
     "is_close_key",
     "clamp_index",
+    "pane_divider",
+    "pad_to_width",
     "SEARCH_QUERY_MAX",
 ]
 
@@ -96,6 +99,67 @@ def split_panes(
         left_w = max(int(min_left) // 2, width - int(min_right) - 1)
     right_w = max(1, width - left_w - 1)
     return left_w, right_w
+
+
+#: 竖直分隔列字符（U+2502）。
+PANE_DIVIDER_CHAR = "\u2502"
+
+
+def pane_divider(height: int, style) -> object:
+    """左右栏之间的**竖直分隔列**（填充 ``height`` 行）。
+
+    ★ P1 修复（review）：修复前各双栏视图用
+    ``h(TEXT, {"children": "│", "style": ..., "height": 1})`` 作分隔符——
+    TEXT 高度仅 1 行，而所在 ``Row`` 的高度由更高的一栏决定（列表 ``vh`` 行 /
+    右栏预览多行），故**只有第一行**渲染出 "│"，其余行的分隔线缺失，左右栏
+    内容直接相邻（视觉上两栏边界消失；实测 /theme、/trace、/logs、/keymap、
+    /plugin、/sessions 等 13 处视图全部命中）。本函数生成与栏高同高的分隔列：
+    内容为 ``height`` 行 "│"（``\\n`` 分隔），显式 ``height`` 保证 min-height
+    语义下高度一致。
+
+    Args:
+        height: 分隔列行数（= Row 的高度，通常为视图可视行数 ``vh``）。
+        style: 分隔线样式。
+
+    Returns:
+        TEXT 元素（1 列宽、``height`` 行高）。
+    """
+    try:
+        rows = max(1, int(height))
+    except (TypeError, ValueError, OverflowError):
+        rows = 1
+    return h(TEXT, {
+        "children": "\n".join([PANE_DIVIDER_CHAR] * rows),
+        "style": style,
+        "height": rows,
+        "key": "pane-divider",
+    })
+
+
+def pad_to_width(text, columns: int, *, min_pad: int = 1) -> str:
+    """按**显示宽度**把 ``text`` 右填充到 ``columns`` 列（CJK/emoji 计 2 列）。
+
+    ★ P2 修复（review）：修复前多处用 f-string ``{label:<14}`` 填充——Python
+    的 ``<`` 对齐按**字符数**而非显示宽度，CJK 标签（如 "输入（未命中）" 8 字符
+    / 16 列）与 ASCII 标签填充后显示宽度不等，同一列区里的值起点错位（/usage
+    实测错位最多 6 列）。本函数按 ``wcswidth_simple`` 计算显示宽度补齐。
+
+    标签自身宽于 ``columns`` 时不截断（由调用方决定是否截断），仍保证至少
+    ``min_pad`` 个空格分隔。
+
+    Args:
+        text: 原始文本（非 str 自动 ``str()``）。
+        columns: 目标显示列宽。
+        min_pad: 最小间隔空格数（默认 1）。
+
+    Returns:
+        填充后的字符串。
+    """
+    s = str(text)
+    gap = int(columns) - wcswidth_simple(s)
+    if gap < int(min_pad):
+        gap = int(min_pad)
+    return s + " " * gap
 
 
 def clamp_index(value, total: int) -> int:
@@ -243,7 +307,12 @@ def build_header_runs(title: str, title_style, segments: list, hint: str,
     if hint:
         runs.append(StyledRun(hint, hint_style))
     if width > 0:
-        runs = truncate_runs(runs, width)
+        # ★ P3 修复（review）：超宽时经 ``truncate_runs_ellipsis`` 截断并补
+        #   省略号——修复前用 ``truncate_runs`` 硬截断，末尾操作提示被拦腰
+        #   切开（实测 "Esc 关闭" → "Esc"、/theme 头部 "Esc 恢复原主题" →
+        #   "Esc 恢复原主"、/logs "F 跟随 · r 刷新" → "F 跟随 · r"），用户
+        #   看不到关闭/恢复等关键提示；未超宽时行为不变（原样返回 + ─ 填充）。
+        runs = truncate_runs_ellipsis(runs, width)
         used = sum(getattr(r, "width", 1) for r in runs)
         pad = width - used
         if pad > 0:
@@ -264,7 +333,10 @@ def status_runs(parts: list, *, style, message: str = "", message_style=None,
         return None
     text = "  \u00b7  ".join(segs)
     if width > 0:
-        text = text[:width]
+        # ★ P3 修复（review）：按**显示宽度**截断——修复前 ``text[:width]``
+        #   按字符数截断，含 CJK 的消息（如删除确认提示携带长标题）实际显示
+        #   宽度可达 2×width，超出终端列宽触发自动换行/布局漂移。
+        text = truncate_width(text, width)
     return [StyledRun(text, message_style if message else style)]
 
 

@@ -33,6 +33,7 @@ from ._view_common import (
     char_of,
     handle_search_input,
     jump_match,
+    pane_divider,
     run_search,
     split_panes,
     status_runs,
@@ -318,7 +319,7 @@ def KeymapView(props) -> object:
         h(TEXT, {"styled": header_runs, "height": 1, "key": "kv-header"}),
         h(Row, None, [
             ledger,
-            h(TEXT, {"children": "\u2502", "style": _S_SEP, "height": 1}),
+            pane_divider(max(vh, len(right_children)), _S_SEP),
             h(Column, {"width": right_w}, right_children),
         ]),
     ]

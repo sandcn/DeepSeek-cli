@@ -28,6 +28,7 @@ import json
 import time
 
 from src.tui.core.style import Style
+from src.tui._width import wcswidth_simple
 from src.tui.ink import TEXT, Column, Row, StyledRun, h, use_input
 from src.tui.ink.helpers import truncate_runs, wrap_runs_by_width
 from src.tui.ink.hooks import use_effect, use_memo
@@ -41,6 +42,8 @@ from ._view_common import (
     char_of,
     handle_search_input,
     jump_match,
+    pad_to_width,
+    pane_divider,
     run_search,
     split_panes,
     status_runs,
@@ -337,8 +340,22 @@ def _verify_rows(state, width: int) -> list:
     for line in wrap_runs_by_width([StyledRun(verify_text, _S_VALUE)], max(1, width)):
         rows.append(list(line.runs))
     rows.append([StyledRun(" ", None)])
-    for label, value in getattr(state, "stats", None) or []:
-        runs = [StyledRun(f"  {str(label):<16}", _S_KEY), StyledRun(str(value), _S_VALUE)]
+    # ★ P2 修复（review）：统计标签按**显示宽度**对齐——修复前
+    #   ``f"  {label:<16}"`` 按字符数填充，CJK 标签（占 2 列/字符）与 ASCII
+    #   标签填充后值起点错位。列宽取「各标签最大显示宽度」与下限 16 的较大者。
+    stats = [
+        (lb, val) for lb, val in (getattr(state, "stats", None) or [])
+    ]
+    label_col = 16
+    for label, _ in stats:
+        # +1：值前至少 1 列间隔（与 ``pad_to_width`` 的 min_pad 语义对齐，
+        # 保证「标签宽度 == 列宽」时该行与其它行值起点仍一致）。
+        label_col = max(label_col, wcswidth_simple(str(label)) + 1)
+    for label, value in stats:
+        runs = [
+            StyledRun("  " + pad_to_width(label, label_col), _S_KEY),
+            StyledRun(str(value), _S_VALUE),
+        ]
         if width > 0:
             rows.extend(list(l.runs) for l in wrap_runs_by_width(runs, max(1, width)))
         else:
@@ -654,7 +671,7 @@ def LogsView(props) -> object:
         h(TEXT, {"styled": header_runs, "height": 1, "key": "lg-header"}),
         h(Row, None, [
             ledger,
-            h(TEXT, {"children": "\u2502", "style": _S_SEP, "height": 1}),
+            pane_divider(max(vh, len(right_children)), _S_SEP),
             h(Column, {"width": right_w}, right_children),
         ]),
     ]

@@ -39,13 +39,14 @@ from ._view_common import (
     char_of,
     handle_search_input,
     jump_match,
+    pane_divider,
     run_search,
     split_panes,
     status_runs,
     viewport_rows,
 )
 
-__all__ = ["ChangesView", "_change_search_text", "_detail_rows"]
+__all__ = ["ChangesView", "_change_search_text", "_detail_rows", "_detail_deps"]
 
 # ── 样式 ──
 _S_TITLE = Style(fg=45, bold=True)
@@ -88,6 +89,31 @@ def _change_search_text(entry: dict) -> str:
     if not isinstance(entry, dict):
         return ""
     return f"{entry.get('path', '')} {entry.get('change_label', '')}"
+
+
+def _detail_deps(entry, right_w: int) -> tuple:
+    """``_detail_rows`` 的 useMemo 依赖（**值驱动**）。
+
+    ★ P2 修复（review）：修复前 deps 为 ``(id(entry), right_w)``——``id()`` 是
+    对象内存地址；entry 被替换（回滚后命令线程重建 entries）且旧对象被 GC 时，
+    新对象可能复用同一地址 → ``_object_is`` 判定依赖未变 → 复用**陈旧**的差异
+    预览（回滚后仍显示回滚前内容）。改为影响输出的字段值（路径 / 变更标签 /
+    修改次数 / 消息序号 + before/after 内容指纹）：同内容保持缓存命中（性能
+    不退化），内容变化必然重算。
+    """
+    if not isinstance(entry, dict):
+        return (None, right_w)
+    before = entry.get("before")
+    after = entry.get("after")
+    return (
+        str(entry.get("path", "")),
+        str(entry.get("change_label", "")),
+        str(entry.get("records", "")),
+        str(entry.get("message_index", "")),
+        hash(before) if isinstance(before, str) else id(before),
+        hash(after) if isinstance(after, str) else id(after),
+        right_w,
+    )
 
 
 def _detail_rows(entry: dict, right_w: int) -> list:
@@ -188,7 +214,7 @@ def ChangesView(props) -> object:
     else:
         content_rows = use_memo(
             lambda: _detail_rows(entry, right_w),
-            (id(entry), right_w),
+            _detail_deps(entry, right_w),
         )
     total_content = len(content_rows)
     cursor, scroll = resolve(
@@ -393,7 +419,7 @@ def ChangesView(props) -> object:
         h(TEXT, {"styled": header_runs, "height": 1, "key": "cv-header"}),
         h(Row, None, [
             ledger,
-            h(TEXT, {"children": "\u2502", "style": _S_SEP, "height": 1}),
+            pane_divider(max(vh, len(right_children)), _S_SEP),
             h(Column, {"width": right_w}, right_children),
         ]),
     ]

@@ -46,11 +46,12 @@ from src.tui.core.style import Style
 from src.tui.ink import (
     TEXT, Column, Row, StyledRun, h, use_effect, use_input, use_memo, use_ref,
 )
-from src.tui.ink.helpers import truncate_runs, wrap_runs_by_width
+from src.tui.ink.helpers import truncate_runs, truncate_runs_ellipsis, wrap_runs_by_width
 from src.tui.ink.widgets.listview import ListView
 
 from ._inspector_pane import PaneState, handle_nav, resolve, scroll_for_cursor
 from ._modal_view import is_modal_close_key, use_modal_scope
+from ._view_common import pane_divider
 
 # ── 样式（共享定义位于 trace_styles，此处 re-import） ──────
 from .trace_styles import (  # noqa: E402
@@ -3417,7 +3418,7 @@ def TraceView(props) -> object:
         StyledRun(header_hint, _S_HINT),
     ]
     if width > 0:
-        header_runs = truncate_runs(header_runs, width)
+        header_runs = truncate_runs_ellipsis(header_runs, width)
     # ★ BEAUTY-36（2026-08-19 美化）：头部行尾 ``─`` 分隔线填充至满宽——
     #   标题区与台账/检查器内容形成清晰视觉分层（对齐 status_bar 分隔线
     #   语义；填充用 _S_SEP_ROW 深灰，低调不抢焦点）。
@@ -3485,7 +3486,7 @@ def TraceView(props) -> object:
         h(TEXT, {"styled": header_runs, "height": 1}),
         h(Row, None, [
             ledger,
-            h(TEXT, {"children": "\u2502", "style": _S_SEP_ROW, "height": 1}),
+            pane_divider(max(vh, len(pane_rows)), _S_SEP_ROW),
             h(Column, {"width": right_w}, pane_rows),
         ]),
     ]

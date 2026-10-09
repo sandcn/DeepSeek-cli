@@ -34,11 +34,12 @@ from src.tui.core.style import Style
 from src.tui.ink import (
     TEXT, Column, Row, StyledRun, h, use_effect, use_input, use_memo,
 )
-from src.tui.ink.helpers import truncate_runs
+from src.tui.ink.helpers import truncate_runs, truncate_runs_ellipsis
 from src.tui.ink.widgets.listview import ListView
 
 from ._inspector_pane import PaneState, handle_nav, resolve
 from ._modal_view import is_modal_close_key, use_modal_scope
+from ._view_common import pane_divider
 
 # ── 样式（对齐 trace_view 轨迹视图视觉：亮青标题/暗灰提示/浅蓝小节） ──
 _S_TITLE = Style(fg=45, bold=True)        # 视图标题/检查器标题（亮青加粗）
@@ -489,7 +490,7 @@ def TraceToolsView(props) -> object:
         StyledRun(header_hint, _S_HINT),
     ]
     if width > 0:
-        header_runs = truncate_runs(header_runs, width)
+        header_runs = truncate_runs_ellipsis(header_runs, width)
     # ★ BEAUTY-36（2026-08-19 美化）：头部行尾 ``─`` 分隔线填充至满宽——
     #   与 TraceView 头部同视觉分层（标题区 / 内容区）。
     if width > 0:
@@ -538,7 +539,7 @@ def TraceToolsView(props) -> object:
         h(TEXT, {"styled": header_runs, "height": 1}),
         h(Row, None, [
             ledger,
-            h(TEXT, {"children": "\u2502", "style": _S_SEP_ROW, "height": 1}),
+            pane_divider(max(vh, len(right_children)), _S_SEP_ROW),
             h(Column, {"width": right_w}, right_children),
         ]),
     ])

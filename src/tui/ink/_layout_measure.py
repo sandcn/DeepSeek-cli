@@ -746,7 +746,6 @@ def _measure(fiber: Fiber, x: int, y: int, avail_w: int, fill: bool = True) -> L
         avail_w: 可用宽度。
         fill: True=填充可用宽度（column 默认）；False=内容自适应宽度（row）。
     """
-    ftype = fiber.type
     # ★ P2-1 修复（review 方向）：**通用** ``_measure_cache`` 提前检查分支已
     #   删除——原分支要求 ``ftype != "text"`` 但**只有 TEXT 分支写缓存**
     #   （容器/自定义 host 不缓存，见 TEXT 写回处），``ftype != "text"`` 条件

@@ -39,6 +39,7 @@ from ._view_common import (
     char_of,
     handle_search_input,
     jump_match,
+    pane_divider,
     run_search,
     split_panes,
     status_runs,
@@ -256,7 +257,7 @@ def SessionsView(props) -> object:
                 if entry is not None and new_title:
                     _apply({"action": "rename", "id": entry.get("id", ""),
                             "title": new_title})
-                    sv.status_message = f"正在重命名…"
+                    sv.status_message = "正在重命名…"
                 else:
                     sv.status_message = "标题不能为空"
                 sv.rename_mode = False
@@ -453,7 +454,7 @@ def SessionsView(props) -> object:
         h(TEXT, {"styled": header_runs, "height": 1, "key": "sv-header"}),
         h(Row, None, [
             ledger,
-            h(TEXT, {"children": "\u2502", "style": _S_SEP, "height": 1}),
+            pane_divider(max(vh, len(right_children)), _S_SEP),
             h(Column, {"width": right_w}, right_children),
         ]),
     ]

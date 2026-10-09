@@ -287,7 +287,6 @@ def ListView(props: dict) -> Element:
         #   基准计算净移动 1 行）。
         base_cur = cursor_ref.current
         cur = _clamp_index(base_cur, total)
-        cur_offset = offset_ref.current
         moved = False
         if event.kind == "arrow_up":
             # ★ P3（review）：视口边界按键空转——已在首项时按上键不移动却

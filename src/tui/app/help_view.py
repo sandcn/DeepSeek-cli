@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from src.tui.core.style import Style
 from src.tui.ink import TEXT, Column, StyledRun, h, use_input, use_memo, use_state
-from src.tui.ink.helpers import truncate_runs
+from src.tui.ink.helpers import truncate_runs, truncate_runs_ellipsis
 from src.tui._screen import wcswidth_simple
 
 from ._modal_view import empty_modal_frame, is_modal_close_key, use_modal_scope
@@ -404,7 +404,7 @@ def HelpView(props) -> object:
             ),
         ]
     if width > 0:
-        header_runs = truncate_runs(header_runs, width)
+        header_runs = truncate_runs_ellipsis(header_runs, width)
         used = sum(getattr(r, "width", 1) for r in header_runs)
         pad = width - used
         if pad > 1:

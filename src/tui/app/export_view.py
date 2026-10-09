@@ -23,7 +23,7 @@ from src.tui.core.style import Style
 from src.tui.ink import TEXT, Column, StyledRun, h, use_input
 
 from ._modal_view import empty_modal_frame, is_modal_close_key, use_modal_scope
-from ._view_common import build_header_runs, char_of, viewport_rows
+from ._view_common import build_header_runs, char_of, pad_to_width
 
 __all__ = ["ExportView"]
 
@@ -45,6 +45,9 @@ _SCOPE_LABEL = {"all": "全部", "user": "仅用户", "assistant": "仅助手"}
 
 #: 表单行数（格式 / 范围 / 路径 / 执行）。
 _FORM_ROWS = 4
+#: 表单标签列宽（**显示列**）——按显示宽度对齐（``pad_to_width``），
+#: CJK 标签（"格式"/"范围"/"路径"/"执行导出"）与 ASCII 值列一致。
+_FORM_LABEL_COL = 8
 
 
 def _cycle(options: list, current: str) -> str:
@@ -148,13 +151,11 @@ def ExportView(props) -> object:
     if not visible:
         return empty_modal_frame()
 
-    vh = max(6, viewport_rows())
-
     def _row(idx: int, label: str, value: str) -> list:
         is_sel = (idx == sel and not editing)
         runs = [
             StyledRun("\u25b6 " if is_sel else "  ", _S_SEL if is_sel else None),
-            StyledRun(f"{label:<8}", _S_LABEL),
+            StyledRun(pad_to_width(label, _FORM_LABEL_COL), _S_LABEL),
             StyledRun(value, _S_SEL if is_sel else _S_VALUE),
         ]
         if is_sel and idx < 2:
@@ -170,9 +171,14 @@ def ExportView(props) -> object:
         _row(0, "格式", fmt),
         _row(1, "范围", _SCOPE_LABEL.get(scope, scope)),
         _row(2, "路径", path_display),
+        # ★ P2/P3 修复（review）：① 标签按显示宽度对齐（``pad_to_width``，
+        #   min_pad=0 与前三行值列严格对齐）；② 去掉内层重复箭头——修复前
+        #   sel==3 时前缀 ``"▶ "`` 与文本内 ``"▶ 执行导出"`` 叠加，实际渲染
+        #   "▶ ▶ 执行导出"（双箭头）。
         [
             StyledRun("\u25b6 " if sel == 3 else "  ", _S_SEL if sel == 3 else None),
-            StyledRun("执行导出" if sel != 3 else "\u25b6 执行导出", _S_OK if sel == 3 else _S_VALUE),
+            StyledRun(pad_to_width("执行导出", _FORM_LABEL_COL, min_pad=0),
+                      _S_OK if sel == 3 else _S_VALUE),
             StyledRun("   (Enter 执行)", _S_HINT),
         ],
     ]

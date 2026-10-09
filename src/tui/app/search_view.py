@@ -32,6 +32,7 @@ from ._view_common import (
     build_header_runs,
     char_of,
     handle_search_input,
+    pane_divider,
     split_panes,
     status_runs,
     viewport_rows,
@@ -359,7 +360,7 @@ def SearchView(props) -> object:
         h(TEXT, {"styled": header_runs, "height": 1, "key": "se-header"}),
         h(Row, None, [
             ledger,
-            h(TEXT, {"children": "\u2502", "style": _S_SEP, "height": 1}),
+            pane_divider(max(vh, len(right_children)), _S_SEP),
             h(Column, {"width": right_w}, right_children),
         ]),
     ]

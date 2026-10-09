@@ -58,7 +58,7 @@ from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple, truncate_width as _truncate_width
 from src.tui.ink import TEXT, Column, Row, StyledRun, h
 from src.tui.ink.hooks import use_input, usePaste, use_memo
-from src.tui.ink.helpers import truncate_runs
+from src.tui.ink.helpers import truncate_runs, truncate_runs_ellipsis
 from src.tui.ink.widgets.listview import ListView
 from src.config.model_profiles import (
     FIELD_KEYS,
@@ -1151,7 +1151,7 @@ def ModelView(props) -> object:
         StyledRun(header_hint, _S_HINT),
     ]
     if width > 0:
-        header_runs = truncate_runs(header_runs, width)
+        header_runs = truncate_runs_ellipsis(header_runs, width)
         used = sum(getattr(r, "width", 1) for r in header_runs)
         pad = width - used
         if pad > 0:

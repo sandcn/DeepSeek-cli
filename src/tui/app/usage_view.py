@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 from src.tui.core.style import Style
+from src.tui._width import wcswidth_simple
 from src.tui.ink import TEXT, Column, StyledRun, h, use_input
 from src.tui.ink.helpers import truncate_runs, wrap_runs_by_width
 
@@ -26,11 +27,12 @@ from ._modal_view import empty_modal_frame, is_modal_close_key, use_modal_scope
 from ._view_common import (
     build_header_runs,
     char_of,
+    pad_to_width,
     status_runs,
     viewport_rows,
 )
 
-__all__ = ["UsageView", "_content_rows", "_bar_runs"]
+__all__ = ["UsageView", "_content_rows", "_bar_runs", "_label_column", "_item_fields"]
 
 _S_TITLE = Style(fg=45, bold=True)
 _S_HINT = Style(fg=242)
@@ -90,8 +92,49 @@ def _bar_runs(ratio: float) -> list:
     ]
 
 
+#: 标签列宽下限（显示列）——值起始列 = 2（缩进）+ 标签列宽 + 间隔。
+_LABEL_MIN_COL = 14
+
+
+def _item_fields(item):
+    """统计条目 → ``(label, value, kind, ratio)``；非法条目返回 None。"""
+    if isinstance(item, (list, tuple)) and len(item) >= 2:
+        return (
+            item[0], item[1],
+            item[2] if len(item) > 2 else "",
+            item[3] if len(item) > 3 else None,
+        )
+    if isinstance(item, dict):
+        return (
+            item.get("label", ""), item.get("value", ""),
+            item.get("kind", ""), item.get("bar"),
+        )
+    return None
+
+
+def _label_column(sections: list) -> int:
+    """标签列宽（显示列，**含值前间隔**）——``max(_LABEL_MIN_COL, 最大标签宽 + 1)``。
+
+    ★ P2 修复（review）：修复前用 f-string ``{label:<14}``（按**字符数**填充），
+    CJK 标签与 ASCII 标签填充后显示宽度不等 → 同一列区内的值起点错位（实测
+    /usage 中 "输入（未命中）" 的值比 "合计" 右移 5 列）。现按显示宽度统一
+    列宽（取最大标签宽度 + 1 列间隔），值起点全表一致。
+    """
+    widest = 0
+    for sec in sections or []:
+        if not isinstance(sec, dict):
+            continue
+        for item in sec.get("rows") or []:
+            fields = _item_fields(item)
+            if fields is None:
+                continue
+            widest = max(widest, wcswidth_simple(str(fields[0])))
+    return max(_LABEL_MIN_COL, widest + 1)
+
+
 def _content_rows(sections: list, width: int) -> list:
     """统计区块 → 内容行（``list[list[StyledRun]]``）。"""
+    label_col = _label_column(sections)
     rows: list = []
     for sec in sections or []:
         if not isinstance(sec, dict):
@@ -104,19 +147,12 @@ def _content_rows(sections: list, width: int) -> list:
             StyledRun("\u2500" * pad, _S_SEP),
         ])
         for item in sec.get("rows") or []:
-            if isinstance(item, (list, tuple)) and len(item) >= 2:
-                label, value = item[0], item[1]
-                kind = item[2] if len(item) > 2 else ""
-                ratio = item[3] if len(item) > 3 else None
-            elif isinstance(item, dict):
-                label = item.get("label", "")
-                value = item.get("value", "")
-                kind = item.get("kind", "")
-                ratio = item.get("bar")
-            else:
+            fields = _item_fields(item)
+            if fields is None:
                 continue
+            label, value, kind, ratio = fields
             runs = [
-                StyledRun(f"  {str(label):<14}", _S_LABEL),
+                StyledRun("  " + pad_to_width(label, label_col), _S_LABEL),
                 StyledRun(str(value), _value_style(str(kind))),
             ]
             if ratio is not None:
