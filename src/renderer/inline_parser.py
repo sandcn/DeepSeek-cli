@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import string
 from bisect import bisect_left
 
 _logger = logging.getLogger(__name__)
@@ -40,6 +41,12 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
     _MAX_DEPTH = 20
     _FORMAT_CHARS: frozenset[str] = frozenset('\\`:*_~=$[<!&^@hHfFwW+|{%')
     _URL_PROTOCOLS: tuple[str, ...] = ('https://', 'http://', 'ftp://', 'ftps://')
+
+    #: 可反斜杠转义的字符集合——CommonMark：**任何 ASCII 标点**都可被转义
+    #: （``string.punctuation`` 恰为 ``!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~``）。
+    #: 修复前仅列举了其中一部分（缺 ``" % & ' , / ; ? @``），这些标点前的
+    #: 反斜杠会**原样泄漏**进正文（``a\%b`` → ``a\%b``）。
+    _ESCAPABLE_CHARS: frozenset[str] = frozenset(string.punctuation)
 
     def __init__(self, text: str):
         self._text = text
@@ -243,7 +250,7 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
         try:
             if self._pos + 1 < self._n and self._text[self._pos] == '\\':
                 ch = self._text[self._pos + 1]
-                if ch in r'\`*_{}[]()#+-.!~^<>$=:|':
+                if ch in self._ESCAPABLE_CHARS:
                     self._pos += 2
                     return TextNode(content=ch)
             return None
@@ -254,29 +261,38 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
     # ── 行内代码 ─────────────────────────────────────────
 
     def _try_inline_code(self) -> InlineNode | None:
+        """行内代码 `` `…` ``（CommonMark 反引号串语义）。
+
+        起始为**连续 k 个反引号**（k ≥ 1），结束须为**恰好 k 个**反引号
+        （修复前只支持 k=1/2，`` ``` ` `` ``` 等三反引号串被误当双反引号，
+        内容错位）。内容保留软换行（与段落「软换行=换行」的终端呈现一致，
+        行内代码跨软换行同样按行拆开）。
+        """
         try:
             if self._text[self._pos] != '`':
                 return None
             saved = self._pos
-            self._pos += 1
-            is_double = False
-            if self._pos < self._n and self._text[self._pos] == '`':
-                is_double = True
+            n = self._n
+            start = self._pos
+            while self._pos < n and self._text[self._pos] == '`':
                 self._pos += 1
+            open_len = self._pos - start
             content_start = self._pos
-            delim = '``' if is_double else '`'
-            found = False
-            while self._pos < self._n:
-                if self._try_match_str(delim):
-                    found = True
-                    break
-                self._pos += 1
-            if not found:
-                self._pos = saved
-                return None
-            content = self._text[content_start:self._pos]
-            self._pos += len(delim)
-            return InlineCodeNode(content=content)
+            i = self._pos
+            while i < n:
+                if self._text[i] == '`':
+                    j = i
+                    while j < n and self._text[j] == '`':
+                        j += 1
+                    if j - i == open_len:
+                        content = self._text[content_start:i]
+                        self._pos = j
+                        return InlineCodeNode(content=content)
+                    i = j
+                else:
+                    i += 1
+            self._pos = saved
+            return None
         except Exception:
             _logger.debug("_try_inline_code 异常，降级处理", exc_info=True)
             return None

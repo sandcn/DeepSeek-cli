@@ -124,6 +124,14 @@ _CONTAINER_PREVIEW_FULL_LINES = 48
 #: 列表项内块级容器）。
 _LIST_BLOCK_THROTTLE_KEY = ("list_block",)
 
+#: 代码块**活动行**（未换行尾行）预览的窗口上限：超长活动行只渲染尾部该
+#: 字符数。pygments 高亮成本与行长度成正比，流式期间每帧对**整行**重解析
+#: 会退化为 O(n²)（minified JSON / base64 / 长 URL 单行可达数十万字符）；
+#: 取较小的独立窗口既保证「最新内容始终可见」（始终显示尾部），又把单帧
+#: 成本封顶（与段落/HTML 的 ``_PREVIEW_MAX_LINE_CHARS`` 解耦——后者对
+#: 纯文本有快速路径，代码高亮没有）。
+_CODE_ACTIVE_MAX_CHARS = 512
+
 #: 数学块预览的源码长度上限：超过后预览降级为提示框（二维排版成本随长度
 #: 线性增长，超长公式即便节流也仍随长度增长；提交路径不受影响）。真实
 #: LaTeX 公式远小于该值，超过基本为模型异常输出。
@@ -1193,16 +1201,16 @@ class AnsiStreamRenderer:
 
         pygments 词法高亮的成本与行长度成正比；流式期间活动行每帧重渲，超长
         单行（minified JSON / base64 / 长 URL）会退化为 O(n²)。仅对**活动行**
-        取 ``_PREVIEW_MAX_LINE_CHARS`` 字符的尾部窗口（与段落活动行同一口径），
-        已确定的历史行不受影响（它们由逐行高亮缓存复用）。提交路径仍渲染完整行，
-        预览窗口只影响流式中间态的可见长度。
+        取 ``_CODE_ACTIVE_MAX_CHARS`` 字符的尾部窗口——始终显示**最新**内容，
+        单帧成本封顶。已确定的历史行不受影响（它们由逐行高亮缓存复用）。
+        提交路径仍渲染完整行，预览窗口只影响流式中间态的可见长度。
 
         调用契约：``start``、``n`` 为活动行区间（通常恰为最后一行
         ``n-1..n``）；返回新列表（不修改调用方/解析器持有的行列表）。
         """
         if n <= start:
             return []
-        limit = _PREVIEW_MAX_LINE_CHARS
+        limit = _CODE_ACTIVE_MAX_CHARS
         out: list[str] = []
         last = n - 1
         for idx in range(start, n):
@@ -1309,11 +1317,11 @@ class AnsiStreamRenderer:
             # 活动行（最后一行，内容逐帧变化）：每帧重渲以保证预览实时，
             # 但不写入共享缓存（否则活动行的每个中间前缀都会成为缓存条目，
             # 持续膨胀并可能触发整体清空）。
-            # ★ 性能（超长单行）：活动行超过 ``_PREVIEW_MAX_LINE_CHARS`` 时
-            #   只词法高亮**尾部窗口**——pygments 高亮成本与行长度成正比，
-            #   无窗口时 minified JSON / base64 等超长单行（可达数十万字符）
-            #   每帧重解析整行，累计 O(n²)（80k 字符单行代码流式实测 5.8s）。
-            #   窗口化与段落活动行同口径，提交时仍完整渲染。
+            # ★ 性能（超长单行）：活动行只词法高亮**尾部窗口**
+            #   （``_CODE_ACTIVE_MAX_CHARS``）——pygments 高亮成本与行长度成正
+            #   比，无窗口时 minified JSON / base64 等超长单行（可达数十万字符）
+            #   每帧重解析整行，累计 O(n²)（20 万字符单行实测 35s）。窗口始终
+            #   含**最新**内容，故刷新实时、无滞后；提交时仍完整渲染。
             rows.extend(
                 _code.highlight_code_lines(
                     self._code_active_window(src_lines, stable_new, n),

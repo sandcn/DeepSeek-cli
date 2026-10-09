@@ -73,6 +73,8 @@ _CODE_THEME = "monokai"
 _HEX_256_CACHE: dict = {}
 #: fg 色号 → Style 对象缓存（同色 Style 共享，避免每 token 重建 frozen dataclass）
 _FG_STYLE_CACHE: dict = {}
+#: 「尚无样式」哨兵（``None`` 是合法样式值，需区分）
+_NO_FG = object()
 #: 单行「语言 + 主题 + 源码」→ 高亮行缓存。代码块内重复行（空行、``}``、
 #: ``else:`` 等）命中后免词法高亮；有界，超限整体清空（简单、无淘汰开销）。
 _LINE_HIGHLIGHT_CACHE: dict = {}
@@ -113,9 +115,17 @@ def _highlight_line(line: str, lexer, pyg_style) -> AnsiLine:
 
     pygments 2.20：样式存于 ``Style.styles``（token → '#RRGGBB' 字符串），
     无 ``get_style_for_token``。解析 hex → 256 色号（带缓存）。
+
+    ★ 性能：连续**同样式** token 先在局部列表累积、样式切换时才构造一个
+    ``Run``——修复前逐 token 调 ``AnsiLine.append``（每次构造 ``Run`` 并做
+    相邻合并），对「长字符串按字符出 token」的词法器（如 JSON 的超长字符串）
+    会退化为每字符一次 Run 构造（20 万字符单行 ~2.5s）。合并后同样式连续段
+    只产生一个 Run。
     """
     aline = AnsiLine()
     try:
+        buf: list[str] = []
+        cur_style = _NO_FG
         for ttype, value in lexer.get_tokens(line):
             if not value:
                 continue
@@ -134,7 +144,16 @@ def _highlight_line(line: str, lexer, pyg_style) -> AnsiLine:
                 if fg is not None:
                     break
                 t = getattr(t, "parent", None)
-            aline.append(val, _fg_style(fg))
+            style = _fg_style(fg)
+            if style is not cur_style:
+                if buf:
+                    aline.append("".join(buf), cur_style)
+                buf = [val]
+                cur_style = style
+            else:
+                buf.append(val)
+        if buf:
+            aline.append("".join(buf), cur_style)
         return aline
     except Exception:
         _logger.debug("代码高亮失败，降级纯文本", exc_info=True)

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import string
 
 from .inline_nodes import (
     InlineNode, LinkNode, ImageNode,
@@ -15,6 +16,9 @@ from .inline_nodes import (
 )
 
 _logger = logging.getLogger(__name__)
+
+#: 链接/图片标题中可「反斜杠转义」的字符（CommonMark：任意 ASCII 标点）。
+_TITLE_ESCAPABLE: frozenset[str] = frozenset(string.punctuation)
 
 
 def _split_attr_tokens(body: str) -> list[str]:
@@ -170,17 +174,33 @@ class InlineLinksMixin:
             return ''
         title_start = self._pos
         self._pos += 1
-        t_start = self._pos
-        while self._pos < self._n and self._text[self._pos] != closer:
-            if closer == ')' and self._text[self._pos] == '(':
+        out_chars: list[str] = []
+        while self._pos < self._n:
+            c = self._text[self._pos]
+            if c == '\\' and self._pos + 1 < self._n:
+                # 反斜杠转义：转义后的 ASCII 标点还原为字面字符（修复前
+                # 标题里的 ``\"`` 被当成标题结束符，整条链接解析失败、原样
+                # 泄漏——``[t](url "a \"b\" c")``）。
+                nxt = self._text[self._pos + 1]
+                if nxt in _TITLE_ESCAPABLE:
+                    out_chars.append(nxt)
+                    self._pos += 2
+                    continue
+                out_chars.append(c)
+                self._pos += 1
+                continue
+            if c == closer:
+                break
+            if closer == ')' and c == '(':
                 self._pos = title_start
                 return ''
+            out_chars.append(c)
             self._pos += 1
-        if self._pos >= self._n:
+        else:
             # 未闭合：回退到标题之前（后续按普通文本处理，不吞字符）
             self._pos = title_start
             return ''
-        title = self._text[t_start:self._pos]
+        title = ''.join(out_chars)
         self._pos += 1
         # 跳过尾随空白
         while self._pos < self._n and self._text[self._pos] in ' \t':

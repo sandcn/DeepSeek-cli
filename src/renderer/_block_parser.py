@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import string
 _logger = logging.getLogger(__name__)
 
 from ._utils import (
@@ -34,6 +35,10 @@ from ._block_parser_state import (
 )
 from ._block_parser_stream import _BlockParserStreamMixin
 from ._html_attrs import parse_open_tag, parse_attrs, language_of, align_of
+
+
+#: 链接定义「下一行标题」中的可转义字符（CommonMark：任意 ASCII 标点）
+_REF_TITLE_ESCAPABLE: frozenset[str] = frozenset(string.punctuation)
 
 
 def _match_display_env(stripped: str) -> tuple[str, str] | None:
@@ -153,6 +158,16 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # 脚注续段待定状态是否跨过空行（GFM 多段落脚注：空行后缩进仍属正文）
         self._pending_fn_blank: bool = False
 
+        # 参考式链接定义的多行标题待定（CommonMark：标题可写在 URL 的**下一
+        # 行**、缩进 ≤3 空格并以引号/括号定界）。记录 ref_id，下一行若为标题
+        # 行则补全 ref_map、不再作为正文输出（修复前标题行泄漏为段落文本）。
+        self._pending_ref_title: str | None = None
+        # 参考式链接定义的「URL 在下一行」待定（``[id]:`` 独占一行）——
+        # 下一行为缩进 URL（可带同行标题）时补全 ref_map；若下一行不是 URL，
+        # 则把暂存的原定义行按段落输出（不静默丢弃）。
+        self._pending_ref_def: str | None = None
+        self._pending_ref_def_text: str = ""
+
         # 延迟 fence（流式场景）
         self._deferred_fence: dict | None = None
 
@@ -225,6 +240,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._in_admonition = False
         self._admonition_type = ''
         self._pending_fn_def = None
+        self._pending_ref_title = None
+        self._pending_ref_def = None
+        self._pending_ref_def_text = ""
         self._def_cont_buffer.clear()
         self._list_indents.clear()
 
@@ -346,6 +364,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             self._pending_fm = None
             self._doc_started = True
             self._parse_normal_line(delim + '\n', tokens)
+
+        # ── 第1.3步：未补全的 ``[id]:``（URL 待定）按段落输出 ──
+        if self._pending_ref_def_text:
+            self._pending_lines.append(self._pending_ref_def_text)
+            self._pending_ref_def_text = ""
+            self._pending_ref_def = None
 
         # ── 第1.5步：处理未解析的延迟 fence ──
         if self._deferred_fence is not None:
@@ -871,12 +895,24 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         """
         out: list[Token] = []
         stripped_tail = _strip_left(tail).rstrip() if tail else ""
-        # Setext 下划线（=== / ---）：前一行成为标题（与提交语义一致）
-        if (tail and len(lines) == 1 and lines[0].strip()
+        # Setext 下划线（=== / ---）：前一行成为标题（与提交语义一致）；
+        # 多行上文 + ``=`` 下划线在提交路径按分隔线处理（``-`` 的多行形态由
+        # ``_classify_preview_line`` 归入分隔线），此处显式对齐。
+        if (tail and lines and lines[0].strip()
                 and self._is_preview_setext_underline(stripped_tail)):
-            level = 1 if stripped_tail[0] == '=' else 2
-            return [Token(TokenType.HEADING, lines[0],
-                          {"level": level, "preview": True})]
+            if len(lines) == 1:
+                level = 1 if stripped_tail[0] == '=' else 2
+                return [Token(TokenType.HEADING, lines[0],
+                              {"level": level, "preview": True})]
+            if stripped_tail[0] == '=':
+                tail_lines = self._preview_tail(lines)
+                meta: dict = {"preview": True}
+                dropped = len(lines) - len(tail_lines)
+                if dropped:
+                    meta["preview_dropped"] = dropped
+                out.append(Token(TokenType.PARAGRAPH, "\n".join(tail_lines), meta))
+                out.append(Token(TokenType.HR, "", {"preview": True}))
+                return out
         if lines:
             tail_lines = self._preview_tail(lines)
             meta: dict = {"preview": True}
@@ -968,9 +1004,11 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                           {"depth": depth, "preview": True}),
                 ]
 
-            # 分隔线（仅由同一字符与空格组成且 ≥3）——``=`` 亦为分隔线字符
-            # （单独出现时；前一行仅一行时已在上游按 Setext 标题处理）
-            if first in '-*_=':
+            # 分隔线（仅由同一字符与空格组成且 ≥3）。★ ``=`` 不是分隔线字符
+            # （CommonMark HR 仅 ``-`` / ``*`` / ``_``）——单独出现的 ``=====``
+            # 按段落预览（与提交路径一致）；上文多行 + ``=`` 下划线的分隔线
+            # 语义由 ``_preview_tokens_for_normal`` 显式处理。
+            if first in '-*_':
                 n = 0
                 ok = True
                 for c in stripped:
@@ -1243,6 +1281,35 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # ── 注释行：[//]: # (comment) 或 [//]: # comment ──
         if stripped.startswith('[//]:'):
             return
+
+        # ── 参考式链接定义的多行标题（前一行为 ``[id]: url``，本行为缩进
+        #    标题）——补全 ref_map 并消费本行（不作为正文输出）。 ──
+        if self._pending_ref_title is not None:
+            ref_id = self._pending_ref_title
+            self._pending_ref_title = None
+            title = self._try_ref_title_line(line)
+            if title is not None:
+                pair = self._ctx.ref_map.get(ref_id)
+                if pair is not None:
+                    self._ctx.ref_map[ref_id] = (pair[0], title)
+                return
+
+        # ── 参考式链接定义的「URL 在下一行」（前一行为 ``[id]:``，本行为
+        #    缩进 URL，可带同行标题）——补全 ref_map 并消费本行。 ──
+        if self._pending_ref_def is not None:
+            ref_id = self._pending_ref_def
+            pending_text = self._pending_ref_def_text
+            self._pending_ref_def = None
+            self._pending_ref_def_text = ""
+            parsed = self._try_ref_def_url_line(line)
+            if parsed is not None:
+                url, title = parsed
+                self._ctx.ref_map[ref_id] = (url, title)
+                return
+            # 下一行不是 URL → 暂存的原定义行按段落输出（不静默丢弃），
+            # 本行继续常规处理。
+            if pending_text:
+                self._pending_lines.append(pending_text)
 
         # ── 列表项内的块级容器（缩进 ≥ 列表内容列 → 收集/子解析）──
         if self._handle_list_block_line(line, stripped, tokens):
@@ -2023,6 +2090,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                             tokens.append(Token(TokenType.HEADING, heading_text,
                                                 {"level": level}))
                             return True
+                elif first == '=':
+                    # ★ ``=`` 不是分隔线字符（CommonMark 的 HR 仅 ``-`` / ``*`` /
+                    #   ``_``）——无上文段落时整行 ``=====`` 应作为普通段落文本，
+                    #   修复前被无条件当作 HR（凭空产生一条分隔线，且
+                    #   ``text\\n\\n=====`` 也会误生成 HR）。
+                    return False
                 self._flush_paragraph(tokens)
                 self._emit_blockquote_close(tokens)
                 self._list_indents.clear()
@@ -2620,6 +2693,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._flush_paragraph(tokens)
         self._emit_blockquote_close(tokens)
         self._list_indents.clear()
+        # 空行打断「参考式链接定义 + 下一行标题」的关联（标题须紧跟定义行）；
+        # 未补全的 ``[id]:``（URL 待定）按段落输出，不静默丢弃。
+        self._pending_ref_title = None
+        self._pending_ref_def = None
+        if self._pending_ref_def_text:
+            self._pending_lines.append(self._pending_ref_def_text)
+            self._pending_ref_def_text = ""
         if self._table_pending_rows:
             self._emit_pending_table(tokens)
         if self._state == _State.TABLE_ACTIVE:
@@ -3377,10 +3457,111 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     title = after_url[1:end]
             if url and ref_id:
                 self._ctx.ref_map[ref_id] = (url, title)
-            return True
+                # 同行无标题 → 下一行可能是缩进标题（CommonMark 允许标题写在
+                # 定义的下一行）；记录待定，下一行若为标题行则补全。
+                self._pending_ref_title = ref_id if not title else None
+                self._pending_ref_def = None
+                return True
+            if ref_id and not rest:
+                # ``[id]:`` 独占一行 → URL 在下一行（CommonMark 允许定义的
+                # 目标写在下一行）；记录待定，下一行若是缩进 URL 则补全。
+                self._pending_ref_title = None
+                self._pending_ref_def = ref_id
+                self._pending_ref_def_text = stripped.rstrip()
+                return True
+            self._pending_ref_title = None
+            self._pending_ref_def = None
+            self._pending_ref_def_text = ""
+            # 目标为空且无下一行形态 → 非定义（按段落文本处理，不静默丢弃）
+            return False
         except Exception:
             _logger.debug("_try_ref_link异常，返回False", exc_info=True)
             return False
+
+    @staticmethod
+    def _try_ref_title_line(line: str) -> str | None:
+        """参考式链接定义「下一行标题」行 → 标题文本（否则 ``None``）。
+
+        CommonMark 链接定义允许标题写在 URL 的**下一行**（缩进不超过 3 空格，
+        用 ``"`` / ``'`` / ``(`` 定界，标题后仅允许空白）。本方法不消费行、
+        不改状态——调用方据返回值决定是否把该行并入定义（而非输出为正文）。
+        """
+        if not line:
+            return None
+        # 缩进须 ≤ 3 空格（Tab 缩进不属于标题行）
+        i = 0
+        n = len(line)
+        while i < n and line[i] == ' ':
+            i += 1
+        if i > 3:
+            return None
+        if i >= n or line[i] in ('\t',):
+            return None
+        stripped = line[i:].rstrip('\n').rstrip()
+        if len(stripped) < 2:
+            return None
+        opener = stripped[0]
+        if opener in ('"', "'"):
+            closer = opener
+        elif opener == '(':
+            closer = ')'
+        else:
+            return None
+        body = stripped[1:]
+        out: list[str] = []
+        j = 0
+        m = len(body)
+        while j < m:
+            c = body[j]
+            if c == '\\' and j + 1 < m:
+                nxt = body[j + 1]
+                if nxt in _REF_TITLE_ESCAPABLE:
+                    out.append(nxt)
+                    j += 2
+                    continue
+                out.append(c)
+                j += 1
+                continue
+            if c == closer:
+                if body[j + 1:].strip():
+                    return None  # 标题后还有内容 → 非标题行
+                return ''.join(out)
+            if closer == ')' and c == '(':
+                return None  # 圆括号标题内不允许未转义的 ``(``
+            out.append(c)
+            j += 1
+        return None
+
+    def _try_ref_def_url_line(self, line: str) -> tuple[str, str] | None:
+        """参考式链接定义「下一行 URL」行 → ``(url, title)``（否则 ``None``）。
+
+        CommonMark 允许链接定义的目标写在 ``[id]:`` 的**下一行**（缩进不超过
+        3 空格）；同行还可跟标题。本方法不消费行、不改状态。
+        """
+        if not line:
+            return None
+        i = 0
+        n = len(line)
+        while i < n and line[i] == ' ':
+            i += 1
+        if i > 3 or i >= n or line[i] == '\t':
+            return None
+        stripped = line[i:].rstrip('\n').rstrip()
+        if not stripped or stripped[0] in '[\'"(':
+            return None
+        url_end = self._find_url_end(stripped)
+        url = stripped[:url_end]
+        if not url:
+            return None
+        title = ''
+        after = stripped[url_end:].strip()
+        if after and after[0] in '"\'':
+            quote = after[0]
+            end = after.find(quote, 1)
+            if end > 0:
+                title = after[1:end]
+        return url, title
+
 
     # ── 块刷出 ─────────────────────────────────────────
 
