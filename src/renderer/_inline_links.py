@@ -48,6 +48,63 @@ _CITATION_KEY_CHARS = frozenset(
 )
 
 
+def _is_uri_autolink(content: str) -> bool:
+    """``<scheme:rest>`` 是否为合法绝对 URI autolink（CommonMark §2.4）。
+
+    scheme 为 ``[A-Za-z][A-Za-z0-9+.-]{1,31}``（2~32 字符），冒号后内容不得
+    含空白、控制字符与 ``<`` / ``>``。
+    """
+    colon = content.find(':')
+    if colon < 2 or colon > 32:
+        return False
+    scheme = content[:colon]
+    head = scheme[0]
+    if not (head.isascii() and head.isalpha()):
+        return False
+    for ch in scheme[1:]:
+        if not (ch.isascii() and (ch.isalnum() or ch in '+.-')):
+            return False
+    rest = content[colon + 1:]
+    if not rest:
+        return False
+    for ch in rest:
+        if ch <= ' ' or ch in '<>':
+            return False
+    return True
+
+
+def normalize_ref_label(label: str) -> str:
+    """参考式链接 / 脚注标签归一化（CommonMark：去首尾空白、内部空白折叠为
+    单个空格、Unicode case fold）。
+
+    ``[Foo][]`` 与 ``[foo]: url`` 是同一引用；``[Î](../url)`` 等非 ASCII 标签
+    按 Unicode case fold 匹配。修复前直接以原文为键，大小写/空白差异导致
+    引用查找失败（``[Foo][]`` 渲染为字面 ``[Foo]``）。
+    """
+    return ' '.join(str(label).split()).casefold()
+
+
+def unescape_label(label: str) -> str:
+    """还原标签内的反斜杠转义（``[foo\\!]`` → ``foo!``）。
+
+    CommonMark：链接标签中的反斜杠转义在匹配前被还原。
+    """
+    if '\\' not in label:
+        return label
+    out: list[str] = []
+    i = 0
+    n = len(label)
+    while i < n:
+        ch = label[i]
+        if ch == '\\' and i + 1 < n and label[i + 1] in _TITLE_ESCAPABLE:
+            out.append(label[i + 1])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return ''.join(out)
+
+
 def _parse_citation_keys(link_text: str) -> list[str]:
     """``@key`` / ``[-@key]`` / ``[@a; @b, p. 3]`` → key 列表（``-`` 前缀保留）。
 
@@ -90,27 +147,46 @@ class InlineLinksMixin:
     # ── 图片 ──────────────────────────────────────────────
 
     def _scan_url_with_parens(self) -> str | None:
-        """扫描 URL，支持 <url> 和裸 URL（含括号平衡）。
+        """扫描 URL，支持 <url> 和裸 URL（含括号平衡 + 反斜杠转义）。
 
         从 self._pos 开始扫描，前进 self._pos 到 URL 之后。
         返回 URL 字符串或 None（出错时）。
+
+        ★ 反斜杠转义（CommonMark）：URL 中的 ``\\(`` / ``\\)`` 等转义序列
+        还原为字面字符，且**不参与括号平衡**——修复前 ``[a](b\\)c)`` 在 ``\\)``
+        处提前结束 URL 扫描，整条链接解析失败、标记原样泄漏。
         """
         if self._pos >= self._n:
             return None
-        url_start = self._pos
         if self._text[self._pos] == '<':
             self._pos += 1
-            while self._pos < self._n and self._text[self._pos] != '>':
+            out: list[str] = []
+            while self._pos < self._n:
+                ch = self._text[self._pos]
+                if ch == '\\' and self._pos + 1 < self._n \
+                        and self._text[self._pos + 1] in _TITLE_ESCAPABLE:
+                    out.append(self._text[self._pos + 1])
+                    self._pos += 2
+                    continue
+                if ch == '>':
+                    self._pos += 1
+                    return ''.join(out)
+                if ch in '<\n':
+                    # ``<`` 或换行不得出现在尖括号目标内 → 非链接目标
+                    return None
+                out.append(ch)
                 self._pos += 1
-            if self._pos >= self._n:
-                return None
-            url = self._text[url_start + 1:self._pos]
-            self._pos += 1
-            return url
-        # 裸 URL：扫描到空格或平衡的 )
+            return None
+        # 裸 URL：扫描到空白或平衡的 )
         paren_depth = 0
+        out = []
         while self._pos < self._n:
             ch = self._text[self._pos]
+            if ch == '\\' and self._pos + 1 < self._n \
+                    and self._text[self._pos + 1] in _TITLE_ESCAPABLE:
+                out.append(self._text[self._pos + 1])
+                self._pos += 2
+                continue
             if ch in ' \t\n' and paren_depth == 0:
                 break
             if ch == '(':
@@ -119,20 +195,25 @@ class InlineLinksMixin:
                 if paren_depth == 0:
                     break
                 paren_depth -= 1
+            out.append(ch)
             self._pos += 1
-        return self._text[url_start:self._pos]
+        return ''.join(out)
 
     def _scan_title(self) -> str:
-        """扫描可选的链接标题，跳过前导/尾随空白。
+        """扫描可选的链接标题，跳过前导/尾随空白（含软换行）。
 
         支持 CommonMark 三种定界：双引号 ``"..."``、单引号 ``'...'`` 与
         圆括号 ``(...)``（修复前仅支持前两种，``[t](url (title))`` 因 URL
         扫描后被 ``(`` 卡住而整体解析失败、原样泄漏）。
 
+        ★ 标题可写在链接目标的**下一行**（``[t](   /uri\\n  "title"  )``）——
+        前导空白跳过时一并跳过换行；修复前遇换行即判定无标题，跨行链接整体
+        解析失败、标记原样泄漏。
+
         从 self._pos 开始扫描，返回标题字符串（可为空；无标题/未闭合时
         位置不变）。完成后 self._pos 指向标题末尾空白之后。
         """
-        while self._pos < self._n and self._text[self._pos] in ' \t':
+        while self._pos < self._n and self._text[self._pos] in ' \t\n':
             self._pos += 1
         if self._pos >= self._n:
             return ''
@@ -233,15 +314,15 @@ class InlineLinksMixin:
                 if self._pos < self._n and self._text[self._pos] == '(':
                     self._pos += 1
                     # ── 手动解析 URL + 可选尺寸 + 可选标题，兼容 =WxH 语法 ──
-                    # 1) 解析 URL
+                    # 1) 解析 URL（``<>`` 空目标合法）
                     url = self._scan_url_with_parens()
-                    if not url:
+                    if url is None:
                         self._pos = saved
                         return None
 
-                    # 2) 跳过空白，尝试解析 =WxH 尺寸
+                    # 2) 跳过空白（含软换行），尝试解析 =WxH 尺寸
                     width = height = 0
-                    while self._pos < self._n and self._text[self._pos] in ' \t':
+                    while self._pos < self._n and self._text[self._pos] in ' \t\n':
                         self._pos += 1
 
                     # 检查 =WxH 尺寸
@@ -289,12 +370,18 @@ class InlineLinksMixin:
                 elif self._pos < self._n and self._text[self._pos] == '[':
                     self._pos += 1
                     ref_start = self._pos
-                    while self._pos < self._n and self._text[self._pos] != ']':
+                    while self._pos < self._n:
+                        ch = self._text[self._pos]
+                        if ch == '\\' and self._pos + 1 < self._n:
+                            self._pos += 2
+                            continue
+                        if ch == ']':
+                            break
                         self._pos += 1
                     if self._pos >= self._n:
                         self._pos = saved
                         return None
-                    ref_id = self._text[ref_start:self._pos]
+                    ref_id = unescape_label(self._text[ref_start:self._pos])
                     self._pos += 1
                     # ★ 折叠引用式图片 ``![alt][]``（CommonMark collapsed
                     #   reference image）：ref_id 为空时以 alt 文本为标签
@@ -302,15 +389,18 @@ class InlineLinksMixin:
                     #   ref_id 恒为空 → url 占位 ``[ref:]``，即便文档中定义了
                     #   ``[alt]: url`` 也渲染为 ``🖼️ alt ([ref:])``（永不展开）。
                     collapsed = False
-                    if not ref_id:
-                        ref_id = alt.strip()
+                    if not ref_id.strip():
+                        ref_id = unescape_label(alt.strip())
                         collapsed = True
                         if not ref_id or '\n' in ref_id:
                             self._pos = saved
                             return None
-                    node = ImageNode(content=alt, url=f'[ref:{ref_id}]')
+                    node = ImageNode(content=alt,
+                                     url=f'[ref:{normalize_ref_label(ref_id)}]')
+                    node.meta = {'label': ref_id}
                     if collapsed:
-                        node.meta = {'shortcut': True, 'collapsed': True}
+                        node.meta['shortcut'] = True
+                        node.meta['collapsed'] = True
                     return node
                 else:
                     # ★ 快捷引用式图片 ``![alt]``（CommonMark shortcut reference
@@ -321,8 +411,10 @@ class InlineLinksMixin:
                     #   原文 ``![alt]``（与链接未命中保留方括号文本一致）。
                     ref_id = alt.strip()
                     if ref_id and len(ref_id) <= 256 and '\n' not in ref_id:
-                        node = ImageNode(content=alt, url=f'[ref:{ref_id}]')
-                        node.meta = {'shortcut': True}
+                        node = ImageNode(
+                            content=alt,
+                            url=f'[ref:{normalize_ref_label(ref_id)}]')
+                        node.meta = {'shortcut': True, 'label': ref_id}
                         return node
                     self._pos = saved
                     return None
@@ -332,13 +424,26 @@ class InlineLinksMixin:
             return None
 
     def _parse_link_url(self) -> tuple[str | None, str]:
+        """解析链接目标 ``(url "title")``（含空目标与跨行目标）。
+
+        - 空目标 ``[t]()`` / ``[t](<>)``：CommonMark 合法（URL 为空串）——
+          修复前整体解析失败、标记原样泄漏；
+        - 目标与标题之间的空白可含换行（``[t](   /uri\\n  "title"  )``）。
+
+        Returns:
+            ``(url, title)``；解析失败返回 ``(None, '')``（调用方回退整体）。
+        """
         try:
-            while self._pos < self._n and self._text[self._pos] in ' \t':
+            while self._pos < self._n and self._text[self._pos] in ' \t\n':
                 self._pos += 1
-            if self._pos >= self._n or self._text[self._pos] == ')':
+            if self._pos >= self._n:
                 return None, ''
+            if self._text[self._pos] == ')':
+                # 空目标：``[t]()``
+                self._pos += 1
+                return '', ''
             url = self._scan_url_with_parens()
-            if not url:
+            if url is None:
                 return None, ''
             title = self._scan_title()
             if self._pos >= self._n or self._text[self._pos] != ')':
@@ -443,29 +548,40 @@ class InlineLinksMixin:
             elif self._pos < self._n and self._text[self._pos] == '[':
                 self._pos += 1
                 ref_start = self._pos
-                while self._pos < self._n and self._text[self._pos] != ']':
+                while self._pos < self._n:
+                    ch = self._text[self._pos]
+                    if ch == '\\' and self._pos + 1 < self._n:
+                        self._pos += 2
+                        continue
+                    if ch == ']':
+                        break
                     self._pos += 1
                 if self._pos >= self._n:
                     self._pos = saved
                     return None
-                ref_id = self._text[ref_start:self._pos]
+                ref_id = unescape_label(self._text[ref_start:self._pos])
                 self._pos += 1
                 collapsed = False
                 # ★ 折叠引用式链接 ``[text][]``：ref_id 为空时用链接文字作 ref_id
-                if not ref_id:
-                    ref_id = link_text.strip()
+                if not ref_id.strip():
+                    ref_id = unescape_label(link_text.strip())
                     collapsed = True
                     if not ref_id:
                         self._pos = saved
                         return None
+                # ★ 标签归一化（大小写不敏感 + 空白折叠）：``[Foo][]`` 与
+                #   ``[foo]: url`` 匹配（CommonMark）。
+                ref_key = normalize_ref_label(ref_id)
                 # ★ 修复：为参考式链接解析 children，确保渲染时能看到链接文字
                 inner_parser = self.__class__(link_text)
                 children = inner_parser.parse()
                 link_content = render_inline_to_text(children)
-                node = LinkNode(url=f'[ref:{ref_id}]', content=link_content,
+                node = LinkNode(url=f'[ref:{ref_key}]', content=link_content,
                                 children=children)
+                node.meta = {'label': ref_id}
                 if collapsed:
-                    node.meta = {'shortcut': True, 'collapsed': True}
+                    node.meta['shortcut'] = True
+                    node.meta['collapsed'] = True
                 return node
             else:
                 # ── 快捷引用式链接 ``[ref]``（引用定义在文档其他位置）──
@@ -475,9 +591,9 @@ class InlineLinksMixin:
                 if ref_id and len(ref_id) <= 256 and '\n' not in ref_id:
                     inner_parser = self.__class__(link_text)
                     children = inner_parser.parse()
-                    node = LinkNode(url=f'[ref:{ref_id}]', content=link_text,
-                                    children=children)
-                    node.meta = {'shortcut': True}
+                    node = LinkNode(url=f'[ref:{normalize_ref_label(ref_id)}]',
+                                    content=link_text, children=children)
+                    node.meta = {'shortcut': True, 'label': ref_id}
                     return node
                 self._pos = saved
                 return None
@@ -504,9 +620,15 @@ class InlineLinksMixin:
                 return None
             content = self._text[content_start:self._pos]
             self._pos += 1
-            if any(content.startswith(p) for p in ('http://', 'https://', 'ftp://', 'ftps://')):
+            # ── 绝对 URI autolink（CommonMark：任意 scheme，``<irc://…>`` /
+            #    ``<a+b+c:d>`` / ``<made-up-scheme://x>`` 均合法）──
+            #    修复前仅识别 http/https/ftp/ftps，其余 scheme 的合法 autolink
+            #    原样输出（不渲染为链接）。
+            if _is_uri_autolink(content):
                 return AutoLinkNode(url=content, content=content)
-            if '@' in content and '.' in content:
+            # ── 邮箱 autolink（``\`` 等非法字符出现时不成立——CommonMark
+            #    例 ``<foo\+@bar.example.com>`` 不是 autolink）──
+            if '@' in content and '.' in content and '\\' not in content:
                 at_idx = content.index('@')
                 if at_idx > 0 and at_idx < len(content) - 1:
                     domain = content[at_idx + 1:]

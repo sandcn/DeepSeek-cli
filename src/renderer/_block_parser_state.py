@@ -27,14 +27,36 @@ _HTML_HEADING_LEVELS: dict[str, int] = {
     'h1': 1, 'h2': 2, 'h3': 3, 'h4': 4, 'h5': 5, 'h6': 6,
 }
 
-#: KaTeX auto-render 支持的「显示模式环境」——不需要 ``$$`` 定界符即可
-#: 直接作为公式块渲染（``\begin{align}…\end{align}`` 等）。
+#: ``\begin{env}`` 环境直接作为公式块渲染（无需 ``$$`` 定界符）的环境集合。
+#: 覆盖渲染层 ``src/renderer/ansi/_math_env.py`` 的 ``KNOWN_ENVS`` 全集（矩阵 /
+#: cases / 对齐 / 多行 / 交换图 / 列格式数组等）——修复前仅列出部分环境，
+#: ``\begin{cases}`` / ``\begin{matrix}`` / ``\begin{split}`` 等落到段落，
+#: 环境语法完全失效（渲染为字面 ``\begin{cases}…`` 文本）。两处集合的同步由
+#: ``tests/test_ansi_markdown_syntax_v9.py`` 的守护断言保证。
 _DISPLAY_MATH_ENVS: frozenset[str] = frozenset({
+    # ── 单列居中（CENTER_ENVS）──
     "equation", "equation*", "displaymath", "math", "dmath",
-    "align", "align*", "alignat", "alignat*",
-    "gather", "gather*", "multline", "multline*",
-    "flalign", "flalign*", "eqnarray", "eqnarray*",
-    "dgroup", "mathdisplay", "CD",
+    "dgroup", "mathdisplay", "gather", "gather*", "gathered",
+    "lgathered", "rgathered",
+    # ── 对齐（ALIGN_ENVS）──
+    "align", "align*", "aligned", "alignedat", "alignedat*",
+    "alignat", "alignat*", "split", "eqnarray", "eqnarray*",
+    "flalign", "flalign*", "IEEEeqnarray", "IEEEeqnarray*",
+    # ── 多行（MULTLINE_ENVS）──
+    "multline", "multline*", "multlined",
+    # ── 矩阵（MATRIX_ENVS）──
+    "matrix", "matrix*", "pmatrix", "pmatrix*", "bmatrix", "bmatrix*",
+    "Bmatrix", "Bmatrix*", "vmatrix", "vmatrix*", "Vmatrix", "Vmatrix*",
+    "smallmatrix",
+    # ── 分段函数（CASES_ENVS）──
+    "cases", "cases*", "dcases", "dcases*",
+    "rcases", "rcases*", "drcases", "drcases*",
+    # ── 列格式数组（COLSPEC_ENVS / WIDTH_COLSPEC_ENVS）──
+    "array", "darray", "subarray",
+    "tabular", "longtable", "supertabular", "tabu",
+    "tabular*", "tabularx", "tabulary",
+    # ── 交换图（CD_ENVS）──
+    "CD", "cd",
 })
 
 

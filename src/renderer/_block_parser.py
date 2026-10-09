@@ -34,11 +34,17 @@ from ._block_parser_state import (
     _State, _ADMONITION_TYPES, _HTML_HEADING_LEVELS, _DISPLAY_MATH_ENVS,
 )
 from ._block_parser_stream import _BlockParserStreamMixin
+from ._inline_links import normalize_ref_label
 from ._html_attrs import parse_open_tag, parse_attrs, language_of, align_of
 
 
 #: 链接定义「下一行标题」中的可转义字符（CommonMark：任意 ASCII 标点）
 _REF_TITLE_ESCAPABLE: frozenset[str] = frozenset(string.punctuation)
+
+#: 围栏 / 块定界符「行」判定的探测长度上限：结束围栏行（`` ``` `` / `~~~`）与
+#: 块定界行（``$$`` / ``\]``）必然极短（其后仅允许空白 / 语言属性串），超长活动
+#: 行不可能是它们——直接按内容处理，免每帧对其 ``strip()`` + 扫描的 O(长度) 开销。
+_FENCE_LINE_MAX_PROBE = 64
 
 
 def _match_display_env(stripped: str) -> tuple[str, str] | None:
@@ -56,6 +62,28 @@ def _match_display_env(stripped: str) -> tuple[str, str] | None:
     if env not in _DISPLAY_MATH_ENVS:
         return None
     return env, "\\end{" + env + "}"
+
+
+def _strip_marker_spaces(rest: str) -> str:
+    """剥离列表标记后的空白（CommonMark：1~4 个空白属标记宽度）。
+
+    ``rest`` 为标记字符之后、未裁剪的剩余文本（含全部前导空白）。规则：
+
+      - 前导空白 0 个：原样返回（调用方已保证标记后至少一个空白）；
+      - 1~4 个：全部视为标记宽度剥掉（``-   wide`` 的内容是 ``wide``）；
+      - ≥5 个：仅有 1 个属标记宽度，其余属内容（``-     code`` 是列表项内的
+        缩进代码块，内容为 ``    code``）。
+
+    修复前 ``content[2:]`` 固定剥掉「标记字符 + 1 个空白」，``-   wide space``
+    渲染为 ``•   wide space``（多出 2 个空格）。
+    """
+    n = 0
+    length = len(rest)
+    while n < length and rest[n] in ' \t':
+        n += 1
+    if n <= 4:
+        return rest[n:]
+    return rest[1:]
 
 
 # ═══════════════════════════════════════════════════════════
@@ -123,6 +151,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # 缩进代码块内「暂存的空行数」：空行仅在后续仍有缩进内容时才作为
         # 块内空行补发，块结束（尾随空行）时丢弃（CommonMark：尾随空行不计入）。
         self._indented_code_pending_blanks: int = 0
+        # 缩进代码块的缩进剥离量（字符数）：默认 4（CommonMark）；列表项上下文
+        # 中的缩进代码块为「列表内容列 + 4」（``- a\\n\\n      code`` 的内容是
+        # ``code`` 而非 ``  code``），由 ``_start_indented_code`` 按上下文计算。
+        self._indented_code_pad: int = 4
         self._block_html_tag: str = ''
         # KaTeX auto-render 显示环境的结束标记（``\end{align}`` 等）；
         # ``None`` 表示当前数学块由 ``$$`` / ``\[`` 定界（见 _DISPLAY_MATH_ENVS）
@@ -739,12 +771,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return out
         if self._deferred_fence is not None:
             fence = self._deferred_fence
-            out.append(Token(TokenType.CODE_BLOCK, "\n".join(tail_lines), {
-                "lang": fence.get("lang") or "text",
-                "attrs": fence.get("attrs", ""),
-                "title": fence.get("title", ""),
-                "preview": True, "closed": False,
-            }))
+            # ★ 与 CODE_FENCE 状态同一预览构造（携带 ``meta["lines"]``）：渲染层
+            #   按行增量高亮 + 活动行尾部窗口化。修复前用 ``"\n".join(tail_lines)``
+            #   传内容字符串、不带 lines，渲染层每帧对整段内容 ``split`` 后重新
+            #   高亮（超长单行 minified JSON/base64 时单帧成本随内容增长）。
+            out.append(self._make_code_preview_token(
+                fence.get("lang") or "text", fence.get("attrs", ""),
+                fence.get("title", ""), tail))
             return out
 
         if self._bq_active:
@@ -1023,8 +1056,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 if ok and n >= 3:
                     return [Token(TokenType.HR, "", {"preview": True})]
 
-            # 代码围栏
-            if first in ('`', '~') and _is_code_fence_line(stripped):
+            # 代码围栏（★ 超长活动行不可能是围栏行——免每帧对其扫描）
+            if (first in ('`', '~') and len(stripped) <= _FENCE_LINE_MAX_PROBE
+                    and _is_code_fence_line(stripped)):
                 info = self._try_code_fence_start(stripped)
                 if info is not None:
                     return [Token(TokenType.CODE_BLOCK, "", {
@@ -1097,9 +1131,17 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         return len(indents)
 
     def _preview_code_tail_lines(self, tail: str) -> list[str]:
-        """代码块预览的未换行活动行（若为本块的结束围栏则不纳入）。"""
+        """代码块预览的未换行活动行（若为本块的结束围栏则不纳入）。
+
+        ★ 性能：结束围栏行必须极短（`` ``` `` / `~~~` + 可选语言/属性串），
+        超长活动行（minified JSON / base64 / 长 URL，可达数十万字符）不可能是
+        结束围栏——直接纳入（免每帧对其 ``strip()`` + 围栏扫描的 O(长度)
+        开销；修复前 20 万字符单行每帧约 0.4ms，流式累计明显）。
+        """
         if not tail:
             return []
+        if len(tail) > _FENCE_LINE_MAX_PROBE:
+            return [tail]
         stripped = tail.strip()
         fchar, flen, _ = _get_fence_info(stripped)
         if (fchar and fchar == self._block_fence_char
@@ -1132,9 +1174,15 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         })
 
     def _preview_block_tail_lines(self, st, tail: str) -> list[str]:
-        """Mermaid/数学块预览的未换行活动行（结束定界符不纳入内容）。"""
+        """Mermaid/数学块预览的未换行活动行（结束定界符不纳入内容）。
+
+        ★ 性能：结束定界符行必然很短（``$$`` / ``\\]`` / 围栏行）——超长活动
+        行直接纳入，免每帧 ``strip()`` 的 O(长度) 开销（同 ``_preview_code_tail_lines``）。
+        """
         if not tail:
             return []
+        if len(tail) > _FENCE_LINE_MAX_PROBE:
+            return [tail]
         stripped = tail.strip()
         if st == _State.MERMAID_BLOCK and _is_code_fence_line(stripped):
             return []
@@ -1184,6 +1232,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     colon_pos = stripped.find(']:')
                     if colon_pos > 0:
                         ref_id = stripped[1:colon_pos]
+                        if '^' not in ref_id and not self._is_valid_ref_label(ref_id):
+                            # 非法标签（含未转义方括号 / 超长）→ 非定义（正文行）
+                            continue
                         if '^' not in ref_id:
                             rest = stripped[colon_pos + 2:].strip()
                             url_end = self._find_url_end(rest)
@@ -1196,7 +1247,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                                 if end > 0:
                                     title = after_url[1:end]
                             if url and ref_id:
-                                self._ctx.ref_map[ref_id] = (url, title)
+                                self._ctx.ref_map[normalize_ref_label(ref_id)] = (
+                                    url, title)
                         else:
                             ref_id = ref_id[1:]
                             content = stripped[colon_pos + 2:].strip()
@@ -1832,6 +1884,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     if ul is not None:
                         self._flush_paragraph(tokens)
                         self._emit_blockquote_close(tokens)
+                        if self._maybe_start_list_block_item(
+                                ul['text'], ul['indent'], ul['indent'] + 2):
+                            return True
                         self._update_list_indent(ul['indent'])
                         tokens.append(Token(TokenType.LIST_ITEM, ul['text'], {
                             "indent": ul['indent'], "depth": len(self._list_indents),
@@ -1996,6 +2051,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 if ul is not None:
                     self._flush_paragraph(tokens)
                     self._emit_blockquote_close(tokens)
+                    if self._maybe_start_list_block_item(
+                            ul['text'], ul['indent'], ul['indent'] + 2):
+                        return True
                     self._update_list_indent(ul['indent'])
                     tokens.append(Token(TokenType.LIST_ITEM, ul['text'], {
                         "indent": ul['indent'], "depth": len(self._list_indents),
@@ -2022,9 +2080,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 if ol is not None:
                     self._flush_paragraph(tokens)
                     self._emit_blockquote_close(tokens)
-                    self._update_list_indent(ol['indent'])
                     # marker_width 由 _try_ol_item 计算（"1. " 或 "1) "）
                     marker_width = ol.get('marker_width', len(str(ol['number'])) + 2)
+                    if self._maybe_start_list_block_item(
+                            ol['text'], ol['indent'],
+                            ol['indent'] + marker_width):
+                        return True
+                    self._update_list_indent(ol['indent'])
                     tokens.append(Token(TokenType.LIST_ITEM, ol['text'], {
                         "indent": ol['indent'], "depth": len(self._list_indents),
                         "bullet": False, "number": ol['number'],
@@ -2101,7 +2163,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
     def _try_setext_or_hr(self, stripped: str, first: str, tokens: list[Token]) -> bool:
         try:
-            if len(stripped) < 3:
+            if len(stripped) < 1:
                 return False
             non_space_count = 0
             all_same = True
@@ -2112,7 +2174,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     all_same = False
                     break
                 non_space_count += 1
-            if all_same and non_space_count >= 3:
+            # ★ CommonMark：setext underline 为 **1 个及以上** 的 ``=`` / ``-``
+            #   （``Foo\n=\n`` 是 h1、``Foo\n--\n`` 是 h2）。修复前要求 ≥ 3 个
+            #   字符，单个/两个的 underline 落到段落（``Setext\n=`` 渲染为两行
+            #   字面文本），与 HR 的 ≥3 门槛混淆。分隔线（HR）仍要求 ≥3 个
+            #   字符，故此处先按 setext 判定、再按 HR 门槛过滤。
+            if all_same and non_space_count >= 1:
                 if first in ('=', '-') and self._pending_lines:
                     # CommonMark：setext underline 前的**整个段落**成为标题内容，
                     # 可跨多行（「The setext heading underline can be preceded by
@@ -2128,11 +2195,14 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                         tokens.append(Token(TokenType.HEADING, heading_text,
                                             {"level": level}))
                         return True
-                elif first == '=':
+                if first == '=':
                     # ★ ``=`` 不是分隔线字符（CommonMark 的 HR 仅 ``-`` / ``*`` /
                     #   ``_``）——无上文段落时整行 ``=====`` 应作为普通段落文本，
                     #   修复前被无条件当作 HR（凭空产生一条分隔线，且
                     #   ``text\\n\\n=====`` 也会误生成 HR）。
+                    return False
+                if non_space_count < 3:
+                    # 单个 / 两个 ``-``（``*`` / ``_`` 同理）不是分隔线
                     return False
                 self._flush_paragraph(tokens)
                 self._emit_blockquote_close(tokens)
@@ -2549,6 +2619,36 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if first == '<' and self._looks_like_block_html(stripped):
             return True
         return False
+
+    def _maybe_start_list_block_item(self, text: str, indent: int,
+                                     content_col: int) -> bool:
+        """列表项内容本身以块级容器起始时，转入列表项内块级容器收集模式。
+
+        CommonMark 的列表项内容是**块级内容**：``- ```\n  code\n  ``` `` 三行
+        同属列表项内的一个代码块，``- | a | b |\n  |---|---|`` 是列表项内的
+        表格，``- > quote`` 是列表项内的引用。修复前仅「列表项之后的缩进行」
+        才进入块级容器收集（``_handle_list_block_line``），首行内容固定按列表项
+        **文本**渲染，导致：
+
+          - ``- ``` `` 首行成为文本、闭合围栏行被当作新的围栏打开 →
+            预览/提交多出一个闭合围栏（结构错乱）；
+          - 列表项内表格 / 引用不成块（渲染为字面 ``| a | b |`` / ``> quote``）。
+
+        命中时返回 ``True``——调用方不再产出 LIST_ITEM token，本行内容成为块级
+        容器的首行，容器在缩进回退时整体子解析（``_flush_list_block``）。
+        """
+        if not (self._may_start_list_block(text)
+                or text[:4] == '    ' or (text and text[0] == '\t')):
+            return False
+        self._update_list_indent(indent)
+        self._last_token_type = TokenType.LIST_ITEM
+        self._last_list_indent = indent
+        self._last_list_content_col = content_col
+        self._list_block_active = True
+        # 容器内后续行按**列表内容列**剥离（``- ``` `` 的代码内容从第 2 列起）。
+        self._list_block_indent = content_col
+        self._list_block_lines = [text]
+        return True
 
     def _handle_list_block_line(self, line: str, stripped: str,
                                 tokens: list[Token]) -> bool:
@@ -3403,7 +3503,23 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         tokens.append(Token(TokenType.CODE_FENCE_OPEN, "", {
             "lang": "text", "indented": True, "attrs": "",
         }))
-        content = line[4:] if line[:4] == '    ' else line[1:]
+        # ★ 列表项上下文中的缩进代码块：内容缩进 = 列表内容列 + 4（CommonMark
+        #   —— ``- a\\n\\n      code`` 的代码内容是 ``code``；修复前固定剥离 4
+        #   个空格，内容多出列表内容列宽的前导空格）。仅在行首确有该缩进时
+        #   采用，否则回退标准 4 空格（避免把文档级缩进代码块误裁）。
+        pad = 4
+        content_col = self._last_list_content_col
+        if content_col and content_col > 0:
+            deep = content_col + 4
+            if line[:deep] == ' ' * deep:
+                pad = deep
+        self._indented_code_pad = pad
+        if line[:pad] == ' ' * pad:
+            content = line[pad:]
+        elif line[:4] == '    ':
+            content = line[4:]
+        else:
+            content = line[1:] if line else ''
         self._emit_code_line(content.rstrip('\n'), tokens)
 
     # ── 缩写定义 ───────────────────────────────────────
@@ -3447,7 +3563,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 and (len(t) == 3 or t[3] in ' \t')):
             if t[1] in ' xX':
                 return text, True, t[1] in 'xX', False
-            if t[1] == '-':
+            if t[1] in '-~':
+                # 取消态标记：``[-]``（GFM/Todo.txt 风格）与 ``[~]``
+                # （Drawer/Obsidian 风格）等同——渲染层统一显示为 ``[~]``。
                 return text, True, False, True
         return text, False, False, False
 
@@ -3460,8 +3578,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 else:
                     break
             content = _strip_left(stripped)
-            if len(content) >= 2 and content[0] in ('-', '*', '+') and content[1] == ' ':
-                text = _rstrip_line(content[2:])
+            if (len(content) >= 2 and content[0] in ('-', '*', '+')
+                    and content[1] in ' \t'):
+                text = _rstrip_line(_strip_marker_spaces(content[1:]))
                 text, todo, checked, cancelled = self._parse_list_item_checkbox(text)
                 return {
                     'indent': indent,
@@ -3495,8 +3614,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             if i < len(content) and content[i] in ".')":
                 delimiter = content[i]
                 i += 1
-                if i < len(content) and content[i] == ' ':
-                    text = _rstrip_line(content[i + 1:])
+                if i < len(content) and content[i] in ' \t':
+                    text = _rstrip_line(_strip_marker_spaces(content[i:]))
                     number = int(num_str)
                     text, todo, checked, cancelled = self._parse_list_item_checkbox(text)
                     # marker_width：含缩进后的标记宽度（"1. "=3, "1) "=3, "12. "=4）
@@ -3568,6 +3687,21 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
     # ── 参考链接 ───────────────────────────────────────
 
+    @staticmethod
+    def _is_valid_ref_label(ref_id: str) -> bool:
+        """链接定义标签是否合法（CommonMark）：不含未转义的 ``[`` / ``]``，
+        且长度不超过 999 字符。
+
+        用于 ``[label]: url`` 定义识别的第一道校验——修复前 ``[Foo][] 与
+        [foo]: /url`` 这类**正文行**（行首 ``[`` 且行内含 ``]:``）会被整行
+        吞掉并登记一条伪造定义（文末「引用链接」附录出现乱码条目、正文丢失）。
+        """
+        if not ref_id or len(ref_id) > 999:
+            return False
+        if '[' in ref_id or ']' in ref_id:
+            return False
+        return True
+
     def _try_ref_link(self, stripped: str) -> bool:
         try:
             if stripped[0] != '[':
@@ -3576,6 +3710,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             if close <= 1:
                 return False
             ref_id = stripped[1:close]
+            # ★ 标签合法性（CommonMark）：不含未转义的 ``[`` / ``]``、长度 ≤ 999。
+            #   修复前 ``[Foo][] 与 [foo]: /url`` 这类正文行会被整行吞掉并登记
+            #   一条伪造定义（``ref_id`` 含方括号 → 文末「引用链接」附录出现
+            #   乱码条目）。
+            if not self._is_valid_ref_label(ref_id):
+                return False
             if '^' in ref_id:
                 return False
             rest = stripped[close + 2:].strip()
@@ -3589,17 +3729,18 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 if end > 0:
                     title = after_url[1:end]
             if url and ref_id:
-                self._ctx.ref_map[ref_id] = (url, title)
+                ref_key = normalize_ref_label(ref_id)
+                self._ctx.ref_map[ref_key] = (url, title)
                 # 同行无标题 → 下一行可能是缩进标题（CommonMark 允许标题写在
                 # 定义的下一行）；记录待定，下一行若为标题行则补全。
-                self._pending_ref_title = ref_id if not title else None
+                self._pending_ref_title = ref_key if not title else None
                 self._pending_ref_def = None
                 return True
             if ref_id and not rest:
                 # ``[id]:`` 独占一行 → URL 在下一行（CommonMark 允许定义的
                 # 目标写在下一行）；记录待定，下一行若是缩进 URL 则补全。
                 self._pending_ref_title = None
-                self._pending_ref_def = ref_id
+                self._pending_ref_def = normalize_ref_label(ref_id)
                 self._pending_ref_def_text = stripped.rstrip()
                 return True
             self._pending_ref_title = None

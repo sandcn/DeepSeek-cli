@@ -23,12 +23,14 @@ def is_todo(text: str) -> tuple[str | None, str]:
     任务项（``[x]done`` 是普通文本）。修复前只检查标记本身，导致
     ``- [x]done`` 被误判、``text[3:]`` 切片吞掉正文首字符。
 
+    ★ 取消态标记 ``[-]`` 与 ``[~]`` 等同（渲染层统一按取消态呈现）。
+
     Returns:
         (marker, content): marker=' ' 未勾选, marker in 'xX' 已勾选,
-        marker='-' 已取消, marker=None 非任务项
+        marker in '-~' 已取消, marker=None 非任务项
     """
     if (len(text) >= 3 and text[0] == '[' and text[2] == ']'
-            and text[1] in ' xX-'
+            and text[1] in ' xX-~'
             and (len(text) == 3 or text[3] in ' \t')):
         return text[1], text[3:].strip()
     return None, text

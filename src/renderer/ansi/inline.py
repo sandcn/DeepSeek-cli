@@ -32,6 +32,7 @@ from contextvars import ContextVar
 
 from .style import Style
 from .helpers import Run, AnsiLine
+from .._inline_links import normalize_ref_label as _normalize_ref_label
 from src.presentation_data import LiveMapping
 
 
@@ -417,17 +418,23 @@ def _emit_abbr(node, base, ctx, out, depth):
 
 def _emit_link(node, base, ctx, out, depth):
     url = getattr(node, "url", "") or ""
-    shortcut = bool(getattr(node, "meta", None)
-                    and node.meta.get("shortcut"))
+    meta = getattr(node, "meta", None) or {}
+    shortcut = bool(meta.get("shortcut"))
+    label = str(meta.get("label") or "")
     if url.startswith("[ref:"):
         ref_id = url[5:-1]
         ref_map = (getattr(ctx, "ref_map", None) or {}) if ctx is not None else {}
-        resolved = ref_map.get(ref_id)
+        # ★ 标签归一化（大小写不敏感 + 空白折叠 + 转义还原）后查表——与解析层
+        #   写入 ref_map 的键口径一致（``[Foo][]`` 命中 ``[foo]: url``）。
+        resolved = ref_map.get(ref_id) or ref_map.get(_normalize_ref_label(ref_id))
         if resolved:
             actual_url, title = resolved
             _emit_children(node, _merge(base, _STYLE_LINK), ctx, out, depth)
             keys = list(ref_map.keys())
-            idx = keys.index(ref_id) + 1
+            try:
+                idx = keys.index(ref_id) + 1
+            except ValueError:
+                idx = keys.index(_normalize_ref_label(ref_id)) + 1
             digits = circled_digits()
             circled = digits[idx - 1] if idx <= len(digits) else f"[{idx}]"
             _append(out, f" {circled}", _merge(base, _STYLE_COMMENT))
@@ -436,11 +443,12 @@ def _emit_link(node, base, ctx, out, depth):
                 _append(out, f' "{title}"', _merge(base, _STYLE_COMMENT))
             return
         if shortcut:
-            # 快捷引用式链接未命中定义 → 原样输出 ``[ref]``（不误改普通方括号文本）
-            _append(out, f"[{ref_id}]", base)
+            # 快捷引用式链接未命中定义 → 原样输出 ``[ref]``（不误改普通方括号
+            # 文本）；用原始标签显示（归一化只用于查表，不改显示形态）。
+            _append(out, f"[{label or ref_id}]", base)
             return
         _emit_children(node, _merge(base, _STYLE_ABBR), ctx, out, depth)
-        _append(out, f"[?{ref_id}]", _merge(base, _STYLE_COMMENT))
+        _append(out, f"[?{label or ref_id}]", _merge(base, _STYLE_COMMENT))
         return
     # ★ 增强（OSC 8 可点击链接）：链接文本 run 携带 url —— TUI 输出层（ink）
     #   据此包裹 OSC 8 序列，现代终端中可直接点击打开（宽度计算不计入）。
@@ -461,13 +469,14 @@ def _emit_image(node, base, ctx, out, depth):
     url = getattr(node, "url", "") or ""
     title = getattr(node, "title", "")
     ref_placeholder = ""
-    shortcut = bool(getattr(node, "meta", None) and node.meta.get("shortcut"))
-    collapsed = bool(getattr(node, "meta", None) and node.meta.get("collapsed"))
+    meta = getattr(node, "meta", None) or {}
+    shortcut = bool(meta.get("shortcut"))
+    collapsed = bool(meta.get("collapsed"))
     # 参考式图片 ``![alt][ref]``：url 为 ``[ref:id]`` 占位 → 查定义表展开
     if url.startswith("[ref:"):
         ref_id = url[5:-1]
         ref_map = (getattr(ctx, "ref_map", None) or {}) if ctx is not None else {}
-        resolved = ref_map.get(ref_id)
+        resolved = ref_map.get(ref_id) or ref_map.get(_normalize_ref_label(ref_id))
         if resolved:
             try:
                 url, ref_title = resolved
@@ -485,7 +494,7 @@ def _emit_image(node, base, ctx, out, depth):
             return
         else:
             # 未解析（如流式前置引用）：保留占位提示，不丢失引用信息
-            ref_placeholder = f"[ref:{ref_id}]"
+            ref_placeholder = f"[ref:{meta.get('label') or ref_id}]"
             url = ""
     shown = url[:50] + "..." if len(url) > 50 else url
     dim = ""

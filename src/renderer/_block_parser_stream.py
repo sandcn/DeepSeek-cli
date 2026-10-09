@@ -508,19 +508,27 @@ class _BlockParserStreamMixin:
             #   出多余的空行（``\n\n`` 尾随空白行）。
             self._indented_code_pending_blanks += 1
             return
-        if line[:4] == '    ' or (line and line[0] == '\t'):
-            while self._indented_code_pending_blanks > 0:
-                self._emit_code_line("", tokens)
-                self._indented_code_pending_blanks -= 1
-            content = line[4:] if line[:4] == '    ' else line[1:]
-            self._emit_code_line(content.rstrip('\n'), tokens)
+        pad = self._indented_code_pad
+        if line[:pad] == ' ' * pad:
+            content = line[pad:]
+        elif pad == 4 and line[:4] == '    ':
+            content = line[4:]
+        elif pad == 4 and line and line[0] == '\t':
+            content = line[1:]
+        else:
+            # 缩进不足 → 代码块结束（列表项上下文中的 ``pad`` 更大，行首缩进
+            # 不足以归入列表项内代码块时同样结束）
+            self._indented_code_pending_blanks = 0
+            tokens.append(Token(TokenType.CODE_FENCE_CLOSE, "", {
+                "lang": "text", "indented": True,
+            }))
+            self._state = _State.NORMAL
+            self._parse_normal_line(line, tokens)
             return
-        self._indented_code_pending_blanks = 0
-        tokens.append(Token(TokenType.CODE_FENCE_CLOSE, "", {
-            "lang": "text", "indented": True,
-        }))
-        self._state = _State.NORMAL
-        self._parse_normal_line(line, tokens)
+        while self._indented_code_pending_blanks > 0:
+            self._emit_code_line("", tokens)
+            self._indented_code_pending_blanks -= 1
+        self._emit_code_line(content.rstrip('\n'), tokens)
 
     # ═══════════════════════════════════════════════════════════
     # 块级语法尝试方法

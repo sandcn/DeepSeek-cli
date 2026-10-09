@@ -117,7 +117,14 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
         return end
 
     def _parse_until(self, close_delim: str,
-                     depth: int = 0) -> tuple[list[InlineNode], bool]:
+                     depth: int = 0,
+                     close_ok=None) -> tuple[list[InlineNode], bool]:
+        """解析到 ``close_delim``（返回 ``(nodes, found)``）。
+
+        ``close_ok(pos, length)`` 为闭合定界符条件（CommonMark 右定界符规则）：
+        返回 ``False`` 时该位置的定界符不作为闭合点，按普通字符继续扫描。
+        ``None`` 表示无条件匹配（既有行为）。
+        """
         if depth > self._MAX_DEPTH:
             return [TextNode(content=self._text[self._pos:])], False
 
@@ -134,7 +141,8 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
                 plain_buf.clear()
 
         while self._pos < self._n:
-            if close_len > 0 and self._try_match_str(close_delim):
+            if close_len > 0 and self._try_match_str(close_delim) \
+                    and (close_ok is None or close_ok(self._pos, close_len)):
                 _emit_plain()
                 return nodes, True
 
@@ -310,6 +318,13 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
                     if (self._pos + 1 < self._n
                             and self._text[self._pos:self._pos + 2] == r'\)'):
                         content = self._text[content_start:self._pos]
+                        if not content:
+                            # ★ 空数学（``\(\)``）不作为公式：回退让 ``\(`` /
+                            #   ``\)`` 走反斜杠转义（CommonMark：``\(`` 是 ``(``
+                            #   的转义）——修复前产出空数学节点，括号字符丢失
+                            #   （``\(\)`` 渲染为 ``()`` 以外的空内容）。
+                            self._pos = saved
+                            return None
                         self._pos += 2
                         return InlineMathNode(content=content)
                     self._pos += 1

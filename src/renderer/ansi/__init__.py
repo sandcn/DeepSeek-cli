@@ -145,6 +145,17 @@ _LIST_BLOCK_THROTTLE_KEY = ("list_block",)
 #: 纯文本有快速路径，代码高亮没有）。
 _CODE_ACTIVE_MAX_CHARS = 512
 
+#: 代码块活动行的**帧成本节流起点**（字符）：活动行长度超过该值后不再逐帧
+#: 重渲，而是按增长步长刷新（见 ``_code_active_throttled``）。取较大阈值
+#: （32KB）——中等长度行（数 KB 级）保持逐帧实时（流式观感），只有真正超长
+#: 的 minified 单行（数十万字符，词法器按字符出 token）才节流。
+_CODE_ACTIVE_THROTTLE_MIN = 32768
+
+#: 活动行节流的步长上限（字符）：保证预览滞后不超过尾部窗口的一半——
+#: 「活动行最新内容可见」的既有契约在节流后仍成立（窗口化只显示尾部
+#: ``_CODE_ACTIVE_MAX_CHARS`` 字符，滞后 ≤ 其一半）。
+_CODE_ACTIVE_THROTTLE_MAX_STEP = 256
+
 #: 数学块预览的源码长度上限：超过后预览降级为提示框（二维排版成本随长度
 #: 线性增长，超长公式即便节流也仍随长度增长；提交路径不受影响）。真实
 #: LaTeX 公式远小于该值，超过基本为模型异常输出。
@@ -299,6 +310,9 @@ class AnsiStreamRenderer:
         #: 上次预览渲染对应的源行数（``_code_preview_rows`` 覆盖的行数）——
         #: 用于增量渲染时定位「已确定行前缀」与活动行（最后一行）。
         self._code_preview_n = 0
+        #: 上次重渲时活动行的字符长度（超长活动行的帧成本节流基准，见
+        #: ``_code_active_throttled``）。
+        self._code_active_len = 0
         # 代码块预览的增量 split 缓存：上次完整 content + 完整行列表——
         # 流式只追加时只 split 新增片段（避免每帧 O(全文) split/比较）。
         self._code_preview_content: str = ""
@@ -1248,6 +1262,7 @@ class AnsiStreamRenderer:
         self._code_preview_key = None
         self._code_preview_rows = []
         self._code_preview_n = 0
+        self._code_active_len = 0
         self._code_preview_content = ""
         self._code_preview_full_src = []
 
@@ -1340,7 +1355,6 @@ class AnsiStreamRenderer:
         错位行），完整行也从未以最终内容渲染（闭合提交时全部行缓存失效）。
         """
         from . import code as _code
-        from .._block_parser import RegexFreeBlockParser
 
         lang = token.meta.get("lang", "")
         title = token.meta.get("title", "")
@@ -1372,13 +1386,22 @@ class AnsiStreamRenderer:
                      if linenos else 0)
         # 首行纳入缓存键：内容「滑窗」（列表项内块级预览截断为尾部窗口）时
         # 前缀不再稳定，必须重置增量缓存，否则沿用旧行导致内容错位。
-        first_line = full_lines[0] if full_lines else ""
+        # ★ 单行内容（首行即活动行、内容逐帧增长）只取前 64 字符作锚点——
+        #   否则每帧 key 都变化 → 缓存每帧重置、增量高亮与活动行节流全部失效
+        #   （20 万字符单行实测退化为每帧整块重渲）。
+        if not full_lines:
+            first_line = ""
+        elif len(full_lines) > 1:
+            first_line = full_lines[0]
+        else:
+            first_line = full_lines[0][:64]
         key = (lang, self._code_theme, skip, dropped, tuple(hl), num_width,
                first_line, lineno_start, lineno_step)
         if reset_rows or key != self._code_preview_key:
             self._code_preview_key = key
             self._code_preview_rows = []
             self._code_preview_n = 0
+            self._code_active_len = 0
         rows = self._code_preview_rows
         # ★ 增量高亮（修正「活动行内容变化未刷新」）：``src_lines`` 的**最后
         #   一行**是尚未换行的活动行（内容逐帧增长），其前 ``n-1`` 行是已确定
@@ -1392,6 +1415,13 @@ class AnsiStreamRenderer:
         stable_prev = self._code_preview_n - 1 if self._code_preview_n else 0
         if stable_prev > n - 1:
             stable_prev = n - 1 if n else 0
+        # ★ 性能（超长活动行节流）：活动行长度超过 ``_CODE_ACTIVE_THROTTLE_MIN``
+        #   （32KB）后不再逐帧重渲，按增长步长刷新（步长上限 256 字符，保证
+        #   预览滞后不超过尾部窗口的一半）。中等长度行（数 KB 级）保持逐帧
+        #   实时——「活动行最新内容可见」的契约不受影响；提交路径始终完整渲染。
+        if self._code_active_throttled(n, src_lines):
+            return self._code_preview_output(rows, skip, title, lang, dropped,
+                                             closed)
         if len(rows) > stable_prev:
             del rows[stable_prev:]
         if n > stable_prev:
@@ -1433,6 +1463,43 @@ class AnsiStreamRenderer:
                 )
             )
         self._code_preview_n = n
+        return self._code_preview_output(rows, skip, title, lang, dropped,
+                                         closed)
+
+    def _code_active_throttled(self, n: int, src_lines: list[str]) -> bool:
+        """超长活动行的帧成本节流：判断是否可沿用上一帧的活动行。
+
+        仅当以下条件全部满足时跳过重渲：
+
+          - 行数未变（``n == self._code_preview_n``，即只有活动行在增长）；
+          - 活动行长度超过 ``_CODE_ACTIVE_THROTTLE_MIN``（中等长度行逐帧实时
+            ——「活动行最新内容可见」的既有契约在 8K 级行上完全保持）；
+          - 相对上次重渲的长度增长未达步长（``prev // 16``，下限 64、上限
+            ``_CODE_ACTIVE_THROTTLE_MAX_STEP``）。
+
+        步长上限保证滞后不超过尾部窗口的一半，窗口化预览中始终能看到接近
+        最新的内容；块闭合 / 提交路径始终完整渲染。
+        """
+        if n <= 0:
+            return False
+        active_len = len(src_lines[n - 1])
+        prev = self._code_active_len
+        if (prev and n == self._code_preview_n
+                and active_len > _CODE_ACTIVE_THROTTLE_MIN):
+            step = max(64, prev // 16)
+            if step > _CODE_ACTIVE_THROTTLE_MAX_STEP:
+                step = _CODE_ACTIVE_THROTTLE_MAX_STEP
+            if active_len - prev < step:
+                return True
+        self._code_active_len = active_len
+        return False
+
+    def _code_preview_output(self, rows: list, skip: int, title: str, lang: str,
+                             dropped: int, closed: bool) -> list[AnsiLine]:
+        """拼装代码块预览行（围栏/标题 + 省略提示 + 尾部窗口 + 关闭围栏）。"""
+        from . import code as _code
+        from .._block_parser import RegexFreeBlockParser
+
         limit = RegexFreeBlockParser._PREVIEW_MAX_LINES
         omitted = max(0, len(rows) - limit) + dropped
         out: list[AnsiLine] = []

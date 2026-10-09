@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+try:  # 标准库完整 HTML5 命名实体表（全量支持；导入失败时仅用内置常用表）
+    from html.entities import html5 as _HTML5_ENTITIES
+except Exception:  # pragma: no cover - 标准库缺失的极端环境
+    _HTML5_ENTITIES = None
+
 
 # HTML 实体映射表（常用命名实体：拉丁补充 / 标点 / 希腊字母 / 数学 / 箭头）
 _HTML_ENTITIES: dict[str, str] = {
@@ -84,10 +89,43 @@ _HTML_ENTITIES: dict[str, str] = {
 }
 
 
+def _lookup_named_entity(entity: str) -> str | None:
+    """命名实体查找：内置常用表 → 标准库完整 HTML5 表（含无分号形式）。
+
+    ★ 全量实体支持：标准库 ``html.entities.html5`` 含 2231 个 HTML5 命名
+    实体（``&AElig;`` / ``&Dcaron;`` / ``&NotNestedGreaterGreater;`` …）——
+    修复前仅内置约 150 个常用实体，其余原样输出（``&AElig;`` 显示为字面
+    文本）。内置表保留为快速路径（高频实体免字典切换）。
+    """
+    val = _HTML_ENTITIES.get(entity)
+    if val is not None:
+        return val
+    if _HTML5_ENTITIES is not None:
+        # 标准库表的键不含前导 ``&``（``'AElig;'`` / ``'amp;'``）
+        name = entity[1:] if entity.startswith('&') else entity
+        val = _HTML5_ENTITIES.get(name)
+        if val is not None:
+            return val
+        if name.endswith(';'):
+            # HTML5 允许部分实体省略分号（``&amp`` / ``&copy``）
+            val = _HTML5_ENTITIES.get(name[:-1])
+            if val is not None:
+                return val
+        else:
+            val = _HTML5_ENTITIES.get(name + ';')
+            if val is not None:
+                return val
+    return None
+
+
 def decode_html_entities(text: str) -> str:
     """HTML 实体解码为 Unicode。
 
     支持命名实体（如 &amp;）和数字实体（如 &#169; / &#x00A9;）。
+
+    ★ 无效码点（``&#0;`` / 代理区 / 超出 U+10FFFF）替换为 U+FFFD——修复前
+    ``&#0;`` 产出真正的 NUL 字符（``\\x00``）混入正文，宽度测量与终端输出
+    均异常。
 
     Args:
         text: 含 HTML 实体的文本
@@ -112,8 +150,9 @@ def decode_html_entities(text: str) -> str:
             break
 
         entity = text[amp:semicolon + 1]
-        if entity in _HTML_ENTITIES:
-            result.append(_HTML_ENTITIES[entity])
+        named = _lookup_named_entity(entity)
+        if named is not None:
+            result.append(named)
             i = semicolon + 1
             continue
 
@@ -121,7 +160,12 @@ def decode_html_entities(text: str) -> str:
             try:
                 num_str = entity[2:-1]
                 cp: int = int(num_str[1:], 16) if num_str.startswith(('x', 'X')) else int(num_str)
-                result.append(chr(cp))
+                # ★ 无效码点（0 / 代理区 / 超出 Unicode 范围）→ U+FFFD
+                #   （CommonMark；修复前 ``&#0;`` 产出 NUL 字符混入正文）
+                if cp == 0 or cp > 0x10FFFF or 0xD800 <= cp <= 0xDFFF:
+                    result.append('\ufffd')
+                else:
+                    result.append(chr(cp))
                 i = semicolon + 1
                 continue
             except (ValueError, OverflowError):

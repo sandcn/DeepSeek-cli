@@ -73,8 +73,15 @@ _CODE_THEME = "monokai"
 _HEX_256_CACHE: dict = {}
 #: fg 色号 → Style 对象缓存（同色 Style 共享，避免每 token 重建 frozen dataclass）
 _FG_STYLE_CACHE: dict = {}
+#: ``(主题, pygments token 类型) → Style`` 缓存：token 类型数很少（数十个），
+#: 缓存后每 token 只需一次 dict 查找——省去沿 parent 链查样式 + 两次子函数
+#: 调用的固定开销（长行每帧数千 token 时收益显著）。
+_TTYPE_STYLE_CACHE: dict = {}
+_TTYPE_STYLE_CACHE_MAX = 8192
 #: 「尚无样式」哨兵（``None`` 是合法样式值，需区分）
 _NO_FG = object()
+#: 缓存未命中哨兵（与合法的 ``None`` 样式区分）
+_MISSING = object()
 #: 单行「语言 + 主题 + 源码」→ 高亮行缓存。代码块内重复行（空行、``}``、
 #: ``else:`` 等）命中后免词法高亮；有界，超限整体清空（简单、无淘汰开销）。
 _LINE_HIGHLIGHT_CACHE: dict = {}
@@ -110,7 +117,33 @@ def _fg_style(fg: int | None) -> "Style | None":
     return style
 
 
-def _highlight_line(line: str, lexer, pyg_style) -> AnsiLine:
+def _style_for_ttype(theme: str, ttype, pyg_style) -> "Style | None":
+    """pygments token 类型 → ``Style``（沿 parent 链取最近定义的样式，带缓存）。
+
+    pygments token 为层级类型（如 ``Comment.Single``），样式表常只定义基类型
+    （``Comment``）——沿 ``parent`` 链向上找最近定义的样式。结果按
+    ``(主题, token 类型)`` 缓存：token 类型集合很小，缓存后热路径只做一次
+    dict 查找（省去每 token 的链遍历与 ``_hex_to_256``/``_fg_style`` 调用）。
+    """
+    key = (theme, ttype)
+    hit = _TTYPE_STYLE_CACHE.get(key, _MISSING)
+    if hit is not _MISSING:
+        return hit
+    fg = None
+    t = ttype
+    while t is not None:
+        fg = _hex_to_256(pyg_style.styles.get(t, ""))
+        if fg is not None:
+            break
+        t = getattr(t, "parent", None)
+    style = _fg_style(fg)
+    if len(_TTYPE_STYLE_CACHE) >= _TTYPE_STYLE_CACHE_MAX:
+        _TTYPE_STYLE_CACHE.clear()
+    _TTYPE_STYLE_CACHE[key] = style
+    return style
+
+
+def _highlight_line(line: str, lexer, pyg_style, theme: str = _CODE_THEME) -> AnsiLine:
     """单行代码词法高亮 → AnsiLine。
 
     pygments 2.20：样式存于 ``Style.styles``（token → '#RRGGBB' 字符串），
@@ -121,6 +154,10 @@ def _highlight_line(line: str, lexer, pyg_style) -> AnsiLine:
     相邻合并），对「长字符串按字符出 token」的词法器（如 JSON 的超长字符串）
     会退化为每字符一次 Run 构造（20 万字符单行 ~2.5s）。合并后同样式连续段
     只产生一个 Run。
+
+    ★ 性能（token 类型样式缓存）：token → 样式的解析（parent 链 + hex → 256 色）
+    按 ``(主题, token 类型)`` 缓存（``_style_for_ttype``），热路径每 token 一次
+    dict 查找。
     """
     aline = AnsiLine()
     try:
@@ -132,19 +169,7 @@ def _highlight_line(line: str, lexer, pyg_style) -> AnsiLine:
             val = value.rstrip("\n")
             if not val:
                 continue
-            # ★ 修复（review 方向）：pygments token 为层级类型（如
-            #   Comment.Single），styles 表常只定义基类型（Comment）——
-            #   直接 get(ttype) 取不到样式（子类型无着色）。沿 parent 链
-            #   向上查找最近定义的样式。
-            fg = None
-            t = ttype
-            while t is not None:
-                style_str = pyg_style.styles.get(t, "")
-                fg = _hex_to_256(style_str)
-                if fg is not None:
-                    break
-                t = getattr(t, "parent", None)
-            style = _fg_style(fg)
+            style = _style_for_ttype(theme, ttype, pyg_style)
             if style is not cur_style:
                 if buf:
                     aline.append("".join(buf), cur_style)
@@ -228,12 +253,12 @@ def highlight_code_lines(
             aline = _diff_line(src_line)
         elif lexer is not None:
             if not use_cache:
-                aline = _highlight_line(src_line, lexer, pyg_style)
+                aline = _highlight_line(src_line, lexer, pyg_style, theme)
             else:
                 cache_key = (lang, theme, src_line)
                 aline = _LINE_HIGHLIGHT_CACHE.get(cache_key)
                 if aline is None:
-                    aline = _highlight_line(src_line, lexer, pyg_style)
+                    aline = _highlight_line(src_line, lexer, pyg_style, theme)
                     if len(_LINE_HIGHLIGHT_CACHE) >= _LINE_HIGHLIGHT_CACHE_MAX:
                         _LINE_HIGHLIGHT_CACHE.clear()
                     _LINE_HIGHLIGHT_CACHE[cache_key] = aline

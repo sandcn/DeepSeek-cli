@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import logging
+import string
+import unicodedata
 
 from .inline_nodes import (
     InlineNode, TextNode,
@@ -24,6 +26,28 @@ from .inline_nodes import (
 
 _logger = logging.getLogger(__name__)
 
+#: ASCII 标点（CommonMark 的「标点」判定在 ASCII 区间的快速路径）
+_ASCII_PUNCT: frozenset[str] = frozenset(string.punctuation)
+
+
+def _is_punct_char(ch: str) -> bool:
+    """字符是否属于 CommonMark 的「标点」类（Unicode P* 或 S*）。
+
+    ``*``/``_`` 的左右定界符规则需要判断相邻字符是否为标点（「内侧空白 +
+    外侧标点」的定界符组合不能开启/闭合强调）。快速路径：空字符与字母数字
+    （含 CJK，``str.isalnum`` 为 C 级判定）直接判否——它们占据真实文本的绝大
+    多数，省去 ``unicodedata`` 查表；ASCII 标点走 ``string.punctuation``；
+    其余非 ASCII 字符才用 ``unicodedata.category``。
+    """
+    if not ch:
+        return False
+    if ch.isalnum():
+        return False
+    if ch.isascii():
+        return ch in _ASCII_PUNCT
+    cat = unicodedata.category(ch)
+    return cat[0] == 'P' or cat[0] == 'S'
+
 
 class InlineFormattingMixin:
     """_InlineParser 格式标记解析 Mixin。
@@ -39,6 +63,98 @@ class InlineFormattingMixin:
       _try_superscript()
       _try_inline_footnote()
     """
+
+    def _delim_flanking(self, pos: int, length: int) -> tuple[bool, bool]:
+        """定界符 run 的 ``(left_flanking, right_flanking)``（CommonMark）。
+
+        - left-flanking：其后字符不是空白，且（其后字符不是标点 或 其前字符是
+          空白或标点）；
+        - right-flanking：其前字符不是空白，且（其前字符不是标点 或 其后字符是
+          空白或标点）。
+        """
+        before = self._text[pos - 1] if pos > 0 else ''
+        after_pos = pos + length
+        after = self._text[after_pos] if after_pos < self._n else ''
+        left = (after != '' and not after.isspace()
+                and (not _is_punct_char(after)
+                     or before == '' or before.isspace()
+                     or _is_punct_char(before)))
+        right = (before != '' and not before.isspace()
+                 and (not _is_punct_char(before)
+                      or after == '' or after.isspace()
+                      or _is_punct_char(after)))
+        return left, right
+
+    def _delim_can_open(self, pos: int, length: int, ch: str = '*') -> bool:
+        """``pos`` 处 ``length`` 个强调定界符是否可作为**左定界符**（开启强调）。
+
+        CommonMark：``*`` 的左定界符 = left-flanking；``_`` 额外要求「不是
+        right-flanking，或其前字符是标点」（词内下划线不能开启强调）。
+
+        修复前无此判定：``a * foo bar*`` / ``** foo bar**`` / ``a_"foo"_``
+        等「内侧空白 + 外侧普通字符」的组合被误判为强调，标记被剥离、正文
+        形态被破坏。
+        """
+        left, right = self._delim_flanking(pos, length)
+        if not left:
+            return False
+        if ch == '_' and right:
+            before = self._text[pos - 1] if pos > 0 else ''
+            if not _is_punct_char(before):
+                return False
+        return True
+
+    def _delim_can_close(self, pos: int, length: int, ch: str = '*') -> bool:
+        """``pos`` 处 ``length`` 个强调定界符是否可作为**右定界符**（闭合强调）。
+
+        CommonMark：``*`` 的右定界符 = right-flanking；``_`` 额外要求「不是
+        left-flanking，或其后续字符是标点」（词内下划线不能闭合强调）。
+
+        修复前无此判定：``**foo bar **`` / ``_foo bar _`` 等尾部空格的定界符
+        被误判为闭合；``_a_b_`` 中间的词内 ``_`` 被误判为闭合，内容错位
+        （渲染为 ``ab_``，丢失一个下划线）。
+        """
+        left, right = self._delim_flanking(pos, length)
+        if not right:
+            return False
+        if ch == '_' and left:
+            after_pos = pos + length
+            after = self._text[after_pos] if after_pos < self._n else ''
+            if not _is_punct_char(after):
+                return False
+        return True
+
+    def _delim_run_len(self, pos: int, ch: str) -> int:
+        """``pos`` 处同字符 ``ch`` 的连续 run 长度（0 表示非 ``ch``）。"""
+        text, n = self._text, self._n
+        i = pos
+        while i < n and text[i] == ch:
+            i += 1
+        return i - pos
+
+    def _make_emphasis_close_check(self, opener_pos: int, opener_len: int,
+                                   ch: str):
+        """构造强调闭合判定回调（右定界符条件 + CommonMark rule of three）。
+
+        rule of three：若「闭合 run 可开启 或 开启 run 可闭合」，且两者长度之和
+        是 3 的倍数而两者长度不都是 3 的倍数，则该对定界符不匹配
+        （``*foo**bar**baz*`` 的外层 em 不在一对 ``**`` 上闭合，而由内层
+        strong 先配对）。缺失该规则时 ``**a*b***`` 之类的组合会残留标记。
+        """
+        def check(pos: int, _length: int | None = None) -> bool:
+            run_len = self._delim_run_len(pos, ch)
+            if run_len == 0:
+                return False
+            if not self._delim_can_close(pos, run_len, ch):
+                return False
+            closer_can_open = self._delim_can_open(pos, run_len, ch)
+            opener_can_close = self._delim_can_close(opener_pos, opener_len, ch)
+            if closer_can_open or opener_can_close:
+                total = opener_len + run_len
+                if total % 3 == 0 and (opener_len % 3 != 0 or run_len % 3 != 0):
+                    return False
+            return True
+        return check
 
     # ── 粗斜体 *** / ___ ──────────────────────────────────
 
@@ -60,11 +176,31 @@ class InlineFormattingMixin:
                     return TextNode(content=self._text[saved:end])
                 if self._is_word_boundary_underscore(3):
                     return None
+            # ★ 左定界符条件（CommonMark）：``*** foo***`` 之类的内侧空白不开启
+            ch = triple[0]
+            if not self._delim_can_open(saved, 3, ch):
+                return None
             self._pos += 3
-            children, found = self._parse_until(triple, depth + 1)
+            children, found = self._parse_until(
+                triple, depth + 1,
+                close_ok=self._make_emphasis_close_check(saved, 3, ch))
             if found:
                 self._pos += 3
                 return self._make_nestable(BoldItalicNode, children)
+            # ★ run 长度 ≥ 3 但 ``***…***`` 不成立 → CommonMark 的「1+2 分配」：
+            #   用 1 个定界符开启 em，其余定界符作为内容开头由递归解析处理
+            #   （``***foo** bar*`` → em("**foo** bar")，内部 ``**`` 成 strong）。
+            #   修复前直接放弃 → 标记残留（``***foo** bar*`` 渲染为 ``*foo bar*``）。
+            if not self._delim_can_open(saved, 1, ch):
+                self._pos = saved
+                return None
+            self._pos = saved + 1
+            children, found = self._parse_italic_content(
+                ch, depth + 1,
+                close_ok=self._make_emphasis_close_check(saved, 1, ch))
+            if found:
+                self._pos += 1
+                return self._make_nestable(ItalicNode, children)
             self._pos = saved
             return None
         except Exception:
@@ -80,8 +216,12 @@ class InlineFormattingMixin:
                     and self._text[self._pos:self._pos + 2] == '**'
                     and not (self._pos + 3 < self._n
                              and self._text[self._pos + 2] == '*')):
+                if not self._delim_can_open(saved, 2, '*'):
+                    return None
                 self._pos += 2
-                children, found = self._parse_until('**', depth + 1)
+                children, found = self._parse_until(
+                    '**', depth + 1,
+                    close_ok=self._make_emphasis_close_check(saved, 2, '*'))
                 if found:
                     self._pos += 2
                     return self._make_nestable(BoldNode, children)
@@ -100,8 +240,12 @@ class InlineFormattingMixin:
                     self._pos = end
                     return TextNode(content=self._text[saved:end])
                 if not self._is_word_boundary_underscore(2):
+                    if not self._delim_can_open(saved, 2, '_'):
+                        return None
                     self._pos += 2
-                    children, found = self._parse_until('__', depth + 1)
+                    children, found = self._parse_until(
+                        '__', depth + 1,
+                        close_ok=self._make_emphasis_close_check(saved, 2, '_'))
                     if found:
                         self._pos += 2
                         return self._make_nestable(BoldNode, children)
@@ -119,8 +263,12 @@ class InlineFormattingMixin:
             if (self._text[self._pos] == '*'
                     and not (self._pos + 1 < self._n
                              and self._text[self._pos + 1] == '*')):
+                if not self._delim_can_open(saved, 1, '*'):
+                    return None
                 self._pos += 1
-                children, found = self._parse_italic_content('*', depth + 1)
+                children, found = self._parse_italic_content(
+                    '*', depth + 1,
+                    close_ok=self._make_emphasis_close_check(saved, 1, '*'))
                 if found:
                     self._pos += 1
                     return self._make_nestable(ItalicNode, children)
@@ -137,8 +285,12 @@ class InlineFormattingMixin:
                     #   一个下划线且内容错位）。
                     and not (self._pos > 0 and self._text[self._pos - 1] == '_')
                     and not self._is_word_boundary_underscore()):
+                if not self._delim_can_open(saved, 1, '_'):
+                    return None
                 self._pos += 1
-                children, found = self._parse_italic_content('_', depth + 1)
+                children, found = self._parse_italic_content(
+                    '_', depth + 1,
+                    close_ok=self._make_emphasis_close_check(saved, 1, '_'))
                 if found:
                     self._pos += 1
                     return self._make_nestable(ItalicNode, children)
@@ -148,8 +300,14 @@ class InlineFormattingMixin:
             _logger.debug("_try_italic 异常，降级处理", exc_info=True)
             return None
 
-    def _parse_italic_content(self, delim: str, depth: int
-                              ) -> tuple[list[InlineNode], bool]:
+    def _parse_italic_content(self, delim: str, depth: int,
+                              close_ok=None) -> tuple[list[InlineNode], bool]:
+        """解析斜体内容（``close_ok`` 为闭合定界符条件，CommonMark 右定界符）。
+
+        ``close_ok(pos, length)`` 返回 ``False`` 时该 ``delim`` 不作为闭合
+        定界符（例如 ``_foo bar _`` 尾部的 ``_`` 前是空白 → 不闭合），按普通
+        字符继续扫描。
+        """
         if depth > self._MAX_DEPTH:
             return [TextNode(content=self._text[self._pos:])], False
         try:
@@ -171,11 +329,23 @@ class InlineFormattingMixin:
                             _emit_plain()
                             nodes.append(node)
                             continue
+                        # ★ run 长 ≥ 2 且嵌套解析不成立：仍可只消耗 1 个定界符
+                        #   作为闭合（CommonMark：闭合 run 从前往后消耗）——
+                        #   ``**a*b***`` 的 ``***`` 闭合 run 用 1 个闭合内层 em、
+                        #   余下 2 个闭合外层 strong。修复前整段 ``**`` 当作文本，
+                        #   标记残留（``*ab***``）。
+                        if close_ok is not None and close_ok(self._pos, 1):
+                            _emit_plain()
+                            return nodes, True
                         plain_buf.append(self._text[self._pos])
                         plain_buf.append(self._text[self._pos + 1])
                         self._pos += 2
                         continue
                     else:
+                        if close_ok is not None and not close_ok(self._pos, 1):
+                            plain_buf.append(ch)
+                            self._pos += 1
+                            continue
                         _emit_plain()
                         return nodes, True
                 node = self._try_format(depth)

@@ -10,6 +10,7 @@ from rich.text import Text
 from rich.style import Style
 
 from ._inline_preprocess import _preprocess_text
+from ._inline_links import normalize_ref_label as _normalize_ref_label
 from src.presentation_data import LiveMapping, circled_digits
 
 
@@ -355,13 +356,18 @@ def _link_node_handler(self, n, ctx, depth):
     url = getattr(n, 'url', '')
     if url and url.startswith('[ref:') and ctx:
         ref_id = url[5:-1]
-        resolved = ctx.ref_map.get(ref_id)
+        # ★ 标签归一化后查表（与解析层写入键口径一致：大小写不敏感 + 空白折叠）
+        resolved = ctx.ref_map.get(ref_id) or ctx.ref_map.get(_normalize_ref_label(ref_id))
+        label = str((getattr(n, "meta", None) or {}).get("label") or ref_id)
         if resolved:
             actual_url, title = resolved
             result.stylize(Style(color="cyan", underline=True))
             # ── 圈数字编号（基于 ref_map 插入顺序） ────────────
             ref_keys = list(ctx.ref_map.keys())
-            ref_idx = ref_keys.index(ref_id) + 1  # 1-based
+            try:
+                ref_idx = ref_keys.index(ref_id) + 1  # 1-based
+            except ValueError:
+                ref_idx = ref_keys.index(_normalize_ref_label(ref_id)) + 1
             digits = circled_digits()
             circled = digits[ref_idx - 1] if ref_idx <= len(digits) else f"[{ref_idx}]"
             result.append(f" {circled}", style=Style(dim=True, color="bright_black"))
@@ -371,10 +377,10 @@ def _link_node_handler(self, n, ctx, depth):
         else:
             # 快捷引用式链接 ``[ref]`` 未命中定义 → 原样输出（不误改方括号文本）
             if getattr(n, "meta", None) and n.meta.get("shortcut"):
-                return Text(f"[{ref_id}]")
+                return Text(f"[{label}]")
             # 未解析的参考链接：黄色高亮 + 显示 ref_id
             result.stylize(Style(color="yellow", italic=True))
-            result.append(f"[?{ref_id}]", style=Style(dim=True, color="bright_black"))
+            result.append(f"[?{label}]", style=Style(dim=True, color="bright_black"))
             return result
 
     result.stylize(Style(color="cyan", underline=True))
@@ -514,7 +520,9 @@ def _build_dispatch_table():
         # 参考式图片 ``![alt][ref]``：url 为 ``[ref:id]`` 占位 → 查定义表展开
         if url.startswith('[ref:') and ctx:
             ref_id = url[5:-1]
-            resolved = ctx.ref_map.get(ref_id) if hasattr(ctx, 'ref_map') else None
+            ref_map = getattr(ctx, 'ref_map', None) or {}
+            resolved = (ref_map.get(ref_id)
+                        or ref_map.get(_normalize_ref_label(ref_id)))
             if resolved:
                 try:
                     url, ref_title = resolved
@@ -525,7 +533,7 @@ def _build_dispatch_table():
                 return Text(f"![{n.content}][]" if collapsed
                             else f"![{n.content}]")
             else:
-                ref_placeholder = f"[ref:{ref_id}]"
+                ref_placeholder = f"[ref:{n.meta.get('label') or ref_id}]"
                 url = ""
         elif url.startswith('[ref:'):
             if shortcut:
