@@ -509,6 +509,45 @@ class BaseAgent:
             return 0
         return sum(1 for r in table.values() if not r.get("done"))
 
+    def _running_background_jobs(self) -> list:
+        """返回当前仍未结束的后台任务清单（供上下文压缩提词保留 task_id）。
+
+        压缩会折叠历史消息——「启动后台任务」那一轮消息一旦被折叠，模型就
+        只剩摘要里的线索。本清单由压缩引擎注入摘要指令，让未结束任务的
+        task_id（及用途/状态）一定出现在检查点中，压缩后仍能经 ``bash_opt``
+        / ``subagent_opt`` 按 id 继续管理。
+
+        Returns:
+            list[dict]，每项 ``{"task_id", "kind", "detail", "status"}``：
+            kind 为 ``"bash"``（_background_tasks，task_id 恒为 ``bg-xxx``）或
+            ``"subagent"``（_subagent_tasks，task_id 恒为 ``sa-xxx``，仅主
+            Agent 独有）；detail 为可得描述（bash 记录无描述时为空串，
+            subagent 为任务描述）。已结束（``done``）任务不列入。
+        """
+        jobs: list = []
+        bash_table = getattr(self, "_background_tasks", None) or {}
+        for task_id, record in list(bash_table.items()):
+            if not isinstance(record, dict) or record.get("done"):
+                continue
+            jobs.append({
+                "task_id": str(task_id),
+                "kind": "bash",
+                "detail": "",
+                "status": str(record.get("status") or "running"),
+            })
+        subagent_table = getattr(self, "_subagent_tasks", None) or {}
+        for task_id, record in list(subagent_table.items()):
+            if not isinstance(record, dict) or record.get("done"):
+                continue
+            detail = record.get("description") or record.get("command") or ""
+            jobs.append({
+                "task_id": str(task_id),
+                "kind": "subagent",
+                "detail": str(detail),
+                "status": str(record.get("status") or "running"),
+            })
+        return jobs
+
     def _publish_background_task_event(self) -> None:
         """发布后台任务数量变更事件（TUI 模式行行首统计用）。
 

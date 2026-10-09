@@ -108,6 +108,9 @@ class SubAgent(BaseAgent):
                 # 子代理上下文独立：不写入全局上下文使用率快照（避免覆盖
                 # 主 Agent 的模式行百分比与流式增量目标实例）。
                 activate_global=False,
+                # ★ 压缩提词保留未结束后台任务 task_id（SubAgent 的 bash 表
+                #   bg-xxx）——压缩后仍可按 id 经 bash_opt 继续管理
+                pending_jobs_fn=getattr(self, "_running_background_jobs", None),
             )
         except Exception:
             self.context_manager = None

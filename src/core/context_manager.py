@@ -268,6 +268,11 @@ class ContextManager:
         output_port: 输出端口
         tools: 当前工具 schemas（list[dict]）——上下文使用率统计的一部分
             （工具列表随系统提词一起发送给模型，须计入上下文占用）。
+        pending_jobs_fn: 可选回调，返回当前未结束的后台任务清单
+            （``[{"task_id", "kind", "detail", "status"}, ...]``）——压缩时
+            注入摘要提词，确保未结束的后台 bash（``bg-xxx``）/ subagent
+            （``sa-xxx``）task_id 逐字保留在检查点里（装配方通常指向 Agent
+            的 ``_running_background_jobs``）；未提供时提词仅保留静态规则。
     """
 
     def __init__(self, messages, model, summarize_fn=None,
@@ -278,7 +283,8 @@ class ContextManager:
                  tools: Optional[list] = None,
                  event_port=None,
                  label: str = "main",
-                 activate_global: bool = True):
+                 activate_global: bool = True,
+                 pending_jobs_fn=None):
         self.messages = messages
         self.model = model
         self._on_changed = on_messages_changed
@@ -292,6 +298,8 @@ class ContextManager:
         # ★ 压缩显示事件端口（TUI 模式行/通知显示压缩状态）与 Agent label。
         self._event_port = event_port
         self.label = label or "main"
+        # ★ 未结束后台任务清单回调（压缩提词注入 bg-xxx / sa-xxx，见类 docstring）。
+        self._pending_jobs_fn = pending_jobs_fn
         # ★ 是否参与全局上下文使用率快照（主 Agent True；SubAgent False——
         #   子代理拥有独立上下文，写入全局会覆盖主 Agent 的百分比与流式
         #   增量目标实例）。
@@ -542,6 +550,7 @@ class ContextManager:
                 event_port=self._event_port,
                 output_port=self._output_port,
                 label=getattr(self, "label", "main"),
+                pending_jobs_fn=getattr(self, "_pending_jobs_fn", None),
             )
         except Exception:
             _logger.debug("构造压缩引擎失败", exc_info=True)

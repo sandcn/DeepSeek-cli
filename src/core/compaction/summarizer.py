@@ -48,14 +48,60 @@ class SummaryError(Exception):
     """摘要调用未能产出有效文本。"""
 
 
+#: 未结束后台任务清单的提词段落标题（与压缩指令同语言）。
+_PENDING_JOBS_HEADER = "## Live Background Jobs (MUST keep these exact ids)"
+
+
+def _format_pending_jobs(pending_jobs) -> str:
+    """把未结束后台任务清单格式化为压缩指令尾部的硬性保留段。
+
+    每项 ``{"task_id", "kind", "detail", "status"}``：kind 为 ``bash``
+    （bg-xxx，bash_opt 管理）或 ``subagent``（sa-xxx，subagent_opt 管理），
+    据此给出对应管理工具提示。空清单 / 无有效项返回空串（不追加段落，
+    保持指令原样）。
+    """
+    lines: list = []
+    for job in list(pending_jobs or ()):
+        if not isinstance(job, dict):
+            continue
+        task_id = str(job.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        kind = str(job.get("kind") or "").strip() or "job"
+        manager = "subagent_opt" if kind == "subagent" else "bash_opt"
+        status = str(job.get("status") or "running").strip() or "running"
+        detail = str(job.get("detail") or "").strip()
+        suffix = f" — {detail}" if detail else ""
+        lines.append(
+            f"- `{task_id}` ({kind}, status={status}, keep managing with {manager}){suffix}"
+        )
+    if not lines:
+        return ""
+    return "\n".join([
+        _PENDING_JOBS_HEADER,
+        "These background jobs have NOT finished. Copy their exact task ids into the "
+        "checkpoint verbatim (never shorten, rename, or drop them) and note each one's "
+        "purpose and status, so the next model can keep managing them:",
+        *lines,
+    ])
+
+
 def build_summarization_messages(head_messages: list, region_messages: list,
-                                 prior_hint: str = "") -> list:
-    """构建摘要调用的消息序列（回放前缀 + 压缩指令）。"""
+                                 prior_hint: str = "",
+                                 pending_jobs=None) -> list:
+    """构建摘要调用的消息序列（回放前缀 + 压缩指令）。
+
+    pending_jobs: 仍未结束的后台任务清单（可选）——追加到压缩指令尾部，
+        确保这些 task_id 逐字保留在检查点里。
+    """
     messages: list = []
     for message in list(head_messages or ()) + list(region_messages or ()):
         if isinstance(message, dict):
             messages.append(message)
     instruction = COMPACTION_INSTRUCTION
+    pending_section = _format_pending_jobs(pending_jobs)
+    if pending_section:
+        instruction = f"{instruction}\n\n{pending_section}"
     if prior_hint:
         instruction = f"{prior_hint}\n{instruction}"
     messages.append({"role": "user", "content": instruction})
@@ -69,6 +115,7 @@ def summarize_region(
     model: str,
     max_tokens: int = 0,
     has_prior: bool = False,
+    pending_jobs=None,
 ) -> SummaryResult:
     """调用模型生成结构化检查点文本。
 
@@ -79,6 +126,9 @@ def summarize_region(
         model: 模型名称。
         max_tokens: 摘要输出上限（0 表示不限制；当前 summarize_fn 不接受该参数时忽略）。
         has_prior: 被遮蔽区域是否已包含既有检查点。
+        pending_jobs: 仍未结束的后台任务清单（``[{"task_id", "kind", "detail",
+            "status"}, ...]``）——注入指令尾部，确保 bg-xxx / sa-xxx 的
+            task_id 逐字保留在检查点里。
 
     Returns:
         SummaryResult。
@@ -93,7 +143,9 @@ def summarize_region(
         "请保留仍然成立的事实、丢弃过时内容，并把新信息合并为一份统一的摘要。"
         if has_prior else ""
     )
-    messages = build_summarization_messages(head_messages, region_messages, prior_hint)
+    messages = build_summarization_messages(
+        head_messages, region_messages, prior_hint, pending_jobs=pending_jobs,
+    )
 
     _reasoning, content, usage, _tool_calls = _invoke_summarize(
         summarize_fn, messages, model, max_tokens,

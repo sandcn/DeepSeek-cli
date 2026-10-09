@@ -378,6 +378,22 @@ class ChatSession:
 
     # ── 初始化 ────────────────────────────────────────────
 
+    def _pending_background_jobs(self) -> list:
+        """当前未结束的后台任务清单（压缩提词保留 task_id 用）。
+
+        委托给 Agent 的 ``_running_background_jobs``（bash 表 ``bg-xxx`` +
+        subagent 表 ``sa-xxx``）；Agent 缺失 / 方法缺失 / 读取异常时返回空
+        清单——压缩提词仅保留静态规则，不因清单不可得而失败。
+        """
+        agent = getattr(self, "_agent", None)
+        collector = getattr(agent, "_running_background_jobs", None)
+        if not callable(collector):
+            return []
+        try:
+            return collector()
+        except Exception:
+            return []
+
     def initialize(self, model: str | None = None,
                    loaded_messages: list[dict] | None = None) -> None:
         """初始化会话上下文。
@@ -440,6 +456,9 @@ class ChatSession:
             # ★ 压缩显示事件端口 + Agent label（TUI 压缩状态显示）
             event_port=getattr(self._agent, "_event_port", None),
             label=getattr(self._agent, "label", None) or "main",
+            # ★ 压缩提词保留未结束后台任务 task_id（bg-xxx / sa-xxx）——
+            #   引擎把清单注入摘要指令，压缩后仍可按 id 继续管理
+            pending_jobs_fn=self._pending_background_jobs,
         )
         if _cm_factory is not None:
             self._ctx_mgr = _cm_factory(**_cm_kwargs)

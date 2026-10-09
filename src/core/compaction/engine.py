@@ -50,6 +50,7 @@ class CompactionEngine:
         event_port=None,
         output_port=None,
         label: str = "main",
+        pending_jobs_fn=None,
     ) -> None:
         self._cm = context_manager
         self._summarize_fn = summarize_fn
@@ -57,6 +58,8 @@ class CompactionEngine:
         self._event_port = event_port
         self._output_port = output_port
         self.label = label or "main"
+        # 未结束后台任务清单回调（压缩提词注入 bg-xxx / sa-xxx task_id）。
+        self._pending_jobs_fn = pending_jobs_fn
 
     # ── 配置 ────────────────────────────────────────────
 
@@ -331,6 +334,10 @@ class CompactionEngine:
             if isinstance(m, dict) and m.get("role") == "system"
         ]
         has_prior = any(is_checkpoint_message(m) for m in region)
+        # ★ 未结束的后台任务清单注入摘要提词：压缩会折叠「启动任务」那轮
+        #   消息，清单保证 bg-xxx / sa-xxx 的 task_id 一定被保留在检查点，
+        #   压缩后仍可按 id 继续管理（见 base_agent._running_background_jobs）。
+        pending_jobs = self._collect_pending_jobs()
 
         self._emit("started", count=len(region), tokens=region_tokens,
                    detail=f"{start}-{end}")
@@ -338,7 +345,7 @@ class CompactionEngine:
         try:
             summary_result = summarize_region(
                 head_system, region, self._summarize_fn, self._cm.model,
-                max_tokens=0, has_prior=has_prior,
+                max_tokens=0, has_prior=has_prior, pending_jobs=pending_jobs,
             )
             summary = summary_result.summary
             checkpoint = build_checkpoint_message(summary)
@@ -398,6 +405,23 @@ class CompactionEngine:
             )
 
     # ── 内部辅助 ────────────────────────────────────────
+
+    def _collect_pending_jobs(self) -> list:
+        """读取当前仍未结束的后台任务清单（供压缩提词保留 task_id）。
+
+        经 ``pending_jobs_fn``（装配方注入，通常指向 Agent 的
+        ``_running_background_jobs``）获取；未注入或读取失败时返回空列表
+        ——提词仍保留静态规则，压缩流程不因清单不可得而失败。
+        """
+        fn = self._pending_jobs_fn
+        if not callable(fn):
+            return []
+        try:
+            jobs = fn() or []
+        except Exception:
+            _logger.debug("读取未结束后台任务失败（压缩提词跳过清单）", exc_info=True)
+            return []
+        return [job for job in jobs if isinstance(job, dict)]
 
     @staticmethod
     def _estimate_chars(messages: list) -> int:

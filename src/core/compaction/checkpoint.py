@@ -43,6 +43,11 @@ COMPACTION_INSTRUCTION = "\n".join([
     "",
     "## Pending Jobs",
     "- [explicitly requested work not yet completed]",
+    "- [every background job STILL RUNNING at this checkpoint, one bullet each; copy its "
+    "exact task id verbatim — background bash tasks are `bg-<hex>` (started with bash "
+    "background=true and managed via bash_opt) and background subagents are `sa-<hex>` "
+    "(started with subagent and managed via subagent_opt) — together with what it runs "
+    "and its last known status]",
     "",
     "## Current Work",
     "- [precisely what was in progress at this checkpoint]",
@@ -57,6 +62,12 @@ COMPACTION_INSTRUCTION = "\n".join([
     "- Write concise engineering prose. Preserve exact file paths, commands, error strings, "
     "identifiers, numeric values, function signatures, and syntax fragments.",
     "- Capture user feedback and explicit instructions faithfully, especially corrections.",
+    "- ALWAYS carry over the exact task ids of background jobs that have NOT finished yet: "
+    "background bash tasks (`bg-<hex>`, started via bash background=true, resumed with "
+    "bash_opt) and background subagents (`sa-<hex>`, started via subagent, resumed with "
+    "subagent_opt). List each live id verbatim with its purpose and last known status so "
+    "the next model can keep managing it; never paraphrase, shorten, or drop these ids, "
+    "and never invent ids for jobs that already completed.",
     "- Do NOT mention this summarization request or that the context was compacted.",
     "- Output only the checkpoint text: do not call any tool or take any other action.",
     f"- If the conversation already contains a {SUMMARY_OPEN_TAG} block, it is a PRIOR "
