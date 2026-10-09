@@ -619,7 +619,7 @@ class StatusState:
     compaction_active: int = 0
     #: 最近一次压缩结束的单调时钟时间戳（0 = 本会话尚未压缩）——压缩在空闲期
     #: 结束后，状态栏在宽限期内短暂展示「总tok / tok/s」，让压缩消耗的 token
-    #: 可见（压缩摘要是非流式调用，其输出 token 在空闲期产生）。
+    #: 可见（压缩摘要是静默后台流式调用，不进入活跃期门控）。
     compaction_last_end_ts: float = 0.0
 
 

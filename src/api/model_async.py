@@ -19,9 +19,10 @@ from .interrupt_async import is_interrupted_async
 from .stream.pipeline_async import stream_call_async
 from ..core.stats import (
     accumulate_usage, set_tool_parse_elapsed, set_stream_speed,
-    add_token_size_batch,
+    add_token_size_batch, record_generation_rate,
 )
 from ..config import MODEL
+from ..core.constants import STREAM_LABEL_SUMMARIZE
 from ._retry import retry_api_call_async, retry_on_parse_failure_async
 from ._adapter_manager import get_adapter
 from .image_upload import optimize_messages_for_upload
@@ -114,6 +115,58 @@ async def call_model_sync_async(
         fixed_delay_sec=fixed_delay_sec,
     )
 
+# ── 流式摘要调用（上下文压缩等内部调用） ────────────────────
+
+async def call_model_summarize_async(
+    messages: list,
+    model: str | None = None,
+    override_max_retries: int | None = None,
+    fixed_delay_sec: float | None = None,
+) -> tuple:
+    """异步**流式**摘要调用（上下文压缩摘要等内部调用专用）。
+
+    与 ``call_model_async`` 走同一条 SSE 流式管线，但固定为该内部调用的口径：
+
+    - ``silent=True``：不向终端渲染摘要生成过程（内部调用，用户无需看到）；
+    - ``label=STREAM_LABEL_SUMMARIZE``：内容/阶段事件不进入主 Agent 或
+      SubAgent 的渲染通道（label 不匹配），且不计入 ``main · N%`` 上下文
+      使用率（core 侧按该标签跳过，见 ``core.context_manager``）；
+    - 不传工具（摘要只产出文本）。
+
+    为何用流式：非流式长输出在服务端/网关侧可能因连接空闲被截断，且拿不到
+    生成过程中的实时 token；流式管线天然规避长连接空闲问题，并复用与主对话
+    完全一致的真实 usage 校准与 token 统计口径（生成中即可见 tok/s）。
+
+    Returns:
+        ``(reasoning_content, content, usage, tool_calls)``。
+    """
+    started = time.time()
+    reasoning, content, usage, tool_calls = await call_model_async(
+        messages,
+        model=model,
+        tools=None,
+        display=None,
+        label=STREAM_LABEL_SUMMARIZE,
+        silent=True,
+        override_max_retries=override_max_retries,
+        fixed_delay_sec=fixed_delay_sec,
+    )
+    # 推理模型兼容：仅返回 reasoning（无 content）时以 reasoning 作为摘要文本
+    # ——与非流式路径 ``_call_sync_async`` 的兜底语义保持一致。
+    if reasoning and not content and not tool_calls:
+        content = reasoning
+    # ★ 生成速率登记（不改动总 tok）：流式期间 token 已实时累加并经真实 usage
+    #   校正；此处登记本次生成的真实平均速率，使状态栏「tok/s」在压缩结束后的
+    #   宽限期内仍显示本次摘要生成速度（而非随 1 秒窗口滑走归零）。
+    try:
+        output_tokens = int((usage or {}).get("output", 0) or 0)
+    except (TypeError, ValueError):
+        output_tokens = 0
+    elapsed = time.time() - started
+    if output_tokens > 0 and elapsed > 0:
+        record_generation_rate(output_tokens, elapsed)
+    return reasoning, content, usage, tool_calls
+
 # ── 非流式调用实现（async） ─────────────────────────────────
 
 async def _call_sync_async(
@@ -160,11 +213,12 @@ async def _call_sync_async(
         _logger.debug("真实 prompt token 校准上下文使用率失败", exc_info=True)
 
     accumulate_usage(usage)
-    # ★ 非流式调用（压缩摘要等）的生成 token 计入状态栏「总tok / tok/s」：
-    #   本调用结束时才拿到真实 usage，故以「已知耗时的批量生成」形式计入——
-    #   总 tok 一次性累加（历史累计语义不变），tok/s 回退到真实平均速率
-    #   （output / api_duration），避免整批算进最后一个采样间隔而虚高、
-    #   或随 1 秒窗口滑走而瞬间归零（用户看不到这次生成的速率）。
+    # ★ 非流式调用（直接调用 call_model_sync 的场景，非压缩摘要——压缩摘要走
+    #   流式管线 call_model_summarize_async）的生成 token 计入状态栏
+    #   「总tok / tok/s」：本调用结束时才拿到真实 usage，故以「已知耗时的批量
+    #   生成」形式计入——总 tok 一次性累加（历史累计语义不变），tok/s 回退到
+    #   真实平均速率（output / api_duration），避免整批算进最后一个采样间隔
+    #   而虚高、或随 1 秒窗口滑走而瞬间归零（用户看不到这次生成的速率）。
     add_token_size_batch(usage.get("output", 0), api_duration)
 
     if api_duration > 0 and usage["output"] > 0:
@@ -214,6 +268,19 @@ def call_model_sync(messages, model=None, tools=None, display=None, label=None):
     loop = _get_model_loop()
     return loop.run_until_complete(
         call_model_sync_async(messages, model, tools, display, label),
+    )
+
+def call_model_summarize_sync(messages, model=None):
+    """同步**流式**摘要调用包装（上下文压缩摘要等内部调用专用）。
+
+    在调用线程的持久化事件循环中运行 ``call_model_summarize_async``——压缩
+    引擎（``core.compaction``）在线程中同步调用摘要函数，经本包装获得与
+    主对话一致的流式管线行为（silent + 内部 label，不渲染、不计入主
+    Agent 上下文使用率）。
+    """
+    loop = _get_model_loop()
+    return loop.run_until_complete(
+        call_model_summarize_async(messages, model),
     )
 
 def call_model(messages, model=None, tools=None, display=None, label=None, silent=False):

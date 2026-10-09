@@ -73,10 +73,10 @@ _snapshot_cache: "WeakKeyDictionary" = WeakKeyDictionary()
 
 #: 压缩结束后「总tok / tok/s」在状态栏继续展示的宽限期（秒）。
 #:
-#: 压缩摘要是**非流式**调用：真实 usage 在调用结束时才到达，token 一次性进入
-#: 全局统计（见 core.stats 的批量生成记账），随后压缩立即结束（``compact · N``
-#: 归零）。若只在「压缩进行中」展示，用户几乎看不到这次压缩产生的 token——
-#: 故压缩结束后仍展示本宽限期长度，之后回到活跃期门控（不长期占用状态栏）。
+#: 压缩摘要是**静默**流式调用（后台生成、不进入活跃期门控）：token 在压缩
+#: 期间实时入账，随后压缩立即结束（``compact · N`` 归零）。若只在「压缩进行
+#: 中」展示，用户几乎看不到这次压缩产生的 token——故压缩结束后仍展示本宽限期
+#: 长度，之后回到活跃期门控（不长期占用状态栏）。
 _COMPACTION_TOKEN_GRACE_SEC = 5.0
 
 
@@ -86,9 +86,9 @@ def _tokens_visible(status_active: bool, status, now: float) -> bool:
     可见条件（任一）：
       - 活跃期（``status_active``，原有语义）；
       - 正在压缩（``compaction_active > 0``）——空闲期手动 ``/compact`` 也可见；
-      - 压缩结束后的 ``_COMPACTION_TOKEN_GRACE_SEC`` 宽限期内——压缩摘要的
-        输出 token 在调用结束时才计入，宽限期让用户看得到「总tok」增量与
-        该次压缩的「tok/s」（批次真实平均速率）。
+      - 压缩结束后的 ``_COMPACTION_TOKEN_GRACE_SEC`` 宽限期内——压缩摘要为
+        静默后台流式调用（不进入活跃期门控），宽限期让用户看得到「总tok」
+        增量与该次压缩的「tok/s」。
 
     Args:
         status_active: 状态栏是否处于活跃期（轮次进行中）。
@@ -155,8 +155,8 @@ class StatusContext:
         self.status = status
         self.status_active = status_active
         #: 总 tok / tok/s 段是否可见（活跃期，或压缩中/压缩刚结束的宽限期——
-        #: 压缩摘要是非流式调用，空闲期（手动 ``/compact``）产生的 token 只有
-        #: 放开活跃期门控才看得到）。未显式传入时跟随 ``status_active``
+        #: 压缩摘要是静默后台流式调用，空闲期（手动 ``/compact``）产生的 token
+        #: 只有放开活跃期门控才看得到）。未显式传入时跟随 ``status_active``
         #: （向后兼容既有构造调用）。
         self.tokens_visible = bool(status_active) if tokens_visible is None else bool(tokens_visible)
         self.dot_elapsed = dot_elapsed
@@ -307,7 +307,7 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
     ``model`` 段为模型名部分（不与其它段用分隔符连接），其余段（tools/
     elapsed/messages/tokens/speed）按声明顺序用 `` · `` 连接。各段自行门控
     可见性：tools/elapsed 仅活跃期渲染；tokens/speed 在活跃期或压缩中/压缩
-    结束宽限期内渲染（``_tokens_visible``，压缩摘要为非流式调用，空闲期
+    结束宽限期内渲染（``_tokens_visible``，压缩摘要是静默后台流式调用，空闲期
     ``/compact`` 产生的 token 也要看得到）；messages 为常驻段（空闲也显示
     ——2026-10-07 状态栏信息增强）。
     """

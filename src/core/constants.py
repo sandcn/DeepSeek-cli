@@ -35,6 +35,8 @@ __all__: list[str] = [
     "RUNNING_256", "DONE_256", "FAIL_256", "ANSWERING_256",
     "PARSING_256", "BATCH_256", "DIMMER_256", "DIMMEST_256",
     "SUMMARY_DIM_256", "BRANCH_256", "SPINNER_COLOR_256",
+    # ── 内部模型调用标签 ──
+    "STREAM_LABEL_SUMMARIZE",
 ]
 
 # ── ANSI 终端颜色常量（纯色值，无依赖） ────────────────
@@ -122,6 +124,16 @@ DIMMEST_256      = "\033[38;5;238m"   # 更深灰 — 分隔线/边框
 SUMMARY_DIM_256  = "\033[38;5;245m"   # 中灰 — 摘要行次要信息
 BRANCH_256       = BRIGHT_BLACK_256   # 灰 — 树状连接线
 SPINNER_COLOR_256 = YELLOW_256        # 金色 — spinner 动画
+
+# ── 内部模型调用标签 ──────────────────────────────────
+
+#: 上下文压缩摘要调用的流式标签（单一真源，api 与 core 共同引用）。
+#:
+#: ``api.model_async`` 以该 label 发起**流式**摘要请求（``silent``）；core 侧
+#: 据此把该调用排除出主 Agent 上下文使用率统计——摘要输出写回检查点而非主
+#: 消息列表，输入也不是主对话（见 ``core.context_manager`` 的
+#: ``update_streaming_usage`` / ``update_real_prompt_usage``）。
+STREAM_LABEL_SUMMARIZE = "summarize"
 
 # ── Token 格式化常量 ──
 

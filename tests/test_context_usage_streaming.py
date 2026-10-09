@@ -243,6 +243,44 @@ class TestUpdateStreamingUsage:
         assert _is_subagent_stream_label(None) is False
         assert _is_subagent_stream_label("") is False
 
+    def test_internal_summarize_label_skipped(self):
+        """内部摘要流式（label="summarize"）不更新主 Agent 全局 pct。
+
+        压缩摘要改为流式后（用户需求），其输出写回检查点而非主消息列表——
+        流式增量若计入会把 ``main · N%`` 在压缩期间虚高。
+        """
+        from src.core.context_manager import (
+            set_context_usage_percent, get_context_usage_percent,
+            update_streaming_usage, get_streaming_extra_tokens,
+            _is_internal_stream_label, STREAM_LABEL_SUMMARIZE,
+        )
+        set_context_usage_percent(None)
+        self._active_cm()
+        base = get_context_usage_percent()
+        update_streaming_usage(5000, STREAM_LABEL_SUMMARIZE)
+        assert get_context_usage_percent() == base
+        assert get_streaming_extra_tokens() == 0  # 全局增量未被污染
+        assert _is_internal_stream_label("summarize") is True
+        assert _is_internal_stream_label("assistant") is False
+        assert _is_internal_stream_label(None) is False
+
+    def test_internal_summarize_clear_does_not_touch_main_delta(self):
+        """内部摘要流式结束清零不得清除主 Agent 的流式增量。"""
+        from src.core.context_manager import (
+            set_context_usage_percent, get_context_usage_percent,
+            update_streaming_usage, get_streaming_extra_tokens,
+            STREAM_LABEL_SUMMARIZE,
+        )
+        set_context_usage_percent(None)
+        self._active_cm()
+        base = get_context_usage_percent()
+        update_streaming_usage(2000, "assistant")
+        assert get_context_usage_percent() > base
+        update_streaming_usage(1500, STREAM_LABEL_SUMMARIZE)
+        update_streaming_usage(0, STREAM_LABEL_SUMMARIZE)
+        assert get_context_usage_percent() > base       # 主 Agent 增量保持
+        assert get_streaming_extra_tokens() == 2000     # 未被覆盖/清零
+
     def test_clear_after_stream(self):
         """流式结束清零（update_streaming_usage(0)）→ 百分比回落基线。"""
         from src.core.context_manager import (

@@ -10,9 +10,10 @@ from collections import deque
 
 #: 「已知耗时的批量生成」速率保鲜期（秒）。
 #:
-#: 非流式调用（上下文压缩摘要等）在**调用结束**时才拿到真实 usage，其 token
-#: 一次性进入统计——窗口差值法会把整批算进最后一个采样间隔（虚高几十倍），
-#: 且 1 秒采样窗口滑走后速率直接归零（用户看不到这次生成的 tok/s）。
+#: 非流式调用（未走流式管线的直连调用，如直接调用 ``call_model_sync``）在
+#: **调用结束**时才拿到真实 usage，其 token 一次性进入统计——窗口差值法会
+#: 把整批算进最后一个采样间隔（虚高几十倍），且 1 秒采样窗口滑走后速率直接
+#: 归零（用户看不到这次生成的 tok/s）。
 #: ``add_token_size_batch`` 记录该批次的**真实平均速率**（size / elapsed），
 #: 在窗口差值法失真/归零时回退到它；超过本保鲜期回退失效（速率自然归零，
 #: 不会长期显示陈旧速率）。
@@ -28,9 +29,9 @@ class _TokenSpeedTracker:
       - 窗口速度（window_speed）：最近 N 秒内的实时速率
 
     另一路每秒实时速度（``per_second_speed``，状态栏 tok/s）按总 tok 差值法
-    计算；非流式调用的批量生成（``add_token_size_batch``，如上下文压缩摘要）
-    以已知耗时记账，使该次生成的 tok/s 显示为真实平均速率 ``size / elapsed``
-    而不是一次性突刺或瞬间归零（见 ``_BATCH_RATE_TTL``）。
+    计算；非流式调用的批量生成（``add_token_size_batch``，未走流式管线的
+    直连调用）以已知耗时记账，使该次生成的 tok/s 显示为真实平均速率
+    ``size / elapsed`` 而不是一次性突刺或瞬间归零（见 ``_BATCH_RATE_TTL``）。
     """
 
     def __init__(self, window_seconds: float = 5.0):
@@ -70,7 +71,7 @@ class _TokenSpeedTracker:
             self._window.append((now, size))
 
     def add_token_size_batch(self, size: int, elapsed: float) -> None:
-        """计入一次「已知耗时」的批量生成（非流式调用，如上下文压缩摘要）。
+        """计入一次「已知耗时」的批量生成（未走流式管线的直连非流式调用）。
 
         与 ``add_token_size`` 的差异：本方法知道这批 token 的真实生成耗时，
         因此把该批次记为「批量生成事件」——总 tok 仍一次性累加（历史累计语义
@@ -234,7 +235,7 @@ class _TokenSpeedTracker:
         tok/s = (当前总tok - 窗口起点总tok) / 经过秒数
 
         窗口内数据不足 2 个采样点时返回 0.0；最近一次「已知耗时的批量生成」
-        （``add_token_size_batch``，如上下文压缩摘要的非流式调用）仍在保鲜期内
+        （``add_token_size_batch``，未走流式管线的直连调用）仍在保鲜期内
         且其后无新 token 时，返回该批次的真实平均速率——否则整批会被算进最后
         一个采样间隔（虚高）或随窗口滑走（归零），状态栏「tok/s」看不到这次
         生成的速率。
@@ -280,6 +281,31 @@ class _TokenSpeedTracker:
         # ★ 真实 usage 修正（adjust_token_size）可使 delta 为负——速度恒非负
         #   （负值对用户无意义，且会让状态栏速度段抖动）。
         return max(0.0, round((_total - old_total) / elapsed, 2))
+
+    def record_generation_rate(self, size: int, elapsed: float) -> None:
+        """登记一次生成的**真实平均速率**（不改动总 token 统计）。
+
+        与 ``add_token_size_batch`` 的差异：本方法**不累加** token——总 tok 已由
+        流式增量实时累加并经真实 usage 校正（见 ``StreamContext.apply_real_usage``）；
+        本方法只登记速率元数据（复用 ``_last_batch`` 回退机制），使状态栏
+        「tok/s」在生成结束后的宽限期内仍显示本次生成的真实平均速率
+        ``size / elapsed``，而不是随 1 秒采样窗口滑走归零。
+
+        Args:
+            size: 本次生成 token 数（<=0 / 不可解析时忽略）。
+            elapsed: 本次生成耗时（秒）；<=0 / 非有限值时忽略。
+        """
+        try:
+            size_int = int(size)
+            seconds = float(elapsed)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if size_int <= 0 or not math.isfinite(seconds) or seconds <= 0:
+            return
+        with self._lock:
+            # total_after 取**当前**总 tok：其后无新 token 时速率回退有效
+            # （``_batch_rate_locked`` 校验 total 相等），有新 token 自动失效。
+            self._last_batch = (time.time(), size_int, seconds, self._total_tokens)
 
     def _batch_rate_locked(self, now: float) -> float:
         """最近一次批量生成的真实平均速率（tok/s）；不可用返回 0.0。
@@ -341,7 +367,7 @@ def add_token_size(size: int) -> None:
 
 
 def add_token_size_batch(size: int, elapsed: float) -> None:
-    """计入一次「已知耗时」的批量生成（非流式调用，如上下文压缩摘要）。
+    """计入一次「已知耗时」的批量生成（未走流式管线的直连非流式调用）。
 
     典型用法：非流式模型调用结束后拿到真实 usage 时调用——
     ``add_token_size_batch(usage["output"], api_duration)``。总 tok 一次性
@@ -355,6 +381,21 @@ def add_token_size_batch(size: int, elapsed: float) -> None:
             （退化为一次性计入，无速率回退）。
     """
     _token_speed.add_token_size_batch(size, elapsed)
+
+
+def record_generation_rate(size: int, elapsed: float) -> None:
+    """登记一次生成的真实平均速率（不改动总 tok）。
+
+    供**流式**调用在结束后登记本次生成速率：总 tok 已由流式管线实时累加并经
+    真实 usage 校正，本函数只登记速率元数据，使状态栏「tok/s」在生成结束后的
+    宽限期内仍显示本次生成的真实平均速率（见
+    ``_TokenSpeedTracker.record_generation_rate``）。
+
+    Args:
+        size: 本次生成 token 数（<=0 时忽略）。
+        elapsed: 本次生成耗时（秒）；<=0 / 非有限值时忽略。
+    """
+    _token_speed.record_generation_rate(size, elapsed)
 
 
 def adjust_token_size(size: int) -> None:
@@ -402,7 +443,7 @@ def get_per_second_speed() -> float:
     记录总 tok 的时间序列快照，在 1 秒窗口内取差值，
     不受 reset 影响（总 tok 是历史累计值）。最近一次「已知耗时的批量生成」
     （``add_token_size_batch``）仍在保鲜期内且其后无新 token 时返回该批次的
-    真实平均速率（压缩摘要等非流式调用的 tok/s 因此可见）。
+    真实平均速率（未走流式管线的直连非流式调用的 tok/s 因此可见）。
     """
     return _token_speed.per_second_speed
 

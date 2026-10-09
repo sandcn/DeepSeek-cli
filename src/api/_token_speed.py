@@ -22,6 +22,7 @@ from ..core.stats._token_speed import (  # noqa: F401
     get_token_speed,
     get_token_speed_snapshot,
     get_total_tokens,
+    record_generation_rate,
     reset_token_speed,
 )
 
@@ -31,6 +32,7 @@ __all__ = [
     "add_token_size",
     "add_token_size_batch",
     "adjust_token_size",
+    "record_generation_rate",
     "get_total_tokens",
     "get_token_speed",
     "get_short_window_speed",

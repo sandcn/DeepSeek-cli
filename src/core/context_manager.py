@@ -15,10 +15,10 @@ ContextManager 是上下文压缩的唯一对外接口。
 # 架构违反标记 — 已知技术债务（方案B已修复）
 #
 # ContextManager 的 summarize_fn 默认值原直接依赖
-# src.api.model_async.call_model_sync，违反「核心层不依赖基础设施层」
+# src.api.model_async（模型调用），违反「核心层不依赖基础设施层」
 # 原则。已在 src.core.adapters.model.SyncModelBridge 中修复：
 # summarize_fn 的默认值改为通过 SyncModelBridge().summarize
-# 桥接，消除对 api 层的直接导入依赖。
+# 桥接（内部走流式摘要调用），消除对 api 层的直接导入依赖。
 # ═══════════════════════════════════════════════════════════════
 
 import json
@@ -27,7 +27,7 @@ import threading
 from typing import Optional
 
 _logger = logging.getLogger(__name__)
-from .constants import YELLOW, DIM, RESET, audit_log as _log
+from .constants import YELLOW, DIM, RESET, STREAM_LABEL_SUMMARIZE, audit_log as _log
 from . import context_selector as selector
 from .context_selector import MessageStatsCache
 from .tokens import estimate_tokens
@@ -136,6 +136,12 @@ def get_streaming_extra_tokens() -> int:
     return _streaming_extra_tokens
 
 
+#: 内部（非主 Agent / 非 SubAgent 对话）流式调用标签集合：其输出不进入主对话
+#: 上下文，不得计入 ``main · N%`` 上下文使用率的实时增量。
+#: 单一真源见 ``core.constants.STREAM_LABEL_SUMMARIZE``（上下文压缩摘要）。
+_INTERNAL_STREAM_LABELS = frozenset({STREAM_LABEL_SUMMARIZE})
+
+
 def _is_subagent_stream_label(label: Optional[str]) -> bool:
     """判断流式调用 label 是否属于 SubAgent（其输出不占主 Agent 上下文）。
 
@@ -155,6 +161,23 @@ def _is_subagent_stream_label(label: Optional[str]) -> bool:
         True 表示该流式属于 SubAgent（应跳过主 Agent 上下文统计）。
     """
     return bool(label and (label.startswith("agent-") or label.startswith("sa-")))
+
+
+def _is_internal_stream_label(label: Optional[str]) -> bool:
+    """判断流式调用 label 是否属于**内部**调用（不占主 Agent 上下文）。
+
+    内部调用示例：上下文压缩摘要（``STREAM_LABEL_SUMMARIZE``，api 经
+    ``call_model_summarize_async`` 以流式发起）——其输出写回检查点而非主消息
+    列表，输入也不是主对话，因此既不能写入全局流式增量、也不能触发主 Agent
+    百分比重算（否则压缩期间 ``main · N%`` 会被摘要内容虚高）。
+
+    Args:
+        label: 流式调用标签。
+
+    Returns:
+        True 表示该流式属于内部调用（应跳过主 Agent 上下文统计）。
+    """
+    return bool(label and label in _INTERNAL_STREAM_LABELS)
 
 
 def update_real_prompt_usage(prompt_tokens: int, label: Optional[str] = None) -> None:
@@ -200,20 +223,24 @@ def set_active_context_manager(cm: Optional["ContextManager"]) -> None:
 def update_streaming_usage(delta_tokens: int, label: Optional[str] = None) -> None:
     """流式输出过程中实时刷新上下文使用率（api 流式管线调用入口）。
 
-    仅主 Agent 流式计入（SubAgent 跳过——label "agent-N" 前台 / "sa-xxx"
-    后台，其输出占用 SubAgent 独立上下文，不影响主 Agent 百分比；★ 2026-08-20
-    修复：后台 subagent label 为 task_id "sa-xxx" 而非 "agent-" 前缀，修复前
-    其流式增量被计入主 Agent 百分比）。写入全局流式增量后触发活跃
-    ContextManager.refresh_usage()（缓存有效时 O(1)，性能好）。
+    仅主 Agent 流式计入（SubAgent 与内部调用跳过）：
+      - SubAgent：label "agent-N" 前台 / "sa-xxx" 后台，其输出占用 SubAgent
+        独立上下文，不影响主 Agent 百分比（★ 2026-08-20 修复：后台 subagent
+        label 为 task_id "sa-xxx" 而非 "agent-" 前缀，修复前其流式增量被计入
+        主 Agent 百分比）；
+      - 内部调用：上下文压缩摘要（``STREAM_LABEL_SUMMARIZE``）等——输出写回
+        检查点而非主消息列表，计入会把 ``main · N%`` 在压缩期间虚高。
+    写入全局流式增量后触发活跃 ContextManager.refresh_usage()（缓存有效时
+    O(1)，性能好）。
 
     Args:
         delta_tokens: 当前流式输出的**上下文增量**（ctx.streamed_output_tokens，
             content + 工具调用参数的整体估算；与消息追加后 MessageStatsCache
             同口径）。
         label: 流式调用标签；None/主 Agent（"assistant"）计入，SubAgent
-            （"agent-N"/"sa-xxx"）跳过。
+            （"agent-N"/"sa-xxx"）与内部调用（"summarize"）跳过。
     """
-    if _is_subagent_stream_label(label):
+    if _is_subagent_stream_label(label) or _is_internal_stream_label(label):
         return
     global _streaming_extra_tokens, _streaming_fail_logged
     _streaming_extra_tokens = max(0, int(delta_tokens or 0))
@@ -253,7 +280,8 @@ class ContextManager:
     Args:
         messages: 消息列表引用（就地修改）
         model: 模型名称
-        summarize_fn: 摘要生成函数，默认 call_model_sync
+        summarize_fn: 摘要生成函数，默认经 SyncModelBridge 走**流式**摘要调用
+            （silent + 内部 label，见 core/adapters/model.py）
         on_messages_changed: 消息变更回调，接收事件字典：
             {"type": "insert", "index": int}
             {"type": "remove", "indices": list[int]}

@@ -115,7 +115,7 @@ class MockAsyncModelAdapter(AsyncModelPort):
 
 
 class SyncModelBridge:
-    """同步模型调用桥接器 — 将 api 层的 call_model_sync 包装为核心层可用的接口。
+    """同步模型调用桥接器 — 将 api 层的摘要调用包装为核心层可用的接口。
 
     消除 core/context_manager.py 对 api/model_async.py 的直接导入依赖，
     将桥接逻辑归一到适配器层（core/adapters/model.py），遵循依赖倒置原则。
@@ -123,18 +123,29 @@ class SyncModelBridge:
     使用方式：
         bridge = SyncModelBridge()
         reasoning, content, usage, tool_calls = bridge.summarize(messages, model=model)
+
+    ★ 摘要调用走**流式**管线（``2026-10`` 用户需求「压缩上下文的 agent 调用
+    API 时要用流式的」）：上下文压缩摘要是内部长输出调用，经
+    ``api.model_async.call_model_summarize_async`` 走与主对话一致的 SSE 流式
+    管线——避免非流式长连接在服务端/网关侧空闲超时被截断，并复用真实 usage
+    校准与实时 token 统计。
     """
 
     def summarize(self, messages, model=None, tools=None, display=None,
-                  label="summarize"):
-        """同步模型调用，返回 (reasoning, content, usage, tool_calls)。
+                  label=None):
+        """同步**流式**模型调用，返回 (reasoning, content, usage, tool_calls)。
 
-        内部延迟导入 api.model_async.call_model_sync，避免模块加载时
+        内部延迟导入 api.model_async.call_model_summarize_sync，避免模块加载时
         产生跨层依赖。调用方无需感知 api 层的存在。
 
-        ★ label 默认 ``"summarize"``（压缩摘要等内部工具调用）——**非主 Agent
-        对话轮次**：core 侧的真实 prompt token 基线仅接受主 Agent 轮次标签
-        （None/"assistant"），内部调用不得污染 ``main · N%`` 上下文使用率。
+        ``tools`` / ``display`` / ``label`` 形参仅为签名兼容保留：
+        - 摘要只产出文本，不接受工具（``tools`` 恒忽略）；
+        - 调用强制 ``silent`` + 内部 label（``label`` 恒忽略），不渲染到终端、
+          不进入主 Agent/SubAgent 渲染通道。
+
+        ★ 内部 label（``"summarize"``）——**非主 Agent 对话轮次**：core 侧的
+        真实 prompt token 基线与上下文使用率实时增量均按该标签跳过，内部调用
+        不得污染 ``main · N%`` 上下文使用率。
         """
-        from ...api.model_async import call_model_sync
-        return call_model_sync(messages, model, tools, display, label)
+        from ...api.model_async import call_model_summarize_sync
+        return call_model_summarize_sync(messages, model)

@@ -692,8 +692,8 @@ def _do_compaction(model, cmd) -> None:
 
     ★ 2026-10（用户需求：压缩消耗的 token 要能在状态栏看到）：压缩结束
     （active 从 >0 归 0）时记录结束时刻——状态栏在空闲期按该时刻短暂
-    展示「总tok / tok/s」（压缩摘要是**非流式**调用，其输出 token 在空闲期
-    产生，只按活跃期门控会永远看不到；见 ``status_bar._tokens_visible``）。
+    展示「总tok / tok/s」（压缩摘要是**静默后台流式**调用，不进入活跃期门控，
+    只按活跃期门控会永远看不到；见 ``status_bar._tokens_visible``）。
     """
     try:
         active = int(getattr(cmd, "active", 0) or 0)

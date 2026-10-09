@@ -5,6 +5,11 @@
 提供方的热前缀 KV 缓存得以复用，只有尾随指令与摘要输出未缓存。
 
 只接受文本摘要；空内容或图片输出一律失败。
+
+摘要调用默认经 ``core.adapters.model.SyncModelBridge`` 走**流式**管线
+（``api.model_async`` 的 SSE 摘要调用，silent + 内部 label）——避免非流式
+长输出在服务端/网关侧空闲超时被截断，并复用真实 usage 校准与实时 token
+统计；摘要内容不渲染、不计入主 Agent 上下文使用率。
 """
 
 from __future__ import annotations

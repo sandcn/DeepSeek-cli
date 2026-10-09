@@ -1,16 +1,21 @@
 """压缩上下文（上下文压缩摘要）的 token 统计测试。
 
 用户需求（2026-10）：压缩上下文消耗的 token（摘要调用的生成 token）必须
-统计到状态栏的「总tok」与「tok/s」；压缩摘要是**非流式**调用，其 token 在
-空闲期（手动 ``/compact``）产生，因此空闲期也要能看到这两个指标。
+统计到状态栏的「总tok」与「tok/s」；压缩摘要**改为流式调用**（用户需求
+「压缩上下文的 agent 调用 API 时要用流式的」）后，其 token 在压缩期间实时
+入账，并在结束后登记本次生成的真实平均速率——空闲期（手动 ``/compact``）
+也能看到这两个指标。
 
 覆盖：
   1. ``_TokenSpeedTracker.add_token_size_batch``：总 tok 累加 + 该批次的真实
      平均速率回退（避免整批算进最后一个采样间隔而虚高、或随短窗口滑走归零）；
-  2. 非流式调用（``api.model_async._call_sync_async``）以「已知耗时批量」记账；
-  3. ``ContextManager.compact_now``（真实压缩链路，mock HTTP）→ 摘要输出 token
-     计入全局总 tok 与 tok/s；
-  4. 状态栏：压缩中 / 压缩结束宽限期内也展示 tokens 与 speed 段（空闲期可见），
+  2. ``_TokenSpeedTracker.record_generation_rate``：只登记速率、不改动总 tok
+     （流式摘要结束后保证 tok/s 仍可见）；
+  3. 非流式调用（``api.model_async._call_sync_async``）以「已知耗时批量」记账；
+  4. 压缩摘要走**流式**管线（``api.model_async.call_model_summarize_async``，
+     SSE + silent + 内部 label）——端到端 ``ContextManager.compact_now`` 的
+     摘要输出 token 计入全局总 tok 与 tok/s；
+  5. 状态栏：压缩中 / 压缩结束宽限期内也展示 tokens 与 speed 段（空闲期可见），
      无压缩的空闲态与宽限期结束后不展示。
 """
 
@@ -124,7 +129,7 @@ def test_reset_clears_batch_state(tracker):
 
 
 # ═══════════════════════════════════════════════════════════════
-# 2. 非流式模型调用以「已知耗时批量」计入（压缩摘要走此路径）
+# 2. 生成速率登记与「已知耗时批量」记账
 # ═══════════════════════════════════════════════════════════════
 
 
@@ -138,20 +143,111 @@ def _fake_response():
     }
 
 
+def _fake_stream_chunks():
+    """SSE chunk 序列：正文 + 带真实 usage 的收尾帧（66 输出 token）。"""
+    return [
+        {"choices": [{"delta": {"content": "## Primary Request\n- summary body"}}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}],
+         "usage": {"prompt_tokens": 4321, "completion_tokens": 66,
+                   "prompt_cache_hit_tokens": 100, "prompt_cache_miss_tokens": 4221}},
+    ]
+
+
+class _FakeAdapter:
+    """无网络假适配器（流式/非流式两条路径共用）。"""
+
+    provider_name = "fake"
+    _protocol = ""
+    _base_url = "http://fake"
+
+    def prepare_messages(self, messages, model):
+        return list(messages)
+
+    def is_reasoner_model(self, model):
+        return False
+
+    def build_request_kwargs(self, messages, model, tools=None, stream=False,
+                             stream_options=None):
+        return {"messages": messages, "model": model, "tools": tools, "stream": stream}
+
+    def parse_response(self, response):
+        usage = dict(response.get("usage", {}) or {})
+        normalized = {
+            "input": usage.get("prompt_tokens", usage.get("input", 0)),
+            "output": usage.get("completion_tokens", usage.get("output", 0)),
+            "input_cache_hit": usage.get(
+                "prompt_cache_hit_tokens", usage.get("input_cache_hit", 0)),
+            "input_cache_miss": usage.get(
+                "prompt_cache_miss_tokens", usage.get("input_cache_miss", 0)),
+        }
+        message = response["choices"][0]["message"]
+        return {
+            "content": message.get("content", ""),
+            "reasoning_content": message.get("reasoning_content", ""),
+            "usage": normalized,
+            "tool_calls": [],
+        }
+
+
 @pytest.fixture
 def _mock_http(monkeypatch):
-    """mock 掉 model_async 的 HTTP 层（不产生真实请求）。"""
+    """mock 掉 api 层的 HTTP（非流式 + 流式两条路径），不产生真实请求。"""
+    import src.api._adapter_manager as am
     import src.api.model_async as ma
+    import src.api.stream.pipeline_async as pa
 
     async def fake_chat(*args, **kwargs):
         return _fake_response()
 
+    async def fake_stream(*args, **kwargs):
+        async def _gen():
+            for chunk in _fake_stream_chunks():
+                yield chunk
+        return _gen()
+
     monkeypatch.setattr(ma, "chat_completions_async", fake_chat)
     monkeypatch.setattr(ma, "chat_completions_async_anthropic", fake_chat)
+    # 流式管线（压缩摘要路径）从 pipeline_async 模块直接引用客户端函数。
+    monkeypatch.setattr(pa, "chat_completions_async", fake_stream)
+    monkeypatch.setattr(pa, "chat_completions_async_anthropic", fake_stream)
+    # 适配器：ma 的模块级引用 + stream_call_async 内部延迟导入的
+    # _adapter_manager.get_adapter 都要替换为无网络假适配器。
+    monkeypatch.setattr(ma, "get_adapter", lambda model: _FakeAdapter())
+    monkeypatch.setattr(am, "get_adapter", lambda model: _FakeAdapter())
     return ma
 
 
+def test_record_generation_rate_sets_rate_without_adding_tokens(tracker):
+    """只登记速率元数据：总 tok 不变，per_second_speed 回退到该速率。"""
+    tracker.add_token_size(66)
+    tracker.record_generation_rate(66, 6.0)
+    assert tracker.total_tokens == 66           # 不重复累加
+    assert tracker.per_second_speed == 11.0     # 66 / 6.0
+    end_ts, size, seconds, total_after = tracker._last_batch
+    assert (size, seconds, total_after) == (66, 6.0, 66)
+
+
+def test_record_generation_rate_ignores_invalid_input(tracker):
+    tracker.record_generation_rate(0, 5.0)
+    tracker.record_generation_rate(-3, 5.0)
+    tracker.record_generation_rate(10, 0.0)
+    tracker.record_generation_rate(10, None)
+    tracker.record_generation_rate(10, float("inf"))
+    tracker.record_generation_rate("x", 5.0)
+    assert tracker._last_batch is None
+
+
+def test_record_generation_rate_invalidated_by_new_tokens(tracker):
+    """速率登记后又有新 token → 交回窗口差值法（不显示陈旧速率）。"""
+    tracker.add_token_size(66)
+    tracker.record_generation_rate(66, 6.0)
+    assert tracker.per_second_speed == 11.0
+    tracker.add_token_size(20)
+    assert tracker.per_second_speed != 11.0
+
+
 def test_non_stream_call_counts_output_and_rate(_mock_http):
+    """直连非流式调用（``call_model_sync``）以「已知耗时批量」计入。"""
     from src.core.stats import get_per_second_speed, get_total_tokens
     from src.core.stats._token_speed import _token_speed
 
@@ -170,8 +266,46 @@ def test_non_stream_call_counts_output_and_rate(_mock_http):
     assert get_per_second_speed() == round(66 / seconds, 2)
 
 
+def test_summarize_call_uses_streaming_pipeline(_mock_http, monkeypatch):
+    """摘要调用走**流式**管线：SSE（stream=True）+ silent + 内部 label。"""
+    import asyncio
+
+    import src.api.model_async as ma
+    import src.api.stream.pipeline_async as pa
+
+    seen: dict = {}
+    real_stream_call = ma.stream_call_async
+
+    async def spy_stream_call(messages, model, is_reasoner, tools=None,
+                              display=None, label=None, silent=False):
+        seen.update(model=model, tools=tools, display=display, label=label, silent=silent)
+        return await real_stream_call(messages, model, is_reasoner, tools,
+                                      display=display, label=label, silent=silent)
+
+    monkeypatch.setattr(ma, "stream_call_async", spy_stream_call)
+
+    original_chat = pa.chat_completions_async
+    request: dict = {}
+
+    async def spy_chat(**kwargs):
+        request.update(kwargs)
+        return await original_chat(**kwargs)
+
+    monkeypatch.setattr(pa, "chat_completions_async", spy_chat)
+
+    result = asyncio.run(ma.call_model_summarize_async(
+        [{"role": "user", "content": "hi"}], model="deepseek-flash",
+    ))
+    assert result[1].startswith("## Primary Request")
+    assert seen["silent"] is True
+    assert seen["label"] == "summarize"
+    assert seen["display"] is None
+    assert seen["tools"] is None
+    assert request["stream"] is True  # 流式请求（非一次性 POST）
+
+
 # ═══════════════════════════════════════════════════════════════
-# 3. 压缩链路端到端：摘要输出 token 计入状态栏统计
+# 3. 压缩链路端到端：摘要输出 token 计入状态栏统计（流式管线）
 # ═══════════════════════════════════════════════════════════════
 
 
@@ -184,7 +318,7 @@ def _compaction_messages(n=20, content_len=400):
 
 
 def test_compact_now_counts_summary_tokens(_mock_http):
-    """``/compact`` 摘要调用（真实链路 + mock HTTP）的 token 进入全局统计。"""
+    """``/compact`` 摘要调用（流式链路 + mock HTTP）的 token 进入全局统计。"""
     from src.core.adapters.config import MockConfigAdapter
     from src.core.context_manager import ContextManager
     from src.core.stats import get_per_second_speed, get_token_stats, get_total_tokens
@@ -202,7 +336,7 @@ def test_compact_now_counts_summary_tokens(_mock_http):
     assert get_total_tokens() == 66
     assert get_token_stats()["output"] == 66
     assert get_token_stats()["calls"] == 1
-    # tok/s 为该次摘要生成的真实平均速率（保鲜期内可见，非 0）
+    # tok/s 为该次摘要生成的真实平均速率（宽限期内可见，非 0）
     assert get_per_second_speed() > 0
 
 

@@ -35,6 +35,7 @@ from ._token_speed import (
     get_avg_token_speed,
     get_per_second_speed,
     get_token_speed_snapshot,
+    record_generation_rate,
     reset_token_speed,
 )
 from ._stream_lifecycle import (
@@ -62,6 +63,7 @@ __all__ = [
     "add_token_size",
     "add_token_size_batch",
     "adjust_token_size",
+    "record_generation_rate",
     "get_total_tokens",
     "get_token_speed",
     "get_short_window_speed",
