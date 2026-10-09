@@ -37,13 +37,46 @@ def _cell_runs(text: str, style) -> list[Run]:
     return render_inline(text, style)
 
 
-def _cell_lines(text: str, style, maxw: int = 0) -> tuple[list[AnsiLine], int]:
+#: 单元格行内解析结果的缓存容量上限（表格预览列宽变化时整表重建，
+#: 单元格文本未变 → 复用行内解析结果，避免重复解析）。
+_CELL_CACHE_MAX = 4096
+
+
+def _render_cell_lines(text: str, style,
+                       cache: dict | None = None) -> tuple[list[AnsiLine], int]:
+    """单元格文本 → ``(多行内容, 基线行号)``（行内解析，带可选缓存）。
+
+    ★ 性能（2026-10）：表格预览在**列宽变化**时整体重建（新增数据行改变某列
+    最大宽度是流式表格的常见形态）——每行重建都要对每个单元格做行内解析。
+    单元格**文本**在重建前后不变，故按文本缓存解析结果：重建时只重做按列宽
+    换行与对齐填充，省去行内解析（``inline_lines_with_baseline``，含行内公式
+    的单元格尤贵）。缓存对象只读（``_wrap_cell_lines`` / ``_pad_runs`` 均不修改
+    输入行），跨帧复用安全。
+
+    ``cache`` 为 None 时不做缓存（一次性渲染的 ``render_table`` 路径）。
+    """
+    if cache is None:
+        return inline_lines_with_baseline(text or "", style)
+    key = text or ""
+    hit = cache.get(key)
+    if hit is None:
+        hit = inline_lines_with_baseline(key, style)
+        if len(cache) >= _CELL_CACHE_MAX:
+            cache.clear()
+        cache[key] = hit
+    return hit
+
+
+def _cell_lines(text: str, style, maxw: int = 0,
+                cache: dict | None = None) -> tuple[list[AnsiLine], int]:
     """单元格文本 → ``(多行内容, 基线行号)``。
 
     按行内语义解析：``<br>`` 拆行、行内格式、**行内二维公式多行块**；
     ``maxw > 0`` 时对超宽行按列宽换行（逐行 wrap，基线随之前移）。
+
+    ``cache`` 非空时复用行内解析结果（见 ``_render_cell_lines``）。
     """
-    rows, baseline = inline_lines_with_baseline(text or "", style)
+    rows, baseline = _render_cell_lines(text, style, cache)
     if maxw and maxw > 0:
         rows, baseline = _wrap_cell_lines(rows, baseline, maxw)
     return rows, baseline
@@ -63,9 +96,12 @@ def _wrap_cell_lines(lines: list[AnsiLine], baseline: int,
     return (out or [AnsiLine()]), new_baseline
 
 
-def _cell_lines_width(text: str, style) -> int:
-    """单元格渲染宽度（多行内容取各行最大宽度——含行内二维公式的实宽）。"""
-    rows, _ = inline_lines_with_baseline(text or "", style)
+def _cell_lines_width(text: str, style, cache: dict | None = None) -> int:
+    """单元格渲染宽度（多行内容取各行最大宽度——含行内二维公式的实宽）。
+
+    ``cache`` 非空时复用行内解析结果（见 ``_render_cell_lines``）。
+    """
+    rows, _ = _render_cell_lines(text, style, cache)
     return max((ln.width for ln in rows), default=0)
 
 
@@ -81,9 +117,9 @@ def _cell_widths_runs(rows, style) -> list[int]:
     return widths
 
 
-def _row_cell_widths(row, style) -> list[int]:
+def _row_cell_widths(row, style, cache: dict | None = None) -> list[int]:
     """单行的各单元格显示宽度（增量列宽计算用，避免每帧重算历史行）。"""
-    return [_cell_lines_width(cell, style) for cell in row]
+    return [_cell_lines_width(cell, style, cache) for cell in row]
 
 
 def _shrink_widths(widths: list[int], max_total: int, ncols: int) -> list[int]:
@@ -167,18 +203,21 @@ def _pad_runs(runs: list[Run], width: int, align: str, style) -> list[Run]:
     return list(runs) + [Run(" " * pad, style)]
 
 
-def _render_row_runs(cells, widths, aligns, style) -> list[AnsiLine]:
+def _render_row_runs(cells, widths, aligns, style,
+                     cache: dict | None = None) -> list[AnsiLine]:
     """渲染数据行：单元格内容按列宽排版并绘制 ``│`` 边框。
 
     单元格内容可多行（``<br>``、换行、**行内二维公式**）——按**基线**垂直
     对齐（与段落一致）：单行文本与公式主体同行，公式的分子/分母行单独占行；
     行高 = 该行各单元格内容的最大跨度（基线以上/以下分别取最大）。
+
+    ``cache`` 非空时复用单元格行内解析结果（见 ``_render_cell_lines``）。
     """
     ncols = len(widths)
     cols: list[tuple[list[AnsiLine], int]] = []
     for i in range(ncols):
         cols.append(_cell_lines(cells[i] if i < len(cells) else "",
-                                style, widths[i]))
+                                style, widths[i], cache))
     max_above = max((b for _, b in cols), default=0)
     max_below = max((len(ls) - 1 - b for ls, b in cols), default=0)
     height = max(1, max_above + max_below + 1)
@@ -255,7 +294,8 @@ class TablePreviewCache:
     __slots__ = ("_key", "_ncols", "_aligns", "_header", "_header_width",
                  "_head", "_data_src", "_data_widths", "_data", "_bottom",
                  "_widths", "_shrink_key", "_shrink_result",
-                 "_col_max", "_out", "_out_ver", "_ver")
+                 "_col_max", "_out", "_out_ver", "_ver",
+                 "_header_cells", "_cell_cache")
 
     _MAX_SLIDE = 8
     """头部滑窗探测的最大行数（预览截断每次仅移除少量旧行）。"""
@@ -288,6 +328,10 @@ class TablePreviewCache:
         self._out: list[AnsiLine] | None = None
         self._out_ver = -1
         self._ver = 0
+        # 单元格行内解析结果缓存（表头 / 数据分开——样式不同）——列宽变化
+        # 整表重建时单元格文本未变，复用解析结果（见 ``_render_cell_lines``）。
+        self._header_cells: dict = {}
+        self._cell_cache: dict = {}
 
     def _bump(self) -> None:
         """结构版本号递增（``_head`` / ``_data`` / ``_bottom`` 变化时调用）。"""
@@ -360,7 +404,8 @@ class TablePreviewCache:
         if header != self._header:
             # 表头变化（首帧 / 列定义修正）→ 清空数据区缓存
             self._header = header
-            self._header_width = (_row_cell_widths(header, _STYLE_HEADER)
+            self._header_width = (_row_cell_widths(header, _STYLE_HEADER,
+                                                   self._header_cells)
                                   if header else [])
             self._head = []
             self._data_src = []
@@ -379,7 +424,7 @@ class TablePreviewCache:
         if len(data) > len(self._data_src):
             for row in data[len(self._data_src):]:
                 self._data_src.append(row)
-                rw = _row_cell_widths(row, _STYLE_CELL)
+                rw = _row_cell_widths(row, _STYLE_CELL, self._cell_cache)
                 self._data_widths.append(rw)
                 self._update_col_max(rw)
             self._bump()
@@ -412,19 +457,20 @@ class TablePreviewCache:
             if rows:
                 self._head.append(_border_line("\u250c", "\u252c", "\u2510", widths))
                 self._head.extend(_render_row_runs(
-                    rows[0], widths, aligns_list, _STYLE_HEADER))
+                    rows[0], widths, aligns_list, _STYLE_HEADER,
+                    self._header_cells))
                 self._head.append(_border_line("\u251c", "\u253c", "\u2524", widths))
                 self._bottom.append(_border_line("\u2514", "\u2534", "\u2518", widths))
             for row in self._data_src:
                 self._data.append(_render_row_runs(
-                    row, widths, aligns_list, _STYLE_CELL))
+                    row, widths, aligns_list, _STYLE_CELL, self._cell_cache))
             self._bump()
         else:
             # 列宽稳定 → 仅补齐新增数据行
             if len(self._data) < len(self._data_src):
                 for row in self._data_src[len(self._data):]:
                     self._data.append(_render_row_runs(
-                        row, widths, aligns_list, _STYLE_CELL))
+                        row, widths, aligns_list, _STYLE_CELL, self._cell_cache))
                 self._bump()
 
         # ★ 性能：结构未变的帧直接复用结果行列表（避免每帧重建 O(行数) 列表）。

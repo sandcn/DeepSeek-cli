@@ -164,6 +164,9 @@ _MATH_PREVIEW_MAX_SRC = 1024
 #: 预览子解析缓存容量（告示等容器正文的块级预览：内容未变化的帧复用结果）。
 _PREVIEW_SUB_CACHE_MAX = 32
 
+#: 预览截断提示行（``dropped`` → AnsiLine）的缓存容量上限。
+_OMITTED_CACHE_MAX = 64
+
 
 def _has_block_markers(lines) -> bool:
     """正文行列表是否含块级 Markdown 标记（列表/围栏/引用/表格/标题…）。
@@ -243,6 +246,15 @@ def _plain_paragraph_line(text: str) -> "AnsiLine":
     if not text:
         return AnsiLine()
     return AnsiLine([Run(text, _EMPTY_STYLE)])
+
+
+def _runs_have_esc(runs) -> bool:
+    """Run 序列是否含原始转义/告警控制字符（``_sanitize_lines`` 判定用）。"""
+    for r in runs:
+        text = r.text
+        if text and ("\x1b" in text or "\x07" in text):
+            return True
+    return False
 
 
 __all__ = [
@@ -361,6 +373,8 @@ class AnsiStreamRenderer:
         # 列表项内块级容器预览（内容行元组 → 渲染行 + 缓存键）。
         self._list_block_preview_key: tuple | None = None
         self._list_block_preview_rows: list[AnsiLine] = []
+        # 预览截断提示行缓存（``dropped`` → AnsiLine；见 ``_omitted_line``）。
+        self._omitted_cache: dict = {}
 
     def set_width(self, width: int) -> None:
         """更新终端宽度（TOC 边框 + 表格宽度自适应用）。"""
@@ -906,12 +920,45 @@ class AnsiStreamRenderer:
                 self._para_scan_text = content
                 self._para_is_append = True
                 return
-        # 全量重扫（前缀关系不成立：解析器重建缓冲 / 段落切换）
+        # ★ 非追加（段落切换 / 预览尾部滑窗）：只扫描「活动行尾部窗口」的
+        #   触发位置，不再对整段重扫。长段落流式期间解析器把预览截断为最近
+        #   ``_PREVIEW_MAX_LINES`` 行（尾部滑窗），源文本与上一帧既非前缀关系、
+        #   也不复用——修复前每帧 ``_last_typo_pos(content)`` 全段重扫（11600
+        #   字符 × 多 pattern，实测 0.4ms/帧、2000 行段落累计约 0.8s）。
+        #   活动行窗口判定（``_plain_active_window`` / ``_window_has_core_markup``）
+        #   只依赖尾部 ``_PREVIEW_MAX_LINE_CHARS`` 窗口，故仅该窗口需要精确。
         self._para_is_append = False
-        self._para_last_core = _last_core_trigger_pos(content)
-        self._para_last_url = _last_url_prefix_pos(content)
-        self._para_last_nl = content.rfind("\n")
-        self._para_last_typo = _last_typo_pos(content)
+        self._scan_active_window(content)
+
+    def _scan_active_window(self, content: str) -> None:
+        """重扫「活动行尾部窗口」的行内触发位置（非追加路径）。
+
+        活动行 = 最后一个换行之后的文本；窗口 = 活动行尾部 ``_PREVIEW_MAX_LINE_CHARS``
+        字符（与 ``_preview_src_lines`` / ``_plain_active_window`` 的口径一致）。
+        三个触发位置（核心字符 / 裸 URL 前缀 / 智能排版）均以**全 content 绝对
+        下标**记录：窗口内无触发时记 ``win_start - 1``（小于窗口起点 → 判定
+        「窗口外」）。``_para_last_nl`` 同步为全文最后一个换行下标。
+
+        仅扫描窗口而非整段：多行滑窗段落的窗口恰为最后一行（成本 O(行)），
+        单行超长段落的窗口为尾部 4096 字符（成本有界，与活动行预览窗口一致）。
+        """
+        nl = content.rfind("\n")
+        self._para_last_nl = nl
+        active_start = nl + 1
+        n = len(content)
+        limit = _PREVIEW_MAX_LINE_CHARS
+        if limit > 0 and n - active_start > limit:
+            win_start = n - limit
+            win = content[win_start:]
+        else:
+            win_start = active_start
+            win = content[active_start:]
+        idx = _last_core_trigger_pos(win)
+        self._para_last_core = win_start + idx if idx >= 0 else win_start - 1
+        idx = _last_url_prefix_pos(win)
+        self._para_last_url = win_start + idx if idx >= 0 else win_start - 1
+        idx = _last_typo_pos(win)
+        self._para_last_typo = win_start + idx if idx >= 0 else win_start - 1
         self._para_scan_text = content
 
     def _plain_active_window(self, content: str) -> bool:
@@ -957,11 +1004,24 @@ class AnsiStreamRenderer:
             start = 0
         return self._para_last_core >= start or self._para_last_url >= start
 
-    @staticmethod
-    def _omitted_line(dropped: int) -> AnsiLine:
-        """预览截断提示行（与代码块预览同一真源）。"""
-        from .code import render_omitted_line
-        return render_omitted_line(dropped)
+    def _omitted_line(self, dropped: int) -> AnsiLine:
+        """预览截断提示行（与代码块预览同一真源）。
+
+        ★ 性能（2026-10）：按 ``dropped`` 值缓存 AnsiLine——长块流式预览每帧
+        都带同一个截断提示（``preview_dropped`` 在整行结束后才递增），修复前
+        每帧调用 ``render_omitted_line`` 重建行对象（含字符串格式化与 Run
+        构造）。缓存对象只读（``_sanitize_lines`` 仅打 ``_esc_checked`` 标记），
+        跨帧/跨块复用安全；条目数受 ``dropped`` 取值空间限制，超上限清空。
+        """
+        cache = self._omitted_cache
+        line = cache.get(dropped)
+        if line is None:
+            from .code import render_omitted_line
+            line = render_omitted_line(dropped)
+            if len(cache) >= _OMITTED_CACHE_MAX:
+                cache.clear()
+            cache[dropped] = line
+        return line
 
     def _render_blockquote_preview(self, token) -> list[AnsiLine]:
         from . import blocks as _blocks
@@ -1626,28 +1686,38 @@ class AnsiStreamRenderer:
         ★ 行级缓存（``AnsiLine._esc_checked``）：预览/已渲染行跨帧复用同一
         AnsiLine 对象，已确认无转义序列的行直接跳过扫描——避免每帧对全部行
         重扫（大预览下 ``_has_esc`` 曾占预览刷新耗时一半以上）。
-        """
-        def _has_esc(runs) -> bool:
-            return any(
-                "\x1b" in (r.text or "") or "\x07" in (r.text or "")
-                for r in runs
-            )
 
-        # 定位首个未检查行（已检查行恒为前缀——预览行按前缀复用）
-        idx = 0
+        ★ 性能（2026-10，未检查行定位）：流式预览的行列表形态是「历史复用行
+        （已检查）+ 尾部新增行（未检查）」，已检查行构成**前缀**。故仅在**首行
+        即未检查**（整表/整段重建，如容器头每帧新建）时从头扫描；否则从尾部
+        回扫定位「尾部连续未检查区间」的起点，只检查该区间——成本由
+        O(预览行数) 降为 O(新增行数)（200 行预览每帧约 20µs、长段落流式
+        累计约 150ms）。检查推进仍按原顺序，保持「已检查构成前缀」不变式。
+        """
         n = len(lines)
-        while idx < n and getattr(lines[idx], "_esc_checked", False):
-            idx += 1
-        if idx == n:
+        if n == 0:
             return lines
+
+        if lines[0]._esc_checked:
+            i = n - 1
+            while i >= 0 and lines[i]._esc_checked:
+                i -= 1
+            if i < 0:
+                return lines  # 全部已检查
+            j = i
+            while j >= 0 and not lines[j]._esc_checked:
+                j -= 1
+            idx = j + 1
+        else:
+            idx = 0
 
         # 只扫描未检查的尾部：全部干净则打标记并零构建返回原 list
         dirty = False
         for i in range(idx, n):
             line = lines[i]
-            if getattr(line, "_esc_checked", False):
+            if line._esc_checked:
                 continue
-            if _has_esc(line.runs):
+            if _runs_have_esc(line.runs):
                 dirty = True
                 break
             line._esc_checked = True
@@ -1658,7 +1728,7 @@ class AnsiStreamRenderer:
         from .helpers import ansi_to_runs, strip_ansi
         out: list[AnsiLine] = []
         for line in lines:
-            if getattr(line, "_esc_checked", False):
+            if line._esc_checked:
                 out.append(line)
                 continue
             new_line = AnsiLine()
