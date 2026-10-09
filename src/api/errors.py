@@ -89,6 +89,36 @@ class ServerError(APIError):
     """5xx / 408 / 425 服务端瞬时错误（可重试）。"""
 
 
+class EmptyResponseError(APIError):
+    """模型返回**完全空**响应（无正文、无推理、无工具调用）——瞬时异常，可重试。
+
+    成因：服务端偶发返回没有任何有效 delta 的流（或携带 ``error`` 字段的
+    200 响应）。空响应不是合法的模型回答——若直接落库，本轮会以占位文本
+    「(无内容)」结束，用户必须手动「继续」才能继续对话（且回答内容永久丢失）。
+
+    因此归类为**可重试**瞬时错误：交由重试层原样重发该请求（此时尚未渲染
+    任何内容，重启流幂等安全）；重试用尽后返回可读错误文本，而不是静默占位。
+
+    ``retry_after`` 默认给一个**短**等待（而非指数退避的 30s 起步）——空响应
+    通常是单次抖动，立即重发即可恢复，不应让用户等待过久。
+
+    状态码固定 200（HTTP 层面调用成功，是**响应内容**异常），但 ``retryable``
+    显式覆盖为 True（不走 ``RETRYABLE_HTTP_STATUS`` 判定）。
+    """
+
+    def __init__(self, message: str = "模型返回空响应（无正文、无推理、无工具调用）",
+                 *, retry_after: float | None = 2.0):
+        super().__init__(200, message, retry_after=retry_after)
+
+    @property
+    def retryable(self) -> bool:
+        return True
+
+    def __str__(self) -> str:
+        # 沿用 APIError 前缀（msg="API error 200: ..."）会误导用户以为 HTTP 失败
+        return self.message
+
+
 # ── 状态码 → 用户可操作的提示 ────────────────────────────────
 #
 # 「一切皆插件」：提示文案上移为表现层数据注册表（``presentation_data`` →
@@ -241,7 +271,7 @@ def format_user_error(exc: BaseException) -> str:
 
 __all__ = [
     "APIError", "RateLimitError", "AuthError", "NotFoundError",
-    "InvalidRequestError", "ServerError",
+    "InvalidRequestError", "ServerError", "EmptyResponseError",
     "CONNECTION_ERRORS", "RETRYABLE_HTTP_STATUS",
     "RETRY_AFTER_CAP", "MAX_BACKOFF_SEC",
     "classify_http_error", "is_retryable", "parse_retry_after",

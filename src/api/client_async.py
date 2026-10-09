@@ -26,7 +26,7 @@ from ..config import (
     HTTP_ENABLE_POOL, HTTP_ENABLE_HTTP2, API_KEY,
 )
 from .errors import (  # noqa: F401  （re-export 保持既有导入路径兼容）
-    APIError, RateLimitError, classify_http_error, parse_retry_after,
+    APIError, RateLimitError, ServerError, classify_http_error, parse_retry_after,
 )
 from .errors import CONNECTION_ERRORS as _CONNECTION_ERRORS
 
@@ -359,6 +359,21 @@ async def _stream_iter_async(
                                 line_bytes[:100], exc_info=True,
                             )
                         return None, False, False
+                    # ★ 错误帧检测（2026-10-09）：部分 OpenAI 兼容服务端在 HTTP
+                    #   200 的 SSE 流里以 ``{"error": {...}}`` 帧报告失败（不在
+                    #   HTTP 层抛错）。本函数此前把它当普通帧 yield——该帧没有
+                    #   choices，管线解析后「无产出」，于是本轮被当作空回答
+                    #   （占位「(无内容)」）静默结束。现改为抛语义化可重试异常：
+                    #   服务端错误信息不再丢失，交由重试层决定重发。
+                    error_payload = parsed.get("error") if isinstance(parsed, dict) else None
+                    if error_payload:
+                        if isinstance(error_payload, dict):
+                            message = (error_payload.get("message")
+                                       or error_payload.get("error")
+                                       or str(error_payload))
+                        else:
+                            message = str(error_payload)
+                        raise ServerError(503, f"流式响应错误帧: {message}")
                     # finish_reason 结束检查：非空时置 stop（先 yield 当前 chunk
                     # 再结束，确保最后一个 delta 被下游处理）。覆盖完整行与残余
                     # 行两条解析路径；对不发送 [DONE] 且连接不关闭的服务端，

@@ -19,6 +19,7 @@ from ..events import publish_event
 from ..client_async import (
     chat_completions_async, chat_completions_async_anthropic, _CONNECTION_ERRORS,
 )
+from ..errors import EmptyResponseError
 from ..tokens import estimate_tokens
 from ..interrupt_async import is_interrupted_async
 from ..stats import (
@@ -135,6 +136,36 @@ def _extract_cancelled(exc: BaseException | None):
     if subgroup is not None:
         return subgroup(asyncio.CancelledError) is not None
     return False
+
+
+def is_empty_stream_result(ctx: StreamContext) -> bool:
+    """本流是否**完全无产出**（无正文、无推理、无工具调用）。
+
+    与 ``AsyncStreamPipeline._build_result`` 落占位文本「(无内容)」的判定同源
+    （``not content and not reasoning and not tool_calls_map``）——此处基于各
+    handler 累积的**原始状态**判断，避免依赖占位字符串本身。
+
+    中断路径（ESC / 工具参数接收中断 / task 取消）不算空响应：那些路径下
+    ``_build_result`` 会给出「(已中断」语义的正文，属于**有效**结果。
+    """
+    if ctx.esc_interrupted or ctx.tracker.interrupted or ctx.task_cancelled:
+        return False
+    return not (ctx.content_full or ctx.reasoning_full or ctx.tool_calls_map)
+
+
+def _raise_if_empty_stream(ctx: StreamContext) -> None:
+    """流式调用**完全无产出**时抛 ``EmptyResponseError``（可重试瞬时错误）。
+
+    空响应不是合法回答：静默落占位文本会让本轮"无声结束"，用户必须手动
+    「继续」。抛出后由 ``retry_api_call_async`` 原样重发该请求——此时尚未
+    渲染任何内容（无 chunk 上屏、无工具调用），重启流幂等安全；重试用尽后
+    返回可读错误文本，而不是静默占位。
+
+    ``process()`` 的 finally 已执行 ``_cleanup_display``（空流下为无副作用
+    收尾），故重试无需重复清理。
+    """
+    if is_empty_stream_result(ctx):
+        raise EmptyResponseError()
 
 
 class StreamIdleTimeoutError(TimeoutError):
@@ -620,7 +651,12 @@ async def stream_call_async(
         else:
             response_iter = await chat_completions_async(**kwargs)
         # response_iter 是 AsyncIterator[dict]（统一格式）
-        return await pipeline.process(ctx, response_iter, silent)
+        result = await pipeline.process(ctx, response_iter, silent)
+        # ★ 空响应（无正文/无推理/无工具调用）不是合法回答：抛 EmptyResponseError
+        #   交由重试层原样重发（此时尚未产出任何内容，重启流幂等安全），而不是
+        #   落占位文本「(无内容)」让本轮无声结束（用户被迫手动「继续」）。
+        _raise_if_empty_stream(ctx)
+        return result
     except asyncio.CancelledError:
         # DEBUG 级别而非 WARNING：取消是正常流程（中断关闭），非错误事件
         _logger.debug("stream_call_async 被取消，返回已累积内容")
@@ -650,7 +686,7 @@ async def stream_call_async(
         if _extract_cancelled(e):
             _logger.debug("stream_call_async 被取消 (in group)，返回已累积内容")
         elif not ctx.content_full and not ctx.reasoning_full and not ctx.tool_calls_map:
-            # ★ 尚未产出任何内容（首个 SSE 块前就失败/超时）：重新抛出，
+            # ★ 尚未产出任何内容（空响应 / 首个 SSE 块前就失败/超时）：重新抛出，
             # 交由 retry_api_call_async 重试（默认最多 10 次）。此时重启流
             # 不会重复渲染任何内容，幂等安全。process() 的 finally 已执行
             # _cleanup_display，无需重复清理。
@@ -676,4 +712,7 @@ async def stream_call_async(
         _notify_stream_ended()
 
 
-__all__ = ["stream_call_async", "AsyncStreamPipeline", "StreamIdleTimeoutError"]
+__all__ = [
+    "stream_call_async", "AsyncStreamPipeline", "StreamIdleTimeoutError",
+    "is_empty_stream_result",
+]
