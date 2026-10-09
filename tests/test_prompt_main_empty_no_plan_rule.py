@@ -1,8 +1,8 @@
-"""prompts_export_main_empty.md 删除「制定计划」指令回归测试。
+"""prompts_export_main_empty.md 旧「一次输出所有计划」句式不得恢复的回归测试。
 
-需求（2026-10-05）：从空模式提词中删除制定计划相关指令
-「强制读完所有相关的源码后，在强制一次输出所有计划，强制按照计划执行」，
-其余全局约束保持不变。
+现行空模式提词以「做任何事情前强制输出计划」表达计划约束；旧的
+「强制读完所有相关的源码后，在强制一次输出所有计划，强制按照计划执行」
+句式不再使用，其余全局约束保持不变。
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ class TestEmptyPromptNoPlanRule:
         assert MAIN_PROMPT.exists()
 
     def test_plan_directive_removed(self, main_prompt_text: str):
-        """「制定计划并按计划执行」指令须已删除。"""
+        """旧「读完源码后一次性输出所有计划并按计划执行」句式不得再出现。"""
         assert "强制读完所有相关的源码后" not in main_prompt_text
         assert "输出所有计划" not in main_prompt_text
         assert "强制按照计划执行" not in main_prompt_text
