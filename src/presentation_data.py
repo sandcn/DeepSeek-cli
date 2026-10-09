@@ -746,6 +746,7 @@ TRACE_KEYMAP_DATA: list = [
     {"group": "详情与树", "keys": "zR / zM", "desc": "全部展开 / 全部折叠树"},
     {"group": "详情与树", "keys": "o", "desc": "就地展开 / 折叠选中记录详情（不切面板）"},
     {"group": "详情与树", "keys": "#", "desc": "检查器行号显示开关"},
+    {"group": "详情与树", "keys": "r", "desc": "切换检查器原始文本 / 渲染显示"},
     {"group": "详情与树", "keys": "T", "desc": "时间列模式（关 / 绝对 / 相对）"},
     {"group": "轮次折叠", "keys": "za / zc / zo", "desc": "切换 / 折叠 / 展开当前轮次"},
     {"group": "轮次折叠", "keys": "zC / zO", "desc": "折叠 / 展开全部轮次"},

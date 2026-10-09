@@ -505,13 +505,89 @@ def _md_detail_rows(rec, right_w: int, kind: str) -> list:
     return rows
 
 
-def _inspector_content_rows(rec, right_w: int, collapsed: set | None = None) -> tuple:
+def _raw_args_text(args) -> str:
+    """工具参数原始文本（``r`` 原始文本模式数据源）。
+
+    ``tool_args`` 为模型原始 arguments（str JSON，原样返回——保留模型
+    输出的原始格式）；构造/异常场景为 dict/list（非消息源路径）→
+    ``json.dumps`` 还原为文本；序列化失败回退 ``str()``（不中断渲染）。
+    """
+    if args is None:
+        return ""
+    if isinstance(args, str):
+        return args
+    try:
+        return json.dumps(args, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError):
+        return str(args)
+
+
+def _raw_detail_rows(rec, right_w: int) -> list:
+    """检查器**原始文本**内容行（``r`` 开关：不做 markdown 渲染/树解析）。
+
+    ★ 2026-10-09（用户需求：轨迹 Trace 右边可以按键切换原始文本显示）：
+    检查器默认按渲染形态显示（思考/回答/system/子代理提词 markdown 渲染、
+    工具参数与返回值树形展开）；``r`` 切换为原始文本：
+      - tool 记录（有参数/返回值）：``▸ 参数`` + 原始 arguments 文本（str
+        原样 / dict JSON 还原，按栏宽换行、不做树解析）+ 分隔线 +
+        ``▸ 图片``（多模态缩略图）+ ``▸ 返回值`` + 原始返回文本（不解析
+        JSON 树）；合并的 subagent 工具记录追加其原始详情行；
+      - 其余记录：``lines`` 原文逐行按栏宽换行（markdown 记录即原始
+        markdown 源码，保留 ``#``/``` 等记号；带图记录追加缩略图）。
+    行形态与 ``_inspector_content_rows`` 一致（str 纯文本行 /
+    list[StyledRun] 样式行），由 ``_inspector_children`` 统一转 TEXT 元素。
+    """
+    right_w = max(1, right_w)
+    kind = getattr(rec, "kind", "context")
+    rows: list = []
+    if kind == "tool":
+        args = getattr(rec, "tool_args", None)
+        result = str(getattr(rec, "tool_result", "") or "")
+        if (args is not None and str(args) != "") or result:
+            rows.append([StyledRun(f"{_SECTION_PREFIX}参数", _S_SECTION)])
+            args_text = _raw_args_text(args)
+            if args_text:
+                for line in args_text.splitlines() or [""]:
+                    rows.extend(_wrap_by_width(line, right_w))
+            else:
+                rows.append([StyledRun("(无参数)", _S_HINT)])
+            rows.append([StyledRun("\u2500" * max(1, right_w - 1), _S_SEP_ROW)])
+            for img in getattr(rec, "images", None) or []:
+                for r in _thumbnail_rows(img, right_w):
+                    rows.append(r)
+            rows.append([StyledRun(f"{_SECTION_PREFIX}返回值", _S_SECTION)])
+            if result:
+                for line in result.splitlines() or [""]:
+                    rows.extend(_wrap_by_width(line, right_w))
+            else:
+                rows.append([StyledRun("(无返回)", _S_HINT)])
+            if getattr(rec, "subagent_label", ""):
+                for line in _detail_lines_of(rec):
+                    rows.extend(_wrap_by_width(str(line), right_w))
+            return rows
+    lines = _get_cached_detail_lines(rec)
+    if lines is None:
+        lines = getattr(rec, "lines", None) or []
+    for line in lines:
+        if not isinstance(line, str):
+            line = str(line)
+        rows.extend(_wrap_by_width(line, right_w))
+    for img in getattr(rec, "images", None) or []:
+        for r in _thumbnail_rows(img, right_w):
+            rows.append(r)
+    return rows
+
+
+def _inspector_content_rows(rec, right_w: int, collapsed: set | None = None,
+                            raw: bool = False) -> tuple:
     """检查器**全量内容行**（正序；上限防御）——滚动查看数据源。
 
     ★ 2026-08-19（用户需求：轨迹 Trace 移动到右边查看东西 + vim 风格）：
     检查器由「视口截断」改为「**全量生成 + 滚动窗口切片**」——焦点移到
     右栏后 j/k/↑↓/PgUp/PgDn/g/G 滚动浏览全部内容（含被省略部分）。内容
     行按 kind 分支生成（与旧 ``_inspector_children`` 截断逻辑同源）：
+      - ``raw`` 置位（``r`` 原始文本显示）→ ``_raw_detail_rows``（原始文本，
+        不做 markdown 渲染/树解析）；
       - tool 且携带树数据 → ``_tool_tree_rows``（参数树 + 分割线 + 返回值树）；
       - reasoning/content/system → ``_md_detail_rows``（markdown 渲染行）；
       - user 且 ``rec.markdown`` 置位（subagent 提词）→ 同上 markdown 渲染；
@@ -533,10 +609,12 @@ def _inspector_content_rows(rec, right_w: int, collapsed: set | None = None) -> 
         rec: 选中 TraceRecord。
         right_w: 右栏宽（换行/截断宽度；<=0 外部调用防御）。
         collapsed: 工具树折叠节点路径 key 集合（None/空 = 全部展开）。
+        raw: 原始文本显示开关（``r`` 键；True=不做 markdown 渲染/树解析，
+            直接显示记录原始文本——见 ``_raw_detail_rows``）。
 
     Returns:
         (rows, keys)：rows 为内容行列表；keys 为与 rows 对齐的节点路径
-        key 列表（str=可折叠节点行；None=叶子/非树行）。
+        key 列表（str=可折叠节点行；None=叶子/非树行；原始文本模式全 None）。
     """
     right_w = max(1, right_w)
     kind = getattr(rec, "kind", "context")
@@ -549,7 +627,13 @@ def _inspector_content_rows(rec, right_w: int, collapsed: set | None = None) -> 
          and str(getattr(rec, "tool_args", "")) != "")
         or (getattr(rec, "tool_result", "") or "")
     )
-    if use_tool_tree:
+    if raw:
+        # ★ 2026-10-09（用户需求：轨迹 Trace 右边可以按键切换原始文本显示）：
+        #   原始文本模式优先——跳过 markdown 渲染与参数/返回值树解析，
+        #   直接展示记录原文（图片缩略图由 _raw_detail_rows 一并处理）。
+        rows = _raw_detail_rows(rec, right_w)
+        keys = [None] * len(rows)
+    elif use_tool_tree:
         rows, keys = _tool_tree_rows(rec, right_w, collapsed)
         # ★ P1（review 2026-08-22）：合并 subagent 的 tool 记录
         #   （``subagent_label`` 非空）——``_tool_tree_rows`` 只渲染参数树/
@@ -586,7 +670,7 @@ def _inspector_content_rows(rec, right_w: int, collapsed: set | None = None) -> 
     #   tool 树分支（use_tool_tree=True）已在 _tool_tree_rows 内联「▸ 图片」
     #   小节渲染缩略图；此处只覆盖纯文本/markdown 分支（user/assistant 消息
     #   带图、tool 无参数/无返回但带图等），避免重复追加。
-    if not use_tool_tree:
+    if not use_tool_tree and not raw:
         images = getattr(rec, "images", None) or []
         if images:
             for img in images:
@@ -603,7 +687,8 @@ def _inspector_content_rows(rec, right_w: int, collapsed: set | None = None) -> 
     return rows, keys
 
 
-def _inspector_content_deps(rec, right_w: int, collapsed: set | None = None) -> tuple:
+def _inspector_content_deps(rec, right_w: int, collapsed: set | None = None,
+                            raw: bool = False) -> tuple:
     """检查器内容行 use_memo 依赖（TraceView 内 ``_inspector_content_rows``
     包装）。
 
@@ -619,10 +704,16 @@ def _inspector_content_deps(rec, right_w: int, collapsed: set | None = None) -> 
     全量换行、md 行每帧 hash、树行每帧 repr）。str 不可变按值比较，跨帧
     同折叠状态命中缓存（与 trace.py ``_messages_fingerprint`` 等「展平
     原子值」契约一致）。
+    ★ 2026-10-09（原始文本显示）：新增 ``raw`` 展平原子值（0/1）——``r``
+      切换触发内容行重建（渲染形态 ↔ 原始文本：两者行数与内容都可能不同，
+      仅靠内容行引用无法命中 memo deps）。插在折叠串**之前**，末位保持折叠
+      串（既有调用面契约）。
     """
     if rec is None:
         return (None, right_w, "")
-    return tuple(_detail_deps(rec)) + (right_w, ";".join(sorted(collapsed or ())))
+    return tuple(_detail_deps(rec)) + (
+        right_w, 1 if raw else 0, ";".join(sorted(collapsed or ())),
+    )
 
 
 def _truncate_text(text: str, width: int) -> str:
@@ -834,7 +925,7 @@ def _inspector_children(
     rec, right_w: int, vh: int, scroll: int = 0, content_rows: list | None = None,
     cursor: int = -1, row_keys: list | None = None, collapsed: set | None = None,
     search_matches: list | None = None, search_cur: int = -1,
-    show_line_numbers: bool = False,
+    show_line_numbers: bool = False, raw: bool = False,
 ) -> list:
     """检查器子元素（标题 + 元信息 + 内容行滚动窗口 + 光标行高亮 + 省略提示）。
 
@@ -879,6 +970,10 @@ def _inspector_children(
         collapsed: 工具树折叠节点路径 key 集合（惰性生成时传入）。
         search_matches: 搜索匹配内容行索引列表（None = 无搜索高亮）。
         search_cur: 当前匹配内容行索引（-1 = 无当前匹配）。
+        show_line_numbers: 内容行号显示开关（``#`` 键）。
+        raw: 原始文本显示开关（``r`` 键）——标题行追加「原文」标记，
+            ``content_rows`` 为空时按该模式惰性生成（``_inspector_content_rows``
+            的 ``raw``）。
     """
     if rec is None:
         return [h(TEXT, {
@@ -892,6 +987,10 @@ def _inspector_children(
     if status:
         sicon = _status_icon(status)
         title = f"{title} {sicon} {status}"
+    if raw:
+        # ★ 2026-10-09（原始文本显示）：标题行标注当前形态——用户一眼可见
+        #   右栏处于「原文」模式（r 切回渲染显示）。
+        title = f"{title} \u00b7 \u539f\u6587"
     children.append(h(TEXT, {
         "children": title, "style": _S_TITLE, "height": 1, "key": "tinsp-title",
     }))
@@ -899,7 +998,9 @@ def _inspector_children(
     # ★ 2026-10-07（元信息增强）：内容行提前解析——meta 行需要内容行数
     #   （「内容 N 行」）；解析结果供下方滚动窗口复用（无重复生成）。
     if content_rows is None:
-        content_rows, row_keys = _inspector_content_rows(rec, right_w, collapsed)
+        content_rows, row_keys = _inspector_content_rows(
+            rec, right_w, collapsed, raw,
+        )
     total = len(content_rows)
     # 元信息（耗时 / 状态 / 工具 / 调用 ID / 起始时间 / token 明细 /
     #   参数与返回行数 / 内容行数）
@@ -1043,7 +1144,7 @@ def _safe_int(v, default=0) -> int:
 
 def _inspector_deps(
     rec, right_w: int, vh: int, scroll: int = 0, cursor: int = -1,
-    show_line_numbers: bool = False,
+    show_line_numbers: bool = False, raw: bool = False,
 ) -> tuple:
     """检查器 use_memo 依赖（TraceView 内 ``_inspector_children`` 包装）。
 
@@ -1061,6 +1162,9 @@ def _inspector_deps(
     ★ 2026-08-19（vim 面板浏览）：末尾追加 scroll（滚动窗口位置）与
     cursor（光标行，-1=不高亮）——滚动/光标键触发重建；越界残留经
     ``_safe_int`` 归一化防御。
+    ★ 2026-10-09（原始文本显示）：末尾追加 raw（``r`` 开关）——渲染形态
+    与原始文本行数/内容可能不同而内容源指纹不变（如内联 lines 未变），
+    须显式入 deps 才能触发元素树重建。
     """
     if rec is None:
         return (None, right_w, vh, 0, -1)
@@ -1076,6 +1180,9 @@ def _inspector_deps(
         right_w,
         vh,
         1 if show_line_numbers else 0,
+        # ★ 2026-10-09（原始文本显示）：raw 插在 scroll/cursor **之前**——
+        #   末两位保持 scroll/cursor 既有契约（既有调用面/测试按 -2/-1 取值）。
+        1 if raw else 0,
         _safe_int(scroll, 0),
         _safe_int(cursor, -1),
     )
@@ -1684,6 +1791,10 @@ def _status_line_text(model, filtered: bool = False) -> str:
         parts.append(f"时间 {_TIME_MODE_LABELS.get(time_mode, time_mode)}")
     if getattr(model, "trace_show_line_numbers", False):
         parts.append("行号开")
+    # ★ 2026-10-09（原始文本显示）：右栏处于原文模式时状态行标注（用户
+    #   一眼可见当前形态；``r`` 切回渲染）。
+    if getattr(model, "trace_raw_text", False):
+        parts.append("原文")
     marks = getattr(model, "trace_marks", None) or {}
     if marks:
         parts.append(f"标记 {len(marks)}")
@@ -1845,6 +1956,30 @@ def _toggle_line_numbers(model) -> None:
     new = not bool(getattr(model, "trace_show_line_numbers", False))
     model.trace_show_line_numbers = new
     _set_status(model, f"检查器行号：{'开' if new else '关'}")
+
+
+def _toggle_raw_text(model) -> bool:
+    """``r``：切换检查器**原始文本显示**（渲染形态 ↔ 原始文本）。
+
+    ★ 2026-10-09（用户需求：轨迹 Trace 右边可以按键切换原始文本显示）：
+    开启后右栏检查器不做流式 markdown 渲染/参数与返回值树解析，直接显示
+    记录原始文本（详见 ``_raw_detail_rows``）；切换会改变内容行结构 ——
+    检查器搜索匹配索引随之失效，清除检查器侧搜索（与树折叠切换同语义；
+    台账搜索不受影响）。
+
+    Returns:
+        切换后的开关值（便于测试/调用方断言）。
+    """
+    new = not bool(getattr(model, "trace_raw_text", False))
+    model.trace_raw_text = new
+    _set_status(
+        model,
+        "检查器显示：原始文本（r 切换回渲染）" if new
+        else "检查器显示：渲染（r 切换为原始文本）",
+    )
+    if getattr(model, "trace_search_side", "") == "inspector":
+        _clear_search(model)
+    return new
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2596,6 +2731,12 @@ def _handle_trace_event(
         if ch == "#":
             _toggle_line_numbers(model)
             return True
+        # ★ 2026-10-09（用户需求：轨迹 Trace 右边可以按键切换原始文本显示）：
+        #   ``r`` 切换检查器原始文本 / 渲染形态（任何焦点可用——与 #/T 等
+        #   显示偏好同语义；切换后内容行重建，见 _toggle_raw_text）。
+        if ch == "r":
+            _toggle_raw_text(model)
+            return True
         if ch == "o":
             # 内联展开在过滤视图下按「视图内位置」定位（records 为当前视图）
             _toggle_expand(model, records, sel_pos)
@@ -2998,9 +3139,13 @@ def TraceView(props) -> object:
     #   传入内容行生成（折叠节点子级行不进入可见列表）；keys 与行对齐——
     #   空格经 keys[cursor] 定位光标所在节点。
     collapsed = set(getattr(model, "trace_tree_collapsed", None) or ())
+    # ★ 2026-10-09（用户需求：轨迹 Trace 右边可以按键切换原始文本显示）：
+    #   ``r`` 开关（显示偏好，跨视图保留）——传入内容行生成（原始文本模式
+    #   不做 markdown 渲染/树解析）与元素树 deps（切换触发重建）。
+    raw_text = bool(getattr(model, "trace_raw_text", False))
     content = use_memo(
-        lambda: _inspector_content_rows(rec, right_w, collapsed),
-        _inspector_content_deps(rec, right_w, collapsed),
+        lambda: _inspector_content_rows(rec, right_w, collapsed, raw_text),
+        _inspector_content_deps(rec, right_w, collapsed, raw_text),
     )
     content_rows, row_keys = content
     total_content = len(content_rows)
@@ -3085,8 +3230,11 @@ def TraceView(props) -> object:
         lambda: _inspector_children(
             rec, right_w, vh, scroll, content_rows, cursor_arg,
             row_keys, collapsed, insp_matches, insp_cur, show_line_numbers,
+            raw_text,
         ),
-        _inspector_deps(rec, right_w, vh, scroll, cursor_arg, show_line_numbers)
+        _inspector_deps(
+            rec, right_w, vh, scroll, cursor_arg, show_line_numbers, raw_text,
+        )
         + (total_content,) + search_fp,
     )
     # ★ 2026-10-07（帮助 / 统计面板）：与检查器同一滚动语义的通用面板内容
@@ -3243,13 +3391,13 @@ def TraceView(props) -> object:
     if sub_label:
         header_title = f"\u258d子代理轨迹 {sub_label}"
         if pane == "inspector":
-            header_hint = "  jk \u6eda\u52a8 \u00b7 / \u641c\u7d22 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u8fd4\u56de"
+            header_hint = "  jk \u6eda\u52a8 \u00b7 r \u539f\u6587 \u00b7 / \u641c\u7d22 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u8fd4\u56de"
         else:
             header_hint = "  \u2191\u2193 \u9009\u62e9 \u00b7 / \u641c\u7d22 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u8fd4\u56de"
     else:
         header_title = "\u258d轨迹 Trace"
         if pane == "inspector":
-            header_hint = "  jk \u6eda\u52a8 \u00b7 / \u641c\u7d22 \u00b7 h \u53f0\u8d26 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u5173\u95ed"
+            header_hint = "  jk \u6eda\u52a8 \u00b7 r \u539f\u6587 \u00b7 / \u641c\u7d22 \u00b7 h \u53f0\u8d26 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u5173\u95ed"
         else:
             header_hint = "  \u2191\u2193 \u9009\u62e9 \u00b7 / \u641c\u7d22 \u00b7 Enter \u8be6\u60c5 \u00b7 ? \u5e2e\u52a9 \u00b7 Esc \u5173\u95ed"
     sel_pos = (sel + 1) if (0 <= sel < total) else 0
@@ -3409,6 +3557,9 @@ __all__ = [
     "_jump_mark",
     "_toggle_expand",
     "_toggle_line_numbers",
+    "_toggle_raw_text",
+    "_raw_detail_rows",
+    "_raw_args_text",
     "_do_copy_line",
     "_copy_text",
     "_cycle_time_mode",

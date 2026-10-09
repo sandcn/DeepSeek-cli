@@ -332,6 +332,12 @@ class AppModel(_ToolOutputMixin):
         # trace_show_line_numbers: 检查器内容行号显示开关（``#`` 键切换，
         #   默认关闭——行号占用栏宽）。
         self.trace_show_line_numbers: bool = False
+        # trace_raw_text: 检查器**原始文本显示**开关（``r`` 键切换，默认
+        #   关闭=渲染显示）。开启后右栏检查器不做流式 markdown 渲染、也不做
+        #   参数/返回值树解析，直接显示记录原始文本（markdown 记录 = 原始
+        #   markdown 源码；工具记录 = 原始 arguments 与返回文本）——便于核对
+        #   原文/复制原文（显示偏好，与行号开关同语义）。
+        self.trace_raw_text: bool = False
         # trace_expanded: 台账内联展开的记录号集合（``o`` 键切换——展开的
         #   记录在其台账行下方追加详情预览行；默认全部折叠）。
         self.trace_expanded: set = set()
@@ -1098,6 +1104,7 @@ class AppModel(_ToolOutputMixin):
         self.trace_kind_filter = ""
         self.trace_time_mode = "off"
         self.trace_show_line_numbers = False
+        self.trace_raw_text = False
         self.trace_expanded = set()
         # ★ 2026-10-07（轨迹 Trace 增强第三批）：清屏同时复位耗时条开关/
         #   轮次折叠/记录对比/导出范围（与浏览临时态同生命周期）。
