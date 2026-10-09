@@ -42,7 +42,7 @@ _PAIR_KEYS = frozenset(("[", "{", "<", "lp", "mp", "code"))
 _MIN_RUN = {"=": 2, "|": 2, "%": 2, "+": 2}
 
 #: CriticMarkup / 着色容器 / 小字文本的 ``{`` 起始前缀（与解析器 ``_try_critic_*`` 对齐）
-_BRACE_PREFIXES = ("{++", "{--", "{~~", "{>>", "{-", "{color:")
+_BRACE_PREFIXES = ("{++", "{--", "{==", "{~~", "{>>", "{-", "{+", "{color:")
 
 #: toggle 定界符的键最大重复长度（``***`` 与更长连续同字符归并，保守不拆分）
 _TOGGLE_KEY_MAX = 3

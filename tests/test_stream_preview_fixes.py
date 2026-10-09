@@ -87,10 +87,26 @@ def test_pipe_text_without_separator_stays_paragraph():
     assert _render(["a | b\n", "c | d\n"]) == ["a | b", "c | d"]
 
 
-def test_table_extra_column_terminates_table():
-    """数据行列数超过表头 → 结束表格，该行作为后续段落。"""
+def test_table_extra_column_ignored():
+    """数据行单元格多于表头 → 多余单元格被忽略（GFM：the excess is ignored）。
+
+    修复前该行被判为非数据行 → 表格提前结束、整行退化为段落。
+    """
     lines = _render(["| a | b |\n", "|---|---|\n", "| 1 | 2 | 3 |\n"])
-    assert "| 1 | 2 | 3 |" in lines
+    assert lines[0].startswith("┌")
+    assert lines[-1].startswith("└")
+    assert "| 1 | 2 | 3 |" not in lines
+    # 第三列（值 3）被忽略，只保留两列表头/数据
+    assert "3" not in "".join(lines)
+    assert any("1" in ln and "2" in ln for ln in lines)
+
+
+def test_table_missing_column_padded():
+    """数据行单元格少于表头 → 缺列补空单元格（GFM：empty cells are inserted）。"""
+    lines = _render(["| a | b | c |\n", "|---|---|---|\n", "| 1 |\n"])
+    assert lines[0].startswith("┌")
+    assert lines[-1].startswith("└")
+    assert "| 1 | 2 | 3 |" not in lines
 
 
 # ═══════════════════════════════════════════════════════════

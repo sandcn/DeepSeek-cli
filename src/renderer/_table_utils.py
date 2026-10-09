@@ -36,9 +36,16 @@ def _is_table_data_row(stripped: str, header_cols: int | None = None) -> bool:
     独立表格）——该保护在表格已建立后不适用，否则表头与数据行判定标准
     不一致（表头用 ≥1 pipe、数据行用 ≥2 pipe），导致数据行被当作段落。
 
+    ★ GFM 列数宽容：数据行的单元格数可与表头**不同**——少于表头时补齐空
+    单元格、多于表头时忽略多余单元格（GFM 规范：「If a row has fewer cells
+    than the header row, empty cells are inserted. If a row has more cells
+    than the header row, the excess is ignored.」）。修复前超列行被判为
+    非数据行 → 表格提前结束、该行退化为段落。归一化由
+    ``_normalize_table_cells`` 完成（调用方负责）。
+
     Args:
         stripped: 去除首尾空白（无换行）的行文本。
-        header_cols: 表头列数；给出时要求数据行列数不超过表头（兼容缺列）。
+        header_cols: 表头列数（仅用于调用方归一化，本判定不再据此拒绝）。
 
     Returns:
         是否为当前表格的数据行。
@@ -47,11 +54,21 @@ def _is_table_data_row(stripped: str, header_cols: int | None = None) -> bool:
     if '|' not in check or _is_table_separator(stripped):
         return False
     cells = _parse_table_row(stripped)
-    if not cells:
-        return False
-    if header_cols is not None and len(cells) > header_cols:
-        return False
-    return True
+    return bool(cells)
+
+
+def _normalize_table_cells(cells: list[str], ncols: int | None) -> list[str]:
+    """把数据行单元格归一化到表头列数（GFM：缺列补空、多列忽略）。
+
+    ``ncols`` 为 ``None``（表头未知）时返回原单元格列表副本。
+    """
+    if ncols is None or ncols < 0:
+        return list(cells)
+    if len(cells) > ncols:
+        return list(cells[:ncols])
+    if len(cells) < ncols:
+        return list(cells) + [''] * (ncols - len(cells))
+    return list(cells)
 
 
 def _is_table_separator(stripped: str) -> bool:

@@ -146,22 +146,28 @@ class InlineHandler(TokenHandler):
     # ── 列表项 ──────────────────────────────────────────
 
     def _handle_list_item(self, token: Token, engine):
-        """列表项（支持 Todo 列表）。"""
+        """列表项（支持 Todo 列表 / 续行）。"""
         try:
             depth = token.meta.get("depth", 1)
             is_bullet = token.meta.get("bullet", True)
             text = token.content
             number = token.meta.get("number", depth)
+            continuation = bool(token.meta.get("continuation"))
+            indent = int(token.meta.get("indent", 0) or 0)
 
-            marker, content = is_todo(text)
-            if marker is not None:
-                engine.todo_emitted = False
-                engine.todo_state.active = True
-                engine.todo_state.total += 1
-                if marker in 'xX':
-                    engine.todo_state.done += 1
+            if not continuation:
+                marker, content = is_todo(text)
+                if marker is not None:
+                    engine.todo_emitted = False
+                    engine.todo_state.active = True
+                    engine.todo_state.total += 1
+                    if marker in 'xX':
+                        engine.todo_state.done += 1
 
-            assembled = _render_list_item_shared(text, depth, is_bullet, number, engine.render_inline)
+            assembled = _render_list_item_shared(
+                text, depth, is_bullet, number, engine.render_inline,
+                continuation=continuation, indent=indent,
+            )
             engine.output_assembled(assembled)
         except Exception:
             _logger.warning("列表项渲染异常，跳过", exc_info=True)

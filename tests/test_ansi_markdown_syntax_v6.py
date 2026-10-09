@@ -191,11 +191,23 @@ def test_setext_single_line_is_heading():
     assert _render("标题\n=====\n") == ["标题"]
 
 
-def test_setext_multiline_still_hr():
-    """多行上文 + ``===`` 保持既有「分隔线」语义（与预览一致，回归锁定）。"""
+def test_setext_multiline_is_heading():
+    """多行上文 + ``===`` → 整个段落成为 setext H1（CommonMark 语义）。
+
+    修复前要求 setext underline 前恰好 1 行，多行时把 underline 误判为分隔线
+    ——``===`` 的标题语义完全丢失。CommonMark 规定 underline 前的**整个段落**
+    （可跨多行）都是标题内容。
+    """
     lines = _render("第一行\n第二行\n===\n")
-    assert "第一行" in lines and "第二行" in lines
-    assert any("\u2500" * 10 in ln for ln in lines)
+    assert lines == ["第一行", "第二行"]
+    assert not any("\u2500" * 10 in ln for ln in lines)
+
+
+def test_setext_multiline_dashes_is_h2():
+    """多行上文 + ``---`` → 整个段落成为 setext H2（同上，``-`` 形态）。"""
+    lines = _render("第一行\n第二行\n---\n")
+    assert lines == ["第一行", "第二行"]
+    assert not any("\u2500" * 10 in ln for ln in lines)
 
 
 def test_bare_dashes_is_hr():

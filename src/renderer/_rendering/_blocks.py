@@ -167,14 +167,29 @@ def render_heading(
 ) -> tuple[Text, int | None]:
     """渲染标题文本（应用样式 + 可选编号）。
 
+    多行标题（CommonMark：setext underline 前的整个段落可跨多行）逐行应用
+    样式；H1 居中按行各自的宽度计算（修复前把含 ``\\n`` 的整段交给
+    ``style_heading``，居中 padding 只作用于首行、其后续行顶格）。
+
     Returns:
         (styled_text, padding) — padding 为 H1 的居中填充量，None 表示不需填充
     """
     num_prefix = _get_heading_number(ctx, level)
     full_text = num_prefix + text if num_prefix else text
-    t = render_inline_fn(full_text) if render_inline_fn else Text(full_text)
-    styled, padding = style_heading(t, level, output_width)
-    return styled, padding
+    if "\n" not in full_text:
+        t = render_inline_fn(full_text) if render_inline_fn else Text(full_text)
+        styled, padding = style_heading(t, level, output_width)
+        return styled, padding
+    result = Text()
+    for i, seg in enumerate(full_text.split("\n")):
+        if i:
+            result.append("\n")
+        seg_text = render_inline_fn(seg) if render_inline_fn else Text(seg)
+        styled, pad = style_heading(seg_text, level, output_width)
+        if pad:
+            result.append(" " * pad)
+        result.append_text(styled)
+    return result, None
 
 
 def render_blockquote(
@@ -182,11 +197,25 @@ def render_blockquote(
     depth: int,
     render_inline_fn,
 ) -> Text:
-    """渲染引用块（前缀竖线 + dim 样式内容）。"""
-    t = render_inline_fn(content)
-    t.stylize(Style(dim=True))
+    """渲染引用块（前缀竖线 + dim 样式内容）。
+
+    多行内容**逐行**加引用前缀：``> a\\n> b``（以及块引用懒续行 ``> a\\nb``）
+    在解析层合并为单个含 ``\\n`` 的 BLOCKQUOTE_LINE——修复前只在首行加前缀，
+    第二行以无标记的裸文本上屏（TUI 路径逐行加前缀，两路径视觉分裂）。
+    """
     prefix = render_blockquote_prefix(depth)
-    return Text.assemble(prefix, t)
+    if "\n" not in content:
+        t = render_inline_fn(content)
+        t.stylize(Style(dim=True))
+        return Text.assemble(prefix, t)
+    result = Text()
+    for i, seg in enumerate(content.split("\n")):
+        if i:
+            result.append("\n")
+        seg_text = render_inline_fn(seg)
+        seg_text.stylize(Style(dim=True))
+        result.append_text(Text.assemble(prefix.copy(), seg_text))
+    return result
 
 
 def render_list_item(
@@ -195,12 +224,24 @@ def render_list_item(
     is_bullet: bool,
     number: int = 1,
     render_inline_fn=None,
+    continuation: bool = False,
+    indent: int = 0,
 ) -> Text | None:
     """渲染列表项（含 Todo ☐/☑ 检测）。
+
+    ``continuation=True`` 表示这是列表项内容的续行（缩进续行 / CommonMark
+    懒续行）——渲染为对齐列表内容起始列的缩进行（**不带**项目符号）。
+    修复前续行 Token 被当作独立列表项渲染（``•   bar`` 重复项目符号），
+    与 TUI 路径（``  bar``）不一致。
 
     Returns:
         组装好的 Rich Text，或 None（调用方自行处理）
     """
+    if continuation:
+        prefix = "  " * (max(0, int(indent)) + 1)
+        content_rich = render_inline_fn(text.lstrip()) if render_inline_fn else Text(text.lstrip())
+        return Text.assemble(prefix, content_rich)
+
     prefix_spaces = min(depth - 1, 6) * 2 if depth > 1 else 0
     prefix = " " * prefix_spaces
 

@@ -17,7 +17,7 @@ from ._block_parser_state import (
 )
 from ._utils import _COMMON_LANGUAGES, _get_fence_info
 from .types import Token, TokenType
-from ._table_utils import _is_table_data_row, _parse_table_row
+from ._table_utils import _is_table_data_row, _parse_table_row, _normalize_table_cells
 from ._block_helpers import (
     _is_empty_line, _strip_left,
     _is_code_fence_line, _strip_blockquote_prefix,
@@ -289,13 +289,15 @@ class _BlockParserStreamMixin:
                 check = _strip_blockquote_prefix(stripped)
                 if check != stripped:
                     if _is_table_data_row(check, header_cols):
-                        self._table_rows.append(_parse_table_row(check))
+                        self._table_rows.append(_normalize_table_cells(
+                            _parse_table_row(check), header_cols))
                     else:
                         self._emit_table(tokens)
                         self._state = _State.NORMAL
                         self._parse_normal_line(line, tokens)
                 elif _is_table_data_row(stripped, header_cols):
-                    self._table_rows.append(_parse_table_row(stripped))
+                    self._table_rows.append(_normalize_table_cells(
+                        _parse_table_row(stripped), header_cols))
                 else:
                     self._emit_table(tokens)
                     self._state = _State.NORMAL

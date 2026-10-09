@@ -171,6 +171,17 @@ class CriticDeletionNode(InlineNode):
 
 
 @dataclass
+class CriticHighlightNode(InlineNode):
+    """CriticMarkup 高亮节点 ``{==highlighted text==}``（可嵌套内联格式）
+
+    CriticMarkup 标准五类标记之一（``{++ ++}`` 添加 / ``{-- --}`` 删除 /
+    ``{~~ ~~}`` 替换 / ``{== ==}`` 高亮 / ``{>> <<}`` 批注）。与 ``==x==``
+    行内高亮语法不同：后者不带花括号，前者是 CriticMarkup 的审阅标记。
+    """
+    pass
+
+
+@dataclass
 class SmallTextNode(InlineNode):
     """小号文本节点 {-small text-}（可嵌套内联格式）"""
     pass
@@ -262,7 +273,8 @@ _NESTABLE_TYPES = frozenset({
     BoldNode, ItalicNode, BoldItalicNode, UnderlineNode,
     StrikethroughNode, HighlightNode, SpoilerNode,
     CriticAdditionNode, CriticDeletionNode, CriticSubstitutionNode,
-    CriticCommentNode, SmallTextNode, BigTextNode, QuotedNode, ColorTextNode,
+    CriticCommentNode, CriticHighlightNode, SmallTextNode, BigTextNode,
+    QuotedNode, ColorTextNode,
 })
 
 _HTML_TAG_MAP: dict[str, tuple[type[InlineNode], bool]] = {
@@ -425,6 +437,8 @@ def render_inline_to_text(nodes: list[InlineNode]) -> str:
         elif isinstance(node, CriticAdditionNode):
             result.append(node.content)
         elif isinstance(node, CriticDeletionNode):
+            result.append(node.content)
+        elif isinstance(node, CriticHighlightNode):
             result.append(node.content)
         elif isinstance(node, CriticSubstitutionNode):
             result.append(node.content)

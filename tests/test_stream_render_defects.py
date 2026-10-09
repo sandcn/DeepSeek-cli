@@ -87,9 +87,19 @@ def test_blockquote_single_level_has_prefix():
     assert _render(["> 第一行\n", "> 第二行\n", "\n"]) == ["│ 第一行", "│ 第二行"]
 
 
-def test_blockquote_followed_by_paragraph():
-    """引用块后紧跟普通段落：引用带前缀，段落在外。"""
-    assert _render(["> 引用内容\n", "普通段落\n"]) == ["│ 引用内容", "普通段落"]
+def test_blockquote_lazy_continuation():
+    """引用块内段落的续行可省略 ``>`` 前缀（CommonMark lazy continuation）。
+
+    ``> 引用内容\\n普通段落`` 中第二行是引用段落的**懒续行**（整个段落都在
+    引用内）——渲染 ``│ 引用内容`` / ``│ 普通段落``。修复前该行触发引用块关闭、
+    以引用块外的独立段落上屏，引用被腰斩。
+    """
+    assert _render(["> 引用内容\n", "普通段落\n"]) == ["│ 引用内容", "│ 普通段落"]
+
+
+def test_blockquote_followed_by_paragraph_after_blank():
+    """空行分隔后普通段落在引用块外（懒续行只对紧邻的无空行续行生效）。"""
+    assert _render(["> 引用内容\n", "\n", "普通段落\n"]) == ["│ 引用内容", "普通段落"]
 
 
 def test_nested_blockquote_keeps_all_content():

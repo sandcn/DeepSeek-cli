@@ -14,9 +14,9 @@ from .inline_nodes import (
     SubscriptNode, SuperscriptNode,
     UnderlineNode,
     SpoilerNode,
-    CriticAdditionNode, CriticDeletionNode,
+    CriticAdditionNode, CriticDeletionNode, CriticHighlightNode,
     CriticSubstitutionNode, CriticCommentNode,
-    SmallTextNode, ColorTextNode,
+    SmallTextNode, BigTextNode, ColorTextNode,
     WikiLinkNode, InlineCommentNode,
     InlineFootnoteNode,
     render_inline_to_text,
@@ -542,6 +542,33 @@ class InlineFormattingMixin:
             _logger.debug("_try_critic_deletion 异常，降级处理", exc_info=True)
             return None
 
+    # ── CriticMarkup {==highlight==} ────────────────────
+
+    def _try_critic_highlight(self, depth: int) -> InlineNode | None:
+        """``{==...==}`` → CriticHighlightNode（黄底黑字高亮）。
+
+        CriticMarkup 标准五类标记中的「高亮」（另见 ``{++ ++}`` / ``{-- --}``
+        / ``{~~ ~> ~~}`` / ``{>> <<}``）。与 ``==x==`` 行内高亮语法互不冲突：
+        本语法要求双侧花括号包裹。
+        """
+        try:
+            if (self._pos + 4 < self._n
+                    and self._text[self._pos:self._pos + 3] == '{=='
+                    and not (self._pos + 4 < self._n
+                             and self._text[self._pos + 3] == '=')):
+                saved = self._pos
+                self._pos += 3
+                children, found = self._parse_until('==}', depth + 1)
+                if found:
+                    self._pos += 3  # skip ==}
+                    return self._make_nestable(CriticHighlightNode, children)
+                self._pos = saved
+                return None
+            return None
+        except Exception:
+            _logger.debug("_try_critic_highlight 异常，降级处理", exc_info=True)
+            return None
+
     # ── 小号文本 {-small-} ──────────────────────────────
 
     def _try_small_text(self, depth: int) -> InlineNode | None:
@@ -565,6 +592,33 @@ class InlineFormattingMixin:
             return None
         except Exception:
             _logger.debug("_try_small_text 异常，降级处理", exc_info=True)
+            return None
+
+    # ── 大号文本 {+big+} ────────────────────────────────
+
+    def _try_big_text(self, depth: int) -> InlineNode | None:
+        """``{+...}`` → BigTextNode（放大文本，终端以加粗近似）。
+
+        与 ``{-small-}`` 对称的放大语法。注意与 CriticMarkup 添加 ``{++ ++}``
+        的区分：调度表中 ``_try_critic_addition`` 先于本方法，且此处显式排除
+        第三个字符为 ``+`` 的 ``{++`` 形态，两者互不误吞。
+        """
+        try:
+            if (self._pos + 3 < self._n
+                    and self._text[self._pos:self._pos + 2] == '{+'
+                    and not (self._pos + 3 < self._n
+                             and self._text[self._pos + 2] == '+')):
+                saved = self._pos
+                self._pos += 2
+                children, found = self._parse_until('+}', depth + 1)
+                if found:
+                    self._pos += 2  # skip +}
+                    return self._make_nestable(BigTextNode, children)
+                self._pos = saved
+                return None
+            return None
+        except Exception:
+            _logger.debug("_try_big_text 异常，降级处理", exc_info=True)
             return None
 
     # ── 彩色文本 {color:red}text{color} ─────────────────

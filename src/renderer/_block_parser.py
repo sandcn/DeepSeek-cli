@@ -17,7 +17,7 @@ from ._utils import (
 from .types import Token, TokenType, RenderContext
 from ._table_utils import (
     _is_table_row, _is_table_data_row, _is_table_separator,
-    _parse_table_row, _parse_table_alignments,
+    _parse_table_row, _parse_table_alignments, _normalize_table_cells,
     _is_grid_table_border, _is_grid_table_row, parse_grid_table,
     _is_dashed_separator, parse_dashed_table,
 )
@@ -895,24 +895,20 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         """
         out: list[Token] = []
         stripped_tail = _strip_left(tail).rstrip() if tail else ""
-        # Setext 下划线（=== / ---）：前一行成为标题（与提交语义一致）；
-        # 多行上文 + ``=`` 下划线在提交路径按分隔线处理（``-`` 的多行形态由
-        # ``_classify_preview_line`` 归入分隔线），此处显式对齐。
+        # Setext 下划线（=== / ---）：underline 前的**整个段落**（可跨多行）成为
+        # 标题内容（CommonMark：「The setext heading underline can be preceded by
+        # multiple lines of text; the whole paragraph becomes the heading.」）。
+        # 修复前仅单行上文识别为标题、多行时 ``=`` 生成 PARAGRAPH + HR——与
+        # 提交路径现已统一的「多行 → 标题」语义对齐，消除预览/提交跳变。
         if (tail and lines and lines[0].strip()
                 and self._is_preview_setext_underline(stripped_tail)):
-            if len(lines) == 1:
-                level = 1 if stripped_tail[0] == '=' else 2
-                return [Token(TokenType.HEADING, lines[0],
-                              {"level": level, "preview": True})]
-            if stripped_tail[0] == '=':
-                tail_lines = self._preview_tail(lines)
-                meta: dict = {"preview": True}
-                dropped = len(lines) - len(tail_lines)
-                if dropped:
-                    meta["preview_dropped"] = dropped
-                out.append(Token(TokenType.PARAGRAPH, "\n".join(tail_lines), meta))
-                out.append(Token(TokenType.HR, "", {"preview": True}))
-                return out
+            level = 1 if stripped_tail[0] == '=' else 2
+            heading_lines = self._preview_tail(lines)
+            meta: dict = {"level": level, "preview": True}
+            dropped = len(lines) - len(heading_lines)
+            if dropped:
+                meta["preview_dropped"] = dropped
+            return [Token(TokenType.HEADING, "\n".join(heading_lines), meta)]
         if lines:
             tail_lines = self._preview_tail(lines)
             meta: dict = {"preview": True}
@@ -1278,6 +1274,20 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             self._handle_empty_line(tokens)
             return
 
+        # ── 块引用懒续行（CommonMark lazy continuation）──
+        # 引用块内未完成段落的续行可省略 ``>`` 前缀：``> foo\nbar`` 中 ``bar``
+        # 仍属引用内容（渲染 ``│ foo`` / ``│ bar``）。修复前该行触发引用块关闭，
+        # ``bar`` 以无前缀的顶层段落上屏，引用被腰斩。
+        # 仅当引用块内已有未完成段落、且本行不是新块起始（列表/标题/围栏/
+        # HTML 块…）时视为续行——否则按既有逻辑关闭引用块（保守，避免把真正
+        # 的新块吞进引用）。
+        if (self._bq_active and self._bq_in_recursion == 0
+                and self._pending_lines
+                and not _is_blockquote_line(stripped)
+                and not self._starts_new_block(stripped)):
+            self._handle_paragraph_line(line, tokens)
+            return
+
         # ── 注释行：[//]: # (comment) 或 [//]: # comment ──
         if stripped.startswith('[//]:'):
             return
@@ -1433,6 +1443,21 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                         "depth": len(self._list_indents) or 1,
                     }))
                     return
+                # ★ 懒续行（CommonMark lazy continuation）：紧凑列表项的段落续行
+                #   可省略（或不足）缩进——``- foo\nbar`` 中 ``bar`` 仍属列表项
+                #   内容（渲染 ``• foo`` / ``  bar``）。仅当上一行确实是列表项行
+                #   （``_prev_emitted_type``，空行/其它块会打断）且本行不是块起始
+                #   时成立，避免把列表后的普通段落误吞进列表项。
+                if (leading < self._last_list_content_col
+                        and self._prev_emitted_type is TokenType.LIST_ITEM
+                        and not self._starts_new_block(stripped)):
+                    tokens.append(Token(TokenType.LIST_ITEM, line.rstrip('\n'), {
+                        "continuation": True,
+                        "indent": self._last_list_indent,
+                        "depth": len(self._list_indents) or 1,
+                        "lazy": True,
+                    }))
+                    return
 
             self._handle_paragraph_line(line, tokens)
             return
@@ -1462,7 +1487,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if self._state == _State.TABLE_ACTIVE:
             header_cols = len(self._table_rows[0]) if self._table_rows else None
             if _is_table_data_row(stripped, header_cols):
-                self._table_rows.append(_parse_table_row(stripped))
+                self._table_rows.append(_normalize_table_cells(
+                    _parse_table_row(stripped), header_cols))
                 return
             self._emit_table(tokens)
 
@@ -2078,18 +2104,20 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 non_space_count += 1
             if all_same and non_space_count >= 3:
                 if first in ('=', '-') and self._pending_lines:
-                    # CommonMark: Setext heading requires exactly one line before the underline.
-                    # Multiple lines → treat underline as HR (horizontal rule).
-                    if len(self._pending_lines) == 1:
-                        last_line = self._pending_lines[0]
-                        if last_line and not _is_empty_line(last_line):
-                            level = 1 if first == '=' else 2
-                            heading_text = last_line
-                            self._pending_lines = []
-                            self._list_indents.clear()
-                            tokens.append(Token(TokenType.HEADING, heading_text,
-                                                {"level": level}))
-                            return True
+                    # CommonMark：setext underline 前的**整个段落**成为标题内容，
+                    # 可跨多行（「The setext heading underline can be preceded by
+                    # multiple lines of text; the whole paragraph becomes the
+                    # heading.」）。修复前要求恰好 1 行，多行时把 underline 误判
+                    # 为分隔线——``Foo\nbar\n===`` 渲染为两行正文 + 一条分隔线，
+                    # ``===`` 的标题语义完全丢失。
+                    if not all(_is_empty_line(ln) for ln in self._pending_lines):
+                        level = 1 if first == '=' else 2
+                        heading_text = '\n'.join(self._pending_lines)
+                        self._pending_lines = []
+                        self._list_indents.clear()
+                        tokens.append(Token(TokenType.HEADING, heading_text,
+                                            {"level": level}))
+                        return True
                 elif first == '=':
                     # ★ ``=`` 不是分隔线字符（CommonMark 的 HR 仅 ``-`` / ``*`` /
                     #   ``_``）——无上文段落时整行 ``=====`` 应作为普通段落文本，
@@ -2421,6 +2449,11 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return
         for tok in tokens[mark:]:
             if tok.type in self._BQ_NO_PREFIX_TYPES:
+                if tok.type is TokenType.BLOCKQUOTE_CLOSE:
+                    # 引用块已关闭：其后产出的 Token（如紧随的顶层标题/列表）
+                    # 不属于引用内容，不得补 ``│`` 前缀。修复前本行产出**全部**
+                    # Token 都被标记——``> foo\n# h`` 的标题被误加引用前缀。
+                    break
                 continue
             meta = tok.meta
             if meta is None:
@@ -2538,7 +2571,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return False
         if not stripped or indent < content_col:
             if stripped and indent < content_col:
-                self._reset_list_context_if_needed(stripped)
+                # 懒续行候选（CommonMark lazy continuation：缩进不足但上一行是
+                # 列表项行、本行非块起始）→ **保留**列表上下文，交由
+                # ``_parse_normal_line`` 的续行分支吸收为列表项内容；其余情况
+                # 仍按既有逻辑清空上下文（列表已结束）。
+                if not (self._prev_emitted_type is TokenType.LIST_ITEM
+                        and not self._starts_new_block(stripped)):
+                    self._reset_list_context_if_needed(stripped)
             return False
         if not self._may_start_list_block(stripped):
             return False
@@ -2597,6 +2636,51 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             _logger.debug("_update_list_indent异常", exc_info=True)
 
     # ── 段落 ─────────────────────────────────────────────
+
+    @staticmethod
+    def _starts_new_block(stripped: str) -> bool:
+        """行是否开启一个新的块级元素（块引用懒续行 / 列表懒续行的终止判定）。
+
+        只识别「行首即可确定」的块起始标记（标题 / 围栏 / 引用 / HTML 块 /
+        列表项 / 分隔线 / 表格 / 容器块 / 定义类行）；普通文本（字母、数字
+        后非列表标记等）返回 ``False``，可作为段落续行。
+
+        判定**保守**：宁可判为「块起始」（关闭容器，走既有逻辑）也不把真正
+        的新块误吞进引用/列表内容。
+        """
+        if not stripped:
+            return True
+        first = stripped[0]
+        if first in ('#', '`', '~', '>', '<', '|'):
+            return True
+        if first in ('-', '*', '+'):
+            if len(stripped) > 1 and stripped[1] == ' ':
+                return True  # 无序列表项
+            core = stripped.replace(' ', '')
+            if len(core) >= 3 and _is_only_chars(core, first):
+                return True  # 分隔线（``***`` / ``---`` / ``___``）
+            if first == '+' and _is_grid_table_border(stripped):
+                return True
+            return False
+        if first.isdigit():
+            j = 1
+            while j < len(stripped) and stripped[j].isdigit():
+                j += 1
+            if j < len(stripped) and stripped[j] in '.):' and (
+                    j + 1 >= len(stripped) or stripped[j + 1] == ' '):
+                return True  # 有序列表项
+        if first == '$' and stripped.startswith('$$'):
+            return True
+        if stripped == r'\[':
+            return True
+        if (stripped.startswith(':::') or stripped.startswith('!!!')
+                or stripped.startswith('???')):
+            return True
+        if stripped.startswith('[^') or stripped.startswith('[//]:'):
+            return True
+        if stripped.startswith('*[') and ']:' in stripped:
+            return True  # 缩写定义 ``*[ABBR]: ...``
+        return False
 
     @staticmethod
     def _may_be_paragraph_text(first: str, stripped: str) -> bool:

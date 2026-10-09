@@ -93,6 +93,8 @@ _STYLE_KBD = Style(fg=231, bg=240, bold=True)
 _STYLE_ABBR = Style(fg=220, underline=True, italic=True)
 _STYLE_CRIT_ADD = Style(fg=40, bg=22, bold=True)
 _STYLE_CRIT_DEL = Style(fg=203, dim=True)
+#: CriticMarkup 高亮 ``{==…==}``：黄底黑字加粗（与 ``==x==`` 行内高亮同视觉）
+_STYLE_CRIT_HL = Style(bg=11, fg=0, bold=True)
 _STYLE_SMALL = Style(dim=True, italic=True)
 _STYLE_BIG = Style(bold=True)
 _STYLE_QUOTE = Style(fg=252, italic=True)
@@ -185,6 +187,109 @@ _SUB_SCRIPT_MAP = LiveMapping("inline_subscript")
 _SUPER_SCRIPT_MAP = LiveMapping("inline_superscript")
 
 
+#: 智能排版（typographer）多字符触发对：文本含其中任意一项才可能发生替换
+#: （``--``→en/em-dash、``...``→省略号、``->``/``<-``/``=>``/``<->``/``==>``
+#: /``<==``→箭头、``<=``/``>=``/``!=``/``~=``/``+-``/``+/-``→数学符号）。
+#: 单字符触发（``&`` 实体 / ``:`` emoji / ``/`` 分数 / ``(c)`` 等）另行判定。
+_TYPO_PAIRS = (
+    '--', '...', '->', '<-', '=>', '<=', '>=', '!=', '~=', '+-', '+/-',
+)
+
+#: 智能排版增量扫描的向前回看长度（覆盖跨增量边界的 pattern：最长 pair 为
+#: 3 字符 ``+/-``）。
+_TYPO_LOOKBACK = 3
+
+
+def _needs_typography(text: str) -> bool:
+    """文本是否**可能**被智能排版预处理改写（快速判否）。
+
+    返回 ``False`` 时 ``_preprocess_text(text) == text``（无需进入预处理）。
+    判定**宁可多报**（多报只多一次预处理，不改变输出），覆盖
+    ``_inline_preprocess`` 的全部替换规则：破折号/省略号（``--`` ``...``）、
+    箭头（``->`` ``<-`` ``=>`` ``<->`` ``==>`` ``<==``）、数学符号
+    （``<=`` ``>=`` ``!=`` ``~=`` ``+-`` ``+/-``）、版权/商标（``(c)``
+    ``(r)`` ``(tm)``）、分数（``N/M``）、Emoji 短代码（``:name:``）与 HTML
+    实体（``&…;``）。
+
+    ★ 性能：单字符 ``-`` / ``+`` / ``=`` 不单独触发（英文文本中连字符、
+    ``+`` 号极常见，如 ``re-render``、``C++``）——仅在上表的**多字符组合**
+    出现时才进入预处理，避免英文长段落每帧做 4 遍全量扫描（累计 O(n²)）。
+    """
+    for pair in _TYPO_PAIRS:
+        if pair in text:
+            return True
+    if '&' in text or ':' in text:
+        return True
+    if '/' in text:
+        # 分数 ``N/M`` 才触发（``and/or``、``I/O`` 等普通斜杠不触发——英文
+        # 文本中斜杠并不罕见，一律判真会让快路径失效并拖慢长段落流式渲染）。
+        i = text.find('/')
+        while i >= 0:
+            if (i > 0 and text[i - 1].isdigit()
+                    and i + 1 < len(text) and text[i + 1].isdigit()):
+                return True
+            i = text.find('/', i + 1)
+    if '(' in text:
+        low = text.lower()
+        if '(c)' in low or '(r)' in low or '(tm)' in low:
+            return True
+    return False
+
+
+#: 智能排版预处理函数（惰性绑定：仅在实际需要预处理时导入一次，避免每次
+#: 调用都走 ``import`` 查找）。
+_PREPROCESS_TEXT = None
+
+
+def _last_typo_pos(text: str) -> int:
+    """``text`` 中最后一个智能排版触发**起点**的下标（无则 -1）。
+
+    供段落预览的「活动行窗口是否纯文本」判定做**增量**维护（见
+    ``AnsiStreamRenderer._note_paragraph_triggers`` / ``_plain_active_window``）
+    ——避免每帧对 4096 字符窗口重扫。覆盖 ``_preprocess_text`` 的全部替换起点：
+    ``--`` / ``...`` / ``->`` / ``<-`` / ``=>`` / ``<=`` / ``>=`` / ``!=`` /
+    ``~=`` / ``+-`` / ``+/-``、``(c)`` / ``(r)`` / ``(tm)``、``N/M`` 分数、
+    ``:emoji:``、``&entity;``——判定口径**宁可多报**（多报只多一次预处理）。
+
+    实现用 C 级 ``str.rfind`` 逐个候选收集（每个 pattern 一次反向 memchr），
+    比逐字符 Python 循环快得多。
+    """
+    pos = -1
+    for pair in _TYPO_PAIRS:
+        idx = text.rfind(pair)
+        if idx > pos:
+            pos = idx
+    for ch in '&:(':
+        idx = text.rfind(ch)
+        if idx > pos:
+            pos = idx
+    i = text.rfind('/')
+    while i > 0:
+        if text[i - 1].isdigit():
+            if i - 1 > pos:
+                pos = i - 1
+            break
+        i = text.rfind('/', 0, i)
+    return pos
+
+
+def _preprocess_plain(text: str) -> str:
+    """智能排版预处理（与 Rich 路径 ``_preprocess_text`` 同源同产出）。
+
+    TUI 内容路径此前完全不做智能排版——同一段 Markdown 经 Rich 路径渲染为
+    ``a → b`` / ``x — y``，经 TUI 路径却原样保留 ``a -> b`` / ``x --- y``，
+    两条路径语义分裂。现按 TextNode 粒度统一预处理（代码/链接 URL 等不经
+    TextNode 的内容不受影响，与 Rich 路径 ``_text_node_handler`` 一致）。
+    """
+    if not text or not _needs_typography(text):
+        return text
+    global _PREPROCESS_TEXT
+    if _PREPROCESS_TEXT is None:
+        from src.renderer._inline_preprocess import _preprocess_text as _fn
+        _PREPROCESS_TEXT = _fn
+    return _PREPROCESS_TEXT(text)
+
+
 def _append(out: list[Run], text: str, style: Style | None,
             link: str | None = None) -> None:
     """追加 Run 并合并相邻同样式（且同链接）段（输出紧凑 + 宽度缓存友好）。
@@ -228,7 +333,7 @@ def _emit_children(node, base: Style, ctx, out: list[Run], depth: int) -> None:
 
 
 def _emit_text(node, base, ctx, out, depth):
-    text = node.content or ""
+    text = _preprocess_plain(node.content or "")
     abbr_map = getattr(ctx, "abbr_map", None) if ctx is not None else None
     if text and abbr_map:
         _emit_text_with_abbr(text, base, abbr_map, out)
@@ -572,6 +677,11 @@ def _emit_critic_deletion(node, base, ctx, out, depth):
     _emit_children(node, _merge(base, _STYLE_CRIT_DEL), ctx, out, depth)
 
 
+def _emit_critic_highlight(node, base, ctx, out, depth):
+    """``{==…==}`` CriticMarkup 高亮：黄底黑字（与 ``==x==`` 同行内视觉）。"""
+    _emit_children(node, _merge(base, _STYLE_CRIT_HL), ctx, out, depth)
+
+
 def _emit_critic_comment(node, base, ctx, out, depth):
     _append(out, "┌[批注]", _merge(base, _STYLE_ABBR))
     _emit_children(node, _merge(base, _STYLE_COMMENT), ctx, out, depth)
@@ -711,6 +821,7 @@ def _build_dispatch() -> dict:
         N.InlineCommentNode: _emit_inline_comment,
         N.CriticAdditionNode: _emit_critic_addition,
         N.CriticDeletionNode: _emit_critic_deletion,
+        N.CriticHighlightNode: _emit_critic_highlight,
         N.CriticCommentNode: _emit_critic_comment,
         N.CriticSubstitutionNode: _emit_critic_substitution,
         N.SmallTextNode: _emit_small,
@@ -782,6 +893,9 @@ def render_inline(text: str, base_style: Style | None = None, ctx=None) -> list[
         #   ``inline_renderer`` 的 abbr 分支同口径）。
         if _FAST_ISDISJOINT(text) and not (
                 ctx is not None and getattr(ctx, "abbr_map", None)):
+            # 智能排版：文本无行内标记时，仍需应用 ``--``/``...``/``->`` 等替换
+            # （与 Rich 路径同源）——预处理不产生新的标记字符，故可直接返回单 Run。
+            text = _preprocess_plain(text)
             return [Run(text, base)]
         from src.renderer.inline_parser import _InlineParser
         nodes = _InlineParser(text).parse()

@@ -301,6 +301,7 @@ try:
         SpoilerNode as _SpoilerNode,
         CriticAdditionNode as _CriticAdditionNode,
         CriticDeletionNode as _CriticDeletionNode,
+        CriticHighlightNode as _CriticHighlightNode,
         CriticSubstitutionNode as _CriticSubstitutionNode,
         CriticCommentNode as _CriticCommentNode,
         SmallTextNode as _SmallTextNode,
@@ -428,6 +429,12 @@ def _render_critic_substitution_node(self, n, ctx, d):
     result.append_text(new_result)
 
     return result
+
+
+def _render_critic_highlight_node(self, n, ctx, d):
+    """CriticHighlightNode 渲染：黄底黑字高亮（与 ``==x==`` 同行内视觉）。"""
+    return _style_children(self, n, ctx, d + 1,
+                           Style(bgcolor="yellow", color="black", bold=True))
 
 
 def _render_critic_comment_node(self, n, ctx, d):
@@ -563,6 +570,7 @@ def _build_dispatch_table():
     d[_CriticDeletionNode] = lambda self, n, ctx, d: _render_strikethrough_handler(
         self, n, ctx, d
     )  # CriticMarkup 删除：红色删除线（复用 strikethrough 处理器）
+    d[_CriticHighlightNode] = _render_critic_highlight_node  # CriticMarkup 高亮：黄底黑字
     d[_SmallTextNode] = lambda self, n, ctx, d: _style_children(
         self, n, ctx, d + 1, Style(dim=True, italic=True)
     )  # 小号文本：dim + 斜体

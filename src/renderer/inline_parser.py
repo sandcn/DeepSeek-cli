@@ -447,8 +447,10 @@ _InlineParser._FORMAT_DISPATCH = {
     '+':  (('_try_underline', True),),
     '|':  (('_try_spoiler', True),),
     '{':  (('_try_critic_addition', True), ('_try_critic_deletion', True),
+            ('_try_critic_highlight', True),
             ('_try_critic_substitution', True), ('_try_critic_comment', True),
-            ('_try_small_text', True), ('_try_color_text', True)),
+            ('_try_small_text', True), ('_try_big_text', True),
+            ('_try_color_text', True)),
     '%':  (('_try_inline_comment', True),),
 }
 

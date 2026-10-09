@@ -25,7 +25,9 @@ from __future__ import annotations
 
 from .helpers import Run, AnsiLine, wrap_line, truncate_line, ansi_to_line
 from .style import Style
-from .inline import render_inline, use_render_context
+from .inline import (
+    render_inline, use_render_context, _last_typo_pos, _TYPO_LOOKBACK,
+)
 from .engine import AnsiRenderEngine, _apply_list_prefix, _apply_bq_prefix
 from ._preview_cache import LinePreviewCache
 from ._line_delims import ParagraphBoundaryScanner
@@ -322,6 +324,9 @@ class AnsiStreamRenderer:
         self._para_last_core = -1
         self._para_last_url = -1
         self._para_last_nl = -1
+        # 智能排版（typographer）触发位置：最后一个可能被 ``_preprocess_text``
+        # 改写的起点下标（增量维护，供 ``_plain_active_window`` O(1) 判否）。
+        self._para_last_typo = -1
         # 容器块（告示）预览的子解析结果缓存（见 ``_preview_sub_parse``）。
         self._preview_sub_cache: dict = {}
         # 列表项内块级容器预览（内容行元组 → 渲染行 + 缓存键）。
@@ -642,6 +647,7 @@ class AnsiStreamRenderer:
         self._para_last_core = -1
         self._para_last_url = -1
         self._para_last_nl = -1
+        self._para_last_typo = -1
         for cache in self._line_preview_caches.values():
             cache.reset()
 
@@ -814,12 +820,23 @@ class AnsiStreamRenderer:
                 idx = _last_url_prefix_pos(probe)
                 if idx >= 0:
                     self._para_last_url = start + idx
+                # 智能排版触发位置（增量：只扫「回看 + 新增」小窗口，覆盖跨
+                # 增量边界的 pattern，如 ``-`` + ``-``）。回看窗口会让新值可能
+                # 小于旧值——仅在更大时更新（保持「最后一个触发位置」语义且
+                # 偏保守，避免把仍含触发的窗口误判为纯文本）。
+                tstart = prev_len - _TYPO_LOOKBACK
+                if tstart < 0:
+                    tstart = 0
+                tidx = _last_typo_pos(content[tstart:])
+                if tidx >= 0 and tstart + tidx > self._para_last_typo:
+                    self._para_last_typo = tstart + tidx
                 self._para_scan_text = content
                 return
         # 全量重扫（前缀关系不成立：解析器重建缓冲 / 段落切换）
         self._para_last_core = _last_core_trigger_pos(content)
         self._para_last_url = _last_url_prefix_pos(content)
         self._para_last_nl = content.rfind("\n")
+        self._para_last_typo = _last_typo_pos(content)
         self._para_scan_text = content
 
     def _plain_active_window(self, content: str) -> bool:
@@ -844,7 +861,13 @@ class AnsiStreamRenderer:
         start = n - _PREVIEW_MAX_LINE_CHARS
         if start < 0:
             start = 0
-        return self._para_last_core < start and self._para_last_url < start
+        if self._para_last_core >= start or self._para_last_url >= start:
+            return False
+        # 智能排版（--/.../->/(c)/:emoji:/&entity;）同样会把窗口改写为不同文本，
+        # 判定窗口需一并排除（``_plain_paragraph_line`` 直接用原文构造单 Run）。
+        # 触发位置由 ``_note_paragraph_triggers`` 增量维护 → 此处 O(1)，不再
+        # 每帧对 4096 字符窗口切片重扫。
+        return self._para_last_typo < start
 
     @staticmethod
     def _omitted_line(dropped: int) -> AnsiLine:

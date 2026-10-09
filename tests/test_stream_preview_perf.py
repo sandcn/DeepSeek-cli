@@ -81,15 +81,15 @@ def test_preview_ambiguous_pipe_row_stays_paragraph():
     assert prev == ["a | b"]
 
 
-def test_preview_setext_underline_after_multiline_is_hr():
-    """多行上文 + ``===`` 不构成 Setext（与提交一致）→ 预览为分隔线。"""
+def test_preview_setext_underline_after_multiline_is_heading():
+    """多行上文 + ``===`` → 整个段落构成 Setext 标题（与提交一致）。"""
     r = AnsiStreamRenderer(width=80)
     r.write("第一行\n")
     r.write("第二行\n")
     r.write("===")
     prev = [l.plain for l in r.take_preview_lines()]
-    assert any("\u2500" * 10 in p for p in prev)
-    assert any("第一行" in p for p in prev)
+    assert prev == ["第一行", "第二行"]
+    assert not any("\u2500" * 10 in p for p in prev)
 
 
 def test_preview_setext_single_line_is_heading():

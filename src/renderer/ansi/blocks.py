@@ -119,11 +119,14 @@ def bullet_symbol(depth: int) -> str:
 
 
 def render_heading(token) -> list[AnsiLine]:
+    """标题渲染（支持多行内容——setext 标题可跨多行，整段成为标题）。
+
+    单行内容与既有行为完全一致；多行内容按软换行拆为多行标题（各行同标题
+    样式）。
+    """
     level = int(token.meta.get("level", 1))
     style = _HEADING_STYLES[min(max(level, 1), 6) - 1]
-    runs = render_inline(token.content, style)
-    line = AnsiLine(runs)
-    return [line]
+    return inline_lines(token.content, style)
 
 
 def render_hr(token, width: int = 0) -> list[AnsiLine]:
