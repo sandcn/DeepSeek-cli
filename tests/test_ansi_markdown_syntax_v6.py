@@ -97,7 +97,8 @@ def test_inline_code_triple_backtick():
 
 
 def test_inline_code_backtick_inside():
-    assert _render("`` ` ``\n") == [" ` "]
+    # CommonMark：`` `` ` `` `` 的内容为 `` ` ``（首尾都是空格 → 各剥一个）
+    assert _render("`` ` ``\n") == ["`"]
 
 
 def test_inline_code_unclosed_literal():

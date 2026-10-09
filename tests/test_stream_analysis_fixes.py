@@ -118,9 +118,13 @@ def test_paragraph_preview_multiline_bold_paired():
 
 
 def test_paragraph_preview_multiline_code_paired():
-    """跨软换行的行内代码在预览期即正确配对。"""
+    """跨软换行的行内代码在预览期即正确配对。
+
+    CommonMark：代码 span 内的软换行规范化为**单个空格**（与段落软换行
+    「保留换行」不同——代码内容中的换行无意义）。
+    """
     prev = _preview(["行内 `code\n", "跨行` 结尾\n"])
-    assert prev == ["行内 code", "跨行 结尾"]
+    assert prev == ["行内 code 跨行 结尾"]
 
 
 def test_paragraph_preview_line_level_without_markers(monkeypatch):

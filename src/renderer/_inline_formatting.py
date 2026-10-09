@@ -71,10 +71,28 @@ class InlineFormattingMixin:
           空白或标点）；
         - right-flanking：其前字符不是空白，且（其前字符不是标点 或 其后字符是
           空白或标点）。
+
+        ★ 2026-10-10（第十批）：``after`` 取**整个定界符 run 之后**的字符，
+        而非调用方尝试消耗的长度之后——CommonMark 的 flanking 判定基于完整
+        run（同一 run 内的字符互为标点，用截断长度永远得到「后字符是标点 →
+        可开」）。修复前 ``foo *****``（run 尾部为行尾空白）被误判为可开、
+        整段标记被剥离（``foo *``）；``**** is not…`` 丢字符（``** is…``）。
         """
-        before = self._text[pos - 1] if pos > 0 else ''
-        after_pos = pos + length
-        after = self._text[after_pos] if after_pos < self._n else ''
+        text, n = self._text, self._n
+        run_len = length
+        if 0 <= pos < n and text[pos] in '*_':
+            ch = text[pos]
+            tail = pos + length
+            # 快速路径：``length`` 处已是 run 之外（常见——调用方按完整 run
+            # 长度尝试）→ 无需扫描；仅当其后仍是同字符时才向后扩展。
+            if tail < n and text[tail] == ch:
+                i = tail
+                while i < n and text[i] == ch:
+                    i += 1
+                run_len = i - pos
+        before = text[pos - 1] if pos > 0 else ''
+        after_pos = pos + run_len
+        after = text[after_pos] if after_pos < n else ''
         left = (after != '' and not after.isspace()
                 and (not _is_punct_char(after)
                      or before == '' or before.isspace()
@@ -159,16 +177,24 @@ class InlineFormattingMixin:
     # ── 粗斜体 *** / ___ ──────────────────────────────────
 
     def _try_bold_italic(self, depth: int) -> InlineNode | None:
+        key = ('bi', self._pos)
+        if key in self._emph_fail:
+            return None
+        node = self._try_bold_italic_impl(depth)
+        if node is None:
+            self._emph_fail.add(key)
+        return node
+
+    def _try_bold_italic_impl(self, depth: int) -> InlineNode | None:
         try:
             saved = self._pos
             triple = self._text[self._pos:self._pos + 3]
             if not (self._pos + 3 < self._n and triple in ('***', '___')):
                 return None
             # ★ Bug B3 fix: ___ 在词内（如 ___init___）不应触发粗斜体。
-            # ★ 修复（下划线标识符字符丢失）：dunder 形态（___init___ 等）
-            #   整体原样输出为文本——既保持 dunder 保护，也避免其尾部
-            #   ``___`` 与后续下划线跨越配对（``___init___ 与 ___x___``
-            #   修复前两端各丢下划线、内容错位）。
+            # ★ dunder 保护（用户选定折中）：dunder 形态（___init___ 等）整体
+            #   原样输出为文本——既保持 dunder 保护，也避免其尾部 ``___`` 与
+            #   后续下划线跨越配对。
             if triple == '___':
                 end = self._dunder_span_end(3)
                 if end > 0:
@@ -210,6 +236,15 @@ class InlineFormattingMixin:
     # ── 粗体 ** / __ ───────────────────────────────────
 
     def _try_bold(self, depth: int) -> InlineNode | None:
+        key = ('b', self._pos)
+        if key in self._emph_fail:
+            return None
+        node = self._try_bold_impl(depth)
+        if node is None:
+            self._emph_fail.add(key)
+        return node
+
+    def _try_bold_impl(self, depth: int) -> InlineNode | None:
         try:
             saved = self._pos
             if (self._pos + 2 < self._n
@@ -230,11 +265,8 @@ class InlineFormattingMixin:
                     and self._text[self._pos:self._pos + 2] == '__'
                     and not (self._pos + 3 < self._n
                              and self._text[self._pos + 2] == '_')):
-                # ★ 修复（下划线标识符字符丢失）：dunder 形态
-                #   （``__init__`` / ``__my_var__`` …）整体原样输出为文本，
-                #   不渲染粗体。修复前仅开头 ``__`` 被 dunder 判定跳过，其
-                #   尾部 ``__`` 仍会被后续 ``__`` 跨越配对
-                #   （``__init__ 与 __my_var__`` → ``__init 与 my_var__``）。
+                # ★ dunder 保护（用户选定折中）：``__init__`` / ``__my_var__``
+                #   等 dunder 形态整体原样输出为文本，不渲染粗体。
                 end = self._dunder_span_end(2)
                 if end > 0:
                     self._pos = end
@@ -258,6 +290,15 @@ class InlineFormattingMixin:
     # ── 斜体 * / _ ─────────────────────────────────────
 
     def _try_italic(self, depth: int) -> InlineNode | None:
+        key = ('i', self._pos)
+        if key in self._emph_fail:
+            return None
+        node = self._try_italic_impl(depth)
+        if node is None:
+            self._emph_fail.add(key)
+        return node
+
+    def _try_italic_impl(self, depth: int) -> InlineNode | None:
         try:
             saved = self._pos
             if (self._text[self._pos] == '*'
@@ -343,6 +384,16 @@ class InlineFormattingMixin:
                         continue
                     else:
                         if close_ok is not None and not close_ok(self._pos, 1):
+                            # 不能作为闭合：先尝试作为**嵌套开启**——如
+                            # ``*(*foo*)*`` 中 ``(`` 后的 ``*``（外层 em 内的
+                            # 内层 em）、``_foo _bar_ baz_`` 的内层 em；失败
+                            # 才按普通字符。修复前直接当文本 → 嵌套强调失效、
+                            # 标记残留。
+                            node = self._try_format(depth)
+                            if node is not None:
+                                _emit_plain()
+                                nodes.append(node)
+                                continue
                             plain_buf.append(ch)
                             self._pos += 1
                             continue
@@ -557,7 +608,7 @@ class InlineFormattingMixin:
 
         对 count>=2 的特殊规则：行首的 __ 后紧跟 ASCII 字母数字且闭合内容为
         纯 ASCII 标识符（``__init__``）→ dunder 名，不触发格式；含非 ASCII
-        （``__粗体__``）按粗体标记渲染。
+        （``__粗体__``）按粗体标记渲染。（★ 用户选定折中：保留 dunder 保护。）
         """
         try:
             if self._pos + count >= self._n:

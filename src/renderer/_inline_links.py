@@ -740,6 +740,11 @@ class InlineLinksMixin:
             _local_count = 0
             while local_start > 0 and _local_count < self._EMAIL_LOCAL_MAX_SCAN:
                 ch = self._text[local_start - 1]
+                # 反斜杠转义产生的字符不属于 email 局部部分（``foo\+@x.com``
+                # 的局部部分是转义后的 ``+``，不应把 ``@`` 识别为裸邮箱——
+                # 修复前 ``<foo\+@bar.example.com>`` 渲染出重复的 ``+``）。
+                if local_start >= 2 and self._text[local_start - 2] == '\\':
+                    break
                 if ch.isalnum() or ch in '._%+-':
                     local_start -= 1
                     _local_count += 1

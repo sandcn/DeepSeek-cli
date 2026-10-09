@@ -520,6 +520,7 @@ def test_emphasis_mixed_nesting():
 
 
 def test_emphasis_dunder_protection_kept():
+    """ASCII dunder 标识符保持原样输出（用户选定折中，第十批沿用未改）。"""
     assert _render("__init__\n") == ["__init__"]
     assert _render("a__b__c\n") == ["a__b__c"]
 

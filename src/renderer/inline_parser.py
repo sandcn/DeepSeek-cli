@@ -62,6 +62,10 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
         positions = _build_interest_positions(text)
         self._interest_positions = positions
         self._interest_set = frozenset(positions) if positions is not None else None
+        #: 强调解析的失败缓存（键 ``(kind, pos)``）：同一位置重复尝试必然重复
+        #: 失败——缓存避免病态输入（``**********a**********a`` 等连续定界符 run）
+        #: 的指数级重复解析（实测 2 组 run 即 0.6s、3 组超时）。
+        self._emph_fail: set = set()
 
     @staticmethod
     def _make_nestable(cls: type, children: list[InlineNode]) -> InlineNode:
@@ -273,13 +277,12 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
 
         起始为**连续 k 个反引号**（k ≥ 1），结束须为**恰好 k 个**反引号
         （修复前只支持 k=1/2，`` ``` ` `` ``` 等三反引号串被误当双反引号，
-        内容错位）。内容保留软换行（与段落「软换行=换行」的终端呈现一致，
-        行内代码跨软换行同样按行拆开）。
+        内容错位）。内容按 CommonMark 规范化：软换行 → 单个空格、首尾同为
+        空格时各剥离一个；无恰好 k 个反引号作闭合时整个反引号 run 为字面文本。
         """
         try:
             if self._text[self._pos] != '`':
                 return None
-            saved = self._pos
             n = self._n
             start = self._pos
             while self._pos < n and self._text[self._pos] == '`':
@@ -294,13 +297,28 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
                         j += 1
                     if j - i == open_len:
                         content = self._text[content_start:i]
+                        # CommonMark：代码段内的软换行（含行尾空格）规范化为
+                        # **单个空格**——修复前保留 ``\n``，跨行的行内代码被
+                        # 拆成多行（`` `foo\nbar` `` 渲染为两行且尾随双空格被
+                        # 误当硬换行）。
+                        if '\n' in content:
+                            content = content.replace('\n', ' ')
+                        # CommonMark：首尾**都是空格**且内容不全为空格时，
+                        # 各剥离一个空格（`` ``` a ``` `` → ``a``）
+                        if (len(content) >= 2 and content[0] == ' '
+                                and content[-1] == ' ' and content.strip(' ')):
+                            content = content[1:-1]
                         self._pos = j
                         return InlineCodeNode(content=content)
                     i = j
                 else:
                     i += 1
-            self._pos = saved
-            return None
+            # ★ CommonMark：找不到**恰好 open_len 个**反引号作闭合时，整个
+            #   反引号 run 作为普通文本——不逐字符回退（修复前从 run 的第二个
+            #   反引号起重新配对，`` ```py foo`` `` 尾部的 2 个反引号与中间
+            #   的 2 个误配，渲染为 `` ` `` + code("py foo")）。
+            self._pos = start + open_len
+            return TextNode(content=self._text[start:start + open_len])
         except Exception:
             _logger.debug("_try_inline_code 异常，降级处理", exc_info=True)
             return None

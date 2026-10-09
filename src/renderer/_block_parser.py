@@ -182,6 +182,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._bq_in_recursion: int = 0
         self._pending_lines: list[str] = []
 
+        #: 当前段落内**未闭合的行内代码**反引号 run 长度（0 = 不在代码段内）。
+        #: 用于判定行尾双空格 / 反斜杠是否为硬换行——CommonMark：代码段内的
+        #: 行尾不构成硬换行（`` `foo  `` + 换行 + `` bar` `` 的双空格属代码
+        #: 内容）。由 ``_handle_paragraph_line`` 逐行增量维护。
+        self._para_code_ticks: int = 0
+
         # Admonition
         self._in_admonition: bool = False
         self._admonition_type: str = ''
@@ -2821,12 +2827,36 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             tokens.append(Token(TokenType.DEFINITION_ITEM, cont_text,
                                 {"term": "", "continuation": True}))
         raw = line.rstrip('\n')
+        # ★ 行内代码跨行状态：维护当前段落内未闭合的反引号 run 长度——
+        #   CommonMark 代码段内的行尾**不**构成硬换行（`` `foo  `` + 换行 +
+        #   `` bar` `` 的双空格是代码内容）；修复前无条件把行尾双空格替换为
+        #   ``<br>``，跨行行内代码被污染（渲染出字面 ``<br>``）。
+        if not self._pending_lines:
+            self._para_code_ticks = 0
+        _ticks = self._para_code_ticks
+        _i = 0
+        _row = raw
+        while _i < len(_row):
+            if _row[_i] == '`':
+                _j = _i
+                while _j < len(_row) and _row[_j] == '`':
+                    _j += 1
+                _run = _j - _i
+                if _ticks == 0:
+                    _ticks = _run
+                elif _run == _ticks:
+                    _ticks = 0
+                _i = _j
+            else:
+                _i += 1
+        self._para_code_ticks = _ticks
+        _trailing_in_code = _ticks != 0
         # ★ 尾随双空格 → 硬换行 (<br>)
-        if len(raw) >= 2 and raw[-1] == ' ' and raw[-2] == ' ':
+        if not _trailing_in_code and len(raw) >= 2 and raw[-1] == ' ' and raw[-2] == ' ':
             raw = raw[:-2] + '<br>'
         # ★ 尾随反斜杠 → 硬换行（CommonMark 反斜杠换行语法）
         # 反斜杠换行：行末 \ 变成 <br>，但 \\ 是转义的反斜杠保持为 \
-        elif len(raw) >= 1 and raw[-1] == '\\':
+        elif not _trailing_in_code and len(raw) >= 1 and raw[-1] == '\\':
             backslash_count = 0
             i = len(raw) - 1
             while i >= 0 and raw[i] == '\\':

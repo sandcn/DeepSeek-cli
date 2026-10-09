@@ -692,6 +692,11 @@ class _BlockParserStreamMixin:
             if count < 3:
                 return None
             remaining = stripped[count:].strip()
+            # ★ CommonMark：**反引号围栏的 info string 不能包含反引号**——
+            #   含反引号时整行不是围栏起始（`` ```py``foo`` `` 是段落）。
+            #   修复前被误判为围栏：info 被当语言、余下部分落入代码内容。
+            if first == '`' and '`' in remaining:
+                return None
             lang = ''
             attrs = ''
             title = ''
