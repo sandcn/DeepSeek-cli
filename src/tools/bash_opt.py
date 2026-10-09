@@ -32,7 +32,7 @@ bash_opt — 按 task_id 操作后台 bash 任务
                   按键可分「按下 / 弹起 / 完整」阶段，见 phase 参数，
                   并用 repeat 一次连按多次；hover 移动到目标点停留触发挥发性
                   界面，move 另支持 dx/dy 相对当前光标偏移，click 另支持 hold
-                  长按与 interval 多击间隔）
+                  长按与 interval 多击间隔，move 另支持 duration/steps 平滑移动）
 - op=sequence    一次调用按顺序执行多个动作（click / move / drag / scroll /
                  key / type 与 wait / screenshot / window 步骤混排），
                  减少往返、避免两次调用之间被抢焦点；on_error 决定遇错
@@ -52,6 +52,14 @@ bash_opt — 按 task_id 操作后台 bash 任务
 - op=locate      在窗口截图里定位「局部图标」（template 模板匹配）或
                  「文字」（query OCR），返回与输入 op 同源的坐标，可直接点击；
                  适合没有可枚举控件的界面（游戏 / canvas / 图片按钮）
+- op=pixel       读取窗口截图像素颜色：mode=point 点取色、region 区域统计
+                 （均值 / 极值 / 主色）、find 查找目标颜色并按连通块返回候选
+                 位置；用于状态灯 / 进度条等无可枚举控件的判定
+- op=annotate    在截图上绘制矩形 / 十字 / 编号标签（可用 locate 结果复核），
+                 产出带标注的图；boxes / points / labels 描述标记
+- op=record      把一段操作序列（actions，与 sequence 同构）保存为命名宏
+- op=replay      回放命名宏（macro / path），times 可重复多次；重复性 GUI
+                 任务一次固化、随时重跑
 
 ★ 「一次调用把一组操作做完」的推荐组合：
 
@@ -192,6 +200,26 @@ from ._screenshot.ocr import (
     recognize as recognize_text,
 )
 from ._screenshot.png_decode import DecodedImage, decode_png_file
+from ._screenshot.color import (
+    DEFAULT_COLOR_TOLERANCE,
+    DEFAULT_MAX_REGIONS,
+    MAX_REGIONS_LIMIT,
+    ColorError,
+    RGB,
+    find_color_regions,
+    parse_color,
+    pixel_at,
+    region_stats,
+    summarize as summarize_color,
+)
+from ._screenshot.annotate import (
+    DEFAULT_ANNOTATE_COLOR,
+    DEFAULT_TEXT_SCALE,
+    DEFAULT_THICKNESS as DEFAULT_ANNOTATE_THICKNESS,
+    MAX_MARKS,
+    AnnotateError,
+    annotate_png_file,
+)
 from ._screenshot.transform import crop_rgb
 from ._screenshot.elements import (
     DEFAULT_ELEMENT_LIMIT,
@@ -226,6 +254,15 @@ from ._window_input import (
     wait_seconds,
 )
 from ._terminal_keys import SUPPORTED_TERMINAL_KEYS, parse_terminal_key
+from ._window_input.action import parse_coordinate
+from ._window_input.macro import (
+    DEFAULT_MACRO_DIR,
+    Macro,
+    MacroError,
+    list_macros as list_saved_macros,
+    load_macro,
+    save_macro,
+)
 from ..core.base_agent import _parse_bash_result_fields
 
 logger = logging.getLogger(__name__)
@@ -269,6 +306,25 @@ def _box_in_crop(box, crop) -> bool:
     """文本框是否与裁剪区域相交（OCR 结果按 crop 过滤时用）。"""
     return not (box.left + box.width <= crop.x or box.left >= crop.x + crop.width
                 or box.top + box.height <= crop.y or box.top >= crop.y + crop.height)
+
+
+def _attach_screen_coords(payload: dict, frame) -> None:
+    """给 ``op=pixel`` 结果补上屏幕坐标（就地修改）。
+
+    点取色结果的 ``x`` / ``y``、颜色查找各块的 ``x`` / ``y`` / ``center_x`` /
+    ``center_y`` 都是窗口截图坐标；这里按 frame 原点换算并写入 ``screen_*``
+    字段，便于把坐标直接用给其它工具或系统级操作。
+    """
+    if isinstance(payload.get("x"), int) and isinstance(payload.get("y"), int):
+        payload["screen_x"] = payload["x"] + frame.screen_x
+        payload["screen_y"] = payload["y"] + frame.screen_y
+    for region in payload.get("regions", []) or []:
+        if not isinstance(region, dict):
+            continue
+        for x_key, y_key in (("x", "y"), ("center_x", "center_y")):
+            if isinstance(region.get(x_key), int) and isinstance(region.get(y_key), int):
+                region["screen_" + x_key] = region[x_key] + frame.screen_x
+                region["screen_" + y_key] = region[y_key] + frame.screen_y
 
 
 class BashOptFunc(Func):
@@ -328,6 +384,10 @@ class BashOptFunc(Func):
     _WAIT_FOR_TIMEOUT: float = 5.0
     #: wait_for 轮询间隔（秒）
     _WAIT_FOR_INTERVAL: float = 0.25
+    #: wait_for 轮询间隔的放大系数（每轮乘以此值）
+    _WAIT_FOR_BACKOFF: float = 1.5
+    #: wait_for 轮询间隔上限（秒）——自适应退避，减少长时间等待时的截图次数
+    _WAIT_FOR_MAX_INTERVAL: float = 1.0
     #: wait_for='stable' 允许忽略的微小变化比例（变化像素占比不超过该值时
     #: 仍判为「画面已稳定」）：带输入光标的界面会因光标闪烁永远等不到
     #: 「逐像素一致」，这类噪声（光标 / 时钟秒数）不应让稳定判定失败。
@@ -346,6 +406,28 @@ class BashOptFunc(Func):
     _MAX_LOCATE_RESULTS: int = 50
     #: op=locate 模板多尺度搜索的步数上限
     _MAX_LOCATE_SCALE_STEPS: int = 21
+    #: op=pixel 的取色模式（point 点取色 / region 区域统计 / find 颜色查找）
+    _PIXEL_MODES: tuple[str, ...] = ("point", "region", "find")
+    #: op=pixel 缺省模式
+    _DEFAULT_PIXEL_MODE: str = "point"
+    #: op=pixel 颜色查找返回的连通块数上限
+    _MAX_PIXEL_REGIONS: int = MAX_REGIONS_LIMIT
+    #: op=pixel 颜色查找默认连通块数
+    _DEFAULT_PIXEL_REGIONS: int = DEFAULT_MAX_REGIONS
+    #: op=annotate 默认标注颜色（RGB）
+    _ANNOTATE_COLOR: tuple[int, int, int] = DEFAULT_ANNOTATE_COLOR
+    #: op=annotate 默认字号放大倍率
+    _ANNOTATE_TEXT_SCALE: int = DEFAULT_TEXT_SCALE
+    #: op=annotate 默认边框线宽
+    _ANNOTATE_THICKNESS: int = DEFAULT_ANNOTATE_THICKNESS
+    #: 单次标注的最大标记数
+    _MAX_ANNOTATE_MARKS: int = MAX_MARKS
+    #: 宏（record / replay）默认存放目录
+    _MACRO_DIR: str = DEFAULT_MACRO_DIR
+    #: op=replay 默认重复次数
+    _DEFAULT_REPLAY_TIMES: int = 1
+    #: op=replay 重复次数上限
+    _MAX_REPLAY_TIMES: int = 20
 
     @classmethod
     def to_tool_schema(cls):
@@ -407,7 +489,8 @@ class BashOptFunc(Func):
                             "enum": ["read", "wait", "kill", "stdin", "keys",
                                      "screenshot", "windows", "window",
                                      "elements", "wait_window", "clipboard",
-                                     "locate", "sequence",
+                                     "locate", "pixel", "annotate",
+                                     "record", "replay", "sequence",
                                      *INPUT_OPS],
                             "description": (
                                 "要执行的操作："
@@ -433,7 +516,8 @@ class BashOptFunc(Func):
                                 "与 window_rect（窗口外框），便于截图像素与屏幕坐标换算；"
                                 "纯命令行进程没有窗口，会返回错误说明"
                                 "\n- move/hover/click/drag/scroll/key/type：向任务进程树的 GUI 窗口"
-                                "注入输入（鼠标移动（x/y 绝对或 dx/dy 相对）/悬停/点击（左中右键、"
+                                "注入输入（鼠标移动（x/y 绝对或 dx/dy 相对；"
+                                "duration+steps 可做平滑移动）/悬停/点击（左中右键、"
                                 "双击即 count=2、hold 长按）/拖动/滚轮、"
                                 "键盘按键（phase=press/down/up 分按下与弹起）、文本）；"
                                 "坐标以窗口截图左上角为原点（与 screenshot 产物一致），"
@@ -485,6 +569,16 @@ class BashOptFunc(Func):
                                 "window（window_action）；on_error=stop/continue 决定"
                                 "遇错停止还是继续）。适合「点输入框→输入→回车→截图」"
                                 "这类连续操作，减少往返与中途失焦"
+                                "\n- pixel：读取窗口截图像素颜色（mode=point 点取色 / "
+                                "region 区域均值与主色 / find 查找目标颜色并按连通块"
+                                "返回可点击的候选位置），适合识别状态灯、进度条等"
+                                "没有可枚举控件的画面"
+                                "\n- annotate：在截图上绘制矩形 / 十字 / 编号标签"
+                                "（常配合 locate 的匹配结果复核），产出带标注的图；"
+                                "boxes / points / labels 可用 window 截图或 path 指定"
+                                "\n- record / replay：把一段操作序列（actions）保存为"
+                                "命名宏（macro），之后一条 replay 调用重复回放"
+                                "（times 可重复多次），适合重复性的 GUI 任务"
                             ),
                         },
                         "timeout": {
@@ -781,14 +875,20 @@ class BashOptFunc(Func):
                         "duration": {
                             "type": "number",
                             "description": (
-                                "仅 drag：拖动耗时秒数（默认 0.3，0 表示瞬时；"
-                                "需要目标程序识别连续移动时调大，最大 10）。"
+                                "drag / move 可选：动作耗时秒数。"
+                                "drag 默认 0.3（0 表示瞬时；需要目标程序识别"
+                                "连续移动时调大，最大 10）；move 默认 0（一步直达），"
+                                ">0 时在起点与终点之间按 duration 分步平滑移动。"
                             ),
                         },
                         "steps": {
                             "type": "number",
                             "description": (
-                                "仅 drag：轨迹插值步数（默认 20，范围 2-200）。"
+                                "drag / move 可选：轨迹插值步数。"
+                                "drag 默认 20（范围 2-200）；move 默认 1（不插值），"
+                                ">1 时按该步数插值分步移动（配合 duration 控制节奏），"
+                                "范围 2-200。某些程序（游戏 / 拖选 / 悬停菜单）只"
+                                "响应连续移动事件，此时用平滑移动。"
                             ),
                         },
                         "method": {
@@ -1022,6 +1122,103 @@ class BashOptFunc(Func):
                                 "取多少个缩放档（默认 1，上限 21）。"
                             ),
                         },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["point", "region", "find"],
+                            "description": (
+                                "仅 pixel 可选：取色模式。"
+                                "point（默认，需 x/y）读该像素颜色；"
+                                "region（需 region）统计区域均值 / 极值 / 主色；"
+                                "find（需 color）在窗口（或 region）内查找目标颜色，"
+                                "按连通块返回多个候选位置（可点击）。"
+                            ),
+                        },
+                        "color": {
+                            "type": "string",
+                            "description": (
+                                "仅 pixel / annotate 使用：颜色。"
+                                "支持 '#RRGGBB'、'rgb(r,g,b)'、'r,g,b' 或颜色名"
+                                "（如 'red'）。pixel 里作为「期望色 / 查找目标」"
+                                "（给 color 时点 / 区域取色会附带是否匹配的结论）；"
+                                "annotate 里作为标记颜色（缺省红色）。"
+                            ),
+                        },
+                        "region": {
+                            "type": "string",
+                            "description": (
+                                "仅 pixel 使用：取色 / 查找区域（'x,y,width,height'，"
+                                "窗口截图坐标，原点为窗口截图左上角）；"
+                                "省略时：point 模式下用 x/y，find 模式下扫描整窗。"
+                            ),
+                        },
+                        "min_pixels": {
+                            "type": "number",
+                            "description": (
+                                "仅 pixel 的 find 模式：连通块的最小像素数"
+                                "（默认 1），用于过滤噪点。"
+                            ),
+                        },
+                        "max_regions": {
+                            "type": "number",
+                            "description": (
+                                "仅 pixel 的 find 模式：最多返回多少块候选区域"
+                                "（默认 10，上限 100）。"
+                            ),
+                        },
+                        "output": {
+                            "type": "string",
+                            "description": (
+                                "仅 annotate 可选：标注结果输出路径（PNG）。"
+                                "省略时覆盖 path 指定的原图；无扩展名自动补 .png。"
+                            ),
+                        },
+                        "boxes": {
+                            "type": "array",
+                            "items": {"type": ["string", "object", "array"]},
+                            "description": (
+                                "仅 annotate：矩形标注列表，每项为 "
+                                "'x,y,width,height'、[x,y,w,h] 或 "
+                                "{x,y,width,height}；坐标以图像左上角为原点。"
+                            ),
+                        },
+                        "points": {
+                            "type": "array",
+                            "items": {"type": ["string", "object", "array"]},
+                            "description": (
+                                "仅 annotate：点标注列表，每项为 'x,y'、[x,y] 或 "
+                                "{x,y}；绘制为十字 + 中心点。"
+                            ),
+                        },
+                        "labels": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "仅 annotate：与 boxes + points 顺序对应的标签文本"
+                                "（5x7 点阵，常用数字 / 字母）；省略时自动编号。"
+                            ),
+                        },
+                        "macro": {
+                            "type": "string",
+                            "description": (
+                                "record / replay 的宏名（保存到 "
+                                "'bash_opt_macros/<宏名>.json'）。replay 时按名加载；"
+                                "record 时保存/追加到该名字。"
+                            ),
+                        },
+                        "times": {
+                            "type": "number",
+                            "description": (
+                                "仅 replay 可选：整段宏重复执行次数（默认 1，"
+                                "上限 20）。"
+                            ),
+                        },
+                        "append": {
+                            "type": "boolean",
+                            "description": (
+                                "仅 record 可选：同名宏已存在时，把新步骤追加到"
+                                "末尾（默认 false = 覆盖）。"
+                            ),
+                        },
                         "seconds": {
                             "type": "number",
                             "description": (
@@ -1106,6 +1303,37 @@ class BashOptFunc(Func):
             window = arguments.get("window")
             if window:
                 extra = f"{extra} window={window}"
+        elif op == "pixel":
+            parts = [str(arguments.get("mode") or "point")]
+            if arguments.get("x") is not None or arguments.get("y") is not None:
+                parts.append(_format_position(arguments))
+            region = arguments.get("region")
+            if region:
+                parts.append(f"region={region}")
+            color = arguments.get("color")
+            if color:
+                parts.append(f"color={color}")
+            extra = " ".join(parts)
+        elif op == "annotate":
+            boxes = arguments.get("boxes")
+            points = arguments.get("points")
+            box_count = len(boxes) if isinstance(boxes, (list, tuple)) else 0
+            point_count = len(points) if isinstance(points, (list, tuple)) else 0
+            extra = f"{box_count}框 {point_count}点"
+            color = arguments.get("color")
+            if color:
+                extra = f"{extra} color={color}"
+        elif op in ("record", "replay"):
+            macro = arguments.get("macro") or arguments.get("path") or ""
+            extra = str(macro)
+            if op == "record":
+                actions = arguments.get("actions")
+                count = len(actions) if isinstance(actions, (list, tuple)) else 0
+                extra = f"{extra} {count} 步" if extra else f"{count} 步"
+            else:
+                times = arguments.get("times")
+                if times not in (None, 1, "1"):
+                    extra = f"{extra} x{times}" if extra else f"x{times}"
         display = f"{op} {task_id}"
         if extra:
             display += f" {cls._sanitize_display(extra)}"
@@ -1138,8 +1366,16 @@ class BashOptFunc(Func):
             return f"{_format_position(arguments)}{suffix}"
         if op == "move":
             if arguments.get("dx") is not None or arguments.get("dy") is not None:
-                return f"rel dx={arguments.get('dx') or 0} dy={arguments.get('dy') or 0}"
-            return _format_position(arguments)
+                label = f"rel dx={arguments.get('dx') or 0} dy={arguments.get('dy') or 0}"
+            else:
+                label = _format_position(arguments)
+            steps = arguments.get("steps")
+            duration = arguments.get("duration")
+            if steps not in (None, 1, "1"):
+                label += f" smooth={steps}"
+            elif duration not in (None, 0, "0", 0.0, ""):
+                label += f" smooth={duration}s"
+            return label
         if op == "scroll":
             direction = str(arguments.get("direction") or "down")
             amount = arguments.get("amount") or 3
@@ -1175,7 +1411,11 @@ class BashOptFunc(Func):
                  template: str | None = None, query: str | None = None,
                  max_results=None, min_scale=None, max_scale=None,
                  scale_steps=None,
-                 screen=None, margin=None):
+                 screen=None, margin=None,
+                 color=None, region=None, mode=None, output=None,
+                 boxes=None, points=None, labels=None,
+                 macro=None, times=None, append=None,
+                 min_pixels=None, max_regions=None):
         super().__init__()
         # task_id 归一化（防御 None/缺失）：模型传 {"task_id": null} 时
         # from_args 把 None 传入（默认值不生效），后续 startswith 崩溃。
@@ -1269,10 +1509,39 @@ class BashOptFunc(Func):
         # ── 截图增强（op=screenshot / sequence 步骤）──
         self.screen = screen          # 全屏 / 多显示器截取（true / 'primary' / 序号）
         self.margin = margin          # 按控件区域截图时的外扩像素
+        # ── 像素取色（op=pixel）──
+        self.color = color            # 期望色 / 查找目标色（文本）
+        self.region = region          # 取色 / 查找区域（'x,y,w,h'）
+        self.mode = mode              # point / region / find
+        self.min_pixels = min_pixels  # find 模式连通块最小像素数
+        self.max_regions = max_regions  # find 模式返回块数上限
+        # ── 截图标注（op=annotate）──
+        self.output = output          # 标注结果输出路径
+        self.boxes = boxes            # 矩形标记列表
+        self.points = points          # 点标记列表
+        self.labels = labels          # 标记标签
+        # ── 操作宏（op=record / op=replay）──
+        self.macro = macro            # 宏名（缺省存到 _MACRO_DIR）
+        self.times = times            # replay 重复次数
+        self.append = (None if append is None else bool(append))  # record 追加
 
     # ── execute ──────────────────────────────────────────
 
     async def execute(self) -> str:
+        """按 task_id 和 op 操作后台 bash 任务，返回结果字符串。
+
+        统一异常兜底：任何未预期的内部错误都转为可读文本（并记日志），
+        避免异常穿透到工具框架、导致整轮对话失败。
+        """
+        try:
+            return await self._execute_inner()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 工具层统一兜底
+            logger.exception("bash_opt 执行异常 op=%s task=%s", self.op, self.task_id)
+            return f"(bash_opt 内部错误（op={self.op}）: {exc})"
+
+    async def _execute_inner(self) -> str:
         """按 task_id 和 op 操作后台 bash 任务，返回结果字符串。"""
         agent = getattr(self, 'agent', None)
         if agent is None or not hasattr(agent, '_background_tasks'):
@@ -1322,6 +1591,14 @@ class BashOptFunc(Func):
             return await self._op_clipboard(rec)
         if self.op == "locate":
             return await self._op_locate(rec)
+        if self.op == "pixel":
+            return await self._op_pixel(rec)
+        if self.op == "annotate":
+            return await self._op_annotate(rec)
+        if self.op == "record":
+            return await self._op_record(rec)
+        if self.op == "replay":
+            return await self._op_replay(rec)
         if self.op == "sequence":
             return await self._op_sequence(rec)
         if self.op in INPUT_OPS:
@@ -1329,7 +1606,8 @@ class BashOptFunc(Func):
         supported = "/".join(("read", "wait", "kill", "stdin", "keys",
                               "screenshot", "windows", "window",
                               "elements", "wait_window", "clipboard",
-                              "locate", "sequence", *INPUT_OPS))
+                              "locate", "pixel", "annotate", "record",
+                              "replay", "sequence", *INPUT_OPS))
         return f"(未知操作: {self.op}。支持: {supported})"
 
     # ── op=read ──────────────────────────────────────────
@@ -2336,6 +2614,7 @@ class BashOptFunc(Func):
         deadline = started + max(float(timeout), 0.0)
         samples = 0
         previous = before_path
+        interval = self._WAIT_FOR_INTERVAL
         while True:
             samples += 1
             current = await self._temp_screenshot(pid, window)
@@ -2344,7 +2623,9 @@ class BashOptFunc(Func):
                     return self._wait_result(
                         mode, None, started, samples,
                         "无法截图（窗口可能已关闭或无响应）")
-                await asyncio.sleep(self._WAIT_FOR_INTERVAL)
+                await asyncio.sleep(interval)
+                interval = min(interval * self._WAIT_FOR_BACKOFF,
+                               self._WAIT_FOR_MAX_INTERVAL)
                 continue
             keep = False
             try:
@@ -2385,7 +2666,9 @@ class BashOptFunc(Func):
                 return self._wait_result(
                     mode, False, started, samples,
                     f"超时：界面在 {timeout:g} 秒内没有{verb}")
-            await asyncio.sleep(self._WAIT_FOR_INTERVAL)
+            await asyncio.sleep(interval)
+            interval = min(interval * self._WAIT_FOR_BACKOFF,
+                           self._WAIT_FOR_MAX_INTERVAL)
 
     def _is_stable(self, diff) -> bool:
         """画面是否可判为「已稳定」（允许光标闪烁 / 时钟之类的微小噪声）。
@@ -3283,6 +3566,397 @@ class BashOptFunc(Func):
         except (TypeError, ValueError):
             raise ImageMatchError(f"{label} 需要整数，当前: {raw!r}") from None
 
+    # ── op=pixel（像素取色 / 颜色检测） ──────────────────
+
+    async def _op_pixel(self, rec: dict) -> str:
+        """读取窗口截图的像素颜色（``op=pixel``）。
+
+        三种模式（``mode``）：
+
+          - ``point``（默认，需 ``x`` / ``y``）：读取该点颜色；给了 ``color``
+            时附带「是否与目标色在容差内匹配」的结论；
+          - ``region``（可选 ``region`` = ``'x,y,w,h'``，缺省整窗）：统计该区域
+            的均值 / 极值 / 主色；给了 ``color`` 时比较均值色；
+          - ``find``（需 ``color``）：在 ``region``（缺省整窗）内查找目标颜色，
+            按 4 连通块聚合成若干候选位置（包围盒 / 中心点），可直接交给
+            ``click`` 点击——适合定位状态灯、地图标记等多个同色元素。
+
+        坐标以窗口截图左上角为原点（与 ``op=screenshot`` / 输入 op 同源），
+        ``x`` / ``y`` 支持 ``'center'`` / ``'50%'`` / ``'center+20'`` 等语义值。
+        """
+        pid = rec.get("pid")
+        if pid is None:
+            return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
+                    f"无法取色。可用 op=wait 查看任务状态)")
+        try:
+            mode = self._resolve_pixel_mode()
+        except ValueError as exc:
+            return f"(pixel 参数非法: {exc})"
+        try:
+            target = (parse_color(self.color)
+                      if self.color is not None and str(self.color).strip()
+                      else None)
+        except ColorError as exc:
+            return f"(pixel 参数非法: {exc})"
+        if mode == "find" and target is None:
+            return "(pixel 的 find 模式需要 color 参数（要查找的目标颜色）)"
+        if mode == "point" and (self.x is None or self.y is None):
+            return "(pixel 的 point 模式需要 x 与 y（窗口内坐标，支持语义值）)"
+        try:
+            tolerance = (DEFAULT_COLOR_TOLERANCE if self.tolerance is None
+                         else self._parse_tolerance(self.tolerance))
+            region = self._parse_pixel_region()
+            max_regions = self._resolve_pixel_regions()
+            min_pixels = self._resolve_min_pixels()
+        except (ValueError, CropError) as exc:
+            return f"(pixel 参数非法: {exc})"
+        path = await self._temp_screenshot(pid, self.window)
+        if path is None:
+            return ("(pixel 失败: 无法截取窗口画面（窗口可能尚未就绪或已关闭）——"
+                    "可用 op=windows 确认窗口状态，或先 op=wait_window 等窗口出现)")
+        try:
+            image = await asyncio.to_thread(decode_png_file, path)
+            payload = self._pixel_payload(image, mode, target, tolerance,
+                                          region, max_regions, min_pixels)
+        except (ColorError, CropError, ValueError, ActionError, OSError) as exc:
+            return f"(pixel 失败: {exc})"
+        finally:
+            self._remove_temp(path)
+        payload.update({
+            "task_id": self.task_id,
+            "op": "pixel",
+            "mode": mode,
+            "hint": ("颜色坐标为窗口截图坐标（与 op=screenshot 产物同源）；"
+                     "find 模式返回的 center_x / center_y 可直接交给 click 的 x / y；"
+                     "screen_* 是换算后的屏幕坐标"),
+        })
+        if self.window:
+            payload["window"] = str(self.window)
+        frame = await self._window_frame_for(pid, self.window)
+        if frame is not None:
+            payload["frame"] = frame.to_dict()
+            _attach_screen_coords(payload, frame)
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _resolve_pixel_mode(self) -> str:
+        """解析 ``op=pixel`` 的 ``mode``（point / region / find，接受常见别名）。"""
+        raw = self.mode
+        if raw is None or not str(raw).strip():
+            return self._DEFAULT_PIXEL_MODE
+        text = str(raw).strip().lower()
+        aliases = {
+            "point": "point", "pixel": "point", "color": "point", "at": "point",
+            "region": "region", "area": "region", "stats": "region",
+            "average": "region", "avg": "region",
+            "find": "find", "search": "find", "match": "find", "locate": "find",
+        }
+        resolved = aliases.get(text)
+        if resolved is None:
+            raise ValueError(
+                f"mode 取值非法: {raw!r}。支持 point（点取色）/ region（区域统计）"
+                f"/ find（颜色查找）"
+            )
+        return resolved
+
+    def _parse_pixel_region(self) -> "CropRegion | None":
+        """解析 ``op=pixel`` 的 ``region``（``'x,y,w,h'``；空 = None）。"""
+        raw = self.region
+        if raw is None or not str(raw).strip():
+            return None
+        return CropRegion.parse(str(raw))
+
+    def _resolve_pixel_regions(self) -> int:
+        """解析 ``op=pixel`` 的 ``max_regions``（1.._MAX_PIXEL_REGIONS）。"""
+        raw = self.max_regions
+        if raw is None:
+            return self._DEFAULT_PIXEL_REGIONS
+        if isinstance(raw, bool):
+            raise ValueError("max_regions 需要正整数")
+        try:
+            value = int(float(str(raw).strip()))
+        except (TypeError, ValueError):
+            raise ValueError(f"max_regions 需要正整数，当前: {raw!r}") from None
+        if value < 1:
+            raise ValueError(f"max_regions 必须为正整数，当前: {value}")
+        return min(value, self._MAX_PIXEL_REGIONS)
+
+    def _resolve_min_pixels(self) -> int:
+        """解析 ``op=pixel`` 的 ``min_pixels``（连通块最小像素数）。"""
+        raw = self.min_pixels
+        if raw is None:
+            return 1
+        if isinstance(raw, bool):
+            raise ValueError("min_pixels 需要正整数")
+        try:
+            value = int(float(str(raw).strip()))
+        except (TypeError, ValueError):
+            raise ValueError(f"min_pixels 需要正整数，当前: {raw!r}") from None
+        if value < 1:
+            raise ValueError(f"min_pixels 必须为正整数，当前: {value}")
+        return value
+
+    def _pixel_payload(self, image, mode: str, target, tolerance: int,
+                       region, max_regions: int, min_pixels: int) -> dict:
+        """按模式组装取色结果（不含 task_id / frame 等公共字段）。"""
+        if mode == "point":
+            x = parse_coordinate(self.x, image.width, label="取色 x")
+            y = parse_coordinate(self.y, image.height, label="取色 y")
+            value = pixel_at(image, x, y)
+            return {
+                "x": x,
+                "y": y,
+                "color": summarize_color(value, target, tolerance=tolerance),
+                "image": {"width": image.width, "height": image.height},
+            }
+        if mode == "region":
+            stats = region_stats(image, region)
+            payload = {
+                "region": region.to_dict() if region is not None
+                else {"x": 0, "y": 0, "width": image.width, "height": image.height},
+                "stats": stats,
+                "image": {"width": image.width, "height": image.height},
+            }
+            if target is not None:
+                average = stats["average"]
+                payload["color"] = summarize_color(
+                    RGB(average["r"], average["g"], average["b"]), target,
+                    tolerance=tolerance)
+            return payload
+        regions = find_color_regions(
+            image, target, tolerance=tolerance, region=region,
+            max_regions=max_regions, min_pixels=min_pixels)
+        return {
+            "color": target.to_dict(),
+            "tolerance": tolerance,
+            "region": region.to_dict() if region is not None
+            else {"x": 0, "y": 0, "width": image.width, "height": image.height},
+            "found": len(regions),
+            "regions": [item.to_dict() for item in regions],
+        }
+
+    # ── op=annotate（截图标注） ──────────────────────────
+
+    async def _op_annotate(self, rec: dict) -> str:
+        """在截图上绘制矩形 / 十字 / 编号标签（``op=annotate``）。
+
+        输入图二选一：``path`` 指定已有 PNG，或用 ``window`` 从目标窗口现截；
+        ``boxes`` / ``points`` / ``labels`` 描述要画的标记（顺序一一对应，
+        省略 ``labels`` 时自动编号）。``output`` 指定输出路径（省略时覆盖
+        ``path``；从窗口现截时输出到 ``bash_opt_shots/``）。
+        """
+        boxes = self._as_list(self.boxes)
+        points = self._as_list(self.points)
+        try:
+            grid = self._resolve_grid()
+        except CropError as exc:
+            return f"(annotate 参数非法: {exc})"
+        if not boxes and not points and grid is None:
+            return "(annotate 至少需要 boxes / points 之一，或给 grid 叠加网格)"
+        if len(boxes) > self._MAX_ANNOTATE_MARKS or len(points) > self._MAX_ANNOTATE_MARKS:
+            return (f"(annotate 元素过多：boxes / points 各上限 "
+                    f"{self._MAX_ANNOTATE_MARKS} 个)")
+        source: str | None = None
+        temporary = False
+        try:
+            if self.path and str(self.path).strip():
+                source = self._prepare_image_path(str(self.path))
+            else:
+                pid = rec.get("pid")
+                if pid is None:
+                    return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或"
+                            f"已退出），无法截图标注；也可用 path 指定已有 PNG)")
+                source = await self._temp_screenshot(pid, self.window)
+                if source is None:
+                    return ("(annotate 失败: 无法截取窗口画面（窗口可能尚未就绪"
+                            "或已关闭）——可先用 op=screenshot 确认窗口)")
+                temporary = True
+            try:
+                target = self._annotate_output_path(source)
+            except ValueError as exc:
+                return f"(annotate 输出路径非法: {exc})"
+            result = await asyncio.to_thread(
+                annotate_png_file, source,
+                boxes=boxes, points=points, labels=self.labels,
+                color=self.color, output=target,
+                thickness=self._ANNOTATE_THICKNESS,
+                text_scale=self._ANNOTATE_TEXT_SCALE, grid=grid)
+        except (AnnotateError, ColorError, ScreenshotError, ValueError,
+                OSError) as exc:
+            return f"(annotate 失败: {exc})"
+        finally:
+            if temporary and source is not None:
+                self._remove_temp(source)
+        payload = {
+            "task_id": self.task_id,
+            "op": "annotate",
+            "hint": ("标注图已写出，可用 read_image 读取核对；坐标以图像左上角"
+                     "为原点（与 op=screenshot 产物同源）"),
+        }
+        payload.update(result.to_dict())
+        if self.window:
+            payload["window"] = str(self.window)
+        return json.dumps(payload, ensure_ascii=False)
+
+    @staticmethod
+    def _as_list(value) -> list:
+        """把可选参数归一化为列表（``None`` → 空；单值 → 单元素列表）。"""
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        return [value]
+
+    @staticmethod
+    def _prepare_image_path(path: str) -> str:
+        """规范化输入图片路径（展开 ~、补 .png、安全校验、要求存在）。
+
+        Raises:
+            ValueError: 路径为空、文件不存在或未通过安全校验。
+        """
+        expanded = os.path.expanduser(str(path).strip())
+        if not expanded:
+            raise ValueError("路径为空")
+        absolute = os.path.abspath(expanded)
+        if not os.path.splitext(absolute)[1]:
+            absolute += ".png"
+        validate_path_security(absolute)
+        if not os.path.isfile(absolute):
+            raise ValueError(f"输入图片不存在: {absolute}")
+        return absolute
+
+    def _annotate_output_path(self, source: str) -> str:
+        """解析标注输出路径：显式 output 优先，否则覆盖 path / 自动命名。"""
+        if self.output is not None and str(self.output).strip():
+            return self._prepare_screenshot_path(str(self.output))
+        if self.path is not None and str(self.path).strip():
+            return source
+        stamp = time.strftime("%H%M%S")
+        return self._prepare_screenshot_path(
+            os.path.join(self._SHOT_AUTO_DIR,
+                         f"{self.task_id}-annotated-{stamp}.png"))
+
+    # ── op=record / op=replay（操作宏） ──────────────────
+
+    async def _op_record(self, rec: dict) -> str:
+        """把一段操作序列保存为命名宏（``op=record``）。
+
+        步骤格式与 ``op=sequence`` 的 ``actions`` 完全一致；用 ``macro`` 指定
+        宏名（存到 ``bash_opt_macros/<宏名>.json``）或用 ``path`` 指定文件路径。
+        ``append=true`` 时把新步骤追加到同名宏末尾。
+        """
+        raw = self.actions
+        if raw is None:
+            return "(record 需要 actions 参数（要保存的步骤数组，与 sequence 相同）)"
+        steps = raw if isinstance(raw, (list, tuple)) else [raw]
+        name = str(self.macro).strip() if self.macro is not None else ""
+        path = str(self.path).strip() if self.path is not None else ""
+        if not name and not path:
+            return "(record 需要 macro（宏名）或 path（文件路径）)"
+        window = str(self.window).strip() if self.window else ""
+        if name:
+            macro = Macro(name=name, steps=tuple(dict(step) for step in steps),
+                          window=window)
+        else:
+            base = os.path.splitext(os.path.basename(path))[0] or "macro"
+            macro = Macro(name=base, steps=tuple(dict(step) for step in steps),
+                          window=window)
+        try:
+            saved = await asyncio.to_thread(
+                save_macro, macro, path=(path or None),
+                directory=self._MACRO_DIR, append=bool(self.append))
+        except MacroError as exc:
+            return f"(record 失败: {exc})"
+        payload = {
+            "task_id": self.task_id,
+            "op": "record",
+            "macro": macro.name,
+            "path": saved,
+            "steps": len(macro.steps),
+            "appended": bool(self.append),
+            "hint": (f"宏已保存；可用 op=replay, macro='{macro.name}' 回放"
+                     f"（或 path='{saved}'）"),
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+    async def _op_replay(self, rec: dict) -> str:
+        """回放命名宏（``op=replay``）：按 ``macro``（宏名）或 ``path`` 加载并执行。
+
+        步骤在保存时已校验；回放复用 ``op=sequence`` 的步骤执行器，因此
+        element / via / wait_for / diff / shot 等增强参数同样生效。``times``
+        可整段重复执行多次（默认 1，上限 20）；``on_error`` 决定遇错停止 / 继续。
+        """
+        name = str(self.macro).strip() if self.macro is not None else ""
+        path = str(self.path).strip() if self.path is not None else ""
+        if not name and not path:
+            return "(replay 需要 macro（宏名）或 path（文件路径）)"
+        try:
+            macro = await asyncio.to_thread(
+                load_macro, name=(name or None), path=(path or None),
+                directory=self._MACRO_DIR)
+        except MacroError as exc:
+            available = await asyncio.to_thread(list_saved_macros, self._MACRO_DIR)
+            names = ", ".join(item["name"] for item in available) or "（暂无已保存宏）"
+            return f"(replay 失败: {exc}。当前可用宏: {names})"
+        try:
+            times = self._resolve_times()
+            on_error = self._resolve_on_error()
+        except ValueError as exc:
+            return f"(replay 参数非法: {exc})"
+        try:
+            steps = parse_sequence([dict(step) for step in macro.steps])
+        except SequenceError as exc:
+            return f"(replay 失败: 宏步骤非法: {exc})"
+        runs: list[dict] = []
+        completed = failed = 0
+        stopped_early = False
+        for iteration in range(times):
+            results, run_completed, run_failed, stopped = await self._run_step_sequence(
+                rec, steps, on_error)
+            completed += run_completed
+            failed += run_failed
+            runs.append({
+                "iteration": iteration + 1,
+                "completed": run_completed,
+                "failed": run_failed,
+                "steps": results,
+            })
+            if stopped:
+                stopped_early = True
+                break
+        payload = {
+            "task_id": self.task_id,
+            "op": "replay",
+            "macro": macro.name,
+            "path": path or os.path.join(self._MACRO_DIR, macro.name + ".json"),
+            "times": times,
+            "executed": len(runs),
+            "steps_per_run": len(steps),
+            "completed": completed,
+            "failed": failed,
+            "stopped_early": stopped_early or len(runs) < times,
+            "on_error": on_error,
+            "runs": runs,
+            "hint": ("宏已回放；每步 result 是该动作的完整结果。需要确认界面变化时"
+                     "可在宏里放 screenshot 步骤，或对关键步骤设 shot / settle / "
+                     "wait_for='change'"),
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _resolve_times(self) -> int:
+        """解析 ``op=replay`` 的 ``times``（1.._MAX_REPLAY_TIMES）。"""
+        raw = self.times
+        if raw is None:
+            return self._DEFAULT_REPLAY_TIMES
+        if isinstance(raw, bool):
+            raise ValueError("times 需要正整数")
+        try:
+            value = int(float(str(raw).strip()))
+        except (TypeError, ValueError):
+            raise ValueError(f"times 需要正整数，当前: {raw!r}") from None
+        if value < 1:
+            raise ValueError(f"times 必须为正整数，当前: {value}")
+        return min(value, self._MAX_REPLAY_TIMES)
+
     # ── op=wait_window（等待窗口出现） ───────────────────
 
     async def _op_wait_window(self, rec: dict) -> str:
@@ -3473,15 +4147,43 @@ class BashOptFunc(Func):
             on_error = self._resolve_on_error()
         except ValueError as exc:
             return f"(sequence 参数非法: {exc})"
+        results, completed, failed, stopped = await self._run_step_sequence(
+            rec, steps, on_error)
+        payload = {
+            "task_id": self.task_id,
+            "op": "sequence",
+            "total": len(steps),
+            "completed": completed,
+            "failed": failed,
+            "stopped_early": stopped,
+            "on_error": on_error,
+            "steps": results,
+            "hint": ("序列已执行；每步的 result 字段是该动作的完整结果（含坐标 / "
+                     "投递方式）。需要确认界面变化时可在整段后跟一步 screenshot，"
+                     "或对关键步骤设 shot=true / settle / wait_for='change'；"
+                     "遇错停止时可用 on_error='continue' 让后续步骤继续执行"),
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+    async def _run_step_sequence(self, rec: dict, steps: list,
+                                 on_error: str) -> tuple[list[dict], int, int, bool]:
+        """按序执行步骤列表，返回 ``(步骤结果, 成功数, 失败数, 是否提前停止)``。
+
+        供 ``op=sequence`` 与 ``op=replay`` 共用：逐步执行并记录每步的
+        ``ok`` / ``elapsed`` / 结果（或错误）；``on_error='stop'`` 时首个失败的
+        步骤会中止后续步骤。
+        """
         results: list[dict] = []
         completed = 0
         failed = 0
+        stopped = False
         for step in steps:
             started = time.monotonic()
             try:
                 detail = await self._run_sequence_step(rec, step)
             except (ActionError, InputError, ScreenshotError, SelectorError,
-                    ElementError, ClipboardError, ValueError) as exc:
+                    ElementError, ClipboardError, ColorError, AnnotateError,
+                    ValueError) as exc:
                 failed += 1
                 entry = {
                     "index": step.index,
@@ -3494,6 +4196,7 @@ class BashOptFunc(Func):
                     entry["stopped"] = True
                 results.append(entry)
                 if on_error == "stop":
+                    stopped = True
                     break
                 continue
             completed += 1
@@ -3505,21 +4208,7 @@ class BashOptFunc(Func):
             }
             entry.update(detail)
             results.append(entry)
-        payload = {
-            "task_id": self.task_id,
-            "op": "sequence",
-            "total": len(steps),
-            "completed": completed,
-            "failed": failed,
-            "stopped_early": (completed + failed) < len(steps),
-            "on_error": on_error,
-            "steps": results,
-            "hint": ("序列已执行；每步的 result 字段是该动作的完整结果（含坐标 / "
-                     "投递方式）。需要确认界面变化时可在整段后跟一步 screenshot，"
-                     "或对关键步骤设 shot=true / settle / wait_for='change'；"
-                     "遇错停止时可用 on_error='continue' 让后续步骤继续执行"),
-        }
-        return json.dumps(payload, ensure_ascii=False)
+        return results, completed, failed, stopped
 
     async def _run_sequence_step(self, rec: dict, step: SequenceStep) -> dict:
         """执行序列中的一步（wait / screenshot / window / 输入动作）。

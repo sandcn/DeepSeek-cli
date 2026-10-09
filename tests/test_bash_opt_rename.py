@@ -38,6 +38,8 @@ def test_tool_name_is_bash_opt():
         "windows", "window",
         # 控件清单 / 等待窗口 / 剪贴板 / 图像文字定位 / 动作序列
         "elements", "wait_window", "clipboard", "locate", "sequence",
+        # 像素取色 / 截图标注 / 操作宏
+        "pixel", "annotate", "record", "replay",
     }
 
 

@@ -786,7 +786,7 @@ def window_owner(hwnd) -> int:
     """
     try:
         return hwnd_value(user32().GetWindow(hwnd, GW_OWNER))
-    except (OSError, TypeError):
+    except (OSError, TypeError, AttributeError):
         return 0
 
 
@@ -935,7 +935,7 @@ def window_is_topmost(hwnd) -> bool:
         user32()
     try:
         style = int(_GET_WINDOW_LONG(hwnd, GWL_EXSTYLE))
-    except (OSError, TypeError):
+    except (OSError, TypeError, AttributeError):
         return False
     return bool(style & WS_EX_TOPMOST)
 

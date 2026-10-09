@@ -61,6 +61,20 @@ DEFAULT_DRAG_STEPS = 20
 MIN_DRAG_STEPS = 2
 MAX_DRAG_STEPS = 200
 
+#: ``move``（鼠标移动）的平滑参数：``duration`` > 0 或 ``steps`` > 1 时，移动
+#: 会被拆成若干中间点逐步注入（时间 = duration，点数 = steps），避免「瞬移」
+#: 被某些程序（游戏、拖选、悬停菜单）忽略。``steps=1`` 且 ``duration=0``
+#: （默认）保持原有的「一步直达」语义。
+DEFAULT_MOVE_DURATION = 0.0
+MAX_MOVE_DURATION = 10.0
+#: 未显式指定时的插值点数（1 = 不插值，一步直达）
+DEFAULT_MOVE_STEPS = 1
+#: 仅指定 duration 由程序补的默认插值点数
+DEFAULT_SMOOTH_MOVE_STEPS = 20
+#: 显式指定 steps 时的允许范围
+MIN_MOVE_STEPS = 2
+MAX_MOVE_STEPS = 200
+
 #: ``hover``（悬停）默认停留时长与上限（秒）：移动到目标点后保持不动，
 #: 等待 tooltip / 悬浮菜单 / 延迟加载出现。
 DEFAULT_HOVER_DWELL = 0.6
@@ -215,6 +229,10 @@ class MoveAction:
         绝对位置。
 
     ``dx`` / ``dy`` 与 ``x`` / ``y`` 不能同时提供。
+
+    ``duration`` > 0 或 ``steps`` > 1 时执行**平滑移动**（在起点与终点之间插值
+    若干中间点逐步移动），让依赖连续 ``WM_MOUSEMOVE`` 的程序（拖选、悬停菜单、
+    游戏视角）也能正确响应；``duration=0``（默认）为一步直达。
     """
 
     name: ClassVar[str] = "move"
@@ -224,6 +242,10 @@ class MoveAction:
     dy: int | None = None
     modifiers: tuple[str, ...] = ()
     method: str = DEFAULT_METHOD
+    #: 平滑移动的总时长（秒，0 = 一步直达）
+    duration: float = DEFAULT_MOVE_DURATION
+    #: 平滑移动的插值点数（1 = 一步直达）
+    steps: int = DEFAULT_MOVE_STEPS
     #: 目标窗口选择器（空串 = 主窗口；见 ``windows`` 模块）
     window: str = ""
 
@@ -231,6 +253,11 @@ class MoveAction:
     def is_relative(self) -> bool:
         """是否为相对移动（给了 ``dx`` / ``dy``）。"""
         return self.dx is not None or self.dy is not None
+
+    @property
+    def is_smooth(self) -> bool:
+        """是否需要平滑移动（拆成多个中间点）。"""
+        return self.duration > 0 or self.steps > 1
 
 
 @dataclass(frozen=True)
@@ -585,7 +612,22 @@ def build_action(op: str, params: Mapping[str, Any]) -> InputAction:
 
 
 def _build_move(params: dict) -> MoveAction:
-    """构建 ``move``：绝对坐标（x/y）与相对偏移（dx/dy）互斥。"""
+    """构建 ``move``：绝对坐标（x/y）与相对偏移（dx/dy）互斥。
+
+    ``duration`` / ``steps`` 控制平滑移动（起点到终点之间插值逐步移动）；
+    缺省一步直达。
+    """
+    duration = _float_arg(params, "duration", minimum=0.0,
+                          maximum=MAX_MOVE_DURATION)
+    steps = _int_arg(params, "steps", minimum=MIN_MOVE_STEPS,
+                     maximum=MAX_MOVE_STEPS)
+    if steps is None:
+        # 仅给了 duration 时按默认点数插值；都没给则一步直达
+        steps = DEFAULT_SMOOTH_MOVE_STEPS if (duration or 0.0) > 0 else DEFAULT_MOVE_STEPS
+    smooth = {
+        "duration": DEFAULT_MOVE_DURATION if duration is None else duration,
+        "steps": steps,
+    }
     has_offset = _raw(params, "dx") is not None or _raw(params, "dy") is not None
     if has_offset:
         if _raw(params, "x") is not None or _raw(params, "y") is not None:
@@ -603,7 +645,7 @@ def _build_move(params: dict) -> MoveAction:
         return MoveAction(dx=dx, dy=dy,
                           modifiers=parse_modifiers(_raw(params, "modifiers")),
                           method=_method_arg(params),
-                          window=_window_arg(params))
+                          window=_window_arg(params), **smooth)
     point = _point_args(params)
     if point is None:
         raise ActionError(
@@ -612,7 +654,7 @@ def _build_move(params: dict) -> MoveAction:
     return MoveAction(x=point.x, y=point.y,
                       modifiers=parse_modifiers(_raw(params, "modifiers")),
                       method=_method_arg(params),
-                      window=_window_arg(params))
+                      window=_window_arg(params), **smooth)
 
 
 def _build_hover(params: dict) -> HoverAction:
@@ -812,6 +854,8 @@ def describe_action(action: InputAction) -> dict:
             payload = {"relative": {"dx": action.dx, "dy": action.dy}}
         else:
             payload = {"position": {"x": action.x, "y": action.y}}
+        if action.is_smooth:
+            payload["smooth"] = {"duration": action.duration, "steps": action.steps}
     elif isinstance(action, HoverAction):
         payload = {
             "position": {"x": action.x, "y": action.y},
@@ -876,6 +920,9 @@ __all__ = [
     "DEFAULT_KEY_PHASE",
     "DEFAULT_KEY_REPEAT",
     "DEFAULT_METHOD",
+    "DEFAULT_MOVE_DURATION",
+    "DEFAULT_MOVE_STEPS",
+    "DEFAULT_SMOOTH_MOVE_STEPS",
     "DEFAULT_SCROLL_AMOUNT",
     "DEFAULT_SCROLL_DIRECTION",
     "DragAction",
@@ -888,8 +935,11 @@ __all__ = [
     "MAX_CLICK_INTERVAL",
     "MAX_HOVER_DWELL",
     "MAX_KEY_REPEAT",
+    "MAX_MOVE_DURATION",
     "MAX_MOVE_OFFSET",
+    "MAX_MOVE_STEPS",
     "METHODS",
+    "MIN_MOVE_STEPS",
     "MoveAction",
     "Point",
     "SCROLL_DIRECTIONS",

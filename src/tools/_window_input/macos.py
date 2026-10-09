@@ -177,15 +177,42 @@ class MacOSInputBackend:
                 )
             screen = (current[0] + int(action.dx or 0),
                       current[1] + int(action.dy or 0))
-            mouse.move(*screen)
-            return {"relative": True, "dx": int(action.dx or 0),
-                    "dy": int(action.dy or 0),
-                    "screen_x": screen[0], "screen_y": screen[1]}
+            self._smooth_move(mouse, current, screen, action)
+            detail = {"relative": True, "dx": int(action.dx or 0),
+                      "dy": int(action.dy or 0),
+                      "screen_x": screen[0], "screen_y": screen[1]}
+            self._annotate_smooth(detail, action)
+            return detail
         point = resolve_point(action.x, action.y, target.frame.width,
                               target.frame.height, label="移动坐标")
         screen = target.frame.to_screen(point)
-        mouse.move(*screen)
-        return _point_detail(point, screen)
+        start = None
+        if action.is_smooth:
+            reader = getattr(mouse, "cursor_position", None)
+            start = reader() if reader is not None else None
+        self._smooth_move(mouse, start, screen, action)
+        detail = _point_detail(point, screen)
+        self._annotate_smooth(detail, action)
+        return detail
+
+    @staticmethod
+    def _smooth_move(mouse, start, end, action: MoveAction) -> None:
+        """移动鼠标：需平滑且已知起点时插值分步移动，否则一步到位。"""
+        if not action.is_smooth or start is None:
+            mouse.move(*end)
+            return
+        steps = max(int(action.steps), 2)
+        interval = (action.duration / steps) if action.duration > 0 else 0.0
+        for point in interpolate(Point(start[0], start[1]), Point(end[0], end[1]),
+                                 steps):
+            mouse.move(int(point.x), int(point.y))
+            if interval > 0:
+                time.sleep(max(interval, _DRAG_MIN_INTERVAL))
+
+    @staticmethod
+    def _annotate_smooth(detail: dict, action: MoveAction) -> None:
+        if action.is_smooth:
+            detail["smooth"] = {"duration": action.duration, "steps": action.steps}
 
     def _hover(self, mouse, target: _MacTarget, action: HoverAction) -> dict:
         """悬停：移动到目标点后在当前位置停留 ``dwell`` 秒。"""

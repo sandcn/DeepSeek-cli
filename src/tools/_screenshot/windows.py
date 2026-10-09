@@ -143,6 +143,10 @@ class WindowInfo:
     #: 所属进程的可执行名（Windows 为 exe 名，如 ``chrome.exe``；其它平台可能
     #: 为空或为应用名），供 ``process:`` 选择器与展示使用。
     process_name: str = ""
+    #: 是否置顶（``WS_EX_TOPMOST``）。``None`` = 平台未提供该信息。
+    topmost: bool | None = None
+    #: 属主窗口句柄（弹层 / 对话框的属主主窗口；``0`` = 无属主或平台未提供）。
+    owner: int = 0
 
     @property
     def area(self) -> int:
@@ -151,6 +155,11 @@ class WindowInfo:
     @property
     def handle_hex(self) -> str:
         return f"0x{self.handle:X}" if self.handle else "0x0"
+
+    @property
+    def owner_hex(self) -> str:
+        """属主窗口句柄的十六进制文本（无属主返回空串）。"""
+        return f"0x{self.owner:X}" if self.owner else ""
 
     def summary(self, z_index: int | None = None) -> str:
         """一行摘要（用于错误提示与 ``op=windows`` 输出）。
@@ -186,6 +195,8 @@ class WindowInfo:
             flags.append("tool")
         if self.client_area is False:
             flags.append("no-client")
+        if self.topmost:
+            flags.append("topmost")
         if not self.visible:
             flags.append("hidden")
         if flags:
@@ -217,6 +228,9 @@ class WindowInfo:
             "selectable": selectable,
             "tool_window": self.tool_window,
             "client_area": self.client_area,
+            "topmost": self.topmost,
+            "owner": self.owner,
+            "owner_hex": self.owner_hex,
             "minimized": self.minimized,
             "visible": self.visible,
             "foreground": self.foreground,

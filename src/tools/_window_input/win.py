@@ -50,6 +50,7 @@ from .._screenshot.win import (
 from .._screenshot.windows import DEFAULT_SELECTOR, pick_window
 from .action import (
     DEFAULT_CLICK_INTERVAL,
+    MIN_MOVE_STEPS,
     ClickAction,
     DragAction,
     HoverAction,
@@ -564,15 +565,54 @@ class WindowsInputBackend:
         if action.is_relative:
             screen = self._relative_screen_point(action)
             with self._hold_modifiers(action.modifiers):
-                self._driver.move_to(*screen)
+                self._smooth_move(action, self._current_cursor(), screen)
             detail = self._relative_detail(action, screen)
+            if action.is_smooth:
+                detail["smooth"] = self._smooth_detail(action)
             return detail
         point = resolve_point(action.x, action.y, frame.width, frame.height,
                               label="移动坐标")
         screen = frame.to_screen(point)
         with self._hold_modifiers(action.modifiers):
-            self._driver.move_to(*screen)
-        return self._point_detail(point, screen)
+            self._smooth_move(action, self._current_cursor(), screen)
+        detail = self._point_detail(point, screen)
+        if action.is_smooth:
+            detail["smooth"] = self._smooth_detail(action)
+        return detail
+
+    def _current_cursor(self) -> tuple[int, int] | None:
+        """读取当前光标屏幕坐标（不可用返回 None）。"""
+        reader = getattr(self._driver, "cursor_pos", None)
+        if reader is None:
+            return None
+        try:
+            return reader()
+        except (OSError, ValueError, RuntimeError):  # pragma: no cover - 依赖系统调用
+            logger.debug("读取光标位置失败", exc_info=True)
+            return None
+
+    def _smooth_move(self, action: MoveAction, start: tuple[int, int] | None,
+                     end: tuple[int, int]) -> None:
+        """移动光标：``action.is_smooth`` 且已知起点时插值分步移动，否则一步到位。
+
+        分步移动会产生连续的 ``WM_MOUSEMOVE``，使依赖连续移动的程序（拖选、
+        悬停菜单、游戏视角）也能响应；起点未知（无法读取当前光标）时退化为
+        一步直达，不会因此失败。
+        """
+        if not action.is_smooth or start is None:
+            self._driver.move_to(*end)
+            return
+        steps = max(int(action.steps), MIN_MOVE_STEPS)
+        interval = (action.duration / steps) if action.duration > 0 else 0.0
+        for point in interpolate(Point(start[0], start[1]), Point(end[0], end[1]),
+                                 steps):
+            self._driver.move_to(int(point.x), int(point.y))
+            if interval:
+                self._driver.sleep(max(interval, _DRAG_MIN_INTERVAL))
+
+    @staticmethod
+    def _smooth_detail(action: MoveAction) -> dict:
+        return {"duration": action.duration, "steps": action.steps}
 
     def _hover_sendinput(self, frame: WindowFrame, action: HoverAction) -> dict:
         """悬停：移动到目标点后保持 ``dwell`` 秒（期间按住 modifiers）。"""
@@ -878,6 +918,13 @@ class WindowsInputBackend:
         detail = self._point_detail(point, (hit.screen_x, hit.screen_y))
         detail.update({"client_x": hit.client_x, "client_y": hit.client_y,
                        "target_handle": hit.handle})
+        if action.is_smooth:
+            # PostMessage 通道不移动真实光标，没有「连续移动」的语义；
+            # 如实说明已按一步投递，而非静默忽略（需要平滑请用合成输入通道）
+            detail["smooth_ignored"] = (
+                "PostMessage 通道不移动真实光标，无平滑移动语义（已按一步投递）；"
+                "需要平滑移动请去掉 method='message'（默认 method='auto' 走合成输入）"
+            )
         return detail
 
     def _hover_message(self, target: _TargetWindow, action: HoverAction) -> dict:

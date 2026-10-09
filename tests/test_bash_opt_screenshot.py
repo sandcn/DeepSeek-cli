@@ -55,11 +55,13 @@ def test_schema_exposes_screenshot_op_and_path():
     # 2026-10-07 新增窗口输入 op（click/move/drag/scroll/key/type）
     # 与窗口枚举 / 窗口控制 op（windows/window）
     # 2026-10-08 新增 elements / wait_window / clipboard / sequence
+    # 2026-10-10 新增 pixel（取色）/ annotate（标注）/ record / replay（宏）
     assert set(params["properties"]["op"]["enum"]) == {
         "read", "wait", "kill", "stdin", "keys", "screenshot",
         "windows", "window",
         "elements", "wait_window", "clipboard", "locate", "sequence",
         "click", "move", "hover", "drag", "scroll", "key", "type",
+        "pixel", "annotate", "record", "replay",
     }
     assert "path" in params["properties"]
     assert "PNG" in params["properties"]["path"]["description"]

@@ -30,6 +30,7 @@ DPI：截图前把进程标记为 DPI 感知（``winapi.ensure_process_dpi_aware
 from __future__ import annotations
 
 import ctypes
+import dataclasses
 import logging
 import time
 
@@ -55,6 +56,12 @@ logger = logging.getLogger(__name__)
 
 #: 兼容别名：窗口候选就是通用窗口描述（选择规则在 ``windows`` 模块统一实现）
 WindowCandidate = WindowInfo
+
+#: ``WindowInfo`` 当前支持的字段名（运行时探测一次）。
+#: 枚举窗口时据此只填充「当前定义确实存在」的扩展字段，避免与旧版窗口描述
+#: （热更新 / 混部场景）组合使用时因未知关键字参数失败。
+_WINDOW_INFO_FIELDS: frozenset[str] = frozenset(
+    field.name for field in dataclasses.fields(WindowInfo))
 
 #: 系统外壳窗口类（桌面 / 任务栏等）——即使属于目标进程也不作为截图目标
 SHELL_WINDOW_CLASSES = frozenset({
@@ -297,6 +304,7 @@ def enumerate_window_infos(window_pids: set[int]) -> list[WindowInfo]:
         if winapi.window_is_hung(hwnd):
             logger.debug("跳过无响应窗口 hwnd=%s", hwnd)
             continue
+        extras = _window_extension_fields(hwnd)
         infos.append(WindowInfo(
             handle=hwnd,
             pid=window_pid,
@@ -313,8 +321,19 @@ def enumerate_window_infos(window_pids: set[int]) -> list[WindowInfo]:
             order=order,
             client_area=winapi.window_client_area(hwnd),
             process_name=process_names.get(window_pid, ""),
+            **extras,
         ))
     return mark_main(infos)
+
+
+def _window_extension_fields(hwnd) -> dict:
+    """读取窗口的扩展属性（置顶 / 属主），仅在 ``WindowInfo`` 定义支持时返回。"""
+    extras: dict = {}
+    if "topmost" in _WINDOW_INFO_FIELDS:
+        extras["topmost"] = winapi.window_is_topmost(hwnd)
+    if "owner" in _WINDOW_INFO_FIELDS:
+        extras["owner"] = winapi.window_owner(hwnd)
+    return extras
 
 
 def _process_name_map() -> dict[int, str]:

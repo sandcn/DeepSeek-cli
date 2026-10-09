@@ -162,20 +162,80 @@ class X11InputBackend:
 
     def _move(self, xdotool: str, target: _X11Target, action: MoveAction) -> dict:
         if action.is_relative:
-            command = [xdotool, "mousemove_relative", "--sync",
-                       str(int(action.dx or 0)), str(int(action.dy or 0))]
+            dx = int(action.dx or 0)
+            dy = int(action.dy or 0)
+            start = self._current_location(xdotool)
+            end = None if start is None else (start[0] + dx, start[1] + dy)
             with self._hold_modifiers(xdotool, action.modifiers):
-                self._checked(command, "鼠标相对移动")
-            return {"relative": True, "dx": int(action.dx or 0),
-                    "dy": int(action.dy or 0)}
+                self._perform_move(xdotool, start, end, action,
+                                   relative=(dx, dy), absolute=None)
+            detail = {"relative": True, "dx": dx, "dy": dy}
+            if end is not None:
+                detail["screen_x"], detail["screen_y"] = end
+            self._annotate_smooth(detail, action)
+            return detail
         point = resolve_point(action.x, action.y, target.frame.width,
                               target.frame.height, label="移动坐标")
         screen = target.frame.to_screen(point)
-        command = [xdotool, "mousemove", "--sync", str(screen[0]), str(screen[1])]
+        start = self._current_location(xdotool)
         with self._hold_modifiers(xdotool, action.modifiers):
-            self._checked(command, "鼠标移动")
+            self._perform_move(xdotool, start, screen, action,
+                               relative=None, absolute=screen)
         detail = _point_detail(point, screen)
+        self._annotate_smooth(detail, action)
         return detail
+
+    def _perform_move(self, xdotool: str, start, end, action: MoveAction, *,
+                      relative, absolute) -> None:
+        """移动鼠标：可用起点且需平滑时按插值命令链分步移动，否则一步到位。"""
+        if action.is_smooth and start is not None and end is not None:
+            self._checked(self._move_command(xdotool, start, end, action),
+                          "鼠标移动")
+            return
+        if relative is not None:
+            self._checked([xdotool, "mousemove_relative", "--sync",
+                           str(relative[0]), str(relative[1])],
+                          "鼠标相对移动")
+            return
+        self._checked([xdotool, "mousemove", "--sync",
+                       str(absolute[0]), str(absolute[1])], "鼠标移动")
+
+    @staticmethod
+    def _move_command(xdotool: str, start, end, action: MoveAction) -> list[str]:
+        """构造分步移动的 xdotool 命令链（``mousemove --sync x y sleep t`` 重复）。"""
+        steps = max(int(action.steps), 2)
+        interval = (action.duration / steps) if action.duration > 0 else 0.0
+        command = [xdotool]
+        for point in interpolate(Point(start[0], start[1]), Point(end[0], end[1]),
+                                 steps):
+            command += ["mousemove", "--sync", str(point.x), str(point.y)]
+            if interval > 0:
+                command += ["sleep", f"{interval:.3f}"]
+        return command
+
+    def _current_location(self, xdotool: str) -> tuple[int, int] | None:
+        """读取当前鼠标屏幕坐标（``xdotool getmouselocation --shell``）。"""
+        completed = self._run([xdotool, "getmouselocation", "--shell"])
+        if completed is None or completed.returncode != 0:
+            return None
+        x = y = None
+        for line in (completed.stdout or "").splitlines():
+            stripped = line.strip()
+            try:
+                if stripped.startswith("X="):
+                    x = int(stripped[2:])
+                elif stripped.startswith("Y="):
+                    y = int(stripped[2:])
+            except ValueError:
+                continue
+        if x is None or y is None:
+            return None
+        return x, y
+
+    @staticmethod
+    def _annotate_smooth(detail: dict, action: MoveAction) -> None:
+        if action.is_smooth:
+            detail["smooth"] = {"duration": action.duration, "steps": action.steps}
 
     def _hover(self, xdotool: str, target: _X11Target, action: HoverAction) -> dict:
         """悬停：``mousemove`` 后 ``sleep dwell``（单条 xdotool 命令链完成）。"""
