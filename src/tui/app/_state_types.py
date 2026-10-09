@@ -39,6 +39,7 @@ __all__ = [
     "KeymapViewState",
     "NotifyViewState",
     "ExportViewState",
+    "LogsViewState",
 ]
 
 
@@ -922,3 +923,38 @@ class ExportViewState(ListViewState):
     message: str = ""
     error: str = ""
     editing: bool = False
+
+
+@dataclass
+class LogsViewState(ListViewState):
+    """会话日志 / 投影浏览器视图状态（/logs 打开，LogsView 消费）。
+
+    会话事实源 = ``SessionLog``（仅追加事件日志）；视图同时呈现事件流、由事件
+    投影出的模型历史、各投影单元状态与「模型可见即已记录」一致性校验——数据
+    全部由命令线程构建后写入本状态（组件只读）。
+
+    Attributes:
+        entries: 会话事件条目列表（seq/type/label/icon/time/summary/data）。
+        messages: 模型历史投影条目列表（derive_messages 结果；每条含
+            role/index/summary/content/reasoning/tool_calls）。
+        projections: 投影单元状态条目列表（name/state_text/state_rows）。
+        verify_ok: 模型历史与日志投影是否一致（None = 不可校验）。
+        verify_text: 一致性校验结果文本。
+        stats: 统计条目列表（(label, value) 二元组；事件总数 / 消息数 /
+            各类型计数等）。
+        pane_mode: 右栏模式（"event" 事件详情 / "messages" 消息投影 /
+            "projections" 投影状态 / "verify" 一致性校验）。
+        follow_tail: 是否跟随最新事件（默认 True——视图打开即定位末条并随
+            会话日志增长实时跟进；用户手动导航后置 False，``F`` 键重新开启）。
+        refresh_seq: 刷新计数（组件递增，命令线程据此重读会话日志）。
+    """
+
+    entries: list = field(default_factory=list)
+    messages: list = field(default_factory=list)
+    projections: list = field(default_factory=list)
+    verify_ok: Any = None
+    verify_text: str = ""
+    stats: list = field(default_factory=list)
+    pane_mode: str = "event"
+    follow_tail: bool = True
+    refresh_seq: int = 0

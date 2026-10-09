@@ -811,6 +811,16 @@ class Input:
         """
         self._dispatcher.set_help_toggle_callback(cb)
 
+    def set_logs_toggle_callback(self, cb) -> None:
+        """设置 F12 会话日志视图开关回调（委托 InputDispatcher，2026-10）。
+
+        cb 签名: ``() -> None``（翻转 model.fullscreen "logs" ↔ "" + 构建视图
+        数据 + 请求重绘——见 ``_make_logs_toggle_cb``）；None 清除注入。
+        ★ 独立于命令队列：AI 流式生成期间 ``/logs`` 命令会被排队，本回调在
+        render 线程立即执行——流式输出中按 F12 也能即时打开视图。
+        """
+        self._dispatcher.set_logs_toggle_callback(cb)
+
     def set_interrupt_callback(self, cb) -> None:
         """设置中断回调（方向A 步骤1 注入点）。
 

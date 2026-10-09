@@ -195,6 +195,31 @@ def _register_session_handlers(
             chat_ui.set_message_source(lambda: session.messages)
         except Exception:
             _logger.debug("注入轨迹消息源异常", exc_info=True)
+    # ★ 会话日志视图实时刷新器注入（幂等：重复注册覆盖为最新 session）——
+    #   F12 / ``/logs`` 打开后视图渲染期每帧调用（签名未变零重建），会话日志
+    #   增长（用户/助手消息、工具结果、轮次步骤、结构变更）时自动重建并写回
+    #   ``model.logs_view``；**流式输出期间亦可打开并实时跟进**（数据刷新不
+    #   依赖命令线程处理，命令在生成期间本就会被排队）。
+    if chat_ui is not None:
+        try:
+            model = chat_ui.get_model() if hasattr(chat_ui, "get_model") else None
+        except Exception:
+            model = None
+        if model is not None and hasattr(model, "logs_view"):
+            try:
+                from ..core.commands._logs_cmd import make_logs_refresher
+
+                def _apply_logs_state(data, _model=model):
+                    state = getattr(_model, "logs_view", None)
+                    if state is None:
+                        return
+                    for key, value in data.items():
+                        setattr(state, key, value)
+                    state.visible = True
+
+                model.logs_refresher = make_logs_refresher(session, _apply_logs_state)
+            except Exception:
+                _logger.debug("注入会话日志刷新器异常", exc_info=True)
     callbacks = _make_round_callbacks(session, monitor, loop_state, chat_ui)
     # 清除旧回调（如果存在），防止重复注册累加
     old_callbacks = loop_state.get("_registered_callbacks")

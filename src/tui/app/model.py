@@ -61,6 +61,7 @@ from src.tui.app._state_types import (
     KeymapViewState,
     NotifyViewState,
     ExportViewState,
+    LogsViewState,
 )
 from src.tui.app._model_helpers import (
     _TOOL_INCREMENTAL_THRESHOLD,
@@ -178,6 +179,15 @@ class AppModel(_ToolOutputMixin):
         self.keymap_view: KeymapViewState = KeymapViewState()
         self.notify_view: NotifyViewState = NotifyViewState()
         self.export_view: ExportViewState = ExportViewState()
+        # 会话日志 / 投影浏览器视图状态（/logs 命令——全屏视图：事件流 +
+        # 模型历史投影 + 投影单元状态 + 一致性校验；命令线程轮询 done 清理。
+        # 状态类型见 _state_types.py LogsViewState，组件见 app/logs_view.py。）
+        self.logs_view: LogsViewState = LogsViewState()
+        # 会话日志**实时刷新器**（装配注入 ``core.commands._logs_cmd.
+        # make_logs_refresher(session, apply)`` 产出；``() -> bool``——签名变化
+        # 时重建并写回 logs_view）。F12 / /logs 打开后由视图渲染期每帧调用，
+        # 支持流式输出期间打开并自动跟进；None = 未注入（测试/无会话）。
+        self.logs_refresher: object | None = None
         # 实时解析进度行（同位置刷新；ParseInfoDone 后提交并清空）
         self.parse_line: Any = None
         # subagent 面板行（控制器推送）
@@ -1179,6 +1189,7 @@ class AppModel(_ToolOutputMixin):
             ("keymap_view", KeymapViewState),
             ("notify_view", NotifyViewState),
             ("export_view", ExportViewState),
+            ("logs_view", LogsViewState),
         ):
             _prev = getattr(self, _attr, None)
             setattr(self, _attr, _cls(seq=getattr(_prev, "seq", 0)))

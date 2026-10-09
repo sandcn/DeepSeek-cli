@@ -130,6 +130,11 @@ def get_export_view_state_cls():
     return _state_cls("ExportViewState")
 
 
+def get_logs_view_state_cls():
+    """返回 LogsViewState 数据类（会话日志 / 投影浏览器）。"""
+    return _state_cls("LogsViewState")
+
+
 def list_keybindings() -> list:
     """返回当前生效的键位绑定（供键位编辑器展示；core 层不直连 tui）。"""
     try:
@@ -270,6 +275,7 @@ __all__ = [
     "get_keymap_view_state_cls",
     "get_notify_view_state_cls",
     "get_export_view_state_cls",
+    "get_logs_view_state_cls",
     "list_keybindings",
     "register_keybinding_override",
     "get_theme_registry",

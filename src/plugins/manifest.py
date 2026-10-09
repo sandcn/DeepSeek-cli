@@ -317,6 +317,8 @@ COMMAND_PLUGIN_ENTRIES = [
      "config": {"command": "src.core.commands._outline_cmd.OutlineCommand", "name": "outline"}},
     {"id": "cmd_notify", "plugin": "src.plugins.command_plugin",
      "config": {"command": "src.core.commands._notify_cmd.NotifyCommand", "name": "notify"}},
+    {"id": "cmd_logs", "plugin": "src.plugins.command_plugin",
+     "config": {"command": "src.core.commands._logs_cmd.LogsCommand", "name": "logs"}},
 ]
 
 # ── 渲染扩展条目（每个内置 handler / filter 一个独立插件条目） ──
@@ -529,6 +531,8 @@ UI_VIEW_ENTRIES = [
      "config": {"id": "notify"}},
     {"id": "ui_view_export", "plugin": "src.plugins.ui_views:apply_ui_view",
      "config": {"id": "export"}},
+    {"id": "ui_view_logs", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "logs"}},
 ]
 
 # ── Preset 条目（每个内置 preset 一个独立插件条目） ─────────

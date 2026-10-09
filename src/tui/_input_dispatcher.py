@@ -46,6 +46,12 @@ _logger = logging.getLogger(__name__)
 # 从 2N 降至 2（select+os.read）；4096 足够覆盖单次输入突发。
 _READ_BATCH = 4096
 
+#: 「提交型」特殊键 action——回调返回命令文本时**提交执行**（reset + 填入
+#: 缓冲 + ``_enter``），而非仅插入文本。editmsg/retry 为用户主动发起的提交
+#: 操作（Ctrl+O / Ctrl+R）。F12 会话日志视图**不走此路径**（其回调直接翻转
+#: fullscreen——生成期间也要能立即打开，见 ``_handle_logs_toggle``）。
+_SUBMIT_SPECIAL_ACTIONS = ("editmsg", "retry")
+
 
 # ═══════════════════════════════════════════════════════════
 # InputDispatcher — 事件分发胶水
@@ -173,6 +179,13 @@ class InputDispatcher:
         # 视图（分组命令列表 + 快捷键速查）。未注入回调时 F1/Ctrl+/ 为
         # no-op（测试/无装配场景兼容）。
         self._help_toggle_callback = None
+
+        # ── F12 会话日志 / 投影浏览器视图开关回调（2026-10，装配注入） ──
+        # F12 功能键（CSI \x1b[24~）→ 打开/关闭模态全屏「会话日志」视图
+        # （事件流 / 模型历史投影 / 投影状态 / 一致性校验）。走独立回调而
+        # 非命令队列——**AI 流式输出期间也能立即打开**（命令在生成期间会被
+        # 排队）。未注入回调时 F12 为 no-op（测试/无装配场景兼容）。
+        self._logs_toggle_callback = None
 
         # ── 拖放文件路径规范化（2026-10-07，用户需求：输入框支持拖动文件
         #    输入文件路径） ──
@@ -364,6 +377,20 @@ class InputDispatcher:
         except Exception:
             _logger.debug("Ctrl+/ help 回调异常", exc_info=True)
 
+    def _handle_logs_toggle(self) -> None:
+        """F12 会话日志视图开关：调用注入的回调（未注入时 no-op）。
+
+        独立于命令队列（``/logs`` 命令在 AI 生成期间会被排队）——F12 在
+        流式输出期间也能立即打开视图。
+        """
+        cb = self._logs_toggle_callback
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception:
+            _logger.debug("F12 logs 回调异常", exc_info=True)
+
     def _handle_ctrl_d(self) -> None:
         """Ctrl+D EOF：空缓冲 → 提交 exit；非空 no-op（防误退）。
 
@@ -410,7 +437,7 @@ class InputDispatcher:
             return
         draft: str | None = None
         if result is not None and result != text:
-            if action in ('editmsg', 'retry'):
+            if action in _SUBMIT_SPECIAL_ACTIONS:
                 # 方向1 B3：retry 在 reset 前保存草稿（_enter 提交后恢复，
                 # 不丢用户输入）；editmsg 保持既有行为（编辑流程刻意替换）。
                 if action == 'retry':
@@ -428,8 +455,8 @@ class InputDispatcher:
         #   None（异常/插件返回"无操作"）时不应意外提交当前缓冲文本。当前实际
         #   回调（app_loop/_special_keys.py）恒返回 '/editmsg'/'/retry'（非 None），
         #   此守卫为防御性（未来回调/插件异常路径）。
-        if result is not None and action in ('editmsg', 'retry'):
-            # editmsg/retry 是用户主动发起的提交操作（Ctrl+O/Ctrl+R），
+        if result is not None and action in _SUBMIT_SPECIAL_ACTIONS:
+            # editmsg/retry/logs 是用户主动发起的提交操作（Ctrl+O/Ctrl+R/F12），
             # 清除 _suppress_enter 确保 _enter() 不被抑制
             self.set_suppress_enter(False)
             # P2-8（review）：注入 append_history——经 ``set_enter_append_history``
@@ -613,7 +640,11 @@ class InputDispatcher:
                         "arrow_up", "arrow_down", "arrow_right", "arrow_left",
                         "home", "end", "delete", "backspace", "char",
                         # 方向A 步骤1：Alt 组合 / 功能键 / CSI u Shift+Tab 进入分发
-                        "alt_char", "f1", "f2", "f3", "f4", "tab",
+                        # 2026-10：f5-f12 补齐（F12 = 会话日志视图开关——
+                        #   修复前仅 f1-f4 在分发元组内，F12 解析为 f12 事件
+                        #   后被静默忽略）
+                        "alt_char", "f1", "f2", "f3", "f4", "f5", "f6",
+                        "f7", "f8", "f9", "f10", "f11", "f12", "tab",
                         # P2-4：CSI u Ctrl 字母（keycode 103/111/110/114）映射为
                         #   ctrl_key 事件进入分发（增强键盘协议终端 Ctrl+G/O/N/R
                         #   失效修复——修复前 ESC 路径分发元组不含 "ctrl_key"，
@@ -911,12 +942,16 @@ class InputDispatcher:
                 "csi_u 事件未被 input router 消费 (keycode=%s modifier=%s)",
                 event.keycode, event.modifier,
             )
-        elif kind in ("f1", "f2", "f3", "f4"):
+        elif kind.startswith("f") and kind[1:].isdigit():
             # 方向A 步骤1：功能键已先行询问 input router；未消费时 F1 触发
-            # 帮助速查视图开关（Ctrl+/ 之外的等价入口），其余功能键 no-op
-            # （不再静默丢弃——router 可经 useInput 钩子消费）。
+            # 帮助速查视图开关（Ctrl+/ 之外的等价入口），F12 触发会话日志
+            # 视图开关（提交 ``/logs`` 命令，生命周期由命令系统统一管理——
+            # 打开 / 实时刷新 / Esc 关闭 / fullscreen 清理），其余功能键
+            # no-op（不再静默丢弃——router 可经 useInput 钩子消费）。
             if kind == "f1":
                 self._handle_help_toggle()
+            elif kind == "f12":
+                self._handle_logs_toggle()
             else:
                 _logger.debug("%s 功能键未被 input router 消费", kind)
         elif kind == "paste":
@@ -1187,6 +1222,7 @@ class InputDispatcher:
         "clear_screen": "_clear_screen_callback",
         "trace_toggle": "_trace_toggle_callback",
         "help_toggle": "_help_toggle_callback",
+        "logs_toggle": "_logs_toggle_callback",
         "mouse_fallback": "_mouse_fallback_callback",
     }
 
@@ -1395,6 +1431,19 @@ class InputDispatcher:
         （关闭），本回调不再被调用（不会重复翻转）。
         """
         self.register_callback("help_toggle", cb)
+
+    def set_logs_toggle_callback(self, cb) -> None:
+        """设置 F12 会话日志 / 投影浏览器视图开关回调（2026-10，装配注入）。
+
+        cb 签名: ``() -> None``（翻转 model.fullscreen "logs" ↔ "" + 构建视图
+        数据 + 请求重绘——见 ``_make_logs_toggle_cb``）；None 可清除注入。
+        未注入时 F12 为 no-op（测试/无装配场景兼容）。
+        ★ 独立于命令队列：AI 流式生成期间 ``/logs`` 命令会被排队，而本回调
+        在 render 线程立即执行——流式输出中按 F12 也能即时打开视图。
+        ★ 视图打开期间 F12 被 LogsView 模态 handler 经 router 消费（关闭在
+        Esc/F12 由组件处理），本回调不再被调用（不会重复翻转）。
+        """
+        self.register_callback("logs_toggle", cb)
 
     def set_suppress_enter(self, suppress: bool) -> None:
         """设置 Enter 抑制标志（用于 editmsg 消息选择期间）。

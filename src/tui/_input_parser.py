@@ -70,7 +70,8 @@ class KeyEvent:
     kind: str        # "char" | "enter" | "tab" | "backspace" | "escape" |
                      # "arrow_up" | "arrow_down" | "arrow_left" | "arrow_right" |
                      # "home" | "end" | "delete" | "ctrl_key" | "interrupt" | "csi_u" | "unknown" |
-                     # "alt_char" | "f1" | "f2" | "f3" | "f4"（方向A 步骤1 新增）
+                     # "alt_char" | "f1".."f12"（方向A 步骤1 新增 f1-f4；
+                     # 2026-10 扩展 f5-f12——F12 会话日志视图开关）
     char: str = ""
     modifier: int = 0
     keycode: int = 0
@@ -812,9 +813,16 @@ class InputParser:
 
         raw = b"\x1b[" + InputParser._params_to_bytes(params) + terminator.encode()
 
-        # ── 功能键序列: \x1b[N~ ──
+        # ── 功能键序列: \x1b[N~（F5-F12；\x1b[11~..14~ 为部分终端的 F1-F4） ──
         if terminator == '~':
             p = params[0] if params else 0
+            _fkey = {
+                11: "f1", 12: "f2", 13: "f3", 14: "f4",
+                15: "f5", 17: "f6", 18: "f7", 19: "f8",
+                20: "f9", 21: "f10", 23: "f11", 24: "f12",
+            }.get(p)
+            if _fkey is not None:
+                return KeyEvent(kind=_fkey, raw=raw)
             if p in (1, 7):
                 return KeyEvent(kind="home", raw=raw)
             if p == 3:
