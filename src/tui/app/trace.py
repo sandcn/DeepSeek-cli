@@ -941,7 +941,7 @@ def _tool_detail(name: str, args) -> str:
     return detail
 
 
-def _records_from_messages(messages) -> tuple:
+def _records_from_messages(messages, user_markdown: bool = False) -> tuple:
     """agent 消息列表 → (records, rows)——轨迹视图主数据源。
 
     对齐 DSH（从 Session 消息组装业务记录，非 TUI 渲染内容）：
@@ -953,6 +953,10 @@ def _records_from_messages(messages) -> tuple:
 
     Args:
         messages: 消息列表（agent.messages 同构：dict 列表）。
+        user_markdown: user 记录是否标记为 markdown 详情（``TraceRecord.
+            markdown``）——subagent 轨迹（提词 = 父 Agent 派发的 markdown
+            任务指令）传 True 走流式 markdown 渲染；主轨迹用户输入保持
+            纯文本原文（默认 False）。
 
     Returns:
         (records: list[TraceRecord], rows: list[TraceRecord | None])。
@@ -1000,6 +1004,13 @@ def _records_from_messages(messages) -> tuple:
             rec = TraceRecord(
                 index=index, kind="user",
                 summary=_first_text(lines), lines=lines, images=images,
+                # ★ 2026-10-09（用户需求：subagent 的提词用 TUI 流式 markdown
+                #   渲染）：subagent 轨迹的 user 记录是父 Agent 派发的任务
+                #   指令（markdown 结构，见 _records_from_messages 的
+                #   user_markdown 参数）——标记后检查器经 AnsiStreamRenderer
+                #   渲染（标题/列表/代码块格式化）；主轨迹用户输入不标记
+                #   （保持原文纯文本显示）。
+                markdown=user_markdown,
             )
             records.append(rec)
             rows.append(rec)
@@ -1518,6 +1529,10 @@ def _subagent_fallback_records(label: str, slot) -> tuple:
             index=index, kind="user",
             summary=_first_text(lines) or label,
             lines=lines,
+            # ★ 2026-10-09（用户需求：subagent 的提词用 TUI 流式 markdown
+            #   渲染）：回退路径（无 messages）的提词同为父 Agent 派发的
+            #   markdown 任务指令——标记后检查器经 AnsiStreamRenderer 渲染。
+            markdown=True,
         )
         records.append(rec)
         rows.append(rec)
@@ -1598,7 +1613,9 @@ def build_subagent_trace_records(label: str, model=None) -> tuple:
             #   （如 content 结构异常）：捕获后回退槽位活动记录，保证
             #   Enter 进入 subagent 轨迹**恒有内容**（不空白/不崩溃）。
             try:
-                records, rows = _records_from_messages(messages)
+                records, rows = _records_from_messages(
+                    messages, user_markdown=True,
+                )
             except Exception:
                 records, rows = [], []
             if records:

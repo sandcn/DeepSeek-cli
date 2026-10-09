@@ -447,9 +447,15 @@ _MD_RENDER_CACHE_MAX = 256
 
 
 def _md_detail_rows(rec, right_w: int, kind: str) -> list:
-    """reasoning/content/system 记录详情 → markdown 渲染 StyledRun 行（缓存）。
+    """reasoning/content/system（及标记 markdown 的 user 提词）记录详情 →
+    markdown 渲染 StyledRun 行（缓存）。
 
     ★ 2026-08-17（用户需求：回答/思考/system 用流式 markdown 显示在右边）：
+    ★ 2026-10-09（用户需求：subagent 的提词用 TUI 流式 markdown 渲染）：
+    subagent 提词记录（``kind == "user"`` 且 ``rec.markdown`` 置位，由
+    ``trace._records_from_messages(user_markdown=True)`` / 回退路径标记）
+    走同一管线——提词内联 lines 为原始 markdown 文本，与 system 提词
+    同源渲染。
     **数据源分支**：
       - ``rec.source_block`` 非空（块/live 记录——块内 AnsiLine 已是流式
         markdown 渲染管线的输出，带标题/代码高亮等样式）→ 直接复用
@@ -508,6 +514,7 @@ def _inspector_content_rows(rec, right_w: int, collapsed: set | None = None) -> 
     行按 kind 分支生成（与旧 ``_inspector_children`` 截断逻辑同源）：
       - tool 且携带树数据 → ``_tool_tree_rows``（参数树 + 分割线 + 返回值树）；
       - reasoning/content/system → ``_md_detail_rows``（markdown 渲染行）；
+      - user 且 ``rec.markdown`` 置位（subagent 提词）→ 同上 markdown 渲染；
       - 其余 → 纯文本按栏宽换行（``_wrap_by_width``）。
     返回元素为 ``list[StyledRun]``（markdown/树样式行）或 ``str``（纯文本
     行）——窗口切片后由 ``_inspector_children`` 统一转 TEXT 元素。
@@ -555,8 +562,14 @@ def _inspector_content_rows(rec, right_w: int, collapsed: set | None = None) -> 
             if sub_rows:
                 rows.extend(sub_rows)
                 keys.extend([None] * len(sub_rows))
-    elif kind in ("reasoning", "content", "system"):
+    elif kind in ("reasoning", "content", "system") or (
+        kind == "user" and getattr(rec, "markdown", False)
+    ):
         # markdown 渲染行（块记录直接复用渲染输出 / 内联原始文本重渲染）
+        # ★ 2026-10-09（用户需求：subagent 的提词用 TUI 流式 markdown 渲染）：
+        #   subagent 提词记录（user，markdown 标记）与 system 提词同管线渲染
+        #   ——标题/列表/代码块等格式化，而非纯文本换行；主轨迹用户输入未
+        #   标记，仍走下方纯文本分支（保持原文显示）。
         rows = list(_md_detail_rows(rec, right_w, kind))
         keys = [None] * len(rows)
     else:

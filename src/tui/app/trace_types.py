@@ -43,6 +43,11 @@ class TraceRecord:
         tool_args: 工具调用原始参数（str JSON 或 dict；None=无）。
         tool_result: 工具返回原始文本。
         images: 多模态图片元信息列表（缩略图渲染用）。
+        markdown: 详情行按**流式 markdown 渲染**（``AnsiStreamRenderer``
+            管线）显示——message 源记录的 ``lines`` 为原始 markdown 文本时
+            置位（如 subagent 提词：父 Agent 派发的任务指令本身为 markdown
+            结构）。未置位记录沿用纯文本换行显示（如主轨迹的用户输入，
+            保持原文）。
     """
 
     index: int = 0
@@ -62,6 +67,7 @@ class TraceRecord:
     tool_args: object = None
     tool_result: str = ""
     images: list = field(default_factory=list)
+    markdown: bool = False
 
 
 __all__ = ["TRACE_KIND_ORDER", "TraceRecord", "_BLOCK_KIND_MAP"]
