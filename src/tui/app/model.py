@@ -70,6 +70,7 @@ from src.tui.app._model_helpers import (
     _BASH_OUTPUT_TAIL_LINES,
     _TOOL_HEAD_TOOLS,
     _TOOL_HEAD_LINES,
+    _TOOL_TAIL_TOOLS,
     _single_line_detail,
     _user_marker_styled_lines,
     _attach_url_links,

@@ -124,11 +124,17 @@ def test_display_name_mapping_restored():
 
 def test_tool_head_tools_restored():
     from src.presentation_data import ui_default
-    from src.tui.app._model_helpers import _TOOL_HEAD_TOOLS
+    from src.tui.app._model_helpers import _TOOL_HEAD_TOOLS, _TOOL_TAIL_TOOLS
 
-    expected = ["find", "search", "ls", "read_file"]
+    expected = ["ls", "read_file"]
     assert ui_default("tool_head_tools") == expected
     assert _TOOL_HEAD_TOOLS == tuple(expected)
+    # ★ 2026-10-10 用户需求：search / find 由头显示改为尾显示（「… 前 N 行省略」）。
+    assert "search" not in _TOOL_HEAD_TOOLS
+    assert "find" not in _TOOL_HEAD_TOOLS
+    assert "search" in _TOOL_TAIL_TOOLS
+    assert "find" in _TOOL_TAIL_TOOLS
+    assert ui_default("tool_tail_tools") == ["bash", "execute_command", "search", "find"]
 
 
 def test_find_tool_style_restored():

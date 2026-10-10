@@ -24,10 +24,12 @@ from src.tui.app._model_helpers import (
     _BASH_OUTPUT_TAIL_LINES,
     _TOOL_HEAD_TOOLS,
     _TOOL_HEAD_LINES,
+    _TOOL_TAIL_TOOLS,
     _bash_output_tail_lines,
     _tool_head_lines,
     _tool_head_tools,
     _tool_incremental_threshold,
+    _tool_tail_tools,
     _single_line_detail,
 )
 # ★ ToolCard React Ink 组件化：工具卡行生成/状态前缀收敛到 app/toolcard.py
@@ -213,12 +215,14 @@ class _ToolOutputMixin:
             block.lines.append(l)
             if hidden_rows is not None:
                 hidden_rows.append(l)
-        # bash/execute_command：输出超过阈值行数时只保留最后 N 行（tail 显示，
-        # 对齐 Claude Code 收敛冗长 bash 输出；修剪后行数 ≤ N+1，不触发增量提交）
-        if block.extra.get("tool_name") in ("bash", "execute_command"):
+        # 尾显示工具（bash/execute_command/search/find）：输出超过阈值行数时只保留
+        # 最后 N 行（tail 显示，对齐 Claude Code 收敛冗长输出；修剪后行数 ≤ N+1，
+        # 不触发增量提交）。卡片渲染前置「… 前 N 行省略」提示。
+        if block.extra.get("tool_name") in _tool_tail_tools():
             self._trim_tool_output_tail(block, _bash_output_tail_lines())
-        # find/search/ls/read_file：输出超过阈值行数时只保留前 N 行（head 显示，
-        # 对齐终端 head 语义——目录列表/文件预览等有序输出看开头即可，防卡片撑爆）
+        # 头显示工具（ls/read_file）：输出超过阈值行数时只保留前 N 行（head
+        # 显示，对齐终端 head 语义——目录列表/文件预览等有序输出看开头即可，防
+        # 卡片撑爆）。卡片渲染后置「… 后 N 行省略」提示。
         if block.extra.get("tool_name") in _tool_head_tools():
             self._trim_tool_output_head(block, _tool_head_lines())
         # ★ 用户需求：trim 删除行后同步清理聊天卡隐藏行登记——被删行对象滞留
@@ -384,11 +388,11 @@ class _ToolOutputMixin:
     def _trim_tool_output_tail(self, block, keep: int) -> None:
         """工具块输出修剪为最后 keep 行（保留标题行 block.lines[0]）。
 
-        bash 尾显示：输出超过 keep 行时删除前置输出行（下标 1..N-keep），
-        累计省略数记入 ``block.extra["_bash_omitted_lines"]``（卡片渲染时
-        前置「… 前 N 行省略」提示）；同步 ``committed_line_count``（已提交行
-        被删则回退计数，防越界/重复提交）。修剪后行数 ≤ 1+keep，远低于增量
-        提交阈值 → 无增量提交。
+        bash/execute_command/search/find 尾显示：输出超过 keep 行时删除前置输出
+        行（下标 1..N-keep），累计省略数记入 ``block.extra["_bash_omitted_lines"]``
+        （卡片渲染时前置「… 前 N 行省略」提示）；同步
+        ``committed_line_count``（已提交行被删则回退计数，防越界/重复提交）。
+        修剪后行数 ≤ 1+keep，远低于增量提交阈值 → 无增量提交。
 
         方向3（trim 与增量提交协同）：已提交前缀（``committed_line_count`` 行）
         不可删除——删除会令 committed_lines 前缀与块行映射错位。★ P2（review）：
@@ -434,7 +438,7 @@ class _ToolOutputMixin:
     def _trim_tool_output_head(self, block, keep: int) -> None:
         """工具块输出修剪为前 keep 行（保留标题行 block.lines[0]）。
 
-        find/search/ls/read_file 头显示：输出超过 keep 行时删除后置输出行
+        ls/read_file 头显示：输出超过 keep 行时删除后置输出行
         （下标 1+keep..末尾），累计省略数记入 ``block.extra["_head_omitted_lines"]``
         （卡片渲染时在主体行后置「… 后 N 行省略」提示）；同步
         ``committed_line_count``（已提交行被删则回退计数，防越界/重复提交）。

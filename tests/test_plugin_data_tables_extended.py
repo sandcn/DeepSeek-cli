@@ -71,7 +71,8 @@ async def test_default_profile_consumers():
         assert trace_style_map()["_S_TITLE"].fg == 45
         assert search_query_max() == 200
         assert ui_default("role_labels")["user"] == "用户"
-        assert ui_default("tool_head_tools") == ["find", "search", "ls", "read_file"]
+        assert ui_default("tool_head_tools") == ["ls", "read_file"]
+        assert ui_default("tool_tail_tools") == ["bash", "execute_command", "search", "find"]
         assert "/editmsg" in ui_default("internal_prefill_cmds")
         assert ui_default("summary_truncate_length") == 300
         assert {"stdio", "http", "sse"} <= set(valid_transports())

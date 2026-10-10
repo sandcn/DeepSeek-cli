@@ -683,8 +683,9 @@ def tool_card_lines(block, width, start=0, stop=None):
         if _md_lines is not None:
             _body_ansi = list(_md_lines)
         else:
-            # bash 尾显示：前置省略提示行「… 前 N 行省略」（仅首次提交 start==0）；
-            # 全隐藏（read_file 成功内容）时一并跳过（保持「只显示标题行」）
+            # 尾显示工具（bash/execute_command/search/find）：前置省略提示行
+            # 「… 前 N 行省略」（仅首次提交 start==0）；全隐藏（read_file 成功
+            # 内容）时一并跳过（保持「只显示标题行」）
             omitted = block.extra.get("_bash_omitted_lines", 0)
             if omitted > 0 and not _body_all_hidden:
                 body_lines.append(_omitted_line(f"\u2026 前 {omitted} 行省略", width, bg_style))
@@ -769,7 +770,7 @@ def tool_card_lines(block, width, start=0, stop=None):
                     body_lines.append(item[1])
                     continue
                 body_lines.append(item[1])
-        # find/search/ls/read_file 头显示：后置省略提示行「… 后 N 行省略」
+        # 头显示工具（ls/read_file）：后置省略提示行「… 后 N 行省略」
         # （head 省略的行在末尾——提示置于内容行之后，对齐终端 head 语义）；
         # markdown 工具卡不走该路径（正文来自渲染缓冲，无 head 省略语义）。
         if _md_lines is None:
