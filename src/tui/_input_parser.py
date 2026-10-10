@@ -226,6 +226,62 @@ def _kitty_bits_from_modifier(modifier: int) -> int:
     return max(0, value - 1)
 
 
+#: US 布局 Shift 符号映射兜底快照（数据注册表 ``kitty_protocol.us_shift_map``
+#: 优先）。仅用于增强键盘协议下终端**未**上报 alternate key 的场景。
+_US_SHIFT_MAP_FALLBACK: dict = {
+    "`": "~", "1": "!", "2": "@", "3": "#", "4": "$", "5": "%",
+    "6": "^", "7": "&", "8": "*", "9": "(", "0": ")",
+    "-": "_", "=": "+", "[": "{", "]": "}", "\\": "|",
+    ";": ":", "'": "\"", ",": "<", ".": ">", "/": "?",
+}
+
+
+def _us_shift_map() -> dict:
+    """US 布局 Shift 映射（数据注册表优先，缺席/异常回退内置快照）。"""
+    try:
+        from src.presentation_data import kitty_protocol
+
+        value = (kitty_protocol() or {}).get("us_shift_map")
+        if isinstance(value, dict) and value:
+            return {str(k): str(v) for k, v in value.items()}
+    except Exception:
+        pass
+    return _US_SHIFT_MAP_FALLBACK
+
+
+def shifted_printable_char(base_code: int, shifted_code: int = 0,
+                           shift: bool = True) -> str:
+    """增强键盘协议（CSI u）按键 → 实际输入字符（无可生成字符返回空串）。
+
+    - 终端上报 alternate key（``\\x1b[47:63;2u`` 中的 63）时直接采用该字符；
+    - 未上报时按 US 布局对 base 字符做 Shift 映射（``/`` → ``?``、``a`` →
+      ``A``、``1`` → ``!``）；
+    - ``shift`` 为假且无 shifted keycode 时返回 base 字符本身（可打印 ASCII
+      限定）；非可打印 keycode 一律返回空串（调用方保持 ``csi_u`` 语义）。
+    """
+    try:
+        shifted = int(shifted_code or 0)
+    except (TypeError, ValueError):
+        shifted = 0
+    if 32 <= shifted <= 0x10FFFF:
+        try:
+            return chr(shifted)
+        except (ValueError, OverflowError):
+            pass
+    try:
+        code = int(base_code or 0)
+    except (TypeError, ValueError):
+        return ""
+    if not (32 <= code <= 126):
+        return ""
+    ch = chr(code)
+    if not shift:
+        return ch
+    if ch.isalpha():
+        return ch.upper()
+    return _us_shift_map().get(ch, ch)
+
+
 def _kitty_event_type(groups) -> str:
     """从 CSI-u 子参数分组提取事件类型名（无 → 空串）。"""
     if len(groups) >= 2 and len(groups[1]) >= 2:
@@ -578,6 +634,12 @@ class InputParser:
                 return mouse_event
 
         event = self._dispatch_csi(params, terminator, groups)
+        # ★ 修复（2026-10）：raw 保真——``_dispatch_csi`` 的 raw 由展平参数重建
+        #   （``\x1b[47:63;2u`` 的 kitty 子参数分隔符 ``:`` 会变成 ``;``），而
+        #   ``unknown`` 事件经 dispatcher 回写捕获缓冲（``_captured_input``）
+        #   会还原出错误字节。统一以本方法累积的原始字节覆盖（对既有等价形式
+        #   零变化，仅修正子参数形式）。
+        event.raw = raw_acc
         if terminator == 'u':
             # ★ kitty 键盘协议元信息落位（统一在解析出口写入，避免在
             #   ``_dispatch_csi`` 的多个 return 分支逐处补字段）：
@@ -809,6 +871,35 @@ class InputParser:
                 decoded = InputParser._decode_control_char(keycode)
                 return KeyEvent(kind=decoded.kind, char=decoded.char,
                                 modifier=decoded.modifier, keycode=keycode, raw=raw)
+            # ★ 修复（2026-10）：CSI u **Shift 组合可打印字符**（``?`` / ``:`` /
+            #   ``@`` / ``{`` / 大写字母…）——增强键盘协议（kitty / WezTerm /
+            #   iTerm2 / Windows Terminal 等 "report all keys as escape codes"）
+            #   下 Shift+键发送 ``\x1b[<base>[:<shifted>];2u``，修复前落入
+            #   ``csi_u`` no-op 被静默丢弃：**Shift 符号完全打不出来**（输入框
+            #   打不出 ``?``/``:``/``{``，模态视图的 ``?`` 帮助键与 ``:`` 等
+            #   快捷键失效）。规则：
+            #     - 优先采用终端上报的 shifted keycode（``47:63`` → ``?``）；
+            #     - 缺席时按 US 布局映射 base 字符（``/`` → ``?``、``a`` → ``A``）；
+            #     - 含 Ctrl/Super/Hyper/Meta 的组合不生成字符（保持 ``csi_u``
+            #       交由 router/旧路径处理）；CapsLock/NumLock 位不影响判定；
+            #     - 同时含 Alt 时生成 ``alt_char``（与 ESC+字符 的 Alt 语义一致）。
+            mod_bits = _kitty_bits_from_modifier(modifier)
+            if not (mod_bits & (4 | 8 | 16 | 32)):
+                _key_group = groups[0] if groups else []
+                _base_code = _key_group[0] if _key_group else 0
+                _shifted_code = _key_group[1] if len(_key_group) > 1 else 0
+                if (mod_bits & 1) or _shifted_code:
+                    _text = shifted_printable_char(
+                        _base_code, _shifted_code, bool(mod_bits & 1),
+                    )
+                    if _text:
+                        if mod_bits & 2:
+                            return KeyEvent(kind="alt_char", char=_text,
+                                            modifier=modifier,
+                                            keycode=_base_code, raw=raw)
+                        return KeyEvent(kind="char", char=_text,
+                                        modifier=modifier,
+                                        keycode=_base_code, raw=raw)
             return KeyEvent(kind="csi_u", modifier=modifier, keycode=keycode, raw=raw)
 
         raw = b"\x1b[" + InputParser._params_to_bytes(params) + terminator.encode()

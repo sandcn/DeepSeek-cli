@@ -67,10 +67,15 @@ from .sandbox_common import (
     change_tag_style,
     diff_rows,
     fmt_time,
+    is_help_char,
     line_delta,
+    record_search_text,
+    record_signature,
+    resync_search,
+    sync_search_matches,
 )
 
-__all__ = ["SandboxRecordsView", "_record_search_text"]
+__all__ = ["SandboxRecordsView", "_record_search_text", "_record_deps"]
 
 _KEYMAP = [
     {"group": "浏览", "keys": "↑↓/jk", "desc": "选择记录"},
@@ -89,28 +94,24 @@ _KEYMAP = [
 
 
 def _record_search_text(entry: dict) -> str:
-    """记录条目搜索文本（路径 + 标签 + 工具）。"""
-    if not isinstance(entry, dict):
-        return ""
-    return " ".join([
-        str(entry.get("path", "")),
-        str(entry.get("change_label", "")),
-        str(entry.get("tool", "")),
-        f"消息 {entry.get('message_index', '')}",
-    ])
+    """记录条目搜索文本（路径 + 标签 + 工具）。
+
+    单一真源在 ``sandbox_common.record_search_text``（别名保持历史引用面）。
+    """
+    return record_search_text(entry)
 
 
 def _record_deps(entry, right_w: int) -> tuple:
+    """``_record_detail_rows`` 的缓存依赖（值驱动，覆盖全部展示字段）。
+
+    ★ 修复（2026-10）：此前依赖为 ``(path, message_index, hash(before),
+    hash(after), right_w)``——同一路径同一消息的目录记录 / 工具名 / 时间 /
+    序号变化时右栏头部显示陈旧；现改用 ``record_signature``（含 tool /
+    label / seq / time / 内容指纹）。
+    """
     if not isinstance(entry, dict):
         return (None, right_w)
-    before, after = entry.get("before"), entry.get("after")
-    return (
-        str(entry.get("path", "")),
-        str(entry.get("message_index", "")),
-        hash(before) if isinstance(before, str) else id(before),
-        hash(after) if isinstance(after, str) else id(after),
-        right_w,
-    )
+    return (record_signature(entry), right_w)
 
 
 def _record_detail_rows(entry: dict, right_w: int) -> list:
@@ -158,6 +159,10 @@ def SandboxRecordsView(props) -> object:
 
     ordered = list(reversed(raw_entries)) if sort_desc else list(raw_entries)
     allowed = None
+    # ★ 修复（2026-10）：数据实时刷新会重建基准列表 → 旧匹配下标失效，渲染期
+    #   同步一次（见 ``sandbox_common.sync_search_matches``）。
+    matches = sync_search_matches(rv, ordered, _record_search_text)
+    filter_on = bool(getattr(rv, "search_filter", False)) if rv is not None else False
     if filter_on and pattern and matches:
         allowed = set(matches)
     index_map = [i for i in range(len(ordered)) if allowed is None or i in allowed]
@@ -183,17 +188,21 @@ def SandboxRecordsView(props) -> object:
     extra_rows = (1 if search_mode else 0) + (1 if status_message else 0)
     vh = max(4, viewport_rows() - extra_rows)
 
-    if help_open:
-        from ._view_common import help_panel_rows
+    # ── 右栏内容（**单一** use_memo：hook 调用必须无条件且数量恒定）──
+    # ★ 修复（2026-10）：修复前帮助面板分支跳过 ``use_memo``——按 ``?`` 打开
+    #   帮助时 hook 序列变化 → 违反 Rules of Hooks（``HookStateError``）→
+    #   视图渲染异常（「按 ? 没有帮助面板」）。现把 help_open 纳入依赖。
+    def _content_rows() -> list:
+        if help_open:
+            from ._view_common import help_panel_rows
 
-        content_rows = help_panel_rows(
-            _KEYMAP, right_w, key_style=S_WARN, group_style=S_META,
-            desc_style=S_PATH, sep_style=S_SEP,
-        )
-    else:
-        content_rows = use_memo(
-            lambda: _record_detail_rows(entry, right_w), _record_deps(entry, right_w),
-        )
+            return help_panel_rows(
+                _KEYMAP, right_w, key_style=S_WARN, group_style=S_META,
+                desc_style=S_PATH, sep_style=S_SEP,
+            )
+        return _record_detail_rows(entry, right_w)
+
+    content_rows = use_memo(_content_rows, (help_open, _record_deps(entry, right_w)))
     total_content = len(content_rows)
     cursor, scroll = resolve(
         getattr(rv, "cursor", 0) or 0, getattr(rv, "scroll", 0) or 0,
@@ -257,7 +266,7 @@ def SandboxRecordsView(props) -> object:
             return True
 
         if event.kind == "char":
-            if ch == "?":
+            if is_help_char(ch):
                 rv.help_open = not bool(rv.help_open)
                 rv.pane = "detail" if rv.help_open else "list"
                 rv.cursor = 0
@@ -285,7 +294,17 @@ def SandboxRecordsView(props) -> object:
                 rv.selected = 0
                 rv.cursor = 0
                 rv.scroll = 0
-                rv.status_message = "排序：倒序（最新在前）" if rv.sort_desc else "排序：正序"
+                # ★ 修复（2026-10）：排序改变基准列表 → 搜索匹配下标必须重算
+                #   （否则 ``f`` 过滤显示的「匹配项」是旧下标在新列表里的另一条
+                #   记录——实测搜 b 切倒序后过滤显示 a）。
+                new_ordered = (
+                    list(reversed(raw_entries)) if rv.sort_desc else list(raw_entries)
+                )
+                found = resync_search(rv, new_ordered, _record_search_text)
+                status = "排序：倒序（最新在前）" if rv.sort_desc else "排序：正序"
+                if (getattr(rv, "search_pattern", "") or ""):
+                    status += f" · 匹配 {found}"
+                rv.status_message = status
                 return True
             if ch == "x" and entry is not None:
                 path = str(entry.get("path", ""))

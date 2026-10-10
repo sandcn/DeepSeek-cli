@@ -267,17 +267,23 @@ def _fmt_int(value) -> str:
         return str(value)
 
 
-def build_sandbox_sections(sandbox) -> list:
+def build_sandbox_sections(sandbox, stats: dict | None = None) -> list:
     """文件沙盒统计区块（对齐 usage 视图的 sections 结构）。
 
     结构：``[{"title": str, "rows": [(label, value, kind, ratio), ...]}, ...]``
+
+    Args:
+        sandbox: 沙盒管理器（None → 返回「未初始化」占位区块）。
+        stats: 预取的扩展统计（``get_extended_stats()`` 结果）——调用方一次
+            取数后复用（见 :func:`build_view_data`），避免重复遍历全部记录。
     """
     if sandbox is None:
         return [{"title": "沙盒", "rows": [("状态", "(未初始化)", "warn", None)]}]
-    try:
-        stats = sandbox.get_extended_stats()
-    except Exception:
-        stats = {}
+    if stats is None:
+        try:
+            stats = sandbox.get_extended_stats()
+        except Exception:
+            stats = {}
     total_files = int(stats.get("total_files", 0) or 0)
     total_records = int(stats.get("total_records", 0) or 0)
     sections: list = [
@@ -321,11 +327,17 @@ def build_sandbox_sections(sandbox) -> list:
 
 
 def sandbox_signature(sandbox) -> tuple:
-    """沙盒数据签名（记录数 / 文件数 / 当前消息索引）——实时刷新检测用。"""
+    """沙盒数据签名（记录数 / 文件数 / 当前消息索引）——实时刷新检测用。
+
+    ★ 性能（2026-10）：改用轻量 ``get_stats()``（只统计条数）——修复前用
+    ``get_extended_stats()``（遍历全部记录计算工具分布 / 变更类型 / 内容字符
+    数），而本函数由实时刷新器**每帧**调用（签名未变即直接返回），大沙盒下
+    每帧产生一次全量遍历的无谓开销。签名语义不变。
+    """
     if sandbox is None:
         return (0, 0, 0)
     try:
-        stats = sandbox.get_extended_stats()
+        stats = sandbox.get_stats()
     except Exception:
         return (0, 0, 0)
     return (
@@ -336,13 +348,27 @@ def sandbox_signature(sandbox) -> tuple:
 
 
 def build_view_data(sandbox) -> dict:
-    """视图完整数据快照（变更审查器 / 概览视图共用的刷新载荷）。"""
+    """视图完整数据快照（变更审查器 / 概览视图共用的刷新载荷）。
+
+    ★ 性能（2026-10）：扩展统计只取一次并在 ``sections`` 中复用——修复前
+    ``build_sandbox_sections`` 与 ``stats`` 字段各自调用
+    ``get_extended_stats()``，每次刷新把全部记录遍历两遍。
+    """
+    if sandbox is None:
+        return {
+            "files": [], "messages": [], "records": [],
+            "sections": build_sandbox_sections(None), "stats": {},
+        }
+    try:
+        stats = sandbox.get_extended_stats()
+    except Exception:
+        stats = {}
     return {
         "files": build_change_entries(sandbox),
         "messages": build_message_entries(sandbox),
         "records": build_record_history_entries(sandbox),
-        "sections": build_sandbox_sections(sandbox),
-        "stats": sandbox.get_extended_stats() if sandbox is not None else {},
+        "sections": build_sandbox_sections(sandbox, stats),
+        "stats": stats,
     }
 
 
@@ -429,6 +455,11 @@ def apply_sandbox_action(sandbox, action: dict) -> str:
             index = int(action.get("index", 0))
         except (TypeError, ValueError):
             return "无效消息索引"
+        # ★ 修复（2026-10）：负索引会命中 ``restore_to_message(-1)``——其语义
+        #   是「所有记录的索引都 > -1」→ 把**全部文件**恢复到最初状态并清空
+        #   记录（等于隐式「回滚全部」），属危险副作用。此处显式拒绝。
+        if index < 0:
+            return "无效消息索引（需为非负整数）"
         results = sandbox.restore_to_message(index)
         ok = sum(1 for v in (results or {}).values() if v)
         bad = len(results or {}) - ok

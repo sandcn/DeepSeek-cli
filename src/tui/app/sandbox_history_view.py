@@ -64,11 +64,16 @@ from .sandbox_common import (
     S_TAG,
     S_TITLE,
     S_WARN,
+    as_int,
     fmt_time,
+    is_help_char,
     message_detail_rows,
+    message_search_text,
+    message_signature,
+    sync_search_matches,
 )
 
-__all__ = ["SandboxHistoryView", "_message_search_text"]
+__all__ = ["SandboxHistoryView", "_message_search_text", "_message_deps"]
 
 _KEYMAP = [
     {"group": "浏览", "keys": "↑↓/jk", "desc": "选择消息"},
@@ -85,20 +90,24 @@ _KEYMAP = [
 
 
 def _message_search_text(entry: dict) -> str:
-    """消息条目搜索文本（消息索引 + 文件路径 + 工具）。"""
-    if not isinstance(entry, dict):
-        return ""
-    return " ".join([
-        f"消息 {entry.get('index', '')}",
-        " ".join(str(p) for p in (entry.get("file_paths") or [])),
-        " ".join(str(t) for t in (entry.get("tools") or [])),
-    ])
+    """消息条目搜索文本（消息索引 + 文件路径 + 工具）。
+
+    单一真源在 ``sandbox_common.message_search_text``（本别名保持历史引用面，
+    与 ``changes_view`` 共用同一实现，避免两处漂移）。
+    """
+    return message_search_text(entry)
 
 
 def _message_deps(entry, right_w: int) -> tuple:
+    """``message_detail_rows`` 的缓存依赖（值驱动，含子记录内容签名）。
+
+    ★ 修复（2026-10）：此前依赖仅 ``(index, 变更条数, 右栏宽)``——同一消息
+    下文件内容变化但条数不变（回滚同一文件、内容被再次修改等）时缓存不失效，
+    右栏 diff 显示陈旧内容。
+    """
     if not isinstance(entry, dict):
         return (None, right_w)
-    return (entry.get("index"), len(entry.get("changes") or []), right_w)
+    return (message_signature(entry), right_w)
 
 
 def SandboxHistoryView(props) -> object:
@@ -114,9 +123,16 @@ def SandboxHistoryView(props) -> object:
     filter_on = bool(getattr(hv, "search_filter", False)) if hv is not None else False
     matches = list(getattr(hv, "search_matches", None) or []) if hv is not None else []
     status_message = (getattr(hv, "status_message", "") or "") if hv is not None else ""
-    restore_confirm = int(getattr(hv, "restore_confirm", -1) or -1) if hv is not None else -1
+    # ★ 修复（2026-10）：此前 ``int(... or -1)`` 在 ``restore_confirm == 0``
+    #   （消息索引 0 是合法值）时被 ``or`` 吞成 -1 → 无法二次确认回滚到消息 0，
+    #   左栏确认高亮同样丢失。``as_int`` 显式区分「无待确认 (-1)」与「0」。
+    restore_confirm = as_int(getattr(hv, "restore_confirm", -1), -1) if hv is not None else -1
 
     allowed = None
+    # ★ 修复（2026-10）：数据实时刷新会重建基准列表 → 旧匹配下标失效，渲染期
+    #   同步一次（见 ``sandbox_common.sync_search_matches``）。
+    matches = sync_search_matches(hv, entries, _message_search_text)
+    filter_on = bool(getattr(hv, "search_filter", False)) if hv is not None else False
     if filter_on and pattern and matches:
         allowed = set(matches)
     index_map = [i for i in range(len(entries)) if allowed is None or i in allowed]
@@ -142,17 +158,21 @@ def SandboxHistoryView(props) -> object:
     extra_rows = (1 if search_mode else 0) + (1 if status_message else 0)
     vh = max(4, viewport_rows() - extra_rows)
 
-    if help_open:
-        from ._view_common import help_panel_rows
+    # ── 右栏内容（**单一** use_memo：hook 调用必须无条件且数量恒定）──
+    # ★ 修复（2026-10）：修复前帮助面板分支跳过 ``use_memo``——按 ``?`` 打开
+    #   帮助时 hook 序列变化 → 违反 Rules of Hooks（``HookStateError``）→
+    #   视图渲染异常（「按 ? 没有帮助面板」）。现把 help_open 纳入依赖。
+    def _content_rows() -> list:
+        if help_open:
+            from ._view_common import help_panel_rows
 
-        content_rows = help_panel_rows(
-            _KEYMAP, right_w, key_style=S_WARN, group_style=S_TAG,
-            desc_style=S_TITLE, sep_style=S_SEP,
-        )
-    else:
-        content_rows = use_memo(
-            lambda: message_detail_rows(entry, right_w), _message_deps(entry, right_w),
-        )
+            return help_panel_rows(
+                _KEYMAP, right_w, key_style=S_WARN, group_style=S_TAG,
+                desc_style=S_TITLE, sep_style=S_SEP,
+            )
+        return message_detail_rows(entry, right_w)
+
+    content_rows = use_memo(_content_rows, (help_open, _message_deps(entry, right_w)))
     total_content = len(content_rows)
     cursor, scroll = resolve(
         getattr(hv, "cursor", 0) or 0, getattr(hv, "scroll", 0) or 0,
@@ -216,7 +236,7 @@ def SandboxHistoryView(props) -> object:
             return True
 
         if event.kind == "char":
-            if ch == "?":
+            if is_help_char(ch):
                 hv.help_open = not bool(hv.help_open)
                 hv.pane = "detail" if hv.help_open else "list"
                 hv.cursor = 0
@@ -240,7 +260,7 @@ def SandboxHistoryView(props) -> object:
                     hv.status_message = "过滤需先搜索且有匹配"
                 return True
             if ch == "R" and entry is not None:
-                idx = int(entry.get("index", 0) or 0)
+                idx = as_int(entry.get("index"), 0)
                 if restore_confirm == idx:
                     hv.applied = {"action": "restore-message", "index": idx}
                     hv.applied_seq += 1
@@ -297,7 +317,9 @@ def SandboxHistoryView(props) -> object:
         if left_w > 0:
             runs = truncate_runs(runs, left_w)
         bg = None
-        if restore_confirm >= 0 and int(e.get("index", -1) or -1) == restore_confirm:
+        # ★ 修复（2026-10）：``int(x or -1)`` 会把消息索引 0 吞成 -1（与
+        #   ``restore_confirm`` 读取同一类 bug）——用 ``as_int`` 显式取值。
+        if restore_confirm >= 0 and as_int(e.get("index"), -1) == restore_confirm:
             bg = S_MATCH_CUR_BG
         elif orig_idx == cur_match_entry:
             bg = S_MATCH_CUR_BG
@@ -343,7 +365,9 @@ def SandboxHistoryView(props) -> object:
         hint = "  jk 滚动 · h 列表 · R 回滚到消息 · ? 帮助 · Esc 关闭"
     else:
         hint = "  ↑↓/jk 选择 · Enter 详情 · R 回滚到消息 · / 搜索 · ? 帮助 · Esc 关闭"
-    segs = [f" · {total} 条消息", f" · {len(entries)} 组"]
+    # ★ 修复（2026-10）：此前分段为「{total} 条消息 · {len(entries)} 组」——
+    #   两个数字语义重复且「组」含义不明；改为与流水视图一致的「命中/全部」。
+    segs = [f" · {total}/{len(entries)} 组"]
     if filter_on and pattern:
         segs.append(f" · 过滤 {len(matches)}/{len(entries)}")
     header_runs = build_header_runs(

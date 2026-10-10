@@ -34,6 +34,11 @@ __all__ = [
     "SORT_MODES", "TYPE_FILTERS", "sort_mode_label", "entry_sort_key",
     "fmt_time", "change_tag_style", "line_delta", "diff_rows",
     "history_rows", "message_detail_rows", "stats_rows", "stats_label_column",
+    "VIEW_STATE_ATTRS", "HELP_CHARS", "is_help_char", "as_int", "content_fingerprint",
+    "record_signature", "message_signature", "file_entry_signature",
+    "sections_signature",
+    "reset_sandbox_view_state", "resync_search", "sync_search_matches",
+    "change_search_text", "message_search_text", "record_search_text",
 ]
 
 #: 变更审查器排序模式（``s`` 循环）。
@@ -46,6 +51,283 @@ _SORT_LABELS = {
 }
 #: 变更类型过滤循环值（``T`` 循环）。
 TYPE_FILTERS = ("", "新建", "修改", "删除", "目录")
+
+#: 沙盒视图族：视图 id → AppModel 上的状态属性名（视图族单一真源）。
+VIEW_STATE_ATTRS = {
+    "changes": "changes_view",
+    "sandbox": "sandbox_view",
+    "sandbox_history": "sandbox_history_view",
+    "sandbox_records": "sandbox_records_view",
+}
+
+#: 帮助面板键字符集（半角 ``?`` + 全角 ``？``）——中文输入法下按 ``?`` 常得到
+#: 全角问号（U+FF1F），模态沙盒视图内应同样打开帮助面板（搜索输入模式下仍作为
+#: 搜索文本，不受影响）。
+HELP_CHARS = ("?", "\uff1f")
+
+
+def is_help_char(ch) -> bool:
+    """帮助面板键判定（半角 / 全角问号）。"""
+    return str(ch or "") in HELP_CHARS
+
+
+def as_int(value, default: int = 0) -> int:
+    """宽松整数转换（``None`` / 非法 → ``default``；**保留 0**）。
+
+    ★ 修复（2026-10）：此前多处用 ``int(x or default)`` 表达式，``0`` 被
+    ``or`` 吞掉——消息索引 0 是合法值（``restore_confirm`` 用 -1 表示「无待
+    确认」，``0 or -1`` → -1），导致「消息 0 无法二次确认回滚」及确认高亮
+    丢失。本函数显式区分「缺省」（None）与「值为 0」。
+    """
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def content_fingerprint(value):
+    """内容指纹（str 取 hash，其它取 id）——缓存依赖的廉价值键。"""
+    if isinstance(value, str):
+        return hash(value)
+    return id(value)
+
+
+def record_signature(row) -> tuple:
+    """单条记录条目 → 缓存签名（``use_memo`` 值驱动依赖）。"""
+    if not isinstance(row, dict):
+        return (None,)
+    return (
+        str(row.get("path", "")),
+        as_int(row.get("message_index"), -1),
+        as_int(row.get("seq"), -1),
+        str(row.get("tool", "")),
+        str(row.get("change_label", "")),
+        round(_as_float(row.get("time")), 6),
+        round(_as_float(row.get("mtime")), 6),
+        content_fingerprint(row.get("before")),
+        content_fingerprint(row.get("after")),
+    )
+
+
+def message_signature(entry) -> tuple:
+    """消息条目 → 缓存签名（含全部子记录签名，内容变化即失效）。"""
+    if not isinstance(entry, dict):
+        return (None,)
+    return (
+        as_int(entry.get("index"), -1),
+        as_int(entry.get("count")),
+        as_int(entry.get("files")),
+        round(_as_float(entry.get("time")), 6),
+        tuple(str(t) for t in (entry.get("tools") or [])),
+        tuple(record_signature(c) for c in (entry.get("changes") or [])),
+    )
+
+
+def file_entry_signature(entry) -> tuple:
+    """文件条目 → 缓存签名（右侧详情 / 预览 / 历史时间线的值驱动依赖）。
+
+    覆盖全部展示字段（变更标签 / 修改次数 / 消息索引范围 / 工具列表 /
+    首末内容指纹 / 历史条数）——修复前 ``_detail_deps`` 未含 ``tools``，
+    ``_history_deps`` 只取历史条数（同长度内容变化不失效）。
+    """
+    if not isinstance(entry, dict):
+        return (None,)
+    history = entry.get("history") or []
+    return (
+        str(entry.get("path", "")),
+        str(entry.get("change_label", "")),
+        as_int(entry.get("records"), 0),
+        as_int(entry.get("first_index"), -1),
+        as_int(entry.get("last_index"), -1),
+        round(_as_float(entry.get("mtime")), 6),
+        bool(entry.get("reverted")),
+        bool(entry.get("is_dir")),
+        tuple(str(t) for t in (entry.get("tools") or [])),
+        len(history),
+        content_fingerprint(entry.get("before")),
+        content_fingerprint(entry.get("after")),
+    )
+
+
+def sections_signature(sections) -> tuple:
+    """统计区块 → 缓存签名（值驱动；替代不可靠的 ``id()`` 依赖）。
+
+    ``id(obj)`` 作为缓存键不安全：旧对象被 GC 后新对象可能复用同一地址，
+    依赖「未变」而命中陈旧缓存。本函数按区块标题 + 行的显示内容取值。
+    """
+    out: list = []
+    for sec in sections or []:
+        if not isinstance(sec, dict):
+            continue
+        rows: list = []
+        for item in sec.get("rows") or []:
+            fields = _item_fields(item)
+            rows.append(tuple(str(f) for f in fields) if fields else ())
+        out.append((str(sec.get("title", "")), tuple(rows)))
+    return tuple(out)
+
+
+#: 视图重开 / 切换前的通用状态复位表（基类字段；``visible`` 单独处理）。
+_BASE_STATE_RESETS = {
+    "done": False,
+    "action": "",
+    "selected": 0,
+    "cursor": 0,
+    "scroll": 0,
+    "pane": "list",
+    "help_open": False,
+    "help_scroll": 0,
+    "search_mode": False,
+    "search_query": "",
+    "search_pattern": "",
+    "search_idx": -1,
+    "search_filter": False,
+    "status_message": "",
+}
+#: 各视图的专有确认 / 输入态复位（键为状态属性名）。
+_VIEW_STATE_EXTRA_RESETS = {
+    "changes_view": {
+        "revert_confirm": "", "revert_all_confirm": False,
+        "restore_mode": False, "restore_value": "", "export_message": "",
+    },
+    "sandbox_view": {"clear_confirm": False},
+    "sandbox_history_view": {"restore_confirm": -1},
+    "sandbox_records_view": {"revert_confirm": ""},
+}
+
+
+def reset_sandbox_view_state(state, attr: str = "", *, visible: bool = False) -> None:
+    """复位沙盒视图状态残留（重开 / 切换子视图前调用）。
+
+    ★ 修复（2026-10）：概览视图按 ``h``/``l`` 打开子视图时此前只翻转
+    ``model.fullscreen``——上一次关闭残留在状态上的 ``done=True`` 会让视图
+    渲染判定（``visible and not done``）为假，**二次进入显示空白界面**；
+    同批确认态（``restore_confirm`` / ``revert_confirm`` / ``clear_confirm``）
+    与搜索态也一并复位，避免「上次的二次确认」误伤下一次操作。
+
+    Args:
+        state: 视图状态对象（``ListViewState`` 子类；None 时忽略）。
+        attr: 状态属性名（``VIEW_STATE_ATTRS`` 的值；用于取专有复位表）。
+        visible: 复位后的可见性（打开切换场景传 True）。
+    """
+    if state is None:
+        return
+    for name, value in _BASE_STATE_RESETS.items():
+        try:
+            setattr(state, name, value)
+        except Exception:
+            continue
+    try:
+        state.search_matches = []   # 可变默认值：每次赋新 list，避免共享
+    except Exception:
+        pass
+    for name, value in (_VIEW_STATE_EXTRA_RESETS.get(attr) or {}).items():
+        try:
+            setattr(state, name, value)
+        except Exception:
+            continue
+    try:
+        state.visible = bool(visible)
+    except Exception:
+        pass
+
+
+def resync_search(state, items, text_of, *, label: str = "匹配") -> int:
+    """基准列表变化后重算搜索匹配索引（排序 / 视图模式 / 类型过滤切换）。
+
+    ★ 修复（2026-10）：搜索匹配存的是**基准列表下标**，而排序模式 / 视图
+    模式（文件 ↔ 消息）/ 类型过滤都会重建基准列表——旧实现只改模式不重算
+    匹配，``f`` 过滤会显示「旧下标在新列表里对应的**另一个**条目」（实测：
+    搜 ``b`` 切排序后过滤显示 ``c``）。本函数按新基准列表重算，并在过滤态
+    失去全部匹配时自动关闭过滤（避免只剩空列表且无从退出）。
+
+    Returns:
+        新匹配条目数（无搜索模式时返回 0 且不触碰状态）。
+    """
+    pattern = str(getattr(state, "search_pattern", "") or "")
+    if not pattern:
+        return 0
+    from ._view_common import find_matches
+
+    found = list(find_matches(items, pattern, text_of))
+    state.search_matches = found
+    state.search_idx = 0 if found else -1
+    if not found and bool(getattr(state, "search_filter", False)):
+        state.search_filter = False
+    return len(found)
+
+
+def sync_search_matches(state, items, text_of) -> list:
+    """渲染期同步搜索匹配（基准列表因**数据刷新**变化时自愈）。
+
+    与 :func:`resync_search`（按键切换基准列表时调用）互补：沙盒视图打开
+    期间数据会实时刷新（流式输出中工具继续写文件）——基准列表重建后旧匹配
+    下标失效，``f`` 过滤与匹配高亮会指向错误条目。本函数在渲染期比对并重算
+    （仅在结果变化时写回状态，无搜索模式时零开销）。
+
+    Returns:
+        当前有效的匹配索引列表（无搜索模式时原样返回状态值）。
+    """
+    pattern = str(getattr(state, "search_pattern", "") or "")
+    if not pattern:
+        return list(getattr(state, "search_matches", None) or [])
+    from ._view_common import find_matches
+
+    found = list(find_matches(items, pattern, text_of))
+    if found != list(getattr(state, "search_matches", None) or []):
+        state.search_matches = found
+        if found:
+            idx = as_int(getattr(state, "search_idx", -1), -1)
+            state.search_idx = idx if 0 <= idx < len(found) else 0
+        else:
+            state.search_idx = -1
+            if bool(getattr(state, "search_filter", False)):
+                state.search_filter = False
+    return found
+
+
+def change_search_text(entry: dict) -> str:
+    """文件条目搜索文本（路径 + 变更标签 + 工具）。"""
+    if not isinstance(entry, dict):
+        return ""
+    tools = entry.get("tools") or []
+    return " ".join([
+        str(entry.get("path", "")),
+        str(entry.get("change_label", "")),
+        " ".join(str(t) for t in tools),
+    ])
+
+
+def message_search_text(entry: dict) -> str:
+    """消息条目搜索文本（消息索引 + 文件路径 + 工具）。"""
+    if not isinstance(entry, dict):
+        return ""
+    return " ".join([
+        f"消息 {entry.get('index', '')}",
+        " ".join(str(p) for p in (entry.get("file_paths") or [])),
+        " ".join(str(t) for t in (entry.get("tools") or [])),
+    ])
+
+
+def record_search_text(entry: dict) -> str:
+    """记录条目搜索文本（路径 + 标签 + 工具 + 消息索引）。"""
+    if not isinstance(entry, dict):
+        return ""
+    return " ".join([
+        str(entry.get("path", "")),
+        str(entry.get("change_label", "")),
+        str(entry.get("tool", "")),
+        f"消息 {entry.get('message_index', '')}",
+    ])
 
 
 def sort_mode_label(mode: str) -> str:
@@ -120,7 +402,13 @@ def _line_count(text) -> int:
 
 
 def line_delta(before, after) -> str:
-    """前后内容行数变化摘要（``-3/+5``；新建 ``+N 行`` / 删除 ``-N 行``）。"""
+    """前后内容行数变化摘要（``-3/+5``；新建 ``+N 行`` / 删除 ``-N 行``）。
+
+    目录 / 无内容记录（前后均为 ``None``）显示 ``—``——修复前走最后分支
+    输出 ``-0/+0``（误导为「内容未变」）。
+    """
+    if before is None and after is None:
+        return "\u2014"
     b, a = _line_count(before), _line_count(after)
     if before is None and after is not None:
         return f"+{a} 行"
@@ -247,7 +535,13 @@ def message_detail_rows(entry: dict, width: int) -> list:
 
 
 def stats_label_column(sections: list) -> int:
-    """统计区块的标签列宽（显示列，含值前间隔）。"""
+    """统计区块的标签列宽（显示列，含值前间隔）。
+
+    ★ 修复（2026-10）：此前只统计 ``list/tuple`` 形式的条目——``dict`` 形式
+    条目（``stats_rows`` / ``_item_fields`` 明确支持 ``label/value/kind/bar``）
+    的标签宽度被忽略，长标签（CJK）区块列宽回退到 14 → 值起点错位。现统一
+    经 :func:`_item_fields` 归一化取值。
+    """
     from src.tui._width import wcswidth_simple
 
     widest = 0
@@ -255,8 +549,9 @@ def stats_label_column(sections: list) -> int:
         if not isinstance(sec, dict):
             continue
         for item in sec.get("rows") or []:
-            if isinstance(item, (list, tuple)) and item:
-                widest = max(widest, wcswidth_simple(str(item[0])))
+            fields = _item_fields(item)
+            if fields is not None:
+                widest = max(widest, wcswidth_simple(str(fields[0])))
     return max(14, widest + 1)
 
 
@@ -288,6 +583,8 @@ def _value_style(kind: str) -> Style:
 
 def stats_rows(sections: list, width: int) -> list:
     """统计区块 → 内容行（``list[list[StyledRun]]``，对齐 usage 视图结构）。"""
+    from src.tui._width import wcswidth_simple
+
     from ._view_common import pad_to_width
 
     label_col = stats_label_column(sections)
@@ -297,7 +594,11 @@ def stats_rows(sections: list, width: int) -> list:
             continue
         title = str(sec.get("title", ""))
         prefix = f"\u25b8 {title} "
-        pad = max(0, width - len(prefix) - 1) if width > 0 else 0
+        # ★ 修复（2026-10）：分隔线填充此前按**字符数**（``len(prefix)``）计算，
+        #   含 CJK 标题时实际显示宽度更大 → 分隔线超出 / 不足（行宽漂移）。
+        #   改为按显示宽度扣减（与 ``stats_label_column`` / ``pad_to_width`` 同源）。
+        prefix_w = wcswidth_simple(prefix)
+        pad = max(0, width - prefix_w - 1) if width > 0 else 0
         rows.append([
             StyledRun(prefix, S_GROUP),
             StyledRun("\u2500" * pad, S_SEP),

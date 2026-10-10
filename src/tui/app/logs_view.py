@@ -433,26 +433,34 @@ def LogsView(props) -> object:
     extra_rows = (1 if search_mode else 0) + (1 if status_message else 0)
     vh = max(4, viewport_rows() - extra_rows)
 
-    if help_open:
-        from ._view_common import help_panel_rows
+    # ── 右栏内容（**单一** use_memo：hook 调用必须无条件且数量恒定）──
+    # ★ 修复（2026-10）：修复前帮助面板分支跳过 ``use_memo``——按 ``?`` 打开
+    #   帮助时分支切换导致 hook 序列变化，违反 Rules of Hooks
+    #   （``HookStateError``：视图渲染异常，「按 ? 没有帮助面板」）。现收敛为
+    #   一个 memo，把 help_open / pane_mode 与各模式依赖一并纳入。
+    def _content_rows() -> list:
+        if help_open:
+            from ._view_common import help_panel_rows
 
-        content_rows = help_panel_rows(
-            _KEYMAP, right_w, key_style=_S_WARN, group_style=_S_TIME,
-            desc_style=_S_NAME, sep_style=_S_SEP,
-        )
-    elif pane_mode == "messages":
-        content_rows = use_memo(lambda: _message_rows(messages, right_w), (id(messages), len(messages), right_w))
-    elif pane_mode == "projections":
-        content_rows = use_memo(
-            lambda: _projection_rows(projections, right_w), (id(projections), len(projections), right_w),
-        )
-    elif pane_mode == "verify":
-        content_rows = use_memo(
-            lambda: _verify_rows(lv, right_w),
-            (getattr(lv, "verify_ok", None), getattr(lv, "verify_text", ""), right_w),
-        )
-    else:
-        content_rows = use_memo(lambda: _event_detail_rows(entry, right_w), (id(entry), right_w))
+            return help_panel_rows(
+                _KEYMAP, right_w, key_style=_S_WARN, group_style=_S_TIME,
+                desc_style=_S_NAME, sep_style=_S_SEP,
+            )
+        if pane_mode == "messages":
+            return _message_rows(messages, right_w)
+        if pane_mode == "projections":
+            return _projection_rows(projections, right_w)
+        if pane_mode == "verify":
+            return _verify_rows(lv, right_w)
+        return _event_detail_rows(entry, right_w)
+
+    content_rows = use_memo(_content_rows, (
+        help_open, pane_mode,
+        (id(messages), len(messages), right_w),
+        (id(projections), len(projections), right_w),
+        (getattr(lv, "verify_ok", None), getattr(lv, "verify_text", ""), right_w),
+        (id(entry), right_w),
+    ))
     total_content = len(content_rows)
     cursor, scroll = resolve(
         getattr(lv, "cursor", 0) or 0, getattr(lv, "scroll", 0) or 0,

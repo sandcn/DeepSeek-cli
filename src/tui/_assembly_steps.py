@@ -446,27 +446,20 @@ def _make_changes_toggle_cb(model, session):
             model.fullscreen = ""
         else:
             state = getattr(model, "changes_view", None)
-            if state is not None:
-                # 重开：复位上次关闭残留（终态/选中/搜索/确认/模式），保证可见
-                state.done = False
-                state.action = ""
-                state.visible = False
-                state.selected = 0
-                state.cursor = 0
-                state.scroll = 0
-                state.pane = "list"
-                state.help_open = False
-                state.search_mode = False
-                state.search_query = ""
-                state.search_pattern = ""
-                state.search_matches = []
-                state.search_idx = -1
-                state.search_filter = False
-                state.revert_confirm = ""
-                state.revert_all_confirm = False
-                state.restore_mode = False
-                state.restore_value = ""
-                state.export_message = ""
+            # 重开：复位上次关闭的残留（终态/选中/搜索/确认/模式）——单一真源
+            # ``sandbox_common.reset_sandbox_view_state``（与沙盒概览视图
+            # 「h/l 打开子视图」共用同一张复位表，避免两处字段漂移）。
+            try:
+                from src.tui.app.sandbox_common import (
+                    VIEW_STATE_ATTRS,
+                    reset_sandbox_view_state,
+                )
+
+                reset_sandbox_view_state(
+                    state, VIEW_STATE_ATTRS.get("changes", "changes_view"),
+                )
+            except Exception:
+                _logger.debug("F11 沙盒视图状态复位失败（忽略）", exc_info=True)
             refresher = getattr(model, "sandbox_refresher", None)
             if callable(refresher):
                 try:

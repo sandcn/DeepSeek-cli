@@ -79,15 +79,24 @@ from .sandbox_common import (
     S_TAG,
     S_TITLE,
     S_WARN,
+    change_search_text,
     change_tag_style,
     diff_rows,
     entry_sort_key,
+    file_entry_signature,
     fmt_time,
     history_rows,
+    is_help_char,
     line_delta,
     message_detail_rows,
+    message_search_text,
+    message_signature,
+    record_signature,
+    resync_search,
+    sections_signature,
     sort_mode_label,
     stats_rows,
+    sync_search_matches,
 )
 
 __all__ = [
@@ -100,6 +109,11 @@ __all__ = [
     "_message_detail_rows",
     "_tree_items",
     "_type_match",
+    "_base_ordered",
+    "_history_deps",
+    "_message_deps",
+    "_preview_deps",
+    "_panel_deps",
 ]
 
 _KEYMAP = [
@@ -132,26 +146,37 @@ _MAX_PREVIEW_ROWS = 400
 
 
 def _change_search_text(entry: dict) -> str:
-    """文件条目搜索文本（路径 + 变更标签 + 工具）。"""
-    if not isinstance(entry, dict):
-        return ""
-    tools = entry.get("tools") or []
-    return " ".join([
-        str(entry.get("path", "")),
-        str(entry.get("change_label", "")),
-        " ".join(str(t) for t in tools),
-    ])
+    """文件条目搜索文本（路径 + 变更标签 + 工具）。
+
+    单一真源在 ``sandbox_common.change_search_text``（别名保持历史引用面）。
+    """
+    return change_search_text(entry)
 
 
 def _message_search_text(entry: dict) -> str:
-    """消息条目搜索文本（消息索引 + 文件路径 + 工具）。"""
-    if not isinstance(entry, dict):
-        return ""
-    return " ".join([
-        f"消息 {entry.get('index', '')}",
-        " ".join(str(p) for p in (entry.get("file_paths") or [])),
-        " ".join(str(t) for t in (entry.get("tools") or [])),
-    ])
+    """消息条目搜索文本（消息索引 + 文件路径 + 工具）。
+
+    单一真源在 ``sandbox_common.message_search_text``（别名保持历史引用面）。
+    """
+    return message_search_text(entry)
+
+
+def _base_ordered(cv, entries: list, messages: list) -> tuple:
+    """当前视图模式 / 排序 / 类型过滤下的**基准列表**与搜索文本函数。
+
+    ★ 单一真源（2026-10）：渲染期与 ``s``/``T``/``t``/``m`` 切换处理共用本
+    函数——切换基准列表后必须按**新基准列表**重算搜索匹配下标（旧实现只改
+    模式，过滤态显示的是旧下标对应的另一条目）。
+    """
+    view_mode = str(getattr(cv, "view_mode", "file") or "file")
+    if view_mode == "message":
+        return list(messages), _message_search_text
+    sort_mode = str(getattr(cv, "sort_mode", "path") or "path")
+    ordered = entry_sort_key(entries, sort_mode)
+    type_filter = str(getattr(cv, "type_filter", "") or "")
+    if type_filter:
+        ordered = [e for e in ordered if _type_match(e, type_filter)]
+    return ordered, _change_search_text
 
 
 def _type_match(entry: dict, flt: str) -> bool:
@@ -190,20 +215,14 @@ def _tree_items(ordered: list, index_map: list) -> list:
 
 
 def _detail_deps(entry, right_w: int) -> tuple:
-    """``_detail_rows`` 的 useMemo 依赖（**值驱动**，避免陈旧缓存）。"""
+    """``_detail_rows`` 的 useMemo 依赖（**值驱动**，避免陈旧缓存）。
+
+    ★ 修复（2026-10）：改用 ``file_entry_signature``——修复前遗漏 ``tools``
+    （同文件后续用别的工具修改时右栏工具列表显示陈旧内容）。
+    """
     if not isinstance(entry, dict):
         return (None, right_w)
-    before = entry.get("before")
-    after = entry.get("after")
-    return (
-        str(entry.get("path", "")),
-        str(entry.get("change_label", "")),
-        str(entry.get("records", "")),
-        str(entry.get("message_index", "")),
-        hash(before) if isinstance(before, str) else id(before),
-        hash(after) if isinstance(after, str) else id(after),
-        right_w,
-    )
+    return (file_entry_signature(entry), right_w)
 
 
 def _detail_rows(entry: dict, right_w: int) -> list:
@@ -235,26 +254,42 @@ def _detail_rows(entry: dict, right_w: int) -> list:
 
 
 def _history_deps(entry, right_w: int) -> tuple:
+    """``history_rows`` 的缓存依赖（文件条目签名 + 每条历史记录签名）。
+
+    ★ 修复（2026-10）：此前只取「历史条数」——同条数下记录内容变化（该文件
+    被再次修改为不同内容、回滚后再改回）不会失效，右栏历史时间线显示陈旧
+    内容。现按每条记录的值签名判定。
+    """
     if not isinstance(entry, dict):
         return (None, right_w)
     history = entry.get("history") or []
     return (
-        str(entry.get("path", "")),
-        len(history),
-        hash(str(entry.get("before"))),
-        hash(str(entry.get("after"))),
+        file_entry_signature(entry),
+        tuple(record_signature(h) for h in history),
         right_w,
     )
 
 
 def _preview_deps(entry, right_w: int) -> tuple:
+    """``_preview_rows`` 的缓存依赖（值驱动）。"""
     if not isinstance(entry, dict):
         return (None, right_w)
+    return (file_entry_signature(entry), right_w)
+
+
+def _panel_deps(entry, sections, right_w: int) -> tuple:
+    """右栏内容缓存的**完整**依赖（文件 / 消息 / 历史 / 预览 / 统计 + 宽度）。
+
+    单 memo 结构（``_content_rows``）下所有模式共用一份依赖——为避免"未使用
+    模式的依赖变化导致无谓重算"与"使用模式的依赖遗漏"，各模式依赖各自完整
+    计算后并列（计算均为纯值提取，开销与一帧内的字符串指纹相当）。
+    """
     return (
-        str(entry.get("path", "")),
-        str(entry.get("change_label", "")),
-        hash(str(entry.get("before"))),
-        right_w,
+        _detail_deps(entry, right_w),
+        _message_deps(entry, right_w),
+        _history_deps(entry, right_w),
+        _preview_deps(entry, right_w),
+        sections_signature(sections),
     )
 
 
@@ -288,10 +323,14 @@ def _preview_rows(entry: dict, right_w: int) -> list:
 
 
 def _message_deps(entry, right_w: int) -> tuple:
+    """消息条目缓存依赖（值驱动，含子记录内容签名）。
+
+    ★ 修复（2026-10）：此前依赖仅 ``(index, 变更条数, 右栏宽)``——同消息下
+    文件内容变化但条数不变时右栏 diff 陈旧。
+    """
     if not isinstance(entry, dict):
         return (None, right_w)
-    changes = entry.get("changes") or []
-    return (entry.get("index"), len(changes), right_w)
+    return (message_signature(entry), right_w)
 
 
 def _message_detail_rows(entry: dict, right_w: int) -> list:
@@ -335,17 +374,15 @@ def ChangesView(props) -> object:
     sort_mode = str(getattr(cv, "sort_mode", "path") or "path") if cv is not None else "path"
     type_filter = str(getattr(cv, "type_filter", "") or "") if cv is not None else ""
 
-    # ── 基准列表（文件 / 消息） + 排序 + 类型过滤 ──
-    if view_mode == "message":
-        ordered = list(messages)
-        search_text_of = _message_search_text
-    else:
-        ordered = entry_sort_key(entries, sort_mode)
-        if type_filter:
-            ordered = [e for e in ordered if _type_match(e, type_filter)]
-        search_text_of = _change_search_text
+    # ── 基准列表（文件 / 消息） + 排序 + 类型过滤（与切换处理单一真源） ──
+    ordered, search_text_of = _base_ordered(cv, entries, messages)
 
     allowed = None
+    # ★ 修复（2026-10）：沙盒数据实时刷新会重建基准列表（流式输出期间工具继续
+    #   写文件），旧匹配下标随之失效 → 过滤 / 高亮 / n 定位错位。渲染期同步
+    #   一次（结果未变时零写回开销）。
+    matches = sync_search_matches(cv, ordered, search_text_of)
+    filter_on = bool(getattr(cv, "search_filter", False)) if cv is not None else False
     if filter_on and pattern and matches:
         allowed = set(matches)
     index_map = [i for i in range(len(ordered)) if allowed is None or i in allowed]
@@ -378,36 +415,37 @@ def ChangesView(props) -> object:
     extra_rows = (1 if search_mode else 0) + (1 if status_message else 0)
     vh = max(4, viewport_rows() - extra_rows)
 
-    # ── 右栏内容 ──
-    if help_open:
-        from ._view_common import help_panel_rows
+    # ── 右栏内容（**单一** use_memo：hook 调用必须无条件且数量恒定）──
+    # ★ 修复（2026-10）：修复前 help / stats / message / history / preview /
+    #   diff 六个分支各自 ``use_memo``——按 ``?`` 打开帮助时分支切换，hook
+    #   序列随之变化 → 违反 Rules of Hooks（``HookStateError: hook 类型不一致``）
+    #   → 视图渲染异常，「按 ? 没有帮助面板」。现收敛为**一个** memo，把模式
+    #   标志（help_open / view_mode / detail_mode）与内容签名一起纳入依赖：
+    #   hook 数量恒定，切换模式即重算，未变化的模式不重算。
+    def _content_rows() -> list:
+        if help_open:
+            from ._view_common import help_panel_rows
 
-        content_rows = help_panel_rows(
-            _KEYMAP, right_w, key_style=S_WARN, group_style=S_TAG,
-            desc_style=S_PATH, sep_style=S_SEP,
-        )
-    elif view_mode == "message":
-        content_rows = use_memo(
-            lambda: _message_detail_rows(entry, right_w),
-            _message_deps(entry, right_w),
-        )
-    elif detail_mode == "stats":
-        content_rows = use_memo(
-            lambda: stats_rows(sections, right_w),
-            (id(sections), len(sections), right_w),
-        )
-    elif detail_mode == "history":
-        content_rows = use_memo(
-            lambda: history_rows(entry, right_w), _history_deps(entry, right_w),
-        )
-    elif detail_mode == "preview":
-        content_rows = use_memo(
-            lambda: _preview_rows(entry, right_w), _preview_deps(entry, right_w),
-        )
-    else:
-        content_rows = use_memo(
-            lambda: _detail_rows(entry, right_w), _detail_deps(entry, right_w),
-        )
+            return help_panel_rows(
+                _KEYMAP, right_w, key_style=S_WARN, group_style=S_TAG,
+                desc_style=S_PATH, sep_style=S_SEP,
+            )
+        if detail_mode == "stats":
+            # ★ 统计面板先于「消息视图」分支——统计是全局数据，任何视图模式
+            #   都适用（修复前消息模式按 ``i`` 被消息详情抢先，按键无效）。
+            return stats_rows(sections, right_w)
+        if view_mode == "message":
+            return _message_detail_rows(entry, right_w)
+        if detail_mode == "history":
+            return history_rows(entry, right_w)
+        if detail_mode == "preview":
+            return _preview_rows(entry, right_w)
+        return _detail_rows(entry, right_w)
+
+    content_rows = use_memo(_content_rows, (
+        help_open, view_mode, detail_mode,
+        _panel_deps(entry, sections, right_w),
+    ))
     total_content = len(content_rows)
     cursor, scroll = resolve(
         getattr(cv, "cursor", 0) or 0, getattr(cv, "scroll", 0) or 0,
@@ -447,6 +485,17 @@ def ChangesView(props) -> object:
     def _target_entry() -> dict:
         return entry if isinstance(entry, dict) else {}
 
+    def _resync_matches() -> int:
+        """基准列表变化后重算搜索匹配（值驱动，返回匹配数）。"""
+        new_ordered, new_text_of = _base_ordered(cv, entries, messages)
+        return resync_search(cv, new_ordered, new_text_of)
+
+    def _with_match_status(base: str) -> str:
+        """状态提示：有搜索模式时附加重算后的匹配数。"""
+        if not (getattr(cv, "search_pattern", "") or ""):
+            return base
+        return f"{base} · 匹配 {_resync_matches()}"
+
     def _handle(event) -> bool:
         if not visible or cv is None:
             return False
@@ -466,11 +515,15 @@ def ChangesView(props) -> object:
             if event.kind == "enter":
                 raw = (getattr(cv, "restore_value", "") or "").strip()
                 cv.restore_mode = False
-                if raw.lstrip("-").isdigit():
+                # ★ 修复（2026-10）：此前用 ``raw.lstrip("-").isdigit()``——负号
+                #   被接受，``restore_to_message(-1)`` 会把**全部文件**恢复到最初
+                #   状态（等于隐式「回滚全部」），属危险的输入校验漏洞。现仅接受
+                #   非负整数（消息索引语义）。
+                if raw.isdigit():
                     _apply({"action": "restore-message", "index": int(raw)})
                     cv.status_message = f"正在回滚到消息 {int(raw)}…"
                 else:
-                    cv.status_message = "请输入消息索引（数字）"
+                    cv.status_message = "请输入非负的消息索引（数字）"
                 cv.restore_value = ""
                 return True
             if event.kind == "char":
@@ -510,7 +563,7 @@ def ChangesView(props) -> object:
             return True
 
         if event.kind == "char":
-            if ch == "?":
+            if is_help_char(ch):
                 cv.help_open = not bool(cv.help_open)
                 cv.pane = "detail" if cv.help_open else "list"
                 cv.cursor = 0
@@ -538,31 +591,42 @@ def ChangesView(props) -> object:
                 cv.selected = 0
                 cv.cursor = 0
                 cv.scroll = 0
-                cv.status_message = "目录树视图" if cv.view_mode == "tree" else "文件列表"
+                base = "目录树视图" if cv.view_mode == "tree" else "文件列表"
+                cv.status_message = _with_match_status(base)
                 return True
             if ch == "m":
                 cv.view_mode = "file" if view_mode == "message" else "message"
                 cv.selected = 0
                 cv.cursor = 0
                 cv.scroll = 0
-                cv.status_message = "消息维度视图" if cv.view_mode == "message" else "文件列表"
+                base = "消息维度视图" if cv.view_mode == "message" else "文件列表"
+                cv.status_message = _with_match_status(base)
                 return True
             if ch == "s":
                 idx = SORT_MODES.index(sort_mode) if sort_mode in SORT_MODES else 0
                 nxt = SORT_MODES[(idx + 1) % len(SORT_MODES)]
                 cv.sort_mode = nxt
-                cv.status_message = f"排序：{sort_mode_label(nxt)}"
+                cv.selected = 0
+                cv.cursor = 0
+                cv.scroll = 0
+                cv.status_message = _with_match_status(f"排序：{sort_mode_label(nxt)}")
                 return True
             if ch == "T":
+                if view_mode == "message":
+                    cv.status_message = "消息视图下不适用类型过滤（按 m 回文件列表）"
+                    return True
                 idx = TYPE_FILTERS.index(type_filter) if type_filter in TYPE_FILTERS else 0
                 nxt = TYPE_FILTERS[(idx + 1) % len(TYPE_FILTERS)]
                 cv.type_filter = nxt
                 cv.selected = 0
                 cv.cursor = 0
                 cv.scroll = 0
-                cv.status_message = f"类型过滤：{nxt or '全部'}"
+                cv.status_message = _with_match_status(f"类型过滤：{nxt or '全部'}")
                 return True
             if ch == "d":
+                if view_mode == "message":
+                    cv.status_message = "消息视图下不适用历史时间线（按 m 回文件列表）"
+                    return True
                 cv.detail_mode = "history" if detail_mode == "history" else "diff"
                 cv.cursor = 0
                 cv.scroll = 0
@@ -576,6 +640,9 @@ def ChangesView(props) -> object:
                 cv.status_message = "统计面板" if cv.detail_mode == "stats" else "右栏：差异"
                 return True
             if ch == "r":
+                if view_mode == "message":
+                    cv.status_message = "消息视图下不适用回滚预览（按 m 回文件列表）"
+                    return True
                 cv.detail_mode = "preview" if detail_mode != "preview" else "diff"
                 cv.pane = "detail"
                 cv.cursor = 0
@@ -588,9 +655,18 @@ def ChangesView(props) -> object:
                 cv.status_message = "输入消息索引后回车回滚"
                 return True
             if ch == "x" and entry is not None:
+                if view_mode == "message":
+                    # ★ 修复（2026-10）：消息条目没有 ``path``，此前按 ``x`` 会
+                    #   进入「回滚 ''」流程（提示「再按 x 确认回滚「」」→
+                    #   回滚失败）。改为提示正确入口。
+                    cv.status_message = "消息视图下按 R 回滚到该消息（x 仅文件视图）"
+                    return True
                 path = str(entry.get("path", ""))
                 if revert_confirm == path:
                     _apply({"action": "revert", "path": path})
+                    # ★ 一致性修复（2026-10）：确认后立即清确认态（与流水视图
+                    #   一致）——刷新器缺失时不会因残留确认态被下一次 x 误触发。
+                    cv.revert_confirm = ""
                     cv.status_message = "正在回滚…"
                 else:
                     cv.revert_confirm = path
@@ -614,6 +690,9 @@ def ChangesView(props) -> object:
             if ch == "y" and entry is not None:
                 from src.tui._screen import set_clipboard
 
+                if view_mode == "message":
+                    cv.status_message = "消息视图下无单一路径可复制（按 m 回文件列表）"
+                    return True
                 path = str(entry.get("path", ""))
                 if path and set_clipboard(path):
                     cv.status_message = f"已复制路径：{path}"
@@ -752,6 +831,10 @@ def ChangesView(props) -> object:
 
     mode_label = {"file": "文件", "tree": "目录树", "message": "消息"}.get(view_mode, "文件")
     detail_label = {"diff": "差异", "history": "历史", "stats": "统计", "preview": "预览"}.get(detail_mode, "差异")
+    if view_mode == "message" and detail_mode != "stats":
+        # ★ 修复（2026-10）：消息视图右栏显示「该消息下全部文件变更」，此前沿用
+        #   ``detail_mode`` 的「差异」标签，与实际内容不符。
+        detail_label = "消息详情"
     if search_mode:
         hint = "  输入搜索词 · Enter 执行 · Esc 取消"
     elif restore_mode:
@@ -762,7 +845,10 @@ def ChangesView(props) -> object:
         hint = "  jk 滚动 · h 列表 · d 历史 · i 统计 · r 预览 · ? 帮助 · Esc 关闭"
     else:
         hint = "  \u2191\u2193/jk 选择 · Enter 差异 · x 回滚 · t 树 · m 消息 · s 排序 · w 导出 · ? 帮助"
-    segs = [f" · {total} 个文件", f" · 视图 {mode_label}", f" · 右栏 {detail_label}"]
+    # ★ 修复（2026-10）：消息视图下列表单位是「条消息」——此前统一显示
+    #   「N 个文件」，与左栏内容（消息索引）不符。
+    unit = "条消息" if view_mode == "message" else "个文件"
+    segs = [f" · {total} {unit}", f" · 视图 {mode_label}", f" · 右栏 {detail_label}"]
     if type_filter:
         segs.append(f" · 类型 {type_filter}")
     if filter_on and pattern:

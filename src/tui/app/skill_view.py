@@ -180,18 +180,20 @@ def SkillView(props) -> object:
     extra_rows = (1 if search_mode else 0) + (1 if input_mode else 0) + (1 if status_message else 0)
     vh = max(4, viewport_rows() - extra_rows)
 
-    if help_open:
-        from ._view_common import help_panel_rows
+    # ── 右栏内容（**单一** use_memo：hook 调用必须无条件且数量恒定）──
+    # ★ 修复（2026-10）：修复前帮助面板分支跳过 ``use_memo``——按 ``?`` 打开
+    #   帮助时 hook 序列变化 → ``HookStateError``（视图渲染异常）。
+    def _content_rows() -> list:
+        if help_open:
+            from ._view_common import help_panel_rows
 
-        content_rows = help_panel_rows(
-            _KEYMAP, right_w, key_style=_S_WARN, group_style=_S_TAG,
-            desc_style=_S_VALUE, sep_style=_S_SEP,
-        )
-    else:
-        content_rows = use_memo(
-            lambda: _detail_rows(entry, right_w),
-            (id(entry), right_w),
-        )
+            return help_panel_rows(
+                _KEYMAP, right_w, key_style=_S_WARN, group_style=_S_TAG,
+                desc_style=_S_VALUE, sep_style=_S_SEP,
+            )
+        return _detail_rows(entry, right_w)
+
+    content_rows = use_memo(_content_rows, (help_open, (id(entry), right_w)))
     total_content = len(content_rows)
     cursor, scroll = resolve(
         getattr(sv, "cursor", 0) or 0, getattr(sv, "scroll", 0) or 0,

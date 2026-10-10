@@ -7,7 +7,8 @@
 
 布局（单栏滚动）：
   - 每个统计区块：``▸ 区块标题 ───…`` + 若干 ``标签  值`` 行；
-  - 视口按终端高度自适应，只渲染可见行；光标行整行背景高亮。
+  - 视口按终端高度自适应，只渲染可见行（纯滚动视图，无光标行高亮——
+    导航语义为 ``scroll``，与 ``cursor`` 驱动的双栏视图不同）。
 
 键盘：
   - ↑↓/jk 滚动 · PgUp/PgDn 翻页 · Home/End 或 g/G 首末；
@@ -20,6 +21,8 @@
 """
 
 from __future__ import annotations
+
+import logging
 
 from src.tui.ink import TEXT, Column, StyledRun, h, use_input
 from src.tui.ink.hooks import use_effect
@@ -45,10 +48,15 @@ from .sandbox_common import (
     S_TITLE,
     S_VALUE,
     S_WARN,
+    VIEW_STATE_ATTRS,
+    is_help_char,
+    reset_sandbox_view_state,
     stats_rows,
 )
 
-__all__ = ["SandboxStatsView"]
+_logger = logging.getLogger(__name__)
+
+__all__ = ["SandboxStatsView", "_open_sub_view"]
 
 _KEYMAP = [
     {"group": "浏览", "keys": "↑↓/jk", "desc": "滚动"},
@@ -64,14 +72,38 @@ _KEYMAP = [
 
 
 def _open_sub_view(model, view_id: str) -> None:
-    """打开沙盒子视图：先经刷新器构建数据，再切换 ``fullscreen``。"""
+    """打开沙盒子视图：构建数据 → 复位目标状态 → 切换 ``fullscreen``。
+
+    ★ 修复（2026-10，三处缺陷）：
+      1. **二次进入空白界面**：视图关闭（Esc / F11）只置 ``done=True``，
+         若状态对象未被命令线程清理（快捷键 / 子视图切换路径），残留的
+         ``done=True`` 会让渲染判定（``visible and not done``）为假 → 从概览
+         再次进入子视图看到空白页。此处统一复位。
+      2. **无刷新器时空白**：``visible`` 此前只由刷新器置位——无会话 / 沙盒
+         缺失时目标视图 ``visible`` 保持 False。此处兜底置 True。
+      3. **命令线程悬挂**：``/sandbox`` 由命令线程打开并轮询 ``state.done``；
+         切换子视图后父视图永不置终态，命令线程悬挂到 600s 超时（期间命令
+         队列全部排队不可执行）。此处主动置父视图终态释放轮询。
+    """
     refresher = getattr(model, "sandbox_refresher", None)
     if callable(refresher):
         try:
             refresher(force=True)
         except Exception:
-            pass
+            _logger.debug("沙盒子视图数据构建失败", exc_info=True)
+    target_attr = VIEW_STATE_ATTRS.get(view_id, "")
+    sub_state = getattr(model, target_attr, None) if target_attr else None
+    reset_sandbox_view_state(sub_state, target_attr, visible=True)
+    # ★ 顺序：先切 fullscreen 再释放父视图轮询——命令线程 ``_cleanup`` 仅在
+    #   ``fullscreen`` 仍指向父视图时才清空；顺序颠倒会把刚打开的子视图清掉。
     model.fullscreen = view_id
+    if view_id != "sandbox":
+        parent = getattr(model, VIEW_STATE_ATTRS["sandbox"], None)
+        if parent is not None:
+            try:
+                parent.try_set_final("switch")
+            except Exception:
+                _logger.debug("沙盒概览视图终态写入失败", exc_info=True)
 
 
 def SandboxStatsView(props) -> object:
@@ -119,7 +151,7 @@ def SandboxStatsView(props) -> object:
                 return True
             close_fullscreen_view(model, sv, "sandbox")
             return True
-        if event.kind == "char" and ch == "?":
+        if event.kind == "char" and is_help_char(ch):
             sv.help_open = not bool(sv.help_open)
             sv.scroll = 0
             return True
