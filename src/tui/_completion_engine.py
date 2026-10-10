@@ -55,8 +55,11 @@ def _get_command_help() -> Callable | None:
 # **异步模式**（``enable_async``，TUI 装配启用）未命中仅触发后台加载并立即
 # 返回「未就绪」，界面显示「加载中…」占位，数据就绪后经监听器动态刷新弹窗。
 
-#: 常驻数据源键（warmup 预热集合）。
-_RESIDENT_KEYS = ("commands", "sessions", "models", "themes", "config_keys")
+#: 常驻数据源键（warmup 预热集合）。**不含** ``sessions``——会话列表体积大、
+#: 逐条解析耗时，改为**按需懒加载**：仅在补全菜单弹出（输入 ``/load`` 或
+#: ``/load ``）时由 ``_complete_param`` 经 ``_cached`` 触发后台加载，
+#: 避免拖慢程序启动（用户需求：启动不加载 /load 补全列表）。
+_RESIDENT_KEYS = ("commands", "models", "themes", "config_keys")
 
 # ── 类型 ────────────────────────────────────────────────
 
@@ -242,7 +245,12 @@ class CompletionEngine:
         return bool(self._deferred)
 
     def warmup(self) -> None:
-        """后台预热常驻数据源（启动时调用，首次补全零等待）。"""
+        """后台预热常驻数据源（启动时调用，首次补全零等待）。
+
+        仅预热轻量数据源（``commands`` / ``models`` / ``themes`` /
+        ``config_keys``）；``sessions``（``/load`` 补全列表）**不在**其中——
+        弹出 ``/load`` 补全菜单时才按需加载（见 ``_RESIDENT_KEYS``）。
+        """
         self._source.prefetch(_RESIDENT_KEYS)
 
     def add_listener(self, listener: Callable[[str], None]) -> Callable[[], None]:
@@ -540,6 +548,9 @@ class CompletionEngine:
             ]
 
         elif cmd_name == "/load":
+            # ★ 2026-10-10（用户需求）：会话列表**懒加载**——未预热，首次读取
+            #   （补全菜单弹出）时触发后台流式加载，界面先显示「加载中…」占位，
+            #   数据就绪后经 _CmplHandler 监听器动态刷新候选。
             sessions = self._cached("sessions", [])
             matched: list[tuple[str, str]] = []
             for s in sessions:

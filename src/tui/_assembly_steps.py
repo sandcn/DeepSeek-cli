@@ -287,9 +287,12 @@ def create_chat_domain_assembly(tui_config, session, bridge):
         bridge, CompletionEngine(async_mode=True),
         request_redraw=session.request_bottom_redraw,
     )
-    # ★ 异步补全预热：后台线程加载命令/会话/模型/主题/配置键数据源——首次
+    # ★ 异步补全预热：后台线程加载命令/模型/主题/配置键数据源——首次
     #   Tab 补全零等待；数据源未就绪时补全弹窗显示「加载中…」占位，就绪后
     #   经 _CmplHandler 监听器动态刷新（见 src/tui/_completion.py）。
+    #   ★ 2026-10-10（用户需求）：会话列表（/load 补全候选）**不参与启动
+    #   预热**——改为补全菜单弹出时才按需加载（见 CompletionEngine.
+    #   _RESIDENT_KEYS），避免程序启动即解析全部会话文件。
     engine = cmpl_handler._engine
     warmup = getattr(engine, "warmup", None)
     if callable(warmup):

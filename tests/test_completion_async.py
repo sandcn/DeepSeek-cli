@@ -216,9 +216,46 @@ def test_engine_stream_sessions_grows_candidates():
 
 def test_engine_warmup_preloads_resident_keys():
     eng = CompletionEngine(commands_source=lambda: ["/help"], async_mode=True)
+    eng.register_source("models", lambda: ["m1"])
+    eng.register_source("themes", lambda: [])
+    eng.register_source("config_keys", lambda: [])
     eng.warmup()
     assert _wait_until(lambda: eng._source.is_ready("commands"))
-    assert eng._source.is_ready("models") or True  # 模型源可能为空但已加载
+    assert _wait_until(lambda: eng._source.is_ready("models"))
+    # ★ 2026-10-10（用户需求）：启动预热**不含**会话列表（/load 补全列表）
+    assert eng._source.is_ready("sessions") is False
+    assert "sessions" not in eng._source.pending_keys()
+    eng.close()
+
+
+def test_sessions_completion_list_loads_on_demand():
+    """会话列表（/load 补全候选）仅在补全菜单弹出时按需加载。"""
+    gate = threading.Event()
+    calls = {"n": 0}
+
+    def _fetch():
+        calls["n"] += 1
+        gate.wait(3)
+        return [{"id": "abc1234567", "title": "标题"}]
+
+    eng = CompletionEngine(commands_source=lambda: ["/help", "/load"], async_mode=True)
+    eng.register_source("sessions", _fetch)
+    eng.warmup()
+    assert _wait_until(lambda: eng._source.is_ready("commands"))
+    # 启动预热未触碰会话列表
+    assert calls["n"] == 0
+    assert eng._source.is_ready("sessions") is False
+    # 弹出 /load 补全菜单 → 触发按需加载（先「加载中…」，就绪后出候选）
+    assert eng.complete("/load ") == []
+    assert eng.pending is True
+    assert _wait_until(lambda: calls["n"] == 1)
+    gate.set()
+    assert _wait_until(lambda: eng._source.is_ready("sessions"))
+    items = eng.complete("/load ")
+    assert eng.pending is False
+    assert [i.item_type for i in items] == ["session"]
+    assert items[0].text == "/load abc1234567"
+    eng.close()
 
 
 # ── _CmplHandler 「加载中…」占位与动态刷新 ───────────────
