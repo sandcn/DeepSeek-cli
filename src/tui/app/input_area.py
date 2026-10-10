@@ -91,6 +91,7 @@ from src.tui.app._popup_builder import (
     _glow_color,
     _placeholder_fade_color,
     _build_popup_lines,
+    _build_loading_lines,
     _highlight_line,
     _vwidth,
     _styled_completion_cached,
@@ -441,9 +442,12 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
             id(completion.descriptions),
             len(completion.descriptions or []),
             getattr(completion, "split_desc", False),
+            # ★ 异步补全：「加载中…」占位态变化（无 items 时 visible 不变）
+            #   须进缓存键，否则占位弹窗显示/消失不触发重建。
+            getattr(completion, "loading", False),
         )
     else:
-        completion_snap = (False, 0, 0, 0, 0, 0, 0, 0, False)
+        completion_snap = (False, 0, 0, 0, 0, 0, 0, 0, False, False)
     search = props.get("history_search")
     if search is not None:
         search_snap = (
@@ -726,7 +730,17 @@ def CompletionPopup(props: dict) -> object:
     now = props.get("now")
     if now is None:
         now = time.monotonic()
-    if completion is None or not completion.visible or not completion.items:
+    if completion is None or not completion.visible:
+        return h(TEXT, {"children": "", "key": "popup-empty"})
+    # ★ 异步补全：「加载中…」占位弹窗（无 items + loading）——数据就绪后
+    #   _CmplHandler 重新 show_completions，组件随状态变化重渲染为真实候选。
+    if not completion.items:
+        if getattr(completion, "loading", False):
+            lines = _build_loading_lines(completion, width, now)
+            return h(Column, {"key": "completion-popup"}, [
+                h(TEXT, {"key": f"popup-{i}", "styled": ln.runs, "height": 1})
+                for i, ln in enumerate(lines)
+            ])
         return h(TEXT, {"children": "", "key": "popup-empty"})
     items = list(completion.items)
     # selected 钳制（_build_popup_lines 同语义——外部注入异常/越界归一化）

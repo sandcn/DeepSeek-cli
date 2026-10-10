@@ -24,6 +24,7 @@ keymap / notify / export）后集中收敛为本模块，避免多份模板漂�
 from __future__ import annotations
 
 import logging
+import threading
 import time as _time
 
 from ..adapters.output import get_default_output_port
@@ -44,6 +45,7 @@ def open_fullscreen_view(
     state_attr: str,
     state_cls,
     setup=None,
+    bg_setup=None,
     on_tick=None,
     timeout: float = DEFAULT_TIMEOUT,
     close_hint: str = "界面已关闭",
@@ -56,7 +58,10 @@ def open_fullscreen_view(
         view_id: 全屏视图 id（写入 ``model.fullscreen``）。
         state_attr: 模型上的视图状态属性名（如 ``"sessions_view"``）。
         state_cls: 视图状态类（``visible/seq/deadline/done`` 等字段 + ``try_set_final``）。
-        setup: ``setup(model, state)`` 回调——填充 entries 等（可为 None）。
+        setup: ``setup(model, state)`` 回调——同步填充（可为 None）。
+        bg_setup: ``bg_setup(state, refresh)`` 回调——在**后台线程**执行
+            （视图初始化数据异步加载，如会话列表/预览构建）；执行期间界面
+            显示加载占位，完成后调用 ``refresh()`` 请求重绘（动态更新界面）。
         on_tick: ``on_tick(state) -> bool`` 回调——每轮轮询调用；返回 True 请求
             关闭视图（置终态后 break）。用于处理组件回传（如应用选中项）。
         timeout: 超时秒数（默认 600）。
@@ -98,6 +103,11 @@ def open_fullscreen_view(
     except Exception:
         pass
 
+    # ★ 2026-10-10（初始化性能异步加载）：视图数据（会话列表 / 预览）在
+    #   后台线程构建，界面先显示加载占位，完成后请求重绘动态更新。
+    if bg_setup is not None:
+        _start_bg_setup(bg_setup, state, chat_ui, view_id)
+
     try:
         while not state.done:
             if on_tick is not None:
@@ -118,6 +128,31 @@ def open_fullscreen_view(
         return True
     finally:
         _cleanup(model, state_attr, state, view_id, state_cls, chat_ui)
+
+
+def _start_bg_setup(bg_setup, state, chat_ui, view_id: str) -> None:
+    """在后台线程执行视图数据构建（``bg_setup(state, refresh)``）。
+
+    ``refresh`` 请求渲染线程重绘（数据就绪后界面动态更新）。视图已关闭
+    （``state.done``）时 bg_setup 应自行跳过写回（本函数不做强制，保持
+    bg_setup 对自身数据流负责）。
+    """
+
+    def _refresh() -> None:
+        try:
+            chat_ui.request_bottom_redraw()
+        except Exception:
+            _logger.debug("bg_setup 重绘请求失败", exc_info=True)
+
+    def _work() -> None:
+        try:
+            bg_setup(state, _refresh)
+        except Exception:
+            _logger.debug("bg_setup 执行失败（忽略）", exc_info=True)
+
+    threading.Thread(
+        target=_work, name=f"view-bg-{view_id}", daemon=True,
+    ).start()
 
 
 def _cleanup(model, state_attr, state, view_id, state_cls, chat_ui) -> None:

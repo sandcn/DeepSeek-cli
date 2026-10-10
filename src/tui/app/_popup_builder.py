@@ -184,6 +184,44 @@ def _highlight_line(line: Line, width: int, sel_bg: int) -> Line:
     return Line(runs)
 
 
+def _build_loading_lines(completion, width: int, now: float) -> list:
+    """「加载中…」占位弹窗行（标题 + 加载提示 + 底部提示）。
+
+    异步补全场景：数据源仍在后台加载时显示，数据就绪后由
+    ``_CmplHandler._on_data_ready`` 重新 ``show_completions`` 刷新为真实候选
+    （动态更新界面）。返回 3 行，与 ``_completion_height`` 的 loading 分支
+    （返回 3）一致。
+    """
+    title = completion.title or ""
+    snap = ("loading", title, width, int(now / 0.25))
+    cached = getattr(completion, "_popup_lines_cache", None)
+    if cached is not None and cached[0] == snap:
+        return cached[1]
+
+    from src.tui.ink.helpers import truncate_line
+
+    title_color = 45
+    head = Line.of(" \u258d", Style(fg=title_color, bold=True))
+    head.append(" ", Style(fg=title_color, bold=True))
+    head.append(title, Style(fg=title_color, bold=True))
+    if width > 0 and head.width > width:
+        head = truncate_line(head, width)
+
+    body = Line.of(" \u25b6 ", Style(fg=15, bg=237))
+    body.append("\u27f3 加载中\u2026", Style(fg=245))
+    if width > 0 and body.width > width:
+        body = truncate_line(body, width)
+
+    hint = Line.of(" ", Style(fg=110))
+    hint.append("加载完成后自动刷新 \u00b7 Esc 取消", Style(fg=110))
+    if width > 0 and hint.width > width:
+        hint = truncate_line(hint, width)
+
+    lines = [head, body, hint]
+    completion._popup_lines_cache = (snap, lines)
+    return lines
+
+
 def _build_popup_lines(completion, width: int, now: float) -> list:
     """构建补全弹窗行（标题 + 候选项 + 提示）；弹窗不可见返回 []。
 
@@ -195,7 +233,14 @@ def _build_popup_lines(completion, width: int, now: float) -> list:
     items 变化自动重建；``time_glow`` 呼吸 0.1s 桶变化自动重建。
     弹窗行引用跨帧稳定（调用方只读，diff 身份短路受益）。
     """
-    if completion is None or not completion.visible or not completion.items:
+    if completion is None or not completion.visible:
+        return []
+    # ★ 异步补全：数据源后台加载中（无 items）→ 「加载中…」占位弹窗（3 行：
+    #   标题 + 加载提示 + 底部提示），与 ``_completion_height`` 的 loading
+    #   分支一致；数据就绪后由 _CmplHandler 重新 show_completions 刷新。
+    if not completion.items:
+        if getattr(completion, "loading", False):
+            return _build_loading_lines(completion, width, now)
         return []
     items = completion.items
     selected = completion.selected

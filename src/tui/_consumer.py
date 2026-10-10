@@ -332,6 +332,12 @@ class ChatUIConsumer:
         input_.set_dismiss_completion_callback(self._cmpl_handler.on_dismiss)
         input_.set_completion_navigate_callback(self._cmpl_handler.on_navigate)
         input_.set_auto_completion_callback(self._cmpl_handler.on_auto)
+        # ★ 异步补全：注入当前输入文本提供者——数据源后台加载完成时就绪
+        #   监听器按**最新**输入重算并刷新弹窗（而非过期文本）。
+        set_provider = getattr(self._cmpl_handler, "set_text_provider", None)
+        get_text = getattr(input_, "get_current_text", None)
+        if callable(set_provider) and callable(get_text):
+            set_provider(get_text)
 
     @property
     def input(self):

@@ -151,6 +151,8 @@ def SessionsView(props) -> object:
     matches = list(getattr(sv, "search_matches", None) or []) if sv is not None else []
     status_message = (getattr(sv, "status_message", "") or "") if sv is not None else ""
     delete_confirm = (getattr(sv, "delete_confirm", "") or "") if sv is not None else ""
+    loading = bool(getattr(sv, "loading", False)) if sv is not None else False
+    loading_error = (getattr(sv, "loading_error", "") or "") if sv is not None else ""
 
     # ── 过滤视图（``f``：只显示搜索匹配） ──
     allowed = None
@@ -189,6 +191,12 @@ def SessionsView(props) -> object:
             key_style=_S_WARN, group_style=_S_META, desc_style=_S_NAME,
             sep_style=_S_SEP,
         )
+    elif loading and not entries:
+        # ★ 异步初始化：会话条目后台构建中——右栏显示「加载中…」占位，
+        #   数据就绪后后台线程写回 entries 并请求重绘（动态更新界面）。
+        content_rows = [[StyledRun(" \u27f3 正在加载会话列表\u2026", _S_HINT)]]
+    elif loading_error and not entries:
+        content_rows = [[StyledRun(f" 加载失败：{loading_error}", _S_WARN)]]
     else:
         content_rows = _preview_rows(entry, right_w)
     total_content = len(content_rows)
@@ -465,9 +473,11 @@ def SessionsView(props) -> object:
         n = len(matches)
         idx = getattr(sv, "search_idx", -1)
         parts.append(f"/{pattern}  {(idx + 1) if 0 <= idx < n else 0}/{n}")
+    # ★ 异步初始化：后台构建会话条目期间提示加载中（数据就绪后自动消失）。
+    status_display = status_message or ("正在加载会话列表…" if loading else "")
     sruns = status_runs(
-        parts, style=_S_STATUS, message=status_message,
-        message_style=_S_WARN if ("确认" in status_message or "失败" in status_message) else _S_OK,
+        parts, style=_S_STATUS, message=status_display,
+        message_style=_S_WARN if ("确认" in status_display or "失败" in status_display) else _S_OK,
         width=width,
     )
     if sruns:

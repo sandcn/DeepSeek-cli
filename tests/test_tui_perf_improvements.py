@@ -578,6 +578,36 @@ class TestPathCompletionScan:
         assert items
         assert elapsed < 0.5, f"大目录补全耗时 {elapsed:.3f}s"
 
+    def test_candidate_count_not_truncated(self, tmp_path, monkeypatch):
+        """候选数量不设上限：有多少个文件就有多少个选项（>20 也不截断）。"""
+        from src.tui._completion_engine import CompletionEngine
+
+        for i in range(37):
+            (tmp_path / f"many_{i:02d}.txt").touch()
+        monkeypatch.chdir(tmp_path)
+        eng = CompletionEngine()
+        items = eng._complete_path("many_")
+        assert len(items) == 37
+        assert all(it.item_type == "file" for it in items)
+
+    def test_enumeration_lists_all_entries(self, tmp_path, monkeypatch):
+        """枚举目录（``.``）返回全部条目（目录 + 文件，不截断）。"""
+        import os
+
+        from src.tui._completion_engine import CompletionEngine
+
+        for i in range(28):
+            (tmp_path / f"e_{i:02d}.txt").touch()
+        (tmp_path / "d1").mkdir()
+        (tmp_path / "d2").mkdir()
+        monkeypatch.chdir(tmp_path)
+        eng = CompletionEngine()
+        items = eng._complete_path(".")
+        assert len(items) == 30
+        assert [it.display for it in items][:2] == [
+            "d1" + os.sep, "d2" + os.sep,
+        ]
+
     def test_small_dir_still_correct(self, tmp_path, monkeypatch):
         from src.tui._completion_engine import CompletionEngine
 

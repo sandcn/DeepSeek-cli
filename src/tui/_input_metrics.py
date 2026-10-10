@@ -114,7 +114,12 @@ def _completion_height(completion, width=None) -> int:
     #   ``completion.visible``/``.items``/``.descriptions``（仅 split_desc 用
     #   getattr），外部注入部分字段的对象（SimpleNamespace 桩）会
     #   AttributeError；与 ``_cursor.position_cursor`` 的 try 兜底口径统一。
-    if completion is None or not getattr(completion, "visible", False) or not getattr(completion, "items", None):
+    if completion is None or not getattr(completion, "visible", False):
+        return 0
+    # ★ 异步补全：「加载中…」占位弹窗（无 items）高度 = 标题 + 加载行 + 提示行。
+    if not getattr(completion, "items", None):
+        if getattr(completion, "loading", False):
+            return 3
         return 0
     n = len(completion.items)
     descs = getattr(completion, "descriptions", None) or []

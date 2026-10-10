@@ -157,7 +157,7 @@ def test_param_completion_marks_current(monkeypatch):
     from src.tui import _completion_engine as ce
 
     eng = ce.CompletionEngine()
-    monkeypatch.setattr(eng._models_cache, "get", lambda: ["m-a", "m-b"])
+    eng.register_source("models", lambda: ["m-a", "m-b"])
     monkeypatch.setattr(ce, "_current_config_value", lambda key: "m-b")
     items = eng.complete("/model")
     by_text = {i.display: i.desc for i in items}
@@ -170,9 +170,7 @@ def test_theme_param_completion_marks_current(monkeypatch):
     from src.tui import _completion_engine as ce
 
     eng = ce.CompletionEngine()
-    monkeypatch.setattr(
-        eng._theme_cache, "get", lambda: [("dark", "暗"), ("light", "亮")],
-    )
+    eng.register_source("themes", lambda: [("dark", "暗"), ("light", "亮")])
     monkeypatch.setattr(ce, "_current_config_value", lambda key: "light")
     items = eng.complete("/theme")
     by_text = {i.display: i.desc for i in items}
@@ -350,3 +348,40 @@ def test_build_lines_multiline_indicator():
     lines = _build_lines(fiber)
     mode_line = "".join(r.text for r in lines[-1].runs)
     assert "\u21b5 3 \u884c" in mode_line
+
+
+def _render_completion_popup(names, selected=0, width=100):
+    from src.tui.app.app import App
+    from src.tui.app.model import AppModel
+    from src.tui.ink import h, renderToString
+
+    m = AppModel()
+    m.input_text = "file_"
+    m.input_cursor = 5
+    c = m.completion
+    c.visible = True
+    c.items = list(names)
+    c.texts = list(names)
+    c.types = ["file"] * len(names)
+    c.match_prefix = "file_"
+    c.title = "补全"
+    c.selected = selected
+    out = renderToString(h(App, {"model": m, "width": width}), {"columns": width})
+    import re
+    return re.sub(r"\x1b\[[0-9;]*m", "", out)
+
+
+def test_completion_popup_lists_all_candidates():
+    """候选数量不截断：60 个文件全为选项，标题显示总数 (1/60)。"""
+    names = [f"file_{i:02d}.txt" for i in range(60)]
+    out = _render_completion_popup(names)
+    assert "file_00.txt" in out
+    assert "(1/60)" in out
+
+
+def test_completion_popup_scrolls_to_last_candidate():
+    """候选多时窗口跟随选中项：选中末项后该候选可见（可翻阅全部选项）。"""
+    names = [f"file_{i:02d}.txt" for i in range(60)]
+    out = _render_completion_popup(names, selected=59)
+    assert "file_59.txt" in out
+    assert "(60/60)" in out

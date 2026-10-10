@@ -652,7 +652,7 @@ class TestCompletion:
     def test_model_param_completion_still_works(self, monkeypatch):
         from src.tui import _completion_engine as ce
         eng = ce.CompletionEngine()
-        monkeypatch.setattr(eng._models_cache, "get", lambda: ["m-a", "m-b"])
+        eng.register_source("models", lambda: ["m-a", "m-b"])
         items = eng.complete("/model")
         assert all(i.item_type == "param" for i in items)
         assert any(i.text.startswith("/model ") for i in items)

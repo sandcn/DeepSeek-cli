@@ -29,6 +29,11 @@ class JsonFilePersistence(PersistencePort):
         from ...chat_msgs import list_sessions as _list
         return _list()
 
+    def iter_sessions(self):
+        """逐条产出会话摘要（流式：每解析出一条即刻产出，界面可增量显示）。"""
+        from ...chat_msgs import iter_sessions as _iter
+        return _iter()
+
     def delete_session(self, session_id: str) -> bool:
         from ...chat_msgs import delete_session as _delete
         return _delete(session_id)

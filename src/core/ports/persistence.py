@@ -40,6 +40,15 @@ class PersistencePort(ABC):
     def list_sessions(self) -> list[dict]:
         """列出所有已保存的会话摘要（按保存时间降序）。"""
 
+    def iter_sessions(self):
+        """**逐条**产出会话摘要（流式，可选能力；默认基于 ``list_sessions``）。
+
+        实现方可覆盖为真流式实现（每解析出一条会话即产出，调用方/界面可
+        增量显示「加载成功一条即增加一条」）；默认实现等价于遍历
+        ``list_sessions()`` 结果。
+        """
+        yield from (self.list_sessions() or ())
+
     @abstractmethod
     def delete_session(self, session_id: str) -> bool:
         """删除指定会话，成功返回 True，不存在 / 失败返回 False。"""

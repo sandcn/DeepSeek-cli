@@ -20,9 +20,12 @@
                               定位与 app 输入区共享，消除 ink→app 反向依赖）
   _dispatcher.py            — EventDispatcher（DisplayEvent → RenderCommand 过滤+入队）
   _consumer.py              — ChatUIConsumer 兼容实现
-  _completion.py            — _CmplHandler 补全处理器
+  _completion.py            — _CmplHandler 补全处理器（含异步「加载中…」占位与
+                              数据就绪后的动态刷新）
   _completion_engine.py     — CompletionEngine 终端补全引擎（/命令/路径/参数补全，
                               供 _CmplHandler 委托；与 _completion.py 职责互补）
+  _async_source.py          — AsyncSource 异步数据源（后台加载 + 键级缓存 + 就绪
+                              通知；支持流式逐条 emit，供补全/视图异步初始化）
   _assembly.py              — TuiAssembly 子系统装配工厂（瘦编排器：结果容器 +
                               assemble() 编排 + _create_* 兼容转发）
   _assembly_steps.py        — 装配子步骤独立模块（create_infrastructure/...，

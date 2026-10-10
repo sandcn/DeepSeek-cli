@@ -16,23 +16,15 @@ from __future__ import annotations
 import os
 import re
 import threading
-import time
 import glob as _glob_module
 import logging
 from dataclasses import dataclass
-from typing import Callable, TypeVar
+from typing import Any, Callable
 
-T = TypeVar("T")
+from ._async_source import AsyncSource
 
 _logger = logging.getLogger(__name__)
 
-#: 路径补全候选项数量上限（P3：原魔法数字 20 提升为模块级常量）——
-#: 与补全弹窗可见行数耦合（弹窗最多显示 20 行候选项，超出部分无 UI 消费
-#: 方）；限制避免超大目录下返回过多候选拖慢渲染。
-_MAX_COMPLETION_ITEMS = 20
-#: ★ P2（review）：路径补全扫描结果硬上限（超大目录防抖）——超限截断后再
-#: 排序/取前 N 候选（正常目录远小于该值，零行为变化）。
-_MAX_SCAN_ITEMS = 5000
 #: 路径补全「目录类型预扫描」阈值（匹配数不超过该值时逐项 ``os.path.isdir``，
 #: 超过时先一次 ``os.scandir`` 建立类型映射）。小目录下逐项 stat 更便宜，
 #: 大目录（数千项）下 scandir 快一个数量级。
@@ -57,48 +49,14 @@ def _get_command_help() -> Callable | None:
         _get_command_help_ready = True
     return _get_command_help_impl
 
-# ── 简易 TTL 缓存 ────────────────────────────────────────
+# ── 异步数据源（键级缓存 + 后台加载） ──────────────────────
+# 补全数据源（命令 / 会话 / 模型 / 主题 / 配置键）统一经 ``AsyncSource``
+# 承载：**同步模式**（默认）未命中即在调用线程加载，行为与旧 TTL 缓存一致；
+# **异步模式**（``enable_async``，TUI 装配启用）未命中仅触发后台加载并立即
+# 返回「未就绪」，界面显示「加载中…」占位，数据就绪后经监听器动态刷新弹窗。
 
-class _TTLCache:
-    """简易 TTL 缓存 — 替换已删除的 core/ttl_cache.py。
-
-    P2-7：get() 加锁（threading.Lock）——原实现无锁，并发时多个线程同时
-    判定过期并重复执行 fetcher（重复查询会话/模型/主题列表）；加锁后仅
-    单线程执行 fetcher，其余线程等待并复用结果（双重检查：锁内二次判定
-    过期，避免等待期间已被其他线程刷新）。
-    """
-
-    def __init__(self, fetcher: Callable[[], T], ttl: float = 60.0):
-        self._fetcher = fetcher
-        self._ttl = ttl
-        self._value: T | None = None
-        self._expires: float = 0.0
-        self._lock = threading.Lock()
-        # ★ P3（review）：独立的「未加载」标志——修复前以 ``self._value is
-        #   None`` 判定未命中：若某 fetcher 合法返回 None，缓存将永久失效、
-        #   每次按键重跑 fetcher。
-        self._loaded: bool = False
-
-    def get(self) -> T:
-        now = time.monotonic()
-        if not self._loaded or now >= self._expires:
-            with self._lock:
-                # 双重检查：等待锁期间可能已被其他线程刷新
-                now = time.monotonic()
-                if not self._loaded or now >= self._expires:
-                    self._value = self._fetcher()
-                    self._loaded = True
-                    self._expires = now + self._ttl
-        return self._value  # type: ignore[return-value]
-
-    def clear(self) -> None:
-        with self._lock:
-            self._value = None
-            self._expires = 0.0
-
-    def refresh(self) -> T:
-        self.clear()
-        return self.get()
+#: 常驻数据源键（warmup 预热集合）。
+_RESIDENT_KEYS = ("commands", "sessions", "models", "themes", "config_keys")
 
 # ── 类型 ────────────────────────────────────────────────
 
@@ -250,26 +208,82 @@ class CompletionEngine:
 
     def __init__(
         self, commands_source: Callable[[], list[str]] | None = None,
+        *, async_mode: bool = False,
     ):
         source = commands_source or _default_commands_source
-        self._commands_cache = _TTLCache(fetcher=source, ttl=60.0)
-        self._sessions_cache = _TTLCache(
-            fetcher=self._fetch_sessions, ttl=60.0,
-        )
-        # ★ review 方向：模型/主题缓存 TTL 从 300s 降至 60s——模型列表变更
-        #   （插件/配置更新）后最长 5 分钟补全不刷新的延迟过长；60s 平衡缓存
-        #   收益与新鲜度（与命令/会话缓存 TTL 一致）。
-        self._models_cache = _TTLCache(
-            fetcher=self._fetch_models, ttl=60.0,
-        )
-        self._theme_cache = _TTLCache(
-            fetcher=self._fetch_themes, ttl=60.0,
-        )
-        # ★ P2（review 2026-08-20）：/config 补全键名 TTL 缓存——与命令/
-        #   模型/主题缓存一致（60s），避免每次 Tab 重建全部配置条目。
-        self._config_keys_cache = _TTLCache(
-            fetcher=self._fetch_config_keys, ttl=60.0,
-        )
+        #: 数据源（键级缓存 + 可选后台加载）；同步模式未命中即在调用线程加载。
+        self._source = AsyncSource("completion")
+        self._source.register("commands", source, ttl=60.0)
+        # 会话列表：**流式**数据源——逐条 emit（每解析出一个会话即增量可见），
+        # /load 补全弹窗随加载进度增长（数据就绪一条即界面增加一条候选）。
+        self._source.register_stream("sessions", self._stream_sessions, ttl=60.0)
+        self._source.register("models", self._fetch_models, ttl=60.0)
+        self._source.register("themes", self._fetch_themes, ttl=60.0)
+        self._source.register("config_keys", self._fetch_config_keys, ttl=60.0)
+        #: 异步模式（TUI 装配启用）：未就绪返回空 + 界面显示「加载中…」占位。
+        self._async_mode = bool(async_mode)
+        #: 本次 complete 中处于「等待后台加载」的数据源键（pending 判定）。
+        self._deferred: set[str] = set()
+        self._lock = threading.RLock()
+
+    # ── 异步开关 / 预热 / 就绪监听 ──────────────────────
+
+    def enable_async(self) -> None:
+        """启用异步数据加载（未就绪不阻塞渲染线程，界面显示加载占位）。"""
+        self._async_mode = True
+
+    @property
+    def async_mode(self) -> bool:
+        return self._async_mode
+
+    @property
+    def pending(self) -> bool:
+        """最近一次 ``complete`` 是否命中「数据仍在后台加载」的数据源。"""
+        return bool(self._deferred)
+
+    def warmup(self) -> None:
+        """后台预热常驻数据源（启动时调用，首次补全零等待）。"""
+        self._source.prefetch(_RESIDENT_KEYS)
+
+    def add_listener(self, listener: Callable[[str], None]) -> Callable[[], None]:
+        """注册数据就绪监听器（后台线程调用；界面据此动态刷新）。"""
+        return self._source.add_listener(listener)
+
+    def close(self) -> None:
+        """关闭后台加载线程（幂等）。"""
+        self._source.close()
+
+    def invalidate(self, key: str | None = None) -> None:
+        """使数据源缓存失效（key=None 清全部；下次读取重新加载）。"""
+        self._source.invalidate(key)
+
+    def register_source(self, key: str, fetcher: Callable[[], Any],
+                        ttl: float = 60.0) -> None:
+        """覆盖/注册数据源 fetcher（扩展点：外部注入自定义数据源并立即使缓存失效）。
+
+        内置键：``commands`` / ``sessions`` / ``models`` / ``themes`` /
+        ``config_keys``。
+        """
+        self._source.register(key, fetcher, ttl)
+        self._source.invalidate(key)
+
+    def register_stream_source(self, key: str, producer: Callable[[Callable], None],
+                               ttl: float = 60.0) -> None:
+        """覆盖/注册**流式**数据源（``producer(emit)`` 逐条 emit 增量结果）。
+
+        每次 emit 即刻更新缓存并按节流通知（补全弹窗随加载进度逐条增长）。
+        """
+        self._source.register_stream(key, producer, ttl)
+        self._source.invalidate(key)
+
+    def _cached(self, key: str, default: Any = None) -> Any:
+        """读取数据源；未就绪时记录 pending 并返回 default（不阻塞）。"""
+        ready, value = self._source.peek(key, sync_fallback=not self._async_mode)
+        if ready:
+            return value
+        with self._lock:
+            self._deferred.add(key)
+        return default
 
     # ── 缓存 fetcher ───────────────────────────────────
 
@@ -280,6 +294,28 @@ class CompletionEngine:
             return list_sessions()
         except Exception:
             return []
+
+    @staticmethod
+    def _stream_sessions(emit) -> None:
+        """会话列表流式 fetcher（逐条 emit 累积列表）。
+
+        每解析出一个会话即 emit 当前累积列表（缓存即时更新 + 节流通知界面，
+        补全弹窗随加载进度逐条增长）；异常回退空列表（不阻塞后续数据源）。
+        """
+        try:
+            from ..chat_msgs import iter_sessions
+        except Exception:
+            emit([])
+            return
+        out: list[dict] = []
+        try:
+            for session in iter_sessions():
+                out.append(session)
+                emit(list(out))
+        except Exception:
+            _logger.debug("会话列表流式加载失败", exc_info=True)
+        if not out:
+            emit([])
 
     @staticmethod
     def _fetch_models() -> list[str]:
@@ -327,6 +363,8 @@ class CompletionEngine:
         Returns:
             补全项列表，可能为空。第一项为"当前最佳匹配"。
         """
+        with self._lock:
+            self._deferred.clear()
         if not text:
             return []
 
@@ -411,7 +449,7 @@ class CompletionEngine:
         方向D 步骤13：候选语义排序——精确匹配 > 前缀匹配（长度升序）>
         子串包含（长度升序）；同优先级按字母序（稳定排序保持注册表序为次级）。
         """
-        commands = self._commands_cache.get()
+        commands = self._cached("commands", [])
         ranked = _ranked(commands, prefix)
         # ★ P3（review 2026-08-22）：``get_command_help`` 经模块级惰性缓存
         #   （``_get_command_help``）取得——修复前每 Tab 重复 from import +
@@ -474,7 +512,7 @@ class CompletionEngine:
             replace_full = not param_words
 
         if cmd_name == "/model":
-            models = self._models_cache.get()
+            models = self._cached("models", [])
             current = _current_config_value("model")
             # 方向D 步骤13：语义排序（精确 > 前缀 > 子串，长度升序）
             return [
@@ -488,7 +526,7 @@ class CompletionEngine:
             ]
 
         elif cmd_name == "/theme":
-            themes = self._theme_cache.get()
+            themes = self._cached("themes", [])
             current = _current_config_value("theme")
             ranked = _ranked([name for name, _desc in themes], param_last)
             return [
@@ -502,7 +540,7 @@ class CompletionEngine:
             ]
 
         elif cmd_name == "/load":
-            sessions = self._sessions_cache.get()
+            sessions = self._cached("sessions", [])
             matched: list[tuple[str, str]] = []
             for s in sessions:
                 sid: str = s.get("id", "")
@@ -549,15 +587,11 @@ class CompletionEngine:
     def _config_key_names(self) -> list[str]:
         """配置键名列表（显示路径；异常回退 []——补全失败不崩溃）。
 
-        ★ P2（review 2026-08-20）：经 ``_config_keys_cache``（TTL 60s）缓存
-        ——修复前每次 Tab 重建全部配置条目（``build_config_entries`` 内部
-        ``get_rc()`` + MODEL 聚合 PROVIDERS），高频补全按键下 IO 开销；
-        与命令/模型/主题缓存 TTL 一致。
+        经数据源缓存（TTL 60s）——避免每次 Tab 重建全部配置条目
+        （``build_config_entries`` 内部 ``get_rc()`` + MODEL 聚合 PROVIDERS）；
+        异步模式下未就绪返回空并触发后台加载（界面显示「加载中…」占位）。
         """
-        try:
-            return self._config_keys_cache.get()
-        except Exception:
-            return []
+        return self._cached("config_keys", [])
 
     def _fetch_config_keys(self) -> list[str]:
         """配置键名 fetcher（TTL 缓存底层；异常回退 []）。"""
@@ -684,17 +718,6 @@ class CompletionEngine:
         except Exception:
             return []
 
-        # ★ P2（review，超大目录性能）：扫描结果截断上限——修复前对 glob 的
-        #   全部结果（无上限）做排序 + 逐项 os.path.isdir；``~``/``.`` 会枚举
-        #   整目录，数万项时每次按键 O(N log N)+N 次 stat，渲染线程卡顿。
-        #   截断到上限（排序后取前 N 候选，语义近似；正常目录远小于上限，
-        #   零行为变化）。
-        if len(matches) > _MAX_SCAN_ITEMS:
-            _logger.debug(
-                "路径补全扫描结果 %d 项超上限 %d，截断", len(matches), _MAX_SCAN_ITEMS,
-            )
-            matches = matches[:_MAX_SCAN_ITEMS]
-
         # 排序：目录优先，然后按字母
         # ★ 性能（大目录路径补全）：先一次性 ``os.scandir`` 建立
         #   「entry 名 → 是否目录」映射，排序 key 直接查表——修复前排序 key 对
@@ -729,8 +752,8 @@ class CompletionEngine:
 
         matches.sort(key=lambda p: (not _is_dir(p), os.path.basename(p).lower()))
 
-        # 限制数量（模块级常量 _MAX_COMPLETION_ITEMS，与补全弹窗可见行数耦合）
-        max_items = _MAX_COMPLETION_ITEMS
+        # 候选数量不设上限：有多少个文件就有多少个选项（弹窗内由可见行数
+        # + ↑↓/PgUp/PgDn 滚动承载，用户可浏览全部匹配）。
 
         # 找到公共前缀用于计算 start_pos
         if prefix.endswith(os.sep):
@@ -749,7 +772,7 @@ class CompletionEngine:
                 base += os.sep
 
         result: list[CompletionItem] = []
-        for p in matches[:max_items]:
+        for p in matches:
             name = os.path.basename(p)
             is_dir = _is_dir(p)
             if is_dir:

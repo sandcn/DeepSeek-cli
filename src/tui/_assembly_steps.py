@@ -284,9 +284,19 @@ def create_chat_domain_assembly(tui_config, session, bridge):
         max_error_length=tui_config.max_error_length,
     )
     cmpl_handler = _CmplHandler(
-        bridge, CompletionEngine(),
+        bridge, CompletionEngine(async_mode=True),
         request_redraw=session.request_bottom_redraw,
     )
+    # ★ 异步补全预热：后台线程加载命令/会话/模型/主题/配置键数据源——首次
+    #   Tab 补全零等待；数据源未就绪时补全弹窗显示「加载中…」占位，就绪后
+    #   经 _CmplHandler 监听器动态刷新（见 src/tui/_completion.py）。
+    engine = cmpl_handler._engine
+    warmup = getattr(engine, "warmup", None)
+    if callable(warmup):
+        try:
+            warmup()
+        except Exception:
+            _logger.debug("补全数据源预热失败", exc_info=True)
     subagent_controller = SubAgentPanelController.get_default()
     # ★ 方向5（单例统一）：装配复用单例并注入 push_cmd 回调（消除双实例
     #   ——事件订阅/状态在单例上累积，不因装配重建丢失）。

@@ -37,43 +37,54 @@ def _get_match_prefix(items: list, last_word: str) -> str:
     return last_word
 
 
-def _show_completions_for(bb, engine, text: str) -> bool:
-    """计算候选项并显示补全弹窗（on_auto / _first_tab 共用 helper）。
+def _last_word_of(text: str) -> str:
+    """取最后一个非空词（尾随空格时回退前一个词）。
 
-    方向F·步骤13 去重：两处显示块逻辑一致，收敛为单一入口。
-
-    P3-20 副作用说明：本函数为**有副作用的显示入口**（调用
-    ``bb.show_completions`` 显示弹窗），仅收敛显示块逻辑，**不承担状态管理**
-    （防抖状态 ``_last_auto_text`` / 隐藏逻辑由调用方 _CmplHandler 管理）。
-
-    Args:
-        bb: InkBridge 实例（调用 show_completions）。
-        engine: CompletionEngine 实例（调用 complete）。
-        text: 当前输入缓冲区文本。
-
-    Returns:
-        True 表示已显示弹窗；False 表示无候选项（调用方负责 hide）。
+    ``re.split(r"\\s+", text)`` 保留尾随空串（``"cd "`` → ``['cd', '']``）——
+    取最后一个非空词使 ``orig_prefix`` 与引擎 ``start_pos`` 的「替换最后一个
+    词」语义对齐（否则 ``/config set `` + Tab 会应用出重复前缀）。
     """
-    items = engine.complete(text)
-    if not items:
-        return False
-
-    # P2-6：与 CompletionEngine.complete 统一为 re.split(r"\s+")（保留尾随空串）——
-    # 原 split(" ") 对含 \t 输入不切分（cd\t/src 中 last_word 取整段
-    # "cd\t/src"，路径补全失效）；re.split 保留尾随空串（"cd " → ['cd', '']，
-    # 与 split(" ") 空格语义一致，且兼容制表符）。
     words = re.split(r"\s+", text)
     last_word = words[-1] if words else ""
-    # ★ P1（review）：尾随空格时 re.split 保留空串（``"cd "`` → ``['cd', '']``），
-    #   使 ``last_word=""`` 而引擎 ``_complete_param`` 的 ``param_last`` 取
-    #   非空词（``start_pos=-len(sub)``）——两者失配导致 ``/config set `` + Tab
-    #   应用出 ``/config sset api_base_url``（重复 ``s``）。此处取最后一个非空词，
-    #   使 ``orig_prefix`` 与引擎 ``start_pos`` 的「替换最后一个词」语义对齐。
     if last_word == "" and words:
         for w in reversed(words):
             if w:
-                last_word = w
-                break
+                return w
+    return last_word
+
+
+#: ``_show_completions_for`` 结果：候选就绪 / 数据加载中 / 无候选。
+_SHOW_ITEMS = "items"
+_SHOW_LOADING = "loading"
+_SHOW_NONE = "none"
+
+
+def _show_completions_for(bb, engine, text: str) -> str:
+    """计算候选项并显示补全弹窗（on_auto / _first_tab / 数据就绪刷新共用）。
+
+    三态返回：候选就绪显示弹窗；数据源仍在后台加载（异步模式）显示
+    「加载中…」占位弹窗（就绪后由 ``_CmplHandler._on_data_ready`` 动态刷新）；
+    无候选且无待加载数据返回 ``_SHOW_NONE``（调用方关闭弹窗）。
+
+    Args:
+        bb: InkBridge 实例（调用 show_completions）。
+        engine: CompletionEngine 实例（调用 complete / pending）。
+        text: 当前输入缓冲区文本。
+
+    Returns:
+        ``_SHOW_ITEMS`` / ``_SHOW_LOADING`` / ``_SHOW_NONE``。
+    """
+    items = engine.complete(text)
+    last_word = _last_word_of(text)
+
+    if not items:
+        if getattr(engine, "pending", False):
+            bb.show_completions(
+                [], 0, texts=[], start_pos=0, orig_prefix=last_word,
+                types=[], match_prefix=last_word, loading=True,
+            )
+            return _SHOW_LOADING
+        return _SHOW_NONE
 
     match_prefix = _get_match_prefix(items, last_word)
 
@@ -87,7 +98,7 @@ def _show_completions_for(bb, engine, text: str) -> bool:
         # Claude TUI parity 步骤 3.7：斜杠命令描述（缺省空列表兼容旧调用）
         descriptions=[getattr(item, "desc", "") for item in items],
     )
-    return True
+    return _SHOW_ITEMS
 
 
 class _CmplHandler:
@@ -104,18 +115,64 @@ class _CmplHandler:
     def __init__(
         self, bottom_bar: "InkBridge", engine: "CompletionEngine",
         request_redraw: Callable[[], None],
+        text_provider: Callable[[], str] | None = None,
     ):
         self._bb = bottom_bar
         self._engine = engine
         self._request_redraw = request_redraw
         self._last_auto_text: str | None = None
+        #: 当前输入文本提供者（数据就绪后按**最新**输入重算；未注入时回退
+        #: 最近一次补全请求文本，保证异步刷新不显示过期候选）。
+        self._text_provider = text_provider
+        self._last_request_text = ""
+        # 异步补全：数据源后台加载就绪 → 重新计算并刷新弹窗（动态更新界面）。
+        add_listener = getattr(engine, "add_listener", None)
+        if callable(add_listener):
+            try:
+                add_listener(self._on_data_ready)
+            except Exception:
+                pass
+
+    def set_text_provider(self, provider: Callable[[], str] | None) -> None:
+        """注入当前输入文本提供者（装配后由 ``setup_completion`` 注入）。"""
+        self._text_provider = provider
+
+    def _current_text(self) -> str:
+        """当前输入文本（provider 优先，异常/未注入回退最近一次请求文本）。"""
+        provider = self._text_provider
+        if callable(provider):
+            try:
+                text = provider()
+                if text is not None:
+                    return str(text)
+            except Exception:
+                pass
+        return self._last_request_text
+
+    def _on_data_ready(self, key: str = "") -> None:
+        """数据源就绪回调（后台线程）→ 按最新输入重算并刷新补全弹窗。
+
+        绕过自动补全防抖（``_last_auto_text`` 置 None）：同一文本的补全在
+        数据未就绪时已被防抖跳过，就绪后必须重算才能显示候选。
+        从未触发过补全（``_last_auto_text is None``）且弹窗不可见时直接返回
+        ——启动预热完成不触发无谓重绘。
+        """
+        if self._last_auto_text is None and not self._bb.is_completion_visible:
+            return
+        self._last_auto_text = None
+        self.on_auto(self._current_text())
 
     def on_tab(self, text: str) -> str | None:
         """Tab 补全入口。
 
-        补全弹窗已可见 → 确认当前选中项并应用。
+        数据加载中（「加载中…」占位弹窗可见）→ 不应用、不插入制表符，
+        等就绪后由 ``_on_data_ready`` 刷新；
+        补全弹窗已可见 → 确认当前选中项并应用；
         弹窗不可见 → 计算候选项，显示弹窗，返回首个匹配。
         """
+        self._last_request_text = text
+        if self._bb.is_completion_loading:
+            return text
         if self._bb.is_completion_visible:
             return self._cycle_tab(text)
         return self._first_tab(text)
@@ -153,6 +210,7 @@ class _CmplHandler:
         # 防抖：文本未变化时跳过重复计算（None 为哨兵值，首次调用不跳过）
         if self._last_auto_text is not None and text == self._last_auto_text:
             return
+        self._last_request_text = text
 
         if not text:
             self._bb.hide_completions()
@@ -186,7 +244,7 @@ class _CmplHandler:
                 self._last_auto_text = text
                 return
 
-        if not _show_completions_for(self._bb, self._engine, text):
+        if _show_completions_for(self._bb, self._engine, text) == _SHOW_NONE:
             self._bb.hide_completions()
             self._request_redraw()
             self._last_auto_text = text
@@ -214,10 +272,11 @@ class _CmplHandler:
     def _first_tab(self, text: str) -> str | None:
         """首次 Tab → 计算候选项，设置状态 + 请求重绘。
 
-        ★ P3（review）：成功分支不再重复 ``_request_redraw()``——
-        ``_show_completions_for`` 内 ``bb.show_completions`` 已请求重绘。
+        数据加载中（``_SHOW_LOADING``）→ 弹窗显示占位并返回 text（不插入
+        制表符，等就绪后自动刷新）；无候选 → 关闭弹窗返回 None（插入制表符）。
         """
-        if not _show_completions_for(self._bb, self._engine, text):
+        status = _show_completions_for(self._bb, self._engine, text)
+        if status == _SHOW_NONE:
             self._bb.hide_completions()
             self._request_redraw()
             return None

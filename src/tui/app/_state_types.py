@@ -118,6 +118,9 @@ class CompletionState:
     """补全弹窗状态（_CmplHandler 注入）。"""
 
     visible: bool = False
+    # ★ 异步补全：数据源后台加载中（弹窗显示「加载中…」占位，Tab 不应用补全，
+    #   数据就绪后 _CmplHandler._on_data_ready 刷新为真实候选）。
+    loading: bool = False
     title: str = "补全"
     items: list = field(default_factory=list)
     texts: list = field(default_factory=list)
@@ -750,6 +753,11 @@ class SessionsViewState(ListViewState):
     rename_value: str = ""
     rename_cursor: int = 0
     delete_confirm: str = ""
+    # ★ 异步初始化：会话条目在后台线程构建——构建期间 loading=True（视图
+    #   显示「正在加载会话列表…」占位），完成后由后台线程写回 entries 并
+    #   请求重绘（动态更新界面）。
+    loading: bool = False
+    loading_error: str = ""
 
 
 @dataclass

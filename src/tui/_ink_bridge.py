@@ -111,20 +111,36 @@ class InkBridge(_BottomBarCompatMixin):
     def is_completion_visible(self) -> bool:
         return self._model.completion.visible
 
+    @property
+    def is_completion_loading(self) -> bool:
+        """补全弹窗是否处于「数据加载中」占位态（此时 Tab 不应用补全）。"""
+        c = self._model.completion
+        return bool(c.visible and getattr(c, "loading", False))
+
     def show_completions(self, items, selected_idx, texts=None, start_pos=0,
                          orig_prefix="", title="补全", types=None,
                          match_prefix="", descriptions=None,
-                         split_desc=False) -> None:
-        if not items:
+                         split_desc=False, loading=False) -> None:
+        # loading=True：异步数据源未就绪——允许空 items（弹窗显示「加载中…」
+        # 占位，数据就绪后经 ``show_completions`` 再次调用刷新为真实候选）。
+        if not items and not loading:
             return
-        c = self._model.completion
+        # ★ 原子替换完成态对象（而非逐字段更新）：异步补全下本方法可能由
+        #   后台加载线程调用，渲染线程并发读取——整体替换保证读到的
+        #   items/texts/selected 始终自洽（逐字段更新存在「items 已换、texts
+        #   未换」的中间态，Tab 应用会拿到错位候选）。旧状态的弹窗行缓存与
+        #   滚动偏移与高度锁定继承（内容未变时复用，避免每帧重建）。
+        old = self._model.completion
+        c = CompletionState()
         c.visible = True
+        c.loading = bool(loading)
         c.title = title
         c.items = list(items)
         c.texts = list(texts) if texts is not None else list(items)
         # ★ 1.8 修复：selected_idx 负值钳制到 0（修复前 min(int(-1), len-1) = -1
         #   → 负索引越界；改为 max(0, min(...)) 双向钳制；超上界仍钳到 len-1）。
-        c.selected = max(0, min(int(selected_idx), len(items) - 1))
+        #   items 空（loading 占位）时钳到 0。
+        c.selected = max(0, min(int(selected_idx), len(c.items) - 1))
         c.start_pos = int(start_pos)
         c.orig_prefix = orig_prefix
         c.types = list(types) if types is not None else []
@@ -133,6 +149,11 @@ class InkBridge(_BottomBarCompatMixin):
         c.descriptions = list(descriptions) if descriptions is not None else []
         # 分栏说明模式（user_select）：True 时弹窗右侧显示当前选中项说明
         c.split_desc = bool(split_desc)
+        if old.visible:
+            c.locked_height = old.locked_height
+            c._popup_lines_cache = old._popup_lines_cache
+            c._popup_scroll = old._popup_scroll
+        self._model.completion = c
         # 方向A 步骤1：show 时同步 _last_completion_idx（修复陈旧索引——
         # 新补全会话不再读到 hide 保留的旧索引；hide 语义保留，message_editor 依赖）。
         self._last_completion_idx = c.selected

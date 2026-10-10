@@ -244,24 +244,52 @@ def _load_session_summary(filepath: Path) -> dict | None:
 
 
 # ── 列出所有保存的会话 ────────────────────────────────────
-def list_sessions() -> list[dict[str, Any]]:
-    """列出 .chat/msg_list/ 下所有保存的会话摘要
+def _session_summary_entry(data: dict, filepath: Path) -> dict[str, Any]:
+    """会话数据 → 摘要条目（id/title/model/saved_at/message_count）。"""
+    title = data.get("title")
+    # 兼容旧会话：没有 title 字段则从首条 user 消息提取
+    if not title:
+        title = ""
+        for m in data.get("messages", []) or []:
+            if isinstance(m, dict) and m.get("role") == "user":
+                # content 可能为 list（多模态 content blocks）——提取文本
+                content = _content_to_text(m.get("content"))
+                content = content.strip()
+                title = content[:40] + ("…" if len(content) > 40 else "")
+                break
+    return {
+        "id": data.get("id", filepath.stem),
+        "title": title,
+        "model": data.get("model", "?"),
+        "saved_at": data.get("saved_at", "?"),
+        "message_count": len(data.get("messages", [])),
+    }
 
-    返回按保存时间降序排列的列表，每项含 id/title/model/saved_at/message_count。
+
+def iter_sessions():
+    """逐条产出会话摘要（流式版 ``list_sessions``，界面可增量显示）。
+
+    与 ``list_sessions`` 同源同缓存：缓存有效（TTL 内）时逐条 yield 快照；
+    未命中时逐文件解析，**每解析出一条即 yield**（调用方可即时显示一条），
+    全部结束后写回缓存（``saved_at`` 降序）。调用方提前中断（不耗尽生成器）
+    时不写缓存——下次重新读取。
+
     使用 threading.Lock 保护缓存读写，防止并发场景下的竞态条件。
     """
     global _session_cache, _session_cache_mtime
     now = time.time()
     with _session_cache_lock:
         if _session_cache is not None and (now - _session_cache_mtime) < _SESSION_CACHE_TTL:
-            return list(_session_cache)
+            for item in list(_session_cache):
+                yield item
+            return
 
     if not CHAT_MSGS_DIR.exists():
         with _session_cache_lock:
             _session_cache = []
             _session_cache_mtime = now
-        return []
-    sessions = []
+        return
+    sessions: list[dict[str, Any]] = []
     for f in CHAT_MSGS_DIR.glob("*.json"):
         # 检查文件可读性，不可读则跳过
         if not os.access(f, os.R_OK):
@@ -269,32 +297,26 @@ def list_sessions() -> list[dict[str, Any]]:
         data = _load_session_summary(f)
         if data is None:
             continue
-        title = data.get("title")
-        # 兼容旧会话：没有 title 字段则从首条 user 消息提取
-        if not title:
-            title = ""
-            for m in data.get("messages", []) or []:
-                if isinstance(m, dict) and m.get("role") == "user":
-                    # content 可能为 list（多模态 content blocks）——提取文本
-                    content = _content_to_text(m.get("content"))
-                    content = content.strip()
-                    title = content[:40] + ("…" if len(content) > 40 else "")
-                    break
-        sessions.append({
-            "id": data.get("id", f.stem),
-            "title": title,
-            "model": data.get("model", "?"),
-            "saved_at": data.get("saved_at", "?"),
-            "message_count": len(data.get("messages", [])),
-        })
-    # ★ Bug 修复：按 saved_at 降序排列（最新在前）
-    #   之前按 MD5 文件名排序无意义。ISO 格式字符串的字典序与时间序一致。
-    #   缺失 saved_at 的旧会话排到最后（空字符串 < ISO 时间）。
+        entry = _session_summary_entry(data, f)
+        sessions.append(entry)
+        yield entry
+    # 按 saved_at 降序排列（最新在前）；缺失 saved_at 的旧会话排到最后。
     sessions.sort(key=lambda s: s.get("saved_at", "") or "", reverse=True)
     with _session_cache_lock:
         _session_cache = sessions
         _session_cache_mtime = now
-    return list(sessions)
+
+
+def list_sessions() -> list[dict[str, Any]]:
+    """列出 .chat/msg_list/ 下所有保存的会话摘要
+
+    返回按保存时间降序排列的列表，每项含 id/title/model/saved_at/message_count。
+    流式逐条读取见 ``iter_sessions``（同源同缓存；流式产出顺序为读取顺序，
+    本函数在收集后统一按 ``saved_at`` 降序排列）。
+     """
+    sessions = list(iter_sessions())
+    sessions.sort(key=lambda s: s.get("saved_at", "") or "", reverse=True)
+    return sessions
 
 
 # ── 删除会话文件 ──────────────────────────────────────────
