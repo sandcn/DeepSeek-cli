@@ -596,9 +596,17 @@ def visible_region(candidate: WindowCandidate) -> CropRegion | None:
 def capture_window_pixels(candidate: WindowCandidate) -> tuple[bytes, int, int]:
     """抓取窗口像素，返回 ``(BGRA 字节, 宽, 高)``。
 
-    先 PrintWindow（可截后台/被遮挡窗口），结果为空白（全黑占位）或失败时
-    回退 BitBlt 屏幕拷贝；两者都空白（窗口本身是纯色画面）时返回有数据的
-    那次结果，两者都失败才报错。
+    依次尝试三条路径，任一拿到非空白图像即返回：
+
+      1. ``PrintWindow(PW_RENDERFULLCONTENT)``——能截后台 / 被遮挡窗口；
+      2. 窗口 DC 的 ``BitBlt``——PrintWindow 失败时把窗口提前后屏幕拷贝；
+      3. **桌面屏幕 DC 的窗口矩形拷贝**——DirectX 独占全屏 / 硬件加速游戏
+         在 1、2 两条路径下常返回全黑占位图，而已由 DWM 合成的桌面通常仍
+         有真实画面，按窗口矩形从屏幕 DC 取像素即可截到游戏画面（窗口须
+         可见且未最小化）。
+
+    三条路径都空白（窗口本身是纯色画面）时返回有数据的那次结果，全部失败
+    才报错。
     """
     width, height = candidate.width, candidate.height
     printed = _capture_window(candidate.handle, width, height, mode="print")
@@ -610,13 +618,102 @@ def capture_window_pixels(candidate: WindowCandidate) -> tuple[bytes, int, int]:
     screen = _capture_window(candidate.handle, width, height, mode="bitblt")
     if screen is not None and not png.looks_blank(screen, 4):
         return screen, width, height
-    for data in (screen, printed):
+    # 仍拿不到内容（DirectX 独占全屏游戏）→ 从桌面屏幕 DC 拷贝窗口矩形区域
+    region = _capture_window_from_screen(candidate, width, height)
+    if region is not None and not png.looks_blank(region, 4):
+        return region, width, height
+    for data in (region, screen, printed):
         if data is not None:
             return data, width, height
     raise ScreenshotError(
         f"窗口像素抓取失败（窗口标题: {candidate.title or '<无标题>'}，"
-        f"进程 {candidate.pid}）：PrintWindow 与 BitBlt 均未返回有效图像"
+        f"进程 {candidate.pid}）：PrintWindow、窗口 BitBlt 与屏幕区域拷贝均未"
+        f"返回有效图像"
     )
+
+
+def _capture_window_from_screen(candidate: WindowCandidate, width: int,
+                                height: int) -> bytes | None:
+    """从**桌面屏幕 DC** 拷贝窗口所在矩形区域（DirectX 独占全屏游戏的兜底）。
+
+    窗口自身的 DC（PrintWindow / ``GetWindowDC`` BitBlt）对独占全屏 / 硬件
+    加速游戏常返回全黑占位图；经 DWM 合成的桌面通常仍能取到真实画面，因此
+    按窗口屏幕矩形从屏幕 DC 取像素（游戏全屏时它就是最上层，不会被遮挡）。
+
+    区域超出虚拟桌面时按交点裁剪、其余像素保持全透明；窗口不可见 / 已最小化
+    时直接返回 ``None``（不可见窗口没有可渲染内容）。
+    """
+    region = screen_region_intersection(candidate, width, height)
+    if region is None:
+        return None
+    offset_x, offset_y, copy_width, copy_height = region
+    gdi = winapi.gdi32()
+    source_dc = winapi.screen_dc()
+    if not source_dc:
+        return None
+    memory_dc = None
+    bitmap = None
+    previous = None
+    try:
+        memory_dc = gdi.CreateCompatibleDC(source_dc)
+        if not memory_dc:
+            return None
+        info = winapi.BITMAPINFO()
+        header = info.bmiHeader
+        header.biSize = ctypes.sizeof(winapi.BITMAPINFOHEADER)
+        header.biWidth = width
+        header.biHeight = -height  # 负高度 = 自上而下扫描行
+        header.biPlanes = 1
+        header.biBitCount = 32
+        header.biCompression = 0  # BI_RGB
+        bits = ctypes.c_void_p()
+        bitmap = gdi.CreateDIBSection(
+            source_dc, ctypes.byref(info), winapi.DIB_RGB_COLORS,
+            ctypes.byref(bits), None, 0,
+        )
+        if not bitmap or not bits:
+            return None
+        previous = gdi.SelectObject(memory_dc, bitmap)
+        ok = gdi.BitBlt(
+            memory_dc, offset_x, offset_y, copy_width, copy_height,
+            source_dc, candidate.left + offset_x, candidate.top + offset_y,
+            winapi.SRCCOPY,
+        )
+        if not ok:
+            return None
+        return ctypes.string_at(bits, width * height * 4)
+    finally:
+        if memory_dc and previous:
+            gdi.SelectObject(memory_dc, previous)
+        if bitmap:
+            gdi.DeleteObject(bitmap)
+        if memory_dc:
+            gdi.DeleteDC(memory_dc)
+        winapi.release_dc(source_dc)
+
+
+def screen_region_intersection(candidate: WindowCandidate, width: int,
+                               height: int) -> tuple[int, int, int, int] | None:
+    """窗口矩形与虚拟桌面的交集（窗口内坐标偏移 + 可拷贝尺寸）。
+
+    返回 ``(offset_x, offset_y, copy_width, copy_height)``：``offset_x`` /
+    ``offset_y`` 是交集左上角**相对窗口**的像素偏移，用于把屏幕拷贝放进窗口
+    尺寸的位图；无交集（窗口完全在屏幕外）或窗口不可见 / 已最小化时返回
+    ``None``。
+    """
+    if getattr(candidate, "minimized", False) or not getattr(candidate, "visible", True):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    vleft, vtop, vwidth, vheight = winapi.virtual_screen_rect()
+    left, top = candidate.left, candidate.top
+    x0 = max(left, vleft)
+    y0 = max(top, vtop)
+    x1 = min(left + width, vleft + vwidth)
+    y1 = min(top + height, vtop + vheight)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0 - left, y0 - top, x1 - x0, y1 - y0)
 
 
 def capture_screen_pixels(monitor: Monitor) -> tuple[bytes, int, int]:
@@ -738,6 +835,7 @@ __all__ = [
     "list_elements",
     "list_windows",
     "resolve_window_pids",
+    "screen_region_intersection",
     "select_window",
     "visible_region",
     "window_state",

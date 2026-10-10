@@ -5,14 +5,21 @@
 
 支持的动作（``INPUT_OPS``）：
 
-  - ``move``    鼠标移动（绝对坐标 x/y，或相对当前光标的 dx/dy 像素偏移）
+  - ``move``    鼠标移动（绝对坐标 x/y，或相对当前光标的 dx/dy 像素偏移；
+                ``relative_event=true`` 发送**纯相对位移事件**，供游戏视角控制）
   - ``hover``   鼠标悬停（移动到目标点后保持 dwell 秒不动，触发 tooltip 等）
   - ``click``   鼠标点击（左/右/中键，可双击、可带修饰键；hold 长按、
-                interval 控制多次点击间隔）
+                interval 控制多次点击间隔；``phase=down/up`` 把按下与弹起
+                分离，用于按住射击 / 拖框）
   - ``drag``    按住鼠标从一点拖到另一点（带轨迹插值）
   - ``scroll``  滚轮滚动（上下左右）
-  - ``key``     键盘按键（支持 ``ctrl+shift+s`` 组合、功能键）
+  - ``key``     键盘按键（支持 ``ctrl+shift+s`` 组合、功能键；hold 长按、
+                interval 连发间隔、repeat 连按）
   - ``type``    文本输入（逐字符，支持任意 Unicode）
+  - ``release`` 释放按下的键与鼠标按钮（清理长按 / 分阶段按下留下的悬空状态）
+
+所有鼠标 / 键盘动作都可用 ``hold_keys`` 在动作期间按住任意键（游戏组合键，
+如按住 W 同时点击），并用 ``modifiers`` 按住修饰键（ctrl/alt/shift/meta）。
 
 坐标语义：以**窗口截图左上角**为原点（与 ``op=screenshot`` 产物一致），
 单位像素；``click`` / ``scroll`` 省略坐标时默认窗口中心；越界坐标报错。
@@ -39,7 +46,13 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Mapping, Union
 
 from .._screenshot.windows import SelectorError, parse_selector
-from .keys import MODIFIER_ORDER, Shortcut, parse_modifiers, parse_shortcut
+from .keys import (
+    MODIFIER_ORDER,
+    Shortcut,
+    parse_key_list,
+    parse_modifiers,
+    parse_shortcut,
+)
 from .result import ActionError
 
 # ── 语义常量（避免散落的魔法值） ─────────────────────────
@@ -50,7 +63,9 @@ METHODS: tuple[str, ...] = ("auto", "sendinput", "message")
 
 DEFAULT_BUTTON = "left"
 DEFAULT_CLICK_COUNT = 1
-MAX_CLICK_COUNT = 10
+#: 单次 click 的最大点击次数。游戏连点（射击 / 快速选择）常需远多于 10 次，
+#: 因此放宽到 100；配合 interval 控制点击节奏。
+MAX_CLICK_COUNT = 100
 DEFAULT_SCROLL_DIRECTION = "down"
 DEFAULT_SCROLL_AMOUNT = 3
 MAX_SCROLL_AMOUNT = 100
@@ -75,6 +90,30 @@ DEFAULT_SMOOTH_MOVE_STEPS = 20
 MIN_MOVE_STEPS = 2
 MAX_MOVE_STEPS = 200
 
+#: ``move`` 相对移动事件模式（``relative_event=True``）的分步间隔（秒）：
+#: 把 ``dx`` / ``dy`` 拆成 ``steps`` 个纯相对移动事件发送，每步之间等待
+#: ``interval`` 秒（默认 0 = 不额外等待）。游戏（第一人称视角 / 锁定光标）
+#: 读取的是**相对位移**，且常忽略单次超大位移，拆步 + 间隔能让引擎逐帧读到。
+DEFAULT_MOVE_INTERVAL = 0.0
+MAX_MOVE_INTERVAL = 10.0
+
+#: ``key`` 长按（``hold``）时长（秒）：>0 时按下主键后保持指定时间再弹起，
+#: 一次调用完成长按（游戏蓄力 / 持续移动 / 连发），避免 down 与 up 两次
+#: 调用之间窗口失焦导致按键悬空。
+DEFAULT_KEY_HOLD = 0.0
+MAX_KEY_HOLD = 30.0
+
+#: ``key`` 连发（``repeat``）时相邻两次按键的间隔（秒）：0 = 用平台后端默认
+#: 间隔（约 0.05 秒）。游戏里可按需要调快 / 调慢（如 0.02 快速连点）。
+DEFAULT_KEY_INTERVAL = 0.0
+MAX_KEY_INTERVAL = 10.0
+
+#: ``hold_keys``（动作期间按住任意键）允许的键数上限（防御误传超长列表）
+MAX_HOLD_KEYS = 16
+
+#: ``release`` 动作可释放的鼠标按钮
+RELEASE_BUTTONS: tuple[str, ...] = BUTTONS
+
 #: ``hover``（悬停）默认停留时长与上限（秒）：移动到目标点后保持不动，
 #: 等待 tooltip / 悬浮菜单 / 延迟加载出现。
 DEFAULT_HOVER_DWELL = 0.6
@@ -94,12 +133,15 @@ MAX_CLICK_INTERVAL = 10.0
 #: 防御误传超大值把光标甩到屏幕外。
 MAX_MOVE_OFFSET = 100000
 
-#: 全部输入动作名（bash_opt 的 op 取值集合）
-INPUT_OPS: tuple[str, ...] = ("click", "move", "hover", "drag", "scroll", "key", "type")
+#: 全部输入动作名（bash_opt 的 op 取值集合）。
+#: ``release`` 为「释放所有（或指定）按下的键与鼠标按钮」，专门清理长按 /
+#: 分阶段按下留下的悬空状态（游戏操作中断后的兜底）。
+INPUT_OPS: tuple[str, ...] = ("click", "move", "hover", "drag", "scroll",
+                              "key", "type", "release")
 
-#: ``key`` 动作的按键阶段：
-#:   ``press`` 按下后立即弹起（完整一次按键，默认）
-#:   ``down``  只发送按下消息（配合后续 ``up`` 实现长按）
+#: ``key`` / ``click`` 动作的阶段：
+#:   ``press`` 按下后立即弹起（完整一次按键 / 点击，默认）
+#:   ``down``  只发送按下消息（配合后续 ``up`` 实现长按 / 按住）
 #:   ``up``    只发送弹起消息
 KEY_PHASES: tuple[str, ...] = ("press", "down", "up")
 DEFAULT_KEY_PHASE = "press"
@@ -233,6 +275,12 @@ class MoveAction:
     ``duration`` > 0 或 ``steps`` > 1 时执行**平滑移动**（在起点与终点之间插值
     若干中间点逐步移动），让依赖连续 ``WM_MOUSEMOVE`` 的程序（拖选、悬停菜单、
     游戏视角）也能正确响应；``duration=0``（默认）为一步直达。
+
+    ``relative_event=True`` 时改为发送**纯相对鼠标移动事件**（不带绝对定位）：
+    事件直接携带 ``(dx, dy)`` 位移量，不依赖当前光标位置，也不受游戏
+    ``ClipCursor``（锁定光标到窗口中心）影响——第一人称 / 第三人称游戏读取的
+    正是这种相对位移。``steps`` 把总位移拆成多个等分事件（引擎常忽略单次超大
+    位移），``interval`` 控制步间间隔。
     """
 
     name: ClassVar[str] = "move"
@@ -244,8 +292,14 @@ class MoveAction:
     method: str = DEFAULT_METHOD
     #: 平滑移动的总时长（秒，0 = 一步直达）
     duration: float = DEFAULT_MOVE_DURATION
-    #: 平滑移动的插值点数（1 = 一步直达）
+    #: 平滑移动的插值点数（1 = 一步直达）；相对事件模式下为拆分的事件数
     steps: int = DEFAULT_MOVE_STEPS
+    #: 相对事件模式：发送纯相对位移事件（不移动绝对光标），用于游戏视角
+    relative_event: bool = False
+    #: 相对事件模式的分步间隔（秒，0 = 不额外等待）
+    interval: float = DEFAULT_MOVE_INTERVAL
+    #: 动作期间额外按住的任意键（游戏组合键，如 ['w', 'shift']）
+    hold_keys: tuple[str, ...] = ()
     #: 目标窗口选择器（空串 = 主窗口；见 ``windows`` 模块）
     window: str = ""
 
@@ -258,6 +312,11 @@ class MoveAction:
     def is_smooth(self) -> bool:
         """是否需要平滑移动（拆成多个中间点）。"""
         return self.duration > 0 or self.steps > 1
+
+    @property
+    def uses_relative_events(self) -> bool:
+        """是否走「纯相对位移事件」模式（给定 dx/dy 且开启 relative_event）。"""
+        return self.relative_event and self.is_relative
 
 
 @dataclass(frozen=True)
@@ -273,6 +332,7 @@ class HoverAction:
     y: int | str = 0
     dwell: float = DEFAULT_HOVER_DWELL
     modifiers: tuple[str, ...] = ()
+    hold_keys: tuple[str, ...] = ()
     method: str = DEFAULT_METHOD
     window: str = ""
 
@@ -283,6 +343,10 @@ class ClickAction:
 
     ``hold`` > 0 表示「长按」：按下后保持指定秒数再弹起；
     ``interval`` 控制多次点击（双击 / 三击）之间的间隔。
+
+    ``phase`` 把按下与弹起**分离**（与 ``key`` 同义）：``down`` 只按下按钮、
+    ``up`` 只弹起按钮，用于「按住左键射击 / 拖框」这类需要跨调用保持按键的
+    游戏操作（配合 ``op=release`` 兜底释放）。
     """
 
     name: ClassVar[str] = "click"
@@ -292,9 +356,16 @@ class ClickAction:
     y: int | str | None = None
     hold: float = DEFAULT_CLICK_HOLD
     interval: float = DEFAULT_CLICK_INTERVAL
+    phase: str = DEFAULT_KEY_PHASE
     modifiers: tuple[str, ...] = ()
+    hold_keys: tuple[str, ...] = ()
     method: str = DEFAULT_METHOD
     window: str = ""
+
+    @property
+    def effective_count(self) -> int:
+        """实际点击次数：``down`` / ``up`` 分离阶段恒为 1（重复无意义）。"""
+        return self.count if self.phase == "press" else 1
 
 
 @dataclass(frozen=True)
@@ -310,6 +381,7 @@ class DragAction:
     duration: float = DEFAULT_DRAG_DURATION
     steps: int = DEFAULT_DRAG_STEPS
     modifiers: tuple[str, ...] = ()
+    hold_keys: tuple[str, ...] = ()
     method: str = DEFAULT_METHOD
     window: str = ""
 
@@ -324,6 +396,7 @@ class ScrollAction:
     x: int | str | None = None
     y: int | str | None = None
     modifiers: tuple[str, ...] = ()
+    hold_keys: tuple[str, ...] = ()
     method: str = DEFAULT_METHOD
     window: str = ""
 
@@ -333,7 +406,10 @@ class KeyAction:
     """键盘按键（可带修饰键；``phase`` 区分按下 / 弹起 / 完整按键）。
 
     ``repeat`` 为连按次数（``phase='press'`` 时生效），用于一次调用完成
-    「连按 N 次」而不必多次调用。
+    「连按 N 次」而不必多次调用；``interval`` 控制连发间隔（0 = 后端默认）。
+
+    ``hold`` > 0 时在按下后保持指定秒数再弹起（一次调用完成长按，游戏蓄力 /
+    持续移动常用）；``hold_keys`` 在按键前后额外按住任意键（组合键）。
     """
 
     name: ClassVar[str] = "key"
@@ -341,6 +417,12 @@ class KeyAction:
     phase: str = DEFAULT_KEY_PHASE
     method: str = DEFAULT_METHOD
     repeat: int = DEFAULT_KEY_REPEAT
+    #: 长按时长（秒，0 = 按下后立即弹起）
+    hold: float = DEFAULT_KEY_HOLD
+    #: 连发间隔（秒，0 = 用后端默认间隔）
+    interval: float = DEFAULT_KEY_INTERVAL
+    #: 动作期间额外按住的任意键
+    hold_keys: tuple[str, ...] = ()
     window: str = ""
 
     @property
@@ -352,6 +434,11 @@ class KeyAction:
         """
         return self.repeat if self.phase == "press" else 1
 
+    @property
+    def is_long_press(self) -> bool:
+        """是否为「按下 + 保持 + 弹起」的长按（仅 ``press`` 阶段且 hold > 0）。"""
+        return self.phase == "press" and self.hold > 0
+
 
 @dataclass(frozen=True)
 class TextAction:
@@ -359,12 +446,29 @@ class TextAction:
 
     name: ClassVar[str] = "type"
     text: str = ""
+    hold_keys: tuple[str, ...] = ()
+    method: str = DEFAULT_METHOD
+    window: str = ""
+
+
+@dataclass(frozen=True)
+class ReleaseAction:
+    """释放按下的键与鼠标按钮（``phase='down'`` 长按后的兜底清理）。
+
+    默认释放**全部**由本会话记录为「已按下」的键与鼠标按钮（``keys`` /
+    ``buttons`` 留空 = 全部）；也可只释放指定的键 / 按钮。用于游戏操作被
+    中断、或长按后忘记弹起时，避免按键一直「卡住」。
+    """
+
+    name: ClassVar[str] = "release"
+    keys: tuple[str, ...] = ()
+    buttons: tuple[str, ...] = ()
     method: str = DEFAULT_METHOD
     window: str = ""
 
 
 InputAction = Union[MoveAction, ClickAction, DragAction, ScrollAction,
-                    KeyAction, TextAction]
+                    KeyAction, TextAction, ReleaseAction]
 
 
 # ── 参数取值辅助 ────────────────────────────────────────
@@ -500,6 +604,64 @@ def _window_arg(params: Mapping[str, Any]) -> str:
     return text
 
 
+def _bool_arg(params: Mapping[str, Any], name: str, *,
+              default: bool = False, label: str | None = None) -> bool:
+    """取布尔参数（接受 true/false、yes/no、1/0 等文本写法）。
+
+    Raises:
+        ActionError: 取值无法识别为布尔。
+    """
+    raw = _raw(params, name)
+    if raw is None:
+        return default
+    name = label or name
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw).strip().lower()
+    if text in ("1", "true", "yes", "on", "y", "t"):
+        return True
+    if text in ("0", "false", "no", "off", "n", "f"):
+        return False
+    raise ActionError(f"{name} 需要布尔值（true/false），当前: {raw!r}")
+
+
+def _hold_keys_arg(params: Mapping[str, Any]) -> tuple[str, ...]:
+    """取 ``hold_keys``（动作期间额外按住的任意键）。"""
+    return parse_key_list(_raw(params, "hold_keys", "holdkeys", "held_keys"),
+                          label="hold_keys", maximum=MAX_HOLD_KEYS)
+
+
+def _release_keys_arg(params: Mapping[str, Any]) -> tuple[str, ...]:
+    """取 ``release`` 的 ``keys``（留空 = 释放全部已按下的键）。"""
+    return parse_key_list(_raw(params, "keys", "key", "hold_keys"),
+                          label="release 的 keys", maximum=MAX_HOLD_KEYS)
+
+
+def _release_buttons_arg(params: Mapping[str, Any]) -> tuple[str, ...]:
+    """取 ``release`` 的 ``buttons``（留空 = 释放全部已按下的鼠标按钮）。"""
+    raw = _raw(params, "buttons", "button")
+    if raw is None:
+        return ()
+    items = [raw] if isinstance(raw, str) else list(raw) if isinstance(
+        raw, (list, tuple, set, frozenset)) else None
+    if items is None:
+        raise ActionError(
+            f"release 的 buttons 需为字符串或字符串数组，当前: {raw!r}"
+        )
+    names: list[str] = []
+    for item in items:
+        button = str(item).strip().lower()
+        if not button:
+            continue
+        if button not in BUTTONS:
+            raise ActionError(
+                f"release 的 buttons 取值非法: {item!r}。支持: {', '.join(BUTTONS)}"
+            )
+        if button not in names:
+            names.append(button)
+    return tuple(names)
+
+
 def _point_args(params: Mapping[str, Any], *, label: str = "坐标") -> Point | None:
     """取可选的 (x, y) 点：都缺省返回 None，只给一个报错。
 
@@ -602,6 +764,7 @@ def build_action(op: str, params: Mapping[str, Any]) -> InputAction:
         "scroll": _build_scroll,
         "key": _build_key,
         "type": _build_text,
+        "release": _build_release,
     }
     builder = builders.get(name)
     if builder is None:
@@ -615,18 +778,26 @@ def _build_move(params: dict) -> MoveAction:
     """构建 ``move``：绝对坐标（x/y）与相对偏移（dx/dy）互斥。
 
     ``duration`` / ``steps`` 控制平滑移动（起点到终点之间插值逐步移动）；
-    缺省一步直达。
+    缺省一步直达。``relative_event=True``（仅配合 dx/dy）改为发送纯相对
+    位移事件，``interval`` 控制分步间隔。
     """
     duration = _float_arg(params, "duration", minimum=0.0,
                           maximum=MAX_MOVE_DURATION)
     steps = _int_arg(params, "steps", minimum=MIN_MOVE_STEPS,
                      maximum=MAX_MOVE_STEPS)
+    interval = _float_arg(params, "interval", minimum=0.0,
+                          maximum=MAX_MOVE_INTERVAL)
+    relative_event = _bool_arg(params, "relative_event", label="relative_event")
+    hold_keys = _hold_keys_arg(params)
     if steps is None:
         # 仅给了 duration 时按默认点数插值；都没给则一步直达
         steps = DEFAULT_SMOOTH_MOVE_STEPS if (duration or 0.0) > 0 else DEFAULT_MOVE_STEPS
     smooth = {
         "duration": DEFAULT_MOVE_DURATION if duration is None else duration,
         "steps": steps,
+        "relative_event": relative_event,
+        "interval": DEFAULT_MOVE_INTERVAL if interval is None else interval,
+        "hold_keys": hold_keys,
     }
     has_offset = _raw(params, "dx") is not None or _raw(params, "dy") is not None
     if has_offset:
@@ -646,6 +817,11 @@ def _build_move(params: dict) -> MoveAction:
                           modifiers=parse_modifiers(_raw(params, "modifiers")),
                           method=_method_arg(params),
                           window=_window_arg(params), **smooth)
+    if relative_event:
+        raise ActionError(
+            "relative_event=True 只能用于相对移动（需给 dx/dy）：它发送的是"
+            "纯相对位移事件（游戏视角），绝对坐标请用 x/y（去掉 relative_event）"
+        )
     point = _point_args(params)
     if point is None:
         raise ActionError(
@@ -667,6 +843,7 @@ def _build_hover(params: dict) -> HoverAction:
     return HoverAction(x=point.x, y=point.y,
                        dwell=DEFAULT_HOVER_DWELL if dwell is None else dwell,
                        modifiers=parse_modifiers(_raw(params, "modifiers")),
+                       hold_keys=_hold_keys_arg(params),
                        method=_method_arg(params),
                        window=_window_arg(params))
 
@@ -684,7 +861,9 @@ def _build_click(params: dict) -> ClickAction:
         y=point.y if point else None,
         hold=DEFAULT_CLICK_HOLD if hold is None else hold,
         interval=DEFAULT_CLICK_INTERVAL if interval is None else interval,
+        phase=_phase_arg(params),
         modifiers=parse_modifiers(_raw(params, "modifiers")),
+        hold_keys=_hold_keys_arg(params),
         method=_method_arg(params),
         window=_window_arg(params),
     )
@@ -715,6 +894,7 @@ def _build_drag(params: dict) -> DragAction:
         duration=DEFAULT_DRAG_DURATION if duration is None else duration,
         steps=DEFAULT_DRAG_STEPS if steps is None else steps,
         modifiers=parse_modifiers(_raw(params, "modifiers")),
+        hold_keys=_hold_keys_arg(params),
         method=_method_arg(params),
         window=_window_arg(params),
     )
@@ -738,6 +918,7 @@ def _build_scroll(params: dict) -> ScrollAction:
         x=point.x if point else None,
         y=point.y if point else None,
         modifiers=parse_modifiers(_raw(params, "modifiers")),
+        hold_keys=_hold_keys_arg(params),
         method=_method_arg(params),
         window=_window_arg(params),
     )
@@ -759,15 +940,33 @@ def _build_key(params: dict) -> KeyAction:
         )
     repeat = _int_arg(params, "repeat", "times", minimum=1,
                       maximum=MAX_KEY_REPEAT, label="repeat")
+    hold = _float_arg(params, "hold", minimum=0.0, maximum=MAX_KEY_HOLD)
+    interval = _float_arg(params, "interval", minimum=0.0,
+                          maximum=MAX_KEY_INTERVAL)
     return KeyAction(shortcut=shortcut, phase=_phase_arg(params),
                      method=_method_arg(params),
                      repeat=DEFAULT_KEY_REPEAT if repeat is None else repeat,
+                     hold=DEFAULT_KEY_HOLD if hold is None else hold,
+                     interval=(DEFAULT_KEY_INTERVAL if interval is None
+                               else interval),
+                     hold_keys=_hold_keys_arg(params),
                      window=_window_arg(params))
 
 
 def _build_text(params: dict) -> TextAction:
     return TextAction(
         text=_text_arg(params, "text"),
+        hold_keys=_hold_keys_arg(params),
+        method=_method_arg(params),
+        window=_window_arg(params),
+    )
+
+
+def _build_release(params: dict) -> ReleaseAction:
+    """构建 ``release``：释放全部（默认）或指定的键 / 鼠标按钮。"""
+    return ReleaseAction(
+        keys=_release_keys_arg(params),
+        buttons=_release_buttons_arg(params),
         method=_method_arg(params),
         window=_window_arg(params),
     )
@@ -849,9 +1048,17 @@ def describe_action(action: InputAction) -> dict:
             payload["hold"] = action.hold
         if action.interval != DEFAULT_CLICK_INTERVAL:
             payload["interval"] = action.interval
+        if action.phase != DEFAULT_KEY_PHASE:
+            payload["phase"] = action.phase
+            if action.effective_count != action.count:
+                payload["effective_count"] = action.effective_count
     elif isinstance(action, MoveAction):
         if action.is_relative:
             payload = {"relative": {"dx": action.dx, "dy": action.dy}}
+            if action.relative_event:
+                payload["relative_event"] = True
+                if action.interval:
+                    payload["interval"] = action.interval
         else:
             payload = {"position": {"x": action.x, "y": action.y}}
         if action.is_smooth:
@@ -888,8 +1095,15 @@ def describe_action(action: InputAction) -> dict:
             payload["repeat"] = action.repeat
             if action.effective_repeat != action.repeat:
                 payload["effective_repeat"] = action.effective_repeat
+        if action.hold:
+            payload["hold"] = action.hold
+        if action.interval:
+            payload["interval"] = action.interval
     elif isinstance(action, TextAction):
         payload = {"text": action.text, "length": len(action.text)}
+    elif isinstance(action, ReleaseAction):
+        payload = {"keys": list(action.keys), "buttons": list(action.buttons),
+                   "all": not action.keys and not action.buttons}
     else:  # pragma: no cover - 动作类型封闭
         payload = {}
     payload["action"] = action.name
@@ -899,6 +1113,9 @@ def describe_action(action: InputAction) -> dict:
     method = getattr(action, "method", DEFAULT_METHOD)
     if method != DEFAULT_METHOD:
         payload["method"] = method
+    hold_keys = getattr(action, "hold_keys", None)
+    if hold_keys:
+        payload["hold_keys"] = list(hold_keys)
     window = getattr(action, "window", "")
     if window:
         payload["window"] = window
@@ -917,10 +1134,13 @@ __all__ = [
     "DEFAULT_DRAG_DURATION",
     "DEFAULT_DRAG_STEPS",
     "DEFAULT_HOVER_DWELL",
+    "DEFAULT_KEY_HOLD",
+    "DEFAULT_KEY_INTERVAL",
     "DEFAULT_KEY_PHASE",
     "DEFAULT_KEY_REPEAT",
     "DEFAULT_METHOD",
     "DEFAULT_MOVE_DURATION",
+    "DEFAULT_MOVE_INTERVAL",
     "DEFAULT_MOVE_STEPS",
     "DEFAULT_SMOOTH_MOVE_STEPS",
     "DEFAULT_SCROLL_AMOUNT",
@@ -931,17 +1151,24 @@ __all__ = [
     "InputAction",
     "KEY_PHASES",
     "KeyAction",
+    "MAX_CLICK_COUNT",
     "MAX_CLICK_HOLD",
     "MAX_CLICK_INTERVAL",
+    "MAX_HOLD_KEYS",
     "MAX_HOVER_DWELL",
+    "MAX_KEY_HOLD",
+    "MAX_KEY_INTERVAL",
     "MAX_KEY_REPEAT",
     "MAX_MOVE_DURATION",
+    "MAX_MOVE_INTERVAL",
     "MAX_MOVE_OFFSET",
     "MAX_MOVE_STEPS",
     "METHODS",
     "MIN_MOVE_STEPS",
     "MoveAction",
     "Point",
+    "RELEASE_BUTTONS",
+    "ReleaseAction",
     "SCROLL_DIRECTIONS",
     "ScrollAction",
     "TextAction",

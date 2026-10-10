@@ -40,6 +40,7 @@ from .action import (  # noqa: F401  # 对外导出动作模型
     InputAction,
     KeyAction,
     MoveAction,
+    ReleaseAction,
     ScrollAction,
     TextAction,
     build_action,
@@ -62,9 +63,13 @@ _BACKENDS: list = []
 _LOCK = threading.RLock()
 _BUILTINS_LOADED = False
 
+#: 当前输入会话的目标进程（0 = 无会话）；供后端跨动作缓存窗口定位结果
+_SESSION: dict = {"pid": 0}
+_SESSION_LOCK = threading.RLock()
+
 #: 动作类型联合（运行时校验用）
 _ACTION_TYPES = (MoveAction, HoverAction, ClickAction, DragAction, ScrollAction,
-                 KeyAction, TextAction)
+                 KeyAction, TextAction, ReleaseAction)
 
 
 def register_backend(backend, *, prepend: bool = False) -> Callable[[], None]:
@@ -166,6 +171,48 @@ def send_window_input(pid: int, action: InputAction) -> InputResult:
         ) from exc
 
 
+def begin_input_session(pid: int) -> bool:
+    """开启一次「输入会话」（sequence / replay 批量动作期间的低延迟优化）。
+
+    会话期间，支持会话的后端会缓存窗口定位结果与前台状态，避免**每个动作**
+    都重新枚举窗口、反复激活前台——游戏这类需要连续快速输入的场景因此明显
+    更跟手。返回是否有后端支持会话（不支持时只是没有加速，行为与逐条调用
+    完全一致，不会报错）。
+
+    会话幂等：重复调用只更新目标进程；必须与 :func:`end_input_session`
+    成对使用（工具层在序列 / 宏回放前后自动包裹）。
+    """
+    with _SESSION_LOCK:
+        _SESSION["pid"] = int(pid) if isinstance(pid, int) and not isinstance(pid, bool) else 0
+    begun = False
+    for backend in available_backends():
+        starter = getattr(backend, "begin_session", None)
+        if starter is None:
+            continue
+        try:
+            if starter(pid):
+                begun = True
+        except Exception:  # noqa: BLE001 - 会话优化失败不应影响正常注入
+            logger.debug("后端 %s 输入会话开启失败",
+                         getattr(backend, "name", backend), exc_info=True)
+    return begun
+
+
+def end_input_session() -> None:
+    """结束输入会话并清除后端缓存（与 :func:`begin_input_session` 配对）。"""
+    with _SESSION_LOCK:
+        _SESSION["pid"] = 0
+    for backend in available_backends():
+        stopper = getattr(backend, "end_session", None)
+        if stopper is None:
+            continue
+        try:
+            stopper()
+        except Exception:  # noqa: BLE001 - 会话清理失败不应中断调用方
+            logger.debug("后端 %s 输入会话结束失败",
+                         getattr(backend, "name", backend), exc_info=True)
+
+
 def _ensure_builtins() -> None:
     """幂等注册内置后端（延迟导入，避免包初始化期的循环引用）。"""
     global _BUILTINS_LOADED
@@ -196,6 +243,7 @@ __all__ = [
     "MAX_SEQUENCE_STEPS",
     "MoveAction",
     "NoWindowError",
+    "ReleaseAction",
     "SEQUENCE_KINDS",
     "ScrollAction",
     "SelectorError",
@@ -203,8 +251,10 @@ __all__ = [
     "SequenceStep",
     "TextAction",
     "available_backends",
+    "begin_input_session",
     "build_action",
     "describe_action",
+    "end_input_session",
     "parse_sequence",
     "probe_window",
     "register_backend",

@@ -30,7 +30,8 @@ from src.tools._window_input.result import ActionError
 # ── op 集合 ─────────────────────────────────────────────
 
 def test_input_ops_are_the_expected_actions():
-    assert set(INPUT_OPS) == {"click", "move", "hover", "drag", "scroll", "key", "type"}
+    assert set(INPUT_OPS) == {"click", "move", "hover", "drag", "scroll", "key",
+                              "type", "release"}
 
 
 # ── click ───────────────────────────────────────────────
@@ -73,7 +74,7 @@ def test_build_click_rejects_negative_and_zero_count():
     with pytest.raises(ActionError):
         build_action("click", {"count": 0})
     with pytest.raises(ActionError):
-        build_action("click", {"count": 11})
+        build_action("click", {"count": 101})
 
 
 def test_build_click_with_modifiers():

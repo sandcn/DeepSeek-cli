@@ -35,6 +35,7 @@ PostMessage；若该窗口恰好没有可换算的客户区（``op=windows`` 里
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -50,6 +51,7 @@ from .._screenshot.win import (
 from .._screenshot.windows import DEFAULT_SELECTOR, pick_window
 from .action import (
     DEFAULT_CLICK_INTERVAL,
+    KEY_PHASES,
     MIN_MOVE_STEPS,
     ClickAction,
     DragAction,
@@ -58,6 +60,7 @@ from .action import (
     KeyAction,
     MoveAction,
     Point,
+    ReleaseAction,
     ScrollAction,
     TextAction,
     interpolate,
@@ -208,6 +211,16 @@ class Win32Driver:
                  | winapi.MOUSEEVENTF_VIRTUALDESK)
         self._send([winapi.mouse_input(flags, nx, ny)])
 
+    def relative_move(self, dx: int, dy: int) -> None:
+        """发送**纯相对**鼠标移动事件（只带位移量，不做绝对定位）。
+
+        与绝对定位不同，相对事件直接告诉系统「鼠标移动了 (dx, dy) 像素」，
+        不依赖光标当前坐标，也不受 ``ClipCursor``（游戏把光标锁定到窗口
+        中心）干扰——第一人称 / 第三人称游戏读取的正是这种相对位移，
+        用它旋转视角才会被引擎正确识别。
+        """
+        self._send([winapi.mouse_input(winapi.MOUSEEVENTF_MOVE, dx, dy)])
+
     def mouse_event(self, flags: int, data: int = 0) -> None:
         """发送鼠标按键/滚轮事件（坐标沿用当前光标位置）。"""
         self._send([winapi.mouse_input(flags, 0, 0, data)])
@@ -314,6 +327,19 @@ class WindowsInputBackend:
         #: Edit/Button 等控件只接收发给自身的 WM_CHAR/WM_KEY*，键盘类动作须
         #: 复用鼠标命中过的控件；跨调用保留由后端实例（注册表单例）承载。
         self._message_key_targets: dict[int, int] = {}
+        #: 长按 / 分阶段按下留下的「仍处于按下状态」的键与鼠标按钮，
+        #: 供 ``op=release`` 兜底释放（游戏操作中断时避免按键卡住）。
+        self._held_keys: dict[str, int] = {}
+        self._held_buttons: set[str] = set()
+        self._state_lock = threading.RLock()
+        #: 输入会话（sequence / replay 批量动作）期间缓存窗口定位结果，
+        #: 避免每个动作都重新枚举窗口；``_session_depth`` 支持嵌套。
+        self._session_lock = threading.RLock()
+        self._session_depth = 0
+        self._locate_cache: dict[tuple, _TargetWindow] = {}
+        #: 「上次确认的前台窗口」句柄：弹层 / 工具窗口场景下省去反复遍历
+        #: 同进程树窗口（仍会实时复核该句柄是否仍在前台，不牺牲正确性）。
+        self._foreground_cache = 0
 
     def supports(self) -> bool:
         return winapi.is_windows_platform()
@@ -324,11 +350,61 @@ class WindowsInputBackend:
         ``window`` 为窗口选择器（``main`` / ``active`` / ``#1`` / ``popup`` 等，
         见 ``_screenshot.windows``）；缺省取主窗口。选择器无匹配时抛
         ``SelectorError``；进程树内没有窗口时返回 ``None``。
+
+        输入会话（``begin_session``）期间结果被缓存：序列 / 宏里成百上千个
+        动作不必每个都重新枚举窗口，游戏连续输入因此更跟手；缓存命中前会用
+        ``IsWindow`` 复核窗口仍然存在，窗口关闭后自动重新定位。
         """
         winapi.ensure_process_dpi_aware()
-        if window:
-            return self._locate(pid, window)
-        return self._locate(pid)
+        key = (pid, window or "")
+        cached = self._cached_target(key)
+        if cached is not None:
+            return cached
+        target = self._locate(pid, window) if window else self._locate(pid)
+        self._store_target(key, target)
+        return target
+
+    def begin_session(self, pid: int | None = None) -> bool:
+        """开启输入会话（缓存窗口定位 + 前台状态，减少每个动作的开销）。"""
+        if not self.supports():
+            return False
+        with self._session_lock:
+            self._session_depth += 1
+        return True
+
+    def end_session(self) -> None:
+        """结束输入会话并清空缓存（嵌套会话全部退出后才清）。"""
+        with self._session_lock:
+            if self._session_depth > 0:
+                self._session_depth -= 1
+            if self._session_depth == 0:
+                self._locate_cache.clear()
+                self._foreground_cache = 0
+
+    def _cached_target(self, key: tuple) -> _TargetWindow | None:
+        """会话期间复用已定位的窗口（复核句柄仍有效，失效则丢弃缓存）。"""
+        with self._session_lock:
+            if self._session_depth <= 0:
+                return None
+            target = self._locate_cache.get(key)
+            if target is None:
+                return None
+        try:
+            if not winapi.is_window(target.handle):
+                with self._session_lock:
+                    self._locate_cache.pop(key, None)
+                return None
+        except Exception:  # noqa: BLE001 - 复核失败时保守地重新定位
+            return None
+        return target
+
+    def _store_target(self, key: tuple, target: _TargetWindow | None) -> None:
+        """会话期间记住定位结果（未找到窗口时不缓存，以便稍后重试）。"""
+        if target is None:
+            return
+        with self._session_lock:
+            if self._session_depth > 0:
+                self._locate_cache[key] = target
 
     def send(self, pid: int, action: InputAction) -> InputResult:
         """向 ``pid`` 的目标窗口注入 ``action``，返回注入结果。
@@ -380,7 +456,8 @@ class WindowsInputBackend:
         控件、对话框）才会响应；Chrome、Electron、游戏等自绘界面通常忽略
         该通道。这里给出提示，避免调用方误以为按键一定生效。
         """
-        if delivery != "message" or not isinstance(action, (KeyAction, TextAction)):
+        if delivery != "message" or not isinstance(
+                action, (KeyAction, TextAction, ReleaseAction)):
             return None
         return (
             "键盘 / 文本走 PostMessage 回退通道：只有处理 WM_KEY*/WM_CHAR 的"
@@ -458,11 +535,19 @@ class WindowsInputBackend:
         owner = winapi.hwnd_value(target.owner_handle)
         if owner and self._driver.is_foreground(owner):
             return owner
+        # 上次确认过的前台窗口仍在前台？直接复用，省去遍历同进程树窗口
+        # （弹层场景下每个动作都要判一次，这里把开销降到 O(1)）。
+        cached = self._foreground_cache
+        if cached and cached not in (winapi.hwnd_value(target.handle), owner) \
+                and self._driver.is_foreground(cached):
+            return cached
         finder = getattr(self._driver, "foreground_in_tree", None)
         if finder is not None:
             found = finder(target.pid)
             if found:
-                return winapi.hwnd_value(found)
+                value = winapi.hwnd_value(found)
+                self._foreground_cache = value
+                return value
         return 0
 
     def _ensure_foreground(self, target: _TargetWindow) -> bool:
@@ -529,6 +614,10 @@ class WindowsInputBackend:
             return resolve_point(action.from_x, action.from_y,
                                  frame.width, frame.height, label="拖动起点")
         if isinstance(action, MoveAction) and action.is_relative:
+            if action.uses_relative_events:
+                # 相对位移事件不按坐标命中窗口，只作用于前台窗口；此处不适用
+                # 「光标是否落在目标窗口」的可达性判断。
+                return None
             reader = getattr(self._driver, "cursor_pos", None)
             current = reader() if reader is not None else None
             if current is None:
@@ -559,12 +648,18 @@ class WindowsInputBackend:
         if isinstance(action, TextAction):
             return self._inject_keyboard(
                 target, lambda: self._type_sendinput(action))
+        if isinstance(action, ReleaseAction):
+            return self._release_sendinput(action)
         raise ActionError(f"Windows 后端不支持的动作: {action.name}")  # pragma: no cover
 
     def _move_sendinput(self, frame: WindowFrame, action: MoveAction) -> dict:
+        if action.uses_relative_events:
+            with self._hold_all(action.modifiers, action.hold_keys):
+                detail = self._move_relative_events(action)
+            return detail
         if action.is_relative:
             screen = self._relative_screen_point(action)
-            with self._hold_modifiers(action.modifiers):
+            with self._hold_all(action.modifiers, action.hold_keys):
                 self._smooth_move(action, self._current_cursor(), screen)
             detail = self._relative_detail(action, screen)
             if action.is_smooth:
@@ -573,12 +668,50 @@ class WindowsInputBackend:
         point = resolve_point(action.x, action.y, frame.width, frame.height,
                               label="移动坐标")
         screen = frame.to_screen(point)
-        with self._hold_modifiers(action.modifiers):
+        with self._hold_all(action.modifiers, action.hold_keys):
             self._smooth_move(action, self._current_cursor(), screen)
         detail = self._point_detail(point, screen)
         if action.is_smooth:
             detail["smooth"] = self._smooth_detail(action)
         return detail
+
+    def _move_relative_events(self, action: MoveAction) -> dict:
+        """发送纯相对鼠标移动事件（游戏视角旋转 / 锁定光标场景）。
+
+        把 ``(dx, dy)`` 拆成 ``steps`` 个等分事件逐个投递，累积余数保证总量
+        精确；``interval`` 控制步间间隔。相对事件不读取 / 不设置光标位置，
+        因此不受游戏 ``ClipCursor`` 影响，引擎能逐帧读到位移。
+        """
+        dx = int(action.dx or 0)
+        dy = int(action.dy or 0)
+        steps = max(int(action.steps), 1)
+        interval = max(float(action.interval or 0.0), 0.0)
+        events = self._emit_relative_steps(dx, dy, steps, interval)
+        return {
+            "relative": True,
+            "relative_event": True,
+            "dx": dx,
+            "dy": dy,
+            "steps": steps,
+            "events": events,
+        }
+
+    def _emit_relative_steps(self, dx: int, dy: int, steps: int,
+                             interval: float) -> int:
+        """按 ``steps`` 把总位移均分为相对事件逐个发送（累积余数保持精确）。"""
+        remaining_x, remaining_y = int(dx), int(dy)
+        sent = 0
+        for index in range(steps):
+            left = steps - index
+            step_x = int(round(remaining_x / left)) if left else remaining_x
+            step_y = int(round(remaining_y / left)) if left else remaining_y
+            remaining_x -= step_x
+            remaining_y -= step_y
+            self._driver.relative_move(step_x, step_y)
+            sent += 1
+            if interval and index + 1 < steps:
+                self._driver.sleep(interval)
+        return sent
 
     def _current_cursor(self) -> tuple[int, int] | None:
         """读取当前光标屏幕坐标（不可用返回 None）。"""
@@ -619,7 +752,7 @@ class WindowsInputBackend:
         point = resolve_point(action.x, action.y, frame.width, frame.height,
                               label="悬停坐标")
         screen = frame.to_screen(point)
-        with self._hold_modifiers(action.modifiers):
+        with self._hold_all(action.modifiers, action.hold_keys):
             self._driver.move_to(*screen)
             if action.dwell > 0:
                 self._driver.sleep(action.dwell)
@@ -659,17 +792,34 @@ class WindowsInputBackend:
                               label="点击坐标")
         screen = frame.to_screen(point)
         down, up = _BUTTON_FLAGS[action.button]
-        self._driver.move_to(*screen)
-        with self._hold_modifiers(action.modifiers):
-            for index in range(action.count):
+        # press 或显式给了坐标时定位光标；phase=down/up 且未给坐标时就在当前
+        # 光标处按下 / 弹起（游戏「按住射击」不必先把光标挪到窗口中心）。
+        if action.phase == "press" or action.x is not None or action.y is not None:
+            self._driver.move_to(*screen)
+        count = action.effective_count
+        with self._hold_all(action.modifiers, action.hold_keys):
+            for index in range(count):
                 if index and action.interval > 0:
                     self._driver.sleep(action.interval)
-                self._driver.mouse_event(down)
-                if action.hold > 0:
-                    self._driver.sleep(action.hold)
-                self._driver.mouse_event(up)
+                if action.phase == "up":
+                    self._driver.mouse_event(up)
+                elif action.phase == "down":
+                    self._driver.mouse_event(down)
+                else:
+                    self._driver.mouse_event(down)
+                    if action.hold > 0:
+                        self._driver.sleep(action.hold)
+                    self._driver.mouse_event(up)
+        if action.phase == "down":
+            self._remember_button(action.button, pressed=True)
+        elif action.phase == "up":
+            self._remember_button(action.button, pressed=False)
         detail = self._point_detail(point, screen)
         detail.update({"button": action.button, "count": action.count})
+        if action.phase != "press":
+            detail["phase"] = action.phase
+            if action.effective_count != action.count:
+                detail["effective_count"] = action.effective_count
         if action.hold > 0:
             detail["hold"] = action.hold
         if action.interval != DEFAULT_CLICK_INTERVAL:
@@ -686,7 +836,7 @@ class WindowsInputBackend:
         down, up = _BUTTON_FLAGS[action.button]
         self._driver.move_to(*start_screen)
         interval = self._drag_interval(action)
-        with self._hold_modifiers(action.modifiers):
+        with self._hold_all(action.modifiers, action.hold_keys):
             self._driver.mouse_event(down)
             for point in interpolate(start, end, action.steps):
                 self._driver.move_to(*frame.to_screen(point))
@@ -719,7 +869,7 @@ class WindowsInputBackend:
         flags, sign = _SCROLL_FLAGS[action.direction]
         data = sign * action.amount * winapi.WHEEL_DELTA
         self._driver.move_to(*screen)
-        with self._hold_modifiers(action.modifiers):
+        with self._hold_all(action.modifiers, action.hold_keys):
             self._driver.mouse_event(flags, data)
         detail = self._point_detail(point, screen)
         detail.update({"direction": action.direction, "amount": action.amount})
@@ -777,20 +927,53 @@ class WindowsInputBackend:
         modifiers = self._merged_modifiers(action.shortcut.modifiers, implicit)
         vks = [_MODIFIER_VKS[name] for name in modifiers]
         repeats = action.effective_repeat
-        for index in range(repeats):
-            if index:
-                self._driver.sleep(_KEY_REPEAT_INTERVAL)
-            self._press_shortcut(vks, vk, action.phase)
-        return {
+        interval = self._key_repeat_interval(action)
+        extra_hold = tuple(k for k in action.hold_keys if k not in modifiers)
+        with self._hold_all((), extra_hold):
+            for index in range(repeats):
+                if index and interval:
+                    self._driver.sleep(interval)
+                self._press_shortcut(vks, vk, action.phase, hold=action.hold)
+        self._remember_shortcut(action, modifiers, vk)
+        detail = {
             "key": action.shortcut.display(),
             "vk": vk,
             "modifiers": list(modifiers),
             "phase": action.phase,
             "repeat": repeats,
         }
+        if action.hold:
+            detail["hold"] = action.hold
+        if action.interval:
+            detail["interval"] = action.interval
+        return detail
 
-    def _press_shortcut(self, vks: list[int], vk: int, phase: str) -> None:
-        """发送一次完整按键（含修饰键的按下与逆序释放）。"""
+    def _remember_shortcut(self, action: KeyAction, modifiers: tuple[str, ...],
+                           vk: int) -> None:
+        """记录 / 清除 ``down`` / ``up`` 阶段留下的按下状态（供 release 兜底）。"""
+        if action.phase == "down":
+            pairs = [(action.shortcut.key, vk)]
+            pairs += [(name, _MODIFIER_VKS[name]) for name in modifiers
+                      if name in _MODIFIER_VKS]
+            self._remember_key_targets(pairs, pressed=True)
+        elif action.phase == "up":
+            pairs = [(action.shortcut.key, vk)]
+            pairs += [(name, _MODIFIER_VKS[name]) for name in modifiers
+                      if name in _MODIFIER_VKS]
+            self._remember_key_targets(pairs, pressed=False)
+
+    @staticmethod
+    def _key_repeat_interval(action: KeyAction) -> float:
+        """连发间隔：``action.interval`` > 0 时用它，否则用平台默认间隔。"""
+        return action.interval if action.interval > 0 else _KEY_REPEAT_INTERVAL
+
+    def _press_shortcut(self, vks: list[int], vk: int, phase: str, *,
+                        hold: float = 0.0) -> None:
+        """发送一次完整按键（含修饰键的按下与逆序释放）。
+
+        ``hold`` > 0 且 ``phase='press'`` 时，主键按下后保持 ``hold`` 秒再
+        弹起（长按：游戏蓄力 / 持续移动）。
+        """
         if phase == "down":
             for name_vk in vks:
                 self._driver.key_event(name_vk, key_up=False)
@@ -799,11 +982,13 @@ class WindowsInputBackend:
             self._driver.key_event(vk, key_up=True)
             for name_vk in reversed(vks):
                 self._driver.key_event(name_vk, key_up=True)
-        else:  # press：按住修饰键 → 主键按下/弹起 → 逆序释放修饰键
+        else:  # press：按住修饰键 → 主键按下[/保持/弹起] → 逆序释放修饰键
             for name_vk in vks:
                 self._driver.key_event(name_vk, key_up=False)
             try:
                 self._driver.key_event(vk, key_up=False)
+                if hold > 0:
+                    self._driver.sleep(hold)
                 self._driver.key_event(vk, key_up=True)
             finally:
                 for name_vk in reversed(vks):
@@ -811,18 +996,19 @@ class WindowsInputBackend:
 
     def _type_sendinput(self, action: TextAction) -> dict:
         characters = 0
-        for char in action.text:
-            if char == "\r":
-                continue
-            if char == "\n":
-                self._press_vk(winapi.VK_RETURN)
-            elif char == "\t":
-                self._press_vk(winapi.VK_TAB)
-            else:
-                for unit in utf16_units(char):
-                    self._driver.unicode_event(unit, key_up=False)
-                    self._driver.unicode_event(unit, key_up=True)
-            characters += 1
+        with self._hold_all((), action.hold_keys):
+            for char in action.text:
+                if char == "\r":
+                    continue
+                if char == "\n":
+                    self._press_vk(winapi.VK_RETURN)
+                elif char == "\t":
+                    self._press_vk(winapi.VK_TAB)
+                else:
+                    for unit in utf16_units(char):
+                        self._driver.unicode_event(unit, key_up=False)
+                        self._driver.unicode_event(unit, key_up=True)
+                characters += 1
         return {"text": action.text, "characters": characters}
 
     def _press_vk(self, vk: int) -> None:
@@ -832,14 +1018,105 @@ class WindowsInputBackend:
     @contextmanager
     def _hold_modifiers(self, modifiers: tuple[str, ...]) -> Iterator[None]:
         """注入期间按住修饰键（结束按逆序释放）。"""
-        vks = [_MODIFIER_VKS[name] for name in modifiers if name in _MODIFIER_VKS]
-        for vk in vks:
+        with self._hold_all(modifiers, ()):
+            yield
+
+    @contextmanager
+    def _hold_all(self, modifiers: tuple[str, ...] = (),
+                  hold_keys: tuple[str, ...] = ()) -> Iterator[None]:
+        """注入期间按住一组键（修饰键 + ``hold_keys``，去重后按下、逆序释放）。
+
+        任意键都可按住（游戏 WASD / Shift 组合），解析失败（未知键名）时
+        跳过该键并记日志，不中断整体注入。
+        """
+        entries: list[tuple[str, int]] = []
+        seen: set[str] = set()
+        for name in tuple(modifiers or ()) + tuple(hold_keys or ()):
+            if name in seen:
+                continue
+            seen.add(name)
+            vk = _MODIFIER_VKS.get(name)
+            if vk is None:
+                try:
+                    vk, _implicit = resolve_windows_vk(name)
+                except InputError:
+                    logger.debug("hold_keys 无法解析为 Windows 虚拟键: %s", name)
+                    continue
+            entries.append((name, vk))
+        for _name, vk in entries:
             self._driver.key_event(vk, key_up=False)
         try:
             yield
         finally:
-            for vk in reversed(vks):
+            for _name, vk in reversed(entries):
                 self._driver.key_event(vk, key_up=True)
+
+    def _remember_key_targets(self, pairs: list[tuple[str, int]], *,
+                              pressed: bool) -> None:
+        """记录 / 清除 ``down`` / ``up`` 阶段留下的按下状态（供 release 兜底）。"""
+        with self._state_lock:
+            for name, vk in pairs:
+                if pressed:
+                    self._held_keys[str(name)] = int(vk)
+                else:
+                    self._held_keys.pop(str(name), None)
+
+    def _remember_button(self, button: str, *, pressed: bool) -> None:
+        """记录 / 清除鼠标按钮的按下状态（供 release 兜底）。"""
+        with self._state_lock:
+            if pressed:
+                self._held_buttons.add(button)
+            else:
+                self._held_buttons.discard(button)
+
+    def _release_sendinput(self, action: ReleaseAction) -> dict:
+        """释放按下的键与鼠标按钮（``op=release``，游戏长按后的兜底清理）。
+
+        默认释放本次会话记录的全部；``action.keys`` / ``action.buttons`` 非空
+        时只释放指定目标（未记录在案的键 / 按钮也会尝试发送释放事件，避免
+        「状态没记上就释放不掉」）。
+        """
+        with self._state_lock:
+            held_keys = dict(self._held_keys)
+            held_buttons = set(self._held_buttons)
+        keys = list(action.keys) or list(held_keys)
+        buttons = list(action.buttons) or list(held_buttons)
+        released_buttons = self._release_buttons(buttons)
+        released_keys = self._release_keys(keys, held_keys)
+        return {
+            "scope": "selected" if (action.keys or action.buttons) else "all",
+            "released_keys": released_keys,
+            "released_buttons": released_buttons,
+        }
+
+    def _release_keys(self, names: list[str],
+                      held_keys: dict[str, int]) -> list[str]:
+        released: list[str] = []
+        for name in names:
+            vk = held_keys.get(name)
+            if vk is None:
+                try:
+                    vk, _implicit = resolve_windows_vk(name)
+                except InputError:
+                    logger.debug("release 无法解析键名: %s", name)
+                    continue
+            self._driver.key_event(int(vk), key_up=True)
+            with self._state_lock:
+                self._held_keys.pop(name, None)
+            released.append(name)
+        return released
+
+    def _release_buttons(self, buttons: list[str]) -> list[str]:
+        released: list[str] = []
+        for button in buttons:
+            flags = _BUTTON_FLAGS.get(button)
+            if flags is None:
+                continue
+            self._driver.mouse_event(flags[1])
+            with self._state_lock:
+                self._held_buttons.discard(button)
+            released.append(button)
+        return released
 
     @staticmethod
     def _merged_modifiers(explicit: tuple[str, ...],
@@ -874,6 +1151,8 @@ class WindowsInputBackend:
             return self._key_message(target, action)
         if isinstance(action, TextAction):
             return self._type_message(target, action)
+        if isinstance(action, ReleaseAction):
+            return self._release_message(target, action)
         raise ActionError(f"Windows 后端不支持的动作: {action.name}")  # pragma: no cover
 
     def _message_point(self, target: _TargetWindow, point: Point) -> _MessagePoint:
@@ -907,10 +1186,14 @@ class WindowsInputBackend:
 
     def _move_message(self, target: _TargetWindow, action: MoveAction) -> dict:
         if action.is_relative:
-            raise ActionError(
-                "method='message' 通道不支持相对移动（没有真实光标可参照）；"
-                "去掉 method 走合成输入（真实光标可用），或改用绝对坐标 x/y"
-            )
+            hint = ("method='message' 通道不支持相对移动（没有真实光标可参照）；"
+                    "去掉 method 走合成输入（真实光标 / 相对位移事件可用），"
+                    "或改用绝对坐标 x/y")
+            if action.relative_event:
+                hint = ("method='message' 通道不能发送相对位移事件（游戏视角）——"
+                        "PostMessage 没有相对移动语义；去掉 method 走合成输入"
+                        "（默认 method='auto' 会发 MOUSEEVENTF_MOVE 相对事件）")
+            raise ActionError(hint)
         point = resolve_point(action.x, action.y, target.frame.width,
                               target.frame.height, label="移动坐标")
         hit = self._message_point(target, point)
@@ -959,24 +1242,39 @@ class WindowsInputBackend:
         hit = self._message_point(target, point)
         down_msg, up_msg, dbl_msg, button_mask = _BUTTON_MESSAGES[action.button]
         lparam = _make_lparam(hit.client_x, hit.client_y)
+        count = action.effective_count
         self._post_move(hit, 0)
-        self._post_modifier_keys(hit.handle, action.modifiers, key_up=False)
+        held = tuple(action.modifiers) + tuple(action.hold_keys)
+        self._post_key_list(hit.handle, held, key_up=False)
         try:
-            for index in range(action.count):
+            for index in range(count):
                 if index and action.interval > 0:
                     self._driver.sleep(action.interval)
-                self._driver.post(hit.handle,
-                                  dbl_msg if index == 1 else down_msg,
-                                  button_mask, lparam)
-                if action.hold > 0:
-                    self._driver.sleep(action.hold)
-                self._driver.post(hit.handle, up_msg, 0, lparam)
+                if action.phase == "up":
+                    self._driver.post(hit.handle, up_msg, 0, lparam)
+                elif action.phase == "down":
+                    self._driver.post(hit.handle, down_msg, button_mask, lparam)
+                else:
+                    self._driver.post(hit.handle,
+                                      dbl_msg if index == 1 else down_msg,
+                                      button_mask, lparam)
+                    if action.hold > 0:
+                        self._driver.sleep(action.hold)
+                    self._driver.post(hit.handle, up_msg, 0, lparam)
         finally:
-            self._post_modifier_keys(hit.handle, action.modifiers, key_up=True)
+            self._post_key_list(hit.handle, held, key_up=True)
+        if action.phase == "down":
+            self._remember_button(action.button, pressed=True)
+        elif action.phase == "up":
+            self._remember_button(action.button, pressed=False)
         detail = self._point_detail(point, (hit.screen_x, hit.screen_y))
         detail.update({"button": action.button, "count": action.count,
                        "client_x": hit.client_x, "client_y": hit.client_y,
                        "target_handle": hit.handle})
+        if action.phase != "press":
+            detail["phase"] = action.phase
+            if action.effective_count != action.count:
+                detail["effective_count"] = action.effective_count
         if action.hold > 0:
             detail["hold"] = action.hold
         if action.interval != DEFAULT_CLICK_INTERVAL:
@@ -1048,20 +1346,29 @@ class WindowsInputBackend:
         down_msg, up_msg = _key_message_types(modifiers)
         vks = [_MODIFIER_VKS[name] for name in modifiers]
         repeats = action.effective_repeat
-        for index in range(repeats):
-            if index:
-                self._driver.sleep(_KEY_REPEAT_INTERVAL)
-            if action.phase in ("press", "down"):
-                for modifier_vk in vks:
-                    self._driver.post(handle, down_msg, modifier_vk, 1)
-                self._driver.post(handle, down_msg, vk, 1)
-                for unit in _message_char_units(action.shortcut, modifiers):
-                    self._driver.post(handle, winapi.WM_CHAR, unit, 1)
-            if action.phase in ("press", "up"):
-                self._driver.post(handle, up_msg, vk, _KEYUP_LPARAM)
-                for modifier_vk in reversed(vks):
-                    self._driver.post(handle, up_msg, modifier_vk, _KEYUP_LPARAM)
-        return {
+        interval = self._key_repeat_interval(action)
+        extra_hold = tuple(k for k in action.hold_keys if k not in modifiers)
+        self._post_key_list(handle, extra_hold, key_up=False)
+        try:
+            for index in range(repeats):
+                if index and interval:
+                    self._driver.sleep(interval)
+                if action.phase in ("press", "down"):
+                    for modifier_vk in vks:
+                        self._driver.post(handle, down_msg, modifier_vk, 1)
+                    self._driver.post(handle, down_msg, vk, 1)
+                    for unit in _message_char_units(action.shortcut, modifiers):
+                        self._driver.post(handle, winapi.WM_CHAR, unit, 1)
+                if action.is_long_press:
+                    self._driver.sleep(action.hold)
+                if action.phase in ("press", "up"):
+                    self._driver.post(handle, up_msg, vk, _KEYUP_LPARAM)
+                    for modifier_vk in reversed(vks):
+                        self._driver.post(handle, up_msg, modifier_vk, _KEYUP_LPARAM)
+        finally:
+            self._post_key_list(handle, extra_hold, key_up=True)
+        self._remember_shortcut(action, modifiers, vk)
+        detail = {
             "key": action.shortcut.display(),
             "vk": vk,
             "modifiers": list(modifiers),
@@ -1069,22 +1376,69 @@ class WindowsInputBackend:
             "target_handle": handle,
             "repeat": repeats,
         }
+        if action.hold:
+            detail["hold"] = action.hold
+        if action.interval:
+            detail["interval"] = action.interval
+        return detail
 
     def _type_message(self, target: _TargetWindow, action: TextAction) -> dict:
         handle = self._keyboard_target(target)
         characters = 0
-        for char in action.text:
-            if char == "\r":
-                continue
-            if char == "\n":
-                self._press_key_message(handle, winapi.VK_RETURN, 0x0D)
-            elif char == "\t":
-                self._press_key_message(handle, winapi.VK_TAB, 0x09)
-            else:
-                self._type_char_message(handle, char)
-            characters += 1
+        self._post_key_list(handle, action.hold_keys, key_up=False)
+        try:
+            for char in action.text:
+                if char == "\r":
+                    continue
+                if char == "\n":
+                    self._press_key_message(handle, winapi.VK_RETURN, 0x0D)
+                elif char == "\t":
+                    self._press_key_message(handle, winapi.VK_TAB, 0x09)
+                else:
+                    self._type_char_message(handle, char)
+                characters += 1
+        finally:
+            self._post_key_list(handle, action.hold_keys, key_up=True)
         return {"text": action.text, "characters": characters,
                 "target_handle": handle}
+
+    def _release_message(self, target: _TargetWindow,
+                         action: ReleaseAction) -> dict:
+        """消息投递路径的释放：向最近交互控件投递 WM_KEYUP / WM_*BUTTONUP。"""
+        handle = self._keyboard_target(target)
+        with self._state_lock:
+            held_keys = dict(self._held_keys)
+            held_buttons = set(self._held_buttons)
+        keys = list(action.keys) or list(held_keys)
+        buttons = list(action.buttons) or list(held_buttons)
+        released_keys: list[str] = []
+        the_message = winapi.WM_KEYUP
+        for name in keys:
+            vk = held_keys.get(name)
+            if vk is None:
+                try:
+                    vk, _implicit = resolve_windows_vk(name)
+                except InputError:
+                    continue
+            self._driver.post(handle, the_message, int(vk), _KEYUP_LPARAM)
+            with self._state_lock:
+                self._held_keys.pop(name, None)
+            released_keys.append(name)
+        released_buttons: list[str] = []
+        for button in buttons:
+            messages = _BUTTON_MESSAGES.get(button)
+            if messages is None:
+                continue
+            self._driver.post(handle, messages[1], 0, 0)
+            with self._state_lock:
+                self._held_buttons.discard(button)
+            released_buttons.append(button)
+        return {
+            "scope": "selected" if (action.keys or action.buttons) else "all",
+            "released_keys": released_keys,
+            "released_buttons": released_buttons,
+            "target_handle": handle,
+        }
 
     def _type_char_message(self, handle: int, char: str) -> None:
         """消息投递路径输入一个字符：按下 → 字符（可多个码元）→ 弹起。
@@ -1114,6 +1468,21 @@ class WindowsInputBackend:
     def _post_move(self, hit: _MessagePoint, state: int) -> None:
         self._driver.post(hit.handle, winapi.WM_MOUSEMOVE, state,
                           _make_lparam(hit.client_x, hit.client_y))
+
+    def _post_key_list(self, handle: int, keys: tuple[str, ...], *,
+                       key_up: bool) -> None:
+        """向窗口投递一组键的按下 / 弹起消息（修饰键与任意 hold_keys 通用）。"""
+        message = winapi.WM_KEYUP if key_up else winapi.WM_KEYDOWN
+        for name in keys or ():
+            vk = _MODIFIER_VKS.get(name)
+            if vk is None:
+                try:
+                    vk, _implicit = resolve_windows_vk(name)
+                except InputError:
+                    logger.debug("hold_keys 无法解析键名: %s", name)
+                    continue
+            lparam = _KEYUP_LPARAM if key_up else 1
+            self._driver.post(handle, message, vk, lparam)
 
     def _post_modifier_keys(self, handle: int, modifiers: tuple[str, ...],
                             *, key_up: bool) -> None:

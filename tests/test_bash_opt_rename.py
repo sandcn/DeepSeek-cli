@@ -40,6 +40,8 @@ def test_tool_name_is_bash_opt():
         "elements", "wait_window", "clipboard", "locate", "sequence",
         # 像素取色 / 截图标注 / 操作宏
         "pixel", "annotate", "record", "replay",
+        # 释放按下的键与鼠标按钮（游戏长按后的兜底清理）
+        "release",
     }
 
 

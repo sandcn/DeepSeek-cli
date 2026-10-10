@@ -60,6 +60,26 @@ bash_opt — 按 task_id 操作后台 bash 任务
 - op=record      把一段操作序列（actions，与 sequence 同构）保存为命名宏
 - op=replay      回放命名宏（macro / path），times 可重复多次；重复性 GUI
                  任务一次固化、随时重跑
+- op=release     释放按下的键与鼠标按钮（keys / buttons 可只释放指定目标）；
+                 清理 key/click 的 phase='down' 留下的悬空状态
+
+★ 游戏操作增强（本工具对游戏场景的重点优化）：
+
+  - move 的 relative_event：发送**纯相对位移事件**做视角控制——第一人称 /
+    第三人称游戏读取的是相对位移，且不受游戏 ClipCursor（锁定光标到窗口
+    中心）影响；steps 拆分位移、interval 控制步间间隔；
+  - click 的 phase=down/up：把鼠标按下与弹起分离，实现「按住左键射击 /
+    拖框 / 按住右键瞄准」这类跨调用保持按键的操作；hold 一步完成长按；
+    count 上限放宽到 100（连点），interval 控制连点节奏；
+  - key 的 hold / interval：一步完成「按住某键 hold 秒」（持续移动 / 蓄力），
+    连发（repeat）可用 interval 自定义速率；
+  - hold_keys（任意鼠标 / 键盘动作通用）：动作期间按住任意键（如按住 W
+    同时点击、按住 Shift 跑动），比 modifiers 更通用（modifiers 仅限
+    修饰键）；必要时用 op=release 兜底释放，避免卡键；
+  - sequence / replay 期间自动开启「输入会话」：批量动作复用窗口定位与前台
+    确认，连续输入更跟手；
+  - screenshot 对 DirectX 独占全屏游戏：窗口自身 DC 拿不到画面时会自动从
+    桌面屏幕 DC 拷贝窗口区域，尽量截到真实游戏画面。
 
 ★ 「一次调用把一组操作做完」的推荐组合：
 
@@ -157,6 +177,7 @@ import math
 import os
 import tempfile
 import time
+from contextlib import asynccontextmanager
 
 from .base import Func
 from .bash import kill_process_tree
@@ -246,7 +267,9 @@ from ._window_input import (
     NoWindowError as InputNoWindowError,
     SequenceError,
     SequenceStep,
+    begin_input_session,
     build_action,
+    end_input_session,
     parse_sequence,
     probe_window,
     resolve_backend as resolve_input_backend,
@@ -579,6 +602,14 @@ class BashOptFunc(Func):
                                 "\n- record / replay：把一段操作序列（actions）保存为"
                                 "命名宏（macro），之后一条 replay 调用重复回放"
                                 "（times 可重复多次），适合重复性的 GUI 任务"
+                                "\n- release：释放按下的键与鼠标按钮（keys / buttons "
+                                "可只释放指定目标，留空释放全部）——清理 key/click 的 "
+                                "phase='down' 留下的悬空状态，是游戏操作中断后的兜底"
+                                "\n- 游戏操作增强：move 的 relative_event（发送纯相对"
+                                "位移事件做视角控制，不受 ClipCursor / 锁定光标影响）、"
+                                "click 的 phase=down/up（按住左键射击 / 拖框）与 hold "
+                                "长按、key 的 hold 长按与 interval 连发间隔、hold_keys "
+                                "（动作期间按住任意键，如按住 W 同时点击）"
                             ),
                         },
                         "timeout": {
@@ -807,23 +838,29 @@ class BashOptFunc(Func):
                         "count": {
                             "type": "number",
                             "description": (
-                                "仅 click：点击次数（默认 1；2 表示双击，最大 10）。"
+                                "仅 click：点击次数（默认 1；2 表示双击，最大 100）。"
+                                "游戏连点（射击 / 快速选择）可配 interval 控制节奏；"
+                                "phase='down'/'up' 分离阶段下恒按一次处理。"
                             ),
                         },
                         "hold": {
                             "type": "number",
                             "description": (
-                                "仅 click：长按时长（秒，默认 0 = 立即弹起）。>0 时"
-                                "按下后保持指定时间再弹起（点住不放 / 长按），"
-                                "上限 30 秒；配合 count=1 使用。"
+                                "click / key 的长按时长（秒，默认 0 = 立即弹起）。>0 时"
+                                "按下后保持指定时间再弹起：click 为「点住不放」（长按"
+                                "拖动 / 蓄力），key 为「按住某键一段时间」（游戏持续"
+                                "移动 / 蓄力 / 长按功能键）；上限 30 秒。"
                             ),
                         },
                         "interval": {
                             "type": "number",
                             "description": (
-                                "仅 click：多次点击（双击 / 三击）之间的间隔（秒，"
-                                "默认 0.05，上限 10）。需小于系统双击时间才会被"
-                                "识别为双击，一般不必改。"
+                                "click / key / move 的时间间隔（秒，上限 10）："
+                                "click = 多次点击（双击 / 三击）之间的间隔（默认 "
+                                "0.05，需小于系统双击时间才会识别为双击）；"
+                                "key = 连发（repeat）时相邻两次按键的间隔（默认用"
+                                "平台默认约 0.05；游戏连点可设 0.02 加快）；"
+                                "move（relative_event） = 相对位移拆步发送时的步间间隔。"
                             ),
                         },
                         "dwell": {
@@ -839,14 +876,16 @@ class BashOptFunc(Func):
                             "description": (
                                 "仅 move：相对当前光标屏幕位置的水平像素偏移"
                                 "（可为负）。与 x/y 互斥——相对移动给 dx/dy，绝对"
-                                "移动给 x/y。"
+                                "移动给 x/y。加 relative_event=true 可改为发送纯"
+                                "相对位移事件（游戏视角）。"
                             ),
                         },
                         "dy": {
                             "type": "number",
                             "description": (
                                 "仅 move：相对当前光标屏幕位置的垂直像素偏移"
-                                "（可为负）。需与 dx 同时提供（不移动的轴给 0）。"
+                                "（可为负）。需与 dx 同时提供（不移动的轴给 0）；"
+                                "加 relative_event=true 可改为发送纯相对位移事件。"
                             ),
                         },
                         "modifiers": {
@@ -906,10 +945,13 @@ class BashOptFunc(Func):
                             "type": "string",
                             "enum": ["press", "down", "up"],
                             "description": (
-                                "仅 key 操作可选：按键阶段。"
-                                "press（默认，按下并弹起，一次完整按键）、"
-                                "down（只发送「按下」消息，可用于长按）、"
+                                "key / click 操作的阶段（默认 press）。"
+                                "press（按下并弹起，一次完整按键 / 点击）、"
+                                "down（只发送「按下」消息，按住不放）、"
                                 "up（只发送「弹起」消息）。"
+                                "click 用 down/up 分离可实现「按住左键射击 / 拖框 / "
+                                "按住右键瞄准」等跨调用保持按键的游戏操作——配合 "
+                                "op=release（或 key/click 的 up 阶段）释放，避免卡键。"
                                 "按下与弹起在各平台分别独立发送（Linux 用 xdotool "
                                 "keydown/keyup、Windows 用 WM_KEYDOWN/WM_KEYUP 或 "
                                 "WM_SYSKEY*/SendInput、macOS 用 Quartz 按键事件）；"
@@ -924,6 +966,49 @@ class BashOptFunc(Func):
                                 "仅在 phase='press'（默认）时生效，down/up 的长按"
                                 "阶段忽略该参数。用于「连按多次」场景（如连按 F12 "
                                 "开关调试工具），减少多次调用与中途失焦导致的漏按。"
+                            ),
+                        },
+                        "relative_event": {
+                            "type": "boolean",
+                            "description": (
+                                "仅 move 的相对移动（给了 dx/dy）可选：true 时发送"
+                                "**纯相对鼠标位移事件**（不把光标定位到绝对位置）。"
+                                "第一人称 / 第三人称游戏读取的正是这种相对位移，且"
+                                "不受游戏 ClipCursor（把光标锁到窗口中心）影响——"
+                                "旋转视角 / 转镜头请用它。steps 把总位移拆成多个"
+                                "等分事件（引擎常忽略单次超大位移），interval 控制"
+                                "步间间隔。"
+                            ),
+                        },
+                        "hold_keys": {
+                            "type": ["string", "array"],
+                            "items": {"type": "string"},
+                            "description": (
+                                "动作期间额外按住的任意键（点击类 / 移动 / 拖动 / 滚动 / "
+                                "hover / key / type 都可用）：字符串（如 'w' 或 "
+                                "'w+shift'）或数组（如 ['w', 'shift']），每项是单个"
+                                "键（修饰键或普通键）。用于游戏组合键——按住 W 前进的"
+                                "同时点击 / 转视角，按住 Shift 跑动等。与 modifiers "
+                                "的区别：modifiers 只接受 ctrl/alt/shift/meta，"
+                                "hold_keys 接受任意键。"
+                            ),
+                        },
+                        "keys": {
+                            "type": ["string", "array"],
+                            "items": {"type": "string"},
+                            "description": (
+                                "仅 release 可选：要释放的键（字符串或数组）；留空 = "
+                                "释放本次会话记录的全部已按下键。release 用于清理 "
+                                "key/click 的 phase='down' 留下的悬空按下状态。"
+                            ),
+                        },
+                        "buttons": {
+                            "type": ["string", "array"],
+                            "items": {"type": "string"},
+                            "description": (
+                                "仅 release 可选：要释放的鼠标按钮（left/right/"
+                                "middle，字符串或数组）；留空 = 释放全部已按下的"
+                                "鼠标按钮。"
                             ),
                         },
                         "actions": {
@@ -1349,13 +1434,33 @@ class BashOptFunc(Func):
             phase = str(arguments.get("phase") or "press").strip().lower()
             if phase in ("down", "up"):
                 label = f"{label} {phase}"
+            hold = arguments.get("hold")
+            if hold not in (None, 0, "0", 0.0, ""):
+                label += f" hold={hold}s"
+            repeat = arguments.get("repeat")
+            if repeat not in (None, 1, "1"):
+                label += f" x{repeat}"
             return label
+        if op == "release":
+            keys = arguments.get("keys")
+            buttons = arguments.get("buttons")
+            parts = []
+            if keys:
+                parts.append("keys=" + ("/".join(keys) if isinstance(
+                    keys, (list, tuple)) else str(keys)))
+            if buttons:
+                parts.append("buttons=" + ("/".join(buttons) if isinstance(
+                    buttons, (list, tuple)) else str(buttons)))
+            return " ".join(parts) or "全部"
         if op == "click":
             button = str(arguments.get("button") or "left")
             count = arguments.get("count")
             label = f"{button}"
             if count not in (None, 1, "1"):
                 label += f"x{count}"
+            phase = str(arguments.get("phase") or "press").strip().lower()
+            if phase in ("down", "up"):
+                label += f" {phase}"
             hold = arguments.get("hold")
             if hold not in (None, 0, "0", 0.0, ""):
                 label += f" hold={hold}s"
@@ -1367,6 +1472,8 @@ class BashOptFunc(Func):
         if op == "move":
             if arguments.get("dx") is not None or arguments.get("dy") is not None:
                 label = f"rel dx={arguments.get('dx') or 0} dy={arguments.get('dy') or 0}"
+                if arguments.get("relative_event") in (True, "true", "1", 1):
+                    label += " event"
             else:
                 label = _format_position(arguments)
             steps = arguments.get("steps")
@@ -1397,6 +1504,8 @@ class BashOptFunc(Func):
                  direction: str | None = None, amount=None,
                  duration=None, steps=None, method: str | None = None,
                  phase: str | None = None, repeat=None,
+                 relative_event=None, hold_keys=None,
+                 keys=None, buttons=None,
                  window: str | None = None, grid=None,
                  shot=None, settle=None,
                  window_action: str | None = None,
@@ -1467,10 +1576,18 @@ class BashOptFunc(Func):
         self.duration = duration
         self.steps = steps
         self.method = method
-        # 按键阶段（仅 key 生效）：press=按下并弹起（默认）/ down=只按下 / up=只弹起
+        # 按键阶段（key / click 生效）：press=按下并弹起（默认）/ down=只按下 / up=只弹起
         self.phase = phase
         # 按键连按次数（仅 key / keys 生效，phase=press 时）：一次调用连按 N 次
         self.repeat = repeat
+        # 鼠标相对位移事件（仅 move 的 dx/dy 生效）：不发绝对定位，只发相对位移，
+        # 适合游戏视角控制（不受光标锁定影响）
+        self.relative_event = relative_event
+        # 动作期间额外按住的任意键（游戏组合键，如 ['w', 'shift']）
+        self.hold_keys = hold_keys
+        # op=release 的目标（留空 = 释放全部已按下的键 / 鼠标按钮）
+        self.keys = keys
+        self.buttons = buttons
         # ── 目标窗口选择（screenshot / 输入 op / window 通用）──
         self.window = window
         # ── 截图增强 ──
@@ -3236,6 +3353,9 @@ class BashOptFunc(Func):
             "duration": self.duration, "steps": self.steps,
             "method": self.method, "phase": self.phase,
             "repeat": self.repeat,
+            "relative_event": self.relative_event,
+            "hold_keys": self.hold_keys,
+            "keys": self.keys, "buttons": self.buttons,
             "window": self.window,
         }
         if overrides:
@@ -3909,20 +4029,21 @@ class BashOptFunc(Func):
         runs: list[dict] = []
         completed = failed = 0
         stopped_early = False
-        for iteration in range(times):
-            results, run_completed, run_failed, stopped = await self._run_step_sequence(
-                rec, steps, on_error)
-            completed += run_completed
-            failed += run_failed
-            runs.append({
-                "iteration": iteration + 1,
-                "completed": run_completed,
-                "failed": run_failed,
-                "steps": results,
-            })
-            if stopped:
-                stopped_early = True
-                break
+        async with self._input_session(rec):
+            for iteration in range(times):
+                results, run_completed, run_failed, stopped = (
+                    await self._run_step_sequence(rec, steps, on_error))
+                completed += run_completed
+                failed += run_failed
+                runs.append({
+                    "iteration": iteration + 1,
+                    "completed": run_completed,
+                    "failed": run_failed,
+                    "steps": results,
+                })
+                if stopped:
+                    stopped_early = True
+                    break
         payload = {
             "task_id": self.task_id,
             "op": "replay",
@@ -4147,8 +4268,9 @@ class BashOptFunc(Func):
             on_error = self._resolve_on_error()
         except ValueError as exc:
             return f"(sequence 参数非法: {exc})"
-        results, completed, failed, stopped = await self._run_step_sequence(
-            rec, steps, on_error)
+        async with self._input_session(rec):
+            results, completed, failed, stopped = await self._run_step_sequence(
+                rec, steps, on_error)
         payload = {
             "task_id": self.task_id,
             "op": "sequence",
@@ -4164,6 +4286,31 @@ class BashOptFunc(Func):
                      "遇错停止时可用 on_error='continue' 让后续步骤继续执行"),
         }
         return json.dumps(payload, ensure_ascii=False)
+
+    @asynccontextmanager
+    async def _input_session(self, rec: dict):
+        """在批量动作（sequence / replay）前后包裹「输入会话」以降低每步开销。
+
+        会话期间，输入后端会缓存窗口定位结果并复用前台确认，游戏这类需要
+        连续快速输入的场景更跟手；开启失败（后端不支持）时静默降级为逐条
+        调用，行为完全一致。
+        """
+        pid = rec.get("pid")
+        started = False
+        if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+            try:
+                started = await asyncio.to_thread(begin_input_session, pid)
+            except Exception:  # noqa: BLE001 - 会话优化失败不应影响执行
+                logger.debug("开启输入会话失败", exc_info=True)
+                started = False
+        try:
+            yield
+        finally:
+            if started:
+                try:
+                    await asyncio.to_thread(end_input_session)
+                except Exception:  # noqa: BLE001
+                    logger.debug("结束输入会话失败", exc_info=True)
 
     async def _run_step_sequence(self, rec: dict, steps: list,
                                  on_error: str) -> tuple[list[dict], int, int, bool]:

@@ -26,6 +26,8 @@ import logging
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 
 from .._screenshot.windows import DEFAULT_SELECTOR, pick_window
@@ -39,6 +41,7 @@ from .action import (
     KeyAction,
     MoveAction,
     Point,
+    ReleaseAction,
     ScrollAction,
     TextAction,
     interpolate,
@@ -57,6 +60,8 @@ _COMMAND_TIMEOUT = 30.0
 _TYPE_DELAY_MS = 12
 #: 双击间隔（毫秒）
 _DOUBLE_CLICK_DELAY_MS = 80
+#: key 连发（repeat）的默认间隔（秒）——未显式指定 interval 时使用
+_KEY_REPEAT_INTERVAL = 0.05
 
 #: 鼠标按钮 → xdotool 按钮号
 _BUTTON_NUMBERS: dict[str, int] = {"left": 1, "middle": 2, "right": 3}
@@ -83,6 +88,15 @@ class X11InputBackend:
     def __init__(self, locator=None, runner=None):
         self._locate = locator or locate_window
         self._run = runner or run_command
+        #: 长按 / 分阶段按下留下的「仍处于按下状态」的键与鼠标按钮，
+        #: 供 op=release 兜底释放。
+        self._held_keys: dict[str, int] = {}
+        self._held_buttons: set[str] = set()
+        self._state_lock = threading.RLock()
+        #: 输入会话（sequence / replay）期间缓存窗口定位结果。
+        self._session_lock = threading.RLock()
+        self._session_depth = 0
+        self._locate_cache: dict[tuple, _X11Target] = {}
 
     def supports(self) -> bool:
         return (
@@ -90,14 +104,41 @@ class X11InputBackend:
             and sys.platform != "darwin"
         )
 
+    def begin_session(self, pid: int | None = None) -> bool:
+        """开启输入会话（缓存窗口定位结果，减少 xdotool 定位 / 激活开销）。"""
+        if not self.supports():
+            return False
+        with self._session_lock:
+            self._session_depth += 1
+        return True
+
+    def end_session(self) -> None:
+        """结束输入会话并清空缓存。"""
+        with self._session_lock:
+            if self._session_depth > 0:
+                self._session_depth -= 1
+            if self._session_depth == 0:
+                self._locate_cache.clear()
+
     def locate(self, pid: int, window: str | None = None) -> _X11Target | None:
         """定位 ``pid``（含子进程）的目标窗口（无副作用；供路由决策与注入复用）。
 
         ``window`` 为窗口选择器（见 ``_screenshot.windows``）；缺省取主窗口。
+        输入会话期间结果被缓存（序列里的连续动作不必每次重新搜索窗口）。
         """
-        if window:
-            return self._locate(pid, window, runner=self._run)
-        return self._locate(pid, runner=self._run)
+        key = (pid, window or "")
+        with self._session_lock:
+            if self._session_depth > 0:
+                cached = self._locate_cache.get(key)
+                if cached is not None:
+                    return cached
+        target = (self._locate(pid, window, runner=self._run) if window
+                  else self._locate(pid, runner=self._run))
+        if target is not None:
+            with self._session_lock:
+                if self._session_depth > 0:
+                    self._locate_cache[key] = target
+        return target
 
     def send(self, pid: int, action: InputAction) -> InputResult:
         """向 ``pid`` 的目标窗口注入 ``action``，返回注入结果。"""
@@ -158,15 +199,19 @@ class X11InputBackend:
             return self._key(xdotool, action)
         if isinstance(action, TextAction):
             return self._type(xdotool, action)
+        if isinstance(action, ReleaseAction):
+            return self._release(xdotool, action)
         raise ActionError(f"X11 后端不支持的动作: {action.name}")  # pragma: no cover
 
     def _move(self, xdotool: str, target: _X11Target, action: MoveAction) -> dict:
+        if action.uses_relative_events:
+            return self._move_relative_events(xdotool, action)
         if action.is_relative:
             dx = int(action.dx or 0)
             dy = int(action.dy or 0)
             start = self._current_location(xdotool)
             end = None if start is None else (start[0] + dx, start[1] + dy)
-            with self._hold_modifiers(xdotool, action.modifiers):
+            with self._hold_all(xdotool, action.modifiers, action.hold_keys):
                 self._perform_move(xdotool, start, end, action,
                                    relative=(dx, dy), absolute=None)
             detail = {"relative": True, "dx": dx, "dy": dy}
@@ -178,12 +223,45 @@ class X11InputBackend:
                               target.frame.height, label="移动坐标")
         screen = target.frame.to_screen(point)
         start = self._current_location(xdotool)
-        with self._hold_modifiers(xdotool, action.modifiers):
+        with self._hold_all(xdotool, action.modifiers, action.hold_keys):
             self._perform_move(xdotool, start, screen, action,
                                relative=None, absolute=screen)
         detail = _point_detail(point, screen)
         self._annotate_smooth(detail, action)
         return detail
+
+    def _move_relative_events(self, xdotool: str,
+                              action: MoveAction) -> dict:
+        """发送纯相对位移（``xdotool mousemove_relative``），供游戏视角使用。
+
+        把 ``(dx, dy)`` 拆成 ``steps`` 个等分相对移动，累积余数保持总量精确；
+        ``interval`` 控制步间间隔。相对移动不依赖光标绝对位置。
+        """
+        dx = int(action.dx or 0)
+        dy = int(action.dy or 0)
+        steps = max(int(action.steps), 1)
+        interval = max(float(action.interval or 0.0), 0.0)
+        remaining_x, remaining_y = dx, dy
+        command = [xdotool]
+        for index in range(steps):
+            left = steps - index
+            step_x = int(round(remaining_x / left)) if left else remaining_x
+            step_y = int(round(remaining_y / left)) if left else remaining_y
+            remaining_x -= step_x
+            remaining_y -= step_y
+            command += ["mousemove_relative", "--sync", str(step_x), str(step_y)]
+            if interval and index + 1 < steps:
+                command += ["sleep", f"{interval:.3f}"]
+        with self._hold_all(xdotool, action.modifiers, action.hold_keys):
+            self._checked(command, "鼠标相对位移事件")
+        return {
+            "relative": True,
+            "relative_event": True,
+            "dx": dx,
+            "dy": dy,
+            "steps": steps,
+            "events": steps,
+        }
 
     def _perform_move(self, xdotool: str, start, end, action: MoveAction, *,
                       relative, absolute) -> None:
@@ -245,7 +323,7 @@ class X11InputBackend:
         command = [xdotool, "mousemove", "--sync", str(screen[0]), str(screen[1])]
         if action.dwell > 0:
             command += ["sleep", f"{action.dwell:.3f}"]
-        with self._hold_modifiers(xdotool, action.modifiers):
+        with self._hold_all(xdotool, action.modifiers, action.hold_keys):
             self._checked(command, "鼠标悬停")
         detail = _point_detail(point, screen)
         detail.update({"hover": True, "dwell": action.dwell})
@@ -256,16 +334,30 @@ class X11InputBackend:
                               target.frame.height, label="点击坐标")
         screen = target.frame.to_screen(point)
         number = _BUTTON_NUMBERS[action.button]
-        self._checked(
-            [xdotool, "mousemove", "--sync", str(screen[0]), str(screen[1])],
-            "鼠标移动",
-        )
+        if action.phase == "press" or action.x is not None or action.y is not None:
+            self._checked(
+                [xdotool, "mousemove", "--sync", str(screen[0]), str(screen[1])],
+                "鼠标移动",
+            )
+        count = action.effective_count
         delay_ms = (int(round(action.interval * 1000))
                     or _DOUBLE_CLICK_DELAY_MS)
-        if action.hold > 0:
+        if action.phase == "down":
+            command = [xdotool]
+            for index in range(count):
+                if index and action.interval > 0:
+                    command += ["sleep", f"{action.interval:.3f}"]
+                command += ["mousedown", str(number)]
+        elif action.phase == "up":
+            command = [xdotool]
+            for index in range(count):
+                if index and action.interval > 0:
+                    command += ["sleep", f"{action.interval:.3f}"]
+                command += ["mouseup", str(number)]
+        elif action.hold > 0:
             # 长按：mousedown → sleep hold → mouseup（每次点击重复）
             command = [xdotool]
-            for index in range(action.count):
+            for index in range(count):
                 if index:
                     command += ["sleep", f"{action.interval:.3f}"]
                 command += ["mousedown", str(number),
@@ -273,13 +365,21 @@ class X11InputBackend:
                             "mouseup", str(number)]
         else:
             command = [xdotool, "click"]
-            if action.count > 1:
-                command += ["--repeat", str(action.count), "--delay", str(delay_ms)]
+            if count > 1:
+                command += ["--repeat", str(count), "--delay", str(delay_ms)]
             command.append(str(number))
-        with self._hold_modifiers(xdotool, action.modifiers):
+        with self._hold_all(xdotool, action.modifiers, action.hold_keys):
             self._checked(command, "鼠标点击")
+        if action.phase == "down":
+            self._remember_button(action.button, pressed=True)
+        elif action.phase == "up":
+            self._remember_button(action.button, pressed=False)
         detail = _point_detail(point, screen)
         detail.update({"button": action.button, "count": action.count})
+        if action.phase != "press":
+            detail["phase"] = action.phase
+            if action.effective_count != action.count:
+                detail["effective_count"] = action.effective_count
         if action.hold > 0:
             detail["hold"] = action.hold
         if action.interval != DEFAULT_CLICK_INTERVAL:
@@ -305,7 +405,7 @@ class X11InputBackend:
                 command += ["sleep", f"{interval:.3f}"]
         command += ["mousemove", "--sync", str(end_screen[0]), str(end_screen[1]),
                     "mouseup", str(number)]
-        with self._hold_modifiers(xdotool, action.modifiers):
+        with self._hold_all(xdotool, action.modifiers, action.hold_keys):
             self._checked(command, "鼠标拖动")
         detail = _point_detail(start, start_screen)
         detail.update({
@@ -326,7 +426,7 @@ class X11InputBackend:
         number = _SCROLL_BUTTONS[action.direction]
         command = [xdotool, "mousemove", "--sync", str(screen[0]), str(screen[1]),
                    "click", "--repeat", str(action.amount), str(number)]
-        with self._hold_modifiers(xdotool, action.modifiers):
+        with self._hold_all(xdotool, action.modifiers, action.hold_keys):
             self._checked(command, "滚轮滚动")
         detail = _point_detail(point, screen)
         detail.update({"direction": action.direction, "amount": action.amount})
@@ -337,38 +437,105 @@ class X11InputBackend:
         # 分开发送按下与弹起（xdotool key 会把两者合并成一条命令）：
         # phase=down/up 可只发送其中之一，用于长按或单独释放。
         repeats = action.effective_repeat
-        for _index in range(repeats):
-            if action.phase in ("press", "down"):
-                self._checked([xdotool, "keydown", combo], "按键按下")
-            if action.phase in ("press", "up"):
-                self._checked([xdotool, "keyup", combo], "按键弹起")
-        return {
+        interval = action.interval if action.interval > 0 else _KEY_REPEAT_INTERVAL
+        extra_hold = tuple(k for k in action.hold_keys
+                           if k not in action.shortcut.modifiers)
+        with self._hold_all(xdotool, (), extra_hold):
+            for index in range(repeats):
+                if index and interval:
+                    time.sleep(interval)
+                if action.phase in ("press", "down"):
+                    self._checked([xdotool, "keydown", combo], "按键按下")
+                if action.is_long_press:
+                    time.sleep(action.hold)
+                if action.phase in ("press", "up"):
+                    self._checked([xdotool, "keyup", combo], "按键弹起")
+        if action.phase == "down":
+            self._remember_keys(action, pressed=True)
+        elif action.phase == "up":
+            self._remember_keys(action, pressed=False)
+        detail = {
             "key": action.shortcut.display(),
             "xdotool_key": combo,
             "modifiers": list(action.shortcut.modifiers),
             "phase": action.phase,
             "repeat": repeats,
         }
+        if action.hold:
+            detail["hold"] = action.hold
+        if action.interval:
+            detail["interval"] = action.interval
+        return detail
+
+    def _remember_keys(self, action: KeyAction, *, pressed: bool) -> None:
+        """记录 / 清除 ``down`` / ``up`` 阶段的按下状态（供 release 兜底）。"""
+        names = [action.shortcut.key, *action.shortcut.modifiers]
+        with self._state_lock:
+            for name in names:
+                if pressed:
+                    self._held_keys[name] = 0
+                else:
+                    self._held_keys.pop(name, None)
+
+    def _remember_button(self, button: str, *, pressed: bool) -> None:
+        with self._state_lock:
+            if pressed:
+                self._held_buttons.add(button)
+            else:
+                self._held_buttons.discard(button)
+
+    def _release(self, xdotool: str, action: ReleaseAction) -> dict:
+        """释放按下的键与鼠标按钮（``op=release``，游戏长按后的兜底清理）。"""
+        with self._state_lock:
+            held_keys = list(self._held_keys)
+            held_buttons = set(self._held_buttons)
+        keys = list(action.keys) or held_keys
+        buttons = list(action.buttons) or list(held_buttons)
+        released_buttons: list[str] = []
+        for button in buttons:
+            number = _BUTTON_NUMBERS.get(button)
+            if number is None:
+                continue
+            self._checked([xdotool, "mouseup", str(number)], "释放鼠标按钮")
+            with self._state_lock:
+                self._held_buttons.discard(button)
+            released_buttons.append(button)
+        released_keys: list[str] = []
+        for name in keys:
+            keysym = _x11_keysym(name)
+            if keysym is None:
+                logger.debug("release 无法解析键名: %s", name)
+                continue
+            self._checked([xdotool, "keyup", keysym], "释放按键")
+            with self._state_lock:
+                self._held_keys.pop(name, None)
+            released_keys.append(name)
+        return {
+            "scope": "selected" if (action.keys or action.buttons) else "all",
+            "released_keys": released_keys,
+            "released_buttons": released_buttons,
+        }
 
     def _type(self, xdotool: str, action: TextAction) -> dict:
         """逐行调用 ``xdotool type``；换行 / 制表符转为对应按键。"""
         line = ""
         characters = 0
-        for char in action.text:
-            if char == "\r":
-                continue
-            if char == "\n":
-                self._flush_line(xdotool, line)
-                line = ""
-                self._checked([xdotool, "key", X11_KEYSYM["enter"]], "回车键")
-            elif char == "\t":
-                self._flush_line(xdotool, line)
-                line = ""
-                self._checked([xdotool, "key", X11_KEYSYM["tab"]], "制表键")
-            else:
-                line += char
-            characters += 1
-        self._flush_line(xdotool, line)
+        with self._hold_all(xdotool, (), action.hold_keys):
+            for char in action.text:
+                if char == "\r":
+                    continue
+                if char == "\n":
+                    self._flush_line(xdotool, line)
+                    line = ""
+                    self._checked([xdotool, "key", X11_KEYSYM["enter"]], "回车键")
+                elif char == "\t":
+                    self._flush_line(xdotool, line)
+                    line = ""
+                    self._checked([xdotool, "key", X11_KEYSYM["tab"]], "制表键")
+                else:
+                    line += char
+                characters += 1
+            self._flush_line(xdotool, line)
         return {"text": action.text, "characters": characters}
 
     def _flush_line(self, xdotool: str, text: str) -> None:
@@ -380,30 +547,56 @@ class X11InputBackend:
         )
 
     def _hold_modifiers(self, xdotool: str, modifiers: tuple[str, ...]):
-        return _ModifierContext(self, xdotool, modifiers)
+        return _KeyHoldContext(self, xdotool, modifiers, ())
+
+    def _hold_all(self, xdotool: str, modifiers: tuple[str, ...] = (),
+                  hold_keys: tuple[str, ...] = ()):
+        """按住一组键（修饰键 + hold_keys，去重后按下、逆序释放）。"""
+        return _KeyHoldContext(self, xdotool, modifiers, hold_keys)
 
 
-class _ModifierContext:
-    """按住修饰键的上下文管理器（xdotool keydown/keyup）。"""
+class _KeyHoldContext:
+    """按住一组键的上下文管理器（xdotool keydown/keyup）。
+
+    支持任意键（修饰键与普通键 / 单字符），用于「动作期间按住 W / Shift」这类
+    游戏组合键；未知键名跳过并记日志，不中断注入。
+    """
 
     def __init__(self, backend: X11InputBackend, xdotool: str,
-                 modifiers: tuple[str, ...]):
+                 modifiers: tuple[str, ...] = (),
+                 hold_keys: tuple[str, ...] = ()):
         self._backend = backend
         self._xdotool = xdotool
-        self._names = [X11_KEYSYM[name] for name in modifiers if name in X11_KEYSYM]
+        names: list[str] = []
+        for raw in list(modifiers or ()) + list(hold_keys or ()):
+            keysym = _x11_keysym(raw)
+            if keysym and keysym not in names:
+                names.append(keysym)
+        self._names = names
 
     def __enter__(self) -> None:
         for name in self._names:
-            self._backend._checked([self._xdotool, "keydown", name], "按下修饰键")
+            self._backend._checked([self._xdotool, "keydown", name], "按下按键")
         return None
 
     def __exit__(self, exc_type, exc, tb) -> None:
         for name in reversed(self._names):
             try:
-                self._backend._checked([self._xdotool, "keyup", name], "释放修饰键")
+                self._backend._checked([self._xdotool, "keyup", name], "释放按键")
             except InputError:
-                logger.debug("释放修饰键失败: %s", name, exc_info=True)
+                logger.debug("释放按键失败: %s", name, exc_info=True)
         return None
+
+
+#: 兼容旧名（工具层 / 测试此前引用 _ModifierContext）
+_ModifierContext = _KeyHoldContext
+
+
+def _x11_keysym(name: str) -> str | None:
+    """规范键名或单字符 → xdotool keysym；无法映射返回 None。"""
+    if len(name) == 1:
+        return name
+    return X11_KEYSYM.get(name)
 
 
 # ── 定位与工具（模块级，便于复用与单测） ────────────────────

@@ -24,8 +24,11 @@ import logging
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Iterator
 
 from .._screenshot.macos import list_windows as list_platform_windows
 from .._screenshot.windows import DEFAULT_SELECTOR, pick_window
@@ -38,6 +41,7 @@ from .action import (
     KeyAction,
     MoveAction,
     Point,
+    ReleaseAction,
     ScrollAction,
     TextAction,
     interpolate,
@@ -48,6 +52,7 @@ from .geometry import WindowFrame
 from .keys import (
     MACOS_KEYCODE,
     MACOS_MODIFIER_NAMES,
+    Shortcut,
     macos_keycode,
     utf16_units,
 )
@@ -61,6 +66,8 @@ _COMMAND_TIMEOUT = 30.0
 _DRAG_MIN_INTERVAL = 0.01
 #: 双击两次点击的间隔（秒）
 _DOUBLE_CLICK_INTERVAL = 0.08
+#: key 连发（repeat）的默认间隔（秒）——未显式指定 interval 时使用
+_KEY_REPEAT_INTERVAL = 0.05
 
 #: 鼠标按钮 → Quartz 事件类型与按钮号（CGEvent 使用）
 _QUARTZ_BUTTONS: dict[str, tuple[int, int, int, int]] = {
@@ -113,18 +120,53 @@ class MacOSInputBackend:
         self._mouse = mouse
         # 键盘驱动：Quartz（pyobjc）可分离按下/弹起，缺省回退 osascript
         self._keyboard = keyboard or resolve_keyboard_driver(self._run)
+        #: 长按 / 分阶段按下留下的「仍处于按下状态」的键与鼠标按钮，
+        #: 供 op=release 兜底释放。
+        self._held_keys: dict[str, int] = {}
+        self._held_buttons: set[str] = set()
+        self._state_lock = threading.RLock()
+        #: 输入会话（sequence / replay）期间缓存窗口定位结果。
+        self._session_lock = threading.RLock()
+        self._session_depth = 0
+        self._locate_cache: dict[tuple, _MacTarget] = {}
 
     def supports(self) -> bool:
         return sys.platform == "darwin"
+
+    def begin_session(self, pid: int | None = None) -> bool:
+        """开启输入会话（缓存窗口定位结果，减少每个动作的开销）。"""
+        if not self.supports():
+            return False
+        with self._session_lock:
+            self._session_depth += 1
+        return True
+
+    def end_session(self) -> None:
+        """结束输入会话并清空缓存。"""
+        with self._session_lock:
+            if self._session_depth > 0:
+                self._session_depth -= 1
+            if self._session_depth == 0:
+                self._locate_cache.clear()
 
     def locate(self, pid: int, window: str | None = None) -> _MacTarget | None:
         """定位 ``pid``（含子进程）的目标窗口（无副作用；供路由决策与注入复用）。
 
         ``window`` 为窗口选择器（见 ``_screenshot.windows``）；缺省取主窗口。
+        输入会话期间结果被缓存（序列里的连续动作不必每次重新搜索窗口）。
         """
-        if window:
-            return self._locate(pid, window)
-        return self._locate(pid)
+        key = (pid, window or "")
+        with self._session_lock:
+            if self._session_depth > 0:
+                cached = self._locate_cache.get(key)
+                if cached is not None:
+                    return cached
+        target = self._locate(pid, window) if window else self._locate(pid)
+        if target is not None:
+            with self._session_lock:
+                if self._session_depth > 0:
+                    self._locate_cache[key] = target
+        return target
 
     def send(self, pid: int, action: InputAction) -> InputResult:
         """向 ``pid`` 的目标窗口注入 ``action``，返回注入结果。"""
@@ -164,9 +206,13 @@ class MacOSInputBackend:
             return self._key(action)
         if isinstance(action, TextAction):
             return self._type(action)
+        if isinstance(action, ReleaseAction):
+            return self._release(action)
         raise ActionError(f"macOS 后端不支持的动作: {action.name}")  # pragma: no cover
 
     def _move(self, mouse, target: _MacTarget, action: MoveAction) -> dict:
+        if action.uses_relative_events:
+            return self._move_relative_events(mouse, action)
         if action.is_relative:
             reader = getattr(mouse, "cursor_position", None)
             current = reader() if reader is not None else None
@@ -177,7 +223,8 @@ class MacOSInputBackend:
                 )
             screen = (current[0] + int(action.dx or 0),
                       current[1] + int(action.dy or 0))
-            self._smooth_move(mouse, current, screen, action)
+            with self._hold_keys(action.hold_keys):
+                self._smooth_move(mouse, current, screen, action)
             detail = {"relative": True, "dx": int(action.dx or 0),
                       "dy": int(action.dy or 0),
                       "screen_x": screen[0], "screen_y": screen[1]}
@@ -190,9 +237,51 @@ class MacOSInputBackend:
         if action.is_smooth:
             reader = getattr(mouse, "cursor_position", None)
             start = reader() if reader is not None else None
-        self._smooth_move(mouse, start, screen, action)
+        with self._hold_keys(action.hold_keys):
+            self._smooth_move(mouse, start, screen, action)
         detail = _point_detail(point, screen)
         self._annotate_smooth(detail, action)
+        return detail
+
+    def _move_relative_events(self, mouse, action: MoveAction) -> dict:
+        """发送相对位移（游戏视角）：优先用驱动的相对原语，否则读光标近似。"""
+        dx = int(action.dx or 0)
+        dy = int(action.dy or 0)
+        steps = max(int(action.steps), 1)
+        interval = max(float(action.interval or 0.0), 0.0)
+        mover = getattr(mouse, "relative_move", None)
+        remaining_x, remaining_y = dx, dy
+        with self._hold_keys(action.hold_keys):
+            for index in range(steps):
+                left = steps - index
+                step_x = int(round(remaining_x / left)) if left else remaining_x
+                step_y = int(round(remaining_y / left)) if left else remaining_y
+                remaining_x -= step_x
+                remaining_y -= step_y
+                if mover is not None:
+                    mover(step_x, step_y)
+                else:
+                    reader = getattr(mouse, "cursor_position", None)
+                    current = reader() if reader is not None else None
+                    if current is None:
+                        raise InputError(
+                            "当前 macOS 鼠标驱动既无相对移动原语，也读不到光标"
+                            "位置，无法发送相对位移（游戏视角）"
+                        )
+                    mouse.move(current[0] + step_x, current[1] + step_y)
+                if interval and index + 1 < steps:
+                    time.sleep(interval)
+        detail = {
+            "relative": True,
+            "relative_event": True,
+            "dx": dx,
+            "dy": dy,
+            "steps": steps,
+        }
+        if mover is None:
+            detail["approximation"] = (
+                "该 macOS 鼠标驱动无相对移动原语，已按「读光标 + 绝对移动」近似"
+            )
         return detail
 
     @staticmethod
@@ -219,9 +308,10 @@ class MacOSInputBackend:
         point = resolve_point(action.x, action.y, target.frame.width,
                               target.frame.height, label="悬停坐标")
         screen = target.frame.to_screen(point)
-        mouse.move(*screen)
-        if action.dwell > 0:
-            time.sleep(action.dwell)
+        with self._hold_keys(action.hold_keys):
+            mouse.move(*screen)
+            if action.dwell > 0:
+                time.sleep(action.dwell)
         detail = _point_detail(point, screen)
         detail.update({"hover": True, "dwell": action.dwell})
         return detail
@@ -230,26 +320,53 @@ class MacOSInputBackend:
         point = resolve_point(action.x, action.y, target.frame.width,
                               target.frame.height, label="点击坐标")
         screen = target.frame.to_screen(point)
-        if action.hold > 0 or action.interval != DEFAULT_CLICK_INTERVAL:
-            clicker = getattr(mouse, "click_ex", None)
-            if clicker is None:
-                raise InputError(
-                    "当前 macOS 鼠标驱动不支持长按（hold）或自定义点击间隔"
-                    "（interval）；请安装 pyobjc（pip install pyobjc）或去掉"
-                    "这两个参数"
-                )
-            clicker(screen[0], screen[1], action.button, action.count,
-                    action.hold, action.interval, action.modifiers)
-        else:
-            mouse.click(screen[0], screen[1], action.button, action.count,
-                        action.modifiers)
+        count = action.effective_count
+        with self._hold_keys(action.hold_keys):
+            if action.phase == "down":
+                self._button_phase(mouse, "button_down", screen, action.button)
+            elif action.phase == "up":
+                self._button_phase(mouse, "button_up", screen, action.button)
+            elif action.hold > 0 or action.interval != DEFAULT_CLICK_INTERVAL:
+                clicker = getattr(mouse, "click_ex", None)
+                if clicker is None:
+                    raise InputError(
+                        "当前 macOS 鼠标驱动不支持长按（hold）或自定义点击间隔"
+                        "（interval）；请安装 pyobjc（pip install pyobjc）或去掉"
+                        "这两个参数"
+                    )
+                clicker(screen[0], screen[1], action.button, count,
+                        action.hold, action.interval, action.modifiers)
+            else:
+                mouse.click(screen[0], screen[1], action.button, count,
+                            action.modifiers)
+        if action.phase == "down":
+            self._remember_button(action.button, pressed=True)
+        elif action.phase == "up":
+            self._remember_button(action.button, pressed=False)
         detail = _point_detail(point, screen)
         detail.update({"button": action.button, "count": action.count})
+        if action.phase != "press":
+            detail["phase"] = action.phase
+            if action.effective_count != action.count:
+                detail["effective_count"] = action.effective_count
         if action.hold > 0:
             detail["hold"] = action.hold
         if action.interval != DEFAULT_CLICK_INTERVAL:
             detail["interval"] = action.interval
         return detail
+
+    @staticmethod
+    def _button_phase(mouse, method: str, screen: tuple[int, int],
+                      button: str) -> None:
+        """调用鼠标驱动的按钮按下 / 弹起原语（缺失时给出可执行提示）。"""
+        action = getattr(mouse, method, None)
+        if action is None:
+            raise InputError(
+                "当前 macOS 鼠标驱动不支持把鼠标点击分成按下 / 弹起（phase）；"
+                "请安装 pyobjc（pip install pyobjc，其 Quartz 驱动支持分离的"
+                "按钮事件）后重试"
+            )
+        action(screen[0], screen[1], button)
 
     def _drag(self, mouse, target: _MacTarget, action: DragAction) -> dict:
         frame = target.frame
@@ -262,8 +379,9 @@ class MacOSInputBackend:
         waypoints = [frame.to_screen(point)
                      for point in interpolate(start, end, action.steps)]
         interval = _drag_interval(action)
-        mouse.drag(start_screen, end_screen, waypoints, action.button, interval,
-                   action.modifiers)
+        with self._hold_keys(action.hold_keys):
+            mouse.drag(start_screen, end_screen, waypoints, action.button, interval,
+                       action.modifiers)
         detail = _point_detail(start, start_screen)
         detail.update({
             "button": action.button,
@@ -280,8 +398,9 @@ class MacOSInputBackend:
         point = resolve_point(action.x, action.y, target.frame.width,
                               target.frame.height, label="滚动坐标")
         screen = target.frame.to_screen(point)
-        approximation = mouse.scroll(screen[0], screen[1], action.direction,
-                                     action.amount, action.modifiers)
+        with self._hold_keys(action.hold_keys):
+            approximation = mouse.scroll(screen[0], screen[1], action.direction,
+                                         action.amount, action.modifiers)
         detail = _point_detail(point, screen)
         detail.update({"direction": action.direction, "amount": action.amount})
         if approximation:
@@ -291,19 +410,137 @@ class MacOSInputBackend:
     def _key(self, action: KeyAction) -> dict:
         driver = self._keyboard
         repeats = action.effective_repeat
-        for _index in range(repeats):
-            driver.key(action.shortcut, action.phase)
-        return {
+        interval = action.interval if action.interval > 0 else _KEY_REPEAT_INTERVAL
+        extra_hold = tuple(k for k in action.hold_keys
+                           if k not in action.shortcut.modifiers)
+        with self._hold_keys(extra_hold):
+            for index in range(repeats):
+                if index and interval:
+                    time.sleep(interval)
+                if action.is_long_press:
+                    self._press_with_hold(driver, action)
+                else:
+                    driver.key(action.shortcut, action.phase)
+        if action.phase == "down":
+            self._remember_action_keys(action, pressed=True)
+        elif action.phase == "up":
+            self._remember_action_keys(action, pressed=False)
+        detail = {
             "key": action.shortcut.display(),
             "modifiers": list(action.shortcut.modifiers),
             "phase": action.phase,
             "repeat": repeats,
         }
+        if action.hold:
+            detail["hold"] = action.hold
+        if action.interval:
+            detail["interval"] = action.interval
+        return detail
+
+    @staticmethod
+    def _press_with_hold(driver, action: KeyAction) -> None:
+        """按下 → 保持 ``hold`` 秒 → 弹起（长按；需驱动支持 down/up 分离）。"""
+        driver.key(action.shortcut, "down")
+        time.sleep(action.hold)
+        driver.key(action.shortcut, "up")
 
     def _type(self, action: TextAction) -> dict:
         driver = self._keyboard
-        driver.text(action.text)
+        with self._hold_keys(action.hold_keys):
+            driver.text(action.text)
         return {"text": action.text, "characters": len(action.text)}
+
+    # ── 按住任意键 / 释放（游戏组合键与兜底清理） ───────────
+
+    @contextmanager
+    def _hold_keys(self, keys: tuple[str, ...] = ()) -> Iterator[None]:
+        """动作期间按住一组键（用键盘驱动的 down/up 分离发送）。
+
+        macOS 的按键驱动（Quartz）支持任意键单独按下 / 弹起；osascript 仅支持
+        修饰键，遇到不支持的键会记录日志并跳过（不中断注入）。
+        """
+        pressed: list[str] = []
+        for name in keys or ():
+            try:
+                self._keyboard.key(Shortcut((), name), "down")
+            except InputError:
+                logger.debug("hold_keys 按下失败（驱动不支持）: %s", name)
+                continue
+            pressed.append(name)
+            self._remember_plain_key(name, pressed=True)
+        try:
+            yield
+        finally:
+            for name in reversed(pressed):
+                try:
+                    self._keyboard.key(Shortcut((), name), "up")
+                except InputError:  # pragma: no cover - 释放失败不应中断
+                    logger.debug("hold_keys 释放失败: %s", name)
+                self._remember_plain_key(name, pressed=False)
+
+    def _remember_plain_key(self, name: str, *, pressed: bool) -> None:
+        with self._state_lock:
+            if pressed:
+                self._held_keys[name] = 0
+            else:
+                self._held_keys.pop(name, None)
+
+    def _remember_action_keys(self, action: KeyAction, *, pressed: bool) -> None:
+        names = [action.shortcut.key, *action.shortcut.modifiers]
+        with self._state_lock:
+            for name in names:
+                if pressed:
+                    self._held_keys[name] = 0
+                else:
+                    self._held_keys.pop(name, None)
+
+    def _remember_button(self, button: str, *, pressed: bool) -> None:
+        with self._state_lock:
+            if pressed:
+                self._held_buttons.add(button)
+            else:
+                self._held_buttons.discard(button)
+
+    def _release(self, action: ReleaseAction) -> dict:
+        """释放按下的键与鼠标按钮（``op=release``，游戏长按后的兜底清理）。"""
+        with self._state_lock:
+            held_keys = list(self._held_keys)
+            held_buttons = set(self._held_buttons)
+        keys = list(action.keys) or held_keys
+        buttons = list(action.buttons) or list(held_buttons)
+        mouse = self._mouse or resolve_mouse_driver(self._run)
+        released_buttons: list[str] = []
+        for button in buttons:
+            releaser = getattr(mouse, "button_up", None)
+            if releaser is None:
+                continue
+            reader = getattr(mouse, "cursor_position", None)
+            position = reader() if reader is not None else None
+            if position is None:
+                continue
+            try:
+                releaser(position[0], position[1], button)
+            except InputError:
+                logger.debug("释放鼠标按钮失败: %s", button, exc_info=True)
+                continue
+            with self._state_lock:
+                self._held_buttons.discard(button)
+            released_buttons.append(button)
+        released_keys: list[str] = []
+        for name in keys:
+            try:
+                self._keyboard.key(Shortcut((), name), "up")
+            except InputError:
+                logger.debug("释放按键失败: %s", name)
+                continue
+            with self._state_lock:
+                self._held_keys.pop(name, None)
+            released_keys.append(name)
+        return {
+            "scope": "selected" if (action.keys or action.buttons) else "all",
+            "released_keys": released_keys,
+            "released_buttons": released_buttons,
+        }
 
 
 # ── 鼠标驱动 ────────────────────────────────────────────
@@ -477,6 +714,32 @@ class QuartzMouseDriver:
         self._post(quartz, quartz.CGEventCreateMouseEvent(
             None, quartz.kCGEventMouseMoved, (x, y), mouse_button))
 
+    def relative_move(self, dx: int, dy: int) -> None:
+        """按 ``(dx, dy)`` 相对移动鼠标（读当前坐标后绝对移动，等效相对位移）。
+
+        macOS 的 CGEvent 没有独立的「相对移动」事件类型，这里以当前光标为基准
+        累加位移；对游戏视角控制是近似实现（真实相对位移需驱动级支持）。
+        """
+        current = self.cursor_position()
+        if current is None:
+            raise InputError("Quartz 无法读取鼠标位置，不能执行相对移动")
+        self.move(current[0] + int(dx), current[1] + int(dy))
+
+    def button_down(self, x: int, y: int, button: str) -> None:
+        """只按下鼠标按钮（不弹起），供 click 的 ``phase='down'`` 使用。"""
+        quartz = self._require()
+        down, _up, _dragged, mouse_button = _QUARTZ_BUTTONS[button]
+        self._move(quartz, x, y, mouse_button)
+        self._post(quartz, quartz.CGEventCreateMouseEvent(
+            None, down, (x, y), mouse_button))
+
+    def button_up(self, x: int, y: int, button: str) -> None:
+        """只弹起鼠标按钮，供 click 的 ``phase='up'`` 与 ``op=release`` 使用。"""
+        quartz = self._require()
+        _down, up, _dragged, mouse_button = _QUARTZ_BUTTONS[button]
+        self._post(quartz, quartz.CGEventCreateMouseEvent(
+            None, up, (x, y), mouse_button))
+
     @staticmethod
     def _post(quartz, event) -> None:
         if event is None:
@@ -504,6 +767,28 @@ class CliclickMouseDriver:
 
     def move(self, x: int, y: int) -> None:
         self._call([f"m:{x},{y}"], "鼠标移动")
+
+    def relative_move(self, dx: int, dy: int) -> None:
+        """相对移动鼠标（cliclick ``m:+dx,+dy``，原生支持相对位移）。"""
+        self._call([f"m:{int(dx):+d},{int(dy):+d}"], "鼠标相对移动")
+
+    def button_down(self, x: int, y: int, button: str) -> None:
+        """只按下鼠标按钮（cliclick 仅支持左键，用 ``dd`` 实现）。"""
+        if button != "left":
+            raise InputError(
+                "cliclick 仅支持左键的按下/弹起分离；请安装 pyobjc"
+                "（pip install pyobjc）以使用右键/中键"
+            )
+        self._call([f"dd:{int(x)},{int(y)}"], "鼠标按下")
+
+    def button_up(self, x: int, y: int, button: str) -> None:
+        """只弹起鼠标按钮（cliclick ``du``，仅左键）。"""
+        if button != "left":
+            raise InputError(
+                "cliclick 仅支持左键的按下/弹起分离；请安装 pyobjc"
+                "（pip install pyobjc）以使用右键/中键"
+            )
+        self._call([f"du:{int(x)},{int(y)}"], "鼠标弹起")
 
     def click(self, x: int, y: int, button: str, count: int,
               modifiers: tuple[str, ...]) -> None:

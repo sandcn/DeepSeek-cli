@@ -263,6 +263,39 @@ def _split_any(text: str) -> list[str]:
     return parts
 
 
+def parse_key_list(value, *, label: str = "hold_keys",
+                   maximum: int | None = None) -> tuple[str, ...]:
+    """解析「任意键列表」参数（``hold_keys`` / ``release`` 的 ``keys``）。
+
+    接受字符串（按 ``+`` / ``,`` / 空白分隔）或字符串数组；每一项必须是
+    **单个键**——修饰键（ctrl/alt/shift/meta）、普通键（w / space / f1 /
+    shift）或单个字符（不能写成组合键，组合请拆成多个元素，如
+    ``['w', 'shift']``）。返回规范化键名序列（去重、保持输入顺序）。
+
+    Raises:
+        ActionError: 取值类型非法、含空项、未知键名或超出 ``maximum`` 数量。
+    """
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        items = [part for part in _split_any(value) if part]
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        items = [str(item) for item in value if str(item).strip()]
+    else:
+        raise ActionError(
+            f"{label} 需为字符串（如 'w'）或字符串数组（如 ['w', 'shift']），"
+            f"当前: {value!r}"
+        )
+    names: list[str] = []
+    for item in items:
+        _kind, name = classify_token(item)
+        if name not in names:
+            names.append(name)
+    if maximum is not None and len(names) > maximum:
+        raise ActionError(f"{label} 最多 {maximum} 个键，当前: {len(names)}")
+    return tuple(names)
+
+
 # ── 平台键码表 ──────────────────────────────────────────
 
 #: 规范键名 → Windows 虚拟键码（字符键由后端经 VkKeyScanW 解析）
@@ -424,6 +457,7 @@ __all__ = [
     "X11_KEYSYM",
     "classify_token",
     "macos_keycode",
+    "parse_key_list",
     "parse_modifiers",
     "parse_shortcut",
     "shift_character",
