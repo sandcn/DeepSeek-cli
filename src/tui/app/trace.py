@@ -974,7 +974,7 @@ def _records_from_messages(messages, user_markdown: bool = False) -> tuple:
         rows.append(tools_rec)
     # 等待返回合并的工具调用（tool_call_id → 记录）
     pending: dict = {}
-    for msg in messages:
+    for msg_index, msg in enumerate(messages):
         if not isinstance(msg, dict):
             continue
         role = msg.get("role", "")
@@ -987,6 +987,7 @@ def _records_from_messages(messages, user_markdown: bool = False) -> tuple:
             rec = TraceRecord(
                 index=index, kind="system",
                 summary=_first_text(lines) or "系统提词", lines=lines,
+                message_index=msg_index,
             )
             records.append(rec)
             rows.append(rec)
@@ -1011,6 +1012,7 @@ def _records_from_messages(messages, user_markdown: bool = False) -> tuple:
                 #   渲染（标题/列表/代码块格式化）；主轨迹用户输入不标记
                 #   （保持原文纯文本显示）。
                 markdown=user_markdown,
+                message_index=msg_index,
             )
             records.append(rec)
             rows.append(rec)
@@ -1022,6 +1024,7 @@ def _records_from_messages(messages, user_markdown: bool = False) -> tuple:
                 rec = TraceRecord(
                     index=index, kind="reasoning",
                     summary=_first_text(lines), lines=lines,
+                    message_index=msg_index,
                 )
                 records.append(rec)
                 rows.append(rec)
@@ -1036,6 +1039,7 @@ def _records_from_messages(messages, user_markdown: bool = False) -> tuple:
                 rec = TraceRecord(
                     index=index, kind="content",
                     summary=_first_text(lines), lines=lines, images=images,
+                    message_index=msg_index,
                 )
                 records.append(rec)
                 rows.append(rec)
@@ -1064,6 +1068,7 @@ def _records_from_messages(messages, user_markdown: bool = False) -> tuple:
                     #   用树控件显示）：保存**原始 arguments**（str JSON 或
                     #   dict）——检查器据此用树控件显示参数（JSON 树形展开）。
                     tool_args=args,
+                    message_index=msg_index,
                 )
                 records.append(rec)
                 rows.append(rec)
@@ -1105,6 +1110,7 @@ def _records_from_messages(messages, user_markdown: bool = False) -> tuple:
                     result=_first_text(lines),
                     lines=["工具返回"] + lines,
                     tool_result=text, images=images,
+                    message_index=msg_index,
                 )
                 records.append(rec)
                 rows.append(rec)

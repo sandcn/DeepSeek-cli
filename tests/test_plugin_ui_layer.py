@@ -78,6 +78,8 @@ async def test_default_profile_registers_all(cli_kernel):
         "search", "keymap", "notify", "export",
         # 2026-10 会话日志 / 投影浏览器
         "logs",
+        # 2026-10 文件沙盒视图族（概览 / 消息维度历史 / 记录流水）
+        "sandbox", "sandbox_history", "sandbox_records",
     }
 
 

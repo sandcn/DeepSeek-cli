@@ -30,6 +30,9 @@ __all__ = [
     "ListViewState",
     "SessionsViewState",
     "ChangesViewState",
+    "SandboxStatsViewState",
+    "SandboxHistoryViewState",
+    "SandboxRecordsViewState",
     "ThemeViewState",
     "SkillViewState",
     "McpViewState",
@@ -755,14 +758,94 @@ class ChangesViewState(ListViewState):
 
     Attributes:
         entries: 文件变更条目列表（path/change_label/before/after/records）。
+        messages: 消息维度条目列表（index/count/files/tools/time/changes）。
         applied_seq: 应用（回滚）计数（组件递增，命令线程比对）。
         applied: 待回滚条目（组件写，命令线程读取）。
         revert_confirm: 待确认回滚的文件路径（"" = 无待确认）。
+        view_mode: 左栏模式（"file" 文件 / "tree" 目录树 / "message" 消息维度）。
+        detail_mode: 右栏模式（"diff" 差异 / "history" 单文件历史时间线 /
+            "stats" 统计区块）。
+        sort_mode: 文件列表排序（"path"/"records"/"recent"/"index"）。
+        type_filter: 变更类型过滤（"" = 全部；否则为变更标签，如 "修改"）。
+        sections: 统计区块数据（统计面板 / 命令线程构建）。
+        revert_all_confirm: 是否处于「回滚全部」二次确认。
+        restore_mode: 是否处于「回滚到消息索引」输入模式。
+        restore_value: 回滚到消息索引的输入缓冲。
+        export_message: 导出反馈文本（空串不渲染）。
+    """
+
+    entries: list = field(default_factory=list)
+    messages: list = field(default_factory=list)
+    applied_seq: int = 0
+    applied: Any = None
+    applied_consumed: int = 0
+    revert_confirm: str = ""
+    view_mode: str = "file"
+    detail_mode: str = "diff"
+    sort_mode: str = "path"
+    type_filter: str = ""
+    sections: list = field(default_factory=list)
+    revert_all_confirm: bool = False
+    restore_mode: bool = False
+    restore_value: str = ""
+    export_message: str = ""
+
+
+@dataclass
+class SandboxStatsViewState(ListViewState):
+    """文件沙盒概览视图状态（/sandbox 打开，SandboxStatsView 消费）。
+
+    Attributes:
+        sections: 统计区块列表（title/rows；命令线程构建）。
+        applied_seq: 操作计数（组件递增，命令线程比对）。
+        applied: 待执行操作（组件写：{"action", ...}）。
+        refresh_seq: 刷新计数（组件递增，命令线程据此重读统计）。
+        clear_confirm: 是否处于「清空沙盒」二次确认。
+    """
+
+    sections: list = field(default_factory=list)
+    applied_seq: int = 0
+    applied: Any = None
+    applied_consumed: int = 0
+    refresh_seq: int = 0
+    clear_confirm: bool = False
+
+
+@dataclass
+class SandboxHistoryViewState(ListViewState):
+    """沙盒消息维度历史视图状态（/sandbox history 打开，SandboxHistoryView 消费）。
+
+    Attributes:
+        entries: 消息维度条目（index/count/files/tools/time/changes）。
+        applied_seq: 回滚计数（组件递增，命令线程比对）。
+        applied: 待回滚动作（组件写：{"action": "restore-message", "index": N}）。
+        restore_confirm: 待确认回滚的消息索引（-1 = 无待确认）。
     """
 
     entries: list = field(default_factory=list)
     applied_seq: int = 0
     applied: Any = None
+    applied_consumed: int = 0
+    restore_confirm: int = -1
+
+
+@dataclass
+class SandboxRecordsViewState(ListViewState):
+    """沙盒变更记录流水视图状态（/sandbox records 打开，SandboxRecordsView 消费）。
+
+    Attributes:
+        entries: 记录条目（path/index/tool/time/change_label/before/after）。
+        applied_seq: 回滚计数（组件递增，命令线程比对）。
+        applied: 待回滚动作（组件写：{"action": "revert", "path": p}）。
+        sort_desc: 是否按消息索引倒序（最新在前）。
+        revert_confirm: 待确认回滚的文件路径。
+    """
+
+    entries: list = field(default_factory=list)
+    applied_seq: int = 0
+    applied: Any = None
+    applied_consumed: int = 0
+    sort_desc: bool = False
     revert_confirm: str = ""
 
 

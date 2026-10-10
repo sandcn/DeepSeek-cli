@@ -85,6 +85,21 @@ def get_changes_view_state_cls():
     return _state_cls("ChangesViewState")
 
 
+def get_sandbox_stats_view_state_cls():
+    """返回 SandboxStatsViewState 数据类（文件沙盒概览视图）。"""
+    return _state_cls("SandboxStatsViewState")
+
+
+def get_sandbox_history_view_state_cls():
+    """返回 SandboxHistoryViewState 数据类（沙盒消息维度历史视图）。"""
+    return _state_cls("SandboxHistoryViewState")
+
+
+def get_sandbox_records_view_state_cls():
+    """返回 SandboxRecordsViewState 数据类（沙盒变更记录流水视图）。"""
+    return _state_cls("SandboxRecordsViewState")
+
+
 def get_theme_view_state_cls():
     """返回 ThemeViewState 数据类（主题选择器）。"""
     return _state_cls("ThemeViewState")
@@ -261,6 +276,9 @@ __all__ = [
     "get_model_view_state_cls",
     "get_sessions_view_state_cls",
     "get_changes_view_state_cls",
+    "get_sandbox_stats_view_state_cls",
+    "get_sandbox_history_view_state_cls",
+    "get_sandbox_records_view_state_cls",
     "get_theme_view_state_cls",
     "get_skill_view_state_cls",
     "get_mcp_view_state_cls",

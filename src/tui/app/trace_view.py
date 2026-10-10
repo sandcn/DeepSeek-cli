@@ -717,6 +717,67 @@ def _inspector_content_deps(rec, right_w: int, collapsed: set | None = None,
     )
 
 
+def _sandbox_change_rows(model, rec, right_w: int) -> list:
+    """tool 记录 → 关联的文件沙盒变更行（无关联返回空列表）。
+
+    关联依据：``TraceRecord.message_index``（来源 assistant 消息索引）与
+    ``FileChangeRecord.message_index`` 相等，且工具名一致（同一 assistant
+    消息内多个工具调用时按工具名细分）。沙盒经装配注入的
+    ``model.sandbox_source`` 获取（未注入时返回空列表——零回归）。
+
+    ★ 2026-10（轨迹 ↔ 文件沙盒关联）：把「轨迹里的工具调用」与「文件沙盒
+    里该调用产生的文件变更」关联呈现，便于直接看到一次工具调用改了什么。
+    """
+    if rec is None or getattr(rec, "kind", "") != "tool":
+        return []
+    try:
+        msg_index = int(getattr(rec, "message_index", -1))
+    except (TypeError, ValueError):
+        return []
+    if msg_index < 0:
+        return []
+    source = getattr(model, "sandbox_source", None)
+    if not callable(source):
+        return []
+    try:
+        sandbox = source()
+    except Exception:
+        return []
+    if sandbox is None:
+        return []
+    tool_name = str(getattr(rec, "tool_name", "") or "")
+    try:
+        records = sandbox.get_message_records(msg_index)
+    except Exception:
+        return []
+    matched = [
+        r for r in (records or [])
+        if not tool_name or str(getattr(r, "tool_name", "") or "") == tool_name
+    ]
+    if not matched:
+        return []
+    rows: list = [[StyledRun("\u2500" * max(1, right_w - 1), _S_SEP_ROW)]]
+    rows.append([StyledRun(
+        f"{_SECTION_PREFIX}文件变更（{len(matched)}）", _S_SECTION,
+    )])
+    for r in matched:
+        path = str(getattr(r, "file_path", "") or "")
+        try:
+            label = r.get_change_type()
+        except Exception:
+            label = ""
+        name = str(getattr(r, "tool_name", "") or "")
+        runs = [
+            StyledRun(f"[{label}] ", _S_HINT),
+            StyledRun(path, _S_TREE_VAL),
+        ]
+        if name:
+            runs.append(StyledRun(f"  \u00b7 {name}", _S_HINT))
+        for line in wrap_runs_by_width(runs, max(1, right_w)):
+            rows.append(list(line.runs))
+    return rows
+
+
 def _truncate_text(text: str, width: int) -> str:
     """按显示宽度截断文本（超宽尾部追加 ``…``；异常回退原样）。
 
@@ -3149,6 +3210,12 @@ def TraceView(props) -> object:
         _inspector_content_deps(rec, right_w, collapsed, raw_text),
     )
     content_rows, row_keys = content
+    # ★ 2026-10（轨迹 ↔ 文件沙盒关联）：选中 tool 记录时在检查器末尾追加
+    #   「文件变更」小节（该工具调用产生的沙盒变更；按消息索引 + 工具名匹配）。
+    _sb_rows = _sandbox_change_rows(model, rec, right_w)
+    if _sb_rows:
+        content_rows = list(content_rows) + _sb_rows
+        row_keys = list(row_keys) + [None] * len(_sb_rows)
     total_content = len(content_rows)
     # ★ 2026-10-07 第三批（记录对比）：对比集判定（``C`` 选满两条记录）——
     #   提前到滚动协调之前（``compare_open`` 参与 resolve 分支）。

@@ -364,6 +364,193 @@ class SandboxManager:
         """获取所有文件修改记录（按消息索引排序）"""
         return self._fh.get_all_records()
 
+    # ── 视图 / 统计查询（TUI 沙盒界面数据源，2026-10） ──────────
+
+    def get_file_paths(self) -> List[str]:
+        """所有有沙盒记录的文件路径（升序）。"""
+        return sorted(self._fh.snapshot().keys())
+
+    def get_file_history(self, file_path: str) -> List[FileChangeRecord]:
+        """单个文件的全部修改记录（按消息索引 + 时间戳排序）。
+
+        与 ``get_all_file_changes`` 的差别：本方法只取指定路径，且**保留
+        中间记录**（视图「文件历史时间线」需要逐次修改，而非首末聚合）。
+        """
+        with self.lock:
+            records = list(self._fh.snapshot().get(file_path, ()) or ())
+        records.sort(key=lambda r: (r.message_index, r.timestamp))
+        return records
+
+    def get_message_groups(self) -> List[Tuple[int, List[FileChangeRecord]]]:
+        """按消息索引分组的记录（升序；线程安全快照）。
+
+        视图「消息维度」的数据源：每条消息索引对应一组文件变更记录。
+        """
+        with self.lock:
+            groups = {
+                idx: list(records) for idx, records in self.message_history.items()
+            }
+        out: List[Tuple[int, List[FileChangeRecord]]] = []
+        for idx in sorted(groups):
+            records = sorted(groups[idx], key=lambda r: r.timestamp)
+            if records:
+                out.append((idx, records))
+        return out
+
+    def get_message_records(self, message_index: int) -> List[FileChangeRecord]:
+        """指定消息索引下的记录（O(1) 集合查询，供轨迹检查器关联用）。"""
+        try:
+            idx = int(message_index)
+        except (TypeError, ValueError):
+            return []
+        with self.lock:
+            return list(self.message_history.get(idx, ()) or ())
+
+    def find_records(self, *, file_path: Optional[str] = None,
+                     tool_name: Optional[str] = None,
+                     message_index: Optional[int] = None,
+                     change_type: Optional[str] = None) -> List[FileChangeRecord]:
+        """按条件过滤全部记录（``None`` 表示该条件不过滤）。
+
+        ``change_type`` 取 :meth:`FileChangeRecord.get_change_type` 的结果
+        （"新建文件" / "修改文件" / "删除文件" 及目录变体）。
+        """
+        out: List[FileChangeRecord] = []
+        for r in self.get_all_file_changes():
+            if file_path is not None and r.file_path != file_path:
+                continue
+            if tool_name is not None and r.tool_name != tool_name:
+                continue
+            if message_index is not None and r.message_index != message_index:
+                continue
+            if change_type is not None and r.get_change_type() != change_type:
+                continue
+            out.append(r)
+        return out
+
+    def get_extended_stats(self) -> Dict[str, Any]:
+        """扩展统计（视图统计面板数据源）。
+
+        在 ``get_stats`` 基础上增加：消息分组数、当前索引、工具分布、
+        变更类型分布、缓存内容字符数、回滚次数。
+        """
+        with self.lock:
+            groups = len(self.message_history)
+            current = self.current_message_index
+        base = self.get_stats()
+        records = self.get_all_file_changes()
+        tool_counts: Dict[str, int] = {}
+        type_counts: Dict[str, int] = {}
+        content_chars = 0
+        revert_count = 0
+        for r in records:
+            name = str(r.tool_name or "")
+            tool_counts[name] = tool_counts.get(name, 0) + 1
+            label = r.get_change_type()
+            type_counts[label] = type_counts.get(label, 0) + 1
+            if isinstance(r.content_before, str):
+                content_chars += len(r.content_before)
+            if isinstance(r.content_after, str):
+                content_chars += len(r.content_after)
+            if name.startswith("revert") or name.startswith("undo-revert"):
+                revert_count += 1
+        base.update({
+            "message_groups": groups,
+            "current_message_index": current,
+            "tool_counts": tool_counts,
+            "type_counts": type_counts,
+            "content_chars": content_chars,
+            "revert_count": revert_count,
+        })
+        return base
+
+    # ── 回滚 / 撤销回滚（视图操作；保持沙盒记录一致） ──────────
+
+    def get_last_revert(self, file_path: Optional[str] = None
+                        ) -> Optional[FileChangeRecord]:
+        """最近一次回滚记录（``tool_name`` 以 ``revert`` / ``undo-revert`` 开头）。"""
+        for r in reversed(self.get_all_file_changes()):
+            name = str(r.tool_name or "")
+            if name.startswith("revert") or name.startswith("undo-revert"):
+                if file_path is None or r.file_path == file_path:
+                    return r
+        return None
+
+    def preview_revert(self, file_path: str) -> Tuple[Optional[str], Optional[str]]:
+        """预览「回滚到首次变更前」：返回 ``(当前末态, 目标内容)``。
+
+        无记录时返回 ``(None, None)``（调用方按「无文件需还原」处理）。
+        """
+        records = self.get_file_history(file_path)
+        if not records:
+            return (None, None)
+        return (records[-1].content_after, records[0].content_before)
+
+    def revert_file(self, file_path: str
+                    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """把文件回滚到其**首次变更前**的状态，并记录回滚动作。
+
+        Returns:
+            ``(ok, before_content, after_content)``：失败为
+            ``(False, ...)``；成功时 ``before_content`` = 回滚前状态（当前
+            末态），``after_content`` = 回滚后状态（首次变更前，``None``
+            表示文件应不存在）。
+        """
+        records = self.get_file_history(file_path)
+        if not records:
+            return (False, None, None)
+        target = records[0].content_before   # 首次变更前（None = 不存在）
+        current = records[-1].content_after  # 当前末态
+        if not self._apply_content(file_path, target):
+            return (False, current, target)
+        try:
+            idx = self.get_current_message_index_safe()
+            self.record_file_change(
+                file_path, current, target, idx, tool_name="revert",
+            )
+        except Exception:
+            pass
+        return (True, current, target)
+
+    def undo_last_revert(self, file_path: Optional[str] = None
+                         ) -> Tuple[bool, str]:
+        """撤销最近一次回滚（把文件恢复到回滚前状态）。
+
+        Returns:
+            ``(ok, path)``：``path`` 为受影响的文件路径（``""`` 表示无
+            可撤销的回滚记录）。
+        """
+        rec = self.get_last_revert(file_path)
+        if rec is None:
+            return (False, "")
+        path = rec.file_path
+        restore = rec.content_before  # 回滚前状态
+        current = rec.content_after   # 回滚后状态
+        if not self._apply_content(path, restore):
+            return (False, path)
+        try:
+            idx = self.get_current_message_index_safe()
+            self.record_file_change(
+                path, current, restore, idx, tool_name="undo-revert",
+            )
+        except Exception:
+            pass
+        return (True, path)
+
+    @staticmethod
+    def _apply_content(file_path: str, content: Optional[str]) -> bool:
+        """把文件设置为指定状态（原子写入；``None`` 表示删除）。"""
+        try:
+            from ._atomic_io import atomic_write_text, remove_path
+
+            if content is None:
+                remove_path(file_path)
+            else:
+                atomic_write_text(file_path, content)
+            return True
+        except Exception:
+            return False
+
     def shift_indices(self, insert_at: int):
         """当在消息列表中插入一条消息后，将 >= insert_at 的索引全部 +1。"""
         self.shift_indices_by(insert_at, 1)

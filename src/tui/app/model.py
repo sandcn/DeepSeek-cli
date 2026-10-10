@@ -52,6 +52,9 @@ from src.tui.app._state_types import (
     ReasoningState,
     SessionsViewState,
     ChangesViewState,
+    SandboxStatsViewState,
+    SandboxHistoryViewState,
+    SandboxRecordsViewState,
     ThemeViewState,
     SkillViewState,
     McpViewState,
@@ -169,6 +172,13 @@ class AppModel(_ToolOutputMixin):
         #    opener（core/commands/_view_opener.py）打开并轮询 done 清理。 ──
         self.sessions_view: SessionsViewState = SessionsViewState()
         self.changes_view: ChangesViewState = ChangesViewState()
+        # 文件沙盒概览 / 消息维度历史 / 记录流水视图（2026-10——
+        # /sandbox 命令族；状态类型见 _state_types.py，组件见
+        # app/sandbox_stats_view.py / sandbox_history_view.py /
+        # sandbox_records_view.py）。
+        self.sandbox_view: SandboxStatsViewState = SandboxStatsViewState()
+        self.sandbox_history_view: SandboxHistoryViewState = SandboxHistoryViewState()
+        self.sandbox_records_view: SandboxRecordsViewState = SandboxRecordsViewState()
         self.theme_view: ThemeViewState = ThemeViewState()
         self.skill_view: SkillViewState = SkillViewState()
         self.mcp_view: McpViewState = McpViewState()
@@ -186,6 +196,12 @@ class AppModel(_ToolOutputMixin):
         # 时重建并写回 logs_view）。F12 / /logs 打开后由视图渲染期每帧调用，
         # 支持流式输出期间打开并自动跟进；None = 未注入（测试/无会话）。
         self.logs_refresher: object | None = None
+        # 文件沙盒视图**实时刷新器**（装配注入 ``core.commands._sandbox_cmd.
+        # make_sandbox_refresher(session, apply)`` 产出；``() -> bool``——数据
+        # 签名变化时重建并写回沙盒视图状态）。F11 / /changes / /sandbox 打开
+        # 后由视图渲染期每帧调用，支持流式输出期间打开并自动跟进；
+        # None = 未注入（测试/无会话）。
+        self.sandbox_refresher: object | None = None
         # 实时解析进度行（同位置刷新；ParseInfoDone 后提交并清空）
         self.parse_line: Any = None
         # subagent 面板行（控制器推送）
@@ -224,6 +240,11 @@ class AppModel(_ToolOutputMixin):
         #   测试/无装配场景）。
         self.trace_selected: int = -1
         self.message_source: object | None = None
+        # sandbox_source: 文件沙盒访问器 ``() -> SandboxManager | None``——轨迹
+        #   检查器据此把 tool 记录关联到该工具调用产生的文件变更（按
+        #   ``FileChangeRecord.message_index`` + 工具名匹配）；None=未注入
+        #   （不显示关联小节，测试/无装配场景）。
+        self.sandbox_source: object | None = None
         # trace_pane: 轨迹视图当前焦点面板（"ledger"=左台账 / "inspector"=
         #   右检查器）——2026-08-19（用户需求：轨迹 Trace 移动到右边查看
         #   东西 + vim 风格）：l 从台账移到检查器（右栏滚动查看详情）、h
@@ -1178,6 +1199,9 @@ class AppModel(_ToolOutputMixin):
         for _attr, _cls in (
             ("sessions_view", SessionsViewState),
             ("changes_view", ChangesViewState),
+            ("sandbox_view", SandboxStatsViewState),
+            ("sandbox_history_view", SandboxHistoryViewState),
+            ("sandbox_records_view", SandboxRecordsViewState),
             ("theme_view", ThemeViewState),
             ("skill_view", SkillViewState),
             ("mcp_view", McpViewState),

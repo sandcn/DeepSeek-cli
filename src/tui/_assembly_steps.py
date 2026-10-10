@@ -235,6 +235,14 @@ def create_framework(model, tui_config, line_tracker, input_instance):
     input_instance.set_logs_toggle_callback(
         _make_logs_toggle_cb(model, session)
     )
+    # ★ 2026-10：F11 文件变更审查器视图开关（模态全屏视图）——直接翻转
+    #   model.fullscreen（**不经命令队列**：``/changes`` 命令在 AI 生成期间
+    #   会被排队，F11 需在流式输出中也能立即打开），打开时经装配注入的
+    #   ``model.sandbox_refresher`` 构建视图数据（视图渲染期继续按沙盒数据
+    #   签名实时刷新）。
+    input_instance.set_changes_toggle_callback(
+        _make_changes_toggle_cb(model, session)
+    )
     # SIGWINCH → 刷新宽度 + 重绘（架构改进方向 C：实例方法 + token 去重注册，
     # 替代旧模块级 ``_active_session`` 全局引用——多 TUI 实例各持自身回调，
     # stop 时由 session 注销，消除全局可变引用与陈旧会话刷新错乱）
@@ -413,6 +421,68 @@ def _make_logs_toggle_cb(model, session):
     return _cb
 
 
+#: 文件沙盒视图族 id（F11 开关的作用域）——任一视图打开时 F11 均为「关闭」。
+_SANDBOX_VIEW_IDS = ("changes", "sandbox", "sandbox_history", "sandbox_records")
+
+
+def _make_changes_toggle_cb(model, session):
+    """构建 F11 文件变更审查器视图开关回调。
+
+    与 F12 会话日志视图（``_make_logs_toggle_cb``）同构，但打开时先调用装配
+    注入的 ``model.sandbox_refresher(force=True)`` 构建视图数据——**不经命令
+    队列**（``/changes`` 命令在 AI 生成期间会被排队，F11 必须能立即打开，含
+    流式输出期间）；数据后续由视图渲染期按沙盒数据签名实时刷新。未注入
+    刷新器（无会话 / 测试桩）时仍打开视图（空数据，视图渲染期会再试）。
+
+    ★ 开关语义（2026-10-10）：当前 ``fullscreen`` 属于**文件沙盒视图族**
+    （changes / sandbox / sandbox_history / sandbox_records）时，F11 一律
+    **关闭**（回到聊天界面）——用户在任一沙盒视图内按一次 F11 即可关闭。
+    （视图自身也会消费 F11 关闭；本回调是「事件未被视图消费」时的兜底。）
+    """
+
+    def _cb():
+        current = getattr(model, "fullscreen", "") or ""
+        if current in _SANDBOX_VIEW_IDS:
+            model.fullscreen = ""
+        else:
+            state = getattr(model, "changes_view", None)
+            if state is not None:
+                # 重开：复位上次关闭残留（终态/选中/搜索/确认/模式），保证可见
+                state.done = False
+                state.action = ""
+                state.visible = False
+                state.selected = 0
+                state.cursor = 0
+                state.scroll = 0
+                state.pane = "list"
+                state.help_open = False
+                state.search_mode = False
+                state.search_query = ""
+                state.search_pattern = ""
+                state.search_matches = []
+                state.search_idx = -1
+                state.search_filter = False
+                state.revert_confirm = ""
+                state.revert_all_confirm = False
+                state.restore_mode = False
+                state.restore_value = ""
+                state.export_message = ""
+            refresher = getattr(model, "sandbox_refresher", None)
+            if callable(refresher):
+                try:
+                    refresher(force=True)
+                except Exception:
+                    _logger.debug("F11 文件变更审查器数据构建失败", exc_info=True)
+            # 兜底：无论刷新器是否可用，打开即置可见（否则沙盒管理器缺失 /
+            # 刷新器未注入时 visible 保持 False → 视图渲染空占位）。
+            if state is not None:
+                state.visible = True
+            model.fullscreen = "changes"
+        session.request_bottom_redraw()
+
+    return _cb
+
+
 def _make_active_status_cb(model):
     """构建活跃状态回调（方向D 步骤16：Esc 取消输入判定用）。
 
@@ -436,5 +506,6 @@ __all__ = [
     "_make_active_status_cb",
     "_make_trace_toggle_cb",
     "_make_logs_toggle_cb",
+    "_make_changes_toggle_cb",
     "_make_fullscreen_toggle_cb",
 ]

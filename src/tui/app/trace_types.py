@@ -64,6 +64,9 @@ class TraceRecord:
     subagent_label: str = ""
     tool_call_id: str = ""
     tool_name: str = ""
+    #: 来源消息在 ``agent.messages`` 中的索引（-1 = 未知 / 块回退路径）。
+    #: 供轨迹检查器关联文件沙盒变更（``FileChangeRecord.message_index``）。
+    message_index: int = -1
     tool_args: object = None
     tool_result: str = ""
     images: list = field(default_factory=list)

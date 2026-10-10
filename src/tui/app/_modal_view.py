@@ -23,7 +23,10 @@ from __future__ import annotations
 from src.tui.ink import TEXT, h
 from src.tui.ink.hooks import use_fullscreen, use_modal
 
-__all__ = ["is_modal_close_key", "empty_modal_frame", "use_modal_scope"]
+__all__ = [
+    "is_modal_close_key", "is_fullscreen_close_key", "empty_modal_frame",
+    "use_modal_scope", "close_fullscreen_view",
+]
 
 
 def is_modal_close_key(event) -> bool:
@@ -41,6 +44,27 @@ def is_modal_close_key(event) -> bool:
     return kind == "ctrl_key" and getattr(event, "char", "") == "\x08"
 
 
+def is_fullscreen_close_key(event, extra_kinds=()) -> bool:
+    """全屏视图关闭键：``Esc`` / ``Ctrl+H`` + 额外功能键（如 ``f11`` / ``f12``）。
+
+    ``extra_kinds`` 用于「**专属开关键同时充当关闭键**」的视图（文件变更审查器
+    的 F11、会话日志的 F12）。这类键**必须由视图消费**（``use_input`` 返回
+    True）——否则会被 ``use_fullscreen`` 模态吞掉：既不触发视图关闭逻辑，也
+    落不到快捷键回调（表现为「按一下 F11 关不掉」）。
+
+    Args:
+        event: 输入事件（读 ``kind``）。
+        extra_kinds: 额外关闭键的 ``kind``（如 ``("f11",)``）。
+
+    Returns:
+        True — 关闭键。
+    """
+    if is_modal_close_key(event):
+        return True
+    kind = getattr(event, "kind", "")
+    return bool(kind) and kind in tuple(extra_kinds or ())
+
+
 def empty_modal_frame() -> object:
     """不可见模态视图的零高度占位元素（统一 ``h(TEXT, {"children": ""})``）。
 
@@ -49,6 +73,31 @@ def empty_modal_frame() -> object:
     销毁重建）。
     """
     return h(TEXT, {"children": ""})
+
+
+def close_fullscreen_view(model, state, view_id: str) -> None:
+    """关闭模态全屏视图：写终态 + 清 ``model.fullscreen``（若仍指向本视图）。
+
+    ★ 关键（2026-10-10 修复）：全屏视图既可由命令路径打开（``/changes`` 等
+    ——命令线程 ``open_fullscreen_view`` 轮询到 ``done`` 后清理 ``fullscreen``），
+    也可由**快捷键直开**（F11 ——不经命令队列，没有命令线程清理）。若视图
+    组件只置终态、不清 ``fullscreen``，直开路径下 App 会继续按 ``fullscreen``
+    整屏渲染该组件（组件已 ``done`` → 渲染空占位）——**界面卡在全屏空视图，
+    无法返回聊天界面**（Esc 关闭看似无效）。
+
+    Args:
+        model: AppModel（读写 ``fullscreen``）。
+        state: 视图状态（须有 ``try_set_final``）；None 时只清 ``fullscreen``。
+        view_id: 本视图 id（仅当 ``fullscreen`` 仍指向它时清空——用户可能
+            已切到其它视图）。
+    """
+    if state is not None:
+        try:
+            state.try_set_final("cancel")
+        except Exception:
+            pass
+    if getattr(model, "fullscreen", "") == view_id:
+        model.fullscreen = ""
 
 
 def use_modal_scope(visible: bool, *, fullscreen: bool = True) -> None:

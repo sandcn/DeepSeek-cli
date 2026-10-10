@@ -126,6 +126,17 @@ class ChatUIConsumer:
         """
         self._rs.message_source = source
 
+    def set_sandbox_source(self, source) -> None:
+        """注入文件沙盒访问器（轨迹检查器关联文件变更用）。
+
+        source 签名: ``() -> SandboxManager | None``——返回全局文件沙盒
+        管理器；轨迹检查器据此把选中 tool 记录关联到该工具调用产生的
+        文件变更（``FileChangeRecord.message_index`` + 工具名匹配）。
+        None 可清除注入（不显示关联小节）。装配后调用（会话创建晚于 UI
+        装配）。重复注入幂等（最新 source 生效）。
+        """
+        self._rs.sandbox_source = source
+
     @classmethod
     def for_testing(cls, components, event_bus=None) -> "ChatUIConsumer":
         """创建用于测试的 ChatUIConsumer 实例。

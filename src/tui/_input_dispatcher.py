@@ -187,6 +187,13 @@ class InputDispatcher:
         # 排队）。未注入回调时 F12 为 no-op（测试/无装配场景兼容）。
         self._logs_toggle_callback = None
 
+        # ── F11 文件变更审查器视图开关回调（2026-10，装配注入） ──
+        # F11 功能键（CSI \x1b[23~）→ 打开/关闭模态全屏「文件变更审查器」
+        # 视图（沙盒 diff / 回滚 / 历史 / 统计）。走独立回调而非命令队列
+        # ——**AI 流式输出期间也能立即打开**（命令在生成期间会被排队）。
+        # 未注入回调时 F11 为 no-op（测试/无装配场景兼容）。
+        self._changes_toggle_callback = None
+
         # ── 拖放文件路径规范化（2026-10-07，用户需求：输入框支持拖动文件
         #    输入文件路径） ──
         # 终端拖放文件时把路径以「粘贴」形式注入 stdin（不同终端形态不同：
@@ -390,6 +397,20 @@ class InputDispatcher:
             cb()
         except Exception:
             _logger.debug("F12 logs 回调异常", exc_info=True)
+
+    def _handle_changes_toggle(self) -> None:
+        """F11 文件变更审查器视图开关：调用注入的回调（未注入时 no-op）。
+
+        独立于命令队列（``/changes`` 命令在 AI 生成期间会被排队）——F11 在
+        流式输出期间也能立即打开视图。
+        """
+        cb = self._changes_toggle_callback
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception:
+            _logger.debug("F11 changes 回调异常", exc_info=True)
 
     def _handle_ctrl_d(self) -> None:
         """Ctrl+D EOF：空缓冲 → 提交 exit；非空 no-op（防误退）。
@@ -950,6 +971,8 @@ class InputDispatcher:
             # no-op（不再静默丢弃——router 可经 useInput 钩子消费）。
             if kind == "f1":
                 self._handle_help_toggle()
+            elif kind == "f11":
+                self._handle_changes_toggle()
             elif kind == "f12":
                 self._handle_logs_toggle()
             else:
@@ -1223,6 +1246,7 @@ class InputDispatcher:
         "trace_toggle": "_trace_toggle_callback",
         "help_toggle": "_help_toggle_callback",
         "logs_toggle": "_logs_toggle_callback",
+        "changes_toggle": "_changes_toggle_callback",
         "mouse_fallback": "_mouse_fallback_callback",
     }
 
@@ -1444,6 +1468,19 @@ class InputDispatcher:
         Esc/F12 由组件处理），本回调不再被调用（不会重复翻转）。
         """
         self.register_callback("logs_toggle", cb)
+
+    def set_changes_toggle_callback(self, cb) -> None:
+        """设置 F11 文件变更审查器视图开关回调（2026-10，装配注入）。
+
+        cb 签名: ``() -> None``（翻转 model.fullscreen "changes" ↔ "" + 构建
+        视图数据 + 请求重绘——见 ``_make_changes_toggle_cb``）；None 可清除注入。
+        未注入时 F11 为 no-op（测试/无装配场景兼容）。
+        ★ 独立于命令队列：AI 流式生成期间 ``/changes`` 命令会被排队，而本
+        回调在 render 线程立即执行——流式输出中按 F11 也能即时打开视图。
+        ★ 视图打开期间 F11 被 ChangesView 模态 handler 经 router 消费（关闭
+        在 Esc 由组件处理），本回调不再被调用（不会重复翻转）。
+        """
+        self.register_callback("changes_toggle", cb)
 
     def set_suppress_enter(self, suppress: bool) -> None:
         """设置 Enter 抑制标志（用于 editmsg 消息选择期间）。

@@ -195,6 +195,15 @@ def _register_session_handlers(
             chat_ui.set_message_source(lambda: session.messages)
         except Exception:
             _logger.debug("注入轨迹消息源异常", exc_info=True)
+    # ★ 轨迹检查器沙盒关联（2026-10）：注入文件沙盒访问器——选中 tool 记录
+    #   时右栏显示该工具调用产生的文件变更（按消息索引 + 工具名匹配）。
+    if chat_ui is not None and hasattr(chat_ui, "set_sandbox_source"):
+        try:
+            from ..core.sandbox_manager import get_sandbox_manager
+
+            chat_ui.set_sandbox_source(get_sandbox_manager)
+        except Exception:
+            _logger.debug("注入轨迹沙盒源异常", exc_info=True)
     # ★ 会话日志视图实时刷新器注入（幂等：重复注册覆盖为最新 session）——
     #   F12 / ``/logs`` 打开后视图渲染期每帧调用（签名未变零重建），会话日志
     #   增长（用户/助手消息、工具结果、轮次步骤、结构变更）时自动重建并写回
@@ -220,6 +229,54 @@ def _register_session_handlers(
                 model.logs_refresher = make_logs_refresher(session, _apply_logs_state)
             except Exception:
                 _logger.debug("注入会话日志刷新器异常", exc_info=True)
+    # ★ 文件沙盒视图实时刷新器注入（幂等：重复注册覆盖为最新 session）——
+    #   F11 / ``/changes`` / ``/sandbox`` 打开后视图渲染期每帧调用（数据签名
+    #   未变零重建），沙盒记录增长（工具写文件、回滚、清空）时自动重建并写回
+    #   各沙盒视图状态；**流式输出期间亦可打开并实时跟进**。
+    if chat_ui is not None:
+        try:
+            model = chat_ui.get_model() if hasattr(chat_ui, "get_model") else None
+        except Exception:
+            model = None
+        if model is not None and hasattr(model, "sandbox_view"):
+            try:
+                from ..core.commands._sandbox_cmd import (
+                    consume_sandbox_actions,
+                    make_sandbox_refresher,
+                )
+
+                def _apply_sandbox_state(data, _model=model):
+                    files = data.get("files") or []
+                    messages = data.get("messages") or []
+                    records = data.get("records") or []
+                    sections = data.get("sections") or []
+                    cv = getattr(_model, "changes_view", None)
+                    if cv is not None:
+                        cv.entries = files
+                        cv.messages = messages
+                        cv.sections = sections
+                        cv.visible = True
+                    sv = getattr(_model, "sandbox_view", None)
+                    if sv is not None:
+                        sv.sections = sections
+                        sv.visible = True
+                    hv = getattr(_model, "sandbox_history_view", None)
+                    if hv is not None:
+                        hv.entries = messages
+                        hv.visible = True
+                    rv = getattr(_model, "sandbox_records_view", None)
+                    if rv is not None:
+                        rv.entries = records
+                        rv.visible = True
+
+                def _drain_sandbox_actions(sandbox, _model=model):
+                    return consume_sandbox_actions(_model, sandbox)
+
+                model.sandbox_refresher = make_sandbox_refresher(
+                    session, _apply_sandbox_state, action_handler=_drain_sandbox_actions,
+                )
+            except Exception:
+                _logger.debug("注入文件沙盒刷新器异常", exc_info=True)
     callbacks = _make_round_callbacks(session, monitor, loop_state, chat_ui)
     # 清除旧回调（如果存在），防止重复注册累加
     old_callbacks = loop_state.get("_registered_callbacks")
