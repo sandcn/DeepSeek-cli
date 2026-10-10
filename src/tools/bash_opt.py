@@ -99,6 +99,15 @@ read 为**增量读取**：后台任务运行期间的每一行输出都会累�
 每次 read 取走当前全部累积内容并清空，适合实时观察长时任务（编译/下载/
 日志流）的进度；任务最终完整结果仍由 op=wait 获取。
 
+read 属**只读观察**：不接管任务生命周期——任务完成后的结果仍由对话轮次正常
+回灌，不会因为「read 看一眼进度」而丢失。缓冲有内存上限（超限丢弃最旧
+内容），单次返回也有字符上限（只返回尾部最新内容并标注 truncated），
+避免超长输出撑爆上下文。
+
+需要**接管任务**（不再由对话轮次自动等待 / 回灌结果）的 op 只有：
+stdin / keys / kill / sequence / replay 与窗口输入（click 等）——它们要么与
+任务交互、要么显式终止、要么是批量操作，此后须由模型主动 wait 取最终输出。
+
 截图（screenshot）适用于后台任务运行的是**图形界面程序**（游戏、GUI 应用、
 渲染预览等）的场景：按 task_id 定位该命令产生的进程树，取其可见窗口像素
 写盘（Windows 用 PrintWindow/BitBlt；Linux 用 ImageMagick import/xwd；
@@ -180,7 +189,7 @@ import time
 from contextlib import asynccontextmanager
 
 from .base import Func
-from .bash import kill_process_tree
+from .bash import READ_BUFFER_DROPPED_KEY, kill_process_tree
 from .file_ops import validate_path_security
 from ._screenshot import (
     CropError,
@@ -293,25 +302,49 @@ logger = logging.getLogger(__name__)
 #: 参数「未显式传入」的哨兵（与显式 None / 空值区分，供内部方法复用参数）
 _UNSET: object = object()
 
+#: PTY master 写入的总超时（秒）——子进程长时间不读取输入时，写缓冲区会持续
+#: 占满；无上限重试会让工具调用永久挂住，这里给出兜底超时（超时转可读错误）。
+_PTY_WRITE_TIMEOUT: float = 5.0
+#: PTY 写入遇 EAGAIN 时的重试间隔（秒）
+_PTY_WRITE_RETRY_INTERVAL: float = 0.01
+
 # 终端按键名 → ANSI/VT100 序列的解析见 ``_terminal_keys`` 模块：它复用
 # ``_window_input.keys`` 的键名别名与组合键语法（与 op=key 完全一致），
 # 支持 esc/del/pageup/ctrl+c 等别名、修饰键组合、单个字符与 f1-f20。
 
 
-async def _write_pty_all(fd: int, data: bytes) -> None:
+async def _write_pty_all(fd: int, data: bytes, *,
+                         timeout: float = _PTY_WRITE_TIMEOUT,
+                         retry_interval: float = _PTY_WRITE_RETRY_INTERVAL) -> None:
     """向 PTY master 写入全部数据，处理非阻塞 EAGAIN（缓冲区满时短暂重试）。
 
     PTY master 被包装进 asyncio 读管道后处于非阻塞模式；子进程不读取时
     写缓冲区可能短暂占满，os.write 抛 BlockingIOError，这里等待后重试
     直至写完。写入失败（fd 关闭 / EIO 等）抛 OSError 由调用方处理。
+
+    ★ 重试有**总超时**（``timeout``）：目标进程长时间不读取输入（如挂起 /
+    死循环）时，缓冲区会一直占满；没有上限的话本协程会永久挂住工具调用。
+    超时抛 :class:`TimeoutError`（``OSError`` 子类），由调用方转成可读错误。
+
+    Args:
+        fd: PTY master 文件描述符。
+        data: 待写入字节。
+        timeout: 写入总超时（秒，<= 0 表示不限制）。
+        retry_interval: EAGAIN 之后的重试间隔（秒）。
     """
     view = memoryview(data)
     total = 0
+    deadline = time.monotonic() + float(timeout) if timeout and timeout > 0 else None
     while total < len(view):
         try:
             written = os.write(fd, view[total:])
         except BlockingIOError:
-            await asyncio.sleep(0.01)
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"PTY 写入超时（超过 {timeout:g} 秒）：目标进程未读取输入，"
+                    f"写缓冲区持续占满"
+                ) from None
+            await asyncio.sleep(retry_interval)
             continue
         total += written
 
@@ -451,6 +484,27 @@ class BashOptFunc(Func):
     _DEFAULT_REPLAY_TIMES: int = 1
     #: op=replay 重复次数上限
     _MAX_REPLAY_TIMES: int = 20
+    #: op=read 单次返回的字符上限（保留尾部最新内容）
+    #: 长时任务的累积输出可能极大，原样返回会撑爆模型上下文；这里在返回时
+    #: 截断并明确标注（内存侧的缓冲上限见 ``bash._READ_BUFFER_MAX_CHARS``）。
+    _READ_OUTPUT_MAX_CHARS: int = 100_000
+    #: 由 bash_opt **接管生命周期**的 op：这些操作要么输入交互（stdin / keys /
+    #: 窗口输入）、要么显式终止任务（kill）、要么是批量操作（sequence /
+    #: replay），任务不再由对话轮次自动等待与回灌结果。
+    #: ★ 只读观察型 op（read / windows / window / elements / wait_window /
+    #: clipboard / screenshot / locate / pixel / annotate / record）**不接管**：
+    #: 否则模型「read 看一眼进度」就会让任务完成结果再也回灌不到对话
+    #: （被 _collect_done_background_messages 静默清理）——见模块行为说明。
+    _MANAGED_OPS: tuple[str, ...] = ("stdin", "keys", "kill", "sequence",
+                                     "replay", *INPUT_OPS)
+    #: op=windows 单次返回的窗口清单上限（超出时截断并在结果中提示）
+    _MAX_WINDOW_LIST: int = 200
+    #: 已结束后台任务的记忆条数（FIFO）——供再次操作同一 task_id 时给出
+    #: 「已被 wait 取走结果 / 已被 kill 终止」这类精确提示，而不是误导性的
+    #: 「任务不存在（请先用 bash 启动）」。
+    _FINISHED_MEMORY: int = 50
+    #: 存放「已结束任务」记忆的 agent 属性名（由本工具在运行时惰性创建）
+    _FINISHED_ATTR: str = "_bashopt_finished_tasks"
 
     @classmethod
     def to_tool_schema(cls):
@@ -495,6 +549,13 @@ class BashOptFunc(Func):
                     "elements（列出窗口内控件清单：名称/类型/矩形/可用状态，"
                     "含窗口内坐标可直接用于 click；max_elements 限制条数，"
                     "element 作为过滤子串）。"
+                    "另有 locate（截图内按 template 模板匹配或 query OCR 文字定位，"
+                    "返回可点击坐标）、pixel（读取截图像素颜色：point 点取色 / "
+                    "region 区域统计 / find 查找颜色连通块）、annotate（在截图上"
+                    "绘制矩形 / 十字 / 编号标签）、record / replay（把 actions 存为"
+                    "命名宏 macro 后按 macro 或 path 回放，times 重复）、release"
+                    "（释放按下的键与鼠标按钮，清理 phase='down' 的悬空状态）——"
+                    "用法见 op 参数的逐项说明。"
                     "task_id 必须是当前对话 bash 后台返回的 bg-xxx。返回：操作结果 JSON 或输出；失败以 ( 开头。"
                 ),
                 "parameters": {
@@ -615,9 +676,10 @@ class BashOptFunc(Func):
                         "timeout": {
                             "type": "number",
                             "description": (
-                                "仅 wait 操作生效：等待完成的超时秒数（默认 300；"
-                                "传 0 表示无限等待）。支持小数（如 0.5）。"
-                                "超时后任务继续运行，可再次等待或 kill。"
+                                "仅 wait / wait_window 生效：wait 为等待任务完成的"
+                                "超时秒数（默认 300；传 0 表示无限等待，支持小数"
+                                "如 0.5）——超时后任务继续运行，可再次 wait 或 "
+                                "kill；wait_window 为等待窗口出现的秒数（默认 15）。"
                             ),
                         },
                         "text": {
@@ -1045,7 +1107,7 @@ class BashOptFunc(Func):
                             "type": "string",
                             "enum": ["stop", "continue"],
                             "description": (
-                                "仅 sequence 可选：步骤失败时的策略（默认 stop）。"
+                                "仅 sequence / replay 可选：步骤失败时的策略（默认 stop）。"
                                 "stop = 立即停止并把已完成步骤与错误一起返回；"
                                 "continue = 跳过失败步骤继续执行后续步骤"
                                 "（每步的 ok / error 都会如实回报）。"
@@ -1307,8 +1369,10 @@ class BashOptFunc(Func):
                         "seconds": {
                             "type": "number",
                             "description": (
-                                "仅 sequence 中 {\"op\": \"wait\"} 步骤使用："
-                                "等待秒数（支持小数，最大 60）。"
+                                "sequence / record / replay 的**步骤内字段**"
+                                "（写在 actions 的 {\"op\": \"wait\", \"seconds\": 0.5} "
+                                "步骤对象里，不作为顶层参数使用）：等待秒数"
+                                "（支持小数，最大 60）。"
                             ),
                         },
                     },
@@ -1408,6 +1472,12 @@ class BashOptFunc(Func):
             color = arguments.get("color")
             if color:
                 extra = f"{extra} color={color}"
+            grid = arguments.get("grid")
+            if grid:
+                extra = f"{extra} grid={grid}"
+            output = arguments.get("output")
+            if output:
+                extra = f"{extra} -> {output}"
         elif op in ("record", "replay"):
             macro = arguments.get("macro") or arguments.get("path") or ""
             extra = str(macro)
@@ -1415,6 +1485,8 @@ class BashOptFunc(Func):
                 actions = arguments.get("actions")
                 count = len(actions) if isinstance(actions, (list, tuple)) else 0
                 extra = f"{extra} {count} 步" if extra else f"{count} 步"
+                if arguments.get("append"):
+                    extra = f"{extra} append"
             else:
                 times = arguments.get("times")
                 if times not in (None, 1, "1"):
@@ -1675,14 +1747,23 @@ class BashOptFunc(Func):
 
         rec = agent._background_tasks.get(self.task_id)
         if rec is None:
+            reason = self._finished_reason(agent, self.task_id)
+            if reason:
+                return (f"(后台任务 {self.task_id} 已结束：{reason}。"
+                        f"该任务已从后台任务表移除，无法再读取输出；"
+                        f"需要新的后台任务请用 bash background=True 启动)")
             return (f"(后台任务不存在: {self.task_id}。"
                     f"请先用 bash background=True 启动后台任务获取 task_id)")
 
-        # ★ 标记为 bash_opt 管理：该任务的结果由大模型通过本工具主动获取
-        #   （wait 拿到输出 / kill 终止 / stdin / keys 交互），后续
-        #   _process_background_tasks 不再把结果作为用户消息自动插入，
-        #   也不自动等待其完成（避免交互任务阻塞对话轮次）。
-        rec["managed_by_tool"] = True
+        # ★ 只有**接管型** op 才标记 managed_by_tool（见 _MANAGED_OPS 说明）：
+        #   该任务的结果由大模型通过本工具主动获取（wait 拿到输出 / kill 终止
+        #   / stdin / keys 交互），后续 _process_background_tasks 不再把结果
+        #   作为用户消息自动插入，也不自动等待其完成（避免交互任务阻塞对话
+        #   轮次）。只读观察型 op（read / windows / elements / …）**不标记**，
+        #   否则模型「read 看一眼进度」就会让任务完成结果再也回灌不到对话
+        #   （被 _collect_done_background_messages 静默清理而模型毫不知情）。
+        if self.op in self._MANAGED_OPS:
+            rec["managed_by_tool"] = True
 
         if self.op == "read":
             return await self._op_read(rec)
@@ -1727,6 +1808,37 @@ class BashOptFunc(Func):
                               "replay", "sequence", *INPUT_OPS))
         return f"(未知操作: {self.op}。支持: {supported})"
 
+    # ── 已结束后台任务的记忆（精确提示用） ───────────────
+
+    @classmethod
+    def _remember_finished(cls, agent, task_id: str, reason: str) -> None:
+        """记下「任务已结束」及其原因（供后续同 task_id 操作给出精确提示）。
+
+        记录挂在 agent 上一个轻量 FIFO 字典上（最多 :data:`_FINISHED_MEMORY`
+        条），不改变 agent 的既有接口；写失败时静默忽略（仅影响提示友好度）。
+        """
+        if agent is None or not task_id:
+            return
+        try:
+            memory = getattr(agent, cls._FINISHED_ATTR, None)
+            if not isinstance(memory, dict):
+                memory = {}
+                setattr(agent, cls._FINISHED_ATTR, memory)
+            memory[task_id] = str(reason)
+            while len(memory) > cls._FINISHED_MEMORY:
+                memory.pop(next(iter(memory)))
+        except Exception:  # noqa: BLE001 - 记忆失败不影响主流程
+            logger.debug("记录已结束后台任务失败（task=%s）", task_id, exc_info=True)
+
+    @classmethod
+    def _finished_reason(cls, agent, task_id: str) -> str | None:
+        """查询 task_id 是否在「已结束」记忆中，返回原因（未记录时 None）。"""
+        memory = getattr(agent, cls._FINISHED_ATTR, None)
+        if not isinstance(memory, dict):
+            return None
+        reason = memory.get(task_id)
+        return str(reason) if reason else None
+
     # ── op=read ──────────────────────────────────────────
 
     async def _op_read(self, rec: dict) -> str:
@@ -1739,15 +1851,25 @@ class BashOptFunc(Func):
         返回 JSON（task_id/status/output）：
           - status: 任务当前状态（running / completed）
           - output: 本次读取到的累积输出（读取后已清空缓冲）
+          - 输出超过 :data:`_READ_OUTPUT_MAX_CHARS` 时只返回**尾部最新**内容
+            并附 ``truncated`` / ``dropped_chars``；缓冲因内存上限裁剪过时附
+            ``buffer_overflow_chars``（提示更早的输出已被丢弃）。
+
+        ★ 本 op 属只读观察，**不接管任务生命周期**（不标记 managed_by_tool）：
+        任务完成后其结果仍会由对话轮次正常回灌，不会因为「看了一眼进度」
+        而丢失。
         """
         lock = rec.get("io_lock")
         if lock is not None:
             async with lock:
                 output = rec.get("read_buffer", "")
                 rec["read_buffer"] = ""
+                buffer_dropped = int(
+                    rec.pop(READ_BUFFER_DROPPED_KEY, 0) or 0)
         else:
             output = rec.get("read_buffer", "")
             rec["read_buffer"] = ""
+            buffer_dropped = int(rec.pop(READ_BUFFER_DROPPED_KEY, 0) or 0)
         done = bool(rec.get("done"))
         status = rec.get("status") or ("completed" if done else "running")
         payload = {
@@ -1755,6 +1877,19 @@ class BashOptFunc(Func):
             "status": status,
             "output": output,
         }
+        if len(output) > self._READ_OUTPUT_MAX_CHARS:
+            dropped = len(output) - self._READ_OUTPUT_MAX_CHARS
+            payload["output"] = output[-self._READ_OUTPUT_MAX_CHARS:]
+            payload["truncated"] = True
+            payload["dropped_chars"] = dropped
+        if buffer_dropped:
+            payload["buffer_overflow_chars"] = buffer_dropped
+        if payload.get("truncated") or buffer_dropped:
+            payload["hint"] = (
+                "输出过大，仅返回尾部最新内容；更早的内容已被丢弃"
+                "（可用 op=wait 获取最终完整结果的三元 JSON，或让命令把输出"
+                "重定向到文件后再按需读取）"
+            )
         return json.dumps(payload, ensure_ascii=False)
 
     # ── op=wait ──────────────────────────────────────────
@@ -1809,6 +1944,7 @@ class BashOptFunc(Func):
             agent._remove_background_task(self.task_id)
         else:
             agent._background_tasks.pop(self.task_id, None)
+        self._remember_finished(agent, self.task_id, "输出已被 op=wait 取走")
         return json.dumps(payload, ensure_ascii=False)
 
     # ── op=kill ──────────────────────────────────────────
@@ -1857,6 +1993,7 @@ class BashOptFunc(Func):
             agent._remove_background_task(self.task_id)
         else:
             agent._background_tasks.pop(self.task_id, None)
+        self._remember_finished(agent, self.task_id, "已被 op=kill 终止")
         return self._kill_report(result)
 
     def _kill_report(self, result) -> str:
@@ -1925,7 +2062,7 @@ class BashOptFunc(Func):
         window_pid = (pid if isinstance(pid, int) and not isinstance(pid, bool)
                       and pid > 0 else None)
         window_failure: str | None = None
-        if window_pid is not None and probe_window(window_pid) is not None:
+        if window_pid is not None and await self._probe_window_async(window_pid):
             try:
                 return await self._send_keys_to_window(window_pid, key_text, repeat)
             except (InputNoWindowError, InputError) as exc:
@@ -1969,6 +2106,27 @@ class BashOptFunc(Func):
         if not 1 <= value <= MAX_KEY_REPEAT:
             raise ActionError(f"repeat 需在 1..{MAX_KEY_REPEAT} 之间，当前: {value}")
         return value
+
+    async def _probe_window_async(self, pid: int) -> bool:
+        """探测目标进程是否有可接收键盘输入的 GUI 窗口（不阻塞事件循环）。
+
+        ``probe_window`` 内部要枚举窗口 / 调系统 API（阻塞调用），因此放到
+        线程池执行并加超时——与截图 / 输入注入的调用方式保持一致（此前是
+        直接在事件循环线程里同步调用，窗口枚举卡顿会拖住整个 Agent 事件
+        循环）。超时或探测异常时按「没有 GUI 窗口」处理，交由终端通道兜底。
+        """
+        try:
+            found = await asyncio.wait_for(
+                asyncio.to_thread(probe_window, pid),
+                timeout=self._INPUT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.debug("窗口探测超时（pid=%s），按无 GUI 窗口处理", pid)
+            return False
+        except Exception:  # noqa: BLE001 - 探测失败不应中断按键发送
+            logger.debug("窗口探测失败（pid=%s）", pid, exc_info=True)
+            return False
+        return found is not None
 
     async def _send_keys_to_window(self, pid: int, key_text: str,
                                    repeat: int = DEFAULT_KEY_REPEAT) -> str:
@@ -2091,6 +2249,12 @@ class BashOptFunc(Func):
                 payload[key] = info[key]
         payload.update(result.to_dict())
         notes = ["截图已保存"]
+        if self._screen_requested() and (
+                self.window
+                or (self.element is not None and str(self.element).strip())
+                or self.margin is not None):
+            notes.append("整屏 / 多显示器截取与 window / element / margin 无关，"
+                         "已忽略这些参数")
         if region is not None:
             payload["crop"] = region.to_dict()
             notes.append("已按 crop 裁剪")
@@ -2129,30 +2293,30 @@ class BashOptFunc(Func):
             return None
         return CropRegion.parse(str(raw))
 
-    def _resolve_grid(self, raw=None) -> int | None:
-        """解析 grid 参数为网格步长（省略 → None 不画；``0`` / true → 自动）。
+    def _resolve_grid(self, raw=_UNSET) -> int | None:
+        """解析 grid 参数为网格步长（``0`` / true → 自动；None / false → 不画）。
 
         Args:
-            raw: 显式取值（供 op=sequence 的步骤复用）；``None`` 时取本工具
-                实例的 ``grid`` 参数。
+            raw: 显式取值（供 op=sequence 的步骤复用）：``_UNSET`` = 未指定，
+                此时取本工具实例的 ``grid`` 参数；``None`` / 空串 / ``false``
+                = **显式不画网格**——步骤级可用它关闭顶层调用打开的 grid。
 
         Raises:
             CropError: 取值不是数值。
         """
-        if raw is None:
-            raw = self.grid
-        if raw is None:
+        value = self.grid if raw is _UNSET else raw
+        if value is None:
             return None
-        if isinstance(raw, bool):
-            return 0 if raw else None
-        text = str(raw).strip()
+        if isinstance(value, bool):
+            return 0 if value else None
+        text = str(value).strip()
         if not text:
             return None
         try:
-            value = int(float(text))
+            number = int(float(text))
         except (TypeError, ValueError):
-            raise CropError(f"grid 需要数值（0 = 自动选择步长），当前: {raw!r}") from None
-        return max(value, 0)
+            raise CropError(f"grid 需要数值（0 = 自动选择步长），当前: {value!r}") from None
+        return max(number, 0)
 
     async def _capture_with_retry(self, pid: int, path: str,
                                   crop: CropRegion | None = None,
@@ -2229,8 +2393,13 @@ class BashOptFunc(Func):
         Raises:
             MonitorError: 平台枚举不到显示器或选择越界。
         """
-        monitors = await asyncio.wait_for(
-            asyncio.to_thread(list_monitors), timeout=self._INPUT_TIMEOUT)
+        try:
+            monitors = await asyncio.wait_for(
+                asyncio.to_thread(list_monitors), timeout=self._INPUT_TIMEOUT)
+        except asyncio.TimeoutError:
+            raise MonitorError(
+                f"枚举显示器超时（超过 {self._INPUT_TIMEOUT:g} 秒）：系统无响应"
+            ) from None
         value = self.screen if spec is None else spec
         monitor = resolve_monitor(
             monitors, value if not isinstance(value, bool) else None)
@@ -2271,10 +2440,16 @@ class BashOptFunc(Func):
             ElementError: 控件不可用或无法确定坐标系。
             CropError: 最终区域越界。
         """
-        elements = await asyncio.wait_for(
-            asyncio.to_thread(list_process_elements, pid, window),
-            timeout=self._INPUT_TIMEOUT,
-        )
+        try:
+            elements = await asyncio.wait_for(
+                asyncio.to_thread(list_process_elements, pid, window),
+                timeout=self._INPUT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise ElementError(
+                f"枚举控件超时（超过 {self._INPUT_TIMEOUT:g} 秒）：系统无响应，"
+                f"无法确定控件区域"
+            ) from None
         if not elements:
             raise ElementError("窗口内没有可枚举的控件（无法按控件区域截图）")
         matched = match_window_element(elements, element)
@@ -2416,6 +2591,10 @@ class BashOptFunc(Func):
         element_desc = None
         element_point = None
         if self.element is not None and str(self.element).strip():
+            if self.op == "release":
+                return ("(输入参数非法: element 不适用于 release——release 释放的是"
+                        "按键 / 鼠标按钮，不针对控件；要释放指定按键用 keys 参数，"
+                        "或用 key/click 的 phase='up')")
             if self._has_explicit_point():
                 return ("(输入参数非法: element 与坐标参数不能同时提供——"
                         "element 会自动使用控件中心坐标；"
@@ -2432,6 +2611,18 @@ class BashOptFunc(Func):
         except ActionError as exc:
             return f"(输入参数非法: {exc})"
         focus_click = self._element_focus_click(action, element_point)
+        # type / key 配合 element 时会先点击控件中心聚焦；该点击是**真实点击**，
+        # 对按钮 / 复选框这类控件会触发它，因此在结果里如实回报，避免调用方
+        # 只看到「一次输入」却不知界面上还发生了一次点击。
+        focus_info = None
+        if focus_click is not None and element_point is not None:
+            focus_info = {
+                "x": element_point[0],
+                "y": element_point[1],
+                "button": "left",
+                "note": ("为使键盘输入落到该控件，已在控件中心先点击一次（左键）；"
+                         "若该控件本身是按钮 / 复选框，这次点击会触发它"),
+            }
         # ── 变化判定 / 差异比较需要基准图：注入前先截一张 ──
         temporaries: list[str] = []
         before_path = None
@@ -2472,6 +2663,8 @@ class BashOptFunc(Func):
             payload["window"] = str(self.window)
         if element_desc is not None:
             payload["element"] = element_desc
+        if focus_info is not None:
+            payload["focus_click"] = focus_info
         payload.update(detail)
         try:
             if settle:
@@ -2527,10 +2720,16 @@ class BashOptFunc(Func):
             ElementError: 没有可枚举控件 / 没有匹配控件 / 无法确定坐标系。
             SelectorError: 窗口选择器非法或没有匹配窗口。
         """
-        elements = await asyncio.wait_for(
-            asyncio.to_thread(list_process_elements, pid, window),
-            timeout=self._INPUT_TIMEOUT,
-        )
+        try:
+            elements = await asyncio.wait_for(
+                asyncio.to_thread(list_process_elements, pid, window),
+                timeout=self._INPUT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise ElementError(
+                f"枚举控件超时（超过 {self._INPUT_TIMEOUT:g} 秒）：系统无响应，"
+                f"无法按控件名定位"
+            ) from None
         if not elements:
             raise ElementError(
                 "窗口内没有可枚举的控件（Windows 优先用 UI Automation 枚举，"
@@ -2577,6 +2776,11 @@ class BashOptFunc(Func):
                 asyncio.to_thread(locate, pid, window),
                 timeout=self._INPUT_TIMEOUT,
             )
+        except asyncio.TimeoutError:
+            # 显式列出（Python 3.9 的 asyncio.TimeoutError 不是 OSError 子类，
+            # 仅靠 OSError 捕获会漏掉 → 变成「内部错误」而不是可读提示）
+            logger.debug("窗口坐标系读取超时（pid=%s）", pid)
+            return None
         except (SelectorError, ScreenshotError, OSError, ValueError):
             return None
         return getattr(target, "frame", None)
@@ -2732,60 +2936,78 @@ class BashOptFunc(Func):
         samples = 0
         previous = before_path
         interval = self._WAIT_FOR_INTERVAL
-        while True:
-            samples += 1
-            current = await self._temp_screenshot(pid, window)
-            if current is None:
+
+        def _replace_previous(new_path: str) -> None:
+            """把本轮采样保留为下一轮基准，并删除上一轮不再需要的基准图。
+
+            ★ 资源回收：作为基准保留的临时图（``previous``）不受 ``finally``
+            的「未保留则删除」约束，必须在这里替换时删除旧基准——否则每次
+            stable 判定都会在临时目录留下一个 PNG（等待越久泄漏越多）。
+            """
+            nonlocal previous
+            if previous is not before_path:
+                self._remove_temp(previous)
+            previous = new_path
+
+        try:
+            while True:
+                samples += 1
+                current = await self._temp_screenshot(pid, window)
+                if current is None:
+                    if time.monotonic() >= deadline:
+                        return self._wait_result(
+                            mode, None, started, samples,
+                            "无法截图（窗口可能已关闭或无响应）")
+                    await asyncio.sleep(interval)
+                    interval = min(interval * self._WAIT_FOR_BACKOFF,
+                                   self._WAIT_FOR_MAX_INTERVAL)
+                    continue
+                keep = False
+                try:
+                    reference = before_path if mode == "change" else previous
+                    if reference is None:
+                        if mode == "change":
+                            if before_path is None:
+                                return self._wait_result(
+                                    mode, None, started, samples,
+                                    "没有注入前的基准截图，无法判定界面是否变化")
+                            return self._wait_result(
+                                mode, None, started, samples, "缺少比较基准")
+                        _replace_previous(current)
+                        keep = True
+                    else:
+                        diff = await asyncio.to_thread(
+                            compare_png_files, reference, current)
+                        if mode == "change":
+                            if diff.changed:
+                                return self._wait_result(
+                                    mode, True, started, samples, None,
+                                    diff.to_dict())
+                        elif self._is_stable(diff):
+                            # 连续两次采样一致（或只剩光标闪烁级别的噪声）→ 稳定
+                            return self._wait_result(
+                                mode, True, started, samples,
+                                ignored=self._stability_note(diff))
+                        else:
+                            _replace_previous(current)
+                            keep = True
+                except (ScreenshotError, OSError, ValueError) as exc:
+                    logger.debug("等待界面变化时比较失败: %s", exc)
+                finally:
+                    if not keep:
+                        self._remove_temp(current)
                 if time.monotonic() >= deadline:
+                    verb = "变化" if mode == "change" else "稳定"
                     return self._wait_result(
-                        mode, None, started, samples,
-                        "无法截图（窗口可能已关闭或无响应）")
+                        mode, False, started, samples,
+                        f"超时：界面在 {timeout:g} 秒内没有{verb}")
                 await asyncio.sleep(interval)
                 interval = min(interval * self._WAIT_FOR_BACKOFF,
                                self._WAIT_FOR_MAX_INTERVAL)
-                continue
-            keep = False
-            try:
-                reference = before_path if mode == "change" else previous
-                if reference is None:
-                    if mode == "change":
-                        if before_path is None:
-                            return self._wait_result(
-                                mode, None, started, samples,
-                                "没有注入前的基准截图，无法判定界面是否变化")
-                        return self._wait_result(
-                            mode, None, started, samples, "缺少比较基准")
-                    previous = current
-                    keep = True
-                else:
-                    diff = await asyncio.to_thread(
-                        compare_png_files, reference, current)
-                    if mode == "change":
-                        if diff.changed:
-                            return self._wait_result(
-                                mode, True, started, samples, None,
-                                diff.to_dict())
-                    elif self._is_stable(diff):
-                        # 连续两次采样一致（或只剩光标闪烁级别的噪声）→ 稳定
-                        return self._wait_result(
-                            mode, True, started, samples,
-                            ignored=self._stability_note(diff))
-                    else:
-                        previous = current
-                        keep = True
-            except (ScreenshotError, OSError, ValueError) as exc:
-                logger.debug("等待界面变化时比较失败: %s", exc)
-            finally:
-                if not keep:
-                    self._remove_temp(current)
-            if time.monotonic() >= deadline:
-                verb = "变化" if mode == "change" else "稳定"
-                return self._wait_result(
-                    mode, False, started, samples,
-                    f"超时：界面在 {timeout:g} 秒内没有{verb}")
-            await asyncio.sleep(interval)
-            interval = min(interval * self._WAIT_FOR_BACKOFF,
-                           self._WAIT_FOR_MAX_INTERVAL)
+        finally:
+            # 循环内作为基准保留的最后一张临时图（非注入前基准）同样要清理
+            if previous is not before_path:
+                self._remove_temp(previous)
 
     def _is_stable(self, diff) -> bool:
         """画面是否可判为「已稳定」（允许光标闪烁 / 时钟之类的微小噪声）。
@@ -3109,16 +3331,25 @@ class BashOptFunc(Func):
         except asyncio.TimeoutError:
             return (f"(枚举窗口超时（超过 {self._INPUT_TIMEOUT:g} 秒）："
                     f"系统窗口枚举无响应")
-        described = describe_windows(infos)
+        # ★ 全量枚举再按 _MAX_WINDOW_LIST 截断：selectable_total 必须基于**全部**
+        #   窗口统计（旧实现用 describe_windows 的默认截断（40 条）结果统计，
+        #   窗口多于 40 个时计数偏小且清单无提示地缺尾）。
+        described_all = (describe_windows(infos, limit=max(len(infos), 1))
+                         if infos else [])
+        described = described_all[:self._MAX_WINDOW_LIST]
         payload = {
             "task_id": self.task_id,
             "op": "windows",
             "pid": pid,
             "total": len(infos),
             "windows_total": len(infos),
-            "selectable_total": sum(1 for item in described if item.get("selectable")),
+            "selectable_total": sum(1 for item in described_all
+                                    if item.get("selectable")),
             "windows": described,
         }
+        if len(described_all) > len(described):
+            payload["returned"] = len(described)
+            payload["truncated"] = True
         if infos:
             payload["hint"] = ("用 window 参数把 screenshot / 输入 op 投向指定窗口："
                                "'main'（缺省主窗口）、'#N'（可操作窗口的 Z 序第 N 个，"
@@ -3146,6 +3377,10 @@ class BashOptFunc(Func):
         else:
             payload["hint"] = ("未找到可见窗口（纯命令行进程没有 GUI 窗口；"
                                "窗口已最小化或被隐藏时也找不到）")
+        if payload.get("truncated"):
+            payload["hint"] = (payload.get("hint", "") +
+                               f"；窗口过多，清单仅返回前 {len(described)} 条"
+                               f"（共 {len(infos)} 条）")
         return json.dumps(payload, ensure_ascii=False)
 
     async def _op_window(self, rec: dict) -> str:
@@ -3967,19 +4202,24 @@ class BashOptFunc(Func):
         raw = self.actions
         if raw is None:
             return "(record 需要 actions 参数（要保存的步骤数组，与 sequence 相同）)"
-        steps = raw if isinstance(raw, (list, tuple)) else [raw]
+        # ★ 保存前用与 op=sequence 同一套解析做结构校验：非 dict 步骤 / 未知
+        #   步骤类型 / 缺少必要参数都在这里给出可读错误，而不是留到写文件时
+        #   变成「bash_opt 内部错误」（旧实现 dict(step) 遇非 dict 直接抛
+        #   ValueError，错误信息对模型毫无指导意义）。
+        try:
+            steps = [dict(step.raw) for step in parse_sequence(raw)]
+        except SequenceError as exc:
+            return f"(record 失败: 宏步骤非法: {exc})"
         name = str(self.macro).strip() if self.macro is not None else ""
         path = str(self.path).strip() if self.path is not None else ""
         if not name and not path:
             return "(record 需要 macro（宏名）或 path（文件路径）)"
         window = str(self.window).strip() if self.window else ""
         if name:
-            macro = Macro(name=name, steps=tuple(dict(step) for step in steps),
-                          window=window)
+            macro = Macro(name=name, steps=tuple(steps), window=window)
         else:
             base = os.path.splitext(os.path.basename(path))[0] or "macro"
-            macro = Macro(name=base, steps=tuple(dict(step) for step in steps),
-                          window=window)
+            macro = Macro(name=base, steps=tuple(steps), window=window)
         try:
             saved = await asyncio.to_thread(
                 save_macro, macro, path=(path or None),
@@ -4023,7 +4263,7 @@ class BashOptFunc(Func):
         except ValueError as exc:
             return f"(replay 参数非法: {exc})"
         try:
-            steps = parse_sequence([dict(step) for step in macro.steps])
+            steps = parse_sequence(list(macro.steps))
         except SequenceError as exc:
             return f"(replay 失败: 宏步骤非法: {exc})"
         runs: list[dict] = []
@@ -4048,7 +4288,8 @@ class BashOptFunc(Func):
             "task_id": self.task_id,
             "op": "replay",
             "macro": macro.name,
-            "path": path or os.path.join(self._MACRO_DIR, macro.name + ".json"),
+            "path": path or os.path.abspath(
+                os.path.join(self._MACRO_DIR, macro.name + ".json")),
             "times": times,
             "executed": len(runs),
             "steps_per_run": len(steps),
@@ -4423,6 +4664,11 @@ class BashOptFunc(Func):
         point = None
         element_desc = None
         if element is not None and str(element).strip():
+            if step.kind == "release":
+                raise ActionError(
+                    "element 不适用于 release 步骤（release 释放的是按键 / "
+                    "鼠标按钮，不针对控件）"
+                )
             point, info = await self._element_target(
                 pid, element, params.get("window"))
             element_desc = self._element_summary(info)
@@ -4464,7 +4710,7 @@ class BashOptFunc(Func):
                 error = await self._attach_shot(
                     holder, rec, shot=step.shot,
                     window=step.window or self.window,
-                    grid=step.params.get("grid"))
+                    grid=step.params.get("grid", _UNSET))
                 if error:
                     payload["screenshot_error"] = error
                 elif "screenshot" in holder:
@@ -4492,7 +4738,7 @@ class BashOptFunc(Func):
             except CropError as exc:
                 raise ScreenshotError(f"截图裁剪参数非法: {exc}") from exc
         try:
-            grid = self._resolve_grid(step.params.get("grid"))
+            grid = self._resolve_grid(step.params.get("grid", _UNSET))
         except CropError as exc:
             raise ScreenshotError(f"截图网格参数非法: {exc}") from exc
         info = await self._screenshot_target(

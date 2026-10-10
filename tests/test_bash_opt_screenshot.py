@@ -191,7 +191,9 @@ async def test_screenshot_success_returns_json(monkeypatch, tmp_path):
     assert payload["path"].endswith("shot.png")
     assert "read_image" in payload["hint"]
     assert captured["pid"] == 1234
-    assert rec["managed_by_tool"] is True
+    # ★ 2026-10-10 修复：screenshot 属只读观察，不接管任务（旧实现标记
+    #   managed_by_tool，会让任务结果静默丢失）。
+    assert not rec.get("managed_by_tool")
 
 
 # ── 重试与错误 ───────────────────────────────────────────

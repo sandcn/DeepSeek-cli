@@ -134,7 +134,7 @@ class _FakeAgent:
 
 
 async def test_execute_read_smoke():
-    """op=read 正常工作并标记 managed_by_tool（行为不变）。"""
+    """op=read 正常工作且**不接管**任务（只读观察）。"""
     rec = {
         "read_buffer": "hi",
         "status": "running",
@@ -150,7 +150,9 @@ async def test_execute_read_smoke():
     assert payload["status"] == "running"
     assert payload["output"] == "hi"
     assert rec["read_buffer"] == ""      # read 消费后清空
-    assert rec["managed_by_tool"] is True
+    # ★ 2026-10-10 修复：read 属只读观察，不接管任务——旧实现会标记
+    #   managed_by_tool，导致任务完成结果再也回灌不到对话（静默丢失）。
+    assert not rec.get("managed_by_tool")
 
 
 async def test_execute_without_agent_context():

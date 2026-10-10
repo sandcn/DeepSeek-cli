@@ -36,19 +36,49 @@ except ImportError:
     _HAS_PTY = False
 
 
+#: 后台任务 read_buffer 的字符上限（bash_opt read 消费）。
+#: 长时任务（编译日志 / 下载进度 / ``yes`` 类命令）会持续产生输出，若模型
+#: 一直不 read，缓冲会无限累积直至耗尽内存；超过上限时**丢弃最旧的内容**、
+#: 保留最新（尾部）——最新输出对判断任务进展更有价值——并把丢弃字符数累计
+#: 到 ``read_buffer_dropped``，由 bash_opt read 在结果中如实回报。
+_READ_BUFFER_MAX_CHARS = 200_000
+
+#: read_buffer 丢弃字符数的记录键（bash_opt read 消费后清零）
+READ_BUFFER_DROPPED_KEY = "read_buffer_dropped"
+
+
+def _trim_read_buffer(rec: dict) -> None:
+    """把 read_buffer 裁剪到上限（保留最新内容，累计丢弃字符数）。
+
+    在 io_lock 保护下由 :func:`_append_read_buffer` 调用；不持锁时也可安全
+    调用（纯读改写，调用方保证串行）。
+    """
+    buffer = rec.get("read_buffer") or ""
+    if len(buffer) <= _READ_BUFFER_MAX_CHARS:
+        return
+    dropped = len(buffer) - _READ_BUFFER_MAX_CHARS
+    rec["read_buffer"] = buffer[-_READ_BUFFER_MAX_CHARS:]
+    rec[READ_BUFFER_DROPPED_KEY] = int(
+        rec.get(READ_BUFFER_DROPPED_KEY, 0) or 0) + dropped
+
+
 async def _append_read_buffer(rec: dict, text: str) -> None:
     """把输出行追加到任务记录 read_buffer（bash_opt read 操作消费）。
 
     read_buffer 保存后台任务运行期间**已产生但尚未被 bash_opt read 消费**
     的输出；read 操作读取后清空（增量语义）。用 io_lock 串行化并发访问
     （PIPE 双流 publish 与 bash_opt read 可能并发）。
+
+    追加后按 :data:`_READ_BUFFER_MAX_CHARS` 裁剪（内存上限保护，见常量说明）。
     """
     lock = rec.get("io_lock")
     if lock is not None:
         async with lock:
             rec["read_buffer"] = rec.get("read_buffer", "") + text
+            _trim_read_buffer(rec)
     else:
         rec["read_buffer"] = rec.get("read_buffer", "") + text
+        _trim_read_buffer(rec)
 
 
 class BashFunc(Func):
@@ -753,6 +783,7 @@ class BashFunc(Func):
             "io_lock": asyncio.Lock(),
             # ── 实时输出缓冲（bash_opt read 读取后清空） ──
             "read_buffer": "",
+            "read_buffer_dropped": 0,  # 因缓冲上限被丢弃的字符数（read 回报）
         }
         agent._register_background_task(task_id, rec)
 
@@ -889,6 +920,7 @@ class BashFunc(Func):
             "io_lock": asyncio.Lock(),  # stdin/keys 写入串行化
             # ── 实时输出缓冲（bash_opt read 读取后清空） ──
             "read_buffer": "",      # 运行期间已产生、尚未被 read 消费的输出
+            "read_buffer_dropped": 0,  # 因缓冲上限被丢弃的字符数（read 回报）
         })
 
         await print_to_terminal(
