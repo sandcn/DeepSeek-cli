@@ -80,7 +80,11 @@ class InlineFormattingMixin:
         """
         text, n = self._text, self._n
         run_len = length
-        if 0 <= pos < n and text[pos] in '*_':
+        # 需要按**完整 run** 判定的定界符字符：``*``/``_``（强调）、``=``
+        # （高亮 ``==x==``）、``+``（下划线 ``++x++``）、``~``（删除线
+        # ``~~x~~``）、``|``（剧透 ``||x||``）——这些语法与强调同族，flanking
+        # 判定同样基于完整 run（``===b`` 的 ``==`` 不是定界符）。
+        if 0 <= pos < n and text[pos] in '*_=+~|':
             ch = text[pos]
             tail = pos + length
             # 快速路径：``length`` 处已是 run 之外（常见——调用方按完整 run
@@ -412,6 +416,31 @@ class InlineFormattingMixin:
             _logger.debug("_parse_italic_content 异常，降级处理", exc_info=True)
             return [], False
 
+    # ── 双字符 span 定界符（== / ++ / || / ~~） ──────────
+
+    def _span_delim_can_open(self, pos: int, length: int = 2) -> bool:
+        """``pos`` 处双字符定界符是否可作**左定界符**（CommonMark flanking）。
+
+        适用 ``==x==``（高亮）、``++x++``（下划线）、``||x||``（剧透）、
+        ``~~x~~``（删除线）——与强调同族，要求 **left-flanking**：其后非空白，
+        且（其后非标点 或 其前为空白/标点）。
+
+        修复前这些语法只看「两字符定界符出现过」，技术文本里的 ``==`` /
+        ``++`` / ``||`` 会被当定界符吞掉并把中间内容误加样式（高亮/下划线/
+        剧透）：``mode=="change"`` → ``mode"change"``、``a++ 与 b++`` →
+        下划线中间的 `` 与 b``。
+        """
+        return self._delim_flanking(pos, length)[0]
+
+    def _span_delim_can_close(self, pos: int, length: int = 2) -> bool:
+        """``pos`` 处双字符定界符是否可作**右定界符**（``_parse_until`` 回调）。
+
+        右定界符 = right-flanking：其前非空白，且（其前非标点 或 其后为空白/
+        标点）。不满足时该定界符不作为闭合点、按普通文本继续扫描——``a == b
+        == c`` / ``a ++ b ++ c`` 等「两侧皆空白」的定界符保持原样。
+        """
+        return self._delim_flanking(pos, length)[1]
+
     # ── 删除线 ~~ ───────────────────────────────────────
 
     def _try_strikethrough(self, depth: int) -> InlineNode | None:
@@ -420,9 +449,13 @@ class InlineFormattingMixin:
                     and self._text[self._pos:self._pos + 2] == '~~'
                     and not (self._pos + 3 < self._n
                              and self._text[self._pos + 2] == '~')):
+                # ★ 定界符 flanking：与高亮同口径（不再吞掉技术文本里的 ~~）
+                if not self._span_delim_can_open(self._pos):
+                    return None
                 saved = self._pos
                 self._pos += 2
-                children, found = self._parse_until('~~', depth + 1)
+                children, found = self._parse_until(
+                    '~~', depth + 1, close_ok=self._span_delim_can_close)
                 if found:
                     self._pos += 2
                     return self._make_nestable(StrikethroughNode, children)
@@ -448,9 +481,15 @@ class InlineFormattingMixin:
                              and (self._pos == 0 or self._text[self._pos - 1] != '='))
                     and not (self._pos > 0
                              and self._text[self._pos - 1] == '<')):
+                # ★ 修复（定界符 flanking）：左定界符条件不满足时不开启高亮
+                #   ——``mode=="change"`` 这类「左字母 + 右引号」的代码语义
+                #   ``==`` 不再吞掉定界符、不再把中间内容误高亮。
+                if not self._span_delim_can_open(self._pos):
+                    return None
                 saved = self._pos
                 self._pos += 2
-                children, found = self._parse_until('==', depth + 1)
+                children, found = self._parse_until(
+                    '==', depth + 1, close_ok=self._span_delim_can_close)
                 if found:
                     self._pos += 2
                     return self._make_nestable(HighlightNode, children)
@@ -687,9 +726,14 @@ class InlineFormattingMixin:
         try:
             if (self._pos + 2 < self._n
                     and self._text[self._pos:self._pos + 2] == '++'):
+                # ★ 定界符 flanking：``a++ 与 b++`` 这类自增/运算符文本不再
+                #   被当作下划线配对（``++`` 吞掉、中间内容被加下划线样式）。
+                if not self._span_delim_can_open(self._pos):
+                    return None
                 saved = self._pos
                 self._pos += 2
-                children, found = self._parse_until('++', depth + 1)
+                children, found = self._parse_until(
+                    '++', depth + 1, close_ok=self._span_delim_can_close)
                 if found:
                     self._pos += 2
                     return self._make_nestable(UnderlineNode, children)
@@ -706,9 +750,14 @@ class InlineFormattingMixin:
         try:
             if (self._pos + 2 < self._n
                     and self._text[self._pos:self._pos + 2] == '||'):
+                # ★ 定界符 flanking：``a || b || c``（逻辑或）不再被当作剧透
+                #   配对（``||`` 吞掉、中间内容被加黑幕样式）。
+                if not self._span_delim_can_open(self._pos):
+                    return None
                 saved = self._pos
                 self._pos += 2
-                children, found = self._parse_until('||', depth + 1)
+                children, found = self._parse_until(
+                    '||', depth + 1, close_ok=self._span_delim_can_close)
                 if found:
                     self._pos += 2
                     return self._make_nestable(SpoilerNode, children)
