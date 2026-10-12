@@ -405,6 +405,14 @@ def render_inline_to_text(nodes: list[InlineNode]) -> str:
     """将内联节点列表渲染为纯文本。"""
     result: list[str] = []
     for node in nodes:
+        # ★ 性能（超长单行）：``TextNode`` 是最常见的节点类型（纯文本段），
+        #   类型精确匹配后直接取 ``content``——修复前它要依次经过下方约 25 条
+        #   ``isinstance`` 检查才落到 ``else`` 分支；强调/链接密集的行（每个
+        #   节点构造都要拼接一次文本）因此付出大量无效类型判定
+        #   （4000 字符 ``**x**`` 密集行实测 78 万次 ``isinstance``）。
+        if node.__class__ is TextNode:
+            result.append(node.content)
+            continue
         if isinstance(node, LinkNode):
             if node.url.startswith('[ref:'):
                 result.append(f'{node.content} (ref:{node.url[5:-1]})')

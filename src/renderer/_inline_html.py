@@ -50,6 +50,12 @@ from ._block_helpers import _VOID_HTML_TAGS
 # 行内出现时内容隐藏，避免脚本/样式源码混入正文）
 from ._html_attrs import RAW_TEXT_TAGS as _HTML_RAW_TEXT_TAGS
 from ._html_attrs import parse_attrs as _parse_attrs
+from ._inline_scan import find_first_of
+
+#: HTML 标签名长度上限（扫描保护）：合法 HTML 标签名远短于此（本项目标签表
+#: 最长 ``figcaption`` 为 10）——超长同字母 run（如 ``<aaaa…``）在标签名扫描
+#: 阶段即安全放弃，避免逐字符扫描整段 run 的 O(n²) 退化。
+_MAX_TAG_NAME_LEN = 32
 
 
 class InlineHTMLMixin:
@@ -72,15 +78,19 @@ class InlineHTMLMixin:
     def _try_html_entity(self) -> InlineNode | None:
         if self._text[self._pos] != '&':
             return None
-        saved = self._pos
-        self._pos += 1
-        while self._pos < self._n and self._text[self._pos] not in (';', ' ', '\n', '\t'):
-            self._pos += 1
-        if self._pos >= self._n or self._text[self._pos] != ';':
-            self._pos = saved
+        # ★ 性能（超长单行）：实体需要 ``;`` 终止——文本不含 ``;`` 时直接判否
+        #   （超长 ``&`` run 下避免每个 ``&`` 都扫描到文本末尾的 O(n²)，4000
+        #   字符实测 1.56s）。
+        if not self._has_char(';'):
             return None
-        entity = self._text[saved:self._pos + 1]
-        self._pos += 1
+        saved = self._pos
+        # ★ 性能：终止字符（``;`` 或空白）用 C 级 ``find`` 一次定位（原逐字符
+        #   Python 扫描）。
+        end = find_first_of(self._text, '; \n\t', saved + 1)
+        if end < 0 or self._text[end] != ';':
+            return None  # 位置未推进（等价于原 ``self._pos = saved`` 回退）
+        entity = self._text[saved:end + 1]
+        self._pos = end + 1
         decoded = decode_html_entities(entity)
         if decoded != entity or len(entity) <= 2:
             return TextNode(content=decoded)
@@ -102,6 +112,10 @@ class InlineHTMLMixin:
     def _try_html_tag(self, depth: int) -> InlineNode | None:
         if self._text[self._pos] != '<':
             return None
+        # ★ 性能（超长单行）：HTML 标签成功解析必然含 ``>``——文本不含 ``>``
+        #   时直接判否（超长 ``<a`` run 下避免逐字符扫描到末尾的 O(n²)）。
+        if not self._has_char('>'):
+            return None
         saved = self._pos
         self._pos += 1
 
@@ -121,9 +135,14 @@ class InlineHTMLMixin:
             self._pos += 1
 
         tag_start = self._pos
+        # ★ 性能（超长单行）：标签名长度上限——同字母 run（``<aaaa…``）在扫描
+        #   上限处停止（标签名必然不在标签表中 → 调用方回退），避免逐字符扫完
+        #   整段 run。合法 HTML 标签名远短于上限（最长 ``figcaption``）。
         while self._pos < self._n and (self._text[self._pos].isalnum()
                                         or self._text[self._pos] in '-:'):
             self._pos += 1
+            if self._pos - tag_start > _MAX_TAG_NAME_LEN:
+                break
         tag_name = self._text[tag_start:self._pos].lower()
 
         if not tag_name:
@@ -303,20 +322,29 @@ class InlineHTMLMixin:
 
     def _parse_html_content(self, tag: str, depth: int) -> str | None:
         close_tag = f'</{tag}>'
+        # ★ 性能（超长单行）：闭合标签的**必要条件判否 + C 级定位**——修复前
+        #   逐字符扫描到文本末尾，未闭合的超长 HTML 块（``<a>…`` 无 ``</a>``）
+        #   在每个 ``<`` 触发位置都重扫一遍（O(n²)）。返回 ``None`` 时位置不变
+        #   （调用方统一 ``self._pos = saved`` 回退）。
+        if not self._has_seq(close_tag):
+            return None
         start = self._pos
-        while self._pos < self._n:
-            if self._try_match_str(close_tag):
-                content = self._text[start:self._pos]
-                self._pos += len(close_tag)
-                return content
-            self._pos += 1
-        return None
+        idx = self._text.find(close_tag, self._pos)
+        if idx < 0:
+            return None
+        self._pos = idx + len(close_tag)
+        return self._text[start:idx]
 
     def _parse_html_content_nested(self, tag: str, depth: int
                                    ) -> list[InlineNode] | None:
         if depth > self._MAX_DEPTH:
             return None
         close_tag = f'</{tag}>'
+        # ★ 性能（超长单行）：闭合标签的必要条件判否——未闭合的嵌套 HTML 标签
+        #   （``<span>…`` 无 ``</span>``）原先每个 ``<`` 触发位置都扫描到文本
+        #   末尾（O(n²)）。返回 ``None`` 时位置不变（调用方统一回退）。
+        if not self._has_seq(close_tag):
+            return None
         nodes: list[InlineNode] = []
         plain_buf: list[str] = []
 

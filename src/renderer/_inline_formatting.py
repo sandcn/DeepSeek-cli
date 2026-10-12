@@ -24,10 +24,17 @@ from .inline_nodes import (
     render_inline_to_text,
 )
 
+from ._inline_scan import find_first_of
+
 _logger = logging.getLogger(__name__)
 
 #: ASCII 标点（CommonMark 的「标点」判定在 ASCII 区间的快速路径）
 _ASCII_PUNCT: frozenset[str] = frozenset(string.punctuation)
+
+#: 定界符 flanking 判定结果缓存容量上限（键 ``(pos, length)``）。超限整体
+#: 清空——缓存只影响性能（结果由文本唯一决定），清空不改变任何解析结果。
+#: 上限取较大值（强调密集的超长单行会有数千个候选位置，过小会频繁清空）。
+_FLANK_CACHE_MAX = 16384
 
 
 def _is_punct_char(ch: str) -> bool:
@@ -64,6 +71,11 @@ class InlineFormattingMixin:
       _try_inline_footnote()
     """
 
+    #: 定界符 flanking 判定结果缓存（``(pos, length) → (left, right)``）——
+    #: 由 ``_InlineParser.__init__`` 创建；``None``（未初始化）时不做缓存
+    #: （语义不变，仅少一层加速）。
+    _flank_cache: dict | None = None
+
     def _delim_flanking(self, pos: int, length: int) -> tuple[bool, bool]:
         """定界符 run 的 ``(left_flanking, right_flanking)``（CommonMark）。
 
@@ -79,6 +91,15 @@ class InlineFormattingMixin:
         整段标记被剥离（``foo *``）；``**** is not…`` 丢字符（``** is…``）。
         """
         text, n = self._text, self._n
+        # ★ 性能（超长单行）：flanking 结果按 ``(pos, length)`` 记忆化——同一位
+        #   置会被 ``_delim_can_open`` / ``_delim_can_close`` / rule-of-three 闭包
+        #   反复查询（强调密集行每次约 15 次），修复前每次都重算 run 终点 +
+        #   3 次标点判定。文本在解析期间不变，记忆化结果恒等价。
+        cache = self._flank_cache
+        if cache is not None:
+            hit = cache.get((pos, length))
+            if hit is not None:
+                return hit
         run_len = length
         # 需要按**完整 run** 判定的定界符字符：``*``/``_``（强调）、``=``
         # （高亮 ``==x==``）、``+``（下划线 ``++x++``）、``~``（删除线
@@ -89,11 +110,11 @@ class InlineFormattingMixin:
             tail = pos + length
             # 快速路径：``length`` 处已是 run 之外（常见——调用方按完整 run
             # 长度尝试）→ 无需扫描；仅当其后仍是同字符时才向后扩展。
+            # ★ 性能（超长单行）：run 终点走实例级缓存（``_delim_run_end``）——
+            #   run 内每个位置都会查询，逐次全扫描使长 run 行（``********…``）
+            #   的 flanking 判定退化为 O(n²)（8000 个 ``*`` 实测 7.2s）。
             if tail < n and text[tail] == ch:
-                i = tail
-                while i < n and text[i] == ch:
-                    i += 1
-                run_len = i - pos
+                run_len = self._delim_run_end(pos, ch) - pos
         before = text[pos - 1] if pos > 0 else ''
         after_pos = pos + run_len
         after = text[after_pos] if after_pos < n else ''
@@ -105,6 +126,10 @@ class InlineFormattingMixin:
                  and (not _is_punct_char(before)
                       or after == '' or after.isspace()
                       or _is_punct_char(after)))
+        if cache is not None:
+            if len(cache) >= _FLANK_CACHE_MAX:
+                cache.clear()
+            cache[(pos, length)] = (left, right)
         return left, right
 
     def _delim_can_open(self, pos: int, length: int, ch: str = '*') -> bool:
@@ -147,12 +172,13 @@ class InlineFormattingMixin:
         return True
 
     def _delim_run_len(self, pos: int, ch: str) -> int:
-        """``pos`` 处同字符 ``ch`` 的连续 run 长度（0 表示非 ``ch``）。"""
-        text, n = self._text, self._n
-        i = pos
-        while i < n and text[i] == ch:
-            i += 1
-        return i - pos
+        """``pos`` 处同字符 ``ch`` 的连续 run 长度（0 表示非 ``ch``）。
+
+        ★ 性能（超长单行）：经 ``_delim_run_end``（实例级 run 终点缓存）——
+        run 内每个位置都被本方法与 ``_delim_flanking`` 查询，逐次全扫描会使
+        长 run 行解析退化为 O(n²)。
+        """
+        return self._delim_run_end(pos, ch) - pos
 
     def _make_emphasis_close_check(self, opener_pos: int, opener_len: int,
                                    ch: str):
@@ -162,16 +188,21 @@ class InlineFormattingMixin:
         是 3 的倍数而两者长度不都是 3 的倍数，则该对定界符不匹配
         （``*foo**bar**baz*`` 的外层 em 不在一对 ``**`` 上闭合，而由内层
         strong 先配对）。缺失该规则时 ``**a*b***`` 之类的组合会残留标记。
+
+        ★ 性能（超长单行）：``opener_can_close`` 只依赖 opener（解析期间文本
+        不变），在闭包创建时**预计算一次**——修复前每次闭合候选都重算一次
+        ``_delim_can_close(opener_pos, …)``（flanking 判定 + 标点判定），
+        强调密集的行（如 ``**x**`` 重复）因此重复付出大量无效开销。
         """
+        opener_can_close = self._delim_can_close(opener_pos, opener_len, ch)
+
         def check(pos: int, _length: int | None = None) -> bool:
             run_len = self._delim_run_len(pos, ch)
             if run_len == 0:
                 return False
             if not self._delim_can_close(pos, run_len, ch):
                 return False
-            closer_can_open = self._delim_can_open(pos, run_len, ch)
-            opener_can_close = self._delim_can_close(opener_pos, opener_len, ch)
-            if closer_can_open or opener_can_close:
+            if self._delim_can_open(pos, run_len, ch) or opener_can_close:
                 total = opener_len + run_len
                 if total % 3 == 0 and (opener_len % 3 != 0 or run_len % 3 != 0):
                     return False
@@ -403,6 +434,17 @@ class InlineFormattingMixin:
                             continue
                         _emit_plain()
                         return nodes, True
+                # ★ 性能（超长单行）：普通文本段一次跳过——二分查找下一个
+                #   兴趣位置后整段切片加入缓冲（与 ``_parse_until`` 同一优化；
+                #   修复前对每个普通字符都调用一次 ``_try_format``，超长单行的
+                #   反复内层扫描因此每字符多付出一次函数调用开销）。产出与
+                #   逐字符路径一致（普通字符必然不产生节点，见
+                #   ``_build_interest_positions`` 的口径）。
+                nxt = self._find_next_format_char(self._pos, self._n)
+                if nxt > self._pos:
+                    plain_buf.append(self._text[self._pos:nxt])
+                    self._pos = nxt
+                    continue
                 node = self._try_format(depth)
                 if node is not None:
                     _emit_plain()
@@ -595,28 +637,48 @@ class InlineFormattingMixin:
                 return None
             if self._pos + 1 >= self._n or self._text[self._pos + 1] != '[':
                 return None
+            # ★ 性能（超长单行）：需要闭合 ``]``——文本不含 ``]`` 时直接判否
+            #   （超长 ``^[`` / ``[^`` run 下避免每个位置都扫描到文本末尾的
+            #   O(n²)，3000 字符实测 0.38s）。
+            if not self._has_char(']'):
+                return None
             saved = self._pos
             i = self._pos + 2
             n = self._n
+            text = self._text
             depth = 0
             buf: list[str] = []
+            # ★ 性能：用 C 级 ``find_first_of`` 跳到下一个「结构字符」（``[`` /
+            #   ``]`` / 反斜杠 / 换行），普通文本段一次切片加入缓冲（原实现
+            #   逐字符 Python 循环 + 逐字符 append）。
             while i < n:
-                ch = self._text[i]
-                if ch == '\\' and i + 1 < n:
-                    buf.append(self._text[i:i + 2])
-                    i += 2
+                j = find_first_of(text, '[]\\\n', i)
+                if j < 0:
+                    buf.append(text[i:])
+                    break
+                if j > i:
+                    buf.append(text[i:j])
+                    i = j
+                ch = text[i]
+                if ch == '\\':
+                    if i + 1 < n:
+                        buf.append(text[i:i + 2])
+                        i += 2
+                    else:
+                        buf.append(ch)
+                        i += 1
                     continue
-                if ch == '[':
-                    depth += 1
-                elif ch == ']':
-                    if depth == 0:
-                        self._pos = i + 1
-                        return InlineFootnoteNode(
-                            content=''.join(buf).strip())
-                    depth -= 1
-                elif ch == '\n':
+                if ch == '\n':
                     # 行内脚注不跨行（流式语义：未闭合时不吞并后续行）
                     break
+                if ch == '[':
+                    depth += 1
+                elif depth == 0:
+                    self._pos = i + 1
+                    return InlineFootnoteNode(
+                        content=''.join(buf).strip())
+                else:
+                    depth -= 1
                 buf.append(ch)
                 i += 1
             self._pos = saved
@@ -1048,32 +1110,32 @@ class InlineFormattingMixin:
             if not (self._pos + 4 < self._n
                     and self._text[self._pos:self._pos + 2] == '[['):
                 return None
+            # ★ 性能（超长单行）：终止序列 ``]]`` 的必要条件判否 + C 级 ``find``
+            #   定位——修复前逐字符扫描到文本末尾，超长 ``[`` run 上每个位置都
+            #   重扫一遍 → O(n²)（2000 个 ``[`` 实测 0.92s）。
+            if not self._has_seq(']]'):
+                return None
             saved = self._pos
-            self._pos += 2  # skip [[
-            # 扫描到 ]] ，收集内容
-            content_start = self._pos
-            while self._pos < self._n:
-                if (self._pos + 1 < self._n
-                        and self._text[self._pos:self._pos + 2] == ']]'):
-                    content = self._text[content_start:self._pos]
-                    self._pos += 2  # skip ]]
-                    # 解析 target 和可选的 display
-                    pipe_idx = content.find('|')
-                    if pipe_idx >= 0:
-                        target = content[:pipe_idx].strip()
-                        display = content[pipe_idx + 1:].strip() or None
-                    else:
-                        target = content.strip()
-                        display = None
-                    if target:
-                        return WikiLinkNode(
-                            content=display or target,
-                            target=target,
-                            display=display,
-                        )
-                    self._pos = saved
-                    return None
-                self._pos += 1
+            content_start = saved + 2
+            end = self._text.find(']]', content_start)
+            if end < 0:
+                return None
+            content = self._text[content_start:end]
+            self._pos = end + 2  # skip ]]
+            # 解析 target 和可选的 display
+            pipe_idx = content.find('|')
+            if pipe_idx >= 0:
+                target = content[:pipe_idx].strip()
+                display = content[pipe_idx + 1:].strip() or None
+            else:
+                target = content.strip()
+                display = None
+            if target:
+                return WikiLinkNode(
+                    content=display or target,
+                    target=target,
+                    display=display,
+                )
             self._pos = saved
             return None
         except Exception:

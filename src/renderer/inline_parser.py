@@ -30,6 +30,10 @@ from .emoji_map import EMOJI_MAP
 from ._inline_html import InlineHTMLMixin
 from ._inline_links import InlineLinksMixin
 from ._inline_formatting import InlineFormattingMixin
+from ._inline_scan import DelimiterRunCache, char_presence_index
+
+#: 「文本中是否存在某终止序列」的惰性探测缓存容量上限（键为终止序列）。
+_SEQ_PROBE_MAX = 32
 
 
 # ═══════════════════════════════════════════════════════════
@@ -52,6 +56,23 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
         self._text = text
         self._pos = 0
         self._n = len(text)
+        # ★ 性能（超长单行）：行内语法的**必要条件快速判否**——字符存在索引
+        #   （长文本 O(1) 判定「文本是否含某字符」）与终止序列探测缓存。
+        #   修复前「文本不含该字符」的病态输入（如 8000 个 ``[``、``&``、``(``）
+        #   会在每个触发位置重扫到文本末尾 → O(n²)（2000 个 ``[`` 实测 0.92s、
+        #   4000 个 ``&`` 实测 1.56s）。索引**惰性构建**（首次 ``_has_char``
+        #   时）——普通文本（无 ``[``/``&``/``<``/``\(`` 触发）零额外成本。
+        self._char_index: frozenset | None = None
+        self._char_index_ready = False
+        self._seq_cache: dict = {}
+        # ★ 性能（超长单行）：定界符 run 终点缓存（``*``/``_``/``+``/``|`` 连续
+        #   run 内每个位置都会被 flanking 判定查询，逐次扫描使长 run 行解析
+        #   退化为 O(n²)——8000 个 ``*`` 实测 7.2s）。
+        self._run_cache = DelimiterRunCache()
+        # ★ 性能（超长单行）：定界符 flanking 判定的记忆化（同一位置被
+        #   ``_delim_can_open`` / ``_delim_can_close`` / rule-of-three 闭包反复
+        #   查询；结果只由文本与 ``(pos, length)`` 决定）。
+        self._flank_cache: dict = {}
         # ★ 性能（英文流式渲染）：行内「兴趣位置」表——只有这些位置才可能产生
         #   非纯文本节点（核心格式触发字符，或裸 URL 前缀起点）。``_parse_until``
         #   据此二分查找一次跳过整段普通文本；英文文本中频次极高的 h/f/w 字母
@@ -66,6 +87,54 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
         #: 失败——缓存避免病态输入（``**********a**********a`` 等连续定界符 run）
         #: 的指数级重复解析（实测 2 组 run 即 0.6s、3 组超时）。
         self._emph_fail: set = set()
+
+    # ── 必要条件快速判否（超长单行性能） ─────────────────
+
+    def _has_char(self, ch: str) -> bool:
+        """文本是否含字符 ``ch``（长文本经存在索引 O(1)）。
+
+        仅用于**必要条件**判否：调用方在「文本不含该字符 ⇒ 语法必然失败」时
+        提前返回 ``None``（不改变任何成功路径的解析结果）。
+
+        ★ 性能：存在索引**惰性构建**（首次调用时）——普通文本（不含
+        ``[``/``&``/``<``/``\\(`` 等触发字符）从不调用本方法，故零额外开销；
+        病态文本（超长同字符 run）首次调用付一次 O(n) 构建，其后每次 O(1)。
+        """
+        index = self._char_index
+        if index is None and not self._char_index_ready:
+            self._char_index = char_presence_index(self._text)
+            self._char_index_ready = True
+            index = self._char_index
+        if index is None:
+            return ch in self._text
+        return ch in index
+
+    def _has_seq(self, seq: str) -> bool:
+        """文本是否含多字符序列 ``seq``（惰性探测 + 按实例缓存）。
+
+        语义等价于 ``seq in self._text``；首个调用者付 O(n) 的 C 级 ``in``
+        扫描，后续 O(1)。同样只用于必要条件判否（如不含 ``]]`` ⇒ WikiLink
+        必然失败）。
+        """
+        cache = self._seq_cache
+        hit = cache.get(seq)
+        if hit is None:
+            hit = seq in self._text
+            if len(cache) >= _SEQ_PROBE_MAX:
+                cache.clear()
+            cache[seq] = hit
+        return hit
+
+    def _delim_run_end(self, pos: int, ch: str) -> int:
+        """``text`` 中从 ``pos`` 起的同字符 ``ch`` run 终点（缓存加速）。"""
+        cache = self._run_cache
+        if cache is None:
+            text, n = self._text, self._n
+            i = pos
+            while i < n and text[i] == ch:
+                i += 1
+            return i
+        return cache.run_end(self._text, pos, ch)
 
     @staticmethod
     def _make_nestable(cls: type, children: list[InlineNode]) -> InlineNode:
@@ -329,25 +398,23 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
         try:
             if (self._pos + 2 < self._n
                     and self._text[self._pos:self._pos + 2] == r'\('):
-                saved = self._pos
-                self._pos += 2
-                content_start = self._pos
-                while self._pos < self._n:
-                    if (self._pos + 1 < self._n
-                            and self._text[self._pos:self._pos + 2] == r'\)'):
-                        content = self._text[content_start:self._pos]
-                        if not content:
-                            # ★ 空数学（``\(\)``）不作为公式：回退让 ``\(`` /
-                            #   ``\)`` 走反斜杠转义（CommonMark：``\(`` 是 ``(``
-                            #   的转义）——修复前产出空数学节点，括号字符丢失
-                            #   （``\(\)`` 渲染为 ``()`` 以外的空内容）。
-                            self._pos = saved
-                            return None
-                        self._pos += 2
-                        return InlineMathNode(content=content)
-                    self._pos += 1
-                self._pos = saved
-                return None
+                # ★ 性能（超长单行）：终止序列 ``\)`` 的必要条件判否 + C 级
+                #   ``find`` 定位——修复前逐字符扫描到文本末尾，``\(`` 反复出现
+                #   时退化为 O(n²)（4000 字符实测 1.16s）。
+                if not self._has_seq(r'\)'):
+                    return None
+                content_start = self._pos + 2
+                end = self._text.find(r'\)', content_start)
+                if end < 0:
+                    return None
+                if end == content_start:
+                    # ★ 空数学（``\(\)``）不作为公式：回退让 ``\(`` / ``\)``
+                    #   走反斜杠转义（CommonMark：``\(`` 是 ``(`` 的转义）——
+                    #   修复前产出空数学节点，括号字符丢失（``\(\)`` 渲染为
+                    #   ``()`` 以外的空内容）。
+                    return None
+                self._pos = end + 2
+                return InlineMathNode(content=self._text[content_start:end])
             return None
         except Exception:
             _logger.debug("_try_paren_math 异常，降级处理", exc_info=True)

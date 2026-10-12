@@ -15,6 +15,7 @@ from .inline_nodes import (
     render_inline_to_text,
 )
 from ._pandoc_attrs import parse_pandoc_attrs as _parse_pandoc_attrs
+from ._inline_scan import find_first_of
 
 _logger = logging.getLogger(__name__)
 
@@ -286,6 +287,10 @@ class InlineLinksMixin:
     def _try_image(self, depth: int) -> InlineNode | None:
         try:
             if self._pos + 2 < self._n and self._text[self._pos:self._pos + 2] == '![':
+                # ★ 性能（超长单行）：alt 文本需要闭合 ``]``——文本不含 ``]``
+                #   时直接判否（超长 ``![`` run 下避免扫描到文本末尾的 O(n²)）。
+                if not self._has_char(']'):
+                    return None
                 saved = self._pos
                 self._pos += 2
                 alt_start = self._pos
@@ -461,17 +466,17 @@ class InlineLinksMixin:
             if (self._pos + 2 < self._n
                     and self._text[self._pos] == '['
                     and self._text[self._pos + 1] == '^'):
-                saved = self._pos
-                self._pos += 2
-                ref_start = self._pos
-                while self._pos < self._n and self._text[self._pos] not in '] \t\n\r':
-                    self._pos += 1
-                if self._pos >= self._n or self._text[self._pos] != ']':
-                    self._pos = saved
+                # ★ 性能（超长单行）：``[...]`` 系列语法都需要闭合 ``]``——
+                #   文本不含 ``]`` 时（如超长 ``[^`` run）直接判否，避免每个
+                #   触发位置都扫描到文本末尾（O(n²)，4000 字符实测 1.01s）。
+                if not self._has_char(']'):
                     return None
-                ref_id = self._text[ref_start:self._pos]
-                self._pos += 1
-                return FootnoteRefNode(ref_id=ref_id)
+                ref_start = self._pos + 2
+                end = find_first_of(self._text, '] \t\n\r', ref_start)
+                if end < 0 or self._text[end] != ']':
+                    return None  # 位置未推进（等价于原 ``self._pos = saved``）
+                self._pos = end + 1
+                return FootnoteRefNode(ref_id=self._text[ref_start:end])
             return None
         except Exception:
             _logger.debug("_try_footnote_ref 异常，降级处理", exc_info=True)
@@ -482,6 +487,11 @@ class InlineLinksMixin:
     def _try_link(self, depth: int) -> InlineNode | None:
         try:
             if self._text[self._pos] != '[':
+                return None
+            # ★ 性能（超长单行）：``[...]`` 语法需要闭合 ``]``——文本不含 ``]``
+            #   时（超长 ``[`` run）直接判否，避免每个 ``[`` 位置都扫描到文本
+            #   末尾（O(n²)，2000 个 ``[`` 实测 0.92s）。
+            if not self._has_char(']'):
                 return None
             saved = self._pos
             self._pos += 1
@@ -607,19 +617,22 @@ class InlineLinksMixin:
         try:
             if self._text[self._pos] != '<':
                 return None
-            saved = self._pos
-            self._pos += 1
-            content_start = self._pos
-            while self._pos < self._n and self._text[self._pos] != '>':
-                if self._text[self._pos] == '<':
-                    self._pos = saved
-                    return None
-                self._pos += 1
-            if self._pos >= self._n:
-                self._pos = saved
+            # ★ 性能（超长单行）：``<...>`` 需要闭合 ``>``——文本不含 ``>`` 时
+            #   直接判否（超长 ``<`` run 下避免逐字符扫描到末尾的 O(n²)）。
+            if not self._has_char('>'):
                 return None
-            content = self._text[content_start:self._pos]
-            self._pos += 1
+            saved = self._pos
+            content_start = self._pos + 1
+            # ★ 性能：``>`` 与 ``<`` 的位置用 C 级 ``find`` 一次定位（原逐字符
+            #   循环）——``<`` 先于 ``>`` 出现即判否（与原有语义一致）。
+            gt = self._text.find('>', content_start)
+            if gt < 0:
+                return None
+            lt = self._text.find('<', content_start)
+            if 0 <= lt < gt:
+                return None
+            content = self._text[content_start:gt]
+            self._pos = gt + 1
             # ── 绝对 URI autolink（CommonMark：任意 scheme，``<irc://…>`` /
             #    ``<a+b+c:d>`` / ``<made-up-scheme://x>`` 均合法）──
             #    修复前仅识别 http/https/ftp/ftps，其余 scheme 的合法 autolink
