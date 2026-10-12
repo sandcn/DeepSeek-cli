@@ -111,12 +111,31 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
     _MAX_BUFFER_SIZE = 1_000_000
 
+    #: 超长活动行「延迟拼接」的启用阈值（字符）：未消费尾部（缓冲 + 待合并
+    #: 分块）超过该长度后，后续**无换行**增量先累积到分块列表，累计达
+    #: ``_TAIL_JOIN_STEP`` 才并入主缓冲。此前的 ``self._buffer += text`` 在
+    #: 超长未换行单行（minified JSON / base64 / 长段落，数十万字符）下每帧
+    #: 复制整个缓冲，累计 O(n²)（800k 字符单行实测 3.9s）。短于此阈值的行
+    #: 行为完全不变（逐帧拼接，成本可忽略）。
+    _TAIL_LAG_MIN = 16_384
+
+    #: 延迟拼接的合并步长（字符）：待合并分块累计到该长度才并入主缓冲——
+    #: 合并次数 ~ 尾部长度 / 步长，单次 O(缓冲长) 摊销后总成本与长度线性；
+    #: 同时决定预览相对最新内容的**最大滞后**（≤ 该步长，提交/闭合前必合并，
+    #: 内容不丢）。
+    _TAIL_JOIN_STEP = 512
+
     _PREVIEW_CODE_LINES_MAX = 4000
     """代码类块预览缓冲的行数上限（超出丢弃最旧行，见 ``_emit_code_line``）。"""
 
     def __init__(self, ctx: RenderContext | None = None):
         self._ctx = ctx if ctx is not None else RenderContext()
         self._buffer = ""
+        #: 未换行尾部的**待合并分块**（延迟拼接，见 ``_TAIL_LAG_MIN``）——
+        #: 逻辑缓冲 = ``self._buffer`` + ``"".join(self._tail_parts)``；
+        #: ``self._tail_len`` 为其长度缓存（免每帧 join 求长度）。
+        self._tail_parts: list[str] = []
+        self._tail_len = 0
         self._state = _State.NORMAL
         # 必须在 _reset_normal_state 之前初始化列表状态变量和表格缓冲
         self._list_indents: list[int] = []
@@ -310,6 +329,20 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
     def feed(self, text: str) -> list[Token]:
         """输入文本片段，返回已解析的 Token。"""
         tokens: list[Token] = []
+        if not text:
+            return tokens
+        # ★ 超长活动行的无换行增量：延迟拼接（见 ``_TAIL_LAG_MIN``）——
+        #   超长未换行尾部下 ``self._buffer += text`` 每帧复制整个缓冲，
+        #   累计 O(n²)。无换行 ⟹ 无完整行可解析（``_prescan_refs`` 亦无完整
+        #   行可扫）⟹ 可安全延后合并；预览滞后 ≤ ``_TAIL_JOIN_STEP``，
+        #   换行/提交/``flush`` 前必先合并（内容不丢）。
+        if ('\n' not in text
+                and len(self._buffer) + self._tail_len >= self._TAIL_LAG_MIN):
+            self._append_tail(text)
+            self._consume_oversized_buffer(tokens)
+            self._silent_downgrade_count.clear()
+            return tokens
+        self._merge_tail()
         # 追加前的缓冲长度（下次找换行的起点；feed 开始时缓冲**不含换行**——
         # 上一次 feed 的逐行循环已消费全部完整行，见循环退出条件）。
         prev_len = len(self._buffer)
@@ -363,6 +396,45 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         #   完整消化——不丢内容。原实现在此处裁剪缓冲一半并
         #   ``_reset_for_buffer_trim``（丢弃未处理内容 + 清空解析状态），极端
         #   超长输入下内容丢失/错乱。
+        self._consume_oversized_buffer(tokens)
+
+        # 降级计数每个 feed 重置（避免跨 chunk 累计掩盖后续真实降级）
+        self._silent_downgrade_count.clear()
+        return tokens
+
+    def _append_tail(self, text: str) -> None:
+        """把无换行增量累积到待合并分块（超长活动行的延迟拼接）。
+
+        累计达 ``_TAIL_JOIN_STEP`` 时并入主缓冲（``_merge_tail``）——
+        合并次数 ~ 尾部长度 / 步长，单次 O(缓冲长) 摊销后总成本与长度线性。
+        """
+        self._tail_parts.append(text)
+        self._tail_len += len(text)
+        if self._tail_len >= self._TAIL_JOIN_STEP:
+            self._merge_tail()
+
+    def _merge_tail(self) -> None:
+        """把待合并分块并入主缓冲（``self._buffer``）。
+
+        一次 C 级 ``join`` 完成（待合并分块 + 旧缓冲），调用方保证此后
+        ``self._buffer`` 为完整未消费文本（逐行解析 / 预扫描 / 提交）。
+        """
+        parts = self._tail_parts
+        if not parts:
+            return
+        if self._buffer:
+            self._buffer = "".join((self._buffer, *parts))
+        else:
+            self._buffer = "".join(parts)
+        parts.clear()
+        self._tail_len = 0
+
+    def _consume_oversized_buffer(self, tokens: list[Token]) -> None:
+        """主缓冲超 ``_MAX_BUFFER_SIZE`` 时按当前状态作为一行完整消化。
+
+        逐行循环只消费含 ``\\n`` 的完整行，残留的是模型正在输出的未换行
+        尾部；单行超限时把它当一行完整处理（内容不丢，避免缓冲无界增长）。
+        """
         if len(self._buffer) > self._MAX_BUFFER_SIZE:
             line = self._buffer + '\n'
             self._buffer = ''
@@ -378,14 +450,15 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     self._handle_paragraph_line(line, tokens)
                 except Exception:
                     _logger.debug("超长尾部降级段落失败", exc_info=True)
-
-        # 降级计数每个 feed 重置（避免跨 chunk 累计掩盖后续真实降级）
-        self._silent_downgrade_count.clear()
-        return tokens
+            if tokens:
+                self._prev_emitted_type = tokens[-1].type
 
     def flush(self) -> list[Token]:
         """刷出所有剩余内容。"""
         tokens: list[Token] = []
+        # ★ 先并入延迟拼接的待合并分块（见 ``_TAIL_LAG_MIN``）——提交路径必须
+        #   基于完整文本（内容不丢）。
+        self._merge_tail()
         _flush_bq = (self._bq_depth_stack[-1]
                      if (self._bq_active and self._bq_depth_stack) else 0)
 
@@ -557,9 +630,19 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         一并渲染——否则逐字输出在换行到来前完全不可见（整行突发上屏）。
 
         仅去除尾部空白（保留行首缩进，使列表/缩进代码的预览与提交后一致）。
+
+        ★ 超长活动行的「延迟拼接」（见 ``_TAIL_LAG_MIN``）：超长未换行尾部
+        的最近 ``_TAIL_JOIN_STEP`` 个字符可能尚未并入缓冲（下次 ``feed``
+        或 ``flush`` 时合并）——预览最多滞后该步长，提交路径必先合并
+        （内容不丢）；把每帧 O(缓冲长) 的字符串拼接降为每步长一次。
         """
         if not self._buffer:
             return ""
+        # ★ 超长活动行性能：无尾部空白时直接返回原对象（``str.rstrip`` 在
+        #   结果与原串不同时会**复制整串**——超长未换行尾部每帧复制一次会
+        #   累计 O(n²)）；仅尾部确有空白时才剥离。
+        if not self._buffer[-1].isspace():
+            return self._buffer
         return self._buffer.rstrip()
 
     #: 容器未闭合预览的正文行归一化模式（与 ``feed`` 的正文行处理一一对应）
