@@ -13,6 +13,12 @@ Esc/Ctrl+H 关闭后恢复完整聊天界面。
     见 ``config.model_profiles.build_model_entries``）。
   - **增加**：``a`` 打开表单（名称 / 模型名 / 接口地址 / API 密钥 /
     Provider 五字段），``s`` 保存为新的模型档案。
+  - **模型名候选**（2026-10-13 用户需求「/models 界面可以选择对应提供商的
+    模型名」）：进入「模型名」字段编辑时，主区列出**当前提供商的内置模型
+    候选**（``config.model_profiles.provider_model_choices``——含「默认」与
+    计费单价说明），``↑``/``↓`` 选择即写入输入缓冲，``Enter`` 确认；同时
+    仍可直接键入**自定义模型名**（``custom`` / 未知提供商无候选时行为与
+    此前一致，纯手动输入）。
   - **编辑**：``e`` 编辑选中档案（同上表单，``s`` 保存）。
   - **复制**：``c`` 以选中档案为模板新建（预填副本字段，改名后 ``s``
     保存）——基于已有模型快速派生变体。
@@ -36,7 +42,7 @@ Esc/Ctrl+H 关闭后恢复完整聊天界面。
   - 表单模式：↑↓/jk 选择字段 · Enter 编辑字段 · s 保存 · Esc 取消；
   - 字段输入：可打印字符（光标处插入）· ←/→/Home/End 移动光标 ·
     Delete/退格删除 · Ctrl+A/Ctrl+E 首末 · Ctrl+U 清空 · Enter 确认 ·
-    Esc 取消。
+    Esc 取消；**模型名字段**额外支持 ↑/↓ 切换内置模型候选（含滚轮）。
 
 数据协议（跨线程安全，与 config/plugin 同构）：
   - 命令线程（``_cmd_models``）：构建 entries → 设置 ``model.model_view``
@@ -67,10 +73,12 @@ from src.config.model_profiles import (
     default_base_url,
     empty_profile,
     field_by_key,
+    infer_provider,
     load_profiles,
     mask_key,
     normalize_profile,
     provider_choices,
+    provider_model_choices,
     save_profiles,
     set_active_profile,
     validate_profile,
@@ -116,6 +124,9 @@ _S_CURSOR = Style(fg=16, bg=45, bold=True)  # 字段输入光标（反色块）
 _EDIT_VALUE_MAX = 400
 #: 搜索输入长度上限。
 _SEARCH_QUERY_MAX = 200
+#: 带内置模型候选的字段（「模型名」——候选按当前提供商给出，见
+#: ``config.model_profiles.provider_model_choices``）。
+_MODEL_FIELD = "model"
 
 
 def _viewport_rows() -> int:
@@ -233,6 +244,97 @@ def _current_provider() -> str:
         return ""
 
 
+# ═══════════════════════════════════════════════════════════
+# 字段候选（「模型名」——按当前提供商取内置模型列表）
+# ═══════════════════════════════════════════════════════════
+
+
+def _choice_index(mv) -> int:
+    """当前高亮候选下标（``-1`` = 自定义 / 无匹配）。
+
+    ★ 注意：不能用 ``getattr(...) or -1`` —— 下标 ``0`` 是合法高亮（首个
+    候选），falsy 会被误判为「无高亮」，导致 ↑/↓ 反复停在第 0 项。
+    """
+    raw = getattr(mv, "form_choice_index", -1)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return -1
+
+
+def _clear_field_choices(mv) -> None:
+    """清空字段候选状态（退出字段编辑 / 切换字段时调用）。"""
+    mv.form_choice_options = []
+    mv.form_choice_desc = []
+    mv.form_choice_index = -1
+    mv.form_choice_active = False
+
+
+def _load_field_choices(mv, key: str) -> None:
+    """加载字段候选（当前仅「模型名」字段：按提供商给内置模型候选）。
+
+    提供商取值顺序：表单 ``provider`` → 按 ``model`` 推断 → 当前生效提供商；
+    候选为空（``custom`` / 未知提供商 / 未配置内置模型）时不激活候选界面
+    ——行为与纯手动输入一致（零回归）。
+    """
+    _clear_field_choices(mv)
+    if key != _MODEL_FIELD:
+        return
+    values = dict(getattr(mv, "form_values", None) or {})
+    provider = str(values.get("provider", "") or "").strip()
+    if not provider:
+        provider = infer_provider(str(values.get("model", "") or "")) or _current_provider()
+    choices = provider_model_choices(provider)
+    if not choices:
+        return
+    mv.form_choice_options = [c[0] for c in choices]
+    mv.form_choice_desc = [c[1] for c in choices]
+    mv.form_choice_active = True
+    current = str(getattr(mv, "form_edit_value", "") or "").strip()
+    if current in mv.form_choice_options:
+        mv.form_choice_index = mv.form_choice_options.index(current)
+
+
+def _start_field(mv, key: str) -> None:
+    """进入字段输入模式（预填当前值 + 光标置末尾 + 加载候选）。"""
+    mv.edit_mode = "field"
+    mv.form_edit_value = str((mv.form_values or {}).get(key, "") or "")
+    mv.form_edit_cursor = len(mv.form_edit_value)
+    mv.edit_error = ""
+    _load_field_choices(mv, key)
+
+
+def _apply_choice(mv, index: int) -> None:
+    """选中候选：写入输入缓冲（可直接 Enter 确认）并把光标置末尾。"""
+    opts = list(getattr(mv, "form_choice_options", None) or [])
+    if not (0 <= int(index) < len(opts)):
+        return
+    mv.form_choice_index = int(index)
+    mv.form_edit_value = opts[int(index)]
+    mv.form_edit_cursor = len(opts[int(index)])
+
+
+def _step_choice(mv, delta: int) -> None:
+    """``↑``/``↓``：在候选列表内移动（钳制到首/末；无高亮时从首/末进入）。"""
+    opts = list(getattr(mv, "form_choice_options", None) or [])
+    if not opts:
+        return
+    cur = _choice_index(mv)
+    if 0 <= cur < len(opts):
+        _apply_choice(mv, max(0, min(cur + delta, len(opts) - 1)))
+    else:
+        _apply_choice(mv, 0 if delta > 0 else len(opts) - 1)
+
+
+def _sync_choice_index(mv) -> None:
+    """输入缓冲变化后同步候选高亮（命中候选则高亮，否则 ``-1`` = 自定义）。"""
+    opts = list(getattr(mv, "form_choice_options", None) or [])
+    if not opts:
+        return
+    value = str(getattr(mv, "form_edit_value", "") or "")
+    mv.form_choice_index = opts.index(value) if value in opts else -1
+
+
 def _start_form(mv, entry=None) -> None:
     """进入表单（entry=None → 新增；否则编辑该档案）。
 
@@ -245,6 +347,7 @@ def _start_form(mv, entry=None) -> None:
     mv.form_select_options = []
     mv.form_select_desc = []
     mv.form_select_index = 0
+    _clear_field_choices(mv)
     mv.edit_error = ""
     mv.message = ""
     if entry is None:
@@ -320,7 +423,16 @@ def _commit_select(mv) -> None:
     mv.form_values = values
     mv.edit_mode = "form"
     mv.edit_error = ""
-    mv.message = f"提供商: {value}" if key == "provider" else ""
+    if key == "provider":
+        # 模型名候选引导：进入「模型名」字段后可按 ↑/↓ 从该提供商内置模型选择
+        count = len(provider_model_choices(value))
+        mv.message = (
+            f"提供商: {value} · 进入「模型名」可按 ↑/↓ 从 {count} 个内置模型选择"
+            if count
+            else f"提供商: {value}（该提供商无内置模型，直接输入模型名）"
+        )
+    else:
+        mv.message = ""
 
 
 def _field_value_display(mv, key: str) -> str:
@@ -333,13 +445,14 @@ def _field_value_display(mv, key: str) -> str:
 
 
 def _commit_field(mv) -> None:
-    """字段输入确认：写回 form_values 并返回表单模式。"""
+    """字段输入确认：写回 form_values 并返回表单模式（同时清理字段候选）。"""
     keys = list(FIELD_KEYS)
     idx = int(getattr(mv, "form_selected", 0) or 0)
     if 0 <= idx < len(keys):
         values = dict(mv.form_values or {})
         values[keys[idx]] = mv.form_edit_value
         mv.form_values = values
+    _clear_field_choices(mv)
     mv.edit_mode = "form"
     mv.form_edit_value = ""
     mv.form_edit_cursor = 0
@@ -619,7 +732,21 @@ def _handle_model_event(
             # 字段输入（光标编辑）：字符在光标处插入 · ←/→ 移动 · Home/End
             # 首末 · Delete 删除 · 退格 · Ctrl+A/Ctrl+E 首末 · Ctrl+U 清空 ·
             # Enter 确认 · Esc 取消
+            # ★ 模型名字段（2026-10-13 用户需求）：↑/↓ 切换该提供商的**内置
+            #   模型候选**（进入字段时按当前提供商加载，见 _load_field_choices）；
+            #   直接键入仍为自定义模型名（_sync_choice_index 同步候选高亮）。
+            choices_active = bool(
+                getattr(mv, "form_choice_active", False)
+                and getattr(mv, "form_choice_options", None)
+            )
+            if choices_active and kind == "arrow_down":
+                _step_choice(mv, 1)
+                return True
+            if choices_active and kind == "arrow_up":
+                _step_choice(mv, -1)
+                return True
             if kind == "escape":
+                _clear_field_choices(mv)
                 mv.edit_mode = "form"
                 mv.form_edit_value = ""
                 mv.form_edit_cursor = 0
@@ -635,6 +762,7 @@ def _handle_model_event(
                 if ch == "\x15":  # Ctrl+U
                     mv.form_edit_value = ""
                     mv.form_edit_cursor = 0
+                    _sync_choice_index(mv)
                 elif ch == "\x01":  # Ctrl+A
                     mv.form_edit_cursor = 0
                 elif ch == "\x05":  # Ctrl+E
@@ -644,15 +772,18 @@ def _handle_model_event(
                 if ch and "\n" not in ch and "\r" not in ch and len(value) < _EDIT_VALUE_MAX:
                     mv.form_edit_value = value[:cur] + ch + value[cur:]
                     mv.form_edit_cursor = cur + 1
+                    _sync_choice_index(mv)
                 return True
             if kind == "backspace":
                 if cur > 0:
                     mv.form_edit_value = value[:cur - 1] + value[cur:]
                     mv.form_edit_cursor = cur - 1
+                    _sync_choice_index(mv)
                 return True
             if kind == "delete":
                 if cur < len(value):
                     mv.form_edit_value = value[:cur] + value[cur + 1:]
+                    _sync_choice_index(mv)
                 return True
             if kind == "arrow_left":
                 mv.form_edit_cursor = max(0, cur - 1)
@@ -698,10 +829,9 @@ def _handle_model_event(
             if field.get("kind") == "select":
                 _start_select(mv, keys[idx])
             else:
-                mv.edit_mode = "field"
-                mv.form_edit_value = str((mv.form_values or {}).get(keys[idx], "") or "")
-                mv.form_edit_cursor = len(mv.form_edit_value)
-                mv.edit_error = ""
+                # _start_field：预填当前值 + 光标置末尾 + 加载字段候选
+                # （模型名字段按提供商给出内置模型列表）
+                _start_field(mv, keys[idx])
             return True
         if kind == "char" and ch == "?":
             # 表单内查快捷键（帮助面板覆盖表单；关闭后回到表单）
@@ -816,6 +946,8 @@ def _handle_model_paste(mv, visible: bool, text: str) -> bool:
             insert = paste[:remaining]
             mv.form_edit_value = value[:cur] + insert + value[cur:]
             mv.form_edit_cursor = cur + len(insert)
+            # 粘贴后同步候选高亮（命中候选 → 高亮；否则视为自定义模型名）
+            _sync_choice_index(mv)
         return True
     if getattr(mv, "search_mode", False):
         remaining = _SEARCH_QUERY_MAX - len(getattr(mv, "search_query", "") or "")
@@ -948,6 +1080,36 @@ def _make_select_renderer(width: int, val_w: int, descs: list):
     return _render_select
 
 
+def _make_model_choice_renderer(width: int, val_w: int, descs: list, mv):
+    """模型名候选行渲染器（「模型名」字段编辑时的内置模型列表）。
+
+    与选择界面渲染器同构，但**高亮以 ``mv.form_choice_index`` 为准**——
+    用户直接键入自定义模型名时该值为 ``-1``，此时不点亮任何候选（避免
+    「光标停在首项却与输入值不符」的误导）。
+    """
+
+    def _render_choice(model_name, i, is_sel):
+        sel = _choice_index(mv) == i
+        prefix = "\u25b6 " if sel else "  "
+        runs = [StyledRun(prefix, _S_SEL_MARK if sel else None)]
+        val = _truncate_width(str(model_name), max(12, val_w))
+        runs.append(StyledRun(val, _S_MODEL))
+        pad = max(0, val_w - _disp_width(val) + 1)
+        if pad:
+            runs.append(StyledRun(" " * pad, None))
+        desc = str(descs[i]) if i < len(descs) else ""
+        if desc:
+            budget = max(6, width - val_w - 4) if width > 0 else 40
+            runs.append(StyledRun(_truncate_width(desc, budget), _S_URL))
+        if width > 0:
+            runs = truncate_runs(runs, width)
+        if sel:
+            runs = [StyledRun(r.text, (r.style or Style()).merge(_S_SEL_BG)) for r in runs]
+        return h(TEXT, {"styled": runs, "height": 1, "key": f"mv-choice-{i}"})
+
+    return _render_choice
+
+
 # ═══════════════════════════════════════════════════════════
 # 组件
 # ═══════════════════════════════════════════════════════════
@@ -967,6 +1129,13 @@ def ModelView(props) -> object:
     matches = list(getattr(mv, "search_matches", None) or []) if mv is not None else []
     editing = bool(getattr(mv, "editing", False)) if mv is not None else False
     edit_mode = getattr(mv, "edit_mode", "form") if mv is not None else "form"
+    # ── 「模型名」字段候选（按当前提供商的内置模型列表；↑↓ 选择 / 直接输入） ──
+    field_choices = list(getattr(mv, "form_choice_options", None) or []) if mv is not None else []
+    field_choice_descs = list(getattr(mv, "form_choice_desc", None) or []) if mv is not None else []
+    field_choice_active = bool(
+        editing and edit_mode == "field"
+        and getattr(mv, "form_choice_active", False) and field_choices
+    )
 
     # ── 过滤视图（``f``：列表只显示匹配条目） ──
     filter_active = bool(filter_on and pattern and matches)
@@ -1054,6 +1223,14 @@ def ModelView(props) -> object:
     def _on_select_navigate(idx: int) -> None:
         mv.form_select_index = int(idx)
 
+    def _on_choice_navigate(idx: int) -> None:
+        """候选列表导航（键盘 ↑↓ 由事件层处理；此处承接鼠标滚轮 / 控件导航）。"""
+        try:
+            i = int(idx)
+        except (TypeError, ValueError):
+            return
+        _apply_choice(mv, i)
+
     # ── 主区（列表 / 表单 / 帮助） ──
     if help_open:
         scroll_h = max(0, int(getattr(mv, "help_scroll", 0) or 0))
@@ -1080,6 +1257,21 @@ def ModelView(props) -> object:
             "renderItem": render_select,
             "onNavigate": _on_select_navigate,
             "focus": visible and editing and edit_mode == "select",
+        })
+    elif editing and edit_mode == "field" and field_choice_active:
+        # 「模型名」字段：主区列出该提供商的内置模型候选（↑↓ 选择即写入
+        # 输入缓冲；直接键入自定义模型名时不高亮任何候选）
+        choice_val_w = min(32, max((_disp_width(str(o)) for o in field_choices), default=12) + 2)
+        render_choice = _make_model_choice_renderer(width, choice_val_w, field_choice_descs, mv)
+        choice_idx = _choice_index(mv)
+        ledger = h(ListView, {
+            "items": field_choices,
+            "height": list_h,
+            "width": width if width > 0 else None,
+            "cursor": choice_idx if choice_idx >= 0 else 0,
+            "renderItem": render_choice,
+            "onNavigate": _on_choice_navigate,
+            "focus": visible and editing and edit_mode == "field",
         })
     elif editing and edit_mode in ("form", "field"):
         form_sel = max(0, min(int(getattr(mv, "form_selected", 0) or 0), len(PROFILE_FIELDS) - 1))
@@ -1130,7 +1322,10 @@ def ModelView(props) -> object:
     elif help_open:
         header_hint = "  帮助面板 \u00b7 ? / q / Esc \u5173\u95ed"
     elif editing and edit_mode == "field":
-        header_hint = "  字段输入 \u00b7 \u2190\u2192 \u5149\u6807 \u00b7 Home/End \u9996\u672b \u00b7 Ctrl+U \u6e05\u7a7a \u00b7 Enter \u786e\u8ba4 \u00b7 Esc \u53d6\u6d88"
+        if field_choice_active:
+            header_hint = "  模型名 \u00b7 ↑/↓ 选择内置候选 \u00b7 直接输入自定义 \u00b7 Enter 确认 \u00b7 Esc 取消"
+        else:
+            header_hint = "  字段输入 \u00b7 ←→ 光标 \u00b7 Home/End 首末 \u00b7 Ctrl+U 清空 \u00b7 Enter 确认 \u00b7 Esc 取消"
     elif editing and edit_mode == "select":
         header_hint = "  选择提供商（接口地址将自动填好）\u00b7 \u2191\u2193/jk \u9009\u62e9 \u00b7 Enter \u786e\u8ba4 \u00b7 Esc \u53d6\u6d88"
     elif editing and edit_mode == "confirm":
@@ -1190,7 +1385,13 @@ def ModelView(props) -> object:
             "styled": field_runs,
             "height": 1, "key": "mv-field",
         }))
-        hint = field.get("hint", "") or "Enter 确认 \u00b7 Esc 取消"
+        if field_choice_active:
+            hint = (
+                f"↑/↓ 选择内置模型候选（{len(field_choices)}）"
+                " \u00b7 直接输入自定义模型名 \u00b7 Enter 确认 \u00b7 Esc 取消"
+            )
+        else:
+            hint = field.get("hint", "") or "Enter 确认 \u00b7 Esc 取消"
         bottom_rows.append(h(TEXT, {
             "children": f"  {hint}", "style": _S_HINT,
             "textWrap": "truncate-end", "height": 1, "key": "mv-field-hint",
@@ -1222,7 +1423,15 @@ def ModelView(props) -> object:
             keys = list(FIELD_KEYS)
             fidx = max(0, min(int(getattr(mv, "form_selected", 0) or 0), len(keys) - 1))
             hint = str((field_by_key(keys[fidx]) or {}).get("hint", "") or "")
-            text = f"  {hint}  \u00b7  s 保存  \u00b7  Esc 取消" if hint else "  Enter 编辑字段 \u00b7 s 保存 \u00b7 Esc 取消"
+            # 操作反馈（如「提供商: deepseek · 进入「模型名」可按 ↑/↓ 从 N 个
+            # 内置模型选择」）优先于静态字段提示——表单内也能看到引导
+            note = str(getattr(mv, "message", "") or "")
+            if note:
+                text = f"  {note}  \u00b7  s 保存  \u00b7  Esc 取消"
+            elif hint:
+                text = f"  {hint}  \u00b7  s 保存  \u00b7  Esc 取消"
+            else:
+                text = "  Enter 编辑字段 \u00b7 s 保存 \u00b7 Esc 取消"
             bottom_rows.append(h(TEXT, {
                 "children": text,
                 "style": _S_HINT, "height": 1, "key": "mv-form-hint",

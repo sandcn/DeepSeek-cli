@@ -695,3 +695,59 @@ def test_sse_null_error_is_not_treated_as_error(monkeypatch):
         b'data: {"error": null, "choices": [{"delta": {"content": "a"}}]}\n',
     ])
     assert len(out) == 1
+
+
+# ═══════════════════════════════════════════════════════════
+# 4. 配置接入：EMPTY_RESPONSE_MAX_RETRIES
+# ═══════════════════════════════════════════════════════════
+
+def test_empty_response_config_key_wired():
+    """新配置键接入 CONFIG_KEYS / DEFAULTS（0 = 无限）与 /config 说明表。"""
+    from src.config.defaults import CONFIG_KEYS, DEFAULTS
+
+    assert DEFAULTS["empty_response_max_retries"] == 0
+    entry = CONFIG_KEYS["EMPTY_RESPONSE_MAX_RETRIES"]
+    assert entry["rc_path"] == ("empty_response_max_retries",)
+    assert entry["type"] is int
+    assert entry["default"] == DEFAULTS["empty_response_max_retries"]
+
+    from src.presentation_data import CONFIG_ENTRY_DESC_MAP
+
+    assert "EMPTY_RESPONSE_MAX_RETRIES" in CONFIG_ENTRY_DESC_MAP
+
+
+def test_empty_response_budget_reads_config(monkeypatch):
+    """未显式指定时预算来自全局配置（配置 > 0 → 有界；0 → 无限）。"""
+    import src.api._retry as R
+
+    monkeypatch.setattr(R, "EMPTY_RESPONSE_MAX_RETRIES", 0)
+    assert R._empty_response_budget(None, None) is None
+    monkeypatch.setattr(R, "EMPTY_RESPONSE_MAX_RETRIES", 6)
+    assert R._empty_response_budget(None, None) == 6
+    # 显式参数优先于全局配置
+    assert R._empty_response_budget(None, 3) == 3
+    assert R._empty_response_budget(None, 0) is None
+    # 有界调用方（override_max_retries）沿用其预算
+    assert R._empty_response_budget(1, None) == 1
+
+
+def test_summarize_call_bounds_empty_retries(monkeypatch):
+    """压缩摘要（内部调用）空响应预算有界：不会因服务端持续空响应永久挂起。"""
+    import src.api.model_async as ma
+
+    captured = {}
+
+    async def _fake_retry(api_func, **kwargs):
+        captured.update(kwargs)
+        return ("", "", {"input": 0, "output": 0}, [])
+
+    monkeypatch.setattr(ma, "retry_on_parse_failure_async", _fake_retry)
+    monkeypatch.setattr(ma, "get_adapter", lambda model: _FakeAdapter())
+    monkeypatch.setattr(ma, "_optimize_messages_for_upload", lambda messages: None)
+
+    asyncio.run(ma.call_model_summarize_async(
+        [{"role": "user", "content": "hi"}], model="m",
+    ))
+
+    budget = captured.get("empty_response_retries")
+    assert isinstance(budget, int) and budget >= 1

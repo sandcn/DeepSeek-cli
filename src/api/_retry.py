@@ -107,6 +107,7 @@ def _publish_empty_hint(attempts: int) -> None:
     except Exception:
         _logger.debug("空响应提示输出失败", exc_info=True)
 
+
 # 候选可重试异常：捕获后交由 is_retryable() 统一判定（连接错误 /
 # httpx 传输错误 / JSON 解析错误 / 超时 / 语义化 API 错误）
 _RETRY_EXCEPTIONS = _CONNECTION_ERRORS + (

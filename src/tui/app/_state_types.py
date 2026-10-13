@@ -521,6 +521,11 @@ class ModelViewState:
         form_edit_cursor: 字段输入光标位置（0..len；支持 ←/→/Home/End
             移动与中间插入/删除）。
         form_is_new: 是否新增（决定保存时 append 还是替换）。
+        form_choice_options/form_choice_desc/form_choice_index/
+            form_choice_active: 「模型名」字段编辑时的**内置模型候选**
+            （按当前提供商取 ``config.model_profiles.provider_model_choices``；
+            ↑↓ 选择候选直接写入 ``form_edit_value``，也可继续手输自定义名；
+            ``form_choice_index`` = 当前高亮候选，``-1`` = 自定义/无匹配）。
         search_mode/search_query/search_pattern/search_matches/search_idx/
             search_filter: 搜索输入 / 已执行模式 / 匹配列表 / 当前匹配 / 过滤。
         help_open/help_scroll: 帮助面板开关与滚动偏移。
@@ -552,6 +557,13 @@ class ModelViewState:
     form_select_options: list = field(default_factory=list)
     form_select_desc: list = field(default_factory=list)
     form_select_index: int = 0
+    # 「模型名」字段的内置模型候选（edit_mode == "field" 且
+    # form_choice_active 时，主区渲染候选列表；↑↓ 选择即写入输入缓冲，
+    # 亦可直接键入自定义模型名——form_choice_index = -1 表示自定义/无匹配）
+    form_choice_options: list = field(default_factory=list)
+    form_choice_desc: list = field(default_factory=list)
+    form_choice_index: int = -1
+    form_choice_active: bool = False
     # ── 搜索 ──
     search_mode: bool = False
     search_query: str = ""
@@ -586,6 +598,10 @@ class ModelViewState:
         self.form_select_options = []
         self.form_select_desc = []
         self.form_select_index = 0
+        self.form_choice_options = []
+        self.form_choice_desc = []
+        self.form_choice_index = -1
+        self.form_choice_active = False
         self.edit_error = ""
         self.message = ""
 

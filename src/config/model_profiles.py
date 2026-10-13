@@ -17,6 +17,11 @@
 
 新增流程（用户需求）：**先选提供商** → **填模型名** → **填 API 密钥**；
 接口地址按提供商自动给定，用户无需输入（仍可在表单中修改）。
+
+**模型名候选**（2026-10-13 用户需求「/models 界面可以选择对应提供商的模型
+名」）：选定提供商后，模型名可直接从 :func:`provider_model_choices`（=
+``defaults.PROVIDERS`` 的 ``models``，附「默认」标记与计费单价）中选择，
+同时保留手动输入自定义模型名的能力。
 """
 
 from __future__ import annotations
@@ -37,6 +42,9 @@ __all__ = [
     "default_base_url",
     "effective_base_url",
     "provider_choices",
+    "provider_models",
+    "provider_model_choices",
+    "default_model_for",
     "configured_models",
     "active_profile_index",
     "active_profile",
@@ -56,7 +64,7 @@ PROFILE_FIELDS: tuple = (
     {"key": "provider", "label": "提供商", "sensitive": False, "required": False,
      "kind": "select", "hint": "先选提供商（接口地址将自动填好）"},
     {"key": "model", "label": "模型名", "sensitive": False, "required": True,
-     "kind": "input", "hint": "API 请求使用的模型名（如 deepseek-v4-pro）"},
+     "kind": "input", "hint": "API 请求使用的模型名（Enter 进入后可按 ↑/↓ 选择该提供商内置模型）"},
     {"key": "api_key", "label": "API 密钥", "sensitive": True, "required": False,
      "kind": "input", "hint": "API Key（留空则沿用全局配置 / 环境变量）"},
     {"key": "base_url", "label": "接口地址", "sensitive": False, "required": False,
@@ -204,6 +212,81 @@ def provider_choices() -> list[tuple[str, str]]:
         if not label:
             label = str(cfg.get("base_url", "") or "") or "（需手填接口地址）"
         out.append((str(name), label))
+    return out
+
+
+def provider_models(provider: str) -> list[str]:
+    """提供商的内置模型名列表（``defaults.PROVIDERS[provider]["models"]``）。
+
+    「模型名」字段（新增/编辑模型档案）的**候选来源**：用户选定提供商后，
+    可直接从该列表中选择模型名（``/models`` 表单 ↑↓），也可手动输入其它
+    自定义模型名（保证兼容自建 / 新上线模型）。
+
+    未知提供商、``custom``（无内置模型）、配置异常 → 返回空列表（调用方
+    回退纯手动输入，行为与此前一致）。
+    """
+    name = str(provider or "").strip()
+    if not name:
+        return []
+    try:
+        from .defaults import PROVIDERS
+        models = (PROVIDERS.get(name) or {}).get("models") or []
+    except Exception:
+        return []
+    out: list[str] = []
+    seen: set = set()
+    for m in models:
+        text = str(m or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
+
+
+def default_model_for(provider: str) -> str:
+    """提供商默认模型名（``defaults.PROVIDERS[provider]["default_model"]``）。
+
+    未配置 / 未知提供商 / 异常 → 空串。
+    """
+    name = str(provider or "").strip()
+    if not name:
+        return ""
+    try:
+        from .defaults import PROVIDERS
+        return str((PROVIDERS.get(name) or {}).get("default_model", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def provider_model_choices(provider: str) -> list[tuple[str, str]]:
+    """提供商内置模型的候选 ``[(模型名, 说明)]``（模型名字段候选列表）。
+
+    说明列：``默认``（= 该提供商默认模型）+ 计费单价（``$in/$out``，单位
+    美元 / 百万 tokens，取自 ``defaults.PROVIDERS`` 的 ``token_prices``）；
+    两者皆无时回退 ``内置模型``。无内置模型（``custom`` / 未知提供商）返回
+    空列表。
+    """
+    models = provider_models(provider)
+    if not models:
+        return []
+    default = default_model_for(provider)
+    try:
+        from .defaults import PROVIDERS
+        prices = (PROVIDERS.get(str(provider or "").strip()) or {}).get("token_prices") or {}
+    except Exception:
+        prices = {}
+    out: list[tuple[str, str]] = []
+    for m in models:
+        parts: list[str] = []
+        if m == default:
+            parts.append("默认")
+        price = prices.get(m) if isinstance(prices, dict) else None
+        if isinstance(price, dict):
+            inp = price.get("input")
+            outp = price.get("output")
+            if isinstance(inp, (int, float)) and isinstance(outp, (int, float)):
+                parts.append(f"${inp:g}/${outp:g}")
+        out.append((m, " \u00b7 ".join(parts) if parts else "\u5185\u7f6e\u6a21\u578b"))
     return out
 
 
