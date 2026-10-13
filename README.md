@@ -73,6 +73,7 @@ pip install ".[dev]"
     "max_output_chars": 3000,
     "max_retries": 10,
     "retry_base_sec": 30,
+    "empty_response_max_retries": 0,
     "max_session_messages": 0,
     "keep_recent_messages": 0,
     "theme": "dark",
@@ -104,6 +105,12 @@ pip install ".[dev]"
 - `model_profiles`：模型档案列表（每个档案含 `provider` / `model` / `api_key` /
   `base_url` / `name`；`base_url` 留空则用提供商默认地址）。
 - `active_model_profile`：当前生效档案下标（由模型选择器写入，`-1` = 未选择）。
+- `empty_response_max_retries`：模型返回**完全空**响应（无正文/无推理/无工具
+  调用）时的自动重发上限。`0`（默认）= 无限重试，直到拿到有效回答或用户
+  `ESC` 中断——空响应不是「调用失败」而是「没拿到回答」，请求健康、尚未渲染
+  任何内容、重发幂等安全，因此**不占用 `max_retries` 瞬时错误预算**，也
+  **不输出错误**（连续多次未恢复时给一条弱提示）；等待按 2→4→8→15 秒封顶。
+  `>0` = 有界重试（内部调用方如压缩摘要、SubAgent 恒为有界，快速失败）。
 
 配置文件位于 `~/.chat_config/chatrc.json`，首次运行时自动创建（使用默认值）。
 

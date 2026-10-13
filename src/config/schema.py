@@ -141,6 +141,9 @@ def _validate_rc(rc):
 
     if rc.get("max_retries", 1) < 0:
         rc["max_retries"] = DEFAULTS["max_retries"]
+    # 空响应自动重发上限：0 = 无限、正数 = 有界；负值无意义，回退默认（0）
+    if rc.get("empty_response_max_retries", 0) < 0:
+        rc["empty_response_max_retries"] = DEFAULTS["empty_response_max_retries"]
     if rc.get("max_context_chars", 1) < 0:
         rc["max_context_chars"] = DEFAULTS["max_context_chars"]
     # auto_force_compress_threshold 为 token 口径阈值：负值无意义，回退默认

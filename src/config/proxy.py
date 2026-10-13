@@ -164,6 +164,10 @@ class ConfigProxy(ConfigPort):
         return _config.RETRY_BASE_SEC
 
     @property
+    def EMPTY_RESPONSE_MAX_RETRIES(self) -> int:
+        return _config.EMPTY_RESPONSE_MAX_RETRIES
+
+    @property
     def MAX_SESSION_MESSAGES(self) -> int:
         return _config.MAX_SESSION_MESSAGES
 

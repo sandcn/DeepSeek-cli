@@ -98,6 +98,13 @@ DEFAULTS = {
     "max_output_chars": 3000,
     "max_retries": 10,
     "retry_base_sec": 30.0,
+    # ── 空响应（无正文/无推理/无工具调用）自动重发上限 ──
+    # 空响应不是"调用失败"而是"没拿到回答"：请求健康、未渲染任何内容、重发
+    # 幂等安全，故不占用 max_retries 瞬时错误预算，默认**无限**重试（0 =
+    # 无限），直到拿到有效回答或用户 ESC 中断——避免以「模型返回空响应」错误
+    # 结束本轮、让用户手动「继续」。有界调用方（SubAgent / 压缩摘要）不受此
+    # 默认值影响，按各自预算快速失败。
+    "empty_response_max_retries": 0,
     "max_session_messages": 0,
     "keep_recent_messages": 0,
     "max_context_tokens": 1000000,
@@ -258,6 +265,13 @@ CONFIG_KEYS = {
         "rc_path": ("retry_base_sec",),
         "type": float,
         "default": DEFAULTS["retry_base_sec"],
+        "cacheable": True,
+    },
+    # 空响应自动重发上限（0 = 无限；默认值见 DEFAULTS["empty_response_max_retries"]）
+    "EMPTY_RESPONSE_MAX_RETRIES": {
+        "rc_path": ("empty_response_max_retries",),
+        "type": int,
+        "default": DEFAULTS["empty_response_max_retries"],
         "cacheable": True,
     },
     "MAX_SESSION_MESSAGES": {

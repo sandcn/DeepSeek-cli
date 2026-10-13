@@ -27,6 +27,12 @@ RETRY_AFTER_CAP = 120.0
 # 指数退避单次等待上限（秒）
 MAX_BACKOFF_SEC = 60.0
 
+# 空响应（EmptyResponseError）自动重发的等待策略：起点短、指数增长后封顶。
+# 空响应通常是单次抖动，2 秒后原样重发即可恢复；持续为空时逐步拉长等待
+# （2 → 4 → 8 → 15 → 15 …）避免无限重试变成对服务端的持续冲击。
+EMPTY_RESPONSE_BASE_DELAY = 2.0
+EMPTY_RESPONSE_MAX_DELAY = 15.0
+
 # 连接类错误（网络层瞬时故障，始终可重试）
 CONNECTION_ERRORS = (
     ConnectionError,
@@ -245,6 +251,23 @@ def compute_retry_delay(
     return delay + random.uniform(0.0, delay * 0.1)
 
 
+def compute_empty_response_delay(
+    attempt: int,
+    *,
+    base_delay: float = EMPTY_RESPONSE_BASE_DELAY,
+    max_delay: float = EMPTY_RESPONSE_MAX_DELAY,
+) -> float:
+    """第 attempt 次**连续空响应**后的自动重发等待秒数。
+
+    与 ``compute_retry_delay`` 的区别：不读异常的 ``retry_after``（空响应的
+    ``retry_after`` 只是"短等待"的标记），也不加抖动——确定性等待便于测试与
+    用户预期（2 → 4 → 8 → 15 → 15 …）。
+    """
+    base = max(float(base_delay), 0.0)
+    exp = max(int(attempt), 1) - 1
+    return min(base * (2 ** exp), max(float(max_delay), 0.0))
+
+
 # ── 用户消息 ────────────────────────────────────────────────
 
 def format_user_error(exc: BaseException) -> str:
@@ -274,6 +297,7 @@ __all__ = [
     "InvalidRequestError", "ServerError", "EmptyResponseError",
     "CONNECTION_ERRORS", "RETRYABLE_HTTP_STATUS",
     "RETRY_AFTER_CAP", "MAX_BACKOFF_SEC",
+    "EMPTY_RESPONSE_BASE_DELAY", "EMPTY_RESPONSE_MAX_DELAY",
     "classify_http_error", "is_retryable", "parse_retry_after",
-    "compute_retry_delay", "format_user_error",
+    "compute_retry_delay", "compute_empty_response_delay", "format_user_error",
 ]

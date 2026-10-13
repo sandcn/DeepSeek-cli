@@ -180,6 +180,39 @@ def _check_response(resp: httpx.Response) -> None:
     raise classify_http_error(resp.status_code, resp.text[:500], retry_after=retry_after)
 
 
+#: SSE 数据行前缀（字段名 ``data``，其后空格可选——见 _process_sse_line）
+_SSE_DATA_PREFIX = b"data:"
+
+# ── 响应内容编码（Content-Encoding）支持表 ──────────────────
+# SSE 响应可能被服务端/网关压缩（DeepSeek 官方自 2026-10 起对
+# /chat/completions 的流式响应返回 ``Content-Encoding: gzip``）。httpx 的
+# ``aiter_bytes()`` 会按该头增量解码，但**对未知编码静默回退
+# IdentityDecoder**（原样透传压缩字节）——此时 SSE 行匹配全部落空，退化成
+# 「模型返回空响应」且无任何报错。这里取 httpx 解码器注册表用于提前识别，
+# 私有 API 导入失败时保守回退到标准库可解码的集合。
+try:  # pragma: no cover - 依赖 httpx 内部结构，仅作能力探测
+    from httpx._decoders import SUPPORTED_DECODERS as _SUPPORTED_DECODERS
+except Exception:  # pragma: no cover
+    _SUPPORTED_DECODERS = {"identity": object, "gzip": object, "deflate": object}
+
+
+def _unsupported_content_encodings(resp: httpx.Response) -> list[str]:
+    """返回响应 ``Content-Encoding`` 中本地无法解码的编码（去重保序）。
+
+    ``identity`` / 空值为无编码，不算不支持；编码列表按 HTTP 规范可逗号分隔
+    （多重编码，如 ``gzip, br``）。
+    """
+    raw = resp.headers.get("content-encoding", "") or ""
+    seen: list[str] = []
+    for part in raw.split(","):
+        enc = part.strip().lower()
+        if not enc or enc == "identity" or enc in _SUPPORTED_DECODERS:
+            continue
+        if enc not in seen:
+            seen.append(enc)
+    return seen
+
+
 def _has_finish_reason(chunk: dict) -> bool:
     """检查 chunk 是否携带非空 finish_reason（用于提前结束 SSE 流迭代）。
 
@@ -320,8 +353,25 @@ async def _stream_iter_async(
                     await resp.aread()
                 _check_response(resp)
 
+                # ★ 本地无法解码的压缩编码（如未安装 brotli 时的 br）：httpx 会
+                #   静默按 IdentityDecoder 透传压缩字节 → SSE 一行都匹配不到。
+                #   提前显式报错（501 非可重试：重试不会改变结果），给出可操作
+                #   提示，而不是让上层误判成「模型返回空响应」重试 10 次。
+                unsupported = _unsupported_content_encodings(resp)
+                if unsupported:
+                    raise APIError(
+                        501,
+                        "服务端响应使用了本地不支持的压缩编码 "
+                        f"{', '.join(unsupported)}（流式响应无法解析）；"
+                        "请安装对应解码库（br → brotli，zstd → zstandard）",
+                    )
+
                 buffer = b""
                 consecutive_failures = 0
+                # 已收到的（解码后）响应体字节数：用于「收到数据却解析不出任何
+                # SSE data 帧」的诊断告警（区分「服务端真的什么都没返回」与
+                # 「返回了但本地没解析出来」）。
+                received_bytes = 0
 
                 done = False
 
@@ -338,9 +388,15 @@ async def _stream_iter_async(
                     nonlocal consecutive_failures
                     if not line_bytes:
                         return None, False, False
-                    if not line_bytes.startswith(b"data: "):
+                    if not line_bytes.startswith(_SSE_DATA_PREFIX):
                         return None, False, False
-                    data_bytes = line_bytes[6:]
+                    data_bytes = line_bytes[len(_SSE_DATA_PREFIX):]
+                    # SSE 规范：字段名 ``data`` 后是**可选的单个前导空格**。
+                    # 此前只认 ``data: ``（带空格）——省略空格的 ``data:{...}``
+                    # （部分 OpenAI 兼容网关这样发送）会被整条静默丢弃，再次
+                    # 退化成「模型返回空响应」。两种写法都接受。
+                    if data_bytes.startswith(b" "):
+                        data_bytes = data_bytes[1:]
                     if data_bytes == b"[DONE]":
                         return None, False, True
                     try:
@@ -380,9 +436,20 @@ async def _stream_iter_async(
                     # 避免流挂起至空闲超时。
                     return parsed, True, _has_finish_reason(parsed)
 
-                async for chunk in resp.aiter_raw():
+                # ★ 2026-10-13 修复（「模型返回空响应（无正文、无推理、无工具
+                #   调用）」根因）：官方 API 的 SSE 响应带 ``Content-Encoding:
+                #   gzip``（非流式路径走 resp.json() 有解码，故只有流式对话受害）。
+                #   此前用 ``aiter_raw()`` 读到的是**压缩后的原始字节**——压缩流里
+                #   没有以 ``data: `` 开头的行，全部被静默跳过 → 零 chunk → 管线
+                #   判定「完全无产出」→ EmptyResponseError 重试 10 次仍空 → 用户
+                #   看到「API 调用失败 … 模型返回空响应」，回答永久丢失。
+                #   ``aiter_bytes()`` 按 Content-Encoding 增量解码（gzip/deflate/
+                #   br/zstd；无编码时与原 aiter_raw() 行为等价），且解码是流式的
+                #   （服务端 Z_SYNC_FLUSH 逐帧压缩，首 token 延迟不受影响）。
+                async for chunk in resp.aiter_bytes():
                     if done:
                         break
+                    received_bytes += len(chunk)
                     buffer += chunk
                     while b"\n" in buffer:
                         line_bytes, buffer = buffer.split(b"\n", 1)
@@ -405,6 +472,18 @@ async def _stream_iter_async(
                         yield parsed
                     if stop:
                         done = True
+                # ★ 诊断（2026-10-13）：收到响应体却解析不出任何 SSE 帧——典型成因
+                #   是 Content-Encoding 未被解码、服务端返回非 SSE 响应体、或 SSE
+                #   行前缀不是 ``data: ``。上层会把本轮判为「空响应」并重试，这里
+                #   留下可定位的 WARNING（否则故障完全静默，只能看到重试文案）。
+                if not yielded_any and received_bytes > 0:
+                    _logger.warning(
+                        "流式响应收到 %d 字节但未解析出任何 SSE data 帧"
+                        "（HTTP %s，Content-Encoding=%r）——按空响应处理，请检查"
+                        "响应体是否为 SSE 且编码可解码",
+                        received_bytes, resp.status_code,
+                        resp.headers.get("content-encoding"),
+                    )
                 break  # 正常完成 (含 [DONE] 正常结束)
 
         except _CONNECTION_ERRORS as e:
@@ -425,6 +504,15 @@ async def _stream_iter_async(
                 )
             else:
                 _logger.error("流式连接错误，已重试 %d 次仍失败: %s", max_attempts, e)
+            raise
+        except httpx.DecodingError as e:
+            # 压缩流解码失败（响应体损坏 / 中途截断）：未产出任何内容时可安全
+            # 重发 → 转成可重试语义交由重试层；已产出部分内容时不重启（避免
+            # 重复渲染），保留已接收内容。
+            if not yielded_any:
+                _logger.warning("流式响应解码失败（未产出内容），交由重试层重试: %s", e)
+                raise ServerError(503, f"流式响应解码失败（Content-Encoding）: {e}") from e
+            _logger.warning("流式中途解码失败（已产出部分内容），保留已接收内容: %s", e)
             raise
         except (RateLimitError, APIError):
             raise

@@ -21,7 +21,7 @@ from ..core.stats import (
     accumulate_usage, set_tool_parse_elapsed, set_stream_speed,
     add_token_size_batch, record_generation_rate,
 )
-from ..config import MODEL
+from ..config import MODEL, MAX_RETRIES
 from ..core.constants import STREAM_LABEL_SUMMARIZE
 from ._retry import retry_api_call_async, retry_on_parse_failure_async
 from ._adapter_manager import get_adapter
@@ -60,6 +60,7 @@ async def call_model_async(
     silent: bool = False,
     override_max_retries: int | None = None,
     fixed_delay_sec: float | None = None,
+    empty_response_retries: int | None = None,
 ) -> tuple:
     """异步流式调用模型。
 
@@ -71,6 +72,11 @@ async def call_model_async(
             默认 None 使用全局 MAX_RETRIES；SubAgent 等快速失败场景传 1。
         fixed_delay_sec: 覆盖固定重试间隔（透传给重试层）。
             默认 None 使用全局 RETRY_BASE_SEC；SubAgent 场景传 0。
+        empty_response_retries: 空响应自动重发上限（透传给重试层）。
+            None = 沿用 override_max_retries / 全局配置
+            EMPTY_RESPONSE_MAX_RETRIES（0 = 无限）；``<=0`` = 无限重试
+            （交互主对话默认：不要以「模型返回空响应」错误结束本轮）；
+            ``>0`` = 有界（内部调用方）。
     """
     model = model or MODEL
     adapter = get_adapter(model)
@@ -86,6 +92,7 @@ async def call_model_async(
         api_args=(messages_copy, model, is_reasoner, tools, display, label, silent),
         override_max_retries=override_max_retries,
         fixed_delay_sec=fixed_delay_sec,
+        empty_response_retries=empty_response_retries,
     )
 
 async def call_model_sync_async(
@@ -96,10 +103,14 @@ async def call_model_sync_async(
     label: str | None = None,
     override_max_retries: int | None = None,
     fixed_delay_sec: float | None = None,
+    empty_response_retries: int | None = None,
 ) -> tuple:
     """异步非流式模型调用（Agent 内部使用），无终端输出。
 
     返回 (reasoning_content, content, usage, tool_calls)。
+
+    ``empty_response_retries`` 默认按全局 ``MAX_RETRIES`` 有界（内部调用方，
+    不做无限重试）。
     """
     model = model or MODEL
     adapter = get_adapter(model)
@@ -113,6 +124,11 @@ async def call_model_sync_async(
         api_args=(messages_copy, model, tools, display, label),
         override_max_retries=override_max_retries,
         fixed_delay_sec=fixed_delay_sec,
+        empty_response_retries=(
+            empty_response_retries
+            if empty_response_retries is not None
+            else max(int(MAX_RETRIES or 0), 1)
+        ),
     )
 
 # ── 流式摘要调用（上下文压缩等内部调用） ────────────────────
@@ -122,6 +138,7 @@ async def call_model_summarize_async(
     model: str | None = None,
     override_max_retries: int | None = None,
     fixed_delay_sec: float | None = None,
+    empty_response_retries: int | None = None,
 ) -> tuple:
     """异步**流式**摘要调用（上下文压缩摘要等内部调用专用）。
 
@@ -150,6 +167,14 @@ async def call_model_summarize_async(
         silent=True,
         override_max_retries=override_max_retries,
         fixed_delay_sec=fixed_delay_sec,
+        # 压缩摘要是后台内部调用：空响应**不无限重试**（默认按全局 MAX_RETRIES
+        # 有界），避免服务端持续返回空响应时压缩流程永久挂起；用尽后返回可读
+        # 错误文本，由压缩引擎按自身 compaction_retries 决定后续。
+        empty_response_retries=(
+            empty_response_retries
+            if empty_response_retries is not None
+            else max(int(MAX_RETRIES or 0), 1)
+        ),
     )
     # 推理模型兼容：仅返回 reasoning（无 content）时以 reasoning 作为摘要文本
     # ——与非流式路径 ``_call_sync_async`` 的兜底语义保持一致。
@@ -288,8 +313,14 @@ def call_model(messages, model=None, tools=None, display=None, label=None, silen
 
     供 SubAgent 等在线程中运行 sync 代码的模块使用。
     每个线程持有独立事件循环，互不干扰。
+
+    空响应自动重发按全局 ``MAX_RETRIES`` 有界（调用方为子代理兜底路径，
+    应快速失败，不做无限重试）。
     """
     loop = _get_model_loop()
     return loop.run_until_complete(
-        call_model_async(messages, model, tools, display, label, silent),
+        call_model_async(
+            messages, model, tools, display, label, silent,
+            empty_response_retries=max(int(MAX_RETRIES or 0), 1),
+        ),
     )

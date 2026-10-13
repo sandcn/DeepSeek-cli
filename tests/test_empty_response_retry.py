@@ -13,6 +13,21 @@
      任何内容，重启流幂等安全）；
   3. ``client_async`` 的 SSE 解析识别 ``{"error": ...}`` 错误帧（HTTP 200
      内的服务端错误），抛语义化可重试异常，不再被当作「无产出的空流」。
+
+后续问题（2026-10）：空响应被当成普通瞬时错误，与网络错误共用
+``MAX_RETRIES=10`` 预算——**用尽 10 次后本轮以「API 调用失败 (已重试10次):
+模型返回空响应…」错误文本结束**，用户看不到回答、必须手动回车「继续」。
+
+修复（本次）：
+  4. 空响应走**独立**重试预算（不与瞬时错误互相挤占），交互主对话默认
+     **无限**自动重发（``EMPTY_RESPONSE_MAX_RETRIES``，0 = 无限），等待
+     2→4→8→15 秒封顶，ESC 仍可即时中断；
+  5. 空响应重试**不输出 ✖ 错误**（自动恢复不是错误），仅在连续多次未恢复
+     时输出一条 DIM 弱提示；
+  6. 连续 ``_EMPTY_NUDGE_AFTER`` 次空响应后向**发送副本**追加一条续接
+     提示词（不写入会话历史），打破同一请求的确定性空响应；
+  7. 有界调用方（SubAgent ``override_max_retries=1``、压缩摘要显式传
+     ``empty_response_retries``）保持快速失败语义。
 """
 
 from __future__ import annotations
@@ -24,7 +39,10 @@ import pytest
 import src.api.client_async as ca
 import src.api.model_async as ma
 import src.api.stream.pipeline_async as pa
-from src.api.errors import EmptyResponseError, ServerError, format_user_error, is_retryable
+from src.api.errors import (
+    EmptyResponseError, ServerError, classify_http_error, format_user_error,
+    is_retryable,
+)
 from src.api.stream.pipeline_async import (
     AsyncStreamPipeline, is_empty_stream_result, stream_call_async,
 )
@@ -247,6 +265,315 @@ def test_retry_layer_exhausted_returns_readable_error(monkeypatch):
     assert result[1] != "(无内容)"
 
 
+# ═══════════════════════════════════════════════════════════
+# 2b. 空响应独立预算：默认无限自动重发、不报错、不占 MAX_RETRIES
+# ═══════════════════════════════════════════════════════════
+
+@pytest.fixture
+def no_wait(monkeypatch):
+    """把中断等待替换为即时返回（记录等待时长），避免测试真实等待。"""
+    import src.api._retry as R
+
+    waits: list[float] = []
+
+    async def _no_wait(timeout):
+        waits.append(timeout)
+        return False
+
+    async def _not_interrupted():
+        return False
+
+    monkeypatch.setattr(R, "wait_for_interrupt_async", _no_wait)
+    monkeypatch.setattr(R, "is_interrupted_async", _not_interrupted)
+    return waits
+
+
+def test_empty_response_retries_beyond_max_retries(monkeypatch, no_wait):
+    """默认（配置 0 = 无限）时，空响应可重发远超 MAX_RETRIES 次直到成功。
+
+    回归：修复前共用 MAX_RETRIES=10 预算，第 10 次后以错误文本结束本轮。
+    """
+    import src.api._retry as R
+
+    monkeypatch.setattr(R, "EMPTY_RESPONSE_MAX_RETRIES", 0)
+    calls = {"n": 0}
+
+    async def _api():
+        calls["n"] += 1
+        if calls["n"] <= 15:  # 远超 MAX_RETRIES（默认 10）
+            raise EmptyResponseError()
+        return ("r", "真实回答", {"input": 0, "output": 0}, [])
+
+    result = asyncio.run(R.retry_api_call_async(_api, silent=True))
+
+    assert result[1] == "真实回答"
+    assert calls["n"] == 16
+    assert len(no_wait) == 15
+
+
+def test_empty_response_config_budget_is_bounded(monkeypatch, no_wait):
+    """配置了有限预算（>0）时按预算停止（内部/保守配置场景）。"""
+    import src.api._retry as R
+
+    monkeypatch.setattr(R, "EMPTY_RESPONSE_MAX_RETRIES", 4)
+    calls = {"n": 0}
+
+    async def _api():
+        calls["n"] += 1
+        raise EmptyResponseError()
+
+    result = asyncio.run(R.retry_api_call_async(_api, silent=True))
+
+    assert calls["n"] == 4
+    assert "空响应" in result[1]
+
+
+def test_empty_response_explicit_budget_overrides_config(monkeypatch, no_wait):
+    """empty_response_retries=2 → 只尝试 2 次即返回错误文本（显式有界）。"""
+    import src.api._retry as R
+
+    monkeypatch.setattr(R, "EMPTY_RESPONSE_MAX_RETRIES", 0)
+    calls = {"n": 0}
+
+    async def _api():
+        calls["n"] += 1
+        raise EmptyResponseError()
+
+    result = asyncio.run(R.retry_api_call_async(
+        _api, silent=True, empty_response_retries=2,
+    ))
+
+    assert calls["n"] == 2
+    assert "空响应" in result[1]
+
+
+def test_empty_response_bounded_by_override_max_retries(monkeypatch, no_wait):
+    """有界调用方（SubAgent 语义）不传 explicit 时沿用 override_max_retries。"""
+    import src.api._retry as R
+
+    monkeypatch.setattr(R, "EMPTY_RESPONSE_MAX_RETRIES", 0)
+    calls = {"n": 0}
+
+    async def _api():
+        calls["n"] += 1
+        raise EmptyResponseError()
+
+    result = asyncio.run(R.retry_api_call_async(
+        _api, silent=True, override_max_retries=2,
+    ))
+
+    assert calls["n"] == 2
+    assert "空响应" in result[1]
+
+
+def test_empty_response_does_not_consume_transient_budget(monkeypatch, no_wait):
+    """空响应不占用瞬时错误预算：5 次空响应后仍保留完整的瞬时重试额度。"""
+    import src.api._retry as R
+
+    monkeypatch.setattr(R, "EMPTY_RESPONSE_MAX_RETRIES", 0)
+    calls = {"n": 0}
+
+    async def _api():
+        calls["n"] += 1
+        if calls["n"] <= 5:
+            raise EmptyResponseError()
+        if calls["n"] == 6:
+            raise classify_http_error(503, "overloaded")
+        return ("", "done", {"input": 0, "output": 0}, [])
+
+    result = asyncio.run(R.retry_api_call_async(
+        _api, silent=True, override_max_retries=2, empty_response_retries=0,
+    ))
+
+    assert result[1] == "done"
+    assert calls["n"] == 7
+
+
+def test_empty_response_backoff_capped():
+    """空响应等待：2 → 4 → 8 → 15（封顶），确定性无抖动。"""
+    from src.api.errors import compute_empty_response_delay
+
+    assert compute_empty_response_delay(1) == pytest.approx(2.0)
+    assert compute_empty_response_delay(2) == pytest.approx(4.0)
+    assert compute_empty_response_delay(3) == pytest.approx(8.0)
+    assert compute_empty_response_delay(4) == pytest.approx(15.0)
+    assert compute_empty_response_delay(50) == pytest.approx(15.0)
+
+
+def test_empty_response_waits_use_short_backoff(monkeypatch, no_wait):
+    """空响应重发等待走专用短退避（而非 RETRY_BASE_SEC=30 起步）。"""
+    import src.api._retry as R
+
+    monkeypatch.setattr(R, "EMPTY_RESPONSE_MAX_RETRIES", 0)
+    calls = {"n": 0}
+
+    async def _api():
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            raise EmptyResponseError()
+        return ("", "ok", {}, [])
+
+    asyncio.run(R.retry_api_call_async(_api, silent=True))
+
+    assert no_wait == [pytest.approx(2.0), pytest.approx(4.0), pytest.approx(8.0)]
+
+
+def test_empty_response_nudge_injected_after_threshold(monkeypatch, no_wait):
+    """连续 N 次空响应后向**发送副本**追加续接提示词（不写入会话历史）。"""
+    import src.api._retry as R
+
+    monkeypatch.setattr(R, "EMPTY_RESPONSE_MAX_RETRIES", 0)
+    messages = [{"role": "user", "content": "hi"}]
+    seen: list[list[dict]] = []
+    calls = {"n": 0}
+
+    async def _api(msgs):
+        calls["n"] += 1
+        seen.append([dict(m) for m in msgs])
+        if calls["n"] <= 4:
+            raise EmptyResponseError()
+        return ("", "ok", {}, [])
+
+    result = asyncio.run(R.retry_api_call_async(
+        _api, silent=True, api_args=(messages,),
+    ))
+
+    assert result[1] == "ok"
+    # 前 3 次原样重发；第 4 次已注入提示词
+    assert all(len(s) == 1 for s in seen[:3])
+    assert len(seen[3]) == 2
+    assert "系统提示" in seen[3][1]["content"]
+    # 注入对象是上传副本（api_args[0]，call_model_async 已 deepcopy），
+    # 因此断言该副本尾部即为注入的提示词
+    assert messages[-1]["content"] == seen[3][1]["content"]
+
+
+def test_empty_response_nudge_skipped_for_assistant_tail(monkeypatch, no_wait):
+    """末条为 assistant（续写/预填）时不注入提示词，避免非法消息序列。"""
+    import src.api._retry as R
+
+    monkeypatch.setattr(R, "EMPTY_RESPONSE_MAX_RETRIES", 0)
+    messages = [{"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "前文"}]
+    seen: list[int] = []
+    calls = {"n": 0}
+
+    async def _api(msgs):
+        calls["n"] += 1
+        seen.append(len(msgs))
+        if calls["n"] <= 4:
+            raise EmptyResponseError()
+        return ("", "ok", {}, [])
+
+    result = asyncio.run(R.retry_api_call_async(
+        _api, silent=True, api_args=(messages,),
+    ))
+
+    assert result[1] == "ok"
+    assert seen == [2, 2, 2, 2, 2]
+
+
+def test_empty_response_reports_no_error_phase(monkeypatch, no_wait):
+    """空响应重试不产生任何错误阶段 / 错误输出（自动恢复不是错误）。"""
+    import src.api._retry as R
+
+    monkeypatch.setattr(R, "EMPTY_RESPONSE_MAX_RETRIES", 0)
+    phases: list[tuple] = []
+    outputs: list[str] = []
+
+    class _Display:
+        def update_model_phase(self, label, phase, msg=""):
+            phases.append((label, phase, msg))
+
+    monkeypatch.setattr(R, "publish_output", lambda text, **kw: outputs.append(text))
+
+    calls = {"n": 0}
+
+    async def _api():
+        calls["n"] += 1
+        if calls["n"] <= 4:
+            raise EmptyResponseError()
+        return ("", "ok", {}, [])
+
+    result = asyncio.run(R.retry_api_call_async(
+        _api, silent=False, display=_Display(), label="assistant",
+    ))
+
+    assert result[1] == "ok"
+    assert phases == []
+    assert outputs == []
+
+
+def test_empty_response_hint_only_after_many_retries(monkeypatch, no_wait):
+    """长时间未恢复才输出 DIM 弱提示（非错误、间隔 10 次）。"""
+    import src.api._retry as R
+
+    monkeypatch.setattr(R, "EMPTY_RESPONSE_MAX_RETRIES", 0)
+    outputs: list[str] = []
+    monkeypatch.setattr(R, "publish_output", lambda text, **kw: outputs.append(text))
+
+    calls = {"n": 0}
+
+    async def _api():
+        calls["n"] += 1
+        if calls["n"] <= 10:
+            raise EmptyResponseError()
+        return ("", "ok", {}, [])
+
+    asyncio.run(R.retry_api_call_async(_api, silent=False))
+
+    assert len(outputs) == 1
+    assert "自动重试" in outputs[0]
+    assert "错误" not in outputs[0]
+    assert R._EMPTY_HINT_INTERVAL == 10
+
+
+def test_empty_response_interrupt_stops_unbounded_retry(monkeypatch):
+    """无限重试仍可被中断：等待期间检测到中断即返回「(已中断)」。"""
+    import src.api._retry as R
+
+    monkeypatch.setattr(R, "EMPTY_RESPONSE_MAX_RETRIES", 0)
+
+    async def _not_interrupted():
+        return False
+
+    async def _interrupted_wait(_timeout):
+        return True
+
+    monkeypatch.setattr(R, "is_interrupted_async", _not_interrupted)
+    monkeypatch.setattr(R, "wait_for_interrupt_async", _interrupted_wait)
+
+    calls = {"n": 0}
+
+    async def _api():
+        calls["n"] += 1
+        raise EmptyResponseError()
+
+    result = asyncio.run(R.retry_api_call_async(_api, silent=True))
+
+    assert result[1] == "(已中断)"
+    assert calls["n"] == 1
+
+
+def test_empty_response_budget_explicit_one_fails_fast(monkeypatch, no_wait):
+    """空响应预算 1 → 单次尝试后返回错误文本（内部调用方快速失败）。"""
+    import src.api._retry as R
+
+    monkeypatch.setattr(R, "EMPTY_RESPONSE_MAX_RETRIES", 0)
+    calls = {"n": 0}
+
+    async def _api():
+        calls["n"] += 1
+        raise EmptyResponseError()
+
+    result = asyncio.run(R.retry_api_call_async(
+        _api, silent=True, empty_response_retries=1,
+    ))
+
+    assert calls["n"] == 1
+    assert "空响应" in result[1]
+
+
 def test_call_model_async_recovers_from_empty_first_stream(monkeypatch):
     """端到端：首个流为空 → 自动重发 → 用户拿到真实回答（而非「(无内容)」）。"""
     import src.api._retry as R
@@ -293,6 +620,13 @@ class _FakeResponse:
 
     async def aread(self):
         return b""
+
+    async def aiter_bytes(self):
+        # ★ 生产路径经 ``aiter_bytes()`` 读取（按 Content-Encoding 解码，
+        #   修复 gzip 压缩流被当作「空响应」的根因）。本替身模拟**未压缩**
+        #   响应，故与 aiter_raw() 行为一致。
+        for line in self._lines:
+            yield line
 
     async def aiter_raw(self):
         for line in self._lines:

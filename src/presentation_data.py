@@ -361,6 +361,7 @@ CONFIG_ENTRY_DESC_MAP: dict[str, str] = {
     "MAX_CONTEXT_CHARS": "上下文最大字符数",
     "MAX_OUTPUT_CHARS": "单次输出最大字符数",
     "MAX_RETRIES": "API 调用最大重试次数",
+    "EMPTY_RESPONSE_MAX_RETRIES": "空响应自动重发上限（0=无限重试直到拿到回答或 ESC 中断）",
     "RETRY_BASE_SEC": "重试基础间隔（秒）",
     "MAX_SESSION_MESSAGES": "会话消息数上限（0=无限制）",
     "KEEP_RECENT_MESSAGES": "压缩时保留的最近消息数",
