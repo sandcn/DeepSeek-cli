@@ -126,7 +126,7 @@ def test_tool_head_tools_restored():
     from src.presentation_data import ui_default
     from src.tui.app._model_helpers import _TOOL_HEAD_TOOLS, _TOOL_TAIL_TOOLS
 
-    expected = ["ls", "read_file"]
+    expected = ["read_file"]
     assert ui_default("tool_head_tools") == expected
     assert _TOOL_HEAD_TOOLS == tuple(expected)
     # ★ 2026-10-10 用户需求：search / find 由头显示改为尾显示（「… 前 N 行省略」）。
@@ -134,7 +134,12 @@ def test_tool_head_tools_restored():
     assert "find" not in _TOOL_HEAD_TOOLS
     assert "search" in _TOOL_TAIL_TOOLS
     assert "find" in _TOOL_TAIL_TOOLS
-    assert ui_default("tool_tail_tools") == ["bash", "execute_command", "search", "find"]
+    # ★ 2026-10-13 用户需求：ls 由头显示改为尾显示（「… 前 N 行省略」）。
+    assert "ls" not in _TOOL_HEAD_TOOLS
+    assert "ls" in _TOOL_TAIL_TOOLS
+    assert ui_default("tool_tail_tools") == [
+        "bash", "execute_command", "search", "find", "ls",
+    ]
 
 
 def test_find_tool_style_restored():

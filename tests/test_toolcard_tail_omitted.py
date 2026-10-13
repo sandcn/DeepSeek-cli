@@ -1,16 +1,20 @@
-"""工具卡省略方向（2026-10-10 用户需求）回归测试。
+"""工具卡省略方向（2026-10-10 / 2026-10-13 用户需求）回归测试。
 
-需求：Search / Find 工具的 toolcard 省略提示由「后置『… 后 N 行省略』」改为
-「前置『… 前 N 行省略』」——即两者由**头显示**（保留前 N 行）切换为
-**尾显示**（保留后 N 行）。
+需求：
+  - Search / Find 工具的 toolcard 省略提示由「后置『… 后 N 行省略』」改为
+    「前置『… 前 N 行省略』」——即两者由**头显示**（保留前 N 行）切换为
+    **尾显示**（保留后 N 行）。（2026-10-10）
+  - Ls 工具同样由头显示改为尾显示——目录列表看结尾更实用，卡片省略从
+    「后置『… 后 N 行省略』」改为「前置『… 前 N 行省略』」。（2026-10-13）
 
 链路：
-  ``_TOOL_TAIL_TOOLS`` / ``ui_default("tool_tail_tools")`` 含 ``search`` / ``find``
-  → ``append_tool_output`` 命中尾显示分支 → ``_trim_tool_output_tail``
-  删除前置行并累计 ``block.extra["_bash_omitted_lines"]``
+  ``_TOOL_TAIL_TOOLS`` / ``ui_default("tool_tail_tools")`` 含
+  ``search`` / ``find`` / ``ls`` → ``append_tool_output`` 命中尾显示分支
+  → ``_trim_tool_output_tail`` 删除前置行并累计
+  ``block.extra["_bash_omitted_lines"]``
   → ``toolcard.tool_card_lines`` 前置「… 前 N 行省略」提示行（不含后置提示）。
 
-同批固化：ls/read_file 仍为头显示（保留前 N 行 + 后置「… 后 N 行省略」），
+同批固化：read_file 仍为头显示（保留前 N 行 + 后置「… 后 N 行省略」），
 bash 仍为尾显示，防本次改动误伤其它工具。
 """
 
@@ -39,7 +43,7 @@ def _fill(model: AppModel, tool_id: str, segments: list[str]) -> None:
     model.append_tool_output(tool_id, "\n".join(segments))
 
 
-# ── 配置层：search / find 归入尾显示工具集合 ───────────────
+# ── 配置层：search / find / ls 归入尾显示工具集合 ──────────
 
 
 def test_search_find_in_tail_tools_not_head_tools():
@@ -59,8 +63,11 @@ def test_defaults_registry_matches_constants():
     assert "bash" in _TOOL_TAIL_TOOLS
     assert "execute_command" in _TOOL_TAIL_TOOLS
     assert "find" in _TOOL_TAIL_TOOLS
-    assert "ls" in _TOOL_HEAD_TOOLS
+    # ★ 2026-10-13 用户需求：ls 由头显示改为尾显示。
+    assert "ls" in _TOOL_TAIL_TOOLS
+    assert "ls" not in _TOOL_HEAD_TOOLS
     assert "read_file" in _TOOL_HEAD_TOOLS
+    assert "read_file" not in _TOOL_TAIL_TOOLS
 
 
 def test_tool_tail_tools_configurable(monkeypatch):
@@ -149,20 +156,52 @@ def test_search_card_shows_tail_content_order():
     assert "row-16" not in text
 
 
-# ── 防回归：其它工具省略方向不变 ─────────────────────────
+# ── 行为层：ls 输出保留尾行 + 累计前省略计数（2026-10-13） ──
 
 
-def test_ls_keeps_head_omitted_marker():
+def test_ls_tail_trim_keeps_last_lines():
     m = AppModel()
     m.width = _WIDTH
     m.open_tool_box("l1", "ls", "src")
     _fill(m, "l1", [f"entry-{i}" for i in range(8)])
     block = m.tool_boxes["l1"]
-    assert block.extra.get("_head_omitted_lines") == 8 - 3
+    # 标题行 + 保留最后 3 行
+    assert len(block.lines) == 1 + 3
+    assert block.extra.get("_bash_omitted_lines") == 8 - 3
+    assert block.extra.get("_head_omitted_lines", 0) == 0
+    kept = [line.plain.strip() for line in block.lines[1:]]
+    assert kept == ["entry-5", "entry-6", "entry-7"]
+
+
+def test_ls_card_shows_leading_omitted_marker():
+    m = AppModel()
+    m.width = _WIDTH
+    m.open_tool_box("l1", "ls", "src")
+    _fill(m, "l1", [f"entry-{i}" for i in range(8)])
+    block = m.tool_boxes["l1"]
+    rows = tool_card_lines(block, _WIDTH)
+    text = _plain(rows)
+    assert "… 前 5 行省略" in text
+    assert "… 后" not in text
+    # 省略提示行是卡片第二行（标题行之后、内容行之前）
+    assert "行省略" in _plain(rows[1:2])
+    # 保留的尾行仍在卡片中（顺序：标题 → 省略 → entry-5/6/7）
+    assert text.index("行省略") < text.index("entry-5") < text.index("entry-7")
+
+
+def test_ls_below_threshold_no_omitted_marker():
+    m = AppModel()
+    m.width = _WIDTH
+    m.open_tool_box("l1", "ls", "src")
+    _fill(m, "l1", ["only-1", "only-2"])
+    block = m.tool_boxes["l1"]
+    assert len(block.lines) == 1 + 2
     assert block.extra.get("_bash_omitted_lines", 0) == 0
-    text = _plain(tool_card_lines(block, _WIDTH))
-    assert "… 后 5 行省略" in text
-    assert "… 前" not in text
+    assert block.extra.get("_head_omitted_lines", 0) == 0
+    assert "行省略" not in _plain(tool_card_lines(block, _WIDTH))
+
+
+# ── 防回归：其它工具省略方向不变 ─────────────────────────
 
 
 def test_read_file_keeps_head_omitted_marker():

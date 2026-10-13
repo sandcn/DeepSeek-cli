@@ -42,21 +42,23 @@ def _attach_url_links(runs):
 #: 增量提交已闭合行到 committed_lines（长工具输出每帧不再全量重渲染）。
 _TOOL_INCREMENTAL_THRESHOLD = 64
 
-#: bash/execute_command/search/find 等尾显示工具输出保留行数——超过该行数时只
-#: 保留最后 N 行（对齐终端 ``tail`` 语义；bash 输出常为冗长命令回显/构建日志，
-#: search/find 输出为有序匹配/文件列表，防卡片撑爆）。
+#: bash/execute_command/search/find/ls 等尾显示工具输出保留行数——超过该行数时
+#: 只保留最后 N 行（对齐终端 ``tail`` 语义；bash 输出常为冗长命令回显/构建日志，
+#: search/find 输出为有序匹配/文件列表，ls 输出为目录列表尾部，防卡片撑爆）。
 _BASH_OUTPUT_TAIL_LINES = 3
 
-#: 头显示工具集合——ls/read_file 输出超过阈值行数时只保留前 N 行
-#: （对齐终端 ``head`` 语义；目录列表/文件预览等有序输出看开头即可，防卡片撑爆）。
-_TOOL_HEAD_TOOLS = ("ls", "read_file")
+#: 头显示工具集合——read_file 输出超过阈值行数时只保留前 N 行
+#: （对齐终端 ``head`` 语义；文件预览等有序输出看开头即可，防卡片撑爆）。
+#: ★ 2026-10-13 用户需求：``ls`` 由头显示改为尾显示（见 ``_TOOL_TAIL_TOOLS``）。
+_TOOL_HEAD_TOOLS = ("read_file",)
 _TOOL_HEAD_LINES = 3
 
-#: 尾显示工具集合——bash/execute_command/search/find 输出超过阈值行数时只保留
+#: 尾显示工具集合——bash/execute_command/search/find/ls 输出超过阈值行数时只保留
 #: 后 N 行（对齐终端 ``tail`` 语义；卡片渲染时**前置**「… 前 N 行省略」提示）。
 #: ★ 2026-10-10 用户需求：``search`` / ``find`` 由头显示改为尾显示——卡片省略
 #:   从「后置『… 后 N 行省略』」改为「前置『… 前 N 行省略』」。
-_TOOL_TAIL_TOOLS = ("bash", "execute_command", "search", "find")
+#: ★ 2026-10-13 用户需求：``ls`` 同上由头显示改为尾显示（「… 前 N 行省略」）。
+_TOOL_TAIL_TOOLS = ("bash", "execute_command", "search", "find", "ls")
 
 
 def _ui_int(key: str, default: int) -> int:

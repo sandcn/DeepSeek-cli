@@ -489,13 +489,15 @@ UI_DEFAULTS_DATA: dict = {
     "tool_card_bg": 236,
     "codeblock_border": ["┌", "┐", "└", "┘", "─", "│"],
     # 头显示工具（head 语义）：输出超阈值时保留前 N 行 + 后置「… 后 N 行省略」。
-    "tool_head_tools": ["ls", "read_file"],
+    # ★ 2026-10-13 用户需求：ls 由头显示改为尾显示——目录列表看结尾更实用，
+    #   卡片省略从「后置『… 后 N 行省略』」改为「前置『… 前 N 行省略』」。
+    "tool_head_tools": ["read_file"],
     "tool_head_lines": 3,
     # 尾显示工具（tail 语义）：输出超阈值时保留后 N 行 + 前置「… 前 N 行省略」。
     # ★ 2026-10-10 用户需求：search / find 由头显示改为尾显示——卡片省略从
     #   「后置『… 后 N 行省略』」改为「前置『… 前 N 行省略』」。
-    "tool_tail_tools": ["bash", "execute_command", "search", "find"],
-    # 尾显示工具保留行数（bash/execute_command/search/find 共用）。
+    "tool_tail_tools": ["bash", "execute_command", "search", "find", "ls"],
+    # 尾显示工具保留行数（bash/execute_command/search/find/ls 共用）。
     "bash_output_tail_lines": 3,
     "tool_incremental_threshold": 64,
     "role_labels": {
