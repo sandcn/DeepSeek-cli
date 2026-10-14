@@ -31,6 +31,14 @@ _logger = logging.getLogger(__name__)
 #: ASCII 标点（CommonMark 的「标点」判定在 ASCII 区间的快速路径）
 _ASCII_PUNCT: frozenset[str] = frozenset(string.punctuation)
 
+#: ASCII 标识符字符（``==`` / ``~~`` / ``||`` / ``++`` 的「代码语义」词内
+#: 判定：``x==y``、``a~~b``、``a||b``、``i++`` 等词内运算符不得作为定界符）。
+#: 仅限 ASCII——CJK（``中文==高亮==中文``）不是词内运算符语境。
+_WORD_CHARS: frozenset[str] = frozenset(string.ascii_letters + string.digits + "_")
+
+#: ASCII 引号（字符串字面量边界：``x=="s"`` / ``(0)=="s"`` / ``=="s"==``）。
+_QUOTE_CHARS: frozenset[str] = frozenset("\"'")
+
 #: 定界符 flanking 判定结果缓存容量上限（键 ``(pos, length)``）。超限整体
 #: 清空——缓存只影响性能（结果由文本唯一决定），清空不改变任何解析结果。
 #: 上限取较大值（强调密集的超长单行会有数千个候选位置，过小会频繁清空）。
@@ -465,23 +473,67 @@ class InlineFormattingMixin:
 
         适用 ``==x==``（高亮）、``++x++``（下划线）、``||x||``（剧透）、
         ``~~x~~``（删除线）——与强调同族，要求 **left-flanking**：其后非空白，
-        且（其后非标点 或 其前为空白/标点）。
+        且（其后非标点 或 其前为空白/标点）；此外还要求不在「代码语义」上下文
+        （见 ``_span_delim_code_open``）。
 
         修复前这些语法只看「两字符定界符出现过」，技术文本里的 ``==`` /
         ``++`` / ``||`` 会被当定界符吞掉并把中间内容误加样式（高亮/下划线/
         剧透）：``mode=="change"`` → ``mode"change"``、``a++ 与 b++`` →
         下划线中间的 `` 与 b``。
         """
-        return self._delim_flanking(pos, length)[0]
+        if not self._delim_flanking(pos, length)[0]:
+            return False
+        return not self._span_delim_code_open(pos, length)
 
     def _span_delim_can_close(self, pos: int, length: int = 2) -> bool:
         """``pos`` 处双字符定界符是否可作**右定界符**（``_parse_until`` 回调）。
 
         右定界符 = right-flanking：其前非空白，且（其前非标点 或 其后为空白/
-        标点）。不满足时该定界符不作为闭合点、按普通文本继续扫描——``a == b
+        标点）；此外还要求不在「代码语义」上下文（见 ``_span_delim_code_close``）。
+        不满足时该定界符不作为闭合点、按普通文本继续扫描——``a == b
         == c`` / ``a ++ b ++ c`` 等「两侧皆空白」的定界符保持原样。
         """
-        return self._delim_flanking(pos, length)[1]
+        if not self._delim_flanking(pos, length)[1]:
+            return False
+        return not self._span_delim_code_close(pos, length)
+
+    def _span_delim_code_open(self, pos: int, length: int) -> bool:
+        """``pos`` 处的双字符定界符是否处于「代码语义」上下文（不可作左定界符）。
+
+        仅靠 CommonMark flanking 仍会把一批代码语义的定界符判为合法（其两侧
+        是标点或词字符时 flanking 成立），导致定界符被吞、中间内容被误加样式
+        （``(0)=="sculk_block"; (69)=="sculk_block"`` 渲染为
+        ``(0)"sculk_block"; (69)"sculk_block"`` 且中间段被整段高亮）。故额外
+        判否两种形态：
+
+          - **词内运算符**：紧邻左侧是 ASCII 标识符字符（``x==y``、``count==0``、
+            ``legacy==old, new==fresh``、``a~~b, c~~d``、``a||b || c||d``）；
+          - **字符串字面量比较**：紧随右侧是 ASCII 引号（``(0)=="x"``、``a=="b"``
+            的右操作数）——高亮语法不会以引号紧接左定界符。
+        """
+        text = self._text
+        if pos > 0 and text[pos - 1] in _WORD_CHARS:
+            return True
+        after = pos + length
+        return after < self._n and text[after] in _QUOTE_CHARS
+
+    def _span_delim_code_close(self, pos: int, length: int) -> bool:
+        """``pos`` 处的双字符定界符是否处于「代码语义」上下文（不可作右定界符）。
+
+        与 ``_span_delim_code_open`` 对偶，判否两种形态：
+
+          - **词内运算符**：紧随右侧是 ASCII 标识符字符（``x==y, z==w`` 的右侧
+            比较、``"a"==x``）；
+          - **字符串字面量结尾**：紧邻左侧是 ASCII 引号（``=="x"==`` 形态）。
+
+        ``==hi==``（行尾）/ ``中文==高亮==中文``（CJK）/ ``a ==b== c``（空格断
+        开）等正常高亮的闭合点均不受影响：其右侧不是 ASCII 标识符字符。
+        """
+        text = self._text
+        after = pos + length
+        if after < self._n and text[after] in _WORD_CHARS:
+            return True
+        return pos > 0 and text[pos - 1] in _QUOTE_CHARS
 
     # ── 删除线 ~~ ───────────────────────────────────────
 
