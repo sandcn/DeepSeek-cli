@@ -97,6 +97,15 @@ class InlineFormattingMixin:
         run（同一 run 内的字符互为标点，用截断长度永远得到「后字符是标点 →
         可开」）。修复前 ``foo *****``（run 尾部为行尾空白）被误判为可开、
         整段标记被剥离（``foo *``）；``**** is not…`` 丢字符（``** is…``）。
+
+        ★ CJK 语义软化：定界符紧贴**中文（非 ASCII）标点**、另一侧是中文/
+        全角（非 ASCII、非空白）字符时，该标点不再阻断 flanking —— 该组合
+        在中文排版里是「强调 + 标点」的常规书写（``**原版「…」**已有。`` /
+        ``已经**「加粗」**完成``），而 CommonMark 的标点规则会把闭合定界符
+        判否（闭合符前为标点、后为词字符），标记以字面 ``**`` 上屏。非 ASCII
+        字符不可能是 Markdown 运算符/标识符，故软化只在**两侧同为非 ASCII**
+        时生效；纯 ASCII 技术文本（``foo*(bar)*baz`` / ``mode=="change"``）
+        判定完全不变。
         """
         text, n = self._text, self._n
         # ★ 性能（超长单行）：flanking 结果按 ``(pos, length)`` 记忆化——同一位
@@ -126,12 +135,23 @@ class InlineFormattingMixin:
         before = text[pos - 1] if pos > 0 else ''
         after_pos = pos + run_len
         after = text[after_pos] if after_pos < n else ''
+        # ★ CJK 语义软化：两侧同为非 ASCII（且非空白）时，紧邻的**非 ASCII
+        #   标点**不再阻断 flanking。中文排版中强调标记常紧贴中文标点
+        #   （``**原版「…」**已有。`` 的闭合 ``**`` 前是 ``」``、后是汉字；
+        #   ``已经**「加粗」**完成`` 的开启 ``**`` 前是汉字、后是 ``「``），
+        #   CommonMark 的标点规则把这类定界符判否 → 标记以字面 ``**`` 上屏。
+        #   软化条件要求两侧都非 ASCII：ASCII 技术文本（``foo*(bar)*baz``、
+        #   ``mode=="change"``、``a == b == c``）的判定逐字不变。
+        soft_before = soft_after = False
+        if before and after and not before.isascii() and not after.isascii():
+            soft_before = _is_punct_char(before)
+            soft_after = _is_punct_char(after)
         left = (after != '' and not after.isspace()
-                and (not _is_punct_char(after)
+                and (not _is_punct_char(after) or soft_after
                      or before == '' or before.isspace()
                      or _is_punct_char(before)))
         right = (before != '' and not before.isspace()
-                 and (not _is_punct_char(before)
+                 and (not _is_punct_char(before) or soft_before
                       or after == '' or after.isspace()
                       or _is_punct_char(after)))
         if cache is not None:
