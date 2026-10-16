@@ -20,6 +20,7 @@ import pytest
 
 import src.chat_msgs as cm
 from src.chat_msgs import (
+    ExportError,
     _validate_session_id,
     delete_session,
     export_session,
@@ -83,7 +84,6 @@ def msgs_dir(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(cm, "ensure_chat_msgs_dir", lambda: None)
     monkeypatch.setattr(cm, "get_token_stats", lambda: {"input": 10, "output": 20, "total": 30})
     monkeypatch.setattr(cm, "_sync_terminal_title", lambda title: None)
-    monkeypatch.setattr(cm, "publish_output", lambda *a, **k: None)
     cm._invalidate_session_cache()
     cm._session_cache_mtime = 0.0
     return msgs_dir
@@ -307,15 +307,20 @@ def test_export_session_to_file(tmp_path, msgs_dir, monkeypatch):
 
 
 def test_export_session_outside_cwd_rejected(tmp_path, msgs_dir, monkeypatch):
+    """导出目标越出当前目录 → ExportError（修复前误报「未找到会话」）。"""
     _write_session(msgs_dir, "e3")
     monkeypatch.chdir(tmp_path)
     outside = tmp_path.parent / "escape.json"
-    assert export_session("e3", output=str(outside)) is None
+    with pytest.raises(ExportError):
+        export_session("e3", output=str(outside))
     assert not outside.exists()
 
 
 def test_export_session_existing_file_rejected(tmp_path, msgs_dir, monkeypatch):
+    """目标文件已存在 → ExportError（不覆盖既有文件）。"""
     _write_session(msgs_dir, "e4")
     monkeypatch.chdir(tmp_path)
     (tmp_path / "exists.json").write_text("occupied", encoding="utf-8")
-    assert export_session("e4", output="exists.json") is None
+    with pytest.raises(ExportError):
+        export_session("e4", output="exists.json")
+    assert (tmp_path / "exists.json").read_text(encoding="utf-8") == "occupied"

@@ -217,15 +217,23 @@ def SandboxStatsView(props) -> object:
         hint, width, hint_style=S_HINT, sep_style=S_SEP,
     )
 
-    children: list = [
-        h(TEXT, {"styled": header_runs, "height": 1, "key": "sb-header"}),
-    ]
+    content_children: list = []
     window = content_rows[scroll:scroll + vh]
     for i, runs in enumerate(window):
-        children.append(h(TEXT, {
+        content_children.append(h(TEXT, {
             "styled": runs if runs else [StyledRun(" ", None)],
             "height": 1, "key": f"sb-{scroll + i}",
         }))
+
+    children: list = [
+        h(TEXT, {"styled": header_runs, "height": 1, "key": "sb-header"}),
+        # ★ 修复（2026-10，全屏视图贴底）：内容区显式占满视口高度
+        #   （``height=vh``）——修复前内容行数不足整屏（空闲沙盒仅 11 行）时
+        #   文档高度远小于终端，渲染器按「底部对齐」把内容贴到屏幕底部
+        #   （顶部整片空白），与 /mcp、/skill 等视图（内部列表容器撑满高度）
+        #   表现不一致。补齐后总高度与其它模态视图同构，内容从顶部开始。
+        h(Column, {"height": vh}, content_children),
+    ]
     sruns = status_runs(
         [], style=S_HINT, message=status_message,
         message_style=(S_WARN if "确认" in status_message or "失败" in status_message else S_OK),

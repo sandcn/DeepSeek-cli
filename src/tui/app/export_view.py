@@ -23,7 +23,7 @@ from src.tui.core.style import Style
 from src.tui.ink import TEXT, Column, StyledRun, h, use_input
 
 from ._modal_view import empty_modal_frame, is_modal_close_key, use_modal_scope
-from ._view_common import build_header_runs, char_of, pad_to_width
+from ._view_common import build_header_runs, char_of, pad_to_width, viewport_rows
 
 __all__ = ["ExportView"]
 
@@ -191,7 +191,6 @@ def ExportView(props) -> object:
     )
 
     children: list = [
-        h(TEXT, {"styled": header_runs, "height": 1, "key": "ev-header"}),
         h(TEXT, {"children": " ", "height": 1, "key": "ev-sp"}),
     ]
     for i, runs in enumerate(rows):
@@ -213,4 +212,10 @@ def ExportView(props) -> object:
         children.append(h(TEXT, {
             "children": f"路径: {path}\u258f", "style": _S_PROMPT, "height": 1, "key": "ev-path",
         }))
-    return h(Column, None, children)
+    # ★ 修复（2026-10，全屏视图贴底）：表体显式占满视口高度（``height``）——
+    #   修复前向导内容仅约 9 行，远小于终端高度，渲染器按「底部对齐」把内容
+    #   贴到屏幕底部（顶部整片空白），与 /mcp、/config 等模态视图不一致。
+    return h(Column, None, [
+        h(TEXT, {"styled": header_runs, "height": 1, "key": "ev-header"}),
+        h(Column, {"height": max(4, viewport_rows())}, children),
+    ])

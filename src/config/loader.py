@@ -5,7 +5,9 @@ import logging
 import sys
 import threading
 
-from .defaults import CONFIG_DIR, LOG_FILE, RC_FILE, DEFAULTS, CONFIG_KEYS, PROVIDERS
+from .defaults import (
+    CONFIG_DIR, LOG_FILE, RC_FILE, DEFAULTS, CONFIG_KEYS, PROVIDERS, CONFIG_BOUNDS,
+)
 from .schema import _validate_rc
 
 
@@ -85,14 +87,56 @@ def get_rc():
     return _RC
 
 
+# ── 数值边界校验（配置写入的唯一真源处执行） ──────────────
+def _bounds_for(key: str):
+    """取配置键的数值边界（大写写回键或 rc_path 末段均可；无边界返回 None）。"""
+    bounds = CONFIG_BOUNDS.get(key)
+    if bounds is not None:
+        return bounds
+    text = str(key or "")
+    for name, meta in CONFIG_KEYS.items():
+        path = meta.get("rc_path") or ()
+        if path and str(path[-1]) == text:
+            return CONFIG_BOUNDS.get(name)
+    return None
+
+
+def check_config_bounds(key: str, value) -> None:
+    """数值配置边界校验：越界抛 ``ValueError``。
+
+    ★ 修复（2026-10）：修复前配置层不校验数值区间，``config set temperature 99``
+    / ``config set max_retries -5`` 均写入成功，直到调用 API 才报错（报错点
+    远离根因）。本校验置于 ``update_config``（CLI / TUI / 配置导入等**所有**
+    写入路径的唯一入口），边界声明见 ``config.defaults.CONFIG_BOUNDS``。
+
+    仅对显式声明边界且值为 int/float 的键生效（bool 不计入——True/False 不是
+    数值输入）；无边界键、非数值键不受影响。
+    """
+    bounds = _bounds_for(key)
+    if bounds is None or isinstance(value, bool):
+        return
+    if not isinstance(value, (int, float)):
+        return
+    low, high = bounds
+    if low is not None and value < low:
+        raise ValueError(f"{key} 不能小于 {low}（当前: {value}）")
+    if high is not None and value > high:
+        raise ValueError(f"{key} 不能大于 {high}（当前: {value}）")
+
+
 def update_config(key: str, value) -> None:
     """更新配置键并持久化到 RC 文件。
 
     ★ P3（review 2026-08-22）：读改写序列加 ``_update_lock`` 防护——修复前
     无锁，多线程同时写 RC 文件存在整文件写坏风险（单条 write_text 原子但
     读-改-写序列并发交错仍可能丢写）。调用频率低，锁开销可忽略。
+
+    ★ 修复（2026-10）：写入前做数值边界校验（``check_config_bounds``）——
+    所有调用方（CLI / TUI 配置界面 / 配置导入 / 内部命令）共用同一道闸，
+    越界值抛 ``ValueError`` 且不落盘。
     """
     with _update_lock:
+        check_config_bounds(key, value)
         rc = get_rc()
         # 使用 CONFIG_KEYS 中的 rc_path 进行键名映射
         if key in CONFIG_KEYS:

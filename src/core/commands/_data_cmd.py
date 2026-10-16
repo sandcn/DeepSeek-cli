@@ -337,6 +337,28 @@ def _iter_session_summaries(persistence, limit: int):
         yield item
 
 
+def _build_preview_lines(persistence, session_id, head_loader=None) -> list:
+    """会话预览行构建：优先**轻量头部读取**，不支持/失败时回退全量加载。
+
+    ★ 修复（2026-10）：修复前每个会话都走 ``load_session``（整文件解析）——
+    会话浏览器首屏为 300+ 个会话各解析一次（实测 2.8GB / 数十秒）。预览只需
+    前 ``_SESSION_PREVIEW_LINES`` 条消息，改走端口可选能力
+    ``load_session_head_messages``（文件头增量解析）。
+    """
+    if head_loader is not None:
+        try:
+            head = head_loader(session_id, _SESSION_PREVIEW_LINES)
+        except Exception:
+            head = None
+        if head is not None:
+            return _session_preview({"messages": head})
+    try:
+        data = persistence.load_session(session_id)
+    except Exception:
+        data = None
+    return _session_preview(data)
+
+
 def _build_session_entries(
     persistence, *, limit: int = _SESSION_PREVIEW_LIMIT, on_entry=None,
 ) -> list:
@@ -346,16 +368,15 @@ def _build_session_entries(
     一条**（含预览行）后立即调用——视图据此把该条追加显示（加载成功一条即
     界面增加一条信息）；回调异常隔离，不影响后续构建。
     """
+    head_loader = getattr(persistence, "load_session_head_messages", None)
     out: list = []
     for s in _iter_session_summaries(persistence, limit):
         if not isinstance(s, dict):
             continue
         entry = dict(s)
-        try:
-            data = persistence.load_session(s.get("id"))
-        except Exception:
-            data = None
-        entry["preview_lines"] = _session_preview(data)
+        entry["preview_lines"] = _build_preview_lines(
+            persistence, s.get("id"), head_loader,
+        )
         out.append(entry)
         if on_entry is not None:
             try:

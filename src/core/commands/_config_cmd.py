@@ -380,7 +380,9 @@ def _set_config_value(ctx, key_input: str, value_text: str) -> bool:
 
 def _reset_config_value(ctx, key_input: str) -> bool:
     """重置单项配置为默认值并持久化。"""
-    from ...config.view_model import resolve_config_key, format_config_value
+    from ...config.view_model import (
+        resolve_config_key, format_config_value, get_entry_display_path,
+    )
     from ...config.defaults import CONFIG_KEYS, DEFAULTS
     key = resolve_config_key(key_input)
     if key is None:
@@ -399,7 +401,8 @@ def _reset_config_value(ctx, key_input: str) -> bool:
         _out.write(f"{YELLOW}  ! 写入配置失败: {e}{RESET}", level="raw", source="cmd")
         return True
     shown = format_config_value(default, typ)
-    _out.write(f"{GREEN}  + 已重置 {key} = {shown} (默认){RESET}", level="raw", source="cmd")
+    # ★ 修复（2026-10）：输出显示路径（与 get/set 一致；修复前打印大写写回键）
+    _out.write(f"{GREEN}  + 已重置 {get_entry_display_path(key)} = {shown} (默认){RESET}", level="raw", source="cmd")
     return True
 
 

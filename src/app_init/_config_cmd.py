@@ -18,6 +18,7 @@ from ..config.view_model import (
     resolve_config_key,
     parse_config_value,
     format_config_value,
+    get_entry_display_path,
 )
 from ..config.defaults import CONFIG_KEYS, DEFAULTS, RC_FILE
 
@@ -117,4 +118,10 @@ def _cli_reset(key_input: str) -> None:
         publish_output(f"\n{YELLOW}  ! 写入配置失败: {e}{RESET}", level="raw")
         return
     shown = format_config_value(default, typ)
-    publish_output(f"\n{GREEN}  ✓ 已重置 {key} = {shown} (默认){RESET}", level="raw")
+    # ★ 修复（2026-10）：输出使用**显示路径**（与 get/set 一致）——修复前
+    #   打印大写写回键（``已重置 TEMPERATURE``），与 ``config get``/
+    #   ``config set`` 的 ``temperature`` 不一致，用户难以对应。
+    publish_output(
+        f"\n{GREEN}  ✓ 已重置 {get_entry_display_path(key)} = {shown} (默认){RESET}",
+        level="raw",
+    )

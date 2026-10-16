@@ -468,3 +468,55 @@ CONFIG_KEYS = {
         "cacheable": True,
     },
 }
+
+# ============================================================
+# CONFIG_BOUNDS — 数值配置的合法区间（用户输入校验真源）
+# ------------------------------------------------------------
+# 键 → ``(最小值, 最大值)``（任一端为 ``None`` 表示该侧无界）。
+# 校验在 ``config.loader.update_config``（配置写入的唯一真源）执行——
+# CLI ``chat.py config set``、TUI ``/config`` 编辑界面、配置导入等**所有**
+# 写入路径共用同一道校验；越界值一律拒绝（``ValueError``），不再写入与
+# 文档/运行语义不符的值（修复前 ``config set temperature 99``、
+# ``config set max_retries -5`` 均被接受并落盘）。
+#
+# 键名可用大写写回键（``TEMPERATURE``）或 rc_path 末段（``temperature``）；
+# 仅对 int/float 值生效（bool 不计入），无边界的键不受影响。
+# ============================================================
+CONFIG_BOUNDS = {
+    # 当前生效档案下标（-1 = 未选择）
+    "ACTIVE_MODEL_PROFILE": (-1, None),
+    # 大模型温度（文档：0.0~2.0）
+    "TEMPERATURE": (0.0, 2.0),
+    "MAX_CONTEXT_CHARS": (1, None),
+    "MAX_OUTPUT_CHARS": (1, None),
+    # API 调用最大重试次数（负数无语义）
+    "MAX_RETRIES": (0, 100),
+    # 重试基础间隔（秒）
+    "RETRY_BASE_SEC": (0.0, None),
+    # 空响应自动重发上限（0 = 无限）
+    "EMPTY_RESPONSE_MAX_RETRIES": (0, None),
+    # 会话消息数上限 / 压缩保留数（0 = 无限制）
+    "MAX_SESSION_MESSAGES": (0, None),
+    "KEEP_RECENT_MESSAGES": (0, None),
+    "MAX_CONTEXT_TOKENS": (0, None),
+    # 模型上下文窗口（使用率分母，0 无意义）
+    "MODEL_CONTEXT_TOKENS": (1, None),
+    "SUMMARY_TOKEN_BUDGET": (0, None),
+    "AUTO_FORCE_COMPRESS_THRESHOLD": (0, None),
+    # 上传前图片优化
+    "IMAGE_UPLOAD_KEEP_RECENT": (0, None),
+    "IMAGE_UPLOAD_MAX_DIMENSION": (1, None),
+    # JPEG 质量 1~100
+    "IMAGE_UPLOAD_QUALITY": (1, 100),
+    # 多模态图片视觉 token 估算
+    "MULTIMODAL_IMAGE_TOKEN_PATCH": (1, None),
+    "MULTIMODAL_IMAGE_TOKEN_DEFAULT": (0, None),
+    # HTTP 客户端（超时/连接数 > 0；keep-alive 允许 0 = 不复用）
+    "HTTP_CONNECT_TIMEOUT": (1, None),
+    "HTTP_READ_TIMEOUT": (1, None),
+    "HTTP_WRITE_TIMEOUT": (1, None),
+    "HTTP_MAX_CONNECTIONS": (1, None),
+    "HTTP_MAX_CONNECTIONS_PER_HOST": (1, None),
+    "HTTP_KEEP_ALIVE_TIMEOUT": (0, None),
+}
+

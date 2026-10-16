@@ -561,7 +561,16 @@ class ClawBotRunner:
         if command is None:
             await self._send(from_id, ctx, f"未知指令 /{name}\n{build_help_text()}")
             return
-        await command.handler(self, from_id, ctx, arg)
+        handler = command.handler
+        if handler is None:
+            # ★ 修复（2026-10）：命令条目的 handler 允许为空（扩展命令未提供
+            #   可调用体 / 条目被 patch 覆盖成 None）——修复前直接
+            #   ``await command.handler(...)`` 抛 TypeError，只落到消息消费者的
+            #   兜底 except 里（用户侧表现为「指令静默失效 + 日志异常」）。
+            _logger.warning("ClawBot 指令 /%s 未绑定 handler，跳过执行", name)
+            await self._send(from_id, ctx, f"指令 /{name} 暂不可用（未绑定处理器）")
+            return
+        await handler(self, from_id, ctx, arg)
 
     # ── 配对流程 ──────────────────────────────────────
 

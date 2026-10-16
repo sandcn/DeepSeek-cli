@@ -25,6 +25,11 @@ class JsonFilePersistence(PersistencePort):
         from ...chat_msgs import load_session as _load
         return _load(session_id)
 
+    def load_session_head_messages(self, session_id: str, max_messages: int) -> list | None:
+        """读取会话前若干条消息（会话浏览器预览的轻量路径）。"""
+        from ...chat_msgs import load_session_head_messages as _head
+        return _head(session_id, max_messages)
+
     def list_sessions(self) -> list[dict]:
         from ...chat_msgs import list_sessions as _list
         return _list()

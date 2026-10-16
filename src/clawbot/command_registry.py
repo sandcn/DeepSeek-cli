@@ -15,10 +15,12 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+_logger = logging.getLogger(__name__)
 _lock = threading.RLock()
 _ABSENT = object()
 
@@ -255,6 +257,13 @@ def register_clawbot_command(command: ClawbotCommand) -> Callable[[], None]:
         raise TypeError(f"命令规格非法: {command!r}")
     if not command.name:
         raise ValueError("命令名必须是非空字符串")
+    if command.handler is None:
+        # ★ 修复（2026-10）：handler 为空时命令可被解析但不可执行——注册期
+        #   给出告警（与 app_init.subcommands.Subcommand 同一约定），便于
+        #   定位「指令不生效」；分派侧另有判空防御。
+        _logger.warning(
+            "ClawBot 命令 '%s' 没有 handler，将被分派侧拒绝执行", command.name,
+        )
     with _lock:
         previous = _extension.get(command.name, _ABSENT)
         _extension[command.name] = command

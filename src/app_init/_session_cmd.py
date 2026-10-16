@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 import logging
 
-from ..chat_msgs import list_sessions, delete_session, export_session
+from ..chat_msgs import list_sessions, delete_session, export_session, ExportError
 from ..core.constants import CYAN, DIM, RESET, YELLOW, GREEN
 from ..tui.events.consumers import publish_output
 
@@ -37,7 +37,13 @@ def _handle_session_command(args: argparse.Namespace) -> None:
             publish_output(f"\n{YELLOW}  ! 未找到会话: {args.session_id}{RESET}", level="raw")
 
     elif args.session_cmd == 'export':
-        result = export_session(args.session_id, output=args.output)
+        try:
+            result = export_session(args.session_id, output=args.output)
+        except ExportError as exc:
+            # ★ 修复（2026-10）：导出目标非法（路径越界/文件已存在）单独提示
+            #   ——修复前与「会话不存在」同为 None，误报"未找到会话"。
+            publish_output(f"\n{YELLOW}  ! 导出失败: {exc}{RESET}", level="raw")
+            return
         if result is None:
             publish_output(f"\n{YELLOW}  ! 未找到会话: {args.session_id}{RESET}", level="raw")
         elif args.output:

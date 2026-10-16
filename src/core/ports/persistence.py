@@ -60,6 +60,15 @@ class PersistencePort(ABC):
         """
         return False
 
+    def load_session_head_messages(self, session_id: str, max_messages: int) -> list | None:
+        """读取会话**前若干条消息**（可选能力，默认不支持返回 None）。
+
+        供会话浏览器预览行使用：只需前若干条消息，无需整读会话文件
+        （大文件场景显著降低首屏耗时）。返回 None 表示不支持/无法轻量读取，
+        调用方回退 ``load_session`` 全量读取。
+        """
+        return None
+
     @abstractmethod
     def get_recover_cmd(self, session_id: str) -> str:
         """获取恢复指定会话的命令行提示字符串。"""
