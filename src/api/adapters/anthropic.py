@@ -120,9 +120,9 @@ class AnthropicAdapter(BaseLLMAdapter):
             "model": model,
             "messages": anthro_messages,
             # max_tokens 为单次响应的最大输出 token 上限（Anthropic 必填）。
-            # 4096 与全局 MAX_OUTPUT_CHARS≈3000 字符（约 750-1500 token）
-            # 量级匹配；长输出任务（整文件生成）可在此提高，但受输出
-            # 字符上限约束，保持当前值与 MAX_OUTPUT_CHARS 换算关系一致。
+            # 4096 为保守值，与全局 max_output_chars（默认 1M 字符，
+            # 见 config.defaults）不同口径、不做换算；长输出任务
+            # （整文件生成）需要更高上限时在此调整。
             "max_tokens": 4096,
         }
         # 大模型温度（从配置读取，Anthropic 官方支持范围 0.0~1.0，clamp 保证安全）

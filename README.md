@@ -71,7 +71,7 @@ pip install ".[dev]"
     "reasoning_effort": "max",
     "temperature": 0.2,
     "max_context_chars": 3000000,
-    "max_output_chars": 3000,
+    "max_output_chars": 1000000,
     "max_retries": 10,
     "retry_base_sec": 30,
     "empty_response_max_retries": 0,

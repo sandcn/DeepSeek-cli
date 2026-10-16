@@ -95,7 +95,8 @@ DEFAULTS = {
     #   服务端 prompt_tokens + 新增消息估算；无基线时回退全量估算），确保
     #   「显示达到阈值」与「自动压缩触发」永不脱节。
     "max_context_chars": 3000000,
-    "max_output_chars": 3000,
+    # 单次输出最大字符数（默认 1M = 1000000 字符；可在 RC / /config 中覆盖）
+    "max_output_chars": 1000000,
     "max_retries": 10,
     "retry_base_sec": 30.0,
     # ── 空响应（无正文/无推理/无工具调用）自动重发上限 ──
@@ -255,7 +256,9 @@ CONFIG_KEYS = {
     "MAX_OUTPUT_CHARS": {
         "rc_path": ("max_output_chars",),
         "type": int,
-        "default": 3000,
+        # 引用 DEFAULTS 保持单一事实源（与 MAX_RETRIES 同一约定，
+        # 避免 rc 键缺失兜底与 DEFAULTS 双源漂移）
+        "default": DEFAULTS["max_output_chars"],
         "cacheable": True,
     },
     "MAX_RETRIES": {
