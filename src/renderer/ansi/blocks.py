@@ -225,10 +225,16 @@ def render_list_item(token) -> list[AnsiLine]:
         out: list[AnsiLine] = []
         for sub in _inline_lines(token.content.lstrip()):
             line = AnsiLine.of(prefix, _STYLE_BQ)
+            # ★ 续行悬挂缩进：本行折行时续行与内容起始列对齐（前缀等宽空格）
+            line.cont_prefix = prefix
             for run in sub.runs:
                 line.append_run(run)
             out.append(line)
-        return out or [AnsiLine.of(prefix, _STYLE_BQ)]
+        if out:
+            return out
+        empty = AnsiLine.of(prefix, _STYLE_BQ)
+        empty.cont_prefix = prefix
+        return [empty]
     # 缩进按 indent；项目符号按嵌套深度（depth 为 1-based）
     prefix = "  " * max(0, indent)
     if meta.get("bullet"):
@@ -270,13 +276,22 @@ def render_list_item(token) -> list[AnsiLine]:
         sub_lines, base_idx = inline_lines_with_baseline(content)
     # 项目符号落在**基线行**：行内多行块（二维公式）的非基线行缩进对齐，
     # 保证 ``- $\frac{a}{b}$`` 的符号与分数线同行而非公式顶行。
+    # ★ 续行悬挂缩进：折行后除首行外的行以「内容起始列」等宽空格起始——
+    #   首行为项目符号 / 复选框之后，非基线缩进行为其缩进前缀本身。
+    head_cols = line.width
     out_lines: list[AnsiLine] = []
     for idx, sub in enumerate(sub_lines):
-        target = line if idx == base_idx else AnsiLine.of(prefix + "  ", _STYLE_BQ)
+        if idx == base_idx:
+            target = line
+            target.cont_prefix = " " * head_cols
+        else:
+            target = AnsiLine.of(prefix + "  ", _STYLE_BQ)
+            target.cont_prefix = prefix + "  "
         for run in sub.runs:
             target.append_run(run)
         out_lines.append(target)
     if not out_lines:
+        line.cont_prefix = " " * head_cols
         out_lines = [line]
     return out_lines
 
@@ -292,13 +307,22 @@ def render_definition_item(token) -> list[AnsiLine]:
     else:
         # 同一术语的后续定义（无 term）→ 缩进续行，不再重复 ``term:``
         line = AnsiLine.of("  ", _STYLE_BQ)
+    # ★ 续行悬挂缩进：续行对齐「定义内容起始列」（术语行 = ``term: `` 之后，
+    #   无术语行 = 其缩进前缀）。
+    head_cols = line.width
     out: list[AnsiLine] = []
     for idx, sub in enumerate(sub_lines):
-        target = line if idx == base_idx else AnsiLine.of("    ", _STYLE_BQ)
+        if idx == base_idx:
+            target = line
+            target.cont_prefix = " " * head_cols
+        else:
+            target = AnsiLine.of("    ", _STYLE_BQ)
+            target.cont_prefix = "    "
         for run in sub.runs:
             target.append_run(run)
         out.append(target)
     if not out:
+        line.cont_prefix = " " * head_cols
         out = [line]
     return out
 
@@ -323,6 +347,7 @@ def render_front_matter(token) -> list[AnsiLine]:
         if text.strip():
             for seg in _inline_lines(text):
                 body = AnsiLine.of("  ", _STYLE_BQ)
+                body.cont_prefix = "  "
                 for run in seg.runs:
                     body.append_run(run)
                 out.append(body)
@@ -333,6 +358,7 @@ def render_front_matter(token) -> list[AnsiLine]:
         value_lines = (value or "").split("\n")
         for li, vline in enumerate(value_lines):
             line = AnsiLine.of("  ", _STYLE_BQ)
+            line.cont_prefix = "  "
             if li == 0 and key:
                 line.append(f"{key:<{kw}}", _STYLE_FM_KEY)
                 line.append(" : ", _STYLE_BQ)
@@ -348,6 +374,7 @@ def render_table_caption(token) -> list[AnsiLine]:
     """表格表注（``: 说明`` / ``Table: 说明``）渲染为缩进斜体说明行。"""
     text = token.content or ""
     line = AnsiLine.of("  ", _STYLE_BQ)
+    line.cont_prefix = "  "
     for run in render_inline(text, _STYLE_CAPTION):
         line.append_run(run)
     return [line]
@@ -367,17 +394,23 @@ def render_blockquote(token, depth: int = 0) -> list[AnsiLine]:
 def render_blockquote_lines(text: str, depth: int = 0) -> list[AnsiLine]:
     """引用单行源文本 → 渲染行（支持行内多行块：公式非基线行同样带前缀）。
 
-    前缀 ``│`` 按嵌套深度分级着色（外层亮 → 内层暗）。
+    前缀 ``│`` 按嵌套深度分级着色（外层亮 → 内层暗）。折行时续行同样以该
+    引用前缀起始（``cont_prefix``），保持引用块视觉连续性。
     """
     prefix = "\u2502 " * max(1, depth + 1)
     style = bq_prefix_style(depth + 1)
     out: list[AnsiLine] = []
     for sub in inline_lines(text):
         line = AnsiLine.of(prefix, style)
+        line.cont_prefix = prefix
         for run in sub.runs:
             line.append_run(run)
         out.append(line)
-    return out or [AnsiLine.of(prefix, style)]
+    if out:
+        return out
+    line = AnsiLine.of(prefix, style)
+    line.cont_prefix = prefix
+    return [line]
 
 
 def render_blockquote_line(text: str, depth: int = 0) -> AnsiLine:
@@ -424,11 +457,7 @@ def render_admonition(token) -> list[AnsiLine]:
     lines: list[AnsiLine] = [head]
     lines.extend(_preview_omitted(token.meta))
     for seg in body_lines:
-        for sub in _inline_lines(str(seg)):
-            body = AnsiLine.of("    ", _STYLE_BQ)
-            for run in sub.runs:
-                body.append_run(run)
-            lines.append(body)
+        lines.extend(render_container_body_lines(str(seg), "    "))
     return lines
 
 
@@ -462,14 +491,22 @@ def render_container_body(text: str, indent: str = "  ") -> AnsiLine:
 
 
 def render_container_body_lines(text: str, indent: str = "  ") -> list[AnsiLine]:
-    """容器块正文 → 渲染行（支持行内多行块：公式各行均带缩进前缀）。"""
+    """容器块正文 → 渲染行（支持行内多行块：公式各行均带缩进前缀）。
+
+    折行时续行以同一缩进起始（``cont_prefix``），与容器正文起始列对齐。
+    """
     out: list[AnsiLine] = []
     for sub in inline_lines(text):
         line = AnsiLine.of(indent, _STYLE_BQ)
+        line.cont_prefix = indent
         for run in sub.runs:
             line.append_run(run)
         out.append(line)
-    return out or [AnsiLine.of(indent, _STYLE_BQ)]
+    if out:
+        return out
+    line = AnsiLine.of(indent, _STYLE_BQ)
+    line.cont_prefix = indent
+    return [line]
 
 
 def render_admonition_body(text: str) -> AnsiLine:
@@ -527,11 +564,7 @@ def _container_body_lines(body_lines) -> list[AnsiLine]:
     """容器正文行逐行渲染（2 空格缩进 + 行内格式；``<details>``/fenced div 共用）。"""
     out: list[AnsiLine] = []
     for seg in (body_lines or []):
-        for sub in _inline_lines(str(seg)):
-            line = AnsiLine.of("  ", _STYLE_BQ)
-            for run in sub.runs:
-                line.append_run(run)
-            out.append(line)
+        out.extend(render_container_body_lines(str(seg), "  "))
     return out
 
 

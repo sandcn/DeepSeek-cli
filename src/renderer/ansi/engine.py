@@ -362,8 +362,10 @@ class AnsiRenderEngine:
                 if ln.runs and _runs_visible(ln.runs):
                     # 不就地修改：子引擎行可能来自跨帧高亮缓存
                     # （``_LINE_HIGHLIGHT_CACHE``），就地插入缩进会在复用中叠加。
-                    out.append(AnsiLine(
-                        [Run(indent, prefix_style)] + list(ln.runs)))
+                    new = AnsiLine([Run(indent, prefix_style)] + list(ln.runs))
+                    # 续行前缀随容器缩进叠加（长正文折行后续行仍对齐正文列）
+                    new.cont_prefix = indent + (ln.cont_prefix or "")
+                    out.append(new)
                 else:
                     # 空行（含仅空 run 的伪空行）不加缩进前缀——否则容器正文
                     # 的空行渲染为「带尾随空格的缩进行」。
@@ -438,7 +440,10 @@ def _apply_list_prefix(lines: list[AnsiLine], indent: int) -> list[AnsiLine]:
     out: list[AnsiLine] = []
     for ln in lines:
         if ln.runs and _runs_visible(ln.runs):
-            out.append(AnsiLine([Run(prefix, blocks._STYLE_BQ)] + list(ln.runs)))
+            new = AnsiLine([Run(prefix, blocks._STYLE_BQ)] + list(ln.runs))
+            # 续行前缀随内容前缀叠加（列表项内元素折行后续行仍对齐内容列）
+            new.cont_prefix = prefix + (ln.cont_prefix or "")
+            out.append(new)
         else:
             out.append(ln)
     return out
@@ -459,7 +464,10 @@ def _apply_bq_prefix(lines: list[AnsiLine], depth: int) -> list[AnsiLine]:
     pstyle = blocks.bq_prefix_style(depth)
     for ln in lines:
         if ln.runs and _runs_visible(ln.runs):
-            out.append(AnsiLine([Run(prefix, pstyle)] + list(ln.runs)))
+            new = AnsiLine([Run(prefix, pstyle)] + list(ln.runs))
+            # 续行前缀 = 引用前缀 + 内容自身续行前缀（折行后续行仍带 ``│ ``）
+            new.cont_prefix = prefix + (ln.cont_prefix or "")
+            out.append(new)
         else:
             out.append(ln)
     return out

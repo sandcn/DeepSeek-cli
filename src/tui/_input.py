@@ -550,9 +550,16 @@ class Input:
         """获取当前正在输入的文本（不消费）。"""
         return self._buffer_editor.get_current_text()
 
-    def reset(self) -> None:
-        """清空所有流式输入状态（缓冲区、提交文本、历史导航、中断标志）。"""
-        self._dispatcher.reset()
+    def reset(self, clear_queue: bool = True, clear_buffer: bool = True) -> None:
+        """清空所有流式输入状态（缓冲区、提交文本、历史导航、中断标志）。
+
+        Args:
+            clear_queue: 是否清空未消费排队输入（默认 True）；False 保留
+                用户 Enter 提交后尚未被编排器消费的输入（特殊按键分发路径）。
+            clear_buffer: 是否清空编辑缓冲与光标（默认 True）；False 保留用户
+                正在编辑但尚未提交的内容（ESC 中断——用户可继续编辑）。
+        """
+        self._dispatcher.reset(clear_queue=clear_queue, clear_buffer=clear_buffer)
 
     def drain_all(self) -> tuple[str | None, str]:
         """排出所有流式输入状态：返回 (submitted_text, buffer_text)。"""
@@ -884,9 +891,9 @@ class Input:
         """调用回显回调（委托 InputBufferEditor，供测试直接调用）。"""
         self._buffer_editor._echo(text)
 
-    def reset_and_echo(self) -> None:
-        """重置缓冲区并回显空字符串（清空输入行视觉）。"""
-        self._dispatcher.reset_and_echo()
+    def reset_and_echo(self, clear_buffer: bool = True) -> None:
+        """重置缓冲区并回显（clear_buffer=False 时保留并回显当前内容）。"""
+        self._dispatcher.reset_and_echo(clear_buffer=clear_buffer)
 
     def capture_bytes(self, data: bytes) -> None:
         """追加原始字节到捕获缓冲区。线程安全。"""

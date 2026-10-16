@@ -451,7 +451,13 @@ class Pipeline:
         # 中断检查
         interrupt_port = await self._get_interrupt_port(ctx)
         if await interrupt_port.is_interrupted():
-            agent._append_assistant_msg(_INTERRUPTED_MSG, reasoning)
+            # ★ 保留已生成的部分内容：中断时流式层已把中断语义写入正文
+            #   （有内容 → "... (已中断)"；无内容 → 纯占位 "(已中断)"），
+            #   此处直接用 content 落库。修复前一律落固定占位
+            #   "(已中断)"，把流式已累积的 content 丢弃——用户在终端已看到
+            #   这部分回复，模型上下文里却只剩占位符（用户接着「继续」时
+            #   模型不知道自己说到这里）。仅当确实无内容时才用占位符。
+            agent._append_assistant_msg(content or _INTERRUPTED_MSG, reasoning)
             ctx.interrupted = True
             return
         # 工具调用 → 由 run_round_async 中的中间件钩子处理

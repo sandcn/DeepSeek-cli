@@ -216,7 +216,7 @@ class InputDispatcher:
     # ═══════════════════════════════════════════════════════
 
     def _do_interrupt(self, kill_background: bool = False) -> None:
-        """内联中断处理：设置中断标志 + 清空回显 + 请求异步中断（回调注入）。
+        """内联中断处理：保留用户输入 + 设置中断标志 + 请求异步中断（回调注入）。
 
         在 render 线程中调用（快速路径，由 ``read_stdin_once()`` 直接分发）。
 
@@ -241,7 +241,12 @@ class InputDispatcher:
             self._buffer_editor.search_exit(apply=False)
             self._sync_reverse_search()
         if not self._buffer_editor.has_queued_input():
-            self.reset_and_echo()
+            # ★ ESC（纯 Esc / 双 Esc / Ctrl+C 一律）保留用户正在编辑的输入：
+            #   仅清提交态/搜索态并原样回显缓冲，不清空编辑内容——修复前
+            #   无条件 reset_and_echo() 会丢弃用户「AI 生成期间提前敲入的
+            #   下一条消息」（用户可见内容却丢失，需重打）。语义上 ESC 是
+            #   「停止生成」，不应连带删除用户尚未提交的输入。
+            self.reset_and_echo(clear_buffer=False)
         else:
             self._io._flush_stdin_residual()
         self._io.set_interrupted()
@@ -255,9 +260,9 @@ class InputDispatcher:
                 _logger.debug("_do_interrupt: interrupt 回调异常", exc_info=True)
         # ★ 纯 Esc：额外触发 kill_background 回调（杀所有后台 bash/subagent）。
         #   普通中断（Ctrl+C/双 Esc/命令触发）不置位——后台任务继续运行。
-        #   注：kill 回调在 reset_and_echo（清空输入缓冲）之后执行——ESC
-        #   中断语义下用户输入缓冲本就清空（既有行为），杀后台任务紧随其后；
-        #   若未来需求「ESC 保留输入缓冲」需调整此处顺序。
+        #   注：kill 回调在输入态清理 + 中断回调整之后执行；用户正在编辑但
+        #   未提交的输入内容被保留（见上方 reset_and_echo(clear_buffer=False)），
+        #   杀后台任务不影响输入缓冲。
         if kill_background:
             self._trigger_kill_background()
 
@@ -1201,7 +1206,7 @@ class InputDispatcher:
     # 缓冲重置辅助
     # ═══════════════════════════════════════════════════════
 
-    def reset(self, clear_queue: bool = True) -> None:
+    def reset(self, clear_queue: bool = True, clear_buffer: bool = True) -> None:
         """清空缓冲/队列状态 + 清除中断标志（与 _input.py 原 reset 语义等价）。
 
         Args:
@@ -1209,14 +1214,22 @@ class InputDispatcher:
                 ``_input_ready``，委托 ``_buffer_editor.reset``）。False 用于
                 特殊按键分发路径（非 editmsg/retry 的 action）——保留用户
                 Enter 提交后尚未被编排器消费的输入（P2 修复，2026-08-07）。
+            clear_buffer: 是否清空编辑缓冲（默认 True，既有语义）；False 用于
+                ESC 中断——保留用户正在编辑但未提交的内容（委托
+                ``_buffer_editor.reset``，见其 ``clear_buffer`` 说明）。
         """
         self._io.clear_interrupted()
-        self._buffer_editor.reset(clear_queue=clear_queue)
+        self._buffer_editor.reset(clear_queue=clear_queue, clear_buffer=clear_buffer)
 
-    def reset_and_echo(self) -> None:
-        """重置缓冲区并回显空字符串（清空输入行视觉）。"""
-        self.reset()
-        self._buffer_editor._echo("")
+    def reset_and_echo(self, clear_buffer: bool = True) -> None:
+        """重置缓冲区并按当前缓冲回显（清输入行视觉 / 保留内容二选一）。
+
+        Args:
+            clear_buffer: True（默认）清空缓冲并回显空串（既有语义）；
+                False 保留缓冲内容并原样回显（ESC 中断保用户未提交输入）。
+        """
+        self.reset(clear_buffer=clear_buffer)
+        self._buffer_editor._echo(self._buffer_editor.get_current_text())
 
     # ═══════════════════════════════════════════════════════
     # 回调接口

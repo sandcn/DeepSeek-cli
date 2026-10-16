@@ -1,12 +1,14 @@
 """prompts_export_main_empty.md 结构整理与元规则补充的回归测试。
 
 本轮改动（在保持既有测试所锁定的逐字规则串不变的前提下）：
-1. 新增模式自描述（说明本文件是空模式精简规则集、Ctrl+B 切换关系）；
-2. 新增章节分组标题（总则/需求/语言/可维护性/认知规划/工具验证/安全/技能/交付）；
-3. 新增总则条目——规则分级（红线 > 强制 > 默认）与同级冲突裁决；
-4. 新增完成输出条目——任务结束须给出含验证结论的变更说明；
-5. 补齐若干语义澄清：工作量禁令的用户询问例外、bash_opt 与内部工具的
+1. 章节分组标题（总则/需求/语言/可维护性/认知规划/工具验证/安全/技能/交付）；
+2. 总则条目——规则分级（红线 > 强制 > 默认）与同级冲突裁决；
+3. 完成输出条目——任务结束须给出含验证结论的变更说明；
+4. 补齐若干语义澄清：工作量禁令的用户询问例外、bash_opt 与内部工具的
    边界、注释不得作为事实依据、以及若干语病修正。
+
+后续改动：撤除文件头部的模式自描述两行（「空模式精简规则集」与
+「Ctrl+B 循环切换」说明），故新增反向断言锁定其不再出现。
 """
 
 from __future__ import annotations
@@ -53,13 +55,13 @@ class TestEmptyPromptModeSelfDescription:
         assert main_prompt_text.startswith("你是一位乐于助人的软件工程师助手。")
         assert "# 全局约束" in main_prompt_text
 
-    def test_mode_self_description_present(self, main_prompt_text: str):
-        """须说明本文件是空模式精简规则集，并说明 Ctrl+B 的模式切换关系。"""
-        assert "空模式（empty）" in main_prompt_text
-        assert "精简规则集" in main_prompt_text
-        assert "Ctrl+B" in main_prompt_text
-        assert "简单模式" in main_prompt_text
-        assert "标准模式" in main_prompt_text
+    def test_mode_self_description_removed(self, main_prompt_text: str):
+        """文件头部的模式自描述两行须已撤除（不留「空模式精简规则集/Ctrl+B」说明）。"""
+        assert "精简规则集" not in main_prompt_text
+        assert "空模式（empty）" not in main_prompt_text
+        assert "Ctrl+B" not in main_prompt_text
+        first_lines = main_prompt_text.splitlines()[:4]
+        assert all("简单模式" not in ln and "标准模式" not in ln for ln in first_lines)
 
     def test_baseline_flow_hint_present(self, main_prompt_text: str):
         """须给出未覆盖细节的基本流程兜底（认知 → 计划 → 实施 → 验证）。"""

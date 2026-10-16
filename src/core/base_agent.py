@@ -956,8 +956,10 @@ class BaseAgent:
              安全红线：仅当进程仍可能存活时执行）；
           2. subagent 表（_subagent_tasks）：取消运行中的 asyncio task
              （SubAgent.run() 的 finally 会清理其内部 bash 任务）；
-          3. 清空两张任务表（不再生成"已取消"结果消息，保持中断语义
-             干净——模型不会收到后台任务取消通知）。
+          3. 取消**之前**先保全「已完成但尚未被对话消费」的后台结果（收集
+             为对话消息），随后取消运行中任务并清空两张任务表——本次被
+             取消的任务不生成"已取消"结果消息（保持中断语义干净）；已
+             完成任务的产出不丢。
 
         Returns:
             被取消的 asyncio 任务数量。
@@ -989,6 +991,24 @@ class BaseAgent:
                 task = rec.get("task")
                 if task is not None and getattr(task, "done", None) is not None and not task.done():
                     tasks_to_cancel.append(task)
+
+        # ── 保全「已完成但尚未被对话消费」的后台结果（**在取消之前**） ──
+        # ESC 的中断语义是「停掉正在跑的」，但**已完成**（done=True，结果
+        # 已就绪）的任务不属于「正在跑」——其结果（bash 三元输出 / subagent
+        # 输出）若随 clear() 一并丢弃，模型将永远看不到该任务已产出结果
+        # （修复前行为）。此处先把这类结果收集为对话消息，再取消运行中任务
+        # 并清空任务表。
+        # ★ 顺序要求：必须在 ``_cancel_tasks_and_kill_pids`` **之前**收集——
+        #   取消会让运行中任务的完成回调（``_on_done``）把记录标记 done 并
+        #   写入「(后台命令已被取消)」结果；若在其后收集，这些「被本次中断
+        #   取消」的任务会被误当「已完成结果」插入对话，污染中断语义。
+        try:
+            preserved = self._collect_done_background_messages()
+            preserved += self._collect_done_subagent_messages()
+            if preserved:
+                self._append_background_result_messages(preserved)
+        except Exception:
+            _logger.debug("ESC 杀后台任务时保全已完成结果失败", exc_info=True)
 
         # 取消任务 + 移出事件循环线程杀进程树 + 超时等待（公共助手，与
         # SubAgent._cleanup_background_tasks 共用，避免两处漂移）

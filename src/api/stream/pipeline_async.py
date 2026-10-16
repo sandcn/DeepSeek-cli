@@ -37,8 +37,62 @@ from ...core.events.publish import publish_output
 _logger = logging.getLogger(__name__)
 
 _STREAM_IDLE_TIMEOUT = 120.0
+#: 中断轮询间隔（秒）——等待 SSE 下一块数据期间，以该间隔检查全局中断信号
+#: （threading.Event，跨线程/跨事件循环）；中断到达即取消「取块」任务，使
+#: 用户在 SSE 无数据（流卡住）时按 ESC/Ctrl+C 也能立即结束迭代，而不必等
+#: 120s 空闲超时或下一块数据到达（响应延迟 ≤ 本间隔）。
+_INTERRUPT_POLL_INTERVAL = 0.1
 _INTERRUPTED_MSG = f"\n{YELLOW}  ● 已中断{RESET}"
 _INTERRUPTED_MSG_TEXT = "(已中断)"
+
+
+def _discard_task(task: "asyncio.Future | None") -> None:
+    """取消并回收 asyncio 任务（**不 await**，避免取消信号纠缠）。
+
+    直接 ``await`` 一个刚被取消的任务，会在当前协程自身也处于取消中时把
+    ``CancelledError`` 混淆传播；改用 done 回调取出结果（含 CancelledError），
+    既回收任务（避免「Task was destroyed but it is pending」），又保持调用方
+    的取消语义不被干扰。
+    """
+    if task is None or task.done():
+        if task is not None and not task.cancelled():
+            try:
+                task.exception()
+            except Exception:
+                pass
+        return
+
+    def _consume(t: "asyncio.Future") -> None:
+        if t.cancelled():
+            return
+        try:
+            t.exception()
+        except Exception:
+            pass
+
+    task.cancel()
+    task.add_done_callback(_consume)
+
+
+async def _watch_interrupt_and_cancel(task: "asyncio.Future") -> None:
+    """轮询全局中断标志；置位时取消正在等待的「取块」任务。
+
+    全局中断信号是 ``threading.Event``（可被 render 线程等任意线程置位），
+    无法被 asyncio 直接等待；本协程以 ``_INTERRUPT_POLL_INTERVAL`` 间隔轮询，
+    中断到达即取消 ``task``（``response_iter.__anext__()`` 的任务），使外层
+    ``asyncio.wait_for`` 立即以 CancelledError 返回——SSE 无数据（流卡住）时
+    用户按 ESC/Ctrl+C 也能即时结束迭代。
+
+    由 ``_interruptible_iter_async`` 每轮取块时启动，随其 finally 回收。
+
+    注：经模块全局名 ``is_interrupted_async`` 调用（而非闭包捕获），
+    保持测试 ``monkeypatch.setattr(pa, "is_interrupted_async", ...)`` 可拦截。
+    """
+    while not task.done():
+        if await is_interrupted_async():
+            task.cancel()
+            return
+        await asyncio.sleep(_INTERRUPT_POLL_INTERVAL)
 
 
 async def _interruptible_iter_async(
@@ -52,31 +106,55 @@ async def _interruptible_iter_async(
     - 通过 asyncio.sleep(0) 让出控制权给 Event Loop
     - 每次迭代后检查中断标志
 
+    ★ 中断即时性（ESC/Ctrl+C 响应）：等待下一块数据时并行启动
+    ``_watch_interrupt_and_cancel``（按 ``_INTERRUPT_POLL_INTERVAL`` 轮询全局
+    中断信号）——中断到达即取消「取块」任务，外层 ``asyncio.wait_for`` 随
+    即抛 ``CancelledError``，本次迭代立即结束。修复前中断检查只在每个 chunk
+    之间进行，SSE 流卡住（无新数据）时用户按 ESC 后最长 120s 才响应。
+    超时语义不变：单次等待下一块超过 ``_STREAM_IDLE_TIMEOUT`` 才抛
+    ``StreamIdleTimeoutError``。
+
     try/finally 显式清理 response_iter（而非 aclosing()），从而在
     finally 块中消化清理期间的异常，防止它们与传播中的 GeneratorExit
     组合成 BaseExceptionGroup（Python 3.11+），确保 async for 的
     aclose() 能正确识别生成器已关闭。
 
     使用 while 循环 + 手动 __anext__() 替代 async for，从而可以给每次
-    迭代设置 asyncio.wait_for 超时。当 SSE 流因网络问题卡住时，
+    迭代设置等待超时。当 SSE 流因网络问题卡住时，
     抛出 StreamIdleTimeoutError（继承自 TimeoutError），由上游的
     _retry_api_call_async 重试机制自动捕获并重试。
     """
     try:
         while True:
+            if await is_interrupted_async():
+                return
+            anext_task = asyncio.ensure_future(response_iter.__anext__())
+            watcher = asyncio.ensure_future(
+                _watch_interrupt_and_cancel(anext_task),
+            )
             try:
                 chunk = await asyncio.wait_for(
-                    response_iter.__anext__(),
-                    timeout=_STREAM_IDLE_TIMEOUT,
+                    anext_task, timeout=_STREAM_IDLE_TIMEOUT,
                 )
+            except asyncio.CancelledError:
+                # 取块任务被 watcher 取消 = 中断信号到达（全局标志已置位）
+                # → 结束迭代；否则为外部取消（当前协程被取消）→ 向上传播，
+                # 交由本方法外层的 CancelledError 分支降级处理。
+                if await is_interrupted_async():
+                    return
+                raise
             except asyncio.TimeoutError:
                 # asyncio.TimeoutError 在 Python 3.11+ 等价于内置 TimeoutError，
-                # StreamIdleTimeoutError 继承自 TimeoutError，会被上游重试机制捕获
+                # StreamIdleTimeoutError 继承自 TimeoutError，会被上游重试机制捕获。
+                # wait_for 超时时已取消并回收取块任务（生成器已关闭），此处无需
+                # 额外清理。
                 raise StreamIdleTimeoutError(
                     f"流空闲超时: {_STREAM_IDLE_TIMEOUT:.0f}秒内未收到新数据"
                 )
             except StopAsyncIteration:
                 return  # 流正常结束
+            finally:
+                _discard_task(watcher)
 
             if await is_interrupted_async():
                 return
@@ -120,6 +198,7 @@ async def _interruptible_iter_async(
         # 防止它们与传播中的 GeneratorExit（由 async for 的 aclose() 注入）
         # 组合成 BaseExceptionGroup（Python 3.11+），
         # 导致 GeneratorExit 无法被 asyncio 识别为该生成器已正常关闭。
+        # （每轮取块的中断监视协程已在循环内 finally 回收，见 _discard_task。）
         try:
             await response_iter.aclose()
         except (asyncio.CancelledError, StopAsyncIteration, Exception):

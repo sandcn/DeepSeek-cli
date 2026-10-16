@@ -123,7 +123,8 @@ def _make_dispatcher(kill_cb=None, interrupt_cb=None) -> InputDispatcher:
     buffer_editor = SimpleNamespace(
         is_search_active=lambda: False,
         has_queued_input=lambda: False,
-        reset=lambda clear_queue=True: None,
+        reset=lambda clear_queue=True, clear_buffer=True: None,
+        get_current_text=lambda: "",
         _echo=lambda text: None,
     )
     d = InputDispatcher(io, buffer_editor, InputParser())

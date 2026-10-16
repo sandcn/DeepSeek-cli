@@ -1731,7 +1731,7 @@ class AnsiStreamRenderer:
             if line._esc_checked:
                 out.append(line)
                 continue
-            new_line = AnsiLine()
+            new_line = AnsiLine(cont_prefix=line.cont_prefix)
             for r in line.runs:
                 text = r.text or ""
                 if "\x1b" not in text and "\x07" not in text:

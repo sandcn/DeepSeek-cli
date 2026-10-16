@@ -345,7 +345,7 @@ class InputBufferEditor:
         with self._lock:
             return self._buffer
 
-    def reset(self, clear_queue: bool = True) -> None:
+    def reset(self, clear_queue: bool = True, clear_buffer: bool = True) -> None:
         """清空所有流式输入状态（缓冲区、提交文本、历史导航、搜索状态）。
 
         （中断标志 _interrupted 由 InputDispatcher.reset() 一并清除，
@@ -356,10 +356,14 @@ class InputBufferEditor:
                 ``_input_ready``）。False 用于特殊按键分发路径（非 editmsg/
                 retry 的 action）——保留用户 Enter 提交后尚未被编排器消费的
                 输入（P2 修复，2026-08-07）。
+            clear_buffer: 是否清空编辑缓冲与光标（默认 True，既有语义）。
+                False 用于 **ESC 中断**——保留用户正在编辑但尚未提交的内容
+                （用户可见、可继续编辑），仅清理提交态/历史导航/搜索态。
         """
         with self._lock:
-            self._buffer = ""
-            self._cursor_pos = 0
+            if clear_buffer:
+                self._buffer = ""
+                self._cursor_pos = 0
             if clear_queue:
                 self._submitted_text = ""
                 self._input_ready.clear()

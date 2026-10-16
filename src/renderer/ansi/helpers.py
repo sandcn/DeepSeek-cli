@@ -72,17 +72,26 @@ class Run:
 
 
 class AnsiLine:
-    """一行输出（Run 序列）。"""
+    """一行输出（Run 序列）。
 
-    __slots__ = ("runs", "_esc_checked", "_w")
+    ``cont_prefix`` 为**续行前缀**（悬挂缩进）：本行按终端宽度折行时，除
+    首行外的每行以此前缀起始、可用宽度相应扣减——用于「列表项 / 引用行 /
+    容器缩进行」折行后续行与首行内容起始列对齐（见 ``wrap_line``）。空字符串
+    表示无续行对齐需求（普通段落 / 代码等），不影响本行自身内容与宽度。
+    """
 
-    def __init__(self, runs: list[Run] | None = None) -> None:
+    __slots__ = ("runs", "_esc_checked", "_w", "cont_prefix")
+
+    def __init__(self, runs: list[Run] | None = None,
+                 cont_prefix: str = "") -> None:
         self.runs: list[Run] = list(runs) if runs else []
         # ANSI 消毒缓存标记：True 表示已确认本行（当前内容）不含原始转义序列，
         # 消毒路径可直接跳过扫描。内容经 append/append_run 修改时重置。
         self._esc_checked = False
         # 显示宽度缓存（-1 = 未计算）；``append`` 修改内容时失效。
         self._w = -1
+        # 续行前缀（悬挂缩进）；仅 ``wrap_line`` 折行时消费。
+        self.cont_prefix = cont_prefix
 
     @classmethod
     def of(cls, text: str, style: Style | None = None) -> "AnsiLine":
@@ -155,7 +164,7 @@ class AnsiLine:
         return False
 
     def clone(self) -> "AnsiLine":
-        return AnsiLine(list(self.runs))
+        return AnsiLine(list(self.runs), self.cont_prefix)
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return f"AnsiLine({self.plain!r})"
@@ -321,7 +330,8 @@ def _all_width_one(runs: list) -> bool:
     return True
 
 
-def wrap_line(line: AnsiLine, max_width: int) -> list[AnsiLine]:
+def wrap_line(line: AnsiLine, max_width: int,
+              cont_prefix: str | None = None) -> list[AnsiLine]:
     """将 AnsiLine 按显示宽度换行为多行（CJK 安全 + 词边界优先）。
 
     词边界换行（方向8）：超宽且当前行内含空格断点时**优先在空格处断行**
@@ -334,9 +344,28 @@ def wrap_line(line: AnsiLine, max_width: int) -> list[AnsiLine]:
     实现：先展开为 (ch, style) 序列，贪心填充每行；超宽时若有空格断点则
     回退到断点（下一行从断点后继续），否则字符级断开。最后每行经
     ``AnsiLine.append`` 合并相邻同 style run（样式保持）。
+
+    ★ 续行悬挂缩进（``cont_prefix``，缺省取 ``line.cont_prefix``）：行首带
+    固定标记/缩进的行（列表项 ``1. `` / ``• ``、引用 ``│ ``、容器缩进行）
+    折行时，续行以「首行内容起始列」等宽的前缀起始、可用宽度扣减前缀宽度
+    ——修复前续行顶格列 0，长列表项折行后与首行内容错位（续行看起来像新的
+    顶层内容）。空前缀（普通段落）走原路径，快路径语义与性能不变；前缀
+    宽度不足 2 列余量（窄屏）时禁用前缀，避免撑破行宽不变量。
     """
     if max_width <= 0:
         return [line] if line.runs else []
+    if cont_prefix is None:
+        cont_prefix = getattr(line, "cont_prefix", "") or ""
+    # 续行前缀宽度：剩余可用宽度 < 2 列时禁用（窄屏防御——宽 2 字符仍能
+    # 放下；否则前缀会把内容挤到 0 列并破坏「行宽 <= max_width」不变量）。
+    cp = ""
+    cp_w = 0
+    if cont_prefix:
+        cp_w = cjk_display_width(cont_prefix)
+        if cp_w > 0 and cp_w + 2 <= max_width:
+            cp = cont_prefix
+        else:
+            cp_w = 0
     runs = line.runs
     if not any(r.text for r in runs):
         return []
@@ -381,7 +410,7 @@ def wrap_line(line: AnsiLine, max_width: int) -> list[AnsiLine]:
     #     - ``total == 2n`` ⟺ 每字符宽 2（宽度取值 0/1/2，全部为 2 才成立）
     #     - ``total == n`` 且所有字符宽 1（``_all_width_one``）⟺ 每字符宽 1
     #   ``not has_nl`` 显式守卫（上述两条判定已隐含无 ``\n``，保留以固化契约）。
-    if not has_nl:
+    if not has_nl and not cp_w:
         if total == 2 * n:
             per_line = max_width // 2
             if per_line > 0:
@@ -405,7 +434,10 @@ def wrap_line(line: AnsiLine, max_width: int) -> list[AnsiLine]:
     lines: list[AnsiLine] = []
     i = 0
     while i < n:
-        # 贪心填充一行（不超 max_width）
+        # 本行可用宽度：首行（尚无输出行）用 max_width；续行扣除续行前缀
+        # 宽度（悬挂缩进——前缀在下面追加到行首）。
+        limit = max_width if (not cp_w or not lines) else max_width - cp_w
+        # 贪心填充一行（不超 limit）
         j = i
         width = 0
         last_space = -1  # 本行内最后一个空格的索引（绝对）
@@ -421,7 +453,7 @@ def wrap_line(line: AnsiLine, max_width: int) -> list[AnsiLine]:
             if ch == " ":
                 last_space = j
             cw = width_of(ch)
-            if width + cw > max_width and j > i:
+            if width + cw > limit and j > i:
                 break
             width += cw
             j += 1
@@ -471,7 +503,17 @@ def wrap_line(line: AnsiLine, max_width: int) -> list[AnsiLine]:
         if chars:
             line_out.append("".join(chars), seg_style, seg_link)
         if line_out.runs:
-            lines.append(line_out)
+            # 续行（非首行）补悬挂缩进前缀：等宽前缀并入首个无样式 run，
+            # 减少 run 碎片；首行不含前缀（行首已有项目符号/缩进本身）。
+            if cp and lines:
+                first = line_out.runs[0]
+                if first.style is None and not getattr(first, "link", None):
+                    lines.append(AnsiLine(
+                        [Run(cp + first.text)] + list(line_out.runs[1:])))
+                else:
+                    lines.append(AnsiLine([Run(cp)] + list(line_out.runs)))
+            else:
+                lines.append(line_out)
         i = next_i
     return lines
 
