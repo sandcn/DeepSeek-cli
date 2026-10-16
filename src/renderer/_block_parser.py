@@ -261,6 +261,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._last_list_indent: int = -1
         # 上一个 LIST_ITEM 的内容起始列（= indent + marker宽度）
         self._last_list_content_col: int = -1
+        # 上一个 LIST_ITEM 的**标记显示宽度**（无序 ``• `` = 2、有序 ``12. `` = 4）
+        # ——渲染层据此把续行/嵌套块对齐到内容起始列（见 ``list_content_prefix``）。
+        self._last_list_marker_width: int = 2
         # 列表项内块级内容（嵌套代码块/引用/表格/子列表）的收集缓冲：
         #   ``_list_block_active`` 表示正在收集缩进行；``_list_block_indent``
         #   为该块统一的剥离列宽；``_list_block_lines`` 为剥离后的原始行。
@@ -1109,12 +1112,34 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     else:
                         break
                 if leading >= self._last_list_content_col:
+                    # ★ 列表项内的**块级起始行**（引用 / 围栏 / 子列表 / 标题）
+                    #   优先按块级语义预览并带列表内容缩进前缀：修复前一律按
+                    #   续行处理，``- 项\n  > 引用`` 流式期间原样显示 ``> 引用``
+                    #   （提交后是 ``│ 引用``）、嵌套子列表 ``    - c`` 显示为
+                    #   缩进 6 列的字面 ``- c``（提交后是缩进 4 列的 ``▪ c``）。
+                    nested = self._classify_preview_nested(line)
+                    if nested is not None:
+                        return nested
                     return [Token(TokenType.LIST_ITEM, line.rstrip(), {
                         "continuation": True,
                         "indent": self._last_list_indent,
                         "depth": len(self._list_indents) or 1,
+                        "marker_width": self._last_list_marker_width,
                         "preview": True,
                     })]
+
+            return self._classify_preview_block(stripped, line)
+        except Exception:
+            return None
+
+    def _classify_preview_block(self, stripped: str, line: str) -> list[Token] | None:
+        """块级语法预览分类（引用 / 分隔线 / 围栏 / 标题 / 列表）。
+
+        供 ``_classify_preview_line``（顶层活动行）与 ``_classify_preview_nested``
+        （列表项内块级起始行）共用；只读解析器状态，未命中 / 异常返回 ``None``。
+        """
+        try:
+            first = stripped[0]
 
             # 引用
             if first == '>':
@@ -1181,6 +1206,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     "indent": ul['indent'],
                     "depth": self._preview_list_depth(ul['indent']),
                     "bullet": True,
+                    "marker_width": 2 + (4 if ul.get('todo') else 0),
                     "todo": ul.get('todo', False),
                     "checked": ul.get('checked', False),
                     "cancelled": ul.get('cancelled', False),
@@ -1194,6 +1220,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     "indent": ol['indent'],
                     "depth": self._preview_list_depth(ol['indent']),
                     "bullet": False, "number": ol['number'],
+                    "marker_width": (ol.get('marker_width',
+                                            len(str(ol['number'])) + 2)
+                                     + (4 if ol.get('todo') else 0)),
                     "start": ol.get('start', ol['number']),
                     "todo": ol.get('todo', False),
                     "checked": ol.get('checked', False),
@@ -1204,6 +1233,41 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         except Exception:
             return None
         return None
+
+    def _classify_preview_nested(self, line: str) -> list[Token] | None:
+        """列表项内**块级起始行**的预览 Token（带列表前缀元数据）。
+
+        与提交路径 ``_handle_list_block_line`` → ``_flush_list_block`` 同语义：
+        剥离列表内容缩进后按块级语法分类；非块级起始（普通文本续行）返回
+        ``None``（调用方按列表续行处理）。非列表项 token 标记
+        ``list_depth`` / ``list_marker_width``，由渲染层补内容缩进前缀。
+        """
+        content_col = self._last_list_content_col
+        if content_col <= 0 or len(line) <= content_col:
+            return None
+        inner_line = line[content_col:]
+        inner_stripped = _strip_left(inner_line).rstrip()
+        if not inner_stripped:
+            return None
+        toks = self._classify_preview_block(inner_stripped, inner_line)
+        if not toks:
+            return None
+        depth = len(self._list_indents) or 1
+        if toks[0].type is TokenType.LIST_ITEM:
+            # 列表项内的**子列表**：层级 = 当前层 + 1（与提交路径
+            # ``_update_list_indent`` 后的 depth 一致）——它自身就是列表行，
+            # 不再叠加列表内容前缀。
+            for tok in toks:
+                tok.meta["depth"] = depth + 1
+            return toks
+        try:
+            mw = max(1, int(self._last_list_marker_width or 2))
+        except (TypeError, ValueError):
+            mw = 2
+        for tok in toks:
+            tok.meta.setdefault("list_depth", depth)
+            tok.meta.setdefault("list_marker_width", mw)
+        return toks
 
     def _preview_list_depth(self, indent: int) -> int:
         """按 ``_update_list_indent`` 的规则（不修改状态）计算列表深度。"""
@@ -1227,6 +1291,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         结束围栏——直接纳入（免每帧对其 ``strip()`` + 围栏扫描的 O(长度)
         开销；修复前 20 万字符单行每帧约 0.4ms，流式累计明显）。
         """
+        if not tail:
+            return []
+        tail = self._strip_preview_tail_bq(tail)
         if not tail:
             return []
         if len(tail) > _FENCE_LINE_MAX_PROBE:
@@ -1262,12 +1329,34 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             "lineno_step": parse_lineno_options(attrs)[2],
         })
 
+    def _strip_preview_tail_bq(self, tail: str) -> str:
+        """预览活动行的引用块 ``>`` 前缀剥离（引用块内时）。
+
+        引用块内的代码 / 数学行以**剥离前缀后**的内容进入块缓冲，而**未换行
+        的活动行**取自原始解析缓冲（未剥离）——不剥离会让预览内容混入 ``>``
+        （如 ``> $$`` 块的预览公式变成 ``> x = 1``），与提交态不一致。
+        """
+        if not tail:
+            return tail
+        if not (self._bq_in_recursion > 0 or self._bq_active):
+            return tail
+        if tail.lstrip()[:1] != '>':
+            return tail
+        try:
+            _depth, text = _split_blockquote(tail)
+        except Exception:
+            return tail
+        return text
+
     def _preview_block_tail_lines(self, st, tail: str) -> list[str]:
         """Mermaid/数学块预览的未换行活动行（结束定界符不纳入内容）。
 
         ★ 性能：结束定界符行必然很短（``$$`` / ``\\]`` / 围栏行）——超长活动
         行直接纳入，免每帧 ``strip()`` 的 O(长度) 开销（同 ``_preview_code_tail_lines``）。
         """
+        if not tail:
+            return []
+        tail = self._strip_preview_tail_bq(tail)
         if not tail:
             return []
         if len(tail) > _FENCE_LINE_MAX_PROBE:
@@ -1589,6 +1678,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                         "continuation": True,
                         "indent": self._last_list_indent,
                         "depth": len(self._list_indents) or 1,
+                        "marker_width": self._last_list_marker_width,
                     }))
                     return
                 # ★ 懒续行（CommonMark lazy continuation）：紧凑列表项的段落续行
@@ -1603,6 +1693,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                         "continuation": True,
                         "indent": self._last_list_indent,
                         "depth": len(self._list_indents) or 1,
+                        "marker_width": self._last_list_marker_width,
                         "lazy": True,
                     }))
                     return
@@ -1977,16 +2068,19 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                                 ul['text'], ul['indent'], ul['indent'] + 2):
                             return True
                         self._update_list_indent(ul['indent'])
+                        # 标记显示宽度：符号 + 空格；任务项再加复选框 ``[x] ``（4）
+                        _mw = 2 + (4 if ul.get('todo') else 0)
                         tokens.append(Token(TokenType.LIST_ITEM, ul['text'], {
                             "indent": ul['indent'], "depth": len(self._list_indents),
-                            "bullet": True,
+                            "bullet": True, "marker_width": _mw,
                             "todo": ul.get('todo', False),
                             "checked": ul.get('checked', False),
                             "cancelled": ul.get('cancelled', False),
                         }))
                         self._last_token_type = TokenType.LIST_ITEM
                         self._last_list_indent = ul['indent']
-                        self._last_list_content_col = ul['indent'] + 2
+                        self._last_list_marker_width = _mw
+                        self._last_list_content_col = ul['indent'] + _mw
                         return True
                 except Exception:
                     count = self._silent_downgrade_count.get('ul_item_in_setext', 0) + 1
@@ -2144,16 +2238,19 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                             ul['text'], ul['indent'], ul['indent'] + 2):
                         return True
                     self._update_list_indent(ul['indent'])
+                    # 标记显示宽度：符号 + 空格；任务项再加复选框 ``[x] ``（4）
+                    _mw = 2 + (4 if ul.get('todo') else 0)
                     tokens.append(Token(TokenType.LIST_ITEM, ul['text'], {
                         "indent": ul['indent'], "depth": len(self._list_indents),
-                        "bullet": True,
+                        "bullet": True, "marker_width": _mw,
                         "todo": ul.get('todo', False),
                         "checked": ul.get('checked', False),
                         "cancelled": ul.get('cancelled', False),
                     }))
                     self._last_token_type = TokenType.LIST_ITEM
                     self._last_list_indent = ul['indent']
-                    self._last_list_content_col = ul['indent'] + 2  # "- " marker
+                    self._last_list_marker_width = _mw
+                    self._last_list_content_col = ul['indent'] + _mw  # "- " marker
                     return True
             except Exception:
                 count = self._silent_downgrade_count.get('plus', 0) + 1
@@ -2171,6 +2268,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     self._emit_blockquote_close(tokens)
                     # marker_width 由 _try_ol_item 计算（"1. " 或 "1) "）
                     marker_width = ol.get('marker_width', len(str(ol['number'])) + 2)
+                    if ol.get('todo'):
+                        marker_width += 4  # 复选框 ``[x] ``
                     if self._maybe_start_list_block_item(
                             ol['text'], ol['indent'],
                             ol['indent'] + marker_width):
@@ -2179,6 +2278,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     tokens.append(Token(TokenType.LIST_ITEM, ol['text'], {
                         "indent": ol['indent'], "depth": len(self._list_indents),
                         "bullet": False, "number": ol['number'],
+                        "marker_width": marker_width,
                         "start": ol.get('start', ol['number']),
                         "todo": ol.get('todo', False),
                         "checked": ol.get('checked', False),
@@ -2187,6 +2287,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     }))
                     self._last_token_type = TokenType.LIST_ITEM
                     self._last_list_indent = ol['indent']
+                    self._last_list_marker_width = marker_width
                     self._last_list_content_col = ol['indent'] + marker_width
                     return True
             except Exception:
@@ -2733,6 +2834,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._last_token_type = TokenType.LIST_ITEM
         self._last_list_indent = indent
         self._last_list_content_col = content_col
+        # 标记显示宽度（内容列 - 缩进列）：渲染层据此把续行/嵌套块对齐内容列
+        self._last_list_marker_width = max(2, content_col - indent)
         self._list_block_active = True
         # 容器内后续行按**列表内容列**剥离（``- ``` `` 的代码内容从第 2 列起）。
         self._list_block_indent = content_col
@@ -2800,8 +2903,17 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return
         sub = self._parse_sub_blocks(lines)
         list_indent = max(0, self._last_list_indent)
+        depth = max(1, len(self._list_indents) or 1)
+        try:
+            marker_width = max(1, int(self._last_list_marker_width or 2))
+        except (TypeError, ValueError):
+            marker_width = 2
         for tok in sub:
+            # 渲染层据此补「列表内容缩进前缀」（层级 + 标记宽度）；``list_indent``
+            # 为兼容旧调用面保留的源前导空白列数。
             tok.meta.setdefault('list_indent', list_indent)
+            tok.meta.setdefault('list_depth', depth)
+            tok.meta.setdefault('list_marker_width', marker_width)
         tokens.extend(sub)
 
     def _reset_list_context_if_needed(self, stripped: str) -> None:
@@ -2910,6 +3022,16 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             tokens.append(Token(TokenType.DEFINITION_ITEM, cont_text,
                                 {"term": "", "continuation": True}))
         raw = line.rstrip('\n')
+        # ★ CommonMark：段落行的行首 **≤3 个空格**缩进被忽略（「Up to three
+        #   spaces of leading spaces are allowed and ignored」）；4+ 空格属缩进
+        #   代码块、由上游分支判定，段落内的 4 空格续行保守保留原样。修复前
+        #   原样保留行首空格 → 模型输出的缩进段落整段右移（渲染出行首缩进）。
+        if raw[:1] == ' ':
+            _sp = 0
+            while _sp < len(raw) and raw[_sp] == ' ':
+                _sp += 1
+            if 0 < _sp <= 3:
+                raw = raw[_sp:]
         # ★ 行内代码跨行状态：维护当前段落内未闭合的反引号 run 长度——
         #   CommonMark 代码段内的行尾**不**构成硬换行（`` `foo  `` + 换行 +
         #   `` bar` `` 的双空格是代码内容）；修复前无条件把行尾双空格替换为

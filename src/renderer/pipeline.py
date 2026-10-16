@@ -169,6 +169,12 @@ class CodeBlockBatcher(TokenFilter):
             out_meta["bq_depth"] = bq_depth
         if "list_indent" in meta:
             out_meta["list_indent"] = meta.get("list_indent", 0)
+        # 列表项的层级与标记宽度（渲染层据此按层级缩进 / 对齐内容列，见
+        # ``ansi.blocks.list_content_prefix``）
+        if "list_depth" in meta:
+            out_meta["list_depth"] = meta.get("list_depth", 1)
+        if "list_marker_width" in meta:
+            out_meta["list_marker_width"] = meta.get("list_marker_width", 2)
         return Token(TokenType.CODE_BLOCK, "\n".join(lines), out_meta)
 
     def _flush_segment(self, result: list[Token], lines: list[str],

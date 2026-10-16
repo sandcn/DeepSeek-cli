@@ -34,7 +34,12 @@ from src._text_width import char_width, string_width
 
 
 def _wrap_reference(line: AnsiLine, max_width: int) -> list[AnsiLine]:
-    """逐字符 tuple 展开 + 贪心填充的参考换行实现（修复前算法）。"""
+    """逐字符 tuple 展开 + 贪心填充的参考换行实现（通用路径语义）。
+
+    词边界断点带**半行约束**（断点左侧内容须占本行可用宽度的一半以上）——
+    与 ``wrap_line`` 一致，避免行首标记（``• `` / ``│ ``）里的空白成为唯一
+    断点、首行只剩标记。
+    """
     if max_width <= 0:
         return [line] if line.runs else []
     items: list[tuple[str, Style | None]] = []
@@ -50,12 +55,14 @@ def _wrap_reference(line: AnsiLine, max_width: int) -> list[AnsiLine]:
         j = i
         width = 0
         last_space = -1
+        last_space_w = 0
         while j < n:
             ch, _ = items[j]
             if ch == "\n":
                 break
             if ch == " ":
                 last_space = j
+                last_space_w = width
             cw = cjk_display_width(ch)
             if width + cw > max_width and j > i:
                 break
@@ -71,7 +78,7 @@ def _wrap_reference(line: AnsiLine, max_width: int) -> list[AnsiLine]:
         elif j < n and items[j][0] == "\n":
             end = j
             next_i = j + 1
-        elif j < n and last_space > i:
+        elif j < n and last_space > i and last_space_w * 2 >= max_width:
             end = last_space
             next_i = last_space + 1
         else:

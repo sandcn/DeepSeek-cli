@@ -135,16 +135,20 @@ def test_list_item_table_indented():
 
 
 def test_nested_list_not_double_indented():
+    """嵌套列表按**层级**缩进（每层 2 列）——修复前按源前导空白列数 ×2 缩进。"""
     lines = _render("- a\n  - b\n")
     assert lines[0] == "\u2022 a"
     assert lines[1].strip().endswith("b")
-    assert lines[1] == "    \u25e6 b"
+    assert lines[1] == "  \u25e6 b"
+    # 4 空格源缩进的子列表（对齐父项内容的常见写法）同样只缩进一层
+    assert _render("- a\n    - b\n")[1] == "  \u25e6 b"
 
 
-def test_ordered_nested_list_unchanged():
+def test_ordered_nested_list_indent_per_level():
+    """有序嵌套列表每层 2 列（与 Rich 路径一致；修复前按源列 ×2 = 6 列）。"""
     lines = _render("1. a\n   1. b\n")
     assert lines[0] == "1. a"
-    assert "1." in lines[1] and lines[1].startswith("      ")
+    assert lines[1] == "  1. b"
 
 
 # ══════════════════════════════════════════════════════════
@@ -215,7 +219,8 @@ def test_html_nested_list_depth():
     assert lines[1] == "\u2022 一"
     assert lines[2] == "\u2022 二"
     assert lines[3].strip().endswith("嵌套")
-    assert lines[3].startswith("    ")
+    # 嵌套层缩进一层（2 列）——与 Markdown 列表同一「每层 2 列」语义
+    assert lines[3].startswith("  ")
 
 
 def test_html_ordered_list_numbers():

@@ -63,16 +63,14 @@ class AnsiRenderEngine:
     # ── 主入口 ──────────────────────────────────────
 
     def render(self, token: Token) -> list[AnsiLine]:
-        """渲染单个 token（在渲染上下文中，供脚注/参考链接/缩写解析）。"""
+        """渲染单个 token（在渲染上下文中，供脚注/参考链接/缩写解析）。
+
+        渲染后统一施加 token 的列表项 / 引用块前缀（``apply_token_prefixes``，
+        与流式预览共用同一真源）。
+        """
         with use_render_context(self._ctx):
             lines = self._render_impl(token)
-        list_indent = _token_list_indent(token)
-        if list_indent is not None and lines:
-            lines = _apply_list_prefix(lines, list_indent)
-        depth = _token_bq_depth(token)
-        if depth > 0 and lines:
-            lines = _apply_bq_prefix(lines, depth)
-        return lines
+        return apply_token_prefixes(lines, token)
 
     def _render_impl(self, token: Token) -> list[AnsiLine]:
         """渲染单个 token 为 AnsiLine 列表（含流式缓冲副作用）。"""
@@ -416,6 +414,54 @@ def _token_list_indent(token: Token) -> int | None:
         return None
 
 
+def _token_list_prefix_meta(token: Token) -> tuple[int, int] | None:
+    """Token 所属列表项的 ``(嵌套层级, 标记宽度)``；``None`` = 不在列表项内。
+
+    优先读解析器提供的 ``list_depth`` / ``list_marker_width``（精确层级与内容
+    列）；仅有旧键 ``list_indent``（源前导空白列数）时按「每 2 列一层」近似
+    换算，保证历史调用面（自定义 Token 构造 / 插件）仍可用。
+    """
+    meta = getattr(token, "meta", None)
+    if not meta:
+        return None
+    if "list_depth" in meta:
+        try:
+            depth = max(1, int(meta.get("list_depth") or 1))
+        except (TypeError, ValueError):
+            depth = 1
+        try:
+            mw = max(1, int(meta.get("list_marker_width") or 2))
+        except (TypeError, ValueError):
+            mw = 2
+        return (depth, mw)
+    if "list_indent" not in meta:
+        return None
+    try:
+        indent = max(0, int(meta.get("list_indent") or 0))
+    except (TypeError, ValueError):
+        indent = 0
+    return (indent // 2 + 1, 2)
+
+
+def apply_token_prefixes(lines: list[AnsiLine], token: Token) -> list[AnsiLine]:
+    """给渲染行施加 token 的列表项 / 引用块前缀（渲染与预览共用真源）。
+
+    ``AnsiRenderEngine.render`` 与 ``AnsiStreamRenderer._render_preview_token``
+    的**特化增量预览路径**（代码块 / 表格 / 公式…，不经 ``render``）都必须经
+    此处补前缀——修复前预览路径绕过了前缀注入，引用块内的未闭合代码块/表格/
+    公式在流式期间没有 ``│ `` 前缀（显示成顶层块），块闭合瞬间才补上。
+    """
+    if not lines:
+        return lines
+    lm = _token_list_prefix_meta(token)
+    if lm is not None:
+        lines = _apply_list_prefix(lines, lm[0], lm[1])
+    depth = _token_bq_depth(token)
+    if depth > 0:
+        lines = _apply_bq_prefix(lines, depth)
+    return lines
+
+
 def _runs_visible(runs) -> bool:
     """行 runs 是否含可见文本（存在非空白 run）。
 
@@ -429,14 +475,16 @@ def _runs_visible(runs) -> bool:
     return False
 
 
-def _apply_list_prefix(lines: list[AnsiLine], indent: int) -> list[AnsiLine]:
+def _apply_list_prefix(lines: list[AnsiLine], depth: int,
+                       marker_width: int = 2) -> list[AnsiLine]:
     """给列表项内的块级元素行补内容缩进前缀（与列表续行对齐）。
 
-    前缀 ``"  " * indent + "  "`` 与 ``render_list_item`` 的续行缩进一致
-    （``indent`` 为列表项 0-based 缩进层，额外两空格对齐内容起始列）。
+    前缀 = ``list_content_prefix(depth, marker_width)``（层级缩进 +
+    标记宽度），与 ``render_list_item`` 的续行缩进同一真源——``1. `` 项内容
+    起始列 3、``10. `` 为 4、``- [x] `` 为 6。
     与引用前缀同样**不就地修改**输入行——行对象可能来自跨帧缓存。
     """
-    prefix = "  " * max(0, indent) + "  "
+    prefix = blocks.list_content_prefix(depth, marker_width)
     out: list[AnsiLine] = []
     for ln in lines:
         if ln.runs and _runs_visible(ln.runs):
@@ -473,4 +521,9 @@ def _apply_bq_prefix(lines: list[AnsiLine], depth: int) -> list[AnsiLine]:
     return out
 
 
-__all__ = ["AnsiRenderEngine"]
+__all__ = [
+    "AnsiRenderEngine",
+    "apply_token_prefixes",
+    "_apply_list_prefix",
+    "_apply_bq_prefix",
+]

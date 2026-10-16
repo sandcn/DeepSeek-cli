@@ -28,7 +28,9 @@ from .style import Style
 from .inline import (
     render_inline, use_render_context, _last_typo_pos, _TYPO_LOOKBACK,
 )
-from .engine import AnsiRenderEngine, _apply_list_prefix, _apply_bq_prefix
+from .engine import (
+    AnsiRenderEngine, _apply_list_prefix, _apply_bq_prefix, apply_token_prefixes,
+)
 from ._preview_cache import LinePreviewCache
 from ._line_delims import ParagraphBoundaryScanner
 from .table import TablePreviewCache
@@ -266,6 +268,32 @@ __all__ = [
     "truncate_line",
     "ansi_to_line",
 ]
+
+
+#: 自带引用块前缀（``│ ``）的行级 Token 类型——不再叠加 ``bq_depth`` 前缀。
+_BQ_PREFIXED_TOKEN_TYPES: frozenset = frozenset({
+    TokenType.BLOCKQUOTE_OPEN,
+    TokenType.BLOCKQUOTE_LINE,
+    TokenType.BLOCKQUOTE_CLOSE,
+})
+
+#: 未闭合块预览的**特化增量渲染**分派表（Token 类型 → 渲染器方法名）。
+#: 这些路径按块类型做行级增量渲染（代码高亮缓存 / 表格列宽复用 / 段落行级
+#: 缓存…），**不经** ``AnsiRenderEngine.render``，因此不会自动带上「列表项
+#: 内容缩进 / 引用块 ``│ `` 前缀」——调用方须经 ``apply_token_prefixes``
+#: 显式补（见 ``_render_preview_token``）。
+_PREVIEW_SPECIAL_METHODS: dict = {
+    TokenType.CODE_BLOCK: "_render_code_preview",
+    TokenType.TABLE: "_render_table_preview",
+    TokenType.MATH_BLOCK_CLOSE: "_render_math_preview",
+    TokenType.MERMAID_BLOCK_CLOSE: "_render_mermaid_preview",
+    TokenType.FRONT_MATTER: "_render_front_matter_preview",
+    TokenType.PARAGRAPH: "_render_paragraph_preview",
+    TokenType.BLOCKQUOTE_LINE: "_render_blockquote_preview",
+    TokenType.ADMONITION_CLOSE: "_render_admonition_preview",
+    TokenType.DETAILS_CLOSE: "_render_details_preview",
+    TokenType.FENCED_DIV_CLOSE: "_render_fenced_div_preview",
+}
 
 
 class AnsiStreamRenderer:
@@ -549,11 +577,16 @@ class AnsiStreamRenderer:
         with use_render_context(self._ctx):
             for tok in tokens:
                 # 外层统一补列表/引用前缀（token 特化预览路径如代码块增量
-                # 渲染不经 ``engine.render``，不会自带前缀）。
+                # 渲染不经 ``engine.render``，不会自带前缀）——先摘除子解析器
+                # 可能带上的前缀元数据，避免重复叠加。
                 tok.meta.pop("list_indent", None)
+                tok.meta.pop("list_depth", None)
+                tok.meta.pop("list_marker_width", None)
+                # 引用前缀由外层统一补（见下方 ``_apply_bq_prefix``）
+                tok.meta.pop("bq_depth", None)
                 tok.meta.setdefault("preview", True)
-                rows.extend(self._render_preview_token(tok, eng))
-        rows = _apply_list_prefix(rows, self._list_block_indent_level())
+                rows.extend(self._render_preview_token(tok, eng, apply_prefix=False))
+        rows = _apply_list_prefix(rows, *self._list_block_prefix_meta())
         bq = self._list_block_bq_depth()
         if bq > 0:
             rows = _apply_bq_prefix(rows, bq)
@@ -595,9 +628,19 @@ class AnsiStreamRenderer:
             return rows
         return None
 
-    def _list_block_indent_level(self) -> int:
-        """当前列表项缩进层（0 = 顶层列表项）。"""
-        return max(0, self._parser._last_list_indent)
+    def _list_block_prefix_meta(self) -> tuple[int, int]:
+        """当前列表项的 ``(嵌套层级, 标记宽度)``（内容列前缀用）。
+
+        层级取解析器当前列表缩进栈深度（与 LIST_ITEM token 的 ``depth`` 同源）；
+        标记宽度取最近一次列表项的标记宽度（无序 2、``12. `` 为 4）。
+        """
+        p = self._parser
+        depth = max(1, len(getattr(p, "_list_indents", ()) or ()))
+        try:
+            mw = max(1, int(getattr(p, "_last_list_marker_width", 2) or 2))
+        except (TypeError, ValueError):
+            mw = 2
+        return (depth, mw)
 
     def _list_block_bq_depth(self) -> int:
         """当前引用块嵌套深度（0 = 不在引用内；列表项块预览补前缀用）。"""
@@ -633,33 +676,55 @@ class AnsiStreamRenderer:
                 continue
         return pipeline.process(tokens, self._ctx)
 
-    def _render_preview_token(self, tok, eng) -> list[AnsiLine]:
-        """渲染单个预览 token（增量分派；非增量类型走预览引擎）。"""
+    def _render_preview_token(self, tok, eng, apply_prefix: bool = True) -> list[AnsiLine]:
+        """渲染单个预览 token（增量分派；非增量类型走预览引擎）。
+
+        ``apply_prefix=False`` 供**已自行统一补前缀**的调用方使用
+        （``_list_block_preview`` 对整批行补列表/引用前缀）——避免重复叠加。
+
+        ★ 前缀注入（修复预览缺前缀）：特化增量路径（代码块 / 表格 / 公式 /
+        段落…）不经 ``AnsiRenderEngine.render``，此处统一经
+        ``apply_token_prefixes`` 补「列表项内容缩进 / 引用块 ``│ `` 前缀」——
+        修复前引用块内的未闭合代码块/表格/公式在流式期间没有 ``│ `` 前缀
+        （显示成顶层块），块闭合瞬间才补上、视觉跳变。``eng.render`` 路径
+        自带前缀（同一真源），不重复施加。
+        """
+        method_name = None
+        if apply_prefix:
+            # 预览 token 的引用深度兜底（``peek_pending`` 不经 ``_mark_bq_depth``）
+            self._ensure_preview_depth(tok)
         if tok.meta.get("preview"):
-            t = tok.type
-            if t is TokenType.CODE_BLOCK:
-                return self._render_code_preview(tok)
-            if t is TokenType.TABLE:
-                return self._render_table_preview(tok)
-            if t is TokenType.MATH_BLOCK_CLOSE:
-                return self._render_math_preview(tok)
-            if t is TokenType.MERMAID_BLOCK_CLOSE:
-                return self._render_mermaid_preview(tok)
-            if t is TokenType.FRONT_MATTER:
-                return self._render_front_matter_preview(tok)
-            if t is TokenType.PARAGRAPH:
-                return self._render_paragraph_preview(tok)
-            if t is TokenType.BLOCKQUOTE_LINE:
-                return self._render_blockquote_preview(tok)
-            if t is TokenType.ADMONITION_CLOSE:
-                return self._render_admonition_preview(tok)
-            if t is TokenType.DETAILS_CLOSE:
-                return self._render_details_preview(tok)
-            if t is TokenType.FENCED_DIV_CLOSE:
-                return self._render_fenced_div_preview(tok)
-            if t is TokenType.HTML_BLOCK_LINE:
+            method_name = _PREVIEW_SPECIAL_METHODS.get(tok.type)
+            if method_name is None and tok.type is TokenType.HTML_BLOCK_LINE:
                 tok = self._window_html_line_token(tok)
-        return eng.render(tok)
+        if method_name is None:
+            # 非特化路径：``eng.render`` 已施加前缀（apply_token_prefixes）
+            return eng.render(tok)
+        lines = getattr(self, method_name)(tok)
+        if apply_prefix:
+            lines = apply_token_prefixes(lines, tok)
+        return lines
+
+    def _ensure_preview_depth(self, tok) -> None:
+        """给预览 token 兜底补引用块深度 ``bq_depth``（``│ `` 前缀用）。
+
+        ``peek_pending`` 产出的预览 token 不经解析器的 ``_mark_bq_depth``——
+        引用块内**未闭合**的代码块 / 表格 / 公式在流式期间缺 ``│ `` 前缀
+        （显示成顶层块），块闭合瞬间才补上、视觉跳变。此处按解析器当前
+        引用深度兜底（预览只在未闭合状态下渲染，深度即 token 所属内容深度）；
+        自带引用前缀的行级 Token（``BLOCKQUOTE_*``）不处理，避免重复。
+        """
+        meta = getattr(tok, "meta", None)
+        if not meta or "bq_depth" in meta:
+            return
+        if tok.type in _BQ_PREFIXED_TOKEN_TYPES:
+            return
+        try:
+            depth = int(getattr(self._parser, "bq_depth", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        if depth > 0:
+            meta["bq_depth"] = depth
 
     @staticmethod
     def _window_html_line_token(tok):

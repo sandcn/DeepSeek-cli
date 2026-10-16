@@ -197,6 +197,55 @@ def render_paragraph_lines(text: str, base=None) -> list[AnsiLine]:
 # ── 列表 ─────────────────────────────────────────────
 
 
+def list_level_prefix(depth: int) -> str:
+    """列表项**层级缩进**（``depth`` 为 1-based 嵌套层级；每层 2 列）。
+
+    ★ 修复（行首缩进过深）：修复前渲染层直接用解析器的 ``indent``（**源文本
+    前导空白字符列数**）作前缀（``"  " * indent``）——``- a\\n    - b``（4 空格
+    缩进的合法子列表）显示 8 列缩进，源缩进 8 时显示 16 列，深层嵌套迅速撑满
+    终端宽度；且与 Rich 路径（每层 2 列）不一致。现按嵌套层级缩进。
+    """
+    try:
+        d = int(depth)
+    except (TypeError, ValueError):
+        d = 1
+    return "  " * max(0, d - 1)
+
+
+def list_marker_width(meta) -> int:
+    """列表标记显示宽度（内容列偏移：``• `` = 2、``12. `` = 4）。
+
+    优先取解析器显式提供的 ``marker_width``（续行 Token 无 bullet/number 时
+    也可靠）；否则无序列表固定 2，有序列表按 ``number`` 位数推算。
+    """
+    raw = meta.get("marker_width")
+    if raw is not None:
+        try:
+            return max(1, int(raw))
+        except (TypeError, ValueError):
+            pass
+    if meta.get("bullet") or not meta.get("number"):
+        return 2
+    try:
+        return len(str(int(meta.get("number")))) + 2
+    except (TypeError, ValueError):
+        return 2
+
+
+def list_content_prefix(depth: int, marker_width: int) -> str:
+    """列表**内容起始列**前缀（续行 / 列表项内块级元素对齐用）。
+
+    = 层级缩进 + 标记宽度；``1. 项`` 的续行缩进 3 列、``10. 项`` 为 4 列、
+    ``- [x] 项`` 为复选框之后的列 —— 修复前固定 ``"  " * indent + "  "``
+    （2 列 / 层），有序列表与任务列表的续行/缩进块相对正文左移 1~4 列。
+    """
+    try:
+        mw = max(1, int(marker_width))
+    except (TypeError, ValueError):
+        mw = 2
+    return list_level_prefix(depth) + " " * mw
+
+
 def _parse_list_heading(text: str) -> tuple[int, str] | None:
     """列表项内容形如 ATX 标题（``# 标题``）→ ``(level, 文本)``，否则 None。"""
     s = text.lstrip()
@@ -217,26 +266,25 @@ def _parse_list_heading(text: str) -> tuple[int, str] | None:
 
 def render_list_item(token) -> list[AnsiLine]:
     meta = token.meta
-    depth = int(meta.get("depth", 1))
-    indent = int(meta.get("indent", 0))
+    depth = int(meta.get("depth", 1) or 1)
+    # 缩进按**嵌套层级**（每层 2 列，见 ``list_level_prefix``）；续行 / 嵌套块
+    # 对齐**内容起始列**（标记宽度 + 2，见 ``list_content_prefix``）。
+    content_prefix = list_content_prefix(depth, list_marker_width(meta))
     # 列表续行（continuation）：对齐列表内容的缩进行（无项目符号）
     if meta.get("continuation"):
-        prefix = "  " * max(0, indent) + "  "
         out: list[AnsiLine] = []
         for sub in _inline_lines(token.content.lstrip()):
-            line = AnsiLine.of(prefix, _STYLE_BQ)
+            line = AnsiLine.of(content_prefix, _STYLE_BQ)
             # ★ 续行悬挂缩进：本行折行时续行与内容起始列对齐（前缀等宽空格）
-            line.cont_prefix = prefix
+            line.cont_prefix = content_prefix
             for run in sub.runs:
                 line.append_run(run)
             out.append(line)
         if out:
             return out
-        empty = AnsiLine.of(prefix, _STYLE_BQ)
-        empty.cont_prefix = prefix
-        return [empty]
-    # 缩进按 indent；项目符号按嵌套深度（depth 为 1-based）
-    prefix = "  " * max(0, indent)
+        # 空续行返回真空行（不生成带缩进的伪空行）
+        return [AnsiLine()]
+    prefix = list_level_prefix(depth)
     if meta.get("bullet"):
         bullet = bullet_symbol(depth)
         head = f"{prefix}{bullet} "
@@ -285,8 +333,9 @@ def render_list_item(token) -> list[AnsiLine]:
             target = line
             target.cont_prefix = " " * head_cols
         else:
-            target = AnsiLine.of(prefix + "  ", _STYLE_BQ)
-            target.cont_prefix = prefix + "  "
+            # 行内多行块的非基线行（公式分子/分母等）对齐内容起始列
+            target = AnsiLine.of(content_prefix, _STYLE_BQ)
+            target.cont_prefix = content_prefix
         for run in sub.runs:
             target.append_run(run)
         out_lines.append(target)
@@ -494,9 +543,17 @@ def render_container_body_lines(text: str, indent: str = "  ") -> list[AnsiLine]
     """容器块正文 → 渲染行（支持行内多行块：公式各行均带缩进前缀）。
 
     折行时续行以同一缩进起始（``cont_prefix``），与容器正文起始列对齐。
+
+    ★ 空行不带缩进前缀（修复行首缩进残留）：空文本 / 空行返回**真空行**——
+    修复前仍构造 ``AnsiLine.of(indent)``（纯缩进行 ``"    "``），预览里出现
+    带尾随空格的缩进伪空行，与提交路径（``_render_nested_blocks`` 的空行
+    语义）不一致。
     """
     out: list[AnsiLine] = []
     for sub in inline_lines(text):
+        if not sub.runs:
+            out.append(AnsiLine())
+            continue
         line = AnsiLine.of(indent, _STYLE_BQ)
         line.cont_prefix = indent
         for run in sub.runs:
@@ -504,9 +561,7 @@ def render_container_body_lines(text: str, indent: str = "  ") -> list[AnsiLine]
         out.append(line)
     if out:
         return out
-    line = AnsiLine.of(indent, _STYLE_BQ)
-    line.cont_prefix = indent
-    return [line]
+    return [AnsiLine()]
 
 
 def render_admonition_body(text: str) -> AnsiLine:
@@ -638,6 +693,9 @@ __all__ = [
     "render_paragraph_line",
     "render_paragraph_lines",
     "render_list_item",
+    "list_level_prefix",
+    "list_marker_width",
+    "list_content_prefix",
     "render_definition_item",
     "render_blockquote",
     "render_blockquote_line",

@@ -273,7 +273,8 @@ def test_list_lazy_continuation():
 
 
 def test_ordered_list_lazy_continuation():
-    assert _render("1. foo\nbar\n") == ["1. foo", "  bar"]
+    # 续行对齐**内容起始列**（``1. `` → 3 列）；无序列表为 2 列
+    assert _render("1. foo\nbar\n") == ["1. foo", "   bar"]
 
 
 def test_list_lazy_multiline():

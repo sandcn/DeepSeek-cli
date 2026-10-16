@@ -293,8 +293,10 @@ def _wrap_uniform(text: str, spans, n: int, per_line: int, word_break: bool,
             # 断点范围含 end 位置本身：通用路径在「下一个字符放不下」时已
             # 记录该位置的空格（``last_space`` 可为 break 处的 j == end），
             # 且要求断点严格大于行首（行首空格不作断点）。
+            # ★ 半行约束（与通用路径同口径）：断点左侧须占本行容量的半数以上
+            #   ——避免行首标记/缩进里的空白成为唯一断点，首行只剩标记。
             sp = text.rfind(" ", i, end + 1)
-            if sp > i:
+            if sp > i and (sp - i) * 2 >= per_line:
                 line = AnsiLine()
                 _emit_span_range(line, text, spans, i, sp, char_w)
                 lines.append(line)
@@ -441,6 +443,8 @@ def wrap_line(line: AnsiLine, max_width: int,
         j = i
         width = 0
         last_space = -1  # 本行内最后一个空格的索引（绝对）
+        #: 该空格**左侧**已填充的显示宽度（断点回退量判定用，见下方半行约束）
+        last_space_w = 0
         while j < n:
             ch = items_chars[j]
             if ch == "\n":
@@ -452,6 +456,7 @@ def wrap_line(line: AnsiLine, max_width: int,
             #   "brown" 被拆成 " brow"/"n"）。
             if ch == " ":
                 last_space = j
+                last_space_w = width
             cw = width_of(ch)
             if width + cw > limit and j > i:
                 break
@@ -472,8 +477,14 @@ def wrap_line(line: AnsiLine, max_width: int,
             # 强制换行：本行到 \n 前，下一行从 \n 后开始
             end = j
             next_i = j + 1
-        elif j < n and last_space > i:
-            # 词边界断行：本行到空格前（不含空格），下一行从空格后开始
+        elif j < n and last_space > i and last_space_w * 2 >= limit:
+            # 词边界断行：本行到空格前（不含空格），下一行从空格后开始。
+            # ★ 半行约束（修复行首标记/缩进被当作断点）：断点左侧内容须占本行
+            #   可用宽度的一半以上，否则视为「过于靠前」→ 回退字符级硬拆。
+            #   修复前只要行内有空格就回退到「最后一个空格」，而行首标记
+            #   （``• `` / ``│ `` / ``1. ``）或缩进里的空白常是该行**唯一**的
+            #   空格（中文长行无空格断点）→ 首行只输出标记本身（``•`` / ``│``），
+            #   内容被整体挤到下一行。
             end = last_space
             next_i = last_space + 1
         else:
