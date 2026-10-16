@@ -27,10 +27,22 @@ from ..core.multimodal import (  # noqa: F401
 )
 
 __all__ = [
+    # 公开 API
     "is_multimodal_model",
     "clear_multimodal_cache",
     "build_image_content_blocks",
     "content_to_text",
     "extract_image_refs",
     "build_user_content_blocks",
+    # 兼容面：历史调用方可能按原名导入的实现细节（下沉前位于本模块）
+    "_IMAGE_EXTENSIONS",
+    "_MD_IMAGE_RE",
+    "_MULTIMODAL_MODEL_PATTERNS",
+    "_RAW_IMAGE_URL_RE",
+    "_SHORT_MODEL_PATTERN",
+    "_configured_multimodal_models",
+    "_is_image_file",
+    "_local_image_data_uri",
+    "_match_model_pattern",
+    "_multimodal_cache",
 ]

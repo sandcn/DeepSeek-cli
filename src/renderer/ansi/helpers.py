@@ -10,6 +10,8 @@ import re
 from dataclasses import field
 from typing import Any
 
+from src._ansi_text import ANSI_RE
+from src._ansi_text import strip_ansi as strip_ansi  # noqa: F401 — 全项目单一真源 re-export
 from src._compat import dataclass
 
 from src.renderer._utils import cjk_display_width, expand_tabs
@@ -181,19 +183,13 @@ def visual_width(text: str) -> int:
     return cjk_display_width(strip_ansi(text))
 
 
-_ANSI_RE = re.compile(
-    r"\x1b\[[0-9;?]*[A-Za-z]"
-    r"|\x1b\][^\x07\x1b]*(\x07|\x1b\\)"
-    r"|\x1b[@-Z\\-_]"
-)
+# ANSI 转义序列处理收敛到 ``src._ansi_text``（tui / renderer / clawbot 三层
+# 唯一真源）；此处保留 ``_ANSI_RE`` / ``strip_ansi`` 旧导入路径兼容。
+_ANSI_RE = ANSI_RE
 
 #: 「无前驱样式」哨兵（避免用 None 兼作哨兵——None 是合法的无样式值，
 #: 需要区分「尚无前驱」与「前驱样式为 None」）
 _NO_STYLE = object()
-
-
-def strip_ansi(text: str) -> str:
-    return _ANSI_RE.sub("", text)
 
 
 def _run_spans(runs: list) -> tuple:

@@ -15,7 +15,7 @@ Patch/Overlay 按 id 单独禁用、覆盖（改关键字/注释/别名）或替
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
 _lock = threading.RLock()

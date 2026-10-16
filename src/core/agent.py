@@ -28,6 +28,16 @@ _logger = logging.getLogger(__name__)
 
 from .agent_di import _create_default_ports, _resolve_port
 
+__all__ = [
+    "Agent",
+    # 兼容面（向后 re-export）
+    "get_default_tool_registry",
+    "_AsyncObservabilityMiddleware",
+    "_AuditLogMiddleware",
+    "_InterruptCheckMiddleware",
+    "_ToolRegistryAdapter",
+]
+
 
 class Agent(BaseAgent):
     """对话代理，封装模型调用和工具执行逻辑

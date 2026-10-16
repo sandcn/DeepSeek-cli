@@ -1,14 +1,13 @@
 """TopHeader — 顶部标题栏组件（Claude Code 视觉对齐）。
 
-渲染 ``✦ DeepSeek CLI · v2.2.0``：
-  - ``✦`` 亮色（品红系 fg=213）**时间基呼吸**（BEAUTY-7：0.1s 时间桶
-    ``time_glow`` 在品红邻域脉动；流式/活跃期间随 30Hz 渲染平滑呼吸）。
+渲染 ``✦ DeepSeek CLI · <版本>``（版本号经 ``src.app_init._args.VERSION``，
+其值来自 ``src/version.py`` 单一真源）：
+  - ``✦`` 亮色（品红系 fg=213）**时间基呼吸**（0.1s 时间桶 ``time_glow``
+    在品红邻域脉动；流式/活跃期间随 30Hz 渲染平滑呼吸）。
   - ``DeepSeek CLI`` 空间渐变：逐字符 ``lerp_color`` 插值，色标
     ``[45, 39, 141, 213]``（青 → 蓝 → 紫 → 品红）。
-  - 版本号 dim（fg=242），版本号经 ``src.app_init._args.VERSION`` 导入。
-  - ★ BEAUTY-31（2026-08-05）：版本号独立 TEXT——活跃期（status_active）
-    呼吸（暗灰 242↔252，8s 周期，与工具卡 detail/模型名呼吸同步），空闲
-    静态 242（零额外渲染成本）。
+  - 版本号 dim（fg=242）：活跃期（``status_active``）呼吸（暗灰 242↔252，
+    8s 周期，与工具卡 detail/模型名呼吸同步），空闲静态（零额外渲染成本）。
 
 性能：渐变 runs 与终端宽度无关（内容固定）→ ``use_memo(deps=())`` 缓存
 同一 ``styled`` 列表引用 → TEXT ``_paint_cache``（键含 styled 引用）跨帧

@@ -49,6 +49,8 @@ __all__ = [
     "pane_divider",
     "pad_to_width",
     "SEARCH_QUERY_MAX",
+    # 兼容面：ink 侧截断辅助 re-export
+    "truncate_runs",
 ]
 
 #: 搜索输入缓冲上限（渲染行按宽度截断，无上限累积只浪费内存）。

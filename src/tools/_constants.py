@@ -257,3 +257,24 @@ def should_exclude_dir(dirname: str) -> bool:
 # 数据表已上移为表现层数据注册表（``presentation_data`` → ``tool_display_name``）。
 
 from ..core.tool_display import TOOL_DISPLAY_NAME  # noqa: E402,F401  （下沉核心层，re-export 兼容）
+
+__all__ = [
+    "EXCLUDED_DIRS",
+    "EXCLUDED_FILE_PATTERNS",
+    "DANGEROUS_DEVICE_FILES",
+    "SYSTEM_CRITICAL_PATHS",
+    "DOS_DEVICE_NAMES",
+    "WIN_DEVICE_PREFIXES",
+    "DEFAULT_ENCODING",
+    "DEFAULT_ERRORS",
+    "MAX_FILE_SIZE_MB",
+    "CATCHALL_ENCODINGS",
+    "MAX_DETECT_BYTES",
+    "COMMON_ENCODINGS",
+    "FALLBACK_ENCODINGS",
+    "BOM_MARKERS",
+    "ENCODING_ALIASES",
+    "LARGE_FILE_THRESHOLD",
+    # 兼容面：工具显示名映射 re-export
+    "TOOL_DISPLAY_NAME",
+]

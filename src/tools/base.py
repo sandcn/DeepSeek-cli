@@ -5,8 +5,7 @@ import functools
 import inspect
 import logging
 import os
-from dataclasses import dataclass as _std_dataclass
-from typing import Any, List, Optional, Union
+from typing import Any, Optional
 
 from src._compat import dataclass
 

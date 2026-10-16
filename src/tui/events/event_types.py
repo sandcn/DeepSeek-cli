@@ -8,8 +8,34 @@ re-export。新增事件类型请定义在 ``src/core/events/display_types.py``�
 
 from __future__ import annotations
 
-from ...core.events.display_types import *  # noqa: F401,F403
-from ...core.events.display_types import ALL_EVENT_TYPES
+from ...core.events.display_types import (  # noqa: F401  （显式重导出，替代 star import）
+    ALL_EVENT_TYPES,
+    AgentAddedEvent,
+    AgentResultEvent,
+    AgentStatusChanged,
+    BackgroundTaskChangedEvent,
+    CompactionChangedEvent,
+    ContentChunkEvent,
+    DisplayEvent,
+    MetricsUpdateEvent,
+    ModelPhaseEvent,
+    OutputEvent,
+    ParseInfoDoneEvent,
+    ParseInfoEvent,
+    PhaseDoneEvent,
+    ReasoningChunkEvent,
+    SessionStarted,
+    SessionStopped,
+    SubagentPromptEvent,
+    ToolBatchStartedEvent,
+    ToolDoneEvent,
+    ToolNoticeEvent,
+    ToolOutputChunkEvent,
+    ToolParsingEvent,
+    ToolStartedEvent,
+    ToolSummaryEvent,
+    UsageUpdatedEvent,
+)
 
 __all__ = [
     "DisplayEvent",
@@ -23,5 +49,6 @@ __all__ = [
     "OutputEvent", "ToolSummaryEvent",
     "SubagentPromptEvent", "AgentResultEvent",
     "BackgroundTaskChangedEvent",
+    "CompactionChangedEvent",
     "ALL_EVENT_TYPES",
 ]

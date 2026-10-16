@@ -505,4 +505,4 @@ def _build_status_line(status_runs: list) -> Line:
     return line
 
 
-__all__ = ["StatusBar"]
+__all__ = ["StatusBar", "_SPINNER_FRAMES"]

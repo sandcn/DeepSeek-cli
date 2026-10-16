@@ -16,6 +16,22 @@ from ..internal.commands._command_core import CommandContext, show_cost
 # 向后兼容 re-export：/model 命令已独立到 _model_cmd.py
 from ._model_cmd import _cmd_model, _infer_model_provider  # noqa: F401
 
+__all__ = [
+    "_cmd_cost",
+    "_cmd_theme",
+    "_cmd_reasoning",
+    "_cmd_temperature",
+    "_cmd_config",
+    "CostCommand",
+    "ThemeCommand",
+    "ReasoningCommand",
+    "TemperatureCommand",
+    "ConfigCommand",
+    # 兼容面（/model 命令迁出后保留旧导入路径）
+    "_cmd_model",
+    "_infer_model_provider",
+]
+
 _logger = logging.getLogger(__name__)
 _out = get_default_output_port()
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 
 from ..adapters.output import get_default_output_port
-from ..constants import CYAN, DIM, RESET, YELLOW
+from ..constants import CYAN, DIM, RESET
 from ..internal.commands._command_core import CommandContext
 
 _logger = logging.getLogger(__name__)

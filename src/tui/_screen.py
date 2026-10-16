@@ -902,3 +902,59 @@ def narrow_sep_width(width: int | None = None, threshold: int = 40) -> int:
     if width < threshold:
         return max(10, width - 2)
     return width
+
+
+__all__ = [
+    # 终端尺寸 / 光标查询
+    "query_cursor_row",
+    "detect_truecolor",
+    # 光标与屏幕控制序列
+    "set_scroll_region",
+    "reset_scroll_region",
+    "cursor_save",
+    "cursor_restore",
+    "cursor_goto",
+    "cursor_up",
+    "cursor_down",
+    "cursor_forward",
+    "cursor_hide",
+    "cursor_show",
+    "clear_line",
+    "clear_screen_from_cursor",
+    "clear_screen",
+    "move_clear",
+    "scroll_up",
+    "scroll_down",
+    # 样式 / 颜色
+    "sgr",
+    "sgr_reset",
+    "fg_256",
+    "bg_256",
+    "set_window_title",
+    # 剪贴板
+    "set_clipboard",
+    # SIGWINCH
+    "register_sigwinch_callback",
+    "unregister_sigwinch_callback",
+    "process_sigwinch",
+    # 终端宽度缓存
+    "TerminalWidthCache",
+    "narrow_sep_width",
+    # 兼容面：_width.py 再导出（历史导入路径 ``from ._screen import wcswidth_simple``）
+    "wcswidth_simple",
+    "_CJK_RANGES",
+    "_ZERO_WIDTH_RANGES",
+    "_FULLWIDTH_RANGES",
+    "_EMOJI_WIDE_RANGES",
+    "_build_flat_ranges",
+    "_in_ranges_bisect",
+    "_CJK_FLAT",
+    "_FULLWIDTH_FLAT",
+    "_EMOJI_WIDE_FLAT",
+    "_ZERO_WIDTH_FLAT",
+    "_ASCII_RUN_RE",
+    "_skip_ansi_at",
+    "_CHAR_WIDTH_CACHE_MAX",
+    "_char_width_cache",
+    "_wcswidth_single",
+]

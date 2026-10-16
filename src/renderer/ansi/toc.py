@@ -1,11 +1,12 @@
 """TOC 渲染 — Table of Contents 目录（无 Rich）。
 
-复用旧 _rendering/_special.py 的树形连接符逻辑（_build_toc_connectors），
-输出为 AnsiLine。
+树形连接符逻辑来自共享纯逻辑模块 ``renderer._toc_logic``（与 Rich 路径
+``_rendering/_special.py`` 同一实现），此处只做输出模型映射（AnsiLine）。
 """
 
 from __future__ import annotations
 
+from .._toc_logic import build_toc_connectors as _build_toc_connectors  # noqa: F401 — 共享纯逻辑
 from .style import Style
 from .helpers import AnsiLine
 from .inline import render_inline
@@ -15,41 +16,6 @@ _STYLE_CONN = Style(fg=238)                      # 树形连接符
 _STYLE_L1 = Style(fg=220, bold=True)             # 一级标题
 _STYLE_L2 = Style(fg=45, bold=True)              # 二级标题
 _STYLE_L3 = Style(fg=242, bold=True, dim=True)   # 三级+标题
-
-
-def _build_toc_connectors(toc: list[dict]) -> list[dict]:
-    """构建 TOC 树形前缀（与旧 _build_toc_connectors 逐字符一致）。"""
-    if not toc:
-        return []
-    n = len(toc)
-    is_last = [True] * n
-    for i in range(n - 1):
-        level_i = toc[i]["level"]
-        for j in range(i + 1, n):
-            if toc[j]["level"] == level_i:
-                is_last[i] = False
-                break
-            elif toc[j]["level"] < level_i:
-                break
-
-    ancestors_active: dict[int, bool] = {}
-    result: list[dict] = []
-    for i, entry in enumerate(toc):
-        level = entry["level"]
-        prefix_parts: list[str] = []
-        for l in range(1, level):
-            if ancestors_active.get(l, False):
-                prefix_parts.append("\u2503  ")
-            else:
-                prefix_parts.append("   ")
-        connector = "\u2517\u2501 " if is_last[i] else "\u2523\u2501 "
-        prefix_parts.append(connector)
-        ancestors_active[level] = not is_last[i]
-        for l in list(ancestors_active.keys()):
-            if l > level:
-                del ancestors_active[l]
-        result.append({**entry, "prefix": "".join(prefix_parts)})
-    return result
 
 
 def render_toc(toc: list[dict], output_width: int) -> list[AnsiLine]:

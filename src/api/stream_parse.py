@@ -35,6 +35,19 @@ _PARSE_INFO_REFRESH_INTERVAL = 1.0 / 30
 #: （其余记 debug），防持续异常刷屏。
 _PUSH_ERR_LOG_INTERVAL = 5.0
 
+#: 兼容重导出面：这些符号的实现位于 ``api._tool_parse_utils``，本模块保留
+#: 旧导入路径（``from .stream_parse import convert_tool_calls_map`` 等）。
+__all__ = [
+    "ToolParseTracker",
+    "_PARSE_INFO_REFRESH_INTERVAL",
+    "_PUSH_ERR_LOG_INTERVAL",
+    "convert_tool_calls_map",
+    "convert_tool_calls_map_with_status",
+    "parse_raw_tool_calls",
+    "parse_raw_tool_calls_with_status",
+    "full_args_str",
+]
+
 
 # ── 解析计时器 ──
 

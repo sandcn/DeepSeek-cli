@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import logging
 
-from ..core.constants import CYAN, DIM, GREEN, RESET, YELLOW
+from ..core.constants import DIM, GREEN, RESET, YELLOW
 from ..tui.events.consumers import publish_output
 from ..plugins.manager import (
     add_plugin,

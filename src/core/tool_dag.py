@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
@@ -25,15 +26,10 @@ from typing import Any
 _logger = logging.getLogger(__name__)
 
 # ── 正则：匹配参数值中的 $tool_call_id 引用 ──────────────
-# 匹配形如 "$call_xxx" 或 "${call_xxx}" 的引用
-_TC_ID_REF_RE = None  # 延迟导入 re
-
-def _compile_re():
-    global _TC_ID_REF_RE
-    if _TC_ID_REF_RE is None:
-        import re
-        _TC_ID_REF_RE = re.compile(r"\$(call_[a-zA-Z0-9_]+)")
-    return _TC_ID_REF_RE
+# 匹配形如 "$call_xxx" 或 "${call_xxx}" 的引用。
+# 模块级一次性编译（此前为「模块级 None + global 惰性编译」——多线程下
+# 存在竞态且每次引用都要走一次 global 读取）。
+_TC_ID_REF_RE = re.compile(r"\$(call_[a-zA-Z0-9_]+)")
 
 @dataclass
 class ToolCallNode:
@@ -178,6 +174,26 @@ class ToolDAG:
 
     # ── 缓存管理 ────────────────────────────────────────────
 
+    def _add_edge(self, src: str, dst: str) -> None:
+        """添加依赖边 ``src → dst``（dst 依赖 src）并失效可达性缓存。
+
+        ``_path_cache`` 缓存的是「src 是否可达 dst」；新增一条边可能使此前
+        计算出的「不可达」变为可达，因此**任何写边操作都必须失效该缓存**。
+        修复前仅 ``add_batch`` / ``remove_nodes`` 清缓存，类别约束与路径
+        依赖阶段写边不清 —— 存在把过期「不可达」当作事实、进而加出环的风险。
+
+        边已存在时为幂等无操作（不失效缓存，避免无谓重建）。
+        """
+        src_node = self._nodes.get(src)
+        dst_node = self._nodes.get(dst)
+        if src_node is None or dst_node is None:
+            return
+        if dst in src_node.dependents:
+            return
+        dst_node.dependencies.add(src)
+        src_node.dependents.add(dst)
+        self._path_cache.clear()
+
     def _clear_path_cache(self) -> None:
         """清除 _path_cache 全部条目
 
@@ -230,14 +246,13 @@ class ToolDAG:
             for new_id in new_ids:
                 for prev_id in prev_non_dispatch_ids:
                     if prev_id in self._nodes and prev_id != new_id:
-                        self._nodes[new_id].dependencies.add(prev_id)
-                        self._nodes[prev_id].dependents.add(new_id)
+                        self._add_edge(prev_id, new_id)
 
     # ── 显式依赖检测 ───────────────────────────────────────
 
     def _detect_explicit_deps(self) -> None:
         """检测参数值中的 ``$tool_call_id`` 显式引用"""
-        ref_re = _compile_re()
+        ref_re = _TC_ID_REF_RE
         known_ids = set(self._nodes.keys())
 
         for tc_id, node in self._nodes.items():
@@ -245,8 +260,7 @@ class ToolDAG:
             for ref_id in refs:
                 if ref_id in known_ids and ref_id != tc_id:
                     # 添加依赖边：node 依赖 ref_id
-                    node.dependencies.add(ref_id)
-                    self._nodes[ref_id].dependents.add(tc_id)
+                    self._add_edge(ref_id, tc_id)
 
     def _scan_args_for_refs(self, arguments: dict, ref_re) -> set[str]:
         """递归扫描参数值中的所有 ``$tool_call_id`` 引用
@@ -399,8 +413,12 @@ class ToolDAG:
         read_index: dict[str, list[str]] = {}
         delete_index: dict[str, list[tuple[str, int]]] = {}
 
+        # 原始顺序索引表：一次 O(n) 预建，替代循环内 ``list.index`` 的
+        # O(n) 查找（整体曾为 O(n²)）。
+        order_of = {tc_id: idx for idx, tc_id in enumerate(self._original_order)}
+
         for tc_id in has_any_path:
-            order = self._original_order.index(tc_id) if tc_id in self._original_order else -1
+            order = order_of.get(tc_id, -1)
 
             for wp in node_write_paths.get(tc_id, set()):
                 write_index.setdefault(wp, []).append((tc_id, order))
@@ -439,16 +457,14 @@ class ToolDAG:
             for writer_id, _ in writers:
                 for reader_id in readers:
                     if reader_id != writer_id:
-                        self._nodes[reader_id].dependencies.add(writer_id)
-                        self._nodes[writer_id].dependents.add(reader_id)
+                        self._add_edge(writer_id, reader_id)
 
         # —— 删除依赖读：deleter 依赖 reader（reader 先读，deleter 再删除） ——
         if deleters and readers:
             for deleter_id, _ in deleters:
                 for reader_id in readers:
                     if reader_id != deleter_id:
-                        self._nodes[deleter_id].dependencies.add(reader_id)
-                        self._nodes[reader_id].dependents.add(deleter_id)
+                        self._add_edge(reader_id, deleter_id)
 
         # —— 写/删混合串行化：同路径的写入者和删除者按原始顺序串行 ——
         # 处理场景：write+write、delete+delete、delete+write（write+delete）
@@ -459,8 +475,7 @@ class ToolDAG:
             for k in range(len(mutators_sorted) - 1):
                 earlier_id = mutators_sorted[k][0]
                 later_id = mutators_sorted[k + 1][0]
-                self._nodes[later_id].dependencies.add(earlier_id)
-                self._nodes[earlier_id].dependents.add(later_id)
+                self._add_edge(earlier_id, later_id)
 
     def _add_parent_child_deps(
         self,
@@ -508,22 +523,19 @@ class ToolDAG:
                     for cw_id, _ in child_writers:
                         for pw_id, _ in parent_writers:
                             if cw_id != pw_id:
-                                self._nodes[cw_id].dependencies.add(pw_id)
-                                self._nodes[pw_id].dependents.add(cw_id)
+                                self._add_edge(pw_id, cw_id)
 
                     # 子路径读取者依赖父路径写入者
                     for cr_id in child_readers:
                         for pw_id, _ in parent_writers:
                             if cr_id != pw_id:
-                                self._nodes[cr_id].dependencies.add(pw_id)
-                                self._nodes[pw_id].dependents.add(cr_id)
+                                self._add_edge(pw_id, cr_id)
 
                     # 子路径删除者依赖父路径写入者（父目录先存在，才能删除其子文件）
                     for cd_id, _ in child_deleters:
                         for pw_id, _ in parent_writers:
                             if cd_id != pw_id:
-                                self._nodes[cd_id].dependencies.add(pw_id)
-                                self._nodes[pw_id].dependents.add(cd_id)
+                                self._add_edge(pw_id, cd_id)
 
     def _detect_path_overlap(self) -> None:
         """检测文件路径重叠导致的隐式依赖（支持多路径工具如 cp/mv）
@@ -588,11 +600,9 @@ class ToolDAG:
         # 并发需求下同一层多个 user_select 并行等待用户交互（各自独立 tab）。
 
         for us_id in user_select_ids:
-            us_node = self._nodes[us_id]
             for other_id in non_user_ids:
                 # 其他所有节点依赖 user_select（user_select 先独占终端执行）
-                self._nodes[other_id].dependencies.add(us_id)
-                us_node.dependents.add(other_id)
+                self._add_edge(us_id, other_id)
 
     # ── 工具类别约束检测 ───────────────────────────────────
 
@@ -712,16 +722,14 @@ class ToolDAG:
                     if self._path_exists(bash_id, non_bash_id):
                         continue
                     # 添加 non-bash → bash 边（bash 在所有 non-bash 之后执行）
-                    self._nodes[bash_id].dependencies.add(non_bash_id)
-                    self._nodes[non_bash_id].dependents.add(bash_id)
+                    self._add_edge(non_bash_id, bash_id)
 
         # ── 规则 b：bash → bash 链式串行（按原始顺序） ──
         if len(bash_nodes) >= 2:
             for i in range(len(bash_nodes) - 1):
                 earlier_id = bash_nodes[i]
                 later_id = bash_nodes[i + 1]
-                self._nodes[later_id].dependencies.add(earlier_id)
-                self._nodes[earlier_id].dependents.add(later_id)
+                self._add_edge(earlier_id, later_id)
 
     def _add_read_write_constraints(self, read_nodes: list[str], write_nodes: list[str]) -> None:
         """添加 read → write 约束
@@ -744,8 +752,7 @@ class ToolDAG:
                     if self._path_exists(read_id, write_id):
                         continue
                     # 添加 read → write 边（read 优先于 write）
-                    self._nodes[write_id].dependencies.add(read_id)
-                    self._nodes[read_id].dependents.add(write_id)
+                    self._add_edge(read_id, write_id)
 
     def _detect_tool_category_constraints(self) -> None:
         """检测工具类别调度约束（层 D）

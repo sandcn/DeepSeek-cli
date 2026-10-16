@@ -32,7 +32,7 @@ from ._view_common import (
     viewport_rows,
 )
 
-__all__ = ["UsageView", "_content_rows", "_bar_runs", "_label_column", "_item_fields"]
+__all__ = ["UsageView", "_content_rows", "_bar_runs", "_label_column", "_item_fields", "truncate_runs"]
 
 _S_TITLE = Style(fg=45, bold=True)
 _S_HINT = Style(fg=242)

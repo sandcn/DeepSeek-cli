@@ -37,6 +37,24 @@ from .ports.config import ConfigPort
 from .ports.output import OutputPort
 from .adapters.config import DefaultConfigAdapter
 
+__all__ = [
+    "ContextManager",
+    "set_context_usage_percent",
+    "get_context_usage_percent",
+    "set_streaming_extra_tokens",
+    "get_streaming_extra_tokens",
+    "update_real_prompt_usage",
+    "set_active_context_manager",
+    "update_streaming_usage",
+    "_is_subagent_stream_label",
+    "_is_internal_stream_label",
+    # 兼容面（向后 re-export）
+    "CompressionResult",
+    "CompressionStrategy",
+    "SummarizeStrategy",
+    "DropStrategy",
+]
+
 
 # ═══════════════════════════════════════════════════════════════
 # 全局上下文使用率快照（TUI 模式行行首显示用，性能：O(1) 无锁读）

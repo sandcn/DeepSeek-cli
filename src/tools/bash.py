@@ -28,11 +28,12 @@ from ..api.interrupt_async import is_interrupted
 
 logger = logging.getLogger(__name__)
 
-# 尝试导入 pty（部分平台不支持）
+# 尝试探测平台 PTY 可用性（不实际导入模块，避免无谓开销）
 try:
-    import pty as _pty_mod  # noqa: F401  # 仅用于探测平台 PTY 可用性（_HAS_PTY）
-    _HAS_PTY = True
-except ImportError:
+    import importlib.util as _importlib_util
+
+    _HAS_PTY = _importlib_util.find_spec("pty") is not None
+except Exception:  # pragma: no cover - 极端环境下探测失败按不可用处理
     _HAS_PTY = False
 
 
@@ -1068,3 +1069,11 @@ class BashFunc(Func):
                 await print_to_terminal(safe)
 
         return await self._run_with_line_callback(_on_line)
+
+
+__all__ = [
+    "BashFunc",
+    "READ_BUFFER_DROPPED_KEY",
+    # 兼容面：由 _bash_support 下沉实现后保留的公开 API（bash_opt / base_agent 导入）
+    "kill_process_tree",
+]

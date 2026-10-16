@@ -9,21 +9,19 @@ from __future__ import annotations
 
 import re
 
+from src._ansi_text import ANSI_RE as _ANSI_RE
+from src._ansi_text import has_ansi as has_ansi  # noqa: F401 — 全项目单一真源 re-export
+from src._ansi_text import strip_ansi as strip_ansi  # noqa: F401 — 全项目单一真源 re-export
 from src.tui._width import wcswidth_simple
 
 # ANSI 转义序列（SGR 颜色/属性 + 光标控制）
-# ★ BUG-33（review 方向）：CSI 参数范围扩展为 ``[\x20-\x3F]``——ECMA-48 中间
-#   字节全范围（数字/分号/冒号/问号/空格 + ``!"#$%&'()*+,-./``），与
-#   ``_width._skip_ansi_at`` 的 CSI 分支（``0x20 <= ord(c) <= 0x3F``）完全对齐：
-#   含真彩冒号格式 ``\x1b[38:2::255:0:0m`` 的 ``:``、DECSTR ``\x1b[!p`` 的 ``!``、
-#   DA 响应 ``\x1b[>c`` 的 ``>``；最终字节 ``[@-~]``（0x40-0x7E，含终端键序列
-#   ``\x1b[3~`` 的 ``~``）——修复前 ``\x1b[!p``/``\x1b[>c`` 等中间字节序列残留
-#   字符被宽度测量计宽导致行宽虚高，且与 _width._skip_ansi_at 剥离范围分裂。
-_ANSI_RE = re.compile(
-    r"\x1b\[[\x20-\x3F]*[@-~]"
-    r"|\x1b\][^\x07\x1b]*(\x07|\x1b\\)"
-    r"|\x1b[@-Z\\-_]"
-)
+# ★ 收敛（2026-10）：正则与 ``strip_ansi`` / ``has_ansi`` 的真源移至
+#   ``src._ansi_text``（tui / renderer / clawbot 三层唯一实现），本模块保留
+#   ``_ANSI_RE`` 名（兼容历史导入）并按名 re-export 上述函数。
+#   覆盖范围沿用此前的「最完整版本」：CSI 参数字节 ``\x20-\x3F``（ECMA-48
+#   中间字节全范围，含真彩 ``\x1b[38:2::255:0:0m`` 的 ``:``、DECSTR ``\x1b[!p``、
+#   DA 响应 ``\x1b[>c``）+ 最终字节 ``[@-~]``（含终端键序列 ``\x1b[3~``），
+#   与 ``_width._skip_ansi_at`` 的 CSI 分支范围一致。
 
 # 光标控制序列（CUP 绝对定位 + DECRC/SCRC 光标恢复）——统一供
 # ``_stdout_tracker`` 数据流顺序解析底部栏过滤（row/col 命名组）。
@@ -35,16 +33,6 @@ cursor_control_re = re.compile(
     r"|\x1b8"                              # DECRC
     r"|\x1b\[u"                            # SCRC
 )
-
-
-def strip_ansi(text: str) -> str:
-    """剥离 ANSI 转义序列，返回纯文本。"""
-    return _ANSI_RE.sub("", text)
-
-
-def has_ansi(text: str) -> bool:
-    """是否包含 ANSI 转义序列。"""
-    return "\x1b" in text
 
 
 def visual_width(text: str) -> int:

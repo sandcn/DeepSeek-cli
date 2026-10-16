@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import importlib
+
 from ..kernel import Service, plugin
 
 
@@ -57,7 +59,8 @@ class PromptService(Service):
 
             undo = disable_builtin_sections(disabled_sections)
             ctx.effect(lambda: undo)
-        from ..prompt_builder.builder import _EMPTY_MODE  # noqa: F401  触发加载
+        # 触发 prompt_builder.builder 模块加载（运行模式 / 提词片段在此声明）
+        importlib.import_module("src.prompt_builder.builder")
 
     # ── 自省（运行模式 / 提词来源注册表） ───────────────
 

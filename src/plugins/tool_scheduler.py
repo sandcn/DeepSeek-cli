@@ -15,7 +15,6 @@ Patch/Overlay 禁用或替换；本聚合插件处理组合根注入的 ``manage
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from ..kernel import Service, plugin
 

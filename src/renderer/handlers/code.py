@@ -16,7 +16,7 @@ from .._rendering import (
     highlight_line,
     render_diff_line,
 )
-from .._utils import parse_highlight_lines, parse_linenos, parse_lineno_options
+from .._utils import parse_highlight_lines, parse_lineno_options
 
 from .base import TokenHandler
 

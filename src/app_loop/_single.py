@@ -75,3 +75,10 @@ async def run_single_mode_async(prompt_text):
     finally:
         chat_ui.stop()
         stop_active_monitor()
+
+
+__all__ = [
+    "run_single_mode_async",
+    # 兼容面：app_loop/__init__ 经本模块 re-export _make_event_agent
+    "_make_event_agent",
+]

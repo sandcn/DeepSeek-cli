@@ -20,8 +20,6 @@ ctrl_r/clear_screen/ctrl_d/toggle_theme/switch_model/history_prev/cycle_mode）
 
 from __future__ import annotations
 
-from typing import Optional
-
 from ..kernel import plugin
 
 #: keybinding 条目可由 config 覆盖的字段

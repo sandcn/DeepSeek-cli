@@ -23,6 +23,13 @@ from .event_types import (
     OutputEvent,
 )
 
+__all__ = [
+    "OutputConsumer",
+    # 兼容面：核心事件发布辅助 re-export（表现层经本模块导入）
+    "publish_output",
+    "publish_tool_summary",
+]
+
 _logger = logging.getLogger(__name__)
 
 # -- 级别 -> Style 映射（统一 ink 输出模型） -----------------------------

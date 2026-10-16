@@ -159,3 +159,30 @@ def __getattr__(name):
 
 # 导出 ConfigProxy 实例（作为 __getattr__ 的补充，提供 IDE 类型提示）
 from .proxy import config as config
+
+__all__ = [
+    # 静态导出（本模块顶部导入的常量/re-export）
+    "CONFIG_DIR",
+    "LOG_FILE",
+    "RC_FILE",
+    "INPUT_HISTORY_FILE",
+    "PROVIDERS",
+    "DEFAULTS",
+    "CONFIG_KEYS",
+    "config",
+    "_ensure_config_dir",
+    "_load_rc",
+    "update_config",
+    "get_base_url",
+    "get_audit_logger",
+    "get_rc",
+    # PEP 562 惰性导出（经 __getattr__ 解析）
+    "API_KEY",
+    "BASE_URL",
+    "MODEL",
+    "MODELS",
+    "TOKEN_PRICES",
+    "audit_logger",
+    "STAGGER_MIN_DELAY",
+    "STAGGER_MAX_DELAY",
+]

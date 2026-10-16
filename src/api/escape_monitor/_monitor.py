@@ -176,3 +176,8 @@ class EscapeMonitor:
 # ``get_active_monitor`` / ``stop_active_monitor`` 已上移至 ``._registry``
 # （活跃实例单例真源 + 内核 ``ctx.escape_monitor`` 服务接入点），此处保持
 # 既有 ``from ._monitor import ...`` 调用路径兼容。
+__all__ = [
+    "EscapeMonitor",
+    "get_active_monitor",
+    "stop_active_monitor",
+]

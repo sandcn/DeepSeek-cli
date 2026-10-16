@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
+from ..version import __version__
+
 # ── 协议常量 ──────────────────────────────────────────────
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -20,7 +22,8 @@ SUPPORTED_PROTOCOL_VERSIONS: tuple[str, ...] = (
 )
 
 CLIENT_NAME = "deepseek-cli"
-CLIENT_VERSION = "2.2.0"
+#: 客户端版本随包版本变化（单一真源：src/version.py）
+CLIENT_VERSION = __version__
 
 JSONRPC_VERSION = "2.0"
 

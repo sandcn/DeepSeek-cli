@@ -14,4 +14,4 @@ from ...core.events.display_bus import (  # noqa: F401
     _last_exc_log,
 )
 
-__all__ = ["DisplayEventBus", "EventHandler"]
+__all__ = ["DisplayEventBus", "EventHandler", "_EXC_LOG_WINDOW", "_last_exc_log"]

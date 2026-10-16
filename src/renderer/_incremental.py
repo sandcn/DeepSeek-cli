@@ -28,7 +28,7 @@ from .recursive_parser import RecursiveDescentParser
 from .types import RenderContext, TokenType
 from .engine import RenderEngine
 from .pipeline import TokenPipeline
-from ._rendering import render_toc, render_render_summary
+from ._rendering import render_render_summary
 
 _logger = logging.getLogger(__name__)
 

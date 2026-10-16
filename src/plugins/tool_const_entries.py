@@ -48,7 +48,8 @@ def _ensure_declared(name: str) -> None:
 
 @plugin("tool_const_entry")
 def apply_tool_const(ctx):
-    from ..tools import _constants  # noqa: F401 - 确保基础常量已声明
+    # 确保基础常量模块已加载（其常量在导入时登记到注册表）
+    importlib.import_module("src.tools._constants")
     from ..tools.const_registry import (
         builtin_constant_names,
         register_builtin_constant,

@@ -1098,4 +1098,11 @@ __all__ = [
     "_MODE_STANDARD_TEXT",
     "_S_MODE_EMPTY",
     "_S_MODE_SIMPLE",
+    # 兼容面：布局/度量/弹窗构建辅助 re-export（旧导入路径兼容）
+    "_wrap_by_width",
+    "_compute_cursor_visual_pos",
+    "_LOCKED_PAD_LIMIT",
+    "_desc_column_width",
+    "_completion_item_rows",
+    "_styled_completion_cached",
 ]

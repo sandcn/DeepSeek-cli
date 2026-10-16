@@ -29,7 +29,7 @@ MCP 工具策略在运行期向其 ``add`` 动态工具名——注册表持有�
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .cordis_tools import CORDIS_TOOLS

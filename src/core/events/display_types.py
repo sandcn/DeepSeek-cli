@@ -469,3 +469,32 @@ declare_events("display", _DISPLAY_EVENT_TYPES)
 
 #: 所有事件类型的集合（实时委托注册表域 display），用于 EventBus 按类型过滤订阅。
 ALL_EVENT_TYPES: LiveSequence = LiveSequence(lambda: list(active_events("display").values()))
+
+__all__ = [
+    "DisplayEvent",
+    "SessionStarted",
+    "SessionStopped",
+    "ToolParsingEvent",
+    "ToolStartedEvent",
+    "ToolDoneEvent",
+    "ToolOutputChunkEvent",
+    "ToolNoticeEvent",
+    "ToolBatchStartedEvent",
+    "AgentAddedEvent",
+    "AgentStatusChanged",
+    "ModelPhaseEvent",
+    "PhaseDoneEvent",
+    "UsageUpdatedEvent",
+    "ContentChunkEvent",
+    "ReasoningChunkEvent",
+    "ParseInfoEvent",
+    "ParseInfoDoneEvent",
+    "MetricsUpdateEvent",
+    "OutputEvent",
+    "ToolSummaryEvent",
+    "SubagentPromptEvent",
+    "AgentResultEvent",
+    "BackgroundTaskChangedEvent",
+    "CompactionChangedEvent",
+    "ALL_EVENT_TYPES",
+]

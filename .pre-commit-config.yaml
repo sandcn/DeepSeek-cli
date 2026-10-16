@@ -1,0 +1,35 @@
+# 提交前钩子 — 与 CI（.github/workflows/ci.yml）保持一致。
+#
+# 安装：pip install pre-commit && pre-commit install
+# 手动全量运行：pre-commit run --all-files
+#
+# 设计原则：只放「可自动修复且低风险」的检查，避免提交被长时间阻塞。
+# 全量测试与 mypy 基线由 CI 承担（见 ci.yml）。
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      # 阻塞项：F 组（Pyflakes）与 E9 —— 真实缺陷，非风格偏好
+      - id: ruff
+        name: ruff (F, E9)
+        args: [--select, "F,E9", --fix]
+        files: ^(src|tests)/.*\.py$
+      # 非阻塞：格式与其余规则组（暂不阻塞提交，见 pyproject 注释）
+      - id: ruff-format
+        files: ^(src|tests)/.*\.py$
+        verbose: true
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+        files: ^(src|tests)/.*\.py$
+      - id: trailing-whitespace
+        files: ^(src|tests)/.*\.py$
+      - id: check-added-large-files
+        args: [--maxkb=1024]

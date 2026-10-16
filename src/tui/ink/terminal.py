@@ -321,7 +321,7 @@ class RawModeController:
         if self._fd is None:
             return False
         try:
-            from src._compat_termios import HAS_TERMIOS, termios
+            from src._compat_termios import HAS_TERMIOS
 
             if not HAS_TERMIOS:
                 return False

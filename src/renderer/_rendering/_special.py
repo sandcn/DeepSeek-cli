@@ -68,56 +68,9 @@ def render_html_block_close(tag: str, output_width: int) -> Text:
 # 统一目录（TOC）渲染
 # ═══════════════════════════════════════════════════════════
 
-def _build_toc_connectors(toc: list[dict]) -> list[dict]:
-    """为 TOC 条目构建树形连接符前缀。
-
-    根据条目层级关系计算每条目的树前缀（┣━/┗━/┃），
-    使目录以树形结构展示层级关系。
-
-    Args:
-        toc: TOC 条目列表
-
-    Returns:
-        带 "prefix" 键的条目列表
-    """
-    if not toc:
-        return []
-
-    n = len(toc)
-    is_last = [True] * n
-    for i in range(n - 1):
-        level_i = toc[i]["level"]
-        for j in range(i + 1, n):
-            if toc[j]["level"] == level_i:
-                is_last[i] = False
-                break
-            elif toc[j]["level"] < level_i:
-                break
-
-    ancestors_active: dict[int, bool] = {}
-    result = []
-
-    for i, entry in enumerate(toc):
-        level = entry["level"]
-
-        prefix_parts = []
-        for l in range(1, level):
-            if ancestors_active.get(l, False):
-                prefix_parts.append("┃  ")
-            else:
-                prefix_parts.append("   ")
-
-        connector = "┗━ " if is_last[i] else "┣━ "
-        prefix_parts.append(connector)
-
-        ancestors_active[level] = not is_last[i]
-        for l in list(ancestors_active.keys()):
-            if l > level:
-                del ancestors_active[l]
-
-        result.append({**entry, "prefix": "".join(prefix_parts)})
-
-    return result
+# 树形连接符纯逻辑收敛到 ``renderer._toc_logic``（与自绘 ANSI 路径
+# ``renderer.ansi.toc`` 同一实现）；本模块仅做 Rich 输出模型映射。
+from .._toc_logic import build_toc_connectors as _build_toc_connectors  # noqa: E402
 
 
 def render_toc(toc: list[dict], output_width: int) -> Text:

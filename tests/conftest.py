@@ -6,6 +6,13 @@ True），同进程内再构造 asyncio 原语（Queue/Lock/Event 等）会经
 get_event_loop() 抛 ``RuntimeError: There is no current event loop``——
 xdist 多 worker 并行下偶发失败（取决于测试在 worker 内的分配顺序）。
 本夹具在每个测试前修复该状态，消除整类偶发失败。
+
+★ 覆盖率模式（``--cov``）下的性能预算用例：``coverage`` 的逐行插桩会让被
+测代码慢数倍，所有**时间预算型**断言（用例如名含 ``budget`` / ``bounded``）
+必然超时失败——这是测量方式的伪失败，与代码性能无关。CI 因此在两个步骤中
+分别承担职责：完整套件（**不带**覆盖率）验证正确性与性能预算；覆盖率步骤
+只统计覆盖面。本夹具在检测到 ``--cov`` 生效时跳过这些用例，避免把工具开销
+误报为性能回归。
 """
 
 from __future__ import annotations
@@ -22,6 +29,27 @@ def _ensure_main_event_loop():
         asyncio.get_event_loop_policy().get_event_loop()
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
+    yield
+
+
+def _coverage_instrumented(config) -> bool:
+    """当前运行是否启用了覆盖率插桩（只看显式传入的 ``--cov``）。"""
+    return bool(getattr(config.option, "cov_source", None))
+
+
+#: 时间预算型用例命名特征（插桩后执行时间失真，见模块 docstring）
+_TIMING_SENSITIVE_TOKENS = ("budget", "bounded", "_perf", "perf_")
+
+
+@pytest.fixture(autouse=True)
+def _skip_timing_budget_when_measuring_coverage(request):
+    """覆盖率插桩模式下跳过时间预算型用例（性能预算由无插桩的完整套件验证）。"""
+    if not _coverage_instrumented(request.config):
+        yield
+        return
+    node_id = request.node.nodeid.lower()
+    if any(token in node_id for token in _TIMING_SENSITIVE_TOKENS):
+        pytest.skip("覆盖率插桩改变执行时间，时间预算用例在 --cov 模式下不适用")
     yield
 
 

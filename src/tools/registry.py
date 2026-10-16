@@ -19,6 +19,19 @@ from ..core.tool_display import TOOL_DISPLAY_NAME, get_tool_display_name  # noqa
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "ToolRegistry",
+    "discover_builtin_tools",
+    "register_tool",
+    "get_tools",
+    "tool_output_is_markdown",
+    "get_tool_schemas",
+    "clear_registry",
+    # 兼容面（历史从本模块导入的显示名辅助）
+    "TOOL_DISPLAY_NAME",
+    "get_tool_display_name",
+]
+
 # ------------------------------------------------------------
 #  全局单例引用（懒初始化）
 # ------------------------------------------------------------

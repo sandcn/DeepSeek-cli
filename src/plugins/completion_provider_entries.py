@@ -18,8 +18,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from ..kernel import plugin
 
 #: completion_provider 条目可由 config 覆盖的字段

@@ -8,9 +8,9 @@ JSON Schema 与异步处理函数，得到一个标准 ``Func`` 子类，再经
 from __future__ import annotations
 
 import logging
-from typing import Awaitable, Callable, Optional, Type
+from typing import Awaitable, Callable, Type
 
-from .base import Func, ToolMetadata, tool_metadata
+from .base import Func, tool_metadata
 
 _logger = logging.getLogger(__name__)
 

@@ -9,10 +9,12 @@ import argparse
 import logging
 import sys
 
+from ..version import version_string
+
 _logger = logging.getLogger(__name__)
 
-# ── 版本常量 ──
-VERSION = "v2.2.0"
+# ── 版本常量（单一真源：src/version.py） ──
+VERSION = version_string()
 
 def _parse_args() -> argparse.Namespace:
     """解析命令行参数，支持子命令和旧语法自动兼容"""

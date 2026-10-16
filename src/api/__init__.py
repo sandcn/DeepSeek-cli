@@ -12,6 +12,9 @@
 - json_repair.py    —— JSON 格式自动修复
 - stream_parse.py   —— 流式工具调用解析
 - escape_monitor/ —— Esc 键中断监听（包，原 escape_monitor.py 拆分）
+
+本包 ``__init__`` **不**做任何数值/重导出：``estimate_tokens`` 等符号经
+``src.api.tokens`` 等真实实现路径导入（避免为无调用方的兼容面引入导入开销）。
 """
 
-from .tokens import estimate_tokens  # noqa: F401
+__all__: list[str] = []

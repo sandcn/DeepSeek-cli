@@ -32,6 +32,7 @@ from typing import Optional
 import httpx
 
 from src._compat import dataclass
+from src.version import user_agent
 
 _logger = logging.getLogger(__name__)
 
@@ -133,8 +134,8 @@ DEEPSEEK_SEARCH_MAX_USES = 5
 # 搜索 API 专用超时（对齐 DSH 的 30000ms 协作预算）
 DEEPSEEK_SEARCH_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
-# 归属头，随包版本更新
-DEEPSEEK_SEARCH_USER_AGENT = "deepseek-cli/2.2.0"
+# 归属头，随包版本更新（单一真源：src/version.py）
+DEEPSEEK_SEARCH_USER_AGENT = user_agent()
 
 # 环境变量：搜索端点/模型独立覆盖。刻意不复用聊天端点环境变量——
 # 搜索与 chat-completions 使用不同的 API 基址（对齐 DSH SEARCH_BASE_URL_ENV）。

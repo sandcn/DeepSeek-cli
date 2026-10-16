@@ -1,12 +1,19 @@
 """命令内部实现 — 命令注册表和分发"""
 from __future__ import annotations
 
-from ._command_core import *
-from ._command_core import (  # noqa: F401 — 下划线名不被星号导入覆盖，须显式导入
+from ._command_core import (  # noqa: F401 — 显式重导出（替代 star import + 私有名）
     _cmd_help,
     _commands,
     _format_cost_duration,
     _pop_assistant_tool_messages,
+    CommandContext,
+    COMMANDS_HELP,
+    compute_cost,
+    get_dynamic_help_text,
+    get_registered_command_names,
+    handle_command,
+    register_command,
+    show_cost,
 )
 
 __all__ = [

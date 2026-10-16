@@ -1,0 +1,20 @@
+# 开发依赖锁定（测试 / 静态检查 / 提交钩子）
+#
+# 用法：
+#   pip install -r requirements.txt -r requirements-dev.txt
+#
+# 见 requirements.txt 顶部的维护约定。由 tests/test_requirements_lock.py
+# 守卫：pyproject 的 dev 分组依赖必须全部出现在本文件中。
+
+-r requirements.txt
+
+pytest==8.4.2
+pytest-asyncio==1.2.0
+pytest-xdist==3.8.0
+pytest-cov==7.1.0
+mypy==1.19.1
+tomli==2.4.1; python_version < "3.11"
+
+# 本地环境未安装、无法实测版本：仅保留声明
+ruff>=0.6
+pre-commit>=3.5

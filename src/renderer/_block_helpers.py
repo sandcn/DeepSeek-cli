@@ -13,6 +13,32 @@ from ._front_matter import (  # noqa: E402
     is_front_matter_close as _is_front_matter_close,
 )
 
+__all__ = [
+    "_is_empty_line",
+    "_strip_left",
+    "_rstrip_line",
+    "_is_only_chars",
+    "_has_only_chars",
+    "_LANG_BLACKLIST",
+    "_BLOCK_HTML_TAGS",
+    "_VOID_HTML_TAGS",
+    "_INDENT_SPACES",
+    "_INDENT_PREFIX",
+    "_INLINE_MAX_DEPTH",
+    "_MAX_PRESCAN_BUFFER",
+    "_is_blockquote_line",
+    "_get_blockquote_text",
+    "_split_blockquote",
+    "_is_code_fence_line",
+    "_strip_blockquote_prefix",
+    "_get_fence_lang",
+    "_rstrip_trailing_hashes",
+    # 兼容面：_front_matter 纯逻辑的 re-export（块级解析器经由本模块导入）
+    "_front_matter_delim",
+    "_front_matter_format",
+    "_is_front_matter_close",
+]
+
 
 # ═══════════════════════════════════════════════════════════
 # 字符级辅助函数（无正则）

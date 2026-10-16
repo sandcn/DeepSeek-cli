@@ -7,8 +7,6 @@
 
 from __future__ import annotations
 
-from .history import *  # noqa: F401,F403
-
 from .history import (  # noqa: F401  （显式重导出，含下划线私有名）
     MONITOR_JOIN_TIMEOUT,
     MONITOR_START_JOIN_TIMEOUT,
@@ -26,3 +24,24 @@ from .history import (  # noqa: F401  （显式重导出，含下划线私有名
     _unlock_history_file,
 )
 from ._registry import _active_monitor, _active_monitor_lock  # noqa: F401  （活跃实例注册表）
+
+__all__ = [
+    # 来自 escape_monitor.history
+    "MONITOR_JOIN_TIMEOUT",
+    "MONITOR_START_JOIN_TIMEOUT",
+    "UNIX_SELECT_TIMEOUT",
+    "WINDOWS_POLL_INTERVAL",
+    "_POLL_INTERVAL",
+    "_EOF_THRESHOLD",
+    "_SELECT_ERROR_THRESHOLD",
+    "_HISTORY_MAX_ENTRIES",
+    "_HISTORY_COMPACT_RATIO",
+    "_lock_history_file",
+    "_unlock_history_file",
+    "_read_history_file",
+    "_append_to_history_file",
+    "_compact_history_file",
+    # 兼容面：活跃实例注册表私有名
+    "_active_monitor",
+    "_active_monitor_lock",
+]

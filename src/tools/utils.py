@@ -145,3 +145,30 @@ async def async_termux_notify(
 
 # ── 沙盒记录 re-export（实际实现已移至 file_ops.py） ──────
 from .file_ops import async_record_sandbox, async_makedirs_and_record  # noqa: F401
+
+__all__ = [
+    # Termux 通知
+    "termux_notify",
+    "async_termux_notify",
+    # re-export：编码检测
+    "detect_encoding",
+    # re-export：文件操作
+    "validate_path_security",
+    "check_file_size",
+    "atomic_write_file",
+    "get_last_user_message_preview",
+    "async_atomic_write",
+    "async_read_file_content",
+    "async_file_exists",
+    "async_remove_file",
+    "async_makedirs",
+    "async_is_link",
+    "async_collect_files",
+    "async_record_sandbox",
+    "async_makedirs_and_record",
+    # re-export：安全常量
+    "DANGEROUS_DEVICE_FILES",
+    "SYSTEM_CRITICAL_PATHS",
+    "DOS_DEVICE_NAMES",
+    "WIN_DEVICE_PREFIXES",
+]

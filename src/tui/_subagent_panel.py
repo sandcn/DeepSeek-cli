@@ -643,3 +643,15 @@ class SubAgentPanelController:
             # ★ 2026-08-06：未注入 push_cmd 时记 debug 日志（修复前静默丢帧，
             #   排障无痕迹；装配路径已注入，仅测试桩/异常装配缺省）。
             _logger.debug("_push_frame 无 push_cmd_cb，帧丢弃（%d 行）", len(lines))
+
+
+__all__ = [
+    "SubAgentPanelController",
+    # 兼容面：渲染/状态辅助符号 re-export（docstring 声明 + patch 路径兼容）
+    "_ToolRecord",
+    "_SPINNER_FRAMES",
+    "_get_tool_color",
+    "_format_duration",
+    "_format_tokens",
+    "_format_speed",
+]

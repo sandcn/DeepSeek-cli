@@ -935,4 +935,5 @@ __all__ = [
     "_wrap_by_width",
     "_compute_input_layout",
     "_cursor_visual_from_layout",
+    "_tab_pos_to_expanded",
 ]

@@ -14,7 +14,7 @@ from .context import Context, _MISSING
 from .errors import PluginError
 from .events import EventBus
 from .fiber import Fiber, FiberState
-from .plugin import Plugin, as_plugin
+from .plugin import as_plugin
 
 _logger = logging.getLogger(__name__)
 
@@ -355,4 +355,6 @@ __all__ = [
     "set_current_kernel",
     "get_current_kernel",
     "current_context",
+    # 兼容面：测试断言 ``kernel_mod._activate_kernel is activate_kernel``
+    "_activate_kernel",
 ]

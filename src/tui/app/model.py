@@ -1270,4 +1270,12 @@ __all__ = [
     "ConfigViewState",
     "PluginViewState",
     "ReasoningState",
+    # 兼容面：_model_helpers 常量/辅助 re-export（旧导入路径兼容）
+    "_TOOL_INCREMENTAL_THRESHOLD",
+    "_BASH_OUTPUT_TAIL_LINES",
+    "_TOOL_HEAD_TOOLS",
+    "_TOOL_HEAD_LINES",
+    "_TOOL_TAIL_TOOLS",
+    "_single_line_detail",
+    "_role_header_runs",
 ]

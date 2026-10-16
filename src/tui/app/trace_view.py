@@ -43,7 +43,7 @@ from src.tui.app.trace import (
 from src.tui.app.trace_image import thumbnail_rows as _thumbnail_rows
 from src.tui.core.style import Style
 from src.tui.ink import (
-    TEXT, Column, Row, StyledRun, h, use_effect, use_input, use_memo, use_ref,
+    TEXT, Column, Row, StyledRun, h, use_input, use_memo, use_ref,
 )
 from src.tui.ink.helpers import truncate_runs, truncate_runs_ellipsis, wrap_runs_by_width
 from src.tui.ink.widgets.listview import ListView
@@ -3655,4 +3655,19 @@ __all__ = [
     "_EXPORT_SCOPES",
     "_EXPORT_SCOPE_LABELS",
     "_ledger_renderer",
+    # 兼容面：trace_styles / trace_tree / trace_ledger 的符号 re-export
+    "_S_INDEX",
+    "_S_SEL_BG",
+    "_S_SEL_MARK",
+    "_S_TIME",
+    "_S_TREE_KEY",
+    "_TREE_INDENT",
+    "_TREE_LEAF",
+    "_TREE_MAX_DEPTH",
+    "_TREE_OPEN",
+    "_LEDGER_RUNS_CACHE",
+    "_LEDGER_RUNS_CACHE_MAX",
+    "_SEP_RUNS_CACHE",
+    "_kind_fg",
+    "_status_fg",
 ]

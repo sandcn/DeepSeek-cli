@@ -51,3 +51,4 @@ test_chrome/*
 !test_chrome/second_page.html
 !test_chrome/verify_bash_opt_ops.py
 !test_chrome/verify_popup_click.py
+DeepSeek_V4.pdf

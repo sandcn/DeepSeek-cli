@@ -127,4 +127,6 @@ __all__ = [
     "_glow_bucket",
     "_active_palette_cache",
     "_sep_style_active",
+    # patch 兼容：测试经 patch("src.tui.app._theme.time.monotonic") 定位
+    "time",
 ]

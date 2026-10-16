@@ -51,7 +51,6 @@ from .._screenshot.win import (
 from .._screenshot.windows import DEFAULT_SELECTOR, pick_window
 from .action import (
     DEFAULT_CLICK_INTERVAL,
-    KEY_PHASES,
     MIN_MOVE_STEPS,
     ClickAction,
     DragAction,

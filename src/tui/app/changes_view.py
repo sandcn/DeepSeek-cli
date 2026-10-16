@@ -114,6 +114,9 @@ __all__ = [
     "_message_deps",
     "_preview_deps",
     "_panel_deps",
+    # 兼容面：sandbox_common 常量 re-export
+    "MAX_DIFF_ROWS",
+    "S_LABEL",
 ]
 
 _KEYMAP = [

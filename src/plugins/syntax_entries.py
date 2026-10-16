@@ -19,8 +19,6 @@ rust/java/c/cpp/ruby/shell/sql/yaml/json/css/html）不再硬编码在
 
 from __future__ import annotations
 
-from typing import Optional
-
 from ..kernel import plugin
 
 #: syntax_language 条目可由 config 覆盖的字段

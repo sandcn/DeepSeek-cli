@@ -219,4 +219,4 @@ class InkBridge(_BottomBarCompatMixin):
             _logger.debug("request_bottom_redraw 异常", exc_info=True)
 
 
-__all__ = ["InkBridge"]
+__all__ = ["InkBridge", "_CompletionProxy"]

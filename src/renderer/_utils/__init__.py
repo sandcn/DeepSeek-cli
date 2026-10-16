@@ -49,3 +49,32 @@ from ._delay import (
     _precise_delay,
 )
 
+__all__ = [
+    # URL/Email 扫描
+    "_scan_next_url",
+    "_scan_next_email",
+    "_scan_next_url_or_email",
+    # HTML 实体
+    "_HTML_ENTITIES",
+    "decode_html_entities",
+    # 自动链接化
+    "_auto_linkify_emails",
+    # 显示宽度与转义标记
+    "_ZERO_WIDTH_CHARS",
+    "cjk_display_width",
+    "expand_tabs",
+    # 代码高亮
+    "_code_style_cache",
+    "parse_highlight_lines",
+    "parse_linenos",
+    "parse_lineno_options",
+    "get_code_style",
+    # Code fence 检测
+    "_COMMON_LANGUAGES",
+    "_get_fence_info",
+    # 高精度延时
+    "_PLATFORM",
+    "_IS_LINUX",
+    "_precise_delay",
+]
+

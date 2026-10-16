@@ -31,7 +31,7 @@ ink-confirm-input）API 对齐：
 
 from __future__ import annotations
 
-from ._interactive_common import (
+from ._interactive_common import (  # noqa: F401 — 兼容 re-export（历史经本模块导入）
     _call,
     _color,
     _normalize_items,
@@ -44,4 +44,8 @@ from ._text_input import TextInput
 from ._multi_select import MultiSelect
 from ._confirm_toggle import ConfirmInput, Toggle
 
-__all__ = ["SelectInput", "TextInput", "MultiSelect", "ConfirmInput", "Toggle"]
+__all__ = [
+    "SelectInput", "TextInput", "MultiSelect", "ConfirmInput", "Toggle",
+    # 兼容面：_interactive_common 辅助函数 re-export
+    "_call", "_color", "_normalize_items", "_visible_window", "_clamp_index", "_hashable",
+]

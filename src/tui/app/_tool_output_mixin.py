@@ -696,4 +696,12 @@ class _ToolOutputMixin:
         return f"tool-{self._tool_id_seq}"
 
 
-__all__ = ["_ToolOutputMixin"]
+__all__ = [
+    "_ToolOutputMixin",
+    # 兼容面：_model_helpers 常量 re-export（mixin 经本模块导入避免反向依赖）
+    "_TOOL_INCREMENTAL_THRESHOLD",
+    "_BASH_OUTPUT_TAIL_LINES",
+    "_TOOL_HEAD_TOOLS",
+    "_TOOL_HEAD_LINES",
+    "_TOOL_TAIL_TOOLS",
+]

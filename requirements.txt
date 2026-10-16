@@ -1,0 +1,37 @@
+# 运行时依赖锁定（直接依赖）
+#
+# 用途：在无法使用 pip-compile / uv lock 的环境中提供「已验证可运行」的
+# 版本组合，降低「同一代码在不同时间安装出不同依赖版本」导致的不可复现问题。
+#
+# 用法：
+#   pip install -r requirements.txt           # 安装运行时依赖
+#   pip install -r requirements-dev.txt       # 安装开发依赖
+#
+# 维护约定：
+#   - 版本号来自实际通过全量测试的环境（`pip show <pkg>` / importlib.metadata）；
+#   - 升级依赖后必须同步本文件并跑一次全量测试；
+#   - 完整传递闭包锁定建议在联网环境执行 `pip-compile pyproject.toml`
+#     生成（本仓库未内置该产物，避免手工维护传递依赖出错）。
+#
+# 由 tests/test_requirements_lock.py 守卫：pyproject 的必需依赖必须全部出现在
+# 本文件中（反向缺失同样报错）。
+
+# ── 核心运行时 ────────────────────────────────────────────
+httpx==0.28.1
+rich==15.0.0
+Pygments==2.20.0
+beautifulsoup4==4.14.3
+chardet==4.0.0
+aiofiles==25.1.0
+qrcode==8.2
+Pillow==8.4.0
+typing-extensions==4.15.0; python_version < "3.11"
+
+# ── 可选加速（缺失时自动回退，见 pyproject optional-dependencies）──
+orjson>=3.9
+h2==4.3.0
+
+# ── 本地环境未安装、无法实测版本：仅保留声明（不写死版本，避免锁到
+#    未经验证的版本）。联网环境首次安装后请补成 `==`。
+psutil>=5.9
+PyYAML>=6.0

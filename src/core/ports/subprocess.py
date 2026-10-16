@@ -6,8 +6,8 @@ Provider 指向远程沙箱，进程便在沙箱里启动。
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, runtime_checkable
+from dataclasses import dataclass
+from typing import Any, Dict, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 
 @dataclass

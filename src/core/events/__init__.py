@@ -24,8 +24,34 @@
 
 from .event_bus import CoreEventBus, get_default_bus, set_default_bus, reset_default_bus
 from .event_types import CoreEvent, EventPriority
-from .display_types import *  # noqa: F401,F403 — 显示事件类型（下沉自 tui.events.event_types）
-from .display_types import ALL_EVENT_TYPES
+from .display_types import (  # 显式导入（替代 star import，便于静态分析）
+    ALL_EVENT_TYPES,
+    AgentAddedEvent,
+    AgentResultEvent,
+    AgentStatusChanged,
+    BackgroundTaskChangedEvent,
+    CompactionChangedEvent,
+    ContentChunkEvent,
+    DisplayEvent,
+    MetricsUpdateEvent,
+    ModelPhaseEvent,
+    OutputEvent,
+    ParseInfoDoneEvent,
+    ParseInfoEvent,
+    PhaseDoneEvent,
+    ReasoningChunkEvent,
+    SessionStarted,
+    SessionStopped,
+    SubagentPromptEvent,
+    ToolBatchStartedEvent,
+    ToolDoneEvent,
+    ToolNoticeEvent,
+    ToolOutputChunkEvent,
+    ToolParsingEvent,
+    ToolStartedEvent,
+    ToolSummaryEvent,
+    UsageUpdatedEvent,
+)
 
 # CoreHooks 兼容别名（CoreHooks→CoreEventBus 合并后，仍可使用旧名引用）
 CoreHooks = CoreEventBus
@@ -45,6 +71,7 @@ __all__ = [
     "OutputEvent", "ToolSummaryEvent",
     "SubagentPromptEvent", "AgentResultEvent",
     "BackgroundTaskChangedEvent",
+    "CompactionChangedEvent",
     "ALL_EVENT_TYPES",
     # 兼容别名
     "CoreHooks",

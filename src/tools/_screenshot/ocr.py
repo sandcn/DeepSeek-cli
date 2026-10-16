@@ -469,12 +469,12 @@ class MacVisionBackend:
     def available(self) -> bool:
         if sys.platform != "darwin":
             return False
-        try:
-            import Vision  # noqa: F401
-            import Quartz  # noqa: F401
-        except ImportError:
-            return False
-        return True
+        import importlib.util
+
+        return (
+            importlib.util.find_spec("Vision") is not None
+            and importlib.util.find_spec("Quartz") is not None
+        )
 
     def recognize(self, image_path: str, lang: str | None = None) -> list[TextBox]:
         import Quartz

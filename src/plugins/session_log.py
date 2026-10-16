@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional
 
-from ..core.session_log import LoggedMessageList, SessionLog, derive_messages
+from ..core.session_log import LoggedMessageList, SessionLog
 from ..kernel import Service, plugin
 
 

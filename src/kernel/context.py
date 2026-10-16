@@ -38,7 +38,7 @@ import re
 from typing import Any, Callable, List, Optional
 
 from .errors import ServiceExists, ServiceNotFound
-from .plugin import Plugin, as_plugin
+from .plugin import as_plugin
 
 _logger = logging.getLogger(__name__)
 

@@ -15,7 +15,7 @@ import json
 import os
 from typing import Any, List
 
-from .config_tree import Bundle, ConfigTree, Profile
+from .config_tree import ConfigTree
 from .errors import PluginError
 
 

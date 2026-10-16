@@ -9,8 +9,6 @@ core 领域层经 ``core.display_target`` 协议访问显示目标；本模块�
 
 from __future__ import annotations
 
-from typing import Optional
-
 
 def get_display_target():
     """返回当前活跃的显示目标（TUI 模式为 ChatUIConsumer，无头模式 None）。"""

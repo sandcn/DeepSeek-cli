@@ -359,4 +359,8 @@ __all__ = [
 
 # 确保 render()/renderToString()/measureElement() 可用：
 # 导入 session 定义 InkSession 并注册到 _render_api（打破循环依赖）。
-from . import session as _ink_session  # noqa: E402,F401
+# 用 importlib 触发导入：本语句的语义是「副作用导入」，不绑定名字。
+import importlib as _importlib  # noqa: E402
+
+_importlib.import_module("src.tui.ink.session")
+del _importlib

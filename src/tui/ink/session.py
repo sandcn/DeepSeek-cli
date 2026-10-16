@@ -1683,6 +1683,8 @@ __all__ = [
     "_safe_int",
     # ★ 2026-09-20：可合并状态命令集合 re-export（真源 ``_cmd_priority``）
     "_COALESCE_CMDS",
+    # 兼容面：``_render_api`` 的轻量入口实现符号 re-export
+    "_SimpleModel",
 ]
 
 

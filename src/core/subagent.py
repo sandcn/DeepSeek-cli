@@ -11,7 +11,7 @@ SubAgent 共享 MainAgent 的文件沙盒（SandboxManager），
 import asyncio
 import logging
 import threading
-from typing import List, Dict, Any, Optional, Tuple, Callable
+from typing import Optional, Tuple, Callable
 
 from .base_agent import BaseAgent
 from .tool_executor_async import ToolScheduler

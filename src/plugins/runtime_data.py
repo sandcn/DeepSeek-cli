@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Optional
 
 from ..kernel import Service, plugin
 

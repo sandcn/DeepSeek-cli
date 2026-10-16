@@ -8,16 +8,10 @@
 
 from __future__ import annotations
 
-import re
+from .._ansi_text import strip_ansi as strip_ansi  # noqa: F401 — 全项目单一真源 re-export
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 # 微信单条文本消息长度上限（保守按字符数，中文 3 字节编码下约 2000 字安全）
 DEFAULT_MESSAGE_LIMIT = 2000
-
-
-def strip_ansi(text: str) -> str:
-    """去除 ANSI 转义序列。"""
-    return _ANSI_RE.sub("", text or "")
 
 
 def _content_to_text(content) -> str:

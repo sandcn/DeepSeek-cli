@@ -11,6 +11,25 @@
 from .internal.shared._message_stats_cache import MessageStatsCache  # noqa: F401 — re-exported for backward compat
 from .internal.shared._message_text import message_to_text, _parse_tool_args  # noqa: F401 — re-exported for backward compat
 
+__all__ = [
+    "compute_message_stats",
+    "exceeds_limit_values",
+    "should_auto_force_values",
+    "calc_excess_chars_values",
+    "calc_usage_percent_values",
+    "total_chars",
+    "total_tokens",
+    "find_tool_groups",
+    "adjust_keep_for_tool_groups",
+    "extend_to_complete_tool_group",
+    "select_candidates",
+    "select_for_compression",
+    # 兼容面（向后 re-export）
+    "message_to_text",
+    "MessageStatsCache",
+    "_parse_tool_args",
+]
+
 _EXCESS_BUFFER = 1.3  # 30% 超额释放缓冲，避免频繁触发压缩
 
 

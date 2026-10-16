@@ -54,5 +54,7 @@ __all__ = [
     "_resolve_style",
     "_repeat_to_width",
     "SPINNER_FRAMES",
+    # patch 兼容：测试经 patch("...display.threading...") 定位
+    "threading",
 ]
 

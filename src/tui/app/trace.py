@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import json as _json
 import time as _time
-from dataclasses import dataclass, field
 from .trace_image import parse_image_blocks, image_summary, _is_image_block
 from .trace_types import (
     TRACE_KIND_ORDER,  # noqa: F401  （re-export 兼容）

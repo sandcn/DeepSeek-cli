@@ -37,7 +37,7 @@ mixin 方法即实例方法）。
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import logging
 import time

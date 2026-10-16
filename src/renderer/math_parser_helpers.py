@@ -25,6 +25,42 @@ from .math_symbols import (
 _SUBSCRIPT_UNICHARS: set[str] = set(_SUBSCRIPT_MAP.values())
 _SUPERSCRIPT_UNICHARS: set[str] = set(_SUPERSCRIPT_MAP.values())
 
+#: 本模块对外（含 Mixin 模块与 math_parser.py）的完整导出面。
+#: 其中 ``_STYLE_*`` 为 ``math_symbols`` 的再导出——Mixin 模块经本模块
+#: 间接导入这些样式常量。
+__all__ = [
+    "_SUBSCRIPT_UNICHARS",
+    "_SUPERSCRIPT_UNICHARS",
+    "_extract_braced_group",
+    "_skip_group",
+    "_skip_spaces",
+    "_convert_to_superscript",
+    "_convert_to_subscript",
+    "_convert_to_superscript_progressive",
+    "_convert_to_subscript_progressive",
+    "_all_chars_mapped",
+    "_OPEN_PAREN_OPS",
+    "_has_operator",
+    "_find_tex_primitive",
+    "re_split_rows",
+    # 再导出：math_symbols 样式常量
+    "_STYLE_DEFAULT",
+    "_STYLE_FUNCTION",
+    "_STYLE_NUMBER",
+    "_STYLE_OPERATOR",
+    "_STYLE_SUPERSCRIPT",
+    "_STYLE_SUBSCRIPT",
+    "_STYLE_FRAC_LINE",
+    "_STYLE_TEXT",
+    "_STYLE_BOLD",
+    "_STYLE_ITALIC",
+    "_STYLE_CANCEL",
+    "_STYLE_TAG",
+    "_STYLE_BOXED",
+    "_STYLE_ACCENT",
+    "_STYLE_COLOR_NOTICE",
+]
+
 
 # ═══════════════════════════════════════════════════════════
 # 花括号组提取

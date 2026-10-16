@@ -52,10 +52,12 @@ def _is_http2_available() -> bool:
     if _HTTP2_AVAILABLE is not None:
         return _HTTP2_AVAILABLE
     try:
-        import h2  # noqa: F401
-        _HTTP2_AVAILABLE = True
-    except ImportError:
-        _logger.warning("h2 包未安装，HTTP/2 不可用，回退 HTTP/1.1")
+        import importlib.util
+
+        _HTTP2_AVAILABLE = importlib.util.find_spec("h2") is not None
+        if not _HTTP2_AVAILABLE:
+            _logger.warning("h2 包未安装，HTTP/2 不可用，回退 HTTP/1.1")
+    except Exception:  # pragma: no cover - 探测失败按不可用处理
         _HTTP2_AVAILABLE = False
     return _HTTP2_AVAILABLE
 

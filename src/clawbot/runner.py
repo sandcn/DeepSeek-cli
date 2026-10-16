@@ -44,7 +44,6 @@ from .render import (
     extract_reasoning,
     extract_tool_summary,
     split_message,
-    strip_ansi,
 )
 
 _logger = logging.getLogger(__name__)
@@ -248,7 +247,7 @@ class ClawBotRunner:
             request_kill_background,
             reset_interrupt_async,
         )
-        from ..app_loop._session_setup import SessionState, _register_session_handlers
+        from ..app_loop._session_setup import SessionState
         from ..app_loop._special_keys import make_special_key_callback
         from ..app_loop._ui_factory import create_chat_ui
         from ..app_loop._utils import _exit_save_and_stop, _merge_prefill
