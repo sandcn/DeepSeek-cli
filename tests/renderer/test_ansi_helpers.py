@@ -4,8 +4,6 @@
 以及 ANSI→Run 的 SGR 解析。
 """
 
-import pytest
-
 from src.renderer.ansi.helpers import (
     AnsiLine,
     Run,

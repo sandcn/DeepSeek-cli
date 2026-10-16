@@ -31,10 +31,8 @@ import pytest
 
 from src.tui.app.model import AppModel, UserSelectState
 from src.tui.app.user_select import UserSelectPopup
-from src.tui.ink import h, TEXT
 from src.tui.ink import hooks
 from src.tui.ink.fiber import Fiber, InputHook, TAG_FUNCTION
-from src.tui.ink.reconciler import Reconciler
 
 
 # ── 测试辅助 ──────────────────────────────────────────────

@@ -21,8 +21,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from src.api.stream.context import StreamContext
 from src.api.stream.handlers.tool_calls import ToolCallsHandler
 

@@ -14,8 +14,6 @@ import re
 import unittest.mock
 from pathlib import Path
 
-import pytest
-
 import src.tools as tools
 
 

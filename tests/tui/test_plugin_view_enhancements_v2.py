@@ -284,7 +284,6 @@ class TestExport:
             write_export(_entries(), "xml")
 
     def test_w_key_exports(self, monkeypatch, tmp_path):
-        from src.tui.app import plugin_view as pv_mod
         from src.tui.app.plugin_view import PluginView
         monkeypatch.chdir(tmp_path)
         model = _model()

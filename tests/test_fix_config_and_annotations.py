@@ -11,9 +11,10 @@
 
 from __future__ import annotations
 
-import ast
 import pathlib
 import typing
+
+import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 

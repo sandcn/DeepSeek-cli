@@ -3,8 +3,6 @@
 验证自包含 Style 的 ANSI 序列生成、合并、布尔语义，以及 RGB→256 色号转换与调色板构建。
 """
 
-import pytest
-
 from src.renderer.ansi.style import (
     Style,
     _build_palette,

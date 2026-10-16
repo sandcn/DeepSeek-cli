@@ -3,10 +3,6 @@
 验证 dataclass 装饰器在 Python 3.9 下的 slots 兼容行为。
 """
 
-import sys
-
-import pytest
-
 from src._compat import dataclass
 
 

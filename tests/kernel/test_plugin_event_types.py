@@ -28,9 +28,14 @@ def _resolved(profile="cli"):
 
 
 def test_manifest_declares_each_builtin_event_type():
-    import src.core.events.agent_types  # noqa: F401
-    import src.core.events.display_types  # noqa: F401
-    import src.core.events.event_types  # noqa: F401
+    import importlib
+
+    for _mod in (
+        "src.core.events.agent_types",
+        "src.core.events.display_types",
+        "src.core.events.event_types",
+    ):
+        importlib.import_module(_mod)
     from src.core.events.type_registry import builtin_composite_ids
 
     declared = []
@@ -44,9 +49,14 @@ def test_manifest_declares_each_builtin_event_type():
 
 
 def test_manifest_entries_match_registry_declaration():
-    import src.core.events.agent_types  # noqa: F401
-    import src.core.events.display_types  # noqa: F401
-    import src.core.events.event_types  # noqa: F401
+    import importlib
+
+    for _mod in (
+        "src.core.events.agent_types",
+        "src.core.events.display_types",
+        "src.core.events.event_types",
+    ):
+        importlib.import_module(_mod)
     from src.core.events.type_registry import builtin_composite_ids
 
     assert {(e.get("config") or {}).get("name") for e in EVENT_TYPE_ENTRIES} == set(builtin_composite_ids())
@@ -170,9 +180,14 @@ async def test_overlay_disable_session_event_type():
 
 
 def test_registry_api_roundtrip():
-    import src.core.events.agent_types  # noqa: F401
-    import src.core.events.display_types  # noqa: F401
-    import src.core.events.event_types  # noqa: F401
+    import importlib
+
+    for _mod in (
+        "src.core.events.agent_types",
+        "src.core.events.display_types",
+        "src.core.events.event_types",
+    ):
+        importlib.import_module(_mod)
     from src.core.events.type_registry import (
         event_value,
         reset,

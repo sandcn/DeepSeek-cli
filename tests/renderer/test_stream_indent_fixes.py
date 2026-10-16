@@ -20,7 +20,7 @@
 from __future__ import annotations
 
 from src.renderer.ansi import AnsiStreamRenderer, wrap_line
-from src.renderer.ansi.helpers import AnsiLine, Run
+from src.renderer.ansi.helpers import AnsiLine
 
 
 def _render(src: str, width: int = 70) -> list[str]:

@@ -3,8 +3,6 @@
 验证 ANSI 清理、回复/思考提取、工具摘要与消息分段。
 """
 
-import pytest
-
 from src.clawbot.render import (
     _content_to_text,
     _find_cut,

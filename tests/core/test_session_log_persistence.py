@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from src.core.events.agent_types import SessionEventType
 from src.core.session_log import LoggedMessageList, SessionLog
 

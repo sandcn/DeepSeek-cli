@@ -8,8 +8,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from src.renderer.emoji_map import EMOJI_MAP, resolve_emoji
 
 

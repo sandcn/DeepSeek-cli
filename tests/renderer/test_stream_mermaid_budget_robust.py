@@ -25,7 +25,6 @@ from src.renderer.ansi import AnsiStreamRenderer
 from src.renderer.ansi.mermaid import clear_mermaid_cache, render_mermaid_block
 from tests.renderer.test_stream_markdown_render_fixes_v6 import (
     _frame_worst_costs,
-    _min_elapsed,
     _one_shot,
     _stream,
 )

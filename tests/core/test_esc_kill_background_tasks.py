@@ -401,6 +401,7 @@ async def test_kill_all_active_agents(monkeypatch):
 async def test_kill_all_active_agents_empty():
     """无活跃后台任务时返回 0（注册表可含无任务 Agent，零副作用）。"""
     agent = _FakeMainAgent()  # 无任何后台任务
+    assert not agent._background_tasks and not agent._subagent_tasks
     assert await kill_all_active_background_tasks() == 0
 
 

@@ -20,16 +20,21 @@ from src.tui.app.help_view import (
 
 
 def _register_all_commands():
-    import src.core.commands._config_cmd  # noqa: F401
-    import src.core.commands._data_cmd  # noqa: F401
-    import src.core.commands._export_cmd  # noqa: F401
-    import src.core.commands._plugin_cmd  # noqa: F401
-    import src.core.commands._session_cmd  # noqa: F401
-    import src.core.commands.plugins.deitmsg_plugin  # noqa: F401
-    import src.core.commands.plugins.editmsg_plugin  # noqa: F401
-    import src.core.commands.plugins.loop_plugin  # noqa: F401
-    import src.core.commands.plugins.model_plugin  # noqa: F401
-    import src.core.commands.plugins.skill_plugin  # noqa: F401
+    import importlib
+
+    for _mod in (
+        "src.core.commands._config_cmd",
+        "src.core.commands._data_cmd",
+        "src.core.commands._export_cmd",
+        "src.core.commands._plugin_cmd",
+        "src.core.commands._session_cmd",
+        "src.core.commands.plugins.deitmsg_plugin",
+        "src.core.commands.plugins.editmsg_plugin",
+        "src.core.commands.plugins.loop_plugin",
+        "src.core.commands.plugins.model_plugin",
+        "src.core.commands.plugins.skill_plugin",
+    ):
+        importlib.import_module(_mod)
     from src.core.commands.base import (
         command_registry_singleton,
         declared_command_names,

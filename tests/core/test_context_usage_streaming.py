@@ -299,7 +299,7 @@ class TestUpdateStreamingUsage:
         """无活跃 ContextManager（纯 api 场景）调用不崩溃。"""
         from src.core.context_manager import (
             set_active_context_manager, update_streaming_usage,
-            set_streaming_extra_tokens, get_streaming_extra_tokens,
+            get_streaming_extra_tokens,
         )
         set_active_context_manager(None)
         update_streaming_usage(1500, "assistant")

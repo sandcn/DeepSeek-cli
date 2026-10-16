@@ -3,8 +3,6 @@
 验证 extract_key_params 的关键参数值提取与紧凑 k=v 输出。
 """
 
-import pytest
-
 from src.core.param_formatter import extract_key_params
 
 

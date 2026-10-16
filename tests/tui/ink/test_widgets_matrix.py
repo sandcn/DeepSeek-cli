@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.tui.ink import StyledRun, h
+from src.tui.ink import h
 from src.tui.ink import widgets as W
 from tests.tui.ink._harness import Harness
 
@@ -122,7 +122,6 @@ def test_widget_export_list_is_covered():
 
 def test_styled_runs_render_in_widgets():
     """带链接/styled 的 runs 在控件（CodeBlock）内正常渲染。"""
-    styled = [StyledRun("url", None, "https://a.b")]
     harness = Harness(30)
     el = h(W.CodeBlock, {"code": "see https://a.b", "language": "text"})
     harness.render(el)

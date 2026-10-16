@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -493,7 +492,9 @@ def test_handle_command_editmsg_sync_path_no_crash():
     注：显式 import 插件模块触发模块级自注册——生产路径由 app_loop
     ``from ..core.commands.plugins import ...`` 链触发；单测独立运行时
     无该链（修复前依赖文件内其他测试先 import 的顺序副作用）。"""
-    import src.core.commands.plugins  # noqa: F401 — 触发 EditmsgPlugin 注册
+    import importlib
+
+    importlib.import_module("src.core.commands.plugins")  # 触发 EditmsgPlugin 注册
     from src.core.commands import handle_command
 
     messages = [{"role": "user", "content": "hi"}]
@@ -537,7 +538,7 @@ async def test_editmsg_plugin_renders_warning_on_restore_failure(monkeypatch):
     monkeypatch.setattr(me, "_get_sandbox_manager", lambda: _FailRestoreSandbox())
 
     # 预填选择路径：绕过交互（直接返回 0——patch _interactive_message_select）
-    editor_obj = MessageEditor(bottom_bar=None, input_=inp)
+    MessageEditor(bottom_bar=None, input_=inp)
 
     def _fake_select(self, user_msgs, display_items, preview_items=None):
         return user_msgs[0][0]

@@ -22,7 +22,6 @@ fiber → UserSelectPopup 内部 use_state（selected/checked）残留上一次�
 
 from __future__ import annotations
 
-import asyncio
 import json
 
 import pytest

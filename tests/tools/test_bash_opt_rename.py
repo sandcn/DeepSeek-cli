@@ -17,7 +17,6 @@ import json
 from pathlib import Path
 
 import src.tools as tools_pkg
-from src.tools import BashOpt
 from src.tools.bash_opt import BashOptFunc
 
 

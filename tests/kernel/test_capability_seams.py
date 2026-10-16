@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.kernel import Kernel, set_current_kernel
+from src.kernel import set_current_kernel
 from src.plugins.bootstrap import build_kernel, shutdown_kernel
 
 

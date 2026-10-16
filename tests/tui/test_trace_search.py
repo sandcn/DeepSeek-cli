@@ -420,7 +420,6 @@ class TestTraceViewSearch:
         # 渲染期 search_mode=False → 无搜索行
         assert handler(_ev("char", "/")) is True
         model.trace_search_query = "hello"
-        from src.tui.app import trace_view as tv
         from src.tui.app.trace_view import TraceView
         rec, root = _render_root(TraceView, {"model": model, "width": 100})
         # 查找底部搜索行（遍历 fiber 找 children 含 "/hello" 的 TEXT）

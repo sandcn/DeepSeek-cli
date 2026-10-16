@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from src.renderer.ansi.helpers import AnsiLine
 from src.tui.core.style import Style
-from src.tui.ink import TEXT
 from src.tui.ink.element import h
 from src.tui.ink.output import Line
 from src.tui.ink.reconciler import Reconciler

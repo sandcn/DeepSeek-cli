@@ -3,8 +3,6 @@
 验证消息列表截断与清空重建 system prompt。
 """
 
-import pytest
-
 from src.core.message_edit import clear_all_messages, truncate_messages
 
 

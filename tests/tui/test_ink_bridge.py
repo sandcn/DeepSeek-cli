@@ -19,7 +19,7 @@ import pytest
 
 import src.tui._ink_bridge as ib
 from src.tui._ink_bridge import InkBridge
-from src.tui._ink_bridge_compat import _BottomBarCompatMixin, _CompletionProxy
+from src.tui._ink_bridge_compat import _CompletionProxy
 from src.tui.app._state_types import CompletionState, StatusState
 
 

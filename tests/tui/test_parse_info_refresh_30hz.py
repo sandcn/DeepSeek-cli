@@ -22,7 +22,6 @@ spinner 同频，每拍推送一次 ⇒ 每帧消费一次（进度行 token/耗
 from __future__ import annotations
 
 import asyncio
-import time
 from types import SimpleNamespace
 
 import pytest

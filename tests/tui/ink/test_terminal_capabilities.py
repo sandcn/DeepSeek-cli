@@ -12,7 +12,6 @@ import time
 
 from src.tui._input_parser import InputParser, KeyEvent, decode_sgr_mouse
 from src.tui.ink import (
-    BOX,
     TEXT,
     attach_links,
     h,
@@ -24,7 +23,6 @@ from src.tui.ink import (
     useStdin,
     useStdout,
     useStderr,
-    use_state,
 )
 from src.tui.ink._paint_canvas import _canvas_row_to_line, _line_as_dict
 from src.tui.ink.output import Line, StyledRun
@@ -397,7 +395,7 @@ def test_session_set_raw_mode_without_support():
 # ═══════════════════════════════════════════════════════════
 
 def test_resolve_kitty_options_auto_with_querier():
-    from src.tui.ink.kitty import decode_query_reply, resolve_kitty_options
+    from src.tui.ink.kitty import resolve_kitty_options
 
     assert resolve_kitty_options({"mode": "auto"}, lambda: None) == -1
     assert resolve_kitty_options({"mode": "auto"}, lambda: 3) == 3

@@ -447,7 +447,7 @@ async def test_bash_opt_kill_uses_process_pid_when_record_pid_missing(monkeypatc
 
     opt = BashOptFunc(task_id="bg-z", op="kill")
     opt.set_agent(agent)
-    out = await opt.execute()
+    await opt.execute()
 
     assert captured["pid"] == 4321
     assert proc.killed is False  # 进程树杀已覆盖，无需 process.kill 兜底

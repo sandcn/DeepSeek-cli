@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from src.core.middleware.registry import (
     builtin_middleware_factories,
     builtin_middleware_ids,

@@ -87,7 +87,7 @@ def _summarize_ctx(monkeypatch):
 
 
 def test_summarize_success_path(monkeypatch):
-    state = _summarize_ctx(monkeypatch)
+    _summarize_ctx(monkeypatch)
     messages = [
         {"role": "system", "content": "系统提示"},
         {"role": "user", "content": "a"},
@@ -131,7 +131,7 @@ def test_summarize_no_candidates(monkeypatch):
 
 
 def test_summarize_exception_degrades(monkeypatch):
-    state = _summarize_ctx(monkeypatch)
+    _summarize_ctx(monkeypatch)
 
     def boom(msgs, has_prior, fn, model):
         raise ValueError("模型返回空摘要")

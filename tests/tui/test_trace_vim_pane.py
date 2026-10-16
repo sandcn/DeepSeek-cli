@@ -346,7 +346,6 @@ class TestInspectorScroll:
 
     def test_cursor_row_highlighted(self):
         """cursor 所在行背景高亮（_S_INSP_BG）；其余行不高亮。"""
-        from src.tui.app import trace_view as tv
         from src.tui.app.trace_view import _inspector_children
         children = _inspector_children(
             self._rec_long(20), 40, 10, scroll=0, cursor=1,
@@ -585,7 +584,7 @@ class TestTraceViewVimPane:
         """检查器焦点 g → 光标顶部、G → 光标底部（视口跟随）。"""
         from src.tui.app import trace_view as tv
         from src.tui.app.trace_view import (
-            _INSPECTOR_MIN_CONTENT, TraceView, _viewport_rows,
+            TraceView, _viewport_rows,
             _inspector_viewport_rows,
         )
         from src.tui.app.model import AppModel
@@ -615,7 +614,7 @@ class TestTraceViewVimPane:
         """检查器焦点方向键同样移动光标（↓/↑/PgDn/PgUp/Home/End）。"""
         from src.tui.app import trace_view as tv
         from src.tui.app.trace_view import (
-            _INSPECTOR_MIN_CONTENT, TraceView, _viewport_rows,
+            TraceView, _viewport_rows,
             _inspector_viewport_rows,
         )
         from src.tui.app.model import AppModel
@@ -650,7 +649,7 @@ class TestTraceViewVimPane:
         """
         from src.tui.app import trace_view as tv
         from src.tui.app.trace_view import (
-            _INSPECTOR_MIN_CONTENT, TraceView, _viewport_rows,
+            TraceView, _viewport_rows,
             _inspector_viewport_rows,
         )
         from src.tui.app.model import AppModel
@@ -814,7 +813,6 @@ class TestTraceToolsViewVimPane:
 
     def test_l_moves_to_inspector(self, monkeypatch):
         """左栏焦点 l → trace_tools_pane=inspector。"""
-        from src.tui.app.trace_tools_view import TraceToolsView
         model, rec, root = self._setup(monkeypatch)
         router = rec._build_input_router(root)
         assert router(_ev("char", "l")) is True
@@ -844,7 +842,6 @@ class TestTraceToolsViewVimPane:
 
     def test_ledger_jk_navigates_tools(self, monkeypatch):
         """左栏焦点 j/k → ListView 导航工具列表（trace_tools_selected 写回）。"""
-        from src.tui.app.trace_tools_view import TraceToolsView
         model, rec, root = self._setup(monkeypatch)
         router = rec._build_input_router(root)
         assert router(_ev("char", "j")) is True
@@ -854,7 +851,6 @@ class TestTraceToolsViewVimPane:
 
     def test_navigate_resets_scroll_and_cursor(self, monkeypatch):
         """左栏导航切换工具 → 右栏滚动/光标复位 0。"""
-        from src.tui.app.trace_tools_view import TraceToolsView
         model, rec, root = self._setup(monkeypatch)
         model.trace_tools_scroll = 4
         model.trace_tools_cursor = 6
@@ -866,7 +862,6 @@ class TestTraceToolsViewVimPane:
 
     def test_escape_returns_trace(self, monkeypatch):
         """Esc → 返回主轨迹（fullscreen="trace"，既有语义）。"""
-        from src.tui.app.trace_tools_view import TraceToolsView
         model, rec, root = self._setup(monkeypatch)
         router = rec._build_input_router(root)
         assert router(_ev("escape")) is True

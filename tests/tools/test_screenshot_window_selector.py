@@ -20,7 +20,6 @@ from src.tools._screenshot.windows import (
     WindowSelector,
     describe_windows,
     filter_windows,
-    main_rank,
     main_window,
     mark_main,
     parse_control_request,

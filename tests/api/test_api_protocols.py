@@ -6,8 +6,6 @@ isinstance 与接口行为一致性。
 
 from __future__ import annotations
 
-import pytest
-
 from src.api.protocols import LLMProtocol
 
 

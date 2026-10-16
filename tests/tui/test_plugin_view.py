@@ -413,7 +413,9 @@ class TestIntegration:
         assert FULLSCREEN_VIEWS.get("plugin") is PluginView
 
     def test_command_registered(self):
-        import src.core.commands  # noqa: F401
+        import importlib
+
+        importlib.import_module("src.core.commands")
         from src.core.commands.base import get_plugin_registry
 
         plugin = get_plugin_registry().get("plugin")
@@ -422,7 +424,9 @@ class TestIntegration:
 
     def test_handle_command_dispatch(self, monkeypatch):
         """``handle_command("/plugin", ...)`` 经注册表调度到 PluginCommand。"""
-        import src.core.commands  # noqa: F401
+        import importlib
+
+        importlib.import_module("src.core.commands")
         from src.core.internal.commands._command_core import handle_command
         from src.core.commands import _plugin_cmd as pc
 

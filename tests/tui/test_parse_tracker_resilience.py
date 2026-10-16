@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from src.api.interrupt_async import reset_interrupt_async
 from src.api.stream_parse import ToolParseTracker, _PUSH_ERR_LOG_INTERVAL
 

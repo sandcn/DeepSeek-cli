@@ -513,7 +513,7 @@ class TestLedgerAndMetaEnhancements:
         assert "输入 10" in text
 
     def test_meta_fixed_rows_consistent(self):
-        from src.tui.app.trace_view import _inspector_fixed_rows, _meta_parts
+        from src.tui.app.trace_view import _inspector_fixed_rows
         rec = _tool_rec(3, "bash", status="done")
         assert _inspector_fixed_rows(rec) == 3  # 标题 2 + meta 1
         plain = _rec(9, "hi")

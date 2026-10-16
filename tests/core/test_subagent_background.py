@@ -25,7 +25,7 @@ import json
 
 from src.core.base_agent import BaseAgent
 from src.core.subagent import SubAgent
-from src.tools import Subagent, SubagentOpt
+from src.tools import SubagentOpt
 from src.tools.subagent import SubagentFunc
 from src.tools.subagent_opt import SubagentOptFunc
 

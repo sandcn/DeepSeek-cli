@@ -3,8 +3,6 @@
 验证 token/文件大小格式化与消息过滤工具。
 """
 
-import pytest
-
 from src.core.constants import (
     filter_non_system,
     filter_non_system_indices,

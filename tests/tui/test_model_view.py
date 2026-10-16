@@ -617,7 +617,9 @@ class TestCommandLayer:
         assert "模型选择器" in "\n".join(captured)
 
     def test_models_command_declared_and_registered(self):
-        import src.core.commands.plugins.models_plugin  # noqa: F401
+        import importlib
+
+        importlib.import_module("src.core.commands.plugins.models_plugin")
         from src.core.commands.base import get_plugin_registry
         assert get_plugin_registry().exists("models")
 

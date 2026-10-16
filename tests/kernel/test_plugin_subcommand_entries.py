@@ -13,8 +13,6 @@ from __future__ import annotations
 
 import argparse
 
-import pytest
-
 from src.kernel import Kernel, materialize
 from src.plugins.bootstrap import (
     build_kernel,

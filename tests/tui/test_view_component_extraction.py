@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from src.tui.app.config_view import (
     _cancel_edit,
     _json_container,

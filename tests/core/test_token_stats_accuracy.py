@@ -22,8 +22,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from src.core.tokens import (

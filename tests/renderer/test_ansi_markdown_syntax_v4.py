@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from src.renderer.ansi import AnsiStreamRenderer
 from src.renderer.ansi import blocks as _blocks
-from src.renderer.ansi import table as _table
 from src.renderer.ansi.helpers import AnsiLine, Run, wrap_line, truncate_line
 from src.renderer.ansi.inline import render_inline
 

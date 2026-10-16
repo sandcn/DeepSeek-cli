@@ -7,7 +7,6 @@ import pytest
 
 from src.core.internal.shared._message_stats_cache import MessageStatsCache
 from src.core.context_selector import message_to_text
-from src.api.tokens import estimate_tokens
 
 
 def _stats(messages):

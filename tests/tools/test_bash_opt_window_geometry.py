@@ -21,8 +21,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from src.tools import bash_opt as bash_opt_module
 from src.tools._screenshot import macos as macos_mod
 from src.tools._screenshot import png

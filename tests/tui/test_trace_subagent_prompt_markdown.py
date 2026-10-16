@@ -12,8 +12,6 @@
 
 from types import SimpleNamespace
 
-import pytest
-
 from src.tui.app.trace_types import TraceRecord
 
 

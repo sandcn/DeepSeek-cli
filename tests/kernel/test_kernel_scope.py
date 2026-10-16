@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.kernel import FiberState, Kernel, ServiceExists, plugin
+from src.kernel import Kernel, ServiceExists, plugin
 
 
 @pytest.fixture

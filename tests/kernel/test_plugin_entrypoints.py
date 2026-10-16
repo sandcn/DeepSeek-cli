@@ -7,8 +7,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 import src.plugins.bootstrap as bootstrap
 from src.kernel import plugin
 from src.plugins.bootstrap import build_kernel, shutdown_kernel

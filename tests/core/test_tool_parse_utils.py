@@ -3,8 +3,6 @@
 验证流式/非流式工具调用解析、失败 ID 追踪、参数串拼接与解析计时器。
 """
 
-import pytest
-
 from src.api._tool_parse_utils import (
     convert_tool_calls_map,
     convert_tool_calls_map_with_status,

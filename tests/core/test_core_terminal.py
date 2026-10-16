@@ -20,7 +20,6 @@ def fake_io(monkeypatch):
     import fcntl
     import os
     import struct
-    import termios
 
     state = {
         "open_ok": True,

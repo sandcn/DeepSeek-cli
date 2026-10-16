@@ -52,7 +52,7 @@ class _PaneHarness:
         self.recon.render(self.root, self.element, self.columns, 0)
 
     def text(self) -> str:
-        from src.tui.ink import h, renderToString
+        from src.tui.ink import renderToString
         from src.tui.ink.helpers import strip_ansi
 
         return strip_ansi(renderToString(self.element, {"columns": self.columns}))

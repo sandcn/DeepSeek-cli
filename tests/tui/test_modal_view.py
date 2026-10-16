@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from src.tui.app._modal_view import (
     empty_modal_frame,
     is_modal_close_key,

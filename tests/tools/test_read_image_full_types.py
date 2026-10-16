@@ -15,7 +15,6 @@ deepseek-v4-flash-vision-exp 路由到该模型）支持的格式（JPEG/PNG/GIF
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import io
 

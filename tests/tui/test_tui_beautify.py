@@ -316,7 +316,6 @@ class TestTraceHeaderSeparator:
     """TraceView / TraceToolsView 头部行尾 ─ 填充至满宽（真实渲染验证）。"""
 
     def _render_component(self, el, width: int = 80):
-        from src.tui.ink.element import h  # noqa: F401
         from src.tui.ink.reconciler import Reconciler
         from src.tui.ink.layout import layout_tree
         from src.tui.ink import components as _components
@@ -577,7 +576,6 @@ class TestApplyDefensiveFixes:
 
     def test_error_role_header_live_false_static(self):
         """P3 修复：error 头 live=False 时不呼吸（静态红，防冻结随机帧）。"""
-        from src.tui.app._theme import time_glow
         from src.tui.app._model_helpers import _role_header_runs
         # 未关闭 error 块 + live=False（提交/冻结路径）→ 静态 196
         block = SimpleNamespace(kind="error", closed=False, extra={})

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
-from src.kernel import FiberState, Kernel, get_current_kernel, plugin
+from src.kernel import FiberState, get_current_kernel, plugin
 from src.plugins.bootstrap import build_kernel, dump_profile, shutdown_kernel
 
 

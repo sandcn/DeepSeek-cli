@@ -13,7 +13,7 @@ import pytest
 
 import src.api._retry as retry_mod
 from src.api.errors import (
-    APIError, AuthError, CONNECTION_ERRORS, InvalidRequestError, NotFoundError,
+    APIError, AuthError, InvalidRequestError, NotFoundError,
     RateLimitError, RETRY_AFTER_CAP, RETRYABLE_HTTP_STATUS, ServerError,
     classify_http_error, compute_retry_delay, format_user_error, is_retryable,
     parse_retry_after,

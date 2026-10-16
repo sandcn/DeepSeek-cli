@@ -28,7 +28,6 @@ from src.plugins.bootstrap import (
 def _clean_registries():
     nreg.reset()
     mreg.reset()
-    from src.plugins.context import ContextService
 
     yield
     nreg.reset()

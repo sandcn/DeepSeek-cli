@@ -3,8 +3,6 @@
 验证 trace_id/span_id 生成与上下文管理器传播。
 """
 
-import pytest
-
 from src.core.telemetry.trace_context import (
     TraceContext,
     generate_span_id,

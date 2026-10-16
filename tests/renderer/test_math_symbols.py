@@ -32,7 +32,6 @@ from src.renderer.math_symbols import (
     _SUPERSCRIPT_MAP,
     _build_command_map,
 )
-from src.renderer.math_symbols import styles as styles_mod
 
 
 # ── 希腊字母 ──────────────────────────────────────────────

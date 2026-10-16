@@ -245,8 +245,6 @@ def test_engine_path_token_branch_compacts_everything_compactable():
         _config(auto_force_compress_threshold=5_000),
         messages=_cjk_messages(),
     )
-    before = len(cm.messages)
-
     cm.check_and_compress(force=False)
 
     assert cm._summarize_calls

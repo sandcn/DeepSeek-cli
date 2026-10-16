@@ -11,8 +11,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from src.kernel import Kernel, materialize
 from src.plugins.bootstrap import (
     build_kernel,
@@ -28,8 +26,10 @@ def _resolved(profile="cli"):
 
 
 def test_manifest_declares_each_builtin_constant():
-    import src.tools.page_fetcher  # noqa: F401 - 声明 REMOVE_TAGS
-    import src.tools.read_image  # noqa: F401 - 声明 IMAGE_EXTENSIONS
+    import importlib
+
+    importlib.import_module("src.tools.page_fetcher")  # 声明 REMOVE_TAGS
+    importlib.import_module("src.tools.read_image")  # 声明 IMAGE_EXTENSIONS
     from src.tools.const_registry import builtin_constant_names
 
     declared = []
@@ -43,8 +43,10 @@ def test_manifest_declares_each_builtin_constant():
 
 
 def test_manifest_entries_match_registry_declaration():
-    import src.tools.page_fetcher  # noqa: F401
-    import src.tools.read_image  # noqa: F401
+    import importlib
+
+    importlib.import_module("src.tools.page_fetcher")
+    importlib.import_module("src.tools.read_image")
     from src.tools.const_registry import builtin_constant_names
 
     assert {(e.get("config") or {}).get("name") for e in TOOL_CONST_ENTRIES} == set(builtin_constant_names())

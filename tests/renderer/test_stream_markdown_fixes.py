@@ -314,7 +314,6 @@ def test_code_batcher_force_flush_keeps_lang():
 
 def test_long_code_block_renders_single_fence():
     """超长代码块分段刷出后仍渲染为一个逻辑代码块（仅一对围栏）。"""
-    from src.renderer.pipeline import CodeBlockBatcher
     from src.renderer.ansi import AnsiStreamRenderer
 
     r = AnsiStreamRenderer(width=80)

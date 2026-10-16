@@ -3,8 +3,6 @@
 验证消息文本提取、限制检测、工具调用组保护与压缩候选筛选。
 """
 
-import pytest
-
 from src.core.context_selector import (
     adjust_keep_for_tool_groups,
     calc_excess_chars_values,

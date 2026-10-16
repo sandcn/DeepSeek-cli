@@ -16,10 +16,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import io
-import os
 
 import pytest
 
@@ -175,7 +173,7 @@ async def test_multimodal_output_sets_result_blocks(tmp_path, monkeypatch):
     _multimodal(monkeypatch, True)
     p = _write_test_image(tmp_path / "t.png", 2, 2)
     f = ReadImageFunc(path=p)
-    out = await f.execute()
+    await f.execute()
     blocks = f.result_blocks
     assert isinstance(blocks, list) and len(blocks) == 2
     assert blocks[0]["type"] == "text"
@@ -193,7 +191,7 @@ async def test_result_blocks_reset_on_failure(tmp_path, monkeypatch):
     _multimodal(monkeypatch, True)
     p = _write_test_image(tmp_path / "t.png")
     f = ReadImageFunc(path=p)
-    out = await f.execute()
+    await f.execute()
     assert f.result_blocks is not None
     # 同一实例改为读不存在的文件 → 失败路径必须清除 result_blocks
     f.path = str(tmp_path / "nope.png")

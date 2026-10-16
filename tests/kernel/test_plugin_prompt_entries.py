@@ -11,8 +11,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 import src.prompt_builder.builder as builder
 from src.kernel import Kernel, materialize
 from src.plugins.bootstrap import (

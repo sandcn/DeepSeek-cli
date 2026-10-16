@@ -67,7 +67,7 @@ async def test_default_profile_providers_by_manifest():
 
 
 async def _build_with_disable(ids):
-    from src.kernel import get_current_kernel, set_current_kernel
+    from src.kernel import set_current_kernel
     from src.kernel.overlay import apply_overlay
 
     entries = apply_overlay(resolve_entries("cli", discover_external=False), {"disable": list(ids)})

@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import importlib
 
-import pytest
-
 
 def test_tool_registry_has_read_image():
     """工具注册表自动发现后包含 read_image。"""

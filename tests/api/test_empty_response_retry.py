@@ -44,7 +44,7 @@ from src.api.errors import (
     is_retryable,
 )
 from src.api.stream.pipeline_async import (
-    AsyncStreamPipeline, is_empty_stream_result, stream_call_async,
+    is_empty_stream_result, stream_call_async,
 )
 
 

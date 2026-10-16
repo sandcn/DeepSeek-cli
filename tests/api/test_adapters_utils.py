@@ -4,8 +4,6 @@
 以及 OpenAI 兼容的 usage 提取与流式 chunk 解析。
 """
 
-import pytest
-
 from src.api.adapters._utils import (
     ensure_reasoning_content,
     ensure_tool_response_complete,

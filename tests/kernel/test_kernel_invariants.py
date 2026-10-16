@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import logging
 
-import pytest
-
 from src.kernel import Kernel, get_current_kernel, plugin
 from src.plugins.bootstrap import build_kernel, shutdown_kernel
 

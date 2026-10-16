@@ -401,7 +401,7 @@ async def test_editmsg_prefill_injected_before_replay(monkeypatch):
 
     monkeypatch.setattr(me, "_get_sandbox_manager", lambda: _OkSandbox())
 
-    editor_obj = MessageEditor(bottom_bar=None, input_=inp)
+    MessageEditor(bottom_bar=None, input_=inp)
     monkeypatch.setattr(
         MessageEditor, "_interactive_message_select",
         lambda self, um, di, *a: um[1][0],  # 选第 2 条用户消息（原始 idx=2）
@@ -651,7 +651,6 @@ async def test_deitmsg_deferred_enter_auto_submits(monkeypatch):
     # 模拟：finally 块的 flush 时机用户按 Enter 产生空提交（只第一次——
     # needs_rerender 块内的 flush 不再模拟新按键）
     flush_count = {"n": 0}
-    orig_flush = chat_ui.flush
 
     def _flush_then_submit(*a, **k):
         flush_count["n"] += 1

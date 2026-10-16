@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import pytest
 
-from src.renderer.ansi import AnsiLine
 from src.tui.app.apply import apply_cmd, _strip_control_text
 from src.tui.app.model import AppModel
 from src.tui._const import WriteLineCmd

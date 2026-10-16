@@ -57,7 +57,7 @@ async def test_message_queue_service(cli_kernel):
     from src.core.message_queue import AsyncMessageQueue
 
     assert isinstance(queue, AsyncMessageQueue)
-    msg = await queue.put("hello")
+    await queue.put("hello")
     got = await queue.get(timeout=0)
     assert got.content == "hello"
     assert service.default() is service.default()

@@ -22,7 +22,6 @@ from src.core.compaction.config import (
     DEFAULT_HEADROOM_TOKENS,
     DEFAULT_RETAIN_RATIO,
     DEFAULT_THRESHOLD_RATIO,
-    CompactionConfig,
     TargetPressureConfigError,
     resolve_compact_spec,
     resolve_config,

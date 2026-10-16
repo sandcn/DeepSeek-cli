@@ -36,8 +36,6 @@ def test_get_snapshot_loads_from_api_stats(monkeypatch):
 
 
 def test_get_snapshot_caches_result():
-    import src.api.stats as api_stats
-
     loads = []
 
     def fake_loader():

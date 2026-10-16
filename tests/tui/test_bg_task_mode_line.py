@@ -555,7 +555,6 @@ class TestInputAreaRealRender:
 
     def test_mode_line_bg_prefix_rendered(self):
         from src.tui.ink.reconciler import Reconciler
-        from src.tui.app.input_area import InputArea
         rec = Reconciler(schedule_callback=None)
         root = rec.create_root()
         props = {
@@ -570,11 +569,7 @@ class TestInputAreaRealRender:
 
     def test_count_change_rerender_updates_prefix(self):
         """同 root 二次渲染（计数变化）→ 模式行行首即时更新。"""
-        from src.tui.ink.element import h
         from src.tui.ink.reconciler import Reconciler
-        from src.tui.ink.layout import layout_tree
-        from src.tui.ink import components as _components
-        from src.tui.app.input_area import InputArea
         rec = Reconciler(schedule_callback=None)
         root = rec.create_root()
         props = {
@@ -708,7 +703,7 @@ class TestContextUsagePercent:
                     "parameters": {"type": "object", "properties": {}}}},
             ]
             msgs = [{"role": "system", "content": p} for p in sys_parts]
-            cm = self._cm(msgs, tools=tools, ctx_tokens=10000)
+            self._cm(msgs, tools=tools, ctx_tokens=10000)
             tokens = sum(estimate_tokens(p) for p in sys_parts) + sum(
                 estimate_tokens(_json.dumps(t, ensure_ascii=False)) for t in tools)
             assert get_context_usage_percent() == round(tokens / 10000 * 100, 1)

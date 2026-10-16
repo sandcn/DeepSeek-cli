@@ -19,7 +19,6 @@ from src.clawbot.commands import HELP_TEXT
 from src.clawbot.runner import ClawBotRunner
 from src.api.interrupt_async import (
     is_interrupted,
-    request_interrupt_async,
     reset_interrupt_async,
 )
 

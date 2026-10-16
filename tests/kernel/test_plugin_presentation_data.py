@@ -13,8 +13,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from src.kernel import Kernel, materialize
 from src.plugins.bootstrap import (
     build_kernel,
@@ -118,7 +116,6 @@ def test_registry_api_roundtrip():
     from src.presentation_data import (
         DataTable,
         bullets,
-        default_data_table,
         html_tag_color,
         reset,
     )
@@ -205,7 +202,6 @@ def test_new_tables_declared():
 async def test_new_tables_default_profile():
     from src.core.tool_display import TOOL_DISPLAY_NAME, get_tool_display_name
     from src.presentation_data import (
-        admonition_style,
         config_entry_descs,
         config_entry_options,
         inline_spinner_frames,

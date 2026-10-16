@@ -9,8 +9,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from src.renderer._utils._url_email_scanner import (
     _scan_next_email,
     _scan_next_url,

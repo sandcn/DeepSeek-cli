@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from src.kernel import Kernel, materialize
 from src.plugins.bootstrap import (
     inject_managed_config,

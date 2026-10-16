@@ -144,8 +144,6 @@ async def test_view_entry_overrides_component():
 
 
 async def test_consumer_entry_overrides_class():
-    from src.plugins.consumer_entries import apply_consumer
-
     class _Custom:
         def __init__(self, **kwargs):
             self.kwargs = kwargs

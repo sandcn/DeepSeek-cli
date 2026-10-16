@@ -268,7 +268,7 @@ def test_call_sync_async_interrupted_before_call():
 
 
 def test_call_sync_async_interrupted_after_call():
-    global _current, _interrupt_flag
+    global _current
     _current = _FakeAdapter()
     calls = {"n": 0}
 

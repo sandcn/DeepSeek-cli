@@ -978,7 +978,7 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 | 内核 | 无特权插件内核（Fiber 生命周期 / 服务容器 / 五模式事件分发 / 作用域与拦截）、Profile / Bundle / Patch 三层组装、热重载与依赖诊断、运行时不变量自检 |
 | 能力接缝 | 六边形端口-适配器（配置 / 模型 / 持久化 / 事件 / 中断 / 可观测性 / 工具注册表）、三段式 seam（`ctx.fs` / `shell` / `subprocess` / `terminals` / `jobs` / `sandbox`，Provider 可整体替换） |
 | 工具 | bash / bash_opt（后台任务与 GUI 操作：截图、窗口、键鼠、宏、像素、OCR 定位）、文件读写与检索、Web 搜索与抓取、MCP 外部工具、技能、SubAgent 调度 |
-| 工程 | 全量测试 + 覆盖率门槛、ruff（F/E9 阻塞）/ mypy 基线、CI（3.9 与 3.13 双版本）、pre-commit、依赖锁定与打包元数据守卫、架构分层与无环守卫测试 |
+| 工程 | 全量测试 + 覆盖率门槛、ruff（F/E9 阻塞，`src` 与 `tests` 零缺陷）/ mypy 基线、CI（3.9 与 3.13 双版本）、pre-commit、依赖锁定与打包元数据守卫、架构分层与无环守卫测试、静态检查卫生守卫（`tests/test_lint_hygiene.py`） |
 
 ### 尚未实现的方向
 
@@ -996,7 +996,9 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 
 - 渲染层：`src/renderer` 的双路径（Rich / ANSI）仍有各自实现的块渲染逻辑，可继续把纯逻辑下沉为共享模块。
 - 类型收窄：剩余 mypy 错误集中在动态属性与联合类型分支，需逐一收窄或显式标注。
+- 巨型组件：全屏视图已统一复用骨架（`_inspector_pane` 检查器状态与导航 / `_keymap_pane` 帮助面板 / `_modal_view` 模态框架 / `_view_common` 分隔线与搜索），并由 `tests/tui/test_view_skeleton_shared.py` 守卫；各视图剩余的 `_handle_*_event` 承载**语义各异**的按键分发，不再强行抽取。
 - 测试目录：`tests/` 已按被测模块分组（`renderer/` `tui/` `tools/` `api/` `core/` `kernel/` `integrations/`）；顶层保留跨模块/工程守卫用例（路径深度敏感的用例仍留在顶层，其迁移依赖 `tests/_paths` 的深度无关定位，见 `tests/test_paths_helper.py` 的存量豁免清单）。
+- 静态检查：`src` / `tests` 现已零 F 组缺陷（未使用导入 / 未定义名 / 未使用局部变量 / 无效全局声明），并由 `tests/test_lint_hygiene.py` 在测试套件内守卫（本地优先 ruff、缺失时回退 pyflakes；后者不识别 `# noqa` 且更严格，故需要「副作用导入」处统一用 `importlib.import_module("…")` 表达，不保留 `# noqa: F401` 一类抑制）。
 
 ---
 

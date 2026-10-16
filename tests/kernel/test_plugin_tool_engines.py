@@ -140,8 +140,6 @@ async def test_schedule_falls_back_to_dag_when_engine_missing():
 
 
 async def test_serial_engine_runs_in_order():
-    from src.core.tool_executor_async import ToolScheduler
-
     order = []
 
     class _Sched:
