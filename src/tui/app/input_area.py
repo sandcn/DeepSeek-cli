@@ -26,7 +26,7 @@
   - ``src/tui/_input_metrics.py`` — 输入区布局度量（``_completion_height``/
     ``_is_search_active``/``_desc_column_width``/``_completion_item_rows``/
     ``_LOCKED_PAD_LIMIT``，ink 依赖净化）——本文件 re-export 保持旧导入
-    路径兼容（tests/test_tui/ink/test_completion_flash_fix.py 等）。
+    路径兼容（tests/tui/ink/ 下的 React Ink 用例等）。
 
 性能：``_build_lines`` 快照缓存语义保留（Line 跨帧引用稳定）——InputArea
 经 ``use_memo`` 缓存 Element 列表（deps = 快照键），命中时 children 引用
@@ -72,7 +72,7 @@ from src.tui._input import (
 #   _is_search_active / _desc_column_width / _completion_item_rows /
 #   _LOCKED_PAD_LIMIT 迁至 src/tui/_input_metrics.py（ink 依赖净化——
 #   ink/session 光标定位不再反向依赖 app 层）；本模块 re-export 保持旧
-#   导入路径兼容（tests/test_tui/ink/test_completion_flash_fix.py 等）。
+#   导入路径兼容（tests/tui/ink/ 下的用例等）。
 from src.tui._input_metrics import (
     _LOCKED_PAD_LIMIT,
     _desc_column_width,

@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import os
 import re
-from pathlib import Path
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+from tests._paths import repo_root
+
+_REPO_ROOT = repo_root()
 _SRC_DIR = _REPO_ROOT / "src"
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 

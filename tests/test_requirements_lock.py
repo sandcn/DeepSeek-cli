@@ -19,7 +19,9 @@ from pathlib import Path
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+from tests._paths import repo_root
+
+_REPO_ROOT = repo_root()
 _REQUIREMENTS = _REPO_ROOT / "requirements.txt"
 _REQUIREMENTS_DEV = _REPO_ROOT / "requirements-dev.txt"
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"

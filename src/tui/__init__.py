@@ -97,7 +97,7 @@
     保留进程级默认实例。
   - E（渲染循环状态机）：``RenderLoopPhase`` 枚举——``_drain_queue`` 七阶段
     显式迁移（SIGWINCH→INPUT→PANELS→SYSTEM_STATS→DRAIN_COMMANDS→APPLY→RENDER）。
-  - F（架构守卫）：``tests/test_tui/test_arch_guard.py`` AST 依赖方向检查
+  - F（架构守卫）：``tests/test_architecture_layering.py`` AST 依赖方向检查
     （ink 不依赖 app / app 不依赖 consumer / Layer 0 纯净 / import 无环）。
 
 Layer 层次（由底向上）：

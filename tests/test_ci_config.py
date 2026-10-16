@@ -16,7 +16,9 @@ from pathlib import Path
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+from tests._paths import repo_root
+
+_REPO_ROOT = repo_root()
 _CI_FILE = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _PRECOMMIT_FILE = _REPO_ROOT / ".pre-commit-config.yaml"
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"

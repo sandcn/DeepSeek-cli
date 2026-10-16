@@ -683,7 +683,16 @@ ChatUIConsumer
 │   ├── prompts_export_execute.md  # execute SubAgent 提示词
 │   ├── prompts_export_review.md  # review SubAgent 审查提示词
 
-├── tests/                 # 测试（按模块划分，覆盖各功能域）
+├── tests/                 # 测试（按被测模块分组）
+│   ├── renderer/          # Markdown/ANSI 解析与渲染、流式渲染
+│   ├── tui/               # 终端界面（含 ink/ 框架用例）
+│   ├── tools/             # 工具与平台后端（bash/window/screenshot/文件/Web）
+│   ├── api/               # HTTP 适配器、多模态、流式生命周期
+│   ├── core/              # 核心域（Agent/会话/压缩/上下文/沙盒/工具调度）
+│   ├── kernel/            # 内核、清单、插件条目、架构守卫
+│   ├── integrations/      # 外部集成（MCP / ClawBot / Skills）
+│   ├── _paths.py          # 与文件层级无关的仓库根定位（新增用例统一使用）
+│   └── conftest.py        # 全局夹具（事件循环兜底 / 覆盖率模式跳过时间预算用例）
 ├── .chat/                 # 运行时数据目录（首次运行自动创建）
 │   ├── memory/            # 跨对话记忆系统（索引 + 详情）
 │   ├── plan/              # Plan Agent 计划文件
@@ -987,7 +996,7 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 
 - 渲染层：`src/renderer` 的双路径（Rich / ANSI）仍有各自实现的块渲染逻辑，可继续把纯逻辑下沉为共享模块。
 - 类型收窄：剩余 mypy 错误集中在动态属性与联合类型分支，需逐一收窄或显式标注。
-- 测试目录：`tests/` 仍为扁平布局（部分历史用例按批次命名），可按被测模块重新分组。
+- 测试目录：`tests/` 已按被测模块分组（`renderer/` `tui/` `tools/` `api/` `core/` `kernel/` `integrations/`）；顶层保留跨模块/工程守卫用例（路径深度敏感的用例仍留在顶层，其迁移依赖 `tests/_paths` 的深度无关定位，见 `tests/test_paths_helper.py` 的存量豁免清单）。
 
 ---
 

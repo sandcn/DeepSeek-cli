@@ -125,7 +125,7 @@ class TuiLifecycle:
             # 导致推理文本静默丢失（ContentChunkEvent 同理导致 content 开新块）。
             # 批处理机制（_TimeWindowBatcher / register_batched_event）保留但不启用；
             # 若未来需要启用须先解决顺序保障。同步测试见
-            # tests/test_tui/test_consumer.py::TestLifecycleBatchedRegistration
+            # tests/tui/ 下的消费者注册用例
             # （断言 start() 后 bus._batched_events 为空）。
             try:
                 self._engine.start()
