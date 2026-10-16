@@ -15,6 +15,7 @@ import os
 import re as _re
 import signal as _signal
 import subprocess
+import sys
 import time
 
 from .._compat import dataclass
@@ -245,6 +246,28 @@ _DESCENDANT_MAX_DEPTH: int = 10
 _PROC_TOOL_TIMEOUT: float = 5.0
 
 
+#: ``/proc`` 为「按需模拟」的慢速平台的 ``sys.platform`` 前缀。
+#: 此类平台读取 ``/proc/<pid>/status`` 单进程需数百 ms（实测 Cygwin 约
+#: 0.17s/进程，整表 6~8s），而 ``ps`` 一次仅约 0.17s。
+_SLOW_PROC_PLATFORMS: tuple[str, ...] = ("cygwin", "msys")
+
+
+def _prefer_ps_process_tree() -> bool:
+    """进程树收集是否优先用 ``ps``（代替慢速模拟的 ``/proc``）。
+
+    Cygwin / MSYS2 的 ``/proc`` 由运行时按需模拟：``os.listdir`` 很快，但
+    逐个读取 ``/proc/<pid>/status`` 会触发昂贵的模拟层查询（实测 Cygwin
+    约 0.17s/进程，整表 6~8s）。进程树收集位于 **ESC 中断**等同步热路径上
+    ——若沿用 ``/proc``，中断时要等 6~8s 才杀进程，用户按一次 ESC 看起来
+    「毫无反应」，需反复按多次（本函数修复的根因）。此类平台改走 ``ps``
+    （单次约 0.17s），把中断响应拉回亚秒级。
+
+    非此类平台（Linux / macOS / *BSD / Android Termux）保持原有
+    ``/proc`` 优先策略（Linux 上 /proc 单次遍历 O(N) 且最快）。
+    """
+    return sys.platform.startswith(_SLOW_PROC_PLATFORMS)
+
+
 def _is_windows() -> bool:
     """是否 Windows **原生**环境（Cygwin 的 ``os.name`` 为 ``posix``，不算）。"""
     return os.name == 'nt'
@@ -338,10 +361,15 @@ def _children_map_from_ps() -> dict[int, list[int]]:
 def _children_map() -> dict[int, list[int]]:
     """构建 ``PPid → [child_pid]`` 映射（跨平台多策略）。
 
-    优先解析 ``/proc/<pid>/status`` 的 ``PPid`` 字段（Linux / Cygwin /
-    Android Termux，单次遍历 O(N)）；``/proc`` 不可用或未解析到任何父子
-    关系时回退 ``ps``（macOS / BSD）。
+    优先解析 ``/proc/<pid>/status`` 的 ``PPid`` 字段（Linux / Android
+    Termux，单次遍历 O(N) 且最快）；``/proc`` 不可用或未解析到任何父子
+    关系时回退 ``ps``（macOS / BSD）。``/proc`` 为慢速模拟层的平台
+    （Cygwin / MSYS2，见 ``_prefer_ps_process_tree``）**直接走 ps**——
+    避免进程树收集（ESC 中断热路径）被逐进程 0.17s、整表 6~8s 的
+    ``/proc/<pid>/status`` 读取阻塞。
     """
+    if _prefer_ps_process_tree():
+        return _children_map_from_ps()
     mapping: dict[int, list[int]] = {}
     if os.path.isdir('/proc'):
         try:
@@ -398,6 +426,13 @@ def _pid_state(pid: int) -> str | None:
 
     Linux / Cygwin 读 ``/proc/<pid>/status`` 的 ``State`` 行（首字符）；
     无 ``/proc`` 平台回退 ``ps -o state= -p <pid>``。
+
+    注：此处的 ``/proc`` 读取是**单进程**查询（非整表枚举），代价约
+    0.1s/pid，仅在 ``kill_process_tree`` 的存活校验路径（每轮对进程树内
+    各 PID 调用）出现；中断快路径 ``_kill_process_tree`` 不做校验，不受
+    影响。整表枚举的慢速 ``/proc`` 只在 ``_children_map`` 中规避（见
+    ``_prefer_ps_process_tree``）——那里是真凶（6~8s），且此处保留
+    ``/proc`` 可保住僵尸判定（Cygwin 的 ``ps`` 不支持 ``state`` 列）。
     """
     if _is_windows():
         return None
