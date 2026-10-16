@@ -5,8 +5,11 @@
 （default_options 默认先同意），用户超时未响应、非交互环境或未作答时
 按默认「同意」回退并继续执行；同时保留「未获用户明确同意前禁止执行」
 与「不得以任何理由或方式替代、绕过确认」的约束，并删除旧有的
-「禁止依赖默认选项/超时回退/非交互回退视为同意」禁令；
-git 读操作豁免与既有 git svn 写操作需同意的约束保持不变。
+「禁止依赖默认选项/超时回退/非交互回退视为同意」禁令。
+
+需求（变更）：删除操作 git 的限制，只保留提交与 push——原「操作 git svn
+（提交、push、回滚/还原等写操作）前必须用 user_select 询问用户是否同意」
+与「git 的读操作可以不经过用户同意」等条款一并移除。
 """
 
 from __future__ import annotations
@@ -17,12 +20,9 @@ import pytest
 
 MAIN_PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "prompts_export_main_empty.md"
 
-RULE_ANCHOR = "操作 git svn"
+RULE_ANCHOR = "「提交（commit）」与「push」强制用 user_select 向用户确认"
 
 REQUIRED_CLAUSES = (
-    "操作 git svn",
-    "必须用 user_select 询问用户是否同意",
-    "git 的读操作可以不经过用户同意",
     "「提交（commit）」与「push」强制用 user_select 向用户确认",
     "该确认的默认选项必须先设为「同意」",
     "default_options 默认先同意",
@@ -39,6 +39,13 @@ REQUIRED_CLAUSES = (
 FORBIDDEN_CLAUSES = (
     "禁止依赖 user_select 的默认选项/超时回退/非交互回退视为同意",
     "禁止依赖 user_select 的默认选项",
+)
+
+REMOVED_CLAUSES = (
+    "操作 git svn",
+    "必须用 user_select 询问用户是否同意",
+    "git 的读操作可以不经过用户同意",
+    "回滚/还原",
 )
 
 UNTOUCHED_CLAUSES = (
@@ -69,9 +76,9 @@ class TestGitCommitPushConfirmRule:
         assert MAIN_PROMPT.exists()
 
     def test_git_rule_single_entry(self, git_rule_lines: list[str]):
-        """git svn 约束仍为单条条目，未被拆散成多条。"""
-        assert len(git_rule_lines) == 1, "git svn 约束条目数量应为 1"
-        assert git_rule_lines[0].startswith("- "), "git svn 约束须为列表条目"
+        """提交与 push 约束仍为单条条目，未被拆散成多条。"""
+        assert len(git_rule_lines) == 1, "提交与 push 约束条目数量应为 1"
+        assert git_rule_lines[0].startswith("- "), "提交与 push 约束须为列表条目"
 
     @pytest.mark.parametrize("clause", REQUIRED_CLAUSES)
     def test_required_clause_present(self, main_prompt_text: str, clause: str):
@@ -80,18 +87,18 @@ class TestGitCommitPushConfirmRule:
 
     @pytest.mark.parametrize("clause", REQUIRED_CLAUSES)
     def test_clause_on_git_rule_line(self, git_rule_lines: list[str], clause: str):
-        """所有关键约束点须挂在同一条 git svn 条目上，避免语义脱离。"""
-        assert clause in git_rule_lines[0], f"约束点未挂在 git svn 条目上: {clause}"
+        """所有关键约束点须挂在同一条提交与 push 条目上，避免语义脱离。"""
+        assert clause in git_rule_lines[0], f"约束点未挂在提交与 push 条目上: {clause}"
 
     def test_commit_and_push_both_named(self, main_prompt_text: str):
         """提交（commit）与 push 均被点名，缺一不可。"""
         rule = next(ln for ln in main_prompt_text.splitlines() if RULE_ANCHOR in ln)
         assert "「提交（commit）」" in rule and "「push」" in rule
 
-    def test_no_weakening_of_read_exemption(self, main_prompt_text: str):
-        """git 读操作豁免仍保留，未被强制确认条款吞掉。"""
-        rule = next(ln for ln in main_prompt_text.splitlines() if RULE_ANCHOR in ln)
-        assert "git 的读操作可以不经过用户同意" in rule
+    @pytest.mark.parametrize("clause", REMOVED_CLAUSES)
+    def test_only_commit_and_push_restricted(self, main_prompt_text: str, clause: str):
+        """除提交与 push 之外的 git 限制须已删除。"""
+        assert clause not in main_prompt_text, f"旧 git 限制仍残留: {clause}"
 
     @pytest.mark.parametrize("clause", UNTOUCHED_CLAUSES)
     def test_other_constraints_untouched(self, main_prompt_text: str, clause: str):
