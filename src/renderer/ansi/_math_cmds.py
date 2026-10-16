@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from .style import Style
-from .helpers import AnsiLine
+from .helpers import AnsiLine, visual_width
 
 from ._math_style import (
     _M_SYM, _M_TEXT, _M_TEXT_ROMAN, _M_TEXT_BOLD, _M_MATH_BOLD, _M_CODE,
@@ -160,10 +160,14 @@ def _length_to_chars(spec: str, default: int = 1) -> int:
 
 
 def _centered_line(text: str, width: int, style) -> AnsiLine:
-    """在给定宽度内居中放置文本（左侧留白 + 文本）。"""
+    """在给定宽度内居中放置文本（左侧留白 + 文本）。
+
+    留白按**显示宽度**计算（CJK 全宽字符占 2 列）——修复前用 ``len``（字符
+    数），中文标注（``\\overbrace{x}^{和}``）在波浪线中央左右偏移。
+    """
     if not text:
         return AnsiLine()
-    left = max(0, (width - len(text)) // 2)
+    left = max(0, (width - visual_width(text)) // 2)
     return AnsiLine.of(" " * left + text, style)
 
 

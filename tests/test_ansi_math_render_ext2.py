@@ -371,7 +371,7 @@ def test_stream_renderer_math_block_end_to_end():
     r.write("公式：\n\n$$\n\\binom{n}{k} = \\frac{n!}{k!(n-k)!}\n$$\n")
     r.close()
     text = "\n".join(ln.plain for ln in r.take_lines())
-    assert "╭─ 数学公式" in text
+    assert "╭─ 公式" in text
     assert "⎛" in text and "!" in text
 
 

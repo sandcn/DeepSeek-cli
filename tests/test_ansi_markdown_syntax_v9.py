@@ -81,12 +81,12 @@ def test_display_math_env_cases_recognized():
     toks = _tokens("\\begin{cases}\na & b\n\\end{cases}\n")
     assert any(t[0] == "MATH_BLOCK_CLOSE" for t in toks), toks
     out = _render("\\begin{cases}\na & b\n\\end{cases}\n")
-    assert any("数学公式" in ln for ln in out), out
+    assert any("╭─ 公式" in ln for ln in out), out
 
 
 def test_display_math_env_single_line():
     out = _render("\\begin{cases} a & b \\end{cases}\n")
-    assert any("数学公式" in ln for ln in out), out
+    assert any("╭─ 公式" in ln for ln in out), out
 
 
 def test_display_math_env_matrix_render():

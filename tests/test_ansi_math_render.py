@@ -74,13 +74,15 @@ def test_inline_empty_and_exception_safe():
 
 def test_block_basic_frame():
     lines = render_math_block("E = mc^2")
-    # 块级外观：圆角框 + 顶边框标签（与 Mermaid 图 / 运行环境信息框同一
-    # 视觉语言），内容行左右以竖线界定
-    assert lines[0].plain.startswith("\u256d\u2500 数学公式")
+    # 块级外观：圆角框 + 顶边框简洁标签「公式」（与 Mermaid 图 / 运行环境信息框
+    # 同一视觉语言），内容行左右以竖线界定、公式内容居中
+    assert lines[0].plain.startswith("\u256d\u2500 \u516c\u5f0f")
     assert lines[0].plain.endswith("\u256e")
     assert lines[1].plain.startswith("\u2502 ") and lines[1].plain.endswith(" \u2502")
     assert "E = mc\u00b2" in lines[1].plain
     assert lines[-1].plain.startswith("\u2570") and lines[-1].plain.endswith("\u256f")
+    # 框线等宽（顶 / 内容 / 底同宽）——短公式不再出现残缺边框
+    assert len({ln.width for ln in lines}) == 1
 
 
 def test_block_frac_stacked_rows():

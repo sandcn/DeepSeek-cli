@@ -15,13 +15,18 @@ TUI 内容路径的数学渲染入口：
 from __future__ import annotations
 
 from .style import Style
-from .helpers import AnsiLine
+from .helpers import AnsiLine, visual_width
 from ._math_latex import render_math_box
+from ._math_box import center_line
+from ._math_style import _M_TAG
 from ._math_macros import MacroState
 
+#: 块级公式框的默认标签（简洁——框头保持清爽；``label`` 仅在特殊场景覆盖）
+_LABEL_DEFAULT = "公式"
+
 _STYLE_LABEL = Style(fg=45, bold=True)
-_STYLE_BORDER = Style(fg=238)
-_STYLE_OMITTED = Style(fg=238)
+_STYLE_BORDER = Style(fg=240)
+_STYLE_OMITTED = Style(fg=240)
 
 #: 跨公式共享的宏状态（``\gdef`` 等全局定义持久到后续公式，与 KaTeX 一致）。
 _MACRO_STATE = MacroState()
@@ -39,7 +44,8 @@ def _cache_key(source: str, inline: bool, label: str = "",
     return (source, inline, label, dropped, _MACRO_STATE.version)
 
 
-def _cached(source: str, inline: bool, label: str = "数学公式", dropped: int = 0):
+def _cached(source: str, inline: bool, label: str = _LABEL_DEFAULT,
+            dropped: int = 0):
     key = _cache_key(source, inline, label, dropped)
     hit = _CACHE.get(key)
     if hit is not None:
@@ -60,60 +66,96 @@ def _cached(source: str, inline: bool, label: str = "数学公式", dropped: int
     return value
 
 
-def _build_block_lines(source: str, label: str = "数学公式",
+def _box_row(content, inner_w: int, style: Style | None = None,
+             align: str = "center") -> AnsiLine:
+    """框内一行（``│ 内容 │``）：内容在 ``inner_w`` 内按 ``align`` 定位。
+
+    ``content`` 为 ``AnsiLine``（公式正文行）或 ``str``（提示 / 编号文本）。
+    空行（无 run）也补齐为满宽空行，保证框线左右对齐。
+    """
+    src = AnsiLine.of(content, style) if isinstance(content, str) else content
+    w = src.width
+    pad = inner_w - w
+    left = 0
+    if pad > 0:
+        if align == "right":
+            left = pad
+        elif align == "center":
+            left = pad // 2
+    line = AnsiLine.of("\u2502 ", _STYLE_BORDER)
+    if left:
+        line.append(" " * left)
+    for run in src.runs:
+        line.append_run(run)
+    right = inner_w - left - w
+    if right > 0:
+        line.append(" " * right)
+    line.append(" \u2502", _STYLE_BORDER)
+    return line
+
+
+def _block_head(label: str, inner_w: int) -> AnsiLine:
+    """框顶行（``╭─ 标签 ─────╮``）：与内容行 / 底边等宽。"""
+    head = AnsiLine.of(f"\u256d\u2500 {label} ", _STYLE_LABEL)
+    fill = inner_w - visual_width(label) - 1
+    if fill > 0:
+        head.append("\u2500" * fill, _STYLE_BORDER)
+    head.append("\u256e", _STYLE_BORDER)
+    return head
+
+
+def _inner_width(body: list[AnsiLine], label: str, texts: list[str]) -> int:
+    """框内宽（内容区列数）：容纳正文、标签（顶边框）与附加文本。
+
+    标签至少留 2 列余量（``╭─ 标签 ─╮`` 至少有 1 个填充横线）——修复前短公式
+    （如 ``$x$``）的顶边比内容行宽、底边比内容行窄，圆形框左右不闭合。
+    """
+    inner = max((ln.width for ln in body), default=0)
+    inner = max(inner, visual_width(label) + 2)
+    for text in texts:
+        inner = max(inner, visual_width(text))
+    return inner
+
+
+def _build_block_lines(source: str, label: str = _LABEL_DEFAULT,
                        dropped: int = 0) -> list[AnsiLine]:
+    """块级公式 → 框线行（公式居中、标签在顶边、编号右对齐在框内）。
+
+    - **内容居中**：公式按内宽居中（印刷习惯；修复前一律左贴框线，长宽不匹配
+      的公式右侧留白突兀）；
+    - **编号**：``\\tag{1}`` 右对齐到框内末行（公式视觉主体不被编号挤偏）；
+    - **超长预览截断**：``dropped`` > 0 时正文前插入左对齐的省略提示行。
+    """
     box = render_math_box(source or "", inline=False, macro_state=_MACRO_STATE)
-    body = box.lines
-    inner_w = max((ln.width for ln in body), default=0)
+    body = list(box.lines)
     omitted = int(dropped or 0)
-    if omitted:
-        inner_w = max(inner_w, len(f"… 前 {omitted} 行省略"))
+    omitted_text = f"… 前 {omitted} 行省略" if omitted else ""
+    tag = (box.tag or "").strip()
+    if tag and len(body) == 1 and not body[0].runs:
+        body = []      # 仅 ``\tag``（无公式内容）时不输出空内容行
+    inner_w = _inner_width(body, label, [omitted_text, tag])
 
-    head = AnsiLine.of(f"╭─ {label} ", _STYLE_LABEL)
-    head_fill = inner_w + 2 - head.width
-    if head_fill > 0:
-        head.append("─" * head_fill, _STYLE_BORDER)
-    head.append("╮", _STYLE_BORDER)
-
-    lines: list[AnsiLine] = [head]
-    if omitted:
-        om = AnsiLine.of("│ ", _STYLE_BORDER)
-        om.append(f"… 前 {omitted} 行省略", _STYLE_OMITTED)
-        pad = inner_w - (om.width - 2)
-        if pad > 0:
-            om.append(" " * pad)
-        om.append(" │", _STYLE_BORDER)
-        lines.append(om)
+    lines: list[AnsiLine] = [_block_head(label, inner_w)]
+    if omitted_text:
+        lines.append(_box_row(omitted_text, inner_w, _STYLE_OMITTED,
+                              align="left"))
     for ln in body:
-        nl = AnsiLine.of("│ ", _STYLE_BORDER)
-        for run in ln.runs:
-            nl.append_run(run)
-        pad = inner_w - ln.width
-        if pad > 0:
-            nl.append(" " * pad)
-        nl.append(" │", _STYLE_BORDER)
-        lines.append(nl)
+        lines.append(_box_row(center_line(ln, inner_w), inner_w))
+    if tag:
+        lines.append(_box_row(tag, inner_w, _M_TAG, align="right"))
 
-    lines.append(AnsiLine.of("╰" + "─" * (inner_w + 2) + "╯", _STYLE_BORDER))
+    lines.append(AnsiLine.of(
+        "\u2570" + "\u2500" * (inner_w + 2) + "\u256f", _STYLE_BORDER))
     return lines
 
 
-def render_math_block(source: str, label: str = "数学公式",
+def render_math_block(source: str, label: str = _LABEL_DEFAULT,
                       dropped: int = 0) -> list[AnsiLine]:
-    """渲染块级数学公式（二维排版 + 边框）。
-
-    Args:
-        source: LaTeX 源码（不含 ``$$`` / ``\\[`` 定界符）。
-        label: 边框标签（默认「数学公式」）。
-        dropped: 预览截断丢弃的行数（>0 时正文前插入省略提示行）。
-
-    Returns:
-        AnsiLine 列表（首行标题、正文居中、末行边框）。
-    """
+    """渲染块级数学公式（二维排版 + 圆角框，内容居中）。"""
     return _cached(source or "", False, label, dropped)
 
 
-def render_math_omitted(chars: int, label: str = "数学公式") -> list[AnsiLine]:
+def render_math_omitted(chars: int, label: str = _LABEL_DEFAULT) -> list[AnsiLine]:
     """超长公式的流式预览占位框（完整内容在本块结束后渲染）。
 
     二维排版成本与公式长度成正比；超长公式（> ``_MATH_PREVIEW_MAX_SRC``）
@@ -121,17 +163,13 @@ def render_math_omitted(chars: int, label: str = "数学公式") -> list[AnsiLin
     预览的「省略提示」同一语义（预览有界、提交完整）。
     """
     msg = f"… 公式过长（{chars} 字符），本块结束后完整渲染"
-    om = AnsiLine.of("│ ", _STYLE_BORDER)
-    om.append(msg, _STYLE_OMITTED)
-    inner_w = max(0, om.width - 2)
-    om.append(" │", _STYLE_BORDER)
-    head = AnsiLine.of(f"╭─ {label} ", _STYLE_LABEL)
-    head_fill = inner_w + 2 - head.width
-    if head_fill > 0:
-        head.append("─" * head_fill, _STYLE_BORDER)
-    head.append("╮", _STYLE_BORDER)
-    bottom = AnsiLine.of("╰" + "─" * (inner_w + 2) + "╯", _STYLE_BORDER)
-    return [head, om, bottom]
+    inner_w = _inner_width([], label, [msg])
+    return [
+        _block_head(label, inner_w),
+        _box_row(msg, inner_w, _STYLE_OMITTED, align="left"),
+        AnsiLine.of("\u2570" + "\u2500" * (inner_w + 2) + "\u256f",
+                    _STYLE_BORDER),
+    ]
 
 
 def render_math_inline(source: str) -> AnsiLine:
@@ -148,6 +186,9 @@ def render_math_inline_block(source: str) -> tuple[list[AnsiLine], int]:
     完全失去二维结构。
 
     单行内容（如 ``x^2``）返回单行块，调用方可直接当普通文本处理。
+
+    ``\\tag{1}`` 公式编号：行内无处右对齐，附在块末行末尾（`` (1)``，
+    编号样式）——修复前编号随布局块传递、行内路径不消费，编号内容静默丢失。
     """
     key = ("inline_block", source or "", _MACRO_STATE.version)
     hit = _CACHE.get(key)
@@ -160,6 +201,13 @@ def render_math_inline_block(source: str) -> tuple[list[AnsiLine], int]:
         for run in ln.runs:
             nl.append_run(run)
         lines.append(nl)
+    tag = (box.tag or "").strip()
+    if tag and lines:
+        last = AnsiLine()
+        for run in lines[-1].runs:
+            last.append_run(run)
+        last.append(" " + tag, _M_TAG)
+        lines[-1] = last
     value = (lines, box.baseline)
     if len(_CACHE) >= _CACHE_MAX:
         _CACHE.clear()

@@ -355,7 +355,7 @@ def test_math_overflow_commit_is_complete():
     """超长公式提交仍完整排版（预览降级不影响提交）。"""
     src = "$$\n" + "x + " * 600 + "1\n$$\n\n"
     lines = _stream(src)
-    assert any("数学公式" in ln for ln in lines)
+    assert any("╭─ 公式" in ln for ln in lines)
     assert any("公式过长" in ln for ln in lines) is False
     assert not any(ln == "" for ln in lines[:1])
 

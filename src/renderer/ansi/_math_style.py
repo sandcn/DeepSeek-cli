@@ -10,9 +10,15 @@ from __future__ import annotations
 from .style import Style
 
 # ── 基础语义色（256 色，暗色终端下对比度良好） ──────────────
+#
+# 素雅统一配色（2026-10-16 用户需求「让公式更好看」）：把颜色收敛到
+# 「近白（符号/数字）+ 青（算符/结构线/装饰）+ 蓝（函数名）+ 品红（分数与
+# 根式线）+ 灰（下标/提示）」五族——修复前数字黄、算符青粗、花括号橙、
+# ``\boxed`` 框黄等多处并列，颜色种类多、观感杂乱。新增颜色请优先从既有
+# 五族取值（本表是公式配色的单一真源，各命令模块只引用常量）。
 _M_SYM = Style(fg=252)
-_M_NUM = Style(fg=221)
-_M_OP = Style(fg=51, bold=True)
+_M_NUM = Style(fg=252)
+_M_OP = Style(fg=51)
 _M_FN = Style(fg=75)
 _M_BIGOP = Style(fg=51, bold=True)
 _M_BIGOP_LIMIT = Style(fg=45, bold=True)
@@ -26,12 +32,12 @@ _M_CODE = Style(fg=46, bold=True)
 _M_MATH_BOLD = Style(fg=248, bold=True)
 _M_SQRT = Style(fg=213)
 _M_ACCENT = Style(fg=51, dim=True)
-_M_BOX = Style(fg=226)
+_M_BOX = Style(fg=51)
 _M_CANCEL = Style(fg=203, dim=True)
-_M_TAG = Style(fg=240, dim=True)
-_M_NOTICE = Style(fg=240, italic=True, dim=True)
+_M_TAG = Style(fg=245)
+_M_NOTICE = Style(fg=245, italic=True)
 _M_FENCE = Style(fg=45, bold=True)
-_M_BRACE = Style(fg=214, bold=True)
+_M_BRACE = Style(fg=51)
 _M_ARROW = Style(fg=45)
 _M_HLINE = Style(fg=240)
 _M_COLORBOX_FRAME = Style(fg=226)

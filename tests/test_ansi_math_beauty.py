@@ -33,16 +33,15 @@ def _isolate_math_state():
 
 
 def _inner_lines(src: str) -> list[str]:
-    """块级公式的正文行（去掉圆角框线与两侧留白，保留行首缩进）。"""
-    out: list[str] = []
-    for line in render_math_block(src)[1:-1]:
-        text = line.plain
-        if text.startswith("\u2502 "):
-            text = text[2:]
-        if text.endswith(" \u2502"):
-            text = text[:-2]
-        out.append(text.rstrip())
-    return out
+    """公式正文行（直接取二维布局块，不含块级圆角框与框内居中留白）。
+
+    本文件断言的是**数学二维排版本身**（堆叠位置 / 根式结构 / 环境基线），
+    取 ``render_math_box`` 的行即可——块级外观（圆角框、标签、内容居中、
+    ``\\tag`` 右对齐）由 ``tests/test_ansi_math_block_appearance.py`` 覆盖。
+    """
+    from src.renderer.ansi._math_latex import render_math_box
+
+    return [ln.plain.rstrip() for ln in render_math_box(src, inline=False).lines]
 
 
 def _plain(src: str) -> str:

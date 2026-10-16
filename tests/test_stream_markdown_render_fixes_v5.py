@@ -233,7 +233,7 @@ def test_strikethrough_unaffected():
 def test_single_line_display_math_renders_box():
     """单行 ``\\[ ... \\]`` 渲染为数学框（不再字面 ``[ ... ]``）。"""
     lines = _render("\\[ x^2 + y^2 \\]\n\n")
-    assert lines[0].startswith("╭─ 数学公式"), lines
+    assert lines[0].startswith("╭─ 公式"), lines
     assert any("x² + y²" in ln for ln in lines)
     assert all(not ln.startswith("[ ") for ln in lines)
 
@@ -246,14 +246,14 @@ def test_single_line_display_math_stream_matches_oneshot():
 def test_multiline_display_math_unchanged():
     """多行 ``\\[`` 块行为不变。"""
     lines = _render("\\[\nx^2\n\\]\n\n")
-    assert lines[0].startswith("╭─ 数学公式"), lines
+    assert lines[0].startswith("╭─ 公式"), lines
     assert any("x²" in ln for ln in lines)
 
 
 def test_single_line_display_math_preceded_by_paragraph():
     lines = _render("前文\n\n\\[ a \\]\n\n")
     assert lines[0] == "前文"
-    assert any(ln.startswith("╭─ 数学公式") for ln in lines)
+    assert any(ln.startswith("╭─ 公式") for ln in lines)
 
 
 # ══════════════════════════════════════════════════════════

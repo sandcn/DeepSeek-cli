@@ -28,7 +28,7 @@ TUI 内容路径（``src.renderer.ansi``）的数学公式渲染器：与 Rich �
 
 from __future__ import annotations
 
-from .helpers import AnsiLine, Run
+from .helpers import AnsiLine, Run, visual_width
 from .style import Style
 
 from ._math_style import (
@@ -782,7 +782,8 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin, _MathTexMixin,
             return _Box([line])
         # 度数（``\sqrt[3]{x}`` 的 ``3``）占一列：上划线自根号列起、铺满被开方体
         # 宽度（与根号竖线相接），被开方体内容一律自「度数 + √」之后开始。
-        head = len(degree)
+        # 宽度按显示宽度算（CJK 度数如 ``\sqrt[甲]{}`` 不左移）。
+        head = visual_width(degree)
         top = AnsiLine.of(" " * head + "‾" * (content.width + 1), _M_SQRT)
         lines = [top]
         for idx, ln in enumerate(content.lines):
@@ -914,8 +915,25 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin, _MathTexMixin,
         return _txt(inner, _M_FN)
 
     def _cmd_tag(self) -> _Box:
+        r"""``\tag{编号}`` / ``\tag*{编号}`` 公式编号。
+
+        块级：编号**不占公式宽度**，只随布局块向上传递（``_Box.tag``），由块级
+        渲染层右对齐放到公式框内——印刷语义（编号贴右端、公式本身保持居中）；
+        修复前编号被当普通文本拼在公式尾部（``(1) E = mc²``），既破坏居中也不
+        符合 LaTeX 习惯。行内：单行约束下无处右对齐，以 `` (1)`` 附在末尾。
+        ``\tag*`` 省略括号（LaTeX 语义）。
+        """
+        starred = self.i < self.n and self.s[self.i] == "*"
+        if starred:
+            self.i += 1
         raw = self._read_group_raw()
-        return _txt("  (" + raw + ")", _M_TAG)
+        label = _plain_of(self._render_sub(raw)).strip() or raw.strip()
+        if not label:
+            return _empty_box()
+        text = label if starred else "(" + label + ")"
+        if self.inline:
+            return _txt("  " + text, _M_TAG)
+        return _Box([AnsiLine()], kind="tag", tag=text)
 
 
 def render_math_box(source: str, inline: bool = False,

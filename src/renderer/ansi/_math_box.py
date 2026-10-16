@@ -20,15 +20,18 @@ class _Box:
 
     ``kind`` 标记大算符/极限函数/上下花括号等语义；``baseline`` 为基线行索引
     （水平拼接时按基线对齐，符合数学排版直觉：分数与主体行对齐、上下划线锚定
-    内容行）。
+    内容行）。``tag`` 为 ``\\tag{...}`` 携带的公式编号（布局中不占宽度——由
+    块级渲染层右对齐放到框内；水平/垂直拼接时逐层向上传递，遇第一个非空值
+    即保留）。
     """
 
-    __slots__ = ("lines", "kind", "baseline")
+    __slots__ = ("lines", "kind", "baseline", "tag")
 
     def __init__(self, lines=None, kind: str | None = None,
-                 baseline: int | None = None) -> None:
+                 baseline: int | None = None, tag: str | None = None) -> None:
         self.lines = lines if lines else [AnsiLine()]
         self.kind = kind
+        self.tag = tag
         h = len(self.lines)
         if baseline is None:
             baseline = (h - 1) // 2
@@ -92,6 +95,34 @@ def _blank_line(width: int) -> AnsiLine:
     return AnsiLine.of(" " * width) if width > 0 else AnsiLine()
 
 
+def center_line(line: AnsiLine, width: int) -> AnsiLine:
+    """把一行在宽度 ``width`` 内居中（左侧补空格，右侧留白由调用方补齐）。
+
+    显示宽度使用 ``AnsiLine.width``（CJK 安全）；内容已占满/超出时不补空格、
+    原样返回（不裁内容）。仅左侧补白：右侧留白交给块级渲染层统一补齐
+    （避免行尾出现多余空格 run）。
+    """
+    gap = width - line.width
+    if gap <= 0:
+        return line
+    out = AnsiLine()
+    out.append(" " * (gap // 2))
+    for run in line.runs:
+        out.append_run(run)
+    return out
+
+
+def _is_tag_only(box: "_Box") -> bool:
+    """是否为「仅承载公式编号」的空布局块（``\\tag`` 产生的占位块）。
+
+    ``\\tag{1}`` 的编号不占公式宽度（由块级渲染层右对齐输出），其占位块
+    不应参与水平/垂直拼接——否则 ``$$ \\tag{1} $$``（无公式内容）会在框内多出
+    一行空行。
+    """
+    return (box.tag is not None and box.height == 1 and box.width == 0
+            and not box.lines[0].runs)
+
+
 def _hjoin(boxes: list[_Box]) -> _Box:
     """水平拼接（按基线对齐，数学排版语义）。
 
@@ -100,10 +131,16 @@ def _hjoin(boxes: list[_Box]) -> _Box:
     矩阵）与单行元素拼接时其非基线行（分子/分母）左移错位，如
     ``E = mc^2 + \\frac{a}{b}`` 的 ``a`` 出现在公式左端而非分数线中央上方。
     仅非末位 box 补齐（行尾不留无意义空格）。
+
+    ``tag``（公式编号）随拼接向上传递：取第一个非空值。
     """
     boxes = [b for b in boxes if b is not None]
     if not boxes:
         return _empty_box()
+    tag = next((b.tag for b in boxes if b.tag), None)
+    boxes = [b for b in boxes if not _is_tag_only(b)]
+    if not boxes:
+        return _Box([AnsiLine()], tag=tag)
     if len(boxes) == 1:
         return boxes[0]
     max_above = max(b.baseline for b in boxes)
@@ -131,14 +168,18 @@ def _hjoin(boxes: list[_Box]) -> _Box:
                 if pad > 0:
                     line.append(" " * pad)
         out.append(line)
-    return _Box(out, baseline=max_above)
+    return _Box(out, baseline=max_above, tag=tag)
 
 
 def _vstack(boxes: list[_Box], align: str = "center",
             baseline: int | None = None) -> _Box:
-    """垂直堆叠（按最大宽度对齐：left/center/right）。"""
+    """垂直堆叠（按最大宽度对齐：left/center/right）；``tag`` 向上传递。"""
     if not boxes:
         return _empty_box()
+    tag = next((b.tag for b in boxes if b.tag), None)
+    boxes = [b for b in boxes if not _is_tag_only(b)]
+    if not boxes:
+        return _Box([AnsiLine()], tag=tag)
     w = max(b.width for b in boxes)
     out: list[AnsiLine] = []
     for b in boxes:
@@ -159,7 +200,7 @@ def _vstack(boxes: list[_Box], align: str = "center",
             if right:
                 nl.append(" " * right)
             out.append(nl)
-    return _Box(out, baseline=baseline)
+    return _Box(out, baseline=baseline, tag=tag)
 
 
 def pad_to_baseline(box: _Box, above: int, below: int) -> _Box:
@@ -179,7 +220,8 @@ def pad_to_baseline(box: _Box, above: int, below: int) -> _Box:
     bottom = max(0, bottom)
     lines = [AnsiLine() for _ in range(top)] + list(box.lines) \
         + [AnsiLine() for _ in range(bottom)]
-    return _Box(lines, kind=box.kind, baseline=box.baseline + top)
+    return _Box(lines, kind=box.kind, baseline=box.baseline + top,
+                tag=box.tag)
 
 
 def repeat_line(text: str, count: int, style=None) -> AnsiLine:
@@ -380,6 +422,6 @@ __all__ = [
     "_Box", "_empty_box", "_txt", "_styled_text", "_plain_of", "_has_operator",
     "_hjoin", "_vstack", "pad_to_baseline", "repeat_line", "_split_rows",
     "_split_cols", "_tall_delim", "_wrap_delims", "frac_box", "accent_over",
-    "accent_under", "join_right", "prepend", "_blank_line",
+    "accent_under", "join_right", "prepend", "_blank_line", "center_line",
     "strike_through", "bracket_over", "bracket_under",
 ]

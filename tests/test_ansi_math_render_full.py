@@ -358,7 +358,7 @@ def test_auto_render_display_env_block(env):
     r.write(md)
     r.close()
     text = "\n".join(ln.plain for ln in r.take_lines())
-    assert "数学公式" in text
+    assert "╭─ 公式" in text
     assert "正文" in text and "尾巴" in text
     assert "\\begin" not in text
 
@@ -368,14 +368,14 @@ def test_auto_render_single_line_env():
     r.write("\\begin{align} a &= b \\end{align}\n")
     r.close()
     text = "\n".join(ln.plain for ln in r.take_lines())
-    assert "数学公式" in text and "\\end" not in text
+    assert "╭─ 公式" in text and "\\end" not in text
 
 
 def test_auto_render_env_stream_preview_updates():
     r = AnsiStreamRenderer(width=72)
     r.write("\\begin{align}\na &= b \\\\\n")
     preview = [ln.plain for ln in r.take_preview_lines()]
-    assert any("数学公式" in p for p in preview)
+    assert any("╭─ 公式" in p for p in preview)
     r.write("c &= d\n\\end{align}\n")
     r.close()
     text = "\n".join(ln.plain for ln in r.take_lines())
@@ -388,7 +388,7 @@ def test_non_display_env_not_treated_as_math_block():
     r.write(md)
     r.close()
     text = "\n".join(ln.plain for ln in r.take_lines())
-    assert "数学公式" not in text
+    assert "╭─ 公式" not in text
 
 
 def test_displaystyle_inline_bigop_stacks():
@@ -462,7 +462,7 @@ def test_stream_preview_partial_tex_primitive():
     assert [ln.plain for ln in r.take_preview_lines()]
     r.write(" c\n$$\n")
     r.close()
-    assert any("数学公式" in ln.plain for ln in r.take_lines())
+    assert any("╭─ 公式" in ln.plain for ln in r.take_lines())
 
 
 # ── 缓存与鲁棒性 ────────────────────────────────────────
