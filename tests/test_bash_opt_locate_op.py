@@ -168,3 +168,88 @@ async def test_locate_rejects_bad_parameters(monkeypatch, tmp_path):
                        min_scale=2.0, max_scale=0.5)
     func.set_agent(_FakeAgent({"bg-1": _record()}))
     assert "min_scale" in await func.execute()
+
+
+# ── OCR + crop：坐标必须仍是窗口坐标 ─────────────────────
+
+async def test_locate_text_with_crop_keeps_window_coordinates(monkeypatch, tmp_path):
+    """crop 只限定命中范围，识别仍在整图上做，坐标不得再叠加 crop 偏移。
+
+    回归：此前 crop 情况下把 crop 原点又加了一次，返回坐标整体偏移了
+    (crop.x, crop.y)，模型按该坐标点击会落到错误位置。
+    """
+    shot = _make_png(tmp_path / "shot.png", 120, 40)
+    _patch_shot(monkeypatch, shot)
+    boxes = [TextBox("保存", 10, 5, 30, 12), TextBox("取消", 60, 5, 30, 12)]
+    monkeypatch.setattr(bash_opt_module, "recognize_text",
+                        lambda path, lang=None: list(boxes))
+    func = BashOptFunc(task_id="bg-1", op="locate", query="保存",
+                       crop="5,0,40,40")
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+    payload = json.loads(await func.execute())
+    assert payload["recognized"] == 2       # 识别总数（整图）
+    assert payload["in_crop"] == 1          # 落在 crop 区域内的框
+    match = payload["matches"][0]
+    assert match["text"] == "保存"
+    assert (match["x"], match["y"]) == (10, 5)
+    assert (match["center_x"], match["center_y"]) == (25, 11)
+
+
+async def test_locate_text_keeps_full_count_when_cropped(monkeypatch, tmp_path):
+    """crop 命中多个框时坐标同样保持窗口坐标系。"""
+    shot = _make_png(tmp_path / "shot.png", 120, 40)
+    _patch_shot(monkeypatch, shot)
+    boxes = [TextBox("OK", 10, 5, 20, 12), TextBox("OK", 60, 5, 20, 12)]
+    monkeypatch.setattr(bash_opt_module, "recognize_text",
+                        lambda path, lang=None: list(boxes))
+    func = BashOptFunc(task_id="bg-1", op="locate", query="OK",
+                       crop="50,0,40,40")
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+    payload = json.loads(await func.execute())
+    assert payload["returned"] == 1
+    assert payload["matches"][0]["x"] == 60
+
+
+# ── 未命中时的诊断信息 ──────────────────────────────────
+
+async def test_locate_text_without_match_reports_recognized_texts(monkeypatch, tmp_path):
+    shot = _make_png(tmp_path / "shot.png", 120, 40)
+    _patch_shot(monkeypatch, shot)
+    boxes = [TextBox("开机", 10, 5, 30, 12), TextBox("0K", 60, 5, 30, 12)]
+    monkeypatch.setattr(bash_opt_module, "recognize_text",
+                        lambda path, lang=None: list(boxes))
+    func = BashOptFunc(task_id="bg-1", op="locate", query="OK")
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+    payload = json.loads(await func.execute())
+    assert payload["matches"] == []
+    assert payload["recognized"] == 2
+    # 识别到的内容一并返回：模型据此判断是 OCR 认错（0K）还是画面没有该文字
+    assert payload["recognized_texts"] == ["开机", "0K"]
+
+
+async def test_locate_text_crop_without_text_falls_back_to_full_samples(monkeypatch, tmp_path):
+    shot = _make_png(tmp_path / "shot.png", 120, 40)
+    _patch_shot(monkeypatch, shot)
+    boxes = [TextBox("保存", 10, 5, 30, 12)]
+    monkeypatch.setattr(bash_opt_module, "recognize_text",
+                        lambda path, lang=None: list(boxes))
+    func = BashOptFunc(task_id="bg-1", op="locate", query="保存",
+                       crop="100,0,5,40")
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+    payload = json.loads(await func.execute())
+    assert payload["in_crop"] == 0
+    assert payload["recognized"] == 1
+    assert payload["recognized_texts"] == ["保存"]   # 回退为整图样本
+    assert "crop 区域内没有识别到任何文字" in payload["note"]
+
+
+async def test_locate_rejects_crop_outside_image(monkeypatch, tmp_path):
+    """crop 越界要立刻报错（OCR 路径不做裁剪，否则会静默变成「没找到」）。"""
+    shot = _make_png(tmp_path / "shot.png", 30, 30)
+    _patch_shot(monkeypatch, shot)
+    func = BashOptFunc(task_id="bg-1", op="locate", query="x",
+                       crop="25,25,20,20")
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+    result = await func.execute()
+    assert result.startswith("(locate 参数非法")
+    assert "超出" in result

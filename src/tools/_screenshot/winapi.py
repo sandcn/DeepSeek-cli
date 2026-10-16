@@ -55,6 +55,8 @@ INVALID_HANDLE_VALUE = c_void_p(-1).value
 # ── 常量 ────────────────────────────────────────────────
 PW_RENDERFULLCONTENT = 0x00000002
 SRCCOPY = 0x00CC0020
+#: ``SetStretchBltMode`` 的拉伸模式：半色调（缩放窗口位图时质量最好）
+HALFTONE = 4
 DIB_RGB_COLORS = 0
 TH32CS_SNAPPROCESS = 0x00000002
 GWL_EXSTYLE = -20
@@ -199,6 +201,10 @@ PROCESS_DPI_AWARENESS_PER_MONITOR_AWARE = 2
 PROCESS_PER_MONITOR_DPI_AWARE = 2
 #: ``user32!SetProcessDpiAwarenessContext`` 的每显示器感知 V2 上下文（(HANDLE)-4）
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+#: ``user32!SetThreadDpiAwarenessContext`` 的「非感知」上下文（(HANDLE)-1）：
+#: 线程临时切到该上下文可读到窗口被系统虚拟化前的逻辑矩形
+#: （见 :func:`window_virtualization_scale`）。
+DPI_AWARENESS_CONTEXT_UNAWARE = -1
 
 
 def is_windows_platform() -> bool:
@@ -339,6 +345,78 @@ def ensure_process_dpi_aware() -> bool:
         return _DPI_AWARE
 
 
+def window_virtualization_scale(hwnd) -> tuple[float, float]:
+    """窗口位图被系统 DPI 虚拟化的比例（``(1.0, 1.0)`` = 无需换算）。
+
+    高 DPI 显示器上，**非 DPI 感知进程**的窗口由系统做位图拉伸（bitmap
+    stretching）：窗口自身仍按**逻辑像素**渲染——``PrintWindow`` / 窗口 DC
+    输出的是这部分内容——而 ``GetWindowRect`` 在 DPI 感知的调用方下返回
+    **物理像素**矩形。把当前线程临时切到「非感知」上下文再读一次矩形，
+    两值之比即虚拟化比例（150% 缩放时为 1.5）：截图后端据此把逻辑内容放大
+    回物理像素，使截图像素与输入坐标（物理屏幕坐标）一一对应。
+
+    Returns:
+        ``(scale_x, scale_y)``；窗口未被虚拟化（目标进程本身 DPI 感知）、
+        探测不可用（进程未能感知 DPI、旧系统缺线程上下文 API、句柄失效）
+        时返回 ``(1.0, 1.0)``。
+    """
+    if not is_windows_platform():
+        return 1.0, 1.0
+    setter = _SET_THREAD_DPI_AWARENESS_CONTEXT
+    if setter is None:
+        user32()
+        setter = _SET_THREAD_DPI_AWARENESS_CONTEXT
+    if setter is None or not ensure_process_dpi_aware():
+        return 1.0, 1.0
+    physical = window_rect(hwnd)
+    try:
+        previous = setter(c_void_p(DPI_AWARENESS_CONTEXT_UNAWARE))
+    except (OSError, OverflowError, TypeError):
+        return 1.0, 1.0
+    try:
+        logical = window_rect(hwnd)
+    except OSError:  # pragma: no cover - 依赖系统调用
+        logger.debug("读取窗口逻辑矩形失败 hwnd=%s", hwnd)
+        return 1.0, 1.0
+    finally:
+        # 无论读取是否成功都恢复原上下文：线程状态不能泄漏给后续调用
+        try:
+            setter(c_void_p(previous) if previous else None)
+        except (OSError, OverflowError, TypeError):  # pragma: no cover - 依赖系统调用
+            logger.debug("恢复线程 DPI 感知上下文失败 hwnd=%s", hwnd)
+    return _virtualization_scale_from_rects(physical, logical)
+
+
+def _virtualization_scale_from_rects(physical: tuple, logical: tuple) -> tuple[float, float]:
+    """由物理 / 逻辑矩形求虚拟化比例（尺寸非法或未虚拟化时返回 ``1.0``）。"""
+    physical_width = int(physical[2]) - int(physical[0])
+    physical_height = int(physical[3]) - int(physical[1])
+    logical_width = int(logical[2]) - int(logical[0])
+    logical_height = int(logical[3]) - int(logical[1])
+    if (physical_width <= 0 or physical_height <= 0
+            or logical_width <= 0 or logical_height <= 0):
+        return 1.0, 1.0
+    scale_x = physical_width / logical_width
+    scale_y = physical_height / logical_height
+    if scale_x <= 1.0 and scale_y <= 1.0:
+        return 1.0, 1.0
+    return scale_x, scale_y
+
+
+def stretch_blt():
+    """``gdi32!StretchBlt`` 绑定（不可用时返回 None，调用方回退纯 Python 缩放）。"""
+    if _STRETCH_BLT is None and is_windows_platform():
+        gdi32()
+    return _STRETCH_BLT
+
+
+def set_stretch_blt_mode():
+    """``gdi32!SetStretchBltMode`` 绑定（不可用时返回 None）。"""
+    if _SET_STRETCH_BLT_MODE is None and is_windows_platform():
+        gdi32()
+    return _SET_STRETCH_BLT_MODE
+
+
 class RECT(Structure):
     _fields_ = [("left", LONG), ("top", LONG), ("right", LONG), ("bottom", LONG)]
 
@@ -455,6 +533,14 @@ _SET_DPI_AWARENESS_CONTEXT: Any = None
 #: ``SetProcessDPIAware`` 绑定（Vista+，旧系统为 None）
 _SET_SYSTEM_DPI_AWARE: Any = None
 
+#: ``SetThreadDpiAwarenessContext`` 绑定（Win10 1607+，旧系统为 None）。
+#: 线程级 DPI 上下文：截图据此探测目标窗口是否被系统 DPI 虚拟化。
+_SET_THREAD_DPI_AWARENESS_CONTEXT: Any = None
+
+#: ``gdi32!StretchBlt`` / ``SetStretchBltMode`` 绑定（旧系统 / 非 Windows 为 None）
+_STRETCH_BLT: Any = None
+_SET_STRETCH_BLT_MODE: Any = None
+
 #: DPI 感知设置的进程级缓存与串行锁（设置不可逆，幂等生效）
 _DPI_LOCK = threading.Lock()
 _DPI_AWARE: "bool | None" = None
@@ -499,6 +585,13 @@ def user32():
         system_setter.argtypes = []
         system_setter.restype = BOOL
     _SET_SYSTEM_DPI_AWARE = system_setter
+    # 线程级 DPI 上下文（Win10 1607+）：窗口虚拟化探测用
+    thread_context = getattr(lib, "SetThreadDpiAwarenessContext", None)
+    if thread_context is not None:
+        thread_context.argtypes = [c_void_p]
+        thread_context.restype = c_void_p
+    global _SET_THREAD_DPI_AWARENESS_CONTEXT
+    _SET_THREAD_DPI_AWARENESS_CONTEXT = thread_context
     lib.GetWindowTextLengthW.argtypes = [HWND]
     lib.GetWindowTextLengthW.restype = c_int32
     lib.GetWindowTextW.argtypes = [HWND, c_wchar_p, c_int32]
@@ -592,6 +685,22 @@ def gdi32():
     lib.DeleteObject.restype = BOOL
     lib.BitBlt.argtypes = [HDC, c_int32, c_int32, c_int32, c_int32, HDC, c_int32, c_int32, DWORD]
     lib.BitBlt.restype = BOOL
+    # 位图缩放（把 DPI 虚拟化的窗口位图放大回物理像素）
+    stretch = getattr(lib, "StretchBlt", None)
+    if stretch is not None:
+        stretch.argtypes = [
+            HDC, c_int32, c_int32, c_int32, c_int32,
+            HDC, c_int32, c_int32, c_int32, c_int32, DWORD,
+        ]
+        stretch.restype = BOOL
+    global _STRETCH_BLT
+    _STRETCH_BLT = stretch
+    stretch_mode = getattr(lib, "SetStretchBltMode", None)
+    if stretch_mode is not None:
+        stretch_mode.argtypes = [HDC, c_int32]
+        stretch_mode.restype = c_int32
+    global _SET_STRETCH_BLT_MODE
+    _SET_STRETCH_BLT_MODE = stretch_mode
     _LIBS["gdi32"] = lib
     return lib
 

@@ -140,6 +140,48 @@ def _crop_pixels(pixels: bytes, image_width: int, image_height: int,
     return bytes(out)
 
 
+def scale_bgra(pixels: bytes, image_width: int, image_height: int,
+               region: CropRegion, dst_width: int, dst_height: int) -> bytes:
+    """把 BGRA 图像的 ``region`` 区域缩放到 ``dst_width x dst_height``。
+
+    采用最近邻采样（平台无关实现）：Windows 后端优先用 GDI ``StretchBlt``
+    （质量更好、速度快，见 ``_screenshot/win.py``），仅在 GDI 不可用时回退
+    到这里。典型用途是把系统对**非 DPI 感知窗口**渲染出的逻辑像素内容放大
+    回物理像素，使截图坐标与输入坐标（物理屏幕坐标）保持一致。
+
+    Args:
+        pixels: 连续 BGRA 字节（长度须为 ``image_width * image_height * 4``）。
+        image_width / image_height: 源图像尺寸。
+        region: 参与缩放的源区域（必须完全落在源图像内）。
+        dst_width / dst_height: 目标尺寸（必须为正）。
+
+    Raises:
+        CropError: 区域越界、目标尺寸非法或像素数据长度不匹配。
+    """
+    region.validate_against(image_width, image_height)
+    if dst_width <= 0 or dst_height <= 0:
+        raise CropError(f"缩放目标尺寸必须为正: {dst_width}x{dst_height}")
+    expected = image_width * image_height * 4
+    if len(pixels) != expected:
+        raise CropError(f"像素数据长度不匹配: 期望 {expected}，实际 {len(pixels)}")
+    if dst_width == region.width and dst_height == region.height:
+        return crop_bgra(pixels, image_width, image_height, region)
+    source_stride = image_width * 4
+    rows = [region.y + min(region.height - 1, (y * region.height) // dst_height)
+            for y in range(dst_height)]
+    cols = [region.x + min(region.width - 1, (x * region.width) // dst_width)
+            for x in range(dst_width)]
+    out = bytearray(dst_width * dst_height * 4)
+    for y, source_row in enumerate(rows):
+        source_base = source_row * source_stride
+        target_base = y * dst_width * 4
+        for x, source_col in enumerate(cols):
+            offset = source_base + source_col * 4
+            target = target_base + x * 4
+            out[target:target + 4] = pixels[offset:offset + 4]
+    return bytes(out)
+
+
 def apply_crop_to_png_file(path: str, region: CropRegion) -> tuple[int, int]:
     """就地把 PNG 文件裁剪为 ``region``，返回裁剪后的 ``(width, height)``。
 
@@ -185,5 +227,6 @@ __all__ = [
     "apply_crop_to_png_file",
     "crop_bgra",
     "crop_rgb",
+    "scale_bgra",
     "write_png_atomic",
 ]

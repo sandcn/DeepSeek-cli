@@ -230,6 +230,7 @@ from ._screenshot.ocr import (
     recognize as recognize_text,
 )
 from ._screenshot.png_decode import DecodedImage, decode_png_file
+from ._screenshot.png import read_png_size
 from ._screenshot.color import (
     DEFAULT_COLOR_TOLERANCE,
     DEFAULT_MAX_REGIONS,
@@ -462,6 +463,8 @@ class BashOptFunc(Func):
     _MAX_LOCATE_RESULTS: int = 50
     #: op=locate 模板多尺度搜索的步数上限
     _MAX_LOCATE_SCALE_STEPS: int = 21
+    #: op=locate 未命中时附带的识别文字样本条数上限（便于判断 OCR 识别偏差）
+    _LOCATE_DIAGNOSTIC_TEXTS: int = 40
     #: op=pixel 的取色模式（point 点取色 / region 区域统计 / find 颜色查找）
     _PIXEL_MODES: tuple[str, ...] = ("point", "region", "find")
     #: op=pixel 缺省模式
@@ -841,11 +844,15 @@ class BashOptFunc(Func):
                         "crop": {
                             "type": "string",
                             "description": (
-                                "仅 screenshot 操作可选：只截取窗口内的像素区域，"
+                                "screenshot / locate 可选：窗口内的像素区域，"
                                 "格式 'x,y,width,height'（如 '100,50,800,600'），"
                                 "以整窗截图左上角为原点（(0,0) 即窗口左上角）。"
-                                "省略时输出整窗原始像素（不做任何缩放）。"
-                                "区域须完全落在窗口截图内，越界会报错并提示窗口实际尺寸。"
+                                "screenshot：只截取该区域，省略时输出整窗原始像素"
+                                "（不做任何缩放），区域须完全落在窗口截图内，"
+                                "越界会报错并提示窗口实际尺寸；"
+                                "locate：把搜索限定在该区域内（template 会先裁剪"
+                                "再匹配；query 用识别结果按区域过滤，坐标仍与"
+                                "整窗截图同源）。"
                             ),
                         },
                         "x": {
@@ -1240,6 +1247,9 @@ class BashOptFunc(Func):
                                 "仅 locate：要在画面里查找的文字（OCR）。"
                                 "返回匹配文字的包围盒坐标（支持跨词短语）；"
                                 "与 template 二选一。也可用 text 传该查询。"
+                                "未命中时会附带 recognized_texts（识别到的文字"
+                                "样本），便于判断是 OCR 识别偏差还是画面里确实"
+                                "没有该文字；crop 可把命中范围限定在指定区域内。"
                             ),
                         },
                         "max_results": {
@@ -2190,8 +2200,25 @@ class BashOptFunc(Func):
             if not ok:
                 return False, err
         suffix = "" if repeat == 1 else f" x{repeat}"
+        note = self._terminal_key_note(rec, payload)
         return True, (f"(已向后台任务 {self.task_id} 发送终端按键: "
-                      f"{key_text}{suffix})")
+                      f"{key_text}{suffix}{note})")
+
+    @staticmethod
+    def _terminal_key_note(rec: dict, payload: bytes) -> str:
+        """按键写入「非终端」stdin（管道 / 重定向）时的提醒。
+
+        控制字符与 ANSI 序列要靠终端（PTY）解释才会变成信号（``ctrl+c`` 的
+        SIGINT）或按键事件；目标是管道时它们只是普通字节，程序既不中断也不
+        会当快捷键处理。此时必须如实提示，避免「看起来发送成功、实际无效果」。
+        """
+        if rec.get("mode") != "pipe":
+            return ""
+        if not any(byte < 0x20 or byte == 0x7F for byte in payload):
+            return ""
+        return ("；注意：目标进程的 stdin 不是终端（PTY）而是管道 / 重定向，"
+                "控制字符不会被解释为信号或快捷键（例如 ctrl+c 不会中断进程，"
+                "需要结束任务请用 op=kill）")
 
     @staticmethod
     def _plain(message: str) -> str:
@@ -3751,6 +3778,10 @@ class BashOptFunc(Func):
             return ("(locate 失败: 无法截取窗口画面（窗口可能尚未就绪或已关闭）——"
                     "可用 op=windows 确认窗口状态，或先 op=wait_window 等窗口出现)")
         try:
+            if crop is not None:
+                invalid = self._validate_locate_crop(path, crop)
+                if invalid is not None:
+                    return f"(locate 参数非法: {invalid})"
             if template_raw:
                 payload = await self._locate_template(
                     template_raw, path, crop, tolerance, max_results,
@@ -3816,32 +3847,68 @@ class BashOptFunc(Func):
 
     async def _locate_text(self, query: str, shot_path: str, crop,
                            max_results: int) -> dict:
-        """OCR 文字定位：识别截图文字并按查询过滤（支持跨词短语）。"""
+        """OCR 文字定位：识别截图文字并按查询过滤（支持跨词短语）。
+
+        ``crop`` 只用于**限定命中范围**（识别始终在整幅窗口截图上进行），
+        因此识别框的坐标本来就是窗口截图坐标，返回时**不再叠加** crop 偏移
+        —— 模板匹配那条路径会真正裁剪图像（见 :meth:`_locate_template`），
+        两者的坐标系处理据此区分。
+
+        未命中时会附上识别到的文字样本（``recognized_texts``），便于判断是
+        「OCR 识别偏差」（如把 OK 认成 0K）还是「画面里确实没有该文字」。
+        """
         boxes = await asyncio.to_thread(recognize_text, shot_path)
+        recognized_total = len(boxes)
+        scoped = boxes
         if crop is not None:
-            boxes = [box for box in boxes if _box_in_crop(box, crop)]
+            scoped = [box for box in boxes if _box_in_crop(box, crop)]
         if query:
-            matched = await asyncio.to_thread(find_ocr_text, boxes, query)
+            matched = await asyncio.to_thread(find_ocr_text, scoped, query)
         else:
-            matched = list(boxes)
-        offset_x = crop.x if crop is not None else 0
-        offset_y = crop.y if crop is not None else 0
-        items = []
-        for box in matched[:max_results]:
-            payload = box.to_dict()
-            payload["x"] += offset_x
-            payload["y"] += offset_y
-            payload["center_x"] += offset_x
-            payload["center_y"] += offset_y
-            items.append(payload)
-        return {
+            matched = list(scoped)
+        items = [box.to_dict() for box in matched[:max_results]]
+        payload: dict = {
             "mode": "text",
             "query": query,
-            "recognized": len(boxes),
+            "recognized": recognized_total,
             "total": len(matched),
             "returned": len(items),
             "matches": items,
         }
+        if crop is not None:
+            payload["in_crop"] = len(scoped)
+        if not items and recognized_total:
+            sample_source = scoped
+            if crop is not None and not scoped:
+                sample_source = boxes
+                payload["note"] = ("crop 区域内没有识别到任何文字；"
+                                   "recognized_texts 是整幅截图的识别结果")
+            payload["recognized_texts"] = [
+                box.text for box in sample_source[:self._LOCATE_DIAGNOSTIC_TEXTS]
+            ]
+        return payload
+
+    @staticmethod
+    def _validate_locate_crop(path: str, crop) -> str | None:
+        """crop 必须完全落在窗口截图内（与 screenshot 的裁剪语义一致）。
+
+        OCR 路径不做真正的裁剪（只按区域过滤识别结果），若不校验，越界参数
+        会静默表现为「区域内没有文字」；这里统一提前报错，让参数错误立刻可见。
+
+        Returns:
+            错误说明；合法（或读不出图像尺寸）时返回 None。
+        """
+        try:
+            width, height = read_png_size(path)
+        except (OSError, ValueError):
+            return None
+        if crop.is_full(width, height):
+            return None
+        try:
+            crop.validate_against(width, height)
+        except CropError as exc:
+            return str(exc)
+        return None
 
     @staticmethod
     def _locate_item(raw: dict, offset_x: int, offset_y: int) -> dict:

@@ -155,3 +155,49 @@ def test_match_results_are_sorted_by_score():
 def test_template_match_dataclass_defaults():
     match = TemplateMatch(x=1, y=2, width=4, height=6, score=0.9)
     assert match.scale == 1.0
+
+
+# ── 前景结构校验（模板含大片纯色背景） ──────────────────
+
+def _button_template(width=24, height=16, mark=(0, 0, 0),
+                     mark_at=(10, 5), mark_size=6):
+    """构造「大片底色 + 一小块图案」的模板（模拟按钮截图）。"""
+    template = _image(width, height, (240, 240, 240))
+    return _paint(template, mark_at[0], mark_at[1], mark_size, mark_size, mark)
+
+
+def test_background_dominated_template_ignores_wrong_foreground():
+    """背景相同但图案不同的位置不得算匹配（回归：曾被大片背景稀释成误命中）。"""
+    canvas = _image(80, 60, (240, 240, 240))
+    canvas = _paint(canvas, 20, 15, 6, 6, (0, 0, 0))        # 正确图案
+    canvas = _paint(canvas, 60, 15, 6, 6, (200, 200, 200))  # 相似但不同
+    template = _button_template()
+    matches = match_template(canvas, template, tolerance=25, max_results=5)
+    assert [(m.x, m.y) for m in matches] == [(10, 10)]
+    assert matches[0].score == pytest.approx(1.0)
+
+
+def test_structured_template_returns_empty_on_plain_background():
+    """画面里只有同样的底色、没有模板图案时，不得报出匹配。"""
+    canvas = _image(60, 40, (240, 240, 240))
+    template = _button_template()
+    assert match_template(canvas, template, tolerance=25) == []
+
+
+def test_foreground_within_tolerance_still_matches():
+    """模板图案与目标略有差异（在容差内）时仍算匹配，避免过度过滤。"""
+    canvas = _image(40, 30, (240, 240, 240))
+    canvas = _paint(canvas, 12, 8, 6, 6, (10, 10, 10))
+    template = _button_template()
+    matches = match_template(canvas, template, tolerance=25)
+    assert matches and (matches[0].x, matches[0].y) == (2, 3)
+
+
+def test_large_background_template_locates_small_foreground():
+    """模板 90% 以上是底色时仍能定位到唯一图案（回归：真实位置曾被漏掉）。"""
+    canvas = _image(200, 120, (250, 250, 250))
+    canvas = _paint(canvas, 100, 70, 8, 8, (20, 20, 20))
+    template = _image(60, 40, (250, 250, 250))
+    template = _paint(template, 40, 25, 8, 8, (20, 20, 20))
+    matches = match_template(canvas, template, tolerance=25, max_results=5)
+    assert [(m.x, m.y) for m in matches] == [(60, 45)]

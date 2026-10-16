@@ -12,6 +12,15 @@ DPI：截图前把进程标记为 DPI 感知（``winapi.ensure_process_dpi_aware
 使窗口几何与物理像素 1:1；否则高 DPI 显示器上窗口坐标被系统虚拟化缩小，
 产物右下角会被裁掉。
 
+DPI 虚拟化窗口：目标进程**自身非 DPI 感知**时（未声明感知的 WinForms /
+Python 程序等），系统会对其窗口做位图拉伸——窗口仍按逻辑像素渲染，而
+``GetWindowRect`` 在感知的调用方下返回物理像素矩形。此时 ``PrintWindow`` /
+窗口 DC 得到的内容只占位图左上角（其余空白），直接输出会让「截图像素坐标」
+与「输入坐标（物理屏幕坐标）」差一个缩放比。后端按
+``winapi.window_virtualization_scale`` 探测到的比例把内容放大回物理像素
+（GDI ``StretchBlt`` 优先，纯 Python 最近邻兜底），使截图像素、
+``window_x/window_y`` 原点与输入注入坐标落在同一坐标系。
+
 黑边：``GetWindowRect`` 含 Win10 DWM 的不可见边框（阴影/缩放预留），直接
 截图四边会出现黑边；按 ``DWMWA_EXTENDED_FRAME_BOUNDS``（
 :func:`visible_region`）裁掉该边框后再输出。
@@ -605,31 +614,147 @@ def capture_window_pixels(candidate: WindowCandidate) -> tuple[bytes, int, int]:
          有真实画面，按窗口矩形从屏幕 DC 取像素即可截到游戏画面（窗口须
          可见且未最小化）。
 
+    产出的像素始终是**屏幕物理像素**：窗口 DC 路径（1、2）对非 DPI 感知
+    窗口拿到的是系统按逻辑像素渲染的内容，先用 ``_devirtualize`` 放大回物理
+    像素；屏幕拷贝路径（3）本就是物理像素。
+
     三条路径都空白（窗口本身是纯色画面）时返回有数据的那次结果，全部失败
     才报错。
     """
     width, height = candidate.width, candidate.height
+    scale_x, scale_y = winapi.window_virtualization_scale(candidate.handle)
     printed = _capture_window(candidate.handle, width, height, mode="print")
     if printed is not None and not png.looks_blank(printed, 4):
-        return printed, width, height
+        return _devirtualize(printed, width, height, scale_x, scale_y), width, height
     # PrintWindow 拿不到内容（硬件加速窗口的常见情形）→ 提到最前后屏幕拷贝
     if winapi.raise_window(candidate.handle):
         time.sleep(_RAISE_SETTLE_SECONDS)
     screen = _capture_window(candidate.handle, width, height, mode="bitblt")
     if screen is not None and not png.looks_blank(screen, 4):
-        return screen, width, height
+        return _devirtualize(screen, width, height, scale_x, scale_y), width, height
     # 仍拿不到内容（DirectX 独占全屏游戏）→ 从桌面屏幕 DC 拷贝窗口矩形区域
     region = _capture_window_from_screen(candidate, width, height)
     if region is not None and not png.looks_blank(region, 4):
         return region, width, height
-    for data in (region, screen, printed):
+    for data, virtualized in ((region, False), (screen, True), (printed, True)):
         if data is not None:
+            if virtualized:
+                data = _devirtualize(data, width, height, scale_x, scale_y)
             return data, width, height
     raise ScreenshotError(
         f"窗口像素抓取失败（窗口标题: {candidate.title or '<无标题>'}，"
         f"进程 {candidate.pid}）：PrintWindow、窗口 BitBlt 与屏幕区域拷贝均未"
         f"返回有效图像"
     )
+
+
+def _devirtualize(bgra: bytes, width: int, height: int,
+                  scale_x: float, scale_y: float) -> bytes:
+    """把被系统 DPI 虚拟化的窗口位图放大回物理像素（尺寸不变）。
+
+    非 DPI 感知进程的窗口在高 DPI 显示器上按**逻辑像素**渲染：``PrintWindow``
+    / 窗口 DC 把内容画在物理尺寸位图的左上角，其余区域为空白。按虚拟化比例
+    把该区域拉伸到整幅位图后，截图像素与屏幕物理坐标一一对应——模型从截图上
+    读到的坐标可直接交给输入操作，无需按 DPI 比例折算。
+
+    Args:
+        bgra: ``width x height`` 的 BGRA 源数据。
+        width / height: 位图尺寸（物理像素）。
+        scale_x / scale_y: ``winapi.window_virtualization_scale`` 的结果。
+
+    Returns:
+        拉伸后的 BGRA 数据；未虚拟化（比例 ≤ 1）时原样返回。
+    """
+    if scale_x <= 1.0 and scale_y <= 1.0:
+        return bgra
+    source_width = max(1, min(width, int(round(width / scale_x))))
+    source_height = max(1, min(height, int(round(height / scale_y))))
+    if source_width == width and source_height == height:
+        return bgra
+    region = CropRegion(0, 0, source_width, source_height)
+    stretched = _stretch_bgra_gdi(bgra, width, height, region, width, height)
+    if stretched is not None:
+        return stretched
+    logger.debug("GDI StretchBlt 不可用，回退纯 Python 最近邻缩放")
+    return transform.scale_bgra(bgra, width, height, region, width, height)
+
+
+def _stretch_bgra_gdi(bgra: bytes, width: int, height: int, region: CropRegion,
+                      dst_width: int, dst_height: int) -> bytes | None:
+    """用 GDI ``StretchBlt`` 把 ``region`` 缩放到目标尺寸（不可用返回 None）。
+
+    GDI 由系统在半色调模式下完成缩放，整屏尺寸的位图（数百万像素）也能在
+    毫秒级完成；纯 Python 逐像素采样只作为 GDI 缺失时的兜底。
+    """
+    stretch = winapi.stretch_blt()
+    if stretch is None:
+        return None
+    gdi = winapi.gdi32()
+    screen = winapi.screen_dc()
+    if not screen:
+        return None
+    source_dc = target_dc = None
+    source_bitmap = target_bitmap = None
+    source_previous = target_previous = None
+    try:
+        source_dc = gdi.CreateCompatibleDC(screen)
+        target_dc = gdi.CreateCompatibleDC(screen)
+        if not source_dc or not target_dc:
+            return None
+        source_bitmap, source_bits = _create_dib_section(gdi, screen, width, height)
+        target_bitmap, target_bits = _create_dib_section(
+            gdi, screen, dst_width, dst_height)
+        if not source_bitmap or not target_bitmap:
+            return None
+        source_previous = gdi.SelectObject(source_dc, source_bitmap)
+        target_previous = gdi.SelectObject(target_dc, target_bitmap)
+        ctypes.memmove(source_bits, bgra, len(bgra))
+        mode = winapi.set_stretch_blt_mode()
+        if mode is not None:
+            mode(target_dc, winapi.HALFTONE)
+        if not stretch(target_dc, 0, 0, dst_width, dst_height,
+                       source_dc, region.x, region.y, region.width, region.height,
+                       winapi.SRCCOPY):
+            return None
+        return ctypes.string_at(target_bits, dst_width * dst_height * 4)
+    finally:
+        if source_dc and source_previous:
+            gdi.SelectObject(source_dc, source_previous)
+        if target_dc and target_previous:
+            gdi.SelectObject(target_dc, target_previous)
+        if source_bitmap:
+            gdi.DeleteObject(source_bitmap)
+        if target_bitmap:
+            gdi.DeleteObject(target_bitmap)
+        if source_dc:
+            gdi.DeleteDC(source_dc)
+        if target_dc:
+            gdi.DeleteDC(target_dc)
+        winapi.release_dc(screen)
+
+
+def _create_dib_section(gdi, dc, width: int, height: int):
+    """创建自上而下的 32 位 BGRA DIB，返回 ``(位图句柄, 像素指针)``。
+
+    失败返回 ``(None, None)``（调用方自行清理已创建的资源）。
+    """
+    info = winapi.BITMAPINFO()
+    header = info.bmiHeader
+    header.biSize = ctypes.sizeof(winapi.BITMAPINFOHEADER)
+    header.biWidth = int(width)
+    header.biHeight = -int(height)  # 负高度 = 自上而下扫描行
+    header.biPlanes = 1
+    header.biBitCount = 32
+    header.biCompression = 0  # BI_RGB
+    bits = ctypes.c_void_p()
+    bitmap = gdi.CreateDIBSection(
+        dc, ctypes.byref(info), winapi.DIB_RGB_COLORS, ctypes.byref(bits), None, 0,
+    )
+    if not bitmap or not bits:
+        if bitmap:
+            gdi.DeleteObject(bitmap)
+        return None, None
+    return bitmap, bits
 
 
 def _capture_window_from_screen(candidate: WindowCandidate, width: int,

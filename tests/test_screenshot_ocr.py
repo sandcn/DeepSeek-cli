@@ -168,3 +168,31 @@ def test_windows_path_returns_usable_string():
     assert converted and isinstance(converted, str)
     if not ocr.sys.platform.startswith(("cygwin", "msys")):
         assert converted == os.path.abspath("/tmp/example.png")
+
+
+# ── 置信度：后端不提供时不得输出无意义值 ────────────────
+
+def test_textbox_confidence_optional_in_dict():
+    """未提供置信度（后端不支持）时不输出该字段，避免被当成「置信度 0」。"""
+    unknown = TextBox("OK", 1, 2, 3, 4)
+    assert unknown.confidence is None
+    assert "confidence" not in unknown.to_dict()
+    scored = TextBox("OK", 1, 2, 3, 4, 0.87)
+    assert scored.to_dict()["confidence"] == pytest.approx(0.87)
+
+
+def test_windows_ocr_json_omits_confidence():
+    boxes = parse_windows_ocr_json(
+        '[{"text": "OK", "x": 1, "y": 2, "w": 3, "h": 4}]')
+    assert boxes[0].confidence is None
+    assert "confidence" not in boxes[0].to_dict()
+
+
+def test_phrase_union_ignores_unknown_confidence():
+    """跨词合并时忽略未知置信度（全部未知则合并结果也不带置信度）。"""
+    mixed = [TextBox("保存", 0, 0, 10, 10), TextBox("文件", 12, 0, 10, 10, 0.5)]
+    hits = find_text(mixed, "保存 文件")
+    assert hits and hits[0].confidence == pytest.approx(0.5)
+    unknown = [TextBox("保存", 0, 0, 10, 10), TextBox("文件", 12, 0, 10, 10)]
+    hits = find_text(unknown, "保存 文件")
+    assert hits and hits[0].confidence is None

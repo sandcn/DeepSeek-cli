@@ -183,3 +183,32 @@ async def test_keys_missing_key_parameter(monkeypatch):
     _set_probe(monkeypatch, False)
     result = await _run_keys(_record(), None)
     assert "需要 key 参数" in result
+
+
+# ── 非终端 stdin（管道）下的提示 ─────────────────────────
+
+async def test_keys_pipe_warns_control_chars_are_not_signals(monkeypatch):
+    """管道 stdin 下控制字符不会变成信号，必须如实提示（避免"发送成功"的错觉）。"""
+    _set_probe(monkeypatch, False)
+    rec = _record(mode="pipe")
+    writer = _Writer()
+    rec["stdin_writer"] = writer
+    result = await _run_keys(rec, "ctrl+c")
+    assert writer.sent == [b"\x03"]
+    assert "不是终端" in result
+    assert "op=kill" in result
+
+
+async def test_keys_pipe_plain_text_has_no_warning(monkeypatch):
+    _set_probe(monkeypatch, False)
+    rec = _record(mode="pipe")
+    rec["stdin_writer"] = _Writer()
+    result = await _run_keys(rec, "a")
+    assert "不是终端" not in result
+
+
+async def test_keys_pty_control_char_has_no_warning(monkeypatch, pty_writes):
+    _set_probe(monkeypatch, False)
+    result = await _run_keys(_record(mode="pty"), "ctrl+c")
+    assert pty_writes == [(9, b"\x03")]
+    assert "不是终端" not in result

@@ -6,20 +6,30 @@
 
 算法（纯 Python，零第三方依赖）：
 
-  1. **粗搜索**：在整幅截图上按 ``stride`` 步长滑动模板，用**抽样像素**快速
-     估算差异（带早停：累计差异一旦超过阈值立即放弃该位置）；
-  2. **精修**：对粗搜索得分最高的若干候选，在其邻域做**全像素**穷举，取精确
-     最优位置；
-  3. **多尺度**：可选在若干缩放比例上重复（模板与截图像素比例不一致时用）；
-  4. **去重**：按得分排序后做非极大值抑制，避免同一目标返回多个重叠框。
+  1. **模板画像**：统计模板主色，标出**前景像素**（与主色差异明显的可见
+     内容）；前景占比过低（近乎纯色模板）时退化为纯统计匹配；
+  2. **粗搜索**：在整幅截图上按 ``stride`` 步长滑动模板，用**前景抽样像素**
+     快速估算差异（带早停）。前景度量对「结构错位」敏感：模板里的大片同色
+     背景不再把无关位置顶进候选，真实位置附近才有低分；
+  3. **精修**：对粗搜索得分最高的若干候选，在其邻域做**全前景像素**穷举，
+     取精确最优位置；
+  4. **多尺度**：可选在若干缩放比例上重复（模板与截图像素比例不一致时用）；
+  5. **校验**：命中位置的全像素平均差与**前景平均差**都必须落在
+     ``tolerance`` 内，否则视为不匹配丢弃（纯色模板跳过前景校验）；
+  6. **去重**：按得分排序后做非极大值抑制，避免同一目标返回多个重叠框。
 
 匹配度量用「每像素三通道平均绝对差」（0 = 完全一致），``tolerance`` 为允许
 的平均通道差上限（0..255）；得分 ``score = 1 - 平均差 / 255``。
+
+前景校验解决的是「模板含大片纯色背景」的经典误命中：只看全图平均差时，
+空白背景区域的「文字像素全部错位」误差会被大片背景稀释成很小的平均值
+（误命中得高分），而前景平均差只统计模板的可见内容，把这类位置判为不匹配。
 """
 
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass
 
 from .png_decode import DecodedImage, decode_png_file
@@ -37,16 +47,43 @@ DEFAULT_MAX_RESULTS = 10
 MAX_RESULTS_LIMIT = 100
 
 #: 粗搜索的抽样像素数（约值）
-_COARSE_SAMPLES = 400
+_COARSE_SAMPLES = 64
+
+#: 粗搜索「快速预筛」的抽样点数：这么多个抽样点全部不匹配的位置直接淘汰
+#: （真实位置附近至少有部分前景点对齐，因此可用它极快地过滤大片背景）
+_COARSE_FAST_SAMPLES = 8
+
+#: 粗搜索早停允许的不匹配抽样点占比上限（抽样比较有噪声，留足余量）
+_COARSE_MISMATCH_RATIO = 0.85
+
+#: 粗搜索的像素级匹配门槛（容差很小时也给下限，容忍抗锯齿 / 采样噪声）
+_COARSE_MIN_PIXEL_TOLERANCE = 8
 
 #: 保留用于精修的候选数
-_REFINE_CANDIDATES = 16
+_REFINE_CANDIDATES = 32
+
+#: 候选分散选择时最多考察的评分条数（防止极端情况下遍历过慢）
+_CANDIDATE_SCAN_LIMIT = 4000
 
 #: 非极大值抑制的重叠阈值（交并比超过该值的框视为同一目标）
 _NMS_IOU = 0.3
 
 #: 最小模板边长（像素）——过小的模板匹配噪声极大，直接拒绝
 MIN_TEMPLATE_SIDE = 4
+
+#: 前景像素判定门槛：与模板主色的每通道最大差超过该值即视为「可见内容」
+_FOREGROUND_DELTA = 24
+
+#: 前景像素数量 / 占比低于这些阈值时视为「近乎纯色模板」（跳过前景校验）
+_MIN_FOREGROUND_PIXELS = 16
+_MIN_FOREGROUND_RATIO = 0.02
+
+#: 粗搜索步长上限：步长越小越不容易漏掉真实位置（代价是更多位置参与比较）。
+#: 取 2 可保证真实位置附近总有网格点只错位 1 像素，前景内容仍能部分对齐。
+_MAX_COARSE_STRIDE = 2
+
+#: 粗搜索位置数预算：超过则自动放大步长，避免大图 / 大模板匹配过慢
+_MAX_COARSE_POSITIONS = 150000
 
 
 class ImageMatchError(ValueError):
@@ -83,6 +120,33 @@ class TemplateMatch:
             "score": round(self.score, 4),
             "scale": round(self.scale, 3),
         }
+
+
+@dataclass(frozen=True)
+class _TemplateProfile:
+    """模板结构画像：前景像素序号（``y * width + x``）与像素总数。
+
+    前景像素 = 与模板主色差异明显的像素，代表模板的「可见内容」（图标笔画、
+    文字、边框等）。``structured`` 为 False 表示模板近乎纯色：此时结构校验
+    没有意义，匹配退化为纯统计（平均通道差）语义。
+    """
+
+    foreground: tuple
+    total_pixels: int
+
+    @property
+    def structured(self) -> bool:
+        """模板是否有足够前景内容（近乎纯色时为 False）。"""
+        count = len(self.foreground)
+        if count < _MIN_FOREGROUND_PIXELS:
+            return False
+        return count >= self.total_pixels * _MIN_FOREGROUND_RATIO
+
+    def indices(self, total_pixels: int) -> tuple:
+        """参与结构比较的像素序号（无结构时为全部像素）。"""
+        if self.structured:
+            return self.foreground
+        return tuple(range(total_pixels))
 
 
 def match_template_file(image_path: str, template_path: str, *,
@@ -190,28 +254,34 @@ def _validate(image: DecodedImage, template: DecodedImage,
 
 def _match_single(image: DecodedImage, template: DecodedImage, scale: float,
                   tolerance: int, max_results: int) -> list[TemplateMatch]:
-    """单尺度匹配：粗搜索 → 精修 → 组装结果。"""
+    """单尺度匹配：模板画像 → 粗搜索 → 精修 → 结构校验。"""
     tw, th = template.width, template.height
-    iw, ih = image.width, image.height
-    max_x = iw - tw
-    max_y = ih - th
-    # 步长不超过模板短边的 1/4：保证真实位置附近总有粗搜索点（精修再补足）
-    stride = max(1, min(tw, th) // 4)
-    samples = _sample_offsets(tw, th)
-    # 粗搜索用略放宽的阈值（抽样本身有误差），避免漏掉真实位置
-    coarse_limit = int(tolerance * 1.5) * 3 * len(samples)
-    candidates = _coarse_scan(image, template, max_x, max_y, stride, samples,
-                              coarse_limit)
+    max_x = image.width - tw
+    max_y = image.height - th
+    profile = _analyze_template(template)
+    stride = _coarse_stride(tw, th, max_x, max_y)
+    samples = _sample_indices(profile, tw * th)
+    sampled = _coarse_template(template, samples, image.width, tw)
+    pixel_tolerance = max(int(tolerance), _COARSE_MIN_PIXEL_TOLERANCE)
+    candidates = _coarse_scan(image, sampled, max_x, max_y, stride,
+                              pixel_tolerance)
     matches: list[TemplateMatch] = []
-    seen: set[tuple[int, int]] = set()
+    seen: set = set()
     for coarse_x, coarse_y in candidates:
-        best = _refine(image, template, coarse_x, coarse_y, stride, tolerance)
+        best = _refine(image, template, profile, coarse_x, coarse_y,
+                       stride, pixel_tolerance)
         if best is None:
             continue
-        x, y, mean = best
+        x, y, foreground_mean = best
         if (x, y) in seen:
             continue
         seen.add((x, y))
+        if profile.structured and foreground_mean > tolerance:
+            # 结构不一致：模板的可见内容没有对上（典型是大片背景处的误命中）
+            continue
+        mean = _mean_channel_diff(image, template, x, y)
+        if mean > tolerance:
+            continue
         matches.append(TemplateMatch(
             x=x, y=y, width=tw, height=th,
             score=max(0.0, 1.0 - mean / 255.0), scale=scale))
@@ -219,105 +289,218 @@ def _match_single(image: DecodedImage, template: DecodedImage, scale: float,
     return matches[:max_results]
 
 
-def _coarse_scan(image: DecodedImage, template: DecodedImage, max_x: int,
-                 max_y: int, stride: int, samples, limit: int
-                 ) -> list[tuple[int, int]]:
-    """粗搜索：按 stride 滑动、抽样比较、带早停，返回得分最高的候选位置。"""
-    iw = image.width
-    pixels = image.rgb
-    sampled = _coarse_template(template, samples, iw)
-    best: list[tuple[int, int, int]] = []
-    for y in range(0, max_y + 1, stride):
-        row_base = y * iw
-        for x in range(0, max_x + 1, stride):
-            total = 0
-            base = (row_base + x) * 3
-            for offset, tr, tg, tb in sampled:
-                index = base + offset
-                total += abs(pixels[index] - tr)
-                total += abs(pixels[index + 1] - tg)
-                total += abs(pixels[index + 2] - tb)
-                if total > limit:
-                    break
-            else:
-                _push(best, x, y, total)
-    best.sort(key=lambda item: item[2])
-    return [(item[0], item[1]) for item in best[:_REFINE_CANDIDATES]]
+def _coarse_stride(template_width: int, template_height: int,
+                   max_x: int, max_y: int) -> int:
+    """粗搜索步长：不超过模板短边的 1/8，且受位置数预算约束。"""
+    stride = max(1, min(template_width, template_height) // 8)
+    stride = min(stride, _MAX_COARSE_STRIDE)
+    while stride < 128:
+        positions = (max_x // stride + 1) * (max_y // stride + 1)
+        if positions <= _MAX_COARSE_POSITIONS:
+            break
+        stride += 1
+    return stride
 
 
-def _push(best: list, x: int, y: int, mean: int) -> None:
-    best.append((x, y, mean))
-    if len(best) > _REFINE_CANDIDATES * 4:
-        best.sort(key=lambda item: item[2])
-        del best[_REFINE_CANDIDATES:]
+def _analyze_template(template: DecodedImage) -> _TemplateProfile:
+    """统计模板主色并标出前景像素（与主色差异明显的可见内容）。"""
+    total = template.width * template.height
+    if total <= 0:
+        return _TemplateProfile((), 0)
+    pixels = template.rgb
+    buckets = Counter()
+    for index in range(total):
+        base = index * 3
+        buckets[(pixels[base] >> 3, pixels[base + 1] >> 3,
+                 pixels[base + 2] >> 3)] += 1
+    if not buckets:
+        return _TemplateProfile((), total)
+    dominant = buckets.most_common(1)[0][0]
+    # 用量化桶中心还原主色（量化误差最多 7，不影响前景判定）
+    key_r, key_g, key_b = ((channel << 3) | 4 for channel in dominant)
+    foreground: list = []
+    for index in range(total):
+        base = index * 3
+        delta = max(abs(pixels[base] - key_r),
+                    abs(pixels[base + 1] - key_g),
+                    abs(pixels[base + 2] - key_b))
+        if delta > _FOREGROUND_DELTA:
+            foreground.append(index)
+    return _TemplateProfile(tuple(foreground), total)
 
 
-def _refine(image: DecodedImage, template: DecodedImage, coarse_x: int,
-            coarse_y: int, stride: int, tolerance: int):
-    """在粗候选邻域内做全像素穷举，返回 ``(x, y, 每像素平均通道差)``。"""
-    iw = image.width
-    tw, th = template.width, template.height
-    max_x = image.width - tw
-    max_y = image.height - th
-    pixels = image.rgb
-    tpl = template.rgb
-    limit = int(tolerance) * 3 * tw * th
-    best = None
-    start_x = max(0, coarse_x - stride)
-    end_x = min(max_x, coarse_x + stride)
-    start_y = max(0, coarse_y - stride)
-    end_y = min(max_y, coarse_y + stride)
-    for y in range(start_y, end_y + 1):
-        for x in range(start_x, end_x + 1):
-            total = 0
-            for row in range(th):
-                index = ((y + row) * iw + x) * 3
-                tindex = row * tw * 3
-                row_bytes = tw * 3
-                segment = pixels[index:index + row_bytes]
-                target = tpl[tindex:tindex + row_bytes]
-                if segment == target:
-                    continue
-                for col in range(row_bytes):
-                    total += abs(segment[col] - target[col])
-                    if total > limit:
-                        break
-                if total > limit:
-                    break
-            if total > limit:
-                continue
-            mean = total / (3 * tw * th)
-            if best is None or mean < best[2]:
-                best = (x, y, mean)
-    return best
+def _sample_indices(profile: _TemplateProfile, total_pixels: int) -> tuple:
+    """从前景像素中抽样（无结构时从全部像素抽样），约 :data:`_COARSE_SAMPLES` 个。"""
+    pool = profile.indices(total_pixels)
+    count = len(pool)
+    if count <= 0:
+        return ()
+    step = max(1, count // _COARSE_SAMPLES)
+    return tuple(pool[index] for index in range(0, count, step))
 
 
-def _coarse_template(template: DecodedImage, samples,
-                     image_width: int) -> list[tuple[int, int, int, int]]:
-    """按抽样偏移取出模板像素 ``(offset, r, g, b)``。
+def _coarse_template(template: DecodedImage, samples, image_width: int,
+                     template_width: int) -> list:
+    """按抽样序号取出模板像素 ``(offset, r, g, b)``。
 
     ``offset`` 以**被搜索图像**的宽度换算（``dy * image_width + dx``），
     这样在图像里直接加基址即可命中同一相对位置。
     """
     pixels = template.rgb
-    out: list[tuple[int, int, int, int]] = []
-    for dx, dy in samples:
-        source = (dy * template.width + dx) * 3
-        offset = (dy * image_width + dx) * 3
-        out.append((offset, pixels[source], pixels[source + 1], pixels[source + 2]))
+    out: list = []
+    for index in samples:
+        dy, dx = divmod(index, template_width)
+        source = index * 3
+        out.append((
+            (dy * image_width + dx) * 3,
+            pixels[source], pixels[source + 1], pixels[source + 2],
+        ))
     return out
 
 
-def _sample_offsets(width: int, height: int) -> list[tuple[int, int]]:
-    """生成模板内的抽样偏移（约 :data:`_COARSE_SAMPLES` 个，均匀分布）。"""
-    total = width * height
-    step = max(1, total // _COARSE_SAMPLES)
-    offsets: list[tuple[int, int]] = []
-    for index in range(0, total, step):
-        offsets.append((index % width, index // width))
-    if not offsets:
-        offsets.append((0, 0))
-    return offsets
+def _coarse_scan(image: DecodedImage, sampled, max_x: int, max_y: int,
+                 stride: int, pixel_tolerance: int) -> list:
+    """粗搜索：按 stride 滑动、用前景抽样像素做**不匹配计数**并带早停。
+
+    不匹配计数的好处是「结构错位」会立刻暴露：模板里的文字 / 图标没有对齐
+    时，对应前景抽样点几乎全判为不匹配；而按平均差排序时，大片同色背景会
+    把这类位置的误差稀释掉，导致真实位置被无关位置挤出候选。
+
+    早停分两级：前 :data:`_COARSE_FAST_SAMPLES` 个抽样点全部不匹配即淘汰
+    （真实位置附近总有一部分前景点对齐，用这一条即可极快地过滤大片背景），
+    其后按不匹配占比上限 :data:`_COARSE_MISMATCH_RATIO` 淘汰。
+    """
+    iw = image.width
+    pixels = image.rgb
+    total_samples = len(sampled)
+    hard_limit = max(1, int(total_samples * _COARSE_MISMATCH_RATIO))
+    fast_limit = min(_COARSE_FAST_SAMPLES, total_samples)
+    scored: list = []
+    for y in range(0, max_y + 1, stride):
+        row_base = y * iw
+        for x in range(0, max_x + 1, stride):
+            base = (row_base + x) * 3
+            mismatch = 0
+            total = 0
+            checked = 0
+            for offset, tr, tg, tb in sampled:
+                index = base + offset
+                dr = pixels[index] - tr
+                if dr < 0:
+                    dr = -dr
+                dg = pixels[index + 1] - tg
+                if dg < 0:
+                    dg = -dg
+                db = pixels[index + 2] - tb
+                if db < 0:
+                    db = -db
+                total += dr + dg + db
+                if (dr > pixel_tolerance or dg > pixel_tolerance
+                        or db > pixel_tolerance):
+                    mismatch += 1
+                checked += 1
+                if checked <= fast_limit:
+                    if mismatch >= fast_limit:
+                        break
+                elif mismatch > hard_limit:
+                    break
+            else:
+                scored.append((mismatch, total, x, y))
+    return _pick_candidates(scored, stride)
+
+
+def _pick_candidates(scored: list, stride: int) -> list:
+    """按「不匹配点最少 → 差异和最小」排序，取彼此分散的若干候选位置。
+
+    分散（同一区域只保留得分最好的一个）能避免一个显眼目标占满候选名额，
+    让更多区域有机会进入精修。
+    """
+    scored.sort(key=lambda item: (item[0], item[1]))
+    picked: list = []
+    gap = max(1, stride)
+    for position, item in enumerate(scored):
+        if position >= _CANDIDATE_SCAN_LIMIT:
+            break
+        _, _, x, y = item
+        if any(abs(x - px) < gap and abs(y - py) < gap
+               for _, _, px, py in picked):
+            continue
+        picked.append(item)
+        if len(picked) >= _REFINE_CANDIDATES:
+            break
+    return [(item[2], item[3]) for item in picked]
+
+
+def _refine(image: DecodedImage, template: DecodedImage,
+            profile: _TemplateProfile, coarse_x: int, coarse_y: int,
+            radius: int, pixel_tolerance: int):
+    """在粗候选邻域内按前景像素穷举，返回 ``(x, y, 前景平均通道差)``。
+
+    ``pixel_tolerance`` 只用于早停（避免在明显不可能的位置上算完全部前景
+    像素），取值不低于 :data:`_COARSE_MIN_PIXEL_TOLERANCE`，因此「接近但
+    不完全一致」的真实位置不会被误淘汰——最终是否算匹配由调用方的
+    ``tolerance`` 与前景校验决定。
+
+    返回 None 表示邻域内没有位置的前景差落在早停阈值内。
+    """
+    iw = image.width
+    tw, th = template.width, template.height
+    max_x = iw - tw
+    max_y = image.height - th
+    pixels = image.rgb
+    tpl = template.rgb
+    offsets = _pixel_offsets(profile.indices(tw * th), tw, iw)
+    limit = int(pixel_tolerance) * 3 * len(offsets)
+    best = None
+    x_end = min(max_x, coarse_x + radius)
+    y_end = min(max_y, coarse_y + radius)
+    for y in range(max(0, coarse_y - radius), y_end + 1):
+        row_base = y * iw
+        for x in range(max(0, coarse_x - radius), x_end + 1):
+            base = (row_base + x) * 3
+            total = 0
+            for source_offset, target_offset in offsets:
+                index = base + source_offset
+                total += abs(pixels[index] - tpl[target_offset])
+                total += abs(pixels[index + 1] - tpl[target_offset + 1])
+                total += abs(pixels[index + 2] - tpl[target_offset + 2])
+                if total > limit:
+                    break
+            else:
+                mean = total / (3 * len(offsets))
+                if best is None or mean < best[2]:
+                    best = (x, y, mean)
+    return best
+
+
+def _pixel_offsets(indices, template_width: int, image_width: int) -> tuple:
+    """把像素序号换算为 ``(图像内字节偏移, 模板内字节偏移)``，供逐像素比较。"""
+    return tuple(
+        (((index // template_width) * image_width + index % template_width) * 3,
+         index * 3)
+        for index in indices
+    )
+
+
+def _mean_channel_diff(image: DecodedImage, template: DecodedImage,
+                       x: int, y: int) -> float:
+    """命中位置的**全像素**每像素平均通道差（得分与容差判定用）。"""
+    iw = image.width
+    tw, th = template.width, template.height
+    pixels = image.rgb
+    tpl = template.rgb
+    total = 0
+    for row in range(th):
+        base = ((y + row) * iw + x) * 3
+        target = row * tw * 3
+        row_bytes = tw * 3
+        segment = pixels[base:base + row_bytes]
+        reference = tpl[target:target + row_bytes]
+        if segment == reference:
+            continue
+        for col in range(row_bytes):
+            total += abs(segment[col] - reference[col])
+    return total / (3 * tw * th)
 
 
 def _resize(template: DecodedImage, scale: float) -> DecodedImage:
@@ -340,9 +523,9 @@ def _resize(template: DecodedImage, scale: float) -> DecodedImage:
     return DecodedImage(width, height, bytes(out))
 
 
-def _suppress(matches: list[TemplateMatch], max_results: int) -> list[TemplateMatch]:
+def _suppress(matches: list, max_results: int) -> list:
     """非极大值抑制：去掉与已选结果重叠过多的框。"""
-    selected: list[TemplateMatch] = []
+    selected: list = []
     for candidate in matches:
         if all(_iou(candidate, chosen) <= _NMS_IOU for chosen in selected):
             selected.append(candidate)

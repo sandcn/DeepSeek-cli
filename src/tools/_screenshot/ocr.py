@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import locale
 import logging
 import os
 import shutil
@@ -44,14 +45,19 @@ class OcrError(RuntimeError):
 
 @dataclass(frozen=True)
 class TextBox:
-    """一个识别出的文本块（左上角为图像原点）。"""
+    """一个识别出的文本块（左上角为图像原点）。
+
+    ``confidence`` 为 ``None`` 表示**该后端不提供置信度**（如 Windows 系统
+    OCR）——此时 :meth:`to_dict` 不输出该字段，避免调用方把「无意义值」当成
+    「置信度为 0 的低质量结果」。
+    """
 
     text: str
     left: int
     top: int
     width: int
     height: int
-    confidence: float = 0.0
+    confidence: float | None = None
 
     @property
     def center_x(self) -> int:
@@ -62,7 +68,7 @@ class TextBox:
         return self.top + self.height // 2
 
     def to_dict(self) -> dict:
-        return {
+        payload = {
             "text": self.text,
             "x": self.left,
             "y": self.top,
@@ -70,8 +76,10 @@ class TextBox:
             "height": self.height,
             "center_x": self.center_x,
             "center_y": self.center_y,
-            "confidence": round(self.confidence, 3),
         }
+        if self.confidence is not None:
+            payload["confidence"] = round(self.confidence, 3)
+        return payload
 
 
 # ── 后端注册表 ──────────────────────────────────────────
@@ -242,7 +250,8 @@ def _union(boxes: Sequence[TextBox]) -> TextBox:
     top = min(box.top for box in boxes)
     right = max(box.left + box.width for box in boxes)
     bottom = max(box.top + box.height for box in boxes)
-    confidence = min((box.confidence for box in boxes), default=0.0)
+    confidences = [box.confidence for box in boxes if box.confidence is not None]
+    confidence = min(confidences) if confidences else None
     return TextBox(
         text=" ".join(box.text for box in boxes),
         left=left, top=top, width=right - left, height=bottom - top,
@@ -268,7 +277,7 @@ class TesseractBackend:
         if not binary:
             raise OcrError("未找到 tesseract 可执行文件")
         command = [binary, image_path, "stdout", "-l", lang or "eng", "tsv"]
-        completed = _run(command)
+        completed = _run_text(command)
         if completed is None:
             raise OcrError("tesseract 执行超时或不可用")
         if completed.returncode != 0:
@@ -306,6 +315,11 @@ def parse_tesseract_tsv(text: str) -> list[TextBox]:
 #: 经 PowerShell 调 WinRT OCR 的脚本（$Path 由命令行注入，$Lang 可为空）
 _WINDOWS_OCR_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
+# 输出固定为 UTF-8（无 BOM）：无控制台或中文代码页下 PowerShell 默认按系统
+# ANSI（GBK）写 stdout，会把结果中的中文编成非 UTF-8 字节
+try {
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding -ArgumentList $false
+} catch { }
 Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null
 $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
     $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
@@ -344,7 +358,11 @@ foreach ($line in $result.Lines) {
     }
 }
 $json = ConvertTo-Json -InputObject @($out) -Compress
-Write-Output $json
+# 非 ASCII 字符转义为 \uXXXX，使 stdout 全为 ASCII：解码不再受控制台代码页影响
+$escaped = [System.Text.RegularExpressions.Regex]::Replace(
+    $json, '[^\u0000-\u007F]',
+    { param($m) '\u' + ('{0:x4}' -f [int][char]$m.Value) })
+Write-Output $escaped
 """
 
 
@@ -367,7 +385,7 @@ class WindowsOcrBackend:
         env = dict(os.environ)
         env["BASHOPT_OCR_IMAGE"] = _windows_path(image_path)
         env["BASHOPT_OCR_LANG"] = lang or ""
-        completed = _run(
+        completed = _run_text(
             [binary, "-NoProfile", "-NonInteractive", "-Command",
              _WINDOWS_OCR_SCRIPT],
             env=env, timeout=_COMMAND_TIMEOUT,
@@ -400,7 +418,7 @@ def _windows_path(path: str) -> str:
     converter = shutil.which("cygpath")
     if not converter:
         return absolute
-    completed = _run([converter, "-w", absolute])
+    completed = _run_text([converter, "-w", absolute])
     if completed is None or completed.returncode != 0:
         return absolute
     converted = (completed.stdout or "").strip()
@@ -502,16 +520,69 @@ def _pixel_size(path: str) -> tuple[int, int]:
         return 1, 1
 
 
+def _candidate_encodings() -> tuple:
+    """子进程文本输出的候选解码顺序。
+
+    Windows 工具（PowerShell / cygpath 等）的 stdout 编码随控制台代码页变化：
+    可能是 UTF-8，也可能是系统 ANSI（中文为 GBK/cp936）；macOS / Linux 一般是
+    UTF-8。按「UTF-8 → 本地首选编码 → 中文 ANSI → latin-1」依次尝试，
+    保证任何一端都不会因编码不匹配而解码失败。
+    """
+    try:
+        preferred = locale.getpreferredencoding(False) or ""
+    except (LookupError, ValueError):  # pragma: no cover - 平台异常兜底
+        preferred = ""
+    ordered: list = []
+    for encoding in ("utf-8-sig", preferred, "cp936", "mbcs", "latin-1"):
+        key = (encoding or "").strip().lower()
+        if key and key not in {item.lower() for item in ordered}:
+            ordered.append(encoding)
+    return tuple(ordered)
+
+
+def _decode_output(raw) -> str:
+    """把子进程输出解码为文本（按候选编码依次尝试，永不抛异常）。
+
+    直接让 ``subprocess`` 以 ``text=True`` 解码会使用应用自身的 locale 编码，
+    与子进程实际写出的编码（Windows 控制台代码页）不一致时会抛
+    ``UnicodeDecodeError``，导致 OCR 识别失败。
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    data = bytes(raw)
+    if not data:
+        return ""
+    for encoding in _candidate_encodings():
+        try:
+            return data.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("latin-1", errors="replace")
+
+
 # ── 子进程执行 ──────────────────────────────────────────
 
-def _run(command: list[str], *, env=None, timeout: float = _COMMAND_TIMEOUT):
-    """执行子进程（失败返回 None，不抛异常）。"""
+def _run_bytes(command: list, *, env=None, timeout: float = _COMMAND_TIMEOUT):
+    """执行子进程并捕获**字节**输出（失败返回 None，不抛异常）。"""
     try:
-        return subprocess.run(command, capture_output=True, text=True,
-                              timeout=timeout, env=env)
+        return subprocess.run(command, capture_output=True, timeout=timeout,
+                              env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         logger.debug("OCR 命令执行失败 %s: %s", command[0], exc)
         return None
+
+
+def _run_text(command: list, *, env=None, timeout: float = _COMMAND_TIMEOUT):
+    """执行子进程并把 stdout / stderr 稳健解码为文本（失败返回 None）。"""
+    completed = _run_bytes(command, env=env, timeout=timeout)
+    if completed is None:
+        return None
+    return subprocess.CompletedProcess(
+        completed.args, completed.returncode,
+        _decode_output(completed.stdout), _decode_output(completed.stderr),
+    )
 
 
 def _ensure_builtins() -> None:
