@@ -119,8 +119,8 @@ def _build_flat_ranges(
 ) -> list[int]:
     """构造区间表的扁平排序边界数组（每个区间起点/终点后一位，供 bisect 定位）。
 
-    二分正确性依赖「有序不重叠」不变式——实现时显式排序 + 断言（区间表声明为
-    有序不重叠；断言保护排序不变式，防后续误改区间表破坏二分）。
+    二分正确性依赖「有序不重叠」不变式——实现时显式排序 + 校验（区间表声明为
+    有序不重叠；校验保护排序不变式，防后续误改区间表破坏二分）。
 
     Args:
         ranges: 区间列表（``[(lo, hi), ...]``；顺序无关，内部排序）。
@@ -129,14 +129,18 @@ def _build_flat_ranges(
         扁平的 ``[lo0, hi0+1, lo1, hi1+1, ...]`` 数组。
 
     Raises:
-        AssertionError: 区间非法（``lo > hi``）或区间重叠/乱序。
+        ValueError: 区间非法（``lo > hi``）或区间重叠/乱序。
+            ★ 用显式 raise 而非 ``assert``：``python -O`` 会剥离 assert，
+            而宽度区间表是二分查找的正确性根基，不变式被破坏必须立刻失败。
     """
     ordered = sorted(ranges, key=lambda r: r[0])
     flat: list[int] = []
     prev_end = -1
     for lo, hi in ordered:
-        assert lo <= hi, f"区间非法: ({lo}, {hi})"
-        assert lo > prev_end, f"区间表重叠/乱序: ({lo}, {hi}) 与前一区间 {prev_end}"
+        if lo > hi:
+            raise ValueError(f"区间非法: ({lo}, {hi})")
+        if lo <= prev_end:
+            raise ValueError(f"区间表重叠/乱序: ({lo}, {hi}) 与前一区间 {prev_end}")
         flat.append(lo)
         flat.append(hi + 1)
         prev_end = hi

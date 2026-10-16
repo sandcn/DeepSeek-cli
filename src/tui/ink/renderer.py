@@ -428,10 +428,13 @@ class InkRenderer(_RendererContentMixin):
     # ── 渲染 ─────────────────────────────────────────
 
     def _assert_renderer_invariants(self) -> None:
-        """调试期不变量断言（P3-14 review 方向）：物理缓冲状态三元组一致性校验。
+        """运行期不变量校验：物理缓冲状态三元组一致性。
 
-        辅助未来重构校验（``assert`` 在 ``python -O`` 下剥离，常规运行每帧
-        O(1) 开销可忽略）。不变量：
+        ★ 用显式 ``raise`` 而非 ``assert``：``assert`` 在 ``python -O`` 下被
+        剥离，而这些不变量是帧缓冲写入的正确性根基（破坏后会造成屏幕错位/
+        残留），必须真实生效。常规运行每帧 O(1) 布尔比较，开销可忽略。
+
+        不变量：
           - ``_buf_h >= 0``（物理缓冲行数非负）；
           - ``_top_aligned == False``（底部对齐）仅在**已渲染**状态合法——
             ``_prev`` 非 None 且 ``_buf_h > 0``（底部对齐仅由
@@ -444,27 +447,32 @@ class InkRenderer(_RendererContentMixin):
             起始行与缓冲均不越屏幕高度（越界由 ``_sync_start_row_anchor``
             解除锚定）。
         """
-        assert self._buf_h >= 0, f"_buf_h 非负不变量被破坏: {self._buf_h}"
-        if not self._top_aligned:
-            assert self._prev is not None and self._buf_h > 0, (
+        if self._buf_h < 0:
+            raise RuntimeError(f"_buf_h 非负不变量被破坏: {self._buf_h}")
+        if not self._top_aligned and not (self._prev is not None and self._buf_h > 0):
+            raise RuntimeError(
                 "底部对齐（_top_aligned=False）仅在已渲染状态合法: "
                 f"prev={self._prev is not None} buf_h={self._buf_h}"
             )
-        if self._prev is None:
-            assert self._buf_h == 0 and self._top_aligned, (
+        if self._prev is None and not (self._buf_h == 0 and self._top_aligned):
+            raise RuntimeError(
                 "未渲染状态（_prev is None）应满足 buf_h==0 且 top_aligned: "
                 f"buf_h={self._buf_h} top_aligned={self._top_aligned}"
             )
         if self._start_row is not None:
-            assert self._height > 0, "_start_row 锚定仅在已知屏幕高度时有效"
-            assert not self._top_aligned, "_start_row 锚定与顶部对齐互斥"
-            assert 1 <= self._start_row <= self._height, (
-                f"_start_row 越界: {self._start_row}（屏幕高度 {self._height}）"
-            )
-            assert self._buf_h <= self._height, (
-                f"锚定期间物理缓冲不应越过屏幕高度: buf_h={self._buf_h} "
-                f"height={self._height}"
-            )
+            if self._height <= 0:
+                raise RuntimeError("_start_row 锚定仅在已知屏幕高度时有效")
+            if self._top_aligned:
+                raise RuntimeError("_start_row 锚定与顶部对齐互斥")
+            if not 1 <= self._start_row <= self._height:
+                raise RuntimeError(
+                    f"_start_row 越界: {self._start_row}（屏幕高度 {self._height}）"
+                )
+            if self._buf_h > self._height:
+                raise RuntimeError(
+                    f"锚定期间物理缓冲不应越过屏幕高度: buf_h={self._buf_h} "
+                    f"height={self._height}"
+                )
 
     def render(self, frame: Frame) -> None:
         """渲染新帧（最小差异写入）。

@@ -18,6 +18,25 @@ import src.api.model_async as ma
 from src.api.model_async import _call_sync_async, call_model, call_model_async, call_model_sync, call_model_sync_async
 
 
+class _FakeMonotonic:
+    """可控单调时钟（仅替换 ``model_async`` 模块内的 ``time`` 引用）。
+
+    不能写成 ``monkeypatch.setattr(ma.time, "monotonic", ...)``——那替换的是
+    **全局** ``time.monotonic``，会污染事件循环等库的计时（asyncio 内部同样
+    读取它，导致可控序列被意外消耗 / StopIteration）。
+
+    ``values``：前 N-1 次调用依次返回，之后恒返回最后一个值（幂等，不耗尽）。
+    """
+
+    def __init__(self, *values):
+        self._values = list(values) or [0.0]
+
+    def monotonic(self):
+        if len(self._values) > 1:
+            return self._values.pop(0)
+        return self._values[0]
+
+
 class _FakeAdapter:
     """记录调用的假适配器。"""
 
@@ -212,7 +231,7 @@ def test_call_model_sync_async_routes_to_sync_impl(monkeypatch):
 def test_call_sync_async_full_path(monkeypatch):
     global _current
     _current = _FakeAdapter()
-    monkeypatch.setattr(ma.time, "time", lambda: 1.0)  # duration=0 → speed 0
+    monkeypatch.setattr(ma, "time", _FakeMonotonic(1.0))  # duration=0 → speed 0
 
     result = asyncio.run(_call_sync_async(
         [{"role": "user", "content": "hi"}], "m", None,
@@ -278,7 +297,7 @@ def test_call_sync_async_tool_calls_set_parse_elapsed(monkeypatch):
     })
     seen = {}
     monkeypatch.setattr(ma, "set_tool_parse_elapsed", lambda e: seen.setdefault("elapsed", e))
-    monkeypatch.setattr(ma.time, "time", lambda: 1.0)  # 固定时间 → elapsed 0.0
+    monkeypatch.setattr(ma, "time", _FakeMonotonic(1.0))  # 固定时间 → elapsed 0.0
 
     result = asyncio.run(_call_sync_async([{"role": "user", "content": "hi"}], "m", []))
     assert result[3][0]["name"] == "read_file"
@@ -295,8 +314,8 @@ def test_call_sync_async_speed_calculation(monkeypatch):
         "usage": {"input": 5, "output": 50},
         "tool_calls": [],
     })
-    times = iter([10.0, 20.0])  # duration = 10s
-    monkeypatch.setattr(ma.time, "time", lambda: next(times))
+    # duration = 10s：首次读 10.0，其后恒 20.0（幂等，不耗尽）
+    monkeypatch.setattr(ma, "time", _FakeMonotonic(10.0, 20.0))
     speeds = []
     monkeypatch.setattr(ma, "set_stream_speed", speeds.append)
 
@@ -331,7 +350,7 @@ def test_call_sync_async_display_update(monkeypatch):
     seen = {}
     display = type("D", (), {"update_parse_info": lambda self, label, name, toks, elapsed: seen.update(
         {"label": label, "name": name, "tokens": toks, "elapsed": elapsed})})()
-    monkeypatch.setattr(ma.time, "time", lambda: 1.0)
+    monkeypatch.setattr(ma, "time", _FakeMonotonic(1.0))
 
     asyncio.run(_call_sync_async([{"role": "user", "content": "hi"}], "m", [], display=display, label="L"))
     assert seen["label"] == "L"
@@ -349,7 +368,7 @@ def test_call_sync_async_display_error_silent(monkeypatch):
         "tool_calls": [{"id": "t", "name": "bash", "arguments": {}}],
     })
     display = type("D", (), {"update_parse_info": lambda self, *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))})()
-    monkeypatch.setattr(ma.time, "time", lambda: 1.0)
+    monkeypatch.setattr(ma, "time", _FakeMonotonic(1.0))
 
     result = asyncio.run(_call_sync_async([{"role": "user", "content": "hi"}], "m", [], display=display, label="L"))
     assert result[3][0]["name"] == "bash"  # 不抛异常

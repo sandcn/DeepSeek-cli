@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import time as _time
 from src._compat import dataclass
 from ...constants import DIM, RESET, TEAL
-from ...stats import get_token_stats, get_session_start_time
+from ...stats import get_session_elapsed, get_token_stats
 from ...constants import format_token_k
 
 
@@ -253,7 +252,7 @@ def show_cost(ctx):
     prices = _fill_default_cache_price(model, prices)
     current = get_token_stats()
     detail = compute_cost(current, prices)
-    elapsed = _time.time() - get_session_start_time()
+    elapsed = get_session_elapsed()
     duration = _format_cost_duration(elapsed)
     _get_out().write(f"\n{DIM}  \u2500 费用统计{RESET}", level="raw", source="cmd")
     _get_out().write(f"  {DIM}\u2502{RESET} 模型  {model}", level="raw", source="cmd")

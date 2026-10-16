@@ -341,7 +341,7 @@ def _wmctrl_windows(pids: list[int]) -> list[_X11Window]:
         parts = line.split(None, 4)
         if len(parts) < 3:
             continue
-        window_id, _desktop, pid_text = parts[0], parts[1], parts[2]
+        window_id, pid_text = parts[0], parts[2]
         try:
             window_pid = int(pid_text)
         except ValueError:

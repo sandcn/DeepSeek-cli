@@ -22,9 +22,12 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
+
+_logger = logging.getLogger(__name__)
 
 _lock = threading.RLock()
 _ABSENT = object()
@@ -47,7 +50,9 @@ class Subcommand:
     hidden: bool = False
 
     def matches(self, args) -> bool:
-        if self.matcher is None:
+        # 无 matcher（仅用于展示的条目）或**无 handler**（无法执行）都不命中：
+        # 后者若命中会在分派处触发 "NoneType object is not callable"。
+        if self.matcher is None or self.handler is None:
             return False
         try:
             return bool(self.matcher(args))
@@ -280,6 +285,12 @@ def register_subcommand(command: Subcommand) -> Callable[[], None]:
         raise TypeError(f"子命令规格非法: {command!r}")
     if not command.name:
         raise ValueError("子命令名必须是非空字符串")
+    if command.matcher is not None and command.handler is None:
+        # 可命中却无可执行体：matches() 对 handler 为空恒返回 False（不参与
+        # 分派），记 warning 便于注册方定位「子命令不生效」的原因。
+        _logger.warning(
+            "子命令 '%s' 只有 matcher 没有 handler，将不会被分派", command.name,
+        )
     with _lock:
         previous = _extension.get(command.name, _ABSENT)
         _extension[command.name] = command

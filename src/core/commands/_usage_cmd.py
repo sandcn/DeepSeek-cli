@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import logging
-import time
 
 from ..adapters.output import get_default_output_port
 from ..constants import CYAN, DIM, RESET
@@ -93,7 +92,7 @@ def build_usage_sections(ctx) -> list:
     """构建用量仪表盘统计区块。"""
     from ..stats import (
         get_per_second_speed,
-        get_session_start_time,
+        get_session_elapsed,
         get_token_stats,
     )
     from ..internal.commands._command_core import compute_cost
@@ -160,7 +159,7 @@ def build_usage_sections(ctx) -> list:
         {
             "title": "会话",
             "rows": [
-                ("时长", _fmt_duration(time.time() - get_session_start_time()), "info", None),
+                ("时长", _fmt_duration(get_session_elapsed()), "info", None),
             ],
         },
     ]

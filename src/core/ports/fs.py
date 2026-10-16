@@ -39,7 +39,8 @@ class FsPort(Protocol):
         """读取二进制内容。"""
         ...
 
-    def write_text(self, path: str, content: str, *, encoding: str = "utf-8") -> None:
+    def write_text(self, path: str, content: str, *, encoding: str = "utf-8",
+                   errors: str = "replace") -> None:
         """写入文本内容（原子写 + 权限继承由 Provider 决定）。"""
         ...
 

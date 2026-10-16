@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import time
 import logging
 from typing import AsyncIterator
 
@@ -450,10 +449,10 @@ def _emit_round_events(session, interrupted: bool, session_id: str | None,
     """发射 round 事件，返回结果字典。
     interrupted 分支中无条件调用 save_checkpoint() 确保中断时持久化状态。
     """
-    from ...stats import get_token_stats, get_session_start_time
+    from ...stats import get_session_elapsed, get_token_stats
 
     current = get_token_stats()
-    elapsed = time.time() - get_session_start_time()
+    elapsed = get_session_elapsed()
     if delta["input"] > 0 or delta["output"] > 0:
         prices = session._config_port.get_token_prices()
         session._emit("cost_update",

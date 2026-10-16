@@ -129,12 +129,12 @@ class SummarizeStrategy(CompressionStrategy):
             on_info(f"正在压缩 {len(to_compress)} 条消息...")
 
         try:
-            start_time = time.time()
+            start_time = time.monotonic()
             summary, usage = summarizer.summarize(
                 msgs_to_compress, has_prior_summary,
                 summarize_fn, model,
             )
-            elapsed = time.time() - start_time
+            elapsed = time.monotonic() - start_time
 
             self._apply_summary(messages, to_compress, summary, on_changed, cache)
             self._report_success(to_compress, chars_before, cache, usage, elapsed, messages, on_info)

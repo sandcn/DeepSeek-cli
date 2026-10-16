@@ -14,6 +14,7 @@ import threading
 
 from ..tui.events.consumers import publish_output
 from ..api.escape_monitor import stop_active_monitor
+from ..kernel.task_refs import spawn_tracked
 
 _logger = logging.getLogger(__name__)
 
@@ -132,6 +133,9 @@ class SignalManager:
         降级到 signal.signal + loop.call_soon_threadsafe。
         在 Termux 下 SIGTERM 设为忽略（Android 进程管理发来的非用户信号）。
         SIGHUP 在所有平台（含 Termux/Cygwin）均注册处理器，实现终端断开时优雅关闭。
+
+        ★ 处理协程统一经 ``spawn_tracked`` 调度（保存强引用）——fire-and-forget
+        任务若无强引用，事件循环空闲时可能被 GC 回收，信号处理会静默丢失。
         """
         if self._registered:
             return
@@ -141,13 +145,19 @@ class SignalManager:
         _sigterm_ok = False
 
         try:
-            loop.add_signal_handler(signal.SIGINT, lambda: asyncio.create_task(self.handle_sigint()))
+            loop.add_signal_handler(
+                signal.SIGINT,
+                lambda: spawn_tracked(loop, self.handle_sigint(), name="signal-sigint"),
+            )
             _sigint_ok = True
         except NotImplementedError:
             pass
 
         try:
-            loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(self.shutdown()))
+            loop.add_signal_handler(
+                signal.SIGTERM,
+                lambda: spawn_tracked(loop, self.shutdown(), name="signal-sigterm"),
+            )
             _sigterm_ok = True
         except NotImplementedError:
             pass
@@ -156,7 +166,9 @@ class SignalManager:
         if not _sigint_ok:
             try:
                 signal.signal(signal.SIGINT, lambda s, f: loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(self.handle_sigint())
+                    lambda: spawn_tracked(
+                        loop, self.handle_sigint(), name="signal-sigint",
+                    )
                 ))
             except (ValueError, RuntimeError):
                 pass
@@ -169,7 +181,9 @@ class SignalManager:
                     signal.signal(signal.SIGTERM, signal.SIG_IGN)
                 else:
                     signal.signal(signal.SIGTERM, lambda s, f: loop.call_soon_threadsafe(
-                        lambda: asyncio.create_task(self.shutdown())
+                        lambda: spawn_tracked(
+                            loop, self.shutdown(), name="signal-sigterm",
+                        )
                     ))
             except (ValueError, RuntimeError):
                 pass
@@ -180,7 +194,9 @@ class SignalManager:
             try:
                 loop.add_signal_handler(
                     signal.SIGHUP,
-                    lambda: asyncio.create_task(self.handle_sighup()),
+                    lambda: spawn_tracked(
+                        loop, self.handle_sighup(), name="signal-sighup",
+                    ),
                 )
                 _sighup_ok = True
             except NotImplementedError:
@@ -192,7 +208,9 @@ class SignalManager:
                     signal.signal(
                         signal.SIGHUP,
                         lambda s, f: loop.call_soon_threadsafe(
-                            lambda: asyncio.create_task(self.handle_sighup())
+                            lambda: spawn_tracked(
+                                loop, self.handle_sighup(), name="signal-sighup",
+                            )
                         ),
                     )
                 except (ValueError, RuntimeError):

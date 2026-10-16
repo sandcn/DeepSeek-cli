@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import warnings
 
 import pytest
 
@@ -112,10 +113,40 @@ def test_cleanup_model_loops_cancels_pending_tasks():
 
     task = loop.create_task(_never())
     task._log_destroy_pending = False  # 抑制 loop 关闭时的 pending 告警
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        ml.cleanup_model_loops()
+    # ★ 修复后语义：pending 任务被 cancel 并**驱动至结束**（不再只置
+    #   ``_must_cancel`` 后被 loop.close() 直接丢弃），任务处于 cancelled 终态。
+    assert task.done() is True
+    assert task.cancelled() is True
+    # 且不再产生「协程从未被 await」告警（旧实现直接 close 会丢弃协程）。
+    assert not any("never awaited" in str(w.message) for w in caught)
+
+
+def test_cleanup_model_loops_drives_started_task_to_finish():
+    """已启动（挂起中）的 pending 任务同样被取消并驱动到结束。"""
+    loop = ml._get_model_loop()
+    events: list[str] = []
+
+    async def _work():
+        events.append("started")
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            events.append("cancelled")
+            raise
+
+    task = loop.create_task(_work())
+    task._log_destroy_pending = False
+    loop.run_until_complete(asyncio.sleep(0))  # 驱动任务进入挂起点
+    assert events == ["started"]
+
     ml.cleanup_model_loops()
-    # Python 3.9：cancel() 置 _must_cancel；loop 随即关闭未再驱动事件循环，
-    # cancelled() 不保证为 True，但取消请求必须已发出。
-    assert task._must_cancel is True
+
+    assert task.cancelled() is True
+    # CancelledError 真正送达协程（证明循环被驱动，而非 close 丢弃任务）
+    assert events == ["started", "cancelled"]
 
 
 def test_atexit_registered():

@@ -157,9 +157,13 @@ class AppService(Service):
         from ..app_init.subcommands import subcommands_for_phase
 
         for command in subcommands_for_phase(phase):
-            if command.matches(args):
-                await command.handler(self, args)
-                return True
+            handler = command.handler
+            # handler 为空（仅声明未实现）或未命中：跳过——直接调用会
+            # 触发 "NoneType object is not callable"。
+            if handler is None or not command.matches(args):
+                continue
+            await handler(self, args)
+            return True
         return False
 
     async def _dump_config(self, args) -> None:

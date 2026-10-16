@@ -238,8 +238,6 @@ async def retry_api_call_async(
             _logger.warning("API 调用出现非重试异常: %s", e, exc_info=True)
             raise
 
-    return ("", "", {"input": 0, "output": 0}, [])
-
 
 async def retry_on_parse_failure_async(
     api_func,

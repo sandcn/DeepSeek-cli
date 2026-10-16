@@ -48,32 +48,55 @@ def _register_model_loop(loop: asyncio.AbstractEventLoop) -> None:
         _model_loop_registry[threading.get_ident()] = loop
 
 
+def _drain_pending_tasks(loop: asyncio.AbstractEventLoop) -> int:
+    """取消并驱动 loop 上的 pending 任务直至结束，返回被取消的任务数。
+
+    ★ 必须驱动：未运行的 loop 直接 ``close()`` 会**丢弃** pending 任务
+    （task 被销毁、协程从未 await、取消请求不生效），表现为
+    ``Task was destroyed but it is pending`` 与
+    ``coroutine ... was never awaited``。运行中的 loop（另一线程持有）
+    只发取消，由其线程推进。
+    """
+    try:
+        pending = [task for task in asyncio.all_tasks(loop=loop) if not task.done()]
+    except RuntimeError:
+        return 0
+    if not pending:
+        return 0
+    for task in pending:
+        task.cancel()
+    if loop.is_running():
+        return len(pending)
+    try:
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+    except (RuntimeError, asyncio.CancelledError):
+        _logger.debug("cleanup_model_loops 等待任务取消完成失败", exc_info=True)
+    return len(pending)
+
+
 def cleanup_model_loops() -> None:
     """关闭所有持久化事件循环。
 
-    使用 asyncio.all_tasks() + loop.stop() 代替直接 close()，
-    避免与 asyncio.run() 的事件循环清理竞争。
-    在各持久化事件循环中安全停止所有任务再关闭。
+    顺序：取消 pending 任务 → （非运行 loop）驱动至取消完成 → 关闭。
+    运行中的 loop 只请求停止（``call_soon_threadsafe(loop.stop)``），
+    由其持有线程自行结束——避免与 ``asyncio.run()`` 的清理竞争。
     """
     with _model_loop_registry_lock:
         for _, loop in list(_model_loop_registry.items()):
             try:
                 if loop.is_closed():
                     continue
-                # 先停止所有 pending 任务
-                try:
-                    pending = asyncio.all_tasks(loop=loop)
-                    for task in pending:
-                        task.cancel()
-                    if not loop.is_closed():
+                _drain_pending_tasks(loop)
+                if loop.is_running():
+                    try:
                         loop.call_soon_threadsafe(loop.stop)
-                except RuntimeError:
-                    pass
-                # 尝试关闭
-                try:
-                    loop.close()
-                except RuntimeError:
-                    pass
+                    except RuntimeError:
+                        pass
+                else:
+                    try:
+                        loop.close()
+                    except RuntimeError:
+                        pass
             except Exception:
                 _logger.debug(
                     "cleanup_model_loops 关闭 loop 异常", exc_info=True,

@@ -192,10 +192,15 @@ async def test_terminals_service(cli_kernel):
 
 
 async def test_sandbox_service_rejects_unsafe_path(cli_kernel):
+    import os
+
     sandbox = cli_kernel.resolve_service("sandbox")
     allowed, _ = sandbox.check_path("/tmp/ok.txt", operation="read")
     assert allowed is True
-    denied, reason = sandbox.check_path("CON", operation="read")
+    # 跨平台危险路径：POSIX 用系统关键文件；Windows 用设备路径前缀。
+    # （DOS 设备名 CON/NUL/PRN 仅 Windows 具有特殊语义，POSIX 上是合法文件名。）
+    unsafe = "/etc/passwd" if os.name != "nt" else "\\\\.\\NUL"
+    denied, reason = sandbox.check_path(unsafe, operation="read")
     assert denied is False
     assert reason
 

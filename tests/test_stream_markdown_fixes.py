@@ -195,7 +195,7 @@ def test_stream_handler_timer_flush(monkeypatch):
 
     h = _H()
     h._MIN_INTERVAL = 0.05
-    h._last_flush_time = time.time()  # 首次必被节流
+    h._last_flush_time = time.monotonic()  # 首次必被节流
     h.buffer("abc", "lbl")
     assert published == []  # 节流命中，未立即发布
     deadline = time.time() + 1.0

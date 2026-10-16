@@ -5,7 +5,7 @@ import logging
 import sys
 import threading
 
-from .defaults import CONFIG_DIR, LOG_FILE, RC_FILE, DEFAULTS, CONFIG_KEYS
+from .defaults import CONFIG_DIR, LOG_FILE, RC_FILE, DEFAULTS, CONFIG_KEYS, PROVIDERS
 from .schema import _validate_rc
 
 

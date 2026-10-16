@@ -341,7 +341,7 @@ class CompactionEngine:
 
         self._emit("started", count=len(region), tokens=region_tokens,
                    detail=f"{start}-{end}")
-        started = time.time()
+        started = time.monotonic()
         try:
             summary_result = summarize_region(
                 head_system, region, self._summarize_fn, self._cm.model,
@@ -356,7 +356,7 @@ class CompactionEngine:
                 )
             removed = list(range(start, end + 1))
             self._cm.apply_replacement(start, end, checkpoint)
-            elapsed = time.time() - started
+            elapsed = time.monotonic() - started
             result = CompactionResult(
                 success=True,
                 trigger=trigger,
@@ -400,7 +400,7 @@ class CompactionEngine:
                 shadowed_tokens=region_tokens,
                 pruned_count=pruned_count,
                 pruned_chars=pruned_chars,
-                elapsed=time.time() - started,
+                elapsed=time.monotonic() - started,
                 stats={"error": error_text, "exception": exc},
             )
 

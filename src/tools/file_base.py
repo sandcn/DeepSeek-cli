@@ -329,7 +329,7 @@ class FileToolBase(Func):
             return f"  {RED}x {output}{RESET}"
 
     async def execute(self, precomputed_content=None) -> str:
-        total_start = time.time()
+        total_start = time.monotonic()
         try:
             # 路径安全校验 + 文件大小检查（在异步上下文中执行，避免构造时阻塞）
             self._validate_path_and_size()
@@ -365,7 +365,7 @@ class FileToolBase(Func):
             _logger.exception("文件操作异常: %s", e)
             return f"({self._success_verb().replace('成功','失败')}: {e})"
         finally:
-            self.stats["total_time"] = time.time() - total_start
+            self.stats["total_time"] = time.monotonic() - total_start
 
     async def display(self) -> str:
         """异步显示文件操作过程并返回结果"""
@@ -392,9 +392,9 @@ class FileToolBase(Func):
         preview_text = await self._show_diff_preview(old_content, new_content, exists, mode_desc)
 
         # 执行写入并测量耗时
-        start_time = time.time()
+        start_time = time.monotonic()
         output = await self.execute(precomputed_content=new_content)
-        elapsed = time.time() - start_time
+        elapsed = time.monotonic() - start_time
 
         # 获取执行结果文本并合并发布
         result_text = self._log_execution_result(output, elapsed)

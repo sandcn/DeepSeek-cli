@@ -157,7 +157,7 @@ async def call_model_summarize_async(
     Returns:
         ``(reasoning_content, content, usage, tool_calls)``。
     """
-    started = time.time()
+    started = time.monotonic()
     reasoning, content, usage, tool_calls = await call_model_async(
         messages,
         model=model,
@@ -187,7 +187,7 @@ async def call_model_summarize_async(
         output_tokens = int((usage or {}).get("output", 0) or 0)
     except (TypeError, ValueError):
         output_tokens = 0
-    elapsed = time.time() - started
+    elapsed = time.monotonic() - started
     if output_tokens > 0 and elapsed > 0:
         record_generation_rate(output_tokens, elapsed)
     return reasoning, content, usage, tool_calls
@@ -212,13 +212,13 @@ async def _call_sync_async(
         tools=tools,
     )
 
-    start_time = time.time()
+    start_time = time.monotonic()
     if getattr(adapter, '_protocol', '') == 'anthropic':
         response = await chat_completions_async_anthropic(
             base_url=adapter._base_url, **kwargs)
     else:
         response = await chat_completions_async(**kwargs)
-    api_duration = time.time() - start_time
+    api_duration = time.monotonic() - start_time
 
     if await is_interrupted_async():
         return "", "(已中断)", {"input": 0, "output": 0}, []
@@ -255,9 +255,9 @@ async def _call_sync_async(
 
     parse_elapsed = 0.0
     if tool_calls:
-        parse_start = time.time()
+        parse_start = time.monotonic()
         total_args = json.dumps([tc.get("arguments", {}) for tc in tool_calls])
-        parse_elapsed = time.time() - parse_start
+        parse_elapsed = time.monotonic() - parse_start
         parse_tokens = estimate_tokens(total_args)
         name_str = (
             ",".join(tc.get("name", "") for tc in tool_calls if tc.get("name"))

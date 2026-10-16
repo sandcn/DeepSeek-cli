@@ -103,7 +103,10 @@ class CommandPluginRegistry:
         self._plugins: dict[str, CommandPlugin] = {}  # name → plugin
         self._alias_map: dict[str, str] = {}  # alias → name
         self._groups: dict[str, list[str]] = {}  # group → [names]
-        self._interactive_plugins: dict[str, InteractiveCommandPlugin] = {}  # InteractiveCommandPlugin: name → plugin
+        #: 交互式命令插件（name → plugin）。元素类型用 ``Any``：commands.base ↔
+        #: commands.plugins.base 互依，跨模块导入（含 TYPE_CHECKING）会形成
+        #: import 环，被架构守卫（tests/test_architecture_layering.py）禁止。
+        self._interactive_plugins: dict[str, Any] = {}
         #: 曾注册过的插件快照（注册不清除）——命令服务卸载注销后，
         #: 全局注册表可据此按需恢复，避免「模块已导入但注册表被清空」。
         self._known_plugins: dict[str, CommandPlugin] = {}
@@ -152,7 +155,7 @@ class CommandPluginRegistry:
 
         _logger.debug("命令插件已注册: %s", name)
 
-    def register_interactive(self, plugin: InteractiveCommandPlugin) -> None:
+    def register_interactive(self, plugin: Any) -> None:
         """注册交互式命令插件（委托 register 处理）"""
         self.register(plugin)
 

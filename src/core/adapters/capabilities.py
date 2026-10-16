@@ -54,10 +54,11 @@ class LocalFsProvider:
         with open(path, "rb") as handle:
             return handle.read()
 
-    def write_text(self, path: str, content: str, *, encoding: str = "utf-8") -> None:
+    def write_text(self, path: str, content: str, *, encoding: str = "utf-8",
+                   errors: str = "replace") -> None:
         from ...tools.file_ops import _atomic_write_local
 
-        _atomic_write_local(path, content, encoding, "replace")
+        _atomic_write_local(path, content, encoding, errors)
 
     def write_bytes(self, path: str, data: bytes) -> None:
         directory = os.path.dirname(os.path.abspath(path))

@@ -195,7 +195,12 @@ class StdioTransport(_BaseTransport):
         self._stderr_task = asyncio.ensure_future(self._stderr_loop())
 
     async def _read_loop(self) -> None:
-        assert self._proc is not None and self._proc.stdout is not None
+        # 显式校验（assert 在 python -O 下会被剥离）：spawn() 之后 _proc 必存在。
+        if self._proc is None or self._proc.stdout is None:
+            _logger.warning(
+                "MCP(stdio:%s) 读循环启动失败：子进程管道未就绪", self._cfg.name,
+            )
+            return
         stdout = self._proc.stdout
         try:
             while True:
@@ -220,7 +225,12 @@ class StdioTransport(_BaseTransport):
             self._fail_pending(f"MCP server '{self._cfg.name}' 连接已关闭")
 
     async def _stderr_loop(self) -> None:
-        assert self._proc is not None and self._proc.stderr is not None
+        # 显式校验（assert 在 python -O 下会被剥离）。
+        if self._proc is None or self._proc.stderr is None:
+            _logger.debug(
+                "MCP(stdio:%s) 日志循环启动失败：子进程管道未就绪", self._cfg.name,
+            )
+            return
         stderr = self._proc.stderr
         try:
             while True:

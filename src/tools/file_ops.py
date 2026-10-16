@@ -38,9 +38,12 @@ def validate_path_security(path):
         raise ValueError(f"不允许写入系统关键文件: {check_path}")
 
     basename = os.path.basename(check_path)
-    stem = basename.split(".")[0].upper() if "." in basename else basename.upper()
-    if stem in dos_device_names():
-        raise ValueError(f"不允许写入 DOS 设备名: {check_path}")
+    # DOS 设备名（CON/PRN/NUL/COM1…）只对 Windows 具有特殊语义；POSIX 上
+    # 它们是合法普通文件名，不能误伤（修复前无条件拒绝）。
+    if os.name == "nt":
+        stem = basename.split(".")[0].upper() if "." in basename else basename.upper()
+        if stem in dos_device_names():
+            raise ValueError(f"不允许写入 DOS 设备名: {check_path}")
     if ":" in basename and os.name == "nt":
         # Windows 上冒号是 NTFS ADS 流语法（"file:stream"）——整体拒绝；
         # POSIX 允许冒号文件名，仅拒绝 $ 流/多冒号形态（下行）
@@ -142,7 +145,9 @@ def atomic_write_file(path, content, encoding='utf-8', errors='replace'):
     """
     service = _fs_service()
     if service is not None:
-        service.write_text(path, content, encoding=encoding)
+        # errors 一并透传：与本地回退路径（_atomic_write_local）行为一致，
+        # 避免经能力接缝写入时「调用方 errors 被静默丢弃」。
+        service.write_text(path, content, encoding=encoding, errors=errors)
         lines_count = content.count('\n') + (1 if content and not content.endswith('\n') else 0)
         return lines_count, len(content.encode(encoding))
     return _atomic_write_local(path, content, encoding, errors)

@@ -64,7 +64,7 @@ class _TokenSpeedTracker:
         if size <= 0:
             return
         with self._lock:
-            now = time.time()
+            now = time.monotonic()
             self._total_tokens += size
             if self._start_time is None:
                 self._start_time = now
@@ -102,7 +102,7 @@ class _TokenSpeedTracker:
         if not math.isfinite(seconds) or seconds < 0:
             seconds = 0.0
         with self._lock:
-            now = time.time()
+            now = time.monotonic()
             self._total_tokens += size
             if self._start_time is None:
                 # 首批即为批量生成：起始时间回填到生成起点，平均速率不失真。
@@ -134,7 +134,7 @@ class _TokenSpeedTracker:
                 new_total = 0
             if size == 0:
                 return
-            now = time.time()
+            now = time.monotonic()
             self._total_tokens = new_total
             if self._start_time is None and size > 0:
                 self._start_time = now
@@ -143,7 +143,7 @@ class _TokenSpeedTracker:
     def _prune_window(self, now: float | None = None) -> None:
         """清理窗口：移除超出时间范围的旧记录。"""
         if now is None:
-            now = time.time()
+            now = time.monotonic()
         cutoff = now - self._window_seconds
         while self._window and self._window[0][0] < cutoff:
             self._window.popleft()
@@ -163,7 +163,7 @@ class _TokenSpeedTracker:
         with self._lock:
             if self._start_time is None or self._total_tokens == 0:
                 return 0.0
-            elapsed = time.time() - self._start_time
+            elapsed = time.monotonic() - self._start_time
             if elapsed <= 0:
                 return 0.0
             return self._total_tokens / elapsed
@@ -174,7 +174,7 @@ class _TokenSpeedTracker:
 
         窗口内无数据时返回 0.0。
         """
-        now = time.time()
+        now = time.monotonic()
         with self._lock:
             self._prune_window(now)
             if not self._window:
@@ -192,7 +192,7 @@ class _TokenSpeedTracker:
         只读遍历 _window，不修改窗口数据，不影响 window_speed 的 5 秒窗口。
         窗口内无数据时返回 0.0。
         """
-        now = time.time()
+        now = time.monotonic()
         cutoff = now - 1.0
         with self._lock:
             if not self._window:
@@ -240,7 +240,7 @@ class _TokenSpeedTracker:
         一个采样间隔（虚高）或随窗口滑走（归零），状态栏「tok/s」看不到这次
         生成的速率。
         """
-        now = time.time()
+        now = time.monotonic()
         with self._lock:
             return self._per_second_speed_locked(now)
 
@@ -305,7 +305,7 @@ class _TokenSpeedTracker:
         with self._lock:
             # total_after 取**当前**总 tok：其后无新 token 时速率回退有效
             # （``_batch_rate_locked`` 校验 total 相等），有新 token 自动失效。
-            self._last_batch = (time.time(), size_int, seconds, self._total_tokens)
+            self._last_batch = (time.monotonic(), size_int, seconds, self._total_tokens)
 
     def _batch_rate_locked(self, now: float) -> float:
         """最近一次批量生成的真实平均速率（tok/s）；不可用返回 0.0。
@@ -329,7 +329,7 @@ class _TokenSpeedTracker:
         with self._lock:
             total = self._total_tokens
             start = self._start_time
-            now = time.time()
+            now = time.monotonic()
             self._prune_window(now)
             window_tokens = max(0, sum(c for _, c in self._window))
             window_elapsed = now - self._window[0][0] if self._window else 0.0

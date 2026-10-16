@@ -111,16 +111,16 @@ class ObservabilityFacade(ObservabilityPort):
     # ── 生命周期 ────────────────────────────────────────
 
     def start(self) -> None:
-        """记录启动时间"""
+        """记录启动时间（单调时钟：运行时长不受系统时间调整影响）"""
         import time
-        self._start_time = time.time()
+        self._start_time = time.monotonic()
 
     def uptime(self) -> float:
         """获取运行时长（秒）"""
         import time
         if self._start_time == 0:
             return 0.0
-        return time.time() - self._start_time
+        return max(0.0, time.monotonic() - self._start_time)
 
     # ── 报告 ────────────────────────────────────────────
 

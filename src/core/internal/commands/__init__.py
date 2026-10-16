@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 from ._command_core import *
-from ._command_core import _commands  # noqa: F401 — _ 前缀，显式导入
+from ._command_core import (  # noqa: F401 — 下划线名不被星号导入覆盖，须显式导入
+    _cmd_help,
+    _commands,
+    _format_cost_duration,
+    _pop_assistant_tool_messages,
+)
 
 __all__ = [
     # _command_core

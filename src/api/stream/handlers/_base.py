@@ -83,7 +83,9 @@ class StreamChunkHandler(ABC):
             if not self._chunk_buffer:
                 return
             if not force:
-                now = time.time()
+                # 时间门控用单调时钟：墙钟跳变（NTP 校时）会让门控误判，
+                # 导致缓冲被过早/过晚 flush。
+                now = time.monotonic()
                 elapsed = now - self._last_flush_time
                 if elapsed < self._MIN_INTERVAL:
                     # ★ 定时器兜底：剩余时间后强制 flush（不丢缓冲）

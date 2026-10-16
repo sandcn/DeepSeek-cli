@@ -49,7 +49,10 @@ class PipelineContext:
       供 session._emit_round_events 检查以保存 checkpoint。
     """
 
-    agent: "Agent"
+    #: 所属 Agent。类型用 ``Any`` 而非 ``Agent``：agent ↔ pipeline 天然互依，
+    #: 任何形式的跨模块导入（含 ``TYPE_CHECKING``）都会形成 import 环，被架构
+    #: 守卫（tests/test_architecture_layering.py）禁止。
+    agent: Any
     interrupted: bool = False
     round_complete: bool = False
 

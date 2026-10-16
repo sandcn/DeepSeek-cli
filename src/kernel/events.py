@@ -22,6 +22,8 @@ import logging
 from collections import defaultdict
 from typing import Any, Callable
 
+from .task_refs import spawn_tracked
+
 _logger = logging.getLogger(__name__)
 
 Listener = Callable[..., Any]
@@ -139,7 +141,9 @@ class EventBus:
                 result = handler(*args)
                 if inspect.isawaitable(result):
                     if loop is not None:
-                        loop.create_task(_await_quietly(result))
+                        # 强引用跟踪：fire-and-forget 任务若无强引用，事件循环
+                        # 空闲时可能被 GC 回收（任务静默消失、无任何报错）。
+                        spawn_tracked(loop, _await_quietly(result))
                     else:
                         _logger.debug(
                             "emit(%s): 无运行事件循环，跳过协程监听器 %s",

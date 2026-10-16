@@ -11,6 +11,7 @@ class _Stats:
         "_lock",
         "token_stats",
         "session_start_time",
+        "session_start_monotonic",
         "last_tool_parse_elapsed",
         "last_stream_speed",
     )
@@ -31,6 +32,10 @@ class _Stats:
             "input_cache_miss": 0,
         }
         self.session_start_time = time.time()
+        # ★ 会话起点（单调时钟）：会话**耗时**的唯一来源——墙钟可能被 NTP
+        #   校时/手工调整而跳变（甚至回退），使「时长」出现负值或突变。
+        #   ``session_start_time``（墙钟 epoch）保留给需要绝对时间的消费方。
+        self.session_start_monotonic = time.monotonic()
 
         # ── 上次工具调用解析耗时（供 agent 侧显示用）───────
         self.last_tool_parse_elapsed = 0.0
@@ -91,8 +96,13 @@ _stats = _Stats()
 
 # ── 模块级读取接口（从 _stats 实例实时读取）──────────────
 def get_session_start_time():
-    """返回会话开始时间（从 _stats 实例实时读取）。"""
+    """返回会话开始时间（墙钟 epoch；从 _stats 实例实时读取）。"""
     return _stats.session_start_time
+
+
+def get_session_elapsed() -> float:
+    """返回会话已运行秒数（单调时钟，不受系统时间调整影响）。"""
+    return max(0.0, time.monotonic() - _stats.session_start_monotonic)
 
 
 def get_token_stats():
@@ -146,6 +156,7 @@ def reset_stats() -> None:
             "input_cache_miss": 0,
         }
         _stats.session_start_time = time.time()
+        _stats.session_start_monotonic = time.monotonic()
 
 
 # ── 模块级函数（向后兼容委托）─────────────────────────────

@@ -130,27 +130,41 @@ class EmptyResponseError(APIError):
 # 「一切皆插件」：提示文案上移为表现层数据注册表（``presentation_data`` →
 # ``http_error_hint`` 表），可按 Patch/Overlay 覆盖或禁用；此处为兜底快照。
 
+# ★ 键统一为 **str**（``str(status_code)``）：查询侧固定用 ``str(status_code)``，
+#   兜底快照若用 int 键会在「数据注册表不可用」时全部落空（提示静默丢失）。
 _STATUS_HINTS = {
-    400: "请求参数不合法",
-    401: "API 密钥无效或未设置，请在 /models 模型档案中检查 API 密钥",
-    403: "API 密钥无权访问（可能欠费或权限不足）",
-    404: "接口地址或模型不存在，请检查 BASE_URL 与模型名",
-    408: "请求超时",
-    422: "请求参数验证失败（如消息历史中 tool_calls 与 tool 响应不配对）",
-    425: "请求过早，请稍后重试",
-    429: "请求频率超限或额度不足",
-    500: "服务端内部错误",
-    502: "网关错误（上游服务不可用）",
-    503: "服务暂时不可用（过载或维护中）",
-    504: "网关超时",
+    "400": "请求参数不合法",
+    "401": "API 密钥无效或未设置，请在 /models 模型档案中检查 API 密钥",
+    "403": "API 密钥无权访问（可能欠费或权限不足）",
+    "404": "接口地址或模型不存在，请检查 BASE_URL 与模型名",
+    "408": "请求超时",
+    "422": "请求参数验证失败（如消息历史中 tool_calls 与 tool 响应不配对）",
+    "425": "请求过早，请稍后重试",
+    "429": "请求频率超限或额度不足",
+    "500": "服务端内部错误",
+    "502": "网关错误（上游服务不可用）",
+    "503": "服务暂时不可用（过载或维护中）",
+    "504": "网关超时",
 }
 
 
 def _status_hints() -> dict:
-    """当前状态码提示表（数据注册表优先，缺席时回退兜底快照）。"""
+    """当前状态码提示表（数据注册表优先，缺席时回退兜底快照）。
+
+    键一律归一化为 **str**：数据注册表（``presentation_data``）声明 str 键，
+    兜底快照同为 str 键；异常表（含扩展插件注册的 int 键表）也在此统一转换，
+    保证查询侧 ``str(status_code)`` 恒能命中——修复前兜底快照用 int 键，
+    数据注册表不可用时所有 HTTP 错误提示静默消失。
+    """
     from ..presentation_data import http_error_hints
 
-    return http_error_hints() or _STATUS_HINTS
+    table = http_error_hints() or _STATUS_HINTS
+    try:
+        if any(not isinstance(key, str) for key in table):
+            return {str(key): value for key, value in table.items()}
+        return dict(table)
+    except Exception:
+        return dict(_STATUS_HINTS)
 
 
 def classify_http_error(status_code: int, message: str, *, retry_after=None) -> APIError:

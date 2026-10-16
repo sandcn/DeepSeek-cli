@@ -11,6 +11,7 @@
 
 from ._stats_core import (
     _Stats,
+    get_session_elapsed,
     get_session_start_time,
     get_token_stats,
     get_last_tool_parse_elapsed,
@@ -48,6 +49,7 @@ from ._stream_lifecycle import (
 __all__ = [
     "_Stats",
     "_TokenSpeedTracker",
+    "get_session_elapsed",
     "get_session_start_time",
     "get_token_stats",
     "get_last_tool_parse_elapsed",

@@ -60,7 +60,8 @@ class MetricsCollector:
         self._counters: dict[str, int] = defaultdict(int)
         self._gauges: dict[str, float] = {}
         self._histograms: dict[str, list[float]] = defaultdict(list)
-        self._start_time = time.time()
+        # 运行时长基准用单调时钟（墙钟跳变会让 uptime 出现负值/突变）
+        self._start_time = time.monotonic()
 
     # ── 计数器 ──────────────────────────────────────────
 
@@ -211,7 +212,7 @@ class MetricsCollector:
                 self._histograms.clear()
 
         return {
-            "uptime_seconds": time.time() - self._start_time,
+            "uptime_seconds": max(0.0, time.monotonic() - self._start_time),
             "counters": counters,
             "gauges": gauges,
             "histograms": histograms,

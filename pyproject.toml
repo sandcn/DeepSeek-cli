@@ -43,7 +43,10 @@ show_missing = true
 
 [tool.ruff]
 line-length = 120
-target-version = "py313"
+# 与 requires-python（>=3.9）对齐：静态建议不得引入 3.10+ 才支持的语法
+# （如运行期求值的 PEP 604 ``X | Y`` 注解、``match`` 语句），否则会建议出
+# 在 3.9 上运行即崩的改写。
+target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
@@ -54,6 +57,12 @@ quote-style = "double"
 indent-width = 4
 
 [tool.mypy]
+# ★ 保持 3.13（与 requires-python >=3.9 有意不一致）：项目运行期兼容 3.9
+#   （``src/_compat`` 提供 slots/注解兼容），但 mypy 在 3.9 模式下会把
+#   ``from __future__ import annotations`` 下的联合注解与 ``dataclass_transform``
+#   大量误报（实测 ``src/tui``：1281 → 2948 条），反而掩盖真实问题。
+#   运行期 3.9 兼容性由在 3.9.16 上执行的全量测试保障；ruff 的
+#   ``target-version`` 则已对齐 py39（见 [tool.ruff]），避免建议出 3.10+ 语法。
 python_version = "3.13"
 strict = false
 ignore_missing_imports = true

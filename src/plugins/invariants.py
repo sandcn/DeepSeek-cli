@@ -21,6 +21,7 @@ import logging
 
 from ..kernel import Service, plugin
 from ..kernel.invariants import InvariantRegistry
+from ..kernel.task_refs import spawn_tracked
 
 _logger = logging.getLogger(__name__)
 
@@ -75,7 +76,9 @@ class InvariantsService(Service):
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(self._deferred_startup_check())
+        # 强引用跟踪：延迟自检任务若无强引用，事件循环空闲时可能被 GC 回收
+        # （自检静默不执行、无任何报错）。
+        spawn_tracked(loop, self._deferred_startup_check(), name="invariants-startup-check")
 
     async def _deferred_startup_check(self) -> None:
         import asyncio

@@ -291,11 +291,14 @@ async def test_file_not_exists(tmp_path):
 
 
 async def test_dangerous_path_rejected():
-    # 用跨平台 DOS 设备名（basename 大写匹配 DOS_DEVICE_NAMES），
-    # 避免 /dev/null 在 Windows 下被 realpath 归一化后不再命中，
-    # 也避免 NUL 被 realpath 重写为 \\.\NUL 导致 basename 为空。
+    # 跨平台危险路径：POSIX 用系统关键文件；Windows 用设备路径前缀。
+    # （DOS 设备名 CON/NUL 只在 Windows 上是特殊名，POSIX 上是合法文件名，
+    #   因此不再适合作为跨平台用例。）
+    import os
+
+    unsafe = "/etc/passwd" if os.name != "nt" else "\\\\.\\NUL"
     with pytest.raises(ValueError):
-        ReadImageFunc(path="CON")
+        ReadImageFunc(path=unsafe)
 
 
 async def test_missing_path_raises():
