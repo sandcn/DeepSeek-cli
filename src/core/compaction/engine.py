@@ -328,11 +328,6 @@ class CompactionEngine:
 
         region = list(messages[start:end + 1])
         region_tokens = sum(self._tokens_of(i) for i in range(start, end + 1))
-        # 回放前缀：顶部系统提词（可能多个 parts）。
-        head_system = [
-            m for m in messages[:start]
-            if isinstance(m, dict) and m.get("role") == "system"
-        ]
         has_prior = any(is_checkpoint_message(m) for m in region)
         # ★ 未结束的后台任务清单注入摘要提词：压缩会折叠「启动任务」那轮
         #   消息，清单保证 bg-xxx / sa-xxx 的 task_id 一定被保留在检查点，
@@ -343,8 +338,11 @@ class CompactionEngine:
                    detail=f"{start}-{end}")
         started = time.monotonic()
         try:
+            # ★ 不回放系统提词（用户需求：全量上下文压缩时系统提词不要压缩）：
+            #   摘要请求只含被遮蔽区域 + 压缩指令；系统提词不属于被压缩的
+            #   内容，压缩后仍原样保留在消息列表头部。
             summary_result = summarize_region(
-                head_system, region, self._summarize_fn, self._cm.model,
+                region, self._summarize_fn, self._cm.model,
                 max_tokens=0, has_prior=has_prior, pending_jobs=pending_jobs,
             )
             summary = summary_result.summary

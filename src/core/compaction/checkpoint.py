@@ -4,8 +4,9 @@
 八段 Markdown 检查点；返回的纯文本被 ``<compacted-summary>`` 标签框定，
 并前置一段「这是既有背景、请直接续接」的导言，作为替换历史的消息。
 
-指令作为最后一条 user 消息（而非独立 system 提词）意味着回放的历史 +
-系统提词 + 工具声明构成真正的前缀，提供方 KV 缓存得以复用。
+指令作为最后一条 user 消息（而非独立 system 提词）交付给摘要模型；回放的
+只有被遮蔽区域的对话消息——**顶部系统提词不回放**（系统提词不参与压缩，
+压缩后仍原样保留在消息列表头部），检查点也不得复述系统提词的内容。
 """
 
 from __future__ import annotations
@@ -69,6 +70,9 @@ COMPACTION_INSTRUCTION = "\n".join([
     "the next model can keep managing it; never paraphrase, shorten, or drop these ids, "
     "and never invent ids for jobs that already completed.",
     "- Do NOT mention this summarization request or that the context was compacted.",
+    "- The system prompt is NOT part of the conversation and is NOT being condensed: never "
+    "restate, quote, summarize, or carry over its instructions, persona, or tool descriptions "
+    "into the checkpoint — it stays in effect on its own. Capture only the conversation above.",
     "- Output only the checkpoint text: do not call any tool or take any other action.",
     f"- If the conversation already contains a {SUMMARY_OPEN_TAG} block, it is a PRIOR "
     "checkpoint. Do not copy it forward verbatim: preserve still-true facts, drop stale "

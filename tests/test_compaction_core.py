@@ -308,16 +308,15 @@ def test_summarize_region_returns_summary():
         return ("", "## Primary Request and Intent\n- do it", {"input": 10, "output": 5}, [])
 
     result = summarize_region(
-        [{"role": "system", "content": "sys"}],
         [{"role": "user", "content": "hi"}],
         fake_summarize,
         "m",
     )
     assert result.summary.startswith("## Primary Request")
     assert captured["model"] == "m"
-    # 回放前缀 + 区域消息 + 压缩指令
+    # 被遮蔽区域消息 + 压缩指令（★ 不回放系统提词）
     assert captured["messages"][-1]["content"].startswith("You are now acting as a compaction engine")
-    assert captured["messages"][0]["role"] == "system"
+    assert captured["messages"][0] == {"role": "user", "content": "hi"}
 
 
 def test_summarize_region_rejects_empty_output():
@@ -325,9 +324,9 @@ def test_summarize_region_rejects_empty_output():
         return ("", "   ", {}, [])
 
     with pytest.raises(SummaryError):
-        summarize_region([], [{"role": "user", "content": "hi"}], fake_summarize, "m")
+        summarize_region([{"role": "user", "content": "hi"}], fake_summarize, "m")
 
 
 def test_summarize_region_rejects_no_region():
     with pytest.raises(SummaryError):
-        summarize_region([], [], lambda *a, **k: ("", "", {}, []), "m")
+        summarize_region([], lambda *a, **k: ("", "", {}, []), "m")

@@ -35,7 +35,6 @@ def test_compaction_instruction_pending_jobs_mentions_task_ids():
 
 def test_build_summarization_messages_instruction_mentions_task_ids():
     messages = build_summarization_messages(
-        [{"role": "system", "content": "sys"}],
         [{"role": "user", "content": "started a background task"}],
     )
     instruction = messages[-1]["content"]
@@ -99,7 +98,6 @@ def test_running_background_jobs_empty_without_tables():
 
 def test_build_summarization_messages_injects_pending_job_ids():
     messages = build_summarization_messages(
-        [],
         [{"role": "user", "content": "hi"}],
         pending_jobs=[
             {"task_id": "bg-1234567890ab", "kind": "bash", "detail": "", "status": "running"},
@@ -118,7 +116,7 @@ def test_build_summarization_messages_injects_pending_job_ids():
 
 def test_build_summarization_messages_no_section_without_jobs():
     messages = build_summarization_messages(
-        [], [{"role": "user", "content": "hi"}], pending_jobs=[],
+        [{"role": "user", "content": "hi"}], pending_jobs=[],
     )
     assert "## Live Background Jobs" not in messages[-1]["content"]
 
@@ -131,7 +129,6 @@ def test_summarize_region_forwards_pending_jobs():
         return ("", "## Primary Request and Intent\n- x", {}, [])
 
     summarize_region(
-        [{"role": "system", "content": "sys"}],
         [{"role": "user", "content": "hi"}],
         fake_summarize,
         "m",

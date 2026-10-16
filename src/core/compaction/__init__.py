@@ -5,7 +5,7 @@
 - ``types``       —— 结果类型、触发来源、手动失败分类（对应 dsh ``compaction/types``）
 - ``config``      —— 阈值/保留策略解析（对应 dsh ``compaction-basic/config``）
 - ``checkpoint``  —— 结构化检查点指令与框定（对应 dsh ``compaction-basic/summarizer``）
-- ``summarizer``  —— 一次性摘要调用（回放前缀 + 压缩指令）
+- ``summarizer``  —— 一次性摘要调用（被遮蔽区域回放 + 压缩指令；系统提词不回放）
 - ``region``      —— 保留尾部范围选择与工具配对平衡边界（对应 ``compaction-basic/region``）
 - ``pruner``      —— 无模型的工具结果头/中/尾剪枝（对应 ``compaction-tool-result-pruner``）
 - ``events``      —— 压缩过程的显示事件发布（TUI 显示）

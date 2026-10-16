@@ -1,8 +1,12 @@
-"""一次性摘要调用 — 对齐 dsh ``compaction-basic/summarizer`` 的回放与框定。
+"""一次性摘要调用 — 对齐 dsh ``compaction-basic/summarizer`` 的框定。
 
-摘要请求把「系统提词 + 被遮蔽区域消息」按原顺序回放，末尾追加压缩指令
-作为最后一条 user 消息；这样辅助调用是会话最后一个已路由请求的真实前缀，
-提供方的热前缀 KV 缓存得以复用，只有尾随指令与摘要输出未缓存。
+摘要请求按原顺序回放「被遮蔽区域的消息」，末尾追加压缩指令作为最后一条
+user 消息。
+
+★ 顶部系统提词**不回放**（用户需求：「全量上下文压缩时系统提词不要压缩」）
+——系统提词不属于要压缩的对话，压缩后仍原样保留在消息列表头部；把它一并发
+给摘要模型只会诱导模型把系统提词内容复述进检查点（系统提词被「压缩」进摘要、
+与头部原文重复）。
 
 只接受文本摘要；空内容或图片输出一律失败。
 
@@ -91,16 +95,20 @@ def _format_pending_jobs(pending_jobs) -> str:
     ])
 
 
-def build_summarization_messages(head_messages: list, region_messages: list,
+def build_summarization_messages(region_messages: list,
                                  prior_hint: str = "",
                                  pending_jobs=None) -> list:
-    """构建摘要调用的消息序列（回放前缀 + 压缩指令）。
+    """构建摘要调用的消息序列（被遮蔽区域消息 + 压缩指令）。
+
+    ★ 不回放顶部系统提词：摘要请求只含被遮蔽区域的对话消息与压缩指令，
+    系统提词不属于要压缩的对话（压缩后仍原样保留在消息列表头部），发送给
+    摘要模型会诱导其把系统提词内容复述进检查点。
 
     pending_jobs: 仍未结束的后台任务清单（可选）——追加到压缩指令尾部，
         确保这些 task_id 逐字保留在检查点里。
     """
     messages: list = []
-    for message in list(head_messages or ()) + list(region_messages or ()):
+    for message in list(region_messages or ()):
         if isinstance(message, dict):
             messages.append(message)
     instruction = COMPACTION_INSTRUCTION
@@ -114,7 +122,6 @@ def build_summarization_messages(head_messages: list, region_messages: list,
 
 
 def summarize_region(
-    head_messages: list,
     region_messages: list,
     summarize_fn,
     model: str,
@@ -125,8 +132,7 @@ def summarize_region(
     """调用模型生成结构化检查点文本。
 
     Args:
-        head_messages: 系统提词消息（回放前缀）。
-        region_messages: 被遮蔽区域的历史消息。
+        region_messages: 被遮蔽区域的历史消息（系统提词不回放、不参与压缩）。
         summarize_fn: 摘要调用函数，签名 ``(messages, model=) -> (reasoning, content, usage, tool_calls)``。
         model: 模型名称。
         max_tokens: 摘要输出上限（0 表示不限制；当前 summarize_fn 不接受该参数时忽略）。
@@ -149,7 +155,7 @@ def summarize_region(
         if has_prior else ""
     )
     messages = build_summarization_messages(
-        head_messages, region_messages, prior_hint, pending_jobs=pending_jobs,
+        region_messages, prior_hint, pending_jobs=pending_jobs,
     )
 
     _reasoning, content, usage, _tool_calls = _invoke_summarize(
