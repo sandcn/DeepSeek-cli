@@ -286,3 +286,112 @@ def test_capture_window_pixels_virtualizes_blank_fallback(monkeypatch):
     assert (out_width, out_height) == (width, height)
     assert data == b"fallback"
     assert calls == [(3, 3, 6, 6)]
+
+
+# ── 硬件加速窗口（DWM 表面铺满）不做 DPI 虚拟化放大 ────────
+#
+# 缺陷背景：硬件加速窗口（D3D / OpenGL 游戏画面）经 ``PW_RENDERFULLCONTENT``
+# 拿到的是 DWM 合成后的表面——它**铺满整幅位图且本身就是物理像素**。旧实现
+# 只看 DPI 比例就把左上角约 1/scale 的区域拉满整幅，结果是「内容完整却缺掉
+# 右边 / 下边一条」。修复：放大前先判定逻辑区域之外是否整片未渲染。
+
+
+def _filled_with_variation(width: int, height: int) -> bytes:
+    """整幅位图都有内容（模拟硬件加速窗口的 DWM 表面，且非单色空白）。"""
+    data = bytearray(width * height * 4)
+    for y in range(height):
+        for x in range(width):
+            offset = (y * width + x) * 4
+            data[offset:offset + 4] = bytes(
+                [(x * 7) % 256, (y * 11) % 256, 200, 255])
+    return bytes(data)
+
+
+def test_unrendered_outside_source_true_when_only_top_left_rendered():
+    """只有左上逻辑区域有内容（其余为零值）→ 需要放大。"""
+    width, height = 8, 8
+    data = _with_block(width, height, 4, 4, b"\xff\x00\x00\xff")
+    assert win_mod._unrendered_outside_source(data, width, height, 4, 4) is True
+
+
+def test_unrendered_outside_source_false_when_content_fills_bitmap():
+    """整幅位图都有内容（DWM 表面）→ 不该放大。"""
+    width, height = 8, 8
+    assert win_mod._unrendered_outside_source(
+        _filled_with_variation(width, height), width, height, 4, 4) is False
+
+
+def test_unrendered_outside_source_false_when_right_strip_rendered():
+    """右条带有内容 → 已铺满，保守判定为不放大。"""
+    width, height = 8, 8
+    data = bytearray(_bgra(width, height))
+    for y in range(4):
+        offset = (y * width + (width - 1)) * 4
+        data[offset:offset + 4] = b"\x01\x02\x03\xff"
+    assert win_mod._unrendered_outside_source(
+        bytes(data), width, height, 4, 4) is False
+
+
+def test_unrendered_outside_source_false_when_bottom_strip_rendered():
+    """底部条带有内容 → 已铺满，保守判定为不放大。"""
+    width, height = 8, 8
+    data = bytearray(_bgra(width, height))
+    for x in range(width):
+        offset = ((height - 1) * width + x) * 4
+        data[offset:offset + 4] = b"\x01\x02\x03\xff"
+    assert win_mod._unrendered_outside_source(
+        bytes(data), width, height, 4, 4) is False
+
+
+def test_unrendered_outside_source_false_when_source_covers_bitmap():
+    """逻辑区域即整幅位图时无需放大（比例退化情形）。"""
+    width, height = 8, 8
+    assert win_mod._unrendered_outside_source(
+        _bgra(width, height), width, height, width, height) is False
+
+
+def test_unrendered_outside_source_handles_short_data():
+    """像素数据长度异常时按「不放大」保守处理，不抛异常。"""
+    assert win_mod._unrendered_outside_source(b"\x00" * 8, 8, 8, 4, 4) is False
+
+
+def test_devirtualize_keeps_full_content_untouched(monkeypatch):
+    """内容铺满整幅位图（硬件加速窗口）时不缩放，原样返回像素数据。"""
+    width, height = 8, 8
+    data = _filled_with_variation(width, height)
+    calls: list = []
+    monkeypatch.setattr(win_mod, "_stretch_bgra_gdi",
+                        lambda *args, **kwargs: calls.append(1))
+    assert win_mod._devirtualize(data, width, height, 2.0, 2.0) is data
+    assert calls == [], "内容已铺满时不得调用 StretchBlt"
+
+
+def test_devirtualize_still_stretches_top_left_only_content(monkeypatch):
+    """仍只在「左上角有内容、其余未渲染」时放大（既有行为不回归）。"""
+    width, height = 8, 8
+    source = _with_block(width, height, 4, 4, b"\xff\xff\xff\xff")
+    captured: dict = {}
+
+    def fake_gdi(bgra, w, h, region, dst_w, dst_h):
+        captured["region"] = (region.width, region.height)
+        return b"stretched"
+
+    monkeypatch.setattr(win_mod, "_stretch_bgra_gdi", fake_gdi)
+    assert win_mod._devirtualize(source, width, height, 2.0, 2.0) == b"stretched"
+    assert captured["region"] == (4, 4)
+
+
+def test_capture_window_pixels_keeps_full_content_on_window_dc_path(monkeypatch):
+    """窗口 DC 路径拿到铺满内容（物理像素）时不再按 DPI 比例放大。"""
+    width, height = 8, 6
+    raw = _filled_with_variation(width, height)
+    monkeypatch.setattr(winapi, "window_virtualization_scale",
+                        lambda _hwnd: (2.0, 2.0))
+    monkeypatch.setattr(win_mod, "_capture_window",
+                        lambda *args, **kwargs: raw)
+    monkeypatch.setattr(win_mod, "_stretch_bgra_gdi",
+                        lambda *args, **kwargs: b"stretched")
+    data, out_width, out_height = win_mod.capture_window_pixels(
+        _candidate(width, height))
+    assert (out_width, out_height) == (width, height)
+    assert data == raw, "内容已铺满时不得放大（否则画面右下会被裁掉）"

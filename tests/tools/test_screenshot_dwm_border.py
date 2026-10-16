@@ -25,6 +25,7 @@ from src.tools._screenshot import png_decode
 from src.tools._screenshot import winapi
 from src.tools._screenshot import win as win_mod
 from src.tools._screenshot.transform import CropRegion
+from src.tools._screenshot.windows import is_selectable
 
 
 # ── 辅助 ─────────────────────────────────────────────────
@@ -212,6 +213,10 @@ def test_visible_region_real_window_stays_inside_bounds(real_window_pids):
         target = win_mod.select_window(win_mod.enumerate_candidates({pid}))
         if target is None:
             continue
+        if not is_selectable(target):
+            # 枚举候选与断言之间窗口可能已隐藏 / 最小化（桌面环境竞态）：
+            # 这类窗口 'main' 仍会退回选中，截图本就只能得到可读错误，跳过。
+            continue
         checked += 1
         region = win_mod.visible_region(target)
         if region is None:
@@ -232,6 +237,10 @@ def test_capture_real_window_trimmed_to_visible_bounds(monkeypatch, tmp_path, re
     for pid in real_window_pids:
         target = win_mod.select_window(win_mod.enumerate_candidates({pid}))
         if target is None:
+            continue
+        if not is_selectable(target):
+            # 窗口在枚举后隐藏 / 最小化（桌面环境竞态）：截图会按设计报
+            # NoWindowError，换下一个候选即可，不属于本用例的断言范围。
             continue
         region = win_mod.visible_region(target)
         if region is None:

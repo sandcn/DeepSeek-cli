@@ -21,6 +21,13 @@ Python 程序等），系统会对其窗口做位图拉伸——窗口仍按逻�
 （GDI ``StretchBlt`` 优先，纯 Python 最近邻兜底），使截图像素、
 ``window_x/window_y`` 原点与输入注入坐标落在同一坐标系。
 
+★ 硬件加速窗口（D3D / OpenGL 游戏画面）例外：``PW_RENDERFULLCONTENT``
+拿到的是 DWM 合成后的表面，**铺满整幅位图且本身就是物理像素**。此时若按
+DPI 比例放大，只会保留画面左上角约 ``1/scale`` 的区域再拉满，表现为
+「内容完整却缺掉右边 / 下边一条」。后端因此在放大前先判定「逻辑内容区域
+之外是否整片未渲染」（:func:`_unrendered_outside_source`）：只有确实未
+渲染时才放大，内容已铺满时按物理像素原样输出。
+
 黑边：``GetWindowRect`` 含 Win10 DWM 的不可见边框（阴影/缩放预留），直接
 截图四边会出现黑边；按 ``DWMWA_EXTENDED_FRAME_BOUNDS``（
 :func:`visible_region`）裁掉该边框后再输出。
@@ -616,7 +623,8 @@ def capture_window_pixels(candidate: WindowCandidate) -> tuple[bytes, int, int]:
 
     产出的像素始终是**屏幕物理像素**：窗口 DC 路径（1、2）对非 DPI 感知
     窗口拿到的是系统按逻辑像素渲染的内容，先用 ``_devirtualize`` 放大回物理
-    像素；屏幕拷贝路径（3）本就是物理像素。
+    像素（内容已铺满整幅位图时说明拿到的是物理像素，不再放大）；
+    屏幕拷贝路径（3）本就是物理像素。
 
     三条路径都空白（窗口本身是纯色画面）时返回有数据的那次结果，全部失败
     才报错。
@@ -653,9 +661,17 @@ def _devirtualize(bgra: bytes, width: int, height: int,
     """把被系统 DPI 虚拟化的窗口位图放大回物理像素（尺寸不变）。
 
     非 DPI 感知进程的窗口在高 DPI 显示器上按**逻辑像素**渲染：``PrintWindow``
-    / 窗口 DC 把内容画在物理尺寸位图的左上角，其余区域为空白。按虚拟化比例
-    把该区域拉伸到整幅位图后，截图像素与屏幕物理坐标一一对应——模型从截图上
-    读到的坐标可直接交给输入操作，无需按 DPI 比例折算。
+    / 窗口 DC 把内容画在物理尺寸位图的左上角，其余区域保持 DIB 创建时的零值。
+    按虚拟化比例把该区域拉伸到整幅位图后，截图像素与屏幕物理坐标一一对应
+    ——模型从截图上读到的坐标可直接交给输入操作，无需按 DPI 比例折算。
+
+    ★ **放大前提**：位图确实只在左上角有内容（逻辑区域之外整片未渲染）。
+    硬件加速窗口（D3D / OpenGL，即游戏画面）在 ``PW_RENDERFULLCONTENT``
+    下拿到的是 **DWM 合成后的表面**——它铺满整幅位图且本身就是物理像素；
+    若按 DPI 比例盲目放大，只会保留画面左上角约 ``1/scale`` 的区域再拉满，
+    表现为「截图内容完整却缺掉右边 / 下边一条」。因此这里先由
+    :func:`_unrendered_outside_source` 判定，只有「逻辑区域之外未渲染」时
+    才放大，内容已铺满时原样返回。
 
     Args:
         bgra: ``width x height`` 的 BGRA 源数据。
@@ -663,7 +679,7 @@ def _devirtualize(bgra: bytes, width: int, height: int,
         scale_x / scale_y: ``winapi.window_virtualization_scale`` 的结果。
 
     Returns:
-        拉伸后的 BGRA 数据；未虚拟化（比例 ≤ 1）时原样返回。
+        拉伸后的 BGRA 数据；未虚拟化（比例 ≤ 1）或内容已铺满整幅位图时原样返回。
     """
     if scale_x <= 1.0 and scale_y <= 1.0:
         return bgra
@@ -671,12 +687,61 @@ def _devirtualize(bgra: bytes, width: int, height: int,
     source_height = max(1, min(height, int(round(height / scale_y))))
     if source_width == width and source_height == height:
         return bgra
+    if not _unrendered_outside_source(bgra, width, height,
+                                      source_width, source_height):
+        logger.debug(
+            "窗口内容已铺满整幅位图（硬件加速窗口的 DWM 表面），"
+            "按物理像素处理，不做 DPI 虚拟化放大: %sx%s source=%sx%s",
+            width, height, source_width, source_height,
+        )
+        return bgra
     region = CropRegion(0, 0, source_width, source_height)
     stretched = _stretch_bgra_gdi(bgra, width, height, region, width, height)
     if stretched is not None:
         return stretched
     logger.debug("GDI StretchBlt 不可用，回退纯 Python 最近邻缩放")
     return transform.scale_bgra(bgra, width, height, region, width, height)
+
+
+def _unrendered_outside_source(bgra: bytes, width: int, height: int,
+                               source_width: int, source_height: int) -> bool:
+    """位图「逻辑内容区域」之外的区域是否整片未渲染（全 0 字节）。
+
+    用途：区分「需要放大」与「已经铺满」两类截图结果
+
+      - **逻辑内容在左上角**（``True``）：非 DPI 感知窗口被系统虚拟化时，
+        ``PrintWindow`` / 窗口 ``BitBlt`` 只把内容渲染进左上角（尺寸约为
+        物理尺寸 / 缩放比），其余字节保持 ``CreateDIBSection`` 的零值；
+      - **内容铺满整幅**（``False``）：硬件加速窗口（D3D / OpenGL）经 DWM
+        合成拿到的表面覆盖整幅位图，本身就是物理像素，不该再放大。
+
+    只判定「逻辑区域之外」的右侧条带与底部整行；任一像素非 0 即认为内容
+    已铺满（保守：宁可不放大，也不要放大后裁掉画面右下）。
+
+    Args:
+        bgra: ``width x height`` 的 BGRA 数据。
+        width / height: 位图尺寸。
+        source_width / source_height: 逻辑内容区域尺寸（左上角）。
+
+    Returns:
+        True = 逻辑区域之外没有任何渲染内容（需要放大）。
+    """
+    if source_width >= width and source_height >= height:
+        return False
+    if len(bgra) < width * height * 4:
+        # 数据长度异常：交给调用方既有的长度校验，这里按「不放大」保守处理
+        return False
+    stride = width * 4
+    right_start = source_width * 4
+    # 右条带：仅前 source_height 行属于「逻辑区域之外」
+    for row in range(source_height):
+        start = row * stride
+        if any(bgra[start + right_start:start + stride]):
+            return False
+    # 底部条带：逻辑区域以下的整行
+    if any(bgra[source_height * stride:]):
+        return False
+    return True
 
 
 def _stretch_bgra_gdi(bgra: bytes, width: int, height: int, region: CropRegion,

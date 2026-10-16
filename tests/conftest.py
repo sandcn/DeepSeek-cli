@@ -103,6 +103,10 @@ def capturable_window_pids(limit: int = 5) -> list[int]:
                 continue
             if winapi.is_window_cloaked(hwnd):
                 continue
+            if winapi.is_window_minimized(hwnd):
+                # 最小化窗口没有可渲染的客户区（截图按设计报错），不能作为
+                # 「可截图窗口」候选交给用例。
+                continue
             pid = winapi.window_pid(hwnd)
             if pid and pid not in pids:
                 pids.append(pid)
