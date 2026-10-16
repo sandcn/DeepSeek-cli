@@ -30,39 +30,43 @@ class FileRenderTarget(RenderTarget):
         self._handle = None
         self._console: Optional[Console] = None
 
-    def _ensure_open(self) -> None:
-        if self._handle is not None:
-            return
-        directory = os.path.dirname(os.path.abspath(self._path))
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        self._handle = open(self._path, "w", encoding=self._encoding)
-        self._console = Console(
-            file=self._handle,
-            width=self._width,
-            force_terminal=False,
-            color_system=None,
-            soft_wrap=True,
-            markup=True,
-            emoji=True,
-        )
+    def _ensure_open(self) -> Console:
+        """惰性打开文件并构造 Console；返回可用 Console（恒非 None）。
+
+        ★ P0（review）：返回值取代原先调用方的 ``assert self._console is
+        not None``——``assert`` 在 ``python -O`` 下被剥离，写入路径的
+        「Console 已就绪」保证会静默消失。
+        """
+        if self._console is None:
+            directory = os.path.dirname(os.path.abspath(self._path))
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            self._handle = open(self._path, "w", encoding=self._encoding)
+            self._console = Console(
+                file=self._handle,
+                width=self._width,
+                force_terminal=False,
+                color_system=None,
+                soft_wrap=True,
+                markup=True,
+                emoji=True,
+            )
+        return self._console
 
     def write(self, renderable: Any) -> None:
         if renderable is None:
             return
-        self._ensure_open()
+        console = self._ensure_open()
         if isinstance(renderable, str) and "\x1b" in renderable:
             renderable = Text.from_ansi(renderable)
-        assert self._console is not None
-        self._console.print(renderable)
+        console.print(renderable)
 
     def write_line(self, text: str = "") -> None:
-        self._ensure_open()
-        assert self._console is not None
+        console = self._ensure_open()
         if text:
-            self._console.print(text)
+            console.print(text)
         else:
-            self._console.print()
+            console.print()
 
     def clear_line(self) -> None:
         return None

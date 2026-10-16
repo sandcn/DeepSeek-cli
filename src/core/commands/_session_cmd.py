@@ -114,7 +114,7 @@ def _cmd_clear(ctx):
         from ..adapters.ui_runtime import get_subagent_panel_controller
         get_subagent_panel_controller().get_default().clear_trace_archive()
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
     # ★ 2026-08-19（editmsg 同根因修复：/clear 清空后上下文百分比不更新）：
     #   清空（保留 system）后刷新上下文使用率全局快照——force=True：system
     #   可能按当前空模式重建且**条数不变**（仅内容替换），懒同步（len 判断）

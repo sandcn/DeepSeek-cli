@@ -35,7 +35,8 @@ def get_terminal_width() -> int:
         finally:
             os.close(fd)
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     # 回退
     try:
         import shutil

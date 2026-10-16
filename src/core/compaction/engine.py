@@ -99,7 +99,7 @@ class CompactionEngine:
             message = self._cm.messages[index]
             tokens += estimate_messages_image_tokens([message])
         except Exception:
-            pass
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         return max(0, int(tokens))
 
     def _max_context_chars(self) -> int:

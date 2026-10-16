@@ -182,7 +182,8 @@ def _set_cached_detail_lines(rec, lines) -> None:
         try:
             rec._detail_lines = lines
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
 
 
 def _get_cached_detail_lines(rec):

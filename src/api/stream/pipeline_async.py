@@ -59,7 +59,7 @@ def _discard_task(task: "asyncio.Future | None") -> None:
             try:
                 task.exception()
             except Exception:
-                pass
+                _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         return
 
     def _consume(t: "asyncio.Future") -> None:
@@ -68,7 +68,7 @@ def _discard_task(task: "asyncio.Future | None") -> None:
         try:
             t.exception()
         except Exception:
-            pass
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
     task.cancel()
     task.add_done_callback(_consume)
@@ -202,7 +202,7 @@ async def _interruptible_iter_async(
         try:
             await response_iter.aclose()
         except (asyncio.CancelledError, StopAsyncIteration, Exception):
-            pass
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
 
 def _extract_cancelled(exc: BaseException | None):

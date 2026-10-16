@@ -86,7 +86,8 @@ def apply_theme(name: str) -> bool:
 
         _invalidate_palette_cache()
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     return True
 
 

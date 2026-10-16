@@ -245,7 +245,8 @@ def _us_shift_map() -> dict:
         if isinstance(value, dict) and value:
             return {str(k): str(v) for k, v in value.items()}
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     return _US_SHIFT_MAP_FALLBACK
 
 

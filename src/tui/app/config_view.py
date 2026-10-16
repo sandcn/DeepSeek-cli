@@ -959,7 +959,8 @@ def _commit_import(cv, entries) -> None:
             from src.config.view_model import build_config_entries
             cv.entries = build_config_entries()
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     cv.message = f"已导入 {applied} 项" + (
         f"（{len(errors)} 项失败）" if errors else ""
     )

@@ -141,7 +141,7 @@ class ToolScheduler:
             if scheduler is not None:
                 return scheduler
         except Exception:
-            pass
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         global _default_scheduler
         if _default_scheduler is None:
             _default_scheduler = cls()

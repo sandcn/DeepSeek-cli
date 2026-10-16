@@ -89,7 +89,7 @@ def _close_quietly(coro: Any) -> None:
         try:
             close()
         except Exception:  # pragma: no cover
-            pass
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
 
 def tracked_count() -> int:

@@ -227,7 +227,7 @@ class ToolRegistry:
             if registry is not None:
                 return registry
         except Exception:
-            pass
+            logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         global _default_registry
         if _default_registry is None:
             _default_registry = cls()

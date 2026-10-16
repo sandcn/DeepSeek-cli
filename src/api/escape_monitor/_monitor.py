@@ -78,7 +78,7 @@ class EscapeMonitor:
             with termios_lock():
                 self._saved_original_settings = termios.tcgetattr(sys.stdin.fileno())
         except Exception:
-            pass
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         self.apply_monitor_settings()
         self._input.start_io()
         self._input.echo(self._input.get_current_text())

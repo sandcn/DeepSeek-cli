@@ -229,7 +229,8 @@ def reset_sandbox_view_state(state, attr: str = "", *, visible: bool = False) ->
     try:
         state.search_matches = []   # 可变默认值：每次赋新 list，避免共享
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     for name, value in (_VIEW_STATE_EXTRA_RESETS.get(attr) or {}).items():
         try:
             setattr(state, name, value)
@@ -238,7 +239,8 @@ def reset_sandbox_view_state(state, attr: str = "", *, visible: bool = False) ->
     try:
         state.visible = bool(visible)
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
 
 
 def resync_search(state, items, text_of, *, label: str = "匹配") -> int:

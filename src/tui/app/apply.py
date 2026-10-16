@@ -124,7 +124,7 @@ def _do_notification(model, cmd) -> None:
 
         _record("notice", "通知", str(cmd.text), level="info")
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
 
 def _strip_control_text(text: str) -> str:
@@ -191,7 +191,7 @@ def _do_error(model, cmd) -> None:
 
         _record("error", "错误", str(cmd.message), level="error")
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
 
 def _do_splash(model, cmd) -> None:

@@ -273,7 +273,7 @@ class SubagentOptFunc(Func):
             try:
                 await asyncio.wait({task}, timeout=2.0)
             except Exception:
-                pass  # 任务取消过程异常忽略
+                logger.debug("忽略异常（best-effort 路径）", exc_info=True)  # 任务取消过程异常忽略
             if not task.done():
                 # 取消未完成（任务卡在不可取消点，如子进程 process.wait()）：
                 # 保留记录返回提示，避免孤儿任务 + 结果永久丢失

@@ -49,7 +49,7 @@ def _create_message_queue():
         if service is not None:
             return service.create()
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
     return MessageQueue()
 
 _logger = logging.getLogger(__name__)

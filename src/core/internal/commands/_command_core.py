@@ -47,7 +47,8 @@ def handle_command(cmd, messages, state, build_system_prompt, get_user_input, co
             base = importlib.import_module("src.core.commands.base")
             base.get_plugin_registry()
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
 
     if command in _commands:
         persistence_port = None
@@ -216,7 +217,8 @@ def _fill_default_cache_price(model: str, prices: dict | None) -> dict | None:
                 merged.setdefault("input_cache_hit", tp[model]["input_cache_hit"])
                 return merged
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     return prices
 
 

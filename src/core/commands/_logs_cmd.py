@@ -361,7 +361,7 @@ def log_signature_from_session(session):
         if events:
             last_seq = int(getattr(events[-1], "seq", 0) or 0)
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
     return (count, last_seq, len(_messages_of(session)))
 
 

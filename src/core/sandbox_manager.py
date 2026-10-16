@@ -509,7 +509,8 @@ class SandboxManager:
                 file_path, current, target, idx, tool_name="revert",
             )
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
         return (True, current, target)
 
     def undo_last_revert(self, file_path: Optional[str] = None
@@ -534,7 +535,8 @@ class SandboxManager:
                 path, current, restore, idx, tool_name="undo-revert",
             )
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
         return (True, path)
 
     @staticmethod

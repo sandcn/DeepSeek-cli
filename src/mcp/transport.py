@@ -337,7 +337,7 @@ class StdioTransport(_BaseTransport):
                 try:
                     await task
                 except (asyncio.CancelledError, Exception):  # noqa: B014 - 清理路径吞掉所有异常
-                    pass
+                    _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         proc = self._proc
         self._proc = None
         if proc is None:
@@ -737,7 +737,7 @@ class SseTransport(_BaseTransport):
             try:
                 await self._reader_task
             except (asyncio.CancelledError, Exception):  # noqa: B014 - 清理路径
-                pass
+                _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         self._reader_task = None
         client = self._client
         self._client = None

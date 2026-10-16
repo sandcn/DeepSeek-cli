@@ -642,7 +642,7 @@ class QuartzMouseDriver:
                 try:
                     quartz.CFRelease(event)
                 except Exception:  # pragma: no cover
-                    pass
+                    logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         return int(point.x), int(point.y)
 
     def drag(self, start: tuple[int, int], end: tuple[int, int],

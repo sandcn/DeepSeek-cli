@@ -62,7 +62,7 @@ def _collect_models(ctx) -> list[str]:
                 seen.add(m)
                 out.append(m)
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
     if not out:
         # 回退：配置端口（插件/适配器注入的模型列表；与档案同源）
         try:
@@ -77,7 +77,7 @@ def _collect_models(ctx) -> list[str]:
                     seen.add(m)
                     out.append(m)
         except Exception:
-            pass
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
     return out
 
 
@@ -228,7 +228,7 @@ def _apply_model_entry(ctx, session, chat_ui, entry) -> None:
     try:
         ctx.state["model"] = model_name
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
     if chat_ui is not None and model_name:
         try:
             chat_ui.bottom_bar.set_model_name(model_name)
@@ -279,7 +279,7 @@ def _open_model_view(ctx) -> bool:
     try:
         chat_ui.request_bottom_redraw()
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
     session = getattr(ctx, "session", None)
     last_applied = 0
@@ -310,11 +310,11 @@ def _open_model_view(ctx) -> bool:
             try:
                 chat_ui.request_bottom_redraw()
             except Exception:
-                pass
+                _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
             try:
                 chat_ui.flush_input_router(2.0)
             except Exception:
-                pass
+                _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         except Exception:
             _logger.debug("_open_model_view cleanup 失败", exc_info=True)
 

@@ -345,7 +345,7 @@ def _read_bstr(element: int, index: int, oleaut32) -> str:
         try:
             oleaut32.SysFreeString(out)
         except Exception:  # pragma: no cover - 释放失败不影响结果
-            pass
+            logger.debug("忽略异常（best-effort 路径）", exc_info=True)
     return value
 
 

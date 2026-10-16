@@ -99,7 +99,7 @@ def _open_skill_ui(ctx) -> bool:
 
                 default_registry().invalidate()
             except Exception:
-                pass
+                _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
             state.entries = _build_skill_entries()
             state.status_message = "已刷新"
             return False

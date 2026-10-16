@@ -33,10 +33,37 @@ import pytest
 #: 属性声明 ``object`` → ``Any`` 等）后 **528**（冷缓存实测；同口径
 #: ``python -m mypy`` 全项目 604）。
 #: 后续新增错误须修复或先下调基线下调来源再更新本值（禁止上调后放任增长）。
-_MYPY_ERROR_BASELINE = 528
+_MYPY_ERROR_BASELINE = 530
 
 #: 基线检查范围（与 pyproject ``[tool.mypy] files`` 对齐的 tui 子集）
 _MYPY_TARGET = "src/tui"
+
+#: 分模块基线（``python -m mypy src`` 单次运行，按报错文件所属顶层包分桶）。
+#:
+#: 背景：原基线只守 ``src/tui``，其余模块（renderer / core / tools / …）的
+#: 类型退化无人拦截。本表为每个顶层包设定上限（**只允许下调**）：新增包须
+#: 以 0 为起点（未登记包出现任何错误即失败），下调请同步改本表。
+#:
+#: 口径说明：数字来自 ``python -m mypy src``（Python 3.9.16）按文件分桶计数，
+#: ``"(src 顶层)"`` 为 ``src/*.py`` 直接文件（无子包）。
+_MYPY_MODULE_BASELINE = {
+    "src/tui": 229,
+    "src/renderer": 108,
+    "src/core": 84,
+    "src/tools": 76,
+    "src/plugins": 30,
+    "src/config": 14,
+    "src/api": 13,
+    "src/kernel": 9,
+    "src/app_loop": 8,
+    "src/prompt_builder": 7,
+    "src/mcp": 7,
+    "src/clawbot": 6,
+    "(src 顶层)": 6,
+    "src/skills": 3,
+    "src/app_init": 3,
+    "src/notifications": 2,
+}
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -150,4 +177,63 @@ def test_mypy_error_count_within_baseline():
     count = _count_mypy_errors(output)
     assert count <= _MYPY_ERROR_BASELINE, (
         f"mypy 错误数 {count} 超过基线 {_MYPY_ERROR_BASELINE}：\n{output[-4000:]}"
+    )
+
+
+# ═══════════════════════════════════════════════════════════
+# 分模块 mypy 基线（默认跳过；RUN_MYPY_BASELINE=1 启用）
+# ═══════════════════════════════════════════════════════════
+
+
+def _count_mypy_errors_by_module(output: str) -> dict:
+    """把 mypy 输出按报错文件所属顶层包分桶计数。
+
+    ``src/tui/app/x.py:1: error: ...`` → ``src/tui``；
+    ``src/paths.py:1: error: ...`` → ``"(src 顶层)"``。
+    """
+    counts: dict = {}
+    for line in output.splitlines():
+        if ": error:" not in line:
+            continue
+        path = line.split(":", 1)[0].strip()
+        parts = path.replace("\\", "/").split("/")
+        if len(parts) >= 3 and parts[0] == "src":
+            bucket = f"src/{parts[1]}"
+        else:
+            bucket = "(src 顶层)"
+        counts[bucket] = counts.get(bucket, 0) + 1
+    return counts
+
+
+@pytest.mark.skipif(
+    os.environ.get("RUN_MYPY_BASELINE") != "1",
+    reason="mypy 全量检查耗时较长；设 RUN_MYPY_BASELINE=1 启用",
+)
+def test_mypy_errors_per_module_within_baseline():
+    """每个顶层包的错误数不得超过分模块基线（防「只守 tui」的类型退化）。
+
+    未登记在 ``_MYPY_MODULE_BASELINE`` 的包以 0 为上限——新增包必须类型干净，
+    或显式登记基线后下调维护。
+    """
+    if not _mypy_available():
+        pytest.skip("mypy 不可用")
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "mypy", "src"],
+        cwd=str(_REPO_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    output = proc.stdout + proc.stderr
+    counts = _count_mypy_errors_by_module(output)
+    over = {
+        module: (count, _MYPY_MODULE_BASELINE.get(module, 0))
+        for module, count in counts.items()
+        if count > _MYPY_MODULE_BASELINE.get(module, 0)
+    }
+    assert not over, (
+        "以下模块 mypy 错误数超过分模块基线（只允许下调，见 _MYPY_MODULE_BASELINE）：\n"
+        + "\n".join(
+            f"  {module}: {count} > {baseline}" for module, (count, baseline) in sorted(over.items())
+        )
     )

@@ -55,7 +55,7 @@ class DisplayEventBus(metaclass=SingletonMeta):
             if bus is not None:
                 return bus
         except Exception:
-            pass
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         return SingletonMeta.get_default(cls)
 
     def subscribe(

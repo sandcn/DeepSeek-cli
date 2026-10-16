@@ -183,7 +183,8 @@ def _unwatch(kernel, path: str) -> None:
     try:
         kernel.watcher().unwatch_file(path)
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
 
 
 def _remove_quietly(path: str) -> None:
@@ -203,7 +204,8 @@ async def _dispose_existing(kernel, stem: str) -> bool:
         try:
             await fiber.dispose()
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     await kernel.settle()
     return True
 
@@ -380,7 +382,8 @@ class CordisRunFunc(Func):
         try:
             kernel.watch_file(path)
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
 
         lines = []
         activated = True

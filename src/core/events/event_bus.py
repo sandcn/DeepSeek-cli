@@ -486,7 +486,7 @@ def get_default_bus() -> CoreEventBus:
         if bus is not None:
             return bus
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
     global _default_bus
     if _default_bus is None:
         with _bus_lock:

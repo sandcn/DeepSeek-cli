@@ -1218,7 +1218,7 @@ def schedule_kill_all_background_tasks(loop=None) -> None:
             try:
                 coro.close()
             except Exception:
-                pass
+                _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         _logger.debug(
             "ESC 中断调度杀后台任务失败（将由事件循环处理点兜底）",
             exc_info=True,

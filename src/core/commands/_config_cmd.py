@@ -290,7 +290,7 @@ def _open_config_ui(ctx) -> bool:
     try:
         chat_ui.request_bottom_redraw()
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
     try:
         while not state.done:
@@ -326,11 +326,11 @@ def _open_config_ui(ctx) -> bool:
             try:
                 chat_ui.request_bottom_redraw()
             except Exception:
-                pass
+                _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
             try:
                 chat_ui.flush_input_router(2.0)
             except Exception:
-                pass
+                _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         except Exception:
             _logger.debug("_open_config_ui cleanup 失败", exc_info=True)
 

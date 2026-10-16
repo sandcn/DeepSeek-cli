@@ -75,7 +75,8 @@ class DefaultOutputAdapter(OutputPort):
             if port is not None:
                 return port
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
         if cls._default_instance is None:
             with cls._default_instance_lock:
                 if cls._default_instance is None:

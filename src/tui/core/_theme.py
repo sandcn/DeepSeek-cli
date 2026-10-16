@@ -105,12 +105,19 @@ class Palette:
     placeholder: Style = Style(fg=_SEMANTIC_COLOR["placeholder"])
 
 
-# ★ P3（review）：``_PALETTE_SLOTS`` 与 ``Palette`` 字段集一致性断言——修复前
-#   两者仅靠人工对齐（新增字段时无校验，易漂移）。契约：槽位表是 Palette 的
-#   子集（Palette 可含未列入槽位表的辅助字段，反之不允许）。
-assert set(_PALETTE_SLOTS) <= {
-    f.name for f in _dc_fields(Palette)
-}, "_PALETTE_SLOTS 含 Palette 不存在的槽位"
+# 契约：槽位表是 Palette 的子集（Palette 可含未列入槽位表的辅助字段，反之不允许）。
+# ★ P0（review）：显式校验替代 ``assert``——``assert`` 在 ``python -O`` 下被
+#   剥离，槽位表漂移将不再被拦截（新增字段时静默失去校验）。
+def _validate_palette_slots(slots, field_names) -> None:
+    """校验槽位表 ⊆ Palette 字段集；越界抛 ``ValueError``（导入期即fail-fast）。"""
+    unknown = set(slots) - set(field_names)
+    if unknown:
+        raise ValueError(
+            f"_PALETTE_SLOTS 含 Palette 不存在的槽位: {sorted(unknown)}"
+        )
+
+
+_validate_palette_slots(_PALETTE_SLOTS, (f.name for f in _dc_fields(Palette)))
 
 
 def _light_palette() -> Palette:
@@ -435,7 +442,8 @@ def _read_theme() -> str:
         if isinstance(value, str) and value:
             theme = value
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     return theme
 
 

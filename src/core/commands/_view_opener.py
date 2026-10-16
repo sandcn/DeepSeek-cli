@@ -101,7 +101,7 @@ def open_fullscreen_view(
     try:
         chat_ui.request_bottom_redraw()
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
     # ★ 2026-10-10（初始化性能异步加载）：视图数据（会话列表 / 预览）在
     #   后台线程构建，界面先显示加载占位，完成后请求重绘动态更新。
@@ -169,11 +169,11 @@ def _cleanup(model, state_attr, state, view_id, state_cls, chat_ui) -> None:
         try:
             chat_ui.request_bottom_redraw()
         except Exception:
-            pass
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         try:
             chat_ui.flush_input_router(2.0)
         except Exception:
-            pass
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
     except Exception:
         _logger.debug("open_fullscreen_view cleanup 失败", exc_info=True)
 

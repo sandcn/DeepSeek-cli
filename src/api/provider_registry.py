@@ -341,7 +341,7 @@ def default_registry() -> LlmProviderRegistry:
         if registry is not None:
             return registry
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
     global _default_registry
     if _default_registry is None:

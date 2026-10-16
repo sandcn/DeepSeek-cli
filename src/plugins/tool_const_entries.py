@@ -43,7 +43,8 @@ def _ensure_declared(name: str) -> None:
         try:
             importlib.import_module(module_name)
         except Exception:  # noqa: BLE001 - 声明模块导入失败由下方未知常量报错
-            pass
+            import logging
+            logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
 
 
 @plugin("tool_const_entry")

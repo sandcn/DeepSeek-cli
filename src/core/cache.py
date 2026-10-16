@@ -203,7 +203,8 @@ def get_default_cache() -> CachePort:
         if cache is not None:
             return cache
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     global _default_cache
     if _default_cache is None:
         with _cache_lock:

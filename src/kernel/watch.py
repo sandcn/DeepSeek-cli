@@ -139,7 +139,7 @@ class PluginWatcher:
         try:
             await task
         except (asyncio.CancelledError, Exception):  # noqa: BLE001 - 取消即结束
-            pass
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
 
 __all__ = ["PluginWatcher"]

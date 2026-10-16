@@ -35,7 +35,8 @@ class ConfigService(Service):
                     value = value[part]
                 return value
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
         return default
 
     def update(self, key: str, value) -> None:

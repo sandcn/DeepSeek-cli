@@ -117,7 +117,8 @@ class PresetsService(Service):
         try:
             agent.preset = preset.name
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
         tools = getattr(agent, "tools", None)
         if tools:
             agent.tools = tuple(self.filter_schemas(name, tools))
@@ -125,7 +126,8 @@ class PresetsService(Service):
             try:
                 agent.model = preset.model
             except Exception:
-                pass
+                import logging
+                logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
 
 
 @plugin("presets", provide=["presets"])

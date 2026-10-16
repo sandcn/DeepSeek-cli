@@ -42,7 +42,7 @@ def _optimize_messages_for_upload(messages: list) -> dict:
         if service is not None:
             return service.optimize_messages_for_upload(messages)
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
     return optimize_messages_for_upload(messages)
 
 # 向后兼容别名（供旧代码和测试引用）

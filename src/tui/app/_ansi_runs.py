@@ -111,7 +111,8 @@ def _apply_codes(state: _SGR, codes: list) -> None:
                     rgb = (int(codes[i + 2]), int(codes[i + 3]), int(codes[i + 4]))
                     setattr(state, target, TrueColor(*rgb))
                 except Exception:
-                    pass
+                    import logging
+                    logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
                 i += 5
                 continue
         i += 1

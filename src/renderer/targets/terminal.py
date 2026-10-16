@@ -75,7 +75,8 @@ class TerminalRenderTarget(RenderTarget):
         try:
             self._console.file.flush()
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
 
 
 __all__ = ["TerminalRenderTarget"]

@@ -48,7 +48,8 @@ def apply_event_type(ctx):
             try:
                 importlib.import_module(module_name)
             except Exception:  # noqa: BLE001 - 导入失败由下方未知类型报错
-                pass
+                import logging
+                logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     if name not in builtin_composite_ids():
         raise ValueError(f"未知内置事件类型: {name!r}")
     value = ctx.config.get("value")

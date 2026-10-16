@@ -417,7 +417,7 @@ class ClawBotRunner:
                     try:
                         await task
                     except (asyncio.CancelledError, Exception):
-                        pass
+                        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
             try:
                 _exit_save_and_stop(session, chat_ui)
             except Exception:
@@ -802,7 +802,7 @@ class ClawBotRunner:
         try:
             await self._client.send_typing(from_id, ticket, status)
         except Exception:
-            pass
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
     async def _send(self, from_id: str, ctx: str, text: str) -> None:
         """发送文本：TUI 模式先在界面显示，再发送到微信。
@@ -918,7 +918,7 @@ class ClawBotRunner:
         try:
             await self._client.aclose()
         except Exception:
-            pass
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
 
 # ── 入口函数 ──────────────────────────────────────────

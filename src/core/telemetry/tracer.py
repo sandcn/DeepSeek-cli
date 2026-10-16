@@ -250,7 +250,7 @@ def get_default_tracer() -> Tracer:
         if tracer is not None:
             return tracer
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
     global _default_tracer
     if _default_tracer is None:
         with _tracer_lock:

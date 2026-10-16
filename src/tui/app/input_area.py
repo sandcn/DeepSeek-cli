@@ -199,7 +199,8 @@ def _mode_text(mode_key: str) -> str:
         if label:
             return label
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     return _MODE_TEXTS.get(mode_key, _MODE_STANDARD_TEXT)
 
 

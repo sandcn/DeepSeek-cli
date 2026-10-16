@@ -95,7 +95,8 @@ def close_fullscreen_view(model, state, view_id: str) -> None:
         try:
             state.try_set_final("cancel")
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     if getattr(model, "fullscreen", "") == view_id:
         model.fullscreen = ""
 

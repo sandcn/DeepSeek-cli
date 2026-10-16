@@ -1121,7 +1121,7 @@ class BashOptFunc(Func):
             try:
                 await asyncio.wait({task}, timeout=2.0)
             except Exception:
-                pass  # 任务取消过程异常忽略
+                logger.debug("忽略异常（best-effort 路径）", exc_info=True)  # 任务取消过程异常忽略
 
         # 3. 移除任务记录并更新 TUI 计数
         if hasattr(agent, "_remove_background_task"):

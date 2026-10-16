@@ -54,7 +54,7 @@ def _current_model(ctx) -> str:
         if isinstance(value, str) and value:
             return value
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
     try:
         from ...config import MODEL
 

@@ -352,7 +352,7 @@ def get_plugin_registry() -> CommandPluginRegistry:
         if registry is not None:
             return registry
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
     # 命令服务卸载会注销内置命令（可逆副作用），但命令插件模块已导入——
     # 全局注册表为空时按已知快照 / 声明集合恢复，避免后续访问拿到空注册表。
     if not _command_plugins._plugins:

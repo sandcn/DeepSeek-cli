@@ -108,8 +108,8 @@ def _unregister_consumer() -> None:
             # ★ P2-3：下限保护——引用计数不可为负（防御重复注销/计数漂移，
             #   修复前 ``-= 1`` 可减到负数导致 _active_consumer 永不归零清空）。
             _active_consumer_refcount = max(0, _active_consumer_refcount - 1)
-            # 内部断言：递减后引用计数必须非负（防御性，正常路径恒成立）
-            assert _active_consumer_refcount >= 0
+            # 下限由 ``max(0, ...)`` 保证（递减后引用计数恒非负）；原先的
+            # ``assert`` 在 ``python -O`` 下被剥离且恒为真，故移除。
             if _active_consumer_refcount <= 0:
                 _active_consumer = None
             else:

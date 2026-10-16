@@ -18,6 +18,7 @@ xdist 多 worker 并行下偶发失败（取决于测试在 worker 内的分配�
 from __future__ import annotations
 
 import asyncio
+import inspect
 
 import pytest
 
@@ -41,14 +42,38 @@ def _coverage_instrumented(config) -> bool:
 _TIMING_SENSITIVE_TOKENS = ("budget", "bounded", "_perf", "perf_")
 
 
+def _source_measures_elapsed(node) -> bool:
+    """用例源码是否测量墙钟耗时（``perf_counter`` / ``monotonic``）。
+
+    命名特征（``_TIMING_SENSITIVE_TOKENS``）只是启发式——实际测量耗时的用例
+    未必把 budget/perf 写进函数名（如 ``test_normal_emphasis_not_slowed``、
+    ``test_paragraph_stream_scales_linearly_enough``），插桩后同样必然超预算。
+    这里以**源码为单一事实源**补足判定，避免逐个改名或逐个加标记。
+    """
+    func = getattr(node, "function", None)
+    if func is None:
+        return False
+    try:
+        source = inspect.getsource(func)
+    except (OSError, TypeError):  # pragma: no cover - 源码不可得时按非计时用例处理
+        return False
+    return "perf_counter" in source or "monotonic(" in source
+
+
+def _is_timing_sensitive(node) -> bool:
+    """命名特征命中，或源码确实测量耗时 → 视为时间预算型用例。"""
+    if any(token in node.nodeid.lower() for token in _TIMING_SENSITIVE_TOKENS):
+        return True
+    return _source_measures_elapsed(node)
+
+
 @pytest.fixture(autouse=True)
 def _skip_timing_budget_when_measuring_coverage(request):
     """覆盖率插桩模式下跳过时间预算型用例（性能预算由无插桩的完整套件验证）。"""
     if not _coverage_instrumented(request.config):
         yield
         return
-    node_id = request.node.nodeid.lower()
-    if any(token in node_id for token in _TIMING_SENSITIVE_TOKENS):
+    if _is_timing_sensitive(request.node):
         pytest.skip("覆盖率插桩改变执行时间，时间预算用例在 --cov 模式下不适用")
     yield
 

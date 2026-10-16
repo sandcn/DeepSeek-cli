@@ -92,7 +92,7 @@ class CommandUiAdapter:
             try:
                 session.request_bottom_redraw()
             except Exception:
-                pass
+                _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
             # ★ P1/P2（review 修复）：轮询 + 解析 + 清理整段 try/finally——
             #   异常路径也保证 user_select + bottom_view 恢复（不残留弹窗/
             #   底部视图，输入区不消失）；selected 归一化仿 message_editor
@@ -131,7 +131,7 @@ class CommandUiAdapter:
                         try:
                             model.user_selects.clear()
                         except Exception:
-                            pass
+                            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
                         # ★ 2026-08-18（连续弹出显示错乱修复）：先关闭底部视图
                         #   再清理状态（避免「状态已重置但 bottom_view 仍指向
                         #   弹窗」的空白帧窗口）；且清理**保留 seq**——seq 单调
@@ -146,7 +146,7 @@ class CommandUiAdapter:
                         try:
                             session.request_bottom_redraw()
                         except Exception:
-                            pass
+                            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
                 except Exception:
                     _logger.debug("run_bottom_bar_selection: cleanup 失败", exc_info=True)
 
@@ -178,12 +178,12 @@ class CommandUiAdapter:
                         bottom_bar.hide_completions()
                         return {"action": "confirmed", "index": sel_idx}
             except Exception:
-                pass
+                _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
             try:
                 bottom_bar.force_redraw()
             except Exception:
-                pass
+                _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
             time.sleep(0.05)
 

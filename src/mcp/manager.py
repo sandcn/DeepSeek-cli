@@ -101,7 +101,7 @@ class McpManager:
             if manager is not None:
                 return manager
         except Exception:
-            pass
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         if cls._default is None:
             cls._default = cls()
         return cls._default

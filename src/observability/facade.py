@@ -200,7 +200,7 @@ def get_default_facade() -> ObservabilityFacade:
         if provider is not None:
             return provider
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
     global _default_facade
     if _default_facade is None:
         with _facade_lock:

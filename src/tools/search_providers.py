@@ -295,7 +295,7 @@ class DeepSeekSearchProvider:
                 elif parsed.get("message"):
                     message = str(parsed["message"])
         except Exception:
-            pass
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         return message
 
     @staticmethod

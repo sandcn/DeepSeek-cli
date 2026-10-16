@@ -200,7 +200,8 @@ def _render(b64: str, w_cells: int, h_cells: int) -> list:
         from PIL import ImageOps
         img = ImageOps.exif_transpose(img)
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
 
     # 透明合成到暗灰背景（避免透明像素显示为黑块/预乘色）
     has_alpha = img.mode in ("RGBA", "LA") or ("transparency" in img.info)
@@ -210,7 +211,8 @@ def _render(b64: str, w_cells: int, h_cells: int) -> list:
             bg_img = _Image.new("RGBA", img.size, (30, 30, 30, 255))
             img = bg_img.alpha_composite(img.convert("RGBA"))
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     try:
         img = img.convert("RGB")
     except Exception:

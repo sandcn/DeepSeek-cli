@@ -55,8 +55,10 @@ source = ["src"]
 omit = ["*/__pycache__/*", "*/tests/*"]
 
 [tool.coverage.report]
-# 门槛随覆盖率提升同步收紧（当前实测 ~70%；新增代码不得拉低整体覆盖）
-fail_under = 60
+# 门槛随覆盖率提升同步收紧：实测（``python -m pytest tests --cov=src``，含
+# conftest 在插桩模式下跳过的时间预算用例）**74.05%**，取 72 留出环境差异余量
+# （历史：60 → 72）。新增代码不得拉低整体覆盖——覆盖率下降须先补齐用例。
+fail_under = 72
 show_missing = true
 
 [tool.ruff]

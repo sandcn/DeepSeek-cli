@@ -22,25 +22,21 @@ def _ensure_config_dir():
 
 
 def _safe_merge(defaults: dict, overrides: dict) -> dict:
-    """安全合并，保留 defaults 中已有的键并合并 overrides 值。
+    """递归合并配置：保留 defaults 缺省键，overrides 覆盖同名键。
 
-    同时保留 overrides 中 defaults 不存在的顶层键（如 "performance"），
-    信任 _validate_rc 做校验和回退。
-
-    注（review P3）：浅合并——RC 只配置复合键部分子键（如 skills 只写
-    {"enabled": false}）时会整体替换 defaults 的 skills。读取方有 .get
-    默认值兜底不崩溃，但用户配置会部分丢失；深合并复合键需按类型递归，
-    当前复合键消费方均容忍，暂不实施。
+    - 同名键且两侧均为 ``dict`` → **递归**合并子键（修复「浅合并」缺陷：
+      RC 只配 ``skills.enabled`` 时，defaults 的其余 skills 子键不再整体丢失）；
+    - 其余情况（``list`` / 标量 / 两侧类型不一致）→ 整体覆盖；
+    - ``overrides`` 中 defaults 不存在的顶层键原样保留（如 "performance"），
+      由 ``_validate_rc`` 做校验和回退。
     """
     result = dict(defaults)
-    for key in result:
-        if key in overrides:
-            result[key] = overrides[key]
-    # 保留 overrides 中 defaults 不存在的顶层键（如 "performance"），
-    # 由 _validate_rc 做校验和回退
-    for key in overrides:
-        if key not in result:
-            result[key] = overrides[key]
+    for key, value in overrides.items():
+        base = result.get(key)
+        if isinstance(base, dict) and isinstance(value, dict):
+            result[key] = _safe_merge(base, value)
+        else:
+            result[key] = value
     return result
 
 
@@ -142,9 +138,13 @@ def update_config(key: str, value) -> None:
         if key in CONFIG_KEYS:
             path = CONFIG_KEYS[key]["rc_path"]
             if path:
-                assert all(isinstance(p, str) and p for p in path), (
-                    f"CONFIG_KEYS['{key}']['rc_path'] 包含无效路径段: {path}"
-                )
+                # ★ P0（review）：显式校验替代 ``assert``——``assert`` 在
+                #   ``python -O`` 下被剥离，配置写入路径的完整性校验会静默
+                #   消失（配置键表损坏时会写出畸形 RC）。
+                if not all(isinstance(p, str) and p for p in path):
+                    raise ValueError(
+                        f"CONFIG_KEYS['{key}']['rc_path'] 包含无效路径段: {path}"
+                    )
                 target = rc
                 for part in path[:-1]:
                     nxt = target.setdefault(part, {})
@@ -169,7 +169,7 @@ def update_config(key: str, value) -> None:
                 from ..core.multimodal import clear_multimodal_cache
                 clear_multimodal_cache()
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
 
 
 def get_base_url(provider=None):

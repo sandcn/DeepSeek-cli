@@ -220,7 +220,8 @@ def is_globally_disabled(tool_name: str) -> bool:
             if disabled is not None:
                 return tool_name in disabled
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     try:
         return tool_name in active_global_disabled_tools()
     except Exception:
@@ -251,7 +252,8 @@ def get_excluded_tools(agent_type: str) -> set:
             if excluded is not None:
                 return excluded
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     return TOOL_EXCLUSION_MAP.get(agent_type, TOOL_EXCLUSION_MAP["execute"])
 
 

@@ -507,7 +507,7 @@ def consume_sandbox_actions(model, sandbox) -> bool:
         try:
             state.applied_consumed = seq
         except Exception:
-            pass
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         report = getattr(state, "applied", None) or {}
         try:
             state.status_message = apply_sandbox_action(sandbox, report)
@@ -518,7 +518,7 @@ def consume_sandbox_actions(model, sandbox) -> bool:
             try:
                 setattr(state, name, value)
             except Exception:
-                pass
+                _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
         executed = True
     return executed
 

@@ -250,7 +250,7 @@ def _declared_format(ext: str) -> str | None:
         if dyn and dyn in _image_format_names():
             return dyn
     except Exception:
-        pass
+        _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
     return image_ext_format().get(ext)
 
 
@@ -514,7 +514,7 @@ class ReadImageFunc(Func):
             from PIL import ImageOps
             img = ImageOps.exif_transpose(img)
         except Exception:
-            pass  # 摆正失败（异常图）→ 原样继续（防御，幂等：_normalize_srgb 再次 exif_transpose 为 no-op）
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)  # 摆正失败（异常图）→ 原样继续（防御，幂等：_normalize_srgb 再次 exif_transpose 为 no-op）
 
         width, height = img.size
 

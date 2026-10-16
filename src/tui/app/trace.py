@@ -1477,7 +1477,8 @@ def _slot_live_lines(slot, attr: str) -> list:
     try:
         slot._live_lines_cache = {attr: (text, lines)}
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     return lines
 
 
@@ -1698,7 +1699,8 @@ def build_trace_records(model) -> tuple:
                                   merged_tool_ids=merged_tool_ids)
                     return records, rows
         except Exception:
-            pass  # 消息源异常 → 回退块路径（防御）
+            import logging
+            logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)  # 消息源异常 → 回退块路径（防御）
     # ── 回退路径：TUI 块构建（无消息源/空消息/异常） ──
     records: list = []
     rows: list = []

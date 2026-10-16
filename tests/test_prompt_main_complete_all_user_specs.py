@@ -10,14 +10,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from src.prompt_builder import builder
+from tests._paths import prompts_dir, repo_root
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-MAIN_PROMPT = _PROJECT_ROOT / "prompts" / "prompts_export_main_empty.md"
+_PROJECT_ROOT = repo_root()
+MAIN_PROMPT = prompts_dir() / "prompts_export_main_empty.md"
 
 RULE_TITLE = "强制完成用户指定的所有东西"
 PRIOR_RULE_KEY = "强制完整实现用户的所有要求"

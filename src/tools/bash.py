@@ -345,7 +345,7 @@ class BashFunc(Func):
                 try:
                     await publish_line_fn(clean, is_stderr)
                 except Exception:
-                    pass
+                    logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
         while True:
             if is_interrupted():

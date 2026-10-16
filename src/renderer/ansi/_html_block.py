@@ -812,7 +812,8 @@ def _render_mathml_lines(lines) -> list[AnsiLine]:
             from .math import render_math_block
             return list(render_math_block(latex, label="公式"))
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     out: list[AnsiLine] = [
         AnsiLine.of("\u25b8 <math 数学标记>", _STYLE_HTML_TAG),
     ]

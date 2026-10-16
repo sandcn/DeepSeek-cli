@@ -131,7 +131,8 @@ class _CmplHandler:
             try:
                 add_listener(self._on_data_ready)
             except Exception:
-                pass
+                import logging
+                logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
 
     def set_text_provider(self, provider: Callable[[], str] | None) -> None:
         """注入当前输入文本提供者（装配后由 ``setup_completion`` 注入）。"""
@@ -146,7 +147,8 @@ class _CmplHandler:
                 if text is not None:
                     return str(text)
             except Exception:
-                pass
+                import logging
+                logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
         return self._last_request_text
 
     def _on_data_ready(self, key: str = "") -> None:

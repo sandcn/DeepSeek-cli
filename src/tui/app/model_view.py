@@ -536,7 +536,8 @@ def _refresh_entries(mv) -> None:
     try:
         mv.entries = build_model_entries()
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     # 搜索匹配同步刷新（过滤模式下保持过滤视图有效）
     pattern = getattr(mv, "search_pattern", "") or ""
     if pattern:

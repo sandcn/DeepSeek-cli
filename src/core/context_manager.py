@@ -1040,4 +1040,4 @@ try:
     _register_usage_hook(update_streaming_usage)
     _register_prompt_usage_hook(update_real_prompt_usage)
 except Exception:  # pragma: no cover — 导入失败时静默（实时刷新/真实校准降级）
-    pass
+    _logger.debug("忽略异常（best-effort 路径）", exc_info=True)

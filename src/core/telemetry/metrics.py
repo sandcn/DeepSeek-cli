@@ -278,7 +278,8 @@ def get_default_collector() -> MetricsCollector:
         if collector is not None:
             return collector
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
     global _default_collector
     if _default_collector is None:
         with _collector_lock:
