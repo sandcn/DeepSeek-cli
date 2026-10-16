@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from src._compat import dataclass
 from dataclasses import field
-from typing import Any, Callable, Mapping, Sequence, Union
+from typing import Any, Callable, Iterable, Mapping, Sequence, Union
 
 # ── host 组件标签常量（唯一真源） ──────────────────────────
 BOX = "box"
@@ -30,8 +30,12 @@ FRAGMENT = "fragment"
 #: 元素类型 — host 标签字符串或 function component。
 ElementType = Union[str, Callable[..., Any]]
 
-#: 子元素 — Element 或纯字符串（字符串自动转为 Text 元素）。
-Child = Union["Element", str]
+#: 子元素 — Element / 字符串（自动转 Text）/ bytes / 序列与可迭代（递归扁平
+#: 展开）/ ``None`` 与 ``bool``（React null·boolean 语义：渲染为空，不产生
+#: fiber）。递归别名在 Python 3.9 运行期不可求值，故用 ``Sequence[Any]`` /
+#: ``Iterable[Any]`` 的宽松形式描述（运行期 ``_normalize_children`` 负责递归
+#: 扁平化与规范化）。
+Child = Union["Element", str, bytes, Sequence[Any], Iterable[Any], None, bool]
 
 
 @dataclass(frozen=True)

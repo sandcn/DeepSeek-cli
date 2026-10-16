@@ -46,7 +46,7 @@ from __future__ import annotations
 import sys
 import types
 import weakref
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ._hook_context import (
     HookContext,
@@ -93,6 +93,38 @@ _ALIASES = {
     "_animation_last_time": "animation_last_time",
     "_animation_listeners": "animation_listeners",
 }
+
+
+if TYPE_CHECKING:  # pragma: no cover - 仅静态检查（运行期经 _HooksModule 代理）
+    #: 模块级状态名（``_ALIASES`` 的键）——运行期由 ``_HooksModule.__getattr__``
+    #: 代理到「当前 HookContext」；此处显式声明供静态检查识别属性存在
+    #: （否则 ``hooks._focus_active`` 等访问被误报 module has no attribute）。
+    _current_fiber_stack: Any
+    _schedule_callback: Any
+    _context_version: Any
+    _stdin_accessor: Any
+    _stdout_accessor: Any
+    _stderr_accessor: Any
+    _raw_mode_supported: Any
+    _raw_mode_callback: Any
+    _input_router_callback: Any
+    _app_control: Any
+    _render_flush_fn: Any
+    _suspend_terminal_fn: Any
+    _cursor_position_fn: Any
+    _window_size_accessor: Any
+    _screen_reader_enabled: Any
+    _focus_enabled: Any
+    _focus_active: Any
+    _focus_ids: Any
+    _focus_id_seq: Any
+    _window_size: Any
+    _window_size_version: Any
+    _window_size_listeners: Any
+    _any_key_pressed: Any
+    _animation_tick: Any
+    _animation_last_time: Any
+    _animation_listeners: Any
 
 
 class _HooksModule(types.ModuleType):

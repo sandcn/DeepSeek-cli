@@ -27,18 +27,20 @@ class _FakeEventPort:
 
 
 class _FakeDisplay:
-    """display 桩：记录 tool_done 的 output_preview。"""
+    """display 桩：记录 tool_done 的 output_preview 与各回调调用参数。"""
 
     def __init__(self):
         self.last_done_output = None
+        self.calls: list[tuple] = []
 
     def tool_parsing(self, *args, **kwargs):
-        pass
+        self.calls.append(("tool_parsing", args, kwargs))
 
     def tool_start(self, *args, **kwargs):
-        pass
+        self.calls.append(("tool_start", args, kwargs))
 
-    def tool_done(self, tool_label, tool_name, success, metadata=None):
+    def tool_done(self, tool_label, tool_name, success, metadata=None, tool_id=""):
+        self.calls.append(("tool_done", (tool_label, tool_name, success), {"tool_id": tool_id}))
         if metadata:
             self.last_done_output = metadata.get("output_preview")
 
@@ -129,6 +131,36 @@ def test_on_after_tool_normalizes_tool_result():
 
     # tool_done 收到的 output_preview 应为纯文本（ToolResult → text）
     assert agent.display.last_done_output == "内容已读取"
+    # tool_id 贯通：tool_call_id 以关键字传给 display（前端据此合并工具卡）
+    assert agent.display.calls[-1] == ("tool_done", ("tc-1", "read_file", True), {"tool_id": "tc-1"})
+
+
+def test_on_before_tool_forwards_tool_id(monkeypatch):
+    """_on_before_tool：tool_parsing / tool_start 均带 tool_call_id（贯通修复）。"""
+    import src.config as _config
+
+    from src.core.internal.agent._tool_callbacks import ToolCallbackChain
+
+    class _Logger:
+        def info(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr(_config, "audit_logger", _Logger())
+
+    agent = _FakeToolAgent()
+    chain = ToolCallbackChain(agent)
+
+    chain._on_before_tool(
+        {"id": "tc-7", "name": "read_file", "arguments": {"path": "x.py"}}, "detail", 0.0
+    )
+
+    parsing, started = agent.display.calls
+    assert parsing[0] == "tool_parsing"
+    assert parsing[1][0] == "tc-7"
+    assert parsing[2] == {"tool_id": "tc-7"}
+    assert started[0] == "tool_start"
+    assert started[1][:2] == ("tc-7", "read_file")
+    assert started[2] == {"tool_id": "tc-7"}
 
 
 def test_on_after_tool_normalizes_read_image_blocks():

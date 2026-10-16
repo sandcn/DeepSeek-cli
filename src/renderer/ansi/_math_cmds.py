@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from .style import Style
 from .helpers import AnsiLine, visual_width
 
@@ -493,6 +495,23 @@ class _MathCommandMixin:
     """扩展命令实现（由 ``_LatexRenderer`` 继承）。"""
 
     # ── 参数读取辅助 ─────────────────────────────────────
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``_LatexRenderer`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        s: str
+        n: int
+        i: int
+        inline: bool
+
+        def _read_group_raw(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _render_sub(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _append_script(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _cmd_boxed(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _parse_atom(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def _read_optional_raw(self) -> str:
         """读取可选参数 ``[...]``（不存在时返回空串，不消费输入）。"""

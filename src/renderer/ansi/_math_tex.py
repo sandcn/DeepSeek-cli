@@ -14,6 +14,8 @@ KaTeX 兼容层，补齐 ``\\over`` / ``\\atop`` / ``\\choose`` / ``\\above`` /
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from .helpers import AnsiLine
 
 from ._math_style import _M_SYM, _M_NOTICE
@@ -145,6 +147,27 @@ class _MathTexMixin:
     """TeX 原语与旧式结构（由 ``_LatexRenderer`` 继承）。"""
 
     # ── 分数类原语（组内 / 顶层） ────────────────────────
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``_LatexRenderer`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        s: str
+        n: int
+        i: int
+        inline: bool
+
+        def _read_group_raw(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _render_sub(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _render_environment(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _cmd_rule(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _is_alpha_at(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _parse_atom(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _parse_command(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def _render_group_raw(self, raw: str) -> _Box:
         """渲染花括号组原文：先检测顶层分数原语，否则递归解析。"""

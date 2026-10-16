@@ -792,7 +792,9 @@ def _build_move(params: dict) -> MoveAction:
     if steps is None:
         # 仅给了 duration 时按默认点数插值；都没给则一步直达
         steps = DEFAULT_SMOOTH_MOVE_STEPS if (duration or 0.0) > 0 else DEFAULT_MOVE_STEPS
-    smooth = {
+    #: ``**smooth`` 展开传给 MoveAction——显式 ``dict[str, Any]`` 值类型：mypy
+    #: 对 ``**dict[str, object]`` 展开按各形参类型逐项校验（恒失败）。
+    smooth: dict[str, Any] = {
         "duration": DEFAULT_MOVE_DURATION if duration is None else duration,
         "steps": steps,
         "relative_event": relative_event,

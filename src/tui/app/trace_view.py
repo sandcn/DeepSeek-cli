@@ -29,7 +29,6 @@ Ctrl+H（0x08）打开/关闭：App 在 ``model.fullscreen == "trace"``（兼容
 from __future__ import annotations
 
 import json
-import re
 import time as _time
 from weakref import WeakKeyDictionary
 

@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import TYPE_CHECKING, Any, Tuple
 
 from rich.text import Text
 
@@ -29,6 +29,10 @@ class MathParserFractionsMixin:
     """
 
     # ── 分数 ────────────────────────────────────────────
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``MathParser`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        def parse(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def _make_fraction(self, num_text: Text, den_text: Text,
                        num_raw: str = "", den_raw: str = "") -> Text:

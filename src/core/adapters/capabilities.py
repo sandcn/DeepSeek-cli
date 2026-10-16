@@ -235,8 +235,6 @@ class LocalTerminalsProvider:
         self._next = 0
 
     async def open(self, argv: Optional[list] = None, *, cwd: Optional[str] = None) -> str:
-        import itertools
-
         self._next += 1
         session_id = f"term-{self._next}"
         process = await asyncio.create_subprocess_exec(

@@ -1513,7 +1513,10 @@ def ConfigView(props) -> object:
     #   已知窗口（渲染循环固有），命令线程轮询间隙极短，风险可接受。
     use_modal_scope(visible)
 
-    if not visible:
+    # ★ 收窄：``cv`` 为 Optional（``getattr(model, "config_view", None)``）——
+    #   mypy 无法从 ``visible`` 的布尔表达式反推 cv 非 None，故此处显式判空
+    #   （cv 为 None 时 visible 恒 False，行为与原来一致）。
+    if cv is None or not visible:
         return empty_modal_frame()
 
     # ── 选中钳制 ──

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Callable
 from ..types import Token, TokenType
 
 _logger = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ class TokenHandler(ABC):
         """返回此 handler 负责的 TokenType 集合"""
         ...
 
-    def get_method_map(self) -> dict[TokenType, callable]:
+    def get_method_map(self) -> dict[TokenType, Callable[..., Any]]:
         """子类覆写：返回 TokenType → handler 方法 的映射表"""
         return {}
 

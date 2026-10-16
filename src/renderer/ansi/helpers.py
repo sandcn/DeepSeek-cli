@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import field
+from typing import Any
 
 from src._compat import dataclass
 
@@ -36,7 +37,7 @@ class Run:
     """
 
     text: str
-    style: Style | None = None
+    style: Any = None
     #: 超链接 URL（OSC 8；None = 普通文本）
     link: str | None = None
     #: 行内多行块（二维公式等）：非 None 时 ``text`` 为**展平降级文本**
@@ -94,7 +95,7 @@ class AnsiLine:
         self.cont_prefix = cont_prefix
 
     @classmethod
-    def of(cls, text: str, style: Style | None = None) -> "AnsiLine":
+    def of(cls, text: str, style: Any = None) -> "AnsiLine":
         """单 run 行。
 
         ``text`` 为空时返回**真正的空行**（无 runs）——避免空 run 让下游的
@@ -105,7 +106,7 @@ class AnsiLine:
             return cls()
         return cls([Run(text, style)])
 
-    def append(self, text: str, style: Style | None = None,
+    def append(self, text: str, style: Any = None,
                link: str | None = None) -> None:
         if not text:
             return
@@ -627,7 +628,7 @@ def parse_sgr_params(params: str) -> tuple[Style | None, bool]:
     return (style, reset)
 
 
-def ansi_to_runs(text: str, base_style: Style | None = None) -> list[Run]:
+def ansi_to_runs(text: str, base_style: Any = None) -> list[Run]:
     """将含 ANSI 转义序列的文本解析为 Run 序列（紧急回退）。"""
     runs: list[Run] = []
     current = Style() if base_style is None else base_style
@@ -658,7 +659,7 @@ def ansi_to_runs(text: str, base_style: Style | None = None) -> list[Run]:
     return runs
 
 
-def ansi_to_line(text: str, base_style: Style | None = None) -> AnsiLine:
+def ansi_to_line(text: str, base_style: Any = None) -> AnsiLine:
     """将含 ANSI 的文本转为 AnsiLine（紧急回退）。"""
     return AnsiLine(ansi_to_runs(text, base_style))
 

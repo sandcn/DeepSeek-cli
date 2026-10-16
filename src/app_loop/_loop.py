@@ -62,8 +62,11 @@ class InteractiveLoop:
         self._loaded_data = loaded_data
         self._force_exit = asyncio.Event()
         self._msg_done_ref: asyncio.Event | None = None
-        # ChatUI 消费者 — 通过事件系统渲染聊天内容到终端
-        self._chat_ui: ChatUIConsumer | None = None
+        # ChatUI 消费者 — 通过事件系统渲染聊天内容到终端。
+        # ★ 类型：构造期占位 None，``run()`` 注入实例后整个生命周期恒非 None
+        #   （全部使用点均在注入之后）——故声明为非 Optional：mypy 不对属性
+        #   访问做跨语句收窄（``if self._chat_ui is not None:`` 只保护紧邻行）。
+        self._chat_ui: ChatUIConsumer = None
         # ★ EscapeMonitor — 始终开启，捕获所有键盘输入
         self._monitor: EscapeMonitor | None = None
         # ★ 流式输入状态共享：round_end 回调与 _handle_round 之间传递

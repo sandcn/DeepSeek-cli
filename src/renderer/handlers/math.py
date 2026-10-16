@@ -1,5 +1,6 @@
 """MathHandler — 数学块相关"""
 import logging
+from typing import Any, Callable
 from rich.text import Text
 from rich.style import Style
 from ..types import Token, TokenType
@@ -19,7 +20,7 @@ class MathHandler(TokenHandler):
             TokenType.MATH_BLOCK_CLOSE,
         }
 
-    def get_method_map(self) -> dict[TokenType, callable]:
+    def get_method_map(self) -> dict[TokenType, Callable[..., Any]]:
         return {
             TokenType.MATH_BLOCK_OPEN: self._handle_math_block_open,
             TokenType.MATH_LINE: self._handle_math_line,

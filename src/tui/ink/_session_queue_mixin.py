@@ -26,6 +26,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import dataclasses
 import heapq
 import itertools
@@ -127,6 +129,10 @@ class _SessionQueueMixin:
     _cmd_queue_dropped: int
     _render_running: bool
     _config: object
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``InkSession`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        def _write_emergency(self, *args: Any, **kwargs: Any) -> Any: ...
 
     # ── 命令入队 ─────────────────────────────────────
 

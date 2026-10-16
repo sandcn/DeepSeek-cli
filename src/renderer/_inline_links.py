@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 import string
 
+from typing import TYPE_CHECKING, Any
+
 from .inline_nodes import (
     InlineNode, LinkNode, ImageNode,
     AutoLinkNode, AutoLinkEmailNode, FootnoteRefNode,
@@ -144,6 +146,18 @@ class InlineLinksMixin:
       _try_bare_email()
       _parse_link_url()
     """
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``_InlineParser`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        _text: str
+        _n: int
+        _pos: int
+
+        def __init__(self, text: str) -> None: ...
+
+        def parse(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _has_char(self, *args: Any, **kwargs: Any) -> Any: ...
 
     # ── 图片 ──────────────────────────────────────────────
 

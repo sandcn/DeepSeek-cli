@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Tuple
+from typing import TYPE_CHECKING, Any, Tuple
 
 _logger = logging.getLogger(__name__)
 
@@ -44,6 +44,14 @@ class MathParserCoreCommandsMixin:
     """
 
     # ── 根式 ────────────────────────────────────────────
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``MathParser`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        def parse(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _flush_bigop_limits(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _parse_script(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def _parse_sqrt(self, s: str, i: int, n: int) -> Tuple[Text, int]:
         """解析 \\sqrt[n]{x} 或 \\sqrt{x}。

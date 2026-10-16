@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from typing import Any, Callable
+
 from .types import ASTNode, NodeType
 from ..types import Token, TokenType, RenderContext
 from ._builder_mixins import (
@@ -49,7 +51,7 @@ class ASTBuilder(_TextBuildingMixin, _ListBuildingMixin, _BlockBuildingMixin):
         self._block_meta_stack: list[dict] = []
 
         # TokenType → handler 映射表
-        self._handlers: dict[TokenType, callable] = {
+        self._handlers: dict[TokenType, Callable[..., Any]] = {
             TokenType.PARAGRAPH: self._handle_paragraph,
             TokenType.HEADING: self._handle_heading,
             TokenType.HR: self._handle_hr,

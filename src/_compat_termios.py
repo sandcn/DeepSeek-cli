@@ -153,8 +153,8 @@ if _IS_NATIVE_WIN:
 
 else:
     # Unix / Cygwin / macOS — 直接 re-export，零开销
-    import termios as termios  # type: ignore[no-redef]
-    import tty as tty  # type: ignore[no-redef]
+    import termios as termios
+    import tty as tty
 
     HAS_TERMIOS: bool = True
 

@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from typing import Any, Callable
+
 import logging
 
 from rich.style import Style
@@ -69,7 +71,7 @@ class ASTRenderer(_TextRenderingMixin, _ListRenderingMixin, _BlockRenderingMixin
         self._inline_renderer = InlineRenderer()
 
         # Handler 注册表
-        self._handlers: dict[NodeType, callable] = {}
+        self._handlers: dict[NodeType, Callable[..., Any]] = {}
         self._register_handlers()
 
     def _register_handlers(self):

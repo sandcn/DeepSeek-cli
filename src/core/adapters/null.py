@@ -36,10 +36,12 @@ class _NullDisplayPort(DisplayPort):
                      tool_id: str = "") -> None:
         pass
 
-    def tool_start(self, label: str, tool_name: str, detail: str, metadata: dict | None = None) -> None:
+    def tool_start(self, label: str, tool_name: str, detail: str, metadata: dict | None = None,
+                   tool_id: str = "") -> None:
         pass
 
-    def tool_done(self, label: str, tool_name: str = "", success: bool = True, metadata: dict | None = None) -> None:
+    def tool_done(self, label: str, tool_name: str = "", success: bool = True, metadata: dict | None = None,
+                  tool_id: str = "") -> None:
         pass
 
     def update_spinner(self, label: str) -> None:

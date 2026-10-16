@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from typing import Any, Callable
+
 from .types import ASTNode, NodeType
 from ..types import Token, TokenType
 
@@ -29,7 +31,7 @@ class ASTFlattener:
 
     def __init__(self):
         # NodeType → handler 分发表（替代 getattr 反射）
-        self._handlers: dict[NodeType, callable] = {
+        self._handlers: dict[NodeType, Callable[..., Any]] = {
             NodeType.DOCUMENT: self._handle_document,
             NodeType.SECTION: self._handle_section,
             NodeType.PARAGRAPH: self._handle_paragraph,

@@ -338,12 +338,21 @@ def test_refresher_calls_action_handler(sm):
         set_sandbox_manager(old)
 
 
-def test_register_session_handlers_injects_sandbox_refresher():
-    """会话就绪注入：``model.sandbox_refresher`` / ``model.sandbox_source``。"""
+def test_register_session_handlers_injects_sandbox_refresher(monkeypatch):
+    """会话就绪注入：``model.sandbox_refresher`` / ``model.sandbox_source``。
+
+    ★ 测试隔离：显式把刷新器的沙盒管理器取用点置为「无全局管理器」——
+    修复前依赖进程内全局状态（并行 worker 内若其它测试创建过
+    SandboxManager，刷新器会因数据签名由 None 变为实际签名而返回 True，
+    断言 ``is False`` 随机失败）。
+    """
     import types
 
     from src.app_loop._session_setup import _register_session_handlers
+    from src.core.commands import _sandbox_cmd
     from src.tui.app.model import AppModel
+
+    monkeypatch.setattr(_sandbox_cmd, "get_sandbox_manager", lambda: None)
 
     model = AppModel()
 

@@ -9,6 +9,8 @@ import logging
 import string
 import unicodedata
 
+from typing import TYPE_CHECKING, Any
+
 from .inline_nodes import (
     InlineNode, TextNode,
     BoldNode, ItalicNode, BoldItalicNode,
@@ -78,6 +80,33 @@ class InlineFormattingMixin:
       _try_superscript()
       _try_inline_footnote()
     """
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``_InlineParser`` 提供）：
+    #   mixin 依赖宿主实例状态与方法，mypy 无法从 MRO 推断（宿主在
+    #   ``inline_parser.py`` 中组合本 mixin）。此处显式声明宿主契约，
+    #   运行期 ``TYPE_CHECKING`` 为 False（零开销、无 MRO 影响）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        _text: str
+        _n: int
+        _pos: int
+        _emph_fail: Any
+        _MAX_DEPTH: int
+
+        def _parse_until(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _make_nestable(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _try_format(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _delim_run_end(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _is_interest(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _has_seq(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _has_char(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _find_next_format_char(self, *args: Any, **kwargs: Any) -> Any: ...
 
     #: 定界符 flanking 判定结果缓存（``(pos, length) → (left, right)``）——
     #: 由 ``_InlineParser.__init__`` 创建；``None``（未初始化）时不做缓存

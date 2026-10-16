@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from .inline_nodes import (
     InlineNode, TextNode, LineBreakNode, ImageNode,
     AbbrNode, ColorTextNode, LinkNode, MathMLNode,
@@ -72,6 +74,25 @@ class InlineHTMLMixin:
       _make_img_node()
       _extract_attr()
     """
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``_InlineParser`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        _text: str
+        _n: int
+        _pos: int
+        _MAX_DEPTH: int
+
+        def _has_seq(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _has_char(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _try_match_str(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _try_format(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _make_nestable(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _is_interest(self, *args: Any, **kwargs: Any) -> Any: ...
 
     # ── HTML 实体 ─────────────────────────────────────────
 
@@ -368,7 +389,7 @@ class InlineHTMLMixin:
                 self._pos += 1
         return None
 
-    def _make_img_node(self, attr_text: str) -> ImageNode | None:
+    def _make_img_node(self, attr_text: str) -> InlineNode | None:
         src = self._extract_attr(attr_text, 'src')
         alt = self._extract_attr(attr_text, 'alt')
         if src:

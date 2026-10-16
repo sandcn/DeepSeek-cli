@@ -1,5 +1,6 @@
 """FencedDivHandler — 自定义容器块（::: 语法）"""
 import logging
+from typing import Any, Callable
 from ..types import Token, TokenType
 from .base import TokenHandler
 from ._box_base import BaseBoxMixin
@@ -18,7 +19,7 @@ class FencedDivHandler(TokenHandler, BaseBoxMixin):
             TokenType.FENCED_DIV_CLOSE,
         }
 
-    def get_method_map(self) -> dict[TokenType, callable]:
+    def get_method_map(self) -> dict[TokenType, Callable[..., Any]]:
         return {
             TokenType.FENCED_DIV_OPEN: self._handle_fenced_div_open,
             TokenType.FENCED_DIV_LINE: self._handle_fenced_div_line,

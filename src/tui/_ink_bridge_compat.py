@@ -22,6 +22,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 
 class _CompletionProxy:
     """兼容 _BottomBar._completion 内部字段访问（user_select 等直接读写）。"""
@@ -75,6 +77,12 @@ class _BottomBarCompatMixin:
 
     混入 ``InkBridge``（须提供 ``_model`` / ``_request_redraw()``）。
     """
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``InkBridge`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        _model: Any
+
+        def _request_redraw(self, *args: Any, **kwargs: Any) -> Any: ...
 
     # 兼容 user_select 的 _MIN_HEIGHT 检查（is_active 恒 True，实际不会走到）
     _MIN_HEIGHT = 12

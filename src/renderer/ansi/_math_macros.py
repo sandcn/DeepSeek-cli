@@ -21,6 +21,8 @@ TUI 流式公式渲染在遇到 ``\\def`` / ``\\newcommand`` / ``\\DeclareMathOp
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import re
 
 #: 递归展开深度上限（防 ``\def\a{\a}`` 之类自引用导致栈溢出）
@@ -566,6 +568,10 @@ def preprocess_math_source(src: str, state: MacroState | None = None
 
 class _MathMacroMixin:
     """宏系统 mixin：由 ``_LatexRenderer`` 继承（提供预处理入口）。"""
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``_LatexRenderer`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        macro_state: Any
 
     def preprocess(self, src: str) -> str:
         text, self.macro_table = preprocess_math_source(src, self.macro_state)

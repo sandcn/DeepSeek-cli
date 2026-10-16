@@ -18,7 +18,6 @@ Windows Toast）的**声明**集中在本模块规格表中；每一项都由清
 
 from __future__ import annotations
 
-import asyncio
 import importlib
 import logging
 import threading

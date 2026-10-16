@@ -1,5 +1,6 @@
 """HtmlBlockHandler — HTML 块级元素"""
 import logging
+from typing import Any, Callable
 from rich.text import Text
 from ..types import Token, TokenType
 from .._rendering import render_html_block_open, render_html_block_close
@@ -19,7 +20,7 @@ class HtmlBlockHandler(TokenHandler):
             TokenType.HTML_BLOCK_CLOSE,
         }
 
-    def get_method_map(self) -> dict[TokenType, callable]:
+    def get_method_map(self) -> dict[TokenType, Callable[..., Any]]:
         return {
             TokenType.HTML_BLOCK_OPEN: self._handle_html_block_open,
             TokenType.HTML_BLOCK_LINE: self._handle_html_block_line,

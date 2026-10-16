@@ -27,9 +27,13 @@ import pytest
 #: mypy 错误数基线（``python -m mypy src/tui``）。
 #: 2026-10 dataclass_transform 修复前 2403 → dataclass_transform 修复后 1403
 #: → P1-1 巨型组件拆分（事件处理/协议/渲染器/搜索辅助提取为模块级函数）
-#: 后 1281。后续新增错误须修复或先下调基线下调来源再更新本值
-#: （禁止上调后放任增长）。
-_MYPY_ERROR_BASELINE = 1281
+#: 后 1281 → 2026-10 类型治理（mixin 宿主契约 ``TYPE_CHECKING`` 声明、
+#: ``h()`` children 类型放宽、PEP 562 代理模块属性声明、``_next_hook``
+#: 泛型化、``callable`` → ``Callable[..., Any]``、视图 Optional 状态收窄、
+#: 属性声明 ``object`` → ``Any`` 等）后 **528**（冷缓存实测；同口径
+#: ``python -m mypy`` 全项目 604）。
+#: 后续新增错误须修复或先下调基线下调来源再更新本值（禁止上调后放任增长）。
+_MYPY_ERROR_BASELINE = 528
 
 #: 基线检查范围（与 pyproject ``[tool.mypy] files`` 对齐的 tui 子集）
 _MYPY_TARGET = "src/tui"

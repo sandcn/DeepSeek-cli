@@ -1,6 +1,7 @@
 """FrontMatterHandler — 文档头元信息块（YAML / TOML / JSON）渲染（Rich 路径）"""
 
 import logging
+from typing import Any, Callable
 
 from rich.panel import Panel
 from rich.style import Style
@@ -20,7 +21,7 @@ class FrontMatterHandler(TokenHandler):
     def get_token_types(self) -> set[TokenType]:
         return {TokenType.FRONT_MATTER}
 
-    def get_method_map(self) -> dict[TokenType, callable]:
+    def get_method_map(self) -> dict[TokenType, Callable[..., Any]]:
         return {TokenType.FRONT_MATTER: self._handle_front_matter}
 
     def _handle_front_matter(self, token: Token, engine):
@@ -50,7 +51,7 @@ class TableCaptionHandler(TokenHandler):
     def get_token_types(self) -> set[TokenType]:
         return {TokenType.TABLE_CAPTION}
 
-    def get_method_map(self) -> dict[TokenType, callable]:
+    def get_method_map(self) -> dict[TokenType, Callable[..., Any]]:
         return {TokenType.TABLE_CAPTION: self._handle_table_caption}
 
     def _handle_table_caption(self, token: Token, engine):

@@ -1166,7 +1166,9 @@ def ModelView(props) -> object:
     )
     use_modal_scope(visible)
 
-    if not visible:
+    # ★ 收窄：``mv`` 为 Optional（``getattr(..., None)``）——显式判空
+    #   （mv 为 None 时 visible 恒 False，行为不变）。
+    if mv is None or not visible:
         return empty_modal_frame()
 
     # ── 选中钳制 ──

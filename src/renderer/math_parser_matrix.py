@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import TYPE_CHECKING, Any, List, Tuple
 
 from rich.text import Text
 
@@ -27,6 +27,10 @@ class MathParserMatrixMixin:
     """
 
     # ── 矩阵环境 ────────────────────────────────────────
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``MathParser`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        def parse(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def _parse_matrix_env(self, s: str, i: int, n: int) -> Tuple[Text, int]:
         """解析 \\begin{env}...\\end{env} 或 TeX 简写 \\begin{env}...\\endenv 环境。

@@ -252,8 +252,8 @@ class ToolCallbackChain:
         if parse_elapsed > 0:
             metadata["解析"] = f"{parse_elapsed:.1f}s"
 
-        agent.display.tool_parsing(tool_label, tool_name, arg_str)
-        agent.display.tool_start(tool_label, tool_name, detail, metadata)
+        agent.display.tool_parsing(tool_label, tool_name, arg_str, tool_id=tool_label)
+        agent.display.tool_start(tool_label, tool_name, detail, metadata, tool_id=tool_label)
 
     def _on_after_tool(self, tc: dict, output, success: bool) -> None:
         """工具执行后回调：display 完成进度 + TUI 刷新通知。"""
@@ -271,11 +271,13 @@ class ToolCallbackChain:
                 "output_preview": output,
                 "tool_name": tc["name"],
             }
-            agent.display.tool_done(tool_label, tc["name"], success=True, metadata=metadata)
+            agent.display.tool_done(tool_label, tc["name"], success=True, metadata=metadata,
+                                    tool_id=tool_label)
         else:
             err_preview = (output[:300] + '…') if len(output) > 300 else output
             agent.display.tool_done(tool_label, tc["name"], success=False,
-                                    metadata={"output_preview": err_preview})
+                                    metadata={"output_preview": err_preview},
+                                    tool_id=tool_label)
 
         for _cb in agent._on_tool_completed_callbacks:
             try:

@@ -10,6 +10,8 @@ Setext / 延迟 fence）方法群。``RegexFreeBlockParser`` 继承本 mixin。
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import logging
 
 from ._block_parser_state import (
@@ -118,6 +120,56 @@ def _html_tag_delta(line: str, tag: str) -> int:
 
 class _BlockParserStreamMixin:
     """非 NORMAL 状态行处理 + 块级语法尝试方法群（详见模块 docstring）。"""
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``RegexFreeBlockParser`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        _details_depth: Any
+        _details_open: Any
+        _used_heading_ids: Any
+        _auto_close_kinds: Any
+        _table_rows: Any
+        _admonition_type: Any
+        _bq_active: Any
+        _html_depth: Any
+        _math_env_end: Any
+        _indented_code_pad: Any
+
+        def _emit_code_line(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _handle_paragraph_line(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        _block_lines: Any
+        _block_lang: Any
+        _block_nested_fence: Any
+        _block_html_tag: str
+
+        def _emit_math_block(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _parse_normal_line(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _collect_html_line(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _emit_table(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _emit_admonition_block_close(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _emit_html_structured(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _emit_mermaid_block(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _feed_fenced_div_line(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _feed_front_matter_line(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _feed_html_blockquote_line(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _feed_html_heading_line(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _feed_html_paragraph_line(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _feed_html_pre_line(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _parse_sub_blocks(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def _feed_block_line(self, line: str, tokens: list[Token]):
         """处理非 NORMAL 状态下的行。"""

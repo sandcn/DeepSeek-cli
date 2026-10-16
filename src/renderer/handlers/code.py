@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, Callable
+
 import logging
 from rich.text import Text
 from rich.style import Style
@@ -57,7 +59,7 @@ class CodeHandler(TokenHandler):
             TokenType.CODE_BLOCK,
         }
 
-    def get_method_map(self) -> dict[TokenType, callable]:
+    def get_method_map(self) -> dict[TokenType, Callable[..., Any]]:
         return {
             TokenType.CODE_FENCE_OPEN: self._handle_code_fence_open,
             TokenType.CODE_LINE: self._handle_code_line,

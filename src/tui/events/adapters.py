@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from typing import Any, Dict, List, Optional, Set, Type
 
@@ -40,6 +41,26 @@ from .event_types import (
 )
 
 _logger = logging.getLogger(__name__)
+
+
+def _accepts_keyword_argument(method: Any, name: str) -> bool:
+    """判定可调用对象是否接受指定关键字参数（含 ``**kwargs`` 兜底）。
+
+    适配器按鸭子类型转发（display 可为任意实现，含未声明 ``tool_id`` 形参的
+    旧显示类）——按签名判定后再决定是否传 ``tool_id``，避免给旧实现传多余
+    位置参数抛 ``TypeError``（异常在事件 handler 内会被总线按「handler 异常」
+    吞咽，导致该次事件静默丢失）。签名不可自省（内建/装饰后失去签名）时
+    保守返回 False（不传）。
+    """
+    if method is None:
+        return False
+    try:
+        params = inspect.signature(method).parameters
+    except (TypeError, ValueError):  # pragma: no cover - 内建/不可自省
+        return False
+    if name in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 # ═══════════════════════════════════════════════════════════
@@ -150,10 +171,10 @@ class DisplayEventAdapter:
             #   祖先）的实现；纯继承的 no-op 不订阅。
             if not self._implements_display_method(self._display, method_name):
                 continue
-                # 为每个事件类型创建绑定的 handler
-                handler = self._make_handler(event_type, method_name)
-                self._handlers[event_type] = handler
-                event_bus.subscribe(handler, event_type=event_type)
+            # 为每个事件类型创建绑定的 handler
+            handler = self._make_handler(event_type, method_name)
+            self._handlers[event_type] = handler
+            event_bus.subscribe(handler, event_type=event_type)
 
     def unsubscribe_all(self) -> None:
         """取消所有已订阅的事件 handler。"""
@@ -168,7 +189,25 @@ class DisplayEventAdapter:
         self._handlers.clear()
 
     def _make_handler(self, event_type: Type[DisplayEvent], method_name: str) -> EventHandler:
-        """创建将特定事件类型转发到 BaseDisplay 方法的处理函数。"""
+        """创建将特定事件类型转发到 BaseDisplay 方法的处理函数。
+
+        ★ tool_id 贯通：``ToolParsingEvent`` / ``ToolStartedEvent`` /
+        ``ToolDoneEvent`` 的 ``tool_id`` 一并转发（前端据此把工具卡与流式
+        parsing 记录按 tool_call_id 精确合并）。display 实现可能未声明
+        ``tool_id`` 形参（旧实现/第三方显示类），故按方法签名判定后再决定
+        是否传——不支持时退回不带 ``tool_id`` 的调用，避免 ``TypeError``。
+        """
+        pass_tool_id = _accepts_keyword_argument(
+            getattr(self._display, method_name, None), "tool_id"
+        )
+
+        def _call(method, args: tuple) -> None:
+            """按签名能力携带 tool_id（元素为事件字段，末位为 tool_id）。"""
+            if pass_tool_id:
+                method(*args)
+            else:
+                method(*args[:-1])
+
         def handler(event: DisplayEvent) -> None:
             method = getattr(self._display, method_name, None)
             if method is None:
@@ -180,11 +219,14 @@ class DisplayEventAdapter:
                     #   （_base_display.py L95-98），转发路径不再丢弃 tool_id
                     #   （修复前注释声称「签名无 tool_id」而未转发，事件发布
                     #   后 display 侧拿不到 tool_id）。
-                    method(event.label, event.tool_name, event.arguments, event.tool_id)
+                    _call(method, (event.label, event.tool_name, event.arguments,
+                                   event.tool_id))
                 elif isinstance(event, ToolStartedEvent):
-                    method(event.label, event.tool_name, event.detail, event.metadata)
+                    _call(method, (event.label, event.tool_name, event.detail,
+                                   event.metadata, event.tool_id))
                 elif isinstance(event, ToolDoneEvent):
-                    method(event.label, event.tool_name, event.success, event.metadata)
+                    _call(method, (event.label, event.tool_name, event.success,
+                                   event.metadata, event.tool_id))
                 elif isinstance(event, ToolBatchStartedEvent):
                     method(event.label, list(event.tool_names))
                 elif isinstance(event, AgentAddedEvent):

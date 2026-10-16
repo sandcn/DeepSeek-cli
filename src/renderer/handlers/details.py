@@ -1,5 +1,6 @@
 """DetailsHandler — Details 折叠块"""
 import logging
+from typing import Any, Callable
 from rich.text import Text
 from rich.style import Style
 from ..types import Token, TokenType
@@ -22,7 +23,7 @@ class DetailsHandler(TokenHandler):
             TokenType.DETAILS_CLOSE,
         }
 
-    def get_method_map(self) -> dict[TokenType, callable]:
+    def get_method_map(self) -> dict[TokenType, Callable[..., Any]]:
         return {
             TokenType.DETAILS_OPEN: self._handle_details_open,
             TokenType.DETAILS_LINE: self._handle_details_line,

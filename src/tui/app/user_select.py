@@ -714,6 +714,10 @@ def UserSelectPopup(props) -> object:
         return h(Column, None, rows)
 
     # ══════════════ 问题页 ══════════════
+    # ★ 收窄：``us`` 为 Optional（``states[cur_active] if ... else None``；
+    #   提交页已在上面返回）——mypy 无法从 ``visible`` 反推非 None，显式判空。
+    if us is None:
+        return empty_modal_frame()
     options = list(us.options)
     total = len(options)
     multi = bool(us.multi_select)

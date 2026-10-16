@@ -637,7 +637,10 @@ def PluginView(props) -> object:
     #   Enter 不落入输入缓冲）；关闭后（visible=False）hook 不激活零影响。
     use_modal_scope(visible)
 
-    if not visible:
+    # ★ 收窄：``pv`` 为 Optional（``getattr(..., None)``），mypy 无法从
+    #   ``visible`` 布尔表达式反推其非 None——显式判空（pv 为 None 时
+    #   visible 恒 False，行为不变）。
+    if pv is None or not visible:
         return empty_modal_frame()
 
     # ── 左栏行渲染 ──

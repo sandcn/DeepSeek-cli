@@ -1,5 +1,6 @@
 """TableHandler — 表格渲染"""
 import logging
+from typing import Any, Callable
 from ..types import Token, TokenType
 from .._rendering import build_rich_table
 from .base import TokenHandler
@@ -14,7 +15,7 @@ class TableHandler(TokenHandler):
     def get_token_types(self) -> set[TokenType]:
         return {TokenType.TABLE}
 
-    def get_method_map(self) -> dict[TokenType, callable]:
+    def get_method_map(self) -> dict[TokenType, Callable[..., Any]]:
         return {
             TokenType.TABLE: self._handle_table,
         }

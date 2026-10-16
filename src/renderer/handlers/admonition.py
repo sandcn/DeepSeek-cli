@@ -1,5 +1,6 @@
 """AdmonitionHandler — 告示块"""
 import logging
+from typing import Any, Callable
 
 from rich.text import Text
 from rich.style import Style
@@ -23,7 +24,7 @@ class AdmonitionHandler(TokenHandler, BaseBoxMixin):
             TokenType.ADMONITION_CLOSE,
         }
 
-    def get_method_map(self) -> dict[TokenType, callable]:
+    def get_method_map(self) -> dict[TokenType, Callable[..., Any]]:
         return {
             TokenType.ADMONITION_OPEN: self._handle_admonition_open,
             TokenType.ADMONITION_LINE: self._handle_admonition_line,

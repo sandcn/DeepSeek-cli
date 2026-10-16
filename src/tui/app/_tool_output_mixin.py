@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import logging
 import time
 
@@ -52,6 +54,20 @@ _S_TOOL_OUT = Style(fg=242)
 
 class _ToolOutputMixin:
     """AppModel 工具输出行为 mixin（工具 box 生命周期）。"""
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``AppModel`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        tool_boxes: Any
+        blocks: Any
+        _tool_id_seq: Any
+
+        def _block_to_ink_lines(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def append_block(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def commit_block(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def commit_open_block(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def open_tool_box(self, tool_id: str, tool_name: str, detail: str = "") -> ChatBlock:
         """打开一个工具分组：卡片标题行立即显示，输出增量追加（卡片化）。

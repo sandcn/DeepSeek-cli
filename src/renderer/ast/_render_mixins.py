@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import logging
 
 from rich.syntax import Syntax
@@ -53,6 +55,20 @@ class _TextRenderingMixin:
     """文本/基础节点渲染 handler 集合。"""
 
     # ── 文档 & 章节 ───────────────────────────────────
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``ASTRenderer`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        _output: Any
+        _code_theme: Any
+        _math_renderer: Any
+        _mermaid_renderer: Any
+        _code_lexers: Any
+
+        def render(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _render_inline(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _output_assembled(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def _handle_document(self, node: ASTNode):
         """文档根节点：递归渲染所有子节点。"""
@@ -116,6 +132,16 @@ class _ListRenderingMixin:
     """列表类节点渲染 handler 集合。（支持 Todo 进度统计）"""
 
     # ── 无序列表 ─────────────────────────────────────
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``ASTRenderer`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        _output: Any
+
+        def render(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _render_inline(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _output_assembled(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def _handle_list(self, node: ASTNode):
         """无序列表：统一渲染所有子节点并统计 Todo 进度。"""
@@ -183,6 +209,20 @@ class _BlockRenderingMixin:
     """块级节点渲染 handler 集合。"""
 
     # ── 代码块 ───────────────────────────────────────
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``ASTRenderer`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        _output: Any
+        _code_theme: Any
+        _math_renderer: Any
+        _mermaid_renderer: Any
+        _code_lexers: Any
+
+        def render(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _render_inline(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _output_assembled(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def _render_code_title_bar(self, title: str, lang: str) -> Text:
         """渲染代码块标题栏。"""

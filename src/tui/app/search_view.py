@@ -308,7 +308,9 @@ def SearchView(props) -> object:
     use_input(_handle, visible)
     use_modal_scope(visible)
 
-    if not visible:
+    # ★ 收窄：``sv`` 为 Optional（``getattr(..., None)``）——显式判空
+    #   （sv 为 None 时 visible 恒 False，行为不变）。
+    if sv is None or not visible:
         return empty_modal_frame()
 
     def _render_left(item, idx, is_sel):

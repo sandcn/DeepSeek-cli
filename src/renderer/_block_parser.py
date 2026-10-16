@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from typing import Any, Callable
+
 import logging
 import string
 _logger = logging.getLogger(__name__)
@@ -1088,7 +1090,6 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             stripped = _strip_left(line).rstrip()
             if not stripped:
                 return None
-            first = stripped[0]
 
             # 缩进代码块（4 空格 / tab 开头，且不在列表/告示上下文）——与
             # ``_parse_normal_line`` 的缩进代码检测条件一致：预览为代码块，
@@ -2321,7 +2322,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             self._start_admonition_block(atype, title, first == '?', tokens)
             return True
 
-        _DISPATCH: dict[str, callable] = {
+        _DISPATCH: dict[str, Callable[..., Any]] = {
             '#': _handle_heading,
             '`': _handle_fence,
             '~': _handle_fence,

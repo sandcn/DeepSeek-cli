@@ -20,14 +20,20 @@ class DisplayPort(ABC):
 
     @abstractmethod
     def tool_start(self, tool_label: str, tool_name: str, detail: str,
-                   metadata: Optional[dict] = None) -> None:
-        """工具调用开始"""
+                   metadata: Optional[dict] = None, tool_id: str = "") -> None:
+        """工具调用开始
+
+        ``tool_id`` 为工具调用唯一 ID（tool_call_id）——Core 层各调用方
+        （``SubAgent._build_tool_callbacks`` / ``ToolCallbackChain``）均以
+        关键字传入，供前端把 start/done 与流式 parsing 记录按 ID 精确合并。
+        """
         ...
 
     @abstractmethod
     def tool_done(self, tool_label: str, tool_name: str = "",
-                  success: bool = True, metadata: Optional[dict] = None) -> None:
-        """工具调用结束"""
+                  success: bool = True, metadata: Optional[dict] = None,
+                  tool_id: str = "") -> None:
+        """工具调用结束（``tool_id`` 语义同 ``tool_start``）"""
         ...
 
     @abstractmethod

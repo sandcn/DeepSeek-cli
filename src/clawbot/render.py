@@ -152,8 +152,6 @@ def render_qrcode_ascii(content: str, invert: bool = True,
     Returns:
         二维码文本行列表（含静区 border）
     """
-    import math
-
     import qrcode
     from qrcode.constants import ERROR_CORRECT_M
 

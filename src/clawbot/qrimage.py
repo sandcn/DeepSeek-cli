@@ -23,7 +23,7 @@ import zlib
 from typing import List, Tuple
 
 try:  # 可选依赖：有 Pillow 用 Pillow，否则标准库回退
-    from PIL import Image  # type: ignore
+    from PIL import Image
     _HAS_PIL = True
 except Exception:  # pragma: no cover
     _HAS_PIL = False

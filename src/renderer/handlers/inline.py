@@ -1,5 +1,6 @@
 """InlineHandler — 段落/标题/引用/列表/分隔线/定义列表"""
 import logging
+from typing import Any, Callable
 from ..types import Token, TokenType
 from .._rendering import (
     is_todo,
@@ -37,7 +38,7 @@ class InlineHandler(TokenHandler):
             TokenType.LINE_BREAK,
         }
 
-    def get_method_map(self) -> dict[TokenType, callable]:
+    def get_method_map(self) -> dict[TokenType, Callable[..., Any]]:
         return {
             TokenType.PARAGRAPH: self._handle_paragraph,
             TokenType.EMPTY_LINE: self._handle_empty_line,

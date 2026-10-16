@@ -12,7 +12,6 @@ import asyncio
 import logging
 import os
 import shutil
-import sys
 
 _logger = logging.getLogger(__name__)
 

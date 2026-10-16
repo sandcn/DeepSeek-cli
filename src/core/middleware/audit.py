@@ -8,7 +8,7 @@ _logger = logging.getLogger(__name__)
 
 # 审计日志记录器（模块级，延迟加载）
 # 支持测试通过 mock.patch("src.core.middleware.audit.audit_logger") 进行断言
-audit_logger = None  # type: ignore
+audit_logger = None
 
 
 def _get_audit_logger():

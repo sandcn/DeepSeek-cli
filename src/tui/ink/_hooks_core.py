@@ -28,7 +28,7 @@ from __future__ import annotations
 import itertools
 import logging
 import math
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 
 from .fiber import (
     Fiber,
@@ -138,7 +138,10 @@ def _schedule() -> None:
     _schedule_ctx(current_context())
 
 
-def _next_hook(hook_cls: type, *init_args) -> HookNode:
+_HookT = TypeVar("_HookT", bound=HookNode)
+
+
+def _next_hook(hook_cls: type[_HookT], *init_args: Any) -> _HookT:
     """获取/创建当前 fiber 的下一个 hook 节点（公共骨架，方向② 步骤5）。
 
     模板方法：从 fiber.hook_index 取下标、递增，按下标复用同类型 hook

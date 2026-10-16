@@ -25,7 +25,10 @@ class InlineNode:
 
 @dataclass
 class TextNode(InlineNode):
-    children: list[InlineNode] | None = None  # 叶子节点
+    # 叶子节点：运行期用 None 表示「无子节点」（基类默认 []）——类型上
+    # 有意放宽基类的 ``list[InlineNode]``，故显式忽略赋值兼容检查
+    # （运行期语义由 tests/test_inline_nodes.py 固化：``node.children is None``）。
+    children: list[InlineNode] | None = None  # type: ignore[assignment]  # 叶子节点
 
 
 @dataclass
@@ -50,7 +53,10 @@ class UnderlineNode(InlineNode):
 
 @dataclass
 class InlineCodeNode(InlineNode):
-    children: list[InlineNode] | None = None  # 叶子节点
+    # 叶子节点：运行期用 None 表示「无子节点」（基类默认 []）——类型上
+    # 有意放宽基类的 ``list[InlineNode]``，故显式忽略赋值兼容检查
+    # （运行期语义由 tests/test_inline_nodes.py 固化：``node.children is None``）。
+    children: list[InlineNode] | None = None  # type: ignore[assignment]  # 叶子节点
 
 
 @dataclass
@@ -77,12 +83,18 @@ class HighlightNode(InlineNode):
 
 @dataclass
 class SubscriptNode(InlineNode):
-    children: list[InlineNode] | None = None  # 叶子节点
+    # 叶子节点：运行期用 None 表示「无子节点」（基类默认 []）——类型上
+    # 有意放宽基类的 ``list[InlineNode]``，故显式忽略赋值兼容检查
+    # （运行期语义由 tests/test_inline_nodes.py 固化：``node.children is None``）。
+    children: list[InlineNode] | None = None  # type: ignore[assignment]  # 叶子节点
 
 
 @dataclass
 class SuperscriptNode(InlineNode):
-    children: list[InlineNode] | None = None  # 叶子节点
+    # 叶子节点：运行期用 None 表示「无子节点」（基类默认 []）——类型上
+    # 有意放宽基类的 ``list[InlineNode]``，故显式忽略赋值兼容检查
+    # （运行期语义由 tests/test_inline_nodes.py 固化：``node.children is None``）。
+    children: list[InlineNode] | None = None  # type: ignore[assignment]  # 叶子节点
 
 
 @dataclass
@@ -92,7 +104,10 @@ class SpoilerNode(InlineNode):
 
 @dataclass
 class InlineMathNode(InlineNode):
-    children: list[InlineNode] | None = None  # 叶子节点
+    # 叶子节点：运行期用 None 表示「无子节点」（基类默认 []）——类型上
+    # 有意放宽基类的 ``list[InlineNode]``，故显式忽略赋值兼容检查
+    # （运行期语义由 tests/test_inline_nodes.py 固化：``node.children is None``）。
+    children: list[InlineNode] | None = None  # type: ignore[assignment]  # 叶子节点
 
 
 @dataclass
@@ -102,7 +117,10 @@ class MathMLNode(InlineNode):
     渲染层把 MathML 转为 LaTeX 后复用二维/紧凑公式排版（ANSI 路径），
     Rich 路径转为 LaTeX 后交给 ``MathRenderer``。
     """
-    children: list[InlineNode] | None = None  # 叶子节点
+    # 叶子节点：运行期用 None 表示「无子节点」（基类默认 []）——类型上
+    # 有意放宽基类的 ``list[InlineNode]``，故显式忽略赋值兼容检查
+    # （运行期语义由 tests/test_inline_nodes.py 固化：``node.children is None``）。
+    children: list[InlineNode] | None = None  # type: ignore[assignment]  # 叶子节点
 
 
 @dataclass
@@ -112,12 +130,18 @@ class ProgressNode(InlineNode):
     属性（``value`` / ``max`` / ``min`` / ``optimum``）在解析时写入 ``meta``，
     渲染层据此绘制终端进度条。
     """
-    children: list[InlineNode] | None = None  # 叶子节点
+    # 叶子节点：运行期用 None 表示「无子节点」（基类默认 []）——类型上
+    # 有意放宽基类的 ``list[InlineNode]``，故显式忽略赋值兼容检查
+    # （运行期语义由 tests/test_inline_nodes.py 固化：``node.children is None``）。
+    children: list[InlineNode] | None = None  # type: ignore[assignment]  # 叶子节点
 
 
 @dataclass
 class FootnoteRefNode(InlineNode):
-    children: list[InlineNode] | None = None  # 叶子节点
+    # 叶子节点：运行期用 None 表示「无子节点」（基类默认 []）——类型上
+    # 有意放宽基类的 ``list[InlineNode]``，故显式忽略赋值兼容检查
+    # （运行期语义由 tests/test_inline_nodes.py 固化：``node.children is None``）。
+    children: list[InlineNode] | None = None  # type: ignore[assignment]  # 叶子节点
     ref_id: str = ""
 
 
@@ -128,18 +152,27 @@ class InlineFootnoteNode(InlineNode):
     正文位置渲染为脚注序号 ``[n]``，脚注文本在文末脚注列表中输出
     （与定义式脚注 ``[^id]: ...`` 共用同一编号序列）。
     """
-    children: list[InlineNode] | None = None  # 叶子节点
+    # 叶子节点：运行期用 None 表示「无子节点」（基类默认 []）——类型上
+    # 有意放宽基类的 ``list[InlineNode]``，故显式忽略赋值兼容检查
+    # （运行期语义由 tests/test_inline_nodes.py 固化：``node.children is None``）。
+    children: list[InlineNode] | None = None  # type: ignore[assignment]  # 叶子节点
 
 
 @dataclass
 class AutoLinkNode(InlineNode):
-    children: list[InlineNode] | None = None  # 叶子节点
+    # 叶子节点：运行期用 None 表示「无子节点」（基类默认 []）——类型上
+    # 有意放宽基类的 ``list[InlineNode]``，故显式忽略赋值兼容检查
+    # （运行期语义由 tests/test_inline_nodes.py 固化：``node.children is None``）。
+    children: list[InlineNode] | None = None  # type: ignore[assignment]  # 叶子节点
     url: str = ""
 
 
 @dataclass
 class AutoLinkEmailNode(InlineNode):
-    children: list[InlineNode] | None = None  # 叶子节点
+    # 叶子节点：运行期用 None 表示「无子节点」（基类默认 []）——类型上
+    # 有意放宽基类的 ``list[InlineNode]``，故显式忽略赋值兼容检查
+    # （运行期语义由 tests/test_inline_nodes.py 固化：``node.children is None``）。
+    children: list[InlineNode] | None = None  # type: ignore[assignment]  # 叶子节点
     email: str = ""
 
 
@@ -147,7 +180,10 @@ class AutoLinkEmailNode(InlineNode):
 class KbdNode(InlineNode):
     """键盘快捷键节点 <kbd>text</kbd>（不可嵌套）"""
     content: str = ""
-    children: list[InlineNode] | None = None  # 叶子节点
+    # 叶子节点：运行期用 None 表示「无子节点」（基类默认 []）——类型上
+    # 有意放宽基类的 ``list[InlineNode]``，故显式忽略赋值兼容检查
+    # （运行期语义由 tests/test_inline_nodes.py 固化：``node.children is None``）。
+    children: list[InlineNode] | None = None  # type: ignore[assignment]  # 叶子节点
 
 
 @dataclass
@@ -155,7 +191,10 @@ class AbbrNode(InlineNode):
     """缩写节点 <abbr title="...">text</abbr>（不可嵌套）"""
     content: str = ""
     title: str = ""  # 展开的全称
-    children: list[InlineNode] | None = None  # 叶子节点
+    # 叶子节点：运行期用 None 表示「无子节点」（基类默认 []）——类型上
+    # 有意放宽基类的 ``list[InlineNode]``，故显式忽略赋值兼容检查
+    # （运行期语义由 tests/test_inline_nodes.py 固化：``node.children is None``）。
+    children: list[InlineNode] | None = None  # type: ignore[assignment]  # 叶子节点
 
 
 @dataclass
@@ -223,7 +262,10 @@ class CriticCommentNode(InlineNode):
 
 @dataclass
 class LineBreakNode(InlineNode):
-    children: list[InlineNode] | None = None  # 叶子节点
+    # 叶子节点：运行期用 None 表示「无子节点」（基类默认 []）——类型上
+    # 有意放宽基类的 ``list[InlineNode]``，故显式忽略赋值兼容检查
+    # （运行期语义由 tests/test_inline_nodes.py 固化：``node.children is None``）。
+    children: list[InlineNode] | None = None  # type: ignore[assignment]  # 叶子节点
 
 
 @dataclass
@@ -277,7 +319,7 @@ _NESTABLE_TYPES = frozenset({
     QuotedNode, ColorTextNode,
 })
 
-_HTML_TAG_MAP: dict[str, tuple[type[InlineNode], bool]] = {
+_HTML_TAG_MAP: dict[str, tuple[type[InlineNode] | None, bool]] = {
     # 粗体
     'b':      (BoldNode, True),
     'strong': (BoldNode, True),

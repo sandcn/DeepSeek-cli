@@ -31,12 +31,13 @@ class DefaultDisplayAdapter(DisplayPort):
     # ── 工具调用 ────────────────────────────────────────
 
     def tool_start(self, tool_label: str, tool_name: str, detail: str,
-                   metadata: Optional[dict] = None) -> None:
-        self._get_proxy().tool_start(tool_label, tool_name, detail, metadata)
+                   metadata: Optional[dict] = None, tool_id: str = "") -> None:
+        self._get_proxy().tool_start(tool_label, tool_name, detail, metadata, tool_id=tool_id)
 
     def tool_done(self, tool_label: str, tool_name: str = "",
-                  success: bool = True, metadata: Optional[dict] = None) -> None:
-        self._get_proxy().tool_done(tool_label, tool_name, success, metadata)
+                  success: bool = True, metadata: Optional[dict] = None,
+                  tool_id: str = "") -> None:
+        self._get_proxy().tool_done(tool_label, tool_name, success, metadata, tool_id=tool_id)
 
     def capture_and_print(self, display_func) -> str:
         return self._get_proxy().capture_and_print(display_func)

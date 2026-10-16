@@ -80,7 +80,9 @@ def collect_trace_stats(records) -> dict:
           - ``kinds``：{kind: count}；
           - ``tool_ranking``：[(工具名, 次数, 总耗时, 失败数)] 按总耗时降序。
     """
-    stats = {
+    #: 汇总结果（值类型混合 int/float/None/dict/list——显式注解避免 mypy
+    #: 由首个条目推断出 int 后对后续 ``stats["elapsed"] += x`` 报类型错）。
+    stats: dict = {
         "total": 0,
         "turns": 0,
         "tools": 0,

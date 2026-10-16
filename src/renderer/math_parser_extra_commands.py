@@ -8,7 +8,7 @@ abs/norm、rule/hhline、clap、scalebox/rotatebox、hbox 等命令。
 from __future__ import annotations
 
 import re as _re
-from typing import Tuple
+from typing import TYPE_CHECKING, Any, Tuple
 from rich.style import Style
 from rich.text import Text
 
@@ -53,6 +53,12 @@ class MathParserExtraCommandsMixin:
     """
 
     # ── 垂直压缩 \smash[t/b]{content} ─────────────────
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``MathParser`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        _bigop_stack: Any
+
+        def parse(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def _parse_smash(self, s: str, i: int, n: int) -> Tuple[Text, int]:
         """解析 \\smash{content} 和 \\smash[t]{content}。

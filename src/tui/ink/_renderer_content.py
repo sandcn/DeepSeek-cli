@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import logging
 
 from .output import Frame
@@ -19,6 +21,10 @@ _logger = logging.getLogger(__name__)
 
 class _RendererContentMixin:
     """内容行发射（输出历史接线）——宿主 ``InkRenderer`` 提供状态字段。"""
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``InkRenderer`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        _line_callback: Any
 
     def set_content_line_count(
         self, count: int, *, start: int | None = None, resync: bool = False,

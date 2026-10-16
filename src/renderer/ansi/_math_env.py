@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from .helpers import AnsiLine
 
 from ._math_style import _M_SYM, _M_HLINE
@@ -276,6 +278,21 @@ class _MathEnvMixin:
     """环境渲染实现（由 ``_LatexRenderer`` 继承）。"""
 
     # ── 入口 ─────────────────────────────────────────────
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``_LatexRenderer`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        s: str
+        n: int
+        i: int
+        macro_state: Any
+
+        def _read_group_raw(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _render_sub(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _peek_cmd(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _read_optional_raw(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def _cmd_begin(self) -> _Box:
         env = self._read_group_raw().strip()

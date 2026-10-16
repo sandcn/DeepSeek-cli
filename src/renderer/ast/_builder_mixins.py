@@ -25,6 +25,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from .types import ASTNode, NodeType
 from ..types import Token
 
@@ -33,6 +35,19 @@ class _TextBuildingMixin:
     """文本类 Token handler 集合。"""
 
     # ── 段落 ────────────────────────────────────────────────
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``ASTBuilder`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        _stack: Any
+        _block_buffer_stack: Any
+        _block_meta_stack: Any
+        _paragraph_buffer: Any
+
+        def _flush_pending_list(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _flush_paragraph_buffer(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _emit(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def _handle_paragraph(self, token: Token) -> list[ASTNode]:
         """缓冲段落文本，等待后续非段落 Token 刷出。"""
@@ -144,6 +159,14 @@ class _ListBuildingMixin:
 
     # ── 列表项 ──────────────────────────────────────────────
 
+    # ★ 宿主契约（仅静态检查用；运行期由 ``ASTBuilder`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        def _flush_pending_list(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _flush_paragraph_buffer(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _emit(self, *args: Any, **kwargs: Any) -> Any: ...
+
     def _handle_list_item(self, token: Token) -> list[ASTNode]:
         """缓冲列表项，连续同类型列表项自动合并为 LIST/ORDERED_LIST 父节点。"""
         closed: list[ASTNode] = []
@@ -193,6 +216,24 @@ class _BlockBuildingMixin:
     """块级 Token handler 集合。"""
 
     # ── 代码块 ──────────────────────────────────────────────
+
+    # ★ 宿主契约（仅静态检查用；运行期由 ``ASTBuilder`` 提供）。
+    if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        _stack: Any
+        _block_buffer_stack: Any
+        _block_meta_stack: Any
+
+        def _open_block(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _close_block(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _current_parent(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _flush_pending_list(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _flush_paragraph_buffer(self, *args: Any, **kwargs: Any) -> Any: ...
+
+        def _emit(self, *args: Any, **kwargs: Any) -> Any: ...
 
     def _handle_code_fence_open(self, token: Token) -> list[ASTNode]:
         """开始代码块缓冲。"""

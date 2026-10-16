@@ -37,6 +37,8 @@ mixin 方法即实例方法）。
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import logging
 import time
 
@@ -87,25 +89,27 @@ class _SessionFrameMixin:
     """
 
     # ── 类型标注（InkSession.__init__ 初始化） ──
-    _build_tree: object
-    _model: object
-    _apply_fn: object
-    _reconciler: object
-    _root_fiber: object
-    _ink_renderer: object
-    _width_cache: object
-    _config: object
-    _input_fiber: object
+    _build_tree: Any
+    _model: Any
+    _apply_fn: Any
+    _reconciler: Any
+    _root_fiber: Any
+    _ink_renderer: Any
+    _width_cache: Any
+    _config: Any
+    _input_fiber: Any
     _last_render_width: int
     _last_render_height: int
     _last_size_poll: float
     _resize_pending: bool
     _dirty: bool
     _frame_active: bool
-    _system_monitor: object
+    _system_monitor: Any
     _last_sys_stats_time: float
     _sys_stats_interval: float
-    _hook_ctx: object
+    _hook_ctx: Any
+    _on_render_callback: Any
+    _cmd_queue: Any
 
     # ── 命令应用 ─────────────────────────────────────
 
