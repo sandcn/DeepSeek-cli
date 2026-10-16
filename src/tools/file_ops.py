@@ -91,7 +91,7 @@ def check_file_size(path, max_mb=100):
         size_mb = os.stat(path).st_size / (1024 * 1024)
         if size_mb > max_mb:
             raise ValueError(f"文件大小({size_mb:.1f}MB)超过最大限制({max_mb}MB)")
-    except (OSError, FileNotFoundError):
+    except OSError:
         # 文件不可读/不存在：跳过大小检查（调用方后续打开文件会报错），
         # 记录 debug 便于排查
         _logger.debug("check_file_size 无法读取文件 %s", path, exc_info=True)
@@ -104,7 +104,7 @@ async def async_check_file_size(path: str, max_mb: int = 100) -> None:
         size_mb = size_bytes / (1024 * 1024)
         if size_mb > max_mb:
             raise ValueError(f"文件大小({size_mb:.1f}MB)超过最大限制({max_mb}MB)")
-    except (OSError, FileNotFoundError):
+    except OSError:
         _logger.debug("async_check_file_size 无法读取文件 %s", path, exc_info=True)
 
 

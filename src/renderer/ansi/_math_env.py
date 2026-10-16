@@ -478,7 +478,7 @@ class _MathEnvMixin:
         left_bar = bool(bars[0]) if bars else False
         right_bar = bool(bars[ncols]) if len(bars) > ncols else False
         row_index = 0
-        for idx, (kind, payload) in enumerate(items):
+        for _idx, (kind, payload) in enumerate(items):
             if kind == "hline":
                 out.append(self._hline_line(widths, bars, payload[0]))
                 continue

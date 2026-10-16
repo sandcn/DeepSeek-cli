@@ -200,7 +200,7 @@ def _tree_items(ordered: list, index_map: list) -> list:
     索引」映射；文件行携带 ``_index``（ordered 索引）供匹配高亮定位。
     """
     groups: dict = {}
-    for view_pos, orig in enumerate(index_map):
+    for _view_pos, orig in enumerate(index_map):
         entry = ordered[orig] if 0 <= orig < len(ordered) else None
         if not isinstance(entry, dict):
             continue

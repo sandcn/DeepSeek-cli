@@ -317,7 +317,7 @@ def optimize_messages_for_upload(
     try:
         stats["folded"] = _fold_old_images(messages, keep_recent)
 
-        for content, idx, block in _collect_image_blocks(messages):
+        for _content, _idx, block in _collect_image_blocks(messages):
             url = _block_image_url(block)
             if not url or _decode_data_uri(url) is None:
                 # 非 data URI 图片（http URL / Anthropic image block）不处理

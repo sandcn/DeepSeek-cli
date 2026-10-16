@@ -270,7 +270,7 @@ def discover_builtin_tools() -> Dict[str, Type[Func]]:
         except Exception as e:
             logger.error(f"导入模块失败 {full_module_name}: {e}")
             continue
-        for name, obj in vars(module).items():
+        for _name, obj in vars(module).items():
             if (inspect.isclass(obj) and
                     issubclass(obj, Func) and
                     obj != Func and

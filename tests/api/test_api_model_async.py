@@ -4,7 +4,7 @@
   - call_model_async / call_model_sync_async：适配器解析、消息深拷贝与重试包装
   - _call_sync_async：非流式完整路径（请求构造/中断/解析/统计/工具解析耗时）
   - 中断路径（调用前/调用后）
-  - call_model_sync / call_model 同步包装（持久化事件循环）
+  - call_model_sync / call_model 同步包装（共享桥接事件循环）
 所有网络层均被 mock，不产生真实请求。
 """
 
@@ -374,7 +374,7 @@ def test_call_sync_async_display_error_silent(monkeypatch):
     assert result[3][0]["name"] == "bash"  # 不抛异常
 
 
-# ── 同步包装（持久化事件循环） ────────────────────────────
+# ── 同步包装（共享桥接事件循环） ────────────────────────────
 
 def test_call_model_sync_wrapper(monkeypatch):
     async def fake_sync_async(*args, **kwargs):

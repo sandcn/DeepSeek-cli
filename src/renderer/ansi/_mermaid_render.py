@@ -180,7 +180,7 @@ class _MermaidRenderer:
         标签与边标签中的分号。
         """
         out: list[str] = []
-        for idx, line in enumerate(lines):
+        for _idx, line in enumerate(lines):
             if ";" not in line:
                 out.append(line)
                 continue

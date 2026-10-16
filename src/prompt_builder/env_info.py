@@ -113,7 +113,7 @@ def build_work_md(name="global.md",summary_mode: str = "concise", cwd: str | Non
             mdstr = f.read().strip()
     except FileNotFoundError:
         return ""
-    except (IOError, OSError, PermissionError) as e:
+    except OSError as e:
         _logger.warning("读取 %s 失败: %s",name, e)
         return ""
     if not mdstr:

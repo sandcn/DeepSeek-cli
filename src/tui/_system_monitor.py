@@ -161,7 +161,7 @@ class _SystemMonitor:
         try:
             with open("/proc/stat") as f:
                 line = f.readline()
-        except (OSError, IOError):
+        except OSError:
             return 0.0
         parts = line.split()
         if not parts or parts[0] != "cpu":
@@ -264,7 +264,7 @@ class _SystemMonitor:
                         meminfo[key] = int(val_str)
                     except (ValueError, IndexError):
                         continue
-        except (OSError, IOError):
+        except OSError:
             return 0.0
         total = meminfo.get("MemTotal", 0)
         if total <= 0:

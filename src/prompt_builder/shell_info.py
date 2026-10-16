@@ -129,7 +129,7 @@ def _read_text(path: str) -> str:
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
             return handle.read()
-    except (OSError, IOError):
+    except OSError:
         return ""
 
 

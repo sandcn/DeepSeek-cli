@@ -122,7 +122,7 @@ class LsFunc(Func):
                     if not self.all:
                         entries = [e for e in entries if not e.name.startswith(".")]
                     entries.sort(key=lambda p: (not p.is_dir(), p.name.lower()))
-            except (OSError, PermissionError):
+            except OSError:
                 loop = asyncio.get_event_loop()
                 entries = await loop.run_in_executor(None, self._list_entries, target)
 

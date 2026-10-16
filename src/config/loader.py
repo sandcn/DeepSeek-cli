@@ -70,7 +70,7 @@ def _load_rc():
             return rc
         except json.JSONDecodeError as e:
             logging.warning("配置文件 %s 解析失败: %s，使用默认配置", RC_FILE, e)
-        except (PermissionError, OSError) as e:
+        except OSError as e:
             logging.warning("无法读取配置文件 %s: %s，使用默认配置", RC_FILE, e)
     return _validate_rc(dict(DEFAULTS))
 

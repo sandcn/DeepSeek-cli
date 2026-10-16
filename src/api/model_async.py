@@ -276,49 +276,48 @@ async def _call_sync_async(
         content = reasoning_content
     return reasoning_content, content, usage, tool_calls
 
-# ── 同步兼容包装（持久化事件循环） ──────────────────────────
-# 使用持久化事件循环替代 asyncio.run()，避免每次调用创建/销毁
-# 新事件循环，从而防止 httpx.AsyncClient 因事件循环变换而触发
-# "bound to a different event loop" 错误。
-# 每个调用线程持有独立循环（threading.local），互不干扰。
-# 事件循环管理逻辑已提取到 _model_loops.py。
+# ── 同步兼容包装（单条共享桥接循环） ────────────────────────
+# 同步调用方（经 asyncio.to_thread 调度的压缩流程、脚本、测试）经
+# ``run_coroutine_blocking`` 把协程提交到**唯一**的桥接事件循环并阻塞等待：
+# 循环只有一条，绑定循环的资源（httpx.AsyncClient 等）可安全跨调用复用，
+# 不再有「每线程一条循环」导致的资源复制与
+# "bound to a different event loop" 故障面。
 
-from ._model_loops import _get_model_loop
+from ._sync_bridge import run_coroutine_blocking
 
 def call_model_sync(messages, model=None, tools=None, display=None, label=None):
-    """同步兼容包装 — 在线程持久化事件循环中运行 async 调用。
+    """同步兼容包装 — 在共享桥接事件循环中运行非流式 async 调用。
 
-    供 commands.py / context_manager.py 等尚未迁移到 async 的模块使用。
+    供 context_manager.py 等尚未迁移到 async 的同步调用方（通常运行在
+    ``asyncio.to_thread`` 工作线程中）使用。已处于运行中事件循环的线程调用会
+    立即抛 ``RuntimeError``（阻塞等待必然死锁），应改用 async 接口。
     """
-    loop = _get_model_loop()
-    return loop.run_until_complete(
+    return run_coroutine_blocking(
         call_model_sync_async(messages, model, tools, display, label),
     )
 
 def call_model_summarize_sync(messages, model=None):
     """同步**流式**摘要调用包装（上下文压缩摘要等内部调用专用）。
 
-    在调用线程的持久化事件循环中运行 ``call_model_summarize_async``——压缩
-    引擎（``core.compaction``）在线程中同步调用摘要函数，经本包装获得与
-    主对话一致的流式管线行为（silent + 内部 label，不渲染、不计入主
-    Agent 上下文使用率）。
+    在与 ``call_model_sync`` 相同的共享桥接事件循环中运行
+    ``call_model_summarize_async``——压缩引擎（``core.compaction``）在工作线程中
+    同步调用摘要函数，经本包装获得与主对话一致的流式管线行为（silent + 内部
+    label，不渲染、不计入主 Agent 上下文使用率）。
     """
-    loop = _get_model_loop()
-    return loop.run_until_complete(
+    return run_coroutine_blocking(
         call_model_summarize_async(messages, model),
     )
 
 def call_model(messages, model=None, tools=None, display=None, label=None, silent=False):
-    """同步兼容包装 — 在线程持久化事件循环中运行 async 调用。
+    """同步兼容包装 — 在共享桥接事件循环中运行流式 async 调用。
 
-    供 SubAgent 等在线程中运行 sync 代码的模块使用。
-    每个线程持有独立事件循环，互不干扰。
+    供 SubAgent 等在工作线程中运行 sync 代码的模块使用（无异步端口时的兜底）。
+    所有调用共用唯一桥接循环，不再按线程复制事件循环。
 
     空响应自动重发按全局 ``MAX_RETRIES`` 有界（调用方为子代理兜底路径，
     应快速失败，不做无限重试）。
     """
-    loop = _get_model_loop()
-    return loop.run_until_complete(
+    return run_coroutine_blocking(
         call_model_async(
             messages, model, tools, display, label, silent,
             empty_response_retries=max(int(MAX_RETRIES or 0), 1),

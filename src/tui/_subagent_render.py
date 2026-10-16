@@ -304,7 +304,7 @@ def _build_group_card(rows: list[tuple[str, str, List[Line]]],
     # （build_agent_lines 已含 ├─/└─ 前缀），running agent 追加二级子行。
     # 无边框：树形分支线表达层级，不再加 `│ ` 边框前缀（2026-08-06 去边框）。
     body: List[Line] = []
-    for status, t, sublines in rows:
+    for _status, t, sublines in rows:
         body.append(t)
         for s in sublines:
             body.append(s)

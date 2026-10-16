@@ -957,16 +957,14 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
                 result = callback()
                 import inspect as _i
                 if _i.isawaitable(result):
-                    import asyncio
-                    # ★ BUG（review 方向）：``asyncio.get_event_loop().run_until_complete()``
-                    #   在 Python 3.10+ 非主线程调用抛 RuntimeError（无当前事件循环）、
-                    #   3.12+ 产生 DeprecationWarning——改用独立事件循环执行协程
-                    #   （``new_event_loop`` 线程安全，无 get_event_loop 的线程绑定）。
-                    loop = asyncio.new_event_loop()
-                    try:
-                        loop.run_until_complete(result)
-                    finally:
-                        loop.close()
+                    # ★ 协程在本框架**唯一**的共享桥接事件循环上执行（见
+                    #   ``src/api/_sync_bridge``）——替代「每次回调新建一条
+                    #   事件循环再 close」的写法：既消除 ``get_event_loop()``
+                    #   的线程绑定/弃用问题（原 BUG），也不再为每次回调复制
+                    #   事件循环与绑定循环的资源（httpx.AsyncClient 等）。
+                    from src.api._sync_bridge import run_coroutine_blocking
+
+                    run_coroutine_blocking(result)
             except Exception:
                 _logger.debug("suspend_terminal callback 异常", exc_info=True)
             self.request_clear()

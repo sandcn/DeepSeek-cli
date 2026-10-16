@@ -166,7 +166,7 @@ class FindFunc(Func):
             # 小型目录（<200项）且深度不大时直接同步遍历
             if len(entries) < SMALL_DIR_ENTRY_LIMIT and (self.depth == 0 or self.depth <= SMALL_DIR_DEPTH_LIMIT):
                 return self._sync_find_files(root)
-        except (OSError, PermissionError):
+        except OSError:
             logger.debug("目录遍历跳过（权限或系统错误）: %s", root, exc_info=True)
 
         # 大目录或深度大的情况走 executor，避免阻塞事件循环
@@ -243,7 +243,7 @@ class FindFunc(Func):
                                 results.append(current_path / fname)
                                 break
 
-            except (OSError, PermissionError) as _perr:
+            except OSError as _perr:
                 # 单文件/目录权限错误不中断整个遍历，记录后继续
                 logger.debug("遍历目录时跳过不可访问条目: %s, error=%s", current, _perr)
             except Exception:

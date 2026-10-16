@@ -722,7 +722,7 @@ ChatUIConsumer
 │   │   ├── telemetry.py        # API 层可观测性
 │   │   ├── escape_monitor.py   # 键盘输入监听
 │   │   ├── events.py           # API 事件定义
-│   │   ├── _model_loops.py / _stats_core.py / _stream_lifecycle.py / _token_speed.py / _tool_parse_utils.py  # 内部辅助模块
+│   │   ├── _sync_bridge.py / _stats_core.py / _stream_lifecycle.py / _token_speed.py / _tool_parse_utils.py  # 内部辅助模块
 │   │   ├── multimodal.py       # 多模态模型判定 + 图片 content blocks 构造（read_image 依赖）
 │   │   ├── adapters/          # 多模型适配器（DeepSeek/OpenAI/Anthropic/Ollama）
 │   │   └── _adapter_manager.py   # 适配器管理

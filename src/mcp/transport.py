@@ -289,7 +289,7 @@ class StdioTransport(_BaseTransport):
             async with lock:
                 self._proc.stdin.write(payload)
                 await self._proc.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+        except OSError as e:
             raise McpTransportError(
                 f"MCP server '{self._cfg.name}' 写入失败（进程可能已退出）: {e}"
             ) from e

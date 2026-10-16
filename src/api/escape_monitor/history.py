@@ -48,7 +48,7 @@ def _lock_history_file(fd: int, shared: bool = False) -> bool:
     except ImportError:
         # Windows: fcntl 不可用，跳过锁（单进程无需锁）
         return True
-    except (BlockingIOError, OSError) as exc:
+    except OSError as exc:
         _logger.warning("历史文件锁获取失败(%s): %s", "共享" if shared else "独占", exc)
         return False
 
@@ -79,7 +79,7 @@ def _read_history_file() -> tuple[str, bool]:
                 if locked:
                     _unlock_history_file(f.fileno())
         return content, locked
-    except (OSError, FileNotFoundError):
+    except OSError:
         return "", False
 
 def _append_to_history_file(text: str) -> bool:
@@ -130,7 +130,7 @@ def _compact_history_file() -> bool:
                 raw = f.read()
             finally:
                 _unlock_history_file(f.fileno())
-    except (OSError, FileNotFoundError):
+    except OSError:
         return False
 
     if not raw:

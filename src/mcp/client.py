@@ -195,7 +195,7 @@ class McpClient:
         """拉取工具列表（支持 cursor 分页）。"""
         tools: list = []
         cursor: Optional[str] = None
-        for page in range(_MAX_TOOL_PAGES):
+        for _page in range(_MAX_TOOL_PAGES):
             params = {"cursor": cursor} if cursor else {}
             result = await self._transport.request(METHOD_TOOLS_LIST, params)
             if not isinstance(result, dict):

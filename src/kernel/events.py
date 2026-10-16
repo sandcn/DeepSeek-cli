@@ -160,7 +160,7 @@ class EventBus:
         results = await asyncio.gather(
             *(_invoke(h, args) for h in handlers), return_exceptions=True
         )
-        for handler, result in zip(handlers, results):
+        for _handler, result in zip(handlers, results):
             if isinstance(result, Exception):
                 _logger.exception(
                     "parallel 监听器异常: event=%s", event,

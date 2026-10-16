@@ -78,7 +78,7 @@ def _scan_project_files(cwd: str = ".") -> Tuple[List[Tuple[str, int]], int]:
                 continue
             try:
                 size = os.path.getsize(filepath)
-            except (IOError, OSError):
+            except OSError:
                 _logger.debug("无法读取文件 %s，跳过", filepath)
                 continue
             total_size += size
@@ -136,7 +136,7 @@ def _read_file_contents(
                 tokens = estimate_tokens(content)
             accumulated_tokens += tokens
             file_contents.append({"path": filepath, "size": size, "content": content})
-        except (IOError, OSError):
+        except OSError:
             continue
 
     return file_contents, accumulated_tokens

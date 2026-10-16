@@ -81,7 +81,7 @@ def _create_async_client() -> httpx.AsyncClient:
 
 
 # ── 每事件循环独立 AsyncClient 池 ──────────────────────────
-# 不同事件循环（Agent 持久化循环 / asyncio.run() 临时循环 / 线程子循环）
+# 不同事件循环（Agent 主循环 / 共享桥接循环 / asyncio.run() 临时循环）
 # 各自持有独立 httpx.AsyncClient，避免 "bound to a different event loop"。
 # ★ 使用 asyncio.Lock 而非 threading.RLock：避免阻塞事件循环。
 #   所有访问 _clients 的操作均为 async def，可用 async with 安全等待。

@@ -356,7 +356,7 @@ def load_session_head_messages(session_id: str, max_messages: int) -> list | Non
             return list(messages[:max_messages]) if isinstance(messages, list) else None
         with open(filepath, "r", encoding="utf-8") as fh:
             header = fh.read(_PREVIEW_SCAN_BYTES)
-    except (OSError, UnicodeDecodeError, ValueError):
+    except (OSError, ValueError):
         return None
     return _parse_head_messages(header, max_messages)
 
@@ -377,7 +377,7 @@ def _load_index() -> dict:
     """读取会话摘要磁盘索引（缺失/损坏/版本不符 → 空索引）。"""
     try:
         data = json.loads(_index_path().read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError, ValueError):
+    except (json.JSONDecodeError, OSError, ValueError):
         return {}
     if not isinstance(data, dict) or data.get("version") != _INDEX_VERSION:
         return {}
@@ -566,7 +566,7 @@ def _load_session_summary(filepath: Path) -> dict | None:
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             header = f.read(_HEAD_SCAN_BYTES)
-    except (OSError, UnicodeDecodeError, ValueError):
+    except (OSError, ValueError):
         header = ""
     if header:
         head = _parse_session_head(header)
@@ -574,7 +574,7 @@ def _load_session_summary(filepath: Path) -> dict | None:
             return head
     try:
         return json.loads(filepath.read_text(encoding='utf-8'))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError, ValueError):
+    except (json.JSONDecodeError, OSError, ValueError):
         # ★ P1 修复：缩小异常范围，只捕获与 JSON 解析和 IO 相关的异常，
         #   避免意外吞掉 MemoryError、KeyboardInterrupt 等严重异常。
         return None

@@ -6,7 +6,7 @@
 
   - ``api.model_async.call_model_summarize_async``：流式（``stream=True``）+
     ``silent`` + 内部 label（``STREAM_LABEL_SUMMARIZE``），无工具、无 display；
-  - ``api.model_async.call_model_summarize_sync``：同步包装（持久化事件循环），
+  - ``api.model_async.call_model_summarize_sync``：同步包装（共享桥接事件循环），
     供压缩引擎在线程中同步调用；
   - ``core.adapters.model.SyncModelBridge.summarize``：核心层默认摘要函数，
     委托流式摘要调用。

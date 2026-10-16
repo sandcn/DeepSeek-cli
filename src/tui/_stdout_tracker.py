@@ -412,7 +412,7 @@ class _StdoutLineTracker:
                 # 方向1：历史文件可能含旧 SGR 残留——加载时同样剥离
                 self._ring.append(strip_ansi(line))
 
-        except (OSError, FileNotFoundError):
+        except OSError:
             _logger.debug("输出历史文件不存在，跳过加载")
 
     def _flush_history(self) -> None:
@@ -628,7 +628,7 @@ class _StdoutLineTracker:
                 _logger.debug("输出历史压缩完成: %d行→去重%d行→保留%d行", len(lines), len(unique), len(keep))
                 return True
 
-            except (OSError, FileNotFoundError) as exc:
+            except OSError as exc:
                 _logger.warning("输出历史压缩失败: %s", exc)
                 try:
                     if tmp_path is not None:

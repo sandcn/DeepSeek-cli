@@ -97,7 +97,7 @@ def _estimate_cost(model, input_tokens, output_tokens, provider="unknown"):
                     input_price = p.get("input", default_input)
                     output_price = p.get("output", default_output)
                     break
-    except (ImportError, Exception):
+    except Exception:
         input_price = default_input
         output_price = default_output
 

@@ -201,7 +201,7 @@ async def _interruptible_iter_async(
         # （每轮取块的中断监视协程已在循环内 finally 回收，见 _discard_task。）
         try:
             await response_iter.aclose()
-        except (asyncio.CancelledError, StopAsyncIteration, Exception):
+        except (asyncio.CancelledError, Exception):
             _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
 

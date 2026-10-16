@@ -167,7 +167,7 @@ def _load_prompt(name: str) -> str:
     except FileNotFoundError:
         _logger.error("prompts 文件未找到: %s", filepath)
         return ""
-    except (IOError, OSError) as e:
+    except OSError as e:
         _logger.error("读取 prompts 文件失败 %s: %s", filepath, e)
         return ""
 
