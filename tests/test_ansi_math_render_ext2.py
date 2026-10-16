@@ -269,7 +269,9 @@ def test_script_atom_takes_single_token():
     # TeX 语义：``^`` 未加花括号时只取紧随的单个 token
     assert _block(r"x^2,") == "x²,"
     assert _block(r"x^ab") == "xᵃb"
-    assert _block(r"x^{2,}") == "x^{2,}"  # 花括号组整体作为脚本（含不可上标字符）
+    # 花括号组整体作为脚本：``2,`` 含不可上标字符（``,``）→ 二维堆叠为
+    # 「上标行 + 主体行」（修复前退化为字面 ``x^{2,}``，即 LaTeX 源码上屏）
+    assert _block(r"x^{2,}").split("\n") == [" 2,", "x"]
 
 
 def test_tall_delimiter_for_ceil_floor():

@@ -162,22 +162,21 @@ def _vstack(boxes: list[_Box], align: str = "center",
     return _Box(out, baseline=baseline)
 
 
-def pad_to_height(box: _Box, height: int, align: str = "center") -> _Box:
-    """把 ``box`` 补到指定行高（内容按 ``align`` 垂直对齐）。
+def pad_to_baseline(box: _Box, above: int, below: int) -> _Box:
+    """按**基线**把 ``box`` 补齐到 ``above + 1 + below`` 行。
 
-    矩阵/对齐环境的单元格含多行内容（分数、根式、嵌套矩阵）时按行高补齐，
-    行间内容垂直居中（与 LaTeX 矩阵单元格语义一致）。
+    矩阵/对齐环境的单元格含多行内容（分数、根式、嵌套矩阵）时按行高补齐：
+    各单元格的**数学基线**（分数为分数线行、大算符为算子行、根式为被开方体行）
+    与同一行的其它单元格对齐——与印刷排版一致（``=`` 落在分数线高度，
+    而不是与分子同行）。``above`` / ``below`` 为该行基线上下各需容纳的行数
+    （取该行各单元格的最大值）。
     """
-    if height <= box.height:
+    top = above - box.baseline
+    bottom = below - (box.height - 1 - box.baseline)
+    if top <= 0 and bottom <= 0:
         return box
-    extra = height - box.height
-    if align == "top":
-        top = 0
-    elif align == "bottom":
-        top = extra
-    else:
-        top = extra // 2
-    bottom = extra - top
+    top = max(0, top)
+    bottom = max(0, bottom)
     lines = [AnsiLine() for _ in range(top)] + list(box.lines) \
         + [AnsiLine() for _ in range(bottom)]
     return _Box(lines, kind=box.kind, baseline=box.baseline + top)
@@ -379,7 +378,7 @@ def prepend(line: AnsiLine, text: str, style=None) -> AnsiLine:
 
 __all__ = [
     "_Box", "_empty_box", "_txt", "_styled_text", "_plain_of", "_has_operator",
-    "_hjoin", "_vstack", "pad_to_height", "repeat_line", "_split_rows",
+    "_hjoin", "_vstack", "pad_to_baseline", "repeat_line", "_split_rows",
     "_split_cols", "_tall_delim", "_wrap_delims", "frac_box", "accent_over",
     "accent_under", "join_right", "prepend", "_blank_line",
     "strike_through", "bracket_over", "bracket_under",

@@ -23,7 +23,7 @@ from .helpers import AnsiLine
 
 from ._math_style import _M_SYM, _M_HLINE
 from ._math_box import (
-    _Box, _empty_box, _split_rows, _split_cols, _wrap_delims, pad_to_height,
+    _Box, _empty_box, _split_rows, _split_cols, _wrap_delims, pad_to_baseline,
 )
 from ._math_cmds import HLINE_CHARS
 
@@ -469,8 +469,16 @@ class _MathEnvMixin:
             row_align = (row_aligns[row_index]
                          if row_aligns and row_index < len(row_aligns) else None)
             row_index += 1
-            height = max((b.height for b in row[:ncols]), default=1)
-            padded = [pad_to_height(b, height) for b in row[:ncols]]
+            # ★ 单元格按**基线**对齐：同行各单元格的数学基线（分数为分数线行、
+            #   大算符为算子行、根式为被开方体行）对齐成同一行，行高 = 基线
+            #   上下各需容纳的最大行数 + 1。修复前按行高**居中**补齐——含分数
+            #   的单元格与单行兄弟单元格同行时，`=` 落在分子行而非分数线高度，
+            #   与印刷排版不符（对齐环境下尤其明显）。
+            cells = row[:ncols]
+            above = max((b.baseline for b in cells), default=0)
+            below = max((b.height - 1 - b.baseline for b in cells), default=0)
+            height = above + below + 1
+            padded = [pad_to_baseline(b, above, below) for b in cells]
             while len(padded) < ncols:
                 padded.append(_empty_box())
             for r in range(height):

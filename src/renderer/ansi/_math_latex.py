@@ -8,7 +8,13 @@ TUI 内容路径（``src.renderer.ansi``）的数学公式渲染器：与 Rich �
     operators / arrows / functions / misc / delimiters / scripts）；
   - **块级**：真二维排版（分数堆叠、根式上划线、矩阵/对齐环境多行对齐、
     大算符上下限堆叠、上下标注、上下花括号、自动伸缩定界符）；
-  - **行内**：紧凑单行（分数 ``a⁄b``、上下标 Unicode 化）。
+  - **行内**：紧凑单行（分数 ``a⁄b``、上下标 Unicode 化）——行内公式在
+    二维路径下同样展开多行（见 ``ansi/inline._emit_math``）。
+  - **脚本（``^`` / ``_``）**：可整体 Unicode 化时单行附着（``x^{n+1}`` →
+    ``xⁿ⁺¹``、``x^\\top`` → ``xᵀ``）；二维路径下无法 Unicode 化的脚本
+    （``\\mathbb{R}^{n\\times m}`` / ``a_{i,j}`` / ``\\nabla_\\theta``）按
+    印刷语义排在主体右上 / 右下（``_attach_stacked_scripts``），紧凑路径才
+    回退为字面 ``^{...}``。
 
 模块划分（本文件为解析主体 + 命令分派）：
   - ``_math_box``   — 布局原语（``_Box`` / hjoin / vstack / 定界符）
@@ -87,6 +93,45 @@ _TEXT_ACCENT_CHARS = frozenset("'`^\"~=.")
 
 #: 解析/布局最大递归深度（防异常输入）
 _MAX_DEPTH = 24
+
+
+def _script_unicode(plain: str, is_sup: bool) -> str | None:
+    """脚本文本整体 Unicode 化；存在无对应字形字符时返回 ``None``。
+
+    ``x^{n+1}`` → ``xⁿ⁺¹``；含希腊字母 / 逗号 / CJK 等无上下标字形的字符时
+    返回 ``None``，由调用方决定「二维堆叠」（二维路径）还是保留 ``^{...}``
+    回退（紧凑路径）。
+    """
+    if not plain:
+        return None
+    mapping = _SUPERSCRIPT_MAP if is_sup else _SUBSCRIPT_MAP
+    for ch in plain:
+        if ch not in mapping and not ch.isspace():
+            return None
+    return "".join(mapping.get(ch, ch) for ch in plain)
+
+
+def _script_inline_text(box: _Box | None, is_sup: bool) -> str | None:
+    """单行且可整体 Unicode 化的脚本 → 上/下标文本；否则 ``None``。
+
+    多行脚本（``x^{\frac{a}{b}}``）即便文本可映射也返回 ``None``——展平会
+    丢掉分数/根式的二维结构，应交给堆叠路径整体呈现。
+    """
+    if box is None or box.height != 1:
+        return None
+    return _script_unicode(_plain_of(box).strip(), is_sup)
+
+
+def _needs_stacked_scripts(sup: _Box | None, sub: _Box | None) -> bool:
+    """单行主体的上下标是否需要二维堆叠（存在不可 Unicode 化的非空脚本）。"""
+    for box, is_sup in ((sup, True), (sub, False)):
+        if box is None:
+            continue
+        if box.height == 1 and not _plain_of(box).strip():
+            continue    # 空脚本（``x^{}``）：两路径都不输出
+        if _script_inline_text(box, is_sup) is None:
+            return True
+    return False
 
 
 class _LatexRenderer(_MathCommandMixin, _MathEnvMixin, _MathTexMixin,
@@ -319,6 +364,10 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin, _MathTexMixin,
             return self._attach_bigop(base, sup, sub)
         if base.height != 1:
             return self._attach_flat(base, sup, sub)
+        if not self.inline and _needs_stacked_scripts(sup, sub):
+            # 二维路径（块级公式 / 行内公式）：无法 Unicode 化的脚本按上下
+            # 堆叠排版，而不是把 ``^{...}`` 字面上屏。
+            return self._attach_stacked_scripts(base, sup, sub)
         line = AnsiLine()
         for run in base.lines[0].runs:
             line.append_run(run)
@@ -332,13 +381,51 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin, _MathTexMixin,
         plain = _plain_of(box).strip()
         if not plain:
             return
-        mapping = _SUPERSCRIPT_MAP if is_sup else _SUBSCRIPT_MAP
         style = _M_SUP if is_sup else _M_SUB
-        if all(ch in mapping or ch.isspace() for ch in plain):
-            line.append("".join(mapping.get(ch, ch) for ch in plain), style)
+        mapped = _script_unicode(plain, is_sup)
+        if mapped is not None:
+            line.append(mapped, style)
             return
         delim = "^" if is_sup else "_"
         line.append(delim + "{" + plain + "}", style)
+
+    def _attach_stacked_scripts(self, base: _Box, sup: _Box | None,
+                               sub: _Box | None) -> _Box:
+        r"""单行主体的上下标：可 Unicode 化的附在行尾，其余**二维堆叠**。
+
+        ``\mathbb{R}^{n \times m}`` / ``a_{i,j}`` / ``\nabla_\theta`` /
+        ``x^{\frac{a}{b}}`` 这类无对应 Unicode 上下标字形的脚本，修复前一律
+        退化为字面 ``^{...}``（模型写的 LaTeX 源码直接上屏）；现按印刷语义
+        排在主体**右上 / 右下**——上标占主体上方行、下标占下方行，主体所在行
+        保持数学基线。实现与 ``\prescript`` 的前置堆叠同源（``_vstack`` 的
+        行组合 + ``_hjoin`` 的基线拼接、空白行占位），左右对称。
+        """
+        line = AnsiLine()
+        for run in base.lines[0].runs:
+            line.append_run(run)
+        above: list[_Box] = []
+        below: list[_Box] = []
+        for box, is_sup in ((sup, True), (sub, False)):
+            if box is None:
+                continue
+            mapped = _script_inline_text(box, is_sup)
+            if mapped is not None:
+                line.append(mapped, _M_SUP if is_sup else _M_SUB)
+                continue
+            if box.height == 1 and not _plain_of(box).strip():
+                continue    # 空脚本（``x^{}``）：不占位、不输出 ``^{}``
+            stacked = _restyle_box(box, _M_SUP if is_sup else _M_SUB)
+            (above if is_sup else below).append(stacked)
+        post: list[AnsiLine] = []
+        for box in above:
+            post.extend(box.lines)
+        post.extend(AnsiLine() for _ in range(base.height))
+        for box in below:
+            post.extend(box.lines)
+        return _hjoin([
+            _Box([line]),
+            _Box(post, baseline=sum(len(b.lines) for b in above)),
+        ])
 
     def _attach_flat(self, base: _Box, sup: _Box | None, sub: _Box | None) -> _Box:
         """多行 base（分数/根式/矩阵）的脚本：附加为紧凑文本（不破坏二维布局）。"""
@@ -381,10 +468,13 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin, _MathTexMixin,
         line = AnsiLine()
         for run in base.lines[0].runs:
             line.append_run(run)
-        if sub is not None:
-            line.append("_{" + _plain_of(sub).strip() + "}", _M_SUB)
-        if sup is not None:
-            line.append("^{" + _plain_of(sup).strip() + "}", _M_SUP)
+        # 空脚本（流式预览中的 ``\sum_``）不输出 ``_{}``/``^{}``
+        sub_text = _plain_of(sub).strip() if sub is not None else ""
+        sup_text = _plain_of(sup).strip() if sup is not None else ""
+        if sub_text:
+            line.append("_{" + sub_text + "}", _M_SUB)
+        if sup_text:
+            line.append("^{" + sup_text + "}", _M_SUP)
         return _Box([line])
 
     def _should_stack_limits(self) -> bool:
@@ -690,12 +780,21 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin, _MathTexMixin,
             for run in content.lines[0].runs:
                 line.append_run(run)
             return _Box([line])
-        w = content.width
-        top = AnsiLine.of(" " + "‾" * w, _M_SQRT)
+        # 度数（``\sqrt[3]{x}`` 的 ``3``）占一列：上划线自根号列起、铺满被开方体
+        # 宽度（与根号竖线相接），被开方体内容一律自「度数 + √」之后开始。
+        head = len(degree)
+        top = AnsiLine.of(" " * head + "‾" * (content.width + 1), _M_SQRT)
         lines = [top]
         for idx, ln in enumerate(content.lines):
-            nl = AnsiLine.of(("√" if not degree else degree + "√")
-                             if idx == 0 else " ", _M_SQRT)
+            if idx == 0:
+                prefix = (degree if degree else "") + "√"
+            elif content.height > 1:
+                # 多行被开方体：根号竖线沿左侧延伸，使根式真正包住整个内容
+                # （修复前是非首行只补空格——分数线/矩阵等第二行起脱离根号）。
+                prefix = " " * head + "│"
+            else:
+                prefix = " " * (head + 1)
+            nl = AnsiLine.of(prefix, _M_SQRT)
             for run in ln.runs:
                 nl.append_run(run)
             lines.append(nl)

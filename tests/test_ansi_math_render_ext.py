@@ -164,7 +164,9 @@ def test_gather_centered_rows():
 def test_multline_first_left_last_right():
     rows = _block(r"\begin{multline} loooooong \\ mid \\ s \end{multline}").split("\n")
     first = next(r for r in rows if "loooooong" in r)
-    last = next(r for r in rows if r.strip().endswith("s │"))
+    # 末行内容右对齐：内容列（去掉右侧边框的空白后）以 "s" 结尾，且起始列
+    # 比首行内容的起始列更靠右
+    last = next(r for r in rows if r[1:-1].rstrip().endswith("s"))
     assert first.index("loooooong") < last.index("s")
 
 
