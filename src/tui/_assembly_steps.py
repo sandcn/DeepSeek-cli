@@ -49,6 +49,7 @@ def create_shared():
     tui_config = TuiConfig.defaults().with_overrides(
         drop_path_normalize=_rc_drop_path_normalize(),
         bracketed_paste=_rc_bracketed_paste(),
+        mouse=_rc_mouse(),
     )
     model = AppModel()
     return tui_config, model
@@ -81,6 +82,20 @@ def _rc_bracketed_paste() -> bool:
     except Exception:
         _logger.debug("读取 tui_bracketed_paste 失败，使用默认值", exc_info=True)
         return TuiConfig.defaults().bracketed_paste
+
+
+def _rc_mouse() -> bool:
+    """读取 RC 配置 ``tui_mouse``（鼠标上报 / 滚轮 / 点击交互开关）。
+
+    配置读取失败（RC 不可用/键缺失）时回退 ``TuiConfig`` 默认值。
+    """
+    from src.tui._config import TuiConfig
+    try:
+        from src.config import TUI_MOUSE
+        return bool(TUI_MOUSE)
+    except Exception:
+        _logger.debug("读取 tui_mouse 失败，使用默认值", exc_info=True)
+        return TuiConfig.defaults().mouse
 
 
 def create_chat_domain():
@@ -206,7 +221,10 @@ def create_framework(model, tui_config, line_tracker, input_instance):
     # （不被拆成逐字符按键；多行粘贴不误触发 Enter）；suspend/stop 时还原、
     # resume 时重新启用（TerminalModeManager 幂等管理）。RC 键
     # ``tui_bracketed_paste``（默认开启）经 create_shared 注入 TuiConfig。
-    session.set_terminal_modes(bracketed_paste=tui_config.bracketed_paste)
+    session.set_terminal_modes(
+        bracketed_paste=tui_config.bracketed_paste,
+        mouse=tui_config.mouse,
+    )
     # ★ 空闲帧复用（2026-10-07 性能优化）：注入「静态状态」预测——宿主静态
     #   时本拍复用上一帧（帧号照常推进，恒定 30Hz 节拍不变），省空转 CPU。
     session.set_idle_frame_predicate(_make_idle_frame_predicate(model, session))
@@ -508,6 +526,9 @@ __all__ = [
     "create_chat_domain",
     "create_framework",
     "create_chat_domain_assembly",
+    "_rc_drop_path_normalize",
+    "_rc_bracketed_paste",
+    "_rc_mouse",
     "_make_reverse_search_cb",
     "_make_active_status_cb",
     "_make_trace_toggle_cb",

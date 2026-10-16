@@ -128,6 +128,14 @@ class TuiConfig(ConfigBase):
     # 输入多字符」启发式识别粘贴。可通过 RC 键 ``tui_bracketed_paste`` 关闭。
     bracketed_paste: bool = True
 
+    # ── 鼠标上报（2026-10，用户需求：启用滚轮/点击交互） ──────────────
+    # True（默认）：TUI 启动时启用终端鼠标上报（SGR 1006：``CSI ?1000h`` /
+    # ``?1002h`` / ``?1006h``，退出/挂起还原）——列表（ListView/Menu/Tree）与
+    # 视口（Viewport）滚轮滚动、列表点击选中生效；终端自身文本选择在多数终端
+    # 需按住 Shift（xterm 约定）。False：不协商（终端原生选择优先，无滚轮/
+    # 点击交互）。可通过 RC 键 ``tui_mouse`` 关闭。
+    mouse: bool = True
+
     def __post_init__(self) -> None:
         """强制渲染帧率恒定 30Hz——帧率不可被任何构造/覆盖路径改变。
 

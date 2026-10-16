@@ -152,6 +152,12 @@ DEFAULTS = {
     # 文件路径仍走同一插入/规范化路径）；False = 不协商，回退「单次输入
     # 多字符」启发式识别粘贴。
     "tui_bracketed_paste": True,
+    # 鼠标上报（SGR 1006：滚轮 / 点击 / 拖拽，用户需求 2026-10）。
+    # True（默认）= TUI 启动时启用终端鼠标上报（``CSI ?1000h ?1002h ?1006h``，
+    # 退出/挂起还原）：列表与视口支持滚轮滚动、列表支持点击选中；
+    # 终端原生文本选择在多数终端需按住 Shift（xterm 约定）。
+    # False = 不协商（终端原生选择优先，失去滚轮/点击交互）。
+    "tui_mouse": True,
     # ── 上下文压缩（compaction，dsh 同款语义） ──
     # 设上下文窗口为 W、请求输出预留为 O、额外压力余量 B：
     #   触发阈值 thresholdTokens = floor(min(W * threshold_ratio, W - O - B))
@@ -398,6 +404,13 @@ CONFIG_KEYS = {
     },
     "TUI_BRACKETED_PASTE": {
         "rc_path": ("tui_bracketed_paste",),
+        "type": bool,
+        "default": True,
+        "cacheable": True,
+    },
+    # 鼠标上报开关（滚轮/点击交互；默认开启）
+    "TUI_MOUSE": {
+        "rc_path": ("tui_mouse",),
         "type": bool,
         "default": True,
         "cacheable": True,
