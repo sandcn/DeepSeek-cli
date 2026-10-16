@@ -159,9 +159,9 @@ class InputDispatcher:
         self._reverse_search_callback = None
 
         # ── Esc 取消输入（方向D 步骤16，配置门控） ──
-        # 默认 False 保持既有 Esc 中断语义；装配注入
+        # 默认 True（2026-10 用户需求：空闲时单次 Esc 清空输入）；装配注入
         # TuiConfig.esc_cancel_input 与活跃状态回调（生成中不取消输入）。
-        self._esc_cancel_input: bool = False
+        self._esc_cancel_input: bool = True
         self._active_status_fn = None
 
         # ── Ctrl+L 清屏回调（Claude TUI parity 步骤 3.1，装配注入） ──
@@ -633,12 +633,17 @@ class InputDispatcher:
                             self._buffer_editor.search_exit(apply=False)
                             self._sync_reverse_search()
                         elif kind == "escape" and self._should_cancel_input():
-                            # 方向D 步骤16：Esc 取消输入（启用 + 空闲 + 非空缓冲）
+                            # ★ 2026-10（用户需求：「按一次 esc 要清空输入，
+                            #   在没有流式输出的时候」）：**单次** Esc 在空中闲
+                            #   状态（无流式输出）+ 缓冲非空时清空输入——默认
+                            #   启用（TuiConfig.esc_cancel_input 默认 True），
+                            #   无需连按两次。生成中（status_active）走下方中断
+                            #   分支，输入内容保留。
                             self._cancel_input()
                             # ★ 2026-08-21（用户需求：按 Esc 杀后台任务）：
-                            #   esc_cancel_input 配置下纯 Esc 走取消输入而非中断
-                            #   路径，但"杀所有后台 bash/subagent"语义仍应生效
-                            #   （取消输入不置位中断标志，仅触发 kill 回调）。
+                            #   取消输入路径下纯 Esc 同样走"杀所有后台
+                            #   bash/subagent"语义（取消输入不置位中断标志，
+                            #   仅触发 kill 回调）。
                             self._trigger_kill_background()
                         else:
                             # 方向3（Esc 补全弹窗残留修复）：中断后关闭补全弹窗。
@@ -1126,7 +1131,13 @@ class InputDispatcher:
     # ═══════════════════════════════════════════════════════
 
     def _should_cancel_input(self) -> bool:
-        """Esc 取消输入判定：启用 + 缓冲非空 + 空闲（无生成中）。"""
+        """Esc 取消输入判定：启用 + 缓冲非空 + 空闲（无流式输出）。
+
+        默认启用（``TuiConfig.esc_cancel_input`` 默认 True，2026-10 用户需求
+        「按一次 esc 要清空输入，在没有流式输出的时候」）——空闲时单次 Esc
+        即清空输入内容；生成中（``_is_active_status()`` 为 True）返回 False，
+        Esc 回落为中断当前生成且保留输入。
+        """
         if not self._esc_cancel_input:
             return False
         if not self._buffer_editor.get_current_text():
@@ -1146,6 +1157,9 @@ class InputDispatcher:
 
     def _cancel_input(self) -> None:
         """取消当前输入：清空缓冲 + 回显空串 + 关闭补全弹窗（不触发中断标志）。
+
+        ★ 2026-10（用户需求）：空闲（无流式输出）时单次 Esc 走本路径清空输入
+        ——默认启用（``TuiConfig.esc_cancel_input`` 默认 True）。
 
         方向2（_cancel_input 未 dismiss 修复）：Esc 取消输入同时关闭补全弹窗
         （修复前仅清缓冲不回显 dismiss，补全弹窗残留）。
@@ -1424,9 +1438,11 @@ class InputDispatcher:
         self.register_callback("reverse_search", cb)
 
     def set_esc_cancel_input(self, enabled: bool) -> None:
-        """设置 Esc 取消输入启用标志（方向D 步骤16，默认 False）。
+        """设置 Esc 取消输入启用标志（方向D 步骤16，默认 True）。
 
-        由装配注入 ``TuiConfig.esc_cancel_input``；False 保持既有 Esc 中断语义。
+        由装配注入 ``TuiConfig.esc_cancel_input``（默认 True：空闲 + 缓冲非空
+        时单次 Esc 清空输入）；显式置 False 回退旧语义（Esc 仅中断、保留
+        未提交输入）。
         """
         self._esc_cancel_input = enabled
 

@@ -119,7 +119,7 @@ COMMANDS_HELP = (
     f"  {TEAL}Ctrl+G{RESET}        打开 vim 编辑 {TEAL}Ctrl+O{RESET}         编辑会话消息\n"
     f"  {TEAL}Ctrl+N{RESET}        切换模型     {TEAL}Ctrl+T{RESET}         切换主题\n"
     f"  {TEAL}Ctrl+L{RESET}        清屏         {TEAL}Ctrl+D{RESET}         退出(空输入)\n"
-    f"  {TEAL}Ctrl+B{RESET}        主Agent模式循环 {TEAL}Esc{RESET}         取消输入/中断"
+    f"  {TEAL}Ctrl+B{RESET}        主Agent模式循环 {TEAL}Esc{RESET}         清空输入/中断"
 )
 
 
@@ -330,7 +330,7 @@ SHORTCUT_ROWS: tuple = (
     (("Ctrl+Z", "撤销输入编辑"), ("Ctrl+Y", "重做输入编辑")),
     (("F1 / Ctrl+/", "帮助速查"), ("F11", "变更审查")),
     (("F12", "会话日志"),),
-    (("Esc", "取消输入/中断"),),
+    (("Esc", "清空输入/中断"),),
 )
 
 #: 命令名称列最小/最大宽度（列对齐；超出最大宽度的名称后仍留 1 空格分隔）。

@@ -208,8 +208,8 @@ def create_framework(model, tui_config, line_tracker, input_instance):
     input_instance.set_reverse_search_callback(
         _make_reverse_search_cb(model, session)
     )
-    # 方向D 步骤16：Esc 取消输入（配置门控，默认 False 保持中断语义）；
-    # 活跃状态回调（生成中不取消输入，走既有中断）
+    # 方向D 步骤16：Esc 取消输入（配置门控，默认 True——2026-10 用户需求：
+    # 空闲时单次 Esc 清空输入）；活跃状态回调（生成中不取消输入，走既有中断）
     input_instance.set_esc_cancel_input(tui_config.esc_cancel_input)
     input_instance.set_active_status_callback(_make_active_status_cb(model))
     # 拖放文件路径规范化（2026-10-07，用户需求：输入框支持拖动文件输入文件
@@ -510,8 +510,9 @@ def _make_changes_toggle_cb(model, session):
 def _make_active_status_cb(model):
     """构建活跃状态回调（方向D 步骤16：Esc 取消输入判定用）。
 
-    返回 ``lambda: model.status.status_active``——生成中（True）时 Esc 不取消
-    输入（走既有中断）；空闲（False）时若启用且缓冲非空则清空输入取消编辑。
+    返回 ``lambda: model.status.status_active``——生成中（True，即"有流式
+    输出"）时 Esc 不取消输入（走既有中断，保留输入内容）；空闲（False）时
+    启用且缓冲非空则**单次 Esc** 清空输入取消编辑（2026-10 用户需求）。
     """
 
     def _cb():

@@ -765,7 +765,8 @@ class Input:
     def set_esc_cancel_input(self, enabled: bool) -> None:
         """设置 Esc 取消输入启用标志（委托 InputDispatcher，方向D 步骤16）。
 
-        由装配注入 ``TuiConfig.esc_cancel_input``（默认 False 保持中断语义）。
+        由装配注入 ``TuiConfig.esc_cancel_input``（默认 True：空闲时单次 Esc
+        清空输入，2026-10 用户需求）；置 False 回退「Esc 仅中断」旧语义。
         """
         self._dispatcher.set_esc_cancel_input(enabled)
 
