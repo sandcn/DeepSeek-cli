@@ -177,6 +177,25 @@ def test_gzip_data_field_without_space_is_accepted(monkeypatch):
     assert out[0]["choices"][0]["delta"]["content"] == "z"
 
 
+def test_crlf_sse_lines_are_parsed_without_json_errors(monkeypatch, caplog):
+    """SSE 行尾 CRLF：``[DONE]\\r`` 必须被识别，不能当作 JSON 解析失败。
+
+    修复前完整行保留 ``\\r``，``[DONE]\\r`` 不等于 ``b"[DONE]"`` → 进入
+    ``json.loads`` 失败并累加 consecutive_failures（不发送 finish_reason
+    的服务端无法提前结束迭代，日志被噪声污染）。
+    """
+    body = (
+        b'data: {"choices": [{"delta": {"content": "a"}}]}\r\n'
+        b"\r\n"
+        b"data: [DONE]\r\n"
+    )
+    with caplog.at_level(logging.DEBUG, logger="src.api.client_async"):
+        out = _drive(monkeypatch, [body])
+    assert len(out) == 1
+    assert out[0]["choices"][0]["delta"]["content"] == "a"
+    assert not any("JSON 解析失败" in r.getMessage() for r in caplog.records)
+
+
 # ═══════════════════════════════════════════════════════════
 # 2. 不支持 / 损坏的编码：显式报错而非静默空响应
 # ═══════════════════════════════════════════════════════════

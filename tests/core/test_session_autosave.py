@@ -275,3 +275,26 @@ def test_save_session_omits_session_log_field_when_not_provided(tmp_path, monkey
 
     loaded = chat_msgs.load_session(sid)
     assert loaded["session_log"] == []
+
+
+def test_session_log_snapshot_skips_when_event_limit_exceeded(monkeypatch):
+    """日志事件数超上限 → 不构造快照（保存文件只留完整 messages）。"""
+    monkeypatch.setattr(persistence_mod, "_SESSION_LOG_SNAPSHOT_MAX_EVENTS", 2)
+    log = SessionLog(session_id="s")
+    for i in range(3):
+        log.append(SessionEventType.USER_MESSAGE, content=str(i))
+    manager, _ = _make_manager([{"role": "user", "content": "x"}], log=log)
+
+    assert manager.session_log_snapshot() is None
+
+
+def test_session_log_snapshot_returns_within_event_limit(monkeypatch):
+    monkeypatch.setattr(persistence_mod, "_SESSION_LOG_SNAPSHOT_MAX_EVENTS", 2)
+    log = SessionLog(session_id="s")
+    for i in range(2):
+        log.append(SessionEventType.USER_MESSAGE, content=str(i))
+    manager, _ = _make_manager([{"role": "user", "content": "x"}], log=log)
+
+    snapshot = manager.session_log_snapshot()
+    assert isinstance(snapshot, list)
+    assert len(snapshot) == 2

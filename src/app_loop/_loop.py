@@ -63,10 +63,9 @@ class InteractiveLoop:
         self._force_exit = asyncio.Event()
         self._msg_done_ref: asyncio.Event | None = None
         # ChatUI 消费者 — 通过事件系统渲染聊天内容到终端。
-        # ★ 类型：构造期占位 None，``run()`` 注入实例后整个生命周期恒非 None
-        #   （全部使用点均在注入之后）——故声明为非 Optional：mypy 不对属性
-        #   访问做跨语句收窄（``if self._chat_ui is not None:`` 只保护紧邻行）。
-        self._chat_ui: ChatUIConsumer = None
+        # ★ 类型：构造期为 None，``run()`` 注入实例后恒可用；使用点统一经
+        #   ``_ui`` property 取非 Optional 视图（注入前访问抛可读错误）。
+        self._chat_ui: ChatUIConsumer | None = None
         # ★ EscapeMonitor — 始终开启，捕获所有键盘输入
         self._monitor: EscapeMonitor | None = None
         # ★ 流式输入状态共享：round_end 回调与 _handle_round 之间传递
@@ -76,6 +75,14 @@ class InteractiveLoop:
         # ★ ESC 杀后台任务跨线程调度用的主事件循环（run() 中保存——
         #   render 线程中 asyncio.get_event_loop() 不可用）
         self._loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def _ui(self) -> ChatUIConsumer:
+        """已注入的 ChatUI 消费者（注入前访问属编程错误，抛可读错误）。"""
+        ui = self._chat_ui
+        if ui is None:
+            raise RuntimeError("ChatUI 消费者尚未注入（run() 之前不可访问）")
+        return ui
 
     def _get_term_width(self) -> int:
         return TerminalWidthCache.get_default().get_width()
@@ -120,7 +127,7 @@ class InteractiveLoop:
             # ★ Bug 7: 确保 msg_done 为 cleared 状态，避免异常路径遗留 set 状态导致逻辑混乱
             msg_done.clear()
             # ★ 同步当前模型名到底部栏状态行（覆盖所有可能修改模型的路径）
-            self._chat_ui.bottom_bar.set_model_name(state.model)
+            self._ui.bottom_bar.set_model_name(state.model)
 
             # ★ prefill 优先：先消费 prefill，再决定路由。
             #    当 prefill 非空时（/deitmsg /editmsg 等编辑命令预设），
@@ -134,7 +141,7 @@ class InteractiveLoop:
             # ── retry / retry_pending：仅在无 prefill 时触发 ──
             if not prefill and (state.retry or session.retry_pending):
                 state.retry = False
-                reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
+                reset_interrupt_async(input_instance=self._ui.input if self._chat_ui else None)
                 await _put_and_wait(queue, _RETRY_SENTINEL, msg_done)
                 return _RoundResult(should_exit=False)
 
@@ -146,22 +153,22 @@ class InteractiveLoop:
                     return _RoundResult(should_exit=False)
 
             # ★ 等待 render 线程处理完待渲染内容
-            self._chat_ui.flush()
+            self._ui.flush()
             # ★ 显式将光标定位到输入行（flush 返回时 render 线程可能尚未执行 _position_cursor）
-            self._chat_ui.bottom_bar.ensure_cursor_in_lower()
+            self._ui.bottom_bar.ensure_cursor_in_lower()
 
             # ★ 获取输入前清除残留中断信号
-            reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
+            reset_interrupt_async(input_instance=self._ui.input if self._chat_ui else None)
 
             try:
                 user_input = await asyncio.to_thread(
-                    self._chat_ui.wait_for_user_input, self._monitor, prefill,
-                    input_=self._chat_ui.input,
+                    self._ui.wait_for_user_input, self._monitor, prefill,
+                    input_=self._ui.input,
                 )
             except RuntimeError as e:
                 if "EscapeMonitor" in str(e):
                     _logger.warning("EscapeMonitor I/O 不可用，尝试恢复: %s", e)
-                    self._chat_ui.write_line(
+                    self._ui.write_line(
                         "\n  ⚠ EscapeMonitor I/O 中断，正在重启…"
                     )
                     for attempt in range(1, 6):
@@ -189,7 +196,7 @@ class InteractiveLoop:
                                     "EscapeMonitor 恢复失败（已重试 5 次）: %s",
                                     recovery_err, exc_info=recovery_err,
                                 )
-                                self._chat_ui.write_line(
+                                self._ui.write_line(
                                     f"\n  [错误] 无法恢复输入监听"
                                     f"（已重试 5 次）: {recovery_err}"
                                 )
@@ -197,7 +204,7 @@ class InteractiveLoop:
                             # 指数退避: 1s, 2s, 4s, 8s
                             backoff = min(1.0 * (2 ** (attempt - 1)), 30.0)
                             await asyncio.sleep(backoff)
-                            self._chat_ui.write_line(
+                            self._ui.write_line(
                                 f"\n  ⚠ 正在重试恢复 ({attempt + 1}/5)…"
                             )
                     if self._monitor_recovery_count > 10:
@@ -221,7 +228,7 @@ class InteractiveLoop:
             if user_input.strip().lower() == 'exit':
                 pending = session.pending_messages
                 if pending:
-                    self._chat_ui.write_line(f"\n  [警告] 还有 {len(pending)} 条排队消息未处理，已丢弃")
+                    self._ui.write_line(f"\n  [警告] 还有 {len(pending)} 条排队消息未处理，已丢弃")
                     session.pop_pending_messages()
                 return _RoundResult(should_exit=True)
 
@@ -234,12 +241,12 @@ class InteractiveLoop:
 
         except asyncio.CancelledError:
             _logger.warning("对话轮次被取消")
-            self._chat_ui.write_line("\n  ⚠ 对话轮次被取消，继续运行")
+            self._ui.write_line("\n  ⚠ 对话轮次被取消，继续运行")
             self._force_exit.set()
             return _RoundResult(should_exit=True)
         except Exception as e:
             _logger.exception("对话轮次异常")
-            self._chat_ui.write_line(f"\n  [错误] {e}，可继续输入")
+            self._ui.write_line(f"\n  [错误] {e}，可继续输入")
             if not msg_done.is_set():
                 msg_done.set()
             return _RoundResult(should_exit=False)
@@ -248,12 +255,12 @@ class InteractiveLoop:
         """处理 /loop 命令"""
         parts = content.split(maxsplit=2)
         if len(parts) < 3 or not parts[1].isdigit() or int(parts[1]) < 1:
-            self._chat_ui.write_line(f"  {YELLOW}用法: /loop <次数> <提词>{RESET}")
+            self._ui.write_line(f"  {YELLOW}用法: /loop <次数> <提词>{RESET}")
             return
         count = int(parts[1])
         prompt = parts[2].strip()
         if not prompt:
-            self._chat_ui.write_line(f"  {YELLOW}用法: /loop <次数> <提词>{RESET}")
+            self._ui.write_line(f"  {YELLOW}用法: /loop <次数> <提词>{RESET}")
             return
         # ── 清理前一轮可能的强制退出标记 ──────────────────────
         self._force_exit.clear()
@@ -265,34 +272,34 @@ class InteractiveLoop:
             # 确保 finally 始终清理 _loop_mode，防止状态泄漏
             self._loop_state["_loop_mode"] = True
             if self._chat_ui is not None:
-                self._chat_ui.bottom_bar.enable_status()
-            self._chat_ui.write_line(f"  {GREEN}+ 开始循环 {count} 次: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"{RESET}")
+                self._ui.bottom_bar.enable_status()
+            self._ui.write_line(f"  {GREEN}+ 开始循环 {count} 次: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"{RESET}")
             for i in range(count):
-                self._chat_ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第1次 ─{RESET}")
+                self._ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第1次 ─{RESET}")
                 # 清空对话（每轮开始前清空）
-                reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
+                reset_interrupt_async(input_instance=self._ui.input if self._chat_ui else None)
                 session.clear_messages()
                 # 第1次运行（含网络错误重试）
                 result = await self._run_round_with_retry(session, prompt)
                 if result.get("interrupted", False):
-                    self._chat_ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
+                    self._ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
                     break
 
                 # 第2次运行（固定提词"继续完成所有"，含网络错误重试）
-                self._chat_ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第2次 ─{RESET}")
-                reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
+                self._ui.write_line(f"  {DIM}  ─ 第 {i+1}/{count} 轮 · 第2次 ─{RESET}")
+                reset_interrupt_async(input_instance=self._ui.input if self._chat_ui else None)
                 result2 = await self._run_round_with_retry(session, "继续完成所有")
                 if result2.get("interrupted", False):
-                    self._chat_ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
+                    self._ui.write_line(f"  {YELLOW}+ ESC 中断，提前结束循环（已执行 {i+1}/{count} 轮）{RESET}")
                     break
             else:
-                self._chat_ui.write_line(f"  {GREEN}+ 循环 {count} 次执行完毕{RESET}")
+                self._ui.write_line(f"  {GREEN}+ 循环 {count} 次执行完毕{RESET}")
         finally:
             # ── /loop 结束：清理 _loop_mode 标志 + 重置状态 ────
             self._loop_state["_loop_mode"] = False
             if self._chat_ui is not None:
-                self._chat_ui.bottom_bar.disable_status()
-                self._chat_ui.bottom_bar.reset_tool_count()
+                self._ui.bottom_bar.disable_status()
+                self._ui.bottom_bar.reset_tool_count()
             reset_token_speed()
         # ── 自动保存循环后的对话 ────────────────────────────
         await _save_loop_snapshot(session, self._chat_ui)
@@ -312,7 +319,7 @@ class InteractiveLoop:
         """
         for attempt in range(1, max_attempts + 1):
             # 每轮重试前确保 interrupt 信号已清除
-            reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
+            reset_interrupt_async(input_instance=self._ui.input if self._chat_ui else None)
 
             try:
                 result = await session.run_round(prompt)
@@ -323,7 +330,7 @@ class InteractiveLoop:
                     _logger.warning(
                         "/loop run_round 网络错误 (第%d次重试): %s", attempt, e,
                     )
-                    self._chat_ui.write_line(
+                    self._ui.write_line(
                         f"  {YELLOW}+ 检测到网络错误，正在重试 ({attempt}/{max_attempts})...{RESET}"
                     )
                     # 追加"[继续]"消息通知模型重试
@@ -351,7 +358,7 @@ class InteractiveLoop:
                                 "/loop 返回内容含网络错误 (第%d次重试): %s",
                                 attempt, last_content[:100],
                             )
-                            self._chat_ui.write_line(
+                            self._ui.write_line(
                                 f"  {YELLOW}+ 检测到网络错误，正在重试 ({attempt}/{max_attempts})...{RESET}"
                             )
                             try:
@@ -364,7 +371,7 @@ class InteractiveLoop:
                                 "/loop 网络错误重试 %d 次仍失败，跳过本轮: %s",
                                 max_attempts, last_content[:200],
                             )
-                            self._chat_ui.write_line(
+                            self._ui.write_line(
                                 f"  {YELLOW}+ 网络错误重试 {max_attempts} 次仍失败，跳过本轮{RESET}"
                             )
                             return {"interrupted": True, "session_id": None,
@@ -377,13 +384,13 @@ class InteractiveLoop:
 
     async def _handle_regular_msg(self, content: str, session, state: SessionState) -> None:
         """处理普通用户消息"""
-        reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
+        reset_interrupt_async(input_instance=self._ui.input if self._chat_ui else None)
         # ★ 重置工具计数（新轮开始）
         if self._chat_ui is not None:
-            self._chat_ui.bottom_bar.reset_tool_count()
+            self._ui.bottom_bar.reset_tool_count()
         # 通过 ChatUI 打印用户消息
         if self._chat_ui is not None:
-            self._chat_ui.on_user_message(content)
+            self._ui.on_user_message(content)
         result = await session.run_round(content)
         # ★ Bug3 修复：首轮消息完成后保存 checkpoint，确保异常时已成功处理的消息不丢失。
         #   中断路径在 _emit_round_events 中已调用 save_checkpoint()，此处避免重复保存。
@@ -394,19 +401,19 @@ class InteractiveLoop:
                 _logger.exception("_handle_regular_msg: save_checkpoint 异常，不阻断消息处理")
         state.model = session.model
         if self._chat_ui is not None:
-            self._chat_ui.bottom_bar.set_model_name(state.model)
+            self._ui.bottom_bar.set_model_name(state.model)
         breached, _ = await session.run_pending_loop(max_iter=10)
         if breached:
-            self._chat_ui.write_line("\n  [错误] 系统繁忙，部分消息未能处理，请重新发送")
+            self._ui.write_line("\n  [错误] 系统繁忙，部分消息未能处理，请重新发送")
             session._force_state_recovery()
         # ★ 等待 ChatUI 渲染完所有待处理命令（工具输出/汇总等）
         #   确保输入提示符出现在完整渲染内容之后，不重叠。
         if self._chat_ui is not None:
-            await asyncio.to_thread(self._chat_ui.flush)
+            await asyncio.to_thread(self._ui.flush)
 
     async def _handle_command_msg(self, content: str, session, state: SessionState) -> None:
         """处理 / 命令分发 — 统一走插件路径"""
-        reset_interrupt_async(input_instance=self._chat_ui.input if self._chat_ui else None)
+        reset_interrupt_async(input_instance=self._ui.input if self._chat_ui else None)
         cmd_name = content.split()[0].lower()
 
         # 插件命令分发（统一路径）
@@ -421,11 +428,11 @@ class InteractiveLoop:
             arg = content.split(maxsplit=1)[1] if len(content.split(maxsplit=1)) > 1 else ""
             from ..core.commands import CommandUiAdapter
             _ui_adapter = CommandUiAdapter()
-            input_ = self._chat_ui.input
+            input_ = self._ui.input
             ctx = CommandContext(
                 messages=session.messages, state=state_dict, arg=arg,
                 build_system_prompt=session.agent.build_system_prompt,
-                get_user_input=lambda prompt="": self._chat_ui.wait_for_user_input(
+                get_user_input=lambda prompt="": self._ui.wait_for_user_input(
                     self._monitor, prefill=prompt, input_=input_),
                 context_manager=session.context_manager,
                 session=session,
@@ -440,14 +447,14 @@ class InteractiveLoop:
                 handled = await asyncio.to_thread(plugin.execute, ctx)
             if handled:
                 state.model = state_dict.get("model", state.model)
-                self._chat_ui.bottom_bar.set_model_name(state.model)
+                self._ui.bottom_bar.set_model_name(state.model)
                 state.retry = state_dict.get("retry", False)
                 state.prefill = state_dict.get("prefill", "")
                 _logger.debug("_handle_command_msg: state.prefill set, len=%d, retry=%s", len(state.prefill), state.retry)
             else:
-                self._chat_ui.write_line(f"  {YELLOW}未知命令: {content}，输入 /help 查看可用命令{RESET}")
+                self._ui.write_line(f"  {YELLOW}未知命令: {content}，输入 /help 查看可用命令{RESET}")
         else:
-            self._chat_ui.write_line(f"  {YELLOW}未知命令: {content}，输入 /help 查看可用命令{RESET}")
+            self._ui.write_line(f"  {YELLOW}未知命令: {content}，输入 /help 查看可用命令{RESET}")
 
     async def _cli_msg_consumer(self, msg, session, state: SessionState, msg_done: asyncio.Event) -> None:
         """CLI 消息消费者：处理放入队列的所有消息（命令 + 普通消息）。"""
@@ -478,7 +485,7 @@ class InteractiveLoop:
                 # ★ 给用户可见错误消息，终结"静默无响应"问题
                 if self._chat_ui is not None:
                     try:
-                        self._chat_ui.write_line(
+                        self._ui.write_line(
                             f"  {YELLOW}\u26a0{RESET} \u5904\u7406\u6d88\u606f\u65f6\u51fa\u9519: {exc}"
                         )
                     except Exception:
@@ -494,12 +501,12 @@ class InteractiveLoop:
         from ._ui_factory import create_chat_ui
 
         self._chat_ui = create_chat_ui()
-        self._chat_ui.start()
+        self._ui.start()
 
     def _teardown_chat_ui(self):
         """停止 ChatUI 消费者"""
         if self._chat_ui is not None:
-            self._chat_ui.stop()
+            self._ui.stop()
             self._chat_ui = None
 
     # ── EscapeMonitor 生命周期管理 ───────────────────────
@@ -513,7 +520,7 @@ class InteractiveLoop:
         必须在 _register_session_handlers 之前调用，确保 _setup_session_and_handlers
         中 _register_session_handlers 传入的 self._monitor 为非 None 的 EscapeMonitor。
         """
-        input_instance = self._chat_ui.input
+        input_instance = self._ui.input
         self._monitor = EscapeMonitor(input_instance=input_instance)
 
     def _setup_monitor(self, session, state):
@@ -527,7 +534,7 @@ class InteractiveLoop:
         回调注册在 Input 实例上（render 线程中统一分发），
         EscapeMonitor 仅负责原始 I/O。
         """
-        input_instance = self._chat_ui.input
+        input_instance = self._ui.input
         if self._monitor is None or (self._monitor._started and not self._monitor.is_alive):
             if self._monitor is not None:
                 try:
@@ -569,10 +576,10 @@ class InteractiveLoop:
 
         input_instance.set_kill_background_callback(_on_escape_kill)
         input_instance.set_echo_callback(
-            lambda text, cursor_pos=-1: self._chat_ui.refresh_bottom_bar(text, cursor_pos)
+            lambda text, cursor_pos=-1: self._ui.refresh_bottom_bar(text, cursor_pos)
         )
         if self._chat_ui is not None:
-            self._chat_ui.setup_completion(input_instance)
+            self._ui.setup_completion(input_instance)
         self._monitor.start()
 
     def _teardown_monitor(self):
@@ -586,8 +593,8 @@ class InteractiveLoop:
     def _setup_session_and_handlers(self, loaded_data):
         """初始化会话并注册事件处理器"""
         session, state = _setup_session(loaded_data, self._chat_ui)
-        self._chat_ui.bottom_bar.set_model_name(state.model)
-        self._chat_ui.setup_bottom_bar()
+        self._ui.bottom_bar.set_model_name(state.model)
+        self._ui.setup_bottom_bar()
         # 启动欢迎卡须在模型名已知后推送：卡片内容与聊天区空态同源
         # （模型/模式/主题/目录 + 操作引导），模型名未设置时无法构建。
         push_splash = getattr(self._chat_ui, "push_splash", None)
@@ -638,7 +645,7 @@ class InteractiveLoop:
         ctx = CommandContext(
             messages=session.messages, state=state_dict, arg="",
             build_system_prompt=session.agent.build_system_prompt,
-            get_user_input=lambda prompt="": self._chat_ui.wait_for_user_input(
+            get_user_input=lambda prompt="": self._ui.wait_for_user_input(
                 self._monitor, prefill=prompt, input_=input_),
             context_manager=session.context_manager,
             session=session,
@@ -657,7 +664,7 @@ class InteractiveLoop:
             try:
                 state.model = applied
                 session.model = applied
-                self._chat_ui.bottom_bar.set_model_name(applied)
+                self._ui.bottom_bar.set_model_name(applied)
             except Exception:
                 _logger.debug("同步模型配置结果失败", exc_info=True)
 

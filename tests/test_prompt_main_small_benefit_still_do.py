@@ -63,8 +63,8 @@ class TestMainSmallBenefitStillDoRule:
 
     def test_prompt_keeps_neighbor_complexity_rules(self, main_prompt_text: str):
         """不得破坏相邻原有约束（时间/宏大复杂度不做的禁令）。"""
-        assert "禁止用时间去评任务的复杂度就选择不做" in main_prompt_text
-        assert "禁止用宏大去评任务的复杂度就选择不做" in main_prompt_text
+        assert "禁止以任务耗时长、复杂度高为由选择不做" in main_prompt_text
+        assert "禁止以任务宏大、难度大为由选择不做" in main_prompt_text
 
 
 if __name__ == "__main__":

@@ -404,3 +404,21 @@ def test_bg_loop_calls_collectors_and_waits(monkeypatch):
     assert calls["cpu"] == 2
     assert calls["mem"] == 2
     assert waits == [2.0, 2.0]
+
+
+def test_stop_join_timeout_is_bounded(monitor):
+    """stop() 在退出路径调用：join 上限必须短（不长时间阻塞界面）。"""
+    class _FakeThread:
+        def __init__(self):
+            self.timeout = None
+
+        def join(self, timeout=None):
+            self.timeout = timeout
+
+    fake = _FakeThread()
+    monitor._bg_started = True
+    monitor._bg_thread = fake
+    monitor.stop()
+    assert fake.timeout == monitor.STOP_JOIN_TIMEOUT
+    assert monitor._bg_started is False
+    assert monitor._bg_thread is None

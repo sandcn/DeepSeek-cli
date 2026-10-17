@@ -214,6 +214,26 @@ def test_messages_segment_counts_source():
     assert runs and "3" in runs[0].text
 
 
+def test_messages_segment_excludes_system_prompt():
+    """空对话只有 system 提词时不应显示消息数（修复 ``✉ 2`` 误导）。"""
+    from src.tui.app.status_bar import _messages_segment
+
+    m = AppModel()
+    m.message_source = lambda: [
+        {"role": "system", "content": "a"},
+        {"role": "system", "content": "b"},
+    ]
+    assert _messages_segment(_ctx(m)) == []
+
+    m.message_source = lambda: [
+        {"role": "system", "content": "a"},
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    runs = _messages_segment(_ctx(m))
+    assert runs and "2" in runs[0].text
+
+
 def test_idle_status_shows_model_name():
     """空闲状态栏显示模型名（theme/provider/context 段已删除）。"""
     from src.tui.app.status_bar import _build_status_runs

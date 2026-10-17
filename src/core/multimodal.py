@@ -15,7 +15,8 @@ read_image 等图像工具依赖本模块判断当前模型是否支持多模态
 
 注：各提供商最新一代多模态模型均已覆盖 —— Anthropic Claude 全系（含
 ``claude-opus-5-5`` / ``claude-sonnet-5-5`` / ``claude-haiku-5-5`` 等 5.5 代）、
-智谱 ``glm-5.3-flash`` / ``glm-5.3-flashx``（原生多模态，命中 ``glm-5`` 前缀）、
+智谱 ``glm-5.3-flash`` / ``glm-5.3-flashx``（原生多模态）——注意 ``glm-5.3``
+旗舰为仅文本模型，不匹配 ``glm-5`` 宽前缀）、
 小米 MiMo ``mimo-v2.6-*``（全模态理解）、DeepSeek V4.1 Flash（``deepseek-flash``；
 旧名 ``deepseek-v4-flash`` 与 ``deepseek-v4-flash-vision-exp`` 已下线并路由到
 V4.1 Flash，同样判定为多模态）。
@@ -43,9 +44,12 @@ _MULTIMODAL_MODEL_PATTERNS: tuple[str, ...] = (
     "claude",
     # OpenAI GPT-4o / GPT-4v / o 系列
     "gpt-4o", "gpt-4v", "gpt-4-vision", "gpt-4-turbo", "gpt-4.1", "gpt-5",
-    # 智谱 GLM（4V 起支持视觉；glm-5 前缀覆盖 glm-5.3-flash / glm-5.3-flashx
-    # 等原生多模态代）
-    "glm-4v", "glm-5v", "glm-4.5v", "glm-5", "glm-6v",
+    # 智谱 GLM（4V 起支持视觉）：只匹配**明确的多模态型号**，不能用
+    # ``glm-5`` 宽前缀——``glm-5.3`` 旗舰是仅文本模型（见 defaults.PROVIDERS
+    # 注释），宽前缀会把它误判为多模态（read_image 返回 base64 图片后请求
+    # 可能被服务端拒绝）。``glm-5.3-flash`` 同时覆盖 ``glm-5.3-flashx``。
+    "glm-4v", "glm-5v", "glm-4.5v", "glm-6v",
+    "glm-5.3-flash",
     # 阿里 Qwen-VL 系列
     "qwen-vl", "qwen2-vl", "qwen2.5-vl", "qwen3-vl",
     # 谷歌 Gemini

@@ -67,6 +67,20 @@ def test_shared_grapheme_widths():
     assert wcswidth_simple(_ZWJ_FAMILY) == 2
 
 
+def test_zwj_does_not_swallow_non_emoji_cjk():
+    """ZWJ 只连接 emoji 基字符：``👨‍中`` 不能当成单簇宽 2（实际宽 4）。"""
+    text = "👨\u200d中"
+    assert string_width(text) == 4
+    clusters = list(grapheme_clusters(text))
+    assert clusters[0].endswith("\u200d")
+    assert clusters[-1] == "中"
+
+
+def test_zwj_still_joins_emoji_sequences():
+    assert string_width("👨\u200d👩") == 2
+    assert string_width("👨\u200d👩\u200d👧") == 2
+
+
 # ── 输入区换行 / 制表符 / 光标 ─────────────────────────────
 
 def test_wrap_by_width_keeps_grapheme_clusters_atomic():

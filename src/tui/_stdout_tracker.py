@@ -450,10 +450,13 @@ class _StdoutLineTracker:
 
             if not data:
                 return
-            # 读取起点若落在文件中间，首行可能被截断——丢弃该残行。
+            # 读取起点若落在文件中间，首行可能被截断——丢弃该残行；若窗口内
+            # 完全没有换行（超长单行 > 4MB），保留窗口内容（它是文件最后一
+            # 行的尾部，丢掉会让历史显示为空）。
             if pos > 0:
                 nl = data.find(b"\n")
-                data = data[nl + 1:] if nl >= 0 else b""
+                if nl >= 0:
+                    data = data[nl + 1:]
             lines = data.decode("utf-8", errors="replace").splitlines()
             restore = lines[-max_lines:] if len(lines) > max_lines else lines
             for line in restore:

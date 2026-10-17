@@ -305,12 +305,20 @@ def _speed_segment(ctx: StatusContext) -> list:
 
 
 def _messages_segment(ctx: StatusContext) -> list:
-    """会话消息数段（空闲/活跃均显示；消息源未注入时为空）。"""
+    """会话消息数段（空闲/活跃均显示；消息源未注入时为空）。
+
+    只统计**对话消息**：顶层 system 提词不显示（空对话不应显示 ``✉ 2``
+    这类由系统提词造成的误导性计数）。
+    """
     count = 0
     try:
         source = getattr(ctx.model, "message_source", None)
         if callable(source):
-            count = len(source() or [])
+            messages = source() or []
+            count = sum(
+                1 for m in messages
+                if not (isinstance(m, dict) and m.get("role") == "system")
+            )
     except Exception:
         count = 0
     if count <= 0:

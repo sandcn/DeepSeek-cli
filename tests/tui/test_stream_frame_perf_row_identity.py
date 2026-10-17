@@ -132,6 +132,19 @@ def test_open_children_cache_prune_bounded():
     assert len(cache.groups) < 400
 
 
+def test_open_children_cache_prune_keeps_multirow_source_keys():
+    """多行源的 order 项 ``(line_id, k)`` 不得让 prune 删掉 ``line_id`` 缓存。"""
+    from src.tui.app.chat_view import _OpenChildrenCache
+
+    cache = _OpenChildrenCache()
+    cache.groups = {"sid": (), "other": ()}
+    cache.group_src = {"sid": (None, 1), "other": (None, 1)}
+    order = (("sid", 0), ("sid", 1))
+    cache.prune({item[0] if isinstance(item, tuple) else item for item in order})
+    assert "sid" in cache.groups
+    assert "other" not in cache.groups
+
+
 def test_preview_rows_incremental_matches_full_rebuild():
     """预览行滑窗增量与全量重建产出一致（行内容/顺序/标识数量）。"""
     # 未闭合长表格：预览窗口达到上限后头部滑窗（每帧丢弃最旧行）

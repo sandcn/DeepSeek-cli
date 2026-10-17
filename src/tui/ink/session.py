@@ -1020,6 +1020,19 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._render_thread = threading.Thread(target=self._render, daemon=True)
         self._render_thread.start()
 
+    def prepare_exit(self) -> None:
+        """退出前清除当前帧（保留 scrollback），供生命周期 stop 调用。
+
+        非全屏流动模型的最后一帧包含底部栏（输入区 / 状态栏）；直接退出时
+        光标停在底部栏区域，后续 ``Goodbye!`` 会覆盖首行、其余行残留
+        （``░░░░░░] 1.8%`` 之类）。清屏（``\\033[2J\\033[H``）后退出输出从
+        干净屏幕开始，scrollback 历史由终端保留。
+        """
+        try:
+            self._ink_renderer.full_clear()
+        except Exception:
+            _logger.debug("prepare_exit full_clear 异常", exc_info=True)
+
     def stop(self) -> None:
         self._render_running = False
         # ★ 单帧耗时无上界（2026-08-19）：自适应 join——渲染线程正在执行

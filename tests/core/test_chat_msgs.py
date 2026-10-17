@@ -159,6 +159,45 @@ def test_save_session_write_error_raises(msgs_dir, monkeypatch):
         save_session([{"role": "user", "content": "hi"}], "m")
 
 
+def test_save_session_atomic_no_temp_file_left(msgs_dir):
+    """成功保存后不残留临时文件（原子写使用隐藏临时名）。"""
+    sid = save_session([{"role": "user", "content": "hi"}], "m")
+    assert (msgs_dir / f"{sid}.json").exists()
+    assert not list(msgs_dir.glob("*.tmp"))
+    assert not [p for p in msgs_dir.iterdir() if ".tmp" in p.name]
+
+
+def test_save_session_atomic_keeps_old_file_on_replace_failure(msgs_dir, monkeypatch):
+    """替换失败时旧会话文件保持不变（不会被截断）。"""
+    _write_session(msgs_dir, "atomic1", title="旧内容")
+    old = (msgs_dir / "atomic1.json").read_text(encoding="utf-8")
+
+    def _fail_replace(src, dst):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(cm.os, "replace", _fail_replace)
+    with pytest.raises(OSError):
+        save_session(
+            [{"role": "user", "content": "新内容"}], "m", session_id="atomic1",
+        )
+    assert (msgs_dir / "atomic1.json").read_text(encoding="utf-8") == old
+    assert not [p for p in msgs_dir.iterdir() if ".tmp" in p.name]
+
+
+def test_rename_session_atomic_keeps_old_file_on_replace_failure(msgs_dir, monkeypatch):
+    """重命名替换失败时返回 False 且旧文件保持不变。"""
+    _write_session(msgs_dir, "atomic2", title="旧标题")
+    old = (msgs_dir / "atomic2.json").read_text(encoding="utf-8")
+
+    def _fail_replace(src, dst):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(cm.os, "replace", _fail_replace)
+    assert rename_session("atomic2", "新标题") is False
+    assert (msgs_dir / "atomic2.json").read_text(encoding="utf-8") == old
+    assert not [p for p in msgs_dir.iterdir() if ".tmp" in p.name]
+
+
 # ── load_session ─────────────────────────────────────────
 
 def test_load_session_roundtrip(msgs_dir):

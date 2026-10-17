@@ -314,6 +314,30 @@ def _has_grapheme_special(text: str) -> bool:
     return _GRAPHEME_SPECIAL_RE.search(text) is not None
 
 
+def _is_emoji_base_cp(cp: int) -> bool:
+    """码点是否可作为 ZWJ 组合 emoji 的基字符（UAX #29 Extended_Pictographic 近似）。
+
+    ZWJ 只连接 emoji（``👨‍👩‍👧``），不能吞并 CJK / 普通文字——修复前只要后一
+    字符不是 ASCII 就无条件吞并（``"👨‍中"`` 被当成单簇宽 2，实际终端宽度 4）。
+    范围取常见 emoji 块 + 少量 BMP 符号；未列出的符号按普通字符处理（宽度
+    计算保守，不会低估）。
+    """
+    if 0x1F000 <= cp <= 0x1FAFF:   # 表情、手势、动物、国旗、区域指示符
+        return True
+    if 0x2600 <= cp <= 0x27BF:     # 杂项符号 / 装饰符号
+        return True
+    if 0x2B00 <= cp <= 0x2BFF:     # 杂项符号和箭头
+        return True
+    if 0x2190 <= cp <= 0x21FF:     # 箭头
+        return True
+    if 0x2300 <= cp <= 0x23FF:     # 杂项技术符号（⌚/⏰ 等）
+        return True
+    return cp in (
+        0x00A9, 0x00AE, 0x203C, 0x2049, 0x2122, 0x2139,
+        0x3030, 0x303D, 0x3297, 0x3299,
+    )
+
+
 def grapheme_clusters(text: str):
     """按字形簇切分文本（简化 UAX #29：组合标记 / ZWJ / 肤色 / RI 对）。
 
@@ -348,13 +372,11 @@ def grapheme_clusters(text: str):
                 break
             i += 1
             if next_cp == 0x200D and i < n:
-                # ZWJ 后必须吞掉下一个基字符，保持组合 emoji 完整。但控制
-                # 字符（\t/\n/\r）与 ASCII 不可能是 emoji 基字符——修复前
-                # 无条件吞并：``"\u200d\u200d\t"`` 把制表符吞进组合簇，
-                # ``expand_tabs`` 的簇路径漏展开（字面 \t 进入渲染，宽度
-                # 与实际终端列错位）。控制/ASCII 前置边界处结束本簇。
+                # ZWJ 后必须吞掉下一个**emoji 基字符**，保持组合 emoji 完整。
+                # 控制字符 / ASCII / CJK / 普通文字不可能是 emoji 基字符——
+                # 无条件吞并会让 ``"👨‍中"`` 被当成单簇宽 2（实际宽 4）。
                 nxt = ord(text[i])
-                if nxt < 0x80:
+                if not _is_emoji_base_cp(nxt):
                     break
                 i += 1
                 # 继续吞掉该基字符上的修饰符（VS / 肤色）

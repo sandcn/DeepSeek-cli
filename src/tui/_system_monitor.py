@@ -23,6 +23,9 @@ class _SystemMonitor:
 
     CPU_CACHE_TTL: float = 1.0
     MEM_CACHE_TTL: float = 1.0
+    #: 停止后台线程时 join 上限（秒）——stop() 在渲染/退出路径调用，不能
+    #: 长时间阻塞界面；线程为 daemon，超时后由进程退出回收。
+    STOP_JOIN_TIMEOUT: float = 0.2
 
     def __init__(self) -> None:
         self._platform: str = self._detect_platform()
@@ -162,7 +165,7 @@ class _SystemMonitor:
             thread = self._bg_thread
             self._bg_thread = None
         if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=1.0)
+            thread.join(timeout=self.STOP_JOIN_TIMEOUT)
 
     def _bg_loop(self) -> None:
         """后台刷新循环：每 2 秒采集一次 CPU/MEM（get_* 内部含 1s TTL 缓存）。

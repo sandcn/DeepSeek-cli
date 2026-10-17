@@ -59,13 +59,42 @@ QUERY_MAX = 160
 #: 同组命令最多展示条数。
 _SAME_GROUP_LIMIT = 6
 
+#: 命令目录缓存（``(注册表签名, entries)``）——面板以约 30Hz 重绘，
+#: 每帧重建目录会重复遍历命令插件注册表并排序。注册表可用时按
+#: ``(注册表对象身份, 命令名元组)`` 失效；不可用时（旧命令表回退）
+#: 不缓存，保持与注册表变化一致。
+_ENTRY_CACHE: tuple[object, list] | None = None
+
+
+def _palette_cache_key() -> object | None:
+    """命令目录缓存键（注册表不可用时返回 None，调用方跳过缓存）。"""
+    try:
+        from src.core.commands.base import get_plugin_registry
+
+        registry = get_plugin_registry()
+        plugins = registry.list()
+        names = tuple(
+            str(getattr(getattr(plugin, "meta", None), "name", "") or "")
+            for plugin in plugins
+        )
+        return (id(registry), names)
+    except Exception:
+        return None
+
 
 def _palette_entries() -> list:
     """构建命令目录（分组 / 描述 / 别名；按分组顺序 + 名称排序）。
 
     数据源与 ``/help``、帮助速查视图同源（``_iter_help_commands``），额外
     追加 ``exit`` 伪命令。命令插件注册表未挂载时该函数自身回退旧命令表。
+    注册表可用时按签名缓存（面板每帧渲染不重复扫描注册表）。
     """
+    global _ENTRY_CACHE
+    cache_key = _palette_cache_key()
+    if cache_key is not None and _ENTRY_CACHE is not None:
+        if _ENTRY_CACHE[0] == cache_key:
+            return _ENTRY_CACHE[1]
+
     from src.core.internal.commands._command_core import (
         GROUP_LABELS,
         GROUP_ORDER,
@@ -99,6 +128,8 @@ def _palette_entries() -> list:
         order.get(e["group"], len(order)),
         e["name"],
     ))
+    if cache_key is not None:
+        _ENTRY_CACHE = (cache_key, entries)
     return entries
 
 

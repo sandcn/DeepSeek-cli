@@ -533,18 +533,23 @@ _CLIPBOARD_MAX_BYTES = 74_000
 
 
 def _truncate_utf8(data: bytes, limit: int) -> bytes:
-    """按字节上限截断 UTF-8，且不切断多字节字符。"""
+    """按字节上限截断 UTF-8，且不切断多字节字符。
+
+    只回退「尾部不完整的多字节序列」；若截断窗口**中间**已有非法字节
+    （输入本身不是合法 UTF-8），原样返回窗口内容——不把后续有效数据一并
+    丢弃（终端解码时以替换字符显示，信息损失最小）。
+    """
     if len(data) <= limit:
         return data
     cut = data[:max(0, int(limit))]
-    # 从尾部回退到最后一个完整字符边界（最多 3 个续字节）。
     while cut:
         try:
             cut.decode("utf-8")
             return cut
         except UnicodeDecodeError as exc:
             if exc.reason != "unexpected end of data":
-                return data[:exc.start]
+                # 中间存在非法字节：返回截断窗口（不丢后续数据）。
+                return cut
             cut = cut[:exc.start]
     return b""
 

@@ -244,6 +244,16 @@ def test_truncate_utf8_keeps_character_boundary():
     assert _truncate_utf8(raw, 6) == raw
 
 
+def test_truncate_utf8_does_not_drop_tail_on_illegal_middle_byte():
+    """中间非法 UTF-8 不得把后续有效数据全部丢弃（只回退尾部不完整序列）。"""
+    from src.tui._screen import _truncate_utf8
+
+    raw = b"abc\xffdef"
+    out = _truncate_utf8(raw, 6)
+    assert out == b"abc\xffde"
+    assert out.endswith(b"de")
+
+
 # ── 启动期输入暂存与取回 ─────────────────────────────────
 
 def test_startup_input_stash_is_returned():
@@ -268,6 +278,27 @@ def test_output_history_tail_load(tmp_path, monkeypatch):
     tracker._stop_flush_timer()
     try:
         assert list(tracker._ring) == [f"l{i}" for i in range(45, 50)]
+    finally:
+        tracker.close()
+
+
+def test_output_history_keeps_huge_single_line(tmp_path, monkeypatch):
+    """超过 4MB 且无换行的历史文件：保留窗口内容，不能显示为空。"""
+    import src.tui._stdout_tracker as st
+
+    hist = tmp_path / "output_history"
+    hist.write_bytes(b"x" * (4 * 1024 * 1024 + 1024))
+    monkeypatch.setattr(st, "OUTPUT_HISTORY_FILE", hist)
+    tracker = st._StdoutLineTracker(io.StringIO())
+    tracker._stop_flush_timer()
+    try:
+        tracker._ring.clear()
+        tracker._load_output_history()
+        assert len(tracker._ring) == 1
+        line = tracker._ring[0]
+        assert line
+        assert line.endswith("x")
+        assert len(line) <= 4 * 1024 * 1024
     finally:
         tracker.close()
 

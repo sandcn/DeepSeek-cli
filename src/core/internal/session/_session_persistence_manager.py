@@ -30,6 +30,10 @@ _TASK_DESC_TRUNCATE = 200
 _AUTOSAVE_INTERVAL_SECONDS = 30.0
 #: 无会话日志源时用于变更检测的消息摘要长度（字节）。
 _MESSAGE_DIGEST_SIZE = 16
+#: 会话日志快照的事件数上限——超过后自动/退出保存不再写入日志快照（文件
+#: 保留完整的 ``messages`` 字段，加载端回退 messages 重建）。避免长会话每
+#: 30 秒重写无限增长的日志（写放大 + 会话文件持续膨胀）。
+_SESSION_LOG_SNAPSHOT_MAX_EVENTS = 20_000
 
 
 def _messages_digest(messages: list[dict]) -> str:
@@ -159,17 +163,30 @@ class SessionPersistenceManager:
             return []
 
     def session_log_snapshot(self) -> list[dict] | None:
-        """返回当前会话日志的事件快照（无日志源时 None）。
+        """返回当前会话日志的事件快照（无日志源/超上限时 None）。
 
         会话日志是仅追加的事实源；快照随定时自动保存一起落盘，加载时据此
         重建消息视图。无日志视图（自定义 Agent/旧会话）时返回 None，保存端
         不写入 ``session_log`` 字段（保持向后兼容）。
+
+        ★ 事件数超过 ``_SESSION_LOG_SNAPSHOT_MAX_EVENTS`` 时返回 None：
+        保存文件只保留完整 ``messages``（加载端回退消息列表重建），避免长
+        会话每 30 秒重写无限增长的日志（写放大与文件膨胀）。检查在
+        ``snapshot()`` 之前完成，超限会话不构造全量列表。
         """
         if self._get_log is None:
             return None
         try:
             log = self._get_log()
             if log is None:
+                return None
+            event_count = len(log)
+            if event_count > _SESSION_LOG_SNAPSHOT_MAX_EVENTS:
+                _logger.debug(
+                    "会话日志事件数 %d 超过快照上限 %d，本次不写入日志快照"
+                    "（保留完整 messages）",
+                    event_count, _SESSION_LOG_SNAPSHOT_MAX_EVENTS,
+                )
                 return None
             return log.snapshot()
         except Exception:

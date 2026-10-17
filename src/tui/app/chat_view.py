@@ -588,7 +588,9 @@ def _build_open_children(
         stable_lines,
     )
     if order and len(cache.groups) > len(order) * 2 + 32:
-        cache.prune(set(order))
+        # 多行源的 order 项为 ``(line_id, k)``，groups 的键是 ``line_id``——
+        # 直接 set(order) 会把多行源行从缓存删除（下一帧重新排版）。
+        cache.prune({item[0] if isinstance(item, tuple) else item for item in order})
     if stable_lines:
         children.append(h(LiveLines, {
             "key": f"chat-{block_idx}-live",

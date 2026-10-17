@@ -388,6 +388,11 @@ async def _stream_iter_async(
                     JSON 解析失败按既有 consecutive_failures 计数/跳过策略处理。
                     """
                     nonlocal consecutive_failures
+                    # SSE 规范允许行尾 CRLF；调用方按 ``\n`` 切分后完整行仍带
+                    # 尾部 ``\r``——不剥离会让 ``[DONE]\r`` 与 ``b"[DONE]"``
+                    # 比较失败、被当作 JSON 解析错误（污染连续失败计数，
+                    # 且不发送 finish_reason 的服务端无法提前结束迭代）。
+                    line_bytes = line_bytes.rstrip(b"\r")
                     if not line_bytes:
                         return None, False, False
                     if not line_bytes.startswith(_SSE_DATA_PREFIX):

@@ -383,3 +383,33 @@ def test_workspace_segment_contains_branch_and_directory():
     text = _text(_workspace_segment(ctx))
     assert text
     assert "\u2387" in text or "~" in text or "/" in text
+
+
+# ── 命令目录缓存 ────────────────────────────────────────
+
+def test_palette_entries_cached_by_registry_signature(monkeypatch):
+    """注册表签名不变时返回同一目录对象（面板每帧渲染不重复扫描）。"""
+    import src.tui.app.command_palette as cp
+
+    monkeypatch.setattr(cp, "_ENTRY_CACHE", None)
+    monkeypatch.setattr(cp, "_palette_cache_key", lambda: ("k1",))
+    first = cp._palette_entries()
+    second = cp._palette_entries()
+    assert second is first
+
+    monkeypatch.setattr(cp, "_palette_cache_key", lambda: ("k2",))
+    third = cp._palette_entries()
+    assert third is not first
+    assert third == first
+
+
+def test_palette_entries_not_cached_without_registry(monkeypatch):
+    """注册表不可用（缓存键 None）时不缓存，保持回退命令表实时变化。"""
+    import src.tui.app.command_palette as cp
+
+    monkeypatch.setattr(cp, "_ENTRY_CACHE", None)
+    monkeypatch.setattr(cp, "_palette_cache_key", lambda: None)
+    first = cp._palette_entries()
+    second = cp._palette_entries()
+    assert second is not first
+    assert second == first

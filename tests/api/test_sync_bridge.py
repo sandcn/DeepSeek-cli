@@ -186,3 +186,23 @@ def test_shutdown_bridge_registered_at_exit():
 def test_module_exports():
     for name in sb.__all__:
         assert hasattr(sb, name)
+
+
+def test_ensure_loop_rejects_during_shutdown(monkeypatch):
+    """关闭流程进行中拒绝创建新循环（避免与正在关闭的循环并存）。"""
+    monkeypatch.setattr(sb, "_shutting_down", True)
+    with pytest.raises(RuntimeError, match="正在关闭"):
+        sb.bridge_loop()
+
+
+def test_run_coroutine_blocking_rejects_during_shutdown(monkeypatch):
+    """关闭中提交协程 → 立即拒绝并关闭协程对象（不产生未 await 警告）。"""
+    monkeypatch.setattr(sb, "_shutting_down", True)
+
+    async def coro():
+        return 1
+
+    obj = coro()
+    with pytest.raises(RuntimeError, match="正在关闭"):
+        sb.run_coroutine_blocking(obj)
+    assert obj.cr_frame is None  # 已 close（协程不再可执行）

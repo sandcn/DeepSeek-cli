@@ -385,6 +385,32 @@ def _load_index() -> dict:
     return files if isinstance(files, dict) else {}
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    """原子写入文本文件（同目录临时文件 + ``os.replace``）。
+
+    ★ 修复（2026-10）：会话文件此前直接 ``write_text`` 覆盖——定时自动保存
+    每 30 秒写盘一次，进程在写入中途被终止/断电会留下截断的 JSON，会话无法
+    加载且没有备份。临时文件使用进程/线程唯一后缀，避免同会话并发保存互相
+    删除；写入或替换失败时清理临时文件并原样抛出，旧文件保持不变。
+
+    Args:
+        path: 目标文件路径（父目录须已存在）。
+        content: 待写入的完整文本。
+    """
+    tmp = path.with_name(
+        f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp",
+    )
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            _logger.debug("清理会话临时文件失败: %s", tmp, exc_info=True)
+        raise
+
+
 def _save_index(files: dict) -> None:
     """原子写回会话摘要索引（失败仅记日志——索引只是加速，不影响正确性）。"""
     path = _index_path()
@@ -518,7 +544,7 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
         data["session_log"] = list(session_log)
 
     try:
-        filepath.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_text(filepath, json.dumps(data, ensure_ascii=False, indent=2))
     except OSError as exc:
         _logger.error("保存会话文件失败: path=%s, sid=%s, error=%s", filepath, sid, exc)
         raise
@@ -738,7 +764,9 @@ def rename_session(session_id: str, new_title: str) -> bool:
         data = json.loads(filepath.read_text(encoding="utf-8"))
         # ★ 修复（2026-10）：重命名同样归一化折行/制表符（标题按行渲染）
         data["title"] = normalize_title(new_title)
-        filepath.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_text(
+            filepath, json.dumps(data, ensure_ascii=False, indent=2),
+        )
         _invalidate_session_cache()
         return True
     except (json.JSONDecodeError, OSError):

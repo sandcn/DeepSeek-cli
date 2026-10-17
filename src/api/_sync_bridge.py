@@ -47,6 +47,9 @@ _JOIN_TIMEOUT = 2.0
 _loop: "asyncio.AbstractEventLoop | None" = None
 _thread: "threading.Thread | None" = None
 _lock = threading.Lock()
+#: 关闭流程进行中（取走 loop 到 join/close 完成期间）——阻止新提交落到
+#: 正在关闭的循环；关闭完成后复位（允许下次惰性重建）。
+_shutting_down = False
 
 
 def _serve(loop: asyncio.AbstractEventLoop) -> None:
@@ -60,24 +63,31 @@ def _serve(loop: asyncio.AbstractEventLoop) -> None:
         asyncio.set_event_loop(None)
 
 
-def _ensure_loop() -> asyncio.AbstractEventLoop:
-    """惰性创建共享桥接循环（幂等、线程安全；循环已关闭时自动重建）。"""
+def _ensure_loop_locked() -> asyncio.AbstractEventLoop:
+    """惰性创建共享桥接循环（**调用方必须持有 ``_lock``**）。"""
     global _loop, _thread
+    if (
+        _loop is not None
+        and not _loop.is_closed()
+        and _thread is not None
+        and _thread.is_alive()
+    ):
+        return _loop
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(
+        target=_serve, args=(loop,), name=BRIDGE_THREAD_NAME, daemon=True,
+    )
+    thread.start()
+    _loop, _thread = loop, thread
+    return loop
+
+
+def _ensure_loop() -> asyncio.AbstractEventLoop:
+    """惰性创建共享桥接循环（幂等、线程安全；关闭中拒绝创建）。"""
     with _lock:
-        if (
-            _loop is not None
-            and not _loop.is_closed()
-            and _thread is not None
-            and _thread.is_alive()
-        ):
-            return _loop
-        loop = asyncio.new_event_loop()
-        thread = threading.Thread(
-            target=_serve, args=(loop,), name=BRIDGE_THREAD_NAME, daemon=True,
-        )
-        thread.start()
-        _loop, _thread = loop, thread
-        return loop
+        if _shutting_down:
+            raise RuntimeError("同步桥接正在关闭，请稍后重试")
+        return _ensure_loop_locked()
 
 
 def bridge_loop() -> asyncio.AbstractEventLoop:
@@ -91,13 +101,24 @@ def bridge_thread_ident() -> "int | None":
     return None if thread is None else thread.ident
 
 
+def _close_quietly(coro) -> None:
+    """关闭未调度的协程（避免 "coroutine was never awaited" 噪音）。"""
+    close = getattr(coro, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:  # pragma: no cover - 防御
+            pass
+
+
 def run_coroutine_blocking(coro):
     """在共享桥接循环上运行 ``coro``，并阻塞当前线程等待结果。
 
     Raises:
         RuntimeError: 当前线程已处于运行中的事件循环——此时阻塞等待必然死锁，
             直接失败并给出可读提示（替代历史实现里 ``run_until_complete`` 抛出
-            的 ``This event loop is already running``）。
+            的 ``This event loop is already running``）；桥接正在关闭时同样
+            拒绝新提交，避免协程落到即将停止的循环上永不完成。
     """
     try:
         asyncio.get_running_loop()
@@ -106,16 +127,24 @@ def run_coroutine_blocking(coro):
     else:
         # 拒绝前先关闭传入的协程对象：它不会被任何循环执行，否则解释器会在
         # 垃圾回收时抛 "coroutine ... was never awaited" 警告噪音。
-        close = getattr(coro, "close", None)
-        if callable(close):
-            close()
+        _close_quietly(coro)
         raise RuntimeError(
             "同步模型包装不能在已运行事件循环的线程上调用（阻塞等待会死锁）；"
             "请改用 async 接口：call_model_async / call_model_sync_async / "
             "call_model_summarize_async"
         )
-    loop = _ensure_loop()
-    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    # 检查关闭标志、取循环、提交协程在同一临界区完成：避免 shutdown 取走
+    # loop 后本次提交落到已停止的循环（future 永不完成）。
+    with _lock:
+        if _shutting_down:
+            _close_quietly(coro)
+            raise RuntimeError("同步桥接正在关闭，请稍后重试")
+        loop = _ensure_loop_locked()
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+        except RuntimeError:
+            _close_quietly(coro)
+            raise RuntimeError("同步桥接正在关闭，请稍后重试")
     return future.result()
 
 
@@ -137,30 +166,40 @@ def shutdown_bridge() -> None:
     停止前先驱动取消，避免出现 ``Task was destroyed but it is pending`` 与
     「协程从未被 await」的退出噪音。
     """
-    global _loop, _thread
+    global _loop, _thread, _shutting_down
     with _lock:
+        if _loop is None:
+            # 另一线程正在关闭：由它负责收尾与复位标志。
+            return
+        _shutting_down = True
         loop, thread = _loop, _thread
         _loop, _thread = None, None
-    if loop is None:
-        return
-    if not loop.is_closed() and thread is not None and thread.is_alive():
-        try:
-            asyncio.run_coroutine_threadsafe(_drain_tasks(), loop).result(
-                timeout=_DRAIN_TIMEOUT,
-            )
-        except Exception:
-            _logger.debug("桥接循环 pending 任务收尾失败", exc_info=True)
-        try:
-            loop.call_soon_threadsafe(loop.stop)
-        except RuntimeError:
-            _logger.debug("桥接循环已停止，无需再停", exc_info=True)
-    if thread is not None and thread.is_alive():
-        thread.join(timeout=_JOIN_TIMEOUT)
     try:
-        if not loop.is_closed():
-            loop.close()
-    except Exception:  # pragma: no cover - 关闭异常不应影响退出
-        _logger.debug("关闭桥接循环异常", exc_info=True)
+        if not loop.is_closed() and thread is not None and thread.is_alive():
+            drain = None
+            try:
+                drain = asyncio.run_coroutine_threadsafe(_drain_tasks(), loop)
+                drain.result(timeout=_DRAIN_TIMEOUT)
+            except Exception:
+                # 收尾超时/失败：取消收尾任务后再停循环，避免收尾协程残留。
+                if drain is not None:
+                    drain.cancel()
+                _logger.debug("桥接循环 pending 任务收尾失败", exc_info=True)
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                _logger.debug("桥接循环已停止，无需再停", exc_info=True)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=_JOIN_TIMEOUT)
+        try:
+            if not loop.is_closed():
+                loop.close()
+        except Exception:  # pragma: no cover - 关闭异常不应影响退出
+            _logger.debug("关闭桥接循环异常", exc_info=True)
+    finally:
+        # 关闭完成后复位：下一次调用可惰性重建（测试与退出后重启依赖该语义）。
+        with _lock:
+            _shutting_down = False
 
 
 #: 进程退出兜底：daemon 线程不会阻止退出，但仍主动收尾 pending 任务。

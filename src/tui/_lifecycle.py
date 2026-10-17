@@ -168,6 +168,15 @@ class TuiLifecycle:
                 try:
                     self._engine.flush()
                 finally:
+                    # ★ 退出清理：清当前帧（保留 scrollback），避免底部栏
+                    #   残留与后续 ``Goodbye!`` 输出粘连。prepare_exit 缺失
+                    #   （测试桩/旧引擎）时跳过。
+                    prepare = getattr(self._engine, "prepare_exit", None)
+                    if callable(prepare):
+                        try:
+                            prepare()
+                        except Exception:
+                            _logger.debug("prepare_exit 异常", exc_info=True)
                     # ★ P2（stop 健壮性）：flush 抛异常时仍须停止引擎——修复前
                     #   flush/stop 在同一个 try 主体顺序执行，flush 异常则
                     #   engine.stop() 被跳过（渲染线程泄漏）。stop() 移入嵌套

@@ -393,42 +393,45 @@ def _iter_option_items(text: str):
         pos = close + len("</option>")
 
 
-def _append_void_tail(line: AnsiLine, tail: str) -> None:
+def _append_void_tail(line: AnsiLine, tail: str) -> list[AnsiLine]:
     """空元素同行文本追加（按行内 Markdown 渲染，如 ``<input> **完成**``）。
+
+    返回渲染后的行列表：首行文本合并到语义行，``tail`` 含换行时后续逻辑行
+    作为独立行返回（修复前只取 ``inline_lines`` 第一行，后续行被静默丢弃）。
 
     ``tail`` 以 ``<`` 开头时由调用方递归渲染为独立行（不在本函数处理）。
     """
     if not tail:
-        return
-    line.append(" ", None)
+        return [line]
+    rows: list[AnsiLine] = []
+    first = True
     for sub in inline_lines(tail, None):
+        target = line if first else AnsiLine()
+        if first:
+            target.append(" ", None)
         for run in sub.runs:
-            line.append_run(run)
-        break
+            target.append_run(run)
+        rows.append(target)
+        first = False
+    return rows or [line]
 
 
-def _void_line(tag: str, attrs: dict, tail: str = "") -> AnsiLine | None:
-    """空元素整行 → 语义化行（``None`` 表示按普通内容行处理）。
+def _void_line(tag: str, attrs: dict, tail: str = "") -> list[AnsiLine] | None:
+    """空元素整行 → 语义化行列表（``None`` 表示按普通内容行处理）。
 
     ``tail`` 为标签后的同行文本（``<input …> 完成`` → ``  ☑ 完成``）；
     静默空元素（``<meta>``/``<link>``…）只保留 ``tail``，标签本身不显示
-    （``tail`` 仍是标记时一并忽略）。
+    （``tail`` 仍是标记时一并忽略）。同行文本含换行时返回多行。
     """
     if tag in _SILENT_VOID_TAGS or tag == "br":
         text = tail if tail and not tail.startswith("<") else ""
-        return AnsiLine.of(text) if text else AnsiLine.of("")
+        return [AnsiLine.of(text) if text else AnsiLine.of("")]
     if tag == "input":
-        line = input_line(attrs)
-        _append_void_tail(line, tail)
-        return line
+        return _append_void_tail(input_line(attrs), tail)
     if tag == "img":
-        line = image_line(attrs)
-        _append_void_tail(line, tail)
-        return line
+        return _append_void_tail(image_line(attrs), tail)
     if tag in _MEDIA_VOID_TAGS:
-        line = media_source_line(tag, attrs)
-        _append_void_tail(line, tail)
-        return line
+        return _append_void_tail(media_source_line(tag, attrs), tail)
     return None
 
 
@@ -636,9 +639,9 @@ def html_block_line(text: str, tag: str = "",
             return [line]
         if inner_tag in _VOID_TAGS and not inner_text.strip():
             _t, attrs = parse_open_tag(s)
-            line = _void_line(inner_tag, attrs, "")
-            if line is not None:
-                return [line]
+            rows = _void_line(inner_tag, attrs, "")
+            if rows:
+                return rows
         if inner_tag in _INLINE_SEMANTIC_TAGS:
             effective_tag, content = inner_tag, inner_text
         elif inner_tag in _HEADING_TAGS:
@@ -660,8 +663,7 @@ def html_block_line(text: str, tag: str = "",
             if not tail or void_tag in ("input", "img", "source", "track", "embed"):
                 # 同行后续仍有标签（``<source …><img …>``）：空元素行后递归渲染剩余
                 same_line = tail.startswith("<")
-                line = _void_line(void_tag, attrs, "" if same_line else tail)
-                rows = [line] if line is not None else []
+                rows = _void_line(void_tag, attrs, "" if same_line else tail) or []
                 if same_line:
                     rows.extend(html_block_line(tail, tag))
                 if rows:
@@ -747,12 +749,10 @@ def open_html_block(tag: str, attrs: dict | None = None,
         #   （与 ``html_block_line`` 的连续空元素处理一致）；普通同行文本
         #   仍拼接在同一行。
         if tail and tail.lstrip().startswith("<"):
-            line = _void_line(tag, attrs, "")
-            lines = [line] if line is not None else []
+            lines = _void_line(tag, attrs, "") or []
             lines.extend(html_block_line(tail, tag, attrs))
         else:
-            line = _void_line(tag, attrs, tail)
-            lines = [line] if line is not None else []
+            lines = _void_line(tag, attrs, tail) or []
     else:
         lines = [tag_head_line(state.tag, state.attrs)]
         if state.tag in ("progress", "meter"):
