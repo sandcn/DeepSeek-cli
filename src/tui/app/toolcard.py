@@ -496,8 +496,8 @@ def _tool_md_body_lines(block, width) -> list:
             new_lines = list(renderer.take_lines())
             preview: list = []
         else:
-            new_lines = list(renderer.take_lines())
-            preview = list(renderer.take_preview_lines())
+            new_lines = renderer.take_lines()
+            preview = renderer.take_preview_lines()
     except Exception:
         # 重渲染异常：回退上次缓冲（不中断卡片渲染）
         if lines is None:

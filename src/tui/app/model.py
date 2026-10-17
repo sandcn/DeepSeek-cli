@@ -692,7 +692,9 @@ class AppModel(_ToolOutputMixin):
     @staticmethod
     def _block_source_for_reflow(block):
         """块用于 resize 重渲染的源文本（无源 / 已截断 → None）。"""
-        source = getattr(block, "source_text", "")
+        from src.tui.app._source_buffer import join_source
+
+        source = join_source(block)
         if not source:
             return None
         # 源文本达上限（超长回答）：截断源重渲染会丢内容，保留现有行走
@@ -790,7 +792,9 @@ class AppModel(_ToolOutputMixin):
         ``source_truncated``（源文本超上限）时无法重渲染——返回 False 保留
         现状（重渲染会用截断源产出错误内容）。
         """
-        source = getattr(block, "source_text", "")
+        from src.tui.app._source_buffer import join_source
+
+        source = join_source(block)
         if not source or block.extra.get("source_truncated"):
             return False
         return bool(_FORWARD_REF_RE.search(source))
@@ -807,7 +811,9 @@ class AppModel(_ToolOutputMixin):
         Returns:
             是否成功重渲染并回填（失败保留原状，调用方走常规路径）。
         """
-        source = getattr(block, "source_text", "")
+        from src.tui.app._source_buffer import join_source
+
+        source = join_source(block)
         if not source:
             return False
         try:
@@ -910,7 +916,8 @@ class AppModel(_ToolOutputMixin):
             if lines:
                 block.lines.extend(lines)
                 self.commit_open_block(block)
-            block.preview_lines = list(preview)
+            if block.preview_lines is not preview:
+                block.preview_lines = preview
 
     def close_reasoning(self) -> None:
         """关闭推理通道：固化渲染器输出（无分隔线——对齐 Claude Code 消息间仅空行）。"""

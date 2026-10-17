@@ -347,11 +347,33 @@ def render_list_item(token) -> list[AnsiLine]:
 
 
 def render_definition_item(token) -> list[AnsiLine]:
-    term = token.meta.get("term", "")
+    meta = token.meta
+    term = str(meta.get("term", "") or "")
+    # ★ 多术语定义列表（Pandoc）：``:`` 之前的多行（多个术语）共享定义。
+    #   术语行按行内 Markdown 解析——修复前 ``**Term**`` / `` `code` `` 的
+    #   标记原样泄漏（``**Term**: def``）。
+    raw_terms = meta.get("terms")
+    if isinstance(raw_terms, (list, tuple)):
+        terms = [str(t).strip() for t in raw_terms if str(t).strip()]
+    else:
+        terms = [term] if term.strip() else []
+    if not terms and term.strip():
+        terms = [term.strip()]
     sub_lines, base_idx = inline_lines_with_baseline(token.content)
-    if term:
-        line = AnsiLine.of(f"{term}: ", _STYLE_DEF_TERM)
-    elif token.meta.get("continuation"):
+    out: list[AnsiLine] = []
+    # 额外术语行（除最后一个术语外的每个术语各占一行，不带定义内容）
+    for extra in terms[:-1]:
+        out.extend(inline_lines(extra, _STYLE_DEF_TERM))
+    main_term = terms[-1] if terms else term
+    if main_term:
+        term_rows = inline_lines(main_term, _STYLE_DEF_TERM)
+        if term_rows:
+            out.extend(term_rows[:-1])
+            line = term_rows[-1]
+        else:
+            line = AnsiLine()
+        line.append(": ", _STYLE_DEF_TERM)
+    elif meta.get("continuation"):
         # 定义续段（空行后的缩进段落）→ 对齐定义内容列
         line = AnsiLine.of("    ", _STYLE_BQ)
     else:
@@ -360,7 +382,6 @@ def render_definition_item(token) -> list[AnsiLine]:
     # ★ 续行悬挂缩进：续行对齐「定义内容起始列」（术语行 = ``term: `` 之后，
     #   无术语行 = 其缩进前缀）。
     head_cols = line.width
-    out: list[AnsiLine] = []
     for idx, sub in enumerate(sub_lines):
         if idx == base_idx:
             target = line
@@ -371,9 +392,9 @@ def render_definition_item(token) -> list[AnsiLine]:
         for run in sub.runs:
             target.append_run(run)
         out.append(target)
-    if not out:
+    if not sub_lines:
         line.cont_prefix = " " * head_cols
-        out = [line]
+        out.append(line)
     return out
 
 

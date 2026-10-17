@@ -270,8 +270,9 @@ class InlineLinksMixin:
             return ''
         title = ''.join(out_chars)
         self._pos += 1
-        # 跳过尾随空白
-        while self._pos < self._n and self._text[self._pos] in ' \t':
+        # 跳过尾随空白（含标题与闭合 ``)`` 之间的软换行：
+        # ``[a](url\n  "title"\n)``）
+        while self._pos < self._n and self._text[self._pos] in ' \t\n':
             self._pos += 1
         return title
 

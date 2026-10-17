@@ -121,6 +121,7 @@ _SPAN_CLASS_STYLES: dict = {
     "highlight": _STYLE_HIGHLIGHT, "mark": _STYLE_HIGHLIGHT,
     "code": _STYLE_CODE, "mono": _STYLE_CODE, "monospace": _STYLE_CODE,
     "small": _STYLE_SMALL, "big": _STYLE_BIG, "large": _STYLE_BIG,
+    "smallcaps": Style(bold=True), "small-caps": Style(bold=True),
     "dim": Style(dim=True), "muted": Style(dim=True),
     "kbd": _STYLE_KBD, "spoiler": _STYLE_SPOILER,
     "error": Style(fg=196, bold=True), "danger": Style(fg=196, bold=True),
@@ -733,13 +734,18 @@ def _emit_color(node, base, ctx, out, depth):
 
 
 def _hex_to_256(value: str) -> int | None:
-    """``#rrggbb`` → 256 色号（非该格式或解析失败返回 ``None``）。"""
-    if not value.startswith('#') or len(value) != 7:
+    """``#rrggbb`` / ``#rgb`` → 256 色号（非该格式或解析失败返回 ``None``）。"""
+    if not value.startswith('#'):
+        return None
+    raw = value[1:]
+    if len(raw) == 3:
+        raw = "".join(ch * 2 for ch in raw)
+    if len(raw) != 6:
         return None
     try:
-        r = int(value[1:3], 16)
-        g = int(value[3:5], 16)
-        b = int(value[5:7], 16)
+        r = int(raw[0:2], 16)
+        g = int(raw[2:4], 16)
+        b = int(raw[4:6], 16)
     except ValueError:
         return None
     from .style import rgb_to_256

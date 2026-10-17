@@ -175,6 +175,11 @@ class CodeBlockBatcher(TokenFilter):
             out_meta["list_depth"] = meta.get("list_depth", 1)
         if "list_marker_width" in meta:
             out_meta["list_marker_width"] = meta.get("list_marker_width", 2)
+        # 容器前缀栈（列表 / 引用嵌套顺序）——批处理合并不能丢失，否则
+        # 「列表内引用中的代码块」前缀顺序退化（``│   `` 而非 ``  │ ``）。
+        stack = meta.get("prefix_stack")
+        if isinstance(stack, (list, tuple)) and stack:
+            out_meta["prefix_stack"] = list(stack)
         return Token(TokenType.CODE_BLOCK, "\n".join(lines), out_meta)
 
     def _flush_segment(self, result: list[Token], lines: list[str],

@@ -288,23 +288,23 @@ def _flush_renderer_to_block(model, channel: str, renderer,
     if 0 <= idx < len(model.blocks):
         block = model.blocks[idx]
         if source_delta:
-            # ★ 源文本上限：``source_text`` 仅用于 resize 时整块重渲染；超长
-            #   回答无上限累积会常驻内存并使重渲染退化为 O(全文)。达到上限后
-            #   停止累积并标记——重渲染路径检测标记后保留现有行（避免用截断
-            #   源渲染出错误内容）。
-            cur = getattr(block, "source_text", "")
-            if len(cur) < _SOURCE_TEXT_MAX:
-                merged = cur + source_delta
-                if len(merged) > _SOURCE_TEXT_MAX:
-                    merged = merged[:_SOURCE_TEXT_MAX]
-                    block.extra["source_truncated"] = True
-                    _logger.debug("内容块源文本超限（%d 字符），停止累积",
-                                  _SOURCE_TEXT_MAX)
-                block.source_text = merged
+            # ★ 源文本上限 + 增量缓冲：``source_text`` 仅用于 resize 时整块
+            #   重渲染；超长回答无上限累积会常驻内存并使重渲染退化为 O(全文)。
+            #   使用分块缓冲（大文本每 16KB 才 join 一次）避免逐 chunk
+            #   ``source_text + delta`` 的 O(n²) 拷贝。
+            from src.tui.app._source_buffer import append_source
+            append_source(block, source_delta, _SOURCE_TEXT_MAX)
+            if block.extra.get("source_truncated"):
+                _logger.debug("内容块源文本超限（%d 字符），停止累积",
+                              _SOURCE_TEXT_MAX)
         if lines:
             block.lines.extend(lines)
             model.commit_open_block(block)
-        block.preview_lines = list(preview)
+        # ★ 稳定预览引用（性能）：渲染器在预览内容未变化时返回同一列表对象
+        #   ——保持 block.preview_lines 引用不变，ChatView 的 use_memo 与行
+        #   styled 缓存跨帧命中（免每帧复制 O(预览行数) 列表）。
+        if block.preview_lines is not preview:
+            block.preview_lines = preview
 
 
 def _do_phase_done(model, cmd) -> None:

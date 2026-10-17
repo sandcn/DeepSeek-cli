@@ -275,6 +275,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # 引用风格告示（``> [!TYPE] 文本``）中与 ``[!TYPE]`` 同行的文本——
         # 渲染为头部标题；正文行另存 ``_block_lines``（不再把首行当标题）。
         self._adm_head_text: str = ''
+        #: 告示标记行自身的引用嵌套深度（嵌套引用中的告示：正文行需剥离
+        #: 同等层数的 ``>`` 前缀，避免正文被误渲染为引用块）。
+        self._adm_depth: int = 1
 
         # 脚注定义
         self._pending_fn_def: str | None = None
@@ -365,6 +368,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._dashed = None
         self._in_admonition = False
         self._admonition_type = ''
+        self._adm_head_text = ''
+        self._adm_depth = 1
         self._adm_collapsible = False
         self._adm_collapsed = False
         self._pending_fn_def = None
@@ -1509,10 +1514,11 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                             continue
                         if '^' not in ref_id:
                             rest = stripped[colon_pos + 2:].strip()
-                            url_end = self._find_url_end(rest)
-                            url = rest[:url_end]
+                            dest = self._parse_ref_destination(rest)
+                            if dest is None:
+                                continue
+                            url, after_url = dest
                             title = ''
-                            after_url = rest[url_end:].strip()
                             if after_url and after_url[0] in '"\'':
                                 quote = after_url[0]
                                 end = after_url.find(quote, 1)
@@ -1557,6 +1563,34 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     break
             i += 1
         return i
+
+    @classmethod
+    def _parse_ref_destination(cls, rest: str) -> tuple[str, str] | None:
+        """解析参考式链接定义的目标（支持 ``<...>`` 包裹、URL 内含空格）。
+
+        CommonMark 链接定义的目标可用 ``<...>`` 包裹，包裹内允许空格：
+        ``[x]: <https://e.com/a b>``。修复前按空白切分 → URL 截断为
+        ``<https://e.com/a``、剩余部分被误当标题或丢弃。
+
+        Returns:
+            ``(url, 目标之后的剩余文本)``；无目标返回 ``None``。
+        """
+        rest = rest.strip()
+        if not rest:
+            return None
+        if rest.startswith('<'):
+            end = rest.find('>', 1)
+            if end < 0:
+                return None
+            url = rest[1:end].strip()
+            if not url:
+                return None
+            return url, rest[end + 1:].strip()
+        url_end = cls._find_url_end(rest)
+        url = rest[:url_end].strip()
+        if not url:
+            return None
+        return url, rest[url_end:].strip()
 
     # ═══════════════════════════════════════════════════════════
     # 行处理分发
@@ -1872,7 +1906,11 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
         # Admonition 续行（或新的 [!TYPE] 切换）
         if self._in_admonition and first == '>':
-            text = _get_blockquote_text(stripped)
+            # 剥离告示标记行自身的引用层数（``> > [!NOTE]`` 的正文仍是
+            # ``> > body``，剥 2 层后为 ``body``）；更深层的 ``>`` 是正文内
+            # 的嵌套引用，保留给正文子解析。
+            text = self._strip_bq_levels(
+                stripped, max(1, int(getattr(self, "_adm_depth", 1) or 1)))
             # 检测是否切换为新的 [!TYPE] 告示（支持 Obsidian 折叠标记 ``+``/``-``）
             marker = _parse_admonition_marker(text)
             if marker is not None:
@@ -2134,12 +2172,16 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             try:
                 def_item = self._try_definition(stripped)
                 if def_item is not None:
-                    term = ""
-                    if self._pending_lines:
-                        last = self._pending_lines[-1]
-                        if isinstance(last, str) and last.strip():
-                            term = last.strip()
-                            self._pending_lines = self._pending_lines[:-1]
+                    # ★ Pandoc 定义列表：``:`` 之前的**整个段落**是术语，可跨
+                    #   多行 / 多个术语（``Term1\nTerm2\n: def`` 两个术语共享
+                    #   同一组定义）。修复前只取最后一行作 term、其余行被
+                    #   flush 成独立段落（第一个术语丢失定义关系）。
+                    terms = [
+                        ln.strip() for ln in self._pending_lines
+                        if isinstance(ln, str) and ln.strip()
+                    ]
+                    self._pending_lines = []
+                    term = terms[-1] if terms else ""
                     # ★ 将续行内容合并到前一个 DEFINITION_ITEM 中（不是当前这个）
                     if self._def_cont_buffer:
                         cont_text = '\n'.join(self._def_cont_buffer)
@@ -2154,8 +2196,11 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                         self._def_cont_buffer.clear()
                     self._flush_paragraph(tokens)
                     self._emit_blockquote_close(tokens)
+                    meta = {"term": term, "indent": 0}
+                    if terms:
+                        meta["terms"] = terms
                     tokens.append(Token(TokenType.DEFINITION_ITEM, def_item,
-                                        {"term": term, "indent": 0}))
+                                        meta))
                     self._pending_fn_def = '__def__'
                     return True
             except Exception:
@@ -2761,6 +2806,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._in_admonition = False
         self._admonition_type = ''
         self._adm_head_text = ''
+        self._adm_depth = 1
         self._adm_collapsible = False
         self._adm_collapsed = False
         meta: dict = {
@@ -2775,6 +2821,32 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         tokens.append(Token(TokenType.ADMONITION_CLOSE, "", meta))
 
     # ── 引用块 ──────────────────────────────────────────
+
+    @staticmethod
+    def _strip_bq_levels(stripped: str, levels: int) -> str:
+        """剥离行首**恰好 ``levels`` 层**引用前缀（其余 ``>`` 保留为正文）。
+
+        告示标记行位于嵌套引用中时（``> > [!NOTE]``），后续正文行同样带
+        ``levels`` 层 ``>`` 前缀；剥掉这些层后，正文内部的更深引用前缀
+        （``> > quoted`` 的第 3 层）仍保留，交由正文子解析渲染为嵌套引用。
+        """
+        s = _strip_left(stripped)
+        i = 0
+        n = len(s)
+        depth = 0
+        while i < n and depth < levels:
+            ch = s[i]
+            if ch == '>':
+                depth += 1
+                i += 1
+                if i < n and s[i] == ' ':
+                    i += 1
+                continue
+            if ch == ' ':
+                i += 1
+                continue
+            break
+        return s[i:]
 
     def _parse_blockquote(self, stripped: str, tokens: list[Token]):
         if not _is_blockquote_line(stripped):
@@ -2811,6 +2883,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             self._in_admonition = True
             self._admonition_type = adm_type
             self._adm_head_text = adm_text
+            self._adm_depth = max(1, depth)
             self._adm_collapsible = collapsible
             self._adm_collapsed = collapsed
             self._block_lines = []  # 正文行（head 另存 _adm_head_text）
@@ -2820,6 +2893,18 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             }))
             return
         if self._in_admonition:
+            if inner_has_gt:
+                # 告示位于**嵌套引用**内：正文行仍带下一层 ``>`` 前缀。
+                # 不能把 ``> body`` 原样 append 进正文（会被子解析成引用块，
+                # 渲染出多余的 ``│``），继续按引用层递归剥离，正文归属告示。
+                self._bq_in_recursion += 1
+                _mark_inner = len(tokens)
+                try:
+                    self._parse_normal_line(gt_text + '\n', tokens)
+                finally:
+                    self._bq_in_recursion -= 1
+                    self._mark_bq_depth(tokens, _mark_inner, depth)
+                return
             self._block_lines.append(gt_text.strip())  # 供流式预览
             tokens.append(Token(TokenType.ADMONITION_LINE, gt_text.strip(),
                                 {"depth": depth, "type": self._admonition_type}))
@@ -2890,6 +2975,11 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         引用块内的块级元素（列表 / 代码块 / 表格 / 标题 …）此前无引用前缀，
         与引用正文视觉断裂。标记深度后由渲染层统一补齐前缀（``setdefault``
         保证内层递归的更深深度不被外层覆盖）。
+
+        ★ 容器前缀栈（``prefix_stack``）：列表与引用可相互嵌套，仅靠两个
+        独立深度无法还原「列表内引用」与「引用内列表」相反的前缀顺序。此处
+        把引用片段按**外层优先**写入栈（已有引用片段时只更新其深度，避免
+        每层递归重复叠加）。
         """
         if depth <= 0:
             return
@@ -2904,8 +2994,29 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             meta = tok.meta
             if meta is None:
                 continue
-            if 'bq_depth' not in meta:
-                meta['bq_depth'] = depth
+            prev_depth = 0
+            try:
+                prev_depth = int(meta.get("bq_depth", 0) or 0)
+            except (TypeError, ValueError):
+                prev_depth = 0
+            effective = max(prev_depth, depth)
+            meta["bq_depth"] = effective
+            stack = meta.get("prefix_stack")
+            stack = list(stack) if isinstance(stack, (list, tuple)) else []
+            replaced = False
+            for i, item in enumerate(stack):
+                if (isinstance(item, (list, tuple)) and item
+                        and item[0] == "bq"):
+                    try:
+                        old = int(item[1])
+                    except (IndexError, TypeError, ValueError):
+                        old = 0
+                    stack[i] = ("bq", max(old, effective))
+                    replaced = True
+                    break
+            if not replaced:
+                stack.insert(0, ("bq", effective))
+            meta["prefix_stack"] = stack
 
     def _emit_blockquote_close(self, tokens: list[Token]):
         if not self._bq_active:
@@ -3094,6 +3205,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             tok.meta.setdefault('list_indent', list_indent)
             tok.meta.setdefault('list_depth', depth)
             tok.meta.setdefault('list_marker_width', marker_width)
+            # ★ 容器前缀栈：外层列表片段**前插**到子解析器已有的容器栈之前
+            #   （子解析内部可能还有引用/嵌套列表，顺序为「外 → 内」）。
+            stack = tok.meta.get('prefix_stack')
+            stack = list(stack) if isinstance(stack, (list, tuple)) else []
+            tok.meta['prefix_stack'] = [
+                ("list", depth, marker_width)
+            ] + stack
         tokens.extend(sub)
 
     def _reset_list_context_if_needed(self, stripped: str) -> None:
@@ -3653,9 +3771,22 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         lang = getattr(self, "_html_pre_lang", "") or _html_pre_language(content)
         # ``<pre><code class="...">…</code></pre>``：剥离内层 ``<code>`` 标签
         # （语言已从 class 提取），避免标签字面混入代码内容。
-        content = _strip_inline_code_tags(content)
+        # ★ 逐行剥离：仅由 ``<code>`` / ``</code>`` 构成的闭合标签行剥离后为
+        #   空行——不得作为代码内容保留（修复前 ``</code>`` 行在代码块内渲染
+        #   出一个多余空行）。
+        kept: list[str] = []
+        for raw_line in content.split("\n"):
+            low_line = raw_line.lower()
+            cleaned = _strip_inline_code_tags(raw_line)
+            if (not cleaned.strip()
+                    and ("<code" in low_line or "</code>" in low_line)):
+                continue
+            kept.append(cleaned)
+        content = "\n".join(kept)
         # HTML 语义：``<pre>`` 内容中的实体解码（``&lt;`` → ``<``）
         content = decode_html_entities(content)
+        if not content.strip():
+            return
         tokens.append(Token(TokenType.CODE_BLOCK, content,
                             {"lang": lang or "text", "closed": True}))
 
@@ -4284,10 +4415,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             if '^' in ref_id:
                 return False
             rest = stripped[close + 2:].strip()
-            url_end = self._find_url_end(rest)
-            url = rest[:url_end]
+            dest = self._parse_ref_destination(rest) if rest else None
+            if dest is not None:
+                url, after_url = dest
+            else:
+                url, after_url = "", ""
             title = ''
-            after_url = rest[url_end:].strip()
             if after_url and after_url[0] in '"\'':
                 quote = after_url[0]
                 end = after_url.find(quote, 1)
@@ -4388,12 +4521,11 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         stripped = line[i:].rstrip('\n').rstrip()
         if not stripped or stripped[0] in '[\'"(':
             return None
-        url_end = self._find_url_end(stripped)
-        url = stripped[:url_end]
-        if not url:
+        dest = self._parse_ref_destination(stripped)
+        if dest is None:
             return None
+        url, after = dest
         title = ''
-        after = stripped[url_end:].strip()
         if after and after[0] in '"\'':
             quote = after[0]
             end = after.find(quote, 1)

@@ -341,13 +341,20 @@ class _ToolOutputMixin:
         lines = block.extra.get("_tool_md_lines")
         if lines is None:
             lines = []
-        lines.extend(renderer.take_lines())
+        new_lines = renderer.take_lines()
+        changed = bool(new_lines)
+        if new_lines:
+            lines.extend(new_lines)
         block.extra["_tool_md_lines"] = lines
         take_preview = getattr(renderer, "take_preview_lines", None)
-        block.extra["_tool_md_preview"] = (
-            list(take_preview()) if callable(take_preview) else []
-        )
-        block.extra["_tool_md_version"] = block.extra.get("_tool_md_version", 0) + 1
+        preview = take_preview() if callable(take_preview) else []
+        if block.extra.get("_tool_md_preview") is not preview:
+            block.extra["_tool_md_preview"] = preview
+            changed = True
+        # 预览与已提交行均未变化的帧不递增版本——工具卡帧/正文缓存
+        # （依赖 ``_tool_md_version``）可跨帧复用，避免空转帧整卡重建。
+        if changed:
+            block.extra["_tool_md_version"] = block.extra.get("_tool_md_version", 0) + 1
 
     def _finalize_tool_md(self, block) -> None:
         """工具关闭时收尾 markdown 渲染器（``close()`` 刷出残差后释放实例）。

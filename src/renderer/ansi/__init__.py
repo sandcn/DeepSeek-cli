@@ -30,7 +30,7 @@ from .inline import (
     render_inline, use_render_context, _last_typo_pos, _TYPO_LOOKBACK,
 )
 from .engine import (
-    AnsiRenderEngine, _apply_list_prefix, _apply_bq_prefix, apply_token_prefixes,
+    AnsiRenderEngine, apply_token_prefixes, apply_prefix_stack,
 )
 from ._preview_cache import LinePreviewCache
 from ._line_delims import ParagraphBoundaryScanner
@@ -375,6 +375,11 @@ class AnsiStreamRenderer:
         #   流式缓冲状态（引用/告示/代码等的 OPEN-LINE 缓冲）。
         self._preview_engine = AnsiRenderEngine(code_theme=code_theme, width=width, ctx=self._ctx)
         self._preview_lines: list[AnsiLine] = []
+        #: 预览快照（``take_preview_lines`` 的稳定返回对象）：预览内容未变化的
+        #: 帧返回**同一列表对象** → TUI 侧 ``preview_lines`` 引用不变，
+        #: ChatView 的 use_memo（``id(preview_lines)``）与行 styled 缓存可命中，
+        #: 免每帧复制列表 + 重建全部预览行元素。
+        self._preview_snapshot: list[AnsiLine] | None = None
         # ★ 代码块预览增量高亮缓存（键 = (lang, theme/skip)；流式只追加时仅
         #   渲染新增行，显示侧再按 _PREVIEW_MAX_LINES 截断并给出省略提示）。
         self._code_preview_key: tuple | None = None
@@ -444,6 +449,10 @@ class AnsiStreamRenderer:
         self._list_block_preview_rows: list[AnsiLine] = []
         # 预览截断提示行缓存（``dropped`` → AnsiLine；见 ``_omitted_line``）。
         self._omitted_cache: dict = {}
+        # 代码块预览输出列表缓存（结构未变帧复用，见 ``_code_preview_output``）。
+        self._code_preview_version = 0
+        self._code_preview_out_key: tuple | None = None
+        self._code_preview_out: list[AnsiLine] | None = None
 
     def set_width(self, width: int) -> None:
         """更新终端宽度（TOC 边框 + 表格宽度自适应用）。"""
@@ -615,26 +624,36 @@ class AnsiStreamRenderer:
         rows: list[AnsiLine] = []
         eng = self._preview_engine
         eng.reset()
+        # 外层容器前缀（引用 → 列表；外 → 内）——子解析器 token 自身的
+        # ``prefix_stack``（内层引用/嵌套列表）接在其后。
+        outer_stack: list = []
+        bq = self._list_block_bq_depth()
+        if bq > 0:
+            outer_stack.append(("bq", bq))
+        depth, mw = self._list_block_prefix_meta()
+        outer_stack.append(("list", depth, mw))
         with use_render_context(self._ctx):
             for tok in tokens:
-                # 外层统一补列表/引用前缀（token 特化预览路径如代码块增量
-                # 渲染不经 ``engine.render``，不会自带前缀）——先摘除子解析器
-                # 可能带上的前缀元数据，避免重复叠加。
+                # 旧前缀元数据清空（前缀统一由容器栈施加，避免双重叠加）
                 tok.meta.pop("list_indent", None)
                 tok.meta.pop("list_depth", None)
                 tok.meta.pop("list_marker_width", None)
-                # 引用前缀由外层统一补（见下方 ``_apply_bq_prefix``）
                 tok.meta.pop("bq_depth", None)
+                stack = tok.meta.get("prefix_stack")
+                stack = list(stack) if isinstance(stack, (list, tuple)) else []
+                tok.meta["prefix_stack"] = outer_stack + stack
                 tok.meta.setdefault("preview", True)
-                rows.extend(self._render_preview_token(tok, eng, apply_prefix=False))
-        rows = _apply_list_prefix(rows, *self._list_block_prefix_meta())
-        bq = self._list_block_bq_depth()
-        if bq > 0:
-            rows = _apply_bq_prefix(rows, bq)
+                token_rows = self._render_preview_token(
+                    tok, eng, apply_prefix=False)
+                rows.extend(apply_prefix_stack(
+                    token_rows, tok.meta["prefix_stack"]))
         if dropped and rows:
-            # 截断提示行（与代码块/表格预览同一真源）：插在首行之后
+            # 截断提示行（与代码块/表格预览同一真源）：插在首行之后，
+            # 与正文同样施加外层容器前缀（否则列表项内预览的提示行顶格）。
             from .code import render_omitted_line
-            rows.insert(1, render_omitted_line(dropped))
+            omitted_row = render_omitted_line(dropped)
+            prefixed = apply_prefix_stack([omitted_row], outer_stack)
+            rows.insert(1, prefixed[0])
         self._list_block_preview_key = key
         self._list_block_preview_rows = rows
         self._preview_throttle[_LIST_BLOCK_THROTTLE_KEY] = (
@@ -698,12 +717,34 @@ class AnsiStreamRenderer:
         sub = RecursiveDescentParser(ctx=self._ctx)
         committed = sub.feed("\n".join(body) + "\n")
         pending = sub.peek_pending()
+        # ★ 已确定 Token + 未闭合预览 Token **同时渲染**：修复前只要 pending
+        #   非空就丢弃 committed——列表项内「已闭合的代码块/表格 + 随后仍
+        #   未闭合的引用」会整段预览不可见（流式期间突然上屏）。
+        tokens = list(committed)
         if pending:
-            tokens = pending
-        else:
-            tokens = committed or sub.flush()
+            tokens.extend(pending)
+        elif not tokens:
+            tokens = sub.flush()
         if not tokens:
-            return []
+            tokens = sub.flush()
+        # ``peek_pending`` 产出的预览 Token 不经解析器的 ``_mark_bq_depth``
+        # ——引用内未闭合表格/代码块补引用深度（渲染层前缀用）。
+        bq_depth = sub.bq_depth
+        if bq_depth > 0:
+            for tok in tokens:
+                if tok.type in _BQ_PREFIXED_TOKEN_TYPES:
+                    continue
+                meta = tok.meta
+                if meta is None or "bq_depth" in meta:
+                    continue
+                meta["bq_depth"] = bq_depth
+                stack = meta.get("prefix_stack")
+                stack = list(stack) if isinstance(stack, (list, tuple)) else []
+                if not any(
+                        isinstance(item, (list, tuple)) and item
+                        and item[0] == "bq" for item in stack):
+                    stack.insert(0, ("bq", bq_depth))
+                meta["prefix_stack"] = stack
         pipeline = TokenPipeline()
         for factory in builtin_filter_factories():
             try:
@@ -740,7 +781,7 @@ class AnsiStreamRenderer:
                 tok = self._window_html_line_token(tok)
         if method_name is None:
             # 非特化路径：``eng.render`` 已施加前缀（apply_token_prefixes）
-            return eng.render(tok)
+            return eng.render(tok, apply_prefix=apply_prefix)
         lines = getattr(self, method_name)(tok)
         if apply_prefix:
             lines = apply_token_prefixes(lines, tok)
@@ -850,6 +891,24 @@ class AnsiStreamRenderer:
             # （等价内容，免重复 split 与列表分配）。
             return self._preview_src_cache
         limit = _PREVIEW_MAX_LINE_CHARS
+        # ★ 增量切分（性能）：内容以上次为前缀且两者都在窗口上限内时，只需
+        #   split 新增片段并拼到上次最后一行——修复前每帧对整段内容
+        #   ``content.split("\n")``（长引用/容器正文流式累计 O(n²)）。
+        if (prev_text is not None and len(content) > len(prev_text)
+                and content.startswith(prev_text)
+                and (limit <= 0 or len(content) <= limit)):
+            delta = content[len(prev_text):]
+            parts = delta.split("\n")
+            lines = list(self._preview_src_cache)
+            if lines:
+                lines[-1] = lines[-1] + parts[0]
+                lines.extend(parts[1:])
+            else:
+                lines = parts
+            self._preview_src_text = content
+            self._preview_src_cache = lines
+            self._preview_src_last_nl = last_nl
+            return lines
         if limit <= 0 or len(content) <= limit:
             # 短内容：整体切分（最后一行本来就 <= 窗口上限）
             lines = content.split("\n")
@@ -1480,6 +1539,9 @@ class AnsiStreamRenderer:
         self._code_active_len = 0
         self._code_preview_content = ""
         self._code_preview_full_src = []
+        self._code_preview_version = 0
+        self._code_preview_out_key = None
+        self._code_preview_out = None
 
     @staticmethod
     def _code_num_width(total: int, linenostart: int = 1,
@@ -1617,6 +1679,9 @@ class AnsiStreamRenderer:
             self._code_preview_rows = []
             self._code_preview_n = 0
             self._code_active_len = 0
+            self._code_preview_version += 1
+            self._code_preview_out_key = None
+            self._code_preview_out = None
         rows = self._code_preview_rows
         # ★ 增量高亮（修正「活动行内容变化未刷新」）：``src_lines`` 的**最后
         #   一行**是尚未换行的活动行（内容逐帧增长），其前 ``n-1`` 行是已确定
@@ -1637,9 +1702,12 @@ class AnsiStreamRenderer:
         if self._code_active_throttled(n, src_lines):
             return self._code_preview_output(rows, skip, title, lang, dropped,
                                              closed)
+        changed = False
         if len(rows) > stable_prev:
             del rows[stable_prev:]
+            changed = True
         if n > stable_prev:
+            changed = True
             # 已确定行（不含活动行）走带缓存的逐行高亮（升格时以最终内容
             # 渲染一次并进 ``_LINE_HIGHLIGHT_CACHE``——闭合提交时命中，
             # 免整块重新词法高亮）。
@@ -1678,6 +1746,8 @@ class AnsiStreamRenderer:
                 )
             )
         self._code_preview_n = n
+        if changed:
+            self._code_preview_version += 1
         return self._code_preview_output(rows, skip, title, lang, dropped,
                                          closed)
 
@@ -1711,11 +1781,21 @@ class AnsiStreamRenderer:
 
     def _code_preview_output(self, rows: list, skip: int, title: str, lang: str,
                              dropped: int, closed: bool) -> list[AnsiLine]:
-        """拼装代码块预览行（围栏/标题 + 省略提示 + 尾部窗口 + 关闭围栏）。"""
+        """拼装代码块预览行（围栏/标题 + 省略提示 + 尾部窗口 + 关闭围栏）。
+
+        ★ 输出缓存：活动行被节流 / 预览内容未变化的帧复用同一列表对象——
+        免每帧对最多 200 行做尾部切片与列表重建，同时让 TUI 预览快照引用
+        稳定（``take_preview_lines`` 同一对象 → use_memo 命中）。
+        """
         from . import code as _code
         from .._block_parser import RegexFreeBlockParser
 
         limit = RegexFreeBlockParser._PREVIEW_MAX_LINES
+        out_key = (self._code_preview_version, skip, title, lang, dropped,
+                   closed, limit)
+        cached = self._code_preview_out
+        if cached is not None and out_key == self._code_preview_out_key:
+            return cached
         omitted = max(0, len(rows) - limit) + dropped
         out: list[AnsiLine] = []
         if not skip:
@@ -1728,6 +1808,8 @@ class AnsiStreamRenderer:
         out.extend(rows[-limit:] if omitted else rows)
         if closed:
             out.append(_code.render_close_fence_line())
+        self._code_preview_out_key = out_key
+        self._code_preview_out = out
         return out
 
     def take_preview_lines(self) -> list[AnsiLine]:
@@ -1737,11 +1819,18 @@ class AnsiStreamRenderer:
         以**替换**语义使用（每次 write 后用最新预览替换上一帧预览），因此
         本方法不清空缓冲；``close()`` 后预览恒为空列表。
 
-        ★ 不再复制列表：调用方（apply/model）本就按替换语义复制（``list(...)``）
-        ——避免每帧对整段预览行多一次 O(行数) 复制。**调用方不得原地修改**
-        返回列表。
+        ★ 稳定快照（性能）：预览内容未变化（渲染器复用同一批行对象）时
+        返回**同一列表对象**——TUI 侧据此保持 ``block.preview_lines`` 引用
+        不变，ChatView use_memo 与 styled 缓存跨帧命中（免每帧列表复制与
+        全部预览行 Element 重建）。调用方仍**不得原地修改**返回列表。
         """
-        return self._sanitize_lines(self._preview_lines)
+        lines = self._sanitize_lines(self._preview_lines)
+        snap = self._preview_snapshot
+        if snap is not None and len(snap) == len(lines) and all(
+                a is b for a, b in zip(snap, lines)):
+            return snap
+        self._preview_snapshot = lines
+        return lines
 
     def close(self) -> None:
         """关闭渲染器：flush 解析器残差并渲染（幂等）。

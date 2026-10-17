@@ -189,6 +189,10 @@ class InlineHTMLMixin:
                 end_before_gt = self._pos - 1
                 attr_text = self._text[attr_start:end_before_gt].strip()
                 return self._make_img_node(attr_text)
+            if tag_name == 'input':
+                end_before_gt = self._pos - 1
+                attr_text = self._text[attr_start:end_before_gt].strip()
+                return self._make_input_node(attr_text)
             return TextNode(content='')
 
         # ── 特殊标签：<a> 行内链接 / <ruby> 注音 ──
@@ -393,8 +397,34 @@ class InlineHTMLMixin:
         src = self._extract_attr(attr_text, 'src')
         alt = self._extract_attr(attr_text, 'alt')
         if src:
-            return ImageNode(content=alt or '', url=src)
+            title = self._extract_attr(attr_text, 'title')
+            node = ImageNode(content=alt or '', url=src, title=title)
+            width = self._extract_attr(attr_text, 'width')
+            height = self._extract_attr(attr_text, 'height')
+            if width or height:
+                node.meta = {"width": width or "", "height": height or ""}
+            return node
         return TextNode(content=f'<img {attr_text}>')
+
+    def _make_input_node(self, attr_text: str) -> InlineNode:
+        """行内 ``<input>`` → 控件符号（修复前整标签消失、行内控件不可见）。
+
+        - ``checkbox`` → ☑ / ☐；``radio`` → ◉ / ○；
+        - ``submit`` / ``button`` / ``reset`` → ``[ 标签 ]``；
+        - 其它类型 → ``▸ <input 类型>``（不丢类型信息）。
+        """
+        attrs = _parse_attrs("<input " + (attr_text or "") + ">")
+        itype = str(attrs.get("type", "") or "").strip().lower()
+        if itype == "checkbox":
+            return TextNode(content="\u2611" if "checked" in attrs else "\u2610")
+        if itype == "radio":
+            return TextNode(content="\u25c9" if "checked" in attrs else "\u25cb")
+        if itype in ("submit", "button", "reset"):
+            label = str(attrs.get("value", "") or itype.title())
+            return TextNode(content=f"[ {label} ]")
+        if itype:
+            return TextNode(content=f"\u25b8 <input {itype}>")
+        return TextNode(content="\u25b8 <input>")
 
     @staticmethod
     def _extract_attr(text: str, name: str) -> str:

@@ -17,6 +17,7 @@ from . import math as _math
 from . import mermaid as _mermaid
 from . import _html_block
 from .helpers import AnsiLine, Run
+from .style import Style
 from .inline import use_render_context
 
 _logger = logging.getLogger(__name__)
@@ -62,14 +63,20 @@ class AnsiRenderEngine:
 
     # ── 主入口 ──────────────────────────────────────
 
-    def render(self, token: Token) -> list[AnsiLine]:
+    def render(self, token: Token, apply_prefix: bool = True) -> list[AnsiLine]:
         """渲染单个 token（在渲染上下文中，供脚注/参考链接/缩写解析）。
 
         渲染后统一施加 token 的列表项 / 引用块前缀（``apply_token_prefixes``，
         与流式预览共用同一真源）。
+
+        ``apply_prefix=False`` 供调用方自行施加**完整容器前缀栈**（列表项内
+        块级预览：外层列表 + 子解析器内部引用等前缀需按嵌套顺序合并，不能
+        在此处单独施加一次）。
         """
         with use_render_context(self._ctx):
             lines = self._render_impl(token)
+        if not apply_prefix:
+            return lines
         return apply_token_prefixes(lines, token)
 
     def _render_impl(self, token: Token) -> list[AnsiLine]:
@@ -470,6 +477,70 @@ def _token_list_prefix_meta(token: Token) -> tuple[int, int] | None:
     return (indent // 2 + 1, 2)
 
 
+def _token_prefix_stack(token: Token) -> list:
+    """Token 的容器前缀栈（外 → 内；解析器写入 ``meta["prefix_stack"]``）。
+
+    列表 / 引用可任意嵌套（``- a`` 内的引用、``> - a`` 内的代码块…）。仅靠
+    两个独立深度无法还原顺序：同样的 ``(list, bq)`` 深度对应「列表内引用」
+    与「引用内列表」两种相反的前缀排列。解析器在**进入每种容器时前插**对应
+    片段，渲染层据此一次性拼出正确顺序。
+    """
+    meta = getattr(token, "meta", None)
+    if not meta:
+        return []
+    stack = meta.get("prefix_stack")
+    if not isinstance(stack, (list, tuple)):
+        return []
+    return list(stack)
+
+
+def _stack_prefix_parts(stack: list) -> list[tuple[str, Style]]:
+    """前缀栈 → ``(文本, 样式)`` 片段列表（外 → 内）。"""
+    parts: list[tuple[str, Style]] = []
+    for item in stack:
+        if not isinstance(item, (list, tuple)) or not item:
+            continue
+        kind = item[0]
+        if kind == "list":
+            try:
+                depth = max(1, int(item[1]))
+                mw = max(1, int(item[2]))
+            except (IndexError, TypeError, ValueError):
+                depth, mw = 1, 2
+            parts.append((blocks.list_content_prefix(depth, mw),
+                          blocks._STYLE_BQ))
+        elif kind == "bq":
+            try:
+                depth = max(1, int(item[1]))
+            except (IndexError, TypeError, ValueError):
+                depth = 1
+            parts.append(("\u2502 " * depth, blocks.bq_prefix_style(depth)))
+    return parts
+
+
+def apply_prefix_stack(lines: list[AnsiLine], stack: list) -> list[AnsiLine]:
+    """按容器前缀栈给行首拼接前缀（外 → 内），并同步续行前缀。
+
+    空行不施加前缀（避免引用/容器内空行残留边框字符）；不就地修改输入行
+    （行对象可能来自跨帧缓存）。
+    """
+    parts = _stack_prefix_parts(stack)
+    if not parts:
+        return lines
+    prefix_text = "".join(text for text, _style in parts)
+    out: list[AnsiLine] = []
+    for ln in lines:
+        if ln.runs and _runs_visible(ln.runs):
+            new = AnsiLine(
+                [Run(text, style) for text, style in parts] + list(ln.runs)
+            )
+            new.cont_prefix = prefix_text + (ln.cont_prefix or "")
+            out.append(new)
+        else:
+            out.append(ln)
+    return out
+
+
 def apply_token_prefixes(lines: list[AnsiLine], token: Token) -> list[AnsiLine]:
     """给渲染行施加 token 的列表项 / 引用块前缀（渲染与预览共用真源）。
 
@@ -477,9 +548,15 @@ def apply_token_prefixes(lines: list[AnsiLine], token: Token) -> list[AnsiLine]:
     的**特化增量预览路径**（代码块 / 表格 / 公式…，不经 ``render``）都必须经
     此处补前缀——修复前预览路径绕过了前缀注入，引用块内的未闭合代码块/表格/
     公式在流式期间没有 ``│ `` 前缀（显示成顶层块），块闭合瞬间才补上。
+
+    优先使用解析器写入的 ``prefix_stack``（按真实嵌套顺序拼接）；旧调用面
+    / 手工构造 Token 只有 ``list_depth`` + ``bq_depth`` 时回退固定顺序。
     """
     if not lines:
         return lines
+    stack = _token_prefix_stack(token)
+    if stack:
+        return apply_prefix_stack(lines, stack)
     lm = _token_list_prefix_meta(token)
     if lm is not None:
         lines = _apply_list_prefix(lines, lm[0], lm[1])
@@ -551,6 +628,7 @@ def _apply_bq_prefix(lines: list[AnsiLine], depth: int) -> list[AnsiLine]:
 __all__ = [
     "AnsiRenderEngine",
     "apply_token_prefixes",
+    "apply_prefix_stack",
     "_apply_list_prefix",
     "_apply_bq_prefix",
 ]

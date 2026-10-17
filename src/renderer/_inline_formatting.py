@@ -21,7 +21,7 @@ from .inline_nodes import (
     CriticAdditionNode, CriticDeletionNode, CriticHighlightNode,
     CriticSubstitutionNode, CriticCommentNode,
     SmallTextNode, BigTextNode, ColorTextNode,
-    WikiLinkNode, InlineCommentNode,
+    WikiLinkNode, ImageNode, InlineCommentNode,
     InlineFootnoteNode,
     render_inline_to_text,
 )
@@ -546,6 +546,30 @@ class InlineFormattingMixin:
             return False
         return not self._span_delim_code_close(pos, length)
 
+    def _span_delim_can_close_from(self, opener_pos: int, pos: int,
+                                   length: int = 2) -> bool:
+        """以**开启定界符位置**为上下文的闭合判定（行首开符支持）。
+
+        ``_span_delim_code_close`` 把「闭合符右侧是 ASCII 标识符」一律视为
+        代码语义（``a~~b, c~~d`` 的 ``~~`` 不应配对）。但该判定对「行首 /
+        空白后开启」的正常删除线过严：``~~a~~b`` 的闭合符右侧是 ``b``，
+        按原判定被拒绝 → 标记原样上屏。正确口径是**开启符左侧也在词内**
+        时才视为词内运算符；``~~a~~b`` / ``==a==b`` / ``++a++b`` / ``||a||b``
+        正常渲染，``a~~b, c~~d`` / ``x==y==z`` 仍原样保留。
+
+        字符串字面量比较（闭合符左侧是引号）仍一律判否。
+        """
+        if not self._delim_flanking(pos, length)[1]:
+            return False
+        text = self._text
+        if pos > 0 and text[pos - 1] in _QUOTE_CHARS:
+            return False
+        opener_word = opener_pos > 0 and text[opener_pos - 1] in _WORD_CHARS
+        after = pos + length
+        if opener_word and after < self._n and text[after] in _WORD_CHARS:
+            return False
+        return True
+
     def _span_delim_code_open(self, pos: int, length: int) -> bool:
         """``pos`` 处的双字符定界符是否处于「代码语义」上下文（不可作左定界符）。
 
@@ -584,6 +608,12 @@ class InlineFormattingMixin:
             return True
         return pos > 0 and text[pos - 1] in _QUOTE_CHARS
 
+    def _span_close_checker(self, opener_pos: int):
+        """构造双字符定界符的闭合判定回调（绑定开启符位置）。"""
+        def check(pos: int, length: int = 2) -> bool:
+            return self._span_delim_can_close_from(opener_pos, pos, length)
+        return check
+
     # ── 删除线 ~~ ───────────────────────────────────────
 
     def _try_strikethrough(self, depth: int) -> InlineNode | None:
@@ -598,7 +628,7 @@ class InlineFormattingMixin:
                 saved = self._pos
                 self._pos += 2
                 children, found = self._parse_until(
-                    '~~', depth + 1, close_ok=self._span_delim_can_close)
+                    '~~', depth + 1, close_ok=self._span_close_checker(saved))
                 if found:
                     self._pos += 2
                     return self._make_nestable(StrikethroughNode, children)
@@ -632,7 +662,7 @@ class InlineFormattingMixin:
                 saved = self._pos
                 self._pos += 2
                 children, found = self._parse_until(
-                    '==', depth + 1, close_ok=self._span_delim_can_close)
+                    '==', depth + 1, close_ok=self._span_close_checker(saved))
                 if found:
                     self._pos += 2
                     return self._make_nestable(HighlightNode, children)
@@ -723,6 +753,69 @@ class InlineFormattingMixin:
             return None
         except Exception:
             _logger.debug("_try_superscript 异常，降级处理", exc_info=True)
+            return None
+
+    def _try_block_id(self) -> InlineNode | None:
+        """Obsidian 块 ID ``^id``（行尾）→ 隐藏（不进入可见文本）。
+
+        仅在 ``^`` 前有空白、id 由字母数字 / ``-`` / ``_`` 组成且位于**行尾**
+        （之后仅空白）时识别——行内上标 ``x^2``（无闭合 ``^``）不受影响。
+        块 ID 供 ``[[page#^id]]`` 引用，终端渲染无需显示。
+        """
+        try:
+            if self._text[self._pos] != '^':
+                return None
+            if self._pos == 0 or self._text[self._pos - 1] not in ' \t':
+                return None
+            n = self._n
+            i = self._pos + 1
+            if i >= n or not self._text[i].isalnum():
+                return None
+            j = i
+            while j < n and (self._text[j].isalnum() or self._text[j] in '-_'):
+                j += 1
+            nl = self._text.find('\n', j)
+            end = n if nl < 0 else nl
+            if self._text[j:end].strip():
+                return None
+            # 吞掉 id 与其后的行尾空白（不留下尾随空格）
+            while j < end and self._text[j] in ' \t':
+                j += 1
+            self._pos = j
+            return TextNode(content='')
+        except Exception:
+            _logger.debug("_try_block_id 异常，降级处理", exc_info=True)
+            return None
+
+    def _try_wikilink_embed(self, depth: int) -> InlineNode | None:
+        """Obsidian 嵌入 ``![[target]]`` / ``![[target|display]]``。
+
+        图片扩展名（png/jpg/jpeg/gif/svg/webp/bmp/avif）→ 图片节点；
+        其余（笔记/页面）→ Wiki 链接节点（内容不丢、语法被识别）。
+        """
+        try:
+            if not (self._pos + 3 < self._n
+                    and self._text[self._pos:self._pos + 3] == '![['):
+                return None
+            end = self._text.find(']]', self._pos + 3)
+            if end < 0:
+                return None
+            inner = self._text[self._pos + 3:end]
+            target, _sep, display = inner.partition('|')
+            target = target.strip()
+            display = display.strip() or None
+            if not target:
+                return None
+            self._pos = end + 2
+            low = target.lower()
+            if low.endswith((
+                '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '.avif',
+            )):
+                return ImageNode(content=display or target, url=target)
+            return WikiLinkNode(content=display or target, target=target,
+                                display=display)
+        except Exception:
+            _logger.debug("_try_wikilink_embed 异常，降级处理", exc_info=True)
             return None
 
     def _try_inline_footnote(self) -> InlineNode | None:
@@ -896,7 +989,7 @@ class InlineFormattingMixin:
                 saved = self._pos
                 self._pos += 2
                 children, found = self._parse_until(
-                    '++', depth + 1, close_ok=self._span_delim_can_close)
+                    '++', depth + 1, close_ok=self._span_close_checker(saved))
                 if found:
                     self._pos += 2
                     return self._make_nestable(UnderlineNode, children)
@@ -920,7 +1013,7 @@ class InlineFormattingMixin:
                 saved = self._pos
                 self._pos += 2
                 children, found = self._parse_until(
-                    '||', depth + 1, close_ok=self._span_delim_can_close)
+                    '||', depth + 1, close_ok=self._span_close_checker(saved))
                 if found:
                     self._pos += 2
                     return self._make_nestable(SpoilerNode, children)
@@ -1065,10 +1158,17 @@ class InlineFormattingMixin:
         'orange1', 'purple', 'pink1',
     })
 
+    @staticmethod
+    def _is_hex_color(value: str) -> bool:
+        """``#rgb`` / ``#rrggbb`` 形式的十六进制颜色名。"""
+        if not value.startswith('#') or len(value) not in (4, 7):
+            return False
+        return all(ch in '0123456789abcdefABCDEF' for ch in value[1:])
+
     def _try_color_text(self, depth: int) -> InlineNode | None:
         """{color:COLOR}...{color} → ColorTextNode。
 
-        检测 {color: 前缀 + 已知颜色名 + } 模式。
+        检测 {color: 前缀 + 已知颜色名 / 十六进制色值 + } 模式。
         """
         try:
             if not (self._pos + 7 < self._n
@@ -1081,7 +1181,8 @@ class InlineFormattingMixin:
             if color_end < 0 or color_end - color_start > 20:
                 return None
             color_name = self._text[color_start:color_end].lower()
-            if color_name not in self._KNOWN_COLORS:
+            if (color_name not in self._KNOWN_COLORS
+                    and not self._is_hex_color(color_name)):
                 return None
             self._pos = color_end + 1  # skip {color:COLOR}
             children, found = self._parse_until('{color}', depth + 1)
