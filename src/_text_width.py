@@ -278,6 +278,92 @@ def char_width(ch: str) -> int:
     return w
 
 
+#: 需要按「字形簇」合并计算的码点：ZWJ（emoji 组合）、keycap、肤色修饰符、
+#: 标签序列（旗帜）。组合标记本身宽度 0，逐码点求和已与字形簇宽度一致，
+#: 无需进入簇路径。
+def _is_extend_cp(cp: int) -> bool:
+    """码点是否附着在前一个基字符上（组合标记 / VS / ZWJ / 肤色修饰符）。"""
+    if cp == 0x200D or cp == 0x20E3:
+        return True
+    if 0x1F3FB <= cp <= 0x1F3FF:   # emoji skin tone modifiers
+        return True
+    if 0xFE00 <= cp <= 0xFE0F:     # variation selectors
+        return True
+    if 0xE0100 <= cp <= 0xE01EF:   # variation selectors supplement
+        return True
+    if 0xE0020 <= cp <= 0xE007F:   # tag characters（旗帜序列）
+        return True
+    return _in_ranges_bisect(cp, ZERO_WIDTH_FLAT)
+
+
+def _has_grapheme_special(text: str) -> bool:
+    """文本是否含「必须按字形簇计算宽度」的码点（ZWJ / keycap / 肤色 / 标签）。
+
+    ZWJ / keycap 是低码点，单独用 ``in`` 判定；其余（肤色修饰符 / 标签字符）
+    均 >= U+1F3FB，用 C 级 ``max`` 一次判定，避免长 CJK 文本逐字符 Python循环。
+    """
+    if "\u200d" in text or "\u20e3" in text:
+        return True
+    return bool(text) and max(text) >= "\U0001F3FB"
+
+
+def grapheme_clusters(text: str):
+    """按字形簇切分文本（简化 UAX #29：组合标记 / ZWJ / 肤色 / RI 对）。
+
+    终端把 ``👨‍👩‍👧‍👦`` 渲染为一个宽度 2 的字形；逐码点切分会在换行/截断时
+    把 ZWJ 序列拦腰截断（出现散落的家庭成员 emoji）。本函数把基字符与
+    其后的 Extend / ZWJ + 下一基字符归为同一簇，供换行/截断/测宽使用。
+    """
+    n = len(text)
+    i = 0
+    while i < n:
+        start = i
+        cp = ord(text[i])
+        i += 1
+        if 0x1F1E6 <= cp <= 0x1F1FF:
+            # Regional Indicator：成对构成国旗（单 RI 仍是独立簇）
+            if i < n and 0x1F1E6 <= ord(text[i]) <= 0x1F1FF:
+                i += 1
+            yield text[start:i]
+            continue
+        while i < n:
+            next_cp = ord(text[i])
+            if not _is_extend_cp(next_cp):
+                break
+            i += 1
+            if next_cp == 0x200D and i < n:
+                # ZWJ 后必须吞掉下一个基字符，保持组合 emoji 完整
+                i += 1
+                # 继续吞掉该基字符上的修饰符（VS / 肤色）
+                while i < n and _is_extend_cp(ord(text[i])) \
+                        and ord(text[i]) != 0x200D:
+                    i += 1
+        yield text[start:i]
+
+
+def cluster_width(cluster: str) -> int:
+    """字形簇的显示宽度（ZWJ 组合 / 肤色 / keycap / 国旗按终端实际宽度）。"""
+    if not cluster:
+        return 0
+    if len(cluster) == 1:
+        return char_width(cluster)
+    cps = [ord(c) for c in cluster]
+    if any(cp == 0x200D for cp in cps):
+        return 2
+    if any(cp == 0x20E3 for cp in cps):
+        return 2
+    if any(0x1F3FB <= cp <= 0x1F3FF for cp in cps):
+        return 2
+    if any(0xE0020 <= cp <= 0xE007F for cp in cps):
+        return 2
+    if any(0x1F1E6 <= cp <= 0x1F1FF for cp in cps):
+        return 2
+    first = char_width(cluster[0])
+    if first:
+        return first
+    return max((char_width(c) for c in cluster), default=0)
+
+
 def string_width(text: str) -> int:
     """字符串显示宽度（跳过 ANSI 转义序列；控制字符不计宽）。
 
@@ -308,6 +394,10 @@ def string_width(text: str) -> int:
         # C 实现单趟扫描（比逐字符 Python 循环快数倍）——纯 ASCII 可打印
         # 文本宽度 == 字符数（无 ANSI/控制/零宽/宽字符）。
         return len(text)
+    if "\x1b" not in text and _has_grapheme_special(text):
+        # ZWJ / 肤色 / keycap / 标签序列：按字形簇测宽（终端把组合 emoji
+        # 渲染为一个字形；逐码点求和会高估 2~8 倍，导致布局错位/提前换行）。
+        return sum(cluster_width(c) for c in grapheme_clusters(text))
     if len(text) >= _STRING_WIDTH_COUNTER_MIN and "\x1b" not in text:
         # 无 ANSI：Σ（唯一字符出现次数 × 字符宽度）——等价于逐字符求和。
         return sum(cnt * char_width(ch) for ch, cnt in Counter(text).items())
@@ -412,6 +502,8 @@ __all__ = [
     "codepoint_width",
     "char_width",
     "string_width",
+    "grapheme_clusters",
+    "cluster_width",
     "zero_width_codepoints",
     "expand_tabs",
 ]

@@ -403,10 +403,22 @@ class RenderEngine:
             ordered_refs = list(self._ctx.fn_order)
             remaining = sorted(set(self._ctx.fn_map.keys()) - set(self._ctx.fn_order))
             ordered_refs.extend(remaining)
+            fn_blocks = getattr(self._ctx, "fn_blocks", None) or set()
             for i, ref_id in enumerate(ordered_refs, 1):
                 content = self._ctx.fn_map.get(ref_id)
                 if content is None:
                     continue
+                if ref_id in fn_blocks:
+                    # ★ 块级脚注：按完整 Markdown 语义渲染（列表/代码/引用/
+                    #   表格/多段落），与 ANSI 路径行为一致。
+                    try:
+                        result.append_text(
+                            self._render_block_footnote(i, str(content)))
+                        result.append("\n")
+                        continue
+                    except Exception:
+                        logger.debug("块级脚注渲染异常，降级为逐段文本",
+                                     exc_info=True)
                 # 多段落脚注：逐段渲染（续段缩进对齐），段间空行略过
                 segs = [s for s in str(content).split("\n") if s.strip()] or [""]
                 for si, seg in enumerate(segs):
@@ -423,6 +435,73 @@ class RenderEngine:
         except Exception:
             logger.debug("脚注渲染异常", exc_info=True)
             return []
+
+    def render_block_content(self, content: str, width: int | None = None) -> Text:
+        """把容器正文按完整 Markdown 语义渲染为 Rich ``Text``（多行）。
+
+        使用独立 Console + 子 ``RenderEngine`` 捕获渲染结果，再把 ANSI 逐行
+        转回 ``Text``——供块级脚注 / 定义列表续段等「正文本身含块级结构」
+        的场景复用（与 ANSI 路径的 ``_render_nested_blocks`` 同语义）。
+        """
+        from io import StringIO
+
+        from rich.console import Console
+
+        from .output import OutputAdapter
+        from .recursive_parser import RecursiveDescentParser
+
+        if width is None:
+            width = max(20, self._output.width - 6)
+        buf = StringIO()
+        console = Console(
+            file=buf, width=max(20, width), force_terminal=True,
+            color_system="truecolor", soft_wrap=True,
+        )
+        adapter = OutputAdapter(console)
+        sub = RenderEngine(adapter, ctx=self._ctx,
+                           code_theme=self._code_theme)
+        parser = RecursiveDescentParser(ctx=self._ctx)
+        tokens = parser.feed(content.rstrip("\n") + "\n")
+        tokens.extend(parser.flush())
+        for token in tokens:
+            sub.render(token)
+        adapter.flush()
+
+        lines = buf.getvalue().splitlines()
+        while len(lines) > 1 and not lines[-1].strip():
+            lines.pop()
+        if not lines:
+            lines = [""]
+        result = Text()
+        for k, line in enumerate(lines):
+            if k:
+                result.append("\n")
+            result.append_text(Text.from_ansi(line))
+        return result
+
+    def _render_block_footnote(self, index: int, content: str) -> Text:
+        """块级脚注正文 → Rich ``Text``（首行 ``[n] ``、续行 6 空格缩进）。
+
+        与 ANSI 路径（``_render_footnote_blocks``）语义一致，列表/代码块/
+        引用/表格不再以字面 Markdown 文本显示。
+        """
+        body = self.render_block_content(content)
+        lines = body.split("\n")
+        if not lines:
+            lines = [Text("")]
+        last_visible = max(
+            (k for k, line in enumerate(lines) if line.plain.strip()),
+            default=0)
+        result = Text()
+        for k, line in enumerate(lines):
+            if k:
+                result.append("\n")
+            result.append("  [%d] " % index if k == 0 else "      ",
+                          style=Style(color="bright_cyan"))
+            result.append_text(line)
+            if k == last_visible:
+                result.append(" \u21a9", style=Style(color="bright_cyan", dim=True))
+        return result
 
     def _ensure_theme(self):
         """懒加载 Pygments 主题。"""

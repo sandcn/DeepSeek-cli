@@ -12,6 +12,7 @@ from .helpers import AnsiLine
 from .inline import render_inline, inline_lines, inline_lines_with_baseline
 from src.presentation_data import LiveMapping
 from .._front_matter import parse_front_matter_items
+from .._block_helpers import has_block_markers
 
 # ── 块级样式常量 ──────────────────────────────────────────
 _HEADING_STYLES: list[Style] = [
@@ -727,4 +728,5 @@ __all__ = [
     "render_front_matter",
     "render_table_caption",
     "render_empty_line",
+    "has_block_markers",
 ]

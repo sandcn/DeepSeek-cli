@@ -632,7 +632,10 @@ def test_long_code_active_line_preview_budget():
         r.take_preview_lines()
         return time.perf_counter() - t0
 
-    assert _run() < 2.0
+    # 阈值留出 xdist 多进程并行的 CPU 争用余量（单进程实测 ~0.8s；
+    # 16 worker 满载时可达 ~2.1s）。真正的 O(n²) 退化在 35s 量级，
+    # 5s 阈值仍能有效拦截。
+    assert _run() < 5.0
 
 
 def test_short_code_active_line_still_realtime():

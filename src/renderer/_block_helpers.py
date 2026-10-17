@@ -33,6 +33,7 @@ __all__ = [
     "_strip_blockquote_prefix",
     "_get_fence_lang",
     "_rstrip_trailing_hashes",
+    "has_block_markers",
     # 兼容面：_front_matter 纯逻辑的 re-export（块级解析器经由本模块导入）
     "_front_matter_delim",
     "_front_matter_format",
@@ -223,6 +224,43 @@ def _rstrip_trailing_hashes(text: str) -> str:
     while result and result[-1] == '#':
         result = result[:-1].rstrip()
     return result
+
+
+def has_block_markers(lines) -> bool:
+    """正文行列表是否含块级 Markdown 标记（列表/围栏/引用/表格/标题…）。
+
+    供容器块（告示 / 定义列表续段）判定：含块级标记时走子解析 + 完整
+    Markdown 渲染，否则走逐行增量缓存（纯文本行的常见路径零额外开销）。
+    两条渲染路径（ANSI / Rich）共用本实现。
+    """
+    for raw in lines:
+        raw = raw or ""
+        # 缩进代码块（4 空格 / Tab）：定义续段 / 容器正文中的代码块
+        if raw.startswith('    ') or raw.startswith('\t'):
+            return True
+        s = raw.strip()
+        if not s:
+            continue
+        first = s[0]
+        if first in '>|#`~':
+            return True
+        if first in '-*+' and len(s) > 1 and s[1] == ' ':
+            return True
+        if first == '<' and len(s) > 1 and (s[1].isalpha() or s[1] == '/'):
+            return True
+        if s.startswith(':::') or s.startswith('!!!') or s.startswith('???'):
+            return True
+        if s.startswith('$$') or s == r'\[':
+            return True
+        if first.isdigit():
+            j = 1
+            while j < len(s) and s[j].isdigit():
+                j += 1
+            if j + 1 < len(s) and s[j] in '.):' and s[j + 1] == ' ':
+                return True
+        if len(s) >= 3 and first in '-=_*' and all(c in (first, ' ') for c in s):
+            return True
+    return False
 
 
 # ── Front Matter 判定（见文件顶部 re-export） ────────────

@@ -15,7 +15,12 @@ from src._ansi_text import strip_ansi as strip_ansi  # noqa: F401 — 全项目�
 from src._compat import dataclass
 
 from src.renderer._utils import cjk_display_width, expand_tabs
-from src._text_width import char_width
+from src._text_width import (
+    char_width,
+    cluster_width,
+    grapheme_clusters,
+    _has_grapheme_special,
+)
 from .style import Style
 
 
@@ -159,6 +164,13 @@ class AnsiLine:
                 total += len(text)
                 if total > limit:
                     return True
+                continue
+            if _has_grapheme_special(text):
+                # 组合 emoji / keycap 按字形簇测宽（逐码点会高估 → 误判超宽）
+                for cluster in grapheme_clusters(text):
+                    total += cluster_width(cluster)
+                    if total > limit:
+                        return True
                 continue
             for ch in text:
                 total += char_width(ch)
@@ -378,6 +390,7 @@ def wrap_line(line: AnsiLine, max_width: int,
     n = 0
     has_nl = False
     has_link = False
+    special = False
     for r in runs:
         text = r.text
         if not text:
@@ -388,6 +401,8 @@ def wrap_line(line: AnsiLine, max_width: int,
             has_nl = True
         if not has_link and getattr(r, "link", None):
             has_link = True
+        if not special and _has_grapheme_special(text):
+            special = True
     if not has_nl and total <= max_width:
         normalized = True
         prev_style = _NO_STYLE
@@ -409,7 +424,7 @@ def wrap_line(line: AnsiLine, max_width: int,
     #     - ``total == 2n`` ⟺ 每字符宽 2（宽度取值 0/1/2，全部为 2 才成立）
     #     - ``total == n`` 且所有字符宽 1（``_all_width_one``）⟺ 每字符宽 1
     #   ``not has_nl`` 显式守卫（上述两条判定已隐含无 ``\n``，保留以固化契约）。
-    if not has_nl and not cp_w:
+    if not has_nl and not cp_w and not special:
         if total == 2 * n:
             per_line = max_width // 2
             if per_line > 0:
@@ -425,11 +440,21 @@ def wrap_line(line: AnsiLine, max_width: int,
         text = run.text
         if not text:
             continue
+        if special:
+            # 字形簇切分：ZWJ 组合 emoji / 肤色修饰 / keycap / 国旗不被
+            # 换行拆散（每个簇作为一个不可分割的「字符」参与贪心填充）。
+            for cluster in grapheme_clusters(text):
+                items_chars.append(cluster)
+                items_styles.append(run.style)
+                if items_links is not None:
+                    items_links.append(getattr(run, "link", None))
+            continue
         items_chars.extend(text)
         items_styles.extend([run.style] * len(text))
         if items_links is not None:
             items_links.extend([getattr(run, "link", None)] * len(text))
-    width_of = char_width
+    n = len(items_chars)
+    width_of = cluster_width if special else char_width
     lines: list[AnsiLine] = []
     i = 0
     while i < n:
@@ -536,7 +561,16 @@ def truncate_line(line: AnsiLine, max_width: int) -> AnsiLine:
     width = 0
     for run in line.runs:
         link = getattr(run, "link", None)
-        for ch in run.text:
+        text = run.text
+        if _has_grapheme_special(text):
+            for cluster in grapheme_clusters(text):
+                cw = cluster_width(cluster)
+                if width + cw > max_width:
+                    return out
+                out.append(cluster, run.style, link)
+                width += cw
+            continue
+        for ch in text:
             cw = cjk_display_width(ch)
             if width + cw > max_width:
                 return out

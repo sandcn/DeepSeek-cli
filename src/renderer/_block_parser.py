@@ -202,6 +202,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._dashed: tuple | None = None
         # 定义列表续行缓冲
         self._def_cont_buffer: list[str] = []
+        # Pandoc line block 收集缓冲（``| 行内容``，无内部 pipe）
+        self._line_block_rows: list[str] = []
         self._reset_normal_state()
 
         # 多行块状态
@@ -370,6 +372,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._pending_ref_def = None
         self._pending_ref_def_text = ""
         self._def_cont_buffer.clear()
+        self._line_block_rows.clear()
         self._list_indents.clear()
 
     # ═══════════════════════════════════════════════════════════
@@ -537,6 +540,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # ── 第1.1步：列表项内块级内容收集缓冲 ──
         if self._list_block_active:
             self._flush_list_block(tokens)
+        # ── Pandoc line block 收集缓冲 ──
+        self._flush_line_block(tokens)
 
         # ── 第1.2步：未决的 Front Matter 起始定界符（该行单独出现且文档结束）──
         if self._pending_fm is not None:
@@ -921,6 +926,25 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return out
 
         # ── NORMAL 状态 ──
+        # Pandoc line block 预览（收集中的 ``| 行`` + 未换行活动行）
+        if self._line_block_rows:
+            body = list(self._line_block_rows)
+            tail_s = (tail or "").strip()
+            if tail_s.startswith('| '):
+                t = tail_s[2:]
+                if '|' not in t.replace('\\|', ''):
+                    body.append(t)
+                out.append(Token(TokenType.PARAGRAPH, "\n".join(body),
+                                 {"preview": True}))
+                return out
+            if tail_s == '|':
+                out.append(Token(TokenType.PARAGRAPH, "\n".join(body + [""]),
+                                 {"preview": True}))
+                return out
+            out.append(Token(TokenType.PARAGRAPH, "\n".join(body),
+                             {"preview": True}))
+            # 行块已结束：继续预览其后的新内容（不 return）
+
         # 待定 Front Matter 起始定界符（单独一行、下一行未到）：按分隔线预览。
         # 未换行的活动行（下一行内容）一并作为后续内容预览——修复前只预览
         # 分隔线，正在输入的下一行内容完全不可见（整行「突发」上屏）。
@@ -1542,6 +1566,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         """NORMAL 状态：按首字符调度表分派语法检测。"""
         stripped = _strip_left(line).rstrip('\n')
 
+        # ── Pandoc line block 结束（非 ``|`` 行出现）──
+        if self._line_block_rows and not stripped.startswith('|'):
+            self._flush_line_block(tokens)
+
         # ── 列表上下文延续判定（空行后延迟决策，见 ``_maybe_end_list_context``）──
         # 必须在任何块级分派之前：顶层新块（标题/段落/围栏/引用…）出现即
         # 结束列表；缩进行 / 列表项 / 懒续行保留（嵌套列表跨空行后层级正确）。
@@ -1676,8 +1704,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # ── 定义续行检查（必须在字母快速通道之前，防止续行被段落吞噬） ──
         if self._pending_fn_def == '__def__':
             if line.startswith('    ') or line.startswith('\t'):
-                cont = _rstrip_line(line).strip()
-                if cont:
+                # ★ 保留定义内容列之后的相对缩进：定义续段可含缩进代码块
+                #   （8 空格 = 4 定义缩进 + 4 代码缩进）。修复前 ``strip()``
+                #   把相对缩进一并丢弃 → 代码块退化为普通文本。
+                raw = _rstrip_line(line)
+                cont = raw[4:] if raw[:4] == '    ' else raw[1:]
+                if cont.strip():
                     self._def_cont_buffer.append(cont)
                     return
             elif stripped.startswith(':'):
@@ -2288,12 +2320,24 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             #   （见 ``_table_pending_bq``）。
             try:
                 if _is_table_row(stripped):
+                    self._flush_line_block(tokens)
                     if self._bq_in_recursion > 0:
                         self._table_pending_bq = True
                     if len(self._table_pending_rows) >= 100:
                         self._emit_pending_table(tokens)
                     self._table_pending_rows.append(stripped)
                     return True
+                # ★ Pandoc line block：``| 行内容``（行内无其他未转义 pipe）。
+                #   与表格区分：表格行至少 2 个 pipe（``_is_table_row``）。
+                if stripped.startswith('| ') or stripped == '|':
+                    body = stripped[1:]
+                    if body.startswith(' '):
+                        body = body[1:]
+                    if '|' not in body.replace('\\|', ''):
+                        if self._pending_lines:
+                            self._flush_paragraph(tokens)
+                        self._line_block_rows.append(body)
+                        return True
             except Exception:
                 count = self._silent_downgrade_count.get('table', 0) + 1
                 self._silent_downgrade_count['table'] = count
@@ -2572,6 +2616,37 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._table_pending_bq = False
         self._state = _State.NORMAL
 
+    def _flush_line_block(self, tokens: list[Token]) -> None:
+        """刷出收集中的 Pandoc line block（逐行保留，以换行连接为段落）。"""
+        rows = self._line_block_rows
+        if not rows:
+            return
+        self._line_block_rows = []
+        tokens.append(Token(TokenType.PARAGRAPH, "\n".join(rows)))
+
+    @staticmethod
+    def _as_pandoc_line_block(rows: list[str]) -> list[str] | None:
+        """表格候选行 → Pandoc line block 内容行（非行块返回 None）。
+
+        条件：每行以 ``|`` 开头（可跟一个空格），且去掉行首 ``|`` 后**没有
+        其他未转义 ``|``**——``| line one`` / ``| line two`` 是行块；
+        ``| a | b |`` 含内部 pipe，保持原有段落/表格候选语义。
+        """
+        if not rows:
+            return None
+        bodies: list[str] = []
+        for raw in rows:
+            s = raw.strip()
+            if not s.startswith('|'):
+                return None
+            body = s[1:]
+            if body.startswith(' '):
+                body = body[1:]
+            if '|' in body.replace('\\|', ''):
+                return None
+            bodies.append(body)
+        return bodies
+
     def _emit_pending_table(self, tokens: list[Token]):
         """把流式缓冲的表格候选行降级为 PARAGRAPH / 段落续行。
 
@@ -2596,6 +2671,16 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         rows = self._table_pending_rows
         self._table_pending_rows = []
         if not rows:
+            return
+        # ★ Pandoc line block（``| 行内容``）：每行以 ``| `` 开头且行内没有
+        #   其他未转义 ``|``（避免把 ``| a | b |`` 这类表格候选误判为行块）。
+        #   行块保留逐行语义 → 以换行连接为段落内容（渲染层按 ``\n`` 分行）。
+        line_block = self._as_pandoc_line_block(rows)
+        if line_block is not None:
+            if self._pending_lines:
+                self._pending_lines.extend(line_block)
+            else:
+                tokens.append(Token(TokenType.PARAGRAPH, "\n".join(line_block)))
             return
         if self._pending_lines:
             # 既有段落缓冲：按顺序并入（由后续 flush 统一发射，顺序不变）

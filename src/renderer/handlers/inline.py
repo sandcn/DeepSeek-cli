@@ -1,7 +1,10 @@
 """InlineHandler — 段落/标题/引用/列表/分隔线/定义列表"""
 import logging
 from typing import Any, Callable
+from rich.text import Text
+
 from ..types import Token, TokenType
+from .._block_helpers import has_block_markers
 from .._rendering import (
     is_todo,
     render_heading as _render_heading_shared,
@@ -178,8 +181,24 @@ class InlineHandler(TokenHandler):
     def _handle_definition_item(self, token: Token, engine):
         """定义列表项渲染：术语 + 定义，带增强视觉分隔。"""
         try:
+            content = str(token.content or "")
+            if token.meta.get("continuation") and has_block_markers(
+                    content.split("\n")):
+                # ★ 定义续段含块级内容（列表 / 代码 / 引用 / 表格…）：按完整
+                #   Markdown 子解析并缩进 4 列渲染，与 ANSI 路径一致。
+                body = engine.render_block_content(
+                    content, width=max(20, engine.output_width - 4))
+                lines = body.split("\n") or [Text("")]
+                result = Text()
+                for k, line in enumerate(lines):
+                    if k:
+                        result.append("\n")
+                    result.append("    ")
+                    result.append_text(line)
+                engine.output_assembled(result)
+                return
             result = _render_definition_item_shared(
-                token.meta.get("term", ""), token.content,
+                token.meta.get("term", ""), content,
                 token.meta.get("indent", 0), engine.render_inline,
             )
             engine.output_assembled(result)

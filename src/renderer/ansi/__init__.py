@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from .helpers import Run, AnsiLine, wrap_line, truncate_line, ansi_to_line
 from .style import Style
+from .blocks import has_block_markers as _has_block_markers
 from .inline import (
     render_inline, use_render_context, _last_typo_pos, _TYPO_LOOKBACK,
 )
@@ -168,38 +169,6 @@ _PREVIEW_SUB_CACHE_MAX = 32
 
 #: 预览截断提示行（``dropped`` → AnsiLine）的缓存容量上限。
 _OMITTED_CACHE_MAX = 64
-
-
-def _has_block_markers(lines) -> bool:
-    """正文行列表是否含块级 Markdown 标记（列表/围栏/引用/表格/标题…）。
-
-    供容器块（告示）流式预览判定：含块级标记时走子解析 + 完整 Markdown
-    渲染，否则走逐行增量缓存（纯文本行的常见路径零额外开销）。
-    """
-    for raw in lines:
-        s = (raw or "").strip()
-        if not s:
-            continue
-        first = s[0]
-        if first in '>|#`~':
-            return True
-        if first in '-*+' and len(s) > 1 and s[1] == ' ':
-            return True
-        if first == '<' and len(s) > 1 and (s[1].isalpha() or s[1] == '/'):
-            return True
-        if s.startswith(':::') or s.startswith('!!!') or s.startswith('???'):
-            return True
-        if s.startswith('$$') or s == r'\[':
-            return True
-        if first.isdigit():
-            j = 1
-            while j < len(s) and s[j].isdigit():
-                j += 1
-            if j + 1 < len(s) and s[j] in '.):' and s[j + 1] == ' ':
-                return True
-        if len(s) >= 3 and first in '-=_*' and all(c in (first, ' ') for c in s):
-            return True
-    return False
 
 
 def _container_body_continuation(prev_body: list, body: list, delta: int) -> bool:

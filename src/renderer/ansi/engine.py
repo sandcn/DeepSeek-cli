@@ -85,6 +85,18 @@ class AnsiRenderEngine:
             if t == TokenType.LIST_ITEM:
                 return blocks.render_list_item(token)
             if t == TokenType.DEFINITION_ITEM:
+                if token.meta.get("continuation") and blocks.has_block_markers(
+                        str(token.content or "").split("\n")):
+                    # ★ 定义续段中的块级内容（列表 / 代码 / 引用 / 表格…）：
+                    #   按完整 Markdown 子解析并缩进 4 列渲染（修复前只做
+                    #   行内解析，``- a`` 显示为字面文本）。
+                    sub_tokens = self._parse_sub_tokens(str(token.content or ""))
+                    if sub_tokens:
+                        rows = self._render_nested_blocks(
+                            AnsiLine.of(""), sub_tokens, indent="    ")
+                        if rows and not rows[0].runs:
+                            rows = rows[1:]
+                        return rows
                 return blocks.render_definition_item(token)
             if t == TokenType.EMPTY_LINE:
                 return blocks.render_empty_line(token)
@@ -336,6 +348,18 @@ class AnsiRenderEngine:
         )
 
     # ── 嵌套块渲染（details 正文等） ────────────────────
+
+    def _parse_sub_tokens(self, content: str) -> list:
+        """把容器正文解析为块级 Token 序列（共享渲染上下文）。"""
+        from .._block_parser import RegexFreeBlockParser
+        try:
+            parser = RegexFreeBlockParser(ctx=self._ctx)
+            tokens = parser.feed(content.rstrip("\n") + "\n")
+            tokens.extend(parser.flush())
+            return tokens
+        except Exception:
+            _logger.debug("子块解析异常", exc_info=True)
+            return []
 
     def _render_nested_blocks(self, head: AnsiLine,
                               tokens: list, dropped: int = 0,
