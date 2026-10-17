@@ -6,11 +6,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-MAIN_PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "prompts_export_main_empty.md"
+from tests._paths import prompts_dir
+
+MAIN_PROMPT = prompts_dir() / "prompts_export_main_empty.md"
 
 RULE_KEY = "强制禁止用 `sed -n` 替代 `read_file`"
 INTERNAL_TOOL_KEY = "强制用内部工具实现所有"

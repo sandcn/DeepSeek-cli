@@ -7,11 +7,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-MAIN_PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "prompts_export_main_empty.md"
+from tests._paths import prompts_dir
+
+MAIN_PROMPT = prompts_dir() / "prompts_export_main_empty.md"
 
 
 @pytest.fixture(scope="module")
