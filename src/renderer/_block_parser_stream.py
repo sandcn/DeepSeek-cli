@@ -596,7 +596,12 @@ class _BlockParserStreamMixin:
             if level < 1 or level > 6:
                 return None
             if i >= len(stripped):
-                return None
+                # ★ CommonMark：单独的 ``#`` / ``##``（无正文、无空格）是
+                #   **空标题**（ATX heading with empty content）。修复前返回
+                #   None → 字面 ``#`` 原样输出，既不是标题也不符合段落语义。
+                auto_id = self._generate_heading_id("")
+                return Token(TokenType.HEADING, '',
+                             {"level": level, "id": auto_id})
             # ★ P0 修复: CommonMark 要求 # 后必须跟空格才构成 ATX 标题。
             #   #text（无空格）应降级为段落。
             if stripped[i] != ' ':
@@ -712,6 +717,79 @@ class _BlockParserStreamMixin:
         return result if result else None
 
     @staticmethod
+    def _split_fence_attr_tokens(inner: str) -> list[str]:
+        """按空白切分属性组（引号内的空格不切分）。"""
+        tokens: list[str] = []
+        buf: list[str] = []
+        quote = None
+        for ch in inner:
+            if quote is not None:
+                buf.append(ch)
+                if ch == quote:
+                    quote = None
+            elif ch in ('"', "'"):
+                quote = ch
+                buf.append(ch)
+            elif ch.isspace():
+                if buf:
+                    tokens.append(''.join(buf))
+                    buf = []
+            else:
+                buf.append(ch)
+        if buf:
+            tokens.append(''.join(buf))
+        return tokens
+
+    #: fenced code 属性组中**不是**语言标识的类名 / 键名（用于 ``{.numberLines}``
+    #: 这类没有语言的属性组——避免把渲染选项误当语言）。
+    _FENCE_ATTR_KEYWORDS: frozenset = frozenset({
+        'numberlines', 'number-lines', 'linenos', 'line-numbers',
+        'startfrom', 'start-from', 'hl_lines', 'hllines', 'highlight',
+        'title', 'id', 'class', 'lineanchors', 'anchorlinenos',
+    })
+
+    def _fence_lang_from_attrs(self, remaining: str) -> tuple[str, str]:
+        """从 Pandoc 属性组 ``{...}`` 提取 ``(语言, 标题)``（无语言返回 ``''``）。"""
+        end = remaining.find('}')
+        if end < 0:
+            return '', ''
+        inner = remaining[1:end].strip()
+        if not inner:
+            return '', ''
+        lang_attr = ''
+        title = ''
+        classes: list[str] = []
+        for tok in self._split_fence_attr_tokens(inner):
+            if tok.startswith('.') and len(tok) > 1:
+                classes.append(tok[1:])
+            elif tok.startswith('#') or tok.startswith('{'):
+                continue
+            elif '=' in tok:
+                key, _, val = tok.partition('=')
+                key = key.strip().lower()
+                val = val.strip()
+                if len(val) >= 2 and val[0] in ('"', "'") and val[-1] == val[0]:
+                    val = val[1:-1]
+                if key in ('lang', 'language'):
+                    lang_attr = val
+                elif key == 'title':
+                    title = val
+            elif tok:
+                # 裸词：``{python}`` 的 Pandoc 简写等价于 ``{.python}``
+                classes.append(tok)
+        if lang_attr:
+            return lang_attr.lower(), title
+        for cls in classes:
+            if cls.lower() in _COMMON_LANGUAGES:
+                return cls.lower(), title
+        for cls in classes:
+            low = cls.lower()
+            if low not in self._FENCE_ATTR_KEYWORDS and all(
+                    ch.isalnum() or ch in '+#_-' for ch in cls):
+                return low, title
+        return '', title
+
+    @staticmethod
     def _detect_streaming_fence_merge(
         potential: str, remaining: str, lang_end: int,
     ) -> tuple[str, str]:
@@ -753,6 +831,12 @@ class _BlockParserStreamMixin:
             attrs = ''
             title = ''
             extra = ''
+            if remaining.startswith('{'):
+                # ★ Pandoc 属性语法：`` ```{python} `` / `` ```{.python
+                #   .numberLines} `` / `` ```{lang=js title="x"} ``——语言标识
+                #   位于属性组内。修复前属性组只并入 attrs，lang 恒为空
+                #   （代码块无高亮、围栏行不显示语言）。
+                lang, title = self._fence_lang_from_attrs(remaining)
             if remaining:
                 lang_end = 0
                 for ch in remaining:

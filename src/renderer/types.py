@@ -117,6 +117,13 @@ class RenderContext:
     fn_order: list[str] = field(default_factory=list)
     """脚注引用出现顺序（用于按序输出）"""
 
+    fn_blocks: set = field(default_factory=set)
+    """内容含块级结构的脚注 id 集合（列表/代码/引用/表格…）。
+
+    这类脚注定义不能按行内文本渲染——渲染层需按完整 Markdown 块语义子解析
+    （见 ``AnsiStreamRenderer._render_footnotes``）。
+    """
+
     abbr_map: dict[str, str] = field(default_factory=dict)
     """缩写定义映射 [abbr] → full_text，来自语法 `*[ABBR]: Full Text`。"""
 

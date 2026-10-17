@@ -259,6 +259,69 @@ def _runs_have_esc(runs) -> bool:
     return False
 
 
+def _tail_has_open_marker(text: str) -> bool:
+    """文本尾部是否存在「可被纯文本续写补全」的未闭合结构。
+
+    ``_render_format_active_line`` 的增量快路径只处理「新增纯文本」——若上一
+    帧尾部有未闭合的 ``[`` / ``<`` / ``&`` / 反斜杠转义，新增字符（``]`` /
+    ``>`` / ``;`` / 任意字符）会改变解析结果，必须回退整行重解析。扫描尾部
+    128 字符（远超常见未闭合构造长度）保持 O(1) 成本。
+    """
+    n = len(text)
+    if n == 0:
+        return False
+    start = n - 128 if n > 128 else 0
+    tail = text[start:]
+    if tail.endswith("\\"):
+        return True
+    # 括号 / 标签 / 实体：只关心「最后出现的开符号是否多于闭符号」
+    if tail.count("[") > tail.count("]"):
+        return True
+    if tail.count("<") > tail.count(">"):
+        return True
+    amp = tail.rfind("&")
+    if amp >= 0 and ";" not in tail[amp:]:
+        return True
+    return False
+
+
+def _delta_can_append_plain(prev: str, delta: str) -> bool:
+    """增量 ``delta`` 是否为「不会改变行内解析结果」的纯文本追加。
+
+    仅当以下条件全部成立时返回 True（调用方可直接把 ``delta`` 追加到上一帧
+    渲染结果的尾部，免整行重解析）：
+
+      - ``delta`` 不含任何核心行内格式触发字符（``_CORE_FORMAT_CHARS``）；
+      - 拼接尾部（上一帧末 4 字符 + ``delta``）不触发智能排版（破折号 /
+        省略号 / 箭头 / 分数 / emoji 短代码 / HTML 实体——跨增量边界形态）；
+      - 拼接尾部不形成裸 URL 前缀（``http:`` / ``https:`` / ``ftp:`` /
+        ``ftps:`` / ``www.``，含跨边界拼出 ``ww`` + ``w.`` 的形态）；
+      - 上一帧尾部没有可被 ``delta`` 补全的未闭合结构（见
+        ``_tail_has_open_marker``）。
+    """
+    if not delta:
+        return False
+    # 尾随双空格是硬换行（``<br>``）标记——追加文本会让它不再位于行尾，
+    # 必须整行重解析。
+    if prev.endswith("  "):
+        return False
+    if _last_core_trigger_pos(delta) >= 0:
+        return False
+    probe = prev[-4:] + delta
+    if _last_typo_pos(probe) >= 0:
+        return False
+    if _last_url_prefix_pos(probe) >= 0:
+        return False
+    # URL 前缀可能跨更多字符（如上一帧以 ``ww`` 结尾、本帧 ``w.example``）；
+    # 用 16 字符回看窗口再判一次（覆盖 ``https:`` 前的最长前缀）。
+    probe16 = prev[-16:] + delta
+    if _last_url_prefix_pos(probe16) >= 0:
+        return False
+    if _tail_has_open_marker(prev):
+        return False
+    return True
+
+
 __all__ = [
     "AnsiStreamRenderer",
     "AnsiRenderEngine",
@@ -401,6 +464,10 @@ class AnsiStreamRenderer:
         #: （True）——供格式活动行预览的节流做跨段落安全判定（跨段落/解析器
         #: 重建缓冲时为 False，禁用节流，避免复用旧段落渲染行）。
         self._para_is_append = False
+        # ★ 性能（格式活动行）：上一帧「完整单行 + 渲染结果」缓存。同一段落
+        #   追加纯文本（增量中无任何行内触发字符）时，直接在上一帧结果尾部
+        #   追加 Run，免整行重解析（见 ``_render_format_active_line``）。
+        self._format_active_cache: tuple[str, list[AnsiLine]] | None = None
         # 容器块（告示）预览的子解析结果缓存（见 ``_preview_sub_parse``）。
         self._preview_sub_cache: dict = {}
         # 列表项内块级容器预览（内容行元组 → 渲染行 + 缓存键）。
@@ -762,6 +829,7 @@ class AnsiStreamRenderer:
         self._para_last_nl = -1
         self._para_last_typo = -1
         self._para_is_append = False
+        self._format_active_cache = None
         # 段落源行缓存（内容已切换，避免跨段落复用旧切分结果）
         self._preview_src_text = None
         self._preview_src_cache = []
@@ -939,6 +1007,26 @@ class AnsiStreamRenderer:
         limit = _FORMAT_ACTIVE_MAX_CHARS
         window = line[-limit:] if limit > 0 and n > limit else line
         key = ("paragraph-format",)
+        # ★ 增量快路径：同一段落追加「纯文本」时复用上一帧渲染结果，免整行
+        #   重解析（英文段落每帧只多一个单词/字母，格式解析成本与行长成正比
+        #   → 累计 O(n²)）。判定见 ``_delta_can_append_plain``（任何可能改变
+        #   行内解析的字符都回退整行重渲染，产出与常规路径严格一致）。
+        cache = self._format_active_cache
+        if (cache is not None and self._para_is_append
+                and n <= limit and n > len(cache[0])):
+            prev_line, prev_rows = cache
+            if len(prev_rows) == 1 and line.startswith(prev_line):
+                delta = line[len(prev_line):]
+                if _delta_can_append_plain(prev_line, delta):
+                    row = prev_rows[0].clone()
+                    # 段落基础样式恒为空样式（``render_paragraph_lines`` 无
+                    # base → ``inline_lines`` 用 ``Style()``）；与常规渲染
+                    # 产出的纯文本 Run 样式一致，相邻同样式段会自动合并。
+                    row.append(delta, _EMPTY_STYLE)
+                    rows = [row]
+                    self._format_active_cache = (line, rows)
+                    self._preview_throttle[key] = (n, rows)
+                    return rows
         state = self._preview_throttle.get(key) if self._para_is_append else None
         if state is not None:
             prev_len, rows = state
@@ -948,6 +1036,12 @@ class AnsiStreamRenderer:
                 if n - prev_len < step:
                     return rows
         rows = self._render_paragraph_lines([window])
+        # 缓存仅覆盖「完整单行且单行产出」形态（行内二维公式/超长窗口不缓存——
+        # 尾部追加无法定位到基线行）。
+        if n <= limit and len(rows) == 1:
+            self._format_active_cache = (line, rows)
+        else:
+            self._format_active_cache = None
         self._preview_throttle[key] = (n, rows)
         return rows
 
@@ -1018,6 +1112,7 @@ class AnsiStreamRenderer:
         #   活动行窗口判定（``_plain_active_window`` / ``_window_has_core_markup``）
         #   只依赖尾部 ``_PREVIEW_MAX_LINE_CHARS`` 窗口，故仅该窗口需要精确。
         self._para_is_append = False
+        self._format_active_cache = None
         self._scan_active_window(content)
 
     def _scan_active_window(self, content: str) -> None:
@@ -1717,9 +1812,15 @@ class AnsiStreamRenderer:
         lines: list[AnsiLine] = [
             AnsiLine.of("\u2500" * max(1, self._width), Style(fg=240)),
         ]
+        fn_blocks = getattr(self._ctx, "fn_blocks", None) or set()
         for i, ref_id in enumerate(ordered, 1):
             content = fn_map.get(ref_id)
             if content is None:
+                continue
+            if ref_id in fn_blocks:
+                # ★ 块级脚注（列表 / 代码 / 引用 / 表格 / 多段落）：按完整
+                #   Markdown 子解析渲染，续行缩进对齐 ``[n] `` 之后。
+                lines.extend(self._render_footnote_blocks(i, str(content)))
                 continue
             # 多段落脚注（正文含 ``\n``）→ 逐段渲染为多行，续行缩进对齐；
             # 段间空行不输出（避免脚注列表被空行割裂）。
@@ -1733,6 +1834,50 @@ class AnsiStreamRenderer:
                     line.append(" \u21a9", Style(fg=45, dim=True))
                 lines.append(line)
         return lines
+
+    def _render_footnote_blocks(self, index: int, content: str) -> list[AnsiLine]:
+        """块级脚注正文 → 渲染行（首行 ``[n] ``、续行 6 空格缩进）。
+
+        正文经子解析器按完整 Markdown 语义渲染（列表 / 代码块 / 引用 / 表格
+        / 多段落），与容器块（``<details>`` / 告示）同一机制。
+        """
+        from .style import Style as _Style
+        rows: list[AnsiLine]
+        try:
+            lines = content.split("\n")
+            tokens = self._parser._parse_sub_blocks(lines)
+            if tokens:
+                rendered = self._preview_engine._render_nested_blocks(
+                    AnsiLine.of(""), tokens, indent="")
+                # 去掉 ``_render_nested_blocks`` 的占位头行（空行）
+                if rendered and not rendered[0].runs:
+                    rendered = rendered[1:]
+                rows = rendered
+            else:
+                rows = [AnsiLine.of(seg) for seg in lines if seg.strip()]
+        except Exception:
+            import logging as _logging
+            _logging.getLogger(__name__).debug(
+                "块级脚注渲染异常，降级为逐行文本", exc_info=True)
+            rows = [AnsiLine.of(seg) for seg in content.split("\n") if seg.strip()]
+        if not rows:
+            rows = [AnsiLine()]
+        while len(rows) > 1 and not rows[-1].runs:
+            rows.pop()
+        out: list[AnsiLine] = []
+        last_visible = max((k for k, r in enumerate(rows) if r.runs), default=0)
+        for k, row in enumerate(rows):
+            if not row.runs:
+                out.append(AnsiLine())
+                continue
+            line = AnsiLine.of(f"  [{index}] " if k == 0 else "      ",
+                               _Style(fg=45))
+            for run in row.runs:
+                line.append_run(run)
+            if k == last_visible:
+                line.append(" \u21a9", _Style(fg=45, dim=True))
+            out.append(line)
+        return out
 
     def _render_ref_links(self) -> list[AnsiLine]:
         """渲染参考式链接定义列表（``[id]: url "title"``）。"""

@@ -241,6 +241,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         #: 关闭外层容器；``::: type`` 开启行使深度递增，内层容器作为正文交给
         #: 子解析器递归处理）。
         self._block_div_depth: int = 0
+        #: 嵌套 fenced div 的开启栅栏长度栈（栈顶 = 最内层容器的冒号数）。
+        #: Pandoc：闭合栅栏长度须 >= 被关闭容器的开启栅栏长度；栈支持
+        #: ``:::: outer`` / ``::: inner`` 这类「内外层栅栏长度不同」的嵌套。
+        self._block_div_fence_stack: list[int] = []
 
         # 列表状态
         # _list_indents 已在 _reset_normal_state 之前初始化
@@ -904,6 +908,16 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     "alignments": list(self._table_alignments),
                     "preview": True,
                 }))
+            return out
+
+        # ── 脚注定义续行（活动行）预览抑制 ──
+        # 脚注定义内容在块闭合时才进入文末脚注列表；流式期间缩进活动行若
+        # 进入常规预览会被当作缩进代码块（显示 `` ``` `` + 内容，闭合后突然
+        # 变成脚注条目）。此处直接不预览（定义行本身同样不在预览中显示）。
+        if (self._pending_fn_def is not None
+                and self._pending_fn_def != '__def__' and tail
+                and (tail.startswith('    ') or tail.startswith('\t')
+                     or tail.startswith('  '))):
             return out
 
         # ── NORMAL 状态 ──
@@ -1649,13 +1663,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # 缩进行即清除。
         if self._pending_fn_def is not None and self._pending_fn_def != '__def__':
             if self._is_fn_continuation_line(line):
-                cont = _rstrip_line(line).strip()
-                if cont and self._pending_fn_def in self._ctx.fn_map:
-                    sep = '\n\n' if self._pending_fn_blank else ' '
-                    self._ctx.fn_map[self._pending_fn_def] += sep + cont
+                if self._append_fn_continuation(
+                        self._pending_fn_def, line, self._pending_fn_blank):
                     self._pending_fn_blank = False
                     return
                 self._pending_fn_def = None
+                self._pending_fn_blank = False
             else:
                 self._pending_fn_def = None
                 self._pending_fn_blank = False
@@ -1710,6 +1723,19 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             # 至少 2 个非空部分（单 pipe 分隔）且非分隔行
             if len(parts) >= 2 and not _is_table_separator(stripped):
                 self._table_pending_rows.append(stripped)
+                return
+
+        # ── 表格表注（字母开头的 ``Table: 说明`` 必须在此拦截）──
+        # 字母快速通道会把 ``Table: ...`` 直接当段落，且不会关闭活动表格；
+        # 此处在快速通道前识别表注，先收尾表格再发射说明行。
+        if (self._state == _State.TABLE_ACTIVE
+                or self._prev_emitted_type is TokenType.TABLE
+                or (tokens and tokens[-1].type is TokenType.TABLE)):
+            caption = self._try_table_caption(stripped)
+            if caption is not None:
+                if self._state == _State.TABLE_ACTIVE:
+                    self._emit_table(tokens)
+                tokens.append(Token(TokenType.TABLE_CAPTION, caption))
                 return
 
         # ── 字母快速通道 ──
@@ -1773,14 +1799,15 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # 脚注续行
         if self._pending_fn_def is not None and self._pending_fn_def != '__def__':
             if line.startswith('    ') or line.startswith('\t') or line.startswith('  '):
-                cont = _rstrip_line(line).strip()
-                if cont and self._pending_fn_def in self._ctx.fn_map:
-                    self._ctx.fn_map[self._pending_fn_def] += ' ' + cont
+                if self._append_fn_continuation(
+                        self._pending_fn_def, line, self._pending_fn_blank):
+                    self._pending_fn_blank = False
                     return
-                else:
-                    self._pending_fn_def = None
+                self._pending_fn_def = None
+                self._pending_fn_blank = False
             else:
                 self._pending_fn_def = None
+                self._pending_fn_blank = False
 
         # 表格活动状态（与 ``_feed_block_line`` 同规则：已建立表格后用宽松
         # 数据行判定，兼容无前导 pipe 的数据行）
@@ -1836,7 +1863,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return
 
         # ── 表格表注（表格下方紧跟的说明行）──
-        if self._prev_emitted_type is TokenType.TABLE:
+        # ★ 同时检查「本行刚发射的 TABLE」：数据行结束 / 表注行触发
+        #   ``_emit_table`` 时 ``_prev_emitted_type`` 要到本函数返回后才更新，
+        #   修复前紧跟表格的 ``Table: 说明`` / ``: 说明`` 无法识别（前者降级
+        #   为普通段落、后者被当成定义列表项）。
+        if (self._prev_emitted_type is TokenType.TABLE
+                or (tokens and tokens[-1].type is TokenType.TABLE)):
             caption = self._try_table_caption(stripped)
             if caption is not None:
                 tokens.append(Token(TokenType.TABLE_CAPTION, caption))
@@ -2541,11 +2573,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._state = _State.NORMAL
 
     def _emit_pending_table(self, tokens: list[Token]):
-        """将流式缓冲的连续表格行自动发射为 TABLE（≥2行）或 PARAGRAPH/段落续行。
+        """把流式缓冲的表格候选行降级为 PARAGRAPH / 段落续行。
 
-        ★ 引用块严格模式（``_table_pending_bq``）：引用块内的行缓冲必须出现
-        分隔行才构成表格；未出现分隔行的多行含 pipe 文本降级为段落（避免
-        ``> a | b`` 之类的引用正文被误判为表格）。
+        ★ GFM 严格模式（修复无分隔行误判）：只有出现分隔行（``|---|``）时
+        才构成表格——分隔行由 ``_start_table`` 直接消费建表，**不会**走到
+        本方法。因此本方法被调用时缓冲区里必然没有分隔行，统一按段落输出
+        （修复前 ``| a | b |\\n| 1 | 2 |`` 这类普通含 pipe 文本被误判为表格，
+        GFM 规范要求表格必须有 delimiter row）。引用块内同样适用。
 
         ★ 顺序修复（内容错乱）：降级为段落时**必须与既有段落缓冲
         （``_pending_lines``）保持先后顺序**——修复前直接 ``append``
@@ -2558,24 +2592,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         同样地，多行候选（≥2）在已有未完成段落时也不再建表——GFM 表格不能
         中断段落，段落内连续多行含 ``|`` 属普通文本。
         """
-        strict = self._table_pending_bq
         self._table_pending_bq = False
         rows = self._table_pending_rows
         self._table_pending_rows = []
         if not rows:
-            return
-        if not strict and len(rows) >= 2 and not self._pending_lines:
-            header = _parse_table_row(rows[0])
-            num_cols = len(header)
-            aligns = ['left'] * num_cols
-            data_rows = [_parse_table_row(r) for r in rows[1:]]
-            table_rows = [header] + [
-                (r + [''] * num_cols)[:num_cols] for r in data_rows
-            ]
-            tokens.append(Token(TokenType.TABLE, "", {
-                "rows": table_rows,
-                "alignments": aligns,
-            }))
             return
         if self._pending_lines:
             # 既有段落缓冲：按顺序并入（由后续 flush 统一发射，顺序不变）
@@ -3027,8 +3047,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if not self._list_indents or not stripped:
             return
         if self._bq_active and self._bq_in_recursion == 0:
-            if _is_blockquote_line(stripped):
-                self._clear_list_context()
+            # ★ 引用块内仍在引用中的行（``_bq_active`` 为真）是同一引用的
+            #   延续——列表上下文必须保留。修复前此处对每个引用行都调用
+            #   ``_clear_list_context``：``> - a\\n>   ```js`` 的后续行进入
+            #   ``_parse_normal_line`` 前列表上下文字段已被清空，列表项内的
+            #   代码块/嵌套引用/子列表全部退化为顶层块（围栏丢失列表缩进、
+            #   ``> > - a\\n> >   - b`` 子列表层级丢失）。引用**结束**时由
+            #   ``_emit_blockquote_close`` 统一清理列表上下文。
             return
         indent = self._leading_indent_cols(line)
         if indent > 0:
@@ -3751,7 +3776,14 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
     # ── Fenced Div ───────────────────────────────────────
 
     def _handle_fenced_div_open(self, stripped: str, tokens: list[Token]):
-        rest = stripped[3:].lstrip()
+        # ★ Pandoc：开启栅栏为 3 个及以上冒号；闭合栅栏须**不短于**开启
+        #   栅栏。修复前固定按 3 个冒号切分——``:::: note`` 的类型被解析成
+        #   ``:``、``::::`` 无法闭合外层容器（内层 ``:::`` 反被当成外层闭合，
+        #   嵌套容器结构错乱）。
+        fence_len = len(stripped) - len(stripped.lstrip(':'))
+        if fence_len < 3:
+            fence_len = 3
+        rest = stripped[fence_len:].lstrip()
         div_type = ''
         text = ''
         div_attrs: dict = {}
@@ -3782,6 +3814,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             div_type = 'NOTE'
         self._block_div_type = div_type.upper()
         self._block_div_attrs = div_attrs
+        self._block_div_fence_stack = [fence_len]
         self._block_div_depth = 1
         self._block_lines = []
         tokens.append(Token(TokenType.FENCED_DIV_OPEN, text, {"type": self._block_div_type}))
@@ -3793,19 +3826,28 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             tokens.append(Token(TokenType.FENCED_DIV_LINE, "", {"type": self._block_div_type, "empty": True}))
             self._block_lines.append("")  # 供流式预览
             return
-        if stripped.strip() == ':::':
-            if self._block_div_depth > 1:
-                # 嵌套容器的内层闭合：深度递减，闭合行作为正文交给子解析器
-                # （``_emit_fenced_div_close`` 递归渲染），外层不关闭。
-                self._block_div_depth -= 1
-                tokens.append(Token(TokenType.FENCED_DIV_LINE, stripped, {"type": self._block_div_type}))
+        fence = stripped.strip()
+        if len(fence) >= 3 and fence == ':' * len(fence):
+            # 纯冒号闭合栅栏：长度 >= 栈顶（最内层开启栅栏）即关闭最内层
+            # 容器；栈空后关闭外层。长度不足的行不是闭合（保留为正文，交给
+            # 子解析器按其自身语法处理）。
+            stack = self._block_div_fence_stack
+            if stack and len(fence) >= stack[-1]:
+                stack.pop()
+                self._block_div_depth = max(1, len(stack))
+                if not stack:
+                    self._emit_fenced_div_close(tokens)
+                    return
+                tokens.append(Token(TokenType.FENCED_DIV_LINE, stripped,
+                                    {"type": self._block_div_type}))
                 self._block_lines.append(stripped)
                 return
-            self._emit_fenced_div_close(tokens)
-            return
-        if stripped.startswith(':::'):
-            # 嵌套容器的开启行：深度递增，交由正文子解析器递归处理
-            self._block_div_depth += 1
+        elif stripped.startswith(':::'):
+            # 嵌套容器的开启行：记录其栅栏长度（供内层闭合判定），交由
+            # 正文子解析器递归处理。
+            inner_fence = len(stripped) - len(stripped.lstrip(':'))
+            self._block_div_fence_stack.append(max(3, inner_fence))
+            self._block_div_depth = len(self._block_div_fence_stack)
         tokens.append(Token(TokenType.FENCED_DIV_LINE, stripped, {"type": self._block_div_type}))
         self._block_lines.append(stripped)  # 供流式预览
 
@@ -3821,6 +3863,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             body_lines.pop()
         self._block_lines = []
         self._block_div_depth = 0
+        self._block_div_fence_stack = []
         meta: dict = {"type": self._block_div_type}
         if self._block_div_attrs:
             # 属性块透传给渲染层（终端渲染忽略 id；类名已作为 type）
@@ -4025,10 +4068,91 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             content = stripped[close + 2:].strip()
             if ref_id and content:
                 return {'ref_id': ref_id, 'content': content}
+            if ref_id:
+                # ★ GFM 脚注：``[^1]:`` 单独一行表示定义内容在后续缩进块中
+                #   （列表 / 代码块 / 引用 / 表格 / 多段落）。修复前要求同一
+                #   行必须有内容——空定义行被当正文渲染（``[1]:`` 泄漏），
+                #   其后的缩进块（列表/代码）也全部冒到顶层。
+                return {'ref_id': ref_id, 'content': ''}
             return None
         except Exception:
             _logger.debug("_try_fn_def异常，返回None", exc_info=True)
             return None
+
+    #: 脚注续行中被视为「块级结构起点」的行首标记（含缩进剥离后的形态）。
+    #: 命中时脚注转入块级渲染模式（内容按完整 Markdown 子解析）。
+    _FN_BLOCK_STARTS: tuple = (
+        '- ', '* ', '+ ', '> ', '#', '|', '```', '~~~', '$$', ':::', '!!!',
+        '???', '<', '\\[',
+    )
+
+    @classmethod
+    def _fn_line_starts_block(cls, text: str) -> bool:
+        """缩进剥离后的续行是否开启一个块级结构。"""
+        s = text.strip()
+        if not s:
+            return False
+        if s.startswith(cls._FN_BLOCK_STARTS):
+            return True
+        if s[0].isdigit():
+            j = 1
+            while j < len(s) and s[j].isdigit():
+                j += 1
+            if j < len(s) and s[j] in '.):' and (
+                    j + 1 >= len(s) or s[j + 1] == ' '):
+                return True
+        if len(s) >= 3 and s[0] in '-=_*' and all(c in (s[0], ' ') for c in s):
+            return True
+        return False
+
+    @staticmethod
+    def _strip_fn_indent(line: str) -> str:
+        """去掉脚注定义续行的 4 空格 / 1 Tab 定义缩进（保留更深层缩进）。"""
+        if line[:4] == '    ':
+            return line[4:]
+        if line[:1] == '\t':
+            return line[1:]
+        # 2 空格续行（部分实现允许）：只剥 2 列
+        if line[:2] == '  ':
+            return line[2:]
+        return line
+
+    def _append_fn_continuation(self, ref_id: str, line: str,
+                                blank: bool) -> bool:
+        """把一行缩进续行并入脚注定义（区分行内续行 / 块级内容）。
+
+        返回 True 表示已消费该行。块级模式（``ctx.fn_blocks``）下按 ``\\n``
+        保留每个原始行（不 strip 内部缩进），供渲染层子解析为完整 Markdown；
+        行内模式保持既有「空格连接软换行」语义。
+        """
+        fn_map = self._ctx.fn_map
+        prev = fn_map.get(ref_id)
+        if prev is None:
+            return False
+        raw = _rstrip_line(line)
+        cont = raw.strip()
+        if not cont:
+            return False
+        blocks = getattr(self._ctx, 'fn_blocks', None)
+        block_mode = blocks is not None and ref_id in blocks
+        if not block_mode:
+            stripped_line = self._strip_fn_indent(raw)
+            if not prev.strip() or self._fn_line_starts_block(stripped_line):
+                if blocks is not None:
+                    blocks.add(ref_id)
+                block_mode = True
+        if block_mode:
+            body = self._strip_fn_indent(raw)
+            if blank and prev.strip():
+                fn_map[ref_id] = prev + '\n\n' + body
+            elif prev:
+                fn_map[ref_id] = prev + '\n' + body
+            else:
+                fn_map[ref_id] = body
+        else:
+            sep = '\n\n' if blank else ' '
+            fn_map[ref_id] = prev + sep + cont
+        return True
 
     def _handle_fn_def(self, fn_info: dict, tokens: list[Token]):
         ref_id = fn_info['ref_id']
