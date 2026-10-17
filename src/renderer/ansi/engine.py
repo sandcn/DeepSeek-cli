@@ -179,6 +179,8 @@ class AnsiRenderEngine:
                 title = str(ameta.get("title", "")
                             or token.meta.get("title", "") or "")
                 collapsible = bool(ameta.get("collapsible", False))
+                collapsed = bool(ameta.get(
+                    "collapsed", token.meta.get("collapsed", False)))
                 head_text = str(ameta.get("head_text",
                                           token.meta.get("head_text", "")) or "")
                 dropped = int(token.meta.get("preview_dropped", 0) or 0)
@@ -186,7 +188,8 @@ class AnsiRenderEngine:
                     # 正文以完整 Markdown 语义递归渲染（列表/代码块/引用/嵌套
                     # 告示…），整体缩进显示（与纯文本路径同为 4 空格缩进）。
                     head = blocks.render_admonition_head(
-                        atype, head_text, title=title, collapsible=collapsible)
+                        atype, head_text, title=title, collapsible=collapsible,
+                        collapsed=collapsed)
                     return self._render_nested_blocks(
                         head, body_tokens, dropped, indent="    ")
                 meta = dict(ameta)

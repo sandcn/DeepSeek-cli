@@ -64,11 +64,17 @@ class TokenStreamOptimizer(TokenFilter):
                 # 列表项之间空行处理：同深度丢弃，不同深度保留
                 if curr is TokenType.LIST_ITEM:
                     item_depth = token.meta.get("depth")
-                    if self._list_depth == item_depth:
-                        # 同深度列表 → 丢弃空行（同一列表续行）
+                    # 同级续项 / **更深**的子列表 → 同一列表树，丢弃空行。
+                    # 修复前只按「深度相同」判定：空行后的嵌套子列表 depth
+                    # 由 1 变 2（列表层级修复后）会被误判为「列表边界」而保留
+                    # 空行，列表项内多出一个视觉空行。
+                    if (self._list_depth is not None
+                            and item_depth is not None
+                            and item_depth >= self._list_depth):
+                        # 同深度列表项 / 子列表 → 丢弃空行
                         self._empty_count = 0
                     else:
-                        # 不同深度或首个列表 → 保留空行（列表边界）
+                        # 不同深度（回到外层列表 / 新列表）→ 保留空行（列表边界）
                         result.append(Token(TokenType.EMPTY_LINE))
                         self._empty_count = 0
                 elif self._prev_type is TokenType.EMPTY_LINE and curr is TokenType.PARAGRAPH:

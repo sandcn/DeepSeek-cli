@@ -66,6 +66,54 @@ def _match_display_env(stripped: str) -> tuple[str, str] | None:
     return env, "\\end{" + env + "}"
 
 
+def _parse_admonition_marker(text: str) -> tuple[str, str, bool, bool] | None:
+    """解析引用风格告示标记 ``[!TYPE][+|-] [标题]``。
+
+    Returns:
+        ``(type, head_text, collapsible, collapsed)``；不是合法告示标记时
+        ``None``。Obsidian callout 折叠语法：``-`` 折叠、``+`` 展开（紧贴
+        ``]``，其后的文本为标题）。后两种状态供渲染层选择 ``▸`` / ``▾``。
+    """
+    s = text.strip()
+    if not (s.startswith('[') and len(s) > 2 and s[1] == '!'):
+        return None
+    end = s.find(']')
+    if end <= 2:
+        return None
+    atype = s[2:end].upper()
+    if atype not in _ADMONITION_TYPES:
+        return None
+    rest = s[end + 1:]
+    collapsible = False
+    collapsed = False
+    if rest[:1] in ('+', '-'):
+        collapsible = True
+        collapsed = rest[0] == '-'
+        rest = rest[1:]
+    return atype, rest.strip(), collapsible, collapsed
+
+
+def _is_list_item_start(stripped: str) -> bool:
+    """剥离缩进后的行是否为列表项起始（``- x`` / ``1. x`` / ``1) x``）。
+
+    仅供「空行后列表上下文是否延续」的快速判定使用（不构造列表参数、
+    不修改状态）——与 ``_try_ul_item`` / ``_try_ol_item`` 的起始条件一致。
+    """
+    if not stripped:
+        return False
+    first = stripped[0]
+    if first in '-*+' and len(stripped) > 1 and stripped[1] in ' \t':
+        return True
+    if not first.isdigit():
+        return False
+    i = 1
+    n = len(stripped)
+    while i < n and stripped[i].isdigit():
+        i += 1
+    return (i + 1 < n and stripped[i] in '.)'
+            and stripped[i + 1] in ' \t')
+
+
 def _strip_marker_spaces(rest: str) -> str:
     """剥离列表标记后的空白（CommonMark：1~4 个空白属标记宽度）。
 
@@ -215,6 +263,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # Fenced 告示（``!!! type "title"`` / ``??? type``）
         self._adm_title: str = ''
         self._adm_collapsible: bool = False
+        #: 可折叠告示的初始折叠状态（``???`` / ``> [!TYPE]-`` 为折叠，
+        #: ``> [!TYPE]+`` 为展开）——渲染层选择 ``▸`` / ``▾`` 指示符。
+        self._adm_collapsed: bool = False
         # 引用风格告示（``> [!TYPE] 文本``）中与 ``[!TYPE]`` 同行的文本——
         # 渲染为头部标题；正文行另存 ``_block_lines``（不再把首行当标题）。
         self._adm_head_text: str = ''
@@ -308,6 +359,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._dashed = None
         self._in_admonition = False
         self._admonition_type = ''
+        self._adm_collapsible = False
+        self._adm_collapsed = False
         self._pending_fn_def = None
         self._pending_ref_title = None
         self._pending_ref_def = None
@@ -909,6 +962,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             meta: dict = {
                 "type": self._admonition_type,
                 "head_text": self._adm_head_text,
+                "collapsible": self._adm_collapsible,
+                "collapsed": self._adm_collapsed,
                 "body_lines": body,
                 "preview": True,
             }
@@ -1473,6 +1528,11 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         """NORMAL 状态：按首字符调度表分派语法检测。"""
         stripped = _strip_left(line).rstrip('\n')
 
+        # ── 列表上下文延续判定（空行后延迟决策，见 ``_maybe_end_list_context``）──
+        # 必须在任何块级分派之前：顶层新块（标题/段落/围栏/引用…）出现即
+        # 结束列表；缩进行 / 列表项 / 懒续行保留（嵌套列表跨空行后层级正确）。
+        self._maybe_end_list_context(line, stripped)
+
         # ── 收集中的 Pandoc grid / simple table 续行 ──
         # 收集期间的行只做「并入 / 结束」判定（缩进语义不参与，数据行可含
         # 前导空格）；起始判定在列表项内的块级容器收集之后（见下）。
@@ -1754,23 +1814,22 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # Admonition 续行（或新的 [!TYPE] 切换）
         if self._in_admonition and first == '>':
             text = _get_blockquote_text(stripped)
-            # 检测是否切换为新的 [!TYPE] 告示
-            if text.startswith('[') and '!' in text[:8]:
-                close_bracket = text.find(']')
-                # 宽松检测：`]` 后任意字符都接受
-                if close_bracket > 2:
-                    new_type = text[2:close_bracket].upper()
-                    if new_type in ('NOTE', 'TIP', 'IMPORTANT', 'WARNING', 'CAUTION', 'CITE',
-                                    'INFO', 'SUCCESS', 'QUESTION', 'BUG', 'DANGER'):
-                        # 关闭当前告示，打开新的
-                        self._emit_admonition_close_ref(tokens)
-                        self._admonition_type = new_type
-                        adm_text = text[close_bracket + 1:].strip()
-                        self._adm_head_text = adm_text
-                        self._block_lines = []  # 正文行（head 另存）
-                        tokens.append(Token(TokenType.ADMONITION_OPEN, adm_text,
-                                            {"type": new_type, "depth": 1}))
-                        return
+            # 检测是否切换为新的 [!TYPE] 告示（支持 Obsidian 折叠标记 ``+``/``-``）
+            marker = _parse_admonition_marker(text)
+            if marker is not None:
+                new_type, adm_text, collapsible, collapsed = marker
+                # 关闭当前告示，打开新的
+                self._emit_admonition_close_ref(tokens)
+                self._admonition_type = new_type
+                self._adm_head_text = adm_text
+                self._adm_collapsible = collapsible
+                self._adm_collapsed = collapsed
+                self._block_lines = []  # 正文行（head 另存）
+                tokens.append(Token(TokenType.ADMONITION_OPEN, adm_text, {
+                    "type": new_type, "depth": 1,
+                    "collapsible": collapsible, "collapsed": collapsed,
+                }))
+                return
             self._block_lines.append(text)  # 供流式预览
             tokens.append(Token(TokenType.ADMONITION_LINE, text,
                                 {"depth": 1, "type": self._admonition_type}))
@@ -2535,9 +2594,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._admonition_type = atype
         self._adm_title = title
         self._adm_collapsible = collapsible
+        # ``???`` 语义为「可折叠且初始折叠」——与既有 ``▸`` 指示符一致。
+        self._adm_collapsed = collapsible
         self._block_lines = []
         tokens.append(Token(TokenType.ADMONITION_OPEN, "", {
             "type": atype, "title": title, "collapsible": collapsible,
+            "collapsed": collapsible,
             "depth": 1, "fenced": True,
         }))
 
@@ -2559,6 +2621,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         meta: dict = {
             "type": self._admonition_type, "title": title,
             "collapsible": self._adm_collapsible, "depth": 1, "fenced": True,
+            "collapsed": self._adm_collapsed,
             "head_text": "",
         }
         # 正文以完整 Markdown 语义子解析（列表/代码/引用…），渲染层整体
@@ -2572,6 +2635,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._state = _State.NORMAL
         self._adm_title = ''
         self._adm_collapsible = False
+        self._adm_collapsed = False
         self._block_lines = []
 
     def _emit_admonition_close_ref(self, tokens: list[Token]) -> None:
@@ -2585,12 +2649,19 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         """
         atype = self._admonition_type
         head_text = self._adm_head_text
+        collapsible = self._adm_collapsible
+        collapsed = self._adm_collapsed
         body_lines = list(self._block_lines)
         self._block_lines = []
         self._in_admonition = False
         self._admonition_type = ''
         self._adm_head_text = ''
-        meta: dict = {"type": atype, "depth": 1, "head_text": head_text}
+        self._adm_collapsible = False
+        self._adm_collapsed = False
+        meta: dict = {
+            "type": atype, "depth": 1, "head_text": head_text,
+            "collapsible": collapsible, "collapsed": collapsed,
+        }
         if body_lines:
             body_tokens = self._parse_sub_blocks(body_lines)
             if body_tokens:
@@ -2624,26 +2695,25 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             gt_text += ch
         inner_stripped = gt_text.strip()
         inner_has_gt = inner_stripped.startswith('>')
-        if inner_stripped.startswith('[') and '!' in inner_stripped[:8]:
-            adm_end = inner_stripped.find(']')
-            # 宽松检测：`]` 后任意字符都接受，不再要求空格
-            if adm_end > 2:
-                adm_type = inner_stripped[2:adm_end].upper()
-                if adm_type in ('NOTE', 'TIP', 'IMPORTANT', 'WARNING', 'CAUTION', 'CITE',
-                                'INFO', 'SUCCESS', 'QUESTION', 'BUG', 'DANGER'):
-                    if self._in_admonition:
-                        tokens.append(Token(TokenType.ADMONITION_CLOSE, "",
-                                            {"type": self._admonition_type}))
-                    if self._bq_active:
-                        self._emit_blockquote_close(tokens)
-                    self._in_admonition = True
-                    self._admonition_type = adm_type
-                    adm_text = inner_stripped[adm_end + 1:].strip()
-                    self._adm_head_text = adm_text
-                    self._block_lines = []  # 正文行（head 另存 _adm_head_text）
-                    tokens.append(Token(TokenType.ADMONITION_OPEN, adm_text,
-                                        {"type": adm_type, "depth": depth}))
-                    return
+        marker = _parse_admonition_marker(inner_stripped)
+        if marker is not None:
+            adm_type, adm_text, collapsible, collapsed = marker
+            if self._in_admonition:
+                tokens.append(Token(TokenType.ADMONITION_CLOSE, "",
+                                    {"type": self._admonition_type}))
+            if self._bq_active:
+                self._emit_blockquote_close(tokens)
+            self._in_admonition = True
+            self._admonition_type = adm_type
+            self._adm_head_text = adm_text
+            self._adm_collapsible = collapsible
+            self._adm_collapsed = collapsed
+            self._block_lines = []  # 正文行（head 另存 _adm_head_text）
+            tokens.append(Token(TokenType.ADMONITION_OPEN, adm_text, {
+                "type": adm_type, "depth": depth,
+                "collapsible": collapsible, "collapsed": collapsed,
+            }))
+            return
         if self._in_admonition:
             self._block_lines.append(gt_text.strip())  # 供流式预览
             tokens.append(Token(TokenType.ADMONITION_LINE, gt_text.strip(),
@@ -2749,6 +2819,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             tokens.append(Token(TokenType.BLOCKQUOTE_CLOSE, "",
                                 {"depth": depth}))
         self._bq_active = False
+        # ★ 引用块内的列表上下文随引用结束（引用内缩进列表不应泄漏到引用
+        #   之后的顶层缩进代码/段落判定——``> - a\n> - b\n\n    代码`` 的
+        #   缩进代码必须回到顶层识别）。
+        self._clear_list_context()
 
     # ── 列表缩进 ────────────────────────────────────────
 
@@ -2925,15 +2999,58 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 and _is_blockquote_line(stripped)):
             # 引用块内的行不改变列表上下文（引用递归会剥离前缀后重新判定）
             return
-        first = stripped[0]
-        is_item = False
-        if first in ('-', '*', '+') and len(stripped) > 1 and stripped[1] == ' ':
-            is_item = True
-        elif first.isdigit() and self._try_ol_item(stripped, stripped) is not None:
-            is_item = True
-        if not is_item:
-            self._last_list_content_col = -1
-            self._last_list_indent = -1
+        if _is_list_item_start(stripped):
+            return
+        self._clear_list_context()
+
+    def _clear_list_context(self) -> None:
+        """结束列表上下文（缩进栈 + 最近列表项元信息）。"""
+        self._list_indents.clear()
+        self._last_list_indent = -1
+        self._last_list_content_col = -1
+
+    def _maybe_end_list_context(self, line: str, stripped: str) -> None:
+        """空行后决定列表上下文是否延续（CommonMark 列表可含空行/多段）。
+
+        修复前每个空行都无条件 ``_list_indents.clear()``——``- a\\n\\n  - b``
+        的缩进子列被当作顶层（``• b`` 而非 ``  ◦ b``），``- a\\n\\n    - b``
+        甚至退化为缩进代码块。现改为**延迟判定**：空行保留列表状态，下一个
+        非空行再决定——
+
+          - 缩进行（≥1 列）→ 列表项内续段 / 嵌套块，保留（列表内容列 + 4
+            以上的普通文本按既有契约回到顶层缩进代码）；
+          - 列表项起始行 → 保留（同级或嵌套由 ``_update_list_indent`` 处理）；
+          - 懒续行（上一 token 是 LIST_ITEM 且本行非块起始）→ 保留；
+          - 顶层引用块行 → 结束（引用内列表上下文独立）；
+          - 其余顶层新块 / 段落 → 结束列表上下文。
+        """
+        if not self._list_indents or not stripped:
+            return
+        if self._bq_active and self._bq_in_recursion == 0:
+            if _is_blockquote_line(stripped):
+                self._clear_list_context()
+            return
+        indent = self._leading_indent_cols(line)
+        if indent > 0:
+            content_col = self._last_list_content_col
+            # 列表项内容列 + 4 以上的**普通文本**行：按项目既有契约作为顶层
+            # 缩进代码块渲染（``- a\\n\\n      code`` → ``` 代码块；列表项内
+            # 缩进代码的既有语义由测试锁定）。列表项标记 / 块级容器（引用、
+            # 围栏、表格…）仍归列表项内。
+            if (content_col > 0 and indent >= content_col + 4
+                    and not _is_list_item_start(stripped)
+                    and not self._may_start_list_block(stripped)):
+                # 仅清缩进栈，保留 ``_last_list_content_col``——缩进代码块的
+                # 剥离量按「列表内容列 + 4」计算（既有契约），清掉会让代码
+                # 内容多出列表内容列宽的前导空格。
+                self._list_indents.clear()
+            return
+        if _is_list_item_start(stripped):
+            return
+        if (self._prev_emitted_type is TokenType.LIST_ITEM
+                and not self._starts_new_block(stripped)):
+            return
+        self._clear_list_context()
 
     def _update_list_indent(self, indent: int):
         try:
@@ -3122,7 +3239,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             self._emit_admonition_close_ref(tokens)
         self._flush_paragraph(tokens)
         self._emit_blockquote_close(tokens)
-        self._list_indents.clear()
+        # ★ 列表跨空行延续：空行**不**清空列表缩进栈——列表项可含多段/空行
+        #   （``- 项\n\n  续段`` / ``- 项\n\n  - 子项``）。列表是否结束由下一个
+        #   非空行经 ``_maybe_end_list_context`` 判定（修复前无条件 clear，
+        #   空行后的嵌套列表层级丢失、4 空格子列表退化为缩进代码块）。
         # 空行打断「参考式链接定义 + 下一行标题」的关联（标题须紧跟定义行）；
         # 未补全的 ``[id]:``（URL 待定）按段落输出，不静默丢弃。
         self._pending_ref_title = None

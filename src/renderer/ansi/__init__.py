@@ -389,6 +389,11 @@ class AnsiStreamRenderer:
         self._para_last_core = -1
         self._para_last_url = -1
         self._para_last_nl = -1
+        # 段落预览源行缓存（content → split 结果）：流式空转帧 / 活动行未换行
+        # 时内容与上一帧相同，免每帧 ``split("\n")``（缓存列表跨帧只读）。
+        self._preview_src_text: str | None = None
+        self._preview_src_cache: list[str] = []
+        self._preview_src_last_nl: int | None = -2
         # 智能排版（typographer）触发位置：最后一个可能被 ``_preprocess_text``
         # 改写的起点下标（增量维护，供 ``_plain_active_window`` O(1) 判否）。
         self._para_last_typo = -1
@@ -757,6 +762,10 @@ class AnsiStreamRenderer:
         self._para_last_nl = -1
         self._para_last_typo = -1
         self._para_is_append = False
+        # 段落源行缓存（内容已切换，避免跨段落复用旧切分结果）
+        self._preview_src_text = None
+        self._preview_src_cache = []
+        self._preview_src_last_nl = -2
         for cache in self._line_preview_caches.values():
             cache.reset()
 
@@ -794,29 +803,45 @@ class AnsiStreamRenderer:
         """
         if not content:
             return []
+        prev_text = self._preview_src_text
+        if last_nl == self._preview_src_last_nl and content is prev_text:
+            return self._preview_src_cache
+        if (last_nl == self._preview_src_last_nl and prev_text is not None
+                and len(content) == len(prev_text)
+                and content == prev_text):
+            # 流式空转帧：解析器每帧新建内容相同的字符串 → 复用上次切分结果
+            # （等价内容，免重复 split 与列表分配）。
+            return self._preview_src_cache
         limit = _PREVIEW_MAX_LINE_CHARS
         if limit <= 0 or len(content) <= limit:
             # 短内容：整体切分（最后一行本来就 <= 窗口上限）
-            return content.split("\n")
-        # 超长内容：窗口内定位最后一个换行，窗口之前的内容按需切分
-        window = content[-limit:]
-        nl = window.rfind("\n")
-        if nl < 0:
-            # 窗口内无换行 → 最后一行长度超过窗口上限，窗口即活动行尾部
-            # （历史行仅在窗口前存在换行时才有）
-            if last_nl is not None:
-                prev_nl = last_nl if last_nl < len(content) - limit else -1
+            lines = content.split("\n")
+        else:
+            # 超长内容：窗口内定位最后一个换行，窗口之前的内容按需切分
+            window = content[-limit:]
+            nl = window.rfind("\n")
+            if nl < 0:
+                # 窗口内无换行 → 最后一行长度超过窗口上限，窗口即活动行尾部
+                # （历史行仅在窗口前存在换行时才有）
+                if last_nl is not None:
+                    prev_nl = last_nl if last_nl < len(content) - limit else -1
+                else:
+                    prev_nl = content.rfind("\n", 0, len(content) - limit)
+                if prev_nl < 0:
+                    lines = [window]
+                else:
+                    parts = content[:prev_nl].split("\n")
+                    parts.append(window)
+                    lines = parts
             else:
-                prev_nl = content.rfind("\n", 0, len(content) - limit)
-            if prev_nl < 0:
-                return [window]
-            parts = content[:prev_nl].split("\n")
-            parts.append(window)
-            return parts
-        head = content[:len(content) - limit + nl]
-        parts = head.split("\n")
-        parts.append(window[nl + 1:])
-        return parts
+                head = content[:len(content) - limit + nl]
+                parts = head.split("\n")
+                parts.append(window[nl + 1:])
+                lines = parts
+        self._preview_src_text = content
+        self._preview_src_cache = lines
+        self._preview_src_last_nl = last_nl
+        return lines
 
     def _render_paragraph_preview(self, token) -> list[AnsiLine]:
         """段落预览：稳定前缀逐行增量渲染，仅未闭合尾部整段解析。
@@ -1188,8 +1213,9 @@ class AnsiStreamRenderer:
         body = list(token.meta.get("body_lines") or [])
         if token.content:
             body = str(token.content).split("\n") + body
-        head = _blocks.render_admonition_head(atype, head_text, title=title,
-                                              collapsible=collapsible)
+        head = _blocks.render_admonition_head(
+            atype, head_text, title=title, collapsible=collapsible,
+            collapsed=bool(token.meta.get("collapsed", False)))
         dropped = int(token.meta.get("preview_dropped", 0) or 0)
         return self._render_container_preview(
             head, body, dropped, "admonition",

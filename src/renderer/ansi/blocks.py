@@ -502,7 +502,8 @@ def render_admonition(token) -> list[AnsiLine]:
     else:
         body_lines = parts
     head = render_admonition_head(atype, str(head_text or ""),
-                                  title=title, collapsible=collapsible)
+                                  title=title, collapsible=collapsible,
+                                  collapsed=bool(token.meta.get("collapsed", False)))
     lines: list[AnsiLine] = [head]
     lines.extend(_preview_omitted(token.meta))
     for seg in body_lines:
@@ -511,18 +512,26 @@ def render_admonition(token) -> list[AnsiLine]:
 
 
 def render_admonition_head(atype: str, text: str, title: str = "",
-                           collapsible: bool = False) -> AnsiLine:
-    """告示首行（``■ TYPE [title] 正文``；可折叠时为 ``▸``）。
+                           collapsible: bool = False,
+                           collapsed: bool = False) -> AnsiLine:
+    """告示首行（``■ TYPE [title] 正文``；可折叠时按状态用 ``▸`` / ``▾``）。
 
     标题 / 同行文本非空时才追加分隔空格——修复前恒拼 ``"■ TYPE "``（无标题
     时行尾多一个空格：宽度测量含之，右侧对齐/换行预算偏移）。
+    标题同样经 ``render_inline`` 解析（``> [!NOTE] **重点** 标题`` 不再泄漏
+    字面 ``**``）。
     """
     atype = str(atype).upper()
     color = _ADMONITION_COLORS.get(atype, _STYLE_LIST_BULLET)
-    glyph = "\u25b8" if collapsible else "\u25a0"
+    if collapsible:
+        glyph = "\u25b8" if collapsed else "\u25be"
+    else:
+        glyph = "\u25a0"
     head = AnsiLine.of(f"{glyph} {atype}", color)
     if title:
-        head.append(" " + str(title), _STYLE_ADM_TITLE)
+        head.append(" ")
+        for run in render_inline(str(title), _STYLE_ADM_TITLE):
+            head.append_run(run)
         return head
     if text:
         head.append(" ")

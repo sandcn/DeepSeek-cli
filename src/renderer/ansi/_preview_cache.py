@@ -36,10 +36,11 @@ class LinePreviewCache:
     线程/生命周期：单实例由渲染器持有，随渲染器 GC。
     """
 
-    __slots__ = ("_key", "_src", "_spans", "_rows")
+    __slots__ = ("_key", "_src", "_spans", "_rows", "_last_input")
 
     def __init__(self) -> None:
         self._key = None
+        self._last_input = None
         self._src: list[str] = []
         #: 每个源行产出的渲染行数（``sum(_spans) == len(_rows)``）
         self._spans: list[int] = []
@@ -48,6 +49,7 @@ class LinePreviewCache:
     def reset(self) -> None:
         """清空缓存（块闭合 / 预览清空 / 类型切换时调用）。"""
         self._key = None
+        self._last_input = None
         self._src = []
         self._spans = []
         self._rows = []
@@ -69,6 +71,11 @@ class LinePreviewCache:
         cached_src = self._src
         spans = self._spans
         rows = self._rows
+        # ★ 性能（流式空转帧）：调用方复用同一源行列表（渲染器按内容缓存
+        #   split 结果）时直接返回上次结果——免前缀比较与 ``list`` 复制。
+        if src_lines is self._last_input:
+            return rows
+        self._last_input = src_lines
         common = common_prefix_len(cached_src, src_lines)
         if common == 0 and len(cached_src) >= 2 and len(spans) == len(cached_src):
             # 首行即分歧 → 尝试「头部滑窗复用」（预览有界化的行丢弃）。

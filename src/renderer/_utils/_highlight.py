@@ -19,6 +19,7 @@ def parse_highlight_lines(attrs: str) -> list[int]:
     支持多种书写形式（字符级扫描，无正则表达式）：
       - ``{.numberLines hl_lines="1,3-5"}``（引号属性，逗号或空格分隔）
       - ``{hl_lines='1 3-5'}``（单引号）
+      - ``{hl_lines=[1, 3-5]}``（Pandoc 列表写法，支持内部空格）
       - ``{1,3-5}`` / ``{1 3-5}`` / ``{1,3,7-9}``（Pandoc / kramdown 大括号）
       - ``hl_lines="1,3-5"``（无大括号裸属性）
 
@@ -119,10 +120,11 @@ def parse_lineno_options(attrs: str) -> tuple[bool, int, int]:
 
 
 def _extract_attr_value(attrs: str, name: str) -> str | None:
-    """提取 ``name="value"`` / ``name='value'`` / ``name=value`` 的属性值。
+    """提取 ``name="value"`` / ``name='value'`` / ``name=value`` / ``name=[..]`` 的值。
 
     属性名前必须是独立边界（前一字符非字母数字/连字符），避免 ``data-hl_lines``
-    之类的子串误匹配。找不到返回 ``None``。
+    之类的子串误匹配。方括号列表值（Pandoc ``hl_lines=[1, 3-5]``）按配对读取，
+    允许内部空格。找不到返回 ``None``。
     """
     low = attrs.lower()
     key = name.lower()
@@ -137,6 +139,10 @@ def _extract_attr_value(attrs: str, name: str) -> str | None:
     i = idx + len(key) + 1
     if i >= len(attrs):
         return None
+    # Pandoc 列表写法（``hl_lines=[1, 3-5]``）：按括号配对读取，允许内部空格。
+    if attrs[i] == '[':
+        end = attrs.find(']', i + 1)
+        return attrs[i:end + 1] if end > i else None
     quote = attrs[i]
     if quote in ('"', "'"):
         end = attrs.find(quote, i + 1)
@@ -170,9 +176,15 @@ def _extract_brace_line_spec(attrs: str) -> str | None:
 
 
 def _parse_line_spec(spec: str) -> list[int]:
-    """解析行号规格（``1,3-5`` / ``1 3-5`` / ``1;3-5``）为升序去重列表。"""
+    """解析行号规格（``1,3-5`` / ``1 3-5`` / ``1;3-5`` / ``[1,3-5]``）为升序去重列表。
+
+    方括号 / 圆括号包裹（Pandoc ``hl_lines=[1,3-5]`` 列表写法）与残留引号在
+    此统一剥离——修复前 ``hl_lines=[2]`` 解析为空（``[2]`` 无法转整数），
+    高亮行完全不生效。
+    """
     out: list[int] = []
     seen: set[int] = set()
+    spec = spec.strip().strip(' \t[](){}"\'')
     for raw in spec.replace(';', ',').replace(',', ' ').split():
         part = raw.strip()
         if not part:
