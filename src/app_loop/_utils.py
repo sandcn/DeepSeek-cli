@@ -92,6 +92,12 @@ def _exit_save_and_stop(session, chat_ui=None) -> None:
         _save_and_show_recover(session, chat_ui)
     except Exception:
         _logger.debug("退出前保存会话失败（非关键）")
+    finally:
+        # 退出前先做最终同步保存，再停止 30s 周期自动保存任务。
+        try:
+            session.stop_autosave()
+        except Exception:
+            _logger.debug("停止定时自动保存失败（非关键）", exc_info=True)
     from ..api.escape_monitor import stop_active_monitor
     stop_active_monitor()
 

@@ -61,6 +61,28 @@ QR_SCAN_TIMEOUT = 600            # 重连扫码等待超时（秒）
 LOCAL_USER_ID = "local"
 
 
+def _start_session_autosave(session) -> None:
+    """启动会话定时自动保存（兼容未实现该能力的自定义 session 工厂）。"""
+    starter = getattr(session, "start_autosave", None)
+    if not callable(starter):
+        return
+    try:
+        starter()
+    except Exception:
+        _logger.debug("启动会话定时自动保存失败", exc_info=True)
+
+
+def _stop_session_autosave(session) -> None:
+    """停止会话定时自动保存（兼容未实现该能力的自定义 session 工厂）。"""
+    stopper = getattr(session, "stop_autosave", None)
+    if not callable(stopper):
+        return
+    try:
+        stopper()
+    except Exception:
+        _logger.debug("停止会话定时自动保存失败", exc_info=True)
+
+
 class ClawBotRunner:
     """微信 ClawBot 远程控制机器人。"""
 
@@ -158,6 +180,7 @@ class ClawBotRunner:
         """
         if self._shared_session is None:
             self._shared_session = self._session_factory(self._model)
+            _start_session_autosave(self._shared_session)
         return self._shared_session
 
     def _get_session(self, from_id: str) -> ChatSession:
@@ -177,10 +200,12 @@ class ClawBotRunner:
             self._sessions[from_id] = session  # 移到末尾（最近使用）
             return session
         session = self._session_factory(self._model)
+        _start_session_autosave(session)
         self._sessions[from_id] = session
         if len(self._sessions) > MAX_SESSIONS:
             oldest = next(iter(self._sessions))
-            self._sessions.pop(oldest)
+            oldest_session = self._sessions.pop(oldest)
+            _stop_session_autosave(oldest_session)
             self._print(f"[会话] 已淘汰最久未用会话: {oldest}")
         return session
 
@@ -629,7 +654,10 @@ class ClawBotRunner:
     async def _cmd_new(self, from_id: str, ctx: str) -> None:
         if self._shared_session is not None:
             # 共享会话模式：重建新会话（多用户共同进入新聊天）
+            old_session = self._shared_session
             self._shared_session = self._session_factory(self._model)
+            _start_session_autosave(self._shared_session)
+            _stop_session_autosave(old_session)
             if self._chat_ui is not None:
                 self._chat_ui.clear_messages()
                 self._rebind_session_handlers(self._shared_session)
@@ -637,6 +665,7 @@ class ClawBotRunner:
             session = self._get_session(from_id)
             session.clear_messages()
             self._sessions.pop(from_id, None)
+            _stop_session_autosave(session)
             fresh = self._get_session(from_id)
             fresh.clear_messages()
         await self._send(from_id, ctx, "🆕 已开始新会话")

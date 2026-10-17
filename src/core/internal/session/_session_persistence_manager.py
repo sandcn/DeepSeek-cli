@@ -13,7 +13,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
+import json
 import logging
+import threading
 
 _logger = logging.getLogger(__name__)
 
@@ -21,6 +25,29 @@ _ROLE_KEY = "role"
 _SYSTEM_ROLE = "system"
 _MIN_CHECKPOINT_MESSAGES = 2
 _TASK_DESC_TRUNCATE = 200
+
+#: 定时自动保存间隔（秒）。对话内容变化后最多等待该时长即异步落盘一次。
+_AUTOSAVE_INTERVAL_SECONDS = 30.0
+#: 无会话日志源时用于变更检测的消息摘要长度（字节）。
+_MESSAGE_DIGEST_SIZE = 16
+
+
+def _messages_digest(messages: list[dict]) -> str:
+    """计算消息内容的稳定摘要（仅无会话日志源时的回退路径）。"""
+    try:
+        payload = json.dumps(
+            messages,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        payload = repr(messages)
+    return hashlib.blake2b(
+        payload.encode("utf-8", "replace"), digest_size=_MESSAGE_DIGEST_SIZE,
+    ).hexdigest()
+
 
 class SessionPersistenceManager:
     """会话持久化管理器
@@ -78,49 +105,95 @@ class SessionPersistenceManager:
         self._get_log = log_getter
         self._set_log = log_setter
 
+        # ── 定时自动保存（30s，仅内容变化时异步落盘） ──────
+        self._autosave_task: asyncio.Task | None = None
+        self._autosave_flush_lock: asyncio.Lock | None = None
+        #: 上一次成功保存时的内容签名（None 表示尚未建立基线）
+        self._last_saved_signature: tuple | None = None
+        #: 同步保护 save() 与后台线程写入，避免两个调用同时写同一文件
+        self._save_lock = threading.RLock()
+
     # ── 会话保存 ────────────────────────────────────────
 
     def save(self) -> str | None:
-        """保存当前会话到 .chat/msg_list/。
+        """保存当前会话到 .chat/msg_list/（不持久化会话日志）。
 
         Returns:
             session_id，无可保存内容时返回 None
         """
-        messages = self._get_messages()
-        non_system = [m for m in messages if m.get(_ROLE_KEY) != _SYSTEM_ROLE]
+        signature = self._content_signature()
+        non_system = self._non_system_snapshot()
         if not non_system:
+            self._last_saved_signature = signature
             self._safe_save_state()
             return self._get_session_id()
 
-        subagents = self._get_subagents() if self._get_subagents is not None else None
-        log_snapshot = self._log_snapshot()
-        sid = self._persistence.save_session(
-            messages=non_system,
-            model=self._get_model(),
-            session_id=self._get_session_id(),
-            subagents=subagents,
-            session_log=log_snapshot,
+        subagents = self._subagents_snapshot()
+        sid = self._save_payload(
+            non_system, self._get_model(), self._get_session_id(), subagents,
         )
         self._set_session_id(sid)
+        self._last_saved_signature = signature
         self._safe_save_state()
         self._emit("saved", session_id=sid)
         return sid
 
-    def _log_snapshot(self):
-        """返回会话日志快照（无日志源时返回 None）。"""
-        if self._get_log is None:
-            return None
+    # ── 保存快照辅助 ────────────────────────────────────
+
+    def _non_system_snapshot(self) -> list[dict]:
+        """返回非 system 消息快照（按当前消息列表顺序）。"""
+        return [
+            m for m in list(self._get_messages())
+            if m.get(_ROLE_KEY) != _SYSTEM_ROLE
+        ]
+
+    def _subagents_snapshot(self) -> list:
+        """返回 SubAgent 记录快照（无来源时为空列表）。"""
+        if self._get_subagents is None:
+            return []
         try:
-            log = self._get_log()
+            return list(self._get_subagents() or [])
+        except Exception:
+            _logger.debug("获取 SubAgent 记录失败", exc_info=True)
+            return []
+
+    def _save_payload(self, messages: list[dict], model: str,
+                      session_id: str | None, subagents: list) -> str:
+        """写入会话文件（线程安全；自动保存路径不包含会话日志）。"""
+        with self._save_lock:
+            return self._persistence.save_session(
+                messages=messages,
+                model=model,
+                session_id=session_id,
+                subagents=subagents,
+                # ★ 用户需求（2026-10）：自动/退出保存只落对话消息，不保存
+                #   会话日志快照（事件流仍保留在内存中供 /logs 查看）。
+                session_log=None,
+            )
+
+    def _content_signature(self) -> tuple | None:
+        """计算对话内容变更签名（用于判定是否需要落盘）。
+
+        优先使用会话日志的事件数（O(1)，覆盖追加/插入/替换/删除等全部
+        结构变更）；无日志源时回退到消息数量 + 内容摘要。
+        """
+        try:
+            messages = list(self._get_messages())
         except Exception:
             return None
-        if log is None:
-            return None
-        try:
-            return log.snapshot()
-        except Exception:
-            _logger.debug("会话日志快照失败", exc_info=True)
-            return None
+
+        log = None
+        if self._get_log is not None:
+            try:
+                log = self._get_log()
+            except Exception:
+                log = None
+        if log is not None:
+            try:
+                return ("log", id(log), len(log), len(messages))
+            except Exception:
+                _logger.debug("读取会话日志签名失败，回退消息摘要", exc_info=True)
+        return ("messages", len(messages), _messages_digest(messages))
 
     def load(self, session_id: str) -> dict | None:
         """加载历史会话。
@@ -175,6 +248,8 @@ class SessionPersistenceManager:
 
         self._set_model(data.get("model", self._get_model()))
         self._set_session_id(session_id)
+        # 加载即视为已保存基线：内容未再变化时不会触发定时自动保存。
+        self._last_saved_signature = self._content_signature()
 
         self._observability.gauge("session.messages", len(messages))
         self._emit("loaded", data=data)
@@ -201,44 +276,118 @@ class SessionPersistenceManager:
         except Exception:
             _logger.debug("恢复 subagent 轨迹存档异常", exc_info=True)
 
-    # ── 自动保存（异步） ────────────────────────────────
+    # ── 定时自动保存（30s，异步） ───────────────────────
 
-    async def auto_save(self, messages_getter) -> str | None:
-        """自动保存会话（异步，在子线程中做文件 IO）。
+    def start_autosave(self) -> None:
+        """启动周期自动保存任务（幂等；需在事件循环中调用）。
 
-        Args:
-            messages_getter: 返回消息快照的可调用对象
-
-        Returns:
-            session_id，无可保存内容时返回 None
+        任务每 ``_AUTOSAVE_INTERVAL_SECONDS`` 秒检查一次对话内容签名，
+        仅当内容相对上次成功保存发生变化时才在后台线程落盘。
         """
         try:
-            snapshot = list(messages_getter())
-            snapshot_model = self._get_model()
-            snapshot_sid = self._get_session_id()
-            subagents = self._get_subagents() if self._get_subagents is not None else None
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = self._autosave_task
+        if task is not None and not task.done():
+            return
+        self._autosave_task = loop.create_task(
+            self._autosave_loop(), name="session-autosave",
+        )
 
-            non_system = [m for m in snapshot if m.get(_ROLE_KEY) != _SYSTEM_ROLE]
-            if not non_system:
-                self._safe_save_state()
-                return snapshot_sid
+    def stop_autosave(self) -> None:
+        """请求停止周期自动保存任务（同步版本，用于退出路径）。"""
+        task = self._autosave_task
+        self._autosave_task = None
+        if task is not None and not task.done():
+            task.cancel()
 
-            session_id = await asyncio.to_thread(
-                self._persistence.save_session,
-                non_system,
-                snapshot_model,
-                snapshot_sid,
-                subagents,
-                self._log_snapshot(),
-            )
-            self._set_session_id(session_id)
-            self._safe_save_state()
-            self._emit("saved", session_id=session_id)
-            return session_id
+    async def stop_autosave_async(self) -> None:
+        """停止并等待周期自动保存任务退出（测试 / 异步清理路径）。"""
+        task = self._autosave_task
+        self._autosave_task = None
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def _autosave_loop(self) -> None:
+        """周期自动保存循环（每 30s 检查一次内容是否变化）。"""
+        current = asyncio.current_task()
+        try:
+            while True:
+                await asyncio.sleep(_AUTOSAVE_INTERVAL_SECONDS)
+                try:
+                    await self.auto_save()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    _logger.exception("定时自动保存会话失败: %s", exc)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if self._autosave_task is current:
+                self._autosave_task = None
+
+    def _flush_lock(self) -> asyncio.Lock:
+        """惰性创建异步保存锁（避免在无事件循环的构造期绑定）。"""
+        if self._autosave_flush_lock is None:
+            self._autosave_flush_lock = asyncio.Lock()
+        return self._autosave_flush_lock
+
+    async def auto_save(self) -> str | None:
+        """按需异步保存会话（仅当对话内容相对上次保存发生变化）。
+
+        文件 IO 在 ``asyncio.to_thread`` 后台线程执行，不阻塞事件循环；
+        保存内容只包含对话消息，不包含会话日志快照。
+
+        Returns:
+            session_id；内容未变化时返回 None。
+        """
+        try:
+            signature = self._content_signature()
+            if signature == self._last_saved_signature:
+                return None
+            async with self._flush_lock():
+                signature = self._content_signature()
+                if signature == self._last_saved_signature:
+                    return None
+                return await self._save_if_changed(signature)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             _logger.exception("自动保存会话失败: %s", exc)
             self._safe_save_state()
             return None
+
+    async def _save_if_changed(self, signature: tuple | None) -> str | None:
+        """执行一次后台异步保存并更新内容基线。"""
+        snapshot = list(self._get_messages())
+        snapshot_model = self._get_model()
+        snapshot_sid = self._get_session_id()
+        non_system = [
+            m for m in snapshot if m.get(_ROLE_KEY) != _SYSTEM_ROLE
+        ]
+        if not non_system:
+            self._last_saved_signature = signature
+            self._safe_save_state()
+            return snapshot_sid
+
+        subagents = self._subagents_snapshot()
+        session_id = await asyncio.to_thread(
+            self._save_payload,
+            non_system,
+            snapshot_model,
+            snapshot_sid,
+            subagents,
+        )
+        self._set_session_id(session_id)
+        # 仅在成功落盘后推进基线；保存期间若内容继续变化，下个周期会再次保存。
+        self._last_saved_signature = signature
+        self._safe_save_state()
+        self._emit("saved", session_id=session_id)
+        return session_id
 
     # ── 断点管理 ────────────────────────────────────────
 

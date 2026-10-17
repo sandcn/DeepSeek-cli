@@ -680,6 +680,8 @@ class InteractiveLoop:
 
         # ── 初始化会话 ──
         session, state = self._setup_session_and_handlers(self._loaded_data)
+        # 启动 30s 周期自动保存：覆盖加载后编辑 / 命令修改等非对话轮次变更。
+        session.start_autosave()
 
         # ── 初始化 EscapeMonitor 回调并启动 ──
         self._setup_monitor(session, state)
@@ -719,6 +721,10 @@ class InteractiveLoop:
             raise
         finally:
             self._msg_done_ref = None
+            try:
+                session.stop_autosave()
+            except Exception:
+                _logger.debug("停止定时自动保存失败（非关键）", exc_info=True)
             self._teardown_monitor()
             self._teardown_chat_ui()
             consume_task.cancel()

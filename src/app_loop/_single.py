@@ -55,6 +55,7 @@ async def run_single_mode_async(prompt_text):
         return
 
     session = create_session(event_agent=True)
+    session.start_autosave()
 
     monitor = EscapeMonitor(input_instance=chat_ui._components.input)
     _register_session_handlers(session, monitor, chat_ui=chat_ui)
@@ -73,6 +74,10 @@ async def run_single_mode_async(prompt_text):
             _logger.exception("单次模式异常路径保存会话失败")
         raise
     finally:
+        try:
+            session.stop_autosave()
+        except Exception:
+            _logger.debug("停止定时自动保存失败（非关键）", exc_info=True)
         chat_ui.stop()
         stop_active_monitor()
 

@@ -575,8 +575,20 @@ class ChatSession:
     # ── 会话持久化（委托给 SessionPersistenceManager） ──
 
     def save(self) -> str | None:
-        """保存当前会话到 .chat/msg_list/。"""
+        """保存当前会话到 .chat/msg_list/（不保存会话日志）。"""
         return self._persistence_mgr.save()
+
+    def start_autosave(self) -> None:
+        """启动定时异步自动保存（30s，仅对话内容变化时落盘）。"""
+        self._persistence_mgr.start_autosave()
+
+    def stop_autosave(self) -> None:
+        """停止定时自动保存（退出路径调用）。"""
+        self._persistence_mgr.stop_autosave()
+
+    async def stop_autosave_async(self) -> None:
+        """停止并等待定时自动保存任务退出。"""
+        await self._persistence_mgr.stop_autosave_async()
 
     def load(self, session_id: str) -> dict | None:
         """加载历史会话。"""

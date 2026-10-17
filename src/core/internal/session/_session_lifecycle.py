@@ -47,6 +47,14 @@ def _ensure_idle(session) -> None:
             pass
 
 
+def _ensure_autosave(session) -> None:
+    """确保定时异步自动保存已启动（30s 周期，仅内容变化时落盘）。"""
+    try:
+        session._persistence_mgr.start_autosave()
+    except Exception:
+        _logger.debug("启动定时自动保存失败", exc_info=True)
+
+
 # ═══════════════════════════════════════════════════════════════
 # 状态恢复
 # ═══════════════════════════════════════════════════════════════
@@ -148,6 +156,9 @@ async def run_round(session, user_input: str) -> dict:
                     "delta": {"input": 0, "output": 0, "calls": 0},
                     "pending": True}
         _ensure_idle(session)
+        # ★ 对话内容即将变化：启动 30s 周期异步保存（用户消息在 AI 生成
+        #   期间也可能被定时落盘，无需等待整轮结束）。
+        _ensure_autosave(session)
         session._state_machine.start_round()
         try:
             session._agent.add_user_message(user_input)
@@ -296,6 +307,7 @@ async def retry(session) -> dict:
         session._state.retry_pending = False
         if session._state_machine.is_(SessionState.INIT):
             _ensure_idle(session)
+        _ensure_autosave(session)
         session._state_machine.retry()
         try:
             async with _handle_round_error(session, "retry"):
@@ -316,6 +328,7 @@ async def run_single(session, prompt: str) -> dict:
     """单次对话模式。"""
     async with session._state.round_lock:
         _ensure_idle(session)
+        _ensure_autosave(session)
         session._agent.add_user_message(prompt)
         # ── AI 回复前提前分配 session_id ──────────────────
         if not session._state.session_id:
@@ -433,13 +446,16 @@ def _compute_token_delta(session, prev_stats: tuple[int, int, int]) -> dict:
 
 
 async def _auto_save(session) -> str | None:
-    """自动保存会话，返回 session_id（无可保存内容时返回 None）。"""
+    """确保定时自动保存运行，返回当前 session_id。
+
+    保存本身由 30s 周期任务异步执行（仅内容变化时落盘），回合结束不再
+    同步写盘；退出路径仍会调用 ``session.save()`` 做最终保存。
+    """
     try:
-        return await session._persistence_mgr.auto_save(
-            lambda: session._agent.messages,
-        )
+        session._persistence_mgr.start_autosave()
+        return session.session_id
     except Exception as exc:
-        _logger.exception("自动保存会话失败: %s", exc)
+        _logger.exception("启动定时自动保存失败: %s", exc)
         _force_state_recovery(session)
         return None
 
