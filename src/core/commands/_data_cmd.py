@@ -133,15 +133,23 @@ def _load_session_by_id(ctx, session_id: str) -> bool:
     non_system_current = filter_non_system(ctx.messages)
     if non_system_current:
         current_model = ctx.state.get("model", MODEL)
-        # 连同 SubAgent 记录一起保存（含完整聊天信息）
+        # 连同 SubAgent 记录 / 会话日志快照一起保存（日志为恢复事实源）
         current_subagents = []
+        current_session_log = None
         if ctx.session is not None:
             agent = getattr(ctx.session, "agent", None)
             if agent is not None:
                 current_subagents = list(getattr(agent, "_subagent_records", None) or [])
+            snapshot_log = getattr(ctx.session, "snapshot_session_log", None)
+            if callable(snapshot_log):
+                try:
+                    current_session_log = snapshot_log()
+                except Exception:
+                    _logger.debug("获取当前会话日志快照失败", exc_info=True)
         try:
             saved_id = _p.save_session(non_system_current, model=current_model,
-                                       subagents=current_subagents)
+                                       subagents=current_subagents,
+                                       session_log=current_session_log)
             _out.write(f"{DIM}  + 已自动保存当前会话: {saved_id[:_SESSION_ID_TRUNCATE]}{RESET}", level="raw", source="cmd")
         except Exception as e:
             _out.write(f"{YELLOW}  ! 自动保存当前会话失败: {e}{RESET}", level="raw", source="cmd")

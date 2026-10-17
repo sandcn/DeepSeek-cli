@@ -448,8 +448,8 @@ def _compute_token_delta(session, prev_stats: tuple[int, int, int]) -> dict:
 async def _auto_save(session) -> str | None:
     """确保定时自动保存运行，返回当前 session_id。
 
-    保存本身由 30s 周期任务异步执行（仅内容变化时落盘），回合结束不再
-    同步写盘；退出路径仍会调用 ``session.save()`` 做最终保存。
+    保存本身由 30s 周期任务异步执行（仅内容变化时落盘，含会话日志快照），
+    回合结束不再同步写盘；退出路径仍会调用 ``session.save()`` 做最终保存。
     """
     try:
         session._persistence_mgr.start_autosave()

@@ -69,3 +69,42 @@ def test_restore_from_legacy_messages_still_works():
         view.append(msg)
     assert view.verify() is True
     assert [m["role"] for m in view] == ["system", "user", "assistant"]
+
+
+async def test_chat_session_auto_save_restores_messages_from_log(tmp_path, monkeypatch):
+    """定时自动保存落盘会话日志，加载时由日志投影重建消息视图。"""
+    import types
+
+    import src.chat_msgs as chat_msgs
+    from src.core.adapters.persistence import JsonFilePersistence
+    from src.core.session import ChatSession
+
+    monkeypatch.setattr(chat_msgs, "CHAT_MSGS_DIR", tmp_path)
+    log = SessionLog(session_id="session-1")
+    messages = LoggedMessageList(log, initial=[
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "yo"},
+    ])
+    agent = types.SimpleNamespace(messages=messages, _subagent_records=[])
+    session = ChatSession(model="m", agent=agent,
+                          persistence_port=JsonFilePersistence())
+    session.session_id = "session-1"
+
+    assert await session._persistence_mgr.auto_save() == "session-1"
+    raw = json.loads((tmp_path / "session-1.json").read_text(encoding="utf-8"))
+    assert [event["type"] for event in raw["session_log"]] == [
+        SessionEventType.SYSTEM_MESSAGE,
+        SessionEventType.USER_MESSAGE,
+        SessionEventType.ASSISTANT_MESSAGE,
+    ]
+
+    loaded_agent = types.SimpleNamespace(
+        messages=LoggedMessageList(SessionLog()), _subagent_records=[],
+    )
+    loaded = ChatSession(model="m", agent=loaded_agent,
+                         persistence_port=JsonFilePersistence())
+    assert loaded.load("session-1") is not None
+    assert [m["content"] for m in loaded.messages] == ["sys", "hi", "yo"]
+    assert loaded.session_log is not None
+    assert loaded.session_log.verify(list(loaded.messages)) is True

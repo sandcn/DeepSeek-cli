@@ -116,7 +116,7 @@ class SessionPersistenceManager:
     # ── 会话保存 ────────────────────────────────────────
 
     def save(self) -> str | None:
-        """保存当前会话到 .chat/msg_list/（不持久化会话日志）。
+        """保存当前会话到 .chat/msg_list/（含会话日志快照）。
 
         Returns:
             session_id，无可保存内容时返回 None
@@ -131,6 +131,7 @@ class SessionPersistenceManager:
         subagents = self._subagents_snapshot()
         sid = self._save_payload(
             non_system, self._get_model(), self._get_session_id(), subagents,
+            self.session_log_snapshot(),
         )
         self._set_session_id(sid)
         self._last_saved_signature = signature
@@ -157,18 +158,37 @@ class SessionPersistenceManager:
             _logger.debug("获取 SubAgent 记录失败", exc_info=True)
             return []
 
+    def session_log_snapshot(self) -> list[dict] | None:
+        """返回当前会话日志的事件快照（无日志源时 None）。
+
+        会话日志是仅追加的事实源；快照随定时自动保存一起落盘，加载时据此
+        重建消息视图。无日志视图（自定义 Agent/旧会话）时返回 None，保存端
+        不写入 ``session_log`` 字段（保持向后兼容）。
+        """
+        if self._get_log is None:
+            return None
+        try:
+            log = self._get_log()
+            if log is None:
+                return None
+            return log.snapshot()
+        except Exception:
+            _logger.debug("获取会话日志快照失败，本次不写入日志", exc_info=True)
+            return None
+
     def _save_payload(self, messages: list[dict], model: str,
-                      session_id: str | None, subagents: list) -> str:
-        """写入会话文件（线程安全；自动保存路径不包含会话日志）。"""
+                      session_id: str | None, subagents: list,
+                      session_log: list[dict] | None) -> str:
+        """写入会话文件（线程安全；含会话日志快照）。"""
         with self._save_lock:
             return self._persistence.save_session(
                 messages=messages,
                 model=model,
                 session_id=session_id,
                 subagents=subagents,
-                # ★ 用户需求（2026-10）：自动/退出保存只落对话消息，不保存
-                #   会话日志快照（事件流仍保留在内存中供 /logs 查看）。
-                session_log=None,
+                # 会话日志 = 仅追加事实源：定时自动保存 / 退出保存一并落盘，
+                # 加载时优先由日志重建消息视图。
+                session_log=session_log,
             )
 
     def _content_signature(self) -> tuple | None:
@@ -340,7 +360,7 @@ class SessionPersistenceManager:
         """按需异步保存会话（仅当对话内容相对上次保存发生变化）。
 
         文件 IO 在 ``asyncio.to_thread`` 后台线程执行，不阻塞事件循环；
-        保存内容只包含对话消息，不包含会话日志快照。
+        保存内容包含对话消息与会话日志快照。
 
         Returns:
             session_id；内容未变化时返回 None。
@@ -375,12 +395,16 @@ class SessionPersistenceManager:
             return snapshot_sid
 
         subagents = self._subagents_snapshot()
+        # 会话日志快照在事件循环线程内取（仅复制事件列表）；后台线程只做
+        # JSON 序列化与文件写入，避免跨线程读取仍可能被追加的日志。
+        session_log = self.session_log_snapshot()
         session_id = await asyncio.to_thread(
             self._save_payload,
             non_system,
             snapshot_model,
             snapshot_sid,
             subagents,
+            session_log,
         )
         self._set_session_id(session_id)
         # 仅在成功落盘后推进基线；保存期间若内容继续变化，下个周期会再次保存。

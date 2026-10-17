@@ -1,4 +1,4 @@
-"""会话定时自动保存测试 — 30s 周期、仅内容变化时异步落盘、不保存会话日志。"""
+"""会话定时自动保存测试 — 30s 周期、仅内容变化时异步落盘、含会话日志快照。"""
 
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ async def _wait_until(predicate, timeout=2.0):
     return predicate()
 
 
-def test_save_does_not_persist_session_log():
+def test_save_persists_session_log():
     messages = [{"role": "user", "content": "hi"}]
     log = SessionLog(session_id="session-1")
     log.append(SessionEventType.USER_MESSAGE, content="hi")
@@ -85,10 +85,13 @@ def test_save_does_not_persist_session_log():
     assert manager.save() == "session-1"
 
     assert len(persistence.calls) == 1
-    assert persistence.calls[0]["session_log"] is None
+    snapshot = persistence.calls[0]["session_log"]
+    assert snapshot is not None
+    assert [event["type"] for event in snapshot] == [SessionEventType.USER_MESSAGE]
+    assert snapshot[0]["data"]["content"] == "hi"
 
 
-def test_chat_session_save_does_not_persist_session_log():
+def test_chat_session_save_persists_session_log():
     import types
 
     from src.core.session import ChatSession
@@ -102,7 +105,10 @@ def test_chat_session_save_does_not_persist_session_log():
     session = ChatSession(agent=agent, persistence_port=persistence)
 
     assert session.save() == "saved-session"
-    assert persistence.calls[0]["session_log"] is None
+    snapshot = persistence.calls[0]["session_log"]
+    assert snapshot is not None
+    assert [event["type"] for event in snapshot] == [SessionEventType.USER_MESSAGE]
+    assert session.snapshot_session_log() == snapshot
 
 
 async def test_auto_save_only_when_content_changed():
@@ -132,7 +138,11 @@ async def test_auto_save_detects_changes_via_session_log():
     messages.append({"role": "assistant", "content": "hello"})
     assert await manager.auto_save() == "session-1"
     assert len(persistence.calls) == 2
-    assert all(call["session_log"] is None for call in persistence.calls)
+    assert len(persistence.calls[0]["session_log"]) == 1
+    assert [event["type"] for event in persistence.calls[1]["session_log"]] == [
+        SessionEventType.USER_MESSAGE,
+        SessionEventType.ASSISTANT_MESSAGE,
+    ]
 
 
 async def test_periodic_autosave_every_interval_only_on_change(monkeypatch):
@@ -170,6 +180,89 @@ async def test_autosave_stop_cancels_task(monkeypatch):
 
     assert task.cancelled()
     assert manager._autosave_task is None
+
+
+async def test_periodic_autosave_persists_session_log(monkeypatch):
+    """30s 周期任务落盘时携带会话日志快照（内容变化后才保存）。"""
+    monkeypatch.setattr(persistence_mod, "_AUTOSAVE_INTERVAL_SECONDS", 0.02)
+    log = SessionLog(session_id="session-1")
+    messages = LoggedMessageList(
+        log, initial=[{"role": "system", "content": "sys"},
+                      {"role": "user", "content": "hi"}],
+    )
+    manager, persistence = _make_manager(messages, log=log)
+
+    manager.start_autosave()
+    assert await _wait_until(lambda: len(persistence.calls) >= 1)
+    first = persistence.calls[0]["session_log"]
+    assert [event["type"] for event in first] == [
+        SessionEventType.SYSTEM_MESSAGE,
+        SessionEventType.USER_MESSAGE,
+    ]
+
+    calls_after_first = len(persistence.calls)
+    await asyncio.sleep(0.06)
+    assert len(persistence.calls) == calls_after_first
+
+    messages.append({"role": "assistant", "content": "hello"})
+    assert await _wait_until(lambda: len(persistence.calls) > calls_after_first)
+    assert len(persistence.calls[-1]["session_log"]) == 3
+
+    await manager.stop_autosave_async()
+
+
+async def test_auto_save_at_round_end_does_not_write_immediately():
+    """回合结束只确保定时任务运行，不立即同步写盘（不在每次工具/回答后保存）。"""
+    import types
+
+    from src.core.internal.session import _session_lifecycle as lifecycle
+
+    class _Manager:
+        def __init__(self):
+            self.started = 0
+
+        def start_autosave(self):
+            self.started += 1
+
+    manager = _Manager()
+    session = types.SimpleNamespace(
+        _persistence_mgr=manager, session_id="session-1",
+    )
+
+    assert await lifecycle._auto_save(session) == "session-1"
+    assert manager.started == 1
+
+
+async def test_loop_snapshot_passes_session_log(monkeypatch):
+    from src.app_loop import _utils
+
+    captured: dict = {}
+
+    def fake_save(messages, model, session_id=None, subagents=None,
+                  session_log=None):
+        captured.update({
+            "messages": list(messages),
+            "model": model,
+            "session_log": session_log,
+        })
+        return "loopsession123"
+
+    class _Session:
+        messages = [{"role": "user", "content": "hi"}]
+        model = "m"
+
+        def snapshot_session_log(self):
+            return [{"type": SessionEventType.USER_MESSAGE, "seq": 1,
+                     "timestamp": 0.0, "data": {"content": "hi"}}]
+
+    monkeypatch.setattr(_utils, "save_session", fake_save)
+    await _utils._save_loop_snapshot(_Session())
+
+    assert captured["model"] == "m"
+    assert captured["session_log"] == [
+        {"type": SessionEventType.USER_MESSAGE, "seq": 1,
+         "timestamp": 0.0, "data": {"content": "hi"}},
+    ]
 
 
 def test_save_session_omits_session_log_field_when_not_provided(tmp_path, monkeypatch):

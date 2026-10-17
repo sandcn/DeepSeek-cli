@@ -68,10 +68,15 @@ def _merge_prefill(state, session) -> str:
 
 
 async def _save_loop_snapshot(session, chat_ui=None) -> None:
-    """保存 /loop 循环前后的对话快照"""
+    """保存 /loop 循环前后的对话快照（含会话日志快照）。"""
     non_system = _non_system_messages(session)
     if non_system:
-        sid = await asyncio.to_thread(save_session, session.messages, session.model)
+        snapshot_log = getattr(session, "snapshot_session_log", None)
+        session_log = snapshot_log() if callable(snapshot_log) else None
+        sid = await asyncio.to_thread(
+            save_session, session.messages, session.model,
+            session_log=session_log,
+        )
         filepath = CHAT_MSGS_DIR / f"{sid}.json"
         if chat_ui is not None:
             chat_ui.write_line(f"  {filepath.name}")

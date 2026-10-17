@@ -24,6 +24,7 @@ class _FakeP:
         self._error = error
         self.thread_names = []
         self.saved = []
+        self.saved_logs = []
 
     def list_sessions(self):
         return [{"id": "a1", "title": "t", "model": "m", "saved_at": "x",
@@ -42,6 +43,7 @@ class _FakeP:
     def save_session(self, msgs, model=None, subagents=None, session_id=None,
                      session_log=None):
         self.saved.append(list(msgs))
+        self.saved_logs.append(session_log)
         return "saved1234567890"
 
 
@@ -113,6 +115,32 @@ def test_load_session_by_id_async_replaces_messages(monkeypatch):
     # 读取发生在后台线程（异步），且当前会话已自动保存
     assert fake.thread_names == ["session-load"]
     assert fake.saved and fake.saved[0][0]["content"] == "old"
+    # ctx.session 缺失时无会话日志源，保存不写日志字段
+    assert fake.saved_logs == [None]
+
+
+def test_load_session_by_id_saves_current_session_log(monkeypatch):
+    """自动保存当前会话时一并落盘会话日志快照（加载即事实源切换）。"""
+    class _FakeSession:
+        agent = None
+
+        def snapshot_session_log(self):
+            return [{"type": "user_message", "seq": 1, "timestamp": 0.0,
+                     "data": {"content": "old"}}]
+
+    fake = _FakeP(data={"messages": [{"role": "user", "content": "loaded"}],
+                        "model": "m2"})
+    ctx = _make_ctx(fake)
+    ctx.session = _FakeSession()
+    rec = _Recorder()
+    monkeypatch.setattr(dc, "_out", rec)
+    monkeypatch.setattr(dc, "get_sandbox_manager", lambda: None)
+
+    assert dc._load_session_by_id(ctx, "abc") is True
+    assert fake.saved_logs == [
+        [{"type": "user_message", "seq": 1, "timestamp": 0.0,
+          "data": {"content": "old"}}],
+    ]
 
 
 def test_load_session_by_id_missing_session(monkeypatch):

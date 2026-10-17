@@ -449,9 +449,9 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
         subagents: SubAgent 任务记录列表（含每个 subagent 的完整聊天信息），
             由 SubAgent._record_to_parent() 收集、/export 命令消费。
             None 时保存为空列表（旧会话兼容）。
-        session_log: 会话事件日志快照（仅追加事实源）；None 时不写入该字段
-            （自动保存 / 退出保存路径均不保存会话日志）。显式传入时仍会
-            持久化，加载时据此重建日志，实现 fork / 回放 / 一致性校验。
+        session_log: 会话事件日志快照（仅追加事实源）。定时自动保存 / 退出
+            保存路径均传入当前日志快照；None 时不写入该字段（兼容旧调用方），
+            显式传入时持久化，加载时据此重建日志，实现 fork / 回放 / 一致性校验。
 
     Returns:
         保存的会话 ID
@@ -512,8 +512,8 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
         "messages": filtered,
         "subagents": list(subagents) if subagents else [],
     }
-    # ★ 自动/常规保存不传 session_log 时完全不写该字段（不保存会话日志）；
-    #   显式传入快照的旧调用方仍按原格式写入，加载端统一归一化。
+    # 传入日志快照时写入 session_log 字段（定时自动保存 / 退出保存均传入）；
+    #   未传（None，兼容旧调用方）时不写该字段，加载端统一归一化为空列表。
     if session_log is not None:
         data["session_log"] = list(session_log)
 
