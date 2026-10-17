@@ -70,6 +70,19 @@ class TestBackgroundParallelRule:
         assert "能并行做别的操作就并行做" in rule_line
         assert "必须先把所有可做的别的操作全部做完" in rule_line
 
+    def test_rule_continues_other_work_immediately(self, rule_line: str):
+        """后台启动后须立即继续做别的操作，能并且做就做、能并行就并行。"""
+        assert "必须立即继续做别的操作" in rule_line
+        assert "能并且做别的操作就做别的操作" in rule_line
+        assert "能做就做、能并行就并行" in rule_line
+        assert "禁止以等待为由停顿或空转" in rule_line
+        for token in ("编写或运行测试", "准备验证与检查", "整理结果与交付说明", "查看后台输出或进度"):
+            assert token in rule_line, f"应点名「{token}」"
+
+    def test_rule_waits_only_when_nothing_else_todo(self, rule_line: str):
+        """只有确实没有任何其他可做操作时才允许等待取回结果。"""
+        assert "只有确实没有任何其他可做操作时" in rule_line
+
     def test_rule_waits_only_after_other_work(self, rule_line: str):
         """须规定做完全部别的操作后才允许取回结果，并点名等待操作。"""
         assert "才允许按 `task_id`/任务 ID 取回结果" in rule_line
