@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import field
+from itertools import count as _count
 from typing import Any
 
 from src._ansi_text import ANSI_RE
@@ -27,6 +28,9 @@ from .style import Style
 # ═══════════════════════════════════════════════════════════
 # Run / AnsiLine — 输出模型
 # ═══════════════════════════════════════════════════════════
+
+#: 行稳定标识计数器（进程内单调递增；``AnsiLine.sid`` 分配用）。
+_LINE_SID_COUNTER = _count(1)
 
 
 @dataclass(slots=True)
@@ -86,9 +90,14 @@ class AnsiLine:
     首行外的每行以此前缀起始、可用宽度相应扣减——用于「列表项 / 引用行 /
     容器缩进行」折行后续行与首行内容起始列对齐（见 ``wrap_line``）。空字符串
     表示无续行对齐需求（普通段落 / 代码等），不影响本行自身内容与宽度。
+
+    ``sid`` 为**行稳定标识**（进程内单调递增，创建时分配）——行对象跨帧复用
+    时标识不变，供 UI 层生成稳定的调和 key（流式预览的尾部滑窗场景：同一
+    源码行在窗口中的位置每帧变化，但行对象/标识稳定 → fiber 与换行缓存可
+    按 key/引用复用，避免每帧全量重渲染）。
     """
 
-    __slots__ = ("runs", "_esc_checked", "_w", "cont_prefix")
+    __slots__ = ("runs", "_esc_checked", "_w", "cont_prefix", "sid")
 
     def __init__(self, runs: list[Run] | None = None,
                  cont_prefix: str = "") -> None:
@@ -100,6 +109,8 @@ class AnsiLine:
         self._w = -1
         # 续行前缀（悬挂缩进）；仅 ``wrap_line`` 折行时消费。
         self.cont_prefix = cont_prefix
+        # 行稳定标识（跨帧复用不变；见类 docstring）。
+        self.sid = next(_LINE_SID_COUNTER)
 
     @classmethod
     def of(cls, text: str, style: Any = None) -> "AnsiLine":

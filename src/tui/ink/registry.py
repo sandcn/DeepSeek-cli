@@ -34,6 +34,7 @@ _ABSENT = object()
 #: (tag, measure 点分引用, paint 点分引用)
 _BUILTIN_SPECS: Tuple[Tuple[str, str, str], ...] = (
     ("static-lines", "src.tui.ink.widgets.staticlines:_measure", "src.tui.ink.widgets.staticlines:_paint"),
+    ("live-lines", "src.tui.ink.widgets.livelines:_measure", "src.tui.ink.widgets.livelines:_paint"),
 )
 
 _builtin_specs: Dict[str, Tuple[str, str]] = {

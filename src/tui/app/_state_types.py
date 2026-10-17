@@ -111,6 +111,11 @@ class ChatBlock:
     #: 跨桶复用（标题行状态图标色动态，独立重建）。frame_cache 同桶快速路径
     #: miss（跨桶）时兜底复用内容行，TEXT ``_wrap_cache`` 命中。
     _tool_card_body_lines_cache: tuple | None = None
+    #: 开放块（content/reasoning）行 TEXT 元素的行级复用缓存（
+    #: ``chat_view._OpenChildrenCache``）——流式每帧重建的行 Element 中，内容
+    #: 未变的历史行按 ``runs`` 身份复用同一 Element 对象（免 ``h()`` 构造 +
+    #: 调和/测量/换行缓存 miss）。活动行（末行，逐帧变化 + spinner）不缓存。
+    _open_children_cache: object | None = None
 
 
 @dataclass

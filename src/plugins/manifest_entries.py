@@ -639,6 +639,8 @@ PRESENTATION_DATA_ENTRIES = [
 HOST_ENTRIES = [
     {"id": "host_static_lines", "plugin": "src.plugins.host_entries:apply_host",
      "config": {"id": "static-lines"}},
+    {"id": "host_live_lines", "plugin": "src.plugins.host_entries:apply_host",
+     "config": {"id": "live-lines"}},
 ]
 
 # ── 补全提供者条目（每个内置提供者一个独立插件条目） ──────────

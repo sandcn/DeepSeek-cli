@@ -487,48 +487,65 @@ def _measure_text(
         else:
             if styled is not None:
                 runs = list(styled)
-                # BUG-T1：稳定样式指纹（值驱动），替代 id() 对象身份——
-                #   id() 在对象 GC 后可能复用导致错误缓存命中/未命中
-                #   注意：style 可为 None（无样式 run）→ 记 None（hashable 常量）
-                style_fp = tuple(
-                    style_fingerprint(r.style) if r.style is not None else None
-                    for r in runs
-                )
                 ref = styled
             else:
                 runs = [StyledRun(text, style)] if text else []
-                style_fp = (style_fingerprint(style),) if style is not None else (None,)
                 ref = text
+            # ★ 性能（流式预览热路径）：先做**值比较**（长度短路 + 内容相等 +
+            #   宽度键相等）——内容完全一致时必定复用上次换行结果，无需计算
+            #   样式指纹（``style_fingerprint`` 逐 run 一次，长预览（200 行 ×
+            #   多 run）每帧可达 ~1ms）。值相等 ⇒ 指纹必然相等，短路严格等价。
+            #   仅值不等时才计算指纹（保留原有「同长元素替换」检测语义）。
             if (
                 cache is not None
-                # ★ P3-2 修复（review 方向）：值比较前加**长度快照短路**——
-                #   ``cache[0] == ref`` 对 styled 列表逐 run 比较（O(runs)），
-                #   长度不同直接 miss（O(1)）——styled 原地增删（测试契约）
-                #   必然先改长度；仅同长元素替换（罕见）才落到值比较。字符串
-                #   ref（styled is None 分支）len 同样 O(1) 短路。
                 and len(cache[0]) == len(ref)
                 and cache[0] == ref
                 and cache[1] == cache_wt
-                and cache[2] == style_fp
             ):
                 lines = cache[3]
             else:
-                if text_wrap in ("truncate", "truncate-end", "truncate-start", "truncate-middle"):
-                    # 单行截断：内容超宽 → 截断 + 省略号（位置随模式）；未超宽 → 原样单行
-                    if text_wrap == "truncate-start":
-                        lines = [Line(truncate_runs_start(runs, width))]
-                    elif text_wrap == "truncate-middle":
-                        lines = [Line(truncate_runs_middle(runs, width))]
-                    else:
-                        lines = [Line(truncate_runs_ellipsis(runs, width))]
-                elif text_wrap == "hard":
-                    # react-ink ``wrap="hard"``（方向 G）：字符级硬拆填满行宽
-                    lines = wrap_runs_by_width(runs, width, hard=True)
+                # BUG-T1：稳定样式指纹（值驱动），替代 id() 对象身份——
+                #   id() 在对象 GC 后可能复用导致错误缓存命中/未命中
+                #   注意：style 可为 None（无样式 run）→ 记 None（hashable 常量）
+                if styled is not None:
+                    style_fp = tuple(
+                        style_fingerprint(r.style) if r.style is not None else None
+                        for r in runs
+                    )
                 else:
-                    lines = wrap_runs_by_width(runs, width)
-                lines = _apply_text_align(lines, width, align)
-                # ★ BUG-35：写入时保存 styled 长度快照（原地修改检测基准）
-                fiber._wrap_cache = (ref, cache_wt, style_fp, lines, len(ref) if isinstance(ref, list) else 0)
+                    style_fp = (
+                        (style_fingerprint(style),) if style is not None else (None,)
+                    )
+                if (
+                    cache is not None
+                    # ★ P3-2 修复（review 方向）：值比较前加**长度快照短路**——
+                    #   ``cache[0] == ref`` 对 styled 列表逐 run 比较（O(runs)），
+                    #   长度不同直接 miss（O(1)）——styled 原地增删（测试契约）
+                    #   必然先改长度；仅同长元素替换（罕见）才落到值比较。字符串
+                    #   ref（styled is None 分支）len 同样 O(1) 短路。
+                    and len(cache[0]) == len(ref)
+                    and cache[0] == ref
+                    and cache[1] == cache_wt
+                    and cache[2] == style_fp
+                ):
+                    lines = cache[3]
+                else:
+                    if text_wrap in ("truncate", "truncate-end", "truncate-start", "truncate-middle"):
+                        # 单行截断：内容超宽 → 截断 + 省略号（位置随模式）；未超宽 → 原样单行
+                        if text_wrap == "truncate-start":
+                            lines = [Line(truncate_runs_start(runs, width))]
+                        elif text_wrap == "truncate-middle":
+                            lines = [Line(truncate_runs_middle(runs, width))]
+                        else:
+                            lines = [Line(truncate_runs_ellipsis(runs, width))]
+                    elif text_wrap == "hard":
+                        # react-ink ``wrap="hard"``（方向 G）：字符级硬拆填满行宽
+                        lines = wrap_runs_by_width(runs, width, hard=True)
+                    else:
+                        lines = wrap_runs_by_width(runs, width)
+                    lines = _apply_text_align(lines, width, align)
+                    # ★ BUG-35：写入时保存 styled 长度快照（原地修改检测基准）
+                    fiber._wrap_cache = (ref, cache_wt, style_fp, lines, len(ref) if isinstance(ref, list) else 0)
         fiber._wrapped_lines = lines  # 供 paint 复用（免二次包裹）
         # ★ 空 TEXT 高度修复（方向1）：``max(1, len(lines))`` 恒 ≥1——空文本
         #   （无 lines/runs/text）高度 1 会在文档中产生多余空行；改为纯内容

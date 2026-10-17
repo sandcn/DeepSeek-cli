@@ -24,6 +24,8 @@ from src.tui.app.model import _role_header_line
 from src.tui.app.toolcard import ToolCard
 from src.tui.core.style import Style
 from src.tui.ink import h, TEXT, StyledRun, StaticLines, use_memo, Column, FRAGMENT
+from src.tui.ink._runs_utils import wrap_runs_by_width
+from src.tui.ink.widgets.livelines import LiveLines
 from .subagent_panel import SubAgentCard
 # ★ P3-7：time_glow/_fx 模块顶部集中导入（_theme/_fx 仅依赖 core 层，无
 #   app 依赖，模块级导入无循环风险）——_ParseLine 自 app.py 迁入本模块后
@@ -159,7 +161,8 @@ def _attach_links(runs: list[StyledRun]) -> list[StyledRun]:
     return attach_links(runs)
 
 
-def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[StyledRun]]:
+def _block_styled_lines(block, start: int = 0, width: int = 0,
+                        with_ids: bool = False):
     """将块的行（从 start 起）转为 styled run 列表（块级样式叠加）。
 
     分支顺序：
@@ -175,6 +178,15 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
         block: 聊天块。
         start: 起始 AnsiLine 下标。
         width: 文档宽度（工具卡片宽度约束；调用方传 model.width）。
+        with_ids: True 时返回 ``(rows, ids)``——``ids`` 为每行的**稳定标识**
+            （源 ``AnsiLine.sid``；多行产出用 ``(sid, 子行号)``；冻结/工具
+            路径用固定前缀元组）。调用方据此生成稳定的调和 key：流式预览的
+            尾部滑窗每帧改变行的显示位置，但行对象标识不变 → fiber 与换行
+            缓存可按 key 复用（免每帧全量重渲染）。
+
+    Returns:
+        ``list[list[StyledRun]]``；``with_ids=True`` 时为
+        ``(rows, ids)`` 二元组。
     """
     kind = block.kind
     cache = getattr(block, "_cached_ink_lines", None)
@@ -195,7 +207,10 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
         #   >=0（live_start 初始为 committed_line_count，截断只增不减），
         #   max(0,...) 仅防御。
         offset = max(0, start - block.committed_line_count)
-        return [line.runs for line in cache[offset:]]
+        rows = [line.runs for line in cache[offset:]]
+        if with_ids:
+            return rows, [("f", offset + i) for i in range(len(rows))]
+        return rows
     if kind == "tool":
         # 开放工具卡：卡片行（live 仅 committed_line_count==0 发标题行——
         # 与 committed 首次提交互斥；start>0 已增量提交 → 仅主体行）。
@@ -203,7 +218,10 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
         #   用 ``h(ToolCard, ...)`` 组件渲染；本分支保留供冻结缓存测试
         #   （``_block_styled_lines`` 对关闭工具块复用冻结 runs）与外部调用面。
         from src.tui.app.toolcard import tool_card_lines
-        return tool_card_lines(block, width, start, None)
+        rows = tool_card_lines(block, width, start, None)
+        if with_ids:
+            return rows, [("t", i) for i in range(len(rows))]
+        return rows
     slice_lines = block.lines[start:]
     preview_lines = getattr(block, "preview_lines", None) or []
     # ★ 方向1（open 块 styled 引用缓存）：开放块行转换结果按**行对象**缓存于
@@ -217,6 +235,7 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
         open_cache = {}
         block._open_styled_cache = open_cache
     out: list[list[StyledRun]] = []
+    ids: list = []
     for line in slice_lines:
         runs = open_cache.get(line)
         if runs is None:
@@ -226,6 +245,8 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
                 runs = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING), r.link) for r in runs]
             open_cache[line] = runs
         out.append(runs)
+        if with_ids:
+            ids.append(line.sid)
     # 未闭合块预览行（preview_lines 每次整体替换）——与 committed 行同样按
     # 宽度预 wrap（同一 ``wrap_line`` 真源）：修复前预览行交给 ink 布局换行，
     # 同一内容在「预览→提交」过渡时换行点可能跳变（表格/框线错位）。
@@ -240,7 +261,39 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
         block._preview_styled_cache = pcache
     elif len(pcache) > _PREVIEW_STYLED_CACHE_MAX:
         pcache.clear()
-    for line in preview_lines:
+    # ★ 预览行列表级增量：流式预览每次 ``write`` 整体替换列表——
+    #   - 纯追加（以上一帧列表为前缀）：复用已处理行，只处理新增行；
+    #   - 头部滑窗（预览窗口达到上限后每帧右移）：复用重叠区间（旧活动行
+    #     不参与复用，其内容仍可能变化），只重新处理末行与新增行。
+    #   O(预览行数) 的全量样式转换降为 O(新增行)（长代码块/大表格/长段落
+    #   每帧省 ~0.2-0.3ms）。缓存挂在 block（随块 GC 释放）。
+    pc = getattr(block, "_preview_rows_cache", None)
+    preview_rows: list = []
+    preview_ids: list = []
+    spans: list = []
+    skip = 0
+    if pc is not None and pc[1] == width and len(pc) == 5:
+        prev_lines, prev_rows, prev_ids, prev_spans = pc[0], pc[2], pc[3], pc[4]
+        if prev_lines is preview_lines:
+            preview_rows, preview_ids, spans = prev_rows, prev_ids, prev_spans
+            skip = len(preview_lines)
+        elif (len(preview_lines) >= len(prev_lines)
+                and all(a is b for a, b in zip(prev_lines, preview_lines))):
+            preview_rows, preview_ids, spans = prev_rows, prev_ids, prev_spans
+            skip = len(prev_lines)
+        elif len(prev_lines) >= 2:
+            from src.renderer.ansi._line_match import sliding_drop
+
+            drop = sliding_drop(prev_lines, preview_lines, ignore_tail=True)
+            if drop > 0:
+                reuse_end = len(prev_lines) - 1  # 旧活动行（末行）不复用
+                drop_rows = sum(prev_spans[:drop])
+                keep_rows = sum(prev_spans[:reuse_end])
+                preview_rows = prev_rows[drop_rows:keep_rows]
+                preview_ids = prev_ids[drop_rows:keep_rows]
+                spans = prev_spans[drop:reuse_end]
+                skip = reuse_end
+    for line in preview_lines[skip:]:
         key = (line, width)
         entry = pcache.get(key)
         if entry is None:
@@ -258,7 +311,29 @@ def _block_styled_lines(block, start: int = 0, width: int = 0) -> list[list[Styl
                     runs = [StyledRun(r.text, (r.style or Style()).merge(_S_REASONING), r.link) for r in runs]
                 entry.append(runs)
             pcache[key] = entry
-        out.extend(entry)
+        preview_rows.extend(entry)
+        spans.append(len(entry))
+        # ids 始终维护（即使本次调用方不需要）——缓存跨调用共享：先以
+        # ``with_ids=False`` 构建（如外部测试/其它调用面）后，``with_ids=True``
+        # 的增量调用必须能看到完整的行标识（否则增量分支跳过旧行 → ids 缺失）。
+        if len(entry) == 1:
+            preview_ids.append(line.sid)
+        else:
+            preview_ids.extend((line.sid, k) for k in range(len(entry)))
+    block._preview_rows_cache = (
+        preview_lines, width, preview_rows, preview_ids, spans,
+    )
+    if not out:
+        # 无已提交行（代码块/表格/长段落预览的常见形态）：直接复用预览列表
+        # （同一对象 → 上层整帧缓存/行组缓存命中）
+        out = preview_rows
+        if with_ids:
+            return out, preview_ids
+        return out
+    out.extend(preview_rows)
+    if with_ids:
+        ids.extend(preview_ids)
+        return out, ids
     return out
 
 
@@ -303,6 +378,102 @@ def _with_stream_indicator(styled: list, width: int, sp: str) -> list:
     return runs
 
 
+class _OpenChildrenCache:
+    """开放块稳定行的**行级 Line 组缓存**（流式每帧零重排版）。
+
+    流式开放块（content/reasoning）的未提交尾/预览行每帧都要重新构建
+    children——长段落/代码块/表格的预览可达 ``_LIVE_TAIL_LINES``（64）/
+    ``_PREVIEW_MAX_LINES``（200）行。逐行 ``h(TEXT)`` 会让调和/测量/绘制
+    每帧遍历 O(行数) 个 fiber（长代码块/大表格流式实测 ~3ms/帧）。本缓存
+    做两件事：
+
+      1. 按「行稳定标识（``AnsiLine.sid``）」缓存每行的**换行结果**
+         （``tuple[Line, ...]``，宽度变化时重建）——预览窗口每帧整体滑动
+         （行位置变化）时，同一源码行的 Line 对象跨帧复用，行级 diff 直接
+         身份短路；
+      2. 缓存整段稳定行的**列表对象**（顺序未变时返回同一 list）——批量
+         宿主 ``LiveLines`` 的 props 引用稳定 → 调和器 props 恒等快路径。
+
+    稳定行经 ``LiveLines``（批量 host，单 fiber）一次发射；活动行（末行，
+    内容逐帧变化 + spinner）作为独立 TEXT。缓存键 ``(live_start, width,
+    block_idx)`` 变化时整体重置；块提交/冻结时由 ``AppModel`` 显式置 None
+    （与 ``_open_styled_cache`` 同生命周期）。
+    """
+
+    __slots__ = (
+        "key", "groups", "group_src", "head_key", "head_element",
+        "_lines_order", "_lines_obj", "_stable_src",
+        "_full_key", "_full_children",
+    )
+
+    def __init__(self) -> None:
+        self.key: tuple | None = None
+        #: 行标识 → 换行后的 Line 组
+        self.groups: dict = {}
+        #: 行标识 → (runs 引用, width)（判断是否需要重排版）
+        self.group_src: dict = {}
+        #: 省略提示行的 omitted 值（None=无提示行）与对应 Element
+        self.head_key: object = None
+        self.head_element: object = None
+        #: 稳定行顺序（行标识元组）与列表对象缓存
+        self._lines_order: tuple | None = None
+        self._lines_obj: list | None = None
+        #: 稳定行增量构建缓存（``(rows, ids, stable_count, width, block_idx,
+        #: live_start, order, stable_lines)``）——行列表为纯追加（同一列表 /
+        #: 同一 ids 对象）时只处理新增行（流式每帧 O(新增) 而非 O(预览行数)）。
+        self._stable_src: object = None
+        #: 整帧 children 缓存（``(行数据, 预览引用, 宽度, 起始行, 块索引)`` →
+        #: children 元组）——无活动行（如代码块/表格预览，行全在预览缓冲）
+        #: 且输入引用未变的帧直接复用，免 O(行数) 的拼接与元素组装。
+        self._full_key: object = None
+        self._full_children: object = None
+
+    def reset(self, key: tuple) -> None:
+        """切换块/宽度/起始行：清空全部缓存（行 key 空间变化）。"""
+        self.key = key
+        self.groups = {}
+        self.group_src = {}
+        self.head_key = None
+        self.head_element = None
+        self._lines_order = None
+        self._lines_obj = None
+        self._stable_src = None
+        self._full_key = None
+        self._full_children = None
+
+    def prune(self, keep: set) -> None:
+        """丢弃不在当前窗口内的行（防滑窗场景 dict 无界增长）。"""
+        self.groups = {k: v for k, v in self.groups.items() if k in keep}
+        self.group_src = {k: v for k, v in self.group_src.items() if k in keep}
+
+    def line_group(self, line_id, runs: list, width: int) -> tuple:
+        """取（或排版）指定行的 Line 组（runs 引用 + 宽度未变则复用）。"""
+        src = self.group_src.get(line_id)
+        if src is not None and src[0] is runs and src[1] == width:
+            return self.groups[line_id]
+        group = tuple(wrap_runs_by_width(runs, width))
+        self.groups[line_id] = group
+        self.group_src[line_id] = (runs, width)
+        return group
+
+    def stable_lines(self, order: tuple, lines: list) -> list:
+        """稳定行列表（顺序未变时返回同一 list → props 引用稳定）。"""
+        if self._lines_obj is not None and self._lines_order == order:
+            return self._lines_obj
+        self._lines_order = order
+        self._lines_obj = lines
+        return lines
+
+    def omitted(self, omitted: int, build) -> object:
+        """取（或构造）截断提示行 Element（``omitted`` 值变化时重建）。"""
+        if self.head_key == omitted and self.head_element is not None:
+            return self.head_element
+        element = build()
+        self.head_key = omitted
+        self.head_element = element
+        return element
+
+
 def _build_open_children(
     block, live_start: int, width: int, block_idx: int,
     is_live_content: bool, sp: str,
@@ -314,6 +485,12 @@ def _build_open_children(
     BEAUTY-32：live content 时最后一行经 ``_with_stream_indicator`` 追加
     spinner（截断防溢出）。
 
+    ★ 行级 Element 复用（``_OpenChildrenCache``）：use_memo 在流式推进帧
+    （每次 write 行数/预览变化）必然 miss，若逐行重建 Element，长未提交尾
+    （最多 ``_LIVE_TAIL_LINES``/``_PREVIEW_MAX_LINES`` 行）每帧 O(行数)
+    构造 + 调和——历史行内容其实未变。按 runs 身份复用后，流式帧只构造
+    新增行与活动行（O(1)），无新增内容帧（spinner 推进）仅重建活动行。
+
     ★ P1（review）：被未关闭块夹住的开放块无法增量提交（``commit_open_block``
     的连续提交窗口约束——低层顺序不变量：``committed_lines`` 只按块顺序追加，
     乱序提交会致内容交错），未提交尾随流式增长，上层仅渲染最后
@@ -322,30 +499,115 @@ def _build_open_children(
     过高且有数据交错回归风险，故在**上层提供可感知降级**：截断时插入
     「中间 N 行省略（稍后显示）」提示行，避免误判内容丢失。
     """
-    rows = _block_styled_lines(block, live_start, width)
+    cache = getattr(block, "_open_children_cache", None)
+    if not isinstance(cache, _OpenChildrenCache):
+        cache = _OpenChildrenCache()
+        block._open_children_cache = cache
+    cache_key = (live_start, width, block_idx)
+    if cache.key != cache_key:
+        cache.reset(cache_key)
+    # ★ 整帧复用（无活动行场景）：代码块/表格等预览块的行全部位于预览缓冲
+    #   （``block.lines`` 为空，``is_live_content`` 为 False，无 spinner 行）
+    #   ——行数据引用未变的帧直接返回上一次 children 元组（FRAGMENT 子树据此
+    #   bailout）。``preview_lines`` 由 ``take_preview_lines`` 保证「内容相同 →
+    #   同一列表对象」，故**引用**相等即内容相等（不比较列表内容，避免 O(行数)
+    #   的逐项比较）。流式每帧新增内容时引用变化 → 正常重建。
+    preview_ref = getattr(block, "preview_lines", None) or []
+    full_key = None
+    if not is_live_content:
+        full_key = (
+            block.lines, len(block.lines), block.committed_line_count,
+            preview_ref, width, block_idx, live_start,
+        )
+        prev = cache._full_key
+        if (
+            cache._full_children is not None
+            and prev is not None
+            and prev[0] is full_key[0]
+            and prev[1] == full_key[1]
+            and prev[2] == full_key[2]
+            and prev[3] is full_key[3]
+            and prev[4] == full_key[4]
+            and prev[5] == full_key[5]
+            and prev[6] == full_key[6]
+        ):
+            return cache._full_children
+    rows, ids = _block_styled_lines(block, live_start, width, with_ids=True)
     n_rows = len(rows)
-    head: tuple = ()
+    children: list = []
     omitted = live_start - block.committed_line_count
     if omitted > 0:
-        from src.tui.ink.helpers import truncate_runs
-        text = f"\u2026 中间 {omitted} 行省略（本块结束后完整显示）"
-        runs = truncate_runs([StyledRun(text, Style(fg=238))], max(1, width))
-        head = (
-            h(TEXT, {
-                "key": f"chat-{block_idx}-omitted-{live_start}",
+        def _build_omitted() -> object:
+            from src.tui.ink.helpers import truncate_runs
+            text = f"\u2026 中间 {omitted} 行省略（本块结束后完整显示）"
+            runs = truncate_runs([StyledRun(text, Style(fg=238))], max(1, width))
+            return h(TEXT, {
+                "key": f"chat-{block_idx}-omitted",
                 "styled": list(runs),
-            }),
-        )
-    return head + tuple(
-        h(TEXT, {
-            "key": f"chat-{block_idx}-{live_start + i}",
+            })
+
+        children.append(cache.omitted(omitted, _build_omitted))
+    # 活动行（live content 末行）每帧重建（内容 + spinner 逐帧变化）；其余
+    # 行按**行标识**（``AnsiLine.sid``）复用 Element，并聚合为**单一
+    # FRAGMENT**——行集合/顺序未变的帧 children 元组保持同一对象，调和器整棵
+    # 纯 host 子树 bailout（免逐行调和）。尾部滑窗场景（代码/表格预览）行
+    # 位置每帧变化但行标识稳定：Element/换行缓存按标识命中（不再每帧全量
+    # 重换行）。行 key 用行标识（稳定，不随窗口滑动变化）。
+    stable_count = n_rows - 1 if (is_live_content and n_rows > 0) else n_rows
+    src = cache._stable_src
+    if (
+        src is not None
+        and src[0] is rows
+        and src[1] is ids
+        and src[3] == width
+        and src[4] == block_idx
+        and src[5] == live_start
+        and src[2] <= stable_count
+    ):
+        # 纯追加（同一 rows/ids 列表）：复用已构建的稳定行，只处理新增行
+        order = src[6]
+        stable_lines = src[7]
+        start = src[2]
+    else:
+        order = []
+        stable_lines = []
+        start = 0
+    for i in range(start, stable_count):
+        line_id = ids[i]
+        group = cache.line_group(line_id, rows[i], width)
+        if len(group) == 1:
+            stable_lines.append(group[0])
+            order.append(line_id)
+        else:
+            # 单行源文本被换行成多行（超宽未提交行）：子行标识用 (id, k)
+            for k, line in enumerate(group):
+                stable_lines.append(line)
+                order.append((line_id, k))
+    cache._stable_src = (
+        rows, ids, stable_count, width, block_idx, live_start, order,
+        stable_lines,
+    )
+    if order and len(cache.groups) > len(order) * 2 + 32:
+        cache.prune(set(order))
+    if stable_lines:
+        children.append(h(LiveLines, {
+            "key": f"chat-{block_idx}-live",
+            "lines": cache.stable_lines(tuple(order), stable_lines),
+        }))
+    for i in range(stable_count, n_rows):
+        runs = rows[i]
+        children.append(h(TEXT, {
+            "key": f"chat-{block_idx}-active-{i - stable_count}",
             "styled": (
                 _with_stream_indicator(runs, width, sp)
-                if is_live_content and i == n_rows - 1 else runs
+                if is_live_content else runs
             ),
-        })
-        for i, runs in enumerate(rows)
-    )
+        }))
+    result = tuple(children)
+    if full_key is not None:
+        cache._full_key = full_key
+        cache._full_children = result
+    return result
 
 
 def OpenBlockLines(props) -> object:
@@ -402,7 +664,12 @@ def OpenBlockLines(props) -> object:
         #   block.lines，行数 n 不变时（如段落持续追加但 preview 行数相同）
         #   预览内容变化须使 memo 失效重建（每次替换 preview_lines 为新列表
         #   对象，id 变化即失效）。
+        # ★ 行级 Element 复用：deps 补 ``is_live_content``——块关闭瞬间
+        #   （closed True/False 翻转）末行的 spinner 语义变化，若 n/lines
+        #   未变则 memo 会错误命中（最后一行残留 spinner）。该值仅在关闭
+        #   状态翻转时变化，不影响流式帧的缓存行为。
         (id(block), id(block.lines), n, live_start, width, block_idx, sp,
+         is_live_content,
          id(getattr(block, "preview_lines", None))),
     )
     return h(FRAGMENT, None, children)

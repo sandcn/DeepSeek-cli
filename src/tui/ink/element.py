@@ -142,8 +142,19 @@ def _normalize_children(children: Sequence[Any]) -> tuple[Element, ...]:
     if isinstance(children, tuple):
         if not children:
             return ()
-        if len(children) == 1 and isinstance(children[0], Element):
-            return (children[0],)
+        if len(children) == 1:
+            only = children[0]
+            if isinstance(only, Element):
+                return (only,)
+            # ★ 性能（流式帧 bailout）：单子级为「全 Element 的 tuple」时直接
+            #   返回**该 tuple 本身**（而非重新扁平化为新 tuple）——保留对象
+            #   身份，调和器据此判定「children 引用未变」并跳过纯 host 子树
+            #   调和（``h(FRAGMENT, None, children_tuple)`` 的常见形态：流式
+            #   开放块 200 行 TEXT）。语义与原扁平化路径完全一致（同一批
+            #   元素、同一顺序）。
+            if (isinstance(only, tuple) and only
+                    and all(isinstance(c, Element) for c in only)):
+                return only
     out: list[Element] = []
     for c in children:
         if c is None or c is True or c is False:

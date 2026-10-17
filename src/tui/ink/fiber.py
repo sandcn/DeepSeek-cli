@@ -354,6 +354,15 @@ class Fiber:
     #: 内容驱动/未知，百分比无效）。由 ``_layout_measure`` 布局子节点前写入
     #: （子节点复用时会覆盖或清零，防残留旧父高度）。
     _parent_avail_h: Any = None
+    #: 上次调和时使用的元素 children 元组（**引用**）——本次渲染传入同一
+    #: 元组且子树为纯 host 时跳过子调和（见 ``reconciler._begin_work``）。
+    #: 流式开放块的稳定预览行组件（``OpenBlockLines``）use_memo 命中帧返回
+    #: 同一 children 元组，据此省去数百行 TEXT 的逐行调和（无变化行零成本）。
+    _last_children: Any = None
+    #: 子树是否**仅由 host fiber 构成**（无函数组件——故无 hook/state/输入/
+    #: context 消费者）。``True`` 时子调和可安全跳过（React bailout 语义：
+    #: 子树没有待处理更新）。每次子调和后由 ``_begin_work`` 重新计算。
+    _host_only_subtree: bool = True
 
     # ── 派生属性 ──────────────────────────────────────
 

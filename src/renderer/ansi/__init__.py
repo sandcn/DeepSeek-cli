@@ -170,6 +170,10 @@ _PREVIEW_SUB_CACHE_MAX = 32
 #: 预览截断提示行（``dropped`` → AnsiLine）的缓存容量上限。
 _OMITTED_CACHE_MAX = 64
 
+#: 代码块预览装饰行（围栏/标题）对象缓存容量上限——行对象跨帧稳定是 UI 行级
+#: styled 缓存命中的前提（见 ``AnsiStreamRenderer._preview_fence_line``）。
+_PREVIEW_DECOR_CACHE_MAX = 64
+
 
 def _container_body_continuation(prev_body: list, body: list, delta: int) -> bool:
     """容器正文是否为「上一帧正文的继续」（追加 / 截断滑窗推进）。
@@ -449,6 +453,18 @@ class AnsiStreamRenderer:
         self._list_block_preview_rows: list[AnsiLine] = []
         # 预览截断提示行缓存（``dropped`` → AnsiLine；见 ``_omitted_line``）。
         self._omitted_cache: dict = {}
+        # ★ 代码块预览「装饰行」对象缓存（lang/title/关闭围栏 → AnsiLine）：
+        #   预览行对象跨帧稳定是 UI 行级 styled 缓存（``_preview_styled_cache``
+        #   以行对象身份为键）命中的前提。修复前 ``_code_preview_output`` 每帧
+        #   调用 ``render_fence_line`` / ``render_title_line`` /
+        #   ``render_omitted_line`` / ``render_close_fence_line`` 新建行对象：
+        #   UI 侧缓存键每帧不同 → 缓存条目持续增长并触发整体清空 → 历史代码
+        #   行的 styled/wrap 缓存全部失效 → 长代码块流式每帧重做 O(预览行数)
+        #   的样式转换与换行（200 行实测 ~15ms/帧）。装饰行内容只取决于
+        #   lang/title/omitted，按值缓存后行对象跨帧复用（只读，安全）。
+        self._preview_fence_cache: dict = {}
+        self._preview_title_cache: dict = {}
+        self._preview_close_fence: AnsiLine | None = None
         # 代码块预览输出列表缓存（结构未变帧复用，见 ``_code_preview_output``）。
         self._code_preview_version = 0
         self._code_preview_out_key: tuple | None = None
@@ -1797,7 +1813,6 @@ class AnsiStreamRenderer:
         免每帧对最多 200 行做尾部切片与列表重建，同时让 TUI 预览快照引用
         稳定（``take_preview_lines`` 同一对象 → use_memo 命中）。
         """
-        from . import code as _code
         from .._block_parser import RegexFreeBlockParser
 
         limit = RegexFreeBlockParser._PREVIEW_MAX_LINES
@@ -1811,16 +1826,51 @@ class AnsiStreamRenderer:
         if not skip:
             # 打开围栏/标题已随首段提交时不重复
             if title:
-                out.append(_code.render_title_line(title))
-            out.append(_code.render_fence_line(lang))
+                out.append(self._preview_title_line(title))
+            out.append(self._preview_fence_line(lang))
         if omitted:
-            out.append(_code.render_omitted_line(omitted))
+            # ★ 复用按省略数缓存的行对象（与 UI 行级 styled 缓存键口径一致）
+            out.append(self._omitted_line(omitted))
         out.extend(rows[-limit:] if omitted else rows)
         if closed:
-            out.append(_code.render_close_fence_line())
+            out.append(self._preview_close_fence_line())
         self._code_preview_out_key = out_key
         self._code_preview_out = out
         return out
+
+    def _preview_fence_line(self, lang: str) -> AnsiLine:
+        """代码块预览打开围栏行（按 lang 缓存行对象——跨帧身份稳定）。"""
+        line = self._preview_fence_cache.get(lang)
+        if line is None:
+            from . import code as _code
+
+            if len(self._preview_fence_cache) >= _PREVIEW_DECOR_CACHE_MAX:
+                self._preview_fence_cache.clear()
+            line = _code.render_fence_line(lang)
+            self._preview_fence_cache[lang] = line
+        return line
+
+    def _preview_title_line(self, title: str) -> AnsiLine:
+        """代码块预览标题行（按 title 缓存行对象——跨帧身份稳定）。"""
+        line = self._preview_title_cache.get(title)
+        if line is None:
+            from . import code as _code
+
+            if len(self._preview_title_cache) >= _PREVIEW_DECOR_CACHE_MAX:
+                self._preview_title_cache.clear()
+            line = _code.render_title_line(title)
+            self._preview_title_cache[title] = line
+        return line
+
+    def _preview_close_fence_line(self) -> AnsiLine:
+        """代码块预览关闭围栏行（单例——跨帧身份稳定）。"""
+        line = self._preview_close_fence
+        if line is None:
+            from . import code as _code
+
+            line = _code.render_close_fence_line()
+            self._preview_close_fence = line
+        return line
 
     def take_preview_lines(self) -> list[AnsiLine]:
         """返回当前未闭合块预览行（全量，不消费——UI 每次整体替换）。

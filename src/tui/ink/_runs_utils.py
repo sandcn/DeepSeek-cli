@@ -112,6 +112,31 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
         if cur.runs:
             lines_flat.append(cur)
         return lines_flat
+    # ★ 性能（通用单行快路径）：所有 run 无换行且总显示宽度不超过 ``max_width``
+    #   ——无需换行/词边界计算，直接返回单行（O(runs) 的 ``run.width`` 求和，
+    #   免逐字符展开 + ``wcswidth_simple`` 扫描）。这是**流式预览行的绝对
+    #   多数形态**（代码行/表格单元格/普通段落行通常远窄于终端宽度）：修复前
+    #   通用路径对每个字符构造 tuple 并测宽，含 CJK 的多 run 行（代码注释 /
+    #   中英混排）每行 ~0.09ms；120 行预览每帧全量重换行时单帧 >10ms
+    #   （长代码块/大表格流式卡顿）。不超宽时硬拆/词边界均不触发，产出与
+    #   通用路径严格等价（单行、run 顺序与样式不变）。
+    if runs:
+        total = 0
+        fit = True
+        has_text = False
+        for run in runs:
+            text = run.text
+            if "\n" in text:
+                fit = False
+                break
+            if text:
+                has_text = True
+            total += run.width
+            if total > max_width:
+                fit = False
+                break
+        if fit and has_text:
+            return [Line(list(runs))]
     # ★ 性能（纯 ASCII 批量快路径，PERF-22）：单 run 且文本为可打印 ASCII
     #   （0x21-0x7E，无空格/换行/控制字符）时——每字符宽度恒 1、无词边界
     #   断点（无空格）、无强制换行（无 ``\n``）→ 按 max_width 直接字符串

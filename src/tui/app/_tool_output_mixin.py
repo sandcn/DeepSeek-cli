@@ -602,6 +602,7 @@ class _ToolOutputMixin:
         #   行渲染时跳过），``committed_line_count`` 计数保证不重复追加已提交行。
         block._cached_ink_lines = self._block_to_ink_lines(block, block.committed_line_count)
         block._open_styled_cache = None  # 冻结后开放缓存不再需要
+        block._open_children_cache = None  # 行 TEXT Element 复用缓存（同生命周期）
         self.commit_block(len(self.blocks) - 1)
         # ★ PERF-6：清理工具卡缓存须在 ``commit_block`` **之后**——commit_block
         #   内部 ``_block_to_ink_lines``（tool 分支）会经 ``tool_card_lines``

@@ -87,6 +87,20 @@ from src.tui.app.toolcard import tool_card_lines
 
 _logger = logging.getLogger(__name__)
 
+
+def _release_open_caches(block) -> None:
+    """释放开放块的行渲染缓存（块提交/冻结/重渲染后不再需要）。
+
+    两个缓存同生命周期：
+      - ``_open_styled_cache``：AnsiLine → StyledRun 转换结果（``_block_styled_lines``）；
+      - ``_open_children_cache``：行 TEXT Element 的行级复用缓存（
+        ``chat_view._OpenChildrenCache``，流式帧零重建）。
+    统一释放避免新增缓存点时漏改（大会话下二者都持有块内全部行引用）。
+    """
+    block._open_styled_cache = None
+    block._open_children_cache = None
+
+
 #: 「前向引用」结构特征（块源文本 → 关闭时需按完整源整块重渲染）。
 #: 这些结构的内容取决于标记**之后**的文本，流式增量渲染只能看到标记处
 #: 已解析的部分（目录不完整 / 参考式链接未解析）：
@@ -517,7 +531,7 @@ class AppModel(_ToolOutputMixin):
                 # ★ 方向1（内存回收）：冻结后开放 styled 缓存不再被
                 #   ``_block_styled_lines`` 使用（改走冻结缓存）——释放引用防
                 #   大会话累积（dict 持有全部已转换行引用）。
-                block._open_styled_cache = None
+                _release_open_caches(block)
                 block._tool_card_body_cache = None  # PERF-6：冻结后释放
                 block._tool_card_frame_cache = None  # PERF-6：冻结后释放
                 block._tool_card_body_lines_cache = None  # PERF-6b：冻结后释放
@@ -525,7 +539,7 @@ class AppModel(_ToolOutputMixin):
                 # ★ BUG-62：reasoning 不冻结（冻结缓存无消费方）——仅释放
                 #   open 缓存防大会话内存累积（_block_styled_lines 对
                 #   reasoning 保持即时 fg=242 路径）。
-                block._open_styled_cache = None
+                _release_open_caches(block)
             self.committed_count += 1
 
     def _block_to_ink_lines(self, block, start: int = 0, stop=None):
@@ -738,7 +752,7 @@ class AppModel(_ToolOutputMixin):
         if rendered is None:
             return False
         block.lines, block.preview_lines = rendered
-        block._open_styled_cache = None
+        _release_open_caches(block)
         block._cached_ink_lines = None
         return True
 
@@ -766,7 +780,7 @@ class AppModel(_ToolOutputMixin):
             return False
         block.lines, block.preview_lines = rendered
         block.committed_line_count = len(block.lines)
-        block._open_styled_cache = None
+        _release_open_caches(block)
         block._cached_ink_lines = None
         return True
 
@@ -843,7 +857,7 @@ class AppModel(_ToolOutputMixin):
             for later in self.blocks[idx:]:
                 later.committed_line_count = 0
                 later._cached_ink_lines = None
-                later._open_styled_cache = None
+                _release_open_caches(later)
                 later._tool_card_body_cache = None
                 later._tool_card_frame_cache = None
                 later._tool_card_body_lines_cache = None
@@ -853,7 +867,7 @@ class AppModel(_ToolOutputMixin):
         block.lines = new_lines
         block.committed_line_count = 0
         block._cached_ink_lines = None
-        block._open_styled_cache = None
+        _release_open_caches(block)
         return True
 
     def _rerender_if_needed(self, block) -> bool:
@@ -874,7 +888,7 @@ class AppModel(_ToolOutputMixin):
             block._cached_ink_lines = self._block_to_ink_lines(
                 block, block.committed_line_count,
             )
-        block._open_styled_cache = None
+        _release_open_caches(block)
 
     # ── 推理/内容通道 ───────────────────────────────
 
@@ -954,7 +968,7 @@ class AppModel(_ToolOutputMixin):
                 self._finalize_closed_stream_block(block)
             else:
                 self._rerender_if_needed(block)
-                block._open_styled_cache = None  # 冻结后开放缓存不再需要
+                _release_open_caches(block)  # 冻结后开放缓存不再需要
             # ★ BUG-77（commit 范围）：提交到**块列表末尾**（而非仅本块索引）
             #   ——reasoning 关闭时其后可能存在**已关闭但未提交**的块（如
             #   上一轮遗留的工具卡 / content 流式期间先关闭的工具卡）。修复前

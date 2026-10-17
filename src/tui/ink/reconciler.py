@@ -733,6 +733,26 @@ class Reconciler:
             #   内置 host 成为 provider，须在本快路径补 ``contexts.clear()``。
             if not children and fiber.child is None and ftype in _BUILTIN_HOSTS:
                 fiber._host_ref = fiber.props.get("ref")
+                fiber._last_children = children
+                fiber._host_only_subtree = True
+                return
+            # ★ 性能（流式帧 bailout）：内置 host 的 children 元组**引用未变**
+            #   且子树仅含 host fiber 时跳过子调和——React bailout 语义：子树
+            #   没有 hook/state（纯 host），元素未变即子树无需更新。
+            #   典型场景：流式开放块的稳定预览行（``OpenBlockLines`` 的
+            #   FRAGMENT 下最多 200 行 TEXT）——use_memo 命中帧返回同一
+            #   children 元组，逐行 ``_set_props`` + ``_begin_work`` 全部省去
+            #   （长段落实测省 ~0.3ms/帧）；memo miss 帧（内容变化）仍正常
+            #   调和。内置 host 标签不可能是 context provider（见下方注释）；
+            #   纯 host 子树无 use_context 消费者 → 跳过不影响 context 语义。
+            if (
+                children
+                and fiber.child is not None
+                and fiber._last_children is children
+                and fiber._host_only_subtree
+                and ftype in _BUILTIN_HOSTS
+            ):
+                fiber._host_ref = fiber.props.get("ref")
                 return
             # ★ context provider：先重置 contexts（每次渲染不残留旧值），
             #   再按 host 标签匹配注册的 Context（INK-3）——value 写入
@@ -778,6 +798,22 @@ class Reconciler:
                 #   None`` 已保证旧子链非 None——删除内层重复 ``if fiber.child
                 #   is not None``（恒真）及过时 PERF-16 注释。
                 self._reconcile_children(fiber, [])
+            # ★ 子调和 bailout 状态维护（见本分支开头的跳过判定）：
+            #   ``_last_children`` 记录本次元素的 children 引用；
+            #   ``_host_only_subtree`` 由调和后的子链聚合（任一函数组件或
+            #   非纯 host 子树 → False）。跳过路径不更新（子树未变）。
+            fiber._last_children = children
+            fiber._host_only_subtree = self._host_only_children(fiber)
+
+    @staticmethod
+    def _host_only_children(fiber: Fiber) -> bool:
+        """子链是否仅由 host fiber 且各子树均为纯 host（无函数组件）。"""
+        child = fiber.child
+        while child is not None:
+            if child.is_function or not child._host_only_subtree:
+                return False
+            child = child.sibling
+        return True
 
     # ── ErrorBoundary（方向B 步骤9） ────────────────────
 
