@@ -46,6 +46,31 @@ def test_interrupt_and_retry(sm):
     assert sm.state is SessionState.RUNNING
 
 
+def test_run_round_after_completed_is_allowed(sm):
+    """回合正常完成后（状态停留 COMPLETED，尚未 save）可直接开始下一轮。
+
+    回归：start_round() 文档声明 IDLE/COMPLETED/INTERRUPTED → RUNNING，
+    但转换表只定义了 IDLE → RUNNING，导致下一条用户消息抛
+    InvalidTransitionError: 状态 'completed' 不允许操作 'run_round'。
+    """
+    sm.initialize()
+    sm.start_round()
+    sm.complete_round()
+    assert sm.state is SessionState.COMPLETED
+    sm.start_round()
+    assert sm.state is SessionState.RUNNING
+
+
+def test_run_round_after_interrupted_is_allowed(sm):
+    """中断后（状态停留 INTERRUPTED）用户直接发送新消息也能开始新一轮。"""
+    sm.initialize()
+    sm.start_round()
+    sm.interrupt()
+    assert sm.state is SessionState.INTERRUPTED
+    sm.start_round()
+    assert sm.state is SessionState.RUNNING
+
+
 def test_clear_from_idle(sm):
     sm.initialize()
     sm.clear()

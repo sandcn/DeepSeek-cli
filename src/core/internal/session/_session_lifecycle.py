@@ -68,8 +68,9 @@ def _force_state_recovery(session) -> None:
 
     修复：不再在第一个成功方法后立即返回，而是持续尝试直到达到 IDLE。
     例如 RUNNING → complete_round() → COMPLETED，此时需要额外调用 save()
-    才能回到 IDLE，否则 run_round 再次调用 start_round() 会因
-    (COMPLETED, "run_round") 不存在而抛出 InvalidTransitionError。
+    才能回到 IDLE。状态机虽已允许 COMPLETED/INTERRUPTED 直接 start_round
+    （连续对话的正常路径），但异常恢复仍必须回到 IDLE，避免残留的
+    中断/异常上下文影响下一轮。
     """
     current_state = session._state_machine.name
     if session._state_machine.is_(SessionState.IDLE, SessionState.INIT):

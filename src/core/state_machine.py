@@ -12,19 +12,19 @@
            │                            │ run_round()
            │                            ▼
            │                        ┌────────┐
-           │     retry()            │ RUNNING│
-           │ ←──────────────────────└───┬────┘
+           │     retry() /          │ RUNNING│
+           │     run_round()        └───┬────┘
            │                            │
            │                    ┌───────┴────────┐
            │                    │                │
            │                    ▼                ▼
            │              ┌──────────┐    ┌──────────┐
-           │              │COMPLETED │    │INTERRUPTED│
-           │              └────┬─────┘    └─────┬────┘
+           │   run_round()│COMPLETED │    │INTERRUPTED│ run_round()
+           │   retry()    └────┬─────┘    └─────┬────┘ retry()
            │                   │                │
-           │                   │ save()         │ resume / save
-           │                   ▼                │
-           │               ┌───────┐            │
+           │                   │ save()         │ save()
+           │                   ▼                ▼
+           │               ┌───────┐
            └──────────────→│  IDLE │←───────────┘
                             └───────┘
 """
@@ -76,11 +76,18 @@ _TRANSITIONS = types.MappingProxyType({
     (SessionState.COMPLETED, "save"): SessionState.IDLE,
     # COMPLETED → RUNNING (重试不受限)
     (SessionState.COMPLETED, "retry"): SessionState.RUNNING,
+    # COMPLETED → RUNNING (用户直接发送下一条消息开始新一轮)
+    #   ★ 回合结束后状态停留 COMPLETED，直到 30s 定时自动保存（或退出保存）
+    #     才经 save() 回到 IDLE；若此处不允许 run_round，用户紧接着输入
+    #     下一条消息会抛 InvalidTransitionError。
+    (SessionState.COMPLETED, "run_round"): SessionState.RUNNING,
 
     # INTERRUPTED → IDLE (保存后回到空闲)
     (SessionState.INTERRUPTED, "save"): SessionState.IDLE,
     # INTERRUPTED → RUNNING (重试/恢复)
     (SessionState.INTERRUPTED, "retry"): SessionState.RUNNING,
+    # INTERRUPTED → RUNNING (中断后用户直接发送新消息)
+    (SessionState.INTERRUPTED, "run_round"): SessionState.RUNNING,
 
     # IDLE → IDLE (保存本身不改变活跃状态)
     (SessionState.IDLE, "save"): SessionState.IDLE,
@@ -200,7 +207,7 @@ class SessionStateMachine:
         self.transition("save")
 
     def retry(self) -> None:
-        """重试 (COMPLETED/INTERRUPTED → RUNNING)"""
+        """重试 (IDLE/COMPLETED/INTERRUPTED → RUNNING)"""
         self.transition("retry")
 
     def clear(self) -> None:
