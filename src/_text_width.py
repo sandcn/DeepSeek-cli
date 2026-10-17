@@ -296,15 +296,22 @@ def _is_extend_cp(cp: int) -> bool:
     return _in_ranges_bisect(cp, ZERO_WIDTH_FLAT)
 
 
-def _has_grapheme_special(text: str) -> bool:
-    """文本是否含「必须按字形簇计算宽度」的码点（ZWJ / keycap / 肤色 / 标签）。
+#: 需要按字形簇整体处理的码点（C 级正则单趟判定）：
+#:   - ZWJ（U+200D）/ keycap 组合符（U+20E3）；
+#:   - Regional Indicator（国旗字母）：成对构成国旗（宽 2），拆开会变两个字母；
+#:   - 肤色修饰符（U+1F3FB-U+1F3FF）：附着在基 emoji 上，单独逐字符计宽为 2；
+#:   - 标签字符（U+E0020-U+E007F）：旗帜等标签序列。
+_GRAPHEME_SPECIAL_RE = re.compile(
+    r"[\u200d\u20e3\U0001F1E6-\U0001F1FF\U0001F3FB-\U0001F3FF\U000E0020-\U000E007F]"
+)
 
-    ZWJ / keycap 是低码点，单独用 ``in`` 判定；其余（肤色修饰符 / 标签字符）
-    均 >= U+1F3FB，用 C 级 ``max`` 一次判定，避免长 CJK 文本逐字符 Python循环。
-    """
-    if "\u200d" in text or "\u20e3" in text:
-        return True
-    return bool(text) and max(text) >= "\U0001F3FB"
+
+def _has_grapheme_special(text: str) -> bool:
+    """文本是否含「必须按字形簇计算宽度」的码点（ZWJ / keycap / 肤色 / 标签 / RI）。"""
+    if text.isascii():
+        # ASCII 文本（绝大多数热路径）：不含任何特殊码点，C 级单趟判定直接返回。
+        return False
+    return _GRAPHEME_SPECIAL_RE.search(text) is not None
 
 
 def grapheme_clusters(text: str):
@@ -339,6 +346,29 @@ def grapheme_clusters(text: str):
                         and ord(text[i]) != 0x200D:
                     i += 1
         yield text[start:i]
+
+
+def needs_grapheme_clusters(text: str) -> bool:
+    """文本是否含必须按字形簇整体处理的码点。
+
+    供换行/截断/绘制等布局路径选择「逐字符」快路径或「字形簇」原子路径：
+    ZWJ 序列、keycap、肤色修饰符、标签序列必须原子处理；不满足时逐字符
+    宽度求和与字形簇宽度一致（组合标记宽 0、国旗 RI 单字符宽 1 成对宽 2）。
+    """
+    return _has_grapheme_special(text)
+
+
+def grapheme_spans(text: str):
+    """按字形簇切分并返回 ``(start, end, cluster)``（字符索引区间，左闭右开）。
+
+    与 ``grapheme_clusters`` 同一实现（单一真源），额外携带字符偏移，供
+    需要保留样式/列位置信息的布局路径（换行、截断、画布绘制）使用。
+    """
+    pos = 0
+    for cluster in grapheme_clusters(text):
+        end = pos + len(cluster)
+        yield pos, end, cluster
+        pos = end
 
 
 def cluster_width(cluster: str) -> int:
@@ -503,6 +533,8 @@ __all__ = [
     "char_width",
     "string_width",
     "grapheme_clusters",
+    "grapheme_spans",
+    "needs_grapheme_clusters",
     "cluster_width",
     "zero_width_codepoints",
     "expand_tabs",

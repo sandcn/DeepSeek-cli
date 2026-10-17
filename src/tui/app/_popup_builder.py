@@ -178,7 +178,7 @@ def _highlight_line(line: Line, width: int, sel_bg: int) -> Line:
         for r in line.runs if r.text
     ]
     if width > 0:
-        used = sum(r.width for r in runs)
+        used = line.width
         if used < width:
             runs.append(StyledRun(" " * (width - used), bg))
     return Line(runs)

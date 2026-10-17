@@ -34,6 +34,9 @@ from src._text_width import (
     _build_flat_ranges,
     _in_ranges_bisect,
     char_width as _char_width_impl,
+    cluster_width as _cluster_width_impl,
+    grapheme_spans as _grapheme_spans_impl,
+    needs_grapheme_clusters as _needs_grapheme_clusters_impl,
     string_width as _string_width_impl,
     skip_ansi_at as _skip_ansi_at,
 )
@@ -146,6 +149,27 @@ def truncate_width(s: str, max_w: int) -> str:
         return ""
     if s.isascii() and s.isprintable():
         return s if len(s) <= max_w else s[:max_w]
+    if _needs_grapheme_clusters_impl(s):
+        # 字形簇原子截断：ZWJ / keycap / 肤色 / 标签序列不拦腰拆分
+        # （逐码点会切出悬空 ZWJ、把肤色修饰符拆到被截断部分之后，
+        # 且 keycap 逐字符求和宽度 1 < 实际 2 → 截断结果超宽）。
+        w = 0
+        out: list[str] = []
+        skip_until = 0
+        for start, _end, cluster in _grapheme_spans_impl(s):
+            if start < skip_until:
+                continue
+            if cluster == "\x1b":
+                j = _skip_ansi_at(s, start)
+                out.append(s[start:j])
+                skip_until = j
+                continue
+            cw = _cluster_width_impl(cluster)
+            if w + cw > max_w:
+                break
+            out.append(cluster)
+            w += cw
+        return "".join(out)
     w = 0
     out = []
     i = 0

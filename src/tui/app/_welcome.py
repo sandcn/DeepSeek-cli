@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import os
 import time
-import unicodedata
 
+from src._text_width import cluster_width, grapheme_clusters, needs_grapheme_clusters
+from src.tui._width import wcswidth_simple
 from src.tui.core.style import Style
 
 __all__ = [
@@ -69,11 +70,8 @@ _GIT_CACHE: list = ["", 0.0, ""]
 
 
 def display_width(text: str) -> int:
-    """文本显示宽度（东亚宽/全角字符按 2 列计）。"""
-    width = 0
-    for ch in text:
-        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
-    return width
+    """文本显示宽度（CJK/emoji/组合标记统一走 ``wcswidth_simple`` 单一真源）。"""
+    return wcswidth_simple(text)
 
 
 def _seg_width(segments) -> int:
@@ -91,8 +89,9 @@ def truncate_segments(segments: list, max_width: int) -> list:
         if not text:
             continue
         buf = []
-        for ch in text:
-            w = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        special = needs_grapheme_clusters(text)
+        for ch in (grapheme_clusters(text) if special else text):
+            w = cluster_width(ch) if special else wcswidth_simple(ch)
             if used + w > max_width:
                 break
             buf.append(ch)

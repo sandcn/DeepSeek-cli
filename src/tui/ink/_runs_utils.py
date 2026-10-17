@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from src._text_width import cluster_width, grapheme_spans, needs_grapheme_clusters
 from src.tui._width import wcswidth_simple
 from src.tui.core.style import Style
 from .output import StyledRun, Line
@@ -38,12 +39,8 @@ def _span_slices(runs: list[StyledRun]):
     return "".join(parts), (span_start, span_end, span_style, span_link)
 
 
-def _emit_span_range(line: Line, text: str, spans, start: int, end: int) -> None:
-    """把拼接文本 ``[start, end)`` 按片段边界切分后追加到 ``line``。
-
-    二分定位首个覆盖 start 的片段（避免逐行全量扫描 → O(lines × spans)
-    退化），再沿实际重叠片段追加（样式 / 链接随片段保留）。
-    """
+def _collect_span_range(text: str, spans, start: int, end: int) -> list[StyledRun]:
+    """把拼接文本 ``[start, end)`` 按片段边界切分为 StyledRun 列表。"""
     from bisect import bisect_right
 
     span_start, span_end, span_style, span_link = spans
@@ -51,6 +48,7 @@ def _emit_span_range(line: Line, text: str, spans, start: int, end: int) -> None
     idx = bisect_right(span_start, start) - 1
     if idx < 0:
         idx = 0
+    out: list[StyledRun] = []
     while idx < n_spans:
         a = span_start[idx]
         if a >= end:
@@ -59,8 +57,25 @@ def _emit_span_range(line: Line, text: str, spans, start: int, end: int) -> None
         lo = a if a > start else start
         hi = b if b < end else end
         if lo < hi:
-            line.append(text[lo:hi], span_style[idx], span_link[idx])
+            out.append(StyledRun(text[lo:hi], span_style[idx], span_link[idx]))
         idx += 1
+    return out
+
+
+def _iter_cluster_spans(text: str):
+    """逐个字形簇返回 ``(start, end, cluster, width)``（字符索引左闭右开）。"""
+    for start, end, cluster in grapheme_spans(text):
+        yield start, end, cluster, cluster_width(cluster)
+
+
+def _emit_span_range(line: Line, text: str, spans, start: int, end: int) -> None:
+    """把拼接文本 ``[start, end)`` 按片段边界切分后追加到 ``line``。
+
+    二分定位首个覆盖 start 的片段（避免逐行全量扫描 → O(lines × spans)
+    退化），再沿实际重叠片段追加（样式 / 链接随片段保留）。
+    """
+    for run in _collect_span_range(text, spans, start, end):
+        line.append(run.text, run.style, run.link)
 
 
 def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False) -> list[Line]:
@@ -124,6 +139,7 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
         total = 0
         fit = True
         has_text = False
+        special_runs = False
         for run in runs:
             text = run.text
             if "\n" in text:
@@ -131,10 +147,19 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
                 break
             if text:
                 has_text = True
+            if needs_grapheme_clusters(text):
+                special_runs = True
             total += run.width
             if total > max_width:
                 fit = False
                 break
+        if fit and special_runs:
+            # run 边界可能落在同一字形簇内（base 与 skin tone / ZWJ /
+            # keycap 被拆成不同 run），逐 run 宽度之和不等于实际显示宽度
+            # ——按拼接文本重测。
+            total = wcswidth_simple("".join(run.text for run in runs))
+            if total > max_width:
+                fit = False
         if fit and has_text:
             return [Line(list(runs))]
     # ★ 性能（纯 ASCII 批量快路径，PERF-22）：单 run 且文本为可打印 ASCII
@@ -203,7 +228,9 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
             continue
         n_chars += len(t)
         total_w += r.width
-    if n_chars and total_w == 2 * n_chars:
+    if n_chars and total_w == 2 * n_chars and not needs_grapheme_clusters(
+        "".join(r.text for r in runs)
+    ):
         per_line = max_width // 2
         if per_line > 0:
             text2, spans2 = _span_slices(runs)
@@ -228,6 +255,20 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
     n = len(items)
     if n == 0:
         return []
+    # ★ 字形簇原子换行：ZWJ / keycap / 肤色 / 标签序列必须整体放入同一行
+    #   （逐码点会拆散组合 emoji，且逐字符宽度求和不等于终端实际列宽）。
+    #   仅在特殊码点存在时预计算簇长/簇宽（普通文本保持零额外开销）。
+    special = needs_grapheme_clusters("".join(ch for ch, _st, _lk in items))
+    cluster_lens = [1] * n
+    cluster_widths = [0] * n
+    if special:
+        plain = "".join(ch for ch, _st, _lk in items)
+        for c_start, c_end, cluster in grapheme_spans(plain):
+            cw = cluster_width(cluster)
+            length = c_end - c_start
+            for k in range(c_start, c_end):
+                cluster_lens[k] = length
+                cluster_widths[k] = cw
     lines: list[Line] = []
     i = 0
     while i < n:
@@ -246,11 +287,16 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
             #   "brown" 被拆成 " brow"/"n"）。
             if ch == " ":
                 last_space = j
-            cw = wcswidth_simple(ch)
+            if special:
+                cw = cluster_widths[j]
+                advance = cluster_lens[j]
+            else:
+                cw = wcswidth_simple(ch)
+                advance = 1
             if width + cw > max_width and j > i:
                 break
             width += cw
-            j += 1
+            j += advance
         # ★ P1（review 修复，行宽不变量）：行首单字符超宽（``max_width`` < 该字符
         #   显示宽度，如 width=1 遇 CJK 宽 2）——内层循环的 ``and j > i`` 使首字符
         #   被无条件接受 → 产出**超宽行**（``Line.width`` 2 > max_width 1），违反
@@ -260,8 +306,9 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
         #   不可宽：放不下的字符跳过，不产生超宽行」语义，本函数对齐：跳过该字符
         #   （每轮至少推进 1 字符，无死循环），不为它产出超宽行（该字符无法在给定
         #   宽度内呈现，丢弃优于破坏行宽不变量）。
-        if j == i + 1 and width > max_width:
-            i += 1
+        step = cluster_lens[i] if special else 1
+        if j == i + step and width > max_width:
+            i += step
             continue
         if j == i:
             # ★ P3（review）：此处仅剩「行首强制换行」一种可能——修复前还有
@@ -341,6 +388,25 @@ def _first_logical_line_runs(runs: list[StyledRun]) -> list[StyledRun]:
     return out
 
 
+def _truncate_runs_budget(runs: list[StyledRun], budget: int) -> list[StyledRun]:
+    """按显示宽度预算截断 runs（字形簇原子，跨 run 样式保持）。"""
+    if budget <= 0 or not runs:
+        return []
+    text, spans = _span_slices(runs)
+    width = 0
+    end = 0
+    for _start, c_end, _cluster, cw in _iter_cluster_spans(text):
+        if width + cw > budget:
+            break
+        width += cw
+        end = c_end
+    if end <= 0:
+        return []
+    # 一次性按原样式片段切片（不逐簇生成 run——同一样式应保持合并，
+    # 避免每个字符一个 StyledRun 导致 ANSI 逐字符重置、文本子串断言失效）。
+    return _collect_span_range(text, spans, 0, end)
+
+
 def truncate_runs(runs: list[StyledRun], max_width: int) -> list[StyledRun]:
     """将 StyledRun 序列截断至 max_width 显示宽度（保持样式）。
 
@@ -359,8 +425,11 @@ def truncate_runs(runs: list[StyledRun], max_width: int) -> list[StyledRun]:
     #   ``wcswidth_simple`` 判定与 ``buf += ch`` 拼接。修复前对每个 live 行
     #   （绝大多数不超宽）也走逐字符循环（行宽 ~100 → 每帧上百次宽度查询 ×
     #   每次流式 write 的最后一行）。
-    if sum(r.width for r in runs) <= max_width:
+    if _runs_total_width(runs) <= max_width:
         return list(runs)
+    if needs_grapheme_clusters("".join(r.text for r in runs)):
+        # 字形簇原子截断：不把 ZWJ / keycap / 肤色序列切成两半。
+        return _truncate_runs_budget(runs, max_width)
     out: list[StyledRun] = []
     width = 0
     for run in runs:
@@ -401,11 +470,15 @@ def truncate_runs_ellipsis(runs: list[StyledRun], max_width: int) -> list[Styled
     if max_width <= 0:
         return []
     runs = _first_logical_line_runs(runs)
-    total = 0
-    for run in runs:
-        total += run.width
-    if total <= max_width:
+    if _runs_total_width(runs) <= max_width:
         return list(runs)
+    if needs_grapheme_clusters("".join(r.text for r in runs)):
+        out = _truncate_runs_budget(runs, max_width - 1)
+        width = _runs_total_width(out)
+        ellipsis_style = out[-1].style if out else (runs[0].style if runs else None)
+        if width < max_width:
+            out.append(StyledRun("…", ellipsis_style))
+        return out
     budget = max_width - 1
     out: list[StyledRun] = []
     ellipsis_style: Style | None = runs[0].style if runs else None
@@ -429,7 +502,13 @@ def truncate_runs_ellipsis(runs: list[StyledRun], max_width: int) -> list[Styled
 
 
 def _runs_total_width(runs: list[StyledRun]) -> int:
-    """StyledRun 序列总显示宽度。"""
+    """StyledRun 序列总显示宽度（跨 run 字形簇安全）。
+
+    run 边界可能落在同一字形簇内（不同样式把 base 与 skin tone / ZWJ /
+    keycap 拆开）——逐 run 宽度之和会高估/低估，含特殊码点时按拼接文本测宽。
+    """
+    if any(needs_grapheme_clusters(r.text) for r in runs):
+        return wcswidth_simple("".join(r.text for r in runs))
     total = 0
     for run in runs:
         total += run.width
@@ -438,6 +517,8 @@ def _runs_total_width(runs: list[StyledRun]) -> int:
 
 def _keep_head(runs: list[StyledRun], budget: int) -> list[StyledRun]:
     """保留 runs 开头最多 budget 宽度（保持 run 顺序与样式，不拆 CJK）。"""
+    if needs_grapheme_clusters("".join(r.text for r in runs)):
+        return _truncate_runs_budget(runs, budget)
     out: list[StyledRun] = []
     width = 0
     for run in runs:
@@ -461,6 +542,19 @@ def _keep_tail(runs: list[StyledRun], budget: int) -> list[StyledRun]:
     源 runs 已保证相邻同样式合并（Line.append），故保留尾部即为原序列的
     一个后缀——无需再次合并相邻同样式。
     """
+    if needs_grapheme_clusters("".join(r.text for r in runs)):
+        text, spans = _span_slices(runs)
+        selected_start: int | None = None
+        width = 0
+        for start, _end, _cluster, cw in reversed(list(_iter_cluster_spans(text))):
+            if width + cw > budget:
+                break
+            selected_start = start
+            width += cw
+        if selected_start is None:
+            return []
+        # 选中部分是文本后缀——一次性切片保留原样式片段合并
+        return _collect_span_range(text, spans, selected_start, len(text))
     kept: list[StyledRun] = []  # 反向收集
     width = 0
     for run in reversed(runs):
@@ -562,6 +656,11 @@ def truncate_line(line: Line, max_width: int) -> Line:
     if line.width <= max_width:
         return line.clone()
     runs = _first_logical_line_runs(line.runs)
+    if needs_grapheme_clusters("".join(r.text for r in runs)):
+        out = Line()
+        for run in _truncate_runs_budget(runs, max_width):
+            out.append(run.text, run.style, run.link)
+        return out
     out = Line()
     width = 0
     for run in runs:

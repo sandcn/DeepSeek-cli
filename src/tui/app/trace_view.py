@@ -786,6 +786,7 @@ def _truncate_text(text: str, width: int) -> str:
     if width <= 0:
         return text
     try:
+        from src._text_width import cluster_width, grapheme_clusters, needs_grapheme_clusters
         from src.tui._screen import wcswidth_simple
 
         if wcswidth_simple(text) <= width:
@@ -793,8 +794,9 @@ def _truncate_text(text: str, width: int) -> str:
         out: list = []
         used = 0
         budget = max(0, width - 1)
-        for ch in text:
-            w = wcswidth_simple(ch)
+        special = needs_grapheme_clusters(text)
+        for ch in (grapheme_clusters(text) if special else text):
+            w = cluster_width(ch) if special else wcswidth_simple(ch)
             if used + w > budget:
                 break
             out.append(ch)

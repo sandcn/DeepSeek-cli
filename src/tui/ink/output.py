@@ -17,6 +17,7 @@ from dataclasses import field
 from typing import Iterable
 
 from src._compat import dataclass
+from src._text_width import cluster_width, grapheme_clusters, needs_grapheme_clusters
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple, expand_tabs
 
@@ -204,12 +205,20 @@ class Line:
             if self._w is not None:
                 self._w += merged.width - last.width
             return
+        previous_text = self.runs[-1].text if self.runs else ""
         self.runs.append(StyledRun(text, style, link))
         # ★ 显示错乱修复（2026-10-05）：宽度增量以新建 run 的 ``width`` 为准
         #   ——修复前用 ``_text_width(text)``（`\t`/`\r` 计 0），而 StyledRun
         #   已把制表符展开为空格（宽度变化），二者分叉会污染 ``Line.width``。
+        # ★ 字形簇跨界：相邻 run 边界落在同一个字形簇内（style 不同导致
+        #   base 与 skin tone / ZWJ / keycap 被拆到两个 run）时，两个 run
+        #   各自测宽之和会高估（如 "👍"+"🏽" = 4，实际 2）——此时使缓存
+        #   失效，width 属性按拼接文本重新测宽。
         if self._w is not None:
-            self._w += self.runs[-1].width
+            if needs_grapheme_clusters(previous_text[-2:] + text[:2]):
+                self._w = None
+            else:
+                self._w += self.runs[-1].width
 
     def append_run(self, run: StyledRun) -> None:
         """追加 StyledRun（保留其 ``link`` 超链接语义）。"""
@@ -230,9 +239,16 @@ class Line:
         """显示宽度总和（惰性缓存：首次访问计算，append 增量维护）。"""
         w = self._w
         if w is None:
-            total = 0
-            for r in self.runs:
-                total += r.width  # StyledRun 缓存宽度（O(1)/run）
+            # ★ 字形簇跨界：run 边界可能落在同一字形簇内（如 base 与 skin
+            #   tone / ZWJ / keycap 被不同样式拆成两个 run）——逐 run 求和
+            #   会高估（"👍"+"🏽" = 4，实际 2）。含特殊码点时按拼接文本测宽，
+            #   普通文本保持 O(runs) 快速路径。
+            if any(needs_grapheme_clusters(r.text) for r in self.runs):
+                total = wcswidth_simple("".join(r.text for r in self.runs))
+            else:
+                total = 0
+                for r in self.runs:
+                    total += r.width  # StyledRun 缓存宽度（O(1)/run）
             self._w = total
             return total
         return w
@@ -397,8 +413,11 @@ class FrameBuilder:
             return
         # 字符先累积到 list、段级一次性 join 追加——避免逐字符调用
         # Line.append 段拼接 O(n²)；段长受换行宽度约束有界，join 成本可接受。
+        # ★ 字形簇原子换行：ZWJ / keycap / 肤色 / 标签序列按终端实际字形宽度
+        #   换行（逐码点会把组合 emoji 拆到多行并破坏行宽不变量）。
         buf_chars: list[str] = []
-        for ch in text:
+        special = needs_grapheme_clusters(text)
+        for ch in (grapheme_clusters(text) if special else text):
             # ★ BUG-35（review 方向）：width>0 分支也须按 ``\n`` 拆行——
             #   修复前 ``\n`` 宽度 0，被当普通字符累积进 run，Line 内嵌字面
             #   换行符破坏「帧行内无换行」不变量（wrap/截断均按整行语义）。
@@ -408,12 +427,17 @@ class FrameBuilder:
                     buf_chars = []
                 self._newline()
                 continue
-            cw = wcswidth_simple(ch)
+            cw = cluster_width(ch) if special else wcswidth_simple(ch)
             if self._current_width + cw > self._width and (self._current.runs or buf_chars):
                 if buf_chars:
                     self._current.append("".join(buf_chars), style)
                     buf_chars = []
                 self._newline()
+            if cw > self._width and not self._current.runs and not buf_chars:
+                # 空行也放不下的超宽字形簇（如 width=1 遇 CJK/emoji）：跳过，
+                # 不产出超宽行（与 _wrap_by_width / wrap_runs_by_width 的
+                # 「宁可窄不可宽」语义一致）。换行冲刷后须重新判定。
+                continue
             buf_chars.append(ch)
             self._current_width += cw
         if buf_chars:

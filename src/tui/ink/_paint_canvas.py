@@ -9,6 +9,7 @@ components 主模块。
 
 from __future__ import annotations
 
+from src._text_width import grapheme_clusters
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from .output import Line
@@ -114,9 +115,10 @@ def _line_as_dict(line: Line) -> dict:
         else:
             st = run.style
             lk = run.link
-            for ch in t:
-                # ★ P1-1 修复：零宽字符合并到前键（见 _put_char）
-                col = _put_char(d, col, ch, st, lk)
+            for cluster in grapheme_clusters(t):
+                # ★ P1-1 修复：零宽字符合并到前键（见 _put_char）；
+                #   字形簇整体写入（skin tone/keycap/ZWJ 不拆成多格）。
+                col = _put_char(d, col, cluster, st, lk)
     return d
 
 
@@ -220,9 +222,10 @@ def _merge_line(row, x: int, line: Line) -> dict:
                 slice_[col] = (ch, st, lk)
                 col += 1
         else:
-            for ch in t:
-                # ★ P1-1 修复：零宽字符合并到前键（见 _put_char）
-                col = _put_char(slice_, col, ch, st, lk)
+            for cluster in grapheme_clusters(t):
+                # ★ P1-1 修复：零宽字符合并到前键（见 _put_char）；
+                #   字形簇整体写入（skin tone/keycap/ZWJ 不拆成多格）。
+                col = _put_char(slice_, col, cluster, st, lk)
     row = _ensure_row_dict(row)
     # ★ P2（review）：空行（row={}）场景跳过宽字符扫描（常见合并热路径
     #   零额外开销）；非空行还需检测「新宽字符覆盖既有第二列键」
@@ -282,13 +285,17 @@ def _slice_run_text_with_offset(text: str, start_w: int, end_w: int) -> tuple[st
     col = 0
     first_start = 0
     got = False
-    for ch in text:
-        w = wcswidth_simple(ch)
+    for cluster in grapheme_clusters(text):
+        w = wcswidth_simple(cluster)
         if col < end_w and col + w > start_w:
             if not got:
                 got = True
                 first_start = col
-            chars.append(ch)
+            chars.append(cluster)
+        elif w == 0 and chars and col <= end_w:
+            # 零宽字形簇（组合标记）依附已保留的基字符（不因恰好落在
+            # 右边界而丢失重音/变体选择符）。
+            chars.append(cluster)
         col += w
         if col >= end_w and chars and col - w >= end_w:
             break

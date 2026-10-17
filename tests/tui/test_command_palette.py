@@ -52,12 +52,14 @@ def _register_all_commands():
     ):
         importlib.import_module(_mod)
     from src.core.commands.base import (
-        command_registry_singleton,
         declared_command_names,
         declared_command_plugin,
+        get_plugin_registry,
     )
 
-    reg = command_registry_singleton()
+    # 使用 ``get_plugin_registry()``：有活动内核时命令目录读取的是内核服务
+    # 注册表（``_iter_help_commands`` 同源），注册到进程级单例会被忽略。
+    reg = get_plugin_registry()
     for name in declared_command_names():
         reg.register(declared_command_plugin(name))
     return reg
@@ -162,10 +164,19 @@ def test_palette_view_registered_and_declared():
     assert "palette" in {entry["config"].get("id") for entry in UI_VIEW_ENTRIES}
 
 
-def test_palette_render_visible_and_invisible():
+def test_palette_render_visible_and_invisible(monkeypatch):
+    from src.core.commands.base import command_registry_singleton
     from src.tui.app.command_palette import CommandPalette
     from src.tui.ink import h, renderToString
 
+    # 命令目录为进程级注册表——显式注册并固定到全局单例，避免依赖同 worker
+    # 其他测试执行顺序 / 活动内核服务注册表（xdist 下曾因注册表状态不同而
+    # 只渲染出部分命令，主题命令被挤出可视区）。
+    monkeypatch.setattr(
+        "src.core.commands.base.get_plugin_registry",
+        command_registry_singleton,
+    )
+    _register_all_commands()
     model = AppModel()
     model.fullscreen = "palette"
     out = renderToString(

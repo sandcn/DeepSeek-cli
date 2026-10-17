@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from src._text_width import cluster_width, grapheme_clusters
 from src.tui.core.color import lerp_color
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
@@ -20,7 +21,7 @@ __all__ = ["Gradient"]
 
 
 def _gradient_runs(text: str, colors) -> list:
-    """逐字符渐变 runs（复用 header 的 lerp_color 插值语义）。"""
+    """逐字形簇渐变 runs（组合 emoji 不被拆色/拆散）。"""
     # ★ 2026-08-06：colors 非迭代（int/float 标量）时回退无样式——修复前
     #   ``for c in colors`` 对 `colors=45` 抛 TypeError 渲染崩溃（Gradient
     #   的 props 守卫只防 None/空列表，标量 truthy 穿透）。
@@ -43,7 +44,8 @@ def _gradient_runs(text: str, colors) -> list:
             continue
     if not stops:
         return [StyledRun(text, None)]
-    n = len(text)
+    clusters = list(grapheme_clusters(text))
+    n = len(clusters)
     if n <= 1:
         return [StyledRun(text, Style(fg=stops[0]))]
     if len(stops) == 1:
@@ -53,11 +55,11 @@ def _gradient_runs(text: str, colors) -> list:
     # ★ P3（review 2026-08-18）：按**累计显示宽度**归一化渐变进度——修复前
     #   按字符索引 ``i/(n-1)``，CJK（宽 2）/ASCII（宽 1）混排文本的渐变
     #   进度与显示列位置不成比例（视觉上色偏移）；纯 ASCII/纯 CJK 不受
-    #   影响。t = 该字符起始显示列 / 全文显示宽（末字符 t=1 收敛）。
+    #   影响。t = 该字形簇起始显示列 / 全文显示宽（末簇 t=1 收敛）。
     total_w = wcswidth_simple(text)
     acc_w = 0
-    for ch in text:
-        cw = wcswidth_simple(ch)
+    for ch in clusters:
+        cw = cluster_width(ch)
         t = (acc_w / (total_w - cw)) if (total_w - cw) > 0 else 0.0
         acc_w += cw
         pos = t * seg

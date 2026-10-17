@@ -20,6 +20,12 @@ _wrap_by_width`` 仍可用）；``_input_metrics`` / ``ink._cursor`` 改从本�
 
 from __future__ import annotations
 
+from src._text_width import (
+    cluster_width,
+    grapheme_clusters,
+    grapheme_spans,
+    needs_grapheme_clusters,
+)
 from src.tui._width import wcswidth_simple
 
 _TAB_WIDTH = 4  # 制表符宽度（列数）—— 唯一真源
@@ -59,6 +65,47 @@ def _prompt_of(props) -> str:
     return value if isinstance(value, str) else str(value)
 
 
+def _wrap_grapheme_segment(segment: str, max_width: int) -> list[str]:
+    """字形簇原子换行（ZWJ / keycap / 肤色 / 标签序列不跨行拆分）。
+
+    逐码点换行会把 ``👨‍👩‍👧`` 拆成多个散落 emoji、把肤色修饰符与基字符
+    拆到两行，并用逐字符宽度求和（skin tone 计 2、keycap 计 1）破坏行宽
+    不变量。这里以 ``grapheme_spans`` 的字形簇为最小单位：簇宽度用
+    ``cluster_width``（终端实际列宽），整簇放得下才放入本行。
+
+    超宽簇（``max_width`` 小于簇宽）沿用 L1「宁可窄不可宽」语义跳过；
+    段内仍有可显示内容时按簇字符数写入零宽占位（``U+200B``），保持
+    ``len(拼接结果)`` 与原文一致，光标位置映射不丢位。
+    """
+    if not segment:
+        return [""]
+    has_fittable = any(
+        cluster_width(cluster) <= max_width
+        for _start, _end, cluster in grapheme_spans(segment)
+    )
+    lines: list[str] = []
+    start = 0
+    n = len(segment)
+    while start < n:
+        width = 0
+        end = start
+        for _c_start, c_end, cluster in grapheme_spans(segment[start:]):
+            cw = cluster_width(cluster)
+            if width + cw > max_width:
+                break
+            width += cw
+            end = start + c_end
+        if end == start:
+            _c_start, c_end, cluster = next(grapheme_spans(segment[start:]))
+            if has_fittable:
+                lines.append("\u200b" * len(cluster))
+            start += c_end
+            continue
+        lines.append(segment[start:end])
+        start = end
+    return lines
+
+
 def _wrap_by_width(s: str, max_width: int) -> list[str]:
     """按终端列宽拆分文本为多行，每行不超过 max_width 列。
 
@@ -90,6 +137,9 @@ def _wrap_by_width(s: str, max_width: int) -> list[str]:
     s = _expand_tabs(s)
     lines: list[str] = []
     for segment in s.split('\n'):
+        if needs_grapheme_clusters(segment):
+            lines.extend(_wrap_grapheme_segment(segment, max_width))
+            continue
         remaining = segment
         # P2-10（review）：本逻辑段是否存在可显示内容（至少一个字符宽 <=
         # max_width）——决定跳过超宽字符时是否保留零宽占位（仅当段内确有
@@ -157,6 +207,19 @@ def _expand_tabs(text: str, start_col: int = 0, tab_width: int | None = None) ->
         return text
     result = []
     col = start_col
+    if needs_grapheme_clusters(text):
+        for cluster in grapheme_clusters(text):
+            if cluster == '\n':
+                result.append(cluster)
+                col = 0
+            elif cluster == '\t':
+                spaces = tab_width - (col % tab_width)
+                result.append(' ' * spaces)
+                col += spaces
+            else:
+                result.append(cluster)
+                col += cluster_width(cluster)
+        return ''.join(result)
     for ch in text:
         if ch == '\n':
             result.append(ch)
@@ -190,6 +253,21 @@ def _tab_pos_to_expanded(text: str, pos: int,
         tab_width = _TAB_WIDTH
     expanded_pos = 0
     col = 0
+    if needs_grapheme_clusters(text):
+        for c_start, _c_end, cluster in grapheme_spans(text):
+            if c_start >= pos:
+                break
+            if cluster == '\t':
+                spaces = tab_width - (col % tab_width)
+                expanded_pos += spaces
+                col += spaces
+            elif cluster == '\n':
+                expanded_pos += 1
+                col = 0
+            else:
+                expanded_pos += len(cluster)
+                col += cluster_width(cluster)
+        return expanded_pos
     for i, ch in enumerate(text):
         if i >= pos:
             break
@@ -321,6 +399,7 @@ __all__ = [
     "_TAB_WIDTH",
     "_DEFAULT_PROMPT",
     "_prompt_of",
+    "_wrap_grapheme_segment",
     "_wrap_by_width",
     "_expand_tabs",
     "_tab_pos_to_expanded",

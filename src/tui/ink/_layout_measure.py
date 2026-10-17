@@ -20,6 +20,7 @@ import logging
 
 from src._compat import dataclass
 
+from src._text_width import needs_grapheme_clusters
 from src.tui._width import wcswidth_simple
 from .fiber import Fiber
 from .output import StyledRun, Line
@@ -106,6 +107,19 @@ def _runs_natural_width(runs: list) -> int:
         text = getattr(r, "text", None)
         if text is None:
             text = str(r)
+        if needs_grapheme_clusters(text):
+            # run 边界可能落在同一字形簇内（不同样式拆开 base 与 skin tone /
+            # ZWJ / keycap）——逐 run 求和不等于实际显示宽度；按拼接文本
+            # 重新测宽（含换行时逐行取最大）。
+            parts: list[str] = []
+            for x in runs:
+                xt = getattr(x, "text", None)
+                parts.append(str(x) if xt is None else xt)
+            plain = "".join(parts)
+            return max(
+                (wcswidth_simple(line) for line in plain.split("\n")),
+                default=0,
+            )
         if "\n" in text:
             # 含换行（拆段语义，与 ``text.split("\\n")`` 取最大行宽一致）：
             #   - 第一段 = 活动行的延续（承接之前 run 的 ``cur_w``——文本

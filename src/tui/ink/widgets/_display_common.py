@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from src._text_width import cluster_width, grapheme_clusters, needs_grapheme_clusters
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_color 原本地定义（与
@@ -68,8 +69,9 @@ def _truncate_to_width(text: str, max_w: int, strip_ansi_seq: bool = False) -> s
         return text
     w = 0
     out = []
-    for ch in text:
-        cw = wcswidth_simple(ch)
+    special = needs_grapheme_clusters(text)
+    for ch in (grapheme_clusters(text) if special else text):
+        cw = cluster_width(ch) if special else wcswidth_simple(ch)
         if w + cw > max_w - 1:
             break
         out.append(ch)

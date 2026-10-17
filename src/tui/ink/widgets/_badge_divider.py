@@ -214,7 +214,9 @@ def Divider(props: dict) -> Element:
                 trailing_runs = list(trailing)
         except TypeError:
             trailing_runs = []
-        trailing_w = sum(getattr(r, "width", len(str(getattr(r, "text", "")))) for r in trailing_runs)
+        from ..helpers import _runs_total_width
+
+        trailing_w = _runs_total_width(list(trailing_runs))
         if width > 0 and trailing_w > width:
             # 防御：右侧内容超宽时截断至 width（复用 _theme.sep_line 语义）
             from ..helpers import truncate_line
@@ -225,7 +227,7 @@ def Divider(props: dict) -> Element:
                 from src.tui.ink.output import Line as _L
                 line = truncate_line(_L(list(trailing_runs)), width)
                 trailing_runs = list(line.runs)
-            trailing_w = sum(r.width for r in trailing_runs)
+            trailing_w = _runs_total_width(trailing_runs)
         fill = max(0, width - trailing_w)
         return h(Row, None, [
             h(TEXT, {"children": _repeat_to_width(char, fill), "style": hz_style}),

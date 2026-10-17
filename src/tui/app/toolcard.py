@@ -177,14 +177,13 @@ def _apply_line_bg(runs: list, width: int, bg_style: Style) -> list:
     from src.tui.ink import StyledRun
     # ★ 行宽硬上限：总宽超 width → 先截断并追加省略号（上游已按 width 预算
     #   截断/换行的行不会触发；仅兜底漏截断路径）。
-    used = 0
-    for r in runs:
-        used += r.width
+    from src.tui.ink.helpers import _runs_total_width
+
+    used = _runs_total_width(runs)
     if used > width:
         from src.tui.ink.helpers import truncate_runs_ellipsis
         runs = truncate_runs_ellipsis(runs, width)
     out: list = []
-    used = 0
     for r in runs:
         st = r.style
         if st is None:
@@ -193,7 +192,7 @@ def _apply_line_bg(runs: list, width: int, bg_style: Style) -> list:
             st = st.merge(bg_style)
         out.append(r if st is r.style
                    else StyledRun(r.text, st, getattr(r, "link", None)))
-        used += r.width
+    used = _runs_total_width(out)
     if used < width:
         out.append(StyledRun(" " * (width - used), bg_style))
     return out
