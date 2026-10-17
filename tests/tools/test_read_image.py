@@ -513,8 +513,19 @@ def test_multimodal_model_patterns():
     clear_multimodal_cache()
     assert is_multimodal_model("claude-sonnet-4-6")
     assert is_multimodal_model("claude-opus-4-6")
+    # 最新一代 Claude（5.5 代）同样命中 "claude" 模式
+    assert is_multimodal_model("claude-opus-5-5")
+    assert is_multimodal_model("claude-sonnet-5-5")
+    assert is_multimodal_model("claude-haiku-5-5")
     assert is_multimodal_model("gpt-4o")
     assert is_multimodal_model("glm-5.2")
+    # 智谱 GLM-5.3-Flash / FlashX 为原生多模态（命中 "glm-5" 模式）
+    assert is_multimodal_model("glm-5.3-flash")
+    assert is_multimodal_model("glm-5.3-flashx")
+    # 小米 MiMo V2.6 系列支持全模态理解（V2.5 上一代视觉版）
+    assert is_multimodal_model("mimo-v2.6-pro")
+    assert is_multimodal_model("mimo-v2.6-flash")
+    assert is_multimodal_model("mimo-v2.5")
     assert is_multimodal_model("qwen2.5-vl-7b")
     assert is_multimodal_model("llava-v1.6")
     assert is_multimodal_model("gemini-2.0-flash")

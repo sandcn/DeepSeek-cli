@@ -15,9 +15,11 @@ PROVIDERS = {
     "deepseek": {
         "base_url": "https://api.deepseek.com/v1/chat/completions",
         "default_model": "deepseek-v4-pro",
-        # deepseek-flash 为 DeepSeek V4.1 Flash（最新一代，原生多模态视觉）；
-        # deepseek-v4-flash / deepseek-v4-flash-vision-exp 为上一代旧名，
-        # 官方已下线并把请求路由到 V4.1 Flash（保留以兼容旧配置）。
+        # 最新一代（官方 Models & Pricing，2026-10）：
+        #   deepseek-flash   — DeepSeek-V4.1 Flash（最新一代 Flash，原生多模态视觉）；
+        #   deepseek-v4-pro  — DeepSeek-V4-Pro-0813（旗舰，1M 上下文 / 384K 输出）。
+        # 旧名 deepseek-v4-flash / deepseek-v4-flash-vision-exp 已下线，官方仍接受
+        # 请求并路由到 V4.1 Flash（按 Flash 价计费，含视觉能力）——保留以兼容旧配置。
         "models": ["deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"],
         "token_prices": {
             # 价格单位：美元 / 百万 tokens（高峰价；闲时（非 peak 时段）为高峰价一半）。
@@ -27,7 +29,7 @@ PROVIDERS = {
             # 旧名 deepseek-v4-flash / deepseek-v4-flash-vision-exp 的请求由
             # V4.1 Flash 承接，按相同单价计费。
             "deepseek-flash": {"input": 0.3, "output": 1.2, "input_cache_hit": 0.006},
-            "deepseek-v4-pro": {"input": 0.55, "output": 2.19, "input_cache_hit": 0.07},
+            "deepseek-v4-pro": {"input": 1.32, "output": 3.96, "input_cache_hit": 0.044},
             "deepseek-v4-flash": {"input": 0.3, "output": 1.2, "input_cache_hit": 0.006},
             "deepseek-v4-flash-vision-exp": {"input": 0.3, "output": 1.2, "input_cache_hit": 0.006},
         }
@@ -40,30 +42,75 @@ PROVIDERS = {
     },
     "anthropic": {
         "base_url": "https://api.anthropic.com/v1",
-        "default_model": "claude-sonnet-4-6",
+        # 最新一代（官方模型概览 / 定价，2026-10）：
+        #   claude-opus-5-5   — 官方推荐默认（1M 上下文 / 128K 输出）；
+        #   claude-sonnet-5-5 — 速度与智能最佳平衡；
+        #   claude-haiku-5-5  — 高并发低成本；
+        #   claude-fable-5-1  — 最强通用模型（长程 Agent / 深度推理，每 token 最贵）。
+        # 上一代（legacy，仍可用）：claude-opus-5 / claude-sonnet-5 /
+        # claude-haiku-4-5 / claude-opus-4-8 / claude-sonnet-4-6。
+        "default_model": "claude-opus-5-5",
         "models": [
-            "claude-sonnet-4-6",
-            "claude-opus-4-6",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-fable-5-1",
+            "claude-opus-5",
+            "claude-sonnet-5",
             "claude-haiku-4-5-20251001",
+            "claude-opus-4-8",
+            "claude-sonnet-4-6",
         ],
         "token_prices": {
+            # 美元 / 百万 tokens（标准档）；input_cache_hit = 缓存读取单价
+            # （缺失时 /cost 回退按 input 全价计费，保守不低估）。
+            "claude-opus-5-5": {"input": 4.0, "output": 20.0, "input_cache_hit": 0.20},
+            "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "input_cache_hit": 0.10},
+            "claude-haiku-5-5": {"input": 0.10, "output": 0.50, "input_cache_hit": 0.01},
+            "claude-fable-5-1": {"input": 10.0, "output": 50.0, "input_cache_hit": 0.25},
+            "claude-opus-5": {"input": 5.0, "output": 25.0, "input_cache_hit": 0.50},
+            "claude-sonnet-5": {"input": 2.0, "output": 10.0, "input_cache_hit": 0.20},
+            "claude-haiku-4-5-20251001": {"input": 1.0, "output": 5.0, "input_cache_hit": 0.10},
+            "claude-opus-4-8": {"input": 5.0, "output": 25.0},
             "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
-            "claude-opus-4-6": {"input": 15.0, "output": 75.0},
-            "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.0},
         }
     },
     "glm": {
         "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-        "default_model": "glm-5.2",
+        # 最新一代（智谱模型概览 / 定价，2026-10）：
+        #   glm-5.3        — 旗舰（复杂软件工程 / Agent 任务；仅文本，1M 上下文）；
+        #   glm-5.3-flash  — 首个原生多模态模型（图片 / 视频 / 文件 / 文本）；
+        #   glm-5.3-flashx — GLM-5.3-Flash 加速版（推理速度 200 tokens/s）。
+        # 上一代仍可用：glm-5.2 / glm-5.1 / glm-5 / glm-4.7。
+        # 单价以人民币计价（元/百万 tokens），与美元口径的 provider 不同，
+        # 故不并入 token_prices（/models 候选不显示单价）。
+        "default_model": "glm-5.3",
         "models": [
+            "glm-5.3",
+            "glm-5.3-flash",
+            "glm-5.3-flashx",
             "glm-5.2",
+            "glm-5.1",
+            "glm-5",
+            "glm-4.7",
         ],
         "token_prices": {}
     },
     "mimo": {
         "base_url": "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
-        "default_model": "mimo-v2.5",
+        # 最新一代（Xiaomi MiMo 开放平台模型列表，2026-10）：
+        #   mimo-v2.6-pro            — 旗舰（文本生成 / 全模态理解 / 深度思考）；
+        #   mimo-v2.6-flash          — 专业办公高频调用与规模化任务；
+        #   mimo-v2.6-pro-ultraspeed — 强实时交互（定制服务）。
+        # 上一代 mimo-v2.5-pro / mimo-v2.5 将于 2026-10-21 下线，
+        # 保留候选便于迁移（官方建议尽快切换到 V2.6 系列）。
+        # 单价以人民币计价，故不并入美元口径的 token_prices。
+        "default_model": "mimo-v2.6-pro",
         "models": [
+            "mimo-v2.6-pro",
+            "mimo-v2.6-flash",
+            "mimo-v2.6-pro-ultraspeed",
+            "mimo-v2.5-pro",
             "mimo-v2.5",
         ],
         "token_prices": {}

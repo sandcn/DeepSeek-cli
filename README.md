@@ -147,11 +147,17 @@ API 密钥 / 接口地址 / 模型名 / 提供商只能通过模型档案配置�
 
 | Provider | 适配器 | 说明 |
 |---|---|---|
-| `deepseek` | `DeepSeekAdapter` | DeepSeek 官方 API（默认），支持 deepseek-flash（V4.1 Flash，原生多模态视觉）、v4-pro、v4-flash / v4-flash-vision-exp（旧名，已路由到 V4.1 Flash）、reasoner、chat、coder 系列 |
+| `deepseek` | `DeepSeekAdapter` | DeepSeek 官方 API（默认）。内置模型：`deepseek-flash`（V4.1 Flash，最新一代、原生多模态视觉）、`deepseek-v4-pro`（V4-Pro 旗舰）；旧名 `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` 已下线并由 V4.1 Flash 承接（保留以兼容旧配置）。`deepseek-chat` / `deepseek-reasoner` 已退役 |
 | `custom` | `OpenAICompatAdapter` | 任意 OpenAI 兼容 API（OpenAI / 通义千问 / 本地 Ollama 的 OpenAI 兼容端点等），自动检测 reasoner 模型 |
-| `anthropic` | `AnthropicAdapter` | Anthropic Claude 系列模型（API 格式自动转换） |
-| `glm` | `OpenAICompatAdapter` | 智谱 GLM（open.bigmodel.cn） |
-| `mimo` | `OpenAICompatAdapter` | 小米 MiMo（token-plan-cn） |
+| `anthropic` | `AnthropicAdapter` | Anthropic Claude 系列模型（API 格式自动转换）。内置模型：`claude-opus-5-5`（默认，官方推荐）、`claude-sonnet-5-5`、`claude-haiku-5-5`、`claude-fable-5-1`、`claude-opus-5`、`claude-sonnet-5`、`claude-haiku-4-5-20251001`、`claude-opus-4-8`、`claude-sonnet-4-6` |
+| `glm` | `OpenAICompatAdapter` | 智谱 GLM（open.bigmodel.cn）。内置模型：`glm-5.3`（默认，旗舰）、`glm-5.3-flash` / `glm-5.3-flashx`（原生多模态）、`glm-5.2`、`glm-5.1`、`glm-5`、`glm-4.7` |
+| `mimo` | `OpenAICompatAdapter` | 小米 MiMo（token-plan-cn）。内置模型：`mimo-v2.6-pro`（默认）/ `mimo-v2.6-flash` / `mimo-v2.6-pro-ultraspeed`（全模态理解）；`mimo-v2.5-pro` / `mimo-v2.5` 将于 2026-10-21 下线（保留候选便于迁移） |
+
+> 上表「内置模型」即 `/models` 新增档案时「模型名」字段的候选来源（随各提供商
+> 官方最新模型更新，候选行标注「默认」与计费单价；`deepseek` / `anthropic` 为
+> 美元 / 百万 tokens，`glm` / `mimo` 以人民币计价故不内置单价）；候选之外仍可
+> 直接键入任意自定义模型名。
+
 
 > 模型名以 `ollama` 开头时按 `OllamaAdapter` 路由（本地 Ollama 部署，默认
 > `localhost:11434`）；该路由由模型名决定，不需要 `provider: ollama`。

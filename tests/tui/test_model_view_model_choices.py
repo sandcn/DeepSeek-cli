@@ -110,7 +110,7 @@ class TestProviderModels:
 
     def test_default_model_for(self):
         assert mp.default_model_for("deepseek") == "deepseek-v4-pro"
-        assert mp.default_model_for("glm") == "glm-5.2"
+        assert mp.default_model_for("glm") == "glm-5.3"
         assert mp.default_model_for("custom") == ""
         assert mp.default_model_for("unknown-provider") == ""
 
@@ -135,19 +135,29 @@ class TestProviderModelChoices:
     def test_price_in_description(self):
         descs = dict(mp.provider_model_choices("deepseek"))
         assert "$0.3/$1.2" in descs["deepseek-flash"]
-        assert "$0.55/$2.19" in descs["deepseek-v4-pro"]
+        assert "$1.32/$3.96" in descs["deepseek-v4-pro"]
 
     def test_fallback_description_without_price(self):
+        """GLM 单价以人民币计价、不入内置美元价格表 → 候选无单价描述。"""
         descs = dict(mp.provider_model_choices("glm"))
-        assert descs == {"glm-5.2": "默认"}
+        assert descs[mp.default_model_for("glm")] == "默认"
+        assert set(descs) == set(mp.provider_models("glm"))
+        assert all("$" not in desc for desc in descs.values())
 
     def test_custom_or_unknown_empty(self):
         assert mp.provider_model_choices("custom") == []
         assert mp.provider_model_choices("") == []
 
     def test_anthropic_choices(self):
-        models = [c[0] for c in mp.provider_model_choices("anthropic")]
-        assert "claude-sonnet-4-6" in models and "claude-opus-4-6" in models
+        """Anthropic 候选取自最新内置列表（5.5 代在列，附「默认」与计费单价）。"""
+        choices = mp.provider_model_choices("anthropic")
+        models = [c[0] for c in choices]
+        assert models == mp.provider_models("anthropic")
+        assert "claude-opus-5-5" in models and "claude-sonnet-5-5" in models
+        descs = dict(choices)
+        assert "默认" in descs["claude-opus-5-5"]
+        assert "$4/$20" in descs["claude-opus-5-5"]
+        assert "$2/$10" in descs["claude-sonnet-5-5"]
 
 
 # ═══════════════════════════════════════════════════════════
