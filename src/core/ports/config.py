@@ -47,12 +47,12 @@ class ConfigPort(ABC):
 
     @abstractmethod
     def get_reasoning_effort(self) -> str:
-        """获取推理等级（low/medium/high/max）。"""
+        """获取当前生效模型的思考级别（档案值 > 全局默认，low/medium/high/max）。"""
         ...
 
     @abstractmethod
     def get_temperature(self) -> float:
-        """获取大模型温度（0.0~2.0）。"""
+        """获取当前生效模型的温度（档案值 > 全局默认，0.0~2.0）。"""
         ...
 
     @abstractmethod

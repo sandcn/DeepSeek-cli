@@ -12,7 +12,12 @@ Esc/Ctrl+H 关闭后恢复完整聊天界面。
     顶层 ``models`` 字段已移除，内置 provider 模型只作元数据不进入列表，
     见 ``config.model_profiles.build_model_entries``）。
   - **增加**：``a`` 打开表单（名称 / 模型名 / 接口地址 / API 密钥 /
-    Provider 五字段），``s`` 保存为新的模型档案。
+    Provider / 温度 / 思考级别 七字段），``s`` 保存为新的模型档案。
+  - **按模型生成参数**（2026-10-17 用户需求「/models 支持设置对应的温度跟
+    思考级别」）：表单「温度」字段输入 0.0~2.0（留空 = 沿用全局默认），
+    「思考级别」字段选择 low/medium/high/max（首项「沿用全局默认」）；
+    保存后 API 请求按当前生效档案读取（全局 ``/temperature`` /
+    ``/reasoning`` 命令已删除）。
   - **模型名候选**（2026-10-13 用户需求「/models 界面可以选择对应提供商的
     模型名」）：进入「模型名」字段编辑时，主区列出**当前提供商的内置模型
     候选**（``config.model_profiles.provider_model_choices``——含「默认」与
@@ -79,6 +84,7 @@ from src.config.model_profiles import (
     normalize_profile,
     provider_choices,
     provider_model_choices,
+    reasoning_effort_choices,
     save_profiles,
     set_active_profile,
     validate_profile,
@@ -191,6 +197,8 @@ def _entry_search_text(entry) -> str:
         str(entry.get("provider", "") or ""),
         str(entry.get("effective_base_url", entry.get("base_url", "")) or ""),
         str(entry.get("hint", "") or ""),
+        str(entry.get("temperature", "") or ""),
+        str(entry.get("reasoning_effort", "") or ""),
     ])
 
 
@@ -227,6 +235,10 @@ def _copy_entry(mv, entry) -> None:
         parts.append(f"base_url={url}")
     if entry.get("api_key"):
         parts.append(f"api_key={mask_key(entry.get('api_key'))}")
+    if entry.get("effective_temperature") is not None:
+        parts.append(f"temperature={entry.get('effective_temperature')}")
+    if entry.get("effective_reasoning_effort"):
+        parts.append(f"reasoning_effort={entry.get('effective_reasoning_effort')}")
     text = " ".join(parts)
     from src.tui._screen import set_clipboard
     if set_clipboard(text):
@@ -389,8 +401,11 @@ def _duplicate_selected(mv, entry) -> None:
 
 
 def _start_select(mv, key: str) -> None:
-    """进入某字段的选择界面（当前仅「提供商」字段）。"""
-    choices = provider_choices()
+    """进入某字段的选择界面（提供商 / 思考级别）。"""
+    if key == "reasoning_effort":
+        choices = reasoning_effort_choices()
+    else:
+        choices = provider_choices()
     mv.edit_mode = "select"
     mv.form_select_options = [c[0] for c in choices]
     mv.form_select_desc = [c[1] for c in choices]
@@ -402,6 +417,18 @@ def _start_select(mv, key: str) -> None:
             break
     mv.form_select_index = idx
     mv.edit_error = ""
+
+
+def _select_field_key(mv) -> str:
+    """当前选择界面所属字段键（表单选中字段；越界回退空串）。"""
+    keys = list(FIELD_KEYS)
+    idx = int(getattr(mv, "form_selected", 0) or 0)
+    return keys[idx] if 0 <= idx < len(keys) else ""
+
+
+def _select_field_label(mv) -> str:
+    """当前选择界面的字段标签（提供商 / 思考级别）。"""
+    return str((field_by_key(_select_field_key(mv)) or {}).get("label", ""))
 
 
 def _commit_select(mv) -> None:
@@ -431,16 +458,20 @@ def _commit_select(mv) -> None:
             if count
             else f"提供商: {value}（该提供商无内置模型，直接输入模型名）"
         )
+    elif key == "reasoning_effort":
+        mv.message = f"思考级别: {value or '沿用全局默认'}"
     else:
         mv.message = ""
 
 
 def _field_value_display(mv, key: str) -> str:
-    """表单字段显示值（敏感字段脱敏）。"""
+    """表单字段显示值（敏感字段脱敏；生成参数空值显示全局默认）。"""
     field = field_by_key(key)
     value = str((mv.form_values or {}).get(key, "") or "")
     if field and field.get("sensitive"):
         return mask_key(value)
+    if key in ("temperature", "reasoning_effort") and not value.strip():
+        return "（沿用全局默认）"
     return value
 
 
@@ -654,6 +685,18 @@ def _detail_runs(entry, width: int) -> list:
     if key:
         runs.append(StyledRun(sep, _S_DETAIL_SEP))
         runs.append(StyledRun(f"key={mask_key(str(key))}", _S_KEY))
+    temperature = entry.get("effective_temperature")
+    if isinstance(temperature, (int, float)):
+        raw_temp = str(entry.get("temperature") or "").strip()
+        label = f"温度 {temperature:g}" + ("" if raw_temp else "(默认)")
+        runs.append(StyledRun(sep, _S_DETAIL_SEP))
+        runs.append(StyledRun(label, _S_DETAIL_LABEL))
+    effort = str(entry.get("effective_reasoning_effort") or "").strip()
+    if effort:
+        raw_effort = str(entry.get("reasoning_effort") or "").strip()
+        label = f"思考 {effort}" + ("" if raw_effort else "(默认)")
+        runs.append(StyledRun(sep, _S_DETAIL_SEP))
+        runs.append(StyledRun(label, _S_DETAIL_LABEL))
     if width > 0:
         runs = truncate_runs(runs, width)
     return runs
@@ -1063,7 +1106,8 @@ def _make_select_renderer(width: int, val_w: int, descs: list):
     def _render_select(opt, i, is_sel):
         prefix = "\u25b6 " if is_sel else "  "
         runs = [StyledRun(prefix, _S_SEL_MARK if is_sel else None)]
-        val = _truncate_width(str(opt), max(12, val_w))
+        raw_opt = str(opt)
+        val = _truncate_width(raw_opt or "（沿用全局默认）", max(12, val_w))
         runs.append(StyledRun(val, _S_MODEL))
         pad = max(0, val_w - _disp_width(val) + 1)
         if pad:
@@ -1189,6 +1233,9 @@ def ModelView(props) -> object:
         name_w, prov_w, model_w = 20, 8, 18
     label_w = max((_disp_width(str(f.get("label", ""))) for f in PROFILE_FIELDS), default=8)
 
+    # ── 选择界面字段提示（提供商 / 思考级别） ──
+    select_label = _select_field_label(mv) if (editing and edit_mode == "select") else ""
+
     # ── 状态行 / 详情行 / 视口 ──
     status_text = "" if (editing or search_mode) else _status_text(mv, filter_active)
     show_detail = bool(total > 0 and not editing and not help_open and not search_mode)
@@ -1251,7 +1298,14 @@ def ModelView(props) -> object:
         sel_opts = list(getattr(mv, "form_select_options", None) or [])
         sel_descs = list(getattr(mv, "form_select_desc", None) or [])
         sel_idx = max(0, min(int(getattr(mv, "form_select_index", 0) or 0), len(sel_opts) - 1)) if sel_opts else 0
-        render_select = _make_select_renderer(width, 14, sel_descs)
+        sel_val_w = min(
+            28,
+            max(
+                (_disp_width(str(o) or "（沿用全局默认）") for o in sel_opts),
+                default=12,
+            ) + 2,
+        )
+        render_select = _make_select_renderer(width, sel_val_w, sel_descs)
         ledger = h(ListView, {
             "items": sel_opts,
             "height": list_h,
@@ -1330,7 +1384,10 @@ def ModelView(props) -> object:
         else:
             header_hint = "  字段输入 \u00b7 ←→ 光标 \u00b7 Home/End 首末 \u00b7 Ctrl+U 清空 \u00b7 Enter 确认 \u00b7 Esc 取消"
     elif editing and edit_mode == "select":
-        header_hint = "  选择提供商（接口地址将自动填好）\u00b7 \u2191\u2193/jk \u9009\u62e9 \u00b7 Enter \u786e\u8ba4 \u00b7 Esc \u53d6\u6d88"
+        if select_label == "提供商":
+            header_hint = "  选择提供商（接口地址将自动填好）\u00b7 \u2191\u2193/jk \u9009\u62e9 \u00b7 Enter \u786e\u8ba4 \u00b7 Esc \u53d6\u6d88"
+        else:
+            header_hint = f"  选择{select_label or '值'} \u00b7 \u2191\u2193/jk \u9009\u62e9 \u00b7 Enter \u786e\u8ba4 \u00b7 Esc \u53d6\u6d88"
     elif editing and edit_mode == "confirm":
         header_hint = "  删除确认"
     elif editing:
@@ -1401,7 +1458,7 @@ def ModelView(props) -> object:
         }))
     elif editing and edit_mode == "select":
         bottom_rows.append(h(TEXT, {
-            "children": "  \u2191\u2193/jk 选择提供商 \u00b7 Enter 确认 \u00b7 Esc 取消",
+            "children": f"  \u2191\u2193/jk 选择{select_label or '值'} \u00b7 Enter 确认 \u00b7 Esc 取消",
             "style": _S_HINT, "textWrap": "truncate-end", "height": 1,
             "key": "mv-select-hint",
         }))

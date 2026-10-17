@@ -117,8 +117,15 @@ PROVIDERS = {
     }
 }
 
+#: 思考级别允许值域（模型档案 ``reasoning_effort`` 与全局默认共用）。
+REASONING_EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "max")
+
+#: 温度允许值域（模型档案 ``temperature`` 与全局默认共用）。
+TEMPERATURE_RANGE: tuple[float, float] = (0.0, 2.0)
+
 DEFAULTS = {
-    # ── 模型档案（模型选择器：每个档案含 name/model/base_url/api_key/provider）──
+    # ── 模型档案（模型选择器：每个档案含 name/model/base_url/api_key/provider
+    #    以及可选的 temperature/reasoning_effort——按模型覆盖生成参数）──
     # **LLM 访问的唯一入口**：模型列表、API 密钥、接口地址、提供商与当前生效
     # 模型全部来自模型档案（``model_profiles`` + ``active_model_profile``）；
     # 环境变量 CHAT_API_KEY/CHAT_MODEL/CHAT_BASE_URL/CHAT_LOW_MODEL 与 RC 旧
@@ -532,7 +539,7 @@ CONFIG_KEYS = {
 CONFIG_BOUNDS = {
     # 当前生效档案下标（-1 = 未选择）
     "ACTIVE_MODEL_PROFILE": (-1, None),
-    # 大模型温度（文档：0.0~2.0）
+    # 全局默认温度（0.0~2.0；/models 中可按模型档案覆盖）
     "TEMPERATURE": (0.0, 2.0),
     "MAX_CONTEXT_CHARS": (1, None),
     "MAX_OUTPUT_CHARS": (1, None),

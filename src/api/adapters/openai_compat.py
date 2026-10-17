@@ -15,23 +15,28 @@ def _is_reasoner_model(model: str) -> bool:
 
 
 def _get_reasoning_effort() -> str:
-    """读取当前推理等级（low/medium/high/max），异常回退 'max'。"""
+    """读取当前生效模型的思考级别（low/medium/high/max），异常回退 'max'。
+
+    取值 = 当前生效模型档案的 ``reasoning_effort``（空则回退全局默认）；
+    ``/models`` 中可对每个模型独立设置。
+    """
     try:
-        from ...config import REASONING_EFFORT as effort
+        from ...config.model_profiles import effective_reasoning_effort
+        return effective_reasoning_effort()
     except Exception:
         return "max"
-    return effort or "max"
 
 
 def _get_temperature() -> float:
-    """读取当前大模型温度（0.0~2.0），异常回退 0.2。"""
+    """读取当前生效模型的温度（0.0~2.0），异常回退 0.2。
+
+    取值 = 当前生效模型档案的 ``temperature``（空则回退全局默认）；
+    ``/models`` 中可对每个模型独立设置。
+    """
     try:
-        from ...config import TEMPERATURE as temperature
+        from ...config.model_profiles import effective_temperature
+        return effective_temperature()
     except Exception:
-        return 0.2
-    try:
-        return float(temperature)
-    except (TypeError, ValueError):
         return 0.2
 
 

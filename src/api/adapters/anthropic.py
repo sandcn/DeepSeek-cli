@@ -125,10 +125,10 @@ class AnthropicAdapter(BaseLLMAdapter):
             # （整文件生成）需要更高上限时在此调整。
             "max_tokens": 4096,
         }
-        # 大模型温度（从配置读取，Anthropic 官方支持范围 0.0~1.0，clamp 保证安全）
+        # 大模型温度（当前模型档案 > 全局默认，Anthropic 官方支持 0.0~1.0，clamp 保证安全）
         try:
-            from ...config import TEMPERATURE as _temperature
-            kwargs["temperature"] = min(max(float(_temperature), 0.0), 1.0)
+            from ...config.model_profiles import effective_temperature as _effective_temperature
+            kwargs["temperature"] = min(max(float(_effective_temperature()), 0.0), 1.0)
         except (ImportError, TypeError, ValueError):
             pass
         if system:

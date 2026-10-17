@@ -78,7 +78,9 @@ pip install ".[dev]"
             "model": "deepseek-v4-flash",
             "api_key": "sk-你的API密钥",
             "base_url": "https://api.deepseek.com/v1/chat/completions",
-            "name": "DeepSeek Flash"
+            "name": "DeepSeek Flash",
+            "temperature": "0.3",
+            "reasoning_effort": "high"
         }
     ],
     "active_model_profile": 0,
@@ -118,7 +120,9 @@ pip install ".[dev]"
 ```
 
 - `model_profiles`：模型档案列表（每个档案含 `provider` / `model` / `api_key` /
-  `base_url` / `name`；`base_url` 留空则用提供商默认地址）。
+  `base_url` / `name`，以及可选的 `temperature`（0.0~2.0）与
+  `reasoning_effort`（low / medium / high / max）；`base_url` 留空则用提供商
+  默认地址；生成参数留空则沿用全局 `temperature` / `reasoning_effort` 默认值）。
 - `active_model_profile`：当前生效档案下标（由模型选择器写入，`-1` = 未选择）。
 - `empty_response_max_retries`：模型返回**完全空**响应（无正文/无推理/无工具
   调用）时的自动重发上限。`0`（默认）= 无限重试，直到拿到有效回答或用户
@@ -402,9 +406,7 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | `/retry` | `/r` | 重新生成上一条回答 |
 | `/edit` | — | 编辑并重新发送上一条输入 |
 | `/model` | — | 切换模型（无参数时打开**模型选择器**，**只在模型档案中选择**——RC 顶层 `models` 字段已移除，不列内置 provider 模型；亦支持序号/名称直接切换） |
-| `/models` | — | **模型选择器**（全屏界面：↑↓/jk 选择 · Enter 应用 · `a` 新增 · `c` 复制 · `e` 编辑 · `d` 删除 · `r` 刷新模型档案）。**新增只需三步**：① 选提供商（接口地址自动填好）→ ② **选/填模型名**（进入「模型名」字段后 `↑`/`↓` 从**该提供商内置模型列表**选择——候选行标注「默认」与计费单价，亦可直接键入自定义模型名）→ ③ 填 API 密钥（显示名留空则用模型名）；列表行同时显示模型名与接口主机，选中详情行展示完整模型名/提供商/接口地址/脱敏密钥；字段输入支持光标编辑（←/→ · Home/End · Delete · Ctrl+A/Ctrl+E · Ctrl+U）；`/` 搜索 · `n`/`N`/`p` 匹配 · `f` 过滤 · `?` 帮助（表单内亦可） · `y` 复制信息 · Esc 关闭 |
-| `/reasoning [等级]` | — | 调整推理等级（low / medium / high / max，无参数时显示当前值） |
-| `/temperature [数值]` | — | 调整大模型温度（0.0 ~ 2.0，无参数时显示当前值，保存到配置） |
+| `/models` | — | **模型选择器**（全屏界面：↑↓/jk 选择 · Enter 应用 · `a` 新增 · `c` 复制 · `e` 编辑 · `d` 删除 · `r` 刷新模型档案）。**新增只需三步**：① 选提供商（接口地址自动填好）→ ② **选/填模型名**（进入「模型名」字段后 `↑`/`↓` 从**该提供商内置模型列表**选择——候选行标注「默认」与计费单价，亦可直接键入自定义模型名）→ ③ 填 API 密钥（显示名留空则用模型名）；表单还提供 **温度**（0.0~2.0，留空沿用全局默认）与 **思考级别**（low/medium/high/max，留空沿用全局默认），保存后按模型生效（全局 `/temperature`、`/reasoning` 命令已由本界面取代）；列表行同时显示模型名与接口主机，选中详情行展示完整模型名/提供商/接口地址/脱敏密钥/温度/思考级别；字段输入支持光标编辑（←/→ · Home/End · Delete · Ctrl+A/Ctrl+E · Ctrl+U）；`/` 搜索 · `n`/`N`/`p` 匹配 · `f` 过滤 · `?` 帮助（表单内亦可） · `y` 复制信息 · Esc 关闭 |
 | `/cost` | — | 查看 token 用量和费用 |
 | `/config` | — | 显示/编辑程序配置（无参数打开**独立配置界面**：↑↓/jk 选择、Enter 编辑、Esc 关闭；枚举/布尔/模型走**选择界面**、list/dict 子 JSON 走**递归结构化编辑界面**（Enter 逐层下钻嵌套 · 标量编辑 · a 追加 · d 删除 · Esc 逐级返回、顶层保存）、数值/字符串走输入界面；亦支持 `show`/`list`/`get <键>`/`set <键> <值>`/`reset <键>`） |
 | `/load <ID>` | — | 加载保存的对话 |

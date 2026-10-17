@@ -10,10 +10,18 @@
     {
         "provider": "deepseek",       # 提供商（deepseek/anthropic/glm/mimo/custom）
         "model": "deepseek-v4-pro",   # 必填（API 请求的 model 字段）
-        "api_key": "sk-...",          # 可选（空 = 沿用全局 api_key / 环境变量）
+        "api_key": "sk-...",          # 可选（空 = 不带认证密钥，仅适用于无需鉴权的服务）
         "base_url": "https://...",    # 接口地址（新增时按提供商自动填好，一般无需改）
         "name": "显示名",             # 可选（空 = 用模型名）
+        "temperature": "0.7",         # 可选（空 = 沿用全局 temperature）
+        "reasoning_effort": "high",   # 可选（空 = 沿用全局 reasoning_effort）
     }
+
+**按模型生成参数**（2026-10-17 用户需求「/models 支持设置对应的温度跟思考
+级别」）：每个档案可独立设置 ``temperature`` / ``reasoning_effort``，
+:func:`effective_temperature` / :func:`effective_reasoning_effort` 供 API
+适配器读取当前生效档案的值（未设置时回退全局默认）。全局 ``/temperature``
+与 ``/reasoning`` 命令已删除——生成参数统一在 ``/models`` 界面按模型配置。
 
 新增流程（用户需求）：**先选提供商** → **填模型名** → **填 API 密钥**；
 接口地址按提供商自动给定，用户无需输入（仍可在表单中修改）。
@@ -26,10 +34,14 @@
 
 from __future__ import annotations
 
+import math
+
 __all__ = [
     "PROFILE_FIELDS",
     "FIELD_KEYS",
     "PROVIDER_LABELS",
+    "REASONING_EFFORT_LEVELS",
+    "TEMPERATURE_RANGE",
     "field_by_key",
     "empty_profile",
     "normalize_profile",
@@ -41,6 +53,9 @@ __all__ = [
     "resolve_provider",
     "default_base_url",
     "effective_base_url",
+    "effective_temperature",
+    "effective_reasoning_effort",
+    "reasoning_effort_choices",
     "provider_choices",
     "provider_models",
     "provider_model_choices",
@@ -53,25 +68,43 @@ __all__ = [
     "current_provider",
     "current_base_url",
     "current_api_key",
+    "current_temperature",
+    "current_reasoning_effort",
     "build_model_entries",
     "apply_entry",
     "mask_key",
 ]
 
+from .defaults import REASONING_EFFORT_LEVELS, TEMPERATURE_RANGE
+
 #: 档案字段元数据（表单渲染顺序 + 标签 + 敏感 + 必填 + 提示 + 编辑界面类型）。
-#: 顺序即交互引导顺序：提供商 → 模型名 → API 密钥 → 接口地址 → 名称。
+#: 顺序即交互引导顺序：提供商 → 模型名 → API 密钥 → 接口地址 → 名称 →
+#: 温度 → 思考级别。
 PROFILE_FIELDS: tuple = (
     {"key": "provider", "label": "提供商", "sensitive": False, "required": False,
      "kind": "select", "hint": "先选提供商（接口地址将自动填好）"},
     {"key": "model", "label": "模型名", "sensitive": False, "required": True,
      "kind": "input", "hint": "API 请求使用的模型名（Enter 进入后可按 ↑/↓ 选择该提供商内置模型）"},
     {"key": "api_key", "label": "API 密钥", "sensitive": True, "required": False,
-     "kind": "input", "hint": "API Key（留空则沿用全局配置 / 环境变量）"},
+     "kind": "input", "hint": "API Key（空 = 不带认证密钥，仅适用于无需鉴权的服务）"},
     {"key": "base_url", "label": "接口地址", "sensitive": False, "required": False,
      "kind": "input", "hint": "已按提供商自动填好，一般无需修改"},
     {"key": "name", "label": "名称", "sensitive": False, "required": False,
      "kind": "input", "hint": "显示名（留空则用模型名）"},
+    {"key": "temperature", "label": "温度", "sensitive": False, "required": False,
+     "kind": "input", "hint": f"该模型温度 {TEMPERATURE_RANGE[0]:.1f}~{TEMPERATURE_RANGE[1]:.1f}（如 0.7）；留空沿用全局默认"},
+    {"key": "reasoning_effort", "label": "思考级别", "sensitive": False, "required": False,
+     "kind": "select", "hint": "该模型思考级别 low/medium/high/max；留空沿用全局默认"},
 )
+
+#: 思考级别候选（空串 = 沿用全局默认）。
+_REASONING_EFFORT_DESCS: dict = {
+    "": "沿用全局默认",
+    "low": "低——最快响应，思考最少",
+    "medium": "中——平衡速度与深度",
+    "high": "高——更深入思考",
+    "max": "最大——最充分思考",
+}
 
 #: 档案字段键（顺序同 ``PROFILE_FIELDS``）。
 FIELD_KEYS: tuple = tuple(f["key"] for f in PROFILE_FIELDS)
@@ -138,6 +171,9 @@ def validate_profile(profile, profiles, index=None) -> str:
     """校验档案；返回错误消息（空串 = 通过）。
 
     仅 **模型名** 必填（显示名留空时用模型名）；重名判定按显示名（排除自身）。
+    可选生成参数（``temperature`` / ``reasoning_effort``）非空时校验值域，
+    校验通过后**就地规范化**（温度 → 两位小数文本、思考级别 → 小写）——
+    调用方保存的是同一 dict，因此落盘的始终是规范值。
 
     Args:
         profile: 待校验档案（规范 dict）。
@@ -153,6 +189,22 @@ def validate_profile(profile, profiles, index=None) -> str:
             continue
         if display_name(p) == name:
             return f"名称已存在: {name}"
+    temperature = str(profile.get("temperature", "") or "").strip()
+    if temperature:
+        try:
+            value = float(temperature)
+        except (TypeError, ValueError):
+            return f"温度必须是 {TEMPERATURE_RANGE[0]:g}~{TEMPERATURE_RANGE[1]:g} 之间的数字"
+        if (
+            not math.isfinite(value)
+            or not (TEMPERATURE_RANGE[0] <= value <= TEMPERATURE_RANGE[1])
+        ):
+            return f"温度必须是 {TEMPERATURE_RANGE[0]:g}~{TEMPERATURE_RANGE[1]:g} 之间的数字"
+        profile["temperature"] = f"{round(value, 2):g}"
+    effort = str(profile.get("reasoning_effort", "") or "").strip().lower()
+    if effort and effort not in REASONING_EFFORT_LEVELS:
+        return f"思考级别必须是 {'/'.join(REASONING_EFFORT_LEVELS)} 或留空"
+    profile["reasoning_effort"] = effort
     return ""
 
 
@@ -198,6 +250,104 @@ def effective_base_url(profile, provider: str = "") -> str:
         return url
     provider = provider or resolve_provider(profile)
     return default_base_url(provider)
+
+
+def _global_temperature(rc) -> float:
+    """全局默认温度（RC 值；非法/缺失回退 0.2）。"""
+    if rc is None:
+        try:
+            from .loader import get_rc
+            rc = get_rc()
+        except Exception:
+            rc = {}
+    raw = rc.get("temperature", 0.2) if isinstance(rc, dict) else 0.2
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 0.2
+    if (
+        not math.isfinite(value)
+        or not (TEMPERATURE_RANGE[0] <= value <= TEMPERATURE_RANGE[1])
+    ):
+        return 0.2
+    return value
+
+
+def _global_reasoning_effort(rc) -> str:
+    """全局默认思考级别（RC 值；非法/缺失回退 ``max``）。"""
+    if rc is None:
+        try:
+            from .loader import get_rc
+            rc = get_rc()
+        except Exception:
+            rc = {}
+    raw = rc.get("reasoning_effort", "max") if isinstance(rc, dict) else "max"
+    value = str(raw or "").strip().lower()
+    if value not in REASONING_EFFORT_LEVELS:
+        return "max"
+    return value
+
+
+def effective_temperature(profile=None, rc=None) -> float:
+    """当前生效温度：档案值优先，空/非法 → 全局默认。
+
+    API 请求按**当前生效档案**读取本函数（``/models`` 中每个模型可独立
+    设置温度；未设置时沿用 RC 全局 ``temperature``）。
+    """
+    if profile is None:
+        profile = active_profile(rc)
+    raw = (profile or {}).get("temperature", "") if isinstance(profile, dict) else ""
+    text = str(raw or "").strip()
+    if text:
+        try:
+            value = float(text)
+        except (TypeError, ValueError):
+            value = None
+        if (
+            value is not None
+            and math.isfinite(value)
+            and TEMPERATURE_RANGE[0] <= value <= TEMPERATURE_RANGE[1]
+        ):
+            return value
+    return _global_temperature(rc)
+
+
+def effective_reasoning_effort(profile=None, rc=None) -> str:
+    """当前生效思考级别：档案值优先，空/非法 → 全局默认。"""
+    if profile is None:
+        profile = active_profile(rc)
+    raw = (
+        (profile or {}).get("reasoning_effort", "")
+        if isinstance(profile, dict) else ""
+    )
+    value = str(raw or "").strip().lower()
+    if value in REASONING_EFFORT_LEVELS:
+        return value
+    return _global_reasoning_effort(rc)
+
+
+def current_temperature(rc=None) -> float:
+    """当前生效档案的有效温度（无档案 → 全局默认）。"""
+    return effective_temperature(active_profile(rc), rc)
+
+
+def current_reasoning_effort(rc=None) -> str:
+    """当前生效档案的有效思考级别（无档案 → 全局默认）。"""
+    return effective_reasoning_effort(active_profile(rc), rc)
+
+
+def reasoning_effort_choices(global_default: str | None = None) -> list[tuple[str, str]]:
+    """思考级别候选 ``[(值, 说明)]``（空值 = 沿用全局默认）。"""
+    current = global_default
+    if current is None:
+        current = _global_reasoning_effort(None)
+    out: list[tuple[str, str]] = []
+    for value in ("",) + tuple(REASONING_EFFORT_LEVELS):
+        desc = _REASONING_EFFORT_DESCS.get(value, "")
+        if value == "" and desc:
+            desc = f"{desc}（当前 {current}）"
+        out.append((value, desc))
+    return out
 
 
 def provider_choices() -> list[tuple[str, str]]:
@@ -405,6 +555,10 @@ def build_model_entries(rc=None) -> list[dict]:
         effective_base_url  有效接口地址（显示用）
         api_key        密钥（渲染层脱敏）
         provider       提供商
+        temperature    档案温度（空 = 沿用全局默认）
+        reasoning_effort  档案思考级别（空 = 沿用全局默认）
+        effective_temperature       有效温度（档案 > 全局默认）
+        effective_reasoning_effort  有效思考级别（档案 > 全局默认）
         current        是否当前生效（= :func:`active_profile_index` 指向）
         editable       恒 True
         hint           提供商显示说明
@@ -428,6 +582,10 @@ def build_model_entries(rc=None) -> list[dict]:
             "effective_base_url": effective_base_url(prof, provider),
             "api_key": prof.get("api_key", ""),
             "provider": provider,
+            "temperature": (prof.get("temperature") or "").strip(),
+            "reasoning_effort": (prof.get("reasoning_effort") or "").strip(),
+            "effective_temperature": effective_temperature(prof, rc),
+            "effective_reasoning_effort": effective_reasoning_effort(prof, rc),
             "current": i == active_idx,
             "editable": True,
             "hint": PROVIDER_LABELS.get(provider, provider),

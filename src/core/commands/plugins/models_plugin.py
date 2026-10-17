@@ -26,7 +26,7 @@ class ModelsPlugin(InteractiveCommandPlugin):
         super().__init__()
         self.meta = CommandMeta(
             name="models",
-            description="模型选择器（选择/新增/编辑模型档案：name/model/url/key/provider）",
+            description="模型选择器（选择/新增/编辑模型档案：name/model/url/key/provider/温度/思考级别）",
             group="model",
         )
 

@@ -45,14 +45,10 @@ from ._plugin_cmd import (
 from ._config_cmd import (
     _cmd_cost,
     _cmd_theme,
-    _cmd_reasoning,
-    _cmd_temperature,
     _cmd_config,
     # 插件子类
     CostCommand,
     ThemeCommand,
-    ReasoningCommand,
-    TemperatureCommand,
     ConfigCommand,
 )
 
@@ -114,8 +110,6 @@ __all__ = [
     "_cmd_plugin",
     "_cmd_cost",
     "_cmd_theme",
-    "_cmd_reasoning",
-    "_cmd_temperature",
     "_cmd_config",
     "_cmd_load",
     "_cmd_sessions",
@@ -131,8 +125,6 @@ __all__ = [
     "PluginCommand",
     "CostCommand",
     "ThemeCommand",
-    "ReasoningCommand",
-    "TemperatureCommand",
     "ConfigCommand",
     "LoadCommand",
     "SessionsCommand",

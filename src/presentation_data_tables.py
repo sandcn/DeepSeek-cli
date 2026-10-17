@@ -296,9 +296,9 @@ INLINE_SPINNER_FRAMES: str = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u
 
 CONFIG_ENTRY_DESC_MAP: dict[str, str] = {
     # ── 核心配置 ──
-    "MODEL_PROFILES": "模型档案列表（name/model/base_url/api_key/provider；**模型列表唯一来源**，/models 界面增删改选）",
-    "REASONING_EFFORT": "推理等级（low/medium/high/max）",
-    "TEMPERATURE": "大模型温度（0.0~2.0，越高越随机）",
+    "MODEL_PROFILES": "模型档案列表（name/model/base_url/api_key/provider/temperature/reasoning_effort；**模型列表唯一来源**，/models 界面增删改选并按模型设置温度与思考级别）",
+    "REASONING_EFFORT": "全局默认思考级别（low/medium/high/max；/models 中可按模型覆盖）",
+    "TEMPERATURE": "全局默认温度（0.0~2.0，越高越随机；/models 中可按模型覆盖）",
     "THEME": "UI 配色主题（dark/light/high-contrast）",
     # ── 数值配置 ──
     "MAX_CONTEXT_CHARS": "上下文最大字符数",
@@ -774,7 +774,7 @@ MODEL_KEYMAP_DATA: list = [
     {"group": "选择", "keys": "PgUp / PgDn", "desc": "整页翻页"},
     {"group": "选择", "keys": "Home/End \u00b7 g/G", "desc": "首末"},
     {"group": "选择", "keys": "Enter", "desc": "应用选中模型（表单中编辑字段）"},
-    {"group": "管理", "keys": "a", "desc": "新增模型档案（选提供商 → 选/填模型名 → 填密钥）"},
+    {"group": "管理", "keys": "a", "desc": "新增模型档案（提供商 → 模型名 → 密钥 → 温度/思考级别）"},
     {"group": "管理", "keys": "c", "desc": "复制选中档案为副本（改名后 s 保存）"},
     {"group": "管理", "keys": "e", "desc": "编辑选中模型档案"},
     {"group": "管理", "keys": "d", "desc": "删除选中模型档案"},
@@ -784,6 +784,8 @@ MODEL_KEYMAP_DATA: list = [
     {"group": "搜索", "keys": "n / N / p", "desc": "下一个 / 上一个匹配"},
     {"group": "搜索", "keys": "f", "desc": "过滤模式（只显示匹配模型）"},
     {"group": "输入", "keys": "\u2191 / \u2193", "desc": "模型名候选：切换该提供商内置模型（也可直接输入自定义名）"},
+    {"group": "输入", "keys": "温度字段", "desc": "输入 0.0~2.0（如 0.7）；留空沿用全局默认"},
+    {"group": "输入", "keys": "思考级别字段", "desc": "Enter 后 \u2191\u2193 选择 low/medium/high/max 或「沿用全局默认」"},
     {"group": "输入", "keys": "\u2190 \u2192", "desc": "字段输入：光标左右移动"},
     {"group": "输入", "keys": "Home/End \u00b7 Ctrl+A/Ctrl+E", "desc": "字段输入：光标到行首 / 行尾"},
     {"group": "输入", "keys": "Delete / Backspace", "desc": "字段输入：删除光标处 / 前一个字符"},

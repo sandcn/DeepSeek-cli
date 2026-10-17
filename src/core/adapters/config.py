@@ -78,10 +78,22 @@ class MockConfigAdapter(ConfigPort):
             return []
 
     def get_reasoning_effort(self) -> str:
-        return str(self._data.get("reasoning_effort", "max"))
+        """当前生效模型的思考级别（档案值 > 全局默认，low/medium/high/max）。"""
+        from ...config.model_profiles import effective_reasoning_effort
+
+        try:
+            return effective_reasoning_effort(rc=self._data)
+        except Exception:
+            return "max"
 
     def get_temperature(self) -> float:
-        return float(self._data.get("temperature", 0.2))
+        """当前生效模型的温度（档案值 > 全局默认，0.0~2.0）。"""
+        from ...config.model_profiles import effective_temperature
+
+        try:
+            return effective_temperature(rc=self._data)
+        except Exception:
+            return 0.2
 
     def get_int(self, key: str, default: int = 0) -> int:
         return int(self.get(key, default))

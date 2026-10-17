@@ -1,6 +1,10 @@
 """配置包 — 配置校验逻辑"""
 
-from .defaults import CONFIG_KEYS, DEFAULTS
+import math
+
+from .defaults import (
+    CONFIG_KEYS, DEFAULTS, REASONING_EFFORT_LEVELS, TEMPERATURE_RANGE,
+)
 
 
 def _derive_rc_fields(key_type):
@@ -22,7 +26,7 @@ _FLOAT_FIELDS = _derive_rc_fields(float)
 _BOOL_FIELDS = _derive_rc_fields(bool)
 
 # reasoning_effort 允许值域（模块级常量，避免每次 _validate_rc 调用重建）
-_REASONING_EFFORT_LEVELS = frozenset({"low", "medium", "high", "max"})
+_REASONING_EFFORT_LEVELS = frozenset(REASONING_EFFORT_LEVELS)
 
 
 def _validate_rc(rc):
@@ -91,13 +95,47 @@ def _validate_rc(rc):
             rc["temperature"] = DEFAULTS.get("temperature", 0.2)
         else:
             temp = float(temp)
-            if not (0.0 <= temp <= 2.0):
+            if not (TEMPERATURE_RANGE[0] <= temp <= TEMPERATURE_RANGE[1]):
                 rc["temperature"] = DEFAULTS.get("temperature", 0.2)
             else:
                 rc["temperature"] = temp
 
     # ── 旧配置清理（见上方说明）：历史遗留的顶层 models 字段 ──
     rc.pop("models", None)
+
+    # ── 模型档案生成参数清洗（temperature / reasoning_effort）──
+    # 档案由 /models 保存时已校验；这里兜底手工编辑 RC 的坏值：非法值置空
+    # （= 沿用全局默认），避免请求参数读到 NaN/越界值。
+    if "model_profiles" in rc:
+        if not isinstance(rc["model_profiles"], (list, tuple)):
+            rc["model_profiles"] = []
+        else:
+            cleaned_profiles = []
+            for item in rc["model_profiles"]:
+                if not isinstance(item, dict):
+                    continue
+                entry = dict(item)
+                temp = entry.get("temperature", "")
+                text = "" if temp is None else str(temp).strip()
+                if text:
+                    try:
+                        value = float(text)
+                    except (TypeError, ValueError):
+                        value = None
+                    if (
+                        value is None
+                        or not math.isfinite(value)
+                        or not (TEMPERATURE_RANGE[0] <= value <= TEMPERATURE_RANGE[1])
+                    ):
+                        text = ""
+                entry["temperature"] = text
+                effort = entry.get("reasoning_effort", "")
+                effort_text = "" if effort is None else str(effort).strip().lower()
+                if effort_text and effort_text not in _REASONING_EFFORT_LEVELS:
+                    effort_text = ""
+                entry["reasoning_effort"] = effort_text
+                cleaned_profiles.append(entry)
+            rc["model_profiles"] = cleaned_profiles
 
     if "multimodal_models" in rc:
         if not isinstance(rc["multimodal_models"], (list, tuple)):

@@ -344,6 +344,19 @@ def _list_models_text(ctx) -> None:
                 f"  {DIM}\u2502{RESET}   {DIM}key: {mask_key(e.get('api_key'))}{RESET}",
                 level="raw", source="cmd",
             )
+        temp = e.get("effective_temperature")
+        effort = str(e.get("effective_reasoning_effort") or "")
+        if isinstance(temp, (int, float)) or effort:
+            temp_text = f"{temp:g}" if isinstance(temp, (int, float)) else "-"
+            if not str(e.get("temperature") or "").strip():
+                temp_text += "(默认)"
+            effort_text = effort or "-"
+            if effort and not str(e.get("reasoning_effort") or "").strip():
+                effort_text += "(默认)"
+            _out.write(
+                f"  {DIM}\u2502{RESET}   {DIM}温度 {temp_text} · 思考 {effort_text}{RESET}",
+                level="raw", source="cmd",
+            )
     _out.write(f"  {DIM}在 TUI 中运行 /models 可交互增删改选{RESET}", level="raw", source="cmd")
 
 

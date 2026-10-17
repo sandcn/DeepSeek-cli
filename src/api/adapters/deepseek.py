@@ -37,31 +37,28 @@ _CLASSIC_MODELS: set[str] = {
 # ═══════════════════════════════════════════════════════════════
 
 def _get_reasoning_effort() -> str:
-    """读取当前推理等级（low/medium/high/max），异常回退 'max'。
+    """读取当前生效模型的思考级别（low/medium/high/max）。
 
-    延迟导入避免模块加载时的循环依赖；配置写入后缓存被清除，
-    每次调用都能读到最新值。
+    取值 = 当前生效模型档案的 ``reasoning_effort``（空则回退全局默认）；
+    ``/models`` 中可对每个模型独立设置。延迟导入避免模块加载循环依赖。
     """
     try:
-        from ...config import REASONING_EFFORT as effort
+        from ...config.model_profiles import effective_reasoning_effort
+        return effective_reasoning_effort()
     except Exception:
         return "max"
-    return effort or "max"
 
 
 def _get_temperature() -> float:
-    """读取当前大模型温度（0.0~2.0），异常回退 0.2。
+    """读取当前生效模型的温度（0.0~2.0）。
 
-    延迟导入避免模块加载时的循环依赖；配置写入后缓存被清除，
-    每次调用都能读到最新值。
+    取值 = 当前生效模型档案的 ``temperature``（空则回退全局默认）；
+    ``/models`` 中可对每个模型独立设置。延迟导入避免模块加载循环依赖。
     """
     try:
-        from ...config import TEMPERATURE as temperature
+        from ...config.model_profiles import effective_temperature
+        return effective_temperature()
     except Exception:
-        return 0.2
-    try:
-        return float(temperature)
-    except (TypeError, ValueError):
         return 0.2
 
 
@@ -129,7 +126,8 @@ class DeepSeekAdapter(BaseLLMAdapter):
         # deepseek-v4-* 系列（非 reasoner）需要注入 thinking 参数
         # 以启用推理能力的流式输出。
         # reasoner 模型已有内置推理能力，不需要额外参数。
-        # reasoning_effort 可通过 /reasoning 命令调整（low/medium/high/max）。
+        # reasoning_effort 按当前模型档案设置（/models 中每个模型可独立
+        # 配置 low/medium/high/max；空则回退全局默认）。
         if self.is_v4_model(model) and not self.is_reasoner_model(model):
             kwargs["thinking"] = {
                 "type": "enabled",

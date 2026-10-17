@@ -86,10 +86,22 @@ class TestModelProfiles:
 
     def test_fields_and_empty(self):
         assert tuple(f["key"] for f in mp.PROFILE_FIELDS) == mp.FIELD_KEYS
-        assert set(mp.FIELD_KEYS) == {"provider", "model", "api_key", "base_url", "name"}
-        # 交互引导顺序：提供商 → 模型名 → API 密钥 → 接口地址 → 名称
+        assert set(mp.FIELD_KEYS) == {
+            "provider", "model", "api_key", "base_url", "name",
+            "temperature", "reasoning_effort",
+        }
+        # 交互引导顺序：提供商 → 模型名 → API 密钥 → …→ 温度 → 思考级别
         assert mp.FIELD_KEYS[:3] == ("provider", "model", "api_key")
+        assert mp.FIELD_KEYS[-2:] == ("temperature", "reasoning_effort")
         assert mp.empty_profile() == {k: "" for k in mp.FIELD_KEYS}
+
+    def test_generation_fields_metadata(self):
+        temp = mp.field_by_key("temperature") or {}
+        effort = mp.field_by_key("reasoning_effort") or {}
+        assert temp.get("kind") == "input"
+        assert effort.get("kind") == "select"
+        assert "0.0" in temp.get("hint", "") and "2" in temp.get("hint", "")
+        assert "全局默认" in effort.get("hint", "")
 
     def test_provider_field_is_select(self):
         assert (mp.field_by_key("provider") or {}).get("kind") == "select"

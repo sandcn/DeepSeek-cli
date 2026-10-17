@@ -161,9 +161,9 @@ def parse_config_value(typ: type, text: str) -> tuple[Any, str]:
             value = float(raw)
         except (ValueError, TypeError):
             return None, "请输入数字"
-        # ★ P2（review 2026-08-20）：拒绝 NaN/Inf——修复前 ``float("nan")``
-        #   无错误返回，ConfigView 输入可写入 nan/inf（与 _cmd_temperature
-        #   的 NaN/Inf 防御不一致，同配置两条编辑路径行为不同）。
+    # ★ 修复（2026-10）：拒绝 NaN/Inf——修复前 ``float("nan")``
+    #   无错误返回，ConfigView 输入可写入 nan/inf（与模型档案温度校验
+    #   不一致，同配置两条编辑路径行为不同）。
         import math as _math
         if not _math.isfinite(value):
             return None, "请输入有限数字"

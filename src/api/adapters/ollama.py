@@ -15,14 +15,14 @@ from .base import BaseLLMAdapter
 
 
 def _get_temperature() -> float:
-    """读取当前大模型温度（0.0~2.0），异常回退 0.2。"""
+    """读取当前生效模型的温度（0.0~2.0），异常回退 0.2。
+
+    取值 = 当前生效模型档案的 ``temperature``（空则回退全局默认）。
+    """
     try:
-        from ...config import TEMPERATURE as temperature
+        from ...config.model_profiles import effective_temperature
+        return effective_temperature()
     except Exception:
-        return 0.2
-    try:
-        return float(temperature)
-    except (TypeError, ValueError):
         return 0.2
 
 

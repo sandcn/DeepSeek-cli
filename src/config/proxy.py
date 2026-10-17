@@ -48,12 +48,14 @@ class ConfigProxy(ConfigPort):
         return _config.MODELS
 
     def get_reasoning_effort(self) -> str:
-        """获取推理等级（low/medium/high/max）。"""
-        return _config.REASONING_EFFORT
+        """当前生效模型的思考级别（档案值 > 全局默认，low/medium/high/max）。"""
+        from src.config.model_profiles import current_reasoning_effort
+        return current_reasoning_effort()
 
     def get_temperature(self) -> float:
-        """获取大模型温度（0.0~2.0）。"""
-        return float(_config.TEMPERATURE)
+        """当前生效模型的温度（档案值 > 全局默认，0.0~2.0）。"""
+        from src.config.model_profiles import current_temperature
+        return current_temperature()
 
     def get_int(self, key: str, default: int = 0) -> int:
         return int(self.get(key, default))
@@ -133,10 +135,12 @@ class ConfigProxy(ConfigPort):
 
     @property
     def REASONING_EFFORT(self) -> str:
+        """全局默认思考级别（/models 中可按模型档案覆盖）。"""
         return _config.REASONING_EFFORT
 
     @property
     def TEMPERATURE(self) -> float:
+        """全局默认温度（/models 中可按模型档案覆盖）。"""
         return _config.TEMPERATURE
 
     @property

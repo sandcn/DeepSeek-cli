@@ -174,7 +174,7 @@ class StatusContext:
 
 
 def _model_segment(ctx: StatusContext) -> list:
-    """模型名段（含 spinner 点 + 推理等级标签；空闲/活跃样式区分）。"""
+    """模型名段（含 spinner 点 + 当前模型思考级别标签；空闲/活跃样式区分）。"""
     st = ctx.status
     _model_name = getattr(st, "model_name", "")
     model_part: list[StyledRun] = []
@@ -191,9 +191,9 @@ def _model_segment(ctx: StatusContext) -> list:
         model_name_style = _S_ACCENT_BOLD
     model_part.append(StyledRun(f"{ctx.spinner_char} ", dot_style))
     model_part.append(StyledRun(_model_name, model_name_style))
-    # ★ 推理等级标签（2026-08-14）：模型名后追加当前推理等级
-    #   （low/medium/high/max，/reasoning 命令配置）。暗灰 dim 弱化；格式
-    #   [level] 与 /reasoning 命令显示一致。
+    # ★ 思考级别标签（2026-08-14）：模型名后追加当前生效模型的思考级别
+    #   （low/medium/high/max，/models 中按模型配置，空则回退全局默认）。
+    #   暗灰 dim 弱化；格式 [level] 与 /models 表单显示一致。
     eff = (ctx.reasoning_effort or "").strip().lower()
     if eff:
         model_part.append(StyledRun(f" [{eff}]", _S_DIM))
@@ -301,7 +301,8 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             >=duration 后返回呼吸色（动画结束）。
         spinner_char: 活跃状态指示字符（BEAUTY-7：streaming 时 30Hz spinner
             帧；空闲为静态 ``·``）。
-        reasoning_effort: 当前推理等级（low/medium/high/max）；None 或空串不显示。
+        reasoning_effort: 当前生效模型的思考级别（low/medium/high/max，/models
+            按模型配置；None 或空串不显示）。
 
     段由 ``src.tui.app._status_segments`` 注册表提供（每个段一个清单条目）：
     ``model`` 段为模型名部分（不与其它段用分隔符连接），其余段（tools/
@@ -425,14 +426,14 @@ def StatusBar(props) -> object:
         else:
             time_dep = int(time.monotonic() / 1.0)
         spinner_char = "\u00b7"
-    # ★ 推理等级（/reasoning 命令配置 low/medium/high/max）：模型名后显示
-    #   [level]。读取配置（RC 内存缓存 + 单键缓存，每帧读取开销极小；异常
-    #   回退空串不显示）。作为 use_memo deps——update_config 清配置缓存后
-    #   下帧读取新值 → deps 变化 → 状态栏即时刷新（/reasoning 切换无需
-    #   额外同步链路）。
+    # ★ 思考级别（/models 中按模型配置 low/medium/high/max；空则回退全局
+    #   默认）：模型名后显示 [level]。读取当前生效档案的有效值（与 API 请求
+    #   同源，列表规模小，每帧开销可忽略；异常回退空串不显示）。作为
+    #   use_memo deps——/models 切换档案或保存新值后下帧 deps 变化 →
+    #   状态栏即时刷新（无需额外同步链路）。
     try:
-        from src.config import REASONING_EFFORT as _eff
-        reasoning_effort = str(_eff or "")
+        from src.config.model_profiles import current_reasoning_effort as _current_effort
+        reasoning_effort = str(_current_effort() or "")
     except Exception:
         reasoning_effort = ""
     status_runs = use_memo(
@@ -450,8 +451,8 @@ def StatusBar(props) -> object:
             #   time_dep（0.1s 桶）兜底，``int(now/0.1)`` 与 ``int(now*10)``
             #   浮点边界偶发错位 ≤1 帧（spinner 帧与缓存不同步）。
             spinner_char,
-            # ★ 推理等级（2026-08-14）：切换（/reasoning）后 deps 变化 →
-            #   重建状态行（模型名后 [level] 即时刷新）。
+            # ★ 思考级别（2026-08-14）：/models 切换档案或保存新值后 deps
+            #   变化 → 重建状态行（模型名后 [level] 即时刷新）。
             reasoning_effort,
             # ★ 2026-10（用户需求：压缩消耗的 token 要能在状态栏看到）：
             #   压缩状态变化（开始/结束）立即重建状态行——空闲期压缩中与
