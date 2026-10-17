@@ -503,6 +503,10 @@ def _emit_image(node, base, ctx, out, depth):
     h = node.meta.get("height", 0)
     if w and h:
         dim = f" ={w}x{h}"
+    elif w:
+        dim = f" ={w}"
+    elif h:
+        dim = f" =x{h}"
     alt = node.content or "image"
     style = _merge(base, _STYLE_IMAGE)
     if url:

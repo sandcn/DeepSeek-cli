@@ -299,6 +299,36 @@ class InlineLinksMixin:
         self._pos = end + 1
         return attrs
 
+    def _apply_trailing_attrs(self, node, media: bool = False):
+        """把紧跟节点的 Pandoc 属性块 ``{...}`` 附加到 ``node.meta``。
+
+        - ``media=True``（图片引用式）：``width`` / ``height`` / ``title`` 经
+          ``_apply_media_attrs`` 归一化后写入 ``meta``（渲染层据此显示尺寸），
+          ``title`` 同时补到节点字段；
+        - 链接：``classes`` / ``id`` / ``attrs`` 原样保留在 ``meta``（不泄漏为
+          正文文本）。
+
+        属性块无效时位置与节点均不变（普通花括号文本照常渲染）。
+        """
+        if self._pos >= self._n or self._text[self._pos] != '{':
+            return node
+        attrs = self._parse_inline_attrs()
+        if not attrs:
+            return node
+        meta = dict(node.meta or {})
+        if media:
+            _apply_media_attrs(attrs, meta)
+            title = meta.pop("title", None)
+            if title and not getattr(node, "title", ""):
+                node.title = title
+        else:
+            for key in ("classes", "id", "attrs"):
+                value = attrs.get(key)
+                if value:
+                    meta[key] = value
+        node.meta = meta
+        return node
+
     def _try_image(self, depth: int) -> InlineNode | None:
         try:
             if self._pos + 2 < self._n and self._text[self._pos:self._pos + 2] == '![':
@@ -421,7 +451,7 @@ class InlineLinksMixin:
                     if collapsed:
                         node.meta['shortcut'] = True
                         node.meta['collapsed'] = True
-                    return node
+                    return self._apply_trailing_attrs(node, media=True)
                 else:
                     # ★ 快捷引用式图片 ``![alt]``（CommonMark shortcut reference
                     #   image）：``![alt]`` 后不跟 ``(`` / ``[`` → 以 alt 为标签
@@ -435,7 +465,7 @@ class InlineLinksMixin:
                             content=alt,
                             url=f'[ref:{normalize_ref_label(ref_id)}]')
                         node.meta = {'shortcut': True, 'label': ref_id}
-                        return node
+                        return self._apply_trailing_attrs(node, media=True)
                     self._pos = saved
                     return None
             return None
@@ -569,7 +599,9 @@ class InlineLinksMixin:
                 inner_parser = self.__class__(link_text)
                 children = inner_parser.parse()
                 link_content = render_inline_to_text(children)
-                return LinkNode(url=url, content=link_content, children=children, title=title)
+                node = LinkNode(url=url, content=link_content,
+                                children=children, title=title)
+                return self._apply_trailing_attrs(node)
             elif self._pos < self._n and self._text[self._pos] == '[':
                 self._pos += 1
                 ref_start = self._pos
@@ -607,7 +639,7 @@ class InlineLinksMixin:
                 if collapsed:
                     node.meta['shortcut'] = True
                     node.meta['collapsed'] = True
-                return node
+                return self._apply_trailing_attrs(node)
             else:
                 # ── 快捷引用式链接 ``[ref]``（引用定义在文档其他位置）──
                 # 解析为带 ``[ref:...]`` 的 LinkNode；渲染层查 ref_map 命中则
@@ -619,7 +651,7 @@ class InlineLinksMixin:
                     node = LinkNode(url=f'[ref:{normalize_ref_label(ref_id)}]',
                                     content=link_text, children=children)
                     node.meta = {'shortcut': True, 'label': ref_id}
-                    return node
+                    return self._apply_trailing_attrs(node)
                 self._pos = saved
                 return None
         except Exception:

@@ -216,8 +216,9 @@ def _dash_spans(stripped: str) -> list[tuple[int, int]]:
 def _is_dashed_separator(stripped: str) -> bool:
     """Pandoc simple / multiline table 的列段分隔行 ``-----  ------``。
 
-    要求：整行只含 ``-`` 与空格、至少两个 ``-`` 段、相邻段之间至少 2 个空格
-    （单段 ``---`` 是分隔线、段间仅 1 空格的行不是分隔行）。
+    要求：整行只含 ``-`` 与空格、至少两个 ``-`` 段；相邻段之间通常至少
+    2 个空格，Pandoc 文档示例中允许 **1 个空格**（此时要求两侧 ``-`` 段
+    足够长（≥5），避免把 ``--- ---`` / ``- - -`` 这类分隔线误判为表格）。
     """
     s = stripped.strip()
     if not s or '-' not in s:
@@ -229,9 +230,101 @@ def _is_dashed_separator(stripped: str) -> bool:
     if len(spans) < 2:
         return False
     for k in range(1, len(spans)):
-        if spans[k][0] - spans[k - 1][1] < 2:
+        gap = spans[k][0] - spans[k - 1][1]
+        if gap >= 2:
+            continue
+        # 仅 1 个空格：两侧段须足够长（Pandoc simple table 常见形态）
+        prev_len = spans[k - 1][1] - spans[k - 1][0]
+        cur_len = spans[k][1] - spans[k][0]
+        if prev_len < 5 or cur_len < 5:
             return False
     return True
+
+
+def _is_multiline_separator(stripped: str) -> bool:
+    """Pandoc multiline table 的列段分隔行（允许段间 **1 个空格**）。
+
+    与 ``_is_dashed_separator`` 的区别：multiline table 已由顶边框 + 表头行
+    确认上下文，段间一个空格也是合法的列分隔（Pandoc 文档示例即如此）；
+    仍要求每段至少 2 个 ``-``，避免 ``- - -`` 之类分隔线被误判。
+    """
+    s = stripped.strip()
+    if not s or s[0] != '-' or '-' not in s:
+        return False
+    for ch in s:
+        if ch != '-' and ch != ' ':
+            return False
+    spans = _dash_spans(s)
+    if len(spans) < 2:
+        return False
+    for a, b in spans:
+        if b - a < 2:
+            return False
+    return True
+
+
+def _is_multiline_border(stripped: str) -> bool:
+    """Pandoc multiline table 的顶/底边框（单段长横线，≥10 个 ``-``）。
+
+    阈值 10 避免把常见 ``---`` / ``--------`` 分隔线误判为表格候选；
+    真正误判时解析层会回退为「分隔线 + 普通段落」，内容不丢。
+    """
+    s = stripped.strip()
+    if len(s) < 10 or s[0] != '-' or '-' not in s:
+        return False
+    for ch in s:
+        if ch != '-' and ch != ' ':
+            return False
+    return len(_dash_spans(s)) == 1
+
+
+def parse_multiline_table(header_lines: list[str], sep_line: str,
+                          body_lines: list[str]
+                          ) -> tuple[list[list[str]], list[str]] | None:
+    """Pandoc multiline table → ``(rows, alignments)``（无效返回 ``None``）。
+
+    列边界由列段分隔行的 ``-`` 段给出；表头可多行（按列位置拼接），正文行
+    以空行分组、组内多行拼接为同一单元格（Pandoc multiline table 语义）。
+    """
+    spans = _dash_spans(sep_line)
+    if len(spans) < 2:
+        return None
+    headers = [ln for ln in header_lines if ln.strip()]
+    if not headers:
+        return None
+
+    def _cells(line: str) -> list[str]:
+        out: list[str] = []
+        for a, b in spans:
+            seg = line[a:b] if a < len(line) else ''
+            out.append(seg.strip())
+        return out
+
+    ncols = len(spans)
+    header_cells: list[str] = []
+    for i in range(ncols):
+        vals = [cells[i] for cells in (_cells(ln) for ln in headers) if cells]
+        header_cells.append(" ".join(vals))
+
+    groups: list[list[str]] = []
+    current: list[str] = []
+    for raw in body_lines:
+        if not str(raw).strip():
+            if current:
+                groups.append(current)
+                current = []
+            continue
+        current.append(str(raw))
+    if current:
+        groups.append(current)
+    rows: list[list[str]] = [header_cells]
+    for group in groups:
+        row: list[str] = []
+        for i in range(ncols):
+            vals = [cells[i] for cells in (_cells(ln) for ln in group) if cells]
+            row.append(" ".join(vals))
+        rows.append(row)
+    return rows, ['left'] * ncols
 
 
 def parse_dashed_table(header_lines: list[str], sep_line: str,

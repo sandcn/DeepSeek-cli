@@ -193,6 +193,10 @@ class InlineHTMLMixin:
                 end_before_gt = self._pos - 1
                 attr_text = self._text[attr_start:end_before_gt].strip()
                 return self._make_input_node(attr_text)
+            if tag_name in ('source', 'track', 'embed'):
+                end_before_gt = self._pos - 1
+                attr_text = self._text[attr_start:end_before_gt].strip()
+                return self._make_media_node(tag_name, attr_text)
             return TextNode(content='')
 
         # ── 特殊标签：<a> 行内链接 / <ruby> 注音 ──
@@ -212,7 +216,9 @@ class InlineHTMLMixin:
                     return None
                 text = render_inline_to_text(children)
                 if href:
-                    return LinkNode(url=href, content=text or href, children=children)
+                    return LinkNode(url=href, content=text or href,
+                                    title=self._extract_attr(attr_text, 'title'),
+                                    children=children)
                 return TextNode(content=text)
             content = self._parse_html_content('ruby', depth)
             if content is None:
@@ -241,6 +247,20 @@ class InlineHTMLMixin:
                 self._pos = saved
                 return None
             return TextNode(content='')
+
+        # ── 行内媒体/嵌入容器：保留地址信息（修复前 src 随标签一起消失）──
+        if not is_close and tag_name in ('video', 'audio', 'iframe', 'object'):
+            attr_start = self._pos
+            self._skip_html_attrs()
+            if self._pos < self._n and self._text[self._pos] == '>':
+                attr_text = self._text[attr_start:self._pos].strip()
+                self._pos += 1
+                children = self._parse_html_content_nested(tag_name, depth)
+                if children is not None:
+                    fallback = render_inline_to_text(children)
+                    return self._make_media_node(tag_name, attr_text, fallback)
+            self._pos = saved
+            return None
 
         # 非 void 标签：必须在 _HTML_TAG_MAP 中注册
         if tag_name not in _HTML_TAG_MAP:
@@ -425,6 +445,40 @@ class InlineHTMLMixin:
         if itype:
             return TextNode(content=f"\u25b8 <input {itype}>")
         return TextNode(content="\u25b8 <input>")
+
+    #: 行内媒体标签 → 图标（终端单行呈现）
+    _MEDIA_GLYPHS = {
+        "video": "\u25b6", "audio": "\u266a", "iframe": "\u29c9",
+        "object": "\u29c9", "source": "\u25c6", "track": "\u25c6",
+        "embed": "\u25c6",
+    }
+
+    def _make_media_node(self, tag: str, attr_text: str,
+                         fallback: str = "") -> InlineNode:
+        """行内 ``<video>`` / ``<audio>`` / ``<iframe>`` / ``<object>`` /
+        ``<source>`` / ``<track>`` → 带地址的媒体摘要（内容不丢）。
+
+        修复前这些标签在行内被当作透明容器或直接丢弃：``<audio src>`` /
+        ``<iframe src>`` 的地址完全消失，``<source>`` / ``<track>`` 连标签都
+        不显示。终端无媒体播放能力，但应保留来源信息。
+        """
+        attrs = _parse_attrs("<" + (tag or "media") + " "
+                             + (attr_text or "") + ">")
+        src = (str(attrs.get("src", "") or "")
+               or str(attrs.get("data", "") or "")
+               or str(attrs.get("data-src", "") or ""))
+        kind = str(attrs.get("type", "") or attrs.get("kind", "") or "")
+        glyph = self._MEDIA_GLYPHS.get(tag, "\u25c6")
+        parts = [glyph]
+        if kind:
+            parts.append(f"[{kind}]")
+        if src:
+            parts.append(src)
+        fallback = (fallback or "").strip()
+        if fallback and fallback != src:
+            parts.append(f"({fallback})")
+        text = " ".join(parts).strip()
+        return TextNode(content=text or fallback)
 
     @staticmethod
     def _extract_attr(text: str, name: str) -> str:

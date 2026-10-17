@@ -511,6 +511,10 @@ def _build_dispatch_table():
         h = n.meta.get("height", 0)
         if w and h:
             dim = f" ={w}x{h}"
+        elif w:
+            dim = f" ={w}"
+        elif h:
+            dim = f" =x{h}"
         url = n.url or ""
         title = getattr(n, 'title', '')
         ref_placeholder = ""

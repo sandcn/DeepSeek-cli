@@ -21,7 +21,8 @@ from ._table_utils import (
     _is_table_row, _is_table_data_row, _is_table_separator,
     _parse_table_row, _parse_table_alignments, _normalize_table_cells,
     _is_grid_table_border, _is_grid_table_row, parse_grid_table,
-    _is_dashed_separator, parse_dashed_table,
+    _is_dashed_separator, _is_multiline_border, _is_multiline_separator,
+    parse_dashed_table, parse_multiline_table,
 )
 from ._block_helpers import (
     _is_empty_line, _strip_left, _rstrip_line,
@@ -93,16 +94,43 @@ def _parse_admonition_marker(text: str) -> tuple[str, str, bool, bool] | None:
     return atype, rest.strip(), collapsible, collapsed
 
 
+def _parse_example_marker(stripped: str) -> tuple[str, int] | None:
+    """解析 Pandoc example list 标记 ``(@)`` / ``(@label)``。
+
+    返回 ``(label, close_index)``（``close_index`` 为 ``)`` 的下标）；标记
+    后必须跟空白（CommonMark 列表标记语义），否则不是 example 列表项。
+    供 ``_try_example_item`` / ``_is_list_item_start`` / ``_starts_new_block``
+    共用，保证三处判定一致。
+    """
+    if not stripped.startswith('(@'):
+        return None
+    close = stripped.find(')', 2, 66)
+    if close < 0:
+        return None
+    label = stripped[2:close]
+    if label:
+        if not label[0].isalnum():
+            return None
+        if any(not (ch.isalnum() or ch in '-_') for ch in label):
+            return None
+    if close + 1 >= len(stripped) or stripped[close + 1] not in ' \t':
+        return None
+    return label, close
+
+
 def _is_list_item_start(stripped: str) -> bool:
-    """剥离缩进后的行是否为列表项起始（``- x`` / ``1. x`` / ``1) x``）。
+    """剥离缩进后的行是否为列表项起始（``- x`` / ``1. x`` / ``1) x`` / ``(@) x``）。
 
     仅供「空行后列表上下文是否延续」的快速判定使用（不构造列表参数、
-    不修改状态）——与 ``_try_ul_item`` / ``_try_ol_item`` 的起始条件一致。
+    不修改状态）——与 ``_try_ul_item`` / ``_try_ol_item`` /
+    ``_try_example_item`` 的起始条件一致。
     """
     if not stripped:
         return False
     first = stripped[0]
     if first in '-*+' and len(stripped) > 1 and stripped[1] in ' \t':
+        return True
+    if first == '(' and _parse_example_marker(stripped) is not None:
         return True
     if not first.isdigit():
         return False
@@ -200,6 +228,14 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._grid_bq_depth: int = 0
         # Pandoc simple table 收集状态 (header_lines, sep_line, rows)（None = 未收集）
         self._dashed: tuple | None = None
+        # Pandoc multiline table 收集状态：
+        #   ``_multiline_top`` 为顶边框行（None = 未收集）；
+        #   ``_multiline_header`` / ``_multiline_sep`` / ``_multiline_body``
+        #   分别为表头行 / 列段分隔行 / 正文行。
+        self._multiline_top: str | None = None
+        self._multiline_header: list[str] = []
+        self._multiline_sep: str | None = None
+        self._multiline_body: list[str] = []
         # 定义列表续行缓冲
         self._def_cont_buffer: list[str] = []
         # Pandoc line block 收集缓冲（``| 行内容``，无内部 pipe）
@@ -256,6 +292,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._bq_depth_stack: list[int] = []
         self._bq_in_recursion: int = 0
         self._pending_lines: list[str] = []
+        #: 段落缓冲的**原始行**（保留行首缩进，供 Pandoc simple table 表头按
+        #: 分隔行列位置切分；普通段落渲染仍使用去掉 ≤3 空格的 ``_pending_lines``）。
+        #: 仅与 ``_pending_lines`` 等长时可信（其它路径修改 pending 后自动回退）。
+        self._pending_raw_lines: list[str] = []
 
         #: 当前段落内**未闭合的行内代码**反引号 run 长度（0 = 不在代码段内）。
         #: 用于判定行尾双空格 / 反斜杠是否为硬换行——CommonMark：代码段内的
@@ -332,9 +372,19 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._list_block_active: bool = False
         self._list_block_indent: int = 0
         self._list_block_lines: list[str] = []
+        #: 列表项内块级容器的**标记行元数据**（bullet/number/depth/宽度）：
+        #: 容器本身体现在缩进块中，但列表项标记（``•`` / ``1.``）仍须显示
+        #: ——提交时先发射一个空内容 LIST_ITEM，预览时据此补标记行。
+        self._list_block_marker: dict | None = None
 
         # 标题 ID 去重字典
         self._used_heading_ids: dict[str, int] = {}
+
+        # Pandoc example list（``(@)`` / ``(@label)``）：编号序列与标签映射。
+        # ``(@)`` 与首次出现的 ``(@label)`` 依次分配下一个编号；同一标签再次
+        # 出现沿用原编号（Pandoc 语义：标签是稳定引用）。预览只读、不推进。
+        self._example_numbers: dict[str, int] = {}
+        self._example_next: int = 1
 
         # ── Front Matter（文档头元信息块）──
         #   _doc_started：文档是否已开始（首个非空行后置 True）——Front Matter
@@ -349,6 +399,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # 上一个实际发射的 Token 类型（跨 feed 保留）——表格表注判定用。
         self._prev_emitted_type: TokenType | None = None
 
+        # Pandoc **前置表注**（``Table: 说明`` 位于表格上方）：暂存文本，下一
+        # 行开始表格时随 TABLE 一起发射；否则按普通段落输出（不丢内容）。
+        # 仅接受 ``Table:`` / ``Table caption:`` / ``表:`` / ``表注:`` 前缀——
+        # ``: 说明`` 与定义列表冲突，仍只支持后置形式。
+        self._pending_table_caption: str | None = None
+
         # HTML 块原始行缓冲（``<table>`` 等结构化标签的整体解析用）。
         self._html_lines: list[str] = []
         # HTML 块内同名标签的当前嵌套深度（起始标签计 1，内层 ``</tag>``
@@ -361,11 +417,16 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
     def _reset_normal_state(self):
         """重置 NORMAL 状态变量。"""
         self._pending_lines = []
+        self._pending_raw_lines = []
         self._table_pending_rows.clear()
         self._table_pending_bq = False
         self._grid_lines = None
         self._grid_bq_depth = 0
         self._dashed = None
+        self._multiline_top = None
+        self._multiline_header = []
+        self._multiline_sep = None
+        self._multiline_body = []
         self._in_admonition = False
         self._admonition_type = ''
         self._adm_head_text = ''
@@ -379,6 +440,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._def_cont_buffer.clear()
         self._line_block_rows.clear()
         self._list_indents.clear()
+        self._list_block_marker = None
 
     # ═══════════════════════════════════════════════════════════
     # 公共接口
@@ -548,6 +610,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # ── Pandoc line block 收集缓冲 ──
         self._flush_line_block(tokens)
 
+        # ── Pandoc multiline table 收集缓冲 ──
+        if self._multiline_top is not None:
+            if self._multiline_sep is not None:
+                self._emit_multiline_table(tokens)
+            else:
+                self._flush_multiline_fallback(tokens)
+
         # ── 第1.2步：未决的 Front Matter 起始定界符（该行单独出现且文档结束）──
         if self._pending_fm is not None:
             delim = self._pending_fm
@@ -612,6 +681,17 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if self._in_admonition:
             self._emit_admonition_close_ref(tokens)
 
+        # ── 第4.5步：未决的前置表注（其后始终没有表格）按段落输出 ──
+        # 若仍有表格候选缓冲（第7/8/9步才提交），表注交由对应发射点处理，
+        # 避免表注排到表格之前。
+        if (self._pending_table_caption is not None
+                and not self._table_pending_rows
+                and self._grid_lines is None
+                and self._dashed is None):
+            caption = self._pending_table_caption
+            self._pending_table_caption = None
+            self._pending_lines.insert(0, caption)
+
         # ── 第5步：刷出段落缓冲 ──
         self._flush_paragraph(tokens)
 
@@ -656,6 +736,14 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if len(lines) <= limit:
             return list(lines)
         return lines[-limit:]
+
+    def _append_pending_caption_preview(self, out: list[Token]) -> list[Token]:
+        """表格预览后附加暂存的前置表注（只读，不修改解析状态）。"""
+        caption = self._pending_table_caption
+        if caption is not None:
+            out.append(Token(TokenType.TABLE_CAPTION, caption,
+                             {"preview": True}))
+        return out
 
     def _preview_table_rows(self, rows: list[list[str]]) -> list[list[str]]:
         """表格预览行（超 ``_PREVIEW_MAX_LINES`` 时保留表头 + 最近行）。
@@ -791,6 +879,34 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         tail = self._peek_incomplete_tail()
         tail_lines = [tail] if tail else []
 
+        # ── Pandoc multiline table（收集中预览）──
+        if self._multiline_top is not None and st == _State.NORMAL:
+            if self._multiline_sep is not None:
+                body = list(self._multiline_body)
+                if tail and not _is_multiline_border(tail):
+                    body.append(tail)
+                # 预览有界化：只解析最近若干行（提交路径仍完整解析），
+                # 避免超长表格流式期间每帧 O(全文) 重排。
+                body = self._preview_tail(body)
+                parsed = parse_multiline_table(
+                    self._multiline_header, self._multiline_sep, body)
+                if parsed is not None:
+                    rows, aligns = parsed
+                    return self._append_pending_caption_preview([
+                        Token(TokenType.TABLE, "", {
+                            "rows": self._preview_table_rows(rows),
+                            "alignments": aligns,
+                            "preview": True,
+                        })])
+                return out
+            lines = list(self._multiline_header)
+            if tail and not _is_multiline_separator(tail):
+                lines.append(tail)
+            if lines:
+                return [Token(TokenType.PARAGRAPH, "\n".join(lines),
+                              {"preview": True})]
+            return out
+
         # ── Front Matter（未闭合预览：元信息卡片）──
         if st == _State.FRONT_MATTER:
             # ★ 预览行数上限：Front Matter 流式期间每帧都会重建预览内容
@@ -918,7 +1034,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     "alignments": list(self._table_alignments),
                     "preview": True,
                 }))
-            return out
+            return self._append_pending_caption_preview(out)
 
         # ── 脚注定义续行（活动行）预览抑制 ──
         # 脚注定义内容在块闭合时才进入文末脚注列表；流式期间缩进活动行若
@@ -1064,7 +1180,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 }))
             else:
                 out.extend(self._preview_pending_single_row(rows_src[0]))
-            return out
+            return self._append_pending_caption_preview(out)
 
         # ── Grid table（Pandoc ``+---+``）收集中的预览 ──
         if self._grid_lines is not None:
@@ -1085,7 +1201,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             else:
                 out.append(Token(TokenType.PARAGRAPH, "\n".join(lines),
                                  {"preview": True}))
-            return out
+            return self._append_pending_caption_preview(out)
 
         # ── Pandoc simple table 收集中的预览 ──
         if self._dashed is not None:
@@ -1104,6 +1220,19 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 out.append(Token(TokenType.PARAGRAPH,
                                  "\n".join(list(header) + [sep] + rows2),
                                  {"preview": True}))
+            return self._append_pending_caption_preview(out)
+
+        # 暂存的前置表注（其后表格尚未开始）：按表注行预览，避免整行不可见。
+        if self._pending_table_caption is not None and not (
+                self._table_pending_rows or self._grid_lines is not None
+                or self._dashed is not None
+                or self._multiline_top is not None):
+            out.append(Token(TokenType.TABLE_CAPTION,
+                             self._pending_table_caption,
+                             {"preview": True}))
+            if self._pending_lines or tail_lines:
+                out.extend(self._preview_tokens_for_normal(
+                    self._pending_lines, tail))
             return out
 
         if self._pending_lines or tail_lines:
@@ -1327,6 +1456,24 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     "checked": ol.get('checked', False),
                     "cancelled": ol.get('cancelled', False),
                     "delimiter": ol.get('delimiter', '.'),
+                    "preview": True,
+                })]
+
+            # Pandoc example list（``(@)`` / ``(@label)``，编号列表语义）
+            ex = self._try_example_item(stripped, line, allocate=False)
+            if ex is not None:
+                return [Token(TokenType.LIST_ITEM, ex['text'], {
+                    "indent": ex['indent'],
+                    "depth": self._preview_list_depth(ex['indent']),
+                    "bullet": False, "number": ex['number'],
+                    "marker_width": (ex.get('marker_width',
+                                            len(str(ex['number'])) + 2)
+                                     + (4 if ex.get('todo') else 0)),
+                    "start": ex.get('start', ex['number']),
+                    "todo": ex.get('todo', False),
+                    "checked": ex.get('checked', False),
+                    "cancelled": ex.get('cancelled', False),
+                    "delimiter": ex.get('delimiter', '.'),
                     "preview": True,
                 })]
         except Exception:
@@ -1600,6 +1747,33 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         """NORMAL 状态：按首字符调度表分派语法检测。"""
         stripped = _strip_left(line).rstrip('\n')
 
+        # ── Pandoc multiline table（顶/底长横线 + 列段分隔）──
+        # 顶边框先进入候选收集；遇到列段分隔行后收集正文，底边框时提交。
+        # 未形成表格（无分隔行 / 被其它块打断）时回退为「分隔线 + 段落」，
+        # 内容不丢。
+        if self._multiline_top is not None:
+            # 引用块内的 multiline table：后续行仍带 ``>`` 前缀，交给引用递归
+            # 剥离后再进入本方法（否则 ``> H1`` 会原样进入表头）。
+            if (self._bq_active and self._bq_in_recursion == 0
+                    and _is_blockquote_line(stripped)):
+                self._parse_blockquote(stripped, tokens)
+                return
+            if (self._bq_active and self._bq_in_recursion == 0
+                    and not _is_blockquote_line(stripped)):
+                # 引用结束：先提交表格，当前行继续按顶层内容解析（关闭引用）
+                if self._multiline_sep is not None:
+                    self._emit_multiline_table(tokens)
+                else:
+                    self._flush_multiline_fallback(tokens)
+            if self._handle_multiline_line(line, stripped, tokens):
+                return
+        elif (not self._pending_lines and not self._table_pending_rows
+                and not self._list_indents and self._grid_lines is None
+                and self._dashed is None
+                and _is_multiline_border(stripped)):
+            self._start_multiline_table(stripped, tokens)
+            return
+
         # ── Pandoc line block 结束（非 ``|`` 行出现）──
         if self._line_block_rows and not stripped.startswith('|'):
             self._flush_line_block(tokens)
@@ -1648,6 +1822,20 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             self._handle_empty_line(tokens)
             return
 
+        # ── Pandoc 前置表注推进（``Table: 说明`` 位于表格上方）──
+        # 暂存行在下一非空行到来时判定：可能开始表格 → 继续保留（表格发射
+        # 时随 TABLE 追加）；否则按普通段落输出（Pandoc 语义：非表格上下文
+        # 下它就是正文），保持在更早段落行之前。
+        if self._pending_table_caption is not None:
+            if not self._line_may_start_table(stripped):
+                # 普通文本行可能是 simple table 的表头/段落续行：暂存保持，
+                # 由 ``_flush_paragraph``（段落结束）或表格发射点接管；遇到
+                # 明确的新块起始则先按段落输出表注（顺序不丢）。
+                if self._starts_new_block(stripped):
+                    caption = self._pending_table_caption
+                    self._pending_table_caption = None
+                    self._pending_lines.insert(0, caption)
+
         # ── 块引用懒续行（CommonMark lazy continuation）──
         # 引用块内未完成段落的续行可省略 ``>`` 前缀：``> foo\nbar`` 中 ``bar``
         # 仍属引用内容（渲染 ``│ foo`` / ``│ bar``）。修复前该行触发引用块关闭，
@@ -1665,6 +1853,20 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # ── 注释行：[//]: # (comment) 或 [//]: # comment ──
         if stripped.startswith('[//]:'):
             return
+
+        # ── Pandoc 前置表注识别（表格**上方**的 ``Table: 说明``）──
+        # 仅接受明确前缀（``: 说明`` 与定义列表冲突，仍只支持后置形式），且
+        # 要求当前无未完成段落/表格候选——避免把正文行误判为表注。
+        if (self._pending_table_caption is None
+                and not self._pending_lines
+                and not self._table_pending_rows
+                and self._bq_in_recursion == 0
+                and not (self._prev_emitted_type is TokenType.TABLE
+                         or (tokens and tokens[-1].type is TokenType.TABLE))
+                and self._is_prefixed_table_caption(stripped)):
+            self._pending_table_caption = self._try_table_caption(stripped)
+            if self._pending_table_caption is not None:
+                return
 
         # ── 参考式链接定义的多行标题（前一行为 ``[id]: url``，本行为缩进
         #    标题）——补全 ref_map 并消费本行（不作为正文输出）。 ──
@@ -1702,8 +1904,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # ── Pandoc simple / grid table 起始（列表项外；列表项内的缩进块已由
         #    上方 ``_handle_list_block_line`` 收集后子解析，保留缩进语义）──
         if _is_dashed_separator(stripped) and self._pending_lines:
-            header = list(self._pending_lines)
+            if len(self._pending_raw_lines) == len(self._pending_lines):
+                header = list(self._pending_raw_lines)
+            else:
+                header = list(self._pending_lines)
             self._pending_lines = []
+            self._pending_raw_lines = []
             self._dashed = (header, stripped, [])
             return
         if _is_grid_table_border(stripped):
@@ -2046,6 +2252,21 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
     # ── 表格表注 ────────────────────────────────────────
 
     @staticmethod
+    def _is_prefixed_table_caption(stripped: str) -> bool:
+        """是否带有**明确**表格表注前缀（前缀后须为空白或行尾）。
+
+        用于前置表注（表格上方）识别：``Table: 说明`` / ``Table caption:`` /
+        ``Caption:`` / ``表注:`` / ``表:``。要求前缀后是空白，避免
+        ``table:foo`` 这类正文被吞。
+        """
+        lower = stripped.lower()
+        for prefix in ('table caption:', 'table:', 'caption:', '表注:', '表:'):
+            if lower.startswith(prefix):
+                rest = stripped[len(prefix):]
+                return not rest or rest[0] in ' \t'
+        return False
+
+    @staticmethod
     def _try_table_caption(stripped: str) -> str | None:
         """识别表格表注行（``: 说明`` / ``Table: 说明`` / ``表: 说明``）。"""
         if not stripped:
@@ -2181,6 +2402,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                         if isinstance(ln, str) and ln.strip()
                     ]
                     self._pending_lines = []
+                    self._pending_raw_lines = []
                     term = terms[-1] if terms else ""
                     # ★ 将续行内容合并到前一个 DEFINITION_ITEM 中（不是当前这个）
                     if self._def_cont_buffer:
@@ -2234,7 +2456,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                         self._flush_paragraph(tokens)
                         self._emit_blockquote_close(tokens)
                         if self._maybe_start_list_block_item(
-                                ul['text'], ul['indent'], ul['indent'] + 2):
+                                ul['text'], ul['indent'], ul['indent'] + 2,
+                                marker={"bullet": True}, tokens=tokens):
                             return True
                         self._update_list_indent(ul['indent'])
                         # 标记显示宽度：符号 + 空格；任务项再加复选框 ``[x] ``（4）
@@ -2416,7 +2639,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     self._flush_paragraph(tokens)
                     self._emit_blockquote_close(tokens)
                     if self._maybe_start_list_block_item(
-                            ul['text'], ul['indent'], ul['indent'] + 2):
+                            ul['text'], ul['indent'], ul['indent'] + 2,
+                            marker={"bullet": True}, tokens=tokens):
                         return True
                     self._update_list_indent(ul['indent'])
                     # 标记显示宽度：符号 + 空格；任务项再加复选框 ``[x] ``（4）
@@ -2445,36 +2669,25 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             try:
                 ol = self._try_ol_item(stripped, line)
                 if ol is not None:
-                    self._flush_paragraph(tokens)
-                    self._emit_blockquote_close(tokens)
-                    # marker_width 由 _try_ol_item 计算（"1. " 或 "1) "）
-                    marker_width = ol.get('marker_width', len(str(ol['number'])) + 2)
-                    if ol.get('todo'):
-                        marker_width += 4  # 复选框 ``[x] ``
-                    if self._maybe_start_list_block_item(
-                            ol['text'], ol['indent'],
-                            ol['indent'] + marker_width):
-                        return True
-                    self._update_list_indent(ol['indent'])
-                    tokens.append(Token(TokenType.LIST_ITEM, ol['text'], {
-                        "indent": ol['indent'], "depth": len(self._list_indents),
-                        "bullet": False, "number": ol['number'],
-                        "marker_width": marker_width,
-                        "start": ol.get('start', ol['number']),
-                        "todo": ol.get('todo', False),
-                        "checked": ol.get('checked', False),
-                        "cancelled": ol.get('cancelled', False),
-                        "delimiter": ol.get('delimiter', '.'),
-                    }))
-                    self._last_token_type = TokenType.LIST_ITEM
-                    self._last_list_indent = ol['indent']
-                    self._last_list_marker_width = marker_width
-                    self._last_list_content_col = ol['indent'] + marker_width
-                    return True
+                    return self._emit_numbered_item(ol, tokens)
             except Exception:
                 count = self._silent_downgrade_count.get('ordered_list', 0) + 1
                 self._silent_downgrade_count['ordered_list'] = count
                 _logger.warning("有序列表解析异常，降级为段落", exc_info=True)
+                if count > 5:
+                    raise
+            return False
+
+        def _handle_example_list() -> bool:
+            """Pandoc example list ``(@)`` / ``(@label)``（编号列表语义）。"""
+            try:
+                item = self._try_example_item(stripped, line)
+                if item is not None:
+                    return self._emit_numbered_item(item, tokens)
+            except Exception:
+                count = self._silent_downgrade_count.get('example_list', 0) + 1
+                self._silent_downgrade_count['example_list'] = count
+                _logger.warning("example list 解析异常，降级为段落", exc_info=True)
                 if count > 5:
                     raise
             return False
@@ -2525,6 +2738,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if first.isdigit():
             return _handle_ordered_list()
 
+        if first == '(' and stripped.startswith('(@'):
+            return _handle_example_list()
+
         handler = _DISPATCH.get(first)
         if handler is not None:
             return handler()
@@ -2562,6 +2778,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                         level = 1 if first == '=' else 2
                         heading_text = '\n'.join(self._pending_lines)
                         self._pending_lines = []
+                        self._pending_raw_lines = []
                         self._list_indents.clear()
                         tokens.append(Token(TokenType.HEADING, heading_text,
                                             {"level": level}))
@@ -2596,13 +2813,126 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         header, sep, rows = state
         parsed = parse_dashed_table(header, sep, rows)
         if parsed is None:
-            all_lines = list(header) + [sep] + list(rows)
+            all_lines = self._downgrade_table_caption(
+                list(header) + [sep] + list(rows))
             tokens.append(Token(TokenType.PARAGRAPH, "\n".join(all_lines)))
             return
         data, aligns = parsed
         tokens.append(Token(TokenType.TABLE, "", {
             "rows": data, "alignments": aligns,
         }))
+        self._emit_table_caption(tokens)
+
+    def _start_multiline_table(self, top: str, tokens: list[Token]) -> None:
+        """开始收集 Pandoc multiline table（顶边框行）。"""
+        self._flush_paragraph(tokens)
+        self._emit_blockquote_close(tokens)
+        self._list_indents.clear()
+        self._multiline_top = top
+        self._multiline_header = []
+        self._multiline_sep = None
+        self._multiline_body = []
+
+    def _reset_multiline(self) -> None:
+        self._multiline_top = None
+        self._multiline_header = []
+        self._multiline_sep = None
+        self._multiline_body = []
+
+    def _handle_multiline_line(self, line: str, stripped: str,
+                               tokens: list[Token]) -> bool:
+        """multiline table 收集中的行处理（返回 True 表示已消费）。"""
+        if self._multiline_sep is None:
+            if _is_multiline_separator(stripped):
+                self._multiline_sep = stripped
+                return True
+            if not stripped:
+                # 分隔行之前出现空行 → 不是表格，回退为分隔线 + 段落
+                self._flush_multiline_fallback(tokens)
+                return False
+            if len(self._multiline_header) >= 50:
+                self._flush_multiline_fallback(tokens)
+                return False
+            self._multiline_header.append(line.rstrip('\n'))
+            return True
+        if _is_multiline_border(stripped) or _is_dashed_separator(stripped):
+            self._emit_multiline_table(tokens)
+            return True
+        # 正文结束后的新块（空行 + 块级起始标记）→ 提交表格，当前行正常解析
+        if (self._multiline_body and not self._multiline_body[-1].strip()
+                and self._starts_new_block(stripped)):
+            self._emit_multiline_table(tokens)
+            return False
+        self._multiline_body.append(line.rstrip('\n'))
+        return True
+
+    def _emit_multiline_table(self, tokens: list[Token]) -> None:
+        """提交已收集的 multiline table（失败回退为分隔线 + 段落）。"""
+        top = self._multiline_top
+        headers = list(self._multiline_header)
+        sep = self._multiline_sep
+        body = list(self._multiline_body)
+        self._reset_multiline()
+        parsed = parse_multiline_table(headers, sep, body) if sep else None
+        if parsed is not None:
+            rows, aligns = parsed
+            tokens.append(Token(TokenType.TABLE, "", {
+                "rows": rows, "alignments": aligns,
+            }))
+            self._emit_table_caption(tokens)
+            return
+        self._emit_multiline_fallback_data(top, headers, sep, body, tokens)
+
+    def _flush_multiline_fallback(self, tokens: list[Token]) -> None:
+        top = self._multiline_top
+        headers = list(self._multiline_header)
+        sep = self._multiline_sep
+        body = list(self._multiline_body)
+        self._reset_multiline()
+        self._emit_multiline_fallback_data(top, headers, sep, body, tokens)
+
+    @staticmethod
+    def _emit_multiline_fallback_lines(lines: list[str], tokens: list[Token]) -> None:
+        """回退输出候选行：长横线按分隔线、其余按段落（空行保留）。"""
+        para: list[str] = []
+
+        def _flush_para() -> None:
+            if para:
+                tokens.append(Token(TokenType.PARAGRAPH, "\n".join(para)))
+                para.clear()
+
+        for raw in lines:
+            if not str(raw).strip():
+                _flush_para()
+                tokens.append(Token(TokenType.EMPTY_LINE))
+                continue
+            if _is_multiline_border(raw):
+                _flush_para()
+                tokens.append(Token(TokenType.HR))
+                continue
+            _s = str(raw).strip()
+            if (len(_s) >= 3 and all(ch in '- ' for ch in _s)
+                    and _s.count('-') >= 3):
+                _flush_para()
+                tokens.append(Token(TokenType.HR))
+                continue
+            para.append(raw)
+        _flush_para()
+
+    def _emit_multiline_fallback_data(self, top: str | None, headers: list[str],
+                                      sep: str | None, body: list[str],
+                                      tokens: list[Token]) -> None:
+        """multiline table 候选未成立 → 顶边框按分隔线、其余按段落输出。"""
+        lines = list(headers)
+        if sep:
+            lines.append(sep)
+        lines.extend(body)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        lines = self._downgrade_table_caption(lines)
+        if top:
+            tokens.append(Token(TokenType.HR))
+        self._emit_multiline_fallback_lines(lines, tokens)
 
     def _emit_grid_table(self, tokens: list[Token]) -> None:
         """提交已收集的 Grid table 行 → TABLE token（解析失败按段落，不丢内容）。"""
@@ -2614,7 +2944,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return
         parsed = parse_grid_table(lines)
         if parsed is None:
-            tok = Token(TokenType.PARAGRAPH, "\n".join(lines))
+            tok = Token(TokenType.PARAGRAPH,
+                        "\n".join(self._downgrade_table_caption(lines)))
             if bq_depth > 0:
                 tok.meta["bq_depth"] = bq_depth
             tokens.append(tok)
@@ -2624,6 +2955,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if bq_depth > 0:
             meta["bq_depth"] = bq_depth
         tokens.append(Token(TokenType.TABLE, "", meta))
+        self._emit_table_caption(tokens)
 
     def _start_table(self, sep_line: str, tokens: list[Token]):
         self._table_alignments = _parse_table_alignments(sep_line)
@@ -2649,12 +2981,48 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             self._table_rows = []
         self._state = _State.TABLE_ACTIVE
 
+    # ── 表格表注（前置暂存 / 后置识别） ──────────────────
+
+    @staticmethod
+    def _line_may_start_table(stripped: str) -> bool:
+        """该行是否**可能**开始表格（前置表注判定用，允许后续回退）。
+
+        只做保守前判：以 ``|`` / ``+`` 开头、含未转义 ``|``、或为 Pandoc
+        simple/multiline table 的分隔行/顶边框。误判的代价仅是表注稍后按
+        段落输出（内容不丢），因此宁可放宽。
+        """
+        if not stripped:
+            return False
+        if stripped[0] in '|+':
+            return True
+        if '|' in stripped.replace('\\|', ''):
+            return True
+        return (_is_dashed_separator(stripped)
+                or _is_multiline_border(stripped))
+
+    def _emit_table_caption(self, tokens: list[Token]) -> None:
+        """表格发射后追加暂存的前置表注（无暂存时无动作）。"""
+        caption = self._pending_table_caption
+        if caption is None:
+            return
+        self._pending_table_caption = None
+        tokens.append(Token(TokenType.TABLE_CAPTION, caption))
+
+    def _downgrade_table_caption(self, lines: list[str]) -> list[str]:
+        """表格候选回退为段落时，把暂存表注并入段首（保持原文顺序）。"""
+        caption = self._pending_table_caption
+        if caption is None:
+            return lines
+        self._pending_table_caption = None
+        return [caption] + list(lines)
+
     def _emit_table(self, tokens: list[Token]):
         if self._table_rows and self._table_alignments:
             tokens.append(Token(TokenType.TABLE, "", {
                 "rows": self._table_rows,
                 "alignments": self._table_alignments,
             }))
+            self._emit_table_caption(tokens)
         self._table_rows = []
         self._table_alignments = []
         self._table_pending_rows.clear()
@@ -2717,16 +3085,24 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._table_pending_rows = []
         if not rows:
             return
+        # 前置表注（``Table: 说明``）同样降级为普通段落，保持在候选行之前。
+        caption = self._pending_table_caption
+        if caption is not None:
+            self._pending_table_caption = None
         # ★ Pandoc line block（``| 行内容``）：每行以 ``| `` 开头且行内没有
         #   其他未转义 ``|``（避免把 ``| a | b |`` 这类表格候选误判为行块）。
         #   行块保留逐行语义 → 以换行连接为段落内容（渲染层按 ``\n`` 分行）。
         line_block = self._as_pandoc_line_block(rows)
         if line_block is not None:
+            if caption is not None:
+                tokens.append(Token(TokenType.PARAGRAPH, caption))
             if self._pending_lines:
                 self._pending_lines.extend(line_block)
             else:
                 tokens.append(Token(TokenType.PARAGRAPH, "\n".join(line_block)))
             return
+        if caption is not None:
+            rows = [caption] + rows
         if self._pending_lines:
             # 既有段落缓冲：按顺序并入（由后续 flush 统一发射，顺序不变）
             self._pending_lines.extend(rows)
@@ -2921,6 +3297,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             if self._pending_lines:
                 content = '\n'.join(self._pending_lines)
                 self._pending_lines.clear()
+                self._pending_raw_lines.clear()
                 tokens.append(Token(TokenType.BLOCKQUOTE_LINE, content,
                                     {"depth": old_depth}))
             tokens.append(Token(TokenType.BLOCKQUOTE_OPEN, "",
@@ -2932,6 +3309,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             if self._pending_lines:
                 content = '\n'.join(self._pending_lines)
                 self._pending_lines.clear()
+                self._pending_raw_lines.clear()
                 tokens.append(Token(TokenType.BLOCKQUOTE_LINE, content,
                                     {"depth": old_depth}))
             while self._bq_depth_stack and depth < self._bq_depth_stack[-1]:
@@ -2946,6 +3324,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             if self._pending_lines:
                 content = '\n'.join(self._pending_lines)
                 self._pending_lines.clear()
+                self._pending_raw_lines.clear()
                 tokens.append(Token(TokenType.BLOCKQUOTE_LINE, content,
                                     {"depth": old_depth}))
             new_depth = depth + 1
@@ -3028,6 +3407,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             depth = self._bq_depth_stack[-1] if self._bq_depth_stack else 1
             content = '\n'.join(self._pending_lines)
             self._pending_lines.clear()
+            self._pending_raw_lines.clear()
             tokens.append(Token(TokenType.BLOCKQUOTE_LINE, content,
                                 {"depth": depth}))
         while self._bq_depth_stack:
@@ -3090,6 +3470,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if first == '+' and _is_grid_table_border(stripped):
             # Pandoc grid table 边界（列表项内也作为块级容器整体收集）
             return True
+        if first == '-' and _is_multiline_border(stripped):
+            # Pandoc multiline table 顶/底边框
+            return True
         if first == '$' and stripped.startswith('$$'):
             return True
         if stripped == r'\[':
@@ -3101,8 +3484,45 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return True
         return False
 
+    def _emit_numbered_item(self, ol: dict, tokens: list[Token]) -> bool:
+        """发射编号列表项（有序列表 / Pandoc example list 共用）。
+
+        ``ol`` 由 ``_try_ol_item`` / ``_try_example_item`` 产出，字段一致：
+        ``text`` / ``indent`` / ``number`` / ``marker_width`` 等。
+        """
+        self._flush_paragraph(tokens)
+        self._emit_blockquote_close(tokens)
+        marker_width = ol.get('marker_width', len(str(ol['number'])) + 2)
+        if ol.get('todo'):
+            marker_width += 4  # 复选框 ``[x] ``
+        if self._maybe_start_list_block_item(
+                ol['text'], ol['indent'], ol['indent'] + marker_width,
+                marker={
+                    "bullet": False, "number": ol['number'],
+                    "delimiter": ol.get('delimiter', '.'),
+                }, tokens=tokens):
+            return True
+        self._update_list_indent(ol['indent'])
+        tokens.append(Token(TokenType.LIST_ITEM, ol['text'], {
+            "indent": ol['indent'], "depth": len(self._list_indents),
+            "bullet": False, "number": ol['number'],
+            "marker_width": marker_width,
+            "start": ol.get('start', ol['number']),
+            "todo": ol.get('todo', False),
+            "checked": ol.get('checked', False),
+            "cancelled": ol.get('cancelled', False),
+            "delimiter": ol.get('delimiter', '.'),
+        }))
+        self._last_token_type = TokenType.LIST_ITEM
+        self._last_list_indent = ol['indent']
+        self._last_list_marker_width = marker_width
+        self._last_list_content_col = ol['indent'] + marker_width
+        return True
+
     def _maybe_start_list_block_item(self, text: str, indent: int,
-                                     content_col: int) -> bool:
+                                     content_col: int,
+                                     marker: dict | None = None,
+                                     tokens: list[Token] | None = None) -> bool:
         """列表项内容本身以块级容器起始时，转入列表项内块级容器收集模式。
 
         CommonMark 的列表项内容是**块级内容**：``- ```\n  code\n  ``` `` 三行
@@ -3127,6 +3547,17 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._last_list_content_col = content_col
         # 标记显示宽度（内容列 - 缩进列）：渲染层据此把续行/嵌套块对齐内容列
         self._last_list_marker_width = max(2, content_col - indent)
+        # ★ 列表项标记行：内容整体是块级容器（``- ``` `` / ``- > q`` / 表格）时
+        #   列表项自身的 ``•`` / ``1.`` 仍须显示——发射一个空内容 LIST_ITEM，
+        #   容器行由其后的块级 Token 渲染（统一缩进到内容列）。
+        marker_meta = dict(marker or {"bullet": True})
+        marker_meta.setdefault("indent", indent)
+        marker_meta.setdefault("depth", len(self._list_indents))
+        marker_meta.setdefault("marker_width", max(2, content_col - indent))
+        self._list_block_marker = marker_meta
+        if tokens is not None:
+            tokens.append(Token(TokenType.LIST_ITEM, "",
+                                dict(marker_meta)))
         self._list_block_active = True
         # 容器内后续行按**列表内容列**剥离（``- ``` `` 的代码内容从第 2 列起）。
         self._list_block_indent = content_col
@@ -3184,6 +3615,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         lines = self._list_block_lines
         self._list_block_active = False
         self._list_block_lines = []
+        self._list_block_marker = None
         if not lines:
             return
         while lines and not lines[0].strip():
@@ -3326,6 +3758,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             if j < len(stripped) and stripped[j] in '.):' and (
                     j + 1 >= len(stripped) or stripped[j + 1] == ' '):
                 return True  # 有序列表项
+        if first == '(' and _parse_example_marker(stripped) is not None:
+            return True  # Pandoc example list 项
         if first == '$' and stripped.startswith('$$'):
             return True
         if stripped == r'\[':
@@ -3368,6 +3802,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             tokens.append(Token(TokenType.DEFINITION_ITEM, cont_text,
                                 {"term": "", "continuation": True}))
         raw = line.rstrip('\n')
+        # ★ Pandoc simple table：表头行需要保留原始行首缩进（列边界由分隔行
+        #   的 ``-`` 段位置决定；去掉 ≤3 空格会让表头整体左移、单元格错位）。
+        raw_for_table = raw
         # ★ CommonMark：段落行的行首 **≤3 个空格**缩进被忽略（「Up to three
         #   spaces of leading spaces are allowed and ignored」）；4+ 空格属缩进
         #   代码块、由上游分支判定，段落内的 4 空格续行保守保留原样。修复前
@@ -3417,6 +3854,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 # 奇数个反斜杠：最后一个 \ 消耗为硬换行标记
                 raw = raw[:-(backslash_count)] + '\\' * (backslash_count // 2) + '<br>'
         self._pending_lines.append(raw)
+        self._pending_raw_lines.append(raw_for_table)
 
     def _flush_paragraph(self, tokens: list[Token]):
         """刷新段落到 Token。如果存在待刷的定义续行内容，先合并追加。
@@ -3428,6 +3866,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         空边框行。与 Rich 路径 ``InlineHandler``（BLOCKQUOTE_LINE 立即带
         深度前缀渲染）语义对齐。
         """
+        if self._pending_table_caption is not None and self._pending_lines:
+            # 前置表注后跟的是普通段落（而非表格）：表注按段落首行输出。
+            self._pending_lines.insert(0, self._pending_table_caption)
+            self._pending_table_caption = None
         if self._def_cont_buffer:
             cont_text = '\n'.join(self._def_cont_buffer)
             if self._pending_lines:
@@ -3442,6 +3884,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if self._pending_lines:
             content = '\n'.join(self._pending_lines)
             self._pending_lines = []
+            self._pending_raw_lines = []
             if self._bq_active:
                 depth = self._bq_depth_stack[-1] if self._bq_depth_stack else 1
                 tokens.append(Token(TokenType.BLOCKQUOTE_LINE, content,
@@ -3456,6 +3899,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             # 列表项内块级容器的块内空行：并入收集缓冲（不产出 EMPTY_LINE，
             # 也保留列表上下文，使 ``- 项`` 空行后的围栏代码块仍归入该项）。
             self._list_block_lines.append('')
+            return
+        # 前置表注与表格之间允许空行：表注待定且当前无段落内容时不产生空行，
+        # 避免表格上方出现多余空行（表注稍后随表格发射）。
+        if self._pending_table_caption is not None and not self._pending_lines:
             return
         # 脚注定义 / 定义列表续行待定状态跨空行保留（GFM 多段落：空行后缩进
         # 续段仍归入同一脚注 / 定义）；无待定状态时无需处理。
@@ -3987,6 +4434,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         }))
         if caption:
             tokens.append(Token(TokenType.TABLE_CAPTION, caption))
+        self._emit_table_caption(tokens)
         return True
 
     # ── Fenced Div ───────────────────────────────────────
@@ -4249,6 +4697,64 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return None
         except Exception:
             _logger.debug("_try_ol_item异常，返回None", exc_info=True)
+            return None
+
+    # ── Pandoc example list（``(@)`` / ``(@label)``）────
+
+    def _example_number(self, label: str, allocate: bool = True) -> int:
+        """取/分配 example list 编号（``allocate=False`` = 纯读预览）。"""
+        if label:
+            existing = self._example_numbers.get(label)
+            if existing is not None:
+                return existing
+            if not allocate:
+                return self._example_next
+            number = self._example_next
+            self._example_numbers[label] = number
+            self._example_next = number + 1
+            return number
+        number = self._example_next
+        if allocate:
+            self._example_next = number + 1
+        return number
+
+    def _try_example_item(self, stripped: str, line: str,
+                          allocate: bool = True) -> dict | None:
+        """识别 Pandoc example list 项 ``(@)`` / ``(@label)``。
+
+        语义等同编号列表项：``(@)`` 依次编号，``(@label)`` 首次出现时分配编号、
+        再次出现沿用（标签稳定）。``allocate=False`` 供流式预览使用（不推进
+        编号计数）。
+        """
+        try:
+            content = _strip_left(stripped)
+            parsed = _parse_example_marker(content)
+            if parsed is None:
+                return None
+            label, close = parsed
+            rest = content[close + 1:]
+            indent = 0
+            for ch in line:
+                if ch in ' \t':
+                    indent += 1
+                else:
+                    break
+            number = self._example_number(label, allocate)
+            text = _rstrip_line(_strip_marker_spaces(rest))
+            text, todo, checked, cancelled = self._parse_list_item_checkbox(text)
+            return {
+                'indent': indent,
+                'number': number,
+                'text': text,
+                'start': number,
+                'todo': todo,
+                'checked': checked,
+                'cancelled': cancelled,
+                'delimiter': '.',
+                'marker_width': len(str(number)) + 2,
+            }
+        except Exception:
+            _logger.debug("_try_example_item异常，返回None", exc_info=True)
             return None
 
     # ── 定义列表 ───────────────────────────────────────

@@ -111,6 +111,93 @@ def test_list_block_preview_keeps_quote_prefix_and_reaches_final():
     ]
 
 
+def test_list_item_with_block_content_keeps_marker():
+    assert _one_shot("- ```\n  x\n  ```\n") == [
+        "\u2022 ",
+        "  ```",
+        "  x",
+        "  ```",
+    ]
+    assert _one_shot("- > quote\n") == ["\u2022 ", "  \u2502 quote"]
+    assert _one_shot("1. | a |\n   |---|\n   |1|\n")[0] == "1. "
+
+
+# ══════════════════════════════════════════════════════════
+# Pandoc multiline table
+# ══════════════════════════════════════════════════════════
+
+_MULTILINE = (
+    "--------------------------\n"
+    " H1          H2\n"
+    "-----------  ---------------\n"
+    " A           B\n"
+    "\n"
+    " C           D\n"
+    "--------------------------\n"
+)
+
+
+def test_multiline_table_basic():
+    lines = _one_shot(_MULTILINE)
+    assert lines[0].startswith("\u250c")
+    assert "\u2502 H1 \u2502 H2 \u2502" in lines
+    assert any("A" in ln and "B" in ln for ln in lines)
+    assert any("C" in ln and "D" in ln for ln in lines)
+    assert lines[-1].startswith("\u2514")
+
+
+def test_multiline_table_stream_matches_once():
+    assert _stream(_MULTILINE) == _one_shot(_MULTILINE)
+
+
+def test_multiline_table_multiline_cell():
+    src = (
+        "--------------------------\n"
+        " H1          H2\n"
+        "-----------  ---------------\n"
+        " A           first line\n"
+        "             second line\n"
+        "--------------------------\n"
+    )
+    lines = _one_shot(src)
+    joined = "\n".join(lines)
+    assert "first line" in joined and "second line" in joined
+
+
+def test_multiline_table_fallback_keeps_long_hr_and_paragraph():
+    src = (
+        "--------------------------\n"
+        "just a paragraph\n"
+        "--------------------------\n"
+    )
+    lines = _one_shot(src)
+    assert sum(1 for ln in lines if ln.startswith("\u2500")) == 2
+    assert "just a paragraph" in lines
+
+
+def test_multiline_table_in_blockquote_and_list():
+    quote = _one_shot(
+        "> --------------------------\n"
+        ">  H1          H2\n"
+        "> -----------  ---------------\n"
+        ">  A           B\n"
+        "> --------------------------\n"
+    )
+    assert quote[0].startswith("\u2502 \u250c")
+    assert all(ln.startswith("\u2502 ") for ln in quote)
+
+    item = _one_shot(
+        "- item\n\n"
+        "  --------------------------\n"
+        "   H1          H2\n"
+        "  -----------  ---------------\n"
+        "   A           B\n"
+        "  --------------------------\n"
+    )
+    assert item[0] == "\u2022 item"
+    assert any(ln.startswith("  \u250c") for ln in item)
+
+
 def test_nested_admonition_body_has_no_extra_quote_prefix():
     lines = _one_shot("> > [!NOTE] t\n> > body\n")
     assert lines[0] == "\u25a0 NOTE t"
@@ -195,6 +282,16 @@ def test_inline_img_attributes():
     assert _plain(
         'before <img src="a.png" alt="A" title="T" width="10" height="20"> after'
     ) == 'before \U0001f5bc\ufe0f A (a.png =10x20) "T" after'
+
+
+def test_inline_media_tags_keep_source():
+    assert _plain('a <audio src="a.mp3"></audio> b') == "a \u266a a.mp3 b"
+    assert _plain('a <iframe src="x"></iframe> b') == "a \u29c9 x b"
+    assert _plain('a <object data="x"></object> b') == "a \u29c9 x b"
+    assert _plain('a <source src="x" type="video/webm"> b') == \
+        "a \u25c6 [video/webm] x b"
+    assert _plain('a <track src="x" kind="captions"> b') == \
+        "a \u25c6 [captions] x b"
 
 
 # ══════════════════════════════════════════════════════════
@@ -298,3 +395,151 @@ def test_preview_snapshot_cleared_after_close():
 ])
 def test_stream_matches_once_for_new_syntax(src):
     assert _stream(src) == _one_shot(src)
+
+
+# ══════════════════════════════════════════════════════════
+# Pandoc 前置表注（表格上方的 ``Table: 说明``）
+# ══════════════════════════════════════════════════════════
+
+TABLE_CAPTION_PIPE = "Table: Demo table\n\n| a | b |\n|---|---|\n| 1 | 2 |\n"
+
+TABLE_CAPTION_GRID = (
+    "Table: Grid demo\n\n"
+    "+---+---+\n| a | b |\n+===+===+\n| 1 | 2 |\n+---+---+\n"
+)
+
+TABLE_CAPTION_MULTILINE = (
+    "Table: Multi demo\n"
+    "-------------------------------------------------------------\n"
+    " Name     Age\n"
+    "-------- -------\n"
+    " Alice     30\n"
+    "\n"
+    " Bob       40\n"
+    "-------------------------------------------------------------\n"
+)
+
+
+def test_table_caption_before_pipe_table():
+    lines = _one_shot(TABLE_CAPTION_PIPE)
+    assert lines[0].startswith("┌")
+    assert "Demo table" in lines[-1]
+    # 表注与表格之间的空行不应渲染为额外空行
+    assert "" not in lines
+
+
+def test_table_caption_before_grid_table():
+    lines = _one_shot(TABLE_CAPTION_GRID)
+    assert lines[0].startswith("┌")
+    assert "Grid demo" in lines[-1]
+
+
+def test_table_caption_before_simple_table_keeps_columns():
+    lines = _one_shot(
+        "Table: Simple demo\n\n  Right     Left\n-------    ------\n     12    12\n")
+    assert "Right" in lines[1]
+    assert "Left" in lines[1]
+    assert "Simple demo" in lines[-1]
+
+
+def test_table_caption_before_multiline_table():
+    lines = _one_shot(TABLE_CAPTION_MULTILINE)
+    assert any("Alice" in line for line in lines)
+    assert any("Bob" in line for line in lines)
+    assert "Multi demo" in lines[-1]
+
+
+def test_table_caption_without_table_renders_as_paragraph():
+    assert _one_shot("Table: just text\n\nsome paragraph\n") == [
+        "just text", "some paragraph"]
+
+
+def test_table_caption_before_heading_keeps_order():
+    assert _one_shot("Table: x\n# H\n") == ["x", "H"]
+
+
+def test_table_caption_before_list_keeps_order():
+    assert _one_shot("Table: x\n- item\n") == ["x", "• item"]
+
+
+def test_table_caption_inside_paragraph_is_plain_text():
+    assert _one_shot("hello\nTable: x\n") == ["hello", "Table: x"]
+
+
+def test_table_caption_after_table_still_works():
+    lines = _one_shot("| a | b |\n|---|---|\n| 1 | 2 |\n\n: below\n")
+    assert "below" in lines[-1]
+
+
+def test_table_caption_visible_in_stream_preview():
+    r = AnsiStreamRenderer(width=80)
+    r.write("Table: Demo table\n")
+    preview = [ln.plain for ln in r.take_preview_lines()]
+    assert any("Demo table" in line for line in preview)
+    r.close()
+
+
+@pytest.mark.parametrize("src", [
+    TABLE_CAPTION_PIPE,
+    TABLE_CAPTION_GRID,
+    TABLE_CAPTION_MULTILINE,
+])
+def test_table_caption_stream_matches_once(src):
+    assert _stream(src) == _one_shot(src)
+
+
+# ══════════════════════════════════════════════════════════
+# Pandoc example list（``(@)`` / ``(@label)``）
+# ══════════════════════════════════════════════════════════
+
+def test_example_list_auto_numbers():
+    assert _one_shot("(@) first\n(@) second\n") == ["1. first", "2. second"]
+
+
+def test_example_list_label_keeps_stable_number():
+    assert _one_shot("(@a) one\n(@) two\n(@a) again\n") == [
+        "1. one", "2. two", "1. again"]
+
+
+def test_example_list_nested_in_bullet():
+    assert _one_shot("- a\n  (@) x\n") == ["• a", "  1. x"]
+
+
+def test_example_list_requires_trailing_space():
+    assert _one_shot("(@)x\n") == ["(@)x"]
+
+
+def test_example_list_preview_classification():
+    r = AnsiStreamRenderer(width=80)
+    r.write("(@) first item")
+    preview = [ln.plain for ln in r.take_preview_lines()]
+    assert any("1. first item" in line for line in preview)
+    r.close()
+
+
+# ══════════════════════════════════════════════════════════
+# Pandoc 链接 / 图片属性块
+# ══════════════════════════════════════════════════════════
+
+def test_link_attrs_do_not_leak_text():
+    assert _one_shot("[text](url){.cls}\n")[0] == "text"
+    assert _one_shot("[text](url){#id key=val}\n")[0] == "text"
+
+
+def test_link_attrs_on_reference_link():
+    lines = _one_shot("[ref][1]{.c}\n\n[1]: http://x\n")
+    assert lines[0].startswith("ref")
+
+
+def test_image_single_side_size():
+    assert "=100" in _one_shot("![alt](a.png){width=100}\n")[0]
+    assert "=x20" in _one_shot("![alt](a.png){height=20}\n")[0]
+
+
+def test_reference_image_attrs_size():
+    lines = _one_shot("![alt][1]{width=50% height=20}\n\n[1]: a.png\n")
+    assert "=50x20" in lines[0]
+
+
+def test_plain_braces_not_treated_as_attrs():
+    assert _one_shot("a {not attrs} b\n") == ["a {not attrs} b"]
