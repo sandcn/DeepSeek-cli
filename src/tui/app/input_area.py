@@ -117,7 +117,7 @@ _PLACEHOLDER_STREAMING_BASE = "AI 生成中"
 #   流式时启用）。文本进入快照键（time_bucket 已隐式进键），桶边界自动刷新。
 _PLACEHOLDER_ROTATION = (
     _PLACEHOLDER_TEXT,
-    "输入消息 · /help 查看命令 · Ctrl+H 轨迹视图 · F1 帮助速查",
+    "输入消息 · /help 查看命令 · F2 命令面板 · Ctrl+H 轨迹视图 · F1 帮助速查",
     "输入消息 · Tab 补全 · Ctrl+N 切换模型 · Ctrl+B 切换模式",
     "输入消息 · 拖动文件到窗口插入路径 · Ctrl+O 编辑消息 · Ctrl+L 清屏",
     "输入消息 · /cost 查看用量 · /theme 切换主题 · Ctrl+T 快捷切换",

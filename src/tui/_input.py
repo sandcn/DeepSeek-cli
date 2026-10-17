@@ -569,6 +569,38 @@ class Input:
         """设置缓冲区文本（用于预填），光标移到末尾。"""
         self._buffer_editor.set_buffer(text)
 
+    def prefill_text(self, text: str) -> bool:
+        """把文本填入输入框但不提交（命令面板 Tab 路径）。
+
+        关闭可能残留的补全弹窗并清空旧编辑态，写入文本后回显——用户可继续
+        补充参数再按 Enter。空文本返回 False（不改变当前输入）。
+        """
+        text = str(text or "")
+        if not text:
+            return False
+        self._dismiss_completion()
+        self.reset()
+        self._buffer_editor.set_buffer(text)
+        self._buffer_editor._echo(text)
+        return True
+
+    def submit_text(self, text: str, *, append_history: bool = True) -> bool:
+        """提交一段文本（等价输入后按 Enter；命令面板 Enter 路径）。
+
+        先清空当前编辑态与补全弹窗，再写入文本并走 ``_enter`` 提交——与真实
+        Enter 同一路径（``_submitted_text`` / ``_input_ready`` / 回显 / 历史），
+        编排器按普通用户输入消费。空文本返回 False。
+        """
+        text = str(text or "")
+        if not text:
+            return False
+        self._dismiss_completion()
+        self.reset()
+        self._buffer_editor.set_buffer(text)
+        append = self._append_history_locked if append_history else (lambda _text: None)
+        self._buffer_editor._enter(append_history=append)
+        return True
+
     def get_history_indicator(self) -> str:
         """历史浏览状态指示器，非导航模式返回空字符串。"""
         return self._buffer_editor.get_history_indicator()
@@ -818,6 +850,14 @@ class Input:
         重绘——见 ``_make_fullscreen_toggle_cb`` 通用工厂）；None 清除注入。
         """
         self._dispatcher.set_help_toggle_callback(cb)
+
+    def set_palette_toggle_callback(self, cb) -> None:
+        """设置 F2 命令面板开关回调（委托 InputDispatcher，2026-10）。
+
+        cb 签名: ``() -> None``（翻转 model.fullscreen "palette" ↔ "" + 请求
+        重绘——见 ``_make_fullscreen_toggle_cb`` 通用工厂）；None 清除注入。
+        """
+        self._dispatcher.set_palette_toggle_callback(cb)
 
     def set_logs_toggle_callback(self, cb) -> None:
         """设置 F12 会话日志视图开关回调（委托 InputDispatcher，2026-10）。

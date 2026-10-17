@@ -361,7 +361,7 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | `Ctrl+P` / `↑` | 浏览输入历史（上一条） |
 | `↓` | 浏览输入历史（下一条） |
 | `Ctrl+R` | 反向历史搜索（配置门控；默认重试上一轮） |
-| `Ctrl+T` | 循环切换配色主题（dark/light/high-contrast/nord/dracula/gruvbox） |
+| `Ctrl+T` | 循环切换配色主题（dark/light/high-contrast/nord/dracula/gruvbox/tokyo-night/catppuccin） |
 | `Ctrl+L` | 清屏 |
 | `Ctrl+D` | 退出程序（输入为空时） |
 | `Ctrl+Z` | 撤销输入编辑（连续同类编辑合并为一步） |
@@ -382,10 +382,18 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | `Ctrl+U` | 删除光标到行首 |
 | `Ctrl+K` | 删除光标到行尾 |
 | `↑` / `↓`（补全可见） | 移动补全高亮 |
-| `F1` / `Ctrl+/` | 打开/关闭帮助速查视图 |
+| `F1` / `Ctrl+/` | 打开/关闭帮助速查视图（命令行上 Enter 直接执行、Tab 填入输入框） |
+| `F2` | 打开/关闭**命令面板**（模糊检索全部斜杠命令：输入即筛选，↑↓/PgUp/PgDn 选择，Enter 执行，Tab 填入输入框，Esc/F2 关闭；最近使用命令置顶） |
 | `F11` | 打开/关闭文件变更审查器（沙盒 diff / 回滚 / 历史时间线 / 统计；打开后按一次 F11 或 Esc 即关闭） |
 | `F12` | 打开/关闭会话日志 / 投影浏览器 |
 | `Ctrl+H` | 打开/关闭轨迹视图（DSH 风格台账 + 检查器） |
+
+> **命令面板（F2）**：无需记住命令名——输入任意关键词即可按名称 / 别名 /
+> 描述 / 分组做子序列模糊匹配；右侧实时显示命令详情、别名、同组命令与操作
+> 方式；`Enter` 立即执行，`Tab` 只填入输入框（便于补充 `/load <ID>` 等参数）。
+> 最近执行过的命令会在空查询时置顶（★ 标记），面板在 AI 流式输出期间也能
+> 立即打开。状态栏同时展示工作区信息（`⎇ 分支  当前目录`，可在插件清单中
+> 按 `status_segment_workspace` 禁用/替换）。
 
 ---
 
@@ -412,7 +420,7 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | `/load <ID>` | — | 加载保存的对话 |
 | `/sessions` | — | 列出所有保存的对话 |
 | `/export [路径]` | — | 导出当前对话为 Markdown（含 SubAgent 聊天信息） |
-| `/theme <名称>` | — | 切换配色主题（dark / light / high-contrast / nord / dracula / gruvbox） |
+| `/theme <名称>` | — | 切换配色主题（dark / light / high-contrast / nord / dracula / gruvbox / tokyo-night / catppuccin） |
 | `/changes` | — | **文件变更审查器**（全屏界面，**F11** 快捷打开/关闭：打开后按一次 **F11 或 Esc** 即关闭）：左栏文件列表按 `t` 切目录树、`m` 切消息维度、`s` 轮换排序（路径/次数/最近/索引）、`T` 循环类型过滤；右栏按 `d` 在差异 / **历史时间线**（该文件逐次修改 + diff）间切换、`i` 统计面板、`r` 回滚预览；`x` 回滚该文件 · `u` 撤销回滚 · `X` 回滚全部 · `R` 回滚到消息索引 · `y` 复制路径 · `c` 复制差异 · `w`/`W` 导出变更报告（md/json）· `/` 搜索 · `f` 过滤 · `?` 帮助 · Esc/F11 关闭（可加文件名过滤） |
 | `/sandbox` | — | **文件沙盒概览**（全屏界面，Esc/F11 关闭）：统计区块（概览 / 变更类型 / 工具分布 / 缓存与回滚）+ `r` 刷新 · `c` 清空沙盒（再按确认）· `h` **消息维度历史**（`/sandbox history`：按消息浏览变更并 `R` 回滚到消息）· `l` **变更记录流水**（`/sandbox records`：逐条变更 + 差异 + `x` 回滚）· Esc/F11 关闭 |
 | `/logs` | — | **会话日志 / 投影浏览器**（全屏界面，**F12** 快捷打开）：左栏事件流（`#seq 图标 类型 时间 摘要`）+ 右栏按 `v` 循环四模式——事件详情（data 展开）/ 消息投影（`derive_messages` 模型历史）/ 投影状态（`turnBoundary` 等投影单元 snapshot）/ 一致性校验（`SessionLog.verify`「模型可见即已记录」）；`F` 跟随最新（随会话日志增长**实时刷新**）/ `r` 刷新 / `/` 搜索 · `n`/`N`/`p` 定位 · `f` 过滤 · `?` 帮助 · Esc 关闭 |
@@ -981,7 +989,7 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 | 领域 | 能力 |
 |---|---|
 | 渲染 | 增量流式 Markdown（CommonMark / GFM 主体 + Pandoc 扩展）、LaTeX 公式终端排版、Mermaid 11 类图 ASCII 渲染、HTML 块与行内元素、Front Matter、代码高亮与行号、TOC、Diff 高亮；Rich 与零 Rich（自绘 ANSI）两条路径共享解析层 |
-| TUI | React Ink 风格自研框架（调和器 / flexbox / hooks / 帧差异渲染 / 标准控件库）、恒定 30Hz 渲染、行级增量与 committed 前缀复用、全屏视图族（轨迹 / 日志 / 配置 / 插件 / 模型 / 文件沙盒 / 变更审查 / MCP / 技能 / 用量 / 搜索 / 键位 / 通知 / 导出）、模态与底部视图机制、vim 风格导航与搜索 |
+| TUI | React Ink 风格自研框架（调和器 / flexbox / hooks / 帧差异渲染 / 标准控件库）、恒定 30Hz 渲染、行级增量与 committed 前缀复用、全屏视图族（轨迹 / 日志 / 配置 / 插件 / 模型 / 文件沙盒 / 变更审查 / MCP / 技能 / 用量 / 搜索 / 键位 / 通知 / 导出 / 命令面板）、模态与底部视图机制、vim 风格导航与搜索、模糊命令面板与工作区状态段、8 套配色主题 |
 | Agent | Pipeline 中间件链、上下文自动压缩（dsh 同款）、工具调用 DAG 并行调度（显式引用 / 路径重叠 / user_select 独占 / 类别约束四层依赖 + Kahn 分层）、SubAgent 并发派发（plan / map / review / execute）、会话日志与投影、断点与恢复 |
 | 内核 | 无特权插件内核（Fiber 生命周期 / 服务容器 / 五模式事件分发 / 作用域与拦截）、Profile / Bundle / Patch 三层组装、热重载与依赖诊断、运行时不变量自检 |
 | 能力接缝 | 六边形端口-适配器（配置 / 模型 / 持久化 / 事件 / 中断 / 可观测性 / 工具注册表）、三段式 seam（`ctx.fs` / `shell` / `subprocess` / `terminals` / `jobs` / `sandbox`，Provider 可整体替换） |

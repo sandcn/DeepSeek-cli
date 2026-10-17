@@ -80,6 +80,8 @@ async def test_default_profile_registers_all(cli_kernel):
         "logs",
         # 2026-10 文件沙盒视图族（概览 / 消息维度历史 / 记录流水）
         "sandbox", "sandbox_history", "sandbox_records",
+        # 2026-10 命令面板（F2）
+        "palette",
     }
 
 

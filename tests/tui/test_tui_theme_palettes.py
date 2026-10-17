@@ -22,7 +22,7 @@ def _clean_theme():
     th.reset()
 
 
-NEW_THEMES = ("nord", "dracula", "gruvbox")
+NEW_THEMES = ("nord", "dracula", "gruvbox", "tokyo-night", "catppuccin")
 
 
 def test_builtin_theme_names_include_new():

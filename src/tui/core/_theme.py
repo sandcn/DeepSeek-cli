@@ -195,6 +195,36 @@ def _gruvbox_palette() -> Palette:
     )
 
 
+def _tokyo_night_palette() -> Palette:
+    """Tokyo Night 主题（深蓝夜色 + 霓虹青紫——官方色板 256 色近似）。"""
+    return Palette(
+        accent=Style(fg=111), accent_bold=Style(fg=111, bold=True),
+        dim=Style(fg=60), sep=Style(fg=238), time=Style(fg=73),
+        user_icon=Style(fg=170, bold=True), user_text=Style(fg=253),
+        notice=Style(fg=60), text=Style(fg=252),
+        token=Style(fg=141), speed=Style(fg=214),
+        tool_ok=Style(fg=114), tool_fail=Style(fg=203), tool_running=Style(fg=214),
+        border=Style(fg=60), code_bg=Style(bg=235),
+        selection_bg=Style(bg=60), selection_fg=Style(fg=15),
+        placeholder=Style(fg=60),
+    )
+
+
+def _catppuccin_palette() -> Palette:
+    """Catppuccin Mocha 主题（柔和粉紫 + 高可读文本——官方色板 256 色近似）。"""
+    return Palette(
+        accent=Style(fg=183), accent_bold=Style(fg=183, bold=True),
+        dim=Style(fg=245), sep=Style(fg=238), time=Style(fg=117),
+        user_icon=Style(fg=183, bold=True), user_text=Style(fg=253),
+        notice=Style(fg=245), text=Style(fg=253),
+        token=Style(fg=183), speed=Style(fg=215),
+        tool_ok=Style(fg=114), tool_fail=Style(fg=210), tool_running=Style(fg=215),
+        border=Style(fg=240), code_bg=Style(bg=235),
+        selection_bg=Style(bg=60), selection_fg=Style(fg=15),
+        placeholder=Style(fg=245),
+    )
+
+
 class ThemeRegistry:
     """主题注册表（按名解析 Palette，不可变）。
 
@@ -231,6 +261,8 @@ _BUILTIN_THEME_SPECS: dict[str, Callable[[], Palette]] = {
     "nord": _nord_palette,
     "dracula": _dracula_palette,
     "gruvbox": _gruvbox_palette,
+    "tokyo-night": _tokyo_night_palette,
+    "catppuccin": _catppuccin_palette,
 }
 
 _theme_lock = threading.RLock()

@@ -299,7 +299,7 @@ CONFIG_ENTRY_DESC_MAP: dict[str, str] = {
     "MODEL_PROFILES": "模型档案列表（name/model/base_url/api_key/provider/temperature/reasoning_effort；**模型列表唯一来源**，/models 界面增删改选并按模型设置温度与思考级别）",
     "REASONING_EFFORT": "全局默认思考级别（low/medium/high/max；/models 中可按模型覆盖）",
     "TEMPERATURE": "全局默认温度（0.0~2.0，越高越随机；/models 中可按模型覆盖）",
-    "THEME": "UI 配色主题（dark/light/high-contrast）",
+    "THEME": "UI 配色主题（dark/light/high-contrast/nord/dracula/gruvbox/tokyo-night/catppuccin）",
     # ── 数值配置 ──
     "MAX_CONTEXT_CHARS": "上下文最大字符数",
     "MAX_OUTPUT_CHARS": "单次输出最大字符数",
@@ -349,6 +349,8 @@ CONFIG_ENTRY_OPTION_MAP: dict[str, tuple[tuple[str, str], ...]] = {
         ("nord", "Nord 主题（冷色调）"),
         ("dracula", "Dracula 主题（糖果色）"),
         ("gruvbox", "Gruvbox 主题（暖色复古）"),
+        ("tokyo-night", "Tokyo Night 主题（深蓝夜色）"),
+        ("catppuccin", "Catppuccin 主题（柔和粉紫）"),
     ),
     "REASONING_EFFORT": (
         ("low", "低——最快响应，思考最少"),

@@ -211,6 +211,13 @@ class AppModel(_ToolOutputMixin):
         # 时重建并写回 logs_view）。F12 / /logs 打开后由视图渲染期每帧调用，
         # 支持流式输出期间打开并自动跟进；None = 未注入（测试/无会话）。
         self.logs_refresher: object | None = None
+        # 命令面板执行器（装配注入 ``Input.submit_text`` / ``Input.prefill_text``，
+        # 2026-10 F2 命令面板）：视图只调用这两个回调把选中的命令交给输入层，
+        # 与用户真实输入 Enter 的路径一致；None = 未装配（测试/无会话）。
+        self.palette_submit: object | None = None
+        self.palette_prefill: object | None = None
+        # 命令面板最近使用命令名（内存态；面板空查询时置顶展示）。
+        self.palette_recent: list = []
         # 文件沙盒视图**实时刷新器**（装配注入 ``core.commands._sandbox_cmd.
         # make_sandbox_refresher(session, apply)`` 产出；``() -> bool``——数据
         # 签名变化时重建并写回沙盒视图状态）。F11 / /changes / /sandbox 打开

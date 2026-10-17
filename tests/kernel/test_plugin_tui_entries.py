@@ -248,7 +248,8 @@ async def test_default_status_segments():
     kernel = await build_kernel("cli")
     try:
         assert set(active_segment_ids()) == {
-            "model", "tools", "elapsed", "tokens", "messages", "speed",
+            "model", "tools", "elapsed", "tokens", "messages", "workspace",
+            "speed",
         }
     finally:
         await shutdown_kernel(kernel)

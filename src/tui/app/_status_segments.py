@@ -43,6 +43,7 @@ _BUILTIN_SPECS: Tuple[StatusSegment, ...] = (
     StatusSegment("tools", 10, "src.tui.app.status_bar:_tools_segment"),
     StatusSegment("elapsed", 20, "src.tui.app.status_bar:_elapsed_segment"),
     StatusSegment("messages", 25, "src.tui.app.status_bar:_messages_segment"),
+    StatusSegment("workspace", 26, "src.tui.app.status_bar:_workspace_segment"),
     StatusSegment("tokens", 30, "src.tui.app.status_bar:_tokens_segment"),
     StatusSegment("speed", 40, "src.tui.app.status_bar:_speed_segment"),
 )

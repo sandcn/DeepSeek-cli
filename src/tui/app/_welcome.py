@@ -50,7 +50,7 @@ _S_TITLE = Style(fg=45, bold=True)   # 卡片标题（亮青加粗）
 GUIDE_ROWS: tuple = (
     "直接输入消息开始对话",
     "/help 查看命令 · /model 选择模型 · /theme 主题",
-    "Tab 补全 · Ctrl+N 切换模型 · Ctrl+H 轨迹视图 · F1 帮助",
+    "Tab 补全 · F2 命令面板 · Ctrl+H 轨迹视图 · F1 帮助",
 )
 
 # ── 卡片化参数 ──

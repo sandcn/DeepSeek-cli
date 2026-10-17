@@ -213,6 +213,8 @@ class CommandUiAdapter:
                 "dark": "暗色", "light": "亮色", "high-contrast": "高对比",
                 "nord": "Nord 冷色调", "dracula": "Dracula 糖果色",
                 "gruvbox": "Gruvbox 暖色复古",
+                "tokyo-night": "Tokyo Night 深蓝夜色",
+                "catppuccin": "Catppuccin 柔和粉紫",
             }
             return [(n, desc.get(n, n)) for n in ThemeRegistry.names()]
         except Exception:

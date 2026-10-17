@@ -245,6 +245,14 @@ def create_framework(model, tui_config, line_tracker, input_instance):
     input_instance.set_help_toggle_callback(
         _make_fullscreen_toggle_cb(model, session, "help")
     )
+    # ★ 2026-10：F2 命令面板开关（模态全屏视图）——翻转
+    #   model.fullscreen（"palette" ↔ ""）；执行/填入经注入的输入层回调交给
+    #   真实输入路径（命令面板不直接持有 Input）。
+    input_instance.set_palette_toggle_callback(
+        _make_fullscreen_toggle_cb(model, session, "palette")
+    )
+    model.palette_submit = input_instance.submit_text
+    model.palette_prefill = input_instance.prefill_text
     # ★ 2026-10：F12 会话日志 / 投影浏览器视图开关（模态全屏视图）——直接
     #   翻转 model.fullscreen（**不经命令队列**：``/logs`` 命令在 AI 生成
     #   期间会被排队，F12 需在流式输出中也能立即打开），打开时经装配注入的

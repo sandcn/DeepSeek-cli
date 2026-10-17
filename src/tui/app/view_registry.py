@@ -117,6 +117,8 @@ _BUILTIN_SPECS: tuple = (
              description="导出向导（格式 / 范围 / 路径）"),
     ViewSpec("logs", "fullscreen", "src.tui.app.logs_view.LogsView",
              description="会话日志 / 投影浏览器（事件流 / 模型历史 / 投影状态 / 一致性校验）"),
+    ViewSpec("palette", "fullscreen", "src.tui.app.command_palette.CommandPalette",
+             description="命令面板（模糊检索 / 最近使用 / 快速执行，F2 开关）"),
 )
 
 _builtin_specs: Dict[str, ViewSpec] = {spec.id: spec for spec in _BUILTIN_SPECS}

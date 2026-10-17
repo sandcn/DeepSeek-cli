@@ -180,6 +180,13 @@ class InputDispatcher:
         # no-op（测试/无装配场景兼容）。
         self._help_toggle_callback = None
 
+        # ── F2 命令面板开关回调（2026-10，装配注入） ──
+        # F2 功能键（CSI \x1b[12~）→ 打开/关闭模态全屏「命令面板」视图
+        # （模糊检索命令 / 最近使用 / Enter 执行 / Tab 填入）。走独立回调而
+        # 非命令队列——**AI 流式输出期间也能立即打开**。未注入回调时 F2 为
+        # no-op（测试/无装配场景兼容）。
+        self._palette_toggle_callback = None
+
         # ── F12 会话日志 / 投影浏览器视图开关回调（2026-10，装配注入） ──
         # F12 功能键（CSI \x1b[24~）→ 打开/关闭模态全屏「会话日志」视图
         # （事件流 / 模型历史投影 / 投影状态 / 一致性校验）。走独立回调而
@@ -388,6 +395,19 @@ class InputDispatcher:
             cb()
         except Exception:
             _logger.debug("Ctrl+/ help 回调异常", exc_info=True)
+
+    def _handle_palette_toggle(self) -> None:
+        """F2 命令面板开关：调用注入的回调（未注入时 no-op）。
+
+        独立于命令队列——AI 流式输出期间也能立即打开/关闭。
+        """
+        cb = self._palette_toggle_callback
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception:
+            _logger.debug("F2 palette 回调异常", exc_info=True)
 
     def _handle_logs_toggle(self) -> None:
         """F12 会话日志视图开关：调用注入的回调（未注入时 no-op）。
@@ -981,6 +1001,8 @@ class InputDispatcher:
             # no-op（不再静默丢弃——router 可经 useInput 钩子消费）。
             if kind == "f1":
                 self._handle_help_toggle()
+            elif kind == "f2":
+                self._handle_palette_toggle()
             elif kind == "f11":
                 self._handle_changes_toggle()
             elif kind == "f12":
@@ -1272,6 +1294,7 @@ class InputDispatcher:
         "clear_screen": "_clear_screen_callback",
         "trace_toggle": "_trace_toggle_callback",
         "help_toggle": "_help_toggle_callback",
+        "palette_toggle": "_palette_toggle_callback",
         "logs_toggle": "_logs_toggle_callback",
         "changes_toggle": "_changes_toggle_callback",
         "mouse_fallback": "_mouse_fallback_callback",
@@ -1484,6 +1507,16 @@ class InputDispatcher:
         （关闭），本回调不再被调用（不会重复翻转）。
         """
         self.register_callback("help_toggle", cb)
+
+    def set_palette_toggle_callback(self, cb) -> None:
+        """设置 F2 命令面板开关回调（2026-10，装配注入）。
+
+        cb 签名: ``() -> None``（翻转 model.fullscreen "palette" ↔ "" + 请求
+        重绘——见 ``_make_fullscreen_toggle_cb`` 通用工厂）；None 可清除注入。
+        未注入时 F2 为 no-op（测试/无装配场景兼容）。
+        ★ 面板打开期间 F2/Esc 被 CommandPalette 模态 handler 消费（关闭）。
+        """
+        self.register_callback("palette_toggle", cb)
 
     def set_logs_toggle_callback(self, cb) -> None:
         """设置 F12 会话日志 / 投影浏览器视图开关回调（2026-10，装配注入）。

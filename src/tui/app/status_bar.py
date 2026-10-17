@@ -45,6 +45,8 @@ from src.tui._format import format_speed as _format_speed
 _S_TOKEN = Style(fg=68)
 _S_SPEED = Style(fg=214)
 _S_TOOL_OK = Style(fg=41)
+_S_WORKSPACE_BRANCH = Style(fg=110)
+_S_WORKSPACE_PATH = Style(fg=242)
 
 # BEAUTY-7：streaming braille spinner 帧序列（与 _subagent_render 共用语义）
 # ★ 方向4：唯一真源 _fx.SPINNER_FRAMES——本模块保留别名（兼容既有 patch 路径；
@@ -288,6 +290,33 @@ def _messages_segment(ctx: StatusContext) -> list:
     if count <= 0:
         return []
     return [StyledRun(f"\u2709 {count}", Style(fg=110))]
+
+
+def _workspace_segment(ctx: StatusContext) -> list:
+    """工作区段：Git 分支 + 当前目录（``⎇ main  ~/proj``）。
+
+    分支/目录查询复用欢迎卡环境信息实现（``_welcome._git_branch`` 有 5s
+    缓存；目录读取开销极小）。两者都不可用时返回空列表（不占状态栏）。
+    目录按显示宽度截断，避免长路径挤掉 token/速度等运行信息。
+    """
+    try:
+        from ._welcome import _git_branch, _short_cwd
+        from src.tui._width import truncate_width
+
+        branch = str(_git_branch() or "")
+        cwd = str(_short_cwd() or "")
+    except Exception:
+        return []
+    if not branch and not cwd:
+        return []
+    runs: list[StyledRun] = []
+    if branch:
+        runs.append(StyledRun(f"\u2387 {branch}", _S_WORKSPACE_BRANCH))
+    if cwd:
+        if runs:
+            runs.append(StyledRun("  ", None))
+        runs.append(StyledRun(truncate_width(cwd, 32), _S_WORKSPACE_PATH))
+    return runs
 
 
 def _build_status_runs(model, dot_elapsed: float = 0.0,

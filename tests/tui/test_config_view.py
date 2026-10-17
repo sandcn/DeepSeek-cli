@@ -195,6 +195,7 @@ class TestViewModel:
         # 枚举（theme/reasoning_effort）→ 选择界面
         assert [o[0] for o in entries["THEME"]["options"]] == [
             "dark", "light", "high-contrast", "nord", "dracula", "gruvbox",
+            "tokyo-night", "catppuccin",
         ]
         assert [o[0] for o in entries["REASONING_EFFORT"]["options"]] == [
             "low", "medium", "high", "max",

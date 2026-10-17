@@ -91,9 +91,9 @@ def _disp_len(text: str) -> int:
         return len(text)
 
 
-def _sec(kind: str, group: str, text: str, runs: list) -> dict:
-    """构建一个帮助行段（结构化：类型/所属分组/纯文本/渲染 runs）。"""
-    return {"kind": kind, "group": group, "text": text, "runs": runs}
+def _sec(kind: str, group: str, text: str, runs: list, name: str = "") -> dict:
+    """构建一个帮助行段（结构化：类型/所属分组/纯文本/渲染 runs/命令名）。"""
+    return {"kind": kind, "group": group, "text": text, "runs": runs, "name": name}
 
 
 def _help_sections(width: int) -> list:
@@ -144,6 +144,7 @@ def _help_sections(width: int) -> list:
                     ))
                 sections.append(_sec(
                     "cmd", group, "".join(r.text for r in runs), runs,
+                    name=name,
                 ))
         pad_exit = " " * (cmd_w - len("exit") + 2)
         exit_runs = [
@@ -153,6 +154,7 @@ def _help_sections(width: int) -> list:
         ]
         sections.append(_sec(
             "cmd", "general", "".join(r.text for r in exit_runs), exit_runs,
+            name="exit",
         ))
     else:
         empty_runs = [StyledRun("  (暂无可用命令)", _S_HINT)]
@@ -307,6 +309,21 @@ def HelpView(props) -> object:
         else:
             set_collapsed(lambda c: frozenset(set(c) | {group}))
 
+    def _activate(submit: bool) -> bool:
+        """执行 / 填入光标所在命令（仅命令行；无执行器时返回 False）。"""
+        if total <= 0:
+            return False
+        sec = rows[cur]
+        name = str(sec.get("name") or "")
+        if sec.get("kind") != "cmd" or not name:
+            return False
+        from ._command_actions import run_command
+
+        if not run_command(model, name, submit=submit):
+            return False
+        model.fullscreen = ""
+        return True
+
     def _handle(event) -> bool:
         if not visible:
             return False
@@ -344,7 +361,15 @@ def HelpView(props) -> object:
         if kind == "char" and ch == "N" and query:
             _jump_match(-1)
             return True
-        if kind == "enter" or (kind == "char" and ch == " "):
+        if kind == "enter":
+            if _activate(True):
+                return True
+            _toggle_collapse()
+            return True
+        if kind == "tab":
+            _activate(False)
+            return True
+        if kind == "char" and ch == " ":
             _toggle_collapse()
             return True
         if kind == "arrow_up" or (kind == "char" and ch == "k"):
@@ -398,8 +423,8 @@ def HelpView(props) -> object:
             ),
             StyledRun(match_hint, _S_SEARCH if query else _S_HINT),
             StyledRun(
-                "  \u2191\u2193/jk \u9009\u62e9 \u00b7 Enter \u6298\u53e0 \u00b7 / \u641c\u7d22"
-                " \u00b7 Esc \u5173\u95ed",
+                "  \u2191\u2193/jk \u9009\u62e9 \u00b7 Enter \u6267\u884c/\u6298\u53e0"
+                " \u00b7 Tab \u586b\u5165 \u00b7 / \u641c\u7d22 \u00b7 Esc \u5173\u95ed",
                 _S_HINT,
             ),
         ]

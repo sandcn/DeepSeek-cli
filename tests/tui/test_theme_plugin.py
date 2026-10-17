@@ -75,7 +75,10 @@ def test_manifest_declares_escape_monitor_entry():
 
 async def test_default_profile_themes(cli_kernel):
     service = cli_kernel.resolve_service("themes")
-    expected = ["dark", "light", "high-contrast", "nord", "dracula", "gruvbox"]
+    expected = [
+        "dark", "light", "high-contrast", "nord", "dracula", "gruvbox",
+        "tokyo-night", "catppuccin",
+    ]
     assert service.names() == expected
     assert th.ThemeRegistry.names() == tuple(expected)
 

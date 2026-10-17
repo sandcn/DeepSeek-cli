@@ -446,6 +446,8 @@ UI_VIEW_ENTRIES = [
      "config": {"id": "export"}},
     {"id": "ui_view_logs", "plugin": "src.plugins.ui_views:apply_ui_view",
      "config": {"id": "logs"}},
+    {"id": "ui_view_palette", "plugin": "src.plugins.ui_views:apply_ui_view",
+     "config": {"id": "palette"}},
 ]
 
 # ── Preset 条目（每个内置 preset 一个独立插件条目） ─────────
@@ -667,6 +669,8 @@ STATUS_SEGMENT_ENTRIES = [
      "config": {"id": "tokens"}},
     {"id": "status_segment_messages", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
      "config": {"id": "messages"}},
+    {"id": "status_segment_workspace", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
+     "config": {"id": "workspace"}},
     {"id": "status_segment_speed", "plugin": "src.plugins.status_segment_entries:apply_status_segment",
      "config": {"id": "speed"}},
 ]
@@ -709,6 +713,10 @@ THEME_ENTRIES = [
      "config": {"name": "dracula"}},
     {"id": "theme_gruvbox", "plugin": "src.plugins.theme_entries:apply_theme",
      "config": {"name": "gruvbox"}},
+    {"id": "theme_tokyo_night", "plugin": "src.plugins.theme_entries:apply_theme",
+     "config": {"name": "tokyo-night"}},
+    {"id": "theme_catppuccin", "plugin": "src.plugins.theme_entries:apply_theme",
+     "config": {"name": "catppuccin"}},
 ]
 
 # ── 技能来源条目（每个内置来源一个独立插件条目） ────────────
