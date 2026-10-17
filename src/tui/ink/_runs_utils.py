@@ -261,17 +261,33 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
     special = needs_grapheme_clusters("".join(ch for ch, _st, _lk in items))
     cluster_lens = [1] * n
     cluster_widths = [0] * n
+    cluster_starts: set[int] = set()
+    plain = ""
     if special:
         plain = "".join(ch for ch, _st, _lk in items)
         for c_start, c_end, cluster in grapheme_spans(plain):
             cw = cluster_width(cluster)
             length = c_end - c_start
+            cluster_starts.add(c_start)
             for k in range(c_start, c_end):
                 cluster_lens[k] = length
                 cluster_widths[k] = cw
     lines: list[Line] = []
     i = 0
     while i < n:
+        # ★ 断点落在字形簇内部（换行/空格断行可能切开被控制字符吸附的
+        #   组合簇，如 "\n" 后跟肤色修饰符）时，预计算的簇长/簇宽从 i 起
+        #   不再有效——按剩余文本重算后缀簇元信息（每个断点至多一次）。
+        #   修复前按旧簇长推进越过行尾 → 超宽行 / ``items[k]`` 越界
+        #   IndexError。
+        if special and i not in cluster_starts:
+            for c_start, c_end, cluster in grapheme_spans(plain[i:]):
+                cw = cluster_width(cluster)
+                length = c_end - c_start
+                cluster_starts.add(i + c_start)
+                for k in range(i + c_start, i + c_end):
+                    cluster_lens[k] = length
+                    cluster_widths[k] = cw
         # 贪心填充一行（不超 max_width）
         j = i
         width = 0
@@ -285,7 +301,11 @@ def wrap_runs_by_width(runs: list[StyledRun], max_width: int, hard: bool = False
             #   后开始）——修复前 break 在 last_space 记录之前，行内最后一个
             #   空格未被记录，断点回退到字符级 → 下一行以空格开头（如
             #   "brown" 被拆成 " brow"/"n"）。
-            if ch == " ":
+            # ★ 字形簇原子性：仅「独立空格簇」可作为断点——空格被 ZWJ
+            #   吞入组合簇（如 " \u200d"）时按空格断行会让下一行从簇内部
+            #   开始，预计算的 cluster_lens/cluster_widths 失效（按整簇
+            #   推进越过行尾 → 超宽行 / ``items[k]`` 越界 IndexError）。
+            if ch == " " and (not special or cluster_lens[j] == 1):
                 last_space = j
             if special:
                 cw = cluster_widths[j]

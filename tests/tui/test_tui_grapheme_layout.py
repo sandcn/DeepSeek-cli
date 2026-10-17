@@ -26,6 +26,7 @@ from src.tui.ink import Line, StyledRun, h
 from src.tui.ink._layout_measure import _runs_natural_width
 from src.tui.ink._paint_canvas import _line_as_dict, _slice_run_text
 from src.tui.ink._runs_utils import (
+    _runs_total_width,
     truncate_line,
     truncate_runs,
     truncate_runs_ellipsis,
@@ -246,3 +247,72 @@ def test_divider_trailing_split_cluster_line_width():
     )
     assert frame.lines
     assert all(line.width <= 5 for line in frame.lines)
+
+
+# ── 共享宽度/制表符真源（ANSI + 字形簇） ──────────────────
+# 回归：``string_width`` 含 ANSI 时整串回退逐字符路径 → 组合 emoji 宽度
+# 高估；``expand_tabs`` 逐码点推进列宽 → 组合 emoji 后制表位错误。
+
+def test_shared_string_width_with_ansi_and_clusters():
+    assert string_width("\x1b[31m" + _ZWJ_FAMILY + "\x1b[0m") == 2
+    assert string_width("\x1b[1m" + _SKIN + "\x1b[0m") == 2
+    assert string_width("a\x1b[31m" + _KEYCAP + "\x1b[0mb") == 4
+    # ANSI 序列本身零宽（不与后随/前导文本拼接错算）
+    assert string_width("a\x1b[0m" + _FLAG) == 3
+
+
+def test_shared_expand_tabs_uses_cluster_width():
+    from src._text_width import expand_tabs as shared_expand_tabs
+
+    # ZWJ 家庭 emoji 实际宽 2 → tab stop 8 补 6 空格
+    assert shared_expand_tabs(_ZWJ_FAMILY + "\tb", tab_width=8) == _ZWJ_FAMILY + " " * 6 + "b"
+    assert shared_expand_tabs(_SKIN + "\tb", tab_width=8) == _SKIN + " " * 6 + "b"
+    # ANSI 序列不占列
+    assert shared_expand_tabs("\x1b[31mab\x1b[0m\tb", tab_width=8) == "\x1b[31mab\x1b[0m" + " " * 6 + "b"
+    # ZWJ 不得吞并后续制表符（字面 \t 漏展开）
+    out = shared_expand_tabs("\u200d\u200d\tb", tab_width=8)
+    assert "\t" not in out
+    assert out.endswith("b")
+    assert out.count(" ") >= 1
+
+
+def test_styled_run_expands_tab_after_zwj():
+    run = StyledRun("\u200d\u200d\tb")
+    assert "\t" not in run.text
+    assert run.width == string_width(run.text)
+
+
+# ── 字形簇断行回归（断点落在簇内部） ──────────────────────
+
+def test_wrap_runs_word_break_inside_cluster_no_crash_or_overflow():
+    # 空格被 ZWJ 吞入组合簇：按空格断行会让下一行从簇内部开始——旧实现
+    # 按整簇长度推进越过行尾（IndexError）或产出超宽行。
+    for text in (
+        "b文🏽 \u200da\u0301\u0301文\u20e3",
+        "🇨🏽👍中 \u20e3\u200dbxab 🇳",
+        " \u200d\u200d\tb",
+    ):
+        for width in (1, 2, 3, 4, 6):
+            lines = wrap_runs_by_width([StyledRun(text)], width)
+            for line in lines:
+                assert line.width <= width, (text, width, line.plain)
+
+
+def test_wrap_runs_newline_before_extender_keeps_line_width():
+    # 换行后紧跟肤色修饰符：旧实现把 "\n🏽" 视为同一簇，断行后从簇内部
+    # 开始推进（IndexError / 超宽）。
+    for text in ("\n🏽", "a\n🏽b", "a\n\u200d\u200d\tb"):
+        for width in (1, 2, 3):
+            lines = wrap_runs_by_width([StyledRun(text)], width)
+            for line in lines:
+                assert line.width <= width, (text, width, line.plain)
+
+
+def test_truncate_start_keycap_after_ri_not_overflow():
+    # RI 后的 keycap 组合符曾被当作独立零宽簇：truncate-start 选中它后与
+    # 省略号拼接，宽度被误计为 2（结果超宽）。
+    text = "🇳🇳🇨\u20e3x\u20e3   "
+    for width in range(1, 8):
+        out = truncate_runs_start([StyledRun(text)], width)
+        assert _runs_total_width(out) <= width, (width, "".join(r.text for r in out))
+

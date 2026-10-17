@@ -327,19 +327,35 @@ def grapheme_clusters(text: str):
         start = i
         cp = ord(text[i])
         i += 1
-        if 0x1F1E6 <= cp <= 0x1F1FF:
-            # Regional Indicator：成对构成国旗（单 RI 仍是独立簇）
-            if i < n and 0x1F1E6 <= ord(text[i]) <= 0x1F1FF:
-                i += 1
+        if cp < 0x20 or 0x7F <= cp <= 0x9F:
+            # UAX #29 GB4：Control（含 \t \n \r）之后必须断开——修复前制表符
+            # 会吸附后续组合标记成为 "\t\u0301" 单簇，``expand_tabs`` 的簇
+            # 路径只识别独立 "\t"，字面制表符漏展开进入渲染（宽度与实际
+            # 终端列错位）；换行吸附肤色修饰符亦会让断行后的簇元信息失效。
             yield text[start:i]
             continue
+        if 0x1F1E6 <= cp <= 0x1F1FF:
+            # Regional Indicator：成对构成国旗（单 RI 仍是独立簇）。
+            # 成对后继续走下方 Extend 吸收逻辑（与普通基字符一致）——
+            # 修复前此处直接 yield，RI 后的 keycap/VS/ZWJ 成为孤立零宽
+            # 簇，截断/换行可能在两簇之间切开（ellipsis 与孤立 keycap
+            # 拼接后宽度被误计为 2）。
+            if i < n and 0x1F1E6 <= ord(text[i]) <= 0x1F1FF:
+                i += 1
         while i < n:
             next_cp = ord(text[i])
             if not _is_extend_cp(next_cp):
                 break
             i += 1
             if next_cp == 0x200D and i < n:
-                # ZWJ 后必须吞掉下一个基字符，保持组合 emoji 完整
+                # ZWJ 后必须吞掉下一个基字符，保持组合 emoji 完整。但控制
+                # 字符（\t/\n/\r）与 ASCII 不可能是 emoji 基字符——修复前
+                # 无条件吞并：``"\u200d\u200d\t"`` 把制表符吞进组合簇，
+                # ``expand_tabs`` 的簇路径漏展开（字面 \t 进入渲染，宽度
+                # 与实际终端列错位）。控制/ASCII 前置边界处结束本簇。
+                nxt = ord(text[i])
+                if nxt < 0x80:
+                    break
                 i += 1
                 # 继续吞掉该基字符上的修饰符（VS / 肤色）
                 while i < n and _is_extend_cp(ord(text[i])) \
@@ -381,7 +397,13 @@ def cluster_width(cluster: str) -> int:
     if any(cp == 0x200D for cp in cps):
         return 2
     if any(cp == 0x20E3 for cp in cps):
-        return 2
+        # keycap 组合（``1️⃣`` = 数字/#/* + VS16 + U+20E3）宽 2；U+20E3
+        # 附着在非 keycap 基字符（如 ``…``）上时只是零宽组合符，宽度按
+        # 基字符计算（修复前无条件返回 2：ellipsis 与孤立 keycap 拼接后
+        # 被计为 2 列，截断结果超宽）。
+        base = cps[0]
+        if 0x30 <= base <= 0x39 or base in (0x23, 0x2A):
+            return 2
     if any(0x1F3FB <= cp <= 0x1F3FF for cp in cps):
         return 2
     if any(0xE0020 <= cp <= 0xE007F for cp in cps):
@@ -424,10 +446,34 @@ def string_width(text: str) -> int:
         # C 实现单趟扫描（比逐字符 Python 循环快数倍）——纯 ASCII 可打印
         # 文本宽度 == 字符数（无 ANSI/控制/零宽/宽字符）。
         return len(text)
-    if "\x1b" not in text and _has_grapheme_special(text):
+    if _has_grapheme_special(text):
         # ZWJ / 肤色 / keycap / 标签序列：按字形簇测宽（终端把组合 emoji
         # 渲染为一个字形；逐码点求和会高估 2~8 倍，导致布局错位/提前换行）。
-        return sum(cluster_width(c) for c in grapheme_clusters(text))
+        # 含 ANSI 时按转义序列切段，各段独立按簇测宽（修复前整串回退逐
+        # 字符路径 → 组合 emoji 被高估，如 ``\x1b[31m👨‍👩‍👧\x1b[0m`` 计 6 列）。
+        if "\x1b" not in text:
+            return sum(cluster_width(c) for c in grapheme_clusters(text))
+        total = 0
+        i = 0
+        n = len(text)
+        segment_start = 0
+        while i < n:
+            if text[i] != "\x1b":
+                i += 1
+                continue
+            if segment_start < i:
+                total += sum(
+                    cluster_width(c)
+                    for c in grapheme_clusters(text[segment_start:i])
+                )
+            i = skip_ansi_at(text, i)
+            segment_start = i
+        if segment_start < n:
+            total += sum(
+                cluster_width(c)
+                for c in grapheme_clusters(text[segment_start:])
+            )
+        return total
     if len(text) >= _STRING_WIDTH_COUNTER_MIN and "\x1b" not in text:
         # 无 ANSI：Σ（唯一字符出现次数 × 字符宽度）——等价于逐字符求和。
         return sum(cnt * char_width(ch) for ch, cnt in Counter(text).items())
@@ -500,6 +546,33 @@ def expand_tabs(text: str, start_col: int = 0, tab_width: int = 8) -> str:
         tab_width = 8
     out: list[str] = []
     col = start_col
+    # ★ 字形簇 / ANSI 感知：制表位列宽必须按终端实际列宽推进——逐码点
+    #   ``char_width`` 会把 ZWJ 组合 emoji 计成 2×成员数（如 👨‍👩‍👧 计 6 列，
+    #   实际 2 列）、把 ANSI 序列正文计为可见字符，后续 ``\t`` 补齐空格数
+    #   错误（与 ``string_width`` / ``_input_layout._expand_tabs`` 口径分裂）。
+    if needs_grapheme_clusters(text) or "\x1b" in text:
+        skip_until = 0
+        for start, _end, cluster in grapheme_spans(text):
+            if start < skip_until:
+                continue
+            if cluster == "\x1b":
+                stop = skip_ansi_at(text, start)
+                out.append(text[start:stop])
+                skip_until = stop
+                continue
+            if cluster == "\t":
+                n = tab_width - (col % tab_width)
+                out.append(" " * n)
+                col += n
+            elif cluster == "\r":
+                col = start_col
+            elif cluster == "\n":
+                out.append(cluster)
+                col = start_col
+            else:
+                out.append(cluster)
+                col += cluster_width(cluster)
+        return "".join(out)
     for ch in text:
         if ch == "\t":
             n = tab_width - (col % tab_width)
