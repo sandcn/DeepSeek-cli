@@ -141,7 +141,10 @@ def _content_rows(sections: list, width: int) -> list:
             continue
         title = str(sec.get("title", ""))
         prefix = f"\u25b8 {title} "
-        pad = max(0, width - len(prefix) - 1) if width > 0 else 0
+        # 分隔线按**显示宽度**扣减（CJK 标题字符数 < 显示列数——按字符数
+        # 计算会使整行超出 width，行级 diff 宽度不变量被破坏）。
+        prefix_w = wcswidth_simple(prefix)
+        pad = max(0, width - prefix_w - 1) if width > 0 else 0
         rows.append([
             StyledRun(prefix, _S_GROUP),
             StyledRun("\u2500" * pad, _S_SEP),

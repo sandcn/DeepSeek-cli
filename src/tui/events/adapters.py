@@ -110,6 +110,13 @@ class DisplayEventAdapter:
         SessionStopped: "stop",
     }
 
+    #: 统一指标事件的候选转发方法——MetricsUpdateEvent 一次只携带部分字段
+    #: （未变更字段为 0），按字段分发到对应显示方法（而不是一律调用
+    #: ``update_tokens``，否则 live/speed 事件会把 output token 计数清 0）。
+    _METRICS_METHODS = (
+        "update_tokens", "update_live_output", "update_live_input", "update_speed",
+    )
+
     def __init__(
         self,
         display: Any,  # 鸭类型：通过 hasattr/getattr 调用方法，不要求特定基类
@@ -169,7 +176,16 @@ class DisplayEventAdapter:
             #   ``update_status`` 的显示实现被订阅到 no-op（状态更新静默
             #   丢弃）。现要求方法来自 display 自身类（或其非 BaseDisplay
             #   祖先）的实现；纯继承的 no-op 不订阅。
-            if not self._implements_display_method(self._display, method_name):
+            # ★ 统一指标事件按字段分发到多个方法：只要实现了任一候选方法
+            #   即订阅（否则只实现 update_speed 的显示收不到任何指标）。
+            if event_type is MetricsUpdateEvent:
+                supported = any(
+                    self._implements_display_method(self._display, m)
+                    for m in self._METRICS_METHODS
+                )
+            else:
+                supported = self._implements_display_method(self._display, method_name)
+            if not supported:
                 continue
             # 为每个事件类型创建绑定的 handler
             handler = self._make_handler(event_type, method_name)
@@ -209,6 +225,26 @@ class DisplayEventAdapter:
                 method(*args[:-1])
 
         def handler(event: DisplayEvent) -> None:
+            # 统一指标事件按字段分发（不依赖 method_name 方法存在——只实现
+            # update_speed 的显示 method 为 None，仍需转发）。
+            if isinstance(event, MetricsUpdateEvent):
+                if event.output_tokens:
+                    fn = getattr(self._display, "update_tokens", None)
+                    if callable(fn):
+                        fn(event.label, event.output_tokens)
+                if event.live_output_tokens:
+                    fn = getattr(self._display, "update_live_output", None)
+                    if callable(fn):
+                        fn(event.label, event.live_output_tokens)
+                if event.live_input_tokens:
+                    fn = getattr(self._display, "update_live_input", None)
+                    if callable(fn):
+                        fn(event.label, event.live_input_tokens)
+                if event.speed:
+                    fn = getattr(self._display, "update_speed", None)
+                    if callable(fn):
+                        fn(event.label, event.speed)
+                return
             method = getattr(self._display, method_name, None)
             if method is None:
                 return
@@ -239,9 +275,6 @@ class DisplayEventAdapter:
                     method(event.label, event.tool_names, event.tokens, event.elapsed)
                 elif isinstance(event, ParseInfoDoneEvent):
                     method(event.label)
-                elif isinstance(event, MetricsUpdateEvent):
-                    # 统一指标事件转发到 update_tokens（取主要字段 output_tokens）
-                    method(event.label, event.output_tokens)
                 elif isinstance(event, OutputEvent):
                     method(event.text, event.level)
                 elif isinstance(event, ToolSummaryEvent):

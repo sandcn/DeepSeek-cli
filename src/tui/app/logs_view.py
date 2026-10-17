@@ -42,6 +42,7 @@ from ._view_common import (
     char_of,
     handle_search_input,
     jump_match,
+    memo_key,
     pad_to_width,
     pane_divider,
     run_search,
@@ -389,8 +390,13 @@ def LogsView(props) -> object:
     lv = getattr(model, "logs_view", None)
     visible = bool(lv is not None and lv.visible and not lv.done)
     entries = list(getattr(lv, "entries", None) or []) if lv is not None else []
-    messages = list(getattr(lv, "messages", None) or []) if lv is not None else []
-    projections = list(getattr(lv, "projections", None) or []) if lv is not None else []
+    # 保留原始引用（未 list() 拷贝）供 use_memo 依赖做身份比较——拷贝对象每帧
+    # 新建会使依赖恒变（缓存失效），而 id() 依赖在对象回收后可能被复用（陈旧
+    # 缓存）。
+    messages_src = (getattr(lv, "messages", None) or []) if lv is not None else []
+    messages = list(messages_src)
+    projections_src = (getattr(lv, "projections", None) or []) if lv is not None else []
+    projections = list(projections_src)
     help_open = bool(getattr(lv, "help_open", False)) if lv is not None else False
     search_mode = bool(getattr(lv, "search_mode", False)) if lv is not None else False
     pattern = (getattr(lv, "search_pattern", "") or "") if lv is not None else ""
@@ -455,11 +461,11 @@ def LogsView(props) -> object:
         return _event_detail_rows(entry, right_w)
 
     content_rows = use_memo(_content_rows, (
-        help_open, pane_mode,
-        (id(messages), len(messages), right_w),
-        (id(projections), len(projections), right_w),
-        (getattr(lv, "verify_ok", None), getattr(lv, "verify_text", ""), right_w),
-        (id(entry), right_w),
+        help_open, pane_mode, right_w,
+        messages_src, len(messages),
+        projections_src, len(projections),
+        getattr(lv, "verify_ok", None), getattr(lv, "verify_text", ""),
+        memo_key(entry),
     ))
     total_content = len(content_rows)
     cursor, scroll = resolve(

@@ -110,6 +110,31 @@ def test_widget_survives_narrow_and_hostile_props(name):
         assert ln.width <= 12, f"{name} 窄屏行宽违规：{ln.width}"
 
 
+def test_key_zero_total_tab_does_not_crash():
+    """Key 收到非法 ``_focus_total=0`` 时 Tab 放行（取模不得 ZeroDivisionError）。"""
+    from types import SimpleNamespace
+
+    from src.tui.ink import hooks
+    from src.tui.ink.fiber import TAG_FUNCTION, Fiber, InputHook
+
+    props = {
+        "_focus_index": 0, "_focus_total": 0, "_focus_active": True,
+        "_focus_set": lambda *_: None, "children": None,
+    }
+    fiber = Fiber(TAG_FUNCTION, W.Key, dict(props))
+    hooks._push_current(fiber)
+    try:
+        W.Key(props)
+    finally:
+        hooks._pop_current()
+    handler = next(
+        h.handler for h in fiber.hooks
+        if isinstance(h, InputHook) and h.is_active and h.handler is not None
+    )
+    event = SimpleNamespace(kind="tab", char="", modifier=0)
+    assert handler(event) is False
+
+
 def test_widget_export_list_is_covered():
     """导出清单中的控件均在本矩阵内（新增控件须同步补测）。"""
     exported = set(W.__all__)

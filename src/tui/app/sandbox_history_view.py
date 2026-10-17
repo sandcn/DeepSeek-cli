@@ -43,6 +43,7 @@ from ._view_common import (
     char_of,
     handle_search_input,
     jump_match,
+    memo_key,
     pane_divider,
     run_search,
     split_panes,
@@ -172,7 +173,11 @@ def SandboxHistoryView(props) -> object:
             )
         return message_detail_rows(entry, right_w)
 
-    content_rows = use_memo(_content_rows, (help_open, _message_deps(entry, right_w)))
+    content_rows = use_memo(
+        _content_rows,
+        (help_open,)
+        + tuple(memo_key(v) for v in _message_deps(entry, right_w)),
+    )
     total_content = len(content_rows)
     cursor, scroll = resolve(
         getattr(hv, "cursor", 0) or 0, getattr(hv, "scroll", 0) or 0,

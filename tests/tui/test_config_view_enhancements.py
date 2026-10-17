@@ -169,6 +169,32 @@ class TestResetUndoCopy:
         assert "\u5df2\u64a4\u9500" in cv.message
         assert cv.undo_stack == []
 
+    def test_undo_keeps_stack_when_entry_missing(self):
+        """条目缺失时不丢弃撤销记录（修复前先 pop 再查找，历史静默丢失）。"""
+        from src.tui.app.config_view import _undo_last
+
+        cv = _state(_entries())
+        cv.undo_stack = [("NOT_A_KEY", 1, "1", "nope")]
+        _undo_last(cv, cv.entries)
+        assert cv.undo_stack == [("NOT_A_KEY", 1, "1", "nope")]
+
+    def test_undo_keeps_stack_when_write_fails(self, monkeypatch):
+        """写入失败时不丢弃撤销记录（可重试）。"""
+        from src.tui.app import config_view as cvm
+        from src.config import loader as cfg_loader
+
+        def _boom(key, value):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(cfg_loader, "update_config", _boom)
+        entries = _entries()
+        cv = _state(entries)
+        cv.undo_stack = [("TEMPERATURE", 0.9, "0.9", "temperature")]
+        cvm._undo_last(cv, entries)
+        assert cv.undo_stack == [("TEMPERATURE", 0.9, "0.9", "temperature")]
+        assert entries[1]["value"] == 0.2
+        assert "\u64a4\u9500\u5199\u5165\u5931\u8d25" in cv.edit_error
+
     def test_push_undo_bounded(self):
         from src.tui.app.config_view import _UNDO_MAX, _push_undo
         cv = _state()

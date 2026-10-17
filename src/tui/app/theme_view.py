@@ -172,7 +172,7 @@ def ThemeView(props) -> object:
             )
         return _palette_preview_rows(sel_name, right_w)
 
-    content_rows = use_memo(_content_rows, (help_open, (sel_name, right_w)))
+    content_rows = use_memo(_content_rows, (help_open, sel_name, right_w))
     window = content_rows[:max(1, vh)]
 
     def _row_of(orig: int) -> int:

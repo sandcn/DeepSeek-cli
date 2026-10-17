@@ -32,6 +32,7 @@ from ._view_common import (
     char_of,
     handle_search_input,
     jump_match,
+    memo_key,
     pane_divider,
     run_search,
     split_panes,
@@ -193,7 +194,12 @@ def SkillView(props) -> object:
             )
         return _detail_rows(entry, right_w)
 
-    content_rows = use_memo(_content_rows, (help_open, (id(entry), right_w)))
+    content_rows = use_memo(
+        _content_rows,
+        (help_open, right_w, memo_key(entry),
+         getattr(sv, "refresh_seq", 0) or 0,
+         getattr(sv, "applied_seq", 0) or 0),
+    )
     total_content = len(content_rows)
     cursor, scroll = resolve(
         getattr(sv, "cursor", 0) or 0, getattr(sv, "scroll", 0) or 0,

@@ -1201,6 +1201,17 @@ def test_merge_line_clears_stale_second_column():
     assert out.plain == "中"
 
 
+def test_canvas_row_does_not_squeeze_wide_char_from_bad_host():
+    """异常 host 以「每字符 +1 列」写入宽字符时不得按 1 列推导（宽度不变量）。"""
+    from src.tui.ink._paint_canvas import _canvas_row_to_line
+
+    row = {0: ("中", None, None), 1: ("x", None, None)}
+    out = _canvas_row_to_line(row)
+    # 宽字符占 2 列——输出行宽不得被错误压成 3（2 列画布溢出）
+    assert out.width == 2
+    assert out.plain == "中"
+
+
 def test_put_char_leading_zero_width_kept():
     """行首零宽字符不被下一字符覆盖（合并到同一键）。"""
     from src.tui.ink._paint_canvas import _line_as_dict

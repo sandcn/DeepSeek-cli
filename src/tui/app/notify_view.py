@@ -32,6 +32,7 @@ from ._view_common import (
     char_of,
     handle_search_input,
     jump_match,
+    memo_key,
     pane_divider,
     run_search,
     split_panes,
@@ -150,6 +151,31 @@ def _refresh_entries() -> list:
         return []
 
 
+def _resync_after_entries_change(nv, entries: list) -> int:
+    """条目列表重建后重算搜索匹配（刷新 / 清空共用）。
+
+    搜索匹配存的是**基准列表下标**——条目重建后旧下标失效（``f`` 过滤与
+    ``n`` 定位会指向错误条目）。按当前搜索模式重算；失去全部匹配时自动
+    关闭过滤（避免只剩空列表且无从退出）。无搜索模式时清空匹配。
+
+    Returns:
+        新匹配条目数。
+    """
+    pattern = str(getattr(nv, "search_pattern", "") or "")
+    if not pattern:
+        nv.search_matches = []
+        nv.search_idx = -1
+        return 0
+    from ._view_common import find_matches
+
+    found = list(find_matches(entries, pattern, _notify_search_text))
+    nv.search_matches = found
+    nv.search_idx = 0 if found else -1
+    if not found and bool(getattr(nv, "search_filter", False)):
+        nv.search_filter = False
+    return len(found)
+
+
 def NotifyView(props) -> object:
     """通知 / 事件日志视图组件（模态全屏视图）。"""
     model = props["model"]
@@ -203,7 +229,9 @@ def NotifyView(props) -> object:
             )
         return _detail_rows(entry, right_w)
 
-    content_rows = use_memo(_content_rows, (help_open, (id(entry), right_w)))
+    content_rows = use_memo(
+        _content_rows, (help_open, right_w, memo_key(entry)),
+    )
     total_content = len(content_rows)
     cursor, scroll = resolve(
         getattr(nv, "cursor", 0) or 0, getattr(nv, "scroll", 0) or 0,
@@ -285,7 +313,10 @@ def NotifyView(props) -> object:
                 return True
             if ch == "r":
                 nv.entries = _refresh_entries()
+                _resync_after_entries_change(nv, nv.entries)
                 nv.selected = 0
+                nv.cursor = 0
+                nv.scroll = 0
                 nv.status_message = f"已刷新：{len(nv.entries)} 条"
                 return True
             if ch == "c":
@@ -294,7 +325,10 @@ def NotifyView(props) -> object:
 
                     _clear()
                     nv.entries = []
+                    _resync_after_entries_change(nv, [])
                     nv.selected = 0
+                    nv.cursor = 0
+                    nv.scroll = 0
                     nv.status_message = "日志已清空"
                 except Exception:
                     nv.status_message = "清空失败"

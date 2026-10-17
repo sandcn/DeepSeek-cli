@@ -105,10 +105,16 @@ def parse_image_blocks(content) -> list[dict]:
         media_type, b64 = payload
         if not b64:
             continue
+        # base64 载荷理论上只含 ASCII；但 data URI 来自外部消息数据，
+        # 非法字符（如中文/损坏内容）不应让整条轨迹构建崩溃——按 UTF-8
+        # 编码做内容指纹（b64decode 失败由渲染层降级为占位图）。
+        digest = hashlib.sha256(
+            b64.encode("utf-8", "surrogatepass")
+        ).hexdigest()
         out.append({
             "media_type": media_type,
             "b64": b64,
-            "sha": hashlib.sha256(b64.encode("ascii")).hexdigest(),
+            "sha": digest,
             "approx_bytes": _b64_approx_len(b64),
         })
     return out

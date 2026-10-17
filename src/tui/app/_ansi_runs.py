@@ -49,8 +49,13 @@ class _SGR:
         self.italic = False
         self.underline = False
 
-    def style(self) -> Style:
-        if not (self.fg or self.bg or self.bold or self.dim or self.italic or self.underline):
+    def style(self) -> Style | None:
+        # 色号 0（黑色前景 / 黑色背景）是合法值，不能用真值判断——否则
+        # ``38;5;0`` / ``48;5;0`` 会被误判为「无样式」而丢失颜色。
+        if (
+            self.fg is None and self.bg is None
+            and not (self.bold or self.dim or self.italic or self.underline)
+        ):
             return None
         return Style(
             fg=self.fg, bg=self.bg, bold=self.bold, dim=self.dim,

@@ -420,3 +420,77 @@ def test_kwargs_display_receives_tool_id(bus):
     bus.publish(ToolStartedEvent(label="l", tool_name="bash", detail="d", tool_id="c1"))
 
     assert received == [(("l", "bash", "d", None, "c1"), {})]
+
+
+# ═══════════════════════════════════════════════════════════
+# 统一指标事件（MetricsUpdateEvent）按字段分发
+# ═══════════════════════════════════════════════════════════
+
+
+class _MetricsDisplay(_MinimalDisplay):
+    """实现全部指标方法的显示（记录每次调用的字段值）。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple] = []
+
+    def update_tokens(self, label, tokens):
+        self.calls.append(("update_tokens", label, tokens))
+
+    def update_live_output(self, label, tokens):
+        self.calls.append(("update_live_output", label, tokens))
+
+    def update_live_input(self, label, tokens):
+        self.calls.append(("update_live_input", label, tokens))
+
+    def update_speed(self, label, speed):
+        self.calls.append(("update_speed", label, speed))
+
+
+def test_metrics_event_forwards_only_non_zero_fields(bus):
+    """MetricsUpdateEvent 只转发非默认字段——修复前 live 事件会调用
+    update_tokens(label, 0)，把已累计的输出 token 计数清 0。"""
+    from src.core.events.display_types import MetricsUpdateEvent
+
+    display = _MetricsDisplay()
+    DisplayEventAdapter(display).subscribe_to(bus)
+
+    bus.publish(MetricsUpdateEvent(
+        label="a", live_output_tokens=7, source="t",
+    ))
+
+    assert display.calls == [("update_live_output", "a", 7)]
+
+
+def test_metrics_event_forwards_output_tokens(bus):
+    from src.core.events.display_types import MetricsUpdateEvent
+
+    display = _MetricsDisplay()
+    DisplayEventAdapter(display).subscribe_to(bus)
+
+    bus.publish(MetricsUpdateEvent(label="a", output_tokens=42, source="t"))
+
+    assert display.calls == [("update_tokens", "a", 42)]
+
+
+def test_metrics_event_subscribes_when_only_speed_implemented(bus):
+    """只实现 update_speed 的显示也必须收到指标事件（修复前映射固定为
+    update_tokens → 未实现即不订阅，speed 事件全部丢弃）。"""
+    from src.core.events.display_types import MetricsUpdateEvent
+
+    class _SpeedOnly(_MinimalDisplay):
+        def __init__(self) -> None:
+            super().__init__()
+            self.speeds: list[tuple] = []
+
+        def update_speed(self, label, speed):
+            self.speeds.append((label, speed))
+
+    display = _SpeedOnly()
+    adapter = DisplayEventAdapter(display)
+    adapter.subscribe_to(bus)
+    assert MetricsUpdateEvent in adapter._handlers
+
+    bus.publish(MetricsUpdateEvent(label="a", speed=12.5, source="t"))
+
+    assert display.speeds == [("a", 12.5)]

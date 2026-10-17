@@ -42,6 +42,7 @@ from ._view_common import (
     char_of,
     handle_search_input,
     jump_match,
+    memo_key,
     pane_divider,
     run_search,
     split_panes,
@@ -202,7 +203,11 @@ def SandboxRecordsView(props) -> object:
             )
         return _record_detail_rows(entry, right_w)
 
-    content_rows = use_memo(_content_rows, (help_open, _record_deps(entry, right_w)))
+    content_rows = use_memo(
+        _content_rows,
+        (help_open,)
+        + tuple(memo_key(v) for v in _record_deps(entry, right_w)),
+    )
     total_content = len(content_rows)
     cursor, scroll = resolve(
         getattr(rv, "cursor", 0) or 0, getattr(rv, "scroll", 0) or 0,

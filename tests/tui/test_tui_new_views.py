@@ -116,6 +116,78 @@ def test_ansi_runs_truecolor_and_empty():
     assert runs and runs[0].style is not None
 
 
+def test_ansi_runs_black_color_not_dropped():
+    """色号 0（黑）是合法值——不能被当作「无样式」丢弃。"""
+    from src.tui.app._ansi_runs import ansi_line_to_runs
+
+    runs = ansi_line_to_runs("\x1b[38;5;0mX\x1b[48;5;0mY")
+    assert runs[0].style is not None and runs[0].style.fg == 0
+    assert runs[1].style is not None and runs[1].style.bg == 0
+
+
+# ── 分栏宽度分配 ──────────────────────────────────────
+
+def test_split_panes_narrow_terminal_never_overflows():
+    from src.tui.app._view_common import split_panes
+
+    for width in range(1, 60):
+        left, right = split_panes(width)
+        assert left + 1 + right == width, (width, left, right)
+
+
+def test_split_panes_zero_width_falls_back():
+    from src.tui.app._view_common import split_panes
+
+    assert split_panes(0) == (30, 50)
+
+
+def test_memo_key_scalarizes_containers_by_value():
+    """容器依赖转 repr 字符串：同内容相等（memo 命中）、内容变化不等。"""
+    from src.tui.app._view_common import memo_key
+
+    assert memo_key(("a", 1, None)) == memo_key(("a", 1, None))
+    assert memo_key(("a", 1)) != memo_key(("a", 2))
+    assert memo_key("x") == "x"
+    assert memo_key(3) == 3
+    assert memo_key(None) is None
+
+
+# ── trace_image 解析健壮性 ────────────────────────────
+
+def test_parse_image_blocks_non_ascii_payload_does_not_crash():
+    """损坏/非 ASCII 的 data URI 不应让轨迹构建崩溃（渲染层降级占位）。"""
+    from src.tui.app.trace_image import parse_image_blocks
+
+    images = parse_image_blocks([{
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,中文"},
+    }])
+    assert len(images) == 1
+    assert images[0]["media_type"] == "image/png"
+    assert len(images[0]["sha"]) == 64
+
+
+# ── changes_view 目录树选中归一 ───────────────────────
+
+def test_nearest_selectable_row_skips_group_headers():
+    from src.tui.app.changes_view import _tree_items, _nearest_selectable_row
+
+    ordered = [
+        {"path": "a/x.py", "records": 1},
+        {"path": "b/y.py", "records": 1},
+    ]
+    items = _tree_items(ordered, [0, 1])
+    assert items[0].get("_group") is True
+    # 选中落在首个组头 → 归一到第一个文件行
+    assert _nearest_selectable_row(items, 0) == 1
+    # 中间组头 → 向后找
+    group_idx = next(i for i, it in enumerate(items) if it.get("_group") and i > 0)
+    assert _nearest_selectable_row(items, group_idx) == group_idx + 1
+    # 全是组头（异常数据）→ 保持原行
+    assert _nearest_selectable_row([{"_group": True}], 0) == 0
+    assert _nearest_selectable_row([], 3) == 0
+
+
 # ── sessions ──────────────────────────────────────────
 
 def test_session_search_text():
@@ -266,12 +338,82 @@ def test_build_usage_sections():
     assert "Token 用量" in titles and "上下文窗口" in titles and "费用估算" in titles
 
 
+def test_usage_content_rows_cjk_title_does_not_overflow():
+    """CJK 区块标题的分隔线按显示宽度扣减（按字符数会超出终端宽度）。"""
+    from src.tui.app.usage_view import _content_rows
+    from src.tui._width import wcswidth_simple
+
+    rows = _content_rows([{"title": "中文标题", "rows": [("标签", "值")]}], 20)
+    for row in rows:
+        assert sum(wcswidth_simple(r.text) for r in row) <= 20
+
+
 # ── mcp / skill 命令辅助 ──────────────────────────────
 
 def test_mcp_build_entries_no_servers():
     from src.core.commands._mcp_cmd import _build_mcp_entries
 
     assert isinstance(_build_mcp_entries(), list)
+
+
+def test_notify_resync_search_matches_after_refresh():
+    """刷新/清空条目后重算搜索匹配（旧下标失效）——失配时自动关过滤。"""
+    from src.tui.app import _state_types as st
+    from src.tui.app.notify_view import _resync_after_entries_change
+
+    nv = st.NotifyViewState(
+        visible=True, seq=1,
+        entries=[{"title": "alpha", "body": "x", "kind": "error"},
+                 {"title": "beta", "body": "y", "kind": "info"}],
+        search_pattern="beta",
+        search_matches=[0],
+        search_filter=True,
+    )
+    assert _resync_after_entries_change(nv, nv.entries) == 1
+    assert nv.search_matches == [1]
+    assert nv.search_idx == 0
+    assert nv.search_filter is True
+
+    # 条目全被清空 → 无匹配 → 自动关闭过滤
+    assert _resync_after_entries_change(nv, []) == 0
+    assert nv.search_matches == []
+    assert nv.search_idx == -1
+    assert nv.search_filter is False
+
+
+def test_mcp_reconnect_sets_action_before_sequence():
+    """``c`` 重连：先写 applied 再 ++seq（命令线程读 seq 变化后才读 applied）。"""
+    from types import SimpleNamespace
+
+    from src.tui.app import _state_types as st
+    from src.tui.app.mcp_view import McpView
+    from src.tui.app.model import AppModel
+    from src.tui.ink import hooks
+    from src.tui.ink.fiber import TAG_FUNCTION, Fiber, InputHook
+
+    model = AppModel()
+    model.mcp_view = st.McpViewState(
+        visible=True, seq=1,
+        entries=[{"name": "srv", "transport": "stdio", "connected": True}],
+    )
+    fiber = Fiber(TAG_FUNCTION, McpView, {"model": model, "width": 80})
+    hooks._push_current(fiber)
+    try:
+        McpView({"model": model, "width": 80})
+    finally:
+        hooks._pop_current()
+    handler = next(
+        h.handler for h in fiber.hooks
+        if isinstance(h, InputHook) and h.is_active and h.handler is not None
+    )
+    event = SimpleNamespace(
+        kind="char", char="c", modifier=0, keycode=0, raw=b"",
+        kitty_bits=-1, event_type="",
+    )
+
+    assert handler(event) is True
+    assert model.mcp_view.applied == {"action": "reconnect"}
+    assert model.mcp_view.applied_seq == 1
 
 
 def test_skill_build_entries_returns_list():

@@ -341,7 +341,8 @@ def PluginView(props) -> object:
     width = props.get("width", 0) or 0
     pv = getattr(model, "plugin_view", None)
     visible = bool(pv is not None and pv.visible and not pv.done)
-    entries = list(getattr(pv, "entries", None) or []) if pv is not None else []
+    entries_src = (getattr(pv, "entries", None) or []) if pv is not None else []
+    entries = list(entries_src)
     help_open = bool(getattr(pv, "help_open", False)) if pv is not None else False
     search_mode = bool(getattr(pv, "search_mode", False)) if pv is not None else False
     pattern = (getattr(pv, "search_pattern", "") or "") if pv is not None else ""
@@ -354,7 +355,7 @@ def PluginView(props) -> object:
 
     stats = use_memo(
         lambda: collect_plugin_stats(entries),
-        (id(entries), len(entries)),
+        (entries_src, len(entries)),
     )
     stats_text = format_plugin_stats(stats)
 

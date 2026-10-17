@@ -387,15 +387,24 @@ def EditMsgSelectPopup(props) -> object:
         })
 
     # ── 弹窗级按键（搜索输入 / 翻页 / 首末） ──
-    def _current_view_pos() -> int:
-        """当前选中在过滤视图中的位置（实时读 es——同批连续按键不陈旧）。"""
+    def _current_orig() -> int:
+        """当前选中消息的原始索引（实时读 es——同批导航无重渲染时不陈旧）。"""
         try:
             cur = int(getattr(es, "selected", 0) or 0)
         except (TypeError, ValueError):
             cur = 0
-        if keep and cur in keep:
-            return keep.index(cur)
-        return 0
+        if not keep:
+            return 0
+        if cur not in keep:
+            return keep[0]
+        return max(0, min(cur, total_all - 1))
+
+    def _current_view_pos() -> int:
+        """当前选中在过滤视图中的位置（实时读 es——同批连续按键不陈旧）。"""
+        try:
+            return keep.index(_current_orig())
+        except ValueError:
+            return 0
 
     def _move_view_pos(new_pos: int) -> bool:
         if not keep:
@@ -414,10 +423,11 @@ def EditMsgSelectPopup(props) -> object:
 
         无预览数据 / 预览不足一屏 / 已在边界 → 返回 False（放行，不消费）。
         """
-        if not (previews and 0 <= cur_orig < len(previews) and preview_h):
+        orig = _current_orig()
+        if not (previews and 0 <= orig < len(previews) and preview_h):
             return False
         pw = max(1, width if width and width > 0 else 40)
-        total_prev = len(_preview_rows(str(previews[cur_orig] or ""), pw))
+        total_prev = len(_preview_rows(str(previews[orig] or ""), pw))
         if total_prev <= preview_h:
             return False
         try:

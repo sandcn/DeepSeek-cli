@@ -152,8 +152,10 @@ def SearchView(props) -> object:
     width = props.get("width", 0) or 0
     sv = getattr(model, "search_view", None)
     visible = bool(sv is not None and sv.visible and not sv.done)
-    messages = list(getattr(sv, "messages", None) or []) if sv is not None else []
-    results = list(getattr(sv, "results", None) or []) if sv is not None else []
+    messages_src = (getattr(sv, "messages", None) or []) if sv is not None else []
+    messages = list(messages_src)
+    results_src = (getattr(sv, "results", None) or []) if sv is not None else []
+    results = list(results_src)
     pattern = (getattr(sv, "search_pattern", "") or "") if sv is not None else ""
     search_mode = bool(getattr(sv, "search_mode", False)) if sv is not None else False
     help_open = bool(getattr(sv, "help_open", False)) if sv is not None else False
@@ -193,7 +195,8 @@ def SearchView(props) -> object:
         return _detail_rows(results, messages, sel, pattern, right_w)
 
     content_rows = use_memo(_content_rows, (
-        help_open, (id(results), sel, pattern, right_w),
+        help_open, right_w, sel, pattern,
+        results_src, messages_src, len(results), len(messages),
     ))
     total_content = len(content_rows)
     cursor, scroll = resolve(

@@ -33,6 +33,7 @@ from ._view_common import (
     char_of,
     handle_search_input,
     jump_match,
+    memo_key,
     pane_divider,
     run_search,
     split_panes,
@@ -153,7 +154,9 @@ def KeymapView(props) -> object:
             )
         return _detail_rows(entry, right_w)
 
-    content_rows = use_memo(_content_rows, (help_open, (id(entry), right_w)))
+    content_rows = use_memo(
+        _content_rows, (help_open, right_w, memo_key(entry)),
+    )
     window = content_rows[:max(1, vh)]
 
     def _row_of(orig: int) -> int:

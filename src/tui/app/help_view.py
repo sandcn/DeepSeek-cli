@@ -478,12 +478,12 @@ def _highlight_matches(runs: list, query: str) -> list:
         pos = 0
         while idx >= 0:
             if idx > pos:
-                out.append(StyledRun(text[pos:idx], run.style))
-            out.append(StyledRun(text[idx:idx + len(q)], _S_MATCH))
+                out.append(StyledRun(text[pos:idx], run.style, run.link))
+            out.append(StyledRun(text[idx:idx + len(q)], _S_MATCH, run.link))
             pos = idx + len(q)
             idx = lower_text.find(lower_q, pos)
         if pos < len(text):
-            out.append(StyledRun(text[pos:], run.style))
+            out.append(StyledRun(text[pos:], run.style, run.link))
     return out
 
 

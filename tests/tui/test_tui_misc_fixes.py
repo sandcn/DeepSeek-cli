@@ -148,6 +148,13 @@ class TestSliceLineWithOffset:
         assert sliced.plain == ""
         assert offset == 0
 
+    def test_slice_preserves_hyperlink(self):
+        """水平裁剪不得丢失 OSC 8 超链接（link 字段随切片保留）。"""
+        line = Line([StyledRun("abcdef", None, "https://example.com")])
+        sliced, _offset = _slice_line_with_offset(line, 1, 4)
+        assert sliced.plain == "bcd"
+        assert sliced.runs and sliced.runs[0].link == "https://example.com"
+
     def test_paint_draws_wide_char_at_true_column(self):
         """集成：clip 左边界落在宽字符中间时，宽字符绘制在真实列。
 

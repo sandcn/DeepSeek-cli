@@ -349,7 +349,7 @@ def _slice_line_with_offset(
                 if not recorded:
                     recorded = True
                     offset = rel
-                out.append(text, run.style)
+                out.append(text, run.style, run.link)
         col = run_end
         if col >= end_col:
             break
@@ -437,7 +437,15 @@ def _canvas_row_to_line(row) -> Line:
             if st2 != style or lk2 != link:
                 break
             buf += ch2
-            if j + 1 < n and keys[j + 1] == c2 + 1:
+            # 相邻键差 1 仅在字符确为单列宽时可直接推导——非 ASCII 字符
+            # （宽字符/CJK/emoji）即使被异常 host 以「每字符 +1 列」写入，
+            # 也不能按 1 列推导（否则后续内容错位）。正常画布写入
+            # （``_put_char``/``_line_as_dict``）的键差与宽度一致。
+            if (
+                j + 1 < n
+                and keys[j + 1] == c2 + 1
+                and ch2.isascii()
+            ):
                 cw = 1  # 连续 ASCII 快路径（相邻键差 1）
             else:
                 cw = wcswidth_simple(ch2)

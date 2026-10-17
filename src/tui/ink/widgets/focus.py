@@ -135,6 +135,13 @@ def Key(props: dict) -> Element:
         # 仅受管且激活的 Key 处理焦点切换
         if not managed or not active or set_active is None:
             return False
+        try:
+            total_n = int(total)
+        except (TypeError, ValueError):
+            return False
+        if total_n <= 0:
+            # 外部注入的非法 total（0）——取模会 ZeroDivisionError，放行。
+            return False
         # ★ P1-3 + P2-1（review）：Tab（modifier!=2）前进 / Shift+Tab
         #   （modifier==2）后退——框架 CSI-u 已把 Shift+Tab 解析为
         #   ``kind=="tab", modifier==2``（见 _input_parser 方向A 步骤1）。
@@ -143,10 +150,14 @@ def Key(props: dict) -> Element:
         #   等）左移键冲突——激活态 Key 恒消费 arrow_left，子组件永远收不到
         #   左移事件。
         if event.kind == "tab" or (event.kind == "char" and event.char == "\t"):
+            try:
+                idx_n = int(index)
+            except (TypeError, ValueError):
+                return False
             if event.modifier == 2:
-                _call(set_active, (index - 1) % total)
+                _call(set_active, (idx_n - 1) % total_n)
             else:
-                _call(set_active, (index + 1) % total)
+                _call(set_active, (idx_n + 1) % total_n)
             return True
         return False
 

@@ -48,6 +48,7 @@ __all__ = [
     "clamp_index",
     "pane_divider",
     "pad_to_width",
+    "memo_key",
     "SEARCH_QUERY_MAX",
     # 兼容面：ink 侧截断辅助 re-export
     "truncate_runs",
@@ -92,10 +93,20 @@ def split_panes(
         fallback: 无宽度上下文时的 ``(left, right)``。
 
     Returns:
-        ``(left_w, right_w)``，满足 ``left_w + 1 + right_w == width``（宽度足够时）。
+        ``(left_w, right_w)``，满足 ``left_w + 1 + right_w == width``
+        （width >= 3；width <= 0 时返回 ``fallback``）——极窄终端按比例
+        收缩，不再使用超过总宽的最小栏宽。
     """
     if width <= 0:
         return fallback
+    min_left = max(1, int(min_left))
+    min_right = max(1, int(min_right))
+    # 极窄终端：两栏最小宽度 + 分隔列已超过总宽——按比例分配（左栏
+    # 优先），保证 ``left_w + 1 + right_w == width`` 不再溢出终端。
+    if width < min_left + min_right + 1:
+        left_w = max(1, width // 2) if width >= 3 else max(0, width - 1)
+        right_w = max(0, width - left_w - 1)
+        return left_w, right_w
     left_w = max(int(min_left), int(width * left_ratio))
     if width - left_w - 1 < int(min_right):
         left_w = max(int(min_left) // 2, width - int(min_right) - 1)
@@ -162,6 +173,24 @@ def pad_to_width(text, columns: int, *, min_pad: int = 1) -> str:
     if gap < int(min_pad):
         gap = int(min_pad)
     return s + " " * gap
+
+
+def memo_key(value):
+    """把 ``use_memo`` 依赖值标量化（容器 → repr，供跨帧**按值**比较）。
+
+    ``use_memo`` 的 deps 按 ``Object.is`` 逐项比较（容器按**引用**）——直接
+    传每帧新建的 tuple/list/dict 会导致缓存恒 miss（视图每帧重算内容/
+    diff），传 ``id(obj)`` 又存在对象回收后 id 复用（陈旧缓存）风险。本函数
+    把非原始值转为稳定字符串：同内容 → 相同字符串（命中缓存），内容变化 →
+    字符串变化（重建缓存）。原始值（None/bool/int/float/str）原样返回。
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    try:
+        return repr(value)
+    except Exception:
+        # 不可 repr 的异常对象：退回 id（不崩溃；仅该场景保留引用比较语义）
+        return f"<unrepr:{id(value)}>"
 
 
 def clamp_index(value, total: int) -> int:

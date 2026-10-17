@@ -199,6 +199,23 @@ class TestPreviewScroll:
         handler = _input_handler(fiber)
         assert handler(_ev("char", "]")) is False
 
+    def test_scroll_uses_live_selection_without_rerender(self):
+        """同批导航（无中间渲染）后 ``]`` 须按**新**选中消息的预览滚动。
+
+        修复前闭包 ``cur_orig`` 是渲染期旧值：导航到长消息后按 ``]`` 会按
+        旧消息（短预览）判定「不足一屏」而放行，或把滚动量记到新消息上。
+        """
+        short_preview = "single line"
+        long_preview = "\n".join(f"line{i}" for i in range(60))
+        model = self._model([short_preview, long_preview])
+        fiber, _el = _render_popup(model)
+        handler = _input_handler(fiber)
+        # 模拟 SelectInput onHighlight 写回 es.selected（同批、尚未重渲染）
+        model.editmsg_select.selected = 1
+
+        assert handler(_ev("char", "]")) is True
+        assert model.editmsg_select.preview_scroll == 3
+
     def test_short_preview_not_scrollable(self):
         model = self._model(["one line", "one line"])
         fiber, _el = _render_popup(model)

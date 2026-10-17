@@ -132,3 +132,13 @@ def test_highlight_matches_empty_query_same_object():
 
     runs = [StyledRun("abc", None)]
     assert _highlight_matches(runs, "") is runs
+
+
+def test_highlight_matches_preserves_hyperlink():
+    """拆分 run 做关键词高亮时保留原 OSC 8 超链接（不丢失 link）。"""
+    from src.tui.ink import StyledRun
+
+    runs = [StyledRun("see docs", None, "https://example.com")]
+    out = _highlight_matches(runs, "docs")
+    assert "".join(r.text for r in out) == "see docs"
+    assert all(r.link == "https://example.com" for r in out)

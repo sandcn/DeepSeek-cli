@@ -52,6 +52,7 @@ from ._view_common import (
     char_of,
     handle_search_input,
     jump_match,
+    memo_key,
     pane_divider,
     run_search,
     split_panes,
@@ -108,6 +109,7 @@ __all__ = [
     "_preview_rows",
     "_message_detail_rows",
     "_tree_items",
+    "_nearest_selectable_row",
     "_type_match",
     "_base_ordered",
     "_history_deps",
@@ -215,6 +217,37 @@ def _tree_items(ordered: list, index_map: list) -> list:
         for orig, entry in sorted(members, key=lambda p: str(p[1].get("path", ""))):
             items.append({**entry, "_index": orig})
     return items
+
+
+def _is_group_row(item) -> bool:
+    """目录树组头行判定（不可选——ListView isSelectable 排除）。"""
+    return isinstance(item, dict) and bool(item.get("_group"))
+
+
+def _nearest_selectable_row(items: list, sel: int) -> int:
+    """把选中行归一到最近的可选行（目录树视图组头不可选）。
+
+    目录树视图首行恒为组头，``t`` 切换后 ``selected`` 复位 0 会落在组头：
+    右栏「无选中文件」且列表无高亮（组头不渲染选中态），用户需再按一次
+    ↓ 才能看到内容。此处向后找第一个文件行，找不到再向前找，都没有则
+    保持原行（全组头的异常数据）。
+    """
+    total = len(items or [])
+    if total <= 0:
+        return 0
+    try:
+        sel = max(0, min(int(sel), total - 1))
+    except (TypeError, ValueError):
+        sel = 0
+    if not _is_group_row(items[sel]):
+        return sel
+    for i in range(sel + 1, total):
+        if not _is_group_row(items[i]):
+            return i
+    for i in range(sel - 1, -1, -1):
+        if not _is_group_row(items[i]):
+            return i
+    return sel
 
 
 def _detail_deps(entry, right_w: int) -> tuple:
@@ -403,6 +436,9 @@ def ChangesView(props) -> object:
             sel = max(0, min(int(getattr(cv, "selected", 0) or 0), total - 1))
         except (TypeError, ValueError):
             sel = 0
+        # 目录树视图组头不可选：选中落在组头时归一到最近文件行（否则右栏
+        # 显示「无选中文件」、列表也无高亮）。
+        sel = _nearest_selectable_row(display_items, sel)
     if cv is not None and sel != getattr(cv, "selected", None):
         cv.selected = sel
     raw_entry = display_items[sel] if total else None
@@ -445,10 +481,11 @@ def ChangesView(props) -> object:
             return _preview_rows(entry, right_w)
         return _detail_rows(entry, right_w)
 
-    content_rows = use_memo(_content_rows, (
-        help_open, view_mode, detail_mode,
-        _panel_deps(entry, sections, right_w),
-    ))
+    content_rows = use_memo(
+        _content_rows,
+        (help_open, view_mode, detail_mode, right_w)
+        + tuple(memo_key(v) for v in _panel_deps(entry, sections, right_w)),
+    )
     total_content = len(content_rows)
     cursor, scroll = resolve(
         getattr(cv, "cursor", 0) or 0, getattr(cv, "scroll", 0) or 0,

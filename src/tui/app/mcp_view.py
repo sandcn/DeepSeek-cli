@@ -30,6 +30,7 @@ from ._view_common import (
     char_of,
     handle_search_input,
     jump_match,
+    memo_key,
     pane_divider,
     run_search,
     split_panes,
@@ -190,7 +191,12 @@ def McpView(props) -> object:
             )
         return _detail_rows(entry, right_w)
 
-    content_rows = use_memo(_content_rows, (help_open, (id(entry), right_w)))
+    content_rows = use_memo(
+        _content_rows,
+        (help_open, right_w, memo_key(entry),
+         getattr(mv, "refresh_seq", 0) or 0,
+         getattr(mv, "applied_seq", 0) or 0),
+    )
     total_content = len(content_rows)
     cursor, scroll = resolve(
         getattr(mv, "cursor", 0) or 0, getattr(mv, "scroll", 0) or 0,
@@ -275,8 +281,11 @@ def McpView(props) -> object:
                 mv.status_message = "已刷新"
                 return True
             if ch == "c":
-                mv.applied_seq += 1
+                # 先写动作再递增序号：命令线程以 applied_seq 变化作为「有新
+                # 动作」信号，反序（先 ++ 后写 applied）存在读到上一条动作的
+                # 竞态窗口。
                 mv.applied = {"action": "reconnect"}
+                mv.applied_seq += 1
                 mv.status_message = "正在重连…"
                 return True
 

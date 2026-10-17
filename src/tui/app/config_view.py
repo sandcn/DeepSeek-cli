@@ -612,8 +612,9 @@ def _undo_last(cv, entries) -> None:
         cv.edit_error = ""
         cv.message = "无可撤销的编辑"
         return
-    key, old_value, old_text, path = stack.pop()
-    cv.undo_stack = stack
+    key, old_value, old_text, path = stack[-1]
+    # ★ 先确认可应用再出栈：修复前先 ``pop()`` 再查找/写入——条目缺失或
+    #   ``update_config`` 失败时撤销记录已被丢弃（历史静默丢失，无法重试）。
     entry = _entry_by_key(entries, key)
     if entry is None:
         cv.message = "无可撤销的编辑"
@@ -624,6 +625,8 @@ def _undo_last(cv, entries) -> None:
     except Exception as exc:
         cv.edit_error = f"撤销写入失败: {exc}"
         return
+    stack.pop()
+    cv.undo_stack = stack
     entry["value"] = old_value
     entry["value_text"] = old_text
     cv.edit_error = ""
