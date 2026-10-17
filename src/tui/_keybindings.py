@@ -260,7 +260,11 @@ def combo_to_key(text: str) -> Optional[str]:
     token = t.lower()
     if token in _CTRL_SYMBOLS:
         return chr(_CTRL_SYMBOLS[token])
-    if len(t) == 1 and t.isalpha():
+    # 仅接受 ASCII 字母：``str.isalpha()`` 对中文/其它 Unicode 字母同样为
+    # True——修复前 ``combo_to_key("ctrl+中")`` 返回 ``chr(ord("中")-64)``
+    # （码点 19949 的普通字符），非控制字符，被键位覆盖注册后绑定永不生效，
+    # 且持久化出畸形配置。
+    if len(t) == 1 and t.isascii() and t.isalpha():
         return chr(ord(t.upper()) - 64)
     return None
 

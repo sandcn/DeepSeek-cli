@@ -183,7 +183,13 @@ def test_palette_render_visible_and_invisible(monkeypatch):
         h(CommandPalette, {"model": model, "width": 100}), {"columns": 100}
     )
     assert "命令面板" in out
-    assert "/theme" in out
+    # 左栏是虚拟滚动视口：命令目录随测试注册表增长时，/theme 不一定落在
+    # 首屏（终端高度决定可见行数）。断言首屏第一项可见，并单独校验目录
+    # 完整性——不依赖运行环境的终端高度，避免 xdist/CI 下的偶发失败。
+    entries = _palette_entries()
+    first_name = _rank_entries(entries, "", recent_commands(model))[0][0]["name"]
+    assert f"/{first_name}" in out
+    assert "theme" in {entry["name"] for entry in entries}
     assert "Enter 执行" in out
 
     model.fullscreen = ""

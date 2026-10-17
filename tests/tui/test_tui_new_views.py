@@ -193,6 +193,9 @@ def test_keybinding_combo_conversion():
     assert combo_to_key("ctrl+/") == "\x1f"
     assert combo_to_key("ctrl+space") == "\x00"
     assert combo_to_key("garbage") is None
+    # 非 ASCII 字母不得被换算成码点偏移字符（= 非控制字符，绑定永不生效）
+    assert combo_to_key("ctrl+中") is None
+    assert combo_to_key("ctrl+é") is None
     assert key_to_combo("\x0b") == "ctrl+k"
     assert key_to_combo("\x1f") == "ctrl+/"
 

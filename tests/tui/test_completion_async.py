@@ -321,3 +321,25 @@ def test_handler_dismiss_resets_debounce():
     handler.on_auto("/config ")
     handler.on_dismiss()
     assert handler._last_auto_text is None
+
+
+def test_engine_broken_provider_resolution_degrades_to_no_candidates():
+    """扩展提供者 handler 点分路径失效时补全降级为空（不向调用方抛异常）。
+
+    修复前 ``resolve_provider`` 的惰性 import/getattr 在 try 之外——插件
+    配置错误（模块缺失/属性改名）会让 ``complete()`` 抛 ImportError，
+    Tab/自动补全整次失败（用户看到无响应）。
+    """
+    from src.tui._completion_providers import (
+        CompletionProvider,
+        register_provider,
+    )
+
+    undo = register_provider(CompletionProvider(
+        "broken_plugin", 0, "definitely_missing_module:handler",
+    ))
+    try:
+        engine = CompletionEngine(commands_source=lambda: [])
+        assert engine.complete("/help") == []
+    finally:
+        undo()

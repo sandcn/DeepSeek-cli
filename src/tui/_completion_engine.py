@@ -455,13 +455,20 @@ class CompletionEngine:
         return []
 
     def _call_provider(self, pid: str, ctx: "CompletionContext") -> list[CompletionItem]:
-        """调用某提供者的实现（注册表解析；缺席返回空）。"""
+        """调用某提供者的实现（注册表解析；缺席返回空）。
+
+        ★ 修复：解析（``resolve_provider`` 的惰性 import / getattr）同样纳入
+        try 保护——扩展提供者的 ``handler`` 点分路径失效（插件配置错误、
+        模块缺失/改名）时，修复前 ImportError/AttributeError 直接抛出
+        ``complete()``，导致 Tab/自动补全整次失败（仅有上层分发 warning，
+        用户看到补全无响应）。单个提供者异常一律降级为无候选。
+        """
         from ._completion_providers import resolve_provider
 
-        fn = resolve_provider(pid)
-        if fn is None:
-            return []
         try:
+            fn = resolve_provider(pid)
+            if fn is None:
+                return []
             return fn(self, ctx) or []
         except Exception:
             # 单个提供者（尤其扩展插件）异常不得让整次补全失败——记录
