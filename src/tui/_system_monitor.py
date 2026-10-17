@@ -39,6 +39,8 @@ class _SystemMonitor:
         # 子进程平台后台刷新（darwin/windows 无 psutil 时启用）——渲染线程
         # 不阻塞等待 iostat/sysctl/vm_stat/wmic 子进程（方向3 性能）。
         self._bg_started: bool = False
+        self._bg_stop = threading.Event()
+        self._bg_thread: threading.Thread | None = None
         # ★ P2-1（review 方向）：后台线程启动锁——检查/置位原子化，防并发
         #   首次调用（get_cpu_and_mem 双线程同时见 _bg_started=False）启动
         #   双后台线程。
@@ -139,23 +141,43 @@ class _SystemMonitor:
             if self._bg_started:
                 return
             self._bg_started = True
+            self._bg_stop.clear()
             try:
                 t = threading.Thread(target=self._bg_loop, daemon=True,
                                      name="tui-sysmon")
+                self._bg_thread = t
                 t.start()
             except Exception:
                 _logger.debug("系统监控后台线程启动失败", exc_info=True)
                 self._bg_started = False
+                self._bg_thread = None
+
+    def stop(self) -> None:
+        """停止后台刷新线程（幂等；会话 stop 时调用）。"""
+        with self._bg_lock:
+            if not self._bg_started:
+                return
+            self._bg_started = False
+            self._bg_stop.set()
+            thread = self._bg_thread
+            self._bg_thread = None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
 
     def _bg_loop(self) -> None:
-        """后台刷新循环：每 2 秒采集一次 CPU/MEM（get_* 内部含 1s TTL 缓存）。"""
-        while True:
+        """后台刷新循环：每 2 秒采集一次 CPU/MEM（get_* 内部含 1s TTL 缓存）。
+
+        使用 ``Event.wait`` 而非 ``sleep``：stop() 可立即唤醒退出，避免
+        daemon 线程在进程/会话结束后继续采样（修复前无停止入口）。
+        """
+        while not self._bg_stop.is_set():
             try:
                 self.get_cpu_percent()
                 self.get_memory_percent()
             except Exception:
                 _logger.debug("系统监控后台刷新异常", exc_info=True)
-            time.sleep(self._bg_interval)
+            if self._bg_stop.wait(self._bg_interval):
+                break
 
     def _read_cpu_proc_stat(self) -> float:
         try:

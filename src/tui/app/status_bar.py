@@ -27,6 +27,7 @@ BEAUTY-1/PERF-3（方向A 步骤1）：模型名点 FadeIn 渐显窗口内按 0.
 
 from __future__ import annotations
 
+import threading
 import time
 from weakref import WeakKeyDictionary
 
@@ -57,6 +58,31 @@ from src.tui.app._fx import SPINNER_FRAMES as _SPINNER_FRAMES  # noqa: F401
 # 方向D 步骤16：TTL 常量化（_SNAPSHOT_TTL）——与状态栏 1s 时间桶对齐，
 # 快照与显示节奏不产生错位。
 _SNAPSHOT_TTL = 1.0
+
+#: 思考级别读取缓存（模型名 → (时间, 值)）。状态栏 0.1s 桶重建时分段读取
+#: 当前档案（load_profiles 读盘）；短 TTL 缓存把频率降到 ≤2Hz，模型名变化
+#: 时立即失效（/models 切换即时生效）。
+_REASONING_EFFORT_TTL = 0.5
+_reasoning_effort_cache: dict[str, tuple[float, str]] = {}
+_reasoning_effort_lock = threading.Lock()
+
+
+def _cached_reasoning_effort(model_name: str) -> str:
+    """读取当前生效思考级别（按模型名短 TTL 缓存；异常回退空串）。"""
+    key = str(model_name or "")
+    now = time.monotonic()
+    with _reasoning_effort_lock:
+        hit = _reasoning_effort_cache.get(key)
+        if hit is not None and now - hit[0] < _REASONING_EFFORT_TTL:
+            return hit[1]
+    try:
+        from src.config.model_profiles import current_reasoning_effort as _current_effort
+        value = str(_current_effort() or "")
+    except Exception:
+        value = ""
+    with _reasoning_effort_lock:
+        _reasoning_effort_cache[key] = (now, value)
+    return value
 
 #: 压缩驱动的 token/速度展示期使用的快照 TTL（秒）。
 #:
@@ -366,10 +392,26 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
     model_part: list[StyledRun] = []
     segment_runs: list[list[StyledRun]] = []
     for spec_id in active_segment_ids():
-        fn = resolve_segment(spec_id)
+        # 单个插件段的导入/执行异常不得拖垮整条状态栏（修复前任一扩展段
+        # 抛异常会让本帧状态栏构建整体失败）。
+        try:
+            fn = resolve_segment(spec_id)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "状态栏段导入失败: %s", spec_id, exc_info=True,
+            )
+            continue
         if fn is None:
             continue
-        runs = fn(ctx) or []
+        try:
+            runs = fn(ctx) or []
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "状态栏段执行失败: %s", spec_id, exc_info=True,
+            )
+            continue
         if not runs:
             continue
         if spec_id == "model":
@@ -460,11 +502,7 @@ def StatusBar(props) -> object:
     #   同源，列表规模小，每帧开销可忽略；异常回退空串不显示）。作为
     #   use_memo deps——/models 切换档案或保存新值后下帧 deps 变化 →
     #   状态栏即时刷新（无需额外同步链路）。
-    try:
-        from src.config.model_profiles import current_reasoning_effort as _current_effort
-        reasoning_effort = str(_current_effort() or "")
-    except Exception:
-        reasoning_effort = ""
+    reasoning_effort = _cached_reasoning_effort(st_model_name)
     status_runs = use_memo(
         lambda: _build_status_runs(model, dot_elapsed, spinner_char, reasoning_effort),
         (

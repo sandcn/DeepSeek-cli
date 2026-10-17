@@ -378,7 +378,8 @@ def test_bg_refresh_starts_once(monkeypatch):
     assert len(starts) == 1  # 单飞：仅启动一次
 
 
-def test_bg_loop_calls_collectors_and_sleeps(monkeypatch):
+def test_bg_loop_calls_collectors_and_waits(monkeypatch):
+    """后台循环用 stop Event.wait 节拍（stop() 可立即唤醒退出）。"""
     m = sm._SystemMonitor()
     calls = {"cpu": 0, "mem": 0}
 
@@ -390,16 +391,16 @@ def test_bg_loop_calls_collectors_and_sleeps(monkeypatch):
 
     m.get_cpu_percent = cpu  # type: ignore[method-assign]
     m.get_memory_percent = mem  # type: ignore[method-assign]
-    sleeps = []
+    waits = []
 
-    def sleep(s):
-        sleeps.append(s)
-        if len(sleeps) >= 2:
-            raise KeyboardInterrupt  # 结束无限循环
+    def wait(timeout):
+        waits.append(timeout)
+        if len(waits) >= 2:
+            m._bg_stop.set()  # 第二次等待时请求停止
+        return False
 
-    monkeypatch.setattr(sm.time, "sleep", sleep)
-    with pytest.raises(KeyboardInterrupt):
-        m._bg_loop()
+    monkeypatch.setattr(m._bg_stop, "wait", wait)
+    m._bg_loop()
     assert calls["cpu"] == 2
     assert calls["mem"] == 2
-    assert sleeps == [2.0, 2.0]
+    assert waits == [2.0, 2.0]

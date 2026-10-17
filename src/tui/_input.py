@@ -11,7 +11,7 @@ Input 保留全部公开 API 作为薄外观（Facade），方法体委托：
   - 移除对 ``src.api.interrupt_async`` 的直接 import：``_do_interrupt`` 改调
     注入回调（``set_interrupt_callback``，由 _loop.py _setup_monitor 注入
     ``lambda: request_interrupt_async()``）；未注入时记 debug 日志并跳过。
-  - 历史写盘决策（2026-07-31）：``_append_history_locked`` 保持每 Enter 调
+  - 历史写盘决策（2026-07-31）：``_append_history`` 保持每 Enter 调
     ``_append_to_history_file``（**保持现状**，批量化风险 > 收益，见 _input_buffer.py）。
   - 历史写盘线程模型（2026-08-05 review 收敛）：每 Enter 创建 daemon 线程改为
     共享串行后台 writer（_HistoryDiskWriter，见 _input_buffer.py）；「不批量化」
@@ -93,7 +93,7 @@ class _HistoryIO:
     """历史文件 I/O 适配器 — 经本模块命名空间解析历史读写函数。
 
     InputBufferEditor 通过构造注入本适配器，使其 ``load_history`` /
-    ``_append_history_locked`` 调用的 ``_read_history_file`` /
+    ``_append_history`` 调用的 ``_read_history_file`` /
     ``_append_to_history_file`` / ``_compact_history_file`` 在调用时从本模块
     命名空间解析——保证 tests 中 ``patch("src.tui._input._read_history_file", ...)``
     等仍可拦截（与拆分前行为一致）。
@@ -161,14 +161,13 @@ class Input:
             buffer_editor=self._buffer_editor,
             parser=self._parser,
         )
-        # ★ P2（review）：把外观的 ``_append_history_locked`` 注入 dispatcher
-        #   ——修复前 ``set_enter_append_history`` 全项目零调用，
-        #   ``_handle_special_key`` 的 ``_enter`` 恒取 None（回落 buffer_editor
-        #   自身实现）：测试对 ``patch.object(inp, "_append_history_locked")``
-        #   的拦截在 editmsg/retry 特殊键路径不生效（与 ``_enter`` 的注入语义
-        #   不一致）。
+        # ★ P2（review）：把外观的历史追加回调注入 dispatcher——修复前
+        #   ``set_enter_append_history`` 全项目零调用，``_handle_special_key``
+        #   的 ``_enter`` 恒取 None（回落 buffer_editor 自身实现）：测试对
+        #   ``patch.object(inp, "_append_history")`` 的拦截在 editmsg/retry
+        #   特殊键路径不生效（与 ``_enter`` 的注入语义不一致）。
         try:
-            self._dispatcher.set_enter_append_history(self._append_history_locked)
+            self._dispatcher.set_enter_append_history(self._append_history)
         except Exception:
             _logger.debug("注入 enter append history 回调失败", exc_info=True)
 
@@ -597,7 +596,7 @@ class Input:
         self._dismiss_completion()
         self.reset()
         self._buffer_editor.set_buffer(text)
-        append = self._append_history_locked if append_history else (lambda _text: None)
+        append = self._append_history if append_history else (lambda _text: None)
         self._buffer_editor._enter(append_history=append)
         return True
 
@@ -618,13 +617,16 @@ class Input:
         """从 INPUT_HISTORY_FILE 加载历史行（多进程安全）。"""
         self._buffer_editor.load_history()
 
-    def _append_history_locked(self, text: str) -> None:
-        """保存输入到历史（需持 _lock，委托 InputBufferEditor）。
+    def _append_history(self, text: str) -> None:
+        """保存输入到历史（委托 InputBufferEditor；实际在锁外调用）。
 
         历史写盘决策（方向A 步骤1 评估，2026-07-31）：保持每 Enter 调用一次
         ``_append_to_history_file``（**保持现状**），见 _input_buffer.py。
         """
-        self._buffer_editor._append_history_locked(text)
+        self._buffer_editor._append_history(text)
+
+    #: 兼容旧私有名（本类旧名实际并未持锁，已更正）。
+    _append_history_locked = _append_history
 
     # ═══════════════════════════════════════════════════════
     # 缓冲编辑操作（委托 InputBufferEditor）
@@ -633,10 +635,10 @@ class Input:
     def _enter(self) -> None:
         """Enter：保存提交文本、标记就绪、清空缓冲区（委托 InputBufferEditor）。
 
-        外观层注入自身 ``_append_history_locked``，保证 tests 对外观实例的
-        ``patch.object(inp, "_append_history_locked", ...)`` 拦截路径有效。
+        外观层注入自身 ``_append_history``，保证 tests 对外观实例的
+        ``patch.object(inp, "_append_history", ...)`` 拦截路径有效。
         """
-        self._buffer_editor._enter(append_history=self._append_history_locked)
+        self._buffer_editor._enter(append_history=self._append_history)
 
     def _backspace(self) -> None:
         """退格：删除光标前一个字符（委托 InputBufferEditor）。"""

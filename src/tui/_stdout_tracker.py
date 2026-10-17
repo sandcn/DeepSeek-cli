@@ -77,10 +77,21 @@ class _StdoutLineTracker:
     #   若需要重启 timer（当前无重启场景），需先调用
     #   _flush_timer_stop.clear() 再调用 _start_flush_timer()。
 
+    @property
+    def _partial_line(self) -> str:
+        """未完成行的当前内容（由块列表惰性拼接）。"""
+        return "".join(self._partial_chunks)
+
+    @_partial_line.setter
+    def _partial_line(self, value: str) -> None:
+        self._partial_chunks = [value] if value else []
+        self._partial_len = len(value)
+
     def __init__(self, real_stdout: IO[str]):
         self._real_stdout = real_stdout
         self._ring: deque[str] = deque(maxlen=self._MAX_LINES)
-        self._partial_line: str = ""
+        self._partial_chunks = []
+        self._partial_len = 0
         self._scroll_end: int = 0
         self._in_bottom_bar: bool = False
         self._output_buffer: list[str] = []
@@ -225,18 +236,31 @@ class _StdoutLineTracker:
         \\r 不剥（仅行尾）；先剥 ANSI 再 rstrip \\r（顺序固定，与 1.1 的
         ANSI 剥离协同）。
         """
-        self._partial_line += text
-        if len(self._partial_line) > _PARTIAL_LINE_MAX:
-            # ★ BUG-46：无换行长行累积上限——超限截断保留尾部最新内容
-            #   （防流式二进制/超长单行撑爆内存；截断后下次 \n 仍正常拆行）。
-            self._partial_line = self._partial_line[-_PARTIAL_LINE_MAX:]
-        if '\n' in self._partial_line:
-            *complete_lines, self._partial_line = self._partial_line.split('\n')
+        if not text:
+            return
+        if '\n' in text:
+            # 含换行时一次性拼接+切分；每行到达只做一次 O(当前行长度) 拼接，
+            # 避免逐次 ``partial += chunk`` 的 O(n²) 复制。
+            combined = self._partial_line + text
+            # BUG-46：单行上限（保留尾部最新内容）。截断在切分前执行，
+            # 与原实现一致：超长缓冲只保留尾部窗口。
+            if len(combined) > _PARTIAL_LINE_MAX:
+                combined = combined[-_PARTIAL_LINE_MAX:]
+            *complete_lines, last = combined.split('\n')
+            self._partial_line = last[-_PARTIAL_LINE_MAX:]
             if not self._in_bottom_bar:
                 for line in complete_lines:
                     plain_line = strip_ansi(line).rstrip("\r")
                     self._ring.append(plain_line)
                     self._buffer_to_output(plain_line)
+            return
+        # 无换行：只追加块引用，不复制已累积内容；超限时才拼接并保留尾部。
+        self._partial_chunks.append(text)
+        self._partial_len += len(text)
+        if self._partial_len > _PARTIAL_LINE_MAX:
+            tail = self._partial_line[-_PARTIAL_LINE_MAX:]
+            self._partial_chunks = [tail]
+            self._partial_len = len(tail)
 
     def _buffer_to_output(self, line: str) -> None:
         """将完整行加入输出历史缓冲，达到阈值时异步刷盘（单飞）。
@@ -388,26 +412,50 @@ class _StdoutLineTracker:
             return False
 
     def _load_output_history(self) -> None:
-        """从输出历史文件加载最后 N 行到环形缓冲。"""
+        """从输出历史文件尾部加载最后 N 行到环形缓冲。
+
+        只从文件末尾向前读取到足够 N 行（最多 4MB），不再 ``f.read()`` 整个
+        历史文件——历史文件可能非常大（多会话累积），全量读取 + splitlines
+        会在启动/重建时造成明显内存与 CPU 峰值。
+        """
         try:
             path = self._output_history_file
             if not path.exists():
                 return
 
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
+            max_lines = self._MAX_LINES
+            max_bytes = 4 * 1024 * 1024
+            chunk_size = 8192
+            with open(path, "rb") as f:
                 locked = _lock_history_file(f.fileno(), shared=True)
                 if not locked:
                     return
                 try:
-                    content = f.read()
+                    f.seek(0, os.SEEK_END)
+                    pos = f.tell()
+                    chunks = []
+                    total = 0
+                    newlines = 0
+                    while pos > 0 and total < max_bytes and newlines <= max_lines:
+                        step = min(chunk_size, pos)
+                        pos -= step
+                        f.seek(pos)
+                        chunk = f.read(step)
+                        chunks.append(chunk)
+                        total += len(chunk)
+                        newlines += chunk.count(b"\n")
+                    data = b"".join(reversed(chunks))
                 finally:
                     _unlock_history_file(f.fileno())
 
-            if not content:
+            if not data:
                 return
-
-            lines = content.splitlines()
-            restore = lines[-self._MAX_LINES:] if len(lines) > self._MAX_LINES else lines
+            # 读取起点若落在文件中间，首行可能被截断——丢弃该残行。
+            if pos > 0:
+                nl = data.find(b"\n")
+                data = data[nl + 1:] if nl >= 0 else b""
+            lines = data.decode("utf-8", errors="replace").splitlines()
+            restore = lines[-max_lines:] if len(lines) > max_lines else lines
             for line in restore:
                 # 方向1：历史文件可能含旧 SGR 残留——加载时同样剥离
                 self._ring.append(strip_ansi(line))

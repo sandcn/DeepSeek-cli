@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 _lock = threading.RLock()
-_ABSENT = object()
+_ABSENT: Any = object()
 
 
 @dataclass(frozen=True)
@@ -98,6 +98,9 @@ def active_segments() -> Dict[str, StatusSegment]:
             if spec_id in _managed_builtin:
                 continue
             result[spec_id] = default
+        # 扩展段必须参与 active 迭代（resolve_segment 早已扩展优先）——修复前
+        # 只遍历内置表，插件注册的新段永远不出现在状态栏。
+        result.update(_extension)
         return result
 
 
@@ -106,7 +109,9 @@ def active_segment_ids() -> list[str]:
     return sorted(segments, key=lambda sid: segments[sid].order)
 
 
-def register_builtin_segment(spec_id: str, spec: StatusSegment = None) -> Callable[[], None]:
+def register_builtin_segment(
+    spec_id: str, spec: StatusSegment | None = None,
+) -> Callable[[], None]:
     if spec_id not in _builtin_specs:
         raise KeyError(f"未知内置状态栏段: {spec_id!r}（可用: {list(_builtin_specs)}）")
     with _lock:
@@ -188,7 +193,7 @@ def extension_segments() -> Dict[str, StatusSegment]:
         return dict(_extension)
 
 
-def resolve_segment(spec_id: str) -> Callable:
+def resolve_segment(spec_id: str) -> Callable | None:
     """解析某段的实现（扩展优先 → 生效内置 → None）。"""
     with _lock:
         spec = _extension.get(spec_id)

@@ -53,7 +53,16 @@ def _static_key(view_id: str) -> Callable[[Any], str]:
 
 
 def _user_select_key(view_id: str) -> Callable[[Any], str]:
-    return lambda model: "us-popup"
+    """user_select 弹窗 key：随协议 seq 变化（新弹窗重新挂载）。
+
+    修复前恒返回固定 ``"us-popup"``，新 user_select 复用旧 fiber 状态
+    （选中项/滚动位置残留），与 editmsg 的 seq key 语义不一致。
+    """
+    def _key(model):
+        state = getattr(model, "user_select", None)
+        return f"us-{getattr(state, 'seq', 0)}"
+
+    return _key
 
 
 def _editmsg_key(view_id: str) -> Callable[[Any], str]:

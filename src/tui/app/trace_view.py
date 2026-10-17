@@ -43,7 +43,7 @@ from src.tui.app.trace import (
 from src.tui.app.trace_image import thumbnail_rows as _thumbnail_rows
 from src.tui.core.style import Style
 from src.tui.ink import (
-    TEXT, Column, Row, StyledRun, h, use_input, use_memo, use_ref,
+    TEXT, Column, Row, StyledRun, h, use_effect, use_input, use_memo, use_ref,
 )
 from src.tui.ink.helpers import truncate_runs, truncate_runs_ellipsis, wrap_runs_by_width
 from src.tui.ink.widgets.listview import ListView
@@ -2674,7 +2674,9 @@ def _handle_trace_event(
                     pane_state.cursor() + delta, total_content, approx_content_vh,
                 )
             elif total > 0:
-                base = sel if 0 <= sel < total else 0
+                # 使用实时选中位置（sel_pos）而非渲染期快照 sel——同一帧内
+                # 连续按键时快照已过期，Ctrl+D/U 会基于旧位置翻页。
+                base = sel_pos if 0 <= sel_pos < total else 0
                 _select_record(model, max(0, min(total - 1, base + delta)))
             _set_status(model, "")
             return True
@@ -3118,9 +3120,13 @@ def TraceView(props) -> object:
     #   全表最大耗时（归一化基准）；记录集变化才重算（耗时逐秒变化的近似
     #   取整——不每帧重算）。
     show_time_bar = bool(getattr(model, "trace_show_time_bar", True))
+    # 耗时秒级推进：记录对象身份/数量不变时，运行中记录的 elapsed 仍在
+    # 增长——把单调时钟秒桶纳入依赖，最长 1s 内刷新基准（修复前统计/基准
+    # 在一次流式期间永久冻结）。
+    _time_bucket = int(_time.monotonic())
     max_time = use_memo(
         lambda: _time_bar_max(records),
-        (id(records), len(records)),
+        (id(records), len(records), _time_bucket),
     )
 
     # ── 面板开关与统计（2026-10-07：``?`` 帮助 / ``i`` 统计概览） ──
@@ -3130,7 +3136,7 @@ def TraceView(props) -> object:
     # 始终基于未过滤全量记录，过滤层数另在头部标注）
     trace_stats = use_memo(
         lambda: collect_trace_stats(raw_records),
-        (id(raw_records), len(raw_records)),
+        (id(raw_records), len(raw_records), _time_bucket),
     )
     source_label = f"子代理 {sub_label}" if sub_label else ""
 
@@ -3397,6 +3403,15 @@ def TraceView(props) -> object:
 
     # ★ P1-1（巨型组件拆分）：搜索辅助（清除/定位/切换/执行）收敛到模块级
     #   ``_clear_search`` / ``_search_locate`` / ``_search_jump`` / ``_exec_search``。
+
+    # ★ 渲染期无副作用：渲染期收集的模型写回（尾部跟随归一化 / 检查器光标
+    #   与滚动钳制）在提交期统一落盘。修复前仅在 dict 中收集、从未注册
+    #   use_effect，model 实际从未更新（尾部跟随、越界钳制全部失效）。
+    def _flush_model_writes() -> None:
+        for _name, _value in tuple(_model_writes.items()):
+            setattr(model, _name, _value)
+
+    use_effect(_flush_model_writes, tuple(sorted(_model_writes.items())))
 
     # ★ P1-1（巨型组件拆分）：输入事件处理收敛到模块级
     #   ``_handle_trace_event``（搜索输入 / 关闭键 / 面板切换 / 检查器导航 /

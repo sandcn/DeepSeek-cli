@@ -319,7 +319,11 @@ class CompletionEngine:
         try:
             for session in iter_sessions():
                 out.append(session)
-                emit(list(out))
+                # AsyncSource 以「最新累积值」缓存 emit 参数；直接传同一列表
+                # 避免每次 emit 复制（修复前 list(out) 使总复制量 O(n²)）。
+                # producer 在 emit 返回后继续 append，界面可能短暂看到部分
+                # 新增项（可接受，CPython list 迭代对 append 安全）。
+                emit(out)
         except Exception:
             _logger.debug("会话列表流式加载失败", exc_info=True)
         if not out:
@@ -403,7 +407,17 @@ class CompletionEngine:
         """
         from ._completion_providers import active_provider_ids
 
-        active = set(active_provider_ids())
+        active_ids = active_provider_ids()
+        active = set(active_ids)
+        # 扩展提供者（非内置 id）先于内置分支分发：插件声明自己的上下文
+        # 并返回候选即接管；返回空则继续内置逻辑。修复前这些 id 可被
+        # resolve 解析但永远不会被调用。
+        for pid in active_ids:
+            if pid in ("command", "param", "path"):
+                continue
+            items = self._call_provider(pid, ctx)
+            if items:
+                return items
         last_word = ctx.last_word
         if "command" in active and last_word.startswith("/") and ctx.text.startswith("/"):
             # ── 命令补全（行首命令 + / 开头的词） ──
@@ -447,7 +461,13 @@ class CompletionEngine:
         fn = resolve_provider(pid)
         if fn is None:
             return []
-        return fn(self, ctx)
+        try:
+            return fn(self, ctx) or []
+        except Exception:
+            # 单个提供者（尤其扩展插件）异常不得让整次补全失败——记录
+            # 日志并视为无候选，其余提供者/内置分支继续。
+            _logger.warning("补全提供者执行失败: %s", pid, exc_info=True)
+            return []
 
     # ── 命令补全 ───────────────────────────────────────
 
@@ -722,8 +742,11 @@ class CompletionEngine:
             # 方向2（glob 通配符转义）：file_prefix 含 `[`/`]`/`?` 等被 glob
             # 解释为通配符 → 前缀经 ``glob.escape`` 转义（保留尾部 ``*`` 匹配
             # 后缀）——前缀按字面匹配，不误命中通配语义。
+            # 基准目录同样可能包含 glob 元字符（如 `[` 目录名）——一并转义，
+            # 修复前只转义 file_prefix，搜索目录被当作通配模式。
             search_pattern = os.path.join(
-                search_dir, _glob_module.escape(file_prefix) + "*",
+                _glob_module.escape(search_dir),
+                _glob_module.escape(file_prefix) + "*",
             )
             matches = _glob_module.glob(search_pattern)
         except Exception:

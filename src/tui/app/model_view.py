@@ -74,6 +74,7 @@ from src.tui.ink.widgets.listview import ListView
 from src.config.model_profiles import (
     FIELD_KEYS,
     PROFILE_FIELDS,
+    active_profile_index,
     build_model_entries,
     default_base_url,
     empty_profile,
@@ -502,25 +503,34 @@ def _commit_form(mv) -> None:
     if err:
         mv.edit_error = err
         return
-    is_new = mv.form_is_new or index is None or not (0 <= int(index) < len(profiles))
+    index_val = int(index) if index is not None else -1
+    is_new = mv.form_is_new or not (0 <= index_val < len(profiles))
     if is_new:
         profiles.append(profile)
         msg = f"已新增模型档案 {profile['name']}"
     else:
-        profiles[int(index)] = profile
+        profiles[index_val] = profile
         msg = f"已保存模型档案 {profile['name']}"
     try:
         save_profiles(profiles)
     except Exception as exc:
         mv.edit_error = f"保存失败: {exc}"
         return
+    active_changed = False
     if is_new:
         # 新增档案即设为当前生效——LLM 访问参数唯一来源 = 模型档案，
         # 首次配置（启动引导）保存后立即可用
-        set_active_profile(len(profiles) - 1)
+        active_changed = set_active_profile(len(profiles) - 1)
+        if not active_changed:
+            msg += "（切换当前档案失败）"
     _refresh_entries(mv)
     # 保存后定位到该档案（新增/编辑/复制均回到刚保存的条目）
     mv.selected = _locate_entry(mv.entries, profile.get("name") or profile.get("model") or "")
+    # ★ 跨线程同步：编辑的档案若正是当前生效档案（或新增已设为当前），
+    #   session.model / 状态栏也必须更新——经 applied_seq 交给命令线程
+    #   ``_apply_model_entry`` 统一落地（修复前仅写盘，当前会话仍用旧模型）。
+    if active_changed or _entry_is_current(mv, index_val):
+        _queue_current_apply(mv)
     mv.reset_edit_state()
     mv.message = msg
 
@@ -538,18 +548,58 @@ def _delete_selected(mv, entry) -> None:
         mv.message = "该档案已不存在"
         return
     name = profiles[int(index)].get("name") or ""
-    del profiles[int(index)]
+    deleted_index = int(index)
+    # ★ 删除后修正当前生效档案下标：删除当前项 → 指向同位置的后一项
+    #   （末项则前移）；删除当前项之前的项 → 下标整体前移。修复前仅删除
+    #   列表项、active_model_profile 保持旧下标，会静默指向另一条档案
+    #   （删除当前项甚至越界回退到首个档案），当前会话与实际档案不一致。
+    active_before = active_profile_index()
+    del profiles[deleted_index]
     try:
         save_profiles(profiles)
     except Exception as exc:
         mv.edit_error = f"删除失败: {exc}"
         return
+    if profiles and active_before >= 0:
+        if deleted_index < active_before:
+            new_active = active_before - 1
+        elif deleted_index == active_before:
+            new_active = min(deleted_index, len(profiles) - 1)
+        else:
+            new_active = active_before
+        set_active_profile(new_active)
     _refresh_entries(mv)
+    # 删除可能改变当前生效档案 → 同步 session.model / 状态栏（命令线程经
+    # applied_seq 应用）。无档案时无当前项，跳过。
+    _queue_current_apply(mv)
     # 删除后选中被删位置的下一项（钳制到列表范围），保持浏览连续性
     total_new = len(getattr(mv, "entries", None) or [])
     mv.selected = max(0, min(int(index), total_new - 1)) if total_new else 0
     mv.reset_edit_state()
     mv.message = f"已删除模型档案 {name}"
+
+
+def _entry_is_current(mv, index: int) -> bool:
+    """给定档案下标是否为当前生效档案（越界/异常 → False）。"""
+    if index < 0:
+        return False
+    try:
+        return active_profile_index() == index
+    except Exception:
+        return False
+
+
+def _queue_current_apply(mv) -> None:
+    """把当前生效条目交给命令线程应用（applied_seq+1）。"""
+    current = None
+    for entry in getattr(mv, "entries", None) or []:
+        if isinstance(entry, dict) and entry.get("current"):
+            current = entry
+            break
+    if current is None:
+        return
+    mv.applied = current
+    mv.applied_seq = int(getattr(mv, "applied_seq", 0) or 0) + 1
 
 
 def _locate_entry(entries, name: str) -> int:
@@ -1221,8 +1271,8 @@ def ModelView(props) -> object:
         selected = max(0, min(int(mv.selected), total - 1)) if total else 0
     except (TypeError, ValueError):
         selected = 0
-    if selected != mv.selected:
-        mv.selected = selected
+    # 渲染期只钳制本地显示值，不回写 model（渲染 = 纯函数）。导航回调
+    # ``_on_navigate`` / ``_sel_index`` 在事件路径上各自钳制。
 
     # ── 栏宽分配 ──
     if width > 0 and total:

@@ -1062,6 +1062,14 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         if raw_mode is not None:
             raw_mode.disable()
         self.exit_terminal_modes()
+        # 系统监控后台线程（darwin/windows 无 psutil 时启动）随会话停止——
+        # 修复前 daemon 线程无停止入口，会话结束后仍持续起子进程采样。
+        monitor = getattr(self, "_system_monitor", None)
+        if monitor is not None:
+            try:
+                monitor.stop()
+            except Exception:
+                _logger.debug("系统监控停止异常", exc_info=True)
 
     def flush(self, timeout: float | None = 5.0) -> None:
         """等待队列处理完成。

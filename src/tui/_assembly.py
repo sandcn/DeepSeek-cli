@@ -116,6 +116,8 @@ class TuiAssembly:
         再 re-raise（不吞异常，由调用方决定后续）。
         """
         line_tracker = None
+        session = None
+        cmpl_handler = None
         try:
             line_tracker = _assembly_steps.create_infrastructure()
             tui_config, model = _assembly_steps.create_shared()
@@ -140,6 +142,33 @@ class TuiAssembly:
         except Exception:
             # P2-6：已创建的 tracker（含其 daemon 定时器）在失败路径上无引用
             # 可回收——close() 停止定时器并 flush 剩余行，防泄漏（幂等）。
+            # 补全引擎在装配后失败时同样无引用：关闭其后台线程与监听器。
+            if cmpl_handler is not None:
+                close_cmpl = getattr(cmpl_handler, "close", None)
+                if callable(close_cmpl):
+                    try:
+                        close_cmpl()
+                    except Exception:
+                        _logger.debug(
+                            "assemble 失败清理 cmpl_handler 异常", exc_info=True,
+                        )
+            # create_framework 已启用终端模式并可能注册 SIGWINCH 回调；
+            # 后续步骤失败时若不还原，终端停留在括号粘贴/鼠标上报模式，
+            # 且全局回调表强引用半装配 session（修复前仅关闭 tracker）。
+            if session is not None:
+                try:
+                    session.exit_terminal_modes()
+                except Exception:
+                    _logger.debug(
+                        "assemble 失败还原终端模式异常", exc_info=True,
+                    )
+                try:
+                    from src.tui._screen import unregister_sigwinch_callback
+                    unregister_sigwinch_callback(session)
+                except Exception:
+                    _logger.debug(
+                        "assemble 失败注销 SIGWINCH 异常", exc_info=True,
+                    )
             if line_tracker is not None:
                 try:
                     line_tracker.close()

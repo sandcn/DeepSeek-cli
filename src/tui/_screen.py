@@ -124,6 +124,29 @@ _CURSOR_REPORT_RE = re.compile(rb"\x1b\[(\d+);(\d+)R")
 #: 光标位置查询默认超时（秒）——不支持 CPR 的终端快速回退，不阻塞启动
 _CURSOR_QUERY_TIMEOUT = 0.25
 
+#: CPR 查询窗口内读到的非响应字节（用户抢跑输入）。查询函数直接读 stdin，
+#: 无法把字节塞回内核；暂存后由 InputDispatcher.read_stdin_once 回填 pending。
+_startup_input_pending: bytes = b""
+_startup_input_lock = threading.Lock()
+
+
+def _stash_startup_input(data: bytes) -> None:
+    """暂存查询窗口内误读的输入字节（供后续回填）。"""
+    global _startup_input_pending
+    if not data:
+        return
+    with _startup_input_lock:
+        _startup_input_pending += data
+
+
+def take_startup_input() -> bytes:
+    """取走暂存的启动期输入字节（线程安全；无则返回 b""）。"""
+    global _startup_input_pending
+    with _startup_input_lock:
+        data = _startup_input_pending
+        _startup_input_pending = b""
+    return data
+
 
 def query_cursor_row(
     timeout: float | None = None, stdin_fd: int | None = None,
@@ -171,6 +194,7 @@ def query_cursor_row(
     except (AttributeError, ValueError, OSError):
         return None
     wait = _CURSOR_QUERY_TIMEOUT if timeout is None else max(0.01, float(timeout))
+    buf = b""
     # ★ 终端属性经 ``termios_noncanonical`` 串行化（TERMIOS_LOCK）：进入前
     #   仅关闭 ICANON/ECHO（已处于 cbreak/raw 时零副作用），退出时在锁内
     #   恢复——修复前用 ``tty.setraw`` + 无条件整体恢复：查询窗口（最长
@@ -202,9 +226,20 @@ def query_cursor_row(
                 buf += chunk
                 match = _CURSOR_REPORT_RE.search(buf)
                 if match:
+                    # 响应之外可能夹带用户抢跑输入（如启动瞬间按键/粘贴）——
+                    # 暂存并交给 InputDispatcher 回填，修复前直接丢弃。
+                    _stash_startup_input(
+                        buf[:match.start()] + buf[match.end():],
+                    )
                     return int(match.group(1))
+            # 超时/未识别：缓冲区内容全部保留，避免用户输入丢失。
+            _stash_startup_input(buf)
     except Exception:
         _logger.debug("query_cursor_row 异常", exc_info=True)
+        try:
+            _stash_startup_input(buf)
+        except Exception:
+            _logger.debug("暂存启动期输入失败", exc_info=True)
         return None
     return None
 
@@ -497,6 +532,23 @@ def set_window_title(title: str) -> None:
 _CLIPBOARD_MAX_BYTES = 74_000
 
 
+def _truncate_utf8(data: bytes, limit: int) -> bytes:
+    """按字节上限截断 UTF-8，且不切断多字节字符。"""
+    if len(data) <= limit:
+        return data
+    cut = data[:max(0, int(limit))]
+    # 从尾部回退到最后一个完整字符边界（最多 3 个续字节）。
+    while cut:
+        try:
+            cut.decode("utf-8")
+            return cut
+        except UnicodeDecodeError as exc:
+            if exc.reason != "unexpected end of data":
+                return data[:exc.start]
+            cut = cut[:exc.start]
+    return b""
+
+
 def set_clipboard(text: str) -> bool:
     """写入系统剪贴板（OSC 52）。
 
@@ -518,8 +570,9 @@ def set_clipboard(text: str) -> bool:
         import base64
 
         raw = (text or "").encode("utf-8")
-        if len(raw) > _CLIPBOARD_MAX_BYTES:
-            raw = raw[:_CLIPBOARD_MAX_BYTES]
+        # 按字符边界截断：修复前直接切字节会把末尾 UTF-8 字符截成半个，
+        # 终端解码出 U+FFFD 或丢弃整段。
+        raw = _truncate_utf8(raw, _CLIPBOARD_MAX_BYTES)
         payload = base64.b64encode(raw).decode("ascii")
         out = sys.__stdout__
         if out is None:
@@ -536,7 +589,9 @@ def set_clipboard(text: str) -> bool:
 # SIGWINCH 信号处理
 # ═══════════════════════════════════════════════════════════
 
-_sigwinch_callbacks: list[tuple[int, Callable[[int, int], None]]] = []
+#: (id(token), token 强引用, callback)——同时保存 token 本体：仅用 id(token)
+#: 时对象回收后 id 可能被新对象复用，旧回调会被误删/误替换。
+_sigwinch_callbacks: list[tuple[int, object, Callable[[int, int], None]]] = []
 #: ★ P2（review）：回调注册表互斥锁——register/unregister（装配线程）与
 #: process_sigwinch（渲染线程快照迭代）并发读写同一列表；修复前无锁保护
 #: （``del list[i]`` 与 ``append`` 竞争）。锁只保护注册表增删；回调执行在
@@ -570,13 +625,13 @@ def register_sigwinch_callback(
     # ★ P2（review）：注册表增删在锁内（与渲染线程的 process_sigwinch 快照
     #   迭代互斥）；signal.signal 亦在锁内（只注册一次的判定与置位原子）。
     with _sigwinch_lock:
-        for i, (existing_key, _) in enumerate(_sigwinch_callbacks):
-            if existing_key == key:
+        for i, (existing_key, existing_token, _) in enumerate(_sigwinch_callbacks):
+            if existing_key == key and (token is None or existing_token is token):
                 # 同 token 已注册：替换回调（幂等 + 最新绑定生效）
-                _sigwinch_callbacks[i] = (key, cb)
+                _sigwinch_callbacks[i] = (key, token, cb)
                 break
         else:
-            _sigwinch_callbacks.append((key, cb))
+            _sigwinch_callbacks.append((key, token, cb))
         if not _sigwinch_registered:
             try:
                 signal.signal(signal.SIGWINCH, _handle_sigwinch)
@@ -599,8 +654,9 @@ def unregister_sigwinch_callback(token: object) -> None:
     key = id(token)
     # ★ P2（review）：注销在锁内（与 register/快照迭代互斥）。
     with _sigwinch_lock:
-        for i, (existing_key, _) in enumerate(_sigwinch_callbacks):
-            if existing_key == key:
+        for i, (existing_key, existing_token, _) in enumerate(_sigwinch_callbacks):
+            # 同时校验 id 与 token 身份：id 复用时不误删新对象的回调。
+            if existing_key == key and existing_token is token:
                 del _sigwinch_callbacks[i]
                 return
 
@@ -646,7 +702,7 @@ def process_sigwinch() -> bool:
     #   回调执行在锁外（回调可重新注册，锁外避免自死锁）。
     with _sigwinch_lock:
         callbacks = list(_sigwinch_callbacks)
-    for _, cb in callbacks:
+    for _, _token, cb in callbacks:
         try:
             cb(width, height)
         except Exception:
@@ -907,6 +963,7 @@ def narrow_sep_width(width: int | None = None, threshold: int = 40) -> int:
 __all__ = [
     # 终端尺寸 / 光标查询
     "query_cursor_row",
+    "take_startup_input",
     "detect_truecolor",
     # 光标与屏幕控制序列
     "set_scroll_region",

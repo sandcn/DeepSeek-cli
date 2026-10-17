@@ -369,10 +369,11 @@ def _tool_result_line_count(block) -> int:
     except (TypeError, ValueError):
         omitted = 0
     try:
-        omitted += int(block.extra.get("_head_omitted_lines", 0) or 0)
+        head_omitted = int(block.extra.get("_head_omitted_lines", 0) or 0)
     except (TypeError, ValueError):
-        omitted = 0
-    return max(0, count) + max(0, omitted)
+        head_omitted = 0
+    # 头尾省略各自独立：head 解析失败不得把已累计的 bash 尾省略清零。
+    return max(0, count) + max(0, omitted) + max(0, head_omitted)
 
 
 def _tool_meta_runs(block, running: bool) -> list:
@@ -665,7 +666,9 @@ def tool_card_lines(block, width, start=0, stop=None):
         start, len(block.lines), body_start, body_end, width, status_idx,
         block.extra.get("_bash_omitted_lines", 0),
         block.extra.get("_head_omitted_lines", 0),
-        len(_hidden_rows) if _hidden_rows else 0,
+        # 隐藏集合按行对象身份入键：只比较长度时，替换为另一批同数量隐藏
+        # 行（如 read_file 重试/不同文件）会错误命中旧正文缓存。
+        tuple(id(line) for line in _hidden_rows) if _hidden_rows else (),
         bg_style.bg,
         # ★ markdown 工具卡：渲染版本 / 正文行数参与键（新 chunk 或 resize
         #   重渲染后版本变化 → 重建；未变化帧命中缓存）。

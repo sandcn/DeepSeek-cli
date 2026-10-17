@@ -420,7 +420,6 @@ def CommandPalette(props) -> object:
     selected_ref.current = cur
     scroll_ref.current = off
     entry = rows[cur][0] if total else None
-    highlights = rows[cur][1] if total else {}
     recent_set = set(recent)
 
     def _live_total() -> int:

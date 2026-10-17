@@ -125,6 +125,8 @@ class AppModel(_ToolOutputMixin):
     """聊天 UI 应用模型。"""
 
     def __init__(self) -> None:
+        # 未声明字段告警去重（同名只 warning 一次——getattr 探测可能高频）。
+        self._unknown_attr_warned: set = set()
         # ── 聊天块 ──
         self.blocks: list[ChatBlock] = []
         # ★ 增量渲染缓存：已关闭（提交）块的渲染行。
@@ -1255,11 +1257,23 @@ class AppModel(_ToolOutputMixin):
     # ``copy``/``pickle`` 的 dunder 查询）不告警，避免噪音。
 
     def __getattr__(self, name: str):
-        """未知属性访问：公开名记 warning 后抛 ``AttributeError``。"""
+        """未知属性访问：同名首次 warning 后抛 ``AttributeError``。
+
+        ``getattr(model, 名称, 默认值)`` 在组件/插件中大量用于可选字段探测；
+        公开名缺失可能是拼写错误，也可能是可选字段探测。告警按名称去重，
+        既保留可观测性又避免同一探测每帧刷屏（修复前每次访问都 warning）。
+        """
         if not name.startswith("_"):
-            _logger.warning(
-                "AppModel 访问未声明字段 %r（拼写错误或未在 __init__ 初始化）", name,
-            )
+            warned = self.__dict__.get("_unknown_attr_warned")
+            if warned is None:
+                warned = set()
+                self.__dict__["_unknown_attr_warned"] = warned
+            if name not in warned:
+                warned.add(name)
+                _logger.warning(
+                    "AppModel 访问未声明字段 %r（拼写错误或未在 __init__ 初始化）",
+                    name,
+                )
         raise AttributeError(name)
 
     # ── trace_open 兼容别名（2026-08-17 通用化：模态全屏视图） ──

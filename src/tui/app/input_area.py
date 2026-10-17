@@ -101,6 +101,7 @@ from src.tui.app._popup_builder import (
 )
 from src.tui.core.style import Style
 from src.tui.ink import h, TEXT, Column, Line, use_memo, use_ref
+from src.tui.ink.helpers import truncate_line
 from src.tui.ink.widgets.interactive import SelectInput
 from src.tui.app import _fx
 from src.tui.app._theme import sep_line as _theme_sep_line, time_glow, _S_ACCENT, _S_DIM, _S_TEXT, _S_TIME
@@ -315,7 +316,6 @@ def _build_mode_line(width: int, mode,
     # 极窄屏防御：前缀超宽时截断至 width（保持行级 diff 行宽不变量；
     #   truncate_line 不拆 CJK——前缀为 ASCII+·，截断安全）。
     if width > 0 and prefix.width > width:
-        from src.tui.ink.helpers import truncate_line
         prefix = truncate_line(prefix, width)
     prefix_w = prefix.width
     for run in prefix.runs:
@@ -580,7 +580,6 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
         sline.append(_truncate_width(match, match_budget), _S_TEXT)
         # 极窄屏（前缀 + query 已超宽）→ 整行截断至 width（复用 truncate_line）
         if sline.width > width:
-            from src.tui.ink.helpers import truncate_line
             sline = truncate_line(sline, width)
         lines.append(sline)
 
@@ -633,7 +632,6 @@ def _build_lines(fiber, include_popup: bool = True) -> list[Line]:
         #   输入段可能超 width（width<4 时 CJK 段宽 2）——截断至 width 保持
         #   行级 diff 宽度不变量（与补全弹窗/搜索行截断语义一致）。
         if width > 0 and line.width > width:
-            from src.tui.ink.helpers import truncate_line
             line = truncate_line(line, width)
         lines.append(line)
 
@@ -749,7 +747,8 @@ def CompletionPopup(props: dict) -> object:
         sel = max(0, min(int(completion.selected), len(items) - 1))
     except (TypeError, ValueError):
         sel = 0
-    completion.selected = sel
+    # 渲染期只钳制显示用局部值，不回写 completion.selected（渲染 = 纯函数）；
+    # 导航回调按当前列表长度取模，越界值不会造成错误选中。
     match_prefix = completion.match_prefix or ""
     types = completion.types or ()
     types_disp = list(types) + [""] * (len(items) - len(types))
@@ -779,7 +778,6 @@ def CompletionPopup(props: dict) -> object:
     if total > 0:
         head.append(f" ({sel + 1}/{total})", Style(fg=title_color))
     if head.width > width:
-        from src.tui.ink.helpers import truncate_line
         head = truncate_line(head, width)
 
     # ── 候选项（SelectInput 标准控件） ──
@@ -820,7 +818,6 @@ def CompletionPopup(props: dict) -> object:
             desc_budget = max(1, width - line.width)
             line.append(_truncate_width(descs[idx], desc_budget), Style(fg=110))
         if width > 0 and line.width > width:
-            from src.tui.ink.helpers import truncate_line
             line = truncate_line(line, width)
         # 整行背景高亮（选中项；补白至满宽）
         if is_sel:
@@ -851,7 +848,6 @@ def CompletionPopup(props: dict) -> object:
     hint = Line.of(" ", Style(fg=110))
     hint.append("Tab \u2191\u2193 PgUp/PgDn Esc", Style(fg=110))
     if width > 0 and hint.width > width:
-        from src.tui.ink.helpers import truncate_line
         hint = truncate_line(hint, width)
 
     children = [

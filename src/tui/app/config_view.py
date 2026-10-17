@@ -57,7 +57,7 @@ import json
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple, truncate_width as _truncate_width
 from src.tui.ink import TEXT, Column, Row, StyledRun, h
-from src.tui.ink.hooks import use_input, usePaste, use_memo
+from src.tui.ink.hooks import use_effect, use_input, usePaste, use_memo
 from src.tui.ink.helpers import truncate_runs, truncate_runs_ellipsis
 from src.tui.ink.widgets.listview import ListView
 from src.config.view_model import format_config_value, parse_config_value
@@ -1453,6 +1453,8 @@ def ConfigView(props) -> object:
     model = props["model"]
     width = props.get("width", 0) or 0
     cv = getattr(model, "config_view", None)
+    # 渲染期只算不写：选中/高亮/帮助滚动钳制先收集，组件末尾 use_effect 提交。
+    _model_writes: dict = {}
     visible = bool(cv is not None and cv.visible and not cv.done)
     entries = list(getattr(cv, "entries", None) or []) if cv is not None else []
     help_open = bool(getattr(cv, "help_open", False)) if cv is not None else False
@@ -1514,6 +1516,17 @@ def ConfigView(props) -> object:
     #   已知窗口（渲染循环固有），命令线程轮询间隙极短，风险可接受。
     use_modal_scope(visible)
 
+    def _flush_model_writes() -> None:
+        if cv is None:
+            return
+        for _name, _value in tuple(_model_writes.items()):
+            if getattr(cv, _name, None) != _value:
+                setattr(cv, _name, _value)
+
+    # 无 deps（每次提交执行）：写回在渲染后段才收集，deps 在此刻计算会
+    # 恒为空；闭包引用同一 dict，提交期可读到最终值。
+    use_effect(_flush_model_writes)
+
     # ★ 收窄：``cv`` 为 Optional（``getattr(model, "config_view", None)``）——
     #   mypy 无法从 ``visible`` 的布尔表达式反推 cv 非 None，故此处显式判空
     #   （cv 为 None 时 visible 恒 False，行为与原来一致）。
@@ -1526,7 +1539,7 @@ def ConfigView(props) -> object:
     except (TypeError, ValueError):
         selected = 0
     if selected != cv.selected:
-        cv.selected = selected
+        _model_writes["selected"] = selected
     # 选择界面高亮钳制
     pick_total = len(cv.edit_options or [])
     try:
@@ -1534,7 +1547,7 @@ def ConfigView(props) -> object:
     except (TypeError, ValueError):
         pick_sel = 0
     if pick_sel != cv.edit_selected:
-        cv.edit_selected = pick_sel
+        _model_writes["edit_selected"] = pick_sel
     # json 界面条目高亮钳制（基于递归路径导航到的当前容器）
     json_container = _json_container(cv)
     json_is_dict = isinstance(json_container, dict)
@@ -1550,7 +1563,7 @@ def ConfigView(props) -> object:
     except (TypeError, ValueError):
         json_sel = 0
     if json_sel != cv.edit_json_selected:
-        cv.edit_json_selected = json_sel
+        _model_writes["edit_json_selected"] = json_sel
 
     # ── 栏宽分配（键列 / 值列 / 说明列） ──
     if width > 0 and total:
@@ -1756,7 +1769,7 @@ def ConfigView(props) -> object:
         max_scroll = max(0, total_help - panel_vh)
         scroll_h = min(scroll_h, max_scroll)
         if cv is not None and scroll_h != getattr(cv, "help_scroll", 0):
-            cv.help_scroll = scroll_h
+            _model_writes["help_scroll"] = scroll_h
         help_children: list = []
         for i, runs in enumerate(help_rows[scroll_h:scroll_h + panel_vh]):
             help_children.append(h(TEXT, {

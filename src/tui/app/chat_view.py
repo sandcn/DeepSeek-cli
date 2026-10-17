@@ -72,9 +72,9 @@ def _welcome_rows(model, active: bool, width: int) -> list:
 
     行结构：环境信息卡（``◆ 标签  值``，值缺省的行跳过）+ 空行 + 3 行引导。
     每行按 width 截断（不拆 CJK，行级 diff 宽度不变量）——截断由
-    ``_welcome.welcome_card_rows`` 完成。快照键 ``(active, width, info_key)``
-    命中时返回同一 rows 引用（跨帧零重建）；活跃态（呼吸色变化）亦参与键，
-    但同帧内色值一致时复用（渲染循环每帧推进时间桶时色值变化 → 自动 miss）。
+    ``_welcome.welcome_card_rows`` 完成。快照键
+    ``(active, width, info_key, dot_fg)`` 命中时返回同一 rows 引用（跨帧零
+    重建）；活跃态呼吸色也参与键——色值变化即 miss，保证呼吸动画推进。
 
     Returns:
         list[list[StyledRun]]——欢迎卡每行 runs。
@@ -82,14 +82,14 @@ def _welcome_rows(model, active: bool, width: int) -> list:
     from src.tui.app._welcome import welcome_card_rows
 
     info_key = _welcome_info_key(model)
-    key = (bool(active), int(width or 0), info_key)
+    dot_fg = 45
+    if active:
+        dot_fg = time_glow(_WELCOME_DOT_LO, _WELCOME_DOT_HI, _WELCOME_DOT_PERIOD)
+    key = (bool(active), int(width or 0), info_key, int(dot_fg))
     with _WELCOME_CACHE_LOCK:
         cached = _WELCOME_STATIC_CACHE
         if cached[0] == key and cached[1] is not None:
             return cached[1]
-    dot_fg = 45
-    if active:
-        dot_fg = time_glow(_WELCOME_DOT_LO, _WELCOME_DOT_HI, _WELCOME_DOT_PERIOD)
     active_dot = Style(fg=dot_fg, bold=True)
     rows = [
         [

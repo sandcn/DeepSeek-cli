@@ -27,6 +27,7 @@ import logging
 import os
 import select
 import threading
+import time
 from typing import TYPE_CHECKING
 
 from src.core.path_tokens import normalize_dropped_paths
@@ -544,6 +545,16 @@ class InputDispatcher:
         """
         fd = self._io.fd
 
+        # CPR 光标查询期间读到的非响应字节（用户抢跑输入）由 _screen 暂存，
+        # 这里回填到 pending 缓冲最前面——修复前这些字节被直接丢弃。
+        try:
+            from ._screen import take_startup_input
+            stashed = take_startup_input()
+            if stashed:
+                self._io.prepend_pending(stashed)
+        except Exception:
+            _logger.debug("回填启动期输入失败", exc_info=True)
+
         # ── 状态检查（委托 InputIO） ──
         if not self._io.can_read():
             return False
@@ -803,15 +814,27 @@ class InputDispatcher:
     # 事件处理（render 线程调用）
     # ═══════════════════════════════════════════════════════
 
-    def process_events(self) -> None:
-        """处理所有输入事件（render 线程调用）。
+    #: 单帧输入处理预算：粘贴大段文本时无上限循环会长时间占用渲染线程
+    #: （掉帧/输入无响应）；剩余 pending 字节留到下一帧继续处理。
+    _MAX_EVENTS_PER_FRAME = 4096
+    _MAX_SECONDS_PER_FRAME = 0.02
 
-        循环调用 ``read_stdin_once()`` 直到无可读数据，
-        确保一次渲染帧内处理完所有待处理的输入。
+    def process_events(self) -> None:
+        """处理输入事件（render 线程调用，带单帧预算）。
+
+        循环调用 ``read_stdin_once()``，直到无可读数据或达到本帧预算
+        （4096 个输入单元 / 20ms）。大段粘贴剩余部分保留在 InputIO.pending，
+        下一帧继续，避免单帧长时间阻塞渲染。
         """
         try:
-            while self.read_stdin_once():
-                pass
+            deadline = time.monotonic() + self._MAX_SECONDS_PER_FRAME
+            processed = 0
+            while processed < self._MAX_EVENTS_PER_FRAME:
+                if not self.read_stdin_once():
+                    break
+                processed += 1
+                if time.monotonic() >= deadline:
+                    break
         except Exception:
             _logger.warning("process_events 异常", exc_info=True)
 

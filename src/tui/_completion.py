@@ -126,13 +126,39 @@ class _CmplHandler:
         self._text_provider = text_provider
         self._last_request_text = ""
         # 异步补全：数据源后台加载就绪 → 重新计算并刷新弹窗（动态更新界面）。
+        # 保存注销函数供 close() 使用——修复前监听器永久持有 handler/engine，
+        # 且 CompletionEngine 后台线程从不关闭（会话 stop 后仍泄漏）。
+        self._undo_listener: Callable[[], None] | None = None
+        self._closed = False
         add_listener = getattr(engine, "add_listener", None)
         if callable(add_listener):
             try:
-                add_listener(self._on_data_ready)
+                undo = add_listener(self._on_data_ready)
+                if callable(undo):
+                    self._undo_listener = undo
             except Exception:
                 import logging
                 logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
+
+    def close(self) -> None:
+        """注销数据源监听器并关闭补全引擎后台线程（幂等）。"""
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        undo, self._undo_listener = self._undo_listener, None
+        if callable(undo):
+            try:
+                undo()
+            except Exception:
+                import logging
+                logging.getLogger(__name__).debug("补全监听器注销失败", exc_info=True)
+        close = getattr(self._engine, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                import logging
+                logging.getLogger(__name__).debug("补全引擎关闭失败", exc_info=True)
 
     def set_text_provider(self, provider: Callable[[], str] | None) -> None:
         """注入当前输入文本提供者（装配后由 ``setup_completion`` 注入）。"""

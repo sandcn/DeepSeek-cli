@@ -7,6 +7,7 @@ filter_fn 注入。``push_cmd`` 由装配层注入（InkSession.push_cmd）。
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING, Callable
 
 from src.tui._const import (
@@ -99,10 +100,11 @@ class EventDispatcher:
         # 主 Agent（"main"）与每个 SubAgent（"agent-N"）发布各自计数；
         # bash（_bg_bash_counts）与 subagent（_bg_subagent_counts）分列聚合，
         # 模式行行首显示（bash · N · subagent · N）。
-        # ★ P3-6（无锁可接受）：聚合 dict 无锁——GIL 下单条 get/set/pop 原子；
-        #   ``_on_bg_bash_changed`` 的「更新 + sum」为复合操作，但结果仅用于
-        #   模式行显示（允许瞬时轻微偏差，最终一致），不加锁可接受（避免
-        #   事件分发热路径锁开销）。
+        # ★ 聚合 dict 的「更新 + sum」是复合操作，而发布事件可能来自多个
+        #   Agent 线程（asyncio.to_thread）——无锁时 dict 在 sum 迭代中并发
+        #   pop/set 会抛 RuntimeError（dict changed size during iteration）。
+        #   锁只保护短临界区，事件热路径开销可忽略。
+        self._bg_lock = threading.RLock()
         self._bg_bash_counts: dict[str, int] = {}
         self._bg_subagent_counts: dict[str, int] = {}
         # 压缩中 Agent 集合（label → True）：主 Agent 与全部 SubAgent 的压缩
@@ -375,17 +377,20 @@ class EventDispatcher:
             sa_count = max(0, int(getattr(event, "subagent_count", 0) or 0))
         except (TypeError, ValueError):
             sa_count = 0
-        if count <= 0:
-            self._bg_bash_counts.pop(label, None)
-        else:
-            self._bg_bash_counts[label] = count
-        if sa_count <= 0:
-            self._bg_subagent_counts.pop(label, None)
-        else:
-            self._bg_subagent_counts[label] = sa_count
+        with self._bg_lock:
+            if count <= 0:
+                self._bg_bash_counts.pop(label, None)
+            else:
+                self._bg_bash_counts[label] = count
+            if sa_count <= 0:
+                self._bg_subagent_counts.pop(label, None)
+            else:
+                self._bg_subagent_counts[label] = sa_count
+            total = sum(self._bg_bash_counts.values())
+            subagent_total = sum(self._bg_subagent_counts.values())
         self._push_cmd(BgBashCountCmd(
-            count=sum(self._bg_bash_counts.values()),
-            subagent_count=sum(self._bg_subagent_counts.values()),
+            count=total,
+            subagent_count=subagent_total,
         ))
 
     def _on_compaction(self, event) -> None:
@@ -396,11 +401,13 @@ class EventDispatcher:
         """
         label = event.label or "main"
         phase = str(getattr(event, "phase", "") or "")
-        if phase == "started":
-            self._compaction_active[label] = True
-        else:
-            self._compaction_active.pop(label, None)
-        self._push_cmd(CompactionCmd(active=len(self._compaction_active)))
+        with self._bg_lock:
+            if phase == "started":
+                self._compaction_active[label] = True
+            else:
+                self._compaction_active.pop(label, None)
+            compact_active = len(self._compaction_active)
+        self._push_cmd(CompactionCmd(active=compact_active))
 
         if phase == "finished":
             try:

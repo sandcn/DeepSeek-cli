@@ -6,7 +6,7 @@
   - 编辑方法: handle_char / handle_chars / set_buffer / _backspace / _left / _right /
               _up / _down / _home / _end / _word_left / _word_right / _delete /
               _delete_word_left / _kill_to_bol / _kill_to_eol / _enter
-  - 历史管理: load_history / _append_history_locked / _history* / _unescape
+  - 历史管理: load_history / _append_history / _history* / _unescape
   - 队列: get_queued_input / has_queued_input / drain_all / reset / get_current_text
   - 回显: _echo / _history_indicator
 
@@ -14,7 +14,7 @@ InputBufferEditor 通过构造注入 ``echo_callback``（缺省 None 时 _echo �
 ``history_io`` 历史文件 I/O 适配器（由 _input.py 注入，保持测试 patch 路径）。
 
 历史写盘决策（方向A 步骤1 评估，2026-07-31）：
-  ``_append_history_locked`` 保持每 Enter 调用一次 ``_append_to_history_file``
+  ``_append_history`` 保持每 Enter 调用一次 ``_append_to_history_file``
   （**保持现状**）。批量化会引入崩溃时历史丢失风险与退出冲刷复杂度，收益低，
   故不批量化。
 
@@ -602,9 +602,9 @@ class InputBufferEditor:
         """Enter：保存提交文本、标记就绪、清空缓冲区。
 
         Args:
-            append_history: 历史追加回调。None 时使用自身 ``_append_history_locked``；
-                外观层注入其 ``_append_history_locked`` 以保持测试对外观实例的
-                ``patch.object(inp, "_append_history_locked", ...)`` 拦截路径。
+            append_history: 历史追加回调。None 时使用自身 ``_append_history``；
+                外观层注入其 ``_append_history`` 以保持测试对外观实例的
+                ``patch.object(inp, "_append_history", ...)`` 拦截路径。
 
         方向D 步骤14：反向历史搜索激活时（Ctrl+R），Enter 应用当前匹配到缓冲
         并退出搜索（不提交——bash 语义：接受匹配项到命令行继续编辑）。
@@ -640,18 +640,18 @@ class InputBufferEditor:
                 self._undo_stack.clear()
                 self._redo_stack.clear()
                 self._undo_coalesce_key = None
-        # P2（2026-08-07）：历史追加移出锁——``_append_history_locked`` 内部
+        # P2（2026-08-07）：历史追加移出锁——``_append_history`` 内部
         # ``_HISTORY_DISK_WRITER.submit`` 获取 ``_submit_lock``；flush 并发
         # 持 ``_submit_lock`` 做同步文件 I/O 时，锁内 submit 阻塞 render 线程
         # （所有缓冲编辑冻结）。移出后 submit 阻塞不再影响 ``_lock``。
-        # 线程安全说明：``_history`` 内存更新（``_append_history_locked``
+        # 线程安全说明：``_history`` 内存更新（``_append_history``
         # 内部）仅 render 线程路径访问（_up/_down/search/load_history 均为
         # render/装配期调用），无跨线程竞态。
         if not applied_search:
             if append_history is not None:
                 append_history(text)
             else:
-                self._append_history_locked(text)
+                self._append_history(text)
         if applied_search:
             self._echo(text)
         else:
@@ -733,20 +733,19 @@ class InputBufferEditor:
         """是否处于反向历史搜索模式。"""
         return self._search_active
 
-    def _append_history_locked(self, text: str) -> None:
+    def _append_history(self, text: str) -> None:
         """保存输入到历史（写盘部分异步执行）。
 
-        ★ P2（review 2026-08-22）：方法名含 ``_locked`` 但实际在 ``_enter``
-        的 ``with self._lock`` 块**外**调用（锁外提交后台写盘避免 render 线程
-        阻塞）——命名/锁纪律误导。``_history`` 内存更新仅 render/装配期单线程
-        访问（_up/_down/search/load_history 同线程），无跨线程竞态；方法名
-        保留以兼容 patch 路径，语义以本说明为准。
+        ★ 2026-10：方法名由 ``_append_history_locked`` 更正——实际在
+        ``_enter`` 的 ``with self._lock`` 块**外**调用（锁外提交后台写盘避免
+        render 线程阻塞），旧名与锁纪律相悖。``_history`` 内存更新仅 render/
+        装配期单线程访问（_up/_down/search/load_history 同线程），无跨线程竞态。
 
         历史写盘决策（方向A 步骤1 评估，2026-07-31）：保持每 Enter 调用一次
         ``_append_to_history_file``（**保持现状**）——批量化会引入崩溃时历史丢失
         风险与退出冲刷复杂度，收益低，故不批量化。
 
-        方向3（Enter fsync 阻塞渲染修复）：``_append_history_locked`` 在渲染线程
+        方向3（Enter fsync 阻塞渲染修复）：``_append_history`` 在渲染线程
         持锁被 ``_enter`` 调用，原实现内同步执行 ``os.fsync``（Termux ext4
         10-100ms）阻塞渲染帧与所有锁竞争路径——写盘迁移到后台 daemon 线程
         （``_safe_disk_append``），锁内仅更新内存历史（零阻塞）。
@@ -767,6 +766,9 @@ class InputBufferEditor:
         # 有界队列），替代每 Enter 创建 daemon 线程（线程创建开销/磁盘竞争）。
         # 权衡见 _HistoryDiskWriter 注释：不改变「不批量化」决策。
         _HISTORY_DISK_WRITER.submit(self._history_io, escaped)
+
+    #: 兼容旧私有名（外部/测试可能仍引用）；新代码用 ``_append_history``。
+    _append_history_locked = _append_history
 
     def _up(self) -> None:
         """上箭头：多行上移一行；首行或单行回退到历史浏览。"""

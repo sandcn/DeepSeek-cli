@@ -238,13 +238,27 @@ class ChatUIConsumer:
         消费者（refcount 负向错乱）。
         """
         with self._state_lock:
-            if self._started:
-                try:
-                    self._lifecycle.stop()
-                finally:
-                    # 无论 lifecycle.stop 是否抛异常，都必须注销消费者，
-                    # 防止消费者注册表泄漏、get_active_chat_ui() 返回已停止实例。
-                    _unregister_consumer()
+            try:
+                if self._started:
+                    try:
+                        self._lifecycle.stop()
+                    finally:
+                        # 无论 lifecycle.stop 是否抛异常，都必须注销消费者，
+                        # 防止消费者注册表泄漏、get_active_chat_ui() 返回已停止实例。
+                        _unregister_consumer()
+            finally:
+                # 补全引擎后台线程 + 数据源监听器随会话关闭（修复前
+                # warmup 启动的 daemon loader 线程与 listener 永久存活）。
+                # 即使从未 start（装配后预热线程已启动）也必须在 stop 时关闭。
+                cmpl_close = getattr(self._cmpl_handler, "close", None)
+                if callable(cmpl_close):
+                    try:
+                        cmpl_close()
+                    except Exception:
+                        import logging
+                        logging.getLogger(__name__).debug(
+                            "cmpl_handler.close 异常", exc_info=True,
+                        )
 
     def suspend(self) -> None:
         """暂停渲染引擎（委托 TuiLifecycle）。"""

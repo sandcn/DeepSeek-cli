@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 _lock = threading.RLock()
-_ABSENT = object()
+_ABSENT: Any = object()
 
 
 @dataclass(frozen=True)
@@ -94,6 +94,9 @@ def active_providers() -> Dict[str, CompletionProvider]:
             if spec_id in _managed_builtin:
                 continue
             result[spec_id] = default
+        # 扩展提供者参与 active 迭代（resolve 早已扩展优先）——修复前新 id
+        # 可被解析但永远不会被补全引擎分发。
+        result.update(_extension)
         return result
 
 
@@ -102,7 +105,9 @@ def active_provider_ids() -> list[str]:
     return sorted(providers, key=lambda pid: providers[pid].order)
 
 
-def register_builtin_provider(spec_id: str, spec: CompletionProvider = None) -> Callable[[], None]:
+def register_builtin_provider(
+    spec_id: str, spec: CompletionProvider | None = None,
+) -> Callable[[], None]:
     if spec_id not in _builtin_specs:
         raise KeyError(f"未知内置补全提供者: {spec_id!r}（可用: {list(_builtin_specs)}）")
     with _lock:
@@ -184,7 +189,7 @@ def extension_providers() -> Dict[str, CompletionProvider]:
         return dict(_extension)
 
 
-def resolve_provider(spec_id: str) -> Callable:
+def resolve_provider(spec_id: str) -> Callable | None:
     """解析某提供者的实现（扩展优先 → 生效内置 → None）。"""
     with _lock:
         spec = _extension.get(spec_id)
