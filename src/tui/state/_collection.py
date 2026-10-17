@@ -15,12 +15,12 @@
 from __future__ import annotations
 
 import threading
-from typing import Iterator, TypeVar
+from typing import Generic, Iterator, TypeVar
 
 T = TypeVar("T")
 
 
-class ThreadSafeList:
+class ThreadSafeList(Generic[T]):
     """线程安全列表封装，提供 list 兼容接口（**基础操作子集**）。
 
     ★ P3（review 2026-08-22）：**已弃用（deprecated）**——``captured_*`` 机制

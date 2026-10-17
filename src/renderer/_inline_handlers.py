@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from rich.text import Text
 from rich.style import Style
 
@@ -210,7 +212,7 @@ def _render_subscript_node(self, node, ctx, depth) -> Text:
         if plain and all(ch in _SUB_SCRIPT_MAP or ch.isspace() for ch in plain):
             # ★ 修复 Bug: Unicode 转换路径丢失子节点样式。
             #    从 result 的 spans 构建 offset→style 映射，逐字符转换并附加原样式。
-            char_styles = {}
+            char_styles: dict[int, Style] = {}
             for span in result.spans:
                 s = span.style if isinstance(span.style, Style) else Style.parse(span.style)
                 for j in range(span.start, span.end):
@@ -218,7 +220,7 @@ def _render_subscript_node(self, node, ctx, depth) -> Text:
                     char_styles[j] = Style.combine([existing, s]) if existing else s
             converted = Text(style=Style(dim=True, italic=True))
             for j, ch in enumerate(plain):
-                unicode_ch = _SUB_SCRIPT_MAP.get(ch, ch)
+                unicode_ch = str(_SUB_SCRIPT_MAP.get(ch, ch))
                 style = char_styles.get(j)
                 if style:
                     converted.append(unicode_ch, style=style)
@@ -227,8 +229,8 @@ def _render_subscript_node(self, node, ctx, depth) -> Text:
             return converted
         return result
     # 叶子节点：使用 Unicode 下标字符转换
-    converted = ''.join(_SUB_SCRIPT_MAP.get(ch, ch) for ch in node.content)
-    return Text(converted, style=Style(dim=True, italic=True))
+    leaf_text = ''.join(_SUB_SCRIPT_MAP.get(ch, ch) for ch in node.content)
+    return Text(leaf_text, style=Style(dim=True, italic=True))
 
 
 def _render_superscript_node(self, node, ctx, depth) -> Text:
@@ -252,7 +254,7 @@ def _render_superscript_node(self, node, ctx, depth) -> Text:
         if plain and all(ch in _SUPER_SCRIPT_MAP or ch.isspace() for ch in plain):
             # ★ 修复 Bug: Unicode 转换路径丢失子节点样式。
             #    从 result 的 spans 构建 offset→style 映射，逐字符转换并附加原样式。
-            char_styles = {}
+            char_styles: dict[int, Style] = {}
             for span in result.spans:
                 s = span.style if isinstance(span.style, Style) else Style.parse(span.style)
                 for j in range(span.start, span.end):
@@ -260,7 +262,7 @@ def _render_superscript_node(self, node, ctx, depth) -> Text:
                     char_styles[j] = Style.combine([existing, s]) if existing else s
             converted = Text(style=Style(color="bright_cyan", italic=True))
             for j, ch in enumerate(plain):
-                unicode_ch = _SUPER_SCRIPT_MAP.get(ch, ch)
+                unicode_ch = str(_SUPER_SCRIPT_MAP.get(ch, ch))
                 style = char_styles.get(j)
                 if style:
                     converted.append(unicode_ch, style=style)
@@ -269,13 +271,16 @@ def _render_superscript_node(self, node, ctx, depth) -> Text:
             return converted
         return result
     # 叶子节点：使用 Unicode 上标字符转换
-    converted = ''.join(_SUPER_SCRIPT_MAP.get(ch, ch) for ch in node.content)
-    return Text(converted, style=Style(color="bright_cyan", italic=True))
+    leaf_text = ''.join(_SUPER_SCRIPT_MAP.get(ch, ch) for ch in node.content)
+    return Text(leaf_text, style=Style(color="bright_cyan", italic=True))
 
 
 # ── 导入 InlineNode 类型及解析器（条件导入，防止循环导入） ──
+_InlineParser: Any = None
 try:
-    from .inline_parser import _InlineParser
+    from .inline_parser import _InlineParser as _InlineParserImpl
+
+    _InlineParser = _InlineParserImpl
     from .inline_nodes import (
         InlineNode as _InlineNode,
         TextNode as _TextNode,

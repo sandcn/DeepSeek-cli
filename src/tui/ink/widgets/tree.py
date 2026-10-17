@@ -80,13 +80,17 @@ def _normalize_tree(items, depth: int = 0) -> list[dict]:
     for item in items or []:
         if isinstance(item, dict):
             children = _normalize_tree(item.get("children", []), depth + 1)
+            raw_label = item.get("label", "")
             out.append({
-                "label": str(item.get("label", "")),
+                "label": "" if raw_label is None else str(raw_label),
                 "children": children,
                 "open": bool(item.get("open", True)),
             })
         else:
-            out.append({"label": str(item), "children": [], "open": False})
+            out.append({
+                "label": "" if item is None else str(item),
+                "children": [], "open": False,
+            })
     return out
 
 

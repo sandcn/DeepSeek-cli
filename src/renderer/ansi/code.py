@@ -84,7 +84,7 @@ _NO_FG = object()
 _MISSING = object()
 #: 单行「语言 + 主题 + 源码」→ 高亮行缓存。代码块内重复行（空行、``}``、
 #: ``else:`` 等）命中后免词法高亮；有界，超限整体清空（简单、无淘汰开销）。
-_LINE_HIGHLIGHT_CACHE: dict = {}
+_LINE_HIGHLIGHT_CACHE: dict[tuple[str, str, str], AnsiLine] = {}
 _LINE_HIGHLIGHT_CACHE_MAX = 4096
 
 
@@ -256,12 +256,14 @@ def highlight_code_lines(
                 aline = _highlight_line(src_line, lexer, pyg_style, theme)
             else:
                 cache_key = (lang, theme, src_line)
-                aline = _LINE_HIGHLIGHT_CACHE.get(cache_key)
-                if aline is None:
+                cached_line = _LINE_HIGHLIGHT_CACHE.get(cache_key)
+                if cached_line is None:
                     aline = _highlight_line(src_line, lexer, pyg_style, theme)
                     if len(_LINE_HIGHLIGHT_CACHE) >= _LINE_HIGHLIGHT_CACHE_MAX:
                         _LINE_HIGHLIGHT_CACHE.clear()
                     _LINE_HIGHLIGHT_CACHE[cache_key] = aline
+                else:
+                    aline = cached_line
         else:
             aline = AnsiLine.of(src_line, _STYLE_DIM)
         if idx in hl:

@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import logging
 
@@ -338,7 +338,7 @@ class _BlockRenderingMixin:
 
         for i, h in enumerate(headers):
             justify = aligns[i] if i < len(aligns) else "left"
-            table.add_column(self._render_inline(h), justify=justify)
+            table.add_column(self._render_inline(h), justify=cast(Any, justify))
 
         for row in data_rows:
             padded = (row + [""] * num_cols)[:num_cols]

@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 from contextvars import ContextVar
+from typing import Any, Literal
 
 from .style import Style
 from .helpers import Run, AnsiLine
@@ -58,7 +59,7 @@ class _RenderContextScope:
     def __enter__(self):
         return self
 
-    def __exit__(self, *exc) -> bool:
+    def __exit__(self, *exc) -> Literal[False]:
         _RENDER_CTX.reset(self._token)
         return False
 
@@ -870,9 +871,11 @@ def _emit_node(node, base: Style, ctx, out: list[Run], depth: int) -> None:
     handler(node, base, ctx, out, depth)
 
 
-_INLINE_BASE = None
+_INLINE_BASE: Any = None
 try:
-    from src.renderer.inline_nodes import InlineNode as _INLINE_BASE
+    from src.renderer.inline_nodes import InlineNode as _INLINE_BASE_IMPL
+
+    _INLINE_BASE = _INLINE_BASE_IMPL
 except Exception:  # pragma: no cover - 导入失败时兜底为 None
     _INLINE_BASE = None
 

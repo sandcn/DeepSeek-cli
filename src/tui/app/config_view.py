@@ -54,6 +54,7 @@ from __future__ import annotations
 import copy
 import json
 
+from src._ansi_text import sanitize_paste
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple, truncate_width as _truncate_width
 from src.tui.ink import TEXT, Column, Row, StyledRun, h
@@ -1323,7 +1324,7 @@ def _handle_config_paste(cv, visible: bool, text: str) -> bool:
         return False
     if not cv.editing or cv.edit_mode not in ("input", "json_input"):
         return False
-    paste = (text or "").replace("\r", "").replace("\n", "")
+    paste = sanitize_paste(text, multiline=False)
     if not paste:
         return True
     remaining = _EDIT_VALUE_MAX - len(cv.edit_value)

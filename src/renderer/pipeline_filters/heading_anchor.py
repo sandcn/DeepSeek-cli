@@ -25,8 +25,10 @@ class HeadingAnchorFilter(TokenFilter):
 
     def process(self, tokens: list[Token], ctx: RenderContext) -> list[Token]:
         """收集标题 TOC 条目。"""
-        if self._collect_toc and ctx.toc is None:
-            ctx.toc = []
+        toc = ctx.toc
+        if self._collect_toc and toc is None:
+            toc = []
+            ctx.toc = toc
 
         for token in tokens:
             if token.type is not TokenType.HEADING:
@@ -35,9 +37,9 @@ class HeadingAnchorFilter(TokenFilter):
             level = token.meta.get("level", 1)
             text = token.content
 
-            if self._collect_toc:
+            if self._collect_toc and toc is not None:
                 heading_id = token.meta.get("id", "")
-                ctx.toc.append({
+                toc.append({
                     "level": level,
                     "text": text,
                     "id": heading_id,

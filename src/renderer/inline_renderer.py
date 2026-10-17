@@ -156,7 +156,10 @@ class InlineRenderer:
         #    改为从 text.spans 预先构建 offset→style 映射。
         def _get_style_at_offset(offset: int):
             """从 Text 的 spans 中获取指定偏移的合并样式。"""
-            combined = text.style or Style()
+            base_style = text.style
+            if isinstance(base_style, str):
+                base_style = Style.parse(base_style)
+            combined = base_style or Style()
             for span in text.spans:
                 if span.start <= offset < span.end:
                     s = span.style if isinstance(span.style, Style) else Style.parse(span.style)

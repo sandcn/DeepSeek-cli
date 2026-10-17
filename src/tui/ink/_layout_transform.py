@@ -77,15 +77,19 @@ def _reflow_subtree(fiber: Fiber, new_y: int, new_x: int | None = None) -> None:
         col_gap = spacing
         row_gap = spacing
         if "columnGap" in node.props:
-            try:
-                col_gap = max(0, int(node.props.get("columnGap")))
-            except (TypeError, ValueError, OverflowError):
-                col_gap = spacing
+            raw_col_gap = node.props.get("columnGap")
+            if raw_col_gap is not None:
+                try:
+                    col_gap = max(0, int(raw_col_gap))
+                except (TypeError, ValueError, OverflowError):
+                    col_gap = spacing
         if "rowGap" in node.props:
-            try:
-                row_gap = max(0, int(node.props.get("rowGap")))
-            except (TypeError, ValueError, OverflowError):
-                row_gap = spacing
+            raw_row_gap = node.props.get("rowGap")
+            if raw_row_gap is not None:
+                try:
+                    row_gap = max(0, int(raw_row_gap))
+                except (TypeError, ValueError, OverflowError):
+                    row_gap = spacing
         direction = node.props.get("flexDirection", "column")
         # ★ P2（review）：与 ``_measure`` 一致归一化 ``-reverse`` 变体——
         #   修复前仅判断 ``direction == "row"``，``row-reverse`` 落入 else

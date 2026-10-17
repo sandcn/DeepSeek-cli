@@ -180,8 +180,8 @@ class MathParserMatrixMixin:
         # 计算每列最大宽度
         col_widths = [0] * col_count
         for row in parsed_rows:
-            for j, cell in enumerate(row):
-                w = cell.cell_len
+            for j, cell_text in enumerate(row):
+                w = cell_text.cell_len
                 if w > col_widths[j]:
                     col_widths[j] = w
 
@@ -206,28 +206,28 @@ class MathParserMatrixMixin:
                     result.append("\n  ")
                 else:
                     result.append(sep if not is_small else " ")
-            for j, cell in enumerate(row):
+            for j, cell_text in enumerate(row):
                 if j > 0:
                     result.append(sep)
                 align = col_aligns[j] if j < len(col_aligns) else 'left'
-                cell_w = cell.cell_len
+                cell_w = cell_text.cell_len
                 if align == 'right':
                     padding = col_widths[j] - cell_w
                     if padding > 0:
                         result.append(" " * padding)
-                    result.append_text(cell)
+                    result.append_text(cell_text)
                 elif align == 'center':
                     padding = col_widths[j] - cell_w
                     left_pad = padding // 2
                     right_pad = padding - left_pad
                     if left_pad > 0:
                         result.append(" " * left_pad)
-                    result.append_text(cell)
+                    result.append_text(cell_text)
                     if right_pad > 0:
                         result.append(" " * right_pad)
                 else:
                     # left
-                    result.append_text(cell)
+                    result.append_text(cell_text)
                     padding = col_widths[j] - cell_w
                     if padding > 0:
                         result.append(" " * padding)

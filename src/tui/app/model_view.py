@@ -65,6 +65,7 @@ model_profiles（纯逻辑）；无 tools 层反向依赖。
 
 from __future__ import annotations
 
+from src._ansi_text import sanitize_paste
 from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple, truncate_width as _truncate_width
 from src.tui.ink import TEXT, Column, Row, StyledRun, h
@@ -1025,7 +1026,7 @@ def _handle_model_paste(mv, visible: bool, text: str) -> bool:
         return False
     if not getattr(mv, "editing", False) and not getattr(mv, "search_mode", False):
         return False
-    paste = (text or "").replace("\r", "").replace("\n", "")
+    paste = sanitize_paste(text, multiline=False)
     if not paste:
         return True
     if getattr(mv, "editing", False) and getattr(mv, "edit_mode", "") == "field":

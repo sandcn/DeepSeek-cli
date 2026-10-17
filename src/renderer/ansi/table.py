@@ -441,8 +441,11 @@ class TablePreviewCache:
             shrink_key = (tuple(widths), term_width)
             if shrink_key != self._shrink_key:
                 self._shrink_key = shrink_key
-                self._shrink_result = _shrink_widths(widths, term_width, ncols)
-            widths = self._shrink_result
+                shrink_result = _shrink_widths(widths, term_width, ncols)
+                self._shrink_result = shrink_result
+                widths = shrink_result
+            else:
+                widths = self._shrink_result or widths
         else:
             self._shrink_key = None
             self._shrink_result = None

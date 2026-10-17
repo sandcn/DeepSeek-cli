@@ -40,7 +40,7 @@ class LinePreviewCache:
 
     def __init__(self) -> None:
         self._key = None
-        self._last_input = None
+        self._last_input: list[str] | None = None
         self._src: list[str] = []
         #: 每个源行产出的渲染行数（``sum(_spans) == len(_rows)``）
         self._spans: list[int] = []

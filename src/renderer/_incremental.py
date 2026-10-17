@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 
 from rich.console import Console
 from rich.style import Style
@@ -152,6 +153,8 @@ class IncrementalRenderer:
         self._ctx.heading_numbering = False
         self._show_summary = show_summary
         self._captured_output_external = captured_output
+        #: 输出适配器（OutputAdapter 或同接口的 _StyledOutputAdapter 包装）。
+        self._output: Any
 
         # ★ 支持外部注入 OutputAdapter（共享模式），消除双 Console 实例竞争
         if output_adapter is not None:

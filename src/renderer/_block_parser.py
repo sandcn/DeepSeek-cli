@@ -962,7 +962,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             self._fm_lines = fm_lines
             content = self._front_matter_content()
             self._fm_lines = saved
-            meta: dict = {
+            meta = {
                 "format": _front_matter_format(self._fm_delim),
                 "preview": True,
             }
@@ -1015,7 +1015,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             while body_all and not body_all[-1].strip():
                 body_all.pop()
             body = self._preview_tail(body_all)
-            meta: dict = {
+            meta = {
                 "summary": self._details_summary,
                 "body_lines": body,
                 "preview": True,
@@ -1034,7 +1034,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             while body_all and not body_all[-1].strip():
                 body_all.pop()
             body = self._preview_tail(body_all)
-            meta: dict = {
+            meta = {
                 "type": self._block_div_type,
                 "head_text": self._block_div_head_text,
                 "body_lines": body,
@@ -1140,7 +1140,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                         mw = 2
                     stack = [("bq", depth), ("list", list_depth, mw)]
                     sub = self._parse_sub_blocks([inner_tail.lstrip()])
-                    rows: list[Token] = []
+                    preview_rows: list[Token] = []
                     for tok in sub:
                         tok.meta["preview"] = True
                         inner_stack = tok.meta.get("prefix_stack")
@@ -1148,9 +1148,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                                        if isinstance(inner_stack, (list, tuple))
                                        else [])
                         tok.meta["prefix_stack"] = stack + inner_stack
-                        rows.append(tok)
-                    if rows:
-                        out.extend(rows)
+                        preview_rows.append(tok)
+                    if preview_rows:
+                        out.extend(preview_rows)
                         return out
             body = list(self._pending_lines)
             rest = ""
@@ -1166,7 +1166,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                              {"depth": depth, "preview": True}))
             if body:
                 tail_body = self._preview_tail(body)
-                meta: dict = {"depth": depth, "preview": True}
+                meta = {"depth": depth, "preview": True}
                 dropped = len(body) - len(tail_body)
                 if dropped:
                     meta["preview_dropped"] = dropped
@@ -1182,7 +1182,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             all_lines, rest = self._normalized_container_body(
                 self._CONTAINER_QUOTE)
             body = self._preview_tail(all_lines)
-            meta: dict = {
+            meta = {
                 "type": self._admonition_type,
                 "head_text": self._adm_head_text,
                 "collapsible": self._adm_collapsible,
@@ -1209,7 +1209,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             while all_lines and not all_lines[-1].strip():
                 all_lines.pop()
             body = self._preview_tail(all_lines)
-            meta: dict = {
+            meta = {
                 "type": self._admonition_type,
                 "title": self._adm_title,
                 "collapsible": self._adm_collapsible,
@@ -1255,7 +1255,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             parsed = parse_grid_table(lines)
             if parsed is not None:
                 rows, aligns = parsed
-                meta: dict = {
+                meta = {
                     "rows": self._preview_table_rows(rows),
                     "alignments": aligns, "preview": True,
                 }
@@ -1329,14 +1329,14 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 and self._is_preview_setext_underline(stripped_tail)):
             level = 1 if stripped_tail[0] == '=' else 2
             heading_lines = self._preview_tail(lines)
-            meta: dict = {"level": level, "preview": True}
+            meta = {"level": level, "preview": True}
             dropped = len(lines) - len(heading_lines)
             if dropped:
                 meta["preview_dropped"] = dropped
             return [Token(TokenType.HEADING, "\n".join(heading_lines), meta)]
         if lines:
             tail_lines = self._preview_tail(lines)
-            meta: dict = {"preview": True}
+            meta = {"preview": True}
             dropped = len(lines) - len(tail_lines)
             if dropped:
                 meta["preview_dropped"] = dropped
@@ -2067,11 +2067,11 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if (self._state == _State.TABLE_ACTIVE
                 or self._prev_emitted_type is TokenType.TABLE
                 or (tokens and tokens[-1].type is TokenType.TABLE)):
-            caption = self._try_table_caption(stripped)
-            if caption is not None:
+            caption_text = self._try_table_caption(stripped)
+            if caption_text is not None:
                 if self._state == _State.TABLE_ACTIVE:
                     self._emit_table(tokens)
-                tokens.append(Token(TokenType.TABLE_CAPTION, caption))
+                tokens.append(Token(TokenType.TABLE_CAPTION, caption_text))
                 return
 
         # ── 字母快速通道 ──
@@ -2209,9 +2209,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         #   为普通段落、后者被当成定义列表项）。
         if (self._prev_emitted_type is TokenType.TABLE
                 or (tokens and tokens[-1].type is TokenType.TABLE)):
-            caption = self._try_table_caption(stripped)
-            if caption is not None:
-                tokens.append(Token(TokenType.TABLE_CAPTION, caption))
+            caption_text = self._try_table_caption(stripped)
+            if caption_text is not None:
+                tokens.append(Token(TokenType.TABLE_CAPTION, caption_text))
                 return
 
         # ═══════════════════════════════════════════════════════════
@@ -2244,9 +2244,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             self._start_front_matter(delim)
             self._feed_front_matter_line(line, stripped, tokens)
             return True
-        delim = _front_matter_delim(stripped)
-        if delim is not None:
-            self._pending_fm = delim
+        fm_delim = _front_matter_delim(stripped)
+        if fm_delim is not None:
+            self._pending_fm = fm_delim
             return True
         if stripped:
             self._doc_started = True
@@ -2884,7 +2884,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                         stack = self._list_item_prefix_stack(line)
                         if stack is None:
                             self._list_indents.clear()
-                        meta = {"level": level}
+                        meta: dict[str, Any] = {"level": level}
                         if stack is not None:
                             meta["prefix_stack"] = stack
                         tokens.append(Token(TokenType.HEADING, heading_text,
@@ -3061,7 +3061,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             tokens.append(tok)
             return
         rows, aligns = parsed
-        meta: dict = {"rows": rows, "alignments": aligns}
+        meta = {"rows": rows, "alignments": aligns}
         if bq_depth > 0:
             meta["bq_depth"] = bq_depth
         tokens.append(Token(TokenType.TABLE, "", meta))
@@ -4662,7 +4662,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._block_lines = []
         self._block_div_depth = 0
         self._block_div_fence_stack = []
-        meta: dict = {"type": self._block_div_type,
+        meta: dict[str, Any] = {"type": self._block_div_type,
                       "head_text": self._block_div_head_text}
         self._block_div_head_text = ""
         if self._block_div_attrs:

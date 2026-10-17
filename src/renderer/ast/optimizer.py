@@ -140,16 +140,16 @@ class ASTOptimizer:
             i += 1
         
         # ★ 优化：段落合并后处理——将所有暂存的段落片段一次性 join
-        for n in merged:
-            nid = id(n)
+        for merged_node in merged:
+            nid = id(merged_node)
             if nid in _para_parts_cache:
-                n.content = "\n\n".join(_para_parts_cache[nid])
+                merged_node.content = "\n\n".join(_para_parts_cache[nid])
 
         # ★ 优化：代码块合并后处理——单次 join
-        for n in merged:
-            nid = id(n)
+        for merged_node in merged:
+            nid = id(merged_node)
             if nid in _code_parts_cache:
-                n.content = "\n".join(_code_parts_cache[nid])
+                merged_node.content = "\n".join(_code_parts_cache[nid])
 
         # 清理缓存
         _para_parts_cache.clear()

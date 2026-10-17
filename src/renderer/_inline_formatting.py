@@ -803,7 +803,7 @@ class InlineFormattingMixin:
             inner = self._text[self._pos + 3:end]
             target, _sep, display = inner.partition('|')
             target = target.strip()
-            display = display.strip() or None
+            display_val: str | None = display.strip() or None
             if not target:
                 return None
             self._pos = end + 2
@@ -811,9 +811,9 @@ class InlineFormattingMixin:
             if low.endswith((
                 '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '.avif',
             )):
-                return ImageNode(content=display or target, url=target)
-            return WikiLinkNode(content=display or target, target=target,
-                                display=display)
+                return ImageNode(content=display_val or target, url=target)
+            return WikiLinkNode(content=display_val or target, target=target,
+                                display=display_val)
         except Exception:
             _logger.debug("_try_wikilink_embed 异常，降级处理", exc_info=True)
             return None

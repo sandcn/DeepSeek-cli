@@ -810,7 +810,8 @@ class _MermaidRenderer:
         b = _Builder()
         title = ""
         sections: list[tuple] = []
-        cur_name, cur_tasks = "", []
+        cur_name = ""
+        cur_tasks: list[tuple] = []
         for line in lines[1:]:
             s = line.strip()
             if not s or _is_comment_line(s):
@@ -1149,7 +1150,8 @@ class _MermaidRenderer:
         b = _Builder()
         title = ""
         sections: list[tuple] = []
-        cur_name, cur_tasks = "", []
+        cur_name = ""
+        cur_tasks: list[tuple] = []
         role_emoji = {"用户": "👤", "系统": "🤖"}
         for line in lines[1:]:
             s = line.strip()

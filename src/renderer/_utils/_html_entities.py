@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+_HTML5_ENTITIES: dict[str, str] | None
 try:  # 标准库完整 HTML5 命名实体表（全量支持；导入失败时仅用内置常用表）
-    from html.entities import html5 as _HTML5_ENTITIES
+    from html.entities import html5 as _html5_import
+
+    _HTML5_ENTITIES = _html5_import
 except Exception:  # pragma: no cover - 标准库缺失的极端环境
     _HTML5_ENTITIES = None
 

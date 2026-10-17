@@ -1678,7 +1678,8 @@ class AnsiStreamRenderer:
         # 呈现尚未提交的尾部（否则同一批行在 committed 与 preview 中重复显示）。
         skip = min(self._committed_code_lines, len(full_lines))
         src_lines = full_lines[skip:] if skip else full_lines
-        hl = token.meta.get("highlight_lines") or ()
+        hl_raw = token.meta.get("highlight_lines") or ()
+        hl = list(hl_raw) if hl_raw else None
         linenos = bool(token.meta.get("linenos", False))
         lineno_start = int(token.meta.get("lineno_start", 1) or 1)
         lineno_step = int(token.meta.get("lineno_step", 1) or 1)
@@ -1698,7 +1699,7 @@ class AnsiStreamRenderer:
             first_line = full_lines[0]
         else:
             first_line = full_lines[0][:64]
-        key = (lang, self._code_theme, skip, dropped, tuple(hl), num_width,
+        key = (lang, self._code_theme, skip, dropped, tuple(hl or ()), num_width,
                first_line, lineno_start, lineno_step)
         if reset_rows or key != self._code_preview_key:
             self._code_preview_key = key

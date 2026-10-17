@@ -203,7 +203,7 @@ class MermaidClassStateGanttPieMixin:
         result.append("\n")
         title = ""
         sections: list[tuple[str, list[tuple[str, int]]]] = []
-        cur_section = ("", [])
+        cur_section: tuple[str, list[tuple[str, int]]] = ("", [])
 
         for line in lines[1:]:
             s = line.strip()

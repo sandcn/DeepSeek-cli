@@ -19,7 +19,7 @@ from __future__ import annotations
 import importlib
 import logging
 import threading
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple, cast
 
 _logger = logging.getLogger(__name__)
 
@@ -108,7 +108,7 @@ def register_builtin_render_target(spec_id: str, factory: Any = None) -> Callabl
             if previous is _ABSENT:
                 _registered_builtin.pop(spec_id, None)
             else:
-                _registered_builtin[spec_id] = previous
+                _registered_builtin[spec_id] = cast(Callable[..., Any], previous)
 
     return _undo
 
@@ -166,7 +166,7 @@ def register_render_target(name: str, factory: Callable[..., Any]) -> Callable[[
             if previous is _ABSENT:
                 _extension.pop(name, None)
             else:
-                _extension[name] = previous
+                _extension[name] = cast(Callable[..., Any], previous)
 
     return _undo
 

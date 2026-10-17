@@ -77,7 +77,7 @@ def _transform_arity(fn: Callable) -> int:
     return n
 
 
-def _apply_transform_to_text(text: str, fn: Callable[[str], str]) -> str:
+def _apply_transform_to_text(text: str, fn: Callable[..., str]) -> str:
     """对文本按行应用 transform（React Ink v6 逐行签名适配）。
 
     transform 接受 2+ 参数时按 ``(line, index)`` 逐行调用（React Ink v6
@@ -99,7 +99,7 @@ def _apply_transform_to_text(text: str, fn: Callable[[str], str]) -> str:
         return text
 
 
-def _apply_transform_to_element(el: Element, fn: Callable[[str], str]) -> Element:
+def _apply_transform_to_element(el: Element, fn: Callable[..., str]) -> Element:
     """递归对元素树的 TEXT 叶子应用字符串变换（返回新元素树）。
 
     非 TEXT 容器（BOX/function/STATIC 等）保持 props/children 结构不变，

@@ -4,7 +4,9 @@
 
 - Gradient 渐变进度按**显示列**归一化（宽字符混排时色标偏移）；
 - 输入缓冲 Delete 跨代理对删除后光标位置未前移（光标越界/错位）；
-- 粘贴文本中的 ANSI / 控制字节进入输入缓冲（终端控制码注入风险）；
+- 粘贴文本中的 ANSI / 控制字节进入输入缓冲（终端控制码注入风险），
+  统一由 ``src._ansi_text.sanitize_paste`` 清洗（主缓冲/命令面板/配置/模型字段）；
+- 列表类控件显式 None label 渲染出字面 "None"；
 - CodeBlock ``wrap=True`` 含 ANSI 序列时换行拆断转义序列（渲染乱码/超宽）；
 - StaticLines / LiveLines 行元素非 ``Line``（如 str）时 paint 异常、整块空白；
 - Viewport / FocusGroup 同批连续按键丢失（偏移/焦点只前进一格）；
@@ -85,6 +87,33 @@ def test_paste_strips_ansi_and_control_bytes():
     editor.handle_chars("a\x1b[31mb\x07c\x00d\ne\tf\x1b")
     assert editor.get_current_text() == "abcd\ne\tf"
     assert editor._cursor_pos == len("abcd\ne\tf")
+
+
+def test_sanitize_paste_single_and_multiline():
+    """公共粘贴清洗：多行保留 \n/\t；单行额外删除换行。"""
+    from src._ansi_text import sanitize_paste
+
+    raw = "a\x1b[31mb\x07c\x00d\ne\tf\x1b]52;c;x\x07g"
+    assert sanitize_paste(raw, multiline=True) == "abcd\ne\tfg"
+    assert sanitize_paste(raw, multiline=False) == "abcde\tfg"
+    assert sanitize_paste(None) == ""
+
+
+def test_widget_none_labels_do_not_render_literal_none():
+    """列表类控件的显式 None label 渲染为空串（不显示字面 "None"）。"""
+    cases = [
+        h(W.SelectInput, {"items": [{"label": None, "value": 1}]}),
+        h(W.MultiSelect, {"items": [{"label": None, "value": 1}]}),
+        h(W.RadioList, {"items": [{"label": None, "value": 1}]}),
+        h(W.SearchInput, {"items": [{"label": None, "value": 1}]}),
+        h(W.Breadcrumbs, {"items": [{"label": None}]}),
+        h(W.Tabs, {"tabs": [{"label": None, "key": "a"}]}),
+        h(W.Tree, {"data": [{"label": None}]}),
+        h(W.Menu, {"items": [{"label": None}]}),
+    ]
+    for element in cases:
+        text = "\n".join(line.plain for line in Harness(40).frame(element).lines)
+        assert "None" not in text
 
 
 # ═══════════════════════════════════════════════════════════

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, cast
 
 _lock = threading.RLock()
 _ABSENT = object()
@@ -227,7 +227,7 @@ def register_builtin_language(lang_id: str, spec: Optional[SyntaxLanguage] = Non
             if previous is _ABSENT:
                 _registered_builtin.pop(lang_id, None)
             else:
-                _registered_builtin[lang_id] = previous
+                _registered_builtin[lang_id] = cast(SyntaxLanguage, previous)
             _invalidate()
 
     return _undo
@@ -294,7 +294,7 @@ def register_language(spec: SyntaxLanguage) -> Callable[[], None]:
             if previous is _ABSENT:
                 _extension.pop(spec.id, None)
             else:
-                _extension[spec.id] = previous
+                _extension[spec.id] = cast(SyntaxLanguage, previous)
             _invalidate()
 
     return _undo

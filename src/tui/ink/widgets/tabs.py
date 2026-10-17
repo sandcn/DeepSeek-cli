@@ -60,10 +60,12 @@ def _normalize_tabs(tabs) -> list[dict]:
     out: list[dict] = []
     for t in tabs:
         if isinstance(t, dict):
-            label = str(t.get("label", t.get("key", "")))
-            key = str(t.get("key", label))
+            raw_label = t.get("label", t.get("key", ""))
+            label = "" if raw_label is None else str(raw_label)
+            raw_key = t.get("key", label)
+            key = label if raw_key is None else str(raw_key)
         else:
-            label = str(t)
+            label = "" if t is None else str(t)
             key = label
         out.append({"label": label, "key": key})
     return out

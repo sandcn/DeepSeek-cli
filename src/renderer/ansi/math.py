@@ -14,6 +14,8 @@ TUI 内容路径的数学渲染入口：
 
 from __future__ import annotations
 
+from typing import Any
+
 from .style import Style
 from .helpers import AnsiLine, visual_width
 from ._math_latex import render_math_box
@@ -52,7 +54,7 @@ def _cached(source: str, inline: bool, label: str = _LABEL_DEFAULT,
         return hit
     if inline:
         box = render_math_box(source, inline=True, macro_state=_MACRO_STATE)
-        value: object = AnsiLine()
+        value: Any = AnsiLine()
         for idx, ln in enumerate(box.lines):
             if idx:
                 value.append(" ")

@@ -7,6 +7,8 @@ FRONT_MATTER / TABLE_CAPTION。
 
 from __future__ import annotations
 
+from typing import Any
+
 from .style import Style
 from .helpers import AnsiLine
 from .inline import render_inline, inline_lines, inline_lines_with_baseline
@@ -100,7 +102,7 @@ def bullet_symbol(depth: int) -> str:
     回退内置快照，保证渲染不崩（与 Rich 路径 ``_bullet_symbols`` 同语义）。
     """
     try:
-        symbols = _NESTED_BULLETS
+        symbols: Any = _NESTED_BULLETS
         n = len(symbols)
     except Exception:
         n = 0

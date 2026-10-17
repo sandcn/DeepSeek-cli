@@ -43,7 +43,9 @@ def _normalize_items(items) -> list[dict]:
     out: list[dict] = []
     for item in items:
         if isinstance(item, dict):
-            label = str(item.get("label", item.get("value", "")))
+            raw_label = item.get("label", item.get("value", ""))
+            # 显式 None 不渲染字面 "None"（与 Menu/Breadcrumbs 等 label 口径一致）。
+            label = "" if raw_label is None else str(raw_label)
             out.append({"label": label, "value": item.get("value", label)})
         else:
             out.append({"label": str(item), "value": item})

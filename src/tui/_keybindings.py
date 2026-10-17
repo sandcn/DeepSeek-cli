@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, cast
 
 _lock = threading.RLock()
 _ABSENT = object()
@@ -129,7 +129,7 @@ def register_builtin_keybinding(spec_id: str, spec: Optional[KeyBinding] = None)
             if previous is _ABSENT:
                 _registered_builtin.pop(spec_id, None)
             else:
-                _registered_builtin[spec_id] = previous
+                _registered_builtin[spec_id] = cast(KeyBinding, previous)
 
     return _undo
 
@@ -187,7 +187,7 @@ def register_keybinding(spec: KeyBinding) -> Callable[[], None]:
             if previous is _ABSENT:
                 _extension.pop(spec.id, None)
             else:
-                _extension[spec.id] = previous
+                _extension[spec.id] = cast(KeyBinding, previous)
 
     return _undo
 

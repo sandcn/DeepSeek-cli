@@ -128,7 +128,7 @@ class _SessionQueueMixin:
     _consecutive_full: int
     _cmd_queue_dropped: int
     _render_running: bool
-    _config: object
+    _config: Any
 
     # ★ 宿主契约（仅静态检查用；运行期由 ``InkSession`` 提供）。
     if TYPE_CHECKING:  # pragma: no cover - 仅静态检查

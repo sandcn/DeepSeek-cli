@@ -148,6 +148,9 @@ def query_kitty_support(
     except (AttributeError, ValueError, OSError, TypeError):
         return None
     stream = out_stream if out_stream is not None else _sys.__stdout__
+    if stream is None:
+        # pythonw / 已分离的 stdout：无输出目标，直接判定不支持（不写控制序列）。
+        return None
     try:
         if not _os.isatty(fd) or not _os.isatty(stream.fileno()):
             return None

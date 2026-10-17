@@ -52,10 +52,16 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
     #: 反斜杠会**原样泄漏**进正文（``a\%b`` → ``a\%b``）。
     _ESCAPABLE_CHARS: frozenset[str] = frozenset(string.punctuation)
 
+    #: 字符级格式调度表（类定义后填充实际方法名/引用；此处声明类型供静态检查）。
+    _FORMAT_DISPATCH: dict[str, tuple] = {}
+    _METHOD_CACHE: dict[str, list[tuple]] = {}
+
     def __init__(self, text: str):
         self._text = text
         self._pos = 0
         self._n = len(text)
+        #: 最近一次裸邮箱检测的局部部分起始位置（``None`` = 未命中）。
+        self._last_email_local_start: int | None = None
         # ★ 性能（超长单行）：行内语法的**必要条件快速判否**——字符存在索引
         #   （长文本 O(1) 判定「文本是否含某字符」）与终止序列探测缓存。
         #   修复前「文本不含该字符」的病态输入（如 8000 个 ``[``、``&``、``(``）
@@ -540,7 +546,7 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
 
 
 # ── 字符级格式调度表（类属性，避免每次调用重新构造） ──
-_InlineParser._FORMAT_DISPATCH = {
+_InlineParser._FORMAT_DISPATCH.update({
     '\\': (('_try_paren_math', False), ('_try_escape', False)),
     '`':  (('_try_inline_code', False),),
     ':':  (('_try_emoji', False),),
@@ -564,10 +570,10 @@ _InlineParser._FORMAT_DISPATCH = {
             ('_try_small_text', True), ('_try_big_text', True),
             ('_try_color_text', True)),
     '%':  (('_try_inline_comment', True),),
-}
+})
 
 # ★ 优化：将 _FORMAT_DISPATCH 中的方法名预解析为实际方法引用
-_InlineParser._METHOD_CACHE: dict[str, list[tuple]] = {}
+_InlineParser._METHOD_CACHE.clear()
 for ch, entries in _InlineParser._FORMAT_DISPATCH.items():
     resolved = []
     for method_name, needs_depth in entries:

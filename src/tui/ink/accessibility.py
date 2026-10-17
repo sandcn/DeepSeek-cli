@@ -41,7 +41,7 @@ def get_accessibility(props: Any) -> dict:
         dict：``{"label": str|None, "hidden": bool, "role": str|None,
         "state": dict}``——role 非官方值时归 None；state 仅保留官方键。
     """
-    out = {"label": None, "hidden": False, "role": None, "state": {}}
+    out: dict[str, Any] = {"label": None, "hidden": False, "role": None, "state": {}}
     if not isinstance(props, Mapping):
         return out
     label = props.get("aria-label")

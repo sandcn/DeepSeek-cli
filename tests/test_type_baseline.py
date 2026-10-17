@@ -33,7 +33,11 @@ import pytest
 #: 属性声明 ``object`` → ``Any`` 等）后 **528**（冷缓存实测；同口径
 #: ``python -m mypy`` 全项目 604）。
 #: 后续新增错误须修复或先下调基线下调来源再更新本值（禁止上调后放任增长）。
-_MYPY_ERROR_BASELINE = 530
+#: 2026-10 第二轮 TUI 类型治理：TUI 自身错误清零（29 → 0），
+#: ``python -m mypy src/tui --no-incremental`` 为 ``Success: no issues found``。
+#: 注意必须用 ``--no-incremental``：增量缓存可能保留旧依赖文件的错误，
+#: 导致同一代码在不同缓存状态下计数漂移。
+_MYPY_ERROR_BASELINE = 0
 
 #: 基线检查范围（与 pyproject ``[tool.mypy] files`` 对齐的 tui 子集）
 _MYPY_TARGET = "src/tui"
@@ -47,8 +51,8 @@ _MYPY_TARGET = "src/tui"
 #: 口径说明：数字来自 ``python -m mypy src``（Python 3.9.16）按文件分桶计数，
 #: ``"(src 顶层)"`` 为 ``src/*.py`` 直接文件（无子包）。
 _MYPY_MODULE_BASELINE = {
-    "src/tui": 229,
-    "src/renderer": 108,
+    "src/tui": 0,
+    "src/renderer": 0,
     "src/core": 84,
     "src/tools": 76,
     "src/plugins": 30,
@@ -168,7 +172,7 @@ def test_mypy_error_count_within_baseline():
         pytest.skip("mypy 不可用")
 
     proc = subprocess.run(
-        [sys.executable, "-m", "mypy", _MYPY_TARGET],
+        [sys.executable, "-m", "mypy", _MYPY_TARGET, "--no-incremental"],
         cwd=str(_REPO_ROOT),
         capture_output=True,
         text=True,
@@ -219,7 +223,7 @@ def test_mypy_errors_per_module_within_baseline():
         pytest.skip("mypy 不可用")
 
     proc = subprocess.run(
-        [sys.executable, "-m", "mypy", "src"],
+        [sys.executable, "-m", "mypy", "src", "--no-incremental"],
         cwd=str(_REPO_ROOT),
         capture_output=True,
         text=True,

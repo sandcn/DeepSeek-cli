@@ -43,7 +43,7 @@ from ._math_cmds import COMMAND_HANDLERS, _MathCommandMixin, _restyle_box
 from ._math_cmds import _operatorname_text
 from ._math_env import _MathEnvMixin
 from ._math_tex import _MathTexMixin, _split_at_primitive
-from ._math_macros import _MathMacroMixin, MacroState
+from ._math_macros import _MathMacroMixin, MacroState, MacroTable
 from ._math_html import _MathHtmlMixin
 
 from src.renderer.math_symbols.greek import _GREEK_LETTERS
@@ -148,7 +148,7 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin, _MathTexMixin,
         self.depth = 0
         #: 宏系统跨公式共享状态（``\gdef`` 持久；``None`` 时新建局部状态）
         self.macro_state = macro_state if macro_state is not None else MacroState()
-        self.macro_table = None
+        self.macro_table: MacroTable | None = None
         #: 是否在 ``render()`` 入口做宏预处理（子渲染器已在展开后的文本上工作）
         self._preprocess_src = preprocess
         #: ``\displaystyle`` 生效中——行内公式下大算符也按上下限堆叠
@@ -458,10 +458,10 @@ class _LatexRenderer(_MathCommandMixin, _MathEnvMixin, _MathTexMixin,
             has_sub = sub is not None and _plain_of(sub).strip() != ""
             if has_sup or has_sub:
                 parts: list[_Box] = []
-                if has_sup:
+                if has_sup and sup is not None:
                     parts.append(_restyle_box(sup, _M_SUP))
                 parts.append(base)
-                if has_sub:
+                if has_sub and sub is not None:
                     parts.append(_restyle_box(sub, _M_SUB))
                 return _vstack(parts, align="center",
                                baseline=1 if has_sup else 0)

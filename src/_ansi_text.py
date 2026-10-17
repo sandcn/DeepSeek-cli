@@ -45,4 +45,36 @@ def has_ansi(text: str) -> bool:
     return bool(text) and "\x1b" in text
 
 
-__all__ = ["ANSI_RE", "strip_ansi", "has_ansi"]
+#: 粘贴文本控制字符过滤表：保留 \t（0x09）/ \n（0x0a），删除其余 C0、DEL
+#: 与 C1（0x7F-0x9F）。ANSI 转义先经 ``strip_ansi`` 整体剥离；孤立 ESC 等
+#: 残余控制字节在此删除，避免进入输入缓冲/查询/配置字段后被原样写到终端。
+_PASTE_CONTROL_TRANSLATION = {
+    cp: None for cp in range(0x20) if cp not in (0x09, 0x0A)
+}
+_PASTE_CONTROL_TRANSLATION.update({cp: None for cp in range(0x7F, 0xA0)})
+
+#: 单行粘贴过滤表（额外删除换行）。
+_PASTE_SINGLE_LINE_TRANSLATION = dict(_PASTE_CONTROL_TRANSLATION)
+_PASTE_SINGLE_LINE_TRANSLATION[0x0A] = None
+
+
+def sanitize_paste(text: str, multiline: bool = True) -> str:
+    """清洗粘贴/批量输入文本（剥离 ANSI + 删除控制字符）。
+
+    Args:
+        text: 原始文本（None 按空串）。
+        multiline: True 保留 ``\\n``（多行输入缓冲）；False 删除换行
+            （单行查询/配置字段）。
+
+    Returns:
+        清洗后的文本：ANSI 转义整段剥离、``\\r`` 删除、控制字节删除；
+        制表符 ``\\t`` 保留（不产生终端控制效果）。
+    """
+    cleaned = strip_ansi(text).replace("\r", "")
+    if not multiline:
+        cleaned = cleaned.replace("\n", "")
+        return cleaned.translate(_PASTE_SINGLE_LINE_TRANSLATION)
+    return cleaned.translate(_PASTE_CONTROL_TRANSLATION)
+
+
+__all__ = ["ANSI_RE", "strip_ansi", "has_ansi", "sanitize_paste"]

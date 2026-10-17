@@ -23,6 +23,7 @@ mphantom / menclose / maction / semantics / mmultiscripts / merror。
 from __future__ import annotations
 
 from html.parser import HTMLParser
+from typing import Any
 
 from ._math_latex import render_math_box
 
@@ -426,7 +427,7 @@ def _h_skip(node: _Node, depth: int) -> str:
 
 
 #: MathML 元素 → 转换函数（新增元素只登记本表）
-_HANDLERS: dict[str, object] = {
+_HANDLERS: dict[str, Any] = {
     "math": _h_row,
     "mrow": _h_row,
     "mstyle": _h_row,

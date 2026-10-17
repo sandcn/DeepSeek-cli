@@ -572,6 +572,7 @@ class _MathMacroMixin:
     # ★ 宿主契约（仅静态检查用；运行期由 ``_LatexRenderer`` 提供）。
     if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
         macro_state: Any
+        macro_table: MacroTable | None
 
     def preprocess(self, src: str) -> str:
         text, self.macro_table = preprocess_math_source(src, self.macro_state)

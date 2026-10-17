@@ -57,6 +57,7 @@ from __future__ import annotations
 import io
 import logging
 import sys
+from typing import cast
 
 from src.tui._screen import (
     cursor_up, cursor_down, clear_line, cursor_forward, clear_screen,
@@ -955,7 +956,7 @@ class InkRenderer(_RendererContentMixin):
                 grow_rows = max(0, new_h - buf_h0)
                 buf_h1 = buf_h0 + grow_rows
             drift1 = buf_h1 - new_h   # 增长后漂移
-        prev = self._prev
+        prev = cast(Frame, self._prev)
         rewrites: list[tuple[int, int]] = []
         for q in range(buf_top0, buf_h0):
             old_idx = q - drift0
@@ -1112,7 +1113,7 @@ class InkRenderer(_RendererContentMixin):
         height = self._height
         buf_h = self._buf_h
         buf_top = max(0, buf_h - height)  # 可见区首物理行（0-based）
-        prev = self._prev
+        prev = cast(Frame, self._prev)
         # ★ 修复（2026-10-06 用户报障「流式输出时中间删除几行有机率渲染
         #   错误」）：一律切**底部对齐**（``drift = buf_h - new_h``）。
         #

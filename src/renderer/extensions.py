@@ -28,7 +28,7 @@ from __future__ import annotations
 import importlib
 import logging
 import threading
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple, cast
 
 _logger = logging.getLogger(__name__)
 
@@ -209,7 +209,7 @@ def _register_builtin(
             if previous is _ABSENT:
                 registry.pop(spec_id, None)
             else:
-                registry[spec_id] = previous
+                registry[spec_id] = cast(Callable[[], Any], previous)
 
     return _undo
 

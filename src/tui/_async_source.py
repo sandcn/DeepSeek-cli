@@ -36,7 +36,10 @@ class AsyncSource:
     def __init__(self, name: str = "async-source") -> None:
         self._name = name
         self._lock = threading.RLock()
-        self._fetchers: dict[str, tuple[Callable[[], Any], float]] = {}
+        # 值类型为通用可调用：register 传 0 参 fetcher，register_stream 传
+        # ``producer(emit)``（1 参）——统一 ``Callable[..., Any]`` 避免联合
+        # 类型在 ``fetcher(_emit)`` 调用处报 "Too many arguments"。
+        self._fetchers: dict[str, tuple[Callable[..., Any], float]] = {}
         self._streams: set[str] = set()
         self._values: dict[str, Any] = {}
         self._expires: dict[str, float] = {}
@@ -173,7 +176,7 @@ class AsyncSource:
     def _expired_locked(self, key: str) -> bool:
         return time.monotonic() >= self._expires.get(key, 0.0)
 
-    def _execute(self, key: str, spec: tuple[Callable[[], Any], float]) -> Any:
+    def _execute(self, key: str, spec: tuple[Callable[..., Any], float]) -> Any:
         """同步执行 fetcher（流式源完整跑一遍，取最后一次 emit 的值）。"""
         fetcher, ttl = spec
         with self._lock:

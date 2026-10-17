@@ -44,10 +44,11 @@ def _normalize_items(items) -> list[dict]:
     out: list[dict] = []
     for it in items:
         if isinstance(it, dict):
-            label = str(it.get("label", ""))
+            raw_label = it.get("label", "")
+            label = "" if raw_label is None else str(raw_label)
             active = bool(it.get("active", False))
         else:
-            label = str(it)
+            label = "" if it is None else str(it)
             active = False
         # 强制单行（label 可能含换行——归一化防行级 diff 宽度不变量破坏）
         if "\n" in label:

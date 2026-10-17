@@ -52,12 +52,15 @@ def _normalize_items(items) -> list[dict]:
     out: list[dict] = []
     for item in items:
         if isinstance(item, dict):
-            label = str(item.get("label", item.get("value", "")))
+            raw_label = item.get("label", item.get("value", ""))
+            label = "" if raw_label is None else str(raw_label)
             value = item.get("value", label)
+            raw_search = item.get("searchText", label)
+            search_text = label if raw_search is None else str(raw_search)
         else:
             label = str(item)
             value = item
-        search_text = str(item.get("searchText", label)) if isinstance(item, dict) else label
+            search_text = label
         out.append({"label": label, "value": value, "searchText": search_text})
     return out
 

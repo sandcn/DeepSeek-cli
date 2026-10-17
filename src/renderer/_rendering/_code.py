@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import logging
 import threading
+from typing import Any, cast
 
 _logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ def render_code_block_syntax(source: str, lang: str, code_theme: str,
         return Syntax(
             source,
             lang,
-            theme=get_code_style(code_theme),
+            theme=cast(Any, get_code_style(code_theme)),
             line_numbers=linenos,
             highlight_lines=set(highlight_lines or []),
             word_wrap=False,

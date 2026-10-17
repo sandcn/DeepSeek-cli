@@ -133,6 +133,15 @@ class _BlockParserStreamMixin:
         _html_depth: Any
         _math_env_end: Any
         _indented_code_pad: Any
+        _state: Any
+        _html_lines: Any
+        _code_content_seen: Any
+        _block_fence_char: Any
+        _block_fence_len: Any
+        _details_open_emitted: Any
+        _indented_code_pending_blanks: Any
+        _preview_code_lines: Any
+        _deferred_fence: Any
 
         def _emit_code_line(self, *args: Any, **kwargs: Any) -> Any: ...
 

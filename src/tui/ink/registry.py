@@ -24,7 +24,7 @@ from __future__ import annotations
 import importlib
 import logging
 import threading
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, cast
 
 _logger = logging.getLogger(__name__)
 
@@ -136,7 +136,7 @@ def register_builtin_host(tag: str, pair: Optional[Tuple[Callable, Callable]] = 
             if previous is _ABSENT:
                 _registered_builtin.pop(tag, None)
             else:
-                _registered_builtin[tag] = previous
+                _registered_builtin[tag] = cast(Tuple[Callable, Callable], previous)
             _invalidate_hosts_cache()
 
     return _undo

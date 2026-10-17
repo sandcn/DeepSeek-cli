@@ -487,8 +487,6 @@ class RenderEngine:
         """
         body = self.render_block_content(content)
         lines = body.split("\n")
-        if not lines:
-            lines = [Text("")]
         last_visible = max(
             (k for k, line in enumerate(lines) if line.plain.strip()),
             default=0)

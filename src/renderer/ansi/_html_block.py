@@ -639,9 +639,9 @@ def html_block_line(text: str, tag: str = "",
             return [line]
         if inner_tag in _VOID_TAGS and not inner_text.strip():
             _t, attrs = parse_open_tag(s)
-            rows = _void_line(inner_tag, attrs, "")
-            if rows:
-                return rows
+            void_rows = _void_line(inner_tag, attrs or {}, "")
+            if void_rows:
+                return void_rows
         if inner_tag in _INLINE_SEMANTIC_TAGS:
             effective_tag, content = inner_tag, inner_text
         elif inner_tag in _HEADING_TAGS:
@@ -663,11 +663,13 @@ def html_block_line(text: str, tag: str = "",
             if not tail or void_tag in ("input", "img", "source", "track", "embed"):
                 # 同行后续仍有标签（``<source …><img …>``）：空元素行后递归渲染剩余
                 same_line = tail.startswith("<")
-                rows = _void_line(void_tag, attrs, "" if same_line else tail) or []
+                void_rows = _void_line(
+                    void_tag, attrs or {}, "" if same_line else tail,
+                ) or []
                 if same_line:
-                    rows.extend(html_block_line(tail, tag))
-                if rows:
-                    return rows
+                    void_rows.extend(html_block_line(tail, tag))
+                if void_rows:
+                    return void_rows
     # 块级控件标签的内容行（``<button>文本</button>`` 的内层「文本」行）
     if not s.startswith("<"):
         if effective_tag == "button":
@@ -678,8 +680,8 @@ def html_block_line(text: str, tag: str = "",
     rows: list[AnsiLine] = []
     for sub in inline_lines(content, base):
         line = AnsiLine.of(prefix, base)
-        for run in sub.runs:
-            line.append_run(run)
+        for r in sub.runs:
+            line.append_run(r)
         rows.append(line)
     return rows or [AnsiLine.of(prefix, base)]
 
@@ -749,10 +751,10 @@ def open_html_block(tag: str, attrs: dict | None = None,
         #   （与 ``html_block_line`` 的连续空元素处理一致）；普通同行文本
         #   仍拼接在同一行。
         if tail and tail.lstrip().startswith("<"):
-            lines = _void_line(tag, attrs, "") or []
+            lines = _void_line(tag, attrs or {}, "") or []
             lines.extend(html_block_line(tail, tag, attrs))
         else:
-            lines = _void_line(tag, attrs, tail) or []
+            lines = _void_line(tag, attrs or {}, tail) or []
     else:
         lines = [tag_head_line(state.tag, state.attrs)]
         if state.tag in ("progress", "meter"):
@@ -772,9 +774,9 @@ def open_html_block(tag: str, attrs: dict | None = None,
         elif state.tag == "iframe" and not state.hidden:
             src = attr(state.attrs, "src")
             if src:
-                width = attr(state.attrs, "width")
-                height = attr(state.attrs, "height")
-                dim = f" （{width}×{height}）" if width and height else ""
+                frame_width = attr(state.attrs, "width")
+                frame_height = attr(state.attrs, "height")
+                dim = f" （{frame_width}×{frame_height}）" if frame_width and frame_height else ""
                 line = AnsiLine.of("    ◆ 地址 ", _STYLE_MEDIA)
                 line.append(src, _STYLE_HTML_TAG)
                 if dim:
@@ -784,8 +786,8 @@ def open_html_block(tag: str, attrs: dict | None = None,
             lines.append(media_source_line(state.tag, state.attrs))
     if state.center:
         # 标签行保持左对齐（避免出现整行浮动的标签），其余行居中
-        head = [] if tag in _VOID_TAGS else lines[:1]
-        lines = head + center_lines(lines[len(head):], width)
+        head_lines = [] if tag in _VOID_TAGS else lines[:1]
+        lines = head_lines + center_lines(lines[len(head_lines):], width)
     return lines, state
 
 

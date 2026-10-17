@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from src._ansi_text import sanitize_paste
 from src.tui.core.style import Style
 from src.tui.ink import TEXT, Column, Row, StyledRun, h, use_input, use_state
 from src.tui.ink.hooks import use_ref
@@ -411,8 +412,8 @@ def _detail_rows(entry: Optional[dict], entries: list, right_w: int,
 
 
 def _normalize_query_char(ch: str) -> str:
-    """过滤输入字符：去掉换行/回车（粘贴多行不应把 Enter 带进查询）。"""
-    return str(ch or "").replace("\r", "").replace("\n", "")
+    """过滤输入字符：去掉换行/回车与控制/ANSI 字节（粘贴多行不把 Enter 带进查询）。"""
+    return sanitize_paste(ch, multiline=False)
 
 
 def CommandPalette(props) -> object:

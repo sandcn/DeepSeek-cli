@@ -18,6 +18,8 @@ v2026-07-24 新增 captured_output 可选捕获，支持将渲染后的富文本
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from rich.console import Console
 from rich.text import Text
 
@@ -35,7 +37,7 @@ def _new_render_console(width: int, real_console: Console) -> Console:
         file=StringIO(),
         width=width,
         force_terminal=True,
-        color_system=real_console.color_system,
+        color_system=cast(Any, real_console.color_system),
         soft_wrap=True,
         markup=True,
         emoji=True,
@@ -120,7 +122,7 @@ class OutputAdapter:
             file=self._capture_file,
             width=self._width,
             force_terminal=True,
-            color_system=self._console.color_system,
+            color_system=cast(Any, self._console.color_system),
             soft_wrap=True,
             markup=True,
             emoji=True,
@@ -137,7 +139,10 @@ class OutputAdapter:
             self._capture_file.seek(0)
             if isinstance(renderable, str) and "\x1b" in renderable:
                 renderable = Text.from_ansi(renderable)
-            self._capture_console.print(renderable)
+            capture_console = self._capture_console
+            if capture_console is None:
+                return
+            capture_console.print(renderable)
             self._captured_output.append(self._capture_file.getvalue())
         except Exception:
             _logger.debug("捕获渲染输出异常", exc_info=True)

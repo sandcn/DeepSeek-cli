@@ -152,6 +152,7 @@ class InlineLinksMixin:
         _text: str
         _n: int
         _pos: int
+        _last_email_local_start: int | None
 
         def __init__(self, text: str) -> None: ...
 

@@ -8,6 +8,7 @@ admonition/details/fenced_div 的 OPEN/LINE/CLOSE 缓冲）。
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from src.renderer.types import TokenType, Token
 from . import blocks
@@ -55,7 +56,7 @@ class AnsiRenderEngine:
         self._details: tuple | None = None
         self._fenced_div: tuple | None = None
         # HTML 块渲染状态（``_html_block.HtmlBlockState``；CLOSE 时清理）
-        self._html_state = None
+        self._html_state: Any = None
 
     def reset(self) -> None:
         """重置所有流式状态（close() 后调用）。"""
@@ -251,8 +252,8 @@ class AnsiRenderEngine:
                 body = list(token.meta.get("body_lines") or [])
                 if token.content:
                     body = body + str(token.content).split("\n")
-                meta: dict = {"summary": summary, "body_lines": body,
-                              "open": bool(token.meta.get("open", False))}
+                meta = {"summary": summary, "body_lines": body,
+                        "open": bool(token.meta.get("open", False))}
                 if dropped:
                     meta["preview_dropped"] = dropped
                 return blocks.render_details(_StrToken("", meta))
@@ -283,7 +284,7 @@ class AnsiRenderEngine:
                     # 整体缩进显示（与 <details>/告示同一机制）。
                     head = blocks.render_fenced_div_head(dtype, head_text)
                     return self._render_nested_blocks(head, body_tokens, dropped)
-                meta: dict = {"type": dtype, "body_lines": body}
+                meta = {"type": dtype, "body_lines": body}
                 if dropped:
                     meta["preview_dropped"] = dropped
                 return blocks.render_fenced_div(_StrToken(head_text, meta))

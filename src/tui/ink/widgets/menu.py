@@ -123,7 +123,10 @@ def Menu(props: dict) -> Element:
     if hasattr(raw_items, "__iter__") and not isinstance(raw_items, (str, bytes)):
         for it in raw_items:
             if isinstance(it, dict):
-                items.append(dict(it))
+                entry = dict(it)
+                if entry.get("label") is None:
+                    entry["label"] = ""
+                items.append(entry)
             else:
                 # ★ P3（review）：items 元素为 None 时渲染空标签——修复前
                 #   ``str(None)`` 渲染出字面 "None"。

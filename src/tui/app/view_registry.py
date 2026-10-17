@@ -24,7 +24,7 @@ from __future__ import annotations
 import importlib
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, cast
 
 _lock = threading.RLock()
 _ABSENT = object()
@@ -249,7 +249,7 @@ def register_builtin_view(spec_id: str, spec: Optional[ViewSpec] = None) -> Call
             if previous is _ABSENT:
                 _registered_builtin.pop(spec_id, None)
             else:
-                _registered_builtin[spec_id] = previous
+                _registered_builtin[spec_id] = cast(ViewSpec, previous)
             _refresh()
 
     return _undo
@@ -276,7 +276,7 @@ def register_view(spec: ViewSpec) -> Callable[[], None]:
             if previous is _ABSENT:
                 _extension.pop(spec.id, None)
             else:
-                _extension[spec.id] = previous
+                _extension[spec.id] = cast(ViewSpec, previous)
             _refresh()
 
     return _undo

@@ -54,7 +54,8 @@ class ConfigBase:
         基于字段元数据，兼容 slots/frozen 子类。
         """
         import dataclasses as _dc
-        return _dc.replace(self, **kwargs)
+        from typing import cast
+        return cast(_C, _dc.replace(cast(Any, self), **kwargs))
 
 
 @dataclass(frozen=True)

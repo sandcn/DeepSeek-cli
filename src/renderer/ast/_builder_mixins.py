@@ -42,6 +42,8 @@ class _TextBuildingMixin:
         _block_buffer_stack: Any
         _block_meta_stack: Any
         _paragraph_buffer: Any
+        _block_buffer: Any
+        _block_meta: Any
 
         def _flush_pending_list(self, *args: Any, **kwargs: Any) -> Any: ...
 
@@ -161,6 +163,10 @@ class _ListBuildingMixin:
 
     # ★ 宿主契约（仅静态检查用；运行期由 ``ASTBuilder`` 提供）。
     if TYPE_CHECKING:  # pragma: no cover - 仅静态检查
+        _pending_list: Any
+        _pending_list_ordered: Any
+        _paragraph_buffer: Any
+
         def _flush_pending_list(self, *args: Any, **kwargs: Any) -> Any: ...
 
         def _flush_paragraph_buffer(self, *args: Any, **kwargs: Any) -> Any: ...
@@ -222,6 +228,9 @@ class _BlockBuildingMixin:
         _stack: Any
         _block_buffer_stack: Any
         _block_meta_stack: Any
+        _block_buffer: Any
+        _block_meta: Any
+        _paragraph_buffer: Any
 
         def _open_block(self, *args: Any, **kwargs: Any) -> Any: ...
 

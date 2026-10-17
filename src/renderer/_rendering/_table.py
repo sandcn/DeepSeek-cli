@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 _logger = logging.getLogger(__name__)
 
@@ -96,7 +97,7 @@ def build_rich_table(
 
     for i, h in enumerate(headers):
         justify = aligns[i] if i < len(aligns) else 'left'
-        table.add_column(render_inline_fn(h), justify=justify)
+        table.add_column(render_inline_fn(h), justify=cast(Any, justify))
 
     for row in data_rows:
         padded = (row + [''] * num_cols)[:num_cols]

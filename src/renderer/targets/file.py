@@ -27,7 +27,7 @@ class FileRenderTarget(RenderTarget):
         self._path = path
         self._width = int(width) if width else 100
         self._encoding = encoding
-        self._handle = None
+        self._handle: Any = None
         self._console: Optional[Console] = None
 
     def _ensure_open(self) -> Console:
