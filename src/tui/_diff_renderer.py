@@ -644,7 +644,8 @@ def render_diff(diff_list, w, line_offset=0, lexer_name='', output_target: Optio
                 line.append(_hl(a_line[1:]), None)
                 _write_diff_line(line, output_target, max_width)
 
-    del_buf, add_buf = [], []
+    del_buf: list = []
+    add_buf: list = []
     _hunk_count = 0
     for item in folded:
         typ = item[0]
@@ -710,16 +711,30 @@ def render_diff_to_ansi(path: str, old_content: str, new_content: str) -> str:
     collected: list[str] = []
 
     class _Collector:
-        """收集 write_line 调用的简单输出目标（替代 type() 动态类创建）。"""
-        _target = collected
-        @classmethod
-        def write_line(cls, text: str) -> None:
-            cls._target.append(text)
+        """收集 write_line 调用的简单输出目标（替代 type() 动态类创建）。
+
+        实现 ``IOutputTarget`` 协议（``write_line`` + ``flush`` /
+        ``display_messages`` 空实现）——实例传给 ``render_diff``，纯内存收集。
+        """
+
+        def __init__(self) -> None:
+            self._target: list[str] = collected
+
+        def write_line(self, text: str) -> None:
+            self._target.append(text)
+
+        def flush(self, timeout: float | None = None) -> None:
+            return None
+
+        def display_messages(self, messages: list[dict], speed: int = 0) -> None:
+            return None
+
+    collector = _Collector()
 
     # ★ P2-1（review 方向）：render_diff 返回解析结果，摘要复用（不再重复解析）
-    parsed = render_diff(diff_list, w, lexer_name=lexer_name, output_target=_Collector, width=sep_w)
+    parsed = render_diff(diff_list, w, lexer_name=lexer_name, output_target=collector, width=sep_w)
     # 追加变更统计摘要
-    _render_diff_summary(diff_list, output_target=_Collector, width=sep_w, parsed=parsed)
+    _render_diff_summary(diff_list, output_target=collector, width=sep_w, parsed=parsed)
     # 移除最后的空行（如有）
     while collected and collected[-1] == '':
         collected.pop()

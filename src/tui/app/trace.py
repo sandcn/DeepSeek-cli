@@ -586,6 +586,7 @@ def _messages_fingerprint(model) -> tuple:
     if not messages:
         return (id(messages), 0)
     tail = messages[-1]
+    tail_fp: tuple
     if isinstance(tail, dict):
         tail_fp = (
             id(tail),
@@ -688,7 +689,7 @@ def _live_tool_payload(box, call: str) -> tuple:
 
 
 def _live_records(model, index_holder: list, out_records: list, rows: list,
-                  merged_tool_ids: set = None) -> None:
+                  merged_tool_ids: set | None = None) -> None:
     """实时生成记录（消息源模式：轨迹 Trace 正在生成的内容动态显示）。
 
     消息源（agent.messages）只在**流式完成后**才追加 assistant 消息/工具
@@ -1080,11 +1081,11 @@ def _records_from_messages(messages, user_markdown: bool = False) -> tuple:
             if not text and not images:
                 continue
             cid = msg.get("tool_call_id") or ""
-            rec = pending.pop(cid, None) if cid else None
+            tool_rec = pending.pop(cid, None) if cid else None
             lines = _split_lines(text) if text else []
-            if rec is not None:
+            if tool_rec is not None:
                 # ★ 工具调用 + 返回合并一条：返回追加到调用记录
-                rec.result = _first_text(lines)
+                tool_rec.result = _first_text(lines)
                 # ★ 性能（O(N²) 优化）：合并列表缓存（内容不变 → 每帧零重建，
                 #   长工具返回不再每帧 O(返回行数) 复制）。图片摘要行经
                 #   ``_merge_call_lines`` 的 images 分支追加（含缓存），
@@ -1093,26 +1094,28 @@ def _records_from_messages(messages, user_markdown: bool = False) -> tuple:
                 #   修复前 ``lines`` 先 ``+ [image_summary(...)]`` 再传
                 #   ``_merge_call_lines``（内部又 ``+ [...]``）→ 图片摘要行
                 #   重复两次；现由 ``_merge_call_lines`` 统一追加一次。
-                rec.lines = _merge_call_lines(rec.summary, text, lines, images)
-                rec.images = images
+                tool_rec.lines = _merge_call_lines(
+                    tool_rec.summary, text, lines, images,
+                )
+                tool_rec.images = images
                 # ★ 2026-08-17（用户需求：轨迹 Trace 工具调用参数/返回值用树
                 #   控件显示）：保存**原始返回文本**——检查器据此用树控件显示
                 #   返回值（JSON 树形展开；非 JSON 文本每行一个叶子节点）。
-                rec.tool_result = text
+                tool_rec.tool_result = text
             else:
                 # 无匹配调用（异常/截断会话）→ 独立返回记录（图片摘要追加到返回行）
                 if images:
                     lines = list(lines) + [image_summary(img) for img in images]
                 index += 1
-                rec = TraceRecord(
+                new_rec = TraceRecord(
                     index=index, kind="tool", summary="工具返回",
                     result=_first_text(lines),
                     lines=["工具返回"] + lines,
                     tool_result=text, images=images,
                     message_index=msg_index,
                 )
-                records.append(rec)
-                rows.append(rec)
+                records.append(new_rec)
+                rows.append(new_rec)
     return records, rows
 
 
@@ -1702,44 +1705,41 @@ def build_trace_records(model) -> tuple:
             import logging
             logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)  # 消息源异常 → 回退块路径（防御）
     # ── 回退路径：TUI 块构建（无消息源/空消息/异常） ──
-    records: list = []
-    rows: list = []
+    fb_records: list = []
+    fb_rows: list = []
     index = 0
     # ★ 2026-08-17（用户需求：# 0 工具列表）：台账固定首条 # 0 工具列表
     #   （index=0，不占用 index 变量——系统提词仍 #1 起）。
     tools_rec = _tools_record()
     if tools_rec is not None:
-        records.append(tools_rec)
-        rows.append(tools_rec)
+        fb_records.append(tools_rec)
+        fb_rows.append(tools_rec)
     # 系统提词（台账次条；对齐 DSH SYSTEM 记录）
     sys_rec = _system_prompt_record(index + 1)
     if sys_rec is not None:
         index += 1
-        records.append(sys_rec)
-        rows.append(sys_rec)
+        fb_records.append(sys_rec)
+        fb_rows.append(sys_rec)
     # 聊天块记录（新用户消息 = 新轮次，插入分隔行）
     turn = 0
     for block in getattr(model, "blocks", None) or []:
         if getattr(block, "kind", "") == "user":
             turn += 1
-            rows.append(None)  # 轮次分隔行（新用户消息 = 新轮次）
+            fb_rows.append(None)  # 轮次分隔行（新用户消息 = 新轮次）
         rec = _record_from_block(block, index + 1)
         if rec is None:
             continue
         index += 1
         rec.index = index
-        records.append(rec)
-        rows.append(rec)
+        fb_records.append(rec)
+        fb_rows.append(rec)
     # 子代理记录（追加于块记录之后，按状态存储顺序）
     # ★ P3（review）：接收返回的 merged_tool_ids——修复前回退路径丢弃返回值
     #   （当前契约下回退路径不再调用 ``_live_records``，故无重复记录；保留
     #   接收以固化契约：后续若在回退路径追加 live 记录，须据此跳过已合并
     #   进 tool 记录的 subagent box）。
-    merged_tool_ids = _subagent_records([index], records, rows)
-    if merged_tool_ids:
-        # 显式消费（保持契约可追溯；当前无 live 追加，行为不变）
-        pass
-    return records, rows
+    _subagent_records([index], fb_records, fb_rows)
+    return fb_records, fb_rows
 
 
 __all__ = [

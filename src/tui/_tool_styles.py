@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .core.style import Style
 
 _lock = threading.RLock()
-_ABSENT = object()
+#: 注册表「无值」哨兵（``Any`` 标注：``dict.get(key, _ABSENT)`` 的结果需可赋回
+#: 原注册表类型，避免静态检查把哨兵并进联合类型）。
+_ABSENT: Any = object()
 
 
 @dataclass(frozen=True)
@@ -43,7 +45,7 @@ class PresentationSpec:
     fg: int = 0
 
     def to_dict(self) -> dict:
-        data = {"id": self.id, "kind": self.kind, "name": self.name}
+        data: dict[str, Any] = {"id": self.id, "kind": self.kind, "name": self.name}
         if self.kind == "tool":
             data["category"] = self.category
             data["icon"] = self.icon

@@ -687,7 +687,7 @@ class AppModel(_ToolOutputMixin):
             #   （表格/代码块等定宽内容随宽度重排），并清空已提交计数——其行
             #   改由 live 渲染路径发射，避免与重建后的 committed_lines 重复。
             #   重渲染失败时保留原状（不清计数，走下方常规重排路径）。
-            if (not block.closed and getattr(block, "source_text", "")):
+            if (not block.closed and bool(getattr(block, "source_text", ""))):
                 if self._rerender_open_block(block, width):
                     block.committed_line_count = 0
                     continue
@@ -695,7 +695,7 @@ class AppModel(_ToolOutputMixin):
             #   关闭块只按新宽度 wrap 旧行，表格框线被拦腰拆断/单元格跨行，
             #   终端 resize 变窄后历史回答里的表格彻底错乱（走下方常规 wrap
             #   路径时无法重画框线）。重渲染后整块行按新宽度产出并全量提交。
-            elif block.closed and getattr(block, "source_text", ""):
+            elif block.closed and bool(getattr(block, "source_text", "")):
                 self._rerender_closed_block(block, width)
             count = block.committed_line_count
             if count <= 0:

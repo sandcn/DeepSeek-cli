@@ -42,8 +42,8 @@ class _SGR:
         self.reset()
 
     def reset(self) -> None:
-        self.fg = None
-        self.bg = None
+        self.fg: int | TrueColor | None = None
+        self.bg: int | TrueColor | None = None
         self.bold = False
         self.dim = False
         self.italic = False

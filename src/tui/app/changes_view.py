@@ -261,7 +261,7 @@ def _detail_deps(entry, right_w: int) -> tuple:
     return (file_entry_signature(entry), right_w)
 
 
-def _detail_rows(entry: dict, right_w: int) -> list:
+def _detail_rows(entry: dict | None, right_w: int) -> list:
     """选中文件 → 差异内容行（``list[list[StyledRun]]``）。"""
     if entry is None:
         return [[StyledRun("无选中文件", S_HINT)]]
@@ -329,7 +329,7 @@ def _panel_deps(entry, sections, right_w: int) -> tuple:
     )
 
 
-def _preview_rows(entry: dict, right_w: int) -> list:
+def _preview_rows(entry: dict | None, right_w: int) -> list:
     """回滚预览行（将写入的目标内容）。"""
     if entry is None:
         return [[StyledRun("无选中文件", S_HINT)]]
@@ -369,7 +369,7 @@ def _message_deps(entry, right_w: int) -> tuple:
     return (message_signature(entry), right_w)
 
 
-def _message_detail_rows(entry: dict, right_w: int) -> list:
+def _message_detail_rows(entry: dict | None, right_w: int) -> list:
     """消息条目 → 该消息下全部文件变更（委托 ``sandbox_common``）。"""
     return message_detail_rows(entry, right_w)
 
@@ -613,7 +613,7 @@ def ChangesView(props) -> object:
                 cv.search_mode = True
                 cv.search_query = getattr(cv, "search_pattern", "") or ""
                 return True
-            if ch in ("n", "N", "p") and (getattr(cv, "search_pattern", "") or ""):
+            if ch in ("n", "N", "p") and bool(getattr(cv, "search_pattern", "")):
                 jump_match(cv, 1 if ch == "n" else -1,
                            on_jump=lambda i: _select_row(_row_of(i)))
                 return True
@@ -785,7 +785,7 @@ def ChangesView(props) -> object:
     use_input(_handle, visible)
     use_modal_scope(visible)
 
-    if not visible:
+    if not visible or cv is None:
         return empty_modal_frame()
 
     matched_set = set(matches) if (pattern and matches) else set()

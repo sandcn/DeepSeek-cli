@@ -266,7 +266,9 @@ _BUILTIN_THEME_SPECS: dict[str, Callable[[], Palette]] = {
 }
 
 _theme_lock = threading.RLock()
-_ABSENT = object()
+#: 注册表「无值」哨兵（``Any`` 标注：``dict.get(key, _ABSENT)`` 的结果需可赋回
+#: 原注册表类型，避免静态检查把哨兵并进联合类型）。
+_ABSENT: Any = object()
 _registered_builtin_themes: dict[str, Callable[[], Palette]] = {}
 _managed_builtin_themes: set = set()
 _disabled_builtin_themes: set = set()
@@ -330,7 +332,9 @@ def _get_theme_palette(name: str) -> Palette | None:
         return palette
 
 
-def register_builtin_theme(name: str, factory: Any = None) -> Callable[[], None]:
+def register_builtin_theme(
+    name: str, factory: Callable[[], Palette] | None = None,
+) -> Callable[[], None]:
     """注册/覆盖一个内置主题（``factory=None`` 用默认工厂）；返回幂等撤销。"""
     if name not in _BUILTIN_THEME_SPECS:
         raise KeyError(f"未知内置主题: {name!r}（可用: {list(_BUILTIN_THEME_SPECS)}）")

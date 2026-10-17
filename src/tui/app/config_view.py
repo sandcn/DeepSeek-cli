@@ -644,10 +644,12 @@ def _reset_entry_default(cv, entries, idx: int) -> None:
     key = entry.get("key", "")
     if key in CONFIG_KEYS:
         default = CONFIG_KEYS[key]["default"]
-        typ = CONFIG_KEYS[key]["type"]
+        untyped = CONFIG_KEYS[key]["type"]
+        typ = untyped if isinstance(untyped, type) else str
     else:
         default = DEFAULTS.get(key)
-        typ = entry.get("type", str)
+        untyped = entry.get("type", str)
+        typ = untyped if isinstance(untyped, type) else str
     old_value = copy.deepcopy(entry.get("value"))
     try:
         from src.config.loader import update_config
@@ -1283,7 +1285,7 @@ def _handle_config_event(
             cv.search_mode = True
             cv.search_query = getattr(cv, "search_pattern", "") or ""
             return True
-        if ch in ("n", "N", "p") and (getattr(cv, "search_pattern", "") or ""):
+        if ch in ("n", "N", "p") and bool(getattr(cv, "search_pattern", "")):
             _jump_config_match(cv, 1 if ch == "n" else -1, view_map)
             return True
         if ch == "f":

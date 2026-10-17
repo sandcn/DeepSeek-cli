@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from typing import Any, Callable
 
 from src.tui._const import (
     RenderCommand,
@@ -720,7 +721,7 @@ def _do_compaction(model, cmd) -> None:
         active = 0
     active = max(0, active)
     status = model.status
-    if active == 0 and getattr(status, "compaction_active", 0):
+    if active == 0 and bool(getattr(status, "compaction_active", 0)):
         status.compaction_last_end_ts = time.monotonic()
     status.compaction_active = active
 
@@ -773,7 +774,7 @@ def coalesce_commands(commands: list) -> list:
     return out
 
 
-_HANDLERS: dict[int, object] = {
+_HANDLERS: dict[int, Callable[[Any, RenderCmd], None]] = {
 
     RenderCommand.NOTIFICATION: _do_notification,
     RenderCommand.WRITE_LINE: _do_write_line,

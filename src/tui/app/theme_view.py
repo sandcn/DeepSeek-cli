@@ -91,9 +91,24 @@ def apply_theme(name: str) -> bool:
     return True
 
 
-def _slot_color(style) -> object:
-    """从调色板槽位 ``Style`` 取主色（fg 优先，无则 None）。"""
-    return getattr(style, "fg", None)
+def _slot_color(style):
+    """从调色板槽位 ``Style`` 取主色（fg 优先，非法值回退 None）。
+
+    仅接受 ``Style.bg``/``Style.fg`` 支持的合法值：0-255 的 int（bool 排除）
+    或 ``TrueColor``——主题插件注入畸形值（字符串/越界色号/bool）时返回
+    None（调用方回退灰底色块），避免渲染期 ``Style(bg=...)`` 抛 ValueError
+    导致整个主题预览崩溃。
+    """
+    from src.tui.core.color import TrueColor
+
+    value = getattr(style, "fg", None)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if 0 <= value <= 255 else None
+    if isinstance(value, TrueColor):
+        return value
+    return None
 
 
 def _palette_preview_rows(name: str, right_w: int) -> list:
@@ -234,7 +249,7 @@ def ThemeView(props) -> object:
                 tv.search_mode = True
                 tv.search_query = getattr(tv, "search_pattern", "") or ""
                 return True
-            if ch in ("n", "N", "p") and (getattr(tv, "search_pattern", "") or ""):
+            if ch in ("n", "N", "p") and bool(getattr(tv, "search_pattern", "")):
                 jump_match(tv, 1 if ch == "n" else -1,
                            on_jump=lambda i: _preview(_row_of(i)))
                 return True

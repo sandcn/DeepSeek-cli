@@ -53,6 +53,7 @@ fiber 引用**（use_ref 持有）使 ``_build_lines`` 的快照/换行布局缓
 from __future__ import annotations
 
 import time
+from typing import Mapping
 
 from src.tui._screen import (
     wcswidth_simple,
@@ -157,7 +158,7 @@ _S_MODE_EMPTY = Style(fg=178)
 #: 简单模式文本强调色（亮青 45——介于空/标准之间，与 accent 同色系）
 _S_MODE_SIMPLE = Style(fg=45)
 #: 模式 → 显示文本（实时视图；真源 == 表现层数据注册表 mode_text 表）
-_MODE_TEXTS: dict = LiveMapping("mode_text")
+_MODE_TEXTS: Mapping[str, str] = LiveMapping("mode_text")
 #: 模式 → 图标（模式行右侧视觉标识；与 mode_text 表同键集）。
 _MODE_ICONS: dict = {
     "empty": "\u25c7",      # ◇ 空模式（轻量/无约束）

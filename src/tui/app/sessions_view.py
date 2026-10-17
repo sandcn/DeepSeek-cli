@@ -95,7 +95,7 @@ def _session_search_text(entry: dict) -> str:
     ])
 
 
-def _preview_rows(entry: dict, right_w: int) -> list:
+def _preview_rows(entry: dict | None, right_w: int) -> list:
     """选中会话 → 预览内容行（``list[list[StyledRun]]``）。"""
     if entry is None:
         return [[StyledRun("无选中会话", _S_HINT)]]
@@ -230,11 +230,15 @@ def SessionsView(props) -> object:
             return 0
 
     def _run_search() -> None:
+        if sv is None:
+            return
         run_search(sv, entries, getattr(sv, "search_query", "") or "",
                    _session_search_text,
                    on_first=lambda i: _select_row(_row_of(i)))
 
     def _jump(delta: int) -> None:
+        if sv is None:
+            return
         jump_match(sv, delta, on_jump=lambda i: _select_row(_row_of(i)))
 
     def _apply(report: dict) -> None:
@@ -312,7 +316,7 @@ def SessionsView(props) -> object:
                 sv.search_mode = True
                 sv.search_query = getattr(sv, "search_pattern", "") or ""
                 return True
-            if ch in ("n", "N", "p") and (getattr(sv, "search_pattern", "") or ""):
+            if ch in ("n", "N", "p") and bool(getattr(sv, "search_pattern", "")):
                 _jump(1 if ch == "n" else -1)
                 return True
             if ch == "f":
@@ -373,7 +377,7 @@ def SessionsView(props) -> object:
     use_input(_handle, visible)
     use_modal_scope(visible)
 
-    if not visible:
+    if not visible or sv is None:
         return empty_modal_frame()
 
     # ── 左栏渲染 ──

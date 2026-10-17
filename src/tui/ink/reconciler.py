@@ -14,7 +14,7 @@ React 风格调和：
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from typing import Any, Callable, Mapping
 
 from .fiber import (
     Fiber,
@@ -150,6 +150,16 @@ def _classify_input_hooks(
             mouse_out.append(hook)
 
 
+def _as_props_dict(props: Mapping[str, Any]) -> dict:
+    """把 ``Element.props``（``Mapping`` 契约）规范为 fiber 的 ``dict`` 契约。
+
+    ``Element.__post_init__`` 已把 props 规范为 dict，正常路径零拷贝
+    （``isinstance`` 命中直接返回同一对象——保持 ``_measure_cache`` 的引用级
+    命中语义）；外部构造的自定义 Mapping 才拷贝一次。
+    """
+    return props if isinstance(props, dict) else dict(props)
+
+
 def _props_identical(a: dict, b: dict) -> bool:
     """props 浅引用全等判定（比 ``dict.__eq__`` 更快的**充分**条件）。
 
@@ -180,7 +190,8 @@ class Reconciler:
         #: 独立 ``HookContext``；渲染期经 ``_hooks.push_context`` 激活，hooks
         #: 函数读取它，输入事件/router 回调闭包捕获它）。
         self._hook_ctx = _hooks.HookContext()
-        self._pending_destroys: list[tuple[Fiber, EffectHook]] = []
+        #: 待执行卸载清理的 hook（EffectHook 的 destroy / SyncStoreHook 的取消订阅）
+        self._pending_destroys: list[tuple[Fiber, EffectHook | SyncStoreHook]] = []
         #: input router 签名缓存（同签名复用上次 router，免每帧重建闭包）：
         #: ``(signature, router, hooks_list, paste_hooks)`` 四元组
         self._input_router_cache: tuple | None = None
@@ -467,7 +478,7 @@ class Reconciler:
                 #   ``_set_props`` 值比较复用：内容相等时保持旧引用（
                 #   _measure_cache 引用级命中，0% → 高命中率），内容变化才
                 #   更新（免每帧 O(n) dict 浅拷贝）。
-                self._set_props(fiber, element.props)
+                self._set_props(fiber, _as_props_dict(element.props))
                 self._revive_reused(fiber, return_fiber)
                 fiber.return_ = return_fiber
                 self._begin_work(fiber, element)
@@ -519,7 +530,7 @@ class Reconciler:
         #   稳定列表命中场景才多比较 N 项；收缩场景提前返回仍省一趟 O(n)）。
         #   触发条件不变：len(elements) >= n_old 且前 N 个 key/type 一致。
         n_old = 0
-        cur = child
+        cur: Fiber | None = child
         n_new = len(elements)  # 新元素数量（旧链长度上限阈值，与 n_old 对称）
         while cur is not None:
             if n_old >= n_new:
@@ -549,11 +560,13 @@ class Reconciler:
         cur = child
         for i, el in enumerate(elements):
             if i < n_old:
+                # 第一趟已确认前 n_old 个旧 fiber 存在（cur 在此区间恒非 None）
+                assert cur is not None
                 fiber = cur
                 cur = cur.sibling
                 # ★ 性能（PERF-7 + props 引用级缓存）：经 ``_set_props``
                 #   值比较复用（内容相等保持旧引用 → _measure_cache 命中）。
-                self._set_props(fiber, el.props)
+                self._set_props(fiber, _as_props_dict(el.props))
                 self._revive_reused(fiber, return_fiber)
                 fiber.return_ = return_fiber
                 fiber.moved = False  # 稳定列表：位置不变
@@ -579,7 +592,7 @@ class Reconciler:
         if existing is not None and _is_same_type(existing, element):
             # ★ 性能（PERF-7 + props 引用级缓存）：经 ``_set_props`` 值比较
             #   复用（内容相等保持旧引用 → _measure_cache 命中）。
-            self._set_props(existing, element.props)
+            self._set_props(existing, _as_props_dict(element.props))
             self._revive_reused(existing, return_fiber)
             existing.return_ = return_fiber
             existing.sibling = None
@@ -597,7 +610,7 @@ class Reconciler:
             tag = "host"
         # ★ 性能（PERF-7）：直接复用 ``element.props`` 引用（Element frozen
         # 不可变）——免新 fiber 构造时 dict 浅拷贝。
-        fiber = Fiber(tag, element.type, element.props, return_=return_fiber)
+        fiber = Fiber(tag, element.type, _as_props_dict(element.props), return_=return_fiber)
         self._begin_work(fiber, element)
         return fiber
 
@@ -1060,9 +1073,9 @@ class Reconciler:
             # （事件放行给 InputDispatcher 兜底路径——滚轮滚动回调等）。
             # 模态激活时未消费的鼠标事件同样吞掉（独占输入语义一致）。
             if getattr(event, "kind", "") == "mouse":
-                for hook in mouse_hooks:
+                for mhook in mouse_hooks:
                     try:
-                        if hook.handler is not None and hook.handler(event):
+                        if mhook.handler is not None and mhook.handler(event):
                             return True
                     except Exception:
                         _logger.debug("useMouseInput handler 异常", exc_info=True)
@@ -1080,10 +1093,10 @@ class Reconciler:
                     # useInput handler（独立通道）——无论 handler 返回值
                     # 如何，粘贴事件均被消费（handler 官方签名为 `(text) ->
                     # void`，返回 None 也应阻断 use_input 通道）。
-                    for hook in paste_hooks:
+                    for phook in paste_hooks:
                         try:
-                            if hook.handler is not None:
-                                hook.handler(text)
+                            if phook.handler is not None:
+                                phook.handler(text)
                         except Exception:
                             _logger.debug("usePaste handler 异常", exc_info=True)
                             continue
@@ -1099,14 +1112,14 @@ class Reconciler:
                 else:
                     _hooks._focus_next()
                 return True
-            for hook in input_hooks:
+            for ihook in input_hooks:
                 try:
-                    if hook.handler is not None:
+                    if ihook.handler is not None:
                         ev = event
-                        mask = getattr(hook, "mask", None)
+                        mask = getattr(ihook, "mask", None)
                         if mask and getattr(event, "kind", "") == "char":
                             ev = _MaskedCharEvent(event, mask)
-                        if hook.handler(ev):
+                        if ihook.handler(ev):
                             return True
                 except Exception:
                     # ★ P3（review）：handler 异常不再静默——记 debug（按键
@@ -1125,7 +1138,7 @@ class Reconciler:
                 return True
             return False
 
-        router._ink_has_focus_ids = has_focus_ids
+        setattr(router, "_ink_has_focus_ids", has_focus_ids)
         self._input_router_cache = (signature, router, hooks_list, paste_hooks, mouse_hooks)
         return router
 
@@ -1188,9 +1201,9 @@ class Reconciler:
         input_hooks: list[InputHook] = []
         paste_hooks: list[PasteHook] = []
         mouse_hooks: list[MouseHook] = []
-        stack = [root_fiber]
+        stack: list[Fiber | None] = [root_fiber]
         while stack:
-            f = stack.pop()
+            f: Fiber | None = stack.pop()
             while f is not None:
                 if f.deleted:
                     f = f.sibling
@@ -1280,7 +1293,7 @@ class Reconciler:
 
     # ── effects 提交 ────────────────────────────────
 
-    def _run_destroy(self, fiber: Fiber, hook: EffectHook) -> None:
+    def _run_destroy(self, fiber: Fiber, hook: EffectHook | SyncStoreHook) -> None:
         try:
             if isinstance(hook, SyncStoreHook):
                 # useSyncExternalStore 卸载：取消外部 store 订阅

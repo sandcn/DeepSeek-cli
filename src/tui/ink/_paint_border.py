@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from typing import Mapping
+
 from src.presentation_data import LiveMapping
 from src.tui.core.style import Style
 from .fiber import Fiber
@@ -104,11 +106,11 @@ def _border_style(props: dict, edge: str | None = None) -> Style:
 #: 边框（``┄``/``┆``，视觉更轻）。
 #: singleDouble：顶/底双线、左右单线（``╓ ╖ ╙ ╜ ═ ║``）；doubleSingle：
 #: 顶/底单线、左右双线（``╒ ╕ ╘ ╛ ─ ╞`` 类）——react-ink 完整变体。
-_BORDER_CHARS = LiveMapping("border_chars")
+_BORDER_CHARS: Mapping[str, tuple] = LiveMapping("border_chars")
 
 #: 自定义 borderStyle 对象缺省值（React Ink v6：``{topLeft, top, topRight,
 #: left, bottomLeft, bottom, bottomRight, right}``——缺省项回退 "single"）。
-_DEFAULT_BORDER_OBJECT = LiveMapping("border_object_default")
+_DEFAULT_BORDER_OBJECT: Mapping[str, str] = LiveMapping("border_object_default")
 
 #: 边框字符兜底（注册表缺席/被禁用时使用，与 single 变体一致）。
 _FALLBACK_BORDER = ("┌", "┐", "└", "┘", "─", "│")
@@ -306,17 +308,17 @@ def _paint_box_background(box, canvas: list[dict], style: Style, clip=None) -> N
     """
     if box is None or box.w <= 0 or box.h <= 0:
         return
-    clip_x0 = clip_y0 = clip_x1 = clip_y1 = None
-    if clip is not None:
+    has_clip = clip is not None
+    clip_x0 = clip_y0 = clip_x1 = clip_y1 = 0
+    if has_clip:
         if clip[2] <= 0 or clip[3] <= 0:
             return
-        clip_x0, clip_y0, clip_x1, clip_y1 = (
-            clip[0], clip[1], clip[0] + clip[2], clip[1] + clip[3],
-        )
+        clip_x0, clip_y0 = clip[0], clip[1]
+        clip_x1, clip_y1 = clip_x0 + clip[2], clip_y0 + clip[3]
     for r in range(box.y, box.y + box.h):
         if r < 0 or r >= len(canvas):
             continue
-        if clip_y0 is not None and (r < clip_y0 or r >= clip_y1):
+        if has_clip and (r < clip_y0 or r >= clip_y1):
             continue
         row = canvas[r]
         if isinstance(row, Line):
@@ -327,7 +329,7 @@ def _paint_box_background(box, canvas: list[dict], style: Style, clip=None) -> N
             canvas[r] = row
         c0 = max(0, box.x)
         c1 = box.x + box.w
-        if clip_x0 is not None:
+        if has_clip:
             c0 = max(c0, clip_x0)
             c1 = min(c1, clip_x1)
         for c in range(c0, c1):

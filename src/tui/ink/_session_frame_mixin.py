@@ -37,7 +37,10 @@ mixin 方法即实例方法）。
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # pragma: no cover - 仅静态检查（避免运行期循环导入）
+    from .renderer import Frame
 
 import logging
 import time
@@ -110,6 +113,10 @@ class _SessionFrameMixin:
     _hook_ctx: Any
     _on_render_callback: Any
     _cmd_queue: Any
+    #: 最近一帧（空闲帧复用直接重放；None = 尚未渲染过任何帧）
+    _last_frame: "Frame | None"
+    #: 最近渲染帧行数（render(debug=True) 统计）
+    _last_frame_lines: int
 
     # ── 命令应用 ─────────────────────────────────────
 
@@ -359,7 +366,7 @@ class _SessionFrameMixin:
         #   预测函数返回 True + 无待处理命令 + 非脏 + 无 resize + 无重绘请求 +
         #   无激活动画（``useAnimation``）。未注入预测函数时恒不复用（默认
         #   行为与既有 30Hz 全量渲染完全一致）。
-        if self._should_reuse_idle_frame():
+        if self._should_reuse_idle_frame() and self._last_frame is not None:
             frame = self._last_frame
         else:
             element = self._build_tree(self._model, width)

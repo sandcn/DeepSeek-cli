@@ -135,6 +135,8 @@ def Key(props: dict) -> Element:
         # 仅受管且激活的 Key 处理焦点切换
         if not managed or not active or set_active is None:
             return False
+        if index is None or total is None:  # managed 已判定；显式收窄供静态检查
+            return False
         try:
             total_n = int(total)
         except (TypeError, ValueError):

@@ -114,7 +114,7 @@ def _notify_search_text(entry: dict) -> str:
     ])
 
 
-def _detail_rows(entry: dict, right_w: int) -> list:
+def _detail_rows(entry: dict | None, right_w: int) -> list:
     """选中事件 → 详情行。"""
     if entry is None:
         return [[StyledRun("无选中事件", _S_HINT)]]
@@ -300,7 +300,7 @@ def NotifyView(props) -> object:
                 nv.search_mode = True
                 nv.search_query = getattr(nv, "search_pattern", "") or ""
                 return True
-            if ch in ("n", "N", "p") and (getattr(nv, "search_pattern", "") or ""):
+            if ch in ("n", "N", "p") and bool(getattr(nv, "search_pattern", "")):
                 jump_match(nv, 1 if ch == "n" else -1,
                            on_jump=lambda i: _select_row(_row_of(i)))
                 return True
@@ -354,7 +354,7 @@ def NotifyView(props) -> object:
     use_input(_handle, visible)
     use_modal_scope(visible)
 
-    if not visible:
+    if not visible or nv is None:
         return empty_modal_frame()
 
     matched_set = set(matches) if (pattern and matches) else set()

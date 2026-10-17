@@ -194,7 +194,7 @@ _BASE_STATE_RESETS = {
     "status_message": "",
 }
 #: 各视图的专有确认 / 输入态复位（键为状态属性名）。
-_VIEW_STATE_EXTRA_RESETS = {
+_VIEW_STATE_EXTRA_RESETS: dict[str, dict[str, object]] = {
     "changes_view": {
         "revert_confirm": "", "revert_all_confirm": False,
         "restore_mode": False, "restore_value": "", "export_message": "",
@@ -470,7 +470,7 @@ def _history_diff_rows(row: dict, width: int) -> list:
     return rows
 
 
-def history_rows(entry: dict, width: int) -> list:
+def history_rows(entry: dict | None, width: int) -> list:
     """单文件历史时间线内容行（每条记录摘要 + 差异）。
 
     ``entry`` 为文件变更条目（``_sandbox_cmd.build_change_entries`` 产出，
@@ -498,7 +498,7 @@ def history_rows(entry: dict, width: int) -> list:
     return rows
 
 
-def message_detail_rows(entry: dict, width: int) -> list:
+def message_detail_rows(entry: dict | None, width: int) -> list:
     """消息条目 → 该消息下全部文件变更（逐文件摘要 + diff）。"""
     if not isinstance(entry, dict):
         return [[StyledRun("无选中消息", S_HINT)]]

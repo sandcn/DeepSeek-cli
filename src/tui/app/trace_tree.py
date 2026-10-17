@@ -102,7 +102,7 @@ def _tree_node_rows(nodes: list, right_w: int, out: list, depth: int = 0,
     for i, node in enumerate(nodes):
         node_path = f"{path}/{i}" if path else str(i)
         children = node.get("children") or []
-        folded = bool(collapsed) and node_path in collapsed
+        folded = collapsed is not None and node_path in collapsed
         if children:
             indicator = _TREE_CLOSED if folded else _TREE_OPEN
         else:

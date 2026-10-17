@@ -171,22 +171,22 @@ def _help_sections(width: int) -> list:
         key, desc = row[0]
         left_w = max(left_w, key_w + 3 + _disp_len(desc))
     for row in SHORTCUT_ROWS:
-        runs: list = []
+        row_runs: list = []
         for idx, (key, desc) in enumerate(row):
             pad = " " * (key_w - len(key) + 3)
             if idx == 0:
                 gap = left_w - (key_w + 3 + _disp_len(desc)) + 2
-                runs.append(StyledRun("  ", None))
-                runs.append(StyledRun(key, _S_KEY))
-                runs.append(StyledRun(pad, None))
-                runs.append(StyledRun(desc, _S_DESC))
-                runs.append(StyledRun(" " * max(2, gap), None))
+                row_runs.append(StyledRun("  ", None))
+                row_runs.append(StyledRun(key, _S_KEY))
+                row_runs.append(StyledRun(pad, None))
+                row_runs.append(StyledRun(desc, _S_DESC))
+                row_runs.append(StyledRun(" " * max(2, gap), None))
             else:
-                runs.append(StyledRun(key, _S_KEY))
-                runs.append(StyledRun(pad, None))
-                runs.append(StyledRun(desc, _S_DESC))
+                row_runs.append(StyledRun(key, _S_KEY))
+                row_runs.append(StyledRun(pad, None))
+                row_runs.append(StyledRun(desc, _S_DESC))
         sections.append(_sec(
-            "shortcut", "shortcuts", "".join(r.text for r in runs), runs,
+            "shortcut", "shortcuts", "".join(r.text for r in row_runs), row_runs,
         ))
 
     if width > 0:

@@ -53,7 +53,7 @@ def _children(props: dict):
     return (children,)
 
 
-def _color(value, default: int = 6) -> int | None:
+def _color(value, default: int | None = 6) -> int | None:
     """解析颜色 shorthand（颜色名/int）为 256 色号；解析失败回退 default。
 
     ★ P2-7（review）：int 色号钳制到 [0, 255]、显式排除 bool——修复前

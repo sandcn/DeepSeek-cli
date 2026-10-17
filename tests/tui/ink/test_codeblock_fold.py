@@ -73,6 +73,19 @@ def test_collapsible_on_toggle_callback():
     assert seen == [True]
 
 
+def test_collapsible_same_frame_double_toggle_returns_to_collapsed():
+    """同批两次 Enter（无中间渲染）应展开后立即收起（ref 即时推进）。"""
+    el = h(CollapsibleCodeBlock, {"code": CODE, "width": 24, "maxLines": 3})
+    harness = Harness(40)
+    harness.render(el)
+    router = harness.reconciler._input_router_cache[1]
+
+    assert router(KeyEvent(kind="enter")) is True
+    assert router(KeyEvent(kind="enter")) is True
+
+    assert "line9" not in harness.render(el)
+
+
 # ── 语法高亮 ────────────────────────────────────────────
 
 def test_syntax_language_coverage():

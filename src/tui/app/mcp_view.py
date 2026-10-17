@@ -98,7 +98,7 @@ def _status_text(entry: dict) -> str:
     return "已禁用"
 
 
-def _detail_rows(entry: dict, right_w: int) -> list:
+def _detail_rows(entry: dict | None, right_w: int) -> list:
     """选中服务器 → 详情行。"""
     if entry is None:
         return [[StyledRun("无选中服务器", _S_HINT)]]
@@ -265,7 +265,7 @@ def McpView(props) -> object:
                 mv.search_mode = True
                 mv.search_query = getattr(mv, "search_pattern", "") or ""
                 return True
-            if ch in ("n", "N", "p") and (getattr(mv, "search_pattern", "") or ""):
+            if ch in ("n", "N", "p") and bool(getattr(mv, "search_pattern", "")):
                 jump_match(mv, 1 if ch == "n" else -1,
                            on_jump=lambda i: _select_row(_row_of(i)))
                 return True
@@ -309,7 +309,7 @@ def McpView(props) -> object:
     use_input(_handle, visible)
     use_modal_scope(visible)
 
-    if not visible:
+    if not visible or mv is None:
         return empty_modal_frame()
 
     matched_set = set(matches) if (pattern and matches) else set()

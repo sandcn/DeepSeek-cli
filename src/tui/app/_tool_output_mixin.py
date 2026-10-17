@@ -60,6 +60,12 @@ class _ToolOutputMixin:
         tool_boxes: Any
         blocks: Any
         _tool_id_seq: Any
+        #: 已提交到聊天前缀的输出行（前缀缓存按列表身份命中）
+        committed_lines: list
+        #: 当前渲染宽度（工具卡换行预算；宿主每帧更新）
+        width: int
+        #: 进行中工具摘要（``None`` = 无进行中工具）
+        active_tool: dict | None
 
         def _block_to_ink_lines(self, *args: Any, **kwargs: Any) -> Any: ...
 

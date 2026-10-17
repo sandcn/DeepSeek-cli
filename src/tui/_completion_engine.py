@@ -579,7 +579,7 @@ class CompletionEngine:
             #   （补全菜单弹出）时触发后台流式加载，界面先显示「加载中…」占位，
             #   数据就绪后经 _CmplHandler 监听器动态刷新候选。
             sessions = self._cached("sessions", [])
-            matched: list[tuple[str, str]] = []
+            matched_pairs: list[tuple[str, str]] = []
             for s in sessions:
                 sid: str = s.get("id", "")
                 title: str = s.get("title", "")
@@ -589,13 +589,13 @@ class CompletionEngine:
                     sid.startswith(param_last) or title.startswith(param_last)
                     or param_last in sid or param_last in title
                 ):
-                    matched.append((sid, title))
+                    matched_pairs.append((sid, title))
             # P1-1 回归修复：多键加权排序（sid 精确 > sid 前缀 > title 前缀 >
             # sid 子串 > title 子串）替代二次 sid 过滤——title 匹配但 sid 不匹配
             # 的会话不再被丢弃。
-            ranked = _ranked_sessions(matched, param_last)
+            ranked_sessions = _ranked_sessions(matched_pairs, param_last)
             result: list[CompletionItem] = []
-            for sid, title in ranked:
+            for sid, title in ranked_sessions:
                 # 方向F·步骤15（渲染错误修复）：title 可能含换行符（多行用户
                 # 消息作为会话标题，如 "tui:\n1.分析...\n2.完善..."）——
                 # Line 内嵌字面换行会把一"行"拆成多行，破坏帧行号/diff/光标

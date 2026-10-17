@@ -118,8 +118,8 @@ class MessageDisplayContext:
     """非 system 消息列表（副本，不含 system 消息）。"""
     agent: Any = None
     """ChatAgent 实例（可选）。"""
-    idx_map: list[int] = None  # type: ignore[assignment]
-    """索引映射：data[i] 在原 messages 中的位置。"""
+    idx_map: list[int] | None = None
+    """索引映射：data[i] 在原 messages 中的位置（None → ``__post_init__`` 按 data 生成）。"""
 
     def __post_init__(self):
         if self.idx_map is None:
@@ -197,6 +197,10 @@ def display_messages(
         idx_map: 索引映射（可选）。
         speed: 保留参数（兼容旧接口，当前忽略）。
     """
+    out = sys.__stdout__
+    if out is None:  # 无 stdout（pythonw / 已分离的流）：无输出目标，直接返回
+        _logger.debug("display_messages 跳过：stdout 不可用")
+        return
     for msg in data:
         # ★ 修复（P3）：data 元素可能非 dict（str 等异常数据）——
         #   msg.get 抛 AttributeError；非 dict 跳过（安全处理）。
@@ -210,7 +214,7 @@ def display_messages(
         # 截断过长的消息用于显示（_truncate 内部已去除 \n/\r）
         preview = _truncate(content, _DISPLAY_PREVIEW_MAX_LEN)
         try:
-            sys.__stdout__.write(_display_line(icon, role, preview).render() + "\n")
+            out.write(_display_line(icon, role, preview).render() + "\n")
         except (OSError, ValueError, AttributeError):
             # ★ BUG-60（review 方向）+ P2-4：兜底直写无 TTY/管道关闭时抛
             #   异常——**跳过当前消息**（continue），修复前 ``return`` 中断
@@ -219,7 +223,7 @@ def display_messages(
             _logger.debug("display_messages 直写消息失败，跳过该条", exc_info=True)
             continue
     try:
-        sys.__stdout__.flush()
+        out.flush()
     except (OSError, ValueError, AttributeError):
         _logger.debug("display_messages flush 失败", exc_info=True)
 

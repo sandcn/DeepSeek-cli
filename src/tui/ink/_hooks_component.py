@@ -109,8 +109,8 @@ def forwardRef(fn: Callable) -> Callable:
     def Forwarded(props, ref=None):
         return fn(props, ref if ref is not None else props.get("ref"))
 
-    Forwarded._is_forward_ref = True
-    Forwarded._forward_ref_fn = fn
+    setattr(Forwarded, "_is_forward_ref", True)
+    setattr(Forwarded, "_forward_ref_fn", fn)
     Forwarded.__name__ = getattr(fn, "__name__", "Forwarded")
     Forwarded.__module__ = getattr(fn, "__module__", __name__)
     return Forwarded
@@ -213,18 +213,18 @@ def memo(Component: Callable, are_equal: Callable | None = None) -> Callable:
             return Component(props)
         return Component(props, ref)
 
-    Memoized._is_memo = True
-    Memoized._are_equal = are_equal
+    Memoized.__name__ = getattr(Component, "__name__", "Memoized")
+    Memoized.__module__ = getattr(Component, "__module__", __name__)
+    setattr(Memoized, "_is_memo", True)
+    setattr(Memoized, "_are_equal", are_equal)
     # ★ P3（review）：透传 forwardRef 标记——``memo(forwardRef(fn))`` 组合下
     #   reconciler 仅按 ``fiber.type._is_forward_ref`` 决定双参调用，修复前
     #   标记丢失 → ref 不传给组件（React 允许该组合）。Memoized 同时接受
     #   ``ref`` 位置参并透传。
     if getattr(Component, "_is_forward_ref", False):
-        Memoized._is_forward_ref = True
+        setattr(Memoized, "_is_forward_ref", True)
         # 同步透传原始函数引用（供调试/工具链按 ``_forward_ref_fn`` 取回）
-        Memoized._forward_ref_fn = getattr(Component, "_forward_ref_fn", None)
-    Memoized.__name__ = getattr(Component, "__name__", "Memoized")
-    Memoized.__module__ = getattr(Component, "__module__", __name__)
+        setattr(Memoized, "_forward_ref_fn", getattr(Component, "_forward_ref_fn", None))
     return Memoized
 
 

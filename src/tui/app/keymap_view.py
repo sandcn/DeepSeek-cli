@@ -78,7 +78,7 @@ def _keymap_search_text(entry: dict) -> str:
     ])
 
 
-def _detail_rows(entry: dict, right_w: int) -> list:
+def _detail_rows(entry: dict | None, right_w: int) -> list:
     """选中绑定 → 详情行。"""
     if entry is None:
         return [[StyledRun("无选中绑定", _S_HINT)]]
@@ -236,7 +236,7 @@ def KeymapView(props) -> object:
                 kv.search_mode = True
                 kv.search_query = getattr(kv, "search_pattern", "") or ""
                 return True
-            if ch in ("n", "N", "p") and (getattr(kv, "search_pattern", "") or ""):
+            if ch in ("n", "N", "p") and bool(getattr(kv, "search_pattern", "")):
                 jump_match(kv, 1 if ch == "n" else -1,
                            on_jump=lambda i: setattr(kv, "selected", _row_of(i)))
                 return True
@@ -261,7 +261,7 @@ def KeymapView(props) -> object:
     use_input(_handle, visible)
     use_modal_scope(visible)
 
-    if not visible:
+    if not visible or kv is None:
         return empty_modal_frame()
 
     matched_set = set(matches) if (pattern and matches) else set()

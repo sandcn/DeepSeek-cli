@@ -421,12 +421,12 @@ class _OpenChildrenCache:
         #: 稳定行增量构建缓存（``(rows, ids, stable_count, width, block_idx,
         #: live_start, order, stable_lines)``）——行列表为纯追加（同一列表 /
         #: 同一 ids 对象）时只处理新增行（流式每帧 O(新增) 而非 O(预览行数)）。
-        self._stable_src: object = None
+        self._stable_src: tuple | None = None
         #: 整帧 children 缓存（``(行数据, 预览引用, 宽度, 起始行, 块索引)`` →
         #: children 元组）——无活动行（如代码块/表格预览，行全在预览缓冲）
         #: 且输入引用未变的帧直接复用，免 O(行数) 的拼接与元素组装。
-        self._full_key: object = None
-        self._full_children: object = None
+        self._full_key: tuple | None = None
+        self._full_children: tuple | None = None
 
     def reset(self, key: tuple) -> None:
         """切换块/宽度/起始行：清空全部缓存（行 key 空间变化）。"""

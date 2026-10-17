@@ -752,13 +752,15 @@ def _container_geometry(fiber: Fiber) -> tuple:
     col_gap = gap
     row_gap = gap
     if "columnGap" in props:
+        col_raw = props.get("columnGap")
         try:
-            col_gap = max(0, int(props.get("columnGap")))
+            col_gap = max(0, int(col_raw)) if col_raw is not None else gap
         except (TypeError, ValueError, OverflowError):
             col_gap = gap
     if "rowGap" in props:
+        row_raw = props.get("rowGap")
         try:
-            row_gap = max(0, int(props.get("rowGap")))
+            row_gap = max(0, int(row_raw)) if row_raw is not None else gap
         except (TypeError, ValueError, OverflowError):
             row_gap = gap
 

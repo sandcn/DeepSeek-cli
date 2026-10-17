@@ -115,7 +115,7 @@ def _record_deps(entry, right_w: int) -> tuple:
     return (record_signature(entry), right_w)
 
 
-def _record_detail_rows(entry: dict, right_w: int) -> list:
+def _record_detail_rows(entry: dict | None, right_w: int) -> list:
     """选中记录 → 差异内容行。"""
     if not isinstance(entry, dict):
         return [[StyledRun("无选中记录", S_HINT)]]
@@ -281,7 +281,7 @@ def SandboxRecordsView(props) -> object:
                 rv.search_mode = True
                 rv.search_query = getattr(rv, "search_pattern", "") or ""
                 return True
-            if ch in ("n", "N", "p") and (getattr(rv, "search_pattern", "") or ""):
+            if ch in ("n", "N", "p") and bool(getattr(rv, "search_pattern", "")):
                 jump_match(rv, 1 if ch == "n" else -1,
                            on_jump=lambda i: _select_row(_row_of(i)))
                 return True
@@ -357,7 +357,7 @@ def SandboxRecordsView(props) -> object:
     use_input(_handle, visible)
     use_modal_scope(visible)
 
-    if not visible:
+    if not visible or rv is None:
         return empty_modal_frame()
 
     matched_set = set(matches) if (pattern and matches) else set()

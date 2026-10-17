@@ -264,7 +264,7 @@ def EditMsgSelectPopup(props) -> object:
     list_rows_budget = use_memo(lambda: _rows, [total, _rows])
     list_limit = max(1, min(total, list_rows_budget - (preview_h + (1 if preview_h else 0))))
 
-    if not visible:
+    if not visible or es is None:
         return empty_modal_frame()
 
     # ── 当前选中（原始索引 → 视图位置） ──

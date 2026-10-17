@@ -152,19 +152,20 @@ def ListView(props: dict) -> Element:
     highlight_style_prop = props.get("highlightStyle")
     highlight_style = highlight_style_prop if highlight_style_prop is not None else Style(fg=6)
     try:
-        initial_index = max(0, int(props.get("initialIndex", 0)))
+        initial_raw = props.get("initialIndex", 0)
+        initial_index = max(0, int(initial_raw)) if initial_raw is not None else 0
     except (TypeError, ValueError, OverflowError):
         initial_index = 0
     # ★ 受控光标（方案B）：cursor prop 提供时渲染期用该值（外部控制——
     #   TraceView 经 model.trace_selected 受控）；None 时用内部 state。
     cursor_prop = props.get("cursor")
-    controlled = cursor_prop is not None
-    if controlled:
+    cursor_ctrl: int | None = None
+    if cursor_prop is not None:
         try:
-            cursor_prop = int(cursor_prop)
+            cursor_ctrl = int(cursor_prop)
         except (TypeError, ValueError, OverflowError):
-            cursor_prop = None
-            controlled = False
+            cursor_ctrl = None
+    controlled = cursor_ctrl is not None
     total = len(items)
 
     cursor, set_cursor = use_state(_clamp_index(initial_index, total))
@@ -197,7 +198,7 @@ def ListView(props: dict) -> Element:
         #   渲染后基准=受控值（外部经 onNavigate 写回或直接改值，下一帧
         #   生效）；**批内**（同输入批、无中间渲染）基准=``_move`` 推进值
         #   ——连续按键沿推进值计算，不回退受控旧值。
-        cursor_ref.current = cursor_prop
+        cursor_ref.current = cursor_ctrl
     else:
         cursor_ref.current = cursor
     offset_ref.current = offset
@@ -347,14 +348,18 @@ def ListView(props: dict) -> Element:
     use_input(_handle, focus)
     # ★ 鼠标滚轮（2026-10-07 鼠标支持）：滚轮上/下 = 光标上/下移一项
     #   （选中态跟随滚动，与键盘 ↑↓ 语义一致）。
-    use_wheel_scroll(
-        lambda delta: _step(delta, base=cursor_ref.current) and _sync_after_move(),
-        bool(focus),
-    )
+    def _wheel(delta: int) -> bool:
+        """滚轮步进 + 视口同步（返回 True = 已消费）。"""
+        if not _step(delta, base=cursor_ref.current):
+            return False
+        _sync_after_move()
+        return True
 
-    # 渲染期钳制（items 收缩后光标/offset 越界防护；受控模式用 cursor_prop）
-    if controlled:
-        cursor_shown = _clamp_index(cursor_prop, total)
+    use_wheel_scroll(_wheel, bool(focus))
+
+    # 渲染期钳制（items 收缩后光标/offset 越界防护；受控模式用 cursor prop）
+    if controlled and cursor_ctrl is not None:
+        cursor_shown = _clamp_index(cursor_ctrl, total)
     else:
         cursor_shown = _clamp_index(cursor, total)
     max_offset = max(0, total - viewport_h)

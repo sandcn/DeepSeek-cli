@@ -250,7 +250,7 @@ def _data_rows(data, width: int) -> list:
     return rows or [[StyledRun("(无附加数据)", _S_HINT)]]
 
 
-def _event_detail_rows(entry: dict, right_w: int) -> list:
+def _event_detail_rows(entry: dict | None, right_w: int) -> list:
     """选中事件 → 详情行。"""
     if entry is None:
         return [[StyledRun("无选中事件", _S_HINT)]]
@@ -537,7 +537,7 @@ def LogsView(props) -> object:
                 lv.search_mode = True
                 lv.search_query = getattr(lv, "search_pattern", "") or ""
                 return True
-            if ch in ("n", "N", "p") and (getattr(lv, "search_pattern", "") or ""):
+            if ch in ("n", "N", "p") and bool(getattr(lv, "search_pattern", "")):
                 jump_match(lv, 1 if ch == "n" else -1,
                            on_jump=lambda i: _select_row(_row_of(i)))
                 return True
@@ -604,7 +604,7 @@ def LogsView(props) -> object:
     use_input(_handle, visible)
     use_modal_scope(visible)
 
-    if not visible:
+    if not visible or lv is None:
         return empty_modal_frame()
 
     matched_set = set(matches) if (pattern and matches) else set()

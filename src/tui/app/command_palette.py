@@ -213,7 +213,7 @@ def _rank_entries(entries: list, query: str, recent: list) -> list:
     """
     recent_index = {name: idx for idx, name in enumerate(recent or [])}
     if not str(query or "").strip():
-        recent_entries = []
+        recent_entries: list = []
         used = set()
         by_name = {entry["name"]: entry for entry in entries}
         for name in recent:
@@ -221,7 +221,7 @@ def _rank_entries(entries: list, query: str, recent: list) -> list:
             if entry is not None and name not in used:
                 recent_entries.append((entry, {}))
                 used.add(name)
-        rest = [(entry, {}) for entry in entries if entry["name"] not in used]
+        rest: list = [(entry, {}) for entry in entries if entry["name"] not in used]
         return recent_entries + rest
 
     scored = []

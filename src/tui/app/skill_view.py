@@ -84,7 +84,7 @@ def _skill_search_text(entry: dict) -> str:
     return f"{entry.get('name', '')} {entry.get('description', '')} {entry.get('source', '')}"
 
 
-def _detail_rows(entry: dict, right_w: int) -> list:
+def _detail_rows(entry: dict | None, right_w: int) -> list:
     """选中技能 → 详情行（含正文）。"""
     if entry is None:
         return [[StyledRun("无选中技能", _S_HINT)]]
@@ -310,7 +310,7 @@ def SkillView(props) -> object:
                 sv.search_mode = True
                 sv.search_query = getattr(sv, "search_pattern", "") or ""
                 return True
-            if ch in ("n", "N", "p") and (getattr(sv, "search_pattern", "") or ""):
+            if ch in ("n", "N", "p") and bool(getattr(sv, "search_pattern", "")):
                 jump_match(sv, 1 if ch == "n" else -1,
                            on_jump=lambda i: _select_row(_row_of(i)))
                 return True
@@ -363,7 +363,7 @@ def SkillView(props) -> object:
     use_input(_handle, visible)
     use_modal_scope(visible)
 
-    if not visible:
+    if not visible or sv is None:
         return empty_modal_frame()
 
     matched_set = set(matches) if (pattern and matches) else set()

@@ -353,7 +353,7 @@ class Style:
         from .color import TrueColor as _TC
 
         # ── 前景色 ──
-        fg = None
+        fg: int | _TC | None = None
         if style.color is not None:
             if style.color.triplet is not None:
                 # TrueColor
@@ -363,7 +363,7 @@ class Style:
                 fg = style.color.number
 
         # ── 背景色 ──
-        bg = None
+        bg: int | _TC | None = None
         if style.bgcolor is not None:
             if style.bgcolor.triplet is not None:
                 bg = _TC(style.bgcolor.triplet.red, style.bgcolor.triplet.green, style.bgcolor.triplet.blue)

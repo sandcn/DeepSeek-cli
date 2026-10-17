@@ -125,6 +125,8 @@ def Badge(props: dict) -> Element:
     """
     label = str(props.get("label") or "")
     bg = _color(props.get("color"), 6)
+    if bg is None:  # 显式默认 6 → 运行期恒非 None（此分支仅类型收窄/防御）
+        bg = 6
     fg = _color(props.get("fg")) if props.get("fg") is not None else _badge_fg_for_bg(bg)
     try:
         padding = max(0, int(props.get("padding", 1)))

@@ -107,7 +107,7 @@ def _place_absolute(fiber: Fiber, base: Fiber) -> None:
                 h = 0
         else:
             try:
-                h = max(0, int(height_prop))
+                h = max(0, int(height_prop)) if height_prop is not None else 0
             except (TypeError, ValueError, OverflowError):
                 h = 0
     elif has_w:

@@ -952,7 +952,7 @@ def _handle_model_event(
             mv.search_mode = True
             mv.search_query = getattr(mv, "search_pattern", "") or ""
             return True
-        if ch in ("n", "N", "p") and (getattr(mv, "search_pattern", "") or ""):
+        if ch in ("n", "N", "p") and bool(getattr(mv, "search_pattern", "")):
             _jump_match(mv, 1 if ch == "n" else -1, view_map)
             return True
         if ch == "f":

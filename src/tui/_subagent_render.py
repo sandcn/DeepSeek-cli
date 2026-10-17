@@ -115,6 +115,10 @@ def _fade_type_style(agent_type: str, elapsed: float) -> Style:
     if style is None or getattr(style, "fg", None) is None:
         return _S_DIMMER
     code = style.fg
+    if not isinstance(code, int):
+        # TrueColor 前景（``(r, g, b)``）：``fade_color`` 仅支持 256 色号插值
+        # → 不做渐显，直接返回原样式（保持颜色正确，动画降级为无渐变）。
+        return style
     # ★ P2-5（review 方向）：惰性读取动效参数（运行期修改 TuiConfig 即时
     #   生效；修复前消费模块级快照 _FADE_DURATION/_FADE_START_COLOR）。
     fade_duration, fade_start_color, _ = _fx_params()
@@ -193,7 +197,7 @@ def render_frame(store, max_history: int = 3,
         # 该 agent 用 ``└─``/``│  `` 还是 ``├─``/``│  ``——与历史树形分支
         # 语义一致：最后 agent 闭合树尾）。
         present = [label for label in order if agents.get(label) is not None]
-        rows: list[tuple[str, str, List[Line]]] = []
+        rows: list[tuple[str, Line, List[Line]]] = []
         for idx, label in enumerate(present):
             slot = agents[label]
             is_last = (idx == len(present) - 1)
@@ -262,7 +266,7 @@ def _terminal_max_width() -> int:
         return 80
 
 
-def _build_group_card(rows: list[tuple[str, str, List[Line]]],
+def _build_group_card(rows: list[tuple[str, Line, List[Line]]],
                       max_lines: int | None = None) -> List[Line]:
     """构建子代理树图卡片（标题行 + 树形分支，**无边框**）。
 

@@ -30,7 +30,7 @@ _S_SEP = Style(fg=238)
 _S_ARROW = Style(fg=45)
 
 
-def relation_rows(entry: dict, by_name: dict, width: int) -> tuple:
+def relation_rows(entry: dict | None, by_name: dict, width: int) -> tuple:
     """选中插件 → (关系面板行, 跳转目标列表)。
 
     小节：依赖（inject）→ 被依赖（谁依赖本插件）→ 提供服务。每项一行；

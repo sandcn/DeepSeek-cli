@@ -136,7 +136,7 @@ def _field_style(label: str, value, levels: dict) -> Style:
     return _S_VALUE
 
 
-def _detail_rows(entry: dict, right_w: int) -> list:
+def _detail_rows(entry: dict | None, right_w: int) -> list:
     """选中条目 → 详情内容行（``list[list[StyledRun]]``；按栏宽换行）。"""
     rows: list = []
     if entry is None:
@@ -460,6 +460,8 @@ def PluginView(props) -> object:
 
     # ── 搜索辅助（模块级逻辑，组件内薄封装） ──
     def _run_search() -> None:
+        if pv is None:
+            return
         q = getattr(pv, "search_query", "") or ""
         pv.search_mode = False
         pv.search_pattern = q
@@ -476,6 +478,8 @@ def PluginView(props) -> object:
             pv.status_message = f"无匹配：{q}" if q else ""
 
     def _jump_match(delta: int) -> None:
+        if pv is None:
+            return
         found = list(getattr(pv, "search_matches", None) or [])
         if not found:
             return
@@ -558,7 +562,7 @@ def PluginView(props) -> object:
                 pv.search_mode = True
                 pv.search_query = getattr(pv, "search_pattern", "") or ""
                 return True
-            if ch in ("n", "N", "p") and (getattr(pv, "search_pattern", "") or ""):
+            if ch in ("n", "N", "p") and bool(getattr(pv, "search_pattern", "")):
                 _jump_match(1 if ch == "n" else -1)
                 return True
             if ch == "f":

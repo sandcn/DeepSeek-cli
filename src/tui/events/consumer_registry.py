@@ -24,7 +24,9 @@ from typing import Any, Callable, Dict, List, Tuple
 _logger = logging.getLogger(__name__)
 
 _lock = threading.RLock()
-_ABSENT = object()
+#: 注册表「无值」哨兵（``Any`` 标注：``dict.get(key, _ABSENT)`` 的结果需可赋回
+#: 原注册表类型，避免静态检查把哨兵并进联合类型）。
+_ABSENT: Any = object()
 
 _BUILTIN_SPECS: Tuple[Tuple[str, str, str], ...] = (
     ("output", "src.tui.events.consumers", "OutputConsumer"),
@@ -92,7 +94,9 @@ def builtin_consumer_factories() -> Dict[str, Callable[..., Any]]:
         return result
 
 
-def register_builtin_consumer(spec_id: str, factory: Any = None) -> Callable[[], None]:
+def register_builtin_consumer(
+    spec_id: str, factory: Callable[..., Any] | None = None,
+) -> Callable[[], None]:
     if spec_id not in _builtin_specs:
         raise KeyError(f"未知内置事件消费者: {spec_id!r}（可用: {list(_builtin_specs)}）")
     with _lock:

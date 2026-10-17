@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import itertools
 import threading
+from typing import Any, Callable
 
 #: HookContext 全部状态字段（__slots__ 固化，防拼写错误静默创建新字段）。
 _SLOTS = (
@@ -77,22 +78,24 @@ class HookContext:
 
     def __init__(self) -> None:
         self.current_fiber_stack: list = []
-        self.schedule_callback = None
+        self.schedule_callback: Callable[[], Any] | None = None
         self.context_version = 0
-        self.stdin_accessor = None
-        self.stdout_accessor = None
-        self.stderr_accessor = None
-        self.raw_mode_supported = False
-        self.raw_mode_callback = None
-        self.input_router_callback = None
-        self.app_control = None
-        self.render_flush_fn = None
-        self.suspend_terminal_fn = None
-        self.cursor_position_fn = None
-        self.window_size_accessor = None
+        self.stdin_accessor: Callable[[], Any] | None = None
+        self.stdout_accessor: Callable[[], Any] | None = None
+        self.stderr_accessor: Callable[[], Any] | None = None
+        #: raw 模式能力查询函数（``() -> bool``；**不是**布尔值本身——session
+        #:  经 set_raw_mode_accessor 注入，useStdin().isRawModeSupported 调用）
+        self.raw_mode_supported: Callable[[], bool] | None = None
+        self.raw_mode_callback: Callable[[bool], Any] | None = None
+        self.input_router_callback: Callable[[Any], Any] | None = None
+        self.app_control: dict | None = None
+        self.render_flush_fn: Callable[[], Any] | None = None
+        self.suspend_terminal_fn: Callable[[Any], Any] | None = None
+        self.cursor_position_fn: Callable[[Any], None] | None = None
+        self.window_size_accessor: Callable[[], tuple[int, int]] | None = None
         self.screen_reader_enabled = False
         self.focus_enabled = True
-        self.focus_active = None
+        self.focus_active: str | int | None = None
         self.focus_ids: list = []
         #: useFocus 自动 id 分配序号（``__focus_<n>__``）——每会话独立计数器
         #: （多会话下 id 不跨会话碰撞）。

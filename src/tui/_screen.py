@@ -85,13 +85,19 @@ def _get_terminal_size() -> tuple[int, int]:
     Returns:
         (cols, rows) 终端宽度和高度。
     """
+    # ★ P3-2（review 方向）：把 ioctl/TIOCGWINSZ 先取出为局部引用——
+    #   ``fcntl``/``termios`` 是 POSIX 专有模块，纯 Windows 上导入失败置 None；
+    #   取引用后下方仅需判一次 None（同时让静态检查明确非 None 收窄）。
+    fcntl_ioctl = None
+    tiocgwinsz = None
     try:
         import fcntl
         import termios
+        fcntl_ioctl = fcntl.ioctl
+        tiocgwinsz = termios.TIOCGWINSZ
     except ImportError:
-        fcntl = None
-        termios = None
-    if fcntl is not None and termios is not None:
+        pass
+    if fcntl_ioctl is not None and tiocgwinsz is not None:
         for fd_src in (sys.stdin, sys.stdout, sys.stderr):
             try:
                 fd = fd_src.fileno()
@@ -99,7 +105,7 @@ def _get_terminal_size() -> tuple[int, int]:
                 continue
             try:
                 # TIOCGWINSZ 结构体: unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel
-                buf = fcntl.ioctl(fd, termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
+                buf = fcntl_ioctl(fd, tiocgwinsz, struct.pack("HHHH", 0, 0, 0, 0))
                 rows, cols, _, _ = struct.unpack("HHHH", buf)
                 if rows > 0 and cols > 0:
                     return (cols, rows)
@@ -188,6 +194,8 @@ def query_cursor_row(
     except OSError:
         return None
     out = sys.__stdout__
+    if out is None:  # 无 TTY 环境（pythonw / 管道被关闭）：无光标位置可查
+        return None
     try:
         if not os.isatty(out.fileno()):
             return None
@@ -520,12 +528,15 @@ def set_window_title(title: str) -> None:
     Args:
         title: 窗口标题。
     """
+    out = sys.__stdout__
+    if out is None:  # 无 TTY / pythonw 等场景：直接跳过（不抛异常）
+        _logger.debug("窗口标题写入跳过（stdout 不可用）: %r", title)
+        return
     try:
-        sys.__stdout__.write(f"\033]0;{title}\007")
-        sys.__stdout__.flush()
+        out.write(f"\033]0;{title}\007")
+        out.flush()
     except (OSError, ValueError, AttributeError):  # BUG-52：无 TTY 时 stdout 为 None
         _logger.debug("窗口标题写入失败（无 TTY？）: %r", title, exc_info=True)
-
 
 #: 剪贴板写入上限（原始字节）——base64 膨胀约 4/3，控制在 100 000 字节
 #: 序列以内（多数终端 OSC 52 长度上限）。

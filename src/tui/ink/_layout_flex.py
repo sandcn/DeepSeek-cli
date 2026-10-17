@@ -211,40 +211,40 @@ def _reflow_row_justify(
         # ★ P3-10 说明（review 方向）：n==1 时 gaps=0（无间隔）——CSS flexbox
         #   space-between 语义：单子节点时无间隔可分配（子节点贴 start_x，
         #   不居中/不偏移；``per/rem`` 经 ``if gaps else 0`` 兜底避免除零）。
-        gaps = n - 1
-        per = extra // gaps if gaps else 0
-        rem = extra % gaps if gaps else 0
+        gap_count = n - 1
+        per = extra // gap_count if gap_count else 0
+        rem = extra % gap_count if gap_count else 0
         cx = start_x
         for i, child in enumerate(children):
             cb = child.layout_box
             _place_child_x(child, cx)
             cx += cb.w
-            if i < gaps:
+            if i < gap_count:
                 cx += margin + per + (1 if i < rem else 0)
     elif justify == "space-evenly":
         slots = n + 1
         per = extra // slots
         rem = extra % slots
-        gaps = [per] * slots
+        gap_list = [per] * slots
         for i in range(rem):
-            gaps[i] += 1
-        cx = start_x + gaps[0]
+            gap_list[i] += 1
+        cx = start_x + gap_list[0]
         for i, child in enumerate(children):
             cb = child.layout_box
             _place_child_x(child, cx)
-            cx += cb.w + margin + gaps[i + 1]
+            cx += cb.w + margin + gap_list[i + 1]
     else:  # space-around：2n 半间隔（边缘半间隔、中间整间隔）
         half_units = 2 * n
         per = extra // half_units
         rem = extra % half_units
-        gaps = [per if i in (0, n) else per * 2 for i in range(n + 1)]
+        gap_list = [per if i in (0, n) else per * 2 for i in range(n + 1)]
         for i in range(rem):
-            gaps[i % (n + 1)] += 1
-        cx = start_x + gaps[0]
+            gap_list[i % (n + 1)] += 1
+        cx = start_x + gap_list[0]
         for i, child in enumerate(children):
             cb = child.layout_box
             _place_child_x(child, cx)
-            cx += cb.w + margin + gaps[i + 1]
+            cx += cb.w + margin + gap_list[i + 1]
 
 
 __all__ = ["_distribute_extra", "_compute_weight_shares", "_reflow_row_justify"]

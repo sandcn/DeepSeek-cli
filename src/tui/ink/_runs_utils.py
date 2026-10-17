@@ -500,8 +500,8 @@ def truncate_runs_ellipsis(runs: list[StyledRun], max_width: int) -> list[Styled
             out.append(StyledRun("…", ellipsis_style))
         return out
     budget = max_width - 1
-    out: list[StyledRun] = []
-    ellipsis_style: Style | None = runs[0].style if runs else None
+    trunc_out: list[StyledRun] = []
+    tail_style: Style | None = runs[0].style if runs else None
     width = 0
     for run in runs:
         if width >= budget:
@@ -514,11 +514,11 @@ def truncate_runs_ellipsis(runs: list[StyledRun], max_width: int) -> list[Styled
             buf += ch
             width += cw
         if buf:
-            out.append(StyledRun(buf, run.style, run.link))
-            ellipsis_style = run.style
+            trunc_out.append(StyledRun(buf, run.style, run.link))
+            tail_style = run.style
     if width < max_width:
-        out.append(StyledRun("…", ellipsis_style))
-    return out
+        trunc_out.append(StyledRun("…", tail_style))
+    return trunc_out
 
 
 def _runs_total_width(runs: list[StyledRun]) -> int:

@@ -2896,7 +2896,7 @@ def _handle_trace_event(
                 getattr(model, "trace_search_history", None) or []
             )
             return True
-        if ch in ("n", "N", "p") and getattr(model, "trace_search_pattern", ""):
+        if ch in ("n", "N", "p") and bool(getattr(model, "trace_search_pattern", "")):
             # ★ 语义说明（P3 review）：n/N/p 在**任何焦点**（台账/检查器）
             #   下均消费——搜索结果导航是跨面板的全局操作（匹配集合来自
             #   台账 records，定位同时移动台账选中与检查器光标）；仅在

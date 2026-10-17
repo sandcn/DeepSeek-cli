@@ -255,6 +255,22 @@ def test_theme_preview_rows():
     assert rows and any("accent" in "".join(r.text for r in row) for row in rows)
 
 
+def test_slot_color_rejects_invalid_palette_values():
+    """主题插件注入畸形槽位色不崩溃（回退灰底色块，不抛 Style ValueError）。"""
+    from types import SimpleNamespace
+
+    from src.tui.app.theme_view import _slot_color
+    from src.tui.core.color import TrueColor
+
+    assert _slot_color(SimpleNamespace(fg=45)) == 45
+    assert _slot_color(SimpleNamespace(fg=0)) == 0
+    assert _slot_color(SimpleNamespace(fg=True)) is None
+    assert _slot_color(SimpleNamespace(fg=300)) is None
+    assert _slot_color(SimpleNamespace(fg="red")) is None
+    tc = TrueColor(1, 2, 3)
+    assert _slot_color(SimpleNamespace(fg=tc)) is tc
+
+
 # ── keymap ────────────────────────────────────────────
 
 def test_keybinding_combo_conversion():

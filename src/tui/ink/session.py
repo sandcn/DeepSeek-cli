@@ -288,7 +288,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         # 由 render() 选项（alternateScreen / interactive / mouse）配置，
         # useStdin()/usePaste()/useMouseInput() 在组件侧读取能力状态。
         self._terminal_modes = TerminalModeManager(self._ink_renderer.stream)
-        self._raw_mode = None
+        self._raw_mode: RawModeController | None = None
         self._interactive: bool = False
         self._raw_mode_supported: bool = False
         self._bracketed_paste_active: bool = False
@@ -301,7 +301,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         self._last_frame = None
         #: 宿主注入的「静态状态」预测函数（None = 恒不复用，默认行为与既有
         #: 恒定 30Hz 全量渲染完全一致）
-        self._idle_frame_predicate = None
+        self._idle_frame_predicate: Callable[[], bool] | None = None
         #: 本拍「无变更」标记（``_should_render`` 写入；空闲帧复用的前置条件）
         self._idle_ok: bool = False
 
@@ -559,6 +559,8 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
     def _write_emergency(self, text: str, stream: str = "stderr") -> None:
         try:
             f = sys.__stderr__ if stream == "stderr" else sys.__stdout__
+            if f is None:  # 无 TTY / 流已分离：紧急输出无处可写
+                return
             f.write(text)
             f.flush()
         except (OSError, ValueError):
@@ -1444,12 +1446,15 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         失败计数。异常吞掉（debug 输出为观测辅助，不阻断渲染循环）。
         """
         try:
-            self._stderr_stream.write(
+            out = self._stderr_stream
+            if out is None:  # stderr 被关闭/分离：debug 输出无从写入
+                return
+            out.write(
                 f"[ink:debug] frame lines={self._last_frame_lines} "
                 f"queue={self._cmd_queue.qsize()} "
                 f"failures={self._consecutive_render_failures}\n"
             )
-            self._stderr_stream.flush()
+            out.flush()
         except Exception:
             _logger.debug("debug 帧统计输出异常", exc_info=True)
 

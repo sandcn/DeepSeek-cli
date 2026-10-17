@@ -336,6 +336,8 @@ class RawModeController:
             return True
         if not self.supported:
             return False
+        if self._fd is None:  # supported 已确保 fd 有效；显式收窄（防御）
+            return False
         try:
             from src._compat_termios import termios, termios_lock, tty
 
@@ -355,6 +357,9 @@ class RawModeController:
     def disable(self) -> bool:
         """还原 raw 模式（未进入时无操作）。"""
         if self._saved is None:
+            return False
+        if self._fd is None:  # 无有效 fd：无可还原（防御）
+            self._saved = None
             return False
         try:
             from src._compat_termios import termios, termios_lock

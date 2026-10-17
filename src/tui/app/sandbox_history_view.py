@@ -251,7 +251,7 @@ def SandboxHistoryView(props) -> object:
                 hv.search_mode = True
                 hv.search_query = getattr(hv, "search_pattern", "") or ""
                 return True
-            if ch in ("n", "N", "p") and (getattr(hv, "search_pattern", "") or ""):
+            if ch in ("n", "N", "p") and bool(getattr(hv, "search_pattern", "")):
                 jump_match(hv, 1 if ch == "n" else -1,
                            on_jump=lambda i: _select_row(_row_of(i)))
                 return True
@@ -301,7 +301,7 @@ def SandboxHistoryView(props) -> object:
     use_input(_handle, visible)
     use_modal_scope(visible)
 
-    if not visible:
+    if not visible or hv is None:
         return empty_modal_frame()
 
     matched_set = set(matches) if (pattern and matches) else set()

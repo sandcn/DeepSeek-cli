@@ -215,6 +215,8 @@ def SearchView(props) -> object:
     )
 
     def _run_search() -> None:
+        if sv is None:
+            return
         q = (getattr(sv, "search_query", "") or "").strip()
         sv.search_mode = False
         sv.search_pattern = q
@@ -226,6 +228,8 @@ def SearchView(props) -> object:
         sv.status_message = f"{len(found)} 条匹配" if found else (f"无匹配：{q}" if q else "")
 
     def _jump(row: int) -> None:
+        if sv is None:
+            return
         if not results or row < 0 or row >= len(results):
             return
         sv.selected = row

@@ -21,7 +21,7 @@ from src.tui.core.style import Style
 from src.tui._width import wcswidth_simple
 from ..element import TEXT, Element, h
 from ..widgets.layout import Row, Column
-from ..hooks import use_input, use_state
+from ..hooks import use_input, use_ref, use_state
 from . import _syntax
 
 # ★ P2（review 2026-08-22）：_repeat/_truncate_to_width 收敛至 _display_common
@@ -276,12 +276,17 @@ def CollapsibleCodeBlock(props: dict) -> Element:
         foldable = False
 
     expanded_state, set_expanded = use_state(bool(props.get("defaultExpanded", False)))
+    # 同批连续按键（无中间渲染）修复：handler 闭包 state 陈旧，连按两次 Enter
+    # 会两次读到旧值（都设为 True）——用 ref 即时推进。
+    expanded_ref = use_ref(expanded_state)
+    expanded_ref.current = expanded_state
 
     def _handle(event) -> bool:
         kind = getattr(event, "kind", "")
         ch = getattr(event, "char", "")
         if kind == "enter" or (kind == "char" and ch == " "):
-            new_value = not expanded_state
+            new_value = not expanded_ref.current
+            expanded_ref.current = new_value
             set_expanded(new_value)
             cb = props.get("onToggle")
             if cb is not None:

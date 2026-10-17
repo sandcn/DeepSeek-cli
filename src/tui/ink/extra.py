@@ -18,7 +18,7 @@ React Ink 完整语义补充（方向4 / 方向 G）：
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from typing import Any, Callable, cast
 
 from .element import Element, TEXT, STATIC, h, _as_element
 from .hooks import use_memo, use_ref, useIsScreenReaderEnabled
@@ -44,8 +44,10 @@ _TRANSFORM_ARITY_CACHE_MAX = 256
 
 def _transform_arity(fn: Callable) -> int:
     """返回 transform 函数的位置参数数量（>=2 → (line, index) 签名）。"""
-    # 普通函数：属性缓存快路径（免 dict 查找）
-    cached = getattr(fn, "_ink_transform_arity", None)
+    # 普通函数：属性缓存快路径（免 dict 查找）——任意可调用对象的动态属性，
+    # 经 Any 视图读写（Callable 类型上无该属性声明）。
+    owner = cast(Any, fn)
+    cached = getattr(owner, "_ink_transform_arity", None)
     if cached is not None:
         return cached
     # 模块级 (id, fn) 双键缓存（内置函数等不可设置属性对象；双键校验防
@@ -64,7 +66,7 @@ def _transform_arity(fn: Callable) -> int:
     except (TypeError, ValueError):
         n = 1
     try:
-        fn._ink_transform_arity = n
+        owner._ink_transform_arity = n
     except Exception:
         # 内置函数等不可设置属性的对象——跳过属性缓存（仍有模块级 (id, fn)
         # 双键缓存兜底）；记 debug 便于排查（修复前静默 pass）。
