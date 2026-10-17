@@ -971,8 +971,11 @@ def narrow_sep_width(width: int | None = None, threshold: int = 40) -> int:
     """
     if width is None:
         width = TerminalWidthCache.get_default().get_width()
+    # 窄屏：优先 width-2，下限 10 列；但终端本身不足 10 列时须钳制到终端
+    # 宽度——修复前 ``max(10, width-2)`` 在 width<10 时返回 10（超过终端宽，
+    # 分隔线换行破坏布局）。
     if width < threshold:
-        return max(10, width - 2)
+        return max(1, min(width, max(10, width - 2)))
     return width
 
 

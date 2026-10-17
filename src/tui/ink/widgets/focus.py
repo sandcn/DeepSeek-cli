@@ -153,13 +153,16 @@ def Key(props: dict) -> Element:
         #   左移事件。
         if event.kind == "tab" or (event.kind == "char" and event.char == "\t"):
             try:
-                idx_n = int(index)
+                int(index)
             except (TypeError, ValueError):
                 return False
+            # 函数式更新：同批连续 Tab（无中间重渲染）时基于队列中的最新
+            # 焦点值推进，而非陈旧闭包 index（修复前两次 Tab 都写入同一
+            # 目标 → 焦点只前进一格）。
             if event.modifier == 2:
-                _call(set_active, (idx_n - 1) % total_n)
+                _call(set_active, lambda prev, _n=total_n: (prev - 1) % _n)
             else:
-                _call(set_active, (idx_n + 1) % total_n)
+                _call(set_active, lambda prev, _n=total_n: (prev + 1) % _n)
             return True
         return False
 

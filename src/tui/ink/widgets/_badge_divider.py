@@ -62,7 +62,7 @@ def _badge_params() -> dict:
     def _as_int(key, default):
         try:
             return int(data.get(key, default))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return default
 
     raw_base = data.get("base_brightness") or {}
@@ -70,12 +70,12 @@ def _badge_params() -> dict:
     for key, value in raw_base.items():
         try:
             base[int(key)] = int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
     raw_levels = data.get("ansi_levels") or _ANSI_LEVELS
     try:
         levels = tuple(int(item) for item in raw_levels)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         levels = _ANSI_LEVELS
     return {
         "fg_on_dark": _as_int("fg_on_dark", _BADGE_FG_ON_DARK),
@@ -159,7 +159,7 @@ def _divider_default_width() -> int:
     value = ui_default("divider_width", _DIVIDER_DEFAULT_WIDTH)
     try:
         width = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return _DIVIDER_DEFAULT_WIDTH
     return width if width > 0 else _DIVIDER_DEFAULT_WIDTH
 

@@ -442,7 +442,12 @@ class StateStore:
             #   usage 更新丢失（面板 token 统计静默停滞）。与下方 speed 的
             #   float() 防御一致，统一用 ``or 0`` 兜底。
             def _i(k):
-                return usage.get(k) or 0
+                # None/非数值（str/对象等）统一归 0：``+= "100"`` 会抛
+                # TypeError 使整条 usage 事件被 EventBus 吞掉（统计静默停滞）。
+                try:
+                    return int(usage.get(k) or 0)
+                except (TypeError, ValueError, OverflowError):
+                    return 0
             if replace:
                 slot.input_tokens = _i("input")
                 slot.output_tokens = _i("output")

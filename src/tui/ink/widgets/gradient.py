@@ -57,10 +57,16 @@ def _gradient_runs(text: str, colors) -> list:
     #   进度与显示列位置不成比例（视觉上色偏移）；纯 ASCII/纯 CJK 不受
     #   影响。t = 该字形簇起始显示列 / 全文显示宽（末簇 t=1 收敛）。
     total_w = wcswidth_simple(text)
+    # 归一化基准 = 末簇起始列（全文显示宽 - 末簇宽）：所有簇共用同一分母，
+    # 否则中间宽字符会以「全文宽 - 当前簇宽」为分母（分母偏小）→ 进度偏大、
+    # 渐变在末簇前提前收敛（如 "中中a" 中间簇 2/3 而非 1/2）。
+    last_cw = cluster_width(clusters[-1]) if clusters else 0
+    progress_span = total_w - last_cw
     acc_w = 0
     for ch in clusters:
         cw = cluster_width(ch)
-        t = (acc_w / (total_w - cw)) if (total_w - cw) > 0 else 0.0
+        t = (acc_w / progress_span) if progress_span > 0 else 0.0
+        t = max(0.0, min(1.0, t))
         acc_w += cw
         pos = t * seg
         idx = int(pos)

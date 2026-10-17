@@ -518,8 +518,12 @@ def test_multimodal_model_patterns():
     assert is_multimodal_model("claude-sonnet-5-5")
     assert is_multimodal_model("claude-haiku-5-5")
     assert is_multimodal_model("gpt-4o")
-    assert is_multimodal_model("glm-5.2")
-    # 智谱 GLM-5.3-Flash / FlashX 为原生多模态（命中 "glm-5" 模式）
+    # 智谱 GLM：只匹配明确的多模态型号——glm-5.3 旗舰与上一代 glm-5.2
+    # 均为纯文本（不匹配 ``glm-5`` 宽前缀；与 src/core/multimodal.py 的
+    # 有意收窄一致）。
+    assert not is_multimodal_model("glm-5.2")
+    assert not is_multimodal_model("glm-5.3")
+    # 智谱 GLM-5.3-Flash / FlashX 为原生多模态（命中 "glm-5.3-flash" 模式）
     assert is_multimodal_model("glm-5.3-flash")
     assert is_multimodal_model("glm-5.3-flashx")
     # 小米 MiMo V2.6 系列支持全模态理解（V2.5 上一代视觉版）

@@ -39,6 +39,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from src._ansi_text import strip_ansi
 from src.api.escape_monitor.history import _HISTORY_MAX_ENTRIES
 
 # ★ 历史写盘（模块边界优化，2026-08-05）：_safe_disk_append /
@@ -58,6 +59,14 @@ _UNDO_LIMIT = 200
 #: 同类连续编辑合并窗口（秒）——窗口内的连续输入/删除合并为一个撤销单元，
 #: 避免「每敲一个字符一个撤销点」。
 _UNDO_COALESCE_SECONDS = 0.8
+
+#: 粘贴文本控制字符过滤表：保留 \t（0x09）/ \n（0x0a），删除其余 C0、DEL
+#: 与 C1（0x7F-0x9F）。ANSI 转义已先经 ``strip_ansi`` 整体剥离；孤立 ESC
+#: 等残余控制字节在此删除，避免进入缓冲后由渲染层原样写入终端执行。
+_PASTE_CONTROL_TRANSLATION = {
+    cp: None for cp in range(0x20) if cp not in (0x09, 0x0A)
+}
+_PASTE_CONTROL_TRANSLATION.update({cp: None for cp in range(0x7F, 0xA0)})
 
 
 # ═══════════════════════════════════════════════════════════
@@ -308,6 +317,13 @@ class InputBufferEditor:
         预填路径（``set_buffer`` 不受影响）。
         """
         text = text.replace("\r", "")
+        # 粘贴内容可能来自终端复制（带颜色转义）——ANSI 序列整体剥离、残余
+        # 控制字节删除（保留多行 \n / 制表 \t）。修复前只过滤 \r：ESC/OSC
+        # 等控制序列进入缓冲后，输入区渲染会把它们原样写到终端（执行控制
+        # 码，显示错乱/潜在终端状态篡改）。
+        if "\x1b" in text:
+            text = strip_ansi(text)
+        text = text.translate(_PASTE_CONTROL_TRANSLATION)
         with self._lock:
             self._push_undo(("paste",))
             if self._history_idx >= 0:
@@ -986,6 +1002,10 @@ class InputBufferEditor:
                     self._buffer = (
                         self._buffer[:pos - 1] + self._buffer[pos + 1:]
                     )
+                    # 删除的是光标前的高代理 + 光标处的低代理，光标须随
+                    # 「前一个字符」一并前移一位（与 _backspace 同分支对齐；
+                    # 修复前光标停在原位 → 后续编辑偏移/越界）。
+                    self._cursor_pos = pos - 1
                 else:
                     del_count = 1
                     if (

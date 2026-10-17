@@ -66,7 +66,7 @@ def _ui_int(key: str, default: int) -> int:
 
     try:
         return int(ui_default(key, default))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 

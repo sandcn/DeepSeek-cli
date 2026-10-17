@@ -108,7 +108,7 @@ def _close_quietly(coro) -> None:
         try:
             close()
         except Exception:  # pragma: no cover - 防御
-            pass
+            _logger.debug("关闭未调度协程失败", exc_info=True)
 
 
 def run_coroutine_blocking(coro):

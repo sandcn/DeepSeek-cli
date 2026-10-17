@@ -46,7 +46,7 @@ def _gradient_stops() -> tuple:
     if isinstance(value, (list, tuple)) and value:
         try:
             return tuple(int(item) for item in value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             pass
     return _GRADIENT_STOPS
 
@@ -67,7 +67,7 @@ def _breath_params(key: str, fallback: tuple) -> tuple:
                 int(value.get("hi", fallback[1])),
                 float(value.get("period", fallback[2])),
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             pass
     return fallback
 

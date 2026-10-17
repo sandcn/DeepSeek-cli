@@ -32,6 +32,10 @@ from ._display_common import _repeat_to_width, _truncate_to_width
 #   ——修复前本模块维护 5 变体副本（缺 dashed/singleDouble/doubleSingle，
 #   ``borderStyle="dashed"`` 静默回退默认边框，与 BOX 边框行为不一致）。
 from .._paint_border import _BORDER_CHARS, _FALLBACK_BORDER
+# ★ 展示控件统一剥离 ANSI：代码块内容可能来自工具输出/日志（含颜色转义），
+#   保留序列会让终端把转义当控制码执行；wrap 模式更会被逐字符换行拆断
+#   （产生残缺 ``\x1b[3`` 之类的序列）。
+from ..helpers import strip_ansi
 # ★ 公共纯辅助收敛（2026-08-05 架构优化）：_color 原本地定义（与
 #   _interactive_common/_display_common 逻辑一致，仅默认值 23 vs 6）——收敛
 #   至 _widget_common（调用处显式传 default=23，行为不变）。
@@ -115,6 +119,11 @@ def CodeBlock(props: dict) -> Element:
             width = None
 
     lines = code.split("\n") if code else [""]
+    # ★ 统一剥离 ANSI（含 wrap 分支）：展示控件不解释/不执行转义序列；
+    #   修复前仅 truncate 分支剥离，``wrap=True`` 时逐字符换行会把序列
+    #   拆断（行宽按序列正文计算，产出残缺转义与错位边框）。
+    if any("\x1b" in line for line in lines):
+        lines = [strip_ansi(line) for line in lines]
 
     # ── 折叠/展开（长代码段；纯 props 驱动，无 hook——保持直接调用契约） ──
     expandable = bool(props.get("expandable", False))

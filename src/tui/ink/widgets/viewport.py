@@ -23,7 +23,7 @@ from typing import Any
 
 from ..element import BOX, TEXT, Element, h
 from ..output import StyledRun
-from ..hooks import use_input, use_state
+from ..hooks import use_input, use_ref, use_state
 from src.tui.core.style import Style
 from ..helpers import visual_width
 from ._display_common import _truncate_to_width
@@ -116,29 +116,36 @@ def Viewport(props: dict) -> Element:
     except (TypeError, ValueError, OverflowError):
         offset = 0
     offset = _clamp(offset, 0, max_offset)
+    # ref 镜像（同批连续按键）：handler 闭包捕获渲染期 offset——同一批次内
+    # 多次 ↑↓/翻页之间无重渲染，闭包值陈旧会让第二次导航从旧基准计算
+    # （连续下移只前进一格）。ref 在事件期即时推进。
+    offset_ref = use_ref(offset)
+    offset_ref.current = offset
 
     active = props.get("active", True) is not False
     on_offset_change = props.get("onOffsetChange")
 
     def _apply(new_offset: int) -> None:
         new_offset = _clamp(new_offset, 0, max_offset)
+        offset_ref.current = new_offset
         if not controlled:
             set_state_offset(new_offset)
         _call(on_offset_change, new_offset)
 
     def _handle(event) -> bool:
         kind = getattr(event, "kind", "")
+        cur = offset_ref.current
         if kind in ("arrow_up",):
-            _apply(offset - 1)
+            _apply(cur - 1)
             return True
         if kind in ("arrow_down",):
-            _apply(offset + 1)
+            _apply(cur + 1)
             return True
         if kind == "page_up":
-            _apply(offset - height)
+            _apply(cur - height)
             return True
         if kind == "page_down":
-            _apply(offset + height)
+            _apply(cur + height)
             return True
         if kind == "home":
             _apply(0)
@@ -149,10 +156,10 @@ def Viewport(props: dict) -> Element:
         if kind == "char":
             ch = getattr(event, "char", "")
             if ch == "j":
-                _apply(offset + 1)
+                _apply(cur + 1)
                 return True
             if ch == "k":
-                _apply(offset - 1)
+                _apply(cur - 1)
                 return True
             if ch == "g":
                 _apply(0)
@@ -165,7 +172,10 @@ def Viewport(props: dict) -> Element:
     use_input(_handle, {"isActive": bool(active)})
     # ★ 鼠标滚轮（2026-10-07 鼠标支持）：滚轮上下各滚动 _WHEEL_LINES 行
     #   （视口控件是纯滚动语义——不改内容，只改偏移）。
-    use_wheel_scroll(lambda delta: _apply(offset + delta * _WHEEL_LINES), bool(active))
+    use_wheel_scroll(
+        lambda delta: _apply(offset_ref.current + delta * _WHEEL_LINES),
+        bool(active),
+    )
 
     line_style = props.get("lineStyle")
     bar_style = props.get("scrollbarStyle") or Style(fg=240)

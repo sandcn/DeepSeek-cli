@@ -76,6 +76,10 @@ def _clear_focus_active(fiber: Fiber) -> None:
 
 def _focus_next() -> None:
     """切换到下一个可聚焦组件（Tab）。React Ink useFocusManager.focusNext。"""
+    if not _hooks_module._focus_enabled:
+        # 与 _focus_to 一致：禁用焦点管理期间不写入 active（否则 enableFocus
+        # 恢复后焦点落到未经用户交互的组件）。
+        return
     focus_ids = _hooks_module._focus_ids
     focus_active = _hooks_module._focus_active
     if not focus_ids:
@@ -90,6 +94,9 @@ def _focus_next() -> None:
 
 def _focus_previous() -> None:
     """切换到上一个可聚焦组件（Shift+Tab）。React Ink useFocusManager.focusPrevious。"""
+    if not _hooks_module._focus_enabled:
+        # 与 _focus_next/_focus_to 一致：禁用期间不切换焦点。
+        return
     focus_ids = _hooks_module._focus_ids
     focus_active = _hooks_module._focus_active
     if not focus_ids:

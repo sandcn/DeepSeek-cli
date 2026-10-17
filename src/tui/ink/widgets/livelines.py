@@ -20,7 +20,7 @@ O(行数) 次画布引用赋值（~0.1ms），行内容缓存（行级 Line 复�
 from __future__ import annotations
 
 from ..element import h
-from .staticlines import _resolve_lines
+from .staticlines import _coerce_line, _resolve_lines
 
 __all__ = ["LiveLines"]
 
@@ -44,14 +44,14 @@ def _paint(fiber, canvas) -> None:
     if box.x == 0:
         for line in lines:
             if 0 <= y < len(canvas):
-                canvas[y] = line
+                canvas[y] = _coerce_line(line)
             y += 1
         return
     from .._paint_canvas import _merge_line
 
     for line in lines:
         if 0 <= y < len(canvas):
-            canvas[y] = _merge_line(canvas[y], box.x, line)
+            canvas[y] = _merge_line(canvas[y], box.x, _coerce_line(line))
         y += 1
 
 

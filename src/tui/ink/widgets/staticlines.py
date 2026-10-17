@@ -26,8 +26,36 @@ React Ink 标准组件：渲染静态行列表（``lines: list[Line]``）。对�
 from __future__ import annotations
 
 from ..element import h
+from ..output import Line
 
 __all__ = ["StaticLines"]
+
+
+def _coerce_line(item) -> Line:
+    """把行元素归一化为 ink ``Line``（非 Line 输入不使 paint 崩溃）。
+
+    正常调用方传 ``list[Line]``（零转换、保持对象身份/增量缓存）。异常输入
+    （str / None / AnsiLine 等）按行文本或 runs 转成 Line：修复前 paint 直接
+    访问 ``ln.width`` → AttributeError（被绘制层捕获后整块内容空白）。
+    """
+    if isinstance(item, Line):
+        return item
+    line = Line()
+    if item is None:
+        return line
+    runs = getattr(item, "runs", None)
+    if runs is not None:
+        for run in runs:
+            text = getattr(run, "text", None)
+            if text:
+                line.append(
+                    text,
+                    getattr(run, "style", None),
+                    getattr(run, "link", None),
+                )
+        return line
+    line.append(str(item), None)
+    return line
 
 
 def _resolve_lines(fiber) -> list:
@@ -104,12 +132,13 @@ def _paint(fiber, canvas) -> None:
         ):
             # lines 原地 extend（引用不变、长度增长）→ 仅追加新增行
             prefix = cached[1]
-            prefix.extend(lines[cached[0][1]:])
+            new_lines = [_coerce_line(line) for line in lines[cached[0][1]:]]
+            prefix.extend(new_lines)
             all_ok = bool(cached[2]) and all(
-                ln.width <= box.w for ln in lines[cached[0][1]:]
+                ln.width <= box.w for ln in new_lines
             )
         else:
-            prefix = list(lines)
+            prefix = [_coerce_line(line) for line in lines]
             # ★ 行宽守卫（E-COMMITTED-OVERFLOW 防御）：reflow 未执行/失败
             #   （终端宽度变化后 committed_lines 按旧宽度 wrap）时前缀含超宽
             #   行——render_frame 前缀复用路径不经 E-OVERFLOW-GUARD（复用 Line
@@ -136,7 +165,7 @@ def _paint(fiber, canvas) -> None:
     for i, line in enumerate(lines):
         row = box.y + i
         if 0 <= row < len(canvas):
-            canvas[row] = _merge_line(canvas[row], box.x, line)
+            canvas[row] = _merge_line(canvas[row], box.x, _coerce_line(line))
 
 
 def StaticLines(props: dict):
