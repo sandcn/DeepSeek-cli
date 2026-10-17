@@ -701,7 +701,8 @@ def render_fenced_div(token) -> list[AnsiLine]:
     丢弃——仅显示容器头。现支持 meta["body_lines"]（正文行列表，缩进渲染）。
     """
     dtype = str(token.meta.get("type", "NOTE")).upper()
-    head = render_fenced_div_head(dtype, token.content or "")
+    head_text = token.meta.get("head_text") or token.content or ""
+    head = render_fenced_div_head(dtype, head_text)
     lines = [head]
     lines.extend(_preview_omitted(token.meta))
     lines.extend(_container_body_lines(token.meta.get("body_lines")))

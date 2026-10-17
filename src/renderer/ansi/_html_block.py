@@ -393,6 +393,20 @@ def _iter_option_items(text: str):
         pos = close + len("</option>")
 
 
+def _append_void_tail(line: AnsiLine, tail: str) -> None:
+    """空元素同行文本追加（按行内 Markdown 渲染，如 ``<input> **完成**``）。
+
+    ``tail`` 以 ``<`` 开头时由调用方递归渲染为独立行（不在本函数处理）。
+    """
+    if not tail:
+        return
+    line.append(" ", None)
+    for sub in inline_lines(tail, None):
+        for run in sub.runs:
+            line.append_run(run)
+        break
+
+
 def _void_line(tag: str, attrs: dict, tail: str = "") -> AnsiLine | None:
     """空元素整行 → 语义化行（``None`` 表示按普通内容行处理）。
 
@@ -405,18 +419,15 @@ def _void_line(tag: str, attrs: dict, tail: str = "") -> AnsiLine | None:
         return AnsiLine.of(text) if text else AnsiLine.of("")
     if tag == "input":
         line = input_line(attrs)
-        if tail:
-            line.append(f" {tail}", None)
+        _append_void_tail(line, tail)
         return line
     if tag == "img":
         line = image_line(attrs)
-        if tail:
-            line.append(f" {tail}", None)
+        _append_void_tail(line, tail)
         return line
     if tag in _MEDIA_VOID_TAGS:
         line = media_source_line(tag, attrs)
-        if tail:
-            line.append(f" {tail}", None)
+        _append_void_tail(line, tail)
         return line
     return None
 
@@ -729,8 +740,19 @@ def open_html_block(tag: str, attrs: dict | None = None,
     if tag == "object":
         return [object_line(state.attrs)], state
     if tag in _VOID_TAGS:
-        line = _void_line(tag, attrs, tail)
-        lines = [line] if line is not None else []
+        # ★ 修复（同行后续 HTML 标签泄漏原文）：``<input type=checkbox>
+        #   <input type=text>`` 的 ``tail`` 以 ``<`` 开头时，此前直接
+        #   ``append`` 到语义行——第二段标签原样上屏（``☑ <input
+        #   type="text">``）。改为把后续标签按 HTML 行语义递归渲染为独立行
+        #   （与 ``html_block_line`` 的连续空元素处理一致）；普通同行文本
+        #   仍拼接在同一行。
+        if tail and tail.lstrip().startswith("<"):
+            line = _void_line(tag, attrs, "")
+            lines = [line] if line is not None else []
+            lines.extend(html_block_line(tail, tag, attrs))
+        else:
+            line = _void_line(tag, attrs, tail)
+            lines = [line] if line is not None else []
     else:
         lines = [tag_head_line(state.tag, state.attrs)]
         if state.tag in ("progress", "meter"):

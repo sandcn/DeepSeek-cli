@@ -288,14 +288,32 @@ def _wrap_uniform(text: str, spans, n: int, per_line: int, word_break: bool,
     且无强制换行符；``word_break=True``（宽 1 的行）时按「行内最后一个空格」
     优先断行——语义与通用路径一致（空格不保留在行尾、行首空格不作断点）。
     断点用 C 级 ``str.rfind``（修复前逐字符 Python 循环找行内最后空格）。
+
+    ★ 性能（超长单 Run 行）：单 span（绝大多数纯文本段落 / 代码行）直接构造
+    一段 ``Run`` 并写入已知宽度，免每行 ``bisect`` + 段循环 + 临时对象；
+    超长 ASCII 行（80KB+）换行成本显著降低。
     """
+    starts, ends, styles, links = spans
+    single = len(starts) == 1
+    style0 = styles[0] if single else None
+    link0 = links[0] if single else None
+
+    def _emit(line: AnsiLine, a: int, b: int) -> None:
+        if single:
+            run = Run(text[a:b], style0, link0)
+            run._w = (b - a) * char_w
+            line.runs.append(run)
+            line._w = (b - a) * char_w
+            return
+        _emit_span_range(line, text, spans, a, b, char_w)
+
     lines: list[AnsiLine] = []
     i = 0
     while i < n:
         end = i + per_line
         if end >= n:
             line = AnsiLine()
-            _emit_span_range(line, text, spans, i, n, char_w)
+            _emit(line, i, n)
             lines.append(line)
             break
         if word_break:
@@ -307,12 +325,12 @@ def _wrap_uniform(text: str, spans, n: int, per_line: int, word_break: bool,
             sp = text.rfind(" ", i, end + 1)
             if sp > i and (sp - i) * 2 >= per_line:
                 line = AnsiLine()
-                _emit_span_range(line, text, spans, i, sp, char_w)
+                _emit(line, i, sp)
                 lines.append(line)
                 i = sp + 1
                 continue
         line = AnsiLine()
-        _emit_span_range(line, text, spans, i, end, char_w)
+        _emit(line, i, end)
         lines.append(line)
         i = end
     return lines

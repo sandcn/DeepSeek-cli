@@ -50,6 +50,32 @@ _REF_TITLE_ESCAPABLE: frozenset[str] = frozenset(string.punctuation)
 _FENCE_LINE_MAX_PROBE = 64
 
 
+def _has_top_level_double_dollar(text: str) -> bool:
+    """文本顶层（花括号外、非转义）是否含 ``$$``。
+
+    用于单行显示数学判定：``$$x$$ and $$y$$`` 的中间 ``$$`` 是第二个公式的
+    开头，不能把整行包成一个显示块；而 ``$$\\text{a $$ b}$$`` 的 ``$$`` 位于
+    ``\\text{...}`` 花括号内，属于公式内容。
+    """
+    depth = 0
+    i = 0
+    n = len(text)
+    while i < n - 1:
+        ch = text[i]
+        if ch == '\\':
+            i += 2
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            if depth > 0:
+                depth -= 1
+        elif ch == '$' and text[i + 1] == '$' and depth == 0:
+            return True
+        i += 1
+    return False
+
+
 def _match_display_env(stripped: str) -> tuple[str, str] | None:
     """行首是否为 KaTeX auto-render 显示环境（``\\begin{align}`` 等）。
 
@@ -275,6 +301,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         #: fenced div 的属性块（``::: {.warning #id}`` → ``{"classes": [...],
         #: "id": ..., "attrs": {...}}``；无属性为空 dict）。渲染层可据此扩展。
         self._block_div_attrs: dict = {}
+        #: fenced div 头文本（``::: note Title`` 的 ``Title``；属性形式的
+        #: ``title="..."`` 同样写入）——关闭 Token 用它渲染容器头，避免标题
+        #: 只存在于 OPEN Token、提交路径丢失。
+        self._block_div_head_text: str = ''
         #: fenced div 嵌套深度（1 = 最外层；``:::`` 关闭行使深度递减、归零即
         #: 关闭外层容器；``::: type`` 开启行使深度递增，内层容器作为正文交给
         #: 子解析器递归处理）。
@@ -441,6 +471,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._line_block_rows.clear()
         self._list_indents.clear()
         self._list_block_marker = None
+        self._block_div_head_text = ''
 
     # ═══════════════════════════════════════════════════════════
     # 公共接口
@@ -1005,6 +1036,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             body = self._preview_tail(body_all)
             meta: dict = {
                 "type": self._block_div_type,
+                "head_text": self._block_div_head_text,
                 "body_lines": body,
                 "preview": True,
             }
@@ -1088,6 +1120,38 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
         if self._bq_active:
             depth = self._bq_depth_stack[-1] if self._bq_depth_stack else 1
+            # ★ 列表项内的引用活动行（``> - a`` 后的 ``>   > b`` / ``>   # H``
+            #   / ``>   text``）：按子解析 + 容器前缀栈预览，与提交路径一致。
+            #   修复前统一剥掉全部 ``>`` 后作为引用正文渲染——内层引用前缀
+            #   ``│`` 丢失、列表内容缩进丢失、标题标记以字面 ``#`` 上屏。
+            if (self._list_indents and self._last_list_content_col > 0
+                    and tail and _is_blockquote_line(tail.strip())):
+                raw_tail = tail.strip()
+                j = 1
+                if j < len(raw_tail) and raw_tail[j] == ' ':
+                    j += 1
+                inner_tail = raw_tail[j:]
+                if (self._leading_indent_cols(inner_tail)
+                        >= self._last_list_content_col):
+                    list_depth = max(1, len(self._list_indents))
+                    try:
+                        mw = max(1, int(self._last_list_marker_width or 2))
+                    except (TypeError, ValueError):
+                        mw = 2
+                    stack = [("bq", depth), ("list", list_depth, mw)]
+                    sub = self._parse_sub_blocks([inner_tail.lstrip()])
+                    rows: list[Token] = []
+                    for tok in sub:
+                        tok.meta["preview"] = True
+                        inner_stack = tok.meta.get("prefix_stack")
+                        inner_stack = (list(inner_stack)
+                                       if isinstance(inner_stack, (list, tuple))
+                                       else [])
+                        tok.meta["prefix_stack"] = stack + inner_stack
+                        rows.append(tok)
+                    if rows:
+                        out.extend(rows)
+                        return out
             body = list(self._pending_lines)
             rest = ""
             if tail and _is_blockquote_line(tail.strip()):
@@ -2291,7 +2355,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 if heading is not None:
                     self._flush_paragraph(tokens)
                     self._emit_blockquote_close(tokens)
-                    self._list_indents.clear()
+                    stack = self._list_item_prefix_stack(line)
+                    if stack is None:
+                        self._list_indents.clear()
+                    else:
+                        # 列表项内的标题：保留列表上下文并补内容缩进前缀
+                        heading.meta["prefix_stack"] = stack
                     tokens.append(heading)
                     return True
             except Exception:
@@ -2441,7 +2510,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
         def _handle_setext_or_hr() -> bool:
             try:
-                if self._try_setext_or_hr(stripped, first, tokens):
+                if self._try_setext_or_hr(stripped, first, tokens, line):
                     return True
             except Exception:
                 count = self._silent_downgrade_count.get('setext_or_hr', 0) + 1
@@ -2564,9 +2633,14 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             # （源为中间内容）。修复前落入段落 → 行内 ``$`` 解析把首尾定界符当
             # 行内数学，多出字面 ``$``（``$$x=1$$`` → ``$x=1$``），与多行
             # ``$$`` 块的渲染（数学框）不一致。
+            # ★ 内容中仍有 ``$$``（``$$x$$ and $$y$$`` 两个行内显示公式）时
+            #   不按单个显示块处理——否则首尾定界符把两段公式包成一个公式，
+            #   中间 ``$$`` 以字面上屏。降级为段落，由行内数学逐个解析。
+            inner = stripped[2:-2] if len(stripped) > 4 else ""
             if (len(stripped) > 4 and stripped[:2] == '$$'
-                    and stripped.endswith('$$')):
-                source = stripped[2:-2].strip()
+                    and stripped.endswith('$$')
+                    and not _has_top_level_double_dollar(inner)):
+                source = inner.strip()
                 if source:
                     try:
                         self._flush_paragraph(tokens)
@@ -2748,7 +2822,35 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
     # ── Setext 标题 / HR ────────────────────────────────
 
-    def _try_setext_or_hr(self, stripped: str, first: str, tokens: list[Token]) -> bool:
+    def _list_item_prefix_stack(self, line: str) -> list | None:
+        """当前行属于列表项内容时返回容器前缀栈（外 → 内）；否则 ``None``。
+
+        列表项内的**块级元素**（标题 / 分隔线 / 嵌套引用…）与段落续行一样
+        应缩进到列表内容列。此前标题/分隔线直接 ``_list_indents.clear()``
+        并以顶层样式输出（``- a`` 内缩进 2 的 ``# H`` 渲染成顶格 ``H``）。
+        前缀栈顺序：外层引用（若有）→ 列表内容缩进。
+
+        ``line`` 的缩进 < 列表内容列时视为列表已结束（返回 ``None``，调用方
+        维持既有的清空列表上下文行为）。
+        """
+        if not self._list_indents or self._last_list_content_col <= 0:
+            return None
+        indent = self._leading_indent_cols(line)
+        if indent < self._last_list_content_col:
+            return None
+        depth = max(1, len(self._list_indents))
+        try:
+            mw = max(1, int(self._last_list_marker_width or 2))
+        except (TypeError, ValueError):
+            mw = 2
+        stack: list = []
+        if self._bq_active and self._bq_depth_stack:
+            stack.append(("bq", max(1, self._bq_depth_stack[-1])))
+        stack.append(("list", depth, mw))
+        return stack
+
+    def _try_setext_or_hr(self, stripped: str, first: str, tokens: list[Token],
+                          line: str = "") -> bool:
         try:
             if len(stripped) < 1:
                 return False
@@ -2779,9 +2881,14 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                         heading_text = '\n'.join(self._pending_lines)
                         self._pending_lines = []
                         self._pending_raw_lines = []
-                        self._list_indents.clear()
+                        stack = self._list_item_prefix_stack(line)
+                        if stack is None:
+                            self._list_indents.clear()
+                        meta = {"level": level}
+                        if stack is not None:
+                            meta["prefix_stack"] = stack
                         tokens.append(Token(TokenType.HEADING, heading_text,
-                                            {"level": level}))
+                                            meta))
                         return True
                 if first == '=':
                     # ★ ``=`` 不是分隔线字符（CommonMark 的 HR 仅 ``-`` / ``*`` /
@@ -2794,8 +2901,11 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     return False
                 self._flush_paragraph(tokens)
                 self._emit_blockquote_close(tokens)
-                self._list_indents.clear()
-                tokens.append(Token(TokenType.HR))
+                stack = self._list_item_prefix_stack(line)
+                if stack is None:
+                    self._list_indents.clear()
+                meta = {"prefix_stack": stack} if stack is not None else {}
+                tokens.append(Token(TokenType.HR, "", meta))
                 return True
             return False
         except Exception:
@@ -3319,7 +3429,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             if not self._bq_depth_stack:
                 self._bq_active = False
         elif inner_has_gt:
-            # ★ 修复嵌套引用: 深度增加前将待定段落刷新为当前深度的 BLOCKQUOTE_LINE
+            # ★ 嵌套引用：深度增加前将待定段落刷新为当前深度的 BLOCKQUOTE_LINE
             old_depth = self._bq_depth_stack[-1]
             if self._pending_lines:
                 content = '\n'.join(self._pending_lines)
@@ -3327,6 +3437,25 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 self._pending_raw_lines.clear()
                 tokens.append(Token(TokenType.BLOCKQUOTE_LINE, content,
                                     {"depth": old_depth}))
+            # ★ 列表项内的嵌套引用（``> - a`` 后的 ``>   > b``）：交给子解析
+            #   完整处理，并把「外层引用 + 列表内容缩进」写入 prefix_stack。
+            #   修复前此处预开内层 BLOCKQUOTE_OPEN 后把仍有 ``>`` 的文本再次
+            #   递归——内部按相对深度 1 计算与外层栈（[1, 2]）冲突，弹出内层、
+            #   正文被列表续行吸收，内层引用前缀 ``│`` 丢失（``>   > b`` 渲染
+            #   为 ``│   b``）。子解析不预开内层，交由它按真实 ``>`` 建引用块。
+            stack = self._list_item_prefix_stack(gt_text + '\n')
+            if stack is not None:
+                # 剥离列表内容列缩进后再子解析：``gt_text`` 为 ``    > - c``
+                # 时（嵌套列表内的引用），保留 4 空格会被子解析当成缩进代码
+                # 块（``> - c`` 原样进代码）；lstrip 后 ``> - c`` 正确识别为
+                # 引用内列表，列表内容缩进由 prefix_stack 统一补。
+                sub = self._parse_sub_blocks([gt_text.lstrip()])
+                for tok in sub:
+                    inner = tok.meta.get('prefix_stack')
+                    inner = list(inner) if isinstance(inner, (list, tuple)) else []
+                    tok.meta['prefix_stack'] = stack + inner
+                tokens.extend(sub)
+                return
             new_depth = depth + 1
             tokens.append(Token(TokenType.BLOCKQUOTE_OPEN, "",
                                 {"depth": new_depth}))
@@ -4478,10 +4607,15 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             div_type = 'NOTE'
         self._block_div_type = div_type.upper()
         self._block_div_attrs = div_attrs
+        if not text and div_attrs:
+            # 属性形式 ``::: {.note title="T"}`` 的标题
+            text = str((div_attrs.get("attrs") or {}).get("title", "") or "")
+        self._block_div_head_text = text
         self._block_div_fence_stack = [fence_len]
         self._block_div_depth = 1
         self._block_lines = []
-        tokens.append(Token(TokenType.FENCED_DIV_OPEN, text, {"type": self._block_div_type}))
+        tokens.append(Token(TokenType.FENCED_DIV_OPEN, text, {
+            "type": self._block_div_type, "head_text": text}))
         self._state = _State.FENCED_DIV
 
     def _feed_fenced_div_line(self, line: str, stripped: str, tokens: list[Token]):
@@ -4528,7 +4662,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._block_lines = []
         self._block_div_depth = 0
         self._block_div_fence_stack = []
-        meta: dict = {"type": self._block_div_type}
+        meta: dict = {"type": self._block_div_type,
+                      "head_text": self._block_div_head_text}
+        self._block_div_head_text = ""
         if self._block_div_attrs:
             # 属性块透传给渲染层（终端渲染忽略 id；类名已作为 type）
             meta["attrs"] = self._block_div_attrs

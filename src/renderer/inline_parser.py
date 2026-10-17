@@ -463,13 +463,24 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
                     depth += 1
                 elif ch == "}":
                     depth = max(0, depth - 1)
-                elif (ch == "$" and depth == 0
-                        and self._pos > content_start
-                        and not text[self._pos - 1].isspace()
-                        and not (self._pos + 1 < n
-                                 and text[self._pos + 1] == "$")):
+                elif ch == "$" and depth == 0:
                     # 花括号内的 ``$`` 属于内容（``\text{a $x$ b}`` 的内联
-                    # 数学切换），只有顶层 ``$`` 才结束行内数学
+                    # 数学切换），只有顶层 ``$`` 才结束行内数学。
+                    #
+                    # ★ 修复（金额吞并后文公式）：顶层 ``$`` 不满足闭合条件
+                    #   （空内容 / 前一字符为空白 / 下一个字符也是 ``$``）时
+                    #   **立即放弃**本次行内数学，而不是继续向后寻找 ``$``
+                    #   ——否则 ``cost $5 and $10 total; $x+y$ ok`` 会把首个
+                    #   金额 ``$`` 与最后的公式闭合 ``$`` 跨段配对，吞掉中间
+                    #   全部文本的美元符号。``$...$`` 内容中不允许未转义
+                    #   ``$``（Pandoc 规则），提前放弃后各 ``$`` 逐个按原文
+                    #   保留，真正的 ``$x+y$`` 仍会单独解析。
+                    if (self._pos == content_start
+                            or text[self._pos - 1].isspace()
+                            or (self._pos + 1 < n
+                                and text[self._pos + 1] == "$")):
+                        self._pos = saved
+                        return None
                     content = text[content_start:self._pos]
                     self._pos += 1
                     return InlineMathNode(content=content)

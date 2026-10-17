@@ -707,7 +707,15 @@ class InlineLinksMixin:
 
     @staticmethod
     def _balance_url_parens(url: str) -> tuple[str, int]:
-        """从 URL 末尾剥离多余的右括号，保留平衡的括号。
+        """从 URL 末尾剥离多余的右括号与行内格式定界符。
+
+        尾部剥离两类字符：
+
+          - 不平衡的右括号（``(https://x)`` 的闭合括号不属于 URL）；
+          - 行内格式定界符 / 常规标点（``. , ; : ! ? ' " * _ ~ | ^``）——
+            ``**https://x**`` / ``~~https://x~~`` 的裸 URL 扫描此前会把
+            尾部 ``**`` / ``~~`` 吞进 URL，导致强调语法整体失效（标记以字面
+            上屏）。GFM 自动链接规则同样不把尾部标点/定界符计入链接。
 
         Returns:
             (balanced_url, chars_removed)
@@ -723,10 +731,18 @@ class InlineLinksMixin:
                 close_count -= 1
             else:
                 break
-        # 再剥离尾部常规标点
-        while stripped and stripped[-1] in '.,;:!?\'"':
+        # 再剥离尾部常规标点 + 行内格式定界符（强调/删除线/高亮/剧透/上标）
+        while stripped and stripped[-1] in '.,;:!?\'"*_~|^':
             stripped = stripped[:-1]
             chars_removed += 1
+        # 成对定界符（高亮 ``==`` / 下划线 ``++`` / 行内注释 ``%%``）：URL
+        # 通常不会以这两组连续字符结尾；若不剥离，``==https://x==`` 的闭合
+        # ``==`` 会被裸 URL 吞掉 → 高亮解析失败、标记字面上屏。单个 ``=`` /
+        # ``+`` / ``%`` 保留（query 参数与 URL 编码的常见结尾）。
+        for pair in ('==', '++', '%%'):
+            if stripped.endswith(pair):
+                stripped = stripped[:-2]
+                chars_removed += 2
         return stripped, chars_removed
 
     def _try_bare_url(self) -> InlineNode | None:

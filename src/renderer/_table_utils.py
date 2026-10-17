@@ -213,18 +213,46 @@ def _dash_spans(stripped: str) -> list[tuple[int, int]]:
     return spans
 
 
+def _dash_layout(stripped: str) -> tuple[list[tuple[int, int]], list[str]]:
+    """列段分隔行 → ``(列区间, 对齐)``；列区间包含对齐冒号。
+
+    对齐冒号（``:-----`` / ``-----:`` / ``:----:``）位于 ``-`` 段两侧，占一
+    个字符位置。内容行没有该冒号，若直接按 ``-`` 段区间切片会整体错位 1 列
+    （左对齐列丢首字符 / 右对齐列丢尾字符）。此处把冒号并入列区间，供表格
+    单元格切分与字段归属使用；``_dash_spans`` 仍保留纯 ``-`` 段（分隔线
+    识别 / 段间距判断用）。
+    """
+    s = stripped.strip()
+    spans: list[tuple[int, int]] = []
+    aligns: list[str] = []
+    for a, b in _dash_spans(s):
+        left_colon = a > 0 and s[a - 1] == ':'
+        right_colon = b < len(s) and s[b] == ':'
+        a2 = a - 1 if left_colon else a
+        b2 = b + 1 if right_colon else b
+        spans.append((a2, b2))
+        if left_colon and right_colon:
+            aligns.append('center')
+        elif right_colon:
+            aligns.append('right')
+        else:
+            aligns.append('left')
+    return spans, aligns
+
+
 def _is_dashed_separator(stripped: str) -> bool:
     """Pandoc simple / multiline table 的列段分隔行 ``-----  ------``。
 
-    要求：整行只含 ``-`` 与空格、至少两个 ``-`` 段；相邻段之间通常至少
-    2 个空格，Pandoc 文档示例中允许 **1 个空格**（此时要求两侧 ``-`` 段
-    足够长（≥5），避免把 ``--- ---`` / ``- - -`` 这类分隔线误判为表格）。
+    要求：整行只含 ``-`` / 空格 / 对齐冒号、至少两个 ``-`` 段；相邻段之间
+    通常至少 2 个空格，Pandoc 文档示例中允许 **1 个空格**（此时要求两侧
+    ``-`` 段足够长（≥5），避免把 ``--- ---`` / ``- - -`` 这类分隔线误判为
+    表格）。
     """
     s = stripped.strip()
     if not s or '-' not in s:
         return False
     for ch in s:
-        if ch != '-' and ch != ' ':
+        if ch != '-' and ch != ' ' and ch != ':':
             return False
     spans = _dash_spans(s)
     if len(spans) < 2:
@@ -246,13 +274,14 @@ def _is_multiline_separator(stripped: str) -> bool:
 
     与 ``_is_dashed_separator`` 的区别：multiline table 已由顶边框 + 表头行
     确认上下文，段间一个空格也是合法的列分隔（Pandoc 文档示例即如此）；
-    仍要求每段至少 2 个 ``-``，避免 ``- - -`` 之类分隔线被误判。
+    仍要求每段至少 2 个 ``-``，避免 ``- - -`` 之类分隔线被误判。允许对齐
+    冒号（``:-----`` / ``-----:`` / ``:----:``）。
     """
     s = stripped.strip()
-    if not s or s[0] != '-' or '-' not in s:
+    if not s or (s[0] != '-' and s[0] != ':') or '-' not in s:
         return False
     for ch in s:
-        if ch != '-' and ch != ' ':
+        if ch != '-' and ch != ' ' and ch != ':':
             return False
     spans = _dash_spans(s)
     if len(spans) < 2:
@@ -285,26 +314,80 @@ def parse_multiline_table(header_lines: list[str], sep_line: str,
 
     列边界由列段分隔行的 ``-`` 段给出；表头可多行（按列位置拼接），正文行
     以空行分组、组内多行拼接为同一单元格（Pandoc multiline table 语义）。
+    分隔行的对齐冒号（``:-----`` / ``-----:`` / ``:----:``）并入列区间并
+    产出对应 ``left/center/right`` 对齐。
     """
-    spans = _dash_spans(sep_line)
+    spans, aligns = _dash_layout(sep_line)
     if len(spans) < 2:
         return None
     headers = [ln for ln in header_lines if ln.strip()]
     if not headers:
         return None
 
-    def _cells(line: str) -> list[str]:
-        out: list[str] = []
-        for a, b in spans:
-            seg = line[a:b] if a < len(line) else ''
-            out.append(seg.strip())
-        return out
+    #: Pandoc multiline/simple table 的列对齐基准：内容可能右对齐/居中，
+    #: 最后一个字符可落入列段右侧的列间空格（甚至下一列段起点前 1 列）。
+    #: 按「字段与列段的区间重叠」归属列，而不是机械切片，避免列首/列尾
+    #: 字符被切掉（``Center`` → ``Cente``、``Example`` → ``Exampl``）。
+    def _line_fields(line: str) -> list[tuple[int, int, str]]:
+        """按 **2 个及以上连续空格** 切出字段（单空格保留在字段内）。
+
+        Returns:
+            ``(start, end, text)`` 列表（``text`` 已去首尾空白）。
+        """
+        fields: list[tuple[int, int, str]] = []
+        n = len(line)
+        i = 0
+        while i < n:
+            if line[i] == ' ':
+                i += 1
+                continue
+            start = i
+            j = i
+            while j < n:
+                if line[j] != ' ':
+                    j += 1
+                    continue
+                # 连续空格 run：>=2 视为列分隔；单个空格属于字段内容
+                k = j
+                while k < n and line[k] == ' ':
+                    k += 1
+                if k - j >= 2 or k >= n:
+                    break
+                j = k
+            text = line[start:j].strip()
+            if text:
+                fields.append((start, j, text))
+            i = j
+        return fields
+
+    def _fields_by_column(line: str) -> list[list[str]]:
+        """把一行字段按区间重叠归入各列（重叠最多者；并列取最近列中心）。"""
+        cols: list[list[str]] = [[] for _ in spans]
+        for start, end, text in _line_fields(line):
+            best = 0
+            best_score = -1
+            best_center_dist = 1 << 30
+            for idx, (a, b) in enumerate(spans):
+                overlap = min(end, b) - max(start, a)
+                if overlap < 0:
+                    overlap = 0
+                center_dist = abs((start + end) - (a + b))
+                if (overlap > best_score
+                        or (overlap == best_score
+                            and center_dist < best_center_dist)):
+                    best = idx
+                    best_score = overlap
+                    best_center_dist = center_dist
+            cols[best].append(text)
+        return cols
 
     ncols = len(spans)
     header_cells: list[str] = []
+    header_cols = [_fields_by_column(ln) for ln in headers]
     for i in range(ncols):
-        vals = [cells[i] for cells in (_cells(ln) for ln in headers) if cells]
-        header_cells.append(" ".join(vals))
+        vals = [cols[i] for cols in header_cols if cols[i]]
+        flat = [v for group in vals for v in group]
+        header_cells.append(" ".join(flat))
 
     groups: list[list[str]] = []
     current: list[str] = []
@@ -320,11 +403,13 @@ def parse_multiline_table(header_lines: list[str], sep_line: str,
     rows: list[list[str]] = [header_cells]
     for group in groups:
         row: list[str] = []
+        group_cols = [_fields_by_column(ln) for ln in group]
         for i in range(ncols):
-            vals = [cells[i] for cells in (_cells(ln) for ln in group) if cells]
-            row.append(" ".join(vals))
+            vals = [cols[i] for cols in group_cols if cols[i]]
+            flat = [v for field_group in vals for v in field_group]
+            row.append(" ".join(flat))
         rows.append(row)
-    return rows, ['left'] * ncols
+    return rows, aligns
 
 
 def parse_dashed_table(header_lines: list[str], sep_line: str,
@@ -333,9 +418,9 @@ def parse_dashed_table(header_lines: list[str], sep_line: str,
 
     列边界由分隔行的 ``-`` 段区间给出；表头行取 ``header_lines`` 的最后一行
     （simple table 表头为分隔行上方紧邻行），数据行取 ``body_lines``（连续
-    非空行；空行由调用方截断）。
+    非空行；空行由调用方截断）。对齐冒号并入列区间并产出对齐。
     """
-    spans = _dash_spans(sep_line)
+    spans, aligns = _dash_layout(sep_line)
     if len(spans) < 2:
         return None
     header = [ln for ln in header_lines if ln.strip()]
@@ -356,7 +441,7 @@ def parse_dashed_table(header_lines: list[str], sep_line: str,
     norm: list[list[str]] = []
     for r in rows:
         norm.append((r + [''] * ncols)[:ncols])
-    return norm, ['left'] * ncols
+    return norm, aligns
 
 
 def _grid_border_positions(stripped: str) -> list[int]:
