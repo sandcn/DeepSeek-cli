@@ -1,9 +1,12 @@
-"""prompts_export_main_empty.md「做任何事情前强制输出计划」规则回归测试。
+"""prompts_export_main_empty.md「只在思考和回答中输出计划」规则回归测试。
 
 现行空模式提词强制要求：做任何事情前先输出计划——明确本次目标、按顺序
-编号的步骤清单（每步写清做什么、涉及哪些文件与影响范围），输出计划后
-严格按计划逐步执行；禁止未输出计划就直接动手、禁止执行计划外的动作、
-禁止跳过或擅自变更计划步骤；计划须建立在「先充分认知再分析、再动手」之上。
+编号的步骤清单（每步写清做什么、涉及哪些文件与影响范围）；计划只允许在
+思考（thinking）与回答中输出，强制禁止把计划写入任何文件（含 `.chat/plan/`
+计划文件、计划文档、源码与注释等任何落盘载体）、禁止以写入文件替代在思考
+与回答中输出计划；输出计划后严格按计划逐步执行；禁止未输出计划就直接动手、
+禁止执行计划外的动作、禁止跳过或擅自变更计划步骤；计划须建立在
+「先充分认知再分析、再动手」之上。
 """
 
 from __future__ import annotations
@@ -14,7 +17,7 @@ import pytest
 
 MAIN_PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "prompts_export_main_empty.md"
 
-RULE_KEY = "做任何事情前强制输出计划"
+RULE_KEY = "只在思考和回答中输出计划"
 PREVIOUS_RULE_KEY = "先充分认知再分析、再动手，禁止未充分了解就动手"
 
 
@@ -48,6 +51,17 @@ class TestPlanBeforeActionRule:
     def test_rule_requires_plan_output_before_action(self, rule_line: str):
         """须要求做任何事情前先输出计划。"""
         assert "先输出计划" in rule_line
+
+    def test_rule_limits_plan_output_to_thinking_and_reply(self, rule_line: str):
+        """计划只允许在思考（thinking）与回答中输出。"""
+        assert "只在思考和回答中输出计划" in rule_line
+        assert "思考（thinking）与回答中输出" in rule_line
+
+    def test_rule_forbids_writing_plan_to_files(self, rule_line: str):
+        """强制禁止把计划写入任何落盘载体，禁止以落盘替代在思考与回答中输出。"""
+        assert "强制禁止把计划写入任何文件" in rule_line
+        assert ".chat/plan/" in rule_line
+        assert "强制禁止以写入文件替代在思考与回答中输出计划" in rule_line
 
     def test_rule_requires_ordered_steps(self, rule_line: str):
         """计划须含按顺序编号的步骤清单。"""
