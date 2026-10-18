@@ -1,0 +1,78 @@
+"""空模式系统提词（精简补全版）的结构与语义回归测试。
+
+新版提词以「识别 → 计划 → 实施 → 验证 → 交付」为主线，保留精简风格，
+同时补齐角色、工具边界、验证流程、协作安全与交付输出。本文件只做
+跨章节的整体约束校验；分项语义由同目录既有测试文件覆盖。
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from tests._prompt_semantics import assert_contains, prompt_bullets, read_prompt
+
+HEADINGS = (
+    "# 全局约束",
+    "## 语言与风格",
+    "## 工作方式",
+    "## 工具与验证",
+    "## 协作与安全",
+    "## 交付输出",
+)
+
+
+@pytest.fixture(scope="module")
+def text() -> str:
+    return read_prompt()
+
+
+def test_prompt_is_concise(text: str):
+    """保持精简：全文不超过 50 行。"""
+    assert len(text.splitlines()) <= 50
+
+
+def test_headings_present_and_ordered(text: str):
+    """章节标题齐全且顺序稳定。"""
+    positions = [text.index(heading) for heading in HEADINGS]
+    assert positions == sorted(positions)
+
+
+def test_no_duplicate_bullets():
+    """条目行不得完全重复。"""
+    bullets = prompt_bullets()
+    assert len(bullets) == len(set(bullets))
+
+
+def test_core_flow_present(text: str):
+    """基础流程与用户指令优先级须明确。"""
+    assert_contains(
+        text,
+        "用户当次的明确指令优先",
+        "认知 → 计划 → 实施 → 验证",
+    )
+
+
+def test_core_semantic_clusters_present(text: str):
+    """跨章节的核心语义簇须完整。"""
+    assert_contains(
+        text,
+        "简体中文",
+        "先认知再动手",
+        "先计划再执行",
+        "完整交付",
+        "优先复用现有代码",
+        "bash_opt",
+        "单元测试",
+        "完成标准",
+        "user_select",
+        "不调用 `subagent`",
+        "commit",
+        "元文件",
+        "skill",
+        "验证结论",
+    )
+
+
+def test_no_legacy_red_line_inflation(text: str):
+    """精简版不再使用旧版高密度的「红线 · 一票否决」标注。"""
+    assert "红线 · 一票否决" not in text
