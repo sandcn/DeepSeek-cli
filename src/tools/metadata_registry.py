@@ -100,7 +100,7 @@ BUILTIN_TOOL_METADATA: Dict[str, dict] = {
         "timeout_estimate": 0, "category": "general", "priority": 50,
         "tool_category": "general", "description": "操作后台subagent任务",
     },
-    "update_file": {
+    "edit_file": {
         "parallel_safe": False, "requires_network": False, "requires_terminal": False,
         "timeout_estimate": 0, "category": "io", "priority": 10,
         "tool_category": "write", "description": "更新文件内容",

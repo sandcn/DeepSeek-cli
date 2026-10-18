@@ -59,8 +59,8 @@ TOOL_PLUGIN_ENTRIES = [
      "config": {"tool": "src.tools.subagent.SubagentFunc", "name": "subagent"}},
     {"id": "tool_subagent_opt", "plugin": "src.plugins.tool_plugin",
      "config": {"tool": "src.tools.subagent_opt.SubagentOptFunc", "name": "subagent_opt"}},
-    {"id": "tool_update_file", "plugin": "src.plugins.tool_plugin",
-     "config": {"tool": "src.tools.update_file.UpdateFileFunc", "name": "update_file"}},
+    {"id": "tool_edit_file", "plugin": "src.plugins.tool_plugin",
+     "config": {"tool": "src.tools.edit_file.EditFileFunc", "name": "edit_file"}},
     {"id": "tool_user_select", "plugin": "src.plugins.tool_plugin",
      "config": {"tool": "src.tools.user_select.UserSelectFunc", "name": "user_select"}},
     {"id": "tool_web_fetch", "plugin": "src.plugins.tool_plugin",
@@ -76,7 +76,7 @@ TOOL_PLUGIN_ENTRIES = [
 _TOOL_METADATA_NAMES = (
     "bash", "bash_opt", "cp", "find", "ls", "mkdir", "mv", "read_file",
     "read_image", "rm", "search", "skill", "subagent", "subagent_opt",
-    "update_file", "user_select", "web_fetch", "web_search", "write_file",
+    "edit_file", "user_select", "web_fetch", "web_search", "write_file",
 )
 
 TOOL_METADATA_ENTRIES = [
@@ -561,7 +561,7 @@ SPECIAL_KEY_ENTRIES = [
 
 _TOOL_STYLE_IDS = (
     "tool_bash", "tool_execute_command", "tool_read_file", "tool_write_file",
-    "tool_update_file", "tool_str_replace_editor", "tool_file_editor",
+    "tool_edit_file", "tool_str_replace_editor", "tool_file_editor",
     "tool_subagent", "tool_subagent_opt", "tool_user_select",
     "tool_web_search", "tool_web_fetch", "tool_rm", "tool_grep", "tool_find", "tool_glob",
     "cat_shell", "cat_file_read", "cat_file_write", "cat_search",

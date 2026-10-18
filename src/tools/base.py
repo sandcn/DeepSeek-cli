@@ -92,12 +92,12 @@ class Func(abc.ABC):
         if tool_name in excluded:
             return (False, f"工具 '{tool_name}' 不可用于 '{agent_type}' 类型 agent，"
                     f"该 agent 类型的工具白名单已排除此工具")
-        # 路径白名单校验：plan agent 使用 write_file / update_file / mkdir 时限制写入目录
+        # 路径白名单校验：plan agent 使用 write_file / edit_file / mkdir 时限制写入目录
         # （与 file_base._validate_path_and_size / mkdir.execute 共用
         #  get_plan_allowed_dir + is_path_within_dir，realpath 解析符号链接防绕过）。
         # 白名单标识来自 Agent 类型注册表（类型是清单中的独立插件条目）。
         from ..core.agent_types import path_whitelist as _path_whitelist
-        if path is not None and _path_whitelist(agent_type) == "plan" and tool_name in ('write_file', 'update_file', 'mkdir'):
+        if path is not None and _path_whitelist(agent_type) == "plan" and tool_name in ('write_file', 'edit_file', 'mkdir'):
             from .file_ops import get_plan_allowed_dir, is_path_within_dir
             allowed_dir = get_plan_allowed_dir()
             agent_label = "plan agent"

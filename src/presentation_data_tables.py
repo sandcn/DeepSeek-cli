@@ -220,7 +220,7 @@ TOOL_DISPLAY_NAME_MAP: dict[str, str] = {
     "read_file": "ReadFile",
     "read_image": "ReadImage",
     "write_file": "WriteFile",
-    "update_file": "UpdateFile",
+    "edit_file": "EditFile",
     "str_replace_editor": "StrReplaceEditor",
     "file_editor": "FileEditor",
     "bash": "Bash",

@@ -27,7 +27,7 @@ def sm(tmp_path):
     f1 = str(tmp_path / "a.py")
     f2 = str(tmp_path / "sub" / "b.py")
     manager.record_file_change(f1, "old\n", "new\n", 3, tool_name="write_file")
-    manager.record_file_change(f1, "new\n", "newer\n", 5, tool_name="update_file")
+    manager.record_file_change(f1, "new\n", "newer\n", 5, tool_name="edit_file")
     manager.record_file_change(f2, None, "x\n", 5, tool_name="write_file")
     return manager
 
@@ -72,7 +72,7 @@ def test_get_extended_stats(sm):
     assert stats["total_records"] == 3
     assert stats["message_groups"] == 2
     assert stats["tool_counts"]["write_file"] == 2
-    assert stats["tool_counts"]["update_file"] == 1
+    assert stats["tool_counts"]["edit_file"] == 1
     assert stats["revert_count"] == 0
     assert stats["content_chars"] > 0
 

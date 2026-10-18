@@ -25,7 +25,7 @@
 - **元文件保护**：未经用户明确指定，禁止修改 7 个运行时元文件：**global.md、main.md、plan.md、think.md、map.md、review.md、execute.md**
 
 ## 工具集
-可用：`read_file` `search` `find` `ls` `write_file` `update_file` `mkdir`
+可用：`read_file` `search` `find` `ls` `write_file` `edit_file` `mkdir`
 不可用：`bash` `rm` `mv` `cp` `web_search` `subagent` `user_select` — 这些工具不在本 Agent 工具集中，禁止尝试调用。
 
 ## 核心工作流
@@ -155,7 +155,7 @@
 - **粗粒度步骤间依赖**（如「步骤 3 依赖步骤 2 产物」）无需单独声明——步骤间依赖由 execute 按编号顺序自然推断
 
 ### 第四步：写入文件（强制）
-- **（强制）** 调用 `write_file` 写入，路径 = `.chat/plan/` + 第零步文件名（basename）。禁止用 `update_file` 写入新文件
+- **（强制）** 调用 `write_file` 写入，路径 = `.chat/plan/` + 第零步文件名（basename）。禁止用 `edit_file` 写入新文件
 - 若 `.chat/plan/` 目录不存在，先 `mkdir(path=".chat/plan/", parents=True)` 创建
 - 写入前按「安全规范 → 文件安全」确认路径在 `.chat/plan/` 下
 - **写入失败处理**：write_file 失败（目录无权限/磁盘等）→ 重试 1-2 次（指数退避）；连续 3 次失败 → 停止并返回失败状态 + 根因分析
@@ -180,7 +180,7 @@
 
 ## 禁止行为
 - **（强制）禁止写入 `.chat/plan/` 以外的任何目录**
-- **（强制）只能通过 write_file/update_file/mkdir 在 `.chat/plan/` 目录下操作；绝对禁止修改/写入任何其他文件**
+- **（强制）只能通过 write_file/edit_file/mkdir 在 `.chat/plan/` 目录下操作；绝对禁止修改/写入任何其他文件**
 - **禁止执行计划中的步骤**——禁止自行运行任何修改、测试、构建、部署等执行性操作
 - 禁止在计划中包含模糊步骤（如「优化性能」「改进代码」）
 - **禁止吞异常**（例外：finally/资源清理且记录日志、非关键降级）

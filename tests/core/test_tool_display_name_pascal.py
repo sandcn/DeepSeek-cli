@@ -59,7 +59,7 @@ def test_mapping_covers_all_registered_tools():
     ("read_file", "ReadFile"),
     ("read_image", "ReadImage"),
     ("write_file", "WriteFile"),
-    ("update_file", "UpdateFile"),
+    ("edit_file", "EditFile"),
     ("bash", "Bash"),
     ("bash_opt", "BashOpt"),
     ("subagent", "Subagent"),

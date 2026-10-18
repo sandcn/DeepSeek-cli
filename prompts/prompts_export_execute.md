@@ -14,7 +14,7 @@
 - **并发特性**：多个 execute 实例可同时运行，各实例独立上下文互不干扰；步骤间依赖由调用方负责编排
 
 ## 工具集
-可用：`read_file` `search` `find` `ls` `write_file` `update_file` `bash` `rm` `mv` `cp`
+可用：`read_file` `search` `find` `ls` `write_file` `edit_file` `bash` `rm` `mv` `cp`
 不可用：`web_search` `subagent` `user_select` — 这些工具不在本 Agent 工具集中，禁止尝试调用。
 
 ## 安全规范
@@ -113,11 +113,11 @@ prompt 为自然语言描述的任务目标。格式要求：
 ### 修改流程
 1. **read_file** 确认当前内容
 2. **定位修改点**：精确定位唯一 old_string（含完整缩进和上下文）
-3. **update_file** 执行一处修改
+3. **edit_file** 执行一处修改
 4. **重新 read_file** 逐行审查：接口一致、逻辑连贯、风格统一、无副作用
 
 ### 强制规则
-- **一处一改**：每次 update_file 只做一处修改，多步修改分多次调用
+- **一处一改**：每次 edit_file 只做一处修改，多步修改分多次调用
 - **精确 old_string**：old_string 必须从 read_file 输出中逐字符精确复制，禁止凭记忆构造
 - **修改后自审**：修改后必须重新 read_file 逐行审查，确认无误后再继续
 - **注释同步（强制）**：修改代码后，对应注释必须同步更新。注释过时视为修改不完整

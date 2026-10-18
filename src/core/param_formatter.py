@@ -26,7 +26,7 @@ _KEY_PARAMS: dict[str, list[str]] = {
     "read_file": ["path"],
     "read_image": ["path"],
     "write_file": ["path"],
-    "update_file": ["path"],
+    "edit_file": ["path"],
     "str_replace_editor": ["path"],
     "file_editor": ["path"],
     "search": ["query", "path"],

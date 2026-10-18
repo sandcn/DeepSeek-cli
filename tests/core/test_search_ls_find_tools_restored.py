@@ -213,12 +213,12 @@ def test_subagent_and_policy_reference_restored_tools():
 def test_tool_descriptions_reference_restored_tools():
     from src.tools.bash import BashFunc
     from src.tools.rm import RmFunc
-    from src.tools.update_file import UpdateFileFunc
+    from src.tools.edit_file import EditFileFunc
 
     bash_desc = BashFunc.to_tool_schema()["function"]["description"]
     assert "搜索用 search、找文件用 find/ls" in bash_desc
     assert "search" in RmFunc.to_tool_schema()["function"]["description"]
-    assert "search" in UpdateFileFunc.to_tool_schema()["function"]["description"]
+    assert "search" in EditFileFunc.to_tool_schema()["function"]["description"]
 
 
 def test_fallback_prompts_reference_search_tool():

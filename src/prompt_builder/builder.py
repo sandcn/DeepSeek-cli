@@ -193,7 +193,7 @@ _FALLBACK_CORE_RULES = """## 安全红线（一票否决）
 _FALLBACK_SUB_PROMPT = f"""# 行为规则
 {_FALLBACK_CORE_RULES}
 ## 工具使用
-- 使用 read_file 读文件，update_file 改文件
+- 使用 read_file 读文件，edit_file 改文件
 - 使用 search 搜索代码，禁止 bash grep
 - 修改前 read_file 确认内容
 
@@ -207,7 +207,7 @@ _FALLBACK_MAIN_PROMPT = f"""# 核心目标
 高效交付可运行代码，修改即验证。
 {_FALLBACK_CORE_RULES}
 ## 工具使用
-- 使用 read_file 读文件，update_file 改文件
+- 使用 read_file 读文件，edit_file 改文件
 - 使用 search 搜索代码，禁止 bash grep
 - 修改前 read_file 确认内容
 - 修改后执行语言对应的语法检查（如 Python `python -m py_compile` / Node.js `node --check` / Go `go vet` / Rust `cargo check` / Java `javac -Xlint`），并运行对应测试框架（如 Python pytest / Node.js Jest/Mocha / Go `go test` / Rust `cargo test` / Java JUnit）
@@ -432,7 +432,7 @@ def build_plan_agent_system_prompt(
 
     从 prompts_export_plan.md 加载静态规则，追加运行时动态信息。
     Plan 类型专用于制定可执行计划并写入 .chat/plan/ 目录，
-    只读分析工具 + write_file/update_file。
+    只读分析工具 + write_file/edit_file。
     环境信息后注入技能章节（每个 agent 均可使用技能）。
     """
     return _build_prompt("plan", resolve_prompt_source("plan") or "", _FALLBACK_SUB_PROMPT, include_version_control, cwd, include_global_md=True, include_skills=True)

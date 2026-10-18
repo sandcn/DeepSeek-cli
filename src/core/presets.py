@@ -55,7 +55,7 @@ _BUILTIN_PRESET_SPECS: Dict[str, Preset] = {
         "最小模式：只读 + 基础交互工具",
         tool_excludes=(
             "bash", "bash_opt", "subagent", "subagent_opt", "user_select",
-            "web_search", "write_file", "update_file", "rm", "mv", "cp", "mkdir",
+            "web_search", "write_file", "edit_file", "rm", "mv", "cp", "mkdir",
         ),
     ),
     "code": Preset(

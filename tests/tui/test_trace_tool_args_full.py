@@ -7,7 +7,7 @@
      直接丢弃，长实参在检查器不可见）改为**换行显示完整**
      （``_tree_row_wrap`` → ``wrap_runs_by_width`` hard 字符级硬拆，与
      检查器纯文本 ``_wrap_by_width`` 同语义）——长实参（bash command /
-     update_file old_string 全文等）折行后全部可见；每行宽度 <= right_w
+     edit_file old_string 全文等）折行后全部可见；每行宽度 <= right_w
      （行级 diff 宽度不变量保持）；
   2. 续行 hanging indent：缩进到首行内容起始列（depth*2 + 2），值与层级
      视觉连贯；极窄栏（hang >= right_w）续行不缩进（预算不足防御，内容

@@ -129,7 +129,7 @@ class PolicyService(Service):
             )
         if path is not None and path_whitelist(agent_type) == "plan" and tool_name in (
             "write_file",
-            "update_file",
+            "edit_file",
             "mkdir",
         ):
             from ..tools.file_ops import get_plan_allowed_dir, is_path_within_dir

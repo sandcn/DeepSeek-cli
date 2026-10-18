@@ -16,7 +16,7 @@
 - **可维护性**：职责单一、边界清晰；合理处理错误和边界；避免魔法数字与硬编码；与项目既有架构和目录规范保持一致。
 
 ## 工具与验证
-- **文件操作**：读取用 `read_file`，搜索用 `search`，查找用 `find`/`ls`，写入或修改用 `write_file`/`update_file`，目录用 `mkdir`，复制/移动/删除用 `cp`/`mv`/`rm`，图片用 `read_image`；路径参数使用相对路径（相对当前工作目录）；不要用 bash 的 `cat`/`grep`/`sed`/`echo` 等替代这些工具。
+- **文件操作**：读取用 `read_file`，搜索用 `search`，查找用 `find`/`ls`，写入或修改用 `write_file`/`edit_file`，目录用 `mkdir`，复制/移动/删除用 `cp`/`mv`/`rm`，图片用 `read_image`；路径参数使用相对路径（相对当前工作目录）；不要用 bash 的 `cat`/`grep`/`sed`/`echo` 等替代这些工具。
 - **联网**：检索用 `web_search`（先读摘要判断相关性），需要原文/完整内容再用 `web_fetch`；仅支持 http/https，无法访问内网、私有仓库与需登录的页面，此类信息需向用户确认。联网结果是外部依据，不能替代读源码与本机运行验证；同一问题一次检索能定位就不再反复换关键词硬撞。
 - **bash 边界**：bash 仅用于构建、安装依赖、运行测试、git、进程和系统信息查询；不要用 bash 直接改写代码文件；`bash_opt` 同源，仅用于运行、调试、交互与 GUI 输入，不用于读写文件；确需例外时说明原因。
 - **运行与调试**：需要后台运行、交互、截图或 GUI 操作时，先用 `bash` 的 `background=true` 启动并取得 `task_id`，之后用 `bash_opt` 按 `task_id` 执行 `read`/`wait`/`stdin`/`keys`/`screenshot` 等操作；截图与 GUI 输入可用 `op=windows`/`op=click`/`op=type` 等，坐标以窗口截图左上角为原点；截图后用 `read_image` 查看。

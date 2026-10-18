@@ -76,7 +76,7 @@ _BUILTIN_SPECS: Tuple[PresentationSpec, ...] = (
     _tool("execute_command", "shell", "\u26a1"),
     _tool("read_file", "file_read", "\U0001f4d6"),
     _tool("write_file", "file_write", "\u270e"),
-    _tool("update_file", "file_write", "\u270e"),
+    _tool("edit_file", "file_write", "\u270e"),
     _tool("str_replace_editor", "file_write", "\u270e"),
     _tool("file_editor", "file_write", "\u270e"),
     _tool("subagent", "agent", "\u2699"),

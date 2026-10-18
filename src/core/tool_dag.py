@@ -297,7 +297,7 @@ class ToolDAG:
             (write_paths, read_paths, delete_paths): 写入路径集合、读取路径集合、删除路径集合
 
         各工具的路径提取规则：
-        - write_file/update_file/mk → path 为写入路径
+        - write_file/edit_file/mk → path 为写入路径
         - rm → path 为删除路径（文件被移除，非写入）
         - cp → destination 为写入路径，source 为读取路径
         - mv → destination 为写入路径，source 为删除路径（源被移除）
@@ -317,7 +317,7 @@ class ToolDAG:
                 return os.path.abspath(p.strip())
 
         # ── path 参数 ──
-        # write_file/update_file → 写入；rm → 删除；mk → 创建
+        # write_file/edit_file → 写入；rm → 删除；mk → 创建
         # read_file/search/find/ls → 读取
         path_val = arguments.get("path")
         np = _normalize(path_val) if path_val else None

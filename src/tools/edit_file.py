@@ -41,15 +41,15 @@ def _parse_regex_flags(flags: str) -> int:
     return result
 
 
-class UpdateFileFunc(FileToolBase):
-    name = "update_file"
+class EditFileFunc(FileToolBase):
+    name = "edit_file"
 
     @classmethod
     def to_tool_schema(cls) -> dict:
         return {
             "type": "function",
             "function": {
-                "name": "update_file",
+                "name": "edit_file",
                 "description": (
                     "精确替换文件中的文本片段（old_string→new_string）。"
                     "修改前必须先 read_file 获取最新内容，old_string 从中精确复制（含缩进/换行），禁止凭记忆构造。"

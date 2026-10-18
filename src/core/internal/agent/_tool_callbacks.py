@@ -123,7 +123,7 @@ def _sanitize_args_impl(args, _depth: int = 0) -> str:
 
 
 async def _run_file_display(func, display=None):
-    """通过 display 管道执行文件操作工具（write_file/update_file），获取 diff 输出。
+    """通过 display 管道执行文件操作工具（write_file/edit_file），获取 diff 输出。
 
     SubAgent 和 Agent 的 _run_with_capture 对文件工具都需要走 display 路径：
     - ParallelDisplay 场景：用 capture_and_print_async 捕获差异并打印到终端

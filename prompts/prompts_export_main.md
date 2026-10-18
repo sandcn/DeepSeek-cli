@@ -50,7 +50,7 @@
 | 类型 | 用途 | 调用时机 | 工具集 | 写入权限 |
 |------|------|----------|--------|----------|
 | `map` | 代码分析/探底（只读） | 有信息缺口时 | read_file/search/find/ls | 无 |
-| `plan` | 生成执行计划 | map 后、改码前 | 读工具 + write_file/update_file/mkdir | 仅 `.chat/plan/` |
+| `plan` | 生成执行计划 | map 后、改码前 | 读工具 + write_file/edit_file/mkdir | 仅 `.chat/plan/` |
 | `review` | 代码审查（只读） | 文件修改完成后 | read_file/search/find/ls/web_search | 无 |
 | `execute` | 计划步骤/子任务执行 | 按需 | 除 user_select/subagent/web_search 外全工具 | 全项目（沙盒保护） |
 

@@ -46,9 +46,9 @@ class TestReviewBashToolRemoved:
         assert _can_use("bash_opt", "review") is False
 
     def test_review_still_exclude_write_tools(self):
-        """review 仍排除全部内部写入类工具（write_file/update_file/rm/mv/cp/mkdir）。"""
+        """review 仍排除全部内部写入类工具（write_file/edit_file/rm/mv/cp/mkdir）。"""
         excluded = _review_excluded()
-        for tool in ("write_file", "update_file", "rm", "mv", "cp", "mkdir"):
+        for tool in ("write_file", "edit_file", "rm", "mv", "cp", "mkdir"):
             assert tool in excluded, f"review 应排除内部写入工具 {tool}"
 
     def test_review_keep_readonly_and_web_search(self):

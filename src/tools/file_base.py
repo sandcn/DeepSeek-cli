@@ -1,4 +1,4 @@
-"""文件操作工具的公共基类，提取 write_file 和 update_file 的共享逻辑。"""
+"""文件操作工具的公共基类，提取 write_file 和 edit_file 的共享逻辑。"""
 
 from __future__ import annotations
 
@@ -114,7 +114,7 @@ class FileSizeError(FileToolError):
     description="文件操作工具基类",
 )
 class FileToolBase(Func):
-    """write_file 和 update_file 的公共基类。"""
+    """write_file 和 edit_file 的公共基类。"""
 
     def __init__(self, path: str, content_for_size_check: str = ""):
         # 内容大小校验（纯字符串计算，无 I/O）保留在构造时
@@ -246,7 +246,7 @@ class FileToolBase(Func):
         → 工具卡片（既有行为不变）。
         subagent 上下文：走 ``publish_output`` → OutputEvent →
         ``EventDispatcher._on_output`` → WriteLineCmd → 主消息区 committed
-        文本行，使 subagent 调用 write_file/update_file 的 diff 在消息区
+        文本行，使 subagent 调用 write_file/edit_file 的 diff 在消息区
         可见（不创建工具 box，避免 BUG-63 的永不关闭 box 问题）。
         """
         if self._is_subagent_context():
