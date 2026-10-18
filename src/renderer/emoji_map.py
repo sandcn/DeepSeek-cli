@@ -27,7 +27,7 @@ def resolve_emoji(text: str) -> str:
         if text[i] == ':':
             j = i + 1
             name_start = j
-            while j < n and (text[j].isalnum() or text[j] in '_-+'):
+            while j < n and (text[j].isalnum() or text[j] in '_-+#*'):
                 j += 1
             if j > name_start and j < n and text[j] == ':':
                 full = text[i:j + 1]

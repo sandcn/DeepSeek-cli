@@ -270,6 +270,44 @@ def _parse_list_heading(text: str) -> tuple[int, str] | None:
 def render_list_item(token) -> list[AnsiLine]:
     meta = token.meta
     depth = int(meta.get("depth", 1) or 1)
+    # ★ Pandoc 定义列表的**块级正文**标记行（``Term`` / ``: ``` `` 等）：
+    #   解析器以 LIST_ITEM + ``definition`` 元数据发出（正文经列表项内块级
+    #   容器统一缩进子解析）。标记行渲染 ``Term:``（术语支持行内 Markdown）。
+    if meta.get("definition"):
+        raw_terms = meta.get("terms")
+        if isinstance(raw_terms, (list, tuple)) and raw_terms:
+            terms = [str(t).strip() for t in raw_terms if str(t).strip()]
+        else:
+            term_text = str(meta.get("term", "") or "")
+            terms = [term_text] if term_text.strip() else [""]
+        if not terms:
+            terms = [""]
+        lead = list_level_prefix(depth)
+        out: list[AnsiLine] = []
+        for extra in terms[:-1]:
+            for row in inline_lines(extra, _STYLE_DEF_TERM):
+                if lead:
+                    line = AnsiLine.of(lead, _STYLE_BQ)
+                    for run in row.runs:
+                        line.append_run(run)
+                    out.append(line)
+                else:
+                    out.append(row)
+        main_rows = (inline_lines(terms[-1], _STYLE_DEF_TERM)
+                     if terms[-1] else [])
+        if main_rows:
+            line = main_rows[-1]
+            out.extend(main_rows[:-1])
+            if lead:
+                prefixed = AnsiLine.of(lead, _STYLE_BQ)
+                for run in line.runs:
+                    prefixed.append_run(run)
+                line = prefixed
+        else:
+            line = AnsiLine.of(lead, _STYLE_BQ)
+        line.append(":", _STYLE_DEF_TERM)
+        out.append(line)
+        return out
     # 缩进按**嵌套层级**（每层 2 列，见 ``list_level_prefix``）；续行 / 嵌套块
     # 对齐**内容起始列**（标记宽度 + 2，见 ``list_content_prefix``）。
     content_prefix = list_content_prefix(depth, list_marker_width(meta))

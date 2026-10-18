@@ -154,7 +154,8 @@ def _parse_example_marker(stripped: str) -> tuple[str, int] | None:
 
 
 def _is_list_item_start(stripped: str) -> bool:
-    """剥离缩进后的行是否为列表项起始（``- x`` / ``1. x`` / ``1) x`` / ``(@) x``）。
+    """剥离缩进后的行是否为列表项起始（``- x`` / ``1. x`` / ``1) x`` /
+    ``(@) x`` / Pandoc 自动编号 ``#. x``）。
 
     仅供「空行后列表上下文是否延续」的快速判定使用（不构造列表参数、
     不修改状态）——与 ``_try_ul_item`` / ``_try_ol_item`` /
@@ -166,6 +167,10 @@ def _is_list_item_start(stripped: str) -> bool:
     if first in '-*+' and len(stripped) > 1 and stripped[1] in ' \t':
         return True
     if first == '(' and _parse_example_marker(stripped) is not None:
+        return True
+    # Pandoc 自动编号有序列表标记 ``#.`` / ``#)``（标记后须跟空白）
+    if (first == '#' and len(stripped) > 2
+            and stripped[1] in '.)' and stripped[2] in ' \t'):
         return True
     if not first.isdigit():
         return False
@@ -273,6 +278,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._multiline_body: list[str] = []
         # 定义列表续行缓冲
         self._def_cont_buffer: list[str] = []
+        #: Pandoc 自动编号列表（``#.`` / ``#)``）按缩进层级的下一编号：
+        #: ``{缩进列数: 下一个编号}``。嵌套列表各自从 1 开始；显式编号项为
+        #: **同一缩进层级**的后续自动编号提供起点；列表上下文结束时清空。
+        self._auto_numbers: dict[int, int] = {}
         # Pandoc line block 收集缓冲（``| 行内容``，无内部 pipe）
         self._line_block_rows: list[str] = []
         self._reset_normal_state()
@@ -485,6 +494,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._line_block_rows.clear()
         self._list_indents.clear()
         self._list_block_marker = None
+        self._auto_numbers.clear()
         self._block_div_head_text = ''
 
     # ═══════════════════════════════════════════════════════════
@@ -1519,8 +1529,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     "preview": True,
                 })]
 
-            # 有序列表
-            ol = self._try_ol_item(stripped, line)
+            # 有序列表（``#.`` 自动编号在预览中不推进计数）
+            ol = self._try_ol_item(stripped, line, allocate=False)
             if ol is not None:
                 return [Token(TokenType.LIST_ITEM, ol['text'], {
                     "indent": ol['indent'],
@@ -2118,6 +2128,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         # 如 "Name|Age" 或 "a|b|c" 样式的行，避免被段落吞噬
         # ★ 排除 blockquote 行（> 前缀）和递归引用块内部
         # ★ 排除列表项：- item | detail 之类不应误判为表格
+        # ★ 排除定义列表标记行（``: | a | b |`` / ``~ | a | b |``）：定义正文
+        #   本身可以是表格，冒号/波浪号不是表格内容（修复前冒号进入表头单元格，
+        #   定义列表被整块吞成表格）。
         first_non_space = stripped.lstrip()
         list_prefix = False
         if first_non_space:
@@ -2125,6 +2138,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             if ch0 in ('-', '*', '+') and len(first_non_space) > 1 and first_non_space[1] == ' ':
                 list_prefix = True
             elif ch0.isdigit() and '. ' in first_non_space[:4]:
+                list_prefix = True
+            elif (ch0 in (':', '~') and len(first_non_space) > 1
+                  and first_non_space[1] in ' \t'):
                 list_prefix = True
         if (self._bq_in_recursion == 0
                 and not self._table_pending_rows
@@ -2484,6 +2500,19 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 _logger.warning("Code fence解析异常，降级为段落", exc_info=True)
                 if count > 5:
                     raise
+            if stripped.startswith('~ '):
+                # Pandoc 定义列表的波浪号标记（``Term`` / ``~ def``）：非代码
+                # 围栏的 ``~`` 行交给定义列表处理（无前导术语时降级为段落）。
+                return _handle_definition()
+            return False
+
+        def _handle_hash() -> bool:
+            """``#`` 开头：ATX 标题优先，其次 Pandoc 自动编号列表（``#.`` / ``#)``）。"""
+            if _handle_heading():
+                return True
+            if len(stripped) >= 3 and stripped[0] == '#' and stripped[1] in '.)' \
+                    and stripped[2] in ' \t':
+                return _handle_ordered_list()
             return False
 
         def _handle_html() -> bool:
@@ -2579,6 +2608,34 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                         self._def_cont_buffer.clear()
                     self._flush_paragraph(tokens)
                     self._emit_blockquote_close(tokens)
+                    # ★ Pandoc 定义列表的正文是**块级内容**：``: - a`` /
+                    #   ``: ``` `` / ``: | a | b |`` 应按列表 / 代码块 / 表格
+                    #   渲染（修复前定义行内容按行内文本处理，后续缩进行还会
+                    #   被误判为新的列表/表格：``: | a | b |`` 被当作表格候选，
+                    #   冒号进入表头单元格；``: ``` `` 则泄漏围栏、重复闭合）。
+                    #   复用列表项内块级容器收集机制：标记行渲染 ``Term:``，
+                    #   正文按内容列缩进子解析（流式预览同样可见）。
+                    indent = self._leading_indent_cols(stripped)
+                    if self._definition_starts_block(def_item):
+                        marker_terms = list(terms) if terms else (
+                            [term] if term.strip() else [])
+                        if self._maybe_start_list_block_item(
+                                def_item, indent, indent + 2,
+                                marker={
+                                    "definition": True,
+                                    "term": term,
+                                    "terms": marker_terms,
+                                    "indent": indent,
+                                },
+                                tokens=tokens, force=True):
+                            # 渲染前缀宽度按 ``Term: `` 的显示列宽（术语可含
+                            # CJK / 行内 Markdown）；源文内容列是 ``: `` 之后
+                            # 的 2 列——两者用途不同，收集时用前者、子解析
+                            # 渲染缩进用后者。
+                            self._last_list_marker_width = (
+                                self._definition_marker_width(term))
+                            self._pending_fn_def = '__def__'
+                            return True
                     meta = {"term": term, "indent": 0}
                     if terms:
                         meta["terms"] = terms
@@ -2882,7 +2939,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             return True
 
         _DISPATCH: dict[str, Callable[..., Any]] = {
-            '#': _handle_heading,
+            '#': _handle_hash,
             '`': _handle_fence,
             '~': _handle_fence,
             '<': _handle_html,
@@ -3759,7 +3816,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
     def _maybe_start_list_block_item(self, text: str, indent: int,
                                      content_col: int,
                                      marker: dict | None = None,
-                                     tokens: list[Token] | None = None) -> bool:
+                                     tokens: list[Token] | None = None,
+                                     force: bool = False) -> bool:
         """列表项内容本身以块级容器起始时，转入列表项内块级容器收集模式。
 
         CommonMark 的列表项内容是**块级内容**：``- ```\n  code\n  ``` `` 三行
@@ -3772,10 +3830,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             预览/提交多出一个闭合围栏（结构错乱）；
           - 列表项内表格 / 引用不成块（渲染为字面 ``| a | b |`` / ``> quote``）。
 
+        ``force=True``：调用方已确认内容为块级结构（定义列表正文），跳过内部
+        ``_may_start_list_block`` 判定（该判定不覆盖 ``- a`` 这类嵌套列表标记）。
+
         命中时返回 ``True``——调用方不再产出 LIST_ITEM token，本行内容成为块级
         容器的首行，容器在缩进回退时整体子解析（``_flush_list_block``）。
         """
-        if not (self._may_start_list_block(text)
+        if not (force or self._may_start_list_block(text)
                 or text[:4] == '    ' or (text and text[0] == '\t')):
             return False
         self._update_list_indent(indent)
@@ -3900,6 +3961,8 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         self._list_indents.clear()
         self._last_list_indent = -1
         self._last_list_content_col = -1
+        # 自动编号列表（``#.``）随列表上下文结束清空（各级缩进重新从 1 开始）
+        self._auto_numbers.clear()
 
     def _maybe_end_list_context(self, line: str, stripped: str) -> None:
         """空行后决定列表上下文是否延续（CommonMark 列表可含空行/多段）。
@@ -3917,6 +3980,12 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
           - 其余顶层新块 / 段落 → 结束列表上下文。
         """
         if not self._list_indents or not stripped:
+            return
+        # ★ 列表项内块级容器收集期间不在此结束列表上下文：缩进回退的当前行
+        #   需由 ``_handle_list_block_line`` 先**刷出已收集块**（它依赖
+        #   ``_last_list_content_col`` 判定缩进）——修复前这里先清空上下文，
+        #   刷出被跳过，容器内容延迟到文档结束才发射（与后续块顺序颠倒）。
+        if self._list_block_active:
             return
         if self._bq_active and self._bq_in_recursion == 0:
             # ★ 引用块内仍在引用中的行（``_bq_active`` 为真）是同一引用的
@@ -4721,6 +4790,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         if not text and div_attrs:
             # 属性形式 ``::: {.note title="T"}`` 的标题
             text = str((div_attrs.get("attrs") or {}).get("title", "") or "")
+        # ★ Pandoc fenced div 标题可用引号包裹（``::: warning "标题"``）——
+        #   引号是语法标记而非标题内容。修复前引号原样上屏（``▪ WARNING "标题"``）。
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
+            text = text[1:-1].strip()
         self._block_div_head_text = text
         self._block_div_fence_stack = [fence_len]
         self._block_div_depth = 1
@@ -4904,7 +4977,13 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             _logger.debug("_try_ul_item异常，返回None", exc_info=True)
             return None
 
-    def _try_ol_item(self, stripped: str, line: str) -> dict | None:
+    def _try_ol_item(self, stripped: str, line: str,
+                     allocate: bool = True) -> dict | None:
+        """识别有序列表项（``1.`` / ``1)`` / Pandoc 自动编号 ``#.`` / ``#)``）。
+
+        ``allocate=False`` 供流式预览使用：``#.`` 的自动编号只读取当前计数、
+        不推进（预览每帧都会重解析，推进计数会让真实编号跳号）。
+        """
         try:
             indent = 0
             for ch in line:
@@ -4913,6 +4992,30 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 else:
                     break
             content = _strip_left(stripped)
+            # ── Pandoc 自动编号列表 ``#.`` / ``#)`` ──
+            # 编号由列表位置决定（``#. a`` / ``#. b`` → 1. / 2.），显式编号项
+            # 会重置后续自动编号。修复前整行按普通文本上屏（``#. a``）。
+            if (len(content) >= 3 and content[0] == '#'
+                    and content[1] in '.)' and content[2] in ' \t'):
+                delimiter = content[1]
+                number = self._auto_numbers.get(indent, 1)
+                if allocate:
+                    self._auto_numbers[indent] = number + 1
+                text = _rstrip_line(_strip_marker_spaces(content[2:]))
+                text, todo, checked, cancelled = (
+                    self._parse_list_item_checkbox(text))
+                return {
+                    'indent': indent,
+                    'number': number,
+                    'text': text,
+                    'start': number,
+                    'todo': todo,
+                    'checked': checked,
+                    'cancelled': cancelled,
+                    'delimiter': delimiter,
+                    'marker_width': len(str(number)) + 2,
+                    'auto': True,
+                }
             i = 0
             num_str = ''
             while i < len(content) and content[i].isdigit():
@@ -4927,6 +5030,9 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 if i < len(content) and content[i] in ' \t':
                     text = _rstrip_line(_strip_marker_spaces(content[i:]))
                     number = int(num_str)
+                    if allocate:
+                        # 显式编号项为**同一缩进层级**的后续 ``#.`` 提供起点
+                        self._auto_numbers[indent] = number + 1
                     text, todo, checked, cancelled = self._parse_list_item_checkbox(text)
                     # marker_width：含缩进后的标记宽度（"1. "=3, "1) "=3, "12. "=4）
                     marker_width = len(num_str) + 2  # digit + delimiter + ' '
@@ -5006,13 +5112,50 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
     # ── 定义列表 ───────────────────────────────────────
 
+    def _definition_starts_block(self, text: str) -> bool:
+        """定义项正文是否以**块级结构**起始（列表 / 表格 / 代码 / 引用…）。
+
+        命中时定义正文改走「块级容器收集」。仅识别行首可确定的块级标记；
+        普通文本（含行内格式）仍走行内渲染。
+        """
+        if not text or not text.strip():
+            return False
+        t = text.lstrip(' \t')
+        if not t:
+            return False
+        if _is_list_item_start(t):
+            return True
+        if t[0] in ('|', '+', '>', '$', '<', '`', '~'):
+            return self._may_start_list_block(t)
+        if t.startswith(':::') or t.startswith('!!!') or t.startswith('???'):
+            return True
+        return False
+
+    @staticmethod
+    def _definition_marker_width(term: str) -> int:
+        """定义标记 ``Term: `` 的显示列宽（块级正文的内容列缩进用）。
+
+        术语可含行内 Markdown（``**Term**``）与 CJK——按渲染后纯文本的终端
+        显示宽度计算，保证块级正文与该标记对齐。
+        """
+        try:
+            from .inline_nodes import render_inline_to_text
+            from .inline_parser import _InlineParser
+            from ._utils import cjk_display_width
+            plain = render_inline_to_text(_InlineParser(term or "").parse())
+            return max(2, cjk_display_width(plain or "") + 2)
+        except Exception:
+            return max(2, len(term or "") + 2)
+
     def _try_definition(self, stripped: str) -> str | None:
         try:
             i = 0
             while i < len(stripped) and stripped[i] in ' \t':
                 i += 1
-            # ★ 修复: 要求 : 后紧跟空格/制表符，排除 :emoji: 等模式
-            if (i < len(stripped) and stripped[i] == ':'
+            # ★ 定义标记：Pandoc 允许 ``:``（冒号）或 ``~``（波浪号）后跟空白
+            #   （``Term`` / ``: def`` / ``~ def`` 同义）；``:emoji:`` 等无空白
+            #   形态不受影响。
+            if (i < len(stripped) and stripped[i] in ':~'
                     and i + 1 < len(stripped) and stripped[i + 1] in ' \t'):
                 rest = stripped[i + 1:].strip()
                 return rest if rest else None

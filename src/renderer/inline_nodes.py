@@ -239,8 +239,13 @@ class QuotedNode(InlineNode):
 
 @dataclass
 class ColorTextNode(InlineNode):
-    """彩色文本节点 {color:red}text{color}（可嵌套内联格式）"""
-    color: str = ""  # 颜色名（如 red, green, blue, yellow, cyan, magenta）
+    """彩色文本节点 {color:red}text{color} / ``<span style="color:red">``
+
+    ``color`` 为前景色、``bg`` 为背景色（颜色名或 ``#rrggbb``）；二者均可为空
+    （仅设置其中一项时另一项继承基础样式）。
+    """
+    color: str = ""  # 前景色（如 red, green, blue, yellow, cyan, magenta）
+    bg: str = ""     # 背景色（``<span style="background-color:#ff0">`` / bgcolor）
 
 
 @dataclass
@@ -334,6 +339,7 @@ _HTML_TAG_MAP: dict[str, tuple[type[InlineNode] | None, bool]] = {
     # 删除线
     's':      (StrikethroughNode, True),
     'del':    (StrikethroughNode, True),
+    'strike': (StrikethroughNode, True),  # 旧式 HTML 删除线标签（仍被广泛使用）
     # 高亮
     'mark':   (HighlightNode, True),
     # 角标
@@ -344,6 +350,7 @@ _HTML_TAG_MAP: dict[str, tuple[type[InlineNode] | None, bool]] = {
     'kbd':    (KbdNode, False),
     'samp':   (InlineCodeNode, False),  # 示例输出 → 代码样式
     'tt':     (InlineCodeNode, False),  # 电传打字 → 代码样式
+    'pre':    (InlineCodeNode, False),  # 行内出现的 <pre>：按代码样式保留内容
     # 缩写（title 属性在解析器中提取）
     'abbr':   (AbbrNode, False),
     'acronym': (AbbrNode, False),   # 旧式缩写标签，语义同 abbr
@@ -354,6 +361,14 @@ _HTML_TAG_MAP: dict[str, tuple[type[InlineNode] | None, bool]] = {
     'time':   (TextNode, False),
     'data':   (TextNode, False),
     'bdo':    (TextNode, False),
+    # 标题标签在**行内**出现（``前文 <h3>x</h3> 后文``）：按粗体呈现，
+    # 标签字面不泄漏（块级标题由块解析器单独处理）。
+    'h1':     (BoldNode, True),
+    'h2':     (BoldNode, True),
+    'h3':     (BoldNode, True),
+    'h4':     (BoldNode, True),
+    'h5':     (BoldNode, True),
+    'h6':     (BoldNode, True),
     # 透明容器（内容照常显示，仅结构含义）
     'span':     (None, True),
     'label':    (None, True),
@@ -411,6 +426,17 @@ _HTML_TAG_MAP: dict[str, tuple[type[InlineNode] | None, bool]] = {
     'map':      (None, True),
     'datalist': (None, True),
     'slot':     (None, True),
+    # ★ 块级标签在**行内**出现（``前文 <ul><li>x</li></ul> 后文``）：透明
+    #   容器，内容照常显示、标签字面不泄漏（块级形态由块解析器负责）。
+    'p':        (None, True),
+    'li':       (None, True),
+    'ol':       (None, True),
+    'ul':       (None, True),
+    'table':    (None, True),
+    'blockquote': (None, True),
+    'select':   (None, True),
+    'button':   (None, True),
+    'details':  (None, True),
 }
 
 

@@ -277,6 +277,14 @@ def _tail_has_open_marker(text: str) -> bool:
         return True
     if tail.count("<") > tail.count(">"):
         return True
+    # ★ 链接/图片目标与行内属性：``![alt](u`` 在闭合 ``)`` 到达前是普通文本
+    #   （图片语法不成立）——若把 ``)`` 当纯文本追加到上一帧结果，预览会一直
+    #   保留「未解析的原文 + 已剥离的强调标记」直到整行重渲。``{…}`` 同理
+    #   （``[x]{.cls`` / `` `x`{.py`` 的闭合花括号会改变解析）。
+    if tail.count("(") > tail.count(")"):
+        return True
+    if tail.count("{") > tail.count("}"):
+        return True
     amp = tail.rfind("&")
     if amp >= 0 and ";" not in tail[amp:]:
         return True
@@ -743,16 +751,6 @@ class AnsiStreamRenderer:
             outer_stack.append(("bq", bq))
         depth, mw = self._list_block_prefix_meta()
         outer_stack.append(("list", depth, mw))
-        # 列表项标记行（内容整体为块级容器时 marker 仍须显示）
-        marker_meta = getattr(self._parser, "_list_block_marker", None)
-        if marker_meta:
-            from . import blocks as _blocks
-            marker_rows = _blocks.render_list_item(
-                Token(TokenType.LIST_ITEM, "", dict(marker_meta)))
-            if bq > 0:
-                marker_rows = apply_prefix_stack(
-                    marker_rows, [("bq", bq)])
-            rows.extend(marker_rows)
         with use_render_context(self._ctx):
             for tok in tokens:
                 # 旧前缀元数据清空（前缀统一由容器栈施加，避免双重叠加）

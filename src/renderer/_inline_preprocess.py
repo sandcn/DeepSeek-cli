@@ -375,7 +375,7 @@ def _preprocess_html_entities(text: str) -> str:
         if ch == ':':
             name_start = i + 1
             j = name_start
-            while j < n and (text[j].isalnum() or text[j] in '_-+'):
+            while j < n and (text[j].isalnum() or text[j] in '_-+#*'):
                 j += 1
             if j < n and text[j] == ':' and j > name_start:
                 name = text[name_start:j]

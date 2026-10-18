@@ -45,6 +45,38 @@ def _extract_style_color(attr_text: str) -> str:
     return ''
 
 
+def _extract_style_background(attr_text: str) -> str:
+    """从 HTML ``style="..."`` 属性提取背景色（``background-color`` / ``background``）。
+
+    与 ``_extract_style_color`` 同口径：仅识别独立声明（``background-color``
+    优先于 ``background``），值支持颜色名与 ``#rrggbb``；无则返回空串。
+    """
+    if not attr_text:
+        return ''
+    low = attr_text.lower()
+    i = low.find('background-color')
+    if i < 0:
+        i = low.find('background')
+    while i >= 0:
+        prev_ok = i == 0 or not (low[i - 1].isalnum() or low[i - 1] in '-_')
+        j = i + (len('background-color') if low.startswith('background-color', i)
+                 else len('background'))
+        while j < len(low) and low[j].isspace():
+            j += 1
+        if prev_ok and j < len(low) and low[j] == ':':
+            j += 1
+            while j < len(low) and low[j].isspace():
+                j += 1
+            k = j
+            while k < len(low) and (low[k].isalnum() or low[k] in '#(),%.-'):
+                k += 1
+            value = low[j:k].strip()
+            if value:
+                return value
+        i = low.find('background', i + len('background'))
+    return ''
+
+
 # HTML void 元素（自闭合标签）集合（统一定义于 _block_helpers.py）
 from ._block_helpers import _VOID_HTML_TAGS
 
@@ -307,11 +339,14 @@ class InlineHTMLMixin:
                     # ``<span style="color:red">`` / ``<font color="red">``
                     # → 彩色文本节点（颜色名 / #rrggbb；无颜色则透明）
                     color = _extract_style_color(attr_text)
+                    bg = _extract_style_background(attr_text)
                     if tag_name == 'font':
                         color = self._extract_attr(attr_text, 'color') or color
-                    if color:
+                        bg = (self._extract_attr(attr_text, 'bgcolor')
+                              or bg)
+                    if color or bg:
                         return ColorTextNode(content=text, children=children,
-                                             color=color)
+                                             color=color, bg=bg)
                 return TextNode(content=text)
             self._pos = saved
             return None

@@ -258,8 +258,13 @@ def test_image_alt_nested_brackets():
 
 
 def test_image_alt_escaped_bracket():
+    """alt 的反斜杠转义按行内语义解析（``\\]`` → ``]``，内容不截断）。
+
+    ★ 第十九批：alt 文本按行内 Markdown 解析为纯文本（剥离强调/代码标记），
+      转义方括号随之还原为字面 ``]``；修复前 alt 原样保留反斜杠。
+    """
     got = _render("![a \\] b](u)\n")
-    assert got and "a \\] b" in got[0]
+    assert got and "a ] b" in got[0]
 
 
 def test_image_alt_nested_chunked_consistent():

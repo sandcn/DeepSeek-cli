@@ -142,6 +142,24 @@ EMOJI_MAP: dict[str, str] = {
     ":new:": "\U0001f195", ":free:": "\U0001f193", ":id:": "\U0001f194",
     ":hash:": "#\ufe0f\u20e3", ":asterisk:": "*\ufe0f\u20e3",
     ":speaker:": "\U0001f508", ":mute:": "\U0001f507",
+    # ── 补充：keycap / 旗帜 / 常用表情（GFM 短代码补全）──
+    ":zero:": "0\ufe0f\u20e3", ":one:": "1\ufe0f\u20e3",
+    ":two:": "2\ufe0f\u20e3", ":three:": "3\ufe0f\u20e3",
+    ":four:": "4\ufe0f\u20e3", ":five:": "5\ufe0f\u20e3",
+    ":six:": "6\ufe0f\u20e3", ":seven:": "7\ufe0f\u20e3",
+    ":eight:": "8\ufe0f\u20e3", ":nine:": "9\ufe0f\u20e3",
+    ":keycap_ten:": "\U0001f51f",
+    ":red_heart:": "\u2764\ufe0f", ":large_green_circle:": "\U0001f7e2",
+    ":checkered_flag:": "\U0001f3c1",
+    ":cn:": "\U0001f1e8\U0001f1f3", ":us:": "\U0001f1fa\U0001f1f8",
+    ":jp:": "\U0001f1ef\U0001f1f5", ":kr:": "\U0001f1f0\U0001f1f7",
+    ":gb:": "\U0001f1ec\U0001f1e7",
+    ":books:": "\U0001f4da", ":file_folder:": "\U0001f4c1",
+    ":open_file_folder:": "\U0001f4c2", ":clock1:": "\U0001f550",
+    ":grinning:": "\U0001f600", ":partying_face:": "\U0001f973",
+    ":saluting_face:": "\U0001fae1", ":melting_face:": "\U0001fae0",
+    ":pleading_face:": "\U0001f97a", ":upside_down_face:": "\U0001f643",
+    ":hugs:": "\U0001f917", ":eye:": "\U0001f441\ufe0f",
 }
 
 # ── 上下标 / 圈号 Unicode 表 ─────────────────────────────

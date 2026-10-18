@@ -987,7 +987,7 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 
 | 领域 | 能力 |
 |---|---|
-| 渲染 | 增量流式 Markdown（CommonMark / GFM 主体 + Pandoc 扩展，含行内代码属性 / 独立属性块 / 定义列表 / 脚注 / 表格表注）、LaTeX 公式终端排版、Mermaid 11 类图 ASCII 渲染（支持 `%%` 注释）、HTML 块与行内元素（datalist / hgroup / map / slot / ruby 等）、Front Matter、代码高亮与行号、TOC、Diff 高亮；自绘 ANSI 渲染路径与共享解析层 |
+| 渲染 | 增量流式 Markdown（CommonMark / GFM 主体 + Pandoc 扩展，含行内代码属性 / 独立属性块 / 定义列表（块级正文）/ 脚注 / 表格表注 / 自动编号列表（`#.`）/ 定义标记 `~`）、LaTeX 公式终端排版、Mermaid 11 类图 ASCII 渲染（支持 `%%` 注释）、HTML 块与行内元素（datalist / hgroup / map / slot / ruby / strike 等，含行内背景色）、Front Matter、代码高亮与行号、TOC、Diff 高亮；自绘 ANSI 渲染路径与共享解析层 |
 | TUI | React Ink 风格自研框架（调和器 / flexbox / hooks / 帧差异渲染 / 标准控件库）、恒定 30Hz 渲染、行级增量与 committed 前缀复用、全屏视图族（轨迹 / 日志 / 配置 / 插件 / 模型 / 文件沙盒 / 变更审查 / MCP / 技能 / 用量 / 搜索 / 键位 / 通知 / 导出 / 命令面板）、模态与底部视图机制、vim 风格导航与搜索、模糊命令面板与工作区状态段、8 套配色主题 |
 | Agent | Pipeline 中间件链、上下文自动压缩（dsh 同款）、工具调用 DAG 并行调度（显式引用 / 路径重叠 / user_select 独占 / 类别约束四层依赖 + Kahn 分层）、SubAgent 并发派发（plan / map / review / execute）、会话日志与投影、断点与恢复 |
 | 内核 | 无特权插件内核（Fiber 生命周期 / 服务容器 / 五模式事件分发 / 作用域与拦截）、Profile / Bundle / Patch 三层组装、热重载与依赖诊断、运行时不变量自检 |

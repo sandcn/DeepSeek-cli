@@ -479,6 +479,48 @@ def _emit_link(node, base, ctx, out, depth):
         _append(out, f' "{title}"', _merge(base, _STYLE_COMMENT))
 
 
+def _plain_alt_text(text: str) -> str:
+    """图片 alt 文本 → 纯文本（剥离行内强调/代码等标记，不泄漏 ``**`` / 反引号）。
+
+    CommonMark 的 alt 是**标签内容的纯文本**（``![**粗** 图](u)`` 的 alt 为
+    ``粗 图``）；修复前原样拼接 alt 源码，强调/代码标记字面上屏。
+    仅当文本含可能的行内标记字符时才进入解析器（纯文本零成本）。
+
+    ★ 含链接/图片/引用等**非格式节点**时保留原文：``![a [b]](u)`` 的 ``[b]``
+    是未定义引用的字面文本（CommonMark alt 保留方括号），不能被展开成
+    ``b (ref:b)`` 或丢掉方括号。
+    """
+    if not text:
+        return text
+    if not any(ch in text for ch in "*_`~[]<>!|:\\$"):
+        return text
+    try:
+        from src.renderer.inline_parser import _InlineParser
+        from src.renderer.inline_nodes import (
+            LinkNode, ImageNode, WikiLinkNode, CitationNode,
+            render_inline_to_text,
+        )
+
+        def _has_special(nodes) -> bool:
+            for node in nodes or ():
+                if isinstance(node, (LinkNode, ImageNode, WikiLinkNode,
+                                     CitationNode)):
+                    return True
+                if _has_special(getattr(node, "children", None)):
+                    return True
+                if _has_special(getattr(node, "meta", {}).get("new_children")):
+                    return True
+            return False
+
+        parsed = _InlineParser(text).parse()
+        if _has_special(parsed):
+            return text
+        plain = render_inline_to_text(parsed)
+    except Exception:
+        return text
+    return plain or text
+
+
 def _emit_image(node, base, ctx, out, depth):
     url = getattr(node, "url", "") or ""
     title = getattr(node, "title", "")
@@ -520,7 +562,7 @@ def _emit_image(node, base, ctx, out, depth):
         dim = f" ={w}"
     elif h:
         dim = f" =x{h}"
-    alt = node.content or "image"
+    alt = _plain_alt_text(node.content or "") or "image"
     style = _merge(base, _STYLE_IMAGE)
     if url:
         _append(out, f"\U0001f5bc\ufe0f {alt} ({shown}{dim})", style)
@@ -740,14 +782,31 @@ def _emit_quoted(node, base, ctx, out, depth):
 
 
 def _emit_color(node, base, ctx, out, depth):
-    """着色文本：颜色名或 ``#rrggbb``（未知值回退白色）。"""
+    """着色文本：颜色名或 ``#rrggbb``（未知值回退白色）。
+
+    支持前景色（``color`` / ``{color:red}``）与背景色（``bg``，来自
+    ``<span style="background-color:…">`` / ``<font bgcolor=…>``）；仅设置背景
+    色时前景继承基础样式（不再强制白色）。
+    """
     name = (getattr(node, "color", "") or "").lower()
-    fg = _COLOR_TO_256.get(name)
-    if fg is None:
-        fg = _hex_to_256(name)
-    if fg is None:
-        fg = 231
-    _emit_children(node, _merge(base, Style(fg=fg, bold=True)), ctx, out, depth)
+    bg_name = (getattr(node, "bg", "") or "").lower()
+    fg = None
+    if name:
+        fg = _COLOR_TO_256.get(name)
+        if fg is None:
+            fg = _hex_to_256(name)
+        if fg is None:
+            fg = 231
+    bg = None
+    if bg_name:
+        bg = _COLOR_TO_256.get(bg_name)
+        if bg is None:
+            bg = _hex_to_256(bg_name)
+    if fg is None and bg is None:
+        _emit_children(node, base, ctx, out, depth)
+        return
+    style = Style(fg=fg, bg=bg, bold=fg is not None)
+    _emit_children(node, _merge(base, style), ctx, out, depth)
 
 
 def _hex_to_256(value: str) -> int | None:

@@ -513,7 +513,7 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
             name_start = self._pos
             while (self._pos < self._n
                    and (self._text[self._pos].isalnum()
-                        or self._text[self._pos] in '_-+')):
+                        or self._text[self._pos] in '_-+#*')):
                 self._pos += 1
             if self._pos < self._n and self._text[self._pos] == ':':
                 name = self._text[name_start:self._pos]
