@@ -93,7 +93,7 @@ def test_no_test_module_relies_on_its_own_depth():
         "test_fix_timing_and_file_ops.py",
         "test_prompt_main_dev_and_other_gui_apps.py",
         "test_prompt_main_done_criteria.py",
-        "test_prompt_main_empty_find_dirs_when_no_project_info.py",
+        "test_prompt_main_empty_no_dir_scan_rule.py",
         "test_prompt_main_empty_merged_rules.py",
         "test_prompt_main_empty_no_plan_rule.py",
         "test_prompt_main_empty_plan_before_action.py",
