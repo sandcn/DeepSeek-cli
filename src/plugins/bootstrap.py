@@ -61,7 +61,6 @@ _SINGLE_DECL_PLUGINS = {
     "named_style": "name",
     "global_disabled_tool": "name",
     "command": "name",
-    "renderer_handler": "id",
     "renderer_filter": "id",
     "middleware": "id",
     "agent_type": "name",
@@ -82,7 +81,6 @@ _SINGLE_DECL_PLUGINS = {
     "subcommand": "name",
     "skill_source": "id",
     "session_projection": "name",
-    "renderer_target": "id",
     "keybinding": "id",
     "special_key": "id",
     "tool_style": "id",
@@ -109,7 +107,6 @@ _MANAGED_GROUP = {
     "named_style": "managed_named_styles",
     "global_disabled_tool": "managed_global_disabled_tools",
     "command": "managed_commands",
-    "renderer_handler": "managed_handlers",
     "renderer_filter": "managed_filters",
     "middleware": "managed_middlewares",
     "agent_type": "managed_agent_types",
@@ -130,7 +127,6 @@ _MANAGED_GROUP = {
     "subcommand": "managed_subcommands",
     "skill_source": "managed_skill_sources",
     "session_projection": "managed_session_projections",
-    "renderer_target": "managed_render_targets",
     "keybinding": "managed_keybindings",
     "special_key": "managed_special_keys",
     "tool_style": "managed_tool_styles",
@@ -157,7 +153,7 @@ _AGGREGATE_MANAGED_KEYS = {
     "named_styles": ("managed_named_styles",),
     "policy": ("managed_global_disabled_tools",),
     "commands": ("managed_commands",),
-    "renderer_builtin": ("managed_handlers", "managed_filters"),
+    "renderer_builtin": ("managed_filters",),
     "agent_middleware": ("managed_middlewares",),
     "subagents": ("managed_agent_types",),
     "stream": ("managed_stream_handlers",),
@@ -172,7 +168,6 @@ _AGGREGATE_MANAGED_KEYS = {
     "themes": ("managed_themes",),
     "skill_sources": ("managed_skill_sources",),
     "session_projections": ("managed_session_projections",),
-    "renderer": ("managed_render_targets",),
     "presets": ("managed_presets",),
     "prompt": ("managed_prompt_modes", "managed_prompt_sources", "managed_prompt_sections"),
     "clawbot": ("managed_clawbot_commands",),
@@ -318,14 +313,13 @@ def collect_managed_names(resolved) -> dict:
 
     Returns:
         形如 ``{"managed_tools": [...], "managed_commands": [...],
-        "managed_handlers": [...], "managed_filters": [...],
-        "managed_middlewares": [...]}``。
+        "managed_filters": [...], "managed_middlewares": [...]}``。
 
     语义差异（由各自的聚合插件兜底方式决定）：
 
-    - ``managed_tools`` / ``managed_handlers`` / ``managed_filters`` /
-      ``managed_middlewares`` 含**被禁用**的项——聚合插件据此抑制默认装配，
-      使 overlay 禁用单项真正生效；
+    - ``managed_tools`` / ``managed_filters`` / ``managed_middlewares`` 含
+      **被禁用**的项——聚合插件据此抑制默认装配，使 overlay 禁用单项真正
+      生效；
     - ``managed_commands`` 只含**启用**的命令名——``ctx.commands`` 只注册清单
       接管的命令，被禁用的命令不会被兜底注册（命令无自动发现兜底路径）。
     """

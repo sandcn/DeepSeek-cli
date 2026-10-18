@@ -16,8 +16,8 @@ flanking 判定（左定界符须 left-flanking、右定界符须 right-flanking
   - **流式分块一致性**（逐字符写入与一次性写入产出一致）；
   - **段落边界扫描**与解析器口径一致（修复后不再把 ``==`` 当未闭合定界符）。
 
-两路径同步：TUI（``AnsiStreamRenderer``）与 Rich（``IncrementalRenderer``）
-共享同一解析层（``_InlineParser``），故两路径断言一致。
+两路径同步：解析层（``_InlineParser``）由 ANSI 渲染路径
+（``AnsiStreamRenderer``）消费，故断言一致。
 """
 
 from __future__ import annotations
@@ -84,18 +84,6 @@ def _styled_texts(src: str, pred, width: int = 100) -> list:
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
 
-def _rich_plain(src: str) -> str:
-    import io
-
-    from src.renderer._incremental import IncrementalRenderer
-
-    buf = io.StringIO()
-    r = IncrementalRenderer(_file=buf, show_indicator=False)
-    r.write(src)
-    r.close()
-    return _ANSI.sub("", buf.getvalue()).rstrip()
-
-
 # ══════════════════════════════════════════════════════════
 # 1. 代码语义的 ``==`` 保留（本次修复的核心）
 # ══════════════════════════════════════════════════════════
@@ -121,11 +109,6 @@ class TestCodeStyleDoubleEquals:
 
     def test_reported_sentence_chunked_matches(self):
         assert _chunked_plain(REPORTED, size=3) == _plain(REPORTED)
-
-    def test_reported_sentence_rich_path(self):
-        got = _rich_plain(REPORTED)
-        assert 'mode=="change"' in got
-        assert 'mode=="stable"' in got
 
     def test_inline_code_double_equals_untouched(self):
         got = _plain("`a == b`")
@@ -165,11 +148,6 @@ class TestHighlightStillWorks:
         # 跨软换行的高亮仍可配对：内容按行拆分为两个带高亮背景的 run
         assert _highlighted_texts("==高亮\n跨行==") == ["高亮", "跨行"]
         assert _plain("==高亮\n跨行==") == "高亮\n跨行"
-
-    def test_highlight_rich_path(self):
-        got = _rich_plain("中文==高亮==中文")
-        assert "中文高亮中文" in got
-        assert "==" not in got
 
 
 # ══════════════════════════════════════════════════════════

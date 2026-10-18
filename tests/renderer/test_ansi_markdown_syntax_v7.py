@@ -4,7 +4,7 @@
 
   - 新增语法：CriticMarkup 高亮 ``{==…==}``、大号文本 ``{+…+}``（与既有
     ``{-…-}`` 对称）、TUI 路径智能排版（typographer：``--``/``...``/``->``/
-    ``<=``/``(c)``/``1/2``/``:emoji:``…，与 Rich 路径 ``_preprocess_text`` 同源）
+    ``<=``/``(c)``/``1/2``/``:emoji:``…，与解析层 ``_preprocess_text`` 同源）
   - 渲染修复：多行 setext 标题（整个段落成为标题）、块引用懒续行（``> a\\nb``）、
     列表项懒续行（``- a\\nb``）、GFM 表格列数宽容（缺列补空 / 多列忽略）、
     引用块结束后紧邻的顶层块不再被误加 ``│`` 前缀
@@ -13,7 +13,6 @@
 
 from __future__ import annotations
 
-import io
 import time
 
 from src.renderer.ansi import AnsiStreamRenderer
@@ -32,16 +31,6 @@ def _render_chunked(src: str, size: int = 1, width: int = 72):
         r.write(src[i:i + size])
     r.close()
     return [ln.plain for ln in r.take_lines()]
-
-
-def _rich(src: str) -> str:
-    from src.renderer._incremental import IncrementalRenderer
-
-    buf = io.StringIO()
-    r = IncrementalRenderer(_file=buf, show_indicator=False)
-    r.write(src)
-    r.close()
-    return buf.getvalue()
 
 
 # ══════════════════════════════════════════════════════════
@@ -88,13 +77,6 @@ def test_critic_highlight_all_five_marks():
     assert "→" in got[0] and "批注" in got[0]
 
 
-def test_critic_highlight_rich_path():
-    """Rich 路径同步支持高亮（两路径语义一致）。"""
-    out = _rich("{==marked==}\n")
-    assert "marked" in out
-    assert "{==" not in out and "==}" not in out
-
-
 def test_critic_highlight_chunked_consistent():
     src = "a {==marked==} b\n"
     assert _render_chunked(src) == _render(src)
@@ -131,18 +113,13 @@ def test_big_text_unclosed_is_plain():
     assert _render("a {+ b\n") == ["a {+ b"]
 
 
-def test_big_text_rich_path():
-    out = _rich("{+big+}\n")
-    assert "big" in out and "{+" not in out
-
-
 def test_big_text_chunked_consistent():
     src = "a {+big+} b\n"
     assert _render_chunked(src) == _render(src)
 
 
 # ══════════════════════════════════════════════════════════
-# 新增语法 3：智能排版（typographer，与 Rich 路径同源）
+# 新增语法 3：智能排版（typographer，与解析层同源）
 # ══════════════════════════════════════════════════════════
 
 
@@ -186,12 +163,6 @@ def test_typographer_not_in_code_span_url():
     """代码 span 不做智能排版替换；链接 URL 中的 ``--`` 不泄漏为可见文本。"""
     assert _render("`a -- b`\n") == ["a -- b"]
     assert _render("[t](http://x/a--b)\n") == ["t"]
-
-
-def test_typographer_rich_path_sync():
-    """两路径同源：同一输入在 Rich 路径也做替换。"""
-    out = _rich("a -> b -- c\n")
-    assert "\u2192" in out and "\u2013" in out
 
 
 def test_typographer_fast_path_plain_text_unchanged():

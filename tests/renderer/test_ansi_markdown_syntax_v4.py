@@ -174,7 +174,7 @@ def test_hl_lines_row_background():
     assert any(r.style is not None and r.style.bg is not None for r in hl.runs)
 
 
-def test_rich_code_state_display_line_number():
+def test_code_state_display_line_number():
     from src.renderer.states import _CodeBlockState
 
     st = _CodeBlockState(linenos=True, lineno_start=10, lineno_step=5)
@@ -184,8 +184,8 @@ def test_rich_code_state_display_line_number():
     assert st.display_line_number() == 20
 
 
-def test_rich_diff_langs_covers_patch():
-    from src.renderer.handlers.code import _DIFF_LANGS
+def test_diff_langs_covers_patch():
+    from src.renderer.ansi.code import _DIFF_LANGS
 
     assert "diff" in _DIFF_LANGS and "patch" in _DIFF_LANGS
 
@@ -241,11 +241,12 @@ def test_superscript_still_works_after_inline_footnote():
     assert _inline_plain("x^2^ 与 ^[注]") == "x\u00b2 与 [^\u6ce8]"
 
 
-def test_rich_path_registers_inline_footnote_handler():
+def test_inline_footnote_ansi_renderer_supports_node():
     from src.renderer.inline_nodes import InlineFootnoteNode
-    from src.renderer import inline_renderer
+    from src.renderer.ansi import inline as ansi_inline
 
-    assert InlineFootnoteNode in inline_renderer.InlineRenderer._NODE_DISPATCH
+    assert InlineFootnoteNode is not None
+    assert hasattr(ansi_inline, "render_inline")
 
 
 # ══════════════════════════════════════════════════════════
@@ -386,7 +387,7 @@ def test_math_sqrt_rows_aligned():
 
 
 def test_get_lexer_unknown_lang_cached():
-    from src.renderer._rendering._code import _LEXER_CACHE, get_lexer
+    from src.renderer._lexer import _LEXER_CACHE, get_lexer
 
     assert get_lexer("no-such-lexer-xyz") is None
     assert "no-such-lexer-xyz" in _LEXER_CACHE

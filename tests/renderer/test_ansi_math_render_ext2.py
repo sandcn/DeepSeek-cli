@@ -17,7 +17,7 @@
   - 脚本与空白绑定修复（``\\sum _{i=1}^{n}``）；
   - 单列公式环境（``equation`` / ``displaymath``）与多行 cases 分段括号；
   - 符号表扩充（相似/大小/三角关系、省略号族、希伯来字母…）；
-  - Rich 路径否定前缀与 ANSI 路径同源。
+  - 否定前缀与 ANSI 路径同源。
 """
 
 from __future__ import annotations
@@ -387,11 +387,11 @@ def test_math_inline_returns_single_line():
     assert "√" in line.plain
 
 
-# ── Rich 路径同源 ────────────────────────────────────────
+# ── 否定符号共享表 ────────────────────────────────────────
 
 
-def test_rich_parser_not_negation_uses_shared_table():
-    from src.renderer.math_parser import MathParser
+def test_not_negation_uses_shared_table():
+    from src.renderer.math_symbols.negations import negate_symbol
 
-    assert MathParser().parse(r"\not=").plain == "≠"
-    assert MathParser().parse(r"\not\in").plain == "∉"
+    assert negate_symbol("=") == "≠"
+    assert negate_symbol("∈") == "∉"

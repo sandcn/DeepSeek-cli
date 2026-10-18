@@ -1,6 +1,6 @@
 """InkSession — Ink 渲染会话：PriorityQueue + render 线程 + 生命周期。
 
-移植 TuiEngine 的队列/优先级/批处理/崩溃恢复逻辑，替换其 Rich 渲染
+移植 TuiEngine 的队列/优先级/批处理/崩溃恢复逻辑，替换其渲染
 管线的渲染目标为：RenderCmd → AppModel 状态变更 → 组件树 → Frame →
 InkRenderer 非全屏输出。
 

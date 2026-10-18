@@ -1,11 +1,11 @@
 """行内格式 — 复用递归下降内联解析器（``_InlineParser``）→ Run 序列。
 
-统一真源：与 Rich 路径共用 ``src.renderer.inline_parser._InlineParser``
+统一真源：与解析层共用 ``src.renderer.inline_parser._InlineParser``
 （字符级递归下降、无正则），解析结果（InlineNode 树）经本模块的节点渲染
 调度表转换为 ANSI ``Run`` 列表。新增内联语法只需扩展解析器 + 本节点表，
 两条渲染路径自动同步（开闭原则）。
 
-支持的内联语法（与 Rich 路径同源）：
+支持的内联语法（与解析层同源）：
   粗体 ``**x**`` / ``__x__``、斜体 ``*x*`` / ``_x_``、粗斜体 ``***x***``、
   行内码 ``` `x` ```、删除线 ``~~x~~``、高亮 ``==x==``、上标 ``^x^``、
   下标 ``~x~``、下划线 ``++x++``、剧透 ``||x||``、链接 ``[t](url)``、
@@ -277,12 +277,12 @@ def _last_typo_pos(text: str) -> int:
 
 
 def _preprocess_plain(text: str) -> str:
-    """智能排版预处理（与 Rich 路径 ``_preprocess_text`` 同源同产出）。
+    """智能排版预处理（与 ``_preprocess_text`` 同源同产出）。
 
-    TUI 内容路径此前完全不做智能排版——同一段 Markdown 经 Rich 路径渲染为
+    TUI 内容路径此前完全不做智能排版——同一段 Markdown 经历史渲染实现为
     ``a → b`` / ``x — y``，经 TUI 路径却原样保留 ``a -> b`` / ``x --- y``，
     两条路径语义分裂。现按 TextNode 粒度统一预处理（代码/链接 URL 等不经
-    TextNode 的内容不受影响，与 Rich 路径 ``_text_node_handler`` 一致）。
+    TextNode 的内容不受影响，与解析层 ``_text_node_handler`` 一致）。
     """
     if not text or not _needs_typography(text):
         return text
@@ -911,12 +911,12 @@ def render_inline(text: str, base_style: Style | None = None, ctx=None) -> list[
         # 快速判否：不产生任何行内格式节点（无核心格式字符、无裸 URL 前缀）
         # → 单 Run（免进解析器）。
         # ★ 例外：上下文含缩写定义表（``abbr_map``）时短语可能被缩写替换为
-        #   高亮样式，纯文本也需进入解析器（与 Rich 路径
+        #   高亮样式，纯文本也需进入解析器（与解析层
         #   ``inline_renderer`` 的 abbr 分支同口径）。
         if _FAST_ISDISJOINT(text) and not (
                 ctx is not None and getattr(ctx, "abbr_map", None)):
             # 智能排版：文本无行内标记时，仍需应用 ``--``/``...``/``->`` 等替换
-            # （与 Rich 路径同源）——预处理不产生新的标记字符，故可直接返回单 Run。
+            # （与解析层同源）——预处理不产生新的标记字符，故可直接返回单 Run。
             text = _preprocess_plain(text)
             return [Run(text, base)]
         from src.renderer.inline_parser import _InlineParser

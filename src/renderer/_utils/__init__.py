@@ -15,11 +15,6 @@ from ._html_entities import (
     decode_html_entities,
 )
 
-# ── 自动链接化 ──
-from ._linkify import (
-    _auto_linkify_emails,
-)
-
 # ── 显示宽度与转义标记 ──
 from ._display import (
     _ZERO_WIDTH_CHARS,
@@ -57,8 +52,6 @@ __all__ = [
     # HTML 实体
     "_HTML_ENTITIES",
     "decode_html_entities",
-    # 自动链接化
-    "_auto_linkify_emails",
     # 显示宽度与转义标记
     "_ZERO_WIDTH_CHARS",
     "cjk_display_width",

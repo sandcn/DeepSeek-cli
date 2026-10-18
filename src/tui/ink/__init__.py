@@ -1,4 +1,4 @@
-"""ink — React Ink 风格组件框架核心（零 Rich 依赖）。
+"""ink — React Ink 风格组件框架核心（零第三方渲染依赖）。
 
 组件树 + 调和器（reconciler）+ hooks + flexbox 布局 + 帧差异渲染，
 非全屏（随内容流动）模型。由以下子模块组成：

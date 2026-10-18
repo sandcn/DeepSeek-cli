@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import io
 import string
 import time
 
@@ -34,16 +33,6 @@ def _render_chunked(src: str, size: int = 2, width: int = 72):
         r.write(src[i:i + size])
     r.close()
     return [ln.plain for ln in r.take_lines()]
-
-
-def _rich(src: str) -> str:
-    from src.renderer._incremental import IncrementalRenderer
-
-    buf = io.StringIO()
-    r = IncrementalRenderer(_file=buf, show_indicator=False)
-    r.write(src)
-    r.close()
-    return buf.getvalue()
 
 
 # ══════════════════════════════════════════════════════════
@@ -76,11 +65,6 @@ def test_escape_backslash():
 def test_escape_chunked_consistent():
     src = "\\*not em\\* \\# \\% \\@ \\` end\n"
     assert _render_chunked(src) == _render(src)
-
-
-def test_rich_escape_parity():
-    out = _rich("a\\%b \\@c\n")
-    assert "a%b @c" in out
 
 
 # ══════════════════════════════════════════════════════════
@@ -123,11 +107,6 @@ def test_image_title_escaped_quote():
 def test_link_title_single_quoted_escape():
     got = _render("[t](url 'a \\'b\\'')\n")
     assert got == ["t \"a 'b'\""]
-
-
-def test_rich_link_title_escape_parity():
-    out = _rich('[t](url "a \\"b\\" c")\n')
-    assert "t" in out and "a \"b\" c" in out
 
 
 # ══════════════════════════════════════════════════════════
@@ -264,7 +243,7 @@ def test_short_code_active_line_reflects_latest():
 def test_code_highlight_groups_same_style(monkeypatch):
     """同样式连续 token 合并为单个 Run（长字符串按字符出 token 时不退化）。"""
     from src.renderer.ansi import code as _code
-    from src.renderer._rendering._code import get_lexer
+    from src.renderer._lexer import get_lexer
     from src.renderer._utils import get_code_style
 
     lexer = get_lexer("json")

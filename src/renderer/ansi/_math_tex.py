@@ -1,4 +1,4 @@
-"""_math_tex — TeX 原语与旧式排版结构（零 Rich，供 ANSI 公式路径使用）。
+"""_math_tex — TeX 原语与旧式排版结构（自绘 ANSI，供公式路径使用）。
 
 KaTeX 兼容层，补齐 ``\\over`` / ``\\atop`` / ``\\choose`` / ``\\above`` /
 ``\\brace`` / ``\\brack`` 及其 ``*withdelims`` 变体（组内分数原语），以及

@@ -1,4 +1,4 @@
-"""AnsiRenderEngine — token → AnsiLine 行（替代 Rich RenderEngine）。
+"""AnsiRenderEngine — token → AnsiLine 行（Token → 行模型）。
 
 复用解析层（RecursiveDescentParser / TokenPipeline / CodeBlockBatcher），
 将 Token 渲染为 AnsiLine 序列。支持流式状态（代码/数学/mermaid/引用/
@@ -25,7 +25,7 @@ _logger = logging.getLogger(__name__)
 
 
 class AnsiRenderEngine:
-    """Rich-free 渲染引擎：Token → list[AnsiLine]。
+    """纯 ANSI 渲染引擎：Token → list[AnsiLine]。
 
     Args:
         code_theme: pygments 代码高亮主题名。
@@ -113,7 +113,7 @@ class AnsiRenderEngine:
             if t == TokenType.TABLE_CAPTION:
                 return blocks.render_table_caption(token)
             if t == TokenType.LINE_BREAK:
-                # 硬换行（`<br>` 独立 Token）→ 空行（与 Rich 路径 InlineHandler 一致）
+                # 硬换行（`<br>` 独立 Token）→ 空行（与历史实现一致）
                 return [AnsiLine()]
             if t == TokenType.BLOCKQUOTE:
                 # 旧式单 Token 引用块（兼容解析器旧契约）
@@ -166,7 +166,7 @@ class AnsiRenderEngine:
             # OPEN/CLOSE 仅表达结构、不产出内容行。修复前用单一 ``_bq_lines``
             # 缓冲 + CLOSE 时渲染：嵌套引用的 OPEN 会清空缓冲（丢失外层内容）、
             # 跨层 BLOCKQUOTE_LINE 在缓冲为 None 时被丢弃、每层 CLOSE 都重复
-            # 渲染一次（多出空边框行）。与 Rich 路径 ``InlineHandler`` 语义一致。
+            # 渲染一次（多出空边框行）。与历史实现语义一致。
             if t in (TokenType.BLOCKQUOTE_OPEN, TokenType.BLOCKQUOTE_CLOSE):
                 return []
             if t == TokenType.BLOCKQUOTE_LINE:

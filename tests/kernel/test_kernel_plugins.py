@@ -90,8 +90,8 @@ async def test_llm_service(cli_kernel):
 
 async def test_renderer_service(cli_kernel):
     renderer = cli_kernel.resolve_service("renderer")
-    instance = renderer.create()
-    assert instance is not None
+    assert renderer.builtin_filter_ids()
+    assert isinstance(renderer.filters(), list)
 
 
 async def test_ui_service(cli_kernel):

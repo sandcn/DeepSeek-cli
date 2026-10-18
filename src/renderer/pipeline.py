@@ -105,7 +105,7 @@ class CodeBlockBatcher(TokenFilter):
     """代码块批处理过滤器——将逐行的 CODE_LINE 合并为整块 CODE_BLOCK。
 
     将 CODE_FENCE_OPEN → (CODE_LINE)* → CODE_FENCE_CLOSE 模式
-    合并为单个 CODE_BLOCK Token，供 Engine 用 Rich Syntax 整块高亮。
+    合并为单个 CODE_BLOCK Token，供渲染引擎整块高亮。
 
     收益：
     - 从每行一次 Pygments 调用 → 整个代码块一次

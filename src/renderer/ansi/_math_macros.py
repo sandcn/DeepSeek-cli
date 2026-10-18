@@ -1,4 +1,4 @@
-"""_math_macros — 宏定义与展开（KaTeX 兼容的轻量 TeX 宏系统，零 Rich）。
+"""_math_macros — 宏定义与展开（KaTeX 兼容的轻量 TeX 宏系统，自绘 ANSI）。
 
 TUI 流式公式渲染在遇到 ``\\def`` / ``\\newcommand`` / ``\\DeclareMathOperator``
 / ``\\let`` 等定义命令时，需要把定义登记下来并在后续（含跨公式的 ``\\gdef``）

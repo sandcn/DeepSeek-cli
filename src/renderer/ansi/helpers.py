@@ -1,6 +1,6 @@
 """ansi 工具 — Run/AnsiLine 输出模型 + 换行/截断/测量 + ANSI→样式解析。
 
-本模块自绘 ANSI（零 Rich、零 tui 依赖）：输出模型为 AnsiLine（Run 序列），
+本模块自绘 ANSI（零第三方渲染依赖、零 tui 依赖）：输出模型为 AnsiLine（Run 序列），
 宽度依据统一用 renderer._utils.cjk_display_width，样式用本包自含 Style。
 """
 
@@ -640,7 +640,7 @@ def parse_sgr_params(params: str) -> tuple[Style | None, bool]:
     i = 0
     while i < len(parts):
         p = parts[i]
-        # 0 / 00 / 000 → 重置（Rich 有时输出 \x1b[39;49;00m 形式的重置）
+        # 0 / 00 / 000 → 重置（部分终端库有时输出 \x1b[39;49;00m 形式的重置）
         if p == "" or (p.isdigit() and int(p) == 0):
             reset = True
         elif p == "1":
@@ -703,7 +703,7 @@ def ansi_to_runs(text: str, base_style: Any = None) -> list[Run]:
         style, is_reset = parse_sgr_params(m.group(1))
         if is_reset:
             # ★ 组合 SGR「重置 + 颜色」修复（方向1）：``\x1b[0;31m`` 等
-            #   （Pygments/Rich 常输出）——终端语义先 reset 再应用颜色。
+            #   （Pygments 常输出）——终端语义先 reset 再应用颜色。
             #   修复前直接 ``current = Style()`` 把同序列解析出的 fg=31 丢弃，
             #   reset 后文本渲染成默认色而非红色。
             current = Style() if base_style is None else base_style

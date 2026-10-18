@@ -114,8 +114,7 @@ class InlineMathNode(InlineNode):
 class MathMLNode(InlineNode):
     """行内 MathML 节点 ``<math>…</math>``（内容的 Presentation MathML 原文）。
 
-    渲染层把 MathML 转为 LaTeX 后复用二维/紧凑公式排版（ANSI 路径），
-    Rich 路径转为 LaTeX 后交给 ``MathRenderer``。
+    渲染层把 MathML 转为 LaTeX 后复用二维/紧凑公式排版（ANSI 路径）。
     """
     # 叶子节点：运行期用 None 表示「无子节点」（基类默认 []）——类型上
     # 有意放宽基类的 ``list[InlineNode]``，故显式忽略赋值兼容检查

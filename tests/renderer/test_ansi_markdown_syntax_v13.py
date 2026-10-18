@@ -88,18 +88,6 @@ def _inline_bold_texts(src: str) -> list:
     return [r.text for r in render_inline(src) if r.style is not None and r.style.bold]
 
 
-def _rich_plain(src: str) -> str:
-    import io
-
-    from src.renderer._incremental import IncrementalRenderer
-
-    buf = io.StringIO()
-    r = IncrementalRenderer(_file=buf, show_indicator=False)
-    r.write(src)
-    r.close()
-    return _ANSI.sub("", buf.getvalue()).rstrip()
-
-
 # ══════════════════════════════════════════════════════════
 # 1. 用户报告内容（本次修复核心）
 # ══════════════════════════════════════════════════════════
@@ -156,13 +144,6 @@ class TestReportedList:
 
     def test_inline_path_renders_bold(self):
         assert _inline_bold_texts(REPORTED_TARGET) == ["原版「传送门特效、水下雾」"]
-
-    def test_rich_path_renders_bold(self):
-        """Rich 渲染路径共享同一解析层——同样不得残留字面 ``**``。"""
-        got = _rich_plain(REPORTED_TARGET)
-        assert "**" not in got, got
-        assert "原版「传送门特效、水下雾」已有。" in got
-
 
 # ══════════════════════════════════════════════════════════
 # 2. CJK 语境软化（正例：中文标点紧贴强调/span 定界符）

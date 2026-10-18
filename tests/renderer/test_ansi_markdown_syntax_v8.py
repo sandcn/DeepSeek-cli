@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import io
 import time
 
 from src.renderer.ansi import AnsiStreamRenderer
@@ -35,16 +34,6 @@ def _render_chunked(src: str, size: int = 2, width: int = 72):
         r.write(src[i:i + size])
     r.close()
     return [ln.plain for ln in r.take_lines()]
-
-
-def _rich(src: str) -> str:
-    from src.renderer._incremental import IncrementalRenderer
-
-    buf = io.StringIO()
-    r = IncrementalRenderer(_file=buf, show_indicator=False)
-    r.write(src)
-    r.close()
-    return buf.getvalue()
 
 
 def _table_body(lines) -> list:
@@ -89,11 +78,6 @@ def test_toc_variant_in_blockquote():
 def test_toc_variant_chunked_consistent():
     for src in ("# a\n\n[toc]\n", "# a\n\n[[TOC]]\n"):
         assert _render_chunked(src) == _render(src)
-
-
-def test_toc_variant_rich_path():
-    out = _rich("[[TOC]]\n\n# A\n")
-    assert "\u76ee\u5f55" in out
 
 
 def test_forward_ref_regex_toc_variants():
@@ -145,11 +129,6 @@ def test_fenced_div_plain_type_unchanged():
 def test_fenced_div_attrs_chunked_consistent():
     src = "::: {.warning #w}\nbody\n:::\n"
     assert _render_chunked(src) == _render(src)
-
-
-def test_fenced_div_attrs_rich_path():
-    out = _rich("::: {.warning}\nbody\n:::\n")
-    assert "WARNING" in out and "{.warning}" not in out
 
 
 # ══════════════════════════════════════════════════════════
@@ -261,19 +240,6 @@ def test_task_checkbox_parser_flags():
     assert parse("[x] done")[1:] == (True, True, False)
     assert parse("[ ]")[1] is True
     assert parse("[-]cancelled")[1] is False
-
-
-def test_task_checkbox_rich_is_todo():
-    from src.renderer._rendering import is_todo
-
-    assert is_todo("[x]done")[0] is None
-    assert is_todo("[x] done")[0] == "x"
-    assert is_todo("[ ]")[0] == " "
-
-
-def test_task_checkbox_rich_path_no_char_loss():
-    out = _rich("- [x]done\n")
-    assert "[x]done" in out and "one\\n" not in out
 
 
 def test_task_checkbox_chunked_consistent():

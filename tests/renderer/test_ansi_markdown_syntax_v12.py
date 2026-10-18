@@ -22,9 +22,9 @@
   - **闭定界符**：紧随右侧是 ASCII 标识符字符（``x==y, z==w``）；或紧邻左侧
     是 ASCII 引号。
 
-两路径同步：TUI（``AnsiStreamRenderer``）与 Rich（``IncrementalRenderer``）
-共享同一解析层（``_InlineParser``），故两路径断言一致；并固化「流式分块写入
-与一次性写入产出一致」「预览任意帧都不得出现被吞的定界符」。
+两路径同步：解析层（``_InlineParser``）由 ANSI 渲染路径
+（``AnsiStreamRenderer``）消费，故断言一致；并固化「流式分块写入与一次性
+写入产出一致」「预览任意帧都不得出现被吞的定界符」。
 """
 
 from __future__ import annotations
@@ -121,18 +121,6 @@ def _styled_texts(src: str, pred, width: int = 100) -> list:
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
 
-def _rich_plain(src: str) -> str:
-    import io
-
-    from src.renderer._incremental import IncrementalRenderer
-
-    buf = io.StringIO()
-    r = IncrementalRenderer(_file=buf, show_indicator=False)
-    r.write(src)
-    r.close()
-    return _ANSI.sub("", buf.getvalue()).rstrip()
-
-
 # ══════════════════════════════════════════════════════════
 # 1. 用户报告内容（本次修复核心）
 # ══════════════════════════════════════════════════════════
@@ -186,12 +174,6 @@ class TestReportedSculkBlock:
                 for bad in _EATEN_MARKERS:
                     assert bad not in text, (i, bad, text)
         r.close()
-
-    def test_rich_path_keeps_delimiters(self):
-        got = _rich_plain(REPORTED)
-        assert 'PickSpreadBlock(0)=="sculk_block"' in got
-        assert '(69)=="sculk_block"' in got
-
 
 # ══════════════════════════════════════════════════════════
 # 2. 代码语义的定界符保留（词内运算符 / 字符串字面量）
@@ -288,11 +270,6 @@ class TestNormalMarkupStillWorks:
         got = _plain("箭头 ==> 与 <== 与 <==>")
         assert "⟹" in got and "⟸" in got and "⟺" in got
         assert _highlighted_texts("箭头 ==> 与 <== 与 <==>") == []
-
-    def test_rich_path_highlight_still_works(self):
-        got = _rich_plain("中文==高亮==中文")
-        assert "中文高亮中文" in got
-        assert "==" not in got
 
 
 def _selected_highlight(lines) -> list:

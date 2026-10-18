@@ -520,7 +520,7 @@ class _BlockParserStreamMixin:
             self._details_open_emitted = True
         # 正文以完整 Markdown 语义递归解析（列表/代码块/引用/强调…），
         # 结果挂在 CLOSE 的 meta["body_tokens"]（渲染层整体渲染并缩进）；
-        # 同时保留原始行 body_lines（Rich 路径与流式预览逐行渲染用）。
+        # 同时保留原始行 body_lines（流式预览逐行渲染用）。
         body_lines = list(self._block_lines)
         # 去尾部空行（空行分隔的多段正文保留；尾部空行是块结束的产物）
         while body_lines and not body_lines[-1].strip():

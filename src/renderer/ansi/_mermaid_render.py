@@ -1,4 +1,4 @@
-"""_mermaid_render — Mermaid 图表 → AnsiLine 终端渲染（零 Rich 依赖）。
+"""_mermaid_render — Mermaid 图表 → AnsiLine 终端渲染（零第三方渲染依赖）。
 
 原 ``ansi/mermaid.py`` 仅以等宽纯文本框展示 Mermaid 源码（首版退化）。本模块
 提供真正的 ASCII/Unicode 图形渲染，覆盖 11 类图：
@@ -6,7 +6,7 @@
   流程图 / 时序图 / 类图 / 状态图 / 甘特图 / 饼图 / ER 图 / Git 提交图 /
   思维导图 / 时间线 / 用户旅程图
 
-与 Rich 路径（``renderer.mermaid_renderer``）**共享字符级解析**（``_mermaid_parse``），
+与共享解析模块（``renderer._mermaid_parse``）**共享字符级解析**，
 布局语义一致；输出 ``AnsiLine`` 并按显示宽度对齐（CJK/emoji 安全）。
 
 性能：渲染结果按源码缓存在 ``ansi/mermaid.py`` 层上（流式预览逐帧重渲时
@@ -31,7 +31,7 @@ from src.renderer._mermaid_parse import (
 )
 
 
-# ── 样式常量（ANSI；语义与 Rich 路径一致） ────────────────
+# ── 样式常量（ANSI；语义与历史实现一致） ────────────────
 _ST_BOX = Style(fg=241, dim=True)
 _ST_NODE = Style(fg=231, bold=True)
 _ST_EDGE_LABEL = Style(fg=245, italic=True, dim=True)

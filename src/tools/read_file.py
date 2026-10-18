@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 import os
 from functools import lru_cache
 import aiofiles
 import aiofiles.os
-from rich.syntax import Syntax
-from rich.console import Console as RichConsole
 from .base import Func
 from .file_ops import validate_path_security, check_file_size
 from .encoding import async_detect_encoding, pick_best_decoding
@@ -376,36 +373,6 @@ class ReadFileFunc(Func):
 
     # ── 公共 UI 辅助方法 ──
 
-    def _build_syntax(self, result: dict, file_path: str) -> Syntax | None:
-        """从 result 构建 Syntax 对象（含 lexer 解析和 fallback），返回 Syntax 或 None。"""
-        if not result[_CONTENT_KEY]:
-            return None
-        try:
-            ext = os.path.splitext(file_path)[1].lstrip('.')
-            lexer = _resolve_lexer_name(ext)
-            start_line = 1
-            if result.get(_LINE_NUMBERS_KEY) is not None:
-                start_line = result[_LINE_NUMBERS_KEY][0]
-            return Syntax(
-                result[_CONTENT_KEY], lexer,
-                line_numbers=True,
-                start_line=start_line,
-                highlight_lines=set(),
-                theme="monokai",
-                background_color="default",
-            )
-        except Exception:
-            fallback_start = 1
-            if result.get(_LINE_NUMBERS_KEY) is not None:
-                fallback_start = result[_LINE_NUMBERS_KEY][0]
-            return Syntax(
-                result[_CONTENT_KEY], "python3",
-                line_numbers=True,
-                start_line=fallback_start,
-                theme="monokai",
-                background_color="default",
-            )
-
     def _render_syntax_to_output(self, file_path: str, result: dict) -> None:
         """将语法高亮渲染为 ANSI 字符串，通过 EventBus 上屏（聊天卡隐藏）。
 
@@ -413,15 +380,38 @@ class ReadFileFunc(Func):
         不显示读到的文件内容——内容上屏时携带 ``chat_hidden=True``，聊天卡
         渲染跳过该内容行；内容行仍保留在工具块数据中（轨迹 Trace / 详情视图
         照常可见）。读取失败/空文件等错误提示不经本方法（照常显示）。
+
+        高亮使用 Pygments（256 色 ANSI）并补行号前缀，未知语言降级为纯文本。
         """
-        syntax = self._build_syntax(result, file_path)
-        if syntax is None:
+        content = result[_CONTENT_KEY]
+        if not content:
             return
 
-        buf = io.StringIO()
-        ansi_console = RichConsole(file=buf, force_terminal=True)
-        ansi_console.print(syntax)
-        output = buf.getvalue()
+        ext = os.path.splitext(file_path)[1].lstrip(".")
+        lang = _resolve_lexer_name(ext)
+        start_line = 1
+        if result.get(_LINE_NUMBERS_KEY) is not None:
+            start_line = result[_LINE_NUMBERS_KEY][0]
+
+        from pygments import highlight
+        from pygments.formatters import Terminal256Formatter
+        from pygments.lexers import get_lexer_by_name
+
+        try:
+            lexer = get_lexer_by_name(lang, stripnl=False)
+            body = highlight(content, lexer, Terminal256Formatter(style="monokai"))
+            lines = body.rstrip("\n").splitlines()
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "语法高亮失败，降级纯文本: %s", file_path, exc_info=True,
+            )
+            lines = content.splitlines()
+        if not lines:
+            return
+        width = max(2, len(str(start_line + len(lines) - 1)))
+        output = "\n".join(
+            f"{start_line + i:>{width}} {line}" for i, line in enumerate(lines)
+        )
         if output:
             Func._publish_tool_text(output, chat_hidden=True)
 

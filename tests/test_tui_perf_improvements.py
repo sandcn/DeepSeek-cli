@@ -152,26 +152,15 @@ class TestLazyExports:
         assert proc.returncode == 0, proc.stderr
         assert proc.stdout.strip() == "False False"
 
-    def test_renderer_ansi_import_skips_rich_chain(self):
-        """导入 ``src.renderer.ansi``（TUI 内容路径）不加载 Rich 渲染链。"""
+    def test_renderer_ansi_import_skips_legacy_chain(self):
+        """导入 ``src.renderer.ansi``（TUI 内容路径）不加载旧渲染链。"""
         proc = _run_isolated(
             "import sys; import src.renderer.ansi; "
-            "print('rich.console' in sys.modules, "
-            "'src.renderer.engine' in sys.modules)"
+            "print('src.renderer.engine' in sys.modules, "
+            "'src.renderer._incremental' in sys.modules)"
         )
         assert proc.returncode == 0, proc.stderr
         assert proc.stdout.strip() == "False False"
-
-    def test_renderer_rich_exports_still_accessible(self):
-        """``src.renderer`` 的 Rich 侧符号经惰性解析仍可用。"""
-        proc = _run_isolated(
-            "from src.renderer import (IncrementalRenderer, _StyledOutputAdapter, "
-            "OutputAdapter, TokenType, Style, Console, render_toc, "
-            "RenderEngine, TokenPipeline, RenderContext, get_safe_console_config); "
-            "print(IncrementalRenderer.__name__)"
-        )
-        assert proc.returncode == 0, proc.stderr
-        assert proc.stdout.strip() == "IncrementalRenderer"
 
     def test_renderer_all_names_resolvable(self):
         proc = _run_isolated(

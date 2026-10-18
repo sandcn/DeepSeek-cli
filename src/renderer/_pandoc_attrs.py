@@ -11,7 +11,7 @@ fenced div ``::: {.warning #id}``（``_block_parser``）共用同一套 token �
   - 其它 token（如 ``color:red``）→ 视为**非本语法**（返回 ``None``，调用方
     回退既有花括号语义，如 ``{color:red}`` 着色文本）。
 
-本模块无 ANSI/Rich 依赖，可被解析层与渲染层安全导入。
+本模块无渲染依赖，可被解析层与渲染层安全导入。
 """
 
 from __future__ import annotations

@@ -2,8 +2,8 @@
 
 历史问题：``strip_ansi`` 与 TOC 树形连接符在多层各有一份实现，覆盖范围
 互不相同（``clawbot`` 仅剥 CSI、``renderer`` 剥 CSI+OSC+双字符转义），同一
-文本经不同路径清洗结果可能不一致；TOC 连接符逻辑则在 Rich 路径与自绘 ANSI
-路径各有一份逐字符相同的拷贝。
+文本经不同路径清洗结果可能不一致；TOC 连接符逻辑此前在两条渲染路径各有一份
+逐字符相同的拷贝。
 
 本测试固化收敛结果：
 
@@ -95,7 +95,7 @@ def test_has_ansi_fast_path():
 
 
 def test_ansi_module_has_no_third_party_dependency():
-    """``src._ansi_text`` 必须零第三方依赖（TUI ANSI 路径禁止 Rich）。"""
+    """``src._ansi_text`` 必须零第三方依赖（TUI ANSI 路径禁止第三方渲染库）。"""
     import ast
     from pathlib import Path
 
@@ -114,11 +114,9 @@ def test_ansi_module_has_no_third_party_dependency():
 
 
 def test_toc_connectors_shared_between_render_paths():
-    from src.renderer._rendering._special import _build_toc_connectors as rich_impl
     from src.renderer._toc_logic import build_toc_connectors
     from src.renderer.ansi.toc import _build_toc_connectors as ansi_impl
 
-    assert rich_impl is build_toc_connectors
     assert ansi_impl is build_toc_connectors
 
 

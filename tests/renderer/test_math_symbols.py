@@ -1,19 +1,15 @@
-"""数学符号表测试 — 覆盖 src/renderer/math_symbols/ 全部符号表与样式常量。
+"""数学符号表测试 — 覆盖 src/renderer/math_symbols/ 全部纯数据符号表。
 
-验证各符号映射表的正确性、_build_command_map 合并结果的正确性与一致性，
-以及上下标/定界符/空格等关键映射。
+验证各符号映射表的正确性，以及上下标/定界符/空格等关键映射。
 """
 
 import pytest
-from rich.style import Style
 
 from src.renderer.math_symbols import (
     _ACCENT_MAP,
     _ARROW_SYMBOLS,
     _BIG_OPERATOR_COMMANDS,
     _BIG_OPERATORS,
-    _COLOR_ALIAS,
-    _COMMAND_MAP,
     _DELIMITER_MAP,
     _FUNCTION_NAMES,
     _GREEK_LETTERS,
@@ -25,12 +21,8 @@ from src.renderer.math_symbols import (
     _RELATION_SYMBOLS,
     _SILENT_COMMANDS,
     _SPACE_MAP,
-    _STYLE_DEFAULT,
-    _STYLE_FUNCTION,
-    _STYLE_OPERATOR,
     _SUBSCRIPT_MAP,
     _SUPERSCRIPT_MAP,
-    _build_command_map,
 )
 
 
@@ -204,63 +196,3 @@ def test_superscript_has_plus_minus_equals():
 def test_script_maps_are_non_empty():
     assert len(_SUPERSCRIPT_MAP) > 20
     assert len(_SUBSCRIPT_MAP) > 10
-
-
-# ── 样式常量 ──────────────────────────────────────────────
-
-def test_style_constants_are_rich_styles():
-    assert isinstance(_STYLE_DEFAULT, Style)
-    assert isinstance(_STYLE_FUNCTION, Style)
-    assert isinstance(_STYLE_OPERATOR, Style)
-
-
-def test_color_alias_contains_common_colors():
-    assert _COLOR_ALIAS["red"] == "red"
-    assert _COLOR_ALIAS["blue"] == "blue"
-    assert _COLOR_ALIAS["gray"] == "grey"
-    assert _COLOR_ALIAS["darkred"] == "dark_red"
-
-
-# ── 命令映射构建 ──────────────────────────────────────────
-
-def test_command_map_is_consistent_with_builder():
-    assert _COMMAND_MAP == _build_command_map()
-
-
-def test_command_map_contains_merged_tables():
-    for cmd in ("alpha", "leq", "times", "sum", "sin", "infty"):
-        assert cmd in _COMMAND_MAP, cmd
-
-
-def test_command_map_function_style():
-    char, style = _COMMAND_MAP["sin"]
-    assert char == "sin"
-    assert style == _STYLE_FUNCTION
-
-
-def test_command_map_operator_style():
-    char, style = _COMMAND_MAP["times"]
-    assert char == "×"
-    assert style == _STYLE_OPERATOR
-
-
-def test_command_map_greek_default_style():
-    char, style = _COMMAND_MAP["alpha"]
-    assert char == "α"
-    assert style == _STYLE_DEFAULT
-
-
-def test_command_map_symbol_entries_non_empty():
-    # 符号类命令（非空格命令）必须映射到非空字符
-    symbol_sources = {**_GREEK_LETTERS, **_RELATION_SYMBOLS, **_ARROW_SYMBOLS,
-                      **_MISC_SYMBOLS, **_OPERATOR_SYMBOLS, **_BIG_OPERATORS,
-                      **_FUNCTION_NAMES}
-    for cmd, char in symbol_sources.items():
-        mapped, _style = _COMMAND_MAP[cmd]
-        assert mapped, f"命令 {cmd} 映射为空字符"
-
-
-def test_build_command_map_deterministic():
-    m1 = _build_command_map()
-    m2 = _build_command_map()
-    assert m1 == m2

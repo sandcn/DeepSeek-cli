@@ -227,7 +227,7 @@ class _ToolOutputMixin:
             segs.pop()
         for seg in segs:
             l = AnsiLine.of("  ", _S_TOOL_OUT)
-            # ★ 工具输出可能含 Rich/pygments 高亮 ANSI 序列（read_file 等）。
+            # ★ 工具输出可能含 Pygments 高亮 ANSI 序列（read_file 等）。
             #   原样保留进 Run.text 会让宽度测量把转义码当可见字符（宽度膨胀→
             #   误触发 wrap），wrap_line 逐字符截断把转义序列拦腰截断（如残留
             #   ;49;00m）渲染错乱。经 ansi_to_line 解析为带样式 Run，宽度测量

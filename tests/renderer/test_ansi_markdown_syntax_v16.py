@@ -1,11 +1,11 @@
-"""ANSI/Rich 流式 Markdown 收尾完善（第十六批）测试。
+"""ANSI 流式 Markdown 收尾完善（第十六批）测试。
 
 本轮改动：
 
-  - **Rich 路径块级脚注**：``[^1]:`` 后缩进的列表 / 代码 / 引用 / 表格按完整
-    Markdown 渲染（此前 Rich 路径显示字面 ``- one``）。
+  - **块级脚注**：``[^1]:`` 后缩进的列表 / 代码 / 引用 / 表格按完整
+    Markdown 渲染。
   - **定义列表块级续段**：``Term\\n: def\\n\\n    - a`` 的续段按块解析并缩进
-    4 列（ANSI + Rich 两条路径一致）。
+    4 列。
   - **字形簇（grapheme cluster）宽度/换行/截断**：ZWJ 组合 emoji、肤色修饰、
     keycap、国旗不再被拆散或高估宽度。
   - **Pandoc line block**：``| 行内容`` 连续行按行块渲染（保留逐行语义），
@@ -15,8 +15,6 @@
 
 from __future__ import annotations
 
-from io import StringIO
-
 import pytest
 
 from src._text_width import (
@@ -24,13 +22,11 @@ from src._text_width import (
     grapheme_clusters,
     string_width,
 )
-from src.renderer import IncrementalRenderer
 from src.renderer._block_helpers import has_block_markers
 from src.renderer.ansi import AnsiStreamRenderer
 from src.renderer.ansi.helpers import (
     AnsiLine,
     Run,
-    strip_ansi,
     truncate_line,
     wrap_line,
 )
@@ -47,14 +43,6 @@ def _ansi(src: str, width: int = 60) -> list[str]:
     r.write(src)
     r.close()
     return [ln.plain for ln in r.take_lines()]
-
-
-def _rich(src: str, width: int = 60) -> str:
-    buf = StringIO()
-    r = IncrementalRenderer(width=width, show_indicator=False, _file=buf)
-    r.write(src)
-    r.close()
-    return strip_ansi(buf.getvalue())
 
 
 # ══════════════════════════════════════════════════════════
@@ -115,7 +103,7 @@ def test_ansi_line_width_uses_cluster_width():
 
 
 # ══════════════════════════════════════════════════════════
-# 定义列表块级续段（ANSI / Rich）
+# 定义列表块级续段（ANSI）
 # ══════════════════════════════════════════════════════════
 
 def test_ansi_definition_continuation_list_block():
@@ -151,20 +139,6 @@ def test_ansi_definition_continuation_stream_matches_oneshot():
         r.write(src[i:i + 2])
     r.close()
     assert [ln.plain for ln in r.take_lines()] == _ansi(src)
-
-
-def test_rich_definition_continuation_list_block():
-    out = _rich("Term\n: def\n\n    - a\n    - b\n")
-    assert "Term" in out and "def" in out
-    assert "• a" in out and "• b" in out
-    assert "- a" not in out
-
-
-def test_rich_definition_continuation_indented_code():
-    out = _rich("Term\n: def\n\n        code\n        two\n")
-    assert "code" in out and "two" in out
-    assert "        code" not in out
-
 
 
 # ══════════════════════════════════════════════════════════
@@ -207,29 +181,6 @@ def test_line_block_preview():
     r.write("ne two\n")
     assert [ln.plain for ln in r.take_preview_lines()] == ["line one", "line two"]
     r.close()
-
-
-# ══════════════════════════════════════════════════════════
-# Rich 路径块级脚注
-# ══════════════════════════════════════════════════════════
-
-def test_rich_block_footnote_list():
-    out = _rich("a[^1]\n\n[^1]:\n    - one\n    - two\n")
-    assert "[1]" in out
-    assert "• one" in out and "• two" in out
-    assert "- one" not in out
-
-
-def test_rich_block_footnote_code_and_quote():
-    code = _rich("a[^1]\n\n[^1]:\n    ```js\n    x\n    ```\n")
-    assert "x" in code and "```" in code
-    quote = _rich("a[^1]\n\n[^1]:\n    > quote\n")
-    assert "quote" in quote
-
-
-def test_rich_block_footnote_multiple_paragraphs():
-    out = _rich("a[^1]\n\n[^1]: first\n\n    - item\n\n    after\n")
-    assert "first" in out and "• item" in out and "after" in out
 
 
 # ══════════════════════════════════════════════════════════

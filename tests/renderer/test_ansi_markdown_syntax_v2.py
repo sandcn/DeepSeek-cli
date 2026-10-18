@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-import io
-
 from src.renderer.ansi import AnsiStreamRenderer
 from src.renderer.ansi.inline import render_inline
 
@@ -357,48 +355,6 @@ def test_html_table_stream_commit():
     frames = _live(chunks)
     final = frames[-1][0]
     assert any("\u250c" in ln for ln in final)
-
-
-# ══════════════════════════════════════════════════════════
-# Rich 路径（RenderEngine / IncrementalRenderer）一致性
-# ══════════════════════════════════════════════════════════
-
-
-def _rich(src: str) -> str:
-    from src.renderer._incremental import IncrementalRenderer
-
-    buf = io.StringIO()
-    r = IncrementalRenderer(_file=buf, show_indicator=False)
-    r.write(src)
-    r.close()
-    return buf.getvalue()
-
-
-def test_rich_front_matter_rendered():
-    out = _rich("---\ntitle: 我的标题\n---\n\n正文\n")
-    assert "元信息" in out
-    assert "我的标题" in out
-
-
-def test_rich_table_caption_rendered():
-    out = _rich("| A |\n|---|\n| 1 |\n: 表注文字\n")
-    assert "表注文字" in out
-
-
-def test_rich_details_body_rendered():
-    out = _rich("<details>\n<summary>标题</summary>\n正文内容\n</details>\n")
-    assert "标题" in out
-    assert "正文内容" in out
-
-
-def test_rich_nolang_fence_content_preserved():
-    out = _rich("```\nplain text\n```\n")
-    assert "plain text" in out
-
-
-def test_rich_reference_image_resolved():
-    out = _rich("![图][img]\n\n[img]: http://x/y.png\n")
-    assert "http://x/y.png" in out
 
 
 def test_html_table_track_tag_not_matched_as_row():

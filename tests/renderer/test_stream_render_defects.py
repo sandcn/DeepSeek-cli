@@ -393,57 +393,6 @@ def test_stream_merge_respects_max_chars():
 
 
 # ═══════════════════════════════════════════════════════════
-# P2-5 捕获缓冲公开接口
-# ═══════════════════════════════════════════════════════════
-
-
-def test_output_adapter_captured_output_property():
-    """OutputAdapter 暴露公开 captured_output 读写接口。"""
-    from io import StringIO
-    from rich.console import Console
-    from src.renderer.output import OutputAdapter
-
-    cap: list = []
-    adapter = OutputAdapter(Console(file=StringIO(), force_terminal=True),
-                            captured_output=cap)
-    assert adapter.captured_output is cap
-    adapter.captured_output = []
-    assert adapter.captured_output == []
-
-
-def test_styled_adapter_forwards_captured_output():
-    """_StyledOutputAdapter 经公开接口转发捕获缓冲（不再直达私有字段）。"""
-    from io import StringIO
-    from rich.console import Console
-    from src.renderer import _StyledOutputAdapter
-    from src.renderer.output import OutputAdapter
-
-    cap: list = []
-    adapter = OutputAdapter(Console(file=StringIO(), force_terminal=True),
-                            captured_output=cap)
-    styled = _StyledOutputAdapter(adapter, style="dim")
-    assert styled.captured_output is cap
-    new_cap: list = []
-    styled.captured_output = new_cap
-    assert adapter.captured_output is new_cap
-
-
-def test_styled_adapter_tolerates_adapter_without_capture():
-    """底层适配器不支持捕获时安全降级（返回 None，不抛异常）。"""
-    from src.renderer import _StyledOutputAdapter
-
-    class _Bare:
-        width = 80
-
-        def force_refresh_width(self):
-            return None
-
-    styled = _StyledOutputAdapter(_Bare(), style="dim")
-    assert styled.captured_output is None
-    styled.captured_output = []   # 不抛异常
-
-
-# ═══════════════════════════════════════════════════════════
 # 其它：优化器 / 管道容错 / 批处理器异常
 # ═══════════════════════════════════════════════════════════
 
@@ -516,23 +465,6 @@ def test_ansi_engine_has_no_blockquote_buffer():
 
     engine = AnsiRenderEngine(width=80)
     assert not hasattr(engine, "_bq_lines")
-
-
-def test_rich_path_code_block_single_fence():
-    """Rich 路径（IncrementalRenderer）超长代码块分段后仍只输出一对围栏。"""
-    from io import StringIO
-    from src.renderer import IncrementalRenderer
-
-    buf = StringIO()
-    r = IncrementalRenderer(show_indicator=False, _file=buf)
-    r.write("```python\n")
-    for i in range(2005):
-        r.write(f"v{i} = {i}\n")
-    r.write("```\n")
-    r.close()
-    text = buf.getvalue()
-    assert text.count("```python") == 1, "打开围栏应只出现一次"
-    assert text.count("```") == 2, "围栏总数应为开/闭各一次"
 
 
 @pytest.mark.parametrize("chunks, expected", [

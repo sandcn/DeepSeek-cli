@@ -140,7 +140,7 @@ class RenderContext:
     """已处理的 Token 总数，用于渲染统计摘要"""
 
     heading_numbering: bool = False
-    """是否启用标题自动编号。由 IncrementalRenderer 根据配置设置。"""
+    """是否启用标题自动编号。由渲染配置设置。"""
 
     heading_counters: dict[int, int] = field(default_factory=dict)
     """标题计数器，{level: count}，用于标题自动编号。"""

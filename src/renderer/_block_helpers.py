@@ -231,7 +231,7 @@ def has_block_markers(lines) -> bool:
 
     供容器块（告示 / 定义列表续段）判定：含块级标记时走子解析 + 完整
     Markdown 渲染，否则走逐行增量缓存（纯文本行的常见路径零额外开销）。
-    两条渲染路径（ANSI / Rich）共用本实现。
+    解析层与 ANSI 渲染路径共用本实现。
     """
     for raw in lines:
         raw = raw or ""

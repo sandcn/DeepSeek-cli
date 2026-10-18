@@ -1,4 +1,4 @@
-"""终端显示宽度计算与 Rich Text 转义标记处理。
+"""终端显示宽度计算与终端文本转义标记处理。
 
 ★ P1-2（单一真源）：``cjk_display_width`` 与 ``expand_tabs`` 已委托
 ``src._text_width``（Layer 0；被 ``tui._width`` / ``renderer`` /

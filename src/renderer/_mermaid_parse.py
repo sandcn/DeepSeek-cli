@@ -1,8 +1,8 @@
 """_mermaid_parse — Mermaid 字符级解析辅助（无后端依赖）。
 
 从 ``_mermaid_helpers.py`` 抽取的纯函数部分：节点/形状/子图/行的字符级
-扫描，不含任何样式或 Rich 依赖。Rich 路径（``_mermaid_helpers``）与 ANSI
-路径（``ansi/_mermaid_render``）共享同一实现，避免两处解析漂移。
+扫描，不含任何样式或渲染库依赖。ANSI 路径（``ansi/_mermaid_render``）使用
+同一实现，避免两处解析漂移。
 """
 
 from __future__ import annotations

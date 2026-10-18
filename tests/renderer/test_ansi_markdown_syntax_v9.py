@@ -28,7 +28,6 @@
 
 from __future__ import annotations
 
-import io
 import re
 import time
 
@@ -59,16 +58,6 @@ def _tokens(src: str):
 
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
-
-
-def _rich_plain(src: str) -> list:
-    from src.renderer._incremental import IncrementalRenderer
-
-    buf = io.StringIO()
-    r = IncrementalRenderer(_file=buf, show_indicator=False)
-    r.write(src)
-    r.close()
-    return [_ANSI.sub("", ln).rstrip() for ln in buf.getvalue().splitlines()]
 
 
 # ══════════════════════════════════════════════════════════
@@ -258,14 +247,6 @@ def test_task_cancel_requires_space():
 def test_task_states_render():
     out = _render("- [ ] a\n- [x] b\n- [~] c\n")
     assert out == ["• [ ] a", "• [x] b", "• [~] c"]
-
-
-def test_is_todo_accepts_tilde():
-    from src.renderer._rendering import is_todo
-
-    assert is_todo("[~] c")[0] == "~"
-    assert is_todo("[-] c")[0] == "-"
-    assert is_todo("[~]c")[0] is None
 
 
 # ══════════════════════════════════════════════════════════
@@ -485,9 +466,9 @@ def test_emphasis_still_works_common():
         assert _render(src) == [expect], (src, _render(src))
 
 
-def test_emph_whitespace_inside_keeps_markers_rich():
-    """Rich 路径同步（``_preprocess_text`` 后仍不剥标记）。"""
-    out = _rich_plain("a * foo bar*\n")
+def test_emph_whitespace_inside_keeps_markers_ansi():
+    """预处理后仍不剥标记（与解析层语义一致）。"""
+    out = _render("a * foo bar*\n")
     assert any("* foo bar*" in ln for ln in out), out
 
 
@@ -530,10 +511,10 @@ def test_emphasis_run_split_chunked_consistent():
         assert _render_chunked(src, 1) == _render(src), src
 
 
-def test_emphasis_run_split_rich_parity():
-    """Rich 路径同源解析（内联解析器共享）→ 文本一致。"""
+def test_emphasis_run_split_ansi_consistent():
+    """ANS 渲染路径重复渲染文本一致。"""
     for src, expect in (("**a*b***\n", "ab"), ("***foo** bar*\n", "foo bar")):
-        joined = "".join(_rich_plain(src))
+        joined = "".join(_render(src))
         assert joined == expect, (src, joined)
 
 
@@ -587,32 +568,6 @@ def test_stream_consistency_matrix():
         base = _render(src)
         for size in (1, 2, 3, 5):
             assert _render_chunked(src, size) == base, (src, size)
-
-
-# ══════════════════════════════════════════════════════════
-# 两路径同步（Rich ↔ TUI）
-# ══════════════════════════════════════════════════════════
-
-
-def test_rich_path_display_math_env():
-    out = _rich_plain("\\begin{cases}\na & b\n\\end{cases}\n")
-    assert any("\\begin" not in ln for ln in out), out
-    assert any("a" in ln for ln in out), out
-
-
-def test_rich_path_entities():
-    joined = "".join(_rich_plain("&AElig; &Dcaron;\n"))
-    assert "\u00c6" in joined and "\u010e" in joined, joined
-
-
-def test_rich_path_list_item_code():
-    out = _rich_plain("- ```\n  code\n  ```\n")
-    assert any("code" in ln for ln in out), out
-
-
-def test_rich_path_emphasis_flanking():
-    out = _rich_plain("a * foo bar*\n")
-    assert any("* foo bar*" in ln for ln in out), out
 
 
 # ══════════════════════════════════════════════════════════
@@ -704,7 +659,7 @@ def test_medium_length_active_line_not_throttled():
 def test_ttype_style_cache_used():
     """token 类型 → 样式按 (主题, 类型) 缓存（热路径命中免重复解析）。"""
     from src.renderer.ansi import code as _code
-    from src.renderer._rendering._code import get_lexer
+    from src.renderer._lexer import get_lexer
     from src.renderer._utils import get_code_style
 
     _code._TTYPE_STYLE_CACHE.clear()

@@ -14,7 +14,7 @@
 
 ```bash
 # 安装全部核心依赖
-pip install httpx rich Pygments beautifulsoup4 chardet aiofiles qrcode \
+pip install httpx Pygments beautifulsoup4 chardet aiofiles qrcode \
             Pillow psutil PyYAML typing_extensions
 
 # 可选加速（推荐）
@@ -42,7 +42,6 @@ pip install ".[dev]"
 | 包 | 用途 | 必需 |
 |---|---|---|
 | `httpx` | HTTP 请求库 | ✅ |
-| `rich` | 终端富文本输出（Rich 渲染路径） | ✅ |
 | `Pygments` | 代码语法高亮 | ✅ |
 | `beautifulsoup4` | HTML 抓取解析（`web_fetch`） | ✅ |
 | `chardet` | 字符编码检测（`read_file`） | ✅ |
@@ -988,7 +987,7 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 
 | 领域 | 能力 |
 |---|---|
-| 渲染 | 增量流式 Markdown（CommonMark / GFM 主体 + Pandoc 扩展）、LaTeX 公式终端排版、Mermaid 11 类图 ASCII 渲染、HTML 块与行内元素、Front Matter、代码高亮与行号、TOC、Diff 高亮；Rich 与零 Rich（自绘 ANSI）两条路径共享解析层 |
+| 渲染 | 增量流式 Markdown（CommonMark / GFM 主体 + Pandoc 扩展）、LaTeX 公式终端排版、Mermaid 11 类图 ASCII 渲染、HTML 块与行内元素、Front Matter、代码高亮与行号、TOC、Diff 高亮；自绘 ANSI 渲染路径与共享解析层 |
 | TUI | React Ink 风格自研框架（调和器 / flexbox / hooks / 帧差异渲染 / 标准控件库）、恒定 30Hz 渲染、行级增量与 committed 前缀复用、全屏视图族（轨迹 / 日志 / 配置 / 插件 / 模型 / 文件沙盒 / 变更审查 / MCP / 技能 / 用量 / 搜索 / 键位 / 通知 / 导出 / 命令面板）、模态与底部视图机制、vim 风格导航与搜索、模糊命令面板与工作区状态段、8 套配色主题 |
 | Agent | Pipeline 中间件链、上下文自动压缩（dsh 同款）、工具调用 DAG 并行调度（显式引用 / 路径重叠 / user_select 独占 / 类别约束四层依赖 + Kahn 分层）、SubAgent 并发派发（plan / map / review / execute）、会话日志与投影、断点与恢复 |
 | 内核 | 无特权插件内核（Fiber 生命周期 / 服务容器 / 五模式事件分发 / 作用域与拦截）、Profile / Bundle / Patch 三层组装、热重载与依赖诊断、运行时不变量自检 |
@@ -1010,7 +1009,7 @@ Pipeline 将 Agent 对话循环编排为可插拔中间件链。中间件按注�
 
 **其他**
 
-- 渲染层：`src/renderer` 的双路径（Rich / ANSI）仍有各自实现的块渲染逻辑，可继续把纯逻辑下沉为共享模块。
+- 渲染层：`src/renderer` 的解析层与 ANSI 渲染层仍有各自实现的块渲染逻辑，可继续把纯逻辑下沉为共享模块。
 - 类型收窄：剩余 mypy 错误集中在动态属性与联合类型分支，需逐一收窄或显式标注。
 - 巨型组件：全屏视图已统一复用骨架（`_inspector_pane` 检查器状态与导航 / `_keymap_pane` 帮助面板 / `_modal_view` 模态框架 / `_view_common` 分隔线与搜索），并由 `tests/tui/test_view_skeleton_shared.py` 守卫；各视图剩余的 `_handle_*_event` 承载**语义各异**的按键分发，不再强行抽取。
 - 测试目录：`tests/` 已按被测模块分组（`renderer/` `tui/` `tools/` `api/` `core/` `kernel/` `integrations/`）；顶层保留跨模块/工程守卫用例（路径深度敏感的用例仍留在顶层，其迁移依赖 `tests/_paths` 的深度无关定位，见 `tests/test_paths_helper.py` 的存量豁免清单）。

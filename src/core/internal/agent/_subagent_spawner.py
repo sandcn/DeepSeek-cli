@@ -108,7 +108,7 @@ class SubAgentSpawner:
     def _render_subagent_display(self, specs: List[Dict[str, Any]]) -> None:
         """逐 spec 发布 SubagentPromptEvent（事件投递，替代 core 直接渲染）。
 
-        删除原 IncrementalRenderer/get_display_target/get_terminal_width/
+        删除原流式渲染器/get_display_target/get_terminal_width/
         sys.__stdout__ 渲染路径；渲染统一由 TUI 侧消费事件完成
         （EventDispatcher → SubagentMarkdownCmd → apply_cmd → 消息区块）。
         """

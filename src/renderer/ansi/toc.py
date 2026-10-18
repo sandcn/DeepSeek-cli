@@ -1,7 +1,7 @@
-"""TOC 渲染 — Table of Contents 目录（无 Rich）。
+"""TOC 渲染 — Table of Contents 目录（自绘 ANSI）。
 
-树形连接符逻辑来自共享纯逻辑模块 ``renderer._toc_logic``（与 Rich 路径
-``_rendering/_special.py`` 同一实现），此处只做输出模型映射（AnsiLine）。
+树形连接符逻辑来自共享纯逻辑模块 ``renderer._toc_logic``，此处只做输出模型
+映射（AnsiLine）。
 """
 
 from __future__ import annotations

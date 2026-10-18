@@ -93,7 +93,7 @@ async def test_overlay_disable_single_check():
         names = set(service.names())
         assert "services.keys_valid" not in names
         assert "fibers.active_have_deps" in names
-        assert len(names) == 41
+        assert len(names) == 40
     finally:
         await kernel.dispose()
 

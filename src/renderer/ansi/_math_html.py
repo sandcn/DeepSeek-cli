@@ -1,4 +1,4 @@
-"""_math_html — KaTeX HTML / 链接 / 盒子类命令的终端映射（零 Rich）。
+"""_math_html — KaTeX HTML / 链接 / 盒子类命令的终端映射（自绘 ANSI）。
 
 KaTeX 的 ``\\href`` / ``\\url`` / ``\\includegraphics`` / ``\\htmlId`` /
 ``\\htmlClass`` / ``\\htmlStyle`` / ``\\htmlData`` / ``\\class`` / ``\\style`` /

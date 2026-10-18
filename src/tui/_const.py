@@ -19,7 +19,7 @@ from enum import IntEnum
 _CLEAR_PARSE_LINE: int = -1
 
 # ═══════════════════════════════════════════════════════════
-# 紧急路径 ANSI 转义序列（直写终端，绕过 Rich 管线）
+# 紧急路径 ANSI 转义序列（直写终端，绕过渲染管线）
 # ═══════════════════════════════════════════════════════════
 ANSI_EMERGENCY_RED: str = "\033[31m"
 ANSI_EMERGENCY_YELLOW: str = "\033[33m"

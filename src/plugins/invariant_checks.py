@@ -142,12 +142,11 @@ def _provider_list(service, method: str) -> set:
 
 
 def renderer_extensions_readable(kernel) -> str | None:
-    """renderer 扩展点必须可读（handler/filter 注册表自省不抛异常）。"""
+    """renderer 扩展点必须可读（filter 注册表自省不抛异常）。"""
     if not kernel.has_service("renderer"):
         return None
     service = kernel.resolve_service("renderer")
-    for method in ("handlers", "filters", "builtin_handlers", "builtin_filters",
-                   "builtin_handler_ids", "builtin_filter_ids"):
+    for method in ("filters", "builtin_filters", "builtin_filter_ids"):
         read = getattr(service, method, None)
         if not callable(read):
             continue
@@ -461,23 +460,6 @@ def session_projections_readable(kernel) -> str | None:
             return f"ctx.session_projections 缺少内置投影: {missing}"
     except Exception as exc:  # noqa: BLE001 - 读取失败即上报
         return f"会话投影注册表读取失败: {exc}"
-    return None
-
-
-def renderer_targets_readable(kernel) -> str | None:
-    """渲染目标注册表必须可读，且生效项覆盖全部内置目标。"""
-    if not kernel.has_service("renderer"):
-        return None
-    try:
-        from ..renderer.targets.registry import builtin_render_target_ids
-
-        service = kernel.resolve_service("renderer")
-        names = set(service.target_ids())
-        missing = sorted(set(builtin_render_target_ids()) - names)
-        if missing:
-            return f"ctx.renderer 缺少内置渲染目标: {missing}"
-    except Exception as exc:  # noqa: BLE001 - 读取失败即上报
-        return f"渲染目标注册表读取失败: {exc}"
     return None
 
 
@@ -823,7 +805,6 @@ __all__ = [
     "themes_readable",
     "skill_sources_readable",
     "session_projections_readable",
-    "renderer_targets_readable",
     "global_disabled_tools_readable",
     "presets_readable",
     "prompt_registry_readable",

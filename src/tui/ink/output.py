@@ -6,7 +6,7 @@
   - Frame：一帧 = Line 序列（整帧文档，供 InkRenderer 行级 diff）
   - FrameBuilder：流式构建 Frame 的辅助器（按宽换行/追加）
 
-零 Rich 依赖：样式一律用 ``src.tui.core.style.Style``，
+零第三方渲染依赖：样式一律用 ``src.tui.core.style.Style``，
 宽度一律用 ``_width.wcswidth_simple``（唯一宽度依据）。
 """
 

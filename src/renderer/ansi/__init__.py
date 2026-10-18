@@ -1,6 +1,6 @@
-r"""ansi — 自绘 ANSI 内容引擎（零 Rich，复用解析层）。
+r"""ansi — 自绘 ANSI 内容引擎（零第三方渲染依赖，复用解析层）。
 
-``AnsiStreamRenderer`` 是 TUI 内容路径的入口（替代 IncrementalRenderer 角色）：
+``AnsiStreamRenderer`` 是 TUI 内容路径的入口（流式 Markdown 渲染器）：
   write(chunk) → RecursiveDescentParser.feed → TokenPipeline（CodeBlockBatcher/
   HeadingAnchorFilter/TokenStreamOptimizer）→ AnsiRenderEngine → AnsiLine 追加。
 
@@ -1910,7 +1910,7 @@ class AnsiStreamRenderer:
                     self._lines.extend(self._render_toc())
                     continue
                 self._lines.extend(self._engine.render(token))
-            # ★ 文档尾附录：脚注定义列表 + 参考式链接列表（与 Rich 路径同源语义）。
+            # ★ 文档尾附录：脚注定义列表 + 参考式链接列表（与解析层同源语义）。
             #   仅当文档实际定义过脚注 / 参考链接时才输出（无定义零额外行）。
             self._lines.extend(self._render_footnotes())
             self._lines.extend(self._render_ref_links())

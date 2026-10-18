@@ -86,9 +86,9 @@ _ADMONITION_COLORS: dict[str, Style] = {
 }
 
 #: 无序列表项目符号（按嵌套深度；真源 == 表现层数据注册表 ``nested_bullet``
-#: 表——与 Rich 路径 ``_rendering/_blocks.py`` 同一真源）。修复前误用
+#: 表——与共享呈现数据同一真源）。修复前误用
 #: ``bullet`` 表（仅 3 个符号）→ 第 4 层起符号与第 3 层重复（``▪`` 连续出现），
-#: 与 Rich 路径（``▸ ▹ ◆``）不一致。
+#: 与历史实现（``▸ ▹ ◆``）不一致。
 _NESTED_BULLETS = LiveMapping("nested_bullet")
 
 #: 注册表 ``nested_bullet`` 缺席（被禁用/未注册）时的内置兜底快照。
@@ -99,7 +99,7 @@ def bullet_symbol(depth: int) -> str:
     """块级无序列表项目符号（按嵌套深度；越界层取最后一项）。
 
     ``nested_bullet`` 注册表可按 Patch/Overlay 覆盖/禁用；缺席或为非序列时
-    回退内置快照，保证渲染不崩（与 Rich 路径 ``_bullet_symbols`` 同语义）。
+    回退内置快照，保证渲染不崩（与共享符号表同语义）。
     """
     try:
         symbols: Any = _NESTED_BULLETS
@@ -206,7 +206,7 @@ def list_level_prefix(depth: int) -> str:
     ★ 修复（行首缩进过深）：修复前渲染层直接用解析器的 ``indent``（**源文本
     前导空白字符列数**）作前缀（``"  " * indent``）——``- a\\n    - b``（4 空格
     缩进的合法子列表）显示 8 列缩进，源缩进 8 时显示 16 列，深层嵌套迅速撑满
-    终端宽度；且与 Rich 路径（每层 2 列）不一致。现按嵌套层级缩进。
+    终端宽度；且与历史实现（每层 2 列）不一致。现按嵌套层级缩进。
     """
     try:
         d = int(depth)

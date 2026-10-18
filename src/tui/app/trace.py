@@ -54,7 +54,7 @@ _TOOLS_TTL = 30.0
 _tools_cache: tuple[float, TraceRecord] | None = None
 
 #: 工具调用参数详情最大长度（消息模型 tool_calls arguments 防御截断——
-#:   与 apply._append_assistant_rich 同阈值语义）
+#:   与 apply._append_assistant_replay 同阈值语义）
 _TOOL_DETAIL_MAX_LEN = 80
 
 #: 内容消毒/换行缓存上限（条数，超限清空重建——miss 仅多一次消毒/拆分，

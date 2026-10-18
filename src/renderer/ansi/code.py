@@ -1,7 +1,7 @@
-"""代码块 — pygments 词法高亮 → 256 色 Style 行（无 Rich）。
+"""代码块 — pygments 词法高亮 → 256 色 Style 行（自绘 ANSI）。
 
 复用：
-  - ``renderer._rendering._code.get_lexer``（pygments lexer 缓存）
+  - ``renderer._lexer.get_lexer``（pygments lexer 缓存）
   - ``renderer._utils.get_code_style``（monokai 色板，去背景/文本样式）
 
 映射：pygments token → Style（仅前景色，经 rgb_to_256 降级到 256 色体系）。
@@ -46,7 +46,7 @@ _DIFF_LANGS: frozenset = frozenset({"diff", "patch"})
 
 
 def _diff_line(line: str) -> AnsiLine:
-    """Diff/patch 行 → 语义着色行（与 Rich 路径 ``render_diff_line`` 同源语义）。
+    """Diff/patch 行 → 语义着色行（行首语义着色）。
 
     - ``@@ ... @@`` hunk 头 → 青色粗体
     - ``+++`` / ``---`` 文件头 → 灰粗体
@@ -228,7 +228,7 @@ def highlight_code_lines(
     Returns:
         与 ``lines`` 等长的 AnsiLine 列表。
     """
-    from src.renderer._rendering._code import get_lexer
+    from src.renderer._lexer import get_lexer
     from src.renderer._utils import get_code_style
 
     if not lines:
@@ -248,7 +248,7 @@ def highlight_code_lines(
     for offset, src_line in enumerate(lines):
         idx = start_index + offset
         if is_diff:
-            # Diff/patch：行首语义着色（+ 绿 / - 红 / @@ 青），与 Rich 路径
+            # Diff/patch：行首语义着色（+ 绿 / - 红 / @@ 青），与历史实现
             # ``render_diff_line`` 语义一致（TUI 路径此前无差异高亮）。
             aline = _diff_line(src_line)
         elif lexer is not None:

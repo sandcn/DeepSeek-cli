@@ -1149,7 +1149,7 @@ class InlineFormattingMixin:
 
     # ── 彩色文本 {color:red}text{color} ─────────────────
 
-    # 已知颜色名白名单（Rich 终端色名）
+    # 已知颜色名白名单（终端色名）
     _KNOWN_COLORS: frozenset[str] = frozenset({
         'red', 'green', 'blue', 'yellow', 'cyan', 'magenta',
         'white', 'black', 'grey30', 'grey50', 'bright_red',

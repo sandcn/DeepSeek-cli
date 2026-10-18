@@ -1,4 +1,4 @@
-"""数学公式渲染 — LaTeX → Unicode/框线终端排版（零 Rich）。
+"""数学公式渲染 — LaTeX → Unicode/框线终端排版（自绘 ANSI）。
 
 TUI 内容路径的数学渲染入口：
 

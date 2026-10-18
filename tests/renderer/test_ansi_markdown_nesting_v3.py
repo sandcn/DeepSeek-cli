@@ -145,7 +145,7 @@ def test_nested_list_not_double_indented():
 
 
 def test_ordered_nested_list_indent_per_level():
-    """有序嵌套列表每层 2 列（与 Rich 路径一致；修复前按源列 ×2 = 6 列）。"""
+    """有序嵌套列表每层 2 列（与历史实现一致；修复前按源列 ×2 = 6 列）。"""
     lines = _render("1. a\n   1. b\n")
     assert lines[0] == "1. a"
     assert lines[1] == "  1. b"
@@ -359,48 +359,5 @@ def test_stream_equals_once_for_nested_documents():
 
 
 # ══════════════════════════════════════════════════════════
-# Rich 路径同步（代码块 hl_lines / linenos / 脚注多段）
+# 结构稳定性
 # ══════════════════════════════════════════════════════════
-
-
-def test_rich_code_block_syntax_linenos_flag():
-    from src.renderer._rendering._code import render_code_block_syntax
-
-    syntax = render_code_block_syntax("a = 1\nb = 2", "python", "monokai",
-                                      [1], linenos=True)
-    assert getattr(syntax, "line_numbers", False) is True
-    assert syntax.highlight_lines == {1}
-
-
-def test_rich_code_line_number_prefix():
-    from src.renderer.handlers.code import _line_number_prefix
-
-    assert _line_number_prefix(7) == " 7 "
-
-
-def test_rich_footnote_multiline_no_literal_newline():
-    import io
-    import re
-
-    from src.renderer._incremental import IncrementalRenderer
-
-    buf = io.StringIO()
-    r = IncrementalRenderer(_file=buf, show_indicator=False)
-    r.write("文本[^1]\n\n[^1]: 第一段\n\n    第二段\n")
-    r.close()
-    plain = re.sub(r"\x1b\[[0-9;]*m", "", buf.getvalue())
-    assert "第一段" in plain and "第二段" in plain
-
-
-def test_rich_details_body_still_markdown():
-    import io
-    import re
-
-    from src.renderer._incremental import IncrementalRenderer
-
-    buf = io.StringIO()
-    r = IncrementalRenderer(_file=buf, show_indicator=False)
-    r.write("<details><summary>s</summary>\n\n- a\n- b\n\n</details>\n")
-    r.close()
-    plain = re.sub(r"\x1b\[[0-9;]*m", "", buf.getvalue())
-    assert "\u2022" in plain or "- a" in plain

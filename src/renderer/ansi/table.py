@@ -1,4 +1,4 @@
-"""表格渲染 — wcswidth 对齐 + 框线字符 → AnsiLine（无 Rich）。
+"""表格渲染 — wcswidth 对齐 + 框线字符 → AnsiLine（自绘 ANSI）。
 
 利用块解析器已产出的 TABLE token（meta: rows + alignments）。
 

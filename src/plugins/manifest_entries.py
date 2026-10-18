@@ -271,32 +271,7 @@ COMMAND_PLUGIN_ENTRIES = [
      "config": {"command": "src.core.commands._logs_cmd.LogsCommand", "name": "logs"}},
 ]
 
-# ── 渲染扩展条目（每个内置 handler / filter 一个独立插件条目） ──
-
-RENDERER_HANDLER_ENTRIES = [
-    {"id": "renderer_handler_inline", "plugin": "src.plugins.renderer_entries:apply_handler",
-     "config": {"id": "inline"}},
-    {"id": "renderer_handler_code", "plugin": "src.plugins.renderer_entries:apply_handler",
-     "config": {"id": "code"}},
-    {"id": "renderer_handler_math", "plugin": "src.plugins.renderer_entries:apply_handler",
-     "config": {"id": "math"}},
-    {"id": "renderer_handler_mermaid", "plugin": "src.plugins.renderer_entries:apply_handler",
-     "config": {"id": "mermaid"}},
-    {"id": "renderer_handler_details", "plugin": "src.plugins.renderer_entries:apply_handler",
-     "config": {"id": "details"}},
-    {"id": "renderer_handler_admonition", "plugin": "src.plugins.renderer_entries:apply_handler",
-     "config": {"id": "admonition"}},
-    {"id": "renderer_handler_html_block", "plugin": "src.plugins.renderer_entries:apply_handler",
-     "config": {"id": "html_block"}},
-    {"id": "renderer_handler_table", "plugin": "src.plugins.renderer_entries:apply_handler",
-     "config": {"id": "table"}},
-    {"id": "renderer_handler_fenced_div", "plugin": "src.plugins.renderer_entries:apply_handler",
-     "config": {"id": "fenced_div"}},
-    {"id": "renderer_handler_front_matter", "plugin": "src.plugins.renderer_entries:apply_handler",
-     "config": {"id": "front_matter"}},
-    {"id": "renderer_handler_table_caption", "plugin": "src.plugins.renderer_entries:apply_handler",
-     "config": {"id": "table_caption"}},
-]
+# ── 渲染扩展条目（每个内置 filter 一个独立插件条目） ──
 
 RENDERER_FILTER_ENTRIES = [
     {"id": "renderer_filter_code_block_batcher", "plugin": "src.plugins.renderer_entries:apply_filter",
@@ -735,15 +710,6 @@ SESSION_PROJECTION_ENTRIES = [
      "config": {"name": "turnBoundary"}},
 ]
 
-# ── 渲染目标条目（每个内置目标一个独立插件条目） ────────────
-
-RENDERER_TARGET_ENTRIES = [
-    {"id": "renderer_target_terminal", "plugin": "src.plugins.renderer_targets:apply_renderer_target",
-     "config": {"id": "terminal"}},
-    {"id": "renderer_target_file", "plugin": "src.plugins.renderer_targets:apply_renderer_target",
-     "config": {"id": "file"}},
-]
-
 __all__ = [
     "INVARIANT_ENTRIES",
     "TOOL_PLUGIN_ENTRIES",
@@ -753,7 +719,6 @@ __all__ = [
     "NAMED_STYLE_ENTRIES",
     "GLOBAL_DISABLED_TOOL_ENTRIES",
     "COMMAND_PLUGIN_ENTRIES",
-    "RENDERER_HANDLER_ENTRIES",
     "RENDERER_FILTER_ENTRIES",
     "MIDDLEWARE_ENTRIES",
     "AGENT_TYPE_ENTRIES",
@@ -784,5 +749,4 @@ __all__ = [
     "THEME_ENTRIES",
     "SKILL_SOURCE_ENTRIES",
     "SESSION_PROJECTION_ENTRIES",
-    "RENDERER_TARGET_ENTRIES",
 ]

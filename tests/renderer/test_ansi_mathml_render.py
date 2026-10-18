@@ -218,21 +218,22 @@ def test_mathml_fraction_block_layout():
     assert "2" in out
 
 
-# ── Rich 路径同源 ────────────────────────────────────────
+# ── MathML / progress 行内渲染 ────────────────────────────
+
+def _inline_plain(src: str) -> str:
+    from src.renderer.ansi.inline import render_inline
+
+    return "".join(run.text for run in render_inline(src))
 
 
-def test_rich_inline_renderer_handles_mathml():
-    from src.renderer.inline_renderer import render_inline as rich_inline
-
-    text = rich_inline("<math><msup><mi>x</mi><mn>2</mn></msup></math>")
-    assert "x" in text.plain
-    assert "²" in text.plain
-    assert "<msup>" not in text.plain
+def test_inline_renderer_handles_mathml():
+    text = _inline_plain("<math><msup><mi>x</mi><mn>2</mn></msup></math>")
+    assert "x" in text
+    assert "²" in text
+    assert "<msup>" not in text
 
 
-def test_rich_inline_renderer_handles_progress():
-    from src.renderer.inline_renderer import render_inline as rich_inline
-
-    text = rich_inline('<progress value="50" max="100"></progress>')
-    assert "50%" in text.plain
-    assert "█" in text.plain
+def test_inline_renderer_handles_progress():
+    text = _inline_plain('<progress value="50" max="100"></progress>')
+    assert "50%" in text
+    assert "█" in text

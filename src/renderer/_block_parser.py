@@ -1712,7 +1712,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     continue
                 # 注释行（``[//]: # (comment)``）不是引用链接定义——与
                 # ``_parse_normal_line`` 的注释跳过逻辑保持一致（修复前
-                # 预扫描把它收录进 ``ctx.ref_map``，Rich 路径 close() 渲染出
+                # 预扫描把它收录进 ``ctx.ref_map``，历史实现 close() 渲染出
                 # 伪造的「引用链接」条目 ``[//] #``）。
                 if stripped.startswith('[//]:'):
                     continue
@@ -3246,7 +3246,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         标题只来自**同行文本**（``!!! type Title`` → ``meta["title"]``）。修复前
         无同行标题时把**正文首行**提升为 head_text——ANSI 路径首行既作头部又
         作正文（单行正文重复显示；多行正文首行被吞成标题且原始 markdown 泄漏：
-        ``- a`` / ``## h`` / ` ```py `），与 Rich 路径（不使用 head_text）不一致。
+        ``- a`` / ``## h`` / ` ```py `），与历史实现（不使用 head_text）不一致。
         """
         body_lines = list(self._block_lines)
         # 去掉尾部空行（正文空行保留用于分隔多段；尾部空行是块结束/文档结束
@@ -3992,7 +3992,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         当前嵌套深度）——修复前统一以 ``PARAGRAPH`` 发出：凡是先 ``_flush_paragraph``
         再 ``_emit_blockquote_close`` 的路径（空行/标题/列表/fence 起始）都会
         让引用内容以无前缀的普通段落上屏，且关闭时缓冲已空 → 额外输出一个
-        空边框行。与 Rich 路径 ``InlineHandler``（BLOCKQUOTE_LINE 立即带
+        空边框行。与历史实现 ``InlineHandler``（BLOCKQUOTE_LINE 立即带
         深度前缀渲染）语义对齐。
         """
         if self._pending_table_caption is not None and self._pending_lines:

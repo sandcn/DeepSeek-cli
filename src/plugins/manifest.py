@@ -48,8 +48,6 @@ from .manifest_entries import (
     PROMPT_SECTION_ENTRIES,
     PROMPT_SOURCE_ENTRIES,
     RENDERER_FILTER_ENTRIES,
-    RENDERER_HANDLER_ENTRIES,
-    RENDERER_TARGET_ENTRIES,
     RUNTIME_DATA_ENTRIES,
     SESSION_PROJECTION_ENTRIES,
     SKILL_SOURCE_ENTRIES,
@@ -122,8 +120,8 @@ BUNDLES = [
     },
     {
         "id": "renderer_ext",
-        "description": "渲染扩展：每个内置 handler/filter/target 一个独立插件条目（可 patch/overlay 禁用/替换）",
-        "plugins": list(RENDERER_HANDLER_ENTRIES) + list(RENDERER_FILTER_ENTRIES) + list(RENDERER_TARGET_ENTRIES),
+        "description": "渲染扩展：每个内置 filter 一个独立插件条目（可 patch/overlay 禁用/替换）",
+        "plugins": list(RENDERER_FILTER_ENTRIES),
     },
     {
         "id": "web",
@@ -410,7 +408,6 @@ __all__ = [
     "NAMED_STYLE_ENTRIES",
     "GLOBAL_DISABLED_TOOL_ENTRIES",
     "COMMAND_PLUGIN_ENTRIES",
-    "RENDERER_HANDLER_ENTRIES",
     "RENDERER_FILTER_ENTRIES",
     "MIDDLEWARE_ENTRIES",
     "AGENT_TYPE_ENTRIES",
@@ -441,5 +438,4 @@ __all__ = [
     "THEME_ENTRIES",
     "SKILL_SOURCE_ENTRIES",
     "SESSION_PROJECTION_ENTRIES",
-    "RENDERER_TARGET_ENTRIES",
 ]

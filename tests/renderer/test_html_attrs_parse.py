@@ -1,7 +1,7 @@
 """HTML 属性解析与渲染辅助测试（2026-10 HTML 增强）。
 
 覆盖 ``src/renderer/_html_attrs.py``（标签/属性解析单一真源）与
-``src/renderer/ansi/_math_env.py`` 的列格式解析，以及 Rich 路径新增行内节点
+``src/renderer/ansi/_math_env.py`` 的列格式解析，以及新增行内节点
 （``<big>`` / ``<q>``）的内容保留。
 """
 
@@ -126,20 +126,20 @@ def test_column_aligns_per_environment():
     assert column_aligns("gather", 1) == ["c"]
 
 
-# ── Rich 路径：新增行内节点内容保留 ───────────────────────
+# ── 行内节点内容保留 ─────────────────────────────────────
 
 
-def test_rich_path_big_and_quoted_nodes():
-    from src.renderer.inline_renderer import InlineRenderer
+def _inline_plain(src: str) -> str:
+    from src.renderer.ansi.inline import render_inline
 
-    r = InlineRenderer()
-    assert r.render("<big>大</big>").plain == "大"
-    assert r.render("<q>引用</q>").plain == "\u300c引用\u300d"
+    return "".join(run.text for run in render_inline(src))
 
 
-def test_rich_path_unknown_container_keeps_text():
-    from src.renderer.inline_renderer import InlineRenderer
+def test_big_and_quoted_nodes():
+    assert _inline_plain("<big>大</big>") == "大"
+    assert _inline_plain("<q>引用</q>") == "\u300c引用\u300d"
 
-    r = InlineRenderer()
-    assert r.render("<label>标签</label>").plain == "标签"
-    assert r.render("<font color='red'>红</font>").plain == "红"
+
+def test_unknown_container_keeps_text():
+    assert _inline_plain("<label>标签</label>") == "标签"
+    assert _inline_plain("<font color='red'>红</font>") == "红"

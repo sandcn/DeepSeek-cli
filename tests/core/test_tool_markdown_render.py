@@ -13,7 +13,7 @@
 
 覆盖：事件/命令字段、dispatcher 路由、模型 markdown 缓冲、卡片渲染、
 关闭收尾（残差刷出）、终端 resize 整块重渲染、工具声明与格式化、
-历史回放（``apply._append_tool_rich``）同样渲染 markdown。
+历史回放（``apply._append_tool_replay``）同样渲染 markdown。
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from src.tui._const import (
     RenderCommand, ToolMarkdownCmd, ToolOpenCmd, ToolCloseCmd,
 )
 from src.tui._dispatcher import EventDispatcher
-from src.tui.app.apply import apply_cmd, _do_tool_markdown, _append_tool_rich
+from src.tui.app.apply import apply_cmd, _do_tool_markdown, _append_tool_replay
 from src.tui.app.model import AppModel
 from src.tui.app.toolcard import tool_card_lines, _tool_md_content_width
 from src.tui.events import ToolOutputChunkEvent
@@ -340,7 +340,7 @@ def test_history_replay_markdown_tool():
     """历史回放 web_search 结果 → markdown 缓冲渲染（非纯文本行）。"""
     m = _model()
     m.open_tool_box("c1", "web_search", "q")
-    _append_tool_rich(m, {
+    _append_tool_replay(m, {
         "role": "tool", "tool_call_id": "c1", "content": _MD,
     })
     block = m.blocks[0]
@@ -353,7 +353,7 @@ def test_history_replay_plain_tool_stays_plain():
     """历史回放普通工具（bash）→ 纯文本行（不变）。"""
     m = _model()
     m.open_tool_box("c2", "bash", "ls")
-    _append_tool_rich(m, {
+    _append_tool_replay(m, {
         "role": "tool", "tool_call_id": "c2", "content": "a\nb",
     })
     block = m.blocks[0]

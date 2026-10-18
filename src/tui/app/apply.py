@@ -476,7 +476,7 @@ def _do_subagent_markdown(model, cmd) -> None:
     """subagent 提词/返回 markdown → 消息区块（kind "subagent"）。
 
     使用主 agent 回答的流式 markdown 渲染路径（``AnsiStreamRenderer``，
-    零 Rich Console 往返），渲染结果直接产出 AnsiLine 提交到已关闭块——
+    零控制台往返），渲染结果直接产出 AnsiLine 提交到已关闭块——
     与主 agent 内容渲染一致，无特殊样式。
     """
     if not cmd.text or not cmd.text.strip():
@@ -511,7 +511,7 @@ def _render_markdown_lines(text: str, width: int) -> list:
     return renderer.take_lines()
 
 
-def _append_assistant_rich(model, msg, anon_ids: list | None = None) -> None:
+def _append_assistant_replay(model, msg, anon_ids: list | None = None) -> None:
     """assistant 历史消息按 ChatView 语义分块渲染（reasoning/content/tool）。
 
     用户需求（/editmsg 等历史回放）：思考/回答/工具调用显示与消息区
@@ -519,7 +519,7 @@ def _append_assistant_rich(model, msg, anon_ids: list | None = None) -> None:
       - reasoning_content → reasoning 块（💭 思考 角色头 + markdown 行）；
       - content → content 块（💬 回答 角色头 + markdown 行）；
       - tool_calls → 工具块（ToolCard 卡片，open_tool_box 后续 tool 消息
-        经 ``_append_tool_rich`` 追加输出并关闭）。
+        经 ``_append_tool_replay`` 追加输出并关闭）。
 
     Args:
         anon_ids: 匿名（无 tool_call_id）工具调用的**合成 id 队列**（★ P3
@@ -582,11 +582,11 @@ def _append_assistant_rich(model, msg, anon_ids: list | None = None) -> None:
         model.open_tool_box(tid, name, detail)
 
 
-def _append_tool_rich(model, msg, anon_ids: list | None = None) -> None:
+def _append_tool_replay(model, msg, anon_ids: list | None = None) -> None:
     """tool 历史消息：追加工具输出并关闭对应工具块（ToolCard 完整显示）。
 
     ★ P3（review）：无 ``tool_call_id`` 时从 ``anon_ids`` 队列取配对合成 id
-    （见 ``_append_assistant_rich``）；成功位按消息携带的失败标记还原
+    （见 ``_append_assistant_replay``）；成功位按消息携带的失败标记还原
     （``is_error``/``status``）——修复前无条件 ``True``，历史回放中原失败的
     工具被渲染为 ✔（信息失真）。消息无该字段时保持 True（无法还原）。
     """
@@ -644,7 +644,7 @@ def _do_display_messages(model, cmd) -> None:
     for msg in messages:
         # ★ P2-4（review 修复）：消息元素可能非 dict（str/None 等外部注入）——
         #   ``msg.get`` 抛 AttributeError 中断回放；非 dict 跳过（安全处理，
-        #   与 _append_assistant_rich 的 tool_calls 元素防御一致）。
+        #   与 _append_assistant_replay 的 tool_calls 元素防御一致）。
         if not isinstance(msg, dict):
             continue
         role = msg.get("role", "")
@@ -656,9 +656,9 @@ def _do_display_messages(model, cmd) -> None:
                 continue
             model.append_committed("user", build_user_line(content))
         elif role == "assistant":
-            _append_assistant_rich(model, msg, anon_ids)
+            _append_assistant_replay(model, msg, anon_ids)
         elif role == "tool":
-            _append_tool_rich(model, msg, anon_ids)
+            _append_tool_replay(model, msg, anon_ids)
         elif role in ("other",):
             content = _content_str(msg.get("content", ""))
             if not content.strip():

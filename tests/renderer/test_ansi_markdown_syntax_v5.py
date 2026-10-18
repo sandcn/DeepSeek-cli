@@ -344,15 +344,6 @@ def test_paragraph_boundary_scanner_fast_path_equivalent():
 
 
 # ══════════════════════════════════════════════════════════
-# Rich 路径同步（新语法两渲染路径一致）
+# 结构稳定性
 # ══════════════════════════════════════════════════════════
-
-
-def test_rich_path_span_and_citation():
-    from src.renderer.inline_renderer import render_inline as rich_inline
-
-    assert rich_inline("[危险]{.red}").plain == "危险"
-    assert rich_inline("文献 [@doe99]").plain == "文献 [doe99]"
-    assert rich_inline("[t](http://x (title))").plain == 't "title"'
-    assert "{" not in rich_inline("![a](b.png){width=10}").plain
 

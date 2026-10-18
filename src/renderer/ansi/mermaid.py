@@ -1,4 +1,4 @@
-"""Mermaid 图渲染 — ASCII/Unicode 终端图形（零 Rich）。
+"""Mermaid 图渲染 — ASCII/Unicode 终端图形（自绘 ANSI）。
 
 TUI 内容路径的 Mermaid 渲染入口：委托 ``_mermaid_render``（11 类图的字符级
 布局），并提供**有界结果缓存**——流式预览每次 write 重渲未闭合 Mermaid 块，

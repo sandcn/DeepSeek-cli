@@ -21,8 +21,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from src.tui.app.app import App
 from src.tui.app.model import AppModel, UserSelectState
 from src.tui.core.style import Style

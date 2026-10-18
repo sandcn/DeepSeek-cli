@@ -1,6 +1,6 @@
 """ANSI 流式 Markdown 语法/渲染增强（第十批）测试。
 
-本轮改动（对齐 CommonMark / GFM 语义，TUI 与 Rich 两路径共享解析层）：
+本轮改动（对齐 CommonMark / GFM 语义，ANSI 渲染路径消费共享解析层）：
 
   - **语法语义补全**：
 
@@ -33,8 +33,8 @@
     「dunder 保护」（用户选定折中）沿用未改——``__bold__`` 这类纯 ASCII
     下划线写法仍按标识符原样输出；含非 ASCII（``__粗体__``）照常渲染粗体。
 
-两路径同步：TUI（``AnsiStreamRenderer``）与 Rich（``IncrementalRenderer``）
-共享同一解析层（``RecursiveDescentParser`` / ``_InlineParser``），语义一致。
+两路径同步：解析层（``RecursiveDescentParser`` / ``_InlineParser``）由
+ANSI 渲染路径（``AnsiStreamRenderer``）消费，语义一致。
 """
 
 from __future__ import annotations
@@ -61,18 +61,6 @@ def _render_chunked(src: str, size: int = 1, width: int = 72):
 
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
-
-
-def _rich_plain(src: str) -> list:
-    import io
-
-    from src.renderer._incremental import IncrementalRenderer
-
-    buf = io.StringIO()
-    r = IncrementalRenderer(_file=buf, show_indicator=False)
-    r.write(src)
-    r.close()
-    return [_ANSI.sub("", ln).rstrip() for ln in buf.getvalue().splitlines()]
 
 
 # ══════════════════════════════════════════════════════════
@@ -235,26 +223,6 @@ def test_cjk_underscore_bold_still_renders():
 def test_intraword_underscore_not_emphasis():
     assert _render("foo_bar_baz\n") == ["foo_bar_baz"]
     assert _render("snake_case_name\n") == ["snake_case_name"]
-
-
-# ══════════════════════════════════════════════════════════
-# Rich 路径同步
-# ══════════════════════════════════════════════════════════
-
-
-def test_rich_path_code_multiline():
-    out = "\n".join(_rich_plain("`foo\nbar`\n"))
-    assert "foo bar" in out, out
-
-
-def test_rich_path_nested_emphasis():
-    out = "\n".join(_rich_plain("*(*foo*)*\n"))
-    assert "(foo)" in out, out
-
-
-def test_rich_path_star_run_kept():
-    out = "\n".join(_rich_plain("foo *****\n"))
-    assert "foo *****" in out, out
 
 
 # ══════════════════════════════════════════════════════════

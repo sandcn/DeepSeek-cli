@@ -1,8 +1,8 @@
-"""_math_latex — LaTeX 数学公式 → AnsiLine 终端排版（零 Rich 依赖）。
+"""_math_latex — LaTeX 数学公式 → AnsiLine 终端排版（零第三方渲染依赖）。
 
-TUI 内容路径（``src.renderer.ansi``）的数学公式渲染器：与 Rich 路径
-（``renderer.math_parser.MathParser``）**同源符号表**，输出 ``AnsiLine``
-（不引入 Rich）。
+TUI 内容路径（``src.renderer.ansi``）的数学公式渲染器：与符号表模块
+（``renderer.math_symbols``）**同源符号表**，输出 ``AnsiLine``（不引入第三方
+渲染库）。
 
   - 符号表复用 ``renderer.math_symbols`` 的纯数据子模块（greek / relations /
     operators / arrows / functions / misc / delimiters / scripts）；

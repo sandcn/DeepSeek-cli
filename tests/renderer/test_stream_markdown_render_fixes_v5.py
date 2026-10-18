@@ -20,13 +20,10 @@
     渲染出多余空行（CommonMark 尾随空行不计入）——修复后空行暂存、仅在
     后续仍有缩进内容时补发。
 
-两条渲染路径（ANSI / Rich）共用解析层，图片渲染分别覆盖。
+两条渲染路径（ANSI / TUI）共用解析层，图片渲染分别覆盖。
 """
 from __future__ import annotations
 
-from io import StringIO
-
-from src.renderer import IncrementalRenderer
 from src.renderer.ansi import AnsiStreamRenderer
 from src.tui.app.apply import _flush_renderer_to_block
 from src.tui.app.model import AppModel
@@ -53,14 +50,6 @@ def _per_char(src: str, width: int = 60):
         r.write(src[i:i + 1])
     r.close()
     return [ln.plain for ln in r.take_lines()]
-
-
-def _rich(src: str) -> str:
-    buf = StringIO()
-    r = IncrementalRenderer(show_indicator=False, _file=buf)
-    r.write(src)
-    r.close()
-    return buf.getvalue()
 
 
 def _tui_stream(md: str, width: int = 60, chunk: int = 1):
@@ -179,14 +168,6 @@ def test_collapsed_image_tui_forward_ref_consistent():
         COLLAPSED_IMG, chunk=len(COLLAPSED_IMG))
 
 
-def test_rich_path_collapsed_and_shortcut_image_resolved():
-    """Rich 路径（IncrementalRenderer）同步修复。"""
-    assert "https://a.b/i.png" in _rich(COLLAPSED_IMG)
-    assert "https://a.b/i.png" in _rich(SHORTCUT_IMG)
-    # 未命中回退原文
-    assert "![i] 结束" in _rich("![i] 结束\n\n")
-
-
 # ══════════════════════════════════════════════════════════
 # 上标 / 下标内容不含空白
 # ══════════════════════════════════════════════════════════
@@ -283,17 +264,6 @@ def test_indented_code_trailing_blank_tui_matches():
     assert _tui_apply(src, chunk=1) == _tui_apply(src, chunk=len(src))
 
 
-def test_rich_path_single_line_display_math_and_indent_code():
-    """Rich 路径同源解析层：单行显示数学 / 缩进代码块尾随空行同步修复。"""
-    from src.renderer.ansi.helpers import strip_ansi
-
-    out = strip_ansi(_rich("\\[ x^2 \\]\n\n"))
-    assert "数学" in out or "│" in out
-    # 缩进代码块「代码一」之后不留空行（尾随空行不计入）
-    code_out = strip_ansi(_rich("    代码一\n\n结束\n"))
-    assert "代码一\n" + chr(0x1F4C4) in code_out
-
-
 # ══════════════════════════════════════════════════════════
 # 下划线粗体：仅非 ASCII（CJK）场景渲染，ASCII 标识符保持 dunder 保护
 # ══════════════════════════════════════════════════════════
@@ -351,12 +321,4 @@ def test_cjk_bold_stream_matches_oneshot():
     src = "__粗体__ 与 __my_var__ 与 __init__\n\n"
     assert _per_char(src) == _render(src)
     assert _tui_apply(src, chunk=1) == _tui_apply(src, chunk=len(src))
-
-
-def test_rich_path_cjk_bold_and_dunder_protection():
-    """Rich 路径同源解析层：中文粗体渲染、ASCII dunder 保护一致。"""
-    from src.renderer.ansi.helpers import strip_ansi
-
-    assert "粗体" in strip_ansi(_rich("__粗体__ 结束\n\n"))
-    assert "__init__" in strip_ansi(_rich("__init__ 说明\n\n"))
 

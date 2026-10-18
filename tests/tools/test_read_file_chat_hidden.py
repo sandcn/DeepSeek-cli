@@ -12,7 +12,7 @@
     → ``block.extra["_chat_hidden_lines"]``（行对象引用）
     → ``toolcard.tool_card_lines`` 跳过隐藏行 + 跳过省略提示行
 
-历史回放：``apply._append_tool_rich`` 命中 read_file 成功返回值形态
+历史回放：``apply._append_tool_replay`` 命中 read_file 成功返回值形态
 （``文件: <path>``）→ 同样登记隐藏。
 """
 
@@ -24,7 +24,7 @@ from src.tools.base import Func
 from src.tools.read_file import ReadFileFunc
 from src.tui._const import RenderCommand, ToolOutputCmd
 from src.tui._dispatcher import EventDispatcher
-from src.tui.app.apply import _append_tool_rich
+from src.tui.app.apply import _append_tool_replay
 from src.tui.app.model import AppModel
 from src.tui.app.toolcard import tool_card_lines
 from src.tui.events import ToolOutputChunkEvent
@@ -236,12 +236,12 @@ def test_prune_chat_hidden_drops_dead_rows():
     assert len(block.extra["_chat_hidden_lines"]) == 2
 
 
-# ── 6. 历史回放（apply._append_tool_rich） ────────────────
+# ── 6. 历史回放（apply._append_tool_replay） ────────────────
 
 def test_history_replay_hides_read_file_content():
     """历史回放 read_file 成功返回值（文件: <path>）→ 内容行登记隐藏。"""
     m = _model_with_tool("c1", "read_file", "'x.py'")
-    _append_tool_rich(m, {
+    _append_tool_replay(m, {
         "role": "tool", "tool_call_id": "c1",
         "content": "文件: x.py\nalpha\nbeta",
     })
@@ -255,7 +255,7 @@ def test_history_replay_hides_read_file_content():
 def test_history_replay_error_not_hidden():
     """历史回放 read_file 错误提示 → 不隐藏（照常显示）。"""
     m = _model_with_tool("c2", "read_file", "'missing'")
-    _append_tool_rich(m, {
+    _append_tool_replay(m, {
         "role": "tool", "tool_call_id": "c2",
         "content": "(文件不存在: missing)",
     })
@@ -268,7 +268,7 @@ def test_history_replay_error_not_hidden():
 def test_history_replay_other_tool_not_hidden():
     """历史回放其他工具（非 read_file）内容不隐藏。"""
     m = _model_with_tool("c3", "bash", "ls")
-    _append_tool_rich(m, {
+    _append_tool_replay(m, {
         "role": "tool", "tool_call_id": "c3",
         "content": "文件: 无关",
     })

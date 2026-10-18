@@ -1,4 +1,4 @@
-"""_math_style — 数学公式终端渲染的样式常量与颜色解析（零 Rich）。
+"""_math_style — 数学公式终端渲染的样式常量与颜色解析（自绘 ANSI）。
 
 从 ``_math_latex`` 拆出的共享样式层：布局原语（``_math_box``）、扩展命令
 （``_math_cmds``）、环境渲染（``_math_env``）与解析主体（``_math_latex``）

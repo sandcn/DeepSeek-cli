@@ -24,9 +24,6 @@ from typing import ClassVar
 # 依赖 style，无循环导入）。
 from .color import TrueColor
 from ...declarative import DeclarativeRegistry
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    import rich  # noqa: F401  # 字符串注解 "rich.style.Style" 的类型检查
 # 紧急路径 ANSI 序列常量 — 唯一真源在 _const.py（Layer 0），此处 re-export 保持兼容
 from src.tui._const import (
     ANSI_EMERGENCY_RED,
@@ -285,101 +282,6 @@ class Style:
             underline=overrides.get('underline', self.underline),
             strikethrough=overrides.get('strikethrough', self.strikethrough),
             inverse=overrides.get('inverse', self.inverse),
-        )
-
-    # ── Rich 桥接方法 ──
-
-    def to_rich(self) -> "rich.style.Style":
-        """将 tui.core.Style 转换为 rich.style.Style（桥接方法）。
-
-        桥接方法 — 用于需要 ``rich.style.Style`` 的旧代码路径。
-        延迟导入 rich 和 TrueColor，避免模块级 third-party 依赖。
-
-        Returns:
-            等效的 ``rich.style.Style`` 实例。
-        """
-        # 方法体内延迟导入，避免模块级 third-party 依赖
-        from rich.style import Style as RichStyle
-        from rich.color import Color as RichColor
-        from .color import TrueColor as _TC
-
-        kwargs: dict = {}
-
-        # fg: int(256色号) / TrueColor(r,g,b) / None
-        if self.fg is not None:
-            if isinstance(self.fg, _TC):
-                kwargs["color"] = RichColor.from_rgb(self.fg.r, self.fg.g, self.fg.b)
-            else:
-                # int 256 色号 → 使用 Rich Color.from_ansi
-                kwargs["color"] = RichColor.from_ansi(self.fg)
-
-        # bg: 同上
-        if self.bg is not None:
-            if isinstance(self.bg, _TC):
-                kwargs["bgcolor"] = RichColor.from_rgb(self.bg.r, self.bg.g, self.bg.b)
-            else:
-                kwargs["bgcolor"] = RichColor.from_ansi(self.bg)
-
-        # 布尔属性直接映射
-        if self.bold:
-            kwargs["bold"] = True
-        if self.dim:
-            kwargs["dim"] = True
-        if self.italic:
-            kwargs["italic"] = True
-        if self.underline:
-            kwargs["underline"] = True
-        if self.strikethrough:
-            kwargs["strike"] = True
-        if self.inverse:
-            kwargs["reverse"] = True
-
-        return RichStyle(**kwargs)
-
-    @classmethod
-    def from_rich(cls, style: "rich.style.Style") -> Style:
-        """从 rich.style.Style 创建 tui.core.Style（桥接方法）。
-
-        桥接方法 — 从 ``rich.style.Style`` 创建 tui.core.Style。
-        延迟导入，避免模块级 third-party 依赖。
-
-        Args:
-            style: ``rich.style.Style`` 实例。
-
-        Returns:
-            等效的 ``tui.core.Style`` 实例。
-        """
-        # 方法体内延迟导入
-        from .color import TrueColor as _TC
-
-        # ── 前景色 ──
-        fg: int | _TC | None = None
-        if style.color is not None:
-            if style.color.triplet is not None:
-                # TrueColor
-                fg = _TC(style.color.triplet.red, style.color.triplet.green, style.color.triplet.blue)
-            elif style.color.number is not None:
-                # 256 色号
-                fg = style.color.number
-
-        # ── 背景色 ──
-        bg: int | _TC | None = None
-        if style.bgcolor is not None:
-            if style.bgcolor.triplet is not None:
-                bg = _TC(style.bgcolor.triplet.red, style.bgcolor.triplet.green, style.bgcolor.triplet.blue)
-            elif style.bgcolor.number is not None:
-                bg = style.bgcolor.number
-
-        # ── 布尔属性（rich 的布尔属性可能为 None，bool(None) → False） ──
-        return cls(
-            fg=fg,
-            bg=bg,
-            bold=bool(style.bold),
-            italic=bool(style.italic),
-            dim=bool(style.dim),
-            underline=bool(style.underline),
-            strikethrough=bool(getattr(style, "strike", False)),
-            inverse=bool(getattr(style, "reverse", False)),
         )
 
     def __bool__(self) -> bool:
@@ -704,7 +606,7 @@ SEP_COLOR_START: int = 45       # 分隔线起始色 — 亮青（make_sep_gradi
 SEP_COLOR_END: int = 237        # 分隔线结束色 — 深灰（make_sep_gradient 默认结束）
 
 # ════════════════════════════════════════════════════════
-# 紧急路径 ANSI 序列常量（直写终端，绕过 Rich 管线）
+# 紧急路径 ANSI 序列常量（直写终端，绕过渲染管线）
 # ════════════════════════════════════════════════════════
 # 用于队列满/render 崩溃等无法通过正常渲染管线输出的场景。
 # 唯一真源在 src/tui/_const.py（Layer 0），本文件顶部导入并 re-export（步骤 4.5）。
