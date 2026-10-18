@@ -257,6 +257,14 @@ def _runs_have_esc(runs) -> bool:
     return False
 
 
+#: 末尾敏感的**行内定界符**字符：上一帧以它们结尾时，追加纯文本会改变该
+#: 定界符的闭合资格（CommonMark right-flanking / 词内下划线规则），增量追加
+#: 结果与整行重解析不一致。覆盖强调（``*`` / ``_``）、代码段（反引号）、
+#: 删除线/下标（``~``）、上下标（``^``）、行内数学（``$``）、高亮/插入/
+#: 着色等 span（``=`` / ``+`` / ``|`` / ``%``）与转义（``\\``）。
+_TAIL_SENSITIVE_DELIMS = frozenset("`*_~^$=+|%\\")
+
+
 def _tail_has_open_marker(text: str) -> bool:
     """文本尾部是否存在「可被纯文本续写补全」的未闭合结构。
 
@@ -291,6 +299,22 @@ def _tail_has_open_marker(text: str) -> bool:
     return False
 
 
+def _tail_ends_with_delimiter(text: str) -> bool:
+    """文本是否以**行内定界符**结尾（追加纯文本可能改变其解析）。
+
+    定界符的闭合资格依赖**其后字符**（CommonMark flanking / 词内下划线
+    规则）：``_x_`` 追加字母后变成 ``_x_g``，原本可闭合的 ``_`` 落入词内，
+    强调整体失效、标记变字面。因此上一帧以定界符结尾时不能走「把新增纯文本
+    直接追加到已渲染行」的快路径，必须整行重解析。
+
+    典型缺陷（用户报告）：流式输入 ``...;`_resolve_g`` 时，上一帧
+    ``...;`_resolve_`` 把 ``_resolve_`` 渲染为斜体 ``resolve``，直接追加
+    ``g`` 得到 ``resolveg``；整行重解析应为字面 ``_resolve_g``（未闭合代码
+    段内下划线不参与强调）——预览与一次性渲染不一致。
+    """
+    return bool(text) and text[-1] in _TAIL_SENSITIVE_DELIMS
+
+
 def _delta_can_append_plain(prev: str, delta: str) -> bool:
     """增量 ``delta`` 是否为「不会改变行内解析结果」的纯文本追加。
 
@@ -303,13 +327,17 @@ def _delta_can_append_plain(prev: str, delta: str) -> bool:
       - 拼接尾部不形成裸 URL 前缀（``http:`` / ``https:`` / ``ftp:`` /
         ``ftps:`` / ``www.``，含跨边界拼出 ``ww`` + ``w.`` 的形态）；
       - 上一帧尾部没有可被 ``delta`` 补全的未闭合结构（见
-        ``_tail_has_open_marker``）。
+        ``_tail_has_open_marker``）；
+      - 上一帧不以行内定界符结尾（见 ``_tail_ends_with_delimiter``——
+        追加文本会改变该定界符的闭合/flanking 判定）。
     """
     if not delta:
         return False
     # 尾随双空格是硬换行（``<br>``）标记——追加文本会让它不再位于行尾，
     # 必须整行重解析。
     if prev.endswith("  "):
+        return False
+    if _tail_ends_with_delimiter(prev):
         return False
     if _last_core_trigger_pos(delta) >= 0:
         return False
@@ -365,7 +393,10 @@ def _whole_delta_keeps_rendered_rows(prev_tail: str, delta: str) -> bool:
       - ``delta`` 不含可能跨行/补全前文的触发字符（见 ``_WHOLE_DELTA_FORBIDDEN``）
         ——可能闭合或开启跨行结构，整段已渲染行会变化；
       - ``prev_tail`` 尾部无可被任意文本补全的未闭合结构（``[`` / ``<`` /
-        ``&`` / 反斜杠）。
+        ``&`` / 反斜杠）；
+      - ``prev_tail`` 不以行内定界符结尾（``_tail_ends_with_delimiter``）——
+        追加文本会改变该定界符的闭合/flanking 判定（``_x_`` + ``g`` →
+        ``_x_g`` 词内下划线不再闭合强调）。
 
     ★ 不检查智能排版（破折号 / 省略号 / emoji 短代码等）的跨边界形态：这类
     改写只影响**活动行尾部**（节流允许其滞后到下次刷新，提交路径不受影响）；
@@ -381,6 +412,8 @@ def _whole_delta_keeps_rendered_rows(prev_tail: str, delta: str) -> bool:
     if not delta:
         return True
     if prev_tail.endswith("  "):
+        return False
+    if _tail_ends_with_delimiter(prev_tail):
         return False
     for ch in _WHOLE_DELTA_FORBIDDEN:
         if ch in delta:

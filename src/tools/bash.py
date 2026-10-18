@@ -536,6 +536,39 @@ class BashFunc(Func):
 
         _shell = 'bash' if sys.platform.startswith('linux') else 'sh'
 
+        def _setup_controlling_terminal() -> None:
+            """子进程 exec 前建立「会话 + 控制终端」（preexec_fn 内执行）。
+
+            ★ 只调用 ``os.setpgid(0, 0)``（旧实现）只创建了新的进程组，
+            PTY slave 仍是普通 fd——它没有成为子进程的控制终端，因此
+            line discipline 的 ``ISIG`` 没有可投递信号的前台进程组：向
+            master 写入 ``\\x03``（ctrl+c）时，内核只会把该字节当作普通
+            输入传给程序，不会产生 SIGINT。``bash_opt op=keys key='ctrl+c'``
+            因此在 PTY 模式下「发送成功但无法中断进程」。
+
+            这里补上标准三件套：
+              1. ``setsid()``：子进程成为新会话的会话首进程（同时是新的
+                 进程组组长 / 前台进程组）；
+              2. ``TIOCSCTTY``：把继承来的 PTY slave 设为该会话的控制终端；
+              3. ``setpgid`` 兜底（setsid 已设置，失败时保持旧行为）。
+
+            preexec_fn 在 fork 之后、exec 之前运行，不能依赖日志 / 锁
+            （多线程下可能死锁），失败一律静默：最坏退回旧行为，不应阻止
+            命令执行。
+            """
+            try:
+                os.setsid()
+            except OSError:
+                pass
+            try:
+                fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+            except OSError:
+                pass
+            try:
+                os.setpgid(0, 0)
+            except OSError:
+                pass
+
         try:
             from ..core.adapters.kernel_runtime import spawn_process
 
@@ -547,7 +580,7 @@ class BashFunc(Func):
                 stderr=slave_fd,
                 env=env,
                 pass_fds=(slave_fd,),
-                preexec_fn=lambda: os.setpgid(0, 0),
+                preexec_fn=_setup_controlling_terminal,
             )
         except Exception:
             os.close(master_fd)

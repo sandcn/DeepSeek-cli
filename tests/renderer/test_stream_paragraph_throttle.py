@@ -251,10 +251,15 @@ def test_whole_paragraph_throttle_rejects_cross_line_triggers() -> None:
     # ``*`` 可能闭合跨行粗体 → 重渲染
     r._throttle_paragraph_whole(key, base[:-1] + [base[-1] + "*"], render)
     assert calls["n"] == 2
-    # 纯文本追加 → 复用
+    # 上一帧以定界符结尾（``*``）→ 追加文本可能改变该定界符的闭合判定，
+    # 必须重渲染一次（第二十批：``_tail_ends_with_delimiter`` 守卫）
     plain = base[:-1] + [base[-1] + "*" + "y"]
     r._throttle_paragraph_whole(key, plain[:-1] + [plain[-1] + "z"], render)
-    assert calls["n"] == 2
+    assert calls["n"] == 3
+    # 尾部已是普通字符 → 纯文本追加复用
+    plain2 = plain[:-1] + [plain[-1] + "z"]
+    r._throttle_paragraph_whole(key, plain2[:-1] + [plain2[-1] + "w"], render)
+    assert calls["n"] == 3
 
 
 def test_whole_paragraph_throttle_reduces_parse_calls(monkeypatch) -> None:

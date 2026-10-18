@@ -68,7 +68,7 @@ def test_schema_exposes_input_ops_and_parameters():
                  "count", "modifiers", "direction", "amount", "duration",
                  "steps", "method", "phase"):
         assert name in params["properties"], name
-    assert params["required"] == ["task_id", "op"]
+    assert params["required"] == ["op"]
     assert params["properties"]["button"]["enum"] == ["left", "right", "middle"]
     assert params["properties"]["direction"]["enum"] == ["up", "down", "left", "right"]
     assert params["properties"]["method"]["enum"] == ["auto", "sendinput", "message"]

@@ -79,3 +79,26 @@ def test_chat_view_nested_quote_prefix_order():
     idx = lines.index("• a")
     assert lines[idx + 1] == "  │ b"
     assert lines[idx + 2] == "  │ ```py [py]"
+
+
+def test_streaming_preview_keeps_leading_underscore_in_inline_code():
+    """第二十批：流式预览不得把行内代码的前导下划线吞掉。
+
+    用户报告内容含 ``_resolve_grid``。BPE 流式切分下 ``_resolve_`` 先到达
+    （末尾是定界符 ``_``），随后 ``grid`` 作为纯文本增量到达；修复前预览把
+    ``grid`` 直接拼到上一帧的斜体 ``resolve`` 上 → 显示 ``resolvegrid``。
+    """
+    prefix = (
+        "**问题 3 的 `grid`**:schema type number,描述 \"0 或 true\";`_resolve"
+    )
+    model = AppModel()
+    model.width = 120
+    for i in range(0, len(prefix), 4):
+        _do_content(model, ContentCmd(text=prefix[i:i + 4]))
+    out = Harness(120).render(h(ChatView, {"model": model, "width": 120}))
+    assert "`_resolve" in out
+    _do_content(model, ContentCmd(text="_"))
+    _do_content(model, ContentCmd(text="grid"))
+    out = Harness(120).render(h(ChatView, {"model": model, "width": 120}))
+    assert "_resolve_grid" in out
+    assert "resolvegrid" not in out

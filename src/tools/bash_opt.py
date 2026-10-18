@@ -63,6 +63,10 @@ bash_opt — 按 task_id 操作后台 bash 任务
 - op=release     释放按下的键与鼠标按钮（keys / buttons 可只释放指定目标）；
                  清理 key/click 的 phase='down' 留下的悬空状态
 
+★ 无需 task_id 的 op：clipboard / record / release 与具体进程 / 窗口无关；
+  annotate 显式给 path（标注已有 PNG）、screenshot 用 screen=…（整屏 /
+  多显示器）时也可省略 task_id。其余 op 仍需要后台任务的进程句柄或窗口。
+
 ★ 游戏操作增强（本工具对游戏场景的重点优化）：
 
   - move 的 relative_event：发送**纯相对位移事件**做视角控制——第一人称 /
@@ -499,8 +503,17 @@ class BashOptFunc(Func):
     #: clipboard / screenshot / locate / pixel / annotate / record）**不接管**：
     #: 否则模型「read 看一眼进度」就会让任务完成结果再也回灌不到对话
     #: （被 _collect_done_background_messages 静默清理）——见模块行为说明。
-    _MANAGED_OPS: tuple[str, ...] = ("stdin", "keys", "kill", "sequence",
-                                     "replay", *INPUT_OPS)
+    #: ★ release 也从集合中排除：它释放的是**全局**按下的键 / 鼠标按钮
+    #: （清理 phase='down' 的悬空状态），与后台任务生命周期无关；若照旧
+    #: 接管，一次 release 就会让任务完成结果不再自动回灌（静默丢失）。
+    _MANAGED_OPS: tuple[str, ...] = (
+        "stdin", "keys", "kill", "sequence", "replay",
+        *(op for op in INPUT_OPS if op != "release"),
+    )
+    #: 与具体进程 / 窗口无关、**无需 task_id** 即可执行的 op（其余 op 仍需要
+    #: 后台任务的进程句柄 / 窗口）。annotate / screenshot 的条件形态见
+    #: :meth:`_can_run_without_task`。
+    _TASKLESS_OPS: tuple[str, ...] = ("clipboard", "record", "release")
     #: op=windows 单次返回的窗口清单上限（超出时截断并在结果中提示）
     _MAX_WINDOW_LIST: int = 200
     #: 已结束后台任务的记忆条数（FIFO）——供再次操作同一 task_id 时给出
@@ -700,7 +713,7 @@ class BashOptFunc(Func):
             return f"{arguments.get('button') or 'left'} {start}->{end}"
         return ""
 
-    def __init__(self, task_id: str, op: str, timeout=None,
+    def __init__(self, task_id: str = "", op: str = "", timeout=None,
                  text: str | None = None, newline: bool | None = None,
                  key: str | None = None, path: str | None = None,
                  crop: str | None = None,
@@ -866,22 +879,54 @@ class BashOptFunc(Func):
             return f"(bash_opt 内部错误（op={self.op}）: {exc})"
 
     async def _execute_inner(self) -> str:
-        """按 task_id 和 op 操作后台 bash 任务，返回结果字符串。"""
+        """按 task_id 和 op 操作后台 bash 任务，返回结果字符串。
+
+        ★ 并非所有 op 都依赖后台任务：clipboard / record / release 与具体
+        进程 / 窗口无关；annotate 在显式给 path 时只处理已有 PNG；screenshot
+        在 screen=… 时截整屏 / 多显示器。这些 op 允许省略 task_id（或传一个
+        已结束的 task_id），不再被任务生命周期绑死；其余 op 仍要求有效的
+        ``bg-xxx`` 记录，并给出与「任务不存在 / 已结束」相符的提示。
+        """
         agent = getattr(self, 'agent', None)
-        if agent is None or not hasattr(agent, '_background_tasks'):
+        if agent is None:
             return "(后台任务操作需要关联 Agent 上下文，当前未关联)"
+        background_tasks = getattr(agent, "_background_tasks", None)
+        if background_tasks is None:
+            # 无需任务的 op（clipboard / record / release / …）不依赖该表；
+            # 其余 op 仍要求已关联 Agent 的后台任务上下文。
+            if not self._can_run_without_task():
+                return "(后台任务操作需要关联 Agent 上下文，当前未关联)"
+            background_tasks = {}
+
+        supported_ops = ("read", "wait", "kill", "stdin", "keys",
+                         "screenshot", "windows", "window",
+                         "elements", "wait_window", "clipboard",
+                         "locate", "pixel", "annotate", "record",
+                         "replay", "sequence", *INPUT_OPS)
+        if self.op not in supported_ops:
+            return f"(未知操作: {self.op}。支持: {'/'.join(supported_ops)})"
+
+        taskless = self._can_run_without_task()
 
         # ★ task_id 前缀校验（与 subagent_opt 对称，双保险）：bash 后台任务
         #   id 恒为 "bg-xxx"，且注册在 bash 专用表 _background_tasks——subagent
         #   后台任务（sa-xxx）注册在独立的 _subagent_tasks 表，本工具查不到也
         #   不该操作；误传时直接提示走 subagent_opt。
-        if not self.task_id.startswith("bg-"):
+        #   无需任务的 op 不受此前缀约束（它们本就与任务无关）。
+        if self.task_id and not self.task_id.startswith("bg-") and not taskless:
             return (f"(错误：task_id 必须是 bash 后台启动（background=True）返回的 "
                     f"'bg-xxx' 格式 ID，当前: {self.task_id}。"
                     f"subagent 后台任务请用 subagent_opt 操作)")
 
-        rec = agent._background_tasks.get(self.task_id)
-        if rec is None:
+        rec = (background_tasks.get(self.task_id)
+               if self.task_id and self.task_id.startswith("bg-") else None)
+        if rec is None and not taskless:
+            if not self.task_id:
+                return (f"(错误：op={self.op} 需要 task_id（bash background=True "
+                        f"返回的 'bg-xxx' 格式 ID）。subagent 后台任务请用 "
+                        f"subagent_opt 操作。无需任务的 op 只有 clipboard / "
+                        f"record / release，以及带 path 的 annotate 与 "
+                        f"screen=… 的 screenshot)")
             reason = self._finished_reason(agent, self.task_id)
             if reason:
                 return (f"(后台任务 {self.task_id} 已结束：{reason}。"
@@ -897,7 +942,7 @@ class BashOptFunc(Func):
         #   轮次）。只读观察型 op（read / windows / elements / …）**不标记**，
         #   否则模型「read 看一眼进度」就会让任务完成结果再也回灌不到对话
         #   （被 _collect_done_background_messages 静默清理而模型毫不知情）。
-        if self.op in self._MANAGED_OPS:
+        if rec is not None and self.op in self._MANAGED_OPS:
             rec["managed_by_tool"] = True
 
         if self.op == "read":
@@ -936,12 +981,24 @@ class BashOptFunc(Func):
             return await self._op_sequence(rec)
         if self.op in INPUT_OPS:
             return await self._op_input(rec)
-        supported = "/".join(("read", "wait", "kill", "stdin", "keys",
-                              "screenshot", "windows", "window",
-                              "elements", "wait_window", "clipboard",
-                              "locate", "pixel", "annotate", "record",
-                              "replay", "sequence", *INPUT_OPS))
-        return f"(未知操作: {self.op}。支持: {supported})"
+        return f"(未知操作: {self.op}。支持: {'/'.join(supported_ops)})"
+
+    def _can_run_without_task(self) -> bool:
+        """当前 op 是否可在没有后台任务记录时执行。
+
+        与具体进程 / 窗口无关的 op 不依赖 task_id；部分 op 只有在特定参数
+        形态下才与任务无关（annotate 给 path、screenshot 走整屏）。其余 op
+        （read / wait / kill / stdin / keys / windows / window / elements /
+        wait_window / locate / pixel / sequence / replay / 窗口输入）都需要
+        任务记录里的进程句柄或窗口。
+        """
+        if self.op in self._TASKLESS_OPS:
+            return True
+        if self.op == "annotate":
+            return self.path is not None and bool(str(self.path).strip())
+        if self.op == "screenshot":
+            return self._screen_requested()
+        return False
 
     # ── 已结束后台任务的记忆（精确提示用） ───────────────
 
@@ -1022,8 +1079,9 @@ class BashOptFunc(Func):
         if payload.get("truncated") or buffer_dropped:
             payload["hint"] = (
                 "输出过大，仅返回尾部最新内容；更早的内容已被丢弃"
-                "（可用 op=wait 获取最终完整结果的三元 JSON，或让命令把输出"
-                "重定向到文件后再按需读取）"
+                "（op=wait 返回任务最终结果，但 stdout/stderr 同样按 bash 工具的"
+                " 1000 行上限截断；需要完整输出请让命令把输出重定向到文件后"
+                "再按需读取）"
             )
         return json.dumps(payload, ensure_ascii=False)
 
@@ -1337,13 +1395,20 @@ class BashOptFunc(Func):
         SIGINT）或按键事件；目标是管道时它们只是普通字节，程序既不中断也不
         会当快捷键处理。此时必须如实提示，避免「看起来发送成功、实际无效果」。
         """
-        if rec.get("mode") != "pipe":
-            return ""
         if not any(byte < 0x20 or byte == 0x7F for byte in payload):
             return ""
-        return ("；注意：目标进程的 stdin 不是终端（PTY）而是管道 / 重定向，"
-                "控制字符不会被解释为信号或快捷键（例如 ctrl+c 不会中断进程，"
-                "需要结束任务请用 op=kill）")
+        mode = rec.get("mode")
+        if mode == "pipe":
+            return ("；注意：目标进程的 stdin 不是终端（PTY）而是管道 / 重定向，"
+                    "控制字符不会被解释为信号或快捷键（例如 ctrl+c 不会中断进程，"
+                    "需要结束任务请用 op=kill）")
+        if mode == "pty":
+            # PTY 子进程已建立控制终端（见 bash._run_pty 的 setsid +
+            # TIOCSCTTY），正常情况下 ctrl+c 会变成 SIGINT；但程序可能自行
+            # 忽略 / 接管该信号，仍给出可执行的兜底提示。
+            return ("；提示：若目标进程没有响应（例如自行忽略 SIGINT），"
+                    "可用 op=kill 终止")
+        return ""
 
     @staticmethod
     def _plain(message: str) -> str:
@@ -1461,9 +1526,13 @@ class BashOptFunc(Func):
             return None
         if isinstance(value, bool):
             return 0 if value else None
-        text = str(value).strip()
-        if not text:
+        text = str(value).strip().lower()
+        if not text or text in ("false", "no", "off"):
             return None
+        # schema 描述允许「0 或 true = 自动选择步长」；布尔语义以字符串
+        # 传入（模型 JSON 参数常被转成文本）时同样按自动处理，而不是报错。
+        if text in ("true", "yes", "on", "auto"):
+            return 0
         try:
             number = int(float(text))
         except (TypeError, ValueError):
@@ -1722,10 +1791,22 @@ class BashOptFunc(Func):
         结果返回 JSON（task_id/op 与动作细节如按钮、坐标、屏幕坐标、按键序列、
         投递方式；启用上述增强时附 ``element`` / ``wait_for`` / ``diff`` 字段）。
         """
-        pid = rec.get("pid")
-        if pid is None:
+        pid = rec.get("pid") if rec else None
+        if pid is None and self.op != "release":
+            if rec is None:
+                return (f"(错误：op={self.op} 需要 task_id（后台任务的进程句柄）；"
+                        f"只有 release 可以在没有任务时执行（全局释放按下的键 / "
+                        f"鼠标按钮）)")
             return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
                     f"无法注入输入。可用 op=wait 查看任务状态)")
+        if pid is None:
+            # release 的免任务形态：它释放的是全局输入状态，不依赖窗口；
+            # 但变化判定 / 自动截图仍需要可截图的窗口，直接给出可读提示，
+            # 而不是让 _temp_screenshot(None) 变成内部错误。
+            if self.diff or self.wait_for or self.shot:
+                return ("(输入参数非法: 没有 task_id 的 release 只做全局释放，"
+                        "不支持 diff / wait_for / shot；这些选项需要可截图的"
+                        "后台任务窗口)")
         try:
             wait_mode, wait_timeout, extra_wait = self._resolve_wait_target()
             settle = self._resolve_settle()
@@ -2836,6 +2917,13 @@ class BashOptFunc(Func):
                     f"'type:edit' 与中文标签"
                     f"（'编辑框' / '按钮' / '列表'）；也可不传 element 先看完整清单"
                 )
+        if len(descriptors) < len(filtered):
+            payload["truncated"] = True
+            payload["hint"] = (
+                str(payload.get("hint", ""))
+                + f"；清单已截断：仅返回前 {len(descriptors)} 条"
+                  f"（共 {len(filtered)} 个匹配控件），可用 max_elements 调大上限"
+            )
         return json.dumps(payload, ensure_ascii=False)
 
     @staticmethod
@@ -2946,11 +3034,11 @@ class BashOptFunc(Func):
                                min_scale: float, max_scale: float,
                                scale_steps: int) -> dict:
         """模板匹配：解码截图与模板，返回窗口坐标下的匹配列表。"""
-        expanded = os.path.expanduser(template_path)
-        if not os.path.isfile(expanded):
-            raise ImageMatchError(f"模板图片不存在: {template_path}")
+        # 与 annotate 的输入图片走同一条路径：展开 ~、补 .png、安全校验、
+        # 要求文件存在（模板路径同样来自模型，不能绕过统一的安全校验）。
+        absolute = self._prepare_image_path(template_path)
         image = await asyncio.to_thread(decode_png_file, shot_path)
-        template = await asyncio.to_thread(decode_png_file, expanded)
+        template = await asyncio.to_thread(decode_png_file, absolute)
         offset_x = offset_y = 0
         if crop is not None:
             image = self._crop_decoded(image, crop)
@@ -3542,9 +3630,15 @@ class BashOptFunc(Func):
                 except SelectorError as exc:
                     last_error = str(exc)
                 else:
-                    described = describe_windows(infos)
-                    match = next((item for item in described
+                    # ★ 全量描述再按返回上限截断：describe_windows 默认
+                    #   limit=40，若目标窗口排在第 40 个之后，旧实现会
+                    #   `match=None`——明明等到了窗口却返回 window=null。
+                    #   这里与 op=windows 保持一致（先全量，再截断清单）。
+                    described_all = describe_windows(
+                        infos, limit=max(len(infos), 1))
+                    match = next((item for item in described_all
                                   if item["handle"] == target.handle), None)
+                    described = described_all[:self._MAX_WINDOW_LIST]
                     payload = {
                         "task_id": self.task_id,
                         "op": "wait_window",
@@ -3558,6 +3652,13 @@ class BashOptFunc(Func):
                                  "screenshot / 输入 op；需要固定布局时可先用 "
                                  "op=window 的 always_on_top 或 save_geometry"),
                     }
+                    if len(described_all) > len(described):
+                        payload["returned"] = len(described)
+                        payload["truncated"] = True
+                        payload["hint"] += (
+                            f"；窗口过多，清单仅返回前 {len(described)} 条"
+                            f"（共 {len(described_all)} 条），window 字段仍是"
+                            f"命中的那个窗口")
                     return json.dumps(payload, ensure_ascii=False)
             if deadline is not None and time.monotonic() >= deadline:
                 break

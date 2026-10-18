@@ -217,13 +217,23 @@ class McpClient:
         self.tools = tools
         return tools
 
-    async def call_tool(self, name: str, arguments: Optional[dict] = None) -> McpToolResult:
-        """调用工具并归一化结果。"""
+    async def call_tool(self, name: str, arguments: Optional[dict] = None,
+                        timeout: Optional[float] = None) -> McpToolResult:
+        """调用工具并归一化结果。
+
+        Args:
+            name: 工具名。
+            arguments: 工具参数。
+            timeout: 单次调用超时（秒）；``None`` = 使用 server 配置的
+                ``timeout``。需要「只放宽 / 缩短这一次调用」时显式传入，
+                不会影响 initialize 握手等其它请求。
+        """
         if not self._connected:
             raise McpError(f"MCP server '{self.name}' 未连接")
         result = await self._transport.request(
             METHOD_TOOLS_CALL,
             {"name": name, "arguments": arguments or {}},
+            timeout=timeout,
         )
         return McpToolResult.from_result(result)
 

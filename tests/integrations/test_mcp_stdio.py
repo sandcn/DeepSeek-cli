@@ -113,12 +113,19 @@ def test_stdio_pagination():
 
 
 def test_stdio_timeout():
+    """单次工具调用可用显式 timeout；initialize 握手使用配置的 20s。
+
+    修复前测试把配置 timeout 设成 0.5s，initialize 握手也受该值约束——
+    16 worker 并发 / 机器较慢时握手偶发超时（test_stdio_timeout 随机失败），
+    与「slow 工具调用超时」的测试意图无关。这里只在 call_tool 上指定
+    0.5s，握手仍用默认 20s。
+    """
     async def _run():
-        client = McpClient(_cfg(timeout=0.5))
+        client = McpClient(_cfg())
         try:
             await client.connect()
             with pytest.raises(McpTransportError):
-                await client.call_tool("slow", {"seconds": 3})
+                await client.call_tool("slow", {"seconds": 3}, timeout=0.5)
         finally:
             await client.close()
 

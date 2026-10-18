@@ -141,8 +141,21 @@ class X11InputBackend:
         return target
 
     def send(self, pid: int, action: InputAction) -> InputResult:
-        """向 ``pid`` 的目标窗口注入 ``action``，返回注入结果。"""
+        """向 ``pid`` 的目标窗口注入 ``action``，返回注入结果。
+
+        ``release`` 是全局兜底清理（释放按下的键 / 鼠标按钮），不依赖窗口，
+        因此没有任务 / pid 时也能执行。
+        """
         xdotool = require_xdotool()
+        if isinstance(action, ReleaseAction):
+            return InputResult(
+                action=action.name,
+                backend=self.name,
+                window_pid=pid if isinstance(pid, int) and pid > 0 else 0,
+                window_title="",
+                detail=self._release(xdotool, action),
+                window_selector=getattr(action, "window", "") or DEFAULT_SELECTOR,
+            )
         target = self.locate(pid, getattr(action, "window", "") or None)
         if target is None:
             raise NoWindowError(

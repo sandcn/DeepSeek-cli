@@ -66,7 +66,7 @@ def test_schema_exposes_screenshot_op_and_path():
     }
     assert "path" in params["properties"]
     assert "PNG" in params["properties"]["path"]["description"]
-    assert params["required"] == ["task_id", "op"]
+    assert params["required"] == ["op"]
 
 
 def test_schema_exposes_crop_parameter():

@@ -460,6 +460,10 @@ def _fill_row(pixels: bytearray, width: int, x: int, y: int, length: int,
     """在 ``y`` 行从 ``x`` 起填充 ``length`` 个像素（自动裁剪到图像内）。"""
     if length <= 0:
         return
+    # ★ 行号也必须裁剪：y 越界时 offset 会落在缓冲区外，slice 赋值会把
+    #   bytearray **加长**（而不是被忽略），最终导致 PNG 编码长度不匹配。
+    if y < 0 or y >= (len(pixels) // 3 // max(width, 1)):
+        return
     start = max(x, 0)
     end = min(x + length, width)
     if end <= start:
@@ -473,6 +477,11 @@ def _fill_column(pixels: bytearray, width: int, height: int, x: int, y: int,
                  length: int, color: RGB) -> None:
     """在 ``x`` 列从 ``y`` 起填充 ``length`` 个像素（自动裁剪到图像内）。"""
     if length <= 0:
+        return
+    # ★ 列号必须裁剪：x 为负（标签贴左边缘）或 >= width 时，offset 会落到
+    #   缓冲区外，slice 赋值会**扩展** bytearray，导致后续 PNG 编码报
+    #   「RGB 数据长度不匹配」。
+    if x < 0 or x >= width or height <= 0:
         return
     start = max(y, 0)
     end = min(y + length, height)

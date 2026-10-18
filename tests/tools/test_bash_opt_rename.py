@@ -28,7 +28,7 @@ def test_tool_name_is_bash_opt():
     schema = BashOptFunc.to_tool_schema()
     assert schema["function"]["name"] == "bash_opt"
     required = schema["function"]["parameters"]["required"]
-    assert required == ["task_id", "op"]
+    assert required == ["op"]
     assert set(schema["function"]["parameters"]["properties"]["op"]["enum"]) == {
         "read", "wait", "kill", "stdin", "keys", "screenshot",
         # 窗口输入注入（鼠标/键盘/文本/拖动/悬停）

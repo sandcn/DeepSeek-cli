@@ -356,7 +356,10 @@ def test_schema_docs_match_implementation():
     props = BashOptFunc.to_tool_schema()["function"]["parameters"]["properties"]
     assert "wait_window" in props["timeout"]["description"]
     assert "replay" in props["on_error"]["description"]
-    assert "步骤内字段" in props["seconds"]["description"]
+    # seconds 只是 sequence / record / replay 的步骤内字段，不再列为顶层参数；
+    # 说明保留在 actions 的描述里（顶层出现会被 from_args 静默丢弃）。
+    assert "seconds" not in props
+    assert "seconds" in props["actions"]["description"]
 
 
 # ═══════════════════════════════════════════════════════════

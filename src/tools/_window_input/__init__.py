@@ -148,10 +148,17 @@ def send_window_input(pid: int, action: InputAction) -> InputResult:
         NoWindowError: 目标进程没有可接收输入的窗口。
         InputError: 平台不支持、平台工具缺失或注入失败。
     """
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-        raise ActionError(f"进程号非法，无法注入输入: {pid!r}")
     if not isinstance(action, _ACTION_TYPES):
         raise ActionError(f"输入动作类型非法: {type(action).__name__}")
+    # ★ release 释放的是**全局**按下的键 / 鼠标按钮，不依赖任何窗口；
+    #   允许 pid=None / 0（无后台任务时的兜底清理）。其余动作必须有
+    #   可定位窗口的进程号。
+    is_release = isinstance(action, ReleaseAction)
+    if not is_release and (
+            not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0):
+        raise ActionError(f"进程号非法，无法注入输入: {pid!r}")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        pid = 0
     backend = resolve_backend()
     if backend is None:
         raise InputError(

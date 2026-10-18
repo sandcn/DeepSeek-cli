@@ -90,7 +90,7 @@ def test_schema_exposes_window_ops_and_parameters():
         "always_on_top", "not_on_top",
         "get_geometry", "save_geometry", "restore_geometry",
     ]
-    assert params["required"] == ["task_id", "op"]
+    assert params["required"] == ["op"]
 
 
 def test_schema_descriptions_mention_window_capabilities():

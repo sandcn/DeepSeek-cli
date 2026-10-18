@@ -21,7 +21,9 @@ def test_schema_shape_and_required_fields():
     assert schema["type"] == "function"
     fn = schema["function"]
     assert fn["name"] == "bash_opt"
-    assert fn["parameters"]["required"] == ["task_id", "op"]
+    # 只有 op 是绝对必需；task_id 对 clipboard / record / release / 带 path 的
+    # annotate / screen=… 的 screenshot 可省略（执行层按 op 再校验）。
+    assert fn["parameters"]["required"] == ["op"]
     assert "task_id" in fn["parameters"]["properties"]
     assert isinstance(fn["description"], str) and fn["description"]
 

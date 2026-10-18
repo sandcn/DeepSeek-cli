@@ -82,7 +82,14 @@ def build_bash_opt_schema() -> dict[str, Any]:
                         "type": "string",
                         "description": (
                             "后台 bash 任务的 task_id（bash background=True 返回的 "
-                            "'bg-xxx' 格式 ID）。"
+                            "'bg-xxx' 格式 ID）。除以下无需任务的 op 外必填："
+                            "clipboard（系统剪贴板）、record（写宏文件）、"
+                            "release（释放按下的键 / 鼠标按钮）、带 path 的 "
+                            "annotate（标注已有 PNG）、screen=… 的 screenshot"
+                            "（整屏 / 多显示器截取）。其余 op（read/wait/kill/"
+                            "stdin/keys/windows/window/elements/wait_window/"
+                            "locate/pixel/sequence/replay 与窗口输入）都需要对应"
+                            "后台任务的进程句柄或窗口。"
                         ),
                     },
                     "op": {
@@ -267,7 +274,7 @@ def build_bash_opt_schema() -> dict[str, Any]:
                         ),
                     },
                     "grid": {
-                        "type": "number",
+                        "type": ["number", "boolean"],
                         "description": (
                             "仅 screenshot 可选：在截图上叠加等距坐标参考线，值为"
                             "线间距像素（省略 = 不叠加参考线；0 或 true = 按画面"
@@ -295,7 +302,7 @@ def build_bash_opt_schema() -> dict[str, Any]:
                         ),
                     },
                     "shot": {
-                        "type": "string",
+                        "type": ["string", "boolean"],
                         "description": (
                             "仅输入 op（click/move/drag/scroll/key/type）可选："
                             "注入完成后自动截图，省去额外一次 screenshot 调用。"
@@ -350,9 +357,11 @@ def build_bash_opt_schema() -> dict[str, Any]:
                     "path": {
                         "type": "string",
                         "description": (
-                            "仅 screenshot 操作必填：截图保存的文件路径（PNG）。"
-                            "无扩展名时自动补 .png；父目录不存在会自动创建。"
-                            "截图后可用 read_image 读取该文件查看画面。"
+                            "文件路径：screenshot 必填（截图保存的 PNG；无扩展名"
+                            "自动补 .png，父目录不存在会自动创建）；annotate 可"
+                            "指定要标注的已有 PNG（省略时从目标窗口现截，需 "
+                            "task_id）；record / replay 可指定宏文件路径（与 "
+                            "macro 二选一）。"
                         ),
                     },
                     "crop": {
@@ -799,7 +808,8 @@ def build_bash_opt_schema() -> dict[str, Any]:
                         "description": (
                             "仅 pixel 可选：取色模式。"
                             "point（默认，需 x/y）读该像素颜色；"
-                            "region（需 region）统计区域均值 / 极值 / 主色；"
+                            "region（可选 region，省略时统计整窗）统计区域"
+                            "均值 / 极值 / 主色；"
                             "find（需 color）在窗口（或 region）内查找目标颜色，"
                             "按连通块返回多个候选位置（可点击）。"
                         ),
@@ -890,17 +900,8 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "末尾（默认 false = 覆盖）。"
                         ),
                     },
-                    "seconds": {
-                        "type": "number",
-                        "description": (
-                            "sequence / record / replay 的**步骤内字段**"
-                            "（写在 actions 的 {\"op\": \"wait\", \"seconds\": 0.5} "
-                            "步骤对象里，不作为顶层参数使用）：等待秒数"
-                            "（支持小数，最大 60）。"
-                        ),
-                    },
                 },
-                "required": ["task_id", "op"],
+                "required": ["op"],
             },
         },
     }
