@@ -86,12 +86,18 @@ async def test_dangerous_command_rejected_as_json():
     assert r["returncode"] == -1
 
 
-async def test_cwd_not_exist_as_json():
-    """工作目录不存在 → 工具级错误三元 JSON。"""
-    r = _loads(await BashFunc(command="echo hi", cwd="/nonexistent-dir-xyz").execute())
-    assert r["stdout"] == ""
-    assert "工作目录不存在" in r["stderr"]
-    assert r["returncode"] == -1
+def test_schema_has_no_cwd_param():
+    """bash 工具不暴露 cwd 参数：命令始终在进程当前工作目录执行。"""
+    props = BashFunc.to_tool_schema()["function"]["parameters"]["properties"]
+    assert "cwd" not in props
+    assert set(props) == {"command", "background"}
+
+
+def test_cwd_argument_ignored_by_from_args():
+    """模型误传 cwd 时由 from_args 忽略，不会进入构造参数。"""
+    f = BashFunc.from_args({"command": "echo hi", "cwd": "/tmp"})
+    assert f.command == "echo hi"
+    assert not hasattr(f, "cwd")
 
 
 # ── 3. 截断：stdout / stderr 各自独立截断 ──────────────

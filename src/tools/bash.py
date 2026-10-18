@@ -117,10 +117,6 @@ class BashFunc(Func):
                                 "returncode 为退出码；stdout/stderr 各自超 1000 行截断保留尾部。"
                             )
                         },
-                        "cwd": {
-                            "type": "string",
-                            "description": "命令工作目录。省略用当前目录；目录不存在返回错误而不执行。"
-                        },
                         "background": {
                             "type": "boolean",
                             "description": (
@@ -154,20 +150,13 @@ class BashFunc(Func):
         """检查 PTY 是否可用（用于子进程实时行缓冲输出）。"""
         return _HAS_PTY
 
-    def __init__(self, command, cwd=None, background=False):
+    def __init__(self, command, background=False):
         super().__init__()
         self.command = command
-        self.cwd = cwd
         self.background = bool(background)
+        # 无 cwd 参数：命令始终在当前工作目录执行。
         # 无 timeout 参数：前台执行超过 _AUTO_BG_TIMEOUT 秒自动转后台
         # （不终止进程，返回 task_id JSON）；后台任务无限运行。
-
-    @classmethod
-    def _check_cwd_or_return(cls, cwd):
-        """检查 cwd 是否存在，不存在时返回错误信息。"""
-        if cwd and not os.path.isdir(cwd):
-            return f"(工作目录不存在: {cwd})"
-        return None
 
     # ── 输出截断 ────────────────────────────────────────
     # 返回给大模型的输出超过 MAX_LINES 行时自动截断，
@@ -413,8 +402,7 @@ class BashFunc(Func):
                           供后台任务记录 stdin 写端（bash_opt 工具写入输入用）。
         """
         if show_command:
-            cwd_info = f" {DIM}(在 {self.cwd}){RESET}" if self.cwd else ""
-            await print_to_terminal(f"\n{GREEN}$ {self.command}{cwd_info}{RESET}\n")
+            await print_to_terminal(f"\n{GREEN}$ {self.command}{RESET}\n")
 
         # ★ Windows 兼容（review 方向）：非 PTY 回退路径恰恰是 PTY 不可用
         #   时（如 Windows）使用，修复前无条件传 preexec_fn=os.setpgid——
@@ -432,7 +420,6 @@ class BashFunc(Func):
         process = await spawn_process(
             self.command,
             shell=True,
-            cwd=self.cwd,
             stdin=asyncio.subprocess.PIPE if interactive else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -555,7 +542,6 @@ class BashFunc(Func):
             process = await spawn_process(
                 [_shell, '-c', self.command],
                 shell=False,
-                cwd=self.cwd,
                 stdin=slave_fd if interactive else asyncio.subprocess.DEVNULL,
                 stdout=slave_fd,
                 stderr=slave_fd,
@@ -660,10 +646,6 @@ class BashFunc(Func):
             三元 JSON 字符串 {"stdout", "stderr", "returncode"}（已截断）；
             超时转后台时返回 task_id JSON 字符串
         """
-        ret = self._check_cwd_or_return(self.cwd)
-        if ret:
-            return self._error_result(ret)
-
         # ★ 子进程句柄记录：自动转后台时写入任务记录，供 bash_opt 工具操作
         #   （wait 等待 / kill 杀进程树 / stdin、keys 交互）。
         holder: dict = {}
@@ -770,7 +752,6 @@ class BashFunc(Func):
 
         rec = {
             "task": exec_task,
-            "cwd": self.cwd,
             "created_at": time.time(),
             "done": False,
             "result": "",
@@ -842,10 +823,6 @@ class BashFunc(Func):
             三元 JSON 字符串 {"stdout", "stderr", "returncode"}（已截断）。
             PTY 模式下 stdout/stderr 物理合并，输出归 stdout、stderr 为空。
         """
-        ret = self._check_cwd_or_return(self.cwd)
-        if ret:
-            return self._error_result(ret)
-
         try:
             if _HAS_PTY:
                 result = await self._run_pty(
@@ -895,7 +872,7 @@ class BashFunc(Func):
         task_id = f"bg-{uuid.uuid4().hex[:12]}"
 
         # 后台任务无限运行（不设超时，避免误杀编译/下载等长时命令）
-        bg = BashFunc(command=self.command, cwd=self.cwd)
+        bg = BashFunc(command=self.command)
 
         task = asyncio.ensure_future(self._run_background_task(bg, task_id))
 
@@ -907,7 +884,6 @@ class BashFunc(Func):
         #   io_lock 串行化 stdin/keys 写入。
         agent._register_background_task(task_id, {
             "task": task,
-            "cwd": self.cwd,
             "created_at": time.time(),
             "done": False,
             "result": "",
@@ -1012,7 +988,7 @@ class BashFunc(Func):
         返回给大模型的结构：{"stdout": ..., "stderr": ..., "returncode": N}——
         stdout/stderr 分离（前台 PIPE 模式），returncode 是**命令的退出码**
         （bash $? 语义：被信号杀死为 128+sig）；工具级错误（危险命令拒绝 /
-        cwd 不存在 / 执行异常 / 中断取消）时 stdout 为空、stderr 放错误说明、
+        执行异常 / 中断取消）时 stdout 为空、stderr 放错误说明、
         returncode 为 -1。
 
         有 UI 副作用（危险命令时终端输出红色警告）。
@@ -1029,7 +1005,7 @@ class BashFunc(Func):
         return await self._run_async(show_command=False, show_output=False)
 
     async def _run_with_line_callback(self, on_line) -> str:
-        """共享的 UI 执行框架：检查 cwd、执行命令、异常处理（display 路径）。
+        """共享的 UI 执行框架：执行命令、异常处理（display 路径）。
 
         前台执行与 _run_async 一致：超过 _AUTO_BG_TIMEOUT 秒自动转后台
         （命令不终止，返回 task_id JSON）；publish_line_fn 持续接收实时输出行。
