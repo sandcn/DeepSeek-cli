@@ -18,6 +18,18 @@ def test_git_rule_uses_user_select_before_commit_or_push():
     assert_contains(bullet, "必须", "user_select", "commit", "push", "前")
 
 
+def test_git_rule_asks_user_to_agree():
+    """Git 条目必须让用户明确选择是否同意执行。"""
+    bullet = _git_bullet()
+    assert_contains(bullet, "是否同意")
+
+
+def test_git_rule_requires_message_confirmation():
+    """提交信息须经用户确认，不得自行拟定后直接提交。"""
+    bullet = _git_bullet()
+    assert_contains(bullet, "提交信息", "确认", "不得自行拟定")
+
+
 def test_git_rule_covers_scope_message_and_fallback():
     """用户选择需覆盖范围与提交信息；未授权时不得替用户提交。"""
     bullet = _git_bullet()
