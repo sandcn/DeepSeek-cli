@@ -34,3 +34,16 @@ def test_git_rule_covers_scope_message_and_fallback():
     """用户选择需覆盖范围与提交信息；未授权时不得替用户提交。"""
     bullet = _git_bullet()
     assert_contains(bullet, "范围", "提交信息", "取消", "不得")
+
+
+def test_git_rule_allows_user_to_cancel():
+    """用户必须可以取消：选择项须含取消，且取消/超时不得执行提交或推送。"""
+    bullet = _git_bullet()
+    assert_contains(bullet, "用户可以取消", "超时", "按取消处理")
+    assert_contains(bullet, "保持改动留在工作区")
+
+
+def test_git_rule_default_options_must_not_approve():
+    """超时回退项不得是同意项，否则等同替用户拍板提交。"""
+    bullet = _git_bullet()
+    assert_contains(bullet, "default_options", "不得包含同意项")
