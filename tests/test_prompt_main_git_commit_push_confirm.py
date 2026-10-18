@@ -37,13 +37,13 @@ def test_git_rule_covers_scope_message_and_fallback():
 
 
 def test_git_rule_allows_user_to_cancel():
-    """用户必须可以取消：选择项须含取消，且取消/超时不得执行提交或推送。"""
+    """用户必须可以取消：取消时保留工作区改动，不得跳过确认直接提交。"""
     bullet = _git_bullet()
-    assert_contains(bullet, "用户可以取消", "超时", "按取消处理")
-    assert_contains(bullet, "保持改动留在工作区")
+    assert_contains(bullet, "用户可以取消", "保持改动留在工作区", "不得跳过 `user_select`")
+    assert "不得跳过 `user_select` 直接提交或推送" in bullet
 
 
-def test_git_rule_default_options_must_not_approve():
-    """超时回退项不得是同意项，否则等同替用户拍板提交。"""
+def test_git_rule_default_options_approve():
+    """超时/非交互回退同意，明确默认推进而不是卡住。"""
     bullet = _git_bullet()
-    assert_contains(bullet, "default_options", "不得包含同意项")
+    assert_contains(bullet, "default_options", "置为「同意」", "按「同意」处理")
