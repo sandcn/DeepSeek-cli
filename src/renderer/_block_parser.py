@@ -50,6 +50,15 @@ _REF_TITLE_ESCAPABLE: frozenset[str] = frozenset(string.punctuation)
 _FENCE_LINE_MAX_PROBE = 64
 
 
+def _is_json_object(text: str) -> bool:
+    """文本是否为合法 JSON 对象（JSON Front Matter 内容校验）。"""
+    try:
+        import json
+        return isinstance(json.loads(text), dict)
+    except Exception:
+        return False
+
+
 def _has_top_level_double_dollar(text: str) -> bool:
     """文本顶层（花括号外、非转义）是否含 ``$$``。
 
@@ -327,6 +336,10 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         #: 仅与 ``_pending_lines`` 等长时可信（其它路径修改 pending 后自动回退）。
         self._pending_raw_lines: list[str] = []
 
+        #: 待定段落后面的 Pandoc 独立属性块行（``{.cls #id key=val}``）：
+        #: 属性属于该段落（显示上不可见），随 PARAGRAPH token 的 meta 携带。
+        self._pending_para_attrs: dict | None = None
+
         #: 当前段落内**未闭合的行内代码**反引号 run 长度（0 = 不在代码段内）。
         #: 用于判定行尾双空格 / 反斜杠是否为硬换行——CommonMark：代码段内的
         #: 行尾不构成硬换行（`` `foo  `` + 换行 + `` bar` `` 的双空格属代码
@@ -448,6 +461,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
         """重置 NORMAL 状态变量。"""
         self._pending_lines = []
         self._pending_raw_lines = []
+        self._pending_para_attrs = None
         self._table_pending_rows.clear()
         self._table_pending_bq = False
         self._grid_lines = None
@@ -1807,9 +1821,72 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
     # 行处理分发
     # ═══════════════════════════════════════════════════════════
 
+    def _try_attribute_block(self, stripped: str,
+                             tokens: list[Token]) -> bool:
+        """识别并消费 Pandoc 独立属性块行（True = 已归属/消费）。
+
+        规则：
+          - 属性体必须是合法 Pandoc 属性（``.cls`` / ``#id`` / ``k=v``）；
+            含 ``:`` 的既有花括号语法（``{color:red}``）不匹配 → 不吞内容；
+          - 紧邻前一段落尚未 flush（``_pending_lines`` 非空）→ 记入待定
+            属性，随 PARAGRAPH token 的 meta 携带（显示上不可见）；
+          - 紧随 token 流中的上一块（无空行分隔）→ 合并进该块 meta；
+          - 跨 chunk 时上一块已在之前 feed 渲染（``_prev_emitted_type``
+            可归属）→ 直接消费（属性本身不可见，不产生正文）；
+          - 其余（文档开头 / 空行之后）→ False，按普通段落显示原文。
+        """
+        from ._pandoc_attrs import parse_pandoc_attrs
+        attrs = parse_pandoc_attrs(stripped[1:-1])
+        if attrs is None:
+            return False
+        if self._pending_lines:
+            self._pending_para_attrs = attrs
+            return True
+        target = None
+        if tokens:
+            last = tokens[-1]
+            if last.type is not TokenType.EMPTY_LINE:
+                target = last
+        elif self._prev_emitted_type not in (None, TokenType.EMPTY_LINE):
+            # 跨 chunk：上一块已在之前 feed 渲染（类型可能是代码块关闭围栏 /
+            # 表格表注等派生 token）——属性块本身不可见，直接消费。
+            return True
+        if target is None:
+            return False
+        meta = dict(target.meta or {})
+        prev = meta.get('attrs')
+        if isinstance(prev, dict):
+            merged = dict(prev)
+            classes = list(merged.get('classes') or [])
+            for cls in attrs.get('classes') or []:
+                if cls not in classes:
+                    classes.append(cls)
+            if classes:
+                merged['classes'] = classes
+            if attrs.get('id'):
+                merged['id'] = attrs['id']
+            kv = dict(merged.get('attrs') or {})
+            kv.update(attrs.get('attrs') or {})
+            if kv:
+                merged['attrs'] = kv
+            meta['attrs'] = merged
+        else:
+            meta['attrs'] = attrs
+        target.meta = meta
+        return True
+
     def _parse_normal_line(self, line: str, tokens: list[Token]):
         """NORMAL 状态：按首字符调度表分派语法检测。"""
         stripped = _strip_left(line).rstrip('\n')
+
+        # ── Pandoc 独立属性块行（``{.cls #id key=val}``）──
+        # 属性属于**前一个块**（Pandoc attribute block），显示上不可见：
+        # 能归属时附加到最近块的 meta 并消费该行；无法归属时按普通段落处理
+        # （不吞正文）。``{color:red}`` 等既有花括号语法（含 ``:``）不匹配。
+        if (len(stripped) >= 3 and stripped.startswith('{')
+                and stripped.endswith('}')
+                and self._try_attribute_block(stripped, tokens)):
+            return
 
         # ── Pandoc multiline table（顶/底长横线 + 列段分隔）──
         # 顶边框先进入候选收集；遇到列段分隔行后收集正文，底边框时提交。
@@ -1974,6 +2051,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                 header = list(self._pending_lines)
             self._pending_lines = []
             self._pending_raw_lines = []
+            self._pending_para_attrs = None
             self._dashed = (header, stripped, [])
             return
         if _is_grid_table_border(stripped):
@@ -2266,6 +2344,19 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
 
     def _emit_front_matter(self, tokens: list[Token]) -> None:
         content = self._front_matter_content()
+        if self._fm_delim == '{' and not _is_json_object(content):
+            # ★ 非法 JSON：``{`` 开头的普通多行文本（未加围栏的 JSON 片段 /
+            #   正文）不是 JSON Front Matter——回退为普通 Markdown 行，既不
+            #   误显示为「元信息」卡片，也不丢内容。合法 JSON 仍按元信息渲染
+            #   （既有行为不变）。
+            self._state = _State.NORMAL
+            self._doc_started = True
+            lines = ['{'] + list(self._fm_lines) + ['}']
+            self._fm_lines = []
+            self._fm_delim = ''
+            for ln in lines:
+                self._parse_normal_line(ln + '\n', tokens)
+            return
         tokens.append(Token(TokenType.FRONT_MATTER, content,
                             {"format": _front_matter_format(self._fm_delim)}))
         self._state = _State.NORMAL
@@ -2472,6 +2563,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                     ]
                     self._pending_lines = []
                     self._pending_raw_lines = []
+                    self._pending_para_attrs = None
                     term = terms[-1] if terms else ""
                     # ★ 将续行内容合并到前一个 DEFINITION_ITEM 中（不是当前这个）
                     if self._def_cont_buffer:
@@ -2881,6 +2973,7 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
                         heading_text = '\n'.join(self._pending_lines)
                         self._pending_lines = []
                         self._pending_raw_lines = []
+                        self._pending_para_attrs = None
                         stack = self._list_item_prefix_stack(line)
                         if stack is None:
                             self._list_indents.clear()
@@ -3460,6 +3553,21 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             tokens.append(Token(TokenType.BLOCKQUOTE_OPEN, "",
                                 {"depth": new_depth}))
             self._bq_depth_stack.append(new_depth)
+        if not gt_text.strip():
+            # ★ 引用块内的显式空行（``> a`` / ``>`` / ``> b``）：段落在此结束，
+            #   但仍属于引用块——发射一个空内容的 BLOCKQUOTE_LINE（渲染层输出
+            #   ``│`` 边框行）。修复前该行走 ``_parse_normal_line`` 的空行路径，
+            #   产出无前缀 EMPTY_LINE，引用框在段落之间断裂。
+            cur_depth = self._bq_depth_stack[-1] if self._bq_depth_stack else depth
+            if self._pending_lines:
+                content = '\n'.join(self._pending_lines)
+                self._pending_lines.clear()
+                self._pending_raw_lines.clear()
+                tokens.append(Token(TokenType.BLOCKQUOTE_LINE, content,
+                                    {"depth": cur_depth}))
+            tokens.append(Token(TokenType.BLOCKQUOTE_LINE, "",
+                                {"depth": cur_depth, "blank": True}))
+            return
         self._bq_in_recursion += 1
         _mark = len(tokens)
         try:
@@ -4014,12 +4122,15 @@ class RegexFreeBlockParser(_BlockParserStreamMixin):
             content = '\n'.join(self._pending_lines)
             self._pending_lines = []
             self._pending_raw_lines = []
+            attrs = self._pending_para_attrs
+            self._pending_para_attrs = None
+            meta = {"attrs": attrs} if attrs else {}
             if self._bq_active:
                 depth = self._bq_depth_stack[-1] if self._bq_depth_stack else 1
-                tokens.append(Token(TokenType.BLOCKQUOTE_LINE, content,
-                                    {"depth": depth}))
+                meta["depth"] = depth
+                tokens.append(Token(TokenType.BLOCKQUOTE_LINE, content, meta))
             else:
-                tokens.append(Token(TokenType.PARAGRAPH, content))
+                tokens.append(Token(TokenType.PARAGRAPH, content, meta))
 
     # ── 空行 ─────────────────────────────────────────────
 

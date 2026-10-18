@@ -126,6 +126,10 @@ class _MermaidRenderer:
         if not source or not source.strip():
             return [AnsiLine.of("📊 (空图表)", _ST_EDGE_LABEL)]
         lines = [ln.rstrip() for ln in source.split("\n") if ln.strip()]
+        # ★ Mermaid 注释行（``%%``）与指令行（``%%{init: …}%%``）不是图表
+        #   内容：修复前首行为注释时图类型判定失败（取 ``lines[0]`` 为
+        #   ``%%…``），整图降级为源码展示；各图渲染器内部本就跳过注释行。
+        lines = [ln for ln in lines if not _is_comment_line(ln)]
         if not lines:
             return [AnsiLine.of("📊 (空图表)", _ST_EDGE_LABEL)]
         first = lines[0].strip()
@@ -162,10 +166,11 @@ class _MermaidRenderer:
     def _render_fallback(self, lines: list[str]) -> list[AnsiLine]:
         b = _Builder()
         first = lines[0].strip() if lines else ""
-        type_name = first.split()[0] if first else "diagram"
-        b.append("  📊 " + type_name, _ST_HEADER)
+        # 首行作为头部显示；正文从第二行开始——修复前头部取首词的短名、
+        # 正文又从首行起逐行输出，首行内容重复显示两次。
+        b.append("  📊 " + (first or "Mermaid 源码"), _ST_HEADER)
         b.append("\n")
-        for line in lines:
+        for line in lines[1:]:
             s = line.strip()
             if s:
                 b.append("  │ " + s, _ST_EDGE_LABEL)

@@ -384,7 +384,12 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
                                 and content[-1] == ' ' and content.strip(' ')):
                             content = content[1:-1]
                         self._pos = j
-                        return InlineCodeNode(content=content)
+                        # ★ Pandoc 行内代码属性 `` `x`{.python} `` /
+                        #   `` `x`{#id} `` / `` `x`{key=val}``：属性附加到
+                        #   ``InlineCodeNode.meta``（渲染层按类名叠加样式），
+                        #   不再把 ``{.python}`` 字面泄漏进正文。
+                        return self._apply_trailing_attrs(
+                            InlineCodeNode(content=content))
                     i = j
                 else:
                     i += 1

@@ -404,6 +404,13 @@ _HTML_TAG_MAP: dict[str, tuple[type[InlineNode] | None, bool]] = {
     'th':       (None, True),
     'caption':  (None, True),
     'font':     (None, True),   # 颜色属性在解析器中提取（无颜色 → 透明）
+    # ★ 第二批扩展：注音 / 标题组 / 图像映射 / 候选 / 插槽（内容照常显示）
+    'rt':       (None, True),   # ruby 注音（``<ruby>`` 内由专用路径处理）
+    'rp':       (None, True),   # ruby 注音回退括号
+    'hgroup':   (None, True),
+    'map':      (None, True),
+    'datalist': (None, True),
+    'slot':     (None, True),
 }
 
 

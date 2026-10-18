@@ -60,6 +60,7 @@ TAG_LABELS: dict[str, str] = {
     "dialog": "dialog 对话框", "menu": "menu 菜单",
     "form": "form 表单", "fieldset": "fieldset 字段组",
     "center": "center 居中",
+    "hgroup": "hgroup 标题组", "map": "map 图像映射",
     # 列表 / 定义列表（解析层结构化，标签行保留）
     "ul": "ul 列表", "ol": "ol 有序列表", "li": "li 列表项",
     "dl": "dl 定义列表", "dt": "dt 术语", "dd": "dd 定义",
@@ -728,6 +729,10 @@ def open_html_block(tag: str, attrs: dict | None = None,
     """
     state = HtmlBlockState(tag, attrs)
     if tag == "math":
+        return [], state
+    if tag in ("hgroup", "map", "slot"):
+        # 标题组 / 图像映射 / 插槽容器：语义头行无信息量（内容本身即可读），
+        # 不显示 ``▸ <hgroup …>`` 标签行，内容照常渲染。
         return [], state
     if tag in _SILENT_BLOCK_TAGS:
         return [], state

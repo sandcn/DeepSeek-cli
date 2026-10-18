@@ -66,6 +66,7 @@ def parse_pandoc_attrs(body: str) -> dict | None:
     classes: list[str] = []
     ident = ''
     attrs: dict = {}
+    format_name = ''
     for token in split_attr_tokens(body):
         if not token:
             continue
@@ -75,6 +76,11 @@ def parse_pandoc_attrs(body: str) -> dict | None:
                 classes.append(cls)
         elif token.startswith('#'):
             ident = token[1:]
+        elif token.startswith('=') and len(token) > 1:
+            # Pandoc raw inline / raw block 的格式标记（`` `x`{=latex} ``）：
+            # 属性体不含类名 / id / 键值对，仅指定原始内容的目标格式。
+            # 终端无多格式概念——按普通内容显示（属性不可见）。
+            format_name = token[1:]
         elif '=' in token:
             key, _, value = token.partition('=')
             key = key.strip().lower()
@@ -84,8 +90,10 @@ def parse_pandoc_attrs(body: str) -> dict | None:
         else:
             # 非属性 token（如 ``color:red``）→ 非本语法
             return None
-    if not (classes or ident or attrs):
+    if not (classes or ident or attrs or format_name):
         return None
+    if format_name:
+        attrs.setdefault("format", format_name)
     return {"classes": classes, "id": ident, "attrs": attrs}
 
 

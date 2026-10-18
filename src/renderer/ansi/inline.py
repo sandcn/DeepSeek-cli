@@ -398,7 +398,19 @@ def _emit_spoiler(node, base, ctx, out, depth):
 
 
 def _emit_code(node, base, ctx, out, depth):
-    _append(out, node.content or "", _merge(base, _STYLE_CODE))
+    """行内代码：``_STYLE_CODE`` 基础样式 + Pandoc 行内代码属性类名样式。
+
+    `` `x`{.red} `` / `` `x`{.highlight} `` 的类名按行内 span 同一映射
+    （``_SPAN_CLASS_STYLES``）叠加；未知类名 / ``#id`` / 键值对忽略，
+    代码内容照常显示。
+    """
+    style = _STYLE_CODE
+    classes = (getattr(node, "meta", None) or {}).get("classes") or []
+    for cls in classes:
+        extra = _SPAN_CLASS_STYLES.get(str(cls).lower())
+        if extra is not None:
+            style = style.merge(extra)
+    _append(out, node.content or "", _merge(base, style))
 
 
 def _emit_kbd(node, base, ctx, out, depth):

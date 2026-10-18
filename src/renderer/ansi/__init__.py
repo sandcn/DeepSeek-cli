@@ -698,6 +698,14 @@ class AnsiStreamRenderer:
         body = list(p._list_block_lines)
         tail = p._peek_incomplete_tail()
         if tail:
+            # ★ 活动行取自原始行（带列表内容列缩进）——先按收集路径同一口径
+            #   剥离列表块缩进，否则与统一施加的列表前缀叠加（``   x`` 渲染
+            #   成 6 空格缩进，与已换行行不一致）。
+            tail_indent = p._leading_indent_cols(tail)
+            pad = min(int(getattr(p, "_list_block_indent", 0) or 0),
+                      tail_indent)
+            if pad > 0:
+                tail = tail[pad:]
             body.append(tail)
         while body and not body[-1].strip():
             body.pop()
@@ -835,6 +843,18 @@ class AnsiStreamRenderer:
         #   未闭合的引用」会整段预览不可见（流式期间突然上屏）。
         tokens = list(committed)
         if pending:
+            # ★ 去重：未闭合代码块在 ``committed`` 中以行级 Token
+            #   （``CODE_FENCE_OPEN`` + ``CODE_LINE``）出现，``peek_pending``
+            #   又把同一块整体作为预览 ``CODE_BLOCK`` 返回——两者同时渲染会
+            #   把整块代码预览两遍（`` ```js`` / 行 / `` ```js`` / 行）。
+            #   pending 含未闭合 CODE_BLOCK 时，从 committed 尾部剔除同一
+            #   未闭合块的行级 Token（已闭合块以 CODE_FENCE_CLOSE 结尾，
+            #   不会被误删）。
+            if any(t.type is TokenType.CODE_BLOCK
+                   and not t.meta.get("closed", True) for t in pending):
+                while tokens and tokens[-1].type in (
+                        TokenType.CODE_LINE, TokenType.CODE_FENCE_OPEN):
+                    tokens.pop()
             tokens.extend(pending)
         elif not tokens:
             tokens = sub.flush()

@@ -170,11 +170,12 @@ class InlineHTMLMixin:
             self._pos = saved
             return None
 
-        # ★ P0 修复: 关闭 void 标签（如 </br>、</hr>、</img>）短路径返回 None，
-        #   让文本原样输出，避免错误输出 LineBreakNode 或空 TextNode。
+        # ★ 关闭 void 标签（如 </br>、</hr>、</img>、</input>）：HTML 中
+        #   void 元素没有闭合标签，浏览器忽略之。渲染层同样**静默吞掉**——
+        #   修复前返回 None 让文本原样上屏（``a</br>b`` 显示 ``a</br>b``）。
         if is_close and tag_name in _VOID_HTML_TAGS:
-            self._pos = saved
-            return None
+            self._skip_to_tag_end()
+            return TextNode(content='')
 
         # 已知的 HTML void 元素（自闭合）→ 跳过属性直接返回空
         if tag_name in _VOID_HTML_TAGS:

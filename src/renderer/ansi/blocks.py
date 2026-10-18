@@ -472,6 +472,13 @@ def render_blockquote_lines(text: str, depth: int = 0) -> list[AnsiLine]:
     """
     prefix = "\u2502 " * max(1, depth + 1)
     style = bq_prefix_style(depth + 1)
+    if not text.strip():
+        # ★ 引用块内的显式空行（``> a`` / ``>`` / ``> b``）：保留引用边框
+        #   前缀——修复前该行经空行路径渲染为无前缀空行，引用框在段落之间
+        #   断裂（连续引用视觉上被切成两块）。行尾不留空格（``│``）。
+        line = AnsiLine.of(prefix.rstrip(), style)
+        line.cont_prefix = prefix
+        return [line]
     out: list[AnsiLine] = []
     for sub in inline_lines(text):
         line = AnsiLine.of(prefix, style)

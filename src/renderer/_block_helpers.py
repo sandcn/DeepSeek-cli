@@ -117,6 +117,9 @@ _BLOCK_HTML_TAGS: frozenset[str] = frozenset({
     # ★ 第二批扩展：控件与嵌入对象（单独成行时按其语义渲染，
     #   而非作为普通段落文本）
     'button', 'select', 'textarea', 'object',
+    # ★ 第二批扩展：其余常用容器/控件标签（单独成行时识别为 HTML 块，
+    #   不再把 ``<datalist>`` / ``<hgroup>`` / ``<map>`` 等标签字面上屏）
+    'datalist', 'hgroup', 'map', 'slot', 'legend', 'optgroup', 'option',
 })
 
 # HTML 自闭合空标签（void elements）
