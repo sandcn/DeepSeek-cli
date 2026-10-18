@@ -41,6 +41,22 @@ _WORD_CHARS: frozenset[str] = frozenset(string.ascii_letters + string.digits + "
 #: ASCII 引号（字符串字面量边界：``x=="s"`` / ``(0)=="s"`` / ``=="s"==``）。
 _QUOTE_CHARS: frozenset[str] = frozenset("\"'")
 
+#: ASCII **操作数结尾**字符：左操作数在这些字符处结束。紧随其后的双字符
+#: 定界符（``==`` / ``~~`` / ``++`` / ``||``）若右侧又是 ASCII 操作数起点，
+#: 则是**比较/逻辑运算符**而非行内定界符：
+#:
+#:   - ``threadCount()==2`` / ``f()==(g)`` / ``arr[0]==1``（``)`` / ``]``）
+#:   - ``"a"==2``（字符串字面量）
+#:   - ``` `x`==y ```（行内代码闭合反引号）
+#:   - ``{a: 1}==b``（``}``）
+#:
+#: 仅在「右侧也是 ASCII 操作数起点」时判否——右侧为 CJK / 空白 / 标点时
+#: 保持定界符语义（``（==高亮==）`` 等中文排版高亮不受影响）。
+_OPERAND_END_CHARS: frozenset[str] = frozenset(")]}\"'`")
+
+#: ASCII **操作数起点**字符（右操作数）：标识符字符与开括号。
+_OPERAND_START_CHARS: frozenset[str] = _WORD_CHARS | frozenset("([{")
+
 #: 定界符 flanking 判定结果缓存容量上限（键 ``(pos, length)``）。超限整体
 #: 清空——缓存只影响性能（结果由文本唯一决定），清空不改变任何解析结果。
 #: 上限取较大值（强调密集的超长单行会有数千个候选位置，过小会频繁清空）。
@@ -577,18 +593,35 @@ class InlineFormattingMixin:
         是标点或词字符时 flanking 成立），导致定界符被吞、中间内容被误加样式
         （``(0)=="sculk_block"; (69)=="sculk_block"`` 渲染为
         ``(0)"sculk_block"; (69)"sculk_block"`` 且中间段被整段高亮）。故额外
-        判否两种形态：
+        判否三种形态：
 
           - **词内运算符**：紧邻左侧是 ASCII 标识符字符（``x==y``、``count==0``、
             ``legacy==old, new==fresh``、``a~~b, c~~d``、``a||b || c||d``）；
           - **字符串字面量比较**：紧随右侧是 ASCII 引号（``(0)=="x"``、``a=="b"``
-            的右操作数）——高亮语法不会以引号紧接左定界符。
+            的右操作数）——高亮语法不会以引号紧接左定界符；
+          - **左操作数在括号 / 引号 / 行内代码处结束**：紧邻左侧是
+            ``)`` / ``]`` / ``}`` / 引号 / 反引号，且右侧是 ASCII 操作数起点
+            （标识符字符或开括号）——``threadCount()==2``、``f()==(g)``、
+            ``arr[0]==1``、``"a"==2`` 等是比较运算符。
+
+        ★ 2026-10-18（用户报告：「流式 markdown 下面的东西渲染错误」）：修复前
+        只判「左侧词字符」——``threadCount()==2`` 左侧是 ``)``、右侧是 ``2``，
+        被当作高亮左定界符；后续普通文本里的词内比较 ``…threadCount==2``
+        又能作为闭合符（right-flanking 成立）→ 两个 ``==`` 被吞、整段正文
+        被误加高亮背景（流式预览与提交渲染同时出现）。左操作数边界判定后，
+        运算符 ``==`` 不再开启高亮，``==`` 原样保留。
         """
         text = self._text
         if pos > 0 and text[pos - 1] in _WORD_CHARS:
             return True
         after = pos + length
-        return after < self._n and text[after] in _QUOTE_CHARS
+        after_ch = text[after] if after < self._n else ''
+        if after_ch in _QUOTE_CHARS:
+            return True
+        if (pos > 0 and text[pos - 1] in _OPERAND_END_CHARS
+                and after_ch in _OPERAND_START_CHARS):
+            return True
+        return False
 
     def _span_delim_code_close(self, pos: int, length: int) -> bool:
         """``pos`` 处的双字符定界符是否处于「代码语义」上下文（不可作右定界符）。
