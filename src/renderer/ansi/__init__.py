@@ -53,6 +53,31 @@ _FORMAT_ACTIVE_MAX_CHARS = 2048
 #: 总成本与长度线性），避免超长单行每帧全量重解析。
 _FORMAT_ACTIVE_FULL_LIMIT = 512
 
+#: 段落「整段解析」预览的帧成本节流参数：存在跨软换行的未闭合行内标记时
+#: （如 ``**粗体`` 从首行延续到段尾），行级增量缓存不可用，整段必须一起解析
+#: ——长段落每帧重解析退化为 O(n²)（200 行 × 每行裸 URL 实测每帧 ~4ms、
+#: 累计数秒）。与 ``_render_format_active_line`` 同一策略：同一段落追加时按
+#: ``clamp(上次字符数 // 16, 64, 512)`` 节流（刷新次数 ~O(log n)，总成本线性）；
+#: 跨段落 / 预览滑窗（非追加）不节流，避免复用陈旧行。
+#:
+#: ``_PARAGRAPH_WHOLE_MIN_CHARS``：短于该字符数的段落整段解析成本可忽略
+#: （<0.1ms），**逐帧实时刷新**（保持「预览与提交一致」的既有契约）；仅较长
+#: 段落才按增长节流。取 256（与 ``_FORMAT_ACTIVE_FULL_LIMIT`` 同量级——
+#: 该阈值以下单帧渲染成本低于感知阈值）。
+_PARAGRAPH_WHOLE_MIN_CHARS = 256
+_PARAGRAPH_WHOLE_STEP_DIV = 16
+_PARAGRAPH_WHOLE_STEP_MIN = 64
+_PARAGRAPH_WHOLE_STEP_MAX = 512
+
+#: 整段解析节流「新增文本不得含」的触发字符：核心行内触发字符去掉 ``:``
+#: ——emoji 短代码（``:name:``）不跨行、只影响活动行自身，节流允许其滞后；
+#: 其余字符（``*`` / ``_`` / ``~`` / 反引号 / ``[`` / ``<`` / ``&`` / ``$``
+#: / ``\`` / ``{`` / ``|`` / ``%`` / ``+`` / ``=`` / ``^`` / ``@`` / ``!``）
+#: 均可能闭合/开启跨行结构或补全前文，出现即必须重渲染。
+_WHOLE_DELTA_FORBIDDEN = frozenset(
+    ch for ch in "\\`:*_~=$[<!&^@+|{%" if ch != ":"
+)
+
 #: 行内「触发位置」元数据缓存（唯一真源 ``inline_parser``）：核心格式触发
 #: 字符（不含裸 URL 首字母）/ 裸 URL 首字母 / 裸 URL 前缀。惰性初始化避免
 #: 模块导入顺序耦合。
@@ -291,6 +316,68 @@ def _delta_can_append_plain(prev: str, delta: str) -> bool:
     if _last_url_prefix_pos(probe16) >= 0:
         return False
     if _tail_has_open_marker(prev):
+        return False
+    return True
+
+
+def _tail_text_window(lines: list[str], limit: int = 160) -> str:
+    """行列表尾部窗口文本（≥ ``limit`` 字符，按行回退拼接）。
+
+    整段节流的安全判定只需**尾部窗口**（``_tail_has_open_marker`` 扫描尾部
+    128 字符、``endswith("  ")`` 只看行尾）——避免每帧对超长段落做 O(全文)
+    的 ``"\\n".join`` 复制。
+    """
+    parts: list[str] = []
+    total = 0
+    for line in reversed(lines):
+        parts.append(line)
+        total += len(line) + 1
+        if total >= limit:
+            break
+    if not parts:
+        return ""
+    parts.reverse()
+    text = "\n".join(parts)
+    if len(text) > limit:
+        return text[-limit:]
+    return text
+
+
+def _whole_delta_keeps_rendered_rows(prev_tail: str, delta: str) -> bool:
+    """整段解析节流：新增文本 ``delta`` 是否保持上一帧**已渲染行**不变。
+
+    与 ``_delta_can_append_plain``（单行渲染结果可整体复用）相比更宽松：
+    整段节流只要求「上一帧已渲染的完整行」不被新增内容改写，活动行本身
+    允许滞后到下次刷新（节流语义）。故**不**把裸 URL 前缀作为拒绝条件
+    ——URL 只影响活动行自身，且达到步长/段落闭合时必然刷新。
+
+    安全条件：
+
+      - ``prev_tail`` 不以双空格（硬换行 ``<br>``）结尾——新增文本会改变其语义；
+      - ``delta`` 不含可能跨行/补全前文的触发字符（见 ``_WHOLE_DELTA_FORBIDDEN``）
+        ——可能闭合或开启跨行结构，整段已渲染行会变化；
+      - ``prev_tail`` 尾部无可被任意文本补全的未闭合结构（``[`` / ``<`` /
+        ``&`` / 反斜杠）。
+
+    ★ 不检查智能排版（破折号 / 省略号 / emoji 短代码等）的跨边界形态：这类
+    改写只影响**活动行尾部**（节流允许其滞后到下次刷新，提交路径不受影响）；
+    而 ``_last_typo_pos`` 对单个 ``:`` / ``&`` / ``(`` 也保守报真——URL
+    （``https://…``）与普通文本会因此每帧被拒绝，节流失效。
+
+    ``prev_tail`` 为上一帧源码的**尾部窗口**（``_tail_text_window``；判定只
+    依赖尾部字符），非整段全文。
+
+    判定为真时候选复用结果是「上一帧渲染行」（不含 delta）；调用方另按
+    增长步长限制复用跨度。
+    """
+    if not delta:
+        return True
+    if prev_tail.endswith("  "):
+        return False
+    for ch in _WHOLE_DELTA_FORBIDDEN:
+        if ch in delta:
+            return False
+    if _tail_has_open_marker(prev_tail):
         return False
     return True
 
@@ -1006,9 +1093,7 @@ class AnsiStreamRenderer:
                       len(src) - 1)
             if cut <= 0:
                 # 首行即存在未闭合标记 → 整段解析
-                rows = _blocks.render_paragraph(
-                    Token(TokenType.PARAGRAPH, "\n".join(src))
-                )
+                rows = self._render_paragraph_whole(src)
             elif cut >= len(src) - 1:
                 # 仅最后一行（活动行）尚未确定：逐行渲染即整段语义
                 rows = self._render_paragraph_lines(src)
@@ -1018,9 +1103,7 @@ class AnsiStreamRenderer:
                 if len(tail) == 1:
                     tail_rows = _blocks.render_paragraph_lines(tail[0])
                 else:
-                    tail_rows = _blocks.render_paragraph(
-                        Token(TokenType.PARAGRAPH, "\n".join(tail))
-                    )
+                    tail_rows = self._render_paragraph_tail(tail)
                 rows = head_rows + tail_rows
         dropped = int(token.meta.get("preview_dropped", 0) or 0)
         if dropped:
@@ -1037,6 +1120,85 @@ class AnsiStreamRenderer:
             ("paragraph",), src,
             lambda text: _blocks.render_paragraph_lines(text),
         )
+
+    def _render_paragraph_whole(self, src: list[str]) -> list[AnsiLine]:
+        """整段解析段落预览（首行即存在跨软换行未闭合标记时）。
+
+        行级增量缓存要求每个完整行在行边界处行内闭合；``**粗体`` / `` `code``
+        这类标记从首行延续到段尾时，整段必须作为连续文本解析（与提交路径
+        ``render_paragraph`` 一致）。该路径无法按行复用——每帧重解析整段会随
+        段落长度累计 O(n²)（200 行 × 每行裸 URL 实测每帧 ~4ms、数秒累计），
+        故经 ``_throttle_paragraph_whole`` 按源码增长节流（刷新次数 ~O(log n)）。
+        """
+        from . import blocks as _blocks
+        return self._throttle_paragraph_whole(
+            ("paragraph-whole",), src,
+            lambda: _blocks.render_paragraph(
+                Token(TokenType.PARAGRAPH, "\n".join(src))),
+        )
+
+    def _render_paragraph_tail(self, tail: list[str]) -> list[AnsiLine]:
+        """段落尾部（自首个未闭合行起）整段解析预览（同样按增长节流）。
+
+        稳定头部（``cut`` 行之前）已走行级缓存；未闭合标记之后的尾部仍须整段
+        解析——长尾部逐帧重解析同样累计 O(n²)。
+        """
+        from . import blocks as _blocks
+        return self._throttle_paragraph_whole(
+            ("paragraph-tail",), tail,
+            lambda: _blocks.render_paragraph(
+                Token(TokenType.PARAGRAPH, "\n".join(tail))),
+        )
+
+    def _throttle_paragraph_whole(self, key, src: list[str],
+                                  render) -> list[AnsiLine]:
+        """整段解析的帧成本节流（同一段落纯追加时复用上一帧结果）。
+
+        判定条件（全部成立才复用）：
+
+          - 源码字符数 ≥ ``_PARAGRAPH_WHOLE_MIN_CHARS``（短段落逐帧实时——
+            整段解析成本可忽略，保持「预览与提交一致」的既有契约）；
+          - 上一帧有同键结果，且本帧源行列表以上一帧为**纯追加**（历史行
+            逐行相同、上一帧活动行是本帧对应行的前缀；预览滑窗 / 段落切换 /
+            内容回退一律重渲染——同时消除跨段落误复用风险）；
+          - 新增文本不改变已渲染行的解析结果：无可能跨行 / 补全前文的触发
+            字符（``*`` / ``]`` / ``<`` / ``&`` / 反引号等），上一帧尾部无
+            可被补全的未闭合结构（``[`` / ``<`` / ``&`` / 反斜杠）。裸 URL
+            前缀 / emoji 短代码只影响活动行自身（节流允许其滞后；达到步长
+            或段落闭合时刷新），故不参与判定；
+          - 源码字符增长未达步长 ``clamp(上次字符数 // 16, 64, 512)``。
+
+        刷新次数随源码增长按几何级数减少（~O(log n)），总渲染成本与源码长度
+        线性；提交路径不受影响（块闭合时完整渲染 committed 行）。
+        """
+        n = 0
+        for line in src:
+            n += len(line) + 1
+        state = self._preview_throttle.get(key)
+        if state is not None and n >= _PARAGRAPH_WHOLE_MIN_CHARS:
+            prev_n, prev_src, rows = state
+            m = len(prev_src)
+            # 纯追加判定：上一帧的完整行（除活动行外）与历史行逐行相同，
+            # 且上一帧活动行是本帧对应行的前缀（活动行每帧增长；行数可能
+            # 不变或增加一行）。
+            if (m <= len(src)
+                    and src[:m - 1] == prev_src[:m - 1]
+                    and src[m - 1].startswith(prev_src[m - 1])):
+                delta = src[m - 1][len(prev_src[m - 1]):]
+                if m < len(src):
+                    delta = delta + "\n" + "\n".join(src[m:])
+                step = prev_n // _PARAGRAPH_WHOLE_STEP_DIV
+                if step < _PARAGRAPH_WHOLE_STEP_MIN:
+                    step = _PARAGRAPH_WHOLE_STEP_MIN
+                elif step > _PARAGRAPH_WHOLE_STEP_MAX:
+                    step = _PARAGRAPH_WHOLE_STEP_MAX
+                if (n - prev_n < step
+                        and _whole_delta_keeps_rendered_rows(
+                            _tail_text_window(prev_src), delta)):
+                    return rows
+        rows = render()
+        self._preview_throttle[key] = (n, list(src), rows)
+        return rows
 
     def _render_format_active_line(self, line: str) -> list[AnsiLine]:
         """含行内格式的单行活动行预览（尾部窗口 + 帧成本节流）。

@@ -322,7 +322,7 @@ class TestParagraphPreviewPerf:
         assert calls["n"] < 20, calls["n"]
 
     def test_cross_line_mark_still_full_parse(self, monkeypatch):
-        """存在跨行未闭合标记时限内回退整段解析（保证一致性）。"""
+        """存在跨行未闭合标记时回退整段解析（保证一致性，并按增长节流）。"""
         calls = {"n": 0}
         orig = _blocks.render_paragraph
 
@@ -336,6 +336,7 @@ class TestParagraphPreviewPerf:
         for _ in range(30):
             r.write("继续内容\n")
             r.take_preview_lines()
+        # 路径仍被采用（整段解析而非行级增量）；短段落不节流（逐帧实时）
         assert calls["n"] >= 10
 
 

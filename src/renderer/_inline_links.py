@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import string
 
 from typing import TYPE_CHECKING, Any
@@ -23,6 +24,46 @@ _logger = logging.getLogger(__name__)
 
 #: 链接/图片标题中可「反斜杠转义」的字符（CommonMark：任意 ASCII 标点）。
 _TITLE_ESCAPABLE: frozenset[str] = frozenset(string.punctuation)
+
+#: 裸 URL 主体的终止字符类（与 ``_try_bare_url`` 逐字符扫描的原语义一致）：
+#: 空白 / HTML 定界符 / 半角 ``,[]{}`` / 全角标点 / 破折号。半角 ``. ! ? ; :``
+#: **不在**终止类中——它们只有在后跟空白时才终止 URL（见 ``_scan_url_body``），
+#: URL 中间的 ``.`` / ``:``（端口 / 路径）是合法字符。
+_URL_BODY_RE = re.compile(r"[^\s<>\"'\[\]{},，。、！？；：】》》）—–]+")
+
+#: 「标点后跟空白即终止 URL」的半角标点集合（半角逗号恒终止，已在上面的
+#: 字符类中排除）。
+_URL_TAIL_PUNCT = '.!?;:'
+
+
+def _scan_url_body(text: str, pos: int, n: int) -> int:
+    """从 ``pos`` 起扫描裸 URL 主体，返回终止下标（一次 C 级正则定位）。
+
+    修复前逐字符 Python 循环（``isspace`` + 字符集 ``in``）扫描 URL 主体：
+    长段落（每行含裸 URL）流式预览整段重解析时，URL 数是主要成本（200 行 ×
+    每帧实测 ~1.8ms）。正则匹配与原循环语义严格一致：
+
+      - 空白 / ``<>"'[]{},`` / 全角标点 / ``—–`` 立即终止（半角逗号恒终止）；
+      - 半角 ``. ! ? ; :`` 仅当**后跟空白**时终止（``text[end]`` 为空白且
+        ``text[end-1]`` 是该标点——正则必然在此空白处停下，故只需回退一位）；
+      - 文本结尾处的尾部标点保留（由 ``_balance_url_parens`` 统一剥离）。
+
+    Args:
+        text: 所在行文本。
+        pos: URL 主体起点（协议 / ``www.`` 之后）。
+        n: 文本长度（``len(text)``，避免重复计算）。
+
+    Returns:
+        主体结束下标（不含）；无任何主体字符时返回 ``pos``。
+    """
+    m = _URL_BODY_RE.match(text, pos)
+    if m is None:
+        return pos
+    end = m.end()
+    if (end > pos and text[end - 1] in _URL_TAIL_PUNCT
+            and end < n and text[end].isspace()):
+        end -= 1
+    return end
 
 
 def _apply_media_attrs(attrs: dict, meta: dict) -> None:
@@ -760,12 +801,7 @@ class InlineLinksMixin:
                             and self._text[self._pos:self._pos + plen].lower() == protocol):
                         saved = self._pos
                         self._pos += len(protocol)
-                        while (self._pos < self._n
-                               and not self._text[self._pos].isspace()
-                               and self._text[self._pos] not in '<>"\'[]{},，。、！？；：】》》）—–—'):
-                            if self._text[self._pos] in ',.!?;:' and self._pos + 1 < self._n and self._text[self._pos + 1].isspace():
-                                break
-                            self._pos += 1
+                        self._pos = _scan_url_body(self._text, self._pos, self._n)
                         url = self._text[saved:self._pos]
                         # 括号平衡处理：剥离多余右括号
                         balanced_url, removed = self._balance_url_parens(url)
@@ -780,12 +816,7 @@ class InlineLinksMixin:
                     and self._text[self._pos:self._pos + len(_www_prefix)].lower() == _www_prefix):
                 saved = self._pos
                 self._pos += len(_www_prefix)
-                while (self._pos < self._n
-                       and not self._text[self._pos].isspace()
-                       and self._text[self._pos] not in '<>"\'[]{},，。、！？；：】》》）—–—'):
-                    if self._text[self._pos] in ',.!?;:' and self._pos + 1 < self._n and self._text[self._pos + 1].isspace():
-                        break
-                    self._pos += 1
+                self._pos = _scan_url_body(self._text, self._pos, self._n)
                 url = self._text[saved:self._pos]
                 # 括号平衡处理：剥离多余右括号
                 balanced_url, removed = self._balance_url_parens(url)
