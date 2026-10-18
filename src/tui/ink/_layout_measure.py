@@ -505,13 +505,19 @@ def _measure_text(
             else:
                 runs = [StyledRun(text, style)] if text else []
                 ref = text
-            # ★ 性能（流式预览热路径）：先做**值比较**（长度短路 + 内容相等 +
-            #   宽度键相等）——内容完全一致时必定复用上次换行结果，无需计算
-            #   样式指纹（``style_fingerprint`` 逐 run 一次，长预览（200 行 ×
-            #   多 run）每帧可达 ~1ms）。值相等 ⇒ 指纹必然相等，短路严格等价。
-            #   仅值不等时才计算指纹（保留原有「同长元素替换」检测语义）。
+            # ★ 性能（流式预览热路径）：styled 分支先做**值比较**（长度短路 +
+            #   内容相等 + 宽度键相等）——StyledRun 值比较已含 style，内容完全
+            #   一致时渲染结果必然一致，无需计算样式指纹（``style_fingerprint``
+            #   逐 run 一次，长预览（200 行 × 多 run）每帧可达 ~1ms）。
+            # ★ 修复（2026-10-18，user_select 多选高亮不跟随）：纯文本分支的
+            #   ref 是**文本字符串**，不包含 style——文本相同而 style 变化
+            #   （如多选弹窗固定 ``○`` 前缀 + 整行背景高亮切换）时若走本短路
+            #   会复用旧 lines（旧 StyledRun 样式）→ 高亮永远停在首次渲染行。
+            #   故值比较短路只允许 styled 分支；纯文本必须落到下方
+            #   ``style_fp`` 完整比较（单样式指纹 O(1)，开销可忽略）。
             if (
-                cache is not None
+                styled is not None
+                and cache is not None
                 and len(cache[0]) == len(ref)
                 and cache[0] == ref
                 and cache[1] == cache_wt
