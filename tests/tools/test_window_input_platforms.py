@@ -79,19 +79,24 @@ def test_x11_move_uses_screen_coordinates():
 
 def test_x11_click_center_and_button_3():
     runner = FakeRunner()
-    _x11_backend(runner).send(999, build_action("click", {"button": "right"}))
-    command = _last_command(runner, "click")
-    assert command[-1] == "3"
+    result = _x11_backend(runner).send(999, build_action("click", {"button": "right"}))
+    command = _last_command(runner, "mousedown")
+    assert command.count("mousedown") == 1 and command.count("mouseup") == 1
+    assert command[command.index("mousedown") + 1] == "3"
+    assert command[command.index("mouseup") + 1] == "3"
+    # 按下与弹起之间保持最小按住时长（逐帧采样的程序才不会吞掉点击）
+    assert command[command.index("sleep") + 1] == f"{result.detail['press_hold']:.3f}"
     move = _last_command(runner, "mousemove")
     assert move[3:5] == ["250", "210"]  # 窗口中心 (50+200, 60+150)
 
 
-def test_x11_double_click_uses_repeat():
+def test_x11_double_click_uses_down_sleep_up_pairs():
     runner = FakeRunner()
     _x11_backend(runner).send(999, build_action("click", {"count": 2}))
-    command = _last_command(runner, "click")
-    assert "--repeat" in command
-    assert command[command.index("--repeat") + 1] == "2"
+    command = _last_command(runner, "mousedown")
+    assert command.count("mousedown") == 2
+    assert command.count("mouseup") == 2
+    assert command.count("sleep") == 3  # 两次按住 + 一次点击间隔
     assert command[-1] == "1"
 
 
@@ -263,7 +268,9 @@ def test_macos_drag_scroll_key_type_dispatch():
     assert mouse.calls[-1] == ("scroll", 410, 320, "down", 2)
 
     backend.send(555, build_action("key", {"key": "cmd+s"}))
-    assert keyboard.calls[-1] == ("key", "meta+s", "press")
+    # 按下与弹起分离发送，且之间至少保持最小按住时长（逐帧采样的程序可见）
+    assert keyboard.calls[-2:] == [("key", "meta+s", "down"),
+                                   ("key", "meta+s", "up")]
 
     backend.send(555, build_action("type", {"text": "hi"}))
     assert keyboard.calls[-1] == ("text", "hi")

@@ -99,7 +99,8 @@ MAX_MOVE_INTERVAL = 10.0
 
 #: ``key`` 长按（``hold``）时长（秒）：>0 时按下主键后保持指定时间再弹起，
 #: 一次调用完成长按（游戏蓄力 / 持续移动 / 连发），避免 down 与 up 两次
-#: 调用之间窗口失焦导致按键悬空。
+#: 调用之间窗口失焦导致按键悬空。省略 / 0 时后端仍会保持
+#: :data:`MIN_PRESS_HOLD`（逐帧采样的程序才不会把按下与弹起当成没发生）。
 DEFAULT_KEY_HOLD = 0.0
 MAX_KEY_HOLD = 30.0
 
@@ -120,7 +121,8 @@ DEFAULT_HOVER_DWELL = 0.6
 MAX_HOVER_DWELL = 30.0
 
 #: ``click`` 长按时长（秒）：>0 时按下后保持指定时间再弹起（长按 / 拖选的
-#: 「点住不放」场景；配合 ``count=1`` 使用）。
+#: 「点住不放」场景；配合 ``count=1`` 使用）。省略 / 0 时后端仍会保持
+#: :data:`MIN_PRESS_HOLD`（逐帧采样的程序才不会把按下与弹起当成没发生）。
 DEFAULT_CLICK_HOLD = 0.0
 MAX_CLICK_HOLD = 30.0
 
@@ -128,6 +130,32 @@ MAX_CLICK_HOLD = 30.0
 #: 默认值需小于系统双击时间（约 0.5s），才能被目标程序识别为双击。
 DEFAULT_CLICK_INTERVAL = 0.05
 MAX_CLICK_INTERVAL = 10.0
+
+#: 单次「按下 → 弹起」的最小间隔（秒）。逐帧采样的程序（游戏引擎 XNA /
+#: SDL、部分 OpenGL / Qt 应用）只在帧边界读取输入状态：按下与弹起落在同一
+#: 帧时，程序看到的永远是「没按过」，点击 / 按键会被静默吞掉。合成输入时
+#: 至少保持该时长；显式 ``hold`` 更大时以 ``hold`` 为准（见
+#: :func:`effective_press_hold`）。
+MIN_PRESS_HOLD = 0.05
+
+
+def effective_press_hold(hold: float | None) -> float:
+    """一次完整点击 / 按键的实际按住时长（显式 hold 与最小可靠时长取大）。
+
+    Args:
+        hold: 调用方指定的长按时长（秒，``None`` / 0 表示「瞬时」）。
+
+    Returns:
+        实际应保持的按下时长（秒）：至少 :data:`MIN_PRESS_HOLD`，hold 更大
+        时用 hold（游戏蓄力 / 持续移动等长按语义不受影响）。
+    """
+    try:
+        value = float(hold or 0.0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value < 0:
+        value = 0.0
+    return max(value, MIN_PRESS_HOLD)
 
 #: 鼠标相对移动（``move`` 的 ``dx`` / ``dy``）单次偏移的像素绝对值上限，
 #: 防御误传超大值把光标甩到屏幕外。
@@ -1167,6 +1195,7 @@ __all__ = [
     "MAX_MOVE_STEPS",
     "METHODS",
     "MIN_MOVE_STEPS",
+    "MIN_PRESS_HOLD",
     "MoveAction",
     "Point",
     "RELEASE_BUTTONS",
@@ -1176,6 +1205,7 @@ __all__ = [
     "TextAction",
     "build_action",
     "describe_action",
+    "effective_press_hold",
     "interpolate",
     "parse_coordinate",
     "resolve_point",

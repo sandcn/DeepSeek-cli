@@ -200,7 +200,14 @@ class WindowsBackend:
         return list_windows(pid)
 
     def list_monitors(self) -> list[Monitor]:
-        """枚举显示器（多显示器 / 全屏截取用）。"""
+        """枚举显示器（多显示器 / 全屏截取用）。
+
+        先确保进程 DPI 感知：否则首次调用（进程尚未感知）返回的是缩放后的
+        逻辑尺寸（如 150% 缩放下的 1707x960），后续截图（进程已感知）却是
+        物理像素（2560x1440）——同一接口前后结果不一致，整屏截图与窗口
+        坐标无法对齐。
+        """
+        winapi.ensure_process_dpi_aware()
         return [Monitor(**item) for item in winapi.list_monitors()]
 
     def capture_screen(self, monitor: Monitor, path: str,
@@ -511,6 +518,10 @@ def control_window(pid: int, request: WindowControlRequest) -> dict:
         winapi.set_window_topmost(target.handle, topmost=False)
     time.sleep(_CONTROL_SETTLE_SECONDS)
     after = window_state(target.handle)
+    retry = None
+    if action in ("move", "resize", "fit"):
+        retry, after = _compensate_geometry(
+            target.handle, action, request, before, after)
     detail = {
         "window_action": action,
         "handle": target.handle,
@@ -519,6 +530,11 @@ def control_window(pid: int, request: WindowControlRequest) -> dict:
         "before": before,
         "after": after,
     }
+    if action in ("move", "resize", "fit"):
+        # 如实回报请求的几何值：模型可据此判断目标程序是否又改写了窗口
+        detail["requested"] = request.to_dict()
+    if retry is not None:
+        detail["geometry_retry"] = retry
     if action == "activate":
         activated = _application_foreground(target)
         detail["foreground"] = activated
@@ -534,6 +550,78 @@ def control_window(pid: int, request: WindowControlRequest) -> dict:
                 f"method='message' 投递通道"
             )
     return detail
+
+
+#: 几何校验容差（像素）：窗口位置 / 尺寸与请求的偏差超过该值才补偿。
+_GEOMETRY_TOLERANCE_PX = 2
+
+
+def _geometry_matches(state: dict, *,
+                      x: int | None = None, y: int | None = None,
+                      width: int | None = None,
+                      height: int | None = None) -> bool:
+    """窗口状态是否与期望几何一致（``None`` 的维度不校验，容差 2px）。"""
+    if not state.get("exists"):
+        return False
+    for key, want in (("x", x), ("y", y), ("width", width), ("height", height)):
+        if want is None:
+            continue
+        if abs(int(state.get(key, 0)) - int(want)) > _GEOMETRY_TOLERANCE_PX:
+            return False
+    return True
+
+
+def _compensate_geometry(handle, action: str, request: WindowControlRequest,
+                         before: dict, after: dict) -> tuple[dict | None, dict]:
+    """几何动作被目标程序改写时补一次修正（游戏在改尺寸后自行居中）。
+
+    现象：``fit`` / ``resize`` 调用成功后，目标程序（如 Terraria 这类
+    WinForms 游戏）收到 ``WM_SIZE`` 时按自己的逻辑重新居中窗口，导致位置
+    与请求不一致；``move`` 也可能被程序的布局逻辑改写。这里读回实际几何，
+    与请求比对，偏差超过 ``_GEOMETRY_TOLERANCE_PX`` 时先补尺寸、再补位置
+    （各最多一次），避免与程序互相拉扯。
+
+    Returns:
+        ``(retry 说明或 None, 补偿后的窗口状态)``。retry 含 ``steps``
+        （补发的动作）与 ``matched``（补偿后是否与请求一致）。
+    """
+    if action not in ("move", "resize", "fit") or not after.get("exists"):
+        return None, after
+    wants: dict[str, int] = {}
+    if action in ("move", "fit"):
+        wants["x"], wants["y"] = int(request.x), int(request.y)
+    if action in ("resize", "fit"):
+        wants["width"], wants["height"] = int(request.width), int(request.height)
+    if action == "resize" and before.get("exists"):
+        # resize 只改尺寸：位置漂移时按原位置还原
+        wants["x"], wants["y"] = int(before["x"]), int(before["y"])
+    steps: list[str] = []
+    if "width" in wants and not _geometry_matches(
+            after, width=wants["width"], height=wants["height"]):
+        winapi.set_window_pos(
+            handle, 0, 0, wants["width"], wants["height"],
+            winapi.SWP_NOMOVE | winapi.SWP_NOZORDER | winapi.SWP_NOACTIVATE)
+        steps.append("resize")
+        time.sleep(_CONTROL_SETTLE_SECONDS)
+        after = window_state(handle)
+    if ("x" in wants or "y" in wants) and not _geometry_matches(
+            after, x=wants.get("x"), y=wants.get("y")):
+        winapi.set_window_pos(
+            handle, wants["x"], wants["y"], 0, 0,
+            winapi.SWP_NOSIZE | winapi.SWP_NOZORDER | winapi.SWP_NOACTIVATE)
+        steps.append("move")
+        time.sleep(_CONTROL_SETTLE_SECONDS)
+        after = window_state(handle)
+    if not steps:
+        return None, after
+    info: dict = {"steps": steps,
+                  "matched": _geometry_matches(after, **wants)}
+    if not info["matched"]:
+        info["hint"] = (
+            "目标程序在窗口几何变化后自行调整了窗口（例如游戏在分辨率变化后"
+            "重新居中），已按请求补发一次修正仍未完全一致；可用 "
+            "window_action=move 再校正位置")
+    return info, after
 
 
 def _activate_window(target: WindowInfo) -> bool:

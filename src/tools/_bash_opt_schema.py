@@ -62,7 +62,9 @@ def build_bash_opt_schema() -> dict[str, Any]:
                 "输入动作或 wait/screenshot/window，on_error 决定遇错停止/继续）、"
                 "clipboard（读写系统剪贴板：clipboard_action=set/get/clear/append，"
                 "set/append 需 text）、"
-                "wait_window（等待窗口出现，按 window 选择器，timeout 秒）、"
+                "wait_window（等待窗口**可用**：默认等到窗口可见且未最小化"
+                "（能截图 / 能注入输入）才返回，allow_hidden=true 时命中的隐藏"
+                "窗口也立即返回，timeout 秒）、"
                 "elements（列出窗口内控件清单：名称/类型/矩形/可用状态，"
                 "含窗口内坐标可直接用于 click；max_elements 限制条数，"
                 "element 作为过滤子串）。"
@@ -156,9 +158,11 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "Windows 优先走 UI Automation：Chrome/Electron/"
                             "Qt/WPF/UWP 等自绘界面也能枚举到无障碍节点；"
                             "UIA 不可用时回退经典 Win32 子窗口枚举"
-                            "\n- wait_window：等待窗口出现（按 window 选择器，"
-                            "timeout 秒，默认 15 秒）；GUI 程序启动慢时先等"
-                            "窗口就绪再操作"
+                            "\n- wait_window：等待窗口**可用**（按 window 选择器，"
+                            "timeout 秒，默认 15 秒）；默认等到窗口可见且未最小化"
+                            "（能截图 / 能注入输入）才返回，避免启动初期拿到一个"
+                            "visible=false 的窗口直接失败；确需操作隐藏 / 最小化"
+                            "窗口时传 allow_hidden=true，或改用 handle:0x…"
                             "\n- clipboard：读写系统剪贴板"
                             "（clipboard_action=set/get/clear/append，"
                             "set/append 需 text；缺省按是否提供 text 推断）；"
@@ -203,7 +207,17 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "仅 wait / wait_window 生效：wait 为等待任务完成的"
                             "超时秒数（默认 300；传 0 表示无限等待，支持小数"
                             "如 0.5）——超时后任务继续运行，可再次 wait 或 "
-                            "kill；wait_window 为等待窗口出现的秒数（默认 15）。"
+                            "kill；wait_window 为等待窗口**可用**的秒数（默认 15）。"
+                        ),
+                    },
+                    "allow_hidden": {
+                        "type": "boolean",
+                        "description": (
+                            "仅 wait_window：默认 false = 等到窗口可见且未最小化"
+                            "（能截图 / 能注入输入）才返回；true = 命中的隐藏 / "
+                            "最小化窗口也立即返回（结果里 selectable=false，"
+                            "截图与合成输入可能失败，通常先 window_action="
+                            "'restore' 更稳）。"
                         ),
                     },
                     "text": {
@@ -438,10 +452,13 @@ def build_bash_opt_schema() -> dict[str, Any]:
                     "hold": {
                         "type": "number",
                         "description": (
-                            "click / key 的长按时长（秒，默认 0 = 立即弹起）。>0 时"
-                            "按下后保持指定时间再弹起：click 为「点住不放」（长按"
-                            "拖动 / 蓄力），key 为「按住某键一段时间」（游戏持续"
-                            "移动 / 蓄力 / 长按功能键）；上限 30 秒。"
+                            "click / key 的长按时长（秒，默认 0 = 不额外保持）。"
+                            "省略 / 0 时后端仍会让按下与弹起至少间隔约 0.05 秒"
+                            "（逐帧采样的程序，如游戏引擎 XNA/SDL，同一帧内看不到"
+                            "按下状态会把整次点击 / 按键吞掉）；>0 时按该时长保持："
+                            "click 为「点住不放」（长按拖动 / 蓄力），key 为"
+                            "「按住某键一段时间」（游戏持续移动 / 蓄力 / 长按功能"
+                            "键）；上限 30 秒。结果里的 press_hold 给出实际按住时长。"
                         ),
                     },
                     "interval": {

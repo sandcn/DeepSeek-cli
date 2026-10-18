@@ -73,6 +73,9 @@ class _RecordingDriver:
         self.calls.append((handle, msg, wparam, lparam))
         return True
 
+    def sleep(self, seconds: float) -> None:
+        """后端在按下与弹起之间会保持最小按住时长（这里不真的等待）。"""
+
     def messages(self) -> list[tuple]:
         """只保留 (消息, wParam) 便于断言。"""
         return [(msg, wparam) for _handle, msg, wparam, _lparam in self.calls]

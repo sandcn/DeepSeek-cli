@@ -482,7 +482,10 @@ def test_foreground_activation_retries_until_success():
     result = _backend(driver).send(1234, build_action("click", {}))
     assert result.detail["delivery"] == "sendinput"
     assert driver.activations == 2
-    assert len([e for e in driver.events if e[0] == "sleep"]) == 2
+    sleeps = [event[1] for event in driver.events if event[0] == "sleep"]
+    # 2 次前台切换等待 + 1 次「按下 → 弹起」之间的最小按住保持
+    assert len(sleeps) == 3
+    assert sleeps[-1] == win_module.MIN_PRESS_HOLD
 
 
 def test_foreground_activation_exhausts_all_attempts():
@@ -649,7 +652,11 @@ def test_key_repeat_sends_multiple_sequences(monkeypatch):
     result = _backend(driver).send(1234, build_action("key", {"key": "a", "repeat": 3}))
     assert _keys(driver) == [("key", 0x41, False), ("key", 0x41, True)] * 3
     assert result.detail["repeat"] == 3
-    assert driver.events.count(("sleep", win_module._KEY_REPEAT_INTERVAL)) == 2
+    sleeps = [event[1] for event in driver.events if event[0] == "sleep"]
+    # 2 次连发间隔 + 3 次按下与弹起之间的最小按住保持
+    # （默认连发间隔与最小按住时长同为 0.05，按次数断言）
+    assert len(sleeps) == 2 + 3
+    assert all(value == win_module.MIN_PRESS_HOLD for value in sleeps)
 
 
 def test_key_repeat_ignored_for_down_phase(monkeypatch):

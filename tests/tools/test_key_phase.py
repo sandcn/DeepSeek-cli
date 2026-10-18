@@ -86,6 +86,9 @@ class _KeyEventDriver:
     def key_event(self, vk: int, *, key_up: bool) -> None:
         self.events.append((vk, key_up))
 
+    def sleep(self, seconds: float) -> None:
+        """后端在按下与弹起之间会保持最小按住时长（这里不真的等待）。"""
+
 
 def _windows_backend(driver):
     return WindowsInputBackend(locator=lambda pid: None, driver=driver)
@@ -143,6 +146,9 @@ class _PostDriver:
     def post(self, handle, msg, wparam=0, lparam=0):
         self.calls.append((handle, msg, wparam, lparam))
         return True
+
+    def sleep(self, seconds: float) -> None:
+        """后端在按下与弹起之间会保持最小按住时长（这里不真的等待）。"""
 
     def messages(self) -> list[tuple[int, int]]:
         return [(msg, wparam) for _h, msg, wparam, _lp in self.calls]

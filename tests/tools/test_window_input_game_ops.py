@@ -218,7 +218,9 @@ def test_key_interval_controls_repeat_gap():
         "key": "f12", "repeat": 3, "interval": 0.02,
     }))
     sleeps = [event[1] for event in _events(driver, "sleep")]
-    assert sleeps == [0.02, 0.02]
+    # 每次按键：按下 → 最小按住（0.05）→ 弹起；两次按键之间才是 interval（0.02）
+    hold = win_module.MIN_PRESS_HOLD
+    assert sleeps == [hold, 0.02, hold, 0.02, hold]
 
 
 def test_hold_keys_wrap_action():

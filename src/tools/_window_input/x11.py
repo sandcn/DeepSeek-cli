@@ -44,6 +44,7 @@ from .action import (
     ReleaseAction,
     ScrollAction,
     TextAction,
+    effective_press_hold,
     interpolate,
     resolve_point,
     validate_point,
@@ -353,8 +354,6 @@ class X11InputBackend:
                 "鼠标移动",
             )
         count = action.effective_count
-        delay_ms = (int(round(action.interval * 1000))
-                    or _DOUBLE_CLICK_DELAY_MS)
         if action.phase == "down":
             command = [xdotool]
             for index in range(count):
@@ -367,20 +366,21 @@ class X11InputBackend:
                 if index and action.interval > 0:
                     command += ["sleep", f"{action.interval:.3f}"]
                 command += ["mouseup", str(number)]
-        elif action.hold > 0:
-            # 长按：mousedown → sleep hold → mouseup（每次点击重复）
+        else:
+            # press：统一走 mousedown → sleep → mouseup。按下与弹起之间至少
+            # 保持 MIN_PRESS_HOLD，逐帧采样的程序（游戏 / SDL / 自绘界面）
+            # 才不会把点击吞掉；count>1 时用 interval 控制两次点击的节奏
+            # （interval 为 0 时退回双击默认间隔）。
+            press_hold = effective_press_hold(action.hold)
+            gap = (action.interval if action.interval > 0
+                   else _DOUBLE_CLICK_DELAY_MS / 1000.0)
             command = [xdotool]
             for index in range(count):
                 if index:
-                    command += ["sleep", f"{action.interval:.3f}"]
+                    command += ["sleep", f"{gap:.3f}"]
                 command += ["mousedown", str(number),
-                            "sleep", f"{action.hold:.3f}",
+                            "sleep", f"{press_hold:.3f}",
                             "mouseup", str(number)]
-        else:
-            command = [xdotool, "click"]
-            if count > 1:
-                command += ["--repeat", str(count), "--delay", str(delay_ms)]
-            command.append(str(number))
         with self._hold_all(xdotool, action.modifiers, action.hold_keys):
             self._checked(command, "鼠标点击")
         if action.phase == "down":
@@ -395,6 +395,8 @@ class X11InputBackend:
                 detail["effective_count"] = action.effective_count
         if action.hold > 0:
             detail["hold"] = action.hold
+        if action.phase == "press":
+            detail["press_hold"] = effective_press_hold(action.hold)
         if action.interval != DEFAULT_CLICK_INTERVAL:
             detail["interval"] = action.interval
         return detail
@@ -459,8 +461,10 @@ class X11InputBackend:
                     time.sleep(interval)
                 if action.phase in ("press", "down"):
                     self._checked([xdotool, "keydown", combo], "按键按下")
-                if action.is_long_press:
-                    time.sleep(action.hold)
+                if action.phase == "press":
+                    # 按下与弹起之间至少保持 MIN_PRESS_HOLD（逐帧采样的
+                    # 程序才不会把整次按键吞掉）；显式 hold 更大时以 hold 为准。
+                    time.sleep(effective_press_hold(action.hold))
                 if action.phase in ("press", "up"):
                     self._checked([xdotool, "keyup", combo], "按键弹起")
         if action.phase == "down":
@@ -476,6 +480,8 @@ class X11InputBackend:
         }
         if action.hold:
             detail["hold"] = action.hold
+        if action.phase == "press":
+            detail["press_hold"] = effective_press_hold(action.hold)
         if action.interval:
             detail["interval"] = action.interval
         return detail

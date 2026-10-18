@@ -52,6 +52,7 @@ from .._screenshot.windows import DEFAULT_SELECTOR, pick_window
 from .action import (
     DEFAULT_CLICK_INTERVAL,
     MIN_MOVE_STEPS,
+    MIN_PRESS_HOLD,
     ClickAction,
     DragAction,
     HoverAction,
@@ -62,6 +63,7 @@ from .action import (
     ReleaseAction,
     ScrollAction,
     TextAction,
+    effective_press_hold,
     interpolate,
     resolve_point,
     validate_point,
@@ -819,8 +821,10 @@ class WindowsInputBackend:
                     self._driver.mouse_event(down)
                 else:
                     self._driver.mouse_event(down)
-                    if action.hold > 0:
-                        self._driver.sleep(action.hold)
+                    # 按下与弹起之间至少保持 MIN_PRESS_HOLD：逐帧采样的
+                    # 程序（游戏 / XNA / SDL）同一帧内看不到「按下」状态，
+                    # 会把整次点击吞掉（实测泰拉瑞亚主菜单即如此）。
+                    self._driver.sleep(effective_press_hold(action.hold))
                     self._driver.mouse_event(up)
         if action.phase == "down":
             self._remember_button(action.button, pressed=True)
@@ -834,6 +838,8 @@ class WindowsInputBackend:
                 detail["effective_count"] = action.effective_count
         if action.hold > 0:
             detail["hold"] = action.hold
+        if action.phase == "press":
+            detail["press_hold"] = effective_press_hold(action.hold)
         if action.interval != DEFAULT_CLICK_INTERVAL:
             detail["interval"] = action.interval
         return detail
@@ -956,6 +962,8 @@ class WindowsInputBackend:
         }
         if action.hold:
             detail["hold"] = action.hold
+        if action.phase == "press":
+            detail["press_hold"] = effective_press_hold(action.hold)
         if action.interval:
             detail["interval"] = action.interval
         return detail
@@ -999,8 +1007,9 @@ class WindowsInputBackend:
                 self._driver.key_event(name_vk, key_up=False)
             try:
                 self._driver.key_event(vk, key_up=False)
-                if hold > 0:
-                    self._driver.sleep(hold)
+                # 至少保持 MIN_PRESS_HOLD：逐帧采样的程序（游戏）同一帧内
+                # 看不到按下状态，会把整次按键吞掉。
+                self._driver.sleep(effective_press_hold(hold))
                 self._driver.key_event(vk, key_up=True)
             finally:
                 for name_vk in reversed(vks):
@@ -1025,6 +1034,8 @@ class WindowsInputBackend:
 
     def _press_vk(self, vk: int) -> None:
         self._driver.key_event(vk, key_up=False)
+        # 回车 / 制表同样要跨帧可见，否则逐帧采样的程序收不到按键
+        self._driver.sleep(MIN_PRESS_HOLD)
         self._driver.key_event(vk, key_up=True)
 
     @contextmanager
@@ -1270,8 +1281,9 @@ class WindowsInputBackend:
                     self._driver.post(hit.handle,
                                       dbl_msg if index == 1 else down_msg,
                                       button_mask, lparam)
-                    if action.hold > 0:
-                        self._driver.sleep(action.hold)
+                    # 与 SendInput 路径一致：按下与弹起之间至少保持
+                    # MIN_PRESS_HOLD，逐帧采样的程序才不会把点击吞掉。
+                    self._driver.sleep(effective_press_hold(action.hold))
                     self._driver.post(hit.handle, up_msg, 0, lparam)
         finally:
             self._post_key_list(hit.handle, held, key_up=True)
@@ -1289,6 +1301,8 @@ class WindowsInputBackend:
                 detail["effective_count"] = action.effective_count
         if action.hold > 0:
             detail["hold"] = action.hold
+        if action.phase == "press":
+            detail["press_hold"] = effective_press_hold(action.hold)
         if action.interval != DEFAULT_CLICK_INTERVAL:
             detail["interval"] = action.interval
         return detail
@@ -1371,8 +1385,10 @@ class WindowsInputBackend:
                     self._driver.post(handle, down_msg, vk, 1)
                     for unit in _message_char_units(action.shortcut, modifiers):
                         self._driver.post(handle, winapi.WM_CHAR, unit, 1)
-                if action.is_long_press:
-                    self._driver.sleep(action.hold)
+                if action.phase == "press":
+                    # 与 SendInput 路径一致：按下与弹起至少间隔
+                    # MIN_PRESS_HOLD，避免逐帧采样的程序看不到按键。
+                    self._driver.sleep(effective_press_hold(action.hold))
                 if action.phase in ("press", "up"):
                     self._driver.post(handle, up_msg, vk, _KEYUP_LPARAM)
                     for modifier_vk in reversed(vks):
@@ -1390,6 +1406,8 @@ class WindowsInputBackend:
         }
         if action.hold:
             detail["hold"] = action.hold
+        if action.phase == "press":
+            detail["press_hold"] = effective_press_hold(action.hold)
         if action.interval:
             detail["interval"] = action.interval
         return detail
@@ -1475,6 +1493,7 @@ class WindowsInputBackend:
         """消息投递路径按一次功能键：按下 → 字符 → 弹起（成对通知程序）。"""
         self._driver.post(handle, winapi.WM_KEYDOWN, vk, 1)
         self._driver.post(handle, winapi.WM_CHAR, char, 1)
+        self._driver.sleep(MIN_PRESS_HOLD)
         self._driver.post(handle, winapi.WM_KEYUP, vk, _KEYUP_LPARAM)
 
     def _post_move(self, hit: _MessagePoint, state: int) -> None:

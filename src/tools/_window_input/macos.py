@@ -44,6 +44,7 @@ from .action import (
     ReleaseAction,
     ScrollAction,
     TextAction,
+    effective_press_hold,
     interpolate,
     resolve_point,
     validate_point,
@@ -334,6 +335,7 @@ class MacOSInputBackend:
                               target.frame.height, label="点击坐标")
         screen = target.frame.to_screen(point)
         count = action.effective_count
+        press_hold = effective_press_hold(action.hold)
         with self._hold_keys(action.hold_keys):
             if action.phase == "down":
                 self._button_phase(mouse, "button_down", screen, action.button)
@@ -348,10 +350,18 @@ class MacOSInputBackend:
                         "这两个参数"
                     )
                 clicker(screen[0], screen[1], action.button, count,
-                        action.hold, action.interval, action.modifiers)
+                        press_hold, action.interval, action.modifiers)
             else:
-                mouse.click(screen[0], screen[1], action.button, count,
-                            action.modifiers)
+                clicker = getattr(mouse, "click_ex", None)
+                if clicker is not None:
+                    # 按下与弹起至少保持 MIN_PRESS_HOLD：逐帧采样的程序
+                    # （游戏）同一帧内看不到按下状态，会把点击吞掉。
+                    clicker(screen[0], screen[1], action.button, count,
+                            press_hold, action.interval, action.modifiers)
+                else:
+                    self._press_buttons(mouse, screen, action.button, count,
+                                        press_hold, action.interval,
+                                        action.modifiers)
         if action.phase == "down":
             self._remember_button(action.button, pressed=True)
         elif action.phase == "up":
@@ -364,9 +374,32 @@ class MacOSInputBackend:
                 detail["effective_count"] = action.effective_count
         if action.hold > 0:
             detail["hold"] = action.hold
+        if action.phase == "press":
+            detail["press_hold"] = press_hold
         if action.interval != DEFAULT_CLICK_INTERVAL:
             detail["interval"] = action.interval
         return detail
+
+    @staticmethod
+    def _press_buttons(mouse, screen: tuple[int, int], button: str,
+                       count: int, press_hold: float, interval: float,
+                       modifiers=()) -> None:
+        """无 ``click_ex`` 时用分离的按下 / 弹起保证最小按住时长。
+
+        驱动连 ``button_down`` / ``button_up`` 都不提供时退回普通 ``click``
+        （由驱动自身决定按下时长；这是平台能力限制，无法在这里补偿）。
+        """
+        down = getattr(mouse, "button_down", None)
+        up = getattr(mouse, "button_up", None)
+        if down is None or up is None:
+            mouse.click(screen[0], screen[1], button, count, modifiers)
+            return
+        for index in range(max(int(count), 1)):
+            if index and interval > 0:
+                time.sleep(interval)
+            down(screen[0], screen[1], button)
+            time.sleep(press_hold)
+            up(screen[0], screen[1], button)
 
     @staticmethod
     def _button_phase(mouse, method: str, screen: tuple[int, int],
@@ -430,7 +463,7 @@ class MacOSInputBackend:
             for index in range(repeats):
                 if index and interval:
                     time.sleep(interval)
-                if action.is_long_press:
+                if action.phase == "press":
                     self._press_with_hold(driver, action)
                 else:
                     driver.key(action.shortcut, action.phase)
@@ -446,16 +479,30 @@ class MacOSInputBackend:
         }
         if action.hold:
             detail["hold"] = action.hold
+        if action.phase == "press":
+            detail["press_hold"] = effective_press_hold(action.hold)
         if action.interval:
             detail["interval"] = action.interval
         return detail
 
     @staticmethod
     def _press_with_hold(driver, action: KeyAction) -> None:
-        """按下 → 保持 ``hold`` 秒 → 弹起（长按；需驱动支持 down/up 分离）。"""
-        driver.key(action.shortcut, "down")
-        time.sleep(action.hold)
-        driver.key(action.shortcut, "up")
+        """按下 → 至少保持 ``MIN_PRESS_HOLD``（或显式 hold）→ 弹起。
+
+        逐帧采样的程序（游戏）同一帧内看不到按下状态，会把整次按键吞掉；
+        显式 hold 更大时以 hold 为准。驱动不支持分离的按下 / 弹起时退回
+        一次完整按键（平台能力限制）。
+        """
+        hold = effective_press_hold(action.hold)
+        try:
+            driver.key(action.shortcut, "down")
+        except InputError:
+            driver.key(action.shortcut, "press")
+            return
+        try:
+            time.sleep(hold)
+        finally:
+            driver.key(action.shortcut, "up")
 
     def _type(self, action: TextAction) -> dict:
         driver = self._keyboard

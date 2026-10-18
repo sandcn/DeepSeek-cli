@@ -42,8 +42,10 @@ bash_opt — 按 task_id 操作后台 bash 任务
                  emoji、多行）以「粘贴」方式可靠输入（游戏、Electron、
                  远程桌面都接受）；粘贴后恢复原剪贴板内容前会留出片刻，
                  避免目标程序（浏览器 / Electron）异步读剪贴板时拿到旧内容
-- op=wait_window 等待窗口出现（按 window 选择器，timeout 秒）；GUI 程序
-                 启动慢时先等窗口就绪再操作，避免「窗口还没出现」空转
+- op=wait_window 等待窗口**可用**（按 window 选择器，timeout 秒）；默认等到
+                 窗口可见且未最小化（能截图 / 能注入输入）才返回，避免启动
+                 初期拿到 visible=false 的窗口直接失败；确需操作隐藏 / 最小化
+                 窗口时传 allow_hidden=true
 - op=elements    列出窗口内的控件（名称 / 类型 / 类名 / 矩形 / 可用状态）；
                  可用 element 参数（如 element='确定'）直接按控件名点击或
                  输入，不必读图算像素（Windows 优先走 UI Automation，
@@ -266,6 +268,7 @@ from ._screenshot.elements import (
 from ._screenshot.windows import (
     WINDOW_CONTROL_ACTIONS,
     WINDOW_MEMORY_ACTIONS,
+    is_selectable,
     normalize_control_action,
 )
 from ._clipboard import (
@@ -741,6 +744,7 @@ class BashOptFunc(Func):
                  max_results=None, min_scale=None, max_scale=None,
                  scale_steps=None,
                  screen=None, margin=None,
+                 allow_hidden=None,
                  color=None, region=None, mode=None, output=None,
                  boxes=None, points=None, labels=None,
                  macro=None, times=None, append=None,
@@ -846,6 +850,11 @@ class BashOptFunc(Func):
         # ── 截图增强（op=screenshot / sequence 步骤）──
         self.screen = screen          # 全屏 / 多显示器截取（true / 'primary' / 序号）
         self.margin = margin          # 按控件区域截图时的外扩像素
+        # ── 等待窗口（op=wait_window）──
+        # allow_hidden=True 时，命中隐藏 / 最小化的窗口也立即返回（默认等
+        # 到窗口可见且可操作，否则后续截图 / 输入必然失败）。
+        self.allow_hidden = (None if allow_hidden is None
+                             else bool(allow_hidden))
         # ── 像素取色（op=pixel）──
         self.color = color            # 期望色 / 查找目标色（文本）
         self.region = region          # 取色 / 查找区域（'x,y,w,h'）
@@ -3602,14 +3611,20 @@ class BashOptFunc(Func):
     # ── op=wait_window（等待窗口出现） ───────────────────
 
     async def _op_wait_window(self, rec: dict) -> str:
-        """等待目标窗口出现（按 ``window`` 选择器）。
+        """等待目标窗口**可用**（按 ``window`` 选择器）。
 
         GUI 程序启动后窗口创建有延迟（尤其是 Electron / 游戏 / 需要登录的
         IDE），先等窗口就绪再操作可以避免一连串「没有匹配窗口」的失败。
         ``timeout`` 秒内每 ``_WAIT_WINDOW_INTERVAL`` 轮询一次窗口清单，用
-        ``window`` 选择器匹配；命中即返回该窗口的清单条目与几何。
+        ``window`` 选择器匹配。
 
-        超时返回可读提示（附当前窗口清单），便于改用正确的选择器。
+        默认等到窗口**可见且未最小化**（可截图 / 可注入输入）才返回：启动
+        初期窗口往往先以 ``visible=false`` 出现（游戏 / Electron 初始化），
+        此时返回「已就绪」会让后续 screenshot / click 立刻失败。确实要操作
+        隐藏 / 最小化窗口时传 ``allow_hidden=true``（或改用 ``handle:0x…``）。
+
+        超时返回可读提示（附当前窗口清单），便于改用正确的选择器；若窗口
+        已存在但一直不可见，会明确指出应先 restore。
         """
         pid = rec.get("pid")
         if pid is None:
@@ -3619,8 +3634,10 @@ class BashOptFunc(Func):
         started = time.monotonic()
         deadline = None if not timeout else started + timeout
         selector = self.window or "main"
+        allow_hidden = bool(self.allow_hidden)
         attempts = 0
         last_error = ""
+        hidden_hit = None
         while True:
             attempts += 1
             infos = await self._list_windows_quietly(pid)
@@ -3630,36 +3647,48 @@ class BashOptFunc(Func):
                 except SelectorError as exc:
                     last_error = str(exc)
                 else:
-                    # ★ 全量描述再按返回上限截断：describe_windows 默认
-                    #   limit=40，若目标窗口排在第 40 个之后，旧实现会
-                    #   `match=None`——明明等到了窗口却返回 window=null。
-                    #   这里与 op=windows 保持一致（先全量，再截断清单）。
-                    described_all = describe_windows(
-                        infos, limit=max(len(infos), 1))
-                    match = next((item for item in described_all
-                                  if item["handle"] == target.handle), None)
-                    described = described_all[:self._MAX_WINDOW_LIST]
-                    payload = {
-                        "task_id": self.task_id,
-                        "op": "wait_window",
-                        "found": True,
-                        "selector": selector,
-                        "waited": round(time.monotonic() - started, 3),
-                        "attempts": attempts,
-                        "window": match,
-                        "windows": described,
-                        "hint": ("窗口已就绪：用同一个 window 选择器继续 "
-                                 "screenshot / 输入 op；需要固定布局时可先用 "
-                                 "op=window 的 always_on_top 或 save_geometry"),
-                    }
-                    if len(described_all) > len(described):
-                        payload["returned"] = len(described)
-                        payload["truncated"] = True
-                        payload["hint"] += (
-                            f"；窗口过多，清单仅返回前 {len(described)} 条"
-                            f"（共 {len(described_all)} 条），window 字段仍是"
-                            f"命中的那个窗口")
-                    return json.dumps(payload, ensure_ascii=False)
+                    if allow_hidden or is_selectable(target):
+                        # ★ 全量描述再按返回上限截断：describe_windows 默认
+                        #   limit=40，若目标窗口排在第 40 个之后，旧实现会
+                        #   `match=None`——明明等到了窗口却返回 window=null。
+                        #   这里与 op=windows 保持一致（先全量，再截断清单）。
+                        described_all = describe_windows(
+                            infos, limit=max(len(infos), 1))
+                        match = next((item for item in described_all
+                                      if item["handle"] == target.handle), None)
+                        described = described_all[:self._MAX_WINDOW_LIST]
+                        payload = {
+                            "task_id": self.task_id,
+                            "op": "wait_window",
+                            "found": True,
+                            "selector": selector,
+                            "waited": round(time.monotonic() - started, 3),
+                            "attempts": attempts,
+                            "visible": bool(target.visible),
+                            "selectable": is_selectable(target),
+                            "window": match,
+                            "windows": described,
+                            "hint": ("窗口已就绪：用同一个 window 选择器继续 "
+                                     "screenshot / 输入 op；需要固定布局时可先用 "
+                                     "op=window 的 always_on_top 或 save_geometry"),
+                        }
+                        if len(described_all) > len(described):
+                            payload["returned"] = len(described)
+                            payload["truncated"] = True
+                            payload["hint"] += (
+                                f"；窗口过多，清单仅返回前 {len(described)} 条"
+                                f"（共 {len(described_all)} 条），window 字段仍是"
+                                f"命中的那个窗口")
+                        if not is_selectable(target):
+                            payload["hint"] += (
+                                "；该窗口当前不可见 / 已最小化（allow_hidden=true "
+                                "强制返回），截图与合成输入可能失败：可先执行 "
+                                "window_action='restore' 恢复窗口")
+                        return json.dumps(payload, ensure_ascii=False)
+                    # 命中的窗口还在后台初始化（visible=false / 最小化）：
+                    # 继续等到它真正可截取、可注入为止，避免返回一个
+                    # 「看起来找到了但实际不能操作」的窗口。
+                    hidden_hit = target
             if deadline is not None and time.monotonic() >= deadline:
                 break
             await asyncio.sleep(self._WAIT_WINDOW_INTERVAL)
@@ -3667,8 +3696,15 @@ class BashOptFunc(Func):
         candidates = window_hint(infos) if infos else "（无可见窗口）"
         timeout_desc = f"{timeout:g} 秒" if timeout else "无限"
         detail = f"；匹配提示: {last_error}" if last_error else ""
+        hidden_note = ""
+        if hidden_hit is not None:
+            hidden_note = (
+                f"；注意：窗口「{hidden_hit.title}」（句柄 "
+                f"{hidden_hit.handle_hex}）已经存在，但当前不可见 / 已最小化，"
+                f"不能截图或注入输入——可用 window_action='restore' 先恢复窗口，"
+                f"或传 allow_hidden=true 直接操作它")
         return (f"(等待窗口超时（{timeout_desc}）：window 选择器 {selector!r} 没有等到"
-                f"匹配窗口{detail}。当前窗口: {candidates}。"
+                f"可操作的匹配窗口{detail}{hidden_note}。当前窗口: {candidates}。"
                 f"可用 op=windows 查看完整清单、op=wait 确认进程状态；"
                 f"若进程是纯命令行程序，它不会有 GUI 窗口)")
 
