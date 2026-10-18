@@ -55,6 +55,49 @@ def _create_message_queue():
 _logger = logging.getLogger(__name__)
 
 
+def _make_pending_input_probe(queue, input_instance=None):
+    """构造「待处理用户输入」探测回调（agent 等待后台任务时优先消费消息）。
+
+    覆盖两类用户输入通道：
+      - ``queue``：消息队列（``AsyncMessageQueue.qsize`` 是 **property**，
+        ``asyncio.Queue.qsize`` 是**方法**——统一兼容两种形态）；
+      - ``input_instance``：输入框排队输入（AI 生成 / 等待后台任务期间用户
+        按 Enter 提交、尚未被 ``round_end`` 取走的文本，经
+        ``has_queued_input()`` 检测）。
+
+    探测回调由 ``_wait_background_tasks`` 在事件循环线程中每 0.2s 调用，
+    返回 True 即提前结束后台任务等待，让当前轮结束、由消息队列消费者取走
+    并处理该条用户消息（后台任务继续运行，不杀不标记 managed_by_tool）。
+
+    Args:
+        queue: 消息队列实例（MessageQueue / asyncio.Queue）。
+        input_instance: Input 实例（可为 None——无输入框的上层）。
+
+    Returns:
+        无参探测函数，返回 bool。
+    """
+    def _probe() -> bool:
+        try:
+            size = getattr(queue, "qsize", None)
+            if size is not None:
+                value = size() if callable(size) else size
+                if int(value) > 0:
+                    return True
+        except Exception:
+            _logger.debug("消息队列非空探测失败", exc_info=True)
+        if input_instance is not None:
+            try:
+                has_queued = getattr(input_instance, "has_queued_input", None)
+                if callable(has_queued) and has_queued():
+                    return True
+            except Exception:
+                _logger.debug("输入框排队输入探测失败", exc_info=True)
+        return False
+
+    return _probe
+
+
+
 class InteractiveLoop:
     """交互模式主循环 — 封装循环状态和编排逻辑"""
 
@@ -700,6 +743,19 @@ class InteractiveLoop:
         queue = _create_message_queue()
         msg_done = asyncio.Event()
         self._msg_done_ref = msg_done
+
+        # ★ 用户输入优先（2026-10-19 用户需求）：注入「待处理用户输入」探测
+        #   ——agent 等待后台 bash/subagent 期间，消息队列一有用户消息即停止
+        #   等待、结束当前轮，由下方消费者取走并处理该条消息（后台任务继续
+        #   运行，不杀不标记 managed_by_tool）。
+        pending_probe = _make_pending_input_probe(queue, self._ui.input)
+        try:
+            agent_obj = getattr(session, "agent", None)
+            set_probe = getattr(agent_obj, "set_pending_input_probe", None)
+            if callable(set_probe):
+                set_probe(pending_probe)
+        except Exception:
+            _logger.debug("注入待处理用户输入探测失败（不影响主流程）", exc_info=True)
 
         consume_task = asyncio.create_task(queue.async_consume(lambda msg: self._cli_msg_consumer(msg, session, state, msg_done)))
         consume_task.add_done_callback(self._check_consumer_exception)

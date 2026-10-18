@@ -352,6 +352,19 @@ class ClawBotRunner:
 
         # ── 并行任务 ──────────────────────────────────
         queue: asyncio.Queue = asyncio.Queue()
+        # ★ 用户输入优先（2026-10-19 用户需求）：共享会话的 agent 在等待
+        #   后台 bash/subagent 期间，消息队列一有消息（本地输入 / 微信消息）
+        #   即停止等待、结束当前轮，由 _consume_loop 取走并处理该条消息
+        #   （后台任务继续运行，不杀不标记 managed_by_tool）。
+        from ..app_loop._loop import _make_pending_input_probe
+
+        try:
+            agent_obj = getattr(session, "agent", None)
+            set_probe = getattr(agent_obj, "set_pending_input_probe", None)
+            if callable(set_probe):
+                set_probe(_make_pending_input_probe(queue, input_))
+        except Exception:
+            _logger.debug("注入待处理用户输入探测失败（不影响主流程）", exc_info=True)
         poll_task = None
         consume_task = None
 

@@ -12,7 +12,7 @@ import logging
 import threading
 import time
 import weakref
-from typing import Any
+from typing import Any, Callable
 
 from .sandbox_manager import get_sandbox_manager, set_current_message_index
 
@@ -130,9 +130,45 @@ class BaseAgent:
         # 只操作 _subagent_tasks——误传对方 task_id 时天然查不到记录，从
         # 结构上杜绝跨类型误操作（工具内部另有 task_id 前缀校验双保险）。
         self._background_tasks: dict[str, dict] = {}
+        # ── 待处理用户输入探测（等待后台任务时优先消费用户消息） ──
+        # 上层（app_loop / clawbot）在创建消息队列后注入：回调返回 True
+        # 表示消息队列中已有待处理的用户消息。_wait_background_tasks 在
+        # 等待后台 bash/subagent 期间轮询它——有用户消息即提前结束等待
+        # （后台任务继续运行、不杀不标记 managed_by_tool），让当前轮尽快
+        # 结束、由消息队列消费者取走并处理该条用户消息。
+        # SubAgent 不注入（用户消息只属于主 Agent），默认 None 行为不变。
+        self._pending_input_probe: Callable[[], bool] | None = None
+        # 最近一次 _wait_background_tasks 是否因「有待处理用户输入」提前退出
+        # （_process_background_tasks / _process_subagent_tasks 据此跳过超时
+        #  降级分支，不把未完成任务误标记为 managed_by_tool）。
+        self._background_wait_preempted: bool = False
         # ★ 注册到全局活跃 Agent 注册表（ESC 中断时统一杀掉所有后台任务）
         with _active_agents_lock:
             _active_agents.add(self)
+
+    # ── 待处理用户输入探测 ────────────────────────────
+
+    def set_pending_input_probe(self, probe: Callable[[], bool] | None) -> None:
+        """注入/清除「待处理用户输入」探测回调。
+
+        探测回调在**事件循环线程**中同步调用，须快速返回且不得阻塞；
+        返回 True 表示消息队列已有待处理用户消息。
+
+        Args:
+            probe: 无参可调用对象；None 表示清除探测（恢复默认等待语义）。
+        """
+        self._pending_input_probe = probe
+
+    def _has_pending_user_input(self) -> bool:
+        """返回消息队列中是否有待处理的用户消息（探测失败视为无）。"""
+        probe = getattr(self, "_pending_input_probe", None)
+        if probe is None:
+            return False
+        try:
+            return bool(probe())
+        except Exception:
+            _logger.debug("待处理用户输入探测失败", exc_info=True)
+            return False
 
     # ── 沙盒索引同步 ──────────────────────────────────
 
@@ -661,6 +697,7 @@ class BaseAgent:
         """
         for content in messages:
             self.add_user_message(content)
+
         self._sync_sandbox_index()
         # 主 Agent 有 context_manager，插入消息后使缓存失效保持一致
         cm = getattr(self, "context_manager", None)
@@ -683,13 +720,25 @@ class BaseAgent:
         工具管理），避免长时/挂起的 bash 后台任务（如自动转后台后命令
         永不退出）让 Agent/SubAgent 无限阻塞。
 
+        ★ 用户输入优先（2026-10-19 用户需求）：等待期间轮询
+        ``_pending_input_probe``——消息队列一有用户消息就立即结束等待并
+        返回当前未完成任务集合（置 ``_background_wait_preempted=True``），
+        让当前轮尽快结束、由消息队列消费者取走并处理该条用户消息；后台
+        任务继续运行，不杀、不标记 managed_by_tool。调用方应据该标志跳过
+        「超时」降级分支（见 ``_process_background_tasks`` /
+        ``_process_subagent_tasks``）。
+
         Args:
             tasks: asyncio.Task 列表
             timeout: 最长等待秒数。None 使用 _BACKGROUND_WAIT_TIMEOUT。
 
         Returns:
-            仍未完成（超时）的任务集合；全部完成或中断退出等待时返回空集合。
+            仍未完成（超时/用户输入抢占）的任务集合；全部完成或中断退出
+            等待时返回空集合。
         """
+        # ★ 每次进入等待先复位抢占标志（调用方在读取后同样会复位，
+        #   此处保证直接调用本方法的场景不残留上一轮状态）。
+        self._background_wait_preempted = False
         if not tasks:
             return set()
         if timeout is None:
@@ -697,18 +746,14 @@ class BaseAgent:
         pending = set(tasks)
         deadline = time.monotonic() + timeout
         while pending:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break  # 超时：返回仍未完成的任务集合
-            _, pending = await asyncio.wait(pending, timeout=min(0.2, remaining))
-            if not pending:
-                break
             # 等待期间检查中断信号：用户按 ESC（kill_background 标志置位）
             # 时杀掉所有后台任务（含 managed_by_tool 的 bash/subagent，
             # 跨所有活跃 Agent——由 kill_all_active_background_tasks 遍历
             # 全局注册表统一处理）；普通中断（Ctrl+C/双 Esc/网络错误等，
             # kill 标志未置位）仅退出等待、不杀后台任务（新语义，见
             # docstring——区别于旧实现无条件取消 pending 任务）。
+            # ★ 检查置于循环开头（用户输入探测之前）：ESC kill 与消息队列
+            #   有消息同时发生时，中断（杀任务）优先，不因抢占而漏杀。
             try:
                 port = getattr(self, "_interrupt_port", None)
                 interrupted = False
@@ -727,6 +772,21 @@ class BaseAgent:
                     return set()
             except Exception:
                 _logger.debug("后台任务等待中断检查失败", exc_info=True)
+            # ★ 用户输入优先：消息队列有消息时立即结束等待（含进入等待前
+            #   已有消息的情况——不必白等一次 0.2s 轮询）。
+            if self._has_pending_user_input():
+                self._background_wait_preempted = True
+                _logger.debug(
+                    "等待后台任务期间检测到待处理用户消息，提前结束等待（%d 个任务继续运行）",
+                    len(pending),
+                )
+                return pending
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break  # 超时：返回仍未完成的任务集合
+            _, pending = await asyncio.wait(pending, timeout=min(0.2, remaining))
+            if not pending:
+                break
         return pending
 
     async def _process_background_tasks(self) -> bool:
@@ -740,6 +800,10 @@ class BaseAgent:
         超时后仍在运行的任务被标记为 ``managed_by_tool=True``（不再自动等待），
         并插入「仍在运行」用户消息——模型已在前台 bash 工具返回中拿到
         task_id，可经 bash_opt 工具继续 wait/kill 管理。
+
+        ★ 用户输入优先：等待期间消息队列一有用户消息即停止等待并返回
+        False（不标记 managed_by_tool、不插入「仍在运行」消息、不清表），
+        让当前轮尽快结束、由消息队列消费者处理该条用户消息。
 
         注（review P3）：与 _process_subagent_tasks 高度同构（同一处理模板，
         仅表名/字段不同）——刻意保留两份以独立演进两表语义（bash 三元结果
@@ -762,12 +826,23 @@ class BaseAgent:
                 if r.get("task") is not None and not r["task"].done()
             ]
             unfinished: set = set()
+            wait_preempted = False
             if tasks:
                 # 注意：_wait_background_tasks 中断退出等待时也返回空集
                 # （ESC kill 已清表 / 普通中断运行中任务保留）——与"全部
                 # 完成"语义区分见其 docstring；运行中任务由下方 stale 清理
                 # 分支保留（非 managed），下一轮对话继续处理
                 unfinished = await self._wait_background_tasks(tasks)
+                wait_preempted = self._background_wait_preempted
+            if wait_preempted:
+                # ★ 用户输入优先（2026-10-19 用户需求）：等待期间消息队列
+                #   出现用户消息 → 本轮不处理后台任务（不标记
+                #   managed_by_tool、不插入「仍在运行」消息、不清表），
+                #   立即返回 False 结束本轮，让消息队列消费者尽快取走并
+                #   处理该条用户消息。后台任务保留在表中，由后续轮次继续
+                #   自动等待/收集。
+                self._background_wait_preempted = False
+                return False
             done_msgs = self._collect_done_background_messages()
             if done_msgs:
                 self._append_background_result_messages(done_msgs)
@@ -858,6 +933,10 @@ class BaseAgent:
         超时后仍在运行的任务被标记为 ``managed_by_tool=True``（不再自动等待），
         并插入「仍在运行」用户消息——模型已在 subagent 工具返回中拿到
         task_id，可经 subagent_opt 工具继续 read/wait/kill 管理。
+
+        ★ 用户输入优先：等待期间消息队列一有用户消息即停止等待并返回
+        False（不标记 managed_by_tool、不插入「仍在运行」消息、不清表），
+        让当前轮尽快结束、由消息队列消费者处理该条用户消息。
         """
         if not hasattr(self, "_subagent_tasks") or not self._subagent_tasks:
             return False
@@ -876,12 +955,23 @@ class BaseAgent:
                 if r.get("task") is not None and not r["task"].done()
             ]
             unfinished: set = set()
+            wait_preempted = False
             if tasks:
                 # 注意：_wait_background_tasks 中断退出等待时也返回空集
                 # （ESC kill 已清表 / 普通中断运行中任务保留）——与"全部
                 # 完成"语义区分见其 docstring；运行中任务由下方 stale 清理
                 # 分支保留（非 managed），下一轮对话继续处理
                 unfinished = await self._wait_background_tasks(tasks)
+                wait_preempted = self._background_wait_preempted
+            if wait_preempted:
+                # ★ 用户输入优先（2026-10-19 用户需求）：等待期间消息队列
+                #   出现用户消息 → 本轮不处理后台任务（不标记
+                #   managed_by_tool、不插入「仍在运行」消息、不清表），
+                #   立即返回 False 结束本轮，让消息队列消费者尽快取走并
+                #   处理该条用户消息。后台任务保留在表中，由后续轮次继续
+                #   自动等待/收集。
+                self._background_wait_preempted = False
+                return False
             done_msgs = self._collect_done_subagent_messages()
             if done_msgs:
                 self._append_background_result_messages(done_msgs)
