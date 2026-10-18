@@ -50,7 +50,9 @@ def _write(path, fmt: str):
 
 
 def _multimodal(monkeypatch, value: bool = True):
-    monkeypatch.setattr("src.tools.read_image.is_multimodal_model", lambda m: value)
+    monkeypatch.setattr(
+        "src.tools.read_image.model_supports_multimodal", lambda m: value,
+    )
 
 
 # ── 多格式读取并转换为 PNG（vision 支持格式） ─────────────

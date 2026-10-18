@@ -14,6 +14,7 @@ from src.tui.app.model import AppModel
 from src.tui.app.status_bar import (
     StatusContext,
     _build_status_runs,
+    _model_segment,
     _tools_segment,
 )
 
@@ -28,6 +29,35 @@ def _ctx(model, active: bool = False, snapshot: dict | None = None) -> StatusCon
 
 def _text(runs) -> str:
     return "".join(r.text for r in runs)
+
+
+# ── 模型名旁的多模态读图徽标（「图」） ────────────────────
+
+
+def test_model_segment_multimodal_badge():
+    """开启「多模态读图」→ 模型名旁显示「图」；关闭 → 不显示。"""
+    m = AppModel()
+    m.status.model_name = "vision-model"
+    on = _text(_model_segment(_ctx_with_multimodal(m, True)))
+    off = _text(_model_segment(_ctx_with_multimodal(m, False)))
+    assert "vision-model" in on and "\u56fe" in on
+    assert "vision-model" in off and "\u56fe" not in off
+
+
+def test_build_status_runs_multimodal_badge_and_effort_order():
+    """状态行顺序：模型名 → 图 → [思考级别]（「图」在模型名隔壁）。"""
+    m = AppModel()
+    m.status.model_name = "vision-model"
+    text = _text(_build_status_runs(m, 0.0, "\u00b7", "high", True))
+    assert "vision-model \u56fe [high]" in text
+
+
+def _ctx_with_multimodal(model, value: bool) -> StatusContext:
+    return StatusContext(
+        model=model, status=model.status, status_active=False,
+        dot_elapsed=0.0, spinner_char="\u00b7", reasoning_effort="",
+        snapshot={}, multimodal=value,
+    )
 
 
 # ── 工具计数段 ──────────────────────────────────────────────

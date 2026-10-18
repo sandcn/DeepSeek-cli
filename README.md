@@ -79,7 +79,8 @@ pip install ".[dev]"
             "base_url": "https://api.deepseek.com/v1/chat/completions",
             "name": "DeepSeek Flash",
             "temperature": "0.3",
-            "reasoning_effort": "high"
+            "reasoning_effort": "high",
+            "multimodal": "true"
         }
     ],
     "active_model_profile": 0,
@@ -122,6 +123,9 @@ pip install ".[dev]"
   `base_url` / `name`，以及可选的 `temperature`（0.0~2.0）与
   `reasoning_effort`（low / medium / high / max）；`base_url` 留空则用提供商
   默认地址；生成参数留空则沿用全局 `temperature` / `reasoning_effort` 默认值）。
+  `multimodal`（`"true"` / `"false"`，默认 `"false"`）声明该模型是否支持
+  多模态读图：`true` 时才会向模型加载 `read_image` 工具，`false` 时该工具不
+  进入工具集、执行也会被拒绝（在 `/models` 界面「多模态读图」字段设置）。
 - `active_model_profile`：当前生效档案下标（由模型选择器写入，`-1` = 未选择）。
 - `empty_response_max_retries`：模型返回**完全空**响应（无正文/无推理/无工具
   调用）时的自动重发上限。`0`（默认）= 无限重试，直到拿到有效回答或用户
@@ -233,9 +237,12 @@ python chat.py -m deepseek-flash
    > 代码）原样输入不受影响。图片路径因此同样可直接拖入传图。
    > 关闭：`python chat.py config set tui_drop_path_normalize false`。
 
-2. **read_image 工具**：AI 代理可主动调用 `read_image` 工具读取本地图像
-   （支持分块/灰度/旋转/翻转/缩放操作），多模态模型直接看到 base64 图片
-   （图片按原始尺寸返回，不做自动缩放）。
+2. **read_image 工具**（按模型开关加载）：模型档案的「多模态读图」
+   （`multimodal`）为 `true` 时才向该模型加载 `read_image` 工具；为 `false`
+   时工具不进入工具集、执行也会被拒绝。开启后 AI 代理可主动调用
+   `read_image` 读取本地图像（支持分块/灰度/旋转/翻转/缩放操作），多模态
+   模型直接看到 base64 图片（图片按原始尺寸返回，不做自动缩放）。
+   在 `/models` 编辑模型档案的「多模态读图」字段即可切换（默认 false）。
 
 > **上传前图片瘦身（默认开启）**：图片按原始尺寸进入会话历史，而每轮 API
 > 请求都会重传**整个**历史（含全部历史图片的 base64），图片一多请求体便随
@@ -413,7 +420,7 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | `/retry` | `/r` | 重新生成上一条回答 |
 | `/edit` | — | 编辑并重新发送上一条输入 |
 | `/model` | — | 切换模型（无参数时打开**模型选择器**，**只在模型档案中选择**——RC 顶层 `models` 字段已移除，不列内置 provider 模型；亦支持序号/名称直接切换） |
-| `/models` | — | **模型选择器**（全屏界面：↑↓/jk 选择 · Enter 应用 · `a` 新增 · `c` 复制 · `e` 编辑 · `d` 删除 · `r` 刷新模型档案）。**新增只需三步**：① 选提供商（接口地址自动填好）→ ② **选/填模型名**（进入「模型名」字段后 `↑`/`↓` 从**该提供商内置模型列表**选择——候选行标注「默认」与计费单价，亦可直接键入自定义模型名）→ ③ 填 API 密钥（显示名留空则用模型名）；表单还提供 **温度**（0.0~2.0，留空沿用全局默认）与 **思考级别**（low/medium/high/max，留空沿用全局默认），保存后按模型生效（全局 `/temperature`、`/reasoning` 命令已由本界面取代）；列表行同时显示模型名与接口主机，选中详情行展示完整模型名/提供商/接口地址/脱敏密钥/温度/思考级别；字段输入支持光标编辑（←/→ · Home/End · Delete · Ctrl+A/Ctrl+E · Ctrl+U）；`/` 搜索 · `n`/`N`/`p` 匹配 · `f` 过滤 · `?` 帮助（表单内亦可） · `y` 复制信息 · Esc 关闭 |
+| `/models` | — | **模型选择器**（全屏界面：↑↓/jk 选择 · Enter 应用 · `a` 新增 · `c` 复制 · `e` 编辑 · `d` 删除 · `r` 刷新模型档案）。**新增只需三步**：① 选提供商（接口地址自动填好）→ ② **选/填模型名**（进入「模型名」字段后 `↑`/`↓` 从**该提供商内置模型列表**选择——候选行标注「默认」与计费单价，亦可直接键入自定义模型名）→ ③ 填 API 密钥（显示名留空则用模型名）；表单还提供 **温度**（0.0~2.0，留空沿用全局默认）、**思考级别**（low/medium/high/max，留空沿用全局默认）与 **多模态读图**（true/false：true 才加载 `read_image` 工具；默认 false），保存后按模型生效（全局 `/temperature`、`/reasoning` 命令已由本界面取代）；列表行同时显示模型名与接口主机，选中详情行展示完整模型名/提供商/接口地址/脱敏密钥/温度/思考级别/多模态读图；字段输入支持光标编辑（←/→ · Home/End · Delete · Ctrl+A/Ctrl+E · Ctrl+U）；`/` 搜索 · `n`/`N`/`p` 匹配 · `f` 过滤 · `?` 帮助（表单内亦可） · `y` 复制信息 · Esc 关闭 |
 | `/cost` | — | 查看 token 用量和费用 |
 | `/config` | — | 显示/编辑程序配置（无参数打开**独立配置界面**：↑↓/jk 选择、Enter 编辑、Esc 关闭；枚举/布尔/模型走**选择界面**、list/dict 子 JSON 走**递归结构化编辑界面**（Enter 逐层下钻嵌套 · 标量编辑 · a 追加 · d 删除 · Esc 逐级返回、顶层保存）、数值/字符串走输入界面；亦支持 `show`/`list`/`get <键>`/`set <键> <值>`/`reset <键>`） |
 | `/load <ID>` | — | 加载保存的对话 |
@@ -455,7 +462,7 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 | `mv` | mv | IO | ✅ | 移动文件或目录，支持跨文件系统 |
 | `rm` | rm | IO | ❌ | 删除文件或目录（删除前自动备份到沙盒） |
 | `mkdir` | mk | IO | ✅ | 创建目录，支持递归创建父目录 |
-| `read_image` | ri | IO | ✅ | 读取图像文件内容，支持分块读取与图像操作（灰度/旋转/翻转/缩放）；图片按原始尺寸返回给模型（不做自动缩放）；多模态 base64 图片（多模态模型如 deepseek-flash 直接看到图片）。发送前客户端会自动瘦身（折叠旧图+压缩大图+编码缓存），缓解多图场景每轮重传导致的请求卡顿 |
+| `read_image` | ri | IO | ✅ | 读取图像文件内容，支持分块读取与图像操作（灰度/旋转/翻转/缩放）；图片按原始尺寸返回给模型（不做自动缩放）；**仅当模型档案「多模态读图」=true 时加载**（`/models` 设置，默认 false；false 时工具不进入工具集且执行被拒绝）；多模态 base64 图片。发送前客户端会自动瘦身（折叠旧图+压缩大图+编码缓存），缓解多图场景每轮重传导致的请求卡顿 |
 | `web_search` | ws | 网络 | ❌ | DeepSeek 官方原生联网搜索（Anthropic 兼容 Messages API + web_search_20250305），返回来源列表（标题/URL/摘要） |
 | `web_fetch` | — | 网络 | ✅ | 获取指定 URL 的网页全文（自动提取正文，SSRF 防护，仅 http/https） |
 | `user_select` | us | 交互 | ❌ | 向用户显示交互式选择界面（单选/多选/超时回退/非交互回退，选项可带说明，TUI 中高亮选项时说明显示在右侧；支持并发提问——多个问题可同一轮同时弹出、以 tab 形式一起回答） |
@@ -738,7 +745,7 @@ ChatUIConsumer
 │   │   ├── escape_monitor.py   # 键盘输入监听
 │   │   ├── events.py           # API 事件定义
 │   │   ├── _sync_bridge.py / _stats_core.py / _stream_lifecycle.py / _token_speed.py / _tool_parse_utils.py  # 内部辅助模块
-│   │   ├── multimodal.py       # 多模态模型判定 + 图片 content blocks 构造（read_image 依赖）
+│   │   ├── multimodal.py       # 多模态模型判定（用户消息图片）+ 图片 content blocks 构造
 │   │   ├── adapters/          # 多模型适配器（DeepSeek/OpenAI/Anthropic/Ollama）
 │   │   └── _adapter_manager.py   # 适配器管理
 │   │

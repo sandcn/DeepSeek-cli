@@ -15,6 +15,7 @@
         "name": "显示名",             # 可选（空 = 用模型名）
         "temperature": "0.7",         # 可选（空 = 沿用全局 temperature）
         "reasoning_effort": "high",   # 可选（空 = 沿用全局 reasoning_effort）
+        "multimodal": "false",        # 是否支持多模态读图（"true"/"false"）
     }
 
 **按模型生成参数**（2026-10-17 用户需求「/models 支持设置对应的温度跟思考
@@ -22,6 +23,17 @@
 :func:`effective_temperature` / :func:`effective_reasoning_effort` 供 API
 适配器读取当前生效档案的值（未设置时回退全局默认）。全局 ``/temperature``
 与 ``/reasoning`` 命令已删除——生成参数统一在 ``/models`` 界面按模型配置。
+
+**多模态读图开关**（2026-10-19 用户需求）：每个档案可显式设置
+``multimodal``（``"true"`` / ``"false"``，默认 ``"false"``）——它同时决定：
+
+1. 是否为该模型加载 ``read_image`` 工具（false 时工具不出现在请求的
+   tool schemas 中）；
+2. ``read_image`` 执行时是否放行（false 时返回明确的「请在 /models 开启
+   多模态读图」错误）。
+
+模型能力不再由模型名模式推断（原 ``is_multimodal_model`` 判定已从
+``read_image`` 移除）——用户显式配置是唯一判据。
 
 新增流程（用户需求）：**先选提供商** → **填模型名** → **填 API 密钥**；
 接口地址按提供商自动给定，用户无需输入（仍可在表单中修改）。
@@ -55,6 +67,11 @@ __all__ = [
     "effective_base_url",
     "effective_temperature",
     "effective_reasoning_effort",
+    "profile_supports_multimodal",
+    "multimodal_choices",
+    "model_profile_for_model",
+    "model_supports_multimodal",
+    "current_multimodal",
     "reasoning_effort_choices",
     "provider_choices",
     "provider_models",
@@ -76,6 +93,7 @@ __all__ = [
 ]
 
 from .defaults import REASONING_EFFORT_LEVELS, TEMPERATURE_RANGE
+from ._values import normalize_multimodal as _normalize_multimodal
 
 #: 档案字段元数据（表单渲染顺序 + 标签 + 敏感 + 必填 + 提示 + 编辑界面类型）。
 #: 顺序即交互引导顺序：提供商 → 模型名 → API 密钥 → 接口地址 → 名称 →
@@ -95,6 +113,8 @@ PROFILE_FIELDS: tuple = (
      "kind": "input", "hint": f"该模型温度 {TEMPERATURE_RANGE[0]:.1f}~{TEMPERATURE_RANGE[1]:.1f}（如 0.7）；留空沿用全局默认"},
     {"key": "reasoning_effort", "label": "思考级别", "sensitive": False, "required": False,
      "kind": "select", "hint": "该模型思考级别 low/medium/high/max；留空沿用全局默认"},
+    {"key": "multimodal", "label": "多模态读图", "sensitive": False, "required": False,
+     "kind": "select", "hint": "该模型是否支持图像输入：true 才加载 read_image 工具，false 不加载"},
 )
 
 #: 思考级别候选（空串 = 沿用全局默认）。
@@ -104,6 +124,12 @@ _REASONING_EFFORT_DESCS: dict = {
     "medium": "中——平衡速度与深度",
     "high": "高——更深入思考",
     "max": "最大——最充分思考",
+}
+
+#: 多模态读图候选（true = 支持图像输入并加载 read_image；false = 不加载）。
+_MULTIMODAL_DESCS: dict = {
+    "true": "支持——加载 read_image 并返回图片",
+    "false": "不支持——不加载 read_image 工具",
 }
 
 #: 档案字段键（顺序同 ``PROFILE_FIELDS``）。
@@ -128,18 +154,24 @@ def field_by_key(key: str) -> dict | None:
 
 
 def empty_profile() -> dict:
-    """空白档案（全部字段为空串）。"""
-    return {k: "" for k in FIELD_KEYS}
+    """空白档案（多模态读图默认 false，其余字段为空串）。"""
+    return {
+        k: ("false" if k == "multimodal" else "")
+        for k in FIELD_KEYS
+    }
 
 
 def normalize_profile(raw) -> dict:
-    """任意输入 → 规范档案 dict（未知键丢弃、缺失补空串、值字符串化）。"""
+    """任意输入 → 规范档案 dict（未知键丢弃、缺失补默认、值字符串化）。"""
     if not isinstance(raw, dict):
         return empty_profile()
     out: dict = {}
     for k in FIELD_KEYS:
         value = raw.get(k, "")
-        out[k] = "" if value is None else str(value)
+        if k == "multimodal":
+            out[k] = _normalize_multimodal(value)
+        else:
+            out[k] = "" if value is None else str(value)
     return out
 
 
@@ -205,6 +237,7 @@ def validate_profile(profile, profiles, index=None) -> str:
     if effort and effort not in REASONING_EFFORT_LEVELS:
         return f"思考级别必须是 {'/'.join(REASONING_EFFORT_LEVELS)} 或留空"
     profile["reasoning_effort"] = effort
+    profile["multimodal"] = _normalize_multimodal(profile.get("multimodal", ""))
     return ""
 
 
@@ -334,6 +367,60 @@ def current_temperature(rc=None) -> float:
 def current_reasoning_effort(rc=None) -> str:
     """当前生效档案的有效思考级别（无档案 → 全局默认）。"""
     return effective_reasoning_effort(active_profile(rc), rc)
+
+
+# ── 多模态读图（模型档案显式开关，read_image 加载/放行的唯一判据） ──
+
+def profile_supports_multimodal(profile) -> bool:
+    """档案是否声明支持多模态读图（``multimodal`` 为 true）。"""
+    if not isinstance(profile, dict):
+        return False
+    return _normalize_multimodal(profile.get("multimodal", "")) == "true"
+
+
+def multimodal_choices() -> list[tuple[str, str]]:
+    """多模态读图候选 ``[(值, 说明)]``（表单「多模态读图」选择界面）。"""
+    return [(value, _MULTIMODAL_DESCS[value]) for value in ("false", "true")]
+
+
+def model_profile_for_model(model: str, rc=None) -> dict | None:
+    """按模型名定位档案（当前生效档案优先，其次首个同名档案）。
+
+    模型名可能重复（不同接口地址 / 密钥）；LLM 访问以 ``active_model_profile``
+    为准，因此当生效档案的 ``model`` 与给定模型名一致时优先返回它。
+    找不到返回 ``None``。
+    """
+    target = str(model or "").strip()
+    if not target:
+        return None
+    active = active_profile(rc)
+    if active is not None and str(active.get("model") or "").strip() == target:
+        return active
+    for profile in load_profiles(rc):
+        if str(profile.get("model") or "").strip() == target:
+            return profile
+    return None
+
+
+def model_supports_multimodal(model: str | None = None, rc=None) -> bool:
+    """模型是否支持多模态读图（读模型档案的 ``multimodal`` 开关）。
+
+    这是 ``read_image`` 工具加载与执行放行的**唯一判据**（取代原按模型名
+    模式推断的逻辑）：
+
+    - ``model`` 为空 → 取当前生效档案；
+    - 模型名匹配不到任何档案 → ``False``（未声明即不支持）；
+    - 档案 ``multimodal`` 为 ``"true"`` → ``True``。
+    """
+    if not model:
+        return profile_supports_multimodal(active_profile(rc))
+    profile = model_profile_for_model(model, rc)
+    return profile_supports_multimodal(profile)
+
+
+def current_multimodal(rc=None) -> bool:
+    """当前生效档案是否支持多模态读图（无档案 → False）。"""
+    return profile_supports_multimodal(active_profile(rc))
 
 
 def reasoning_effort_choices(global_default: str | None = None) -> list[tuple[str, str]]:
@@ -557,6 +644,7 @@ def build_model_entries(rc=None) -> list[dict]:
         provider       提供商
         temperature    档案温度（空 = 沿用全局默认）
         reasoning_effort  档案思考级别（空 = 沿用全局默认）
+        multimodal     多模态读图开关（"true"/"false"）
         effective_temperature       有效温度（档案 > 全局默认）
         effective_reasoning_effort  有效思考级别（档案 > 全局默认）
         current        是否当前生效（= :func:`active_profile_index` 指向）
@@ -584,6 +672,7 @@ def build_model_entries(rc=None) -> list[dict]:
             "provider": provider,
             "temperature": (prof.get("temperature") or "").strip(),
             "reasoning_effort": (prof.get("reasoning_effort") or "").strip(),
+            "multimodal": _normalize_multimodal(prof.get("multimodal", "")),
             "effective_temperature": effective_temperature(prof, rc),
             "effective_reasoning_effort": effective_reasoning_effort(prof, rc),
             "current": i == active_idx,

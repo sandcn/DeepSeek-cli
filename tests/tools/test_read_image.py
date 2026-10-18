@@ -3,7 +3,7 @@
 覆盖：
 - 扩展名格式门禁（仅 PNG/JPEG/WebP/GIF，拒绝 BMP/文本等）
 - magic-byte / 声明类型一致校验（扩展名声明与实际解码格式不符）
-- 严格图像能力门禁（非多模态模型 → DSH 式拒绝，不再降级 rgba/palette）
+- 严格图像能力门禁（模型档案「多模态读图」=false → DSH 式拒绝）
 - 8-bit sRGB 规范化（16 位 PNG 拒绝）
 - 多模态输出（result_blocks = image_url data URI content blocks）
 - 分块读取（start_x/start_y/end_x/end_y 像素区域裁剪）
@@ -54,8 +54,10 @@ def _write_test_image(path, w: int = 4, h: int = 3, fmt: str = "PNG") -> str:
 
 
 def _multimodal(monkeypatch, value: bool = True):
-    """强制 read_image 的图像能力判定结果为 value。"""
-    monkeypatch.setattr("src.tools.read_image.is_multimodal_model", lambda m: value)
+    """强制 read_image 的模型档案「多模态读图」判定结果为 value。"""
+    monkeypatch.setattr(
+        "src.tools.read_image.model_supports_multimodal", lambda m: value,
+    )
 
 
 # ── 0. 扩展名格式门禁（仅 PNG/JPEG/WebP/GIF） ──────────
@@ -96,7 +98,8 @@ async def test_capability_gate_refuses_non_multimodal(tmp_path, monkeypatch):
     out = await ReadImageFunc(path=str(p)).execute()
     assert out.startswith('(cannot read "')
     assert "does not declare image input" in out
-    assert "switch to an image-capable model to read images" in out
+    assert "多模态读图=false" in out
+    assert "switch to a model that supports image input" in out
 
 
 async def test_capability_gate_passes_multimodal(tmp_path, monkeypatch):
@@ -112,28 +115,28 @@ async def test_capability_gate_passes_multimodal(tmp_path, monkeypatch):
 
 
 async def test_capability_gate_uses_routed_agent_model(tmp_path, monkeypatch):
-    """对齐 DSH：门禁取「调用代理当前路由模型」（agent.model），而非全局 MODEL。
+    """门禁取「调用代理当前路由模型」（agent.model），而非全局 MODEL。
 
-    用户把模型切到 deepseek-v4-flash-vision-exp 后应放行；旧逻辑读全局 MODEL
-    （默认 deepseek-v4-flash）会把视觉模型误判为「不能输入图片」而拒绝。
+    用户把模型切到开启「多模态读图」的档案后应放行；旧逻辑读全局 MODEL
+    会把当前视觉模型误判为「不能输入图片」而拒绝。
     """
     seen = []
 
     def spy(model):
         seen.append(model)
-        return is_multimodal_model(model)
+        return model == "vision-model"
 
-    monkeypatch.setattr("src.tools.read_image.is_multimodal_model", spy)
+    monkeypatch.setattr("src.tools.read_image.model_supports_multimodal", spy)
     p = _write_test_image(tmp_path / "t.png", 2, 2)
     f = ReadImageFunc(path=str(p))
 
     class FakeAgent:
-        model = "deepseek-v4-flash-vision-exp"
+        model = "vision-model"
 
     f.set_agent(FakeAgent())  # 模拟 registry.dispatch 注入的调用代理
     out = await f.execute()
     # 门禁确实询问了调用代理的当前路由模型（而非全局默认）
-    assert seen and seen[0] == "deepseek-v4-flash-vision-exp"
+    assert seen and seen[0] == "vision-model"
     assert not out.startswith("(cannot read ")
     assert f.result_blocks is not None
 

@@ -41,6 +41,53 @@ TOOL_EXCLUSION_MAP = _exclusion_map()
 # Profile/Patch/Overlay 按 id 禁用、覆盖或新增，从而细粒度调整全局禁用集合。
 GLOBAL_DISABLED_TOOLS = frozenset(CORDIS_TOOLS)
 
+# ── 模型能力门禁（read_image 只在模型档案声明支持多模态读图时加载） ──
+# 用户需求（2026-10-19）：`/models` 模型档案新增 `multimodal`（true/false）
+# 开关；false 时 read_image 不进入该模型的 tool schemas，也不能执行。
+IMAGE_TOOLS: frozenset = frozenset({"read_image"})
+
+
+def model_supports_image_tools(model=None) -> bool:
+    """模型档案是否声明支持多模态读图（``multimodal=true``）。
+
+    唯一判据是模型档案的 ``multimodal`` 字段（不再按模型名模式推断）；
+    配置读取失败/无档案时返回 False（未声明即不加载图像工具）。
+    """
+    try:
+        from ..config.model_profiles import model_supports_multimodal
+
+        return bool(model_supports_multimodal(model))
+    except Exception:
+        import logging
+        logging.getLogger(__name__).debug(
+            "读取模型多模态配置失败（按不支持处理）", exc_info=True,
+        )
+        return False
+
+
+def _schema_tool_name(schema) -> str:
+    """从 tool schema 提取函数名（非法结构返回空串）。"""
+    if not isinstance(schema, dict):
+        return ""
+    function = schema.get("function")
+    if isinstance(function, dict):
+        return str(function.get("name") or "")
+    return ""
+
+
+def filter_schemas_for_model(schemas, model=None) -> list:
+    """按模型档案的多模态能力过滤 tool schemas。
+
+    ``multimodal=false``（或无法判定）时移除 :data:`IMAGE_TOOLS`（read_image），
+    其余工具原样保留；``true`` 时原样返回副本。过滤只做「移除」，不会重新
+    加入被 preset / 其他策略排除的工具。
+    """
+    items = list(schemas or ())
+    if model_supports_image_tools(model):
+        return items
+    return [s for s in items if _schema_tool_name(s) not in IMAGE_TOOLS]
+
+
 # ── 全局禁用工具注册表（声明 + 清单接管 + 扩展） ──────────────
 
 _lock = threading.RLock()
@@ -260,8 +307,11 @@ def get_excluded_tools(agent_type: str) -> set:
 __all__ = [
     "TOOL_EXCLUSION_MAP",
     "GLOBAL_DISABLED_TOOLS",
+    "IMAGE_TOOLS",
     "is_globally_disabled",
     "get_excluded_tools",
+    "model_supports_image_tools",
+    "filter_schemas_for_model",
     "builtin_global_disabled_tool_ids",
     "active_global_disabled_tools",
     "global_disabled_tool_names",

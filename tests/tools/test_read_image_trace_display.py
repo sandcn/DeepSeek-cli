@@ -195,7 +195,9 @@ def test_merge_call_lines_images_appends_summary_and_caches():
 # ── read_image 输出移除技术尾注（Trace 噪音根因） ─────────────────────
 
 async def test_read_image_output_no_tailnote(tmp_path, monkeypatch):
-    monkeypatch.setattr("src.tools.read_image.is_multimodal_model", lambda m: True)
+    monkeypatch.setattr(
+        "src.tools.read_image.model_supports_multimodal", lambda m: True,
+    )
     from PIL import Image
     p = tmp_path / "t.png"
     Image.new("RGB", (4, 4)).save(str(p), format="PNG")

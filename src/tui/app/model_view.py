@@ -18,6 +18,10 @@ Esc/Ctrl+H 关闭后恢复完整聊天界面。
     「思考级别」字段选择 low/medium/high/max（首项「沿用全局默认」）；
     保存后 API 请求按当前生效档案读取（全局 ``/temperature`` /
     ``/reasoning`` 命令已删除）。
+  - **多模态读图开关**（2026-10-19 用户需求）：表单「多模态读图」字段选择
+    true/false（默认 false）。true → 该模型加载 ``read_image`` 工具并允许
+    读取图片；false → 不加载该工具，``read_image`` 执行也被拒绝。列表详情
+    行同时展示当前值。
   - **模型名候选**（2026-10-13 用户需求「/models 界面可以选择对应提供商的
     模型名」）：进入「模型名」字段编辑时，主区列出**当前提供商的内置模型
     候选**（``config.model_profiles.provider_model_choices``——含「默认」与
@@ -83,6 +87,7 @@ from src.config.model_profiles import (
     infer_provider,
     load_profiles,
     mask_key,
+    multimodal_choices,
     normalize_profile,
     provider_choices,
     provider_model_choices,
@@ -105,6 +110,7 @@ _S_NAME = Style(fg=75)
 _S_MODEL = Style(fg=252)
 _S_URL = Style(fg=110)
 _S_KEY = Style(fg=214)
+_S_IMAGE = Style(fg=141)
 _S_PROFILE = Style(fg=135)
 _S_CURRENT = Style(fg=40, bold=True)
 _S_SEL_BG = Style(bg=237)
@@ -201,6 +207,7 @@ def _entry_search_text(entry) -> str:
         str(entry.get("hint", "") or ""),
         str(entry.get("temperature", "") or ""),
         str(entry.get("reasoning_effort", "") or ""),
+        str(entry.get("multimodal", "") or ""),
     ])
 
 
@@ -241,6 +248,7 @@ def _copy_entry(mv, entry) -> None:
         parts.append(f"temperature={entry.get('effective_temperature')}")
     if entry.get("effective_reasoning_effort"):
         parts.append(f"reasoning_effort={entry.get('effective_reasoning_effort')}")
+    parts.append(f"multimodal={entry.get('multimodal', 'false') or 'false'}")
     text = " ".join(parts)
     from src.tui._screen import set_clipboard
     if set_clipboard(text):
@@ -403,9 +411,11 @@ def _duplicate_selected(mv, entry) -> None:
 
 
 def _start_select(mv, key: str) -> None:
-    """进入某字段的选择界面（提供商 / 思考级别）。"""
+    """进入某字段的选择界面（提供商 / 思考级别 / 多模态读图）。"""
     if key == "reasoning_effort":
         choices = reasoning_effort_choices()
+    elif key == "multimodal":
+        choices = multimodal_choices()
     else:
         choices = provider_choices()
     mv.edit_mode = "select"
@@ -462,6 +472,10 @@ def _commit_select(mv) -> None:
         )
     elif key == "reasoning_effort":
         mv.message = f"思考级别: {value or '沿用全局默认'}"
+    elif key == "multimodal":
+        mv.message = (
+            f"多模态读图: {value}（{'加载 read_image' if value == 'true' else '不加载 read_image'}）"
+        )
     else:
         mv.message = ""
 
@@ -722,6 +736,11 @@ def _detail_runs(entry, width: int) -> list:
         StyledRun("  \u21b3 ", _S_DETAIL_SEP),
         StyledRun(str(entry.get("model") or ""), _S_DETAIL_VALUE),
     ]
+    # 多模态读图开关放在最前（模型名之后）——详情行空间有限，放末尾会被
+    # 接口地址/密钥挤出屏幕，用户就看不到该模型是否加载 read_image。
+    multimodal = str(entry.get("multimodal", "false") or "false").strip().lower()
+    runs.append(StyledRun(sep, _S_DETAIL_SEP))
+    runs.append(StyledRun(f"多模态读图 {multimodal}", _S_DETAIL_LABEL))
     provider = str(entry.get("provider") or "")
     if provider:
         hint = str(entry.get("hint") or provider)
@@ -1102,6 +1121,11 @@ def _make_entry_renderer(width: int, name_w: int, prov_w: int, model_w: int,
         # ── 徽标 ──
         if entry.get("api_key"):
             runs.append(StyledRun("  \u25c6key", _S_KEY))
+        multimodal = str(entry.get("multimodal", "false") or "false").strip().lower()
+        runs.append(StyledRun(
+            "  \u25c8\u56fe" if multimodal == "true" else "  \u25c7\u56fe",
+            _S_IMAGE if multimodal == "true" else _S_HINT,
+        ))
         if entry.get("current"):
             runs.append(StyledRun("  \u25cf\u5f53\u524d", _S_CURRENT))
         if width > 0:

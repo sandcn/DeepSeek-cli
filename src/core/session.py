@@ -235,6 +235,16 @@ class ChatSession:
         self._agent.model = value
         if self._ctx_mgr:
             self._ctx_mgr.update_model(value)
+            # 模型切换可能改变 read_image 工具是否加载（模型档案「多模态读图」
+            # 开关）——同步上下文使用率的工具 schemas 估算口径。
+            get_active_tools = getattr(self._agent, "_get_active_tools", None)
+            if callable(get_active_tools):
+                try:
+                    self._ctx_mgr.set_tools(get_active_tools())
+                except Exception:
+                    logging.getLogger(__name__).debug(
+                        "同步上下文工具 schemas 失败", exc_info=True,
+                    )
 
     @property
     def session_id(self) -> str | None:
@@ -445,14 +455,21 @@ class ChatSession:
         except Exception:
             _cm_factory = None
 
+        _get_active_tools = getattr(self._agent, "_get_active_tools", None)
+        _agent_tools = (
+            _get_active_tools()
+            if callable(_get_active_tools)
+            else getattr(self._agent, "tools", None)
+        )
         _cm_kwargs = dict(
             messages=self._agent.messages,
             model=self._model,
             on_messages_changed=_sandbox_callback,
             config_port=self._config_port,
             # ★ 工具列表 schemas（上下文使用率统计的一部分——工具随系统提词
-            #   一起发送给模型，须计入上下文占用）
-            tools=getattr(self._agent, "tools", None),
+            #   一起发送给模型，须计入上下文占用）；取实际请求口径
+            #   （_get_active_tools 已按模型档案「多模态读图」过滤 read_image）
+            tools=_agent_tools,
             # ★ 压缩显示事件端口 + Agent label（TUI 压缩状态显示）
             event_port=getattr(self._agent, "_event_port", None),
             label=getattr(self._agent, "label", None) or "main",

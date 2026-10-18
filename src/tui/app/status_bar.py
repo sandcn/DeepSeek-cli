@@ -48,6 +48,9 @@ _S_SPEED = Style(fg=214)
 _S_TOOL_OK = Style(fg=41)
 _S_WORKSPACE_BRANCH = Style(fg=110)
 _S_WORKSPACE_PATH = Style(fg=242)
+# 多模态读图能力徽标（模型名旁的「图」）：青绿加粗，和模型名的青蓝主色区分开，
+# 又不抢眼——只有模型档案开启「多模态读图」时才出现。
+_S_MULTIMODAL = Style(fg=141, bold=True)
 
 # BEAUTY-7：streaming braille spinner 帧序列（与 _subagent_render 共用语义）
 # ★ 方向4：唯一真源 _fx.SPINNER_FRAMES——本模块保留别名（兼容既有 patch 路径；
@@ -82,6 +85,32 @@ def _cached_reasoning_effort(model_name: str) -> str:
         value = ""
     with _reasoning_effort_lock:
         _reasoning_effort_cache[key] = (now, value)
+    return value
+
+
+#: 多模态读图能力缓存（模型名 → (时间, 是否支持)）。与思考级别同样的短 TTL：
+#: /models 切换档案或保存「多模态读图」开关后 ≤0.5s 内状态栏自动刷新。
+_multimodal_cache: dict[str, tuple[float, bool]] = {}
+_multimodal_lock = threading.Lock()
+
+
+def _cached_multimodal(model_name: str) -> bool:
+    """当前模型档案是否开启「多模态读图」（按模型名短 TTL 缓存）。"""
+    key = str(model_name or "")
+    if not key:
+        return False
+    now = time.monotonic()
+    with _multimodal_lock:
+        hit = _multimodal_cache.get(key)
+        if hit is not None and now - hit[0] < _REASONING_EFFORT_TTL:
+            return hit[1]
+    try:
+        from src.config.model_profiles import model_supports_multimodal as _supports
+        value = bool(_supports(key))
+    except Exception:
+        value = False
+    with _multimodal_lock:
+        _multimodal_cache[key] = (now, value)
     return value
 
 #: 压缩驱动的 token/速度展示期使用的快照 TTL（秒）。
@@ -174,11 +203,12 @@ class StatusContext:
 
     __slots__ = (
         "model", "status", "status_active", "tokens_visible", "dot_elapsed",
-        "spinner_char", "reasoning_effort", "snapshot",
+        "spinner_char", "reasoning_effort", "snapshot", "multimodal",
     )
 
     def __init__(self, model, status, status_active, dot_elapsed,
-                 spinner_char, reasoning_effort, snapshot, tokens_visible=None):
+                 spinner_char, reasoning_effort, snapshot, tokens_visible=None,
+                 multimodal=False):
         self.model = model
         self.status = status
         self.status_active = status_active
@@ -190,6 +220,7 @@ class StatusContext:
         self.dot_elapsed = dot_elapsed
         self.spinner_char = spinner_char
         self.reasoning_effort = reasoning_effort
+        self.multimodal = bool(multimodal)
         self.snapshot = snapshot
 
     def get(self, key, default=None):
@@ -219,6 +250,11 @@ def _model_segment(ctx: StatusContext) -> list:
         model_name_style = _S_ACCENT_BOLD
     model_part.append(StyledRun(f"{ctx.spinner_char} ", dot_style))
     model_part.append(StyledRun(_model_name, model_name_style))
+    # ★ 多模态读图能力徽标（2026-10-19 用户需求）：模型档案开启「多模态读图」
+    #   时在模型名旁显示一个「图」字——用户一眼可知当前模型能否调用 read_image。
+    #   青绿色加粗，与模型名主色区分；关闭时不占位（false 不显示，保持简洁）。
+    if getattr(ctx, "multimodal", False):
+        model_part.append(StyledRun(" \u56fe", _S_MULTIMODAL))
     # ★ 思考级别标签（2026-08-14）：模型名后追加当前生效模型的思考级别
     #   （low/medium/high/max，/models 中按模型配置，空则回退全局默认）。
     #   暗灰 dim 弱化；格式 [level] 与 /models 表单显示一致。
@@ -355,7 +391,8 @@ def _workspace_segment(ctx: StatusContext) -> list:
 
 def _build_status_runs(model, dot_elapsed: float = 0.0,
                        spinner_char: str = "\u00b7",
-                       reasoning_effort: str | None = None) -> list[StyledRun]:
+                       reasoning_effort: str | None = None,
+                       multimodal: bool = False) -> list[StyledRun]:
     """构建状态文本 runs（段注册表驱动：模型名/工具计数/耗时/token/速度）。
 
     Args:
@@ -366,6 +403,8 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             帧；空闲为静态 ``·``）。
         reasoning_effort: 当前生效模型的思考级别（low/medium/high/max，/models
             按模型配置；None 或空串不显示）。
+        multimodal: 当前模型档案是否开启「多模态读图」（true 时模型名旁显示
+            「图」徽标）。
 
     段由 ``src.tui.app._status_segments`` 注册表提供（每个段一个清单条目）：
     ``model`` 段为模型名部分（不与其它段用分隔符连接），其余段（tools/
@@ -394,7 +433,7 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
         model=model, status=st, status_active=status_active,
         dot_elapsed=dot_elapsed, spinner_char=spinner_char,
         reasoning_effort=reasoning_effort, snapshot=snap,
-        tokens_visible=tokens_visible,
+        tokens_visible=tokens_visible, multimodal=multimodal,
     )
 
     model_part: list[StyledRun] = []
@@ -511,8 +550,13 @@ def StatusBar(props) -> object:
     #   use_memo deps——/models 切换档案或保存新值后下帧 deps 变化 →
     #   状态栏即时刷新（无需额外同步链路）。
     reasoning_effort = _cached_reasoning_effort(st_model_name)
+    # ★ 多模态读图徽标（2026-10-19 用户需求）：模型名旁「图」字——与思考级别
+    #   同样短 TTL 缓存；/models 切换档案或修改开关后下帧自动刷新。
+    multimodal = _cached_multimodal(st_model_name)
     status_runs = use_memo(
-        lambda: _build_status_runs(model, dot_elapsed, spinner_char, reasoning_effort),
+        lambda: _build_status_runs(
+            model, dot_elapsed, spinner_char, reasoning_effort, multimodal,
+        ),
         (
             st_active,
             st_model_name,
@@ -529,6 +573,9 @@ def StatusBar(props) -> object:
             # ★ 思考级别（2026-08-14）：/models 切换档案或保存新值后 deps
             #   变化 → 重建状态行（模型名后 [level] 即时刷新）。
             reasoning_effort,
+            # ★ 多模态读图（2026-10-19）：/models 修改开关后 deps 变化 →
+            #   模型名旁「图」徽标即时出现/消失。
+            multimodal,
             # ★ 2026-10（用户需求：压缩消耗的 token 要能在状态栏看到）：
             #   压缩状态变化（开始/结束）立即重建状态行——空闲期压缩中与
             #   压缩结束宽限期内 tokens/speed 段的出现/消失即时生效

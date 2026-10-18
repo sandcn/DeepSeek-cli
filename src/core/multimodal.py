@@ -3,7 +3,8 @@
 原位于 ``api.multimodal``，下沉核心层以消除核心层/基础设施层对 api 的
 反向依赖；``api.multimodal`` 仅 re-export 兼容。
 
-read_image 等图像工具依赖本模块判断当前模型是否支持多模态（视觉输入）：
+用户消息中的图片引用（以及 MCP 图片工具）依赖本模块判断模型是否支持
+多模态（视觉输入）：
 - 支持 → 返回 OpenAI 兼容的 image_url data URI content blocks
   （Anthropic 适配器自动转换为 image block）
 - 不支持 → 返回 RGBA 十六进制字符

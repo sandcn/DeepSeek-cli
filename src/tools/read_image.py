@@ -9,9 +9,9 @@ DSH 对齐的加工语义（2026-08 重构）：
   BMP/TIFF）自动转换；
 - magic-byte / 声明类型一致校验：解码后实际格式必须与扩展名声明的格式一致，
   否则报 DSH 式「扩展名与实际格式不符，重命名文件」错误；
-- 严格图像能力门禁：当前模型若不声明图像输入（非多模态），直接拒绝并提示
-  切换到图像模型——对齐 DSH 的「switch to an image-capable model」，不再降级
-  为 rgba_hex / palette 文本；
+- 严格图像能力门禁：当前模型档案未开启「多模态读图」（``multimodal=true``）
+  时直接拒绝并提示到 ``/models`` 开启或切换到支持图像输入的模型——不再按
+  模型名模式推断能力，也不再降级为 rgba_hex / palette 文本；
 - 规范化：应用 EXIF 方向并转换为 8-bit sRGB 单帧（RGB/RGBA），16 位 PNG 等
   无法转换时返回 DSH 式错误；不做任何自动缩放，图片按原始尺寸返回。
 
@@ -34,7 +34,8 @@ import os
 
 from .base import Func
 from .file_ops import validate_path_security
-from ..core.multimodal import is_multimodal_model, build_image_content_blocks
+from ..config.model_profiles import model_supports_multimodal
+from ..core.multimodal import build_image_content_blocks
 
 _logger = logging.getLogger(__name__)
 
@@ -196,13 +197,12 @@ def _clamp(value: int, lo: int, hi: int) -> int:
 
 
 def _current_model(agent=None) -> str:
-    """解析「当前实际使用的模型」名（严格门禁用），优先取调用代理的当前路由模型。
+    """解析「当前实际使用的模型」名（用于模型档案能力门禁）。
 
-    对齐 DSH 的 assertImageCapableRoute：模型可能已在运行期通过 /model（或会话
-    切换）换成多模态（如 deepseek-flash），而全局 MODEL 配置仍为
-    旧值；因此先读 registry.dispatch 注入的调用代理（self.agent）当前路由模型
-    （agent.model，即当前会话/子代理实际请求所用的模型），失败才回退全局 MODEL。
-    两种情况都取不到返回空串（视为非多模态）。
+    模型可在运行期通过 /model 或 /models 切换；因此先读 registry.dispatch
+    注入的调用代理（self.agent）当前路由模型（agent.model，即当前会话/
+    子代理实际请求所用的模型），失败才回退全局 MODEL。
+    两种情况都取不到返回空串（视为未开启多模态读图）。
     """
     if agent is not None:
         scoped = getattr(agent, "model", None)
@@ -255,11 +255,12 @@ def _declared_format(ext: str) -> str | None:
 
 
 def _capability_error(path: str, model: str) -> str:
-    """当前模型未声明 image 输入 → 严格拒绝（对齐 assertImageCapableRoute）。"""
+    """模型档案未开启「多模态读图」→ 严格拒绝并提示开启方式。"""
     model_part = model if model else "<unknown>"
     return (
-        f'(cannot read "{path}" as an image: model "{model_part}" does not declare image '
-        "input; switch to an image-capable model to read images)"
+        f'(cannot read "{path}" as an image: model "{model_part}" does not declare '
+        "image input (多模态读图=false in /models); set 多模态读图=true for this "
+        "model in /models, or switch to a model that supports image input)"
     )
 
 
@@ -305,8 +306,9 @@ class ReadImageFunc(Func):
                 "description": (
                     "读取图像文件内容。支持全量图片类型（所有 Pillow 可解码格式，"
                     "含 PNG/JPEG/WebP/GIF/BMP/TIFF/ICO/PNM/TGA/…），非模型原生"
-                    "支持的格式自动转换为 PNG 返回；要求当前模型支持图像输入"
-                    "（多模态）；返回 base64 PNG 图片并附文本元信息，"
+                    "支持的格式自动转换为 PNG 返回；要求当前模型档案在 /models"
+                    "开启「多模态读图」（multimodal=true），否则拒绝读取；"
+                    "返回 base64 PNG 图片并附文本元信息，"
                     "图片按原始尺寸返回（不做自动缩放）。"
                     "支持分块读取（start_x/start_y/end_x/end_y 指定像素区域，类似"
                     "read 的行号范围）；支持对图像操作后返回（operation：grayscale"
@@ -468,10 +470,11 @@ class ReadImageFunc(Func):
         if not os.path.exists(file_path):
             return f"(文件不存在: {file_path})"
 
-        # ── 2. 严格图像能力门禁（对齐 DSH：模型须声明 image 输入） ──
-        # 用调用代理当前路由模型（运行期可能已切到多模态），而非全局 MODEL。
+        # ── 2. 严格图像能力门禁（模型档案须开启「多模态读图」） ──
+        # 唯一判据 = 当前模型档案的 multimodal 开关（不再按模型名模式推断）；
+        # 模型可在运行期切换，故取调用代理当前路由模型而非启动时快照。
         model = _current_model(self.agent)
-        if not is_multimodal_model(model):
+        if not model_supports_multimodal(model):
             return _capability_error(file_path, model)
 
         try:

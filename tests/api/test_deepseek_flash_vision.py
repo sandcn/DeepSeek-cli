@@ -103,11 +103,15 @@ def test_deepseek_adapter_injects_thinking(monkeypatch):
 # ── 4. read_image 集成 ────────────────────────────────
 
 async def test_read_image_allows_deepseek_flash(tmp_path, monkeypatch):
-    """read_image 在 deepseek-flash 下放行并返回 image_url content blocks。"""
+    """模型档案开启「多模态读图」后 read_image 放行并返回 image_url blocks。"""
     pytest.importorskip("PIL")
     from src.tools.read_image import ReadImageFunc
     monkeypatch.setattr(
         "src.tools.read_image._current_model", lambda agent=None: _FLASH,
+    )
+    monkeypatch.setattr(
+        "src.tools.read_image.model_supports_multimodal",
+        lambda model: model == _FLASH,
     )
     p = tmp_path / "t.png"
     p.write_bytes(_png_bytes())
@@ -120,17 +124,21 @@ async def test_read_image_allows_deepseek_flash(tmp_path, monkeypatch):
 
 
 async def test_read_image_rejects_deepseek_v4_pro(tmp_path, monkeypatch):
-    """非多模态模型 deepseek-v4-pro 下 read_image 仍按能力门禁拒绝。"""
+    """模型档案「多模态读图」=false 时 read_image 按能力门禁拒绝。"""
     pytest.importorskip("PIL")
     from src.tools.read_image import ReadImageFunc
     monkeypatch.setattr(
         "src.tools.read_image._current_model", lambda agent=None: "deepseek-v4-pro",
+    )
+    monkeypatch.setattr(
+        "src.tools.read_image.model_supports_multimodal", lambda model: False,
     )
     p = tmp_path / "t.png"
     p.write_bytes(_png_bytes())
     out = await ReadImageFunc(path=str(p)).execute()
     assert out.startswith("(cannot read ")
     assert "does not declare image input" in out
+    assert "多模态读图=false" in out
 
 
 # ── 5. 用户消息图片输入 ───────────────────────────────

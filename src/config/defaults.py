@@ -172,8 +172,9 @@ DEFAULTS = {
     "notify_on_chat_completion": True,
     "token_prices": {},
     # 显式声明为多模态（视觉输入）的模型名列表（小写子串匹配，覆盖
-    # src/api/multimodal.py 内置模式未覆盖的模型；read_image 等图像工具
-    # 据此判断是否返回 base64 图片 content blocks）
+    # src/core/multimodal.py 内置模式未覆盖的模型；用于**用户消息中的图片
+    # 引用**内嵌为 image_url blocks。read_image 工具是否加载/可执行改由
+    # 模型档案的 `multimodal`（/models「多模态读图」）开关决定）。
     "multimodal_models": [],
     # ── 上传前图片优化（发送副本上执行，不改 read_image 输出/会话存档）──
     # 多图场景下每轮请求都会重传全部历史图片 base64，体积线性膨胀导致

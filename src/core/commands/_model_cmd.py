@@ -346,7 +346,8 @@ def _list_models_text(ctx) -> None:
             )
         temp = e.get("effective_temperature")
         effort = str(e.get("effective_reasoning_effort") or "")
-        if isinstance(temp, (int, float)) or effort:
+        multimodal = str(e.get("multimodal", "false") or "false")
+        if isinstance(temp, (int, float)) or effort or multimodal:
             temp_text = f"{temp:g}" if isinstance(temp, (int, float)) else "-"
             if not str(e.get("temperature") or "").strip():
                 temp_text += "(默认)"
@@ -354,7 +355,8 @@ def _list_models_text(ctx) -> None:
             if effort and not str(e.get("reasoning_effort") or "").strip():
                 effort_text += "(默认)"
             _out.write(
-                f"  {DIM}\u2502{RESET}   {DIM}温度 {temp_text} · 思考 {effort_text}{RESET}",
+                f"  {DIM}\u2502{RESET}   {DIM}温度 {temp_text} · 思考 {effort_text}"
+                f" · 多模态读图 {multimodal}{RESET}",
                 level="raw", source="cmd",
             )
     _out.write(f"  {DIM}在 TUI 中运行 /models 可交互增删改选{RESET}", level="raw", source="cmd")

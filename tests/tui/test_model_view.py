@@ -88,12 +88,14 @@ class TestModelProfiles:
         assert tuple(f["key"] for f in mp.PROFILE_FIELDS) == mp.FIELD_KEYS
         assert set(mp.FIELD_KEYS) == {
             "provider", "model", "api_key", "base_url", "name",
-            "temperature", "reasoning_effort",
+            "temperature", "reasoning_effort", "multimodal",
         }
-        # 交互引导顺序：提供商 → 模型名 → API 密钥 → …→ 温度 → 思考级别
+        # 交互引导顺序：提供商 → 模型名 → API 密钥 → …→ 温度 → 思考级别 → 多模态读图
         assert mp.FIELD_KEYS[:3] == ("provider", "model", "api_key")
-        assert mp.FIELD_KEYS[-2:] == ("temperature", "reasoning_effort")
-        assert mp.empty_profile() == {k: "" for k in mp.FIELD_KEYS}
+        assert mp.FIELD_KEYS[-3:] == ("temperature", "reasoning_effort", "multimodal")
+        assert mp.empty_profile() == {
+            k: ("false" if k == "multimodal" else "") for k in mp.FIELD_KEYS
+        }
 
     def test_generation_fields_metadata(self):
         temp = mp.field_by_key("temperature") or {}
@@ -488,6 +490,41 @@ class TestFormEvents:
         assert mv.edit_mode == "select"
         _dispatch(mv, mv.entries, _ev("escape"))
         assert mv.edit_mode == "form"
+
+    def test_multimodal_select_flow_and_save(self, isolated_rc):
+        """「多模态读图」选择 true → 保存为 true（默认 false）。"""
+        mv = _state()
+        _dispatch(mv, mv.entries, _ev("char", "a"))
+        idx = list(mp.FIELD_KEYS).index("multimodal")
+        assert mv.form_values["multimodal"] == "false"
+        mv.form_selected = idx
+        assert _dispatch(mv, mv.entries, _ev("enter")) is True
+        assert mv.edit_mode == "select"
+        assert list(mv.form_select_options) == ["false", "true"]
+        mv.form_select_index = 1  # true
+        assert _dispatch(mv, mv.entries, _ev("enter")) is True
+        assert mv.edit_mode == "form"
+        assert mv.form_values["multimodal"] == "true"
+        assert "多模态读图: true" in mv.message
+        mv.form_values = mp.normalize_profile(
+            {"provider": "deepseek", "model": "vision-m", "multimodal": "true"},
+        )
+        assert _dispatch(mv, mv.entries, _ev("char", "s")) is True
+        assert not mv.editing
+        assert mp.load_profiles()[0]["multimodal"] == "true"
+
+    def test_multimodal_detail_and_copy(self, monkeypatch):
+        entry = _profile_entry()
+        entry["multimodal"] = "true"
+        from src.tui.app.model_view import _detail_runs, _copy_entry
+        text = "".join(r.text for r in _detail_runs(entry, 200))
+        assert "多模态读图 true" in text
+        captured = []
+        monkeypatch.setattr("src.tui._screen.set_clipboard", lambda t: captured.append(t) or True)
+        mv = _state([entry])
+        mv.selected = 0
+        _copy_entry(mv, entry)
+        assert "multimodal=true" in captured[0]
 
     def test_form_save_new_profile_name_defaults_to_model(self, isolated_rc):
         mv = _state()

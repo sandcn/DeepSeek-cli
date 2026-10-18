@@ -66,8 +66,14 @@ class SubAgent(BaseAgent):
 
         self.model = model or parent_agent.model
         excluded = get_excluded_tools(agent_type)
-        self.tools = [t for t in self._registry.get_schemas()
-                      if t.get("function", {}).get("name") not in excluded]
+        # 子代理同样按模型档案的「多模态读图」开关过滤：模型不支持图像输入
+        # 时 read_image 不进入子代理的 tool schemas（与主 Agent 同源规则）。
+        from ..tools.tool_policy import filter_schemas_for_model
+        self.tools = filter_schemas_for_model(
+            [t for t in self._registry.get_schemas()
+             if t.get("function", {}).get("name") not in excluded],
+            self.model,
+        )
 
         # 通过 parent_agent 的 DefaultPromptBuilderAdapter 构建 system prompt，
         # 确保与 MainAgent 使用一致的 cwd 和环境信息（修复 Bug#4）。

@@ -110,6 +110,9 @@ def _validate_rc(rc):
         if not isinstance(rc["model_profiles"], (list, tuple)):
             rc["model_profiles"] = []
         else:
+            # 多模态读图开关规范化（兼容 bool / 1/0 / yes/on 等手工写法）
+            from ._values import normalize_multimodal
+
             cleaned_profiles = []
             for item in rc["model_profiles"]:
                 if not isinstance(item, dict):
@@ -134,6 +137,7 @@ def _validate_rc(rc):
                 if effort_text and effort_text not in _REASONING_EFFORT_LEVELS:
                     effort_text = ""
                 entry["reasoning_effort"] = effort_text
+                entry["multimodal"] = normalize_multimodal(entry.get("multimodal", ""))
                 cleaned_profiles.append(entry)
             rc["model_profiles"] = cleaned_profiles
 

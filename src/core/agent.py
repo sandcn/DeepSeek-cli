@@ -114,6 +114,10 @@ class Agent(BaseAgent):
         # ── ConfigPort 注入 ───────────────────────────────
         self._config_port = _resolve_port(config_port, _defaults, "config")
         self.model = model or self._config_port.get_model()
+        # 工具集保留注册表全集（preset 等上层可再过滤）；read_image 等模型
+        # 能力相关工具在每次请求前由 ``_get_active_tools`` 按当前模型档案的
+        # 「多模态读图」开关动态过滤——这样运行期切换模型/修改开关都能即时
+        # 生效（既不会在 false 时加载，也不会在改成 true 后无法恢复）。
         self.tools = self._registry.get_schemas()
 
         # ── ObservabilityPort（可观测性） ────────────────
@@ -250,8 +254,15 @@ class Agent(BaseAgent):
                 _logger.debug("系统提词重建后刷新上下文使用率失败", exc_info=True)
 
     def _get_active_tools(self) -> list[dict]:
-        """返回当前工具 schemas。"""
-        return self.tools
+        """返回当前工具 schemas（按**当前模型**的多模态读图开关动态过滤）。
+
+        模型可在运行期经 ``/model`` / ``/models`` / Ctrl+N 切换；这里每次
+        请求都按 ``self.model`` 对应的模型档案重新判定，``multimodal=false``
+        时 read_image 不会出现在请求的 tool schemas 中（其余工具不变；只做
+        移除，不会恢复被 preset 排除的工具）。
+        """
+        from ..tools.tool_policy import filter_schemas_for_model
+        return filter_schemas_for_model(self.tools, self.model)
 
     def get_tool_registry(self):
         """返回工具注册表实例"""

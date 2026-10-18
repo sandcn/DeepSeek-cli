@@ -333,7 +333,7 @@ CONFIG_ENTRY_DESC_MAP: dict[str, str] = {
     "NOTIFY_ON_CHAT_COMPLETION": "聊天完成时通知",
     # ── 复合配置 ──
     "TOKEN_PRICES": "token 价格表（input/output/input_cache_hit，$/M）",
-    "MULTIMODAL_MODELS": "多模态模型列表（小写子串匹配，read_image 据此返回图片）",
+    "MULTIMODAL_MODELS": "多模态模型列表（小写子串匹配，用于用户消息图片内嵌；read_image 由模型档案「多模态读图」控制）",
     "IMAGE_UPLOAD_OPTIMIZE": "上传前图片优化（折叠旧图+压缩大图，缓解多图请求卡顿）",
     "IMAGE_UPLOAD_KEEP_RECENT": "上传时保留的最近图片数（更早的图片替换为文本占位，0=不折叠）",
     "IMAGE_UPLOAD_MAX_DIMENSION": "上传图片长边上限（像素，超过则降采样后再上传）",
