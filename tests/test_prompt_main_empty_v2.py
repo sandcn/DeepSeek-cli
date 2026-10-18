@@ -27,8 +27,13 @@ def text() -> str:
 
 
 def test_prompt_is_concise(text: str):
-    """保持精简：全文不超过 50 行。"""
-    assert len(text.splitlines()) <= 50
+    """保持精简：全文不超过 80 行。
+
+    原上限为 50 行；其后陆续补入「验证时序红线」「bash 禁改文件红线」
+    「bash 替代内部工具红线」等最高优先级条款（规则完整性优先于篇幅），
+    条目随之增加，故上限放宽到 80 行，仍用于防止提词无限膨胀。
+    """
+    assert len(text.splitlines()) <= 80
 
 
 def test_headings_present_and_ordered(text: str):
