@@ -33,7 +33,9 @@
    多模态读图」错误）。
 
 模型能力不再由模型名模式推断（原 ``is_multimodal_model`` 判定已从
-``read_image`` 移除）——用户显式配置是唯一判据。
+``read_image`` 移除）——用户显式配置是唯一判据。该开关同时派生
+``model_input_modalities``（DSH ``inputModalities`` 对齐：true →
+``("text", "image")``，false → ``("text",)``）。
 
 新增流程（用户需求）：**先选提供商** → **填模型名** → **填 API 密钥**；
 接口地址按提供商自动给定，用户无需输入（仍可在表单中修改）。
@@ -70,6 +72,7 @@ __all__ = [
     "profile_supports_multimodal",
     "multimodal_choices",
     "model_profile_for_model",
+    "model_input_modalities",
     "model_supports_multimodal",
     "current_multimodal",
     "reasoning_effort_choices",
@@ -402,20 +405,33 @@ def model_profile_for_model(model: str, rc=None) -> dict | None:
     return None
 
 
-def model_supports_multimodal(model: str | None = None, rc=None) -> bool:
-    """模型是否支持多模态读图（读模型档案的 ``multimodal`` 开关）。
+def model_input_modalities(model: str | None = None, rc=None) -> tuple[str, ...]:
+    """模型声明的输入模态（对齐 DSH ``inputModalities``）。
 
-    这是 ``read_image`` 工具加载与执行放行的**唯一判据**（取代原按模型名
-    模式推断的逻辑）：
+    DSH 的 ``read_image`` 在执行前要求**精确路由模型**显式声明 ``image``
+    输入；本项目把档案 ``multimodal`` 开关作为该声明的配置来源：
 
-    - ``model`` 为空 → 取当前生效档案；
-    - 模型名匹配不到任何档案 → ``False``（未声明即不支持）；
-    - 档案 ``multimodal`` 为 ``"true"`` → ``True``。
+    - ``multimodal=true``  → ``("text", "image")``；
+    - ``multimodal=false`` / 无档案 / 模型名匹配不到档案 → ``("text",)``。
+
+    ``model`` 为空时取当前生效档案（与 ``read_image._current_model`` 的
+    「调用代理当前路由模型」配合，保证运行期切换模型立即生效）。
     """
     if not model:
-        return profile_supports_multimodal(active_profile(rc))
-    profile = model_profile_for_model(model, rc)
-    return profile_supports_multimodal(profile)
+        profile = active_profile(rc)
+    else:
+        profile = model_profile_for_model(model, rc)
+    if profile_supports_multimodal(profile):
+        return ("text", "image")
+    return ("text",)
+
+
+def model_supports_multimodal(model: str | None = None, rc=None) -> bool:
+    """模型是否声明 ``image`` 输入（``"image" in inputModalities``）。
+
+    ``read_image`` 工具加载与执行放行的唯一判据；模型名模式推断不参与。
+    """
+    return "image" in model_input_modalities(model, rc)
 
 
 def current_multimodal(rc=None) -> bool:

@@ -75,7 +75,7 @@ def _content_to_text(content) -> str:
                         t = b.get("text", "")
                         if isinstance(t, str):
                             parts.append(t)
-                    elif b.get("type") == "image_url":
+                    elif b.get("type") in ("image_url", "image"):
                         parts.append("[图片]")
                 elif b is not None:
                     parts.append(str(b))

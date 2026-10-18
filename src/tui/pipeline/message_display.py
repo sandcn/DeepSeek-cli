@@ -75,6 +75,11 @@ def _content_str(content: Any) -> str:
                     url = url_container.get("url", "") if isinstance(url_container, dict) else ""
                     parts.append(f"[图片: {url}]" if url else "[图片]")
                     continue
+                if btype == "image":
+                    # DSH 附件引用 / Anthropic image block：预览只显示占位，
+                    # 不把 attachment 元数据或 base64 灌进消息摘要。
+                    parts.append("[图片]")
+                    continue
                 # ★ P3（review 2026-08-22）：未知 dict 类型（如 Anthropic
                 #   tool_use）原 ``c.get("text", c)`` 回退整 dict → str(dict)
                 #   垃圾文本进预览。输出摘要（含 name），未污染消息预览。

@@ -26,6 +26,7 @@ from ..core.constants import STREAM_LABEL_SUMMARIZE
 from ._retry import retry_api_call_async, retry_on_parse_failure_async
 from ._adapter_manager import get_adapter
 from .image_upload import optimize_messages_for_upload
+from ..core.attachments import resolve_attachment_blocks
 
 _logger = logging.getLogger(__name__)
 
@@ -82,6 +83,8 @@ async def call_model_async(
     adapter = get_adapter(model)
     messages_copy = copy.deepcopy(messages)
     messages_copy = adapter.prepare_messages(messages_copy, model)
+    # 附件图片引用 → image_url data URI（只作用于发送副本，存档保留引用）。
+    resolve_attachment_blocks(messages_copy)
     # 上传前图片瘦身（折叠/压缩/缓存）：缓解多图场景每轮请求重复上传全量
     # base64 导致的卡顿；只作用于发送副本，不影响 agent.messages。
     _optimize_messages_for_upload(messages_copy)
@@ -116,6 +119,8 @@ async def call_model_sync_async(
     adapter = get_adapter(model)
     messages_copy = copy.deepcopy(messages)
     messages_copy = adapter.prepare_messages(messages_copy, model)
+    # 附件图片引用 → image_url data URI（同 call_model_async）。
+    resolve_attachment_blocks(messages_copy)
     # 上传前图片瘦身（折叠/压缩/缓存）：同 call_model_async。
     _optimize_messages_for_upload(messages_copy)
     return await retry_on_parse_failure_async(

@@ -43,10 +43,7 @@ def _png_b64(w: int, h: int, seed: int) -> str:
 
 
 def _meta_text(w: int = 4, h: int = 4) -> str:
-    return (
-        f"图片: same.png\n尺寸: {w}x{h} (宽x高)\n"
-        f"原始尺寸: {w}x{h} (宽x高)\n操作: none\n格式: PNG"
-    )
+    return f"same.png image image/png image, {w}x{h} px, 123 bytes"
 
 
 def _tool_record(b64: str, text: str | None = None):
@@ -202,10 +199,10 @@ async def test_read_image_output_no_tailnote(tmp_path, monkeypatch):
     p = tmp_path / "t.png"
     Image.new("RGB", (4, 4)).save(str(p), format="PNG")
     out = await ReadImageFunc(path=str(p)).execute()
-    # 核心元信息保留（Trace 台账/检查器可读）
-    assert "图片:" in out
-    assert "尺寸:" in out
-    assert "格式: PNG" in out
+    # DSH 风格单行 envelope（Trace 台账/检查器可读）
+    assert out.startswith(str(p) + " image image/")
+    assert " px, " in out and " bytes" in out
+    assert "\n" not in out
     # 不再把「图片已编码为 base64 PNG…」「模式: 多模态」「预计占用…」
     # 「如需细节…」等技术提示拼进返回文本（Trace 返回值树叶噪音）
     assert "已编码为 base64 PNG" not in out
@@ -213,6 +210,27 @@ async def test_read_image_output_no_tailnote(tmp_path, monkeypatch):
     assert "模式: 多模态" not in out
     assert "预计占用" not in out
     assert "如需细节" not in out
+
+
+def test_trace_parses_attachment_image_block():
+    """DSH 附件图片 block → Trace 缩略图可解析（读取持久化附件）。"""
+    from PIL import Image
+    from src.core.attachments import save_image, attachment_image_block
+
+    buf = io.BytesIO()
+    img = Image.new("RGBA", (8, 8), (10, 20, 30, 128))
+    img.putpixel((0, 0), (255, 0, 0, 64))
+    img.save(buf, format="PNG")
+    ref = save_image(buf.getvalue(), "image/png", width=8, height=8)
+    blocks = parse_image_blocks([attachment_image_block(ref)])
+    assert len(blocks) == 1
+    assert blocks[0]["media_type"] == "image/png"
+    assert blocks[0]["approx_bytes"] > 0
+    rows = thumbnail_rows(blocks[0], 70)
+    assert rows
+    # 透明图不能被降级为「图片无法解码」（Pillow alpha_composite 原地返回
+    # None 的旧 bug 回归）
+    assert "".join(getattr(x, "text", "") for x in rows[0]) != "(图片无法解码)"
 
 
 # ── 缩略图等比放大（小图不再窄条，上限防模糊） ───────────────────────

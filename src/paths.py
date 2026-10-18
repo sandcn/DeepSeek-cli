@@ -16,6 +16,14 @@ CHAT_MEMORY_DIR = CHAT_DIR / "memory"
 # 运行时自修改插件目录（cordis_define/run/stop/undefine 工具使用）
 RUNTIME_PLUGINS_DIR = CHAT_DIR / "runtime_plugins"
 
+# 图片附件存储（read_image 的 durable attachment：内容寻址、跨会话可复用）
+CHAT_ATTACHMENTS_DIR = CHAT_DIR / "attachments"
+
+
+def ensure_attachments_dir() -> None:
+    """确保 .chat/attachments/ 目录存在"""
+    CHAT_ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def ensure_runtime_plugins_dir() -> None:
     """确保 .chat/runtime_plugins/ 目录存在"""

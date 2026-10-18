@@ -312,7 +312,9 @@ class BaseAgent:
           包装）——有 blocks 时 content 为 OpenAI 兼容 content blocks list
           （多模态模型可见图片），无 blocks 时退化为 text。
         - list[dict]：直接作为 content blocks（多模态，OpenAI 兼容格式，
-          如 [{"type": "image_url", "image_url": {...}}]）。
+          如 [{"type": "image_url", "image_url": {...}}]；read_image 的
+          durable attachment 块为 [{"type": "image", "attachment": {...}}]，
+          发送前由 core.attachments.resolve_attachment_blocks 展开）。
         """
         from ..tools.base import ToolResult
         if isinstance(content, ToolResult):

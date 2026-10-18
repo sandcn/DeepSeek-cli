@@ -35,6 +35,9 @@ _DATA_URI_RE = re.compile(r"^data:(?P<mime>[^;,]+)?;base64,(?P<data>.*)$", re.S)
 
 _IMAGE_BLOCK_TYPES = ("image_url", "image")
 
+#: DSH 风格附件图片块的 attachment 字段
+_ATTACHMENT_KEY = "attachment"
+
 
 # ── 配置读取（延迟导入 + 容错，缺失/异常回退默认值） ──────
 
@@ -67,7 +70,11 @@ def _cfg_bool(name: str, default: bool) -> bool:
 # ── 图片块解析 ────────────────────────────────────────────
 
 def is_image_block(block: Any) -> bool:
-    """判断 content block 是否为图片块（image_url / Anthropic image）。"""
+    """判断 content block 是否为图片块。
+
+    覆盖三种形态：OpenAI ``image_url``、Anthropic ``image`` base64/url、
+    DSH 风格持久化附件 ``{"type": "image", "attachment": {...}}``。
+    """
     if not isinstance(block, dict):
         return False
     btype = block.get("type")
@@ -75,6 +82,9 @@ def is_image_block(block: Any) -> bool:
         container = block.get("image_url")
         return isinstance(container, dict) and isinstance(container.get("url"), str)
     if btype == "image":
+        attachment = block.get(_ATTACHMENT_KEY)
+        if isinstance(attachment, dict):
+            return isinstance(attachment.get("attachmentId"), str)
         source = block.get("source")
         if isinstance(source, dict) and source.get("type") == "base64":
             return isinstance(source.get("data"), str)
@@ -102,6 +112,14 @@ def _block_raw_bytes(block: dict) -> Optional[bytes]:
         except Exception:
             return None
     if btype == "image":
+        attachment = block.get(_ATTACHMENT_KEY)
+        if isinstance(attachment, dict):
+            try:
+                from .attachments import load_block_image
+                _media, data, _meta = load_block_image(block)
+                return data
+            except Exception:
+                return None
         source = block.get("source")
         if not isinstance(source, dict):
             return None
@@ -153,11 +171,27 @@ def estimate_image_tokens_by_size(width: int, height: int,
     return max(1, cols * rows)
 
 
+def _block_image_size(block: dict) -> Optional[Tuple[int, int]]:
+    """读取图片块尺寸：附件引用直接用元数据，其余解码 header。"""
+    if not is_image_block(block):
+        return None
+    attachment = block.get(_ATTACHMENT_KEY)
+    if isinstance(attachment, dict):
+        try:
+            width = int(attachment.get("width") or 0)
+            height = int(attachment.get("height") or 0)
+        except (TypeError, ValueError):
+            width = height = 0
+        if width > 0 and height > 0:
+            return width, height
+    return _image_size(_block_raw_bytes(block))
+
+
 def estimate_image_block_tokens(block: dict, patch: int = _DEFAULT_PATCH,
                                 max_dimension: int = 0,
                                 default: int = _DEFAULT_FIXED) -> int:
     """估算单个图片块的视觉 token（读尺寸 → 长边约束 → patch 分块）。"""
-    size = _image_size(_block_raw_bytes(block)) if is_image_block(block) else None
+    size = _block_image_size(block)
     if size is None:
         return max(0, int(default))
     width, height = size

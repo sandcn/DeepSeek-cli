@@ -231,12 +231,15 @@ MODE_TEXT: dict[str, str] = {
 MODE_STYLE_FG: dict[str, int] = {"empty": 178, "simple": 45, "standard": 242}
 
 # ── 工具显示名映射（工具注册名 → UI 显示名） ──────────────
-# UI 显示一律取工具注册名的 PascalCase；新增工具时在此补一行
-# （tests/test_tool_display_name_pascal.py 校验「映射完整 + 值 == PascalCase」）。
+# UI 显示默认取工具注册名的 PascalCase；新增工具时在此补一行。
+# 例外：read_image 对齐 DSH presentCall 标题，显示为 ``Read image``
+# （tests/test_tool_display_name_pascal.py 校验映射完整性与该显式例外）。
 
 TOOL_DISPLAY_NAME_MAP: dict[str, str] = {
     "read": "Read",
-    "read_image": "ReadImage",
+    # DSH 对齐（2026-10 用户选择）：工具卡展示为 ``Read image <path>``，
+    # 与 DSH presentCall 标题一致（PascalCase 约定的显式例外）。
+    "read_image": "Read image",
     "write": "Write",
     "edit": "Edit",
     "str_replace_editor": "StrReplaceEditor",

@@ -72,6 +72,10 @@ def test_model_supports_multimodal_reads_profile_flag(isolated_rc):
     assert mp.model_supports_multimodal("vision-model") is True
     assert mp.model_supports_multimodal("text-model") is False
     assert mp.model_supports_multimodal("unknown-model") is False
+    # DSH 对齐：inputModalities 语义
+    assert mp.model_input_modalities("vision-model") == ("text", "image")
+    assert mp.model_input_modalities("text-model") == ("text",)
+    assert mp.model_input_modalities("unknown-model") == ("text",)
 
 
 def test_missing_multimodal_defaults_false(isolated_rc):
@@ -130,10 +134,9 @@ async def test_read_image_rejected_when_profile_false(tmp_path, monkeypatch, iso
     )
     path = _write_png(tmp_path / "t.png")
     out = await ReadImageFunc(path=path).execute()
-    assert out.startswith("(cannot read ")
+    assert out.startswith("Error: IMAGE_MODEL_INCAPABLE:")
     assert "does not declare image input" in out
-    assert "多模态读图=false" in out
-    assert "set 多模态读图=true" in out
+    assert "switch to an image-capable model" in out
 
 
 async def test_read_image_allowed_when_profile_true(tmp_path, monkeypatch, isolated_rc):
@@ -144,9 +147,10 @@ async def test_read_image_allowed_when_profile_true(tmp_path, monkeypatch, isola
     path = _write_png(tmp_path / "t.png")
     f = ReadImageFunc(path=path)
     out = await f.execute()
-    assert not out.startswith("(cannot read ")
+    assert not out.startswith("Error:")
     assert f.result_blocks is not None
-    assert f.result_blocks[1]["type"] == "image_url"
+    assert f.result_blocks[1]["type"] == "image"
+    assert f.result_blocks[1]["attachment"]["mediaType"] == "image/png"
 
 
 async def test_read_image_flag_change_takes_effect_immediately(
@@ -158,8 +162,9 @@ async def test_read_image_flag_change_takes_effect_immediately(
     )
     path = _write_png(tmp_path / "t.png")
     mp.save_profiles([{"model": "vision-model", "multimodal": "false"}])
-    assert (await ReadImageFunc(path=path).execute()).startswith("(cannot read ")
+    assert (await ReadImageFunc(path=path).execute()).startswith(
+        "Error: IMAGE_MODEL_INCAPABLE:")
     mp.save_profiles([{"model": "vision-model", "multimodal": "true"}])
     f = ReadImageFunc(path=path)
-    assert not (await f.execute()).startswith("(cannot read ")
+    assert not (await f.execute()).startswith("Error:")
     assert f.result_blocks is not None

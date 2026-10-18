@@ -24,6 +24,15 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _isolate_attachment_store(monkeypatch, tmp_path):
+    """每个测试使用独立的附件库目录，避免 read_image 写入项目 .chat/。"""
+    import src.paths as _paths
+
+    monkeypatch.setattr(_paths, "CHAT_ATTACHMENTS_DIR", tmp_path / "attachments")
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _ensure_main_event_loop():
     """主线程事件循环兜底：无循环时（asyncio.run 残留态）重建一个。"""
     try:

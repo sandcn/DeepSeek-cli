@@ -1,14 +1,14 @@
 """上传前图片瘦身 — 折叠 / 压缩 / 编码缓存
 
 背景（为什么"图片一多，每次请求都很卡"）：
-``read_image`` 按原始尺寸返回 base64 PNG（单张 1080p 截图 ≈ 6MB，base64
-后 ≈ 8MB），并随对话累积进 messages 历史。而每轮 API 请求都会把**整个**
-messages（含全部历史图片的 base64 data URI）重新序列化上传——实测 6 张
-1080p 噪声 PNG 的请求体即 ≈ 47.5MB，且随图片数量线性膨胀，故多图后每次
-请求都极慢。
+``read_image`` 的图片以持久化附件引用进入 messages 历史，发送副本会把引用
+展开为 base64 data URI（单张 1080p 截图 ≈ 6MB，base64 后 ≈ 8MB），并随对话
+累积。每轮 API 请求都会把**整个** messages（含全部历史图片的 data URI）重新
+序列化上传——实测 6 张 1080p 噪声 PNG 的请求体即 ≈ 47.5MB，且随图片数量
+线性膨胀，故多图后每次请求都极慢。
 
 本模块在**发送副本**上做三件事（不改动 ``agent.messages`` / 会话存档，
-``read_image`` 的「原始尺寸返回」契约保持不变；TUI 显示与存档不受影响）：
+``read_image`` 的附件引用与 TUI 显示不受影响）：
 
 1. **折叠**：发送时仅保留最近 ``N`` 张图片，更早的图片块替换为文本占位
    ——上传体积不再随图片数量线性膨胀（模型仍可从占位文本看到图片路径，
@@ -101,6 +101,9 @@ def _is_image_block(block: Any) -> bool:
         container = block.get("image_url")
         return isinstance(container, dict) and isinstance(container.get("url"), str)
     if btype == "image":
+        attachment = block.get("attachment")
+        if isinstance(attachment, dict) and attachment.get("attachmentId"):
+            return True
         source = block.get("source")
         return isinstance(source, dict) and source.get("type") == "base64"
     return False

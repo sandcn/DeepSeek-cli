@@ -9,6 +9,11 @@
   （Anthropic 适配器自动转换为 image block）
 - 不支持 → 返回 RGBA 十六进制字符
 
+``read_image`` 工具输出使用持久化附件引用（``{"type": "image",
+"attachment": {...}}``）；发送副本由 ``core.attachments.resolve_attachment_blocks``
+展开为 image_url data URI。``content_to_text`` 对 image_url / image（含附件
+引用与 Anthropic image block）统一输出 ``[图片]`` 占位。
+
 判定依据（命中其一即为多模态）：
 1. 模型名匹配已知多模态模型模式（claude / gpt-4o / glm-4v / llava /
    deepseek-flash 等）
@@ -201,9 +206,10 @@ def content_to_text(content: Any) -> str:
                     if isinstance(text, str):
                         parts.append(text)
                     continue
-                if btype == "image_url":
-                    # 只保留占位标记，不输出 data URI/base64——避免图片数据
-                    # 灌入上下文统计、会话标题、导出等文本消费方。
+                if btype in ("image_url", "image"):
+                    # 只保留占位标记，不输出 data URI/base64/附件引用——避免
+                    # 图片数据灌入上下文统计、会话标题、导出等文本消费方。
+                    # （``image`` 覆盖 DSH 风格附件块与 Anthropic image block）
                     parts.append("[图片]")
                     continue
                 # 其他 block（file 等）：尝试取 text 字段，无则跳过

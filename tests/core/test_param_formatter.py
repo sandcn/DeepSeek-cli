@@ -61,9 +61,13 @@ def test_extract_missing_key_returns_empty():
 
 
 def test_extract_read_image_path():
-    """read_image 归入已知工具 → 显示纯 path 值（修复前走未知工具 k=v → `path=…`）。"""
+    """read_image 归入已知工具 → 显示纯路径值（file_path 首选、path 兼容）。"""
     assert extract_key_params("read_image", {"path": "a.png"}) == "a.png"
     assert extract_key_params("read_image", '{"path": "x.png"}') == "x.png"
+    assert extract_key_params("read_image", {"file_path": "b.png"}) == "b.png"
+    # 两个别名同时存在时只显示一次值
+    assert extract_key_params(
+        "read_image", {"file_path": "c.png", "path": "c.png"}) == "c.png"
 
 
 def test_extract_non_dict_json_falls_back():

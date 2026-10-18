@@ -1,9 +1,9 @@
 """上传前图片优化（折叠 / 压缩 / 编码缓存）测试。
 
-背景：read_image 按原始尺寸返回 base64 PNG，并随对话累积——每轮 API 请求
-都会重传整个历史（含全部图片 base64），体积随图片数量线性膨胀，导致多图
-后请求极卡。src/api/image_upload.py 在**发送副本**上做折叠 + 压缩 + 缓存，
-本文件覆盖其行为与边界（不改 read_image 的「原始尺寸返回」契约）。
+背景：read_image 的图片以 durable attachment 引用进入历史，发送副本展开为
+base64 data URI——每轮 API 请求都会重传整个历史（含全部图片数据），体积随
+图片数量线性膨胀，导致多图后请求极卡。src/api/image_upload.py 在**发送副本**
+上做折叠 + 压缩 + 缓存，本文件覆盖其行为与边界（不改 read_image 的存档约定）。
 """
 
 from __future__ import annotations
@@ -79,7 +79,11 @@ def _image_blocks(messages: list) -> list:
         content = m.get("content")
         if isinstance(content, list):
             for b in content:
-                if isinstance(b, dict) and b.get("type") == "image_url":
+                if isinstance(b, dict) and (
+                    b.get("type") == "image_url"
+                    or (b.get("type") == "image"
+                        and isinstance(b.get("attachment"), dict))
+                ):
                     out.append(b)
     return out
 
@@ -345,3 +349,21 @@ async def test_call_model_async_optimizes_before_send(monkeypatch):
     sent = captured["messages"]
     assert len(_image_blocks(sent)) == 2      # 发送副本已折叠到最近 2 张
     assert len(_image_blocks(original)) == 5  # 原始历史不受影响
+
+
+def test_fold_counts_attachment_image_blocks():
+    """DSH 附件图片块同样参与折叠（发送副本展开前也可被折叠）。"""
+    from src.core.attachments import save_image, attachment_image_block
+
+    clear_upload_cache()
+    ref = save_image(_png_bytes(4, 4), "image/png", width=4, height=4)
+    msgs = []
+    for i in range(4):
+        msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": [
+            attachment_image_block(ref),
+        ]})
+    stats = optimize_messages_for_upload(
+        msgs, keep_recent=1, max_dimension=0, quality=80)
+    assert stats["folded"] == 3
+    assert len(_image_blocks(msgs)) == 1
+    assert _placeholders(msgs) == 3

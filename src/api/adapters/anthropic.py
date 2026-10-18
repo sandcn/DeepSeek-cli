@@ -5,6 +5,7 @@ Anthropic 使用 /v1/messages 端点，消息格式与 OpenAI 不兼容。
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from typing import Any, Optional
@@ -57,6 +58,24 @@ def _convert_tool_content_blocks(blocks: list) -> list:
             if img is not None:
                 converted.append(img)
         elif btype == "image":
+            attachment = block.get("attachment")
+            if isinstance(attachment, dict):
+                # DSH 附件图片引用（防御路径：正常发送前已 resolve 为
+                # image_url；直接调用适配器的调用方仍可正确转换）。
+                try:
+                    from ...core.attachments import load_block_image
+                    media_type, data, _meta = load_block_image(block)
+                    converted.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": base64.b64encode(data).decode("ascii"),
+                        },
+                    })
+                except Exception:
+                    _logger.debug("附件图片转 Anthropic image block 失败", exc_info=True)
+                continue
             # 已是 Anthropic image block，原样保留
             converted.append(block)
         elif btype in ("tool_result", "text_delta"):

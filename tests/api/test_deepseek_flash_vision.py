@@ -7,7 +7,7 @@ V4.1 Flash。本文件覆盖 read_image 等图像能力在该模型下的完整�
 - PROVIDERS 模型列表 / token 价格（V4.1 Flash 新价）
 - 多模态判定（is_multimodal_model）与 V4 系列判定（is_deepseek_v4_model）
 - DeepSeekAdapter 请求注入 thinking 参数（reasoning_effort 生效）
-- read_image 门禁放行并返回 image_url content blocks
+- read_image 门禁放行并返回 durable attachment 图片 block
 - 用户消息图片输入 content blocks（BaseAgent.add_user_message）
 """
 
@@ -103,9 +103,10 @@ def test_deepseek_adapter_injects_thinking(monkeypatch):
 # ── 4. read_image 集成 ────────────────────────────────
 
 async def test_read_image_allows_deepseek_flash(tmp_path, monkeypatch):
-    """模型档案开启「多模态读图」后 read_image 放行并返回 image_url blocks。"""
+    """模型档案开启「多模态读图」后 read_image 放行并返回附件图片 block。"""
     pytest.importorskip("PIL")
     from src.tools.read_image import ReadImageFunc
+    from src.core.attachments import load_block_image
     monkeypatch.setattr(
         "src.tools.read_image._current_model", lambda agent=None: _FLASH,
     )
@@ -117,10 +118,12 @@ async def test_read_image_allows_deepseek_flash(tmp_path, monkeypatch):
     p.write_bytes(_png_bytes())
     f = ReadImageFunc(path=str(p))
     out = await f.execute()
-    assert not out.startswith("(cannot read ")
+    assert not out.startswith("Error:")
     blocks = f.result_blocks
-    assert blocks is not None and blocks[1]["type"] == "image_url"
-    assert blocks[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert blocks is not None and blocks[1]["type"] == "image"
+    media_type, data = load_block_image(blocks[1])[:2]
+    assert media_type == "image/png"
+    assert data == p.read_bytes()
 
 
 async def test_read_image_rejects_deepseek_v4_pro(tmp_path, monkeypatch):
@@ -136,9 +139,9 @@ async def test_read_image_rejects_deepseek_v4_pro(tmp_path, monkeypatch):
     p = tmp_path / "t.png"
     p.write_bytes(_png_bytes())
     out = await ReadImageFunc(path=str(p)).execute()
-    assert out.startswith("(cannot read ")
+    assert out.startswith("Error: IMAGE_MODEL_INCAPABLE:")
     assert "does not declare image input" in out
-    assert "多模态读图=false" in out
+    assert "switch to an image-capable model" in out
 
 
 # ── 5. 用户消息图片输入 ───────────────────────────────

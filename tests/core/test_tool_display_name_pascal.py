@@ -11,7 +11,8 @@
    ``core/internal/agent/_tool_callbacks.py`` 通知汇总）。
 
 覆盖：
-  1. 真实工具显示名 == 注册名 PascalCase（参数化全量）；
+  1. 真实工具显示名 == 注册名 PascalCase（参数化全量；read_image 为
+     DSH presentCall 对齐的显式例外 ``Read image``）；
   2. 映射表覆盖全部注册工具；
   3. 历史兼容别名按 PascalCase 显示；
   4. 未知工具回退原名；
@@ -27,6 +28,9 @@ from src.tools.registry import get_tool_display_name, get_tools
 
 #: 旧 Claude Code 风格缩写（真实工具不得再使用这些显示名）
 _OLD_ABBREVS = {"Task", "RM", "MV", "CP", "LS"}
+
+#: 显式例外：read_image 对齐 DSH presentCall 标题 ``Read image <path>``。
+_DISPLAY_EXCEPTIONS = {"read_image": "Read image"}
 
 
 def _pascal(name: str) -> str:
@@ -45,8 +49,9 @@ def test_tool_registry_not_empty():
 
 @pytest.mark.parametrize("tool_name", _real_tools())
 def test_real_tool_display_name_is_registered_name_pascal(tool_name):
-    """真实工具：显示名 == 工具注册名 PascalCase。"""
-    assert get_tool_display_name(tool_name) == _pascal(tool_name)
+    """真实工具：显示名 == 工具注册名 PascalCase（read_image 为 DSH 例外）。"""
+    expected = _DISPLAY_EXCEPTIONS.get(tool_name, _pascal(tool_name))
+    assert get_tool_display_name(tool_name) == expected
 
 
 def test_mapping_covers_all_registered_tools():
@@ -57,7 +62,7 @@ def test_mapping_covers_all_registered_tools():
 
 @pytest.mark.parametrize("tool_name,expected", [
     ("read", "Read"),
-    ("read_image", "ReadImage"),
+    ("read_image", "Read image"),
     ("write", "Write"),
     ("edit", "Edit"),
     ("bash", "Bash"),
@@ -119,6 +124,20 @@ def test_tool_card_title_shows_read():
     assert "Read" in title
     assert "engine/rendering/FrameGraph.cpp" in title
     assert "ReadFile" not in title
+
+
+def test_tool_card_title_shows_read_image():
+    """read_image 工具卡标题对齐 DSH：``Read image <path>``。"""
+    from src.tui.app.model import AppModel
+    from src.tui.app.toolcard import tool_card_lines
+
+    model = AppModel()
+    model.width = 80
+    model.open_tool_box("t2", "read_image", "test_img/tiny_1x1.png")
+    block = model.tool_boxes["t2"]
+    title = "".join(r.text for r in tool_card_lines(block, 80)[0])
+    assert "Read image test_img/tiny_1x1.png" in title
+    assert "ReadImage" not in title
 
 
 def test_subagent_tool_record_shows_read():

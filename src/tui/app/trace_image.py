@@ -34,6 +34,9 @@ _ROW_CACHE_MAX = 64
 #: 解码像素上限（★ P2 review：超大 data URI 不进入全量解码，直接占位）
 _MAX_DECODE_PIXELS = 40_000_000
 _rows_cache: dict = {}
+#: 附件图片 block → (media_type, base64) 缓存（避免每帧重复读附件文件）
+_attachment_payload_cache: dict = {}
+_ATTACHMENT_CACHE_MAX = 16
 
 
 def _b64_approx_len(b64: str) -> int:
@@ -67,7 +70,26 @@ def _image_url_payload(block: dict):
 
 
 def _image_block_payload(block: dict):
-    """从 image block（Anthropic 原生 / 通用）提取 (media_type, base64)。"""
+    """从 image block（DSH 附件 / Anthropic 原生 / 通用）提取 (media_type, base64)。"""
+    attachment = block.get("attachment")
+    if isinstance(attachment, dict):
+        key = (
+            str(attachment.get("attachmentId") or ""),
+            attachment.get("bytes"),
+        )
+        cached = _attachment_payload_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            from src.core.attachments import block_base64
+            payload = block_base64(block)
+        except Exception:
+            payload = None
+        if payload is not None:
+            if len(_attachment_payload_cache) >= _ATTACHMENT_CACHE_MAX:
+                _attachment_payload_cache.clear()
+            _attachment_payload_cache[key] = payload
+        return payload
     cont = block.get("source") or block
     if not isinstance(cont, dict):
         return None
@@ -215,7 +237,10 @@ def _render(b64: str, w_cells: int, h_cells: int) -> list:
         try:
             from PIL import Image as _Image
             bg_img = _Image.new("RGBA", img.size, (30, 30, 30, 255))
-            img = bg_img.alpha_composite(img.convert("RGBA"))
+            # Pillow 的 alpha_composite 是**原地**操作且返回 None（旧代码
+            # 把返回值赋给 img → 透明图缩略图恒为「图片无法解码」）。
+            bg_img.alpha_composite(img.convert("RGBA"))
+            img = bg_img
         except Exception:
             import logging
             logging.getLogger(__name__).debug("忽略异常（best-effort 路径）", exc_info=True)
@@ -238,7 +263,8 @@ def _render(b64: str, w_cells: int, h_cells: int) -> list:
     nw = max(1, int(w * scale))
     nh = max(1, int(h * scale))
     try:
-        img = img.resize((nw, nh), Image.LANCZOS)
+        resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+        img = img.resize((nw, nh), resampling)
     except Exception:
         return _placeholder()
 

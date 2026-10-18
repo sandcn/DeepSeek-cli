@@ -1,28 +1,35 @@
-"""read_image — 读取图像文件工具（对齐 DSH read_image 加工契约）
+"""read_image — 读取图像文件工具（对齐 DSH read_image 契约 + 本项目扩展）
 
-DSH 对齐的加工语义（2026-08 重构）：
+DSH（DeepSeek Harness）read_image 的加工语义（2026-10 对齐）：
+- 参数名 ``file_path``（``path`` 保留为兼容别名）；
 - 全量图片类型：接受所有 Pillow 可解码的图像格式（PNG/JPEG/WebP/GIF/BMP/
-  TIFF/ICO/PNM(PPM/PGM/PBM)/TGA/SGI/…），不再局限于四种；深度求索
-  deepseek-flash（V4.1 Flash，原生多模态；旧名 deepseek-v4-flash 与
-  deepseek-v4-flash-vision-exp 均路由到该模型）仅支持 JPEG/PNG/GIF/WebP，
-  故所有输入统一转码为 PNG 返回（模型支持格式之一），非支持格式（如
-  BMP/TIFF）自动转换；
+  TIFF/ICO/PNM(PPM/PGM/PBM)/TGA/SGI/…）；有扩展名时扩展名必须声明图像格式，
+  无扩展名时按文件内容（magic-byte / Pillow 解码）识别；
 - magic-byte / 声明类型一致校验：解码后实际格式必须与扩展名声明的格式一致，
   否则报 DSH 式「扩展名与实际格式不符，重命名文件」错误；
-- 严格图像能力门禁：当前模型档案未开启「多模态读图」（``multimodal=true``）
-  时直接拒绝并提示到 ``/models`` 开启或切换到支持图像输入的模型——不再按
-  模型名模式推断能力，也不再降级为 rgba_hex / palette 文本；
+- 严格图像能力门禁：当前**精确路由模型**必须声明 ``image`` 输入
+  （``inputModalities`` 含 image；本项目由模型档案 ``multimodal`` 开关派生），
+  否则拒绝并提示切换支持图像输入的模型；
 - 规范化：应用 EXIF 方向并转换为 8-bit sRGB 单帧（RGB/RGBA），16 位 PNG 等
-  无法转换时返回 DSH 式错误；不做任何自动缩放，图片按原始尺寸返回。
+  无法转换时返回 DSH 式错误；
+- 自动降采样：总像素预算 2048×2048、长边 8192、编码目标 4 MiB；缩小时在
+  返回文本中给出原尺寸与坐标换算倍数（模型无需先制作缩略图）；
+- 编码策略：干净的 8-bit sRGB/sRGBA PNG/JPEG/WebP 在预算内字节直通；
+  否则 alpha 图用 WebP、不透明图用 JPEG（质量阶梯 85/75/60，取满足 4 MiB
+  的最小输出）；
+- durable attachment：图片字节存入内容寻址附件库，工具结果返回
+  ``{"type": "image", "attachment": {...}}`` 引用（发送前展开为 image_url）；
+- 返回单行 envelope：``<path> image <mime> image, WxH px, N bytes``（缩小时
+  追加 downscaled 说明），不再返回多行中文元信息。
 
-保留当前项目特性：
+保留当前项目特性（DSH 超集）：
 - 分块读取（start_x/start_y/end_x/end_y 像素区域裁剪）
 - 图像操作（grayscale / rotate90/180/270 / flip_h / flip_v / scale）
-- 不自动缩放：返回给大模型的图片保持原始尺寸（仅显式 operation=scale 缩放）
+- 路径安全校验拒绝危险路径（设备文件/系统关键路径等）
 
-返回格式固定为多模态：文本元信息 + OpenAI 兼容 image_url data URI
-content blocks（Anthropic 适配器自动转 image block）；图片统一编码为 PNG
-（deepseek-flash 支持的格式之一）。
+错误契约对齐 DSH：``Error: <CODE>: <message>``，包含稳定错误码与可执行的
+修复提示（not found / not a regular file / 扩展名 / 格式不符 / 16-bit /
+字节 / 像素 / 单边限制 / 模型能力）。
 """
 
 from __future__ import annotations
@@ -30,12 +37,17 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import math
 import os
 
 from .base import Func
 from .file_ops import validate_path_security
 from ..config.model_profiles import model_supports_multimodal
-from ..core.multimodal import build_image_content_blocks
+from ..core.attachments import (
+    AttachmentError,
+    attachment_image_block,
+    save_image,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -47,15 +59,12 @@ _SUPPORTED_OPERATIONS = frozenset({
 
 # ── 全量图片类型：扩展名 → Pillow 格式名（声明格式） ──
 # 覆盖 Pillow 常见可解码图像格式；magic-byte 校验以实际解码为准。
-# 深度求索 deepseek-flash（V4.1 Flash，原生多模态）仅支持
-# JPEG/PNG/GIF/WebP，故所有输入统一转码为 PNG 返回（模型支持格式之一）。
+# 有扩展名时扩展名必须声明图像格式；无扩展名时按内容识别。
 _EXT_TO_FORMAT: dict[str, str] = {
-    # 深度求索原生支持格式（输出统一转 PNG，保留语义）
     ".png": "PNG", ".apng": "PNG",
     ".jpg": "JPEG", ".jpeg": "JPEG", ".jpe": "JPEG", ".jfif": "JPEG",
     ".gif": "GIF",
     ".webp": "WEBP",
-    # 其它 Pillow 可解码图像格式（自动转换 PNG 后交给视觉模型）
     ".bmp": "BMP", ".dib": "BMP",
     ".tif": "TIFF", ".tiff": "TIFF",
     ".ico": "ICO", ".cur": "ICO",
@@ -152,6 +161,8 @@ def image_format_media() -> dict:
 def image_extensions() -> dict:
     """当前生效的「扩展名 → 声明媒体类型」映射（被禁用时为空）。"""
     return dict(_const("IMAGE_EXTENSIONS", {}) or {})
+
+
 # Pillow 可识别的图像格式名集合兼容快照（用于 registered_extensions 动态过滤：
 # 仅接受静态表认可的「图像」格式，排除 PDF/视频/数据文件等非图像扩展名）。
 # 运行时经 ``_image_format_names()`` 实时查询（可被清单条目覆盖/禁用）。
@@ -164,11 +175,56 @@ def _image_format_names() -> frozenset:
         return frozenset()
     return frozenset(ext_format.values())
 
-# 单文件大小上限（MB）
-_MAX_FILE_SIZE_MB = 50
-# 解码前像素面积上限（3000 万像素：解码 RGBA ≈120MB、copy 后峰值 ≈240MB；
-# 在 Pillow decompression bomb 防护（约 9000 万）之前拦截，控制内存峰值）
-_MAX_IMAGE_PIXELS = 30_000_000
+
+# ── DSH 对齐限制值 ────────────────────────────────────
+# 源准入（对齐 dsh-attachment-local 默认值）
+_MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024       # maxImageBytes 20 MiB
+_MAX_IMAGE_PIXELS = 64_000_000                # maxImagePixels 6400 万
+_MAX_IMAGE_DIMENSION = 8192                   # maxImageDimension 单边 8192
+# 规范化预算（对齐 normalizedImage* 默认值）
+_NORMALIZED_MAX_PIXELS = 2048 * 2048          # 总像素预算 2048×2048
+_NORMALIZED_MAX_DIMENSION = 8192              # 规范化后长边上限
+_NORMALIZED_MAX_BYTES = 4 * 1024 * 1024       # 编码目标 4 MiB
+_ENCODE_QUALITIES = (85, 75, 60)              # 共用质量阶梯
+
+# 直通允许的结构性标记（不是用户元数据）：JPEG 的 JFIF 文件头、Pillow 为
+# 单帧 WebP 填充的容器默认字段。
+_PASSTHROUGH_INFO = frozenset({
+    "jfif", "jfif_version", "jfif_unit", "jfif_density",
+    "jfif_progressive", "jfif_restart_marker",
+    "loop", "background", "timestamp", "duration",
+})
+
+# ── 稳定错误码（对齐 DSH 的可恢复错误契约） ─────────────
+_ERR_INVALID_ARGUMENT = "INVALID_ARGUMENT"
+_ERR_NOT_FOUND = "FS_NOT_FOUND"
+_ERR_NOT_REGULAR_FILE = "FS_NOT_REGULAR_FILE"
+_ERR_UNSUPPORTED_EXTENSION = "IMAGE_UNSUPPORTED_EXTENSION"
+_ERR_UNSUPPORTED_FORMAT = "IMAGE_UNSUPPORTED_FORMAT"
+_ERR_INVALID_IMAGE = "IMAGE_INVALID"
+_ERR_TYPE_MISMATCH = "IMAGE_TYPE_MISMATCH"
+_ERR_TOO_LARGE = "IMAGE_TOO_LARGE"
+_ERR_TOO_MANY_PIXELS = "IMAGE_TOO_MANY_PIXELS"
+_ERR_DIMENSION_TOO_LARGE = "IMAGE_DIMENSION_TOO_LARGE"
+_ERR_NORMALIZE_FAILED = "IMAGE_NORMALIZE_FAILED"
+_ERR_OPERATION_FAILED = "IMAGE_OPERATION_FAILED"
+_ERR_ENCODE_FAILED = "IMAGE_ENCODE_FAILED"
+_ERR_READ_FAILED = "IMAGE_READ_FAILED"
+_ERR_MODEL_INCAPABLE = "IMAGE_MODEL_INCAPABLE"
+_ERR_ATTACHMENT_FAILED = "ATTACHMENT_WRITE_FAILED"
+
+#: 错误文案中展示的支持格式说明（全量 Pillow 解码能力）
+_SUPPORTED_FORMATS = (
+    "all Pillow-readable image formats "
+    "(PNG/JPEG/WebP/GIF/BMP/TIFF/ICO/PNM/TGA/...), including extension-less "
+    "files in those formats"
+)
+
+
+def _error(code: str, message: str) -> str:
+    """DSH 式错误：``Error: <CODE>: <message>``。"""
+    return f"Error: {code}: {message}"
+
 
 # Pillow transpose 常量（延迟导入 + 兜底数值，避免模块导入期强依赖 PIL）
 # 注：Pillow 未安装时 read_image 在 execute 早期即返回错误，不会走到 flip
@@ -202,7 +258,7 @@ def _current_model(agent=None) -> str:
     模型可在运行期通过 /model 或 /models 切换；因此先读 registry.dispatch
     注入的调用代理（self.agent）当前路由模型（agent.model，即当前会话/
     子代理实际请求所用的模型），失败才回退全局 MODEL。
-    两种情况都取不到返回空串（视为未开启多模态读图）。
+    两种情况都取不到返回空串（视为未声明 image 输入）。
     """
     if agent is not None:
         scoped = getattr(agent, "model", None)
@@ -216,24 +272,24 @@ def _current_model(agent=None) -> str:
         return ""
 
 
-# ── DSH 风格错误文案（返回给模型；前缀 '(' 对齐本项目错误显示约定） ──
+# ── 错误文案（对齐 DSH read_image 的可恢复提示） ─────────
 
-def _format_gate_error(path: str) -> str:
+def _format_gate_error(path: str, ext: str) -> str:
     """扩展名非 Pillow 可解码图像格式 → 拒绝（扩展名门禁）。"""
-    return (
-        f'(cannot read "{path}": the file extension is not a recognized image '
-        "extension; read_image supports all image formats readable by Pillow "
-        "(PNG/JPEG/WebP/GIF/BMP/TIFF/ICO/PNM/TGA/...), which are converted to "
-        "PNG for the vision model)"
+    return _error(
+        _ERR_UNSUPPORTED_EXTENSION,
+        f'cannot read "{path}": the {ext} extension does not declare a supported '
+        f"image format; read_image accepts {_SUPPORTED_FORMATS}",
     )
 
 
 def _format_mismatch_error(path: str, ext: str, declared: str) -> str:
     """声明（扩展名）与实际解码格式不一致 → 拒绝（对齐 IMAGE_TYPE_MISMATCH）。"""
-    return (
-        f'(cannot read "{path}": the {ext} extension declares {declared}, but the bytes '
-        "use a different image format; rename the file to match its actual format, or "
-        "convert it to a supported image format)"
+    return _error(
+        _ERR_TYPE_MISMATCH,
+        f'cannot read "{path}": the {ext} extension declares {declared}, but the '
+        "bytes use a different image format; rename the file to match its actual "
+        "format, or convert it to a supported image format",
     )
 
 
@@ -255,21 +311,28 @@ def _declared_format(ext: str) -> str | None:
 
 
 def _capability_error(path: str, model: str) -> str:
-    """模型档案未开启「多模态读图」→ 严格拒绝并提示开启方式。"""
+    """精确路由模型未声明 image 输入 → 严格拒绝并提示切换模型。"""
     model_part = model if model else "<unknown>"
-    return (
-        f'(cannot read "{path}" as an image: model "{model_part}" does not declare '
-        "image input (多模态读图=false in /models); set 多模态读图=true for this "
-        "model in /models, or switch to a model that supports image input)"
+    return _error(
+        _ERR_MODEL_INCAPABLE,
+        f'cannot read "{path}" as an image: model "{model_part}" does not '
+        "declare image input; switch to an image-capable model to read images",
     )
 
 
-def _normalization_error(path: str) -> str:
+def _normalization_error(path: str, is_16bit_png: bool = False) -> str:
     """无法归一化为 8-bit sRGB（如 16 位 PNG）→ 拒绝（对齐 normalizeImage 失败）。"""
-    return (
-        f'(cannot read "{path}": the image could not be converted to the normalized '
-        "8-bit sRGB form; convert it to an 8-bit PNG/JPEG/WebP and retry)"
-    )
+    if is_16bit_png:
+        message = (
+            f'cannot read "{path}": the 16-bit PNG could not be converted to the '
+            "normalized 8-bit sRGB form; convert it to an 8-bit PNG/JPEG/WebP and retry"
+        )
+    else:
+        message = (
+            f'cannot read "{path}": the image could not be converted to the '
+            "normalized 8-bit sRGB form; convert it to an 8-bit PNG/JPEG/WebP and retry"
+        )
+    return _error(_ERR_NORMALIZE_FAILED, message)
 
 
 def _normalize_srgb(img, apply_exif: bool = True):
@@ -294,6 +357,134 @@ def _normalize_srgb(img, apply_exif: bool = True):
     return img.convert("RGBA" if has_alpha else "RGB")
 
 
+def _format_mime(fmt: str | None) -> str:
+    """Pillow 格式名 → 媒体类型（未知格式回退 image/<lower>）。"""
+    if not fmt:
+        return "image/png"
+    return image_format_media().get(fmt, f"image/{fmt.lower()}")
+
+
+def _exif_orientation(img) -> int:
+    """读取 EXIF orientation（缺失/异常 → 1）。"""
+    try:
+        exif = img.getexif()
+        return int(exif.get(0x0112, 1) or 1)
+    except Exception:
+        return 1
+
+
+def _is_clean_for_passthrough(img, info: dict, orientation: int) -> bool:
+    """判断输入是否满足 DSH 的「字节直通」干净条件。"""
+    if img.mode not in ("RGB", "RGBA"):
+        return False
+    if orientation != 1:
+        return False
+    if info.get("icc_profile"):
+        return False
+    if info.get("exif"):
+        return False
+    if info.get("transparency") is not None:
+        return False
+    # 只允许 JPEG 的 JFIF 结构标记；其余 info 键（dpi/gamma/text/comment…）
+    # 都视为需要移除的元数据 → 不走直通，交给规范化重编码。
+    if not set(info) <= _PASSTHROUGH_INFO:
+        return False
+    return True
+
+
+def _can_passthrough(
+    *,
+    input_bytes: bytes,
+    actual_format: str | None,
+    frame_count: int,
+    img,
+    info: dict,
+    orientation: int,
+    region_changed: bool,
+    operation: str,
+) -> bool:
+    """DSH 直通判定：干净 8-bit sRGB/sRGBA PNG/JPEG/WebP、预算内、无加工。"""
+    if actual_format not in ("PNG", "JPEG", "WEBP"):
+        return False
+    if frame_count > 1:
+        return False
+    if region_changed or operation != "none":
+        return False
+    if not _is_clean_for_passthrough(img, info, orientation):
+        return False
+    width, height = img.size
+    if width <= 0 or height <= 0:
+        return False
+    if max(width, height) > _NORMALIZED_MAX_DIMENSION:
+        return False
+    if width * height > _NORMALIZED_MAX_PIXELS:
+        return False
+    if len(input_bytes) > _NORMALIZED_MAX_BYTES:
+        return False
+    return True
+
+
+def _downscale_to_budget(img):
+    """按 DSH 规范化预算等比缩小（总像素 2048×2048、长边 8192）。
+
+    Returns:
+        ``(img, original_size_or_None)``；发生缩小时 original_size 为缩放前
+        ``(width, height)``。
+    """
+    width, height = img.size
+    if width <= 0 or height <= 0:
+        return img, None
+    scale = 1.0
+    long_side = max(width, height)
+    if long_side > _NORMALIZED_MAX_DIMENSION:
+        scale = min(scale, _NORMALIZED_MAX_DIMENSION / float(long_side))
+    pixels = width * height
+    if pixels > _NORMALIZED_MAX_PIXELS:
+        scale = min(scale, math.sqrt(_NORMALIZED_MAX_PIXELS / float(pixels)))
+    if scale >= 1.0:
+        return img, None
+    new_w = max(1, int(width * scale))
+    new_h = max(1, int(height * scale))
+    # 向下取整后仍可能因极端长宽比略超总像素预算：继续收一档。
+    while new_w * new_h > _NORMALIZED_MAX_PIXELS and (new_w > 1 or new_h > 1):
+        if new_w >= new_h:
+            new_w = max(1, new_w - 1)
+        else:
+            new_h = max(1, new_h - 1)
+    if new_w > _NORMALIZED_MAX_DIMENSION:
+        new_w = _NORMALIZED_MAX_DIMENSION
+    if new_h > _NORMALIZED_MAX_DIMENSION:
+        new_h = _NORMALIZED_MAX_DIMENSION
+    from PIL import Image
+    resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+    return img.resize((new_w, new_h), resampling), (width, height)
+
+
+def _encode_with_ladder(img) -> tuple[bytes, str]:
+    """按 DSH 编码策略输出图片字节与媒体类型。
+
+    - alpha → WebP（保留透明通道）；
+    - 不透明 → JPEG；
+    - 质量阶梯 85/75/60：优先取满足 4 MiB 的最小输出；若全部超限，保留
+      字节数最小的候选（对齐 DSH）。
+    """
+    has_alpha = img.mode == "RGBA"
+    fmt = "WEBP" if has_alpha else "JPEG"
+    media_type = "image/webp" if has_alpha else "image/jpeg"
+    candidates: list[bytes] = []
+    for quality in _ENCODE_QUALITIES:
+        buf = io.BytesIO()
+        kwargs = {"quality": quality}
+        if fmt == "JPEG":
+            kwargs["optimize"] = True
+        img.save(buf, format=fmt, **kwargs)
+        candidates.append(buf.getvalue())
+    fitting = [data for data in candidates if len(data) <= _NORMALIZED_MAX_BYTES]
+    if fitting:
+        return min(fitting, key=len), media_type
+    return min(candidates, key=len), media_type
+
+
 class ReadImageFunc(Func):
     name = "read_image"
 
@@ -304,24 +495,28 @@ class ReadImageFunc(Func):
             "function": {
                 "name": "read_image",
                 "description": (
-                    "读取图像文件内容。支持全量图片类型（所有 Pillow 可解码格式，"
-                    "含 PNG/JPEG/WebP/GIF/BMP/TIFF/ICO/PNM/TGA/…），非模型原生"
-                    "支持的格式自动转换为 PNG 返回；要求当前模型档案在 /models"
-                    "开启「多模态读图」（multimodal=true），否则拒绝读取；"
-                    "返回 base64 PNG 图片并附文本元信息，"
-                    "图片按原始尺寸返回（不做自动缩放）。"
-                    "支持分块读取（start_x/start_y/end_x/end_y 指定像素区域，类似"
-                    "read 的行号范围）；支持对图像操作后返回（operation：grayscale"
-                    "灰度/rotate90/rotate180/rotate270/flip_h/flip_v/scale 缩放，"
-                    "先裁剪区域再应用操作）。"
-                    "路径安全校验拒绝危险路径（设备文件/系统关键路径等）。"
+                    "Read a PNG/JPEG/WebP/GIF (or any Pillow-readable image) file and "
+                    "return the image itself. Large images are downscaled automatically "
+                    "to a 2048x2048 total-pixel budget / 4 MiB target; do not install "
+                    "image libraries or create thumbnails to inspect an image. "
+                    "Requires the current routed model to declare image input "
+                    "(多模态读图=true in /models); otherwise execution is refused. "
+                    "Extension-less files are identified from their content. "
+                    "Project extensions (DSH superset): start_x/start_y/end_x/end_y "
+                    "crop a pixel region; operation applies grayscale / rotate90 / "
+                    "rotate180 / rotate270 / flip_h / flip_v / scale before return. "
+                    "Path security rejects dangerous paths (device files/system paths)."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to the image file (DSH-compatible field name)."
+                        },
                         "path": {
                             "type": "string",
-                            "description": "图像文件路径，支持相对路径或绝对路径（所有 Pillow 可解码图片格式）。"
+                            "description": "Deprecated alias of file_path (kept for compatibility)."
                         },
                         "start_x": {
                             "type": "integer",
@@ -366,18 +561,18 @@ class ReadImageFunc(Func):
                             "description": "缩放目标高度（operation=scale 时使用，省略时按比例自动计算）。"
                         },
                     },
-                    "required": ["path"]
+                    "required": ["file_path"]
                 }
             }
         }
 
     @classmethod
     def from_args(cls, args: dict) -> "ReadImageFunc":
-        path = args.get("path") or args.get("paths")
+        path = args.get("file_path") or args.get("path") or args.get("paths")
         if isinstance(path, list):
             path = path[0] if path else ""
         if not path:
-            raise ValueError("缺少必需参数: path")
+            raise ValueError("缺少必需参数: file_path")
 
         operation = str(args.get("operation") or "none").strip().lower()
         if operation not in _SUPPORTED_OPERATIONS:
@@ -397,12 +592,17 @@ class ReadImageFunc(Func):
 
     @classmethod
     def display_params(cls, arguments: dict, max_len: int = 80) -> str:
-        path = arguments.get("path") or arguments.get("paths", "")
+        """DSH 风格展示：``Read image <path>``（保留区域/操作扩展信息）。"""
+        path = (
+            arguments.get("file_path")
+            or arguments.get("path")
+            or arguments.get("paths", "")
+        )
         if isinstance(path, list):
             path = path[0] if path else ""
         if not path:
             return ""
-        display = f"'{cls._sanitize_display(path)}'"
+        display = f"Read image {cls._sanitize_display(path)}"
         extras = []
         if arguments.get("operation") and arguments.get("operation") != "none":
             extras.append(arguments["operation"])
@@ -424,12 +624,23 @@ class ReadImageFunc(Func):
 
     def __init__(
         self,
-        path: str,
+        path: str = "",
         start_x=None, start_y=None, end_x=None, end_y=None,
         operation: str = "none",
         scale_width=None, scale_height=None,
+        file_path: str | None = None,
     ):
         super().__init__()
+        # DSH 对齐：file_path 是模型侧首选字段；path 保留为构造器兼容参数。
+        if file_path:
+            path = file_path
+        if not isinstance(path, str):
+            try:
+                path = os.fspath(path)
+            except TypeError:
+                path = ""
+        if not path.strip():
+            raise ValueError("缺少必需参数: file_path")
         validate_path_security(path)
         self.path = path
         self.start_x = start_x
@@ -461,63 +672,131 @@ class ReadImageFunc(Func):
         self.result_blocks = None
         file_path = self.path
 
-        # ── 1. 扩展名格式门禁（全量 Pillow 图像格式） ────
+        # ── 1. 参数 / 扩展名 / 路径门禁 ──────────────────
+        if not isinstance(file_path, str) or not file_path.strip():
+            return _error(
+                _ERR_INVALID_ARGUMENT, "file_path must be a non-empty string"
+            )
         ext = os.path.splitext(file_path)[1].lower()
-        declared_format = _declared_format(ext)
-        if declared_format is None:
-            return _format_gate_error(file_path)
+        # 无扩展名：不声明格式，按文件内容（Pillow magic-byte 识别）判定。
+        declared_format = _declared_format(ext) if ext else None
+        if ext and declared_format is None:
+            return _format_gate_error(file_path, ext)
 
-        if not os.path.exists(file_path):
-            return f"(文件不存在: {file_path})"
-
-        # ── 2. 严格图像能力门禁（模型档案须开启「多模态读图」） ──
-        # 唯一判据 = 当前模型档案的 multimodal 开关（不再按模型名模式推断）；
-        # 模型可在运行期切换，故取调用代理当前路由模型而非启动时快照。
+        # ── 2. 严格图像能力门禁（精确路由模型须声明 image 输入） ──
+        # 对齐 DSH：能力门禁在文件系统解析（not found / not regular）之前，
+        # 避免对无法查看图片的模型先做无意义的磁盘读取。
         model = _current_model(self.agent)
         if not model_supports_multimodal(model):
             return _capability_error(file_path, model)
 
+        if not os.path.exists(file_path):
+            return _error(
+                _ERR_NOT_FOUND, f'cannot read "{file_path}": not found'
+            )
+        if not os.path.isfile(file_path):
+            return _error(
+                _ERR_NOT_REGULAR_FILE,
+                f'cannot read "{file_path}": not a regular file',
+            )
+
         try:
             size_bytes = os.path.getsize(file_path)
-            if size_bytes > _MAX_FILE_SIZE_MB * 1024 * 1024:
-                return (f"(读取失败: 文件过大 ({size_bytes / 1024 / 1024:.1f}MB)，"
-                        f"超过 {_MAX_FILE_SIZE_MB}MB 限制)")
         except OSError as e:
-            return f"(读取失败: {e})"
+            return _error(_ERR_READ_FAILED, f'cannot read "{file_path}": {e}')
+        if size_bytes > _MAX_FILE_SIZE_BYTES:
+            return _error(
+                _ERR_TOO_LARGE,
+                f'cannot read "{file_path}": the image cannot be stored within '
+                "the deployment's byte limits; downscale the image and read the "
+                "smaller copy",
+            )
 
         try:
             from PIL import Image
         except ImportError:
-            return "(读取失败: 需要 Pillow 库（pip install Pillow）才能读取图像)"
+            return _error(
+                _ERR_READ_FAILED,
+                "(读取失败: 需要 Pillow 库（pip install Pillow）才能读取图像)",
+            )
 
         try:
-            with Image.open(file_path) as img:
-                # 解码前检查像素面积（Pillow decompression bomb 防护的
-                # 前置拦截——避免超大图像已解码再被拒，浪费内存/时间）
-                img_w, img_h = img.size
-                if img_w * img_h > _MAX_IMAGE_PIXELS:
-                    return (f"(读取失败: 图像过大 ({img_w}x{img_h}={img_w * img_h} 像素，"
-                            f"超过 {_MAX_IMAGE_PIXELS} 像素上限)")
-                img.load()  # 触发解码
-                # ── 3. magic-byte / 声明类型一致校验 ───────
+            with open(file_path, "rb") as f:
+                input_bytes = f.read()
+        except OSError as e:
+            return _error(_ERR_READ_FAILED, f'cannot read "{file_path}": {e}')
+        if len(input_bytes) > _MAX_FILE_SIZE_BYTES:
+            return _error(
+                _ERR_TOO_LARGE,
+                f'cannot read "{file_path}": the image cannot be stored within '
+                "the deployment's byte limits; downscale the image and read the "
+                "smaller copy",
+            )
+
+        try:
+            opened = Image.open(io.BytesIO(input_bytes))
+        except Exception:
+            return _error(
+                _ERR_INVALID_IMAGE,
+                f'cannot read "{file_path}": the bytes do not decode as a '
+                "supported image; the file may be truncated or corrupt",
+            )
+
+        try:
+            with opened as img:
+                width, height = img.size
+                if max(width, height) > _MAX_IMAGE_DIMENSION:
+                    return _error(
+                        _ERR_DIMENSION_TOO_LARGE,
+                        f'cannot read "{file_path}": at least one image side '
+                        f"exceeds the {_MAX_IMAGE_DIMENSION}px limit; downscale "
+                        "the image and read the smaller copy",
+                    )
+                if width * height > _MAX_IMAGE_PIXELS:
+                    return _error(
+                        _ERR_TOO_MANY_PIXELS,
+                        f'cannot read "{file_path}": the image exceeds the '
+                        f"{_MAX_IMAGE_PIXELS}-pixel decoded-size limit; downscale "
+                        "the image and read the smaller copy",
+                    )
+                img.load()  # 触发解码（校验字节确实可解码）
                 actual_format = getattr(img, "format", None)
-                if actual_format is None or actual_format != declared_format:
-                    declared_mime = image_format_media().get(
-                        declared_format, f"image/{declared_format.lower()}")
-                    return _format_mismatch_error(file_path, ext, declared_mime)
+
+                # ── 3. magic-byte / 声明类型一致校验 ───────
+                if declared_format is not None:
+                    if actual_format is None or actual_format != declared_format:
+                        declared_mime = image_format_media().get(
+                            declared_format, f"image/{declared_format.lower()}")
+                        return _format_mismatch_error(
+                            file_path, ext, declared_mime)
+                elif actual_format is None or actual_format not in _image_format_names():
+                    return _error(
+                        _ERR_UNSUPPORTED_FORMAT,
+                        f'cannot read "{file_path}": the file content is not a '
+                        f"supported image format; read_image accepts "
+                        f"{_SUPPORTED_FORMATS}",
+                    )
+
+                frame_count = int(getattr(img, "n_frames", 1) or 1)
+                orientation = _exif_orientation(img)
+                original_mode = img.mode
+                info = dict(img.info)
                 img = img.copy()  # 复制后源文件可关闭，后续操作安全
         except Exception as e:
-            return f"(读取失败: {e})"
+            return _error(
+                _ERR_INVALID_IMAGE,
+                f'cannot read "{file_path}": {e}',
+            )
+
+        input_format = actual_format
 
         # ── 应用 EXIF 方向（在取尺寸/裁剪前——带 orientation 的 JPEG 先摆正，
-        #   使 start_x/start_y/end_x/end_y 与用户目视方向一致；修复前
-        #   exif_transpose 在 crop 之后才执行，按原始未摆正坐标裁剪后整体
-        #   旋转 → 返回区域与用户期望的视觉区域不符） ──
+        #   使 start_x/start_y/end_x/end_y 与用户目视方向一致） ──
         try:
             from PIL import ImageOps
             img = ImageOps.exif_transpose(img)
         except Exception:
-            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)  # 摆正失败（异常图）→ 原样继续（防御，幂等：_normalize_srgb 再次 exif_transpose 为 no-op）
+            _logger.debug("忽略异常（best-effort 路径）", exc_info=True)
 
         width, height = img.size
 
@@ -542,37 +821,142 @@ class ReadImageFunc(Func):
         try:
             img = self._apply_operation(img)
         except Exception as e:
-            return f"(操作失败: {e})"
+            return _error(
+                _ERR_OPERATION_FAILED,
+                f'cannot read "{file_path}": image operation failed: {e}',
+            )
 
-        # ── 4. 规范化到 8-bit sRGB 单帧（对齐 DSH） ──────
-        # apply_exif=False：EXIF 方向已在裁剪前摆正一次，避免同一对象重复摆正。
+        # ── 4. DSH 直通 / 规范化 ─────────────────────────
+        passthrough = _can_passthrough(
+            input_bytes=input_bytes,
+            actual_format=input_format,
+            frame_count=frame_count,
+            img=img,
+            info=info,
+            orientation=orientation,
+            region_changed=region_changed,
+            operation=self.operation,
+        )
+
+        original_dimensions = None
+        if passthrough:
+            output_bytes = input_bytes
+            media_type = _format_mime(input_format)
+            out_w, out_h = img.size
+        else:
+            # 规范化到 8-bit sRGB 单帧（对齐 DSH）；EXIF 已在裁剪前摆正一次。
+            try:
+                img = _normalize_srgb(img, apply_exif=False)
+            except ValueError:
+                is_16bit_png = (
+                    input_format == "PNG"
+                    and original_mode in ("I;16", "I;16B", "I;16L", "I", "F")
+                )
+                return _normalization_error(
+                    file_path, is_16bit_png=is_16bit_png)
+            except Exception as e:
+                return _error(
+                    _ERR_NORMALIZE_FAILED,
+                    f'cannot read "{file_path}": normalization failed: {e}',
+                )
+
+            # ── 5. 自动降采样（DSH 规范化预算） ──────────
+            img, original_dimensions = _downscale_to_budget(img)
+            out_w, out_h = img.size
+
+            # ── 6. 编码策略（alpha→WebP / 不透明→JPEG，质量阶梯） ──
+            try:
+                output_bytes, media_type = _encode_with_ladder(img)
+            except Exception as e:
+                return _error(
+                    _ERR_ENCODE_FAILED,
+                    f'cannot read "{file_path}": image encoding failed: {e}',
+                )
+
+        # ── 7. 持久化附件（内容寻址去重） ────────────────
         try:
-            img = _normalize_srgb(img, apply_exif=False)
-        except ValueError:
-            return _normalization_error(file_path)
-        except Exception as e:
-            return f"(规范化失败: {e})"
+            ref = save_image(
+                output_bytes,
+                media_type,
+                width=out_w,
+                height=out_h,
+                name=os.path.basename(file_path),
+                original_dimensions=(
+                    {"width": original_dimensions[0],
+                     "height": original_dimensions[1]}
+                    if original_dimensions else None
+                ),
+            )
+        except AttachmentError as exc:
+            return _error(
+                exc.code or _ERR_ATTACHMENT_FAILED,
+                f'cannot read "{file_path}": {exc.message}',
+            )
+        except Exception as exc:
+            return _error(
+                _ERR_ATTACHMENT_FAILED,
+                f'cannot read "{file_path}": could not store image attachment: {exc}',
+            )
 
-        # ── 不缩放：图片按原始尺寸返回给大模型（仅显式 operation=scale 缩放） ──
-
-        # ── 元信息（精简：不再携带面向模型的技术尾注——「模式: 多模态(base64
-        #   PNG)」「预计占用: … tokens」「如需细节…」此前会在轨迹 Trace 检查器
-        #   「▸ 返回值」中显示为多余叶子行；图片本身经 image_url block 返回，
-        #   模型天然可见，无需文本复述） ──
-        # 输出恒为 PNG（deepseek-flash 支持格式之一）：不依赖 img.format。
-        fmt_name = "PNG"
-        out_w, out_h = img.size
-        meta = [
-            f"图片: {file_path}",
-            f"尺寸: {out_w}x{out_h} (宽x高)",
-            f"原始尺寸: {width}x{height} (宽x高)",
+        # ── 8. 单行 envelope + 附件图片 block ────────────
+        text = self._format_envelope(
+            file_path=file_path,
+            media_type=media_type,
+            width=out_w,
+            height=out_h,
+            byte_count=len(output_bytes),
+            original_dimensions=original_dimensions,
+            region=(start_x, start_y, end_x, end_y) if region_changed else None,
+            operation=self.operation,
+        )
+        self.result_blocks = [
+            {"type": "text", "text": text},
+            attachment_image_block(ref),
         ]
-        if region_changed:
-            meta.append(f"区域: ({start_x},{start_y})-({end_x},{end_y})")
-        meta.append(f"操作: {self.operation}")
-        meta.append(f"格式: {fmt_name}")
+        return text
 
-        return self._build_multimodal_output(img, meta)
+    @staticmethod
+    def _format_envelope(
+        *,
+        file_path: str,
+        media_type: str,
+        width: int,
+        height: int,
+        byte_count: int,
+        original_dimensions,
+        region,
+        operation: str,
+    ) -> str:
+        """DSH 风格单行 envelope（保留区域/操作扩展说明）。"""
+        text = (
+            f"{file_path} image {media_type} image, "
+            f"{width}x{height} px, {byte_count} bytes"
+        )
+        if original_dimensions:
+            ow, oh = original_dimensions
+            ratio_x = ow / float(width) if width else 1.0
+            ratio_y = oh / float(height) if height else 1.0
+            x_text = f"{ratio_x:.2f}"
+            y_text = f"{ratio_y:.2f}"
+            if x_text == y_text:
+                advice = f"multiply coordinates by {x_text}"
+            else:
+                advice = (
+                    f"multiply x coordinates by {x_text} and y coordinates by {y_text}"
+                )
+            text += (
+                f" (downscaled from {ow}x{oh} px; {advice} to locate features "
+                "in the original file)"
+            )
+        extras = []
+        if region is not None:
+            sx, sy, ex, ey = region
+            extras.append(f"region {sx},{sy}-{ex},{ey}")
+        if operation and operation != "none":
+            extras.append(f"operation {operation}")
+        if extras:
+            text += " (" + "; ".join(extras) + ")"
+        return text
 
     # ── 图像操作 ─────────────────────────────────────────
 
@@ -611,22 +995,3 @@ class ReadImageFunc(Func):
         elif sh <= 0:
             sh = max(1, round(h * sw / w)) if w else h
         return img.resize((sw, sh))
-
-    # ── 输出构造（固定多模态） ───────────────────────────
-
-    def _build_multimodal_output(self, img, meta: list[str]) -> str:
-        """多模态输出：文本元信息 + image_url data URI content blocks。"""
-        buf = io.BytesIO()
-        try:
-            img.save(buf, format="PNG")
-        except Exception as e:
-            return f"(编码失败: {e})"
-        data = buf.getvalue()
-        text = "\n".join(meta)
-        # ★ 2026-08-22（轨迹 Trace 尾注噪音）：不再把「图片已编码为 base64
-        #   PNG（data URI）随 content blocks 返回。」拼进返回文本——该句是给
-        #   模型的技术提示，在 Trace 检查器「▸ 返回值」中显示为多余叶子行；
-        #   data URI 图片本身随 image_url block 返回，模型天然可见，无需文本
-        #   复述（跟踪显示更干净）。
-        self.result_blocks = build_image_content_blocks(text, data, "image/png")
-        return text
