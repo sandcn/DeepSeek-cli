@@ -255,7 +255,7 @@ class TestExtractKeyParamsNonDict:
     def test_list_input_no_raise(self):
         from src.core.param_formatter import extract_key_params
 
-        out = extract_key_params("read_file", [1, 2, 3])
+        out = extract_key_params("read", [1, 2, 3])
         assert isinstance(out, str)
         assert "1" in out
 
@@ -267,9 +267,9 @@ class TestExtractKeyParamsNonDict:
     def test_none_and_empty_unchanged(self):
         from src.core.param_formatter import extract_key_params
 
-        assert extract_key_params("read_file", None) == ""
-        assert extract_key_params("read_file", "") == ""
-        assert extract_key_params("read_file", {}) == ""
+        assert extract_key_params("read", None) == ""
+        assert extract_key_params("read", "") == ""
+        assert extract_key_params("read", {}) == ""
 
 
 # ── 7. 模块导入冒烟（死导入清理后公开面不变） ───────────

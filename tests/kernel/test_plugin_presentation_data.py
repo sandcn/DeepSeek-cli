@@ -211,7 +211,7 @@ async def test_new_tables_default_profile():
 
     kernel = await build_kernel("cli")
     try:
-        assert get_tool_display_name("read_file") == "ReadFile"
+        assert get_tool_display_name("read") == "Read"
         assert TOOL_DISPLAY_NAME["bash_opt"] == "BashOpt"
         assert get_admonition_config("warning")["color"] == "yellow"
         assert "NOTE" in ADMONITION_STYLES
@@ -230,7 +230,7 @@ async def test_overlay_disable_tool_display_name():
         ["presentation_data::presentation_data_tool_display_name"]
     )
     try:
-        assert get_tool_display_name("read_file") == "read_file"
+        assert get_tool_display_name("read") == "read"
     finally:
         await kernel.dispose()
 

@@ -30,10 +30,10 @@ def test_message_to_text_assistant_tool_calls():
     msg = {
         "role": "assistant",
         "content": "done",
-        "tool_calls": [{"function": {"name": "read_file", "arguments": '{"path": "x"}'}}],
+        "tool_calls": [{"function": {"name": "read", "arguments": '{"path": "x"}'}}],
     }
     text = message_to_text(msg)
-    assert "调用工具 read_file" in text
+    assert "调用工具 read" in text
     assert "done" in text
     assert '{"path": "x"}' in text
 
@@ -44,7 +44,7 @@ def test_message_to_text_tool_args_not_truncated():
     msg = {
         "role": "assistant",
         "content": "",
-        "tool_calls": [{"function": {"name": "write_file", "arguments": big_args}}],
+        "tool_calls": [{"function": {"name": "write", "arguments": big_args}}],
     }
     text = message_to_text(msg)
     assert big_args in text          # 完整参数（500 字符未被截断到 100）
@@ -56,7 +56,7 @@ def test_message_to_text_tool_args_dict_serialized():
     msg = {
         "role": "assistant",
         "content": "",
-        "tool_calls": [{"function": {"name": "read_file",
+        "tool_calls": [{"function": {"name": "read",
                                      "arguments": {"path": "a.txt", "n": 1}}}],
     }
     text = message_to_text(msg)
@@ -92,10 +92,10 @@ def test_message_to_text_assistant_content_list():
     msg = {
         "role": "assistant",
         "content": [{"type": "text", "text": "done"}],
-        "tool_calls": [{"function": {"name": "read_file", "arguments": '{"path": "x"}'}}],
+        "tool_calls": [{"function": {"name": "read", "arguments": '{"path": "x"}'}}],
     }
     text = message_to_text(msg)
-    assert "调用工具 read_file" in text
+    assert "调用工具 read" in text
     assert "done" in text
 
 

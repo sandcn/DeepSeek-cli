@@ -7,7 +7,7 @@
   SubprocessPort / TerminalsPort / JobsPort / SandboxPort）；
 - **Service Provider**：默认本地实现（``src.core.adapters.capabilities``），
   可用 ``set_provider`` 整体替换（如指向远程沙箱）；
-- **Consumer**：面向模型的工具（read_file / write_file / bash ...）经
+- **Consumer**：面向模型的工具（read / write / bash ...）经
   ``ctx.fs`` / ``ctx.shell`` 等使用能力。
 
 替换一个 Provider 即可改变整个执行世界；每次操作同时广播能力事件

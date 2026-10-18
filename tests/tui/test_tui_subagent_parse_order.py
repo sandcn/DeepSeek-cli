@@ -1,7 +1,7 @@
 """test_tui_subagent_parse_order — subagent 界面打开时接收参数进度行显示在 subagent 界面上方。
 
 需求（2026-08-20）：有 subagent 界面（SubAgentCard）打开时，工具参数接收
-进度行（``_ParseLine`` / ``model.parse_line``，如 ``~ write_file 123t 8.44s``）
+进度行（``_ParseLine`` / ``model.parse_line``，如 ``~ write 123t 8.44s``）
 显示在 subagent 界面**上面**（修复前渲染在 subagent 卡片下方）。
 
 实现：``_ParseLine`` 组件自 ``app.py`` 迁入 ``chat_view.py``——subagent 卡片
@@ -19,7 +19,7 @@ from src.tui.ink.output import Line
 from src.tui.ink.reconciler import Reconciler
 from src.tui.ink import components as _components
 
-_PARSE_TEXT = "  ~ write_file 123t 8.44s"
+_PARSE_TEXT = "  ~ write 123t 8.44s"
 
 
 def _make_model(parse_text=_PARSE_TEXT, subagent=False):
@@ -82,7 +82,7 @@ class TestRenderOrder:
         """★ 核心需求：有 subagent 界面且接收参数时，进度行显示在 subagent 界面上面。"""
         model = _make_model(subagent=True)
         texts = _render_texts(model)
-        parse_idx = next(i for i, t in enumerate(texts) if "write_file" in t)
+        parse_idx = next(i for i, t in enumerate(texts) if "write" in t)
         sub_idx = next(i for i, t in enumerate(texts) if "agent-1" in t)
         assert parse_idx < sub_idx, (
             f"接收参数进度行（index={parse_idx}）应显示在 subagent 界面（index={sub_idx}）上方"
@@ -92,13 +92,13 @@ class TestRenderOrder:
         """无 subagent：进度行仍渲染（由 App 承担，位置不变）。"""
         model = _make_model(subagent=False)
         texts = _render_texts(model)
-        assert any("write_file" in t for t in texts), "无 subagent 时进度行仍应渲染"
+        assert any("write" in t for t in texts), "无 subagent 时进度行仍应渲染"
 
     def test_subagent_without_parse_line_no_parse_row(self):
         """subagent 打开但无进度行：帧中不出现进度行，subagent 卡片正常显示。"""
         model = _make_model(parse_text=None, subagent=True)
         texts = _render_texts(model)
-        assert not any("write_file" in t for t in texts), "无 parse_line 时不显示进度行"
+        assert not any("write" in t for t in texts), "无 parse_line 时不显示进度行"
         assert any("agent-1" in t for t in texts), "subagent 卡片应正常渲染"
 
 

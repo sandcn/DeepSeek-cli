@@ -15,7 +15,7 @@ def test_call_chain_and_impact_known_before_change():
     assert_contains(
         read_prompt(),
         "先读相关代码与文档",
-        "`search`/`find`",
+        "`grep`/`glob`",
         "调用方、被调用方和影响范围",
         "禁止凭猜测修改",
     )

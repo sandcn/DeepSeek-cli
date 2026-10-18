@@ -85,12 +85,12 @@ def sm(tmp_path):
 
     mgr = SandboxManager()
     # 消息 0：合法索引（修复前无法二次确认回滚）
-    mgr.record_file_change(str(tmp_path / "a.py"), None, "1\n", 0, tool_name="write_file")
-    mgr.record_file_change(str(tmp_path / "a.py"), "1\n", "2\n", 0, tool_name="write_file")
-    mgr.record_file_change(str(tmp_path / "a.py"), "2\n", "3\n", 0, tool_name="write_file")
-    mgr.record_file_change(str(tmp_path / "b.py"), None, "b\n", 1, tool_name="write_file")
-    mgr.record_file_change(str(tmp_path / "c.py"), None, "c\n", 1, tool_name="write_file")
-    mgr.record_file_change(str(tmp_path / "c.py"), "c\n", "cc\n", 1, tool_name="write_file")
+    mgr.record_file_change(str(tmp_path / "a.py"), None, "1\n", 0, tool_name="write")
+    mgr.record_file_change(str(tmp_path / "a.py"), "1\n", "2\n", 0, tool_name="write")
+    mgr.record_file_change(str(tmp_path / "a.py"), "2\n", "3\n", 0, tool_name="write")
+    mgr.record_file_change(str(tmp_path / "b.py"), None, "b\n", 1, tool_name="write")
+    mgr.record_file_change(str(tmp_path / "c.py"), None, "c\n", 1, tool_name="write")
+    mgr.record_file_change(str(tmp_path / "c.py"), "c\n", "cc\n", 1, tool_name="write")
     return mgr
 
 
@@ -239,7 +239,7 @@ def test_resync_search_disables_filter_when_no_match():
 def _file_entry(path: str) -> dict:
     return {
         "path": path, "change_label": "修改", "records": 1,
-        "message_index": "1-1", "tools": ["write_file"],
+        "message_index": "1-1", "tools": ["write"],
         "before": "a\n", "after": "b\n", "history": [],
     }
 
@@ -486,9 +486,9 @@ def test_message_signature_detects_content_change():
     from src.tui.app.sandbox_common import message_signature
 
     base = {
-        "index": 1, "count": 1, "files": 1, "time": 1.0, "tools": ["write_file"],
+        "index": 1, "count": 1, "files": 1, "time": 1.0, "tools": ["write"],
         "changes": [{
-            "path": "a.py", "tool": "write_file", "change_label": "修改",
+            "path": "a.py", "tool": "write", "change_label": "修改",
             "before": "old\n", "after": "new\n", "message_index": 1,
         }],
     }
@@ -504,7 +504,7 @@ def test_message_signature_detects_content_change():
 def test_record_signature_detects_metadata_change():
     from src.tui.app.sandbox_common import record_signature
 
-    row = {"path": "a.py", "tool": "write_file", "change_label": "修改",
+    row = {"path": "a.py", "tool": "write", "change_label": "修改",
            "before": "x\n", "after": "y\n", "message_index": 1, "seq": 1}
     sig = record_signature(row)
     assert record_signature({**row, "tool": "bash"}) != sig
@@ -530,11 +530,11 @@ def test_file_entry_signature_detects_tools_and_history():
 
     entry = {
         "path": "a.py", "change_label": "修改", "records": 2,
-        "before": "x\n", "after": "z\n", "tools": ["write_file"],
+        "before": "x\n", "after": "z\n", "tools": ["write"],
         "history": [{"path": "a.py", "seq": 1, "before": "x\n", "after": "y\n"}],
     }
     sig = file_entry_signature(entry)
-    assert file_entry_signature({**entry, "tools": ["write_file", "bash"]}) != sig
+    assert file_entry_signature({**entry, "tools": ["write", "bash"]}) != sig
     assert _detail_deps(entry, 40) != _detail_deps({**entry, "tools": ["bash"]}, 40)
     changed_hist = {**entry, "history": [{"path": "a.py", "seq": 1, "before": "x\n", "after": "q\n"}]}
     assert _history_deps(entry, 40) != _history_deps(changed_hist, 40)

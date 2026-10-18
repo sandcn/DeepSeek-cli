@@ -50,7 +50,7 @@ def _args_map():
     return {
         0: {
             "id": "call_1",
-            "name": "write_file",
+            "name": "write",
             "arguments": "",
             "_args_parts": ['{"file_path": "a.txt", "content": "hello"}'],
         },
@@ -182,8 +182,8 @@ class TestUpdateLoopRefresh:
         names = [c[0] for c in calls]
         tokens = [c[1] for c in calls]
         elapsed = [c[2] for c in calls]
-        # 工具名 = 显示名（工具注册名 PascalCase：write_file → WriteFile）
-        assert names == ["WriteFile"] * 3
+        # 工具名 = 显示名（工具注册名 PascalCase：write → Write）
+        assert names == ["Write"] * 3
         # token 数 > 0（信息随参数累积推送）
         assert all(t > 0 for t in tokens)
         # 耗时严格递增（0 → 1/30 → 2/30）：不是「冻结值」
@@ -242,7 +242,7 @@ class TestParseLineRefreshesEveryTick:
 
         # 每拍渲染到的进度行都不同（信息逐拍刷新，非 0.2s 一跳）
         assert len(set(frames)) == 3, frames
-        assert "WriteFile" in frames[0]
+        assert "Write" in frames[0]
         assert "0.00s" in frames[0]
         assert "0.03s" in frames[1]
         assert "0.07s" in frames[2]
@@ -251,10 +251,10 @@ class TestParseLineRefreshesEveryTick:
         """命令 → 模型链路：ParseInfoCmd 立即更新 model.parse_line 文本。"""
         model = AppModel()
         apply_cmd(model, ParseInfoCmd(
-            tool_names="WriteFile", tokens=384, elapsed=1.01,
+            tool_names="Write", tokens=384, elapsed=1.01,
         ))
         text = _line_text(model)
-        assert "WriteFile" in text
+        assert "Write" in text
         assert "384t" in text
         assert "1.01s" in text
 
@@ -263,7 +263,7 @@ class TestParseLineRefreshesEveryTick:
         from src.tui._const import _CLEAR_PARSE_LINE
 
         model = AppModel()
-        apply_cmd(model, ParseInfoCmd(tool_names="WriteFile", tokens=384, elapsed=1.01))
+        apply_cmd(model, ParseInfoCmd(tool_names="Write", tokens=384, elapsed=1.01))
         assert model.parse_line is not None
         apply_cmd(model, ParseInfoCmd(tool_names="", tokens=_CLEAR_PARSE_LINE,
                                      elapsed=0.0))

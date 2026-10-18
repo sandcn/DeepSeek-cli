@@ -11,7 +11,7 @@
     → ``NotificationCmd``
     → ``apply._do_notification``（``▎通知`` 角色头 + ``  │ + ...`` 行）
 
-本文件验证：事件定义、发布入口、dispatcher 路由过滤、read_file 三处警告
+本文件验证：事件定义、发布入口、dispatcher 路由过滤、read 三处警告
 迁移、渲染端块结构。
 """
 
@@ -136,9 +136,9 @@ def test_publish_tool_notice_exception_swallowed(capture_emit, monkeypatch):
 
 def test_publish_tool_notice_available_on_all_tool_funcs():
     """通用性：任意工具子类（Func 后代）均可用 _publish_tool_notice。"""
-    from src.tools import ReadFile, BashOpt
+    from src.tools import Read, BashOpt
 
-    for cls in (ReadFile, BashOpt):
+    for cls in (Read, BashOpt):
         assert callable(getattr(cls, "_publish_tool_notice", None))
         # 继承自 Func 基类（同一实现，无子类覆盖）
         assert cls._publish_tool_notice is Func._publish_tool_notice
@@ -221,15 +221,15 @@ def test_dispatcher_registered_in_handler_table():
     assert handlers[ToolNoticeEvent] == disp._on_tool_notice
 
 
-# ── 4. read_file 警告迁移 ────────────────────────────────
+# ── 4. read 警告迁移 ────────────────────────────────
 
-def test_read_file_swap_warning_publishes_notice(capture_emit, monkeypatch):
+def test_read_swap_warning_publishes_notice(capture_emit, monkeypatch):
     """start_line > end_line：警告走 ToolNoticeEvent（▎通知），不再进工具卡。"""
-    from src.tools import ReadFile
+    from src.tools import Read
 
     monkeypatch.setattr(Func, "_publish_tool_text", lambda *a, **k: pytest.fail("不应走工具卡输出"))
-    inst = ReadFile.from_args({
-        "path": "src/tools/read_file.py",
+    inst = Read.from_args({
+        "path": "src/tools/read.py",
         "start_line": 400, "end_line": 380,
     })
     assert inst.start_line == 380 and inst.end_line == 400
@@ -241,31 +241,31 @@ def test_read_file_swap_warning_publishes_notice(capture_emit, monkeypatch):
     assert ev.text.startswith("+ ")
 
 
-def test_read_file_validate_warning_uses_notice(capture_emit):
+def test_read_validate_warning_uses_notice(capture_emit):
     """行号 <1 自动调整为 1 的警告同样走通知块。"""
-    from src.tools import ReadFile
+    from src.tools import Read
 
-    inst = ReadFile.from_args({"path": "x.py", "start_line": 0, "end_line": 5})
+    inst = Read.from_args({"path": "x.py", "start_line": 0, "end_line": 5})
     assert inst.start_line == 1
     assert len(capture_emit.events) == 1
     assert "start_line 必须 >= 1" in capture_emit.events[0].text
 
 
-def test_read_file_validate_non_int_ignored_uses_notice(capture_emit):
+def test_read_validate_non_int_ignored_uses_notice(capture_emit):
     """非整数行号忽略参数的警告同样走通知块。"""
-    from src.tools import ReadFile
+    from src.tools import Read
 
-    inst = ReadFile.from_args({"path": "x.py", "start_line": "abc"})
+    inst = Read.from_args({"path": "x.py", "start_line": "abc"})
     assert inst.start_line is None
     assert len(capture_emit.events) == 1
     assert "应为整数" in capture_emit.events[0].text
 
 
-def test_read_file_normal_args_no_notice(capture_emit):
+def test_read_normal_args_no_notice(capture_emit):
     """正常参数（含合法行号范围）不产生任何通知。"""
-    from src.tools import ReadFile
+    from src.tools import Read
 
-    inst = ReadFile.from_args({"path": "x.py", "start_line": 10, "end_line": 20})
+    inst = Read.from_args({"path": "x.py", "start_line": 10, "end_line": 20})
     assert inst.start_line == 10 and inst.end_line == 20
     assert capture_emit.events == []
 

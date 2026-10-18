@@ -87,7 +87,7 @@ async def test_overlay_disable_single_tool():
         names = set(kernel.resolve_service("tools").names())
         assert "ls" not in names
         assert "rm" not in names
-        assert "read_file" in names
+        assert "read" in names
     finally:
         await kernel.dispose()
 
@@ -114,19 +114,19 @@ def test_globally_disabled_default_contains_cordis():
     from src.tools.tool_policy import is_globally_disabled
 
     assert is_globally_disabled("cordis_inspect") is True
-    assert is_globally_disabled("read_file") is False
+    assert is_globally_disabled("read") is False
 
 
 async def test_globally_disabled_override_with_patch(tmp_path):
     from src.tools.tool_policy import is_globally_disabled
 
     patch = {"replace": [{"id": "core::policy",
-                          "config": {"globally_disabled_tools": ["read_file"]}}]}
+                          "config": {"globally_disabled_tools": ["read"]}}]}
     path = tmp_path / "patch.json"
     path.write_text(json.dumps(patch), encoding="utf-8")
     kernel = await build_kernel("cli", patch_paths=[str(path)])
     try:
-        assert is_globally_disabled("read_file") is True
+        assert is_globally_disabled("read") is True
         assert is_globally_disabled("cordis_inspect") is False
     finally:
         await shutdown_kernel(kernel)

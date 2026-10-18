@@ -2,7 +2,7 @@
 
 覆盖此前覆盖率偏低的纯逻辑/核心路径：
 
-- ``src/tools/edit_file.py``（高频写入路径）——精确替换、正则替换、
+- ``src/tools/edit.py``（高频写入路径）——精确替换、正则替换、
   追加模式、歧义检测、正则标志解析、内容大小校验；
 - ``src/kernel/_yaml.py``（无 PyYAML 时的清单兜底解析器）——嵌套映射、
   列表、行内列表/映射、注释、标量类型与错误分支。
@@ -13,11 +13,11 @@ from __future__ import annotations
 import pytest
 
 from src.kernel import _yaml as ky
-from src.tools.edit_file import (
+from src.tools.edit import (
     AmbiguousMatchError,
     RegexCompileError,
     StringNotFoundError,
-    EditFileFunc,
+    EditFunc,
     _parse_regex_flags,
 )
 
@@ -49,13 +49,13 @@ def test_parse_regex_flags_unknown_raises():
         _parse_regex_flags("z")
 
 
-# ── edit_file 语义 ──────────────────────────────────────
+# ── edit 语义 ──────────────────────────────────────
 
 
-def _func(tmp_path, content: str, old: str, new: str, **kwargs) -> EditFileFunc:
+def _func(tmp_path, content: str, old: str, new: str, **kwargs) -> EditFunc:
     path = tmp_path / "target.txt"
     path.write_text(content, encoding="utf-8")
-    return EditFileFunc(str(path), old, new, **kwargs)
+    return EditFunc(str(path), old, new, **kwargs)
 
 
 async def test_exact_unique_replacement(tmp_path):
@@ -99,7 +99,7 @@ async def test_append_mode_adds_newline_when_missing(tmp_path):
 
 async def test_append_mode_to_missing_file_creates_content(tmp_path):
     path = tmp_path / "new.txt"
-    func = EditFileFunc(str(path), "", "fresh")
+    func = EditFunc(str(path), "", "fresh")
     assert await func._get_new_content() == "fresh"
 
 
@@ -157,22 +157,22 @@ async def test_regex_flags_invalid_character_surfaces_as_compile_error(tmp_path)
 
 def test_display_params_annotations(tmp_path):
     args = {"path": "a/b.py", "use_regex": True, "replace_all": True}
-    text = EditFileFunc.display_params(args)
+    text = EditFunc.display_params(args)
     assert "a/b.py" in text
     assert "[正则]" in text
     assert "[全局替换]" in text
 
 
 def test_mode_desc_variants(tmp_path):
-    plain = EditFileFunc("p", "a", "b")
+    plain = EditFunc("p", "a", "b")
     assert plain._mode_desc() == "字符串替换"
-    assert EditFileFunc("p", "a", "b", replace_all=True)._mode_desc() == "字符串全局替换"
-    assert EditFileFunc("p", "a", "b", use_regex=True)._mode_desc() == "正则替换"
-    assert EditFileFunc("p", "", "b")._mode_desc() == "追加内容"
+    assert EditFunc("p", "a", "b", replace_all=True)._mode_desc() == "字符串全局替换"
+    assert EditFunc("p", "a", "b", use_regex=True)._mode_desc() == "正则替换"
+    assert EditFunc("p", "", "b")._mode_desc() == "追加内容"
 
 
 def test_success_verb():
-    assert EditFileFunc("p", "a", "b")._success_verb() == "更新成功"
+    assert EditFunc("p", "a", "b")._success_verb() == "更新成功"
 
 
 # ── YAML 子集解析器 ───────────────────────────────────────

@@ -41,22 +41,22 @@ def _parse_regex_flags(flags: str) -> int:
     return result
 
 
-class EditFileFunc(FileToolBase):
-    name = "edit_file"
+class EditFunc(FileToolBase):
+    name = "edit"
 
     @classmethod
     def to_tool_schema(cls) -> dict:
         return {
             "type": "function",
             "function": {
-                "name": "edit_file",
+                "name": "edit",
                 "description": (
                     "精确替换文件中的文本片段（old_string→new_string）。"
-                    "修改前必须先 read_file 获取最新内容，old_string 从中精确复制（含缩进/换行），禁止凭记忆构造。"
+                    "修改前必须先 read 获取最新内容，old_string 从中精确复制（含缩进/换行），禁止凭记忆构造。"
                     "默认精确字符串匹配，old_string 必须唯一；多次出现需加上下文或用 replace_all=true。"
                     "use_regex=true 时按正则匹配，new_string 支持 \\1 反向引用。"
                     "old_string 为空 = 追加到文件末尾；new_string 为空 = 删除 old_string。"
-                    "删除代码/函数/类前必须先 search 确认无悬空引用。"
+                    "删除代码/函数/类前必须先 grep 确认无悬空引用。"
                     "返回：更新结果（成功含行数/字节数）；失败以 ( 开头。匹配失败须重读文件后重试。"
                 ),
                 "parameters": {
@@ -64,11 +64,11 @@ class EditFileFunc(FileToolBase):
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "要修改的文件路径（相对或绝对路径）。文件不存在且 old_string 非空时报错「文件不存在或为空」，请改用 write_file 创建或设 old_string 为空实现追加。"
+                            "description": "要修改的文件路径（相对或绝对路径）。文件不存在且 old_string 非空时报错「文件不存在或为空」，请改用 write 创建或设 old_string 为空实现追加。"
                         },
                         "old_string": {
                             "type": "string",
-                            "description": "要被替换的原始文本（use_regex=true 时作为正则模式）。必须从最新 read_file 输出中精确复制（含完整缩进和换行符），禁止凭记忆构造。空字符串表示追加模式（添加到文件末尾）。replace_all=false（默认）时 old_string 在文件中必须恰好出现1次；replace_all=true 时可出现多次，全部替换。"
+                            "description": "要被替换的原始文本（use_regex=true 时作为正则模式）。必须从最新 read 输出中精确复制（含完整缩进和换行符），禁止凭记忆构造。空字符串表示追加模式（添加到文件末尾）。replace_all=false（默认）时 old_string 在文件中必须恰好出现1次；replace_all=true 时可出现多次，全部替换。"
                         },
                         "new_string": {
                             "type": "string",
@@ -127,7 +127,7 @@ class EditFileFunc(FileToolBase):
 
         if not original:
             raise StringNotFoundError(
-                "文件不存在或为空，无法匹配old_string。如需创建新文件请用write_file，如需追加请将old_string设为空。"
+                "文件不存在或为空，无法匹配old_string。如需创建新文件请用write，如需追加请将old_string设为空。"
             )
 
         # ── 正则替换模式 ──────────────────────────────────
@@ -149,7 +149,7 @@ class EditFileFunc(FileToolBase):
                     preview += '...'
                 raise StringNotFoundError(
                     f"正则未匹配到任何内容: /{preview}/\n"
-                    f"请先用read_file读取文件确认内容，或调整正则模式。"
+                    f"请先用read读取文件确认内容，或调整正则模式。"
                 )
 
             second = next(matches, None)
@@ -180,7 +180,7 @@ class EditFileFunc(FileToolBase):
                 preview += '...'
             raise StringNotFoundError(
                 f"未找到匹配内容: \"{preview}\"\n"
-                f"请先用read_file读取文件，确认要替换的内容与文件中完全一致（包括缩进和空白）。"
+                f"请先用read读取文件，确认要替换的内容与文件中完全一致（包括缩进和空白）。"
             )
 
         # 检查是否存在第二个匹配（用于非 replace_all 歧义检测）

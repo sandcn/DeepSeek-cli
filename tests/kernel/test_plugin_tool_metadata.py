@@ -53,15 +53,15 @@ def test_tree_declares_tool_metadata_bundle():
 async def test_default_profile_metadata():
     from src.tools.base import get_tool_metadata
     from src.tools.bash import BashFunc
-    from src.tools.read_file import ReadFileFunc
+    from src.tools.read import ReadFunc
     from src.tools.user_select import UserSelectFunc
 
     kernel = await build_kernel("cli")
     try:
         service = kernel.resolve_service("tool_metadata")
         assert set(service.names()) <= set(service.active())
-        assert get_tool_metadata(ReadFileFunc).parallel_safe is True
-        assert get_tool_metadata(ReadFileFunc).tool_category == "read"
+        assert get_tool_metadata(ReadFunc).parallel_safe is True
+        assert get_tool_metadata(ReadFunc).tool_category == "read"
         assert get_tool_metadata(BashFunc).priority == 30
         assert get_tool_metadata(UserSelectFunc).parallel_safe is True
         assert get_tool_metadata(UserSelectFunc).timeout_estimate == 120
@@ -86,12 +86,12 @@ async def _build_with_disable(ids):
 
 async def test_overlay_disable_single_metadata():
     from src.tools.base import get_tool_metadata
-    from src.tools.read_file import ReadFileFunc
+    from src.tools.read import ReadFunc
     from src.tools.read_image import ReadImageFunc
 
-    kernel = await _build_with_disable(["tool_metadata::tool_metadata_read_file"])
+    kernel = await _build_with_disable(["tool_metadata::tool_metadata_read"])
     try:
-        assert get_tool_metadata(ReadFileFunc) is None
+        assert get_tool_metadata(ReadFunc) is None
         assert get_tool_metadata(ReadImageFunc).tool_category == "read"
     finally:
         await kernel.dispose()
@@ -101,17 +101,17 @@ async def test_entry_config_override_metadata():
     from src.plugins.config import apply as config_apply
     from src.plugins.tool_metadata_entries import apply_tool_metadata
     from src.tools.base import get_tool_metadata
-    from src.tools.read_file import ReadFileFunc
+    from src.tools.read import ReadFunc
 
     kernel = Kernel(name="t")
-    kernel.mount(config_apply, config={"managed_tool_metadata": ["read_file"]})
+    kernel.mount(config_apply, config={"managed_tool_metadata": ["read"]})
     kernel.mount(
         apply_tool_metadata,
-        config={"name": "read_file", "metadata": {"tool_category": "write", "priority": 1}},
+        config={"name": "read", "metadata": {"tool_category": "write", "priority": 1}},
     )
     await kernel.settle()
     try:
-        meta = get_tool_metadata(ReadFileFunc)
+        meta = get_tool_metadata(ReadFunc)
         assert meta.tool_category == "write"
         assert meta.priority == 1
         assert meta.parallel_safe is False

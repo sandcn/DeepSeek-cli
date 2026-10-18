@@ -1470,7 +1470,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         产生一条 prio0 内容命令，队列积压 ≥ 批处理上限后，prio2 的
         ``ParseInfoCmd``（解析进度行）再也不会进入任何批次：渲染帧持续推进
         （进度行 spinner 在转）而 token 数/耗时数字长时间不刷新（用户报障
-        「⠹ WriteFile 25t 0.11s 卡住，数据仍在传」）。本方法在本批未包含
+        「⠹ Write 25t 0.11s 卡住，数据仍在传」）。本方法在本批未包含
         「最新值覆盖」状态命令（``_COALESCE_CMDS``）且队列中仍有优先级更低
         （数值更大）的该类命令时，额外捞取**最新**一条（seq 最大）并入本批
         ——进度行最多延迟一个渲染节拍刷新。

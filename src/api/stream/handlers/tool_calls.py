@@ -85,7 +85,7 @@ class ToolCallsHandler:
                             entry_id = _entry.get("_stream_label",
                                                    _entry.get("id", "") or f"auto_{idx}")
                             # ★ 只发布参数**预览**（截断 200 字符）——修复前发布
-                            #   完整累积参数（write_file 大 content）→ 子代理工具
+                            #   完整累积参数（write 大 content）→ 子代理工具
                             #   记录 detail 存超大 JSON → 卡片渲染卡顿/CPU 满。
                             ctx.display.tool_parsing(
                                 ctx.label or "",
@@ -113,7 +113,7 @@ class ToolCallsHandler:
                 fargs = func.get("arguments")
                 if fargs:
                     # ★ list 累积参数片段——避免 `entry["arguments"] += fargs`
-                    #   对超大参数（write_file 大 content）O(n²) 复制
+                    #   对超大参数（write 大 content）O(n²) 复制
                     #   （1MB ≈ 175ms 接收卡顿）。
                     entry.setdefault("_args_parts", []).append(fargs)
                     # 惰性维护完整参数串：仅当消费方需要时 join（见

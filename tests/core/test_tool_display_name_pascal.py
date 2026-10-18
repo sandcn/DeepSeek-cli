@@ -1,8 +1,8 @@
 """工具显示名 = 工具注册名 PascalCase（2026-09-18 用户需求）回归测试。
 
 需求：工具卡标题行 / 子代理工具记录行 / 解析进度行显示工具**真实注册名**
-（``ReadFile engine/rendering/FrameGraph.cpp``），不再用 Claude Code 风格
-缩写（``Read`` / ``Write`` / ``Edit`` / ``Task`` / ``Grep`` / ``RM`` 等）。
+（``Read engine/rendering/FrameGraph.cpp``），不再用 Claude Code 风格缩写
+（``Task`` / ``RM`` 等）。
 
 链路：工具注册名 → ``TOOL_DISPLAY_NAME``（唯一真源）
   → ``registry.get_tool_display_name`` → 消费方
@@ -15,7 +15,7 @@
   2. 映射表覆盖全部注册工具；
   3. 历史兼容别名按 PascalCase 显示；
   4. 未知工具回退原名；
-  5. 端到端：工具卡标题行 / 子代理记录行显示 ReadFile（非 Read）。
+  5. 端到端：工具卡标题行 / 子代理记录行显示 Read（非旧缩写）。
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from src.tools._constants import TOOL_DISPLAY_NAME
 from src.tools.registry import get_tool_display_name, get_tools
 
 #: 旧 Claude Code 风格缩写（真实工具不得再使用这些显示名）
-_OLD_ABBREVS = {"Read", "Write", "Edit", "Task", "Grep", "RM", "MV", "CP", "LS"}
+_OLD_ABBREVS = {"Task", "RM", "MV", "CP", "LS"}
 
 
 def _pascal(name: str) -> str:
@@ -56,16 +56,16 @@ def test_mapping_covers_all_registered_tools():
 
 
 @pytest.mark.parametrize("tool_name,expected", [
-    ("read_file", "ReadFile"),
+    ("read", "Read"),
     ("read_image", "ReadImage"),
-    ("write_file", "WriteFile"),
-    ("edit_file", "EditFile"),
+    ("write", "Write"),
+    ("edit", "Edit"),
     ("bash", "Bash"),
     ("bash_opt", "BashOpt"),
     ("subagent", "Subagent"),
     ("subagent_opt", "SubagentOpt"),
-    ("find", "Find"),
-    ("search", "Search"),
+    ("glob", "Glob"),
+    ("grep", "Grep"),
     ("cp", "Cp"),
     ("mv", "Mv"),
     ("rm", "Rm"),
@@ -86,8 +86,6 @@ def test_known_display_names(tool_name, expected):
     ("str_replace_editor", "StrReplaceEditor"),
     ("file_editor", "FileEditor"),
     ("execute_command", "ExecuteCommand"),
-    ("grep", "Grep"),
-    ("glob", "Glob"),
 ])
 def test_alias_display_names_are_pascal(alias, expected):
     """历史兼容别名（非真实工具）同样按 PascalCase 显示。"""
@@ -108,42 +106,42 @@ def test_unknown_tool_falls_back_to_raw_name():
 
 # ── 端到端：工具卡标题行 / 子代理记录行 ──────────────────
 
-def test_tool_card_title_shows_read_file():
-    """工具卡标题行显示 ``● ReadFile <path>``（非 ``Read``）。"""
+def test_tool_card_title_shows_read():
+    """工具卡标题行显示 ``● Read <path>``（注册名 PascalCase）。"""
     from src.tui.app.model import AppModel
     from src.tui.app.toolcard import tool_card_lines
 
     model = AppModel()
     model.width = 80
-    model.open_tool_box("t1", "read_file", "engine/rendering/FrameGraph.cpp")
+    model.open_tool_box("t1", "read", "engine/rendering/FrameGraph.cpp")
     block = model.tool_boxes["t1"]
     title = "".join(r.text for r in tool_card_lines(block, 80)[0])
-    assert "ReadFile" in title
+    assert "Read" in title
     assert "engine/rendering/FrameGraph.cpp" in title
-    assert " Read " not in title
+    assert "ReadFile" not in title
 
 
-def test_subagent_tool_record_shows_read_file():
-    """子代理面板工具记录行显示 ``ReadFile``（非 ``Read``）。"""
+def test_subagent_tool_record_shows_read():
+    """子代理面板工具记录行显示 ``Read``。"""
     from src.tui._subagent_state import _ToolRecord
     from src.tui._subagent_render import format_tool_record
 
-    rec = _ToolRecord("read_file", "engine/rendering/FrameGraph.cpp", "tc-1")
+    rec = _ToolRecord("read", "engine/rendering/FrameGraph.cpp", "tc-1")
     rec.phase = "done"
     rec.end_time = rec.start_time + 0.3
     text = "".join(r.text for r in format_tool_record(rec, rec.end_time).runs)
-    assert "ReadFile" in text
+    assert "Read" in text
     assert "engine/rendering/FrameGraph.cpp" in text
 
 
 @pytest.mark.parametrize("tool_name,expected", [
-    ("search", "Search"),
+    ("grep", "Grep"),
     ("rm", "Rm"),
     ("subagent", "Subagent"),
-    ("write_file", "WriteFile"),
+    ("write", "Write"),
 ])
 def test_subagent_tool_record_uses_registered_name(tool_name, expected):
-    """search / rm / subagent / write_file 记录行显示注册名（非 Grep/RM/Task/Write）。"""
+    """grep / rm / subagent / write 记录行显示注册名 PascalCase。"""
     from src.tui._subagent_state import _ToolRecord
     from src.tui._subagent_render import format_tool_record
 

@@ -34,21 +34,21 @@ def _resolve_lexer_name(ext: str) -> str:
         return "text"
 
 
-class ReadFileFunc(Func):
-    name = "read_file"
+class ReadFunc(Func):
+    name = "read"
 
     @classmethod
     def to_tool_schema(cls):
         return {
             "type": "function",
             "function": {
-                "name": "read_file",
+                "name": "read",
                 "description": (
                     "读取文件内容，返回文件文本。支持整文件读取或按行号范围读取"
                     "（start_line/end_line，含两端，行号从 1 开始）。"
                     "show_line_numbers 开启时在返回内容中为每行附加行号（默认关闭）。"
                     "首次读取某文件必须读完整内容（不设行号限制）以全面理解；"
-                    "读取多个文件时并发调用多个 read_file。"
+                    "读取多个文件时并发调用多个 read。"
                     "返回：文件内容；错误以「(」开头（如「(文件不存在: xxx)」）；"
                     "编码自动检测（UTF-8/GBK/Latin-1），二进制/编码错误自动降级不崩溃；危险/系统关键路径被拒绝。"
                 ),
@@ -305,7 +305,7 @@ class ReadFileFunc(Func):
             }
             return self._file_result[_ERROR_KEY]
 
-        # 文件大小上限（与 write_file 一致）：超过 MAX_FILE_SIZE_MB 拒绝，
+        # 文件大小上限（与 write 一致）：超过 MAX_FILE_SIZE_MB 拒绝，
         # 避免超大文件被全量读入引发内存尖峰（LLM 上下文也无法容纳）。
         try:
             await asyncio.to_thread(check_file_size, file_path, max_file_size_mb())
@@ -376,7 +376,7 @@ class ReadFileFunc(Func):
     def _render_syntax_to_output(self, file_path: str, result: dict) -> None:
         """将语法高亮渲染为 ANSI 字符串，通过 EventBus 上屏（聊天卡隐藏）。
 
-        用户需求：read_file 聊天区工具卡只显示标题行（``✔ ReadFile path``），
+        用户需求：read 聊天区工具卡只显示标题行（``✔ Read path``），
         不显示读到的文件内容——内容上屏时携带 ``chat_hidden=True``，聊天卡
         渲染跳过该内容行；内容行仍保留在工具块数据中（轨迹 Trace / 详情视图
         照常可见）。读取失败/空文件等错误提示不经本方法（照常显示）。

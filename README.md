@@ -44,7 +44,7 @@ pip install ".[dev]"
 | `httpx` | HTTP 请求库 | ✅ |
 | `Pygments` | 代码语法高亮 | ✅ |
 | `beautifulsoup4` | HTML 抓取解析（`web_fetch`） | ✅ |
-| `chardet` | 字符编码检测（`read_file`） | ✅ |
+| `chardet` | 字符编码检测（`read`） | ✅ |
 | `aiofiles` | 异步文件操作 | ✅ |
 | `qrcode` | 终端二维码生成（微信 ClawBot 登录） | ✅ |
 | `Pillow` | 图像解码/归一化（`read_image`、图片上传） | ✅ |
@@ -443,11 +443,11 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 
 | 工具名 | 缩写 | 分类 | 并行安全 | 功能说明 |
 |--------|------|------|---------|---------|
-| `read_file` | rf | IO | ✅ | 读取文件内容，支持指定行号范围、自动编码检测，可显示行号（默认关闭） |
-| `write_file` | wf | IO | ✅ | 覆盖写入文件，自动创建父目录，原子写入 |
-| `edit_file` | ef | IO | ❌ | 精确替换文件中的文本（old_string → new_string），支持 use_regex 正则替换 |
-| `search` | sr | 搜索 | ✅ | 在项目源码中搜索正则表达式，自动排除非源码目录 |
-| `find` | fn | 搜索 | ✅ | 按通配符模式查找文件和目录，支持深度控制 |
+| `read` | rd | IO | ✅ | 读取文件内容，支持指定行号范围、自动编码检测，可显示行号（默认关闭） |
+| `write` | wr | IO | ✅ | 覆盖写入文件，自动创建父目录，原子写入 |
+| `edit` | ed | IO | ❌ | 精确替换文件中的文本（old_string → new_string），支持 use_regex 正则替换 |
+| `grep` | gp | 搜索 | ✅ | 在项目源码中搜索正则表达式，自动排除非源码目录 |
+| `glob` | gl | 搜索 | ✅ | 按通配符模式查找文件和目录，支持深度控制 |
 | `ls` | ls | IO | ✅ | 列出目录内容，支持详细格式和隐藏文件显示 |
 | `bash` | bs | 执行 | ❌ | 执行 shell 命令（安全沙盒保护，禁止替代专用工具） |
 | `bash_opt` | bo | 执行 | ❌ | 按 task_id 操作后台 bash 任务：read（读取当前已产生的全部输出并清空缓冲，立即返回；只读观察、不接管任务，任务结果仍会在轮次结束时正常回灌；缓冲有内存上限，单次返回超长时只给尾部最新内容并标注 `truncated`/`dropped_chars`）/ wait（等待完成取输出）/ kill（杀死整个进程树：进程组 + 全部递归后代；杀完后校验进程是否真正退出、未死自动补杀，最多 3 轮尝试，残留进程在结果中报告）/ stdin（发送文本输入）/ keys（发送光标键盘消息，自动路由：目标进程有 GUI 窗口时作为窗口级键盘消息注入该窗口，否则写入终端 PTY/stdin，跨平台 ANSI/VT100；支持 `ctrl+c` 等修饰键组合、`ctrl_c`/`ctrl-c` 紧凑写法、`esc`/`del`/`pageup`/`return` 等别名、单个字符与 f1-f20）/ screenshot（把该命令进程树的窗口，或整个屏幕，截图存为 PNG，需 path；可选 crop 只截取窗口内的像素区域，格式 `x,y,width,height`；可选 window 选择目标窗口、grid 叠加坐标参考线（省略=不叠加，0=自动步长）；`screen=true`/`'primary'`/序号 做整屏 / 多显示器截取（不需要进程句柄）；`element`+`margin` 只截某控件区域（可外扩/收缩）；命中已最小化/不可见的窗口时直接报错并提示先 restore，不产出占位小图）/ windows（列出该进程树的全部窗口及句柄/标题/几何/Z 序）/ window（控制窗口：activate/maximize/minimize/restore/close/move/resize/fit/always_on_top/not_on_top/get_geometry/save_geometry/restore_geometry）/ elements（列出窗口内控件：名称/类型/类名/矩形/可用状态，含窗口内坐标，可直接用于 click；Windows 优先走 UI Automation（Chrome/Electron/Qt/WPF/UWP 等自绘界面也能枚举），不可用时回退经典 Win32 子窗口；element 可作过滤子串，支持 `'#N'`/`'text:子串'`/`'id:子串'`（自动化 ID）/`'class:子串'`/`'type:edit'` 与中文标签）/ locate（在窗口截图里定位：给 `template=模板图片路径` 做模板匹配（支持 `min_scale`/`max_scale`/`scale_steps` 多尺度），或给 `query=文字` 做 OCR（Windows 系统自带 OCR / 其它平台 tesseract），返回与输入 op 同源的坐标可直接点击；`crop` 限定搜索区域，适合没有可枚举控件的界面）/ wait_window（等待窗口出现，按 window 选择器 + timeout 秒）/ clipboard（读写系统剪贴板：`clipboard_action=set/get/clear/append`）/ sequence（一次调用按序执行多个动作：`actions` 数组，步骤可为输入动作或 wait/screenshot/window，`on_error` 决定遇错停止或继续）/ move（绝对 x/y，或相对当前光标的 dx/dy 像素偏移）/ hover（移动到目标点停留 `dwell` 秒，触发 tooltip / 悬浮菜单）/ click（左中右键、双击，需 button/count；`hold` 长按、`interval` 多击间隔）/ drag（拖动，需 to_x/to_y，可选 from_x/from_y/duration/steps）/ scroll（滚轮，direction+amount）/ key（窗口级按键，如 `ctrl+s`，与 keys 共用键名规则；`phase` 可选 press/down/up 分别发送按下与弹起）/ type（向窗口逐字符输入文本，或用 `via='clipboard'` 走剪贴板粘贴、`paste_key` 指定粘贴键、`restore_clipboard=false` 保留剪贴板内容（恢复前会留出目标程序读取剪贴板的时间）；坐标/文本均可按控件名定位——输入 op 传 `element='确定'` 即用控件中心，type/key 会先点击该控件聚焦（该聚焦点击是真实左键点击，会在结果里以 focus_click 回报））；release（释放按下的键与鼠标按钮：`keys`/`buttons` 可只释放指定目标，留空释放全部——清理 key/click 的 `phase='down'` 留下的悬空状态）；坐标以窗口截图左上角为原点（与 screenshot 产物一致），除像素整数外也支持 `'center'`/`'50%'`/`'center+20'`/`'left+20'`/`'bottom-30'` 等语义坐标；`method` 可选 auto/sendinput/message（仅 Windows 生效）；`wait_for='change'/'stable'` 可等界面变化或稳定（stable 会忽略光标闪烁级别的微小噪声，并在 `ignored_change` 说明），`diff=true` 回传注入前后截图差异 |
@@ -467,8 +467,8 @@ AI 代理在对话中可调用以下工具完成各类操作。共 **19 个内�
 
 | 分类 | 工具 | 说明 |
 |------|------|------|
-| **文件 IO** | read_file, write_file, edit_file, ls, cp, mv, rm, mkdir, read_image | 读写文件、目录操作、文件管理、图像读取 |
-| **代码搜索** | search, find | 正则搜索源码、通配符查找文件 |
+| **文件 IO** | read, write, edit, ls, cp, mv, rm, mkdir, read_image | 读写文件、目录操作、文件管理、图像读取 |
+| **代码搜索** | grep, glob | 正则搜索源码、通配符查找文件 |
 | **命令执行** | bash, bash_opt | 安全沙盒中执行 shell 命令；按 task_id 操作后台 bash 任务（bash 后台任务注册在 bash 专用表 `_background_tasks`），含读取/等待/终止/终端输入、窗口截图（screenshot / windows / window，含整屏与多显示器截取、按控件区域截图、置顶与几何记忆）、控件清单（elements，Windows 优先 UI Automation）、图像/文字定位（locate）、等待窗口（wait_window）、剪贴板（clipboard）、动作序列（sequence）与 GUI 窗口输入注入（move/hover/click/drag/scroll/key/type，支持相对移动与长按、按控件名/自动化 ID 定位、语义坐标、界面变化等待与前后截图比对） |
 | **网络访问** | web_search, web_fetch | 网页搜索（DeepSeek 官方原生搜索）与网页全文获取 |
 | **用户交互** | user_select | 交互式选择弹窗（单选/多选/超时回退；支持并发提问，多问题 tab 一起显示） |
@@ -671,12 +671,12 @@ ChatUIConsumer
 
 | 类型 | 可用工具 | 用途 |
 |---|---|---|
-| **plan** | 只读分析 + write_file/edit_file/mkdir（仅限 `.chat/plan/` 目录） | 任务拆解、依赖分析、生成计划文件到 `.chat/plan/` |
-| **map** | 只读（read_file/search/find/ls 等只读工具） | 项目探底、模块地图、调用链追踪、引用关系分析 |
+| **plan** | 只读分析 + write/edit/mkdir（仅限 `.chat/plan/` 目录） | 任务拆解、依赖分析、生成计划文件到 `.chat/plan/` |
+| **map** | 只读（read/grep/glob/ls 等只读工具） | 项目探底、模块地图、调用链追踪、引用关系分析 |
 | **review** | 只读 + web_search（无 bash/bash_opt 等任何 shell 执行工具） | Code Review、P0-P3 分级审查、跨文件一致性验证 |
 | **execute** | 全工具（不含 user_select/subagent/subagent_opt/web_search） | 读/写/改代码、执行测试、通用任务 |
 
-> **工具排除策略**（与 `src/core/subagent.py` 的 `_TOOL_EXCLUSION_MAP` 一致）：execute 排除 `subagent/subagent_opt/user_select/web_search`；map 排除 `bash/bash_opt/write_file/edit_file/rm/mv/cp/mkdir/web_search/subagent/subagent_opt/user_select`；review 排除 `bash/bash_opt/write_file/edit_file/rm/mv/cp/mkdir/subagent/subagent_opt/user_select`（纯只读审查：仅 read_file/search/find/ls/web_search，无任何 shell 执行能力）；plan 排除 `bash/bash_opt/rm/mv/cp/subagent/subagent_opt/user_select`，write_file/edit_file/mkdir 仅限 `.chat/plan/` 目录。`subagent_opt` 与后台 subagent 均仅主 Agent 独有：SubAgent 工具白名单全类型排除 + 工具运行时 `isinstance(agent, SubAgent)` 双保险。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan Agent 路径白名单校验。
+> **工具排除策略**（与 `src/core/subagent.py` 的 `_TOOL_EXCLUSION_MAP` 一致）：execute 排除 `subagent/subagent_opt/user_select/web_search`；map 排除 `bash/bash_opt/write/edit/rm/mv/cp/mkdir/web_search/subagent/subagent_opt/user_select`；review 排除 `bash/bash_opt/write/edit/rm/mv/cp/mkdir/subagent/subagent_opt/user_select`（纯只读审查：仅 read/grep/glob/ls/web_search，无任何 shell 执行能力）；plan 排除 `bash/bash_opt/rm/mv/cp/subagent/subagent_opt/user_select`，write/edit/mkdir 仅限 `.chat/plan/` 目录。`subagent_opt` 与后台 subagent 均仅主 Agent 独有：SubAgent 工具白名单全类型排除 + 工具运行时 `isinstance(agent, SubAgent)` 双保险。SubAgent 在 `_handle_tool_calls()` 中注入 `agent_type` 到 Func 实例，`Func.can_use()` 进行统一检查。`FileToolBase._validate_path_and_size()` 额外实施 plan Agent 路径白名单校验。
 
 ### 并发调度策略
 
@@ -822,8 +822,8 @@ ChatUIConsumer
 │   │   ├── base.py            # Func 基类 + 元数据系统（含 can_use 工具可用性检查 / agent_type）
 │   │   ├── file_base.py       # FileToolBase 文件操作基类（含 plan agent 路径白名单）
 │   │   ├── registry.py        # 工具注册表（自动发现 + 调度 + 元数据索引）
-│   │   ├── read_file.py / write_file.py / edit_file.py / read_image.py
-│   │   ├── search.py / find.py / ls.py
+│   │   ├── read.py / write.py / edit.py / read_image.py
+│   │   ├── grep.py / glob.py / ls.py
 │   │   ├── bash.py / cp.py / mv.py / rm.py / mkdir.py / skill_tool.py
 │   │   ├── web_search.py / web_fetch.py / user_select.py / subagent.py / subagent_opt.py
 │   │   ├── file_ops.py        # 文件操作原子工具（原子写入、路径安全校验、沙盒记录）

@@ -6,16 +6,16 @@
 from src.core.param_formatter import extract_key_params
 
 
-def test_extract_read_file_path():
-    assert extract_key_params("read_file", {"path": "pyproject.toml"}) == "pyproject.toml"
+def test_extract_read_path():
+    assert extract_key_params("read", {"path": "pyproject.toml"}) == "pyproject.toml"
 
 
 def test_extract_bash_command():
     assert extract_key_params("bash", {"command": "ls -la"}) == "ls -la"
 
 
-def test_extract_search_query_path():
-    result = extract_key_params("search", {"query": "foo", "path": "src/"})
+def test_extract_grep_query_path():
+    result = extract_key_params("grep", {"query": "foo", "path": "src/"})
     assert result == "foo src/"
 
 
@@ -25,15 +25,15 @@ def test_extract_mv_source_destination():
 
 
 def test_extract_args_as_json_string():
-    assert extract_key_params("read_file", '{"path": "x.py"}') == "x.py"
+    assert extract_key_params("read", '{"path": "x.py"}') == "x.py"
 
 
 def test_extract_args_invalid_json_string():
-    assert extract_key_params("read_file", "not-json") == "not-json"
+    assert extract_key_params("read", "not-json") == "not-json"
 
 
 def test_extract_empty_dict():
-    assert extract_key_params("read_file", {}) == ""
+    assert extract_key_params("read", {}) == ""
 
 
 def test_extract_unknown_tool_kv():
@@ -42,7 +42,7 @@ def test_extract_unknown_tool_kv():
 
 
 def test_extract_show_all_known_tool():
-    result = extract_key_params("read_file", {"path": "x", "extra": "y"}, show_all=True)
+    result = extract_key_params("read", {"path": "x", "extra": "y"}, show_all=True)
     assert "path=x" in result
     assert "extra=y" in result
 
@@ -52,12 +52,12 @@ def test_extract_keeps_long_value_whole():
 
     显示截断由渲染层按终端宽度执行（工具卡标题行 ``truncate_runs``）。
     """
-    result = extract_key_params("read_file", {"path": "a" * 100})
+    result = extract_key_params("read", {"path": "a" * 100})
     assert result == "a" * 100
 
 
 def test_extract_missing_key_returns_empty():
-    assert extract_key_params("read_file", {"other": "x"}) == ""
+    assert extract_key_params("read", {"other": "x"}) == ""
 
 
 def test_extract_read_image_path():
@@ -68,7 +68,7 @@ def test_extract_read_image_path():
 
 def test_extract_non_dict_json_falls_back():
     """合法 JSON 但顶层非 dict（"5"/"null"/"[1,2]"/"\"str\""）→ 回退原始串（修复前静默返回空）。"""
-    assert extract_key_params("read_file", "5") == "5"
-    assert extract_key_params("read_file", "null") == "null"
-    assert extract_key_params("read_file", '"s"') == '"s"'
-    assert extract_key_params("read_file", "[1, 2]") == "[1, 2]"
+    assert extract_key_params("read", "5") == "5"
+    assert extract_key_params("read", "null") == "null"
+    assert extract_key_params("read", '"s"') == '"s"'
+    assert extract_key_params("read", "[1, 2]") == "[1, 2]"

@@ -7,7 +7,7 @@
 
     # 发布事件
     DisplayEventBus.get_default().publish(
-        ToolStartedEvent(label="call_xxx", tool_name="read_file", source="agent")
+        ToolStartedEvent(label="call_xxx", tool_name="read", source="agent")
     )
 
     # 订阅事件

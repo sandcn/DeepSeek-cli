@@ -1,18 +1,18 @@
-"""read_file 聊天区工具卡隐藏文件内容（2026-09 用户需求）。
+"""read 聊天区工具卡隐藏文件内容（2026-09 用户需求）。
 
-需求：read_file 聊天区工具卡只显示标题行（``✔ ReadFile '<path>'``），不显示
+需求：read 聊天区工具卡只显示标题行（``✔ Read '<path>'``），不显示
 读到的文件内容；读取失败/空文件等错误提示仍显示。内容行仍保留在工具块
 数据 ``block.lines`` 中（轨迹 Trace / 详情视图照常可见）。
 
 链路：
-  read_file.display() 成功 → ``_publish_tool_text(..., chat_hidden=True)``
+  read.display() 成功 → ``_publish_tool_text(..., chat_hidden=True)``
     → ``ToolOutputChunkEvent(chat_hidden=True)``
     → ``EventDispatcher._on_tool_output`` → ``ToolOutputCmd(chat_hidden=True)``
     → ``apply._do_tool_output`` → ``AppModel.append_tool_output(chat_hidden=True)``
     → ``block.extra["_chat_hidden_lines"]``（行对象引用）
     → ``toolcard.tool_card_lines`` 跳过隐藏行 + 跳过省略提示行
 
-历史回放：``apply._append_tool_replay`` 命中 read_file 成功返回值形态
+历史回放：``apply._append_tool_replay`` 命中 read 成功返回值形态
 （``文件: <path>``）→ 同样登记隐藏。
 """
 
@@ -21,7 +21,7 @@ from __future__ import annotations
 import pytest
 
 from src.tools.base import Func
-from src.tools.read_file import ReadFileFunc
+from src.tools.read import ReadFunc
 from src.tui._const import RenderCommand, ToolOutputCmd
 from src.tui._dispatcher import EventDispatcher
 from src.tui.app.apply import _append_tool_replay
@@ -100,13 +100,13 @@ def test_publish_tool_text_default_not_hidden(capture_emit):
     assert capture_emit.events[0].chat_hidden is False
 
 
-# ── 2. read_file.display 上屏标记 ────────────────────────
+# ── 2. read.display 上屏标记 ────────────────────────
 
 async def test_display_success_content_chat_hidden(tmp_path, capture_emit):
     """成功读取：文件内容上屏事件带 chat_hidden=True（聊天卡隐藏）。"""
     p = tmp_path / "a.py"
     p.write_text("x = 1\ny = 2\n", encoding="utf-8")
-    await ReadFileFunc(path=str(p)).display()
+    await ReadFunc(path=str(p)).display()
     evs = [e for e in capture_emit.events if isinstance(e, ToolOutputChunkEvent)]
     assert evs, "成功读取仍应上屏内容（供 Trace 可见）"
     assert evs[-1].chat_hidden is True
@@ -118,7 +118,7 @@ async def test_display_success_content_chat_hidden(tmp_path, capture_emit):
 async def test_display_error_not_chat_hidden(tmp_path, capture_emit):
     """读取失败：错误提示照常显示（chat_hidden=False）。"""
     missing = str(tmp_path / "missing.txt")
-    await ReadFileFunc(path=missing).display()
+    await ReadFunc(path=missing).display()
     evs = [e for e in capture_emit.events if isinstance(e, ToolOutputChunkEvent)]
     assert evs
     assert evs[-1].chat_hidden is False
@@ -129,7 +129,7 @@ async def test_display_empty_file_no_event(tmp_path, capture_emit):
     """空文件：无内容上屏事件（仅返回提示）。"""
     p = tmp_path / "empty.txt"
     p.write_text("", encoding="utf-8")
-    await ReadFileFunc(path=str(p)).display()
+    await ReadFunc(path=str(p)).display()
     evs = [e for e in capture_emit.events if isinstance(e, ToolOutputChunkEvent)]
     assert evs == []
 
@@ -167,7 +167,7 @@ def _model_with_tool(tool_id: str, tool_name: str, detail: str = "") -> AppModel
 
 def test_append_tool_output_registers_hidden_rows():
     """append_tool_output(chat_hidden=True) 登记行对象到 _chat_hidden_lines。"""
-    m = _model_with_tool("t1", "read_file", "'x.py'")
+    m = _model_with_tool("t1", "read", "'x.py'")
     m.append_tool_output("t1", "alpha\nbeta", chat_hidden=True)
     block = _tool_block(m, "t1")
     hidden = block.extra.get("_chat_hidden_lines")
@@ -178,30 +178,30 @@ def test_append_tool_output_registers_hidden_rows():
 
 def test_append_tool_output_not_hidden_by_default():
     """默认（chat_hidden=False）不登记隐藏行。"""
-    m = _model_with_tool("t2", "read_file", "'x.py'")
+    m = _model_with_tool("t2", "read", "'x.py'")
     m.append_tool_output("t2", "alpha\nbeta")
     block = _tool_block(m, "t2")
     assert not block.extra.get("_chat_hidden_lines")
 
 
 def test_tool_card_hides_success_content():
-    """read_file 成功内容：聊天卡仅标题行（无内容行/无省略提示）。"""
-    m = _model_with_tool("t3", "read_file", "'x.py'")
+    """read 成功内容：聊天卡仅标题行（无内容行/无省略提示）。"""
+    m = _model_with_tool("t3", "read", "'x.py'")
     m.append_tool_output(
         "t3", "\n".join(f"line-{i}" for i in range(10)), chat_hidden=True,
     )
     block = _tool_block(m, "t3")
     rows = tool_card_lines(block, 80)
-    assert len(rows) == 1, f"read_file 聊天卡应仅标题行，实际：{_plain(rows)!r}"
-    assert "ReadFile" in _plain(rows)
+    assert len(rows) == 1, f"read 聊天卡应仅标题行，实际：{_plain(rows)!r}"
+    assert "Read" in _plain(rows)
     # 内容仍保留在块数据中（Trace 可见）——head trim 保留前 3 行
     assert len(block.lines) == 4
     assert block.extra.get("_head_omitted_lines", 0) == 7
 
 
 def test_tool_card_shows_error_content():
-    """read_file 错误提示（chat_hidden=False）仍渲染为内容行。"""
-    m = _model_with_tool("t4", "read_file", "'missing.txt'")
+    """read 错误提示（chat_hidden=False）仍渲染为内容行。"""
+    m = _model_with_tool("t4", "read", "'missing.txt'")
     m.append_tool_output("t4", "  x (文件不存在: missing.txt)")
     block = _tool_block(m, "t4")
     rows = tool_card_lines(block, 80)
@@ -213,7 +213,7 @@ def test_tool_card_shows_error_content():
 
 def test_hidden_rows_pruned_after_head_trim():
     """head trim 删除后置行后，隐藏登记只保留仍在 block.lines 中的行。"""
-    m = _model_with_tool("t5", "read_file", "'x.py'")
+    m = _model_with_tool("t5", "read", "'x.py'")
     m.append_tool_output(
         "t5", "\n".join(f"line-{i}" for i in range(50)), chat_hidden=True,
     )
@@ -226,7 +226,7 @@ def test_hidden_rows_pruned_after_head_trim():
 
 def test_prune_chat_hidden_drops_dead_rows():
     """_prune_chat_hidden 移除已不在 block.lines 的行对象。"""
-    m = _model_with_tool("t6", "read_file", "'x.py'")
+    m = _model_with_tool("t6", "read", "'x.py'")
     m.append_tool_output("t6", "a\nb\nc", chat_hidden=True)
     block = _tool_block(m, "t6")
     assert len(block.extra["_chat_hidden_lines"]) == 3
@@ -238,9 +238,9 @@ def test_prune_chat_hidden_drops_dead_rows():
 
 # ── 6. 历史回放（apply._append_tool_replay） ────────────────
 
-def test_history_replay_hides_read_file_content():
-    """历史回放 read_file 成功返回值（文件: <path>）→ 内容行登记隐藏。"""
-    m = _model_with_tool("c1", "read_file", "'x.py'")
+def test_history_replay_hides_read_content():
+    """历史回放 read 成功返回值（文件: <path>）→ 内容行登记隐藏。"""
+    m = _model_with_tool("c1", "read", "'x.py'")
     _append_tool_replay(m, {
         "role": "tool", "tool_call_id": "c1",
         "content": "文件: x.py\nalpha\nbeta",
@@ -253,8 +253,8 @@ def test_history_replay_hides_read_file_content():
 
 
 def test_history_replay_error_not_hidden():
-    """历史回放 read_file 错误提示 → 不隐藏（照常显示）。"""
-    m = _model_with_tool("c2", "read_file", "'missing'")
+    """历史回放 read 错误提示 → 不隐藏（照常显示）。"""
+    m = _model_with_tool("c2", "read", "'missing'")
     _append_tool_replay(m, {
         "role": "tool", "tool_call_id": "c2",
         "content": "(文件不存在: missing)",
@@ -266,7 +266,7 @@ def test_history_replay_error_not_hidden():
 
 
 def test_history_replay_other_tool_not_hidden():
-    """历史回放其他工具（非 read_file）内容不隐藏。"""
+    """历史回放其他工具（非 read）内容不隐藏。"""
     m = _model_with_tool("c3", "bash", "ls")
     _append_tool_replay(m, {
         "role": "tool", "tool_call_id": "c3",

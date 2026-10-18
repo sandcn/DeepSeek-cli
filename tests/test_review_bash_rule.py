@@ -46,15 +46,15 @@ class TestReviewBashToolRemoved:
         assert _can_use("bash_opt", "review") is False
 
     def test_review_still_exclude_write_tools(self):
-        """review 仍排除全部内部写入类工具（write_file/edit_file/rm/mv/cp/mkdir）。"""
+        """review 仍排除全部内部写入类工具（write/edit/rm/mv/cp/mkdir）。"""
         excluded = _review_excluded()
-        for tool in ("write_file", "edit_file", "rm", "mv", "cp", "mkdir"):
+        for tool in ("write", "edit", "rm", "mv", "cp", "mkdir"):
             assert tool in excluded, f"review 应排除内部写入工具 {tool}"
 
     def test_review_keep_readonly_and_web_search(self):
-        """review 保留只读工具与 web_search（read_file/search/find/ls/web_search 不在排除表）。"""
+        """review 保留只读工具与 web_search（read/grep/glob/ls/web_search 不在排除表）。"""
         excluded = _review_excluded()
-        for tool in ("read_file", "search", "find", "ls", "web_search"):
+        for tool in ("read", "grep", "glob", "ls", "web_search"):
             assert tool not in excluded, f"review 应保留只读工具 {tool}"
 
     def test_review_still_exclude_subagent_and_user_select(self):
@@ -72,10 +72,10 @@ class TestReviewPromptNoBashRule:
         assert "bash_opt" not in review_prompt_text
 
     def test_prompt_states_readonly_toolset(self, review_prompt_text: str):
-        """提词仍声明只读工具集（read_file/search/find/ls/web_search）且禁止任何修改操作。"""
-        assert "read_file" in review_prompt_text
-        assert "search" in review_prompt_text
-        assert "find" in review_prompt_text
+        """提词仍声明只读工具集（read/grep/glob/ls/web_search）且禁止任何修改操作。"""
+        assert "read" in review_prompt_text
+        assert "grep" in review_prompt_text
+        assert "glob" in review_prompt_text
         assert "ls" in review_prompt_text
         assert "web_search" in review_prompt_text
         assert "禁止任何修改操作" in review_prompt_text

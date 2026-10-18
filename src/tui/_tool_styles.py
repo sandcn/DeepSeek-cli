@@ -74,9 +74,9 @@ _BUILTIN_SPECS: Tuple[PresentationSpec, ...] = (
     # ── 工具 → 类别 / 图标 ──
     _tool("bash", "shell", "\u26a1"),
     _tool("execute_command", "shell", "\u26a1"),
-    _tool("read_file", "file_read", "\U0001f4d6"),
-    _tool("write_file", "file_write", "\u270e"),
-    _tool("edit_file", "file_write", "\u270e"),
+    _tool("read", "file_read", "\U0001f4d6"),
+    _tool("write", "file_write", "\u270e"),
+    _tool("edit", "file_write", "\u270e"),
     _tool("str_replace_editor", "file_write", "\u270e"),
     _tool("file_editor", "file_write", "\u270e"),
     _tool("subagent", "agent", "\u2699"),
@@ -86,7 +86,6 @@ _BUILTIN_SPECS: Tuple[PresentationSpec, ...] = (
     _tool("web_fetch", "search", "\U0001f310"),
     _tool("rm", "delete", "\u2715"),
     _tool("grep", "search", "\u2315"),
-    _tool("find", "search", "\u2315"),
     _tool("glob", "search", "\u2315"),
     # ── 类别 → 配色 ──
     _category("shell", 41),

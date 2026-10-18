@@ -41,7 +41,7 @@ def test_append_assistant_with_tool_calls():
     log.append(
         SessionEventType.ASSISTANT_MESSAGE,
         content="",
-        tool_calls=[{"id": "1", "function": {"name": "read_file", "arguments": "{}"}}],
+        tool_calls=[{"id": "1", "function": {"name": "read", "arguments": "{}"}}],
     )
     log.append(SessionEventType.TOOL_RESULT, content="file body", tool_call_id="1")
     messages = log.derive_messages()

@@ -1088,10 +1088,10 @@ def test_sandbox_reindex_records():
     from src.core.sandbox_manager import SandboxManager
 
     sm = SandboxManager()
-    sm.record_file_change("a.txt", None, "v1", 3, tool_name="write_file")
-    sm.record_file_change("b.txt", None, "v2", 3, tool_name="write_file")
+    sm.record_file_change("a.txt", None, "v1", 3, tool_name="write")
+    sm.record_file_change("b.txt", None, "v2", 3, tool_name="write")
     # 不匹配的记录（索引 7）保持不动
-    sm.record_file_change("c.txt", None, "v3", 7, tool_name="write_file")
+    sm.record_file_change("c.txt", None, "v3", 7, tool_name="write")
 
     moved = sm.reindex_records(lambda r: r.message_index == 3, 5)
     assert moved == 2

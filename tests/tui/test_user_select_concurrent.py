@@ -164,7 +164,7 @@ def test_tool_dag_user_select_same_layer():
     calls = [
         {"id": "call_us1", "name": "user_select", "arguments": {"title": "问题1", "options": ["A", "B"]}},
         {"id": "call_us2", "name": "user_select", "arguments": {"title": "问题2", "options": ["X", "Y"]}},
-        {"id": "call_read", "name": "read_file", "arguments": {"path": "a.py"}},
+        {"id": "call_read", "name": "read", "arguments": {"path": "a.py"}},
     ]
     dag = ToolDAG(calls, ToolRegistry.default())
     layers = dag.topological_sort()
@@ -179,10 +179,10 @@ def test_tool_dag_user_select_same_layer():
     assert us_layer is not None
     us_ids = [t for t in us_layer if dag.get_node(t).name == "user_select"]
     assert len(us_ids) == 2, f"两个 user_select 应同层并发: {us_layer}"
-    # read_file 在 user_select 之后（独占层约束保持）
+    # read 在 user_select 之后（独占层约束保持）
     read_layer_idx = next(
         i for i, layer in enumerate(layers)
-        if any(dag.get_node(t).name == "read_file" for t in layer)
+        if any(dag.get_node(t).name == "read" for t in layer)
     )
     us_layer_idx = next(
         i for i, layer in enumerate(layers)

@@ -33,7 +33,7 @@ class _AgentStub:
 async def test_tools_builtin_registers_all(cli_kernel):
     tools = cli_kernel.resolve_service("tools")
     names = tools.names()
-    assert "read_file" in names and "bash" in names and "ls" in names
+    assert "read" in names and "bash" in names and "ls" in names
     assert len(names) >= 19
 
 
@@ -102,7 +102,7 @@ async def test_policy_denies_plan_path_outside_whitelist(cli_kernel):
     scheduler = ToolScheduler()
     tc = {
         "id": "t5",
-        "name": "write_file",
+        "name": "write",
         "arguments": {"path": "src/evil.py", "content": "x"},
     }
     _id, output, success = await scheduler._execute_one_async(

@@ -129,7 +129,7 @@ class TestTraceStats:
             _tool_rec(3, "bash", status="done", time_seconds=2.0,
                       tokens={"input": 100, "output": 50}),
             _tool_rec(4, "bash", status="error", time_seconds=1.0),
-            _tool_rec(5, "read_file", status="running", time_seconds=0.5),
+            _tool_rec(5, "read", status="running", time_seconds=0.5),
         ]
         stats = collect_trace_stats(records)
         assert stats["total"] == 6
@@ -281,7 +281,7 @@ class TestTraceKeyOps:
             _rec(1, "hi", kind="user"),
             _tool_rec(2, "bash", status="done"),
             _rec(3, "出错了", status="error"),
-            _tool_rec(4, "read_file", status="running"),
+            _tool_rec(4, "read", status="running"),
             _rec(5, "再错一次", status="fail"),
         ]
 

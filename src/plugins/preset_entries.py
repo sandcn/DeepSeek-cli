@@ -8,7 +8,7 @@
       config:
         name: minimal                      # 内置 preset id（可被 patch/overlay 定位）
         # description: 最小模式             # 可选：覆盖描述
-        # tool_includes: [read_file]        # 可选：覆盖包含集合
+        # tool_includes: [read]             # 可选：覆盖包含集合
         # tool_excludes: [bash]             # 可选：覆盖排除集合
         # model: ""                         # 可选：模型覆盖
         # preset: my_pkg.MyPreset           # 可选：替换实现（点分路径 / 工厂）

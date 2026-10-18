@@ -130,7 +130,7 @@ async def test_entry_config_overrides_spec():
         assert at.excluded_tools("review") == {"bash"}
     finally:
         await kernel.dispose()
-    assert "write_file" in at.excluded_tools("review")
+    assert "write" in at.excluded_tools("review")
 
 
 async def test_custom_agent_type_registration():

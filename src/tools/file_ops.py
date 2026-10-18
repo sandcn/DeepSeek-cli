@@ -496,7 +496,7 @@ async def async_makedirs_and_record(path: str, tool_name: str) -> None:
 
     Args:
         path: 要创建的目录路径（类似 mkdir -p）
-        tool_name: 触发创建的工具名（如 "write_file"、"cp"）
+        tool_name: 触发创建的工具名（如 "write"、"cp"）
     """
     import os as _os
 

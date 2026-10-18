@@ -78,7 +78,7 @@ _BUILTIN_SPECS: Tuple[AgentTypeSpec, ...] = (
         prompt_builder="build_map_agent_prompt",
         agent_name="map",
         exclusions=(
-            "bash", "bash_opt", "subagent_opt", "write_file", "edit_file",
+            "bash", "bash_opt", "subagent_opt", "write", "edit",
             "rm", "mv", "cp", "mkdir", "web_search", "subagent", "user_select",
             *_CORDIS_TOOLS,
         ),
@@ -90,7 +90,7 @@ _BUILTIN_SPECS: Tuple[AgentTypeSpec, ...] = (
         prompt_builder="build_review_agent_prompt",
         agent_name="review",
         exclusions=(
-            "bash", "bash_opt", "subagent_opt", "write_file", "edit_file",
+            "bash", "bash_opt", "subagent_opt", "write", "edit",
             "rm", "mv", "cp", "mkdir", "subagent", "user_select",
             *_CORDIS_TOOLS,
         ),

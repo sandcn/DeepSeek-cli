@@ -309,7 +309,7 @@ class ReadImageFunc(Func):
                     "（多模态）；返回 base64 PNG 图片并附文本元信息，"
                     "图片按原始尺寸返回（不做自动缩放）。"
                     "支持分块读取（start_x/start_y/end_x/end_y 指定像素区域，类似"
-                    "read_file 的行号范围）；支持对图像操作后返回（operation：grayscale"
+                    "read 的行号范围）；支持对图像操作后返回（operation：grayscale"
                     "灰度/rotate90/rotate180/rotate270/flip_h/flip_v/scale 缩放，"
                     "先裁剪区域再应用操作）。"
                     "路径安全校验拒绝危险路径（设备文件/系统关键路径等）。"

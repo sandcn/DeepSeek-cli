@@ -15,7 +15,7 @@
     obs.histogram("model.latency_ms", 150.0)
 
     with obs.tracer.span("tool.execute") as span:
-        span.set_attribute("tool", "read_file")
+        span.set_attribute("tool", "read")
         ...
 """
 

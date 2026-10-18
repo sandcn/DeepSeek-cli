@@ -65,7 +65,7 @@ async def test_default_profile_presentations():
     try:
         assert tool_category("bash") == "shell"
         assert tool_icon("bash") == "\u26a1"
-        assert tool_style("read_file").fg == 81
+        assert tool_style("read").fg == 81
         assert category_style("delete").fg == 203
         assert agent_type_abbrev("execute") == "ex"
         assert agent_type_style("plan").fg == 214
@@ -97,7 +97,7 @@ async def test_overlay_disable_tool_presentation():
     kernel = await _build_with_disable(["tool_styles::tool_style_tool_bash"])
     try:
         assert tool_category("bash") == ""
-        assert tool_category("read_file") == "file_read"
+        assert tool_category("read") == "file_read"
     finally:
         await kernel.dispose()
 

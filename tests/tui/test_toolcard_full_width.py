@@ -44,7 +44,7 @@ class TestNoFixedTruncation:
         assert out == "k=" + "b" * 300
 
     def test_raw_non_json_kept_whole(self):
-        assert extract_key_params("read_file", "c" * 200) == "c" * 200
+        assert extract_key_params("read", "c" * 200) == "c" * 200
 
 
 class TestToolCardFillsTerminalWidth:
@@ -355,7 +355,7 @@ class TestToolCardLongLineTruncatesToSingleRow:
     """超长输出行截断到终端宽度（单行显示，不 wrap 成多行，2026-10-07 需求）。
 
     需求：bash 执行输出一个超长行时，显示必须**截断到当前终端宽度**（单行 +
-    末尾省略号 ``…``），不得 wrap 成成百上千行淹没聊天区；其它工具（read_file /
+    末尾省略号 ``…``），不得 wrap 成成百上千行淹没聊天区；其它工具（read /
     search / find / ls 等）走同一 toolcard 内容行路径，行为一致。
     """
 

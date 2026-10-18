@@ -79,11 +79,11 @@ def test_extract_reasoning_none():
 def test_extract_tool_summary():
     messages = [
         {"role": "assistant", "tool_calls": [
-            {"function": {"name": "read_file", "arguments": '{"path": "x"}'}}]},
+            {"function": {"name": "read", "arguments": '{"path": "x"}'}}]},
         {"role": "tool", "content": "result text"},
     ]
     summary = extract_tool_summary(messages)
-    assert "read_file" in summary
+    assert "read" in summary
     assert "result text" in summary
 
 

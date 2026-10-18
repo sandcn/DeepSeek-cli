@@ -89,7 +89,7 @@ async def test_handle_tool_calls_failed_tool_no_nameerror(monkeypatch):
     chain = ToolCallbackChain(agent)
     await chain.handle_tool_calls(
         "content",
-        [{"id": "tc-1", "name": "read_file", "arguments": {"path": "x.py"}}],
+        [{"id": "tc-1", "name": "read", "arguments": {"path": "x.py"}}],
     )
 
     assert agent._event_port.summary_data is not None
@@ -109,11 +109,11 @@ async def test_handle_tool_calls_success_tool(monkeypatch):
     chain = ToolCallbackChain(agent)
     await chain.handle_tool_calls(
         "content",
-        [{"id": "tc-1", "name": "read_file", "arguments": {"path": "x.py"}}],
+        [{"id": "tc-1", "name": "read", "arguments": {"path": "x.py"}}],
     )
 
     assert agent._event_port.summary_data is not None
-    assert agent._event_port.summary_data["successful_tools"] == ["ReadFile"]
+    assert agent._event_port.summary_data["successful_tools"] == ["Read"]
     assert agent._event_port.summary_data["failed_tools"] == []
 
 
@@ -125,14 +125,14 @@ def test_on_after_tool_normalizes_tool_result():
     agent = _FakeToolAgent()
     chain = ToolCallbackChain(agent)
 
-    tc = {"id": "tc-1", "name": "read_file", "arguments": {"path": "x.py"}}
+    tc = {"id": "tc-1", "name": "read", "arguments": {"path": "x.py"}}
     output = ToolResult(text="内容已读取", blocks=[{"type": "text"}])
     chain._on_after_tool(tc, output, success=True)
 
     # tool_done 收到的 output_preview 应为纯文本（ToolResult → text）
     assert agent.display.last_done_output == "内容已读取"
     # tool_id 贯通：tool_call_id 以关键字传给 display（前端据此合并工具卡）
-    assert agent.display.calls[-1] == ("tool_done", ("tc-1", "read_file", True), {"tool_id": "tc-1"})
+    assert agent.display.calls[-1] == ("tool_done", ("tc-1", "read", True), {"tool_id": "tc-1"})
 
 
 def test_on_before_tool_forwards_tool_id(monkeypatch):
@@ -151,7 +151,7 @@ def test_on_before_tool_forwards_tool_id(monkeypatch):
     chain = ToolCallbackChain(agent)
 
     chain._on_before_tool(
-        {"id": "tc-7", "name": "read_file", "arguments": {"path": "x.py"}}, "detail", 0.0
+        {"id": "tc-7", "name": "read", "arguments": {"path": "x.py"}}, "detail", 0.0
     )
 
     parsing, started = agent.display.calls
@@ -159,7 +159,7 @@ def test_on_before_tool_forwards_tool_id(monkeypatch):
     assert parsing[1][0] == "tc-7"
     assert parsing[2] == {"tool_id": "tc-7"}
     assert started[0] == "tool_start"
-    assert started[1][:2] == ("tc-7", "read_file")
+    assert started[1][:2] == ("tc-7", "read")
     assert started[2] == {"tool_id": "tc-7"}
 
 

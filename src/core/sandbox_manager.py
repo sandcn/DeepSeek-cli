@@ -114,7 +114,7 @@ class SandboxManager:
 
     def record_file_change(self, file_path: str, content_before: Optional[str],
                           content_after: Optional[str], message_index: int,
-                          tool_name: str = "write_file",
+                          tool_name: str = "write",
                           record_type: str = "file") -> FileChangeRecord:
         """
         记录文件修改
@@ -186,7 +186,7 @@ class SandboxManager:
 
     async def async_record_file_change(self, file_path: str, content_before: Optional[str],
                                        content_after: Optional[str], message_index: int,
-                                       tool_name: str = "write_file",
+                                       tool_name: str = "write",
                                        record_type: str = "file") -> FileChangeRecord:
         """异步记录文件修改（内部同步操作已包装为 async）"""
         return await asyncio.to_thread(
@@ -758,7 +758,7 @@ def clear_current_message_index():
 
 def record_file_change_from_context(file_path: str, content_before: Optional[str],
                                    content_after: Optional[str],
-                                   tool_name: str = "write_file",
+                                   tool_name: str = "write",
                                    record_type: str = "file") -> Optional[FileChangeRecord]:
     """
     从上下文记录文件修改
@@ -787,7 +787,7 @@ def record_file_change_from_context(file_path: str, content_before: Optional[str
 async def async_record_file_change_from_context(
     file_path: str, content_before: Optional[str],
     content_after: Optional[str],
-    tool_name: str = "write_file",
+    tool_name: str = "write",
     record_type: str = "file",
 ) -> Optional[FileChangeRecord]:
     """异步版本：从上下文记录文件修改，使用 asyncio.to_thread 包装"""

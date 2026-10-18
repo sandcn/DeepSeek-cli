@@ -6,16 +6,16 @@
 from .base import Func
 from .bash import BashFunc as Bash
 from .bash_opt import BashOptFunc as BashOpt
-from .read_file import ReadFileFunc as ReadFile
+from .read import ReadFunc as Read
 from .read_image import ReadImageFunc as ReadImage
 from .rm import RmFunc as Rm
 from .cp import CpFunc as Cp
-from .write_file import WriteFileFunc as WriteFile
-from .edit_file import EditFileFunc as EditFile
+from .write import WriteFunc as Write
+from .edit import EditFunc as Edit
 from .mv import MvFunc as Mv
 from .user_select import UserSelectFunc as UserSelect
-from .search import SearchFunc as Search
-from .find import FindFunc as Find
+from .grep import GrepFunc as Grep
+from .glob import GlobFunc as Glob
 from .ls import LsFunc as Ls
 from .web_search import WebSearchFunc as WebSearch
 from .web_fetch import WebFetchFunc as WebFetch
@@ -29,6 +29,6 @@ from .registry import get_tools, register_tool
 # 漏加 __all__ 不影响 registry 自动发现，但影响 ``from src.tools import *``）
 __all__ = [
     'Func',
-    'Bash', 'BashOpt', 'ReadFile', 'ReadImage', 'Rm', 'WriteFile', 'EditFile', 'UserSelect', 'Search', 'Find', 'Ls', 'Mv', 'Cp', 'Mk', 'WebSearch', 'WebFetch', 'Subagent', 'SubagentOpt', 'Skill',
+    'Bash', 'BashOpt', 'Read', 'ReadImage', 'Rm', 'Write', 'Edit', 'UserSelect', 'Grep', 'Glob', 'Ls', 'Mv', 'Cp', 'Mk', 'WebSearch', 'WebFetch', 'Subagent', 'SubagentOpt', 'Skill',
     'get_tools', 'register_tool'
 ]

@@ -81,7 +81,7 @@ def _validate_plugin_name(name: str) -> str:
 def _plugin_path(name: str) -> str:
     safe = _validate_plugin_name(name)
     path = os.path.join(str(RUNTIME_PLUGINS_DIR), f"{safe}.py")
-    # 纵深防御：与 write_file 等文件工具共用同一路径安全校验（设备文件/系统
+    # 纵深防御：与 write 等文件工具共用同一路径安全校验（设备文件/系统
     # 关键路径/Windows 保留名/NTFS 流），拒绝时抛 ValueError 由调用方转为错误文本。
     from .file_ops import validate_path_security
 

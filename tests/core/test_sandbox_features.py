@@ -26,9 +26,9 @@ def sm(tmp_path):
     manager = SandboxManager()
     f1 = str(tmp_path / "a.py")
     f2 = str(tmp_path / "sub" / "b.py")
-    manager.record_file_change(f1, "old\n", "new\n", 3, tool_name="write_file")
-    manager.record_file_change(f1, "new\n", "newer\n", 5, tool_name="edit_file")
-    manager.record_file_change(f2, None, "x\n", 5, tool_name="write_file")
+    manager.record_file_change(f1, "old\n", "new\n", 3, tool_name="write")
+    manager.record_file_change(f1, "new\n", "newer\n", 5, tool_name="edit")
+    manager.record_file_change(f2, None, "x\n", 5, tool_name="write")
     return manager
 
 
@@ -59,7 +59,7 @@ def test_get_message_records(sm):
 
 
 def test_find_records(sm):
-    assert len(sm.find_records(tool_name="write_file")) == 2
+    assert len(sm.find_records(tool_name="write")) == 2
     assert len(sm.find_records(message_index=5)) == 2
     assert len(sm.find_records(change_type="新建文件")) == 1
     a = [p for p in sm.get_file_paths() if p.endswith("a.py")][0]
@@ -71,8 +71,8 @@ def test_get_extended_stats(sm):
     assert stats["total_files"] == 2
     assert stats["total_records"] == 3
     assert stats["message_groups"] == 2
-    assert stats["tool_counts"]["write_file"] == 2
-    assert stats["tool_counts"]["edit_file"] == 1
+    assert stats["tool_counts"]["write"] == 2
+    assert stats["tool_counts"]["edit"] == 1
     assert stats["revert_count"] == 0
     assert stats["content_chars"] > 0
 
@@ -132,7 +132,7 @@ def test_build_change_entries(sm):
     a = [e for e in entries if e["path"].endswith("a.py")][0]
     assert a["records"] == 2
     assert a["first_index"] == 3 and a["last_index"] == 5
-    assert "write_file" in a["tools"]
+    assert "write" in a["tools"]
     assert len(a["history"]) == 2
 
 
@@ -238,7 +238,7 @@ def test_make_sandbox_refresher_rebuilds(sm):
         refresher = make_sandbox_refresher(None, lambda data: calls.append(data))
         assert refresher() is True  # 首次强制重建
         assert refresher() is False  # 签名未变
-        sm.record_file_change("/tmp/z", None, "z", 7, tool_name="write_file")
+        sm.record_file_change("/tmp/z", None, "z", 7, tool_name="write")
         assert refresher() is True
         assert refresher(force=True) is True
         assert calls
@@ -427,7 +427,7 @@ def test_history_rows_and_stats_rows():
         "path": "a.py", "change_label": "修改", "records": 1,
         "history": [{
             "seq": 1, "path": "a.py", "change_label": "修改",
-            "tool": "write_file", "message_index": 3, "time": 0.0,
+            "tool": "write", "message_index": 3, "time": 0.0,
             "before": "old\n", "after": "new\n",
         }],
     }
@@ -443,9 +443,9 @@ def test_message_detail_rows_and_change_tag_style():
     from src.tui.app.sandbox_common import change_tag_style, fmt_time, message_detail_rows
 
     entry = {
-        "index": 5, "count": 1, "files": 1, "time": 0.0, "tools": ["write_file"],
+        "index": 5, "count": 1, "files": 1, "time": 0.0, "tools": ["write"],
         "changes": [{
-            "path": "a.py", "change_label": "新建", "tool": "write_file",
+            "path": "a.py", "change_label": "新建", "tool": "write",
             "before": None, "after": "x\n",
         }],
     }
@@ -472,7 +472,7 @@ def test_sandbox_export_markdown_json_and_write(tmp_path):
 
     entries = [{
         "path": "a.py", "change_label": "修改", "before": "old\n", "after": "new\n",
-        "records": 1, "message_index": "3-3", "tools": ["write_file"],
+        "records": 1, "message_index": "3-3", "tools": ["write"],
     }]
     md = entries_to_markdown(entries, when=0)
     assert "a.py" in md and "```diff" in md
@@ -529,7 +529,7 @@ def test_detail_and_preview_rows():
 
     entry = {
         "path": "a.py", "change_label": "修改", "before": "old\n", "after": "new\n",
-        "records": 1, "message_index": "3-3", "tools": ["write_file"],
+        "records": 1, "message_index": "3-3", "tools": ["write"],
     }
     assert _detail_rows(entry, 60)
     assert _detail_rows(None, 60)

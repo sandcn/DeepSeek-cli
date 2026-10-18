@@ -128,8 +128,8 @@ class PolicyService(Service):
                 f"该 agent 类型的工具白名单已排除此工具",
             )
         if path is not None and path_whitelist(agent_type) == "plan" and tool_name in (
-            "write_file",
-            "edit_file",
+            "write",
+            "edit",
             "mkdir",
         ):
             from ..tools.file_ops import get_plan_allowed_dir, is_path_within_dir

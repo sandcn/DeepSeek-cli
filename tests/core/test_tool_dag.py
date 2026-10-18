@@ -55,9 +55,9 @@ def _edges(dag: ToolDAG) -> set[tuple[str, str]]:
 def test_build_nodes_reads_metadata():
     registry = _FakeRegistry({
         "bash": {"parallel_safe": False, "requires_terminal": True, "tool_category": "bash"},
-        "read_file": {"parallel_safe": True, "tool_category": "read"},
+        "read": {"parallel_safe": True, "tool_category": "read"},
     })
-    dag = ToolDAG([_tc("a", "bash"), _tc("b", "read_file")], registry)
+    dag = ToolDAG([_tc("a", "bash"), _tc("b", "read")], registry)
     assert dag.size == 2
     assert dag.get_node("a").requires_terminal is True
     assert dag.get_node("a").tool_category == "bash"
@@ -114,18 +114,18 @@ def test_reference_regex_is_module_level_compiled():
 
 def test_read_depends_on_write_same_path():
     dag = ToolDAG([
-        _tc("w", "write_file", path="a.txt"),
-        _tc("r", "read_file", path="a.txt"),
-    ], _FakeRegistry({"write_file": {"tool_category": "write"},
-                      "read_file": {"tool_category": "read"}}))
+        _tc("w", "write", path="a.txt"),
+        _tc("r", "read", path="a.txt"),
+    ], _FakeRegistry({"write": {"tool_category": "write"},
+                      "read": {"tool_category": "read"}}))
     assert ("w", "r") in _edges(dag)
 
 
 def test_same_path_writes_serialize_in_original_order():
     dag = ToolDAG([
-        _tc("w1", "write_file", path="a.txt"),
-        _tc("w2", "write_file", path="a.txt"),
-    ], _FakeRegistry({"write_file": {"tool_category": "write"}}))
+        _tc("w1", "write", path="a.txt"),
+        _tc("w2", "write", path="a.txt"),
+    ], _FakeRegistry({"write": {"tool_category": "write"}}))
     assert ("w1", "w2") in _edges(dag)
     assert ("w2", "w1") not in _edges(dag)
 
@@ -133,18 +133,18 @@ def test_same_path_writes_serialize_in_original_order():
 def test_parent_child_path_dependency():
     dag = ToolDAG([
         _tc("d", "mkdir", path="out"),
-        _tc("f", "write_file", path="out/a.txt"),
+        _tc("f", "write", path="out/a.txt"),
     ], _FakeRegistry({"mkdir": {"tool_category": "write"},
-                      "write_file": {"tool_category": "write"}}))
+                      "write": {"tool_category": "write"}}))
     assert ("d", "f") in _edges(dag)
 
 
 def test_cp_reads_source_and_writes_destination():
     dag = ToolDAG([
         _tc("cp", "cp", source="s.txt", destination="d.txt"),
-        _tc("r", "read_file", path="d.txt"),
+        _tc("r", "read", path="d.txt"),
     ], _FakeRegistry({"cp": {"tool_category": "write"},
-                      "read_file": {"tool_category": "read"}}))
+                      "read": {"tool_category": "read"}}))
     # 读 d.txt 依赖 cp 写 d.txt
     assert ("cp", "r") in _edges(dag)
 
@@ -156,8 +156,8 @@ def test_user_select_precedes_other_tools_but_concurrent_with_each_other():
     dag = ToolDAG([
         _tc("u1", "user_select", question="q1"),
         _tc("u2", "user_select", question="q2"),
-        _tc("r", "read_file", path="a.txt"),
-    ], _FakeRegistry({"read_file": {"tool_category": "read"}}))
+        _tc("r", "read", path="a.txt"),
+    ], _FakeRegistry({"read": {"tool_category": "read"}}))
     edges = _edges(dag)
     assert ("u1", "r") in edges
     assert ("u2", "r") in edges
@@ -170,8 +170,8 @@ def test_concurrent_user_select_share_one_layer():
     dag = ToolDAG([
         _tc("u1", "user_select"),
         _tc("u2", "user_select"),
-        _tc("r", "read_file", path="a.txt"),
-    ], _FakeRegistry({"read_file": {"tool_category": "read"}}))
+        _tc("r", "read", path="a.txt"),
+    ], _FakeRegistry({"read": {"tool_category": "read"}}))
     layers = dag.topological_sort()
     assert layers is not None
     layer_of = {tc: idx for idx, layer in enumerate(layers) for tc in layer}
@@ -199,26 +199,26 @@ def test_bash_nodes_chain_in_original_order():
 def test_non_bash_precedes_bash():
     dag = ToolDAG([
         _tc("b", "bash", command="x"),
-        _tc("r", "read_file", path="a.txt"),
+        _tc("r", "read", path="a.txt"),
     ], _FakeRegistry({"bash": {"tool_category": "bash"},
-                      "read_file": {"tool_category": "read"}}))
+                      "read": {"tool_category": "read"}}))
     assert ("r", "b") in _edges(dag)
 
 
 def test_read_precedes_write_by_category():
     dag = ToolDAG([
-        _tc("w", "write_file", path="x.txt"),
-        _tc("r", "read_file", path="y.txt"),
-    ], _FakeRegistry({"write_file": {"tool_category": "write"},
-                      "read_file": {"tool_category": "read"}}))
+        _tc("w", "write", path="x.txt"),
+        _tc("r", "read", path="y.txt"),
+    ], _FakeRegistry({"write": {"tool_category": "write"},
+                      "read": {"tool_category": "read"}}))
     assert ("r", "w") in _edges(dag)
 
 
 def test_general_category_node_has_no_category_constraints():
     dag = ToolDAG([
         _tc("g", "mystery"),
-        _tc("r", "read_file", path="a.txt"),
-    ], _FakeRegistry({"read_file": {"tool_category": "read"}}))
+        _tc("r", "read", path="a.txt"),
+    ], _FakeRegistry({"read": {"tool_category": "read"}}))
     assert _edges(dag) == set()
 
 
@@ -228,12 +228,12 @@ def test_general_category_node_has_no_category_constraints():
 def test_topological_sort_assigns_layers_and_order():
     """同路径「读依赖写」→ 写先于读（路径重叠优先于类别默认顺序）。"""
     registry = _FakeRegistry({
-        "read_file": {"tool_category": "read"},
-        "write_file": {"tool_category": "write"},
+        "read": {"tool_category": "read"},
+        "write": {"tool_category": "write"},
     })
     dag = ToolDAG([
-        _tc("r", "read_file", path="a.txt"),
-        _tc("w", "write_file", path="a.txt"),
+        _tc("r", "read", path="a.txt"),
+        _tc("w", "write", path="a.txt"),
     ], registry)
     layers = dag.topological_sort()
     assert layers == [["w"], ["r"]]
@@ -313,11 +313,11 @@ def test_path_exists_handles_missing_nodes_and_self():
 
 def test_path_index_order_matches_original_order():
     """``_build_path_indexes`` 的 order 必须等于 original_order 下标。"""
-    registry = _FakeRegistry({"write_file": {"tool_category": "write"}})
+    registry = _FakeRegistry({"write": {"tool_category": "write"}})
     dag = ToolDAG([
-        _tc("w1", "write_file", path="a.txt"),
-        _tc("w2", "write_file", path="b.txt"),
-        _tc("w3", "write_file", path="c.txt"),
+        _tc("w1", "write", path="a.txt"),
+        _tc("w2", "write", path="b.txt"),
+        _tc("w3", "write", path="c.txt"),
     ], registry)
     write_paths, read_paths, delete_paths, has_any = dag._collect_node_paths()
     write_index, _, _, _ = dag._build_path_indexes(
@@ -331,10 +331,10 @@ def test_path_index_order_matches_original_order():
 
 
 def test_same_path_writes_serialize_with_order_from_index():
-    registry = _FakeRegistry({"write_file": {"tool_category": "write"}})
+    registry = _FakeRegistry({"write": {"tool_category": "write"}})
     dag = ToolDAG([
-        _tc("w1", "write_file", path="a.txt"),
-        _tc("w2", "write_file", path="a.txt"),
+        _tc("w1", "write", path="a.txt"),
+        _tc("w2", "write", path="a.txt"),
     ], registry)
     assert ("w1", "w2") in _edges(dag)
 
@@ -343,9 +343,9 @@ def test_same_path_writes_serialize_with_order_from_index():
 
 
 def test_add_batch_creates_cross_batch_edges():
-    registry = _FakeRegistry({"read_file": {"tool_category": "read"}})
-    dag = ToolDAG([_tc("a", "read_file", path="x.txt")], registry)
-    dag.add_batch([_tc("b", "read_file", path="y.txt")], registry,
+    registry = _FakeRegistry({"read": {"tool_category": "read"}})
+    dag = ToolDAG([_tc("a", "read", path="x.txt")], registry)
+    dag.add_batch([_tc("b", "read", path="y.txt")], registry,
                   prev_non_dispatch_ids={"a"})
     assert "b" in dag.nodes
     assert dag.original_order == ["a", "b"]

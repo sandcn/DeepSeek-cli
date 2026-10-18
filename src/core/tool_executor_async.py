@@ -621,7 +621,7 @@ class ToolScheduler:
             （多模态结构化结果，见 _run_tool_func）。
         """
         # 对齐 Claude Code：工具卡 detail 用关键参数**值**（非 JSON）——已知工具
-        # 显示如 `ReadFile pyproject.toml` 的路径/命令，未知工具显示紧凑 `k=v`
+        # 显示如 `Read pyproject.toml` 的路径/命令，未知工具显示紧凑 `k=v`
         try:
             detail = extract_key_params(tc["name"], tc["arguments"])
             if on_before:
@@ -822,8 +822,8 @@ class ToolScheduler:
                 #   多个并发 SubAgent 的 _execute_global_dag_async（各自
                 #   is_outermost=False）在 _find_next_layer 中可能同时选中同一
                 #   层节点（_results_map/_pending_tc_ids 均未命中）→ 工具被
-                #   重复执行（write_file 写两次、bash 跑两次——用户报告"多个
-                #   SubAgent 并发大量 write_file/bash 偶发异常"的元凶）。
+                #   重复执行（write 写两次、bash 跑两次——用户报告"多个
+                #   SubAgent 并发大量 write/bash 偶发异常"的元凶）。
                 #   改为无论是否最外层，选中节点一律标记 pending，由 finally
                 #   统一 discard，消除选中竞态。
                 for tc_id in target_layer:

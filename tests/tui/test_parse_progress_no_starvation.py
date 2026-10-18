@@ -1,6 +1,6 @@
-"""解析进度行（``⠹ WriteFile 25t 0.11s``）卡住回归测试（2026-09-20 用户报障）。
+"""解析进度行（``⠹ Write 25t 0.11s``）卡住回归测试（2026-09-20 用户报障）。
 
-用户报障：调用 write_file 写较大文件时，解析进度行显示 ``⠹ WriteFile 25t
+用户报障：调用 write 写较大文件时，解析进度行显示 ``⠹ Write 25t
 0.11s`` 后**数字长时间不再变化**（界面仍在刷新、spinner 在转，工具参数数据
 仍在传），过一会才自行恢复。
 
@@ -91,9 +91,9 @@ class TestCoalesce:
     def test_coalesce_keeps_single_latest_parse_info(self):
         """重复入队只保留一条，且为**最新值**。"""
         s = _make_session()
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=25, elapsed=0.11))
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=120, elapsed=0.52))
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=900, elapsed=3.10))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=25, elapsed=0.11))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=120, elapsed=0.52))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=900, elapsed=3.10))
         assert s._cmd_queue.qsize() == 1
         item = _queue_items(s)[0]
         assert item[2].tokens == 900
@@ -102,9 +102,9 @@ class TestCoalesce:
     def test_coalesce_preserves_first_seq_and_priority(self):
         """替换保持首入队 ``(priority, seq)``——堆序与同批插入序不变。"""
         s = _make_session()
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=1, elapsed=0.1))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=1, elapsed=0.1))
         first = _queue_items(s)[0]
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=2, elapsed=0.2))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=2, elapsed=0.2))
         second = _queue_items(s)[0]
         assert second[0] == first[0]
         assert second[1] == first[1]
@@ -113,9 +113,9 @@ class TestCoalesce:
         """合并不改变其它命令的相对顺序（阶段命令仍先出队）。"""
         s = _make_session()
         s.push_cmd(MainPhaseCmd(phase="parsing"))
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=10, elapsed=0.1))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=10, elapsed=0.1))
         s.push_cmd(ContentCmd(text="hello"))
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=99, elapsed=0.9))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=99, elapsed=0.9))
         cmds = _drain_all(s)
         assert [type(c).__name__ for c in cmds] == [
             "MainPhaseCmd", "ContentCmd", "ParseInfoCmd",
@@ -125,8 +125,8 @@ class TestCoalesce:
     def test_coalesce_unfinished_tasks_consistent(self):
         """条目数不变 ⇒ ``unfinished_tasks`` 一致，``queue.join`` 可完成。"""
         s = _make_session()
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=1, elapsed=0.1))
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=2, elapsed=0.2))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=1, elapsed=0.1))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=2, elapsed=0.2))
         assert s._cmd_queue.unfinished_tasks == 1
         drained = _drain_all(s)
         assert len(drained) == 1
@@ -138,9 +138,9 @@ class TestCoalesce:
     def test_coalesce_replace_when_queue_full(self):
         """队列满且已有同类命令时，最新进度**替换**而非丢弃。"""
         s = _make_session(maxsize=1)
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=25, elapsed=0.11))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=25, elapsed=0.11))
         assert s._cmd_queue.qsize() == 1
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=400, elapsed=1.40))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=400, elapsed=1.40))
         assert s._cmd_queue.qsize() == 1
         assert s._cmd_queue_dropped == 0
         assert _queue_items(s)[0][2].tokens == 400
@@ -157,7 +157,7 @@ class TestCoalesce:
     def test_clear_parse_line_replaces_pending_progress(self):
         """解析完成清除命令替换掉待消费的进度命令（最终状态 = 清除）。"""
         s = _make_session()
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=25, elapsed=0.11))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=25, elapsed=0.11))
         s.push_cmd(ParseInfoCmd(tool_names="", tokens=_CLEAR_PARSE_LINE, elapsed=0.0))
         assert s._cmd_queue.qsize() == 1
         assert _queue_items(s)[0][2].tokens == _CLEAR_PARSE_LINE
@@ -183,7 +183,7 @@ class TestAntiStarvation:
         s = _make_session()
         for i in range(200):
             s.push_cmd(ContentCmd(text=f"c{i}"))
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=42, elapsed=4.2))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=42, elapsed=4.2))
         cmds, changed, locked = s._drain_commands_locked()
         assert locked and changed
         assert len(cmds) == s._config.max_batch_size + 1
@@ -195,7 +195,7 @@ class TestAntiStarvation:
         s = _make_session()
         for i in range(120):
             s.push_cmd(ContentCmd(text=f"c{i}"))
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=7, elapsed=0.7))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=7, elapsed=0.7))
         before = s._cmd_queue.qsize()
         s._drain_commands_locked()
         consumed = before - s._cmd_queue.qsize()
@@ -209,9 +209,9 @@ class TestAntiStarvation:
             s.push_cmd(ContentCmd(text=f"c{i}"))
         # 直接注入两条（绕过合并）模拟历史积压
         s._cmd_queue.put((2, next(s._cmd_seq),
-                          ParseInfoCmd(tool_names="WriteFile", tokens=1, elapsed=0.1)))
+                          ParseInfoCmd(tool_names="Write", tokens=1, elapsed=0.1)))
         s._cmd_queue.put((2, next(s._cmd_seq),
-                          ParseInfoCmd(tool_names="WriteFile", tokens=9, elapsed=0.9)))
+                          ParseInfoCmd(tool_names="Write", tokens=9, elapsed=0.9)))
         cmds, _c, _l = s._drain_commands_locked()
         picked = [c for c in cmds if _get_cmd_id(c) == RenderCommand.PARSE_INFO]
         assert len(picked) == 1
@@ -228,7 +228,7 @@ class TestAntiStarvation:
     def test_anti_starvation_not_triggered_when_batch_already_has_state_cmd(self):
         """本批已含状态类命令时不额外捞取（不超发）。"""
         s = _make_session()
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=5, elapsed=0.5))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=5, elapsed=0.5))
         for i in range(10):
             s.push_cmd(ContentCmd(text=f"c{i}"))
         cmds, _c, _l = s._drain_commands_locked()
@@ -239,7 +239,7 @@ class TestAntiStarvation:
         """常规流式帧（少量命令）行为不变：按优先级全量出队。"""
         s = _make_session()
         s.push_cmd(MainPhaseCmd(phase="parsing"))
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=10, elapsed=0.1))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=10, elapsed=0.1))
         cmds, changed, locked = s._drain_commands_locked()
         assert locked and changed
         assert [type(c).__name__ for c in cmds] == ["MainPhaseCmd", "ParseInfoCmd"]
@@ -253,7 +253,7 @@ class TestAntiStarvation:
         s = _make_session()
         for i in range(200):
             s.push_cmd(ContentCmd(text=f"c{i}"))
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=42, elapsed=4.2))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=42, elapsed=4.2))
         s._pop_starved_state_cmd = lambda *a, **k: None  # 模拟修复前（无捞取）
         cmds, _c, _l = s._drain_commands_locked()
         assert len(cmds) == s._config.max_batch_size
@@ -266,7 +266,7 @@ class TestAntiStarvation:
         s = _make_session()
         for i in range(80):
             s.push_cmd(ContentCmd(text=f"c{i}"))
-        s.push_cmd(ParseInfoCmd(tool_names="WriteFile", tokens=33, elapsed=3.3))
+        s.push_cmd(ParseInfoCmd(tool_names="Write", tokens=33, elapsed=3.3))
         s.push_cmd(WriteLineCmd(text="external"))
         dropped = s._drain_queue_safe(keep_content=True)
         assert dropped == 1  # 仅 WRITE_LINE 被丢弃

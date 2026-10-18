@@ -45,7 +45,7 @@ BUILTIN_TOOL_METADATA: Dict[str, dict] = {
         "timeout_estimate": 0, "category": "io", "priority": 10,
         "tool_category": "write", "description": "复制文件或目录",
     },
-    "find": {
+    "glob": {
         "parallel_safe": True, "requires_network": False, "requires_terminal": False,
         "timeout_estimate": 0, "category": "code", "priority": 20,
         "tool_category": "read", "description": "在项目中查找文件和目录",
@@ -65,7 +65,7 @@ BUILTIN_TOOL_METADATA: Dict[str, dict] = {
         "timeout_estimate": 0, "category": "io", "priority": 10,
         "tool_category": "write", "description": "移动文件或目录",
     },
-    "read_file": {
+    "read": {
         "parallel_safe": True, "requires_network": False, "requires_terminal": False,
         "timeout_estimate": 0, "category": "io", "priority": 10,
         "tool_category": "read", "description": "读取文件内容",
@@ -80,7 +80,7 @@ BUILTIN_TOOL_METADATA: Dict[str, dict] = {
         "timeout_estimate": 0, "category": "io", "priority": 10,
         "tool_category": "write", "description": "删除文件或目录",
     },
-    "search": {
+    "grep": {
         "parallel_safe": True, "requires_network": False, "requires_terminal": False,
         "timeout_estimate": 0, "category": "code", "priority": 20,
         "tool_category": "read", "description": "在项目源码中搜索正则模式",
@@ -100,7 +100,7 @@ BUILTIN_TOOL_METADATA: Dict[str, dict] = {
         "timeout_estimate": 0, "category": "general", "priority": 50,
         "tool_category": "general", "description": "操作后台subagent任务",
     },
-    "edit_file": {
+    "edit": {
         "parallel_safe": False, "requires_network": False, "requires_terminal": False,
         "timeout_estimate": 0, "category": "io", "priority": 10,
         "tool_category": "write", "description": "更新文件内容",
@@ -120,7 +120,7 @@ BUILTIN_TOOL_METADATA: Dict[str, dict] = {
         "timeout_estimate": 30, "category": "general", "priority": 40,
         "tool_category": "read", "description": "网页搜索",
     },
-    "write_file": {
+    "write": {
         "parallel_safe": False, "requires_network": False, "requires_terminal": False,
         "timeout_estimate": 0, "category": "io", "priority": 10,
         "tool_category": "write", "description": "写入文件",

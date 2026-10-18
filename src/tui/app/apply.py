@@ -547,7 +547,7 @@ def _append_assistant_replay(model, msg, anon_ids: list | None = None) -> None:
             model.append_committed("content", lines).source_text = content
     # 与正常执行路径（tool_executor_async._execute_one_async 经
     # extract_key_params）一致：工具卡标题 detail 用关键参数**值**
-    # （如 Bash → `pwd`、read_file → `src/main.py`），而非原始 JSON
+    # （如 Bash → `pwd`、read → `src/main.py`），而非原始 JSON
     # （`{"command": "pwd"}`）——历史回放（/editmsg /deitmsg /load
     # 重渲染）与流式执行的工具卡标题显示统一。extract_key_params
     # 兼容 str（JSON 串）与 dict 两种 arguments 形态。
@@ -595,7 +595,7 @@ def _append_tool_replay(model, msg, anon_ids: list | None = None) -> None:
     if not tool_call_id and anon_ids:
         tool_call_id = anon_ids.pop(0)
     content = _content_str(msg.get("content", ""))
-    # ★ 用户需求：read_file 聊天区工具卡只显示标题行（隐藏读到的文件内容）——
+    # ★ 用户需求：read 聊天区工具卡只显示标题行（隐藏读到的文件内容）——
     #   历史回放的工具消息内容为工具返回值（成功读取 = ``文件: <path>\n<内容>``），
     #   命中该形态即标记聊天卡隐藏该内容行；内容行仍保留在工具块数据中
     #   （轨迹 Trace / 详情视图照常可见）。读取失败/空文件等提示不隐藏。
@@ -606,7 +606,7 @@ def _append_tool_replay(model, msg, anon_ids: list | None = None) -> None:
         _extra = getattr(_box, "extra", None) or {}
         _tool_name = _extra.get("tool_name") or ""
         if (
-            _extra.get("tool_name") == "read_file"
+            _extra.get("tool_name") == "read"
             and content.lstrip().startswith("文件: ")
         ):
             chat_hidden = True

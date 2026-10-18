@@ -985,7 +985,7 @@ class TestConfigViewComponent:
                 "key": "skills", "path": "skills", "type": dict,
                 "value": {
                     "enabled": True,
-                    "auto_load": ["read_file", "search"],
+                    "auto_load": ["read", "grep"],
                     "nested": {"level2": [{"x": 1}]},
                 },
                 "value_text": "{...}", "default_text": "{}",
@@ -1012,16 +1012,16 @@ class TestConfigViewComponent:
         assert cv.edit_json_path == ["auto_load"]
         assert isinstance(cv.edit_json_data["auto_load"], list)
 
-        # 编辑 auto_load[0]（标量 read_file）
+        # 编辑 auto_load[0]（标量 read）
         assert handler(_ev("enter")) is True
         cv = self._active_cv(model)
         assert cv.edit_mode == "json_input"
-        assert cv.edit_value == "read_file"
-        cv.edit_value = "write_file"
+        assert cv.edit_value == "read"
+        cv.edit_value = "write"
         assert handler(_ev("enter")) is True
         cv = self._active_cv(model)
         assert cv.edit_mode == "json"
-        assert cv.edit_json_data["auto_load"][0] == "write_file"
+        assert cv.edit_json_data["auto_load"][0] == "write"
 
         # Esc 返回顶层
         assert handler(_ev("escape")) is True
@@ -1061,7 +1061,7 @@ class TestConfigViewComponent:
         cv = self._active_cv(model)
         assert cv.editing is False
         assert cv.edit_json_data["nested"]["level2"][0]["x"] == 42
-        assert cv.edit_json_data["auto_load"][0] == "write_file"
+        assert cv.edit_json_data["auto_load"][0] == "write"
 
 
 # ═══════════════════════════════════════════════════════════

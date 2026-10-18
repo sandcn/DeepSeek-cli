@@ -37,7 +37,7 @@ def test_get_excluded_tools_execute_unchanged():
     excluded = get_excluded_tools("execute")
     for name in _MAIN_RESTRICTED_IN_EXECUTE:
         assert name in excluded
-    assert "read_file" not in excluded
+    assert "read" not in excluded
     assert "bash" not in excluded
 
 

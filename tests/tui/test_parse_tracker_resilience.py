@@ -4,7 +4,7 @@
 外无异常捕获——任一单拍异常（如 ``tool_calls_map`` 条目缺 ``name`` 键的
 KeyError、非字符串工具名导致 ``','.join`` 的 TypeError）都会**静默终止整个
 推送任务**（仅留 "Task exception was never retrieved"），此后解析进度行永远
-停在最后一次成功推送的数值上（工具参数仍在接收 → 用户看到「⠹ WriteFile 25t
+停在最后一次成功推送的数值上（工具参数仍在接收 → 用户看到「⠹ Write 25t
 0.11s 卡住，数据有传过来」）。
 
 修复：单拍计算抽为 ``_push_once``／``_snapshot_progress``，异常被捕获（5s
@@ -33,7 +33,7 @@ class _RecordingDisplay:
         self.done += 1
 
 
-def _entry(name="write_file", args="x" * 40, entry_id="c1"):
+def _entry(name="write", args="x" * 40, entry_id="c1"):
     e = {"id": entry_id, "arguments": "", "_args_parts": [args],
          "_stream_label": entry_id}
     if name is not None:
@@ -61,7 +61,7 @@ class TestTrackerResilience:
 
     def test_missing_name_key_does_not_kill_loop(self):
         """条目缺 ``name`` 键（KeyError）后循环继续推送。"""
-        calls_map = {0: _entry(name="write_file"), 1: _entry(name=None)}
+        calls_map = {0: _entry(name="write"), 1: _entry(name=None)}
         display = _run(calls_map, seconds=0.45)
         assert len(display.updates) >= 3, "异常条目终止了推送循环"
         assert display.done == 1, "finalize 未清除进度行"
@@ -75,7 +75,7 @@ class TestTrackerResilience:
 
     def test_recovery_after_bad_entry_removed(self):
         """异常条目移除后恢复正常推送（进度行数字继续刷新）。"""
-        calls_map = {0: _entry(name="write_file"), 1: _entry(name=None)}
+        calls_map = {0: _entry(name="write"), 1: _entry(name=None)}
         display = _RecordingDisplay()
         tracker = ToolParseTracker(calls_map, display, "main")
 
@@ -99,9 +99,9 @@ class TestTrackerResilience:
 
     def test_normal_path_unchanged(self):
         """正常路径行为不变：约 30Hz 推送，最终清除。"""
-        display = _run({0: _entry(name="write_file")}, seconds=0.45)
+        display = _run({0: _entry(name="write")}, seconds=0.45)
         assert len(display.updates) >= 3
-        assert display.updates[0][0] == "WriteFile"
+        assert display.updates[0][0] == "Write"
         assert display.done == 1
 
     def test_display_exception_does_not_kill_loop(self):
@@ -128,9 +128,9 @@ class TestTrackerResilience:
 
     def test_snapshot_progress_shape(self):
         """``_snapshot_progress`` 返回 (显示名串, token 估算)。"""
-        tracker = ToolParseTracker({0: _entry(name="write_file")})
+        tracker = ToolParseTracker({0: _entry(name="write")})
         name_str, tokens = tracker._snapshot_progress()
-        assert name_str == "WriteFile"
+        assert name_str == "Write"
         assert tokens > 0
 
     def test_snapshot_progress_empty_map(self):

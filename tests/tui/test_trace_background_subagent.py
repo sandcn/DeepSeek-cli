@@ -202,7 +202,7 @@ def test_background_subagent_enter_shows_trace():
         sa.messages += [
             {"role": "assistant", "content": "分析结果", "reasoning_content": "思考过程"},
             {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
-                                                                  "function": {"name": "read_file", "arguments": '{"path": "a.py"}'}}]},
+                                                                  "function": {"name": "read", "arguments": '{"path": "a.py"}'}}]},
             {"role": "tool", "tool_call_id": "c1", "content": "file content"},
             {"role": "assistant", "content": "最终回答"},
         ]

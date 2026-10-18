@@ -696,7 +696,7 @@ class TestContextUsagePercent:
             sys_parts = ["## 规则\n" + "x" * 5000, "环境信息: /home/u"]
             tools = [
                 {"type": "function", "function": {
-                    "name": "read_file", "description": "读文件",
+                    "name": "read", "description": "读文件",
                     "parameters": {"type": "object", "properties": {}}}},
                 {"type": "function", "function": {
                     "name": "bash", "description": "执行命令",

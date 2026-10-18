@@ -51,7 +51,7 @@ def _feed(chunks: int, chunk_size: int = 40):
     async def _run():
         for i in range(chunks):
             part = payload[i * chunk_size:(i + 1) * chunk_size]
-            fn = {"name": "write_file"} if i == 0 else {}
+            fn = {"name": "write"} if i == 0 else {}
             delta = [{
                 "index": 0,
                 "id": "call_1" if i == 0 else None,
@@ -70,7 +70,7 @@ class TestToolParsingDedup:
         """首次检测到工具调用仍发布一次（arguments 为空，进入解析阶段信号）。"""
         display, _ctx = _feed(chunks=1)
         assert len(display.calls) == 1
-        assert display.calls[0][1] == "write_file"
+        assert display.calls[0][1] == "write"
         assert display.calls[0][2] == ""
         assert display.calls[0][3] == "call_1"
 
@@ -110,7 +110,7 @@ class TestToolParsingDedup:
 
         async def _run():
             for i in range(3):
-                fn = {"name": "write_file"} if i == 0 else {}
+                fn = {"name": "write"} if i == 0 else {}
                 await handler.handle(ctx, [{
                     "index": 0,
                     "id": "call_1" if i == 0 else None,
@@ -128,8 +128,8 @@ class TestToolParsingDedup:
         async def _run():
             await handler.handle(ctx, [{
                 "index": 0, "id": "c1",
-                "function": {"name": "write_file", "arguments": "{}"},
+                "function": {"name": "write", "arguments": "{}"},
             }])
 
         asyncio.run(_run())
-        assert ctx.tool_calls_map[0]["name"] == "write_file"
+        assert ctx.tool_calls_map[0]["name"] == "write"

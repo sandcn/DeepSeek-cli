@@ -1,15 +1,15 @@
-"""空模式提词：读取文件只用 read_file，不用 bash 文本工具替代。"""
+"""空模式提词：读取文件只用 read，不用 bash 文本工具替代。"""
 
 from __future__ import annotations
 
 from tests._prompt_semantics import assert_contains, read_prompt
 
 
-def test_read_file_is_the_only_reader():
+def test_read_is_the_only_reader():
     text = read_prompt()
     assert_contains(
         text,
-        "读取用 `read_file`",
+        "读取用 `read`",
         "不要用 bash 的 `cat`/`grep`/`sed`/`echo` 等替代这些工具",
     )
 

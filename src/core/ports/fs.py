@@ -4,7 +4,7 @@
 
 - **Service Definition**（本协议）声明接口；
 - **Service Provider**（默认本地实现 / 远程沙箱实现）实现它；
-- **Consumer**（``read_file`` / ``write_file`` / ``rm`` 等工具）使用它。
+- **Consumer**（``read`` / ``write`` / ``rm`` 等工具）使用它。
 
 把 Provider 指向远程沙箱，也就把读写、遍历、删除一并搬了过去，无需
 Provider 专用 fork。

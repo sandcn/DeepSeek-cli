@@ -568,7 +568,7 @@ class SubAgent(BaseAgent):
             from .internal.agent._tool_context import run_with_tool_context
             # SubAgent 事件 label 为 agent-1 等（与 start_capture 语义一致），
             # 工具输出经 contextvar 定向路由到对应 label。
-            if tc["name"] in ("write_file", "edit_file"):
+            if tc["name"] in ("write", "edit"):
                 coro = _run_file_display(func, display)
             else:
                 coro = func.execute()

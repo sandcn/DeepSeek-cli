@@ -1,6 +1,6 @@
 """Tools 共享常量 — 集中管理排除目录、安全路径、异常类等跨工具常量
 
-消除 search.py / find.py / file_ops.py 等文件之间的 DRY 违反。
+消除 grep.py / glob.py / file_ops.py 等文件之间的 DRY 违反。
 
 「一切皆插件」：内置常量在本模块以字面量声明，并登记到 ``const_registry``
 （``src.plugins.tool_const_entries`` 的独立条目）；消费方经本模块的访问器
@@ -13,8 +13,8 @@ import re
 
 from .const_registry import const, declare_constants  # noqa: F401  （const 供本模块访问器使用）
 
-# ── 默认排除的非源码目录（用于 search / find 等搜索工具） ──
-# 注意：修改此集合会同时影响 search, find 及所有引用它的工具
+# ── 默认排除的非源码目录（用于 grep / glob 等搜索工具） ──
+# 注意：修改此集合会同时影响 grep, glob 及所有引用它的工具
 
 EXCLUDED_DIRS: set[str] = {
     "node_modules", "__pycache__", ".git", ".hg", ".svn",
@@ -30,7 +30,7 @@ EXCLUDED_DIRS: set[str] = {
     ".coverage", "htmlcov",
 }
 
-# ── 默认排除的编译产物/二进制文件扩展名（用于 search 搜索工具） ──
+# ── 默认排除的编译产物/二进制文件扩展名（用于 grep 搜索工具） ──
 # 新增排除模式时在此集合添加即可，自动传播到三路引擎（rg/grep/Python）
 # 注意：与 EXCLUDED_DIRS 职责分离——此集合仅管理文件模式，EXCLUDED_DIRS 仅管理目录
 
@@ -111,7 +111,7 @@ ENCODING_ALIASES: dict[str, str] = {
     'ascii': 'utf-8',
 }
 
-# ── read_file 常量 ──
+# ── read 常量 ──
 
 LARGE_FILE_THRESHOLD = 10 * 1024 * 1024  # 10MB
 
@@ -252,7 +252,7 @@ def should_exclude_dir(dirname: str) -> bool:
 
 # ── 工具显示名映射（UI 显示用：一律取工具注册名的 PascalCase） ──
 # 2026-09-18 用户需求：工具卡/子代理面板显示工具**真实注册名**（如
-# ``ReadFile engine/rendering/FrameGraph.cpp``），不再用 Claude Code 风格
+# ``Read engine/rendering/FrameGraph.cpp``），不再用 Claude Code 风格
 # 缩写（Read/Write/Edit/Task/Grep/RM 等）——UI 名称与模型调用的工具名一一对应。
 # 数据表已上移为表现层数据注册表（``presentation_data`` → ``tool_display_name``）。
 

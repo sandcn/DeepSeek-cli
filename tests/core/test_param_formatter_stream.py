@@ -89,16 +89,16 @@ class TestExtractKeyParamsStream:
 
     def test_complete_json_matches_extract_key_params(self):
         args = json.dumps({"path": "src/main.py", "offset": 3})
-        assert extract_key_params_stream("read_file", args) == extract_key_params(
-            "read_file", args
+        assert extract_key_params_stream("read", args) == extract_key_params(
+            "read", args
         )
-        assert extract_key_params_stream("read_file", args) == "src/main.py"
+        assert extract_key_params_stream("read", args) == "src/main.py"
 
     def test_truncated_string_value(self):
-        assert extract_key_params_stream("read_file", '{"path": "src/ma') == "src/ma"
+        assert extract_key_params_stream("read", '{"path": "src/ma') == "src/ma"
 
     def test_truncated_multi_key_known_tool(self):
-        out = extract_key_params_stream("search", '{"query": "foo", "path": "src/ma')
+        out = extract_key_params_stream("grep", '{"query": "foo", "path": "src/ma')
         assert out == "foo src/ma"
 
     def test_truncated_bash_command(self):
@@ -107,7 +107,7 @@ class TestExtractKeyParamsStream:
 
     def test_long_value_kept_whole(self):
         """超长单值完整返回（不再固定截断到 60——显示层按终端宽度截断）。"""
-        out = extract_key_params_stream("read_file", '{"path": "' + "x" * 100)
+        out = extract_key_params_stream("read", '{"path": "' + "x" * 100)
         assert out == "x" * 100
 
     def test_non_json_falls_back_to_raw(self):
@@ -130,12 +130,12 @@ class TestExtractKeyParamsStream:
         assert out == "c" * 81
 
     def test_empty_input(self):
-        assert extract_key_params_stream("read_file", "") == ""
-        assert extract_key_params_stream("read_file", None) == ""
+        assert extract_key_params_stream("read", "") == ""
+        assert extract_key_params_stream("read", None) == ""
 
     def test_dict_input_passthrough(self):
-        assert extract_key_params_stream("read_file", {"path": "a.py"}) == "a.py"
+        assert extract_key_params_stream("read", {"path": "a.py"}) == "a.py"
 
     def test_unparseable_partial_keeps_raw(self):
         raw = '{"flag": tru'
-        assert extract_key_params_stream("read_file", raw) == raw
+        assert extract_key_params_stream("read", raw) == raw

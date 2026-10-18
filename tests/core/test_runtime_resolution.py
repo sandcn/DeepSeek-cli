@@ -55,9 +55,9 @@ async def test_func_can_use_uses_policy_service(cli_kernel):
 async def test_func_can_use_plan_path_whitelist(cli_kernel):
     from src.tools.base import Func
 
-    allowed, reason = Func.can_use("write_file", "plan", path="src/x.py")
+    allowed, reason = Func.can_use("write", "plan", path="src/x.py")
     assert allowed is False
-    allowed_ok, _ = Func.can_use("write_file", "plan", path=".chat/plan/a.md")
+    allowed_ok, _ = Func.can_use("write", "plan", path=".chat/plan/a.md")
     assert allowed_ok is True
 
 

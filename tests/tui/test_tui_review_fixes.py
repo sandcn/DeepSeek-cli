@@ -159,7 +159,7 @@ class TestOpenToolBoxReuseTimestamp:
         # 追加主体输出（行数 > 1）
         m.append_tool_output("t3", "some output")
         assert len(block.lines) > 1
-        m.open_tool_box("t3", "search", "q")
+        m.open_tool_box("t3", "grep", "q")
         assert block.extra["_tool_started_at"] == old_ts
 
 

@@ -5,7 +5,7 @@
 由 src/core/tool_executor_async.py 消费。
 
 提供 extract_key_params 函数（对齐 Claude Code 工具卡参数显示，非 JSON）：
-- 已知工具名：关键参数**值**（纯值空格连接，如 read_file → `pyproject.toml`）；
+- 已知工具名：关键参数**值**（纯值空格连接，如 read → `pyproject.toml`）；
 - 其他工具/show_all：紧凑 ``k=v`` 空格连接（非 JSON 大括号）。
 
 不做固定字符截断——参数值完整返回，显示截断由渲染层按终端宽度执行
@@ -21,18 +21,16 @@ from typing import Any
 # ★ 2026-08-22（review P2）：提升为模块级常量——原为函数体内局部 dict，
 #   每次调用 extract_key_params 都重建整个字面量（trace 每帧
 #   _records_from_messages 经 _tool_detail 高频调用），上移后可复用。
-#   read_image 与 read_file 同款：显示纯 path 值（修复前走未知工具 k=v → `path=…`）。
+#   read_image 与 read 同款：显示纯 path 值（修复前走未知工具 k=v → `path=…`）。
 _KEY_PARAMS: dict[str, list[str]] = {
-    "read_file": ["path"],
+    "read": ["path"],
     "read_image": ["path"],
-    "write_file": ["path"],
-    "edit_file": ["path"],
+    "write": ["path"],
+    "edit": ["path"],
     "str_replace_editor": ["path"],
     "file_editor": ["path"],
-    "search": ["query", "path"],
-    "find": ["pattern", "path"],
-    "grep": ["pattern", "path"],
-    "glob": ["pattern"],
+    "grep": ["query", "path"],
+    "glob": ["pattern", "path"],
     "bash": ["command"],
     "execute_command": ["command"],
     "ls": ["path"],
@@ -63,7 +61,7 @@ def extract_key_params(
 ) -> str:
     """从工具参数中提取关键参数用于显示（纯参数值，非 JSON）。
 
-    - 已知工具名：关键参数值（纯值空格连接，如 `ReadFile pyproject.toml`）；
+    - 已知工具名：关键参数值（纯值空格连接，如 `Read pyproject.toml`）；
     - 未知工具/show_all：紧凑 ``k=v`` 空格连接（不输出 JSON 大括号）。
 
     ★ 2026-10-05（用户需求：工具卡标题行参数达到终端宽度）：本函数**不再做

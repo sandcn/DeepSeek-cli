@@ -46,7 +46,7 @@ async def test_all_fibers_active(cli_kernel):
 async def test_tools_service_discovers_builtin(cli_kernel):
     tools = cli_kernel.resolve_service("tools")
     names = tools.names()
-    assert "read_file" in names
+    assert "read" in names
     assert "bash" in names
     assert tools.schemas()
 
@@ -59,8 +59,8 @@ async def test_commands_service_registers_builtin(cli_kernel):
 
 async def test_policy_service(cli_kernel):
     policy = cli_kernel.resolve_service("policy")
-    assert "write_file" in policy.excluded_tools("review")
-    assert policy.can_use("read_file", "review")[0] is True
+    assert "write" in policy.excluded_tools("review")
+    assert policy.can_use("read", "review")[0] is True
 
 
 async def test_skills_service(cli_kernel):

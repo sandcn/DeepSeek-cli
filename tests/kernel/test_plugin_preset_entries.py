@@ -112,8 +112,8 @@ def test_registry_api_roundtrip():
         assert "code" not in reg.active_presets()
         undo2()
 
-        undo3 = reg.register_preset(Preset("readonly", "只读", tool_includes=("read_file",)))
-        assert reg.resolve_preset("readonly").allows("read_file") is True
+        undo3 = reg.register_preset(Preset("readonly", "只读", tool_includes=("read",)))
+        assert reg.resolve_preset("readonly").allows("read") is True
         assert reg.resolve_preset("readonly").allows("bash") is False
         assert reg.unregister_preset("readonly") is True
         undo3()

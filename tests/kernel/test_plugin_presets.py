@@ -42,11 +42,11 @@ def test_filter_schemas(cli_kernel):
     presets = cli_kernel.resolve_service("presets")
     schemas = [
         {"type": "function", "function": {"name": "bash"}},
-        {"type": "function", "function": {"name": "read_file"}},
+        {"type": "function", "function": {"name": "read"}},
         {"type": "function", "function": {"name": "web_search"}},
     ]
     names = [s["function"]["name"] for s in presets.filter_schemas("code", schemas)]
-    assert names == ["bash", "read_file"]
+    assert names == ["bash", "read"]
 
 
 def test_apply_to_agent(cli_kernel):
@@ -56,7 +56,7 @@ def test_apply_to_agent(cli_kernel):
     assert agent.preset == "minimal"
     names = {schema["function"]["name"] for schema in agent.tools}
     assert "bash" not in names
-    assert "read_file" in names
+    assert "read" in names
 
 
 def test_create_agent_with_preset(cli_kernel):
@@ -71,7 +71,7 @@ def test_register_custom_preset(cli_kernel):
     from src.plugins.presets import Preset
 
     presets = cli_kernel.resolve_service("presets")
-    presets.register(Preset("readonly", "只读", tool_includes=("read_file", "search")))
-    assert presets.allows("readonly", "read_file") is True
+    presets.register(Preset("readonly", "只读", tool_includes=("read", "grep")))
+    assert presets.allows("readonly", "read") is True
     assert presets.allows("readonly", "bash") is False
     assert presets.unregister("readonly") is True

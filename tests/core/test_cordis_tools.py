@@ -117,7 +117,7 @@ def test_global_disabled_tools_cover_cordis():
     assert set(_CORDIS_TOOLS) <= set(GLOBAL_DISABLED_TOOLS)
     for name in _CORDIS_TOOLS:
         assert is_globally_disabled(name) is True
-    assert is_globally_disabled("read_file") is False
+    assert is_globally_disabled("read") is False
 
 
 async def test_main_agent_schema_excludes_cordis(cli_kernel):

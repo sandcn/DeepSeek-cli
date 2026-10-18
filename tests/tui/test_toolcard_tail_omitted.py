@@ -1,7 +1,7 @@
 """工具卡省略方向（2026-10-10 / 2026-10-13 用户需求）回归测试。
 
 需求：
-  - Search / Find 工具的 toolcard 省略提示由「后置『… 后 N 行省略』」改为
+  - Grep / Glob 工具的 toolcard 省略提示由「后置『… 后 N 行省略』」改为
     「前置『… 前 N 行省略』」——即两者由**头显示**（保留前 N 行）切换为
     **尾显示**（保留后 N 行）。（2026-10-10）
   - Ls 工具同样由头显示改为尾显示——目录列表看结尾更实用，卡片省略从
@@ -9,12 +9,12 @@
 
 链路：
   ``_TOOL_TAIL_TOOLS`` / ``ui_default("tool_tail_tools")`` 含
-  ``search`` / ``find`` / ``ls`` → ``append_tool_output`` 命中尾显示分支
+  ``grep`` / ``glob`` / ``ls`` → ``append_tool_output`` 命中尾显示分支
   → ``_trim_tool_output_tail`` 删除前置行并累计
   ``block.extra["_bash_omitted_lines"]``
   → ``toolcard.tool_card_lines`` 前置「… 前 N 行省略」提示行（不含后置提示）。
 
-同批固化：read_file 仍为头显示（保留前 N 行 + 后置「… 后 N 行省略」），
+同批固化：read 仍为头显示（保留前 N 行 + 后置「… 后 N 行省略」），
 bash 仍为尾显示，防本次改动误伤其它工具。
 """
 
@@ -43,18 +43,18 @@ def _fill(model: AppModel, tool_id: str, segments: list[str]) -> None:
     model.append_tool_output(tool_id, "\n".join(segments))
 
 
-# ── 配置层：search / find / ls 归入尾显示工具集合 ──────────
+# ── 配置层：grep / glob / ls 归入尾显示工具集合 ──────────
 
 
 def test_search_find_in_tail_tools_not_head_tools():
-    assert "search" in _TOOL_TAIL_TOOLS
-    assert "find" in _TOOL_TAIL_TOOLS
-    assert "search" not in _TOOL_HEAD_TOOLS
-    assert "find" not in _TOOL_HEAD_TOOLS
-    assert "search" in _tool_tail_tools()
-    assert "find" in _tool_tail_tools()
-    assert "search" not in _tool_head_tools()
-    assert "find" not in _tool_head_tools()
+    assert "grep" in _TOOL_TAIL_TOOLS
+    assert "glob" in _TOOL_TAIL_TOOLS
+    assert "grep" not in _TOOL_HEAD_TOOLS
+    assert "glob" not in _TOOL_HEAD_TOOLS
+    assert "grep" in _tool_tail_tools()
+    assert "glob" in _tool_tail_tools()
+    assert "grep" not in _tool_head_tools()
+    assert "glob" not in _tool_head_tools()
 
 
 def test_defaults_registry_matches_constants():
@@ -62,12 +62,12 @@ def test_defaults_registry_matches_constants():
     assert tuple(ui_default("tool_head_tools")) == _TOOL_HEAD_TOOLS
     assert "bash" in _TOOL_TAIL_TOOLS
     assert "execute_command" in _TOOL_TAIL_TOOLS
-    assert "find" in _TOOL_TAIL_TOOLS
+    assert "glob" in _TOOL_TAIL_TOOLS
     # ★ 2026-10-13 用户需求：ls 由头显示改为尾显示。
     assert "ls" in _TOOL_TAIL_TOOLS
     assert "ls" not in _TOOL_HEAD_TOOLS
-    assert "read_file" in _TOOL_HEAD_TOOLS
-    assert "read_file" not in _TOOL_TAIL_TOOLS
+    assert "read" in _TOOL_HEAD_TOOLS
+    assert "read" not in _TOOL_TAIL_TOOLS
 
 
 def test_tool_tail_tools_configurable(monkeypatch):
@@ -83,7 +83,7 @@ def test_tool_tail_tools_configurable(monkeypatch):
     assert _tool_tail_tools() == ("custom_tool",)
 
 
-# ── 行为层：search / find 输出保留尾行 + 累计前省略计数 ──────
+# ── 行为层：grep / glob 输出保留尾行 + 累计前省略计数 ──────
 
 
 def _tool_block(tool_name: str, detail: str, segments: list[str]):
@@ -96,7 +96,7 @@ def _tool_block(tool_name: str, detail: str, segments: list[str]):
 
 def test_search_tail_trim_keeps_last_lines():
     segments = [f"row-{i}" for i in range(12)]
-    _, block = _tool_block("search", "foo in:src", segments)
+    _, block = _tool_block("grep", "foo in:src", segments)
     # 标题行 + 保留最后 3 行
     assert len(block.lines) == 1 + 3
     assert block.extra.get("_bash_omitted_lines") == 12 - 3
@@ -107,7 +107,7 @@ def test_search_tail_trim_keeps_last_lines():
 
 def test_find_tail_trim_keeps_last_lines():
     segments = [f"file-{i}.py" for i in range(10)]
-    _, block = _tool_block("find", "*.py", segments)
+    _, block = _tool_block("glob", "*.py", segments)
     assert len(block.lines) == 1 + 3
     assert block.extra.get("_bash_omitted_lines") == 10 - 3
     assert block.extra.get("_head_omitted_lines", 0) == 0
@@ -116,7 +116,7 @@ def test_find_tail_trim_keeps_last_lines():
 
 
 def test_tail_trim_no_omit_below_threshold():
-    _, block = _tool_block("search", "foo", ["only-1", "only-2"])
+    _, block = _tool_block("grep", "foo", ["only-1", "only-2"])
     assert len(block.lines) == 1 + 2
     assert block.extra.get("_bash_omitted_lines", 0) == 0
     assert block.extra.get("_head_omitted_lines", 0) == 0
@@ -124,7 +124,7 @@ def test_tail_trim_no_omit_below_threshold():
 
 def test_search_card_shows_leading_omitted_marker():
     segments = [f"row-{i}" for i in range(12)]
-    _, block = _tool_block("search", "foo in:src", segments)
+    _, block = _tool_block("grep", "foo in:src", segments)
     rows = tool_card_lines(block, _WIDTH)
     text = _plain(rows)
     assert "… 前 9 行省略" in text
@@ -137,7 +137,7 @@ def test_search_card_shows_leading_omitted_marker():
 
 def test_find_card_shows_leading_omitted_marker():
     segments = [f"file-{i}.py" for i in range(10)]
-    _, block = _tool_block("find", "*.py", segments)
+    _, block = _tool_block("glob", "*.py", segments)
     text = _plain(tool_card_lines(block, _WIDTH))
     assert "… 前 7 行省略" in text
     assert "… 后" not in text
@@ -148,7 +148,7 @@ def test_find_card_shows_leading_omitted_marker():
 
 def test_search_card_shows_tail_content_order():
     segments = [f"row-{i}" for i in range(20)]
-    _, block = _tool_block("search", "foo", segments)
+    _, block = _tool_block("grep", "foo", segments)
     text = _plain(tool_card_lines(block, _WIDTH))
     assert "… 前 17 行省略" in text
     for i in (17, 18, 19):
@@ -204,10 +204,10 @@ def test_ls_below_threshold_no_omitted_marker():
 # ── 防回归：其它工具省略方向不变 ─────────────────────────
 
 
-def test_read_file_keeps_head_omitted_marker():
+def test_read_keeps_head_omitted_marker():
     m = AppModel()
     m.width = _WIDTH
-    m.open_tool_box("r1", "read_file", "src/main.py")
+    m.open_tool_box("r1", "read", "src/main.py")
     _fill(m, "r1", [f"line-{i}" for i in range(9)])
     block = m.tool_boxes["r1"]
     assert block.extra.get("_head_omitted_lines") == 9 - 3

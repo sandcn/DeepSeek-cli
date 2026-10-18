@@ -33,10 +33,10 @@ def test_full_args_str_empty():
 
 def test_convert_tool_calls_map():
     tool_calls_map = {
-        0: {"id": "call_1", "name": "read_file", "arguments": '{"path": "x"}'},
+        0: {"id": "call_1", "name": "read", "arguments": '{"path": "x"}'},
     }
     result = convert_tool_calls_map(tool_calls_map)
-    assert result == [{"id": "call_1", "name": "read_file", "arguments": {"path": "x"}}]
+    assert result == [{"id": "call_1", "name": "read", "arguments": {"path": "x"}}]
 
 
 def test_convert_tool_calls_map_sorted_by_index():
@@ -64,11 +64,11 @@ def test_convert_tool_calls_map_invalid_json_failed_id():
 # ── parse_raw_tool_calls ──────────────────────────────────
 
 def test_parse_raw_tool_calls():
-    raw = [{"id": "c1", "function": {"name": "read_file", "arguments": '{"path": "x"}'}}]
+    raw = [{"id": "c1", "function": {"name": "read", "arguments": '{"path": "x"}'}}]
     tool_calls, total_args, names = parse_raw_tool_calls(raw)
-    assert tool_calls == [{"id": "c1", "name": "read_file", "arguments": {"path": "x"}}]
+    assert tool_calls == [{"id": "c1", "name": "read", "arguments": {"path": "x"}}]
     assert total_args == '{"path": "x"}'
-    assert names == ["read_file"]
+    assert names == ["read"]
 
 
 def test_parse_raw_tool_calls_empty_arguments():

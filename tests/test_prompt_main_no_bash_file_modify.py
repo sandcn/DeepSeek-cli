@@ -9,7 +9,7 @@ def test_bash_cannot_modify_code_files():
     text = read_prompt()
     assert_contains(
         text,
-        "写入或修改用 `write_file`/`edit_file`",
+        "写入或修改用 `write`/`edit`",
         "不要用 bash 直接改写代码文件",
         "确需例外时说明原因",
     )

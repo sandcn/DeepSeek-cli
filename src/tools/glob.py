@@ -1,5 +1,5 @@
 """
-find — 文件查找工具
+glob — 文件查找工具
 
 在项目中查找文件和目录，支持 glob 模式匹配、类型(file/dir)过滤、深度控制。
 使用纯 Python 实现（pathlib + os.walk），不依赖外部命令。
@@ -24,20 +24,20 @@ SMALL_DIR_ENTRY_LIMIT = 200   # 小型目录条目阈值（直接同步遍历）
 SMALL_DIR_DEPTH_LIMIT = 3     # 小型目录深度阈值
 
 
-class FindFunc(Func):
+class GlobFunc(Func):
     """文件查找工具 — 在项目中查找文件和目录"""
 
-    name = "find"
+    name = "glob"
 
     @classmethod
     def to_tool_schema(cls):
         return {
             "type": "function",
             "function": {
-                "name": "find",
+                "name": "glob",
                 "description": (
                     "在项目中按文件名模式（fnmatch 通配符）查找文件和目录，返回匹配路径列表。"
-                    "引用任何文件路径前先用 find 确认其存在。"
+                    "引用任何文件路径前先用 glob 确认其存在。"
                     "pattern 支持 * ? [...] 通配符，多模式空格分隔（OR）；"
                     "path 限定根目录，type 过滤 file/dir，depth 控制深度（0 无限制）。"
                     "自动排除 node_modules/.git/__pycache__ 等。无结果返回明确提示。"

@@ -92,12 +92,12 @@ class Func(abc.ABC):
         if tool_name in excluded:
             return (False, f"工具 '{tool_name}' 不可用于 '{agent_type}' 类型 agent，"
                     f"该 agent 类型的工具白名单已排除此工具")
-        # 路径白名单校验：plan agent 使用 write_file / edit_file / mkdir 时限制写入目录
+        # 路径白名单校验：plan agent 使用 write / edit / mkdir 时限制写入目录
         # （与 file_base._validate_path_and_size / mkdir.execute 共用
         #  get_plan_allowed_dir + is_path_within_dir，realpath 解析符号链接防绕过）。
         # 白名单标识来自 Agent 类型注册表（类型是清单中的独立插件条目）。
         from ..core.agent_types import path_whitelist as _path_whitelist
-        if path is not None and _path_whitelist(agent_type) == "plan" and tool_name in ('write_file', 'edit_file', 'mkdir'):
+        if path is not None and _path_whitelist(agent_type) == "plan" and tool_name in ('write', 'edit', 'mkdir'):
             from .file_ops import get_plan_allowed_dir, is_path_within_dir
             allowed_dir = get_plan_allowed_dir()
             agent_label = "plan agent"
@@ -170,7 +170,7 @@ class Func(abc.ABC):
             tool_id: 可选工具调用 ID。为空时从 contextvar 解析归属；
                 仍为空回退 "assistant"（兼容旧行为）。
             chat_hidden: 聊天区工具卡是否隐藏该输出行（默认 False）。
-                read_file 成功读取的整文件内容置 True——聊天卡只显示标题行，
+                read 成功读取的整文件内容置 True——聊天卡只显示标题行，
                 内容仍保留在工具块数据中（轨迹 Trace 照常可见）。
         """
         from ..core.events.display_types import ToolOutputChunkEvent
@@ -271,7 +271,7 @@ class Func(abc.ABC):
         self, header: str, extra_info: str = "",
         error_prefixes: tuple[str, ...] = ("(",),
     ) -> str:
-        """display() 通用模板 — ls/find/search 统一使用。
+        """display() 通用模板 — ls/glob/grep 统一使用。
 
         1. 用 publish_output 输出 header（及可选的 extra_info）
         2. await self.execute()
@@ -379,8 +379,8 @@ def tool_metadata(
 
     使用方式:
         @tool_metadata(parallel_safe=True, requires_network=True, category="io")
-        class ReadFile(Func):
-            name = "read_file"
+        class Read(Func):
+            name = "read"
             ...
     """
     def decorator(cls):

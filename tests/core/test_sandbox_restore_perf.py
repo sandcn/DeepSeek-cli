@@ -19,7 +19,7 @@ from src.core.internal.shared._sandbox_history import _FileHistory, _read_text_i
 
 
 def _record(fh, path, before, after, idx=1):
-    fh.record(path, before, after, idx, "write_file", "file")
+    fh.record(path, before, after, idx, "write", "file")
 
 
 # ── _read_text_if_file 边界 ────────────────────────────────

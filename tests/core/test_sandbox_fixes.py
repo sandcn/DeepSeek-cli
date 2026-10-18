@@ -369,15 +369,15 @@ async def test_directory_tools_record_and_restore_dirs(clean_sandbox):
 
 
 @pytest.mark.asyncio
-async def test_write_file_records_created_parent_dirs(clean_sandbox, tmp_path):
-    """write_file 隐式创建的父目录应记录并可回滚（批量记录）。"""
-    from src.tools.write_file import WriteFileFunc
+async def test_write_records_created_parent_dirs(clean_sandbox, tmp_path):
+    """write 隐式创建的父目录应记录并可回滚（批量记录）。"""
+    from src.tools.write import WriteFunc
 
     sm = SandboxManager()
     set_sandbox_manager(sm)
     set_current_message_index(1)
     target = tmp_path / "a" / "b" / "c.txt"
-    res = await WriteFileFunc(path=str(target), content="hi").execute()
+    res = await WriteFunc(path=str(target), content="hi").execute()
     assert "写入成功" in res
     assert target.read_text() == "hi"
 

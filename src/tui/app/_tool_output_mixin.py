@@ -185,7 +185,7 @@ class _ToolOutputMixin:
     def append_tool_output(self, tool_id: str, text: str, chat_hidden: bool = False) -> None:
         """追加工具输出行到对应分组（卡片主体行）。
 
-        ``chat_hidden=True``（用户需求：read_file 聊天区工具卡只显示标题行）——
+        ``chat_hidden=True``（用户需求：read 聊天区工具卡只显示标题行）——
         追加的行登记到 ``block.extra["_chat_hidden_lines"]``，聊天区工具卡渲染
         时跳过这些行（内容仍保留在 ``block.lines``，轨迹 Trace / 详情视图可见）。
 
@@ -211,7 +211,7 @@ class _ToolOutputMixin:
         block = self._output_target_block(tool_id, text, "append_tool_output")
         if block is None:
             return
-        # ★ 用户需求（read_file 聊天卡隐藏内容）：chat_hidden 输出行登记到
+        # ★ 用户需求（read 聊天卡隐藏内容）：chat_hidden 输出行登记到
         #   ``_chat_hidden_lines``（行对象引用）——聊天卡渲染跳过（数据保留，
         #   Trace 可见）。非 hidden 调用零开销（hidden_rows 保持 None）。
         hidden_rows = (
@@ -227,7 +227,7 @@ class _ToolOutputMixin:
             segs.pop()
         for seg in segs:
             l = AnsiLine.of("  ", _S_TOOL_OUT)
-            # ★ 工具输出可能含 Pygments 高亮 ANSI 序列（read_file 等）。
+            # ★ 工具输出可能含 Pygments 高亮 ANSI 序列（read 等）。
             #   原样保留进 Run.text 会让宽度测量把转义码当可见字符（宽度膨胀→
             #   误触发 wrap），wrap_line 逐字符截断把转义序列拦腰截断（如残留
             #   ;49;00m）渲染错乱。经 ansi_to_line 解析为带样式 Run，宽度测量
@@ -237,18 +237,18 @@ class _ToolOutputMixin:
             block.lines.append(l)
             if hidden_rows is not None:
                 hidden_rows.append(l)
-        # 尾显示工具（bash/execute_command/search/find/ls）：输出超过阈值行数时只
+        # 尾显示工具（bash/execute_command/grep/glob/ls）：输出超过阈值行数时只
         # 保留最后 N 行（tail 显示，对齐 Claude Code 收敛冗长输出；修剪后行数
         # ≤ N+1，不触发增量提交）。卡片渲染前置「… 前 N 行省略」提示。
         if block.extra.get("tool_name") in _tool_tail_tools():
             self._trim_tool_output_tail(block, _bash_output_tail_lines())
-        # 头显示工具（read_file）：输出超过阈值行数时只保留前 N 行（head
+        # 头显示工具（read）：输出超过阈值行数时只保留前 N 行（head
         # 显示，对齐终端 head 语义——文件预览等有序输出看开头即可，防卡片
         # 撑爆）。卡片渲染后置「… 后 N 行省略」提示。
         if block.extra.get("tool_name") in _tool_head_tools():
             self._trim_tool_output_head(block, _tool_head_lines())
         # ★ 用户需求：trim 删除行后同步清理聊天卡隐藏行登记——被删行对象滞留
-        #   会被 id() 复用误判（隐藏错误行）。read_file 走 head trim。
+        #   会被 id() 复用误判（隐藏错误行）。read 走 head trim。
         if hidden_rows is not None:
             self._prune_chat_hidden(block)
         # ★ 方向4：增量提交阈值——长工具输出不每帧全量重渲染（超过阈值即提交
@@ -417,7 +417,7 @@ class _ToolOutputMixin:
     def _trim_tool_output_tail(self, block, keep: int) -> None:
         """工具块输出修剪为最后 keep 行（保留标题行 block.lines[0]）。
 
-        bash/execute_command/search/find/ls 尾显示：输出超过 keep 行时删除前置输出
+        bash/execute_command/grep/glob/ls 尾显示：输出超过 keep 行时删除前置输出
         行（下标 1..N-keep），累计省略数记入 ``block.extra["_bash_omitted_lines"]``
         （卡片渲染时前置「… 前 N 行省略」提示）；同步
         ``committed_line_count``（已提交行被删则回退计数，防越界/重复提交）。
@@ -467,7 +467,7 @@ class _ToolOutputMixin:
     def _trim_tool_output_head(self, block, keep: int) -> None:
         """工具块输出修剪为前 keep 行（保留标题行 block.lines[0]）。
 
-        read_file 头显示：输出超过 keep 行时删除后置输出行
+        read 头显示：输出超过 keep 行时删除后置输出行
         （下标 1+keep..末尾），累计省略数记入 ``block.extra["_head_omitted_lines"]``
         （卡片渲染时在主体行后置「… 后 N 行省略」提示）；同步
         ``committed_line_count``（已提交行被删则回退计数，防越界/重复提交）。
@@ -495,7 +495,7 @@ class _ToolOutputMixin:
             )
             return
         # 尾部换行符产生的空行（text.split("\n") 尾空 seg → 仅前缀的空行）不
-        # 算内容行——先剔除，避免「前 N 行」计数被尾空行占位（如 read_file
+        # 算内容行——先剔除，避免「前 N 行」计数被尾空行占位（如 read
         # 整文件输出以 \n 结尾时尾空行无意义，会挤占前 3 行显示位）。
         # ★ P1-1（同 tail trim）：删除行同步清理 ``_tool_card_body_cache``
         #   行键，防被删行对象被缓存持有（内存线性增长）。

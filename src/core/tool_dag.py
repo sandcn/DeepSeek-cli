@@ -297,11 +297,11 @@ class ToolDAG:
             (write_paths, read_paths, delete_paths): 写入路径集合、读取路径集合、删除路径集合
 
         各工具的路径提取规则：
-        - write_file/edit_file/mk → path 为写入路径
+        - write/edit/mk → path 为写入路径
         - rm → path 为删除路径（文件被移除，非写入）
         - cp → destination 为写入路径，source 为读取路径
         - mv → destination 为写入路径，source 为删除路径（源被移除）
-        - read_file/search/find/ls → path 为读取路径
+        - read/grep/glob/ls → path 为读取路径
         - bash → 无法静态分析，不提取
         """
         write_paths: set[str] = set()
@@ -317,12 +317,12 @@ class ToolDAG:
                 return os.path.abspath(p.strip())
 
         # ── path 参数 ──
-        # write_file/edit_file → 写入；rm → 删除；mk → 创建
-        # read_file/search/find/ls → 读取
+        # write/edit → 写入；rm → 删除；mk → 创建
+        # read/grep/glob/ls → 读取
         path_val = arguments.get("path")
         np = _normalize(path_val) if path_val else None
         if np:
-            if name in ("read_file", "search", "find", "ls"):
+            if name in ("read", "grep", "glob", "ls"):
                 read_paths.add(np)
             elif name == "rm":
                 delete_paths.add(np)
@@ -334,7 +334,7 @@ class ToolDAG:
         nfp = _normalize(fp_val) if fp_val else None
         if nfp:
             _logger.debug("_extract_tool_paths: 工具 '%s' 使用了 file_path 参数: '%s'", name, nfp)
-            if name in ("read_file", "search", "find", "ls"):
+            if name in ("read", "grep", "glob", "ls"):
                 read_paths.add(nfp)
             elif name == "rm":
                 delete_paths.add(nfp)

@@ -343,7 +343,7 @@ class TestToolsTokensCache:
     def _tools():
         return [
             {"type": "function", "function": {
-                "name": "read_file", "description": "读文件",
+                "name": "read", "description": "读文件",
                 "parameters": {"type": "object", "properties": {}}}},
             {"type": "function", "function": {
                 "name": "bash", "description": "执行命令",
@@ -448,7 +448,7 @@ class TestPipelineIntegration:
         chunks = [
             {"choices": [{"delta": {"tool_calls": [{
                 "index": 0, "id": "call_1",
-                "function": {"name": "write_file", "arguments": args[i:i + 200]},
+                "function": {"name": "write", "arguments": args[i:i + 200]},
             }]}}]}
             for i in range(0, len(args), 200)
         ]
@@ -464,11 +464,11 @@ class TestPipelineIntegration:
         msgs.append({
             "role": "assistant", "content": "",
             "tool_calls": [{"id": "call_1", "type": "function",
-                            "function": {"name": "write_file", "arguments": args}}],
+                            "function": {"name": "write", "arguments": args}}],
         })
         cm.refresh_usage()
         pct_after = get_context_usage_percent()
-        # 结束后不低于流式期间（含「[调用工具 write_file(...)]」包装，略高），
+        # 结束后不低于流式期间（含「[调用工具 write(...)]」包装，略高），
         # 无回落跳变（修复前工具参数不计入 → 结束后反而跳变/流式期间不动）。
         assert pct_after >= pct_stream
 

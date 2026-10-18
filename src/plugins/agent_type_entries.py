@@ -9,7 +9,7 @@
         name: map                        # 内置类型 id（可被 patch/overlay 定位）
         # prompt_builder: build_map_agent_prompt   # 可选：覆盖提示词端口方法
         # agent_name: map                          # 可选：提示词文件基名
-        # exclusions: [bash, write_file]           # 可选：覆盖排除工具集合
+        # exclusions: [bash, write]           # 可选：覆盖排除工具集合
         # low_model: true                          # 可选：优先低优先级模型
         # path_whitelist: plan                     # 可选：写入路径白名单标识
         # mcp_agent_type: execute                  # 可选：MCP 章节权限类型

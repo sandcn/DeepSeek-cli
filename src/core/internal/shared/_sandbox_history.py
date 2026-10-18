@@ -132,7 +132,7 @@ class _FileHistory:
         content_before: Optional[str],
         content_after: Optional[str],
         message_index: int,
-        tool_name: str = "write_file",
+        tool_name: str = "write",
         record_type: str = "file",
     ) -> FileChangeRecord:
         """记录文件修改（仅写入 file_history，不涉及 message_history）。"""

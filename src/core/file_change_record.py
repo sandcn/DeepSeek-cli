@@ -23,7 +23,7 @@ class FileChangeRecord:
 
     def __init__(self, file_path: str, content_before: Optional[str],
                  content_after: Optional[str], message_index: int,
-                 timestamp: float = None, tool_name: str = "write_file",
+                 timestamp: float = None, tool_name: str = "write",
                  record_type: str = "file"):
         """
         初始化文件修改记录

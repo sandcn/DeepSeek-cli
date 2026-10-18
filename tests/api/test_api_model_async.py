@@ -293,14 +293,14 @@ def test_call_sync_async_tool_calls_set_parse_elapsed(monkeypatch):
         "content": "",
         "reasoning_content": "",
         "usage": {"input": 5, "output": 10},
-        "tool_calls": [{"id": "t1", "name": "read_file", "arguments": {"path": "x.py"}}],
+        "tool_calls": [{"id": "t1", "name": "read", "arguments": {"path": "x.py"}}],
     })
     seen = {}
     monkeypatch.setattr(ma, "set_tool_parse_elapsed", lambda e: seen.setdefault("elapsed", e))
     monkeypatch.setattr(ma, "time", _FakeMonotonic(1.0))  # 固定时间 → elapsed 0.0
 
     result = asyncio.run(_call_sync_async([{"role": "user", "content": "hi"}], "m", []))
-    assert result[3][0]["name"] == "read_file"
+    assert result[3][0]["name"] == "read"
     assert result[2]["tool_parse_elapsed"] == 0.0
     assert "elapsed" in seen
 

@@ -39,8 +39,8 @@ def _make_sm(tmp_path):
     from src.core.sandbox_manager import SandboxManager
 
     sm = SandboxManager()
-    sm.record_file_change(str(tmp_path / "a.py"), "old\n", "new\n", 3, tool_name="write_file")
-    sm.record_file_change(str(tmp_path / "sub" / "b.py"), None, "x\n", 5, tool_name="write_file")
+    sm.record_file_change(str(tmp_path / "a.py"), "old\n", "new\n", 3, tool_name="write")
+    sm.record_file_change(str(tmp_path / "sub" / "b.py"), None, "x\n", 5, tool_name="write")
     return sm
 
 
@@ -388,12 +388,12 @@ def test_records_from_messages_fills_message_index():
         {"role": "user", "content": "hi"},
         {
             "role": "assistant", "content": "yo",
-            "tool_calls": [{"id": "c1", "function": {"name": "write_file", "arguments": "{}"}}],
+            "tool_calls": [{"id": "c1", "function": {"name": "write", "arguments": "{}"}}],
         },
         {"role": "tool", "tool_call_id": "c1", "content": "ok"},
     ]
     records, _rows = _records_from_messages(messages)
-    tool_recs = [r for r in records if r.kind == "tool" and r.tool_name == "write_file"]
+    tool_recs = [r for r in records if r.kind == "tool" and r.tool_name == "write"]
     assert tool_recs and tool_recs[0].message_index == 2
 
 
@@ -405,7 +405,7 @@ def test_sandbox_change_rows_matches(tmp_path):
     sm = _make_sm(tmp_path)
     model = AppModel()
     model.sandbox_source = lambda: sm
-    rec = TraceRecord(kind="tool", tool_name="write_file", message_index=3)
+    rec = TraceRecord(kind="tool", tool_name="write", message_index=3)
     rows = _sandbox_change_rows(model, rec, 60)
     assert rows
     assert any("文件变更" in r.text for row in rows for r in row)
@@ -424,11 +424,11 @@ def test_sandbox_change_rows_no_match(tmp_path):
     assert _sandbox_change_rows(model, TraceRecord(kind="content", message_index=3), 60) == []
     # message_index 未知
     assert _sandbox_change_rows(
-        model, TraceRecord(kind="tool", tool_name="write_file", message_index=-1), 60,
+        model, TraceRecord(kind="tool", tool_name="write", message_index=-1), 60,
     ) == []
     # 未注入沙盒源
     assert _sandbox_change_rows(
-        AppModel(), TraceRecord(kind="tool", tool_name="write_file", message_index=3), 60,
+        AppModel(), TraceRecord(kind="tool", tool_name="write", message_index=3), 60,
     ) == []
     # 工具名不匹配
     assert _sandbox_change_rows(
@@ -519,7 +519,7 @@ def test_f11_open_and_auto_update_on_sandbox_growth(tmp_path):
 
         # 流式期间 AI 工具写入新文件 → 视图自动跟进（渲染期刷新，无需命令）
         sm.record_file_change(
-            str(tmp_path / "c.py"), None, "y\n", 7, tool_name="write_file",
+            str(tmp_path / "c.py"), None, "y\n", 7, tool_name="write",
         )
         _render(model, ChangesView)  # 本帧渲染后（提交期）刷新器重建数据
         out = _render(model, ChangesView)  # 下一帧显示新数据（30Hz 认知即自动更新）
@@ -598,5 +598,5 @@ def test_sandbox_change_rows_without_sandbox(tmp_path):
     model = AppModel()
     model.sandbox_source = lambda: None
     assert _sandbox_change_rows(
-        model, TraceRecord(kind="tool", tool_name="write_file", message_index=3), 60,
+        model, TraceRecord(kind="tool", tool_name="write", message_index=3), 60,
     ) == []

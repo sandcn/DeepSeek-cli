@@ -8,7 +8,7 @@
 对齐 Claude Code 的极简样式（方案 A，2026-08-06）：
   - 标题行：``状态前缀 + 工具名 + 参数``（如 ``0.1 UserSelect foo``）——去掉
     ▎ 引导线、去掉 emoji 工具图标、detail 用空格分隔（Claude Code
-    ``ReadFile src/main.py`` 语义，非 ``·``）；状态前缀恒为 runs[0]
+    ``Read src/main.py`` 语义，非 ``·``）；状态前缀恒为 runs[0]
     （close_tool_box 原位翻转前缀与 ``startswith`` 测试不变式依赖）；
     ★ 2026-10-09 用户需求：工具卡标题前缀 = **运行时间**——运行中为实时
     运行时间（``format_elapsed``：<60s 纯数字 ``0.1``；≥60s ``1:05``）替代
@@ -592,7 +592,7 @@ def tool_card_lines(block, width, start=0, stop=None):
         running = _status == "running" and not block.closed
         # ★ Claude Code 极简样式（2026-08-06 用户需求）：标题行 = 状态图标 +
         #   工具名（类别色，加粗）+ 参数（空格分隔，dim）——去掉 ▎ 引导线、
-        #   emoji 工具图标（工具注册名语义，如 ``ReadFile src/main.py``）。工具名
+        #   emoji 工具图标（工具注册名语义，如 ``Read src/main.py``）。工具名
         #   按类别着色——运行中在类别色邻域呼吸（12s 周期，与 detail 呼吸
         #   同步；同 _cat_fg 值，整体同色脉动），关闭/提交后静态类别色
         #   （frozen 缓存不再重算，零额外渲染成本）。runs[0] 保持状态图标
@@ -639,13 +639,13 @@ def tool_card_lines(block, width, start=0, stop=None):
     _md_lines = None
     if start == 0 and block.extra.get("_tool_md_source") is not None:
         _md_lines = _tool_md_body_lines(block, width)
-    # ★ 用户需求（read_file 聊天卡只显示标题行）：聊天卡隐藏行集合
+    # ★ 用户需求（read 聊天卡只显示标题行）：聊天卡隐藏行集合
     #   （``block.extra["_chat_hidden_lines"]`` 行对象引用，由
     #   ``append_tool_output(chat_hidden=True)`` 登记）——按 id() 判定跳过；
     #   数据仍保留在 block.lines（轨迹 Trace / 详情视图可见）。
     _hidden_rows = block.extra.get("_chat_hidden_lines")
     _hidden_ids = {id(l) for l in _hidden_rows} if _hidden_rows else None
-    # 全隐藏判定（read_file 成功读取：body 全部为隐藏行）——跳过省略提示行
+    # 全隐藏判定（read 成功读取：body 全部为隐藏行）——跳过省略提示行
     # （否则聊天卡残留「… 后 N 行省略」，破坏「只显示标题行」语义）。
     _hidden_body_count = 0
     _body_count = 0
@@ -666,7 +666,7 @@ def tool_card_lines(block, width, start=0, stop=None):
         block.extra.get("_bash_omitted_lines", 0),
         block.extra.get("_head_omitted_lines", 0),
         # 隐藏集合按行对象身份入键：只比较长度时，替换为另一批同数量隐藏
-        # 行（如 read_file 重试/不同文件）会错误命中旧正文缓存。
+        # 行（如 read 重试/不同文件）会错误命中旧正文缓存。
         tuple(id(line) for line in _hidden_rows) if _hidden_rows else (),
         bg_style.bg,
         # ★ markdown 工具卡：渲染版本 / 正文行数参与键（新 chunk 或 resize
@@ -685,8 +685,8 @@ def tool_card_lines(block, width, start=0, stop=None):
         if _md_lines is not None:
             _body_ansi = list(_md_lines)
         else:
-            # 尾显示工具（bash/execute_command/search/find/ls）：前置省略提示行
-            # 「… 前 N 行省略」（仅首次提交 start==0）；全隐藏（read_file 成功
+            # 尾显示工具（bash/execute_command/grep/glob/ls）：前置省略提示行
+            # 「… 前 N 行省略」（仅首次提交 start==0）；全隐藏（read 成功
             # 内容）时一并跳过（保持「只显示标题行」）
             omitted = block.extra.get("_bash_omitted_lines", 0)
             if omitted > 0 and not _body_all_hidden:
@@ -696,7 +696,7 @@ def tool_card_lines(block, width, start=0, stop=None):
                 if status_idx is not None and abs_idx == status_idx:
                     continue
                 _ansi_line = block.lines[abs_idx]
-                # ★ 用户需求（read_file 聊天卡只显示标题行）：隐藏行不渲染——
+                # ★ 用户需求（read 聊天卡只显示标题行）：隐藏行不渲染——
                 #   数据仍在 block.lines（Trace 可见），仅聊天卡跳过。
                 if _hidden_ids is not None and id(_ansi_line) in _hidden_ids:
                     continue
@@ -772,7 +772,7 @@ def tool_card_lines(block, width, start=0, stop=None):
                     body_lines.append(item[1])
                     continue
                 body_lines.append(item[1])
-        # 头显示工具（read_file）：后置省略提示行「… 后 N 行省略」
+        # 头显示工具（read）：后置省略提示行「… 后 N 行省略」
         # （head 省略的行在末尾——提示置于内容行之后，对齐终端 head 语义）；
         # markdown 工具卡不走该路径（正文来自渲染缓冲，无 head 省略语义）。
         if _md_lines is None:

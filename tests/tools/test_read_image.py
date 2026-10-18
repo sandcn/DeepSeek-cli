@@ -203,7 +203,7 @@ async def test_result_blocks_reset_on_failure(tmp_path, monkeypatch):
 # ── 5. 分块读取（区域裁剪） ──────────────────────────
 
 async def test_region_crop(tmp_path, monkeypatch):
-    """start_x/start_y/end_x/end_y 指定区域裁剪（类似 read_file 行号范围）。"""
+    """start_x/start_y/end_x/end_y 指定区域裁剪（类似 read 行号范围）。"""
     _multimodal(monkeypatch, True)
     p = _write_test_image(tmp_path / "t.png", 4, 3)
     f = ReadImageFunc(path=p, start_x=1, start_y=0, end_x=2, end_y=1)
@@ -215,7 +215,7 @@ async def test_region_crop(tmp_path, monkeypatch):
 
 
 async def test_region_reversed_swaps(tmp_path, monkeypatch):
-    """start > end 时自动交换（与 read_file 语义一致）。"""
+    """start > end 时自动交换（与 read 语义一致）。"""
     _multimodal(monkeypatch, True)
     p = _write_test_image(tmp_path / "t.png", 4, 3)
     f = ReadImageFunc(path=p, start_x=3, end_x=0, start_y=2, end_y=0)
@@ -500,7 +500,7 @@ def test_anthropic_adapter_tool_str_unchanged():
         {"role": "user", "content": "x"},
         {"role": "assistant", "content": None, "tool_calls": [
             {"id": "c1", "type": "function",
-             "function": {"name": "read_file", "arguments": "{}"}},
+             "function": {"name": "read", "arguments": "{}"}},
         ]},
         {"role": "tool", "tool_call_id": "c1", "content": "文件内容"},
     ])

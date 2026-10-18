@@ -1,19 +1,19 @@
 from .file_base import FileToolBase
 
 
-class WriteFileFunc(FileToolBase):
-    name = "write_file"
+class WriteFunc(FileToolBase):
+    name = "write"
 
     @classmethod
     def to_tool_schema(cls) -> dict:
         return {
             "type": "function",
             "function": {
-                "name": "write_file",
+                "name": "write",
                 "description": (
                     "创建新文件或整体覆盖写入文件。适用：1.创建新文件；2.重写超过一半内容的文件。"
-                    "少量修改用 edit_file（更安全）。覆盖写入，UTF-8 编码，原子写入，自动创建父目录；"
-                    "写入前建议先 read_file 确认现有内容。"
+                    "少量修改用 edit（更安全）。覆盖写入，UTF-8 编码，原子写入，自动创建父目录；"
+                    "写入前建议先 read 确认现有内容。"
                     "返回：写入结果（成功含行数/字节数）；失败以 ( 开头。超过 100MB 拒绝；路径穿越被拒绝；沙盒可撤回。"
                 ),
                 "parameters": {
