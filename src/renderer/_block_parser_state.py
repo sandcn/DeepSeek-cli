@@ -14,7 +14,9 @@ _MERMAID_KEYWORDS: frozenset[str] = frozenset({
     "graph", "flowchart", "sequenceDiagram", "classDiagram",
     "stateDiagram", "stateDiagram-v2", "erDiagram", "gantt",
     "pie", "gitgraph", "mindmap", "timeline", "journey",
-    "block", "packet", "quadrantChart", "requirementDiagram",
+    "block", "block-beta", "packet", "packet-beta",
+    "quadrantChart", "requirementDiagram",
+    "xychart", "xychart-beta", "sankey", "sankey-beta",
     "C4Context", "C4Container", "C4Component", "C4Deployment",
     "gitGraph",
 })

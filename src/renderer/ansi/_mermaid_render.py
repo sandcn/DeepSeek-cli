@@ -1,10 +1,12 @@
 """_mermaid_render — Mermaid 图表 → AnsiLine 终端渲染（零第三方渲染依赖）。
 
 原 ``ansi/mermaid.py`` 仅以等宽纯文本框展示 Mermaid 源码（首版退化）。本模块
-提供真正的 ASCII/Unicode 图形渲染，覆盖 11 类图：
+提供真正的 ASCII/Unicode 图形渲染，覆盖 17 类图：
 
   流程图 / 时序图 / 类图 / 状态图 / 甘特图 / 饼图 / ER 图 / Git 提交图 /
-  思维导图 / 时间线 / 用户旅程图
+  思维导图 / 时间线 / 用户旅程图 / 数据包位域图（packet） / 块图（block） /
+  象限图（quadrantChart） / 需求图（requirementDiagram） /
+  XY 图表（xychart） / 桑基图（sankey）
 
 与共享解析模块（``renderer._mermaid_parse``）**共享字符级解析**，
 布局语义一致；输出 ``AnsiLine`` 并按显示宽度对齐（CJK/emoji 安全）。
@@ -61,6 +63,54 @@ def _pad(text: str, width: int, align: str = "left") -> str:
 
 def _dw(text: str) -> int:
     return cjk_display_width(text)
+
+
+def _strip_quotes(text: str) -> str:
+    """去除首尾成对引号（``"x"`` / ``'x'``）。"""
+    s = text.strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+        return s[1:-1]
+    return s
+
+
+def _split_space_tokens(text: str) -> list[str]:
+    """按**顶层空白**切分（引号 / 括号 / 方括号内不切）。"""
+    out: list[str] = []
+    cur: list[str] = []
+    depth = 0
+    quote = ""
+    for ch in text:
+        if quote:
+            cur.append(ch)
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in "\"'":
+            quote = ch
+            cur.append(ch)
+        elif ch in "([{":
+            depth += 1
+            cur.append(ch)
+        elif ch in ")]}":
+            if depth > 0:
+                depth -= 1
+            cur.append(ch)
+        elif ch.isspace() and depth == 0:
+            if cur:
+                out.append("".join(cur))
+                cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        out.append("".join(cur))
+    return out
+
+
+def _fmt_number(value: float) -> str:
+    """数值显示（整数不带小数位，其余最多两位小数）。"""
+    if value == int(value):
+        return str(int(value))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 class _Builder:
@@ -157,6 +207,18 @@ class _MermaidRenderer:
                 return self._render_timeline(lines)
             if low.startswith("journey"):
                 return self._render_journey(lines)
+            if low.startswith("packet"):
+                return self._render_packet(lines)
+            if low.startswith("block"):
+                return self._render_block(lines)
+            if low.startswith("quadrantchart"):
+                return self._render_quadrant(lines)
+            if low.startswith("requirementdiagram"):
+                return self._render_requirement(lines)
+            if low.startswith("xychart"):
+                return self._render_xychart(lines)
+            if low.startswith("sankey"):
+                return self._render_sankey(lines)
         except Exception:
             return [AnsiLine.of("📊 Mermaid 渲染失败，显示源码", _ST_EDGE_LABEL)] + [
                 AnsiLine.of("  " + ln, _ST_EDGE_LABEL) for ln in lines
@@ -1201,6 +1263,432 @@ class _MermaidRenderer:
                 b.append("\n")
             if sec_idx < len(sections) - 1:
                 b.append("\n")
+        return b.done()
+
+    # ═══════════════════════════════════════════════════
+    # 数据包图（packet-beta）
+    # ═══════════════════════════════════════════════════
+
+    def _render_packet(self, lines: list[str]) -> list[AnsiLine]:
+        """数据包位域图：``0-15: "Source Port"`` → 位范围 / 字段表。
+
+        支持绝对范围 ``a-b`` 与相对长度 ``+n``（Mermaid packet 语法）。
+        """
+        b = _Builder()
+        title = ""
+        fields: list[tuple[str, str]] = []
+        cursor = 0
+        for line in lines[1:]:
+            s = line.strip()
+            if not s or _is_comment_line(s):
+                continue
+            low = s.lower()
+            if low.startswith("title "):
+                title = _strip_quotes(s[6:])
+                continue
+            if low in ("packet", "packet-beta"):
+                continue
+            head, sep, label = s.partition(":")
+            label = _strip_quotes(label)
+            if not sep or not label:
+                continue
+            head = head.strip()
+            if head.startswith("+"):
+                try:
+                    size = int(head[1:])
+                except ValueError:
+                    continue
+                start, end = cursor, cursor + max(1, size) - 1
+            elif "-" in head:
+                a, _, c = head.partition("-")
+                try:
+                    start, end = int(a), int(c)
+                except ValueError:
+                    continue
+                if end < start:
+                    start, end = end, start
+            else:
+                continue
+            cursor = end + 1
+            fields.append((f"{start}-{end}", label))
+        if not fields:
+            return [AnsiLine.of("  📦 packet: 无字段", _ST_EDGE_LABEL)]
+        if title:
+            b.append("  📦 " + title, _ST_HEADER)
+            b.append("\n")
+        w0 = max(max(_dw(f[0]) for f in fields), _dw("位范围"))
+        w1 = max(max(_dw(f[1]) for f in fields), _dw("字段"))
+        b.append("  ┌" + "─" * (w0 + 2) + "┬" + "─" * (w1 + 2) + "┐", _ST_BOX)
+        b.append("\n")
+        b.append("  │ " + _pad("位范围", w0) + " │ " + _pad("字段", w1) + " │",
+                 _ST_FIELD)
+        b.append("\n")
+        b.append("  ├" + "─" * (w0 + 2) + "┼" + "─" * (w1 + 2) + "┤", _ST_BOX)
+        b.append("\n")
+        for rng, label in fields:
+            b.append("  │ " + _pad(rng, w0) + " │ " + _pad(label, w1) + " │",
+                     _ST_NODE)
+            b.append("\n")
+        b.append("  └" + "─" * (w0 + 2) + "┴" + "─" * (w1 + 2) + "┘", _ST_BOX)
+        return b.done()
+
+    # ═══════════════════════════════════════════════════
+    # 块图（block-beta）
+    # ═══════════════════════════════════════════════════
+
+    @staticmethod
+    def _block_cell_label(token: str) -> str:
+        """block 图单元格 → 显示文本（``id["label"]`` / ``id("label")`` / ``id``）。"""
+        t = token.strip()
+        if not t:
+            return ""
+        low = t.lower()
+        if low in ("end", "space", "space:"):
+            return ""
+        if low.startswith("block:"):
+            t = t.split(":", 1)[1]
+        lb = t.find("[")
+        if lb >= 0 and t.endswith("]"):
+            inner = _strip_quotes(t[lb + 1:-1].strip())
+            if inner:
+                return inner
+        lp = t.find("(")
+        if lp >= 0 and t.endswith(")"):
+            inner = t[lp + 1:-1].strip()
+            while len(inner) >= 2 and inner[0] == "(" and inner[-1] == ")":
+                inner = inner[1:-1].strip()
+            inner = _strip_quotes(inner)
+            if inner:
+                return inner
+        return t
+
+    def _render_block(self, lines: list[str]) -> list[AnsiLine]:
+        """块图：``columns N`` + 空白分隔的块，渲染为 N 列网格。"""
+        b = _Builder()
+        columns = 3
+        cells: list[str] = []
+        for line in lines[1:]:
+            s = line.strip()
+            if not s or _is_comment_line(s):
+                continue
+            low = s.lower()
+            if low.startswith("columns "):
+                try:
+                    columns = max(1, int(s[8:].strip()))
+                except ValueError:
+                    pass
+                continue
+            if low.startswith(("block:", "classdef", "class ", "style ",
+                               "linkstyle")):
+                continue
+            if low in ("end", "space", "space:"):
+                continue
+            for token in _split_space_tokens(s):
+                label = self._block_cell_label(token)
+                if label:
+                    cells.append(label)
+        if not cells:
+            return [AnsiLine.of("  📊 block: 空", _ST_EDGE_LABEL)]
+        rows = [cells[i:i + columns] for i in range(0, len(cells), columns)]
+        col_w = [2] * columns
+        for row in rows:
+            for i, cell in enumerate(row):
+                w = _dw(cell) + 2
+                if w > col_w[i]:
+                    col_w[i] = w
+        b.append("  ┌" + "┬".join("─" * w for w in col_w) + "┐", _ST_BOX)
+        b.append("\n")
+        for ri, row in enumerate(rows):
+            b.append("  │", _ST_BOX)
+            for i in range(columns):
+                text = row[i] if i < len(row) else ""
+                b.append(_pad(" " + text + " ", col_w[i]), _ST_NODE)
+                b.append("│", _ST_BOX)
+            b.append("\n")
+            if ri < len(rows) - 1:
+                b.append("  ├" + "┼".join("─" * w for w in col_w) + "┤", _ST_BOX)
+                b.append("\n")
+        b.append("  └" + "┴".join("─" * w for w in col_w) + "┘", _ST_BOX)
+        return b.done()
+
+    # ═══════════════════════════════════════════════════
+    # 象限图（quadrantChart）
+    # ═══════════════════════════════════════════════════
+
+    @staticmethod
+    def _axis_text(text: str) -> str:
+        """坐标轴文本：``Low --> High`` → ``Low → High``。"""
+        s = text.strip()
+        for sep in ("-->", "->"):
+            if sep in s:
+                a, _, c = s.partition(sep)
+                return f"{a.strip()} → {c.strip()}"
+        return s
+
+    def _render_quadrant(self, lines: list[str]) -> list[AnsiLine]:
+        """象限图：2×2 象限（1 右上 / 2 左上 / 3 左下 / 4 右下）+ 数据点。"""
+        b = _Builder()
+        title = ""
+        x_axis = y_axis = ""
+        quadrants: dict[int, str] = {}
+        points: list[tuple[str, float, float]] = []
+        for line in lines[1:]:
+            s = line.strip()
+            if not s or _is_comment_line(s):
+                continue
+            low = s.lower()
+            if low.startswith("title "):
+                title = _strip_quotes(s[6:])
+            elif low.startswith("x-axis "):
+                x_axis = self._axis_text(s[7:])
+            elif low.startswith("y-axis "):
+                y_axis = self._axis_text(s[7:])
+            elif low.startswith("quadrant-"):
+                try:
+                    q = int(s[9])
+                except (ValueError, IndexError):
+                    continue
+                text = s[10:].strip().lstrip(":").strip()
+                if 1 <= q <= 4:
+                    quadrants[q] = text
+            elif s.endswith("]") and "[" in s:
+                name, sep, coords = s.partition(":")
+                if not sep:
+                    continue
+                inner = coords.strip()
+                if not (inner.startswith("[") and inner.endswith("]")):
+                    continue
+                parts = [p.strip() for p in inner[1:-1].split(",")]
+                if len(parts) != 2:
+                    continue
+                try:
+                    points.append((name.strip(), float(parts[0]),
+                                   float(parts[1])))
+                except ValueError:
+                    pass
+        if not (title or x_axis or y_axis or quadrants or points):
+            return [AnsiLine.of("  🧭 quadrant: 空", _ST_EDGE_LABEL)]
+        if title:
+            b.append("  🧭 " + title, _ST_HEADER)
+            b.append("\n")
+        if y_axis:
+            b.append("  y ↑ " + y_axis, _ST_EDGE_LABEL)
+            b.append("\n")
+        labels = {q: f"{q} {quadrants.get(q, '')}".strip() for q in (1, 2, 3, 4)}
+        cw = max(20, max(_dw(t) for t in labels.values()) + 2)
+        b.append("  ┌" + "─" * cw + "┬" + "─" * cw + "┐", _ST_BOX)
+        b.append("\n")
+        b.append("  │" + _pad(" " + labels[2], cw) + "│"
+                 + _pad(" " + labels[1], cw) + "│", _ST_NODE)
+        b.append("\n")
+        b.append("  ├" + "─" * cw + "┼" + "─" * cw + "┤", _ST_BOX)
+        b.append("\n")
+        b.append("  │" + _pad(" " + labels[3], cw) + "│"
+                 + _pad(" " + labels[4], cw) + "│", _ST_NODE)
+        b.append("\n")
+        b.append("  └" + "─" * cw + "┴" + "─" * cw + "┘", _ST_BOX)
+        b.append("\n")
+        if x_axis:
+            b.append("    " + x_axis + " →", _ST_EDGE_LABEL)
+            b.append("\n")
+        for name, x, y in points:
+            b.append(f"  • {name} ({_fmt_number(x)}, {_fmt_number(y)})", _ST_NODE)
+            b.append("\n")
+        return b.done()
+
+    # ═══════════════════════════════════════════════════
+    # 需求图（requirementDiagram）
+    # ═══════════════════════════════════════════════════
+
+    @staticmethod
+    def _requirement_rel(text: str) -> str:
+        """需求关系行：``a - satisfies -> b`` → ``a ── satisfies ──▶ b``。"""
+        s = text.strip()
+        arrow = "->" if "->" in s else ("<-" if "<-" in s else "")
+        if not arrow:
+            return s
+        left, _, right = s.partition(arrow)
+        left = left.strip().rstrip("-").strip()
+        right = right.strip()
+        if " - " in left:
+            src, _, label = left.partition(" - ")
+            return f"{src.strip()} ── {label.strip()} ──▶ {right}"
+        return f"{left} ──▶ {right}"
+
+    def _render_requirement(self, lines: list[str]) -> list[AnsiLine]:
+        """需求图：需求 / 元素条目卡 + 关系列表。"""
+        b = _Builder()
+        entries: list[tuple[str, str, list[tuple[str, str]]]] = []
+        rels: list[str] = []
+        cur_kind = cur_name = ""
+        cur_fields: list[tuple[str, str]] = []
+        for line in lines[1:]:
+            s = line.strip()
+            if not s or _is_comment_line(s):
+                continue
+            low = s.lower()
+            if low.startswith("requirementdiagram"):
+                continue
+            if s.endswith("{") and not s.startswith("}"):
+                head = s[:-1].strip()
+                parts = head.split(None, 1)
+                if len(parts) >= 2:
+                    cur_kind, cur_name = parts[0], parts[1].strip()
+                    cur_fields = []
+                    continue
+            if s in ("}", "};"):
+                if cur_name:
+                    entries.append((cur_name, cur_kind, cur_fields))
+                cur_name = cur_kind = ""
+                cur_fields = []
+                continue
+            if cur_name:
+                k, sep, v = s.partition(":")
+                if sep:
+                    cur_fields.append((k.strip(), v.strip()))
+                continue
+            if "->" in s or "<-" in s:
+                rels.append(s)
+        if not entries and not rels:
+            return [AnsiLine.of("  📋 requirement: 空", _ST_EDGE_LABEL)]
+        for name, kind, fields in entries:
+            icon = "🧩" if kind.lower() == "element" else "📋"
+            b.append(f"  {icon} {name}", _ST_HEADER)
+            b.append(f"  [{kind}]", _ST_EDGE_LABEL)
+            b.append("\n")
+            if fields:
+                kw = max(_dw(k) for k, _ in fields)
+                for k, v in fields:
+                    b.append("    " + _pad(k, kw) + " : " + v, _ST_NODE)
+                    b.append("\n")
+            b.append("\n")
+        if rels:
+            b.append("  关系:", _ST_FIELD)
+            b.append("\n")
+            for rel in rels:
+                b.append("    " + self._requirement_rel(rel), _ST_NODE)
+                b.append("\n")
+        return b.done()
+
+    # ═══════════════════════════════════════════════════
+    # XY 图表（xychart-beta）
+    # ═══════════════════════════════════════════════════
+
+    def _render_xychart(self, lines: list[str]) -> list[AnsiLine]:
+        """XY 图：``bar`` / ``line`` 数据序列 → 横向条形（按 y 轴范围归一化）。"""
+        b = _Builder()
+        title = ""
+        y_title = ""
+        y_range: tuple[float, float] | None = None
+        x_labels: list[str] = []
+        series: list[tuple[str, list[float]]] = []
+        for line in lines[1:]:
+            s = line.strip()
+            if not s or _is_comment_line(s):
+                continue
+            low = s.lower()
+            if low.startswith("xychart"):
+                continue
+            if low.startswith("title "):
+                title = _strip_quotes(s[6:])
+                continue
+            if low.startswith("x-axis"):
+                if "[" in s and "]" in s:
+                    inner = s[s.find("[") + 1:s.rfind("]")]
+                    x_labels = [_strip_quotes(p) for p in inner.split(",")
+                                if p.strip()]
+                continue
+            if low.startswith("y-axis"):
+                rest = s[6:].strip()
+                if rest[:1] in ("\"", "'"):
+                    end = rest.find(rest[0], 1)
+                    if end > 0:
+                        y_title = rest[1:end]
+                        rest = rest[end + 1:].strip()
+                if "-->" in rest:
+                    a, _, c = rest.partition("-->")
+                    try:
+                        y_range = (float(a.strip()), float(c.strip()))
+                    except ValueError:
+                        pass
+                continue
+            if low.startswith(("bar ", "line ")):
+                kind = "bar" if low.startswith("bar") else "line"
+                if "[" not in s or "]" not in s:
+                    continue
+                inner = s[s.find("[") + 1:s.rfind("]")]
+                values: list[float] = []
+                for part in inner.split(","):
+                    try:
+                        values.append(float(part.strip()))
+                    except ValueError:
+                        continue
+                if values:
+                    series.append((kind, values))
+        if not series:
+            return [AnsiLine.of("  📈 xychart: 无数据", _ST_EDGE_LABEL)]
+        if title:
+            b.append("  📈 " + title, _ST_HEADER)
+            b.append("\n")
+        lo, hi = y_range if y_range else (0.0, max(max(v) for _, v in series))
+        span = hi - lo if hi > lo else 1.0
+        if y_title:
+            b.append(f"  y: {y_title} ({_fmt_number(lo)} → {_fmt_number(hi)})",
+                     _ST_EDGE_LABEL)
+            b.append("\n")
+        bar_max = 20
+        glyphs = {"bar": "█", "line": "▓"}
+        label_w = max((_dw(x) for x in x_labels), default=3)
+        for kind, values in series:
+            b.append("  " + kind + ":", _ST_FIELD)
+            b.append("\n")
+            for i, v in enumerate(values):
+                label = x_labels[i] if i < len(x_labels) else str(i + 1)
+                ratio = (v - lo) / span if span > 0 else 0.0
+                ratio = max(0.0, min(1.0, ratio))
+                bar_len = max(1, round(ratio * bar_max))
+                b.append("    " + _pad(label, label_w) + " "
+                         + glyphs[kind] * bar_len, _ST_NODE)
+                b.append(f"  {_fmt_number(v)}", _ST_EDGE_LABEL)
+                b.append("\n")
+        return b.done()
+
+    # ═══════════════════════════════════════════════════
+    # 桑基图（sankey-beta）
+    # ═══════════════════════════════════════════════════
+
+    def _render_sankey(self, lines: list[str]) -> list[AnsiLine]:
+        """桑基图：``源,目标,数值`` 流量 → 逐条流量箭头（附占比）。"""
+        b = _Builder()
+        flows: list[tuple[str, str, float]] = []
+        for line in lines[1:]:
+            s = line.strip()
+            if not s or _is_comment_line(s):
+                continue
+            low = s.lower()
+            if low.startswith(("sankey", "config")):
+                continue
+            parts = [p.strip() for p in s.split(",")]
+            if len(parts) < 3:
+                continue
+            try:
+                value = float(_strip_quotes(parts[2]))
+            except ValueError:
+                continue
+            flows.append((_strip_quotes(parts[0]), _strip_quotes(parts[1]),
+                          value))
+        if not flows:
+            return [AnsiLine.of("  🔀 sankey: 无流量", _ST_EDGE_LABEL)]
+        total = sum(v for _, _, v in flows) or 1.0
+        src_w = max((_dw(a) for a, _, _ in flows), default=3)
+        b.append("  🔀 Sankey 流量", _ST_HEADER)
+        b.append("\n")
+        for src, dst, value in flows:
+            pct = value / total * 100
+            b.append("  " + _pad(src, src_w) + " ──", _ST_ARROW)
+            b.append(f"{_fmt_number(value)} ({pct:.0f}%)", _ST_NODE)
+            b.append("──▶ " + dst, _ST_NODE)
+            b.append("\n")
         return b.done()
 
 

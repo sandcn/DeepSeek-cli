@@ -144,15 +144,16 @@ class TestMermaidResultCache:
 class TestMermaidPreviewThrottle:
 
     def test_throttle_state_recorded_on_stream(self):
-        """未闭合 Mermaid 块流式期间记录节流槽（行数 + 首行锚点）。"""
+        """未闭合 Mermaid 块流式期间记录节流槽（行数 + 首行锚点 + 活动行长度）。"""
         r = AnsiStreamRenderer(width=100)
         r.write("```mermaid\ngraph TD\n" + "  A0[节点0]-->B0[节点0]\n" * 60)
         state = r._preview_throttle.get(THROTTLE_KEY)
         assert state is not None, "缺少 Mermaid 节流槽"
-        total, first_line, rows = state
+        total, first_line, rows, tail_len = state
         assert total >= 60
         assert first_line == "graph TD"
         assert rows
+        assert tail_len > 0
 
     def test_small_delta_reuses_preview_rows(self):
         """小增量（含仅活动行增长）复用上次预览行对象（节流生效）。"""
