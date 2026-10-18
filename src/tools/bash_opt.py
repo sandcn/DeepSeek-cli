@@ -18,8 +18,8 @@ bash_opt — 按 task_id 操作后台 bash 任务
 - op=screenshot  把后台命令（及其子进程）的窗口，或整个屏幕，截图保存为 PNG
                  （path 参数指定文件路径；可选 crop 指定只截取的像素区域，
                  window 选择目标窗口，grid 叠加等距坐标参考线；
-                 screen=true/'primary'/序号 做整屏 / 多显示器截取（不需要进程
-                 句柄），element+margin 只截某个控件的区域）
+                 screen=true（含字符串 'true'）/'primary'/序号 做整屏 / 多显示器
+                 截取（不需要进程句柄），element+margin 只截某个控件的区域）
 - op=windows     列出该进程树的全部窗口（句柄 / 标题 / 类名 / 位置尺寸 /
                  Z 序 / 是否前台 / 是否主窗口），用于挑选目标窗口
 - op=window      控制被选窗口的状态与几何（window_action=activate / maximize /
@@ -1619,6 +1619,10 @@ class BashOptFunc(Func):
     async def _resolve_monitor(self, spec=None):
         """按 ``spec``（缺省取实例 ``screen``）挑出显示器，返回
         ``(Monitor, 序号, 总数)``。
+
+        ``screen`` 的布尔真值（``True``）与文本真值（``'true'`` / ``'yes'`` /
+        ``'on'``，大小写与空白不敏感）都表示整个虚拟桌面——上游常把 JSON
+        布尔转成字符串，工具层必须与 ``op=screenshot`` 的文档语义一致。
 
         Raises:
             MonitorError: 平台枚举不到显示器或选择越界。

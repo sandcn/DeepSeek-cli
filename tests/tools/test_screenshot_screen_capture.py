@@ -47,6 +47,20 @@ def test_resolve_rejects_out_of_range():
         resolve([], None)
 
 
+def test_resolve_accepts_truthy_strings_as_virtual_desktop():
+    """``screen=true`` 常以字符串形式传入（真实用例：泰拉瑞亚整屏截图）。
+
+    schema 明确 ``true`` / ``'all'`` / ``'0'`` 都表示虚拟桌面；上游把 JSON
+    布尔转成文本后，``"true"`` 必须与布尔 ``True`` 等价，否则合法调用会落到
+    「显示器选择非法」分支。
+    """
+    monitors = _monitors()
+    for spec in ("true", "TRUE", " true ", "yes", "YES", "on", " On "):
+        virtual = resolve(monitors, spec)
+        assert (virtual.left, virtual.top,
+                virtual.width, virtual.height) == (0, 0, 3200, 1080), spec
+
+
 def test_union_requires_monitors():
     with pytest.raises(MonitorError):
         union([])
@@ -105,6 +119,37 @@ async def test_screenshot_primary_monitor(monkeypatch, tmp_path):
     payload = json.loads(await func.execute())
     assert payload["monitor"]["primary"] is True
     assert payload["monitor_index"] == 1
+
+
+@pytest.mark.parametrize("screen_value", ["true", "TRUE", "yes", "on"])
+async def test_screenshot_screen_truthy_string_uses_virtual_desktop(
+        monkeypatch, tmp_path, screen_value):
+    """回归：``op=screenshot screen='true'`` 不应报「显示器选择非法」。
+
+    真实数据：泰拉瑞亚会话里模型传 ``screen=true``（上游序列化为字符串
+    ``"true"``），工具返回 ``(截图失败: 显示器选择非法: 'true' ...)``。
+    """
+    _patch_screen(monkeypatch, tmp_path)
+    func = BashOptFunc(task_id="bg-1", op="screenshot",
+                       path=str(tmp_path / "s.png"), screen=screen_value)
+    func.set_agent(_FakeAgent({"bg-1": _record(pid=None)}))
+    payload = json.loads(await func.execute())
+    assert payload["monitor"]["width"] == 3200
+    assert payload["monitors_total"] == 2
+    assert payload["width"] == 3200
+
+
+async def test_sequence_screenshot_screen_truthy_string(monkeypatch, tmp_path):
+    """sequence 的 screenshot 步骤同样接受字符串 ``screen='true'``。"""
+    _patch_screen(monkeypatch, tmp_path)
+    func = BashOptFunc(task_id="bg-1", op="sequence", actions=[
+        {"op": "screenshot", "path": str(tmp_path / "seq.png"),
+         "screen": "true"},
+    ])
+    func.set_agent(_FakeAgent({"bg-1": _record(pid=None)}))
+    payload = json.loads(await func.execute())
+    assert payload["completed"] == 1
+    assert payload["steps"][0]["screenshot"]["width"] == 3200
 
 
 async def test_screenshot_monitor_index_out_of_range(monkeypatch, tmp_path):

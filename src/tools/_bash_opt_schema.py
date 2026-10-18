@@ -301,7 +301,8 @@ def build_bash_opt_schema() -> dict[str, Any]:
                         "description": (
                             "仅 screenshot / sequence 的 screenshot 步骤可选："
                             "整屏 / 多显示器截取（不限于目标进程的窗口）。"
-                            "true / 'all' / '0' = 整个虚拟桌面（所有显示器）；"
+                            "true / 'true' / 'all' / '0' = 整个虚拟桌面"
+                            "（所有显示器）；"
                             "'primary' = 主显示器；序号（1 / '2'）= 第 N 个"
                             "显示器。省略 / false = 截目标窗口。"
                         ),

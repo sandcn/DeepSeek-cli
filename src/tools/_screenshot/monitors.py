@@ -3,9 +3,14 @@
 各平台后端负责产出 :class:`Monitor` 列表（Windows 走 ``EnumDisplayMonitors``、
 X11 走 ``xrandr``、macOS 走 Quartz），本模块负责**统一选择语义**：
 
-  - 省略 / ``'all'`` / ``'virtual'``：整个虚拟桌面（所有显示器合并区域）；
+  - 省略 / ``true`` / ``'all'`` / ``'virtual'``：整个虚拟桌面（所有显示器
+    合并区域）；
   - ``'primary'`` / ``'main'``：主显示器；
   - ``1`` / ``'1'``：第 N 个显示器（1 起，按平台枚举顺序）。
+
+``true`` 同时接受布尔值与字符串形式：工具参数的 JSON 布尔经常被上游转成
+文本（``"true"``），若不在此归一化，``screen=true`` 这类合法调用会落进
+「显示器选择非法」分支（真实用例：泰拉瑞亚整屏截图）。
 
 拼接多个显示器时用虚拟桌面的并集矩形表示；单显示器时即该显示器区域。
 """
@@ -62,8 +67,9 @@ def resolve(monitors: list[Monitor], spec=None) -> Monitor:
 
     Args:
         monitors: 平台后端产出的显示器列表。
-        spec: 选择值（``None``/``'all'``/``'virtual'`` = 全部合并；
-            ``'primary'``/``'main'`` = 主显示器；整数 / 数字串 = 第 N 个）。
+        spec: 选择值（``None`` / ``true`` / ``'true'`` / ``'yes'`` / ``'on'`` /
+            ``'all'`` / ``'virtual'`` = 全部合并；``'primary'`` / ``'main'`` =
+            主显示器；整数 / 数字串 = 第 N 个）。
 
     Raises:
         MonitorError: 列表为空，或序号越界。
@@ -71,7 +77,8 @@ def resolve(monitors: list[Monitor], spec=None) -> Monitor:
     if not monitors:
         raise MonitorError("当前平台未能枚举到任何显示器")
     text = "" if spec is None else str(spec).strip().lower()
-    if text in ("", "all", "virtual", "desktop", "0"):
+    if text in ("", "all", "virtual", "desktop", "0",
+                "true", "yes", "on"):
         return union(monitors)
     if text in ("primary", "main"):
         for item in monitors:
