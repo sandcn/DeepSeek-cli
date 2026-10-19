@@ -176,6 +176,16 @@ class InkRenderer(_RendererContentMixin):
         #: 屏幕底部（或 resize 全量重写）后置回 None（转底部锚定，物理
         #: 缓冲此后不收缩）。
         self._start_row: int | None = None
+        # ★ 2026-10-20（resize 残留修复）：下一次全量写入前先清屏。
+        #   ``reset(full=True)``（仅 resize 使用）置位；``_write_full`` 消费。
+        #   修复前 resize 全量重写只从「新文档起始行」开始逐行覆盖：
+        #   - 终端对旧帧（旧宽度）的 reflow 会让旧内容占更多物理行，
+        #   - 新文档比屏幕矮时旧帧上半部分完全不被覆盖，
+        #   屏幕上因此残留半份旧 UI / 行内左右两段来自不同帧（resize 后
+        #   必现）。清屏（ED 2，不清 scrollback）后从底部锚定重写即干净。
+        #   首帧（``_prev is None`` 且未经 reset）不置位——不得清掉用户
+        #   终端里已有的历史输出。
+        self._clear_before_full: bool = False
 
     # ── 启动起始行锚定（用户需求：光标行 + 1） ──────────
 
@@ -665,6 +675,8 @@ class InkRenderer(_RendererContentMixin):
             self._buf_h = 0
             self._top_aligned = True
             self._start_row = None
+            # 本路径已清屏；避免 _write_full 二次清屏（幂等但多一次 ED 序列）。
+            self._clear_before_full = False
             self._prev = None
             self._write_full(frame)
             self._prev = frame
@@ -1218,6 +1230,12 @@ class InkRenderer(_RendererContentMixin):
         self._stream.write(buf.getvalue())
         self._stream.flush()
 
+    def _take_clear_before_full(self) -> bool:
+        """消费「下一次全量写入前清屏」标志（一次性）。"""
+        clear = self._clear_before_full
+        self._clear_before_full = False
+        return clear
+
     def _write_full(self, frame: Frame) -> None:
         """首帧/重置后：全量写入文档。
 
@@ -1225,19 +1243,42 @@ class InkRenderer(_RendererContentMixin):
         CRLF 语义一致）。方向1：整帧缓冲单次 write+flush（免逐行 flush
         闪烁/撕裂）。
 
+        ★ 2026-10-20（resize 残留修复）：``reset(full=True)``（resize）后
+        的首次全量写入先写 ``clear_screen()``（ED 2 + 归位，不清 scrollback）
+        再按底部锚定重写——修复前只从新文档起始行逐行覆盖，旧帧（旧宽度，
+        且被终端 reflow 成更多物理行）在屏幕上方/行尾残留，resize 后屏幕
+        出现两份 UI / 行内左右两段来自不同帧。首帧（未经 reset）不清屏，
+        不会破坏用户终端里已有的历史输出。
+
         Args:
             frame: 目标帧。
         """
+        clear_first = self._take_clear_before_full()
         if not frame.lines:
             # 方向1 步骤3（首帧空帧光标）：空帧也更新 _cursor_row（=1）
             # ——修复前空帧不置位，下一帧 ``n_move`` 产生多余光标移动。
             # ★ 无末尾空行模型（2026-08-15）：空帧 _buf_h 置 0（无虚拟
             #   末尾空行）——空帧后增长首行原地写（终端光标在行 1）。
+            if clear_first:
+                try:
+                    self._stream.write(clear_screen())
+                    self._stream.flush()
+                except (OSError, ValueError):
+                    _logger.debug("空帧全量清屏写入异常", exc_info=True)
+                self._start_row = None
             self._buf_h = 0
             self._top_aligned = True
             self._cursor_row = self._bottom_row(frame.height)
             return
         buf = io.StringIO()
+        if clear_first:
+            # 清屏 + 光标归位 (1,1)；随后 cursor_goto 重新定位到起始行。
+            # 清屏使旧帧残留（含终端 reflow 产生的额外物理行）全部消失。
+            # 清屏后坐标系已重置：启动行锚定失效（回退底部锚定）。
+            buf.write(clear_screen())
+            self._cursor_row = 1
+            self._start_row = None
+            self._start_anchor_pending = False
         n = len(frame.lines)
         # ★ 2026-10-06（用户需求：启动锚定「当前光标行 + 1」）：首个全量帧
         #   消费注入的光标行查询——有效时起始行 = 光标行 + 1（文档从光标
@@ -1386,11 +1427,19 @@ class InkRenderer(_RendererContentMixin):
         ★ P3（review）：公开 API——修复前 ``session.suspend`` 直写私有成员
         ``renderer._stream``（跨对象私有访问）。
 
+        ★ 2026-10-20：同步光标记账——本方法移动了**真实**物理光标，若
+        ``_cursor_row`` 不跟随，后续帧的相对移动（cursor_up/down）会从
+        错误行起算，整帧写入位置偏移。修复前 ``suspend()`` 把记账重置为 1，
+        与 ``goto_bottom(h)`` 的实际位置（屏幕底部）不一致，是 resume 后
+        重复渲染/错位的直接原因之一。
+
         Args:
             rows: 终端行号（1-based；内部钳制 >= 1）。
         """
-        self._stream.write(cursor_goto(max(1, int(rows)), 1))
+        target = max(1, int(rows))
+        self._stream.write(cursor_goto(target, 1))
         self._stream.flush()
+        self._cursor_row = max(1, min(target, self._height)) if self._height > 0 else target
 
     def full_clear(self) -> None:
         """全帧清屏（Claude TUI parity 步骤 3.1，Ctrl+L 清屏）。
@@ -1418,19 +1467,22 @@ class InkRenderer(_RendererContentMixin):
     # ── 生命周期 ─────────────────────────────────────
 
     def suspend(self) -> None:
-        """暂停：重置渲染状态（live 区已作为普通行提交到 scrollback）。
+        """暂停：刷新输出，**保留**帧/物理缓冲/光标记账。
 
-        非全屏模型下文档行都是真实 scrollback 行，无需额外提交；
-        软重置（空帧 prev）使恢复后走增量 diff 路径（非 resize 均增量）。
+        ★ 2026-10-20（resume 重复渲染修复）：修复前这里是软重置（
+        ``_prev=Frame([])``、``_cursor_row=1``、``_buf_h=0``）——suspend 期间
+        交互工具（user_select / 外部编辑器）经 ``request_bottom_redraw``
+        触发的**同步渲染**、以及 resume 后的首帧都会被当成「空帧 → 整篇文档
+        首次写入」：从物理光标所在位置（终端底部，session.suspend 已
+        goto_bottom）开始逐行追加整篇文档。文档矮于屏幕时旧帧只被推出
+        ``doc_h-1`` 行 → 屏幕上方残留半份旧 UI，屏幕上同时出现两份 UI；
+        ``_buf_h`` 记账与实际物理缓冲永久漂移，scrollback 也被整篇重复写入。
+
+        修复后：suspend 只 flush；``_prev`` 保持最后一帧、``_buf_h`` /
+        ``_top_aligned`` / ``_start_row`` 保持真实布局——suspend 期间的同步
+        渲染与 resume 后的首帧一律走增量 diff（只重写变化行）。
+        终端内容若被交互工具改写，差异行会被下一帧 diff 重写覆盖。
         """
-        self._prev = Frame([])
-        self._cursor_row = 1
-        # ★ 无末尾空行模型（2026-08-15）：软重置后物理缓冲 = 0（无虚拟空行）。
-        self._buf_h = 0
-        self._top_aligned = True
-        # ★ 2026-10-06：suspend 后终端被交互工具独占、坐标基准不可靠——
-        #   起始行锚定失效（恢复走既有软重置/底部锚定语义）。
-        self._start_row = None
         try:
             self._stream.flush()
         except Exception:
@@ -1442,8 +1494,9 @@ class InkRenderer(_RendererContentMixin):
 
         Args:
             full: True = 完全重置（``_prev=None``，下次 render 全量写入），
-                  **仅 resize 使用**；False = 软重置（``_prev=空帧``，下次
-                  render 走增量 diff），用于 resume / Ctrl+L 等非 resize 场景。
+                  **仅 resize 使用**；下一次全量写入前先清屏（清掉旧帧残留，
+                  见 ``_write_full``）；False = 软重置（``_prev=空帧``，下次
+                  render 走增量 diff），用于 Ctrl+L 等非 resize 场景。
         """
         if full:
             self._prev = None
@@ -1453,6 +1506,8 @@ class InkRenderer(_RendererContentMixin):
             # ★ 2026-10-06：起始行锚定仅服务「会话启动首帧」——resize 全量
             #   重写退回底部锚定（屏幕布局已变，旧起始行不再适用）。
             self._start_row = None
+            # ★ 2026-10-20：resize 全量重写前清屏（旧帧残留修复）。
+            self._clear_before_full = True
         else:
             # 空帧 → 增量 diff（与空帧比较 = 所有行都变化 → 逐行写入，不清屏）
             self._prev = Frame([])

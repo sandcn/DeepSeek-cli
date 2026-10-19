@@ -355,10 +355,19 @@ class _SessionFrameMixin:
                     _logger.debug("notify_window_size 异常", exc_info=True)
         # ★ 方向3（resize 全量刷新消费）：尺寸变化后本帧即全量重建（不等待
         #   下一帧 diff）——重置渲染器 prev（full=True），使 render() 走全量
-        #   写入路径。仅 resize 使用 full=True；其余路径均走增量 diff。
+        #   写入路径（并在写入前清屏，清掉旧尺寸帧的残留）。仅 resize 使用
+        #   full=True；其余路径均走增量 diff。
         if getattr(self, "_resize_pending", False):
             self._resize_pending = False
             self._ink_renderer.reset(full=True)
+            # ★ 2026-10-20（resize 布局不跟随修复）：本帧禁止空闲帧复用。
+            #   修复前 ``_resize_pending`` 在此即被清除，下方
+            #   ``_should_reuse_idle_frame`` 看不到 resize 标志；静态状态
+            #   （``_idle_ok`` 为 True）下复用上一帧（**旧尺寸布局**）→ 窗口
+            #   尺寸变化后 TUI 仍按旧宽度渲染（右侧空白/行宽错误），直到下一次
+            #   脏事件（系统统计 ≤2s）才重建。置 ``_idle_ok=False`` 强制本帧
+            #   按新尺寸重建组件树。
+            self._idle_ok = False
         # ★ 空闲帧复用（2026-10-07 性能优化，用户需求）：宿主声明的「静态
         #   状态」（``set_idle_frame_predicate``）下跳过组件树重建/调和/布局/
         #   绘制，直接复用上一帧——**帧号照常推进（对外仍恒定 30Hz）**，仅省

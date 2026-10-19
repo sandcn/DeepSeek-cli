@@ -1188,7 +1188,7 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
             _logger.debug("suspend 光标定位异常", exc_info=True)
 
     def resume(self) -> None:
-        """恢复渲染：重置渲染器后重新渲染组件树。"""
+        """恢复渲染：保持渲染器布局记账并立即增量渲染一帧。"""
         if self._render_running:
             return
         # ★ P2-3（review 方向）：resume 前检查旧线程是否已退出——修复前
@@ -1216,7 +1216,13 @@ class InkSession(_SessionQueueMixin, _SessionFrameMixin):
         # ★ P3（review）：复位 ``_exit_requested``（同 start()）——修复前
         #   exit 后 resume 重启会话时首帧即退出。
         self._exit_requested = False
-        self._ink_renderer.reset()
+        # ★ 2026-10-20（resume 重复渲染修复）：**不再 reset 渲染器**——
+        #   suspend 已保留最后一帧/物理缓冲/光标记账（见 InkRenderer.suspend
+        #   docstring）。修复前此处软重置（空帧 prev + cursor_row=1）：resume
+        #   后首帧把整篇文档当成「首次写入」从终端底部追加，文档矮于屏幕时
+        #   旧帧只被推出 doc_h-1 行 → 屏幕上同时出现两份 UI、scrollback 被
+        #   重复写入（user_select / 外部编辑器返回后必现）。保持 prev 后，
+        #   suspend 期间的同步渲染与 resume 首帧一律增量 diff，只重写变化行。
         # ★ 终端能力恢复（suspend 已还原）：raw 模式 + 备用屏/括号粘贴/鼠标
         raw_mode = getattr(self, "_raw_mode", None)
         if getattr(self, "_interactive", False) and raw_mode is not None:

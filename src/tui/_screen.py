@@ -154,6 +154,79 @@ def take_startup_input() -> bytes:
     return data
 
 
+def _query_cursor_row_windows() -> int | None:
+    """原生 Windows 控制台光标行查询（CPR 的 Win32 等价实现）。
+
+    ★ 2026-10-20（启动锚定跨平台修复）：``query_cursor_row`` 的 DSR/CPR
+    方案依赖 termios + select（POSIX）；原生 Windows 上 ``HAS_TERMIOS`` 为
+    False，修复前直接返回 None → 启动锚定退化为「文档底部贴屏幕底部」，
+    全量首帧会把终端里已有输出的最后 doc_h 行用 EL 清行覆盖掉（用户看到
+    旧输出被「吃掉」/与欢迎界面混排）。这里用
+    ``GetConsoleScreenBufferInfo`` 读取光标在**视口内**的行号，语义与 CPR
+    一致（1-based 屏幕行）。
+
+    Returns:
+        光标 1-based 屏幕行；非 Windows / 非控制台 / 调用失败返回 None。
+    """
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:  # pragma: no cover - ctypes 不可用（异常解释器）
+        return None
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    except Exception:  # pragma: no cover - 非 Windows/受限环境
+        return None
+
+    class _COORD(ctypes.Structure):
+        _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+    class _SMALL_RECT(ctypes.Structure):
+        _fields_ = [
+            ("Left", ctypes.c_short), ("Top", ctypes.c_short),
+            ("Right", ctypes.c_short), ("Bottom", ctypes.c_short),
+        ]
+
+    class _CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", _COORD),
+            ("dwCursorPosition", _COORD),
+            ("wAttributes", wintypes.WORD),
+            ("srWindow", _SMALL_RECT),
+            ("dwMaximumWindowSize", _COORD),
+        ]
+
+    try:
+        kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
+        kernel32.GetStdHandle.restype = ctypes.c_void_p
+        kernel32.GetConsoleScreenBufferInfo.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(_CONSOLE_SCREEN_BUFFER_INFO),
+        ]
+        kernel32.GetConsoleScreenBufferInfo.restype = wintypes.BOOL
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        if not handle or handle == ctypes.c_void_p(-1).value:
+            return None
+        info = _CONSOLE_SCREEN_BUFFER_INFO()
+        if not kernel32.GetConsoleScreenBufferInfo(
+            ctypes.c_void_p(handle), ctypes.byref(info),
+        ):
+            return None
+    except Exception:
+        _logger.debug("Win32 光标行查询异常", exc_info=True)
+        return None
+
+    top = int(info.srWindow.Top)
+    bottom = int(info.srWindow.Bottom)
+    row = int(info.dwCursorPosition.Y) - top + 1
+    # 光标在视口外（滚动缓冲区上方/下方）：CPR 语义无法表达，回退 None。
+    if row < 1 or row > (bottom - top + 1):
+        return None
+    return row
+
+
 def query_cursor_row(
     timeout: float | None = None, stdin_fd: int | None = None,
 ) -> int | None:
@@ -183,7 +256,9 @@ def query_cursor_row(
     from src._compat_termios import HAS_TERMIOS, termios_noncanonical
 
     if not HAS_TERMIOS:
-        return None
+        # ★ 2026-10-20：原生 Windows 控制台无 termios/CPR 通道——改用 Win32
+        #   控制台 API 查询光标行（语义同 CPR），修复启动锚定退化。
+        return _query_cursor_row_windows()
     try:
         fd = sys.stdin.fileno() if stdin_fd is None else int(stdin_fd)
     except (AttributeError, ValueError, OSError, TypeError):
