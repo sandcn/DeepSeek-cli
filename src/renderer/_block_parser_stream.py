@@ -24,8 +24,10 @@ from ._block_helpers import (
     _is_empty_line, _strip_left,
     _is_code_fence_line, _strip_blockquote_prefix,
     _get_fence_lang, _rstrip_trailing_hashes,
-    _LANG_BLACKLIST,
+    _LANG_BLACKLIST, _VOID_HTML_TAGS,
 )
+from ._block_html import _after_open_tag_text
+from ._html_attrs import parse_open_tag
 
 _logger = logging.getLogger(__name__)
 
@@ -305,6 +307,21 @@ class _BlockParserStreamMixin:
             self._parse_normal_line(line, tokens)
 
         elif self._state == _State.HTML_BLOCK:
+            # ── ``<hr>`` / ``<br>`` 等**空元素**块：没有结束标签 ──
+            # 修复前空元素（``hr`` / ``br``）进入 HTML_BLOCK 状态后
+            # ``_html_depth`` 恒 > 0、结束标签永不出现 → 后续全部文档被吞进
+            # 本块（只渲染出一个分隔线，后续正文消失）。空元素在起始行即
+            # 完成：本行只取标签本身（其后同行文本交给 NORMAL 解析），状态
+            # 立即复位。
+            if self._block_html_tag in _VOID_HTML_TAGS:
+                self._state = _State.NORMAL
+                _open_tag, _attrs = parse_open_tag(stripped)
+                if self._block_html_tag == 'hr':
+                    tokens.append(Token(TokenType.HR))
+                tail = _after_open_tag_text(stripped)
+                if tail:
+                    self._parse_normal_line(tail + '\n', tokens)
+                return
             # 嵌套同名标签深度跟踪：内层 ``</ul>``（``<ul><li>…<ul>…</ul>``）
             # 不再误判为整个 HTML 块的结束。
             self._html_depth += _html_tag_delta(stripped, self._block_html_tag)

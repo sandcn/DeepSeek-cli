@@ -313,6 +313,14 @@ def render_list_item(token) -> list[AnsiLine]:
     content_prefix = list_content_prefix(depth, list_marker_width(meta))
     # 列表续行（continuation）：对齐列表内容的缩进行（无项目符号）
     if meta.get("continuation"):
+        if meta.get("lazy"):
+            # ★ 懒续行（CommonMark lazy continuation）：缩进不足/缺失的段落
+            #   续行仍属**同一段落**——与上一列表项行按软换行拼接后整段解析，
+            #   跨行的行内标记（``- **a`` / ``b**``、``- <b>x`` / ``y</b>``）
+            #   才能配对。修复前逐行独立渲染，标记字面上屏。
+            #   内容与 ``render_list_item`` 的段落行语义一致：对齐列表内容列。
+            return _render_list_lazy_continuation(
+                token.content, depth, list_marker_width(meta))
         out: list[AnsiLine] = []
         for sub in _inline_lines(token.content.lstrip()):
             line = AnsiLine.of(content_prefix, _STYLE_BQ)
@@ -384,6 +392,26 @@ def render_list_item(token) -> list[AnsiLine]:
         line.cont_prefix = " " * head_cols
         out_lines = [line]
     return out_lines
+
+
+def _render_list_lazy_continuation(text: str, depth: int,
+                                   marker_width: int) -> list[AnsiLine]:
+    """列表**懒续行**（``lazy``）：缩进不足的段落续行，对齐列表内容列。
+
+    与上一列表项行属于同一段落——跨行的行内标记已在整段解析中配对；此处只
+    负责把该段拆回多行并对齐内容起始列（无项目符号）。
+    """
+    prefix = list_content_prefix(depth, marker_width)
+    out: list[AnsiLine] = []
+    for sub in _inline_lines(str(text or "").lstrip()):
+        line = AnsiLine.of(prefix, _STYLE_BQ)
+        line.cont_prefix = prefix
+        for run in sub.runs:
+            line.append_run(run)
+        out.append(line)
+    if out:
+        return out
+    return [AnsiLine()]
 
 
 def render_definition_item(token) -> list[AnsiLine]:

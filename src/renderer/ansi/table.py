@@ -21,7 +21,7 @@ from __future__ import annotations
 from src.renderer._utils import cjk_display_width as wcswidth_simple
 from .style import Style
 from .helpers import AnsiLine, Run
-from .inline import render_inline, inline_lines_with_baseline
+from .inline import render_inline_cells
 
 _STYLE_HEADER = Style(fg=45, bold=True)
 _STYLE_BORDER = Style(fg=237)
@@ -29,12 +29,16 @@ _STYLE_CELL = Style(fg=252)
 
 
 def _cell_runs(text: str, style) -> list[Run]:
-    """单元格文本 → Run 序列（render_inline 解析行内 markdown，剥离语法）。
+    """单元格文本 → Run 序列（行内 markdown 解析，剥离语法）。
 
     行内二维公式在此退化为**展平降级文本**（``Run.text``），供只关心单行
     文本的调用方使用；表格排版路径请用 ``_cell_lines``。
+
+    ★ 行内 HTML 标签样式（``<span style="color:red">`` / ``<mark>`` /
+    ``<font color>``）：经 ``render_inline_cells`` 按标签覆盖的字符投影样式
+    ——修复前整格统一调色、标签颜色 / 背景丢失。
     """
-    return render_inline(text, style)
+    return render_inline_cells(text, style)[0][0] if text else []
 
 
 #: 单元格行内解析结果的缓存容量上限（表格预览列宽变化时整表重建，
@@ -54,17 +58,31 @@ def _render_cell_lines(text: str, style,
     输入行），跨帧复用安全。
 
     ``cache`` 为 None 时不做缓存（一次性渲染的 ``render_table`` 路径）。
+
+    ★ 单元格内的行内 HTML 标签样式（``<span style="color:red">`` / ``<mark>``
+    / ``<font color>``）经 ``render_inline_cells`` 投影到被标签覆盖的字符上
+    ——修复前单元格整格统一调色，标签的颜色 / 背景全部丢失。无标签的单元格
+    产出与 ``inline_lines_with_baseline`` 完全一致。
     """
     if cache is None:
-        return inline_lines_with_baseline(text or "", style)
+        return _render_cell_rows(text, style)
     key = text or ""
     hit = cache.get(key)
     if hit is None:
-        hit = inline_lines_with_baseline(key, style)
+        hit = _render_cell_rows(key, style)
         if len(cache) >= _CELL_CACHE_MAX:
             cache.clear()
         cache[key] = hit
     return hit
+
+
+def _render_cell_rows(text: str, style) -> tuple[list[AnsiLine], int]:
+    """单元格文本 → ``(多行 AnsiLine, 基线行号)``（含行内 HTML 标签投影）。"""
+    rows, baseline = render_inline_cells(text or "", style)
+    if not rows:
+        return [AnsiLine()], 0
+    lines = [AnsiLine(list(run_list)) for run_list in rows]
+    return lines, baseline
 
 
 def _cell_lines(text: str, style, maxw: int = 0,

@@ -315,10 +315,62 @@ def _append(out: list[Run], text: str, style: Style | None,
 # ═══════════════════════════════════════════════════════════
 
 
+class RunCollector(list):
+    """Run 列表（``render_inline`` 的内部产出），附带**源区间**信息。
+
+    源区间供表格排版使用：单元格里的 HTML 内联块（``<span style="color:red">``
+    / ``<mark>`` / ``<font>``）在解析层是「透明容器」（属性解析后内容以纯文本
+    ``TextNode`` 返回），若按单元格整体调色会整格上色。渲染层可据
+    ``source_markup`` 找到原文中的标签、解析其样式，再按行间映射把样式只施加
+    到标签覆盖的字符上。
+
+    Attributes:
+        source: 解析所用的**源文本**（``render_inline`` 的输入）。
+        source_markup: 文本是否含 HTML 标签（``<`` 且其后为字母/``/``）——
+            仅此时渲染层才需要做标签定位与样式映射（普通文本零成本）。
+    """
+
+    __slots__ = ("source", "source_markup")
+
+    def __init__(self, iterable=(), source: str = "",
+                 source_markup: bool = False) -> None:
+        super().__init__(iterable)
+        self.source = source
+        self.source_markup = source_markup
+
+
+def _nodes_have_html_tag(nodes) -> bool:
+    """节点树中是否含**原始内容以标签开头**的节点（表格行间映射的必要条件）。
+
+    HTML 语义标签（``<sup>`` / ``<code>`` / ``<kbd>`` / ``<abbr>``）解析出的
+    节点，其 ``content`` 是标签内部文本（不以 ``<`` 开头）；含**嵌套结构**
+    的标签（``<span style="color:red"><b>x</b></span>``）则由容器节点保存
+    「渲染后纯文本」，其中可能夹带标签原文。此处递归检查节点子树，只要出现
+    以 ``<`` 开头的原始内容即认为需要行间映射（判定可保守多报——多报只会
+    让表格做出一次无害的标签扫描）。
+    """
+    for node in nodes or ():
+        content = getattr(node, "content", "") or ""
+        if content.lstrip().startswith("<"):
+            return True
+        if _nodes_have_html_tag(getattr(node, "children", None)):
+            return True
+        meta = getattr(node, "meta", None) or {}
+        if _nodes_have_html_tag(meta.get("new_children")):
+            return True
+    return False
+
+
 def _emit_nodes(nodes, base: Style, ctx, out: list[Run], depth: int) -> None:
-    """渲染 InlineNode 列表为 Run（按顺序追加）。"""
+    """渲染 InlineNode 列表为 Run（按顺序追加）。
+
+    产出对象是 ``RunCollector``（``list`` 子类）时，一并记录源文本与
+    「是否含 HTML 标签」——供表格排版只给标签覆盖的字符上色（见
+    ``RunCollector``）。
+    """
     for node in nodes or ():
         _emit_node(node, base, ctx, out, depth)
+    return out
 
 
 def _node_children(node):
@@ -1022,6 +1074,374 @@ _FAST_ISDISJOINT = _make_fast_isdisjoint()
 _DISPATCH.update(_build_dispatch())
 
 
+# ═══════════════════════════════════════════════════════════
+# 表格单元格：行内渲染 + HTML 内联标签的「行间样式映射」
+# ═══════════════════════════════════════════════════════════
+#
+# 解析层把 ``<span style="color:red">`` / ``<mark>`` / ``<font color>`` 等
+# 行内 HTML 当作**透明容器**（属性解析后只返回内部文本，见 ``_inline_html``
+# 的 ``ColorTextNode`` 特殊处理外分支）。块级段落由行内解析器直接产生
+# ``ColorTextNode`` 节点、语义标签（``<sup>`` / ``<kbd>`` / ``<code>`` 等）
+# 产生带样式的节点；但表格单元格的渲染路径（``table._cell_runs``）整格按同一
+# 基础样式调色，导致 ``style`` 属性标记的标签样式在选择 ``ColorTextNode``
+# 之外的全部场景（``<span>`` 包裹嵌套格式、``<font>`` 与 ``<mark>`` 叠加、
+# ``<span style="background-color">``）丢失。
+#
+# 修复思路（只作用于表格单元格，块级段落路径零改动）：单元格原文仍由行内
+# 解析器渲染（链接 / 复制语义不变），随后扫描原文的 HTML 标签，把标签对应的
+# **样式片段**按「行内文本」与「渲染文本」的字符映射逐字符投影到 Run 上——
+# 只有被标签覆盖的字符获得该样式，整格不被误染色。
+
+#: 行内标签的样式属性解析缓存上限（按标签原文缓存，表格预览逐帧复用）
+_INLINE_TAG_STYLE_CACHE: dict = {}
+_INLINE_TAG_STYLE_CACHE_MAX = 512
+
+#: 不产生可见字符的行内标签（投影时跳过，不占映射位置）
+_INLINE_HIDDEN_TAGS: frozenset = frozenset({
+    "wbr", "br", "hr", "img", "input", "source", "track", "embed",
+    "area", "base", "col", "meta", "link", "param", "colgroup",
+    "script", "style", "template", "noscript", "canvas", "svg", "math",
+    "option", "optgroup", "datalist",
+})
+
+
+def _parse_inline_tag(text: str, i: int) -> tuple[str, bool, str, int] | None:
+    """解析 ``text[i:]`` 开始的一个 HTML 标签。
+
+    Returns:
+        ``(tag_name, is_close, raw_tag, next_index)``；不是标签时 ``None``。
+        ``raw_tag`` 为标签原文（含 ``<>``），用于属性解析与缓存键。
+    """
+    n = len(text)
+    if i >= n or text[i] != "<":
+        return None
+    j = i + 1
+    is_close = False
+    if j < n and text[j] == "/":
+        is_close = True
+        j += 1
+    start = j
+    while j < n and (text[j].isalnum() or text[j] in "-:"):
+        j += 1
+    if j == start or j - start > 32:
+        return None
+    name = text[start:j].lower()
+    quote = ""
+    while j < n:
+        ch = text[j]
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch == ">":
+            return name, is_close, text[i:j + 1], j + 1
+        j += 1
+    return None
+
+
+def _inline_tag_style(raw_tag: str) -> Style | None:
+    """行内 HTML 标签 → 终端样式（无样式语义的标签返回 ``None``）。
+
+    支持：``<b>``/``<strong>``/``<i>``/``<em>``/``<u>``/``<ins>``/``<s>``/
+    ``<del>``/``<strike>``/``<mark>``/``<small>``/``<big>``/``<code>``/
+    ``<samp>``/``<tt>``/``<kbd>``/``<span style|class>``/``<font color|bgcolor>``
+    /``<q>`` 等。解析失败或无样式时返回 ``None``（内容照常显示）。
+    """
+    cached = _INLINE_TAG_STYLE_CACHE.get(raw_tag)
+    if cached is not None or raw_tag in _INLINE_TAG_STYLE_CACHE:
+        return cached
+    style: Style | None = None
+    try:
+        from .._html_attrs import parse_attrs
+        from .._inline_html import _extract_style_background, _extract_style_color
+
+        parsed = _parse_inline_tag(raw_tag, 0)
+        tag_name = parsed[0] if parsed is not None else ""
+        is_close = bool(parsed[1]) if parsed is not None else False
+        # ★ 属性区：去掉 ``<tag`` 前缀与尾部 ``>`` / ``/``——修复前传入的是
+        #   ``span style="color:red"``（含标签名），``parse_attrs`` 会把标签名
+        #   当作属性名、``class`` / ``color`` 等属性识别错位。
+        inner = raw_tag[1:].rstrip(">").rstrip("/")
+        if tag_name and inner.startswith(tag_name):
+            inner = inner[len(tag_name):]
+        attrs = parse_attrs(inner)
+        span_classes = attrs.get("class") or attrs.get("classes") or ""
+        if isinstance(span_classes, str):
+            class_list = span_classes.split()
+        else:
+            class_list = list(span_classes or ())
+
+        base = _TAG_BASE_STYLES.get(tag_name)
+        color = ""
+        bg = ""
+        if tag_name in ("span", "font"):
+            color = _extract_style_color(inner)
+            bg = _extract_style_background(inner)
+            if tag_name == "font":
+                color = attrs.get("color") or color
+                bg = attrs.get("bgcolor") or bg
+        if tag_name == "q":
+            # ``<q>`` 由解析层渲染为「…」包裹，样式沿用引用配色
+            base = _STYLE_QUOTE
+        if tag_name == "span" and base is None:
+            # 无样式属性的 ``<span class="red">x</span>``：类名映射即标签
+            # 本身要表达的样式——从**空样式**起步，类名循环才能叠加
+            # （若保持 ``style is None``，``_merge(None, …)`` 会抛异常 →
+            # 整个标签投影被跳过、类名样式丢失）。无类名时该空样式即
+            # 「透明容器」语义（``_merge`` 后不改变字符样式）。
+            style = Style()
+        elif base is not None:
+            style = base
+        if color:
+            fg = _COLOR_TO_256.get(str(color).lower())
+            if fg is None:
+                fg = _hex_to_256(str(color))
+            if fg is not None:
+                style = Style(fg=fg) if style is None else _merge(style, Style(fg=fg))
+        if bg:
+            bg_code = _COLOR_TO_256.get(str(bg).lower())
+            if bg_code is None:
+                bg_code = _hex_to_256(str(bg))
+            if bg_code is not None:
+                style = Style(bg=bg_code) if style is None else _merge(style, Style(bg=bg_code))
+        if style is not None and is_close:
+            # 闭合标签（``</span>``）本身不表达样式：不产生投影区间。
+            style = None
+        for cls in class_list:
+            extra = _SPAN_CLASS_STYLES.get(str(cls).lower())
+            if extra is not None:
+                style = extra if style is None else _merge(style, extra)
+    except Exception:  # pragma: no cover - 属性解析异常时退化为无样式
+        style = None
+    if len(_INLINE_TAG_STYLE_CACHE) >= _INLINE_TAG_STYLE_CACHE_MAX:
+        _INLINE_TAG_STYLE_CACHE.clear()
+    _INLINE_TAG_STYLE_CACHE[raw_tag] = style
+    return style
+
+
+#: 标签名 → 基础样式（与块级段落的行内标签语义保持一致）
+_TAG_BASE_STYLES: dict = {
+    "b": _STYLE_BOLD, "strong": _STYLE_BOLD,
+    "i": _STYLE_ITALIC, "em": _STYLE_ITALIC, "cite": _STYLE_ITALIC,
+    "dfn": _STYLE_ITALIC, "var": _STYLE_ITALIC,
+    "u": _STYLE_UNDERLINE, "ins": _STYLE_UNDERLINE,
+    "s": _STYLE_STRIKE, "del": _STYLE_STRIKE, "strike": _STYLE_STRIKE,
+    "mark": _STYLE_HIGHLIGHT,
+    "code": _STYLE_CODE, "samp": _STYLE_CODE, "tt": _STYLE_CODE,
+    "pre": _STYLE_CODE,
+    "kbd": _STYLE_KBD, "small": _STYLE_SMALL, "big": _STYLE_BIG,
+    "sub": _STYLE_SUB, "sup": _STYLE_SUP,
+    "abbr": _STYLE_ABBR, "acronym": _STYLE_ABBR,
+    "h1": _STYLE_BOLD, "h2": _STYLE_BOLD, "h3": _STYLE_BOLD,
+    "h4": _STYLE_BOLD, "h5": _STYLE_BOLD, "h6": _STYLE_BOLD,
+}
+
+
+def _plain_projection(text: str) -> tuple[str, list[int]]:
+    """原文 → 行内解析后的**可见纯文本** + 每个可见字符的源下标。
+
+    跳过 HTML 标签、``<!-- 注释 -->`` 与 HTML 实体（``&amp;`` 投影为解码后
+    字符，映射到实体起点）；其它字符原样进入投影。该投影与行内解析器的
+    ``render_inline_to_text`` 口径一致（标签不显示、注释隐藏、实体解码）。
+    """
+    from .._utils import decode_html_entities
+
+    out: list[str] = []
+    index: list[int] = []
+    n = len(text)
+    i = 0
+    while i < n:
+        ch = text[i]
+        if ch == "<":
+            if text.startswith("<!--", i):
+                end = text.find("-->", i + 4)
+                if end >= 0:
+                    i = end + 3
+                    continue
+            parsed = _parse_inline_tag(text, i)
+            if parsed is not None:
+                if parsed[0] in _INLINE_HIDDEN_TAGS:
+                    # 不产生可见字符（``<br>`` 由解析器的换行节点单独处理——
+                    # 单元格拆分在调用方按 ``<br>`` 切分，此处不会遇到）
+                    i = parsed[3]
+                    continue
+                i = parsed[3]
+                continue
+        if ch == "&":
+            semi = text.find(";", i + 1)
+            if 0 < semi - i <= 32:
+                entity = text[i:semi + 1]
+                decoded = decode_html_entities(entity)
+                if decoded != entity:
+                    for c in decoded:
+                        out.append(c)
+                        index.append(i)
+                    i = semi + 1
+                    continue
+        out.append(ch)
+        index.append(i)
+        i += 1
+    return "".join(out), index
+
+
+def _collect_inline_style_ranges(source: str) -> list[tuple[int, int, Style]]:
+    """扫描原文中的行内 HTML 标签 → ``(投影起点, 投影终点, 样式)`` 区间。
+
+    区间以 ``_plain_projection`` 的可见文本下标计（``[start, end)``）；标签
+    嵌套时样式重叠，渲染层按顺序合并（外层先、内层后）。无样式标签（如
+    ``<a>`` / 容器 ``<div>`` / 未知标签）不产生区间。
+    """
+    if "<" not in source:
+        return []
+    plain, index = _plain_projection(source)
+    if not index:
+        return []
+    n_src = len(source)
+    ranges: list[tuple[int, int, Style]] = []
+    stack: list[tuple[str, int, Style | None]] = []
+    i = 0
+    while i < n_src:
+        if source[i] != "<":
+            i += 1
+            continue
+        if source.startswith("<!--", i):
+            end = source.find("-->", i + 4)
+            i = end + 3 if end >= 0 else n_src
+            continue
+        parsed = _parse_inline_tag(source, i)
+        if parsed is None:
+            i += 1
+            continue
+        name, is_close, raw, nxt = parsed
+        if not is_close:
+            style = _inline_tag_style(raw)
+            stack.append((name, i, style))
+        else:
+            # 找到最近的同名开启标签（容忍未配对标签）
+            for k in range(len(stack) - 1, -1, -1):
+                if stack[k][0] == name:
+                    _name, open_pos, style = stack.pop(k)
+                    if style is not None:
+                        start = _project_index(index, open_pos, nxt)
+                        end = _project_index(index, i, i)
+                        if end > start:
+                            ranges.append((start, end, style))
+                    break
+        i = nxt
+    # 未闭合的行内标签：覆盖到文本末尾（与浏览器/解析层「标签延续」一致）
+    text_end = len(plain)
+    for _name, open_pos, style in stack:
+        if style is None:
+            continue
+        start = _project_index(index, open_pos, open_pos + 1)
+        if text_end > start:
+            ranges.append((start, text_end, style))
+    return ranges
+
+
+def _project_index(index: list[int], src_pos: int, _unused: int) -> int:
+    """源下标 ``src_pos`` → 投影下标（首个源下标 ≥ ``src_pos`` 的可见字符）。"""
+    lo, hi = 0, len(index)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if index[mid] < src_pos:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+def render_inline_cells(text: str, base_style: Style | None = None,
+                        ctx=None) -> tuple[list[list[Run]], int]:
+    """表格单元格行内渲染 → ``(多行 Run 行, 基线行号)``。
+
+    与 ``inline_lines_with_baseline`` 同一产出结构（按软换行 ``\\n`` 拆分、
+    行内二维公式按基线横向拼接）；在此基础上补做**行内 HTML 标签样式投影**：
+
+      - ``<span style="color:red">`` / ``<font color>`` / ``<mark>`` 等标签的
+        颜色 / 背景 / 粗体等样式只作用于标签覆盖的字符；
+      - 标签本身不显示（内容照常渲染），与块级段落同一语义（修复前表格
+        单元格整格统一调色，标签样式全部丢失）。
+
+    无 HTML 标签（绝大多数单元格）时与既有路径**逐字节等价**，并走同一段
+    代码（仅多一次 ``"<" in text`` 判定）。
+    """
+    base = base_style if base_style is not None else Style()
+    groups = _inline_lines_impl(text, base)
+    rows: list[list[Run]] = []
+    baseline = 0
+    if len(groups) <= 1:
+        joined, baseline = _join_inline_group(groups[0] if groups else [])
+        rows = [list(ln.runs) for ln in joined] or [[]]
+    else:
+        for grp in groups:
+            if not grp:
+                rows.append([])
+                continue
+            joined, _ = _join_inline_group(grp)
+            rows.extend(list(ln.runs) for ln in joined)
+        baseline = 0
+    if "<" not in text or not rows:
+        return rows, baseline
+    try:
+        ranges = _collect_inline_style_ranges(text)
+    except Exception:  # pragma: no cover - 标签扫描异常时退化为无投影
+        return rows, baseline
+    if not ranges:
+        return rows, baseline
+    # 对齐判定：只有当每行「渲染文本」恰为「原文投影行」的连续片段时，字符
+    # 位置才能与投影一一对应。含链接（渲染追加 ` (url)`）/ 图片 / 缩写等
+    # 补充文本的单元格无法精确对应，保持既有渲染（不做投影，避免错位染色）。
+    plain, _index = _plain_projection(text)
+    rendered_all = "".join(
+        "".join(run.text or "" for run in row) for row in rows
+    )
+    if rendered_all != plain.replace("\n", "").replace("\r", ""):
+        return rows, baseline
+    # 逐字符投影样式（按投影文本下标）
+    per_char: list[Style | None] = [None] * len(plain)
+    for start, end, style in ranges:
+        for k in range(max(0, start), min(end, len(per_char))):
+            cur = per_char[k]
+            per_char[k] = style if cur is None else _merge(cur, style)
+    if all(s is None for s in per_char):
+        return rows, baseline
+    # 逐行 / 逐 run 重建：投影文本中的换行与渲染文本的换行一一对应，故按
+    # 字符顺序推进游标即可（投影中的 ``\n`` 不占渲染位置，跳过）。
+    cursor = 0
+    out_rows: list[list[Run]] = []
+    for row in rows:
+        rebuilt: list[Run] = []
+        for run in row:
+            text_run = run.text or ""
+            if not text_run:
+                continue
+            run_link = getattr(run, "link", None)
+            run_block = getattr(run, "block", None)
+            buf: list[str] = []
+            buf_style: Style | None = run.style
+            for ch in text_run:
+                while cursor < len(plain) and plain[cursor] in "\r\n":
+                    cursor += 1
+                extra = per_char[cursor] if cursor < len(per_char) else None
+                cursor += 1
+                target = run.style
+                if extra is not None:
+                    target = extra if target is None else _merge(target, extra)
+                if buf and buf_style == target:
+                    buf.append(ch)
+                    continue
+                if buf:
+                    rebuilt.append(Run("".join(buf), buf_style, run_link, run_block))
+                buf = [ch]
+                buf_style = target
+            if buf:
+                rebuilt.append(Run("".join(buf), buf_style, run_link, run_block))
+        out_rows.append(rebuilt or list(row))
+    return out_rows, baseline
+
+
 def _hjoin_lines(parts: list) -> list["AnsiLine"]:
     """按基线水平拼接多行块（各元素每行按自身宽度补齐）。
 
@@ -1075,7 +1495,16 @@ def _join_inline_group(elements: list) -> tuple[list["AnsiLine"], int]:
 
 
 def _inline_lines_impl(text: str, base: Style | None) -> list:
-    """``inline_lines`` 主体：按软换行切分行组，逐组渲染（含基线信息）。"""
+    """``inline_lines`` 主体：按**显式换行**切分行组，逐组渲染（含基线信息）。
+
+    ★ 修复（行内 HTML 容器跨行）：跨行行内标签（``<span …>a\\nb</span>``）与
+    跨行行内代码（`` `a\\nb` ``）在解析层已被正确配对（一次全文扫描，见
+    ``_try_html_tag`` 的 C 级闭合查找），渲染结果中的软换行是**段落内折行**
+    ——切行后每一行都携带正确的样式，不再泄漏标签原文。
+
+    切分规则：``Run.text`` 中的 ``\\n``（软换行与 ``<br>`` 硬换行同形）切分
+    行组，保持终端「软换行 = 换行」的既有呈现；无换行的文本零改动。
+    """
     runs = render_inline(text, base)
     groups: list[list] = []
     group: list = []

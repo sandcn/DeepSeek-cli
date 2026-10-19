@@ -113,6 +113,7 @@ class InlineHTMLMixin:
         _n: int
         _pos: int
         _MAX_DEPTH: int
+        _FORMAT_CHARS: frozenset
 
         def _has_seq(self, *args: Any, **kwargs: Any) -> Any: ...
 
@@ -362,6 +363,45 @@ class InlineHTMLMixin:
         else:
             content = self._parse_html_content(tag_name, depth)
             if content is not None:
+                # ── 非可嵌套标签的**内容 Markdown 解析**（独立 C 级 █ 定界）──
+                # ``<code>`` / ``<sup>`` / ``<kbd>`` / ``<abbr>`` 等内容按 HTML
+                # 语义是短语容器，但本项目「行内 HTML 透明容器」的既有契约
+                # （``<i>`` / ``<span>`` / ``<mark>``…）是内容仍按行内 Markdown
+                # 解析。修复前这些标签返回原始文本 ——
+                # ``<code>**x**</code>`` / ``<sup>**2**</sup>`` 把 ``**`` 字面
+                # 上屏（``<b>`` 中不存在该缺陷）。
+                #
+                # ★ 内容跨软换行时**不用 C 级 find 取内容**：同一段落内后续还能
+                #   出现同名标签（``<b>a\nb</b>``），C 级 find 会跨段取到最后一个
+                #   闭合，吞掉中间文本。此时退回逐字符 ``_parse_html_content_nested``
+                #   （渲染结果已正确配对，两者仅取边界方式不同）。
+                # ``<progress>`` / ``<meter>`` / 原始内容标签（脚本/样式）等不作
+                # 为短语容器，保持原始文本语义（见 ``_html_content_parses_inline``）。
+                if self._html_content_parses_inline(tag_name):
+                    if '\n' in content:
+                        # 逐字符配对路径：内容含软换行时 C 级 find 会跨段取到
+                        # 最后一个同名闭合标签（``<b>a\nb</b>`` 吞掉中间文本）。
+                        # 先把位置回退到**内容起点**：C 级 ``find`` 已把
+                        # ``self._pos`` 推到闭合标签之后，返回内容起点
+                        # ``self._pos - len(content) - len(</tag>)`` 后交逐字符
+                        # 扫描重新消费内容与闭合标签（父层无副作用）。
+                        self._pos -= len(content) + len(f'</{tag_name}>')
+                        children = self._parse_html_content_nested(tag_name, depth)
+                    else:
+                        children = self._parse_tag_content_nested(
+                            tag_name, content, depth)
+                    if children is not None:
+                        if tag_name in ('abbr', 'acronym'):
+                            return AbbrNode(content=render_inline_to_text(
+                                children), children=children, title=title)
+                        node = self._make_nestable(node_cls, children)
+                        if tag_name in ('progress', 'meter'):
+                            # 进度/度量控件：属性（value/max/min）供渲染层绘制
+                            # 进度条（``_make_nestable`` 重建 meta → 属性补回）
+                            node.meta = dict(node.meta or {})
+                            node.meta.update(_parse_attrs(attr_text))
+                        return node
+                    # 子解析失败（病态嵌套 / 超深）→ 回退原始文本（不丢内容）
                 if tag_name in ('abbr', 'acronym'):
                     return AbbrNode(content=content, title=title)
                 node = node_cls(content=content)
@@ -448,6 +488,65 @@ class InlineHTMLMixin:
                 plain_buf.append(self._text[self._pos])
                 self._pos += 1
         return None
+
+    #: 内容按**原始文本**保留的非可嵌套标签（HTML/本项目语义：内容不是
+    #: Markdown，解析会破坏内容本身）。其余非可嵌套标签（``code`` / ``sup`` /
+    #: ``sub`` / ``kbd`` / ``abbr`` / ``tt`` / ``samp`` / ``pre`` / ``h1``…）
+    #: 的内容按行内 Markdown 解析（与可嵌套标签的「透明容器」契约一致）。
+    _HTML_RAW_CONTENT_TAGS: frozenset = frozenset({
+        'progress', 'meter',   # 数值控件：内容为回退文本，非标记
+        'time', 'data', 'bdo',  # 值/方向标注文本
+    })
+
+    def _html_content_parses_inline(self, tag: str) -> bool:
+        """该标签的内容是否按行内 Markdown 解析（而非保留原始文本）。
+
+        原始内容标签（``<script>`` / ``<style>`` 等，见 ``_HTML_RAW_TEXT_TAGS``）
+        与数值/标注控件（``_HTML_RAW_CONTENT_TAGS``）保留原始文本，其余短语
+        容器（``<code>`` / ``<sup>`` / ``<kbd>`` / ``<abbr>`` …）内容解析。
+
+        ★ 架构约束：本模块不得 import ``inline_parser``（``inline_parser``
+        顶层导入本 mixin，反向导入构成导入环，架构测试强制校验）。
+        """
+        if tag in _HTML_RAW_TEXT_TAGS:
+            return False
+        return tag not in self._HTML_RAW_CONTENT_TAGS
+
+    def _parse_tag_content_nested(self, tag: str, content: str,
+                                  depth: int) -> list[InlineNode] | None:
+        """解析标签内部文本（行内 Markdown）→ 子节点列表。
+
+        与 ``_parse_html_content_nested``（逐字符、遇闭合标签即停）不同：
+        内部文本已在 ``_parse_html_content`` 中用 C 级 ``find`` 定位并切出，
+        此处只做一次**独立子解析**（同样的 ``_InlineParser``，深度 +1）。
+        内容无行内标记（``_FORMAT_CHARS`` 全不出现）时直接返回单个文本节点，
+        避免为 ``<code>x</code>`` 这类常见写法构造解析器。
+
+        返回 ``None`` 表示无法解析（超深 / 解析异常）——调用方回退原始文本。
+
+        ★ 子解析器**不 import** ``inline_parser``：宿主解析器（``_InlineParser``）
+          必然提供 ``_parse_inline_subtree`` 钩子（它就是我方子类），该钩子内部
+          使用同一解析器构造新实例——既复用同一实现，又避免 ``_inline_html``
+          → ``inline_parser`` 的导入环（架构测试强制校验）。
+        """
+        if depth > self._MAX_DEPTH:
+            return None
+        # 独立子解析：深度 + 1（与 ``_parse_html_content_nested`` 的递归计数
+        # 口径一致——每进入一层标签内容深度加 1，防止病态嵌套递归爆栈）
+        if depth + 1 > self._MAX_DEPTH:
+            return None
+        if not content:
+            return []
+        if self._FORMAT_CHARS.isdisjoint(content):
+            return [TextNode(content=content)]
+        parser_factory = getattr(self, "_parse_inline_subtree", None)
+        if parser_factory is None:  # pragma: no cover - 宿主未提供钩子
+            return None
+        try:
+            nodes = parser_factory(content)
+        except Exception:  # pragma: no cover - 子解析异常时回退原始文本
+            return None
+        return nodes
 
     def _make_img_node(self, attr_text: str) -> InlineNode | None:
         src = self._extract_attr(attr_text, 'src')

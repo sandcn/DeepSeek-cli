@@ -850,9 +850,8 @@ class _MermaidRenderer:
                         b.append(f"  [{label}]", _ST_EDGE_LABEL)
                     b.append("\n")
             b.append("\n")
-        if any(d == "*" for _, d, _ in trans):
-            b.append("  ● (终止)", _ST_EDGE_LABEL)
-            b.append("\n")
+        # ★ 终止终点 ``[*]`` 已在各状态的转移行内显示（``──▶ ● (终止)``）；
+        #   修复前额外在末尾再打印一次「● (终止)」，与转移行重复。
         return b.done()
 
     # ═══════════════════════════════════════════════════

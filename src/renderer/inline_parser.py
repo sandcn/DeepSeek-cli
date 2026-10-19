@@ -151,6 +151,15 @@ class _InlineParser(InlineHTMLMixin, InlineLinksMixin, InlineFormattingMixin):
         nodes, _ = self._parse_until('', 0)
         return nodes
 
+    def _parse_inline_subtree(self, text: str) -> list[InlineNode]:
+        """把一段**独立文本**按同一行内语法解析为节点列表（无共享状态）。
+
+        供 HTML Mixin 解析标签内容（``<code>**x**</code>`` 内容按行内 Markdown）
+        使用：``_inline_html`` 不直接 import 本模块（否则构成导入环），改为调用
+        宿主解析器提供的钩子。每次构造**新**解析器实例，位置/兴趣表互不干扰。
+        """
+        return self.__class__(text).parse()
+
     def _is_interest(self, pos: int) -> bool:
         """位置 ``pos`` 是否为「兴趣位置」（需要尝试格式解析的点）。
 

@@ -72,7 +72,7 @@ def test_core_semantic_clusters_present(text: str):
         "单元测试",
         "完成标准",
         "user_select",
-        "不调用 `subagent`",
+        "没有用户的明确指定",
         "commit",
         "元文件",
         "skill",
