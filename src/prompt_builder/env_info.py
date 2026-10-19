@@ -6,7 +6,7 @@ import os
 import platform
 import re
 
-from .shell_info import detect_command_line
+from .shell_info import detect_command_line, detect_gui_program
 
 
 _SUMMARY_CORE_MAX_ITEMS = 4
@@ -48,6 +48,11 @@ def build_environment_info(
     #   硬编码 os.getcwd()，调用方为子代理 prompt 传入的其他工作目录被忽略。
     lines.append(f"- 工作目录: {_resolve_cwd(cwd)}")
     lines.append(f"- 命令行: {detect_command_line()}")
+    # ★ GUI 宿主单独一行：承载当前命令行的 GUI 程序（Windows Terminal /
+    #   VS Code / ConEmu ...）——「命令行」只描述 Shell 类型，避免把终端
+    #   程序混进命令行（如 "cmd (Windows Terminal, Windows)" 误导模型）。
+    #   没有图形宿主（SSH / 纯控制台）时输出 unknown。
+    lines.append(f"- GUI 程序: {detect_gui_program() or 'unknown'}")
     lines.append("")
 
     return "\n".join(lines) + "\n"

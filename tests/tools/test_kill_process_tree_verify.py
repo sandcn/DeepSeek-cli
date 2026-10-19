@@ -199,6 +199,7 @@ def test_pid_alive_process_lookup_error_is_dead(monkeypatch):
     assert support._pid_alive(4242) is False
 
 
+@_POSIX_ONLY  # Windows 走 _win_pid_alive（OpenProcess），不经 os.kill 分支
 def test_pid_alive_permission_error_is_alive(monkeypatch):
     """无权限操作（PermissionError）说明进程仍存在 → 判存活。"""
     def fake_kill(pid, sig):
@@ -310,6 +311,7 @@ def test_kill_pid_windows_invokes_taskkill(monkeypatch):
     assert calls == [["taskkill", "/F", "/T", "/PID", "1234"]]
 
 
+@_POSIX_ONLY  # 用例走 os.kill + signal.SIGKILL（Windows 无 SIGKILL）
 def test_kill_pid_posix_ignores_missing_process(monkeypatch):
     """POSIX：进程已退出（ProcessLookupError）不抛异常。"""
     monkeypatch.setattr(support, "_is_windows", lambda: False)

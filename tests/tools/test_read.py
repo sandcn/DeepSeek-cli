@@ -19,7 +19,9 @@ from src.tools.read import ReadFunc
 
 
 def _write(path, content: str) -> str:
-    with open(path, "w", encoding="utf-8") as f:
+    # newline=""：按给定内容原样写入（不让文本模式在 Windows 上把 \n 翻译成
+    # \r\n——CRLF 用例要求写入的确切是 \r\n，否则会变成 \r\r\n）。
+    with open(path, "w", encoding="utf-8", newline="") as f:
         f.write(content)
     return str(path)
 

@@ -14,10 +14,23 @@
 from __future__ import annotations
 
 import json
+import os
+
+import pytest
 
 from src.tools.bash import BashFunc
 from src.tools.bash_opt import BashOptFunc
 from src.core.base_agent import _parse_bash_result_fields
+
+
+#: 用例用 POSIX shell 语法（``printf`` / ``seq`` / ``1>&2`` / ``$$`` / ``true``）
+#: 表达「退出码 / 流分离」语义。bash 工具由**当前交互 shell** 解释命令
+#: （见 ``_resolve_shell_launch``），Windows 会话是 cmd / PowerShell，这些内建
+#: 不存在（CI 在 Linux 上覆盖同一批用例）。
+_posix_shell_only = pytest.mark.skipif(
+    os.name == "nt",
+    reason="用例依赖 POSIX shell 语法（printf/seq/1>&2/$$），Windows 会话由 cmd/PowerShell 解释",
+)
 
 
 def _loads(result: str) -> dict:
@@ -26,6 +39,7 @@ def _loads(result: str) -> dict:
 
 # ── 1. 前台执行：三元 JSON 结构 ────────────────────────
 
+@_posix_shell_only
 async def test_stdout_stderr_separated():
     """stdout 与 stderr 分离收集，不再合并。"""
     r = _loads(await BashFunc(command="echo out; echo err 1>&2").execute())
@@ -42,12 +56,14 @@ async def test_returncode_is_command_exit_code():
     assert r["stderr"] == ""
 
 
+@_posix_shell_only
 async def test_returncode_pipeline_last_command():
     """管道退出码取最后一个命令（bash 默认，无 pipefail）。"""
     r = _loads(await BashFunc(command="sh -c 'exit 7' | cat").execute())
     assert r["returncode"] == 0
 
 
+@_posix_shell_only
 async def test_returncode_signal_killed_as_128_plus_sig():
     """子进程被信号杀死时 returncode 为 128+sig（$? 语义）。"""
     r = _loads(await BashFunc(command="kill -TERM $$").execute())
@@ -56,12 +72,14 @@ async def test_returncode_signal_killed_as_128_plus_sig():
     assert r["returncode"] == 137  # 128 + 9
 
 
+@_posix_shell_only
 async def test_no_output_empty_strings_not_placeholder():
     """无输出时字段为空字符串（移除旧的 "(无输出)" 占位）。"""
     r = _loads(await BashFunc(command="true").execute())
     assert r == {"stdout": "", "stderr": "", "returncode": 0}
 
 
+@_posix_shell_only
 async def test_multiline_output_split_by_stream():
     """多行输出按流分别保留完整内容。"""
     r = _loads(await BashFunc(
@@ -70,6 +88,7 @@ async def test_multiline_output_split_by_stream():
     assert r["stderr"] == "e1\ne2"
 
 
+@_posix_shell_only
 async def test_display_path_returns_same_json():
     """display 路径（实时输出到终端）返回同结构三元 JSON。"""
     r = _loads(await BashFunc(command="printf 'a'; printf 'b' 1>&2").display())
@@ -102,6 +121,7 @@ def test_cwd_argument_ignored_by_from_args():
 
 # ── 3. 截断：stdout / stderr 各自独立截断 ──────────────
 
+@_posix_shell_only
 async def test_truncate_applies_per_stream():
     """stdout 与 stderr 各自独立截断（超 MAX_LINES 保留尾部）。"""
     n = BashFunc.MAX_LINES + 50
@@ -204,6 +224,7 @@ class _FakeAgent:
         return self._background_tasks.pop(tid, None)
 
 
+@_posix_shell_only
 async def test_background_wait_returns_three_fields():
     """bash_opt wait 返回 stdout/stderr/returncode（不再合并 output）。
 

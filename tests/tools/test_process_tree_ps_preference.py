@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import builtins
 import io
+import os
 
 import pytest
 
@@ -89,6 +90,7 @@ def test_children_map_falls_back_to_ps_when_proc_absent(monkeypatch):
 
 # ── 3. _pid_state（单进程查询，保留 /proc，保住僵尸判定） ──
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows 原生没有 /proc（_pid_state 直接返回 None）")
 def test_pid_state_reads_proc_state_line(monkeypatch):
     """读 ``/proc/<pid>/status`` 的 ``State`` 行首字符（僵尸判定依赖它）。"""
     monkeypatch.setattr(bs.os.path, "isdir", lambda _p: True)

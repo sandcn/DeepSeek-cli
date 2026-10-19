@@ -5,10 +5,12 @@
   - /proc 父进程链解析与 psutil 回退
   - Windows 原生父进程链（Toolhelp32 快照，无 psutil 时识别 powershell）
   - Shell 检测（进程链 / SHELL / BASH_VERSION / ComSpec）
+  - 非交互执行外壳跳过（cmd /c、powershell -Command、sh -c）与环境标记
   - 终端模拟器检测（环境变量 / 进程链 / TERM 回退）
+  - GUI 宿主检测（Windows Terminal / VS Code / ConEmu / JetBrains，跳过 tmux）
   - 运行环境检测（Cygwin / MSYS2 / WSL / Termux / Windows / macOS / Linux）
-  - detect_command_line 单行组装
-  - build_environment_info 注入「- 命令行:」行
+  - detect_command_line 单行组装（命令行不再混入终端）
+  - build_environment_info 注入「- 命令行:」「- GUI 程序:」行
   - build_environment_info 不包含 Python 版本信息
   - build_work_md 的 cwd 解析（省略时回退进程工作目录）与缺失文件兜底
 """
@@ -90,18 +92,24 @@ def test_proc_path_uses_posix_separator(monkeypatch):
 
 
 def test_ancestor_names_psutil_fallback(monkeypatch):
-    monkeypatch.setattr(si, "_proc_ancestor_names", lambda pid: [])
-    monkeypatch.setattr(si, "_psutil_ancestor_names", lambda pid: ["bash"])
+    monkeypatch.setattr(si, "_proc_ancestor_details", lambda pid: [])
+    monkeypatch.setattr(si, "_psutil_ancestor_details", lambda pid: [("bash", "bash -l")])
+    monkeypatch.setattr(si, "_win_ancestor_details", lambda pid: [])
     assert si._ancestor_names(1) == ["bash"]
+    assert si._ancestor_details(1) == [("bash", "bash -l")]
 
 
 def test_ancestor_names_windows_native_fallback(monkeypatch):
     """无 /proc、无 psutil 时（Windows 默认状态）改用原生进程表。"""
-    monkeypatch.setattr(si, "_proc_ancestor_names", lambda pid: [])
-    monkeypatch.setattr(si, "_psutil_ancestor_names", lambda pid: [])
+    monkeypatch.setattr(si, "_proc_ancestor_details", lambda pid: [])
+    monkeypatch.setattr(si, "_psutil_ancestor_details", lambda pid: [])
     monkeypatch.setattr(
-        si, "_win_ancestor_names",
-        lambda pid: ["python.exe", "powershell.exe", "WindowsTerminal.exe"],
+        si, "_win_ancestor_details",
+        lambda pid: [
+            ("python.exe", ""),
+            ("powershell.exe", ""),
+            ("WindowsTerminal.exe", ""),
+        ],
     )
     assert si._ancestor_names(10) == ["python.exe", "powershell.exe", "WindowsTerminal.exe"]
 
@@ -159,55 +167,173 @@ def test_win_process_table_live_windows():
     assert parent_pid > 0
 
 
+def test_win_ancestor_details_adds_shell_cmdline(monkeypatch):
+    """只有 shell 候选进程才补充命令行（用于识别 cmd /c 执行外壳）。"""
+    table = {
+        10: (20, "python.exe"),
+        20: (30, "cmd.exe"),
+        30: (40, "powershell.exe"),
+        40: (0, "WindowsTerminal.exe"),
+    }
+    monkeypatch.setattr(si, "_win_process_table", lambda: table)
+    monkeypatch.setattr(
+        si, "_win_process_cmdline",
+        lambda pid: {20: "cmd.exe /c python t.py", 30: "powershell.exe"}.get(pid, ""),
+    )
+    assert si._win_ancestor_details(10) == [
+        ("python.exe", ""),
+        ("cmd.exe", "cmd.exe /c python t.py"),
+        ("powershell.exe", "powershell.exe"),
+        ("WindowsTerminal.exe", ""),
+    ]
+
+
 # ── Shell 检测 ───────────────────────────────────────────
 
 def test_detect_shell_from_process_chain(monkeypatch):
-    monkeypatch.setattr(si, "_ancestor_names", lambda pid: ["/usr/bin/python3.9", "/usr/bin/bash", "/usr/bin/mintty"])
+    monkeypatch.setattr(
+        si, "_ancestor_details",
+        lambda pid: [
+            ("/usr/bin/python3.9", ""),
+            ("/usr/bin/bash", ""),
+            ("/usr/bin/mintty", ""),
+        ],
+    )
     assert si.detect_shell(env={}, ppid=10) == "bash"
 
 
 def test_detect_shell_powershell_from_native_chain(monkeypatch):
     """Windows 父链里最近的交互 shell 是 powershell 时不得回退成 cmd。"""
     monkeypatch.setattr(
-        si, "_ancestor_names",
-        lambda pid: ["python.exe", "powershell.exe", "WindowsTerminal.exe"],
+        si, "_ancestor_details",
+        lambda pid: [
+            ("python.exe", ""),
+            ("powershell.exe", ""),
+            ("WindowsTerminal.exe", ""),
+        ],
     )
     env = {"ComSpec": r"C:\WINDOWS\system32\cmd.exe"}
     assert si.detect_shell(env=env, ppid=10) == "powershell"
 
 
 def test_detect_shell_pwsh_from_native_chain(monkeypatch):
-    monkeypatch.setattr(si, "_ancestor_names", lambda pid: ["python.exe", "pwsh.exe"])
+    monkeypatch.setattr(
+        si, "_ancestor_details",
+        lambda pid: [("python.exe", ""), ("pwsh.exe", "")],
+    )
     assert si.detect_shell(env={}, ppid=10) == "powershell"
+
+
+def test_detect_shell_skips_cmd_exec_launcher(monkeypatch):
+    """bash 工具用 cmd.exe /c 启动子进程：跳过外壳，识别真实交互 shell。"""
+    monkeypatch.setattr(
+        si, "_ancestor_details",
+        lambda pid: [
+            ("cmd.exe", r'cmd.exe /d /s /c "python -c ""print(1)"""'),
+            ("python.exe", ""),
+            ("powershell.exe", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"),
+            ("WindowsTerminal.exe", ""),
+        ],
+    )
+    assert si.detect_shell(env={"ComSpec": r"C:\WINDOWS\system32\cmd.exe"}, ppid=10) == "powershell"
+
+
+def test_detect_shell_keeps_interactive_cmd(monkeypatch):
+    """cmd /k 是执行后保持交互的会话，不能被当成执行外壳跳过。"""
+    monkeypatch.setattr(
+        si, "_ancestor_details",
+        lambda pid: [("cmd.exe", "cmd.exe /k"), ("WindowsTerminal.exe", "")],
+    )
+    assert si.detect_shell(env={}, ppid=10) == "cmd"
+
+
+def test_detect_shell_skips_powershell_command_launcher(monkeypatch):
+    """powershell -Command ... 是执行外壳；继续向上找交互 powershell。"""
+    monkeypatch.setattr(
+        si, "_ancestor_details",
+        lambda pid: [
+            ("powershell.exe", 'powershell.exe -NoProfile -EncodedCommand ZQBjAGgAbwA='),
+            ("python.exe", ""),
+            ("powershell.exe", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"),
+            ("WindowsTerminal.exe", ""),
+        ],
+    )
+    assert si.detect_shell(env={}, ppid=10) == "powershell"
+
+
+def test_detect_shell_keeps_powershell_noexit(monkeypatch):
+    """powershell -NoExit 是交互会话，不跳过。"""
+    monkeypatch.setattr(
+        si, "_ancestor_details",
+        lambda pid: [("powershell.exe", "powershell.exe -NoExit -Command Get-Date")],
+    )
+    assert si.detect_shell(env={}, ppid=10) == "powershell"
+
+
+def test_detect_shell_skips_posix_command_launcher(monkeypatch):
+    monkeypatch.setattr(
+        si, "_ancestor_details",
+        lambda pid: [
+            ("sh", "sh -c python3 app.py"),
+            ("python3", ""),
+            ("bash", "-bash"),
+        ],
+    )
+    assert si.detect_shell(env={}, ppid=10) == "bash"
+
+
+def test_detect_shell_env_marker_wins(monkeypatch):
+    """启动方注入的真实 shell 优先于父链上的执行外壳。"""
+    monkeypatch.setattr(
+        si, "_ancestor_details",
+        lambda pid: [("cmd.exe", "cmd.exe /c python child.py"), ("python.exe", "")],
+    )
+    assert si.detect_shell(
+        env={si.SHELL_ENV_MARKER: "powershell"}, ppid=10,
+    ) == "powershell"
+
+
+def test_is_launcher_shell_requires_cmdline():
+    assert si._is_launcher_shell("cmd.exe", "") is False
+    assert si._is_launcher_shell("cmd.exe", r"cmd.exe /c dir") is True
+    assert si._is_launcher_shell("cmd.exe", r"cmd.exe /k") is False
+    assert si._is_launcher_shell("powershell.exe", "powershell.exe -Command dir") is True
+    assert si._is_launcher_shell("powershell.exe", "powershell.exe -NoExit") is False
+    assert si._is_launcher_shell("bash", "bash -c 'ls'") is True
+    assert si._is_launcher_shell("bash", "-bash") is False
 
 
 def test_detect_command_line_powershell(monkeypatch):
     monkeypatch.setattr(
-        si, "_ancestor_names",
-        lambda pid: ["python.exe", "powershell.exe", "WindowsTerminal.exe"],
+        si, "_ancestor_details",
+        lambda pid: [
+            ("python.exe", ""),
+            ("powershell.exe", ""),
+            ("WindowsTerminal.exe", ""),
+        ],
     )
     out = si.detect_command_line(env={"WT_SESSION": "abc"}, ppid=10, sys_platform="win32", release="10")
-    assert out == "powershell (Windows Terminal, Windows)"
+    assert out == "powershell (Windows)"
 
 
 def test_detect_shell_env_shell(monkeypatch):
-    monkeypatch.setattr(si, "_ancestor_names", lambda pid: [])
+    monkeypatch.setattr(si, "_ancestor_details", lambda pid: [])
     assert si.detect_shell(env={"SHELL": "/bin/zsh"}, ppid=10) == "zsh"
 
 
 def test_detect_shell_env_version_marker(monkeypatch):
-    monkeypatch.setattr(si, "_ancestor_names", lambda pid: [])
+    monkeypatch.setattr(si, "_ancestor_details", lambda pid: [])
     assert si.detect_shell(env={"BASH_VERSION": "5.2.15"}, ppid=10) == "bash"
     assert si.detect_shell(env={"FISH_VERSION": "3.6.0"}, ppid=10) == "fish"
 
 
 def test_detect_shell_comspec_fallback(monkeypatch):
-    monkeypatch.setattr(si, "_ancestor_names", lambda pid: [])
+    monkeypatch.setattr(si, "_ancestor_details", lambda pid: [])
     assert si.detect_shell(env={"ComSpec": r"C:\WINDOWS\system32\cmd.exe"}, ppid=10) == "cmd"
 
 
 def test_detect_shell_unknown(monkeypatch):
-    monkeypatch.setattr(si, "_ancestor_names", lambda pid: [])
+    monkeypatch.setattr(si, "_ancestor_details", lambda pid: [])
     assert si.detect_shell(env={}, ppid=10) == ""
 
 
@@ -281,52 +407,115 @@ def test_detect_runtime_explicit_platform_overrides_host():
 # ── detect_command_line 组装 ─────────────────────────────
 
 def test_format_command_line():
-    assert si._format_command_line("bash", "mintty", "Cygwin") == "bash (mintty, Cygwin)"
-    assert si._format_command_line("bash", "", "Cygwin") == "bash (Cygwin)"
-    assert si._format_command_line("bash", "", "") == "bash"
-    assert si._format_command_line("", "mintty", "") == "mintty"
-    assert si._format_command_line("", "", "") == "unknown"
+    assert si._format_command_line("bash", "Cygwin") == "bash (Cygwin)"
+    assert si._format_command_line("bash", "") == "bash"
+    assert si._format_command_line("", "Cygwin") == "Cygwin"
+    assert si._format_command_line("", "") == "unknown"
 
 
 def test_detect_command_line_full(monkeypatch):
-    monkeypatch.setattr(si, "_ancestor_names", lambda pid: ["/usr/bin/bash", "/usr/bin/mintty"])
+    monkeypatch.setattr(
+        si, "_ancestor_details",
+        lambda pid: [("/usr/bin/bash", ""), ("/usr/bin/mintty", "")],
+    )
     out = si.detect_command_line(env={}, ppid=1, sys_platform="cygwin", release="CYGWIN_NT-10.0")
-    assert out == "bash (mintty, Cygwin)"
+    assert out == "bash (Cygwin)"
 
 
 def test_detect_command_line_runtime_only(monkeypatch):
-    monkeypatch.setattr(si, "_ancestor_names", lambda pid: [])
+    monkeypatch.setattr(si, "_ancestor_details", lambda pid: [])
     out = si.detect_command_line(env={}, ppid=1, sys_platform="cygwin", release="CYGWIN_NT-10.0")
     assert out == "Cygwin"
 
 
 def test_detect_command_line_unknown(monkeypatch):
-    monkeypatch.setattr(si, "_ancestor_names", lambda pid: [])
+    monkeypatch.setattr(si, "_ancestor_details", lambda pid: [])
     out = si.detect_command_line(env={}, ppid=1, sys_platform="plan9", release="plan9")
     assert out == "unknown"
+
+
+# ── GUI 宿主检测 ─────────────────────────────────────────
+
+def test_detect_gui_program_windows_terminal_env(monkeypatch):
+    monkeypatch.setattr(si, "_ancestor_names", lambda pid: [])
+    assert si.detect_gui_program(env={"WT_SESSION": "abc"}, ppid=1) == "Windows Terminal"
+
+
+def test_detect_gui_program_term_program(monkeypatch):
+    monkeypatch.setattr(si, "_ancestor_names", lambda pid: [])
+    assert si.detect_gui_program(env={"TERM_PROGRAM": "vscode"}, ppid=1) == "VS Code"
+    assert si.detect_gui_program(env={"TERM_PROGRAM": "Apple_Terminal"}, ppid=1) == "Apple Terminal"
+    assert si.detect_gui_program(env={"TERMINAL_EMULATOR": "JetBrains-JediTerm"}, ppid=1) == "JetBrains"
+
+
+def test_detect_gui_program_process_chain(monkeypatch):
+    monkeypatch.setattr(
+        si, "_ancestor_names",
+        lambda pid: ["python.exe", "powershell.exe", "WindowsTerminal.exe"],
+    )
+    assert si.detect_gui_program(env={}, ppid=1) == "Windows Terminal"
+
+
+def test_detect_gui_program_skips_multiplexer(monkeypatch):
+    """tmux 只是复用器：GUI 宿主要继续向上找（gnome-terminal-server）。"""
+    monkeypatch.setattr(
+        si, "_ancestor_names",
+        lambda pid: ["python", "bash", "tmux", "gnome-terminal-server"],
+    )
+    assert si.detect_gui_program(env={}, ppid=1) == "GNOME Terminal"
+
+
+def test_detect_gui_program_jetbrains_process(monkeypatch):
+    monkeypatch.setattr(si, "_ancestor_names", lambda pid: ["python", "pycharm64"])
+    assert si.detect_gui_program(env={}, ppid=1) == "JetBrains"
+
+
+def test_detect_gui_program_unknown(monkeypatch):
+    monkeypatch.setattr(si, "_ancestor_names", lambda pid: ["python", "sshd"])
+    assert si.detect_gui_program(env={}, ppid=1) == ""
+
+
+def test_detect_terminal_expanded_aliases(monkeypatch):
+    monkeypatch.setattr(si, "_ancestor_names", lambda pid: ["python", "conemu64"])
+    assert si.detect_terminal(env={}, ppid=1) == "ConEmu"
+    monkeypatch.setattr(si, "_ancestor_names", lambda pid: ["python", "fluentterminal"])
+    assert si.detect_terminal(env={}, ppid=1) == "Fluent Terminal"
 
 
 # ── build_environment_info 集成 ──────────────────────────
 
 def test_build_environment_info_contains_command_line(monkeypatch):
-    monkeypatch.setattr(ei, "detect_command_line", lambda: "bash (mintty, Cygwin)")
+    monkeypatch.setattr(ei, "detect_command_line", lambda: "bash (Cygwin)")
+    monkeypatch.setattr(ei, "detect_gui_program", lambda: "mintty")
     text = ei.build_environment_info("/tmp/work")
     assert text.startswith("# 当前执行环境\n")
     assert "- 工作目录: /tmp/work" in text
-    assert "- 命令行: bash (mintty, Cygwin)" in text
+    assert "- 命令行: bash (Cygwin)" in text
+    assert "- GUI 程序: mintty" in text
     assert text.endswith("\n")
 
 
+def test_build_environment_info_gui_unknown(monkeypatch):
+    monkeypatch.setattr(ei, "detect_command_line", lambda: "bash (Linux)")
+    monkeypatch.setattr(ei, "detect_gui_program", lambda: "")
+    text = ei.build_environment_info("/tmp/work")
+    assert "- GUI 程序: unknown" in text
+
+
 def test_build_environment_info_line_order(monkeypatch):
-    monkeypatch.setattr(ei, "detect_command_line", lambda: "bash (mintty, Cygwin)")
+    monkeypatch.setattr(ei, "detect_command_line", lambda: "bash (Cygwin)")
+    monkeypatch.setattr(ei, "detect_gui_program", lambda: "mintty")
     lines = ei.build_environment_info("/tmp/work").splitlines()
     cwd_idx = next(i for i, line in enumerate(lines) if line.startswith("- 工作目录:"))
     cmd_idx = next(i for i, line in enumerate(lines) if line.startswith("- 命令行:"))
+    gui_idx = next(i for i, line in enumerate(lines) if line.startswith("- GUI 程序:"))
     assert cmd_idx == cwd_idx + 1
+    assert gui_idx == cmd_idx + 1
 
 
 def test_build_environment_info_excludes_python(monkeypatch):
-    monkeypatch.setattr(ei, "detect_command_line", lambda: "bash (mintty, Cygwin)")
+    monkeypatch.setattr(ei, "detect_command_line", lambda: "bash (Cygwin)")
+    monkeypatch.setattr(ei, "detect_gui_program", lambda: "mintty")
     text = ei.build_environment_info("/tmp/work")
     assert "- Python:" not in text
     assert all(not line.startswith("- Python:") for line in text.splitlines())

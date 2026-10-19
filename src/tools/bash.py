@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import errno as _errno
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -26,6 +28,7 @@ from ._process_output import OutputLineDecoder
 
 from ..core.constants import GREEN, RED, DIM, RESET
 from ..api.interrupt_async import is_interrupted
+from ..prompt_builder.shell_info import SHELL_ENV_MARKER, detect_shell
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,201 @@ try:
     )
 except Exception:  # pragma: no cover - 极端环境下探测失败按不可用处理
     _HAS_PTY = False
+
+
+# ── 按「启动本程序的交互 shell」选择解释器 ──────────────
+# 系统提示词里的「命令行」是按父进程链识别出的真实交互 shell（powershell /
+# cmd / bash / zsh / fish ...）。命令执行必须与之一致：写命令的模型是按那个
+# shell 的语法写的（`ls` / `Get-ChildItem` / `[[ ... ]]` / `dir`），换成另一种
+# 解释器就会判成「不是内部或外部命令」或语法错误。
+#   - PowerShell：用 -EncodedCommand 传脚本（base64 UTF-16LE），彻底避开
+#     命令行引号 / 换行 / 中文转义问题；
+#   - 其余 POSIX 系 shell：`[<shell>, "-c", command]` 以 argv 传命令，不经
+#     任何中间 shell 二次转义；
+#   - cmd 与检测失败：走平台默认 shell=True（Windows → ComSpec=cmd.exe，
+#     POSIX → /bin/sh）。
+
+#: 优先使用的 PowerShell 可执行文件（PowerShell 7 优先，回退 Windows PowerShell 5.1）
+_POWERSHELL_EXECUTABLES = ("pwsh", "powershell")
+
+
+def _find_powershell_executable() -> str | None:
+    """定位 PowerShell 可执行文件（pwsh 优先，回退系统自带 powershell.exe）。"""
+    for name in _POWERSHELL_EXECUTABLES:
+        path = shutil.which(name)
+        if path:
+            return path
+    if os.name == "nt":
+        system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+        candidate = os.path.join(
+            system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
+        )
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+#: 归一化 shell 名 → 可执行文件名候选（未登记的名字与归一化名同名）。
+#: ``shell_info`` 把 ``nu`` 归一化为 ``nushell``，可执行文件名仍是 ``nu``。
+_SHELL_EXECUTABLE_CANDIDATES: dict = {
+    "nushell": ("nu", "nushell"),
+}
+
+#: Windows 上名为 bash、但**不是**本机交互 shell 的启动器：``System32\bash.exe``
+#: （旧 WSL 启动器）与 ``WindowsApps\bash.exe``（商店应用执行别名）。它们把命令
+#: 交给 WSL 发行版执行——工作目录 / 文件系统与当前 Windows 会话不在一棵树里，
+#: 拿来执行本机命令会「命令能跑、文件找不到」，不能作为当前环境的 bash。
+_WSL_BASH_STUBS = ("\\system32\\bash.exe", "\\windowsapps\\bash.exe")
+
+
+def _is_wsl_bash_stub(path: str) -> bool:
+    """Windows 上该 bash 路径是否只是 WSL 启动器（不是本机 bash）。"""
+    return (path or "").replace("/", "\\").lower().endswith(_WSL_BASH_STUBS)
+
+
+def _shell_basename(value: str) -> str:
+    """路径 / 进程名 → 小写 basename（去掉 ``.exe`` 后缀）。"""
+    name = (value or "").strip().strip('"').strip("'").replace("\\", "/").rstrip("/")
+    name = name.rsplit("/", 1)[-1]
+    if name.lower().endswith(".exe"):
+        name = name[:-4]
+    return name.lower()
+
+
+def _find_shell_executable(shell: str) -> str | None:
+    """按归一化 shell 名定位其可执行文件（找不到返回 None）。
+
+    - ``powershell``：``pwsh`` 优先，回退系统自带 ``powershell.exe``；
+    - 其他 shell（bash / zsh / fish / ksh / dash / csh / tcsh / nushell /
+      xonsh / elvish / sh）：POSIX 上优先用 ``$SHELL``——它是用户登录 shell
+      的绝对路径，与检测结果一致时比在 PATH 里按名字找更精确（同名不同版本、
+      或 PATH 未包含该 shell 所在目录）；否则在 PATH 中查找。Windows 上名为
+      ``bash`` 的 WSL 启动器（``System32`` / ``WindowsApps``）不算本机 bash，
+      会跳过（见 :func:`_is_wsl_bash_stub`）。
+    """
+    if not shell:
+        return None
+    if shell == "powershell":
+        return _find_powershell_executable()
+    names = _SHELL_EXECUTABLE_CANDIDATES.get(shell, (shell,))
+    if os.name != "nt":
+        login_shell = (os.environ.get("SHELL") or "").strip()
+        if login_shell and _shell_basename(login_shell) in names and os.path.isfile(login_shell):
+            return login_shell
+    for name in names:
+        path = shutil.which(name)
+        if not path:
+            continue
+        if name == "bash" and os.name == "nt" and _is_wsl_bash_stub(path):
+            logger.debug("%s 是 WSL 启动器（非本机 bash），不作为当前 shell 执行", path)
+            continue
+        return path
+    return None
+
+
+def _powershell_script(command: str) -> str:
+    """把用户命令包装成 PowerShell 脚本。
+
+    - 关闭进度流（``$ProgressPreference``）：stderr 被重定向时 PowerShell
+      会把进度记录序列化成 CLIXML（``#< CLIXML <Objs ... progress ...``）
+      写进 stderr，工具卡片里是一大段噪声；
+    - 错误流改 ``Stop`` + ``catch``：stderr 重定向时 PowerShell 默认把
+      错误记录也序列化成 CLIXML（``<S S="Error">...``），模型看到的
+      不是可读错误；显式捕获后按纯文本写回 stderr；
+    - 输出编码固定 UTF-8（无控制台 / 中文代码页下 PowerShell 默认按系统
+      OEM 代码页输出，工具卡片会乱码；``OutputLineDecoder`` 仍做回退兜底）；
+    - 命令前重置 ``$LASTEXITCODE``，命令后按原生命令退出码退出——保持
+      bash 工具「returncode = 命令退出码」的契约；命令是纯 cmdlet 时
+      用 ``$?`` 兜底（PowerShell 的 cmdlet 错误默认不设置 ``$LASTEXITCODE``，
+      如 ``Get-Item nope`` 在 bash 语义下应为非零）；
+    - ``exit`` 由用户命令自己触发时不会走到末尾判断，语义不变。
+    """
+    return (
+        "$ProgressPreference = 'SilentlyContinue'\n"
+        "$ErrorActionPreference = 'Stop'\n"
+        "try {\n"
+        "    try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }\n"
+        "    $global:LASTEXITCODE = 0\n"
+        f"{command}\n"
+        "    $ok = $?\n"
+        "    if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
+        "    if (-not $ok) { exit 1 }\n"
+        "} catch {\n"
+        "    [Console]::Error.WriteLine($_.Exception.Message)\n"
+        "    exit 1\n"
+        "}\n"
+    )
+
+
+def _encode_powershell_command(script: str) -> str:
+    """PowerShell ``-EncodedCommand`` 参数（UTF-16LE + base64）。"""
+    return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+
+
+def _resolve_shell_launch(command: str) -> tuple:
+    """按「启动本程序的交互 shell」决定命令启动方式。
+
+    检测到的交互 shell 就是系统提示词里声明的「命令行」，命令必须由同一个
+    解释器执行（模型按该 shell 的语法写命令）：
+
+    Returns:
+        ``(command_arg, use_shell, shell_name)``：
+          - ``powershell``：``([pwsh/powershell, -NoLogo, -NoProfile,
+            -EncodedCommand, <base64>], False, "powershell")``；
+          - 其他 POSIX 系 shell（bash / zsh / fish / ksh / dash / csh /
+            tcsh / nushell / xonsh / elvish / sh）：
+            ``([<shell 可执行文件>, "-c", command], False, shell)``；
+          - ``cmd``：``(command, True, "cmd")``——Windows 上 ``shell=True``
+            即 ``ComSpec``（cmd.exe），语义一致且免去引号重写；
+          - 检测失败 / 找不到 shell 可执行文件：``(command, True, shell)``
+            走平台默认 shell（Windows → cmd.exe，POSIX → /bin/sh）。
+    """
+    shell = detect_shell() or ""
+    if shell == "powershell":
+        executable = _find_powershell_executable()
+        if executable:
+            script = _powershell_script(command)
+            return (
+                [
+                    executable,
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-EncodedCommand",
+                    _encode_powershell_command(script),
+                ],
+                False,
+                shell,
+            )
+        logger.warning(
+            "检测到 PowerShell 交互 shell，但未找到 pwsh/powershell 可执行文件，回退平台默认 shell")
+    elif shell == "cmd":
+        return command, True, shell
+    else:
+        executable = _find_shell_executable(shell)
+        if executable:
+            return [executable, "-c", command], False, shell
+        if shell:
+            logger.warning(
+                "检测到 %s 交互 shell，但未找到其可执行文件，回退平台默认 shell", shell)
+    return command, True, shell
+
+
+def _default_posix_shell() -> str:
+    """检测不到具体 shell 时的默认 POSIX shell（沿用旧行为：Linux bash、其余 sh）。"""
+    return 'bash' if sys.platform.startswith('linux') else 'sh'
+
+
+def _pty_launch_argv(command: str) -> list:
+    """PTY 分支的命令 argv：与 PIPE 分支共用同一套交互 shell 解析结果。
+
+    PTY 需要 argv 形式（控制终端设置 / ``pass_fds`` 都依赖 exec 而非 shell
+    解析）；``_resolve_shell_launch`` 回退到 ``shell=True`` 时，这里用默认
+    POSIX shell 显式包一层 ``-c``，保持「命令由某个 shell 解释器执行」的语义。
+    """
+    launch_arg, use_shell, _shell_name = _resolve_shell_launch(command)
+    if not use_shell and isinstance(launch_arg, (list, tuple)):
+        return list(launch_arg)
+    return [_default_posix_shell(), "-c", command]
 
 
 #: 后台任务 read_buffer 的字符上限（bash_opt read 消费）。
@@ -113,6 +311,8 @@ class BashFunc(Func):
                     "（stdout 与 stderr 分离收集，各自超 1000 行截断保留尾部；"
                     "returncode 是命令的退出码，等价 bash 的 $?：0 成功、非 0 命令失败、被信号杀死为 128+sig、"
                     "-1 工具级错误——错误说明在 stderr 字段）。"
+                    "命令由当前命令行（见「当前执行环境」的「命令行」）对应的 shell 解释器执行"
+                    "（bash / zsh / fish / cmd / powershell 等），请按该 shell 的语法书写。"
                     "用途：编译构建、git、包管理、进程管理、系统信息查询。"
                     "禁止替代专用工具：读文件用 read、改文件用 edit、写文件用 write、搜索用 grep、找文件用 glob/ls、建目录用 mkdir。"
                     "仅当专用工具功能不足（如正则多行匹配、二进制）时才用 bash，并加注释 `# 例外原因：<原因>`。"
@@ -126,7 +326,8 @@ class BashFunc(Func):
                         "command": {
                             "type": "string",
                             "description": (
-                                "要执行的 shell 命令，支持管道 |、重定向 > >> <、环境变量、&& || 串联、$(...) 子 shell、通配符等完整语法。"
+                                "要执行的 shell 命令，由当前命令行对应的解释器执行（bash/zsh/fish/cmd/powershell 等），"
+                                "语法按其支持情况书写（管道 |、重定向 > >> <、环境变量、&& || 串联、$(...) 子 shell、通配符等）。"
                                 "返回 JSON：stdout 与 stderr 分离，无输出时对应字段为空字符串；"
                                 "returncode 为退出码；stdout/stderr 各自超 1000 行截断保留尾部。"
                             )
@@ -152,11 +353,21 @@ class BashFunc(Func):
 
     @classmethod
     def _get_subprocess_env(cls) -> dict:
-        """返回子进程环境变量，添加反缓冲设置确保实时输出。"""
+        """返回子进程环境变量，添加反缓冲设置确保实时输出。
+
+        ★ 同时注入 :data:`SHELL_ENV_MARKER`（真实交互 shell）：子进程的父链
+        首项是工具自己的执行外壳（``cmd.exe /c``、``bash -c``、``powershell
+        -EncodedCommand`` ...），单看进程名会把 PowerShell 会话误判成 cmd、
+        把 bash 会话误判成 sh；本进程知道自己是从哪个交互 shell 启动的，写进
+        环境变量后子进程检测可直接命中（见 ``shell_info``）。
+        """
         env = os.environ.copy()
         env['PYTHONUNBUFFERED'] = '1'  # Python 脚本强制无缓冲
         env.pop('PAGER', None)         # 禁用分页器（PTY 模拟终端会触发 pager）
         env['GIT_PAGER'] = 'cat'       # git diff 等通过 PTY 运行时不启用分页器
+        shell = detect_shell()
+        if shell:
+            env[SHELL_ENV_MARKER] = shell
         return env
 
     @classmethod
@@ -435,9 +646,18 @@ class BashFunc(Func):
 
         from ..core.adapters.kernel_runtime import spawn_process
 
+        # ★ 命令解释器按「启动本程序的交互 shell」选择（见 _resolve_shell_launch）：
+        #   PowerShell / bash / zsh / fish 等由各自解释器执行，cmd 与检测失败
+        #   走平台默认 shell=True——系统提示词声明的「命令行」与实际执行环境
+        #   一致，`ls` / `Get-ChildItem` / `[[ ... ]]` 这类按当前 shell 语法写
+        #   的命令不会被另一种 shell 判成「不是内部或外部命令」或语法错误。
+        launch_arg, use_shell, shell_name = _resolve_shell_launch(self.command)
+        if shell_name:
+            logger.debug("按交互 shell 执行命令: %s", shell_name)
+
         process = await spawn_process(
-            self.command,
-            shell=True,
+            launch_arg,
+            shell=use_shell,
             stdin=asyncio.subprocess.PIPE if interactive else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -552,7 +772,9 @@ class BashFunc(Func):
         env = self._get_subprocess_env()
         env['TERM'] = 'xterm-256color'  # 告诉子进程这是终端
 
-        _shell = 'bash' if sys.platform.startswith('linux') else 'sh'
+        # ★ 与 PIPE 分支同一套「交互 shell」解析结果（bash / zsh / fish /
+        #   powershell ...）；回退平台默认 POSIX shell 的逻辑在 _pty_launch_argv。
+        launch_argv = _pty_launch_argv(self.command)
 
         def _setup_controlling_terminal() -> None:
             """子进程 exec 前建立「会话 + 控制终端」（preexec_fn 内执行）。
@@ -591,7 +813,7 @@ class BashFunc(Func):
             from ..core.adapters.kernel_runtime import spawn_process
 
             process = await spawn_process(
-                [_shell, '-c', self.command],
+                launch_argv,
                 shell=False,
                 stdin=slave_fd if interactive else asyncio.subprocess.DEVNULL,
                 stdout=slave_fd,
