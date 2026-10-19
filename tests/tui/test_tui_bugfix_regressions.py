@@ -366,6 +366,27 @@ def test_appmodel_unknown_field_warns_once(caplog):
     assert caplog.text.count("no_such_field") == 1
 
 
+def test_sigwinch_registration_skips_when_signal_missing(monkeypatch):
+    """原生 Windows 无 ``signal.SIGWINCH``：注册回调不得抛 AttributeError。
+
+    修复前 ``register_sigwinch_callback`` 直接访问 ``signal.SIGWINCH``，
+    cmd 下启动即 ``❌ 致命错误: module 'signal' has no attribute 'SIGWINCH'``；
+    无该信号时须静默降级（尺寸变化由渲染帧主动轮询兜底）。
+    """
+    from src.tui import _screen
+
+    monkeypatch.delattr(_screen.signal, "SIGWINCH", raising=False)
+    monkeypatch.setattr(_screen, "_sigwinch_registered", False)
+    old = list(_screen._sigwinch_callbacks)
+    token = object()
+    try:
+        _screen.register_sigwinch_callback(lambda w, h: None, token=token)
+        assert any(item[1] is token for item in _screen._sigwinch_callbacks)
+        assert _screen._sigwinch_registered is True
+    finally:
+        _screen._sigwinch_callbacks[:] = old
+
+
 def test_sigwinch_token_registration_roundtrip():
     from src.tui import _screen
 

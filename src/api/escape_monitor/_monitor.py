@@ -18,7 +18,7 @@ import logging
 from . import _registry
 from ._registry import get_active_monitor, stop_active_monitor
 from ..interrupt_async import reset_interrupt_async
-from src._compat_termios import termios, termios_lock, tty
+from src._compat_termios import HAS_TERMIOS, termios, termios_lock, tty
 
 _logger = logging.getLogger(__name__)
 
@@ -143,6 +143,13 @@ class EscapeMonitor:
         查询）串行化，避免交错恢复用陈旧快照覆盖 cbreak。
         """
         with self._lock:
+            if not HAS_TERMIOS:
+                # ★ 原生 Windows 无 termios：控制台 raw 模式由 InkSession 的
+                #   RawModeController 经 SetConsoleMode 设置（关闭行缓冲/
+                #   回显/系统 Ctrl+C；参见 src.tui._win_console）。此处跳过，
+                #   避免启动日志刷出误导性的 cbreak 失败警告。
+                _logger.debug("termios 不可用（%s），跳过 cbreak 设置", sys.platform)
+                return
             try:
                 fd = sys.stdin.fileno()
                 with termios_lock():

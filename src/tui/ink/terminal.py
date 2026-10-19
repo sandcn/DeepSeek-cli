@@ -29,6 +29,10 @@ from .output import StyledRun, hyperlink as _hyperlink
 
 _logger = logging.getLogger(__name__)
 
+#: RawModeController 的 Windows 控制台模式哨兵（``_saved`` 既可能是 termios
+#: 属性列表，也可能是本标记——用于 disable 时选择还原路径）。
+_WIN_CONSOLE_RAW = object()
+
 # ═══════════════════════════════════════════════════════════
 # 终端模式序列（唯一真源）
 # ═══════════════════════════════════════════════════════════
@@ -305,10 +309,12 @@ class TerminalModeManager:
 
 
 class RawModeController:
-    """stdin raw/cbreak 模式控制器（termios 不可用时不支持，安全降级）。
+    """stdin raw/cbreak 模式控制器（不可用时安全降级）。
 
     ``enable()`` 保存进入前属性，``disable()`` 还原；重复调用幂等。
-    与 ``tty.setcbreak`` 语义一致（关 ICANON/ECHO，保留信号处理）。
+    POSIX/Cygwin 下与 ``tty.setcbreak`` 语义一致（关 ICANON/ECHO，保留
+    信号处理）；原生 Windows 控制台经 ``SetConsoleMode`` 关闭行缓冲/
+    回显/系统 Ctrl+C 处理（见 ``src.tui._win_console``）。
     """
 
     def __init__(self, fd: int | None = None) -> None:
@@ -324,7 +330,15 @@ class RawModeController:
             from src._compat_termios import HAS_TERMIOS
 
             if not HAS_TERMIOS:
-                return False
+                # ★ 原生 Windows：termios 不可用，但控制台句柄（fd 0）可经
+                #   SetConsoleMode 进入 raw（关闭行缓冲/回显/系统 Ctrl+C
+                #   处理）——输入由 src.tui._win_console 的 ReadConsoleInputW
+                #   路径读取。非控制台（重定向/管道）仍返回 False。
+                if int(self._fd) != 0:
+                    return False
+                from src.tui import _win_console
+
+                return _win_console.supported()
             return bool(os.isatty(self._fd))
         except Exception:
             _logger.debug("raw 模式支持判定异常", exc_info=True)
@@ -339,8 +353,15 @@ class RawModeController:
         if self._fd is None:  # supported 已确保 fd 有效；显式收窄（防御）
             return False
         try:
-            from src._compat_termios import termios, termios_lock, tty
+            from src._compat_termios import HAS_TERMIOS, termios, termios_lock, tty
 
+            if not HAS_TERMIOS:
+                from src.tui import _win_console
+
+                if not _win_console.enable_raw():
+                    return False
+                self._saved = _WIN_CONSOLE_RAW
+                return True
             fd = int(self._fd)
             # ★ termios 读-改-写序列互斥（见 src/_compat_termios 模块
             #   docstring）：与 EscapeMonitor 的 cbreak 设置 / 首帧 CPR 光标行
@@ -358,6 +379,15 @@ class RawModeController:
         """还原 raw 模式（未进入时无操作）。"""
         if self._saved is None:
             return False
+        if self._saved is _WIN_CONSOLE_RAW:
+            self._saved = None
+            try:
+                from src.tui import _win_console
+
+                _win_console.disable_raw()
+            except Exception:
+                _logger.debug("还原 Windows 控制台模式失败", exc_info=True)
+            return True
         if self._fd is None:  # 无有效 fd：无可还原（防御）
             self._saved = None
             return False

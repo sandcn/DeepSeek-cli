@@ -567,6 +567,28 @@ class InputDispatcher:
                 _logger.warning("pending 字节分发异常", exc_info=True)
                 return True
 
+        # ── 原生 Windows 控制台：select 只支持 socket，控制台句柄会抛
+        #    OSError（原生 Windows 上 TUI 输入完全失效）。改走
+        #    ReadConsoleInputW 事件翻译（_win_console），Cygwin/MSYS 的
+        #    伪终端仍走下方 select 路径。
+        try:
+            from . import _win_console
+            # ★ 仅 fd 0 可能是进程控制台句柄：测试/嵌入式场景传入 pipe fd
+            #   时仍走既有 select 路径（否则会误读真实控制台）。
+            win_console = fd == 0 and _win_console.supported()
+        except Exception:
+            _logger.debug("Windows 控制台后端探测异常", exc_info=True)
+            win_console = False
+        if win_console:
+            try:
+                raw = _win_console.read_bytes()
+            except Exception:
+                _logger.debug("Windows 控制台读取异常", exc_info=True)
+                raw = b""
+            if not raw:
+                return False
+            return self._dispatch_raw(raw)
+
         # ── select 非阻塞读取（timeout=0，不阻塞渲染帧） ──
         try:
             ready, _, _ = select.select([fd], [], [], 0)
@@ -590,6 +612,10 @@ class InputDispatcher:
             self._io.mark_fd_error(exc)
             return False
 
+        return self._dispatch_raw(raw)
+
+    def _dispatch_raw(self, raw: bytes) -> bool:
+        """批量读取结果入 pending 并分派首字节（select/Windows 控制台共用）。"""
         if len(raw) > 1:
             self._io.set_pending(raw[1:])
 

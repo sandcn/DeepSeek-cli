@@ -649,11 +649,19 @@ def register_sigwinch_callback(
         else:
             _sigwinch_callbacks.append((key, token, cb))
         if not _sigwinch_registered:
-            try:
-                signal.signal(signal.SIGWINCH, _handle_sigwinch)
+            # ★ Windows（原生 CPython）没有 ``signal.SIGWINCH``——直接访问
+            #   会抛 AttributeError。进程内无该信号可用，置位注册标志跳过
+            #   （尺寸变化由渲染帧主动轮询兜底，见 _session_frame_mixin）。
+            sigwinch = getattr(signal, "SIGWINCH", None)
+            if sigwinch is None:
                 _sigwinch_registered = True
-            except (OSError, ValueError):
-                _logger.debug("SIGWINCH 注册失败（非主线程？）", exc_info=True)
+                _logger.debug("当前平台无 SIGWINCH，跳过信号注册（依赖尺寸轮询兜底）")
+            else:
+                try:
+                    signal.signal(sigwinch, _handle_sigwinch)
+                    _sigwinch_registered = True
+                except (OSError, ValueError):
+                    _logger.debug("SIGWINCH 注册失败（非主线程？）", exc_info=True)
 
 
 def unregister_sigwinch_callback(token: object) -> None:
