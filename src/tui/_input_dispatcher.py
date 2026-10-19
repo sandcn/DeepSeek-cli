@@ -307,7 +307,7 @@ class InputDispatcher:
           - Ctrl+R → 反向历史搜索（配置门控）或 retry（重生成上一轮）
           - Ctrl+L → 清屏（非流式时；未注入回调跳过）
           - Ctrl+D → EOF（空缓冲提交 exit；非空 no-op 防误退）
-          - Ctrl+T → 主题切换
+          - Ctrl+T → 思考模式开关（默认开启，关闭注入 thinking.type=disabled）
           - Ctrl+N → switch_model
           - Ctrl+P → 历史上一条（readline previous-history）
           - Ctrl+B → 主 agent 运行模式循环切换（空→简单→标准）
@@ -356,7 +356,7 @@ class InputDispatcher:
             # Ctrl+Y → 重做输入编辑（撤销的反向操作）。
             self._buffer_editor._redo()
         else:
-            # vim / editmsg / toggle_theme / switch_model / cycle_mode
+            # vim / editmsg / toggle_thinking / toggle_theme / switch_model / cycle_mode
             self._handle_special_key(action)
 
     def _handle_clear_screen(self) -> None:
@@ -457,7 +457,7 @@ class InputDispatcher:
         self._buffer_editor._enter(append_history=lambda _text: None)
 
     def _handle_special_key(self, action: str) -> None:
-        """处理特殊按键（Ctrl+G/O/N/R/T）：直接调用回调并应用结果。
+        """处理特殊按键（Ctrl+G/O/N/R/T/B）：直接调用回调并应用结果。
 
         在 render 线程中调用（由 ``read_stdin_once()`` 直接分发）。
         终端模式切换由回调函数内部直接操作 EscapeMonitor 完成。
@@ -493,7 +493,7 @@ class InputDispatcher:
                 self._buffer_editor.set_buffer(result)
             else:
                 # P2（2026-08-07）：非 editmsg/retry action（vim/switch_model/
-                # toggle_theme/cycle_mode）不清空未消费排队输入——用户 Enter
+                # toggle_thinking/toggle_theme/cycle_mode）不清空未消费排队输入——用户 Enter
                 # 提交后、编排器消费前触发此类 action，reset 清空
                 # _submitted_text/_input_ready 会丢弃首次提交文本。
                 self.reset(clear_queue=False)

@@ -88,6 +88,31 @@ def _cached_reasoning_effort(model_name: str) -> str:
     return value
 
 
+#: 思考模式开关缓存（全局开关，不按模型区分）。Ctrl+T 切换后 ≤0.5s 内
+#: 状态栏自动刷新（关闭时模型名后显示 ``[off]``）。
+_THINKING_ENABLED_TTL = 0.5
+_thinking_enabled_cache: tuple[float, bool] | None = None
+_thinking_enabled_lock = threading.Lock()
+
+
+def _cached_thinking_enabled() -> bool:
+    """读取全局思考模式开关（短 TTL 缓存；异常回退 True=官方默认开启）。"""
+    global _thinking_enabled_cache
+    now = time.monotonic()
+    with _thinking_enabled_lock:
+        hit = _thinking_enabled_cache
+        if hit is not None and now - hit[0] < _THINKING_ENABLED_TTL:
+            return hit[1]
+    try:
+        from src.config.model_profiles import thinking_enabled as _thinking_enabled
+        value = bool(_thinking_enabled())
+    except Exception:
+        value = True
+    with _thinking_enabled_lock:
+        _thinking_enabled_cache = (now, value)
+    return value
+
+
 #: 多模态读图能力缓存（模型名 → (时间, 是否支持)）。与思考级别同样的短 TTL：
 #: /models 切换档案或保存「多模态读图」开关后 ≤0.5s 内状态栏自动刷新。
 _multimodal_cache: dict[str, tuple[float, bool]] = {}
@@ -204,11 +229,12 @@ class StatusContext:
     __slots__ = (
         "model", "status", "status_active", "tokens_visible", "dot_elapsed",
         "spinner_char", "reasoning_effort", "snapshot", "multimodal",
+        "thinking_enabled",
     )
 
     def __init__(self, model, status, status_active, dot_elapsed,
                  spinner_char, reasoning_effort, snapshot, tokens_visible=None,
-                 multimodal=False):
+                 multimodal=False, thinking_enabled=True):
         self.model = model
         self.status = status
         self.status_active = status_active
@@ -221,6 +247,8 @@ class StatusContext:
         self.spinner_char = spinner_char
         self.reasoning_effort = reasoning_effort
         self.multimodal = bool(multimodal)
+        #: 全局思考模式开关（Ctrl+T；False 时模型名后显示 ``[off]``）。
+        self.thinking_enabled = bool(thinking_enabled)
         self.snapshot = snapshot
 
     def get(self, key, default=None):
@@ -259,7 +287,11 @@ def _model_segment(ctx: StatusContext) -> list:
     #   （low/medium/high/max，/models 中按模型配置，空则回退全局默认）。
     #   暗灰 dim 弱化；格式 [level] 与 /models 表单显示一致。
     eff = (ctx.reasoning_effort or "").strip().lower()
-    if eff:
+    if not getattr(ctx, "thinking_enabled", True):
+        # ★ 2026-10（用户需求：Ctrl+T 切换思考模式）：关闭时显示 [off]，
+        #   替代思考级别标签（此时 effort 不生效，避免误导）。
+        model_part.append(StyledRun(" [off]", _S_DIM))
+    elif eff:
         model_part.append(StyledRun(f" [{eff}]", _S_DIM))
     return model_part
 
@@ -392,7 +424,8 @@ def _workspace_segment(ctx: StatusContext) -> list:
 def _build_status_runs(model, dot_elapsed: float = 0.0,
                        spinner_char: str = "\u00b7",
                        reasoning_effort: str | None = None,
-                       multimodal: bool = False) -> list[StyledRun]:
+                       multimodal: bool = False,
+                       thinking_enabled: bool = True) -> list[StyledRun]:
     """构建状态文本 runs（段注册表驱动：模型名/工具计数/耗时/token/速度）。
 
     Args:
@@ -405,6 +438,8 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
             按模型配置；None 或空串不显示）。
         multimodal: 当前模型档案是否开启「多模态读图」（true 时模型名旁显示
             「图」徽标）。
+        thinking_enabled: 全局思考模式开关（Ctrl+T；false 时模型名后显示
+            ``[off]`` 替代思考级别标签）。
 
     段由 ``src.tui.app._status_segments`` 注册表提供（每个段一个清单条目）：
     ``model`` 段为模型名部分（不与其它段用分隔符连接），其余段（tools/
@@ -434,6 +469,7 @@ def _build_status_runs(model, dot_elapsed: float = 0.0,
         dot_elapsed=dot_elapsed, spinner_char=spinner_char,
         reasoning_effort=reasoning_effort, snapshot=snap,
         tokens_visible=tokens_visible, multimodal=multimodal,
+        thinking_enabled=thinking_enabled,
     )
 
     model_part: list[StyledRun] = []
@@ -553,9 +589,13 @@ def StatusBar(props) -> object:
     # ★ 多模态读图徽标（2026-10-19 用户需求）：模型名旁「图」字——与思考级别
     #   同样短 TTL 缓存；/models 切换档案或修改开关后下帧自动刷新。
     multimodal = _cached_multimodal(st_model_name)
+    # ★ 思考模式开关（Ctrl+T）：关闭时模型名后显示 [off]；短 TTL 缓存，
+    #   切换后 ≤0.5s 自动刷新（作为 use_memo deps 变化触发重建）。
+    thinking_enabled = _cached_thinking_enabled()
     status_runs = use_memo(
         lambda: _build_status_runs(
             model, dot_elapsed, spinner_char, reasoning_effort, multimodal,
+            thinking_enabled,
         ),
         (
             st_active,
@@ -576,6 +616,8 @@ def StatusBar(props) -> object:
             # ★ 多模态读图（2026-10-19）：/models 修改开关后 deps 变化 →
             #   模型名旁「图」徽标即时出现/消失。
             multimodal,
+            # ★ 思考模式开关（Ctrl+T）：切换后 [off] 标签即时出现/消失。
+            thinking_enabled,
             # ★ 2026-10（用户需求：压缩消耗的 token 要能在状态栏看到）：
             #   压缩状态变化（开始/结束）立即重建状态行——空闲期压缩中与
             #   压缩结束宽限期内 tokens/speed 段的出现/消失即时生效

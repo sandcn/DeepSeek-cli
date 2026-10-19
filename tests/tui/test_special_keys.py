@@ -69,6 +69,23 @@ class _FakeMonitor:
 
 
 @pytest.fixture
+def isolated_rc(monkeypatch, tmp_path):
+    """隔离 RC 配置文件（临时目录）——测试写入不污染真实用户配置。"""
+    from src.config import defaults as cfg_defaults
+    from src.config import loader as cfg_loader
+
+    rc_file = tmp_path / "chatrc.json"
+    monkeypatch.setattr(cfg_loader, "RC_FILE", rc_file)
+    monkeypatch.setattr(cfg_loader, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cfg_loader, "LOG_FILE", tmp_path / "audit.log")
+    monkeypatch.setattr(cfg_loader, "_RC_LOADED", False)
+    monkeypatch.setattr(cfg_loader, "_RC", None)
+    monkeypatch.setattr(cfg_defaults, "RC_FILE", rc_file)
+    monkeypatch.setattr(cfg_defaults, "CONFIG_DIR", tmp_path)
+    return rc_file
+
+
+@pytest.fixture
 def ctx():
     state = _FakeState()
     session = _FakeSession()
@@ -246,6 +263,43 @@ def test_switch_model_apply_failure_notifies(ctx, patch_rc, monkeypatch):
     assert cb("switch_model", "t") == "t"
     assert state.model == "m1" and session.model == ""
     assert chat_ui.notifications and "写入配置失败" in chat_ui.notifications[-1]
+
+
+# ── toggle_thinking（Ctrl+T） ────────────────────────────
+
+def test_toggle_thinking_switches_and_persists(ctx, isolated_rc):
+    """Ctrl+T：默认开启 → 关闭 → 再次开启，持久化到 RC 并提示。"""
+    import json
+
+    from src.config.model_profiles import thinking_enabled
+
+    cb, _, _, chat_ui, _ = ctx
+    assert thinking_enabled() is True  # 默认开启
+
+    assert cb("toggle_thinking", "text") == "text"
+    assert thinking_enabled() is False
+    assert json.loads(isolated_rc.read_text(encoding="utf-8"))["thinking_enabled"] is False
+    assert chat_ui.notifications[-1] == "+ Thinking 已关闭"
+
+    assert cb("toggle_thinking", "text") == "text"
+    assert thinking_enabled() is True
+    assert json.loads(isolated_rc.read_text(encoding="utf-8"))["thinking_enabled"] is True
+    assert chat_ui.notifications[-1] == "+ Thinking 已开启"
+
+
+def test_toggle_thinking_failure_notifies(ctx, monkeypatch):
+    """持久化失败时提示失败，不抛异常、不提交输入。"""
+    cb, _, _, chat_ui, _ = ctx
+    monkeypatch.setattr(
+        "src.config.model_profiles.thinking_enabled", lambda: True,
+    )
+
+    def _boom(key, value):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("src.config.loader.update_config", _boom)
+    assert cb("toggle_thinking", "text") == "text"
+    assert chat_ui.notifications and "失败" in chat_ui.notifications[-1]
 
 
 # ── toggle_theme ─────────────────────────────────────────

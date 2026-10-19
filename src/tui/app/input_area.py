@@ -122,7 +122,7 @@ _PLACEHOLDER_ROTATION = (
     "输入消息 · /help 查看命令 · F2 命令面板 · Ctrl+H 轨迹视图 · F1 帮助速查",
     "输入消息 · Tab 补全 · Ctrl+N 切换模型 · Ctrl+B 切换模式",
     "输入消息 · 拖动文件到窗口插入路径 · Ctrl+O 编辑消息 · Ctrl+L 清屏",
-    "输入消息 · /cost 查看用量 · /theme 切换主题 · Ctrl+T 快捷切换",
+    "输入消息 · /cost 查看用量 · /theme 切换主题 · Ctrl+T 思考开关",
     "输入消息 · Esc 清空输入 · Ctrl+G 外部编辑 · Ctrl+D 退出",
 )
 #: 占位提示轮播周期（秒）

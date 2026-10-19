@@ -68,7 +68,10 @@ __all__ = [
     "default_base_url",
     "effective_base_url",
     "effective_temperature",
+    "temperature_effective",
+    "request_temperature",
     "effective_reasoning_effort",
+    "thinking_enabled",
     "profile_supports_multimodal",
     "multimodal_choices",
     "model_profile_for_model",
@@ -346,6 +349,58 @@ def effective_temperature(profile=None, rc=None) -> float:
         ):
             return value
     return _global_temperature(rc)
+
+
+def temperature_effective(rc=None) -> bool:
+    """温度参数对请求方是否**真正生效**（思考模式开启时 DeepSeek 忽略温度）。
+
+    DeepSeek 官方文档（思考模式）：思考模式**不支持** ``temperature`` /
+    ``presence_penalty`` / ``frequency_penalty``——为兼容已有软件设置这些
+    参数不会报错，**但也不会生效**。本项目 ``/models`` 中的温度配置与内置
+    的 ``reasoning_effort`` 注入正是面向 DeepSeek 思考模式，因此当全局思考
+    模式开关（:func:`thinking_enabled`，Ctrl+T）为开启时，温度不会影响生成
+    结果；关闭思考模式（``thinking.type=disabled``）后才生效。
+
+    Returns:
+        True = 温度生效；False = 温度被思考模式忽略。
+    """
+    return not thinking_enabled(rc)
+
+
+def request_temperature(profile=None, rc=None) -> float | None:
+    """构造 API 请求时应携带的温度：思考模式开启时返回 ``None``（不发送）。
+
+    禁止「发了但被服务端忽略」的误导——适配器把返回值直接放进请求体
+    （``None`` 表示该键整体省略）。关闭思考模式后返回
+    :func:`effective_temperature` 的有效值。
+    """
+    if not temperature_effective(rc):
+        return None
+    return effective_temperature(profile, rc)
+
+
+def thinking_enabled(rc=None) -> bool:
+    """全局思考模式开关（Ctrl+T 切换；默认开启）。
+
+    RC 顶层 ``thinking_enabled``（``/config set thinking_enabled false`` 或
+    Ctrl+T 切换并持久化）。非法/缺失值一律回退 ``True``（保持官方默认：
+    DeepSeek V4 思考模式开启）。API 适配器据此注入
+    ``thinking.type=enabled/disabled``。
+    """
+    if rc is None:
+        try:
+            from .loader import get_rc
+            rc = get_rc()
+        except Exception:
+            rc = {}
+    raw = rc.get("thinking_enabled", True) if isinstance(rc, dict) else True
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("true", "1", "yes", "on")
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    return True
 
 
 def effective_reasoning_effort(profile=None, rc=None) -> str:

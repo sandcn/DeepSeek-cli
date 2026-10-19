@@ -181,7 +181,60 @@ class TestEffectiveValues:
         assert mp.current_temperature(rc) == 1.5
 
 
+# ── 请求温度（思考模式开启时不发送） ───────────────────
+
+class TestRequestTemperature:
+    """DeepSeek 思考模式不支持 temperature（设置不报错但被忽略）。
+
+    ``request_temperature`` 在思考模式开启时返回 ``None``（适配器据此省略
+    该键，避免「配了没生效」的误导）；关闭思考模式后返回有效温度。
+    """
+
+    def test_thinking_enabled_means_temperature_ignored(self):
+        profile = {"temperature": "0.9"}
+        rc = {"temperature": 0.2, "thinking_enabled": True}
+        assert mp.temperature_effective(rc) is False
+        assert mp.request_temperature(profile, rc) is None
+
+    def test_thinking_disabled_returns_effective_value(self):
+        profile = {"temperature": "0.9"}
+        rc = {"temperature": 0.2, "thinking_enabled": False}
+        assert mp.temperature_effective(rc) is True
+        assert mp.request_temperature(profile, rc) == 0.9
+        # 档案未设置 → 回退全局默认
+        assert mp.request_temperature({}, rc) == 0.2
+
+    def test_missing_switch_defaults_to_thinking_enabled(self):
+        rc = {"temperature": 0.6}
+        assert mp.temperature_effective(rc) is False
+        assert mp.request_temperature({}, rc) is None
+
+
 # ── 候选项 / 条目 ──────────────────────────────────────
+
+class TestThinkingEnabled:
+    """全局思考模式开关（Ctrl+T；默认开启）。"""
+
+    def test_default_true(self):
+        assert mp.thinking_enabled({}) is True
+
+    def test_explicit_false(self):
+        assert mp.thinking_enabled({"thinking_enabled": False}) is False
+
+    @pytest.mark.parametrize("raw", ["false", "0", "no", "off", "FALSE"])
+    def test_string_false(self, raw):
+        assert mp.thinking_enabled({"thinking_enabled": raw}) is False
+
+    @pytest.mark.parametrize("raw", ["true", "1", "yes", "on", 1])
+    def test_truthy_values(self, raw):
+        assert mp.thinking_enabled({"thinking_enabled": raw}) is True
+
+    def test_invalid_falls_back_true(self, monkeypatch):
+        assert mp.thinking_enabled({"thinking_enabled": object()}) is True
+        # rc=None → 读取全局配置；隔离真实 RC（避免用户关闭开关影响本用例）
+        monkeypatch.setattr("src.config.loader.get_rc", lambda: {})
+        assert mp.thinking_enabled(None) is True
+
 
 class TestChoicesAndEntries:
 

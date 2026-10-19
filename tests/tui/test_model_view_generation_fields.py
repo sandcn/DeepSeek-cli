@@ -74,7 +74,8 @@ def _type_text(mv, text: str):
 
 class TestFormDisplay:
 
-    def test_empty_generation_fields_show_global_default(self):
+    def test_empty_generation_fields_show_global_default(self, monkeypatch):
+        monkeypatch.setattr("src.config.model_profiles.thinking_enabled", lambda rc=None: False)
         mv = _state()
         mv.form_values = mp.empty_profile()
         assert _field_value_display(mv, "temperature") == "（沿用全局默认）"
@@ -254,3 +255,60 @@ class TestDetailGeneration:
         out = renderToString(h(ModelView, {"model": m, "width": 240}), {"columns": 240})
         assert "温度 0.7" in out
         assert "思考 high" in out
+
+
+# ═══════════════════════════════════════════════════════════
+# 温度是否生效（思考模式开启 → 提示「不生效」）
+# ═══════════════════════════════════════════════════════════
+
+class TestTemperatureEffectNotice:
+    """DeepSeek 官方文档：思考模式不支持 temperature（设置不报错但被忽略）。"""
+
+    def test_field_value_marked_when_thinking_enabled(self, monkeypatch):
+        monkeypatch.setattr("src.config.model_profiles.thinking_enabled", lambda rc=None: True)
+        mv = _state()
+        mv.form_values = mp.empty_profile()
+        mv.form_values["temperature"] = "0.7"
+        assert _field_value_display(mv, "temperature") == "0.7（思考模式开启，不生效）"
+
+    def test_field_value_plain_when_thinking_disabled(self, monkeypatch):
+        monkeypatch.setattr("src.config.model_profiles.thinking_enabled", lambda rc=None: False)
+        mv = _state()
+        mv.form_values = mp.empty_profile()
+        mv.form_values["temperature"] = "0.7"
+        assert _field_value_display(mv, "temperature") == "0.7"
+
+    def test_form_hint_when_thinking_enabled(self, monkeypatch):
+        monkeypatch.setattr("src.config.model_profiles.thinking_enabled", lambda rc=None: True)
+        mv = _state()
+        _open_new_form(mv)
+        assert "不生效" in mv.message and "Ctrl+T" in mv.message
+        mv.form_selected = list(FIELD_KEYS).index("temperature")
+        _dispatch(mv, _ev("enter"))
+        _type_text(mv, "0.7")
+        _dispatch(mv, _ev("enter"))
+        assert "不生效" in mv.message
+
+    def test_form_hint_cleared_when_thinking_disabled(self, monkeypatch):
+        monkeypatch.setattr("src.config.model_profiles.thinking_enabled", lambda rc=None: False)
+        mv = _state()
+        _open_new_form(mv)
+        assert mv.message == ""
+
+    def test_detail_marks_ineffective_temperature(self, monkeypatch):
+        monkeypatch.setattr("src.config.model_profiles.thinking_enabled", lambda rc=None: True)
+        entry = {
+            "model": "m", "provider": "deepseek", "effective_base_url": "",
+            "temperature": "0.7", "effective_temperature": 0.7,
+            "reasoning_effort": "high", "effective_reasoning_effort": "high",
+        }
+        text = "".join(r.text for r in _detail_runs(entry, 300))
+        assert "不生效" in text
+
+    def test_save_message_mentions_ineffective_temperature(self, monkeypatch, isolated_rc):
+        monkeypatch.setattr("src.config.model_profiles.thinking_enabled", lambda rc=None: True)
+        mv = _state()
+        _open_new_form(mv)
+        mv.form_values["temperature"] = "0.75"
+        _dispatch(mv, _ev("char", "s"))
+        assert "已新增" in mv.message and "不生效" in mv.message

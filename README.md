@@ -86,6 +86,7 @@ pip install ".[dev]"
     "active_model_profile": 0,
     "reasoning_effort": "max",
     "temperature": 0.2,
+    "thinking_enabled": true,
     "max_context_chars": 3000000,
     "max_output_chars": 1000000,
     "max_retries": 10,
@@ -123,6 +124,15 @@ pip install ".[dev]"
   `base_url` / `name`，以及可选的 `temperature`（0.0~2.0）与
   `reasoning_effort`（low / medium / high / max）；`base_url` 留空则用提供商
   默认地址；生成参数留空则沿用全局 `temperature` / `reasoning_effort` 默认值）。
+- `thinking_enabled`：思考模式开关（默认 `true`）。**Ctrl+T** 可随时切换并
+  持久化；关闭时 DeepSeek V4 请求注入 `thinking.type=disabled`（官方默认
+  enabled，必须显式关闭），状态栏模型名后显示 `[off]`。也可用
+  `/config set thinking_enabled false` 或 `python chat.py config set
+  thinking_enabled false` 设置。
+  **温度与该开关联动**：官方文档明确「思考模式不支持 `temperature`」（设置
+  不报错但会被忽略），因此思考模式开启时请求不携带 `temperature`（`/models`
+  温度字段标注「思考模式开启，不生效」），关闭思考模式后再发送并生效；
+  `presence_penalty` / `frequency_penalty` 同理。
   `multimodal`（`"true"` / `"false"`，默认 `"false"`）声明该模型是否支持
   多模态读图：`true` 时才会向模型加载 `read_image` 工具，`false` 时该工具不
   进入工具集、执行也会被拒绝（在 `/models` 界面「多模态读图」字段设置）。
@@ -315,9 +325,9 @@ python chat.py version
 | `python chat.py session delete abc123` | 删除会话 |
 | `python chat.py session export abc123` | 导出会话 |
 | `python chat.py config` | 显示全部配置（含敏感值脱敏） |
-| `python chat.py config get model` | 查询单个配置 |
-| `python chat.py config set model deepseek-v4-pro` | 设置配置并持久化 |
-| `python chat.py config reset model` | 重置配置为默认值 |
+| `python chat.py config get temperature` | 查询单个配置 |
+| `python chat.py config set temperature 0.7` | 设置配置并持久化 |
+| `python chat.py config reset temperature` | 重置配置为默认值 |
 | `python chat.py --version` | 显示版本信息 |
 | `python chat.py clawbot` | 微信 ClawBot 远程控制（扫码登录） |
 | `python chat.py clawbot --re-login` | 强制重新扫码登录 |
@@ -371,7 +381,7 @@ python chat.py clawbot --re-login   # 强制重新扫码登录
 | `Ctrl+P` / `↑` | 浏览输入历史（上一条） |
 | `↓` | 浏览输入历史（下一条） |
 | `Ctrl+R` | 反向历史搜索（配置门控；默认重试上一轮） |
-| `Ctrl+T` | 循环切换配色主题（dark/light/high-contrast/nord/dracula/gruvbox/tokyo-night/catppuccin） |
+| `Ctrl+T` | 切换思考模式（Thinking）开关，默认开启；关闭后 DeepSeek V4 请求注入 `thinking.type=disabled`，状态栏模型名后显示 `[off]`（主题请用 `/theme` 切换） |
 | `Ctrl+L` | 清屏 |
 | `Ctrl+D` | 退出程序（输入为空时） |
 | `Ctrl+Z` | 撤销输入编辑（连续同类编辑合并为一步） |

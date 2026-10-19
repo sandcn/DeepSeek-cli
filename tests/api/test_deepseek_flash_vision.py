@@ -93,6 +93,10 @@ def test_deepseek_adapter_injects_thinking(monkeypatch):
     monkeypatch.setattr(
         "src.api.adapters.deepseek._get_reasoning_effort", lambda: "high",
     )
+    # 思考模式开关默认开启（隔离真实 RC：本测试只验证注入格式）
+    monkeypatch.setattr(
+        "src.api.adapters.deepseek._get_thinking_enabled", lambda: True,
+    )
     adapter = DeepSeekAdapter()
     kwargs = adapter.build_request_kwargs(
         [{"role": "user", "content": "hi"}], _FLASH,

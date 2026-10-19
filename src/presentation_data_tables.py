@@ -318,6 +318,7 @@ CONFIG_ENTRY_DESC_MAP: dict[str, str] = {
     "MODEL_PROFILES": "模型档案列表（name/model/base_url/api_key/provider/temperature/reasoning_effort；**模型列表唯一来源**，/models 界面增删改选并按模型设置温度与思考级别）",
     "REASONING_EFFORT": "全局默认思考级别（low/medium/high/max；/models 中可按模型覆盖）",
     "TEMPERATURE": "全局默认温度（0.0~2.0，越高越随机；/models 中可按模型覆盖）",
+    "THINKING_ENABLED": "思考模式开关（默认开启；Ctrl+T 切换，关闭时 DeepSeek V4 请求注入 thinking.type=disabled；思考模式开启时 temperature 被官方忽略，故请求不携带温度）",
     "THEME": "UI 配色主题（dark/light/high-contrast/nord/dracula/gruvbox/tokyo-night/catppuccin）",
     # ── 数值配置 ──
     "MAX_CONTEXT_CHARS": "上下文最大字符数",

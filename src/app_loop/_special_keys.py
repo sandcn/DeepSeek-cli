@@ -2,8 +2,9 @@
 
 「一切皆插件」：``make_special_key_callback`` 的 action 分发不再硬编码 if/elif
 链，而是由 ``src.app_loop._special_handlers`` 注册表驱动——每个内置处理器
-（vim / editmsg / retry / toggle_theme / switch_model / cycle_mode）由清单中的
-独立插件条目（``special_key``）注册，可被 Patch/Overlay 单独禁用/覆盖/替换。
+（vim / editmsg / retry / toggle_thinking / toggle_theme / switch_model /
+cycle_mode）由清单中的独立插件条目（``special_key``）注册，可被
+Patch/Overlay 单独禁用/覆盖/替换。
 
 本模块仅保留各处理器的**工厂实现**（``make_*_handler(env)``）与回调装配；
 处理器业务逻辑在此保持不变（对 ``edit_in_vim_sync`` 等模块属性的 monkeypatch
@@ -77,6 +78,39 @@ def make_retry_handler(env: SpecialKeyEnv):
 
     def _handler(text: str) -> str:
         return "/retry"
+
+    return _handler
+
+
+def make_toggle_thinking_handler(env: SpecialKeyEnv):
+    """toggle_thinking 处理器：Ctrl+T 切换思考模式（默认开启，持久化到 RC）。
+
+    切换后 API 适配器在下一次请求按开关注入
+    ``thinking.type=enabled/disabled``（DeepSeek V4 官方默认 enabled，关闭
+    必须显式 disabled；关闭后 temperature 采样重新生效）。状态栏模型名后
+    同步显示 ``[off]``（≤0.5s 缓存刷新）。
+    """
+    chat_ui = env.chat_ui
+
+    def _handler(text: str) -> str:
+        try:
+            from ..config.loader import update_config
+            from ..config.model_profiles import thinking_enabled
+
+            enabled = not thinking_enabled()
+            update_config("THINKING_ENABLED", enabled)
+            if chat_ui is not None:
+                chat_ui.on_notification(
+                    f"+ Thinking 已{'开启' if enabled else '关闭'}"
+                )
+        except Exception:
+            _logger.debug("toggle_thinking 异常", exc_info=True)
+            if chat_ui is not None:
+                try:
+                    chat_ui.on_notification("! 切换 Thinking 失败")
+                except Exception:
+                    _logger.debug("toggle_thinking 失败提示异常", exc_info=True)
+        return text
 
     return _handler
 
@@ -189,7 +223,8 @@ def make_special_key_callback(loop, session, state, chat_ui, monitor=None):
     - 'vim'：启动 vim 编辑器编辑文本
     - 'editmsg'：返回 '/editmsg' 命令
     - 'retry'：返回 '/retry' 命令
-    - 'toggle_theme'：dark/light 循环切换（不提交输入）
+    - 'toggle_thinking'：Ctrl+T 切换思考模式（默认开启，持久化）
+    - 'toggle_theme'：dark/light 循环切换（不提交输入；已不再绑定 Ctrl+T）
     - 'switch_model'：循环切换模型
     - 'cycle_mode'：Ctrl+B 循环切换主 agent 运行模式（空模式 → 简单模式
       → 标准模式 → 空模式），'empty_mode' 为兼容别名
@@ -215,6 +250,7 @@ __all__ = [
     "make_vim_handler",
     "make_editmsg_handler",
     "make_retry_handler",
+    "make_toggle_thinking_handler",
     "make_toggle_theme_handler",
     "make_switch_model_handler",
     "make_cycle_mode_handler",

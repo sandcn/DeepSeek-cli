@@ -49,15 +49,26 @@ def _get_reasoning_effort() -> str:
         return "max"
 
 
-def _get_temperature() -> float:
-    """读取当前生效模型的温度（0.0~2.0）。
+def _get_thinking_enabled() -> bool:
+    """读取全局思考模式开关（Ctrl+T 切换，默认开启）；异常回退 True。"""
+    try:
+        from ...config.model_profiles import thinking_enabled
+        return bool(thinking_enabled())
+    except Exception:
+        return True
+
+
+def _get_temperature() -> float | None:
+    """读取请求应携带的温度（0.0~2.0）；思考模式开启时返回 None（不发送）。
 
     取值 = 当前生效模型档案的 ``temperature``（空则回退全局默认）；
-    ``/models`` 中可对每个模型独立设置。延迟导入避免模块加载循环依赖。
+    ``/models`` 中可对每个模型独立设置。DeepSeek 思考模式不支持温度
+    （设置不报错但被忽略），故思考模式开启时返回 ``None``，由调用方省略
+    该键；关闭思考模式（Ctrl+T）后温度才真正生效。
     """
     try:
-        from ...config.model_profiles import effective_temperature
-        return effective_temperature()
+        from ...config.model_profiles import request_temperature
+        return request_temperature()
     except Exception:
         return 0.2
 
@@ -117,9 +128,14 @@ class DeepSeekAdapter(BaseLLMAdapter):
         stream: bool = False,
         stream_options: Optional[dict] = None,
     ) -> dict:
+        # 温度：思考模式开启时 DeepSeek 会忽略该参数（官方文档「思考模式不
+        # 支持 temperature」），此时不发送（避免「发了但被忽略」的误导）；
+        # 关闭思考模式（Ctrl+T）后才携带并真正生效。
+        temperature = _get_temperature()
+        extra_kwargs = {} if temperature is None else {"temperature": temperature}
         kwargs = self._build_base_kwargs(
             model, messages, tools, stream, stream_options,
-            extra_kwargs={"temperature": _get_temperature()},
+            extra_kwargs=extra_kwargs,
         )
 
         # ── V4 thinking mode ────────────────────────────
@@ -129,10 +145,15 @@ class DeepSeekAdapter(BaseLLMAdapter):
         # reasoning_effort 按当前模型档案设置（/models 中每个模型可独立
         # 配置 low/medium/high/max；空则回退全局默认）。
         if self.is_v4_model(model) and not self.is_reasoner_model(model):
-            kwargs["thinking"] = {
-                "type": "enabled",
-                "reasoning_effort": _get_reasoning_effort(),
-            }
+            if _get_thinking_enabled():
+                kwargs["thinking"] = {
+                    "type": "enabled",
+                    "reasoning_effort": _get_reasoning_effort(),
+                }
+            else:
+                # 关闭思考模式（Ctrl+T）：DeepSeek V4 官方默认 enabled，
+                # 必须显式传 disabled 才能真正关闭（此时 temperature 生效）。
+                kwargs["thinking"] = {"type": "disabled"}
 
         return kwargs
 

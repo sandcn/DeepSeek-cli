@@ -657,7 +657,7 @@ class CompletionEngine:
         的 orig_prefix 分支）：
           - 无参数 → 候选 ``set {key}`` + start_pos=-len("set")——弹窗
             orig_prefix=last_word("set") 词边界匹配 ``" set"`` → 拼接为
-            ``/config set model``（子命令保留）；
+            ``/config set temperature``（子命令保留）；
           - 有参数 → 候选 ``key`` + start_pos=-len(key_prefix)——替换最后词。
         """
         result: list[CompletionItem] = []

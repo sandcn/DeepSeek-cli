@@ -117,7 +117,7 @@ COMMANDS_HELP = (
     f"  {TEAL}Ctrl+P/↑{RESET}      历史上一条   {TEAL}Ctrl+R{RESET}         反向搜索/重试\n"
     f"  {TEAL}Tab/Shift+Tab{RESET} 补全循环     {TEAL}PgUp/PgDn{RESET}       补全翻页\n"
     f"  {TEAL}Ctrl+G{RESET}        打开 vim 编辑 {TEAL}Ctrl+O{RESET}         编辑会话消息\n"
-    f"  {TEAL}Ctrl+N{RESET}        切换模型     {TEAL}Ctrl+T{RESET}         切换主题\n"
+    f"  {TEAL}Ctrl+N{RESET}        切换模型     {TEAL}Ctrl+T{RESET}         思考模式开关(关→温度生效)\n"
     f"  {TEAL}Ctrl+L{RESET}        清屏         {TEAL}Ctrl+D{RESET}         退出(空输入)\n"
     f"  {TEAL}Ctrl+B{RESET}        主Agent模式循环 {TEAL}Esc{RESET}         清空输入/中断"
 )
@@ -325,7 +325,7 @@ SHORTCUT_ROWS: tuple = (
     (("Ctrl+P/\u2191", "历史上一条"), ("Ctrl+R", "反向搜索/重试")),
     (("Tab/Shift+Tab", "补全循环"), ("PgUp/PgDn", "补全翻页")),
     (("Ctrl+G", "打开 vim 编辑"), ("Ctrl+O", "编辑会话消息")),
-    (("Ctrl+N", "切换模型"), ("Ctrl+T", "切换主题")),
+    (("Ctrl+N", "切换模型"), ("Ctrl+T", "思考模式开关(关→温度生效)")),
     (("Ctrl+L", "清屏"), ("Ctrl+D", "退出(空输入)")),
     (("Ctrl+B", "主Agent模式循环"), ("Ctrl+H", "轨迹视图")),
     (("Ctrl+Z", "撤销输入编辑"), ("Ctrl+Y", "重做输入编辑")),

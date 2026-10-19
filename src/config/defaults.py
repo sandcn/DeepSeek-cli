@@ -136,6 +136,9 @@ DEFAULTS = {
     "active_model_profile": -1,
     "reasoning_effort": "max",
     "temperature": 0.2,
+    # 思考模式开关（Ctrl+T 切换；默认开启）。关闭时 DeepSeek V4 请求注入
+    # thinking.type=disabled（官方默认 enabled），开启时注入 enabled+effort。
+    "thinking_enabled": True,
     # ── 上下文窗口阈值（2026-10-07 用户需求：60k → 1M tokens 窗口）──
     # max_context_tokens：压缩触发的 token 口径上限（1M）；
     # max_context_chars：同一窗口的字符口径上限，取 1M tokens 对应的字符
@@ -291,6 +294,15 @@ CONFIG_KEYS = {
         "rc_path": ("temperature",),
         "type": float,
         "default": 0.2,
+        "cacheable": True,
+    },
+    # 思考模式开关（Ctrl+T 切换；默认开启）。关闭时 DeepSeek V4 请求注入
+    # thinking.type=disabled（官方默认 enabled），开启时注入 enabled+effort。
+    # 官方文档「思考模式不支持 temperature」：开启时请求不携带 temperature。
+    "THINKING_ENABLED": {
+        "rc_path": ("thinking_enabled",),
+        "type": bool,
+        "default": True,
         "cacheable": True,
     },
     "THEME": {

@@ -1,7 +1,7 @@
 """特殊键处理器条目插件 — 清单中每个内置 action 一个独立插件条目。
 
 「一切皆插件」：``make_special_key_callback`` 的 action 处理器（vim / editmsg /
-retry / toggle_theme / switch_model / cycle_mode）不再硬编码在
+retry / toggle_thinking / toggle_theme / switch_model / cycle_mode）不再硬编码在
 ``src.app_loop._special_keys`` 的 if/elif 链里，而是由清单中的独立条目声明::
 
     - id: special_key_vim

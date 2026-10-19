@@ -144,10 +144,14 @@ class AnthropicAdapter(BaseLLMAdapter):
             # （整文件生成）需要更高上限时在此调整。
             "max_tokens": 4096,
         }
-        # 大模型温度（当前模型档案 > 全局默认，Anthropic 官方支持 0.0~1.0，clamp 保证安全）
+        # 温度（当前模型档案 > 全局默认，Anthropic 官方支持 0.0~1.0，clamp 保证安全）。
+        # 与 DeepSeek 一致：思考模式开启时温度会被服务端忽略，故此时不发送
+        # （避免「配置了但没生效」的误导）；关闭思考模式（Ctrl+T）后才携带。
         try:
-            from ...config.model_profiles import effective_temperature as _effective_temperature
-            kwargs["temperature"] = min(max(float(_effective_temperature()), 0.0), 1.0)
+            from ...config.model_profiles import request_temperature as _request_temperature
+            temperature = _request_temperature()
+            if temperature is not None:
+                kwargs["temperature"] = min(max(float(temperature), 0.0), 1.0)
         except (ImportError, TypeError, ValueError):
             pass
         if system:

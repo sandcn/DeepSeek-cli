@@ -549,6 +549,8 @@ SPECIAL_KEY_ENTRIES = [
      "config": {"id": "editmsg"}},
     {"id": "special_key_retry", "plugin": "src.plugins.special_key_entries:apply_special_key",
      "config": {"id": "retry"}},
+    {"id": "special_key_toggle_thinking", "plugin": "src.plugins.special_key_entries:apply_special_key",
+     "config": {"id": "toggle_thinking"}},
     {"id": "special_key_toggle_theme", "plugin": "src.plugins.special_key_entries:apply_special_key",
      "config": {"id": "toggle_theme"}},
     {"id": "special_key_switch_model", "plugin": "src.plugins.special_key_entries:apply_special_key",

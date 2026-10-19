@@ -52,6 +52,27 @@ def test_build_status_runs_multimodal_badge_and_effort_order():
     assert "vision-model \u56fe [high]" in text
 
 
+def test_model_segment_thinking_off_replaces_effort():
+    """Ctrl+T 关闭思考 → 模型名后显示 [off]（不再显示 [high]）。"""
+    m = AppModel()
+    m.status.model_name = "deepseek-flash"
+    ctx = StatusContext(
+        model=m, status=m.status, status_active=False,
+        dot_elapsed=0.0, spinner_char="\u00b7", reasoning_effort="high",
+        snapshot={}, thinking_enabled=False,
+    )
+    text = _text(_model_segment(ctx))
+    assert "deepseek-flash [off]" in text
+    assert "[high]" not in text
+
+
+def test_build_status_runs_thinking_off():
+    m = AppModel()
+    m.status.model_name = "deepseek-flash"
+    text = _text(_build_status_runs(m, 0.0, "\u00b7", "high", False, False))
+    assert "[off]" in text and "[high]" not in text
+
+
 def _ctx_with_multimodal(model, value: bool) -> StatusContext:
     return StatusContext(
         model=model, status=model.status, status_active=False,

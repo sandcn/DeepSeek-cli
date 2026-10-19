@@ -529,7 +529,7 @@ class InputParser:
         if byte == 0x0b:                 # Ctrl+K → kill to EOL
             return KeyEvent(kind="delete", modifier=3, raw=raw)
         # Claude TUI parity 步骤 1.4：Ctrl+L(0x0c 清屏) / Ctrl+D(0x04 EOF) /
-        # Ctrl+T(0x14 主题) 加入特殊按键（分发在 dispatcher 处理）
+        # Ctrl+T(0x14 思考模式开关) 加入特殊按键（分发在 dispatcher 处理）
         # 2026-08-05（增加操作）：Ctrl+E（0x05）已恢复为 end 事件（不再在
         # ctrl_key 集合）；Ctrl+P（0x10）加入 ctrl_key（dispatcher 处理为
         # readline 历史上一条——与 Ctrl+N 被 switch_model 占用的对称补充）。

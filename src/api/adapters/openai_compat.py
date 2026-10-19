@@ -27,15 +27,25 @@ def _get_reasoning_effort() -> str:
         return "max"
 
 
-def _get_temperature() -> float:
-    """读取当前生效模型的温度（0.0~2.0），异常回退 0.2。
+def _get_thinking_enabled() -> bool:
+    """读取全局思考模式开关（Ctrl+T 切换，默认开启）；异常回退 True。"""
+    try:
+        from ...config.model_profiles import thinking_enabled
+        return bool(thinking_enabled())
+    except Exception:
+        return True
+
+
+def _get_temperature() -> float | None:
+    """读取请求应携带的温度（0.0~2.0）；思考模式开启时返回 None（不发送）。
 
     取值 = 当前生效模型档案的 ``temperature``（空则回退全局默认）；
-    ``/models`` 中可对每个模型独立设置。
+    ``/models`` 中可对每个模型独立设置。DeepSeek 思考模式不支持温度
+    （设置不报错但被忽略），故思考模式开启时返回 ``None``。
     """
     try:
-        from ...config.model_profiles import effective_temperature
-        return effective_temperature()
+        from ...config.model_profiles import request_temperature
+        return request_temperature()
     except Exception:
         return 0.2
 
@@ -65,18 +75,27 @@ class OpenAICompatAdapter(BaseLLMAdapter):
         stream: bool = False,
         stream_options: Optional[dict] = None,
     ) -> dict:
+        # 温度：思考模式开启时 DeepSeek 会忽略该参数（官方文档「思考模式不
+        # 支持 temperature」），此时不发送；关闭思考模式（Ctrl+T）后才携带。
+        temperature = _get_temperature()
+        extra_kwargs = {} if temperature is None else {"temperature": temperature}
         kwargs = self._build_base_kwargs(
             model, messages, tools, stream, stream_options,
-            extra_kwargs={"temperature": _get_temperature()},
+            extra_kwargs=extra_kwargs,
         )
 
         # 非 reasoner 子串匹配的 V4 模型需要 thinking 参数
         is_reasoner = _is_reasoner_model(model)
         if is_reasoner and not any(p in model for p in reasoner_patterns()):
-            kwargs["thinking"] = {
-                "type": "enabled",
-                "reasoning_effort": _get_reasoning_effort(),
-            }
+            if _get_thinking_enabled():
+                kwargs["thinking"] = {
+                    "type": "enabled",
+                    "reasoning_effort": _get_reasoning_effort(),
+                }
+            else:
+                # 关闭思考模式（Ctrl+T）：DeepSeek V4 官方默认 enabled，
+                # 必须显式传 disabled 才能真正关闭。
+                kwargs["thinking"] = {"type": "disabled"}
 
         return kwargs
 

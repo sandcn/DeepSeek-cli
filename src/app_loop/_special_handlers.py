@@ -1,7 +1,8 @@
 """特殊键处理器注册表 — action → 处理器工厂的单一来源（一切皆插件）。
 
 「一切皆插件」：``make_special_key_callback`` 的 action 分发（vim / editmsg /
-retry / toggle_theme / switch_model / cycle_mode）不再是硬编码的 if/elif 链，
+retry / toggle_thinking / toggle_theme / switch_model / cycle_mode）不再是
+硬编码的 if/elif 链，
 而是注册到本模块；每个内置处理器由清单中的**独立插件条目**（``special_key``）
 显式注册，因而可被 Profile/Bundle 声明，也可被 Patch/Overlay 按 id 单独禁用、
 覆盖或替换。
@@ -31,6 +32,7 @@ _BUILTIN_SPECS: Tuple[Tuple[str, str], ...] = (
     ("vim", "src.app_loop._special_keys:make_vim_handler"),
     ("editmsg", "src.app_loop._special_keys:make_editmsg_handler"),
     ("retry", "src.app_loop._special_keys:make_retry_handler"),
+    ("toggle_thinking", "src.app_loop._special_keys:make_toggle_thinking_handler"),
     ("toggle_theme", "src.app_loop._special_keys:make_toggle_theme_handler"),
     ("switch_model", "src.app_loop._special_keys:make_switch_model_handler"),
     ("cycle_mode", "src.app_loop._special_keys:make_cycle_mode_handler"),

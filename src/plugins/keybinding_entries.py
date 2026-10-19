@@ -1,9 +1,10 @@
 """键位绑定条目插件 — 清单中每个内置 Ctrl 绑定一个独立插件条目。
 
 「一切皆插件」：TUI 输入分发的 Ctrl 组合键绑定（vim/editmsg/trace_toggle/
-ctrl_r/clear_screen/ctrl_d/toggle_theme/switch_model/history_prev/cycle_mode）
+ctrl_r/clear_screen/ctrl_d/toggle_thinking/toggle_theme/switch_model/
+history_prev/cycle_mode）
 不再硬编码在 ``InputDispatcher._handle_ctrl_key`` 的 if/elif 链里，而是由清单
-中的独立条目声明::
+中的独立条目声明（Ctrl+T 已改为思考模式开关，不再切换主题）::
 
     - id: keybinding_ctrl_g
       plugin: src.plugins.keybinding_entries:apply_keybinding

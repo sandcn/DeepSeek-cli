@@ -62,7 +62,7 @@ async def test_default_profile_resolves_bindings():
         assert resolve_binding("\x12") == "ctrl_r"
         assert resolve_binding("\x0c") == "clear_screen"
         assert resolve_binding("\x04") == "ctrl_d"
-        assert resolve_binding("\x14") == "toggle_theme"
+        assert resolve_binding("\x14") == "toggle_thinking"
         assert resolve_binding("\x0e") == "switch_model"
         assert resolve_binding("\x10") == "history_prev"
         assert resolve_binding("\x02") == "cycle_mode"
@@ -155,8 +155,11 @@ def test_dispatcher_uses_registry(monkeypatch):
     try:
         InputDispatcher._handle_ctrl_key(d, "\x07")
         assert d.calls == ["vim"]
+        # Ctrl+T → 思考模式开关（不再是主题切换）
+        InputDispatcher._handle_ctrl_key(d, "\x14")
+        assert d.calls == ["vim", "toggle_thinking"]
         # 未知组合键 no-op（\x11 Ctrl+Q 未绑定）
         InputDispatcher._handle_ctrl_key(d, "\x11")
-        assert d.calls == ["vim"]
+        assert d.calls == ["vim", "toggle_thinking"]
     finally:
         reg.reset()

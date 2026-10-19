@@ -42,6 +42,18 @@ def test_validate_rc_temperature_out_of_range():
     assert 0.0 <= rc["temperature"] <= 2.0
 
 
+def test_validate_rc_thinking_enabled_string_false():
+    rc = {"thinking_enabled": "false"}
+    _validate_rc(rc)
+    assert rc["thinking_enabled"] is False
+
+
+def test_validate_rc_thinking_enabled_invalid_fallback_true():
+    rc = {"thinking_enabled": object()}
+    _validate_rc(rc)
+    assert rc["thinking_enabled"] is True
+
+
 def test_validate_rc_reasoning_effort_invalid():
     rc = {"reasoning_effort": "INVALID"}
     _validate_rc(rc)

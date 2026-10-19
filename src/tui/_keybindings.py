@@ -51,7 +51,7 @@ _BUILTIN_SPECS: Tuple[KeyBinding, ...] = (
     KeyBinding("ctrl_r", "\x12", "ctrl_r", "Ctrl+R 反向历史搜索 / 重新生成上一轮"),
     KeyBinding("ctrl_l", "\x0c", "clear_screen", "Ctrl+L 清屏"),
     KeyBinding("ctrl_d", "\x04", "ctrl_d", "Ctrl+D EOF（空缓冲提交 exit）"),
-    KeyBinding("ctrl_t", "\x14", "toggle_theme", "Ctrl+T 主题切换"),
+    KeyBinding("ctrl_t", "\x14", "toggle_thinking", "Ctrl+T 思考模式开关（默认开启）"),
     KeyBinding("ctrl_n", "\x0e", "switch_model", "Ctrl+N 切换模型"),
     KeyBinding("ctrl_p", "\x10", "history_prev", "Ctrl+P 历史上一条"),
     KeyBinding("ctrl_b", "\x02", "cycle_mode", "Ctrl+B 主 Agent 运行模式循环"),

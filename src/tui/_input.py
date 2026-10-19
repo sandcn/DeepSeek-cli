@@ -367,7 +367,7 @@ class Input:
         self._dispatcher._do_interrupt(kill_background=kill_background)
 
     def _handle_special_key(self, action: str) -> None:
-        """处理特殊按键（Ctrl+G/O/N/R）（委托 InputDispatcher）。"""
+        """处理特殊按键（Ctrl+G/O/N/R/T/B）（委托 InputDispatcher）。"""
         self._dispatcher._handle_special_key(action)
 
     def _flush_stdin_residual(self, max_flush: int = 50) -> None:
@@ -713,9 +713,11 @@ class Input:
         cb 签名: (action: str, current_text: str) -> str | None
 
         action 取值（当前分发）：``vim``（Ctrl+G）/ ``editmsg``（Ctrl+O）/
-        ``retry``（Ctrl+R，反向搜索禁用时）/ ``toggle_theme``（Ctrl+T）/
-        ``switch_model``（Ctrl+N）/ ``cycle_mode``（Ctrl+B，主 Agent 运行模式
-        循环切换：空模式 → 简单模式 → 标准模式 → 空模式）。
+        ``retry``（Ctrl+R，反向搜索禁用时）/ ``toggle_thinking``（Ctrl+T，
+        思考模式开关，默认开启）/ ``switch_model``（Ctrl+N）/ ``cycle_mode``
+        （Ctrl+B，主 Agent 运行模式循环切换：空模式 → 简单模式 → 标准模式
+        → 空模式）。``toggle_theme`` 处理器仍保留（供插件/Overlay 自定义
+        绑定），但已不再绑定 Ctrl+T（主题可用 ``/theme`` 切换）。
         """
         self._dispatcher.set_special_key_callback(cb)
 

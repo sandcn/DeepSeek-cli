@@ -357,6 +357,21 @@ def _sync_choice_index(mv) -> None:
     mv.form_choice_index = opts.index(value) if value in opts else -1
 
 
+def _temperature_warning() -> str:
+    """温度字段的「思考模式开启，不生效」提示（空串 = 温度生效）。
+
+    DeepSeek 官方文档：思考模式不支持 ``temperature``（设置不报错但会被
+    忽略）。因此思考模式开启时明确告知用户，避免误以为配置无效/未生效。
+    """
+    try:
+        from src.config.model_profiles import temperature_effective
+        if temperature_effective():
+            return ""
+    except Exception:
+        return ""
+    return "思考模式开启，温度不生效 ⏎ Ctrl+T 关闭思考模式后生效"
+
+
 def _start_form(mv, entry=None) -> None:
     """进入表单（entry=None → 新增；否则编辑该档案）。
 
@@ -371,7 +386,7 @@ def _start_form(mv, entry=None) -> None:
     mv.form_select_index = 0
     _clear_field_choices(mv)
     mv.edit_error = ""
-    mv.message = ""
+    mv.message = _temperature_warning()
     if entry is None:
         mv.form_is_new = True
         mv.form_index = None
@@ -472,6 +487,9 @@ def _commit_select(mv) -> None:
         )
     elif key == "reasoning_effort":
         mv.message = f"思考级别: {value or '沿用全局默认'}"
+    elif key == "temperature":
+        # 记录提示：温度是否真的生效（思考模式开启时 DeepSeek 忽略温度）
+        mv.message = _temperature_warning()
     elif key == "multimodal":
         mv.message = (
             f"多模态读图: {value}（{'加载 read_image' if value == 'true' else '不加载 read_image'}）"
@@ -488,6 +506,16 @@ def _field_value_display(mv, key: str) -> str:
         return mask_key(value)
     if key in ("temperature", "reasoning_effort") and not value.strip():
         return "（沿用全局默认）"
+    if key == "temperature":
+        # 思考模式开启时 DeepSeek 忽略温度（官方文档「思考模式不支持
+        # temperature」）：在表单值上直接标注，避免「设置了却不生效」。
+        try:
+            from src.config.model_profiles import temperature_effective
+            temp_active = temperature_effective()
+        except Exception:
+            temp_active = True
+        if not temp_active:
+            return f"{value}（思考模式开启，不生效）"
     return value
 
 
@@ -547,7 +575,7 @@ def _commit_form(mv) -> None:
     if active_changed or _entry_is_current(mv, index_val):
         _queue_current_apply(mv)
     mv.reset_edit_state()
-    mv.message = msg
+    mv.message = msg + (" · " + _temperature_warning() if _temperature_warning() else "")
 
 
 def _delete_selected(mv, entry) -> None:
@@ -759,6 +787,15 @@ def _detail_runs(entry, width: int) -> list:
     if isinstance(temperature, (int, float)):
         raw_temp = str(entry.get("temperature") or "").strip()
         label = f"温度 {temperature:g}" + ("" if raw_temp else "(默认)")
+        # 思考模式开启时 DeepSeek 忽略温度（官方文档），列表上直接标注，
+        # 避免用户误以为「温度配了却没效果」。
+        try:
+            from src.config.model_profiles import temperature_effective
+            temp_active = temperature_effective()
+        except Exception:
+            temp_active = True
+        if not temp_active:
+            label += "(思考模式开启，不生效)"
         runs.append(StyledRun(sep, _S_DETAIL_SEP))
         runs.append(StyledRun(label, _S_DETAIL_LABEL))
     effort = str(entry.get("effective_reasoning_effort") or "").strip()
