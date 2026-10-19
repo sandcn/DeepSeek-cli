@@ -159,6 +159,11 @@ def _atomic_write_local(path, content, encoding='utf-8', errors='replace'):
     使用 tempfile + os.replace 实现原子写入。
     不依赖 flock 文件锁：同一进程内并发写同一文件已由 ToolDAG 的路径依赖
     分层（写依赖写串行）保证，无需额外互斥；os.replace 本身保证替换原子性。
+
+    ★ 文本约定写死：``newline='\\n'`` 禁止平台换行翻译——Windows 原生下也
+    按 LF 落盘（不加该参数时 text 模式会把 ``\\n`` 转成 CRLF，与「当前执行
+    环境」声明的「行尾格式: LF」不一致）。内容里已有的 ``\\r\\n`` 原样保留
+    （edit 修改既有 CRLF 文件时不破坏未触及的行）。
     """
     fd = None
     temp_path = None
@@ -176,7 +181,7 @@ def _atomic_write_local(path, content, encoding='utf-8', errors='replace'):
             suffix='.tmp',
             dir=dir_path
         )
-        with os.fdopen(fd, 'w', encoding=encoding, errors=errors) as f:
+        with os.fdopen(fd, 'w', encoding=encoding, errors=errors, newline='\n') as f:
             f.write(content)
             fd = None
 

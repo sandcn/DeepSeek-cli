@@ -14,6 +14,13 @@ _SUMMARY_CORE_MAX_LEN = 50
 _SUMMARY_TECH_MAX_ITEMS = 3
 _SUMMARY_TRUNCATE_LENGTH = 300
 
+#: 文本约定（写死）：项目内的文本文件一律 UTF-8 编码、LF 行尾。不检测宿主
+#: 平台 / locale / 现有文件的实际情况——Windows 原生环境的控制台代码页与
+#: CRLF 换行不改变该约定；实际写入侧由 ``file_ops._atomic_write_local``
+#: 强制 ``encoding='utf-8'`` + ``newline='\n'`` 保证一致。
+TEXT_ENCODING = "utf-8"
+LINE_ENDING = "LF"
+
 
 def _summary_int(key: str, default: int) -> int:
     """摘要参数（数据注册表 ``ui_defaults`` 优先，非法时回退兜底快照）。"""
@@ -53,6 +60,10 @@ def build_environment_info(
     #   程序混进命令行（如 "cmd (Windows Terminal, Windows)" 误导模型）。
     #   没有图形宿主（SSH / 纯控制台）时输出 unknown。
     lines.append(f"- GUI 程序: {detect_gui_program() or 'unknown'}")
+    # ★ 文本编码 / 行尾写死：不随宿主平台变化（Windows 也不输出 GBK / CRLF），
+    #   与写入工具的实际行为（UTF-8 + LF）保持一致。
+    lines.append(f"- 文本编码格式: {TEXT_ENCODING}")
+    lines.append(f"- 行尾格式: {LINE_ENDING}")
     lines.append("")
 
     return "\n".join(lines) + "\n"

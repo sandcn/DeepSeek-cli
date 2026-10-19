@@ -11,6 +11,7 @@
   - 运行环境检测（Cygwin / MSYS2 / WSL / Termux / Windows / macOS / Linux）
   - detect_command_line 单行组装（命令行不再混入终端）
   - build_environment_info 注入「- 命令行:」「- GUI 程序:」行
+  - build_environment_info 注入写死的「- 文本编码格式: utf-8」「- 行尾格式: LF」
   - build_environment_info 不包含 Python 版本信息
   - build_work_md 的 cwd 解析（省略时回退进程工作目录）与缺失文件兜底
 """
@@ -509,8 +510,28 @@ def test_build_environment_info_line_order(monkeypatch):
     cwd_idx = next(i for i, line in enumerate(lines) if line.startswith("- 工作目录:"))
     cmd_idx = next(i for i, line in enumerate(lines) if line.startswith("- 命令行:"))
     gui_idx = next(i for i, line in enumerate(lines) if line.startswith("- GUI 程序:"))
+    enc_idx = next(i for i, line in enumerate(lines) if line.startswith("- 文本编码格式:"))
+    eol_idx = next(i for i, line in enumerate(lines) if line.startswith("- 行尾格式:"))
     assert cmd_idx == cwd_idx + 1
     assert gui_idx == cmd_idx + 1
+    assert enc_idx == gui_idx + 1
+    assert eol_idx == enc_idx + 1
+
+
+def test_build_environment_info_text_conventions_hardcoded(monkeypatch):
+    """文本编码 / 行尾是写死的常量：不随平台与 locale 检测变化。"""
+    monkeypatch.setattr(ei, "detect_command_line", lambda: "cmd (Windows)")
+    monkeypatch.setattr(ei, "detect_gui_program", lambda: "Windows Terminal")
+    monkeypatch.setattr(ei.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(ei.os, "linesep", "\r\n")
+    text = ei.build_environment_info("/tmp/work")
+    assert ei.TEXT_ENCODING == "utf-8"
+    assert ei.LINE_ENDING == "LF"
+    assert "- 文本编码格式: utf-8" in text
+    assert "- 行尾格式: LF" in text
+    # 不得被平台默认值污染（Windows 的 GBK / CRLF）
+    assert "gbk" not in text.lower()
+    assert "crlf" not in text.lower()
 
 
 def test_build_environment_info_excludes_python(monkeypatch):
