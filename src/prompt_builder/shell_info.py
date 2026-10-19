@@ -4,7 +4,9 @@
 对应语法执行命令（bash / zsh / fish / powershell / cmd 等）。
 
 检测策略：
-  - Shell 解释器：优先遍历父进程链（/proc，回退 psutil）识别交互 shell，
+  - Shell 解释器：优先遍历父进程链识别交互 shell——Linux 走 /proc，
+    psutil 可用时走 psutil，Windows 无 psutil 时回退 kernel32 Toolhelp32
+    快照（零第三方依赖，避免把 powershell 会话误判为 cmd）；
     再回退环境变量（SHELL / BASH_VERSION / ... / ComSpec）。
   - 终端模拟器：优先环境变量特征（WT_SESSION / TERM_PROGRAM / ...），
     回退父进程链（mintty / xterm / konsole ...），最后回退 TERM。
@@ -133,9 +135,18 @@ def _read_text(path: str) -> str:
         return ""
 
 
+def _proc_path(pid: int, filename: str) -> str:
+    """拼 /proc 下的文件路径（如 ``/proc/123/exename``）。
+
+    不能用 ``os.path.join``：Windows 上会拼成 ``\\proc\\...``，既保证不了 POSIX
+    语义，也让 /proc 解析逻辑在 Windows 上完全无法测试。分隔符固定为正斜杠。
+    """
+    return f"{_PROC_ROOT}/{pid}/{filename}"
+
+
 def _proc_name(pid: int) -> str:
     for filename in ("exename", "comm", "cmdline"):
-        text = _read_text(os.path.join(_PROC_ROOT, str(pid), filename))
+        text = _read_text(_proc_path(pid, filename))
         if not text:
             continue
         if filename == "cmdline":
@@ -147,10 +158,10 @@ def _proc_name(pid: int) -> str:
 
 
 def _proc_ppid(pid: int) -> int:
-    text = _read_text(os.path.join(_PROC_ROOT, str(pid), "ppid")).strip()
+    text = _read_text(_proc_path(pid, "ppid")).strip()
     if text.lstrip("-").isdigit():
         return int(text)
-    for line in _read_text(os.path.join(_PROC_ROOT, str(pid), "status")).splitlines():
+    for line in _read_text(_proc_path(pid, "status")).splitlines():
         if line.lower().startswith("ppid:"):
             value = line.split(":", 1)[1].strip()
             if value.lstrip("-").isdigit():
@@ -192,11 +203,110 @@ def _psutil_ancestor_names(pid: int) -> list:
     return names
 
 
+_TH32CS_SNAPPROCESS = 0x00000002
+_MAX_EXE_NAME = 260  # MAX_PATH
+
+
+def _win_process_table() -> dict:
+    """枚举 Windows 进程表：``pid → (父 pid, exe 名)``。
+
+    Windows 没有 /proc，psutil 也不在本项目运行依赖里；此处直接调用
+    kernel32 的 Toolhelp32 快照 API 拿父进程链。缺了这一步，在 PowerShell
+    中启动的会话会因拿不到父进程链而回退到 ``ComSpec``（恒为 cmd.exe），
+    被误判成 cmd。
+
+    非 Windows 平台、API 不可用或调用失败时返回空表（由调用方继续回退）。
+    """
+    if os.name != "nt":
+        return {}
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return {}
+
+    class _ProcessEntry32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_void_p),  # ULONG_PTR
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * _MAX_EXE_NAME),
+        ]
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Process32FirstW.argtypes = (wintypes.HANDLE, ctypes.POINTER(_ProcessEntry32W))
+        kernel32.Process32FirstW.restype = wintypes.BOOL
+        kernel32.Process32NextW.argtypes = (wintypes.HANDLE, ctypes.POINTER(_ProcessEntry32W))
+        kernel32.Process32NextW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+        invalid_handle = ctypes.c_void_p(-1).value
+        if snapshot is None or snapshot == invalid_handle:
+            return {}
+        table: dict = {}
+        try:
+            entry = _ProcessEntry32W()
+            entry.dwSize = ctypes.sizeof(_ProcessEntry32W)
+            ok = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+            while ok:
+                table[int(entry.th32ProcessID)] = (
+                    int(entry.th32ParentProcessID),
+                    entry.szExeFile,
+                )
+                ok = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+        finally:
+            kernel32.CloseHandle(snapshot)
+        return table
+    except Exception:
+        return {}
+
+
+def _win_ancestor_names(pid: int) -> list:
+    """沿 Windows 父进程链向上收集进程名（含起点进程本身）。
+
+    与 ``_proc_ancestor_names`` 语义一致：链断掉（pid 不在表里 / 父 pid 为 0）
+    或达到深度上限即停止，遇到环（pid 重复）也立即停止。
+    """
+    table = _win_process_table()
+    if not table:
+        return []
+    names: list = []
+    seen: set = set()
+    for _ in range(_MAX_ANCESTOR_DEPTH):
+        if not isinstance(pid, int) or pid <= 0 or pid in seen:
+            break
+        seen.add(pid)
+        entry = table.get(pid)
+        if entry is None:
+            break
+        parent, name = entry
+        if name:
+            names.append(name)
+        pid = parent
+    return names
+
+
 def _ancestor_names(pid: int) -> list:
-    names = _proc_ancestor_names(pid)
+    # Windows 上没有 /proc，跳过（否则每次检测都要白白失败 3×N 次文件读取）。
+    if os.name != "nt":
+        names = _proc_ancestor_names(pid)
+        if names:
+            return names
+    names = _psutil_ancestor_names(pid)
     if names:
         return names
-    return _psutil_ancestor_names(pid)
+    return _win_ancestor_names(pid)
 
 
 def _basename_lower(value: str) -> str:
@@ -326,7 +436,7 @@ def detect_runtime(
         return "WSL"
     if env.get("TERMUX_VERSION") or "com.termux" in (env.get("PREFIX") or ""):
         return "Termux"
-    if plat.startswith("win") or os.name == "nt":
+    if plat.startswith("win"):
         return "Windows"
     if plat.startswith("darwin"):
         return "macOS"

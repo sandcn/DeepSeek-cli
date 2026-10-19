@@ -3,15 +3,20 @@
 覆盖：
   - 名称归一化与 shell 别名解析
   - /proc 父进程链解析与 psutil 回退
+  - Windows 原生父进程链（Toolhelp32 快照，无 psutil 时识别 powershell）
   - Shell 检测（进程链 / SHELL / BASH_VERSION / ComSpec）
   - 终端模拟器检测（环境变量 / 进程链 / TERM 回退）
   - 运行环境检测（Cygwin / MSYS2 / WSL / Termux / Windows / macOS / Linux）
   - detect_command_line 单行组装
   - build_environment_info 注入「- 命令行:」行
   - build_environment_info 不包含 Python 版本信息
+  - build_work_md 的 cwd 解析（省略时回退进程工作目录）与缺失文件兜底
 """
 
 from __future__ import annotations
+
+import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -73,10 +78,85 @@ def test_proc_ancestor_names_linux_comm_fallback(monkeypatch):
     assert si._proc_ancestor_names(50) == ["bash"]
 
 
+def test_proc_path_uses_posix_separator(monkeypatch):
+    """Windows 主机上 os.path.join 会拼出 \\proc\\...，/proc 路径必须始终用正斜杠。"""
+    seen: list = []
+    monkeypatch.setattr(si, "_read_text", lambda path: seen.append(path) or "")
+    si._proc_name(123)
+    si._proc_ppid(123)
+    assert "/proc/123/exename" in seen
+    assert "/proc/123/ppid" in seen
+    assert all(path.startswith("/proc/") for path in seen)
+
+
 def test_ancestor_names_psutil_fallback(monkeypatch):
     monkeypatch.setattr(si, "_proc_ancestor_names", lambda pid: [])
     monkeypatch.setattr(si, "_psutil_ancestor_names", lambda pid: ["bash"])
     assert si._ancestor_names(1) == ["bash"]
+
+
+def test_ancestor_names_windows_native_fallback(monkeypatch):
+    """无 /proc、无 psutil 时（Windows 默认状态）改用原生进程表。"""
+    monkeypatch.setattr(si, "_proc_ancestor_names", lambda pid: [])
+    monkeypatch.setattr(si, "_psutil_ancestor_names", lambda pid: [])
+    monkeypatch.setattr(
+        si, "_win_ancestor_names",
+        lambda pid: ["python.exe", "powershell.exe", "WindowsTerminal.exe"],
+    )
+    assert si._ancestor_names(10) == ["python.exe", "powershell.exe", "WindowsTerminal.exe"]
+
+
+# ── Windows 原生父进程链 ─────────────────────────────────
+
+def test_win_ancestor_names_builds_chain(monkeypatch):
+    table = {
+        10: (20, "python.exe"),
+        20: (30, "powershell.exe"),
+        30: (0, "WindowsTerminal.exe"),
+    }
+    monkeypatch.setattr(si, "_win_process_table", lambda: table)
+    assert si._win_ancestor_names(10) == [
+        "python.exe",
+        "powershell.exe",
+        "WindowsTerminal.exe",
+    ]
+
+
+def test_win_ancestor_names_breaks_on_missing_parent(monkeypatch):
+    monkeypatch.setattr(si, "_win_process_table", lambda: {10: (99, "python.exe")})
+    assert si._win_ancestor_names(10) == ["python.exe"]
+
+
+def test_win_ancestor_names_stops_on_cycle(monkeypatch):
+    table = {10: (11, "python.exe"), 11: (10, "pwsh.exe")}
+    monkeypatch.setattr(si, "_win_process_table", lambda: table)
+    assert si._win_ancestor_names(10) == ["python.exe", "pwsh.exe"]
+
+
+def test_win_ancestor_names_empty_table(monkeypatch):
+    monkeypatch.setattr(si, "_win_process_table", lambda: {})
+    assert si._win_ancestor_names(10) == []
+    assert si._win_ancestor_names(0) == []
+
+
+def test_win_ancestor_names_depth_limit(monkeypatch):
+    table = {pid: (pid + 1, f"p{pid}.exe") for pid in range(1, 50)}
+    monkeypatch.setattr(si, "_win_process_table", lambda: table)
+    assert len(si._win_ancestor_names(1)) == si._MAX_ANCESTOR_DEPTH
+
+
+def test_win_process_table_non_windows(monkeypatch):
+    monkeypatch.setattr(si, "os", SimpleNamespace(name="posix"))
+    assert si._win_process_table() == {}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="仅 Windows 有 Toolhelp32 快照")
+def test_win_process_table_live_windows():
+    table = si._win_process_table()
+    assert table
+    assert os.getpid() in table
+    parent_pid, _name = table[os.getpid()]
+    assert parent_pid > 0
 
 
 # ── Shell 检测 ───────────────────────────────────────────
@@ -84,6 +164,30 @@ def test_ancestor_names_psutil_fallback(monkeypatch):
 def test_detect_shell_from_process_chain(monkeypatch):
     monkeypatch.setattr(si, "_ancestor_names", lambda pid: ["/usr/bin/python3.9", "/usr/bin/bash", "/usr/bin/mintty"])
     assert si.detect_shell(env={}, ppid=10) == "bash"
+
+
+def test_detect_shell_powershell_from_native_chain(monkeypatch):
+    """Windows 父链里最近的交互 shell 是 powershell 时不得回退成 cmd。"""
+    monkeypatch.setattr(
+        si, "_ancestor_names",
+        lambda pid: ["python.exe", "powershell.exe", "WindowsTerminal.exe"],
+    )
+    env = {"ComSpec": r"C:\WINDOWS\system32\cmd.exe"}
+    assert si.detect_shell(env=env, ppid=10) == "powershell"
+
+
+def test_detect_shell_pwsh_from_native_chain(monkeypatch):
+    monkeypatch.setattr(si, "_ancestor_names", lambda pid: ["python.exe", "pwsh.exe"])
+    assert si.detect_shell(env={}, ppid=10) == "powershell"
+
+
+def test_detect_command_line_powershell(monkeypatch):
+    monkeypatch.setattr(
+        si, "_ancestor_names",
+        lambda pid: ["python.exe", "powershell.exe", "WindowsTerminal.exe"],
+    )
+    out = si.detect_command_line(env={"WT_SESSION": "abc"}, ppid=10, sys_platform="win32", release="10")
+    assert out == "powershell (Windows Terminal, Windows)"
 
 
 def test_detect_shell_env_shell(monkeypatch):
@@ -168,6 +272,12 @@ def test_detect_runtime(sys_platform, release, env, expected):
     assert si.detect_runtime(env=env, sys_platform=sys_platform, release=release) == expected
 
 
+def test_detect_runtime_explicit_platform_overrides_host():
+    """显式传入 sys_platform 时以参数为准（Windows 主机上也要能判定非 Windows）。"""
+    assert si.detect_runtime(env={}, sys_platform="darwin", release="23.0.0") == "macOS"
+    assert si.detect_runtime(env={}, sys_platform="plan9", release="plan9") == ""
+
+
 # ── detect_command_line 组装 ─────────────────────────────
 
 def test_format_command_line():
@@ -220,3 +330,30 @@ def test_build_environment_info_excludes_python(monkeypatch):
     text = ei.build_environment_info("/tmp/work")
     assert "- Python:" not in text
     assert all(not line.startswith("- Python:") for line in text.splitlines())
+
+
+# ── build_work_md（global.md / agent.md） ────────────────
+
+def test_build_work_md_default_cwd_uses_process_cwd(tmp_path, monkeypatch):
+    """cwd 省略时回退进程工作目录（此前 os.path.join(None, name) 直接 TypeError）。"""
+    (tmp_path / "global.md").write_text("# 全局规则\n\n- 规则A\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    text = ei.build_work_md()
+    assert "规则A" in text
+
+
+def test_build_work_md_reads_from_given_cwd(tmp_path):
+    (tmp_path / "agent.md").write_text("# 子代理规则\n\n- 只读分析\n", encoding="utf-8")
+    text = ei.build_work_md("agent.md", cwd=str(tmp_path))
+    assert "只读分析" in text
+
+
+def test_build_work_md_missing_file_returns_empty(tmp_path):
+    assert ei.build_work_md("nope.md", cwd=str(tmp_path)) == ""
+
+
+def test_build_work_md_full_mode_keeps_raw_text(tmp_path):
+    (tmp_path / "global.md").write_text("# 标题\n\n正文内容\n", encoding="utf-8")
+    text = ei.build_work_md("global.md", summary_mode="full", cwd=str(tmp_path))
+    assert "# 标题" in text
+    assert "正文内容" in text

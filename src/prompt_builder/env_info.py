@@ -107,7 +107,9 @@ def _extract_section_items(lines: list, section_names: list, max_items: int = 4,
 
 
 def build_work_md(name="global.md",summary_mode: str = "concise", cwd: str | None = None) -> str:
-    path = os.path.join(cwd, name)
+    # ★ 修复：cwd 省略时回退进程工作目录——此前直接 os.path.join(None, name)
+    #   抛 TypeError，被提词片段容错捕获后静默丢掉 global.md / agent.md。
+    path = os.path.join(_resolve_cwd(cwd), name)
     try:
         with open(path, 'r', encoding='utf-8') as f:
             mdstr = f.read().strip()
