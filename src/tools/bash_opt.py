@@ -10,7 +10,14 @@ bash_opt — 按 task_id 操作后台 bash 任务
 - op=kill   杀死后台命令的所有进程树（进程组 + 全部递归后代），杀完后
             **校验**进程是否真正退出（僵尸视为已终止）；仍有存活则**自动
             补杀**（最多 3 轮尝试），返回信息报告校验结论与残留 PID
-- op=stdin  向后台命令的 stdin 发送文本输入（text 参数，newline 可选是否追加换行）
+- op=stdin  向后台命令的 stdin 发送文本输入（text 参数，newline 可选是否追加换行，
+            encoding 指定文本编码，默认 utf-8；Windows 原生控制台程序按
+            OEM 代码页读 stdin 时可用 gbk / cp936 / gb18030）
+- op=close_stdin  关闭后台命令的 stdin（发送 EOF）：pipe 模式关闭 stdin
+            写端——依赖输入结束才输出 / 退出的命令（sort / findstr / cat /
+            more / cmd 的 set /p 等）可以正常跑完并给出结果，不必 kill
+            丢掉输出；PTY 模式写入 EOT（Ctrl+D）。关闭后 stdin / keys 写入
+            会明确提示「stdin 已关闭」
 - op=keys   向后台命令发送光标/键盘消息（自动路由：目标进程有 GUI 窗口时
             作为窗口级键盘消息注入该窗口，否则回退写入终端——跨平台
             ANSI/VT100 转义序列；支持 ctrl+c 等修饰键组合、esc/pageup 等
@@ -107,12 +114,14 @@ read 为**增量读取**：后台任务运行期间的每一行输出都会累�
 
 read 属**只读观察**：不接管任务生命周期——任务完成后的结果仍由对话轮次正常
 回灌，不会因为「read 看一眼进度」而丢失。缓冲有内存上限（超限丢弃最旧
-内容），单次返回也有字符上限（只返回尾部最新内容并标注 truncated），
-避免超长输出撑爆上下文。
+内容），单次返回默认最多 **1000 行**（``max_lines`` 可调，``0`` 不按行截断），
+并且还有字符上限（超限只返回尾部最新内容并标注 truncated），避免超长输出
+撑爆上下文。
 
 需要**接管任务**（不再由对话轮次自动等待 / 回灌结果）的 op 只有：
-stdin / keys / kill / sequence / replay 与窗口输入（click 等）——它们要么与
-任务交互、要么显式终止、要么是批量操作，此后须由模型主动 wait 取最终输出。
+stdin / close_stdin / keys / kill / sequence / replay 与窗口输入（click 等）
+——它们要么与任务交互、要么显式终止、要么是批量操作，此后须由模型主动
+wait 取最终输出。
 
 截图（screenshot）适用于后台任务运行的是**图形界面程序**（游戏、GUI 应用、
 渲染预览等）的场景：按 task_id 定位该命令产生的进程树，取其可见窗口像素
@@ -233,7 +242,7 @@ from ._screenshot.imagematch import (
 )
 from ._screenshot.ocr import (
     OcrError,
-    find_text as find_ocr_text,
+    find_text_ex as find_ocr_text_ex,
     recognize as recognize_text,
 )
 from ._screenshot.png_decode import DecodedImage, decode_png_file
@@ -499,9 +508,18 @@ class BashOptFunc(Func):
     #: 长时任务的累积输出可能极大，原样返回会撑爆模型上下文；这里在返回时
     #: 截断并明确标注（内存侧的缓冲上限见 ``bash._READ_BUFFER_MAX_CHARS``）。
     _READ_OUTPUT_MAX_CHARS: int = 100_000
-    #: 由 bash_opt **接管生命周期**的 op：这些操作要么输入交互（stdin / keys /
-    #: 窗口输入）、要么显式终止任务（kill）、要么是批量操作（sequence /
-    #: replay），任务不再由对话轮次自动等待与回灌结果。
+    #: op=read 单次返回的**行数**上限（保留尾部最新行；与 bash 工具的
+    #: ``MAX_LINES`` 对齐，避免一次 read 把几十万行日志灌进上下文）。
+    #: ``max_lines=0`` 表示不按行截断，只受 ``_READ_OUTPUT_MAX_CHARS`` 约束。
+    _READ_MAX_LINES_DEFAULT: int = 1000
+    #: op=close_stdin 关闭写端时的等待上限（秒）——管道对端不响应时不无限挂住
+    _STDIN_CLOSE_TIMEOUT: float = 3.0
+    #: op=stdin 的默认文本编码（Windows 原生控制台程序按 OEM 代码页读 stdin
+    #: 时可显式传 encoding='gbk' / 'cp936' / 'gb18030'）
+    _DEFAULT_STDIN_ENCODING: str = "utf-8"
+    #: 由 bash_opt **接管生命周期**的 op：这些操作要么输入交互（stdin /
+    #: close_stdin / keys / 窗口输入）、要么显式终止任务（kill）、要么是批量
+    #: 操作（sequence / replay），任务不再由对话轮次自动等待与回灌结果。
     #: ★ 只读观察型 op（read / windows / window / elements / wait_window /
     #: clipboard / screenshot / locate / pixel / annotate / record）**不接管**：
     #: 否则模型「read 看一眼进度」就会让任务完成结果再也回灌不到对话
@@ -510,7 +528,7 @@ class BashOptFunc(Func):
     #: （清理 phase='down' 的悬空状态），与后台任务生命周期无关；若照旧
     #: 接管，一次 release 就会让任务完成结果不再自动回灌（静默丢失）。
     _MANAGED_OPS: tuple[str, ...] = (
-        "stdin", "keys", "kill", "sequence", "replay",
+        "stdin", "close_stdin", "keys", "kill", "sequence", "replay",
         *(op for op in INPUT_OPS if op != "release"),
     )
     #: 与具体进程 / 窗口无关、**无需 task_id** 即可执行的 op（其余 op 仍需要
@@ -539,6 +557,12 @@ class BashOptFunc(Func):
         extra = ""
         if op == "stdin":
             extra = str(arguments.get("text", ""))
+            encoding = arguments.get("encoding")
+            if encoding:
+                extra = (f"{extra} encoding={encoding}" if extra
+                         else f"encoding={encoding}")
+        elif op == "close_stdin":
+            extra = "关闭 stdin"
         elif op == "keys":
             extra = str(arguments.get("key", ""))
         elif op == "screenshot":
@@ -718,6 +742,7 @@ class BashOptFunc(Func):
 
     def __init__(self, task_id: str = "", op: str = "", timeout=None,
                  text: str | None = None, newline: bool | None = None,
+                 encoding: str | None = None, max_lines=None,
                  key: str | None = None, path: str | None = None,
                  crop: str | None = None,
                  x=None, y=None, to_x=None, to_y=None,
@@ -774,6 +799,13 @@ class BashOptFunc(Func):
         self.text = text
         # newline 三态：None = 未指定（stdin 默认追加换行、type 默认原样）
         self.newline = None if newline is None else bool(newline)
+        # stdin 文本编码（默认 utf-8）：Windows 原生控制台程序（cmd 内建 /
+        # findstr / sort 等按 OEM 代码页读 stdin）可传 gbk / cp936 / gb18030，
+        # 否则 UTF-8 字节会被按 cp936 解码成乱码。空串按默认处理。
+        self.encoding = self._normalize_encoding(encoding)
+        # read 的行数上限（默认 1000 行，与 bash 工具的 MAX_LINES 对齐）：
+        # None = 默认；0 / 负数 = 不按行截断；非法值回退默认。
+        self.max_lines = self._normalize_max_lines(max_lines)
         self.key = key
         self.path = path
         self.crop = crop
@@ -871,6 +903,34 @@ class BashOptFunc(Func):
         self.times = times            # replay 重复次数
         self.append = (None if append is None else bool(append))  # record 追加
 
+    # ── 参数归一化 ───────────────────────────────────────
+
+    @classmethod
+    def _normalize_encoding(cls, encoding) -> str:
+        """归一化 stdin 文本编码名（缺省 / 空串 → 默认 UTF-8）。
+
+        不在构造期校验编码名是否合法：非法编码名在真正写入时由
+        :meth:`_op_stdin` 返回可读错误（``encoding='utf8x'`` 这类笔误能直接
+        看到提示，而不是被静默改成默认值）。
+        """
+        if encoding is None:
+            return cls._DEFAULT_STDIN_ENCODING
+        text = str(encoding).strip()
+        return text or cls._DEFAULT_STDIN_ENCODING
+
+    @classmethod
+    def _normalize_max_lines(cls, max_lines) -> int:
+        """归一化 ``max_lines``：None/非法 → 默认 1000 行；<=0 → 0（不限）。"""
+        if max_lines is None:
+            return cls._READ_MAX_LINES_DEFAULT
+        if isinstance(max_lines, bool):
+            return cls._READ_MAX_LINES_DEFAULT
+        try:
+            value = int(str(max_lines).strip())
+        except (TypeError, ValueError):
+            return cls._READ_MAX_LINES_DEFAULT
+        return value
+
     # ── execute ──────────────────────────────────────────
 
     async def execute(self) -> str:
@@ -907,8 +967,8 @@ class BashOptFunc(Func):
                 return "(后台任务操作需要关联 Agent 上下文，当前未关联)"
             background_tasks = {}
 
-        supported_ops = ("read", "wait", "kill", "stdin", "keys",
-                         "screenshot", "windows", "window",
+        supported_ops = ("read", "wait", "kill", "stdin", "close_stdin",
+                         "keys", "screenshot", "windows", "window",
                          "elements", "wait_window", "clipboard",
                          "locate", "pixel", "annotate", "record",
                          "replay", "sequence", *INPUT_OPS)
@@ -962,6 +1022,8 @@ class BashOptFunc(Func):
             return await self._op_kill(agent, rec)
         if self.op == "stdin":
             return await self._op_stdin(rec)
+        if self.op == "close_stdin":
+            return await self._op_close_stdin(rec)
         if self.op == "keys":
             return await self._op_keys(rec)
         if self.op == "screenshot":
@@ -1049,11 +1111,14 @@ class BashOptFunc(Func):
         本次读走全部内容并清空；任务继续运行，后续 read 只返回新输出，
         最终完整结果由 op=wait 获取。
 
-        返回 JSON（task_id/status/output）：
+        返回 JSON（task_id/status/output/total_lines/returned_lines/max_lines）：
           - status: 任务当前状态（running / completed）
           - output: 本次读取到的累积输出（读取后已清空缓冲）
-          - 输出超过 :data:`_READ_OUTPUT_MAX_CHARS` 时只返回**尾部最新**内容
-            并附 ``truncated`` / ``dropped_chars``；缓冲因内存上限裁剪过时附
+          - 默认最多返回最后 :data:`_READ_MAX_LINES_DEFAULT` 行（``max_lines``
+            可调整，``0`` 表示不按行截断）；超出行数时附 ``truncated`` /
+            ``dropped_lines``，只保留**尾部最新**行。
+          - 输出超过 :data:`_READ_OUTPUT_MAX_CHARS` 时同样只返回尾部最新内容
+            并附 ``dropped_chars``；缓冲因内存上限裁剪过时附
             ``buffer_overflow_chars``（提示更早的输出已被丢弃）。
 
         ★ 本 op 属只读观察，**不接管任务生命周期**（不标记 managed_by_tool）：
@@ -1073,11 +1138,27 @@ class BashOptFunc(Func):
             buffer_dropped = int(rec.pop(READ_BUFFER_DROPPED_KEY, 0) or 0)
         done = bool(rec.get("done"))
         status = rec.get("status") or ("completed" if done else "running")
+        # ★ 行数截断（默认 1000 行，保留尾部最新行）：read 是增量读取，
+        #   长时任务一次积压几万行时会整段灌进模型上下文；这里与 bash 工具的
+        #   MAX_LINES 对齐，max_lines=0 关闭该限制（只受字符上限约束）。
+        max_lines = self.max_lines if self.max_lines > 0 else 0
+        total_lines = len(output.splitlines())
+        dropped_lines = 0
+        if max_lines and total_lines > max_lines:
+            lines = output.splitlines(keepends=True)
+            dropped_lines = total_lines - max_lines
+            output = "".join(lines[-max_lines:])
         payload = {
             "task_id": self.task_id,
             "status": status,
             "output": output,
+            "total_lines": total_lines,
+            "returned_lines": total_lines - dropped_lines,
+            "max_lines": max_lines,
         }
+        if dropped_lines:
+            payload["truncated"] = True
+            payload["dropped_lines"] = dropped_lines
         if len(output) > self._READ_OUTPUT_MAX_CHARS:
             dropped = len(output) - self._READ_OUTPUT_MAX_CHARS
             payload["output"] = output[-self._READ_OUTPUT_MAX_CHARS:]
@@ -1088,7 +1169,9 @@ class BashOptFunc(Func):
         if payload.get("truncated") or buffer_dropped:
             payload["hint"] = (
                 "输出过大，仅返回尾部最新内容；更早的内容已被丢弃"
-                "（op=wait 返回任务最终结果，但 stdout/stderr 同样按 bash 工具的"
+                f"（默认最多返回最后 {self._READ_MAX_LINES_DEFAULT} 行，"
+                "可用 max_lines 调整、max_lines=0 不按行截断；"
+                "op=wait 返回任务最终结果，但 stdout/stderr 同样按 bash 工具的"
                 " 1000 行上限截断；需要完整输出请让命令把输出重定向到文件后"
                 "再按需读取）"
             )
@@ -1242,18 +1325,119 @@ class BashOptFunc(Func):
     # ── op=stdin ─────────────────────────────────────────
 
     async def _op_stdin(self, rec: dict) -> str:
-        """向后台任务 stdin 发送文本输入。"""
+        """向后台任务 stdin 发送文本输入（按 :attr:`encoding` 编码）。
+
+        默认 UTF-8；Windows 原生控制台程序常按 OEM / ANSI 代码页（cp936）
+        读取 stdin，此时传 ``encoding='gbk'``（或 cp936 / gb18030）可避免
+        中文乱码。``newline`` 未指定或为 true 时按同一编码追加换行。
+
+        ★ PTY 任务（``bash background=true pty=true``）的「回车」是 **CR**
+        （``\\r``）而不是 ``\\n``：终端里 ``\\n`` 只是下移一行、不会提交输入
+        行（实测 ConPTY / POSIX PTY 均如此，交互式程序会一直等下去）。因此
+        PTY 模式下换行自动用 ``\\r``，与真实键盘回车一致。
+        """
         if self.text is None:
             return "(stdin 操作需要 text 参数指定要发送的文本)"
-        data = self.text
-        # newline 未指定（None）或 true → 追加换行（保持「输入一行」语义）；
-        # 显式 false 时原样发送
-        if self.newline is not False:
-            data += "\n"
-        ok, err = await self._write_to_task(rec, data.encode("utf-8"))
+        text = self.text if isinstance(self.text, str) else str(self.text)
+        try:
+            data = text.encode(self.encoding)
+            # newline 未指定（None）或 true → 追加换行（保持「输入一行」语义）；
+            # 显式 false 时原样发送。换行按同一编码编码（UTF-16 等宽编码不会
+            # 退化成单字节 \n）；PTY 任务的「回车」是 CR（\r）。
+            if self.newline is not False:
+                newline = "\r" if rec.get("mode") == "pty" else "\n"
+                data += newline.encode(self.encoding)
+        except LookupError:
+            return (f"(未知编码: {self.encoding}。请使用 Python 编码名，"
+                    f"如 utf-8 / gbk / cp936 / gb18030)")
+        except UnicodeEncodeError as exc:
+            return (f"(文本无法按编码 {self.encoding} 编码: {exc.reason}；"
+                    f"可改用 encoding='utf-8')")
+        ok, err = await self._write_to_task(rec, data)
         if not ok:
             return err
-        return f"(已向后台任务 {self.task_id} 发送 stdin 输入: {self._sanitize_display(self.text)})"
+        return (f"(已向后台任务 {self.task_id} 发送 stdin 输入"
+                f"（编码 {self.encoding}）: "
+                f"{self._sanitize_display(text)})")
+
+    # ── op=close_stdin ───────────────────────────────────
+
+    async def _op_close_stdin(self, rec: dict) -> str:
+        """关闭后台任务的 stdin（发送 EOF）。
+
+        依赖 stdin EOF 才会输出 / 退出的命令（``sort`` / ``findstr`` /
+        ``cat`` / ``more`` / cmd 的 ``set /p`` 等）在 Windows 上无法用
+        Ctrl+C / Ctrl+D 结束（bash 工具在原生 Windows 用管道而非 PTY），
+        关闭写端后子进程读到 EOF 即可正常走完并输出，不必 kill 丢掉结果。
+
+        - ``mode='pipe'``：关闭 stdin 写端（StreamWriter.close），并等
+          ``wait_closed`` 完成（有超时，避免对端不响应时挂住）；
+        - ``mode='pty'``：写入 EOT（``0x04``，等同 Ctrl+D），由终端驱动
+          转成 EOF；PTY 本身不能关闭（master 关闭会同时断开输出读取）。
+        """
+        mode = rec.get("mode")
+        if mode is None:
+            return (f"(后台任务 {self.task_id} 尚未就绪（进程句柄未建立），"
+                    f"请稍后重试)")
+        if rec.get("stdin_closed"):
+            return f"(后台任务 {self.task_id} 的 stdin 已关闭，无需重复操作)"
+        lock = rec.get("io_lock")
+        if lock is not None:
+            async with lock:
+                return await self._close_stdin_unlocked(rec, mode)
+        return await self._close_stdin_unlocked(rec, mode)
+
+    async def _close_stdin_unlocked(self, rec: dict, mode: str) -> str:
+        """在 io_lock 保护下关闭 stdin（pipe 关写端 / pty 写 EOT）。"""
+        if mode == "pty":
+            master_fd = rec.get("master_fd")
+            if master_fd is None:
+                return (f"(后台任务 {self.task_id} 无 PTY 句柄，进程可能已结束)")
+            # Windows ConPTY 的 EOF 是 Ctrl+Z（\x1a）；POSIX PTY 是 Ctrl+D（\x04）
+            eof_byte = b"\x1a" if os.name == "nt" else b"\x04"
+            try:
+                await asyncio.wait_for(
+                    _write_pty_all(master_fd, eof_byte),
+                    timeout=self._STDIN_CLOSE_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                return (f"(向后台任务 {self.task_id} 的 PTY 写入 EOT 超时"
+                        f"（{self._STDIN_CLOSE_TIMEOUT} 秒），进程可能已无响应；"
+                        f"可用 op=kill 终止)")
+            except OSError as exc:
+                return (f"(向后台任务 {self.task_id} 的 PTY 写入 EOT 失败: {exc})")
+            rec["stdin_closed"] = True
+            return (f"(已向后台任务 {self.task_id} 的 PTY 发送 EOT（Ctrl+D），"
+                    f"依赖 EOF 的程序可正常读到输入结束；后续 stdin / keys 写入"
+                    f"会提示 stdin 已关闭，需要继续交互请重新启动任务)")
+
+        if mode != "pipe":
+            return f"(后台任务 {self.task_id} 写入模式异常: {mode})"
+
+        stdin = rec.get("stdin_writer")
+        if stdin is None:
+            return (f"(后台任务 {self.task_id} 无 stdin 管道（可能已关闭或进程已结束）)")
+        try:
+            stdin.close()
+            wait_closed = getattr(stdin, "wait_closed", None)
+            if wait_closed is not None:
+                await asyncio.wait_for(
+                    wait_closed(), timeout=self._STDIN_CLOSE_TIMEOUT)
+        except asyncio.TimeoutError:
+            # 写端已 close，只是底层关闭握手没在时限内完成；保留句柄便于排查，
+            # 但明确告知结果，避免模型反复重试。
+            rec["stdin_closed"] = True
+            rec["stdin_writer"] = None
+            return (f"(已关闭后台任务 {self.task_id} 的 stdin 写端，但等待关闭"
+                    f"完成超时（{self._STDIN_CLOSE_TIMEOUT} 秒）；子进程通常已"
+                    f"读到 EOF，可用 op=wait 确认状态)")
+        except (OSError, RuntimeError, ValueError) as exc:
+            return (f"(关闭后台任务 {self.task_id} 的 stdin 失败: {exc})")
+        rec["stdin_closed"] = True
+        rec["stdin_writer"] = None
+        return (f"(已关闭后台任务 {self.task_id} 的 stdin（写端已关闭，子进程将"
+                f"读到 EOF）；依赖输入结束才输出 / 退出的命令现在可以正常完成，"
+                f"用 op=wait 取最终结果)")
 
     # ── op=keys ──────────────────────────────────────────
 
@@ -1271,6 +1455,13 @@ class BashOptFunc(Func):
 
         这样同一个 ``op=keys`` 既能操作 GUI 程序（游戏 / GUI 应用），
         也能操作纯命令行程序（编译 / 交互式 shell），无需模型先判断形态。
+
+        注意：按键事件「到达窗口」不等于「目标控件执行了对应动作」——组合键
+        是否产生效果取决于目标程序（实测部分 WinForms TextBox 收到了
+        Ctrl+A 的 keydown/keyup，但没有执行全选）。需要确定生效的文本操作
+        优先用 ``type`` / ``element``，或注入后用 screenshot / diff 复核；
+        终端通道下 ``ctrl+c`` 这类控制字符只有在 PTY 中才会变成信号，管道
+        stdin 只是普通字节（见 :meth:`_terminal_key_note`）。
         """
         if self.key is None:
             return "(keys 操作需要 key 参数指定按键，如 key='up' / key='ctrl_c')"
@@ -1375,7 +1566,10 @@ class BashOptFunc(Func):
             "channel": "gui",
             "hint": ("检测到目标进程有 GUI 窗口，按键已作为窗口级键盘消息注入该窗口；"
                      "可用 op=screenshot 截图后 read_image 核对界面变化"
-                     "（纯 GUI 按键可直接用 op=key）"),
+                     "（纯 GUI 按键可直接用 op=key）。注意：事件送达不等于目标控件"
+                     "执行了对应动作（如部分 TextBox 收到 Ctrl+A 但不全选），"
+                     "组合键效果需用界面变化复核；确定生效的文本操作优先用 "
+                     "type / element"),
         }
         payload.update(result.to_dict())
         return json.dumps(payload, ensure_ascii=False)
@@ -1431,9 +1625,15 @@ class BashOptFunc(Func):
                     "控制字符不会被解释为信号或快捷键（例如 ctrl+c 不会中断进程，"
                     "需要结束任务请用 op=kill）")
         if mode == "pty":
-            # PTY 子进程已建立控制终端（见 bash._run_pty 的 setsid +
-            # TIOCSCTTY），正常情况下 ctrl+c 会变成 SIGINT；但程序可能自行
-            # 忽略 / 接管该信号，仍给出可执行的兜底提示。
+            if os.name == "nt":
+                # 平台限制（实测）：ConPTY 下写入 \x03 不会让运行中的进程收到
+                # CTRL_C_EVENT（GenerateConsoleCtrlEvent 对伪控制台进程组也只有
+                # CTRL_BREAK 有效），因此必须提示用 kill 终止。
+                return ("；提示：Windows ConPTY 下控制字符不会变成控制台事件"
+                        "（ctrl+c 只取消当前输入行，不会中断运行中的进程，系统限制）"
+                        "——需要终止任务请用 op=kill")
+            # POSIX PTY：子进程已建立控制终端（setsid + TIOCSCTTY），正常情况下
+            # ctrl+c 会变成 SIGINT；程序可能自行忽略 / 接管该信号，仍给出兜底提示。
             return ("；提示：若目标进程没有响应（例如自行忽略 SIGINT），"
                     "可用 op=kill 终止")
         return ""
@@ -1448,6 +1648,33 @@ class BashOptFunc(Func):
 
     # ── op=screenshot ────────────────────────────────────
 
+    # ── 已结束任务的统一提示（screenshot / window / wait_window） ──
+
+    @staticmethod
+    def _ended_task_note(rec: dict) -> str | None:
+        """任务已结束时返回状态描述，否则返回 ``None``。
+
+        screenshot / window / wait_window 只对**运行中的进程**有意义：任务
+        结束后进程（及其窗口）已不存在，继续按 PID 枚举窗口只会得到
+        「没有可截图的可见窗口」，把「任务已结束」误报成「窗口不可见」，
+        模型据此反复 restore / 重试。这里统一给出可读状态。
+        """
+        if not rec.get("done"):
+            return None
+        status = str(rec.get("status") or "completed")
+        returncode = rec.get("returncode")
+        rc = "" if returncode is None else f"，returncode={returncode}"
+        return f"已结束（{status}{rc}），进程已退出，窗口不再存在"
+
+    def _ended_task_reply(self, rec: dict, action: str) -> str | None:
+        """任务已结束时生成统一错误回复（未结束返回 ``None``）。"""
+        note = self._ended_task_note(rec)
+        if note is None:
+            return None
+        return (f"(后台任务 {self.task_id} {note}，无法{action}；"
+                f"可用 op=wait 查看最终输出，需要{action}请用 bash "
+                f"background=True 重新启动程序并保持运行)")
+
     async def _op_screenshot(self, rec: dict) -> str:
         """把后台任务进程树（含其启动的 GUI 子进程）的窗口截图存为 PNG。
 
@@ -1461,6 +1688,12 @@ class BashOptFunc(Func):
         if not self.path or not str(self.path).strip():
             return ("(screenshot 操作需要 path 参数指定截图保存的文件路径，"
                     "如 path='shot.png' 或 path='/tmp/shot.png')")
+        # ★ 整屏截图不依赖任务窗口（任务结束后仍可截桌面），窗口截图才需要
+        #   进程存活；先给出「任务已结束」而不是让窗口枚举报「没有可见窗口」。
+        if not self._screen_requested():
+            ended = self._ended_task_reply(rec, "截图")
+            if ended:
+                return ended
         try:
             crop = self._resolve_crop()
         except CropError as exc:
@@ -1522,6 +1755,31 @@ class BashOptFunc(Func):
                 f"{box_label} {rect['width']}x{rect['height']}"
                 f"@({rect['x']},{rect['y']})（产物 {result.width}x{result.height} "
                 f"与它的差值来自窗口装饰 / DWM 黑边 / crop，二者不必相等）"
+            )
+            offset_x = result.window_x - rect["x"]
+            offset_y = result.window_y - rect["y"]
+            if result.width != rect["width"] or result.height != rect["height"]:
+                # ★ 坐标换算（真实用例：最大化窗口 2582x1390@(-11,-11) 截图
+                #   只有 2560x1368，原点 (0,0)）：截图像素原点 = 屏幕
+                #   (window_x, window_y)，与窗口外框左上角相差 (offset_x,
+                #   offset_y)。模型若直接拿 window_rect 的坐标 + 像素偏移，
+                #   会整体偏掉这几十像素；这里把换算公式写清楚。
+                notes.append(
+                    f"截图原点相对{box_label}左上角偏移 ({offset_x},{offset_y})"
+                    f"（DWM 不可见边框 / 窗口超出屏幕被裁剪 / crop）；"
+                    f"窗口内坐标 = 截图像素 + ({offset_x},{offset_y})，"
+                    f"输入 op 仍以截图像素左上角为原点"
+                )
+            if not self._screen_requested() and (
+                    rect["x"] < 0 or rect["y"] < 0
+                    or result.width < rect["width"]
+                    or result.height < rect["height"]):
+                notes.append("窗口部分超出屏幕时，截图只包含屏幕内可见部分")
+        if info.get("monitors_total", 0) > 1 and self._screen_requested():
+            notes.append(
+                f"当前共 {info['monitors_total']} 个显示器（本次为第 "
+                f"{info.get('monitor_index')} 个）；screen=true/'all' 截取整个"
+                f"虚拟桌面，screen=序号 只截单个显示器"
             )
         payload["hint"] = ("，".join(notes) +
                            "，可用 read_image 工具读取该文件查看画面")
@@ -2602,14 +2860,15 @@ class BashOptFunc(Func):
         described_all = (describe_windows(infos, limit=max(len(infos), 1))
                          if infos else [])
         described = described_all[:self._MAX_WINDOW_LIST]
+        selectable_total = sum(1 for item in described_all
+                               if item.get("selectable"))
         payload = {
             "task_id": self.task_id,
             "op": "windows",
             "pid": pid,
             "total": len(infos),
             "windows_total": len(infos),
-            "selectable_total": sum(1 for item in described_all
-                                    if item.get("selectable")),
+            "selectable_total": selectable_total,
             "windows": described,
         }
         if len(described_all) > len(described):
@@ -2638,10 +2897,32 @@ class BashOptFunc(Func):
                                "接收窗口）。client_area=false 表示该窗口没有可换算"
                                "的客户区，此时不能用 method='message' 投递鼠标坐标"
                                "（去掉 method 用默认的合成输入即可）")
+            if selectable_total == 0:
+                # ★ 启动竞态（真实用例：WinUI 画图启动瞬间只有一个隐藏的
+                #   GDI+ Hook 窗口，主窗口几秒后才可见）：此时 selectable_total
+                #   为 0，模型若直接截图 / 输入会连续失败；这里明确告诉它
+                #   「窗口存在但还不可操作」，并给出 wait_window / restore 下一步。
+                hidden = [
+                    (item.get("title") or item.get("class")
+                     or item.get("handle_hex"))
+                    for item in described_all[:5]
+                    if not item.get("selectable")
+                ]
+                payload["hint"] = payload["hint"] + (
+                    f"；注意：当前枚举到的 {len(infos)} 个窗口全部不可见 / 已最小化"
+                    f"（selectable_total=0），GUI 程序可能仍在初始化或窗口尚未显示——"
+                    f"可先 op=wait_window 等窗口可用，或对已存在的窗口执行 "
+                    f"window_action='restore' 后再截图 / 输入"
+                )
+                if hidden:
+                    payload["hidden_windows"] = hidden
             payload["summary"] = window_hint(infos)
         else:
             payload["hint"] = ("未找到可见窗口（纯命令行进程没有 GUI 窗口；"
-                               "窗口已最小化或被隐藏时也找不到）")
+                               "窗口已最小化或被隐藏时也找不到；GUI 程序若经 "
+                               "App Execution Alias 或其它进程（explorer 等）启动，"
+                               "窗口可能不属于本任务进程树，可改用整屏截图 "
+                               "screen=true 查看画面）")
         if payload.get("truncated"):
             payload["hint"] = (payload.get("hint", "") +
                                f"；窗口过多，清单仅返回前 {len(described)} 条"
@@ -2663,6 +2944,9 @@ class BashOptFunc(Func):
         （屏幕坐标），``resize`` / ``fit`` 用 ``width`` / ``height``。返回动作
         前后的窗口状态，便于确认结果。
         """
+        ended = self._ended_task_reply(rec, "控制窗口")
+        if ended:
+            return ended
         pid = rec.get("pid")
         if pid is None:
             return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
@@ -3108,13 +3392,15 @@ class BashOptFunc(Func):
         if crop is not None:
             scoped = [box for box in boxes if _box_in_crop(box, crop)]
         if query:
-            matched = await asyncio.to_thread(find_ocr_text, scoped, query)
+            matched, match_mode = await asyncio.to_thread(
+                find_ocr_text_ex, scoped, query)
         else:
-            matched = list(scoped)
+            matched, match_mode = list(scoped), "exact"
         items = [box.to_dict() for box in matched[:max_results]]
         payload: dict = {
             "mode": "text",
             "query": query,
+            "match_mode": match_mode,
             "recognized": recognized_total,
             "total": len(matched),
             "returned": len(items),
@@ -3131,6 +3417,11 @@ class BashOptFunc(Func):
             payload["recognized_texts"] = [
                 box.text for box in sample_source[:self._LOCATE_DIAGNOSTIC_TEXTS]
             ]
+        if items and match_mode == "fuzzy":
+            payload["note"] = (
+                "命中来自近似匹配：OCR 常见易混字符（l / I / 1、O / 0、S / 5 等）"
+                "折叠后比较（如把 Select AII 认成 Select All），坐标请先用 "
+                "op=screenshot / op=annotate 复核再点击")
         return payload
 
     @staticmethod
@@ -3649,6 +3940,9 @@ class BashOptFunc(Func):
         超时返回可读提示（附当前窗口清单），便于改用正确的选择器；若窗口
         已存在但一直不可见，会明确指出应先 restore。
         """
+        ended = self._ended_task_reply(rec, "等待窗口")
+        if ended:
+            return ended
         pid = rec.get("pid")
         if pid is None:
             return (f"(后台任务 {self.task_id} 尚无进程句柄（命令未就绪或已退出），"
@@ -3729,7 +4023,9 @@ class BashOptFunc(Func):
         return (f"(等待窗口超时（{timeout_desc}）：window 选择器 {selector!r} 没有等到"
                 f"可操作的匹配窗口{detail}{hidden_note}。当前窗口: {candidates}。"
                 f"可用 op=windows 查看完整清单、op=wait 确认进程状态；"
-                f"若进程是纯命令行程序，它不会有 GUI 窗口)")
+                f"若进程是纯命令行程序，它不会有 GUI 窗口；GUI 程序若经 App "
+                f"Execution Alias 或其它进程（explorer 等）启动，窗口可能不属于"
+                f"本任务进程树（可用整屏截图 screen=true 查看画面）)")
 
     async def _list_windows_quietly(self, pid: int) -> list:
         """枚举窗口（失败 / 超时返回空列表，供轮询使用）。"""
@@ -4163,6 +4459,10 @@ class BashOptFunc(Func):
             return (False,
                     f"(后台任务 {self.task_id} 尚未就绪（进程句柄未建立），"
                     f"请稍后重试)")
+        if rec.get("stdin_closed"):
+            return (False,
+                    f"(后台任务 {self.task_id} 的 stdin 已被 op=close_stdin 关闭，"
+                    f"无法再写入；需要继续交互请重新启动任务)")
         lock = rec.get("io_lock")
         if lock is not None:
             async with lock:

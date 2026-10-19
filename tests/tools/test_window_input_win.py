@@ -119,6 +119,50 @@ def test_uses_sendinput_when_already_foreground():
     assert result.window_title == "Game"
 
 
+def test_minimized_window_input_raises(monkeypatch):
+    """最小化窗口收不到输入：必须报错，而不是返回「注入成功」。
+
+    真实用例：``op=type`` 打到最小化窗口时，窗口矩形在屏幕外
+    （``-48000`` 一类占位值），合成输入不会生效，旧实现却返回 ok，
+    调用方只能靠截图才发现没有效果。
+    """
+    driver = FakeDriver(foreground=True)
+    backend = _backend(driver)
+    monkeypatch.setattr(win_module.winapi, "is_window", lambda h: True)
+    monkeypatch.setattr(win_module.winapi, "is_window_minimized", lambda h: True)
+    monkeypatch.setattr(win_module.winapi, "is_window_visible", lambda h: True)
+    with pytest.raises(InputError) as excinfo:
+        backend.send(1234, build_action("type", {"text": "abc"}))
+    assert "最小化" in str(excinfo.value)
+    assert "restore" in str(excinfo.value)
+    assert driver.events == []
+
+
+def test_hidden_window_input_raises(monkeypatch):
+    driver = FakeDriver(foreground=True)
+    backend = _backend(driver)
+    monkeypatch.setattr(win_module.winapi, "is_window", lambda h: True)
+    monkeypatch.setattr(win_module.winapi, "is_window_minimized", lambda h: False)
+    monkeypatch.setattr(win_module.winapi, "is_window_visible", lambda h: False)
+    with pytest.raises(InputError) as excinfo:
+        backend.send(1234, build_action("click", {}))
+    assert "不可见" in str(excinfo.value)
+    assert driver.events == []
+
+
+def test_input_target_check_failure_does_not_block(monkeypatch):
+    """校验 API 异常时保守放行（不因校验失败阻断正常输入）。"""
+    def _boom(_handle):
+        raise OSError("boom")
+
+    driver = FakeDriver(foreground=True)
+    backend = _backend(driver)
+    monkeypatch.setattr(win_module.winapi, "is_window", lambda h: True)
+    monkeypatch.setattr(win_module.winapi, "is_window_minimized", _boom)
+    result = backend.send(1234, build_action("click", {}))
+    assert result.detail["delivery"] == "sendinput"
+
+
 def test_auto_falls_back_to_message_without_foreground():
     driver = FakeDriver(foreground=False, activate_grants_foreground=False)
     result = _backend(driver).send(1234, build_action("click", {}))

@@ -16,6 +16,7 @@ from src.tools._screenshot.ocr import (
     OcrError,
     TextBox,
     find_text,
+    find_text_ex,
     parse_tesseract_tsv,
     parse_windows_ocr_json,
     recognize,
@@ -52,6 +53,24 @@ def test_find_text_phrase_across_words():
     assert merged.left == 0 and merged.top == 0
     assert merged.width == 85  # 0..85
     assert "保存" in merged.text and "文件" in merged.text
+
+
+def test_find_text_cjk_phrase_with_single_char_boxes():
+    """Windows 系统 OCR 把中文按单字拆框：query 不带空格也必须命中。"""
+    boxes = [_box("文", 10, 5, 14, 14), _box("件", 24, 5, 14, 14),
+             _box("编", 10, 30, 14, 14)]
+    result = find_text(boxes, "文件")
+    assert result
+    merged = result[0]
+    assert merged.left == 10 and merged.top == 5
+    assert merged.width == 28  # 10..38
+
+
+def test_find_text_compact_phrase_without_spaces():
+    """无空格 query 也能跨词命中（英文 / 数字紧邻时）。"""
+    boxes = [_box("OCR", 0, 0, 30, 10), _box("123", 34, 0, 30, 10)]
+    result = find_text(boxes, "OCR123")
+    assert result and result[0].width == 64
 
 
 def test_find_text_suppresses_nested_matches():
@@ -196,3 +215,54 @@ def test_phrase_union_ignores_unknown_confidence():
     unknown = [TextBox("保存", 0, 0, 10, 10), TextBox("文件", 12, 0, 10, 10)]
     hits = find_text(unknown, "保存 文件")
     assert hits and hits[0].confidence is None
+
+
+# ── 近似匹配（OCR 易混字符） ────────────────────────────
+
+def test_find_text_ex_reports_exact_match():
+    boxes = [_box("Apply", 0, 0, 50, 12)]
+    matches, mode = find_text_ex(boxes, "Apply")
+    assert mode == "exact"
+    assert matches and matches[0].text == "Apply"
+
+
+def test_find_text_ex_falls_back_to_confusable_fold():
+    """Windows OCR 把 ``All`` 认成 ``AII`` 时 query 仍应命中（近似匹配）。
+
+    真实用例：右键菜单的 ``Select All`` 被识别成 ``Select`` + ``AII``，
+    精确匹配（含跨词短语）全部落空，用户侧表现为「画面里明明有这行字，
+    locate query 却查不到」。
+    """
+    boxes = [_box("Select", 0, 0, 60, 14), _box("AII", 65, 0, 30, 14)]
+    matches, mode = find_text_ex(boxes, "Select All")
+    assert mode == "fuzzy"
+    assert len(matches) == 1
+    assert matches[0].left == 0 and matches[0].width == 95
+
+
+def test_find_text_ex_fuzzy_matches_single_box():
+    """单框内的易混字符（``1`` 被识别成 ``l`` 的逆过程）也能命中。"""
+    boxes = [_box("P1ay", 10, 5, 40, 14)]
+    matches, mode = find_text_ex(boxes, "Play")
+    assert mode == "fuzzy"
+    assert matches and matches[0].left == 10
+
+
+def test_find_text_ex_skips_fuzzy_for_single_character():
+    """单字符查询不做近似匹配（折叠后几乎无敌，误匹配概率过高）。"""
+    boxes = [_box("0", 0, 0, 8, 12)]
+    matches, mode = find_text_ex(boxes, "o")
+    assert matches == [] and mode == "exact"
+
+
+def test_find_text_ex_keeps_case_sensitive_exact_only():
+    """大小写敏感时不做易混字符折叠（折叠会转小写，语义冲突）。"""
+    boxes = [_box("AII", 0, 0, 30, 14)]
+    matches, mode = find_text_ex(boxes, "All", case_sensitive=True)
+    assert matches == [] and mode == "exact"
+
+
+def test_find_text_wrapper_still_returns_matches_only():
+    """``find_text`` 保持旧签名（只返回匹配列表），近似命中也返回。"""
+    boxes = [_box("Select", 0, 0, 60, 14), _box("AII", 65, 0, 30, 14)]
+    assert len(find_text(boxes, "Select All")) == 1

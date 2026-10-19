@@ -173,7 +173,51 @@ def find_text(boxes: Sequence[TextBox], needle: str, *,
     """按文本查找文本框（支持跨词短语：同一行相邻词合并后匹配）。
 
     先做「单框包含」匹配；没有命中时按行把相邻词拼成短语再匹配（OCR 常把
-    一句话拆成多个词，如把 ``保存 文件`` 拆成两框）。
+    一句话拆成多个词，如把 ``保存 文件`` 拆成两框）。仍无命中时按
+    :func:`find_text_ex` 的近似匹配（易混字符归一化）再试一次。
+    """
+    matches, _mode = find_text_ex(boxes, needle, case_sensitive=case_sensitive)
+    return matches
+
+
+#: OCR 常见易混字符（字形相近）：Windows 系统 OCR 常把 ``l`` 认成 ``I`` /
+#: ``1``、``O`` 认成 ``0``、``S`` 认成 ``5`` 等。精确匹配失败时把查询与
+#: 候选文本都折叠到规范字符再比较，避免「画面里明明有 ``Select All``，
+#: query 却查不到」这类假阴性（实测菜单项被识别成 ``Select AII``）。
+_CONFUSABLE_FOLD = {
+    "i": "l", "1": "l", "|": "l", "!": "l",
+    "0": "o",
+    "5": "s",
+    "8": "b",
+    "2": "z",
+    "6": "g",
+    "9": "q",
+}
+
+
+def _fold_confusables(text: str) -> str:
+    """把易混字符折叠为规范字符（同时转小写，仅用于近似匹配）。"""
+    return "".join(_CONFUSABLE_FOLD.get(ch, ch) for ch in text.lower())
+
+
+def find_text_ex(boxes: Sequence[TextBox], needle: str, *,
+                 case_sensitive: bool = False) -> tuple[list[TextBox], str]:
+    """按文本查找文本框，返回 ``(匹配列表, 匹配方式)``。
+
+    匹配方式 ``"exact"`` 表示原样（含跨词短语）命中；``"fuzzy"`` 表示精确
+    匹配失败后**折叠易混字符**才命中——调用方应把它当成「近似定位」，用
+    截图 / 标注复核坐标后再点击。
+
+    近似匹配要求查询至少 2 个字符（单字符折叠后几乎无敌，误匹配概率过高），
+    且只在 ``case_sensitive=False`` 时启用（折叠会转小写，与大小写敏感冲突）。
+
+    Args:
+        boxes: OCR 文本框列表。
+        needle: 要查找的文字（可含空格，按跨词短语匹配）。
+        case_sensitive: 是否区分大小写（近似匹配始终不区分）。
+
+    Raises:
+        OcrError: 查询为空。
     """
     query = str(needle or "")
     if not query.strip():
@@ -185,8 +229,24 @@ def find_text(boxes: Sequence[TextBox], needle: str, *,
         if target in haystack:
             direct.append(box)
     if direct:
-        return direct
-    return _suppress_contained(_phrase_matches(boxes, target, case_sensitive))
+        return direct, "exact"
+    phrase = _suppress_contained(_phrase_matches(boxes, target, case_sensitive))
+    if phrase:
+        return phrase, "exact"
+    if case_sensitive:
+        return [], "exact"
+    folded_target = _fold_confusables(target)
+    if len(folded_target) < 2:
+        return [], "exact"
+    direct_fuzzy = [box for box in boxes
+                    if folded_target in _fold_confusables(box.text)]
+    if direct_fuzzy:
+        return direct_fuzzy, "fuzzy"
+    fuzzy_phrase = _suppress_contained(
+        _phrase_matches(boxes, folded_target, False, fold=True))
+    if fuzzy_phrase:
+        return fuzzy_phrase, "fuzzy"
+    return [], "exact"
 
 
 def _suppress_contained(boxes: Sequence[TextBox]) -> list[TextBox]:
@@ -206,22 +266,42 @@ def _contains(outer: TextBox, inner: TextBox) -> bool:
 
 
 def _phrase_matches(boxes: Sequence[TextBox], target: str,
-                    case_sensitive: bool) -> list[TextBox]:
-    """在同一行内把相邻词拼接，匹配跨词短语，返回合并后的包围盒。"""
+                    case_sensitive: bool, *, fold: bool = False) -> list[TextBox]:
+    """在同一行内把相邻词拼接，匹配跨词短语，返回合并后的包围盒。
+
+    拼接同时尝试「带空格」与「无空格」两种形式：英文 / 数字之间带空格
+    （``保存 文件``），中文则常被 OCR 按**单字**拆框（Windows 系统 OCR
+    会把「文件」拆成「文」「件」两个框），query 写 ``文件`` 时只有无空格
+    拼接才能命中；反之 query 写 ``保存 文件`` 时只有带空格拼接才命中。
+    两种形式任一命中即算匹配。
+
+    ``fold=True`` 时把拼接结果与目标文本都折叠易混字符（见
+    :func:`_fold_confusables`），供近似匹配使用（此时 ``target`` 应已是
+    折叠后的文本）。
+    """
     matches: list[TextBox] = []
     for line in _group_lines(boxes):
         ordered = sorted(line, key=lambda item: item.left)
         count = len(ordered)
         for start in range(count):
-            buffer = ""
+            spaced = ""
+            compact = ""
             for end in range(start, count):
                 word = ordered[end].text
-                buffer = (buffer + word) if not buffer else (buffer + " " + word)
-                haystack = buffer if case_sensitive else buffer.casefold()
-                if target in haystack:
-                    matches.append(_union(ordered[start:end + 1]))
+                spaced = word if not spaced else spaced + " " + word
+                compact += word
+                matched = False
+                for candidate in (spaced, compact):
+                    haystack = candidate if case_sensitive else candidate.casefold()
+                    if fold:
+                        haystack = _fold_confusables(haystack)
+                    if target in haystack:
+                        matches.append(_union(ordered[start:end + 1]))
+                        matched = True
+                        break
+                if matched:
                     break
-                if len(haystack) > len(target) + 40:
+                if max(len(spaced), len(compact)) > len(target) + 40:
                     break
     return matches
 
@@ -607,6 +687,7 @@ __all__ = [
     "available_backends",
     "backend_hint",
     "find_text",
+    "find_text_ex",
     "parse_tesseract_tsv",
     "parse_windows_ocr_json",
     "recognize",

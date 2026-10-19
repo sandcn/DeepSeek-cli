@@ -33,6 +33,7 @@ from .context import StreamContext
 from .registry import resolved_stream_handler
 from ...core.constants import YELLOW, RESET
 from ...core.events.publish import publish_output
+from ..._unicode_text import sanitize_surrogates, sanitize_surrogates_deep
 
 _logger = logging.getLogger(__name__)
 
@@ -469,9 +470,17 @@ class AsyncStreamPipeline:
             ctx.usage_accumulated = True
 
     def _build_result(self, ctx: StreamContext) -> tuple:
-        """构建最终返回结果（与同步版逻辑一致）。"""
-        reasoning = ctx.reasoning_full
-        content = ctx.content_full
+        """构建最终返回结果（与同步版逻辑一致）。
+
+        ★ 修复（2026-10）：结果文本可能含**孤立 UTF-16 代理项**（模型服务端
+        把 emoji 的代理对拆到两帧、上游损坏转义等）——该码点无法以 UTF-8
+        编码，会让上层消息追加、会话自动保存、下一次请求序列化抛
+        ``UnicodeEncodeError: surrogates not allowed``。返回前统一清洗：
+        被拆到两帧的代理对在拼接后的全文里已相邻 → 还原为完整 emoji，其余
+        孤立代理项替换为 U+FFFD。
+        """
+        reasoning = sanitize_surrogates(ctx.reasoning_full)
+        content = sanitize_surrogates(ctx.content_full)
 
         ctx.usage["tool_parse_elapsed"] = ctx.tracker.elapsed
 
@@ -498,6 +507,9 @@ class AsyncStreamPipeline:
             return reasoning, content, ctx.usage, []
 
         tool_calls, failed_ids = convert_tool_calls_map_with_status(ctx.tool_calls_map)
+        # 工具调用参数同样可能夹带孤立代理项 → 递归清洗（进入消息列表/请求体
+        # 前必须可 UTF-8 编码）。
+        tool_calls = sanitize_surrogates_deep(tool_calls)
         if failed_ids:
             ctx.usage["_parse_failed_ids"] = failed_ids
         if not ctx.silent:
@@ -521,7 +533,20 @@ class AsyncStreamPipeline:
         # 且均先于后续 PhaseDoneEvent 发布——命令队列优先级（REASONING/CONTENT
         # 与 PhaseDone 同级 0）+ seq 保序保证渲染线程先渲染内容命令再渲染完成命令。
         self._reasoning_handler.flush(ctx.label)
+        # ★ 修复（2026-10）：悬挂的孤立高代理项（低代理项始终未到达，如上游
+        #   截断）以 U+FFFD 收尾——必须与对应通道的缓冲文本同序、且早于
+        #   PhaseDoneEvent 发布，否则渲染侧永远收不到这段残留。走 handler 的
+        #   buffer/flush 而不是直接 publish_event：插件替换/禁用该通道时同样
+        #   生效（空处理器会静默丢弃）。
+        pending_reasoning = ctx.flush_display_surrogate("reasoning")
+        if pending_reasoning:
+            self._reasoning_handler.buffer(pending_reasoning, ctx.label)
+            self._reasoning_handler.flush(ctx.label)
         self._content_handler.flush(ctx.label)
+        pending_content = ctx.flush_display_surrogate("content")
+        if pending_content:
+            self._content_handler.buffer(pending_content, ctx.label)
+            self._content_handler.flush(ctx.label)
 
         # ⏳ 单次 await asyncio.sleep(0) 仅为事件循环让出（保留 CancelledError
         # 保护）；事件顺序由队列优先级 + seq 保证——flush 为同步 publish

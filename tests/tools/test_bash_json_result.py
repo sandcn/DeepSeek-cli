@@ -106,10 +106,13 @@ async def test_dangerous_command_rejected_as_json():
 
 
 def test_schema_has_no_cwd_param():
-    """bash 工具不暴露 cwd 参数：命令始终在进程当前工作目录执行。"""
+    """bash 工具不暴露 cwd 参数：命令始终在进程当前工作目录执行。
+
+    ``pty`` 是 2026-10-20 新增的可选参数（伪终端执行），不属于 cwd 类参数。
+    """
     props = BashFunc.to_tool_schema()["function"]["parameters"]["properties"]
     assert "cwd" not in props
-    assert set(props) == {"command", "background"}
+    assert set(props) == {"command", "background", "pty"}
 
 
 def test_cwd_argument_ignored_by_from_args():

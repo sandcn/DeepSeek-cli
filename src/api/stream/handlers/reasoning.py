@@ -41,7 +41,10 @@ class ReasoningHandler(StreamChunkHandler):
         # - ChatUIConsumer 消费此事件驱动终端 Markdown 渲染
         # 带文本累积节流：短 chunk 合并，减少 EventBus 压力
         # 注意：即使 silent=True 也要发布到 EventBus，确保流式推理内容不丢失
-        self.buffer(rc, ctx.label)
+        # ★ 修复（2026-10）：渲染增量清洗同 content——跨帧代理对先挂起高代理
+        #   项待下一帧拼接，孤立代理项以 U+FFFD 呈现（reasoning_full 仍累积
+        #   原文，结果构建时统一清洗）。
+        self.buffer(ctx.prepare_display_delta(rc, "reasoning"), ctx.label)
 
         ctx.speed_chunk_count += 1
 

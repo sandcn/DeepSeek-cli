@@ -153,7 +153,8 @@ class WindowsBackend:
         if not candidates:
             raise NoWindowError(
                 f"进程 {pid} 及其子进程没有可截图的可见窗口（纯命令行进程无 GUI 窗口；"
-                f"窗口已最小化/被隐藏时也找不到）"
+                f"窗口已最小化/被隐藏时也找不到；GUI 程序若经 App Execution Alias "
+                f"或其它进程（explorer 等）启动，窗口可能不属于本任务进程树）"
             )
         target = pick_window(candidates, window)
         require_capturable(target, window)
@@ -481,7 +482,8 @@ def control_window(pid: int, request: WindowControlRequest) -> dict:
     if not infos:
         raise NoWindowError(
             f"进程 {pid} 及其子进程没有可操作窗口（纯命令行进程无 GUI 窗口；"
-            f"窗口已最小化/被隐藏时也找不到）"
+            f"窗口已最小化/被隐藏时也找不到；GUI 程序若经 App Execution Alias "
+            f"或其它进程（explorer 等）启动，窗口可能不属于本任务进程树）"
         )
     target = pick_window(infos, request.selector)
     action = request.action

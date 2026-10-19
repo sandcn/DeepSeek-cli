@@ -245,8 +245,67 @@ def _ambiguous_local_decode(
     return None
 
 
+#: 判定「UTF-16 被按单字节 / UTF-8 解码」的 NUL 占比阈值
+#: （NUL 个数 / 非 NUL 字符数；正常 UTF-8 文本远低于该值）
+_NUL_REPAIR_RATIO = 1 / 3
+
+
+def _repair_wide_text(text: str) -> str:
+    """修复「UTF-16 输出被上游按单字节 / UTF-8 解码」造成的 NUL 夹字符。
+
+    背景（实测：Windows 上 ``wsl.exe -l -v``）：``wsl.exe`` 按 UTF-16LE 输出，
+    PowerShell 5.1 的 native 管道按 **UTF-8** 解码它——每个 ASCII 字符后面
+    多出一个 ``\\x00``，UTF-16 BOM（``FF FE``）变成两个 ``U+FFFD``。工具拿到
+    的已经是这段文本（原始字节不可逆），但 NUL 的**位置规律**完整保留了原文：
+    去掉 NUL 后就是正确内容。
+
+    触发条件（保守，避免误伤正常文本）：
+
+      - 文本含 ``\\x00``，且 NUL 个数 >= 非 NUL 字符数的 1/3——真 UTF-8 文本
+        几乎不含 NUL；达到该比例只可能是宽字符流被按单字节解码；
+      - 去掉 NUL 后仍有内容（全是 NUL 的输入原样返回）。
+
+    去掉 NUL 后顺带剥离开头连续的 ``U+FFFD``（被误读的 UTF-16 BOM）。
+
+    Args:
+        text: 已解码文本。
+
+    Returns:
+        修复后的文本；未命中条件时原样返回。
+    """
+    if not text or "\x00" not in text:
+        return text
+    stripped = text.replace("\x00", "")
+    if not stripped:
+        return text
+    if len(stripped) < 4:
+        # 极短文本（1~3 个字符夹 NUL）无法可靠区分「宽字符流」与「二进制片段」，
+        # 保持原样（宽字符流的最小样本远大于此，如 wsl -l -v 的整行）
+        return text
+    if len(text) - len(stripped) < max(1, len(stripped) * _NUL_REPAIR_RATIO):
+        return text
+    return stripped.lstrip("\ufffd")
+
+
 def decode_output(raw: bytes, encodings: "tuple[str, ...] | list[str] | None" = None) -> str:
-    """把子进程输出字节解码为文本（编码自适应，绝不抛解码异常）。
+    """把子进程输出字节解码为文本（编码自适应 + 宽字符误读修复）。
+
+    在 :func:`_decode_output` 的自适应解码之上，再修复一类**上游**损坏：
+    UTF-16 输出被按单字节 / UTF-8 解码（Windows 上 ``wsl.exe`` 等），
+    详见 :func:`_repair_wide_text`。
+
+    Args:
+        raw: 子进程输出字节（可含多行 / 不完整行）。
+        encodings: 候选编码（默认 :func:`default_output_encodings`；测试可注入）。
+
+    Returns:
+        解码后的文本（永不抛 ``UnicodeDecodeError``）。
+    """
+    return _repair_wide_text(_decode_output(raw, encodings))
+
+
+def _decode_output(raw: bytes, encodings: "tuple[str, ...] | list[str] | None" = None) -> str:
+    """按编码自适应把字节解码为文本（:func:`decode_output` 的内核）。
 
     解码顺序：
       1. 明确 BOM（UTF-32 → UTF-8 → UTF-16；UTF-32LE 的 BOM 前两字节与

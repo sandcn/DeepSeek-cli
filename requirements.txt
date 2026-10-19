@@ -23,7 +23,11 @@ beautifulsoup4==4.14.3
 chardet==4.0.0
 aiofiles==25.1.0
 qrcode==8.2
-Pillow==8.4.0
+# Pillow 12 起弃用 Python 3.9、13 起弃用 3.10：3.11+ 锁最新 13.0.0，
+# 3.9/3.10 锁 9.5.0（仍保留 8.x 的 Image.LANCZOS 等旧 API；代码按
+# 8.4–13 兼容写法实现，见 src/api/image_upload.py / src/tools/read_image.py）
+Pillow==13.0.0; python_version >= "3.11"
+Pillow==9.5.0; python_version < "3.11"
 typing-extensions==4.15.0; python_version < "3.11"
 
 # ── 可选加速（缺失时自动回退，见 pyproject optional-dependencies）──

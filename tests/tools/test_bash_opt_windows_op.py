@@ -398,3 +398,52 @@ def test_resolve_grid_variants():
     assert BashOptFunc(task_id="bg-1", op="screenshot", grid=False)._resolve_grid() is None
     assert BashOptFunc(task_id="bg-1", op="screenshot", grid=True)._resolve_grid() == 0
     assert BashOptFunc(task_id="bg-1", op="screenshot", grid=-5)._resolve_grid() == 0
+
+
+# ── 启动竞态：窗口存在但全部不可见 / 最小化 ─────────────
+
+async def test_windows_op_all_hidden_suggests_wait_window(monkeypatch):
+    """WinUI 程序启动瞬间只有隐藏窗口时，hint 必须指向 wait_window / restore。
+
+    实测（2026-10-20）：mspaint 启动后第一次 op=windows 只枚举到一个隐藏的
+    1x1 ``GDI+ Hook Window Class``，selectable_total=0；模型若直接截图 / 输入
+    会连续失败。hint 应明确「窗口存在但还不可操作」。
+    """
+    infos = [
+        WindowInfo(handle=0x10, pid=99, title="",
+                   class_name="GDI+ Hook Window Class",
+                   width=1, height=1, order=0, main=True, visible=False),
+        WindowInfo(handle=0x11, pid=99, title="后台窗口", class_name="MSPaintApp",
+                   width=100, height=100, order=1, visible=True, minimized=True),
+    ]
+    monkeypatch.setattr(bash_opt_module, "list_process_windows", lambda pid: infos)
+    func = BashOptFunc(task_id="bg-1", op="windows")
+    func.set_agent(_FakeAgent({"bg-1": _record(pid=99)}))
+
+    payload = json.loads(await func.execute())
+    assert payload["total"] == 2
+    assert payload["selectable_total"] == 0
+    assert "wait_window" in payload["hint"]
+    assert "restore" in payload["hint"]
+    assert "不可见" in payload["hint"]
+    assert payload["hidden_windows"]
+
+
+async def test_windows_op_hidden_hint_absent_when_selectable_window_exists(monkeypatch):
+    """有可操作窗口时不追加「全部隐藏」提示（避免误导）。"""
+    infos = [
+        WindowInfo(handle=0x10, pid=99, title="主窗口", class_name="MspaintApp",
+                   width=800, height=600, order=0, main=True, visible=True),
+        WindowInfo(handle=0x11, pid=99, title="",
+                   class_name="GDI+ Hook Window Class",
+                   width=1, height=1, order=1, visible=False),
+    ]
+    monkeypatch.setattr(bash_opt_module, "list_process_windows", lambda pid: infos)
+    func = BashOptFunc(task_id="bg-1", op="windows")
+    func.set_agent(_FakeAgent({"bg-1": _record(pid=99)}))
+
+    payload = json.loads(await func.execute())
+    assert payload["selectable_total"] == 1
+    assert "全部不可见" not in payload["hint"]
+    assert "hidden_windows" not in payload
+

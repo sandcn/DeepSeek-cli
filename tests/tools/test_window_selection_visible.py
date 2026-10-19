@@ -31,6 +31,7 @@ from src.tools._screenshot.windows import (
     WindowInfo,
     describe_windows,
     filter_windows,
+    is_auxiliary_window,
     is_selectable,
     main_window,
     mark_main,
@@ -102,6 +103,29 @@ def test_main_window_still_works_when_all_hidden():
     """全部窗口都不可见时仍要选出主窗口（不抛异常，退化为旧排序）。"""
     assert main_window([_win(1, title="a", visible=False),
                         _win(2, title="b", visible=False)]).handle == 1
+
+
+def test_main_window_skips_tk_auxiliary_monitor_window():
+    """Tk 的 TtkMonitorWindow 不能被当作主窗口（restore 误显示辅助窗口的根因）。
+
+    实机复现：主窗口最小化后 ``window_action='restore'`` 选中了隐藏的
+    ``TtkMonitorWindow``（1920x983），把它显示出来遮挡屏幕，主窗口仍最小化。
+    """
+    main = _win(0x1001, title="Probe B", class_name="TkTopLevel",
+                width=564, height=299, minimized=True)
+    monitor = _win(0x1002, title="TtkMonitorWindow",
+                   class_name="TtkMonitorClass", width=1920, height=983,
+                   visible=False)
+    assert is_auxiliary_window(monitor)
+    assert not is_auxiliary_window(main)
+    # 主窗口最小化（不可选）时，仍应选主窗口而不是隐藏的辅助窗口
+    assert main_window([main, monitor]).handle == 0x1001
+    # 辅助窗口已可见 / 面积更大时也不能抢走 main
+    assert main_window([main, _win(0x1003, title="TtkMonitorWindow",
+                                   class_name="TtkMonitorClass",
+                                   width=1920, height=983)]).handle == 0x1001
+    # 辅助窗口是唯一选择时仍能返回（退化，不抛异常）
+    assert main_window([monitor]).handle == 0x1002
 
 
 # ── #N：只在可操作窗口中排序 ─────────────────────────────

@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import re
 
+from ._unicode_text import sanitize_surrogates
+
 #: 全量 ANSI 转义序列正则（ECMA-48 CSI + OSC + 双字符转义）。
 ANSI_RE = re.compile(
     r"\x1b\[[\x20-\x3F]*[@-~]"
@@ -68,9 +70,11 @@ def sanitize_paste(text: str, multiline: bool = True) -> str:
 
     Returns:
         清洗后的文本：ANSI 转义整段剥离、``\\r`` 删除、控制字节删除；
-        制表符 ``\\t`` 保留（不产生终端控制效果）。
+        制表符 ``\\t`` 保留（不产生终端控制效果）；孤立 UTF-16 代理项替换为
+        U+FFFD（该码点无法以 UTF-8 编码，进入输入缓冲后会让会话保存 /
+        下一次请求序列化抛 ``UnicodeEncodeError``）。
     """
-    cleaned = strip_ansi(text).replace("\r", "")
+    cleaned = sanitize_surrogates(strip_ansi(text).replace("\r", ""))
     if not multiline:
         cleaned = cleaned.replace("\n", "")
         return cleaned.translate(_PASTE_SINGLE_LINE_TRANSLATION)

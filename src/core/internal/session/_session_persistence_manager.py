@@ -19,6 +19,8 @@ import json
 import logging
 import threading
 
+from ...._unicode_text import sanitize_surrogates_deep
+
 _logger = logging.getLogger(__name__)
 
 _ROLE_KEY = "role"
@@ -244,6 +246,11 @@ class SessionPersistenceManager:
         data = self._persistence.load_session(session_id)
         if data is None:
             return None
+
+        # ★ 修复（2026-10）：旧会话文件可能含孤立代理项（模型流拆开 emoji
+        #   UTF-16 代理对、旧版上游损坏转义等）——读入即清洗，避免污染运行期
+        #   消息列表（后续保存 / 请求序列化再次触发 UnicodeEncodeError）。
+        data = sanitize_surrogates_deep(data)
 
         loaded_msgs = data.get("messages", [])
         log_events = data.get("session_log") or []

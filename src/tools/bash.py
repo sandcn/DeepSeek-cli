@@ -14,6 +14,7 @@ import time
 import uuid
 
 from .base import Func, print_to_terminal
+from . import _conpty
 from ._bash_support import (
     _has_dangerous_command,
     _INTERRUPT_CHECK_INTERVAL,
@@ -58,6 +59,10 @@ try:
     )
 except Exception:  # pragma: no cover - 极端环境下探测失败按不可用处理
     _HAS_PTY = False
+
+#: Windows 伪终端（ConPTY）可用性：Windows 10 1809+ 提供 ``CreatePseudoConsole``。
+#: ``pty=true`` 时 Windows 走 ConPTY（见 ``_conpty`` 模块），POSIX 走 ``pty.openpty``。
+_HAS_CONPTY = _conpty.is_available()
 
 
 # ── 按「启动本程序的交互 shell」选择解释器 ──────────────
@@ -150,6 +155,177 @@ def _find_shell_executable(shell: str) -> str | None:
     return None
 
 
+def _is_windows_powershell_51(executable: str) -> bool:
+    """该 PowerShell 可执行文件是否为 Windows PowerShell 5.1（``powershell.exe``）。
+
+    ``pwsh``（PowerShell 6+）原生支持 ``&&`` / ``||`` 链式运算符；Windows
+    自带的 ``powershell.exe``（5.1）不支持，需要改写（见
+    :func:`_rewrite_chain_operators`）。
+    """
+    name = _shell_basename(executable or "")
+    return name == "powershell"
+
+
+def _line_start(text: str) -> bool:
+    """``text`` 末尾是否位于行首（仅空白）——PowerShell here-string 的判定条件。"""
+    return not text.rsplit("\n", 1)[-1].strip()
+
+
+def _split_chain_operators(command: str):
+    """按**顶层** ``&&`` / ``||`` 切分命令，返回 ``(首段, [(运算符, 段), ...])``。
+
+    只认引号外（以及 here-string / 注释之外）的运算符：``"a && b"`` 里的
+    ``&&`` 属于字符串正文，``2>&1`` 里的 ``&`` 是重定向。没有顶层运算符时
+    返回 ``None``（命令保持原样）。
+
+    扫描规则（与 PowerShell 词法一致的最小子集）：
+
+      - 单引号字符串 ``'...'``（内部 ``''`` 为转义的单引号）；
+      - 双引号字符串 ``"..."``（内部反引号转义下一个字符、``""`` 为转义）；
+      - here-string ``@'...'@`` / ``@"..."@``（必须出现在行首）；
+      - 行注释 ``#`` 到行尾、块注释 ``<# ... #>``；
+      - 反引号 `` ` `` 转义下一个字符（引号外）。
+
+    Returns:
+        ``(first, [(op, segment), ...])`` 或 ``None``（无顶层运算符 / 残缺命令）。
+    """
+    if not command or ("&&" not in command and "||" not in command):
+        return None
+    segments: list[tuple[str | None, str]] = []
+    current: list[str] = []
+    pending: str | None = None
+    quote: str | None = None
+    index = 0
+    length = len(command)
+    while index < length:
+        char = command[index]
+        if quote is None:
+            if char == "@" and index + 1 < length and command[index + 1] in "'\"":
+                if _line_start("".join(current)):
+                    quote = "@" + command[index + 1]
+                    current.append(command[index:index + 2])
+                    index += 2
+                    continue
+            if char in "'\"":
+                quote = char
+                current.append(char)
+                index += 1
+                continue
+            if char == "#":
+                end = command.find("\n", index)
+                if end < 0:
+                    current.append(command[index:])
+                    break
+                current.append(command[index:end])
+                index = end
+                continue
+            if char == "<" and index + 1 < length and command[index + 1] == "#":
+                end = command.find("#>", index + 2)
+                if end < 0:
+                    current.append(command[index:])
+                    break
+                current.append(command[index:end + 2])
+                index = end + 2
+                continue
+            if command.startswith("&&", index) or command.startswith("||", index):
+                # 当前段结束；分隔符是**下一段**的运算符（pending）
+                segments.append((pending, "".join(current).strip()))
+                pending = command[index:index + 2]
+                current = []
+                index += 2
+                continue
+            if char == "`" and index + 1 < length:
+                current.append(command[index:index + 2])
+                index += 2
+                continue
+            current.append(char)
+            index += 1
+            continue
+        # ── 引号 / here-string 内部：只找结束标记 ──
+        if quote in ("'", '"'):
+            if char == quote:
+                if quote == "'" and index + 1 < length and command[index + 1] == "'":
+                    current.append("''")
+                    index += 2
+                    continue
+                quote = None
+                current.append(char)
+                index += 1
+                continue
+            if quote == '"' and char == "`" and index + 1 < length:
+                current.append(command[index:index + 2])
+                index += 2
+                continue
+            current.append(char)
+            index += 1
+            continue
+        if quote == "@'" and char == "'" and index + 1 < length and command[index + 1] == "@":
+            current.append("'@")
+            quote = None
+            index += 2
+            continue
+        if quote == '@"' and char == '"' and index + 1 < length and command[index + 1] == "@":
+            current.append('"@')
+            quote = None
+            index += 2
+            continue
+        current.append(char)
+        index += 1
+    segments.append((pending, "".join(current).strip()))
+    if len(segments) < 2:
+        return None
+    first = segments[0][1]
+    rest = [(op or "&&", segment) for op, segment in segments[1:]]
+    if not first or any(not segment for _op, segment in rest):
+        # 形如 `a &&` / `&& b` 的残缺命令：交给 PowerShell 自己报语法错误，
+        # 改写只会掩盖真实错误
+        return None
+    return first, rest
+
+
+def _rewrite_chain_operators(command: str) -> str:
+    """把 Windows PowerShell 5.1 不支持的 ``&&`` / ``||`` 改写为等价语句块。
+
+    语义（与 bash 一致）：``&&`` 前一条成功才执行后一条，``||`` 前一条失败
+    才执行后一条，且**逐段传递**结果——``a && b || c`` 在 a 成功、b 失败时
+    仍会执行 c（这一点用 ``if/else`` 表达会错，必须用中间状态变量）。
+
+    改写结果形如::
+
+        <a>
+        $__dsh_ok = $?
+        if ($__dsh_ok) {
+        <b>
+        $__dsh_ok = $?
+        }
+        if (-not $__dsh_ok) {
+        <c>
+        $__dsh_ok = $?
+        }
+
+    ``$?`` 是 PowerShell 自身的「上一条语句是否成功」——对 cmdlet 与原生命令
+    都有效（原生命令另有 ``$LASTEXITCODE``，包装脚本末尾仍按它退出）。
+
+    未命中顶层运算符时原样返回（不做任何改写）。
+    """
+    split = _split_chain_operators(command)
+    if split is None:
+        return command
+    first, rest = split
+    lines = [first, "$__dsh_ok = $?"]
+    for op, segment in rest:
+        condition = "$__dsh_ok" if op == "&&" else "-not $__dsh_ok"
+        lines.append(f"if ({condition}) {{")
+        lines.append(segment)
+        lines.append("$__dsh_ok = $?")
+        lines.append("}")
+    # 末段成功时清除 $LASTEXITCODE：bash 语义下 `a || b` 的退出码取 b（成功即 0），
+    # 而 PowerShell 的原生命令失败会留下 LASTEXITCODE（如 cmd /c exit 4），
+    # 不清除会让包装脚本以 4 退出；末段失败则保留，交由包装脚本按非零退出。
+    lines.append("if ($__dsh_ok) { $global:LASTEXITCODE = 0 }")
+    return "\n".join(lines)
+
+
 def _powershell_script(command: str) -> str:
     """把用户命令包装成 PowerShell 脚本。
 
@@ -174,11 +350,19 @@ def _powershell_script(command: str) -> str:
       文本格式把错误写 stderr（与真实控制台一致），不再序列化成 CLIXML
       （``-EncodedCommand`` 只有临时文件不可写时才会回退使用，届时可能出现
       CLIXML，属已知降级路径）；
-    - 输出编码与**本机代码页对齐**（:func:`_powershell_encoding_line`）：Windows
-      下设为系统 OEM 代码页——PowerShell 用它解码**原生命令**的 stdout/stderr，
-      而原生命令（Python 等）正按系统代码页写出；此前固定 UTF-8 会让
-      ``2>&1`` 合并进来的中文变成 U+FFFD（乱码）。非 Windows（pwsh）保持
-      UTF-8。工具侧 ``OutputLineDecoder`` 仍做本机代码页回退兜底；
+    - 编码统一为 **UTF-8（无 BOM）**（:func:`_powershell_encoding_line`），并
+      在包装脚本 finally 中恢复原编码：
+        * ``[Console]::OutputEncoding`` 决定 PowerShell **解码原生命令**
+          stdout/stderr（``2>&1`` / 管道）时用的编码；
+        * ``[Console]::InputEncoding`` 决定它为子进程 stdin 建 StreamWriter
+          时的编码——Windows PowerShell 5.1 在代码页 65001 下会先写 UTF-8
+          BOM（.NET Framework ``Process`` + ``StreamWriter.AutoFlush`` 行为），
+          设为无 BOM UTF-8 可消除 ``cmd | python`` 这类管道输入前的 BOM；
+        * ``$OutputEncoding`` 决定管道正文编码；
+        * ``PYTHONIOENCODING`` / ``PYTHONUTF8`` 让 Python 子进程也输出 UTF-8
+          （否则它按本机代码页输出，经 PowerShell 管道会被 UTF-8 错误解码）。
+      修复前跟随 OEM 代码页（cp936）：``git`` / ``node`` 等输出 UTF-8 的
+      原生命令经管道时被错误解码，中文提交信息显示为「绯荤粺…」乱码。
     - 命令前重置 ``$LASTEXITCODE``，命令后按原生命令退出码退出——保持
       bash 工具「returncode = 命令退出码」的契约；命令是纯 cmdlet 时
       用 ``$?`` 兜底（PowerShell 的 cmdlet 错误默认不设置 ``$LASTEXITCODE``，
@@ -188,41 +372,70 @@ def _powershell_script(command: str) -> str:
     return (
         "$ProgressPreference = 'SilentlyContinue'\n"
         "$ErrorActionPreference = 'Continue'\n"
+        "$__dsh_input_encoding = [Console]::InputEncoding\n"
+        "$__dsh_output_encoding = [Console]::OutputEncoding\n"
+        "try {\n"
         f"{_powershell_encoding_line()}\n"
         "$global:LASTEXITCODE = 0\n"
         f"{command}\n"
         "$ok = $?\n"
         "if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
         "if (-not $ok) { exit 1 }\n"
+        "} finally {\n"
+        "try { [Console]::InputEncoding = $__dsh_input_encoding } catch { }\n"
+        "try { [Console]::OutputEncoding = $__dsh_output_encoding } catch { }\n"
+        "}\n"
     )
 
 
 def _powershell_encoding_line() -> str:
-    """返回包装脚本里的「输出编码设置」语句。
+    """返回包装脚本里的「UTF-8（无 BOM）编码设置」语句。
 
-    ``[Console]::OutputEncoding`` 在 Windows PowerShell 里同时决定两件事：
+    三条编码各自的作用：
 
-      1. PowerShell **自己**写 stdout/stderr 时用的编码；
-      2. 把**原生命令**的 stdout/stderr 转成文本（``2>&1`` / ``2> file`` /
-         管道）时**解码**它们用的编码。
+      1. ``[Console]::OutputEncoding``：PowerShell **自己**写 stdout/stderr
+         的编码，以及把**原生命令**输出转成文本（``2>&1`` / 管道）时
+         **解码**它们的编码。统一 UTF-8 后，``git`` / ``node`` 等按 UTF-8
+         输出的原生命令不再被按 cp936 错误解码（用户侧「git 中文提交信息
+         乱码」的根因）；
+      2. ``[Console]::InputEncoding``：.NET Framework 的 ``Process`` 在
+         重定向子进程 stdin 时用 ``Console.InputEncoding`` 建 StreamWriter，
+         ``AutoFlush`` 会先写该编码的 BOM；Windows PowerShell 5.1 在代码页
+         65001 下因此给 ``cmd | python`` 的 stdin 加上 ``EF BB BF``。设为
+         **无 BOM** UTF-8 可消除该 BOM；
+      3. ``$OutputEncoding``：`|` 管道正文的编码，同样用无 BOM UTF-8。
 
-    原生命令按系统代码页写字节（简体中文 Windows 的 Python 输出 cp936），
-    因此这里必须跟随本机代码页，否则 ``2>&1`` 合并进来的中文会被当成 UTF-8
-    解码成 U+FFFD（用户侧「合并 stderr 后中文变乱码」）。
+    同时设置 ``PYTHONIOENCODING`` / ``PYTHONUTF8``：Python 在 Windows 上
+    默认按本机代码页（cp936）写 stdout，经 PowerShell 管道会被 UTF-8 解码
+    成 U+FFFD；统一为 UTF-8 与上面的设置配套。
 
-    取 ``CultureInfo.CurrentCulture.TextInfo.OEMCodePage``（即 ``GetOEMCP``）：
-    这是原生控制台程序（cmd 内建、Python 等）实际使用的代码页。设置失败
-    （异常 / 代码页不可用）时保持 PowerShell 默认，不影响命令执行；工具侧
-    ``OutputLineDecoder`` 对本机代码页有自适应回退，两种编码都能正确还原。
+    设置失败（无控制台 / 平台不支持）时静默忽略，不影响命令执行；工具侧
+    ``OutputLineDecoder`` 仍对原生命令输出做逐行自适应解码兜底。
+    包装脚本在 ``finally`` 中恢复原来的 Input/OutputEncoding，避免改变
+    调用方（或同一控制台上的后续命令）的代码页。
 
-    非 Windows（pwsh）默认就是 UTF-8，显式设 UTF-8 保持与旧行为一致。
+    非 Windows（pwsh）默认就是 UTF-8，同样显式设置以保持一致。
     """
-    if os.name != "nt":
-        return "try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }"
-    return (
-        "try { [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding("
-        "[System.Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage) } catch { }"
-    )
+    lines = [
+        "$__dsh_utf8 = New-Object System.Text.UTF8Encoding($false)",
+        "try { [Console]::InputEncoding = $__dsh_utf8 } catch { }",
+        "try { [Console]::OutputEncoding = $__dsh_utf8 } catch { }",
+        "$OutputEncoding = $__dsh_utf8",
+        "$env:PYTHONIOENCODING = 'utf-8'",
+        "$env:PYTHONUTF8 = '1'",
+        # 读类 cmdlet 的默认编码（★ Windows 中文乱码修复，2026-10-20）：
+        # Windows PowerShell 5.1 的 Get-Content / Select-String / Import-Csv
+        # 默认按 **ANSI 代码页**（简体中文为 cp936/GBK）解码无 BOM 文件——
+        # 本项目与绝大多数现代仓库是 UTF-8（无 BOM），于是
+        # `Get-Content README.md` / `Select-String 关键词 文件` 的中文全部
+        # 变成「涓枃缂栫爜」式乱码（实测复现）。统一默认 UTF-8 后与工具链
+        # 其余部分（stdout/stderr 均按 UTF-8 收集）一致；确实要读 GBK 文件
+        # 时用户可显式 `-Encoding gb2312` 覆盖。
+        "$PSDefaultParameterValues['Get-Content:Encoding'] = 'utf8'",
+        "$PSDefaultParameterValues['Select-String:Encoding'] = 'utf8'",
+        "$PSDefaultParameterValues['Import-Csv:Encoding'] = 'utf8'",
+    ]
+    return "\n".join(lines)
 
 
 def _encode_powershell_command(script: str) -> str:
@@ -327,6 +540,12 @@ def _resolve_shell_launch(command: str) -> tuple:
     if shell == "powershell":
         executable = _find_powershell_executable()
         if executable:
+            # ★ Windows PowerShell 5.1（powershell.exe）不支持 `&&` / `||`
+            #   （解析阶段直接报「不是此版本中的有效语句分隔符」）；改写成
+            #   等价的条件语句块，使 bash 风格的链式命令能直接执行。
+            #   pwsh（6+）原生支持，保持原样不动。
+            if _is_windows_powershell_51(executable):
+                command = _rewrite_chain_operators(command)
             script = _powershell_script(command)
             return _powershell_launch_argv(executable, script), False, shell
         logger.warning(
@@ -359,6 +578,23 @@ def _pty_launch_argv(command: str) -> list:
     if not use_shell and isinstance(launch_arg, (list, tuple)):
         return list(launch_arg)
     return [_default_posix_shell(), "-c", command]
+
+
+def _conpty_launch_argv(command: str) -> list:
+    """Windows ConPTY 分支的命令 argv（``pty=true`` 且 ``os.name == 'nt'``）。
+
+    与 :func:`_pty_launch_argv` 同构，但回退 shell 是 **cmd.exe**（``ComSpec``）
+    而不是 POSIX ``sh``——Windows 上没有 ``/bin/sh``，沿用 POSIX 默认会让
+    ``pty=true`` 在 cmd 会话里直接「找不到 sh」。
+    """
+    launch_arg, use_shell, _shell_name = _resolve_shell_launch(command)
+    if not use_shell and isinstance(launch_arg, (list, tuple)):
+        return list(launch_arg)
+    comspec = (os.environ.get("ComSpec") or "").strip()
+    if not comspec:
+        system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+        comspec = os.path.join(system_root, "System32", "cmd.exe")
+    return [comspec, "/c", command]
 
 
 #: 后台任务 read_buffer 的字符上限（bash_opt read 消费）。
@@ -406,6 +642,38 @@ async def _append_read_buffer(rec: dict, text: str) -> None:
         _trim_read_buffer(rec)
 
 
+def _remember_pre_background_line(line_cb: dict, text: str) -> None:
+    """记录「自动转后台之前」已产生的输出行（供 bash_opt read 可见）。
+
+    背景：前台命令超过 ``_AUTO_BG_TIMEOUT`` 秒转后台时，转后台之前的输出
+    只存在于 ``_run_pipe`` 的局部 ``lines`` 列表里，转后台后 read_buffer 为空
+    ——``op=read`` 看不到启动阶段输出（实测 ``read`` 为空、``wait`` 才有
+    ``start\\nend``），模型会误判命令卡住。
+
+    这里在行回调代理里顺手把转后台前的行记进 ``line_cb["pre"]``，转后台时
+    一次性写入 ``read_buffer``。同样受 :data:`_READ_BUFFER_MAX_CHARS` 限制，
+    超限丢弃最旧内容（与 read_buffer 语义一致）。
+    """
+    pre = line_cb.get("pre")
+    if pre is None:
+        return
+    pre.append(text)
+    line_cb["pre_len"] = int(line_cb.get("pre_len", 0) or 0) + len(text)
+    # 丢弃最旧的行，直到回到上限以内（至少保留最新一行）
+    while line_cb["pre_len"] > _READ_BUFFER_MAX_CHARS and len(pre) > 1:
+        line_cb["pre_len"] -= len(pre.pop(0))
+
+
+def _take_pre_background_output(line_cb: dict | None) -> str:
+    """取出并清空「转后台前输出」缓存（返回拼接后的文本）。"""
+    if not line_cb:
+        return ""
+    pre = line_cb.get("pre") or []
+    line_cb["pre"] = []
+    line_cb["pre_len"] = 0
+    return "".join(pre)
+
+
 class BashFunc(Func):
     name = "bash"
     # 前台命令超过该秒数未完成 → 自动转后台执行（不终止进程），
@@ -435,6 +703,12 @@ class BashFunc(Func):
                     "系统 kill / 任务管理器）清理后台任务。"
                     "禁止交互式命令（vim/top/less）；禁止 git push -f / reset --hard；"
                     "禁止 rm -rf / mkfs / dd / chmod 777 / sudo / chown。对 git 状态断言前先 git log/diff/status 验证。"
+                    "★ Windows PowerShell 5.1 环境（当前常见）：`&&` / `||` 不是有效的语句分隔符，"
+                    "请用 `;` 顺序执行（需要「前一条成功才执行」时用 `if ($?) { ... }`），"
+                    "确实要在 cmd 内组合时写成 `cmd /c \"a && b\"`（引号内由 cmd 解释）。"
+                    "命令输出统一按 UTF-8 收集（包装脚本会把 PowerShell / 原生程序 / Python 的"
+                    " stdio 编码统一为 UTF-8，并消除 PowerShell 5.1 管道给子进程 stdin 加的 BOM）；"
+                    "如需读取二进制或非 UTF-8 文件，请用 read / 专门工具，不要靠管道文本再用。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -443,7 +717,9 @@ class BashFunc(Func):
                             "type": "string",
                             "description": (
                                 "要执行的 shell 命令，由当前命令行对应的解释器执行（bash/zsh/fish/cmd/powershell 等），"
-                                "语法按其支持情况书写（管道 |、重定向 > >> <、环境变量、&& || 串联、$(...) 子 shell、通配符等）。"
+                                "语法按其支持情况书写（管道 |、重定向 > >> <、环境变量、$(...) 子 shell、通配符等）。"
+                                "★ Windows PowerShell 5.1 不支持 `&&` / `||`：用 `;` 顺序执行，"
+                                "或在 cmd 内写成 `cmd /c \"a && b\"`。"
                                 "返回 JSON：stdout 与 stderr 分离，无输出时对应字段为空字符串；"
                                 "returncode 为退出码；stdout/stderr 各自超 1000 行截断保留尾部。"
                             )
@@ -455,6 +731,21 @@ class BashFunc(Func):
                                 "false 前台执行，超 1 分钟自动转后台。"
                                 "★ 后台运行强制由 bash_opt 清理：返回的 task_id 必须用 bash_opt wait 取走结果、"
                                 "不再需要时必须用 bash_opt kill 终止进程树，不得放任后台任务遗留运行。"
+                            )
+                        },
+                        "pty": {
+                            "type": "boolean",
+                            "description": (
+                                "是否用伪终端（PTY）执行（默认 false）。"
+                                "Windows 走 ConPTY、POSIX 走 pty.openpty。"
+                                "启用后子进程拿到真 TTY：交互式程序 / TUI（python REPL、less、vim、top 等）可用，"
+                                "彩色输出与进度条正常，stdin 按终端语义解析（回车是 \\r，不是 \\n）。"
+                                "代价：PTY 只有一条输出流，stdout / stderr 物理合并（stderr 恒为空）——"
+                                "需要分离双流时才用默认 PIPE 模式。"
+                                "交互式后台任务（如 python 交互、ssh、REPL）建议 background=true 且 pty=true。"
+                                "★ 平台限制：Windows ConPTY 下 ctrl+c（写入 \\x03）不会中断运行中的进程"
+                                "（系统行为，实测 GenerateConsoleCtrlEvent 对伪控制台也无效）——"
+                                "需要终止任务请用 bash_opt op=kill。"
                             )
                         }
                     },
@@ -493,13 +784,24 @@ class BashFunc(Func):
         """检查 PTY 是否可用（用于子进程实时行缓冲输出）。"""
         return _HAS_PTY
 
-    def __init__(self, command, background=False):
+    def __init__(self, command, background=False, pty=False):
         super().__init__()
         self.command = command
         self.background = bool(background)
+        #: 是否用伪终端执行（``pty=true``）：Windows 走 ConPTY、POSIX 走
+        #: ``pty.openpty``。启用后子进程拿到真 TTY——交互式程序 / TUI 可用、
+        #: 彩色与进度条正常、``Ctrl+C`` 会变成信号；代价是 stdout/stderr
+        #: 物理合并（``stderr`` 恒为空），需要分离双流时用默认 PIPE 模式。
+        self.pty = bool(pty)
         # 无 cwd 参数：命令始终在当前工作目录执行。
         # 无 timeout 参数：前台执行超过 _AUTO_BG_TIMEOUT 秒自动转后台
         # （不终止进程，返回 task_id JSON）；后台任务无限运行。
+
+    def _pty_supported(self) -> bool:
+        """当前平台能否按 ``pty=true`` 执行（Windows → ConPTY，POSIX → openpty）。"""
+        if os.name == "nt":
+            return _HAS_CONPTY
+        return _HAS_PTY
 
     # ── 输出截断 ────────────────────────────────────────
     # 返回给大模型的输出超过 MAX_LINES 行时自动截断，
@@ -560,8 +862,15 @@ class BashFunc(Func):
             return 128 - returncode  # 128 + sig
         return returncode
 
-    @staticmethod
-    def _format_result(res: dict) -> str:
+    #: PowerShell 5.1 把 ``&&`` / ``||`` 判为无效语句分隔符时的错误文本片段
+    #: （中英文系统均覆盖）；命中后在 stderr 末尾追加等价的改写提示。
+    _PS_STATEMENT_SEPARATOR_MARKERS: tuple[str, ...] = (
+        "不是此版本中的有效语句分隔符",
+        "not a valid statement separator",
+    )
+
+    @classmethod
+    def _format_result(cls, res: dict) -> str:
         """把结构化执行结果 dict 组装为返回给大模型的三元 JSON 字符串。
 
         Args:
@@ -569,15 +878,44 @@ class BashFunc(Func):
 
         Returns:
             JSON 字符串：stdout/stderr 分别截断（超 MAX_LINES 行保留尾部），
-            returncode 原样输出。
+            returncode 原样输出；stderr 是 PowerShell 语法错误时额外附上
+            当前环境可用的改写方式（见 :meth:`_append_shell_syntax_hint`）。
         """
-        stdout = BashFunc._truncate_output(res.get("stdout", "") or "")
-        stderr = BashFunc._truncate_output(res.get("stderr", "") or "")
+        stdout = cls._truncate_output(res.get("stdout", "") or "")
+        stderr = cls._truncate_output(res.get("stderr", "") or "")
+        stderr = cls._append_shell_syntax_hint(stderr)
         return json.dumps({
             "stdout": stdout,
             "stderr": stderr,
             "returncode": res.get("returncode"),
         }, ensure_ascii=False)
+
+    @classmethod
+    def _append_shell_syntax_hint(cls, stderr: str) -> str:
+        """PowerShell 5.1 拒绝 ``&&`` / ``||`` 时追加可执行的等价写法。
+
+        命令在 PowerShell **解析阶段**就失败（stderr 已是语法错误），这里
+        不改执行结果、也不猜测用户意图，只在错误文本后补一条「当前 shell
+        的等价写法」，避免模型反复用 bash 语法重试；不在引号内的 cmd 组合
+        命令（``cmd /c "a && b"``）本来就能执行，不会进入该分支。
+
+        Args:
+            stderr: 已截断的 stderr 文本。
+
+        Returns:
+            原文本，或原文本 + 环境提示。
+        """
+        if not stderr:
+            return stderr
+        if not any(marker in stderr
+                   for marker in cls._PS_STATEMENT_SEPARATOR_MARKERS):
+            return stderr
+        return stderr + (
+            "\n(环境提示：当前环境是 Windows PowerShell 5.1，`&&` / `||` 不是"
+            "有效的语句分隔符。请改用 `;` 顺序执行；需要「前一条成功才执行」"
+            "时用 `if ($?) { ... }`；确需在 cmd 内组合时写成 "
+            "`cmd /c \"a && b\"`（引号内由 cmd 解释）)"
+        )
 
     @staticmethod
     def _error_result(message: str) -> str:
@@ -893,6 +1231,15 @@ class BashFunc(Func):
             全部输出归入 stdout、stderr 恒为空字符串；returncode 为子进程
             退出码；被中断时 stderr 放中断提示、returncode 为 -1）
         """
+        if os.name == "nt":
+            # Windows：PTY 走 ConPTY（见 _conpty 模块）。POSIX 的 pty/fcntl
+            # 在原生 Windows 上不存在，不能走下面的 openpty 路径。
+            return await self._run_conpty(
+                show_command=show_command, show_output=show_output,
+                publish_line_fn=publish_line_fn,
+                interactive=interactive,
+                interactive_ready_fn=interactive_ready_fn,
+            )
         import fcntl
         import pty
         import struct
@@ -1038,6 +1385,100 @@ class BashFunc(Func):
             "returncode": self._bash_rc(process.returncode),
         }
 
+    async def _run_conpty(self, show_command=False, show_output=False,
+                          publish_line_fn=None, interactive=False,
+                          interactive_ready_fn=None):
+        """用 Windows ConPTY 执行命令（``pty=true`` 且 ``os.name == 'nt'``）。
+
+        与 POSIX :meth:`_run_pty` 的差异只在「怎么建伪终端」：
+
+          - POSIX：``pty.openpty`` + ``preexec_fn``（setsid / TIOCSCTTY）；
+          - Windows：``_conpty.spawn``（CreatePseudoConsole + STARTUPINFOEX）。
+
+        两者的输出处理完全复用 :meth:`_read_loop`（同一个 ``StreamReader``
+        接口），因此 UTF-8/本地代码页自适应解码、ANSI 剥离、``\\r`` 覆盖模拟、
+        行回调（display / read_buffer）行为一致。
+
+        Args:
+            show_command: 是否打印命令行到终端。
+            show_output: 是否实时打印输出到终端。
+            publish_line_fn: 可选的行回调 ``async (text, is_stderr) -> None``。
+            interactive: 是否启用交互式输入（``pty=true`` 下恒为真——ConPTY
+                的输入写端始终可用，保留参数只为与 :meth:`_run_pty` 同签名）。
+            interactive_ready_fn: 子进程创建后的回调
+                ``(process, "pty", master_fd=<写端 fd>, job_handle=<Job>)``，
+                供后台任务记录 stdin 写端与进程句柄。
+
+        Returns:
+            三元结果 dict（PTY 输出合并，``stderr`` 恒为空）。
+        """
+        if show_command:
+            await print_to_terminal(f"\n{GREEN}$ {self.command}{RESET}\n")
+
+        env = self._get_subprocess_env()
+        env['TERM'] = 'xterm-256color'
+        # 交互式程序（REPL / TUI）在 PTY 下会读取行列数；ConPTY 自带默认值，
+        # 这里显式给一个常见尺寸，避免 0 列导致折行异常。
+        launch_argv = _conpty_launch_argv(self.command)
+
+        try:
+            process = _conpty.spawn(launch_argv, env=env)
+        except BaseException:
+            _remove_script_file(_script_path_from_launch(launch_argv))
+            raise
+
+        # Windows Job：kill / 中断时 TerminateJobObject 覆盖 PPID 链断裂的
+        # 孤儿后代（与 PIPE 分支同一套机制）
+        win_job = create_process_job(process.pid)
+
+        if interactive_ready_fn is not None:
+            try:
+                interactive_ready_fn(
+                    process, "pty",
+                    master_fd=process.write_fd, job_handle=win_job,
+                )
+            except Exception:
+                logger.debug("interactive_ready_fn 回调异常")
+
+        lines: list[str] = []
+        _kill_once = False
+
+        def _kill_tree_once() -> None:
+            nonlocal _kill_once
+            if _kill_once:
+                return
+            _kill_once = True
+            terminate_process_job(win_job)
+            _kill_process_tree(process.pid)
+
+        interrupted = False
+        try:
+            interrupted = await BashFunc._read_loop(
+                process.reader, process, lines, publish_line_fn,
+                show_output=show_output, is_stderr=False,
+                kill_fn=_kill_tree_once,
+            )
+        except asyncio.CancelledError:
+            _kill_tree_once()
+            raise
+        finally:
+            try:
+                await process.wait()
+            finally:
+                process.close()
+
+        _remove_script_file(_script_path_from_launch(launch_argv))
+
+        if interrupted:
+            return {"stdout": "", "stderr": "(命令已被中断)",
+                    "returncode": self._bash_rc(process.returncode)}
+        return {
+            "stdout": ''.join(lines).strip(),
+            # ConPTY 只有一条输出流，stdout/stderr 物理合并
+            "stderr": "",
+            "returncode": self._bash_rc(process.returncode),
+        }
+
     async def _run_async(self, show_command=False, show_output=False,
                          publish_line_fn=None):
         """前台执行命令：最多等待 _AUTO_BG_TIMEOUT 秒，超过自动转后台。
@@ -1084,7 +1525,7 @@ class BashFunc(Func):
         #   task_id JSON，后续输出由 bash_opt wait 获取完整结果）。
         #   fn 置 None 后，后续输出行写入任务记录 read_buffer（bash_opt
         #   read 操作实时消费，见 _promote_to_background 填充 line_cb）。
-        line_cb: dict = {"fn": publish_line_fn}
+        line_cb: dict = {"fn": publish_line_fn, "pre": [], "pre_len": 0}
 
         async def _line_proxy(text: str, is_stderr: bool) -> None:
             # ★ 转后台后（rec 已设置）：输出写入任务记录 read_buffer
@@ -1093,6 +1534,9 @@ class BashFunc(Func):
             if rec is not None:
                 await _append_read_buffer(rec, text)
                 return
+            # 转后台前也留一份给 read：否则 read 只能看到转后台之后的输出
+            # （启动阶段的日志会「消失」，wait 才拿得到）。
+            _remember_pre_background_line(line_cb, text)
             fn = line_cb["fn"]
             if fn is not None:
                 await fn(text, is_stderr)
@@ -1101,13 +1545,24 @@ class BashFunc(Func):
             # ★ 前台统一 PIPE 分离模式（见 _run_async docstring）：
             #   stdout/stderr 独立收集 → 三元 JSON 真实分离。
             try:
-                result = await self._run_pipe(
-                    show_command=False,
-                    show_output=show_output,
-                    publish_line_fn=_line_proxy,
-                    interactive=True,
-                    interactive_ready_fn=_on_ready,
-                )
+                if self.pty and self._pty_supported():
+                    # pty=true：走伪终端（Windows ConPTY / POSIX openpty）。
+                    # PTY 只有一条输出流，stdout/stderr 合并（见 _run_conpty）。
+                    result = await self._run_pty(
+                        show_command=False,
+                        show_output=show_output,
+                        publish_line_fn=_line_proxy,
+                        interactive=True,
+                        interactive_ready_fn=_on_ready,
+                    )
+                else:
+                    result = await self._run_pipe(
+                        show_command=False,
+                        show_output=show_output,
+                        publish_line_fn=_line_proxy,
+                        interactive=True,
+                        interactive_ready_fn=_on_ready,
+                    )
                 return self._format_result(result)
             finally:
                 # 未转后台（命令在本函数内正常结束 / 被取消）：关闭 Job 句柄；
@@ -1209,6 +1664,14 @@ class BashFunc(Func):
             "read_buffer": "",
             "read_buffer_dropped": 0,  # 因缓冲上限被丢弃的字符数（read 回报）
         }
+        # ★ 转后台前的输出也并入 read_buffer：否则 op=read 看不到启动阶段
+        #   输出（wait 才有完整 stdout），模型会误判「命令没输出 / 卡住」。
+        pre_output = _take_pre_background_output(line_cb)
+        if pre_output:
+            overflow = max(0, len(pre_output) - _READ_BUFFER_MAX_CHARS)
+            rec["read_buffer"] = pre_output[-_READ_BUFFER_MAX_CHARS:]
+            if overflow:
+                rec["read_buffer_dropped"] = overflow
         agent._register_background_task(task_id, rec)
         # Job 句柄归属转给任务记录：_run_exec 的 finally 不再关闭它
         holder["promoted"] = True
@@ -1274,7 +1737,7 @@ class BashFunc(Func):
             PTY 模式下 stdout/stderr 物理合并，输出归 stdout、stderr 为空。
         """
         try:
-            if _HAS_PTY:
+            if self.pty and self._pty_supported():
                 result = await self._run_pty(
                     show_command=False, show_output=False,
                     publish_line_fn=publish_line_fn,
@@ -1322,7 +1785,7 @@ class BashFunc(Func):
         task_id = f"bg-{uuid.uuid4().hex[:12]}"
 
         # 后台任务无限运行（不设超时，避免误杀编译/下载等长时命令）
-        bg = BashFunc(command=self.command)
+        bg = BashFunc(command=self.command, pty=self.pty)
 
         task = asyncio.ensure_future(self._run_background_task(bg, task_id))
 

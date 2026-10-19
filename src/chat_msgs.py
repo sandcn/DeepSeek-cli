@@ -24,6 +24,7 @@ import logging
 
 from .core.stats import get_token_stats
 from .paths import CHAT_MSGS_DIR, ensure_chat_msgs_dir
+from ._unicode_text import sanitize_surrogates, sanitize_surrogates_deep
 
 _logger = logging.getLogger(__name__)
 
@@ -145,10 +146,28 @@ def _scan_json_string(text: str, pos: int) -> tuple[str | None, int]:
                 if len(digits) < 4:
                     return None, pos
                 try:
-                    out.append(chr(int(digits, 16)))
+                    code = int(digits, 16)
                 except ValueError:
                     return None, pos
                 pos += 5
+                # ★ 修复（2026-10）：``\\ud83d\\ude00`` 这类**代理对转义**此前被
+                #   拆成两个孤立代理码点放进结果——``json.loads`` 会合并为一个
+                #   完整码点，本函数的行为必须与之一致：否则标题/摘要文本里
+                #   残留孤立代理项，后续写 ``.session_index.json`` / 会话文件
+                #   时以 UTF-8 编码即抛 ``UnicodeEncodeError: surrogates not
+                #   allowed``，整次保存失败。
+                if 0xD800 <= code <= 0xDBFF and text[pos:pos + 2] == "\\u":
+                    low_digits = text[pos + 2:pos + 6]
+                    low = -1
+                    if len(low_digits) == 4:
+                        try:
+                            low = int(low_digits, 16)
+                        except ValueError:
+                            low = -1
+                    if 0xDC00 <= low <= 0xDFFF:
+                        code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                        pos += 6
+                out.append(chr(code))
                 continue
             out.append(_JSON_ESCAPES.get(esc, esc))
             pos += 1
@@ -403,7 +422,9 @@ def _atomic_write_text(path: Path, content: str) -> None:
     try:
         tmp.write_text(content, encoding="utf-8")
         os.replace(tmp, path)
-    except OSError:
+    except (OSError, UnicodeError):
+        # UnicodeError（文本含无法以 UTF-8 编码的孤立代理项）同样要清理
+        # 临时文件后再抛出——否则残留 ``.<name>.<pid>.<tid>.tmp`` 文件。
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
@@ -412,17 +433,26 @@ def _atomic_write_text(path: Path, content: str) -> None:
 
 
 def _save_index(files: dict) -> None:
-    """原子写回会话摘要索引（失败仅记日志——索引只是加速，不影响正确性）。"""
+    """原子写回会话摘要索引（失败仅记日志——索引只是加速，不影响正确性）。
+
+    ★ 修复（2026-10）：摘要条目里的标题可能含孤立代理项（旧会话文件中的
+    代理对转义被头部扫描拆开等）——未经清洗直接 ``write_text`` 会抛
+    ``UnicodeEncodeError``（非 OSError，此前未被捕获），使整个会话列表读取
+    失败。写入前清洗，并把 ``UnicodeError`` 一并纳入「仅记日志」的容错范围。
+    """
     path = _index_path()
     tmp = path.with_suffix(".tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(
-            json.dumps({"version": _INDEX_VERSION, "files": files}, ensure_ascii=False),
+            json.dumps(
+                {"version": _INDEX_VERSION, "files": sanitize_surrogates_deep(files)},
+                ensure_ascii=False,
+            ),
             encoding="utf-8",
         )
         os.replace(tmp, path)
-    except OSError:
+    except (OSError, UnicodeError):
         _logger.debug("写入会话摘要索引失败（忽略）", exc_info=True)
         try:
             tmp.unlink(missing_ok=True)
@@ -520,6 +550,9 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
                 break
     # 用户重命名 / 旧文件残留的标题同样归一化（列表渲染防御）
     title = normalize_title(title)
+    # ★ 修复（2026-10）：标题可能来自含孤立代理项的旧内容——写入 OSC 窗口
+    #   标题 / 会话文件前先清洗（无法以 UTF-8 编码的码点替换为 U+FFFD）。
+    title = sanitize_surrogates(title)
 
     # ★ 起完标题后同步终端窗口标题（OSC 序列，无 TTY 静默失败）
     _sync_terminal_title(title)
@@ -543,9 +576,19 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
     if session_log is not None:
         data["session_log"] = list(session_log)
 
+    # ★ 修复（2026-10，用户报障）：自动保存曾报
+    #   ``UnicodeEncodeError: 'utf-8' codec can't encode character '\ud83d'
+    #   ...: surrogates not allowed``——消息/日志/子代理记录里一旦出现
+    #   **孤立代理项**（模型流把 emoji 的 UTF-16 代理对拆到两帧、上游损坏
+    #   转义等），``json.dumps(ensure_ascii=False)`` 会原样带出该码点，
+    #   随后 ``write_text(encoding="utf-8")`` 必然抛异常、整次落盘失败。
+    #   落盘前统一清洗：相邻代理对还原为完整 emoji，其余孤立代理项替换为
+    #   U+FFFD（可安全编码），保存不再因文本内容失败。
+    data = sanitize_surrogates_deep(data)
+
     try:
         _atomic_write_text(filepath, json.dumps(data, ensure_ascii=False, indent=2))
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         _logger.error("保存会话文件失败: path=%s, sid=%s, error=%s", filepath, sid, exc)
         raise
     _invalidate_session_cache()
@@ -612,14 +655,22 @@ def _load_session_summary(filepath: Path) -> dict | None:
 
 # ── 列出所有保存的会话 ────────────────────────────────────
 def _session_summary_entry(data: dict, filepath: Path) -> dict[str, Any]:
-    """会话数据 → 摘要条目（id/title/model/saved_at/message_count）。"""
-    title = normalize_title(data.get("title") or "")
+    """会话数据 → 摘要条目（id/title/model/saved_at/message_count）。
+
+    ★ 修复（2026-10）：标题清洗孤立 UTF-16 代理项——旧会话文件里的代理对
+    转义经头部扫描后可能残留孤立代理项（如 ``"坏\\ud83d"``），该码点无法以
+    UTF-8 编码：直接渲染到终端 / 写入 ``.session_index.json`` 都会抛
+    ``UnicodeEncodeError``，使会话列表读取失败。
+    """
+    title = sanitize_surrogates(normalize_title(data.get("title") or ""))
     # 兼容旧会话：没有 title 字段则从首条 user 消息提取
     if not title:
         for m in data.get("messages", []) or []:
             if isinstance(m, dict) and m.get("role") == "user":
                 # content 可能为 list（多模态 content blocks）——提取文本
-                content = normalize_title(_content_to_text(m.get("content")))
+                content = sanitize_surrogates(
+                    normalize_title(_content_to_text(m.get("content")))
+                )
                 title = content[:40] + ("…" if len(content) > 40 else "")
                 break
     # message_count：新格式文件前置标量字段优先（头部快路径已带；messages
@@ -764,12 +815,16 @@ def rename_session(session_id: str, new_title: str) -> bool:
         data = json.loads(filepath.read_text(encoding="utf-8"))
         # ★ 修复（2026-10）：重命名同样归一化折行/制表符（标题按行渲染）
         data["title"] = normalize_title(new_title)
+        # ★ 修复（2026-10）：会话数据里的消息/子代理记录可能含孤立代理项
+        #   （模型流拆开 emoji 代理对等），整文件重写前统一清洗——否则
+        #   ``write_text(encoding="utf-8")`` 抛 UnicodeEncodeError，重命名失败。
+        data = sanitize_surrogates_deep(data)
         _atomic_write_text(
             filepath, json.dumps(data, ensure_ascii=False, indent=2),
         )
         _invalidate_session_cache()
         return True
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeError):
         return False
 
 
@@ -795,6 +850,9 @@ def export_session(session_id: str, output: str | None = None) -> str | None:
     if data is None:
         return None
 
+    # ★ 修复（2026-10）：导出同样清洗孤立代理项（旧会话文件/异常流数据），
+    #   否则写盘时 UTF-8 编码抛 UnicodeEncodeError。
+    data = sanitize_surrogates_deep(data)
     json_str = json.dumps(data, ensure_ascii=False, indent=2)
     if output:
         out_path = Path(output).resolve()

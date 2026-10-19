@@ -124,3 +124,69 @@ def test_requirements_do_not_pin_platform_specific_markers_wrongly():
     """带环境标记的依赖必须保留标记（``; python_version < "3.11"`` 等）。"""
     text = _REQUIREMENTS.read_text(encoding="utf-8")
     assert 'python_version < "3.11"' in text
+
+
+def _raw_requirement_lines(path: Path, _seen: set[Path] | None = None) -> list[str]:
+    """返回依赖文件的原始依赖行（保留环境标记，跟随 ``-r`` 引用）。"""
+    seen = _seen if _seen is not None else set()
+    resolved = path.resolve()
+    if resolved in seen:
+        return []
+    seen.add(resolved)
+
+    lines: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("-r "):
+            lines.extend(_raw_requirement_lines(path.parent / line[3:].strip(), seen))
+            continue
+        if line.startswith("-"):
+            continue
+        lines.append(line)
+    return lines
+
+
+def test_pillow_pin_matches_installed_pillow():
+    """Pillow 锁定版本必须与当前解释器实际安装的版本一致。
+
+    背景：``requirements.txt`` 曾锁 ``Pillow==8.4.0``——Pillow 8.4 只支持
+    Python ≤3.10，在 Python 3.11 上既没有 wheel、源码构建又缺 zlib 头文件，
+    ``pip install -r requirements-dev.txt`` 直接失败。锁定版本必须适配当前
+    解释器（Pillow 12 起弃 Python 3.9、13 起弃 3.10），否则安装不可复现。
+    """
+    try:
+        from packaging.requirements import Requirement
+    except ModuleNotFoundError:  # pragma: no cover - 环境缺 packaging（pytest 传递依赖）
+        pytest.skip("需要 packaging 解析依赖规格")
+
+    from importlib.metadata import PackageNotFoundError, version as _dist_version
+
+    try:
+        installed = _dist_version("Pillow")
+    except PackageNotFoundError:  # pragma: no cover - 本环境未安装 Pillow
+        pytest.skip("当前环境未安装 Pillow")
+
+    active: list[Requirement] = []
+    for line in _raw_requirement_lines(_REQUIREMENTS):
+        try:
+            requirement = Requirement(line)
+        except Exception:  # pragma: no cover - 非法依赖行由其它测试兜住
+            continue
+        if requirement.name.lower() != "pillow":
+            continue
+        if requirement.marker is not None and not requirement.marker.evaluate():
+            continue
+        active.append(requirement)
+
+    assert active, "requirements.txt 缺少适配当前 Python 的 Pillow 锁定条目"
+    mismatched = [
+        str(requirement.specifier)
+        for requirement in active
+        if not requirement.specifier.contains(installed)
+    ]
+    assert not mismatched, (
+        f"Pillow 锁定 {mismatched} 与实际安装 {installed} 不一致"
+        "（当前 Python 下的锁定必须可直接安装）"
+    )

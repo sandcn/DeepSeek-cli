@@ -47,6 +47,13 @@ def _fake_winapi(monkeypatch):
     """屏蔽真实 Win32 调用（Cygwin 下避免触碰系统 API）。"""
     monkeypatch.setattr(win_module.winapi, "ensure_process_dpi_aware", lambda: True)
     monkeypatch.setattr(win_module.winapi, "is_window", lambda handle: True)
+    # 输入前会校验目标窗口「可见且未最小化」（最小化窗口收不到合成输入）；
+    # 测试里的窗口句柄是伪造的，必须显式给出可见 / 未最小化，否则校验会把
+    # 它当成隐藏窗口直接拒绝注入。
+    monkeypatch.setattr(
+        win_module.winapi, "is_window_visible", lambda handle: True)
+    monkeypatch.setattr(
+        win_module.winapi, "is_window_minimized", lambda handle: False)
     monkeypatch.setattr(
         win_module.winapi, "key_scan_code",
         lambda char: (ord(char.upper()), 0) if len(char) == 1 else None,

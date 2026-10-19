@@ -52,6 +52,10 @@ class ContentHandler(StreamChunkHandler):
         # - ChatUIConsumer 消费此事件驱动终端 Markdown 渲染
         # 带文本累积节流：短 chunk 合并，减少 EventBus 压力
         # 注意：即使 silent=True 也要发布到 EventBus，确保流式内容不丢失
-        self.buffer(dc, ctx.label)
+        # ★ 修复（2026-10）：渲染增量经 ``prepare_display_delta`` 清洗——UTF-16
+        #   代理对被拆到两帧时先挂起高代理项（下一帧拼接后还原 emoji），
+        #   孤立代理项以 U+FFFD 呈现，避免渲染侧 UTF-8 编码抛
+        #   UnicodeEncodeError（content_full 仍累积原文，结果构建时统一清洗）。
+        self.buffer(ctx.prepare_display_delta(dc, "content"), ctx.label)
 
 

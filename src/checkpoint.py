@@ -7,6 +7,7 @@ import logging
 import time
 
 from .paths import CHAT_DIR
+from ._unicode_text import sanitize_surrogates_deep
 
 _logger = logging.getLogger(__name__)
 
@@ -51,13 +52,20 @@ def save_checkpoint(messages: list[dict], model: str,
         "messages": messages,
     }
 
+    # ★ 修复（2026-10）：断点与会话保存同一类缺陷——消息里出现孤立代理项
+    #   （模型流拆开 emoji 的 UTF-16 代理对等）时，``json.dumps(ensure_ascii=
+    #   False)`` 原样带出该码点，``write_text(encoding="utf-8")`` 抛
+    #   ``UnicodeEncodeError``（非 OSError，此前未被捕获）→ 断点丢失且异常
+    #   向上冒泡。落盘前清洗（相邻代理对还原为完整 emoji，其余替换 U+FFFD）。
+    data = sanitize_surrogates_deep(data)
+
     try:
         CHECKPOINT_FILE.write_text(
             json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8"
         )
         _logger.info("断点已保存: %s 条消息 | %s", len(messages), task_description[:60])
-    except OSError as e:
+    except (OSError, UnicodeError) as e:
         _logger.error("断点保存失败: %s", e)
 
 
@@ -70,7 +78,9 @@ def load_checkpoint() -> dict | None:
     """
     try:
         data = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
-        return data
+        # ★ 修复（2026-10）：旧断点文件可能含孤立代理项（恢复后进入消息列表
+        #   会污染后续保存/请求）——读入时统一清洗。
+        return sanitize_surrogates_deep(data)
     except (json.JSONDecodeError, OSError) as e:
         _logger.warning("断点文件损坏: %s", e)
         return None

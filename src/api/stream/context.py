@@ -6,6 +6,12 @@ from ..events import publish_event
 from ..stream_parse import ToolParseTracker
 from ..stats import add_token_size, adjust_token_size
 from ...core.tokens import count_cjk_other, estimate_tokens_from_counts
+from ..._unicode_text import (
+    REPLACEMENT_CHARACTER,
+    has_surrogate,
+    sanitize_surrogates,
+    split_trailing_high_surrogate,
+)
 
 
 class StreamContext:
@@ -28,6 +34,13 @@ class StreamContext:
         # 内容累积
         self.content_full: str = ""
         self.reasoning_full: str = ""
+        #: 流式**渲染增量**的悬挂高代理项（channel → 悬挂字符）。
+        #:   UTF-16 代理对被拆到两个 delta 帧时（帧内 JSON 各自转义一个代理
+        #:   项），先挂起高代理项、与下一增量拼接后再渲染，避免被拆开的
+        #:   emoji 渲染成两个 U+FFFD（见 ``prepare_display_delta``）。
+        #:   仅影响渲染：``content_full`` / ``reasoning_full`` 累积原文，
+        #:   结果构建时统一清洗（相邻代理对还原为完整码点）。
+        self._pending_high_surrogates: dict[str, str] = {}
         #: 上下文占用口径的流式增量：**content + 工具调用参数**的整体估算
         #:   （``estimate_tokens_from_counts``，与消息追加后
         #:   ``MessageStatsCache`` 口径一致——``message_to_text`` 完整纳入
@@ -180,6 +193,52 @@ class StreamContext:
         self._args_cjk += cjk
         self._args_other += other
         return self._sync_estimate()
+
+    # ═══════════════════════════════════════════════════════════
+    # 流式增量代理项清洗（无法以 UTF-8 编码的孤立代理项）
+    # ═══════════════════════════════════════════════════════════
+
+    def prepare_display_delta(self, text: str, channel: str = "content") -> str:
+        """把流式增量转换为可安全渲染 / 编码的文本。
+
+        模型服务端可能把 emoji 的 UTF-16 代理对拆到两个 SSE 帧（两帧 JSON 里
+        各自是 ``\\ud83d`` / ``\\ude00`` 转义），解析后每帧都是**孤立代理项**
+        ——它无法以 UTF-8 编码（渲染写终端 / 会话保存都会抛
+        ``UnicodeEncodeError: surrogates not allowed``）。
+
+        处理规则（与 ``_unicode_text.sanitize_surrogates`` 同一口径）：
+          - 与上一增量挂起的**高代理项**拼接：跨帧代理对还原为完整 emoji；
+          - 本增量末尾新出现的悬挂高代理项先挂起，等下一增量再判断；
+          - 其余孤立代理项替换为 U+FFFD。
+
+        Args:
+            text: 本帧增量原文。
+            channel: 增量通道（``"content"`` / ``"reasoning"``）。各通道独立
+                挂起——跨通道拼接会把两个不相干的代理项错配成一个码点。
+
+        Returns:
+            可安全渲染的文本（无有效内容时返回空串）。
+        """
+        if not text:
+            return ""
+        pending = self._pending_high_surrogates.pop(channel, "")
+        if pending:
+            text = pending + text
+        if not has_surrogate(text):
+            return text
+        text, pending = split_trailing_high_surrogate(text)
+        if pending:
+            self._pending_high_surrogates[channel] = pending
+        return sanitize_surrogates(text) if text else ""
+
+    def flush_display_surrogate(self, channel: str = "content") -> str:
+        """流结束收尾：返回该通道仍未配对的悬挂高代理项（U+FFFD）。
+
+        低代理项始终未到达时（上游截断），悬挂的高代理项不能留在渲染缓冲
+        里，统一以 U+FFFD 收尾后由调用方发布最后一帧事件。
+        """
+        pending = self._pending_high_surrogates.pop(channel, "")
+        return REPLACEMENT_CHARACTER if pending else ""
 
     def apply_real_usage(self, real_output: int) -> None:
         """真实 usage 到达：把本流估算累加修正为真实 output（可为负修正）。

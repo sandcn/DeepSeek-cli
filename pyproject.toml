@@ -62,6 +62,9 @@ show_missing = true
 
 [tool.ruff]
 line-length = 120
+# 缩进宽度：ruff 0.17 起格式化选项归顶层（`[tool.ruff.format]` 不再接受
+# `indent-width`，会导致 `ruff` 整体解析 pyproject 失败）；保持 4 空格缩进。
+indent-width = 4
 # 与 requires-python（>=3.9）对齐：静态建议不得引入 3.10+ 才支持的语法
 # （如运行期求值的 PEP 604 ``X | Y`` 注解、``match`` 语句），否则会建议出
 # 在 3.9 上运行即崩的改写。
@@ -73,7 +76,6 @@ ignore = ["E501"]
 
 [tool.ruff.format]
 quote-style = "double"
-indent-width = 4
 
 [tool.mypy]
 # ★ 保持 3.13（与 requires-python >=3.9 有意不一致）：项目运行期兼容 3.9

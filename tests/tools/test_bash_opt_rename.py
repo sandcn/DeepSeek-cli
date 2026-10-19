@@ -30,7 +30,7 @@ def test_tool_name_is_bash_opt():
     required = schema["function"]["parameters"]["required"]
     assert required == ["op"]
     assert set(schema["function"]["parameters"]["properties"]["op"]["enum"]) == {
-        "read", "wait", "kill", "stdin", "keys", "screenshot",
+        "read", "wait", "kill", "stdin", "close_stdin", "keys", "screenshot",
         # 窗口输入注入（鼠标/键盘/文本/拖动/悬停）
         "click", "move", "hover", "drag", "scroll", "key", "type",
         # 窗口枚举与窗口控制（多窗口 GUI 操作）

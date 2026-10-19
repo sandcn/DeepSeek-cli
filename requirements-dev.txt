@@ -15,6 +15,7 @@ pytest-cov==7.1.0
 mypy==1.19.1
 tomli==2.4.1; python_version < "3.11"
 
-# 本地环境未安装、无法实测版本：仅保留声明
-ruff>=0.6
-pre-commit>=3.5
+# 静态检查 / 提交钩子：已在本环境实测安装（ruff 0.17 起 `[tool.ruff.format]`
+# 不再支持 `indent-width`，须锁定版本避免配置解析随版本漂移而失败）
+ruff==0.17.1
+pre-commit==4.7.0

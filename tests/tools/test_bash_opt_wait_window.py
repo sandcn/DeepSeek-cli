@@ -90,3 +90,5 @@ async def test_wait_window_times_out_without_any_window(monkeypatch):
     result = await func.execute()
     assert result.startswith("(等待窗口超时")
     assert "无可见窗口" in result
+    # 纯命令行进程之外，还要提示 Store 应用别名 / 外部进程导致窗口不在树内
+    assert "进程树" in result

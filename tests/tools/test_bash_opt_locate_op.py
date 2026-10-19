@@ -208,12 +208,31 @@ async def test_locate_text_keeps_full_count_when_cropped(monkeypatch, tmp_path):
     assert payload["matches"][0]["x"] == 60
 
 
+async def test_locate_text_matches_cjk_phrase_split_into_single_chars(monkeypatch, tmp_path):
+    """回归：Windows 系统 OCR 把「文件」拆成「文」「件」两框时，query 不带
+    空格也必须命中（此前只在带空格拼接中查找，中文短语永远匹配不到）。"""
+    shot = _make_png(tmp_path / "shot.png", 120, 40)
+    _patch_shot(monkeypatch, shot)
+    monkeypatch.setattr(BashOptFunc, "_window_frame_for", _fake_frame)
+    boxes = [TextBox("文", 10, 5, 14, 14), TextBox("件", 24, 5, 14, 14)]
+    monkeypatch.setattr(bash_opt_module, "recognize_text",
+                        lambda path, lang=None: list(boxes))
+    func = BashOptFunc(task_id="bg-1", op="locate", query="文件")
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+    payload = json.loads(await func.execute())
+    assert payload["returned"] == 1
+    match = payload["matches"][0]
+    assert (match["x"], match["y"]) == (10, 5)
+    assert match["width"] == 28
+    assert (match["screen_center_x"], match["screen_center_y"]) == (124, 62)
+
+
 # ── 未命中时的诊断信息 ──────────────────────────────────
 
 async def test_locate_text_without_match_reports_recognized_texts(monkeypatch, tmp_path):
     shot = _make_png(tmp_path / "shot.png", 120, 40)
     _patch_shot(monkeypatch, shot)
-    boxes = [TextBox("开机", 10, 5, 30, 12), TextBox("0K", 60, 5, 30, 12)]
+    boxes = [TextBox("开机", 10, 5, 30, 12), TextBox("下载", 60, 5, 30, 12)]
     monkeypatch.setattr(bash_opt_module, "recognize_text",
                         lambda path, lang=None: list(boxes))
     func = BashOptFunc(task_id="bg-1", op="locate", query="OK")
@@ -221,8 +240,8 @@ async def test_locate_text_without_match_reports_recognized_texts(monkeypatch, t
     payload = json.loads(await func.execute())
     assert payload["matches"] == []
     assert payload["recognized"] == 2
-    # 识别到的内容一并返回：模型据此判断是 OCR 认错（0K）还是画面没有该文字
-    assert payload["recognized_texts"] == ["开机", "0K"]
+    # 识别到的内容一并返回：模型据此判断是 OCR 认错还是画面没有该文字
+    assert payload["recognized_texts"] == ["开机", "下载"]
 
 
 async def test_locate_text_crop_without_text_falls_back_to_full_samples(monkeypatch, tmp_path):
@@ -251,3 +270,40 @@ async def test_locate_rejects_crop_outside_image(monkeypatch, tmp_path):
     result = await func.execute()
     assert result.startswith("(locate 参数非法")
     assert "超出" in result
+
+
+# ── 近似匹配（OCR 易混字符） ────────────────────────────
+
+async def test_locate_text_reports_fuzzy_match_mode(monkeypatch, tmp_path):
+    """OCR 把 ``All`` 认成 ``AII`` 时仍能定位，并在结果里标注近似匹配。
+
+    真实用例：右键菜单 ``Select All`` 被识别成 ``Select`` + ``AII``，
+    精确匹配全部落空；近似匹配命中后必须让调用方知道「坐标要复核」。
+    """
+    shot = _make_png(tmp_path / "shot.png", 120, 40)
+    _patch_shot(monkeypatch, shot)
+    monkeypatch.setattr(BashOptFunc, "_window_frame_for", _fake_frame)
+    boxes = [TextBox("Select", 10, 5, 40, 14), TextBox("AII", 52, 5, 20, 14)]
+    monkeypatch.setattr(bash_opt_module, "recognize_text",
+                        lambda path, lang=None: list(boxes))
+    func = BashOptFunc(task_id="bg-1", op="locate", query="Select All")
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+    payload = json.loads(await func.execute())
+    assert payload["returned"] == 1
+    assert payload["match_mode"] == "fuzzy"
+    assert "近似匹配" in payload["note"]
+    assert payload["matches"][0]["x"] == 10
+
+
+async def test_locate_text_reports_exact_match_mode(monkeypatch, tmp_path):
+    shot = _make_png(tmp_path / "shot.png", 120, 40)
+    _patch_shot(monkeypatch, shot)
+    monkeypatch.setattr(BashOptFunc, "_window_frame_for", _fake_frame)
+    monkeypatch.setattr(bash_opt_module, "recognize_text",
+                        lambda path, lang=None: [TextBox("Apply", 10, 5, 40, 14)])
+    func = BashOptFunc(task_id="bg-1", op="locate", query="Apply")
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+    payload = json.loads(await func.execute())
+    assert payload["returned"] == 1
+    assert payload["match_mode"] == "exact"
+    assert "note" not in payload

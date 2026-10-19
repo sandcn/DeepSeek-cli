@@ -58,7 +58,7 @@ def test_schema_exposes_screenshot_op_and_path():
     # 2026-10-10 新增 pixel（取色）/ annotate（标注）/ record / replay（宏）
     # 2026-10-10 新增 release（释放按下的键与鼠标按钮）与游戏操作增强参数
     assert set(params["properties"]["op"]["enum"]) == {
-        "read", "wait", "kill", "stdin", "keys", "screenshot",
+        "read", "wait", "kill", "stdin", "close_stdin", "keys", "screenshot",
         "windows", "window",
         "elements", "wait_window", "clipboard", "locate", "sequence",
         "click", "move", "hover", "drag", "scroll", "key", "type",
@@ -487,3 +487,61 @@ async def test_screenshot_op_crop_real_window(monkeypatch, tmp_path, real_window
         assert png_mod.read_png_size(payload["path"]) == (crop_width, crop_height)
         return
     pytest.skip(f"候选窗口均未能截图: {last_error}")
+
+
+# ── 截图坐标提示：窗口外框与截图原点偏移 ────────────────
+
+async def test_screenshot_hint_reports_offset_and_screen_clip(monkeypatch, tmp_path):
+    """最大化 / 超出屏幕的窗口：hint 给出截图原点与外框的偏移公式。
+
+    实测（2026-10-20）：mspaint 最大化窗口 2582x1390@(-11,-11)，截图只有
+    2560x1368、原点 (0,0)；若模型直接拿 window_rect 坐标加像素偏移，会整体
+    偏 11px。hint 必须写明「窗口内坐标 = 截图像素 + (11,11)」。
+    """
+    _fast_retry(monkeypatch)
+
+    def _fake_capture(pid, path, crop=None, **kwargs):
+        with open(path, "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\n")
+        return CaptureResult(
+            path=path, width=2560, height=1368,
+            window_pid=pid, window_title="最大化窗口", backend="windows",
+            window_x=0, window_y=0,
+            window_rect={"x": -11, "y": -11, "width": 2582, "height": 1390},
+        )
+
+    monkeypatch.setattr(bash_opt_module, "capture_process_window", _fake_capture)
+    func = BashOptFunc(task_id="bg-1", op="screenshot",
+                       path=str(tmp_path / "max.png"))
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+
+    payload = json.loads(await func.execute())
+    hint = payload["hint"]
+    assert "偏移 (11,11)" in hint
+    assert "窗口内坐标 = 截图像素 + (11,11)" in hint
+    assert "只包含屏幕内可见部分" in hint
+
+
+async def test_screenshot_hint_has_no_offset_when_sizes_match(monkeypatch, tmp_path):
+    """尺寸一致（普通窗口）时不输出偏移说明，避免噪声。"""
+    _fast_retry(monkeypatch)
+
+    def _fake_capture(pid, path, crop=None, **kwargs):
+        with open(path, "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\n")
+        return CaptureResult(
+            path=path, width=800, height=600,
+            window_pid=pid, window_title="普通窗口", backend="windows",
+            window_x=100, window_y=100,
+            window_rect={"x": 100, "y": 100, "width": 800, "height": 600},
+        )
+
+    monkeypatch.setattr(bash_opt_module, "capture_process_window", _fake_capture)
+    func = BashOptFunc(task_id="bg-1", op="screenshot",
+                       path=str(tmp_path / "normal.png"))
+    func.set_agent(_FakeAgent({"bg-1": _record()}))
+
+    payload = json.loads(await func.execute())
+    assert "偏移" not in payload["hint"]
+    assert "只包含屏幕内可见部分" not in payload["hint"]
+

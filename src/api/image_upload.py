@@ -176,7 +176,10 @@ def _compress_image_bytes(
                 scale = max_dimension / long_side
                 new_size = (max(1, round(width * scale)),
                             max(1, round(height * scale)))
-                img = img.resize(new_size, Image.LANCZOS)
+                # Pillow 9.1+ 提供 Resampling 枚举；8.x 回退到模块级常量
+                # （Image.LANCZOS 在 8.4–13 均可用，取枚举更面向未来）
+                resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+                img = img.resize(new_size, resampling)
             has_alpha = (
                 img.mode in ("RGBA", "LA", "PA")
                 or "A" in img.mode

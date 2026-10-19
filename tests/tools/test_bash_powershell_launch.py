@@ -31,28 +31,43 @@ def test_powershell_script_sets_encoding_and_exit_code():
     script = bash_mod._powershell_script("Get-ChildItem")
     assert "$ProgressPreference = 'SilentlyContinue'" in script
     assert "[Console]::OutputEncoding" in script
+    assert "[Console]::InputEncoding" in script
+    assert "UTF8Encoding($false)" in script
+    assert "$env:PYTHONIOENCODING = 'utf-8'" in script
     assert "$global:LASTEXITCODE = 0" in script
     assert "Get-ChildItem" in script
     assert "$ok = $?" in script
     assert "if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }" in script
     assert "if (-not $ok) { exit 1 }" in script
+    # 控制台编码用完必须恢复，避免影响同一控制台上的后续命令
+    assert "} finally {" in script
+    assert "[Console]::InputEncoding = $__dsh_input_encoding" in script
+    assert "[Console]::OutputEncoding = $__dsh_output_encoding" in script
 
 
-def test_encoding_line_follows_os_code_page():
-    """Windows 跟随系统 OEM 代码页（原生 stderr 解码才与原生程序写出一致）。"""
+def test_encoding_line_unifies_utf8_without_bom():
+    """包装脚本统一 UTF-8（无 BOM）（2026-10-20 修复）。
+
+    回归背景：此前 Windows 跟随 OEM 代码页（cp936），而 ``git`` / ``node``
+    等原生命令输出 UTF-8——经 PowerShell 管道（``| Out-String`` / ``2>&1``）
+    时被按 cp936 解码，中文提交信息显示为「绯荤粺…」乱码。统一 UTF-8 后
+    两条路径一致；同时 ``[Console]::InputEncoding`` 设为无 BOM UTF-8，
+    消除 Windows PowerShell 5.1 给子进程 stdin 前加的 ``EF BB BF``。
+    """
     line = bash_mod._powershell_encoding_line()
-    if os.name == "nt":
-        assert "OEMCodePage" in line
-        assert "GetEncoding" in line
-        assert "UTF8" not in line
-    else:
-        assert "UTF8" in line
+    assert "UTF8Encoding($false)" in line
+    assert "[Console]::InputEncoding" in line
+    assert "[Console]::OutputEncoding" in line
+    assert "$OutputEncoding" in line
+    assert "PYTHONIOENCODING" in line
+    assert "OEMCodePage" not in line
 
 
-def test_encoding_line_windows_uses_oem_code_page(monkeypatch):
+def test_encoding_line_windows_uses_utf8_without_bom(monkeypatch):
     monkeypatch.setattr(bash_mod.os, "name", "nt")
     line = bash_mod._powershell_encoding_line()
-    assert "CultureInfo" in line and "OEMCodePage" in line
+    assert "UTF8Encoding($false)" in line
+    assert "OEMCodePage" not in line
 
 
 def test_encoding_line_posix_keeps_utf8(monkeypatch):

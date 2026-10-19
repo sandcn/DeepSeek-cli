@@ -343,10 +343,18 @@ def _by_automation_id(elements: Sequence[ElementInfo],
 
 
 def _match_rank(item: ElementInfo) -> tuple:
-    """匹配排序键（越大越优先）：可见 > 可用 > 有文本 > 面积大。"""
+    """匹配排序键（越大越优先）：可见 > 可用 > 有控件身份 > 有文本 > 面积大。
+
+    「控件身份」指原生句柄 / 类名 / AutomationId 至少有一个。标题栏的最小化 /
+    最大化 / 关闭按钮由 UIA 合成：``handle=0``、类名为空、无 AutomationId，
+    且面积（71x45 这类 DPI 缩放后的标题栏按钮）往往大于内容区的小按钮。
+    修复前只按面积排序，``element='按钮'`` 会命中「最小化」——实测把目标
+    窗口最小化，而不是点击内容按钮。
+    """
     return (
         bool(item.visible),
         bool(item.enabled),
+        bool(item.handle) or bool(item.class_name) or bool(item.automation_id),
         bool(item.text.strip()),
         item.area,
     )

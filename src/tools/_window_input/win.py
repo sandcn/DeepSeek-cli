@@ -429,8 +429,13 @@ class WindowsInputBackend:
         if target is None:
             raise NoWindowError(
                 f"进程 {pid} 及其子进程没有可接收输入的可见窗口"
-                f"（纯命令行进程无 GUI 窗口；窗口已最小化/被隐藏时也找不到）"
+                f"（纯命令行进程无 GUI 窗口；窗口已最小化/被隐藏时也找不到；"
+                f"GUI 程序若经 App Execution Alias 或其它进程（explorer 等）"
+                f"启动，窗口可能不属于本任务进程树）"
             )
+        unavailable = _input_target_unavailable(target)
+        if unavailable is not None:
+            raise InputError(unavailable)
         delivery = self._delivery_for(target, action)
         detail, delivery = self._inject(target, action, delivery)
         detail["delivery"] = delivery
@@ -1534,6 +1539,38 @@ class WindowsInputBackend:
 
 
 # ── 窗口定位与坐标换算（模块级，便于复用与单测） ──────────
+
+def _input_target_unavailable(target: _TargetWindow) -> str | None:
+    """窗口当前收不到输入时返回可操作的错误说明（否则 ``None``）。
+
+    最小化窗口没有可渲染的客户区：Windows 把它的窗口矩形写成
+    ``(-32000, -32000, …)`` 这类占位值，鼠标坐标换算后落在屏幕外，键盘
+    事件也送不到它——此前仍返回「注入成功」，调用方只能靠截图才发现没有
+    效果（真实用例：``type`` 打到最小化窗口返回 ok，界面毫无变化）。这里
+    提前校验并给出 ``restore`` 下一步；校验本身异常时保守放行，不阻断输入。
+    """
+    handle = target.handle
+    title = target.title or "<无标题>"
+    handle_text = _window_handle_text(handle)
+    try:
+        if not winapi.is_window(handle):
+            # 句柄已失效：交给既有注入路径处理（窗口消失有自己的错误提示）
+            return None
+        minimized = winapi.is_window_minimized(handle)
+        visible = winapi.is_window_visible(handle)
+    except Exception:  # noqa: BLE001 - 校验失败不阻断输入
+        return None
+    if minimized:
+        return (f"窗口「{title}」（{handle_text}）当前已最小化，收不到鼠标 / "
+                f"键盘输入（最小化窗口矩形在屏幕外，合成输入不会生效）。"
+                f"请先 op=window, window_action='restore' 还原窗口后再输入，"
+                f"或改用 op=windows 里其它可操作窗口")
+    if not visible:
+        return (f"窗口「{title}」（{handle_text}）当前不可见，收不到鼠标 / "
+                f"键盘输入。可先用 op=window, window_action='restore' / "
+                f"'activate' 让它显示出来，或改用 op=windows 查看可操作窗口清单")
+    return None
+
 
 def locate_window(pid: int, window: str | None = None) -> _TargetWindow | None:
     """定位 ``pid``（含子进程）的目标窗口，返回句柄与截图坐标系。

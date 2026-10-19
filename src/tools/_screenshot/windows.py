@@ -408,8 +408,39 @@ def selectable_index(windows: Sequence[WindowInfo]) -> dict[int, int]:
 
 # ── 主窗口与标注 ────────────────────────────────────────
 
+#: 应用内部辅助窗口的类名（小写）：这些窗口不承载用户界面，不能当作主窗口。
+#: 典型来源：
+#:   - Tk：``TtkMonitorClass``（Tk 用于监视主题 / DPI 的隐藏窗口，面积常为
+#:     整个屏幕；主窗口最小化后它会因「面积最大」被选成 main，restore 时
+#:     把它显示出来，遮挡屏幕且真正的窗口仍然最小化——实机复现）；
+#:     ``EmbeddedMenuWindowClass`` / ``MenuWindowClass``（Tk 内部菜单）；
+#:   - 输入法：``IME`` / ``MSCTFIME UI`` / ``IIMProbeWindow``；
+#:   - 钩子：``GDI+ Hook Window Class``；
+#:   - 提示框：``tooltips_class32``（不应作为截图 / 输入目标）。
+_AUXILIARY_WINDOW_CLASSES: frozenset[str] = frozenset({
+    "ttkmonitorclass",
+    "embeddedmenuwindowclass",
+    "menuwindowclass",
+    "ime",
+    "msctfime ui",
+    "iimprobewindow",
+    "gdi+ hook window class",
+    "tooltips_class32",
+})
+
+
+def is_auxiliary_window(info: WindowInfo) -> bool:
+    """窗口是否为应用内部辅助窗口（Tk 监视器 / 输入法 / 钩子 / 提示框）。
+
+    这类窗口即使可见、有标题、面积大，也不应被当作主窗口：截图得到的是
+    空白 / 透明画面，输入也不会到达用户控件。判定只看类名（精确匹配，
+    避免误伤真实菜单窗口——菜单由 ``tool_window`` 与 ``popup`` 选择器处理）。
+    """
+    return (info.class_name or "").strip().lower() in _AUXILIARY_WINDOW_CLASSES
+
+
 def main_window(windows: Sequence[WindowInfo]) -> WindowInfo | None:
-    """按「可见 > 非工具窗口 > 未最小化 > 有标题 > 面积大 > PID 小」选出主窗口。
+    """按「非辅助窗口 > 可见 > 非工具窗口 > 有标题 > 面积大 > PID 小」选出主窗口。
 
     纯函数，无副作用；空列表返回 ``None``。
     """
@@ -421,10 +452,17 @@ def main_window(windows: Sequence[WindowInfo]) -> WindowInfo | None:
 def main_rank(info: WindowInfo) -> tuple:
     """主窗口排序键（越大越优先）。
 
-    可见性排在首位：隐藏 / 最小化的「幽灵窗口」即使面积更大、标题更全，
+    辅助窗口（见 :func:`is_auxiliary_window`）排在**第一位**：主窗口最小化时
+    全部窗口都不可选，若只按面积排序，Tk 的 ``TtkMonitorWindow``（1920x983）
+    会压过真实主窗口（564x299），``window_action='restore'`` 于是把它显示出来
+    ——既没还原目标窗口，又在屏幕上凭空多出一个遮挡窗口（实机复现）；即使
+    辅助窗口已可见，也不能让它抢走 main。
+
+    其次是可见性：隐藏 / 最小化的「幽灵窗口」即使面积更大、标题更全，
     也不应被当作主窗口（截图为全黑、输入打不进去）。
     """
     return (
+        not is_auxiliary_window(info),
         bool(info.visible) and not info.minimized,
         not info.tool_window,
         bool(info.title.strip()),
@@ -889,6 +927,7 @@ __all__ = [
     "describe_windows",
     "filter_windows",
     "indexed_summary",
+    "is_auxiliary_window",
     "is_selectable",
     "main_rank",
     "main_window",

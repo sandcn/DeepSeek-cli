@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Callable
 
 from src._ansi_text import sanitize_paste
+from src._unicode_text import sanitize_surrogates
 from src.api.escape_monitor.history import _HISTORY_MAX_ENTRIES
 
 # ★ 历史写盘（模块边界优化，2026-08-05）：_safe_disk_append /
@@ -408,7 +409,14 @@ class InputBufferEditor:
         return submitted, buffer_text
 
     def set_buffer(self, text: str) -> None:
-        """设置缓冲区文本（用于预填），光标移到末尾。"""
+        """设置缓冲区文本（用于预填），光标移到末尾。
+
+        ★ 修复（2026-10）：预填文本（/editmsg 历史消息、历史文件等）可能含
+        孤立 UTF-16 代理项——它无法以 UTF-8 编码，提交后会让会话自动保存 /
+        请求序列化抛 ``UnicodeEncodeError``。写入缓冲前清洗（相邻代理对还原
+        为完整码点，其余替换 U+FFFD）。
+        """
+        text = sanitize_surrogates(text)
         with self._lock:
             self._push_undo(None)
             self._buffer = text

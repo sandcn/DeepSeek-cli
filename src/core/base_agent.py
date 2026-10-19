@@ -15,6 +15,7 @@ import weakref
 from typing import Any, Callable
 
 from .sandbox_manager import get_sandbox_manager, set_current_message_index
+from .._unicode_text import sanitize_surrogates, sanitize_surrogates_deep
 
 _logger = logging.getLogger(__name__)
 
@@ -300,6 +301,10 @@ class BaseAgent:
             content = build_user_content_blocks(content, self.model)
         except Exception:
             _logger.debug("多模态图片输入转换失败，按纯文本处理", exc_info=True)
+        # ★ 修复（2026-10）：用户输入（TUI 粘贴/命令注入等）可能携带孤立
+        #   UTF-16 代理项——它无法以 UTF-8 编码，会让会话自动保存与下一次
+        #   请求序列化抛 UnicodeEncodeError。进入消息列表前统一清洗。
+        content = sanitize_surrogates_deep(content)
         self.messages.append({"role": "user", "content": content})
         self._refresh_context_usage()
 
@@ -335,6 +340,13 @@ class BaseAgent:
         if tool_calls:
             msg["tool_calls"] = _build_tool_calls_payload(tool_calls)
 
+        # ★ 修复（2026-10）：模型流把 emoji 的 UTF-16 代理对拆到两个 delta 帧
+        #   时，content / reasoning_content / 工具参数里会出现孤立代理项——
+        #   它无法以 UTF-8 编码：会话自动保存（json.dumps + write_text）与下
+        #   一次请求序列化都会抛 UnicodeEncodeError。进入消息列表前统一清洗
+        #   （相邻代理对还原为完整 emoji，其余替换 U+FFFD）。
+        msg = sanitize_surrogates_deep(msg)
+
         self.messages.append(msg)
         self._sync_sandbox_index(len(self.messages) - 1)
         self._refresh_context_usage()
@@ -355,6 +367,10 @@ class BaseAgent:
         from ..tools.base import ToolResult
         if isinstance(content, ToolResult):
             content = content.to_content()
+        # ★ 修复（2026-10）：工具输出（子进程 stdout/stderr、文件内容等）同
+        #   样可能含孤立代理项——进入消息列表前清洗，避免会话自动保存与请求
+        #   序列化因无法以 UTF-8 编码而失败。
+        content = sanitize_surrogates_deep(content)
         self.messages.append({
             "role": "tool",
             "tool_call_id": tool_call_id,

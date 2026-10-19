@@ -31,7 +31,8 @@ def build_bash_opt_schema() -> dict[str, Any]:
             "name": "bash_opt",
             "description": (
                 "按 task_id 操作后台 bash 任务（由 bash background=true 启动）。"
-                "op：read（读取当前已产生的全部输出并清空缓冲，立即返回不等待完成）、"
+                "op：read（读取当前已产生的全部输出并清空缓冲，立即返回不等待完成；"
+                "包含前台超时自动转后台之前的输出，默认最多返回最后 1000 行）、"
                 "wait（等待完成取结果 JSON：task_id/status/stdout/stderr/returncode，"
                 "timeout 秒，默认 300/0 无限）、"
                 "kill（杀整个进程树：进程组 + 全部递归后代（Windows 原生用"
@@ -98,7 +99,8 @@ def build_bash_opt_schema() -> dict[str, Any]:
                     },
                     "op": {
                         "type": "string",
-                        "enum": ["read", "wait", "kill", "stdin", "keys",
+                        "enum": ["read", "wait", "kill", "stdin",
+                                 "close_stdin", "keys",
                                  "screenshot", "windows", "window",
                                  "elements", "wait_window", "clipboard",
                                  "locate", "pixel", "annotate",
@@ -108,6 +110,7 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "要执行的操作："
                             "\n- read：读取后台命令当前已产生的全部输出并清空缓冲，"
                             "立即返回（不等待任务完成）；后续 read 只返回新产生的输出，"
+                            "默认最多返回最后 1000 行（max_lines 可调，0 = 不按行截断），"
                             "最终完整结果由 wait 获取"
                             "\n- wait：等待任务完成并获取命令输出"
                             "\n- kill：杀死任务所有进程树（进程组 + 全部递归"
@@ -116,11 +119,25 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "退出（僵尸视为已终止），仍有存活则自动补杀（最多 3 "
                             "轮尝试）；校验时仍存活的残留 PID 会在结果中列出；"
                             "记录的 PID 已被系统复用（创建时间不匹配）时拒绝杀"
-                            "\n- stdin：向任务 stdin 发送文本输入（需 text）"
+                            "\n- stdin：向任务 stdin 发送文本输入（需 text；"
+                            "encoding 指定文本编码，默认 utf-8——Windows 原生"
+                            "控制台程序按 OEM 代码页读 stdin 时传 gbk / cp936）"
+                            "\n- close_stdin：关闭任务 stdin（发送 EOF）。"
+                            "依赖输入结束才输出 / 退出的命令（sort / findstr / "
+                            "cat / more / cmd 的 set / p 等）用它能正常跑完并"
+                            "返回结果，不必 kill 丢掉输出；关闭后 stdin / keys "
+                            "写入会提示 stdin 已关闭"
                             "\n- keys：向任务发送光标/键盘消息（需 key；"
                             "目标进程有 GUI 窗口时自动作为窗口级键盘消息注入该窗口，"
                             "没有 GUI 窗口则写入终端 PTY/stdin；"
                             "支持 ctrl+c 等组合键、esc/pageup 等别名与单个字符）"
+                            "注意：组合键事件送达不等于目标控件执行了对应动作"
+                            "（如部分 TextBox 收到 Ctrl+A 但不全选），效果需用 "
+                            "screenshot / diff 复核；管道 stdin（任务未以 pty=true "
+                            "启动）中的 ctrl+c 只是普通字节，不会中断进程；"
+                            "Windows ConPTY 任务（pty=true）下 ctrl+c 也可能只取消"
+                            "当前输入行而不中断运行中的进程（系统限制）——"
+                            "需要终止任务请用 op=kill"
                             "\n- screenshot：把任务进程树（含其启动的 GUI 子进程）的窗口"
                             "或整个屏幕截图保存为 PNG 文件（需 path；可选 crop 指定只截取的像素区域，"
                             "screen=true/'primary'/序号 整屏 / 多显示器截取（不再需要进程句柄），"
@@ -128,6 +145,9 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "用于查看图形程序运行画面；"
                             "结果附带 window_x/window_y（截图像素左上角对应的屏幕坐标）"
                             "与 window_rect（窗口外框），便于截图像素与屏幕坐标换算；"
+                            "窗口最大化 / 部分超出屏幕时，产物只包含屏幕内可见部分，"
+                            "截图原点与外框左上角相差 offset（见结果 hint 的换算公式）；"
+                            "多显示器下 screen=序号 指定单个显示器；"
                             "纯命令行进程没有窗口，会返回错误说明"
                             "\n- move/hover/click/drag/scroll/key/type：向任务进程树的 GUI 窗口"
                             "注入输入（鼠标移动（x/y 绝对或 dx/dy 相对；"
@@ -141,7 +161,9 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "（句柄/标题/类名/位置尺寸/Z 序/是否前台/是否主窗口/"
                             "tool_window/client_area），"
                             "z_index 与 '#N' 选择器编号一致、selectable_total 为可操作"
-                            "窗口数，"
+                            "窗口数；selectable_total=0 表示窗口都还不可见 / 已最小化"
+                            "（GUI 程序启动初期常见），先 wait_window 等窗口可用、"
+                            "或对已有窗口执行 window_action='restore' 再截图 / 输入；"
                             "用于挑选目标窗口（右键菜单、下拉浮层、对话框等独立顶层"
                             "窗口都在其中）；"
                             "tool_window=true 的弹层不参与前台切换，输入 op 会按"
@@ -228,8 +250,8 @@ def build_bash_opt_schema() -> dict[str, Any]:
                         "type": "string",
                         "description": (
                             "stdin / type 操作的文本内容："
-                            "stdin 为发送到后台命令 stdin 的内容（按 UTF-8 编码，"
-                            "不经过 shell 解释）；"
+                            "stdin 为发送到后台命令 stdin 的内容（按 encoding "
+                            "指定的编码编码，默认 UTF-8；不经过 shell 解释）；"
                             "type 为注入到 GUI 窗口的文本（逐字符输入，支持任意 "
                             "Unicode，'\\n' 与 '\\t' 转为回车/制表键）。"
                         ),
@@ -240,6 +262,27 @@ def build_bash_opt_schema() -> dict[str, Any]:
                             "是否在 text 末尾追加换行：stdin 默认 true"
                             "（按「输入一行」语义发送），type 默认 false"
                             "（原样输入，需要回车时传 true 或在 text 中写 '\\n'）。"
+                            "close_stdin 不使用该参数。"
+                        ),
+                    },
+                    "encoding": {
+                        "type": "string",
+                        "description": (
+                            "仅 stdin 生效：发送文本使用的编码（Python 编码名），"
+                            "默认 'utf-8'。Windows 原生控制台程序（cmd 内建命令 / "
+                            "findstr / sort / more 等）按控制台 OEM 代码页读取 "
+                            "stdin，中文场景可传 'gbk' / 'cp936' / 'gb18030'，"
+                            "否则 UTF-8 字节会被按 cp936 解码成乱码；"
+                            "PowerShell / Python 子进程保持默认 utf-8 即可。"
+                        ),
+                    },
+                    "max_lines": {
+                        "type": "integer",
+                        "description": (
+                            "仅 read 生效：单次返回的最大行数（默认 1000，保留"
+                            "尾部最新行；与 bash 工具的 1000 行上限对齐）。"
+                            "传 0 表示不按行截断，只受单次返回的字符上限约束"
+                            "（超限时仍会截断并标注 truncated / dropped_chars）。"
                         ),
                     },
                     "key": {

@@ -91,6 +91,27 @@ def test_match_element_by_type_or_label():
     assert match_element(items, "button").handle == 2
 
 
+def test_match_element_type_skips_synthetic_caption_buttons():
+    """按类型匹配时，标题栏合成按钮（无句柄 / 类名 / AutomationId）不应胜出。
+
+    实机复现：Tk 窗口的「最小化」UIA 按钮面积 71x45、内容区 GO 按钮 45x45；
+    修复前 ``element='按钮'`` 按面积选中「最小化」，把目标窗口最小化了。
+    """
+    caption = ElementInfo(handle=0, pid=1, class_name="", text="",
+                          left=600, top=2, width=71, height=45,
+                          control_type_hint="button")
+    content = ElementInfo(handle=0x403C0, pid=1, class_name="Button", text="",
+                          left=294, top=78, width=45, height=45,
+                          control_type_hint="button")
+    assert match_element([caption, content], "按钮").handle == 0x403C0
+    assert match_element([caption, content], "button").handle == 0x403C0
+    # 仍能按文本定位标题栏按钮（显式需求）
+    titled = ElementInfo(handle=0, pid=1, class_name="", text="最小化",
+                         left=600, top=2, width=71, height=45,
+                         control_type_hint="button")
+    assert match_element([titled, content], "最小化").handle == 0
+
+
 def test_filter_elements_matches_type_labels():
     items = [_element(handle=1, class_name="RICHEDIT50W", text=""),
              _element(handle=2, class_name="Button", text="确定", top=30)]
